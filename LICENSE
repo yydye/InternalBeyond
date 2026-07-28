@@ -1,0 +1,62 @@
+Internal Beyond — License Notice
+
+Copyright © 2025–2026 Sui
+Project: https://github.com/Sui-IB/InternalBeyond
+Contact: 1282901880@qq.com
+
+This repository uses separate noncommercial licenses for software code and for
+visual assets/documentation.
+
+1. SOFTWARE CODE
+
+Unless a file says otherwise, the program code in this repository is licensed
+under the PolyForm Noncommercial License 1.0.0. The complete terms are in:
+
+LICENSES/LICENSE-CODE.md
+
+The public license permits noncommercial use, study, modification, and
+redistribution. It does not grant permission for commercial use, paid
+distribution, resale, commercial hosting, inclusion in a paid product or
+service, or other use primarily intended for commercial advantage or monetary
+compensation without Sui's prior written permission.
+
+2. VISUAL ASSETS AND DOCUMENTATION
+
+The interface design, written documentation, and the selection, modification,
+compositing, arrangement, and post-processing contributed by Sui to project
+visual materials are licensed, only to the extent Sui owns or is entitled to
+license those rights, under Creative Commons Attribution-NonCommercial-
+ShareAlike 4.0 International (CC BY-NC-SA 4.0). Project image materials were
+generated with OpenAI GPT-IMAGE-2 and then modified, composited, and integrated
+by Sui using Adobe Photoshop CS. Full scope and attribution terms are in:
+
+LICENSES/LICENSE-ASSETS.md
+
+3. PROJECT IDENTITY
+
+The names “Internal Beyond”, “Infernal Beyond”, “IB”, the project logo, the
+name “Sui”, and other source-identifying marks are not licensed as trademarks.
+No permission is granted to impersonate the official project, imply
+endorsement, or present a modified copy as an official release.
+
+4. THIRD-PARTY MATERIALS
+
+Third-party libraries, fonts, trademarks, model names, and other third-party
+materials remain subject to their own terms. These licenses cover only material
+that Sui has the right to license.
+
+5. COMMERCIAL PERMISSION
+
+Any commercial use requires a separate written license from Sui. A download,
+Fork, Star, contribution, or prior noncommercial permission is not commercial
+authorization.
+
+6. EFFECTIVE DATE AND EARLIER RELEASES
+
+This license arrangement applies to the current repository version and later
+versions published with these files from 2026-07-25 onward. Copies of earlier
+versions that were lawfully obtained remain governed by the license included
+with those versions.
+
+THE SOFTWARE AND MATERIALS ARE PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND,
+TO THE MAXIMUM EXTENT PERMITTED BY LAW.
