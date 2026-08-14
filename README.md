@@ -188,7 +188,19 @@ IB 支持多种 AI 服务（最多 10 个端口）：
 InternalBeyond.html       ← 主文件（浏览器打开这个）
 assets/
   css/
-    core.css              ← 全局主题、组件与响应式样式
+    core.css              ← 全局变量、主题、导航与基础样式
+    core/                 ← 原 core.css 的连续切片（按 HTML 顺序保持层叠）
+      chat-shell.css      ← Chat 页面外壳
+      letters.css         ← Letters 信封与信纸
+      memory.css          ← Memory 仪表盘、时间线与观测站
+      pages.css           ← Guide、Author 与 Home 通用页面
+      chat.css            ← Chat 面板、Auto Memory、Token 与语音
+      workspace.css       ← ICode 工作区
+      api-components.css  ← API 页面与通用玻璃组件
+      blog.css            ← Blog、编辑器、评论与批注
+      about.css           ← About 个人卡片
+      widgets.css         ← Music、浮窗、动态弹窗与画板组件
+      archive-active.css  ← Archived、Active Messages 与 Diary
     calendar.css          ← Calendar 独立样式
     bridge.css            ← Bridge 工具箱独立样式
     local-vault.css       ← 加密备份与本地数据健康样式

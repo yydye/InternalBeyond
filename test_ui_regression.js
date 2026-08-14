@@ -251,7 +251,7 @@ async function main() {
       unnamedRoleButtons:[...document.querySelectorAll('[role="button"]')].filter(b=>!(b.getAttribute('aria-label')||b.getAttribute('title')||b.textContent||'').trim()).map(b=>b.id||b.className||b.tagName).slice(0,20)
     }))()`);
     check('assets.externalScriptsLoaded', structure.scripts >= 15, String(structure.scripts));
-    check('assets.externalStylesLoaded', structure.styles === 5, String(structure.styles));
+    check('assets.externalStylesLoaded', structure.styles === 16, String(structure.styles));
     check('assets.backgroundResolved', /bg-internal\.jpg/.test(structure.background), structure.background);
     check('bridge.singleEntry', structure.nav === 1 && structure.panel === 1 && structure.fab === 0, JSON.stringify(structure));
     check('a11y.landmarks', structure.skip && structure.main === 'main' && structure.navLinkIssues.length === 0, JSON.stringify(structure));
@@ -378,7 +378,7 @@ async function main() {
       const p=document.getElementById('ib-bridge-panel'),s=getComputedStyle(p),r=p.getBoundingClientRect();
       return {open:p.classList.contains('open'),inert:p.inert,hidden:p.getAttribute('aria-hidden'),expanded:document.getElementById('ib-bridge-nav').getAttribute('aria-expanded'),current:document.getElementById('ib-bridge-nav').getAttribute('aria-current'),background:s.backgroundColor,color:s.color,left:r.left,top:r.top,right:r.right,bottom:r.bottom,focus:document.activeElement.id};
     })()`);
-    await new Promise(resolve => setTimeout(resolve, 150));
+    await waitFor(cdp, "document.activeElement && document.activeElement.id==='ib-panel-tab-whisper'", 1500);
     light.focus = await evaluate(cdp, 'document.activeElement.id');
     check('bridge.desktopOpen', light.open && !light.inert && light.hidden === 'false' && light.expanded === 'true' && light.current === 'page', JSON.stringify(light));
     check('bridge.desktopWithinViewport', light.left >= 7 && light.top >= 7 && light.right <= 1433 && light.bottom <= 893, JSON.stringify(light));

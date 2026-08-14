@@ -1,0 +1,57 @@
+﻿/* Chat sub-page */
+#page-chat{padding-top:60px;padding-bottom:0;max-width:100%;height:100vh;display:none;box-sizing:border-box;overflow:hidden}
+#page-chat.active{display:flex;flex-direction:column}
+.chat-full{flex:1;display:flex;flex-direction:column;max-width:900px;margin:0 auto;width:100%;min-height:0;overflow:hidden}
+.chat-full-header{display:flex;align-items:center;justify-content:space-between;padding:8px 0 10px;border-bottom:1px solid var(--glass-border)}
+.chat-full-header h2{font-family:'Cormorant Garamond',serif;font-weight:300;font-size:1.85rem;color:var(--silver)}
+.chat-full-search{display:flex;gap:8px;align-items:center}
+.chat-full-search input{width:184px;height:32px;box-sizing:border-box;padding:6px 12px;border-radius:10px;border:1px solid var(--glass-border);background:rgba(175,195,228,0.06);color:var(--text-primary);font-size:0.78rem;outline:none;font-family:'Noto Sans SC',sans-serif}
+.chat-full-search input:focus{border-color:var(--accent)}
+/* ── chat 工具栏 ICode 按钮 ── */
+.chat-full-search #ws-open-btn{order:2;width:32px;height:32px;flex-shrink:0;border-radius:10px;background:rgba(190,210,244,0.045);border:1px solid rgba(176,200,240,0.22);
+  backdrop-filter:blur(10px) saturate(1.25);-webkit-backdrop-filter:blur(10px) saturate(1.25);
+  box-shadow:inset 0 1px 0 rgba(226,240,255,0.14),0 1px 3px rgba(4,10,24,0.16);
+  transition:background 0.4s var(--transition),border-color 0.4s var(--transition),box-shadow 0.4s var(--transition),transform 0.4s var(--transition)}
+.chat-full-search #ws-open-btn svg{width:17px;height:17px;stroke-width:1.7;color:var(--light);opacity:0.92;transition:color 0.4s var(--transition),opacity 0.4s var(--transition)}
+.chat-full-search #ws-open-btn:hover{background:rgba(190,212,246,0.1);border-color:rgba(192,216,250,0.36);transform:translateY(-1px);
+  box-shadow:inset 0 1px 0 rgba(232,244,255,0.22),0 4px 10px rgba(4,10,24,0.22)}
+.chat-full-search #ws-open-btn:hover svg{color:var(--pale);opacity:1}
+.chat-full-search #ws-open-btn:active{transform:translateY(0.5px);background:rgba(150,180,222,0.13);transition-duration:0.09s;
+  box-shadow:inset 0 2px 5px rgba(4,10,24,0.34),inset 0 1px 0 rgba(120,150,200,0.1),0 0 0 rgba(0,0,0,0)}
+body:not(.theme-infernal) .page.active .chat-full-search #ws-open-btn{background:rgba(255,255,255,0.14);border-color:rgba(165,205,245,0.42);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.72),0 1px 3px rgba(100,150,210,0.1)}
+body:not(.theme-infernal) .page.active .chat-full-search #ws-open-btn svg{color:#2a5382;opacity:1}
+body:not(.theme-infernal) .page.active .chat-full-search #ws-open-btn:hover{background:rgba(255,255,255,0.3);border-color:rgba(145,195,242,0.58);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.85),0 4px 10px rgba(100,150,210,0.18)}
+body:not(.theme-infernal) .page.active .chat-full-search #ws-open-btn:hover svg{color:#1d4272}
+body:not(.theme-infernal) .page.active .chat-full-search #ws-open-btn:active{background:rgba(222,236,250,0.34);
+  box-shadow:inset 0 2px 5px rgba(70,110,165,0.24),inset 0 1px 0 rgba(255,255,255,0.35),0 0 0 rgba(0,0,0,0)}
+.chat-full-body{flex:1;display:flex;gap:16px;overflow:hidden;padding:16px 0;min-height:0}
+.chat-sidebar{width:220px;border-right:1px solid var(--glass-border);padding-right:16px;overflow-y:auto;overflow-x:hidden;flex-shrink:0}
+.chat-sidebar h4{font-family:'Cormorant Garamond',serif;font-size:0.9rem;color:var(--silver);margin-bottom:10px}
+.friend-item{padding:8px 10px;border-radius:10px;cursor:pointer;font-size:0.78rem;color:var(--text-secondary);transition:all 0.2s;display:flex;align-items:center;gap:8px;margin-bottom:4px}
+.friend-item:hover,.friend-item.active{background:rgba(80,128,176,0.12);color:var(--white)}
+.friend-item .friend-dot{width:6px;height:6px;border-radius:50%;background:var(--accent);flex-shrink:0}
+/* Thread items under friends */
+.friend-thread-list{padding-left:20px;overflow:hidden;max-height:0;transition:max-height 0.3s ease}
+.friend-thread-list.open{max-height:600px}
+.thread-item{padding:6px 10px;border-radius:8px;cursor:pointer;font-size:0.78rem;color:var(--text-muted);transition:all 0.2s;display:flex;align-items:center;gap:7px;margin-bottom:2px}
+.thread-item:hover,.thread-item.active{background:rgba(80,128,176,0.10);color:var(--text-primary)}
+.thread-item .thread-dot{width:5px;height:5px;border-radius:50%;background:var(--text-muted);flex-shrink:0;transition:background 0.2s}
+.thread-item.active .thread-dot{background:var(--accent-light)}
+.thread-item .del-btn{margin-left:auto;font-size:0.75rem;cursor:pointer;opacity:0;transition:opacity 0.2s;padding:0 2px}
+.thread-item:hover .del-btn{opacity:0.5}
+.thread-item .del-btn:hover{opacity:1;color:#e88}
+.friend-actions{display:flex;align-items:center;margin-left:auto;gap:2px}
+.friend-add-thread{font-size:0.92rem;cursor:pointer;opacity:0.4;transition:opacity 0.2s;padding:0 5px;line-height:1}
+.friend-add-thread:hover{opacity:0.9}
+.friend-thread-badge{font-size:0.62rem;color:var(--text-muted);opacity:0.6;min-width:14px;text-align:center}
+/* 「+ 创建群聊」：Internal 下旧样式底板过浅几乎隐形——换成站 */
+body:not(.theme-infernal) .page.active #group-create-btn{color:#1a4577;border-color:rgba(90,145,205,0.58);background:rgba(255,255,255,0.72);box-shadow:inset 0 1px 0 rgba(255,255,255,0.85),0 1px 4px rgba(90,140,200,0.14)}
+body:not(.theme-infernal) .page.active #group-create-btn:hover{color:#123a66;border-color:#4a86c8;background:rgba(255,255,255,0.92)}
+body:not(.theme-infernal) .thread-item{color:#3a5a8c}
+body:not(.theme-infernal) .thread-item:hover,body:not(.theme-infernal) .thread-item.active{color:#0a1e42}
+body:not(.theme-infernal) .thread-item.active .thread-dot{background:#3a7ac0}
+body.theme-infernal .thread-item.active .thread-dot{background:rgba(240,248,255,0.9)}
+body.theme-infernal{--thread-dot-active:rgba(240,248,255,0.9)}
+.chat-main-area{flex:1;display:flex;flex-direction:column;overflow:hidden;min-height:0;position:relative}

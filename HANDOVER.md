@@ -587,3 +587,12 @@ node --test test_active_http.js                     # 31 项：/plans 端点/sta
 - **父协调层**：`assets/js/active-diary.js` 从约 2235 行降至 843 行，保留主动消息基础调度、初始化、主题与总协调逻辑。HTML 加载顺序固定为 `active-plans.js` → `diary.js` → `active-diary.js`。
 - **结构加固**：`test_frontend_structure.js` 新增 active.* 的父/子 IIFE 首尾和子模块独立语法断言；旧版 blob 与拆分后三文件的顶层声明集合核对为 143 → 143，零缺失。
 - **最终验证**：`test_active_diary_smoke.js` 19/19；`test-all.js --all` 共 13 个入口全绿（static 2 / service 4 / browser 7，67.0s）；HTML 引用的 36 个本地脚本语法零失败。
+
+### 9.20 2026-08-14 Git 检查点与 core.css 拆分
+
+- **Git 安全基线**：全量测试绿后提交 `800411d`（`refactor: modularize local services and frontend domains`），此前未跟踪的 `assets/`、`active/`、`bridge/`、游戏子模块和测试入口均已纳入版本控制。`.dsh-recovery/` 加入 `.gitignore`；恢复文件保留到两个检查点落盘后删除，空目录可能因本机安全策略保留但不含数据。
+- **严格连续拆分**：原 `assets/css/core.css` 3643 行按顶层区段切成 12 个连续文件；`core.css` 保留前 383 行基础主题，其余进入 `assets/css/core/`：chat-shell / letters / memory / pages / chat / workspace / api-components / blog / about / widgets / archive-active。没有按选择器重新排序，也没有修改任何规则。
+- **层叠完整性**：HTML 以原始区段顺序加载 12 段；拆分后的文件去除各自 BOM 后依次拼接，与提交 `800411d` 中原 `core.css` 精确相等（359440 UTF-8 字节）。子文件中的 `url(...)` 全部是 data URI，不存在目录移动导致的相对路径变化。
+- **结构测试增强**：`test_frontend_structure.js` 改为递归检查 `assets/css` / `assets/js` / `game`，新子目录也纳入 UTF-8、BOM 和乱码检查；新增 16 个 stylesheet 总数与 core 12 段精确加载顺序断言。
+- **浏览器断言同步**：`test_ui_regression.js` 的外部样式数更新为 16；同时把 Bridge 打开后的焦点检查由固定等待 150ms 改为最多 1.5s 等待目标控件实际聚焦，修复全量负载下的时序 flake（验收条件不变），连续单测 3 次通过。
+- **最终验证**：`test-all.js --all` 13 个入口全部通过（static 2 / service 4 / browser 7，66.6s）；36 个本地脚本语法零失败，浏览器确认 16 张样式表全部加载，运行时零 JS 异常。

@@ -21,10 +21,15 @@ function check(name, condition, detail = '') {
 
 function frontFiles() {
   const files = [htmlPath];
-  for (const dir of ['assets/css', 'assets/js', 'game']) {
-    for (const name of fs.readdirSync(path.join(root, dir))) {
-      if (/\.(?:css|js)$/i.test(name)) files.push(path.join(root, dir, name));
+  function collect(dir) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const file = path.join(dir, entry.name);
+      if (entry.isDirectory()) collect(file);
+      else if (/\.(?:css|js)$/i.test(entry.name)) files.push(file);
     }
+  }
+  for (const dir of ['assets/css', 'assets/js', 'game']) {
+    collect(path.join(root, dir));
   }
   return files;
 }
@@ -71,7 +76,22 @@ check('split.noInlineScripts', inlineScripts.length === 0, String(inlineScripts.
 const scriptSources = [...html.matchAll(/<script[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi)].map(m => m[1]);
 const styleSources = [...html.matchAll(/<link[^>]*\brel\s*=\s*["'][^"']*stylesheet[^"']*["'][^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*>/gi)].map(m => m[1]);
 check('split.externalScriptCount', scriptSources.length >= 15, String(scriptSources.length));
-check('split.externalStyleCount', styleSources.length === 5, String(styleSources.length));
+check('split.externalStyleCount', styleSources.length === 16, String(styleSources.length));
+const expectedCoreStyles = [
+  'assets/css/core.css',
+  'assets/css/core/chat-shell.css',
+  'assets/css/core/letters.css',
+  'assets/css/core/memory.css',
+  'assets/css/core/pages.css',
+  'assets/css/core/chat.css',
+  'assets/css/core/workspace.css',
+  'assets/css/core/api-components.css',
+  'assets/css/core/blog.css',
+  'assets/css/core/about.css',
+  'assets/css/core/widgets.css',
+  'assets/css/core/archive-active.css'
+];
+check('split.coreStyleOrder', JSON.stringify(styleSources.slice(0, expectedCoreStyles.length)) === JSON.stringify(expectedCoreStyles), styleSources.slice(0, expectedCoreStyles.length).join(', '));
 
 const missing = [];
 for (const value of scriptSources.concat(styleSources)) {

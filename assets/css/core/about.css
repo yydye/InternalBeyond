@@ -1,0 +1,189 @@
+﻿/* ABOUT — Proposal M: 全景窗名片 */
+#page-about{overflow:hidden!important;position:relative}
+#page-about.active{display:flex!important;flex-direction:column;height:100vh;
+  max-width:100%!important;width:100%!important;padding:44px 5vw 36px 5vw!important;margin:0!important;box-sizing:border-box!important;min-height:auto!important}
+#page-about #about-display,#page-about #about-editor{flex:1;display:flex;flex-direction:column;min-height:0;height:100%}
+#page-about #about-display{display:flex!important;align-items:center;justify-content:center}
+/* Frozen Glass page background — reduced opacity so site bg shows through */
+#page-about::before{content:'';position:absolute;inset:0;z-index:0;pointer-events:none;
+  backdrop-filter:blur(18px) saturate(0.55) brightness(1.06);-webkit-backdrop-filter:blur(18px) saturate(0.55) brightness(1.06);
+  background:rgba(210,228,252,0.02);opacity:0.2}
+#page-about::after{content:'';position:absolute;inset:0;z-index:0;pointer-events:none;
+  background:radial-gradient(ellipse 45% 35% at 30% 45%,rgba(200,225,255,0.05),transparent 65%);
+  mix-blend-mode:overlay;animation:profileShimmer 18s ease-in-out infinite alternate}
+@keyframes profileShimmer{0%{background-position:30% 45%}100%{background-position:70% 55%}}
+body.theme-infernal #page-about::before{
+  backdrop-filter:blur(22px) saturate(0.45) brightness(0.75);-webkit-backdrop-filter:blur(22px) saturate(0.45) brightness(0.75);
+  background:rgba(18,28,55,0.06);opacity:0.2}
+body.theme-infernal #page-about::after{
+  background:radial-gradient(ellipse 50% 40% at 40% 50%,rgba(40,65,130,0.06),transparent 60%);
+  mix-blend-mode:color-dodge;animation:profileUndercurrent 22s ease-in-out infinite alternate}
+@keyframes profileUndercurrent{0%{opacity:0.4;background-position:40% 50%}50%{opacity:0.7}100%{opacity:0.4;background-position:60% 45%}}
+body:not(.theme-infernal) #page-about::before{
+  backdrop-filter:blur(16px) saturate(0.55) brightness(1.1);-webkit-backdrop-filter:blur(16px) saturate(0.55) brightness(1.1);
+  background:rgba(240,248,255,0.04);opacity:0.15}
+body:not(.theme-infernal) #page-about::after{
+  background:radial-gradient(ellipse 45% 35% at 25% 40%,rgba(180,215,255,0.08),transparent 60%);
+  mix-blend-mode:soft-light}
+/* Profile card — fixed aspect ratio, scales fluidly with the viewport */
+.profile-card{position:relative;z-index:1;display:flex;overflow:hidden;
+  border-radius:20px;
+  width:min(90vw,166vh);aspect-ratio:1.95/1;height:auto;flex:none;margin:0 auto;
+  background:rgba(70,98,145,0.10);
+  border:none;
+  backdrop-filter:blur(18px) saturate(1.25);-webkit-backdrop-filter:blur(18px) saturate(1.25);
+  box-shadow:0 14px 38px rgba(0,0,0,0.22),0 3px 10px rgba(0,0,0,0.13),inset 0 1px 0 rgba(255,255,255,0.14)}
+body:not(.theme-infernal) .profile-card{background:rgba(248,252,255,0.20);
+  backdrop-filter:blur(22px) saturate(1.4) brightness(1.04);-webkit-backdrop-filter:blur(22px) saturate(1.4) brightness(1.04);
+  box-shadow:0 10px 26px rgba(70,120,190,0.11),0 2px 7px rgba(80,130,200,0.06),inset 0 1px 0 rgba(255,255,255,0.45)}
+body.theme-infernal .profile-card{background:rgba(18,28,52,0.30);
+  backdrop-filter:blur(22px) saturate(1.1) brightness(0.85);-webkit-backdrop-filter:blur(22px) saturate(1.1) brightness(0.85);
+  box-shadow:0 16px 40px rgba(0,0,0,0.40),0 4px 12px rgba(0,0,0,0.24),inset 0 1px 0 rgba(255,255,255,0.09)}
+/* Avatar column */
+.pc-avatar-col{width:20%;min-width:200px;flex-shrink:0;container-type:inline-size;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  position:relative;overflow:hidden;border-right:1px solid rgba(180,210,245,0.08);border-radius:20px 0 0 20px;
+  -webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;user-select:none}
+.pc-avatar-bg{position:absolute;inset:0;z-index:0;border-radius:inherit}
+/* No bg image: frozen glass */
+.pc-avatar-bg.frozen{backdrop-filter:blur(20px) saturate(0.5) brightness(1.05);-webkit-backdrop-filter:blur(20px) saturate(0.5) brightness(1.05);
+  background:linear-gradient(160deg,rgba(118,162,218,0.18),rgba(82,128,188,0.10))}
+body.theme-infernal .pc-avatar-bg.frozen{backdrop-filter:blur(20px) saturate(0.4) brightness(0.6);-webkit-backdrop-filter:blur(20px) saturate(0.4) brightness(0.6);
+  background:linear-gradient(160deg,rgba(38,60,106,0.30),rgba(24,42,78,0.16))}
+/* Has bg image: liquid glass blur over the image */
+.pc-avatar-bg.has-img{background-size:cover;background-position:center}
+.pc-avatar-bg.has-img::after{content:'';position:absolute;inset:-2px;
+  backdrop-filter:blur(22px) saturate(0.6) brightness(1.06);-webkit-backdrop-filter:blur(22px) saturate(0.6) brightness(1.06);
+  background:rgba(200,225,252,0.08)}
+body.theme-infernal .pc-avatar-bg.has-img::after{backdrop-filter:blur(24px) saturate(0.5) brightness(0.55);-webkit-backdrop-filter:blur(24px) saturate(0.5) brightness(0.55);
+  background:rgba(15,25,50,0.12)}
+.pc-avatar-img{width:140px;height:140px;width:55cqw;height:55cqw;max-width:180px;max-height:180px;border-radius:50%;border:none;object-fit:cover;position:relative;z-index:2}
+.pc-avatar-placeholder{width:140px;height:140px;width:55cqw;height:55cqw;max-width:180px;max-height:180px;border-radius:50%;border:none;
+  background:rgba(120,165,220,0.08);display:flex;align-items:center;justify-content:center;
+  font-size:40px;font-size:16cqw;color:rgba(220,238,255,0.5);font-weight:500;position:relative;z-index:2}
+body:not(.theme-infernal) .pc-avatar-img{border:none}
+body:not(.theme-infernal) .pc-avatar-placeholder{border:none;background:rgba(180,215,250,0.2);color:rgba(30,65,125,0.92)}
+.pc-avatar-name{font-family:'Cormorant Garamond',serif;font-size:1.6rem;font-weight:400;color:var(--white);
+  margin:18px 0 3px;position:relative;z-index:2;letter-spacing:0.04em;text-shadow:0 2px 10px rgba(0,0,0,0.5),0 1px 3px rgba(0,0,0,0.55)}
+body:not(.theme-infernal) .pc-avatar-name{color:#152c58}
+.pc-avatar-label{font-family:'Raleway',sans-serif;font-size:0.72rem;font-weight:300;color:rgba(190,210,238,0.6);letter-spacing:0.16em;
+  position:relative;z-index:2;text-transform:none;margin-top:9px;line-height:1.5;text-align:center}
+.pc-avatar-label::after{content:"InternalBeyond.html"}
+body.theme-infernal .pc-avatar-label::after{content:"InfernalBeyond.html"}
+body:not(.theme-infernal) .pc-avatar-label{color:rgba(36,58,120,0.9)}
+/* --- Profile Avatar Glass Morphism (ice crystal feel) --- */
+.pc-avatar-img{border:none}
+body:not(.theme-infernal) .pc-avatar-img{border:none}
+.pc-avatar-placeholder{border:none;
+  background:rgba(120,170,230,0.1);
+  backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+body:not(.theme-infernal) .pc-avatar-placeholder{border:none;
+  background:rgba(190,220,250,0.25)}
+/* Nickname shadow: near-white light-blue glow in Internal mode */
+body:not(.theme-infernal) .pc-avatar-name{text-shadow:0 1px 4px rgba(200,220,255,0.55),0 2px 16px rgba(210,228,255,0.6),0 0 30px rgba(220,235,255,0.45)}
+/* Label shadow: subtle depth in both modes */
+.pc-avatar-label{text-shadow:0 1px 6px rgba(0,0,0,0.4),0 0 14px rgba(100,150,220,0.25)}
+body:not(.theme-infernal) .pc-avatar-label{text-shadow:0 1px 4px rgba(20,50,100,0.35),0 0 12px rgba(110,160,235,0.3)}
+/* Bio column */
+.pc-bio-col{flex:1;padding:40px 42px;display:flex;flex-direction:column;justify-content:center;
+  border-right:1px solid rgba(180,210,245,0.08);min-width:0;overflow:hidden}
+.pc-bio-text{font-size:1.02rem;color:var(--light);line-height:2.1;white-space:pre-wrap;word-wrap:break-word;overflow:hidden;margin:0 0 20px}
+body:not(.theme-infernal) .pc-bio-text{color:#1a3262}
+body:not(.theme-infernal) #page-about .pc-bio-empty{color:#1f2d63}
+.pc-custom-wrap{border-top:1px solid rgba(180,210,245,0.1);padding-top:14px}
+.pc-custom-label{font-family:'Raleway',sans-serif;font-size:0.68rem;color:rgba(180,200,230,0.45);letter-spacing:0.08em;margin:0 0 6px;text-transform:uppercase}
+body:not(.theme-infernal) .pc-custom-label{color:rgba(40,75,135,0.85)}
+.pc-custom-text{font-size:0.88rem;color:var(--silver);line-height:1.8;white-space:pre-wrap;word-wrap:break-word;overflow:hidden}
+body:not(.theme-infernal) .pc-custom-text{color:#274873}
+.pc-bio-actions{margin-top:auto;padding-top:14px;display:flex;gap:8px}
+/* Gallery column — 3 vertical image slots */
+.pc-gallery-col{width:27%;min-width:250px;flex-shrink:0;display:flex;gap:2px}
+.pc-gallery-slot{flex:1;position:relative;overflow:hidden;cursor:pointer;display:flex;align-items:center;justify-content:center;
+  transition:flex 0.45s cubic-bezier(0.25,0.1,0.25,1);will-change:flex;backface-visibility:hidden;-webkit-backface-visibility:hidden}
+.pc-gallery-slot:not(:last-child){border-right:1px solid rgba(180,210,245,0.12)}
+body:not(.theme-infernal) .pc-gallery-slot:not(:last-child){border-right-color:rgba(90,140,200,0.2)}
+.pc-gallery-slot:last-child{border-radius:0 20px 20px 0}
+/* Empty slot: liquid glass */
+.pc-gallery-slot.empty{background:linear-gradient(180deg,rgba(118,162,218,0.14),rgba(82,128,188,0.06));
+  backdrop-filter:blur(12px) saturate(0.8);-webkit-backdrop-filter:blur(12px) saturate(0.8)}
+.pc-gallery-slot.empty::before{content:'';position:absolute;inset:0;
+  background:radial-gradient(ellipse 60% 40% at 50% 40%,rgba(200,225,255,0.06),transparent 60%);
+  mix-blend-mode:overlay}
+body.theme-infernal .pc-gallery-slot.empty{background:linear-gradient(180deg,rgba(44,68,118,0.30),rgba(28,48,88,0.15));
+  backdrop-filter:blur(12px) saturate(0.5) brightness(0.7);-webkit-backdrop-filter:blur(12px) saturate(0.5) brightness(0.7)}
+body:not(.theme-infernal) .pc-gallery-slot.empty{background:linear-gradient(180deg,rgba(168,202,242,0.34),rgba(150,194,238,0.17));
+  backdrop-filter:blur(12px) saturate(1.2) brightness(1.05);-webkit-backdrop-filter:blur(12px) saturate(1.2) brightness(1.05)}
+/* Slot with image */
+.pc-gallery-slot.has-img{background-size:cover;background-position:center;transform:translateZ(0);-webkit-transform:translateZ(0)}
+.pc-gallery-slot.has-img::after{content:'';position:absolute;inset:0;
+  background:linear-gradient(180deg,rgba(0,0,0,0) 60%,rgba(0,0,0,0.15) 100%);
+  border-left:1px solid rgba(200,225,250,0.06);pointer-events:none}
+.pc-gallery-slot .pc-slot-label{writing-mode:vertical-rl;font-size:0.82rem;color:rgba(206,222,250,0.62);
+  letter-spacing:0.2em;position:relative;z-index:1;transition:opacity 0.3s}
+body:not(.theme-infernal) .pc-gallery-slot .pc-slot-label{color:rgba(34,66,124,0.72)}
+.pc-gallery-slot.has-img .pc-slot-label{opacity:0}
+/* Gallery delete button */
+.pc-gallery-del{position:absolute;top:8px;right:8px;z-index:3;width:22px;height:22px;border-radius:50%;
+  background:rgba(0,0,0,0.45);border:1px solid rgba(255,255,255,0.15);color:rgba(255,255,255,0.8);
+  font-size:0.7rem;cursor:pointer;display:flex;align-items:center;justify-content:center;
+  opacity:0;transition:opacity 0.2s;backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)}
+.pc-gallery-slot:hover .pc-gallery-del{opacity:1}
+.pc-gallery-del:hover{background:rgba(200,60,60,0.6);color:#fff}
+/* Expanded slot (clicked) */
+.pc-gallery-slot.expanded{flex:5}
+.pc-gallery-slot:not(.expanded){flex:1}
+/* Edit mode */
+.pc-edit-overlay{position:absolute;inset:0;z-index:3;display:flex;flex-direction:column;align-items:center;
+  background:rgba(18,28,50,0.65);backdrop-filter:blur(20px) saturate(0.8);-webkit-backdrop-filter:blur(20px) saturate(0.8);
+  border-radius:20px;overflow-y:auto;padding:48px 40px}
+.pc-edit-overlay::-webkit-scrollbar{width:4px}
+.pc-edit-overlay::-webkit-scrollbar-thumb{background:rgba(155,185,232,0.25);border-radius:4px}
+body:not(.theme-infernal) .pc-edit-overlay{background:rgba(235,245,255,0.75);backdrop-filter:blur(24px) saturate(1.2)}
+.pc-edit-inner{width:100%;max-width:520px}
+.pc-edit-overlay h3{font-family:'Cormorant Garamond',serif;font-weight:300;font-size:1.5rem;color:var(--silver);margin:0 0 28px;text-align:center;letter-spacing:0.06em}
+body:not(.theme-infernal) .pc-edit-overlay h3{color:#152c58}
+.pc-edit-overlay label{font-size:0.82rem;color:var(--silver);display:block;margin-bottom:6px;margin-top:18px;letter-spacing:0.03em}
+body:not(.theme-infernal) .pc-edit-overlay label{color:#233e6c}
+.pc-edit-overlay label:first-of-type{margin-top:0}
+.pc-edit-overlay input,.pc-edit-overlay textarea{width:100%;padding:11px 16px;border-radius:12px;border:1px solid var(--glass-border);
+  background:rgba(155,180,218,0.08);color:var(--text-primary);font-family:'Noto Sans SC',sans-serif;font-size:0.9rem;
+  margin-bottom:4px;outline:none;transition:border-color 0.3s;box-sizing:border-box}
+.pc-edit-overlay input:focus,.pc-edit-overlay textarea:focus{border-color:var(--accent-light);box-shadow:0 0 14px rgba(80,128,176,0.1)}
+.pc-edit-overlay textarea{resize:none;line-height:1.8}
+body:not(.theme-infernal) .pc-edit-overlay input,body:not(.theme-infernal) .pc-edit-overlay textarea{
+  background:rgba(248,252,255,0.75);border-color:rgba(170,210,245,0.4);color:#1a3262}
+body:not(.theme-infernal) .pc-edit-overlay input:focus,body:not(.theme-infernal) .pc-edit-overlay textarea:focus{
+  border-color:rgba(100,160,230,0.6);box-shadow:0 0 14px rgba(80,128,200,0.08)}
+.pc-edit-actions{display:flex;gap:12px;justify-content:center;margin-top:24px}
+.pc-edit-uploads{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;margin-bottom:4px}
+.pc-edit-upload-btn{padding:6px 16px;border-radius:12px;border:1px solid var(--glass-border);background:var(--glass-bg);
+  backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);
+  color:var(--text-secondary);font-size:0.8rem;cursor:pointer;font-family:'Noto Sans SC',sans-serif;transition:all 0.2s}
+.pc-edit-upload-btn:hover{background:rgba(175,195,228,0.2);color:var(--white);border-color:rgba(175,195,228,0.35)}
+body:not(.theme-infernal) .pc-edit-upload-btn{background:rgba(230,242,255,0.55);color:#233e6c;border-color:rgba(150,195,240,0.3)}
+body:not(.theme-infernal) .pc-edit-upload-btn:hover{background:rgba(215,235,255,0.75);color:#152c58}
+.pc-char-count{font-size:0.7rem;color:var(--text-muted);float:right;font-weight:400}
+/* Nickname color picker — circular swatches */
+.pc-namecolor-row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px}
+.pc-cswatch{position:relative;display:flex;flex-direction:column;align-items:center;gap:5px;background:none;border:none;cursor:pointer;padding:2px;font-family:'Noto Sans SC',sans-serif}
+.pc-cswatch i{display:block;width:26px;height:26px;border-radius:50%;box-shadow:inset 0 0 0 1px rgba(255,255,255,0.12),0 1px 4px rgba(0,0,0,0.3);transition:transform 0.2s,box-shadow 0.2s}
+.pc-cswatch span{font-size:0.62rem;letter-spacing:0.02em;color:var(--text-muted);transition:color 0.2s;white-space:nowrap}
+.pc-cswatch:hover i{transform:scale(1.12)}
+.pc-cswatch.active i{box-shadow:0 0 0 2px var(--accent-light),inset 0 0 0 1px rgba(255,255,255,0.2),0 0 12px rgba(114,168,216,0.45)}
+.pc-cswatch.active span{color:var(--accent-light)}
+body:not(.theme-infernal) .pc-cswatch span{color:#3f5e8c}
+body:not(.theme-infernal) .pc-cswatch i{box-shadow:inset 0 0 0 1px rgba(80,120,170,0.25),0 1px 4px rgba(80,120,180,0.18)}
+body:not(.theme-infernal) .pc-cswatch.active i{box-shadow:0 0 0 2px #5a92c8,inset 0 0 0 1px rgba(255,255,255,0.4),0 0 12px rgba(90,146,200,0.35)}
+body:not(.theme-infernal) .pc-cswatch.active span{color:#1a5a9c}
+/* INTERNAL (light) theme — profile legibility (scoped to #page-about only).
+   The display card and the inline-styled edit form both reference these CSS
+   vars (var(--text-primary)/--silver/etc.), which are near-white by default and
+   wash out over the light default background. Re-point them to dark navy here. */
+body:not(.theme-infernal) #page-about{
+  --text-primary:#16294f;--text-secondary:#274673;--text-muted:#4a6896;
+  --silver:#274673;--light:#1a3262;--white:#102245;--glass-border:rgba(70,130,190,0.34);
+}
+/* Drop the global white text-glow on the profile card so dark text stays crisp
+   (the nickname is excluded — it keeps its own shadow for emphasis) */
+body:not(.theme-infernal) #page-about .profile-card,
+body:not(.theme-infernal) #page-about .profile-card *:not(.pc-avatar-name){text-shadow:none}
+body:not(.theme-infernal) #page-about .pc-avatar-name{text-shadow:0 1px 4px rgba(200,220,255,0.55),0 2px 16px rgba(210,228,255,0.6),0 0 30px rgba(220,235,255,0.45)}

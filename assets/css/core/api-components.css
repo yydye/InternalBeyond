@@ -1,0 +1,91 @@
+﻿/* API PAGE */
+.api-section{margin-bottom:28px}
+/* 渲染修复：设置页玻璃卡强制与其毛玻璃底同层栅格化。页面共94处back */
+.api-section.glass-card{transform:translateZ(0);backface-visibility:hidden}
+.api-section h3{font-family:'Noto Sans SC',sans-serif;font-size:1.05rem;font-weight:500;margin-bottom:14px;color:var(--light);letter-spacing:0.02em}
+.api-form-group{margin-bottom:14px}
+.api-form-group label{display:block;font-size:0.88rem;color:var(--silver);margin-bottom:7px;letter-spacing:0.03em}
+.api-form-group input,.api-form-group select,.api-form-group textarea{width:100%;background:rgba(175,195,228,0.06);border:1px solid var(--glass-border);border-radius:10px;padding:12px 16px;color:var(--text-primary);font-size:0.92rem;font-family:'Noto Sans SC',sans-serif;outline:none;transition:border-color 0.3s}
+.api-form-group input:focus,.api-form-group select:focus{border-color:var(--accent)}
+.api-form-group select{cursor:pointer;-webkit-appearance:none;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%238895b4' fill='none' stroke-width='1.5'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center;padding-right:32px}
+.api-form-group select option{background:var(--bg-deep);color:var(--text-primary)}
+.api-form-group input::placeholder,.api-form-group textarea::placeholder{color:rgba(160,180,210,0.55)}
+#api-system:focus::placeholder{opacity:0;transition:opacity 0.3s ease}
+body.theme-infernal .api-form-group input::placeholder,body.theme-infernal .api-form-group textarea::placeholder{color:rgba(180,195,220,0.5)}
+.api-avatar-area{display:flex;align-items:center;gap:14px}
+.api-avatar-preview{width:56px;height:56px;border-radius:50%;border:1px solid var(--glass-border);object-fit:cover;background:var(--bg-mid);cursor:pointer}
+.api-avatar-hint{font-size:0.72rem;color:var(--text-muted)}
+/* ── API Editor: Avatar upload zone ── */
+.api-avatar-upload-zone{display:flex;align-items:center;gap:16px;padding:14px 18px;border-radius:14px;background:rgba(114,168,216,0.06);border:1px solid rgba(114,168,216,0.15);margin-bottom:18px}
+.api-avatar-upload-circle{position:relative;flex-shrink:0}
+.api-avatar-upload-circle .aav-img{width:56px;height:56px;border-radius:50%;object-fit:cover;border:1px solid var(--glass-border);display:block}
+.api-avatar-upload-circle .aav-placeholder{width:56px;height:56px;border-radius:50%;background:rgba(120,165,220,0.12);border:1px solid var(--glass-border);display:flex;align-items:center;justify-content:center;font-size:1.2rem;font-weight:500;color:var(--text-muted)}
+.api-avatar-upload-circle .aav-edit{position:absolute;bottom:-1px;right:-1px;width:20px;height:20px;border-radius:50%;background:rgba(80,128,176,0.65);border:1.5px solid rgba(200,220,245,0.4);display:flex;align-items:center;justify-content:center;font-size:0.55rem;color:#fff;cursor:pointer;transition:background 0.2s}
+.api-avatar-upload-circle .aav-edit:hover{background:rgba(80,128,176,0.85)}
+.api-avatar-upload-info{font-size:0.82rem;color:var(--pale);font-weight:400}
+.api-avatar-upload-hint{font-size:0.72rem;color:var(--text-muted);line-height:1.6;margin-top:3px}
+.api-avatar-upload-btns{display:flex;gap:8px;margin-top:8px}
+.api-avatar-upload-btns button{padding:4px 12px;border-radius:10px;font-size:0.74rem;cursor:pointer;font-family:'Noto Sans SC',sans-serif;transition:all 0.2s}
+.api-avatar-upload-btns .aav-upload{border:1px solid var(--glass-border);background:var(--glass-bg);color:var(--text-secondary)}
+.api-avatar-upload-btns .aav-upload:hover{background:rgba(175,195,228,0.18);border-color:rgba(175,195,228,0.4)}
+.api-avatar-upload-btns .aav-remove{border:1px solid rgba(220,100,100,0.25);background:rgba(220,100,100,0.08);color:rgba(220,130,130,0.8)}
+.api-avatar-upload-btns .aav-remove:hover{background:rgba(220,100,100,0.18)}
+body:not(.theme-infernal) .api-avatar-upload-zone{background:rgba(200,225,255,0.35);border-color:rgba(120,170,220,0.25)}
+body:not(.theme-infernal) .api-avatar-upload-circle .aav-placeholder{background:rgba(180,215,250,0.3);border-color:rgba(120,170,220,0.3);color:#2a5080}
+body:not(.theme-infernal) .api-avatar-upload-info{color:#152c58}
+body:not(.theme-infernal) .api-avatar-upload-hint{color:#3a5a8c}
+body:not(.theme-infernal) .api-avatar-upload-btns .aav-upload{background:rgba(220,240,255,0.5);border-color:rgba(120,170,220,0.3);color:#1a3a6c}
+body:not(.theme-infernal) .api-avatar-upload-btns .aav-remove{background:rgba(240,200,200,0.35);border-color:rgba(200,100,100,0.25);color:#8a3030}
+/* ── API Management List: avatar in each row ── */
+.api-item-avatar{width:34px;height:34px;border-radius:50%;flex-shrink:0;overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:0.82rem;font-weight:500;color:var(--text-muted);background:rgba(120,165,220,0.12);border:1px solid var(--glass-border)}
+.api-item-avatar img{width:100%;height:100%;object-fit:cover;display:block}
+body:not(.theme-infernal) .api-item-avatar{background:rgba(180,215,250,0.25);border-color:rgba(120,170,220,0.3);color:#2a5080}
+/* ── Chat fullscreen: grouped avatar layout ── */
+#page-chat .chat-msg-header{display:flex;align-items:center;gap:10px;margin-bottom:1px;animation:fadeUp 0.25s ease}
+#page-chat .chat-msg-header.align-right{flex-direction:row-reverse;align-self:flex-end}
+#page-chat .chat-msg-header.align-left{align-self:flex-start}
+#page-chat .chat-msg-avatar{width:36px;height:36px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:0.85rem;font-weight:500;color:var(--text-muted);background:rgba(120,165,220,0.12);border:1px solid var(--glass-border);overflow:hidden}
+#page-chat .chat-msg-avatar img{width:100%;height:100%;object-fit:cover;display:block}
+#page-chat .chat-msg-header .r-head-name{font-size:0.78rem;font-weight:500;letter-spacing:0.02em}
+#page-chat .chat-msg-header.align-left .r-head-name{color:var(--accent-light)}
+#page-chat .chat-msg-header.align-right .r-head-name{color:var(--silver)}
+#page-chat .chat-msg-header .r-time{font-size:0.65rem;font-weight:300;color:var(--text-muted)}
+#page-chat .chat-msg.chat-msg-avatared{margin-bottom:1px;margin-top:-10px}
+#page-chat .chat-msg.ai.chat-msg-avatared{margin-left:46px}
+#page-chat .chat-msg.user.chat-msg-avatared{margin-right:46px}
+#page-chat .chat-msg-cont-time{font-size:0.6rem;color:var(--text-muted);opacity:0.5;margin-bottom:1px;margin-top:-9px}
+/* 思考链保持原设计：置于头像行/昵称行之上（消息组最顶端），不做缩进重排 */
+body:not(.theme-infernal) #page-chat .chat-msg-header.align-left .r-head-name{color:#1a3a6c;font-weight:500}
+body:not(.theme-infernal) #page-chat .chat-msg-header.align-right .r-head-name{color:#1a3a6c;font-weight:500}
+body:not(.theme-infernal) #page-chat .chat-msg-avatar{background:rgba(180,215,250,0.25);border-color:rgba(120,170,220,0.3);color:#2a5080}
+.api-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.chat-history-item{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;background:rgba(175,195,228,0.04);border:1px solid var(--glass-border);border-radius:10px;margin-bottom:8px;font-size:0.88rem;color:var(--silver)}
+.chat-history-item .del-btn{color:var(--text-muted);cursor:pointer;font-size:0.85rem;transition:color 0.3s}
+.chat-history-item .del-btn:hover{color:#e57373}
+.chat-count{font-size:0.82rem;color:var(--text-muted);margin-top:4px}
+
+.page h2{font-family:'Cormorant Garamond',serif;font-size:1.85rem;font-weight:300;letter-spacing:0.02em}
+
+/* MODULE INTRO CARD */
+.module-intro{background:rgba(182,204,238,0.06);border:1px solid rgba(186,206,242,0.12);border-radius:12px;padding:20px 24px;margin-bottom:24px;backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);--mi-rule:rgba(178,200,240,0.3)}
+.module-intro-top{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
+.module-intro h2{font-family:'Cormorant Garamond',serif;font-weight:600;font-size:1.5rem;color:#e8eef6;letter-spacing:0.05em;margin:0;text-shadow:0 1px 8px rgba(0,0,0,0.3)}
+.module-intro-sub{font-family:'Raleway',sans-serif;font-weight:300;font-size:0.82rem;letter-spacing:0.2em;text-transform:uppercase;color:rgba(114,168,216,0.65);position:relative;padding-left:14px}
+.mi-sub-inf{display:none}
+body.theme-infernal .mi-sub-int{display:none}
+body.theme-infernal .mi-sub-inf{display:inline}
+.module-intro-sub::before{content:"";position:absolute;left:0;top:50%;transform:translateY(-50%);width:1px;height:0.95em;background:var(--mi-rule)}
+.module-intro-rule{height:1px;background:linear-gradient(90deg,var(--mi-rule),transparent);width:min(100%,34ch);margin:10px 0 12px;opacity:0.9}
+.module-intro-desc{font-family:'Noto Sans SC',sans-serif;font-weight:300;font-size:0.85rem;color:rgba(190,202,222,0.88);line-height:1.9;text-shadow:0 1px 6px rgba(0,0,0,0.25)}
+
+/* GLASS CARD */
+
+/* Room title fallback — for browsers */
+.game-cine{padding:0 8px 8px}
+.game-cine-top{gap:12px}
+.game-cine-top h2{font-size:1.4rem}
+.game-cine-sub{font-size:0.72rem;padding-left:13px}
+.game-cine-rule{margin-top:9px}
+.game-cine-desc{font-size:0.76rem;margin-top:8px}
+.glass-card{background:var(--surface-card);border:1px solid var(--border-soft);border-radius:var(--radius-panel);backdrop-filter:blur(16px) saturate(1.2);-webkit-backdrop-filter:blur(16px) saturate(1.2);box-shadow:var(--shadow-card);transition:border-color var(--motion-normal) var(--transition),box-shadow var(--motion-normal) var(--transition),background var(--motion-normal) var(--transition)}
+.glass-card:hover{border-color:var(--border-strong);box-shadow:var(--shadow-panel)}

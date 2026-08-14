@@ -1,0 +1,385 @@
+﻿/* MUSIC */
+#music-mini{position:fixed;bottom:24px;left:24px;z-index:90;display:flex;align-items:center;gap:10px;padding:8px 14px;border-radius:28px;background:var(--glass-bg);border:1px solid var(--glass-border);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);cursor:pointer;transition:all 0.4s var(--transition),background 1.5s ease-out,border-color 1.5s ease-out,box-shadow 1.5s ease-out;max-width:220px;opacity:0;transform:translateY(20px)}
+#music-mini.visible{opacity:1;transform:translateY(0)}
+/* 悬停加强：轻浮 2px + 柔影托底 + 顶缘冰光变亮；按下沉回并微缩，节奏仍是站点缓动 */
+#music-mini.visible:hover{transform:translateY(-2px)}
+#music-mini.visible:active{transform:translateY(0) scale(0.985);transition-duration:0.2s}
+/* Welcome page: music player uses Infernal (dark glass) style regardless of active theme */
+#splash:not(.hidden)~#music-mini{z-index:10000;
+  background:var(--glass-bg);border-color:var(--glass-border);
+  backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);box-shadow:none}
+#splash:not(.hidden)~#music-mini:hover{background:rgba(175,195,228,0.15);border-color:var(--glass-border)}
+#splash:not(.hidden)~#music-mini .mini-title{color:var(--text-secondary);text-shadow:none}
+#splash:not(.hidden)~#music-mini .mini-icon{color:inherit}
+#splash:not(.hidden)~#music-panel{z-index:10001;
+  background:var(--glass-bg);border-color:var(--glass-border);
+  backdrop-filter:blur(16px) saturate(1.15);-webkit-backdrop-filter:blur(16px) saturate(1.15);
+  box-shadow:0 8px 32px rgba(0,0,0,0.16);color:var(--text-primary)}
+#splash:not(.hidden)~#music-panel .panel-header h4{color:var(--silver)}
+#splash:not(.hidden)~#music-panel .panel-close{color:var(--text-secondary);border-color:var(--glass-border)}
+#splash:not(.hidden)~#music-panel .panel-close:hover{color:var(--white);border-color:var(--accent-light)}
+#splash:not(.hidden)~#music-panel .now-playing{color:var(--light)}
+#splash:not(.hidden)~#music-panel .p-btn{color:var(--text-secondary);border-color:rgba(175,195,228,0.15);background:rgba(175,195,228,0.06)}
+#splash:not(.hidden)~#music-panel .p-btn:hover{background:rgba(175,195,228,0.2);color:var(--white)}
+#splash:not(.hidden)~#music-panel .playlist-item{color:var(--text-secondary)}
+#splash:not(.hidden)~#music-panel .playlist-item:hover{background:rgba(175,195,228,0.08);color:var(--white)}
+#splash:not(.hidden)~#music-panel .playlist-item.active{color:var(--accent-light)}
+#splash:not(.hidden)~#music-panel .playlist{border-top-color:rgba(175,195,228,0.1)}
+#splash:not(.hidden)~#music-panel #visualizer-canvas{background:rgba(0,0,0,0.08)}
+#splash:not(.hidden)~#music-panel .now-playing,
+#splash:not(.hidden)~#music-panel .p-btn,
+#splash:not(.hidden)~#music-panel .playlist-item,
+#splash:not(.hidden)~#music-panel h4{text-shadow:none}
+#music-mini:hover{background:rgba(175,195,228,0.16);border-color:rgba(188,208,240,0.34);box-shadow:0 9px 26px rgba(3,8,20,0.32),inset 0 1px 0 rgba(222,236,255,0.16)}
+#music-mini:active{background:rgba(175,195,228,0.2)}
+#music-mini:hover .mini-icon{text-shadow:0 0 10px rgba(190,215,250,0.5)}
+.mini-icon{font-size:1.1rem;flex-shrink:0}.mini-title{font-size:0.72rem;color:var(--text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:color 1.5s ease-out,text-shadow 1.5s ease-out}
+#music-panel{position:fixed;bottom:24px;left:24px;z-index:91;width:300px;max-width:calc(100vw - 48px);padding:20px;border-radius:20px;display:none;animation:panelIn 0.4s var(--transition);
+  transition:background 1.5s ease-out,border-color 1.5s ease-out,box-shadow 1.5s ease-out,color 1.5s ease-out}
+#music-panel.show{display:block}
+@keyframes panelIn{from{opacity:0;transform:translateY(20px) scale(0.95)}to{opacity:1;transform:translateY(0) scale(1)}}
+.panel-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
+.panel-header h4{font-family:'Cormorant Garamond',serif;font-weight:300;font-size:1.05rem;color:var(--silver);transition:color 1.5s ease-out,text-shadow 1.5s ease-out}
+.panel-close{width:26px;height:26px;border-radius:50%;border:1px solid var(--glass-border);background:none;color:var(--text-secondary);cursor:pointer;font-size:0.85rem;display:flex;align-items:center;justify-content:center;transition:all 0.2s}
+.panel-close:hover{color:var(--white);border-color:var(--accent-light)}
+#visualizer-canvas{width:100%;height:44px;border-radius:8px;margin-bottom:12px;background:rgba(0,0,0,0.08)}
+.now-playing{font-size:0.78rem;color:var(--light);text-align:center;margin-bottom:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:color 1.5s ease-out,text-shadow 1.5s ease-out}
+.progress-bar{width:100%;height:3px;border-radius:2px;background:rgba(175,195,228,0.1);margin-bottom:12px;cursor:pointer;position:relative}
+.progress-fill{height:100%;border-radius:2px;background:linear-gradient(90deg,var(--accent),var(--accent-light));width:0%;transition:width 0.1s linear}
+.player-controls{display:flex;align-items:center;justify-content:center;gap:10px}
+.p-btn{width:32px;height:32px;border-radius:50%;border:1px solid var(--glass-border);background:var(--glass-bg);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);color:var(--text-primary);cursor:pointer;font-size:0.8rem;display:flex;align-items:center;justify-content:center;transition:all 0.2s,background 1s ease-out,border-color 1s ease-out,color 1s ease-out}
+.p-btn:hover{background:rgba(175,195,228,0.2);color:var(--white)}
+.p-btn.play-btn{width:38px;height:38px;font-size:0.95rem}
+.playlist{max-height:140px;overflow-y:auto;margin-top:12px;border-top:1px solid rgba(175,195,228,0.1);padding-top:8px}
+.playlist-item{padding:5px 8px;border-radius:8px;font-size:0.75rem;color:var(--text-secondary);cursor:pointer;transition:all 0.2s,color 1s ease-out,text-shadow 1s ease-out;display:flex;justify-content:space-between;align-items:center}
+.playlist-item:hover{background:rgba(175,195,228,0.08);color:var(--white)}
+.playlist-item.active{color:var(--accent-light)}
+.playlist-item .del-track{opacity:0;font-size:0.65rem;color:var(--text-muted);cursor:pointer;transition:opacity 0.2s}
+.playlist-item:hover .del-track{opacity:1}.playlist-item .del-track:hover{color:#e88}
+
+.page-overlay{position:fixed;inset:0;z-index:1;background:rgba(120,150,185,0.08);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);display:none;animation:modalIn 0.5s var(--transition);pointer-events:none}
+.page-overlay.show{display:block}
+::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:rgba(175,195,228,0.2);border-radius:2px}
+.toast-stack{position:fixed;bottom:80px;left:0;right:0;z-index:600;display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:none}
+.toast{padding:10px 24px;border-radius:12px;background:rgba(175,195,228,0.1);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border:1px solid var(--glass-border);color:var(--text-primary);font-size:0.82rem;white-space:nowrap;animation:toastIn 0.4s var(--transition),toastOut 0.4s var(--transition) 2.2s forwards}
+body:not(.theme-infernal) .toast{background:linear-gradient(160deg,rgba(255,255,255,0.62),rgba(224,237,252,0.42));backdrop-filter:blur(22px) saturate(1.5);-webkit-backdrop-filter:blur(22px) saturate(1.5);border:1px solid rgba(255,255,255,0.65);border-radius:14px;box-shadow:0 10px 30px rgba(70,110,170,0.16),inset 0 1px 0 rgba(255,255,255,0.85),inset 0 -1px 0 rgba(150,190,235,0.28);color:#12305a;font-weight:400;text-shadow:none}
+@keyframes toastIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+@keyframes toastOut{to{opacity:0;transform:translateY(-10px)}}
+.empty-state{text-align:center;padding:60px 20px;color:var(--silver);font-size:0.88rem;opacity:0.8}
+.empty-state span{font-size:2rem;display:block;margin-bottom:12px;opacity:0.4}
+
+@media(max-width:768px){
+  #navbar{left:16px;right:16px;top:8px;padding:0 14px;height:40px;gap:18px}
+  .nav-links{gap:14px;min-width:0;flex:1;overflow-x:auto;overflow-y:hidden;scrollbar-width:none}.nav-links::-webkit-scrollbar{display:none}.nav-links li{flex:0 0 auto}.nav-links a{font-size:0.82rem}
+  .nav-btn{padding:4px 10px;font-size:0.65rem}
+  .nav-user-avatar{width:20px;height:20px}
+  .page{padding:76px 16px 80px}
+  #page-home{padding-left:28px}
+  .about-layout{flex-direction:column;align-items:center}
+  .about-avatar-wrap{width:160px;height:160px;margin-bottom:20px}
+  #music-panel{width:calc(100vw - 32px);left:16px;bottom:16px}
+  #chat-panel{width:calc(100vw - 32px);right:16px;bottom:16px;height:calc(100vh - 120px)}
+  #fab-dock{right:16px;bottom:16px}
+  #fab-dock.solo{display:none}
+  #chat-panel.lifted{bottom:16px}
+  #music-mini{left:16px;bottom:16px}.home-content{padding-top:14vh}
+  .nav-brand{font-size:0.95rem}
+}
+@media(max-width:480px){
+  #navbar{gap:10px}
+  .nav-brand{font-size:0.85rem}
+  .nav-links{gap:8px}.nav-links a{font-size:0.74rem}
+  .nav-actions{gap:5px}.nav-btn{padding:3px 7px;font-size:0.6rem}
+  .nav-user-name{display:none}
+  .nav-user-id{padding:0}
+  #page-home{padding-left:20px}
+  .home-content{padding-top:10vh}
+}
+/* === DEFAULT THEME: glassmorphism mini-windows === */
+body:not(.theme-infernal) #music-mini{background:rgba(255,255,255,0.32);border-color:rgba(180,215,245,0.5);backdrop-filter:blur(22px) saturate(1.5);-webkit-backdrop-filter:blur(22px) saturate(1.5);box-shadow:0 4px 20px rgba(100,160,220,0.1)}
+body:not(.theme-infernal) #music-mini:hover{background:rgba(255,255,255,0.5);border-color:rgba(140,195,240,0.65);box-shadow:0 9px 26px rgba(100,160,220,0.2),inset 0 1px 0 rgba(255,255,255,0.85)}
+body:not(.theme-infernal) #music-mini:active{background:rgba(240,248,255,0.55)}
+body:not(.theme-infernal) #music-mini .mini-title{color:#1e3a50}
+body:not(.theme-infernal) #music-mini .mini-icon{color:#2a5070}
+body:not(.theme-infernal) #fab-dock{background:rgba(255,255,255,0.32);border-color:rgba(180,215,245,0.5);backdrop-filter:blur(22px) saturate(1.5);-webkit-backdrop-filter:blur(22px) saturate(1.5);box-shadow:0 4px 20px rgba(100,160,220,0.1)}
+body:not(.theme-infernal) #icode-mini:hover::before,body:not(.theme-infernal) #chat-mini:hover::before{background:rgba(255,255,255,0.4)}
+body:not(.theme-infernal) #icode-mini:active::before,body:not(.theme-infernal) #chat-mini:active::before{background:rgba(255,255,255,0.5)}
+body:not(.theme-infernal) .fab-sep{background:rgba(120,170,220,0.35)}
+body:not(.theme-infernal) #icode-mini .icode-label,body:not(.theme-infernal) #chat-mini .mini-title{color:#1e3a50}
+body:not(.theme-infernal) #chat-mini .mini-icon svg{stroke:#2a5070}
+body:not(.theme-infernal) #icode-mini .mini-icon svg{color:#2a5070}
+/* === DEFAULT THEME: chat & music panels — glassmorphism === */
+body:not(.theme-infernal) #music-panel{background:rgba(255,255,255,0.32);border-color:rgba(180,215,245,0.5);box-shadow:0 8px 36px rgba(100,160,220,0.12);backdrop-filter:blur(24px) saturate(1.5);-webkit-backdrop-filter:blur(24px) saturate(1.5);color:#1a3262}
+body:not(.theme-infernal) #music-panel .panel-header h4{color:#152c58}
+body:not(.theme-infernal) #music-panel .panel-close{color:#30507c;border-color:rgba(60,110,160,0.3)}
+body:not(.theme-infernal) #music-panel .panel-close:hover{color:#0a1e42;border-color:rgba(60,110,160,0.5)}
+body:not(.theme-infernal) #music-panel .now-playing{color:#1a3262}
+body:not(.theme-infernal) #music-panel .p-btn{color:#1a3262;border-color:rgba(130,185,242,0.18);background:rgba(240,248,255,0.35)}
+body:not(.theme-infernal) #music-panel .p-btn:hover{background:rgba(205,225,252,0.45);color:#0a1e42}
+body:not(.theme-infernal) #music-panel .playlist-item{color:#233e6c}
+body:not(.theme-infernal) #music-panel .playlist-item:hover{background:rgba(170,205,250,0.2);color:#0a1e42}
+body:not(.theme-infernal) #music-panel .playlist-item.active{color:#12468c}
+body:not(.theme-infernal) #music-panel .playlist-item .del-track{color:#3f5e8c}
+body:not(.theme-infernal) #music-panel .playlist{border-top-color:rgba(150,185,240,0.45)}
+body:not(.theme-infernal) #music-panel #visualizer-canvas{background:rgba(222,238,255,0.2)}
+body:not(.theme-infernal) #music-panel .progress-bar{background:rgba(120,175,242,0.12)}
+body:not(.theme-infernal) #chat-panel{background:rgba(255,255,255,0.32);border-color:rgba(180,215,245,0.5);box-shadow:0 8px 36px rgba(100,160,220,0.12);backdrop-filter:blur(24px) saturate(1.5);-webkit-backdrop-filter:blur(24px) saturate(1.5);color:#1a3262}
+body:not(.theme-infernal) #chat-panel .chat-header{border-bottom-color:rgba(220,235,250,0.5)}
+body:not(.theme-infernal) #chat-panel .chat-ai-name{color:#152c58}
+body:not(.theme-infernal) #chat-panel .chat-close{color:#30507c}
+body:not(.theme-infernal) #chat-panel .chat-close:hover{color:#0a1e42}
+body:not(.theme-infernal) #chat-panel .chat-panel-friends{border-bottom-color:rgba(150,185,240,0.45)}
+body:not(.theme-infernal) #chat-panel .cpf-item{color:#233e6c;border-color:rgba(130,185,242,0.16);background:rgba(240,248,255,0.35)}
+body:not(.theme-infernal) #chat-panel .cpf-item:hover{background:rgba(205,225,252,0.4);color:#0a1e42}
+body:not(.theme-infernal) #chat-panel .cpf-item.active{background:rgba(120,175,242,0.16);border-color:rgba(80,145,205,0.35);color:#0a1e42}
+body:not(.theme-infernal) #chat-panel .chat-msg.user{background:rgba(110,160,238,0.08);border-color:rgba(255,255,255,0.4);color:#0a1e42}
+body:not(.theme-infernal) #chat-panel .chat-msg.ai{background:rgba(248,252,255,0.4);border-color:rgba(200,225,248,0.25);color:#0a1e42}
+body:not(.theme-infernal) #chat-panel .chat-msg.system{color:#30507c}
+body:not(.theme-infernal) #chat-panel .chat-typing{color:#6888a8}
+body:not(.theme-infernal) .page.active .chat-typing{color:#6888a8}
+body:not(.theme-infernal) #chat-panel .chat-typing .typing-sec{opacity:0.9;color:#4a6a90}
+body:not(.theme-infernal) .page.active .chat-typing .typing-sec{opacity:0.9;color:#4a6a90}
+body:not(.theme-infernal) #chat-panel .chat-input-area{border-top-color:rgba(150,185,240,0.45)}
+body:not(.theme-infernal) #chat-panel .chat-input{background:rgba(248,252,255,0.4);border-color:rgba(170,210,245,0.25);color:#1a3262}
+body:not(.theme-infernal) #chat-panel .chat-input::placeholder{color:#3f5e8c}
+body:not(.theme-infernal) #chat-panel .chat-input:focus{border-color:rgba(60,120,180,0.4)}
+body:not(.theme-infernal) #chat-panel .chat-send{background:rgba(120,175,242,0.1);border-color:rgba(90,155,235,0.18);color:#12468c}
+body:not(.theme-infernal) #chat-panel .chat-send:hover{background:rgba(100,160,235,0.18);color:#0a1e42}
+/* === CHAT PANEL: friend list strip === */
+.chat-panel-friends{display:flex;gap:8px;padding:10px 16px;overflow-x:auto;border-bottom:1px solid var(--glass-border);flex-shrink:0;-webkit-overflow-scrolling:touch;scrollbar-width:thin;scrollbar-color:rgba(175,195,228,0.25) transparent}
+.chat-panel-friends::-webkit-scrollbar{height:3px}
+.chat-panel-friends::-webkit-scrollbar-thumb{background:linear-gradient(90deg,rgba(175,195,228,0.12),rgba(175,195,228,0.3),rgba(175,195,228,0.12));border-radius:2px}
+.chat-panel-friends::-webkit-scrollbar-track{background:transparent}
+.cpf-item{padding:4px 12px;border-radius:16px;font-size:0.7rem;white-space:nowrap;cursor:pointer;border:1px solid rgba(175,195,228,0.2);background:rgba(175,195,228,0.06);color:var(--text-secondary);transition:all 0.2s;flex-shrink:0}
+.cpf-item:hover{background:rgba(80,128,176,0.15);color:var(--white)}
+.cpf-item.active{background:rgba(80,128,176,0.25);border-color:var(--accent);color:var(--white)}
+body:not(.theme-infernal) .cpf-item{color:#adb8d0}
+body:not(.theme-infernal) .cpf-item:hover{background:rgba(75,125,182,0.2);color:#f0f4f8}
+body:not(.theme-infernal) .cpf-item.active{background:rgba(75,125,182,0.3);border-color:#4e7eb5;color:#f0f4f8}
+/* === LETTER REQUEST UI === */
+/* Letters 顶部三区间距：标题块 → 邮编/搜索栏 → 接收信件，轻量收紧并统一 */
+#page-letters .module-intro{margin-bottom:18px}
+#page-letters .blog-header{margin-bottom:18px}
+.letter-request-area{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+.letter-ai-select{padding:6px 14px;border-radius:12px;border:1px solid var(--glass-border);background:var(--glass-bg);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);color:var(--text-primary);font-size:0.78rem;font-family:'Noto Sans SC',sans-serif;cursor:pointer;outline:none;-webkit-appearance:none;appearance:none;padding-right:28px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%238895b4' fill='none' stroke-width='1.5'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center}
+body:not(.theme-infernal) .page.active .letter-ai-select{background:rgba(245,250,255,0.65);border-color:rgba(170,210,245,0.35);color:#1a3262}
+body:not(.theme-infernal) .page.active .letter-ai-select option{background:#eaf2fa;color:#1a3262}
+.letter-request-hint{font-size:0.72rem;color:var(--text-muted);margin-top:4px}
+body:not(.theme-infernal) .page.active .letter-request-hint{color:#233e6c}
+body:not(.theme-infernal) .page.active .letter-request-title{color:#233e6c !important}
+.letter-loading{text-align:center;padding:30px 20px;color:var(--silver)}
+.letter-loading-spinner{display:inline-block;width:20px;height:20px;border:2px solid var(--glass-border);border-top-color:var(--accent);border-radius:50%;animation:lspin 0.8s linear infinite;margin-right:8px;vertical-align:middle}
+@keyframes lspin{to{transform:rotate(360deg)}}
+body:not(.theme-infernal) .page.active .letter-loading{color:#233e6c}
+/* === DYNAMIC ELEMENT STYLES === */
+.chat-sidebar-muted{color:var(--text-muted)}
+body:not(.theme-infernal) .page.active .chat-sidebar-muted{color:#2b487a}
+.api-item-name{color:var(--light)}
+.api-item-detail{color:var(--silver);opacity:0.82}
+body:not(.theme-infernal) .page.active .api-item-name{color:#0f2045}
+body:not(.theme-infernal) .page.active .api-item-detail{color:#233e6c}
+/* === DRAGGABLE PANELS === */
+.panel-drag-handle{cursor:grab;user-select:none;-webkit-user-select:none}
+.panel-drag-handle:active{cursor:grabbing}
+/* === GROUP CHAT DIALOG === */
+.group-dialog-overlay{position:fixed;inset:0;z-index:200;background:rgba(0,0,0,0.45);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);display:none;align-items:center;justify-content:center}
+.group-dialog-overlay.show{display:flex}
+.group-dialog{background:var(--bg-mid);border:1px solid var(--glass-border);border-radius:16px;padding:24px;width:340px;max-width:90vw;color:var(--text-primary);box-shadow:0 12px 48px rgba(0,0,0,0.3)}
+body:not(.theme-infernal) .group-dialog{background:rgba(250,253,255,0.95);color:#1a3262;border-color:rgba(170,210,245,0.4)}
+.group-dialog h3{margin:0 0 16px;font-family:'Noto Sans SC',sans-serif;font-size:1.05rem;font-weight:500}
+.group-dialog label{font-size:0.82rem;display:block;margin-bottom:6px;color:var(--text-secondary)}
+body:not(.theme-infernal) .group-dialog label{color:#1a3262}
+.group-dialog input[type=text]{width:100%;padding:8px 12px;border-radius:10px;border:1px solid var(--glass-border);background:rgba(255,255,255,0.06);color:var(--text-primary);font-size:0.85rem;font-family:'Noto Sans SC',sans-serif;margin-bottom:14px;outline:none;box-sizing:border-box}
+body:not(.theme-infernal) .group-dialog input[type=text]{background:rgba(248,252,255,0.6);color:#1a3262;border-color:rgba(170,210,245,0.35)}
+body:not(.theme-infernal) .group-dialog input[type=text]::placeholder{color:#3f5e8c}
+body:not(.theme-infernal) .group-dialog h3{color:#152c58}
+.group-api-list{max-height:180px;overflow-y:auto;margin-bottom:16px;display:flex;flex-direction:column;gap:6px}
+.group-api-item{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:10px;border:1px solid var(--glass-border);background:rgba(255,255,255,0.04);cursor:pointer;transition:all 0.2s;font-size:0.82rem}
+.group-api-item:hover{background:rgba(80,128,176,0.12)}
+.group-api-item.selected{background:rgba(80,128,176,0.22);border-color:var(--accent)}
+body:not(.theme-infernal) .group-api-item{background:rgba(245,250,255,0.5);color:#1a3262;border-color:rgba(170,210,245,0.28)}
+body:not(.theme-infernal) .group-api-item:hover{background:rgba(222,238,255,0.65)}
+body:not(.theme-infernal) .group-api-item.selected{background:rgba(120,175,242,0.22);border-color:rgba(80,145,205,0.45)}
+.group-api-item input[type=checkbox]{accent-color:var(--accent)}
+.group-dialog-actions{display:flex;gap:10px;justify-content:flex-end}
+/* ── 创建群聊 / 新建话题频道 弹窗 · 统一样式 ──
+   两个弹窗共用同一套视觉配方，参照 api-del-dialog 的干净玻璃底板：
+   不使用浏览器原生配色，所有文字颜色显式指定，双主题均有清晰可读性。 ── */
+#group-dialog-overlay,#thread-dialog-overlay{background:rgba(12,18,34,0.42);backdrop-filter:blur(14px) saturate(0.9);-webkit-backdrop-filter:blur(14px) saturate(0.9)}
+#group-dialog-overlay .group-dialog,#thread-dialog-overlay .group-dialog{width:340px;padding:24px 24px 20px;border-radius:16px;
+  background:var(--bg-mid);border:1px solid var(--glass-border);color:var(--text-primary);
+  box-shadow:0 12px 48px rgba(0,0,0,0.3)}
+#group-dialog-overlay .group-dialog h3,#thread-dialog-overlay .group-dialog h3{position:relative;margin:0 0 16px;padding-bottom:12px;
+  font-family:'Noto Sans SC',sans-serif;font-weight:500;font-size:1.05rem;color:var(--text-primary)}
+#group-dialog-overlay .group-dialog h3::after,#thread-dialog-overlay .group-dialog h3::after{content:"";position:absolute;left:0;bottom:0;width:100%;height:1px;
+  background:linear-gradient(90deg,rgba(178,192,216,0.28),rgba(178,192,216,0.02))}
+#group-dialog-overlay .group-dialog label,#thread-dialog-overlay .group-dialog label{font-size:0.82rem;color:var(--text-secondary);letter-spacing:0.02em}
+#group-dialog-overlay .group-dialog input[type=text],#thread-dialog-overlay .group-dialog input[type=text]{width:100%;padding:10px 13px;border-radius:10px;
+  background:rgba(255,255,255,0.06);border:1px solid var(--glass-border);color:var(--text-primary);font-size:0.85rem;font-family:'Noto Sans SC',sans-serif;margin-bottom:14px;outline:none;box-sizing:border-box;
+  transition:border-color 0.3s,box-shadow 0.3s}
+#group-dialog-overlay .group-dialog input[type=text]:focus,#thread-dialog-overlay .group-dialog input[type=text]:focus{border-color:rgba(114,168,216,0.65);box-shadow:0 0 12px rgba(114,168,216,0.15)}
+#group-dialog-overlay .group-dialog>label input[type=checkbox],#thread-dialog-overlay .group-dialog>label input[type=checkbox]{width:15px;height:15px;accent-color:var(--accent-light)}
+#group-dialog-overlay .group-dialog>label span,#thread-dialog-overlay .group-dialog>label span{color:var(--text-secondary)}
+#group-dialog-overlay .group-dialog-actions,#thread-dialog-overlay .group-dialog-actions{margin-top:2px;padding-top:14px;border-top:1px solid rgba(178,192,216,0.14)}
+#group-dialog-overlay .group-dialog-actions .btn,#thread-dialog-overlay .group-dialog-actions .btn{color:var(--text-primary)}
+#group-dialog-overlay .group-dialog-actions .btn-primary,#thread-dialog-overlay .group-dialog-actions .btn-primary{background:rgba(80,128,176,0.25);border-color:rgba(114,168,216,0.45);
+  box-shadow:0 2px 12px rgba(80,128,176,0.12)}
+#group-dialog-overlay .group-dialog-actions .btn-primary:hover,#thread-dialog-overlay .group-dialog-actions .btn-primary:hover{background:rgba(80,128,176,0.4);box-shadow:0 4px 18px rgba(80,128,176,0.2)}
+/* internal（浅色）：与 api-del-dialog 同一套干净底板 */
+body:not(.theme-infernal) #group-dialog-overlay,body:not(.theme-infernal) #thread-dialog-overlay{background:rgba(205,223,245,0.4)}
+body:not(.theme-infernal) #group-dialog-overlay .group-dialog,body:not(.theme-infernal) #thread-dialog-overlay .group-dialog{
+  background:rgba(250,253,255,0.95);color:#1a3262;border-color:rgba(170,210,245,0.4);
+  box-shadow:0 16px 60px rgba(100,150,220,0.18),0 2px 12px rgba(130,175,235,0.1)}
+body:not(.theme-infernal) #group-dialog-overlay .group-dialog h3,body:not(.theme-infernal) #thread-dialog-overlay .group-dialog h3{color:#152c58}
+body:not(.theme-infernal) #group-dialog-overlay .group-dialog h3::after,body:not(.theme-infernal) #thread-dialog-overlay .group-dialog h3::after{background:linear-gradient(90deg,rgba(90,140,200,0.3),rgba(90,140,200,0.02))}
+body:not(.theme-infernal) #group-dialog-overlay .group-dialog label,body:not(.theme-infernal) #thread-dialog-overlay .group-dialog label{color:#1a3262}
+body:not(.theme-infernal) #group-dialog-overlay .group-dialog input[type=text],body:not(.theme-infernal) #thread-dialog-overlay .group-dialog input[type=text]{background:rgba(248,252,255,0.6);border-color:rgba(170,210,245,0.35);color:#0a1e42}
+body:not(.theme-infernal) #group-dialog-overlay .group-dialog input[type=text]::placeholder,body:not(.theme-infernal) #thread-dialog-overlay .group-dialog input[type=text]::placeholder{color:#3f5e8c}
+body:not(.theme-infernal) #group-dialog-overlay .group-dialog input[type=text]:focus,body:not(.theme-infernal) #thread-dialog-overlay .group-dialog input[type=text]:focus{border-color:rgba(80,140,210,0.6);box-shadow:0 0 12px rgba(80,140,210,0.1)}
+body:not(.theme-infernal) #group-dialog-overlay .group-dialog>label span,body:not(.theme-infernal) #thread-dialog-overlay .group-dialog>label span{color:#1a3262}
+body:not(.theme-infernal) #group-dialog-overlay .group-dialog span,body:not(.theme-infernal) #thread-dialog-overlay .group-dialog span{color:#1a3262}
+body:not(.theme-infernal) #group-dialog-overlay .group-dialog-actions,body:not(.theme-infernal) #thread-dialog-overlay .group-dialog-actions{border-top-color:rgba(120,165,220,0.22)}
+body:not(.theme-infernal) #group-dialog-overlay .group-dialog-actions .btn,body:not(.theme-infernal) #thread-dialog-overlay .group-dialog-actions .btn{color:#152c58;background:rgba(255,255,255,0.72);border-color:rgba(90,145,205,0.55)}
+body:not(.theme-infernal) #group-dialog-overlay .group-dialog-actions .btn:hover,body:not(.theme-infernal) #thread-dialog-overlay .group-dialog-actions .btn:hover{background:rgba(255,255,255,0.92);border-color:rgba(70,130,200,0.7)}
+body:not(.theme-infernal) #group-dialog-overlay .group-dialog-actions .btn-primary,body:not(.theme-infernal) #thread-dialog-overlay .group-dialog-actions .btn-primary{background:rgba(90,155,235,0.2);border-color:rgba(80,145,205,0.45);color:#17457e;box-shadow:none}
+body:not(.theme-infernal) #group-dialog-overlay .group-dialog-actions .btn-primary:hover,body:not(.theme-infernal) #thread-dialog-overlay .group-dialog-actions .btn-primary:hover{background:rgba(90,155,235,0.32);border-color:rgba(70,130,200,0.6);color:#123a66;box-shadow:none}
+/* 群聊弹窗 API 列表元素显式配色 */
+body:not(.theme-infernal) #group-dialog-overlay .group-api-item{background:rgba(245,250,255,0.5);color:#1a3262;border-color:rgba(170,210,245,0.28)}
+body:not(.theme-infernal) #group-dialog-overlay .group-api-item:hover{background:rgba(222,238,255,0.65)}
+body:not(.theme-infernal) #group-dialog-overlay .group-api-item.selected{background:rgba(120,175,242,0.22);border-color:rgba(80,145,205,0.45)}
+body:not(.theme-infernal) #group-dialog-overlay .group-order-badge{background:rgba(120,175,242,0.18);border-color:rgba(80,145,205,0.45);color:#123a66}
+body:not(.theme-infernal) #group-dialog-overlay #group-mention-wrap{background:rgba(240,248,255,0.55);border-color:rgba(160,200,242,0.4)}
+/* 弹窗内 inline-style 说明文字在 Internal 浅色下显式指定可读色 */
+body:not(.theme-infernal) #thread-dialog-overlay .group-dialog div[style*="text-muted"],
+body:not(.theme-infernal) #group-dialog-overlay .group-dialog div[style*="text-muted"]{color:#3f5e8c !important}
+.group-member-tag{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:10px;background:rgba(80,128,176,0.18);font-size:0.7rem;color:var(--text-secondary);margin:2px}
+body:not(.theme-infernal) .group-member-tag{background:rgba(100,160,220,0.15);color:#233e6c}
+
+/* 成员管理面板 */
+.member-mgr-item{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:10px;background:rgba(255,255,255,.05);border:1px solid rgba(150,190,240,.14);transition:background .15s ease}
+.member-mgr-item:hover{background:rgba(255,255,255,.08)}
+body:not(.theme-infernal) .member-mgr-item{background:rgba(245,250,255,0.5);color:#1a3262;border-color:rgba(170,210,245,0.28)}
+body:not(.theme-infernal) .member-mgr-item:hover{background:rgba(222,238,255,0.65)}
+.member-mgr-name{flex:1;font-size:.82rem;font-weight:500;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.member-mgr-status{font-size:.68rem;opacity:.75;white-space:nowrap}
+.member-mgr-status.active{color:#6ccb7a}
+.member-mgr-status.muted{color:#ffa94d}
+.member-mgr-status.removed{color:#ff8a80}
+.member-mgr-actions{display:flex;gap:4px;flex-shrink:0}
+.member-mgr-actions button{padding:3px 8px;border-radius:6px;border:1px solid rgba(140,180,230,.3);background:rgba(90,140,210,.2);color:#dbe9ff;font-size:.68rem;cursor:pointer;font-family:inherit;transition:background .15s ease}
+.member-mgr-actions button:hover{background:rgba(90,140,210,.35)}
+.member-mgr-actions button.danger{color:#ff8a80;border-color:rgba(255,100,100,.35)}
+.member-mgr-actions button.danger:hover{background:rgba(255,100,100,.18)}
+
+/* ============================================================
+   SPLASH GLASS CANVAS — 欢迎页·全屏雾带无框画窗
+   画框宽度撑满全屏，雾化最边缘贴两侧，左右羽化 140px / 上下浅羽化 46px
+   磨砂层+呼吸雾团跟随 MIST 温度计联动（升温变薄→7℃ 接近全透明）
+   右下角上下竖摞 MIST（玻璃温度 ℃）/ BRUSH（画笔大小 °F）两支温度计滑条
+   窗内背景按文件名约定加载：bg-canvas.jpg（或 .png），缺失则为空雾玻璃
+   仅作用于欢迎页（#splash 内），不影响站内其他模块
+   ============================================================ */
+:root{--gw-ar:1.924779;/* 窗内图片宽高比，加载后由 JS 按真实尺寸校准 */
+  --gw-h:min(88vh,calc(101vw/var(--gw-ar)));
+  --gw-w:100vw}/* 画窗宽度：撑满全屏，雾化最边缘贴两侧 */
+#gw-slot{position:absolute;z-index:1;left:50%;top:50%;transform:translate(-50%,-50%);
+  width:var(--gw-w);height:var(--gw-h);
+  --gwfx:140px;--gwfy:68px;
+  transition:opacity .5s ease,visibility .5s ease,filter .45s ease}
+#gw-slot.gw-off{opacity:0;visibility:hidden;pointer-events:none}
+#gw-slot.gw-exit{opacity:0;filter:blur(3px);pointer-events:none;
+  transition:opacity .32s ease-out,filter .32s ease-out}
+
+#gw-pane{position:absolute;inset:0;border-radius:28px;overflow:hidden;cursor:crosshair;
+  /* 缓出式羽化（S 形衰减）：左右深、上下浅，边缘逐级融进页面背景图 */
+  -webkit-mask-image:linear-gradient(to right,rgba(0,0,0,.34),rgba(0,0,0,.62) calc(var(--gwfx)*.42),rgba(0,0,0,.86) calc(var(--gwfx)*.72),#000 var(--gwfx),#000 calc(100% - var(--gwfx)),rgba(0,0,0,.86) calc(100% - var(--gwfx)*.72),rgba(0,0,0,.62) calc(100% - var(--gwfx)*.42),rgba(0,0,0,.34)),
+                     linear-gradient(to bottom,transparent,rgba(0,0,0,.22) calc(var(--gwfy)*.45),rgba(0,0,0,.68) calc(var(--gwfy)*.78),#000 var(--gwfy),#000 calc(100% - var(--gwfy)),rgba(0,0,0,.68) calc(100% - var(--gwfy)*.78),rgba(0,0,0,.22) calc(100% - var(--gwfy)*.45),transparent);
+  -webkit-mask-composite:source-in;-webkit-mask-repeat:no-repeat;
+  mask-image:linear-gradient(to right,rgba(0,0,0,.34),rgba(0,0,0,.62) calc(var(--gwfx)*.42),rgba(0,0,0,.86) calc(var(--gwfx)*.72),#000 var(--gwfx),#000 calc(100% - var(--gwfx)),rgba(0,0,0,.86) calc(100% - var(--gwfx)*.72),rgba(0,0,0,.62) calc(100% - var(--gwfx)*.42),rgba(0,0,0,.34)),
+             linear-gradient(to bottom,transparent,rgba(0,0,0,.22) calc(var(--gwfy)*.45),rgba(0,0,0,.68) calc(var(--gwfy)*.78),#000 var(--gwfy),#000 calc(100% - var(--gwfy)),rgba(0,0,0,.68) calc(100% - var(--gwfy)*.78),rgba(0,0,0,.22) calc(100% - var(--gwfy)*.45),transparent);
+  mask-composite:intersect;mask-repeat:no-repeat}
+.gw-ly{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.gw-img{z-index:1;background-size:cover;background-position:center;opacity:0;transition:opacity 1.1s ease;filter:saturate(0.92) brightness(0.97)}
+#gw-slot.gw-has-img .gw-img{opacity:1}
+/* 雨波画布：位于 gw-img 之上(同 z,DOM 在后),色调与 gw-img 一致,渲染后整层接管画面 */
+#gw-ripple{z-index:1;opacity:0;transition:opacity 1.1s ease}
+#gw-slot.gw-rippling #gw-ripple{opacity:1}
+#gw-slot.gw-gloss #gw-ripple{mix-blend-mode:overlay}
+#gw-ripple-bg{position:absolute;inset:0;z-index:1;width:100%;height:100%;pointer-events:none;opacity:0;transition:opacity 1.1s ease}
+#gw-ripple-bg.on{opacity:1}
+#splash.dissolving #gw-ripple-bg{opacity:0}
+.gw-grade-c{z-index:2;background:#3a5587;mix-blend-mode:color;opacity:0;transition:opacity 1.2s ease}
+#gw-slot.gw-has-img .gw-grade-c{opacity:0.34}
+.gw-grade-s{z-index:2;background:linear-gradient(168deg,rgba(198,218,248,0.16) 0%,rgba(14,26,50,0.30) 80%);mix-blend-mode:soft-light;opacity:0;transition:opacity 1.2s ease}
+#gw-slot.gw-has-img .gw-grade-s{opacity:1}
+.gw-frost{z-index:3;opacity:var(--gw-frost-o,0.55);transition:opacity .4s ease;background:
+  linear-gradient(rgba(16,28,54,0.06),rgba(16,28,54,0.06)),
+  linear-gradient(150deg,rgba(184,204,236,0.07) 0%,rgba(112,136,178,0.04) 52%,rgba(86,108,150,0.07) 100%)}
+.gw-noise{z-index:3;mix-blend-mode:overlay;opacity:0.05;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix type='saturate' values='0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)' opacity='0.55'/></svg>")}
+.gw-depth{z-index:3;background:radial-gradient(130% 160% at 50% 46%,rgba(12,22,44,0) 46%,rgba(12,22,44,0.18) 76%,rgba(12,22,44,0.34) 100%)}
+#gw-fogwipe{z-index:4}
+#gw-draw{position:absolute;inset:0;z-index:6;width:100%;height:100%;touch-action:none;display:block}
+
+.gw-ctrl{position:absolute;right:calc(var(--gwfx) + 14px);top:calc(var(--gwfy) + 12px);z-index:8;display:flex;gap:8px}
+.gw-cbtn{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;position:relative;
+  border:1px solid rgba(190,212,244,0.16);color:rgba(232,242,255,0.78);
+  background:rgba(160,190,235,0.10);
+  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.14),inset 0 -1px 0 rgba(0,0,0,0.10);
+  transition:all .35s ease}
+.gw-cbtn:hover{color:#fff;border-color:rgba(212,230,252,0.34);
+  background:rgba(190,214,248,0.20);
+  box-shadow:0 0 12px rgba(170,205,250,0.25),inset 0 1px 0 rgba(255,255,255,0.18)}
+.gw-cbtn.active{color:rgba(255,255,255,0.95);border-color:rgba(212,230,252,0.34);
+  background:rgba(190,214,248,0.18);
+  box-shadow:0 0 12px rgba(170,205,250,0.25),inset 0 1px 0 rgba(255,255,255,0.18)}
+.gw-cbtn svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;position:relative;z-index:1}
+
+/* —— 画板开关：Sui 签名右侧的透明小调色盘 —— */
+#gw-toggle{display:inline-flex;align-items:center;justify-content:center;margin-left:10px;vertical-align:-5px;
+  width:32px;height:32px;padding:0;border:1px solid rgba(200,220,245,0.22);border-radius:8px;cursor:pointer;pointer-events:auto;position:relative;z-index:10;
+  background:rgba(200,220,245,0.07);color:rgba(214,229,249,0.6);
+  filter:drop-shadow(0 1px 5px rgba(0,0,0,0.30));
+  transition:color .35s ease,filter .35s ease,background .35s ease,border-color .35s ease}
+#gw-toggle svg{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+#gw-toggle:hover{color:rgba(240,247,255,0.95);filter:drop-shadow(0 0 7px rgba(170,205,250,0.45));background:rgba(200,220,245,0.14);border-color:rgba(220,235,255,0.38)}
+#gw-toggle.off{color:rgba(202,218,241,0.26);background:transparent;border-color:rgba(200,220,245,0.12)}
+#gw-toggle.off:hover{color:rgba(214,229,249,0.50);background:rgba(200,220,245,0.07);border-color:rgba(200,220,245,0.22)}
+
+/* —— 温度计滑条：MIST 玻璃温度（℃）/ BRUSH 当前画笔大小（°F） —— */
+.gw-therms{position:absolute;right:calc(var(--gwfx) + 18px);bottom:calc(var(--gwfy) + 16px);
+  z-index:8;display:flex;flex-direction:column;align-items:flex-end;gap:10px}
+.gw-therm{display:flex;align-items:center;gap:11px;pointer-events:auto;cursor:ew-resize;
+  user-select:none;-webkit-user-select:none;touch-action:none}
+.gw-therm-label{width:46px;text-align:right;
+  font-family:'Raleway','Noto Sans SC',sans-serif;font-weight:400;font-size:9px;letter-spacing:0.24em;
+  color:rgba(225,238,252,0.55);text-shadow:0 1px 5px rgba(8,16,34,0.5)}
+.gw-therm-body{position:relative;width:152px;height:16px;filter:drop-shadow(0 1px 4px rgba(8,16,34,0.35))}
+/* 球泡：温度计左端的圆头，亮度随数值变化 */
+.gw-therm-bulb{position:absolute;left:0;top:50%;transform:translateY(-50%);width:15px;height:15px;border-radius:50%;
+  border:1px solid rgba(198,220,250,0.32);
+  background:radial-gradient(circle at 36% 32%,rgba(235,246,255,0.85),rgba(186,216,252,0.55) 55%,rgba(150,185,235,0.35));
+  box-shadow:0 0 9px rgba(178,212,255,0.5),inset 0 -1px 2px rgba(20,40,80,0.25);
+  transition:opacity .2s ease}
+/* 玻璃管：细长管身 + 等距刻度 */
+.gw-therm-tube{position:absolute;left:12px;right:0;top:50%;height:6px;transform:translateY(-50%);
+  border-radius:0 3px 3px 0;border:1px solid rgba(190,212,244,0.24);border-left:none;
+  background:rgba(150,180,225,0.10);
+  backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+  box-shadow:inset 0 1px 1px rgba(255,255,255,0.10),inset 0 -1px 1px rgba(0,0,0,0.10);overflow:hidden}
+.gw-therm-tube::after{content:'';position:absolute;inset:0;pointer-events:none;
+  background:repeating-linear-gradient(90deg,transparent 0 27px,rgba(228,242,255,0.30) 27px 28px)}
+/* 水银柱：从球泡向右延伸的发光填充，长度即当前数值 */
+.gw-therm-fill{position:absolute;left:0;top:0;bottom:0;width:35%;border-radius:0 3px 3px 0;
+  background:linear-gradient(90deg,rgba(186,218,255,0.50),rgba(228,243,255,0.88));
+  box-shadow:0 0 8px rgba(178,212,255,0.65)}
+/* 读数：MIST 显示当前玻璃温度 ℃ / BRUSH 显示当前画笔大小 °F */
+.gw-therm-val{min-width:42px;
+  font-family:'Raleway','Noto Sans SC',sans-serif;font-weight:300;font-size:11px;letter-spacing:0.1em;
+  font-variant-numeric:tabular-nums;
+  color:rgba(231,242,255,0.78);text-shadow:0 1px 6px rgba(8,16,34,0.55),0 0 12px rgba(160,200,255,0.18)}
+.gw-therm:hover .gw-therm-bulb{box-shadow:0 0 13px rgba(186,218,255,0.75),inset 0 -1px 2px rgba(20,40,80,0.25)}
+.gw-therm:hover .gw-therm-tube{border-color:rgba(212,230,252,0.38)}
+
+@media (max-width:900px){#gw-slot,#gw-toggle{display:none}.splash-left{margin-left:clamp(36px,9%,110px)}}
