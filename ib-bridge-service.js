@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 
 /*
  * Internal Beyond - 本地一键 Bridge 后端
@@ -45,210 +45,70 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(STICKER_DIR, { recursive: true });
 
 /* ------------------------------------------------------------------ */
-/* 轻量 JSON 持久化                                                    */
+/* 模块依赖：bridge/ 下按域提取的叶子模块（composition root 注入依赖） */
 /* ------------------------------------------------------------------ */
 
-function jsonPath(name) {
-  return path.join(DATA_DIR, name + '.json');
-}
+const util = require('./bridge/util');
+const createPersistence = require('./bridge/persistence');
+const createConfig = require('./bridge/config');
+const uid = util.uid;
+const todayStr = util.todayStr;
+const constantTimeTokenMatch = util.constantTimeTokenMatch;
+const parseQuery = util.parseQuery;
 
-function deepMerge(base, extra) {
-  const out = Object.assign({}, base);
-  Object.keys(extra || {}).forEach(k => {
-    const bv = base[k], ev = extra[k];
-    if (bv && typeof bv === 'object' && !Array.isArray(bv) &&
-        ev && typeof ev === 'object' && !Array.isArray(ev)) {
-      out[k] = deepMerge(bv, ev);
-    } else {
-      out[k] = ev;
-    }
-  });
-  return out;
-}
+/* ------------------------------------------------------------------ */
+/* 轻量 JSON 持久化（已提取到 bridge/persistence.js；业务数据仍由根文件持有） */
+/* ------------------------------------------------------------------ */
 
-function backupBrokenFile(file, reason) {
-  try {
-    const broken = file + '.broken-' + Date.now().toString(36);
-    fs.copyFileSync(file, broken);
-    console.warn('[IB Bridge] 数据文件' + reason + '，已备份到 ' + broken);
-  } catch (e) { /* 备份失败不阻断启动 */ }
-}
+const persistence = createPersistence({ dataDir: DATA_DIR });
+const jsonPath = persistence.jsonPath;
+const writeJson = persistence.writeJson;
+const saveJson = persistence.saveJson;
+const loadJson = persistence.loadJson;
+const loadList = persistence.loadList;
+const saveList = persistence.saveList;
+const fileSummary = persistence.fileSummary;
+const directoryUsage = persistence.directoryUsage;
 
-function loadJson(name, fallback) {
-  const file = jsonPath(name);
-  try {
-    const raw = fs.readFileSync(file, 'utf8');
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
-    if (fs.existsSync(file)) backupBrokenFile(file, '不是合法对象');
-    return fallback;
-  } catch (e) {
-    if (fs.existsSync(file)) backupBrokenFile(file, '解析失败');
-    return fallback;
-  }
-}
-
-function saveJson(name, obj) {
-  const file = jsonPath(name);
-  const tmp = file + '.tmp';
-  const bak = file + '.bak';
-  try {
-    fs.writeFileSync(tmp, JSON.stringify(obj, null, 2), 'utf8');
-    if (fs.existsSync(file)) {
-      try { fs.copyFileSync(file, bak); } catch (e) { /* 忽略备份失败 */ }
-    }
-    fs.renameSync(tmp, file);
-    return true;
-  } catch (e) {
-    try { fs.unlinkSync(tmp); } catch (e2) { /* 忽略 */ }
-    return false;
-  }
-}
-
-function loadList(name) {
-  const file = jsonPath(name);
-  try {
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
-    if (Array.isArray(parsed)) return parsed;
-    if (fs.existsSync(file)) backupBrokenFile(file, '不是数组');
-    return [];
-  } catch (e) {
-    if (fs.existsSync(file)) backupBrokenFile(file, '解析失败');
-    return [];
-  }
-}
-
-function saveList(name, list) {
-  return saveJson(name, list);
-}
+/* 配置工厂：可变状态收在闭包内；jsonPath / config / LAN_EXPOSED 等
+   保持原有名字，供根文件其余部分无感使用。 */
+const cfg = createConfig({ dataDir: DATA_DIR, writeJson });
+const config = cfg.config;
+const configInvalid = cfg.configInvalid;
+const LAN_EXPOSED = cfg.lanExposed;
+const BIND_HOST = cfg.bindHost;
+const persistConfig = cfg.persistConfig;
+const isLoopbackHost = cfg.isLoopbackHost;
+const createAccessToken = cfg.createAccessToken;
+const lanAddresses = cfg.lanAddresses;
+const corsOrigin = cfg.corsOrigin;
+const isLoopbackRequest = cfg.isLoopbackRequest;
+const suppliedToken = cfg.suppliedToken;
+const needsHttpToken = cfg.needsHttpToken;
+const httpAuthorized = cfg.httpAuthorized;
 
 /* ------------------------------------------------------------------ */
 /* 配置                                                                */
 /* ------------------------------------------------------------------ */
 
-function defaultConfig() {
-  return {
-    version: 1,
-    token: '',                     // 留空 = 仅本机、不鉴权；设置后 IBNET 需要填写相同 token
-    contextBudget: 200000,         // 上下文估算预算（token），进度条按此计算
-    lan: false,                    // true = 监听 0.0.0.0，方便 OPPO/Android 手机访问（注意放行防火墙）
-    music: {                       // 点歌：默认酷狗（你会员在酷狗）；可切 netease
-      provider: 'kugou',
-      kugouCookie: '',             // 可选：浏览器里登录酷狗后复制的 Cookie，会员歌/高品质更稳
-      fallbackNetease: true        // 酷狗拿不到播放地址时，按歌名自动切网易云兜底
-    },
-    tts: {                         // AI 语音气泡：OpenAI 兼容 TTS 接口
-      enabled: false,
-      endpoint: 'https://api.openai.com/v1/audio/speech',
-      apiKey: '',
-      model: 'tts-1',
-      voice: 'alloy',
-      lang: 'zh-CN'
-    },
-    bark: { enabled: false, url: '' },   // 例：https://api.day.app/你的Key
-    ntfy: { enabled: false, server: 'https://ntfy.sh', topic: '' },  // Android/OPPO 推荐
-    webhooks: {},                  // { 名称: { url, method, headers, confirm } }
-    proactive: {                   // 可选：本地低频主动消息（默认关闭）
-      enabled: false,
-      intervalMin: 50,
-      endpoint: '',
-      apiKey: '',
-      model: '',
-      system: '你是陪伴者，发一条简短、自然、像真人一样主动发来的消息。',
-      prompt: '现在主动给用户发一条消息（50 字以内，不要加任何前缀或解释）。',
-      from: 'Sui'
-    }
-  };
-}
+/* defaultConfig 已提取到 bridge/config.js */
 
-const CONFIG_FILE = jsonPath('config');
-let configRaw = null;
-let configInvalid = false;
-try {
-  const text = fs.readFileSync(CONFIG_FILE, 'utf8');
-  configRaw = JSON.parse(text);
-  if (!configRaw || typeof configRaw !== 'object' || Array.isArray(configRaw)) {
-    throw new Error('配置根节点不是对象');
-  }
-} catch (e) {
-  configInvalid = true;
-  configRaw = null;
-}
-let config = deepMerge(defaultConfig(), configRaw || {});
+/* configRaw / configInvalid / config 装载已提取到 bridge/config.js */
 
-const BIND_HOST = process.env.IB_BRIDGE_HOST || (config.lan ? '0.0.0.0' : '127.0.0.1');
+/* isLoopbackHost / createAccessToken / lanAddresses / corsOrigin 已提取到 bridge/config.js */
 
-function lanAddresses() {
-  const out = [];
-  try {
-    const ifs = os.networkInterfaces();
-    Object.keys(ifs).forEach(k => {
-      (ifs[k] || []).forEach(a => {
-        if (a.family === 'IPv4' && !a.internal) out.push(a.address);
-      });
-    });
-  } catch (e) { /* 忽略 */ }
-  return out;
-}
+/* persistConfig / configNeedsUpgrade / ensureConfigFile 已提取到 bridge/config.js（工厂创建时自动执行） */
 
-/* 只允许本机 / file:// 页面跨域读取，避免 lan 模式下任意网站读写本服务 */
-function corsOrigin(req) {
-  const origin = String(req.headers.origin || '').trim();
-  if (!origin) return null;
-  if (origin === 'null') return origin;
-  try {
-    const u = new URL(origin);
-    if (u.protocol === 'file:') return origin;
-    if (u.protocol === 'http:' || u.protocol === 'https:') {
-      const host = String(u.hostname).toLowerCase();
-      if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]') return origin;
-    }
-  } catch (e) { /* 忽略非法 Origin */ }
-  return null;
-}
+/* configuredHost / LAN_EXPOSED / BIND_HOST 与 LAN token 自动生成已提取到 bridge/config.js */
 
-function persistConfig() {
-  saveJson('config', config);
-}
+/* isLoopbackRequest / suppliedToken / constantTimeTokenMatch / needsHttpToken / httpAuthorized 已提取到 bridge/config.js */
 
-function configNeedsUpgrade() {
-  const d = defaultConfig();
-  if (!configRaw || typeof configRaw !== 'object') return false;
-  if (Object.keys(d).some(k => !(k in configRaw))) return true;
-  let nestedMissing = false;
-  ['music', 'tts', 'bark', 'ntfy', 'proactive'].forEach(k => {
-    const dv = d[k], rv = configRaw[k];
-    if (dv && typeof dv === 'object' && rv && typeof rv === 'object') {
-      if (Object.keys(dv).some(n => !(n in rv))) nestedMissing = true;
-    }
+function authRequiredResponse(res) {
+  sendJsonRes(res, 401, {
+    ok: false,
+    error: '认证失败：局域网 Bridge 请求需要 Authorization: Bearer <token>、X-IB-Token 或 token 查询参数。'
   });
-  return nestedMissing;
 }
-
-function ensureConfigFile() {
-  if (!fs.existsSync(CONFIG_FILE)) {
-    persistConfig();
-    console.log('[IB Bridge] 已生成配置文件: ' + CONFIG_FILE);
-    console.log('[IB Bridge] 默认不开启鉴权（仅监听 127.0.0.1）。如需鉴权，请编辑配置里的 token。');
-    return;
-  }
-  if (configInvalid) {
-    try {
-      const broken = CONFIG_FILE + '.broken-' + Date.now().toString(36);
-      fs.copyFileSync(CONFIG_FILE, broken);
-      console.warn('[IB Bridge] 配置文件损坏，已备份到 ' + broken + '，并重建默认配置。');
-    } catch (e) {
-      console.warn('[IB Bridge] 配置文件损坏且备份失败：' + String(e && e.message || e));
-    }
-    persistConfig();
-    return;
-  }
-  if (configNeedsUpgrade()) {
-    persistConfig();
-    console.log('[IB Bridge] 配置文件已自动补齐新字段（lan / music / tts / ntfy 等）。');
-  }
-}
-ensureConfigFile();
 
 /* ------------------------------------------------------------------ */
 /* 各业务数据                                                          */
@@ -263,24 +123,36 @@ let resident = loadJson('resident', {});    // { key: {key,name,provider,system,
 let contextStats = loadJson('context', {}); // { friend: [ {ts,i,cr,cw,o} ] }
 let pushes = loadList('push_history');      // 最近推送记录
 
-function saveWhispers() { saveList('whispers', whispers); }
-function saveHealth() { saveList('health', healthData); }
-function saveGeo() { saveJson('geo', geoLatest); }
-function saveLetters() { saveList('letters', letters); }
-function saveSessions() { saveJson('sessions', sessions); }
-function saveResident() { saveJson('resident', resident); }
-function saveContext() { saveJson('context', contextStats); }
-function savePushes() { saveList('push_history', pushes.slice(0, 200)); }
-
-function uid(prefix) {
-  return (prefix || 'id') + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+/* 列表操作的简易并发锁（内存锁，仅本进程） */
+const _listLocks = { whispers: false, health: false, letters: false, context: false, pushes: false, resident: false };
+function withListLock(name, fn) {
+  return new Promise((resolve) => {
+    function tryAcquire() {
+      if (_listLocks[name]) { setImmediate(tryAcquire); return; }
+      _listLocks[name] = true;
+      try {
+        const r = fn();
+        resolve(r);
+      } catch (e) {
+        resolve({ ok: false, error: String(e && e.message || e).slice(0, 500) });
+      } finally {
+        _listLocks[name] = false;
+      }
+    }
+    tryAcquire();
+  });
 }
 
-function todayStr(d) {
-  const x = d || new Date();
-  const p = n => String(n).padStart(2, '0');
-  return x.getFullYear() + '-' + p(x.getMonth() + 1) + '-' + p(x.getDate());
-}
+function saveWhispers() { if(!saveList('whispers', whispers)) console.error('[IB Bridge] 心语保存失败'); }
+function saveHealth() { if(!saveList('health', healthData)) console.error('[IB Bridge] 健康数据保存失败'); }
+function saveGeo() { if(!saveJson('geo', geoLatest)) console.error('[IB Bridge] 地理数据保存失败'); }
+function saveLetters() { if(!saveList('letters', letters)) console.error('[IB Bridge] 信件保存失败'); }
+function saveSessions() { if(!saveJson('sessions', sessions)) console.error('[IB Bridge] 会话保存失败'); }
+function saveResident() { if(!saveJson('resident', resident)) console.error('[IB Bridge] AI 常驻保存失败'); }
+function saveContext() { if(!saveJson('context', contextStats)) console.error('[IB Bridge] 上下文保存失败'); }
+function savePushes() { if(!saveList('push_history', pushes.slice(0, 200))) console.error('[IB Bridge] 推送历史保存失败'); }
+
+/* uid / todayStr 已提取到 bridge/util.js */
 
 /* ------------------------------------------------------------------ */
 /* 内置默认表情（SVG，个人自用够用；用户可放 PNG 到 stickers 目录）     */
@@ -339,248 +211,34 @@ function listStickers() {
 }
 
 /* ------------------------------------------------------------------ */
-/* 外部服务：天气 / 网易云音乐 / Bark                                  */
+/* 外部服务：天气 / 网易云音乐 / Bark / ntfy                            */
+/* （已提取到 bridge/clients.js 工厂；config 与 geoLatest 经依赖注入）  */
 /* ------------------------------------------------------------------ */
 
-async function fetchJson(url, options, timeoutMs) {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs || 10000);
-  try {
-    const res = await fetch(url, Object.assign({ signal: ctrl.signal, redirect: 'follow' }, options || {}));
-    const text = await res.text();
-    try { return { ok: res.ok, status: res.status, json: JSON.parse(text), text }; }
-    catch (e) { return { ok: res.ok, status: res.status, json: null, text }; }
-  } catch (e) {
-    return { ok: false, status: 0, json: null, text: String(e && e.message || e) };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function getWeather(city) {
-  const q = String(city || '').trim() || (geoLatest && (geoLatest.city || geoLatest.address)) || '';
-  const url = 'https://wttr.in/' + encodeURIComponent(q || '') + '?format=j1&lang=zh';
-  const r = await fetchJson(url, {
-    headers: { 'User-Agent': 'curl/8.0' }
-  }, 12000);
-  if (!r.ok || !r.json) return { ok: false, error: '天气服务暂不可用：' + (r.text || '').slice(0, 120) };
-  const j = r.json;
-  const cur = j.current_condition && j.current_condition[0];
-  const today = j.weather && j.weather[0];
-  const days = (j.weather || []).slice(0, 5).map(w => ({
-    date: w.date,
-    max: w.maxtempC,
-    min: w.mintempC,
-    text: w.hourly && w.hourly[0] && w.hourly[0].lang_zh && w.hourly[0].lang_zh[0] ? w.hourly[0].lang_zh[0].value : (w.hourly && w.hourly[0] && w.hourly[0].weatherDesc && w.hourly[0].weatherDesc[0] && w.hourly[0].weatherDesc[0].value || '')
-  }));
-  return {
-    ok: true,
-    city: (today && today.area && today.area[0] && today.area[0].value) || q || '未知',
-    temp: cur && cur.temp_C,
-    feels: cur && cur.FeelsLikeC,
-    humidity: cur && cur.humidity,
-    wind: cur && cur.windspeedKmph,
-    text: cur && cur.lang_zh && cur.lang_zh[0] && cur.lang_zh[0].value || (cur && cur.weatherDesc && cur.weatherDesc[0] && cur.weatherDesc[0].value) || '',
-    days
-  };
-}
-
-async function searchNetease(keyword, limit) {
-  const q = String(keyword || '').trim();
-  if (!q) return { ok: false, error: '缺少搜索关键词' };
-  const n = Math.max(1, Math.min(20, Number(limit) || 10));
-  const body = new URLSearchParams({ s: q, type: '1', limit: String(n), offset: '0', total: 'true' }).toString();
-  const r = await fetchJson('https://music.163.com/api/search/get/web', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'Referer': 'https://music.163.com/',
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36'
-    },
-    body
-  }, 15000);
-  if (!r.ok || !r.json) return { ok: false, error: '网易云搜索暂不可用：' + (r.text || '').slice(0, 120) };
-  const songs = (r.json.result && r.json.result.songs) || [];
-  return {
-    ok: true,
-    songs: songs.slice(0, n).map(s => ({
-      id: String(s.id || ''),
-      name: s.name || '',
-      artist: (s.artists || []).map(a => a.name).join(' / '),
-      album: s.album && s.album.name || '',
-      duration: s.duration || 0
-    }))
-  };
-}
-
-async function searchKugou(keyword, limit) {
-  const q = String(keyword || '').trim();
-  if (!q) return { ok: false, error: '缺少搜索关键词' };
-  const n = Math.max(1, Math.min(20, Number(limit) || 10));
-  const url = 'https://songsearch.kugou.com/song_search_v2?keyword=' + encodeURIComponent(q) +
-    '&page=1&pagesize=' + n + '&userid=-1&clientver=&platform=WebFilter&tag=em&filter=2&iscorrection=1&privilege_filter=0';
-  const r = await fetchJson(url, {
-    headers: {
-      'Referer': 'https://www.kugou.com/',
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36'
-    }
-  }, 15000);
-  if (!r.ok || !r.json) return { ok: false, error: '酷狗搜索暂不可用：' + (r.text || '').slice(0, 120) };
-  const list = (r.json.data && r.json.data.lists) || [];
-  const strip = s => String(s || '').replace(/<[^>]+>/g, '').trim();
-  return {
-    ok: true,
-    provider: 'kugou',
-    songs: list.slice(0, n).map(s => ({
-      id: String(s.FileHash || s.EMixSongID || ''),
-      name: strip(s.SongName || s.SongCName || ''),
-      artist: strip(s.SingerName || ''),
-      album: strip(s.AlbumName || ''),
-      duration: (Number(s.Duration) || 0) * 1000
-    })).filter(s => s.id)
-  };
-}
-
-async function searchMusic(keyword, limit) {
-  const provider = (config.music && config.music.provider) || 'kugou';
-  if (provider === 'netease') return searchNetease(keyword, limit);
-  return searchKugou(keyword, limit);
-}
-
-async function kugouPlayUrl(hash) {
-  const h = String(hash || '').trim();
-  if (!/^[A-Za-z0-9]+$/.test(h)) return { ok: false, error: '歌曲 ID 无效' };
-  const url = 'https://m.kugou.com/app/i/getSongInfo.php?cmd=playInfo&hash=' + encodeURIComponent(h);
-  const cookie = (config.music && config.music.kugouCookie) || '';
-  const r = await fetchJson(url, {
-    headers: {
-      'Referer': 'https://m.kugou.com/',
-      'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148',
-      'Cookie': cookie
-    }
-  }, 20000);
-  if (!r.ok || !r.json || r.json.status !== 1) {
-    const j = r.json;
-    const msg = String((j && j.error) || '无法播放').slice(0, 80);
-    const vipHint = (msg.indexOf('付费') >= 0 || msg.indexOf('会员') >= 0)
-      ? '（你有会员的话，把浏览器登录酷狗后的 Cookie 填进 config.json 的 music.kugouCookie）'
-      : '';
-    return { ok: false, error: '酷狗：' + msg + vipHint };
-  }
-  const j = r.json;
-  if (!j.url) {
-    return { ok: false, error: '这首歌没有可播放地址（可能需要登录/会员，或把酷狗 Cookie 填进 config.json 的 music.kugouCookie）' };
-  }
-  return {
-    ok: true,
-    provider: 'kugou',
-    id: h,
-    name: j.songName || '',
-    artist: j.singerName || '',
-    rawUrl: String(j.url),
-    url: '/api/music/play?id=' + encodeURIComponent(h)
-  };
-}
-
-async function musicPlayUrl(id) {
-  const sid = String(id || '').trim();
-  if (!sid) return { ok: false, error: '歌曲 ID 无效' };
-  const provider = (config.music && config.music.provider) || 'kugou';
-  if (provider === 'netease') {
-    if (!/^\d+$/.test(sid)) return { ok: false, error: '网易云歌曲 ID 无效' };
-    return { ok: true, provider: 'netease', id: sid, url: '/api/music/play?id=' + sid };
-  }
-  return kugouPlayUrl(sid);
-}
-
-async function musicPlayRemote(id) {
-  const sid = String(id || '').trim();
-  const provider = (config.music && config.music.provider) || 'kugou';
-  if (provider === 'netease') {
-    if (!/^\d+$/.test(sid)) return { ok: false, error: '网易云歌曲 ID 无效' };
-    return { ok: true, url: 'https://music.163.com/song/media/outer/url?id=' + sid + '.mp3' };
-  }
-  const k = await kugouPlayUrl(sid);
-  if (!k.ok) return k;
-  return { ok: true, url: k.rawUrl };
-}
-
-async function barkPush(title, text, url) {
-  const bark = config.bark || {};
-  if (!bark.enabled || !bark.url) return { ok: false, error: 'Bark 未配置' };
-  let target = String(bark.url).replace(/\/+$/, '');
-  target += '/' + encodeURIComponent(String(title || 'Internal Beyond'));
-  target += '/' + encodeURIComponent(String(text || ''));
-  if (url) target += '?url=' + encodeURIComponent(url);
-  const r = await fetchJson(target, {}, 10000);
-  if (!r.ok) return { ok: false, error: 'Bark 推送失败：' + (r.text || '').slice(0, 120) };
-  const j = r.json;
-  if (j && j.code === 200) return { ok: true, message: j.message || '已推送' };
-  return { ok: false, error: 'Bark 返回异常：' + (r.text || '').slice(0, 120) };
-}
-
-async function ntfyPush(title, text, url) {
-  const n = config.ntfy || {};
-  if (!n.enabled || !n.topic) return { ok: false, error: 'ntfy 未配置' };
-  const server = String(n.server || 'https://ntfy.sh').replace(/\/+$/, '');
-  const body = String(text || '') + (url ? ('\n' + url) : '');
-  const r = await fetchJson(server + '/' + encodeURIComponent(String(n.topic)), {
-    method: 'POST',
-    headers: {
-      'Title': String(title || 'Internal Beyond'),
-      'Priority': 'default',
-      'Content-Type': 'text/plain',
-      'User-Agent': 'InternalBeyond-Bridge'
-    },
-    body
-  }, 10000);
-  if (!r.ok) return { ok: false, error: 'ntfy 推送失败（HTTP ' + r.status + '）：' + (r.text || '').slice(0, 120) };
-  return { ok: true, message: '已推送到 ntfy' };
-}
+const createClients = require('./bridge/clients');
+const clients = createClients({ config, getGeoLatest: () => geoLatest });
+const fetchJson = clients.fetchJson;
+const getWeather = clients.getWeather;
+const searchNetease = clients.searchNetease;
+const searchKugou = clients.searchKugou;
+const searchMusic = clients.searchMusic;
+const kugouPlayUrl = clients.kugouPlayUrl;
+const musicPlayUrl = clients.musicPlayUrl;
+const musicPlayRemote = clients.musicPlayRemote;
+const barkPush = clients.barkPush;
+const ntfyPush = clients.ntfyPush;
 
 /* ------------------------------------------------------------------ */
-/* AI 语音气泡（TTS，OpenAI 兼容 /audio/speech）                        */
+/* AI Voice（TTS，OpenAI / Edge 双 provider）                          */
+/* （已提取到 bridge/tts.js 工厂；config / uid / ttsDir 经依赖注入）    */
 /* ------------------------------------------------------------------ */
 
-async function ttsGenerate(text, voice) {
-  const t = config.tts || {};
-  if (!t.enabled || !t.endpoint || !t.apiKey) {
-    return { ok: false, error: 'TTS 未配置：编辑 config.json 的 tts（enabled/endpoint/apiKey/model/voice）' };
-  }
-  const input = String(text || '').trim();
-  if (!input) return { ok: false, error: '缺少朗读文本' };
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 60000);
-  try {
-    const res = await fetch(t.endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + (t.apiKey || '')
-      },
-      body: JSON.stringify({
-        model: t.model || 'tts-1',
-        input: input.slice(0, 4000),
-        voice: voice || t.voice || 'alloy',
-        response_format: 'mp3'
-      }),
-      signal: ctrl.signal
-    });
-    clearTimeout(timer);
-    if (!res.ok) {
-      const err = await res.text().catch(() => '');
-      return { ok: false, error: 'TTS 合成失败（HTTP ' + res.status + '）：' + err.slice(0, 200) };
-    }
-    const buf = Buffer.from(await res.arrayBuffer());
-    if (!buf.length) return { ok: false, error: 'TTS 返回空音频' };
-    const id = uid('tts');
-    fs.writeFileSync(path.join(DATA_DIR, id + '.mp3'), buf);
-    return { ok: true, id, url: '/tts/' + id + '.mp3', bytes: buf.length, lang: t.lang || 'zh-CN' };
-  } catch (e) {
-    clearTimeout(timer);
-    return { ok: false, error: 'TTS 请求失败：' + String(e && e.message || e).slice(0, 200) };
-  }
-}
+const createTts = require('./bridge/tts');
+const tts = createTts({ config, uid, ttsDir: DATA_DIR });
+const edgeTtsGen = tts.edgeTtsGen;
+const ttsGenerate = tts.ttsGenerate;
+
+/* ttsGenerate 已提取到 bridge/tts.js */
 
 /* ------------------------------------------------------------------ */
 /* AI 常驻会话引擎（多模型通用，不绑定 Claude Code）                    */
@@ -786,6 +444,7 @@ async function residentChatImpl(key, message, maxContinues) {
     saveResident();
     return { ok: true, reply, continued, usage: usageTotal, messages: s.history.length };
   } catch (e) {
+    s.history.splice(userIdx);
     return { ok: false, error: String(e && e.message || e).slice(0, 240) };
   }
 }
@@ -850,19 +509,21 @@ setInterval(() => { try { residentTick(); } catch (e) { /* 忽略 */ } }, Math.m
 /* ------------------------------------------------------------------ */
 
 function contextAppend(friend, u) {
-  const key = String(friend || '_default');
-  const arr = Array.isArray(contextStats[key]) ? contextStats[key] : [];
-  arr.push({
-    ts: Date.now(),
-    i: Math.max(0, Number(u && u.input_tokens) || 0),
-    cr: Math.max(0, Number(u && u.cached_tokens) || 0),
-    cw: Math.max(0, Number(u && u.cache_creation_tokens) || 0),
-    o: Math.max(0, Number(u && u.output_tokens) || 0)
+  return withListLock('context', () => {
+    const key = String(friend || '_default');
+    const arr = Array.isArray(contextStats[key]) ? contextStats[key] : [];
+    arr.push({
+      ts: Date.now(),
+      i: Math.max(0, Number(u && u.input_tokens) || 0),
+      cr: Math.max(0, Number(u && u.cached_tokens) || 0),
+      cw: Math.max(0, Number(u && u.cache_creation_tokens) || 0),
+      o: Math.max(0, Number(u && u.output_tokens) || 0)
+    });
+    while (arr.length > 200) arr.shift();
+    contextStats[key] = arr;
+    saveContext();
+    return contextSummary(key);
   });
-  while (arr.length > 200) arr.shift();
-  contextStats[key] = arr;
-  saveContext();
-  return contextSummary(key);
 }
 
 function contextSummary(friend) {
@@ -919,32 +580,41 @@ async function executeTool(name, args) {
       case 'whispers_write': {
         const text = String(a.text || '').trim();
         if (!text) return { ok: false, error: '缺少心语内容' };
-        const w = { id: uid('whisper'), text: text.slice(0, 2000), author: String(a.author || 'AI').slice(0, 40), created: Date.now() };
-        whispers.push(w);
-        saveWhispers();
-        return { ok: true, text: '已写入心语墙。', data: w };
+        const ww = await withListLock('whispers', () => {
+          const w = { id: uid('whisper'), text: text.slice(0, 2000), author: String(a.author || 'AI').slice(0, 40), created: Date.now() };
+          whispers.push(w);
+          if (!saveList('whispers', whispers)) throw new Error('磁盘写入失败');
+          return w;
+        });
+        return { ok: true, text: '已写入心语墙。', data: ww };
       }
 
       case 'whispers_delete': {
         const id = String(a.id || '');
-        const before = whispers.length;
-        whispers = whispers.filter(w => w.id !== id);
-        saveWhispers();
-        return { ok: before !== whispers.length, text: before !== whispers.length ? '已删除。' : '未找到该心语。' };
+        const r = await withListLock('whispers', () => {
+          const before = whispers.length;
+          whispers = whispers.filter(w => w.id !== id);
+          if (before !== whispers.length && !saveList('whispers', whispers)) throw new Error('磁盘写入失败');
+          return before !== whispers.length;
+        });
+        return { ok: r, text: r ? '已删除。' : '未找到该心语。' };
       }
 
       case 'whispers_update': {
         const id = String(a.id || '');
-        const w = whispers.find(x => x.id === id);
-        if (!w) return { ok: false, error: '未找到该心语' };
-        if (a.text !== undefined) {
-          const text = String(a.text || '').trim();
-          if (!text) return { ok: false, error: '心语内容不能为空' };
-          w.text = text.slice(0, 2000);
-        }
-        if (a.author !== undefined) w.author = String(a.author || '').slice(0, 40);
-        saveWhispers();
-        return { ok: true, text: '心语已更新。', data: w };
+        const r = await withListLock('whispers', () => {
+          const w = whispers.find(x => x.id === id);
+          if (!w) throw new Error('未找到该心语');
+          if (a.text !== undefined) {
+            const text = String(a.text || '').trim();
+            if (!text) throw new Error('心语内容不能为空');
+            w.text = text.slice(0, 2000);
+          }
+          if (a.author !== undefined) w.author = String(a.author || '').slice(0, 40);
+          if (!saveList('whispers', whispers)) throw new Error('磁盘写入失败');
+          return w;
+        });
+        return { ok: true, text: '心语已更新。', data: r };
       }
 
       case 'health_read': {
@@ -1017,17 +687,20 @@ async function executeTool(name, args) {
       }
 
       case 'tts_speak': {
-        const r = await ttsGenerate(a.text, a.voice);
+        const r = await ttsGenerate(a.text, a.voice, a.provider, a.rate, a.pitch);
         if (!r.ok) return { ok: false, error: r.error };
-        return { ok: true, text: '已生成语音气泡（' + r.url + '），前端会显示可播放的语音条。', data: r };
+        return { ok: true, text: 'Voice generated (' + r.url + ').', data: r };
       }
 
       case 'letter_write': {
         const content = String(a.content || '').trim();
         if (!content) return { ok: false, error: '缺少信件内容' };
-        const l = { id: uid('letter'), to: String(a.to || '').slice(0, 40), from: String(a.from || 'AI').slice(0, 40), content: content.slice(0, 10000), reply_to: String(a.reply_to || ''), read: false, created: Date.now() };
-        letters.push(l);
-        saveLetters();
+        const l = await withListLock('letters', () => {
+          const item = { id: uid('letter'), to: String(a.to || '').slice(0, 40), from: String(a.from || 'AI').slice(0, 40), content: content.slice(0, 10000), reply_to: String(a.reply_to || ''), read: false, created: Date.now() };
+          letters.push(item);
+          if (!saveList('letters', letters)) throw new Error('磁盘写入失败');
+          return item;
+        });
         return { ok: true, text: '信件已写好并投递。', data: l };
       }
 
@@ -1099,700 +772,75 @@ const TOOLS = [
 /* WebSocket 服务（RFC6455 最小实现，零依赖）                          */
 /* ------------------------------------------------------------------ */
 
-let wsSockets = new Set();
+/* ------------------------------------------------------------------ */
+/* WebSocket 层（已提取到 bridge/ws.js 工厂；心跳 / 广播 / 连接 / 分发） */
+/* ------------------------------------------------------------------ */
+
+const createWs = require('./bridge/ws');
 const pushHistory = pushes;
+const wsLayer = createWs({
+  config,
+  executeTool,
+  tools: TOOLS,
+  maxFrame: MAX_FRAME,
+  serverName: SERVER_NAME,
+  version: VERSION,
+  pushHistory,
+  withListLock,
+  uid,
+  savePushes
+});
+const wsSockets = wsLayer.wsSockets;
+const recordPush = wsLayer.recordPush;
+const broadcast = wsLayer.broadcast;
+const WSConnection = wsLayer.WSConnection;
 
-function recordPush(p) {
-  pushHistory.unshift({
-    id: uid('push'), ts: Date.now(),
-    title: p && p.title, text: p && p.text, from: p && p.from,
-    bark: !!(p && p.bark), ntfy: !!(p && p.ntfy)
-  });
-  savePushes();
-}
-
-function broadcast(obj) {
-  const payload = Buffer.from(JSON.stringify(obj), 'utf8');
-  wsSockets.forEach(conn => {
-    try { conn.sendFrame(0x1, payload); } catch (e) { /* 忽略单个连接错误 */ }
-  });
-}
-
-class WSConnection {
-  constructor(socket, req) {
-    this.socket = socket;
-    this.req = req;
-    this.buf = Buffer.alloc(0);
-    this.fragments = [];
-    this.fragOp = null;
-    this.closed = false;
-    this.alive = true;
-    this.remote = req.socket && (req.socket.remoteAddress || '');
-  }
-
-  onData(chunk) {
-    if (this.closed) return;
-    this.buf = this.buf.length ? Buffer.concat([this.buf, chunk]) : chunk;
-    this.alive = true;
-    try { this.processFrames(); } catch (e) {
-      this.close(1002, '协议解析错误');
-    }
-  }
-
-  processFrames() {
-    for (;;) {
-      if (this.buf.length < 2) return;
-      const b0 = this.buf[0], b1 = this.buf[1];
-      const fin = (b0 & 0x80) !== 0;
-      const opcode = b0 & 0x0f;
-      const masked = (b1 & 0x80) !== 0;
-      let len = b1 & 0x7f;
-      let off = 2;
-      if (len === 126) {
-        if (this.buf.length < off + 2) return;
-        len = this.buf.readUInt16BE(off);
-        off += 2;
-      } else if (len === 127) {
-        if (this.buf.length < off + 8) return;
-        const high = this.buf.readUInt32BE(off);
-        const low = this.buf.readUInt32BE(off + 4);
-        if (high !== 0 || low > MAX_FRAME) throw new Error('frame too large');
-        len = low;
-        off += 8;
-      }
-      if (len > MAX_FRAME) throw new Error('frame too large');
-      let maskKey = null;
-      if (masked) {
-        if (this.buf.length < off + 4) return;
-        maskKey = this.buf.slice(off, off + 4);
-        off += 4;
-      }
-      if (this.buf.length < off + len) return;
-      let payload = this.buf.slice(off, off + len);
-      this.buf = this.buf.slice(off + len);
-      if (maskKey) {
-        const out = Buffer.allocUnsafe(payload.length);
-        for (let i = 0; i < payload.length; i++) out[i] = payload[i] ^ maskKey[i & 3];
-        payload = out;
-      }
-      if (opcode === 0x8) { /* close */
-        let code = 1000, reason = '';
-        if (payload.length >= 2) { code = payload.readUInt16BE(0); reason = payload.slice(2).toString('utf8'); }
-        this.close(code === 1005 ? 1000 : code, reason);
-        return;
-      }
-      if (opcode === 0x9) { /* ping */
-        this.sendFrame(0xA, payload);
-        continue;
-      }
-      if (opcode === 0xA) continue; /* pong */
-      if (opcode === 0x0) { /* continuation */
-        if (this.fragOp === null) throw new Error('unexpected continuation');
-        this.fragments.push(payload);
-        if (fin) {
-          const full = Buffer.concat(this.fragments);
-          const op = this.fragOp;
-          this.fragments = [];
-          this.fragOp = null;
-          this.handleMessage(op, full);
-        }
-        continue;
-      }
-      if (opcode === 0x1 || opcode === 0x2) {
-        if (!fin) {
-          this.fragments = [payload];
-          this.fragOp = opcode;
-          continue;
-        }
-        this.handleMessage(opcode, payload);
-        continue;
-      }
-      throw new Error('unsupported opcode ' + opcode);
-    }
-  }
-
-  handleMessage(opcode, payload) {
-    if (opcode !== 0x1) return;
-    let msg = null;
-    try { msg = JSON.parse(payload.toString('utf8')); } catch (e) { return; }
-    if (!msg || typeof msg !== 'object') return;
-    this.dispatch(msg);
-  }
-
-  dispatch(msg) {
-    const t = msg.type;
-    if (t === 'ping') {
-      this.sendFrame(0x1, Buffer.from(JSON.stringify({ type: 'pong', t: msg.t })));
-      return;
-    }
-    if (t === 'pong') return;
-    if (t === 'hello') {
-      const token = String(msg.token || '');
-      const expect = String(config.token || '');
-      if (expect && token !== expect) {
-        this.close(4401, 'unauthorized');
-        return;
-      }
-      this.authorized = true;
-      wsSockets.add(this);
-      this.sendFrame(0x1, Buffer.from(JSON.stringify({
-        type: 'hello_ack', ok: true, server: SERVER_NAME, version: VERSION,
-        tools: TOOLS.map(x => ({ name: x.name, description: x.description, inputSchema: x.inputSchema }))
-      })));
-      return;
-    }
-    if (!this.authorized) {
-      this.close(4401, 'unauthorized');
-      return;
-    }
-    if (t === 'tool_catalog_request') {
-      this.sendFrame(0x1, Buffer.from(JSON.stringify({ type: 'tool_catalog', tools: TOOLS.map(x => ({ name: x.name, description: x.description, inputSchema: x.inputSchema })) })));
-      return;
-    }
-    if (t === 'tool_call') {
-      const id = String(msg.id || '');
-      const name = String(msg.name || '');
-      const args = msg.args && typeof msg.args === 'object' ? msg.args : {};
-      Promise.resolve(executeTool(name, args)).then(r => {
-        const out = { type: 'tool_result', id, ok: r.ok !== false, error: r.ok === false ? String(r.error || '工具调用失败') : '', text: String(r.text || ''), data: r.data };
-        if (!this.closed) this.sendFrame(0x1, Buffer.from(JSON.stringify(out)));
-      }).catch(e => {
-        if (!this.closed) this.sendFrame(0x1, Buffer.from(JSON.stringify({ type: 'tool_result', id, ok: false, error: String(e && e.message || e).slice(0, 500), text: '' })));
-      });
-      return;
-    }
-    /* 其他类型原样忽略（未知消息不视为错误） */
-  }
-
-  sendFrame(opcode, payload) {
-    if (this.closed) return;
-    const len = payload.length;
-    let header;
-    if (len < 126) {
-      header = Buffer.alloc(2);
-      header[1] = len;
-    } else if (len < 65536) {
-      header = Buffer.alloc(4);
-      header[1] = 126;
-      header.writeUInt16BE(len, 2);
-    } else {
-      header = Buffer.alloc(10);
-      header[1] = 127;
-      header.writeUInt32BE(0, 2);
-      header.writeUInt32BE(len, 6);
-    }
-    header[0] = 0x80 | (opcode & 0x0f);
-    this.socket.write(Buffer.concat([header, payload]));
-  }
-
-  sendJson(obj) {
-    this.sendFrame(0x1, Buffer.from(JSON.stringify(obj), 'utf8'));
-  }
-
-  close(code, reason) {
-    if (this.closed) return;
-    try {
-      const rbuf = Buffer.from(String(reason || ''), 'utf8');
-      const out = Buffer.alloc(2 + rbuf.length);
-      out.writeUInt16BE(code || 1000, 0);
-      rbuf.copy(out, 2);
-      /* 必须先发 close frame 再置 closed，否则 sendFrame 会直接跳过 */
-      this.sendFrame(0x8, out);
-    } catch (e) { /* 忽略 */ }
-    this.closed = true;
-    wsSockets.delete(this);
-    try { this.socket.end(); } catch (e) { /* 忽略 */ }
-  }
-}
+/* WSConnection 已提取到 bridge/ws.js */
 
 /* ------------------------------------------------------------------ */
 /* HTTP 服务                                                           */
 /* ------------------------------------------------------------------ */
 
-function sendJsonRes(res, status, obj) {
-  const body = Buffer.from(JSON.stringify(obj), 'utf8');
-  const headers = {
-    'Content-Type': 'application/json; charset=utf-8',
-    'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type,Authorization',
-    'Cache-Control': 'no-store'
-  };
-  if (res._reqOrigin) headers['Access-Control-Allow-Origin'] = res._reqOrigin;
-  res.writeHead(status, headers);
-  res.end(body);
-}
+/* ------------------------------------------------------------------ */
+/* HTTP 路由层（已提取到 bridge/routes.js 工厂；全部依赖经 ctx 注入）  */
+/* ------------------------------------------------------------------ */
 
-function corsHeaders(res) {
-  return res._reqOrigin ? { 'Access-Control-Allow-Origin': res._reqOrigin } : {};
-}
+const createRoutes = require('./bridge/routes');
+const httpLayer = createRoutes({
+  config, LAN_EXPOSED, configInvalid, SERVER_NAME, VERSION, HOST, PORT, BIND_HOST,
+  DATA_DIR, STICKER_DIR, maxBody: MAX_BODY,
+  wsSockets, TOOLS, listStickers,
+  getWhispers: () => whispers, setWhispers: v => { whispers = v; },
+  healthData,
+  getGeoLatest: () => geoLatest, setGeoLatest: v => { geoLatest = v; },
+  getLetters: () => letters, setLetters: v => { letters = v; },
+  sessions, resident, contextStats, pushHistory,
+  withListLock, uid, todayStr, saveList, saveGeo, saveSessions, saveResident,
+  getWeather, searchMusic, musicPlayUrl, musicPlayRemote, searchNetease,
+  barkPush, ntfyPush, ttsGenerate,
+  sessionGet, sessionSave, contextAppend, contextSummary,
+  residentList, residentUpsert, residentSummary, residentChat, residentProactive,
+  broadcast, recordPush, lanAddresses, fileSummary, directoryUsage,
+  httpAuthorized, authRequiredResponse,
+  parseQuery, corsOrigin
+});
+const sendJsonRes = httpLayer.sendJsonRes;
+const corsHeaders = httpLayer.corsHeaders;
+const rateCheck = httpLayer.rateCheck;
+const readBody = httpLayer.readBody;
+const safeConfigSnapshot = httpLayer.safeConfigSnapshot;
+const diagnosticsSnapshot = httpLayer.diagnosticsSnapshot;
+const handleHttp = httpLayer.handleHttp;
 
-function readBody(req) {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    let total = 0;
-    req.on('data', c => {
-      total += c.length;
-      if (total > MAX_BODY) { reject(new Error('body too large')); req.destroy(); return; }
-      chunks.push(c);
-    });
-    req.on('end', () => {
-      try {
-        const raw = Buffer.concat(chunks).toString('utf8');
-        resolve(raw ? JSON.parse(raw) : {});
-      } catch (e) { reject(new Error('JSON 解析失败')); }
-    });
-    req.on('error', reject);
-  });
-}
+/* parseQuery 已提取到 bridge/util.js */
 
-function parseQuery(url) {
-  const out = {};
-  try { new URLSearchParams(url.search).forEach((v, k) => { out[k] = v; }); } catch (e) { /* 忽略 */ }
-  return out;
-}
+/* safeConfigSnapshot 已提取到 bridge/routes.js */
 
-async function handleHttp(req, res) {
-  const url = new URL(req.url, 'http://' + req.headers.host || ('http://' + HOST + ':' + PORT));
-  const pathname = url.pathname;
-  const q = parseQuery(url);
-  res._reqOrigin = corsOrigin(req);
-  if (req.method === 'OPTIONS') {
-    const headers = {
-      'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type,Authorization'
-    };
-    if (res._reqOrigin) headers['Access-Control-Allow-Origin'] = res._reqOrigin;
-    res.writeHead(204, headers);
-    res.end();
-    return;
-  }
+/* fileSummary / directoryUsage 已提取到 bridge/persistence.js */
 
-  /* 健康检查 */
-  if (req.method === 'GET' && pathname === '/health') {
-    sendJsonRes(res, 200, { ok: true, server: SERVER_NAME, version: VERSION, uptime: Math.round(process.uptime()), connections: wsSockets.size, tools: TOOLS.map(t => t.name) });
-    return;
-  }
-  if (req.method === 'GET' && pathname === '/status') {
-    sendJsonRes(res, 200, {
-      ok: true, server: SERVER_NAME, version: VERSION, connections: wsSockets.size,
-      whispers: whispers.length, health: healthData.length, letters: letters.length,
-      sessions: Object.keys(sessions).length, contextFriends: Object.keys(contextStats).length,
-      stickers: listStickers().length, hasGeo: !!geoLatest,
-      bark: !!(config.bark && config.bark.enabled && config.bark.url),
-      ntfy: !!(config.ntfy && config.ntfy.enabled && config.ntfy.topic),
-      tts: !!(config.tts && config.tts.enabled && config.tts.endpoint && config.tts.apiKey),
-      resident: Object.keys(resident).length,
-      musicProvider: (config.music && config.music.provider) || 'kugou',
-      lan: !!config.lan,
-      proactive: !!(config.proactive && config.proactive.enabled)
-    });
-    return;
-  }
+/* diagnosticsSnapshot 已提取到 bridge/routes.js */
 
-  /* 表情文件 */
-  if (pathname === '/stickers' || pathname === '/stickers/') {
-    const list = listStickers();
-    sendJsonRes(res, 200, { ok: true, stickers: list });
-    return;
-  }
-  const stMatch = pathname.match(/^\/stickers\/([^/]+)$/);
-  if (stMatch && req.method === 'GET') {
-    const name = path.basename(decodeURIComponent(stMatch[1]));
-    if (!/^[\w.\-]+\.(png|webp|gif|jpg|jpeg|svg)$/i.test(name)) {
-      sendJsonRes(res, 400, { ok: false, error: '文件名不合法' });
-      return;
-    }
-    const file = path.join(STICKER_DIR, name);
-    if (!file.startsWith(STICKER_DIR) || !fs.existsSync(file)) {
-      sendJsonRes(res, 404, { ok: false, error: '表情不存在' });
-      return;
-    }
-    const ext = path.extname(file).toLowerCase();
-    const types = { '.png': 'image/png', '.webp': 'image/webp', '.gif': 'image/gif', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.svg': 'image/svg+xml' };
-    res.writeHead(200, Object.assign({
-      'Content-Type': types[ext] || 'application/octet-stream',
-      'Cache-Control': 'max-age=3600'
-    }, corsHeaders(res)));
-    const st = fs.createReadStream(file);
-    st.on('error', () => { try { res.destroy(); } catch (e) { /* 忽略 */ } });
-    st.pipe(res);
-    return;
-  }
-
-  /* TTS 音频文件 */
-  const ttsMatch = pathname.match(/^\/tts\/([^/]+)$/);
-  if (ttsMatch && req.method === 'GET') {
-    const name = path.basename(decodeURIComponent(ttsMatch[1]));
-    if (!/^[\w.\-]+\.mp3$/i.test(name)) {
-      sendJsonRes(res, 400, { ok: false, error: '文件名不合法' });
-      return;
-    }
-    const file = path.join(DATA_DIR, name);
-    if (!file.startsWith(DATA_DIR) || !fs.existsSync(file)) {
-      sendJsonRes(res, 404, { ok: false, error: '音频不存在' });
-      return;
-    }
-    res.writeHead(200, Object.assign({
-      'Content-Type': 'audio/mpeg',
-      'Cache-Control': 'max-age=3600'
-    }, corsHeaders(res)));
-    const ts = fs.createReadStream(file);
-    ts.on('error', () => { try { res.destroy(); } catch (e) { /* 忽略 */ } });
-    ts.pipe(res);
-    return;
-  }
-
-  /* 心语墙 */
-  if (pathname === '/api/whispers' && req.method === 'GET') {
-    const limit = Math.max(1, Math.min(200, Number(q.limit) || 50));
-    sendJsonRes(res, 200, { ok: true, whispers: whispers.slice(-limit).reverse() });
-    return;
-  }
-  if (pathname === '/api/whispers' && req.method === 'POST') {
-    try {
-      const body = await readBody(req);
-      const text = String(body.text || '').trim();
-      if (!text) { sendJsonRes(res, 400, { ok: false, error: '缺少 text' }); return; }
-      const w = { id: uid('whisper'), text: text.slice(0, 2000), author: String(body.author || '你').slice(0, 40), created: Date.now() };
-      whispers.push(w);
-      saveWhispers();
-      sendJsonRes(res, 200, { ok: true, whisper: w });
-    } catch (e) { sendJsonRes(res, 400, { ok: false, error: e.message }); }
-    return;
-  }
-  const wDel = pathname.match(/^\/api\/whispers\/([^/]+)$/);
-  if (wDel && req.method === 'DELETE') {
-    const id = decodeURIComponent(wDel[1]);
-    const before = whispers.length;
-    whispers = whispers.filter(w => w.id !== id);
-    if (before !== whispers.length) saveWhispers();
-    sendJsonRes(res, 200, { ok: before !== whispers.length });
-    return;
-  }
-  if (wDel && req.method === 'PATCH') {
-    const id = decodeURIComponent(wDel[1]);
-    try {
-      const body = await readBody(req);
-      const w = whispers.find(x => x.id === id);
-      if (!w) { sendJsonRes(res, 404, { ok: false, error: '未找到该心语' }); return; }
-      if (body.text !== undefined) {
-        const text = String(body.text || '').trim();
-        if (!text) { sendJsonRes(res, 400, { ok: false, error: '心语内容不能为空' }); return; }
-        w.text = text.slice(0, 2000);
-      }
-      if (body.author !== undefined) w.author = String(body.author || '').slice(0, 40);
-      saveWhispers();
-      sendJsonRes(res, 200, { ok: true, whisper: w });
-    } catch (e) { sendJsonRes(res, 400, { ok: false, error: e.message }); }
-    return;
-  }
-
-  /* 健康看板 */
-  if (pathname === '/api/health' && req.method === 'GET') {
-    const days = Math.max(1, Math.min(365, Number(q.days) || 90));
-    const since = Date.now() - days * 86400000;
-    const list = healthData.filter(h => h.ts >= since).sort((x, y) => x.ts - y.ts);
-    sendJsonRes(res, 200, { ok: true, days, count: list.length, records: list });
-    return;
-  }
-  if (pathname === '/api/health' && req.method === 'POST') {
-    try {
-      const body = await readBody(req);
-      const date = String(body.date || todayStr());
-      const metrics = body.metrics && typeof body.metrics === 'object' && !Array.isArray(body.metrics) ? body.metrics : {};
-      const existing = healthData.find(h => h.date === date);
-      if (existing) {
-        if (!existing.metrics || typeof existing.metrics !== 'object' || Array.isArray(existing.metrics)) existing.metrics = {};
-        Object.assign(existing.metrics, metrics);
-        existing.ts = Date.now();
-        if (body.note !== undefined) existing.note = String(body.note).slice(0, 500);
-      } else {
-        healthData.push({ id: uid('health'), date, metrics: Object.assign({}, metrics), note: body.note ? String(body.note).slice(0, 500) : '', ts: Date.now() });
-      }
-      saveHealth();
-      sendJsonRes(res, 200, { ok: true });
-    } catch (e) { sendJsonRes(res, 400, { ok: false, error: e.message }); }
-    return;
-  }
-
-  /* 地理 */
-  if (pathname === '/api/geo' && req.method === 'POST') {
-    try {
-      const body = await readBody(req);
-      const lat = Number(body.lat);
-      const lng = Number(body.lng);
-      if (!isFinite(lat) || !isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
-        sendJsonRes(res, 400, { ok: false, error: 'lat/lng 无效' });
-        return;
-      }
-      geoLatest = {
-        lat, lng,
-        accuracy: isFinite(Number(body.accuracy)) ? Number(body.accuracy) : null,
-        address: String(body.address || '').slice(0, 300),
-        city: String(body.city || '').slice(0, 100),
-        source: String(body.source || 'manual').slice(0, 40),
-        ts: Date.now()
-      };
-      saveGeo();
-      sendJsonRes(res, 200, { ok: true, geo: geoLatest });
-    } catch (e) { sendJsonRes(res, 400, { ok: false, error: e.message }); }
-    return;
-  }
-  if (pathname === '/api/geo/latest' && req.method === 'GET') {
-    sendJsonRes(res, geoLatest ? 200 : 404, geoLatest ? { ok: true, geo: geoLatest } : { ok: false, error: '还没有位置数据' });
-    return;
-  }
-
-  /* 天气 */
-  if (pathname === '/api/weather' && req.method === 'GET') {
-    const w = await getWeather(q.city);
-    sendJsonRes(res, w.ok ? 200 : 502, w);
-    return;
-  }
-
-  /* 网易云音乐 */
-  if (pathname === '/api/music/search' && req.method === 'GET') {
-    const r = await searchMusic(q.q || q.keyword, q.limit);
-    sendJsonRes(res, r.ok ? 200 : 502, r);
-    return;
-  }
-  if (pathname === '/api/music/url' && req.method === 'GET') {
-    const r = await musicPlayUrl(q.id);
-    sendJsonRes(res, r.ok ? 200 : 400, r);
-    return;
-  }
-  if (pathname === '/api/music/open' && req.method === 'GET') {
-    const id = String(q.id || '').trim();
-    if (!id) { sendJsonRes(res, 400, { ok: false, error: 'ID 无效' }); return; }
-    const provider = (config.music && config.music.provider) || 'kugou';
-    if (provider === 'netease') {
-      if (!/^\d+$/.test(id)) { sendJsonRes(res, 400, { ok: false, error: '网易云歌曲 ID 无效' }); return; }
-      sendJsonRes(res, 200, {
-        ok: true, provider: 'netease', name: String(q.name || '').slice(0, 200),
-        webUrl: 'https://music.163.com/#/song?id=' + id, deepLink: null
-      });
-      return;
-    }
-    sendJsonRes(res, 200, {
-      ok: true, provider: 'kugou', name: String(q.name || '').slice(0, 200),
-      webUrl: 'https://www.kugou.com/song/#hash=' + encodeURIComponent(id),
-      deepLink: 'kugou://kugou/play.html?hash=' + encodeURIComponent(id)
-    });
-    return;
-  }
-  if (pathname === '/api/music/play' && req.method === 'GET') {
-    const sid = String(q.id || '');
-    if (!sid) { sendJsonRes(res, 400, { ok: false, error: 'ID 无效' }); return; }
-    try {
-      let remote = await musicPlayRemote(sid);
-      let isNetease = (config.music && config.music.provider) === 'netease';
-      if (!remote.ok && (config.music && config.music.fallbackNetease !== false) && String(q.name || '').trim()) {
-        /* 酷狗播放受限时按歌名自动切网易云兜底（仅当前这次播放，不改变默认源） */
-        const fallback = await searchNetease(String(q.name).trim(), 1);
-        if (fallback.ok && fallback.songs.length) {
-          remote = { ok: true, url: 'https://music.163.com/song/media/outer/url?id=' + fallback.songs[0].id + '.mp3' };
-          isNetease = true;
-        }
-      }
-      if (!remote.ok) { sendJsonRes(res, 502, { ok: false, error: remote.error || '无法获取播放地址' }); return; }
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 30000);
-      res.on('close', () => ctrl.abort());
-      const up = await fetch(remote.url, {
-        redirect: 'follow',
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148',
-          'Referer': isNetease ? 'https://music.163.com/' : 'https://m.kugou.com/',
-          'Cookie': (config.music && config.music.kugouCookie) || ''
-        },
-        signal: ctrl.signal
-      });
-      if (!up.ok) { clearTimeout(timer); sendJsonRes(res, 502, { ok: false, error: '音乐上游返回 HTTP ' + up.status }); return; }
-      const ct = up.headers.get('content-type') || 'audio/mpeg';
-      res.writeHead(200, Object.assign({
-        'Content-Type': ct,
-        'Cache-Control': 'no-store'
-      }, corsHeaders(res)));
-      const reader = up.body.getReader();
-      try {
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          res.write(Buffer.from(value));
-        }
-        res.end();
-      } catch (e) {
-        try { reader.cancel(); } catch (e2) { /* 忽略 */ }
-        try { res.destroy(); } catch (e2) { /* 忽略 */ }
-      } finally {
-        clearTimeout(timer);
-      }
-    } catch (e) {
-      if (!res.headersSent) sendJsonRes(res, 502, { ok: false, error: '播放地址获取失败：' + String(e && e.message || e) });
-      else res.end();
-    }
-    return;
-  }
-
-  /* 信件 */
-  if (pathname === '/api/letters' && req.method === 'GET') {
-    const list = letters.sort((x, y) => y.created - x.created).slice(0, Math.max(1, Math.min(100, Number(q.limit) || 50)));
-    sendJsonRes(res, 200, { ok: true, letters: list });
-    return;
-  }
-  if (pathname === '/api/letters' && req.method === 'POST') {
-    try {
-      const body = await readBody(req);
-      const content = String(body.content || '').trim();
-      if (!content) { sendJsonRes(res, 400, { ok: false, error: '缺少 content' }); return; }
-      const l = { id: uid('letter'), to: String(body.to || '').slice(0, 40), from: String(body.from || '你').slice(0, 40), content: content.slice(0, 10000), reply_to: String(body.reply_to || ''), read: false, created: Date.now() };
-      letters.push(l);
-      saveLetters();
-      sendJsonRes(res, 200, { ok: true, letter: l });
-    } catch (e) { sendJsonRes(res, 400, { ok: false, error: e.message }); }
-    return;
-  }
-  const lDel = pathname.match(/^\/api\/letters\/([^/]+)$/);
-  if (lDel && req.method === 'DELETE') {
-    const id = decodeURIComponent(lDel[1]);
-    const before = letters.length;
-    letters = letters.filter(l => l.id !== id);
-    if (before !== letters.length) saveLetters();
-    sendJsonRes(res, 200, { ok: before !== letters.length });
-    return;
-  }
-
-  /* 会话状态（多窗口/断线恢复） */
-  const sessMatch = pathname.match(/^\/api\/sessions\/([^/]+)$/);
-  if (sessMatch && req.method === 'GET') {
-    const r = sessionGet(decodeURIComponent(sessMatch[1]));
-    sendJsonRes(res, r.ok ? 200 : 400, r);
-    return;
-  }
-  if (sessMatch && req.method === 'POST') {
-    try {
-      const body = await readBody(req);
-      const r = sessionSave(decodeURIComponent(sessMatch[1]), body.data);
-      sendJsonRes(res, r.ok ? 200 : 400, r);
-    } catch (e) { sendJsonRes(res, 400, { ok: false, error: e.message }); }
-    return;
-  }
-  if (sessMatch && req.method === 'DELETE') {
-    const k = decodeURIComponent(sessMatch[1]);
-    delete sessions[k];
-    saveSessions();
-    sendJsonRes(res, 200, { ok: true });
-    return;
-  }
-
-  /* 上下文统计 */
-  if (pathname === '/api/context' && req.method === 'POST') {
-    try {
-      const body = await readBody(req);
-      const r = contextAppend(q.friend || body.friend, body);
-      sendJsonRes(res, 200, r);
-    } catch (e) { sendJsonRes(res, 400, { ok: false, error: e.message }); }
-    return;
-  }
-  if (pathname === '/api/context' && req.method === 'GET') {
-    sendJsonRes(res, 200, contextSummary(q.friend));
-    return;
-  }
-
-  /* 推送 */
-  if (pathname === '/api/push' && req.method === 'POST') {
-    try {
-      const body = await readBody(req);
-      const title = String(body.title || 'Internal Beyond').slice(0, 120);
-      const text = String(body.text || '').slice(0, 2000);
-      if (!text) { sendJsonRes(res, 400, { ok: false, error: '缺少 text' }); return; }
-      broadcast({ type: 'push', title, text, from: String(body.from || 'Sui').slice(0, 40) });
-      const bp = body.bark !== false ? await barkPush(title, text, body.url) : { ok: false };
-      const np = body.ntfy !== false ? await ntfyPush(title, text, body.url) : { ok: false };
-      recordPush({ title, text, from: body.from, bark: bp.ok, ntfy: np.ok });
-      sendJsonRes(res, 200, { ok: true, bark: bp.ok, barkError: bp.ok ? '' : (bp.error || ''), ntfy: np.ok, ntfyError: np.ok ? '' : (np.error || '') });
-    } catch (e) { sendJsonRes(res, 400, { ok: false, error: e.message }); }
-    return;
-  }
-  if (pathname === '/api/push/history' && req.method === 'GET') {
-    const limit = Math.max(1, Math.min(100, Number(q.limit) || 20));
-    sendJsonRes(res, 200, { ok: true, history: pushHistory.slice(0, limit) });
-    return;
-  }
-
-  /* 配置（脱敏）与工具列表 */
-  if (pathname === '/api/config' && req.method === 'GET') {
-    const c = Object.assign({}, config);
-    if (c.token) c.token = '***';
-    if (c.proactive && c.proactive.apiKey) c.proactive.apiKey = '***';
-    if (c.music && c.music.kugouCookie) c.music.kugouCookie = '***';
-    if (c.tts && c.tts.apiKey) c.tts.apiKey = '***';
-    sendJsonRes(res, 200, { ok: true, config: c, dataDir: DATA_DIR, stickerDir: STICKER_DIR });
-    return;
-  }
-  if (pathname === '/api/tools' && req.method === 'GET') {
-    sendJsonRes(res, 200, { ok: true, tools: TOOLS.map(t => ({ name: t.name, description: t.description })) });
-    return;
-  }
-
-  /* TTS 合成 */
-  if (pathname === '/api/tts' && req.method === 'POST') {
-    try {
-      const body = await readBody(req);
-      const r = await ttsGenerate(body.text, body.voice);
-      sendJsonRes(res, r.ok ? 200 : 503, r);
-    } catch (e) { sendJsonRes(res, 400, { ok: false, error: e.message }); }
-    return;
-  }
-
-  /* AI 常驻会话 */
-  if (pathname === '/api/ai/sessions' && req.method === 'GET') {
-    sendJsonRes(res, 200, { ok: true, sessions: residentList() });
-    return;
-  }
-  if (pathname === '/api/ai/sessions' && req.method === 'POST') {
-    try {
-      const body = await readBody(req);
-      const key = String(body.key || '').trim() || ('resident_' + Date.now().toString(36));
-      const r = residentUpsert(key, body);
-      sendJsonRes(res, r.ok ? 200 : 400, r.ok ? { ok: true, session: r.session } : r);
-    } catch (e) { sendJsonRes(res, 400, { ok: false, error: e.message }); }
-    return;
-  }
-  const aiSess = pathname.match(/^\/api\/ai\/sessions\/([^/]+)$/);
-  if (aiSess && req.method === 'GET') {
-    const sum = residentSummary(decodeURIComponent(aiSess[1]));
-    if (!sum) { sendJsonRes(res, 404, { ok: false, error: '会话不存在' }); return; }
-    const full = Object.assign({}, sum, { history: (resident[sum.key] && resident[sum.key].history) || [] });
-    sendJsonRes(res, 200, { ok: true, session: full });
-    return;
-  }
-  if (aiSess && req.method === 'DELETE') {
-    const k = decodeURIComponent(aiSess[1]);
-    delete resident[k];
-    saveResident();
-    sendJsonRes(res, 200, { ok: true });
-    return;
-  }
-  if (pathname === '/api/ai/chat' && req.method === 'POST') {
-    try {
-      const body = await readBody(req);
-      const r = await residentChat(String(body.key || ''), body.message, body.maxContinues);
-      sendJsonRes(res, r.ok ? 200 : 400, r);
-    } catch (e) { sendJsonRes(res, 400, { ok: false, error: e.message }); }
-    return;
-  }
-  if (pathname === '/api/ai/proactive' && req.method === 'POST') {
-    try {
-      const body = await readBody(req);
-      const r = await residentProactive(String(body.key || ''), body.prompt);
-      sendJsonRes(res, r.ok ? 200 : 400, r);
-    } catch (e) { sendJsonRes(res, 400, { ok: false, error: e.message }); }
-    return;
-  }
-
-  sendJsonRes(res, 404, { ok: false, error: '未找到接口：' + req.method + ' ' + pathname });
-}
+/* handleHttp 已提取到 bridge/routes.js（工厂注入 getter/setter 保持状态一致） */
 
 /* ------------------------------------------------------------------ */
 /* 可选：低频主动消息（本地心跳）                                      */
@@ -1853,6 +901,10 @@ const server = http.createServer((req, res) => {
     try { sendJsonRes(res, 500, { ok: false, error: String(e && e.message || e) }); } catch (e2) { /* 忽略 */ }
   });
 });
+server.timeout = 30000;             /* 30 秒无活动自动断开 */
+server.requestTimeout = 30000;       /* 30 秒请求超时 */
+server.headersTimeout = 10000;       /* 10 秒等待请求头 */
+server.keepAliveTimeout = 10000;     /* 10 秒空闲保持 */
 
 server.on('upgrade', (req, socket, head) => {
   const key = String(req.headers['sec-websocket-key'] || '');
@@ -1869,7 +921,8 @@ server.on('upgrade', (req, socket, head) => {
       const u = new URL(origin);
       const host = String(u.hostname).toLowerCase();
       if ((u.protocol === 'http:' || u.protocol === 'https:') &&
-          (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]')) {
+          (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]' ||
+           (LAN_EXPOSED && lanAddresses().indexOf(host) !== -1))) {
         originOk = true;
       }
     } catch (e) { /* 非法 Origin 一律拒绝 */ }
@@ -1878,6 +931,15 @@ server.on('upgrade', (req, socket, head) => {
       socket.destroy();
       return;
     }
+  }
+  /* In LAN mode require a token before upgrading. Browser WebSocket clients
+     cannot set Authorization, so the DIY client passes it as a URL parameter
+     for this one handshake; the hello-frame check remains a second boundary. */
+  const upgradeToken = suppliedToken(req, parseQuery(new URL(req.url || '/', 'http://localhost')));
+  if (LAN_EXPOSED && !constantTimeTokenMatch(upgradeToken, config.token)) {
+    socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+    socket.destroy();
+    return;
   }
   const accept = crypto.createHash('sha1').update(key + WS_GUID).digest('base64');
   socket.write(
@@ -1913,7 +975,7 @@ server.listen(PORT, BIND_HOST, () => {
     console.log('  已监听局域网（config.lan=true）。手机访问：');
     lans.forEach(ip => console.log('    http://' + ip + ':' + PORT + '   /   ws://' + ip + ':' + PORT));
     if (!lans.length) console.log('    （未找到局域网 IPv4 地址，请检查网络）');
-    if (!config.token) console.log('  ⚠ 已监听局域网但未设置 token：局域网内其他设备可访问本服务。建议配置 token 或配合 Tailscale。');
+    console.log('  局域网业务接口已启用 token 鉴权（Authorization: Bearer 或 X-IB-Token）。');
   }
   if (config.token) console.log('  已开启鉴权 token（在 IBNET 配置里填写相同 token）。');
   ensureProactive();

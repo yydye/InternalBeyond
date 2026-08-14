@@ -41,7 +41,11 @@ app.add_middleware(
 
 @app.get("/health")
 async def health() -> dict:
-    return {"ok": True, **get_vision_model().status()}
+    return {
+        "ok": True,
+        "service": "internal-beyond-vision",
+        **get_vision_model().status(),
+    }
 
 
 @app.post("/vision", response_model=VisionResponse)

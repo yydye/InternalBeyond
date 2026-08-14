@@ -3,3 +3,10 @@ vision/__pycache__/
 __pycache__/
 .pytest_cache/
 vision/.cache/
+
+# 桌面工具本地缓存与临时生成的素材，不属于项目源码
+.reasonix/
+Gemini_Generated_Image_*.png
+
+# 本地故障恢复副本：保留在工作机上，不进入版本库
+.dsh-recovery/

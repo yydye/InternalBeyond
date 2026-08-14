@@ -1,6 +1,6 @@
 # Internal Beyond（IB）
 
-一个离线运行的单文件个人网站项目，支持同时对接多个 AI 模型。
+一个离线运行、无需构建的个人网站项目，支持同时对接多个 AI 模型。
 
 该项目包含 12 个核心功能模块与两套视觉主题。核心数据储存在本地；Active 关页调度可按需启用本地 companion 服务。
 
@@ -15,7 +15,7 @@
 
 1. 下载本仓库（点击上方绿色 **Code** → **Download ZIP**）
 2. 解压后，用浏览器打开 `InternalBeyond.html`
-3. 进入 **API Settings** 页面，添加你的 AI API 密钥
+3. 进入 **API Settings** 页面，添加云端 AI 的 API 密钥，或在「数据保险 → 本地优先中心」接入本机模型
 4. 开始使用
 
 无需联网也能使用基础功能（日志、换装、主题切换、音乐播放等）。AI 相关功能需要联网调用 API。
@@ -31,6 +31,14 @@
 只有显式开启“浏览器关闭后继续运行”的计划会同步。Windows 状态文件位于 `%LOCALAPPDATA%\InternalBeyond\active-message-service.json`（同时保留恢复备份）；其中包含这些计划调用模型所需的 API Key、角色与上下文快照，不会上传到第三方调度服务器。
 
 Active 计划只保存时间、频率、消息方向与“附加要求”，不保存最终发送正文。每次到点后都会读取该角色绑定的 provider / model、原始设定、关系、最近聊天、相关 Memory 与最近主动消息，实时发起模型请求；重复或 thinking 泄露会触发最多两次重新生成。只有模型请求全部失败时才使用角色化短兜底，并在记录中标记 `generatedByFallback`。
+
+### 本地优先中心（可选）
+
+打开 **API → 数据保险 → 本地优先中心**，可以在不离开本机的前提下管理三类能力：
+
+- **本机模型**：提供 Ollama（`127.0.0.1:11434`）、LM Studio（`127.0.0.1:1234`）和 vLLM / OpenAI 兼容服务（`127.0.0.1:8000`）预设。点击「探测服务」后可读取本机模型列表；保存后会成为正常的 API 配置。仅允许 `localhost` / `127.0.0.1` 端点，因此本机模型可以不填 API Key。
+- **离线就绪度**：查看文件解析库的浏览器缓存；已下载的解析库可在离线时继续使用。Python / Pyodide 运行时仍是按需资源，只有自行提供本地副本后才算完整离线。
+- **静谧模式**：关闭背景动效、玻璃模糊和长过渡，并在本浏览器中记住设置，适合省电、低性能设备和专注写作。
 
 ## ✦ 功能一览
 
@@ -145,6 +153,12 @@ IB 支持多种 AI 服务（最多 10 个端口）：
 3. IB 的 API 设置中：服务商选 **自定义**，填入上述信息
 4. 保存即可
 
+### 本机模型（Ollama / LM Studio / vLLM）
+
+先在电脑上启动本机模型服务，再到 **API → 数据保险 → 本地优先中心** 选择对应预设：Ollama 默认使用 `http://127.0.0.1:11434/v1/chat/completions`，LM Studio 使用 `http://127.0.0.1:1234/v1/chat/completions`，vLLM / 其他 OpenAI 兼容服务使用 `http://127.0.0.1:8000/v1/chat/completions`。点击「探测服务」可自动填入服务返回的第一个模型；确认名称后「保存到 API」。
+
+这些配置只接受回环地址，API Key 可保留为空；保存后与其他 API 一样出现在 Chat、Letters、Memory 等功能中。若探测失败，请确认服务已经启动，且它允许浏览器从本机访问。
+
 ### 关于世界观玩家
 
 在 API Settings 的 System Prompt 中设置自定义世界观，会自动注入到所有 AI 功能中。Story 模块支持独立的个性化开关。
@@ -153,6 +167,8 @@ IB 支持多种 AI 服务（最多 10 个端口）：
 
 - **导出**：导航栏 Export → 全部数据导出为 JSON 文件（日志、分类、信件、聊天记录、话题频道、对话摘要、Blog 评论与批注、API 配置、个人资料、群组设置、记忆库、Auto Memory 档案、Active 计划与发送历史、ICode 项目与上传文件、日历事项 / 便笺与设置）。Memory 另支持独立导入导出。
 - **导入**：Import → 选择 JSON 备份文件，增量合并不覆盖。
+- **加密备份**：API 页「数据保险」中的「创建加密备份」会生成 `.ibvault` 文件，使用 AES-256-GCM 加密，密码在本机临时派生、不保存也不上传。忘记密码无法恢复；普通 JSON 导出仍保留，适合跨设备迁移但可能包含 API 密钥。
+- **健康检查**：同一面板可检查各数据表可读性、模块占用和浏览器配额，并显示每日自动备份、紧急镜像、文件夹同步及最近加密备份状态；检查结果不会上传。
 - **归档**：删除 API 时可选择归档而非彻底删除，密钥清除但聊天记录与 Auto Memory 档案保留，随时可恢复。归档区上限 20 个。
 - **存储**：核心数据保存在浏览器 IndexedDB。只有用户主动启用关页调度时，对应 Active 计划才会额外写入本机 companion JSON；不使用云端调度服务。
 - **⚠ 备份建议**：数据仅存于浏览器本地，清除浏览器数据将永久丢失。请定期备份。
@@ -170,8 +186,38 @@ IB 支持多种 AI 服务（最多 10 个端口）：
 
 ```
 InternalBeyond.html       ← 主文件（浏览器打开这个）
-active-message-service.js ← Active 可选本地后台调度服务（Node.js 18+）
+assets/
+  css/
+    core.css              ← 全局主题、组件与响应式样式
+    calendar.css          ← Calendar 独立样式
+    bridge.css            ← Bridge 工具箱独立样式
+    local-vault.css       ← 加密备份与本地数据健康样式
+    local-first.css       ← 本地模型、离线状态与静谧模式样式
+  js/                     ← 按领域拆分的前端脚本（无打包、按 HTML 顺序加载）
+    communication/         ← Chat 子模块（letters / voice / annotations / summary）
+    workspace/             ← ICode 子模块（files / preview / run）
+    memory/                ← Memory 子模块（auto-memory / constellations）
+    active-diary/          ← Active 前端子模块（active-plans / diary）
+    local-vault.js        ← `.ibvault` 加密备份、导入与健康检查
+    local-first.js        ← 本机模型预设、缓存状态与静谧模式
+active-message-service.js ← Active 可选本地后台调度服务（Node.js 18+，composition root）
 start-active-service.cmd  ← Windows 后台服务启动入口
+active/                   ← Active 服务按域拆分模块
+  persistence.js          ← 状态加载 / 原子写入 / 保存队列
+  plan-domain.js          ← 调度计算 / 净化器 / 指纹 / 任务运行时
+  model-client.js         ← prompt 构建 / 三 provider 适配 / 校验与兜底
+  scheduler.js            ← 任务与 AI 计划执行 / 定时 tick / 停机
+  http.js                 ← CORS / JSON / REST 路由与 server 实例
+bridge/                    ← Bridge 后端按域拆分模块（composition root = ib-bridge-service.js）
+  util.js                  ← 无状态工具（deepMerge / uid / todayStr / token 比对等）
+  config.js                ← 配置加载 / 校验 / 升级 / 鉴权工厂
+  persistence.js           ← JSON 文件持久化原语（无状态）
+  clients.js               ← 天气 / 音乐搜索与播放 / Bark / ntfy 推送
+  tts.js                   ← Edge + OpenAI 兼容语音合成
+  ws.js                    ← WebSocket 心跳 / 广播 / 连接与工具分发
+  routes.js                ← HTTP 路由层（限流 / 鉴权边界 / REST 接口）
+local-services-runner.js  ← Bridge + Active 统一本地服务控制器
+start-local-services.cmd  ← Windows 统一启动入口（可传 `--vision`）
 start-vision-service.cmd  ← DeepSeek 本地视觉服务启动入口（Windows）
 test_vision.py            ← 本地视觉 API 测试客户端
 vision/
@@ -180,15 +226,24 @@ vision/
   bootstrap.py            ← CUDA/CPU PyTorch 与依赖检查安装
   requirements.txt        ← 视觉服务依赖
 game/
-  game_module.js           ← 像素房间引擎
+  game_module.js           ← 房间核心引擎（配置 / CSS / 视口 / 寻路 / 交互）
+  game_tarot.js            ← 塔罗模块（牌组 / 牌面 / 牌阵 / 解读 UI）
+  game_story.js            ← Story 模块（AI 分支叙事 + 故事视窗）
+  game_dialogue.js         ← 对话模块（分页 / 对话 UI / Sui 问答 / 房间导览）
+  game_room.js             ← 房间引擎尾段（换装 / 渲染循环 / 面板与宠物窗 / 启动）
+  game_tea.js              ← 茶歇模块（茶点 / 选单 / 精灵动画 / 聊天与存档）
   *.png                    ← 精灵图、场景素材
   portraits/               ← 角色立绘（含默认 + 用户 DIY）
 ```
 
+前端回归测试：双击 `test-ui.cmd`，或依次执行 `node scripts_check_html.js InternalBeyond.html`、`node test_frontend_structure.js`、`node test_game_smoke.js`（游戏模块冒烟测试，覆盖六个拆分模块的加载与核心交互）、`node test_ui_regression.js`。测试保持零依赖，需要本机 Chrome / Edge。
+
+全量一键测试（跨平台）：`node test-all.js`（默认全部三组）；`--quick` 跳过浏览器组（约 17 秒）；`--browser` 仅浏览器集成组。任一失败返回非零退出码，浏览器测试串行执行。
+
 ## ✦ 技术规格
 
-- **架构**：核心为纯前端单文件 HTML + 独立游戏引擎 JS，无框架、无构建；Active 的关页调度由用户显式启用的可选本地 companion 服务提供。
-- **字体**：Cormorant Garamond · Noto Sans SC · Noto Serif SC · Raleway · Great Vibes · Pinyon Script · Spectral（Google Fonts CDN）。
+- **架构**：纯前端 HTML + 按领域拆分的原生 CSS / JS，无框架、无构建；仍可直接打开 `InternalBeyond.html`。Active 的关页调度由用户显式启用的可选本地 companion 服务提供。
+- **本地优先**：界面不再隐式请求 Google Fonts；优先使用系统已安装的 Cormorant Garamond、Noto Sans / Serif SC、Raleway、Great Vibes、Pinyon Script、Spectral 等字体，缺失时自动回退到系统字体栈。文件解析库按需下载并缓存；本机模型只允许回环端点。
 - **视觉**：CSS 玻璃拟态、Canvas 雨滴（45 滴）与水波纹、棱镜光影、烛火月光、浮动微尘、交叉溶解过渡。
 - **AI 协议**：Anthropic 原生格式 + OpenAI 兼容格式，覆盖官方及中转站 API。
 - **构建**：Claude (Opus 4.6) 构建 · Opus 4.8 / Sonnet 4.6 / Fable 5 / Opus 5 / ChatGPT 5.6 Sol 参与辅助构建 · GPT-IMAGE-2 贴图 · Adobe Photoshop CS 设计编绘。
@@ -199,21 +254,23 @@ game/
 
 ### 快速开始
 
-1. 双击 `start-bridge-service.cmd`（或运行 `node ib-bridge-service.js`，需 Node.js 18+）
+1. 推荐双击 `start-local-services.cmd`，一次启动 Bridge 与 Active；仅需 Bridge 时仍可双击 `start-bridge-service.cmd`（或运行 `node ib-bridge-service.js`，需 Node.js 18+）
 2. 打开 `InternalBeyond.html` → **DIY** → **后端连接**
 3. 地址会自动填 `ws://127.0.0.1:23115`；勾选「启用」并点击「连接」
-4. 页面右下角出现「桥」按钮，内含**心语墙 / 生活看板 / 状态**三个页签
+4. 顶部导航栏的 **Bridge** 入口内含**心语墙 / 生活看板 / AI 常驻 / 状态**四个页签
 
 数据目录：`%LOCALAPPDATA%\InternalBeyond\bridge\`（含 `config.json`、心语 / 健康 / 地理 / 信件 / 会话 JSON、`stickers` 表情目录）。
 
-冒烟测试：`node test_bridge.js`（零依赖，覆盖 REST / WebSocket / CORS / 鉴权 / AI 常驻并发锁与 `/continue` / 重启恢复 / 数据损坏自愈）；`node test_dual_window.js`（双窗口同步与重复初始化，需本机 Chrome/Edge）。
+统一启动器不会终止已经由其他方式启动的服务；窗口内输入 `s` 可查看状态，输入 `q` 只停止它自己启动的子服务。也可在项目目录运行 `node local-services-runner.js --status`（人类可读）或 `node local-services-runner.js --json`（脚本可读）；传入 `--vision` 会一并启动可选视觉助手。
+
+冒烟测试：`node test_bridge.js`（零依赖，覆盖 REST / WebSocket / CORS / 鉴权 / AI 常驻并发锁与 `/continue` / 重启恢复 / 数据损坏自愈）；`node test_dual_window.js`（双窗口同步与重复初始化）；`node test_ui_regression.js`（桌面 / 移动、浅色 / 深色、Bridge 交互与可访问性，后两项需本机 Chrome / Edge）。
 
 ### 功能一览
 
 | 功能 | 说明 |
 |------|------|
 | **表情包** | 内置 8 个默认表情；AI 回复可用 `[sticker:名字]` 标记；往 stickers 目录放 PNG/SVG 即新增 |
-| **深夜点歌** | 默认搜**酷狗**（会员 Cookie 可配置，也可切回网易云）；回复 `[music:ID\|歌名]` 前端直接播放（服务端代理） |
+| **深夜点歌** | 默认搜**酷狗**（会员 Cookie 可配置，也可切回网易云）；回复 `[music:ID\|歌名]` 唤起本机酷狗客户端，失败则打开酷狗网页版（会员直接生效） |
 | **心语墙** | 服务端持久化心情便笺；页面「桥」面板读写，AI 有 `whispers_*` 工具 |
 | **健康看板** | iOS 快捷指令 / Android Health Connect 转发 POST `/api/health`，服务端保留 90 天；面板与 AI 均可读取 |
 | **地理眼睛** | 浏览器定位或手机快捷指令（iOS 快捷指令 / Android HTTP Shortcuts）POST `/api/geo`；AI 可读位置与天气 |
@@ -242,7 +299,7 @@ Content-Type: application/json
 { "lat": 31.2304, "lng": 121.4737, "address": "上海市…", "city": "上海", "source": "shortcut" }
 ```
 
-> 注意：默认只监听 `127.0.0.1`，手机无法直连本机回环地址。如需手机访问：把 `config.json` 里的 `lan` 设为 `true`（或设置环境变量 `IB_BRIDGE_HOST=0.0.0.0`），放行防火墙，启动时控制台会打印手机可用的局域网地址（个人建议配合 Tailscale 等内网工具，不要直接暴露公网）。
+> 注意：默认只监听 `127.0.0.1`，手机无法直连本机回环地址。如需手机访问：把 `config.json` 里的 `lan` 设为 `true`（或设置环境变量 `IB_BRIDGE_HOST=0.0.0.0`），放行防火墙。首次局域网监听且未设置 token 时，Bridge 会在 `config.json` 自动生成高强度 token；所有业务 HTTP 接口（包括手机快捷指令）都必须携带它。推荐使用 `Authorization: Bearer <token>` 或 `X-IB-Token: <token>`；仅为不支持自定义头的快捷指令保留 `token` 查询参数。将同一 token 填入 DIY 的后端连接配置，切勿把 Bridge 暴露到公网。
 
 ### Android / OPPO（推荐用法）
 
@@ -298,7 +355,7 @@ OPPO 健康 App 没有公开导出接口，建议让系统健康数据进 Health
 
 用法：
 
-1. 右下角「桥」→ **AI 常驻** 页签
+1. 顶部导航栏 **Bridge** → **AI 常驻** 页签
 2. 选择要用哪个模型 → 点「新建」
 3. 直接对话；「让TA主动说」会立刻让它发一条主动消息（同时推送页面 / Bark / ntfy）
 4. 回复末尾带 `/continue` 会自动续写（每轮最多 2 次）
@@ -355,7 +412,9 @@ GET  /api/ai/sessions        # 会话列表（API Key 自动脱敏）
 
 ### 鉴权
 
-默认不鉴权（仅监听本机）。如需鉴权，在 `config.json` 填 `token`，并在 DIY 后端连接里填写相同 token；鉴权失败会以 4401 永久断开。
+默认回环监听可零配置使用；如果手动设置 `token`，非回环请求需要认证。只要开启局域网监听，Bridge 就会强制要求 token；没有 token 会在启动时自动生成并写入 `config.json`。浏览器 REST 请求使用 `Authorization: Bearer <token>`，也支持 `X-IB-Token`；WebSocket 因浏览器不能自定义握手头，会在仅此一次握手 URL 中带同一 token，并在 `hello` 帧再次校验。鉴权失败的 WebSocket 会以 4401 关闭。
+
+`GET /health` 和 `/status` 可用于本机启动器探活；`GET /api/diagnostics` 会汇总 Bridge 数据目录占用、已启用能力、监听方式、连接数与安全提示。诊断在 token 生效时同样需要认证，且不会返回 token 或其他已脱敏的密钥内容。
 
 ## ✦ DeepSeek 本地视觉（可选）
 
@@ -383,7 +442,7 @@ RTX 3050 6GB 默认使用 Ollama Q4_K_M 量化，并将输入图片最长边限�
 
 **Internal Beyond** is a local-first, single-file personal website with multi-AI support. Its core runs without a server; the optional Active Messages companion enables scheduling after the browser closes. Free and open source.
 
-Connect your own AI API keys to unlock all interactive features. Supports Claude, GPT, DeepSeek, Gemini, and custom relay endpoints.
+Connect your own cloud AI API keys or a loopback OpenAI-compatible local model to unlock interactive features. Supports Claude, GPT, DeepSeek, Gemini, Ollama, LM Studio, vLLM, and custom relay endpoints.
 
 ### Features
 
@@ -405,7 +464,7 @@ Connect your own AI API keys to unlock all interactive features. Supports Claude
 
 1. Download this repository
 2. Open `InternalBeyond.html` in your browser
-3. Add your AI API key in API Settings
+3. Add a cloud AI API key, or configure a loopback local model in API Settings → Local-first Center
 4. Start exploring
 
 For Active schedules that must run after the browser closes, use Node.js 18+: run `start-active-service.cmd` on Windows, or `node active-message-service.js` on macOS/Linux. Keep the service running, open the Active page, and wait for “Connected · Synced” before closing the browser. Repeat that page reconciliation after every companion restart so stale deleted schedules can never revive. Only plans with the background switch enabled are synced; the local companion state file contains the API credentials required by those plans.

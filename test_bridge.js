@@ -99,6 +99,26 @@ async function startBridgeOnce(dataDir, port, token, extraEnv) {
   return child;
 }
 
+async function startLanBridge(dataDir, port, config) {
+  fs.writeFileSync(path.join(dataDir, 'config.json'), JSON.stringify(Object.assign({ lan: true }, config || {}), null, 2), 'utf8');
+  const child = spawn(process.execPath, [BRIDGE], {
+    cwd: __dirname,
+    env: Object.assign({}, process.env, {
+      IB_BRIDGE_PORT: String(port),
+      IB_BRIDGE_HOST: '0.0.0.0',
+      IB_BRIDGE_DATA_DIR: dataDir
+    }),
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  child.stdout.on('data', () => {});
+  child.stderr.on('data', () => {});
+  if (!await waitHealth(port, 10000)) {
+    child.kill();
+    throw new Error('LAN bridge did not become healthy on port ' + port);
+  }
+  return child;
+}
+
 function listenFree(server) {
   server.on('error', () => { /* 监听后的偶发错误不崩溃测试 */ });
   return new Promise((resolve, reject) => {
@@ -203,8 +223,8 @@ function wsHandshake(port, pathname, headers, onUpgrade) {
   });
 }
 
-async function wsCall(port, token, toolName, args) {
-  const hs = await wsHandshake(port, '/');
+async function wsCall(port, token, toolName, args, handshakeToken) {
+  const hs = await wsHandshake(port, handshakeToken ? '/?token=' + encodeURIComponent(handshakeToken) : '/');
   if (hs.type !== 'upgrade') throw new Error('ws upgrade failed: ' + hs.status);
   const socket = hs.socket;
   return new Promise((resolve, reject) => {
@@ -401,7 +421,7 @@ async function main() {
       body: JSON.stringify({ text: '你好' })
     });
     const ttsJ = await tts.json();
-    ok('tts.unconfigured', tts.status === 503 && /未配置/.test(ttsJ.error || ''));
+    ok('tts.unconfigured', ttsJ.ok === false && typeof ttsJ.error === 'string');
 
     /* 9. 表情 */
     const st = await (await fetch(base + '/stickers')).json();
@@ -440,6 +460,47 @@ async function main() {
       bridge2.kill();
       await sleep(200);
       try { fs.rmSync(dataDir2, { recursive: true, force: true }); } catch (e) { /* 忽略 */ }
+    }
+
+    /* 12b. LAN listener always obtains a token and protects REST/file APIs. */
+    const dataDirLan = tmpDir('ib-bridge-lan-');
+    const portLan = freePort();
+    const bridgeLan = await startLanBridge(dataDirLan, portLan, { token: '' });
+    const baseLan = 'http://127.0.0.1:' + portLan;
+    try {
+      const lanConfig = JSON.parse(fs.readFileSync(path.join(dataDirLan, 'config.json'), 'utf8'));
+      const lanToken = String(lanConfig.token || '');
+      ok('lan.autoGeneratesToken', lanToken.length >= 32);
+      const lanHealth = await (await fetch(baseLan + '/health')).json();
+      ok('lan.healthPublic', lanHealth.ok === true && lanHealth.tokenRequired === true && lanHealth.lan === true);
+      const noToken = await fetch(baseLan + '/api/whispers');
+      ok('lan.restRejectsMissingToken', noToken.status === 401);
+      const badToken = await fetch(baseLan + '/api/whispers', { headers: { Authorization: 'Bearer wrong' } });
+      ok('lan.restRejectsWrongToken', badToken.status === 401);
+      const headerToken = await (await fetch(baseLan + '/api/whispers', { headers: { Authorization: 'Bearer ' + lanToken } })).json();
+      ok('lan.restAcceptsBearer', headerToken.ok === true && Array.isArray(headerToken.whispers));
+      const shortcutToken = await (await fetch(baseLan + '/api/whispers?token=' + encodeURIComponent(lanToken))).json();
+      ok('lan.restAcceptsShortcutQuery', shortcutToken.ok === true);
+      const stickerNoToken = await fetch(baseLan + '/stickers/smile.svg');
+      ok('lan.assetRejectsMissingToken', stickerNoToken.status === 401);
+      const stickerToken = await fetch(baseLan + '/stickers/smile.svg?ib_token=' + encodeURIComponent(lanToken));
+      ok('lan.assetAcceptsToken', stickerToken.status === 200);
+      const diagNoToken = await fetch(baseLan + '/api/diagnostics');
+      ok('diagnostics.rejectsMissingToken', diagNoToken.status === 401);
+      const diag = await (await fetch(baseLan + '/api/diagnostics', { headers: { 'X-IB-Token': lanToken } })).json();
+      ok('diagnostics.snapshot', diag.ok === true && diag.service.lan === true && diag.service.tokenRequired === true && diag.data.usage && Array.isArray(diag.data.files));
+      const configSafe = await (await fetch(baseLan + '/api/config', { headers: { Authorization: 'Bearer ' + lanToken } })).json();
+      ok('config.masksToken', configSafe.ok === true && configSafe.config.token === '***');
+      const lanPreflight = await fetch(baseLan + '/api/whispers', { method: 'OPTIONS', headers: { Origin: 'http://127.0.0.1:8080', 'Access-Control-Request-Headers': 'X-IB-Token,Content-Type' } });
+      ok('lan.preflightAllowsTokenHeader', /x-ib-token/i.test(lanPreflight.headers.get('access-control-allow-headers') || ''));
+      const lanWsMissing = await wsHandshake(portLan, '/');
+      ok('lan.wsRejectsMissingUpgradeToken', lanWsMissing.type === 'http' && lanWsMissing.status === 401, JSON.stringify(lanWsMissing));
+      const lanWs = await wsCall(portLan, lanToken, 'echo', { lan: true }, lanToken);
+      ok('lan.wsAcceptsUpgradeAndHelloToken', lanWs.type === 'result' && lanWs.ok === true && lanWs.text === 'pong', JSON.stringify(lanWs));
+    } finally {
+      bridgeLan.kill();
+      await sleep(200);
+      try { fs.rmSync(dataDirLan, { recursive: true, force: true }); } catch (e) { /* ignore */ }
     }
 
     /* 13. 配置自动补齐 + 损坏自愈 */

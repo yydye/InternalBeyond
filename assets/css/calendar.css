@@ -1,0 +1,1109 @@
+﻿/* ═════════ Calendar 模块（并入自 v35 定稿；仅声明日历专有变量，站级变量沿用主站） ═════════ */
+:root{
+  --eph-ink:#16325c;--eph-ink-2:#2a4a74;--eph-ink-3:#41608c;--eph-faint:#6c86ab;
+  --eph-line:rgba(96,140,196,0.2);
+  --eph-border:rgba(200,226,250,0.66);
+  --frost-hi:rgba(255,255,255,0.85);
+  --ice-accent:#8fc2ee;--ice-accent-deep:#3c6ea6;
+  --floret-ink:#9db4cf;--floret-hi:#f2f7fc;--floret-shadow:rgba(63,90,124,0.2);
+  --moon-lit-a:#ffffff;--moon-lit-b:#e7f2fd;--moon-lit-c:#b7d1ea;
+  --moon-base-a:#c4d5e7;--moon-base-b:#8ba5c3;--moon-base-c:#5e7b9e;
+  --moon-rim:rgba(146,182,220,0.6);--moon-dark:rgba(128,158,196,0.13);
+  --moon-halo:0 0 5px rgba(216,238,255,0.85),0 1px 2px rgba(38,68,104,0.16);
+  --sheet-bg:linear-gradient(150deg,rgba(255,255,255,0.5),rgba(240,248,255,0.28) 52%,rgba(224,238,251,0.34));
+  --clock-hand:#2b568f;--clock-hand-2:#4470a6;--clock-tick:#6d95c4;--clock-tick-maj:#3c69a0;
+}
+body.theme-infernal{
+  --eph-ink:#e2e8f4;--eph-ink-2:#bcc8dd;--eph-ink-3:#a3b2cd;--eph-faint:#97a6c0;/* v40 — faint 再亮一档 8c9bb5→97a6c0（v38 已由 74849f 调过一次，暗底上仍偏暗）；ink-3 维持 a3b2cd */
+  --eph-line:rgba(165,188,230,0.14);
+  --eph-border:rgba(162,188,222,0.24);
+  --frost-hi:rgba(222,236,252,0.09);
+  --ice-accent:#a9c8e6;--ice-accent-deep:#7e9fc4;
+  --floret-ink:#8fa4be;--floret-hi:#dde8f4;--floret-shadow:rgba(2,7,18,0.34);
+  --moon-lit-a:#fdfbef;--moon-lit-b:#efe6cd;--moon-lit-c:#c3b696;
+  --moon-base-a:#4d4a42;--moon-base-b:#31302c;--moon-base-c:#1b1a17;
+  --moon-rim:rgba(232,232,242,0.28);--moon-dark:rgba(236,240,250,0.07);
+  --moon-halo:0 0 7px rgba(240,238,226,0.9);
+  --moon2-lit:#ece7d8;--moon2-hi:#fbf8ee;
+  --sheet-bg:linear-gradient(150deg,rgba(46,60,88,0.34),rgba(27,39,63,0.26) 54%,rgba(18,27,47,0.36));
+  --clock-hand:#dce5f0;--clock-hand-2:#b9c7da;--clock-tick:#8fa5c2;--clock-tick-maj:#c2d0e2;
+}
+/* ═════════════════════════════════════════════════════════════════
+   Calendar 视窗 — 壳体与日历区照原设计保留，仅右列与二至五页重构
+   ═════════════════════════════════════════════════════════════════ */
+/* v36 — 全屏遮罩已撤：视窗改为 ICode 式非模态浮窗，不模糊背景，开着也能切换页面与操作站内其他部分 */
+
+/* v38 — 切主题过渡：渐变底色无法用 transition 插值，仿小窗做法把 INT 皮肤（体色渐变 + 高光罩，罩层按原 0.5 透明度预乘）收进 ::before、INF 皮肤收进 ::after，两层各以 2.4s 对向淡变；元素本体只慢速过渡边色与投影。树序上两层均居 .eph-body（z2）、花瓣层（z4）、窗头（z5）之下 */
+#eph-win{position:fixed;z-index:97;left:50%;top:50%;
+  width:min(938px,calc(100vw - 34px));height:min(566px,calc(100vh - 46px));
+  transform:translate(-50%,-50%) scale(0.96);opacity:0;pointer-events:none;
+  display:flex;flex-direction:column;border-radius:21px;overflow:hidden;
+  border:1px solid var(--eph-border);
+  backdrop-filter:blur(34px) saturate(1.04);-webkit-backdrop-filter:blur(34px) saturate(1.04);
+  box-shadow:0 26px 74px rgba(52,92,142,0.22),0 8px 22px rgba(70,112,158,0.1),
+    inset 0 1px 0 rgba(255,255,255,0.62),inset 0 -1px 0 rgba(112,152,194,0.15);
+  transition:opacity 0.5s var(--transition),transform 0.55s var(--transition),border-color 2.4s ease,box-shadow 2.4s ease}
+body.theme-infernal #eph-win{
+  border-color:rgba(78,100,140,0.2);
+  box-shadow:0 30px 92px rgba(0,0,0,0.55),inset 0 1px 0 rgba(221,235,251,0.07),inset 0 -1px 0 rgba(1,8,22,0.35)}
+#eph-win.show{opacity:1;pointer-events:auto;transform:translate(-50%,-50%) scale(1)}
+#eph-win.dragging{transition:none}
+#eph-win.to-widget{transition:opacity 0.42s ease,transform 0.5s cubic-bezier(0.5,0.02,0.7,0.4),box-shadow 0.3s ease;
+  box-shadow:0 10px 26px rgba(52,92,142,0.09),inset 0 1px 0 rgba(255,255,255,0.5)}/* v39 — 大窗收为小框途中投影减淡 */
+body.theme-infernal #eph-win.to-widget{box-shadow:0 12px 30px rgba(0,0,0,0.2),inset 0 1px 0 rgba(221,235,251,0.05)}
+#eph-win::before{content:'';position:absolute;inset:0;pointer-events:none;border-radius:inherit;
+  background:
+    linear-gradient(115deg,rgba(255,255,255,0.12),transparent 22%,transparent 76%,rgba(196,222,246,0.06)),
+    radial-gradient(ellipse 64% 40% at 22% 0%,rgba(255,255,255,0.11),transparent 66%),
+    radial-gradient(110% 86% at 2% -9%,rgba(255,255,255,0.3),transparent 44%),
+    radial-gradient(78% 62% at 101% 105%,rgba(150,190,232,0.09),transparent 62%),
+    linear-gradient(148deg,rgba(250,253,255,0.28),rgba(232,243,253,0.15) 54%,rgba(214,231,248,0.19));
+  opacity:1;transition:opacity 2.4s ease}
+body.theme-infernal #eph-win::before{opacity:0}
+#eph-win::after{content:'';position:absolute;inset:0;pointer-events:none;border-radius:inherit;
+  background:linear-gradient(151deg,rgba(24,35,58,0.62),rgba(15,23,42,0.58) 56%,rgba(10,16,30,0.66));
+  opacity:0;transition:opacity 2.4s ease}
+body.theme-infernal #eph-win::after{opacity:1}
+.eph-body{position:relative;z-index:2}
+.eph-head{position:relative;z-index:5}/* v37 — 抬到花瓣层之上：窗头年月下拉的菜单要覆在页面内容前 */
+
+/* 窗头：居中玻璃组件（品牌+页签）— 右侧窗控 */
+.eph-head{min-height:52px;height:52px;display:flex;align-items:center;justify-content:flex-end;
+  padding:5px 10px;border-bottom:1px solid var(--glass-border);cursor:grab;user-select:none}/* v36 — 分隔线沿用 Chat 侧栏「群聊」上方同款规则 */
+.eph-head:active{cursor:grabbing}
+/* v39 — 窗头改双分区并排：左为品牌与页签，右为年月与 Now，两枚玻璃件同款不同盒 */
+.eph-head-bar{position:absolute;left:9px;top:50%;transform:translateY(-50%);
+  display:flex;align-items:center;gap:7px;max-width:calc(100% - 76px);min-width:0}
+.eph-head-center,.eph-head-ym{display:flex;align-items:center;gap:7px;min-width:0;
+  padding:2px 3px 2px 8px;border-radius:12px;border:1px solid var(--eph-line);
+  background:linear-gradient(180deg,rgba(255,255,255,0.16),rgba(117,157,200,0.05));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.4),0 4px 15px rgba(40,75,112,0.05)}
+.eph-head-ym{gap:5px;padding:2px 4px 2px 5px;flex-shrink:0}
+body.theme-infernal .eph-head-center,body.theme-infernal .eph-head-ym{background:linear-gradient(180deg,rgba(197,218,241,0.06),rgba(1,7,20,0.12));
+  box-shadow:inset 0 1px 0 rgba(218,233,250,0.09),0 6px 20px rgba(0,0,0,0.14)}
+.eph-now{flex:none;height:22px;padding:0 10px;border-radius:9px;cursor:pointer;
+  border:1px solid var(--eph-line);background:linear-gradient(160deg,rgba(255,255,255,0.4),rgba(200,222,244,0.16));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.5);
+  font-family:'Raleway',sans-serif;font-weight:500;font-size:0.6rem;letter-spacing:0.18em;color:var(--eph-ink);
+  transition:color 0.3s,background 0.3s,border-color 0.3s,transform 0.2s,box-shadow 0.2s}
+body.theme-infernal .eph-now{background:linear-gradient(160deg,rgba(200,220,244,0.07),rgba(0,0,0,0.1));box-shadow:inset 0 1px 0 rgba(222,236,252,0.09)}/* v41 — 字色不再单独指定，两主题一律跟随页签所用的 --eph-ink */
+.eph-now:hover{color:var(--eph-ink);border-color:rgba(114,168,216,0.4);background:rgba(150,185,235,0.18)}
+/* v40 — 按下反应：明确的下沉缩合与内凹阴影（原 0.5px 位移不可感） */
+.eph-now:active:not([disabled]){transform:translateY(1px) scale(0.94);background:rgba(150,185,235,0.3);
+  box-shadow:inset 0 2px 6px rgba(46,80,118,0.2);transition-duration:0.08s}
+body.theme-infernal .eph-now:active:not([disabled]){background:rgba(126,160,206,0.2);box-shadow:inset 0 2px 6px rgba(0,0,0,0.32)}
+.eph-now[disabled]{opacity:0.72;cursor:default;transform:none}/* v41 — 禁用态 0.42→0.72，保持文字可读 */
+.eph-brand{display:flex;align-items:center;gap:7px;flex-shrink:0;padding-right:1px}
+.eph-emblem{width:20px;height:20px;color:var(--eph-ink-3);opacity:0.9}
+.eph-title-w .fr{font-family:'Cormorant Garamond',serif;font-weight:400;font-size:0.96rem;letter-spacing:0.05em;color:var(--eph-ink);line-height:1}
+.eph-head-sep{width:1px;height:18px;flex:none;background:linear-gradient(to bottom,transparent,var(--eph-line),transparent)}
+/* v37 — 窗头年月下拉：两枚小型下拉直接跳转挂历月份；菜单约五行高、可滚动 */
+.eph-ym{display:flex;align-items:center;gap:4px;flex-shrink:0}
+.eph-ym .ibs-face{padding:3px 7px 3px 10px;border-radius:9px;font-size:0.68rem;gap:5px}
+.eph-ym .ibs-face svg{width:8px;height:8px}
+.eph-ym .ibs-menu{min-width:88px;max-height:158px}
+.eph-ym .ibs-opt{padding:6px 10px;font-size:0.7rem}
+.eph-tabs{display:flex;align-items:center;gap:2px;flex-wrap:nowrap;overflow:hidden}
+.eph-tab{position:relative;border:none;background:none;cursor:pointer;min-width:0;height:27px;
+  padding:0 12px;border-radius:9px;display:flex;align-items:center;justify-content:center;
+  font-family:'Noto Serif SC',serif;font-weight:500;font-size:0.72rem;letter-spacing:0.08em;color:var(--eph-ink-3);white-space:nowrap;
+  transition:color 0.35s,background 0.35s,box-shadow 0.35s}
+.eph-tab:hover{color:var(--eph-ink);background:rgba(150,185,235,0.1)}
+.eph-tab.on{color:var(--eph-ink);background:linear-gradient(150deg,rgba(255,255,255,0.4),rgba(130,168,208,0.11));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.62),0 3px 10px rgba(46,80,118,0.07)}
+body.theme-infernal .eph-tab.on{background:linear-gradient(150deg,rgba(177,201,229,0.12),rgba(71,98,137,0.08));
+  box-shadow:inset 0 1px 0 rgba(229,240,252,0.12),0 5px 14px rgba(0,0,0,0.15)}
+.eph-winbtns{position:relative;z-index:7;display:flex;gap:5px;margin-left:auto;flex-shrink:0}
+.eph-wbtn{width:24px;height:24px;border-radius:7px;border:1px solid var(--eph-line);
+  background:linear-gradient(160deg,rgba(255,255,255,0.15),rgba(117,155,198,0.05));
+  cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--eph-ink-3);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.28);
+  transition:background 0.3s,color 0.3s,border-color 0.3s}
+body.theme-infernal .eph-wbtn{background:linear-gradient(160deg,rgba(200,220,244,0.07),rgba(0,0,0,0.1));box-shadow:inset 0 1px 0 rgba(222,236,252,0.09)}
+.eph-wbtn svg{width:12px;height:12px}
+.eph-wbtn:hover{color:var(--eph-ink);background:rgba(150,185,235,0.16);border-color:rgba(114,168,216,0.4)}
+.eph-wbtn.close:hover{background:rgba(150,60,70,0.16);border-color:rgba(180,90,100,0.44);color:#a04b58}
+body.theme-infernal .eph-wbtn.close:hover{background:rgba(92,118,158,0.2);border-color:rgba(150,182,222,0.4);color:#cfdcee}
+
+/* 全窗持续飘散：绣球小瓣（原站花卉母题） */
+.eph-petal-field{position:absolute;inset:52px 0 0;z-index:4;overflow:hidden;pointer-events:none;border-radius:0 0 23px 23px}
+body.no-petals .eph-petal-field,body.no-petals .petal{display:none}
+.window-petal{position:absolute;top:-12%;left:var(--x);width:var(--s);height:var(--s);opacity:0;will-change:transform,opacity;
+  color:var(--floret-ink);filter:drop-shadow(0 2px 2px var(--floret-shadow));animation:windowPetal var(--d) linear var(--delay) infinite}
+.window-petal svg{width:100%;height:100%;display:block;overflow:visible}
+/* v39 — 小窗樱花：日历收为悬浮小窗时，花瓣自小窗位置飘出，落向整页（同款花形与配色） */
+#wg-petal-field{position:fixed;inset:0;z-index:100;overflow:hidden;pointer-events:none;display:none}/* v48 — 悬浮小窗为 99：小窗花瓣抬到其上；大窗为 97 且展开时本层关闭 */
+#wg-petal-field.on{display:block}
+body.no-petals #wg-petal-field{display:none}
+.wg-petal{position:absolute;left:calc(var(--ox,88vw) + var(--jx,0px));top:var(--oy,180px);
+  width:var(--s);height:var(--s);opacity:0;will-change:transform,opacity;
+  color:var(--floret-ink);filter:drop-shadow(0 2px 2px var(--floret-shadow));
+  animation:wgPetalFall var(--d) linear var(--delay) infinite}
+.wg-petal svg{width:100%;height:100%;display:block;overflow:visible}
+@keyframes wgPetalFall{
+  0%{transform:translate3d(0,0,0) rotate(-16deg) scale(0.7);opacity:0}
+  9%{opacity:var(--o,0.34);transform:translate3d(calc(var(--dx1)*0.16),4vh,0) rotate(22deg) scale(1)}
+  46%{transform:translate3d(var(--dx1),38vh,0) rotate(126deg);opacity:var(--o,0.34)}
+  78%{transform:translate3d(var(--dx2),68vh,0) rotate(228deg);opacity:calc(var(--o,0.34)*0.72)}
+  100%{transform:translate3d(var(--dx3),100vh,0) rotate(322deg);opacity:0}}
+@keyframes windowPetal{
+  0%{transform:translate3d(0,-8%,0) rotate(-14deg);opacity:0}
+  8%{opacity:var(--o,0.4)}
+  44%{transform:translate3d(var(--dx1),52vh,0) rotate(112deg);opacity:var(--o,0.4)}
+  78%{transform:translate3d(var(--dx2),90vh,0) rotate(206deg);opacity:calc(var(--o,0.4)*0.76)}
+  100%{transform:translate3d(var(--dx3),118vh,0) rotate(302deg);opacity:0}}
+
+/* 页容器 */
+.eph-body{position:relative;flex:1;overflow:hidden}
+/* v39 — 切页过渡重做：原实现让 transition 与 page-fresh 关键帧同时驱动同一组属性，
+   两者争抢造成肉眼可见的顿挫。现只保留过渡，出页先淡出、入页延后 0.1s 再淡入，互不重叠。 */
+.eph-page{position:absolute;inset:0;padding:13px 16px 15px;overflow-y:auto;
+  opacity:0;pointer-events:none;transform:translateY(6px);
+  transition:opacity 0.2s ease,transform 0.28s cubic-bezier(0.4,0,0.7,0.2)}
+.eph-page.on{opacity:1;pointer-events:auto;transform:none;
+  transition:opacity 0.32s ease 0.1s,transform 0.44s cubic-bezier(0.22,1,0.36,1) 0.08s}
+
+/* ─────────── 页一 — 日历：左挂历（照原设计，未改动） ─────────── */
+.eph-page.p-cal{display:grid;grid-template-columns:minmax(0,1.74fr) minmax(254px,0.84fr);gap:15px;
+  overflow:hidden;padding:11px 16px 15px 14px}
+.cal-col{position:relative;display:flex;flex-direction:column;min-width:0;min-height:0;padding-left:26px}
+.cal-rings{position:absolute;left:0;top:60px;bottom:46px;width:26px;display:flex;flex-direction:column;
+  justify-content:space-around;z-index:12;pointer-events:none}
+.ring{width:30px;height:16px;transform:translateX(-7px);filter:drop-shadow(0 2px 2px rgba(28,51,82,0.22))}
+.ring path{fill:none;stroke-width:2.5px;stroke-linecap:round;stroke:url(#ringGrad)}
+.cal-book{position:relative;flex:1;min-height:0;perspective:2600px;perspective-origin:4% 50%;
+  filter:drop-shadow(0 9px 16px rgba(45,76,110,0.08))}
+body.theme-infernal .cal-book{filter:drop-shadow(0 12px 20px rgba(0,0,0,0.2))}
+.cal-sheet{position:absolute;inset:0;display:flex;flex-direction:column;border-radius:17px;
+  background:var(--sheet-bg);border:1px solid var(--eph-border);
+  box-shadow:0 12px 32px rgba(30,58,91,0.13),inset 0 1px 0 rgba(255,255,255,0.78),inset 7px 0 14px rgba(79,115,153,0.05);
+  padding:13px 16px 10px 26px;overflow:hidden}
+body.theme-infernal .cal-sheet{box-shadow:0 15px 36px rgba(0,0,0,0.26),inset 0 1px 0 rgba(225,237,250,0.09),inset 7px 0 15px rgba(0,0,0,0.08)}
+.cal-sheet::before{content:'';position:absolute;inset:0;border-radius:inherit;pointer-events:none;
+  background:linear-gradient(90deg,rgba(73,109,148,0.13),transparent 18px),linear-gradient(158deg,rgba(255,255,255,0.34),transparent 33%);opacity:0.76}
+body.theme-infernal .cal-sheet::before{opacity:0.32}
+.cal-sheet::after{content:'';position:absolute;left:16px;top:0;bottom:0;width:1px;pointer-events:none;
+  background:linear-gradient(to bottom,transparent,rgba(93,133,175,0.3),transparent);opacity:0.7}
+.cal-sheet .hole{position:absolute;left:5px;width:9px;height:9px;border-radius:50%;z-index:4;
+  background:radial-gradient(circle at 42% 37%,rgba(17,33,58,0.34),rgba(31,54,85,0.14) 58%,rgba(255,255,255,0.25) 76%);
+  box-shadow:inset 0 1px 2px rgba(6,12,28,0.3),0 1px 0 rgba(255,255,255,0.3)}
+body.theme-infernal .cal-sheet .hole{background:radial-gradient(circle at 42% 37%,rgba(0,0,0,0.5),rgba(6,12,26,0.28) 58%,rgba(203,222,244,0.14) 78%)}
+.cal-sheet .hole.h1{top:11%}.cal-sheet .hole.h2{top:30.5%}.cal-sheet .hole.h3{top:50%}.cal-sheet .hole.h4{top:69.5%}.cal-sheet .hole.h5{top:89%}
+.sheet-sakura{position:absolute;pointer-events:none;color:#a9bbcf;z-index:1;mix-blend-mode:multiply;
+  filter:none;overflow:visible}
+body.theme-infernal .sheet-sakura{color:#a8b8ca;mix-blend-mode:screen;filter:none}
+/* v12 — 角花回退：右下恢复初版；左上直接移植淘汰版 v5 的最左上樱枝 */
+.sheet-sakura-a{width:186px;height:114px;right:-20px;bottom:-8px;opacity:0.27;transform:rotate(-6deg)}
+.sheet-sakura-b{width:124px;height:76px;left:20px;top:4px;opacity:0.14;transform:rotate(174deg)}
+/* v15 — 从左上枝条向月份标题轻轻散开的花瓣，只作字边点缀 */
+.sheet-sakura-title-petals{width:146px;height:52px;left:44px;top:10px;opacity:0.095;transform:rotate(-3deg)}
+body.theme-infernal .sheet-sakura-a{opacity:0.12}body.theme-infernal .sheet-sakura-b{opacity:0.065}
+body.theme-infernal .sheet-sakura-title-petals{opacity:0.05}
+.sheet-title,.sheet-dow,.sheet-grid,.sheet-legend{position:relative;z-index:2}
+.sheet-title{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;margin:1px 2px 8px}
+.sh-mo{display:flex;align-items:baseline;gap:7px}
+.sh-mo-en{font-family:'Cormorant Garamond',serif;font-weight:300;font-size:1.5rem;letter-spacing:0.1em;color:var(--eph-ink);line-height:1}
+.sh-mo-en .yr{font-size:0.98rem;letter-spacing:0.14em;color:var(--eph-ink-3);margin-left:13px;margin-right:0;font-style:italic}
+.sh-mo-cn{font-family:'Noto Serif SC',serif;font-weight:500;font-size:0.78rem;letter-spacing:0.18em;color:var(--eph-ink-3);opacity:0.8}
+.sheet-nav{display:flex;gap:5px}
+.sn-btn{width:26px;height:26px;border-radius:9px;border:1px solid var(--eph-line);
+  background:linear-gradient(160deg,rgba(255,255,255,0.14),rgba(117,155,198,0.05));
+  cursor:pointer;color:var(--eph-ink-3);display:flex;align-items:center;justify-content:center;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.3);transition:all 0.3s}
+body.theme-infernal .sn-btn{background:linear-gradient(160deg,rgba(200,220,244,0.07),rgba(0,0,0,0.1));box-shadow:inset 0 1px 0 rgba(222,236,252,0.08)}
+.sn-btn svg{width:12px;height:12px}
+.sn-btn:hover{color:var(--eph-ink);border-color:rgba(114,168,216,0.45);background:rgba(150,185,235,0.14)}
+.sheet-dow{display:grid;grid-template-columns:repeat(7,1fr);margin:0 0 3px}
+.sheet-dow span{text-align:center;font-family:'Raleway',sans-serif;font-weight:300;font-size:0.55rem;letter-spacing:0.2em;color:var(--eph-faint);padding:3px 0}
+.sheet-dow span.wknd{color:var(--ice-accent-deep);opacity:0.9}
+body.theme-infernal .sheet-dow span.wknd{color:#9bb2cc}
+.sheet-grid{flex:1;display:grid;grid-template-columns:repeat(7,1fr);grid-auto-rows:1fr;gap:3px;min-height:0}
+.cal-cell{position:relative;border:none;border-radius:9px;cursor:default;overflow:visible;/* v38 — 格子取消点按与悬停交互，仅作展示；今日以选中特效标出 */
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;padding:1px 0 2px;
+  background:rgba(255,255,255,0.03);box-shadow:inset 0 1px 0 rgba(255,255,255,0.09);
+  transition:background 0.3s,box-shadow 0.3s,transform 0.25s}
+body:not(.theme-infernal) .cal-cell{background:linear-gradient(150deg,rgba(255,255,255,0.22),rgba(214,231,247,0.08));box-shadow:inset 0 1px 0 rgba(255,255,255,0.24)}
+.cal-cell .dn{font-family:'Cormorant Garamond',serif;font-weight:400;font-size:0.84rem;color:var(--eph-ink-2);line-height:1}
+.cal-cell.dim{opacity:0.26;pointer-events:none}
+/* v38 — 原「点选后被选中」的底色特效改由今日格常驻承载：描边 + 填色，两种主题同权重生效 */
+body:not(.theme-infernal) .cal-cell.today{background:linear-gradient(145deg,rgba(176,212,244,0.28),rgba(112,160,208,0.1));
+  box-shadow:inset 0 0 0 1px rgba(96,150,204,0.6),0 0 11px rgba(140,190,240,0.2)}
+.cal-cell.today .dn{color:var(--eph-ink);font-weight:600}
+body.theme-infernal .cal-cell.today{background:linear-gradient(145deg,rgba(150,178,214,0.16),rgba(60,84,120,0.14));
+  box-shadow:inset 0 0 0 1px rgba(200,214,236,0.4),0 0 12px rgba(160,190,225,0.16)}
+.cal-cell .dots{display:flex;gap:2.5px;height:4px;align-items:center}
+.cal-cell .dt{width:3.4px;height:3.4px;border-radius:50%}
+.dt{display:inline-block;width:4px;height:4px;border-radius:50%}
+.dt.ev{background:var(--accent-light);box-shadow:0 0 4px rgba(114,168,216,0.7)}
+.dt.an{background:var(--eph-ink);opacity:0.8}
+body.theme-infernal .dt.an{background:#dbe6f5;box-shadow:0 0 4px rgba(198,218,244,0.55);opacity:0.95}
+.dt.cy{background:var(--mist)}
+.dt.hd{background:#d9ae4e;box-shadow:0 0 4px rgba(224,186,104,0.55)}/* v40 — 传统节日黄点 */
+body.theme-infernal .dt.hd{background:#e6c470;box-shadow:0 0 4px rgba(230,200,124,0.5)}
+.cal-cell .moon{width:15px;height:15px}
+.sheet-legend{display:flex;gap:14px;align-items:center;justify-content:center;padding-top:6px;flex-shrink:0}
+.lg{display:flex;align-items:center;gap:6px;font-size:0.52rem;letter-spacing:0.13em;color:var(--eph-faint)}
+
+/* 月相通用 */
+.moon{display:block;overflow:visible}
+.moon .m-aura{fill:rgba(150,190,230,0.1);filter:blur(0.7px)}
+body.theme-infernal .moon .m-aura{fill:rgba(243,233,206,0.06)}
+.moon .m-rim{fill:none;stroke:var(--moon-rim);stroke-width:0.66}
+.moon .m-inf{display:none}
+body.theme-infernal .moon .m-int{display:none}
+body.theme-infernal .moon .m-inf{display:block}
+.cal-cell .moon,.alm-v .moon{filter:drop-shadow(var(--moon-halo))}
+
+/* ── 翻页动画（照原设计，未改动） ── */
+.flip-holder{position:absolute;inset:0;z-index:5;transform-style:preserve-3d;transform-origin:16px 50%;will-change:transform,filter}
+.flip-face{position:absolute;inset:0;backface-visibility:hidden;-webkit-backface-visibility:hidden;border-radius:17px;overflow:hidden;
+  box-shadow:inset -1px 0 0 rgba(255,255,255,0.38)}
+.flip-face.front::after,.flip-face.back::before{content:'';position:absolute;inset:0;pointer-events:none;opacity:0;
+  background:linear-gradient(90deg,rgba(52,83,116,0.2),transparent 8%,transparent 74%,rgba(255,255,255,0.32) 93%,rgba(117,151,186,0.14))}
+.flip-face.back{transform:rotateY(180deg);border:1px solid var(--eph-border);
+  background:linear-gradient(145deg,rgba(233,243,252,0.94),rgba(206,225,243,0.87));
+  box-shadow:inset 8px 0 14px rgba(62,95,129,0.12),inset -1px 0 0 rgba(255,255,255,0.65)}
+body.theme-infernal .flip-face.back{background:linear-gradient(145deg,rgba(58,74,102,0.96),rgba(27,39,63,0.95))}
+.flip-face.back::after{content:'CALENDAR — INTERNAL BEYOND';position:absolute;left:50%;bottom:15px;transform:translateX(-50%) scaleX(-1);
+  font-family:'Raleway',sans-serif;font-size:0.48rem;letter-spacing:0.4em;color:var(--eph-faint);opacity:0.6}
+.flip-shade{position:absolute;inset:0;pointer-events:none;border-radius:17px;opacity:0;z-index:6;mix-blend-mode:multiply;
+  background:linear-gradient(90deg,rgba(10,24,42,0.4),rgba(28,54,83,0.2) 9%,transparent 40%,rgba(255,255,255,0.24) 78%,rgba(76,111,147,0.14))}
+body.theme-infernal .flip-shade{mix-blend-mode:normal;background:linear-gradient(90deg,rgba(0,0,0,0.5),rgba(0,0,0,0.22) 10%,transparent 42%,rgba(200,222,244,0.1) 80%,rgba(0,0,0,0.18))}
+.flip-cast{position:absolute;inset:0;z-index:4;border-radius:17px;pointer-events:none;opacity:0;
+  background:linear-gradient(100deg,rgba(14,30,52,0.34),rgba(24,48,76,0.14) 34%,transparent 62%)}
+.flip-holder.go{animation:pageTurnNext 1.6s cubic-bezier(0.3,0.05,0.18,1) forwards}
+.flip-holder.back-go{animation:pageTurnPrev 1.6s cubic-bezier(0.3,0.05,0.18,1) forwards}
+.flip-holder.go .flip-shade,.flip-holder.back-go .flip-shade{animation:pageShade 1.6s ease forwards}
+.flip-holder.go .flip-face.front::after,.flip-holder.back-go .flip-face.back::before{animation:paperSheen 1.6s ease forwards}
+.flip-cast.go{animation:castSweep 1.6s cubic-bezier(0.3,0.05,0.18,1) forwards}
+.flip-cast.back-go{animation:castSweepPrev 1.6s cubic-bezier(0.3,0.05,0.18,1) forwards}
+@keyframes pageTurnNext{
+  0%{transform:rotateY(0) translateZ(0) scaleX(1);filter:brightness(1)}
+  16%{transform:rotateY(-19deg) translateZ(9px) scaleX(0.998);filter:brightness(0.995)}
+  46%{transform:rotateY(-88deg) translateZ(36px) scaleX(0.962);filter:brightness(0.85)}
+  74%{transform:rotateY(-151deg) translateZ(15px) scaleX(0.985);filter:brightness(0.955)}
+  100%{transform:rotateY(-180deg) translateZ(0) scaleX(1);filter:brightness(1)}}
+@keyframes pageTurnPrev{
+  0%{transform:rotateY(180deg) translateZ(0) scaleX(1);filter:brightness(1)}
+  26%{transform:rotateY(151deg) translateZ(15px) scaleX(0.985);filter:brightness(0.955)}
+  54%{transform:rotateY(86deg) translateZ(36px) scaleX(0.962);filter:brightness(0.85)}
+  84%{transform:rotateY(17deg) translateZ(8px) scaleX(0.998);filter:brightness(0.995)}
+  100%{transform:rotateY(0) translateZ(0) scaleX(1);filter:brightness(1)}}
+@keyframes pageShade{0%,100%{opacity:0}40%{opacity:0.5}56%{opacity:0.64}80%{opacity:0.18}}
+@keyframes paperSheen{0%,100%{opacity:0}46%{opacity:0.8}74%{opacity:0.26}}
+@keyframes castSweep{0%{opacity:0}30%{opacity:0.5}55%{opacity:0.62}100%{opacity:0}}
+@keyframes castSweepPrev{0%{opacity:0}42%{opacity:0.55}70%{opacity:0.4}100%{opacity:0}}
+.drop-holder{position:absolute;inset:0;z-index:5;opacity:0;will-change:transform,opacity;transform-origin:50% -10%;
+  filter:drop-shadow(0 14px 18px rgba(24,48,78,0.2))}
+body.theme-infernal .drop-holder{filter:drop-shadow(0 16px 22px rgba(0,0,0,0.38))}
+.drop-holder.drop-go{animation:sheetDriftBack 1.3s cubic-bezier(0.24,0.86,0.3,1) forwards}
+.drop-veil{position:absolute;inset:0;z-index:6;border-radius:17px;pointer-events:none;opacity:0;
+  background:linear-gradient(180deg,rgba(14,30,52,0.32),rgba(20,42,68,0.12) 42%,transparent 72%)}
+body.theme-infernal .drop-veil{background:linear-gradient(180deg,rgba(0,0,0,0.44),rgba(0,0,0,0.16) 44%,transparent 74%)}
+.drop-veil.drop-go{animation:dropVeil 1.3s ease forwards}
+@keyframes sheetDriftBack{
+  0%{transform:translateY(-116%) rotate(-5deg);opacity:0}
+  10%{opacity:1}
+  46%{transform:translateY(-30%) rotate(3.2deg)}
+  72%{transform:translateY(1.8%) rotate(-1.1deg)}
+  86%{transform:translateY(-0.8%) rotate(0.5deg)}
+  100%{transform:translateY(0) rotate(0)}}
+@keyframes dropVeil{0%{opacity:0}40%{opacity:0.6}75%{opacity:0.28}100%{opacity:0}}
+/* v40 — Now 专属回位动画（与翻页/插页不同源）：旧页上浮消散，当前月自远处轻落定格并微弹一次 */
+.cal-sheet.now-out{animation:nowSheetOut 0.5s ease forwards;pointer-events:none}
+.cal-sheet.now-in{animation:nowSheetIn 0.92s cubic-bezier(0.22,1,0.36,1) both;z-index:3}
+@keyframes nowSheetOut{to{opacity:0;transform:translateY(-14px) scale(0.985);filter:blur(3px)}}
+@keyframes nowSheetIn{
+  0%{opacity:0;transform:translateY(11px) scale(1.03);filter:blur(4px)}
+  58%{opacity:1;filter:blur(0)}
+  80%{transform:translateY(-2px) scale(0.998)}
+  100%{opacity:1;transform:translateY(0) scale(1);filter:blur(0)}}
+.petal{position:absolute;z-index:8;pointer-events:none;color:var(--floret-ink);opacity:0;will-change:transform,opacity;
+  filter:drop-shadow(0 1px 2px var(--floret-shadow));
+  animation:petalFall var(--pd,2.6s) cubic-bezier(0.2,0.5,0.3,1) var(--pdelay,0s) forwards}
+@keyframes petalFall{
+  0%{transform:translate3d(0,0,0) rotate(0);opacity:0}
+  9%{opacity:0.78}
+  40%{transform:translate3d(calc(var(--px,-40px)*0.45),86px,0) rotate(calc(var(--pr,-300deg)*0.42))}
+  100%{transform:translate3d(var(--px,-40px),208px,0) rotate(var(--pr,-300deg)) scale(0.7);opacity:0}}
+/* ─────────── 页一右列 — 重构（三方案） ───────────
+   共同骨架：Timepiece 卡（钟面 + 数字读数 + 月相节气）与 Agenda 卡。
+   方案 A 横排时计、事项占大半；方案 B 大钟居中；方案 C 二卡熔为一柱。 */
+.side-col{display:grid;gap:11px;min-height:0;overflow:hidden;grid-template-rows:minmax(0,1fr) auto}/* v34 — 事项卡定高恰五行，纵向余量尽归时计卡 */
+.timepiece{position:relative;border-radius:17px;overflow:hidden;padding:9px 12px 8px;min-height:0;
+  display:flex;flex-direction:column;gap:0;
+  border:1px solid var(--eph-line);
+  background:
+    radial-gradient(120% 105% at 16% -4%,rgba(255,255,255,0.36),transparent 46%),
+    linear-gradient(148deg,rgba(255,255,255,0.14),rgba(116,156,198,0.04));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.42),inset 0 -1px 2px rgba(75,107,147,0.08)}
+body.theme-infernal .timepiece{background:linear-gradient(148deg,rgba(96,126,164,0.045),rgba(0,0,0,0.08));
+  box-shadow:inset 0 1px 0 rgba(220,235,250,0.05)}
+.timepiece::before{content:'';position:absolute;inset:6px;border-radius:14px;border:1px solid rgba(255,255,255,0.17);pointer-events:none}
+body.theme-infernal .timepiece::before{border-color:rgba(222,236,252,0.06)}
+.tp-core{position:relative;z-index:2;flex:1;display:flex;align-items:center;gap:12px;min-height:130px}
+.tp-read{min-width:0;flex:1;display:flex;flex-direction:column;align-items:flex-start;padding-top:4px}/* v37 — 四行读数整体下移 2px */
+
+/* — 钟面：按 128px 显示尺寸原生绘制，外缘只保留盘自身一道 — */
+.clock-wrap{position:relative;flex:none;width:130px;height:130px}
+.clock-wrap::before{content:'';position:absolute;inset:5px;border-radius:50%;pointer-events:none;
+  background:radial-gradient(circle at 50% 36%,rgba(250,253,255,0.14),transparent 66%);
+  backdrop-filter:blur(5px);-webkit-backdrop-filter:blur(5px)}
+body.theme-infernal .clock-wrap::before{background:radial-gradient(circle at 50% 36%,rgba(150,180,216,0.05),transparent 66%)}
+#ice-clock{position:relative;z-index:2;width:100%;height:100%;overflow:visible;display:block}
+.d-halo{fill:rgba(178,212,244,0.07);filter:blur(5px)}
+body.theme-infernal .d-halo{fill:rgba(140,172,210,0.05)}
+.d-bezel{fill:rgba(240,248,255,0.34);stroke:rgba(150,188,228,0.62);stroke-width:1.1;
+  filter:drop-shadow(0 2px 5px rgba(40,80,130,0.14))}
+body.theme-infernal .d-bezel{fill:rgba(150,180,216,0.055);stroke:rgba(170,198,230,0.17);
+  filter:drop-shadow(0 3px 7px rgba(0,0,0,0.3))}
+.d-top{fill:url(#dTop)}
+.d-bot{fill:url(#dBot)}
+body.theme-infernal .d-top{opacity:0.24}
+body.theme-infernal .d-bot{opacity:0.55}
+.d-rim{fill:none;stroke:rgba(255,255,255,0.55);stroke-width:0.7}
+body.theme-infernal .d-rim{stroke:rgba(222,236,252,0.1)}
+.d-dot{fill:var(--clock-tick);opacity:0.5}
+.d-baton{stroke:var(--clock-tick-maj);stroke-linecap:round;opacity:0.86;
+  filter:drop-shadow(0 1px 1px rgba(30,62,102,0.2))}
+body.theme-infernal .d-baton{filter:drop-shadow(0 1px 1px rgba(0,0,0,0.4))}
+.d-num{font-family:'Cormorant Garamond',serif;font-weight:600;fill:var(--eph-ink);opacity:0.92;
+  text-anchor:middle;dominant-baseline:central;letter-spacing:0.01em}
+.d-hand{fill:var(--clock-hand);stroke:rgba(20,48,88,0.35);stroke-width:0.5}
+body.theme-infernal .d-hand{stroke:rgba(4,10,22,0.5)}
+.d-spine{stroke:rgba(255,255,255,0.75);stroke-linecap:round;opacity:0.72}
+body.theme-infernal .d-spine{stroke:rgba(255,255,255,0.32)}
+.d-sec{fill:var(--ice-accent)}
+.d-sec-tail{stroke:var(--ice-accent);stroke-linecap:round}
+.d-sec-ring{fill:none;stroke:var(--ice-accent)}
+.d-secg{filter:drop-shadow(0 0 2.5px rgba(150,204,246,0.7))}
+body.theme-infernal .d-secg{filter:drop-shadow(0 0 3px rgba(190,216,240,0.55))}
+.d-cap{fill:rgba(248,252,255,0.95);stroke:rgba(150,188,228,0.7);stroke-width:0.8}
+body.theme-infernal .d-cap{fill:#2c3a56;stroke:rgba(190,214,240,0.35)}
+.d-capdot{fill:var(--ice-accent-deep)}
+body.theme-infernal .d-capdot{fill:var(--ice-accent)}
+#hand-hr,#hand-min,#hand-sec{transform-origin:64px 64px;transform-box:view-box}
+#hand-sec{animation:handRot 60s linear infinite}
+#hand-min{animation:handRot 3600s linear infinite}
+#hand-hr{animation:handRot 43200s linear infinite}
+@keyframes handRot{from{transform:rotate(var(--h0,0deg))}to{transform:rotate(calc(var(--h0,0deg) + 360deg))}}
+
+/* v18 — 主表盘改为淘汰版 A「霜盏」；删除两层 ck-lathe 内环圆线 */
+.clock-wrap{width:130px;height:130px;display:flex;align-items:center;justify-content:center}
+.clock-wrap::before{inset:1px;background:radial-gradient(circle at 50% 40%,rgba(248,252,255,0.09),rgba(208,229,248,0.04) 54%,transparent 72%);border:1px solid rgba(182,213,242,0.2);box-shadow:inset 0 1px 0 rgba(255,255,255,0.3),0 8px 18px rgba(49,84,119,0.08);backdrop-filter:blur(5px);-webkit-backdrop-filter:blur(5px)}
+body.theme-infernal .clock-wrap::before{background:rgba(150,180,216,0.03);border-color:rgba(160,190,220,0.1);box-shadow:0 10px 22px rgba(0,0,0,0.22)}
+/* v45 — 表盘外圈闪帧的根治（撤掉 v43/v44 的「动画期间临时关模糊」做法，那个思路本身就是错的：
+   关模糊/开模糊这件事自己就是一次看得见的跳变，反而把原本只在 INF 出现的毛刺带进了 INT）。
+   闪帧的根源：外圈的实时磨砂平时透过页面直接取样窗体玻璃；切页动画一动（整页透明度与位移变化），
+   页面临时变成独立合成组，取样环境瞬间切换，动画结束又切回来——来回切换时浏览器升降合成层，
+   某些显卡/浏览器版本会掉出一帧错误合成，即那道亮环。
+   现在改为：让页面常驻在动画所用的合成状态里（will-change），取样环境不再随动画切换；
+   两只表盘外圈各自钉在独立合成层上（translateZ(0)，零位移、无任何视觉变化）。
+   没有任何东西再被开关，静止与动画中的渲染路径完全一致，两个主题都不再有可切换的状态。 */
+.eph-page{will-change:opacity,transform}
+.clock-wrap::before,.wg-clockwrap::before{transform:translateZ(0)}
+#ice-clock{width:126px;height:126px}
+#ice-clock .ck-halo{fill:rgba(178,212,244,0.05);filter:url(#ckBlur)}
+body.theme-infernal #ice-clock .ck-halo{fill:rgba(140,172,210,0.04)}
+#ice-clock .ck-basin{fill:rgba(226,240,252,0.09);stroke:url(#ckEdge);stroke-width:1.1}
+body.theme-infernal #ice-clock .ck-basin{fill:rgba(150,180,216,0.05)}
+#ice-clock .ck-face{fill:url(#ckFace);stroke:rgba(158,196,234,0.28);stroke-width:0.8}
+body.theme-infernal #ice-clock .ck-face{stroke:rgba(170,198,230,0.13)}
+#ice-clock .ck-conc-sh{fill:none;stroke:rgba(38,78,128,0.2);stroke-width:9;stroke-linecap:round;filter:blur(4.5px)}
+body.theme-infernal #ice-clock .ck-conc-sh{stroke:rgba(0,0,0,0.34)}
+#ice-clock .ck-conc-hi{fill:none;stroke:rgba(255,255,255,0.52);stroke-width:7;stroke-linecap:round;filter:blur(4px);opacity:0.8}
+body.theme-infernal #ice-clock .ck-conc-hi{stroke:rgba(214,230,248,0.14)}
+#ice-clock .ck-glint{fill:none;stroke:rgba(255,255,255,0.72);stroke-width:1.1;opacity:0.5;stroke-linecap:round}
+#ice-clock .ck-glint.faint{opacity:0.18}
+body.theme-infernal #ice-clock .ck-glint{stroke:rgba(226,238,250,0.28)}
+#ice-clock .ck-tick{stroke:var(--clock-tick);opacity:0.38}
+#ice-clock .ck-tick.maj{stroke:var(--clock-tick-maj);opacity:0.66}
+#ice-clock .ck-raised{filter:url(#ckRaised)}
+#ice-clock .ck-hand-hr,#ice-clock .ck-hand-min{fill:url(#ckHand);stroke:rgba(36,80,134,0.5);stroke-width:0.65}
+body.theme-infernal #ice-clock .ck-hand-hr,body.theme-infernal #ice-clock .ck-hand-min{stroke:rgba(6,14,28,0.5)}
+#ice-clock .ck-spine{stroke:rgba(255,255,255,0.72);stroke-width:0.7;stroke-linecap:round;opacity:0.7}
+body.theme-infernal #ice-clock .ck-spine{stroke:rgba(255,255,255,0.3)}
+#ice-clock .ck-hand-sec{stroke:var(--ice-accent);stroke-width:1.15;stroke-linecap:round}
+#ice-clock .ck-sec-tail{stroke:var(--ice-accent);stroke-width:1.6;stroke-linecap:round;opacity:0.9}
+#ice-clock .ck-sec-ring{fill:none;stroke:var(--ice-accent);stroke-width:1.2}
+#ice-clock #hand-sec{filter:drop-shadow(0 0 2.5px rgba(150,204,246,0.7))}
+body.theme-infernal #ice-clock #hand-sec{filter:drop-shadow(0 0 3px rgba(190,216,240,0.55))}
+#ice-clock .ck-cap{fill:url(#ckCap);stroke:rgba(255,255,255,0.66);stroke-width:0.8;filter:url(#ckRaised)}
+#ice-clock .ck-cap-dot{fill:rgba(255,255,255,0.8)}
+#ice-clock #hand-hr,#ice-clock #hand-min,#ice-clock #hand-sec{transform-origin:103px 103px;transform-box:view-box}
+.cks-fa{stop-color:#a9cdf0;stop-opacity:0.2}.cks-fb{stop-color:#dcecfa;stop-opacity:0.1}.cks-fc{stop-color:#ffffff;stop-opacity:0.26}
+body.theme-infernal .cks-fa{stop-color:#060d1b;stop-opacity:0.32}body.theme-infernal .cks-fb{stop-color:#152238;stop-opacity:0.14}body.theme-infernal .cks-fc{stop-color:#b6cbe6;stop-opacity:0.09}
+.cks-ea{stop-color:#ffffff;stop-opacity:0.68}.cks-eb{stop-color:#a9c6e2;stop-opacity:0.3}.cks-ec{stop-color:#eef6fe;stop-opacity:0.5}
+body.theme-infernal .cks-ea{stop-color:#dfe9f5;stop-opacity:0.26}body.theme-infernal .cks-eb{stop-color:#6d87a8;stop-opacity:0.16}body.theme-infernal .cks-ec{stop-color:#c2d2e6;stop-opacity:0.2}
+.cks-ha{stop-color:#8fbde9;stop-opacity:0.88}.cks-hb{stop-color:#d4e7f9;stop-opacity:0.92}.cks-hc{stop-color:#f6fbff;stop-opacity:0.95}
+body.theme-infernal .cks-ha{stop-color:#93a9c6}body.theme-infernal .cks-hb{stop-color:#c3d2e6}body.theme-infernal .cks-hc{stop-color:#eef3fa}
+.cks-ca{stop-color:#ffffff}.cks-cb{stop-color:#bcd7f0}.cks-cc{stop-color:#4d7bab}
+body.theme-infernal .cks-ca{stop-color:#eef4fb}body.theme-infernal .cks-cb{stop-color:#93aac6}body.theme-infernal .cks-cc{stop-color:#2c4260}
+
+/* — 数字读数 — 星期 — 日期 — */
+.tp-local{position:relative;z-index:2;margin-bottom:5px;font-family:'Raleway',sans-serif;font-size:0.48rem;line-height:1;letter-spacing:0.36em;text-transform:uppercase;color:var(--eph-faint);white-space:nowrap}
+.tp-time{position:relative;z-index:2;display:flex;align-items:baseline;font-family:'Cormorant Garamond',serif;font-weight:400;
+  color:var(--eph-ink);font-size:1.56rem;line-height:1;letter-spacing:0.01em;
+  text-shadow:0 1px 0 rgba(255,255,255,0.35)}
+body.theme-infernal .tp-time{text-shadow:0 0 14px rgba(180,205,235,0.22)}
+.tp-time span{display:inline-block;width:1.28em;text-align:center;font-variant-numeric:tabular-nums}
+.tp-time i{font-style:normal;color:var(--eph-ink-3);opacity:0.75}
+.tp-time small{font-family:'Cormorant Garamond',serif;font-size:0.7rem;width:1.6em;color:var(--eph-ink-3);
+  align-self:flex-end;margin:0 0 1px 4px;text-align:left;font-variant-numeric:tabular-nums}/* v37 — 读秒改与小窗同款：缩小并垫底，前置冒号一并省去 */
+.tp-fdate{position:relative;z-index:2;margin-top:6px;font-family:'Cormorant Garamond',serif;font-style:italic;
+  font-size:0.88rem;letter-spacing:0.08em;color:var(--eph-ink-2);font-variant-numeric:tabular-nums;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tp-week{margin-top:9px;font-family:'Raleway','Noto Sans SC',sans-serif;font-size:0.55rem;
+  letter-spacing:0.3em;color:var(--eph-ink-2);text-transform:uppercase;white-space:nowrap}
+
+/* — 今日历象：保留月相与节气内容，隐藏说明标题字 — */
+.alm{position:relative;z-index:2;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);
+  margin:8px 3px 2px;padding-top:8px;border-top:1px solid var(--eph-line)}
+.alm-cell{min-width:0;padding:4px 10px 3px;display:flex;align-items:center;justify-content:center}
+.alm-cell:first-child{border-right:1px solid var(--eph-line)}
+.alm-cell:last-child{padding-left:13px}
+.alm-v{display:flex;align-items:center;justify-content:center;gap:6px;min-width:0;width:100%}
+.alm-v .moon{flex:none}
+.alm-cn{font-family:'Noto Serif SC',serif;font-weight:500;font-size:0.76rem;letter-spacing:0.1em;
+  color:var(--eph-ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.alm-sub{flex:none;font-family:'Raleway','Noto Sans SC',sans-serif;font-size:0.6rem;letter-spacing:0.05em;
+  color:var(--eph-faint);white-space:nowrap;font-variant-numeric:tabular-nums}
+
+/* — Agenda 卡 — */
+.agenda-panel{position:relative;border:1px solid var(--eph-line);border-radius:17px;padding:10px 12px 9px;
+  display:flex;flex-direction:column;min-height:0;overflow:hidden;
+  background:linear-gradient(150deg,rgba(255,255,255,0.12),rgba(114,153,195,0.04));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.34)}
+body.theme-infernal .agenda-panel{background:linear-gradient(150deg,rgba(159,187,219,0.05),rgba(0,0,0,0.08));box-shadow:inset 0 1px 0 rgba(222,236,252,0.06)}
+.ag-head{display:flex;align-items:center;gap:10px;flex-shrink:0;padding-bottom:7px;border-bottom:1px solid var(--eph-line)}
+.ag-datebox{width:40px;height:40px;border-radius:12px;flex:none;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  border:1px solid var(--eph-line);background:linear-gradient(150deg,rgba(255,255,255,0.24),rgba(112,151,193,0.06));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.4)}
+body.theme-infernal .ag-datebox{background:linear-gradient(150deg,rgba(188,211,236,0.08),rgba(0,0,0,0.09));box-shadow:inset 0 1px 0 rgba(222,236,252,0.08)}
+.ag-datebox b{font-family:'Cormorant Garamond',serif;font-weight:600;font-size:1.18rem;line-height:0.9;color:var(--eph-ink)}
+.ag-datebox small{font-family:'Raleway',sans-serif;font-size:0.4rem;letter-spacing:0.22em;color:var(--eph-faint);margin-top:3px}
+.ag-tt{min-width:0;flex:1}
+.ag-tt h4{display:flex;align-items:baseline;gap:8px;font-family:'Cormorant Garamond',serif;font-style:italic;font-weight:400;font-size:0.97rem;color:var(--eph-ink);line-height:1.1}
+.ag-tt h4 .cn{font-family:'Noto Serif SC',serif;font-style:normal;font-weight:500;font-size:0.64rem;letter-spacing:0.22em;color:var(--eph-ink-3)}
+.ag-sub{display:block;font-size:0.58rem;letter-spacing:0.08em;color:var(--eph-faint);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ag-add{flex:none;width:24px;height:24px;border-radius:8px;border:1px solid var(--eph-line);cursor:pointer;
+  display:flex;align-items:center;justify-content:center;color:var(--eph-ink-3);
+  background:linear-gradient(160deg,rgba(255,255,255,0.15),rgba(117,155,198,0.05));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.3);transition:all 0.3s}
+body.theme-infernal .ag-add{background:linear-gradient(160deg,rgba(200,220,244,0.07),rgba(0,0,0,0.1))}
+.ag-add svg{width:11px;height:11px}
+.ag-add:hover{color:var(--eph-ink);border-color:rgba(114,168,216,0.45);background:rgba(150,185,235,0.14)}
+#ag-list{flex:none;height:215px;overflow-y:auto;padding:7px 1px 3px;display:flex;flex-direction:column;gap:5px}/* v34 — 定高恰五行：5×37 + 4×5 + 内距 10 */
+.ev-item{position:relative;flex:none;height:37px;display:flex;gap:9px;align-items:center;padding:0 11px 0 21px;border-radius:11px;
+  background:rgba(255,255,255,0.04);border:1px solid rgba(120,158,199,0.08);transition:background 0.3s,border-color 0.3s}
+body:not(.theme-infernal) .ev-item{background:rgba(255,255,255,0.24)}
+.ev-item:hover{background:rgba(150,185,235,0.12);border-color:rgba(114,168,216,0.28)}
+.ev-item>i{position:absolute;left:10px;top:50%;margin-top:-2px;width:4px;height:4px;border-radius:50%;
+  border:none!important;outline:none!important;box-shadow:none!important}
+.ev-item .et{font-size:0.74rem;color:var(--eph-ink);letter-spacing:0.02em;line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ev-item>div{flex:1;min-width:0}
+.ev-item .ev-du{flex:none;display:inline-flex;align-items:baseline;font-family:'Cormorant Garamond','Noto Serif SC',serif;font-weight:500;font-size:0.8rem;letter-spacing:0.04em;color:var(--eph-ink-3);white-space:nowrap;padding-left:6px}
+.ev-item .ev-du .n{font-weight:600;font-size:1.06rem;line-height:1;color:var(--eph-ink-2)}
+.ev-item .ev-du small{font-family:'Noto Sans SC',sans-serif;font-weight:300;font-size:0.55rem;letter-spacing:0.1em;color:var(--eph-faint);margin-left:4px}
+.ev-empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;text-align:center;color:var(--eph-faint);padding:8px}
+.ev-empty svg{width:19px;height:19px;fill:none;stroke:currentColor;opacity:0.55}
+.ev-empty span{font-size:0.62rem;letter-spacing:0.08em;color:var(--eph-ink-2)}
+.ev-empty small{font-size:0.47rem;letter-spacing:0.05em;opacity:0.72}
+
+/* — 方案 A/B：时计区已统一，无单独覆写 — */
+/* — 方案 C — 侧翼式：时计与事项熔为一柱 — */
+
+
+
+
+
+
+
+
+/* ─────────── 页二~五 — 定稿排版（三方案骨架已撤，页面统一走 .plate 薄板） ─────────── */
+/* ─────────── 页二~五 — 重构框架（三方案） ───────────
+   每页由三段组成：p-side（索引与筛选）— p-main（主内容）— p-aside（情报）。
+   方案 A：主内容在左，p-side 调至右侧，p-aside 收起。
+   方案 B：p-side 化为顶部工具条，主内容通栏铺开。
+   方案 C：p-aside 立于左翼，主内容居中，p-side 调至右翼。 */
+
+
+
+
+
+
+
+
+
+
+
+
+
+.ps-card{position:relative;border:1px solid var(--eph-line);border-radius:14px;padding:11px 13px 12px;
+  background:linear-gradient(155deg,rgba(255,255,255,0.14),rgba(120,158,200,0.04));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.32)}
+body:not(.theme-infernal) .ps-card{background:linear-gradient(155deg,rgba(255,255,255,0.44),rgba(226,239,252,0.22))}
+body.theme-infernal .ps-card{box-shadow:inset 0 1px 0 rgba(222,236,252,0.06)}
+.ps-kick{display:flex;align-items:center;gap:7px;font-family:'Raleway','Noto Sans SC',sans-serif;font-size:0.68rem;letter-spacing:0.22em;text-transform:uppercase;color:var(--eph-faint);margin-bottom:8px}
+.ps-kick svg{width:11px;height:11px;opacity:0.8}
+.ps-line{display:flex;align-items:baseline;justify-content:space-between;gap:8px;padding:3px 0;font-size:0.66rem;color:var(--eph-ink-2)}
+.ps-line b{font-family:'Cormorant Garamond',serif;font-weight:600;font-size:0.92rem;color:var(--eph-ink)}
+.ps-line small{font-size:0.54rem;color:var(--eph-faint);letter-spacing:0.04em}
+.ps-note{font-size:0.76rem;line-height:1.85;letter-spacing:0.03em;color:var(--eph-faint)}
+.ps-note b{color:var(--eph-ink-3);font-weight:400}
+.ps-mini{display:flex;align-items:center;gap:8px;padding:6px 0 1px}
+.ps-mini .pm-n{font-family:'Cormorant Garamond',serif;font-weight:300;font-size:1.7rem;line-height:0.9;color:var(--ice-accent-deep);text-shadow:0 0 14px rgba(140,190,240,0.35)}
+body.theme-infernal .ps-mini .pm-n{color:#dbe7f6;text-shadow:0 0 14px rgba(176,204,238,0.28)}
+.ps-mini .pm-t{min-width:0}
+.ps-mini .pm-t span{display:block;font-size:0.62rem;color:var(--eph-ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ps-mini .pm-t small{display:block;font-size:0.48rem;letter-spacing:0.1em;color:var(--eph-faint);margin-top:1px}
+.ps-nav{display:flex;flex-direction:column;gap:3px}
+.ps-btn{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;text-align:left;
+  border:1px solid transparent;background:none;cursor:pointer;border-radius:10px;padding:7px 10px;
+  font-size:0.68rem;letter-spacing:0.06em;color:var(--eph-ink-2);transition:all 0.3s}
+.ps-btn small{font-family:'Cormorant Garamond',serif;font-size:0.76rem;color:var(--eph-faint)}
+.ps-btn:hover{background:rgba(150,185,235,0.1);color:var(--eph-ink)}
+.ps-btn.on{background:linear-gradient(150deg,rgba(255,255,255,0.36),rgba(130,168,208,0.1));border-color:rgba(150,190,235,0.4);color:var(--eph-ink);box-shadow:inset 0 1px 0 rgba(255,255,255,0.5)}
+body.theme-infernal .ps-btn.on{background:linear-gradient(150deg,rgba(177,201,229,0.12),rgba(71,98,137,0.08));border-color:rgba(150,182,222,0.3);box-shadow:inset 0 1px 0 rgba(229,240,252,0.1)}
+.ps-btn .pb-l{display:flex;align-items:center;gap:8px;min-width:0}
+.ps-btn .pb-l .dt{flex:none}
+
+
+
+
+
+
+
+
+
+
+
+
+
+.eph-btn.full{width:100%;justify-content:center}
+
+/* 页首行（沿用原站字务分层） */
+.p-head-row{display:flex;align-items:flex-end;justify-content:space-between;gap:14px;flex-wrap:wrap}
+.p-title .en{font-family:'Cormorant Garamond',serif;font-style:italic;font-size:1.52rem;color:var(--eph-ink)}
+.p-title .cn{margin-left:10px;font-family:'Noto Serif SC',serif;font-weight:500;font-size:0.86rem;letter-spacing:0.3em;color:var(--eph-ink-3)}
+.p-title .ds{display:block;margin-top:3px;font-size:0.78rem;letter-spacing:0.06em;color:var(--eph-faint);line-height:1.8}
+.fsec{font-family:'Raleway','Noto Sans SC',sans-serif;font-size:0.72rem;letter-spacing:0.18em;text-transform:uppercase;
+  color:var(--eph-ink-3);margin:6px 0 9px;display:flex;align-items:center;gap:10px}
+.fsec::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,var(--eph-line),transparent)}
+.eph-btn{border:1px solid var(--eph-line);cursor:pointer;border-radius:11px;
+  padding:8px 16px;font-size:0.7rem;letter-spacing:0.14em;color:var(--eph-ink-2);
+  background:linear-gradient(160deg,rgba(255,255,255,0.14),rgba(117,155,198,0.05));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.3);
+  transition:all 0.3s;display:inline-flex;align-items:center;gap:8px}
+body:not(.theme-infernal) .eph-btn{background:rgba(255,255,255,0.62);border-color:rgba(90,145,205,0.5);color:#1a4577}
+body:not(.theme-infernal) .eph-btn:hover{background:rgba(255,255,255,0.88);border-color:rgba(70,130,200,0.7)}
+body.theme-infernal .eph-btn{background:linear-gradient(160deg,rgba(200,220,244,0.07),rgba(0,0,0,0.1));box-shadow:inset 0 1px 0 rgba(222,236,252,0.08)}
+body.theme-infernal .eph-btn:hover{border-color:rgba(150,185,224,0.42);color:var(--eph-ink);background:rgba(150,185,235,0.12)}
+.eph-btn.primary{border:1px solid rgba(64,124,194,0.95);background:rgba(64,124,194,0.92);color:#fff;box-shadow:0 3px 12px rgba(50,100,160,0.22),inset 0 1px 0 rgba(255,255,255,0.25)}
+body:not(.theme-infernal) .eph-btn.primary:hover{background:rgba(48,106,176,1);border-color:rgba(48,106,176,1);color:#fff}
+body.theme-infernal .eph-btn.primary{background:rgba(80,128,176,0.25);border-color:rgba(114,168,216,0.45);color:#dceaf8;box-shadow:none}
+body.theme-infernal .eph-btn.primary:hover{background:rgba(80,128,176,0.4);box-shadow:0 4px 18px rgba(80,128,176,0.2)}
+.eph-btn svg{width:12px;height:12px}
+.eph-btn.sm{padding:6px 12px;font-size:0.64rem;border-radius:10px}
+
+/* 表单件（沿用原站控件语言） */
+.f-row{margin-bottom:13px}
+.f-row>label{display:block;font-family:'Raleway','Noto Sans SC',sans-serif;font-size:0.7rem;letter-spacing:0.24em;text-transform:uppercase;color:var(--eph-faint);margin-bottom:7px}
+.f-input{width:100%;border:1px solid var(--eph-line);border-radius:11px;
+  background:linear-gradient(160deg,rgba(255,255,255,0.1),rgba(117,155,198,0.03));
+  color:var(--eph-ink);font-family:'Noto Sans SC',sans-serif;font-size:0.8rem;padding:10px 13px;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.24);transition:border-color 0.3s,box-shadow 0.3s}
+body:not(.theme-infernal) .f-input{background:rgba(255,255,255,0.44)}
+body.theme-infernal .f-input{background:rgba(6,12,26,0.2);box-shadow:inset 0 1px 0 rgba(222,236,252,0.06)}
+.f-input::placeholder{color:var(--eph-faint)}
+.f-input:focus{outline:none;border-color:rgba(114,168,216,0.55);box-shadow:0 0 0 3px rgba(140,190,240,0.14)}/* v41 — 补 outline:none，去掉浏览器默认黑色焦点框 */
+.f-cols{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.f-cols3{grid-template-columns:1.2fr 1fr 1fr}
+.f-hint{font-size:0.76rem;color:var(--eph-faint);line-height:1.85;letter-spacing:0.04em;margin-top:7px}
+.seg{display:flex;border:1px solid var(--eph-line);border-radius:12px;overflow:hidden;
+  background:linear-gradient(180deg,rgba(255,255,255,0.1),rgba(117,157,200,0.03))}
+body.theme-infernal .seg{background:linear-gradient(180deg,rgba(197,218,241,0.05),rgba(1,7,20,0.1))}
+.seg button{flex:1;border:none;background:none;cursor:pointer;padding:9px 6px;font-size:0.7rem;letter-spacing:0.14em;color:var(--eph-ink-3);transition:all 0.3s;border-right:1px solid var(--eph-line)}
+.seg button:last-child{border-right:none}
+.seg button.on{background:linear-gradient(150deg,rgba(255,255,255,0.4),rgba(130,168,208,0.11));color:var(--eph-ink);box-shadow:inset 0 1px 0 rgba(255,255,255,0.55)}
+body.theme-infernal .seg button.on{background:linear-gradient(150deg,rgba(177,201,229,0.12),rgba(71,98,137,0.08));box-shadow:inset 0 1px 0 rgba(229,240,252,0.1)}
+.tog-line{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:10px 2px}
+.tog-line .tl-t{font-size:0.82rem;color:var(--eph-ink-2)}
+.tog-line .tl-s{display:block;font-size:0.76rem;color:var(--eph-faint);margin-top:3px;letter-spacing:0.05em}
+/* .ib-switch 基础样式沿用主站；此处只补视窗内的白昼配色（主站白昼覆写限定在 .page.active 内，视窗是独立浮层） */
+body:not(.theme-infernal) #eph-win .ib-switch .kn{background:rgba(90,130,192,0.12);border-color:rgba(90,130,192,0.38)}
+body:not(.theme-infernal) #eph-win .ib-switch .kn::after{background:#fff;box-shadow:0 1px 3px rgba(40,80,140,0.25)}
+body:not(.theme-infernal) #eph-win .ib-switch input:checked+.kn{background:rgba(90,130,192,0.5);border-color:rgba(90,130,192,0.7)}
+.form-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:4px}
+.tagb{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:999px;
+  border:1px solid var(--eph-line);font-size:0.66rem;letter-spacing:0.08em;color:var(--eph-ink-3);background:rgba(255,255,255,0.05)}
+body:not(.theme-infernal) .tagb{background:rgba(255,255,255,0.34)}
+.tagb svg{width:9px;height:9px}
+.tagb.priv{border-color:rgba(114,168,216,0.42);color:var(--ice-accent-deep)}
+body.theme-infernal .tagb.priv{border-color:rgba(150,182,216,0.44);color:#a9bfd7}
+
+/* ── 自绘下拉（禁用浏览器原生 select）── */
+.ib-select{position:relative;min-width:0}
+.ibs-face{width:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;
+  border:1px solid var(--eph-line);border-radius:11px;padding:10px 12px;
+  background:linear-gradient(160deg,rgba(255,255,255,0.1),rgba(117,155,198,0.03));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.24);
+  color:var(--eph-ink);font-family:'Noto Sans SC',sans-serif;font-size:0.78rem;text-align:left;
+  transition:border-color 0.3s,box-shadow 0.3s,background 0.3s}
+body:not(.theme-infernal) .ibs-face{background:rgba(255,255,255,0.44)}
+body.theme-infernal .ibs-face{background:rgba(6,12,26,0.2);box-shadow:inset 0 1px 0 rgba(222,236,252,0.06)}
+.ibs-face:hover{border-color:rgba(114,168,216,0.45)}
+.ib-select.open .ibs-face{border-color:rgba(114,168,216,0.6);box-shadow:0 0 0 3px rgba(140,190,240,0.14)}
+.ibs-face .ibs-val{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ibs-face svg{width:10px;height:10px;flex:none;color:var(--eph-faint);transition:transform 0.35s var(--transition)}
+.ib-select.open .ibs-face svg{transform:rotate(180deg)}
+.ibs-menu{position:absolute;left:0;right:0;top:calc(100% + 6px);z-index:40;max-height:212px;overflow-y:auto;
+  border-radius:12px;padding:5px;border:1px solid rgba(150,195,240,0.5);
+  background:rgba(248,252,255,0.97);box-shadow:0 14px 38px rgba(40,75,120,0.2),inset 0 1px 0 rgba(255,255,255,0.85);
+  backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);
+  opacity:0;transform:translateY(-5px) scale(0.99);pointer-events:none;
+  transition:opacity 0.28s ease,transform 0.28s var(--transition)}
+body.theme-infernal .ibs-menu{background:rgba(20,29,50,0.97);border-color:rgba(120,155,205,0.3);box-shadow:0 16px 44px rgba(0,0,0,0.5),inset 0 1px 0 rgba(210,228,248,0.1)}
+.ib-select.open .ibs-menu{opacity:1;transform:none;pointer-events:auto}
+.ibs-opt{display:block;width:100%;text-align:left;border:none;background:none;cursor:pointer;border-radius:8px;
+  padding:7px 11px;font-size:0.74rem;color:#2a4a74;font-family:'Noto Sans SC',sans-serif;transition:background 0.2s,color 0.2s}
+body.theme-infernal .ibs-opt{color:#bcc8dd}
+.ibs-opt:hover{background:rgba(120,170,220,0.14);color:#16325c}
+body.theme-infernal .ibs-opt:hover{background:rgba(150,185,235,0.12);color:#e2e8f4}
+.ibs-opt.on{background:rgba(96,150,204,0.16);color:#16325c;font-weight:400}
+body.theme-infernal .ibs-opt.on{background:rgba(150,185,235,0.16);color:#eef3fc}
+/* v37 — 打开的下拉抬高层级不再被别的内容压住；可见范围菜单改向上展开，不再把新建页撑出纵向滚动 */
+.ib-select.open{z-index:60}
+.ib-select.drop-up .ibs-menu{top:auto;bottom:calc(100% + 6px);transform:translateY(5px) scale(0.99)}
+.ib-select.drop-up.open .ibs-menu{transform:none}
+/* ─── 页二~五 — 定稿排版「薄板分区」 ───
+   每页由一层透明薄板(.plate)整体包裹，板内统一文法：
+   页首横带 → 左右分区(.zone-grid = 大左 1fr — 小右 292px)，四页比例一致。
+   纪念日页不设右区，走 .zone-full，但左缘与各页对齐（同板同距）。
+   方案 A/B/C 仅继续作用于日历页与小窗。 */
+
+/* 薄板与分区骨架 */
+.plate{position:relative;min-height:100%;display:flex;flex-direction:column;gap:13px;
+  border:1px solid var(--eph-line);border-radius:18px;padding:18px 22px 20px;
+  background:linear-gradient(155deg,rgba(255,255,255,0.15),rgba(228,240,252,0.09) 55%,rgba(208,228,247,0.12));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.42),0 10px 30px rgba(30,58,91,0.06)}
+body.theme-infernal .plate{background:linear-gradient(155deg,rgba(150,180,215,0.055),rgba(2,8,20,0.12));
+  box-shadow:inset 0 1px 0 rgba(222,236,252,0.06),0 12px 34px rgba(0,0,0,0.18)}
+.zone-grid{display:grid;grid-template-columns:minmax(0,1fr) 292px;gap:15px;align-items:start;flex:1}
+.zone-l,.zone-r{display:flex;flex-direction:column;gap:12px;min-width:0}
+.zone-full{display:flex;flex-direction:column;gap:12px;flex:1}
+.band-r{display:flex;align-items:center;gap:9px;flex-wrap:wrap;justify-content:flex-end;padding-bottom:3px;min-width:0}
+
+/* 丝带筛选：胶囊化的 ps-btn（沿用原站按钮语言，仅改形制） */
+.ribbon{display:flex;align-items:center;gap:3px;padding:4px;border:1px solid var(--eph-line);border-radius:999px;
+  background:linear-gradient(180deg,rgba(255,255,255,0.12),rgba(117,157,200,0.04))}
+body:not(.theme-infernal) .ribbon{background:rgba(255,255,255,0.42)}
+body.theme-infernal .ribbon{background:linear-gradient(180deg,rgba(197,218,241,0.05),rgba(1,7,20,0.1))}
+.ribbon .rb-lab{font-family:'Raleway','Noto Sans SC',sans-serif;font-size:0.58rem;letter-spacing:0.22em;text-transform:uppercase;color:var(--eph-faint);padding:0 3px 0 9px;white-space:nowrap}
+.ribbon .ps-btn{width:auto;border-radius:999px;padding:5px 12px;font-size:0.66rem;letter-spacing:0.08em;white-space:nowrap}
+.ribbon .ps-btn small{font-size:0.66rem}
+
+/* ── 页二 — 日程（原纪念日页） ── */
+.anni-hero{position:relative;display:flex;align-items:center;justify-content:space-between;gap:10px;
+  border-radius:16px;padding:15px 13px 14px;overflow:hidden;border:1px solid var(--eph-line);
+  background:linear-gradient(150deg,rgba(255,255,255,0.2),rgba(120,158,200,0.06));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.4),0 8px 24px rgba(30,58,91,0.07)}
+body:not(.theme-infernal) .anni-hero{background:linear-gradient(150deg,rgba(255,255,255,0.5),rgba(224,238,252,0.26))}
+body.theme-infernal .anni-hero{background:linear-gradient(150deg,rgba(159,187,219,0.07),rgba(0,0,0,0.1));box-shadow:inset 0 1px 0 rgba(222,236,252,0.08)}
+.ah-l{position:relative;min-width:0;flex:1;z-index:1}
+.ah-name{display:flex;align-items:center;gap:9px;font-size:1rem;color:var(--eph-ink);letter-spacing:0.03em;line-height:1.5}
+.ah-name .dt{flex:none}
+.ah-date{font-family:'Cormorant Garamond','Noto Serif SC',serif;font-size:0.86rem;letter-spacing:0.07em;color:var(--eph-ink-3);margin-top:4px}/* v47 — 标题前的圆点已删，原为对齐圆点而设的 13px 左缩进一并撤掉 */
+.ah-meta{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:0.68rem;letter-spacing:0.05em;color:var(--eph-faint);margin-top:8px}
+.ah-bar{position:relative;height:3px;border-radius:3px;margin-top:9px;max-width:300px;background:rgba(120,160,205,0.16);overflow:hidden}
+body.theme-infernal .ah-bar{background:rgba(160,190,225,0.12)}
+.ah-bar i{position:absolute;left:0;top:0;bottom:0;border-radius:3px;background:linear-gradient(90deg,rgba(120,175,230,0.5),var(--ice-accent));box-shadow:0 0 8px rgba(140,195,245,0.55)}
+body.theme-infernal .ah-bar i{background:linear-gradient(90deg,rgba(120,150,190,0.5),#a9c8e6);box-shadow:0 0 8px rgba(169,200,230,0.4)}
+.ah-r{flex:none;text-align:center;padding:0 6px;z-index:1}
+.ah-num{font-family:'Cormorant Garamond','Noto Serif SC',serif;font-weight:300;font-size:2.9rem;line-height:0.9;color:var(--ice-accent-deep);text-shadow:0 0 18px rgba(140,190,240,0.4)}
+body.theme-infernal .ah-num{color:#dbe7f6;text-shadow:0 0 18px rgba(176,204,238,0.3)}
+.ah-num.now{font-size:2.05rem;line-height:1.2;font-weight:500}
+.ah-unit{font-size:0.72rem;letter-spacing:0.22em;color:var(--eph-faint);margin-top:6px;text-transform:uppercase}
+/* v33 — 内容包一层 .ah-body，左右各立一枚切换键，换位时内容滑入 */
+.ah-body{flex:1;min-width:0;display:flex;align-items:center;justify-content:space-between;gap:18px;z-index:1}
+.ah-body.anim-next{animation:ahInNext 0.45s cubic-bezier(0.22,0.61,0.36,1)}
+.ah-body.anim-prev{animation:ahInPrev 0.45s cubic-bezier(0.22,0.61,0.36,1)}
+@keyframes ahInNext{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:none}}
+@keyframes ahInPrev{from{opacity:0;transform:translateX(-20px)}to{opacity:1;transform:none}}
+.ah-prev,.ah-next{flex:none;width:34px;height:34px;border:none;background:none;border-radius:11px;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;color:var(--eph-ink-3);z-index:1;
+  transition:color 0.3s,background 0.3s}
+.ah-prev svg,.ah-next svg{width:16px;height:16px}
+.ah-prev:hover,.ah-next:hover{color:var(--eph-ink);background:rgba(150,185,235,0.14)}
+.anni-list{display:flex;flex-direction:column;gap:7px}/* v35 — 行距随行高微调，首屏恰止于第三行 */
+.anni-row{position:relative;display:grid;grid-template-columns:48px minmax(0,1fr) auto;gap:12px;align-items:center;height:72px;
+  border-radius:13px;padding:0 14px 0 9px;border:1px solid var(--eph-line);
+  background:linear-gradient(155deg,rgba(255,255,255,0.1),rgba(120,158,200,0.03));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.26);transition:background 0.3s,border-color 0.3s,transform 0.25s}
+body:not(.theme-infernal) .anni-row{background:linear-gradient(155deg,rgba(255,255,255,0.4),rgba(224,238,252,0.2))}
+body.theme-infernal .anni-row{box-shadow:inset 0 1px 0 rgba(222,236,252,0.06)}
+.anni-row:hover{transform:translateY(-1px);border-color:rgba(114,168,216,0.38);background:rgba(150,185,235,0.12)}
+.ar-db{display:flex;flex-direction:column;align-items:center;justify-content:center;width:48px;height:48px;border-radius:11px;flex:none;
+  border:1px solid var(--eph-line);background:linear-gradient(150deg,rgba(255,255,255,0.22),rgba(112,151,193,0.05));box-shadow:inset 0 1px 0 rgba(255,255,255,0.36)}
+body.theme-infernal .ar-db{background:linear-gradient(150deg,rgba(188,211,236,0.07),rgba(0,0,0,0.09));box-shadow:inset 0 1px 0 rgba(222,236,252,0.07)}
+.ar-db b{font-family:'Cormorant Garamond','Noto Serif SC',serif;font-weight:600;font-size:1.1rem;line-height:1;color:var(--eph-ink)}
+.ar-db small{font-family:'Raleway','Noto Sans SC',sans-serif;font-size:0.56rem;letter-spacing:0.18em;color:var(--eph-faint);margin-top:2px}
+.ar-main{min-width:0;display:flex;flex-direction:column;gap:3px}
+.ar-name{display:flex;align-items:center;gap:8px;font-size:0.88rem;color:var(--eph-ink);letter-spacing:0.03em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ar-name .dt{flex:none;border:none!important;outline:none!important;box-shadow:none!important}
+.ar-sub{display:flex;align-items:center;gap:5px;flex-wrap:wrap;font-size:0.72rem;letter-spacing:0.05em;color:var(--eph-faint)}
+.ar-chip{flex:none;display:inline-flex;align-items:baseline;font-family:'Cormorant Garamond','Noto Serif SC',serif;font-weight:500;font-size:0.88rem;letter-spacing:0.04em;color:var(--eph-ink-3);
+  border:1px solid var(--eph-line);border-radius:999px;padding:4px 14px 5px;background:rgba(255,255,255,0.06);white-space:nowrap}
+.ar-chip b{font-weight:600;font-size:1.12rem;line-height:1;color:var(--eph-ink-2)}
+.ar-chip small{font-family:'Noto Sans SC',sans-serif;font-weight:300;font-size:0.6rem;letter-spacing:0.1em;color:var(--eph-faint);margin-left:4px}
+body:not(.theme-infernal) .ar-chip{background:rgba(255,255,255,0.36)}
+.ar-chip.near{color:var(--eph-ink);border-color:rgba(114,168,216,0.44);box-shadow:0 0 10px rgba(140,190,240,0.16)}
+body.theme-infernal .ar-chip.near{border-color:rgba(150,182,216,0.4);box-shadow:0 0 10px rgba(150,185,225,0.14)}
+
+/* 页尾元条：两枚情报格（便笺预告 — 留言直达） */
+.meta-strip{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px;margin-top:1px}
+.ms-cell{border:1px solid var(--eph-line);border-radius:13px;padding:9px 13px 10px;
+  background:linear-gradient(155deg,rgba(255,255,255,0.1),rgba(120,158,200,0.03));box-shadow:inset 0 1px 0 rgba(255,255,255,0.26)}
+body:not(.theme-infernal) .ms-cell{background:rgba(255,255,255,0.36)}
+body.theme-infernal .ms-cell{box-shadow:inset 0 1px 0 rgba(222,236,252,0.06)}
+.ms-cell .ps-kick{margin-bottom:5px}
+.ms-cell.link{cursor:pointer;transition:border-color 0.3s,background 0.3s,transform 0.25s}
+.ms-cell.link:hover{border-color:rgba(114,168,216,0.4);background:rgba(150,185,235,0.1);transform:translateY(-1px)}
+
+/* ── 页三 — 新建 ── */
+.tgl-group{border:1px solid var(--eph-line);border-radius:13px;padding:1px 14px;
+  background:linear-gradient(155deg,rgba(255,255,255,0.1),rgba(120,158,200,0.03));box-shadow:inset 0 1px 0 rgba(255,255,255,0.26)}
+body:not(.theme-infernal) .tgl-group{background:rgba(255,255,255,0.36)}
+body.theme-infernal .tgl-group{box-shadow:inset 0 1px 0 rgba(222,236,252,0.06)}
+.tgl-group .tog-line{border-bottom:1px solid var(--eph-line)}
+.tgl-group .tog-line:last-child{border-bottom:none}
+.f-cols.f-cols4{grid-template-columns:1fr 1fr 1fr 1.25fr;gap:9px}
+.plate>.form-actions{margin-top:auto;padding-top:6px}
+/* v35 — 提前天数行：下拉与自定义输入并列 */
+.f-lead-row{display:flex;gap:9px;align-items:stretch}
+.f-lead-row .ib-select{flex:1;min-width:0}
+.f-lead-row .f-input{width:92px;flex:none;padding:8px 11px}
+
+/* ── 页四 — 留言 ── */
+.feed{display:flex;flex-direction:column;gap:11px;min-width:0}
+.cal-lc{position:relative;border-radius:15px;padding:13px 18px 14px;overflow:hidden;
+  background:linear-gradient(155deg,rgba(255,255,255,0.16),rgba(200,222,248,0.07));border:1px solid var(--eph-line);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.3)}
+body:not(.theme-infernal) .cal-lc{background:linear-gradient(155deg,rgba(255,255,255,0.56),rgba(228,240,252,0.34))}
+.lc-top{display:flex;align-items:center;gap:9px;padding:0 20px 8px 0;border-bottom:1px solid var(--eph-line)}/* v36 — 顶行改居中对齐，两侧字高观感一致 */
+.lc-ai{display:flex;align-items:center;gap:8px;font-family:'Noto Serif SC',serif;font-weight:500;font-size:0.86rem;color:var(--eph-ink);letter-spacing:0.04em;white-space:nowrap}
+.lc-dot{width:5px;height:5px;border-radius:50%;flex:none;background:var(--ice-accent-deep);box-shadow:0 0 6px rgba(140,190,240,0.5)}
+body.theme-infernal .lc-dot{background:#a9c8e6;box-shadow:0 0 6px rgba(169,200,230,0.4)}
+/* v34 — 撤模型号；日期改 YYYY/MM/DD 并放大，署名与正文随之提一档 */
+.lc-ref{min-width:0;flex:0 1 auto;font-size:0.78rem;line-height:1;letter-spacing:0.03em;color:var(--eph-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}/* v36 — 便笺关联的事项，只留「标题」 */
+.lc-date{margin-left:auto;font-family:'Cormorant Garamond',serif;font-style:italic;font-size:0.82rem;line-height:1;letter-spacing:0.12em;color:var(--eph-faint);white-space:nowrap;font-variant-numeric:tabular-nums}
+.lc-del{position:absolute;top:5px;right:6px;width:18px;height:18px;border:none;border-radius:6px;background:none;cursor:pointer;
+  color:var(--eph-faint);font-size:0.65rem;line-height:18px;text-align:center;padding:0;opacity:0;transition:opacity 0.2s,color 0.2s,background 0.2s}
+.cal-lc:hover .lc-del{opacity:0.55}
+.lc-del:hover{opacity:1!important;color:#a04b58;background:rgba(150,60,70,0.12)}
+body.theme-infernal .lc-del:hover{color:#cfdcee;background:rgba(92,118,158,0.22)}
+.lc-body{margin-top:10px;font-size:0.84rem;line-height:2;letter-spacing:0.02em;color:var(--eph-ink-2)}
+.lc-foot{display:flex;align-items:center;margin-top:10px}
+/* v33 — From 筛选改为丝带内下拉：十位 AI 也不撑长横排 */
+.ribbon .ib-select{min-width:128px}
+.ribbon .ibs-face{padding:5px 9px 5px 12px;border-radius:999px;font-size:0.66rem;letter-spacing:0.06em}
+.ribbon .ibs-menu{left:auto;right:0;min-width:172px}
+
+/* ── 页五 — 设定 ── */
+.set-block{border:1px solid var(--eph-line);border-radius:14px;padding:10px 16px 8px;
+  background:linear-gradient(155deg,rgba(255,255,255,0.09),rgba(120,158,200,0.03));box-shadow:inset 0 1px 0 rgba(255,255,255,0.26)}
+body:not(.theme-infernal) .set-block{background:rgba(255,255,255,0.34)}
+body.theme-infernal .set-block{box-shadow:inset 0 1px 0 rgba(222,236,252,0.06)}
+.set-block .sb-t{display:flex;align-items:center;gap:8px;font-family:'Raleway','Noto Sans SC',sans-serif;font-size:0.66rem;letter-spacing:0.2em;text-transform:uppercase;color:var(--eph-ink-3);padding:3px 0 7px;border-bottom:1px solid var(--eph-line)}
+.set-block .sb-t svg{width:12px;height:12px;opacity:0.85}
+.set-block .tog-line{border-bottom:1px solid var(--eph-line)}
+.set-block .tog-line:last-child{border-bottom:none}
+.set-block .f-row{margin:10px 0 11px}
+.set-block .f-hint{padding-bottom:9px}
+/* v34 — AI 权限重设计：撤去逐位预览卡，所选 AI 的两枚开关直接横列于下拉之下 */
+.aip-inline{display:flex;align-items:center;gap:26px;padding:9px 3px 12px;border-bottom:1px solid var(--eph-line);margin-bottom:1px}
+.aip-inline .aiw{font-size:0.74rem;color:var(--eph-ink-2);gap:9px}
+.aiw{display:flex;align-items:center;gap:8px;font-size:0.66rem;letter-spacing:0.05em;color:var(--eph-faint)}
+/* v34 — 设置页左右两列等宽，右列减负后两侧齐平，不再触发整页纵滚 */
+.eph-page[data-page="set"] .zone-grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+.set-foot{font-size:0.76rem;color:var(--eph-faint);line-height:1.95;letter-spacing:0.04em;padding:6px 4px 0}
+.set-foot b{color:var(--eph-ink-3);font-weight:400}
+
+/* 窄幅折行 */
+@media (max-width:820px){
+  .zone-grid,.eph-page[data-page="set"] .zone-grid{grid-template-columns:minmax(0,1fr)}
+  .p-head-row{align-items:flex-start;flex-direction:column}
+  .band-r{justify-content:flex-start}
+}
+
+/* v36 — 行卡删除键：悬停浮现，样式随站内 ✕ 键 */
+.ar-del{position:absolute;top:5px;right:6px;width:18px;height:18px;border:none;border-radius:6px;background:none;cursor:pointer;
+  font-size:0.66rem;line-height:1;color:var(--eph-faint);opacity:0;transition:opacity 0.25s,color 0.25s,background 0.25s}
+.anni-row:hover .ar-del{opacity:0.55}
+.ar-del:hover{opacity:1!important;color:#a04b58;background:rgba(150,60,70,0.12)}
+body.theme-infernal .ar-del:hover{color:#cfdcee;background:rgba(92,118,158,0.22)}
+/* v44 — 行卡编辑键：与删除键同款，悬停浮现 */
+.ar-edit{position:absolute;top:5px;right:27px;width:18px;height:18px;border:none;border-radius:6px;background:none;cursor:pointer;
+  font-size:0.66rem;line-height:1;color:var(--eph-faint);opacity:0;transition:opacity 0.25s,color 0.25s,background 0.25s}
+.anni-row:hover .ar-edit{opacity:0.55}
+.ar-edit:hover{opacity:1!important;color:var(--eph-ink);background:rgba(120,170,220,0.16)}
+body.theme-infernal .ar-edit:hover{color:#e2e8f4;background:rgba(92,118,158,0.22)}
+/* v49 — 每周多选：英文缩写圆角矩形；未选为弱态，已选为高亮态 */
+.wd-pick{display:grid;grid-template-columns:repeat(7,minmax(34px,1fr));gap:6px;max-width:344px}
+.wd-pick button{width:100%;height:26px;padding:0 4px;border-radius:8px;cursor:pointer;
+  border:1px solid var(--eph-line);background:rgba(255,255,255,0.05);color:var(--eph-ink-3);
+  font-family:'Raleway',sans-serif;font-weight:500;font-size:0.58rem;letter-spacing:0.08em;line-height:1;
+  box-shadow:none;
+  transition:background 0.2s,border-color 0.2s,color 0.2s,box-shadow 0.2s}
+.wd-pick button.on{background:rgba(140,190,240,0.22);border-color:rgba(114,168,216,0.58);color:var(--eph-ink);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.35),0 0 0 1px rgba(114,168,216,0.06)}
+body.theme-infernal .wd-pick button{background:rgba(255,255,255,0.04);border-color:var(--eph-line);color:var(--eph-ink-3);box-shadow:none}
+body.theme-infernal .wd-pick button.on{background:rgba(126,160,206,0.24);border-color:rgba(150,185,224,0.48);color:var(--eph-ink);
+  box-shadow:inset 0 1px 0 rgba(222,236,252,0.1),0 0 0 1px rgba(150,185,224,0.05)}
+/* v44 — 可见范围多选的 AI 标签 */
+.vis-pick{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.vis-pick button{padding:4px 11px;border-radius:999px;cursor:pointer;
+  border:1px solid var(--eph-line);background:rgba(255,255,255,0.05);color:var(--eph-ink-3);
+  font-family:'Noto Sans SC',sans-serif;font-size:0.7rem;line-height:1.4;
+  transition:background 0.2s,border-color 0.2s,color 0.2s}
+.vis-pick button.on{background:rgba(140,190,240,0.22);border-color:rgba(114,168,216,0.55);color:var(--eph-ink)}
+body.theme-infernal .vis-pick button.on{background:rgba(126,160,206,0.24);border-color:rgba(150,185,224,0.4)}
+/* v44 — 编辑状态提示条 */
+.edit-banner{margin-right:auto;align-self:center;font-size:0.72rem;letter-spacing:0.04em;color:var(--eph-faint);
+  max-width:52%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* ═════════ 收起态 — 悬浮时钟部件（三方案三形制） ═════════
+   方案 A 横枕：钟居左，读数居右，最省纵向空间。
+   方案 B 立牌：窄立式，大钟压顶，读数纵排。
+   方案 C 方件：近方形，钟为中心，读数收于足部。 */
+#cal-widget{position:fixed;z-index:99;right:26px;top:86px;width:316px;/* v47 — 95→99：悬浮小窗压在快捷聊天窗(98)之上；悬浮大窗仍为 97，层级不变 */
+  border-radius:22px;overflow:hidden;user-select:none;-webkit-user-select:none;/* v41 — 小窗内文字不可选中复制 */
+  border:1px solid var(--eph-border);
+  backdrop-filter:blur(28px) saturate(1.05);-webkit-backdrop-filter:blur(28px) saturate(1.05);
+  box-shadow:0 12px 36px rgba(52,92,142,0.15),0 3px 9px rgba(70,112,158,0.07),
+    inset 0 1px 0 rgba(255,255,255,0.82),inset 0 -1px 0 rgba(112,152,194,0.2);/* v39 — 小窗投影整体减淡 */
+  opacity:0;transform:translateY(14px) scale(0.94);pointer-events:none;
+  transition:opacity 0.5s var(--transition),transform 0.55s cubic-bezier(0.22,1,0.36,1),box-shadow 0.4s,width 0.45s var(--transition),border-color 2.4s ease}/* v37 — 透明度略升；渐变底色无法用 transition 插值，改由 ::before/::after 双层罩以 2.4s 对向淡化，元素本体只慢速过渡边色 */
+body.theme-infernal #cal-widget{
+  border-color:rgba(78,100,140,0.2);/* v39 — 描边改取贴近窗内底色的深蓝灰，边界感更弱；随既有 2.4s 边色过渡漂移 */
+  box-shadow:0 14px 40px rgba(0,0,0,0.3),inset 0 1px 0 rgba(221,235,251,0.06)}
+#cal-widget.show{opacity:1;transform:translateY(0) scale(1);pointer-events:auto}
+#cal-widget.dragging{transition:none;box-shadow:0 26px 70px rgba(52,92,142,0.3),inset 0 1px 0 rgba(255,255,255,0.82)}
+#cal-widget:hover{box-shadow:0 20px 56px rgba(52,92,142,0.26),0 0 0 1px rgba(160,200,240,0.24),inset 0 1px 0 rgba(255,255,255,0.85)}
+body.theme-infernal #cal-widget:hover{box-shadow:0 16px 44px rgba(0,0,0,0.34),0 0 0 1px rgba(150,185,224,0.1),inset 0 1px 0 rgba(221,235,251,0.12)}/* v40 — INF 悬停阴影减弱：原 24px/0.6 在暗底上跳变过猛，收到 16px/0.34，随既有 0.4s 过渡渐入 */
+/* v37 — 主题底色交叉淡化：INT 皮肤（体色渐变 + 高光罩，罩层按原 0.7 透明度预乘）收在 ::before，INF 皮肤收在 ::after；切主题时两层各以 2.4s 对向淡变，树序上 ::after 覆于 ::before 之上、仍居 .wg-main（z2）之下 */
+#cal-widget::before{content:'';position:absolute;inset:0;border-radius:inherit;pointer-events:none;
+  background:
+    linear-gradient(118deg,rgba(255,255,255,0.21),transparent 26%,transparent 74%,rgba(196,222,246,0.098)),
+    radial-gradient(130% 100% at 12% -8%,rgba(255,255,255,0.24),transparent 50%),
+    linear-gradient(150deg,rgba(250,253,255,0.24),rgba(230,242,253,0.13) 55%,rgba(212,230,248,0.16));
+  opacity:1;transition:opacity 2.4s ease}
+body.theme-infernal #cal-widget::before{opacity:0}
+#cal-widget::after{content:'';position:absolute;inset:0;border-radius:inherit;pointer-events:none;
+  background:linear-gradient(152deg,rgba(36,50,80,0.42),rgba(24,34,58,0.38) 56%,rgba(17,25,44,0.46));
+  opacity:0;transition:opacity 2.4s ease}/* v39 — INF 小窗底色调淡、透明度提高 */
+body.theme-infernal #cal-widget::after{opacity:1}
+.wg-main{position:relative;z-index:2;display:flex;align-items:center;gap:13px;min-height:142px;padding:14px 17px 14px 14px;cursor:grab}
+#cal-widget.dragging .wg-main{cursor:grabbing}
+.wg-clockwrap{position:relative;flex:none;width:112px;height:112px}
+.wg-clockwrap::before{content:'';position:absolute;inset:4px;border-radius:50%;pointer-events:none;
+  background:radial-gradient(circle at 50% 36%,rgba(250,253,255,0.12),transparent 66%)}
+body.theme-infernal .wg-clockwrap::before{background:radial-gradient(circle at 50% 36%,rgba(150,180,216,0.045),transparent 66%)}
+#wg-clock{position:relative;z-index:2;width:100%;height:100%;overflow:visible;display:block}
+#wg-hr,#wg-min,#wg-sec{transform-origin:48px 48px;transform-box:view-box}
+#wg-sec{animation:handRot 60s linear infinite}
+#wg-min{animation:handRot 3600s linear infinite}
+#wg-hr{animation:handRot 43200s linear infinite}
+/* v19 — 收起小窗同步采用 A「霜盏」表盘，并移除两层内环圆线 */
+.wg-clockwrap{display:flex;align-items:center;justify-content:center}
+.wg-clockwrap::before{inset:1px;background:radial-gradient(circle at 50% 40%,rgba(248,252,255,0.09),rgba(208,229,248,0.04) 54%,transparent 72%);border:1px solid rgba(182,213,242,0.2);box-shadow:inset 0 1px 0 rgba(255,255,255,0.3),0 6px 14px rgba(49,84,119,0.08);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)}
+body.theme-infernal .wg-clockwrap::before{background:rgba(150,180,216,0.03);border-color:rgba(160,190,220,0.1);box-shadow:0 8px 18px rgba(0,0,0,0.22)}
+#wg-clock{width:108px;height:108px}
+#wg-clock .ck-halo{fill:rgba(178,212,244,0.05);filter:url(#ckBlur)}
+body.theme-infernal #wg-clock .ck-halo{fill:rgba(140,172,210,0.04)}
+#wg-clock .ck-basin{fill:rgba(226,240,252,0.09);stroke:url(#ckEdge);stroke-width:1.1}
+body.theme-infernal #wg-clock .ck-basin{fill:rgba(150,180,216,0.05)}
+#wg-clock .ck-face{fill:url(#ckFace);stroke:rgba(158,196,234,0.28);stroke-width:0.8}
+body.theme-infernal #wg-clock .ck-face{stroke:rgba(170,198,230,0.13)}
+#wg-clock .ck-conc-sh{fill:none;stroke:rgba(38,78,128,0.2);stroke-width:9;stroke-linecap:round;filter:blur(4.5px)}
+body.theme-infernal #wg-clock .ck-conc-sh{stroke:rgba(0,0,0,0.34)}
+#wg-clock .ck-conc-hi{fill:none;stroke:rgba(255,255,255,0.52);stroke-width:7;stroke-linecap:round;filter:blur(4px);opacity:0.8}
+body.theme-infernal #wg-clock .ck-conc-hi{stroke:rgba(214,230,248,0.14)}
+#wg-clock .ck-glint{fill:none;stroke:rgba(255,255,255,0.72);stroke-width:1.1;opacity:0.5;stroke-linecap:round}
+#wg-clock .ck-glint.faint{opacity:0.18}
+body.theme-infernal #wg-clock .ck-glint{stroke:rgba(226,238,250,0.28)}
+#wg-clock .ck-tick{stroke:var(--clock-tick);opacity:0.38}
+#wg-clock .ck-tick.maj{stroke:var(--clock-tick-maj);opacity:0.66}
+#wg-clock .ck-raised{filter:url(#ckRaised)}
+#wg-clock .ck-hand-hr,#wg-clock .ck-hand-min{fill:url(#ckHand);stroke:rgba(36,80,134,0.5);stroke-width:0.65}
+body.theme-infernal #wg-clock .ck-hand-hr,body.theme-infernal #wg-clock .ck-hand-min{stroke:rgba(6,14,28,0.5)}
+#wg-clock .ck-spine{stroke:rgba(255,255,255,0.72);stroke-width:0.7;stroke-linecap:round;opacity:0.7}
+body.theme-infernal #wg-clock .ck-spine{stroke:rgba(255,255,255,0.3)}
+#wg-clock .ck-hand-sec{stroke:var(--ice-accent);stroke-width:1.15;stroke-linecap:round}
+#wg-clock .ck-sec-tail{stroke:var(--ice-accent);stroke-width:1.6;stroke-linecap:round;opacity:0.9}
+#wg-clock .ck-sec-ring{fill:none;stroke:var(--ice-accent);stroke-width:1.2}
+#wg-clock #wg-sec{filter:drop-shadow(0 0 2.5px rgba(150,204,246,0.7))}
+body.theme-infernal #wg-clock #wg-sec{filter:drop-shadow(0 0 3px rgba(190,216,240,0.55))}
+#wg-clock .ck-cap{fill:url(#ckCap);stroke:rgba(255,255,255,0.66);stroke-width:0.8;filter:url(#ckRaised)}
+#wg-clock .ck-cap-dot{fill:rgba(255,255,255,0.8)}
+#wg-hr,#wg-min,#wg-sec{transform-origin:103px 103px;transform-box:view-box}
+/* v33 — 读数收为两行：时刻为主，星期与日期并作一行副读，去掉眉题与年度拉条 */
+.wg-read{min-width:0;flex:1;display:flex;flex-direction:column;justify-content:center;gap:7px;padding:0 2px 0 0}
+.wg-local{font-family:'Raleway',sans-serif;font-size:0.5rem;line-height:1;letter-spacing:0.34em;text-transform:uppercase;color:var(--eph-faint);white-space:nowrap}/* v34 — 小窗眉题 */
+body.theme-infernal .wg-local{color:#b0bfd6}/* v39 — INF 下眉题提亮一档 */
+.wg-time{display:flex;align-items:baseline;font-family:'Cormorant Garamond',serif;color:var(--eph-ink);line-height:1;
+  font-size:2.05rem;letter-spacing:0.01em;text-shadow:0 1px 0 rgba(255,255,255,0.32)}
+body.theme-infernal .wg-time{text-shadow:0 0 12px rgba(180,205,235,0.2)}
+.wg-time span{display:inline-block;width:1.24em;text-align:center;font-variant-numeric:tabular-nums}
+.wg-time i{font-style:normal;color:var(--eph-ink-3);opacity:0.75}
+.wg-time small{font-family:'Cormorant Garamond',serif;font-size:0.9rem;width:1.6em;color:var(--eph-ink-3);
+  align-self:flex-end;margin:0 0 2px 5px;text-align:left;font-variant-numeric:tabular-nums}
+.wg-date{font-family:'Cormorant Garamond',serif;font-style:italic;font-size:0.75rem;
+  letter-spacing:0.06em;color:var(--eph-ink-2);font-variant-numeric:tabular-nums;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:5px}/* v36 — 第三行下移，与时刻拉开距离 */
+
+/* 收起态已统一为横枕形，无方案覆写 */
+/* 悬浮窗控 */
+/* v34 — 窗控常驻但低调：默认无底无框微透，悬停小窗才亮出玻璃件本体 */
+.wg-btns{position:absolute;z-index:5;top:9px;right:9px;display:flex;gap:5px;opacity:0.42;
+  transition:opacity 0.3s ease}
+#cal-widget:hover .wg-btns,#cal-widget.dragging .wg-btns{opacity:1}
+.wg-btn{width:23px;height:23px;border-radius:8px;border:1px solid transparent;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;color:var(--eph-faint);
+  background:transparent;box-shadow:none;transition:all 0.3s}
+#cal-widget:hover .wg-btn{color:var(--eph-ink-3);border-color:var(--eph-line);
+  background:linear-gradient(160deg,rgba(255,255,255,0.4),rgba(200,222,244,0.16));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.5)}
+body.theme-infernal #cal-widget:hover .wg-btn{background:linear-gradient(160deg,rgba(200,220,244,0.1),rgba(0,0,0,0.16));box-shadow:inset 0 1px 0 rgba(222,236,252,0.1)}
+.wg-btn svg{width:11px;height:11px}
+#cal-widget .wg-btn:hover{color:var(--eph-ink);border-color:rgba(114,168,216,0.45);background:rgba(160,200,240,0.28)}
+#cal-widget .wg-btn.close:hover{background:rgba(150,60,70,0.16);border-color:rgba(180,90,100,0.44);color:#a04b58}
+body.theme-infernal #cal-widget .wg-btn.close:hover{background:rgba(92,118,158,0.22);border-color:rgba(150,182,222,0.42);color:#cfdcee}
+/* 盘面立体层改由 defs 里的 dTop/dBot 两枚中性渐变承担 */
+
+/* ═════════ 右下角组合坞（复刻原站 — 仅作重开入口） ═════════ */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/* toast */
+
+
+
+
+/* 响应式 */
+@media (max-width:1060px){
+  #eph-win{width:calc(100vw - 24px);height:min(700px,calc(100vh - 34px))}
+  .eph-page.p-cal{grid-template-columns:minmax(0,1.55fr) minmax(252px,0.9fr)}
+  .clock-wrap{width:118px;height:118px}#ice-clock{width:114px;height:114px}/* v34 — 窄幅回落一档，护住右侧读数 */
+  .eph-tab{min-width:52px;padding:0 6px}
+  .eph-tab svg{display:none}
+  
+  
+  
+  
+  
+}
+@media (max-width:880px){
+  #eph-win{height:min(820px,calc(100vh - 20px))}
+  .eph-head{height:74px;min-height:74px;align-items:flex-start}
+  .eph-head-center{left:8px;top:5px;transform:none;flex-direction:column;align-items:flex-start;gap:2px;max-width:calc(100% - 80px);padding:3px 7px}
+  .eph-head-sep{display:none}
+  .eph-petal-field{inset:74px 0 0}
+  .eph-page.p-cal{grid-template-columns:1fr;overflow-y:auto}
+  .cal-col{min-height:460px}
+  .side-col{overflow:visible;min-height:0;grid-template-rows:auto auto!important}
+  
+  
+  
+  
+  .p-side{flex-direction:row;flex-wrap:wrap;gap:9px}
+  .p-side .ps-card{flex:1 1 200px}
+  
+  .p-aside .ps-card{flex:1 1 200px}
+  .form-grid,.notes-cols,.set-cols{grid-template-columns:1fr!important}
+  #cal-widget{right:14px;top:70px}
+  
+}
+@media (max-width:560px){
+  
+  
+  .f-cols,.f-cols3{grid-template-columns:1fr}
+  #eph-win{width:calc(100vw - 16px)}
+}
+@media (prefers-reduced-motion:reduce){
+  .window-petal,.wg-petal{animation:none!important}
+  .flip-holder.go,.flip-holder.back-go,.flip-cast.go,.flip-cast.back-go,.drop-holder.drop-go,.drop-veil.drop-go,.cal-sheet.now-out,.cal-sheet.now-in{animation-duration:0.01s!important}
+  .ah-body.anim-next,.ah-body.anim-prev{animation-duration:0.01s!important}
+  .petal{display:none}
+  #eph-win,#eph-win::before,#eph-win::after,.eph-page,#cal-widget,#cal-widget::before,#cal-widget::after{transition-duration:0.01s!important}
+  #hand-sec,#wg-sec{animation-duration:60s}
+}
+
+/* ═════════ 集成补充（v36） ═════════ */
+/* 隐藏态不参与绘制：视窗与部件收起时停掉花瓣与表盘的后台渲染 */
+#eph-win:not(.show):not(.to-widget){visibility:hidden}
+#cal-widget:not(.show){visibility:hidden}
+
+/* ── 组合坞 Calendar 段（沿用主坞按钮款式） ── */
+/* v37 — 站名随主题联动：INT 显示 Internal，INF 显示 Infernal */
+body.theme-infernal .ibn-int{display:none}
+body:not(.theme-infernal) .ibn-inf{display:none}
+
+/* v36 — 坞入口按 ICode 同款规则：纯图标、无文字标签 */
+#cal-mini{position:relative;display:flex;align-items:center;box-sizing:border-box;background:none;border:none;cursor:pointer;padding:0 13px 0 16px}
+/* ICode 由最左段移为中段，高亮药丸两侧收成等距 */
+#icode-mini::before{left:1px;right:1px}
+#cal-mini::before{content:'';position:absolute;top:3px;bottom:3px;left:3px;right:1px;border-radius:999px;background:rgba(175,195,228,0);transition:background 0.45s var(--transition);pointer-events:none}
+#cal-mini:hover::before{background:rgba(175,195,228,0.14)}
+#cal-mini:active::before{background:rgba(175,195,228,0.2);transition-duration:0.25s}
+#cal-mini>*{position:relative;z-index:1}
+#cal-mini .mini-icon{display:flex;align-items:center;flex-shrink:0;opacity:0.8;transition:opacity 0.45s var(--transition)}
+#cal-mini:hover .mini-icon{opacity:1}
+#cal-mini .mini-icon svg{display:block;color:var(--silver)}
+body:not(.theme-infernal) #cal-mini:hover::before{background:rgba(255,255,255,0.4)}
+body:not(.theme-infernal) #cal-mini:active::before{background:rgba(255,255,255,0.5)}
+body:not(.theme-infernal) #cal-mini .mini-icon svg{color:#2a5070}
+/* v40 — 撤「小窗态收起坞内 Calendar 段」：无论日历以小窗还是大窗呈现，坞内始终保持三枚按钮 */
+
+/* ── Chat 侧栏 Calendar 入口（参考 ICode 工具栏按钮，整体更淡一档；点按与过渡逻辑一致） ── */
+/* v40 — 「Open」换成下拉提示小图标 + Calendar；字号再小一档、药丸再加宽、按钮单独上提 4px（非首元素，负上边距不触及滚动裁切） */
+.chat-full-body .chat-sidebar{margin-top:-9px}/* v41 — 整栏再上提 5px；上方 .chat-full-body 有 16px 内边距，按钮顶边距工具行仍留 7px，不会被压住 */
+#cal-open-btn{display:flex;align-items:center;justify-content:center;gap:7px;width:100%;height:24px;margin:1px 0 3px;padding:0 12px;border-radius:8px;cursor:pointer;
+  background:rgba(190,210,244,0.03);border:1px solid rgba(176,200,240,0.16);
+  backdrop-filter:blur(10px) saturate(1.2);-webkit-backdrop-filter:blur(10px) saturate(1.2);
+  box-shadow:inset 0 1px 0 rgba(226,240,255,0.1),0 1px 3px rgba(4,10,24,0.1);
+  font-family:'Raleway','Noto Sans SC',sans-serif;font-size:0.56rem;font-weight:300;letter-spacing:0.26em;color:var(--silver);
+  transition:background 0.4s var(--transition),border-color 0.4s var(--transition),box-shadow 0.4s var(--transition),transform 0.4s var(--transition),color 0.4s var(--transition)}
+#cal-open-btn .cob-ic{width:9px;height:9px;flex:none;opacity:0.75}
+#cal-open-btn:hover{background:rgba(190,212,246,0.08);border-color:rgba(192,216,250,0.3);transform:translateY(-1px);color:var(--pale);
+  box-shadow:inset 0 1px 0 rgba(232,244,255,0.14),0 3px 7px rgba(4,10,24,0.12)}/* v40 — 悬停投影减淡 */
+#cal-open-btn:active{transform:translateY(0.5px);background:rgba(150,180,222,0.1);transition-duration:0.09s;
+  box-shadow:inset 0 2px 5px rgba(4,10,24,0.28),inset 0 1px 0 rgba(120,150,200,0.08),0 0 0 rgba(0,0,0,0)}
+body:not(.theme-infernal) .page.active #cal-open-btn{background:rgba(255,255,255,0.1);border-color:rgba(165,205,245,0.32);color:#2a5382;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.6),0 1px 3px rgba(100,150,210,0.08)}
+body:not(.theme-infernal) .page.active #cal-open-btn:hover{background:rgba(255,255,255,0.24);border-color:rgba(145,195,242,0.48);color:#1d4272;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.8),0 3px 7px rgba(100,150,210,0.1)}/* v40 — 悬停投影减淡 */
+body:not(.theme-infernal) .page.active #cal-open-btn:active{background:rgba(222,236,250,0.3);
+  box-shadow:inset 0 2px 5px rgba(70,110,165,0.2),inset 0 1px 0 rgba(255,255,255,0.3),0 0 0 rgba(0,0,0,0)}

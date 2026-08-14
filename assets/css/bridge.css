@@ -1,0 +1,128 @@
+﻿#ib-ctx-bar{position:relative;height:18px;margin:6px 18px 0;border-radius:9px;background:rgba(120,150,190,.16);overflow:hidden;display:none;font-family:'Noto Sans SC',sans-serif}
+#ib-ctx-bar .ib-ctx-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:9px;transition:width .4s ease}
+#ib-ctx-bar .ib-ctx-label{position:relative;z-index:1;display:flex;align-items:center;justify-content:center;height:100%;font-size:.66rem;color:rgba(230,240,255,.88);text-shadow:0 1px 2px rgba(0,0,0,.4)}
+.ib-sticker{max-width:96px;max-height:96px;margin:2px 4px;vertical-align:middle;border-radius:10px;background:rgba(255,255,255,.08)}
+.ib-music-btn{display:inline-block;margin:2px 4px;padding:6px 14px;border-radius:12px;border:1px solid rgba(130,170,220,.45);background:linear-gradient(180deg,rgba(120,170,230,.28),rgba(90,130,200,.22));color:#e8f1ff;font-size:.8rem;cursor:pointer;font-family:'Noto Sans SC',sans-serif;vertical-align:middle}
+.ib-music-btn:hover{border-color:rgba(150,200,255,.8)}
+.ib-sticker-btn{flex:0 0 auto;width:28px;height:28px;margin:0 4px;border-radius:8px;border:1px solid rgba(140,180,230,.35);background:rgba(120,165,225,.18);color:#dbe9ff;font-size:.85rem;cursor:pointer;line-height:1}
+.ib-sticker-btn:hover{background:rgba(120,165,225,.32)}
+#ib-sticker-pop{position:absolute;bottom:110%;left:0;z-index:9999;min-width:150px;max-width:280px;max-height:190px;overflow:auto;display:flex;flex-wrap:wrap;gap:5px;padding:9px;border-radius:12px;background:rgba(18,28,48,.97);border:1px solid rgba(150,190,240,.35);box-shadow:0 10px 28px rgba(0,0,0,.45);font-size:.72rem;color:#dbe7ff;font-family:'Noto Sans SC',sans-serif;line-height:1.5}
+.ib-sticker-opt{width:44px;height:44px;object-fit:contain;border-radius:8px;cursor:pointer;background:rgba(255,255,255,.08);padding:3px;box-sizing:border-box}
+.ib-sticker-opt:hover{background:rgba(255,255,255,.22)}
+#ib-bridge-panel{
+  position:fixed;right:22px;bottom:76px;z-index:var(--layer-floating-panel);width:min(360px,calc(100vw - 44px));max-height:72vh;
+  display:flex;flex-direction:column;overflow:hidden;border-radius:var(--radius-panel);
+  border:1px solid var(--border-soft);
+  background:var(--surface-panel);
+  color:var(--content-primary);font-family:var(--font-ui);
+  backdrop-filter:blur(26px) saturate(1.16);-webkit-backdrop-filter:blur(26px) saturate(1.16);
+  box-shadow:var(--shadow-panel);
+  opacity:0;transform:translateY(10px) scale(.975);pointer-events:none;
+  transition:opacity .22s ease,transform .22s ease,background .45s var(--transition),border-color .45s var(--transition),color .45s var(--transition),box-shadow .45s var(--transition)
+}
+#ib-bridge-panel.open{opacity:1;transform:translateY(0) scale(1);pointer-events:auto}
+#ib-bridge-panel .ib-panel-head{display:flex;align-items:center;gap:9px;padding:8px 12px;border-bottom:1px solid var(--border-soft)}
+#ib-bridge-panel .ib-panel-head b{font-size:.86rem;letter-spacing:.065em;font-weight:600;color:var(--content-primary)}
+#ib-bridge-panel .ib-panel-conn{flex:1;font-size:.68rem;opacity:.78;text-align:right}
+#ib-bridge-panel #ib-panel-close{
+  width:25px;height:25px;display:grid;place-items:center;padding:0;border:0;border-radius:8px;background:transparent;
+  color:var(--content-muted);font-size:1rem;line-height:1;cursor:pointer;
+  transition:color .2s ease,background .2s ease,transform .15s ease
+}
+#ib-bridge-panel #ib-panel-close:hover{color:var(--content-primary);background:var(--surface-hover)}
+#ib-bridge-panel #ib-panel-close:active{transform:translateY(1px)}
+#ib-bridge-panel .ib-panel-tabs{display:flex;border-bottom:1px solid var(--border-soft)}
+#ib-bridge-panel .ib-panel-tabs button{
+  flex:1;padding:8px 3px;border:0;border-bottom:2px solid transparent;background:transparent;
+  color:var(--content-muted);font-size:.77rem;cursor:pointer;font-family:inherit;
+  transition:color .2s ease,background .2s ease,border-color .2s ease
+}
+#ib-bridge-panel .ib-panel-tabs button:hover{color:var(--content-secondary);background:var(--surface-hover)}
+#ib-bridge-panel .ib-panel-tabs button.on{color:var(--content-primary);border-bottom-color:color-mix(in srgb,var(--accent) 72%,transparent)}
+#ib-bridge-panel .ib-panel-tabs button:focus-visible,
+#ib-bridge-panel button:focus-visible,
+#ib-bridge-panel textarea:focus-visible,
+#ib-bridge-panel select:focus-visible{outline:2px solid var(--focus-ring);outline-offset:-2px}
+#ib-bridge-panel .ib-tab{padding:9px 10px;overflow:auto;display:flex;flex-direction:column;gap:7px;min-height:188px;max-height:58vh}
+#ib-bridge-panel .ib-whisper-list{display:flex;flex-direction:column;gap:6px;overflow:auto;max-height:28vh}
+#ib-bridge-panel .ib-whisper-item,
+#ib-bridge-panel .ib-card{
+  border-radius:var(--radius-control);padding:7px 9px;background:var(--surface-card);border:1px solid var(--border-soft);
+  color:var(--content-primary)
+}
+#ib-bridge-panel .ib-whisper-item{position:relative;padding-right:26px}
+#ib-bridge-panel .ib-whisper-item b{display:block;font-size:.65rem;color:var(--content-muted);font-weight:500}
+#ib-bridge-panel .ib-whisper-item div{font-size:.79rem;line-height:1.5;white-space:pre-wrap;word-break:break-word}
+#ib-bridge-panel .ib-whisper-edit,
+#ib-bridge-panel .ib-whisper-del{position:absolute;top:3px;border:0;background:transparent;cursor:pointer;font-size:.86rem}
+#ib-bridge-panel .ib-whisper-edit{right:23px;color:var(--content-muted)}
+#ib-bridge-panel .ib-whisper-del{right:6px;color:#b97878}
+#ib-bridge-panel .ib-whisper-edit:hover{color:var(--content-primary)}
+#ib-bridge-panel .ib-whisper-del:hover{color:#965f66}
+#ib-bridge-panel #ib-whisper-input,
+#ib-bridge-panel #ib-ai-input,
+#ib-bridge-panel .ib-ai-top select,
+#ib-bridge-panel .ib-ai-provider-row select{
+  box-sizing:border-box;border-radius:var(--radius-control);border:1px solid var(--border-soft);background:var(--surface-input);
+  color:var(--content-primary);font-family:inherit;outline:none;
+  transition:background .2s ease,border-color .2s ease,box-shadow .2s ease
+}
+#ib-bridge-panel #ib-whisper-input,
+#ib-bridge-panel #ib-ai-input{width:100%;resize:none;padding:7px 9px;font-size:.78rem}
+#ib-bridge-panel textarea::placeholder{color:var(--content-muted);opacity:.82}
+#ib-bridge-panel #ib-whisper-input:focus,
+#ib-bridge-panel #ib-ai-input:focus,
+#ib-bridge-panel .ib-ai-top select:focus,
+#ib-bridge-panel .ib-ai-provider-row select:focus{
+  border-color:var(--border-strong);
+  background:var(--surface-panel-strong);
+  box-shadow:0 0 0 2px color-mix(in srgb,var(--focus-ring) 16%,transparent)
+}
+#ib-bridge-panel #ib-whisper-send,
+#ib-bridge-panel .ib-board-actions button,
+#ib-bridge-panel .ib-ai-top button,
+#ib-bridge-panel .ib-ai-actions button,
+#ib-bridge-panel .ib-ai-provider-row button{
+  border-radius:var(--radius-control);border:1px solid color-mix(in srgb,var(--accent) 38%,var(--border-soft));
+  background:color-mix(in srgb,var(--accent) 15%,var(--surface-card));
+  color:var(--content-primary);padding:6px 7px;cursor:pointer;font-size:.72rem;font-family:inherit;
+  box-shadow:none;transition:background .2s ease,border-color .2s ease,transform .15s ease
+}
+#ib-bridge-panel #ib-whisper-send{width:100%;font-size:.77rem}
+#ib-bridge-panel #ib-whisper-send:hover,
+#ib-bridge-panel .ib-board-actions button:hover,
+#ib-bridge-panel .ib-ai-top button:hover,
+#ib-bridge-panel .ib-ai-actions button:hover,
+#ib-bridge-panel .ib-ai-provider-row button:hover{
+  background:color-mix(in srgb,var(--accent) 22%,var(--surface-hover));
+  border-color:color-mix(in srgb,var(--accent) 52%,var(--border-soft))
+}
+#ib-bridge-panel #ib-whisper-send:active,
+#ib-bridge-panel .ib-board-actions button:active,
+#ib-bridge-panel .ib-ai-top button:active,
+#ib-bridge-panel .ib-ai-actions button:active,
+#ib-bridge-panel .ib-ai-provider-row button:active{transform:translateY(1px)}
+#ib-bridge-panel .ib-board-content{display:flex;flex-direction:column;gap:7px;overflow:auto;max-height:40vh}
+#ib-bridge-panel .ib-card{font-size:.76rem;line-height:1.55}
+#ib-bridge-panel .ib-card-title{font-size:.68rem;letter-spacing:.1em;color:var(--content-muted);margin-bottom:2px}
+#ib-bridge-panel .ib-board-actions{display:flex;gap:6px;flex-wrap:wrap}
+#ib-bridge-panel .ib-board-actions button{flex:1;min-width:80px;padding:5px 4px}
+#ib-bridge-panel .ib-empty{font-size:.73rem;color:var(--content-muted);line-height:1.65;padding:3px 0}
+.ib-tts-btn{display:inline-block;margin:2px 4px 2px 2px;padding:4px 10px;border-radius:10px;border:1px solid rgba(140,180,230,.35);background:rgba(120,165,225,.16);color:#dbe9ff;font-size:.74rem;cursor:pointer;font-family:'Noto Sans SC',sans-serif;vertical-align:middle}
+.ib-tts-btn:hover{background:rgba(120,165,225,.32)}
+.ib-tts-btn.playing{background:rgba(120,200,160,.32);border-color:rgba(120,220,170,.6)}
+#ib-bridge-panel .ib-ai-top{display:flex;align-items:center;gap:6px}
+#ib-bridge-panel .ib-ai-top select{flex:1;min-width:0;padding:5px 6px;font-size:.72rem}
+#ib-bridge-panel .ib-ai-provider-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+#ib-bridge-panel .ib-ai-provider-row select{flex:1;min-width:0;padding:5px 6px;font-size:.7rem}
+#ib-bridge-panel .ib-ai-provider-row label{display:flex;align-items:center;gap:4px;font-size:.68rem;color:var(--content-secondary);white-space:nowrap}
+#ib-bridge-panel .ib-ai-msgs{
+  display:flex;flex-direction:column;gap:6px;overflow:auto;max-height:31vh;
+  background:color-mix(in srgb,var(--surface-card) 68%,transparent);border-radius:var(--radius-control);padding:7px;border:1px solid var(--border-soft)
+}
+#ib-bridge-panel .ib-ai-msg{max-width:86%;padding:6px 9px;border-radius:11px;font-size:.78rem;line-height:1.5;white-space:pre-wrap;word-break:break-word}
+#ib-bridge-panel .ib-ai-msg.user{align-self:flex-end;background:color-mix(in srgb,var(--accent) 16%,var(--surface-card));border:1px solid var(--border-soft)}
+#ib-bridge-panel .ib-ai-msg.ai{align-self:flex-start;background:var(--surface-card);border:1px solid var(--border-soft)}
+#ib-bridge-panel .ib-ai-msg.sys{align-self:center;background:none;border:0;color:var(--content-muted);font-size:.67rem;text-align:center}
+#ib-bridge-panel .ib-ai-actions{display:flex;gap:6px}
+#ib-bridge-panel .ib-ai-actions button{flex:1}

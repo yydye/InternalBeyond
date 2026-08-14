@@ -1,0 +1,12 @@
+root = true
+
+[*]
+charset = utf-8-bom
+end_of_line = lf
+insert_final_newline = true
+
+[*.{png,jpg,jpeg,gif,ico,mp3,woff,woff2}]
+charset = unset
+
+[*.{cmd,bat}]
+charset = utf-8

@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 
 /*
  * 双窗口同步测试（Node 18+，零依赖）
@@ -17,8 +17,9 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
+const { pathToFileURL } = require('url');
 
-const PAGE_URL = 'file:///E:/InternalBeyond-main/InternalBeyond.html';
+const PAGE_URL = pathToFileURL(path.join(__dirname, 'InternalBeyond.html')).href;
 
 function chromePath() {
   if (process.env.CHROME_PATH && fs.existsSync(process.env.CHROME_PATH)) return process.env.CHROME_PATH;
@@ -232,8 +233,9 @@ async function main() {
     await cdpEval(cdpB, 'window.__ibBootFn(); window.__ibBootFn();');
     const bootCount = await cdpEval(cdpB, 'window.__ibBootCount');
     const fabCount = await cdpEval(cdpB, 'document.querySelectorAll("#ib-bridge-fab").length');
+    const navCount = await cdpEval(cdpB, 'document.querySelectorAll("#ib-bridge-nav").length');
     const panelCount = await cdpEval(cdpB, 'document.querySelectorAll("#ib-bridge-panel").length');
-    ok('repeatInit.guarded', bootCount === 3 && fabCount === 1 && panelCount === 1, 'boot=' + bootCount + ' fab=' + fabCount + ' panel=' + panelCount);
+    ok('repeatInit.guarded', bootCount === 3 && fabCount === 0 && navCount === 1 && panelCount === 1, 'boot=' + bootCount + ' fab=' + fabCount + ' nav=' + navCount + ' panel=' + panelCount);
 
     const before = await cdpEval(cdpB, 'window.__ibSyncCount');
     await cdpEval(cdpA, "localStorage.setItem('ib_chat_sync', String(Date.now()))");

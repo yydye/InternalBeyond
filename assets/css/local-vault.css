@@ -1,0 +1,43 @@
+﻿/* Local vault: encrypted backup and on-device health audit. */
+.ib-vault-shell{display:grid;gap:14px;margin:0 0 22px}
+.ib-vault-card{padding:16px;border:1px solid color-mix(in srgb,var(--border-soft) 82%,transparent);border-radius:var(--radius-card);background:linear-gradient(135deg,color-mix(in srgb,var(--surface-card) 84%,transparent),color-mix(in srgb,var(--surface-panel) 66%,transparent));box-shadow:inset 0 1px 0 rgba(255,255,255,.22)}
+.ib-vault-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}
+.ib-vault-card h3{margin:0;color:var(--content-primary);font-size:.96rem;font-weight:500;letter-spacing:.035em}
+.ib-vault-card-head p{margin:5px 0 0;max-width:640px;color:var(--content-muted);font-size:.75rem;line-height:1.7}
+.ib-vault-lock{display:grid;flex:0 0 auto;width:30px;height:30px;place-items:center;border:1px solid var(--border-soft);border-radius:10px;color:var(--accent);font-size:1.22rem;background:color-mix(in srgb,var(--surface-panel-strong) 74%,transparent)}
+.ib-vault-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:13px}
+.ib-vault-facts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:13px}
+.ib-vault-facts span{display:flex;min-width:0;flex-direction:column;gap:3px;padding:8px 9px;border:1px solid color-mix(in srgb,var(--border-soft) 70%,transparent);border-radius:9px;color:var(--content-muted);font-size:.68rem;line-height:1.45;background:color-mix(in srgb,var(--surface-input) 62%,transparent)}
+.ib-vault-facts b{overflow:hidden;color:var(--content-secondary);font-size:.72rem;font-weight:500;text-overflow:ellipsis;white-space:nowrap}
+.ib-vault-note,.ib-vault-unsupported{margin:11px 0 0;color:var(--content-muted);font-size:.7rem;line-height:1.7}
+.ib-vault-unsupported{padding:8px 10px;border-radius:8px;color:var(--status-warning);background:color-mix(in srgb,var(--status-warning) 10%,transparent)}
+.ib-vault-health{padding-bottom:15px}
+.ib-vault-health-badge{display:inline-flex;flex:0 0 auto;align-items:center;min-height:24px;padding:3px 9px;border:1px solid var(--border-soft);border-radius:999px;color:var(--content-muted);font-size:.68rem;white-space:nowrap}
+.ib-vault-health-badge.good{border-color:color-mix(in srgb,var(--status-success) 55%,transparent);color:var(--status-success);background:color-mix(in srgb,var(--status-success) 10%,transparent)}
+.ib-vault-health-badge.warn{border-color:color-mix(in srgb,var(--status-warning) 60%,transparent);color:var(--status-warning);background:color-mix(in srgb,var(--status-warning) 10%,transparent)}
+.ib-vault-health-badge.pending{color:var(--content-muted)}
+.ib-vault-health-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin-top:13px}
+.ib-vault-health-row{display:flex;min-width:0;align-items:center;justify-content:space-between;gap:8px;padding:7px 9px;border:1px solid color-mix(in srgb,var(--border-soft) 62%,transparent);border-radius:8px;color:var(--content-secondary);font-size:.7rem;background:color-mix(in srgb,var(--surface-input) 52%,transparent)}
+.ib-vault-health-row span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ib-vault-health-row span:last-child{flex:0 0 auto;color:var(--content-muted);font-size:.65rem;white-space:nowrap}
+.ib-vault-health-empty{grid-column:1/-1;padding:9px;border:1px dashed var(--border-soft);border-radius:8px;color:var(--content-muted);font-size:.72rem;line-height:1.6}
+.ib-vault-health-details{margin:9px 0 0;padding:0;color:var(--content-muted);font-family:var(--font-ui);font-size:.68rem;line-height:1.75;white-space:pre-wrap}
+.ib-vault-modal{position:fixed;z-index:100100;inset:0;display:grid;place-items:center;padding:20px;background:rgba(13,22,42,.52);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+.ib-vault-modal[hidden]{display:none}
+.ib-vault-modal-card{width:min(460px,100%);padding:20px;border:1px solid var(--border-strong);border-radius:var(--radius-panel);background:var(--surface-panel-strong);color:var(--content-primary);box-shadow:var(--shadow-panel)}
+.ib-vault-modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}
+.ib-vault-modal-head h2{margin:0;font-size:1.05rem;font-weight:500;letter-spacing:.03em}
+.ib-vault-modal-head p{margin:7px 0 0;color:var(--content-muted);font-size:.76rem;line-height:1.7}
+.ib-vault-close{display:grid;width:28px;height:28px;flex:0 0 auto;place-items:center;padding:0;border:1px solid var(--border-soft);border-radius:8px;background:transparent;color:var(--content-muted);font-size:1.25rem;line-height:1;cursor:pointer}
+.ib-vault-close:hover{border-color:var(--border-strong);background:var(--surface-hover);color:var(--content-primary)}
+.ib-vault-field{display:grid;gap:5px;margin-top:14px}
+.ib-vault-field label,.ib-vault-show-password{color:var(--content-secondary);font-size:.74rem}
+.ib-vault-field input{width:100%;padding:9px 10px;border:1px solid var(--border-soft);border-radius:8px;outline:0;background:var(--surface-input);color:var(--content-primary);font:inherit;font-size:.83rem}
+.ib-vault-field input:focus{border-color:var(--border-strong);box-shadow:0 0 0 2px color-mix(in srgb,var(--focus-ring) 28%,transparent)}
+.ib-vault-show-password{display:flex;align-items:center;gap:7px;margin-top:10px;cursor:pointer}
+.ib-vault-show-password input{accent-color:var(--accent)}
+.ib-vault-modal-error{margin:11px 0 0;padding:8px 10px;border:1px solid color-mix(in srgb,var(--status-danger) 45%,transparent);border-radius:8px;color:var(--status-danger);font-size:.72rem;line-height:1.55;background:color-mix(in srgb,var(--status-danger) 8%,transparent)}
+.ib-vault-modal-footnote{margin:12px 0 0;color:var(--content-muted);font-size:.69rem;line-height:1.65}
+.ib-vault-modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
+.ib-vault-modal.is-busy .ib-vault-modal-card{cursor:progress;opacity:.78}
+@media (max-width:620px){.ib-vault-card{padding:14px}.ib-vault-facts,.ib-vault-health-list{grid-template-columns:1fr}.ib-vault-facts span{padding:7px 8px}.ib-vault-modal{padding:12px}.ib-vault-modal-card{padding:16px}.ib-vault-modal-actions{justify-content:stretch}.ib-vault-modal-actions .btn{flex:1}}
