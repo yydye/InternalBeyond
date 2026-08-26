@@ -268,7 +268,7 @@ function createMomentsDomain(deps) {
     for (let attempt = 0; attempt < MOMENT_MAX_ATTEMPTS; attempt += 1) {
       const __t0 = Date.now();
       try {
-        const out = await callCharacterModel(task, built, { jsonMode: true });
+        const out = await callCharacterModel(task, built, { jsonMode: true, jsonPrefill: '{"publish":' });
         rawOut = contentText(out && out.content);
         obs({ t: 'llm_call', kind: 'moment', ok: true, ms: Date.now() - __t0, origin: 'companion' });
       } catch (error) {
@@ -368,6 +368,10 @@ function createMomentsDomain(deps) {
         const schedule = sanitizeMomentSchedule(state.moments[characterId]);
         const userId = String(schedule.user_id || '');
         if (!userId || !armedUsers.has(userId) || !schedule.enabled || !schedule.characterId) continue;
+        /* 总开关：浏览器设置页的 enabled=false 必须真正停住后台发布
+           （此前后台只看 schedule.enabled=autoPublish，总开关关了照样发） */
+        const rawPrefs = state.moments[characterId] && state.moments[characterId].moments_prefs;
+        if (rawPrefs && typeof rawPrefs === 'object' && rawPrefs.enabled === false) continue;
         /* 崩溃恢复：running 停留超过 10 分钟 → 回收（与 plans 同阈值） */
         if (schedule.status === 'running' && schedule.claimedAt > 0 && now - schedule.claimedAt > MOMENT_STALE_WINDOW) {
           schedule.lastError = 'execution timed out (executor may have crashed); recovered';
@@ -514,7 +518,7 @@ function createMomentsDomain(deps) {
       const userId = String(schedule.user_id || '');
       if (!userId || !armedUsers.has(userId)) return;
       const prefs = (raw.moments_prefs && typeof raw.moments_prefs === 'object') ? raw.moments_prefs : {};
-      if (prefs.aiComment === false) { expireUserPendingTasks(userId, 'ai-comment-disabled'); return; }
+      if (prefs.aiComment === false || prefs.enabled === false) { expireUserPendingTasks(userId, 'moments-disabled'); return; }
       const threads = Array.isArray(raw.recent_threads) ? raw.recent_threads.slice(0, RC_THREADS_PER_SYNC) : [];
       threads.forEach(t => {
         const thread = sanitizeReplyThread(t);
@@ -528,7 +532,7 @@ function createMomentsDomain(deps) {
             ownerRoleId: thread.roleId,
             thread,
             tasks: {},
-            prefs: { aiComment: prefs.aiComment !== false },
+            prefs: { aiComment: prefs.aiComment !== false, enabled: prefs.enabled !== false },
             lastSeenAt: now,
             updatedAt: now
           };
@@ -544,7 +548,7 @@ function createMomentsDomain(deps) {
           imagesCount: thread.imagesCount || existing.thread.imagesCount,
           comments: mergeThreadComments(existing.thread.comments, thread.comments)
         };
-        existing.prefs = { aiComment: prefs.aiComment !== false };
+        existing.prefs = { aiComment: prefs.aiComment !== false, enabled: prefs.enabled !== false };
         existing.lastSeenAt = now;
         existing.updatedAt = now;
         changed = true;
@@ -557,7 +561,7 @@ function createMomentsDomain(deps) {
     const chains = replyStore();
     const rec = chains[momentId];
     if (!rec) return null;
-    if (rec.prefs && rec.prefs.aiComment === false) return null; /* 用户关闭 AI 评论 */
+    if (rec.prefs && (rec.prefs.aiComment === false || rec.prefs.enabled === false)) return null; /* 用户关闭 AI 评论或总开关 */
     const thread = rec.thread;
     if (!thread) return null;
     const comments = Array.isArray(thread.comments) ? thread.comments : [];
@@ -723,7 +727,7 @@ function createMomentsDomain(deps) {
     for (let attempt = 0; attempt < CORE.LIMITS.MAX_ATTEMPTS; attempt += 1) {
       const __t0 = Date.now();
       try {
-        const out = await callCharacterModel(callTask, built, { jsonMode: true });
+        const out = await callCharacterModel(callTask, built, { jsonMode: true, jsonPrefill: '{"publishReply":' });
         rawOut = contentText(out && out.content);
         obs({ t: 'llm_call', kind: 'reply', ok: true, ms: Date.now() - __t0, origin: 'companion' });
       } catch (error) {
@@ -903,7 +907,7 @@ function createMomentsDomain(deps) {
       for (const momentId of momentIds) {
         const rec = chains[momentId];
         if (!rec || !rec.thread) continue;
-        if (rec.prefs && rec.prefs.aiComment === false) continue;
+        if (rec.prefs && (rec.prefs.aiComment === false || rec.prefs.enabled === false)) continue;
         maybeCreateReplyTask(momentId, now);
       }
       for (const momentId of momentIds) {
@@ -912,6 +916,7 @@ function createMomentsDomain(deps) {
         for (const taskKey of Object.keys(rec.tasks)) {
           const t = rec.tasks[taskKey];
           if (t && t.status === 'pending' && Number(t.scheduledAt) <= now + 500) {
+            if (rec.prefs && (rec.prefs.aiComment === false || rec.prefs.enabled === false)) continue; /* 开关关闭：不再执行到期任务 */
             if (now - Number(t.scheduledAt) > RC_MAX_LATE_MS) {
               t.status = 'expired';
               t.lastError = 'missed trigger window';

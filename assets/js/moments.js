@@ -1068,7 +1068,7 @@ async function _momentsSyncCompanion(){
   try{
     if(!window._activeCompanionOnline)return false;
     if(_momentsCompanionBrokenAt&&Date.now()-_momentsCompanionBrokenAt<5*60000)return false;
-    const prefs=_momentsPrefs();if(!prefs.enabled)return false;
+    const prefs=_momentsPrefs();/* 注意：enabled=false 也必须继续同步——关闭状态要传给后台，由后台停发（见 momentsTick） */
     /* 能力预检（复用既有 /health：新版响应携带 moments 计数字段）。
        旧版 companion（无 /moments 路由）→ 不发任何 PUT，直接回退浏览器本地执行，
        避免每个角色一次 404 的连发；窗口过后自动重探，重启新版服务即自动恢复后台调度。 */
@@ -1204,15 +1204,17 @@ async function _momentsTick(){
   if(!db)return;
   try{
     const prefs=_momentsPrefs();
-    if(!prefs.enabled||!prefs.autoPublish)return;
     const now=Date.now();
-    /* companion 在线且支持 moments：后台独占执行（先拉事件，再同步最新 nextAt） */
+    /* companion 在线且支持 moments：后台独占执行（先拉事件，再同步最新 nextAt）。
+       注意：enabled/autoPublish 的早退必须放在同步之后——否则总开关一关就停止同步，
+       后台永远学不到"已关闭"，继续照常发布/推进回复链（设置保存但不生效的根因之一）。 */
     if(window._activeCompanionOnline){
       await _momentsPullCompanionEvents();
       if(now-_momentsLastSyncAt>60000)await _momentsSyncCompanion();
       /* 旧版 companion（无 /moments）：同一次 tick 内回退浏览器本地执行（与第一阶段一致） */
       if(!(_momentsCompanionBrokenAt&&now-_momentsCompanionBrokenAt<5*60000))return
     }
+    if(!prefs.enabled||!prefs.autoPublish)return;
     await _momentsLocalTick(now)
   }catch(e){console.warn('[Moments] tick failed',String(e&&e.message||e).slice(0,200))}
 }

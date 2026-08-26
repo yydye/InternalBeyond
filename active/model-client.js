@@ -245,7 +245,10 @@ function createModelClient(deps) {
         system: prompt.system,
         messages: prompt.messages
       };
-      if (opts.jsonMode) body.messages = body.messages.concat([{ role: 'assistant', content: '{"action":' }]);/* AI 规划：预填 JSON 前缀引导结构化输出 */
+      /* AI 规划/朋友圈结构化输出：预填 JSON 前缀引导模型续写。前缀必须与目标 schema 一致
+         （规划='{"action":'、动态='{"publish":'、回复链='{"publishReply":'}，
+         否则模型被迫在两个 schema 间强行拼接，是 replyTo 残片漏进正文的诱因之一。 */
+      if (opts.jsonMode) body.messages = body.messages.concat([{ role: 'assistant', content: opts.jsonPrefill || '{"action":' }]);
       if (Number.isFinite(Number(character.temperature))) body.temperature = Number(character.temperature);
       const data = await fetchJson(character.endpoint, {
         method: 'POST',

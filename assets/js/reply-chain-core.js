@@ -97,16 +97,49 @@
   }
 
   /* ══════════ 输出解析 + 校验（parseJson 由各侧注入：浏览器 _activeParsePlanJson / Node parsePlanJson） ══════════ */
+  /* 模型输出容错：comment 内混入 JSON 信封残片时就地修复（不碰普通文本）。
+     两种已复现的污染形态：
+     ① 过度转义：模型把字段分隔引号写成 \" —— JSON 仍合法，
+        但解析后 comment 变成「正文","replyTo":"mc_xxx」（replyTo 残片进入正文且回复关系丢失）；
+     ② 整包回显：comment 值是完整内层信封字符串 {"publishReply":...,"comment":...,"replyTo":...}。
+     修复策略：② 解开一层取真正文；① 按键形残片截断并回收 replyTo（仅原值为空时采纳）。 */
+  function repairComment(comment, replyTo) {
+    let c = String(comment || '');
+    let r = String(replyTo || '');
+    const t = c.trim();
+    /* ① 整包回显：comment 本身是一个 JSON 对象字符串 → 解开一层取真正文 */
+    if (t.charAt(0) === '{' && t.indexOf('}') !== -1) {
+      try {
+        const inner = JSON.parse(t);
+        if (inner && typeof inner === 'object' && !Array.isArray(inner) && String(inner.comment || '').trim()) {
+          return { comment: String(inner.comment).trim(), replyTo: r || String(inner.replyTo || '').trim() };
+        }
+      } catch (e) { /* 内层非合法 JSON → 走残片清理 */ }
+    }
+    /* ② 过度转义/拼接残片：comment 中出现键形结构（如 ,"replyTo":"…）→ 截断并回收 replyTo */
+    const m = c.match(/[,，、]?\s*\\?"(?:replyTo|publishReply|publishComment|reason|visibility)\\?"\s*[:：]/);
+    if (m && m.index > 0) {
+      if (!r) {
+        const vm = c.slice(m.index + m[0].length).match(/^\s*\\?"([^"\\]*)/);
+        if (vm && vm[1].trim()) r = vm[1].trim();
+      }
+      c = c.slice(0, m.index);
+    }
+    /* 过度转义在截断处留下的悬空转义/引号尾巴（如「正文\"」） */
+    c = c.replace(/[\\"]+$/, '');
+    return { comment: c.trim(), replyTo: r.trim() };
+  }
   function parseReplyOutput(raw, parseJson) {
     const j = parseJson(raw);
     if (!j || typeof j !== 'object') return null;
     if (j.publishReply === false) return { publish: false };
     if (j.publishReply !== true) return null;
     if (!String(j.comment || '').trim()) return null;
+    const fixed = repairComment(j.comment, j.replyTo);
     return {
       publish: true,
-      comment: String(j.comment || '').trim().slice(0, 300),
-      replyTo: String(j.replyTo || '').trim().slice(0, 80)
+      comment: fixed.comment.slice(0, 300),
+      replyTo: fixed.replyTo.slice(0, 80)
     };
   }
   /* replyTo 合法性：非法 id → 回落建议目标 → 最终空串（回复原帖） */
