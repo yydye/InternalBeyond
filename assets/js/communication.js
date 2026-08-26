@@ -1507,7 +1507,7 @@ async function sendChatMessage(voiceMsg){
           const _gElapsed=Math.round((Date.now()-_gTypStart)/1000);
           if(typingEl){typingEl.textContent=selfName+'（'+_gElapsed+'秒）';typingEl.style.animation='none';setTimeout(()=>{if(typingEl.parentNode)typingEl.remove()},1000)}
         }
-        if((!rawReply||!String(rawReply).trim())&&!(_gCallRes.reasoning_content||groupThinking)){appendChatBubble('ai','（未收到有效回复）',selfName);continue}
+        if((!rawReply||!String(rawReply).trim())&&!(_gCallRes.reasoning_content||groupThinking)){appendChatBubble('ai',(window.IBERR?window.IBERR.text('empty_output',selfName):'（未收到有效回复）'),selfName);continue}
         var gParts=_assistantResponseParts(rawReply,groupThinking);
         groupThinking=gParts.reasoning_content;
         let cleanReply=sanitizeGroupReply(gParts.content,selfName,allNames);
@@ -1559,14 +1559,11 @@ async function sendChatMessage(voiceMsg){
         if(_gTypTimer)clearInterval(_gTypTimer);
         if(typingEl&&typingEl.parentNode)typingEl.remove();
         _showStreamingUI(false);
-        let errText=selfName+': 请求失败';
-        if(err.message){
-          if(err.message.includes('Failed to fetch'))errText=selfName+': 无法连接到 API';
-          else if(err.message.includes('401'))errText=selfName+': API Key 无效';
-          else if(err.message.includes('429'))errText=selfName+': 请求频率过高';
-        }
-        toast(errText);
-        appendChatBubble('ai','[错误] '+errText,selfName);
+        /* 失败成员的流式气泡若还没写入内容，直接移除，避免残留带光标的空气泡（已流出内容的气泡保留） */
+        try{(gStreamRefs||[]).forEach(function(ref){const _t=String((ref.txt&&ref.txt.textContent)||'');const _hasCards=typeof (ref.txt&&ref.txt.querySelector)==='function'&&!!ref.txt.querySelector('.ws-op-card');if(!_t.trim()&&!_hasCards&&ref.div.parentNode)ref.div.parentNode.removeChild(ref.div)})}catch(e){}
+        const _ibFE=window.IBERR?window.IBERR.report(err,{cfg:cfg,friendId:_targetFriend,senderName:selfName,stage:'group_chat'}):null;
+        const _ibFT=_ibFE?_ibFE.text:(selfName+': 请求失败');
+        if(!_ibFE||!_ibFE.dup){toast(_ibFT);appendChatBubble('ai',_ibFT,selfName)}
       }
     }
     }finally{
@@ -1624,6 +1621,7 @@ async function sendChatMessage(voiceMsg){
 
   let ss={enabled:false};/* fix: 提升到 try 外供末尾延迟摘要使用，原 const 声明在 try 内、catch 后引用必抛 ReferenceError */
   let _sealTs=0;/* 封档线时间戳：同 ss 提升至 try 外供延迟摘要闭包引用 */
+  let streamRefs=[];/* 流式气泡引用提升到 try 外：失败路径需要清理未写入内容的空气泡 */
   try{
     const lim=await getReadingLimits();
     _sealTs=await getChatSealTimestamp(_targetFriend);
@@ -1755,7 +1753,7 @@ async function sendChatMessage(voiceMsg){
     if(_streamingOk){
       /* ===== 流式传输路径 ===== */
       _showStreamingUI(true);
-      const streamRefs=activeFriendId===_targetFriend?_createStreamBubble(_targetFriend):[];
+      streamRefs=activeFriendId===_targetFriend?_createStreamBubble(_targetFriend):[];
       /* Reasoning 始终独立缓冲；仅 showThinking=true 时创建实时面板。 */
       let _liveThinkEls=[];
       const _showThinking=_resolveShowThinking(cfg);
@@ -1825,6 +1823,8 @@ async function sendChatMessage(voiceMsg){
       var responseParts=_assistantResponseParts(rawReply,thinkingText);
       thinkingText=responseParts.reasoning_content;
       var replyText=responseParts.content;
+      /* 空输出防护：模型什么都没回（连思考链都没有）→ 按统一错误分类走友好提示，不再静默保存空气泡 */
+      if(!(replyText&&String(replyText).trim())&&!(thinkingText&&String(thinkingText).trim()))throw window.IBERR?window.IBERR.err('empty_output'):new Error('API 返回了空内容');
       if(_showThinking&&thinkingText){_ensureStreamThinking(streamRefs,_liveThinkEls);_finishStreamThinking(_liveThinkEls,thinkingText)}
       /* AUTO MEMORY：截取并执行 mem_* 指令（先于 ws 解析与收尾渲染，防止标签原文入库/上屏） */
       var _memR=[];
@@ -1876,6 +1876,8 @@ async function sendChatMessage(voiceMsg){
       var responsePartsN=_assistantResponseParts(rawReply,_callResN.reasoning_content||'');
       let thinkingText=responsePartsN.reasoning_content;
       var replyText=responsePartsN.content;
+      /* 空输出防护（非流式）：与流式路径同一处理，走统一错误分类 */
+      if(!(replyText&&String(replyText).trim())&&!(thinkingText&&String(thinkingText).trim()))throw window.IBERR?window.IBERR.err('empty_output'):new Error('API 返回了空内容');
       /* 非流式路径：先截取 mem_* 指令，再按顺序执行工作区操作 */
       var _memRNs=[];
       {const _mpn=_parseMemOps(replyText);
@@ -1915,13 +1917,15 @@ async function sendChatMessage(voiceMsg){
     if(_typTimer)clearInterval(_typTimer);
     const te=document.getElementById('chat-typing-'+_targetFriend);if(te)te.remove();
     _showStreamingUI(false);
-    let errText='请求失败';
-    if(err.message)errText=err.message;
-    if(errText.includes('Failed to fetch')||errText.includes('NetworkError'))errText='无法连接到 API';
-    if(errText.includes('401'))errText='API Key 无效';
-    if(errText.includes('429'))errText='请求频率过高';
-    toast(errText);
-    if(activeFriendId===_targetFriend)appendChatBubble('ai','[错误] '+errText);
+    /* 失败时移除还没写入任何内容的流式气泡（含思考面板卡），避免残留带光标的空气泡；已流出内容的气泡保留 */
+    try{(streamRefs||[]).forEach(function(ref){const _t=String((ref.txt&&ref.txt.textContent)||'');const _hasCards=typeof (ref.txt&&ref.txt.querySelector)==='function'&&!!ref.txt.querySelector('.ws-op-card');if(!_t.trim()&&!_hasCards&&ref.div.parentNode)ref.div.parentNode.removeChild(ref.div)})}catch(e){}
+    /* 统一错误分类 + 角色化友好文案；完整技术错误已由 IBERR.report 与底层日志写入 Console */
+    const _ibFE=window.IBERR?window.IBERR.report(err,{cfg:cfg,friendId:_targetFriend,stage:'chat'}):null;
+    const _ibFT=_ibFE?_ibFE.text:'请求失败';
+    if(!_ibFE||!_ibFE.dup){
+      toast(_ibFT);
+      if(activeFriendId===_targetFriend)appendChatBubble('ai',_ibFT);
+    }
   }
   _chatSendingFor.delete(_targetFriend);
   if(sendBtn)sendBtn.disabled=false;
