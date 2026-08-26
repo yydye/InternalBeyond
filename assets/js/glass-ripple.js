@@ -1,4 +1,4 @@
-﻿﻿(function(NS){
+﻿(function(NS){
 'use strict';
 var slot=document.getElementById('gw-slot');
 var pane=document.getElementById('gw-pane');
@@ -20,6 +20,9 @@ var SW=0,SH=0,h1=null,h2=null,bgData=null,outImg=null;
 var sim=document.createElement('canvas'),simCtx=null;
 var DAMP=0.9855;
 var REFRACT=2.0;
+/* 封面清晰化：画窗不再用低分辨率模拟网格整层替换画面（放大后模糊），
+   只在高水波处叠加水痕高光，其余区域透出清晰的 bg-canvas 原图 */
+var GLOSS_ONLY=true;
 var LIGHT=10;
 var STEP=1/30;
 
@@ -52,7 +55,7 @@ function stepWater(){
 }
 function renderWater(){
 
-  var gloss=(mode==='bg')||!REFRACT_OK;
+  var gloss=(mode==='bg')||!REFRACT_OK||GLOSS_ONLY;
   var ctx=(mode==='bg')?bgctx:rctx;
 
   var GAIN=(mode==='bg')?150:330,CAP=(mode==='bg')?110:165;
@@ -223,7 +226,7 @@ function rebuildBg(){
   tmp.width=SW;tmp.height=SH;
   var tc=tmp.getContext('2d');
   tc.drawImage(img,sx,sy,sw,sh,0,0,SW,SH);
-  try{bgData=tc.getImageData(0,0,SW,SH);REFRACT_OK=true;slot.classList.remove('gw-gloss')}
+  try{bgData=GLOSS_ONLY?null:tc.getImageData(0,0,SW,SH);REFRACT_OK=!GLOSS_ONLY;slot.classList.toggle('gw-gloss',!REFRACT_OK)}
   catch(_){bgData=null;REFRACT_OK=false;slot.classList.add('gw-gloss')}
   outImg=simCtx.createImageData(SW,SH);
   return true;
