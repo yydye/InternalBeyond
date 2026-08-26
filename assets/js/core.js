@@ -788,7 +788,7 @@ audioEl.addEventListener('play',drawVisualizer);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!audioEl.paused)drawVisualizer()});
 
 /* EXPORT/IMPORT */
-async function exportAll(){const data=await _ibBuildExportData();downloadJSON(data,'InternalBeyond_backup_'+new Date().toISOString().slice(0,10)+'.json');toast('数据已导出（含 ICode 项目文件）')}
+async function exportAll(){const data=await _ibBuildRedactedExportData();downloadJSON(data,'InternalBeyond_backup_'+new Date().toISOString().slice(0,10)+'.json');toast('数据已导出（含 ICode 项目文件，不含 API 密钥）')}
 function downloadJSON(data,filename){const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=filename;document.body.appendChild(a);a.click();document.body.removeChild(a);setTimeout(()=>URL.revokeObjectURL(a.href),100)}
 
 /* ══════════ 数据保险系统 ══════════
@@ -825,6 +825,24 @@ async function _ibBuildExportData(){
   const cleanChats=(await g('chatMessages')).map(function(m){const c=Object.assign({},m);delete c.upstreamRaw;delete c.thinkingSources;return c});
   return{posts:await g('posts'),categories:await g('categories'),about:await g('about'),apiSettings:(await g('apiSettings')).filter(function(r){return!(r&&r.id==='ib_fsSyncDir')}),apiConfigs:await g('apiConfigs'),chatMessages:cleanChats,letters:await g('letters'),groups:await loadGroups(),blogComments:await g('blogComments'),memories:await g('memories'),chatThreads:await g('chatThreads'),chatSummaries:await g('chatSummaries'),projects:await g('projects'),projectFiles:await g('projectFiles'),uploadedFiles:await g('uploadedFiles'),blogAnnotations:await g('blogAnnotations'),autoMemory:await g('autoMemory'),calEvents:await g('calEvents'),calNotes:await g('calNotes'),calLedger:await g('calLedger'),active_message_settings:await g('active_message_settings'),active_message_history:await g('active_message_history'),active_message_plans:await g('active_message_plans'),diary_entries:await g('diary_entries'),moments:await g('moments'),exportDate:new Date().toISOString(),version:8};
 }
+/* —— 明文导出脱敏：清除 apiConfigs/apiSettings 中的 apiKey、Authorization 等密钥字段 ——
+   作用于 手动导出 / 每日自动备份 / 文件夹同步 / 紧急镜像（均为明文落盘）；
+   Vault 加密备份仍走 _ibBuildExportData 原始全量数据，不经本函数。 —— */
+function _ibScrubSecrets(o){
+  if(Array.isArray(o)){for(var i=0;i<o.length;i++)o[i]=_ibScrubSecrets(o[i]);return o}
+  if(o&&typeof o==='object'){
+    for(var k in o){
+      if(typeof o[k]==='string'&&o[k]&&/api[_-]?key|authorization|^token$|secret|password|bearer/i.test(k))o[k]='';
+      else o[k]=_ibScrubSecrets(o[k]);
+    }
+  }
+  return o;
+}
+async function _ibBuildRedactedExportData(){
+  var data=await _ibBuildExportData();
+  var copy=JSON.parse(JSON.stringify(data));
+  return _ibScrubSecrets(copy);
+}
 /* —— 每日自动备份 —— */
 function _ibAutoBakOn(){try{return localStorage.getItem('ib_autoBak')==='1'}catch(e){return false}}/* 默认关闭：仅当用户在面板中手动开启（存 '1'）时生效 */
 function _ibToggleAutoBak(){try{localStorage.setItem('ib_autoBak',_ibAutoBakOn()?'0':'1')}catch(e){}toast('每日自动备份已'+(_ibAutoBakOn()?'开启':'关闭'));_ibRenderGuardPanel()}
@@ -836,10 +854,10 @@ async function _ibAutoBackupTick(){
     if(last===today)return;
     var v=await _ibVitals();
     if(v.total===0)return;/* 空站不备份，也避免熔断场景下载空文件 */
-    var data=await _ibBuildExportData();
+    var data=await _ibBuildRedactedExportData();
     downloadJSON(data,'InternalBeyond_auto_'+today+'.json');
     try{localStorage.setItem('ib_autoBakLast',today)}catch(e){}
-    toast('今日数据已自动备份到下载文件夹');
+    toast('今日数据已自动备份到下载文件夹（不含 API 密钥）');
     _ibRenderGuardPanel();
   }catch(e){}
 }
@@ -885,7 +903,7 @@ async function _ibMirrorNow(force){
     var v=await _ibVitals();
     var meta=null;try{meta=JSON.parse(localStorage.getItem(IB_MIRROR_META)||'null')}catch(e){}
     if(v.total===0&&meta&&meta.total>0){if(force)toast('站内没有数据，为保护上一份镜像未执行覆盖');return}
-    var all=await _ibBuildExportData();
+    var all=await _ibBuildRedactedExportData();
     var pack=_ibMirrorPack(all),str=JSON.stringify(pack);
     var ok=false;
     for(var tries=0;tries<4;tries++){
@@ -895,7 +913,7 @@ async function _ibMirrorNow(force){
     if(!ok)return;
     try{localStorage.setItem(IB_MIRROR_META,JSON.stringify({ts:pack.ts,total:v.total,msgs:(pack.stores.chatMessages||[]).length}))}catch(e){}
     _ibMirrorLastTs=now;_ibMirrorDirty=false;
-    if(force)toast('紧急镜像已更新');
+    if(force)toast('紧急镜像已更新（不含 API 密钥）');
     _ibRenderGuardPanel();
   }catch(e){}
 }
@@ -937,7 +955,7 @@ async function _ibFsSyncNow(force){
     var meta=null;try{meta=JSON.parse(localStorage.getItem('ib_fsSyncMeta')||'null')}catch(e){}
     if(v.total===0&&meta&&meta.total>0){if(force===true)toast('站内没有数据，为保护磁盘上的旧备份未执行覆盖');return}
     _ibFsBusy=true;
-    var data=await _ibBuildExportData();
+    var data=await _ibBuildRedactedExportData();
     var str=JSON.stringify(data);
     await _ibFsWrite(_ibFsHandle,'IB_sync_latest.json',str);
     var today=new Date().toISOString().slice(0,10);
@@ -948,7 +966,7 @@ async function _ibFsSyncNow(force){
     }
     _ibFsLastTs=now;_ibFsDirty=false;_ibFsState='granted';_ibFsErr='';
     try{localStorage.setItem('ib_fsSyncMeta',JSON.stringify({ts:now,total:v.total,name:_ibFsHandle.name||''}))}catch(e){}
-    if(force===true)toast('已同步到本地文件夹「'+(_ibFsHandle.name||'')+'」');
+    if(force===true)toast('已同步到本地文件夹「'+(_ibFsHandle.name||'')+'」（不含 API 密钥）');
     _ibRenderGuardPanel();
   }catch(e){
     _ibFsState='error';_ibFsErr=String(e&&e.message||e);
