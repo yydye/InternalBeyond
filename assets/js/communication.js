@@ -2587,7 +2587,27 @@ async function _callApiChatStreamOnce(cfg,messages,opts){
       if(cfg.temperature!=null)gB.generationConfig.temperature=cfg.temperature;
       try{if(typeof IBWS!=='undefined')IBWS.attach(gB,'gemini',cfg,opts)}catch(e){}
       body=JSON.stringify(gB);
-    }e{if(/key|token|secret|authorization/i.test(k)&&typeof o[k]==='string'&&o[k]){o[k]=String(o[k]).slice(0,4)+'***'+String(o[k]).slice(-4)}else _dbgRedact(o[k])}})(_dbgBody);
+    }else{
+      url=cfg.endpoint;
+      hdrs={'Content-Type':'application/json'};if(cfg.apiKey)hdrs.Authorization='Bearer '+cfg.apiKey;
+      const _allowOpenAIImages=!_usesLocalDeepSeekVision(cfg);
+      const ob={model:cfg.model,messages:_msgs.map(m=>_adaptMessageForApi(m,'openai',_allowOpenAIImages)),stream:true};
+      if(opts._fcCtx&&opts._fcCtx.tools){ob.tools=opts._fcCtx.tools.openai;IBFC.newAcc(opts._fcCtx)}
+      try{if(typeof IBWS!=='undefined')IBWS.attach(ob,'openai',cfg,opts)}catch(e){}
+      ob[opts.tokenParam||'max_tokens']=maxTok;/* 新款 OpenAI 系模型由包装器切换为 max_completion_tokens */
+      if(cfg.promptCache!==false)ob.prompt_cache_key='ib_'+String(cfg.id||'');/* OpenAI 缓存本自动生效；此 key 只用于提升路由命中率 */
+      if(cfg.promptCache!==false)ob.stream_options={include_usage:true};/* 用量回传：与上方附加参数同受"提示缓存"开关控制 */
+      if(cfg.promptCache!==false){try{_ibOaiCacheDiag(cfg,ob.messages)}catch(e){}}/* 前缀缓存诊断（console-only） */
+      if(cfg.temperature!=null)ob.temperature=cfg.temperature;
+      /* ── 临时调试（定位 OpenRouter 400；测试完删除本段）──
+         console 执行：localStorage.setItem('ib_debug_omit','prompt_cache_key,stream_options') 可逐项剔除；
+         支持字段名：prompt_cache_key / stream_options / temperature / tools / web_search_options / max_tokens 等 */
+      try{
+        var _dbgOmit=(typeof localStorage!=='undefined'?localStorage.getItem('ib_debug_omit'):'')||'';
+        var _dbgKeys=_dbgOmit.split(/[,，\s]+/).map(function(s){return s.trim()}).filter(Boolean);
+        if(_dbgKeys.length){_dbgKeys.forEach(function(k){delete ob[k]});console.warn('[IB调试] 已临时移除请求体字段:',_dbgKeys.join(', '))}
+        var _dbgBody=JSON.parse(JSON.stringify(ob));
+        (function _dbgRedact(o){if(!o||typeof o!=='object')return;for(var k in o){if(/key|token|secret|authorization/i.test(k)&&typeof o[k]==='string'&&o[k]){o[k]=String(o[k]).slice(0,4)+'***'+String(o[k]).slice(-4)}else _dbgRedact(o[k])}})(_dbgBody);
         console.log('[IB调试] 最终请求体:',JSON.stringify(_dbgBody,null,2));
         console.log('[IB调试] 请求URL:',url,'| Authorization:',cfg.apiKey?('Bearer '+String(cfg.apiKey).slice(0,6)+'***'):'(无)');
       }catch(e){}
