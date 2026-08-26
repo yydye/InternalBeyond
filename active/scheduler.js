@@ -1,4 +1,4 @@
-﻿/* IB Active · 调度器：任务执行（发送 / 跳过 / 失败 / 落库）、AI 计划二次评估与执行、
+/* IB Active · 调度器：任务执行（发送 / 跳过 / 失败 / 落库）、AI 计划二次评估与执行、
    每 15 秒 schedulerTick（含崩溃遗留回收与历史裁剪）、启动宽限期与优雅停机。
    从 active-message-service.js 提取为工厂：state 经 getState() 注入，armedUsers / 持久化 /
    计划域 / 模型客户端函数全部依赖注入；ticking 标志收在工厂闭包（根文件不再持有）。
@@ -15,7 +15,7 @@ function createScheduler(ctx) {
     isInDnd, nextDndFree, planRunId, planMessageId, planSnapshotTask,
     generateProactiveMessage, windowsNotify, proactiveLog,
     callCharacterModel, contentText, parsePlanJson, isCharacterModelReady,
-    terminalRun, sameRunRevision,
+    terminalRun, sameRunRevision, momentsTick,
     startDelayMs, closeServer
   } = ctx;
 
@@ -533,6 +533,15 @@ function createScheduler(ctx) {
         if (!due) continue;
         if (due > now + 500) continue;
         await executePlan(id);
+      }
+      /* Moments：后台朋友圈调度（浏览器离线时执行；与任务/计划共用同一个 tick，不另起定时器）。
+         单次失败只记录，绝不让 tick 整体停止。 */
+      if (typeof momentsTick === 'function') {
+        try {
+          await momentsTick(now);
+        } catch (error) {
+          console.error('[Active] Moments tick failed:', error && error.message || error);
+        }
       }
       const historyIds = Object.keys(s.history).sort((a, b) =>
         Number(s.history[b].sent_at || s.history[b].started_at || 0) -

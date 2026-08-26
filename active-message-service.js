@@ -137,6 +137,71 @@ const generateProactiveMessage = modelClient.generateProactiveMessage;
 const windowsNotify = modelClient.windowsNotify;
 
 /* ------------------------------------------------------------------ */
+/* Moments 域（后台朋友圈调度：每角色 nextAt + 频率；事件经 events 回传） */
+/* ------------------------------------------------------------------ */
+
+/* 行为观测（观察期专用；纯本地文件统计，见 assets/js/social-observe.js）。
+   - 存 DATA_DIR/social-observe.json（原子写），30s 节流 flush + 退出时 flush；
+   - 只记后台的失败/拒绝/拦截/调用次数（成功结果由浏览器 ingest 入账）；
+   - 关闭方式：环境变量 IB_SOCIAL_OBSERVE=off。 */
+const OBSERVE_DISABLED = String(process.env.IB_SOCIAL_OBSERVE || '').trim().toLowerCase() === 'off';
+const socialObserveCore = require('./assets/js/social-observe.js');
+const socialObserveFile = path.join(DATA_DIR, 'social-observe.json');
+let socialObserver = null;
+if (!OBSERVE_DISABLED) {
+  const obsFs = require('fs');
+  const inst = socialObserveCore.createWith({
+    load: () => {
+      try { return JSON.parse(obsFs.readFileSync(socialObserveFile, 'utf8')); } catch (_) { return null; }
+    },
+    save: st => {
+      const tmp = `${socialObserveFile}.tmp`;
+      obsFs.writeFileSync(tmp, JSON.stringify(st));
+      obsFs.renameSync(tmp, socialObserveFile);
+    }
+  });
+  setInterval(() => { try { inst.flush(); } catch (_) {} }, 30000).unref();
+  process.on('exit', () => { try { inst.flush(); } catch (_) {} });
+  socialObserver = inst;
+}
+
+const createMomentsDomain = require('./active/moments');
+/* 前后台共享核心（回复链规则/Prompt/常量唯一来源）：浏览器 <script> 与 Node require 的是同一文件 */
+const replyChainCore = require('./assets/js/reply-chain-core.js');
+const momentsDomain = createMomentsDomain({
+  getState: () => state,
+  armedUsers,
+  saveNow,
+  queueSave,
+  trimText,
+  deepClone,
+  finiteTimestamp,
+  parsePlanJson,
+  contentText,
+  isCharacterModelReady,
+  callCharacterModel,
+  proactiveTextSimilarity,
+  replyChainCore,
+  observe: socialObserver ? socialObserver.record.bind(socialObserver) : undefined
+});
+const sanitizeMomentSchedule = momentsDomain.sanitizeMomentSchedule;
+const publicMomentSchedule = momentsDomain.publicMomentSchedule;
+const parseMomentOutput = momentsDomain.parseMomentOutput;
+const executeMomentSchedule = momentsDomain.executeMomentSchedule;
+const momentsTick = momentsDomain.momentsTick;
+const momentsEvent = momentsDomain.momentsEvent;
+const buildMomentPrompt = momentsDomain.buildMomentPrompt;
+const replyChainTick = momentsDomain.replyChainTick;
+const syncReplyChainThreads = momentsDomain.syncReplyChainThreads;
+const maybeCreateReplyTask = momentsDomain.maybeCreateReplyTask;
+const executeReplyChainTask = momentsDomain.executeReplyChainTask;
+const replyChainTaskCount = momentsDomain.replyChainTaskCount;
+const replyStore = momentsDomain.replyStore;
+const sanitizeReplyThread = momentsDomain.sanitizeReplyThread;
+const mergeThreadComments = momentsDomain.mergeThreadComments;
+const replyTaskKey = momentsDomain.replyTaskKey;
+
+/* ------------------------------------------------------------------ */
 /* 调度器（已提取到 active/scheduler.js 工厂；state 经 getState 注入） */
 /* ------------------------------------------------------------------ */
 
@@ -153,7 +218,7 @@ const scheduler = createScheduler({
   isInDnd, nextDndFree, planRunId, planMessageId, planSnapshotTask,
   generateProactiveMessage, windowsNotify, proactiveLog,
   callCharacterModel, contentText, parsePlanJson, isCharacterModelReady,
-  terminalRun, sameRunRevision,
+  terminalRun, sameRunRevision, momentsTick,
   startDelayMs: START_DELAY_MS,
   closeServer: callback => server.close(callback)
 });
@@ -181,7 +246,8 @@ const httpLayer = createHttp({
   saveNow,
   queueSave,
   publicPlan, sanitizeAiPlan, buildTaskReplacement, recordUserId,
-  trimText, deepClone, finiteTimestamp
+  trimText, deepClone, finiteTimestamp,
+  sanitizeMomentSchedule, publicMomentSchedule
 });
 const server = httpLayer.server;
 const originAllowed = httpLayer.originAllowed;
@@ -261,8 +327,25 @@ module.exports = {
   updatePlan,
   isLoopbackEndpoint,
   isCharacterModelReady,
+  sanitizeMomentSchedule,
+  publicMomentSchedule,
+  parseMomentOutput,
+  buildMomentPrompt,
+  executeMomentSchedule,
+  momentsTick,
+  momentsEvent,
   getState: () => state,
   setArmed: userId => { armedUsers.add(userId); },
   saveNow,
-  resetStateForTest: () => { state = emptyData(); }
+  resetStateForTest: () => { state = emptyData(); },
+  replyChainTick,
+  syncReplyChainThreads,
+  maybeCreateReplyTask,
+  executeReplyChainTask,
+  replyChainTaskCount,
+  replyStore,
+  sanitizeReplyThread,
+  mergeThreadComments,
+  replyTaskKey,
+  replyChainCore
 };

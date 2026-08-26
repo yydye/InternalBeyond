@@ -201,6 +201,12 @@ body:not(.theme-infernal) .group-api-item{background:rgba(245,250,255,0.5);color
 body:not(.theme-infernal) .group-api-item:hover{background:rgba(222,238,255,0.65)}
 body:not(.theme-infernal) .group-api-item.selected{background:rgba(120,175,242,0.22);border-color:rgba(80,145,205,0.45)}
 .group-api-item input[type=checkbox]{accent-color:var(--accent)}
+.group-role-search{width:100%;box-sizing:border-box;padding:8px 10px;border-radius:9px;border:1px solid var(--glass-border);background:rgba(255,255,255,0.05);color:var(--text-primary);font-size:0.78rem;font-family:inherit;margin:0 0 8px;outline:none}
+.group-role-search:focus{border-color:var(--accent-light);box-shadow:0 0 10px rgba(114,168,216,0.14)}
+.group-role-search::placeholder{color:var(--text-muted)}
+.group-role-empty{padding:10px 4px;font-size:0.75rem;color:var(--text-muted);text-align:center}
+body:not(.theme-infernal) .group-role-search{background:rgba(248,252,255,0.7);color:#1a3262;border-color:rgba(170,210,245,0.35)}
+body:not(.theme-infernal) .group-role-search::placeholder{color:#3f5e8c}
 .group-dialog-actions{display:flex;gap:10px;justify-content:flex-end}
 /* ── 创建群聊 / 新建话题频道 弹窗 · 统一样式 ──
    两个弹窗共用同一套视觉配方，参照 api-del-dialog 的干净玻璃底板：

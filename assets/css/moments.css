@@ -1,0 +1,84 @@
+﻿/* AI 朋友圈（Moments）样式 — 微信风格信息密度卡片，复用全局设计变量、主题切换
+   与 active-* 公共开关/表单组件；本文件只保留朋友圈特有的卡片与 Feed 样式。 */
+
+#page-moments{max-width:720px;margin:0 auto;padding-bottom:max(48px,env(safe-area-inset-bottom))}
+
+/* ── Feed 工具栏 ── */
+.moments-feed-toolbar{display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap;margin-bottom:var(--space-2)}
+.moments-feed-title{font-size:17px;font-weight:600;color:var(--content-primary);letter-spacing:.02em}
+.moments-feed-meta{font-size:12px;color:var(--content-muted);margin-left:auto}
+.moments-feed-toolbar select{flex:0 0 auto;min-width:130px;padding:7px 10px;border-radius:var(--radius-control);border:1px solid var(--border-soft);background:var(--surface-input);color:var(--content-primary);font-size:12.5px;outline:none}
+.moments-feed-toolbar select:focus{border-color:var(--focus-ring)}
+.moments-toolbar-actions{display:flex;gap:var(--space-2);align-items:center}
+
+/* ── 手动发布 ── */
+.moments-compose{margin-bottom:var(--space-5);padding:var(--space-4);border:1px dashed var(--border-soft);border-radius:var(--radius-card);background:var(--surface-card)}
+.moments-compose-title{font-size:13px;color:var(--content-secondary);margin-bottom:var(--space-3)}
+.moments-compose-row{display:flex;gap:var(--space-3);align-items:center;flex-wrap:wrap;margin-bottom:var(--space-3)}
+.moments-compose-row select,#mom-compose-text{background:var(--surface-input);border:1px solid var(--border-soft);border-radius:var(--radius-control);color:var(--content-primary);outline:none}
+.mom-compose-me{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;color:var(--content-secondary);white-space:nowrap}
+.mom-compose-me .mom-avatar{flex:0 0 auto;background:var(--surface-input);color:var(--content-primary);font-size:11px}
+.moments-compose-row select{padding:7px 10px;font-size:12.5px;min-width:130px}
+.moments-compose-row select:focus,#mom-compose-text:focus{border-color:var(--focus-ring)}
+#mom-compose-text{flex:1 1 260px;padding:9px 12px;font-size:13px;line-height:1.6;resize:vertical;min-height:64px;font-family:inherit}
+#mom-compose-imgs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:var(--space-3)}
+
+/* ── 状态 ── */
+.mom-state{padding:40px 16px;text-align:center;color:var(--content-muted);font-size:13px;line-height:1.8}
+.mom-retry{margin-left:var(--space-2)}
+.mom-more{padding:18px 16px}
+
+/* ── 私人日志（锁占位卡：无内容、无互动） ── */
+.mom-private-lock{opacity:.92}
+.mom-tag-private{color:#a98fd6;border-color:rgba(169,143,214,.45)}
+.mom-private-note{margin-top:10px;padding:10px 14px;border:1px dashed var(--border-soft);border-radius:var(--radius-card);background:var(--surface-card);color:var(--content-muted);font-size:12.5px;line-height:1.7}
+
+/* ── 动态卡片（微信朋友圈信息密度） ── */
+.mom-card{padding:var(--space-5) 0;border-bottom:1px solid var(--border-soft)}
+.mom-card:last-child{border-bottom:none}
+.mom-card-head{display:flex;align-items:flex-start;gap:var(--space-3)}
+.mom-avatar{width:42px;height:42px;flex-shrink:0;border-radius:50%;overflow:hidden;background:var(--surface-pressed);color:var(--content-secondary);display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:600;border:1px solid var(--border-soft)}
+.mom-avatar img{width:100%;height:100%;object-fit:cover;display:block}
+.mom-card-info{flex:1;min-width:0}
+.mom-card-name{font-size:14px;font-weight:600;color:var(--content-primary)}
+.mom-card-time{font-size:11.5px;color:var(--content-muted);margin-top:2px}
+.mom-tag{flex-shrink:0;font-size:10.5px;color:var(--content-muted);border:1px solid var(--border-soft);border-radius:8px;padding:1px 7px;line-height:1.5}
+.mom-card-body{padding:10px 0 2px;font-size:14px;line-height:1.75;color:var(--content-primary);word-break:break-word;white-space:pre-wrap}
+.mom-card-body p{margin:0 0 6px}
+.mom-card-body p:last-child{margin-bottom:0}
+/* ── 动态图片：1 张大图 / 2-4 网格 / 5+ 九宫格（微信式布局，点击复用聊天大图组件） ── */
+.mom-images{display:grid;gap:8px;margin-top:var(--space-2);grid-template-columns:repeat(3,1fr);max-width:320px}
+.mom-images.n1{grid-template-columns:minmax(180px,280px)}
+.mom-image{position:relative;border-radius:var(--radius-card);overflow:hidden;border:1px solid var(--border-soft);background:var(--surface-card);aspect-ratio:1/1;width:100%;height:auto;cursor:zoom-in}
+.mom-images.n1 .mom-image{aspect-ratio:4/3}
+.mom-image img{width:100%;height:100%;object-fit:cover;display:block}
+.mom-remove-image{position:absolute;top:3px;right:3px;width:18px;height:18px;border-radius:50%;border:none;background:rgba(20,30,60,.55);color:#fff;font-size:10px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;z-index:2}
+#mom-compose-imgs{max-width:320px}
+.mom-actions{display:flex;gap:var(--space-5);margin-top:var(--space-3);align-items:center}
+.mom-action-btn{border:none;background:none;cursor:pointer;font-size:12.5px;color:var(--content-muted);padding:2px 4px;border-radius:6px;transition:color var(--motion-fast) ease,background var(--motion-fast) ease;display:inline-flex;align-items:center;gap:3px}
+.mom-action-btn:hover{color:var(--content-primary);background:var(--surface-hover)}
+.mom-action-btn.liked{color:#e0565d}
+.mom-action-btn.mom-del{margin-left:auto}
+
+/* ── 评论 ── */
+.mom-comments{display:none;margin-top:var(--space-3);background:var(--surface-card);border:1px solid var(--border-soft);border-radius:var(--radius-card);padding:var(--space-3)}
+.mom-comments.open{display:block}
+.mom-comments-list{display:flex;flex-direction:column;gap:6px;margin-bottom:var(--space-2)}
+.mom-comment-row{display:flex;align-items:baseline;gap:6px;font-size:12.5px;line-height:1.6;color:var(--content-secondary);flex-wrap:wrap}
+.mom-comment-name{font-weight:600;color:var(--content-primary)}
+.mom-comment-text{color:var(--content-primary);word-break:break-word}
+.mom-comment-time{margin-left:auto;font-size:10.5px;color:var(--content-muted);flex-shrink:0}
+.mom-comment-del{border:none;background:none;cursor:pointer;color:var(--content-muted);font-size:11px;padding:0 2px;line-height:1}
+.mom-comment-del:hover{color:#e0565d}
+.mom-comment-input{display:flex;gap:var(--space-2);align-items:center}
+.mom-comment-input input{flex:1;min-width:0;padding:7px 10px;font-size:12.5px;border-radius:var(--radius-control);border:1px solid var(--border-soft);background:var(--surface-input);color:var(--content-primary);outline:none}
+.mom-comment-input input:focus{border-color:var(--focus-ring)}
+.mom-comment-input .btn{padding:6px 14px;font-size:12.5px;white-space:nowrap}
+
+/* ── 移动端 ── */
+@media (max-width:768px){
+  #page-moments{max-width:100%;padding:0 10px max(48px,env(safe-area-inset-bottom))}
+  .mom-images{max-width:100%}
+  .mom-card-name{font-size:13.5px}
+  .mom-card-body{font-size:13.5px}
+}

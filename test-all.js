@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 
 /* Internal Beyond · 一键全量测试入口（Node 18+，零依赖，跨平台）。
  *
@@ -30,6 +30,9 @@ const GROUPS = [
       ['test_bridge.js'],
       ['test_active_http.js'],
       ['test_active_plans.js'],
+      ['test_moments_companion.js'],
+      ['test_moments_http.js'],
+      ['test_socialnet_chain_companion_smoke.js'],
       ['test_local_services_runner.js']
     ]
   },
@@ -42,6 +45,12 @@ const GROUPS = [
       ['test_workspace_smoke.js'],
       ['test_memory_smoke.js'],
       ['test_active_diary_smoke.js'],
+      ['test_moments_smoke.js'],
+      ['test_moments_phase2_smoke.js'],
+      ['test_moments_phase3_smoke.js'],
+      ['test_moments_user_smoke.js'],
+      ['test_socialnet_smoke.js'],
+      ['test_socialnet_chain_smoke.js'],
       ['test_ui_regression.js'],
       ['test_dual_window.js']
     ]

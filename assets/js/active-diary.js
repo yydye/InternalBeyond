@@ -509,6 +509,7 @@ async function _activeTick(){
     if(_activeCompanionOnline&&now-_activeLastContextSync>5*60000)await _activeSyncAllBackground()
     await _activeTickAiPlans();/* AI 自主规划：到期评估与发送（fail-open） */
     await _diaryTick();/* 日记：每周周记 + 每日规划（fail-open） */
+    await _momentsTick();/* 朋友圈：角色自主发布调度（fail-open） */
   }catch(e){console.warn('[Active Messages] scheduler tick failed',e)}
   finally{_activeTicking=false}
 }

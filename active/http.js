@@ -10,7 +10,8 @@ function createHttp(ctx) {
   const {
     HOST, PORT, maxBody, getState, armedUsers, saveNow, queueSave,
     publicPlan, sanitizeAiPlan, buildTaskReplacement, recordUserId,
-    trimText, deepClone, finiteTimestamp
+    trimText, deepClone, finiteTimestamp,
+    sanitizeMomentSchedule, publicMomentSchedule
   } = ctx;
 
   function originAllowed(origin) {
@@ -95,13 +96,14 @@ function createHttp(ctx) {
       const url = new URL(request.url, `http://${HOST}:${PORT}`);
       const parts = url.pathname.split('/').filter(Boolean);
       const s = getState();
-      if (request.method === 'GET' && url.pathname === '/health') {
-        json(response, 200, {
+      if (request.method === 'GET' && url.pathname === '/health') {        json(response, 200, {
           ok: true,
           service: 'internal-beyond-active-messages',
           version: 3,
           tasks: Object.keys(s.tasks).length,
           plans: Object.keys(s.plans).length,
+          moments: Object.keys(s.moments || {}).length,
+          reply_chains: Object.keys(s.replyChains || {}).length,
           pending_events: Object.values(s.events).filter(event => !event.acknowledged).length,
           armed_users: armedUsers.size,
           now: Date.now()
@@ -245,6 +247,93 @@ function createHttp(ctx) {
         json(response, 200, { ok: true, missing: !existing, executed });
         return;
       }
+      /* ── Moments 后台朋友圈调度：与 plans 同一套 user_id 归属 + stale/executedAt 单调 + reconcile 声明 ── */
+      if (request.method === 'GET' && url.pathname === '/moments') {
+        const userId = String(url.searchParams.get('user_id') || '');
+        if (!userId) {
+          json(response, 400, { error: 'user_id is required' });
+          return;
+        }
+        json(response, 200, {
+          moments: Object.values(s.moments || {})
+            .filter(m => String(m && m.user_id || '') === userId)
+            .map(publicMomentSchedule)
+        });
+        return;
+      }
+      if (request.method === 'PUT' && parts[0] === 'moments' && parts[1]) {
+        const characterId = decodeURIComponent(parts.slice(1).join('/'));
+        const body = await readBody(request);
+        const raw = body && body.schedule || {};
+        if (!raw || String(raw.id || raw.characterId || '') !== characterId || !raw.characterId || !raw.user_id) {
+          json(response, 400, { error: 'Invalid moment schedule snapshot' });
+          return;
+        }
+        const incoming = sanitizeMomentSchedule(raw);
+        if (!incoming.characterId || !incoming.user_id) {
+          json(response, 400, { error: 'Invalid moment schedule snapshot' });
+          return;
+        }
+        const existing = (s.moments || {})[characterId];
+        const existingOwner = String(existing && existing.user_id || '');
+        if (existingOwner && existingOwner !== incoming.user_id) {
+          json(response, 403, { error: 'Moment schedule does not belong to this user' });
+          return;
+        }
+        const incomingUpdated = Date.parse(incoming.updatedAt) || 0;
+        const existingUpdated = existing ? (Date.parse(existing.updatedAt) || 0) : 0;
+        /* stale 判定：执行器推进（updatedAt 更新）后，旧的浏览器快照回写一律拒绝（防重复执行） */
+        if (existing && incomingUpdated < existingUpdated) {
+          json(response, 200, { ok: true, stale: true, schedule: publicMomentSchedule(existing) });
+          return;
+        }
+        /* executedAt 单调：已执行标记只前进不后退 */
+        const incomingExecTs = Date.parse(incoming.executedAt || '') || 0;
+        const existingExecTs = existing ? (Date.parse(existing.executedAt || '') || 0) : 0;
+        s.moments[characterId] = {
+          ...incoming,
+          executedAt: incomingExecTs > 0 && incomingExecTs >= existingExecTs
+            ? incoming.executedAt
+            : ((existing && existing.executedAt) || null),
+          character: deepClone(body.character || {}),
+          user: deepClone(body.user || {}),
+          recent_memories: Array.isArray(body.recent_memories) ? deepClone(body.recent_memories.slice(0, 8)) : [],
+          recent_messages: Array.isArray(body.recent_messages) ? deepClone(body.recent_messages.slice(-16)) : [],
+          recent_proactive_messages: Array.isArray(body.recent_proactive_messages) ? deepClone(body.recent_proactive_messages.slice(-10)) : [],
+          chat_summary: trimText(body.chat_summary, 1200),
+          last_interaction_at: finiteTimestamp(body.last_interaction_at),
+          recent_moments: Array.isArray(body.recent_moments) ? deepClone(body.recent_moments.slice(0, 30)) : [],
+          other_role_moments: Array.isArray(body.other_role_moments) ? deepClone(body.other_role_moments.slice(0, 20)) : [],
+          /* ── AI↔AI 回复链：线程快照 + 角色偏好（同一 PUT 载荷的附加字段，协议不变） ── */
+          recent_threads: Array.isArray(body.recent_threads) ? deepClone(body.recent_threads.slice(0, 8)) : [],
+          moments_prefs: (body.prefs && typeof body.prefs === 'object') ? deepClone(body.prefs) : {},
+          synced_at: Date.now()
+        };
+        saveNow();
+        json(response, 200, { ok: true, stale: false, schedule: publicMomentSchedule(s.moments[characterId]) });
+        return;
+      }
+      if (request.method === 'DELETE' && parts[0] === 'moments' && parts[1]) {
+        const characterId = decodeURIComponent(parts.slice(1).join('/'));
+        const userId = String(url.searchParams.get('user_id') || '');
+        if (!userId) {
+          json(response, 400, { error: 'user_id is required' });
+          return;
+        }
+        const existing = (s.moments || {})[characterId];
+        if (existing && String(existing.user_id || '') !== userId) {
+          json(response, 403, { error: 'Moment schedule does not belong to this user' });
+          return;
+        }
+        const executed = !!(existing && existing.executedAt);
+        if (existing) {
+          delete s.moments[characterId];
+          saveNow();
+        }
+        /* executed 标记：与 plans 同理，防止浏览器误判后本地补发已执行动态 */
+        json(response, 200, { ok: true, missing: !existing, executed });
+        return;
+      }
       if (request.method === 'POST' && url.pathname === '/reconcile') {
         const body = await readBody(request);
         const userId = String(body && body.user_id || '');
@@ -252,8 +341,10 @@ function createHttp(ctx) {
            未声明的一侧保持不动（避免 AI 计划同步误删手动任务或反之） */
         const hasTasks = Array.isArray(body && body.task_ids);
         const hasPlans = Array.isArray(body && body.plan_ids);
+        const hasMomentIds = Array.isArray(body && body.moment_ids);
         const keep = new Set(hasTasks ? body.task_ids.map(String) : []);
         const keepPlans = new Set(hasPlans ? body.plan_ids.map(String) : []);
+        const keepMoments = new Set(hasMomentIds ? body.moment_ids.map(String) : []);
         if (!userId) {
           json(response, 400, { error: 'user_id is required' });
           return;
@@ -278,10 +369,20 @@ function createHttp(ctx) {
             }
           });
         }
-        if (removed || removedPlans) saveNow();
+        let removedMoments = 0;
+        if (hasMomentIds) {
+          Object.keys(s.moments || {}).forEach(characterId => {
+            const momentUser = String(s.moments[characterId] && s.moments[characterId].user_id || '');
+            if (momentUser === userId && !keepMoments.has(characterId)) {
+              delete s.moments[characterId];
+              removedMoments += 1;
+            }
+          });
+        }
+        if (removed || removedPlans || removedMoments) saveNow();
         /* Arming is intentionally last and process-local: a failed reconcile never enables scheduling. */
         armedUsers.add(userId);
-        json(response, 200, { ok: true, removed, removed_plans: removedPlans, armed: true });
+        json(response, 200, { ok: true, removed, removed_plans: removedPlans, removed_moments: removedMoments, armed: true });
         return;
       }
       if (request.method === 'GET' && url.pathname === '/events') {

@@ -580,14 +580,23 @@ function compressImage(file){
   })
 }
 
-/* DeepSeek has no native image input in this app. Images are understood locally first,
-   then the resulting description is supplied to the character's normal DeepSeek call. */
+/* DeepSeek 普通文本模型没有原生图片输入：图片先由本地 Qwen2.5-VL 识别，
+   再把描述文本交给角色的 DeepSeek 请求。
+   例外：模型名精确为 deepseek-v4-flash-vision-exp 时，图片直接随消息发送给
+   DeepSeek（OpenAI image_url 格式），由模型完成视觉理解与推理。 */
+const DEEPSEEK_NATIVE_VISION_MODEL='deepseek-v4-flash-vision-exp';
+function _isDeepSeekNativeVisionModel(model){
+  return String((model==null?'':model)).trim().toLowerCase()===DEEPSEEK_NATIVE_VISION_MODEL;
+}
+function _usesNativeDeepSeekVision(cfg){
+  return !!(cfg&&_isDeepSeekNativeVisionModel(cfg.model));
+}
 const LOCAL_VISION_ENDPOINT='http://127.0.0.1:8765/vision';
 const _localVisionCache=new Map();
 function _usesLocalDeepSeekVision(cfg){
   const provider=String((cfg&&cfg.provider)||'').toLowerCase();
   const model=String((cfg&&cfg.model)||'').toLowerCase();
-  return provider==='deepseek'||model.indexOf('deepseek')>=0
+  return (provider==='deepseek'||model.indexOf('deepseek')>=0)&&!_usesNativeDeepSeekVision(cfg)
 }
 function _localVisionCacheKey(img,prompt){
   const raw=String((img&&img.base64)||'');
@@ -1377,7 +1386,8 @@ async function sendChatMessage(voiceMsg){
         }
         /* 群聊图片注入：检查当前成员是否支持视觉 */
         const _gLocalVision=_usesLocalDeepSeekVision(cfg);
-        const _gVisionOk=_gLocalVision||(cfg.vision!==undefined?!!cfg.vision:!!(PROVIDERS[cfg.provider]&&PROVIDERS[cfg.provider].vision));
+        const _gNativeDeepSeekVision=_usesNativeDeepSeekVision(cfg);
+        const _gVisionOk=_gLocalVision||_gNativeDeepSeekVision||(cfg.vision!==undefined?!!cfg.vision:!!(PROVIDERS[cfg.provider]&&PROVIDERS[cfg.provider].vision));
         try{if(_ibToolDrainImages.length){const _gti=_ibToolDrainImages.splice(0);if(_gVisionOk)_gti.forEach(u=>sentImages.push({dataUrl:u,name:'tool_result.png'}))}}catch(e){}
         if(sentImages.length&&messages.length){
           if(_gLocalVision){
@@ -1392,7 +1402,11 @@ async function sendChatMessage(voiceMsg){
           }else if(_gVisionOk){
             for(let gi=messages.length-1;gi>=0;gi--){
               if(messages[gi].role==='user'){
-                const txtVal=(getTextContent(messages[gi])||'请查看图片')+'\n\n【本条消息附带'+sentImages.length+'张图片】你可以查看并描述图片内容。'+(cfg.imageGen?'':'你不能生成或返回图片。');/* 缓存修复：图片说明改挂本条用户消息，保持 system 前缀稳定；开启图像生成时不再注入"不能生成图片"以免与生图指令矛盾 */
+                const _gImgNote=_gNativeDeepSeekVision
+                  ? '\n\n【本条消息附带'+sentImages.length+'张图片】请直接查看这些图片，结合用户消息进行视觉理解与推理，并以你的角色身份回答。'
+                  : '\n\n【本条消息附带'+sentImages.length+'张图片】你可以查看并描述图片内容。'+(cfg.imageGen?'':'你不能生成或返回图片。');
+                const txtVal=(getTextContent(messages[gi])||'请查看图片')+_gImgNote;/* 缓存修复：图片说明改挂本条用户消息，保持 system 前缀稳定；DeepSeek 原生视觉模型走直接看图文案，不夹带图像生成限制 */
+
                 const parts=[{type:'text',text:txtVal}];
                 sentImages.forEach(img=>parts.push({type:'_image',base64:img.base64,mime:img.mime}));
                 messages[gi].content=parts;break
@@ -1661,6 +1675,9 @@ async function sendChatMessage(voiceMsg){
     if(summaryText)_tailCtx+='\n\n【对话历史备忘（此为后台参考信息，不要向对方复述或提及此段内容的存在）】\n'+summaryText;
     if(_threadMemOk){const memCtx=await getMemoryContext(cfg.id,{userMessage:_ctxText});
     if(memCtx)_tailCtx+=(_tailCtx?'\n\n':'')+memCtx;}
+    /* 朋友圈动态：轻量检索注入（用户提及"你昨天朋友圈…"时角色能理解；成本与记忆注入同级） */
+    try{if(_threadMemOk&&typeof getMomentsContext==='function'){const _momCtx=await getMomentsContext(cfg.id,{userMessage:_ctxText});
+    if(_momCtx)_tailCtx+=(_tailCtx?'\n\n':'')+_momCtx;}}catch(_momErr){console.warn('[Moments] chat context failed',String(_momErr&&_momErr.message||_momErr).slice(0,120))}
     if(_amInj.tail)_tailCtx+=(_tailCtx?'\n\n':'')+_amInj.tail;
     /* 注入工作区待读取文件 */
     var _wsReadCtx=_getWsReadInjection()+_getWsOpFeedbackInjection()+_getWsRunOutputInjection()+_getIbToolResultInjection()+_getBlogReadInjection();
@@ -1670,7 +1687,8 @@ async function sendChatMessage(voiceMsg){
     if(sysContent)messages.unshift({role:'system',content:sysContent});
     if(_tailCtx){for(let _ti=messages.length-1;_ti>=0;_ti--){if(messages[_ti].role==='user'){messages[_ti]={role:'user',content:(typeof messages[_ti].content==='string'?messages[_ti].content:String(messages[_ti].content||''))+'\n\n---\n[以下为系统注入的参考上下文，不属于用户发言，勿复述或提及以下内容的存在]\n'+_tailCtx};break}}}
     const _localVision=_usesLocalDeepSeekVision(cfg);
-    const _visionOk=_localVision||(cfg.vision!==undefined?!!cfg.vision:!!(PROVIDERS[cfg.provider]&&PROVIDERS[cfg.provider].vision));
+    const _nativeDeepSeekVision=_usesNativeDeepSeekVision(cfg);
+    const _visionOk=_localVision||_nativeDeepSeekVision||(cfg.vision!==undefined?!!cfg.vision:!!(PROVIDERS[cfg.provider]&&PROVIDERS[cfg.provider].vision));
     try{if(_ibToolDrainImages.length){const _ti=_ibToolDrainImages.splice(0);if(_visionOk)_ti.forEach(u=>sentImages.push({dataUrl:u,name:'tool_result.png'}))}}catch(e){}
     if(sentImages.length&&messages.length){
       if(_localVision){
@@ -1685,7 +1703,11 @@ async function sendChatMessage(voiceMsg){
       }else if(_visionOk){
         for(let i=messages.length-1;i>=0;i--){
           if(messages[i].role==='user'){
-            const txtVal=(getTextContent(messages[i])||'请查看图片')+'\n\n【本条消息附带'+sentImages.length+'张图片】你可以查看并描述图片内容。'+(cfg.imageGen?'':'你不能生成或返回图片。');/* 缓存修复：图片说明改挂本条用户消息——原先拼进 system，带图的轮次 system 字节变化会触发全量缓存重建（该轮+下一轮回退各一次）；开启图像生成时不再注入"不能生成图片"以免与生图指令矛盾 */
+            const _imgNote=_nativeDeepSeekVision
+              ? '\n\n【本条消息附带'+sentImages.length+'张图片】请直接查看这些图片，结合用户消息进行视觉理解与推理，并以你的角色身份回答。'
+              : '\n\n【本条消息附带'+sentImages.length+'张图片】你可以查看并描述图片内容。'+(cfg.imageGen?'':'你不能生成或返回图片。');
+            const txtVal=(getTextContent(messages[i])||'请查看图片')+_imgNote;/* 缓存修复：图片说明改挂本条用户消息——原先拼进 system，带图的轮次 system 字节变化会触发全量缓存重建（该轮+下一轮回退各一次）；DeepSeek 原生视觉模型走直接看图文案，不夹带图像生成限制 */
+
             const parts=[{type:'text',text:txtVal}];
             sentImages.forEach(img=>parts.push({type:'_image',base64:img.base64,mime:img.mime}));
             messages[i].content=parts;break
@@ -2229,9 +2251,10 @@ function _injectAnthropicMsgCache(chatMsgs,cfg){
 function _adaptContentForApi(content,fmt,allowImages){
   if(typeof content==='string')return content;
   if(!Array.isArray(content))return String(content||'');
-  /* DeepSeek receives local LocateAnything descriptions, never image blocks.
-     Apply this at the final request boundary as well so historical images and
-     function-call/tool messages cannot reintroduce image_url. */
+  /* DeepSeek 文本模型只接收本地视觉描述，不接收 image blocks。
+     deepseek-v4-flash-vision-exp 例外：调用方会传入 allowImages=true，
+     由这里转换为 OpenAI image_url 后随消息直发。
+     此边界过滤用于防止历史图片与 function-call/tool 消息重新引入 image_url。 */
   if(allowImages===false)return content.filter(p=>p&&p.type==='text').map(p=>p.text||'').join('');
   if(fmt==='anthropic')return content.map(p=>{
     if(p.type==='_image')return{type:'image',source:{type:'base64',media_type:p.mime,data:p.base64}};
@@ -2353,7 +2376,7 @@ async function callApiChatStream(cfg,messages,opts){
   var st=_newCallState(opts);/* 并发隔离：本次调用的独立状态（思考/结束原因/停止/可中止句柄），按 chatKey 注册供停止按钮定位 */
   /* FC：原生函数调用（anthropic/openai 走 tools 参数；无工具块/开关关/其他厂商 → 不激活，回落 XML 通道） */
   var _fcCtx=null;
-  try{if(!opts.disableTools&&typeof IBFC!=='undefined'){var _fcv=IBFC.prepare(messages,PROVIDERS[cfg.provider]?.format||'openai',{vision:cfg.vision!==undefined?!!cfg.vision:!!(PROVIDERS[cfg.provider]&&PROVIDERS[cfg.provider].vision)});if(_fcv&&_fcv.active){_fcCtx=_fcv;msgs=_fcCtx.messages}}}catch(e){_fcCtx=null}
+  try{if(!opts.disableTools&&typeof IBFC!=='undefined'){var _fcv=IBFC.prepare(messages,PROVIDERS[cfg.provider]?.format||'openai',{vision:_usesNativeDeepSeekVision(cfg)||(cfg.vision!==undefined?!!cfg.vision:!!(PROVIDERS[cfg.provider]&&PROVIDERS[cfg.provider].vision))});if(_fcv&&_fcv.active){_fcCtx=_fcv;msgs=_fcCtx.messages}}}catch(e){_fcCtx=null}
   try{/* 并发隔离：任何退出路径都在函数尾 finally 注销本对话的调用状态 */
   for(var round=0;;round++){
     var hold='',holding=round>0;/* 续写轮先缓冲开头，做接缝去重后再上屏 */
@@ -2423,7 +2446,7 @@ async function callApiChat(cfg,messages,opts){
   var st=_newCallState(null);/* 并发隔离：仅用于按调用隔离思考/结束原因；非流式没有停止入口，不注册停止路由（与原行为一致） */
   /* FC：原生函数调用（与流式同一套；无工具块/开关关/其他厂商 → 不激活） */
   var _fcCtx=null;
-  try{if(!opts.disableTools&&typeof IBFC!=='undefined'){var _fcv=IBFC.prepare(messages,PROVIDERS[cfg.provider]?.format||'openai',{vision:cfg.vision!==undefined?!!cfg.vision:!!(PROVIDERS[cfg.provider]&&PROVIDERS[cfg.provider].vision)});if(_fcv&&_fcv.active){_fcCtx=_fcv;msgs=_fcCtx.messages}}}catch(e){_fcCtx=null}
+  try{if(!opts.disableTools&&typeof IBFC!=='undefined'){var _fcv=IBFC.prepare(messages,PROVIDERS[cfg.provider]?.format||'openai',{vision:_usesNativeDeepSeekVision(cfg)||(cfg.vision!==undefined?!!cfg.vision:!!(PROVIDERS[cfg.provider]&&PROVIDERS[cfg.provider].vision))});if(_fcv&&_fcv.active){_fcCtx=_fcv;msgs=_fcCtx.messages}}}catch(e){_fcCtx=null}
   try{/* 并发隔离：任何退出路径都在函数尾 finally 注销状态 */
   for(var round=0;;round++){
     var o=Object.assign({},opts,{maxTokens:budget,wantMeta:true});
@@ -2572,11 +2595,23 @@ async function _callApiChatStreamOnce(cfg,messages,opts){
       if(cfg.promptCache!==false)ob.stream_options={include_usage:true};/* 用量回传：与上方附加参数同受"提示缓存"开关控制 */
       if(cfg.promptCache!==false){try{_ibOaiCacheDiag(cfg,ob.messages)}catch(e){}}/* 前缀缓存诊断（console-only） */
       if(cfg.temperature!=null)ob.temperature=cfg.temperature;
+      /* ── 临时调试（定位 OpenRouter 400；测试完删除本段）──
+         console 执行：localStorage.setItem('ib_debug_omit','prompt_cache_key,stream_options') 可逐项剔除；
+         支持字段名：prompt_cache_key / stream_options / temperature / tools / web_search_options / max_tokens 等 */
+      try{
+        var _dbgOmit=(typeof localStorage!=='undefined'?localStorage.getItem('ib_debug_omit'):'')||'';
+        var _dbgKeys=_dbgOmit.split(/[,，\s]+/).map(function(s){return s.trim()}).filter(Boolean);
+        if(_dbgKeys.length){_dbgKeys.forEach(function(k){delete ob[k]});console.warn('[IB调试] 已临时移除请求体字段:',_dbgKeys.join(', '))}
+        var _dbgBody=JSON.parse(JSON.stringify(ob));
+        (function _dbgRedact(o){if(!o||typeof o!=='object')return;for(var k in o){if(/key|token|secret|authorization/i.test(k)&&typeof o[k]==='string'&&o[k]){o[k]=String(o[k]).slice(0,4)+'***'+String(o[k]).slice(-4)}else _dbgRedact(o[k])}})(_dbgBody);
+        console.log('[IB调试] 最终请求体:',JSON.stringify(_dbgBody,null,2));
+        console.log('[IB调试] 请求URL:',url,'| Authorization:',cfg.apiKey?('Bearer '+String(cfg.apiKey).slice(0,6)+'***'):'(无)');
+      }catch(e){}
       body=JSON.stringify(ob);
     }
     const res=await fetch(url,{method:'POST',signal:ac.signal,headers:hdrs,body});
     clearTimeout(tm);_resetHB();
-    if(!res.ok){const e=await res.text();throw new Error(res.status+': '+e)}
+    if(!res.ok){const e=await res.text();console.error('[IB API错误]',res.status,e);throw new Error(res.status+': '+e)}
     const _sct=res.headers.get('content-type')||'';
     if(_sct.includes('text/html')){throw new Error('API端点返回了网页而非JSON——请检查端点URL是否正确。如使用中转站，请确认API地址填写到完整路径（如 https://xxx.com/v1/chat/completions）')}
     const reader=res.body.getReader();const decoder=new TextDecoder();let buf='';
@@ -3256,6 +3291,9 @@ window._capFileText=_capFileText;
 window.toggleAttachPopup=toggleAttachPopup;
 window.pickImage=pickImage;
 window.compressImage=compressImage;
+window.DEEPSEEK_NATIVE_VISION_MODEL=DEEPSEEK_NATIVE_VISION_MODEL;
+window._isDeepSeekNativeVisionModel=_isDeepSeekNativeVisionModel;
+window._usesNativeDeepSeekVision=_usesNativeDeepSeekVision;
 window._usesLocalDeepSeekVision=_usesLocalDeepSeekVision;
 window._localVisionCacheKey=_localVisionCacheKey;
 window._requestLocalVision=_requestLocalVision;
@@ -3442,6 +3480,9 @@ NS.expose('chat', {
   toggleAttachPopup: toggleAttachPopup,
   pickImage: pickImage,
   compressImage: compressImage,
+  DEEPSEEK_NATIVE_VISION_MODEL: DEEPSEEK_NATIVE_VISION_MODEL,
+  _isDeepSeekNativeVisionModel: _isDeepSeekNativeVisionModel,
+  _usesNativeDeepSeekVision: _usesNativeDeepSeekVision,
   _usesLocalDeepSeekVision: _usesLocalDeepSeekVision,
   _localVisionCacheKey: _localVisionCacheKey,
   _requestLocalVision: _requestLocalVision,

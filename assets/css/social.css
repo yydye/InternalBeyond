@@ -1,0 +1,229 @@
+﻿/* InternetBeyond · AI 社交网络（Social Net）样式
+   复用全局设计变量（--surface-* / --content-* / --border-* / --radius-* / --motion-*），
+   主体在原有 Moments 能力之上新增：站点栏 / 页签 / 双栏 Feed / 好友 / 角色主页 / 讨论串 / 转发引用。
+   深色（body.theme-infernal）自动随变量成立，不建第三套主题。 */
+
+#page-moments{max-width:1180px;margin:0 auto;padding-bottom:max(48px,env(safe-area-inset-bottom))}
+#page-moments [hidden]{display:none !important}
+
+/* ── 站点栏 ── */
+.net-sitebar{display:flex;align-items:center;gap:var(--space-4);flex-wrap:wrap;padding:var(--space-3) 0 var(--space-3);border-bottom:1px solid var(--border-soft)}
+.net-brand{font-size:1.35rem;font-weight:700;letter-spacing:.02em;color:var(--content-primary);white-space:nowrap}
+.net-site-actions{display:flex;align-items:center;gap:var(--space-2);margin-left:auto;flex:1 1 auto;justify-content:flex-end;min-width:0}
+.net-search{flex:0 1 260px;min-width:140px;padding:8px 14px;border-radius:999px;border:1px solid var(--border-soft);background:var(--surface-input);color:var(--content-primary);font-size:13px;outline:none}
+.net-search:focus{border-color:var(--focus-ring)}
+.net-tool{padding:7px 14px;font-size:12.5px;white-space:nowrap}
+
+/* ── 页签 ── */
+.net-tabs{display:flex;gap:var(--space-2);padding:var(--space-3) 0 var(--space-3);border-bottom:1px solid var(--border-soft)}
+.net-tab{border:none;background:none;cursor:pointer;font-size:14.5px;font-weight:600;color:var(--content-muted);padding:8px 18px;border-radius:999px;transition:color var(--motion-fast) ease,background var(--motion-fast) ease}
+.net-tab:hover{color:var(--content-primary);background:var(--surface-hover)}
+.net-tab.is-active{color:var(--content-primary);background:var(--surface-card);border:1px solid var(--border-soft);box-shadow:var(--shadow-card)}
+
+.net-hidden{display:none !important}
+.net-avi-hidden{display:none !important}
+.net-mini{padding:5px 12px;font-size:12px}
+
+/* ── 双栏布局 ── */
+.net-columns{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:var(--space-5);align-items:start}
+.net-main{min-width:0}
+.net-side{display:flex;flex-direction:column;gap:var(--space-4);position:sticky;top:14px}
+
+/* ── 发布框 ── */
+.net-compose{padding:var(--space-4);margin-bottom:var(--space-4)}
+.net-compose-row{display:flex;gap:var(--space-3);align-items:flex-start;flex-wrap:wrap;margin-bottom:var(--space-3)}
+.net-compose-row:last-of-type{align-items:center}
+.net-compose-text{flex:1 1 260px;min-height:74px;padding:10px 14px;font-size:14px;line-height:1.65;border-radius:var(--radius-control);border:1px solid var(--border-soft);background:var(--surface-input);color:var(--content-primary);outline:none;resize:vertical;font-family:inherit}
+.net-compose-text:focus{border-color:var(--focus-ring)}
+.net-compose-select{padding:7px 10px;font-size:12.5px;min-width:130px;border-radius:var(--radius-control);border:1px solid var(--border-soft);background:var(--surface-input);color:var(--content-primary);outline:none}
+#mom-compose-imgs{margin-top:var(--space-2);max-width:100%}
+
+/* ── Feed 头部 ── */
+.net-feed-head{display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap;margin:var(--space-2) 0 var(--space-3)}
+.net-feed-title{font-size:17px;font-weight:700;color:var(--content-primary)}
+.net-feed-sub{font-size:12px;color:var(--content-muted);font-weight:400;margin-left:8px}
+.net-feed-meta{font-size:12px;color:var(--content-muted)}
+.net-feed-tools{display:flex;gap:var(--space-2);align-items:center;margin-left:auto;flex-wrap:wrap}
+
+/* ── Feed 卡片 ── */
+.net-feed{display:flex;flex-direction:column}
+.net-card{padding:var(--space-5) 0;border-bottom:1px solid var(--border-soft)}
+.net-card:last-child{border-bottom:none}
+.net-card-head{display:flex;align-items:flex-start;gap:var(--space-3)}
+.net-avatar{width:46px;height:46px;flex-shrink:0;border-radius:50%;overflow:hidden;background:var(--surface-pressed);color:var(--content-secondary);display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:700;border:1px solid var(--border-soft);cursor:pointer;transition:box-shadow var(--motion-fast) ease,border-color var(--motion-fast) ease}
+.net-avatar:hover{border-color:var(--focus-ring);box-shadow:0 0 0 3px color-mix(in srgb,var(--focus-ring) 18%,transparent)}
+.net-avatar img{width:100%;height:100%;object-fit:cover;display:block}
+.net-card-ident{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
+.net-card-name{font-size:14.5px;font-weight:700;color:var(--content-primary);background:none;border:none;padding:0;cursor:pointer;text-align:left;font-family:inherit}
+.net-card-name:hover{text-decoration:underline}
+.net-card-handle{font-size:12px;color:var(--content-muted)}
+.net-card-time{flex-shrink:0;font-size:11.5px;color:var(--content-muted);margin-top:2px}
+.net-card-tag{flex-shrink:0;font-size:10.5px;color:var(--content-muted);border:1px solid var(--border-soft);border-radius:8px;padding:1px 7px;line-height:1.5}
+.net-card-body{padding:8px 0 2px;font-size:14.5px;line-height:1.75;color:var(--content-primary);word-break:break-word;white-space:pre-wrap}
+.net-card-body p{margin:0 0 6px}
+.net-card-body p:last-child{margin-bottom:0}
+
+/* ── 卡片图片：1 大图 / 2-4 网格 / 5+ 九宫格（微博式） ── */
+.net-images{display:grid;gap:6px;margin-top:var(--space-2);grid-template-columns:repeat(3,minmax(0,1fr));max-width:420px}
+.net-images.n1{grid-template-columns:minmax(0,1fr);max-width:360px}
+.net-image{position:relative;border-radius:var(--radius-card);overflow:hidden;border:1px solid var(--border-soft);background:var(--surface-card);aspect-ratio:1/1;width:100%;height:auto;cursor:zoom-in}
+.net-images.n1 .net-image{aspect-ratio:4/3}
+.net-image img{width:100%;height:100%;object-fit:cover;display:block}
+
+/* ── 转发/引用块 ── */
+.net-repost{margin-top:var(--space-2);padding:var(--space-3);border-left:3px solid var(--border-strong);background:var(--surface-card);border-radius:var(--radius-card)}
+.net-repost-head{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--content-secondary);margin-bottom:4px;flex-wrap:wrap}
+.net-repost-head .net-name-btn{background:none;border:none;padding:0;cursor:pointer;font-weight:700;color:var(--content-primary);font-size:12.5px;font-family:inherit}
+.net-repost-head .net-name-btn:hover{text-decoration:underline}
+.net-repost-body{font-size:13px;line-height:1.7;color:var(--content-secondary);white-space:pre-wrap;word-break:break-word}
+.net-repost-imgs{display:grid;gap:6px;grid-template-columns:repeat(3,minmax(0,1fr));max-width:260px;margin-top:8px}
+.net-repost-imgs .net-image{cursor:zoom-in}
+
+/* ── 操作行 ── */
+.net-actions{display:flex;gap:var(--space-5);margin-top:var(--space-3);align-items:center}
+.net-action{border:none;background:none;cursor:pointer;font-size:12.5px;color:var(--content-muted);padding:3px 6px;border-radius:8px;transition:color var(--motion-fast) ease,background var(--motion-fast) ease;display:inline-flex;align-items:center;gap:4px}
+.net-action:hover{color:var(--content-primary);background:var(--surface-hover)}
+.net-action.is-liked{color:#e0565d}
+.net-action.net-del{margin-left:auto;color:var(--content-muted)}
+.net-action.net-del:hover{color:#e0565d}
+
+/* ── 卡片内评论预览 ── */
+.net-comments{margin-top:var(--space-3);background:var(--surface-card);border:1px solid var(--border-soft);border-radius:var(--radius-card);padding:var(--space-3);display:flex;flex-direction:column;gap:8px}
+.net-comment-row{display:flex;align-items:baseline;gap:6px;font-size:12.5px;line-height:1.6;color:var(--content-secondary);flex-wrap:wrap;cursor:pointer}
+.net-comment-row:hover .net-comment-text{text-decoration:underline}
+.net-comment-name{font-weight:700;color:var(--content-primary)}
+.net-comment-text{color:var(--content-primary);word-break:break-word}
+.net-comment-meta{font-size:10.5px;color:var(--content-muted);flex-shrink:0}
+.net-thread-link{margin-top:2px;font-size:12px;color:var(--accent-light);background:none;border:none;padding:2px 0;cursor:pointer;text-align:left;font-family:inherit}
+.net-thread-link:hover{text-decoration:underline}
+
+/* ── 右侧好友栏 ── */
+.net-side-card{padding:var(--space-4)}
+.net-side-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--space-3)}
+.net-side-title{font-size:14.5px;font-weight:700;color:var(--content-primary)}
+.net-side-tip .net-side-p{font-size:12.5px;line-height:1.8;color:var(--content-muted);margin:8px 0 0}
+.net-friends-list{display:flex;flex-direction:column;gap:4px}
+.net-friend-row{display:flex;align-items:center;gap:10px;padding:8px 6px;border-radius:var(--radius-control);cursor:pointer;transition:background var(--motion-fast) ease}
+.net-friend-row:hover{background:var(--surface-hover)}
+.net-friend-row .net-avatar{width:36px;height:36px;font-size:14px}
+.net-friend-info{flex:1;min-width:0}
+.net-friend-name{font-size:13px;font-weight:700;color:var(--content-primary);background:none;border:none;padding:0;cursor:pointer;font-family:inherit}
+.net-friend-name:hover{text-decoration:underline}
+.net-friend-handle{font-size:11px;color:var(--content-muted)}
+.net-follow-btn{flex-shrink:0;border:1px solid var(--border-soft);background:none;color:var(--content-secondary);border-radius:999px;padding:4px 12px;font-size:11.5px;cursor:pointer;transition:all var(--motion-fast) ease;font-family:inherit}
+.net-follow-btn:hover{border-color:var(--focus-ring)}
+.net-follow-btn.is-following{background:color-mix(in srgb,var(--accent) 14%,var(--surface-card));border-color:color-mix(in srgb,var(--accent) 46%,var(--border-soft));color:var(--content-primary)}
+
+/* ── 好友视图 ── */
+.net-friends-card{padding:var(--space-5)}
+.net-friends-head{display:flex;align-items:center;justify-content:space-between;gap:var(--space-3);flex-wrap:wrap;margin-bottom:var(--space-4)}
+.net-friends-filter{display:flex;gap:6px}
+.net-chip{border:1px solid var(--border-soft);background:none;color:var(--content-muted);border-radius:999px;padding:5px 14px;font-size:12px;cursor:pointer;font-family:inherit}
+.net-chip.is-active{color:var(--content-primary);background:var(--surface-card);border-color:var(--border-strong)}
+.net-friends-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:var(--space-4)}
+.net-friend-card{padding:var(--space-4);border:1px solid var(--border-soft);border-radius:var(--radius-card);background:var(--surface-card);display:flex;flex-direction:column;gap:8px;transition:border-color var(--motion-fast) ease,box-shadow var(--motion-fast) ease}
+.net-friend-card:hover{border-color:var(--border-strong);box-shadow:var(--shadow-panel)}
+.net-friend-card-head{display:flex;align-items:center;gap:10px}
+.net-friend-card .net-avatar{width:52px;height:52px;font-size:19px}
+.net-friend-bio{font-size:12.5px;line-height:1.7;color:var(--content-muted);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:2.4em}
+.net-friend-card-actions{display:flex;gap:8px;margin-top:auto;padding-top:6px}
+.net-friend-card-actions .btn{flex:1;padding:6px 10px;font-size:12px}
+
+/* ── 角色主页（Profile） ── */
+.net-profile-outer{max-width:760px;margin:0 auto}
+.net-profile{padding:0;overflow:hidden;margin-bottom:var(--space-3)}
+.net-profile-banner{height:240px;background-size:cover;background-position:center;position:relative}
+.net-profile-banner.is-empty{background:linear-gradient(135deg,color-mix(in srgb,var(--accent) 55%,var(--surface-panel-strong)),color-mix(in srgb,var(--accent-light) 30%,var(--surface-panel-strong)));display:flex;align-items:center;justify-content:center}
+.net-profile-banner-letter{font-size:88px;font-weight:800;color:rgba(255,255,255,.4);user-select:none}
+.net-profile-head{display:flex;gap:var(--space-4);padding:0 var(--space-5) var(--space-4);flex-wrap:wrap}
+.net-profile-avatar{width:104px;height:104px;flex-shrink:0;border-radius:50%;overflow:hidden;background:var(--surface-pressed);color:var(--content-secondary);display:flex;align-items:center;justify-content:center;font-size:38px;font-weight:800;border:5px solid var(--surface-panel-strong);margin-top:-52px;box-shadow:var(--shadow-card);position:relative;z-index:2}
+.net-profile-avatar img{width:100%;height:100%;object-fit:cover;display:block}
+.net-profile-ident{flex:1;min-width:220px;padding-top:14px;display:flex;flex-direction:column;gap:4px}
+.net-profile-name{font-size:22px;font-weight:800;color:var(--content-primary)}
+.net-profile-handle{font-size:13px;color:var(--content-muted)}
+.net-profile-signature{font-size:13px;color:var(--content-secondary);font-style:italic;letter-spacing:.04em}
+.net-profile-bio{font-size:13.5px;line-height:1.75;color:var(--content-secondary);margin-top:6px}
+.net-profile-joined{font-size:12px;color:var(--content-muted);margin-top:4px}
+.net-profile-follow{margin-left:auto;align-self:flex-start;margin-top:18px}
+.net-profile-follow .net-follow-btn{font-size:13px;padding:8px 22px}
+.net-profile-note{font-size:12px;color:var(--content-muted);margin-top:6px}
+
+/* ── 主页页签与内容 ── */
+.net-profile-tabs{display:flex;gap:var(--space-1);border-bottom:1px solid var(--border-soft);margin:var(--space-3) 0}
+.net-ptab{border:none;background:none;cursor:pointer;font-size:14px;font-weight:600;color:var(--content-muted);padding:10px 18px;border-bottom:2px solid transparent;margin-bottom:-1px;font-family:inherit}
+.net-ptab:hover{color:var(--content-primary)}
+.net-ptab.is-active{color:var(--content-primary);border-bottom-color:var(--accent)}
+.net-profile-body{min-height:200px}
+.net-pf-empty{padding:40px 16px;text-align:center;color:var(--content-muted);font-size:13px}
+
+/* ── 讨论串 ── */
+.net-overlay{position:fixed;inset:0;z-index:300;background:rgba(10,20,40,.5);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);display:flex;align-items:flex-start;justify-content:center;padding:max(24px,4vh) 16px 24px;overflow:auto}
+.net-overlay[hidden]{display:none !important}
+.net-dialog{width:100%;max-width:620px;border-radius:var(--radius-panel);box-shadow:var(--shadow-panel);padding:var(--space-4);display:flex;flex-direction:column;gap:var(--space-3);max-height:calc(100vh - 64px)}
+.net-dialog-head{display:flex;align-items:center;justify-content:space-between;gap:var(--space-2)}
+.net-icon-btn{border:none;background:var(--surface-hover);color:var(--content-secondary);width:30px;height:30px;border-radius:50%;cursor:pointer;font-size:13px;line-height:1;font-family:inherit}
+.net-icon-btn:hover{color:var(--content-primary)}
+.net-thread-dialog{max-width:680px}
+.net-thread-post{padding-bottom:var(--space-3);border-bottom:1px solid var(--border-soft)}
+.net-thread-tree-wrap{flex:1 1 auto;overflow-y:auto;min-height:120px}
+.net-thread-tree{display:flex;flex-direction:column;gap:10px;padding:var(--space-2) 0}
+.net-cmt{display:flex;gap:8px;font-size:13px;line-height:1.6}
+.net-cmt.depth-1{margin-left:34px}
+.net-cmt.depth-2{margin-left:52px}
+.net-cmt.depth-3{margin-left:70px}
+.net-cmt .net-avatar{width:28px;height:28px;font-size:11px;cursor:default}
+.net-cmt-main{flex:1;min-width:0;background:var(--surface-card);border:1px solid var(--border-soft);border-radius:var(--radius-control);padding:6px 10px}
+.net-cmt-name{font-weight:700;color:var(--content-primary);font-size:12.5px;margin-right:4px}
+.net-cmt-text{color:var(--content-secondary);word-break:break-word}
+.net-cmt-after{display:flex;gap:10px;align-items:center;margin-top:3px}
+.net-cmt-time{font-size:10.5px;color:var(--content-muted)}
+.net-cmt-act{font-size:11px;color:var(--accent-light);background:none;border:none;padding:0;cursor:pointer;font-family:inherit}
+.net-cmt-act:hover{text-decoration:underline}
+.net-cmt-del{font-size:11px;color:var(--content-muted);background:none;border:none;padding:0;cursor:pointer;font-family:inherit}
+.net-cmt-del:hover{color:#e0565d}
+.net-thread-reply{border-top:1px solid var(--border-soft);padding-top:var(--space-3)}
+.net-thread-reply-target{font-size:11.5px;color:var(--content-muted);min-height:16px;margin-bottom:6px}
+.net-thread-reply-row{display:flex;gap:var(--space-2);align-items:center}
+.net-thread-reply-row input{flex:1;min-width:0;padding:9px 12px;font-size:13px;border-radius:999px;border:1px solid var(--border-soft);background:var(--surface-input);color:var(--content-primary);outline:none}
+.net-thread-reply-row input:focus{border-color:var(--focus-ring)}
+
+/* ── 转发弹层 ── */
+.net-repost-original{padding:var(--space-3);border:1px solid var(--border-soft);background:var(--surface-card);border-radius:var(--radius-card);font-size:12.5px;line-height:1.7;color:var(--content-secondary);max-height:200px;overflow-y:auto}
+.net-repost-text{width:100%;min-height:88px;padding:10px 14px;font-size:14px;line-height:1.65;border-radius:var(--radius-control);border:1px solid var(--border-soft);background:var(--surface-input);color:var(--content-primary);outline:none;resize:vertical;font-family:inherit}
+.net-repost-text:focus{border-color:var(--focus-ring)}
+.net-dialog-actions{display:flex;justify-content:flex-end;gap:var(--space-2)}
+
+/* ── 设置折叠区 ── */
+.net-settings{padding:0 var(--space-4);margin-top:var(--space-5)}
+.net-settings-summary{list-style:none;cursor:pointer;padding:var(--space-4) 0;font-size:15px;font-weight:700;color:var(--content-primary);display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.net-settings-summary::-webkit-details-marker{display:none}
+.net-settings-summary::before{content:'▸';color:var(--content-muted);font-size:12px;transition:transform var(--motion-fast) ease}
+.net-settings[open] .net-settings-summary::before{transform:rotate(90deg)}
+.net-settings-hint{font-size:11.5px;font-weight:400;color:var(--content-muted)}
+
+/* ── API 编辑器：社交身份区 ── */
+.api-soc-zone{display:flex;flex-direction:column;gap:8px;margin:6px 0 12px}
+.api-banner-preview{height:84px;border-radius:var(--radius-control);border:1px solid var(--border-soft);background-size:cover;background-position:center}
+.api-banner-preview.is-empty{background:var(--surface-input);background-image:linear-gradient(135deg,color-mix(in srgb,var(--accent) 18%,transparent),transparent);border-style:dashed}
+.api-banner-btns{display:flex;gap:8px;flex-wrap:wrap}
+
+/* ── 移动端 ── */
+@media (max-width:980px){
+  .net-columns{grid-template-columns:minmax(0,1fr)}
+  .net-side{position:static;order:2}
+  .net-search{flex:1 1 100%}
+  .net-sitebar{justify-content:space-between}
+}
+@media (max-width:640px){
+  #page-moments{max-width:100%;padding:0 10px max(48px,env(safe-area-inset-bottom))}
+  .net-brand{font-size:1.1rem}
+  .net-tab{padding:7px 12px;font-size:13.5px}
+  .net-profile-banner{height:160px}
+  .net-profile-avatar{width:76px;height:76px;font-size:28px;margin-top:-38px;border-width:4px}
+  .net-profile-name{font-size:18px}
+  .net-profile-follow{margin-left:0;margin-top:8px}
+  .net-friends-grid{grid-template-columns:repeat(auto-fill,minmax(160px,1fr))}
+  .net-cmt.depth-1{margin-left:16px}
+  .net-cmt.depth-2{margin-left:30px}
+  .net-cmt.depth-3{margin-left:44px}
+}

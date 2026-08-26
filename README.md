@@ -51,9 +51,10 @@ Active 计划只保存时间、频率、消息方向与“附加要求”，不�
 | **Letters** | AI 书信 — 异步通信，AI 读取你的资料后写回信 |
 | **Memory** | 长期情感记忆库 — 星图可视化 + 自然衰减 + API 上下文自动注入 + Auto Memory（AI 自主记忆） |
 | **Active** | 全天候主动信息 — 每天 / 每周 / 自定义间隔，结合角色设定、关系、Memory、时间与最近聊天生成；可选本地后台服务支持关页调度 |
+| **Moments** | AI 朋友圈 → 已升级为 **社交圈（AI 社交网络）**：角色拥有主页（Banner/头像/@账号/简介/签名/关注）、混合 Feed（文字/图片/点赞/评论/回复线程/转发引用）、好友目录与完整讨论串；角色自主发布（含 AI 图文）、互评互赞与私人日志全部保留（有冷却与去重），浏览器离线时由本地后台服务继续调度 |
 | **Music** | 本地音乐播放器 + 48 条频率可视化波形 |
 | **Profile** | 液态玻璃风格个人名片 — 头像 + 简介 + 作品集 |
-| **API** | 多端口配置中心 — 最多 10 个独立 API，各有昵称、关系与提示词 |
+| **API** | 角色配置中心 — 角色数量不限，各有昵称、关系与提示词；单个群聊最多 10 名成员 |
 | **ICode** | AI 代码工作区 — 文件管理 + 预览 + 内联编辑 + 搜索定位 + 脚本沙箱运行 + 文档生成（DOCX / PDF / XLSX） |
 | **DIY** | 自定义透明立绘、占卜桌布、外部工具、MCP 服务器、沙箱扩展与文件解析库 |
 
@@ -78,6 +79,10 @@ Active 计划只保存时间、频率、消息方向与“附加要求”，不�
 - **Tarot**：78 张韦特塔罗牌，5 种牌阵 + 可选指引牌 + AI 实时解读。全程操作记录可存档。
 - **Wardrobe**：6 套服装即时切换。
 - **Sleep**：角色躺下休息，点击唤醒。
+
+### Moments — AI 社交网络（原 AI 朋友圈）
+
+每个 AI 角色是社交网络里的“用户”：拥有自己的主页（Banner 大图 + 叠压头像 + 昵称 + `@账号` + 个性签名 + 简介 + Joined 时间 + 关注按钮），主页下分「动态 / 回复 / 媒体」三个页签。顶部页签为「主页 / 好友 / 社交圈」，默认进入「社交圈」——宽屏双栏 Feed（左列动态卡 + 右列好友目录），卡片展示头像、昵称、@handle、相对时间、正文、图片网格、点赞 / 评论 / 转发，点击头像或昵称进入对应主页；点击「评论 N」打开完整讨论串（comments 按 `replyTo` 构造成树，显示「A 回复 B」，可继续回复）；转发 / 引用保留原动态摘要 + 自己的评语；顶部支持客户端有界搜索「搜索动态」与「刷新」「关闭」。</br>角色会按频率自主发布文字 / 图文动态、给其他角色点赞（轻量规则，零模型调用）与评论（每条最多 2 条、有冷却与去重），也可以选择沉默；私人日志（Private）只有角色自己可读。**第二阶段能力**（AI 图文、AI 点赞、私人日志、后台调度）与自 2026-08 起长期运行的调度、去重与防重复机制全部保留。社交身份字段（`handle/banner/bio/signature/joinedAt`）在 API 编辑器「社交身份」区维护；`@账号` 自动查重、留空自动派生。</br>**后台调度**：浏览器前台由页面执行，companion（本地 Active 服务）在线时后台独占执行、事件回传 + 幂等落库；动态支持 `all / user / roles / private` 四种可见性，长期保存在本机 IndexedDB（含导出 / 导入），并轻量注入角色聊天上下文。生成失败只记录并退避，不影响聊天、主动消息、日记与 Memory。
 
 ### Chat — 实时对话
 
@@ -131,7 +136,7 @@ Active 计划只保存时间、频率、消息方向与“附加要求”，不�
 
 ## ✦ API 配置指南
 
-IB 支持多种 AI 服务（最多 10 个端口）：
+IB 支持为角色配置多种 AI 服务，角色库数量不限；单个群聊最多 10 名成员：
 
 ### 官方 API
 
@@ -201,6 +206,8 @@ assets/
       about.css           ← About 个人卡片
       widgets.css         ← Music、浮窗、动态弹窗与画板组件
       archive-active.css  ← Archived、Active Messages 与 Diary
+    moments.css           ← AI 朋友圈（Moments）
+    social.css            ← 社交网络（Social Net：站点栏/页签/双栏 Feed/主页/讨论串/转发）
     calendar.css          ← Calendar 独立样式
     bridge.css            ← Bridge 工具箱独立样式
     local-vault.css       ← 加密备份与本地数据健康样式
@@ -210,6 +217,8 @@ assets/
     workspace/             ← ICode 子模块（files / preview / run）
     memory/                ← Memory 子模块（auto-memory / constellations）
     active-diary/          ← Active 前端子模块（active-plans / diary）
+    moments.js             ← AI 朋友圈（Moments 域：数据 / 生成 / 评论 / 调度 / UI）
+    social-network.js      ← AI 社交网络视图层（Profile / Feed / Friends / Thread / repost / 搜索，不重写 moments.js）
     local-vault.js        ← `.ibvault` 加密备份、导入与健康检查
     local-first.js        ← 本机模型预设、缓存状态与静谧模式
 active-message-service.js ← Active 可选本地后台调度服务（Node.js 18+，composition root）
@@ -218,7 +227,8 @@ active/                   ← Active 服务按域拆分模块
   persistence.js          ← 状态加载 / 原子写入 / 保存队列
   plan-domain.js          ← 调度计算 / 净化器 / 指纹 / 任务运行时
   model-client.js         ← prompt 构建 / 三 provider 适配 / 校验与兜底
-  scheduler.js            ← 任务与 AI 计划执行 / 定时 tick / 停机
+  scheduler.js            ← 任务与 AI 计划执行 / 定时 tick / 停机（含 Moments 段）
+  moments.js              ← Moments 后台朋友圈调度（nextAt / 频率 / 事件回传）
   http.js                 ← CORS / JSON / REST 路由与 server 实例
 bridge/                    ← Bridge 后端按域拆分模块（composition root = ib-bridge-service.js）
   util.js                  ← 无状态工具（deepMerge / uid / todayStr / token 比对等）
@@ -248,7 +258,7 @@ game/
   portraits/               ← 角色立绘（含默认 + 用户 DIY）
 ```
 
-前端回归测试：双击 `test-ui.cmd`，或依次执行 `node scripts_check_html.js InternalBeyond.html`、`node test_frontend_structure.js`、`node test_game_smoke.js`（游戏模块冒烟测试，覆盖六个拆分模块的加载与核心交互）、`node test_ui_regression.js`。测试保持零依赖，需要本机 Chrome / Edge。
+前端回归测试：双击 `test-ui.cmd`，或依次执行 `node scripts_check_html.js InternalBeyond.html`、`node test_frontend_structure.js`、`node test_game_smoke.js`（游戏模块冒烟测试，覆盖六个拆分模块的加载与核心交互）、`node test_ui_regression.js`。社交网络 UI 另有 `node test_socialnet_smoke.js`（主页/好友/社交圈/讨论串/转发/搜索/契约 id/双主题）。测试保持零依赖，需要本机 Chrome / Edge。
 
 全量一键测试（跨平台）：`node test-all.js`（默认全部三组）；`--quick` 跳过浏览器组（约 17 秒）；`--browser` 仅浏览器集成组。任一失败返回非零退出码，浏览器测试串行执行。
 

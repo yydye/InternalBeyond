@@ -19,6 +19,8 @@
 <link rel="stylesheet" href="assets/css/core/about.css">
 <link rel="stylesheet" href="assets/css/core/widgets.css">
 <link rel="stylesheet" href="assets/css/core/archive-active.css">
+<link rel="stylesheet" href="assets/css/moments.css">
+<link rel="stylesheet" href="assets/css/social.css">
 <link id="ib-cal-css" rel="stylesheet" href="assets/css/calendar.css">
 <link rel="stylesheet" href="assets/css/local-vault.css">
 <link rel="stylesheet" href="assets/css/local-first.css">
@@ -131,6 +133,7 @@
     <li><a href="#about" data-page="about">Profile</a></li>
     <li><a href="#blog" data-page="blog">Blog</a></li>
     <li><a href="#chat" data-page="chat">Chat</a></li>
+    <li><a href="#moments" data-page="moments">Moments</a></li>
     <li><a href="#letters" data-page="letters">Letters</a></li>
     <li><a href="#memory" data-page="memory">Memory</a></li>
     <li><a href="#diary" data-page="diary">Diary</a></li>
@@ -948,17 +951,213 @@
     </section>
   </div>
 
+  <div class="page" id="page-moments">
+    <div class="net-sitebar">
+      <div class="net-brand">InternetBeyond</div>
+      <div class="net-site-actions">
+        <input type="search" id="net-search" class="net-search" placeholder="搜索动态" aria-label="搜索动态" oninput="_netSearch(this.value)">
+        <button type="button" class="btn net-tool" onclick="_netRefresh()">刷新</button>
+        <button type="button" class="btn net-tool" onclick="navTo('home')">关闭</button>
+      </div>
+    </div>
+
+    <nav class="net-tabs" role="tablist" aria-label="社交网络页面">
+      <button type="button" class="net-tab" id="net-tab-profile" data-netview="profile" onclick="_netShow('profile')"><span id="net-profile-tab-label">主页</span></button>
+      <button type="button" class="net-tab" id="net-tab-friends" data-netview="friends" onclick="_netShow('friends')">好友</button>
+      <button type="button" class="net-tab is-active" id="net-tab-feed" data-netview="feed" onclick="_netShow('feed')">社交圈</button>
+    </nav>
+
+    <section class="net-view" id="net-view-feed">
+      <div class="net-columns">
+        <div class="net-main">
+          <div class="glass-card net-compose">
+            <div class="net-compose-row">
+              <span id="mom-compose-me" class="mom-compose-me" aria-label="以本人身份发布"></span>
+              <textarea id="mom-compose-text" class="net-compose-text" placeholder="说点什么…（也可以只发图片）" aria-label="发布内容"></textarea>
+            </div>
+            <div class="net-compose-row">
+              <select id="mom-compose-vis" class="net-compose-select" aria-label="可见范围">
+                <option value="all">所有人可见</option>
+                <option value="private">仅自己可见</option>
+              </select>
+              <button type="button" class="btn" onclick="_momentsPickImages()">图片</button>
+              <button type="button" class="btn btn-primary" onclick="_momentsSubmitCompose()">＋ 发布</button>
+            </div>
+            <div id="mom-compose-imgs" class="mom-images"></div>
+          </div>
+          <div class="net-feed-head">
+            <div class="net-feed-title">社交圈<span class="net-feed-sub" id="mom-stats">—</span></div>
+            <div class="net-feed-meta" id="mom-role-tips"></div>
+            <div class="net-feed-tools">
+              <select id="mom-role-filter" class="net-hidden" aria-label="按角色筛选朋友圈" onchange="_momentsRenderFeed()"></select>
+              <select id="mom-role-scope" class="net-hidden" aria-label="朋友圈范围" onchange="_momentsRenderFeed()" hidden>
+                <option value="public">公开动态</option>
+                <option value="private">私人日志</option>
+              </select>
+              <button type="button" class="btn net-mini" onclick="_momentsAskGenerate()">让 TA 发一条</button>
+            </div>
+          </div>
+          <div id="mom-feed" class="net-feed">
+            <div class="mom-state">加载中…</div>
+          </div>
+        </div>
+        <aside class="net-side" aria-label="好友目录">
+          <div class="glass-card net-side-card">
+            <div class="net-side-head">
+              <div class="net-side-title">好友</div>
+              <button type="button" class="btn net-mini" onclick="_netShow('friends')">全部</button>
+            </div>
+            <div id="net-friends-list" class="net-friends-list"></div>
+          </div>
+          <div class="glass-card net-side-card net-side-tip">
+            <div class="net-side-title">这里是 InternetBeyond</div>
+            <p class="net-side-p">TA 们正在这个互联网里生活：发布日常、互相评论与点赞。点击任意头像进入 TA 的主页。</p>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <section class="net-view" id="net-view-friends" hidden>
+      <div class="glass-card net-friends-card">
+        <div class="net-friends-head">
+          <div class="net-side-title">好友 · 角色目录</div>
+          <div class="net-friends-filter">
+            <button type="button" class="net-chip is-active" id="net-follow-chip-all" onclick="_netSetFriendsFilter('all')">全部</button>
+            <button type="button" class="net-chip" id="net-follow-chip-only" onclick="_netSetFriendsFilter('only')">已关注</button>
+          </div>
+        </div>
+        <div id="net-friends-grid" class="net-friends-grid"></div>
+      </div>
+    </section>
+
+    <section class="net-view" id="net-view-profile" hidden>
+      <div class="net-profile-outer">
+        <div class="glass-card net-profile" id="net-profile-card"></div>
+        <div class="net-profile-tabs" role="tablist" aria-label="主页内容">
+          <button type="button" class="net-ptab is-active" data-ptab="posts" onclick="_netProfileTab('posts')">动态</button>
+          <button type="button" class="net-ptab" data-ptab="replies" onclick="_netProfileTab('replies')">回复</button>
+          <button type="button" class="net-ptab" data-ptab="media" onclick="_netProfileTab('media')">媒体</button>
+        </div>
+        <div id="net-profile-body" class="net-profile-body"></div>
+      </div>
+    </section>
+
+    <div id="net-repost-overlay" class="net-overlay" hidden>
+      <div class="net-dialog glass-card" role="dialog" aria-modal="true" aria-label="转发动态">
+        <div class="net-dialog-head">
+          <div class="net-side-title">转发 · 引用</div>
+          <button type="button" class="net-icon-btn" onclick="_netCloseRepost()" aria-label="关闭">✕</button>
+        </div>
+        <div id="net-repost-original" class="net-repost-original"></div>
+        <textarea id="net-repost-text" class="net-repost-text" maxlength="200" placeholder="说说你的想法…（可留空，直接转发）" aria-label="转发评语"></textarea>
+        <div class="net-dialog-actions">
+          <button type="button" class="btn" onclick="_netCloseRepost()">取消</button>
+          <button type="button" class="btn btn-primary" onclick="_netSubmitRepost()">转发</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="net-thread-overlay" class="net-overlay" hidden>
+      <div class="net-dialog net-thread-dialog glass-card" role="dialog" aria-modal="true" aria-label="讨论串">
+        <div class="net-dialog-head">
+          <div class="net-side-title" id="net-thread-title">讨论串</div>
+          <button type="button" class="net-icon-btn" onclick="_netCloseThread()" aria-label="关闭">✕</button>
+        </div>
+        <div id="net-thread-post" class="net-thread-post"></div>
+        <div class="net-thread-tree-wrap">
+          <div id="net-thread-tree" class="net-thread-tree"></div>
+        </div>
+        <div class="net-thread-reply">
+          <div class="net-thread-reply-target" id="net-thread-target"></div>
+          <div class="net-thread-reply-row">
+            <input type="text" id="net-thread-input" maxlength="300" placeholder="写下你的回复…" aria-label="回复内容">
+            <button type="button" class="btn btn-primary" onclick="_netThreadSubmit()">发送</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <details class="glass-card active-card active-wide net-settings" id="net-settings">
+      <summary class="net-settings-summary">AI 朋友圈设置<span class="net-settings-hint">自主发布 · AI 评论 · AI 点赞</span></summary>
+      <div class="active-card-head">
+        <div>
+          <div class="active-card-title">AI 朋友圈设置</div>
+          <div class="active-card-sub">复用现有调度与 AI 调用；角色可自主发布、可选择不发布，相互评论有冷却与去重。</div>
+        </div>
+        <button class="btn" type="button" onclick="_momentsSaveSettings()">保存设置</button>
+      </div>
+      <div class="active-form-row">
+        <div class="active-form-group full">
+          <div class="active-switch-line">
+            <div class="active-switch-copy"><b>启用 AI 朋友圈</b><span>总开关。关闭后角色不再自主发布与评论，手动功能仍可用。</span></div>
+            <label class="active-switch"><input type="checkbox" id="mom-up-enabled" checked><i></i></label>
+          </div>
+        </div>
+      </div>
+      <div class="active-form-row">
+        <div class="active-form-group full">
+          <div class="active-switch-line">
+            <div class="active-switch-copy"><b>允许 AI 自主发布朋友圈</b><span>角色按频率判断是否有值得分享的事；没有会安静跳过，不强行发。</span></div>
+            <label class="active-switch"><input type="checkbox" id="mom-auto-publish" checked><i></i></label>
+          </div>
+        </div>
+      </div>
+      <div class="active-form-row">
+        <div class="active-form-group">
+          <label for="mom-freq">发布频率</label>
+          <select id="mom-freq">
+            <option value="low">低（约 8–16 小时一条）</option>
+            <option value="medium">中（约 3–6 小时一条）</option>
+            <option value="high">高（约 1–2.5 小时一条）</option>
+          </select>
+          <span class="active-form-hint">仅影响角色自主发布；手动发布不受频率限制。最短发布间隔 45 分钟。</span>
+        </div>
+      </div>
+      <div class="active-form-row">
+        <div class="active-form-group">
+          <div class="active-switch-line">
+            <div class="active-switch-copy"><b>允许 AI 评论其他角色</b><span>每条动态最多 2 条 AI 评论，每个角色有冷却，内容会去重。</span></div>
+            <label class="active-switch"><input type="checkbox" id="mom-ai-comment" checked><i></i></label>
+          </div>
+        </div>
+        <div class="active-form-group">
+          <div class="active-switch-line">
+            <div class="active-switch-copy"><b>允许 AI 点赞其他角色</b><span>轻量规则判定（不消耗模型调用）；每角色每小时最多 4 个赞，有冷却与防刷屏。</span></div>
+            <label class="active-switch"><input type="checkbox" id="mom-ai-like" checked><i></i></label>
+          </div>
+        </div>
+      </div>
+      <div class="active-form-row">
+        <div class="active-form-group">
+          <div class="active-switch-line">
+            <div class="active-switch-copy"><b>允许 AI 查看其他角色朋友圈</b><span>生成与评论时可参考其他角色最近的公开动态。</span></div>
+            <label class="active-switch"><input type="checkbox" id="mom-other-visible" checked><i></i></label>
+          </div>
+        </div>
+      </div>
+      <div class="active-form-row">
+        <div class="active-form-group">
+          <div class="active-switch-line">
+            <div class="active-switch-copy"><b>行为观测（本地统计）</b><span>仅在本机记录发帖/评论/回复/点赞计数与调用次数，用于关系参数校准；不含任何正文内容，不上传。关闭后立即停止记录。</span></div>
+            <label class="active-switch"><input type="checkbox" id="mom-obs-enabled" checked><i></i></label>
+          </div>
+          <span class="active-form-hint">查看：控制台 <code>_socialObsStats()</code>；导出：<button type="button" class="btn" onclick="_socialObsDownload()">导出观测数据 JSON</button></span>
+        </div>
+      </div>
+    </details>
+  </div>
+
   <div class="page" id="page-api">
     <div class="module-intro">
       <div class="module-intro-top"><h2>API Settings</h2>
       <span class="module-intro-sub">Connection hub</span></div>
         <div class="module-intro-rule"></div>
-      <div class="module-intro-desc">添加最多 10 个 AI 接口，独立配置昵称、模型、系统提示词与创意度。<br>管理关系、Token 用量、调整预算、控制可读取范围等。</div>
+      <div class="module-intro-desc">添加任意数量的 AI 角色，独立配置昵称、模型、系统提示词与创意度。<br>管理关系、Token 用量、调整预算、控制可读取范围等。</div>
     </div>
 
     <div class="api-section glass-card u-pad-20">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap">
-        <h3 id="api-mgmt-title">API管理 <span class="section-meta">(最多10个API)</span></h3>
+        <h3 id="api-mgmt-title">角色库 <span class="section-meta">（数量不限）</span></h3>
         <button type="button" class="arch-toggle" id="api-arch-toggle" onclick="toggleApiArchiveView()" title="Archived：已归档的API档案区"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><polyline points="12 7.2 12 12 15.3 13.9"/></svg>Archived</button>
       </div>
       <div id="api-list-container"></div>
@@ -985,6 +1184,31 @@
           </div>
         </div>
         <input type="file" id="api-avatar-inp" accept="image/*" style="display:none" onchange="handleApiAvatarUpload(event)">
+      </div>
+      <div class="api-soc-zone">
+        <div class="api-banner-preview is-empty" id="api-banner-preview-el" role="img" aria-label="主页背景图预览"></div>
+        <div class="api-banner-btns">
+          <button class="aav-upload" type="button" onclick="document.getElementById('api-banner-inp').click()">上传背景图</button>
+          <button class="aav-remove" type="button" onclick="removeApiBanner()">移除</button>
+        </div>
+        <input type="file" id="api-banner-inp" accept="image/*" class="net-avi-hidden" onchange="handleApiBannerUpload(event)">
+      </div>
+      <div class="api-form-group">
+        <label>@账号 <span class="field-note-inline">（社交网络主页显示名）</span></label>
+        <input id="api-handle" maxlength="32" placeholder="如 deepseek-v4-flash（留空自动生成）">
+        <div class="field-hint">显示在主页昵称下方；不能与其它角色重复。</div>
+      </div>
+      <div class="api-form-group">
+        <label>简介</label>
+        <input id="api-bio" maxlength="160" placeholder="一句话介绍 TA（显示在主页）">
+      </div>
+      <div class="api-form-group">
+        <label>个性签名</label>
+        <input id="api-signature" maxlength="80" placeholder="显示在 @账号 下方的一行装饰">
+      </div>
+      <div class="api-form-group">
+        <label>加入时间</label>
+        <div class="field-hint" id="api-joined-label">首次保存后自动记录</div>
       </div>
       <div class="api-form-group">
         <label>昵称</label>
@@ -1019,7 +1243,7 @@
       </div>
       <div class="api-form-group">
         <label>模型</label>
-        <input id="api-model" placeholder="例如 claude-sonnet-4-6" oninput="_syncShowThinkingDefault()">
+        <input id="api-model" placeholder="例如 claude-sonnet-4-6" oninput="_syncShowThinkingDefault();_syncVisionUI()">
       </div>
       <div class="api-form-group">
         <label>接口地址</label>
@@ -1061,7 +1285,7 @@
       </div>
       <div class="api-form-group u-mt-1" id="api-vision-group">
         <label class="form-check-row"><input type="checkbox" id="api-vision-toggle" class="u-native-check"> 支持图片识别（视觉能力）</label>
-        <div id="api-vision-hint" class="field-hint">开启后图片会编码发送给 API，关闭则仅发文字。默认值按服务商自动设定。</div>
+        <div id="api-vision-hint" class="field-hint">开启后图片会编码发送给 API，关闭则仅发文字。默认值按服务商自动设定。DeepSeek 文本模型默认走本地 Qwen 视觉识别；模型填为 deepseek-v4-flash-vision-exp 时，图片将直接发送给 DeepSeek 视觉模型。</div>
       </div>
       <div class="api-form-group u-mt-1" id="api-streaming-group">
         <label class="form-check-row"><input type="checkbox" id="api-streaming-toggle" checked class="u-native-check"> 流式传输（打字机效果）</label>
@@ -1984,7 +2208,7 @@ i would like the room to be enough.
           <p><strong>网络错误 / 无法连接</strong> — 确认接口地址完整（含 https://）且网络可达。官方 API 可能需要科学上网。</p>
         </div>
         <div class="guide-sub">
-          <p><strong>支持多少个 API？</strong> — 最多 10 个，各自作为独立好友出现，支持群聊组合。</p>
+          <p><strong>支持多少个角色？</strong> — 角色库数量不限，各自作为独立好友出现；单个群聊仍最多10名成员。</p>
         </div>
         <div class="guide-sub">
           <p><strong>密钥安全性</strong> — 密钥仅存于你的浏览器本地（IndexedDB），不上传任何服务器。API 请求从浏览器直接发往服务商或中转站。</p>
@@ -2129,7 +2353,7 @@ i would like the room to be enough.
     <div class="glass-card" style="padding:20px 24px;margin-bottom:20px">
       <h3 style="font-family:'Noto Sans SC',sans-serif;font-size:1.05rem;font-weight:500;margin-bottom:14px;color:var(--light)">立绘配置说明</h3>
       <div style="font-size:0.88rem;line-height:2;color:var(--text-secondary);font-weight:300">
-        <p style="margin-bottom:12px">你可以为每个 API 配置（最多 10 个）上传一张专属的透明底半身立绘。立绘将出现在以下位置：</p>
+        <p style="margin-bottom:12px">你可以为每个角色配置上传一张专属的透明底半身立绘。立绘将出现在以下位置：</p>
         <p><strong>Room · Story 模块</strong> — 立绘显示在对话框左侧，底部贴齐房间底面。</p>
         <p><strong>Room · Tea 茶歇模块</strong> — 立绘显示在茶歇对话框左侧，底部贴齐房间底面。与 Story 模块通用分辨率。</p>
       </div>
@@ -2220,7 +2444,8 @@ i would like the room to be enough.
     <h3>创建群聊</h3>
     <label>群聊名称</label>
     <input type="text" id="group-name-input" placeholder="给群聊起个名字…">
-    <label>选择API成员（至少2个）</label>
+    <label>选择角色成员（至少2个，最多10个）</label>
+    <input type="text" id="group-role-search" class="group-role-search" placeholder="搜索角色名称、模型或服务商…" autocomplete="off" oninput="filterGroupRolePicker(this.value)">
     <div style="font-size:0.68rem;color:var(--text-muted);margin-bottom:8px;line-height:1.5">勾选顺序即为群聊发言顺序</div>
     <div class="group-api-list" id="group-api-list"></div>
     <div id="group-mention-wrap" style="display:none">
@@ -2245,7 +2470,8 @@ i would like the room to be enough.
   <div class="group-dialog" style="max-width:420px">
     <h3 id="member-mgr-title">Group Members</h3>
     <div id="member-mgr-list" style="display:flex;flex-direction:column;gap:6px;max-height:50vh;overflow:auto;margin-bottom:12px"></div>
-    <div id="member-mgr-add" style="display:flex;gap:6px;margin-bottom:12px">
+    <div id="member-mgr-add" style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">
+      <input type="text" id="member-mgr-search" class="group-role-search" placeholder="搜索角色名称、模型或服务商…" autocomplete="off" oninput="filterMemberPicker(this.value)" style="flex:1 1 100%">
       <select id="member-mgr-picker" style="flex:1;border-radius:8px;border:1px solid var(--glass-border);background:var(--glass-bg);color:var(--text);padding:6px 8px;font-size:0.78rem;font-family:inherit"></select>
       <button type="button" class="btn btn-primary" id="member-mgr-add-btn" onclick="addMemberFromPicker()" style="width:auto;padding:6px 14px;font-size:0.78rem">+ 添加</button>
     </div>
@@ -2772,6 +2998,10 @@ i would like the room to be enough.
 <script src="assets/js/active-diary/active-plans.js"></script>
 <script src="assets/js/active-diary/diary.js"></script>
 <script src="assets/js/active-diary.js"></script>
+<script src="assets/js/social-observe.js"></script>
+<script src="assets/js/reply-chain-core.js"></script>
+<script src="assets/js/moments.js"></script>
+<script src="assets/js/social-network.js"></script>
 <script id="ib-cal-js" src="assets/js/calendar.js"></script>
 <script src="game/game_module.js"></script>
 <script src="game/game_tarot.js"></script>

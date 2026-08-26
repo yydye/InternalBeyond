@@ -705,7 +705,7 @@ async function continueTruncatedMsg(msgId,pillEl){
   var cfg=null;
   if((m.friendId||'').startsWith('group_')){
     try{var g=await dbGet('groups',m.friendId);
-      if(g&&g.members)cfg=g.members.map(id=>apiConfigs.find(a=>a.id===id)).filter(Boolean).find(a=>(a.nickname||a.model)===m.senderName)}catch(e){}
+      if(g&&g.members){normalizeGroupMembers(g);cfg=getGroupMemberIds(g).map(id=>apiConfigs.find(a=>a.id===id)).filter(Boolean).find(a=>(a.nickname||a.model)===m.senderName)}}catch(e){}
   }else{cfg=apiConfigs.find(a=>a.id===m.friendId)}
   if(!_ibApiReady(cfg)){toast('找不到可用的 API 配置');return}
   _contBusy.add(msgId);

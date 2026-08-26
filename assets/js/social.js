@@ -59,6 +59,45 @@ function _syncShowThinkingDefault(){
   el.checked=_modelThinkingDefault(provider&&provider.value,model&&model.value);
 }
 
+/* DeepSeek 原生视觉模型：模型名精确命中时，图片直接随消息发给 DeepSeek，
+   不再经本地 Qwen2.5-VL 识别，也不先转成描述文本。
+   其它 DeepSeek 模型继续走原有本地视觉链路。 */
+const DEEPSEEK_NATIVE_VISION_MODEL='deepseek-v4-flash-vision-exp';
+function _isDeepSeekNativeVisionModel(model){
+  return String((model==null?'':model)).trim().toLowerCase()===DEEPSEEK_NATIVE_VISION_MODEL;
+}
+/* API 编辑器：按当前 provider/model 同步“支持图片识别”开关与提示。 */
+function _syncVisionUI(){
+  const modelEl=document.getElementById('api-model');
+  if(!modelEl)return;
+  const providerEl=document.getElementById('api-provider');
+  const visionEl=document.getElementById('api-vision-toggle');
+  const hintEl=document.getElementById('api-vision-hint');
+  const model=String(modelEl.value||'').trim().toLowerCase();
+  const provider=String((providerEl&&providerEl.value)||'').toLowerCase();
+  const nativeVision=_isDeepSeekNativeVisionModel(model);
+  const deepSeekVision=provider==='deepseek'||model.indexOf('deepseek')>=0;
+  if(visionEl){
+    if(nativeVision){
+      visionEl.checked=true;
+      visionEl.disabled=true;
+      visionEl.title='该模型原生支持图片输入，始终直接把图片发送给模型';
+    }else{
+      visionEl.disabled=false;
+      visionEl.removeAttribute('title');
+    }
+  }
+  if(hintEl){
+    if(nativeVision){
+      hintEl.textContent='已识别 DeepSeek 原生视觉模型：聊天图片会与文字一起直接发送给 DeepSeek，由模型完成视觉理解与推理；不会经过本地 Qwen 视觉模型，也不会先转换为描述文本。';
+    }else if(deepSeekVision){
+      hintEl.textContent='当前为 DeepSeek 文本模型：图片会先由本地 Qwen2.5-VL 识别为文字描述，再交给 DeepSeek。将模型填写为 deepseek-v4-flash-vision-exp 可改为直接向模型发送图片。';
+    }else{
+      hintEl.textContent='开启后图片会编码发送给 API，关闭则仅发文字。默认值按服务商自动设定。';
+    }
+  }
+}
+
 /* Voice UI helpers */
 function _voiceRateUpdate(){
   var r=document.getElementById('api-voice-rate');var v=document.getElementById('api-voice-rate-val');
@@ -96,6 +135,7 @@ function onProviderChange(){
     if(se)se.checked=!!cfg.streaming;
     _showThinkingTouched=false;
     _syncShowThinkingDefault();
+    _syncVisionUI();
   }
 }
 
@@ -105,6 +145,11 @@ let archivedConfigs=[];/* 归档区：不进入好友列表、群聊、选择器
 let editingApiId=null;
 let activeFriendId=null;
 let activeThreadId=null;/* null=主对话, 有值=话题频道 */
+/* 角色库数量与群聊成员数量是两个独立的维度。10 是当前群聊的既有有效成员上限，
+   不再用它限制 apiConfigs 的数量。 */
+const MAX_GROUP_MEMBERS=10;
+let _groupRoleSearch='';
+let _memberPickerSearch='';
 const API_CONFIG_FALLBACK_KEY='ib_apiConfigsFallback_v1';
 function _apiFallbackRead(){
   try{const v=JSON.parse(localStorage.getItem(API_CONFIG_FALLBACK_KEY)||'[]');return Array.isArray(v)?v.filter(a=>a&&a.id):[]}catch(e){return[]}
@@ -216,10 +261,34 @@ function _apiAvatarLoadError(img){
     el.innerHTML='';el.textContent=nn?nn.charAt(0).toUpperCase():'?';el.className='aav-placeholder';
   }catch(e){}
 }
+/* ── 社交身份：Banner（背景大图，dataUrl；null=no change, ''=remove, string=new） ── */
+var _pendingApiBanner=null;
+function handleApiBannerUpload(e){
+  var f=e.target.files[0];if(!f)return;
+  var r=new FileReader();r.onload=function(){
+    _pendingApiBanner=r.result;
+    _renderApiBannerPreview(r.result);
+    toast('背景图已选择');
+  };r.readAsDataURL(f);e.target.value='';
+}
+function removeApiBanner(){_pendingApiBanner='';_renderApiBannerPreview('');toast('背景图已移除（保存后生效）')}
+function _renderApiBannerPreview(src){
+  var el=document.getElementById('api-banner-preview-el');
+  if(!el)return;
+  if(src){el.style.backgroundImage='url("'+src+'")';el.classList.add('has-img');el.classList.remove('is-empty')}
+  else{el.style.backgroundImage='';el.classList.remove('has-img');el.classList.add('is-empty')}
+}
+function _normApiHandle(v){
+  return String(v||'').trim().replace(/^@+/,'').replace(/\s+/g,'_').replace(/[^\w\u4e00-\u9fa5.\-]/g,'').replace(/^[_.]+/,'').slice(0,32);
+}
 function addNewApi(){
-  if(apiConfigs.length>=10){toast('最多添加10个API');return}
-  editingApiId='friend_'+Date.now();
+  editingApiId='friend_'+Date.now()+'_'+Math.random().toString(36).slice(2,8);
   _pendingApiAvatar=null;
+  _pendingApiBanner=null;
+  var _hb=document.getElementById('api-handle');if(_hb)_hb.value='';
+  var _bb=document.getElementById('api-bio');if(_bb)_bb.value='';
+  var _sb=document.getElementById('api-signature');if(_sb)_sb.value='';
+  _renderApiBannerPreview('');
   document.getElementById('api-editor-title').textContent='添加API';
   document.getElementById('api-editor').style.display='block';
   var _dw0=document.getElementById('api-daywrap');if(_dw0)_dw0.style.display='none';
@@ -244,6 +313,7 @@ function addNewApi(){
   _showThinkingTouched=false;_syncShowThinkingDefault();thinkEl.disabled=false;
   var wsEl=document.getElementById('api-websearch-toggle');
   if(wsEl)wsEl.checked=false;
+  _syncVisionUI();
   var _igT=document.getElementById('api-imagegen-toggle');if(_igT)_igT.checked=false;
   var _igM=document.getElementById('api-imagegen-model');if(_igM)_igM.value='';
   var amT=document.getElementById('api-automem-toggle');if(amT)amT.checked=false;
@@ -432,6 +502,7 @@ function editApi(id){
   if(visionEl)visionEl.checked=cfg.vision!==undefined?!!cfg.vision:!!(PROVIDERS[cfg.provider]&&PROVIDERS[cfg.provider].vision);
   var streamEl=document.getElementById('api-streaming-toggle');
   if(streamEl)streamEl.checked=cfg.streaming!==undefined?!!cfg.streaming:!!(PROVIDERS[cfg.provider]&&PROVIDERS[cfg.provider].streaming);
+  _syncVisionUI();
   var _amT=document.getElementById('api-automem-toggle');if(_amT)_amT.checked=!!cfg.autoMem;
   var _amM=document.getElementById('api-automem-mode');if(_amM)_amM.value=cfg.autoMemMode||'hybrid';
   var _amB=document.getElementById('api-automem-budget');if(_amB)_amB.value=cfg.autoMemBudget||1200;
@@ -464,6 +535,14 @@ function editApi(id){
   _renderApiAvatarPreview(_avSrc);
   var lbl=document.getElementById('api-avatar-label');
   if(lbl)lbl.textContent=(cfg.nickname||'AI')+' 的头像';
+  /* 社交身份（AI 社交网络）：handle / banner / bio / signature / joinedAt（旧数据无字段则回落到派生值） */
+  var _hd=document.getElementById('api-handle');if(_hd)_hd.value=cfg.handle||'';
+  var _bd=document.getElementById('api-bio');if(_bd)_bd.value=cfg.bio||'';
+  var _sd=document.getElementById('api-signature');if(_sd)_sd.value=cfg.signature||'';
+  _pendingApiBanner=null;
+  _renderApiBannerPreview(cfg.banner||'');
+  var _jl=document.getElementById('api-joined-label');
+  if(_jl)_jl.textContent=cfg.joinedAt||cfg.created?('Joined '+(new Date(Number(cfg.joinedAt||cfg.created)||Date.now()).toLocaleDateString('en-US',{year:'numeric',month:'long'}))):'Joined —';
 }
 
 async function saveCurrentApi(btn){
@@ -472,27 +551,45 @@ async function saveCurrentApi(btn){
   if(btn){btn.disabled=true;btn.textContent='保存中…'}
   /* Check nickname uniqueness：按最终显示名比较（昵称留空时回落到模型名），覆盖"同模型+空昵称"的重名情况 */
   var nn=(document.getElementById('api-ai-name').value||'').trim();
-  var effName=nn||(document.getElementById('api-model').value||'').trim()||'AI';
+  var modelVal=(document.getElementById('api-model').value||'').trim();
+  var effName=nn||modelVal||'AI';
   var dup=apiConfigs.find(function(c){return c.id!==editingApiId&&String(c.nickname||c.model||'').trim()===effName});
   if(dup){toast(nn?('昵称「'+nn+'」已被其他API使用，请换一个不同的昵称。'):('昵称留空时显示名为模型名「'+effName+'」，与其他API重复，请填写一个昵称。'));if(btn){btn.disabled=false;btn.textContent=oldBtnText}return}
+  /* @账号（社交身份）：规范化 + 查重（留空则由展示层回落到昵称派生名） */
+  var _hRaw=(document.getElementById('api-handle')?document.getElementById('api-handle').value:'').trim();
+  var _hVal=_normApiHandle(_hRaw);
+  if(_hVal){
+    var _hDup=apiConfigs.find(function(c){return c.id!==editingApiId&&String(c.handle||'').toLowerCase()===_hVal.toLowerCase()});
+    if(_hDup){toast('@账号「@'+_hVal+'」已被「'+(_hDup.nickname||_hDup.model||'另一角色')+'」使用，请换一个。');if(btn){btn.disabled=false;btn.textContent=oldBtnText}return}
+  }
   if(!editingApiId){toast('保存失败：API 配置标识已失效，请重新打开编辑器');if(btn){btn.disabled=false;btn.textContent=oldBtnText}return}
   /* Merge with existing config to preserve sortOrder, avatar, created, archived etc. */
+  _syncVisionUI();/* 视觉模型名命中时保持“支持图片识别”与保存值一致 */
   const existing=apiConfigs.find(a=>a.id===editingApiId)||{};
   /* Resolve avatar: _pendingApiAvatar===null means no change, ''=remove, string=new */
   var avatarVal=existing.avatar||'';
   if(_pendingApiAvatar!==null)avatarVal=_pendingApiAvatar;
+  /* Resolve banner（社交身份背景图）：三态同头像 */
+  var bannerVal=existing.banner||'';
+  if(_pendingApiBanner!==null)bannerVal=_pendingApiBanner;
   const cfg=Object.assign({},existing,{
     id:editingApiId,
     provider:document.getElementById('api-provider').value,
     apiKey:document.getElementById('api-key').value.trim(),
-    model:document.getElementById('api-model').value.trim(),
+    model:modelVal,
     endpoint:document.getElementById('api-endpoint').value.trim(),
     systemPrompt:document.getElementById('api-system').value||(_sysPromptCleared?'':getDefaultPromptForTheme()),
     nickname:effName,
     relationship:document.getElementById('api-relationship').value.trim().slice(0,16)||'',
+    /* ── 社交身份（AI 社交网络）：全部可选、带回落，旧数据兼容 ── */
+    handle:_hVal,
+    banner:bannerVal,
+    bio:document.getElementById('api-bio')?document.getElementById('api-bio').value.trim().slice(0,160):'',
+    signature:document.getElementById('api-signature')?document.getElementById('api-signature').value.trim().slice(0,80):'',
+    joinedAt:existing.joinedAt||existing.created||Date.now(),
     temperature:parseFloat(document.getElementById('api-temperature').value)||1.0,
     storyPersonalize:document.getElementById('api-story-personalize').checked,
-    vision:!!document.getElementById('api-vision-toggle').checked,
+    vision:_isDeepSeekNativeVisionModel(modelVal)?true:!!document.getElementById('api-vision-toggle').checked,
     streaming:!!document.getElementById('api-streaming-toggle').checked,
     webSearch:!!(document.getElementById('api-websearch-toggle')&&document.getElementById('api-websearch-toggle').checked),
     imageGen:!!(document.getElementById('api-imagegen-toggle')&&document.getElementById('api-imagegen-toggle').checked),
@@ -538,15 +635,39 @@ var _ARCH_CLOCK_SVG='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" 
 var _ARCH_RETURN_SVG='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="10 6 4 12 10 18"/><path d="M4 12h16"/></svg>';
 var _ARCH_RESTORE_SVG='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.5 15a9 9 0 1 0 2.1-9.4L1 10"/></svg>';
 var _adlTargetId=null,_adlChoice='archive',_adlResolve=null;
+async function _findGroupsReferencingCharacter(characterId){
+  let groups=[];
+  try{groups=await dbGetAll('groups')}catch(e){return[]}
+  return groups.filter(function(group){
+    if(!group)return false;
+    normalizeGroupMembers(group);
+    return group.members.some(function(member){return member&&member.characterId===characterId});
+  });
+}
+async function _detachCharacterFromGroups(characterId){
+  const groups=await _findGroupsReferencingCharacter(characterId);
+  let detached=0;
+  for(const group of groups){
+    const before=group.members.length;
+    group.members=group.members.filter(function(member){return member.characterId!==characterId});
+    if(group.members.length===before)continue;
+    await dbPut('groups',group);
+    try{await insertGroupSystemEvent(group.id,'member_leave',characterId)}catch(e){}
+    detached++;
+  }
+  return detached;
+}
 function deleteApiConfig(id){
-  return new Promise(function(resolve){
+  return (async function(){
     const cfg=apiConfigs.find(a=>a.id===id);
-    if(!cfg){resolve(false);return}
-    _adlTargetId=id;_adlResolve=resolve;
-    document.getElementById('api-del-title').textContent='删除 '+(cfg.nickname||cfg.model||'API')+'？';
+    if(!cfg)return false;
+    const refs=await _findGroupsReferencingCharacter(id);
+    _adlTargetId=id;
+    document.getElementById('api-del-title').textContent='删除 '+(cfg.nickname||cfg.model||'API')+'？'+(refs.length?'（将从 '+refs.length+' 个群聊中移除）':'');
     _adlPick('archive');
     document.getElementById('api-del-overlay').classList.add('show');
-  });
+    return new Promise(function(resolve){_adlResolve=resolve});
+  })();
 }
 function _adlPick(v){
   _adlChoice=v;
@@ -569,16 +690,19 @@ async function _archiveApiConfig(id){
   if(archivedConfigs.length>=20){toast('归档区已满，请先彻底删除部分归档 API 后重试');return false}
   const cfg=apiConfigs.find(a=>a.id===id);if(!cfg)return false;
   if(typeof _activePrepareCharacterBackgroundChange==='function'&&!(await _activePrepareCharacterBackgroundChange(id,'归档角色')))return false;
+  try{await _detachCharacterFromGroups(id)}catch(e){console.error('Group reference cleanup failed',e);toast('归档失败：无法清理群聊成员引用');return false}
   cfg.archived=true;cfg.archivedAt=Date.now();cfg.apiKey='';/* 归档即清除密钥，其余设置全部保留 */
   await _persistApiConfig(cfg);
   await renderApiList();
+  try{await loadFriendsList()}catch(e){}
   try{if(typeof _activeSyncAllBackground==='function'&&_activeCompanionOnline){_activeLastContextSync=0;await _activeSyncAllBackground()}}catch(e){console.warn('[Active Messages] archived API cleanup failed',e)}
   toast('已归档');
   return true;
 }
 async function _hardDeleteApiConfig(id){
   if(typeof _activePrepareCharacterBackgroundChange==='function'&&!(await _activePrepareCharacterBackgroundChange(id,'彻底删除角色')))return false;
-  try{await dbDelete('apiConfigs',id)}catch(e){console.warn('IndexedDB API delete failed',e)}
+  try{await _detachCharacterFromGroups(id)}catch(e){console.error('Group reference cleanup failed',e);toast('删除失败：无法清理群聊成员引用');return false}
+  try{await dbDelete('apiConfigs',id)}catch(e){console.warn('IndexedDB API delete failed',e);toast('删除失败：角色配置未能从数据库移除');return false}
   _apiFallbackRemove(id);
   /* Clear related messages */
   const msgs=await dbGetByIndex('chatMessages','byFriend',id);
@@ -589,6 +713,7 @@ async function _hardDeleteApiConfig(id){
   try{const sums=await dbGetAll('chatSummaries');for(const s of sums){if(s.friendId===id)await dbDelete('chatSummaries',s.id)}}catch(e){}
   /* Clear related auto memory entries */
   try{const ams=await dbGetByIndex('autoMemory','byFriend',id);for(const am of ams){await dbDelete('autoMemory',am.id)}}catch(e){}
+  if(activeFriendId===id){activeFriendId=null;activeThreadId=null}
   await renderApiList();
   try{if(typeof _activeSyncAllBackground==='function'&&_activeCompanionOnline){_activeLastContextSync=0;await _activeSyncAllBackground()}}catch(e){console.warn('[Active Messages] deleted API cleanup failed',e)}
   toast('已删除');
@@ -617,7 +742,7 @@ function _apiArchToggleUI(){
     b.title='返回API管理区';
     if(add)add.style.display='none';
   }else{
-    t.innerHTML='API管理 <span class="section-meta">(最多10个API)</span>';
+    t.innerHTML='角色库 <span class="section-meta">（数量不限）</span>';
     b.classList.remove('arch-return');
     b.innerHTML=_ARCH_CLOCK_SVG+'Archived';
     b.title='Archived：已归档的API档案区';
@@ -665,7 +790,6 @@ function openApiRestoreDialog(id){
 function closeApiRestoreDialog(){document.getElementById('api-restore-overlay').classList.remove('show');_apiRestoreId=null}
 async function confirmApiRestore(){
   const id=_apiRestoreId;if(!id){closeApiRestoreDialog();return}
-  if(apiConfigs.length>=10){toast('API管理区已满（最多10个），请先删除或归档部分API');closeApiRestoreDialog();return}
   const cfg=archivedConfigs.find(a=>a.id===id);if(!cfg){closeApiRestoreDialog();return}
   const nn=(cfg.nickname||cfg.model||'').trim();/* 查重按最终显示名：昵称留空的旧数据回落到模型名 */
   if(nn&&apiConfigs.some(c=>String(c.nickname||c.model||'').trim()===nn)){toast('显示名「'+nn+'」已被管理区其他API使用，请先处理同名API后再恢复');closeApiRestoreDialog();return}
@@ -764,12 +888,39 @@ async function selectFriend(id){
   setTimeout(()=>autoSummaryOnOpen(id,null),300);
 }
 
+function _roleSearchText(a){
+  return [a&&a.nickname,a&&a.model,a&&a.provider,a&&a.relationship,a&&a.id].filter(Boolean).join(' ').toLocaleLowerCase();
+}
+function _roleMatchesSearch(a,query){
+  const q=String(query==null?'':query).trim().toLocaleLowerCase();
+  return !q||_roleSearchText(a).indexOf(q)!==-1;
+}
+function _renderGroupRolePicker(){
+  const list=document.getElementById('group-api-list');
+  if(!list)return;
+  const available=apiConfigs.filter(a=>_roleMatchesSearch(a,_groupRoleSearch));
+  list.innerHTML=available.length?available.map(a=>'<div class="group-api-item" data-id="'+a.id+'" onclick="_toggleGroupMember(this)"><input type="checkbox" tabindex="-1"><span>'+esc(a.nickname||a.model||'AI')+'</span><span class="group-order-badge" style="display:none;margin-left:auto;font-size:0.62rem;opacity:0.6;min-width:16px;text-align:center"></span></div>').join(''):'<div class="group-role-empty">没有匹配的角色</div>';
+  document.querySelectorAll('#group-api-list .group-api-item').forEach(item=>{
+    const selected=_groupSelectOrder.indexOf(item.dataset.id)>=0;
+    item.classList.toggle('selected',selected);
+    item.querySelector('input').checked=selected;
+    const badge=item.querySelector('.group-order-badge');
+    const idx=_groupSelectOrder.indexOf(item.dataset.id);
+    if(badge){if(idx>=0){badge.textContent=idx+1;badge.style.display=''}else{badge.style.display='none'}}
+  });
+}
+function filterGroupRolePicker(value){
+  _groupRoleSearch=String(value||'');
+  _renderGroupRolePicker();
+}
+
 function createGroup(){
   if(apiConfigs.length<2){toast('至少需要2个API才能创建群聊');return}
   _groupSelectOrder=[];
   _groupMentionOnly=new Set();
-  const list=document.getElementById('group-api-list');
-  list.innerHTML=apiConfigs.map(a=>'<div class="group-api-item" data-id="'+a.id+'" onclick="_toggleGroupMember(this)"><input type="checkbox" tabindex="-1"><span>'+esc(a.nickname||a.model||'AI')+'</span><span class="group-order-badge" style="display:none;margin-left:auto;font-size:0.62rem;opacity:0.6;min-width:16px;text-align:center"></span></div>').join('');
+  _groupRoleSearch='';
+  const search=document.getElementById('group-role-search');if(search)search.value='';
+  _renderGroupRolePicker();
   document.getElementById('group-name-input').value='';
   document.getElementById('group-memory-toggle').checked=false;/* BUGFIX: 原先只重置思考链开关，记忆开关会残留上次的勾选 */
   document.getElementById('group-thinking-toggle').checked=false;
@@ -807,6 +958,7 @@ function _toggleGroupMentionOnly(el){
 }
 function _toggleGroupMember(el){
   const id=el.dataset.id;
+  if(!el.classList.contains('selected')&&_groupSelectOrder.length>=MAX_GROUP_MEMBERS){toast('群聊最多添加'+MAX_GROUP_MEMBERS+'名成员');return}
   el.classList.toggle('selected');
   el.querySelector('input').checked=el.classList.contains('selected');
   if(el.classList.contains('selected')){
@@ -833,6 +985,8 @@ async function openMemberManager(){
   const group=groups.find(g=>g.id===activeFriendId);
   if(!group){toast('群聊不存在');return}
   normalizeGroupMembers(group);
+  _memberPickerSearch='';
+  const search=document.getElementById('member-mgr-search');if(search)search.value='';
   const ov=document.getElementById('member-mgr-overlay');
   ov.classList.add('show');
   document.getElementById('member-mgr-title').textContent='Members / '+esc(group.name);
@@ -878,10 +1032,17 @@ function renderMemberPicker(group){
   const sel=document.getElementById('member-mgr-picker');
   if(!sel)return;
   const existingIds=group.members.filter(m=>m.status!=='removed').map(m=>m.characterId);
-  const available=apiConfigs.filter(a=>existingIds.indexOf(a.id)<0);
+  const available=apiConfigs.filter(a=>existingIds.indexOf(a.id)<0&&_roleMatchesSearch(a,_memberPickerSearch));
   sel.innerHTML='';
+  const activeCount=countGroupMembersByStatus(group,'active')+countGroupMembersByStatus(group,'muted');
+  const atLimit=activeCount>=MAX_GROUP_MEMBERS;
+  const addBtn=document.getElementById('member-mgr-add-btn');
+  if(addBtn)addBtn.disabled=atLimit;
+  if(atLimit){
+    var lim=document.createElement('option');lim.value='';lim.textContent='(已达到群聊成员上限 '+MAX_GROUP_MEMBERS+' 人)';sel.appendChild(lim);return;
+  }
   if(!available.length){
-    var o=document.createElement('option');o.value='';o.textContent='(no available roles)';sel.appendChild(o);
+    var o=document.createElement('option');o.value='';o.textContent=_memberPickerSearch?'(没有匹配的角色)':'(没有可添加的角色)';sel.appendChild(o);
     return;
   }
   var o0=document.createElement('option');o0.value='';o0.textContent='Select a role...';sel.appendChild(o0);
@@ -890,6 +1051,14 @@ function renderMemberPicker(group){
     o.value=a.id;
     o.textContent=(a.nickname||a.model)+' · '+(PROVIDERS[a.provider]?.name||a.provider||'');
     sel.appendChild(o);
+  });
+}
+function filterMemberPicker(value){
+  _memberPickerSearch=String(value||'');
+  if(!activeFriendId||!activeFriendId.startsWith('group_'))return;
+  loadGroups().then(function(groups){
+    const group=groups.find(g=>g.id===activeFriendId);
+    if(group){normalizeGroupMembers(group);renderMemberPicker(group)}
   });
 }
 
@@ -905,8 +1074,7 @@ async function addMemberFromPicker(){
     const group=groups.find(g=>g.id===activeFriendId);
     if(group){normalizeGroupMembers(group);renderMemberMgrList(group);renderMemberPicker(group)}
     if(currentPage==='chat'){selectGroup(activeFriendId)}
-  }else{toast(r.error||'Add failed')}
-  if(btn)btn.disabled=false;
+  }else{toast(r.error||'Add failed');if(btn)btn.disabled=false}
 }
 
 async function memberAction(gid,characterId,action){
@@ -942,6 +1110,7 @@ async function confirmCreateGroup(){
   if(!name){toast('请输入群聊名称');return}
   const selected=_groupSelectOrder.filter(id=>apiConfigs.some(a=>a.id===id));
   if(selected.length<2){toast('请至少选择2个API成员');return}
+  if(selected.length>MAX_GROUP_MEMBERS){toast('群聊最多添加'+MAX_GROUP_MEMBERS+'名成员');return}
   /* 静默模式兜底校验：先勾静默、再取消掉唯一发言者的路径也会被这里拦下 */
   const silentIds=selected.filter(id=>_groupMentionOnly.has(id));
   if(silentIds.length>=selected.length){toast('至少留一位不开静默的成员');return}
@@ -1030,6 +1199,7 @@ async function setGroupMemberStatus(gid,characterId,newStatus){
   const member=group.members.find(m=>m.characterId===characterId);
   if(!member)return {ok:false,error:'该成员不在群聊中'};
   const oldStatus=member.status;
+  if(oldStatus==='removed'&&newStatus!=='removed'&&countGroupMembersByStatus(group,'active')+countGroupMembersByStatus(group,'muted')>=MAX_GROUP_MEMBERS)return {ok:false,error:'群聊最多添加'+MAX_GROUP_MEMBERS+'名成员'};
   member.status=newStatus;
   await dbPut('groups',group);
   return {ok:true,oldStatus,newStatus,member};
@@ -1062,6 +1232,7 @@ async function addGroupMember(gid,characterId){
     /* 若之前被移除，改为 active */
     const existing=group.members.find(m=>m.characterId===characterId);
     if(existing.status==='removed'){
+      if(countGroupMembersByStatus(group,'active')+countGroupMembersByStatus(group,'muted')>=MAX_GROUP_MEMBERS)return {ok:false,error:'群聊最多添加'+MAX_GROUP_MEMBERS+'名成员'};
       existing.status='active';
       existing.joinedAt=Date.now();
       await dbPut('groups',group);
@@ -1070,6 +1241,7 @@ async function addGroupMember(gid,characterId){
     }
     return {ok:false,error:'该成员已在群聊中（状态：'+(existing.status||'active')+'）'};
   }
+  if(countGroupMembersByStatus(group,'active')+countGroupMembersByStatus(group,'muted')>=MAX_GROUP_MEMBERS)return {ok:false,error:'群聊最多添加'+MAX_GROUP_MEMBERS+'名成员'};
   /* 验证角色存在 */
   const exists=apiConfigs.some(a=>a.id===characterId)||archivedConfigs.some(a=>a.id===characterId);
   if(!exists)return {ok:false,error:'角色不存在：'+characterId};
@@ -1471,6 +1643,9 @@ window._ibApiReady=_ibApiReady;
 window._modelThinkingDefault=_modelThinkingDefault;
 window._resolveShowThinking=_resolveShowThinking;
 window._syncShowThinkingDefault=_syncShowThinkingDefault;
+window.DEEPSEEK_NATIVE_VISION_MODEL=DEEPSEEK_NATIVE_VISION_MODEL;
+window._isDeepSeekNativeVisionModel=_isDeepSeekNativeVisionModel;
+window._syncVisionUI=_syncVisionUI;
 window._voiceRateUpdate=_voiceRateUpdate;
 window._voiceToggleDetail=_voiceToggleDetail;
 window.testCharacterVoice=testCharacterVoice;
@@ -1490,7 +1665,12 @@ window.handleApiAvatarUpload=handleApiAvatarUpload;
 window.removeApiAvatar=removeApiAvatar;
 window._renderApiAvatarPreview=_renderApiAvatarPreview;
 window._apiAvatarLoadError=_apiAvatarLoadError;
+window.handleApiBannerUpload=handleApiBannerUpload;
+window.removeApiBanner=removeApiBanner;
+window._renderApiBannerPreview=_renderApiBannerPreview;
+window._normApiHandle=_normApiHandle;
 window.addNewApi=addNewApi;
+window.MAX_GROUP_MEMBERS=MAX_GROUP_MEMBERS;
 window._tkLoad=_tkLoad;
 window._tkSave=_tkSave;
 window._tkRecord=_tkRecord;
@@ -1525,6 +1705,8 @@ window.closeApiDelDialog=closeApiDelDialog;
 window.confirmApiDelDialog=confirmApiDelDialog;
 window._archiveApiConfig=_archiveApiConfig;
 window._hardDeleteApiConfig=_hardDeleteApiConfig;
+window._findGroupsReferencingCharacter=_findGroupsReferencingCharacter;
+window._detachCharacterFromGroups=_detachCharacterFromGroups;
 window.deleteCurrentApi=deleteCurrentApi;
 window._apiArchToggleUI=_apiArchToggleUI;
 window.toggleApiArchiveView=toggleApiArchiveView;
@@ -1537,6 +1719,7 @@ window.loadApiSettingsUI=loadApiSettingsUI;
 window.loadFriendsList=loadFriendsList;
 window.selectFriend=selectFriend;
 window.createGroup=createGroup;
+window.filterGroupRolePicker=filterGroupRolePicker;
 window._renderGroupMentionList=_renderGroupMentionList;
 window._toggleGroupMentionOnly=_toggleGroupMentionOnly;
 window._toggleGroupMember=_toggleGroupMember;
@@ -1545,6 +1728,7 @@ window.openMemberManager=openMemberManager;
 window.closeMemberManager=closeMemberManager;
 window.renderMemberMgrList=renderMemberMgrList;
 window.renderMemberPicker=renderMemberPicker;
+window.filterMemberPicker=filterMemberPicker;
 window.addMemberFromPicker=addMemberFromPicker;
 window.memberAction=memberAction;
 window.confirmCreateGroup=confirmCreateGroup;
@@ -1594,6 +1778,7 @@ ibSocialLive('activeFriendId', function(){return activeFriendId}, function(v){ac
 ibSocialLive('activeThreadId', function(){return activeThreadId}, function(v){activeThreadId=v});
 ibSocialLive('_dragApiIdx', function(){return _dragApiIdx}, function(v){_dragApiIdx=v});
 ibSocialLive('_pendingApiAvatar', function(){return _pendingApiAvatar}, function(v){_pendingApiAvatar=v});
+ibSocialLive('_pendingApiBanner', function(){return _pendingApiBanner}, function(v){_pendingApiBanner=v});
 ibSocialLive('_tkCacheDoc', function(){return _tkCacheDoc}, function(v){_tkCacheDoc=v});
 ibSocialLive('_tkT0', function(){return _tkT0}, function(v){_tkT0=v});
 ibSocialLive('_tkCalM', function(){return _tkCalM}, function(v){_tkCalM=v});
@@ -1642,6 +1827,7 @@ NS.expose('social', {
   _renderApiAvatarPreview: _renderApiAvatarPreview,
   _apiAvatarLoadError: _apiAvatarLoadError,
   addNewApi: addNewApi,
+  MAX_GROUP_MEMBERS: MAX_GROUP_MEMBERS,
   _tkLoad: _tkLoad,
   _tkSave: _tkSave,
   _tkRecord: _tkRecord,
@@ -1676,6 +1862,8 @@ NS.expose('social', {
   confirmApiDelDialog: confirmApiDelDialog,
   _archiveApiConfig: _archiveApiConfig,
   _hardDeleteApiConfig: _hardDeleteApiConfig,
+  _findGroupsReferencingCharacter: _findGroupsReferencingCharacter,
+  _detachCharacterFromGroups: _detachCharacterFromGroups,
   deleteCurrentApi: deleteCurrentApi,
   _apiArchToggleUI: _apiArchToggleUI,
   toggleApiArchiveView: toggleApiArchiveView,
@@ -1688,6 +1876,7 @@ NS.expose('social', {
   loadFriendsList: loadFriendsList,
   selectFriend: selectFriend,
   createGroup: createGroup,
+  filterGroupRolePicker: filterGroupRolePicker,
   _renderGroupMentionList: _renderGroupMentionList,
   _toggleGroupMentionOnly: _toggleGroupMentionOnly,
   _toggleGroupMember: _toggleGroupMember,
@@ -1696,6 +1885,7 @@ NS.expose('social', {
   closeMemberManager: closeMemberManager,
   renderMemberMgrList: renderMemberMgrList,
   renderMemberPicker: renderMemberPicker,
+  filterMemberPicker: filterMemberPicker,
   addMemberFromPicker: addMemberFromPicker,
   memberAction: memberAction,
   confirmCreateGroup: confirmCreateGroup,
@@ -1738,6 +1928,9 @@ NS.expose('social', {
   API_CONFIG_FALLBACK_KEY: API_CONFIG_FALLBACK_KEY,
   _CAL_MONTHS: _CAL_MONTHS,
   _showThinkingTouched: _showThinkingTouched,
+  DEEPSEEK_NATIVE_VISION_MODEL: DEEPSEEK_NATIVE_VISION_MODEL,
+  _isDeepSeekNativeVisionModel: _isDeepSeekNativeVisionModel,
+  _syncVisionUI: _syncVisionUI,
   apiConfigs: apiConfigs,
   archivedConfigs: archivedConfigs,
   editingApiId: editingApiId,

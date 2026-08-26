@@ -251,7 +251,7 @@ async function main() {
       unnamedRoleButtons:[...document.querySelectorAll('[role="button"]')].filter(b=>!(b.getAttribute('aria-label')||b.getAttribute('title')||b.textContent||'').trim()).map(b=>b.id||b.className||b.tagName).slice(0,20)
     }))()`);
     check('assets.externalScriptsLoaded', structure.scripts >= 15, String(structure.scripts));
-    check('assets.externalStylesLoaded', structure.styles === 16, String(structure.styles));
+    check('assets.externalStylesLoaded', structure.styles === 18, String(structure.styles));
     check('assets.backgroundResolved', /bg-internal\.jpg/.test(structure.background), structure.background);
     check('bridge.singleEntry', structure.nav === 1 && structure.panel === 1 && structure.fab === 0, JSON.stringify(structure));
     check('a11y.landmarks', structure.skip && structure.main === 'main' && structure.navLinkIssues.length === 0, JSON.stringify(structure));
@@ -363,6 +363,61 @@ async function main() {
     check('localFirst.saveLoopbackNoKey', localFirst.saved && localFirst.noKey && localFirst.model && localFirst.endpoint && localFirst.localRuntime && localFirst.promptCacheOff, JSON.stringify(localFirst));
     check('localFirst.quietModeToggleRestore', localFirst.quietOn && localFirst.quietOff, JSON.stringify(localFirst));
     check('localFirst.testConfigCleanup', localFirst.cleaned, JSON.stringify(localFirst));
+
+    const roleGroups = await evaluate(cdp, `(async()=>{
+      const ids=Array.from({length:12},(_,i)=>'role_group_smoke_'+i);
+      const now=Date.now();
+      const configs=ids.map((id,i)=>({id,nickname:'Role '+i,provider:'custom',apiKey:'key-'+i,model:'model-'+i,endpoint:'http://127.0.0.1:1/v1/chat/completions',systemPrompt:'prompt-'+i,relationship:'relation-'+i,autoMem:i%2===0,voice:{enabled:true,voiceId:'voice-'+i,rate:1+i/10},activeMessage:{interval:i+1},avatar:'avatar-'+i,created:now+i}));
+      const memories=ids.map((id,i)=>({id:'role_group_memory_'+i,friendId:id,content:'memory-'+i,created:now+i}));
+      const groupIds=[];
+      const putGroup=(id,members)=>{groupIds.push(id);return dbPut('groups',{id,name:id,members:members.map(characterId=>({characterId,status:'active',joinedAt:now})),memoryEnabled:true,created:now})};
+      try{
+        for(const cfg of configs)await dbPut('apiConfigs',cfg);
+        for(const memory of memories)await dbPut('autoMemory',memory);
+        await loadApiConfigs();
+        const before=await dbGetAll('apiConfigs');
+        const beforeMemory=await dbGetAll('autoMemory');
+        const independent=before.filter(x=>ids.includes(x.id)).length===12
+          &&before.filter(x=>ids.includes(x.id)).every(x=>{const i=Number(x.id.slice('role_group_smoke_'.length));return x.systemPrompt==='prompt-'+i&&x.voice.voiceId==='voice-'+i&&x.model==='model-'+i&&x.relationship==='relation-'+i&&x.avatar==='avatar-'+i})
+          &&beforeMemory.filter(x=>ids.includes(x.friendId)).length===12
+          &&beforeMemory.every(x=>!ids.includes(x.friendId)||x.content==='memory-'+Number(x.friendId.slice('role_group_smoke_'.length)));
+        createGroup();
+        const items=Array.from(document.querySelectorAll('#group-api-list .group-api-item'));
+        items.slice(0,10).forEach(item=>item.click());
+        const pickedBefore=window._groupSelectOrder.length;
+        if(items[10])items[10].click();
+        const pickedAfter=window._groupSelectOrder.length;
+        document.getElementById('group-name-input').value='Role group one';
+        await confirmCreateGroup();
+        const created=(await dbGetAll('groups')).filter(g=>g.name==='Role group one').pop();
+        if(created)groupIds.push(created.id);
+        const groupOneCount=created&&created.members.length;
+        const groupOneRefsOnly=created&&created.members.every(m=>Object.keys(m).every(k=>['characterId','status','joinedAt'].includes(k)));
+        const secondId='role_group_smoke_second';
+        await putGroup(secondId,[ids[0],ids[10]]);
+        const added=await addGroupMember(secondId,ids[11]);
+        const rejected=created&&await addGroupMember(created.id,ids[10]);
+        createGroup();
+        filterGroupRolePicker('Role 11');
+        const searchMatches=Array.from(document.querySelectorAll('#group-api-list .group-api-item')).map(x=>x.textContent.trim());
+        closeGroupDialog();
+        const groups=await dbGetAll('groups');
+        const deleted=await _hardDeleteApiConfig(ids[0]);
+        const afterGroups=await dbGetAll('groups');
+        const afterMemory=await dbGetAll('autoMemory');
+        return {roleCount:before.filter(x=>ids.includes(x.id)).length,independent,pickedBefore,pickedAfter,groupOneCount,groupOneRefsOnly,added:!!(added&&added.ok),differentGroup:groups.some(g=>g.id===secondId&&g.members.some(m=>m.characterId===ids[0])),maxRejected:!!(rejected&&!rejected.ok),searchMatches,deleted,deletedRef:afterGroups.every(g=>!g.members.some(m=>m.characterId===ids[0])),deletedMemory:!afterMemory.some(x=>x.friendId===ids[0])};
+      }finally{
+        for(const gid of groupIds){try{await dbDelete('groups',gid);for(const m of await dbGetByIndex('chatMessages','byFriend',gid))await dbDelete('chatMessages',m.id)}catch(e){}}
+        for(const cfg of configs.slice(1)){try{await dbDelete('apiConfigs',cfg.id);if(typeof _apiFallbackRemove==='function')_apiFallbackRemove(cfg.id)}catch(e){}}
+        for(const memory of memories.slice(1)){try{await dbDelete('autoMemory',memory.id)}catch(e){}}
+        await loadApiConfigs();
+      }
+    })()`);
+    check('roles.largeLibrary', roleGroups.roleCount === 12 && roleGroups.independent, JSON.stringify(roleGroups));
+    check('groups.keepExistingMemberLimit', roleGroups.pickedBefore === 10 && roleGroups.pickedAfter === 10 && roleGroups.groupOneCount === 10 && roleGroups.maxRejected, JSON.stringify(roleGroups));
+    check('groups.independentCombinationsAndSharedRoles', roleGroups.added && roleGroups.differentGroup, JSON.stringify(roleGroups));
+    check('groups.searchRolePicker', roleGroups.searchMatches.length === 1 && roleGroups.searchMatches[0].includes('Role 11'), JSON.stringify(roleGroups));
+    check('roles.deleteRemovesGroupReferences', roleGroups.deleted && roleGroups.deletedRef && roleGroups.deletedMemory, JSON.stringify(roleGroups));
 
     const bootBefore = await evaluate(cdp, 'window.__ibBootCount');
     await evaluate(cdp, 'window.__ibBootFn();window.__ibBootFn()');

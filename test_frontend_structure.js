@@ -76,7 +76,7 @@ check('split.noInlineScripts', inlineScripts.length === 0, String(inlineScripts.
 const scriptSources = [...html.matchAll(/<script[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi)].map(m => m[1]);
 const styleSources = [...html.matchAll(/<link[^>]*\brel\s*=\s*["'][^"']*stylesheet[^"']*["'][^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*>/gi)].map(m => m[1]);
 check('split.externalScriptCount', scriptSources.length >= 15, String(scriptSources.length));
-check('split.externalStyleCount', styleSources.length === 16, String(styleSources.length));
+check('split.externalStyleCount', styleSources.length === 18, String(styleSources.length));
 const expectedCoreStyles = [
   'assets/css/core.css',
   'assets/css/core/chat-shell.css',

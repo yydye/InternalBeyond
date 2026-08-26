@@ -16,7 +16,7 @@ function createPersistence(deps) {
   const DATA_BACKUP_FILE = DATA_FILE + '.bak';
 
   function emptyData() {
-    return { version: 3, tasks: {}, plans: {}, events: {}, history: {} };
+    return { version: 3, tasks: {}, plans: {}, events: {}, history: {}, moments: {}, replyChains: {} };
   }
 
   function parseDataFile(file) {
@@ -29,7 +29,9 @@ function createPersistence(deps) {
       tasks: parsed.tasks && typeof parsed.tasks === 'object' && !Array.isArray(parsed.tasks) ? parsed.tasks : {},
       plans: parsed.plans && typeof parsed.plans === 'object' && !Array.isArray(parsed.plans) ? parsed.plans : {},
       events: parsed.events && typeof parsed.events === 'object' && !Array.isArray(parsed.events) ? parsed.events : {},
-      history: parsed.history && typeof parsed.history === 'object' && !Array.isArray(parsed.history) ? parsed.history : {}
+      history: parsed.history && typeof parsed.history === 'object' && !Array.isArray(parsed.history) ? parsed.history : {},
+      moments: parsed.moments && typeof parsed.moments === 'object' && !Array.isArray(parsed.moments) ? parsed.moments : {},
+      replyChains: parsed.replyChains && typeof parsed.replyChains === 'object' && !Array.isArray(parsed.replyChains) ? parsed.replyChains : {}
     };
   }
 
