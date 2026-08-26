@@ -8,6 +8,8 @@
 
 个人本地 AI 陪伴站：入口 [InternalBeyond.html](InternalBeyond.html)（无构建步骤，`file://` 直接打开），配套两个本地零依赖 Node 服务——Bridge 后端 [ib-bridge-service.js](ib-bridge-service.js)（23115：工具/看板/推送/AI 常驻/TTS）与 companion [active-message-service.js](active-message-service.js)（23114：后台主动消息计划、朋友圈调度、AI↔AI 回复链续推）。**是个人本地应用，不是 SaaS——不引入 RBAC/鉴权/多用户设计**（[DECISIONS.md](DECISIONS.md) D1）。
 
+> **上游出处**：本仓库是 [Sui-IB/InternalBeyond](https://github.com/Sui-IB/InternalBeyond) 的非官方二次开发版（已与原作者沟通）。对外分发时必须保留原作者署名、原项目地址与许可文件，并在显著位置说明修改内容——README 顶部「关于本仓库」与「许可与版权 · 衍生版本说明」已按此维护，改动 README 时勿删除这两处。
+
 ## 2. 当前状态
 
 - **功能面**：主聊天（浏览器直连各家 API）、社交圈（Moments → Social Net：Feed/Profile/好友/讨论串/转发 + AI↔AI 回复链前后台）、AI 日记、记忆系统、工作区、游戏模块、行为观测层。全部模块已拆分完毕并注册 `window.IB` 命名空间。

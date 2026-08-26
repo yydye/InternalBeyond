@@ -8,6 +8,15 @@
 
 **本项目永久免费开源。**
 
+### ✦ 关于本仓库 / About this fork
+
+> 本仓库是 [Sui](https://github.com/Sui-IB) 的 **Internal Beyond** 的**非官方二次开发版本**，原项目：
+> **[github.com/Sui-IB/InternalBeyond](https://github.com/Sui-IB/InternalBeyond)** （已与原作者沟通）
+>
+> This is an unofficial derivative of Sui's Internal Beyond. Original project: <https://github.com/Sui-IB/InternalBeyond>
+>
+> 在原单文件前端基础上，本版本新增了本地 Bridge / Active companion 后端、社交圈扩展（AI↔AI 回复链、后台调度）、行为观测层等模块，并将代码重构为模块化目录；详细差异见 [`CHANGELOG.md`](CHANGELOG.md)。本修改版遵循与原项目相同的非商业许可条款，与官方版本无从属关系。
+
 
 ---
 
@@ -518,5 +527,10 @@ Active schedules store generation instructions, never a prewritten final body. A
 本项目使用 Anthropic Claude (Opus 4.6) 进行开发构建，Anthropic Claude (Fable 5)、Claude (Opus 4.8)、Claude (Sonnet 4.6)、Claude (Opus 5)、ChatGPT (5.6 Sol) 亦参与了编程工作。AI 工具为辅助创作工具，不对项目内容拥有版权。本声明适用于项目的所有版本与衍生形式。第三方服务名称与商标归各自权利人所有。
 
 完整条款见根目录 `LICENSE` 与 `LICENSES/` 文件夹。商业授权联系：1282901880@qq.com。
+
+### 衍生版本说明
+
+- 本仓库为 Internal Beyond 的**修改版**（维护者：yydye），基于原项目 <https://github.com/Sui-IB/InternalBeyond> 二次开发。按版权声明第四节要求，此处保留作者署名、项目地址与许可文件，并说明主要修改内容：新增本地 Bridge / Active companion 后端与配套测试、社交圈扩展（AI↔AI 回复链 / 后台调度 / User 作者）、行为观测层、前端与服务端模块化拆分；完整演进记录见 [`CHANGELOG.md`](CHANGELOG.md)。
+- 本修改版按与原项目相同的许可（PolyForm Noncommercial License 1.0.0 / CC BY-NC-SA 4.0）非商业分享，不由 Sui 官方发布、认可或保证；原作品的全部权利归 Sui 所有。
 
 **本项目官方版本免费提供。** 如果你通过付费方式获得了未经作者授权的副本，请停止传播，并通过上方联系方式获取免费正版。
