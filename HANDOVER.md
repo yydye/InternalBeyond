@@ -49,7 +49,7 @@
 
 ### DO
 
-- ✅ 用**中文**交流。主要设备 OPPO（Android）：推送走 ntfy、健康走 Health Connect/HTTP Shortcuts。
+- ✅ 用**中文**交流。主要使用场景是 Android 手机（OPPO 等国产 ROM 需允许后台运行）：推送走 ntfy、健康走 Health Connect/HTTP Shortcuts。
 - ✅ 用户对"看起来实现但实际没实现"非常敏感——交付前给代码证据与测试。
 - ✅ 改 `InternalBeyond.html` 或 assets 下任一 JS/CSS 后检查/补回 **UTF-8 BOM**（edit 工具会剥掉，结构测试会拦）；新文件必须 BOM + UTF-8。
 - ✅ 本地 file:// 验证改动用 **Ctrl+F5** 强刷。
@@ -62,7 +62,7 @@
 # 重启 Bridge 服务
 $c = Get-NetTCPConnection -LocalPort 23115 -State Listen
 foreach($x in $c){ $p = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $x.OwningProcess); if($p.CommandLine -like '*ib-bridge-service.js*'){ Stop-Process -Id $x.OwningProcess -Force } }
-Start-Process cmd.exe -ArgumentList '/c','start-bridge-service.cmd' -WorkingDirectory 'E:\InternalBeyond-main'
+Start-Process cmd.exe -ArgumentList '/c','start-bridge-service.cmd' -WorkingDirectory '<仓库根目录>'
 Invoke-RestMethod http://127.0.0.1:23115/health
 
 # companion（23114）同理：找监听进程确认 active-message-service.js 后停止，重跑 start-active-service.cmd

@@ -18,7 +18,7 @@
 
 ### T1. 酷狗直连播放全部返回"需要付费"
 
-- **现象**：`m.kugou.com/getSongInfo`、`wwwapi/play/getdata` 等对这台机器一律返回需要付费——免费歌也一样，带会员 Cookie 也无效。
+- **现象**：`m.kugou.com/getSongInfo`、`wwwapi/play/getdata` 等接口在开发环境实测一律返回"需要付费"——免费歌也一样，带会员 Cookie 也无效。
 - **结论**：酷狗服务端限制，暂时无解；当前配置里的 Cookie 是登录接口返回串，即使有效也被限制。
 - **处置**：点歌走"打开酷狗客户端/网页"方案（深链是否唤起取决于本机是否安装酷狗）。不要试图改回内嵌流式（[DECISIONS.md](DECISIONS.md) D3）。
 

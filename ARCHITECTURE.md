@@ -21,7 +21,7 @@ Internal Beyond 是一个**个人本地 AI 陪伴站**：入口是 [InternalBeyo
 ## 2. 目录与模块结构
 
 ```
-E:\InternalBeyond-main
+InternalBeyond/  # 仓库根目录
 ├── InternalBeyond.html          # 入口 HTML（页内仍有少量内联脚本与全部页面 DOM）
 ├── ib-bridge-service.js         # Bridge composition root（约 998 行）
 ├── bridge/                      # Bridge 七个 CommonJS 工厂模块
