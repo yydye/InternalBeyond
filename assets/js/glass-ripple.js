@@ -303,7 +303,7 @@ window.addEventListener('resize',function(){if(mode)tgtOk=retarget(mode)});
   };
   im.onerror=function(){probe(names)};
   im.src=name;
-})(['bg-canvas.jpg','bg-canvas.png']);
+  })(['bg-canvas.png','bg-canvas.jpg']);
 if(!REDUCED)requestAnimationFrame(loop);
 
 /* ---- window.IB 命名空间迁移：所有权标记 ---- */
