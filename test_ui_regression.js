@@ -471,6 +471,334 @@ async function main() {
     })`);
     check('navigation.routeClosesBridge', !routed.bridgeOpen && routed.guideActive && routed.guideCurrent === 'page' && routed.page, JSON.stringify(routed));
 
+    /* ── VoiceClone Reference Audio UI（第三阶段 B1）：真实 Bridge + 编辑器上传 / 保存 / 回归 ── */
+    const voiceBridgePort = await freePort();
+    const voiceDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-voice-ui-'));
+    const voiceBridge = spawn(process.execPath, [path.join(__dirname, 'ib-bridge-service.js')], {
+      cwd: __dirname,
+      env: Object.assign({}, process.env, { IB_BRIDGE_PORT: String(voiceBridgePort), IB_BRIDGE_HOST: '127.0.0.1', IB_BRIDGE_DATA_DIR: voiceDataDir }),
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    voiceBridge.stdout.on('data', () => {});
+    voiceBridge.stderr.on('data', () => {});
+    let voiceBridgeReady = false;
+    for (let i = 0; i < 60; i++) {
+      try { if ((await fetch('http://127.0.0.1:' + voiceBridgePort + '/health')).ok) { voiceBridgeReady = true; break; } } catch (error) { /* 启动中 */ }
+      await new Promise(resolve => setTimeout(resolve, 150));
+    }
+    check('voiceBridge.ready', voiceBridgeReady);
+    const voiceSavedOldBridge = await evaluate(cdp, 'localStorage.getItem("ib_bridge_http")');
+    if (voiceBridgeReady) {
+      await evaluate(cdp, 'localStorage.setItem("ib_bridge_http", ' + JSON.stringify('http://127.0.0.1:' + voiceBridgePort) + ')');
+      const voiceUi = await evaluate(cdp, `(async()=>{
+        const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+        const appFetch=(code,opt)=>window.ibBridgeFetch('http://127.0.0.1:${voiceBridgePort}'+code,opt).then(r=>r.json());
+        const out={};
+        const cleanup=async()=>{
+          try{await dbDelete('apiConfigs',out._id);if(typeof _apiFallbackRemove==='function')_apiFallbackRemove(out._id);}catch(e){}
+          try{await loadApiConfigs();if(typeof renderApiList==='function')await renderApiList();}catch(e){}
+          try{cancelApiEdit();}catch(e){}
+        };
+        try{
+          const id='voice_ui_role_'+Date.now().toString(36);
+          out._id=id;
+          /* 种子：builtin 音色 + 携带未来字段的 voiceData（兼容铁律测试预置） */
+          const seeded={id,nickname:'VoiceClone UI 角色',provider:'custom',apiKey:'k-voice-ui',model:'m-voice-ui',endpoint:'http://127.0.0.1:1/v1/chat/completions',systemPrompt:'p',relationship:'朋友',voice:{enabled:true,provider:'edge',voiceId:'zh-CN-XiaoxiaoNeural',rate:1.0,pitch:'+0Hz',voiceType:'builtin',voiceData:{refAudioId:'abc',futureField:'keep-me'}},created:Date.now()};
+          await dbPut('apiConfigs',seeded);
+          await loadApiConfigs();
+          editApi(id);
+          await sleep(120);
+          out.editorOpen=!!document.getElementById('api-editor')&&document.getElementById('api-editor').style.display==='block';
+          out.builtinRadio=document.getElementById('api-voice-type-builtin').checked;
+          /* 打开编辑器（builtin）→ 修改普通字段 → 保存：voiceData.futureField 必须保留 */
+          document.getElementById('api-system').value='保存普通字段前修改';
+          await saveCurrentApi(null);
+          await sleep(120);
+          let saved=await dbGet('apiConfigs',id);
+          out.plainSaveKeepsFuture=(saved&&saved.voice&&saved.voice.voiceData&&saved.voice.voiceData.futureField==='keep-me')&&saved.voice.voiceType==='builtin';
+          /* 切换到 Voice Clone */
+          document.getElementById('api-voice-type-clone').checked=true;
+          _voiceTypeChange();
+          await sleep(80);
+          out.clonePanelVisible=document.getElementById('api-voice-clone-panel').style.display!=='none';
+          /* B2：builtin-fields 保持可见（由 capability sync 按类型显隐）；此时 provider 行应被隐藏、clone model 下拉显示、Test 不再禁用 */
+          out.providerRowHidden=document.getElementById('api-voice-provider-wrap').style.display==='none';
+          out.modelShowsClone=document.getElementById('api-voice-model').value==='mimo-v2.5-tts-voiceclone';
+          out.testEnabled=!!document.getElementById('api-voice-test-btn')&&!document.getElementById('api-voice-test-btn').disabled;
+          /* 真实上传：文件输入（DataTransfer）+ change 事件 → 上传 → 自动绑定 */
+          const mp3Bytes=new Uint8Array([0x49,0x44,0x33,0x04,0,0,0,0,0,0,0x01,0x02,0x03,0x04,0x55]);
+          const dt=new DataTransfer();dt.items.add(new File([mp3Bytes],'voice-ui.mp3',{type:'audio/mpeg'}));
+          const fileInput=document.getElementById('api-voice-clone-file');
+          fileInput.files=dt.files;
+          fileInput.dispatchEvent(new Event('change',{bubbles:true}));
+          let sel=null;
+          for(let i=0;i<120;i++){sel=_voiceCloneSelectionGet();if(sel&&sel.refAudioId)break;await sleep(30);}
+          out.uploaded=!!(sel&&sel.refAudioId);
+          out.uploadName=sel&&sel.name;
+          out.uploadSize=sel&&sel.size;
+          out.currentLabel=(document.getElementById('api-voice-clone-current')||{}).textContent||'';
+          /* 保存 clone → 读回：voiceData 含 refAudioId 且 futureField 保留，无任何二进制字段 */
+          await saveCurrentApi(null);
+          await sleep(150);
+          saved=await dbGet('apiConfigs',id);
+          out.savedType=saved&&saved.voice&&saved.voice.voiceType;
+          out.savedProv=saved&&saved.voice&&saved.voice.provider;
+          out.savedRefId=saved&&saved.voice&&saved.voice.voiceData&&saved.voice.voiceData.refAudioId;
+          out.savedMime=saved&&saved.voice&&saved.voice.voiceData&&saved.voice.voiceData.mime;
+          out.savedName=saved&&saved.voice&&saved.voice.voiceData&&saved.voice.voiceData.name;
+          out.savedSize=saved&&saved.voice&&saved.voice.voiceData&&saved.voice.voiceData.size;
+          out.futureField=saved&&saved.voice&&saved.voice.voiceData&&saved.voice.voiceData.futureField;
+          const savedJson=JSON.stringify(saved&&saved.voice||{});
+          const vd=Object.keys(saved&&saved.voice&&saved.voice.voiceData||{}).sort();
+          out.vdKeys=vd.join(',');
+          out.noBinaryInConfig=vd.join(',').indexOf('data')===-1&&vd.join(',').indexOf('base64')===-1&&!(/data:|base64/.test(savedJson));
+          /* 导出语义：apiConfigs 直出 JSON 即导出，同样无二进制（导出不含音频本体的断言） */
+          out.exportJsonNoBinary=!(/data:|base64/.test(savedJson));
+          /* 文件确实在 Bridge 上可读（HEAD + 完整字节对比） */
+          const refId=out.savedRefId;
+          if(refId){
+            const headRes=await fetch('http://127.0.0.1:${voiceBridgePort}/api/tts/voices/'+encodeURIComponent(refId),{method:'HEAD'});
+            out.headOk=headRes.status===200&&String(headRes.headers.get('content-type')||'').indexOf('audio/mpeg')!==-1;
+            const got=await fetch('http://127.0.0.1:${voiceBridgePort}/api/tts/voices/'+encodeURIComponent(refId));
+            const gotBuf=new Uint8Array(await got.arrayBuffer());
+            out.bytesMatch=got.status===200&&gotBuf.length===mp3Bytes.length&&gotBuf.every((v,i)=>v===mp3Bytes[i]);
+          }
+          /* 重新打开编辑器：Voice Type 恢复 + 引用展示 */
+          editApi(id);
+          await sleep(120);
+          out.reopenClone=document.getElementById('api-voice-type-clone').checked;
+          out.reopenLabel=(document.getElementById('api-voice-clone-current')||{}).textContent||'';
+          /* 仍被角色引用 → DELETE 必须被拒绝（服务端引用校验） */
+          try{
+            const refsReferenced=_ibReferencedRefAudioIds(refId);
+            const delRef=await appFetch('/api/tts/voices/'+encodeURIComponent(refId),{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({referencedIds:refsReferenced})});
+            out.deleteReferencedRejected=delRef&&delRef.ok===false&&/引用/.test(delRef.error||'');
+          }catch(e){out.deleteReferencedRejected=false;}
+          /* 导入后的 dangling reference 检测：引用不存在文件时必须给出明确状态 */
+          try{
+            const importCheck=await ibTtsVoiceCheckImport([{id:'x1',voice:{voiceType:'clone',voiceData:{refAudioId:'nonexistent12345'}}},{id:'x2',voice:{voiceType:'builtin',voiceData:{refAudioId:refId}}}]);
+            out.danglingDetected=importCheck&&Array.isArray(importCheck.missing)&&importCheck.missing.length===1&&importCheck.missing[0]==='nonexistent12345';
+          }catch(e){out.danglingDetected=false;}
+          /* 切回 Built-in 并保存（解除引用）→ 删除成功 → HEAD 404 */
+          document.getElementById('api-voice-type-builtin').checked=true;
+          _voiceTypeChange();
+          out.unboundModel=document.getElementById('api-voice-model').value;
+          out.unboundProv=document.getElementById('api-voice-provider').value;
+          await saveCurrentApi(null);
+          await sleep(150);
+          saved=await dbGet('apiConfigs',id);
+          out.unboundType=saved&&saved.voice&&saved.voice.voiceType;
+          out.unboundSavedModel=saved&&saved.voice&&saved.voice.model;
+          out.unboundSavedProv=saved&&saved.voice&&saved.voice.provider;
+          out.futureFieldAfterUnbound=saved&&saved.voice&&saved.voice.voiceData&&saved.voice.voiceData.futureField;
+          try{
+            const delFree=await appFetch('/api/tts/voices/'+encodeURIComponent(refId),{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({referencedIds:_ibReferencedRefAudioIds()})});
+            out.deleteUnboundOk=delFree&&delFree.ok===true;
+            const headAfter=await fetch('http://127.0.0.1:${voiceBridgePort}/api/tts/voices/'+encodeURIComponent(refId),{method:'HEAD'});
+            out.headAfterDelete=headAfter.status===404;
+          }catch(e){out.deleteUnboundOk=false;}
+        }catch(error){out.error=String(error&&error.message||error);}
+        await cleanup();
+        return out;
+      })()`);
+      check('voiceClone.editorOpenAndBuiltin', voiceUi.editorOpen && voiceUi.builtinRadio, JSON.stringify(voiceUi));
+      check('voiceClone.plainSaveKeepsFuture', voiceUi.plainSaveKeepsFuture === true, JSON.stringify(voiceUi));
+      check('voiceClone.panelShowsOnSelect', voiceUi.clonePanelVisible && voiceUi.providerRowHidden && voiceUi.modelShowsClone && voiceUi.testEnabled, JSON.stringify(voiceUi));
+      check('voiceClone.uploadReal', voiceUi.uploaded && voiceUi.uploadName === 'voice-ui.mp3' && voiceUi.uploadSize === 15, JSON.stringify(voiceUi));
+      check('voiceClone.currentLabelShows', /voice-ui\.mp3/.test(voiceUi.currentLabel), voiceUi.currentLabel);
+      check('voiceClone.savePersistsRef', voiceUi.savedType === 'clone' && voiceUi.savedRefId && voiceUi.savedMime === 'audio/mpeg' && voiceUi.savedName === 'voice-ui.mp3' && voiceUi.savedSize === 15, JSON.stringify(voiceUi));
+      check('voiceClone.futureFieldPreserved', voiceUi.futureField === 'keep-me', JSON.stringify(voiceUi));
+      check('voiceClone.noBinaryInConfig', voiceUi.vdKeys === 'futureField,mime,name,refAudioId,size' && voiceUi.noBinaryInConfig && voiceUi.exportJsonNoBinary, JSON.stringify(voiceUi));
+      check('voiceClone.bridgeServesBytes', voiceUi.headOk && voiceUi.bytesMatch, JSON.stringify(voiceUi));
+      check('voiceClone.reopenRestoresState', voiceUi.reopenClone && /voice-ui\.mp3/.test(voiceUi.reopenLabel || ''), JSON.stringify(voiceUi));
+      check('voiceClone.deleteReferencedRejected', voiceUi.deleteReferencedRejected === true, JSON.stringify(voiceUi));
+      check('voiceClone.importDanglingDetected', voiceUi.danglingDetected === true, JSON.stringify(voiceUi));
+      check('voiceClone.unbindThenDelete', voiceUi.unboundType === 'builtin' && voiceUi.futureFieldAfterUnbound === 'keep-me' && voiceUi.deleteUnboundOk && voiceUi.headAfterDelete, JSON.stringify(voiceUi));
+      check('voiceClone.unbindNoDirtyModel', (voiceUi.unboundModel === '' || voiceUi.unboundModel === 'mimo-v2.5-tts') && voiceUi.unboundSavedModel !== 'mimo-v2.5-tts-voiceclone' && voiceUi.unboundSavedModel !== 'mimo-v2.5-tts-voicedesign', JSON.stringify(voiceUi));
+      /* 保存为 Clone 后重开编辑器再切回 Built-in：provider 保持与已保存配置一致（clone 保存时已合法写为 mimo），
+         不产生额外漂移；模型不得残留专用 model（in-session 强制恢复由 voiceTypeChange 记忆机制保证，见独立验收）。 */
+      check('voiceClone.unbindProviderConsistent', voiceUi.unboundSavedProv === voiceUi.savedProv && voiceUi.savedProv === 'mimo', JSON.stringify(voiceUi));
+    }
+    /* 恢复桥接地址（无论 Bridge 是否就绪） */
+    await evaluate(cdp, voiceSavedOldBridge === null
+      ? 'localStorage.removeItem("ib_bridge_http")'
+      : 'localStorage.setItem("ib_bridge_http", ' + JSON.stringify(voiceSavedOldBridge) + ')');
+    voiceBridge.kill();
+    await new Promise(resolve => setTimeout(resolve, 300));
+    try { fs.rmSync(voiceDataDir, { recursive: true, force: true }); } catch (error) { /* ignore */ }
+
+    /* ── MiMo VoiceClone UI（第三阶段 B2）：真实 Bridge + mock VoiceClone 端点 ── */
+    let cloneReq = null;
+    const mockClone = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', c => { body += c; });
+      req.on('end', () => {
+        cloneReq = { method: req.method, url: req.url, headers: { apiKey: req.headers['api-key'] || '', auth: req.headers.authorization || '' }, body: JSON.parse(body || '{}') };
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ choices: [{ message: { audio: { data: Buffer.from('VCLONE_AUDIO').toString('base64'), id: 'vid1' } } }] }));
+      });
+    });
+    const mockPort = await new Promise(r => { mockClone.listen(0, '127.0.0.1', () => r(mockClone.address().port)); });
+    const cloneDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-clone-ui-'));
+    const cloneBridgePort = await freePort();
+    fs.writeFileSync(path.join(cloneDataDir, 'config.json'), JSON.stringify({ ttsMimo: { enabled: true, endpoint: 'http://127.0.0.1:' + mockPort + '/v1/chat/completions', apiKey: 'vc-key', voice: '' } }), 'utf8');
+    const cloneBridge = spawn(process.execPath, [path.join(__dirname, 'ib-bridge-service.js')], {
+      cwd: __dirname,
+      env: Object.assign({}, process.env, { IB_BRIDGE_PORT: String(cloneBridgePort), IB_BRIDGE_HOST: '127.0.0.1', IB_BRIDGE_DATA_DIR: cloneDataDir }),
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    cloneBridge.stdout.on('data', () => {});
+    cloneBridge.stderr.on('data', () => {});
+    let cloneReady = false;
+    for (let i = 0; i < 60; i++) {
+      try { if ((await fetch('http://127.0.0.1:' + cloneBridgePort + '/health')).ok) { cloneReady = true; break; } } catch (error) { /* 启动中 */ }
+      await new Promise(resolve => setTimeout(resolve, 150));
+    }
+    check('voiceCloneBridge.ready', cloneReady);
+    if (cloneReady) {
+      await evaluate(cdp, 'localStorage.setItem("ib_bridge_http", ' + JSON.stringify('http://127.0.0.1:' + cloneBridgePort) + ')');
+      const cloneUi = await evaluate(cdp, `(async()=>{
+        const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+        const out={};
+        try{
+          addNewApi();
+          await sleep(100);
+          document.getElementById('api-voice-toggle').checked=true; _voiceToggleDetail();
+          document.getElementById('api-voice-provider').value='mimo'; _voiceToggleDetail();
+          document.getElementById('api-voice-type-clone').checked=true; _voiceTypeChange();
+          await sleep(80);
+          out.clonePanel=document.getElementById('api-voice-clone-panel').style.display!=='none';
+          out.modelClone=document.getElementById('api-voice-model').value;
+          out.providerForcedMimo=document.getElementById('api-voice-provider').value;
+          const bytes=new Uint8Array([0x49,0x44,0x33,0x04,0,0,0,0,0,0,0x01,0x02,0x03,0x04,0x55]);
+          const dt=new DataTransfer();dt.items.add(new File([bytes],'vc-ui.mp3',{type:'audio/mpeg'}));
+          const fi=document.getElementById('api-voice-clone-file');fi.files=dt.files;fi.dispatchEvent(new Event('change',{bubbles:true}));
+          let sel=null;for(let i=0;i<120;i++){sel=_voiceCloneSelectionGet();if(sel&&sel.refAudioId)break;await sleep(30);}
+          out.refAudioId=sel&&sel.refAudioId;
+          document.getElementById('api-voice-test-btn').click();
+          out.clickedTest=true;
+          const vc={provider:'mimo',voiceId:'',rate:1.0,pitch:'+0Hz',model:document.getElementById('api-voice-model').value,language:'',style:'',voiceType:'clone',voiceData:sel};
+          const j=await fetch('http://127.0.0.1:${cloneBridgePort}/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(IB.bridge.ttsPayload(vc,'你好，我是克隆音色。'))}).then(r=>r.json()).catch(e=>({error:String(e&&e.message||e)}));
+          out.ttsOk=!!(j&&j.ok)&&typeof j.url==='string';
+          out.ttsUrl=!!(j&&j.url);
+        }catch(error){out.error=String(error&&error.message||error);}
+        try{cancelApiEdit();}catch(e){}
+        return out;
+      })()`);
+      check('voiceCloneUi.panelAndModel', cloneUi.clonePanel && cloneUi.modelClone === 'mimo-v2.5-tts-voiceclone' && cloneUi.providerForcedMimo === 'mimo', JSON.stringify(cloneUi));
+      check('voiceCloneUi.upload', !!cloneUi.refAudioId, JSON.stringify(cloneUi));
+      check('voiceCloneUi.ttsRequestOk', cloneUi.ttsOk && cloneUi.ttsUrl, JSON.stringify(cloneUi));
+      const shapeOk = cloneReq && cloneReq.method === 'POST' && cloneReq.url.indexOf('/v1/chat/completions') > -1
+        && cloneReq.body.model === 'mimo-v2.5-tts-voiceclone'
+        && cloneReq.body.audio && cloneReq.body.audio.format === 'mp3'
+        && typeof cloneReq.body.audio.voice === 'string' && cloneReq.body.audio.voice.indexOf('data:audio/mpeg;base64,') === 0
+        && Array.isArray(cloneReq.body.messages) && cloneReq.body.messages.filter(m => m.role === 'assistant').some(m => m.content === '你好，我是克隆音色。')
+        && cloneReq.headers.apiKey === 'vc-key';
+      check('voiceCloneUi.mockRequestShape', shapeOk, JSON.stringify(cloneReq && cloneReq.body));
+    } else {
+      await evaluate(cdp, voiceSavedOldBridge === null ? 'localStorage.removeItem("ib_bridge_http")' : 'localStorage.setItem("ib_bridge_http", ' + JSON.stringify(voiceSavedOldBridge) + ')');
+    }
+    cloneBridge.kill();
+    await new Promise(resolve => setTimeout(resolve, 300));
+    try { fs.rmSync(cloneDataDir, { recursive: true, force: true }); } catch (error) { /* ignore */ }
+    await new Promise(r => mockClone.close(r));
+
+    /* ── MiMo Voice Design UI（第三阶段 C）：真实 Bridge + mock Voice Design 端点 ── */
+    let designReq = null;
+    const mockDesign = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', c => { body += c; });
+      req.on('end', () => {
+        designReq = { method: req.method, url: req.url, headers: { apiKey: req.headers['api-key'] || '', auth: req.headers.authorization || '' }, body: JSON.parse(body || '{}') };
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ choices: [{ message: { audio: { data: Buffer.from('VDESIGN_AUDIO').toString('base64'), id: 'vid9' } } }] }));
+      });
+    });
+    const designMockPort = await new Promise(r => { mockDesign.listen(0, '127.0.0.1', () => r(mockDesign.address().port)); });
+    const designDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-design-ui-'));
+    const designBridgePort = await freePort();
+    fs.writeFileSync(path.join(designDataDir, 'config.json'), JSON.stringify({ ttsMimo: { enabled: true, endpoint: 'http://127.0.0.1:' + designMockPort + '/v1/chat/completions', apiKey: 'vd-key', voice: '' } }), 'utf8');
+    const designBridge = spawn(process.execPath, [path.join(__dirname, 'ib-bridge-service.js')], {
+      cwd: __dirname,
+      env: Object.assign({}, process.env, { IB_BRIDGE_PORT: String(designBridgePort), IB_BRIDGE_HOST: '127.0.0.1', IB_BRIDGE_DATA_DIR: designDataDir }),
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    designBridge.stdout.on('data', () => {});
+    designBridge.stderr.on('data', () => {});
+    let designReady = false;
+    for (let i = 0; i < 60; i++) {
+      try { if ((await fetch('http://127.0.0.1:' + designBridgePort + '/health')).ok) { designReady = true; break; } } catch (error) { /* 启动中 */ }
+      await new Promise(resolve => setTimeout(resolve, 150));
+    }
+    check('voiceDesignBridge.ready', designReady);
+    if (designReady) {
+      await evaluate(cdp, 'localStorage.setItem("ib_bridge_http", ' + JSON.stringify('http://127.0.0.1:' + designBridgePort) + ')');
+      const designUi = await evaluate(cdp, `(async()=>{
+        const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+        const out={};
+        const cleanup=async()=>{try{await dbDelete('apiConfigs',out._id);if(typeof _apiFallbackRemove==='function')_apiFallbackRemove(out._id);}catch(e){}try{await loadApiConfigs();if(typeof renderApiList==='function')await renderApiList();}catch(e){}try{cancelApiEdit();}catch(e){}};
+        try{
+          /* 开新角色 → 直接切到 Design */
+          addNewApi();
+          await sleep(100);
+          out._id=editingApiId;
+          document.getElementById('api-voice-toggle').checked=true; _voiceToggleDetail();
+          document.getElementById('api-voice-type-design').checked=true; _voiceTypeChange();
+          await sleep(80);
+          out.providerForcedMimo=document.getElementById('api-voice-provider').value;
+          out.modelDesign=document.getElementById('api-voice-model').value;
+          out.providerRowHidden=document.getElementById('api-voice-provider-wrap').style.display==='none';
+          out.builtinVoiceHidden=document.getElementById('api-voice-select-wrap').style.display==='none' && document.getElementById('api-voice-id-wrap').style.display==='none';
+          out.clonePanelHidden=document.getElementById('api-voice-clone-panel').style.display==='none';
+          const styleLabel=document.querySelector('#api-voice-style-wrap .ibv-label');
+          out.styleLabel=(styleLabel&&styleLabel.textContent)||'';
+          out.testEnabled=!document.getElementById('api-voice-test-btn').disabled;
+          /* 填入音色描述并保存 */
+          const desc='一位年迈的先生，嗓音略带沙哑与沧桑感，语速缓慢而沉稳。';
+          document.getElementById('api-voice-style').value=desc;
+          document.getElementById('api-ai-name').value='设计音色角色';
+          await saveCurrentApi(null);
+          await sleep(150);
+          let saved=await dbGet('apiConfigs',out._id);
+          out.savedType=saved&&saved.voice&&saved.voice.voiceType;
+          out.savedStyle=saved&&saved.voice&&saved.voice.style;
+          out.savedModel=saved&&saved.voice&&saved.voice.model;
+          /* 重开编辑器：Design 恢复 + 描述回填 */
+          editApi(out._id);
+          await sleep(120);
+          out.reopenDesign=document.getElementById('api-voice-type-design').checked;
+          out.reopenDesc=document.getElementById('api-voice-style').value;
+          /* Test Voice：真实 /api/tts → mock 捕获 design shape */
+          out.clicksTest=(function(){try{document.getElementById('api-voice-test-btn').click();return true;}catch(e){return false;}})();
+          /* 直接 fetch 同一 payload 拿到确定结果 */
+          const vc={provider:'mimo',voiceId:'',rate:1.0,pitch:'+0Hz',model:document.getElementById('api-voice-model').value,language:'',style:desc,voiceType:'design',voiceData:null};
+          const j=await fetch('http://127.0.0.1:${designBridgePort}/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(IB.bridge.ttsPayload(vc,'你好，设计音色朗读测试。'))}).then(r=>r.json()).catch(e=>({error:String(e&&e.message||e)}));
+          out.ttsOk=!!(j&&j.ok)&&typeof j.url==='string';
+        }catch(error){out.error=String(error&&error.message||error);}
+        await cleanup();
+        return out;
+      })()`);
+      check('voiceDesignUi.vtypeModelProvider', designUi.providerForcedMimo === 'mimo' && designUi.modelDesign === 'mimo-v2.5-tts-voicedesign' && designUi.providerRowHidden && designUi.builtinVoiceHidden && designUi.clonePanelHidden, JSON.stringify(designUi));
+      check('voiceDesignUi.styleLabel', /Voice Design 描述/.test(designUi.styleLabel || ''), designUi.styleLabel);
+      check('voiceDesignUi.testEnabled', designUi.testEnabled === true, JSON.stringify(designUi));
+      check('voiceDesignUi.saveRestores', designUi.savedType === 'design' && designUi.savedStyle === '一位年迈的先生，嗓音略带沙哑与沧桑感，语速缓慢而沉稳。' && designUi.savedModel === 'mimo-v2.5-tts-voicedesign', JSON.stringify(designUi));
+      check('voiceDesignUi.reopen', designUi.reopenDesign && /沙哑与沧桑感/.test(designUi.reopenDesc || ''), JSON.stringify(designUi));
+      check('voiceDesignUi.ttsRequestOk', designUi.ttsOk, JSON.stringify(designUi));
+      const dShapeOk = designReq && designReq.method === 'POST' && designReq.url.indexOf('/v1/chat/completions') > -1
+        && designReq.body.model === 'mimo-v2.5-tts-voicedesign'
+        && designReq.body.audio && designReq.body.audio.format === 'mp3' && typeof designReq.body.audio.voice === 'undefined'
+        && Array.isArray(designReq.body.messages) && designReq.body.messages[0].role === 'user' && designReq.body.messages[0].content === '一位年迈的先生，嗓音略带沙哑与沧桑感，语速缓慢而沉稳。'
+        && designReq.body.messages[1] && designReq.body.messages[1].role === 'assistant' && designReq.body.messages[1].content === '你好，设计音色朗读测试。'
+        && designReq.headers.apiKey === 'vd-key';
+      check('voiceDesignUi.mockRequestShape', dShapeOk, JSON.stringify(designReq && designReq.body));
+    } else {
+      await evaluate(cdp, voiceSavedOldBridge === null ? 'localStorage.removeItem("ib_bridge_http")' : 'localStorage.setItem("ib_bridge_http", ' + JSON.stringify(voiceSavedOldBridge) + ')');
+    }
+    designBridge.kill();
+    await new Promise(resolve => setTimeout(resolve, 300));
+    try { fs.rmSync(designDataDir, { recursive: true, force: true }); } catch (error) { /* ignore */ }
+    await new Promise(r => mockDesign.close(r));
+
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
     await evaluate(cdp, `(()=>{const n=document.getElementById('ib-bridge-nav');n.scrollIntoView({inline:'center',block:'nearest'});n.click();return true})()`);
     await new Promise(resolve => setTimeout(resolve, 1000));

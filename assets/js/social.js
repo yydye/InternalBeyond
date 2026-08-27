@@ -99,6 +99,138 @@ function _syncVisionUI(){
 }
 
 /* Voice UI helpers */
+/* Voice Provider 目录：与 bridge/tts.js 的 TTS_PROVIDER_REGISTRY 字段对齐（label/capabilities/models/cloneModels/designModels）。
+   B2 起 MiMo clone=true（mimo-v2.5-tts-voiceclone，参考音频 data URI）；C 起 design=true
+   （mimo-v2.5-tts-voicedesign，user 消息=音色设计描述，无 audio.voice）。
+   MiMo builtin 音色官方枚举（见 mimo.mi.com Speech Synthesis v2.5；语言由音色决定，无独立 language 参数）。 */
+const IB_TTS_CATALOG=[
+  {id:'openai',label:'OpenAI TTS',capabilities:{builtin:true,clone:false,design:false,style:true,language:false,prosody:false},models:['tts-1','tts-1-hd','gpt-4o-mini-tts'],voices:[]},
+  {id:'edge',label:'Edge TTS (free)',capabilities:{builtin:true,clone:false,design:false,style:false,language:false,prosody:true},models:[],voices:[]},
+  {id:'mimo',label:'MiMo TTS',capabilities:{builtin:true,clone:true,design:true,style:true,language:false,prosody:false},models:['mimo-v2.5-tts'],cloneModels:['mimo-v2.5-tts-voiceclone'],designModels:['mimo-v2.5-tts-voicedesign'],emptyModelLabel:'默认（mimo-v2.5-tts）',cloneModelLabel:'默认（mimo-v2.5-tts-voiceclone）',designModelLabel:'默认（mimo-v2.5-tts-voicedesign）',voices:['mimo_default','冰糖','茉莉','苏打','白桦','Mia','Chloe','Milo','Dean'],voiceLabels:{'mimo_default':'MiMo 默认（随集群）','冰糖':'冰糖 · 中文女声','茉莉':'茉莉 · 中文女声','苏打':'苏打 · 中文男声','白桦':'白桦 · 中文男声','Mia':'Mia · 英文女声','Chloe':'Chloe · 英文女声','Milo':'Milo · 英文男声','Dean':'Dean · 英文男声'}}
+];
+function _voiceCatalogOf(id){
+  for(var i=0;i<IB_TTS_CATALOG.length;i++)if(IB_TTS_CATALOG[i].id===id)return IB_TTS_CATALOG[i];
+  return null;
+}
+/* Provider 下拉改由目录驱动生成：幂等重建，保留当前选中值（缺失时回落首项，保持 openai 在前的历史默认序）。 */
+function _voiceSyncProviderOptions(){
+  var sel=document.getElementById('api-voice-provider');if(!sel||sel.dataset.ibCatalog==='1')return;
+  var cur=sel.value;
+  sel.dataset.ibCatalog='1';
+  sel.innerHTML='';
+  IB_TTS_CATALOG.forEach(function(p){
+    var o=document.createElement('option');o.value=p.id;o.textContent=p.label;sel.appendChild(o);
+  });
+  if(cur&&_voiceCatalogOf(cur))sel.value=cur;
+}
+/* 按 provider capabilities + Voice Type 显隐 Model / Voice / Language / Style / Rate+Pitch 容器。
+   有官方预置音色列表的 provider（如 MiMo）改用下拉选择并隐藏自由文本输入；
+   其余保持既有 #api-voice-id 自由输入。VoiceClone：只显示参考音频面板 + 克隆模型 + Style + Test，
+   隐藏原始 provider 行 / 预置音色 / language / prosody（clone 音色由参考音频决定）。
+   VoiceDesign：同 clone 隐藏 provider 行 / 预置音色 / language / prosody（音色由「Voice Design 描述」决定），
+   Style 标签改为「Voice Design 描述」。 */
+function _voiceSyncCapabilityFields(){
+  var sel=document.getElementById('api-voice-provider');
+  var def=_voiceCatalogOf(sel&&sel.value||'')||IB_TTS_CATALOG[0];
+  var hasVoices=!!(def.voices&&def.voices.length);
+  var vt=_voiceCurrentType();
+  var isSpecial=(vt==='clone'||vt==='design');
+  var show=function(id,on){var el=document.getElementById(id);if(el)el.style.display=on?'':'none'};
+  show('api-voice-model-wrap', vt==='clone'?(def.cloneModels&&def.cloneModels.length>0):(vt==='design'?(def.designModels&&def.designModels.length>0):def.models.length>0));
+  show('api-voice-select-wrap', !isSpecial && hasVoices);
+  show('api-voice-id-wrap', !isSpecial && !hasVoices);
+  show('api-voice-provider-wrap', !isSpecial);
+  show('api-voice-language-wrap', !isSpecial && !!(def.capabilities&&def.capabilities.language));
+  show('api-voice-style-wrap', !!(def.capabilities&&def.capabilities.style));
+  show('api-voice-prosody-wrap', !isSpecial && !!(def.capabilities&&def.capabilities.prosody));
+  /* Style 标签按类型切换：Design 的 style=音色设计描述（官方 user 消息），其余为 Instructions / Style */
+  var styleLabel=document.querySelector('#api-voice-style-wrap .ibv-label');
+  if(styleLabel)styleLabel.textContent=(vt==='design')?'Voice Design 描述（音色设计）':'Instructions / Style';
+  var styleInput=document.getElementById('api-voice-style');
+  if(styleInput)styleInput.placeholder=(vt==='design')?'用自然语言描述想要的音色，如「一位年迈的先生，嗓音略带沙哑与沧桑感，语速缓慢」。':'说话风格指令；仅支持的 Provider 会随请求发送（如 gpt-4o-mini-tts）';
+}
+function _voiceSyncVoiceOptions(def){
+  var sel=document.getElementById('api-voice-select');if(!sel)return;
+  var list=(def&&def.voices)||[];
+  /* 无官方预置目录的 provider（edge/openai）：下拉本就不该有值——清空，
+     防止把上一个角色/上一次会话残留在 select 里的 id 以「(当前配置)」形式带进别的角色。 */
+  if(!list.length){sel.innerHTML='';sel.value='';return;}
+  var cur=sel.value;
+  sel.innerHTML='';
+  list.forEach(function(v){
+    var o=document.createElement('option');
+    o.value=v;
+    o.textContent=(def.voiceLabels&&def.voiceLabels[v])||v;
+    sel.appendChild(o);
+  });
+  /* 兼容：既存值不在官方枚举内（历史手填/上游更新列表）时不静默丢弃 */
+  if(cur&&list.indexOf(cur)<0){
+    var o=document.createElement('option');o.value=cur;o.textContent='(当前配置) '+cur;sel.appendChild(o);
+  }
+  if(cur&&sel.querySelector('option[value="'+cur.replace(/"/g,'\\"')+'"]'))sel.value=cur;
+}
+/* Model 下拉按目录重建：builtin 用 models（openai 保持「跟随全局配置」语义；mimo 空选项即官方默认模型）；
+   VoiceClone 用 cloneModels、VoiceDesign 用 designModels，均默认选中官方专用模型，避免误选普通 TTS model。 */
+function _voiceSyncModelOptions(def){
+  var sel=document.getElementById('api-voice-model');if(!sel)return;
+  var vt=_voiceCurrentType();
+  var list=(def&&(vt==='clone'?(def.cloneModels||[]):(vt==='design'?(def.designModels||[]):(def.models||[]))))||[];
+  var cur=sel.value;
+  sel.innerHTML='';
+  if(vt==='clone'||vt==='design'){
+    if(!list.length){
+      var oe0=document.createElement('option');oe0.value='';oe0.textContent=(def&&def.emptyModelLabel)||'跟随全局配置（config.tts.model）';sel.appendChild(oe0);
+    }else{
+      list.forEach(function(m){var o=document.createElement('option');o.value=m;o.textContent=m;sel.appendChild(o);});
+      /* clone/design 默认选中官方专用模型；已显式保存过则保留 */
+      sel.value=(cur&&list.indexOf(cur)!==-1)?cur:list[0];
+    }
+    return;
+  }
+  var oe=document.createElement('option');
+  oe.value='';
+  oe.textContent=(def&&def.emptyModelLabel)||'跟随全局配置（config.tts.model）';
+  sel.appendChild(oe);
+  list.forEach(function(m){
+    var o=document.createElement('option');o.value=m;o.textContent=m;sel.appendChild(o);
+  });
+  /* Built-in 模式防脏字段：Clone/Design 切换残留下的专用 model（mimo-v2.5-tts-voiceclone /
+     mimo-v2.5-tts-voicedesign）绝不允许作为「(当前配置)」带回 Built-in（保存后上游会收到
+     voiceType 与 model 错配的请求；服务端 normalize 另有同规则兜底）。 */
+  if(cur&&cur!==''){
+    for(var ci=0;ci<IB_TTS_CATALOG.length;ci++){
+      var _cd=IB_TTS_CATALOG[ci];
+      if((_cd.cloneModels&&_cd.cloneModels.indexOf(cur)!==-1)||(_cd.designModels&&_cd.designModels.indexOf(cur)!==-1)){cur='';break;}
+    }
+  }
+  if(cur&&cur!==''){
+    if(!sel.querySelector('option[value="'+String(cur).replace(/"/g,'\\"')+'"]')){
+      var oc=document.createElement('option');oc.value=cur;oc.textContent='(当前配置) '+cur;sel.appendChild(oc);
+    }
+    sel.value=cur;
+  }
+}
+/* 当前生效的 Voice ID 取/设：按目录决定读写预置下拉还是自由输入框。 */
+function _voiceUsesSelect(){
+  var sel=document.getElementById('api-voice-provider');
+  var def=_voiceCatalogOf(sel&&sel.value||'')||IB_TTS_CATALOG[0];
+  return !!(def.voices&&def.voices.length);
+}
+function _voiceGetId(){
+  var el=document.getElementById(_voiceUsesSelect()?'api-voice-select':'api-voice-id');
+  return (el&&el.value)||'';
+}
+function _voiceSetId(val){
+  var v=val==null?'':String(val);
+  var sel=document.getElementById('api-voice-select'),inp=document.getElementById('api-voice-id');
+  if(_voiceUsesSelect()){
+    _voiceSyncVoiceOptions(_voiceCatalogOf((document.getElementById('api-voice-provider')||{}).value||''));
+    if(sel&&v&&!(sel.querySelector&&sel.querySelector('option[value="'+v.replace(/"/g,'\\"')+'"]'))){
+      var o=document.createElement('option');o.value=v;o.textContent='(当前配置) '+v;sel.appendChild(o);
+    }
+    if(sel)sel.value=v;
+  }else if(inp)inp.value=v;
+}
 function _voiceRateUpdate(){
   var r=document.getElementById('api-voice-rate');var v=document.getElementById('api-voice-rate-val');
   if(r&&v)v.textContent=parseFloat(r.value).toFixed(2);
@@ -106,13 +238,209 @@ function _voiceRateUpdate(){
 function _voiceToggleDetail(){
   var t=document.getElementById('api-voice-toggle');var d=document.getElementById('api-voice-detail');
   if(t&&d)d.style.display=t.checked?'':'none';
+  _voiceSyncProviderOptions();
+  var provEl=document.getElementById('api-voice-provider');
+  var def=_voiceCatalogOf(provEl&&provEl.value||'')||IB_TTS_CATALOG[0];
+  _voiceSyncCapabilityFields();
+  _voiceSyncModelOptions(def);
+  _voiceSyncVoiceOptions(def);
+  _voiceTypeChange();
+}
+/* ── VoiceClone Reference Audio（第三阶段 B1）──
+   编辑器当前选中的 Reference Audio：{refAudioId,mime,ext,name,size} 或 null。
+   二进制永不进入 IndexedDB / 导出 JSON；voiceData 只保存引用与元数据。 */
+var _voiceCloneSelection=null;
+var _voiceCloneBound=false;
+/* VoiceType 切换记忆：Clone/Design 强制 provider=mimo 前的值；回 Built-in 时恢复。
+   仅当次编辑器会话内有效（addNewApi/editApi 打开编辑器时重置）。 */
+var _voiceProvBeforeSpecial=null;
+function _voiceCurrentType(){
+  var c=document.getElementById('api-voice-type-clone');
+  var d=document.getElementById('api-voice-type-design');
+  var b=document.getElementById('api-voice-type-builtin');
+  if(c&&c.checked)return 'clone';
+  if(d&&d.checked)return 'design';
+  if(b&&b.checked)return 'builtin';
+  return 'builtin';
+}
+function _voiceSetType(t){
+  var b=document.getElementById('api-voice-type-builtin');
+  var c=document.getElementById('api-voice-type-clone');
+  var d=document.getElementById('api-voice-type-design');
+  if(b)b.checked=t!=='clone'&&t!=='design';
+  if(c)c.checked=t==='clone';
+  if(d)d.checked=t==='design';
+}
+function _voiceFmtBytes(n){
+  var v=Number(n)||0;
+  if(v<1024)return v+' B';
+  if(v<1024*1024)return (Math.round(v/10.24)/100)+' KB';
+  return (Math.round(v/10485.76)/100)+' MB';
+}
+/* 全角色当前引用的 refAudioId 集合：只统计 voiceType==='clone' 且 voiceData.refAudioId 存在。 */
+/* 全角色当前引用的 refAudioId 集合：只统计 voiceType==='clone' 且 voiceData.refAudioId 存在。
+   归档角色同样计入（恢复后仍引用同一文件，删除不能静默破坏）。 */
+function _ibReferencedRefAudioIds(onlyId){
+  var out=[];
+  try{
+    if(typeof apiConfigs==='undefined'||!Array.isArray(apiConfigs))return out;
+    apiConfigs.concat(typeof archivedConfigs!=='undefined'&&Array.isArray(archivedConfigs)?archivedConfigs:[]).forEach(function(c){
+      var v=c&&c.voice;
+      if(!v||v.voiceType!=='clone')return;
+      var id=v.voiceData&&v.voiceData.refAudioId;
+      if(id&&(!onlyId||id===onlyId)&&out.indexOf(id)===-1)out.push(id);
+    });
+  }catch(e){}
+  return out;
+}
+function _voiceCloneBind(){
+  if(_voiceCloneBound)return;
+  _voiceCloneBound=true;
+  var up=document.getElementById('api-voice-clone-upload-btn');
+  var del=document.getElementById('api-voice-clone-delete-btn');
+  var fi=document.getElementById('api-voice-clone-file');
+  if(up)up.onclick=function(){ var i=document.getElementById('api-voice-clone-file'); if(i)i.click(); };
+  if(del)del.onclick=function(){ _voiceCloneDeleteCurrent(); };
+  if(fi)fi.onchange=function(){
+    var f=fi.files&&fi.files[0];
+    if(f)_voiceCloneUploadFile(f);
+    fi.value='';
+  };
+}
+function _voiceCloneRender(){
+  _voiceCloneBind();
+  var vt=_voiceCurrentType();
+  var isClone=vt==='clone';
+  var panel=document.getElementById('api-voice-clone-panel');
+  var cur=document.getElementById('api-voice-clone-current');
+  var status=document.getElementById('api-voice-clone-status');
+  var delBtn=document.getElementById('api-voice-clone-delete-btn');
+  var testBtn=document.getElementById('api-voice-test-btn');
+  /* B2/B3：VoiceClone/VoiceDesign 正常可用，Test Voice 不再禁用；builtin-fields 保持可见，
+     由 _voiceSyncCapabilityFields 按类型显隐 provider/预置音色/language/prosody/model/style；
+     clone 面板只在 clone 且选中参考音频时显示，design 隐藏（参考音频非 design 需要）。 */
+  if(panel)panel.style.display=isClone?'':'none';
+  if(testBtn){testBtn.disabled=false;testBtn.title=vt==='design'?'用 MiMo Voice Design 试听':'（内置音色）试听';}
+  var sel=_voiceCloneSelection;
+  if(cur){
+    if(isClone&&sel&&sel.refAudioId){
+      var nm=(typeof esc==='function')?esc(sel.name||''):String(sel.name||'');
+      cur.innerHTML='<span>当前：</span><b>'+nm+'</b><span class="muted"> '+_voiceFmtBytes(sel.size)+'</span>';
+    }else{
+      cur.innerHTML='<span class="muted">尚未选择参考音频（上传后自动绑定到角色）</span>';
+    }
+  }
+  if(delBtn)delBtn.style.display=(sel&&sel.refAudioId)?'':'none';
+  if(status){
+    if(isClone&&sel&&sel.refAudioId){
+      status.className='ibv-clone-status';
+      status.textContent='检查文件存在性…';
+      /* 异步存在性检查：dangling reference（导入/其它机器）给出明确状态 */
+      (function(idRef,el){
+        var ok=typeof ibTtsVoiceHead==='function'?ibTtsVoiceHead(idRef):Promise.resolve(true);
+        ok.then(function(exists){
+          if(!el.isConnected)return;
+          if(_voiceCloneSelection&&_voiceCloneSelection.refAudioId===idRef){
+            if(exists){el.className='ibv-clone-status ok';el.textContent='✓ 参考音频文件存在（Bridge）';}
+            else{el.className='ibv-clone-status warn';el.textContent='⚠ 引用文件在本机 Bridge 不存在（可能来自其它备份/机器导入）；可删除后重新上传';}
+          }
+        }).catch(function(){});
+      })(sel.refAudioId,status);
+    }else{
+      status.className='ibv-clone-status';
+      status.textContent='';
+    }
+  }
+}
+function _voiceTypeChange(){
+  _voiceCloneBind();
+  /* 只有 MiMo 支持克隆/设计（服务端 mimo.clone/design=true 才放行）。选中 Clone/Design 时把 Provider 强制为 MiMo，
+     避免 edge/openai + clone/design 被 normalize 回落到 builtin 造成"选了特性却是内置音色"的困惑；
+     回 Built-in 时恢复强制前的 provider（否则旧 Edge 角色看一眼 Clone 再切回来会被静默改成 MiMo + 不匹配音色）。 */
+  var vt=_voiceCurrentType();
+  var provEl=document.getElementById('api-voice-provider');
+  if(vt==='clone'||vt==='design'){
+    if(provEl&&provEl.value!=='mimo'){_voiceProvBeforeSpecial=provEl.value;provEl.value='mimo';}
+  }else if(vt==='builtin'){
+    if(_voiceProvBeforeSpecial&&provEl&&provEl.value==='mimo')provEl.value=_voiceProvBeforeSpecial;
+    _voiceProvBeforeSpecial=null;
+  }
+  var def=_voiceCatalogOf(provEl&&provEl.value||'')||IB_TTS_CATALOG[0];
+  _voiceSyncCapabilityFields();
+  _voiceSyncModelOptions(def);
+  _voiceCloneRender();
+}
+async function _voiceCloneUploadFile(file){
+  if(!file)return;
+  var okName=/\.(mp3|wav)$/i.test(String(file.name||''));
+  var okType=/(audio\/(mpeg|mp3|x-mp3|wav|x-wav|wave)|application\/octet-stream)/i.test(String(file.type||''));
+  if(!okName&&!okType){toast('仅支持 MP3 / WAV 参考音频');return;}
+  if(!file.size||file.size===0){toast('文件为空');return;}
+  if(file.size>10*1024*1024){toast('超过 10 MB 上限');return;}
+  var btn=document.getElementById('api-voice-clone-upload-btn');
+  if(btn)btn.disabled=true;
+  try{
+    var j=await ibBridgeFetch(ibBridgeBase()+'/api/tts/voices?name='+encodeURIComponent(file.name||''),{
+      method:'POST',
+      headers:{'Content-Type':file.type||'application/octet-stream'},
+      body:file
+    }).then(function(r){return r.json()}).catch(function(NS){return {ok:false,error:'Bridge 未连接'}});
+    if(j&&j.ok&&j.voice){
+      _voiceCloneSelection={
+        refAudioId:String(j.voice.refAudioId||''),
+        mime:j.voice.mime||'',
+        ext:j.voice.ext||'',
+        name:j.voice.originalName||file.name||'',
+        size:Number(j.voice.size)||file.size||0
+      };
+      toast('参考音频已上传：'+_voiceCloneSelection.refAudioId);
+    }else toast('上传失败：'+(j&&j.error||'未知错误'));
+  }catch(e){toast('上传失败：'+String(e&&e.message||e).slice(0,80));}
+  finally{if(btn)btn.disabled=false;}
+  _voiceCloneRender();
+}
+async function _voiceCloneDeleteCurrent(){
+  var sel=_voiceCloneSelection;
+  if(!sel||!sel.refAudioId)return;
+  var hinted=_ibReferencedRefAudioIds(sel.refAudioId).length>0?'\n\n该文件仍被角色引用，按设计会被拒绝删除。':'';
+  if(!confirm('确定删除这个 Reference Audio？('+sel.refAudioId+')'+hinted))return;
+  var btn=document.getElementById('api-voice-clone-delete-btn');
+  if(btn)btn.disabled=true;
+  try{
+    var j=await ibBridgeFetch(ibBridgeBase()+'/api/tts/voices/'+encodeURIComponent(sel.refAudioId),{
+      method:'DELETE',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({referencedIds:_ibReferencedRefAudioIds()})
+    }).then(function(r){return r.json()}).catch(function(NS){return {ok:false,error:'Bridge 未连接'}});
+    if(j&&j.ok){_voiceCloneSelection=null;toast('参考音频已删除');}
+    else toast('删除失败：'+(j&&j.error||'未知错误'));
+  }catch(e){toast('删除失败：'+String(e&&e.message||e).slice(0,80));}
+  finally{if(btn)btn.disabled=false;}
+  _voiceCloneRender();
 }
 async function testCharacterVoice(){
-  var vi=document.getElementById('api-voice-id');var vp=document.getElementById('api-voice-provider');
-  var textInput=document.getElementById('api-system');
+  /* 只负责收集表单里 Role 形态的 Voice Profile；wire payload 一律经 IB.bridge.ttsPayload（唯一组装点）。
+     B2：VoiceClone 模式走真实 /api/tts → MiMo VoiceClone；无 refAudioId 则阻断。
+     B3：VoiceDesign 模式走真实 /api/tts → MiMo Voice Design；无「Voice Design 描述」则阻断。 */
+  var _vt=_voiceCurrentType();
+  var _vd=null;
+  if(_vt==='clone'){
+    var _sel=_voiceCloneSelection;
+    if(!_sel||!_sel.refAudioId){toast('请先上传 Reference Audio 再试听克隆音色');return;}
+    _vd={refAudioId:_sel.refAudioId,mime:_sel.mime||'',name:_sel.name||'',size:_sel.size||0};
+  }else if(_vt==='design'){
+    var _vs=document.getElementById('api-voice-style');
+    var _designPrompt=String((_vs&&_vs.value)||'').trim();
+    if(!_designPrompt){toast('请先填写 Voice Design 描述再试听');return;}
+  }
+  var vp=document.getElementById('api-voice-provider');
+  var vmC=document.getElementById('api-voice-model');
+  var vlC=document.getElementById('api-voice-language');
+  var vsC=document.getElementById('api-voice-style');
   var sampleText='你好，我是'+(document.getElementById('api-ai-name').value||'AI')+'。';
+  var vc={provider:(vp&&vp.value)||'edge',voiceId:_voiceGetId(),rate:parseFloat((document.getElementById('api-voice-rate')&&document.getElementById('api-voice-rate').value)||'1.0'),pitch:(document.getElementById('api-voice-pitch')&&document.getElementById('api-voice-pitch').value)||'+0Hz',model:(vmC&&vmC.value)||'',language:(vlC&&vlC.value)||'',style:(vsC&&vsC.value)||'',voiceType:_vt,voiceData:_vd};
   try{
-    var j=await fetch(ibBridgeBase()+'/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:sampleText,voice:vi&&vi.value||'',provider:vp&&vp.value||'edge',rate:parseFloat((document.getElementById('api-voice-rate')&&document.getElementById('api-voice-rate').value)||'1.0'),pitch:(document.getElementById('api-voice-pitch')&&document.getElementById('api-voice-pitch').value)||'+0Hz'})}).then(function(r){return r.json()});
+    var j=await fetch(ibBridgeBase()+'/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(IB.bridge.ttsPayload(vc,sampleText))}).then(function(r){return r.json()});
     if(j&&j.ok){
       var au=new Audio(ibBridgeBase()+j.url);au.play().catch(function(){});
       toast('Playing test voice...');
@@ -415,6 +743,11 @@ function addNewApi(){
   if(_thHint){_thHint.textContent='只控制展示；reasoning_content 始终与正文分开保存。GLM 默认关闭，DeepSeek 默认开启。';_thHint.style.opacity='0.55'}
   document.getElementById('api-ai-name').focus();
   _renderApiAvatarPreview('');
+  /* Voice：新角色回退 Built-in 并清空当前 Reference Audio 选择（防止把上一个角色的克隆引用带进新角色） */
+  _voiceProvBeforeSpecial=null;
+  _voiceSetType('builtin');
+  _voiceCloneSelection=null;
+  _voiceTypeChange();
 }
 
 /* ===== Token 仪表盘：用量采集、存储与渲染（明细记录上限 5000 条、超出滚动清理最旧；按API隔离展示） ===== */
@@ -614,7 +947,19 @@ function editApi(id){
   var _vr=document.getElementById('api-voice-rate');if(_vr)_vr.value=vc.rate||1.0;_voiceRateUpdate();
   var _vpi=document.getElementById('api-voice-pitch');if(_vpi)_vpi.value=vc.pitch||'+0Hz';
   var _va=document.getElementById('api-voice-autoplay');if(_va)_va.checked=!!vc.autoPlay;
+  /* Voice Profile 新字段（可编辑：model/language/style；voiceType/voiceData 仅透传不展示） */
+  var _vm2=document.getElementById('api-voice-model');if(_vm2)_vm2.value=vc.model||'';
+  var _vl2=document.getElementById('api-voice-language');if(_vl2)_vl2.value=vc.language||'';
+  var _vs2=document.getElementById('api-voice-style');if(_vs2)_vs2.value=vc.style||'';
+  /* VoiceClone/VoiceDesign（第三阶段 B1/B2/C）：Voice Type 与当前引用恢复 */
+  _voiceProvBeforeSpecial=null;
+  _voiceSetType((vc.voiceType==='clone'||vc.voiceType==='design')?vc.voiceType:'builtin');
+  _voiceCloneSelection=(vc.voiceType==='clone'&&vc.voiceData&&typeof vc.voiceData==='object'&&vc.voiceData.refAudioId)
+    ?{refAudioId:String(vc.voiceData.refAudioId),mime:vc.voiceData.mime||'',ext:vc.voiceData.ext||'',name:vc.voiceData.name||'',size:Number(vc.voiceData.size)||0}
+    :null;
   _voiceToggleDetail();
+  /* 重建目录选项后再按 provider 归位 Voice ID（预置下拉 / 自由输入二选一） */
+  _voiceSetId(vc.voiceId);
   var _thHint=document.getElementById('api-thinking-hint');
   if(_thHint){_thHint.textContent='只控制展示；reasoning_content 始终与正文分开保存。GLM 默认关闭，DeepSeek 默认开启。';_thHint.style.opacity='0.7'}
   _pendingApiAvatar=null;
@@ -652,6 +997,16 @@ async function saveCurrentApi(btn){
     if(_hDup){toast('@账号「@'+_hVal+'」已被「'+(_hDup.nickname||_hDup.model||'另一角色')+'」使用，请换一个。');if(btn){btn.disabled=false;btn.textContent=oldBtnText}return}
   }
   if(!editingApiId){toast('保存失败：API 配置标识已失效，请重新打开编辑器');if(btn){btn.disabled=false;btn.textContent=oldBtnText}return}
+  /* VoiceClone：选了 Clone 但还没有 Reference Audio（未上传 / 引用已清空）→ 阻断保存 */
+  if(_voiceCurrentType()==='clone'&&(!_voiceCloneSelection||!_voiceCloneSelection.refAudioId)){
+    toast('请先上传 Reference Audio 再保存克隆音色');
+    if(btn){btn.disabled=false;btn.textContent=oldBtnText}return;
+  }
+  /* VoiceDesign：选了 Design 但没有「Voice Design 描述」→ 阻断保存（官方 user 消息必填） */
+  if(_voiceCurrentType()==='design'&&!String((document.getElementById('api-voice-style')||{}).value||'').trim()){
+    toast('请先填写 Voice Design 描述再保存');
+    if(btn){btn.disabled=false;btn.textContent=oldBtnText}return;
+  }
   /* Merge with existing config to preserve sortOrder, avatar, created, archived etc. */
   _syncVisionUI();/* 视觉模型名命中时保持“支持图片识别”与保存值一致 */
   const existing=apiConfigs.find(a=>a.id===editingApiId)||{};
@@ -691,7 +1046,40 @@ async function saveCurrentApi(btn){
     cacheTtl1h:!!(document.getElementById('api-cache-ttl')&&document.getElementById('api-cache-ttl').checked),
     showThinking:document.getElementById('api-thinking-toggle').checked,
     thinkingEnabled:existing.thinkingEnabled!==undefined?existing.thinkingEnabled:true,
-    voice:{enabled:!!(document.getElementById('api-voice-toggle')&&document.getElementById('api-voice-toggle').checked),provider:(document.getElementById('api-voice-provider')&&document.getElementById('api-voice-provider').value)||'edge',voiceId:(document.getElementById('api-voice-id')&&document.getElementById('api-voice-id').value)||'',rate:parseFloat((document.getElementById('api-voice-rate')&&document.getElementById('api-voice-rate').value)||'1.0')||1.0,pitch:(document.getElementById('api-voice-pitch')&&document.getElementById('api-voice-pitch').value)||'+0Hz',autoPlay:!!(document.getElementById('api-voice-autoplay')&&document.getElementById('api-voice-autoplay').checked)},
+    /* Voice：合并式写入 —— 旧字段语义不变；UI 未展示的扩展字段（如 voiceData 内未来的字段）
+       必须原样保留，防止「打开编辑器再保存」清掉手改 JSON 的配置（Voice Profile 兼容铁律）。
+       VoiceClone：voiceData 在既有对象之上合并 refAudioId/mime/name/size，绝不覆盖未来字段；
+       Built-in：voiceData 原样透传（含历史未来字段）。 */
+    voice:(function(){
+      var _pv=existing.voice&&typeof existing.voice==='object'?existing.voice:{};
+      var _pvType=_voiceCurrentType();
+      var _pvData;
+      if(_pvType==='clone'){
+        var _sel=_voiceCloneSelection||{};
+        var _baseVoiceData=(_pv.voiceData&&typeof _pv.voiceData==='object'&&!Array.isArray(_pv.voiceData))?_pv.voiceData:{};
+        _pvData=Object.assign({},_baseVoiceData,{
+          refAudioId:String(_sel.refAudioId||_baseVoiceData.refAudioId||''),
+          mime:String(_sel.mime||_baseVoiceData.mime||''),
+          name:String(_sel.name||_baseVoiceData.name||''),
+          size:Number(_sel.size||_baseVoiceData.size||0)
+        });
+      }else{
+        _pvData=_pv.voiceData!=null?_pv.voiceData:null;
+      }
+      return Object.assign({},_pv,{
+        enabled:!!(document.getElementById('api-voice-toggle')&&document.getElementById('api-voice-toggle').checked),
+        provider:(document.getElementById('api-voice-provider')&&document.getElementById('api-voice-provider').value)||'edge',
+        voiceId:_voiceGetId(),
+        rate:parseFloat((document.getElementById('api-voice-rate')&&document.getElementById('api-voice-rate').value)||'1.0')||1.0,
+        pitch:(document.getElementById('api-voice-pitch')&&document.getElementById('api-voice-pitch').value)||'+0Hz',
+        autoPlay:!!(document.getElementById('api-voice-autoplay')&&document.getElementById('api-voice-autoplay').checked),
+        model:(document.getElementById('api-voice-model')&&document.getElementById('api-voice-model').value)||'',
+        language:(document.getElementById('api-voice-language')&&document.getElementById('api-voice-language').value)||'',
+        style:(document.getElementById('api-voice-style')&&document.getElementById('api-voice-style').value)||'',
+        voiceType:_pvType,
+        voiceData:_pvData
+      });
+    })(),
     avatar:avatarVal,
     sortOrder:existing.sortOrder!=null?existing.sortOrder:undefined,
     created:existing.created||Date.now(),
@@ -1738,6 +2126,12 @@ window._isDeepSeekNativeVisionModel=_isDeepSeekNativeVisionModel;
 window._syncVisionUI=_syncVisionUI;
 window._voiceRateUpdate=_voiceRateUpdate;
 window._voiceToggleDetail=_voiceToggleDetail;
+window._voiceTypeChange=_voiceTypeChange;
+window._voiceCurrentType=_voiceCurrentType;
+window._voiceCloneUploadFile=_voiceCloneUploadFile;
+window._voiceCloneDeleteCurrent=_voiceCloneDeleteCurrent;
+window._voiceCloneSelectionGet=function(){return _voiceCloneSelection?Object.assign({},_voiceCloneSelection):null;};
+window._ibReferencedRefAudioIds=_ibReferencedRefAudioIds;
 window.testCharacterVoice=testCharacterVoice;
 window.onProviderChange=onProviderChange;
 window._apiFallbackRead=_apiFallbackRead;
@@ -1901,6 +2295,18 @@ NS.expose('social', {
   _syncShowThinkingDefault: _syncShowThinkingDefault,
   _voiceRateUpdate: _voiceRateUpdate,
   _voiceToggleDetail: _voiceToggleDetail,
+  _voiceTypeChange: _voiceTypeChange,
+  _voiceCurrentType: _voiceCurrentType,
+  _voiceCloneUploadFile: _voiceCloneUploadFile,
+  _voiceCloneDeleteCurrent: _voiceCloneDeleteCurrent,
+  _voiceCloneSelectionGet: function(){return _voiceCloneSelection?Object.assign({},_voiceCloneSelection):null;},
+  _ibReferencedRefAudioIds: _ibReferencedRefAudioIds,
+  _voiceSyncProviderOptions: _voiceSyncProviderOptions,
+  _voiceSyncCapabilityFields: _voiceSyncCapabilityFields,
+  _voiceUsesSelect: _voiceUsesSelect,
+  _voiceGetId: _voiceGetId,
+  _voiceSetId: _voiceSetId,
+  IB_TTS_CATALOG: IB_TTS_CATALOG,
   testCharacterVoice: testCharacterVoice,
   onProviderChange: onProviderChange,
   _apiFallbackRead: _apiFallbackRead,

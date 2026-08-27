@@ -78,6 +78,28 @@ body.theme-infernal .mi-sub-inf{display:inline}
 .module-intro-rule{height:1px;background:linear-gradient(90deg,var(--mi-rule),transparent);width:min(100%,34ch);margin:10px 0 12px;opacity:0.9}
 .module-intro-desc{font-family:'Noto Sans SC',sans-serif;font-weight:300;font-size:0.85rem;color:rgba(190,202,222,0.88);line-height:1.9;text-shadow:0 1px 6px rgba(0,0,0,0.25)}
 
+/* API 编辑器 · Voice Profile 能力驱动字段容器（样式与相邻 TTS 控件一致；显隐由 _voiceSyncCapabilityFields 控制） */
+.ibv-field{margin-bottom:8px}
+.ibv-label{font-size:.75rem;opacity:.7;display:block;margin-bottom:2px}
+.ibv-input{width:100%;padding:8px 12px;border-radius:10px;border:1px solid var(--glass-border);background:var(--glass-bg);color:var(--text);font-size:.85rem;font-family:inherit;margin-bottom:8px;box-sizing:border-box}
+.ibv-select{width:100%;border-radius:8px;border:1px solid var(--glass-border);background:var(--glass-bg);color:var(--text);padding:6px 8px;font-size:.82rem;font-family:inherit}
+.ibv-last{margin-bottom:0}
+/* VoiceClone Reference Audio 面板（第三阶段 B1） */
+.ibv-type-row{display:flex;gap:16px;margin-bottom:10px;font-size:.85rem}
+.ibv-type-row .form-check-row{margin:0}
+.ibv-clone-panel{display:none;margin-bottom:10px;padding:10px 12px;border:1px dashed var(--glass-border);border-radius:10px;background:rgba(128,180,255,.05)}
+.ibv-clone-hint{font-size:.75rem;opacity:.72;line-height:1.6;margin-bottom:8px}
+.ibv-clone-actions{display:flex;gap:8px;flex-wrap:wrap}
+.ibv-clone-btn{font-size:.8rem;padding:6px 14px}
+.ibv-clone-del{color:#e88}
+.ibv-file-input{display:none}
+.ibv-clone-current{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-height:1.2em;font-size:.82rem;margin-bottom:8px}
+.ibv-clone-current b{font-weight:600}
+.ibv-clone-current .muted{opacity:.6}
+.ibv-clone-status{font-size:.75rem;margin-top:6px;line-height:1.55;opacity:.85}
+.ibv-clone-status.warn{color:#e8b45a}
+.ibv-clone-status.ok{color:#7fc48f}
+
 /* GLASS CARD */
 
 /* Room title fallback — for browsers */

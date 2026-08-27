@@ -1,4 +1,4 @@
-﻿﻿/* ===================== IB Bridge 增强（本地一键后端配套） =====================
+﻿/* ===================== IB Bridge 增强（本地一键后端配套） =====================
    依赖 ib-bridge-service.js（一键 start-bridge-service.cmd）。
    提供：默认桥接地址、表情渲染、点歌播放、上下文进度条、
    心语墙 / 生活看板 / 状态导航面板、/continue 自动续写。
@@ -703,6 +703,25 @@ function ibLoadStatus(){
 var _ibTtsAudio=null;
 var _ibTtsQueue=[];var _ibTtsQueueBusy=false;
 var _ibTtsMaxLen=800;/* 单次 TTS 文本最大字符数 */
+/* 统一 wire payload：角色 Voice Profile → /api/tts 请求体的唯一组装点。
+   旧五个字段（text/voice/provider/rate/pitch）的取值与回退保持历史行为逐字节一致；
+   新增字段（model/voiceType/voiceData/language/style）允许为空值——Bridge 端
+   normalizeVoiceProfile 会按 provider capabilities 过滤并补默认值。禁止再出现第二套组装逻辑。 */
+function _ibTtsPayload(vc,text){
+  var v=(vc&&typeof vc==='object')?vc:{};
+  return {
+    text:String(text==null?'':text),
+    voice:v.voiceId||'',
+    provider:v.provider||'edge',
+    rate:v.rate||1.0,
+    pitch:v.pitch||'+0Hz',
+    model:v.model||'',
+    voiceType:v.voiceType||'builtin',
+    voiceData:v.voiceData||null,
+    language:v.language||'',
+    style:v.style||''
+  };
+}
 function ibAttachTts(root){
   if(!root||root.nodeType!==1)return;
   /* 全局开关：showVoiceButton 关闭时不显示 Voice 按钮 */
@@ -784,7 +803,7 @@ function _ibTtsSpeakImpl(bubble,btn,vc,done){
   }
   if(btn)btn.classList.add('playing');
   var vcSafe=vc||_ibGetCharVoice(bubble)||{};
-  ibBridgeFetch(ibBridgeBase()+'/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:text,voice:vcSafe.voiceId||'',provider:vcSafe.provider||'edge',rate:vcSafe.rate||1.0,pitch:vcSafe.pitch||'+0Hz'})}).then(function(r){return r.json()}).then(function(j){
+  ibBridgeFetch(ibBridgeBase()+'/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_ibTtsPayload(vcSafe,text))}).then(function(r){return r.json()}).then(function(j){
     if(j&&j.ok){
       bubble.dataset.ibTtsUrl=j.url;
       ibBridgeLoadAudio(j.url,function(audioUrl,revoke){ _ibTtsPlayQ(bubble,btn,audioUrl,done,revoke); },function(){ if(btn)btn.classList.remove('playing');ibTtsFallback(text,btn);if(done)done(); });
@@ -864,6 +883,40 @@ function ibTtsFallback(text,btn){
     }else ibToast('TTS 未配置');
   }catch(e){ ibToast('TTS 未配置'); }
 }
+
+/* ---------- VoiceClone Reference Audio（第三阶段 B1：文件基础设施） ----------
+   上传/删除都由 Voice 编辑器（social.js）发起；这里只提供存在性检查
+   与导入后的 dangling reference 检测。Reference Audio 二进制绝不进入 IndexedDB。 */
+function ibTtsVoiceHead(id){
+  if(!id)return Promise.resolve(false);
+  return ibBridgeFetch(ibBridgeBase()+'/api/tts/voices/'+encodeURIComponent(id),{method:'HEAD',cache:'no-store'})
+    .then(function(r){return r.ok}).catch(function(){return false});
+}
+function ibTtsVoiceList(){
+  return ibBridgeFetch(ibBridgeBase()+'/api/tts/voices',{cache:'no-store'})
+    .then(function(r){return r.json()}).catch(function(NS){return {ok:false,error:'Bridge 未连接'}});
+}
+/* 导入后检测：voiceType==='clone' 的引用文件在本机 Bridge 是否存在。
+   只报告，不伪造存在、不删文件；Bridge 未连接时 fail-open（本地单机场景）。 */
+async function ibTtsVoiceCheckImport(configs){
+  try{
+    var ids=[];
+    (Array.isArray(configs)?configs:[]).forEach(function(c){
+      var v=c&&c.voice;
+      if(v&&v.voiceType==='clone'&&v.voiceData&&v.voiceData.refAudioId&&ids.indexOf(v.voiceData.refAudioId)===-1)ids.push(v.voiceData.refAudioId);
+    });
+    if(!ids.length)return {ok:true,missing:[]};
+    var missing=[];
+    for(var i=0;i<ids.length;i++){
+      if(!(await ibTtsVoiceHead(ids[i])))missing.push(ids[i]);
+    }
+    if(missing.length)console.warn('[IB Bridge] Reference Audio dangling reference：'+missing.join(', '));
+    return {checked:ids.length,missing:missing};
+  }catch(e){return {checked:0,missing:[]}}
+}
+window.ibTtsVoiceHead=ibTtsVoiceHead;
+window.ibTtsVoiceList=ibTtsVoiceList;
+window.ibTtsVoiceCheckImport=ibTtsVoiceCheckImport;
 
 /* ---------- AI 常驻 ---------- */
 function ibAiOpen(){
@@ -1073,6 +1126,10 @@ else setTimeout(ibBoot,0);
 
 /* ---- window.IB 命名空间迁移：所有权标记 ---- */
 NS.expose('bridge', {
-  mounted: true
+  mounted: true,
+  ttsPayload: _ibTtsPayload,
+  ttsVoiceHead: ibTtsVoiceHead,
+  ttsVoiceList: ibTtsVoiceList,
+  ttsVoiceCheckImport: ibTtsVoiceCheckImport
 });
 })(window.IB || (window.IB = {}));

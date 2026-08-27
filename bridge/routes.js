@@ -17,7 +17,7 @@ function createRoutes(ctx) {
     getLetters, setLetters, sessions, resident, contextStats, pushHistory,
     withListLock, uid, todayStr, saveList, saveGeo, saveSessions, saveResident,
     getWeather, searchMusic, musicPlayUrl, musicPlayRemote, searchNetease,
-    barkPush, ntfyPush, ttsGenerate,
+    barkPush, ntfyPush, ttsNormalize, ttsSynthesize, ttsVoices,
     sessionGet, sessionSave, contextAppend, contextSummary,
     residentList, residentUpsert, residentSummary, residentChat, residentProactive,
     broadcast, recordPush, lanAddresses, fileSummary, directoryUsage,
@@ -80,6 +80,24 @@ function createRoutes(ctx) {
     });
   }
 
+  /* 原始二进制流式读取（上传用）：边读边计数，超上限立即暂停并拒绝，
+     绝不把超大 body 无限制读入内存后再判断。入口处另有 Content-Length 预检。 */
+  function readRawBody(req, limit) {
+    return new Promise((resolve, reject) => {
+      const chunks = [];
+      let total = 0;
+      let settled = false;
+      req.on('data', c => {
+        if (settled) return;
+        total += c.length;
+        if (total > limit) { settled = true; req.pause(); reject(new Error('body too large')); return; }
+        chunks.push(c);
+      });
+      req.on('end', () => { if (!settled) { settled = true; resolve(Buffer.concat(chunks)); } });
+      req.on('error', e => { if (!settled) { settled = true; reject(e); } });
+    });
+  }
+
   function safeConfigSnapshot() {
     /* JSON round-trip avoids mutating the live nested config while masking. */
     let copy = {};
@@ -89,6 +107,7 @@ function createRoutes(ctx) {
     if (copy.proactive) copy.proactive.apiKey = mask(copy.proactive.apiKey);
     if (copy.music) copy.music.kugouCookie = mask(copy.music.kugouCookie);
     if (copy.tts) copy.tts.apiKey = mask(copy.tts.apiKey);
+    if (copy.ttsMimo) copy.ttsMimo.apiKey = mask(copy.ttsMimo.apiKey);
     if (copy.bark) copy.bark.url = mask(copy.bark.url);
     if (copy.webhooks && typeof copy.webhooks === 'object') {
       Object.keys(copy.webhooks).forEach(key => {
@@ -137,10 +156,23 @@ function createRoutes(ctx) {
         },
         files: ['config', 'whispers', 'health', 'geo', 'letters', 'sessions', 'resident', 'context', 'push_history'].map(fileSummary)
       },
+      voiceAssets: (function () {
+        /* VoiceClone Reference Audio 诊断：注册表 ↔ 磁盘对账（只读，不自动清理） */
+        try {
+          const d = ttsVoices.listReferencedVoiceAssets();
+          return {
+            assets: d.assets.length,
+            bytes: d.assets.reduce((s, a) => s + (a.size || 0), 0),
+            orphanFiles: d.orphanFiles,
+            missingFiles: d.missingFiles
+          };
+        } catch (e) { return { assets: 0, bytes: 0, orphanFiles: [], missingFiles: [] }; }
+      })(),
       capabilities: {
         bark: !!(config.bark && config.bark.enabled && config.bark.url),
         ntfy: !!(config.ntfy && config.ntfy.enabled && config.ntfy.topic),
         openaiTts: !!(config.tts && config.tts.enabled && config.tts.endpoint && config.tts.apiKey),
+        mimoTts: !!(config.ttsMimo && config.ttsMimo.enabled && config.ttsMimo.endpoint && config.ttsMimo.apiKey),
         proactive: !!(config.proactive && config.proactive.enabled && config.proactive.endpoint),
         localAddresses: LAN_EXPOSED ? lanAddresses() : []
       },
@@ -183,6 +215,7 @@ function createRoutes(ctx) {
         bark: !!(config.bark && config.bark.enabled && config.bark.url),
         ntfy: !!(config.ntfy && config.ntfy.enabled && config.ntfy.topic),
         tts: !!(config.tts && config.tts.enabled && config.tts.endpoint && config.tts.apiKey),
+        mimoTts: !!(config.ttsMimo && config.ttsMimo.enabled && config.ttsMimo.endpoint && config.ttsMimo.apiKey),
         resident: Object.keys(resident).length,
         musicProvider: (config.music && config.music.provider) || 'kugou',
         lan: LAN_EXPOSED,
@@ -566,14 +599,94 @@ function createRoutes(ctx) {
       return;
     }
 
-    /* TTS 合成 */
+    /* TTS 合成（Voice Profile 统一入口：normalize 兼容旧平铺参数与新 profile，按 provider 能力过滤） */
     if (pathname === '/api/tts' && req.method === 'POST') {
       try {
         const body = await readBody(req);
-        const r = await ttsGenerate(body.text, body.voice, body.provider, body.rate, body.pitch);
+        const r = await ttsSynthesize(ttsNormalize(body));
         sendJsonRes(res, r.ok ? 200 : 503, r);
       } catch (e) { sendJsonRes(res, 400, { ok: false, error: e.message }); }
       return;
+    }
+
+    /* ── Reference Audio 资产 API（VoiceClone 基础设施 · 第三阶段 B1）──
+       POST   /api/tts/voices           上传（原始二进制 body；?name= 原始文件名仅作 metadata）
+       GET    /api/tts/voices           列出资产 + 磁盘↔注册表对账诊断（只读）
+       GET    /api/tts/voices/:id       按 refAudioId 读取文件（HEAD 同支持）
+       DELETE /api/tts/voices/:id       删除（body {referencedIds:[...]} 声明当前仍被角色引用的 id，
+                                        命中则拒绝，防止角色引用静默失效） */
+    if (pathname === '/api/tts/voices' && req.method === 'GET') {
+      const d = ttsVoices.listReferencedVoiceAssets();
+      sendJsonRes(res, 200, { ok: true, voices: d.assets, diagnostics: { orphanFiles: d.orphanFiles, missingFiles: d.missingFiles } });
+      return;
+    }
+    if (pathname === '/api/tts/voices' && req.method === 'POST') {
+      try {
+        const maxBytes = ttsVoices.maxBytes;
+        const declared = Number(req.headers['content-length']);
+        if (declared > maxBytes) {
+          /* 入口即拒绝（不读取 body）；等响应写完再断开，避免客户端看到的是连接重置而非明确错误 */
+          res.on('finish', () => { try { req.destroy(); } catch (e) { /* 忽略 */ } });
+          sendJsonRes(res, 413, { ok: false, error: 'Reference Audio 超过 10 MB 上限' });
+          return;
+        }
+        const buf = await readRawBody(req, maxBytes);
+        const r = ttsVoices.saveRefAudio({
+          buf,
+          contentType: req.headers['content-type'] || '',
+          originalName: q.name || ''
+        });
+        sendJsonRes(res, r.ok ? 200 : 400, r);
+      } catch (e) {
+        if (/body too large/.test(String(e && e.message || e))) {
+          res.on('finish', () => { try { req.destroy(); } catch (e2) { /* 忽略 */ } });
+          sendJsonRes(res, 413, { ok: false, error: 'Reference Audio 超过 10 MB 上限' });
+        } else {
+          sendJsonRes(res, 400, { ok: false, error: e && e.message || 'upload failed' });
+        }
+      }
+      return;
+    }
+    const voiceMatch = pathname.match(/^\/api\/tts\/voices\/([^/]+)$/);
+    if (voiceMatch) {
+      let id;
+      try { id = decodeURIComponent(voiceMatch[1]); } catch (e) {
+        sendJsonRes(res, 400, { ok: false, error: 'Reference Audio id 不合法' });
+        return;
+      }
+      if (!ttsVoices.getRefAudioMeta(id)) {
+        /* 不存在或非法 id 一律 404（不区分，避免探测），路径穿越也在 id 白名单校验下失败 */
+        sendJsonRes(res, 404, { ok: false, error: 'Reference Audio 不存在' });
+        return;
+      }
+      if (req.method === 'GET' || req.method === 'HEAD') {
+        const resolved = ttsVoices.resolveRefAudio(id);
+        if (!resolved) { sendJsonRes(res, 404, { ok: false, error: 'Reference Audio 不存在' }); return; }
+        const stat = fs.statSync(resolved.file);
+        res.writeHead(200, Object.assign({
+          'Content-Type': resolved.meta.mime,
+          'Content-Length': stat.size,
+          'Cache-Control': 'no-store'
+        }, corsHeaders(res)));
+        if (req.method === 'HEAD') { res.end(); return; }
+        const rs = fs.createReadStream(resolved.file);
+        rs.on('error', () => { try { res.destroy(); } catch (e) { /* 忽略 */ } });
+        rs.pipe(res);
+        return;
+      }
+      if (req.method === 'DELETE') {
+        try {
+          const body = await readBody(req);
+          const referenced = Array.isArray(body && body.referencedIds) ? body.referencedIds : [];
+          if (referenced.indexOf(id) !== -1) {
+            sendJsonRes(res, 409, { ok: false, error: '该 Reference Audio 仍被角色引用，拒绝删除。请先将被引用角色切换为 Built-in 音色或解除引用（删除即解绑会静默破坏 VoiceClone）。' });
+            return;
+          }
+          const r = ttsVoices.deleteRefAudio(id);
+          sendJsonRes(res, r.ok ? 200 : 404, r);
+        } catch (e) { sendJsonRes(res, 400, { ok: false, error: e.message }); }
+        return;
+      }
     }
 
     /* AI 常驻会话 */

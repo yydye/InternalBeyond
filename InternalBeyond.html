@@ -1311,21 +1311,62 @@
       </div>
       <div class="api-form-group" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--glass-border)" id="api-voice-group">
         <label class="form-check-row"><input type="checkbox" id="api-voice-toggle" class="u-native-check" onchange="_voiceToggleDetail()"> Enable Voice</label>
-        <div style="font-size:0.72rem;opacity:0.55;margin-top:0px;line-height:1.6">为这个角色配置语音合成，每条 AI 回复都可以播放声音。</div>
+        <div style="font-size:0.72rem;opacity:0.55;margin-top:0px;line-height:1.6">为这个角色配置语音合成，每条 AI 回复都可以播放声音。Edge / OpenAI 使用自由 Voice ID；MiMo 从官方预置音色中选择（音色决定中英文），风格指令随请求发送。MiMo 凭据在 Bridge config.json 的 ttsMimo 区块配置。</div>
         <div id="api-voice-detail" style="display:none;margin-top:10px">
-          <div style="display:flex;gap:8px;margin-bottom:8px">
-            <select id="api-voice-provider" style="flex:1;border-radius:8px;border:1px solid var(--glass-border);background:var(--glass-bg);color:var(--text);padding:8px 10px;font-size:0.85rem;font-family:inherit">
+          <div class="ibv-type-row" id="api-voice-type-row">
+            <label class="form-check-row"><input type="radio" name="api-voice-type" id="api-voice-type-builtin" value="builtin" checked="checked" onchange="_voiceTypeChange()"> Built-in</label>
+            <label class="form-check-row"><input type="radio" name="api-voice-type" id="api-voice-type-clone" value="clone" onchange="_voiceTypeChange()"> Voice Clone</label>
+            <label class="form-check-row"><input type="radio" name="api-voice-type" id="api-voice-type-design" value="design" onchange="_voiceTypeChange()"> Voice Design</label>
+          </div>
+          <div id="api-voice-clone-panel" class="ibv-clone-panel">
+            <div class="ibv-clone-hint">Reference Audio：上传用于克隆音色的参考音频（MP3 / WAV，最大 10 MB，仅保存在本机 Bridge）。上传后即可用 MiMo VoiceClone（mimo-v2.5-tts-voiceclone）试听与朗读。</div>
+            <div id="api-voice-clone-current" class="ibv-clone-current"></div>
+            <div class="ibv-clone-actions">
+              <button type="button" class="btn ibv-clone-btn" id="api-voice-clone-upload-btn">上传音频</button>
+              <button type="button" class="btn ibv-clone-btn ibv-clone-del" id="api-voice-clone-delete-btn" style="display:none">删除</button>
+            </div>
+            <input type="file" id="api-voice-clone-file" accept=".mp3,.wav,audio/mpeg,audio/wav" class="ibv-file-input">
+            <div id="api-voice-clone-status" class="ibv-clone-status"></div>
+          </div>
+          <div id="api-voice-builtin-fields">
+          <div style="display:flex;gap:8px;margin-bottom:8px" id="api-voice-provider-wrap">
+            <select id="api-voice-provider" onchange="_voiceToggleDetail()" style="flex:1;border-radius:8px;border:1px solid var(--glass-border);background:var(--glass-bg);color:var(--text);padding:8px 10px;font-size:0.85rem;font-family:inherit">
               <option value="openai">OpenAI TTS</option>
               <option value="edge">Edge TTS (free)</option>
+              <option value="mimo">MiMo TTS</option>
             </select>
           </div>
-          <input type="text" id="api-voice-id" placeholder="Voice ID (e.g. zh-CN-XiaoxiaoNeural)" style="width:100%;padding:8px 12px;border-radius:10px;border:1px solid var(--glass-border);background:var(--glass-bg);color:var(--text);font-size:0.85rem;font-family:inherit;margin-bottom:8px;box-sizing:border-box">
-          <div style="display:flex;gap:8px;margin-bottom:8px">
+          <div id="api-voice-model-wrap" class="ibv-field">
+            <label class="ibv-label" for="api-voice-model">Model</label>
+            <select id="api-voice-model" class="ibv-select">
+              <option value="">跟随全局配置（config.tts.model）</option>
+              <option value="tts-1">tts-1</option>
+              <option value="tts-1-hd">tts-1-hd</option>
+              <option value="gpt-4o-mini-tts">gpt-4o-mini-tts</option>
+            </select>
+          </div>
+          <div id="api-voice-id-wrap">
+            <input type="text" id="api-voice-id" placeholder="Voice ID (e.g. zh-CN-XiaoxiaoNeural)" style="width:100%;padding:8px 12px;border-radius:10px;border:1px solid var(--glass-border);background:var(--glass-bg);color:var(--text);font-size:0.85rem;font-family:inherit;margin-bottom:8px;box-sizing:border-box">
+          </div>
+          <div id="api-voice-select-wrap" class="ibv-field">
+            <label class="ibv-label" for="api-voice-select">Voice</label>
+            <select id="api-voice-select" class="ibv-select"></select>
+          </div>
+          <div id="api-voice-language-wrap" class="ibv-field">
+            <label class="ibv-label" for="api-voice-language">Language</label>
+            <input type="text" id="api-voice-language" class="ibv-input ibv-last" placeholder="留空 = 自动；如 zh-CN / en-US / ja-JP">
+          </div>
+          <div id="api-voice-style-wrap" class="ibv-field">
+            <label class="ibv-label" for="api-voice-style">Instructions / Style</label>
+            <textarea id="api-voice-style" class="ibv-input ibv-last" rows="2" placeholder="说话风格指令；仅支持的 Provider 会随请求发送（如 gpt-4o-mini-tts）"></textarea>
+          </div>
+          <div id="api-voice-prosody-wrap" class="ibv-field"><div style="display:flex;gap:8px;margin-bottom:8px">
             <div style="flex:1"><label style="font-size:0.75rem;opacity:0.7;display:block;margin-bottom:2px">Rate</label><input type="range" id="api-voice-rate" min="0.25" max="4" step="0.05" value="1.0" oninput="_voiceRateUpdate()" style="width:100%"><span style="font-size:0.68rem;opacity:0.5" id="api-voice-rate-val">1.00</span></div>
             <div style="flex:1"><label style="font-size:0.75rem;opacity:0.7;display:block;margin-bottom:2px">Pitch</label><select id="api-voice-pitch" style="width:100%;border-radius:8px;border:1px solid var(--glass-border);background:var(--glass-bg);color:var(--text);padding:6px 8px;font-size:0.82rem;font-family:inherit"><option value="-20Hz">-20Hz</option><option value="+0Hz" selected>+0Hz</option><option value="+10Hz">+10Hz</option><option value="+20Hz">+20Hz</option></select></div>
-          </div>
+          </div></div>
           <label class="form-check-row"><input type="checkbox" id="api-voice-autoplay" class="u-native-check"> 收到回复后自动播放</label>
           <button type="button" class="btn" id="api-voice-test-btn" onclick="testCharacterVoice()" style="margin-top:10px;font-size:0.82rem;padding:6px 16px">Test Voice</button>
+          </div>
         </div>
       </div>
       <div class="api-form-group u-mt-1" id="api-websearch-group">

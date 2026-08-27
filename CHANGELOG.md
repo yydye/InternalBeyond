@@ -131,3 +131,54 @@
 为关系系统参数校准建立本地观测：`assets/js/social-observe.js`（UMD 双端环形缓冲 + 按日聚合 + 方向保留互动矩阵 + 线程统计 + 亲和度枚举 + 小时直方图）；token 捕获（迟安装包装 window._tkRecord，不改请求参数）；接入点全部一行式旁路失败静默；持久化 social-observe.json（30s 节流原子写）；Moments 设置区开关 + 导出按钮 + 控制台查询函数。现有测试断言零修改，全量绿。
 
 **当前状态：校准等待中——关系状态层的实现被明确禁止，直到 1–2 周真实分布数据回填（见 [HANDOVER.md](HANDOVER.md) 当前工作）。**
+
+## 2026-08-27 · TTS 第三阶段 A（MiMo 普通 TTS）与 B1（VoiceClone Reference Audio 基础设施）
+
+**第三阶段 A**（已在工作树基线）：`bridge/tts.js` Provider Registry 扩为 Edge / OpenAI / MiMo 三 provider（`mimo-v2.5-tts`，chat-completions 兼容：文本在 assistant 消息、风格指令在可选 user 消息、`audio.{format,voice}`）；`normalizeVoiceProfile` 按 capabilities 过滤（MiMo 无 prosody/language → rate/pitch/language 置空）；前端 `IB_TTS_CATALOG` 镜像目录驱动 Provider/Model/Voice 下拉，`_ibTtsPayload` 统一 wire payload；新增 `test_mimo_tts.js`（31 项，registry 形态 + 请求 shape + 错误分类 + Edge/OpenAI 回归）。**`mimo.clone = false` 保持不动。**
+
+**B1 · VoiceClone Reference Audio 基础设施**（本条目）：独立资产层，只做「上传 → 校验 → 落盘 → 引用」，**不实现 MiMo VoiceClone API、不上行任何克隆请求**。
+
+- 新文件 `bridge/tts-voices.js`（工厂）：文件在 `DATA_DIR/tts-voices/<refAudioId>.<ext>`，服务端 metadata 注册表 `DATA_DIR/tts-voices.json`（refAudioId → {mime,ext,size,originalName,created}）；refAudioId = crypto.randomBytes(9) base64url（12 字符，白名单 `[A-Za-z0-9_-]{8,64}`）；**三方校验**：Content-Type（audio/mpeg|wav 族）+ 扩展名 + magic bytes（MP3: ID3 标签或 MPEG 帧同步；WAV: RIFF....WAVE），全一致才接受；10 MB 上限在 Content-Length 入口预检、流式读取、写盘前三层硬核；原始文件名剥离路径成分只作 metadata；`resolveRefAudio` 只由「id + 注册表 ext」拼路径，杜绝任意文件读取。
+- `bridge/routes.js`：`POST /api/tts/voices`（原始二进制 body，`?name=` 仅元数据）、`GET /api/tts/voices`（列表 + 磁盘↔注册表对账诊断）、`GET/HEAD /api/tts/voices/:id`（只认注册表）、`DELETE /api/tts/voices/:id`（body `{referencedIds:[...]}` 声明当前仍被角色引用的 id，命中 409 拒删，防止「删掉后角色 VoiceClone 静默失效」）；`/api/diagnostics` 增 `voiceAssets` 对账块；新增流式 `readRawBody`（边读边超限拒绝，不整包读入）。
+- 前端：Voice 编辑器增加 **Voice Type（○ Built-in ○ Voice Clone）**，选 Clone 只显示 Reference Audio（上传/当前:名称+大小/删除 + 存在性检查状态），不显示 Clone API 参数/MiMo VoiceClone Model/Style 克隆逻辑，Test Voice 在 Clone 下禁用；voiceData 合并式写入（`Object.assign(既有 voiceData, {refAudioId,mime,name,size})`，**futureField 等字段永不被抹除**）；导出保持只含 metadata（apiConfigs 直出 JSON，无 base64/二进制）；导入后 `ibTtsVoiceCheckImport` 检测 dangling reference 并 alert 明确状态。
+- 测试：`test_tts_voices.js`（53 项：模块层 + 真实 Bridge HTTP，含 10MB/空文件/伪造 MIME/扩展名不一致/路径穿越全部 4xx/引用拒删/重启持久化/对账诊断）；`test_ui_regression.js` 新增 13 项真实 Chrome headless（真 Bridge 上传 + 编辑器保存/重开/解绑删除/futureField 保留）。注意：`assets/js/social.js` 内嵌 HTML 转义用全局 `esc`（bridge.js 的 `ibEsc` 是 IIFE 私有，非 window 全局）。
+
+**B1 边界（预期行为）**：`voiceType='clone'` 可保存、可持久化、可引用 Reference Audio，但 TTS normalize 仍按 capabilities 回落 builtin——克隆合成留待 B2（`mimo-v2.5-tts-voiceclone` 未实现，未调用任何 VoiceClone API）。
+
+## 2026-08-27 · TTS 第三阶段 B2：MiMo VoiceClone 合成链路
+
+先重新检索官方文档（mimo.mi.com 官方 API + quick-start「使用音色复刻进行语音合成」章节），按**最新官方实据**实现，未凭记忆猜参数：
+
+**官方实据**：`POST https://api.xiaomimimo.com/v1/chat/completions`；model=`mimo-v2.5-tts-voiceclone`；鉴权 `api-key`（与普通 TTS 一致）；`audio.voice` **必填且为** `data:{MIME};base64,<b64>`（仅 mp3/wav 样本，MIME 与样本一致；Base64 编码后 ≤10 MB）；目标文本在 `assistant` 消息；`user` 消息可选、非空即自然语言风格指令；**不用**普通内置 voiceId（音色由参考音频决定）；无独立 `language` 参数、无 `rate/pitch`；非流式响应 `choices[0].message.audio.data` 为 base64（格式=请求 `audio.format`），另有 `audio.id/expires_at(null)/transcript(null)`。
+
+实现要点：
+- `bridge/tts.js`：`mimo.capabilities.clone=false→true`（仅 mimo；edge/openai 仍 clone:false + 无 cloneSynthesize）；新增 `cloneModels:['mimo-v2.5-tts-voiceclone']`（常量 `MIMO_CLONE_MODEL`）与 `mimoCloneSynthesize`；`normalizeVoiceProfile` 在 clone 且 provider 有 cloneModels 时**强制落到官方克隆模型**（显式指定过 clone model 才保留，误填 builtin model/空值均兜底），非 clone 走既有 models 规则（旧行为不变）；`ttsSynthesize` 按 `voice.type==='clone' && def.cloneSynthesize` 分派（当前仅 mimo）；`mimoCloneSynthesize` 经 `ttsVoices.resolveRefAudio` 读取 B1 文件（不直接拼 DATA_DIR 路径、不破坏 B1 安全边界），空引用/不存在/注册表有记录但文件缺失/读取失败/Base64 超官方 10 MB 一律本地 `ok:false` 失败、绝不发上游。
+- `ib-bridge-service.js`：`ttsVoices` 提前到 `createTts` 之前创建并注入。
+- 前端（`assets/js/social.js`、`InternalBeyond.html`、`assets/css/core/api-components.css`）：目录 `mimo` 增 `clone:true + cloneModels`；`_voiceSyncCapabilityFields`/`_voiceSyncModelOptions` 按类型显隐：Clone 时隐藏 Provider 行/预置音色/lang/prosody、显示克隆模型下拉（默认 `mimo-v2.5-tts-voiceclone`）+Style + Test Voice（**不再禁用**）；`_voiceTypeChange` 选 Clone 时把 Provider 固定为 MiMo（避免 edge/openai+clone 被 normalize 回落 builtin 造成“选了克隆却是内置音色”的困惑）；`testCharacterVoice` 按当前类型构造 `voiceType/voiceData`，Clone 模式走真实 `/api/tts`；Built-in 行为、挂载顺序、旧数据兼容（`voiceType` 缺失仍=builtin）全部不变。
+- 测试：`test_mimo_voiceclone.js`（新，35 项：Registry/edge+openai clone:false/Normalize→clone model/Reference Audio 解析/Base64 逐字节一致（data URI 前缀解码）/request shape/model/无 language/无 rate/pitch/style 空与非空/空引用不发请求/注册表-文件缺失/超 10MB Base64 本地拒绝/builtin 回归仍 `mimo-v2.5-tts` 且 no data URI/未配置错误分类）；`test_mimo_tts.js` 的 `A.capabilities.cloneFalse` 更新为 `cloneTrue + cloneModels`（B2 有意翻转，其余断言不动）；`test_ui_regression.js` B1 块改断言（Test 不再禁用、provider 行隐藏、clone model 默认），并新增 B2 块（真实 Chrome headless：mock VoiceClone 端点 + Provider=MiMo + Clone + 上传 → Test Voice 成功 + 捕获请求 shape：`mimo-v2.5-tts-voiceclone`/`format:'mp3'`/`data:audio/mpeg;base64,`/assistant 文本/api-key 头，runtime 无 JS 异常）。
+- 取舍与边界（报告已注明）：输出 `audio.format='mp3'` 沿用 B1 `.mp3`+`audio/mpeg` 播放链（官方默认 `wav`）；仅 tokenplan/第三方代理上才见 `mimo-v2.5-tts-voiceclone` 需要，此处为官方直连。**未实现 Voice Design**；`mimo-v2.5-tts-voicedesign` 未建假条目。真实上游 API **未调用**（无 MiMo API Key；全部为本地 mock 断言，mock 已明确标记）。
+
+**B2 最终状态**：VoiceClone 合成已完整可用（上传→引用→`/api/tts`→`normalize`→`mimo` clone adapter→`resolveRefAudio` 读文件→`data:...;base64`→`mimo-v2.5-tts-voiceclone`→现有播放链）。已知限制：① 无真实上游调用实测（未持有 MiMo Key）；② 输出格式 mp3 为兼容既有播放链的取舍（官方默认 wav）；③ 10 MB 官方 Base64 上限意味着参考音频原文件需 ≤ 约 7.5 MB（超出本地拒绝，B1 上传上限 10 MB 仍放行但 adapter 会拦截）。
+
+## 2026-08-27 · TTS 第三阶段 C：MiMo Voice Design（mimo-v2.5-tts-voicedesign）
+
+按同日官方文档（API 参考 + quick-start「使用文本设计音色」）核实后实现，仍为 B2 的镜像增量，**未重构 TTS、未新增第二套播放链/资产系统/DB**。
+
+**官方实据**：同一 endpoint/`api-key`；model=`mimo-v2.5-tts-voicedesign`；`role:"user"` 的 content = **音色设计描述（必填）**，`role:"assistant"` 的 content = 目标合成文本（必填）；**无 `audio.voice`**（音色由描述生成）；**无独立 `language`、无 `rate/pitch`**；`audio.format` 默认 `wav`（通用文档允许 `mp3`）；`optimize_text_preview` 可选（仅 design，默认 false，我们总有目标文本故不设）；非流式响应 `choices[0].message.audio.data` 同构。**官方不产生可复用 Voice ID / 资产**（`audio.id` 为响应级标识、`expires_at=null`）——无需持久化额外资产，输出可直接播放。
+
+实现要点：
+- `bridge/tts.js`：`mimo.capabilities.design=false→true`；新增 `MIMO_DESIGN_MODEL`、`designModels:['mimo-v2.5-tts-voicedesign']`、`designSynthesize:mimoDesignSynthesize`；normalize 的 model 块在 `vtype==='design'` 时强制落到官方专用 model（误填 builtin/空值兜底）；`ttsSynthesize` 加 `isDesign && def.designSynthesize` 分派；`mimoDesignSynthesize` 复用 `saveTtsAudio`/播放链/`/api/tts`/WS `tts_speak`；空设计描述本地拒绝（官方 user 必填），错误分类/未配置同 clone。**`mimoSynthesize`/`mimoCloneSynthesize` 零改动**；edge/openai 保持 design:false（normalize 回落 builtin）。
+- 前端（`assets/js/social.js`、`InternalBeyond.html`）：目录 `mimo` 增 `design:true + designModels + designModelLabel`；Voice Type 单选增 `Voice Design`（`#api-voice-type-design`）；`_voiceCurrentType`/`_voiceSetType` 支持 `design`；`_voiceSyncCapabilityFields` 在 design 下隐藏 Provider 行/预置音色/lang/prosody、把 **Style 标签切为「Voice Design 描述（音色设计）」**（复用 `voice.style` 承载音色描述，不造重复字段）、显示 design Model 下拉（默认 `mimo-v2.5-tts-voicedesign`）+ Test Voice；`_voiceTypeChange` 对 clone/design 都强制 provider=mimo；`_voiceCloneRender` 在 design 下隐藏 Reference Audio（clone）面板；`testCharacterVoice` 的 design 分支要求非空描述、走真实 `/api/tts`；`editApi` 恢复 design 类型；保存块复读 `_voiceCurrentType`，design 走 voiceData 透传（futureField 兼容），无 design 专属字段。目录驱动逻辑与 B1/B2 一致，未写死大量 provider 分支。
+- 测试：`test_mimo_voicedesign.js`（新，39 项：Registry(design)/edge+openai design:false×无 designSynthesize/normalize design/非 mimo+design 回落 builtin/design model 默认值/request shape+method+api-key/design 描述→user 消息/目标文本→assistant/无 audio.voice/无 language·rate·pitch·无未确认字段/response 解析/空描述本地拒绝/未配置/401·403·400·500·no audio 分类/VoiceClone 回归 data URI/Built-in 回归 `mimo-v2.5-tts`+预置音色/OpenAI 回归 Bearer+四字段）；`test_mimo_tts.js` 的 `A.capabilities.designFalse` 更新为 `designTrue + designModels`（C 有意翻转，其余断言不动）；`test_ui_regression.js` 新增 C 块（真实 Chrome headless：Provider=MiMo + Design + 「Voice Design 描述」→ 保存 → IndexedDB 回读 → 重开恢复 → Test Voice，mock 捕获 `mimo-v2.5-tts-voicedesign`/`format:'mp3'`/无 `audio.voice`/user 描述=音色描述/api-key 头，runtime 无 JS 异常）。
+
+**C 边界与限制**：仅 `provider=mimo`+`voiceType=design` 进设计适配器；`voiceType` 缺失仍 builtin（旧角色不变）；Edge/OpenAI/MiMo Built-in/MiMo VoiceClone/Reference Audio/fallback/播放队列/export·import/futureField 全部不受影响。真实上游 API **未调用**（无 MiMo Key；全部为本地 mock，mock 已明确标记）。**未实现**：其他 Provider Voice Design、云端 Voice Library/Marketplace、自动同步、伪 2 播放链、企业级安全。官方 `optimize_text_preview`（LLM 润色/自动生成播报文本）未接入——本阶段总提供目标文本，不设该参数；留待后续按需单独加。
+
+## 2026-08-27 · TTS 第三阶段最终验收审计（A/B1/B2/C 封板检查）
+
+审计结论：A/B1/B2/C 已贯通，可封板；确认 3 个 UI 状态机脏字段缺陷（真实 Chrome headless 复现）并最小修复：
+
+1. **Clone/Design → Built-in 残留专用 model**：`_voiceSyncModelOptions` Built-in 分支把切换前的 `mimo-v2.5-tts-voiceclone`/`mimo-v2.5-tts-voicedesign` 当「(当前配置)」保留，保存后角色的 `voiceType='builtin'` 却带上专用 model，播放时上游收到错配请求。修复：目录级检查，专用 model 一律丢弃回落「跟随全局配置/官方默认」（`assets/js/social.js`）；服务端 `normalizeVoiceProfileCore` Built-in 分支同规则兜底（误填专用 model 按未指定处理，`bridge/tts.js`）——双保险，旧数据/手改 JSON 也安全。
+2. **Built-in → Clone → Built-in 不回退 Provider**：`_voiceTypeChange` 强制 provider=mimo 后无记忆，旧 Edge 角色看一眼 Clone 再切回来，保存即被静默改成 mimo（且 voiceId 错配）。修复：`_voiceProvBeforeSpecial` 记忆强制前 provider，回 Built-in 恢复；编辑器打开（addNewApi/editApi）时重置（仅当次会话内生效）。
+3. **Voice 下拉跨角色残留**：无官方预置目录的 provider（edge/openai）同步下拉时把上一个角色/上一次会话残留的 id 以「(当前配置)」形式保留，切回有目录 provider 时选中错误音色。修复：`_voiceSyncVoiceOptions` 无目录时清空下拉；`_voiceToggleDetail` 无条件调用同步。
+
+测试：`test_ui_regression.js` B1 块增 `unbindNoDirtyModel` / `unbindProviderConsistent` 两项回归；`node --check`、`test-all.js --quick`、`test_ui_regression.js`、`test-all.js --all` 全部通过。真实 MiMo 上游 API **未调用**（本机无 Key；request shape 均为本地 mock 验证）。

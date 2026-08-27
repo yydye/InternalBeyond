@@ -37,6 +37,12 @@ function createConfig(deps) {
         voice: 'alloy',
         lang: 'zh-CN'
       },
+      ttsMimo: {                     // AI 语音气泡：MiMo TTS（OpenAI chat-completions 兼容；文本在 assistant 消息）
+        enabled: false,
+        endpoint: 'https://api.xiaomimimo.com/v1/chat/completions',
+        apiKey: '',
+        voice: ''                    // 留空时按角色 voiceId，再兜底注册表默认（mimo_default）
+      },
       bark: { enabled: false, url: '' },   // 例：https://api.day.app/你的Key
       ntfy: { enabled: false, server: 'https://ntfy.sh', topic: '' },  // Android/OPPO 推荐
       webhooks: {},                  // { 名称: { url, method, headers, confirm } }
@@ -123,7 +129,7 @@ function createConfig(deps) {
     if (!configRaw || typeof configRaw !== 'object') return false;
     if (Object.keys(d).some(k => !(k in configRaw))) return true;
     let nestedMissing = false;
-    ['music', 'tts', 'bark', 'ntfy', 'proactive'].forEach(k => {
+    ['music', 'tts', 'ttsMimo', 'bark', 'ntfy', 'proactive'].forEach(k => {
       const dv = d[k], rv = configRaw[k];
       if (dv && typeof dv === 'object' && rv && typeof rv === 'object') {
         if (Object.keys(dv).some(n => !(n in rv))) nestedMissing = true;

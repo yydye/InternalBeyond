@@ -424,6 +424,59 @@ GET  /api/ai/sessions        # 会话列表（API Key 自动脱敏）
 - 没配 TTS 时自动降级为浏览器自带语音（`speechSynthesis`），功能不中断
 - AI 也有 `tts_speak` 工具，可以在回复里主动生成语音气泡
 
+### MiMo TTS（mimo-v2.5-tts）
+
+在 `config.json` 增加 `ttsMimo` 区块（角色侧无需任何凭据）：
+
+```json
+"ttsMimo": {
+  "enabled": true,
+  "endpoint": "https://api.xiaomimimo.com/v1/chat/completions",
+  "apiKey": "你的 MiMo API Key"
+}
+```
+
+- 端点为小米官方 OpenAI chat-completions 兼容接口；待合成文本放在 `assistant` 消息，风格指令（可选）放在 `user` 消息
+- 角色编辑器选择 Provider = MiMo 后，从官方预置音色下拉中选择（`mimo_default`/冰糖/茉莉/苏打/白桦/Mia/Chloe/Milo/Dean），音色即语言（中文女声/男声、英文女声/男声）
+- Style 非空时才作为自然语言指令随请求发送；MiMo 无独立 language 参数与语速音调参数（Rate/Pitch 仅 Edge 提供）
+
+### VoiceClone Reference Audio（基础设施，阶段 B1）
+
+角色编辑器「Voice」里新增 **Voice Type：Built-in / Voice Clone**。选择 Voice Clone 后可以上传一份参考音频（MP3 / WAV，最大 10 MB）作为克隆音色素材；文件只保存在本机 Bridge 的 `DATA_DIR/tts-voices/<refAudioId>.<ext>`，角色只存引用元数据（`voiceData.refAudioId/mime/name/size`），**二进制绝不进入 IndexedDB 或导出 JSON**。
+
+相关 API（Bridge 本机）：
+
+```text
+POST   /api/tts/voices           上传（原始二进制 body；?name= 原文件名仅作 metadata）
+GET    /api/tts/voices           资产列表 + 磁盘↔注册表对账诊断（只读）
+GET    /api/tts/voices/:id       按 refAudioId 读取文件（HEAD 同样支持）
+DELETE /api/tts/voices/:id       删除；body {"referencedIds":[...]} 声明仍被引用的 id，命中则 409 拒绝
+```
+
+校验带三层：Content-Type、文件扩展名、文件头 magic bytes（MP3：ID3/MPEG 帧；WAV：RIFF/WAVE），全部一致才接受；上传超限、空文件、伪造 MIME、路径穿越全部拒绝。**B1 阶段仅文件基础设施；B2 起 VoiceClone 合成已启用**（见下节）。
+
+### MiMo VoiceClone（阶段 B2）
+
+角色编辑器「Voice」选 **Voice Clone** 后（Provider 自动固定为 MiMo），上传参考音频 + 选 Model = `mimo-v2.5-tts-voiceclone`，点击 **Test Voice** 即用真实 `/api/tts` → MiMo VoiceClone 试听；角色朗读时同样走克隆链路。
+
+- 端点沿用 `config.json` 的 `ttsMimo.endpoint`（官方 `https://api.xiaomimimo.com/v1/chat/completions`），鉴权同 `api-key`。
+- 官方要求 `audio.voice` 传 `data:{MIME};base64,<base64>`（仅 mp3/wav 样本，MIME 必须与样本格式一致）；**Base64 编码后 ≤ 10 MB**（比 B1 上传的 10 MB 原文件更严，超出本机直接拒绝）。
+- 目标文本放在 `assistant` 消息；`voice.style`（非空）作为自然语言风格指令放 `user` 消息；`voiceId`（普通内置音色）**不发送**——音色由参考音频决定；无独立 `language` 参数、无 `rate/pitch`（仅 Edge 有 prosody）。
+- 输出 `audio.format='mp3'`（沿用 B1 的 `.mp3` 落盘 + `audio/mpeg` / `/tts/*.mp3` 播放链；官方默认输出格式为 `wav`，此处为兼容既有播放链选 mp3）。
+- 仅 `provider=mimo` + `voiceType=clone` 进入克隆适配器：`edge/openai + clone` 仍被 normalize 回落到 builtin；`voiceType` 缺失仍解释为 `builtin`（旧角色完全不变）。
+- 空引用 / `refAudioId` 不存在 / 注册表有记录但文件缺失 / Base64 超限，全部本地失败并进入既有 TTS fallback，绝不上行；参考音频本体仍**不进入 IndexedDB / 导出 JSON**（导入其它机器仍走 dangling reference 检测）。
+
+### MiMo Voice Design（阶段 C）
+
+角色编辑器「Voice」选 **Voice Design** 后（Provider 自动固定为 MiMo），在 **「Voice Design 描述（音色设计）」** 文本框里用自然语言描述想要的音色，选 Model = `mimo-v2.5-tts-voicedesign`，点击 **Test Voice** 即用真实 `/api/tts` → MiMo Voice Design 试听；角色朗读时同样走设计链路。
+
+- 端点沿用 `config.json` 的 `ttsMimo.endpoint`，鉴权同 `api-key`。
+- 官方要求 `role:"user"` 的 `content` = **音色设计描述（必填）**；`role:"assistant"` 的 `content` = 目标合成文本（必填）。描述官方建议 1–4 句，支持中英文；**无 `audio.voice`**（音色由描述生成，非参考音频/预置音色）；**无独立 `language` 参数、无 `rate/pitch`**。
+- 设计描述直接复用 Profile 的 `voice.style` 字段（`user` 消息），**不造重复字段**；`voiceData` 保持原样透传（futureField 兼容），无 design 专属字段——官方响应只返回可直接播放的音频（`audio.id` 为响应级标识、`expires_at=null`），**不产生可复用的 Voice ID / 资产**，故无需持久化额外资产。
+- 输出 `audio.format='mp3'`（沿用现有 `.mp3` 播放链；官方默认 `wav`）。
+- 仅 `provider=mimo` + `voiceType=design` 进入设计适配器：`edge/openai + design` 仍被 normalize 回落到 builtin；`voiceType` 缺失仍解释为 `builtin`（旧角色完全不变）。
+- 空设计描述本地拒绝（官方 user 消息必填），进入既有 TTS fallback；API Key 仍只存在 Bridge 全局 `ttsMimo.apiKey`（不进入角色 IndexedDB），`/api/config` 继续脱敏。
+
 ### 可选：低频主动消息
 
 `config.json` 里设置：

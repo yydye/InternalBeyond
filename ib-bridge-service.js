@@ -229,16 +229,23 @@ const barkPush = clients.barkPush;
 const ntfyPush = clients.ntfyPush;
 
 /* ------------------------------------------------------------------ */
-/* AI Voice（TTS，OpenAI / Edge 双 provider）                          */
-/* （已提取到 bridge/tts.js 工厂；config / uid / ttsDir 经依赖注入）    */
+/* AI Voice（TTS，OpenAI / Edge / MiMo 三 provider + VoiceClone）       */
+/* （已提取到 bridge/tts.js 工厂；config / uid / ttsDir / ttsVoices 经依赖注入） */
 /* ------------------------------------------------------------------ */
 
+/* ── VoiceClone Reference Audio 资产层（第三阶段 B1：文件基础设施） ──
+   文件在 DATA_DIR/tts-voices/<refAudioId>.<ext>；metadata 注册表 DATA_DIR/tts-voices.json。
+   必须在 createTts 之前创建，供 B2 VoiceClone 适配器经 ttsVoices.resolveRefAudio 读取真实文件。 */
+const createTtsVoices = require('./bridge/tts-voices');
+const ttsVoices = createTtsVoices({ dataDir: DATA_DIR, writeJson, loadJson });
+
 const createTts = require('./bridge/tts');
-const tts = createTts({ config, uid, ttsDir: DATA_DIR });
+const tts = createTts({ config, uid, ttsDir: DATA_DIR, ttsVoices });
 const edgeTtsGen = tts.edgeTtsGen;
 const ttsGenerate = tts.ttsGenerate;
-
-/* ttsGenerate 已提取到 bridge/tts.js */
+/* Voice Profile 统一入口（normalize 按 provider capabilities 过滤并补默认值） */
+const ttsNormalize = tts.normalizeVoiceProfile;
+const ttsSynthesize = tts.ttsSynthesize;
 
 /* ------------------------------------------------------------------ */
 /* AI 常驻会话引擎（多模型通用，不绑定 Claude Code）                    */
@@ -687,7 +694,8 @@ async function executeTool(name, args) {
       }
 
       case 'tts_speak': {
-        const r = await ttsGenerate(a.text, a.voice, a.provider, a.rate, a.pitch);
+        /* normalize 接受旧平铺参数（text/voice/provider/rate/pitch）与可选新字段（model/style/language 等） */
+        const r = await ttsSynthesize(ttsNormalize(a));
         if (!r.ok) return { ok: false, error: r.error };
         return { ok: true, text: 'Voice generated (' + r.url + ').', data: r };
       }
@@ -759,7 +767,7 @@ const TOOLS = [
   { name: 'webhook', description: '调用用户在配置里登记的 Webhook。参数 name 必填，data 为传给对方的 JSON。', inputSchema: toolSchema({ properties: { name: { type: 'string' }, data: {} } }) },
   { name: 'bark_push', description: '推送一条消息到用户的手机/手表（需配置 Bark）。参数 title/text/url。', inputSchema: toolSchema({ properties: { title: { type: 'string' }, text: { type: 'string' }, url: { type: 'string' } } }) },
   { name: 'ntfy_push', description: '推送一条消息到 Android/OPPO 手机（需配置 ntfy）。参数 title/text/url。', inputSchema: toolSchema({ properties: { title: { type: 'string' }, text: { type: 'string' }, url: { type: 'string' } } }) },
-  { name: 'tts_speak', description: '把一段文字合成为语音（AI 语音气泡）。参数 text 必填，voice 可选。', inputSchema: toolSchema({ properties: { text: { type: 'string' }, voice: { type: 'string' } } }) },
+  { name: 'tts_speak', description: '把一段文字合成为语音（AI 语音气泡）。参数 text 必填；voice/provider/model/style/language 均可选。', inputSchema: toolSchema({ properties: { text: { type: 'string' }, voice: { type: 'string' }, provider: { type: 'string' }, model: { type: 'string' }, style: { type: 'string' }, language: { type: 'string' } } }) },
   { name: 'push_send', description: '向当前打开的 Internal Beyond 页面推送一条消息（可选同时 Bark / ntfy）。', inputSchema: toolSchema({ properties: { title: { type: 'string' }, text: { type: 'string' }, from: { type: 'string' }, bark: { type: 'boolean' }, ntfy: { type: 'boolean' } } }) },
   { name: 'letter_write', description: '写一封服务器持久化的信。参数 to/from/content/reply_to。', inputSchema: toolSchema({ properties: { to: { type: 'string' }, from: { type: 'string' }, content: { type: 'string' }, reply_to: { type: 'string' } } }) },
   { name: 'letter_list', description: '读取服务器信箱里的信。参数 box（in/out/角色名）可选。', inputSchema: toolSchema({ properties: { box: { type: 'string' }, limit: { type: 'number' } } }) },
@@ -817,7 +825,7 @@ const httpLayer = createRoutes({
   sessions, resident, contextStats, pushHistory,
   withListLock, uid, todayStr, saveList, saveGeo, saveSessions, saveResident,
   getWeather, searchMusic, musicPlayUrl, musicPlayRemote, searchNetease,
-  barkPush, ntfyPush, ttsGenerate,
+  barkPush, ntfyPush, ttsNormalize, ttsSynthesize, ttsVoices,
   sessionGet, sessionSave, contextAppend, contextSummary,
   residentList, residentUpsert, residentSummary, residentChat, residentProactive,
   broadcast, recordPush, lanAddresses, fileSummary, directoryUsage,

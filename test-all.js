@@ -28,6 +28,10 @@ const GROUPS = [
     note: 'Bridge / Active 本地服务（随机端口 + 临时数据目录）',
     tests: [
       ['test_bridge.js'],
+      ['test_mimo_tts.js'],
+      ['test_tts_voices.js'],
+      ['test_mimo_voiceclone.js'],
+      ['test_mimo_voicedesign.js'],
       ['test_active_http.js'],
       ['test_active_plans.js'],
       ['test_moments_companion.js'],
