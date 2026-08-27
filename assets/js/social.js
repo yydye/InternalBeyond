@@ -151,32 +151,121 @@ const MAX_GROUP_MEMBERS=10;
 let _groupRoleSearch='';
 let _memberPickerSearch='';
 const API_CONFIG_FALLBACK_KEY='ib_apiConfigsFallback_v1';
-function _apiFallbackRead(){
-  try{const v=JSON.parse(localStorage.getItem(API_CONFIG_FALLBACK_KEY)||'[]');return Array.isArray(v)?v.filter(a=>a&&a.id):[]}catch(e){return[]}
+/* ── 存储能力探测与分级降级 ──
+   file:// 以及部分隐私模式下 IndexedDB / localStorage 可能被浏览器禁用，但「是否被禁用」
+   只能实测，不能按协议推断（同一个 file:// 页面在不同浏览器/不同启动参数下能力并不一致）。
+   因此这里对每种后端做一次真实的写-读-删往返，再按持久化强度分级：
+     persistent  IndexedDB 或 localStorage —— 真正持久化，跨会话存活
+     session     sessionStorage           —— 仅当前会话，关闭标签页即失
+     memory      页内变量                 —— 仅当前页面生命周期，刷新即失
+     unavailable 全部不可写               —— 无法保存
+   分级结果如实向上层返回，避免把 session / memory 谎报成持久化。 */
+var _ibApiMemStore=null;/* memory 层载体：仅当前页面生命周期 */
+var _ibStoreProbe=null;
+const API_STORE_TIERS=['local','session','memory'];
+function _ibProbeWebStorage(kind){
+  try{
+    const s=window[kind];
+    if(!s)return false;
+    const k='__ib_probe_'+kind+'__';
+    s.setItem(k,'1');
+    const ok=s.getItem(k)==='1';
+    s.removeItem(k);
+    return ok;
+  }catch(e){return false}
 }
+/* 探测结果缓存；传 true 强制重测（配额被占满等运行期变化后可刷新） */
+function _ibStorageCaps(refresh){
+  if(!_ibStoreProbe||refresh)_ibStoreProbe={local:_ibProbeWebStorage('localStorage'),session:_ibProbeWebStorage('sessionStorage')};
+  return _ibStoreProbe;
+}
+function _apiStoreArea(kind){return kind==='session'?window.sessionStorage:window.localStorage}
+function _apiStoreReadFrom(kind){
+  try{
+    const raw=kind==='memory'?_ibApiMemStore:_apiStoreArea(kind).getItem(API_CONFIG_FALLBACK_KEY);
+    if(!raw)return[];
+    const v=JSON.parse(raw);
+    return Array.isArray(v)?v.filter(a=>a&&a.id):[];
+  }catch(e){return[]}
+}
+function _apiStoreWriteTo(kind,v){
+  try{
+    const json=JSON.stringify(v);
+    if(kind==='memory'){_ibApiMemStore=json;return true}
+    const caps=_ibStorageCaps();
+    if(!caps[kind])return false;/* 探测判定不可写就不再尝试，避免每次保存都抛一轮异常 */
+    _apiStoreArea(kind).setItem(API_CONFIG_FALLBACK_KEY,json);
+    return true;
+  }catch(e){return false}
+}
+function _apiStoreClear(kind){
+  try{
+    if(kind==='memory'){_ibApiMemStore=null;return}
+    _apiStoreArea(kind).removeItem(API_CONFIG_FALLBACK_KEY);
+  }catch(e){}
+}
+/* 跨层合并读取：持久性更弱的层优先级更高（memory > session > local）。
+   这一顺序处理「降级」方向：localStorage 配额耗尽时 setItem 抛错但 getItem 仍可读，
+   旧值留在 local、新值落在 session，此时必须取 session。
+   「恢复」方向由 _apiFallbackWrite 写入成功后清空更弱的层来保证，两者合起来确保
+   任一 id 不会同时存在于多层、也不会被旧值反向遮蔽。 */
+function _apiFallbackRead(){
+  const merged=new Map();
+  API_STORE_TIERS.forEach(function(kind){
+    _apiStoreReadFrom(kind).forEach(function(a){merged.set(a.id,a)});
+  });
+  return Array.from(merged.values());
+}
+/* 返回实际落地的层级字符串（'persistent' / 'session' / 'memory' / 'unavailable'），不再返回布尔值。
+   写入成功后清空所有更弱的层：否则某层曾降级留下的旧值会在能力恢复后
+   按 _apiFallbackRead 的优先级永久遮蔽新值。 */
 function _apiFallbackWrite(v){
-  try{localStorage.setItem(API_CONFIG_FALLBACK_KEY,JSON.stringify(v));return true}catch(e){return false}
+  for(let i=0;i<API_STORE_TIERS.length;i++){
+    if(!_apiStoreWriteTo(API_STORE_TIERS[i],v))continue;
+    for(let j=i+1;j<API_STORE_TIERS.length;j++)_apiStoreClear(API_STORE_TIERS[j]);
+    return API_STORE_TIERS[i]==='local'?'persistent':API_STORE_TIERS[i];
+  }
+  return 'unavailable';
 }
 function _apiFallbackRemove(id){
-  const v=_apiFallbackRead().filter(a=>a.id!==id);
-  try{if(v.length)_apiFallbackWrite(v);else localStorage.removeItem(API_CONFIG_FALLBACK_KEY)}catch(e){}
+  API_STORE_TIERS.forEach(function(kind){
+    const cur=_apiStoreReadFrom(kind);
+    if(!cur.length)return;
+    const v=cur.filter(a=>a.id!==id);
+    if(v.length===cur.length)return;
+    if(v.length)_apiStoreWriteTo(kind,v);else _apiStoreClear(kind);
+  });
 }
 function _apiFallbackPut(cfg){
   const v=_apiFallbackRead().filter(a=>a.id!==cfg.id);v.push(cfg);
-  if(!_apiFallbackWrite(v))throw new Error('IndexedDB 与备用存储均不可用');
+  const tier=_apiFallbackWrite(v);
+  if(tier==='unavailable')throw new Error('浏览器禁用了本页全部可用存储（IndexedDB / localStorage / sessionStorage 均不可写）');
+  return tier;
 }
+/* 返回 {durability,backend,idb}：durability 如实反映持久化强度，供 UI 区分提示。 */
 async function _persistApiConfig(cfg){
   try{
+    /* 正常 http/https 环境维持原有首选路径：IndexedDB 写入成功后照旧留一份轻量同源镜像，
+       因为部分损坏状态会出现 put/get 成功、随后的 getAll 却返回空列表，
+       导致界面看起来像“保存后消失”。 */
     await dbPut('apiConfigs',cfg);
-    /* 即使 IndexedDB 报成功也保留一份轻量同源镜像：部分损坏状态会出现 put/get 成功、
-       随后的 getAll 却返回空列表，导致界面看起来像“保存后消失”。 */
-    try{_apiFallbackPut(cfg)}catch(e){console.warn('API config mirror write failed',e)}
-    return false;
+    let mirror='unavailable';
+    try{mirror=_apiFallbackPut(cfg)}catch(e){console.warn('API config mirror write failed',e)}
+    return {durability:'persistent',backend:'indexeddb',idb:true,mirror:mirror};
   }catch(e){
-    _apiFallbackPut(cfg);
-    console.warn('IndexedDB API config write failed; using local fallback',e);
-    return true;
+    /* IndexedDB 不可用（file:// 常见）→ localStorage → sessionStorage → 内存 逐级降级 */
+    const tier=_apiFallbackPut(cfg);
+    console.warn('IndexedDB API config write failed; fell back to '+tier+' storage',e);
+    return {durability:tier,backend:tier==='persistent'?'localstorage':(tier==='session'?'sessionstorage':'memory'),idb:false,mirror:tier};
   }
+}
+/* 保存提示语：持久化与「仅会话/仅本页」必须让用户看得出区别 */
+function _apiSaveNotice(res){
+  const d=res&&res.durability;
+  if(d==='session')return 'API已保存（仅当前会话有效，关闭标签页后会丢失）';
+  if(d==='memory')return 'API已保存（仅当前页面有效，刷新后会丢失）';
+  if(d==='persistent'&&res&&!res.idb)return 'API已保存（IndexedDB 不可用，已写入本地存储）';
+  return 'API已保存';
 }
 
 async function loadApiConfigs(){
@@ -610,8 +699,9 @@ async function saveCurrentApi(btn){
   });
   if(existing.id&&typeof _activePrepareCharacterBackgroundChange==='function'&&!(await _activePrepareCharacterBackgroundChange(existing.id,'更新角色 API 配置'))){if(btn){btn.disabled=false;btn.textContent=oldBtnText}return}
   try{
-    const usedFallback=await _persistApiConfig(cfg);
-    const saved=usedFallback?_apiFallbackRead().find(a=>a.id===cfg.id):await dbGet('apiConfigs',cfg.id);
+    const persisted=await _persistApiConfig(cfg);
+    /* 校验读回：走 IndexedDB 时仍以 IndexedDB 为准，降级后从实际落地的那一层读回 */
+    const saved=persisted.idb?await dbGet('apiConfigs',cfg.id):_apiFallbackRead().find(a=>a.id===cfg.id);
     if(!saved||saved.apiKey!==cfg.apiKey)throw new Error('保存后校验失败');
     _pendingApiAvatar=null;
     await renderApiList();
@@ -619,7 +709,7 @@ async function saveCurrentApi(btn){
     try{if(activeFriendId)await loadChatMessages()}catch(e){}
     try{if(typeof _activeSyncAllBackground==='function'&&_activeCompanionOnline){_activeLastContextSync=0;await _activeSyncAllBackground()}}catch(e){console.warn('[Active Messages] API update sync failed',e)}
     document.getElementById('api-editor').style.display='none';
-    toast(usedFallback?'API已保存（已使用本地备用存储）':'API已保存');
+    toast(_apiSaveNotice(persisted));
   }catch(e){
     console.error('API config save failed',e);
     toast('API保存失败：'+String(e&&e.message||e||'浏览器存储不可用').slice(0,80));
@@ -1654,6 +1744,8 @@ window._apiFallbackRead=_apiFallbackRead;
 window._apiFallbackWrite=_apiFallbackWrite;
 window._apiFallbackRemove=_apiFallbackRemove;
 window._apiFallbackPut=_apiFallbackPut;
+window._ibStorageCaps=_ibStorageCaps;
+window._apiSaveNotice=_apiSaveNotice;
 window._persistApiConfig=_persistApiConfig;
 window.loadApiConfigs=loadApiConfigs;
 window.renderApiList=renderApiList;
@@ -1815,6 +1907,8 @@ NS.expose('social', {
   _apiFallbackWrite: _apiFallbackWrite,
   _apiFallbackRemove: _apiFallbackRemove,
   _apiFallbackPut: _apiFallbackPut,
+  _ibStorageCaps: _ibStorageCaps,
+  _apiSaveNotice: _apiSaveNotice,
   _persistApiConfig: _persistApiConfig,
   loadApiConfigs: loadApiConfigs,
   renderApiList: renderApiList,
