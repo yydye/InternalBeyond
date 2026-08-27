@@ -173,6 +173,10 @@
 
 **C 边界与限制**：仅 `provider=mimo`+`voiceType=design` 进设计适配器；`voiceType` 缺失仍 builtin（旧角色不变）；Edge/OpenAI/MiMo Built-in/MiMo VoiceClone/Reference Audio/fallback/播放队列/export·import/futureField 全部不受影响。真实上游 API **未调用**（无 MiMo Key；全部为本地 mock，mock 已明确标记）。**未实现**：其他 Provider Voice Design、云端 Voice Library/Marketplace、自动同步、伪 2 播放链、企业级安全。官方 `optimize_text_preview`（LLM 润色/自动生成播报文本）未接入——本阶段总提供目标文本，不设该参数；留待后续按需单独加。
 
+## 2026-08-27 · 朋友圈讨论串：回复嵌套缩进扁平化
+
+用户反馈「讨论串里 AI 回复的位置奇怪/没对齐」——逐像素与真实 Chrome DOM 复核后确认：弹窗定位、头像、时间/回复脚注、行序均正确，异常点是**回复的越级嵌套缩进**（`.net-cmt.depth-1/2/3` 的 `margin-left:34/52/70px`，与首页卡片上的评论预览"全平"不一致，且深层级把文本列挤窄）。修复：`assets/css/social.css` 将 depth-1/2/3 统一 `margin-left:0`（桌面与移动端媒体查询同步）——所有评论含多级回复统一左对齐，回复关系由行内「回复 XX：」前缀表达，与卡片预览/微信动量式讨论串惯例一致；DOM 层级与排序逻辑（父行后接其子回复的树序）保持不变。`test_socialnet_smoke.js`、`test-all.js --quick` 全绿（结构测试首跑因编辑工具剥除 BOM 失败 1 项，已恢复）。
+
 ## 2026-08-27 · TTS 第三阶段最终验收审计（A/B1/B2/C 封板检查）
 
 审计结论：A/B1/B2/C 已贯通，可封板；确认 3 个 UI 状态机脏字段缺陷（真实 Chrome headless 复现）并最小修复：

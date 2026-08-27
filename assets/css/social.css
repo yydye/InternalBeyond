@@ -168,9 +168,11 @@
 .net-thread-tree-wrap{flex:1 1 auto;overflow-y:auto;min-height:120px}
 .net-thread-tree{display:flex;flex-direction:column;gap:10px;padding:var(--space-2) 0}
 .net-cmt{display:flex;gap:8px;font-size:13px;line-height:1.6}
-.net-cmt.depth-1{margin-left:34px}
-.net-cmt.depth-2{margin-left:52px}
-.net-cmt.depth-3{margin-left:70px}
+/* 讨论串评论扁平化：所有评论（含多级回复）统一左对齐，回复关系由行内「回复 XX：」前缀表达，
+   与朋友圈卡片上的评论预览一致；去掉越嵌越深（34/52/70px）导致的压迫感与文本列过窄。 */
+.net-cmt.depth-1{margin-left:0}
+.net-cmt.depth-2{margin-left:0}
+.net-cmt.depth-3{margin-left:0}
 .net-cmt .net-avatar{width:28px;height:28px;font-size:11px;cursor:default}
 .net-cmt-main{flex:1;min-width:0;background:var(--surface-card);border:1px solid var(--border-soft);border-radius:var(--radius-control);padding:6px 10px}
 .net-cmt-name{font-weight:700;color:var(--content-primary);font-size:12.5px;margin-right:4px}
@@ -223,7 +225,7 @@
   .net-profile-name{font-size:18px}
   .net-profile-follow{margin-left:0;margin-top:8px}
   .net-friends-grid{grid-template-columns:repeat(auto-fill,minmax(160px,1fr))}
-  .net-cmt.depth-1{margin-left:16px}
-  .net-cmt.depth-2{margin-left:30px}
-  .net-cmt.depth-3{margin-left:44px}
+  .net-cmt.depth-1{margin-left:0}
+  .net-cmt.depth-2{margin-left:0}
+  .net-cmt.depth-3{margin-left:0}
 }
