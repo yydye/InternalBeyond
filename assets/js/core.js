@@ -276,9 +276,25 @@ function navTo(page){
   if(page==='active'){loadActiveMessagePage()}
   if(page==='diary'){loadDiaryPage()}
   if(page==='moments'){loadMomentsPage()}
+  if(page==='moments-settings'){_momentsRenderSettings()}
   if(page==='chat'){loadFriendsList();renderChatCalendar();closeChatPanel();document.getElementById('fab-dock').style.display='none'}
   else{document.getElementById('fab-dock').style.display='flex'}
+  /* Hash 同步：与上面唯一的 navTo 路由协同（同 hash 不触发事件，无循环） */
+  if(('#'+page)!==location.hash){try{location.hash=page}catch(e){}}
 }
+/* Hash ↔ 页面同步：浏览器前进/后退与刷新恢复；仅识别存在 page-* 容器的页名，SVG/邮件等未知锚点忽略 */
+window.addEventListener('hashchange',function(){
+  var t=String(location.hash||'').replace(/^#/,'');
+  if(t&&t!==currentPage&&document.getElementById('page-'+t))navTo(t);
+});
+(function(){
+  function _ibHashRestore(){
+    var t=String(location.hash||'').replace(/^#/,'');
+    if(t&&currentPage==='home'&&document.getElementById('page-'+t)){try{navTo(t)}catch(e){}}
+  }
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',_ibHashRestore);
+  else setTimeout(_ibHashRestore,0);
+})();
 (function initNavigationAccessibility(){
   const home=document.getElementById('nav-home');
   if(home){

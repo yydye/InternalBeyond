@@ -957,6 +957,7 @@
       <div class="net-site-actions">
         <input type="search" id="net-search" class="net-search" placeholder="搜索动态" aria-label="搜索动态" oninput="_netSearch(this.value)">
         <button type="button" class="btn net-tool" onclick="_netRefresh()">刷新</button>
+        <button type="button" class="btn net-tool" onclick="navTo('moments-settings')">朋友圈设置</button>
         <button type="button" class="btn net-tool" onclick="navTo('home')">关闭</button>
       </div>
     </div>
@@ -1076,9 +1077,22 @@
         </div>
       </div>
     </div>
+  </div>
 
-    <details class="glass-card active-card active-wide net-settings" id="net-settings">
-      <summary class="net-settings-summary">AI 朋友圈设置<span class="net-settings-hint">自主发布 · AI 评论 · AI 点赞</span></summary>
+  <div class="page" id="page-moments-settings">
+    <div class="net-sitebar">
+      <div class="net-brand">InternetBeyond</div>
+      <div class="net-site-actions">
+        <button type="button" class="btn net-tool" onclick="navTo('moments')">← 返回朋友圈</button>
+      </div>
+    </div>
+    <div class="module-intro">
+      <div class="module-intro-top"><h2>AI 朋友圈设置</h2></div>
+      <div class="module-intro-rule"></div>
+      <div class="module-intro-desc">复用现有调度与 AI 调用；角色可自主发布、可选择不发布，相互评论有冷却与去重。</div>
+    </div>
+
+    <section class="glass-card active-card active-wide net-settings" id="net-settings">
       <div class="active-card-head">
         <div>
           <div class="active-card-title">AI 朋友圈设置</div>
@@ -1144,7 +1158,7 @@
           <span class="active-form-hint">查看：控制台 <code>_socialObsStats()</code>；导出：<button type="button" class="btn" onclick="_socialObsDownload()">导出观测数据 JSON</button></span>
         </div>
       </div>
-    </details>
+    </section>
   </div>
 
   <div class="page" id="page-api">
