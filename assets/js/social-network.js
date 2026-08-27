@@ -186,8 +186,9 @@ async function _netCardFor(m){
   likeBtn.type='button';likeBtn.title='点赞';
   likeBtn.addEventListener('click',async function(){
     const r=await likeMoment(m.id);
-    if(r.ok){if(_netView==='feed'||_netPtab==='posts')_netRenderFeed();if(_netView==='profile')_netRenderProfile()}
-    else if(r.error)toast(r.error);
+    /* 成功路径由服务层 _momentsPatchLikeUI 局部更新本卡片；此处不再全量重渲染 Feed/Profile，
+       避免重建整个列表导致"显示更多"展开状态丢失与滚动位置瞬移 */
+    if(!r.ok&&r.error)toast(r.error);
   });
   const cmtBtn=_netEl('button','net-action','💬 '+(m.comments?m.comments.length:0));
   cmtBtn.type='button';cmtBtn.title='评论';

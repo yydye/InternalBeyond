@@ -298,6 +298,30 @@ async function deleteMoment(id){
     return{ok:true}
   }catch(e){return{ok:false,error:String(e&&e.message||e).slice(0,200)}}
 }
+/* ── 点赞局部 UI 同步（增量 patch，替代"点赞成功 → loadMomentsPage 全量刷新"） ──
+   只更新受影响卡片上的点赞按钮（旧版 mom-card / 社交网络 net-card 双契约），
+   不重建列表：保住 _momentsFeedShown 展开状态、DOM 高度与滚动位置；
+   卡片不在当前文档（未渲染/被分页收起/处于其他视图）时静默跳过。 */
+function _momentsPatchLikeUI(id,likes){
+  try{
+    const mid=String(id||'');
+    if(!mid||typeof document==='undefined')return false;
+    if(!/^[\w\-]+$/.test(mid))return false;/* data-id 仅拼安全字符，防选择器注入 */
+    let card=null;
+    try{card=document.querySelector('.mom-card[data-id="'+mid+'"]')}catch(e){card=null}
+    if(!card){try{card=document.querySelector('.net-card[data-id="'+mid+'"]')}catch(e2){card=null}}
+    if(!card)return false;
+    const arr=Array.isArray(likes)?likes:[];
+    let uid='user';try{uid=_activeUserId()}catch(e){}
+    const liked=arr.indexOf(uid)>=0;
+    let btn=null;
+    try{btn=card.classList.contains('mom-card')?card.querySelector('.mom-actions .mom-action-btn'):null}catch(e3){btn=null}
+    if(btn&&!btn.classList.contains('mom-del')){btn.className='mom-action-btn'+(liked?' liked':'');btn.textContent=(liked?'♥ ':'♡ ')+(arr.length?arr.length:'')}
+    try{btn=card.classList.contains('net-card')?card.querySelector('.net-actions .net-action'):null}catch(e4){btn=null}
+    if(btn){btn.className='net-action'+(liked?' is-liked':'');btn.textContent=(liked?'♥ ':'♡ ')+arr.length}
+    return true
+  }catch(e){return false}
+}
 async function likeMoment(id,likerId){
   try{
     const m=await getMoment(id);if(!m)return{ok:false,error:'动态不存在'};
@@ -309,7 +333,8 @@ async function likeMoment(id,likerId){
       else return{ok:true,liked:true,count:m.likes.length}
     }else m.likes.push(who);
     await dbPut(MOMENT_STORE,m);
-    try{if(currentPage==='moments')loadMomentsPage()}catch(e){}
+    /* 局部 patch（勿改回 loadMomentsPage：全量刷新会重置 Feed 分页展开状态并造成滚动瞬移） */
+    try{_momentsPatchLikeUI(m.id,m.likes)}catch(e){}
     return{ok:true,liked:i<0,count:m.likes.length}
   }catch(e){return{ok:false,error:String(e&&e.message||e).slice(0,200)}}
 }
@@ -1597,6 +1622,7 @@ window.getRoleMoments=getRoleMoments;
 window.getMoment=getMoment;
 window.deleteMoment=deleteMoment;
 window.likeMoment=likeMoment;
+window._momentsPatchLikeUI=_momentsPatchLikeUI;
 window.addMomentComment=addMomentComment;
 window.deleteMomentComment=deleteMomentComment;
 window._momentsContext=_momentsContext;
@@ -1679,6 +1705,7 @@ NS.expose('moments',{
   getMoment:getMoment,
   deleteMoment:deleteMoment,
   likeMoment:likeMoment,
+  _momentsPatchLikeUI:_momentsPatchLikeUI,
   addMomentComment:addMomentComment,
   deleteMomentComment:deleteMomentComment,
   _momentsContext:_momentsContext,
