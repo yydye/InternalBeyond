@@ -20,7 +20,8 @@ const GROUPS = [
     note: '语法 / 结构 / 编码（无浏览器）',
     tests: [
       ['scripts_check_html.js', 'InternalBeyond.html'],
-      ['test_frontend_structure.js']
+      ['test_frontend_structure.js'],
+      ['test_cache_audit.js']
     ]
   },
   {

@@ -2343,37 +2343,104 @@ function _cacheStableSlice(list,keepCount){
 /* 1小时长效缓存（Anthropic extended-cache-ttl beta）：按配置生成 cache_control 与请求头 */
 function _ccObj(cfg){return (cfg&&cfg.cacheTtl1h&&cfg.promptCache!==false)?{type:'ephemeral',ttl:'1h'}:{type:'ephemeral'}}
 function _ccBeta(hdrs,cfg){if(hdrs&&cfg&&cfg.cacheTtl1h&&cfg.promptCache!==false)hdrs['anthropic-beta']='extended-cache-ttl-2025-04-11';return hdrs}
-/* ── OpenAI 前缀缓存诊断（console-only，零行为改变）──
-   背景：OpenAI 自动缓存要求"请求开头与已缓存请求逐字一致且 ≥1024 token"才产生命中。
-   此探针在每次 OpenAI 格式请求发出前，将本轮消息序列与上一轮快照对比，在控制台标注首个分歧位置并分类：
-   · 分歧位于上一轮末条消息的动态尾部 → 结构正常，system+历史前缀可被复用；
-   · 分歧早于该位置 → 前缀被逐轮变化的内容污染（打印分歧点上下文以定位来源）。
-   仅在提示缓存开关开启时运行；不修改任何请求内容，随时可整段删除。 */
-var _ibOaiCachePrev={};
-function _ibOaiCacheDiag(cfg,msgs){
+/* ── 统一前缀缓存审计（[IB Cache Audit]，console-only，零行为改变）──
+   背景：provider 的自动前缀缓存要求"请求开头与已缓存请求逐字一致"才产生命中。
+   此探针在每次请求发出前，比较"最终发送 payload"（openai / anthropic / gemini 三形态）与上一轮快照：
+   · 计算稳定前缀长度与首个分歧字符位置；
+   · 分别判定 System / History / Tools / Request structure 是否逐字一致；
+   · 仅输出【截断 + 脱敏】的变更片段，绝不将完整 prompt 打到生产日志（避免泄露角色 Memory / 用户对话）。
+   仅在提示缓存开关 (cfg.promptCache!==false) 开启时运行；不修改任何请求内容，随时可整段删除。 */
+var _ibCacheAuditPrev={};
+/* 稳定段的规范化文本：供逐段 SAME/CHANGED 判定 */
+function _cacheSegText(c){
+  if(typeof c==='string')return c;
+  if(Array.isArray(c))return c.map(function(p){if(p&&p.type==='image')return'[img]';if(p&&p.type==='image_url')return'[img]';if(p&&p.type==='_image')return'[img]';if(p&&p.type==='_audio')return'[audio]';if(p&&p.type==='input_audio')return'[audio]';return(p&&p.text)||''}).join('');
+  return String(c||'');
+}
+function _cacheSeg(role,c){return '\u00b6'+(role||'')+'\u00a7'+_cacheSegText(c)}
+/* 粗 token 估算：CJK≈1 token/字，其余≈0.33；仅用于提示量级，不精确计费 */
+function _cacheTok(s){var t=0;for(var i=0;i<s.length;i++){var c=s.charCodeAt(i);t+=(c>=0x4e00&&c<=0x9fff)?1:0.33}return Math.round(t)}
+/* 截断 + 脱敏：只展示变更片段附近，隐藏完整 Memory / 用户对话 */
+function _cacheRedact(s){return String(s).replace(/[\r\n]+/g,'⏎').replace(/[ \t]{2,}/g,' ')}
+function _ibCacheAudit(cfg,body,fmt){
   try{
-    if(!msgs||!msgs.length)return;
-    var parts=[],lastStart=0;
-    for(var i=0;i<msgs.length;i++){
-      if(i===msgs.length-1)lastStart=parts.join('').length;
-      var c=msgs[i]&&msgs[i].content;
-      parts.push('\u00b6'+(msgs[i].role||'')+'\u00a7'+(typeof c==='string'?c:JSON.stringify(c)));
-    }
-    var full=parts.join('');
-    var key=String((cfg&&cfg.id)||'');
-    var prev=_ibOaiCachePrev[key];
-    _ibOaiCachePrev[key]={full:full,lastStart:lastStart};
-    if(!prev){console.info('[IB缓存诊断] 已记录本对话的前缀基线（'+full.length+' 字符）。从下一轮请求开始输出前缀稳定性对比。');return}
-    var n=Math.min(prev.full.length,full.length),d=0;
-    while(d<n&&prev.full.charCodeAt(d)===full.charCodeAt(d))d++;
-    if(d>=prev.lastStart){
-      console.info('[IB缓存诊断] ✓ 前缀稳定：与上一轮的分歧仅出现在上一轮末条消息的动态注入区（第 '+d+' / '+prev.full.length+' 字符）。system+历史部分逐字一致，理论上可被 OpenAI 前缀缓存复用（需该前缀 ≥1024 token）。若命中仍为 0，请对照相邻的 usage 原文日志：若 usage 中没有 prompt_tokens_details / input_tokens_details 字段，说明该模型或端点未回传命中数据（仪表盘只能显示 0，实际折扣以账单为准）；若字段存在且 cached_tokens 恒为 0，则为服务端未对该请求启用缓存。另：OpenAI 推理类模型（GPT-5 系等）经 chat/completions 调用时，官方文档说明其缓存利用率显著低于 Responses 接口（隐藏思考过程不跨轮保留），命中偶发或持续为 0 属服务端已知行为。');
+    if(!body||!cfg)return;
+    fmt=fmt==='gemini'?'gemini':(fmt==='anthropic'?'anthropic':'openai');
+    var model='',system='',hist='',tools='',struct='';
+    if(fmt==='anthropic'){
+      model=body.model||'';
+      var sa=body.system;
+      system=(Array.isArray(sa)?((sa[0]&&sa[0].text)||''):(typeof sa==='string'?sa:''));
+      hist=(body.messages||[]).map(function(m){return _cacheSeg(m&&m.role,m&&m.content)}).join('\n');
+      tools=(body.tools?JSON.stringify(body.tools):'');
+      struct=JSON.stringify({mtxt:body.max_tokens,t:body.temperature,use:body.tool_choice?1:0,qz:body.top_k?1:0});
+    }else if(fmt==='gemini'){
+      model=body.model||'';
+      var sg=body.system_instruction;
+      system=(sg&&sg.parts&&sg.parts[0]&&sg.parts[0].text)||'';
+      hist=(body.contents||[]).map(function(m){return _cacheSeg(m&&m.role,m&&m.parts)}).join('\n');
+      tools='';/* Gemini 工具经 tools 字段，本调用链不注入，恒为空（不参与判定） */
+      struct=JSON.stringify({mtxt:body.generationConfig&&body.generationConfig.maxOutputTokens,t:body.generationConfig&&body.generationConfig.temperature,qz:body.generationConfig&&body.generationConfig.responseMimeType});
     }else{
-      var a=prev.full.slice(Math.max(0,d-90),d+150).replace(/\u00b6/g,'\n¶').replace(/\u00a7/g,'§');
-      var b=full.slice(Math.max(0,d-90),d+150).replace(/\u00b6/g,'\n¶').replace(/\u00a7/g,'§');
-      console.warn('[IB缓存诊断] ✗ 前缀在第 '+d+' 字符处提前分歧（上一轮末条消息本应从第 '+prev.lastStart+' 字符开始）——system 或历史消息存在逐轮变化，这会使 OpenAI 前缀缓存无法命中。\n【上一轮】…'+a+'…\n【本　轮】…'+b+'…\n提示：若上下文显示本轮历史从更靠后的消息开始，属于阶梯窗口的周期性前移（每隔若干轮的预期重建，仅一次性失效）；若是 system 或某条历史消息的文字发生了变化，则为需要修复的前缀污染点，请将此日志反馈给开发者。');
+      model=body.model||'';
+      var msgs=body.messages||[],seg=[];
+      for(var i=0;i<msgs.length;i++){
+        if(i===0&&msgs[i]&&msgs[i].role==='system'){system=_cacheSegText(msgs[i].content);}
+        else{seg.push(_cacheSeg(msgs[i]&&msgs[i].role,msgs[i]&&msgs[i].content));}
+      }
+      hist=seg.join('\n');
+      tools=(body.tools?JSON.stringify(body.tools):'');
+      struct=JSON.stringify({mtxt:body.max_tokens!=null?body.max_tokens:(body.max_completion_tokens!=null?body.max_completion_tokens:null),t:body.temperature!=null?body.temperature:null,rf:body.response_format?JSON.stringify(body.response_format):null,pc:(typeof body.prompt_cache_key==='string'?body.prompt_cache_key:null),so:body.stream_options?1:0,ta:body.tool_choice?1:0});
     }
+    /* 真实发送字节（与 provider 视角一致的 token 前缀用于计算稳定前缀/首分歧） */
+    var bodyStr=JSON.stringify(body);
+    var key=String((cfg&&cfg.id)||'')+'::'+fmt;/* 按 provider 形态隔离快照，避免 openai/anthropic/gemini 串比 */
+    var prev=_ibCacheAuditPrev[key];
+    _ibCacheAuditPrev[key]={bs:bodyStr,model:model,system:system,hist:hist,tools:tools,struct:struct};
+    if(!prev){console.info('[IB Cache Audit] Model: '+model+' | Prompt text: '+_cacheTok(system+hist)+' chars-est | 已记录本对话请求基线。从下一轮请求开始输出前缀稳定性对比。');return}
+    /* 各段 SAME/CHANGED：仅 History 允许"末尾追加"不视为破坏（新 user 消息追加在数组尾）；
+       System / Tools / Request structure 任何变化都视为破坏（system 位于 token 流前端、tools/结构决定请求形状）。 */
+    function eff(p,c){if(p===c)return false;if(typeof p==='string'&&typeof c==='string'&&c.indexOf(p)===0)return false;return true}
+    var hisC=eff(prev.hist,hist);
+    var sysC=(system!==prev.system);
+    var toolC=(tools!==prev.tools);
+    var structC=(struct!==prev.struct);
+    /* 真实请求字节的公共前缀长度 = 稳定前缀；它是首个分歧位置 */
+    var n=Math.min(prev.bs.length,bodyStr.length),d=0;
+    while(d<n&&prev.bs.charCodeAt(d)===bodyStr.charCodeAt(d))d++;
+    var stable=d;/* 稳定前缀（真实请求字节） */
+    /* 无任何段被破坏 → 前缀稳定（纯追加或完全一致） */
+    if(!sysC&&!hisC&&!toolC&&!structC){
+      console.info('[IB Cache Audit] Model: '+model
+        +' | Prompt chars: '+_cacheTok(system+hist)+' (~'+_cacheTok(system+hist)+' tok)'
+        +' | Stable prefix: '+stable+' request-bytes (~'+_cacheTok(bodyStr.slice(0,stable))+' tok est)'
+        +' | First difference: (纯追加/无，无)'
+        +' | System: SAME | History: SAME | Tools: SAME | Request structure: SAME'
+        +' —— 前缀逐字稳定，本轮仅为消息尾部追加或完全一致。若命中仍为 0，判定见"C"「provider 未启用/未回传缓存字段」。');
+      return;
+    }
+    /* 有段被破坏 → 定位首个分歧所在段并输出截断+脱敏片段 */
+    var sec=sysC?'SYS':(hisC?'HIS':(toolC?'TOOLS':'STRUCT'));
+    var pd=(sec==='SYS'?prev.system:(sec==='HIS'?prev.hist:(sec==='TOOLS'?prev.tools:prev.struct)));
+    var ct=(sec==='SYS'?system:(sec==='HIS'?hist:(sec==='TOOLS'?tools:struct)));
+    var k=0,mn=Math.min(pd.length,ct.length);while(k<mn&&pd.charCodeAt(k)===ct.charCodeAt(k))k++;
+    var a=_cacheRedact(pd.slice(Math.max(0,k-140),k+180));
+    var b=_cacheRedact(ct.slice(Math.max(0,k-140),k+180));
+    console.warn('[IB Cache Audit] Model: '+model
+      +' | Prompt chars: '+_cacheTok(system+hist)+' (~'+_cacheTok(system+hist)+' tok)'
+      +' | Stable prefix: '+stable+' request-bytes (~'+_cacheTok(bodyStr.slice(0,stable))+' tok est)'
+      +' | First difference: request-byte '+stable
+      +' | System: '+(sysC?'CHANGED':'SAME')
+      +' | History: '+(hisC?'CHANGED':'SAME')
+      +' | Tools: '+(toolC?'CHANGED':'SAME')
+      +' | Request structure: '+(structC?'CHANGED':'SAME')
+      +' | 分歧段: '+sec);
+    console.warn('[IB Cache Audit] Changed section (截断+脱敏) 定位首次分歧:\n【上一轮】…'+a+'…\n【本　轮】…'+b+'…');
   }catch(e){}
+}
+/* 向后兼容别名：旧签名 (cfg, messages) 仍可用，等价于仅 messages 的 OpenAI 审计 */
+function _ibOaiCacheDiag(cfg,msgs){
+  try{_ibCacheAudit(cfg,{model:(cfg&&cfg.model)||'',messages:msgs||[]},'openai')}catch(e){}
 }
 /* ── Anthropic 消息级缓存断点注入 ──
    在 chatMsgs 数组的倒数第二条消息（新 user 消息之前的最后一条历史消息）上
@@ -2928,6 +2995,7 @@ async function _callApiChatStreamOnce(cfg,messages,opts){
       if(opts._fcCtx&&opts._fcCtx.tools){b.tools=opts._fcCtx.tools.anthropic;IBFC.newAcc(opts._fcCtx)}
       try{if(typeof IBWS!=='undefined')IBWS.attach(b,'anthropic',cfg,opts)}catch(e){}
       if(sysMsg){if(cfg.promptCache!==false&&cfg.provider==='anthropic'){b.system=[{type:'text',text:sysMsg.content,cache_control:_ccObj(cfg)}]}else{b.system=sysMsg.content}}if(cfg.temperature!=null)b.temperature=cfg.temperature;
+      if(cfg.promptCache!==false){try{_ibCacheAudit(cfg,b,'anthropic')}catch(e){}}/* 前缀缓存审计（console-only） */
       body=JSON.stringify(b);
     }else if(fmt==='gemini'){
       url=cfg.endpoint.replace('{model}',cfg.model).replace('generateContent','streamGenerateContent')+'?key='+cfg.apiKey+'&alt=sse';
@@ -2943,6 +3011,7 @@ async function _callApiChatStreamOnce(cfg,messages,opts){
       gB.generationConfig={maxOutputTokens:maxTok};/* 之前完全没设，Gemini 按默认值截断输出 */
       if(cfg.temperature!=null)gB.generationConfig.temperature=cfg.temperature;
       try{if(typeof IBWS!=='undefined')IBWS.attach(gB,'gemini',cfg,opts)}catch(e){}
+      if(cfg.promptCache!==false){try{_ibCacheAudit(cfg,gB,'gemini')}catch(e){}}/* 前缀缓存审计（console-only） */
       body=JSON.stringify(gB);
     }else{
       url=cfg.endpoint;
@@ -2954,19 +3023,23 @@ async function _callApiChatStreamOnce(cfg,messages,opts){
       ob[opts.tokenParam||'max_tokens']=maxTok;/* 新款 OpenAI 系模型由包装器切换为 max_completion_tokens */
       if(cfg.promptCache!==false)ob.prompt_cache_key='ib_'+String(cfg.id||'');/* OpenAI 缓存本自动生效；此 key 只用于提升路由命中率 */
       if(cfg.promptCache!==false)ob.stream_options={include_usage:true};/* 用量回传：与上方附加参数同受"提示缓存"开关控制 */
-      if(cfg.promptCache!==false){try{_ibOaiCacheDiag(cfg,ob.messages)}catch(e){}}/* 前缀缓存诊断（console-only） */
+      if(cfg.promptCache!==false){try{_ibCacheAudit(cfg,ob,'openai')}catch(e){}}/* 前缀缓存审计（console-only） */
       if(cfg.temperature!=null)ob.temperature=cfg.temperature;
       /* ── 临时调试（定位 OpenRouter 400；测试完删除本段）──
          console 执行：localStorage.setItem('ib_debug_omit','prompt_cache_key,stream_options') 可逐项剔除；
-         支持字段名：prompt_cache_key / stream_options / temperature / tools / web_search_options / max_tokens 等 */
+         支持字段名：prompt_cache_key / stream_options / temperature / tools / web_search_options / max_tokens 等；
+         完整请求体打印需额外显式打开：localStorage.setItem('ib_debug_body','1')（默认不打印，避免把角色 Memory / 用户对话打进生产日志）。 */
       try{
         var _dbgOmit=(typeof localStorage!=='undefined'?localStorage.getItem('ib_debug_omit'):'')||'';
+        var _dbgBodyShow=!!(typeof localStorage!=='undefined'&&localStorage.getItem('ib_debug_body'));
         var _dbgKeys=_dbgOmit.split(/[,，\s]+/).map(function(s){return s.trim()}).filter(Boolean);
         if(_dbgKeys.length){_dbgKeys.forEach(function(k){delete ob[k]});console.warn('[IB调试] 已临时移除请求体字段:',_dbgKeys.join(', '))}
-        var _dbgBody=JSON.parse(JSON.stringify(ob));
-        (function _dbgRedact(o){if(!o||typeof o!=='object')return;for(var k in o){if(/key|token|secret|authorization/i.test(k)&&typeof o[k]==='string'&&o[k]){o[k]=String(o[k]).slice(0,4)+'***'+String(o[k]).slice(-4)}else _dbgRedact(o[k])}})(_dbgBody);
-        console.log('[IB调试] 最终请求体:',JSON.stringify(_dbgBody,null,2));
-        console.log('[IB调试] 请求URL:',url,'| Authorization:',cfg.apiKey?('Bearer '+String(cfg.apiKey).slice(0,6)+'***'):'(无)');
+        if(_dbgBodyShow){
+          var _dbgBody=JSON.parse(JSON.stringify(ob));
+          (function _dbgRedact(o){if(!o||typeof o!=='object')return;for(var k in o){if(/key|token|secret|authorization/i.test(k)&&typeof o[k]==='string'&&o[k]){o[k]=String(o[k]).slice(0,4)+'***'+String(o[k]).slice(-4)}else _dbgRedact(o[k])}})(_dbgBody);
+          console.log('[IB调试] 最终请求体:',JSON.stringify(_dbgBody,null,2));
+          console.log('[IB调试] 请求URL:',url,'| Authorization:',cfg.apiKey?('Bearer '+String(cfg.apiKey).slice(0,6)+'***'):'(无)');
+        }
       }catch(e){}
       body=JSON.stringify(ob);
     }
@@ -3154,6 +3227,7 @@ async function _callApiChatOnce(cfg,messages,opts){
     try{if(typeof IBWS!=='undefined')IBWS.attach(body,'anthropic',cfg,opts)}catch(e){}
     if(sysMsg){if(cfg.promptCache!==false&&cfg.provider==='anthropic'){body.system=[{type:'text',text:sysMsg.content,cache_control:_ccObj(cfg)}]}else{body.system=sysMsg.content}}
     if(cfg.temperature!=null)body.temperature=cfg.temperature;
+    if(cfg.promptCache!==false){try{_ibCacheAudit(cfg,body,'anthropic')}catch(e){}}/* 前缀缓存审计（console-only） */
     const hdrs={'Content-Type':'application/json','x-api-key':cfg.apiKey,
       'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'};
     _ccBeta(hdrs,cfg);
@@ -3206,6 +3280,7 @@ async function _callApiChatOnce(cfg,messages,opts){
     if(opts.jsonMode)gBody.generationConfig.responseMimeType='application/json';/* AI 规划：结构化 JSON 输出 */
     if(cfg.temperature!=null)gBody.generationConfig.temperature=cfg.temperature;
     try{if(typeof IBWS!=='undefined')IBWS.attach(gBody,'gemini',cfg,opts)}catch(e){}
+    if(cfg.promptCache!==false){try{_ibCacheAudit(cfg,gBody,'gemini')}catch(e){}}/* 前缀缓存审计（console-only） */
     /* Gemini: thinking is handled by system prompt <thinking> tags, not native API */
     const ac=new AbortController();const tm=setTimeout(()=>ac.abort(),timeoutMs);
     try{
@@ -3236,7 +3311,7 @@ async function _callApiChatOnce(cfg,messages,opts){
   try{if(typeof IBWS!=='undefined')IBWS.attach(oBody,'openai',cfg,opts)}catch(e){}
   oBody[opts.tokenParam||'max_tokens']=maxTok;/* 新款 OpenAI 系模型由包装器切换为 max_completion_tokens */
   if(cfg.promptCache!==false)oBody.prompt_cache_key='ib_'+String(cfg.id||'');/* OpenAI 缓存本自动生效；此 key 只用于提升路由命中率 */
-  if(cfg.promptCache!==false){try{_ibOaiCacheDiag(cfg,oBody.messages)}catch(e){}}/* 前缀缓存诊断（console-only） */
+  if(cfg.promptCache!==false){try{_ibCacheAudit(cfg,oBody,'openai')}catch(e){}}/* 前缀缓存审计（console-only） */
   if(cfg.temperature!=null)oBody.temperature=cfg.temperature;
   const _hdrN=Object.assign({'Content-Type':'application/json'},cfg.apiKey?{Authorization:'Bearer '+cfg.apiKey}:{});
   const res=await _ibApiPost(cfg.endpoint,_hdrN,JSON.stringify(oBody),{signal:ac.signal});
@@ -3702,6 +3777,7 @@ window._makeAnthropicWebThinkMux=_makeAnthropicWebThinkMux;
 window._cacheStableSlice=_cacheStableSlice;
 window._ccObj=_ccObj;
 window._ccBeta=_ccBeta;
+window._ibCacheAudit=_ibCacheAudit;
 window._ibOaiCacheDiag=_ibOaiCacheDiag;
 window._injectAnthropicMsgCache=_injectAnthropicMsgCache;
 window._adaptContentForApi=_adaptContentForApi;
@@ -3790,7 +3866,7 @@ ibChatLive('_pendingFiles', function(){return _pendingFiles}, function(v){_pendi
 ibChatLive('_attachCloseHandler', function(){return _attachCloseHandler}, function(v){_attachCloseHandler=v});
 ibChatLive('_WS_OPEN_RE', function(){return _WS_OPEN_RE}, function(v){_WS_OPEN_RE=v});
 ibChatLive('_lastApiReasoning', function(){return _lastApiReasoning}, function(v){_lastApiReasoning=v});
-ibChatLive('_ibOaiCachePrev', function(){return _ibOaiCachePrev}, function(v){_ibOaiCachePrev=v});
+ibChatLive('_ibCacheAuditPrev', function(){return _ibCacheAuditPrev}, function(v){_ibCacheAuditPrev=v});
 ibChatLive('_streamAbortController', function(){return _streamAbortController}, function(v){_streamAbortController=v});
 ibChatLive('_lastApiFinish', function(){return _lastApiFinish}, function(v){_lastApiFinish=v});
 ibChatLive('_chatCallStates', function(){return _chatCallStates}, function(v){_chatCallStates=v});
@@ -3892,6 +3968,7 @@ NS.expose('chat', {
   _cacheStableSlice: _cacheStableSlice,
   _ccObj: _ccObj,
   _ccBeta: _ccBeta,
+  _ibCacheAudit: _ibCacheAudit,
   _ibOaiCacheDiag: _ibOaiCacheDiag,
   _injectAnthropicMsgCache: _injectAnthropicMsgCache,
   _adaptContentForApi: _adaptContentForApi,
@@ -3979,7 +4056,7 @@ NS.expose('chat', {
   _attachCloseHandler: _attachCloseHandler,
   _WS_OPEN_RE: _WS_OPEN_RE,
   _lastApiReasoning: _lastApiReasoning,
-  _ibOaiCachePrev: _ibOaiCachePrev,
+  _ibCacheAuditPrev: _ibCacheAuditPrev,
   _streamAbortController: _streamAbortController,
   _lastApiFinish: _lastApiFinish,
   _chatCallStates: _chatCallStates,
