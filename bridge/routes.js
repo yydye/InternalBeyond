@@ -1,4 +1,4 @@
-﻿/* IB Bridge · HTTP 路由层：JSON 响应 / CORS / 限流 / 请求体解析 / 配置脱敏 /
+/* IB Bridge · HTTP 路由层：JSON 响应 / CORS / 限流 / 请求体解析 / 配置脱敏 /
    诊断快照 / REST 分发器。从 ib-bridge-service.js 提取为工厂：全部依赖经 ctx 注入。
    whispers / geoLatest / letters 在路由内存在重新赋值，通过 getter/setter 注入
    保持与 composition root 的绑定一致；其余状态仅原地变更，按引用注入。
@@ -180,6 +180,81 @@ function createRoutes(ctx) {
     };
   }
 
+  /* ── 通用 LLM 代理 ──
+     file://(Origin: null) 页面无法跨域直连的 OpenAI-compatible API，交给本地
+     Bridge 在服务端发起，绕开浏览器 CORS。浏览器把「上游 URL / 头 / 包体」以
+     JSON 交给本地 Bridge；Bridge 只负责转发并镜像状态码 / content-type / 包体，
+     不解析、不改写厂商协议，因此 Provider 的 Base URL / API Key / Model /
+     streaming / headers / endpoint 全部原样生效。
+     · 上游敏感头（Authorization / x-api-key）随请求体交给 Bridge，仅经本机
+       localhost，由 Bridge 转发到真实端点；不落盘、不写日志。
+     · Bridge 自身鉴权由调用方以独立的 X-IB-Token 头提供，绝不与上游 API Key
+       混用（避免把鉴权 token 当 API Key 转发，或反之）。 */
+  async function proxyLlm(req, res) {
+    let payload;
+    try { payload = await readBody(req); }
+    catch (e) { sendJsonRes(res, 400, { ok: false, error: '请求体解析失败' }); return; }
+    const target = String(payload && payload.url || '').trim();
+    let tu;
+    try { tu = new URL(target); } catch (e) { sendJsonRes(res, 400, { ok: false, error: '目标地址无效' }); return; }
+    if (tu.protocol !== 'https:' && tu.protocol !== 'http:') {
+      sendJsonRes(res, 400, { ok: false, error: '仅支持 http/https 目标' }); return;
+    }
+    const method = String(payload.method || 'POST').toUpperCase();
+    /* 只转发字符串型头；显式丢弃 Host 以防被用于伪造 / 污染。其余原样透传。 */
+    const upHeaders = {};
+    const ph = payload.headers || {};
+    for (const k of Object.keys(ph)) {
+      if (/^host$/i.test(String(k))) continue;
+      if (typeof ph[k] === 'string') upHeaders[k] = ph[k];
+    }
+    const hasBody = method !== 'GET' && method !== 'HEAD';
+    const upBody = typeof payload.body === 'string' ? payload.body : JSON.stringify(payload.body);
+    const ac = new AbortController();
+    let upstreamReturned = false;
+    /* 客户端断开 → 立即终止上游请求，避免后台继续计费/占用连接 */
+    req.on('close', () => { if (!upstreamReturned) ac.abort(); });
+    let up;
+    try {
+      up = await fetch(target, { method, headers: upHeaders, body: hasBody ? upBody : undefined, signal: ac.signal });
+    } catch (e) {
+      if (!ac.signal.aborted) sendJsonRes(res, 502, { ok: false, error: '上游请求失败: ' + String(e && e.message || e) });
+      else { try { res.destroy(); } catch (e2) { /* 忽略 */ } }
+      return;
+    }
+    upstreamReturned = true;
+    const upStatus = up.status;
+    const upCtRaw = String(up.headers.get('content-type') || '');
+    const upCt = upCtRaw.toLowerCase();
+    const isOk = upStatus >= 200 && upStatus < 300;
+    const isStream = isOk && (upCt.includes('text/event-stream') || upCt.includes('application/x-ndjson') || upCt.includes('text/plain'));
+    /* 镜像上游状态码与 content-type；补充本机 CORS 允许（file:// Origin: null 可读） */
+    res.writeHead(upStatus, {
+      'Content-Type': upCtRaw || 'application/json',
+      'Cache-Control': 'no-store',
+      ...(res._reqOrigin ? { 'Access-Control-Allow-Origin': res._reqOrigin } : {})
+    });
+    if (isStream) {
+      /* 长流：取消默认 30s 空闲超时，逐块透传 SSE 包体 */
+      try { req.socket.setTimeout(0); } catch (e) { /* 忽略 */ }
+      const reader = up.body && up.body.getReader ? up.body.getReader() : null;
+      if (!reader) { res.end(); return; }
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          res.write(Buffer.from(value));
+        }
+      } catch (e) { /* 客户端中止或上游中断：以落定方式收场 */ }
+      try { res.end(); } catch (e) { /* 忽略 */ }
+    } else {
+      try {
+        const text = await up.text().catch(() => '');
+        res.end(Buffer.from(text, 'utf8'));
+      } catch (e) { try { res.end(); } catch (e2) { /* 忽略 */ } }
+    }
+  }
+
   async function handleHttp(req, res) {
     const url = new URL(req.url, 'http://' + req.headers.host || ('http://' + HOST + ':' + PORT));
     const pathname = url.pathname;
@@ -236,6 +311,12 @@ function createRoutes(ctx) {
     /* Health is intentionally unauthenticated to allow a launcher to detect an
        existing service. Everything else has a token boundary in LAN mode. */
     if (!httpAuthorized(req, q)) { authRequiredResponse(res); return; }
+
+    /* 通用 LLM 代理（file:// Origin:null 页面经本地 Bridge 跨域获取） */
+    if (pathname === '/api/llm-proxy' && req.method === 'POST') {
+      await proxyLlm(req, res);
+      return;
+    }
 
     /* 表情文件 */
     if (pathname === '/stickers' || pathname === '/stickers/') {

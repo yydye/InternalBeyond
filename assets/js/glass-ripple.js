@@ -257,6 +257,9 @@ function idleNow(){
   if(document.hidden)return true;
   if(slot.classList.contains('gw-exit'))return true;
   if(sp&&(sp.classList.contains('hidden')||sp.classList.contains('dissolving')))return true;
+  /* 性能守卫：离开欢迎页（home）后暂停逐帧水波模拟，仅保留已渲染的静态画面，
+     内容页（朋友圈/聊天/日历等）不再每帧重算，消除鼠标拖动卡顿；欢迎页效果不变。 */
+  if(typeof window!=='undefined'&&typeof window.currentPage==='string'&&window.currentPage!=='home')return true;
   return false;
 }
 

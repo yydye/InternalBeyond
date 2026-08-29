@@ -160,6 +160,17 @@
 
 **B2 最终状态**：VoiceClone 合成已完整可用（上传→引用→`/api/tts`→`normalize`→`mimo` clone adapter→`resolveRefAudio` 读文件→`data:...;base64`→`mimo-v2.5-tts-voiceclone`→现有播放链）。已知限制：① 无真实上游调用实测（未持有 MiMo Key）；② 输出格式 mp3 为兼容既有播放链的取舍（官方默认 wav）；③ 10 MB 官方 Base64 上限意味着参考音频原文件需 ≤ 约 7.5 MB（超出本地拒绝，B1 上传上限 10 MB 仍放行但 adapter 会拦截）。
 
+## 2026-08-28 · AI 朋友圈「自主发文动机层」（motive + declineStreak，轻量增强非重构）
+
+在既有「心跳 → 到期认领 → LLM 决策 → 去重/频控 → 落库」调度之上，增加一层语义决策：**「此刻为什么想发」**，目标是增强角色自主性而非提高发帖频率。**调度、Claim、Companion 互斥、频控、去重、图片链路全部未改动。**
+
+- **motive 枚举**（浏览器 `assets/js/moments.js` 与 companion `active/moments.js` 双端镜像）：`share / daily_life / emotion / reflection / interaction / curiosity / social_response / none`。输出 JSON 增加 `"motive"` 字段（schema 行、重试提示串、`_momentsParseOutput`/`parseMomentOutput` 共 4 处同步）。
+- **归一规则**：`publish:false` → 强制 `motive:'none'`；`publish:true` 且缺失/非法/矛盾（`none`）→ `daily_life`；**motive 不是发布资格门**，不因它拒绝/放行任何发布。落库 moment 记录新增 `motive` 字段（`_momentsDefaults` 白名单，手动/用户动态为 `''`），companion 事件回传携带 `moment.motive`，浏览器 ingest 幂等落库。
+- **declineStreak（连续未发计数）**：浏览器 `ib_moments_state_v1[roleId].declineStreak` + companion `schedule.declineStreak`（`sanitizeMomentSchedule` 白名单 + `publicMomentSchedule` 暴露 `decline_streak`）。语义 `publish:true → 0`、`publish:false → +1`（发布事件与 PUT 往返双端同步、`active/http.js` 按 lastPostAt 快慢做单调合并）。**只作为 prompt 上下文**（「最近连续 N 次你都没有发」），**无任何强制发帖逻辑**——连续 declined 不发是正常结果。
+- **Prompt 决策流程**（双端镜像改写）：第一人称「【此刻】→【发圈动机】→【写作要求】」三段；Step1 有没有真实动机（结合角色设定/Memory/最近聊天/主动消息/最近朋友圈/朋友动态/当前时间/距离上次发文），Step2 选 motive（含每项一句释义），Step3 正文由动机自然产生；「今天没想发」是正常输出不是失败。按需求移除 prompt 中的任务/定时/调度/内部机制等词（防泄漏句保留并改写），现有反空泛模板、publish:false 正常化、碎片化等规则原文保留（既有断言零修改）。
+- **观测**：`post`/`post_declined` 事件增加 `motive`（`post_declined` 恒为 `'none'`），`social-observe.js` record() 原样透传无需改动。
+- **测试**：`test_moments_companion.js`（+3 项：motive 归一 / declineStreak 累加与发布归零 / sanitize 透传）、`test_moments_http.js`（+3 项：declineStreak 初写/单调取大/发布后归零）、`test_moments_phase3_smoke.js`（+7 项：Case A–E,G——发布携带 motive 落库/无动机正常 decline+streak/连续 declined 不强制/发布归零/去重不被绕过/prompt 动机段与无内部机制词/发布正文干净）；`test_moments_smoke.js`、`test_moments_phase2_smoke.js`、`test_socialnet_chain_companion_smoke.js`、`scripts_check_html.js` 全绿（零回归）。
+
 ## 2026-08-27 · TTS 第三阶段 C：MiMo Voice Design（mimo-v2.5-tts-voicedesign）
 
 按同日官方文档（API 参考 + quick-start「使用文本设计音色」）核实后实现，仍为 B2 的镜像增量，**未重构 TTS、未新增第二套播放链/资产系统/DB**。

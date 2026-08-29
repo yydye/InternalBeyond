@@ -278,7 +278,7 @@ async function _netRenderFeed(){
   const seq=++_netFeedSeq;
   feed.innerHTML='<div class="mom-state">加载中…</div>';
   let list=[];
-  try{list=await getMoments()}catch(e){list=[]}
+  try{list=await getMoments(window.MOMENT_FEED_FIRST_SCAN||60)}catch(e){list=[]}/* 首屏只读最近 60 条，游标即停，不扫 360 */
   if(seq!==_netFeedSeq)return;/* 过期渲染（更快的搜索/刷新已接管） */
   const q=_netQuery.trim().toLowerCase();
   if(q){
@@ -725,12 +725,19 @@ async function _netInitPage(){
   _netShow('feed');
 }
 const _netOrigLoad=typeof window.loadMomentsPage==='function'?window.loadMomentsPage:null;
-window.loadMomentsPage=function(){
-  try{if(_netOrigLoad)_netOrigLoad()}catch(e){console.warn('[SocialNet] legacy load failed',e)}
-  /* 仅当社交圈页真正处于活动页时接管渲染（保留旧 DOM 契约：后台/测试直调时旧渲染器照常工作） */
+window.loadMomentsPage=function(opts){
   const pm=document.getElementById('page-moments');
-  if(!pm||!pm.classList.contains('active'))return;
-  Promise.resolve(_netInitPage()).catch(function(e){console.warn('[SocialNet] init failed',e)});
+  const active=!!(pm&&pm.classList.contains('active'));
+  if(active){
+    /* Moments 活动页：只跑旧渲染器的页面级设置（skipFeed，不渲染 feed），
+       feed 由 _netInitPage→_netRenderFeed 单独渲染——消灭双渲染/重复 IDB 扫描。
+       注意 _netOrigLoad 为同步函数，opts 透传给它而不是传给本包装层自身。 */
+    try{if(_netOrigLoad)_netOrigLoad({skipFeed:true})}catch(e){console.warn('[SocialNet] legacy load failed',e)}
+    Promise.resolve(_netInitPage()).catch(function(e){console.warn('[SocialNet] init failed',e)});
+    return;
+  }
+  /* 非 Moments 页（后台 ingest / 测试直调等）：保持旧行为完全不变 */
+  try{if(_netOrigLoad)_netOrigLoad(opts)}catch(e){console.warn('[SocialNet] legacy load failed',e)}
 };
 /* API 编辑页「朋友圈」入口 → 直接落到该角色主页 */
 const _netOrigOpenRole=typeof window._momentsOpenRole==='function'?window._momentsOpenRole:null;

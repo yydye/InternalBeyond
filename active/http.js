@@ -1,4 +1,4 @@
-﻿/* IB Active · HTTP 层：CORS（Origin 白名单）、JSON 响应、请求体解析、任务公开视图、
+/* IB Active · HTTP 层：CORS（Origin 白名单）、JSON 响应、请求体解析、任务公开视图、
    全部 REST 路由（tasks / plans / reconcile / events / history）与 server 实例。
    从 active-message-service.js 提取为工厂：state 经 getState() 注入（仅原地变更，
    无重新赋值），armedUsers / 持久化 / 计划域函数全部依赖注入。原逻辑逐字不变。 */
@@ -275,6 +275,21 @@ function createHttp(ctx) {
           return;
         }
         const existing = (s.moments || {})[characterId];
+        /* declineStreak 合并（只作上下文提示，无强制逻辑）：
+           - 传入快照比后台发布更新（incoming.lastPostAt > existing.lastPostAt）→ 以传入为准（发过即归零路径）；
+           - 传入快照落后于后台发布 → 保留后台计数（浏览器旧快照不得回退）；
+           - 相同（无新发布）→ 单调取大，防浏览器过期计数覆盖后台 +1 的累计。 */
+        if (existing) {
+          const inLP = Number(incoming.lastPostAt) || 0;
+          const exLP = Number(existing.lastPostAt) || 0;
+          if (inLP > exLP) {
+            incoming.declineStreak = Math.max(0, Number(incoming.declineStreak) || 0);
+          } else if (inLP < exLP) {
+            incoming.declineStreak = Math.max(0, Number(existing.declineStreak) || 0);
+          } else {
+            incoming.declineStreak = Math.max(incoming.declineStreak, Math.max(0, Number(existing.declineStreak) || 0));
+          }
+        }
         const existingOwner = String(existing && existing.user_id || '');
         if (existingOwner && existingOwner !== incoming.user_id) {
           json(response, 403, { error: 'Moment schedule does not belong to this user' });

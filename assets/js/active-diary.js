@@ -510,6 +510,7 @@ async function _activeTick(){
     await _activeTickAiPlans();/* AI 自主规划：到期评估与发送（fail-open） */
     await _diaryTick();/* 日记：每周周记 + 每日规划（fail-open） */
     await _momentsTick();/* 朋友圈：角色自主发布调度（fail-open） */
+    try{if(typeof window._roleLettersTick==='function')await window._roleLettersTick()}catch(e){console.warn('[RoleLetters] tick '+String(e&&e.message||e).slice(0,120))}/* 角色互相写信（fail-open） */
   }catch(e){console.warn('[Active Messages] scheduler tick failed',e)}
   finally{_activeTicking=false}
 }

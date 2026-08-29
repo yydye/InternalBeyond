@@ -133,6 +133,9 @@ function startMockApi() {
         else if (model === 'p3-dup') content = JSON.stringify({ publish: true, content: '重复内容测试。', visibility: 'all' });
         else if (model === 'p3-rsn') content = '';/* 推理型模型：maxTokens 全部耗在 reasoning 上，content 为空 */
         else if (model === 'p3-rsnok') content = hitBy[model] === 1 ? '' : JSON.stringify({ publish: true, content: '推理后终于想好了。', visibility: 'all' });
+        else if (model === 'p3-mot') content = JSON.stringify({ publish: true, content: hitBy[model] === 1 ? '用户刚才说想去看海，我也有点想去。' : '门口的猫今天蹲了一整天，不知道在想什么。', visibility: 'all', motive: 'interaction' });
+        else if (model === 'p3-decmot') content = JSON.stringify({ publish: false, reason: '今天确实没什么好发的', motive: 'none' });
+        else if (model === 'p3-dup2') content = JSON.stringify({ publish: true, content: '重复内容测试。', visibility: 'all', motive: 'reflection' });
         else content = JSON.stringify({ publish: true, content: 'p3 动态内容 ' + chatHits + '。', visibility: 'all' });
         const usage = (model === 'p3-rsn' || (model === 'p3-rsnok' && hitBy[model] === 1))
           ? { completion_tokens: 900, completion_tokens_details: { reasoning_tokens: 900 } }
@@ -173,7 +176,7 @@ async function main() {
 
     const cfg = (id, model, endpoint, extra) => "{id:'" + id + "',provider:'openai',model:'" + model + "',endpoint:'" + endpoint + "',apiKey:'',nickname:'" + id + "',systemPrompt:'你是测试角色'" + (extra || '') + "}";
     const EP = 'http://127.0.0.1:' + mock.port + '/v1/chat/completions';
-    await evaluate(cdp, "(async function(){await dbPut('apiConfigs'," + cfg('p3a','p3-ok',EP) + ");await dbPut('apiConfigs'," + cfg('p3b','p3-ok',EP) + ");await dbPut('apiConfigs'," + cfg('p3dec','p3-dec',EP) + ");await dbPut('apiConfigs'," + cfg('p3dup','p3-dup',EP) + ");await dbPut('apiConfigs'," + cfg('p3bad','p3-ok','http://127.0.0.1:1/v1/chat/completions') + ");await dbPut('apiConfigs'," + cfg('p3rsn','p3-rsn',EP) + ");await dbPut('apiConfigs'," + cfg('p3rsnok','p3-rsnok',EP) + ");await loadApiConfigs();})()");
+    await evaluate(cdp, "(async function(){await dbPut('apiConfigs'," + cfg('p3a','p3-ok',EP) + ");await dbPut('apiConfigs'," + cfg('p3b','p3-ok',EP) + ");await dbPut('apiConfigs'," + cfg('p3dec','p3-dec',EP) + ");await dbPut('apiConfigs'," + cfg('p3dup','p3-dup',EP) + ");await dbPut('apiConfigs'," + cfg('p3bad','p3-ok','http://127.0.0.1:1/v1/chat/completions') + ");await dbPut('apiConfigs'," + cfg('p3rsn','p3-rsn',EP) + ");await dbPut('apiConfigs'," + cfg('p3rsnok','p3-rsnok',EP) + ");await dbPut('apiConfigs'," + cfg('p3mot','p3-mot',EP) + ");await dbPut('apiConfigs'," + cfg('p3decmot','p3-decmot',EP) + ");await dbPut('apiConfigs'," + cfg('p3dup2','p3-dup2',EP) + ");await loadApiConfigs();})()");
     await evaluate(cdp, "window.__ibP3={set:function(id,patch){var s=JSON.parse(localStorage.getItem('ib_moments_state_v1')||'{}');s[id]=Object.assign({},s[id]||{},patch);localStorage.setItem('ib_moments_state_v1',JSON.stringify(s));return true},reset:function(){localStorage.removeItem('ib_moments_state_v1');localStorage.removeItem('ib_moments_commentq_v1');localStorage.removeItem('ib_moments_likes_v1');return true},solo:function(id,due){var now=Date.now(),s={},ids=['p3a','p3b','p3dec','p3dup','p3bad'];ids.forEach(function(k){s[k]={nextAt:now+86400000,status:'idle',claimUntil:0,lastPostAt:0}});if(id)s[id]={nextAt:due?now-1000:now+86400000,status:'idle',claimUntil:0,lastPostAt:0};localStorage.setItem('ib_moments_state_v1',JSON.stringify(s));return true}}");
 
     /* ── Scheduler ── */
@@ -232,6 +235,33 @@ async function main() {
     check('content.duplicateRejected', d1 && d1.ok && d1.published === true && d2 && d2.ok === false && dupCount === 1, JSON.stringify({ d1ok: d1 && d1.ok, d2ok: d2 && d2.ok, dupCount }));
     const promptTxt = await evaluate(cdp, "buildMomentPrompt({character:{id:'x',nickname:'N',systemPrompt:''},context:{},trigger:'schedule'}).messages[1].content");
     check('content.promptAntiGeneric', /拒绝空泛模板/.test(promptTxt) && /今天阳光很好/.test(promptTxt) && /publish:false 是正常输出/.test(promptTxt) && /碎片化/.test(promptTxt));
+
+    /* ── Motive 动机层（Case A–E,G：schema/落库/declineStreak/护栏不被绕过/无内部机制词） ── */
+    /* Case E：解析与落库——publish:true + motive:'interaction' → 正文落库并携带 motive */
+    await evaluate(cdp, "__ibP3.reset()");
+    const mot = await evaluate(cdp, "(async function(){var r=await generateRoleMoment('p3mot',{trigger:'manual'});var m=await getMoment(r.moment&&r.moment.id);return{ok:r.ok,published:r.published,motive:r.motive,stored:m&&m.motive,content:m&&m.content}})()");
+    check('motive.publishCarries', mot && mot.ok === true && mot.published === true && mot.motive === 'interaction' && mot.stored === 'interaction' && mot.content.indexOf('想去看海') >= 0, JSON.stringify(mot));
+    /* Case B：无动机 → publish:false + motive:'none' 是正常结果；declineStreak +1 */
+    const decm = await evaluate(cdp, "(async function(){var st0=JSON.parse(localStorage.getItem('ib_moments_state_v1')||'{}').p3decmot||{};var r=await generateRoleMoment('p3decmot',{trigger:'manual'});var st=JSON.parse(localStorage.getItem('ib_moments_state_v1')||'{}').p3decmot||{};return{ok:r.ok,published:r.published,motive:r.motive,streak:st.declineStreak||0,count:(await getRoleMoments('p3decmot')).length}})()");
+    check('motive.declineNone', decm && decm.ok === true && decm.published === false && decm.motive === 'none' && decm.streak === 1 && decm.count === 0, JSON.stringify(decm));
+    /* Case D：连续 declined 不强制发布——再次不发布，无动态，仅 streak 增长 */
+    await evaluate(cdp, "(function(){var s=JSON.parse(localStorage.getItem('ib_moments_state_v1')||'{}');s.p3decmot=Object.assign({},s.p3decmot||{},{declineStreak:1});localStorage.setItem('ib_moments_state_v1',JSON.stringify(s));return true})()");
+    const decm2 = await evaluate(cdp, "(async function(){var r=await generateRoleMoment('p3decmot',{trigger:'manual'});var st=JSON.parse(localStorage.getItem('ib_moments_state_v1')||'{}').p3decmot||{};return{published:r.published,motive:r.motive,streak:st.declineStreak||0,count:(await getRoleMoments('p3decmot')).length}})()");
+    check('motive.declineNoForce', decm2 && decm2.published === false && decm2.motive === 'none' && decm2.streak === 2 && decm2.count === 0, JSON.stringify(decm2));
+    /* Case A/D 续：发布成功 → streak 归零 */
+    const motReset = await evaluate(cdp, "(async function(){var r=await generateRoleMoment('p3mot',{trigger:'manual'});var st=JSON.parse(localStorage.getItem('ib_moments_state_v1')||'{}').p3mot||{};return{published:r.published,streak:Number(st.declineStreak||0)}})()");
+    check('motive.publishResetsStreak', motReset && motReset.published === true && motReset.streak === 0, JSON.stringify(motReset));
+    /* Case C：motive 不绕过去重——同内容二次（带 motive 也一样被拒，只产出一条） */
+    await evaluate(cdp, "(async function(){var own=await getRoleMoments('p3dup2');for(var i=0;i<own.length;i++)await dbDelete(MOMENT_STORE,own[i].id);return true})()");
+    const mDup = await evaluate(cdp, "(async function(){var a=await generateRoleMoment('p3dup2',{trigger:'manual'});var b=await generateRoleMoment('p3dup2',{trigger:'manual'});var own=await getRoleMoments('p3dup2');return{a:a.published,b:!!(b&&b.ok===false&&/相似/.test(b.error||'')),n:own.length}})()");
+    check('motive.dedupeNotBypassed', mDup && mDup.a === true && mDup.b === true && mDup.n === 1, JSON.stringify(mDup));
+    /* Case F 前置：prompt 带动机段与 declineStreak 上下文；Case G：无内部机制词
+       （imagePrompt 是模型要填写的 JSON 字段名，属协议键，不算内部机制泄漏） */
+    const motPrompt = await evaluate(cdp, "(function(){var b=buildMomentPrompt({character:{id:'x',nickname:'N',systemPrompt:''},context:{},trigger:'schedule',declineStreak:3,lastPostAt:Date.now()-3*3600000});return{u:b.messages[1].content,s:b.messages[0].content}})()");
+    check('motive.promptHasMotiveSection', /发圈动机/.test(motPrompt.u) && /\{"publish":false,"motive":"none"\}/.test(motPrompt.u) && /"motive":"share\|daily_life\|emotion\|reflection\|interaction\|curiosity\|social_response\|none"/.test(motPrompt.u) && /最近连续 3 次你都没有发/.test(motPrompt.u) && /3 小时前/.test(motPrompt.u), motPrompt.u.slice(-260));
+    check('motive.noInternalMechanismWords', !/任务|定时|调度|API|模型|prompt|scheduler|timer|task|cron|autonomous|token/i.test((motPrompt.u + '\n' + motPrompt.s).replace(/imagePrompt/g, '')), (motPrompt.s + '\n' + motPrompt.u).slice(0, 400));
+    /* Case G：发布正文不含内部机制词（mock 内容本身即验证用例） */
+    check('motive.publishedContentClean', mot && mot.published === true && !/定时|任务|调度|AI 自主发文|系统|Prompt|API|模型/.test(String(mot.content || '')), String(mot.content || '').slice(0, 120));
 
     /* ── 社交自然度（亲和度） ── */
     const aff = await evaluate(cdp, "({a:_momentsPairAffinity('r1','r2'),b:_momentsPairAffinity('r1','r2'),c:_momentsPairAffinity('r2','r1')})");
@@ -324,7 +354,9 @@ async function main() {
     /* 自适应：首次空输出 → 提高生成预算重试 → 推理型模型第二次成功发布 */
     warns.length = 0;
     const rsnOk = await evaluate(cdp, "(async function(){var r=await generateRoleMoment('p3rsnok',{trigger:'manual'});return{ok:r.ok,published:r.published,content:r.moment&&r.moment.content}})()");
-    const retryLine = warns.some(w => w.indexOf('(retrying)') >= 0 && w.indexOf('"stage":"empty-output"') >= 0);
+    /* console 事件经 CDP 异步送达：固定等待不够稳，改为轮询等 warn 事件（最多 4s） */
+    let retryLine = false;
+    for (let _w = 0; _w < 40; _w++) { if (warns.some(w => w.indexOf('(retrying)') >= 0 && w.indexOf('"stage":"empty-output"') >= 0)) { retryLine = true; break; } await new Promise(r => setTimeout(r, 100)); }
     check('rsn.adaptiveRetryPublishes', rsnOk && rsnOk.ok === true && rsnOk.published === true && rsnOk.content === '推理后终于想好了。' && retryLine === true, JSON.stringify({ rsnOk, retryLine }));
 
     await new Promise(r => setTimeout(r, 300));

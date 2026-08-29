@@ -938,7 +938,11 @@ function editApi(id){
   var wsEl=document.getElementById('api-websearch-toggle');
   if(wsEl)wsEl.checked=!!cfg.webSearch;
   var _igT2=document.getElementById('api-imagegen-toggle');if(_igT2)_igT2.checked=!!cfg.imageGen;
+  var _igW2=document.getElementById('api-waifu-toggle');if(_igW2)_igW2.checked=!!cfg.waifu;
   var _igM2=document.getElementById('api-imagegen-model');if(_igM2)_igM2.value=cfg.imageGenModel||'';
+  var _igP2=document.getElementById('api-imagegen-provider');if(_igP2)_igP2.value=cfg.imageGenProvider||'';
+  var _igE2=document.getElementById('api-imagegen-endpoint');if(_igE2)_igE2.value=cfg.imageGenEndpoint||'';
+  var _igK2=document.getElementById('api-imagegen-apikey');if(_igK2)_igK2.value=cfg.imageGenApiKey||'';
   /* Voice settings */
   var vc=cfg.voice||{};
   var _vt=document.getElementById('api-voice-toggle');if(_vt)_vt.checked=!!vc.enabled;
@@ -1036,8 +1040,12 @@ async function saveCurrentApi(btn){
     vision:_isDeepSeekNativeVisionModel(modelVal)?true:!!document.getElementById('api-vision-toggle').checked,
     streaming:!!document.getElementById('api-streaming-toggle').checked,
     webSearch:!!(document.getElementById('api-websearch-toggle')&&document.getElementById('api-websearch-toggle').checked),
-    imageGen:!!(document.getElementById('api-imagegen-toggle')&&document.getElementById('api-imagegen-toggle').checked),
+    imageGen:(document.getElementById('api-imagegen-toggle')&&document.getElementById('api-imagegen-toggle').checked),
     imageGenModel:(document.getElementById('api-imagegen-model')?document.getElementById('api-imagegen-model').value.trim():''),
+    waifu:!!(document.getElementById('api-waifu-toggle')&&document.getElementById('api-waifu-toggle').checked),
+    imageGenProvider:(function(){var el=document.getElementById('api-imagegen-provider');var v=(el&&el.value||'');return['','openai','gemini'].indexOf(v)>-1?v:''})(),
+    imageGenEndpoint:(document.getElementById('api-imagegen-endpoint')?document.getElementById('api-imagegen-endpoint').value.trim():''),
+    imageGenApiKey:(document.getElementById('api-imagegen-apikey')?document.getElementById('api-imagegen-apikey').value.trim():''),
     autoMem:!!(document.getElementById('api-automem-toggle')&&document.getElementById('api-automem-toggle').checked),
     autoMemMode:(document.getElementById('api-automem-mode')&&document.getElementById('api-automem-mode').value)||'hybrid',
     autoMemBudget:parseInt(document.getElementById('api-automem-budget')&&document.getElementById('api-automem-budget').value)||1200,

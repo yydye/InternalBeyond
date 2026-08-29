@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 /* Internal Beyond — Moments 后台调度 HTTP 集成测试
    运行：node test_moments_http.js
    验证：PUT/GET/DELETE /moments、stale 拒绝、reconcile moment_ids（互不误删）、
@@ -135,6 +135,17 @@ async function waitForHealth(timeoutMs) {
     rewind.schedule.updatedAt = new Date(Date.now() + 2000).toISOString();
     const rewindRes = await req('PUT', '/moments/mh_char1', rewind);
     check('PUT executedAt 单调不回退', rewindRes.body.schedule && rewindRes.body.schedule.executed === true, rewindRes.body);
+
+    /* declineStreak 合并：相同 lastPostAt → 单调取大（过期快照不回退后台累计） */
+    const dk1 = snapshot('mh_char1', { schedule: schedule('mh_char1', { declineStreak: 3, updatedAt: new Date(Date.now() + 5000).toISOString() }) });
+    check('PUT declineStreak 初写', (await req('PUT', '/moments/mh_char1', dk1)).body.schedule.decline_streak === 3);
+    const clobber = snapshot('mh_char1', { schedule: schedule('mh_char1', { declineStreak: 1, updatedAt: new Date(Date.now() + 6000).toISOString() }) });
+    const clobberRes = await req('PUT', '/moments/mh_char1', clobber);
+    check('PUT declineStreak 单调取大（同 lastPostAt）', clobberRes.body.schedule.decline_streak === 3, clobberRes.body);
+    /* 更快 lastPostAt（发布后）→ 归零路径应以传入为准 */
+    const reset = snapshot('mh_char1', { schedule: schedule('mh_char1', { declineStreak: 0, lastPostAt: Date.now(), updatedAt: new Date(Date.now() + 7000).toISOString() }) });
+    const resetRes = await req('PUT', '/moments/mh_char1', reset);
+    check('PUT declineStreak 发布后归零可写入', resetRes.body.schedule.decline_streak === 0 && !resetRes.body.stale, resetRes.body);
 
     /* 他人 user_id 被拒（403） */
     const other = snapshot('mh_char1', { schedule: schedule('mh_char1', { user_id: 'other_user' }) });

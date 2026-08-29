@@ -38,21 +38,47 @@ async function _wsArchiveFileBlocks(files,author){
 
 /* ── 图像生成执行器：按好友配置调用生图接口，成功返回 dataUrl/base64 ──
    OpenAI 兼容（官方/中转站）走 /images/generations；Gemini 走 generateContent + responseModalities；
-   用量（若接口回传）按生图模型名计入 Token 仪表盘，单价可在仪表盘中为该模型单独设置 */
+   用量（若接口回传）按生图模型名计入 Token 仪表盘，单价可在仪表盘中为该模型单独设置。
+   图片凭证与文字模型解耦（可选字段，全部留空 = 完全复用文字凭证/接口/协议）：
+     imageGenProvider  'openai'（OpenAI 兼容）/'gemini'；留空=跟随文字 cfg.provider
+     imageGenEndpoint  图片接口地址；留空=复用文字 cfg.endpoint
+     imageGenApiKey    图片专用 Key；留空=复用文字 cfg.apiKey
+   只有"最终图片协议域"（imageGenProvider || provider）为 anthropic/deepseek 时才拒绝。 */
+/* 图片服务商推断：显式 imageGenProvider > 跟随文字 provider；文字 provider 不支持生图（anthropic/deepseek）
+   但显式填了生图模型时，按模型名推断（gemini → Gemini，否则 OpenAI 兼容），让"填了生图模型就能生图"生效。 */
+function _imgResolveProvider(cfg){
+  try{
+    cfg=cfg||{};
+    var ip=String(cfg.imageGenProvider||'').trim().toLowerCase();
+    if(ip)return ip;
+    var prov=String(cfg.provider||'').trim().toLowerCase();
+    if(prov==='anthropic'||prov==='deepseek'){
+      var m=String(cfg.imageGenModel||'').toLowerCase();
+      return m?(/gemini/i.test(m)?'gemini':'openai'):prov;/* 无生图模型 → 保持原 provider（维持拒绝语义） */
+    }
+    return prov;
+  }catch(e){return String((cfg&&cfg.provider)||'').toLowerCase()}
+}
+window._imgResolveProvider=_imgResolveProvider;
+
 async function _wsExecImageGen(cfg,prompt,size){
-  var model=(cfg.imageGenModel||'').trim()||(cfg.provider==='gemini'?'gemini-2.5-flash-image':'gpt-image-1');
+  cfg=cfg||{};
+  var iprov=_imgResolveProvider(cfg);
+  var iEp=String(cfg.imageGenEndpoint||'').trim()||String(cfg.endpoint||'').trim();
+  var iKey=String(cfg.imageGenApiKey||'').trim()||String(cfg.apiKey||'').trim();
+  var model=(cfg.imageGenModel||'').trim()||(iprov==='gemini'?'gemini-2.5-flash-image':'gpt-image-1');
   var ctrl=new AbortController();var _tm=setTimeout(function(){try{ctrl.abort()}catch(e){}},120000);
   try{
-    if(cfg.provider==='anthropic'||cfg.provider==='deepseek'){
-      return{ok:false,reason:(cfg.provider==='anthropic'?'Anthropic':'DeepSeek')+' 接口不提供图像生成；请在 OpenAI 兼容或 Gemini 的 API 配置上开启此功能'};
+    if(iprov==='anthropic'||iprov==='deepseek'){
+      return{ok:false,reason:(iprov==='anthropic'?'Anthropic':'DeepSeek')+' 不支持图像生成；请把图片服务商改为 OpenAI 兼容或 Gemini（可在 API 设置中单独配置图片服务商/接口/Key）'};
     }
     var b64='',mime='image/png';
-    if(cfg.provider==='gemini'){
-      var gUrl=cfg.endpoint||'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent';
+    if(iprov==='gemini'){
+      var gUrl=iEp||'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent';
       if(gUrl.indexOf('{model}')!==-1)gUrl=gUrl.replace('{model}',model);
       else if(/models\/[^:\/?]+:generateContent/i.test(gUrl))gUrl=gUrl.replace(/models\/[^:\/?]+:generateContent/i,'models/'+model+':generateContent');
       else{try{gUrl=new URL(gUrl).origin+'/v1beta/models/'+model+':generateContent'}catch(e){gUrl='https://generativelanguage.googleapis.com/v1beta/models/'+model+':generateContent'}}
-      gUrl+=(gUrl.indexOf('?')===-1?'?':'&')+'key='+cfg.apiKey;
+      gUrl+=(gUrl.indexOf('?')===-1?'?':'&')+'key='+iKey;
       var gRes=await fetch(gUrl,{method:'POST',headers:{'Content-Type':'application/json'},signal:ctrl.signal,
         body:JSON.stringify({contents:[{parts:[{text:prompt}]}],generationConfig:{responseModalities:['TEXT','IMAGE']}})});
       var gj=await gRes.json().catch(function(){return{}});
@@ -62,11 +88,11 @@ async function _wsExecImageGen(cfg,prompt,size){
       if(!b64)return{ok:false,reason:'Gemini 未返回图像数据：该模型可能不支持图像输出，请在 API 设置中把生图模型改为 gemini-2.5-flash-image 等生图型号'};
       try{if(gj.usageMetadata)_tkRecord(Object.assign({},cfg,{model:model}),{i:gj.usageMetadata.promptTokenCount||0,cr:0,cw:0,o:gj.usageMetadata.candidatesTokenCount||0})}catch(e){}
     }else{
-      /* OpenAI 官方与兼容端点（含中转站）：从聊天端点推导生图端点 */
+      /* OpenAI 官方与兼容端点（含中转站）：从图片接口地址推导生图端点 */
       var oUrl='';
       try{
-        if(/\/chat\/completions/i.test(cfg.endpoint||''))oUrl=cfg.endpoint.replace(/\/chat\/completions[^?#]*/i,'/images/generations');
-        else oUrl=new URL(cfg.endpoint).origin+'/v1/images/generations';
+        if(/\/chat\/completions/i.test(iEp||''))oUrl=iEp.replace(/\/chat\/completions[^?#]*/i,'/images/generations');
+        else oUrl=new URL(iEp).origin+'/v1/images/generations';
       }catch(e){oUrl='https://api.openai.com/v1/images/generations'}
       var oBody={model:model,prompt:prompt,n:1};
       /* 尺寸白名单：生图接口只接受枚举值，任意尺寸（如 200x200）会直接 400。
@@ -75,7 +101,7 @@ async function _wsExecImageGen(cfg,prompt,size){
       var _szOk=/^dall-e-2/i.test(model)?['256x256','512x512','1024x1024']:/^dall-e/i.test(model)?['1024x1024','1792x1024','1024x1792']:['1024x1024','1536x1024','1024x1536','auto'];
       if(size&&_szOk.indexOf(String(size).toLowerCase())>-1)oBody.size=String(size).toLowerCase();
       if(/^dall-e/i.test(model))oBody.response_format='b64_json';/* gpt-image 系默认回 b64，且不接受此参数 */
-      var oRes=await fetch(oUrl,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+cfg.apiKey},signal:ctrl.signal,body:JSON.stringify(oBody)});
+      var oRes=await fetch(oUrl,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+iKey},signal:ctrl.signal,body:JSON.stringify(oBody)});
       var oj=await oRes.json().catch(function(){return{}});
       if(!oRes.ok)return{ok:false,reason:'生图请求失败（'+oRes.status+'）'+String((oj.error&&oj.error.message)||'').slice(0,160)};
       var _d0=(oj.data&&oj.data[0])||{};
@@ -147,6 +173,8 @@ async function _execWsOps(ops,authorName,cfg){
           await wsSaveFile(_giPid,_giPath,_gi.dataUrl,authorName);
         }catch(eS){_giPath=''}
         _wsPendingOpFeedback.push({actor:authorName,text:'图像已生成并展示给用户'+(_giPath?'，同时已存入 ICode 默认文件夹（'+_giPath+'）':'')+'。提示词：'+_giPrompt.slice(0,120)});
+        /* 图片回注：生成结果图在用户下一条消息时作为图像一并注入给支持视觉的模型（文本模型不消费） */
+        try{if(typeof _ibImageDrain!=='undefined'&&_ibImageDrain.length<6)_ibImageDrain.push(_gi.dataUrl)}catch(e){}
         results.push({type:'gen_image',ok:true,prompt:_giPrompt,model:_gi.model,dataUrl:_gi.dataUrl,base64:_gi.base64,mime:_gi.mime,path:_giPath,bytes:_gi.bytes||0});
       }else{
         results.push({type:'gen_image',ok:false,prompt:_giPrompt,reason:_gi.reason||'生成失败'});
@@ -197,6 +225,24 @@ async function _execWsOps(ops,authorName,cfg){
         _wsPendingReads.push(_rEntry);
         results.push({type:'read',path:op.path,ok:true,size:rf.size,projId:_wsActiveProject});
       }else{results.push({type:'read',path:op.path,ok:false,reason:'文件不存在'})}
+    }else if(op.type==='read_image'){
+      /* ws_read_image：读取 ICode 里的图片文件 → 入图片回注队列（下一条消息以图像注入支持视觉的模型）
+         容错：① 路径轻规范化（去掉误拼的 ws_gen_image/ws_read_image 前缀）；② 当前项目找不到 → 回退默认项目 */
+      var _riPath=String(op.path||'').trim().replace(/^ws_(gen_image|read_image)\s*/i,'').replace(/^path=["']?/,'').trim();
+      if(!_riPath){results.push({type:'read_image',path:op.path||'',ok:false,reason:'缺少文件名（path 属性为空或无法解析）'});continue}
+      if(!_wsActiveProject)await _wsResolveProject(_riPath);
+      var rif=null,resolvedProj='';
+      if(_wsActiveProject){rif=await wsGetFileByPath(_wsActiveProject,_riPath);if(rif)resolvedProj=_wsActiveProject}
+      if(!rif){/* 回退默认文件夹（用户文件大多在「ICode」） */
+        try{var _defPid=await wsEnsureDefaultProject();rif=await wsGetFileByPath(_defPid,_riPath);if(rif)resolvedProj=_defPid}catch(e){}
+      }
+      if(!rif){results.push({type:'read_image',path:_riPath,ok:false,reason:'文件不存在（请确认文件名/项目；图片文件需为 png/jpg/jpeg/gif/webp/bmp/svg 或 data: 图片）'});continue}
+      var _riStr=String((typeof rif.content==='string'&&rif.content)||'');
+      var _riLooksImage=_riStr.slice(0,5)==='data:'||/\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(_riPath);
+      if(!_riLooksImage){results.push({type:'read_image',path:_riPath,ok:false,reason:'不是图片文件（支持 data: 图片或 png/jpg/jpeg/gif/webp/bmp/svg 扩展名）'});continue}
+      var _riUrl=_riStr.slice(0,5)==='data:'?_riStr:('data:image/png;base64,'+_riStr);/* 纯 base64 内容按 PNG 包装 */
+      try{if(typeof _ibImageDrain!=='undefined'&&_ibImageDrain.length<6)_ibImageDrain.push(_riUrl)}catch(e){}
+      results.push({type:'read_image',path:_riPath,ok:true,size:_riUrl.length,projId:resolvedProj});
     }else if(op.type==='make_docx'||op.type==='make_pdf'||op.type==='make_xlsx'){
       var _mkKind=op.type.slice(5);
       if(op.malformed){results.push({type:op.type,path:op.path||'',ok:false,reason:op.truncated?'输出被截断，内容不完整':'指令格式不完整'});continue}
@@ -246,7 +292,7 @@ async function _execWsOps(ops,authorName,cfg){
     if(r.ok===false){
       if(r.type==='run'&&r.fed)return;/* 自动运行的失败详情已由脚本输出通道回传，避免重复 */
       if(r.type==='tool'&&r.fed)return;/* 同上：工具结果通道已回传 */
-      var act=r.type==='edit'?'编辑':r.type==='create'?'创建':r.type==='read'?'读取':r.type==='run'?'运行脚本':r.type==='tool'?'调用工具':r.type==='gen_image'?'生成图像':r.type==='make_docx'?'生成 Word 文档':r.type==='make_pdf'?'生成 PDF':r.type==='make_xlsx'?'生成 Excel 表格':'项目操作';
+      var act=r.type==='edit'?'编辑':r.type==='create'?'创建':r.type==='read'?'读取':r.type==='read_image'?'读取图片':r.type==='run'?'运行脚本':r.type==='tool'?'调用工具':r.type==='gen_image'?'生成图像':r.type==='make_docx'?'生成 Word 文档':r.type==='make_pdf'?'生成 PDF':r.type==='make_xlsx'?'生成 Excel 表格':'项目操作';
       _wsPendingOpFeedback.push({actor:authorName,text:act+' '+(r.path||r.name||(r.prompt?'「'+String(r.prompt).slice(0,40)+'」':'')||'')+' 失败：'+(r.reason||'未知原因')});
     }else if(r.type==='create'&&r.renamedFrom){
       _wsPendingOpFeedback.push({actor:authorName,text:'创建时发现 '+r.renamedFrom+' 已存在，为避免覆盖旧文件，新文件已自动改存为 '+r.path+'。若你本意就是改写原文件，请改用 <ws_edit path="'+r.renamedFrom+'"> 做局部修改，或用 <ws_create path="'+r.renamedFrom+'" overwrite="true"> 整份重写。'});
@@ -276,7 +322,7 @@ function _buildWsOpCard(d){
   if(d.type==='project'&&d.ok!==false&&!d.malformed&&(d.isDefault||d.projId===WS_DEFAULT_PROJ_ID||_wsIsDefaultName(d.name)))return null;
   var card=document.createElement('div');card.className='ws-op-card';
   var ok=d.ok!==false&&!d.malformed;
-  var icons={project:WS_ICON.proj,create:WS_ICON.create,edit:WS_ICON.edit,read:WS_ICON.read,run:WS_ICON.run,tool:WS_ICON.tool,gen_image:WS_ICON.image,make_docx:WS_ICON.create,make_pdf:WS_ICON.create,make_xlsx:WS_ICON.create};
+  var icons={project:WS_ICON.proj,create:WS_ICON.create,edit:WS_ICON.edit,read:WS_ICON.read,read_image:WS_ICON.image,run:WS_ICON.run,tool:WS_ICON.tool,gen_image:WS_ICON.image,make_docx:WS_ICON.create,make_pdf:WS_ICON.create,make_xlsx:WS_ICON.create};
   var label;
   if(d.type==='project')label=ok?(d.existed?'已选定项目':'已创建项目'):'项目操作失败';
   else if(d.type==='create')label=ok?(d.truncated?'已创建文件（可能不完整）':(d.renamedFrom?'已创建文件（重名自动改名）':'已创建文件')):'创建失败';
@@ -301,6 +347,7 @@ function _buildWsOpCard(d){
     else if(d.dataUrl)label='已生成图像'+(d.path?'（已存入 ICode）':'');
     else label='生图请求';
   }
+  else if(d.type==='read_image')label=ok?'已读取图片（下一条消息注入）':'读取图片失败';
   else label=ok?'已读取文件':'读取失败';
   var detail=d.type==='project'?(d.name||''):d.type==='run'?(d.entry||'内联代码'):d.type==='tool'?(d.name||''):d.type==='gen_image'?String(d.prompt||'').slice(0,40)+(String(d.prompt||'').length>40?'…':''):(d.path||'');
   var size=d.size!==undefined?d.size:(d.type!=='run'&&d.content!==undefined?new Blob([d.content]).size:undefined);
@@ -506,7 +553,7 @@ function _wsMakeStreamWriters(refs){
 
 /* ── 流式拦截器：直播时把 ws 标签 / file 块从文字流里截下，替换为"进行中"操作卡，
    避免整屏原始代码炸进气泡；最终以完整回复为准重新渲染 ── */
-var _WS_STREAM_STARTS=['<ws_project','<ws_create','<ws_edit','<ws_read','<ws_run','<ws_tool','<ws_gen_image','<ws_make_docx','<ws_make_pdf','<ws_make_xlsx','```file:'];
+var _WS_STREAM_STARTS=['<ws_project','<ws_create','<ws_edit','<ws_read','<ws_read_image','<ws_run','<ws_tool','<ws_gen_image','<ws_make_docx','<ws_make_pdf','<ws_make_xlsx','```file:'];
 function _wsMakeStreamFilter(writers){
   var buf='',mode=0,closer='',pend=[],pendPath='',pendKind='',contentLen=0,liveTail='',pendTimer=null;
   var _LIVE_CAP=4000;/* 直播详情只保留末尾 4000 字，防超长文件拖垮 DOM */
@@ -613,6 +660,7 @@ function _wsMakeStreamFilter(writers){
       var val=_wsAttr(opener,'path')||_wsAttr(opener,'name')||_wsAttr(opener,'entry')||_wsAttr(opener,'file');
       if(st==='<ws_project'){if(val&&!_wsIsDefaultName(val))miniCard('project',val);continue}
       if(st==='<ws_read'){miniCard('read',val);continue}
+      if(st==='<ws_read_image'){miniCard('read_image',val);continue}
       if(st==='<ws_run'){
         if(/\/\s*>$/.test(opener)){miniCard('run',val||'脚本');continue}
         beginPending('run',val||'内联脚本');closer='</ws_run>';mode=1;

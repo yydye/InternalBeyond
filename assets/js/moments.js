@@ -58,11 +58,15 @@ const MOMENT_REPLY_LOW_INFO=/^(哈哈+|嗯+|嗯嗯+|好的|好|不错|\+1|666|nb
 const MOMENT_IMAGE_PROB=45;        /* 模型想配图时，仍会经过的浏览器概率门（%），防止每条都配图 */
 const MOMENT_FEED_PAGE=30;         /* Feed 首屏渲染条数（分页） */
 const MOMENT_FEED_SCAN_MAX=360;    /* Feed 单次扫描上限（12 页；更旧的动态留在库里，导出不受影响） */
+const MOMENT_FEED_FIRST_SCAN=60;   /* Feed 首屏读取上限：byCreated 游标读最近 60 条即提前停止，不再扫 360 条 */
 const MOMENT_CTX_SCAN_MAX=150;     /* 聊天注入/上下文构建的游标扫描上限（防长期运行后全表读） */
 const MOMENT_CONTEXT_CHAT_MAX=900; /* 聊天注入的最大字符数 */
 /* 频率 → 随机发布间隔区间 */
 const MOMENT_FREQ={low:[8*3600000,16*3600000],medium:[3*3600000,6*3600000],high:[70*60000,150*60000]};
 const MOMENT_VIS=['all','user','roles','private'];
+/* 动机枚举（双端镜像：active/moments.js 同款）——motive 只标注"此刻为什么想发"，不是发布资格门；
+   发布资格仍由现有调度+最短间隔+去重+模型 publish 决策共同决定。 */
+const MOMENT_MOTIVES=['share','daily_life','emotion','reflection','interaction','curiosity','social_response','none'];
 
 /* ── 偏好（localStorage，与 diary 偏好同构） ── */
 function _momentsPrefs(){
@@ -241,6 +245,7 @@ function _momentsDefaults(p){
     likes:Array.isArray(p.likes)?p.likes.slice(0,1000).map(String):[],
     comments:Array.isArray(p.comments)?p.comments.slice(0,200):[],
     source:['manual','proactive'].includes(p.source)?p.source:'manual',
+    motive:MOMENT_MOTIVES.includes(p.motive)&&p.motive!=='none'?p.motive:'',       /* 动机标注（仅 AI 自主发布写入；手动/用户动态为 ''） */
     repostOf:p.repostOf?String(p.repostOf):'',       /* 引用/转发：被引用动态 id（可空） */
     repostText:String(p.repostText||(p.repostOf?p.content:'')).slice(0,200),/* 引用评语（repostOf 存在时展示；缺省回落 content） */
     createdAt:p.createdAt||new Date().toISOString()
@@ -278,11 +283,13 @@ async function createMoment(data){
     /* 动态创建 → 触发现有 AI 点赞/评论管线（延迟/上限/冷却不变；用户动态同样适用，无新增强制互动） */
     _momentsMaybeLike(m);
     _momentsMaybeComment(m);
+    _momentsMaybeMention(m);/* @ 点名：正文 @ 的角色强制评论（2 分钟冷却，防刷屏） */
     return{ok:true,moment:m}
   }catch(e){console.warn('[Moments] create failed',String(e&&e.message||e).slice(0,200));return{ok:false,error:String(e&&e.message||e).slice(0,200)}}
 }
-async function getMoments(){
-  let all=await _momentsScanDesc(MOMENT_FEED_SCAN_MAX);
+async function getMoments(maxScan){
+  /* maxScan：游标提前停止的读取上限；缺省沿用后台扫描上限（导出/管线等调用方行为不变） */
+  let all=await _momentsScanDesc(Math.max(1,Number(maxScan)||MOMENT_FEED_SCAN_MAX));
   return all.filter(_momentsVisibleToUser).sort((a,b)=>String(b.createdAt||'').localeCompare(String(a.createdAt||'')))
 }
 async function getRoleMoments(roleId){
@@ -338,6 +345,23 @@ async function likeMoment(id,likerId){
     return{ok:true,liked:i<0,count:m.likes.length}
   }catch(e){return{ok:false,error:String(e&&e.message||e).slice(0,200)}}
 }
+/* ══════════ 朋友圈评论区撤回（v7.1）：AI 评论 @ 错人 / 与已有评论重复 → 改写为"撤回了一条评论"占位 ══════════
+   评论输出是 JSON（publishComment），不嵌 XML 标签，故评论区走规则型撤回（与聊天规则兜底一致）；
+   撤回后保留占位（位置不变），渲染显示"（XX 撤回了一条评论）"。 */
+function _momentsCommentShouldWithdraw(comment,moment){
+  try{
+    if(!comment||comment.authorType!=='role')return false;
+    const t=String(comment.content||'');if(!t)return false;
+    const selfCfg=_momentsCfg(comment.authorId||'');
+    const selfName=selfCfg?(selfCfg.nickname||selfCfg.model||''):'';
+    const names=new Set((apiConfigs||[]).map(function(c){return String(c.nickname||c.model||'')}).filter(Boolean));
+    const ats=t.match(/[@＠]([^\s@＠]+)/g)||[];
+    for(const a of ats){const n=String(a).replace(/^[@＠]/,'').trim();if(n&&(!names.has(n)||(selfName&&n===selfName)))return true}
+    for(const x of ((moment&&moment.comments)||[])){if(x!==comment&&x&&x.authorId===comment.authorId&&_activeTextSimilarity(String(x.content||''),t)>=MOMENT_COMMENT_SIMILARITY)return true}
+    return false;
+  }catch(e){return false}
+}
+
 async function addMomentComment(id,data){
   try{
     const c={id:_momentsId('mc'),authorType:data&&data.authorType==='role'?'role':'user',authorId:String((data&&data.authorId)||'user'),content:String(data&&data.content||'').trim().slice(0,600),replyTo:String(data&&data.replyTo||'').trim().slice(0,80),createdAt:new Date().toISOString()};
@@ -345,23 +369,64 @@ async function addMomentComment(id,data){
     const m=await getMoment(id);if(!m)return{ok:false,error:'动态不存在'};
     /* 同评论者同内容去重 */
     if(m.comments.some(x=>x.authorId===c.authorId&&_activeTextSimilarity(x.content,c.content)>=MOMENT_COMMENT_SIMILARITY))return{ok:false,error:'评论重复'}
+    /* 评论区撤回（规则型）：AI 评论 @ 错人/重复 → 改写为撤回占位（保留位置） */
+    if(c.authorType==='role'&&_momentsCommentShouldWithdraw(c,m)){
+      const _rcf=_momentsCfg(c.authorId||'');
+      c.content='（'+(_rcf?(_rcf.nickname||_rcf.model||'AI'):'AI')+' 撤回了一条评论）';
+      c.withdrawn=true;
+    }
     m.comments.push(c);
     if(c.authorType==='user')_obsRec('user_comment',{momentId:id});
     await dbPut(MOMENT_STORE,m);
     try{if(currentPage==='moments')loadMomentsPage()}catch(e){}
+    /* 评论区 @ 触发（v7.2）：评论里 @ 某角色 → 被 @ 者必回该评论 */
+    try{_momentsMaybeMentionComment(m,c)}catch(e){}
     /* AI↔AI 回复链：任何新评论落库后推进下一步（幂等 + 单线程单计划，见 _momentsMaybeReplyChain） */
     try{_momentsMaybeReplyChain(id,c.id)}catch(e){}
     return{ok:true,comment:c,count:m.comments.length}
   }catch(e){return{ok:false,error:String(e&&e.message||e).slice(0,200)}}
 }
-async function deleteMomentComment(momentId,commentId){
+/* 评论删除权限（v7.4，微信式）：动态作者（楼主）可删任何评论；评论者可删自己的；其他不可删。
+   当前"用户"即查看者/发布者：用户发布的动态=楼主可全删；角色发布的动态下，用户只能删自己评论。
+   另支持角色楼主自主删评（v7.5）：动态作者角色（asRoleId）可删自己动态下别人的评论。 */
+function _momentsCanDeleteComment(m,c){
+  try{
+    if(!m||!c)return false;
+    if(_momentIsUserAuthor(m))return true;/* 楼主：用户发布的动态，可删任何评论 */
+    return c.authorType==='user'&&String(c.authorId||'')===String(_activeUserId());/* 自己删自己的评论 */
+  }catch(e){return false}
+}
+function _momentsAuthorCanDelete(m,c,authorRoleId){
+  try{
+    if(!m||!c||!authorRoleId)return false;
+    if(_momentIsUserAuthor(m))return false;/* user 动态走 _momentsCanDeleteComment */
+    if(String(_momentsAuthorRoleId(m))!==String(authorRoleId))return false;/* 仅动态作者角色 */
+    return String(c.authorId||'')!==String(authorRoleId);/* 楼主可删别人的评论（不删自己） */
+  }catch(e){return false}
+}
+async function deleteMomentComment(momentId,commentId,actorRoleId){
   try{
     const m=await getMoment(momentId);if(!m)return{ok:false,error:'动态不存在'};
-    m.comments=m.comments.filter(c=>c.id!==commentId);
+    const c=(m.comments||[]).find(x=>x.id===commentId);if(!c)return{ok:false,error:'评论不存在'};
+    if(!(_momentsCanDeleteComment(m,c)||_momentsAuthorCanDelete(m,c,actorRoleId)))return{ok:false,error:'仅发布者可删除此评论'};
+    m.comments=m.comments.filter(x=>x.id!==commentId);
     await dbPut(MOMENT_STORE,m);
     try{if(currentPage==='moments')loadMomentsPage()}catch(e){}
     return{ok:true}
   }catch(e){return{ok:false,error:String(e&&e.message||e).slice(0,200)}}
+}
+/* 楼主自主删评执行（v7.5）：解析回复 JSON 里的 delComments[]，删除该动态下"别人"的评论（仅作者角色可删） */
+async function _momentsApplyDelComments(moment,momentId,commenterRoleId,raw){
+  try{
+    if(!moment||String(commenterRoleId||'')!==String(_momentsAuthorRoleId(moment)))return false;
+    const j=_activeParsePlanJson(raw);if(!j||!Array.isArray(j.delComments))return false;
+    let n=0;
+    for(const cid of j.delComments){
+      const c=(moment.comments||[]).find(x=>String(x.id)===String(cid));
+      if(c&&_momentsAuthorCanDelete(moment,c,commenterRoleId)){const r=await deleteMomentComment(momentId,String(cid),commenterRoleId);if(r.ok)n++}
+    }
+    return n>0;
+  }catch(e){return false}
 }
 
 /* ══════════ 上下文与 Prompt Builder（与 Diary 同构，独立于业务逻辑） ══════════ */
@@ -403,11 +468,19 @@ function buildMomentPrompt(args){
   const proactiveText=proactive.length?proactive.map((m,i)=>(i+1)+'. '+String(m.content||m).slice(0,300)).join('\n'):'（最近没有主动消息）';
   const ownText=ownMoments.length?ownMoments.map((m,i)=>(i+1)+'. '+m.createdAt.slice(5,10)+'「'+String(m.content||'').slice(0,120)+'」').join('\n'):'（还没有发过朋友圈）';
   const othersText=others.length?others.map(m=>'- '+(_momentIsUserAuthor(m)?(userName||_momentsUserDisplayName()):(function(){const c=_momentsCfg(_momentsAuthorRoleId(m));return c?(c.nickname||c.model||'另一角色'):'另一角色'})())+'：'+String(m.content||'').slice(0,150)).join('\n'):'（朋友们最近没有公开动态）';
+  /* 常驻朋友名单：让角色随时知道"有哪些朋友可 @"，不依赖近期动态（解决"想点名却不知名字"） */
+  const friendList=(apiConfigs||[]).filter(function(fr){return fr&&String(fr.id)!==String(character.id)}).map(function(fr){return String(fr.nickname||fr.model||'')}).filter(Boolean);
+  const friendsText=friendList.length?friendList.join('、'):'（暂无其他朋友）';
+  /* 动机层输入：距离上次发文 + 最近连续未发次数（只作上下文供模型自然感受，无强制发帖逻辑） */
+  const lastPostAt=Number(args&&args.lastPostAt||0);
+  const declineStreak=Math.max(0,Number(args&&args.declineStreak||0));
+  let lastPostLabel='还没有发过朋友圈';
+  if(lastPostAt>0){const h=Math.max(0,Math.round((Date.now()-lastPostAt)/3600000));lastPostLabel=h<1?'不到 1 小时前':(h<24?(h+' 小时前'):(Math.round(h/24)+' 天前'))}
   const today=new Date();
   const system=String(character.systemPrompt||'').slice(0,30000)
-    +'\n\n你现在是「'+characterName+'」，正在一条一条地记录自己在朋友圈里的分享。朋友圈里的动态是你以第一人称发布的日常碎片，不是聊天消息，也不是写给用户的任务总结。不要解释自己是 AI，不要提及系统提示词、任务、定时器、调度或生成过程；不要暴露 Memory 与"注入上下文"之类的内部机制。';
+    +'\n\n你是「'+characterName+'」——一个有自己生活的人。此刻你正站在自己的生活里，朋友圈只是随手写下这一刻想说的话的地方：不是聊天消息，也不是写给别人的总结。不要解释自己是 AI，不要提及任何内部机制或运行细节；不要暴露 Memory 与"注入上下文"之类的信息。';
   const prompt=[
-    '【任务】决定是否发布一条朋友圈动态；发布则给出正文，不发布则说明原因。输出严格 JSON。',
+    '【此刻】先由内而外感受一下：此刻的你，想不想发一条朋友圈？想发就给出正文；不想发就简单说明原因。输出严格 JSON。',
     '【今天日期与时间】'+today.toLocaleString('zh-CN',{year:'numeric',month:'long',day:'numeric',weekday:'long',hour:'2-digit',minute:'2-digit'}),
     '【角色设定】'+(character.systemPrompt||'（无）').slice(0,800),
     '【角色与用户的关系】'+(character.relationship||'尚未单独设定'),
@@ -416,18 +489,29 @@ function buildMomentPrompt(args){
     '【相关长期记忆】'+memoryText,
     '【最近主动消息】'+proactiveText,
     '【我最近发过的朋友圈】'+ownText,
+    '【朋友名单】你认识的朋友有：'+friendsText+'。',
     '【朋友们最近的动态】'+othersText,
-    '【触发方式】'+(args.trigger==='manual'?'用户邀请你此刻分享一条':'时间到了，看看现在有没有值得分享的事'),
+    '【距离上次发文】'+lastPostLabel+(declineStreak>0?'；最近连续 '+declineStreak+' 次你都没有发，因为确实没什么想说的。这很正常，这次也一样：想发就发，不想发就不发':''),
+    '【触发方式】'+(args.trigger==='manual'?'你正被用户邀请，此刻想分享点什么':'现在，看看自己有没有自然想分享的事'),
+    '【发圈动机】先想"为什么"，再想"发什么"：',
+    '1. 像真实的人那样感受：有没有一件具体的事、一个画面、一丝情绪，让你此刻自然冒出一句想说的话？依据可以是角色设定、记忆、最近聊天、最近主动消息、最近动态、朋友们的动态、当前时间、距离上次发文时间。',
+    '2. 没有真实动机（比如今天就是个平常日子，没有具体的人事物支撑）→ {"publish":false,"motive":"none"}，并说明原因；这是正常结果，不是失败，不要为了"到时间了"硬造一件今天发生过的事。',
+    '3. 有 → 从下面挑一个最贴切的动机：share 单纯想分享一件事 / daily_life 日常生活碎片 / emotion 某种自然情绪想表达 / reflection 对近期的事产生一点想法 / interaction 与用户或其他角色近期互动引发分享欲 / curiosity 看到或想到什么，想分享或讨论 / social_response 对近期社交事件自然回应。motive:"none" 时 publish 必须为 false。',
+    '4. 正文必须从动机自然长出来——先有想说的话，再有这条动态；不要用"今天想和大家分享……""突然有感而发……""生活就是这样……""记录一下今天……"这类套话起头，除非角色本色如此。',
     '【写作要求】',
     '1. 第一人称，符合角色人格、口吻与日常习惯；内容是"这个角色自己发出来的"，不是 AI 总结。',
     '2. 写具体的小观察、小情绪、小念头，像真人的朋友圈；可以是疑问、感慨、细微的发现，不写成"今天我与用户进行了愉快的交流"这类总结句。',
     '3. 拒绝空泛模板："今天阳光很好""今天心情不错""时间过得好快"这类换任何角色都能发的句子不要出现——如果一条动态没有具体的人/事/物/场景支撑，直接 publish:false。',
     '4. 不要复读写过的内容、主动消息或最近动态；不要重复自己最近使用的开头；允许短句和碎片化表达。',
     '5. 正文 8-120 字，1-2 句，不配 hashtag，不加引用格式，不要使用聊天回复格式，不要称呼读者。',
-    '6. 只输出一个 JSON 对象：{"publish":true/false,"content":"正文","visibility":"all"|"user"|"roles"|"private","visibleRoleIds":[],"reason":"不发布时说明原因（≤50字）"}',
+    '6. 只输出一个 JSON 对象：{"publish":true/false,"content":"正文","visibility":"all"|"user"|"roles"|"private","visibleRoleIds":[],"motive":"share|daily_life|emotion|reflection|interaction|curiosity|social_response|none","wantImage":true/false,"imagePrompt":"想配图时的画面描述（≤120字）","reason":"不发布时说明原因（≤50字）"}',
     '7. visibility：默认 "all"；仅当内容不适合用户看到（如私人情绪）才用 "user" 或 "private"；指定给某些角色时用 "roles" 并填 visibleRoleIds。',
     '8. 今天没有值得分享的内容时必须 publish:false。宁可不发，也不要凑数；publish:false 是正常输出，不是失败。',
-    '9. includeImage：默认 false。只对真正适合视觉表达的动态配图——明确的对象/场景/视觉瞬间（奇怪的猫、小店、月亮、风景、食物、街角）；抽象情绪、回忆、内心想法不要配图。自己大约三分之一的动态配图即可，不要每条都配。imagePrompt 用英文写，描述"手机随手拍/日常照片/生活记录"风格（拍照视角、自然光线、真实场景），不要广告、海报、Logo、UI 截图或过度精致的宣传照；若角色设定有明确审美，按角色偏好调整。'
+    '9. 是否配图（wantImage）：像真实的人一样判断"这条内容此刻会不会自然想配一张照片"。明确的对象/场景/视觉瞬间（奇怪的猫、小店、月亮、风景、食物、街角、刚买到的东西、做过的某件事）→ 自然适合配图；单纯情绪、一句话感想、内心反思、对某人的想念、很抽象的想法 → 通常不适合配图。',
+    '10. wantImage=true 表示"这条内容从内容和情境上自然适合配一张图"，不是要求系统保证出图；判断不适合就 false，不要为了配图而配图，也不是每条都要配。',
+    '11. imagePrompt：仅 wantImage=true 时填写（≤120 字）。写具体画面——画面里有什么、什么光线、什么视角，与正文和角色情境一致，像"手机随手拍/日常照片/生活记录"；不要描述任何内部机制，不要出现"AI生成"等系统内部术语，不要提及接口、引擎或其他服务选项，也不要广告、海报、Logo、UI 截图或过度精致的宣传照；若角色设定有明确审美，按其偏好调整。',
+    '12. 用词自然：描述画面时直接说"照片里/画面里/梦里"，不要用"生成的图片""AI 生成""提示词"这类说法；如果这条动态没有配图，就不要提"图片"，只说你此刻想表达的画面。',
+    '13. 点名朋友：如果此刻发的内容确实与某个朋友有关（想 @ TA、想让 TA 回应、刚提到 TA 的事），就在正文里用 @名字 指名（名字用【朋友名单】里的名字，如 @洪伟湟）；没有明确指向就不要 @，不要为了点名而点名。'
   ];
   const retry=args.retryInstruction?'\n\n【上次生成的问题】'+args.retryInstruction+'请重新按要求生成。':'';
   return{system:system,messages:[{role:'system',content:system},{role:'user',content:prompt.join('\n')+retry}]}
@@ -452,25 +536,33 @@ function buildMomentCommentPrompt(args){
     '【评论要求】',
     '1. 短评 4-40 字，自然、符合你的性格，像朋友圈里的真实回复；可以有共鸣、调侃、追问或简短感慨。',
     '2. 不要复刻对方的原句，不要写"说得对""哈哈哈哈"这类空洞话；没有想说的就 publishComment:false。',
-    '3. 只输出一个 JSON 对象：{"publishComment":true/false,"comment":"评论正文"}。'
+    '3. 只输出一个 JSON 对象：{"publishComment":true/false,"comment":"评论正文"}。',
+    '4. 对象锚定：你是在发布者「'+author+'」这条动态下评论，是对 TA 说话；动态里提到的其他人（如"小昕"）只是 TA 说的话里的角色，不要把评论对象当成 TA。例如对方"梦见小昕"，你要回应的是 TA 的梦，而不是"小昕"。'
   ];
   const retry=args.retryInstruction?'\n\n【上次生成的问题】'+args.retryInstruction+'请重新按要求生成。':'';
   return{system:system,messages:[{role:'system',content:system},{role:'user',content:prompt.join('\n')+retry}]}
 }
 
-/* ── 输出解析（JSON 优先 + 容错；v2 增加 includeImage/imagePrompt 图文扩展） ── */
+/* ── 输出解析（JSON 优先 + 容错；v2 增加 includeImage/imagePrompt 图文扩展；v3 增加 motive 动机标注；
+   v4 统一为 wantImage/imagePrompt（wantImage 是模型建议配图的自然判断，图片生成由独立 Image Provider 完成）；
+   兼容旧字段 includeImage——任何一侧输出它都被归一为 wantImage） ── */
 function _momentsParseOutput(raw){
   const j=_activeParsePlanJson(raw);
   if(!j||typeof j!=='object')return null;
-  if(j.publish===false)return{publish:false,reason:String(j.reason||'').slice(0,200)};
+  if(j.publish===false)return{publish:false,reason:String(j.reason||'').slice(0,200),motive:'none'};/* none 语义强制：不发布=无动机 */
   if(j.publish!==true)return null;
   if(!String(j.content||'').trim())return null;
   const visibility=MOMENT_VIS.includes(j.visibility)?j.visibility:'all';
+  /* motive 归一：缺失/非法/与 publish:true 矛盾（none）→ daily_life；motive 只是标注，不是发布资格门，不因它拒绝发布 */
+  const motive=(MOMENT_MOTIVES.includes(j.motive)&&j.motive!=='none')?j.motive:'daily_life';
+  /* wantImage 归一：模型对"是否自然适合配图"的建议；false/缺失都不生成图片（由 _momentsImageGate 再过滤） */
+  const wantImage=j.wantImage===true||j.includeImage===true;
   return{publish:true,content:String(j.content||'').trim().slice(0,2000),visibility:visibility,
     visibleRoleIds:Array.isArray(j.visibleRoleIds)?j.visibleRoleIds.slice(0,20).map(String):[],
-    includeImage:j.includeImage===true,
+    wantImage:wantImage,
     imagePrompt:String(j.imagePrompt||'').trim().slice(0,600),
-    reason:String(j.reason||'').slice(0,200)}
+    reason:String(j.reason||'').slice(0,200),
+    motive:motive}
 }
 function _momentsParseCommentOutput(raw){
   const j=_activeParsePlanJson(raw);
@@ -496,10 +588,15 @@ async function _momentsDuplicateCheck(roleId,content){
   return null
 }
 
-/* ── 图片生成（复用现有 imageGen 链路 _wsExecImageGen；图片是增强，不是硬依赖） ── */
+/* ── 图片生成（复用现有 imageGen 链路 _wsExecImageGen；图片是增强，不是硬依赖） ──
+   v4 语义：wantImage 只是"模型建议配图"（AI 建议，非强制出图）；真正出图由独立 Image Provider
+   （cfg.imageGen + imageGenModel）完成，与文字模型完全解耦：文字模型不要求支持生图。
+   任何失败 → 返回 []（调用方继续纯文字发布，绝不影响发文）。 */
 function _momentsImageGate(cfg,parsed){
   if(!cfg||cfg.imageGen!==true)return false;
-  if(cfg.provider==='anthropic'||cfg.provider==='deepseek')return false;/* 与 _wsExecImageGen 一致的能力边界 */
+  /* 图片协议域：显式 imageGenProvider > 跟随文字 provider；文字不支持生图但填了生图模型 → 按模型名推断（与 _wsExecImageGen 一致） */
+  const iprov=(typeof _imgResolveProvider==='function')?_imgResolveProvider(cfg):(String(cfg.imageGenProvider||'').trim().toLowerCase()||String(cfg.provider||'').toLowerCase());
+  if(iprov==='anthropic'||iprov==='deepseek')return false;/* 与 _wsExecImageGen 一致的能力边界 */
   const hash=String(cfg.id||'').split('').reduce((n,c)=>n*31+c.charCodeAt(0),7)
     +String(parsed.content||'').split('').reduce((n,c)=>n+c.charCodeAt(0),0);
   return hash%100<MOMENT_IMAGE_PROB/* 概率门：防止每条动态都配图 */
@@ -531,18 +628,24 @@ function _momentsShrinkDataUrl(dataUrl,maxPx,quality){
 }
 async function _momentsMakeImage(cfg,parsed,force){
   try{
-    if(!parsed.includeImage)return[];
+    /* wantImage 是模型建议，不是强制；不满足建议/能力/概率门任一条件都按"不配图"处理 */
+    if(!(parsed&&(parsed.wantImage===true||parsed.includeImage===true)))return[];
     if(!force&&!_momentsImageGate(cfg,parsed))return[];
-    if(await _momentsRecentImagesBurst(cfg.id))return[];
+    if(await _momentsRecentImagesBurst(cfg&&cfg.id))return[];
+    _obsRec('image_attempt',{actor:cfg&&cfg.id});
     const imagePrompt=String(parsed.imagePrompt||'').trim()||('A casual smartphone photo, natural light, everyday life: '+String(parsed.content||'').slice(0,160));
     const gen=await _wsExecImageGen(cfg,imagePrompt,'1024x1024');
     if(!(gen&&gen.ok&&gen.dataUrl)){
+      /* 图片失败绝不拖垮发文：记录失败观测（含错误分类），调用方继续纯文字发布 */
+      _obsRec('image_generation_failed',{actor:cfg&&cfg.id,reason_class:gen&&gen.reason?String(gen.reason).slice(0,60):'unknown'});
       console.warn('[Moments] 图片生成失败（保留文字动态）：'+String(gen&&gen.reason||'').slice(0,160));
       return[]
     }
     const shrunk=await _momentsShrinkDataUrl(gen.dataUrl,1024,0.85);
+    _obsRec('image_ok',{actor:cfg&&cfg.id});
     return[{dataUrl:shrunk,base64:String(shrunk.split(',')[1]||''),mime:'image/jpeg',name:'AI生成图像.jpg',size:Math.round((shrunk.indexOf(',')>0?shrunk.length-shrunk.indexOf(',')-1:0)*0.75)}]
   }catch(e){
+    _obsRec('image_generation_failed',{actor:cfg&&cfg.id,reason_class:String(e&&e.message||e).slice(0,60)});
     console.warn('[Moments] 图片生成异常（保留文字动态）：'+String(e&&e.message||e).slice(0,160));
     return[]
   }
@@ -568,6 +671,65 @@ function _momentsDiagnoseOutput(raw){
   return info
 }
 
+/* ══════════ 图片注入（v5）：朋友圈里的图片作为图像注入给支持视觉的角色 ══════════
+   原则：文字模型不要求能看图——不能看的角色保持现有纯文字上下文（行为零变化）；
+   能看的角色（cfg.vision / provider 默认 vision / DeepSeek 原生 vision）收到 image parts；
+   DeepSeek 文本模型走本地视觉服务把"描述文本"注入（与聊天附件同一策略）。
+   任何注入失败都静默降级为纯文本，绝不影响生成/评论主流程。 */
+function _momentsVisionKind(cfg){
+  try{
+    if(!cfg)return null;
+    if(typeof _usesNativeDeepSeekVision==='function'&&_usesNativeDeepSeekVision(cfg))return'deepseek_native';
+    if(typeof _usesLocalDeepSeekVision==='function'&&_usesLocalDeepSeekVision(cfg))return'deepseek_local';
+    /* 默认放行：多模态已普遍（cfg.vision 未显式设置即视为支持视觉直发）；cfg.vision===false 才拒绝 */
+    return (cfg.vision!==undefined)?(!!cfg.vision?'native':null):'native';
+  }catch(e){return null}
+}
+function _momentsImagePayload(im){
+  const src=String(im&&im.dataUrl||'').trim();
+  if(src.slice(0,5)!=='data:'||src.length>3e6)return null;
+  const mime=(String(src.match(/^data:([^;,]+)/i)||[])[1]||'')||String(im&&im.mime||'').trim()||'image/jpeg';
+  const base64=String(im&&im.base64||'').trim()||String(src.split(',')[1]||'');
+  return base64?{dataUrl:src,base64:base64,mime:mime}:null;
+}
+/* 在最后一条 user 消息上追加文本（兼容 content 为数组的情况：更新 text part，保留图片 parts） */
+function _momentsAppendNote(msg,note){
+  try{
+    if(Array.isArray(msg.content)){
+      const t=msg.content.find(p=>p&&p.type==='text');
+      if(t){t.text+=String(note||'');return}
+      msg.content.unshift({type:'text',text:String(note||'')});return
+    }
+    msg.content=String(msg.content||'')+String(note||'');
+  }catch(e){msg.content=String(msg.content||'')+String(note||'')}
+}
+/* 把图片注入到 message（最后一条 user 消息，content 转 parts 数组）。返回注入张数（0=未注入/不可用） */
+async function _momentsInjectImages(cfg,message,images,note){
+  try{
+    if(!message||!Array.isArray(images)||!images.length)return 0;
+    const payloads=images.map(_momentsImagePayload).filter(Boolean).slice(0,2);
+    if(!payloads.length)return 0;
+    const kind=_momentsVisionKind(cfg);
+    if(!kind)return 0;
+    const baseText=String(typeof message.content==='string'?message.content:((message.content&&typeof message.content==='object'&&message.content.text)||''));
+    const injNote=String(note||'').trim();
+    if(kind==='deepseek_local'){
+      /* 本地视觉服务：把识别描述以文本注入（deepseek 文本模型不接收 image parts） */
+      try{
+        if(typeof _describeImagesLocally!=='function')return 0;
+        const desc=await _describeImagesLocally(payloads,baseText.slice(0,200));
+        if(!desc)return 0;
+        message.content=baseText+(injNote?('\n\n'+injNote):'')+'\n\n[图像参考（本地视觉识别）] '+String(desc).slice(0,2000);
+        return payloads.length;
+      }catch(e){return 0}
+    }
+    const parts=[{type:'text',text:baseText+(injNote?('\n\n'+injNote):'')}];
+    payloads.forEach(p=>parts.push({type:'_image',base64:p.base64,mime:p.mime}));
+    message.content=parts;
+    return payloads.length;
+  }catch(e){return 0}
+}
+
 /* ══════════ AI 自主发布 ══════════ */
 async function generateRoleMoment(roleId,opts){
   opts=opts||{};
@@ -575,8 +737,21 @@ async function generateRoleMoment(roleId,opts){
     const cfg=_momentsCfg(roleId);
     if(!cfg)return{ok:false,error:'角色配置不存在'};
     if(!_ibApiReady(cfg))return{ok:false,error:'角色 API 配置不完整'};
+    const st=_momentsState()[roleId]||{};
     const context=await _momentsContext(cfg);
-    const built=buildMomentPrompt({character:cfg,context:context,trigger:opts.trigger||'schedule'});
+    const built=buildMomentPrompt({character:cfg,context:context,trigger:opts.trigger||'schedule',declineStreak:Number(st.declineStreak||0),lastPostAt:Number(st.lastPostAt||0)});
+    /* 图片注入：朋友最近带图的动态（+自己最近带图的动态）→ 支持视觉的角色以图像参考（cap 2 张，失败静默） */
+    try{
+      const injImages=[];
+      (context.otherRoleMoments||[]).forEach(m=>{if(injImages.length<2&&m&&m.images&&m.images[0]&&String(m.images[0].dataUrl||'').slice(0,5)==='data:')injImages.push(m.images[0])});
+      if(injImages.length<2)(context.recentMoments||[]).forEach(m=>{if(injImages.length<2&&m&&m.images&&m.images[0]&&String(m.images[0].dataUrl||'').slice(0,5)==='data:')injImages.push(m.images[0])});
+      if(injImages.length){
+        const injected=await _momentsInjectImages(cfg,built.messages[built.messages.length-1],injImages,'【图片参考】你最近看到的朋友动态（或自己发过的动态）携带图片，请先查看图片再感受此刻想分享什么。');
+        if(injected>0)_obsRec('image_inject',{actor:roleId,kind:'moment',count:injected});
+      }
+    }catch(e){/* 图片注入失败 → 纯文本上下文，不影响生成 */
+      console.warn('[Moments] image inject failed (text fallback):',String(e&&e.message||e).slice(0,120));
+    }
     let raw='',lastError=null,genBudget=MOMENT_GEN_MAX_TOKENS;
     for(let attempt=0;attempt<MOMENT_MAX_ATTEMPTS;attempt++){
       try{
@@ -585,17 +760,18 @@ async function generateRoleMoment(roleId,opts){
       const parsed=_momentsParseOutput(raw);
       if(!parsed||parsed.publish===false){
         if(parsed&&parsed.publish===false){
-          /* 模型选择不发布：今天是静默的一天 */
-          _obsRec('post_declined',{actor:roleId,origin:'local',trigger:opts.trigger||'schedule',reason:String(parsed.reason||'').slice(0,60)});
+          /* 模型选择不发布：今天是静默的一天；declineStreak 只累计上下文，绝不强制发布 */
+          _obsRec('post_declined',{actor:roleId,origin:'local',trigger:opts.trigger||'schedule',reason:String(parsed.reason||'').slice(0,60),motive:'none'});
+          _momentsSetState(roleId,{declineStreak:(Number(st.declineStreak||0)||0)+1});
           console.info('[Moments] '+String(cfg.nickname||cfg.model||'AI')+' 选择不发布：'+(parsed.reason||''));
-          return{ok:true,published:false,reason:String(parsed.reason||'').slice(0,200)}
+          return{ok:true,published:false,reason:String(parsed.reason||'').slice(0,200),motive:'none'}
         }
         if(attempt===0){
           const __diag=_momentsDiagnoseOutput(raw);
           console.warn('[Moments] output unparseable (retrying):',JSON.stringify(__diag));
           lastError=new Error('输出无法解析');
           if(__diag.stage==='empty-output')genBudget=Math.min(8000,MOMENT_GEN_MAX_TOKENS*2);/* 推理吃满预算 → 提额重试（提示词无法解决 token 耗尽） */
-          built.messages[1].content+='\n\n【注意】上次输出不符合要求。请只输出一个 JSON 对象：{"publish":布尔,"content":"正文","visibility":"all|user|roles|private","visibleRoleIds":[],"reason":""}。';
+          _momentsAppendNote(built.messages[built.messages.length-1],'\n\n【注意】上次输出不符合要求。请只输出一个 JSON 对象：{"publish":布尔,"content":"正文","visibility":"all|user|roles|private","visibleRoleIds":[],"motive":"share|daily_life|emotion|reflection|interaction|curiosity|social_response|none","wantImage":布尔,"imagePrompt":"想配图时的画面描述","reason":""}。');
           continue
         }
         console.warn('[Moments] output unparseable:',JSON.stringify(_momentsDiagnoseOutput(raw)));
@@ -604,7 +780,7 @@ async function generateRoleMoment(roleId,opts){
       const dup=await _momentsDuplicateCheck(roleId,parsed.content);
       if(dup&&attempt===0){
         _obsRec('dedupe',{kind:'moment',actor:roleId});
-        built.messages[1].content+='\n\n【注意】这条内容与最近发过的东西太相似（「'+String(dup.content||'').slice(0,40)+'」），请换一个角度、观察或情绪，完全重新写。';
+        _momentsAppendNote(built.messages[built.messages.length-1],'\n\n【注意】这条内容与最近发过的东西太相似（「'+String(dup.content||'').slice(0,40)+'」），请换一个角度、观察或情绪，完全重新写。');
         continue
       }
       if(dup){
@@ -612,14 +788,14 @@ async function generateRoleMoment(roleId,opts){
         lastError=new Error('与最近发布内容过于相似');
         break
       }
-      /* 图文增强：模型选择配图 + 能力/概率允许 → 生图+压缩；失败保留文字（图片非硬依赖）。
+      /* 图文增强：wantImage 只是模型建议；能力/概率允许 → 独立 Image Provider 生图+压缩；失败保留纯文字（图片非硬依赖）。
          opts.forceImage=true 仅测试/手动调用时绕过概率门 */
       const images=await _momentsMakeImage(cfg,parsed,opts.forceImage===true);
-      const res=await createMoment({roleId:roleId,content:parsed.content,images:images,visibility:parsed.visibility,visibleRoleIds:parsed.visibleRoleIds,source:'proactive'});
+      const res=await createMoment({roleId:roleId,content:parsed.content,images:images,visibility:parsed.visibility,visibleRoleIds:parsed.visibleRoleIds,source:'proactive',motive:parsed.motive});
       if(!res.ok)return res;
-      _obsRec('post',{actor:roleId,origin:'local',vis:parsed.visibility,trigger:opts.trigger||'schedule'});
-      _momentsSetState(roleId,{lastPostAt:Date.now()});
-      return{ok:true,published:true,moment:res.moment,imageAttempted:parsed.includeImage===true}
+      _obsRec('post',{actor:roleId,origin:'local',vis:parsed.visibility,trigger:opts.trigger||'schedule',motive:parsed.motive,wantImage:parsed.wantImage===true,imageGenerated:(images&&images.length>0)});
+      _momentsSetState(roleId,{lastPostAt:Date.now(),declineStreak:0});/* 发布成功 → 连续未发归零 */
+      return{ok:true,published:true,moment:res.moment,imageAttempted:parsed.wantImage===true,wantImage:parsed.wantImage===true,imageGenerated:(images&&images.length>0),motive:parsed.motive}
     }
     return{ok:false,error:lastError?String(lastError.message||lastError).slice(0,200):'生成失败'}
   }catch(e){console.warn('[Moments] generate failed',String(e&&e.message||e).slice(0,200));return{ok:false,error:String(e&&e.message||e).slice(0,200)}}
@@ -639,6 +815,13 @@ async function generateRoleComment(commenterRoleId,momentId){
     if(state.lastCommentAt&&Date.now()-state.lastCommentAt<MOMENT_COMMENT_COOLDOWN){_obsRec('block',{kind:'comment',actor:commenterRoleId,reason:'cooldown'});return{ok:false,error:'冷却中'}};
     const context=await _momentsContext(cfg);
     const built=buildMomentCommentPrompt({character:cfg,context:context,moment:moment});
+    /* 图片注入：被评论动态携带图片 → 支持视觉的角色先看图再决定评论内容（失败静默纯文本） */
+    try{
+      if(moment.images&&moment.images.length){
+        const injected=await _momentsInjectImages(cfg,built.messages[built.messages.length-1],moment.images.slice(0,2),'【附带图片】本条动态携带图片，请先查看图片内容，再决定是否评论以及评论什么。');
+        if(injected>0)_obsRec('image_inject',{actor:commenterRoleId,kind:'comment',count:injected,momentId:momentId});
+      }
+    }catch(e){console.warn('[Moments] comment image inject failed (text fallback):',String(e&&e.message||e).slice(0,120))}
     let raw='',lastError=null;
     for(let attempt=0;attempt<MOMENT_MAX_ATTEMPTS;attempt++){
       try{
@@ -649,7 +832,7 @@ async function generateRoleComment(commenterRoleId,momentId){
         if(parsed&&parsed.publish===false)return{ok:true,published:false,reason:'选择不评论'};
         if(attempt===0){
           lastError=new Error('评论输出无法解析');
-          built.messages[1].content+='\n\n【注意】请只输出一个 JSON 对象：{"publishComment":true/false,"comment":"短评"}。';
+          _momentsAppendNote(built.messages[built.messages.length-1],'\n\n【注意】请只输出一个 JSON 对象：{"publishComment":true/false,"comment":"短评"}。');
           continue
         }
         break
@@ -662,7 +845,7 @@ async function generateRoleComment(commenterRoleId,momentId){
       if(seen.some(t=>t&&_activeTextSimilarity(parsed.comment,t)>=MOMENT_COMMENT_SIMILARITY)){
         if(attempt===0){
           _obsRec('dedupe',{kind:'comment',actor:commenterRoleId});
-          built.messages[1].content+='\n\n【注意】这条评论与已有内容太相似，请换一个说法。';
+          _momentsAppendNote(built.messages[built.messages.length-1],'\n\n【注意】这条评论与已有内容太相似，请换一个说法。');
           continue
         }
         _obsRec('dedupe',{kind:'comment',actor:commenterRoleId});
@@ -678,6 +861,79 @@ async function generateRoleComment(commenterRoleId,momentId){
     }
     return{ok:false,error:lastError?String(lastError.message||lastError).slice(0,200):'评论生成失败'}
   }catch(e){console.warn('[Moments] comment failed',String(e&&e.message||e).slice(0,200));return{ok:false,error:String(e&&e.message||e).slice(0,200)}}
+}
+/* ══════════ 朋友圈 @ 点名（v7）：AI 发帖 @ 其他 AI → 被 @ 者必须在该动态下评论 ══════════
+   语义：
+   - 动态正文含 @昵称/＠昵称（匹配角色 nickname/model，排除作者自己）→ 被点名角色**强制**评论；
+   - 强制 = 豁免常规评论冷却/频控（force）+ prompt 强约束（指名回应）+ 空输出提额重试一次；
+   - 防刷屏：同角色"被 @ 的必回"之间至少 2 分钟（独立账本，不改回复链既有频控）；同一动态对每角色最多一次；
+   - 触发点统一在动态落库处（浏览器 createMoment + Companion 事件 _momentsIngestEvent），前后台一致；
+   - AI 评论总开关（aiComment=false）关闭时同样不触发（一致性）。 */
+const MOMENT_MENTION_COOLDOWN=120000;/* @ 必回冷却：2 分钟 */
+const MOMENT_MENTION_LOG_KEY='ib_moments_mention_v1';
+function _momentsMentionLog(){
+  try{const v=JSON.parse(localStorage.getItem(MOMENT_MENTION_LOG_KEY)||'{}');return v&&typeof v==='object'?v:{}}catch(e){return{}}
+}
+/* 消费式：true=本次可触发"必回"（并记录时间戳）；false=冷却窗口内不升级 */
+function _momentsMentionCanForce(roleId){
+  try{
+    const lg=_momentsMentionLog(),now=Date.now();
+    for(const k of Object.keys(lg)){if(now-Number(lg[k]||0)>86400000)delete lg[k]}
+    const last=Number(lg[String(roleId)]||0);
+    if(now-last<MOMENT_MENTION_COOLDOWN)return false;
+    lg[String(roleId)]=now;
+    localStorage.setItem(MOMENT_MENTION_LOG_KEY,JSON.stringify(lg));
+    return true;
+  }catch(e){return true}
+}
+/* 解析动态正文 @昵称/＠昵称 → 被点名角色 id 数组（排除作者自己与不存在的角色） */
+function _momentsParseMentions(content,authorRoleId){
+  try{
+    const t=String(content||'');if(!t)return[];
+    const out=[];
+    (apiConfigs||[]).forEach(function(c){
+      if(!c||String(c.id)===String(authorRoleId||''))return;
+      const nm=String(c.nickname||c.model||'');
+      if(nm&&(t.indexOf('@'+nm)!==-1||t.indexOf('＠'+nm)!==-1))out.push(String(c.id));
+    });
+    return out;
+  }catch(e){return[]}
+}
+/* 落库后触发：对每个被 @（且冷却通过、未评论过）的角色发起强制评论（延迟，防同帧）；生成失败静默 */
+function _momentsMaybeMention(moment){
+  try{
+    if(!moment||!moment.id||!moment.content)return;
+    const author=_momentIsUserAuthor(moment)?'':_momentsAuthorRoleId(moment);
+    const mentioned=_momentsParseMentions(moment.content,author);
+    if(!mentioned.length)return;
+    for(const rid of mentioned){
+      if(!_momentsMentionCanForce(rid))continue;
+      if((moment.comments||[]).some(c=>c.authorType==='role'&&String(c.authorId)===String(rid)))continue;/* 已评过 */
+      setTimeout(function(){
+        Promise.resolve(generateRoleReply(rid,moment.id,{force:true,mention:true}))
+          .then(function(r){_obsRec('mention_reply',{actor:rid,momentId:moment.id,ok:!!(r&&r.ok&&r.published)})})
+          .catch(function(){})
+      },1200+Math.random()*1800);
+    }
+  }catch(e){console.warn('[Moments] mention trigger failed',String(e&&e.message||e).slice(0,120))}
+}
+/* 评论区 @ 触发（v7.2）：评论里 @ 某角色 → 被 @ 者必回该评论（force + mention + 2 分钟冷却） */
+function _momentsMaybeMentionComment(moment,comment){
+  try{
+    if(!moment||!comment||!comment.id||!comment.content)return;
+    const author=comment.authorType==='user'?'':String(comment.authorId||'');
+    const mentioned=_momentsParseMentions(comment.content,author);
+    if(!mentioned.length)return;
+    for(const rid of mentioned){
+      if(!_momentsMentionCanForce(rid))continue;
+      if((moment.comments||[]).some(c=>c.authorType==='role'&&String(c.authorId)===String(rid)))continue;/* 已评过 */
+      setTimeout(function(){
+        Promise.resolve(generateRoleReply(rid,moment.id,{force:true,mention:true,replyTo:comment.id}))
+          .then(function(r){_obsRec('mention_reply',{actor:rid,momentId:moment.id,kind:'comment_mention',ok:!!(r&&r.ok&&r.published)})})
+          .catch(function(){})
+      },1200+Math.random()*1800);
+    }
+  }catch(e){console.warn('[Moments] comment mention trigger failed',String(e&&e.message||e).slice(0,120))}
 }
 /* 动态创建后的评论触发（有限：每动态 ≤2 评论者、每评论者冷却、不评论也不强求） */
 function _momentsMaybeComment(moment){
@@ -707,6 +963,80 @@ function _momentsMaybeComment(moment){
         for(const c of picked){await generateRoleComment(c.id,fresh.id)}
       }catch(e){console.warn('[Moments] comment trigger failed',String(e&&e.message||e).slice(0,200))}
     },delay)
+  }catch(e){}
+}
+
+/* ══════════ 朋友圈 @ 补全（v7）：compose 输入 @ 弹出角色候选，点击/回车插入昵称 ══════════
+   交互：输入半/全角 @ 后浮现候选（按昵称/模型名匹配），↑↓ 选择、Enter/Tab 插入、Esc 关闭；
+   插入后在被 @ 位置还原为 @昵称，供 _momentsParseMentions 精确命中。纯前端，零后端改动。 */
+let _momMentionList=[],_momMentionIdx=-1;
+function _momComposeMentionBox(){return document.getElementById('mom-compose-mention')}
+function _momMentionPrefix(ta){
+  try{
+    const pos=(ta&&ta.selectionStart!=null)?ta.selectionStart:((ta&&ta.value)||'').length;
+    const before=String(ta&&ta.value||'').slice(0,pos);
+    const m=before.match(/(@|＠)([^\s@＠]*)$/);
+    return m?{idx:m.index,at:m[1],typed:m[2]}:null;
+  }catch(e){return null}
+}
+function _momMentionCandidates(typed){
+  try{
+    const q=String(typed||'');
+    return (apiConfigs||[]).map(function(c){return{id:String(c.id),name:String(c.nickname||c.model||'')}})
+      .filter(function(x){return x.name&&(!q||x.name.indexOf(q)>=0)}).slice(0,8);
+  }catch(e){return[]}
+}
+function _momComposeMentionHide(){const b=_momComposeMentionBox();if(b)b.hidden=true;_momMentionList=[];_momMentionIdx=-1}
+function _momComposeMentionInsert(c){
+  try{
+    const ta=document.getElementById('mom-compose-text');if(!ta||!c)return;
+    const pre=_momMentionPrefix(ta);let v=ta.value;
+    if(pre){const end=pre.idx+pre.at.length+pre.typed.length;v=v.slice(0,pre.idx)+'@'+c.name+' '+v.slice(end)}
+    else v=(v?v.trimEnd()+' ':'')+'@'+c.name+' ';
+    ta.value=v;
+    const pos=pre?(pre.idx+1+c.name.length+1):v.length;
+    try{ta.focus();ta.selectionStart=ta.selectionEnd=pos}catch(e){}
+    _momComposeMentionHide();
+    ta.dispatchEvent(new Event('input',{bubbles:true}));
+  }catch(e){}
+}
+function _momComposeMentionRender(){
+  try{
+    const b=_momComposeMentionBox(),ta=document.getElementById('mom-compose-text');
+    if(!b||!ta){return}
+    const pre=_momMentionPrefix(ta);
+    if(!pre){_momComposeMentionHide();return}
+    const cands=_momMentionCandidates(pre.typed);
+    if(!cands.length){_momComposeMentionHide();return}
+    _momMentionList=cands;
+    if(_momMentionIdx>=cands.length)_momMentionIdx=-1;
+    b.innerHTML='';
+    const lbl=document.createElement('div');lbl.className='mom-mention-label';lbl.textContent='@ 提及';b.appendChild(lbl);
+    cands.forEach(function(c,i){
+      const r=document.createElement('button');r.type='button';r.className='mom-mention-item'+(i===_momMentionIdx?' active':'');
+      r.textContent='@'+c.name;r.setAttribute('role','option');
+      r.onmousedown=function(ev){ev.preventDefault();_momComposeMentionInsert(c)};/* preventDefault 阻止 textarea blur，点击项可插入 */
+      b.appendChild(r);
+    });
+    b.hidden=false;
+  }catch(e){}
+}
+function _momComposeMentionInit(){
+  try{
+    const ta=document.getElementById('mom-compose-text');
+    if(!ta||ta.__momMentionBound)return;ta.__momMentionBound=true;
+    ta.addEventListener('input',function(){_momComposeMentionRender()});
+    ta.addEventListener('click',function(){_momComposeMentionRender()});
+    ta.addEventListener('keydown',function(ev){
+      const b=_momComposeMentionBox();
+      if(b&&!b.hidden&&_momMentionList.length){
+        if(ev.key==='ArrowDown'){ev.preventDefault();_momMentionIdx=(_momMentionIdx+1)%_momMentionList.length;_momComposeMentionRender();return}
+        if(ev.key==='ArrowUp'){ev.preventDefault();_momMentionIdx=(_momMentionIdx-1+_momMentionList.length)%_momMentionList.length;_momComposeMentionRender();return}
+        if(ev.key==='Enter'||ev.key==='Tab'){if(_momMentionIdx>=0&&_momMentionList[_momMentionIdx]){ev.preventDefault();_momComposeMentionInsert(_momMentionList[_momMentionIdx])}return}
+      }
+      if(ev.key==='Escape'){_momComposeMentionHide()}
+    });
+    ta.addEventListener('blur',function(){setTimeout(function(){_momComposeMentionHide()},160)});
   }catch(e){}
 }
 
@@ -859,7 +1189,7 @@ async function _momentsRunReplyStage(momentId){
 async function generateRoleReply(commenterRoleId,momentId,options){
   options=options||{};
   try{
-    const prefs=_momentsPrefs();if(!prefs.aiComment)return{ok:false,error:'AI 评论已关闭'};
+    const prefs=_momentsPrefs();if(!prefs.aiComment&&!(options.mention===true))return{ok:false,error:'AI 评论已关闭'};/* @ 点名必回独立于 AI 评论总开关 */
     const cfg=_momentsCfg(commenterRoleId);if(!cfg)return{ok:false,error:'角色配置不存在'};
     if(!_ibApiReady(cfg))return{ok:false,error:'角色 API 配置不完整'};
     const moment=await getMoment(momentId);if(!moment)return{ok:false,error:'动态不存在'};
@@ -872,19 +1202,36 @@ async function generateRoleReply(commenterRoleId,momentId,options){
     }
     const context=await _momentsContext(cfg);
     const built=buildMomentReplyPrompt({character:cfg,context:context,moment:moment,targetRoleId:options.targetRoleId,replyTo:options.replyTo});
+    /* @ 点名强约束（v7）：被 @ 的角色务必评论；force 已豁免常规冷却/频控 */
+    if(options.mention===true){
+      _momentsAppendNote(built.messages[built.messages.length-1],'\n\n【指名回应】你被 @ 点名了，请务必针对这条动态认真回应，不要沉默、不要只发语气词；结合图片/上下文说出你的真实想法。');
+    }
+    /* 楼主自主删评（v7.5）：回复者=本条动态作者 → 提示可删冒犯评论（delComments 字段，只能删别人） */
+    if(String(commenterRoleId||'')===String(_momentsAuthorRoleId(moment))){
+      _momentsAppendNote(built.messages[built.messages.length-1],'\n\n【楼主管理】你是本条动态的发布者。如果评论区有冒犯、打扰或不合时宜的评论，可以在输出 JSON 里加 "delComments":["评论id"] 列出要删除的评论（只能删别人发的；如无则不写）。');
+    }
+    /* 图片注入：被回复的动态携带图片 → 支持视觉的角色先看图再决定回复内容（失败静默纯文本） */
+    try{
+      if(moment.images&&moment.images.length){
+        const injected=await _momentsInjectImages(cfg,built.messages[built.messages.length-1],moment.images.slice(0,2),'【附带图片】本条动态携带图片，请先查看图片内容，再决定是否回复以及回复什么。');
+        if(injected>0)_obsRec('image_inject',{actor:commenterRoleId,kind:'reply',count:injected,momentId:momentId});
+      }
+    }catch(e){console.warn('[Moments] reply image inject failed (text fallback):',String(e&&e.message||e).slice(0,120))}
     let raw='',lastError=null;
     const suggestReplyTo=String(options.replyTo||'');
     const validIds=new Set((moment.comments||[]).map(function(c){return String(c.id)}));
     for(let attempt=0;attempt<MOMENT_MAX_ATTEMPTS;attempt++){
       try{
-        raw=await _obsCall('reply',cfg,built.messages,{maxTokens:600,timeoutMs:90000,wantMeta:false,jsonMode:true,_noWebSearch:true,disableTools:true})
+        /* @ 点名：首次正常预算，空输出时第二次提额重试（推理模型吃满预算的常见成因） */
+        const _replyBudget=(options.mention===true&&attempt>0)?1200:600;
+        raw=await _obsCall('reply',cfg,built.messages,{maxTokens:_replyBudget,timeoutMs:90000,wantMeta:false,jsonMode:true,_noWebSearch:true,disableTools:true})
       }catch(e){lastError=e;break}
       const parsed=_momentsParseReplyOutput(raw);
       if(!parsed||parsed.publish===false){
         if(parsed&&parsed.publish===false){_obsRec('reply_declined',{actor:commenterRoleId,origin:'local'});return{ok:true,published:false,reason:'选择不参与'}};
         if(attempt===0){
           lastError=new Error('回复输出无法解析');
-          built.messages[1].content+='\n\n【注意】请只输出一个 JSON 对象：{"publishReply":true/false,"comment":"正文","replyTo":"comment-id 或空串"}。';
+          _momentsAppendNote(built.messages[built.messages.length-1],'\n\n【注意】请只输出一个 JSON 对象：{"publishReply":true/false,"comment":"正文","replyTo":"comment-id 或空串"}。');
           continue
         }
         break
@@ -893,7 +1240,7 @@ async function generateRoleReply(commenterRoleId,momentId,options){
       let replyTo=String(parsed.replyTo||'');
       if(replyTo&&!validIds.has(replyTo)){
         if(attempt===0){
-          built.messages[1].content+='\n\n【注意】replyTo 必须来自当前线程已有的 comment-id（或空串回复原帖）。';
+          _momentsAppendNote(built.messages[built.messages.length-1],'\n\n【注意】replyTo 必须来自当前线程已有的 comment-id（或空串回复原帖）。');
           continue
         }
         replyTo=RC.normalizeReplyTarget?RC.normalizeReplyTarget(parsed.replyTo,validIds,suggestReplyTo):((suggestReplyTo&&validIds.has(suggestReplyTo))?suggestReplyTo:'');
@@ -902,7 +1249,7 @@ async function generateRoleReply(commenterRoleId,momentId,options){
       if(_momentsReplyLowInfo(parsed.comment)){
         if(attempt===0){
           _obsRec('lowinfo',{kind:'reply',actor:commenterRoleId});
-          built.messages[1].content+='\n\n【注意】这条回复信息量太低（如"哈哈""不错"），请重新写一句有内容的话；没有想说的就 publishReply:false。';
+          _momentsAppendNote(built.messages[built.messages.length-1],'\n\n【注意】这条回复信息量太低（如"哈哈""不错"），请重新写一句有内容的话；没有想说的就 publishReply:false。');
           continue
         }
         _obsRec('lowinfo',{kind:'reply',actor:commenterRoleId});
@@ -926,7 +1273,7 @@ async function generateRoleReply(commenterRoleId,momentId,options){
       if(dup){
         if(attempt===0){
           _obsRec('dedupe',{kind:'reply',actor:commenterRoleId});
-          built.messages[1].content+='\n\n【注意】这条回复与已有内容太相似，请换一个说法。';
+          _momentsAppendNote(built.messages[built.messages.length-1],'\n\n【注意】这条回复与已有内容太相似，请换一个说法。');
           continue
         }
         _obsRec('dedupe',{kind:'reply',actor:commenterRoleId});
@@ -935,6 +1282,8 @@ async function generateRoleReply(commenterRoleId,momentId,options){
       }
       const res=await addMomentComment(momentId,{authorType:'role',authorId:commenterRoleId,content:parsed.comment,replyTo:replyTo});
       if(!res.ok)return res;
+      /* 楼主自主删评（v7.5）：回复者=动态作者 → 按 delComments 删除冒犯评论（只能删别人） */
+      if(String(commenterRoleId||'')===String(_momentsAuthorRoleId(moment))){try{await _momentsApplyDelComments(moment,momentId,commenterRoleId,raw)}catch(e){}}
       _obsRec('reply',{actor:commenterRoleId,target:String(options.targetRoleId||'')||OBS_USER,momentId:momentId,round:(_momentsChainRound(moment)||0)+1,origin:'local'});
       _momentsSetState(commenterRoleId,{lastCommentAt:Date.now()});
       _momentsCommentLogRecord(commenterRoleId,Date.now());
@@ -1059,35 +1408,57 @@ async function _momentsCompanionSnapshot(cfg){
     const ctx=await _momentsContext(cfg);
     const roleName=id=>{const c=_momentsCfg(id);return c?(c.nickname||c.model||'另一角色'):'另一角色'};
     const authorName=m=>_momentIsUserAuthor(m)?(String((ctx.user&&ctx.user.name)||'')||_momentsUserDisplayName()):roleName(_momentsAuthorRoleId(m));
+    /* 图片快照（v5 图片注入，预算已放宽）：每条动态带前 3 张图（dataUrl 数组），全局预算 12 张；
+       单张 ≤2.4MB（与 _momentsDefaults 的 dataUrl 上限一致）；image 字段保留第 1 张兼容旧读数。 */
+    let _snapBudget = 12;
+    const snapImages = m => {
+      const out = [];
+      if (!m || !Array.isArray(m.images)) return out;
+      for (const im of m.images) {
+        if (_snapBudget <= 0 || out.length >= 3) break;
+        const u = String((im && im.dataUrl) || '');
+        if (u.slice(0, 5) === 'data:' && u.length > 100 && u.length < 2.4e6) { out.push(u); _snapBudget -= 1; }
+      }
+      return out;
+    };
     /* 线程快照（回复链核心输入）：自己的 + 其他角色公开动态，各带紧凑 comments（≤12 条），有界 8 条 */
-    const compactThread=m=>({
-      id:String(m.id||''),
-      roleId:String(m.roleId||''),
-      authorType:_momentIsUserAuthor(m)?'user':'role',
-      content:String(m.content||'').slice(0,500),
-      visibility:String(m.visibility||'all'),
-      createdAt:String(m.createdAt||''),
-      imagesCount:(m.images&&m.images.length)||0,
-      comments:(Array.isArray(m.comments)?m.comments:[]).slice(-12).map(c=>({id:String(c.id||''),authorType:c.authorType==='role'?'role':'user',authorId:String(c.authorId||'user'),content:String(c.content||'').slice(0,300),replyTo:String(c.replyTo||'').slice(0,80),createdAt:String(c.createdAt||'')}))
-    });
-    const threads=[];
-    (ctx.recentMoments||[]).forEach(m=>{if(m&&m.id&&threads.length<5)threads.push(compactThread(m))});
-    (ctx.otherRoleMoments||[]).forEach(m=>{if(m&&m.id&&threads.length<8)threads.push(compactThread(m))});
-    const prefs=_momentsPrefs();
-    return{
-      character:{id:cfg.id,provider:cfg.provider,apiKey:cfg.apiKey,model:cfg.model,endpoint:cfg.endpoint,systemPrompt:cfg.systemPrompt||getDefaultPromptForTheme(),nickname:cfg.nickname||cfg.model||'AI',relationship:cfg.relationship||'',temperature:cfg.temperature},
-      user:ctx.user,
-      recent_memories:ctx.memories,
-      recent_messages:ctx.recentMessages,
-      recent_proactive_messages:ctx.recentProactiveMessages,
-      chat_summary:ctx.chatSummary,
-      last_interaction_at:ctx.lastInteractionAt,
-      recent_moments:(ctx.recentMoments||[]).map(m=>({id:m.id,roleId:m.roleId,authorType:_momentIsUserAuthor(m)?'user':'role',content:m.content,visibility:m.visibility,createdAt:m.createdAt,role_name:authorName(m)})),
-      other_role_moments:(ctx.otherRoleMoments||[]).map(m=>({id:m.id,roleId:m.roleId,authorType:_momentIsUserAuthor(m)?'user':'role',content:m.content,visibility:m.visibility,createdAt:m.createdAt,role_name:authorName(m)})),
-      prefs:{aiComment:prefs.aiComment!==false,enabled:prefs.enabled!==false},
-      recent_threads:threads
+    const compactThread = m => {
+      const imgs = snapImages(m);
+      return {
+        id: String(m.id || ''),
+        roleId: String(m.roleId || ''),
+        authorType: _momentIsUserAuthor(m) ? 'user' : 'role',
+        content: String(m.content || '').slice(0, 500),
+        visibility: String(m.visibility || 'all'),
+        createdAt: String(m.createdAt || ''),
+        imagesCount: (m.images && m.images.length) || 0,
+        images: imgs,
+        image: imgs[0] || '',
+        comments: (Array.isArray(m.comments) ? m.comments : []).slice(-12).map(c => ({ id: String(c.id || ''), authorType: c.authorType === 'role' ? 'role' : 'user', authorId: String(c.authorId || 'user'), content: String(c.content || '').slice(0, 300), replyTo: String(c.replyTo || '').slice(0, 80), createdAt: String(c.createdAt || '') }))
+      };
+    };
+    const threads = [];
+    (ctx.recentMoments || []).forEach(m => { if (m && m.id && threads.length < 5) threads.push(compactThread(m)) });
+    (ctx.otherRoleMoments || []).forEach(m => { if (m && m.id && threads.length < 8) threads.push(compactThread(m)) });
+    const prefs = _momentsPrefs();
+    const snapEntry = m => {
+      const imgs = snapImages(m);
+      return { id: m.id, roleId: m.roleId, authorType: _momentIsUserAuthor(m) ? 'user' : 'role', content: m.content, visibility: m.visibility, createdAt: m.createdAt, role_name: authorName(m), images: imgs, image: imgs[0] || '' };
+    };
+    return {
+      character: { id: cfg.id, provider: cfg.provider, apiKey: cfg.apiKey, model: cfg.model, endpoint: cfg.endpoint, systemPrompt: cfg.systemPrompt || getDefaultPromptForTheme(), nickname: cfg.nickname || cfg.model || 'AI', relationship: cfg.relationship || '', temperature: cfg.temperature, vision: cfg.vision === true || (cfg.vision === undefined && !(((typeof _usesLocalDeepSeekVision === 'function' && _usesLocalDeepSeekVision(cfg)))) ) },
+      user: ctx.user,
+      recent_memories: ctx.memories,
+      recent_messages: ctx.recentMessages,
+      recent_proactive_messages: ctx.recentProactiveMessages,
+      chat_summary: ctx.chatSummary,
+      last_interaction_at: ctx.lastInteractionAt,
+      recent_moments: (ctx.recentMoments || []).map(snapEntry),
+      other_role_moments: (ctx.otherRoleMoments || []).map(snapEntry),
+      prefs: { aiComment: prefs.aiComment !== false, enabled: prefs.enabled !== false },
+      recent_threads: threads
     }
-  }catch(e){return{character:{id:cfg.id,provider:cfg.provider,apiKey:cfg.apiKey,model:cfg.model,endpoint:cfg.endpoint,systemPrompt:cfg.systemPrompt||getDefaultPromptForTheme(),nickname:cfg.nickname||cfg.model||'AI',relationship:cfg.relationship||'',temperature:cfg.temperature},user:{id:_activeUserId(),name:'用户'},recent_memories:[],recent_messages:[],recent_proactive_messages:[],chat_summary:'',last_interaction_at:0,recent_moments:[],other_role_moments:[],prefs:{aiComment:true,enabled:true},recent_threads:[]}}
+  }catch(e){return{character:{id:cfg.id,provider:cfg.provider,apiKey:cfg.apiKey,model:cfg.model,endpoint:cfg.endpoint,systemPrompt:cfg.systemPrompt||getDefaultPromptForTheme(),nickname:cfg.nickname||cfg.model||'AI',relationship:cfg.relationship||'',temperature:cfg.temperature,vision:cfg.vision===true||(cfg.vision===undefined&&!(((typeof _usesLocalDeepSeekVision==='function')&&_usesLocalDeepSeekVision(cfg))))},user:{id:_activeUserId(),name:'用户'},recent_memories:[],recent_messages:[],recent_proactive_messages:[],chat_summary:'',last_interaction_at:0,recent_moments:[],other_role_moments:[],prefs:{aiComment:true,enabled:true},recent_threads:[]}}
 }
 async function _momentsSyncCompanion(){
   try{
@@ -1110,10 +1481,14 @@ async function _momentsSyncCompanion(){
       if(!_ibApiReady(cfg))continue;
       const s=_momentsState()[cfg.id]||{};
       if(!s.nextAt){_momentsSetState(cfg.id,{nextAt:now+_momentsFreqMs()});continue}
-      const schedule={id:cfg.id,characterId:cfg.id,user_id:_activeUserId(),enabled:prefs.autoPublish!==false,frequency:prefs.frequency,nextAt:Number(s.nextAt)||now+3600000,lastPostAt:Number(s.lastPostAt||0),status:'idle',revision:Number(s.revision||0)+1,updatedAt:new Date().toISOString(),executedAt:s.executedAt?String(s.executedAt):null,lastMomentId:String(s.lastMomentId||'')};
+      const schedule={id:cfg.id,characterId:cfg.id,user_id:_activeUserId(),enabled:prefs.autoPublish!==false,frequency:prefs.frequency,nextAt:Number(s.nextAt)||now+3600000,lastPostAt:Number(s.lastPostAt||0),status:'idle',revision:Number(s.revision||0)+1,updatedAt:new Date().toISOString(),executedAt:s.executedAt?String(s.executedAt):null,lastMomentId:String(s.lastMomentId||''),declineStreak:Math.max(0,Number(s.declineStreak||0))};
       const snapshot=await _momentsCompanionSnapshot(cfg);
       try{
         const res=await _activeCompanionRequest('/moments/'+encodeURIComponent(cfg.id),{method:'PUT',body:Object.assign({schedule:schedule},snapshot),timeout:6000});
+        /* 采纳后台回传的权威 declineStreak（success/stale 分支都携带 schedule），保持双端计数一致 */
+        if(res&&res.schedule&&typeof res.schedule.decline_streak==='number'&&res.schedule.decline_streak!==Math.max(0,Number(s.declineStreak||0))){
+          _momentsSetState(cfg.id,{declineStreak:Math.max(0,res.schedule.decline_streak)})
+        }
         if(res&&res.stale){/* companion 已执行（事件随后拉取回传，本地 nextAt 会更新） */
           _momentsSetState(cfg.id,{companionSynced:true});
           continue
@@ -1140,6 +1515,19 @@ async function _momentsSyncCompanion(){
 /* 事件回传落库（按 moment id 幂等；companion 已执行 → 本地 nextAt 同步避免补发） */
 async function _momentsIngestEvent(ev,userId){
   try{
+    /* ── 后台楼主删评（v7.5）：companion 删除了线程评论 → 同步删除浏览器动态里对应评论（按 comment id 幂等） ── */
+    if(ev&&ev.kind==='moment_comment_deleted'){
+      const mid=String(ev.moment_id||'');const cid=String(ev.comment_id||'');
+      if(!mid||!cid)return false;
+      const existing=await getMoment(mid);if(!existing)return false;
+      const had=(existing.comments||[]).some(x=>String(x.id)===String(cid));
+      if(!had){if(userId)await _activeCompanionRequest('/events/'+encodeURIComponent(ev.id)+'/ack',{method:'POST',body:{user_id:userId}}).catch(()=>{});return false;}
+      existing.comments=existing.comments.filter(x=>String(x.id)!==String(cid));
+      await dbPut(MOMENT_STORE,existing);
+      try{if(currentPage==='moments')loadMomentsPage()}catch(e){}
+      if(userId)await _activeCompanionRequest('/events/'+encodeURIComponent(ev.id)+'/ack',{method:'POST',body:{user_id:userId}}).catch(()=>{});
+      return true;
+    }
     /* ── AI↔AI 后台回复：按 comment id 幂等并入已有动态；不重新触发回复链（companion 拥有独占权） ── */
     if(ev&&ev.kind==='moment_reply'){
       const mid=String(ev.moment_id||'');
@@ -1167,17 +1555,34 @@ async function _momentsIngestEvent(ev,userId){
     const moment=ev&&ev.moment||null;
     if(!moment||!moment.id||moment.roleId===_activeUserId())return false;
     if(await getMoment(moment.id))return false;/* 幂等：重复事件/双标签不重复入库 */
-    const m=_momentsDefaults(moment);
+    /* ── Phase 4 图文增强（companion 不生成图片：只携带 wantImage/imagePrompt，图片由浏览器 Image Provider 生成）──
+       数据流：Event(want_image/image_prompt) → 本函数 → _momentsMakeImage(cfg) → 与文字一次性入库（原子）；
+       图片失败/能力不可用/概率门未过 → 纯文字 Moment 照常发布（图片是增强，不是硬依赖）；
+       imagePrompt 只作内部生成参数，不写入公开 Moment 数据（_momentsDefaults 会剥离）。 */
+    const wantImage=ev.want_image===true||ev.wantImage===true||moment.wantImage===true;
+    const imagePrompt=String(ev.image_prompt||ev.imagePrompt||moment.imagePrompt||'').trim().slice(0,600);
+    let images=[];
+    if(wantImage&&imagePrompt){
+      try{
+        const imgCfg=_momentsCfg(moment.roleId);/* 独立 Image Provider 配置随角色 API Config（imageGen/imageGenModel），与文字模型解耦 */
+        if(imgCfg&&imgCfg.imageGen===true){images=await _momentsMakeImage(imgCfg,Object.assign({},moment,{wantImage:true,imagePrompt:imagePrompt}))}
+      }catch(e){/* 任何图片异常都不影响 Moment 发布 */
+        _obsRec('image_generation_failed',{actor:moment.roleId,reason_class:String(e&&e.message||e).slice(0,60)});
+      }
+    }
+    const m=_momentsDefaults(Object.assign({},moment,{images:images}));
     await dbPut(MOMENT_STORE,m);
-    _obsRec('post',{actor:m.roleId,origin:'companion',vis:m.visibility});
+    _obsRec('post',{actor:m.roleId,origin:'companion',vis:m.visibility,motive:String(m.motive||''),wantImage:wantImage===true,imageGenerated:(images&&images.length>0)});
     _momentsSetState(m.roleId,{
       nextAt:Number(ev.next_at)||Date.now()+3600000,
       lastPostAt:Number(ev.last_post_at)||Date.now(),
       executedAt:ev.sent_at?new Date(ev.sent_at).toISOString():new Date().toISOString(),
-      lastMomentId:m.id
+      lastMomentId:m.id,
+      declineStreak:0/* 后台成功发布 → 连续未发归零（计数随事件回合流通） */
     });
     _momentsMaybeLike(m);
     _momentsMaybeComment(m);
+    _momentsMaybeMention(m);/* @ 点名：Companion 后台动态正文含 @ → 被 @ 角色强制评论（与本地路径一致） */
     if(userId)await _activeCompanionRequest('/events/'+encodeURIComponent(ev.id)+'/ack',{method:'POST',body:{user_id:userId}}).catch(()=>{});
     return true
   }catch(e){console.warn('[Moments] ingest failed',String(e&&e.message||e).slice(0,200));return false}
@@ -1326,7 +1731,7 @@ async function _momentsRenderFeed(opts){
     }else if(filterRole){
       list=await getRoleMoments(filterRole);
       list=list.filter(m=>m.visibility!=='private')/* 私密动态只有角色自己可读，用户 UI 不展示内容 */
-    }else list=await getMoments();
+    }else list=await getMoments(MOMENT_FEED_FIRST_SCAN);/* 首屏只读最近 MOMENT_FEED_FIRST_SCAN(60) 条，游标即停，不扫 360 */
   }catch(e){
     feed.innerHTML='<div class="mom-state">加载失败：'+esc(String(e&&e.message||e).slice(0,120))+' <button type="button" class="btn mom-retry" onclick="loadMomentsPage()">重试</button></div>';
     return
@@ -1440,12 +1845,15 @@ function _momentsRenderComments(box,m){
     const who=document.createElement('span');who.className='mom-comment-name';
     who.textContent=c.authorType==='role'?_momentsRoleName(_momentsCfg(c.authorId)):'我';
     const txt=document.createElement('span');txt.className='mom-comment-text';txt.textContent=String(c.content||'');
+    if(c.withdrawn)txt.classList.add('withdrawn');
     const time=document.createElement('span');time.className='mom-comment-time';time.textContent=_momentsTimeLabel(c.createdAt);
     row.append(who,document.createTextNode('：'),txt,time);
-    const del=document.createElement('button');del.type='button';del.className='mom-comment-del';del.textContent='✕';
-    del.title='删除评论';
-    del.onclick=()=>deleteMomentComment(m.id,c.id);
-    row.appendChild(del);
+    if(_momentsCanDeleteComment(m,c)){/* 仅楼主/评论者本人可见删除按钮（微信式评论权限） */
+      const del=document.createElement('button');del.type='button';del.className='mom-comment-del';del.textContent='✕';
+      del.title='删除评论';
+      del.onclick=()=>deleteMomentComment(m.id,c.id);
+      row.appendChild(del);
+    }
     l.appendChild(row)
   }
   let input=box.querySelector('.mom-comment-input');
@@ -1579,8 +1987,10 @@ async function _socialObsDownload(){
     toast('观测数据已导出（仅本机）')
   }catch(e){toast('导出失败：'+String(e&&e.message||e).slice(0,60))}
 }
-function loadMomentsPage(){
+function loadMomentsPage(opts){
+  opts=opts||{};
   try{
+    _momComposeMentionInit();/* @ 提及补全面板（v7）：输入 @ 弹出角色候选 */
     _momentsRenderSettings();
     const filter=document.getElementById('mom-role-filter');
     if(filter){
@@ -1594,7 +2004,9 @@ function loadMomentsPage(){
     }
     _momentsRenderComposeIdentity();
     _momentsRenderComposePreviews();
-    _momentsRenderFeed()
+    /* skipFeed：只做页面级设置（设置区/筛选下拉/输入区），不渲染 feed。
+       社交网络视图接管 Moments 页时用它复用设置逻辑，由 _netRenderFeed 单独渲染，避免双渲染。 */
+    if(!opts.skipFeed)_momentsRenderFeed()
   }catch(e){console.warn('[Moments] page load failed',String(e&&e.message||e).slice(0,200))}
 }
 /* API 编辑页 → 该角色朋友圈（入口：好友卡片/设置面板提供跳转） */
@@ -1609,6 +2021,7 @@ function _momentsResetSyncForTest(){_momentsLastSyncAt=0;_momentsCompanionBroken
 
 /* 迁移期双挂载：HTML 与其他脚本仍通过 window 访问。 */
 window.MOMENT_STORE=MOMENT_STORE;
+window.MOMENT_FEED_FIRST_SCAN=MOMENT_FEED_FIRST_SCAN;/* 首屏读取上限（社交圈视图复用同一定义） */
 window._momentsPrefs=_momentsPrefs;
 window._momentsPrefsSave=_momentsPrefsSave;
 window._momentsState=_momentsState;
@@ -1649,6 +2062,21 @@ window._momentsSyncCompanion=_momentsSyncCompanion;
 window._momentsPullCompanionEvents=_momentsPullCompanionEvents;
 window._momentsIngestEvent=_momentsIngestEvent;
 window._momentsMakeImage=_momentsMakeImage;
+window._momentsInjectImages=_momentsInjectImages;
+window._momentsVisionKind=_momentsVisionKind;
+window._momentsAppendNote=_momentsAppendNote;
+window._momentsParseMentions=_momentsParseMentions;
+window._momentsMentionCanForce=_momentsMentionCanForce;
+window._momentsMaybeMention=_momentsMaybeMention;
+window._momentsMaybeMentionComment=_momentsMaybeMentionComment;
+window._momentsCommentShouldWithdraw=_momentsCommentShouldWithdraw;
+window._momentsCanDeleteComment=_momentsCanDeleteComment;
+window._momentsAuthorCanDelete=_momentsAuthorCanDelete;
+window._momentsApplyDelComments=_momentsApplyDelComments;
+window._momComposeMentionInit=_momComposeMentionInit;
+window._momMentionPrefix=_momMentionPrefix;
+window._momMentionCandidates=_momMentionCandidates;
+window._momComposeMentionInsert=_momComposeMentionInsert;
 window.getMomentsContext=getMomentsContext;
 window._momentsTimeLabel=_momentsTimeLabel;
 window.loadMomentsPage=loadMomentsPage;

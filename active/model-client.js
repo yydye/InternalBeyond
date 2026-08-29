@@ -1,4 +1,4 @@
-﻿/* IB Active · 模型客户端：主动消息 prompt 构建、三种 provider 适配（anthropic/gemini/openai）、
+/* IB Active · 模型客户端：主动消息 prompt 构建、三种 provider 适配（anthropic/gemini/openai）、
    重试与相似度校验、角色化兜底、Windows 气泡通知。从 active-message-service.js 提取为工厂。
    state 经 getState() 注入（recentProactiveMessages 读 history）；trimText / finiteTimestamp /
    mergeRecentProactiveMessages 与两个 PROACTIVE_* 常量经依赖注入。原逻辑逐字不变。 */
@@ -16,6 +16,25 @@ function createModelClient(deps) {
 
   function proactiveLog(step, detail) {
     console.log(`[ProactiveMessage] ${step}`, detail || '');
+  }
+
+  /* ── 消息内容适配（v5 图片注入）：朋友圈/回复链注入的 _image part → 各 provider 格式；
+     纯文本消息原样返回（与旧行为完全一致，零回退风险） ── */
+  function adaptMessageParts(fmt, content) {
+    if (typeof content === 'string' || !Array.isArray(content)) return content;
+    return content.map(p => {
+      if (p && p.type === '_image' && p.base64) {
+        if (fmt === 'anthropic') return { type: 'image', source: { type: 'base64', media_type: p.mime || 'image/jpeg', data: p.base64 } };
+        if (fmt === 'gemini') return { inlineData: { mimeType: p.mime || 'image/jpeg', data: p.base64 } };
+        return { type: 'image_url', image_url: { url: 'data:' + (p.mime || 'image/jpeg') + ';base64,' + p.base64 } };
+      }
+      return { type: 'text', text: String((p && p.text) || '') };
+    });
+  }
+  function geminiParts(content) {
+    if (typeof content === 'string') return [{ text: content }];
+    if (!Array.isArray(content)) return [{ text: String(content || '') }];
+    return adaptMessageParts('gemini', content);
   }
 
   function currentTimeText(setting, currentTime) {
@@ -243,7 +262,7 @@ function createModelClient(deps) {
         model: character.model,
         max_tokens: 512,
         system: prompt.system,
-        messages: prompt.messages
+        messages: prompt.messages.map(m => ({ role: m.role, content: adaptMessageParts('anthropic', m.content) }))
       };
       /* AI 规划/朋友圈结构化输出：预填 JSON 前缀引导模型续写。前缀必须与目标 schema 一致
          （规划='{"action":'、动态='{"publish":'、回复链='{"publishReply":'}，
@@ -277,7 +296,7 @@ function createModelClient(deps) {
         system_instruction: { parts: [{ text: prompt.system }] },
         contents: prompt.messages.map(message => ({
           role: message.role === 'assistant' ? 'model' : 'user',
-          parts: [{ text: message.content }]
+          parts: geminiParts(message.content)
         })),
         generationConfig: { maxOutputTokens: 512 }
       };
@@ -296,7 +315,7 @@ function createModelClient(deps) {
       );
     }
 
-    const baseMessages = [{ role: 'system', content: prompt.system }, ...prompt.messages];
+    const baseMessages = [{ role: 'system', content: prompt.system }, ...prompt.messages.map(m => ({ role: m.role, content: adaptMessageParts('openai', m.content) }))];
     const body = {
       model: character.model,
       messages: baseMessages,

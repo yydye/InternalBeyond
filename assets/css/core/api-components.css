@@ -99,6 +99,10 @@ body.theme-infernal .mi-sub-inf{display:inline}
 .ibv-clone-status{font-size:.75rem;margin-top:6px;line-height:1.55;opacity:.85}
 .ibv-clone-status.warn{color:#e8b45a}
 .ibv-clone-status.ok{color:#7fc48f}
+/* 图像生成面板：图片服务商行与可选字段（class 化，规避 HTML 内联样式预算） */
+.img-svc-row{display:flex;gap:6px;margin-top:6px;align-items:center}
+.img-svc-row select{flex:1}
+.img-svc-field{margin-top:6px}
 
 /* GLASS CARD */
 

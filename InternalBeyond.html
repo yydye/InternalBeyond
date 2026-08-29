@@ -975,6 +975,7 @@
             <div class="net-compose-row">
               <span id="mom-compose-me" class="mom-compose-me" aria-label="以本人身份发布"></span>
               <textarea id="mom-compose-text" class="net-compose-text" placeholder="说点什么…（也可以只发图片）" aria-label="发布内容"></textarea>
+              <div id="mom-compose-mention" class="mom-mention-pop" hidden="true" role="listbox" aria-label="提及角色"></div>
             </div>
             <div class="net-compose-row">
               <select id="mom-compose-vis" class="net-compose-select" aria-label="可见范围">
@@ -990,12 +991,21 @@
             <div class="net-feed-title">社交圈<span class="net-feed-sub" id="mom-stats">—</span></div>
             <div class="net-feed-meta" id="mom-role-tips"></div>
             <div class="net-feed-tools">
+              <button type="button" class="btn" id="rl-toggle" onclick="_rlToggleInbox()">📮 角色信件</button>
               <select id="mom-role-filter" class="net-hidden" aria-label="按角色筛选朋友圈" onchange="_momentsRenderFeed()"></select>
               <select id="mom-role-scope" class="net-hidden" aria-label="朋友圈范围" onchange="_momentsRenderFeed()" hidden>
                 <option value="public">公开动态</option>
                 <option value="private">私人日志</option>
               </select>
             </div>
+          </div>
+          <div class="rl-inbox" id="rl-inbox" hidden>
+            <div class="rl-inbox-head" title="按住拖动">
+              <div class="net-feed-title"><span class="rl-grip" aria-hidden="true">⠿</span> 角色信件 <span class="net-feed-sub" id="rl-inbox-count">—</span></div>
+              <div class="net-feed-meta">拖动移动 · 收信方延迟后可选择不复</div>
+              <button type="button" class="rl-close" onclick="_rlToggleInbox()" aria-label="关闭">×</button>
+            </div>
+            <div id="rl-inbox-list"></div>
           </div>
           <div id="mom-feed" class="net-feed">
             <div class="mom-state">加载中…</div>
@@ -1156,6 +1166,12 @@
           </div>
           <span class="active-form-hint">查看：控制台 <code>_socialObsStats()</code>；导出：<button type="button" class="btn" onclick="_socialObsDownload()">导出观测数据 JSON</button></span>
         </div>
+        <div class="active-form-group">
+          <div class="active-switch-line">
+            <div class="active-switch-copy"><b>允许角色互相写信</b><span>低频异步：每角色每天最多主动写 1 封，同一对角色 24–72 小时冷却；是否写信由关系、近期事件与记忆决定，收信方延迟并可选择不回。写入双方 Memory。</span></div>
+            <label class="active-switch"><input type="checkbox" id="rl-letter-enabled" onchange="_rlToggleEnabled()" checked><i></i></label>
+          </div>
+        </div>
       </div>
     </section>
   </div>
@@ -1270,9 +1286,21 @@
       <div class="api-form-group u-mt-1" id="api-imagegen-group">
         <label class="form-check-row"><input type="checkbox" id="api-imagegen-toggle" class="u-native-check"> 启用图像生成 <span class="field-note-inline">（仅限 OpenAI 兼容 / Gemini 的生图模型）</span></label>
         <input id="api-imagegen-model" placeholder="生图模型（留空自动：gpt-image-1 / gemini-2.5-flash-image）" style="margin-top:6px">
+        <div class="img-svc-row">
+          <select id="api-imagegen-provider">
+            <option value="">图片服务商：跟随文字（自动）</option>
+            <option value="openai">OpenAI 兼容（官方/中转）</option>
+            <option value="gemini">Gemini</option>
+          </select>
+        </div>
+        <input id="api-imagegen-endpoint" placeholder="图片接口地址（可选；留空=复用文字接口）" class="img-svc-field">
+        <input type="password" id="api-imagegen-apikey" placeholder="图片 API Key（可选；留空=复用文字 Key）" class="img-svc-field">
       </div>
       </div>
       <div class="api-ed-block"><div class="api-ed-btitle">功能设置</div>
+      <div class="api-form-group u-mt-1">
+        <label class="form-check-row"><input type="checkbox" id="api-waifu-toggle" class="u-native-check"> waifu 模式 <span class="field-note-inline">（长回复拆成多条短消息，一条条发，像真人；流式模型保持逐字打字）</span></label>
+      </div>
       <div class="api-form-group u-mt-1" id="api-automem-group">
         <label class="form-check-row"><input type="checkbox" id="api-automem-toggle" class="u-native-check"> 启用 Auto Memory（AI 自主长期记忆）</label>
         <div style="display:flex;gap:10px;align-items:center;margin-top:6px">
@@ -3057,6 +3085,7 @@ i would like the room to be enough.
 <script src="assets/js/reply-chain-core.js"></script>
 <script src="assets/js/moments.js"></script>
 <script src="assets/js/social-network.js"></script>
+<script src="assets/js/role-letters.js"></script>
 <script id="ib-cal-js" src="assets/js/calendar.js"></script>
 <script src="game/game_module.js"></script>
 <script src="game/game_tarot.js"></script>

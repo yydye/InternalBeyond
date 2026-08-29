@@ -203,6 +203,8 @@ Moment 字段：`id/roleId/authorType('user'|'role')/authorId/content/images[]/v
 ### 护栏与调度
 
 - 发布频率低/中/高 = 8–16h / 3–6h / 1–2.5h 随机区间；最短发布间隔 45min（`lastPostAt` 会先于去重拦截）；模型返回 `publish:true/false` 不强制发布；失败 console.warn + 60min 退避。
+- **动机层（motive，双端镜像）**：JSON 输出增加 `motive ∈ share/daily_life/emotion/reflection/interaction/curiosity/social_response/none`；Prompt 以第一人称【此刻→发圈动机→写作要求】三段要求模型先判断「此刻有没有真实动机」（角色设定/Memory/聊天/主动消息/已发动态/朋友动态/当前时间/距上次发文），无动机即 `publish:false + motive:none`（正常输出，不是失败）；`publish:true` 时 motive 缺失/非法/矛盾归一到 `daily_life`——**motive 不是发布资格门**，发布资格仍由调度+间隔+去重+模型决策共同决定。
+- **declineStreak（连续未发计数）**：浏览器 `ib_moments_state_v1[roleId]` 与 companion `schedule.declineStreak`，语义 `publish:true→0 / publish:false→+1`；随 PUT 往返同步（`active/http.js` 按 `lastPostAt` 快慢单调合并），发布事件回传归零。只作为 prompt 上下文（「最近连续 N 次你都没有发」），**无任何 N 次后强制发布的逻辑**。
 - 评论：每条动态最多 2 条 AI 评论、每角色评论冷却 45min、同动态同作者去重、评论不再触发评论；触发延迟 20–60s fire-and-forget（localStorage 队列 `ib_moments_commentq_v1` 防双标签，>48h 裁剪）。
 - 点赞（AI）：仅 visibility=all、每角色 4 赞/小时、15min 冷却、1h 内与作者互动过则跳过、概率 60% 1 赞/25% 2 赞/15% 0 赞；AI 只加不撤、作者自赞拒绝；零 LLM。
 - 亲和度：`_momentsPairAffinity(a,b)` = 40–95 稳定哈希（无存储、无新关系系统）；点赞/评论候选按亲和度过滤与点名，自然出现"常互动/偶尔/潜水"分布。
