@@ -1,4 +1,4 @@
-﻿/* IB 命名空间迁移：IIFE 私有作用域 + 全量双挂载（window 实时 + IB.active 注册）。 */
+/* IB 命名空间迁移：IIFE 私有作用域 + 全量双挂载（window 实时 + IB.active 注册）。 */
 (function(NS){
 /* ══════════ ACTIVE MESSAGES ══════════ */
 const ACTIVE_SETTINGS_STORE='active_message_settings';
@@ -369,7 +369,8 @@ async function loadProactiveMessageContext(cfg,setting,currentTime){
   const now=currentTime instanceof Date?currentTime:new Date(currentTime||Date.now()),lastInteractionAt=recent.filter(m=>m.source!=='active_message').reduce((v,m)=>Math.max(v,Number(m.timestamp||0)),0);
   const userName=(about&&about.name)||_cachedUserName||'用户';
   _activeProactiveLog('memories loaded',{taskId:setting.id||'',characterId:cfg.id,count:memories.length});
-  return{user:{id:setting.user_id||_activeUserId(),name:userName},character:cfg,recentMessages:recent,memories:memories,currentTime:now,timeSinceLastInteraction:_activeElapsedText(lastInteractionAt,now.getTime()),lastInteractionAt:lastInteractionAt,chatSummary:String(summaryItem&&summaryItem.summary||'').slice(0,1200),recentProactiveMessages:recentProactive,messageMode:setting.message_type||'greeting',customInstruction:_activeCustomInstruction(setting),setting:setting}
+  const roleLetterMemories=(typeof window._rlMemoriesFor==='function')?(await window._rlMemoriesFor(cfg.id)):[];
+  return{user:{id:setting.user_id||_activeUserId(),name:userName},character:cfg,recentMessages:recent,memories:memories,roleLetterMemories:roleLetterMemories,currentTime:now,timeSinceLastInteraction:_activeElapsedText(lastInteractionAt,now.getTime()),lastInteractionAt:lastInteractionAt,chatSummary:String(summaryItem&&summaryItem.summary||'').slice(0,1200),recentProactiveMessages:recentProactive,messageMode:setting.message_type||'greeting',customInstruction:_activeCustomInstruction(setting),setting:setting}
 }
 function buildProactivePrompt(args){
   const character=args.character||{},user=args.user||{},characterName=character.nickname||character.model||'AI',userName=user.name||'用户';
@@ -388,6 +389,7 @@ function buildProactivePrompt(args){
     '', '【最近聊天摘要】',args.chatSummary||'（暂无摘要）',
     '', '【最近聊天内容】',chatText,
     '', '【相关长期记忆】',memoryText,
+    '', (args.roleLetterMemories&&args.roleLetterMemories.length&&typeof window._rlMemBlock==='function')?('【角色私信记忆】'+window._rlMemBlock(args.roleLetterMemories)):'',
     '', '【最近已经发送过的主动消息】',proactiveText,
     '', '【本次主动消息目的】',_activeModeGuide(args.messageMode)+(args.planIntent?('\n（本次联系的意图：'+String(args.planIntent).slice(0,200)+'；原由：'+String(args.planReason||'').slice(0,200)+'。不要机械复述意图原文，把它当作话题方向自然展开）'):''),
     '', '【用户附加要求】',args.customInstruction||'（无）'

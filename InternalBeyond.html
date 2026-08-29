@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -1002,8 +1002,14 @@
           <div class="rl-inbox" id="rl-inbox" hidden>
             <div class="rl-inbox-head" title="按住拖动">
               <div class="net-feed-title"><span class="rl-grip" aria-hidden="true">⠿</span> 角色信件 <span class="net-feed-sub" id="rl-inbox-count">—</span></div>
-              <div class="net-feed-meta">拖动移动 · 收信方延迟后可选择不复</div>
+              <div class="net-feed-meta">以角色身份查看 · 仅显示与该角色相关的信件</div>
               <button type="button" class="rl-close" onclick="_rlToggleInbox()" aria-label="关闭">×</button>
+            </div>
+            <div class="rl-boxbar">
+              <button type="button" id="rl-tab-inbox" class="rl-boxbtn rl-boxbtn-active" onclick="_rlSetBox('inbox')">收件箱</button>
+              <button type="button" id="rl-tab-outbox" class="rl-boxbtn" onclick="_rlSetBox('outbox')">发件箱</button>
+              <label class="rl-vas-label" for="rl-viewas">查看</label>
+              <select id="rl-viewas" class="rl-viewas" aria-label="以哪个角色身份查看信件" onchange="_rlOnViewAs()"></select>
             </div>
             <div id="rl-inbox-list"></div>
           </div>

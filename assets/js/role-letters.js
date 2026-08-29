@@ -1,11 +1,19 @@
-﻿/* AI 朋友圈 · 角色互相写信（AI↔AI 私信）域 — 独立 IIFE + window/IB 双挂载。
+/* AI 朋友圈 · 角色互相写信（AI↔AI 私信）域 — 独立 IIFE + window/IB 双挂载。
    设计（复用，不新造重复架构）：
    · 调度：并入 _activeTick 30s 心跳（与 _momentsTick 同挂点，见 active-diary.js 的
      _roleLettersTick 调用）；
    · 角色上下文：复用 moments 的 _momentsContext（角色设定/关系/最近聊天/动态/Memory/
      朋友动态），不重复取材；
    · 生成：复用 callApiChat + jsonMode 容错（同行 moment 用同款 _activeParsePlanJson）；
-   · Memory：写入共用 IndexedDB 'memories' 库（characterId 关联），双方后续可取用；
+   · 私信隔离：信件只存于 roleLetters（byTo/byFrom 索引用途），信箱按 viewAs 角色 +
+     收/发箱过滤，仅显示与该角色相关的信件（收件箱 toRoleId===viewAs、发件箱
+     fromRoleId===viewAs），第三方私信绝不展示；
+   · 记忆解耦：**绝不写入共享 'memories' 库**——避免污染 Memory 面板 / export / backup /
+     统计。角色私信的长期记忆写入独立 'roleLetterMemories' 命名空间（owner=characterId），
+     A 的 tick 只记 A 的视角（"我给 B 写了…"），B 的记忆在 B 阅读后由 B 自己的 tick 生成
+     （"我收到了 A 的…"），任何 tick 都不替对方代生成；
+   · 阅读状态：roleLetters.readAt（未读为 null），仅收件角色在收件箱打开时置位；旧信件
+     无 readAt 视为未读；
    · 频控（localStorage）：每角色每天最多 1 封主动信；同一对角色按哈希取 24~72h 冷却，
      保证低频、绝不会变成聊天室；
    · 回信：收到来信后进入待回队列，延迟 1~6h 再评估；由模型决定是否回（可推迟、可
@@ -14,7 +22,9 @@
    全部 fail-open：任一生成/入库失败只回退与退避，不影响聊天 / Moments / 日记 / Memory。 */
 (function(NS){
 'use strict';
-const RL_STORE='roleLetters';                                   /* IndexedDB 存储（新增，见 core.js v19） */
+const RL_STORE='roleLetters';                                   /* IndexedDB 存储（新增，见 core.js v19）——信件唯一持久化来源 */
+const RL_MEM_STORE='roleLetterMemories';                        /* 角色私信长期记忆命名空间（按 characterId owner 隔离，见 core.js v20）。绝不写入共享 memories，避免污染 Memory 面板/export/backup/统计。 */
+const RL_CLEAN_KEY='ib_role_letters_clean_v1';                  /* 一次性清理历史误入共享 memories 的 role-letter 记录 */
 const RL_STATE_KEY='ib_role_letters_state_v1';                  /* 每角色 { nextInitAt, lastInitAt, nextReplyAt, lastReplyAt, claim... } */
 const RL_PAIR_KEY='ib_role_letters_pair_v1';                    /* 无序角色对 → 最近一次通信时间戳（冷却） */
 const RL_REPLYQ_KEY='ib_role_letters_replyq_v1';                /* 每收信角色 → { letterId, dueAt } 待回信队列（同一时刻最多一个） */
@@ -91,8 +101,12 @@ async function _rlFriendSig(roleId){
     const nm=_momName(_rlCfg(roleId));
     const moments=typeof window.getRoleMoments==='function'?(await window.getRoleMoments(roleId)):[];
     const last=(moments&&moments[0]&&moments[0].content)||'';
-    const letters=await dbGetAll(RL_STORE);
-    const mine=(letters||[]).filter(l=>String(l.fromRoleId)===String(roleId)||String(l.toRoleId)===String(roleId)).slice(-3);
+    /* 用 byTo/byFrom 索引取该角色自己的信件，避免 dbGetAll 全扫 */
+    const [sent,recv]=await Promise.all([
+      dbGetByIndex(RL_STORE,'byFrom',String(roleId)).catch(()=>[]),
+      dbGetByIndex(RL_STORE,'byTo',String(roleId)).catch(()=>[])
+    ]);
+    const mine=([]).concat(sent||[],recv||[]).sort((a,b)=>Number(b.createdAt||0)-Number(a.createdAt||0)).slice(0,3);
     let s=nm;
     if(last)s+='（最近动态：「'+String(last).slice(0,60)+'」）';
     if(mine.length)s+='（最近信件：'+mine.map(l=>{const other=String(l.fromRoleId)===String(roleId)?l.toRoleId:l.fromRoleId;return (l.kind==='reply'?'回':'写')+'给'+_momName(_rlCfg(other))}).join('；')+'）';
@@ -202,32 +216,41 @@ async function _rlGenerateReply(recipientId,letter,now){
   return {reply:false}
 }
 
-/* ── Memory（写入共用 memories 库，characterId 关联；后续行为可引用） ── */
-async function _rlWriteMemory(characterId,content,title){
+/* ── Memory（写入独立 roleLetterMemories 命名空间，owner=characterId；绝不触碰共享 memories） ── */
+async function _rlWriteRoleMemory(characterId,content,title,letterId,direction){
   try{
     const cc=String(content||'').trim();
     if(!cc)return null;
-    const importance=6;/* 信件对双方都是有分量的经历，达到写入阈值 */
-    const all=await dbGetAll('memories');
+    const all=await dbGetAll(RL_MEM_STORE);
     for(const m of all){
-      const text=((m.title||'')+' '+(m.summary||'')+' '+String(m.content||''));
+      const text=((m.title||'')+' '+String(m.content||''));
       if(text&&_sim(cc,text)>=0.8)return null
     }
     const cfg=_rlCfg(characterId);
     const mem={id:'mem_rl_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,8),
       title:(title||cc.slice(0,24)).slice(0,60),summary:cc.slice(0,80),content:cc,created:Date.now(),
-      category:'experience',importance:importance,source:'role_letter',createdBy:'ai',
-      createdByName:_momName(cfg),characterId:String(characterId),resolved:false,activationCount:0};
-    await dbPut('memories',mem);
+      category:'experience',importance:6,source:'role_letter',createdBy:'ai',
+      createdByName:_momName(cfg),
+      characterId:String(characterId),owner:String(characterId),   /* 明确 owner；仅该角色命名空间可见 */
+      roleKey:String(characterId),direction:String(direction||'receive'),
+      letterId:String(letterId||''),resolved:false,activationCount:0};
+    await dbPut(RL_MEM_STORE,mem);
     try{if(typeof updateMemDashboard==='function')updateMemDashboard()}catch(e){}
     return mem
   }catch(e){return null}
+}
+/* 判断该角色对某封信的某个方向记忆是否已存在（防重复） */
+async function _rlHasRoleMem(characterId,letterId,direction){
+  try{
+    const all=await dbGetAll(RL_MEM_STORE);
+    return all.some(m=>String(m.characterId)===String(characterId)&&String(m.letterId)===String(letterId)&&(String(m.direction||'')===String(direction||'')))
+  }catch(e){return false}
 }
 
 /* ── 落库 ── */
 async function _rlStoreLetter(data){
   const id='rletter_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,8);
-  const rec=Object.assign({id:id,createdAt:Date.now(),replyStatus:data.kind==='init'?'pending':'none'},data);
+  const rec=Object.assign({id:id,createdAt:Date.now(),readAt:null,replyStatus:data.kind==='init'?'pending':'none'},data);
   await dbPut(RL_STORE,rec);
   return rec
 }
@@ -253,8 +276,8 @@ async function _rlInitStep(cfg,now){
         const rec=await _rlStoreLetter({fromRoleId:roleId,toRoleId:toId,content:content,kind:'init',createdAt:now});
         _rlPairSet(roleId,toId,now);
         _rlSet(roleId,{lastInitAt:now});
-        _rlWriteMemory(roleId,'我给'+_momName(toCfg)+'写了一封信，其中提到：'+content.slice(0,120),'写给'+_momName(toCfg)+'的信').catch(()=>{});
-        _rlWriteMemory(toId,_momName(cfg)+' 给我写了一封信，其中提到：'+content.slice(0,120),_momName(cfg)+'的来信').catch(()=>{});
+        /* 只让发送方记住"自己写了什么"（owner=roleId，不入共享 memories）；收件方记忆由其阅读后各自 tick 生成 */
+        _rlWriteRoleMemory(roleId,'我给'+_momName(toCfg)+'写了一封信，其中提到：'+content.slice(0,120),'写给'+_momName(toCfg)+'的信',rec.id,'send').catch(()=>{});
         _rlQueueReply(rec,now);/* 收信方进入待回信队列（延迟、可选） */
         try{toast(_momName(cfg)+' 给 '+_momName(toCfg)+' 写了一封信')}catch(e){}
       }
@@ -289,14 +312,14 @@ async function _rlReplyStep(recipientId,now){
   if(answered){
     const content=String(res.content).trim();
     try{
-      await _rlStoreLetter({fromRoleId:recipientId,toRoleId:letter.fromRoleId,content:content,kind:'reply',parentId:letter.id,createdAt:now});
+      const replyRec=await _rlStoreLetter({fromRoleId:recipientId,toRoleId:letter.fromRoleId,content:content,kind:'reply',parentId:letter.id,createdAt:now});
       letter.replyStatus='replied';
       await dbPut(RL_STORE,letter);
       _rlPairSet(recipientId,letter.fromRoleId,now);
       const senderCfg=_rlCfg(letter.fromRoleId);
-      _rlWriteMemory(recipientId,'我回复了'+_momName(senderCfg)+'的信，其中提到：'+content.slice(0,120),'回复'+_momName(senderCfg)+'的信').catch(()=>{});
-      _rlWriteMemory(letter.fromRoleId,_momName(cfgOf(recipientId))+' 回复了我的信，其中提到：'+content.slice(0,120),_momName(cfgOf(recipientId))+'的回复').catch(()=>{});
-      try{toast(_momName(cfgOf(recipientId))+' 回复了 '+_momName(senderCfg)+' 的信')}catch(e){}
+      /* 只让回信方记住"自己回了什么"（owner=recipientId）；原收信方对回信的记忆由其阅读后各自 tick 生成 */
+      _rlWriteRoleMemory(recipientId,'我回复了'+_momName(senderCfg)+'的信，其中提到：'+content.slice(0,120),'回复'+_momName(senderCfg)+'的信',replyRec.id,'reply').catch(()=>{});
+      try{toast(_momName(_rlCfg(recipientId))+' 回复了 '+_momName(senderCfg)+' 的信')}catch(e){}
     }catch(e){}
   }else{
     letter.replyStatus='declined';/* 不回/失败：标记为"未回复"，不再追发 */
@@ -308,6 +331,35 @@ async function _rlReplyStep(recipientId,now){
 }
 function cfgOf(id){return _rlCfg(id)}
 
+/* ── 阅读后记忆（仅收件角色自己的 tick 生成，写入自身命名空间；发送方不代生成） ── */
+async function _rlReadMemoStep(roleId,now){
+  try{
+    const received=await dbGetByIndex(RL_STORE,'byTo',String(roleId));
+    let n=0;
+    for(const l of (received||[])){
+      if(n>=3)break;/* 每轮最多为 3 封新读信件落记忆，控制成本 */
+      if(!(l&&l.readAt))continue;/* 仅已实际阅读的信件 */
+      if(await _rlHasRoleMem(roleId,l.id,'receive'))continue;
+      const senderName=_momName(_rlCfg(l.fromRoleId));
+      await _rlWriteRoleMemory(roleId,'我收到了'+senderName+'的来信，其中提到：'+String(l.content||'').slice(0,120),senderName+'的来信',l.id,'receive').catch(()=>{});
+      n++;
+    }
+  }catch(e){}
+}
+/* ── 一次性清理历史误入共享 memories 的 role-letter 记录（只删可可靠识别的 source==='role_letter'） ── */
+async function _rlCleanupLegacyMemories(){
+  try{
+    if(localStorage.getItem(RL_CLEAN_KEY))return;
+    const all=await dbGetAll('memories');
+    let n=0;
+    for(const m of (all||[])){
+      if(m&&m.source==='role_letter'){try{await dbDelete('memories',m.id);n++}catch(e){}}
+    }
+    localStorage.setItem(RL_CLEAN_KEY,'1');
+    if(n)try{if(typeof updateMemDashboard==='function')updateMemDashboard()}catch(e){}
+  }catch(e){}
+}
+
 /* ── 主调度（并入 _activeTick 心跳，fail-open） ── */
 let _rlTicking=false;
 async function _roleLettersTick(){
@@ -316,12 +368,14 @@ async function _roleLettersTick(){
   _rlTicking=true;
   const now=Date.now();
   try{
+    try{await _rlCleanupLegacyMemories()}catch(e){}/* 数据清理不依赖开关，即使禁用也执行一次 */
     if(!_rlIsEnabled())return;
     const list=_rlApiConfigs();
     for(const cfg of list){
       if(typeof window._ibApiReady!=='function'||!(window._ibApiReady(cfg)))continue;
       try{await _rlInitStep(cfg,now)}catch(e){console.warn('[RoleLetters] init '+String(cfg.id)+'：'+String(e&&e.message||e).slice(0,160))}
       try{await _rlReplyStep(cfg.id,now)}catch(e){console.warn('[RoleLetters] reply '+String(cfg.id)+'：'+String(e&&e.message||e).slice(0,160))}
+      try{await _rlReadMemoStep(cfg.id,now)}catch(e){console.warn('[RoleLetters] mem '+String(cfg.id)+'：'+String(e&&e.message||e).slice(0,160))}
     }
   }finally{_rlTicking=false}
 }
@@ -410,22 +464,71 @@ function _rlAvatar(cfg,size){
   d.textContent=String(_momName(cfg)||'?').charAt(0).toUpperCase();
   return d.outerHTML;
 }
+/* ── 收件视角隔离：viewAs（当前查看角色）+ 收/发箱方向 ── */
+function _rlViewAs(){try{return String((document.getElementById('rl-viewas')||{}).value||'')}catch(e){return''}}
+function _rlBox(){try{const t=document.getElementById('rl-tab-inbox');if(t)return t.classList.contains('rl-boxbtn-active')?'inbox':'outbox'}catch(e){}return 'inbox'}
+function _rlSetBox(box){
+  const inbox=document.getElementById('rl-tab-inbox'),out=document.getElementById('rl-tab-outbox');
+  if(inbox&&out){inbox.classList.toggle('rl-boxbtn-active',box==='inbox');out.classList.toggle('rl-boxbtn-active',box==='outbox')}
+  _rlRenderInbox();
+}
+function _rlOnViewAs(){_rlRenderInbox()}
+function _rlSetViewAs(v){const sel=document.getElementById('rl-viewas');if(sel)sel.value=String(v||'');_rlRenderInbox()}
+/* 取某角色命名空间内的私信长期记忆（严格按 owner=characterId 过滤；不入共享 memories） */
+async function _rlMemoriesFor(roleId){
+  try{return (await dbGetByIndex(RL_MEM_STORE,'byCharacter',String(roleId))||[]).sort((a,b)=>Number(b.created||0)-Number(a.created||0))}
+  catch(e){return[]}
+}
+/* 角色私信记忆 → 注入当前角色聊天/Moments 上下文的展示区块。
+   入参必须已由调用方按 _rlMemoriesFor(当前角色) 过滤（查询层 owner 过滤）；此处只做格式化，
+   绝不自行全量读取后跨角色过滤——任何跨角色的"看得见与否"都发生在调用方/查询层。 */
+function _rlMemBlock(mems){
+  if(!mems||!mems.length)return'';
+  const lines=mems.slice(0,6).map(m=>'- '+((m.title?m.title+'：':'')+(m.summary||m.content||''))).join('\n');
+  return '【角色私信记忆（这些是你本人相关的私信往来，仅供你自然回忆。内容只属于你，向任何第三方复述都不恰当。）】\n'+lines+'\n';
+}
+function _rlPopulateViewAs(){
+  const sel=document.getElementById('rl-viewas');if(!sel)return;
+  const opts=[];
+  (_rlApiConfigs()).forEach(c=>{if(typeof window._ibApiReady==='function'&&!(window._ibApiReady(c)))return;opts.push('<option value="'+esc(c.id)+'">'+esc(_momName(c))+'</option>')});
+  const cur=sel.value;
+  sel.innerHTML=opts.join('');
+  const lastSel=String(cur||'');
+  if(lastSel&&[...sel.options].some(o=>o.value===lastSel))sel.value=lastSel;
+  else if(sel.options.length)sel.value=sel.options[0].value;
+}
+/* 纯加载助手（可单测）：按 viewAs + 收/发箱返回该角色可见范围内的信件；绝不返回无关第三方私信 */
+async function _rlLoadLettersFor(viewAs,box){
+  const roleId=String(viewAs||_rlViewAs()||''),mode=String(box||_rlBox()||'inbox');
+  if(!roleId)return [];
+  try{
+    const arr=(mode==='outbox')
+      ?(await dbGetByIndex(RL_STORE,'byFrom',roleId))
+      :(await dbGetByIndex(RL_STORE,'byTo',roleId));
+    return (arr||[]).slice().sort((a,b)=>Number(b.createdAt||0)-Number(a.createdAt||0));
+  }catch(e){return[]}
+}
 async function _rlRenderInbox(){
+  _rlPopulateViewAs();
   const box=document.getElementById('rl-inbox-list');
   if(!box)return;
-  const all=(await dbGetAll(RL_STORE)).sort((a,b)=>Number(b.createdAt||0)-Number(a.createdAt||0));
+  const viewAs=String(_rlViewAs()||''),mode=_rlBox();
+  if(!viewAs){box.innerHTML='<div class="mom-state">请先在上方选择要查看的角色。</div>';return}
+  const letters=await _rlLoadLettersFor(viewAs,mode);
   const count=document.getElementById('rl-inbox-count');
-  if(count)count.textContent=String(all.length)+' 封';
-  if(!all.length){box.innerHTML='<div class="mom-state">还没有角色信件。角色们会在有值得说的事时，自然地互相通信。</div>';return}
-  box.innerHTML=all.map(function(l){
+  if(count)count.textContent=String(letters.length)+' 封'+(mode==='outbox'?'（发）':'（收）');
+  const label=_momName(_rlCfg(viewAs))||viewAs;
+  if(!letters.length){box.innerHTML='<div class="mom-state">【'+esc(label)+'】'+(mode==='outbox'?'发件箱':'收件箱')+'还没有信件。角色们会在有值得说的事时，自然地互相通信。</div>';return}
+  box.innerHTML=letters.map(function(l){
     const from=_rlCfg(l.fromRoleId),to=_rlCfg(l.toRoleId);
     const fromName=_momName(from),toName=_momName(to);
     const tag=l.kind==='reply'?'回信':'来信';
     const status=(l.kind==='init')?(l.replyStatus==='replied'?'<span class="rl-badge rl-ok">已回</span>':(l.replyStatus==='declined'?'<span class="rl-badge">未回</span>':'<span class="rl-badge rl-pending">待回</span>')):'';
+    const unread=(mode==='inbox'&&l.kind==='init'&&!l.readAt)?'<span class="rl-badge rl-new" id="rln-'+l.id+'">新</span>':'';
     return '<div class="rl-item" id="rl-'+l.id+'">'
       +'<div class="rl-item-head">'
       +'<div class="rl-persons">'+_rlAvatar(from,26)+'<span class="rl-name">'+esc(fromName)+'</span><span class="rl-arrow">→</span>'+_rlAvatar(to,26)+'<span class="rl-name">'+esc(toName)+'</span></div>'
-      +'<span class="rl-tag">'+tag+'</span>'+status
+      +'<span class="rl-tag">'+tag+'</span>'+status+unread
       +'<span class="mom-card-time">'+_rlTimeLabel(l.createdAt)+'</span>'
       +'<button type="button" class="mom-action-btn" onclick="_rlExp(\''+l.id+'\')">详情</button>'
       +'</div>'
@@ -433,9 +536,19 @@ async function _rlRenderInbox(){
       +'</div>';
   }).join('');
 }
-function _rlExp(id){
+async function _rlExp(id){
   const el=document.getElementById('rlx-'+id);
   if(el)el.hidden=!el.hidden;
+  /* 只有收件角色在"收件箱"视角打开时才标记已读；发送方/发件箱视角不代标记 */
+  const viewAs=String(_rlViewAs()||''),mode=_rlBox();
+  if(mode!=='inbox'||!viewAs)return;
+  try{
+    const l=await dbGet(RL_STORE,id);
+    if(l&&String(l.toRoleId)===String(viewAs)&&!l.readAt){
+      l.readAt=Date.now();await dbPut(RL_STORE,l);
+      const nb=document.getElementById('rln-'+id);if(nb)nb.remove();
+    }
+  }catch(e){}
 }
 function _rlRenderSettings(){
   const c=document.getElementById('rl-letter-enabled');
@@ -450,16 +563,21 @@ function _rlToggleEnabled(){
 
 /* ── 导出 ── */
 window.roleLettersStore=RL_STORE;
+window.roleLetterMemoriesStore=RL_MEM_STORE;
 window._roleLettersTick=_roleLettersTick;
 window._rlIsEnabled=_rlIsEnabled;window._rlSetEnabled=_rlSetEnabled;
 window._rlToggleInbox=_rlToggleInbox;window._rlRenderInbox=_rlRenderInbox;
 window._rlExp=_rlExp;window._rlRenderSettings=_rlRenderSettings;window._rlToggleEnabled=_rlToggleEnabled;
 window._rlStoreLetter=_rlStoreLetter;window._rlQueueReply=_rlQueueReply;window._rlInitInboxDrag=_rlInitInboxDrag;
+window._rlLoadLettersFor=_rlLoadLettersFor;window._rlSetBox=_rlSetBox;window._rlSetViewAs=_rlSetViewAs;
+window._rlWriteRoleMemory=_rlWriteRoleMemory;window._rlHasRoleMem=_rlHasRoleMem;window._rlMemoriesFor=_rlMemoriesFor;window._rlMemBlock=_rlMemBlock;
 NS.expose('roleLetters',{
   tick:_roleLettersTick,isEnabled:_rlIsEnabled,setEnabled:_rlSetEnabled,
   toggleInbox:_rlToggleInbox,renderInbox:_rlRenderInbox,exp:_rlExp,
   renderSettings:_rlRenderSettings,toggleEnabled:_rlToggleEnabled,
-  storeLetter:_rlStoreLetter,queueReply:_rlQueueReply,initInboxDrag:_rlInitInboxDrag
+  storeLetter:_rlStoreLetter,queueReply:_rlQueueReply,initInboxDrag:_rlInitInboxDrag,
+  loadLettersFor:_rlLoadLettersFor,setBox:_rlSetBox,setViewAs:_rlSetViewAs,
+  writeRoleMemory:_rlWriteRoleMemory,hasRoleMem:_rlHasRoleMem,memoriesFor:_rlMemoriesFor
 });
 /* 信箱面板在 DOM 中恒存在（脚本位于 body 底部），加载即初始化拖拽 */
 try{_rlInitInboxDrag()}catch(e){console.warn('[RoleLetters] init drag '+String(e&&e.message||e).slice(0,80))}

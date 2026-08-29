@@ -1,4 +1,4 @@
-﻿/* AI 朋友圈（Moments）域 — 独立 IIFE + window/IB 双挂载。
+/* AI 朋友圈（Moments）域 — 独立 IIFE + window/IB 双挂载。
    复用（不重复实现）：IndexedDB 存储（dbPut/dbGet/dbGetAll/dbDelete/dbGetByIndex）、
    AI 调用（callApiChat + jsonMode）、主动消息相似度（_activeTextSimilarity，bigram Dice）、
    JSON 容错解析（_activeParsePlanJson）、上下文加载（_activeRecentMemories/_activeRecentMessages/
@@ -442,7 +442,9 @@ async function _momentsContext(character){
       _momentsRecentOthers(character.id)
     ]);
     const userName=(about&&about.name)||_cachedUserName||'用户';
-    return{user:{id:_activeUserId(),name:userName},character:character,recentMessages:recent,memories:memories,recentProactiveMessages:recentProactive,chatSummary:String(summaryItem&&summaryItem.summary||'').slice(0,1200),recentMoments:recentOwn,otherRoleMoments:others,lastInteractionAt:recent.reduce((v,m)=>Math.max(v,Number(m.timestamp||0)),0)}
+    /* 角色私信记忆注入：只取当前角色自己的命名空间（owner=characterId，查询层过滤），作为独立字段供 Prompt 区块使用 */
+    const roleLetterMemories=(typeof window._rlMemoriesFor==='function')?(await window._rlMemoriesFor(character.id)):[];
+    return{user:{id:_activeUserId(),name:userName},character:character,recentMessages:recent,memories:memories,roleLetterMemories:roleLetterMemories,recentProactiveMessages:recentProactive,chatSummary:String(summaryItem&&summaryItem.summary||'').slice(0,1200),recentMoments:recentOwn,otherRoleMoments:others,lastInteractionAt:recent.reduce((v,m)=>Math.max(v,Number(m.timestamp||0)),0)}
   }catch(e){return{user:{name:'用户'},character:character,recentMessages:[],memories:[],recentProactiveMessages:[],chatSummary:'',recentMoments:[],otherRoleMoments:[],lastInteractionAt:0}}
 }
 async function _momentsRecentOwn(roleId,limit){
@@ -487,6 +489,7 @@ function buildMomentPrompt(args){
     '【最近聊天摘要】'+String(ctx.chatSummary||'（暂无）').slice(0,900),
     '【最近聊天内容】'+chatText,
     '【相关长期记忆】'+memoryText,
+    (ctx.roleLetterMemories&&ctx.roleLetterMemories.length&&typeof window._rlMemBlock==='function')?('【角色私信记忆】'+window._rlMemBlock(ctx.roleLetterMemories)):'',
     '【最近主动消息】'+proactiveText,
     '【我最近发过的朋友圈】'+ownText,
     '【朋友名单】你认识的朋友有：'+friendsText+'。',
