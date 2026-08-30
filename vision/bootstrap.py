@@ -50,11 +50,11 @@ def ensure_torch() -> None:
         return
     if nvidia_gpu_present():
         index = os.getenv("VISION_TORCH_INDEX_URL", "https://download.pytorch.org/whl/cu130")
-        run("install", "torch==2.11.0", "--index-url", index)
+        run("install", "torch==2.13.0", "--index-url", index)
     else:
         run(
             "install",
-            "torch==2.11.0",
+            "torch==2.13.0",
             "--index-url",
             "https://download.pytorch.org/whl/cpu",
         )
