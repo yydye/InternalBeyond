@@ -569,7 +569,7 @@ window._rlIsEnabled=_rlIsEnabled;window._rlSetEnabled=_rlSetEnabled;
 window._rlToggleInbox=_rlToggleInbox;window._rlRenderInbox=_rlRenderInbox;
 window._rlExp=_rlExp;window._rlRenderSettings=_rlRenderSettings;window._rlToggleEnabled=_rlToggleEnabled;
 window._rlStoreLetter=_rlStoreLetter;window._rlQueueReply=_rlQueueReply;window._rlInitInboxDrag=_rlInitInboxDrag;
-window._rlLoadLettersFor=_rlLoadLettersFor;window._rlSetBox=_rlSetBox;window._rlSetViewAs=_rlSetViewAs;
+window._rlLoadLettersFor=_rlLoadLettersFor;window._rlSetBox=_rlSetBox;window._rlSetViewAs=_rlSetViewAs;window._rlOnViewAs=_rlOnViewAs;
 window._rlWriteRoleMemory=_rlWriteRoleMemory;window._rlHasRoleMem=_rlHasRoleMem;window._rlMemoriesFor=_rlMemoriesFor;window._rlMemBlock=_rlMemBlock;
 NS.expose('roleLetters',{
   tick:_roleLettersTick,isEnabled:_rlIsEnabled,setEnabled:_rlSetEnabled,
