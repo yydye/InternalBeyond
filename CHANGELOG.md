@@ -3,6 +3,14 @@
 > 本文档回答「以前发生过什么」。当前状态与待办见 [HANDOVER.md](HANDOVER.md)；机制如何工作见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 > 注：原 HANDOVER.md 的章节编号 9.x 沿用为时间线索引；原文即无 9.31，非遗漏。各条目中记录的测试断言/入口计数以当日原文为准（不同轮次间存在小幅出入，未作统一改写）。
 
+## ✦ 作者彩蛋（关系是怎么"演"出来的）
+
+`［叙事］` 有一件被作者本人证实、却从未写进任何"机制"文档的事：**想要两个角色在社交圈里聊得很嗨，最有效的办法不是等关系状态层（D13），而是直接把关系写进她们各自的系统提示词。** 一句「A 和小 B 是多年挚友 / 恋人」，加上已有的 `pairAffinity` 哈希（决定谁会被点名互动）+ 回复链（45min 冷却、一次一步、多角色轮流接话），角色便会顺着这份声明在朋友圈里你来我往——**结果意外地跟真人差不多**。
+
+> 这其实是这个项目一条隐藏真相的注脚：**它最像真的地方，不在算法多聪明，而在作者肯把感情直接写进人格，再让机制和模型替他把那份感情演出来。** 写死进系统提示词的关系是**静态、恒温**的（不会生分、不会争吵），对个人陪伴站来说，这恰恰是状态层给不了的"稳定的人情味"——而且完全在 D13 边界内（那是**叙事选择**，不是**状态机制**，不存储、不演化、不评分）。
+>
+> 关联：[DECISIONS.md](DECISIONS.md) D13（关系状态层提前实现禁令）；[SOCIAL_RUNTIME.md](docs/SOCIAL_RUNTIME.md)（pairAffinity / 回复链）；[WHY_IB.md](docs/WHY_IB.md)（"边界靠 prompt + 调度，而非单独引擎"）。
+
 ## 基线
 
 - 本地 git 基线提交 `e4074cc`（`chore: establish Internal Beyond baseline`）。此后长期有未跟踪文件（`.gitignore`、`active-message-service.js`、`start-active-service.cmd`、`start-vision-service.cmd`、`test_vision.py`、`vision/` 等），直至 2026-08-14 才纳入版本控制。
