@@ -375,6 +375,22 @@ test('错过触发窗口过久（休眠/重启）→ 不补发，按频率重排
   assert.strictEqual(events.length, 0);
 });
 
+test('Credential Vault：vault 凭证注入 → 后台生成仍成功（browser closed）', async () => {
+  /* 模拟浏览器 POST /credentials：先向 vault 写入 c1 凭证 */
+  service.credentialVault.load();
+  service.credentialVault.upsert('c1', { provider: 'openai', apiKey: 'sk-VAULT-INJECTED', endpoint: `http://127.0.0.1:${mockPort}/v1/chat/completions`, model: 'c1-ok' });
+  /* 业务 snapshot 已 redacted（character 无 apiKey），但 provider/model/endpoint 保留 */
+  const snap = snapshot();
+  delete snap.character.apiKey;
+  getState().moments.c1 = { ...snap, ...seedSchedule('c1') };
+  const before = mockRequests;
+  const res = await executeMomentSchedule('c1');
+  assert.strictEqual(res.published, true, JSON.stringify(res));
+  assert.ok(mockRequests > before, 'model 端点被调用（vault 注入的凭证使 isCharacterModelReady 通过）');
+  /* vault 仍是 authoritative：即便 snapshot 后来又拿到 apiKey，也不覆盖 vault 路径 */
+  assert.strictEqual(service.credentialVault.get('c1').apiKey, 'sk-VAULT-INJECTED');
+});
+
 test('API 失败退避有界（30 分钟量级，非永久停止/无限重试）', async () => {
   const snap = snapshot();
   snap.character.endpoint = 'http://127.0.0.1:1/v1/chat/completions';

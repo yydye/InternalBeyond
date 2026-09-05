@@ -120,6 +120,7 @@ async function loadLetters(){
     +'</div>';
   }
   c.innerHTML=html||(realLetters.length?'':'<div class="empty-state"><span>✉</span>Letters lost...</div>');
+  try{if(window.IB&&IB.favorites&&typeof IB.favorites.starCard==='function'){Array.prototype.forEach.call(c.querySelectorAll('.letter-card'),function(card){var lid=String(card.id||'').replace(/^letter-/,'');if(!lid)return;var body=(card.querySelector('.letter-card-content')||{}).textContent||'';var acts=card.querySelector('.letter-card-actions');if(!acts){card.appendChild(IB.favorites.starCard(card,{type:'letter',sourceId:lid,title:'',body:body}));return}IB.favorites.starCard(acts,{type:'letter',sourceId:lid,title:'',body:body})})}}catch(e){}
 }
 function openLetter(id){
   var env=document.getElementById('env-'+id);

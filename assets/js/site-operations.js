@@ -1,4 +1,4 @@
-/* DANGEROUS OPERATIONS */
+﻿/* DANGEROUS OPERATIONS */
 /* IB 命名空间迁移：IIFE 私有作用域 + 双挂载（window 实时 + IB 注册）。 */
 (function(NS){
 async function clearAllApiKeys(){
@@ -20,7 +20,7 @@ async function resetAllData(){
   if(!confirm('最后确认：此操作不可逆，所有数据将永久丢失。'))return;
   if(typeof _activePrepareAllBackgroundRemoval==='function'&&!(await _activePrepareAllBackgroundRemoval('重置全部数据')))return;
   try{localStorage.setItem('ib_resetAt',String(Date.now()))}catch(e){}/* 主动重置：熔断警告静音 15 分钟 */
-  const stores=['posts','categories','about','music','apiSettings','chatMessages','letters','apiConfigs','groups','blogComments','memories','chatThreads','chatSummaries','uploadedFiles','projects','projectFiles','blogAnnotations','active_message_settings','active_message_history','active_message_plans','diary_entries','roleLetters','roleLetterMemories'];
+  const stores=['posts','categories','about','music','apiSettings','chatMessages','letters','apiConfigs','groups','blogComments','memories','chatThreads','chatSummaries','uploadedFiles','projects','projectFiles','blogAnnotations','active_message_settings','active_message_history','active_message_plans','diary_entries','roleLetters','roleLetterMemories','activities','favorites'];
   for(const s of stores){try{const all=await dbGetAll(s);for(const item of all)await dbDelete(s,item.id||item.name)}catch(e){}}
   try{if(typeof _activeSyncAllBackground==='function'&&_activeCompanionOnline){_activeLastContextSync=0;await _activeSyncAllBackground()}}catch(e){}
   try{if(typeof ibExtReset==='function')ibExtReset()}catch(e){}/* 扩展数据（MCP 配置/向量库/白名单等）一并清理 */

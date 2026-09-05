@@ -69,6 +69,20 @@
 - 输出长度参数用 `max_completion_tokens`（`_tokParamGet` 自动切换）；
 - 图片 token 计量规则见官方文档（PATCH 16 / merge 2 / min 8192 px）。
 
+### MiMo 图片注入 400：`base64 data is not valid`（2026-09-02 修复并官方端点复现验证）
+
+- **现象**：AI 朋友圈生成（`generateRoleMoment` → `callApiChat` → `_callApiChatOnce` openai 分支）对 `https://api.xiaomimimo.com/v1/chat/completions` 返回 400，错误体：
+  `{"error":{"code":"400","message":"Param Incorrect","param":"messages[1] user content: the provided base64 data is not valid"}}`。
+- **根因（一条坏代码）**：`_momentsImagePayload`(moments.js) 提取 mime 时写成
+  `(String(src.match(/^data:([^;,]+)/i)||[])[1]||'')`
+  ——`String(数组)` 先把匹配数组转成字符串，再 `[1]` 取的是**字符串下标 1**（`"data:..."` 的字母 `'a'`），而非匹配数组的捕获组 → **mime 恒等于 `"a"`**。于是 `image_url` 变成 `data:a;base64,/9j/…`，MiMo 无法识别 `a` 类型的 data URI → 400。
+- **修复**：
+  1. `assets/js/moments.js` `_momentsImagePayload`：改为 `((src.match(/^data:([^;,]+)/i)||[])[1]||'')` 正确取捕获组；
+  2. `assets/js/communication.js` `_adaptContentForApi`（openai 图片分支）：构造 `image_url` 时把 mime 强制为合法 `image/*`——`/^image\//i.test(p.mime)?p.mime:'image/jpeg'`（wire 层兜底，覆盖任何来源的图片注入），并顺带对 base64 做 `\s` 去除 + 剥重复 `data:…;base64,` 前缀（防双重编码）。
+- **验证（官方端点，mimo-v2.5）**：`data:a;base64,…` = 400（与上述报错逐字一致）；`data:image/jpeg;base64,…` = 200。本次修复经真实请求逐字复现并 400→200 确认。
+- **排查锚点**：DevTools→Network→该 400 请求→Response 看 `error.param`（即 `messages[1] user content: …`）；临时诊断可在 `_adaptContentForApi` 打 `[IB-DIAG] img mime=…`（现已移除）。
+- **教训**：data URI 的 mime/捕获组提取不要 `String(数组)[1]`；对发给第三方端点的底层数据要校验（mime 白名单 + base64 清洗），不能只靠"默认值"兜底。
+
 ## 测试与回归
 
 - `test_moments_phase4_smoke.js`：A–J + `sep.*`（凭证解耦）+ `inject.*`（评论/生成/文本不注入/obs/ICode 读图/生图回传/路径容错）+ `vision.*`（默认放行/显式关闭/DeepSeek 本地）+ `tail.*`（数组注入保留图片）+ `toolround.*`（自动续轮/带图续轮/无反馈不续）+ `snap.*`（快照预算）+ 降级用例；
@@ -77,8 +91,8 @@
 
 ## 涉及文件
 
-- `assets/js/moments.js`（_momentsVisionKind / _momentsInjectImages / _momentsAppendNote / snapshot）
-- `assets/js/communication.js`（_ibModelCanSee / _VISION_DECLARE / _appendMsgText / _wsToolContinue / 历史图补入）
+- `assets/js/moments.js`（_momentsVisionKind / _momentsInjectImages / _momentsAppendNote / snapshot / _momentsImagePayload mime+base64 清洗）
+- `assets/js/communication.js`（_ibModelCanSee / _VISION_DECLARE / _appendMsgText / _wsToolContinue / 历史图补入 / _adaptContentForApi image_url mime+base64 清洗）
 - `assets/js/workspace.js`（_wsExecImageGen / read_image 分支 / 生图入队）
 - `assets/js/site-operations.js`（_ibImageDrain / 指令块文案）
 - `active/model-client.js`（callCharacterModel 支持 _image parts：openai image_url / gemini inlineData / anthropic image block）

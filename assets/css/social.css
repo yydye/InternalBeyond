@@ -33,7 +33,7 @@
 .net-compose{padding:var(--space-4);margin-bottom:var(--space-4)}
 .net-compose-row{display:flex;gap:var(--space-3);align-items:flex-start;flex-wrap:wrap;margin-bottom:var(--space-3)}
 .net-compose-row:last-of-type{align-items:center}
-.net-compose-text{flex:1 1 260px;min-height:74px;padding:10px 14px;font-size:14px;line-height:1.65;border-radius:var(--radius-control);border:1px solid var(--border-soft);background:var(--surface-input);color:var(--content-primary);outline:none;resize:vertical;font-family:inherit}
+.net-compose-text{flex:1 1 auto;width:100%;min-width:0;min-height:96px;padding:12px 14px;font-size:14px;line-height:1.65;border-radius:var(--radius-control);border:1px solid var(--border-soft);background:var(--surface-input);color:var(--content-primary);outline:none;resize:vertical;font-family:inherit;box-sizing:border-box}
 .net-compose-text:focus{border-color:var(--focus-ring)}
 .net-compose-select{padding:7px 10px;font-size:12.5px;min-width:130px;border-radius:var(--radius-control);border:1px solid var(--border-soft);background:var(--surface-input);color:var(--content-primary);outline:none}
 #mom-compose-imgs{margin-top:var(--space-2);max-width:100%}
@@ -229,3 +229,22 @@
   .net-cmt.depth-2{margin-left:0}
   .net-cmt.depth-3{margin-left:0}
 }
+
+/* ── 支付授权设置卡（Phase 2C）：全部复用 API 设置类，零内联 style ── */
+.pay-auth-row{display:flex;align-items:flex-start;gap:8px;margin-bottom:8px;cursor:pointer;font-size:.82rem;color:var(--silver)}
+.pay-auth-rows{margin-bottom:12px}
+.pay-auth-status{font-size:.78rem;opacity:.78;margin:10px 0;padding:10px 12px;border:1px solid var(--glass-border);border-radius:8px;color:var(--light)}
+.pay-auth-status b{font-weight:600}
+.mi-sub-hint{display:block;font-size:.72rem;opacity:.6;color:var(--text-secondary)}
+
+/* ── 3B 购物审核面板（Shopping Review）── */
+.sr-panel{position:fixed;right:18px;bottom:18px;z-index:1400;width:min(430px,92vw);padding:16px;border:1px solid var(--glass-border);border-radius:12px;background:var(--surface-panel);box-shadow:0 10px 34px rgba(0,0,0,.4);font-size:.85rem;color:var(--light)}
+.sr-panel h4{margin:0 0 10px;font-size:1rem;font-weight:600}
+.sr-kv{display:flex;gap:8px;margin:4px 0;font-size:.82rem;line-height:1.5}
+.sr-kv .k{opacity:.6;min-width:64px;flex:none}
+.sr-url{display:block;font-size:.72rem;opacity:.65;word-break:break-all;margin-top:2px}
+.sr-reason{margin:10px 0;padding:8px 10px;border-top:1px solid var(--glass-border);border-bottom:1px solid var(--glass-border);font-size:.78rem;opacity:.88;line-height:1.7}
+.sr-reason b{display:block;margin-bottom:4px;font-weight:600}
+.sr-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}
+.sr-msg{font-size:.76rem;opacity:.8;margin-top:8px;min-height:1em}
+.sr-close{position:absolute;top:8px;right:12px;cursor:pointer;opacity:.6;background:none;border:none;color:var(--light);font-size:1rem;line-height:1}

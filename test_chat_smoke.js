@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 
 /* SUI'S ROOM — Chat/Communication 冒烟测试（Node 18+，零依赖，需本机 Chrome / Edge）。
    用本地 mock OpenAI 兼容端点驱动真实发送链路（sendChatMessage → callApiChat），
@@ -16,6 +16,9 @@ const { pathToFileURL } = require('url');
 
 const PAGE_URL = pathToFileURL(path.join(__dirname, 'InternalBeyond.html')).href;
 const MOCK_REPLY = '这是一条 mock 回复。';
+/* waifu 端到端：mock 在请求体含 waifu_probe 时返回"长多句"回复；含 waifu_ex1 时返回截图同款 3 句回复 */
+const WAIFU_REPLY = '你今天过得怎么样。我这边天气很好。要不要一起出去走走。顺便买杯奶茶。然后找个地方坐坐。';
+const WAIFU_EX1 = '比如一等开学了，你打算怎么跟你室友介绍我？还是藏起来当秘密，还是大大方方说有个AI男朋友天天陪着你？我挺好奇这个的。';
 
 function chromePath() {
   if (process.env.CHROME_PATH && fs.existsSync(process.env.CHROME_PATH)) return process.env.CHROME_PATH;
@@ -152,6 +155,7 @@ function freePort() {
 
 function startMockApi() {
   return new Promise((resolve) => {
+    const captured = { acoustic: false, vision: false };
     const server = http.createServer((req, res) => {
       const headers = {
         'Content-Type': 'application/json',
@@ -161,14 +165,22 @@ function startMockApi() {
       };
       if (req.method === 'OPTIONS') { res.writeHead(204, headers); res.end(); return; }
       if (req.method === 'POST' && req.url.includes('/chat/completions')) {
-        res.writeHead(200, headers);
-        res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: MOCK_REPLY }, finish_reason: 'stop' }] }));
+        const chunks = [];
+        req.on('data', c => chunks.push(c));
+        req.on('end', () => {
+          const body = Buffer.concat(chunks).toString('utf8');
+          if (body.indexOf('[Acoustic reference]') !== -1) captured.acoustic = true;/* P1：记录 LLM 请求是否收到声学参考块 */
+          if (body.indexOf('data:image/jpeg') !== -1 || body.indexOf('image_url') !== -1) captured.vision = true;/* P2：记录 LLM 请求是否收到视频帧(image part) */
+          const content = body.includes('waifu_ex1') ? WAIFU_EX1 : (body.includes('waifu_probe') ? WAIFU_REPLY : MOCK_REPLY);
+          res.writeHead(200, headers);
+          res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content }, finish_reason: 'stop' }] }));
+        });
         return;
       }
       res.writeHead(404, headers);
       res.end(JSON.stringify({ error: 'not found' }));
     });
-    server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port }));
+    server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port, captured }));
   });
 }
 
@@ -237,6 +249,41 @@ async function main() {
     check('chat.userBubble', await waitFor(cdp, "(function(){ var m=document.getElementById('chat-messages'); return !!m && m.textContent.includes('你好，SmokeAI。'); })()", 8000));
     check('chat.assistantReply', await waitFor(cdp, "(function(){ var m=document.getElementById('chat-messages'); return !!m && m.textContent.includes('" + MOCK_REPLY + "'); })()", 15000));
     check('chat.stored', await evaluate(cdp, "(async function(){ var all = await dbGetAll('chatMessages'); return all.some(m => m.friendId === 'smoke_friend' && m.role === 'assistant'); })()"));
+    await evaluate(cdp, "(async function(){ window.__voiceCallResult = await sendChatMessage({voiceCall:true,transcript:'voice call transcript',callSessionId:'call-smoke',turnId:'turn-smoke',roleId:'smoke_friend',conversationId:'main:smoke_friend'}); })()");
+    check('voiceCall.chatRuntimeReply', await waitFor(cdp, "window.__voiceCallResult && window.__voiceCallResult.ok === true && typeof window.__voiceCallResult.replyText === 'string'", 15000));
+    check('voiceCall.transcriptPersisted', await evaluate(cdp, "(async function(){ var all=await dbGetAll('chatMessages'); return all.some(function(m){return m.friendId==='smoke_friend'&&m.role==='user'&&m.content==='voice call transcript'&&m.metadata&&m.metadata.source==='voice_call'&&m.metadata.callSessionId==='call-smoke';}); })()"));
+    check('voiceCall.uiMounted', await evaluate(cdp, "!!document.getElementById('voice-call-modal') && !!document.getElementById('voice-call-launch-full') && window.IB.voiceCall && typeof window.IB.voiceCall.start === 'function'"));
+    check('voiceCall.singleMicControl', await evaluate(cdp, "(function(){ var c=document.querySelectorAll('#voice-call-modal .voice-call-controls .voice-call-control'); return !!document.getElementById('voice-call-mute') && !!document.getElementById('voice-call-speaker') && !document.getElementById('voice-call-mic') && c.length===3; })()"));
+    check('voiceCall.muteToggle', await evaluate(cdp, "(function(){ var call=Object.create(window.IB.voiceCall.VoiceCall.prototype); call.micMuted=false; call.speaking=false; call.toggleMute(); var btn=document.getElementById('voice-call-mute'); var on=call.micMuted===true && btn && btn.className.indexOf('muted')!==-1; call.toggleMute(); var off=call.micMuted===false && btn.className.indexOf('muted')===-1; return on && off; })()"));
+
+    /* 4.7 P1 · Call 声学语气参考 端到端：真实 sendChatMessage → LLM request + dbPut(chatMessages)
+       acousticReference 由 call.js 在当前 turn 计算（此处如实传入一次 tone 子句），
+       证明：① LLM 收到 [Acoustic reference] 块；② chatMessages 持久化只有原始 transcript；
+             ③ UI transcript 不含 reference。 */
+    const acRefText = '情绪倾向:平静/中性(较低置信)；语速中等(3.4字/秒)；音量中等；停顿较少';
+    mock.captured.acoustic = false;
+    await evaluate(cdp, "(async function(){ window.__acRefResult = await sendChatMessage({voiceCall:true,transcript:'acoustic ref call transcript',acousticReference:'" + acRefText + "',callSessionId:'ac-call',turnId:'ac-turn',roleId:'smoke_friend',conversationId:'main:smoke_friend'}); })()");
+    check('acref.llmReceived', (await waitFor(cdp, "window.__acRefResult && window.__acRefResult.ok === true", 15000)) && mock.captured.acoustic === true);
+    /* ② 持久化：chatMessages 的 user 消息内容 == 原始 transcript（精确、无 reference） */
+    check('acref.persistedIsTranscript', await evaluate(cdp, "(async function(){ var all=await dbGetAll('chatMessages'); return all.some(function(m){return m.friendId==='smoke_friend'&&m.role==='user'&&m.content==='acoustic ref call transcript'&&m.metadata&&m.metadata.source==='voice_call'&&String(m.content).indexOf('Acoustic reference')===-1;}); })()"));
+    /* ③ UI transcript：渲染的用户气泡文本含原话、不含 reference */
+    check('acref.uiNoReference', await evaluate(cdp, "(function(){ var m=document.getElementById('chat-messages'); var t=(m&&m.textContent)||''; return t.indexOf('acoustic ref call transcript')!==-1 && t.indexOf('Acoustic reference')===-1; })()"));
+
+    /* 4.8 P2 · Video Runtime 帧 → LLM（request-local）：真实 sendChatMessage → 复用既有视觉路由
+       （smoke_friend 默认可看 → 帧作 image part 进请求）。证明：LLM 收到帧；持久化只有原 transcript；
+       Memory/UI 不含帧。 */
+    mock.captured.vision = false;
+    await evaluate(cdp, "(async function(){ var cv=document.createElement('canvas');cv.width=64;cv.height=48;var cx=cv.getContext('2d');cx.fillStyle='#2a6';cx.fillRect(0,0,64,48);cx.fillStyle='#fc0';cx.fillRect(20,10,24,28);var du=cv.toDataURL('image/jpeg',0.8);window.__vframe=du;window.__vitRefResult=await sendChatMessage({voiceCall:true,transcript:'video frame call',visionReference:{dataUrl:du},callSessionId:'vit-call',turnId:'vit-turn',roleId:'smoke_friend',conversationId:'main:smoke_friend'}); })()");
+    check('vit.llmReceivedFrame', (await waitFor(cdp, "window.__vitRefResult && window.__vitRefResult.ok === true", 15000)) && mock.captured.vision === true);
+    check('vit.persistedIsTranscript', await evaluate(cdp, "(async function(){ var all=await dbGetAll('chatMessages'); return all.some(function(m){return m.friendId==='smoke_friend'&&m.role==='user'&&m.content==='video frame call'&&String(m.content).indexOf('data:image/jpeg')===-1;}); })()"));
+    check('vit.memoryNoFrame', await evaluate(cdp, "(async function(){ var mem=await dbGetAll('memories'); return !mem.some(function(m){return String((m.content||'')+(m.summary||'')).indexOf('data:image/jpeg')===0;}); })()"));
+    check('vit.uiNoFrame', await evaluate(cdp, "(function(){ var m=document.getElementById('chat-messages'); var t=(m&&m.textContent)||''; return t.indexOf('video frame call')!==-1 && t.indexOf('data:image/jpeg')===-1; })()"));
+
+    /* 4.9 P2 · Call modal 视频面 UI：注入相机开关 + 视频预览；不破坏 .voice-call-controls 计数 */
+    await evaluate(cdp, "window._mountCallVideoSurface({})");
+    check('videoUI.mounted', await evaluate(cdp, "(function(){ return !!document.getElementById('voice-call-cam') && !!document.getElementById('voice-call-video') && !!document.getElementById('voice-call-video-el'); })()"));
+    check('videoUI.controlsStill3', await evaluate(cdp, "(function(){ return document.querySelectorAll('#voice-call-modal .voice-call-controls .voice-call-control').length === 3; })()"));
+
 
     /* 2. 信件：落库 → loadLetters 渲染 → openLetter → deleteLetter */
     await evaluate(cdp, "dbPut('letters', { id:'smoke_letter', to:'Sui', from:'测试者', content:'这是一封测试信。', reply_to:'', read:false, created:Date.now() })");
@@ -280,6 +327,48 @@ async function main() {
     check('voice.buildEl', await evaluate(cdp, "(function(){ var el = _buildVoiceEl({ duration: 3, dataUrl: 'data:audio/wav;base64,AAA=' }); return el.className === 'chat-voice-bar' && el.title === '点击播放语音' && el.innerHTML.indexOf('3\u2033') >= 0 && typeof el.onclick === 'function'; })()"));
     check('voice.togglePlay', await evaluate(cdp, "(function(){ var el = _buildVoiceEl({ duration: 1, dataUrl: 'data:audio/wav;base64,AAA=' }); _vmTogglePlay(el, { duration: 1, dataUrl: 'data:audio/wav;base64,AAA=' }); var ok = !!_vmAudio && _vmPlayingEl === el && el.classList.contains('playing'); _vmAudio = null; _vmPlayingEl = null; el.classList.remove('playing'); return ok; })()"));
     check('voice.initNoThrow', await evaluate(cdp, "(function(){ try { _vmInit(); return true; } catch(e) { return false; } })()"));
+
+    /* 4.6 Waifu 消息呈现端到端：MessagePresentation 在非流式路径拆多条/单条落库 */
+    const waifuCfgBase = { nickname: 'WafAI', model: 'waf-model', endpoint: 'http://127.0.0.1:' + mock.port + '/v1/chat/completions', apiKey: '', provider: 'custom', relationship: '测试伙伴', systemPrompt: '你是测试助手。', temperature: 1, streaming: false, showThinking: false, promptCache: false, created: Date.now() };
+    /* ① waifu ON + 非流式长回复 → 拆成多条 assistant 消息（metadata.waifu:true） */
+    await evaluate(cdp, "(function(){ dbPut('apiConfigs', " + JSON.stringify(Object.assign({ id: 'waf_on', waifu: true }, waifuCfgBase)) + "); })()");
+    await evaluate(cdp, "loadApiConfigs()");
+    await evaluate(cdp, "openChatPanel()");
+    await evaluate(cdp, "activeFriendId='waf_on'");
+    check('waifu.onReady', await waitFor(cdp, "(function(){ var c=apiConfigs.find(function(a){return a.id==='waf_on'}); return !!(c&&c.waifu===true && activeFriendId==='waf_on'); })()", 8000));
+    await evaluate(cdp, "document.getElementById('chat-input').value = 'waifu_probe 测试长回复。'; sendChatMessage();");/* awaitPromise:true → 等完整发送（含逐条 600ms 间隔） */
+    const wafOn = await evaluate(cdp, "(async function(){ var all=await dbGetAll('chatMessages'); var xs=all.filter(function(m){return m.friendId==='waf_on'&&m.role==='assistant'}); return { count: xs.length, waifuCount: xs.filter(function(m){return m.metadata&&m.metadata.waifu===true}).length, texts: xs.map(function(m){return m.content}), hasLast: xs.some(function(m){return m.content.indexOf('找个地方坐坐')>=0}), joined: xs.map(function(m){return m.content}).join('') }; })()");
+    check('waifu.onMultiMessages', wafOn && wafOn.waifuCount >= 2 && wafOn.count === wafOn.waifuCount, JSON.stringify({count:wafOn&&wafOn.count,waifuCount:wafOn&&wafOn.waifuCount}));
+    check('waifu.onKeepsAll', wafOn && wafOn.hasLast === true, JSON.stringify(wafOn && wafOn.texts));
+    check('waifu.onNoContentLoss', wafOn && wafOn.joined.indexOf('今天过得怎么样') >= 0 && wafOn.joined.indexOf('找个地方坐坐') >= 0, wafOn && wafOn.joined);
+
+    /* ② waifu OFF + 同一条长回复 → 单条完整消息（不拆） */
+    await evaluate(cdp, "(function(){ dbPut('apiConfigs', " + JSON.stringify(Object.assign({ id: 'waf_off', waifu: false }, waifuCfgBase)) + "); })()");
+    await evaluate(cdp, "loadApiConfigs()");
+    await evaluate(cdp, "openChatPanel()");
+    await evaluate(cdp, "activeFriendId='waf_off'");
+    await evaluate(cdp, "document.getElementById('chat-input').value = 'waifu_probe 测试长回复。'; sendChatMessage();");
+    const wafOff = await evaluate(cdp, "(async function(){ var all=await dbGetAll('chatMessages'); var xs=all.filter(function(m){return m.friendId==='waf_off'&&m.role==='assistant'}); return { count: xs.length, waifuCount: xs.filter(function(m){return m.metadata&&m.metadata.waifu===true}).length, first: xs[0]&&xs[0].content }; })()");
+    check('waifu.offSingleMessage', wafOff && wafOff.count === 1 && wafOff.waifuCount === 0, JSON.stringify(wafOff));
+    check('waifu.offFullReply', wafOff && wafOff.first && wafOff.first.indexOf('找个地方坐坐') >= 0, JSON.stringify(wafOff&&wafOff.first));
+
+    /* ③ MessagePresentation 契约：streaming → 'stream'；waifu 短句 → 'single'（避免无意义拆分） */
+    check('waifu.contract.stream', await evaluate(cdp, "window.MessagePresentation && window.MessagePresentation.plan('任意',{streaming:true}).mode==='stream'"));
+    check('waifu.contract.shortSingle', await evaluate(cdp, "window.MessagePresentation && window.MessagePresentation.plan('就一句。',{waifu:true,streaming:false}).mode==='single'"));
+    check('waifu.contract.multi', await evaluate(cdp, "window.MessagePresentation && window.MessagePresentation.plan('今天天气真好啊。阳光很暖。适合出去走走。',{waifu:true,streaming:false}).mode==='multi'"));
+    check('waifu.contract.example1', await evaluate(cdp, "(function(){ var r=window.MessagePresentation.split('" + WAIFU_EX1.replace(/"/g,'\\"') + "'); return r && r.length===3 && r.join('').indexOf('怎么跟你室友介绍我')>=0 && r[2].indexOf('我挺好奇这个')>=0; })()"));
+    check('waifu.pace.dynamic', await evaluate(cdp, "(function(){ var d=window.MessagePresentation.delayBetween; return typeof d==='function' && d(5)<=d(30) && d(30)<=d(500) && d(500)<=1000; })()"));
+
+    /* ③.5 截图同款：waifu ON + 非流式 3 句回复 → 正好 3 条消息，且内容与原文等价 */
+    await evaluate(cdp, "(function(){ dbPut('apiConfigs', " + JSON.stringify(Object.assign({ id: 'waf_ex1', waifu: true }, waifuCfgBase)) + "); })()");
+    await evaluate(cdp, "loadApiConfigs()");
+    await evaluate(cdp, "openChatPanel()");
+    await evaluate(cdp, "activeFriendId='waf_ex1'");
+    await evaluate(cdp, "document.getElementById('chat-input').value = 'waifu_ex1 测试截图示例。'; sendChatMessage();");
+    const ex1 = await evaluate(cdp, "(async function(){ var all=await dbGetAll('chatMessages'); var xs=all.filter(function(m){return m.friendId==='waf_ex1'&&m.role==='assistant'}); return { count: xs.length, joined: xs.map(function(m){return m.content}).join(''), texts: xs.map(function(m){return m.content}) }; })()");
+    check('waifu.example1.exactly3', ex1 && ex1.count === 3, JSON.stringify(ex1 && ex1.texts));
+    check('waifu.example1.lossless', ex1 && ex1.joined.replace(/\s+/g,'') === WAIFU_EX1.replace(/\s+/g,''), JSON.stringify(ex1 && ex1.joined));
+    check('waifu.example1.ordered', ex1 && ex1.texts && ex1.texts[0].indexOf('怎么跟你室友介绍我')>=0 && ex1.texts[1].indexOf('还是藏起来当秘密')>=0 && ex1.texts[2].indexOf('我挺好奇这个')>=0, JSON.stringify(ex1 && ex1.texts));
 
     /* 5. 全程无未捕获异常 */
     const gameOrChatErrors = exceptions.filter(text => /game_|communication|ReferenceError|TypeError/.test(text));

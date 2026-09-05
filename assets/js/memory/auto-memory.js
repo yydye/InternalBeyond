@@ -7,6 +7,10 @@
    稳定块前置以配合提示缓存。分类/写入门槛/质量标准由 Anthropic 客户端 memory 导出样本反推而来。 */
 const AM_CATS={work_context:'Work',personal_context:'Personal',top_of_mind:'Top of mind',brief_history:'History',long_term_background:'Background',user_instructions:'Instructions'};
 const AM_PRIOS=['always','normal','low'];
+/* Understanding 证据独立性：两条记忆 content 的 _activeTextSimilarity ≥ 此阈值即视为同一事实，不重复计数。
+   注意：_activeTextSimilarity 是字符 bigram Jaccard，对中文"近字面重复"（score≥0.5）可靠，
+   对"完全改写式释义"不敏感（score 可低至 0.2）——阈值 0.5 只拦截近字面重复，不做语义释义判等。 */
+const U_EVIDENCE_SIM_THRESHOLD=0.5;
 function amEnabled(cfg){return !!(cfg&&cfg.autoMem)}
 function _amUserName(){try{return (typeof _cachedUserName==='string'&&_cachedUserName)||'用户'}catch(e){return '用户'}}
 function _amNewId(){return 'am_'+Date.now().toString(36)+'_'+Math.floor(Math.random()*46656).toString(36)}
@@ -123,6 +127,37 @@ async function _memoryRepeatCount(content,targetStore,cfg,excludeId){
     return Math.min(5,count);
   }catch(e){return 0}
 }
+/* Understanding 证据独立性：统计 evidenceIds 中语义不同的记忆条数。
+   仅信任 memories store；近重复（_activeTextSimilarity ≥ U_EVIDENCE_SIM_THRESHOLD）算同一事实。 */
+async function _distinctEvidenceCount(evidenceIds,cfg){
+  try{
+    if(!Array.isArray(evidenceIds)||!evidenceIds.length)return 0;
+    const all=await dbGetAll('memories');
+    const kindOf=m=>m&&m.kind;
+    const texts=evidenceIds.map(id=>{
+      const m=all.find(x=>x&&x.id===id);/* evidence 只能指向 memories */
+      return m?String((m.title||'')+' '+(m.content||'')+' '+(m.summary||'')).toLowerCase():'';
+    }).filter(Boolean);
+    if(!texts.length)return 0;
+    const sim=(typeof window._activeTextSimilarity==='function')?window._activeTextSimilarity:(function(a,b){return 0});
+    /* 贪心分组：每遇一条与已收组内任何一条 ≥ 阈值 → 归并（同一事实） */
+    const groups=[];
+    for(const t of texts){
+      let merged=false;
+      for(const g of groups){if(sim(t,g.text)>=U_EVIDENCE_SIM_THRESHOLD){g.pool.push(t);g.text=t;merged=true;break}}
+      if(!merged)groups.push({text:t,pool:[t]});
+    }
+    return groups.length;
+  }catch(e){return Math.max(0,(evidenceIds||[]).length)}
+}
+/* 文学化自我感慨 / 自我观察 判定（供 create 硬拒 + 存量审计共用）。
+   返回 {lyric, personReflect}，供调用方结合 explicit/future/repeats/temporary 决策。 */
+function _memoryLyricFlags(text){
+  const ev=String(text||'').toLowerCase();
+  const lyric=/(珍惜|感悟|感慨|领悟|重新评估|恒久|永恒|静谧|宁静|温柔|治愈|芬芳|夜空|星河|月光|岁月|时光|生命的意义|看透|释怀|释然|欣慰|心绪|思绪|触动|共鸣|仿佛|宛如|像是|或许人生|也许自己|一种特别的|属于我们的)/i.test(ev);
+  const personReflect=/(我|自己|彼此|我们)。{0,12}(的|那些|此刻|这般|仿佛)/i.test(ev);
+  return {lyric:lyric,personReflect:personReflect};
+}
 /* 模型判断 + 本地证据校准：不信任随机分值，以主动表达、历史重复、未来影响与一次性特征共同定标。 */
 async function _calibrateMemoryCandidate(input){
   const content=String(input.content||''),reasonText=_memoryReasons(input.reasons).join(' ');
@@ -131,7 +166,44 @@ async function _calibrateMemoryCandidate(input){
   const future=/(未来|长期|偏好|习惯|身份|职业|称呼|沟通方式|交互|推荐|体验|指令|边界|目标|工作流|workflow|preference|habit|identity)/i.test(evidence);
   const temporary=/(仅这次|一次性|临时|暂时|今天|今晚|刚刚|玩笑|随口|当前情绪|一时|马上|待会|temporary|just this once|joke)/i.test(evidence);
   const correction=/(更正|纠正|已经改变|不再|过时|更新为|应改为|错误|撤回|忘记|删除|obsolete|outdated|incorrect)/i.test(evidence);
+  /* Understanding 专属（operation==='understanding'）：人格定性 / 心理类 越界拒止 */
+  const _personality=/(她|他|你|TA|它)?\s*(就是|本质上是|天生是|一直是).{0,10}(型人|的人|性格|人格)|(她|他|你|TA).{0,6}是个.{0,8}(焦虑|抑郁|内向|外向|自恋|偏执|依赖型|回避型)|intrinsically|is by nature/i.test(evidence);
+  const _psych=/(抑郁|抑郁症|焦虑症|双相|人格障碍|自恋型|边缘型|创伤后应激|ptsd|惊恐障碍)/i.test(evidence);
   const repeats=await _memoryRepeatCount(content,input.targetStore,input.cfg,input.excludeId);
+  /* Understanding 前置否决：证据不足(单源) / 人格定性推断 / 心理类推断（仅 user 陈述放行） */
+  if(input.operation==='understanding'){
+    const basis=_memoryReasons(input.basis)[0]||input.basis||'ai_guess';
+    const evidenceIds=Array.isArray(input.evidenceIds)?input.evidenceIds:(input.evidenceIds?[input.evidenceIds]:[]);
+    /* 心理类：仅 user_stated / user_corroborated 放行；ai_inference / ai_guess 一律拒 */
+    if(_psych&&(basis==='ai_inference'||basis==='ai_guess'))return{confidence:0,reasons:['心理健康类理解仅允许用户自述/旁证，禁止AI推断'],repeatCount:repeats,rejected:'psych-inference'};
+    /* 人格定性：ai_inference 且 repeats<2 → 拒（去定性化） */
+    if(_personality&&basis==='ai_inference'&&repeats<2)return{confidence:0,reasons:['人格定性推断需≥2次独立证据，当前证据不足'],repeatCount:repeats,rejected:'personality-inference'};
+    /* 证据≥2 独立来源校验（非用户自述时强制）：只数语义不同的 evidence，
+       近重复（_activeTextSimilarity≥阈值）计为同一事实 → 不凑数。 */
+    if(basis!=='user_stated'){
+      const distinct=await _distinctEvidenceCount(evidenceIds,input.cfg);
+      if(distinct<2)return{confidence:0,reasons:['理解需≥2条语义独立的记忆支撑（近重复证据不重复计数）'],repeatCount:repeats,rejected:'insufficient-evidence',distinctEvidence:distinct};
+    }
+  }
+  /* ── 普通记忆 create 硬拒："文学化自我感慨 / 无未来价值的观察性评论" ──
+     understanding 已有同类硬拒止，但 operation==='create'（普通记忆生成）此前只做
+     软扣分（temporary），导致 AI 角色持续写出"珍惜平凡清晨""对躺平重新评估"这类
+     自我感慨式记忆。此处对 AI 生成（targetStore=memories 且非用户手记）增加硬拒：
+     命中文学感慨 / 观察性抒情 且 无 explicit 事实 / 无 future 价值 且 无历史重复
+     → 直接 reject，不进入审批弹窗（不污染记忆库 + 不再消耗用户审批注意力）。
+     绝不误伤用户手动创建的、以及带明确事实/偏好/身份/目标/重复出现的信息。 */
+  /* 文学化自我感慨 / 自我观察 判定（供 create 硬拒 + 存量审计共用）。
+     返回 {lyric, personReflect}，供调用方结合 explicit/future/repeats/temporary 决策。 */
+  if(input.operation==='create'&&input.targetStore==='memories'&&!(input.createdByUser)){
+    const _fl=_memoryLyricFlags(evidence);
+    const _selfFulfilling=!explicit&&!future&&repeats<1;
+    if(_fl.lyric&&_selfFulfilling&&!temporary){
+      return{confidence:0,reasons:['这条记忆属于文学化自我感慨/观察性抒情，缺乏可作为长期事实的明确用户表达、未来价值或重复证据，已拒绝写入'],repeatCount:repeats,rejected:'lyrical-musing'};
+    }
+    if(_fl.personReflect&&_selfFulfilling){
+      return{confidence:0,reasons:['这条记忆更像角色的自我观察而非关于用户的长期事实，已拒绝写入'],repeatCount:repeats,rejected:'self-reflective'};
+    }
+  }
   let heuristic=35;
   if(explicit)heuristic+=30;
   heuristic+=Math.min(24,repeats*8);
@@ -154,7 +226,18 @@ async function _calibrateMemoryCandidate(input){
   if(input.operation==='update'&&correction)addReason('现有记忆可能已经过时，需要校正');
   if(input.operation==='delete'&&correction)addReason('现有记忆可能已失效或被明确撤回');
   if(!reasons.length)addReason(input.operation==='delete'?'AI 认为现有记忆可能不再适用':'AI 认为这项信息具有后续参考价值');
-  return{confidence:_memoryScore(confidence,heuristic),reasons:reasons.slice(0,3),repeatCount:repeats};
+  /* Understanding：conviction 按 basis 上限封顶（user_stated 全高；ai推断/猜测逐级降） */
+  let _conv=confidence;
+  let _unDistinct=null;/* 仅 understanding：记录语义不同的证据条数（诊断/测试用，放行时为实际值） */
+  if(input.operation==='understanding'){
+    const basis=_memoryReasons(input.basis)[0]||input.basis||'ai_guess';
+    const cap=basis==='user_stated'?100:(basis==='user_corroborated'?85:(basis==='ai_inference'?65:40));
+    _conv=Math.min(_conv,cap);
+    /* 复用已计算或补算一次 distinctEvidence（放行路径供测试/审计观测） */
+    if(input.distinctEvidence!=null)_unDistinct=Number(input.distinctEvidence);
+    else if(Array.isArray(input.evidenceIds)){try{_unDistinct=await _distinctEvidenceCount(input.evidenceIds,input.cfg)}catch(e){_unDistinct=input.evidenceIds.length}}
+  }
+  return{confidence:_memoryScore(_conv,heuristic),reasons:reasons.slice(0,3),repeatCount:repeats,distinctEvidence:_unDistinct};
 }
 /* ── Memory Approval：所有 AI 发起的长期记忆变更先成为内存候选 ──
    pending 不写入 IndexedDB；刷新页面即自然丢弃。队列保证同一轮最多 3 个操作逐个确认。 */
@@ -573,6 +656,9 @@ window._memoryReasons=_memoryReasons;
 window._memoryScore=_memoryScore;
 window._autoMemCandidatePayload=_autoMemCandidatePayload;
 window._memoryRepeatCount=_memoryRepeatCount;
+window._memoryLyricFlags=_memoryLyricFlags;
+window._distinctEvidenceCount=_distinctEvidenceCount;
+window.U_EVIDENCE_SIM_THRESHOLD=U_EVIDENCE_SIM_THRESHOLD;
 window._calibrateMemoryCandidate=_calibrateMemoryCandidate;
 window.requestMemoryApproval=requestMemoryApproval;
 window._showNextMemoryApproval=_showNextMemoryApproval;
@@ -630,6 +716,8 @@ NS.expose('memory.autoMem', {
   _memoryScore: _memoryScore,
   _autoMemCandidatePayload: _autoMemCandidatePayload,
   _memoryRepeatCount: _memoryRepeatCount,
+  _distinctEvidenceCount: _distinctEvidenceCount,
+  U_EVIDENCE_SIM_THRESHOLD: U_EVIDENCE_SIM_THRESHOLD,
   _calibrateMemoryCandidate: _calibrateMemoryCandidate,
   requestMemoryApproval: requestMemoryApproval,
   _showNextMemoryApproval: _showNextMemoryApproval,

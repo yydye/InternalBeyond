@@ -1,4 +1,4 @@
-﻿﻿/*
+﻿/*
  * Internal Beyond local vault
  *
  * Keeps the existing JSON export/import flow intact while adding an opt-in,
@@ -21,7 +21,8 @@
     chatThreads:'话题频道',chatSummaries:'对话摘要',blogComments:'日志留言',blogAnnotations:'日志批注',
     autoMemory:'Auto Memory',calEvents:'日程',calNotes:'日历便笺',calLedger:'日历设置',groups:'群聊',
     categories:'分类',about:'个人资料',active_message_settings:'主动消息设置',
-    active_message_history:'主动消息历史',active_message_plans:'主动计划',diary_entries:'角色日记',music:'音乐'
+    active_message_history:'主动消息历史',active_message_plans:'主动计划',diary_entries:'角色日记',music:'音乐',
+    activities:'陪伴活动',favorites:'收藏夹'
   };
 
   function say(message){

@@ -8,8 +8,20 @@ vision/.cache/
 .reasonix/
 Gemini_Generated_Image_*.png
 
-# 本地故障恢复副本：保留在工作机上，不进入版本库
-.dsh-recovery/
+# 本地故障恢复副本：保留在工作机上，不进入版本�?.dsh-recovery/
 
 # ���湤���ļ�����״̬��������
 .dsh-file-claim/
+
+# launcher runtime log (local machine) �� not part of the project source
+logs/
+
+# 本机运行/开发垃圾，不属于项目源码
+.dsh/
+.dsh-recovery/
+.dsh-file-claim/
+.playwright-mcp/
+browser-data/
+logs/
+tmp_ib_probe*.js
+_icon_preview.png

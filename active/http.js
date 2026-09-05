@@ -6,13 +6,74 @@
 
 const http = require('http');
 
+/* Proactive Observability v1..v3：只读 debug 页（消费 /proactive/traces，不参与任何决策）
+   v3 增加“WHY THIS PROACTIVE?”可读解释 + 结果链（sent → laterOutcome）。无 UI 框架（原生 details）。 */
+const TRACE_DEBUG_HTML = `<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>IB · Proactive Trace Debug</title>
+<style>body{background:#0f1216;color:#e6e6e6;font:13px/1.5 ui-monospace,Consolas,monospace;margin:16px}h1{font-size:16px;margin:0 0 6px}button{background:#1d2530;color:#e6e6e6;border:1px solid #334;border-radius:6px;padding:4px 10px;cursor:pointer}#meta{color:#8b949e;margin-bottom:8px}details{border:1px solid #2a2f3a;border-radius:6px;margin:6px 0;background:#141922}summary{cursor:pointer;padding:6px 10px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;font-size:12px}summary .chip{background:#1d2530;border:1px solid #334;border-radius:10px;padding:1px 8px}.ok{color:#7ee787}.bad{color:#ff7b72}.muted{color:#8b949e}.sec{font-weight:700;color:#79c0ff;margin-top:8px;border-bottom:1px solid #2a2f3a;padding-bottom:2px}.why{color:#ffa657;font-weight:700;margin:4px 0}.kv{display:grid;grid-template-columns:150px 1fr;gap:2px 8px;padding:2px 0}.kv b{color:#9aa4b2;font-weight:600}.steps{color:#9aa4b2;font-size:11px;white-space:pre-wrap;margin-top:6px}</style></head>
+<body><h1>IB · Proactive Trace Debug</h1><div id="meta">加载中…</div><button onclick="load()">刷新</button><div id="rows"></div>
+<script>
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+function kv(k,v){return '<div class="kv"><b>'+k+'</b><span>'+esc(v==null?'—':v)+'</span></div>'}
+function ctxCounts(t){
+  var s=(t.steps||[]).filter(function(x){return x.stage==='context'})[0]; if(!s) return {mem:'—',msg:'—',pro:'—'};
+  var d=s.detail||'',m=d.match(/mem:(\\d+)/),g=d.match(/msg:(\\d+)/),p=d.match(/proactive:(\\d+)/);
+  return {mem:m?m[1]:'—',msg:g?g[1]:'—',pro:p?p[1]:'—'};
+}
+function lastValidation(t){
+  var a=(t.steps||[]).filter(function(x){return x.stage==='validation'}); var s=a[a.length-1];
+  return s?{ok:s.ok,reason:s.detail}:null;
+}
+function explain(t){
+  var c=ctxCounts(t),v=lastValidation(t);
+  var evalTxt=(t.evalAction||'—')+(t.evalReason?' · '+t.evalReason:'');
+  var valTxt=v?((v.ok?'passed':'failed')+(v.reason?' · '+v.reason:'')):'—（未走到）';
+  var retry=t.compatRetry?(t.compatRetryKind||'retry'):'none';
+  var outTxt=(t.outcome||'—')+(t.laterOutcome?(' → '+t.laterOutcome):' → 待观测');
+  var steps=(t.steps||[]).map(function(s){return '['+s.stage+'] '+(s.ok?'✓':'✗')+(s.kind?' ('+s.kind+')':'')+(s.detail?' — '+s.detail:'')}).join('\\n');
+  var h='<div class="why">WHY THIS PROACTIVE?</div>';
+  h+='<div class="sec">PLAN</div>'+kv('intent',t.intent)+kv('reason',t.reason)+kv('trigger',t.trigger)+kv('kind',t.kind)+kv('plan/task',(t.planId||t.taskId||''));
+  h+='<div class="sec">EVALUATION</div>'+kv('action',evalTxt);
+  h+='<div class="sec">CONTEXT</div>'+kv('memory count',c.mem)+kv('message count',c.msg)+kv('proactive count',c.pro);
+  h+='<div class="sec">GENERATION</div>'+kv('attempt count',t.generationAttempts)+kv('model',(t.provider||'')+'/'+(t.model||''))+kv('compat retry',retry)+kv('character',t.characterName);
+  h+='<div class="sec">VALIDATION</div>'+kv('result',valTxt);
+  h+='<div class="sec">DEDUP</div>'+kv('result',(t.dedup?'blocked':'passed'));
+  h+='<div class="sec">FALLBACK</div>'+kv('used',((t.fallback?'used':'unused')));
+  h+='<div class="sec">SEND</div>'+kv('message id',t.sentMessageId)+kv('timestamp',t.sentAt?(new Date(t.sentAt).toLocaleTimeString()):'—');
+  h+='<div class="sec">OUTCOME</div>'+kv('chain',outTxt)+kv('duration',(t.durationMs!=null?t.durationMs+'ms':'—'))+kv('error type',t.errorType||'');
+  h+='<div class="steps">'+esc(steps)+'</div>';
+  return h;
+}
+async function load(){
+  var meta=document.getElementById('meta'),rows=document.getElementById('rows');
+  try{
+    var r=await fetch('/proactive/traces?limit=50'),d=await r.json();
+    meta.textContent='enabled='+(d.enabled?'on':'off')+' · traces='+d.traces.length+' · 每 3 秒自动刷新';
+    rows.innerHTML=d.traces.map(function(t){
+      var when=new Date(t.finishedAt||t.startedAt).toLocaleTimeString();
+      return '<details><summary><span class="chip">'+when+'</span><span class="chip">'+esc(t.kind||'')+'</span><span class="chip">'+esc(t.characterName||t.characterId||'')+'</span><span class="chip">'+esc(t.planId||t.taskId||'')+'</span><span class="chip">'+esc(t.trigger||'')+'</span><span class="chip">'+esc(t.outcome||'')+'</span>'+(t.durationMs!=null?'<span class="chip">'+t.durationMs+'ms</span>':'')+'</summary>'+explain(t)+'</details>';
+    }).join('')||'<div class="muted">暂无 trace（服务端设置 IB_PROACTIVE_TRACE=on 后生效）</div>';
+  }catch(e){meta.textContent='加载失败: '+e.message}
+}
+load();setInterval(load,3000);
+</script></body></html>`;
+
 function createHttp(ctx) {
   const {
     HOST, PORT, maxBody, getState, armedUsers, saveNow, queueSave,
     publicPlan, sanitizeAiPlan, buildTaskReplacement, recordUserId,
     trimText, deepClone, finiteTimestamp,
-    sanitizeMomentSchedule, publicMomentSchedule
+    sanitizeMomentSchedule, publicMomentSchedule, proactiveTrace,
+    credentialVault
   } = ctx;
+
+  /* 凭证剥离：业务 snapshot 持久化绝不写入完整 apiKey（凭证只走 /credentials → vault） */
+  function stripCharacterCredential(character) {
+    if (!character || typeof character !== 'object') return character;
+    const c = deepClone(character);
+    delete c.apiKey;
+    return c;
+  }
 
   function originAllowed(origin) {
     return !origin || origin === 'null' || /^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?$/i.test(origin);
@@ -108,6 +169,42 @@ function createHttp(ctx) {
           armed_users: armedUsers.size,
           now: Date.now()
         });
+        return;
+      }
+      /* ── Proactive Observability v1：只读 trace（Debug Console 消费，绝不参与决策） ── */
+      if (request.method === 'GET' && url.pathname === '/proactive/traces') {
+        const limit = Math.max(1, Math.min(200, Number(url.searchParams.get('limit')) || 50));
+        json(response, 200, { enabled: proactiveTrace.enabled(), traces: proactiveTrace.recent(limit) });
+        return;
+      }
+      if (request.method === 'GET' && url.pathname === '/proactive/debug') {
+        response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+        response.end(TRACE_DEBUG_HTML);
+        return;
+      }
+      /* ── Credential Vault v1：独立 credential-sync endpoint（只写 vault，不动业务 state）──
+         保留顶层 Origin guard（不在此路由内放行）；不参与 Moments ownership/reown；
+         只写 credential-vault.json；任何响应/异常都不回传完整 API Key。 */
+      if (request.method === 'POST' && url.pathname === '/credentials') {
+        const body = await readBody(request);
+        const list = Array.isArray(body && body.credentials) ? body.credentials : [];
+        let stored = 0;
+        for (const c of list) {
+          if (!c || !c.characterId) continue;
+          const keyNow = String(c.apiKey || '').trim();
+          if (!keyNow) continue;
+          const id = String(c.characterId);
+          /* 独立按 characterId 存取：绝不按 nickname/provider/model 合并 */
+          try {
+            if (credentialVault.upsert(id, {
+              provider: String(c.provider || ''),
+              apiKey: keyNow,
+              endpoint: String(c.endpoint || ''),
+              model: String(c.model || '')
+            })) stored += 1;
+          } catch (_) {}
+        }
+        json(response, 200, { ok: true, stored });
         return;
       }
       if (request.method === 'GET' && url.pathname === '/tasks') {
@@ -213,7 +310,7 @@ function createHttp(ctx) {
           executedAt: incomingExecTs > 0 && incomingExecTs >= existingExecTs
             ? incoming.executedAt
             : ((existing && existing.executedAt) || null),
-          character: deepClone(body.character || {}),
+          character: stripCharacterCredential(body.character || {}),
           user: deepClone(body.user || {}),
           recent_memories: Array.isArray(body.recent_memories) ? deepClone(body.recent_memories.slice(0, 8)) : [],
           recent_messages: Array.isArray(body.recent_messages) ? deepClone(body.recent_messages.slice(-16)) : [],
@@ -292,8 +389,16 @@ function createHttp(ctx) {
         }
         const existingOwner = String(existing && existing.user_id || '');
         if (existingOwner && existingOwner !== incoming.user_id) {
-          json(response, 403, { error: 'Moment schedule does not belong to this user' });
-          return;
+          /* ownership guard 保留：普通请求的 owner 不一致一律 403。
+             唯一例外：客户端显式 reown（前端仅在观察到归属 403 后，对单个角色单次触发），
+             用于本机单用户 user_id churn 后重新接管该角色的 schedule。不影响其他角色/其他集合，
+             也不是无条件 last-writer-wins（不携带 reown 的真实不一致仍 403）。 */
+          if (body.reown === true) {
+            try { console.warn('[Moments] re-own ' + characterId + ': ' + existingOwner + ' -> ' + String(incoming.user_id || '')); } catch (_e) {}
+          } else {
+            json(response, 403, { error: 'Moment schedule does not belong to this user' });
+            return;
+          }
         }
         const incomingUpdated = Date.parse(incoming.updatedAt) || 0;
         const existingUpdated = existing ? (Date.parse(existing.updatedAt) || 0) : 0;
@@ -310,7 +415,7 @@ function createHttp(ctx) {
           executedAt: incomingExecTs > 0 && incomingExecTs >= existingExecTs
             ? incoming.executedAt
             : ((existing && existing.executedAt) || null),
-          character: deepClone(body.character || {}),
+          character: stripCharacterCredential(body.character || {}),
           user: deepClone(body.user || {}),
           recent_memories: Array.isArray(body.recent_memories) ? deepClone(body.recent_memories.slice(0, 8)) : [],
           recent_messages: Array.isArray(body.recent_messages) ? deepClone(body.recent_messages.slice(-16)) : [],

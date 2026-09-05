@@ -1,4 +1,4 @@
-/* IB 命名空间迁移：IIFE 私有作用域 + 全量双挂载（window 实时 + IB.active 注册）。 */
+﻿/* IB 命名空间迁移：IIFE 私有作用域 + 全量双挂载（window 实时 + IB.active 注册）。 */
 (function(NS){
 /* ══════════ ACTIVE MESSAGES ══════════ */
 const ACTIVE_SETTINGS_STORE='active_message_settings';
@@ -397,6 +397,8 @@ function buildProactivePrompt(args){
   if(args.randomCharacter)prompt.push('','【可选联想角色】',args.randomCharacter.name+'。只能把这当作话题灵感，不能替 TA 发言。');
   if(args.retryInstruction)prompt.push('','【重新生成要求】',args.retryInstruction);
   prompt.push('','请主动向'+userName+'发送一条自然、具体、符合角色原作语气的消息。严格要求：','1. 长度为 1 至 4 个自然段。','2. 不要总以“早上好”“在吗”“今天过得怎么样”等统一问候开头。','3. 根据当前时段、最近聊天与记忆选择这一次独有的内容。','4. 避免与最近主动消息相同的开头、话题、句式、问候或近义复述。','5. 可以延续之前的话题，也可以自然开启新话题。','6. 不要复读最近回复，只输出最终可见正文。','7. 不要提定时器、任务、系统、调度或“系统让我来找你”；不要假装一直在后台观察对方；不要制造紧迫感或施压。');
+  /* 全局短回合策略：主动消息 1-2 句；语音开场（voice_call）更短。 */
+  try{if(window.IB&&IB.brevity)system=IB.brevity.apply(system,{mode:(args.interaction==='voice_call'?'voice':'proactive'),detailed:IB.brevity.isDetailedRequest(String(args.planIntent||args.userMessage||''))});}catch(e){}
   return{messages:[{role:'system',content:system},{role:'user',content:prompt.join('\n')}],system:system,prompt:prompt.join('\n')}
 }
 async function generateProactiveMessage(args){
@@ -494,25 +496,294 @@ async function _activeRunNow(id){
   await dbPut(ACTIVE_HISTORY_STORE,{id:runId,setting_id:s.id,user_id:s.user_id,character_id:s.character_id,scheduled_for:scheduled,status:'processing',created_at:scheduled,attempts:1,manual:true});
   toast('正在生成主动消息…');await _activeExecuteRun({setting:s,run_id:runId,scheduled_for:scheduled,manual:true})
 }
+/* ---- Memory Consolidation v1：episodic → semantic（最小，复用现有 memories） ----
+   只做 episodic→semantic；不新增 store、不升 DB_VER；kind/consolidatedFrom/lastConsolidatedAt
+   为 memories 可选字段；LLM 决策 + importance≥6 门槛；merge 须真 merge（不重复创建）；
+   保留 provenance（consolidatedFrom）；任何失败/解析异常静默旁路，不影响正常聊天。 */
+async function consolidateCharacterMemory(cfg){
+  if(!cfg||!cfg.id||!cfg.systemPrompt)return null;
+  if(typeof _ibApiReady==='function'&&!_ibApiReady(cfg))return null;
+  try{
+    const roleId=String(cfg.id);
+    const all=await dbGetAll('memories');
+    const visibleSemantic=m=>m&&m.kind==='semantic'&&(String(m.createdBy||'')===roleId||(Array.isArray(m.visibleTo)&&m.visibleTo.map(String).includes(roleId)));
+    /* 该角色近期未固化的 episodic 记忆 */
+    const episodics=all.filter(m=>m&&m.kind!=='semantic'&&m.kind!=='core'&&(String(m.createdBy||'')===roleId||(Array.isArray(m.visibleTo)&&m.visibleTo.map(String).includes(roleId))));
+    const recentEpi=episodics.filter(m=>!(m.lastConsolidatedAt)||(Date.now()-Number(m.lastConsolidatedAt)>86400000)).slice(-12);
+    /* 近期 sources：moments / diary / chat summary */
+    let recentMoments=[],recentDiary=[],summary='';
+    try{const ms=await dbGetAll('moments');recentMoments=ms.filter(m=>String(m.roleId||'')===roleId).slice(-6)}catch(e){}
+    try{const de=await dbGetAll('diary_entries');recentDiary=de.filter(e=>String(e.characterId||'')===roleId).slice(-3)}catch(e){}
+    try{const s=await dbGet('chatSummaries','sum_'+roleId);summary=(s&&s.summary)||''}catch(e){}
+    if(!recentEpi.length&&!recentMoments.length&&!recentDiary.length&&!summary)return null;
+    const charName=cfg.nickname||cfg.model||'AI';
+    const system=String(cfg.systemPrompt||'').slice(0,20000)
+      +'\n\n你正在为角色「'+charName+'」把近期零散经历固化(consolidate)成一条连贯的【语义记忆】(semantic)。只输出严格 JSON 对象，不输出任何其他文字。';
+    const prompt=[
+      '【任务】把以下零散记忆/事件归纳成一条【语义记忆】——反映"这段时间角色经历、感受、在乎什么"。没有值得扎根的东西就 shouldConsolidate:false。',
+      '【角色】'+charName+'；与用户关系：'+(cfg.relationship||'未设')+'。',
+      '【近期零散记忆】'+(recentEpi.map(m=>'- ['+(m.domain||'记忆')+'] '+((m.title||'')+' '+String(m.content||m.summary||'')).slice(0,300)).join('\n')||'（无）'),
+      '【近期日记】'+(recentDiary.map(e=>'- '+String(e.date||'')+'「'+(e.title||'')+'」'+(e.mood?'（'+e.mood+'）':'')+': '+String(e.content||'').slice(0,200)).join('\n')||'（无）'),
+      '【近期动态】'+(recentMoments.map(m=>'- '+String(m.content||'').slice(0,200)).join('\n')||'（无）'),
+      '【最近聊天摘要】'+String(summary||'').slice(0,800),
+      '【输出格式】只输出 JSON：{"shouldConsolidate":true/false,"title":"4-20字","summary":"≤80字","content":"语义记忆正文≤400字","importance":1-10,"consolidatedFrom":["源id..."]}',
+      '【规则】1. 只有近期确实有值得扎根的事才 true。2. 平淡/无新增 → false。3. importance<6 表示不值得固化。4. 不要为了固化而固化。'
+    ];
+    let raw='';
+    try{raw=await callApiChat(cfg,[{role:'system',content:system},{role:'user',content:prompt.join('\n')}],{maxTokens:800,timeoutMs:120000,wantMeta:false,jsonMode:true,_noWebSearch:true,disableTools:true})}catch(e){return null}
+    const parsed=(typeof window._activeParsePlanJson==='function')?window._activeParsePlanJson(raw):null;
+    if(!parsed||parsed.shouldConsolidate!==true)return null;
+    const importance=Math.max(0,Math.min(10,parseInt(parsed.importance,10)||0));
+    if(importance<6)return null;
+    const content=String(parsed.content||'').trim().slice(0,500);
+    if(!content)return null;
+    /* ── Consolidation Admission Gate v1（止血）──
+       套用现有 _calibrateMemoryCandidate 的长期价值校准；importance≥6 不再是唯一准入。
+       拒绝：单次临时情绪 / "今天·今晚·刚刚"即时感想 / 文学化自我感慨 / 无未来价值·稳定偏好·
+            身份·习惯·边界·目标·跨来源证据。允许：explicit/future 或 repeats>0（多来源稳定模式）。 */
+    const _evi=String(content)+' '+((Array.isArray(parsed.reasons)?parsed.reasons:[]).join(' '));
+    const _explicit=/(主动|明确|亲口|直接表达|反复强调|要求记住|偏好|喜欢|习惯|身份|职业|称呼|i prefer|i like|remember that)/i.test(_evi);
+    const _future=/(未来|长期|偏好|习惯|身份|职业|称呼|沟通方式|交互|推荐|体验|指令|边界|目标|工作流|preference|habit|identity)/i.test(_evi);
+    const _temporary=/(仅这次|一次性|临时|暂时|今天|今晚|刚刚|玩笑|随口|当前情绪|一时|马上|待会|temporary|just this once|joke)/i.test(_evi);
+    let _repeats=0;
+    try{
+      if(typeof window._calibrateMemoryCandidate==='function'){
+        const _cal=await window._calibrateMemoryCandidate({content:content,confidence:Number(parsed.confidence)||0,reasons:Array.isArray(parsed.reasons)?parsed.reasons:[],operation:'create',targetStore:'memories',cfg:cfg,excludeId:'consolidate'});
+        if(_cal&&_cal.repeatCount!=null)_repeats=Number(_cal.repeatCount)||0
+      }
+    }catch(e){_repeats=0}
+    const _longTermValue=_explicit||_future||_repeats>0;
+    if(_temporary||!_longTermValue)return null;/* 被 Gate 拒绝：不建、不改已有、不抛 */
+    const refs=(Array.isArray(parsed.consolidatedFrom)?parsed.consolidatedFrom:recentEpi.map(m=>m.id)).filter(Boolean).slice(0,50);
+    const now=Date.now();
+    /* merge：该角色已有 semantic 且相似 → 真 merge（更新同一条，不重复创建） */
+    const existingSemantic=all.find(visibleSemantic);
+    if(existingSemantic){
+      const curText=String((existingSemantic.content||'')+' '+(existingSemantic.summary||''));
+      if(curText&&_activeTextSimilarity(content,curText)>=0.8){
+        existingSemantic.title=String(parsed.title||'')||existingSemantic.title;
+        existingSemantic.summary=String(parsed.summary||'')||content.slice(0,80);
+        existingSemantic.content=content;
+        existingSemantic.importance=Math.max(existingSemantic.importance||5,importance);
+        existingSemantic.kind='semantic';
+        existingSemantic.consolidatedFrom=Array.from(new Set((existingSemantic.consolidatedFrom||[]).concat(refs)));
+        existingSemantic.lastConsolidatedAt=now;
+        await dbPut('memories',existingSemantic);
+        try{if(typeof updateMemDashboard==='function')updateMemDashboard()}catch(e){}
+        return existingSemantic
+      }
+    }
+    const newId=await quickCreateMemory({
+      title:String(parsed.title||'').slice(0,24)||content.slice(0,24),
+      summary:String(parsed.summary||'').slice(0,80),
+      content:content,source:'consolidation',sourceId:roleId,
+      domain:'日常',tags:['consolidated'],valence:0.5,arousal:0.4,importance:importance,
+      resolved:false,visibility:'public',createdBy:roleId,createdByName:charName,
+      kind:'semantic',consolidatedFrom:refs,lastConsolidatedAt:now
+    });
+    if(newId){try{const nm=all.find(m=>m.id===newId);return nm||{id:newId}}catch(e){return{id:newId}}}
+    return null
+  }catch(e){return null}/* 静默旁路 */
+}
+var _consolidationWaterline=0;/* 全局限流：10 分钟至少一次 */
+/* 用户活跃门控：检查最近 withinMs 内用户是否发出过消息（任一好友）。
+   用于停用空闲期的记忆写入（consolidation / understanding+thread），避免用户
+   不在时就唤醒模型狂写记忆刷 token。只挡记忆写入，不影响主动消息/日记/朋友圈调度。 */
+var _activeUserActiveCache=null,_activeUserActiveCacheAt=0;
+function _activeUserActiveReset(){_activeUserActiveCache=null;_activeUserActiveCacheAt=0}
+async function _activeUserRecentlyActive(withinMs){
+  try{
+    /* 结果缓存 30s：减少每 tick 读库 */
+    if(_activeUserActiveCacheAt&&Date.now()-_activeUserActiveCacheAt<30000&&_activeUserActiveCache!=null)return _activeUserActiveCache;
+    const cutoff=Date.now()-(withinMs||3600000);
+    const all=await dbGetAll('chatMessages');
+    let active=false;
+    for(const m of all||[]){
+      if(m&&m.role==='user'&&(m.timestamp||m.created||0)>cutoff){active=true;break}
+    }
+    _activeUserActiveCache=active;_activeUserActiveCacheAt=Date.now();
+    return active;
+  }catch(e){return true}/* 读库失败默认放行（不在异常时误停记忆） */
+}
+async function _consolidationTick(){
+  try{
+    /* 总开关关 / 休眠时段 → 直接禁止记忆固化（直接调用也生效） */
+    if((await _bgAiGate())==='hibernate')return;
+    /* 空闲门控：1 小时内无用户互动 → 不唤醒模型写记忆 */
+    if(!(await _activeUserRecentlyActive(3600000)))return;
+    if(_consolidationWaterline&&Date.now()-_consolidationWaterline<600000)return;
+    const now=Date.now();const all=((await dbGetAll('memories'))||[]);
+    for(const cfg of (apiConfigs||[])){
+      if(typeof _ibApiReady==='function'&&!_ibApiReady(cfg))continue;
+      const sem=all.find(m=>m&&m.kind==='semantic'&&(String(m.createdBy||'')===String(cfg.id)||(Array.isArray(m.visibleTo)&&m.visibleTo.map(String).includes(String(cfg.id)))));
+      /* 水位线：已有 semantic 且 24h 内刚固化过 → 跳过 */
+      if(sem&&sem.lastConsolidatedAt&&(now-Number(sem.lastConsolidatedAt)<86400000))continue;
+      try{await consolidateCharacterMemory(cfg)}catch(e){}
+    }
+    _consolidationWaterline=Date.now()
+  }catch(e){console.warn('[Consolidation] tick '+String(e&&e.message||e).slice(0,120))}
+}
+/* ---- Understanding v1：独立轻量生成（不触碰 semantic consolidation 主链） ----
+   独立 LLM 调用，从近期 episodic/moments/diary 提炼一份"当前理解"；
+   产出经 _calibrateMemoryCandidate(operation:'understanding') 准入（basis 判定/人格·心理拒止/evidence≥2）。
+   任何失败/解析异常静默；仅生成，不新建 semantic、不改任何既有 understanding 之外的东西。
+   水位线：每 6 小时至多一次。 */
+var _understandingWaterline=0;
+async function _understandingTick(cfg){
+  try{
+    if(!cfg||!cfg.id||!cfg.systemPrompt)return null;
+    if(typeof _ibApiReady==='function'&&!_ibApiReady(cfg))return null;
+    const roleId=String(cfg.id);
+    const all=await dbGetAll('memories');
+    const episodics=all.filter(m=>m&&m.kind!=='semantic'&&m.kind!=='core'&&(String(m.createdBy||'')===roleId||(Array.isArray(m.visibleTo)&&m.visibleTo.map(String).includes(roleId))));
+    const recentEpi=episodics.slice(-10);
+    let recentMoments=[],recentDiary=[];
+    try{const ms=await dbGetAll('moments');recentMoments=ms.filter(m=>String(m.roleId||'')===roleId).slice(-6)}catch(e){}
+    try{const de=await dbGetAll('diary_entries');recentDiary=de.filter(e=>String(e.characterId||'')===roleId).slice(-3)}catch(e){}
+    if(!recentEpi.length&&!recentMoments.length&&!recentDiary.length)return null;
+    const charName=cfg.nickname||cfg.model||'AI';
+    const system=String(cfg.systemPrompt||'').slice(0,20000)
+      +'\n\n你正在为角色「'+charName+'」提炼一份【当前理解】(understanding)——反映"这段时间对这段关系的持续认识"。只输出严格 JSON，不输出其他文字。';
+    const prompt=[
+      '【任务】基于近期碎片，提炼你对「'+charName+'」与用户这段关系当前最稳定的一条理解。若没有可扎根的稳定模式就 shouldUpdate:false。',
+      '【角色】'+charName+'；与用户关系：'+(cfg.relationship||'未设')+'。',
+      '【近期碎片】'+(recentEpi.map(m=>'- ['+(m.domain||'记忆')+'] '+((m.title||'')+' '+String(m.content||m.summary||'')).slice(0,200)).join('\n')||'（无）'),
+      '【近期日记】'+(recentDiary.map(e=>'- '+String(e.date||'')+'「'+(e.title||'')+'」: '+String(e.content||'').slice(0,120)).join('\n')||'（无）'),
+      '【近期动态】'+(recentMoments.map(m=>'- '+String(m.content||'').slice(0,120)).join('\n')||'（无）'),
+      '【输出格式】{"shouldUpdate":true/false,"content":"1-3句当前理解","basis":"user_stated|user_corroborated|ai_inference","dimension":"values|habits|identity|relationship|preferences|context","evidenceIds":["源id..."],"conviction":0-100}',
+      '【规则】1. 只有稳定模式才 true。2. 不要对心理健康下推断(只记用户自述)。3. 不要人格定性(不写"她是...型人")。4. basis 必须诚实：用户明确说=user_stated；多方一致=user_corroborated；你自己推测=ai_inference。'
+    ];
+    let raw='';
+    try{raw=await callApiChat(cfg,[{role:'system',content:system},{role:'user',content:prompt.join('\n')}],{maxTokens:700,timeoutMs:120000,wantMeta:false,jsonMode:true,_noWebSearch:true,disableTools:true})}catch(e){return null}
+    const parsed=(typeof window._activeParsePlanJson==='function')?window._activeParsePlanJson(raw):null;
+    if(!parsed||parsed.shouldUpdate!==true)return null;
+    const content=String(parsed.content||'').trim().slice(0,500);
+    if(!content)return null;
+    /* evidenceIds：只信任真实存在且属于本角色/可见的源 id */
+    const evidenceIds=(Array.isArray(parsed.evidenceIds)?parsed.evidenceIds:[]).map(String).filter(id=>all.some(m=>m&&m.id===id)).slice(0,50);
+    /* 准入：basis/人格·心理/evidence≥2 由 _calibrateMemoryCandidate 本地判定 */
+    const cal=(typeof window._calibrateMemoryCandidate==='function')
+      ?await window._calibrateMemoryCandidate({content:content,confidence:Number(parsed.conviction)||0,reasons:[],basis:String(parsed.basis||'').trim()||'ai_guess',operation:'understanding',targetStore:'understandings',cfg:cfg,evidenceIds:evidenceIds,category:['values','habits','identity','relationship','preferences','context'].includes(parsed.dimension)?parsed.dimension:'context'})
+      :null;
+    if(!cal||cal.rejected)return null;/* Gate 拒绝：不建、不改、不抛 */
+    const dimension=['values','habits','identity','relationship','preferences','context'].includes(parsed.dimension)?parsed.dimension:'context';
+    let existing=null;
+    try{existing=await window.unGetActive(roleId)}catch(e){}
+    let resultId=null;
+    if(existing&&existing.current&&existing.current.content&&existing.current.content!==content){
+      /* 仅在内容有实质变化时才改写（留版本史） */
+      if(typeof window.unWrite==='function'){const u=await window.unWrite(roleId,{content:content,conviction:cal.confidence,basis:String(parsed.basis||'').trim()||'ai_guess',dimension:dimension,evidenceIds:evidenceIds,updatedBy:charName});resultId=u&&u.id||null}
+    }else if(!existing&&typeof window.unWrite==='function'){
+      const u=await window.unWrite(roleId,{content:content,conviction:cal.confidence,basis:String(parsed.basis||'').trim()||'ai_guess',dimension:dimension,evidenceIds:evidenceIds,updatedBy:charName});resultId=u&&u.id||null
+    }
+    return resultId||null
+  }catch(e){return null}/* 静默旁路 */
+}
+/* ---- Thread v1：规则触发（零额外 LLM），不挤 semantic consolidation ---- */
+var THREAD_OPEN_RE=/(攒钱|攒|买|想换|计划|准备|还没|待办|未完成|打算|考虑|想学|在准备|等.*(回复|结果|消息)|project|prepare|plan|save up|save for|buy|upgrade)/i;
+async function _threadRuleTick(cfg){
+  try{
+    if(!cfg||!cfg.id)return 0;
+    const roleId=String(cfg.id);
+    const all=await dbGetAll('memories');
+    const episodics=all.filter(m=>m&&m.kind!=='semantic'&&m.kind!=='core'&&(String(m.createdBy||'')===roleId||(Array.isArray(m.visibleTo)&&m.visibleTo.map(String).includes(roleId)))).slice(-12);
+    let created=0;
+    for(const m of episodics){
+      const text=String((m.title||'')+' '+(m.content||'')+' '+(m.summary||''));
+      if(!THREAD_OPEN_RE.test(text))continue;
+      /* 用标题做 question 种子（可被 thOpen 复用合并到同一 thread） */
+      const q=String(m.title||'').trim()||('关于"'+String(m.content||'').slice(0,20)+'"的进展');
+      const t=await window.thOpen(roleId,q,m.id,'ai');
+      if(t)created++;
+    }
+    return created
+  }catch(e){return 0}
+}
+/* Understanding + Thread v1 调度：跟随 _activeTick，fail-open */
+async function _understandingAndThreadTick(){
+  try{
+    /* 总开关关 / 休眠时段 → 直接禁止写理解/线索 */
+    if((await _bgAiGate())==='hibernate')return;
+    /* 空闲门控：1 小时内无用户互动 → 不唤醒模型写理解/线索 */
+    if(!(await _activeUserRecentlyActive(3600000)))return;
+    if(_understandingWaterline&&Date.now()-_understandingWaterline<21600000)return;
+    for(const cfg of (apiConfigs||[])){
+      if(!cfg||!cfg.id)continue;
+      try{await _threadRuleTick(cfg)}catch(e){}
+      if(typeof _ibApiReady==='function'&&!_ibApiReady(cfg))continue;
+      try{await _understandingTick(cfg)}catch(e){}
+    }
+    _understandingWaterline=Date.now()
+  }catch(e){console.warn('[Understanding+Thread] tick '+String(e&&e.message||e).slice(0,120))}
+}
+/* ── 后台 AI 调度总开关 + 休眠时段（DIY 设置）──
+   全局配置存 apiSettings['bgAi'] = { enabled, sleepStart, sleepEnd }。
+   - enabled=false → 停止一切"唤醒 AI"的后台服务（主动消息/AI计划/日记/角色信件/记忆），
+     朋友圈（moments）作为消耗小的例外仍运行。
+   - 休眠时段（sleepStart-sleepEnd，如 23:00-08:00）内：同样停止 AI 唤醒，朋友圈除外，
+     并强制禁止记忆写入（即使在用户最近活跃时）。
+   - 记忆写入在"总开关关"或"休眠时段"内一律禁止。 */
+var BG_AI_KEY='bgAi';
+async function getBgAiConfig(){
+  try{const c=await dbGet('apiSettings',BG_AI_KEY);return Object.assign({enabled:true,sleepStart:'',sleepEnd:''},c||{})}catch(e){return{enabled:true,sleepStart:'',sleepEnd:''}}
+}
+function _bgInSleepWindow(cfg){
+  var start=String(cfg.sleepStart||'').trim(),end=String(cfg.sleepEnd||'').trim();
+  if(!start||!end)return false;
+  var now=new Date(),hm=String(now.getHours()).padStart(2,'0')+':'+String(now.getMinutes()).padStart(2,'0');
+  if(start<=end)return hm>=start&&hm<=end;      /* 同日窗口 */
+  return hm>=start||hm<=end;                     /* 跨午夜窗口 */
+}
+/* 返回 'run'（放行AI唤醒）| 'hibernate'（总开关关/休眠，朋友圈除外，禁记忆） */
+async function _bgAiGate(){
+  var cfg=await getBgAiConfig();
+  if(!cfg.enabled)return'hibernate';
+  if(_bgInSleepWindow(cfg))return'hibernate';
+  return'run';
+}
+async function _bgAiSaveSwitches(){
+  var enabled=!!(document.getElementById('bga-enabled')&&document.getElementById('bga-enabled').checked);
+  var sleepStart=(document.getElementById('bga-sleep-start')?document.getElementById('bga-sleep-start').value:'');
+  var sleepEnd=(document.getElementById('bga-sleep-end')?document.getElementById('bga-sleep-end').value:'');
+  var cfg=Object.assign({id:BG_AI_KEY},await getBgAiConfig(),{enabled:enabled,sleepStart:sleepStart,sleepEnd:sleepEnd});
+  try{await dbPut('apiSettings',cfg)}catch(e){}
+  if(typeof toast==='function')toast(enabled?'后台 AI 已启用':'后台 AI 已停止（朋友圈除外）');
+}
+async function _bgAiLoadUI(){
+  var cfg=await getBgAiConfig();
+  var e=document.getElementById('bga-enabled');if(e)e.checked=!!cfg.enabled;
+  var ss=document.getElementById('bga-sleep-start');if(ss)ss.value=cfg.sleepStart||'';
+  var se=document.getElementById('bga-sleep-end');if(se)se.value=cfg.sleepEnd||'';
+}
 async function _activeTick(){
   if(_activeTicking||!db)return;_activeTicking=true;
   try{
+    /* 后台 AI 总开关 + 休眠时段：hibernate 时跳过一切"唤醒AI"的后台服务，
+       但朋友圈（_momentsTick）作为低消耗例外仍运行；记忆写入（consolidation/understanding）在 hibernate 内强制禁用。 */
+    var _gate=await _bgAiGate();
+    var _aiHibernate=(_gate==='hibernate');
     await _activeCheckCompanion(false);
     if(_activeCompanionOnline)await _activePullCompanionEvents();
+    if(_aiHibernate){
+      /* 休眠/总关：只跑朋友圈（低消耗例外）；其余 AI 唤醒一律跳过，且绝不写记忆 */
+      try{await _momentsTick()}catch(e){console.warn('[Moments] tick (hibernate)',String(e&&e.message||e).slice(0,120))}
+      return;
+    }
     const settings=await dbGetAll(ACTIVE_SETTINGS_STORE),now=Date.now();
     for(const s of settings){
       if(!s.enabled||!s.next_run_at||Number(s.next_run_at)>now+500)continue;
       if(!apiConfigs.some(a=>a.id===s.character_id&&_ibApiReady(a)))continue;
-      /* 后台计划由 companion 独占执行；离线时保留到期槽，服务恢复后补发，避免浏览器与后台双重调用。 */
       if(s.background_enabled)continue;
       if(_chatSendingFor.has(s.character_id))continue;
       const run=await _activeClaimDue(s.id,now);if(run)await _activeExecuteRun(run)
     }
     if(_activeCompanionOnline&&now-_activeLastContextSync>5*60000)await _activeSyncAllBackground()
-    await _activeTickAiPlans();/* AI 自主规划：到期评估与发送（fail-open） */
-    await _diaryTick();/* 日记：每周周记 + 每日规划（fail-open） */
-    await _momentsTick();/* 朋友圈：角色自主发布调度（fail-open） */
+    await _activeTickAiPlans();/* AI 自主规划（fail-open） */
+    await _diaryTick();/* 日记（fail-open） */
+    await _momentsTick();/* 朋友圈（fail-open） */
     try{if(typeof window._roleLettersTick==='function')await window._roleLettersTick()}catch(e){console.warn('[RoleLetters] tick '+String(e&&e.message||e).slice(0,120))}/* 角色互相写信（fail-open） */
+    try{await _consolidationTick()}catch(e){console.warn('[Consolidation] tick '+String(e&&e.message||e).slice(0,120))}/* 记忆固化（fail-open） */
+    try{await _understandingAndThreadTick()}catch(e){console.warn('[Understanding+Thread] tick '+String(e&&e.message||e).slice(0,120))}/* Understanding+Thread（fail-open） */
   }catch(e){console.warn('[Active Messages] scheduler tick failed',e)}
   finally{_activeTicking=false}
 }
@@ -528,7 +799,14 @@ async function _activeCompanionRequest(path,opts){
   try{
     const headers=Object.assign({'Content-Type':'application/json'},opts.headers||{});
     const res=await fetch(ACTIVE_COMPANION_URL+path,{method:opts.method||'GET',headers:headers,body:opts.body==null?undefined:JSON.stringify(opts.body),signal:ac.signal,cache:'no-store'});
-    if(!res.ok)throw new Error('后台服务 '+res.status);const text=await res.text();return text?JSON.parse(text):{}
+    const raw=await res.text();
+    if(!res.ok){
+      /* 不吞掉服务端非 2xx 的原因：解析 body.error，让错误可读（如归 属 403 的
+         "Moment schedule does not belong to this user"，而非只报 状态码）。 */
+      let reason='';try{const j=JSON.parse(raw);reason=(j&&j.error)||''}catch(_e){reason=String(raw||'').slice(0,200)}
+      throw new Error('后台服务 '+res.status+(reason?': '+reason:''))
+    }
+    return raw?JSON.parse(raw):{}
   }finally{clearTimeout(tm)}
 }
 function _activeSetServiceStatus(online){
@@ -546,7 +824,25 @@ async function _activeBuildSnapshot(setting){
   const cfg=apiConfigs.find(a=>a.id===setting.character_id);if(!cfg)throw new Error('角色配置不存在');
   const ctx=await loadProactiveMessageContext(cfg,setting);
   const randomCharacters=setting.message_type==='random'?apiConfigs.filter(a=>a.id!==cfg.id).map(a=>({id:a.id,name:a.nickname||a.model||'另一位角色'})).slice(0,10):[];
-  return{setting:setting,character:{id:cfg.id,provider:cfg.provider,apiKey:cfg.apiKey,model:cfg.model,endpoint:cfg.endpoint,systemPrompt:cfg.systemPrompt||getDefaultPromptForTheme(),nickname:cfg.nickname||cfg.model||'AI',relationship:cfg.relationship||'',temperature:cfg.temperature,showThinking:_resolveShowThinking(cfg)},user:ctx.user,recent_memories:ctx.memories,recent_messages:ctx.recentMessages,recent_proactive_messages:ctx.recentProactiveMessages,chat_summary:ctx.chatSummary,last_interaction_at:ctx.lastInteractionAt,random_characters:randomCharacters}
+  return{setting:setting,character:{id:cfg.id,provider:cfg.provider,model:cfg.model,endpoint:cfg.endpoint,systemPrompt:cfg.systemPrompt||getDefaultPromptForTheme(),nickname:cfg.nickname||cfg.model||'AI',relationship:cfg.relationship||'',temperature:cfg.temperature,showThinking:_resolveShowThinking(cfg)},user:ctx.user,recent_memories:ctx.memories,recent_messages:ctx.recentMessages,recent_proactive_messages:ctx.recentProactiveMessages,chat_summary:ctx.chatSummary,last_interaction_at:ctx.lastInteractionAt,random_characters:randomCharacters}
+}
+/* Credential Vault v1：与业务 snapshot 分离的 credential-sync。
+   只同步 characterId/provider/apiKey/endpoint/model；POST 到 /credentials（独立 endpoint）。
+   绝不把 apiKey 写进 /moments /tasks /plans 的业务 payload。 */
+async function _credentialSync(){
+  try{
+    if(!_activeCompanionOnline)return false;
+    const list=[];
+    for(const cfg of apiConfigs){
+      if(!_ibApiReady(cfg))continue;
+      if(!String(cfg.id||''))continue;
+      if(!String(cfg.apiKey||'').trim()&&!String(cfg.imageGenApiKey||'').trim())continue;
+      list.push({characterId:String(cfg.id),provider:String(cfg.provider||''),apiKey:String(cfg.apiKey||''),endpoint:String(cfg.endpoint||''),model:String(cfg.model||'')});
+    }
+    if(!list.length)return false;
+    await _activeCompanionRequest('/credentials',{method:'POST',body:{credentials:list},timeout:6000});
+    return true
+  }catch(e){console.warn('[Credentials] sync failed',String(e&&e.message||e).slice(0,160));return false}
 }
 async function _activeSyncSetting(setting){
   if(!setting.background_enabled||!setting.enabled)return false;
@@ -558,6 +854,7 @@ async function _activeSyncSetting(setting){
 }
 async function _activeSyncAllBackground(){
   if(!_activeCompanionOnline)return;
+  try{await _credentialSync()}catch(e){}
   const all=await dbGetAll(ACTIVE_SETTINGS_STORE);
   const background=all.filter(x=>x.background_enabled&&x.enabled&&apiConfigs.some(a=>a.id===x.character_id&&_ibApiReady(a)));
   const synced=new Set();let ok=true;
@@ -692,6 +989,7 @@ window._activePrepareSettingBackgroundChange=_activePrepareSettingBackgroundChan
 window._activeQueueHistoryClear=_activeQueueHistoryClear;
 window._activeFlushPendingHistoryClear=_activeFlushPendingHistoryClear;
 window._activeUserId=_activeUserId;
+window._credentialSync=_credentialSync;
 window._activePad=_activePad;
 window._activeTimeParts=_activeTimeParts;
 window._activeAtTime=_activeAtTime;
@@ -740,6 +1038,18 @@ window._activeSkipRun=_activeSkipRun;
 window._activeExecuteRun=_activeExecuteRun;
 window._activeRunNow=_activeRunNow;
 window._activeTick=_activeTick;
+window._activeConsolidate=consolidateCharacterMemory;
+window._consolidationTick=_consolidationTick;
+window._activeUserRecentlyActive=_activeUserRecentlyActive;
+window._activeUserActiveReset=_activeUserActiveReset;
+window.getBgAiConfig=getBgAiConfig;
+window._bgAiGate=_bgAiGate;
+window._bgInSleepWindow=_bgInSleepWindow;
+window._bgAiSaveSwitches=_bgAiSaveSwitches;
+window._bgAiLoadUI=_bgAiLoadUI;
+window._understandingTick=_understandingTick;
+window._threadRuleTick=_threadRuleTick;
+window._understandingAndThreadTick=_understandingAndThreadTick;
 window._activeNotify=_activeNotify;
 window._activeRequestNotification=_activeRequestNotification;
 window._activeCompanionRequest=_activeCompanionRequest;
@@ -844,4 +1154,9 @@ NS.expose('active', {
   _activeCompanionCheckedAt: _activeCompanionCheckedAt,
   _activeLastContextSync: _activeLastContextSync,
 });
+/* 初始化：填充 DIY「后台 AI 调度」设置卡片（DOM 就绪后） */
+if(typeof document!=='undefined'){
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',function(){try{_bgAiLoadUI()}catch(e){}});
+  else try{_bgAiLoadUI()}catch(e){}
+}
 })(window.IB || (window.IB = {}));

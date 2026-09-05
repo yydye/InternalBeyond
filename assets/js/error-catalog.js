@@ -87,13 +87,18 @@
   /* ── 分类 ──
      优先级：中止 > 超时/网络 > 明确状态码(401/403/429/5xx) > 关键词 >
              其余 4xx 归因 > 服务端过载词 > unknown
-     状态码来源：底层 throw 的 "429: {body}" 与 "API返回 400" 两种前缀。 */
+     状态码来源：底层 throw 的 "429: {body}" 与 "API返回 400" 两种前缀。
+     · 结构化的 ibCat（由中止/超时路径抛出时写入）优先，不再依赖中文文案区分
+       timeout 与 user stop（两者的区分由抛错方的 abortReason/ibCat 决定）。
+     · 裸 AbortError 无信号时按 timeout 处理，避免 60s 总超时 / 45s 心跳超时被
+       当作“用户停止”误判为 aborted。 */
   function classify(e){
     if (e && e.ibCat && CATEGORIES.indexOf(e.ibCat) !== -1) return e.ibCat;
     var name = e && e.name || '';
     var s = String((e && e.message) || e || '');
     if (!s && !name) return 'unknown';
-    if (name === 'AbortError') return 'aborted';
+    if (name === 'AbortError') return (e && e.abortReason === 'user_stop') ? 'aborted' : 'timeout';
+    if (e && e.abortReason === 'user_stop') return 'aborted';
     if (/已停止|manually\s+stopped/i.test(s)) return 'aborted';
     if (/超时|timed?\s*out|timeout/i.test(s)) return 'timeout';
     if (/Failed to fetch|NetworkError|Load failed|ERR_(CONNECTION|NAME_|INTERNET|NETWORK)|CORS|Mixed Content|混合内容/i.test(s)) return 'network';

@@ -18,11 +18,32 @@ function createMomentsDomain(deps) {
     callCharacterModel, proactiveTextSimilarity,
     observe
   } = deps;
+  const _vault = deps.credentialVault;
+  /* Credential Vault v1：运行时以 vault 为 authoritative 凭证来源；
+     仅当 vault 无记录时回退到旧 snapshot 的 character.apiKey（migration/兼容期）。 */
+  function _applyCredential(character, characterId) {
+    if (!character || typeof character !== 'object') return character;
+    const vid = String(character.id || characterId || '');
+    const cred = (_vault && typeof _vault.get === 'function') ? _vault.get(vid) : null;
+    if (cred && String(cred.apiKey || '').trim()) {
+      return Object.assign({}, character, { apiKey: cred.apiKey });
+    }
+    return character;
+  }
   const CORE = deps.replyChainCore || require('../assets/js/reply-chain-core.js'); /* 前后台共享核心（规则/Prompt/常量唯一来源） */
   /* 行为观测（纯旁路，可选注入；见 assets/js/social-observe.js）：
      companion 只记录"后台的失败/拒绝/拦截/调用次数"——成功结果经 events 由浏览器 ingest 入账，避免双计。
      任何观测异常都被吞掉，绝不影响调度。 */
-  function obs(event) { try { if (typeof observe === 'function') observe(event); } catch (_) {} }
+  /* observe 已绑定为 socialObserver.record(type, data)；此处 event 是带 t 字段的完整事件对象，
+     拆成 (type, data) 传入，避免把整个对象当成 type 导致 t 被记为 "[object Object]"（观测层失效）。 */
+  function obs(event) {
+    try {
+      if (typeof observe !== 'function' || !event) return;
+      const type = String((event && event.t) || '');
+      if (!type) return;
+      observe(type, event);
+    } catch (_) {}
+  }
 
   /* 与浏览器端 MOMENT_FREQ 完全一致的镜像（后台只做"页面不在前台时也能执行已有 tick"） */
   const MOMENT_FREQ = {
@@ -316,7 +337,7 @@ function createMomentsDomain(deps) {
     schedule.executionId = `momexec_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     persistPatch(characterId, schedule);
 
-    const character = raw.character && typeof raw.character === 'object' ? raw.character : {};
+    const character = _applyCredential(raw.character && typeof raw.character === 'object' ? raw.character : {}, characterId);
     if (!isCharacterModelReady(character)) {
       schedule.lastError = 'Character API configuration is incomplete';
       advanceNext(schedule, now, MOMENT_BACKOFF_MS);
@@ -765,7 +786,7 @@ function createMomentsDomain(deps) {
     const s = getState();
     const rawRole = s.moments[task.roleId];
     const roleSchedule = rawRole ? sanitizeMomentSchedule(rawRole) : null;
-    const character = rawRole && rawRole.character && typeof rawRole.character === 'object' ? rawRole.character : {};
+    const character = _applyCredential(rawRole && rawRole.character && typeof rawRole.character === 'object' ? rawRole.character : {}, task.roleId || '');
     if (!roleSchedule || !isCharacterModelReady(character)) {
       task.status = 'failed';
       task.lastError = 'Character API configuration is incomplete';

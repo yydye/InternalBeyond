@@ -57,6 +57,39 @@ const constantTimeTokenMatch = util.constantTimeTokenMatch;
 const parseQuery = util.parseQuery;
 
 /* ------------------------------------------------------------------ */
+/* 支付（Phase 2B）：Payment Authorization + Alipay Provider + Gate    */
+/*   · payment-auth.js 是唯一授权策略来源（Bridge 权威重放）            */
+/*   · Provider 仅在 ALLOW / 人工确认后的 CONFIRM 时被调用               */
+/*   · 支付凭证绝不进 prompt/DOM: 授权域与 Provider 均不接触凭证         */
+/* ------------------------------------------------------------------ */
+const createPaymentAuth = require('./active/payment-auth.js').createPaymentAuth;
+const createPaymentProviderRegistry = require('./bridge/payment-provider.js').createPaymentProviderRegistry;
+const createAlipayProvider = require('./bridge/alipay-provider.js');
+const createPayGate = require('./bridge/pay-gate.js');
+
+function jsonStore(file) {
+  return {
+    load: function () { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { return null; } },
+    save: function (obj) { try { fs.writeFileSync(file + '.tmp', JSON.stringify(obj)); fs.renameSync(file + '.tmp', file); } catch (e) { /* 持久化失败不阻断授权 */ } }
+  };
+}
+const payAuth = createPaymentAuth({ persist: jsonStore(path.join(DATA_DIR, 'pay-auth.json')) });
+const payProviderRegistry = createPaymentProviderRegistry();
+/* 真实 Alipay Provider 总是注册（内建）；可用性由 gate 在无 Provider/执行失败时回落 manualLink */
+payProviderRegistry.register(createAlipayProvider({}));
+const payGate = createPayGate({
+  payAuth: payAuth,
+  registry: payProviderRegistry,
+  providerName: 'alipay',
+  persist: jsonStore(path.join(DATA_DIR, 'pay-gate.json'))
+});
+
+/* 授权配置入口（供改配置/诊断）：与 payment-auth 的 setConfig 同步 */
+function payConfigure(cfg) { return payAuth.setConfig(cfg || {}); }
+function payConfig() { return payAuth.getConfig(); }
+
+
+/* ------------------------------------------------------------------ */
 /* 轻量 JSON 持久化（已提取到 bridge/persistence.js；业务数据仍由根文件持有） */
 /* ------------------------------------------------------------------ */
 
@@ -246,6 +279,24 @@ const ttsGenerate = tts.ttsGenerate;
 /* Voice Profile 统一入口（normalize 按 provider capabilities 过滤并补默认值） */
 const ttsNormalize = tts.normalizeVoiceProfile;
 const ttsSynthesize = tts.ttsSynthesize;
+
+/* ASR provider interface (turn-based OpenAI-Whisper-compatible default;
+   streaming recognizer is opt-in). Wired into the voice runtime via deps so
+   tests can inject a fake `asr`. */
+const createAsr = require('./bridge/asr');
+const asr = createAsr(config);
+
+/* Voice Runtime only owns audio, ASR, call state and generation lifecycle. */
+const createVoiceRuntime = require('./bridge/voice-runtime');
+const voiceRuntime = createVoiceRuntime({
+  config,
+  ttsNormalize,
+  ttsSynthesize,
+  streamSynthesize: tts.streamSynthesize,
+  dataDir: DATA_DIR,
+  uid,
+  asr
+});
 
 /* ------------------------------------------------------------------ */
 /* AI 常驻会话引擎（多模型通用，不绑定 Claude Code）                    */
@@ -736,6 +787,57 @@ async function executeTool(name, args) {
         return { ok: true, text: '上下文用量约 ' + r.recent + ' / ' + r.budget + ' token（' + r.pct + '%）。', data: r };
       }
 
+      case 'pay_register_checkout': {
+        /* 3C-H2：checkout 捕获时在 Bridge 登记 canonical PaymentIntent（订单域字段，无凭证）。
+           submit_payment 只凭 canonicalId+nonce，不再信任客户端重报的金额/域/orderId。 */
+        const r = payGate.registerCheckout(a.fields || {});
+        return { ok: !!r.ok, text: r.ok ? ('已登记 canonical 收银台（id=' + r.canonicalId + '，金额=' + r.amount + '）') : ('登记失败：' + (r.reason || '')), data: r };
+      }
+
+      case 'submit_payment': {
+        /* 服务端权威支付入口：只信 canonical PaymentIntent（canonicalId+nonce）。
+           绝不信任浏览器传来的 ALLOW / claimedAction / 重报的金额/orderId/domain/checkoutUrl。 */
+        const g = await Promise.resolve(payGate.submitCanonical(a.canonicalId, {
+          confirmToken: a.confirmToken,
+          claimedAction: a.claimedAction,
+          nonce: a.nonce,
+          client: a.client || a.intent || {}
+        }));
+        const ok = g && g.status === 'SUCCESS';
+        const lines = [];
+        lines.push('支付决策=' + g.status);
+        if (g.note) lines.push(g.note);
+        if (g.manualLink) lines.push('人工支付宝链接=' + g.manualLink);
+        if (g.reference) lines.push('交易引用=' + g.reference);
+        return { ok: ok, text: lines.join('\n'), data: g };
+      }
+
+      case 'pay_request_confirm': {
+        /* 人工确认卡路径：为一个 intent 签发 Bridge 侧确认令牌（模型无法自行签发） */
+        const r = payGate.requestConfirm(a.intent);
+        return { ok: true, text: '已生成确认令牌，需用户在确认卡点击后才可提交支付。', data: r };
+      }
+
+      case 'pay_get_config': {
+        /* 授权策略配置 + 当前预算（Bridge 权威；UI 只读展示） */
+        const b = payAuth.ledger();
+        const cfg = payConfig();
+        return {
+          ok: true,
+          text: '授权模式=' + cfg.mode + ' · 单笔上限=' + cfg.perOrderLimit + ' · 单日上限=' + cfg.dailyLimit + ' · 今日已花=' + b.spent + '/' + b.dailyLimit,
+          data: { config: cfg, budget: b }
+        };
+      }
+
+      case 'pay_set_config': {
+        /* 更新授权策略（仅用于管理项；Gate 仍会独立重放 decide，不受 UI「声称」影响） */
+        const next = payConfigure({
+          mode: a.mode, perOrderLimit: a.perOrderLimit, dailyLimit: a.dailyLimit,
+          allowedDomains: a.allowedDomains, currency: a.currency, ttlMs: a.ttlMs
+        });
+        return { ok: true, text: '支付授权配置已更新（模式=' + next.mode + '）。', data: { config: next, budget: payAuth.ledger() } };
+      }
+
       default:
         return { ok: false, error: '未知工具：' + name };
     }
@@ -773,7 +875,12 @@ const TOOLS = [
   { name: 'letter_list', description: '读取服务器信箱里的信。参数 box（in/out/角色名）可选。', inputSchema: toolSchema({ properties: { box: { type: 'string' }, limit: { type: 'number' } } }) },
   { name: 'session_get', description: '读取某个窗口/话题的服务端持久化会话状态。参数 key 必填。', inputSchema: toolSchema({ properties: { key: { type: 'string' } } }) },
   { name: 'session_save', description: '保存某个窗口/话题的服务端持久化会话状态（断线/换设备不丢）。参数 key/data。', inputSchema: toolSchema({ properties: { key: { type: 'string' }, data: {} } }) },
-  { name: 'context_stats', description: '查看当前聊天上下文估算用量（token 与百分比）。参数 friend 可选。', inputSchema: toolSchema({ properties: { friend: { type: 'string' } } }) }
+  { name: 'context_stats', description: '查看当前聊天上下文估算用量（token 与百分比）。参数 friend 可选。', inputSchema: toolSchema({ properties: { friend: { type: 'string' } } }) },
+  { name: 'pay_register_checkout', description: '在 checkout 捕获时登记 canonical PaymentIntent（amount/orderId/domain/checkoutUrl）。返回 canonicalId+nonce，供 submit_payment 使用；不保存支付凭证。', inputSchema: toolSchema({ properties: { fields: {} } }) },
+  { name: 'submit_payment', description: '提交支付宝 AI 付支付（服务端权威授权）。参数 canonicalId 必填、nonce 必填；可选 client 仅用于校验一致（不一致会 DENY）。绝不信任客户端重报的金额/orderId/domain/checkoutUrl。', inputSchema: toolSchema({ properties: { canonicalId: { type: 'string' }, nonce: { type: 'string' }, confirmToken: { type: 'string' }, claimedAction: { type: 'string' }, client: {} } }) },
+  { name: 'pay_request_confirm', description: '为一笔需人工确认的支付签发确认令牌（仅在此后才可 Enter Provider）。参数 intent 必填。', inputSchema: toolSchema({ properties: { intent: {} } }) },
+  { name: 'pay_get_config', description: '读取支付授权策略配置与当前预算（只读）。无参数。', inputSchema: toolSchema() },
+  { name: 'pay_set_config', description: '更新支付授权策略（mode/perOrderLimit/dailyLimit/allowedDomains）。参数可选。', inputSchema: toolSchema({ properties: { mode: { type: 'string' }, perOrderLimit: { type: 'number' }, dailyLimit: { type: 'number' }, allowedDomains: { type: 'array' } } }) }
 ];
 
 /* ------------------------------------------------------------------ */
@@ -796,7 +903,8 @@ const wsLayer = createWs({
   pushHistory,
   withListLock,
   uid,
-  savePushes
+  savePushes,
+  voiceRuntime
 });
 const wsSockets = wsLayer.wsSockets;
 const recordPush = wsLayer.recordPush;

@@ -57,7 +57,7 @@
 .playlist-item .del-track{opacity:0;font-size:0.65rem;color:var(--text-muted);cursor:pointer;transition:opacity 0.2s}
 .playlist-item:hover .del-track{opacity:1}.playlist-item .del-track:hover{color:#e88}
 
-.page-overlay{position:fixed;inset:0;z-index:1;background:rgba(120,150,185,0.08);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);display:none;animation:modalIn 0.5s var(--transition);pointer-events:none}
+.page-overlay{position:fixed;inset:0;z-index:1;background:rgba(120,150,185,0.07);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);display:none;animation:modalIn 0.5s var(--transition);pointer-events:none}
 .page-overlay.show{display:block}
 ::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:rgba(175,195,228,0.2);border-radius:2px}
 .toast-stack{position:fixed;bottom:80px;left:0;right:0;z-index:600;display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:none}

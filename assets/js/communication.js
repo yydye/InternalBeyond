@@ -175,8 +175,9 @@ async function callApi(cfg,userMsg){
     const msgs=[];
     if(cfg.systemPrompt)msgs.push({role:'system',content:cfg.systemPrompt});
     msgs.push({role:'user',content:userMsg});
-    const ob={model:cfg.model,messages:msgs};ob[_tokParamGet(cfg)||'max_tokens']=4096;/* GPT-5 系要求 max_completion_tokens；参数名与聊天通道共用同一份会话记忆 */
-    if(cfg.promptCache!==false)ob.prompt_cache_key='ib_'+String(cfg.id||'');/* OpenAI 缓存本自动生效；此 key 只用于提升路由命中率 */
+    const _ibMimo=_isMimoEndpoint(cfg);/* MiMo 契约：收 max_completion_tokens、拒 max_tokens/prompt_cache_key；与聊天通道共用同一判定，provider==='mimo' 或 endpoint 命中即生效 */
+    const ob={model:cfg.model,messages:msgs};ob[_ibMimo?'max_completion_tokens':(_tokParamGet(cfg)||'max_tokens')]=4096;/* GPT-5 系要求 max_completion_tokens；参数名与聊天通道共用同一份会话记忆 */
+    if(cfg.promptCache!==false&&!_ibMimo)ob.prompt_cache_key='ib_'+String(cfg.id||'');/* OpenAI 缓存本自动生效；此 key 只用于提升路由命中率。MiMo 无此字段，发出即 400 */
     if(cfg.temperature!=null)ob.temperature=cfg.temperature;
     body=JSON.stringify(ob);
   }
@@ -406,7 +407,7 @@ function _buildMsgEl(m,isFullscreen,isGroupCont){
     if(m.images&&m.images.length)m.images.forEach(function(img){var el=document.createElement('img');el.className='chat-bubble-img';el.loading='lazy';el.decoding='async';el.src=img.dataUrl;el.alt=img.name||'image';el.onclick=function(){_viewImageFull(img.dataUrl)};div.appendChild(el)});
     if(m.wsSearches||m.memOps)_amAppendExtraCards(div,m.wsSearches||[],m.memOps||[]);
     if(m.calNotes&&window.IBCAL)try{m.calNotes.forEach(function(r){div.appendChild(IBCAL.noteCard(r))})}catch(e){}
-    if(m.id){const db=document.createElement('button');db.className='chat-msg-del';db.textContent='✕';db.title='删除此消息';db.onclick=function(ev){ev.stopPropagation();deleteSingleMsg(m.id,div,frag)};div.appendChild(db)}
+    if(m.id){div.appendChild(_msgFavBtn(m));const db=document.createElement('button');db.className='chat-msg-del';db.textContent='✕';db.title='删除此消息';db.onclick=function(ev){ev.stopPropagation();deleteSingleMsg(m.id,div,frag)};div.appendChild(db)}
   }else{
     /* Classic panel uses the same per-model showThinking decision as fullscreen. */
     if(!isUser&&m.senderName){
@@ -429,7 +430,7 @@ function _buildMsgEl(m,isFullscreen,isGroupCont){
     if(m.images&&m.images.length)m.images.forEach(function(img){var el=document.createElement('img');el.className='chat-bubble-img';el.loading='lazy';el.decoding='async';el.src=img.dataUrl;el.alt=img.name||'image';el.style.maxWidth='180px';el.onclick=function(){_viewImageFull(img.dataUrl)};div.appendChild(el)});
     if(m.wsSearches||m.memOps)_amAppendExtraCards(div,m.wsSearches||[],m.memOps||[]);
     if(m.calNotes&&window.IBCAL)try{m.calNotes.forEach(function(r){div.appendChild(IBCAL.noteCard(r))})}catch(e){}
-    if(m.id){const db=document.createElement('button');db.className='chat-msg-del';db.textContent='✕';db.title='删除此消息';db.onclick=function(ev){ev.stopPropagation();deleteSingleMsg(m.id,div,frag)};div.appendChild(db)}
+    if(m.id){div.appendChild(_msgFavBtn(m));const db=document.createElement('button');db.className='chat-msg-del';db.textContent='✕';db.title='删除此消息';db.onclick=function(ev){ev.stopPropagation();deleteSingleMsg(m.id,div,frag)};div.appendChild(db)}
   }
   frag.appendChild(div);
   return frag;
@@ -644,6 +645,17 @@ function _isDeepSeekNativeVisionModel(model){
 }
 function _usesNativeDeepSeekVision(cfg){
   return !!(cfg&&_isDeepSeekNativeVisionModel(cfg.model));
+}
+/* MiMo 判定（provider 感知 + endpoint 兜底双保险）：api.xiaomimimo.com 的 chat-completions 契约较窄 ——
+   只接受 max_completion_tokens（不接受 max_tokens），且不定义 prompt_cache_key / stream_options。
+   通用 OpenAI 分支默认发送这三个字段，会在 MiMo 上触发 400，故做特化：
+   强制用 max_completion_tokens，并省略两个非官方字段（MiMo 缓存由服务端自动生效，响应仍回传 cached_tokens）。
+   provider==='mimo' 为新增官方预设走法；保留 endpoint 嗅探以兼容未迁移的 custom 角色。 */
+function _isMimoEndpoint(cfg){
+  return !!(cfg&&(String(cfg.provider||'').toLowerCase()==='mimo'||/xiaomimimo\.com/i.test(String(cfg.endpoint||''))));
+}
+function _mimoTokenKey(cfg,opts){
+  return _isMimoEndpoint(cfg)?'max_completion_tokens':(opts&&opts.tokenParam||'max_tokens');
 }
 /* 视觉能力判定（权威版）：默认放行（多模态普遍）；cfg.vision 显式关闭才拒绝；DeepSeek 文本模型仍算"可描述" */
 function _ibModelCanSee(cfg){
@@ -1298,22 +1310,145 @@ function collapseSameRole(msgs){
   return out;
 }
 
+/* ════ Chat Context Builder（Extraction Debt 本轮落点）════
+   single / group 各一条，外加一个薄分派层。
+   - 只负责"稳定 system 前缀 + 动态 tail 后缀"这一 prompt-cache 分区；
+   - 私有符号 _BLOG_READ_INSTR_BLOCK / _VISION_DECLARE / _IMGGEN_INSTR_BLOCK /
+     _getWsReadInjection / _getWsOpFeedbackInjection / _getWsRunOutputInjection /
+     _getIbToolResultInjection / _getBlogReadInjection 仍为模块私有，不导出；
+   - messages 的组装与 system/tail 的注入点仍在 sendChatMessage，保证顺序不变。 */
+async function _buildSingleChatContext(cfg,opts){
+  opts=opts||{};
+  var _ctxText=opts.userMessage||'';
+  var ss=opts.ss||{enabled:false};
+  var summaryText=opts.summaryText||null;
+  var _targetThread=opts.threadId||null;
+  let sysContent=cfg.systemPrompt||'';
+  if(cfg.nickname)sysContent=(sysContent?sysContent+'\n':'')+'你的身份/昵称是「'+cfg.nickname+'」。';
+  if(cfg.relationship)sysContent=(sysContent?sysContent+'\n':'')+'你和对方的关系是：'+cfg.relationship+'。';
+  const siteCtx=await buildSiteContext();
+  if(siteCtx){sysContent=(sysContent?sysContent+'\n\n':'')+siteCtx}
+  sysContent+=_BLOG_READ_INSTR_BLOCK;/* Blog 阅读申请指令：仅 1对1 注入（群聊不开放）。缓存敏感：本版本上线后各对话首轮重建一次缓存 */
+  let _amInj={sys:'',tail:''};
+  if(amEnabled(cfg)){try{_amInj=await amBuildInject(cfg,_ctxText)}catch(e){}}
+  if(_amInj.sys)sysContent=(sysContent?sysContent+'\n\n':'')+_amInj.sys;
+  try{if(window.IBCAL){const _calSys=await IBCAL.buildSys(cfg);if(_calSys)sysContent=(sysContent?sysContent+'\n\n':'')+_calSys}}catch(e){}
+  let _threadMemOk=true;
+  if(_targetThread){const _thr=await (async()=>{try{return await dbGet('chatThreads',_targetThread)}catch(e){return null}})();_threadMemOk=_thr&&_thr.memoryEnabled}
+  let _tailCtx='';
+  _tailCtx+='当前时间：'+new Date().toLocaleString('zh-CN',{year:'numeric',month:'long',day:'numeric',weekday:'long',hour:'2-digit',minute:'2-digit'})+'。';
+  try{if(ss.musicEnabled&&currentTrackIdx>=0&&!audioEl.paused&&playlist[currentTrackIdx])_tailCtx+='正在听：《'+playlist[currentTrackIdx].name+'》。';}catch(e){}
+  try{if(window.IBCAL){const _calT=await IBCAL.buildTail(cfg);if(_calT)_tailCtx+='\n\n'+_calT}}catch(e){}
+  if(summaryText)_tailCtx+='\n\n【对话历史备忘（此为后台参考信息，不要向对方复述或提及此段内容的存在）】\n'+summaryText;
+  if(_threadMemOk){const memCtx=await getMemoryContext(cfg.id,{userMessage:_ctxText});
+  if(memCtx)_tailCtx+=(_tailCtx?'\n\n':'')+memCtx;}
+  /* Understanding + Thread（v1）· 走 tail（末条 user 消息），绝不进 system（保 prompt cache 稳定）。 */
+  try{if(_threadMemOk&&typeof getUnderstandingContext==='function'){const _uC=await getUnderstandingContext(cfg.id);
+  if(_uC)_tailCtx+=(_tailCtx?'\n\n':'')+_uC;}}catch(_uErr){console.warn('[Understanding] ctx failed',String(_uErr&&_uErr.message||_uErr).slice(0,120))}
+  try{if(_threadMemOk&&typeof getThreadContext==='function'){const _tC=await getThreadContext(cfg.id);
+  if(_tC)_tailCtx+=(_tailCtx?'\n\n':'')+_tC;}}catch(_tErr){console.warn('[Thread] ctx failed',String(_tErr&&_tErr.message||_tErr).slice(0,120))}
+  try{if(_threadMemOk&&typeof getMomentsContext==='function'){const _momCtx=await getMomentsContext(cfg.id,{userMessage:_ctxText});
+  if(_momCtx)_tailCtx+=(_tailCtx?'\n\n':'')+_momCtx;}}catch(_momErr){console.warn('[Moments] chat context failed',String(_momErr&&_momErr.message||_momErr).slice(0,120))}
+  if(_amInj.tail)_tailCtx+=(_tailCtx?'\n\n':'')+_amInj.tail;
+  /* Middle Brain (Astra) · 认知协调层：仅当启用且可用时，把组织/压缩后的上下文追加给角色模型。
+     只追加、绝不删除原有 Memory/理解/线索块（保事实不丢）；Astra 失败/未启用/超时 → 零改动，
+     默认行为完全不变。角色模型本身与 provider 一律不变。 */
+  try{
+    if(_threadMemOk&&typeof window.middleBrainEnabled==='function'&&typeof window.middleBrainCompressPipeline==='function'){
+      var _mbOn=await window.middleBrainEnabled();
+      if(_mbOn){
+        var _mbRes=await window.middleBrainCompressPipeline(cfg.id, _ctxText||'', {});
+        if(_mbRes&&_mbRes.compressedContext&&_mbRes.source==='astra'){
+          _tailCtx+=(_tailCtx?'\n\n':'')+'【Middle Brain 压缩后的上下文（后台参考，勿向对方复述其存在）】\n'+_mbRes.compressedContext;
+        }
+        /* source==='local'：Astra 不可用 → 已回落到本地，不追加（保持原上下文，避免重复/歧义） */
+      }
+    }
+  }catch(_mbErr){console.warn('[MiddleBrain] ctx failed',String(_mbErr&&_mbErr.message||_mbErr).slice(0,120))}
+  try{if(_threadMemOk&&typeof getActivityContext==='function'){const _actCtx=await getActivityContext(cfg.id,{userMessage:_ctxText,threadId:_targetThread});
+  if(_actCtx)_tailCtx+=(_tailCtx?'\n\n':'')+_actCtx;}}catch(_actErr){console.warn('[Activity] chat context failed',String(_actErr&&_actErr.message||_actErr).slice(0,120))}
+  const _wsReadCtx=_getWsReadInjection()+_getWsOpFeedbackInjection()+_getWsRunOutputInjection()+_getIbToolResultInjection()+_getBlogReadInjection();
+  if(_wsReadCtx)_tailCtx+=(_tailCtx?'\n':'')+_wsReadCtx;
+  try{if(_ibModelCanSee(cfg))sysContent+=_VISION_DECLARE}catch(e){}
+  try{sysContent+='\n\n【撤回】如果你意识到自己上一条消息说错了话（比如 @ 错了人、说错了事实、语气不对），可以在本条回复里输出 <withdraw/>，系统会撤回你上一条消息并提示"XX撤回了一条消息"。只有确实说错时才用，不要频繁使用。'}catch(e){}
+  if(cfg.imageGen)sysContent+=_IMGGEN_INSTR_BLOCK;/* 图像生成：按好友开关注入（会话内稳定，缓存友好） */
+  /* 全局短回合策略：仅当用户未明确要求详细时注入；voice 时明显短于 text。
+     角色级「简洁回复」（cfg.replyStyle==='concise'）时换成更克制的简洁约束；
+     「自然收尾」（cfg.naturalEnding===true）与「简洁回复」相互独立，在末尾追加；
+     「保持对话连贯」（cfg.conversationContinuity===true）同样相互独立，可自由组合。 */
+  try{if(window.IB&&IB.brevity){const _bd=!!opts.voice;sysContent=IB.brevity.apply(sysContent,{mode:_bd?'voice':'text',detailed:IB.brevity.isDetailedRequest(_ctxText),concise:!!(cfg&&cfg.replyStyle==='concise'),naturalEnding:!!(cfg&&cfg.naturalEnding),conversationContinuity:!!(cfg&&cfg.conversationContinuity)});}}catch(e){}
+  return {system:sysContent, tail:_tailCtx};
+}
+async function _buildGroupChatContext(cfg,opts){
+  opts=opts||{};
+  var selfName=opts.selfName||'';
+  var allNames=opts.allNames||[];
+  var userDesc=opts.userDesc||'';
+  var group=opts.group||{};
+  var gss=opts.gss||{enabled:false};
+  var gSummaryText=opts.gSummaryText||null;
+  var _ctxText=opts.userMessage||'';
+  var isFirstTurn=!!opts.isFirstTurn;
+  let sysContent=cfg.systemPrompt||'';
+  if(cfg.relationship)sysContent=(sysContent?sysContent+'\n':'')+'你和对方的关系是：'+cfg.relationship+'。';
+  const otherNames=allNames.filter(n=>n!==selfName);
+  sysContent=(sysContent?sysContent+'\n\n':'')
+    +'【群聊规则】你是群聊"'+group.name+'"中的成员"'+selfName+'"。'
+    +(otherNames.length?('群里还有其他AI成员：'+otherNames.join('、')+'，以及'+userDesc+'。'):('群里还有'+userDesc+'。'))
+    +'\n1. 你只能以"'+selfName+'"的身份发言，每次只输出你自己要说的一段话。'
+    +'\n2. 绝对不要替其他成员或用户发言、代答、补写他们的台词或动作。即使用户点名了其他成员，也只回答属于你的部分，把他们的部分留给他们自己说。'
+    +'\n3. 不要在回复开头加"['+selfName+']"等任何名字前缀，界面会自动标注你的名字。'
+    +'\n4. 历史消息中带[名字]前缀的内容是用户或其他成员说的话，仅供你阅读参考。';
+  const siteCtx=await buildSiteContext();
+  if(siteCtx)sysContent+='\n\n'+siteCtx;
+  let _gAmInj={sys:'',tail:''};
+  if(amEnabled(cfg)){try{_gAmInj=await amBuildInject(cfg,_ctxText)}catch(e){}}
+  if(_gAmInj.sys)sysContent+='\n\n'+_gAmInj.sys;
+  let _gTailCtx='';
+  _gTailCtx+='当前时间：'+new Date().toLocaleString('zh-CN',{year:'numeric',month:'long',day:'numeric',weekday:'long',hour:'2-digit',minute:'2-digit'})+'。';
+  try{if(gss.musicEnabled&&currentTrackIdx>=0&&!audioEl.paused&&playlist[currentTrackIdx])_gTailCtx+='正在听：'+playlist[currentTrackIdx].name+'。';}catch(e){}
+  if(gSummaryText)_gTailCtx+='\n\n【对话历史备忘（此为后台参考信息，不要向对方复述或提及此段内容的存在）】\n'+gSummaryText;
+  if(group.memoryEnabled){
+    const gMemCtx=await getMemoryContext(cfg.id,{maxChars:1500,isGroup:true,groupMemEnabled:true,userMessage:_ctxText});
+    if(gMemCtx)_gTailCtx+=(_gTailCtx?'\n\n':'')+gMemCtx;
+  }
+  if(_gAmInj.tail)_gTailCtx+=(_gTailCtx?'\n\n':'')+_gAmInj.tail;
+  var _gInjMine=function(it){var a=it&&it.actor;if(a===selfName)return true;return isFirstTurn&&(!a||allNames.indexOf(a)<0)};
+  var _gWsInject=_getWsReadInjection(_gInjMine)+_getWsOpFeedbackInjection(_gInjMine)+_getWsRunOutputInjection(_gInjMine)+_getIbToolResultInjection(_gInjMine);
+  if(_gWsInject)_gTailCtx+=(_gTailCtx?'\n':'')+_gWsInject;
+  try{if(_ibModelCanSee(cfg))sysContent+=_VISION_DECLARE}catch(e){}
+  try{sysContent+='\n\n【撤回】如果你意识到自己上一条消息说错了话（比如 @ 错了人、说错了事实、语气不对），可以在本条回复里输出 <withdraw/>，系统会撤回你上一条消息并提示"XX撤回了一条消息"。只有确实说错时才用，不要频繁使用。'}catch(e){}
+  if(cfg.imageGen)sysContent+=_IMGGEN_INSTR_BLOCK;/* 图像生成：按本成员开关注入 */
+  /* 全局短回合策略（群聊 = text 模式）：仅当用户未明确要求详细时注入。
+     本成员开启「简洁回复」（cfg.replyStyle==='concise'）时换成更克制的简洁约束；
+     「自然收尾」（cfg.naturalEnding===true）与本成员独立组合，在末尾追加；
+     「保持对话连贯」（cfg.conversationContinuity===true）同样按本成员独立组合。 */
+  try{if(window.IB&&IB.brevity){sysContent=IB.brevity.apply(sysContent,{mode:'text',detailed:IB.brevity.isDetailedRequest(_ctxText),concise:!!(cfg&&cfg.replyStyle==='concise'),naturalEnding:!!(cfg&&cfg.naturalEnding),conversationContinuity:!!(cfg&&cfg.conversationContinuity)});}}catch(e){}
+  return {system:sysContent, tail:_gTailCtx};
+}
+async function buildChatContext(cfg,opts){
+  opts=opts||{};
+  if(opts.isGroup)return await _buildGroupChatContext(cfg,opts);
+  return await _buildSingleChatContext(cfg,opts);
+}
+
 async function sendChatMessage(voiceMsg){
   /* voiceMsg：由语音模块 _vmFinish 传入的 {dataUrl,mime,duration,transcript}；按钮点击/回车调用时为空 */
   const _voice=(voiceMsg&&voiceMsg.dataUrl)?voiceMsg:null;
+  const _callTurn=(voiceMsg&&voiceMsg.voiceCall&&voiceMsg.transcript)?voiceMsg:null;
   /* Find active friend config */
   if(!activeFriendId&&apiConfigs.length>0)activeFriendId=apiConfigs[0].id;
   /* 捕获发送瞬间的目标好友/话题，防止用户在等待API时切窗导致消息串到其他对话框 */
-  const _targetFriend=activeFriendId;
-  const _targetThread=activeThreadId;
+  const _targetFriend=_callTurn?String(_callTurn.roleId||''):activeFriendId;
+  const _targetThread=_callTurn?(String(_callTurn.conversationId||'').indexOf('thread:')===0?String(_callTurn.conversationId).slice(7):null):activeThreadId;
   if(_chatSendingFor.has(_targetFriend))return;
   /* Get input from either mini or full chat */
   const miniInput=document.getElementById('chat-input');
   const fullInput=document.getElementById('chat-full-input');
   const input=currentPage==='chat'?fullInput:miniInput;
-  const text=_voice?'':input.value.trim();/* 语音消息不读取、不清空输入框，输入框中的草稿保持原样 */
+  const text=_voice?'':(_callTurn?String(_callTurn.transcript||'').trim():input.value.trim());/* 通话 transcript 与语音消息都不碰输入框草稿 */
   const _ctxText=_voice?_voiceApiLine(_voice):text;/* 供 @提及判定、记忆检索、Auto Memory 使用的等效文本 */
-  if(!text&&!_voice&&!_pendingImages.length&&!_pendingFiles.length)return;
+  if(!text&&!_voice&&!_pendingImages.length&&!_pendingFiles.length)return {ok:false,error:'empty_message'};
 
   const isGroup=_targetFriend&&_targetFriend.startsWith('group_');
 
@@ -1345,9 +1480,9 @@ async function sendChatMessage(voiceMsg){
     const thinkingOn=true;/* reasoning 始终接收和保存；是否展示由每个成员 cfg.showThinking 决定 */
 
     const sendBtn=document.getElementById('chat-send-btn');
-    if(!_voice)input.value='';
-    const sentImages=_voice?[]:_pendingImages.slice();if(!_voice)_pendingImages=[];
-    const sentFiles=_voice?[]:_pendingFiles.slice();if(!_voice){_pendingFiles=[];renderAttachPreviews()}
+    if(!_voice&&!_callTurn)input.value='';
+    const sentImages=(_voice||_callTurn)?[]:_pendingImages.slice();if(!_voice&&!_callTurn)_pendingImages=[];
+    const sentFiles=(_voice||_callTurn)?[]:_pendingFiles.slice();if(!_voice&&!_callTurn){_pendingFiles=[];renderAttachPreviews()}
 
     const userMsg={id:'msg_'+Date.now()+'_u',role:'user',content:text,friendId:_targetFriend,timestamp:Date.now()};
     if(sentImages.length)userMsg.images=sentImages.map(img=>({dataUrl:img.dataUrl,base64:img.base64,mime:img.mime,name:img.name}));
@@ -1442,47 +1577,11 @@ async function sendChatMessage(voiceMsg){
           return {role:'user',content:'['+(m.senderName||'AI')+'] '+_wsStubHistory(m.content)};
         });
         const messages=collapseSameRole(mapped);
-        /* FIX②: 补强 system 指令——列出成员名单 + 明确禁止代角 */
-        let sysContent=cfg.systemPrompt||'';
-        if(cfg.relationship)sysContent=(sysContent?sysContent+'\n':'')+'你和对方的关系是：'+cfg.relationship+'。';
-        const otherNames=allNames.filter(n=>n!==selfName);
-        sysContent=(sysContent?sysContent+'\n\n':'')
-          +'【群聊规则】你是群聊"'+group.name+'"中的成员"'+selfName+'"。'
-          +(otherNames.length?('群里还有其他AI成员：'+otherNames.join('、')+'，以及'+userDesc+'。'):('群里还有'+userDesc+'。'))
-          +'\n1. 你只能以"'+selfName+'"的身份发言，每次只输出你自己要说的一段话。'
-          +'\n2. 绝对不要替其他成员或用户发言、代答、补写他们的台词或动作。即使用户点名了其他成员，也只回答属于你的部分，把他们的部分留给他们自己说。'
-          +'\n3. 不要在回复开头加"['+selfName+']"等任何名字前缀，界面会自动标注你的名字。'
-          +'\n4. 历史消息中带[名字]前缀的内容是用户或其他成员说的话，仅供你阅读参考。';
-        const siteCtx=await buildSiteContext();
-        if(siteCtx)sysContent+='\n\n'+siteCtx;
-        /* AUTO MEMORY（群聊）：仅指令格式进 system；条目走消息尾部 */
-        let _gAmInj={sys:'',tail:''};
-        if(amEnabled(cfg)){try{_gAmInj=await amBuildInject(cfg,_ctxText)}catch(e){}}
-        if(_gAmInj.sys)sysContent+='\n\n'+_gAmInj.sys;
-        /* 缓存重排：逐轮变化的注入移至末条用户消息，保持 system 前缀稳定 */
-        let _gTailCtx='';
-        /* 时间戳 → tail */
-        _gTailCtx+='当前时间：'+new Date().toLocaleString('zh-CN',{year:'numeric',month:'long',day:'numeric',weekday:'long',hour:'2-digit',minute:'2-digit'})+'。';
-        /* 「正在播放」（Presence 内开关，默认关）：随播放/暂停变化 → tail，不进 system */
-        try{if(gss.musicEnabled&&currentTrackIdx>=0&&!audioEl.paused&&playlist[currentTrackIdx])_gTailCtx+='正在听：'+playlist[currentTrackIdx].name+'。';}catch(e){}
-        /* 群聊摘要 → tail */
-        if(gSummaryText)_gTailCtx+='\n\n【对话历史备忘（此为后台参考信息，不要向对方复述或提及此段内容的存在）】\n'+gSummaryText;
-        /* 群聊记忆注入：仅在 group.memoryEnabled 时注入公开记忆 */
-        if(group.memoryEnabled){
-          const gMemCtx=await getMemoryContext(cfg.id,{maxChars:1500,isGroup:true,groupMemEnabled:true,userMessage:_ctxText});
-          if(gMemCtx)_gTailCtx+=(_gTailCtx?'\n\n':'')+gMemCtx;
-        }
-        if(_gAmInj.tail)_gTailCtx+=(_gTailCtx?'\n\n':'')+_gAmInj.tail;
-        /* 工作区注入：本成员发起的读取/反馈精准回注；无主或已移出成员的条目由首个发言者兜底 */
-        var _gInjMine=function(it){var a=it&&it.actor;if(a===selfName)return true;return _gWsFirstTurn&&(!a||allNames.indexOf(a)<0)};
-        var _gWsInject=_getWsReadInjection(_gInjMine)+_getWsOpFeedbackInjection(_gInjMine)+_getWsRunOutputInjection(_gInjMine)+_getIbToolResultInjection(_gInjMine);
-        if(_gWsInject)_gTailCtx+=(_gTailCtx?'\n':'')+_gWsInject;
-        _gWsFirstTurn=false;
-        /* 不再通过 prompt 强迫模型输出 <thinking>；原生 reasoning 字段由适配器单独接收。 */
-        /* 视觉能力声明：支持视觉的模型收到权威声明，杜绝"我是文本模型/没有眼睛"的自我误判 */
-        try{if(_ibModelCanSee(cfg))sysContent+=_VISION_DECLARE}catch(e){}
-        try{sysContent+='\n\n【撤回】如果你意识到自己上一条消息说错了话（比如 @ 错了人、说错了事实、语气不对），可以在本条回复里输出 <withdraw/>，系统会撤回你上一条消息并提示"XX撤回了一条消息"。只有确实说错时才用，不要频繁使用。'}catch(e){}
-        if(cfg.imageGen)sysContent+=_IMGGEN_INSTR_BLOCK;/* 图像生成：按本成员开关注入 */
+        /* FIX②: 上下文构建（Extraction Seam）——system/tail 分区由 buildChatContext 产出 */
+        const _gc=await buildChatContext(cfg,{isGroup:true,selfName:selfName,allNames:allNames,userDesc:userDesc,group:group,gss:gss,gSummaryText:gSummaryText,userMessage:_ctxText,isFirstTurn:_gWsFirstTurn});
+        const sysContent=_gc.system;
+        const _gTailCtx=_gc.tail;
+        _gWsFirstTurn=false;/* 首个发言者兜底消费完无主/移出成员条目后置 false */
         messages.unshift({role:'system',content:sysContent});
         if(_gTailCtx){/* 群聊尾部挂载：优先找用户本人的消息（无 senderName 且 role=user），找不到才回退到最后一条 user；
            带图消息（content 数组）用 _appendMsgText 追加，绝不 String() 化（图片 part 需要保留） */
@@ -1654,7 +1753,7 @@ async function sendChatMessage(voiceMsg){
             if(_gwsPhantom)gHost.appendChild(_buildWsPhantomHint(_gwsPhantom));
             ref.div.dataset.msgId=aiMsg.id;
             if(typeof _chatSelectMode!=='undefined'&&_chatSelectMode&&ref.full&&!ref.div.querySelector('.chat-sel-circle')){const sc=document.createElement('div');sc.className='chat-sel-circle';sc.onclick=function(ev){ev.stopPropagation();_toggleMsgSel(aiMsg.id,sc)};ref.div.appendChild(sc)}/* BUGFIX: 群聊流式同上 */
-            const db=document.createElement('button');db.className='chat-msg-del';db.textContent='\u2715';db.title='删除此消息';db.onclick=function(ev){ev.stopPropagation();deleteSingleMsg(aiMsg.id,ref.div)};ref.div.appendChild(db);
+            ref.div.appendChild(_msgFavBtn(aiMsg));const db=document.createElement('button');db.className='chat-msg-del';db.textContent='\u2715';db.title='删除此消息';db.onclick=function(ev){ev.stopPropagation();deleteSingleMsg(aiMsg.id,ref.div)};ref.div.appendChild(db);
             if(aiMsg.truncated&&ref.full)gHost.appendChild(_buildContinuePill(aiMsg.id));/* 任务6 */
           });
           _syncMiniAfterStream(aiMsg.id,_targetFriend);
@@ -1700,16 +1799,18 @@ async function sendChatMessage(voiceMsg){
   _chatSendingFor.add(_targetFriend);
   const sendBtn=document.getElementById('chat-send-btn');
   if(sendBtn)sendBtn.disabled=true;
-  if(!_voice)input.value='';
-  const sentImages=_voice?[]:_pendingImages.slice();if(!_voice)_pendingImages=[];
-  const sentFiles=_voice?[]:_pendingFiles.slice();if(!_voice){_pendingFiles=[];renderAttachPreviews()}
+  if(!_voice&&!_callTurn)input.value='';
+  const sentImages=(_voice||_callTurn)?[]:_pendingImages.slice();if(!_voice&&!_callTurn)_pendingImages=[];
+  const sentFiles=(_voice||_callTurn)?[]:_pendingFiles.slice();if(!_voice&&!_callTurn){_pendingFiles=[];renderAttachPreviews()}
 
   const userMsg={id:'msg_'+Date.now()+'_u',role:'user',content:text,friendId:_targetFriend,timestamp:Date.now()};/* 编号方式与群聊统一：后缀防同毫秒碰撞 */
   if(sentImages.length)userMsg.images=sentImages.map(img=>({dataUrl:img.dataUrl,base64:img.base64,mime:img.mime,name:img.name}));
   if(sentFiles.length)userMsg.files=sentFiles.map(f=>({name:f.name,ext:f.ext,size:f.size,text:f.text}));
   if(_voice)userMsg.voice={dataUrl:_voice.dataUrl,mime:_voice.mime,duration:_voice.duration,transcript:_voice.transcript||'',tone:_voice.tone||''};
+  if(_callTurn)userMsg.metadata={source:'voice_call',callSessionId:String(_callTurn.callSessionId||''),turnId:String(_callTurn.turnId||'')};
   if(_targetThread)userMsg.threadId=_targetThread;
   await dbPut('chatMessages',userMsg);
+  _ibAppBroadcast('turn',{state:'start',friendId:_targetFriend,threadId:_targetThread});
   appendChatBubble('user',text,undefined,undefined,userMsg.id,sentImages,sentFiles,undefined,_voice);
   /* AI 自主规划：用户主动发言 → 取消该角色等待中的 AI 计划（异步，不阻塞） */
   try{_activeUserReplied(userMsg)}catch(e){}
@@ -1733,6 +1834,7 @@ async function sendChatMessage(voiceMsg){
   }
 
   let ss={enabled:false};/* fix: 提升到 try 外供末尾延迟摘要使用，原 const 声明在 try 内、catch 后引用必抛 ReferenceError */
+  let _sendResult={ok:false,error:'no_reply',userMessageId:userMsg.id};
   let _sealTs=0;/* 封档线时间戳：同 ss 提升至 try 外供延迟摘要闭包引用 */
   let streamRefs=[];/* 流式气泡引用提升到 try 外：失败路径需要清理未写入内容的空气泡 */
   try{
@@ -1778,46 +1880,23 @@ async function sendChatMessage(voiceMsg){
       if(m.role!=='user'&&_mm.role==='user')_mm._groupSender=true;
       return _mm;
     });
-    let sysContent=cfg.systemPrompt||'';
-    if(cfg.nickname)sysContent=(sysContent?sysContent+'\n':'')+'你的身份/昵称是「'+cfg.nickname+'」。';
-    if(cfg.relationship)sysContent=(sysContent?sysContent+'\n':'')+'你和对方的关系是：'+cfg.relationship+'。';
-    const siteCtx=await buildSiteContext();
-    if(siteCtx){sysContent=(sysContent?sysContent+'\n\n':'')+siteCtx}
-    sysContent+=_BLOG_READ_INSTR_BLOCK;/* Blog 阅读申请指令：仅 1对1 注入（群聊不开放）。缓存敏感：本版本上线后各对话首轮重建一次缓存 */
-    /* AUTO MEMORY：仅指令格式进 system（写入/更新/删除的标签说明），内容条目全部走 tail */
-    let _amInj={sys:'',tail:''};
-    if(amEnabled(cfg)){try{_amInj=await amBuildInject(cfg,_ctxText)}catch(e){}}
-    if(_amInj.sys)sysContent=(sysContent?sysContent+'\n\n':'')+_amInj.sys;
-    /* CALENDAR：便笺格式指令为常量块，仅当留言总开关开且该好友读+写权限均开时注入（会话内稳定；改动权限后下一条消息重建一次提示缓存，之后恢复稳定命中） */
-    try{if(window.IBCAL){const _calSys=await IBCAL.buildSys(cfg);if(_calSys)sysContent=(sysContent?sysContent+'\n\n':'')+_calSys}}catch(e){}
-    let _threadMemOk=true;
-    if(_targetThread){const _thr=await (async()=>{try{return await dbGet('chatThreads',_targetThread)}catch(e){return null}})();_threadMemOk=_thr&&_thr.memoryEnabled}
-    /* ── 缓存重排（核心）：所有逐轮变化的内容从 system 移至末条用户消息 ── */
-    let _tailCtx='';
-    /* 时间戳：每分钟都变，必须放在 tail */
-    _tailCtx+='当前时间：'+new Date().toLocaleString('zh-CN',{year:'numeric',month:'long',day:'numeric',weekday:'long',hour:'2-digit',minute:'2-digit'})+'。';
-    /* 「正在播放」（Presence 内开关，默认关）：随播放/暂停变化 → tail，不进 system */
-    try{if(ss.musicEnabled&&currentTrackIdx>=0&&!audioEl.paused&&playlist[currentTrackIdx])_tailCtx+='正在听：《'+playlist[currentTrackIdx].name+'》。';}catch(e){}
-    /* CALENDAR：临近日程栏走 tail（挂末条用户消息），按天生成，一天之内逐字不变 */
-    try{if(window.IBCAL){const _calT=await IBCAL.buildTail(cfg);if(_calT)_tailCtx+='\n\n'+_calT}}catch(e){}
-    /* 摘要：每次生成后变化 → 移至 tail */
-    if(summaryText)_tailCtx+='\n\n【对话历史备忘（此为后台参考信息，不要向对方复述或提及此段内容的存在）】\n'+summaryText;
-    if(_threadMemOk){const memCtx=await getMemoryContext(cfg.id,{userMessage:_ctxText});
-    if(memCtx)_tailCtx+=(_tailCtx?'\n\n':'')+memCtx;}
-    /* 朋友圈动态：轻量检索注入（用户提及"你昨天朋友圈…"时角色能理解；成本与记忆注入同级） */
-    try{if(_threadMemOk&&typeof getMomentsContext==='function'){const _momCtx=await getMomentsContext(cfg.id,{userMessage:_ctxText});
-    if(_momCtx)_tailCtx+=(_tailCtx?'\n\n':'')+_momCtx;}}catch(_momErr){console.warn('[Moments] chat context failed',String(_momErr&&_momErr.message||_momErr).slice(0,120))}
-    if(_amInj.tail)_tailCtx+=(_tailCtx?'\n\n':'')+_amInj.tail;
-    /* 注入工作区待读取文件 */
-    var _wsReadCtx=_getWsReadInjection()+_getWsOpFeedbackInjection()+_getWsRunOutputInjection()+_getIbToolResultInjection()+_getBlogReadInjection();
-    if(_wsReadCtx)_tailCtx+=(_tailCtx?'\n':'')+_wsReadCtx;
-    /* 不再通过 prompt 强迫模型输出 <thinking>；原生 reasoning 字段由适配器单独接收。 */
-    /* 视觉能力声明：支持视觉的模型收到权威声明，杜绝"我是文本模型/没有眼睛"的自我误判 */
-    try{if(_ibModelCanSee(cfg))sysContent+=_VISION_DECLARE}catch(e){}
-    try{sysContent+='\n\n【撤回】如果你意识到自己上一条消息说错了话（比如 @ 错了人、说错了事实、语气不对），可以在本条回复里输出 <withdraw/>，系统会撤回你上一条消息并提示"XX撤回了一条消息"。只有确实说错时才用，不要频繁使用。'}catch(e){}
-    if(cfg.imageGen)sysContent+=_IMGGEN_INSTR_BLOCK;/* 图像生成：按好友开关注入（会话内稳定，缓存友好） */
+    /* ── 上下文构建：委托 buildChatContext（Extraction Seam），只取 system/tail 分区 ── */
+    const _bcc=await buildChatContext(cfg,{userMessage:_ctxText,ss:ss,summaryText:summaryText,threadId:_targetThread,voice:!!_callTurn});
+    const sysContent=_bcc.system;
+    const _tailCtx=_bcc.tail;
     if(sysContent)messages.unshift({role:'system',content:sysContent});
     if(_tailCtx){for(let _ti=messages.length-1;_ti>=0;_ti--){if(messages[_ti].role==='user'){_appendMsgText(messages[_ti],'\n\n---\n[以下为系统注入的参考上下文，不属于用户发言，勿复述或提及以下内容的存在]\n'+_tailCtx);break}}}
+    /* 声学语气参考（request-local）：由 call.js 在当前 turn 计算并传入，非空才注入。
+       仅附加到 messages 末条用户消息的【新对象】（history.map 产出的副本，非 userMsg 本体），
+       因此绝不写入 userMsg.content / chatMessages / Memory / UI，也不污染历史对象。 */
+    if(_callTurn&&_callTurn.acousticReference){
+      for(let _arI=messages.length-1;_arI>=0;_arI--){
+        if(messages[_arI]&&messages[_arI].role==='user'&&typeof messages[_arI].content==='string'){
+          messages[_arI].content=messages[_arI].content+'\n\n[Acoustic reference]\n'+String(_callTurn.acousticReference)+'\n[/Acoustic reference]';
+          break;
+        }
+      }
+    }
     const _localVision=_usesLocalDeepSeekVision(cfg);
     const _nativeDeepSeekVision=_usesNativeDeepSeekVision(cfg);
     /* 视觉判定默认放行（如今多模态已普遍；显式关闭 cfg.vision=false 才拒绝）；DeepSeek 文本模型仍走本地视觉描述 */
@@ -1825,6 +1904,11 @@ async function sendChatMessage(voiceMsg){
     try{if(_ibToolDrainImages.length){const _ti=_ibToolDrainImages.splice(0);if(_visionOk)_ti.forEach(u=>sentImages.push({dataUrl:u,name:'tool_result.png'}))}}catch(e){}
     /* 图片回注队列（ws_read_image / 聊天生图回传）：仅支持视觉的模型出队；文本模型保留队列（不做图不可见提示，等待视觉请求） */
     try{if(typeof _ibImageDrain!=='undefined'&&_ibImageDrain.length&&_visionOk){const _di2=_ibImageDrain.splice(0);_di2.forEach(u=>{const _du=String(u||'');if(_du.slice(0,5)==='data:')sentImages.push({dataUrl:_du,base64:_du.split(',')[1]||'',mime:(_du.match(/^data:([^;,]+)/i)||[])[1]||'image/jpeg',name:'image_inject.png'})})}}catch(e){}
+    /* P2 · Video Runtime 帧 → 复用既有视觉路由（request-local）：把 Call turn 的
+       visionReference（Video Runtime 产出的原始帧）并入 sentImages，由下方既有分支
+       (native→image parts / 本地 Qwen→描述) 统一处理；只作用于 messages，绝不写入
+       userMsg.content / chatMessages / Memory。无可用帧时为空，不影响。 */
+    try{if(_callTurn&&_callTurn.visionReference){const _fr=_callTurn.visionReference||{};const _du=String(_fr.dataUrl||'');if(_du.slice(0,5)==='data:')sentImages.push({dataUrl:_du,base64:_du.split(',')[1]||'',mime:'image/jpeg',name:'call_frame.jpg'});}}catch(e){}
     if(sentImages.length&&messages.length){
       if(_localVision){
         try{
@@ -1913,7 +1997,15 @@ async function sendChatMessage(voiceMsg){
       };
       const _memLive=_mkMemLiveFilter(function(ch){_wsSFilter.push(ch)},function(build){return _wsSFilter.card(build)});
       const _calLive=(window.IBCAL&&IBCAL.mkLiveFilter)?IBCAL.mkLiveFilter(function(ch){_memLive.push(ch)},function(build){return _wsSFilter.card(build)}):null;/* CALENDAR：流中 <cal_note> 换轻量提示卡 */
-      const _sFlush=(ch)=>{_calLive?_calLive.push(ch):_memLive.push(ch)};
+      /* 语音通话流式句柄：仅当本次是 voiceCall 且角色支持流式时安装。 */
+      var _voiceTurnSink=null;
+      if(_callTurn&&_streamingOk){
+        try{
+          var _vcNow=(window.IB&&IB.voiceCall&&IB.voiceCall.getCurrent&&IB.voiceCall.getCurrent())||null;
+          if(_vcNow&&_vcNow.pushSentence){_voiceTurnSink=_makeVoiceSentenceSink(_vcNow);_voiceSink=_voiceTurnSink;}
+        }catch(e){_voiceTurnSink=null;_voiceSink=null}
+      }
+      const _sFlush=(ch)=>{_calLive?_calLive.push(ch):_memLive.push(ch);if(_voiceSink)_voiceSink.feed(ch)};
       const _callRes={};/* 并发隔离：本次调用的思考与截断结果（不再读共享全局量） */
       let rawReply=await callApiChatStream(cfg,messages,{wantThinking:thinkingOn,autoContinue:true,chatKey:_targetFriend,result:_callRes,searchLog:_srchLog,onSearch:_onSearch,
         onThink:function(tk){_thinkFlush(tk)},
@@ -1945,6 +2037,8 @@ async function sendChatMessage(voiceMsg){
       }});
       /* 清理UI */
       _showStreamingUI(false);
+      /* 语音语句流：模型已停止输出，把残句作为最后一句（done）推给通话线程。 */
+      if(_voiceTurnSink){_voiceTurnSink.flush(true);if(_voiceSink===_voiceTurnSink)_voiceSink=null;}
       if(_calLive)_calLive.finish();
       _memLive.finish();
       _wsSFilter.finish();
@@ -1998,8 +2092,11 @@ async function sendChatMessage(voiceMsg){
       if(_targetThread)aiMsg.threadId=_targetThread;
       if(_callRes.truncated)aiMsg.truncated=true;/* 任务6：自动续写轮数用尽仍截断 */
       await dbPut('chatMessages',aiMsg);
+      _ibAppBroadcast('message',{id:aiMsg.id,role:'assistant',content:aiMsg.content,senderName:cfg.nickname||cfg.model||'AI',friendId:_targetFriend,threadId:_targetThread});
+      _ibAppBroadcast('turn',{state:'end',friendId:_targetFriend,threadId:_targetThread});
+      _sendResult={ok:true,replyText:replyText,messageId:aiMsg.id,userMessageId:userMsg.id,voiceStreamed:!!_voiceTurnSink};
       streamRefs.forEach(ref=>{
-        if(aiMsg.id){ref.div.dataset.msgId=aiMsg.id;const db=document.createElement('button');db.className='chat-msg-del';db.textContent='✕';db.title='删除此消息';db.onclick=function(ev){ev.stopPropagation();deleteSingleMsg(aiMsg.id,ref.div)};ref.div.appendChild(db);
+        if(aiMsg.id){ref.div.dataset.msgId=aiMsg.id;ref.div.appendChild(_msgFavBtn(aiMsg));const db=document.createElement('button');db.className='chat-msg-del';db.textContent='✕';db.title='删除此消息';db.onclick=function(ev){ev.stopPropagation();deleteSingleMsg(aiMsg.id,ref.div)};ref.div.appendChild(db);
           if(typeof _chatSelectMode!=='undefined'&&_chatSelectMode&&ref.full&&!ref.div.querySelector('.chat-sel-circle')){const sc=document.createElement('div');sc.className='chat-sel-circle';sc.onclick=function(ev){ev.stopPropagation();_toggleMsgSel(aiMsg.id,sc)};ref.div.appendChild(sc)}/* BUGFIX: Select 模式中流式完成的消息补圈 */}
         if(aiMsg.truncated&&ref.full)ref.txt.appendChild(_buildContinuePill(aiMsg.id));/* 任务6 */
       });
@@ -2047,19 +2144,26 @@ async function sendChatMessage(voiceMsg){
       {const _giImgsN=_wsCollectGenImages(_wsRNs);if(_giImgsN.length)aiMsg.images=_giImgsN;}/* 生成的图片随消息持久化 */
       if(_targetThread)aiMsg.threadId=_targetThread;
       if(_callResN.truncated)aiMsg.truncated=true;/* 任务6：自动续写轮数用尽仍截断 */
-      /* waifu 模式：非流式纯文本长回复 → 拆成多条短消息逐条上屏（像真人一条条发） */
-      const _waifuSegs=(cfg.waifu===true&&!_wsNs.ops.length&&_wsNs.files.length===0&&_memRNs.length===0&&_calRNs.length===0&&_brCardsNs.length===0&&!_wsNsPhantom&&!_srchLogN.length&&!_callResN.truncated)?_waifuSplit(replyText):null;
-      if(_waifuSegs){
-        for(let _wi=0;_wi<_waifuSegs.length;_wi++){
+      /* waifu 消息呈现（MessagePresentation）：非流式纯文本长回复 → 按自然停顿拆多条，逐条上屏（像真人一条条发）。
+         仅当 waifu 开、且回复为"纯文本、无功能标签"时介入；plan 决定 single/multi，绝不触碰模型执行/continuation。 */
+      const _waifuPlan=(cfg.waifu===true&&!_wsNs.ops.length&&_wsNs.files.length===0&&_memRNs.length===0&&_calRNs.length===0&&_brCardsNs.length===0&&!_wsNsPhantom&&!_srchLogN.length&&!_callResN.truncated&&window.MessagePresentation&&window.MessagePresentation.plan)?window.MessagePresentation.plan(replyText,{waifu:true,streaming:false}):null;
+      const _waifuMsgs=(_waifuPlan&&_waifuPlan.mode==='multi')?_waifuPlan.messages:null;
+      if(_waifuMsgs&&_waifuMsgs.length){
+        for(let _wi=0;_wi<_waifuMsgs.length;_wi++){
+          const _wTxt=String(_waifuMsgs[_wi].text||'');
+          const _wDelay=_wi>0?(Number(_waifuMsgs[_wi].delay)||0):0;/* 每条 delay=显示前等待（首条 0 立即） */
+          if(_wDelay>0)await new Promise(function(r){setTimeout(r,_wDelay)});/* 真人节奏：随上一条长度动态取等待，不卡顿 */
           const _wId='msg_'+Date.now()+'_'+Math.floor(Math.random()*100000)+'_'+_wi;
-          const _wMsg={id:_wId,role:'assistant',content:_waifuSegs[_wi],reasoning_content:_wi===0?(thinkingText||''):'',metadata:{model:cfg.provider||cfg.model||'',model_id:cfg.model||'',config_id:cfg.id,showThinking:_resolveShowThinking(cfg),waifu:true},friendId:_targetFriend,timestamp:Date.now()+_wi};
+          const _wMsg={id:_wId,role:'assistant',content:_wTxt,reasoning_content:_wi===0?(thinkingText||''):'',metadata:{model:cfg.provider||cfg.model||'',model_id:cfg.model||'',config_id:cfg.id,showThinking:_resolveShowThinking(cfg),waifu:true},friendId:_targetFriend,timestamp:Date.now()+_wi};
           if(_targetThread)_wMsg.threadId=_targetThread;
           await dbPut('chatMessages',_wMsg);
-          if(activeFriendId===_targetFriend)appendChatBubble('ai',_waifuSegs[_wi],undefined,_wi===0?(thinkingText||undefined):undefined,_wId,undefined,undefined,undefined,undefined,cfg);
-          if(_wi<_waifuSegs.length-1)await new Promise(function(r){setTimeout(r,600)});/* 分段间隔，模拟逐条发送 */
+          if(activeFriendId===_targetFriend)appendChatBubble('ai',_wTxt,undefined,_wi===0?(thinkingText||undefined):undefined,_wId,undefined,undefined,undefined,undefined,cfg);
         }
+        _sendResult={ok:true,replyText:replyText,messageId:null,userMessageId:userMsg.id};
+        if(activeFriendId!==_targetFriend)_markUnread(_targetFriend);/* BUGFIX: 多段消息同样需要在非活动好友时标记未读 */
       }else{
         await dbPut('chatMessages',aiMsg);
+        _sendResult={ok:true,replyText:replyText,messageId:aiMsg.id,userMessageId:userMsg.id};
         if(activeFriendId===_targetFriend){
         appendChatBubble('ai',replyText,undefined,thinkingText||undefined,aiMsg.id,aiMsg.images,undefined,_wsRNs,undefined,cfg);
         if(_srchLogN.length||_memRNs.length)document.querySelectorAll('.chat-msg[data-msg-id="'+aiMsg.id+'"]').forEach(function(el){_amAppendExtraCards(el,_srchLogN,_memRNs)});/* 任务A：非流式也显示搜索/记忆卡 */
@@ -2072,7 +2176,7 @@ async function sendChatMessage(voiceMsg){
       else _markUnread(_targetFriend);
       }
       /* 微信式小动作（v7）：非 waifu 单条消息 → AI 自查撤回 或 拍一拍（撤回）；延迟让用户先看到内容再撤 */
-      if(!_waifuSegs){
+      if(!_waifuMsgs){
         var __wRid=aiMsg.id,__wText=replyText;
         setTimeout(function(){ if(_chatShouldWithdraw(__wText)){_chatWithdrawMsg(__wRid)} else {_maybePatWithdraw(cfg,__wRid)} },1000);
       }
@@ -2090,6 +2194,7 @@ async function sendChatMessage(voiceMsg){
       toast(_ibFT);
       if(activeFriendId===_targetFriend)appendChatBubble('ai',_ibFT);
     }
+    _sendResult={ok:false,error:String(err&&err.message||err),userMessageId:userMsg.id};
   }
   _chatSendingFor.delete(_targetFriend);
   if(sendBtn)sendBtn.disabled=false;
@@ -2106,6 +2211,7 @@ async function sendChatMessage(voiceMsg){
   }
   if(currentPage==='chat')renderChatCalendar();
   updateChatStorageInfo();
+  return _sendResult;
 }
 
 function appendChatBubble(role,text,senderName,reasoningContent,msgId,images,files,wsResults,voice,modelConfig){
@@ -2175,7 +2281,7 @@ function appendChatBubble(role,text,senderName,reasoningContent,msgId,images,fil
       }
       fls.forEach(function(f){div.appendChild(_buildFileCard(f))});
       imgs.forEach(img=>{const el=document.createElement('img');el.className='chat-bubble-img';el.src=img.dataUrl;el.alt=img.name||'image';el.onclick=function(){_viewImageFull(img.dataUrl)};div.appendChild(el)});
-      if(msgId){const db=document.createElement('button');db.className='chat-msg-del';db.textContent='✕';db.title='删除此消息';db.onclick=function(ev){ev.stopPropagation();deleteSingleMsg(msgId,div)};div.appendChild(db)}
+      if(msgId){div.appendChild(_msgFavBtn(msgId));const db=document.createElement('button');db.className='chat-msg-del';db.textContent='✕';db.title='删除此消息';db.onclick=function(ev){ev.stopPropagation();deleteSingleMsg(msgId,div)};div.appendChild(db)}
     }else{
       if(senderName&&role==='ai'){
         var _acm=_mdMode();if(_acm==='full'||_acm==='partial')div.classList.add('md-rendered');
@@ -2195,11 +2301,49 @@ function appendChatBubble(role,text,senderName,reasoningContent,msgId,images,fil
       }
       fls.forEach(function(f){div.appendChild(_buildFileCard(f))});
       imgs.forEach(img=>{const el=document.createElement('img');el.className='chat-bubble-img';el.loading='lazy';el.decoding='async';el.src=img.dataUrl;el.alt=img.name||'image';el.style.maxWidth='180px';el.onclick=function(){_viewImageFull(img.dataUrl)};div.appendChild(el)});
-      if(msgId){const db=document.createElement('button');db.className='chat-msg-del';db.textContent='✕';db.title='删除此消息';db.onclick=function(ev){ev.stopPropagation();deleteSingleMsg(msgId,div)};div.appendChild(db)}
+      if(msgId){div.appendChild(_msgFavBtn(msgId));const db=document.createElement('button');db.className='chat-msg-del';db.textContent='✕';db.title='删除此消息';db.onclick=function(ev){ev.stopPropagation();deleteSingleMsg(msgId,div)};div.appendChild(db)}
     }
     container.appendChild(div);
     container.scrollTop=container.scrollHeight;
   });
+}
+
+/* 收藏按钮（统一走 IB.favorites，引用式——只存 sourceId/文本/元信息，不复制二进制）。
+   兼容传完整消息对象或长度消息 id；渲染时为尽快呈现先画空星，再异步回填状态。 */
+/* 宿主 → 当前打开 App 的事件广播（幂等、fail-open、不复制 Chat Runtime）。
+   仅投递 AI 完成的『message』（适合弹幕）与『turn start/end』状态；由打开中的 App（如 Cinema）自行过滤 friendId/threadId。 */
+function _ibAppBroadcast(ev,payload){try{if(typeof window.IBApps==='object'&&IBApps&&typeof IBApps.broadcast==='function')IBApps.broadcast(ev,payload)}catch(e){}}
+
+async function _toggleMsgFav(msg,b){
+  if(typeof window.IB==='undefined'||!IB.favorites||typeof IB.favorites.has!=='function'){toast('收藏层尚未就绪');return}
+  var m=msg;
+  if(typeof m==='string'&&m){try{m=await dbGet('chatMessages',m)}catch(e){m=null}}
+  if(!m||!m.id){toast('该消息不存在');return}
+  var h=await IB.favorites.has(m.id);
+  if(h){
+    await IB.favorites.removeBySource('chat',m.id);
+    b.textContent='☆';b.title='收藏';toast('已取消收藏');
+  }else{
+    var meta={kind:(m.voice?'voice':(m.images&&m.images.length?'image':'text')),
+      voice:m.voice?{duration:m.voice.duration,transcript:m.voice.transcript||''}:null,
+      imgN:(m.images&&m.images.length)||0,threadId:m.threadId||'',threadName:'',
+      who:m.role==='user'?'我':(m.senderName||'TA')};
+    var rec=await IB.favorites.add({type:'chat',roleId:m.friendId||'',sourceId:m.id,title:'',body:String(m.content||'').slice(0,6000),meta:meta});
+    b.textContent=rec?'★':'☆';b.title=rec?'取消收藏':'收藏';toast(rec?'已收藏':'收藏失败');
+  }
+}
+function _msgFavBtn(msg){
+  var b=document.createElement('button');b.className='chat-msg-fav';b.textContent='☆';b.title='收藏';
+  b.setAttribute('aria-label','收藏');
+  function setState(v){b.textContent=v?'★':'☆';b.title=v?'取消收藏':'收藏'}
+  var m=msg;
+  // 异步回填收藏态（失败静默，保持空星）
+  (function(){if(typeof window.IB==='undefined'||!IB.favorites)return;
+    if(m&&typeof m==='object'&&m.id){IB.favorites.has(m.id).then(setState,function(){});return}
+    if(typeof m==='string'&&m){dbGet('chatMessages',m).then(function(r){if(r)return IB.favorites.has(r.id)}).then(setState,function(){})}
+  })();
+  b.onclick=function(ev){ev.stopPropagation();_toggleMsgFav(msg,b)};
+  return b;
 }
 
 async function deleteSingleMsg(id,bubble,frag){
@@ -2497,7 +2641,7 @@ function _adaptContentForApi(content,fmt,allowImages){
     return{type:'text',text:p.text||''}
   });
   if(fmt==='openai')return content.map(p=>{
-    if(p.type==='_image')return{type:'image_url',image_url:{url:'data:'+p.mime+';base64,'+p.base64}};
+    if(p.type==='_image'){var _ib64=String(p.base64||'').replace(/\s+/g,'').replace(/^(?:data:[^,]*;base64,)+/i,''),_imime=/^image\//i.test(String(p.mime||''))?p.mime:'image/jpeg';return{type:'image_url',image_url:{url:'data:'+_imime+';base64,'+_ib64}}}
     if(p.type==='_audio')return{type:'input_audio',input_audio:{data:p.base64,format:p.format||'wav'}};
     return{type:'text',text:p.text||''}
   });
@@ -2515,13 +2659,45 @@ function _adaptMessageForApi(message,fmt,allowImages){
 
 /* ── 流式传输 (SSE Streaming) ── */
 let _streamAbortController=null;/* 兜底句柄；常规路径已改走按对话隔离的 _chatCallStates */
+/* ── 语音通话流式句柄：模型 stream 的干净正文（已过滤 thinking）经 _sFlush 推给本 sink。
+   非语音聊天时保持 null，完全惰性，不改变原流式行为。── */
+var _voiceSink=null;
+function _makeVoiceSentenceSink(call){
+  var buf='';
+  return {
+    active:true,
+    feed:function(ch){
+      if(!this.active)return;
+      buf+=ch;
+      /* Strip complete XML-ish markup (tool/calendar/memory/withdraw tags). A tag
+         split across chunks is removed as soon as its closing '>' arrives, so a
+         reply with an unfinished instruction never reads it aloud. */
+      buf=buf.replace(/<[^>]*>/g,'');
+      for(;;){
+        var m=/^[^。！？!?；;]*[。！？!?；;]/.exec(buf);
+        if(!m)break;
+        var s=m[0].trim();
+        buf=buf.slice(m[0].length);
+        if(s)call.pushSentence(s,false);
+      }
+    },
+    flush:function(done){
+      if(!this.active)return;
+      this.active=false;
+      buf=buf.replace(/<[^>]*>/g,'');
+      var rest=buf.trim();buf='';
+      if(rest)call.pushSentence(rest,done!==false);
+      else call.pushSentence('',done!==false);
+    }
+  };
+}
 var _lastApiFinish='';/* 结束原因镜像（length/max_tokens/MAX_TOKENS = 被输出上限截断）。真实判定改用各调用自己的状态对象 */
 /* ── 跨对话并发隔离 ──
    发送锁按好友分开，但"最近一次思考内容 / 结束原因 / 停止标记 / 可停止的传输"此前共用全局变量，
    两路对话同时进行时会互相串扰（停止只停最新一路、思考文本挂错对话、截断标记与自动续写误判）。
    现改为：每次聊天调用创建独立状态对象，按对话 ID 注册，停止按钮按当前查看的对话定位。 */
 var _chatCallStates={};/* key = 好友/群 ID → {think,finish,stopped,ac} */
-function _newCallState(opts){var st={key:(opts&&opts.chatKey)||'',think:'',finish:'',stopped:false,ac:null};if(st.key)_chatCallStates[st.key]=st;return st}
+function _newCallState(opts){var st={key:(opts&&opts.chatKey)||'',think:'',finish:'',stopped:false,ac:null,abortReason:''};if(st.key)_chatCallStates[st.key]=st;return st}
 function _endCallState(st){if(st&&st.key&&_chatCallStates[st.key]===st)delete _chatCallStates[st.key]}
 function _mSetThink(opts,v){_lastApiReasoning=v;if(opts&&opts._st)opts._st.think=v}
 function _mSetFinish(opts,v){_lastApiFinish=v;if(opts&&opts._st)opts._st.finish=v}
@@ -2530,7 +2706,7 @@ function stopStreaming(){
   /* 优先停当前查看的对话；当前对话没有进行中的传输而全局只剩一路时，停那一路 */
   var st=_chatCallStates[activeFriendId];
   if(!st){var ks=Object.keys(_chatCallStates);if(ks.length===1)st=_chatCallStates[ks[0]]}
-  if(st){st.stopped=true;if(st.ac){try{st.ac.abort()}catch(e){}st.ac=null}return}
+  if(st){st.stopped=true;st.abortReason='user_stop';if(st.ac){try{st.ac.abort()}catch(e){}st.ac=null}return}
   if(_streamAbortController){_streamAbortController.abort();_streamAbortController=null}
 }
 let _memStreamAbortController=null;
@@ -2551,7 +2727,7 @@ function _showStreamingUI(show){
 /* 各提供商单次输出上限：一律按主流旗舰模型的官方最大值顶格给（用户明确不在意 token 消耗）。
    若某个具体模型/中转支持不到这个数，请求会报错，下方包装器会读取错误里的建议值自动降档重试，
    所以这里可以放心写大——宁可"顶格再回退"，也不要"保守而浪费"。 */
-const _PROVIDER_MAX_OUT={deepseek:65536,anthropic:64000,openai:32768,grok:32768,moonshot:32768,mistral:32768,qwen:32768,glm:32768,doubao:32768,minimax:32768,yi:16384,baichuan:16384,gemini:65536,custom:32768};
+const _PROVIDER_MAX_OUT={deepseek:65536,anthropic:64000,openai:32768,grok:32768,moonshot:32768,mimo:131072,mistral:32768,qwen:32768,glm:32768,doubao:32768,minimax:32768,yi:16384,baichuan:16384,gemini:65536,custom:32768};
 function _chatMaxTokens(cfg){return _PROVIDER_MAX_OUT[cfg&&cfg.provider]||16384}
 function _errLooksMaxTok(e){return /max_?tokens|max_completion_tokens|maxOutputTokens/i.test(String(e&&e.message||''))}
 /* 新款 OpenAI 系模型（o1/o3/gpt-5 等）不认 max_tokens、要求 max_completion_tokens：
@@ -2668,6 +2844,7 @@ async function _wsToolContinue(cfg,o){
       appendChatBubble('ai',contText,o.senderName,parsed.reasoning_content||undefined,_cId,_cImg,undefined,_cResults,undefined,cfg);
       /* 续轮消息可独立删除（与主流程一致）；truncated 续写 pill 略（自动续轮场景少见） */
       document.querySelectorAll('.chat-msg[data-msg-id="'+_cId+'"]').forEach(function(el){
+        el.appendChild(_msgFavBtn(_cId));
         var db=document.createElement('button');db.className='chat-msg-del';db.textContent='✕';db.title='删除此消息';
         db.onclick=function(ev){ev.stopPropagation();deleteSingleMsg(_cId,el)};el.appendChild(db);
       });
@@ -2682,30 +2859,236 @@ async function _wsToolContinue(cfg,o){
 }
 window._wsToolContinue=_wsToolContinue;
 
-/* ══════════ waifu 模式（v7）：长回复拆成多条短消息，一条条发（像真人） ══════════
-   仅在角色 API 配置开启 waifu 且回复为"纯文本、无功能标签"时生效；
-   流式路径保持逐字打字不拆（本身已像真人）；非流式把整段按中文句读切成多条，
-   逐条落库 + 逐条上屏（600ms 间隔）。失败一律回落整条，绝不影响回复内容。 */
-function _waifuSplit(text){
-  try{
-    const t=String(text||'').trim();
-    if(!t)return null;
-    if(/<\s*(ws_|cal_|mem_|think)|```/i.test(t))return null;/* 含工作区/日历/记忆/思考标签或代码块 → 不拆 */
-    const units=t.split(/(?<=[。！？!?…；;])\s*/).map(s=>s.trim()).filter(Boolean);
-    if(units.length<=1)return null;
-    /* 每 1-2 句一组（组内到 2 句就开新段），最多 5 条；单句过长（>84 字）单独成段 */
-    const MAX=5,PER=2,segs=[];let cur='';
-    units.forEach(function(u){
-      if(!cur){cur=u;return}
-      const cnt=(cur.match(/[。！？!?…；;]/g)||[]).length;
-      if(cur.length>84||cnt>=PER){segs.push(cur);cur=u}
-      else cur=cur+u;
-    });
-    if(cur)segs.push(cur);
-    return segs.length>1?segs.slice(0,MAX):null;
-  }catch(e){return null}
-}
-window._waifuSplit=_waifuSplit;
+/* ══════════ Waifu 消息呈现（MessagePresentation）· v10 ══════════
+   定位：Waifu Mode 是"消息呈现模式"，只回答一件事：完整响应 → 如何变成一条条"真人自然发送"的消息，
+        并带上节奏。核心不再纠结"在哪切"，而是"什么东西应该作为一次发送"（What is ONE message）。
+   三层概念：
+     ① Structural Parsing —— 识别并保护成对结构（括号/引号/代码/URL/链接/JSON/emoji/数字等），
+                            结构内部绝不切碎；有代码块时不整条 single，而是 散文→代码块→散文 各自成条。
+     ② Utterance Segmentation —— 仅对普通自然语言按 空行段落 > 句读（。！？）> 语义转折 > 长度控制 拆分。
+     ③ Human-like Message Planner —— 把 utterance 组装成"一个自然拍发送键"的 beat（消息），并做 anti-fragmentation。
+   对外 API：
+     plan(reply, opts) → { mode:'stream'|'single'|'multi', messages:[{text,delay}], segments:[text] }
+     split(text, opts) → string[] | null   （向后兼容别名，= messages 的 text 数组）
+     delayBetween(len) → number            （真人节奏，确定性上界）
+   约束：不干预模型执行 / continuation / memory / tools；不改 Harness / ModelPort；
+        streaming:true → {mode:'stream'}，交给现有 streaming renderer 实时呈现，绝不等待完整再拆。
+   lossless 硬性保证：join(messages) 与原文仅差空白归一，绝不丢内容/结构/标点/emoji。 */
+window.MessagePresentation = (function () {
+  'use strict';
+  /* ── 标点 / 结构 ── */
+  const HARD_STOP = /[。！？!?]/;                       /* 真正句读：句号 / 感叹 / 问号 */
+  const SOFT_PAUSE = /[，,、；;…～~]/;                  /* 次级停顿：逗号 / 顿号 / 分号 / 省略 / 波浪 */
+  const COMMA = /[，,、]/;                              /* 逗号类（用于"转折分句"与"长句次级断"） */
+  /* 语义/叙事转折词：逗号后紧跟这类词 → 视为"新一拍"，即使同句也拆成独立消息。
+     注意：把 然后/接着/随后/终于 这类"顺承"词排除，保证"她看了你一会儿，然后轻轻笑了一下。"仍旧一条。 */
+  const SPLIT_CONNECTOR_RE = /^\s*(?:不过|但是|可是|然而|所以|因此|其实|对了|还有|而且|再说|就是说|换句话说|更重要的是|顺便|另外|况且|再者|总之|于是)\s*/;
+  const FILLER_RE = /^\s*(?:嗯|哦|噢|啊|哈|哎|唉|呃|唔|呀|嗯嗯|哦哦|哈哈|嘿嘿|哎呀|emm|emmm)\s*[，,。！？!?]?\s*$/;
+  const ONLY_STRUCT = /^[\s\-—–…\.。，、；;：:！!？?'"“”‘’()（）\[\]【】「」『』{}<>《》]+$/;
+  /* 成对结构：recursive（叙事可再拆，括号附着内容） vs atomic（JSON/列表/强调，整块不拆） */
+  const RECURSIVE_PAIRS = { '(': ')', '（': '）', '「': '」', '『': '』', '“': '”', '‘': '’', '"': '"' };
+  const ATOMIC_PAIRS = { '[': ']', '{': '}', '【': '】' };
+
+  /* 软目标（非硬限制）：作为"一个自然拍发送键"的参考长度 */
+  const SOFT_TARGET = 44;   /* 参照：普通消息 30~100 字（非硬上限） */
+  const HARD_LEN = 96;      /* 单句超过 → 在次级停顿处断 */
+  const SUB_MIN = 14;       /* 长句切分时子段最小长度 */
+  const BRACKET_INTACT = 48;/* 成对结构内文 ≤ 此且无段落 → 整块作为一条 */
+
+  /* ═══ ① Structural Parsing：文本 → token 序列（atomic / bracket / prose）═══
+     atomic：code fence / inline code / URL / Markdown link / 图片 / JSON / 列表 —— 绝不内部切分。
+     bracket：成对结构（含嵌套），开括号附着首条内文、闭括号附着末条内文，绝不孤立。
+     prose：普通自然语言，交给 ② utterance segmentation。 */
+  function _tokenize(t) {
+    const toks = []; let i = 0; const n = t.length;
+    let proseStart = -1;
+    const flushProse = (end) => { if (proseStart >= 0) { const p = t.slice(proseStart, end); if (p) toks.push({ kind: 'prose', text: p }); proseStart = -1; } };
+    const atomAdd = (s, e) => { if (e > s) toks.push({ kind: 'atomic', text: t.slice(s, e) }); };
+    while (i < n) {
+      const ch = t[i];
+      /* ── code fence（``` / ~~~）── */
+      if (t.slice(i, i + 3) === '```' || t.slice(i, i + 3) === '~~~') {
+        flushProse(i); const fence = t.slice(i, i + 3);
+        const close = t.indexOf(fence, i + 3); const end = close === -1 ? n : close + 3;
+        atomAdd(i, end); i = end; continue;
+      }
+      /* ── inline code（`）── */
+      if (ch === '`') {
+        flushProse(i); const close = t.indexOf('`', i + 1); const end = close === -1 ? n : close + 1;
+        atomAdd(i, end); i = end; continue;
+      }
+      /* ── Markdown 链接/图片 [文本](url) / ![alt](url) ── */
+      if (ch === '[' || (ch === '!' && t[i + 1] === '[')) {
+        const op = t.indexOf('](', i);
+        if (op > i) {
+          const cl = t.indexOf(')', op + 2); const end = cl === -1 ? n : cl + 1;
+          if (end - i <= 2000 && t.slice(i, end).indexOf('\n') === -1) { flushProse(i); atomAdd(i, end); i = end; continue; }
+        }
+      }
+      /* ── URL ── */
+      const u = t.slice(i).match(/^(?:https?:\/\/|www\.)[^\s`\u4e00-\u9fff，。；！？、；“”（）【】]+/i);
+      if (u && u[0].length >= 4) { flushProse(i); atomAdd(i, i + u[0].length); i += u[0].length; continue; }
+      /* ── 成对结构（嵌套感知；分清 recursive / atomic）── */
+      if (RECURSIVE_PAIRS[ch] || ATOMIC_PAIRS[ch]) {
+        const closeCh = RECURSIVE_PAIRS[ch] || ATOMIC_PAIRS[ch];
+        const end = _matchPaired(t, i, ch, closeCh);
+        if (end > i + 1) {
+          flushProse(i);
+          const isRecursive = !!RECURSIVE_PAIRS[ch];
+          toks.push({ kind: 'bracket', open: ch, close: closeCh, recursive: isRecursive, text: t.slice(i, end), inner: t.slice(i + 1, end - 1) });
+          i = end; continue;
+        }
+      }
+      if (proseStart < 0) proseStart = i;
+      i++;
+    }
+    flushProse(n);
+    return toks;
+  }
+  function _matchPaired(t, openIdx, openCh, closeCh) {
+    if (openCh === closeCh) { const nx = t.indexOf(closeCh, openIdx + 1); return nx === -1 ? -1 : nx + 1; }
+    let depth = 0;
+    for (let i = openIdx; i < t.length; i++) {
+      const c = t[i];
+      if (c === openCh) depth++;
+      else if (c === closeCh) { depth--; if (depth === 0) return i + 1; }
+    }
+    return -1;
+  }
+
+  /* ═══ ②③ 由 token 组装成"消息候选"（beats），并保证结构完整 ═══ */
+  function _beatsFromTokens(toks) {
+    const beats = [];
+    for (const tk of toks) {
+      if (tk.kind === 'atomic') { beats.push(tk.text); continue; }
+      if (tk.kind === 'prose') { const ps = _segmentProse(tk.text); for (const b of ps) beats.push(b); continue; }
+      /* bracket */
+      const inner = tk.inner;
+      const innerTrim = String(inner).replace(/\s+/g, ' ').trim();
+      const hasPara = /\n[ \t]*\n/.test(inner);
+      if (!tk.recursive || (innerTrim.length <= BRACKET_INTACT && !hasPara)) { beats.push(tk.text); continue; } /* 整块一条 */
+      const innerBeats = _beatsFromTokens(_tokenize(inner)).map(b => b.trim());
+      if (innerBeats.length === 0) { beats.push(tk.text); continue; }
+      if (innerBeats.length === 1) { beats.push(tk.open + innerBeats[0] + tk.close); continue; }
+      const out = innerBeats.slice();
+      out[0] = tk.open + out[0];
+      out[out.length - 1] = out[out.length - 1] + tk.close;
+      for (const b of out) beats.push(b);
+    }
+    return beats;
+  }
+
+  /* ═══ ② Utterance Segmentation：仅对自然语言 ═══
+     边界优先级：空行段落 > 句读（。！？）> 语义转折分句（逗号+转折词）> 过长在次级停顿处断。
+     每条 utterance 近似"一个真人拍一次发送键"（WHAT is ONE message），不跨边界合并，避免机械切碎。 */
+  function _segmentProse(text) {
+    const paras = String(text).split(/\n[ \t]*\n/);
+    const beats = [];
+    for (const p of paras) {
+      if (!String(p).replace(/\s/g, '')) continue;
+      const ut = _utterances(p);
+      let pending = null;
+      for (let k = 0; k < ut.length; k++) {
+        let u = String(ut[k]).replace(/\s+/g, ' ').trim();
+        if (!u) continue;
+        if (pending) { u = pending + u; pending = null; }
+        if (FILLER_RE.test(u)) { pending = u; continue; }   /* 前导语气（嗯，）与下一条合并，不单独发 */
+        beats.push(u);
+      }
+      if (pending) beats.push(pending);
+    }
+    return beats;
+  }
+  function _utterances(para) {
+    const base = []; let buf = '';
+    for (let i = 0; i < para.length; i++) {
+      const ch = para[i];
+      buf += ch;
+      if (HARD_STOP.test(ch)) { base.push(buf); buf = ''; continue; }        /* 句读 → 一句话 */
+      if (COMMA.test(ch) && SPLIT_CONNECTOR_RE.test(para.slice(i + 1))) {     /* 逗号+转折词 → 新拍 */
+        base.push(buf); buf = '';
+      }
+    }
+    if (buf.trim()) base.push(buf);
+    const out = [];
+    for (const s of base) { if (s.length <= HARD_LEN) { out.push(s); } else { for (const pt of _splitLong(s)) out.push(pt); } }
+    return out;
+  }
+  function _splitLong(s) {
+    const parts = []; let buf = '';
+    for (let i = 0; i < s.length; i++) {
+      const ch = s[i];
+      buf += ch;
+      if (COMMA.test(ch) && buf.trim().length >= SUB_MIN && !(ch === ',' && /\d/.test(s[i - 1] || '') && /\d/.test(s[i + 1] || ''))) { parts.push(buf); buf = ''; }
+    }
+    if (buf.trim()) parts.push(buf);
+    /* 尾部过短并入上一条，避免碎段 */
+    if (parts.length > 1 && parts[parts.length - 1].trim().length < SUB_MIN) {
+      parts[parts.length - 2] = parts[parts.length - 2] + parts[parts.length - 1];
+      parts.pop();
+    }
+    return parts.length > 1 ? parts : [s];
+  }
+
+  /* ═══ anti-fragmentation：绝不输出只有 结构/标点 的消息，自动并入相邻 ═══
+     只 trim 首尾空白、保留内部空白（否则会破坏 code 块/换行）；内容/结构/标点一律保留。 */
+  function _antiFrag(beats) {
+    const out = [];
+    for (const b of beats) {
+      const x = String(b).trim();
+      if (!x) continue;
+      if (ONLY_STRUCT.test(x)) { if (out.length) out[out.length - 1] = out[out.length - 1] + x; else out.push(x); continue; }
+      out.push(x);
+    }
+    return out.filter(Boolean);
+  }
+
+  /* ═══ 对外：split（向后兼容别名）═══ */
+  function split(text, opts) {
+    opts = opts || {};
+    try {
+      const t = String(text || '').trim();
+      if (!t) return null;
+      /* 功能标签（工作区/日历/记忆/思考/撤回）→ 不拆，整条原样呈现 */
+      if (/<\s*(ws_|cal_|mem_|think|withdraw)/i.test(t)) return null;
+      const MAX = Math.max(2, Math.min(opts.maxSegments || 30, 60));
+      let beats = _antiFrag(_beatsFromTokens(_tokenize(t)));
+      if (beats.length <= 1) return null;
+      /* 溢出合并：绝不丢内容，超出上限的部分并入最后一条 */
+      if (beats.length > MAX) { const tail = beats.slice(MAX - 1).join(''); beats.length = MAX - 1; beats.push(tail); }
+      return beats;
+    } catch (e) { return null; }
+  }
+
+  /* ═══ 真人发送节奏：根据上一条长度给出"到下一条"的确定性上界（无不可测随机）═══
+     短消息 300~500 · 普通 450~800 · 较长 600~1000；首条立即（delay 0）不等待。 */
+  function delayBetween(len) {
+    len = Number(len) || 0;
+    if (len <= 10) return 320;
+    if (len <= 30) return 480;
+    if (len <= 60) return 640;
+    if (len <= 120) return 800;
+    return 960;
+  }
+
+  /* ═══ 呈现决策（唯一入口）：完整响应 → 呈现计划（消息内容 + 发送节奏，同属一个 plan）═══
+     { mode:'stream'|'single'|'multi', messages:[{text,delay}], segments:[text] }
+     - streaming:true → 'stream'（现有 streaming renderer 实时呈现，不拆、不等完整）
+     - waifu 关闭 或 无法自然拆成多条 → 'single'
+     - waifu 开且能拆成多条 → 'multi'（messages 逐条呈现，含各自 delay） */
+  function plan(reply, opts) {
+    opts = opts || {};
+    if (opts.streaming) return { mode: 'stream', messages: [], segments: [] };
+    if (opts.waifu !== true) return { mode: 'single', messages: [], segments: [] };
+    const segs = split(reply, opts);
+    if (!segs || segs.length <= 1) return { mode: 'single', messages: [], segments: [] };
+    const messages = segs.map((t, i) => ({ text: t, delay: i === 0 ? 0 : delayBetween(segs[i - 1].length) }));
+    return { mode: 'multi', messages: messages, segments: segs };
+  }
+  return { split: split, plan: plan, delayBetween: delayBetween };
+})();
+/* 向后兼容别名：旧调用/测试仍经 window._waifuSplit；语义 = MessagePresentation.split */
+window._waifuSplit = function (_t) { return window.MessagePresentation ? window.MessagePresentation.split(_t) : null; };
 
 /* ══════════ 微信式社交小动作（v7）：AI 撤回 / 拍一拍（撤回） ══════════
    撤回 = 把该条 AI 消息内容改写为"【XX撤回了一条消息】"并重渲染（历史 content 已是文案，重载天然支持）。
@@ -2971,11 +3354,11 @@ async function _callApiChatStreamOnce(cfg,messages,opts){
   try{if(typeof IBWS!=='undefined'&&IBWS.steer)_msgs=IBWS.steer(_msgs,cfg,opts)}catch(e){}
   const ac=opts.abortController||new AbortController();const _extAC=!!opts.abortController;if(!_extAC)_streamAbortController=ac;
   if(opts._st)opts._st.ac=ac;/* 并发隔离：供停止按钮按对话中止 */
-  const tm=setTimeout(()=>ac.abort(),timeoutMs);
+  const tm=setTimeout(()=>{if(opts._st)opts._st.abortReason='timeout';ac.abort()},timeoutMs);
   /* 心跳超时：默认45秒没收到任何chunk就中断，可通过opts.heartbeatMs覆盖 */
   const _hbMs=opts.heartbeatMs||45000;
   let _heartbeat=null;
-  const _resetHB=()=>{if(_heartbeat)clearTimeout(_heartbeat);_heartbeat=setTimeout(()=>ac.abort(),_hbMs)};
+  const _resetHB=()=>{if(_heartbeat)clearTimeout(_heartbeat);_heartbeat=setTimeout(()=>{if(opts._st)opts._st.abortReason='heartbeat';ac.abort()},_hbMs)};
   let fullText='',thinkingText='';
   /* 仅响应侧启用：官方原生 thinking_delta 仍走旧路径；只有文本标签泄漏时才由 mux 分流。 */
   const _anthWebThinkMode=(fmt==='anthropic'&&_anthropicWebThinkResponseMode(cfg,opts,wantThink));
@@ -3020,9 +3403,9 @@ async function _callApiChatStreamOnce(cfg,messages,opts){
       const ob={model:cfg.model,messages:_msgs.map(m=>_adaptMessageForApi(m,'openai',_allowOpenAIImages)),stream:true};
       if(opts._fcCtx&&opts._fcCtx.tools){ob.tools=opts._fcCtx.tools.openai;IBFC.newAcc(opts._fcCtx)}
       try{if(typeof IBWS!=='undefined')IBWS.attach(ob,'openai',cfg,opts)}catch(e){}
-      ob[opts.tokenParam||'max_tokens']=maxTok;/* 新款 OpenAI 系模型由包装器切换为 max_completion_tokens */
-      if(cfg.promptCache!==false)ob.prompt_cache_key='ib_'+String(cfg.id||'');/* OpenAI 缓存本自动生效；此 key 只用于提升路由命中率 */
-      if(cfg.promptCache!==false)ob.stream_options={include_usage:true};/* 用量回传：与上方附加参数同受"提示缓存"开关控制 */
+      ob[_mimoTokenKey(cfg,opts)]=maxTok;/* 新款 OpenAI 系模型由包装器切换为 max_completion_tokens；MiMo 端点强制 max_completion_tokens */
+      if(cfg.promptCache!==false&&!_isMimoEndpoint(cfg))ob.prompt_cache_key='ib_'+String(cfg.id||'');/* OpenAI 缓存本自动生效；此 key 只用于提升路由命中率。MiMo 无此字段且自行缓存，发出去反而 400 */
+      if(cfg.promptCache!==false&&!_isMimoEndpoint(cfg))ob.stream_options={include_usage:true};/* 用量回传：与上方附加参数同受"提示缓存"开关控制。MiMo 未定义此字段，省略以免 400 */
       if(cfg.promptCache!==false){try{_ibCacheAudit(cfg,ob,'openai')}catch(e){}}/* 前缀缓存审计（console-only） */
       if(cfg.temperature!=null)ob.temperature=cfg.temperature;
       /* ── 临时调试（定位 OpenRouter 400；测试完删除本段）──
@@ -3037,8 +3420,10 @@ async function _callApiChatStreamOnce(cfg,messages,opts){
         if(_dbgBodyShow){
           var _dbgBody=JSON.parse(JSON.stringify(ob));
           (function _dbgRedact(o){if(!o||typeof o!=='object')return;for(var k in o){if(/key|token|secret|authorization/i.test(k)&&typeof o[k]==='string'&&o[k]){o[k]=String(o[k]).slice(0,4)+'***'+String(o[k]).slice(-4)}else _dbgRedact(o[k])}})(_dbgBody);
+          /* URL 同样脱敏：Gemini 端点把 key 放进 ?key= 查询串，须隐藏其中的完整 API Key */
+          var _dbgRedactUrl=function(u){try{return String(u||'').replace(/([?&])key=[^&]*/gi,'$1key=***********')}catch(e){return String(u||'')}};
           console.log('[IB调试] 最终请求体:',JSON.stringify(_dbgBody,null,2));
-          console.log('[IB调试] 请求URL:',url,'| Authorization:',cfg.apiKey?('Bearer '+String(cfg.apiKey).slice(0,6)+'***'):'(无)');
+          console.log('[IB调试] 请求URL:',_dbgRedactUrl(url),'| Authorization:',cfg.apiKey?('Bearer '+String(cfg.apiKey).slice(0,6)+'***'):'(无)');
         }
       }catch(e){}
       body=JSON.stringify(ob);
@@ -3117,7 +3502,10 @@ async function _callApiChatStreamOnce(cfg,messages,opts){
       if(_anthWebThinkMux)_anthWebThinkMux.finish();
       if(thinkingText)_mSetThink(opts,thinkingText);
       if(fullText.trim()){_ibwsFlushSearchMeta(opts);return fullText}
-      throw new Error('请求超时或已停止')
+      /* 中止语义按 abort 来源区分（结构化，不依赖中文文案）：
+         user_stop → 保持原有 stopped/aborted 语义；timeout/heartbeat → 明确的 timeout 错误。 */
+      if((opts._st&&opts._st.abortReason)==='user_stop'){var _ue=new Error('请求超时或已停止');_ue.ibCat='aborted';throw _ue}
+      var _te=new Error('请求超时');_te.ibCat='timeout';throw _te
     }
     throw e
   }
@@ -3309,8 +3697,8 @@ async function _callApiChatOnce(cfg,messages,opts){
   if(opts._fcCtx&&opts._fcCtx.tools)oBody.tools=opts._fcCtx.tools.openai;
   if(opts.jsonMode)oBody.response_format={type:'json_object'};/* AI 规划：结构化 JSON 输出（不支持的中转站会在包装层降级重试） */
   try{if(typeof IBWS!=='undefined')IBWS.attach(oBody,'openai',cfg,opts)}catch(e){}
-  oBody[opts.tokenParam||'max_tokens']=maxTok;/* 新款 OpenAI 系模型由包装器切换为 max_completion_tokens */
-  if(cfg.promptCache!==false)oBody.prompt_cache_key='ib_'+String(cfg.id||'');/* OpenAI 缓存本自动生效；此 key 只用于提升路由命中率 */
+  oBody[_mimoTokenKey(cfg,opts)]=maxTok;/* 新款 OpenAI 系模型由包装器切换为 max_completion_tokens；MiMo 端点强制 max_completion_tokens */
+  if(cfg.promptCache!==false&&!_isMimoEndpoint(cfg))oBody.prompt_cache_key='ib_'+String(cfg.id||'');/* OpenAI 缓存本自动生效；此 key 只用于提升路由命中率。MiMo 无此字段且自行缓存，发出去反而 400 */
   if(cfg.promptCache!==false){try{_ibCacheAudit(cfg,oBody,'openai')}catch(e){}}/* 前缀缓存审计（console-only） */
   if(cfg.temperature!=null)oBody.temperature=cfg.temperature;
   const _hdrN=Object.assign({'Content-Type':'application/json'},cfg.apiKey?{Authorization:'Bearer '+cfg.apiKey}:{});
@@ -3694,6 +4082,8 @@ window.loadBlogComments=loadBlogComments;
 window.requestBlogComment=requestBlogComment;
 window.deleteBlogComment=deleteBlogComment;
 window.callApi=callApi;
+window._ibApiPost=_ibApiPost;/* 暴露统一传输（Bridge-aware CORS 处理），供 Middle Brain 等复用 */
+window._ibProxyShouldRoute=_ibProxyShouldRoute;
 window.initChatHeader=initChatHeader;
 window._ibDockSwap=_ibDockSwap;
 window._ibDockMorph=_ibDockMorph;
@@ -3881,9 +4271,11 @@ ibChatLive('_pageHiddenAt', function(){return _pageHiddenAt}, function(v){_pageH
 ibChatLive('FILE_MAX_BYTES', function(){return FILE_MAX_BYTES}, function(v){FILE_MAX_BYTES=v});
 ibChatLive('FILE_MAX_COUNT', function(){return FILE_MAX_COUNT}, function(v){FILE_MAX_COUNT=v});
 NS.expose('chat', {
+  MessagePresentation: window.MessagePresentation,
   loadBlogComments: loadBlogComments,
   requestBlogComment: requestBlogComment,
   deleteBlogComment: deleteBlogComment,
+  buildChatContext: buildChatContext,
   callApi: callApi,
   initChatHeader: initChatHeader,
   _ibDockSwap: _ibDockSwap,

@@ -300,6 +300,7 @@ async function _netRenderFeed(){
     frag.appendChild(card);
   }
   feed.appendChild(frag);
+  try{if(window.IB&&IB.favorites&&typeof IB.favorites.starCard==='function'){Array.prototype.forEach.call(feed.querySelectorAll('[data-id]'),function(card){var mid=card.getAttribute('data-id');if(!mid)return;var el=card.querySelector('.mom-content')||card.querySelector('.mom-text')||card;var body=(el&&el.textContent||'').slice(0,6000);IB.favorites.starCard(card,{type:'moment',sourceId:mid,roleId:'',title:'',body:body})})}}catch(e){}
   try{
     const tips=document.getElementById('mom-role-tips');
     if(tips){
@@ -430,10 +431,13 @@ async function _netRenderProfile(){
     pub.appendChild(pbox);
   }else{
     pub.appendChild(_netEl('div','net-profile-note-text','TA 在自主发布与互动，你也可以请 TA 此刻分享一条：'));
-    const gb=_netEl('button','btn','让 TA 发一条');
-    gb.type='button';
-    gb.addEventListener('click',function(){_momentsAskGenerate(view.id)});
-    pub.appendChild(gb);
+    const gb1=_netEl('button','btn','强制发朋友圈（不配图）');
+    gb1.type='button';gb1.style.marginRight='8px';
+    gb1.addEventListener('click',function(){_momentsAskGenerate(view.id,{noImage:true})});
+    const gb2=_netEl('button','btn','强制发朋友圈并配图');
+    gb2.type='button';
+    gb2.addEventListener('click',function(){_momentsAskGenerate(view.id,{forceImage:true})});
+    pub.append(gb1,gb2);
   }
   card.appendChild(pub);
 

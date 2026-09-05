@@ -15,6 +15,7 @@ function createWs(deps) {
   const withListLock = deps.withListLock;
   const uid = deps.uid;
   const savePushes = deps.savePushes;
+  const voiceRuntime = deps.voiceRuntime;
 
   const wsSockets = new Set();
   let wsHeartbeatTimer = null;
@@ -143,6 +144,10 @@ function createWs(deps) {
     }
 
     handleMessage(opcode, payload) {
+      if (opcode === 0x2) {
+        if (this.authorized && voiceRuntime) voiceRuntime.handleBinary(this, payload);
+        return;
+      }
       if (opcode !== 0x1) return;
       let msg = null;
       try { msg = JSON.parse(payload.toString('utf8')); } catch (e) { return; }
@@ -176,6 +181,7 @@ function createWs(deps) {
         this.close(4401, 'unauthorized');
         return;
       }
+      if (voiceRuntime && voiceRuntime.handleEvent(this, msg)) return;
       if (t === 'tool_catalog_request') {
         this.sendFrame(0x1, Buffer.from(JSON.stringify({ type: 'tool_catalog', tools: tools.map(x => ({ name: x.name, description: x.description, inputSchema: x.inputSchema })) })));
         return;
@@ -232,6 +238,7 @@ function createWs(deps) {
       } catch (e) { /* 忽略 */ }
       this.closed = true;
       wsSockets.delete(this);
+      if (voiceRuntime) voiceRuntime.close(this);
       try { this.socket.end(); } catch (e) { /* 忽略 */ }
     }
   }

@@ -290,6 +290,9 @@ async function main() {
     check('privacy.commentRejected', cmt && cmt.ok === false && cmt.error === '不可见' && mock.hits() === hitsBeforeComment, JSON.stringify(cmt));
     const snapClean = await evaluate(cdp, "(async function(){var cb=apiConfigs.find(function(a){return a.id==='p3b'});var s=await _momentsCompanionSnapshot(cb);var bad=(s.other_role_moments||[]).some(function(m){return m.visibility!=='all'||String(m.content||'').indexOf('XYZQ')>=0});return{bad:bad,n:(s.other_role_moments||[]).length}})()");
     check('privacy.companionSnapshotOthersClean', snapClean && snapClean.bad === false, JSON.stringify(snapClean));
+    /* Credential Vault v1：Moments snapshot 的 character 不得携带 apiKey；plan/tasks 由服务端剥离 + 语法/静态守卫确认 */
+    const noKey = await evaluate(cdp, "(async function(){var cb=apiConfigs.find(function(a){return a.id==='p3b'});var s=await _momentsCompanionSnapshot(cb);var hasApiKey = s.character && typeof s.character.apiKey==='string' && String(s.character.apiKey).length>0;return{hasApiKey:hasApiKey}})()");
+    check('vault.snapshotNoApiKey', noKey && noKey.hasApiKey === false, JSON.stringify(noKey));
 
     /* ── Storage（长期运行） ── */
     const junk = await evaluate(cdp, "(async function(){var base=Date.now();for(var i=0;i<120;i++){await dbPut(MOMENT_STORE,{id:'mom_junk_'+i,roleId:'junk',content:'历史堆积 '+i,images:[],visibility:'all',visibleRoleIds:[],likes:[],comments:[],source:'proactive',createdAt:new Date(base-i*1000).toISOString()})}return true})()");
@@ -322,6 +325,17 @@ async function main() {
     await evaluate(cdp, "(function(){window.__ibReq=[];window.__ibFailPut=true;_momentsResetSyncForTest();return true})()");
     const burst = await evaluate(cdp, "(async function(){var r=await _momentsSyncCompanion();return{r:r,attempts:window.__ibReq.filter(function(x){return x.indexOf('PUT /moments/')===0}).length}})()");
     check('sync.burstCutOn404', burst && burst.r === false && burst.attempts === 1, JSON.stringify(burst));
+
+    /* ── 归属 403 → 单角色 re-own 自愈（owner 不一致），且每个角色至多一次 re-own ── */
+    await evaluate(cdp, "(function(){window.__ibReq=[];_momentsResetSyncForTest();window._activeCompanionRequest=async function(p,o){window.__ibReq.push((o&&o.method||'GET')+' '+p+((o&&o.body&&o.body.reown)?'?reown=true':''));if(p==='/health')return{ok:true,moments:1};if(p.indexOf('/moments/')===0){if((o&&o.body&&o.body.reown)===true)return{ok:true,schedule:{decline_streak:0}};throw new Error('后台服务 403: Moment schedule does not belong to this user')}if(p==='/reconcile')return{ok:true};return{}};Object.defineProperty(window,'_activeCompanionOnline',{value:true,writable:true,configurable:true});return true})()");
+    const reown = await evaluate(cdp, "(async function(){var r=await _momentsSyncCompanion();var q=window.__ibReq;return{ok:r,reownPuts:q.filter(function(x){return x.indexOf('?reown=true')>=0}).length,totalPuts:q.filter(function(x){return x.indexOf('PUT /moments/')===0}).length}})()");
+    check('reown.ownershipSelfHeals', reown && reown.reownPuts >= 1 && reown.totalPuts === reown.reownPuts * 2 && reown.ok === true, JSON.stringify(reown));
+
+    /* ── Origin 禁止 403：不得被自愈绕过（零 re-own 请求）── */
+    await evaluate(cdp, "(function(){window.__ibReq=[];_momentsResetSyncForTest();window._activeCompanionRequest=async function(p,o){window.__ibReq.push((o&&o.method||'GET')+' '+p+((o&&o.body&&o.body.reown)?'?reown=true':''));if(p==='/health')return{ok:true,moments:1};if(p.indexOf('/moments/')===0)throw new Error('后台服务 403: Origin is not allowed');if(p==='/reconcile')return{ok:true};return{}};Object.defineProperty(window,'_activeCompanionOnline',{value:true,writable:true,configurable:true});return true})()");
+    const origin = await evaluate(cdp, "(async function(){var r=await _momentsSyncCompanion();var q=window.__ibReq;return{ok:r,reownPuts:q.filter(function(x){return x.indexOf('?reown=true')>=0}).length,totalPuts:q.filter(function(x){return x.indexOf('PUT /moments/')===0}).length}})()");
+    check('reown.originNotSelfHealed', origin && origin.reownPuts === 0, JSON.stringify(origin));
+
     await evaluate(cdp, "(function(){window._activeCompanionRequest=window.__ibOrigReq;Object.defineProperty(window,'_activeCompanionOnline',{value:false,writable:true,configurable:true});_momentsResetSyncForTest();return true})()");
 
     /* ── 输出解析矩阵（定位 unparseable：A 合法 / B 围栏 / 前后杂文 / publish:false / 畸形 / 空 / null / schema） ── */

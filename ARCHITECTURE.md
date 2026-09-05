@@ -1,4 +1,4 @@
-# Internal Beyond · 架构文档
+﻿# Internal Beyond · 架构文档
 
 > 本文档回答「这个项目是怎么工作的」。历史演进见 [CHANGELOG.md](CHANGELOG.md)，设计理由见 [DECISIONS.md](DECISIONS.md)，踩坑见 [TROUBLESHOOTING.md](TROUBLESHOOTING.md)。
 
@@ -111,9 +111,9 @@ InternalBeyond/  # 仓库根目录
 - 鉴权失败 close `4401`；Origin 非法（升级时校验）返回 HTTP 403；协议错误 close `1002`
 - CORS 白名单：`null`（file://）、localhost、127.0.0.1、::1；其余 Origin 一律不带 ACAO 头
 
-### WS 工具清单（21 个，暴露给 AI）
+### WS 工具清单（26 个，暴露给 AI）
 
-`echo`、`sticker_list`、`whispers_read/write/delete/update`、`health_read`、`geo_read`、`weather`、`music_search`、`music_url`、`webhook`、`bark_push`、`ntfy_push`、`tts_speak`、`push_send`、`letter_write/list`、`session_get/save`、`context_stats`
+`echo`、`sticker_list`、`whispers_read/write/delete/update`、`health_read`、`geo_read`、`weather`、`music_search`、`music_url`、`webhook`、`bark_push`、`ntfy_push`、`tts_speak`、`push_send`、`letter_write/list`、`session_get/save`、`context_stats`、`pay_register_checkout`、`submit_payment`、`pay_request_confirm`、`pay_get_config`、`pay_set_config`
 
 ### REST 接口（分组）
 
@@ -266,9 +266,9 @@ Moment 字段：`id/roleId/authorType('user'|'role')/authorId/content/images[]/v
 
 ## 10. 数据存储全景
 
-### IndexedDB（DB_VER 18）
+### IndexedDB（DB_VER 21）
 
-stores 包括：聊天消息（经 dbPut）、`apiConfigs`、`memories`、`blogAnnotations`、`active_message_plans`（v17 起）、`diary_entries`（v17 起）、`moments`（v18，keyPath `id`，索引 `byRole(roleId)`/`byCreated(createdAt)`）。导出/导入：`_ibBuildExportData` 含全部 store（moments 键 version:8）、`importAll` 按 keyPath 回灌天然去重。`openDB` 带 `onblocked` 监听（提示关闭旧标签页）。
+stores 包括：聊天消息（经 dbPut）、`apiConfigs`、`memories`、`blogAnnotations`、`active_message_plans`（v17 起）、`diary_entries`（v17 起）、`moments`（v18，keyPath `id`，索引 `byRole(roleId)`/`byCreated(createdAt)`）、`activities` / `favorites`（v21 起，见 §11.1）。导出/导入：`_ibBuildExportData` 含全部 store（顶层 version 9）、`importAll` 按 keyPath 回灌天然去重。`openDB` 带 `onblocked` 监听（提示关闭旧标签页）。
 
 ### localStorage 键（部分）
 
@@ -278,7 +278,65 @@ stores 包括：聊天消息（经 dbPut）、`apiConfigs`、`memories`、`blogA
 
 `%LOCALAPPDATA%\InternalBeyond\bridge\*`（§4 清单）、companion state 文件（`IB_ACTIVE_DATA_DIR` 可覆盖）、`%LOCALAPPDATA%\InternalBeyond\social-observe.json`。
 
-## 11. 测试架构
+## 11. 陪伴活动 / 应用商店 / 收藏夹（Companion World）
+
+> 本组目标是让 InternalBeyond 从「聊天 + 朋友圈 + 通话」进一步变成共享同一套角色/记忆/活动状态/持久化的 **AI Companion World**：Chat / Moments / Call / Coread / Cinema / Favorites / Apps 共用同一套角色、记忆与活动基础设施。全部为 UI 与数据层新增，**不改动** Harness 四文件、ModelPort 等既有边界。
+
+### 11.1 IndexedDB（DB_VER 21）
+
+在既有 28 个 store 之上**增量**新增两个 store（keyPath `id`）：
+
+- `activities` — 陪伴活动会话。字段：`id/type('coread'|'cinema')/roleId/resourceId/resourceKey/title/kind/threadId/progress{page,sec,pct,pageText,recap,subs...}/bookmarks[]/recap/config{}`/status('active'|'paused'|'finished')/createdAt/updatedAt/lastActiveAt`。索引 `byRole`/`byType`。
+- `favorites` — 跨模块统一收藏层。字段：`id/type('chat'|'blog'|'letter'|'moment'|'activity'|'cal')/roleId/sourceId/title/body/meta{}/createdAt/updatedAt`。引用式存储：**不复制二进制**（语音/图片在渲染时按 `sourceId` 回读原记录，原记录删除则降级为纯文本）。索引 `byRole`/`byType`。
+
+备份：`_ibBuildExportData` 已含 `activities`/`favorites`，顶层 `version` 升为 **9**；`importAll` 按字段存在性守卫回灌。`site-operations.js` reset 清单与 `local-vault.js` 标签已同步。**保持旧备份（version 8 及更早）可导入**——importAll 为 lenient 逐 store 回灌、按 keyPath id 去重。
+
+### 11.2 统一「Activity / Companion Session Runtime」（`assets/js/activity/activity-runtime.js` → `window.IB.activity`）
+
+Coread 与 Cinema 不各自为政，统一跑在这套运行时上，天然可扩展其它陪伴活动：
+
+- **会话生命周期**：`createActivity`（自动创建/复用一条 `chatThreads` 频道：`kind + resourceKey` 去重，`quiet:true, memory:true`）、`findActivity`、`listActivities`、`saveActivity`、`deleteActivity`、`setProgress`。
+- **上下文注入**：`getActivityContext(friendId,{threadId})` 由 `communication.js` 的 `_buildSingleChatContext` 注入（与 `getMomentsContext` 同款钩子）。只透露**到当前页/播放点为止**的内容 + 进度 + 梗概，并附反幻觉边界——即 Mobile 的 `tail()` + `bound()` 语义。`buildActivityContext` 为类型定制（coread=页文本、cinema=最近字幕+进度+帧）。
+- **Memory 回写**：`writeMemory` 走 `quickCreateMemory`（`rawSource=coread|cinema`、`domain='陪伴'`、`createdBy=roleId`），写进共享 `memories` 库，能被后续注入。
+- **Proactive 联动**：`nudge` 经 `_activeSaveAiPlan` 生成一条**活动感知的主动消息计划** `{source:'ai_planned', intent:'共读/观影…'}`，由既有主动计划机器在设定时刻投递。
+- **事件订阅**：`on/off/emit`，供 App 前端订阅 `activity/update`。
+- **收藏联动**：`fav` 经 `IB.favorites.add` 把活动收进收藏层。
+- 消息页锚：activity 的消息落进频道时带 `threadId`；频道 conversation 即「共读 · 书名」「观影室 · 片名」，与主对话隔离。
+
+### 11.3 Coread（共读间，builtin）
+
+- `assets/js/activity/coread.js` → `window.IB.coread` + `page-coread`。
+- 从 Blog（`posts` store）**现读**，不复制书。按段落边界分页（每个读者按 `_charsPerPage`），章节/页码/进度随 `setProgress` 即时写入 `activities.progress`，`getActivityContext` 据此只给 AI 当前页 + 前文梗概。
+- 选一位 AI（apiConfigs 非群聊成员），聊天落在 `共读 · 书名` 频道；书签（`bookmarks[]`）、「生成记忆」（writeMemory）、「提醒 TA」（nudge）、「在聊天里打开」（openChat → `page-chat` 选中该频道）。
+- 进入：Blog 侧「共读」入口、App Store（builtin）与导航「Apps」→ 打开。
+
+### 11.4 Cinema（观影室，manifest + loader 外部 APP）
+
+- `apps/catalog.json` + `apps/catalog.js`（file:// 退回壳）、`apps/ib-app-cinema.js`（独立 APP）、`assets/js/app-store.js`（loader）。
+- APP 经 `IBApps.register({id,version,sdk:2,icon,mount(body,ctx),back,unmount})` 注册，`open(id)` 调 `mount`；APP 只经 `ctx` 与主程序对话（`app/storage/blog/chat/ai/ui/sys/on/off`），**不触碰底层 db/发送函数**——隔离按接口收窄（同 Mobile 约定，非强制 iframe 沙箱）。
+- **Media Adapter v1**（`apps/ib-media-adapter.js` → `window.IBMedia`）：统一 `resolveMedia(url|{file}) → {type,provider,id,url,caps{canFrame,canSeek,remote}}` 与 `createAdapter(media,host) → {load,play,pause,seek,getCurrentTime,getDuration,on,destroy}`。支持 `NativeVideoAdapter`（本地/直链 .mp4/.webm/blob:）、`HLSAdapter`（.m3u8，优先浏览器原生 / `window.Hls`，否则 graceful fallback）、`YouTubeAdapter`（官方 iframe API）、`BilibiliAdapter`（官方 embed iframe）、`UnknownAdapter`（未知来源提示，不强行播放）。平台受限（地区/X-Frame-Options/登录/浏览器）只识别并 graceful fallback，**禁止** DRM 绕过 / 防盗链破解 / Cookie·Token 偷取 / 下载受保护视频 / 代理绕过。Cinema Runtime 只依赖统一接口做进度/字幕/弹幕/共看/Memory/Proactive，不复制 Chat/Memory/Activity Runtime。
+- 视频/字幕文件**不入库、不随备份**（`ctx.storage` 只存片名/秒数/梗概；播放点不续播）。会话/进度/Memory/Proactive 仍经 `IB.activity` 统一运行时。
+- 安装/卸载：enable 集合存 localStorage `ib_apps_on_v1`（app id→1）；builtin 不可卸载、「卸载但保留数据」。
+
+### 11.5 App Store（manifest + loader）
+
+- `assets/js/app-store.js` → `window.IB.apps`：`boot()`（fetch `apps/catalog.json` → script 壳回退）→ `register`/`install`/`uninstall`/`open`/`close`/`isInstalled`/`listEnabled`。
+- 外部 APP 按需注入 `<script src="apps/<file>">`（同源 `'self'`，本地离线运行）；`defer` + `data-ibapp`，失败标 `_missing`。
+- `page-apps` 渲染 `#appstore-grid`；builtin 项（coread）「打开」即 `navTo('coread')`，外部项（cinema）「打开」走 overlay shell。
+
+### 11.6 收藏夹（Favorites）
+
+- `assets/js/favorites.js` → `window.IB.favorites`：`add/remove/removeBySource/has/list/count`，`type` 为展示语义（text|voice|image|blog|letter|moment|activity|cal）。
+- `page-favorites` 收藏墙：按 `type` 分组、引用式解析（语音/图片按 `sourceId` 回读）、长文折叠、语音回放、图片缩略。
+- 统一入口 `IB.favorites.add` 供 Chat / Blog / Letters / Moments / 活动共用；`page-favorites` 只读墙，不孤立声明——所有模块经同一层读写。
+
+### 11.7 前端注册与顺序
+
+- 新脚本全部 **UTF-8 BOM**、IIFE `(function(NS){...})(window.IB||(window.IB={}))`、`window` + `IB` 双挂载；加载顺序：`favorites.js → activity/activity-runtime.js → activity/coread.js → app-store.js`（位于 `local-first.js` 之后，全部在 HTML <script> 末端，运行时调用，无加载期依赖）。
+- 新增 `assets/css/activity.css`（**外部样式数 19→20**，`test_frontend_structure.js` 已同步）；内联样式预算保持 200/460 不变（全部新样式走 CSS 类）。
+- `navTo` 新增 `page-apps`/`page-favorites`/`page-coread` 分派（`typeof xxx==='function'` 守卫）。
+
+## 12. 测试架构
 
 ### 统一入口 test-all.js（零依赖，跨平台）
 

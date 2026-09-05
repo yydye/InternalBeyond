@@ -1,4 +1,4 @@
-/* AI 朋友圈（Moments）样式 — 微信风格信息密度卡片，复用全局设计变量、主题切换
+﻿/* AI 朋友圈（Moments）样式 — 微信风格信息密度卡片，复用全局设计变量、主题切换
    与 active-* 公共开关/表单组件；本文件只保留朋友圈特有的卡片与 Feed 样式。 */
 
 #page-moments{max-width:720px;margin:0 auto;padding-bottom:max(48px,env(safe-area-inset-bottom))}

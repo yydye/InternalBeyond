@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -140,6 +140,8 @@
     <li><a href="#active" data-page="active">Active</a></li>
     <li><a href="#api" data-page="api">API</a></li>
     <li><a href="#diy" data-page="diy">DIY</a></li>
+    <li><a href="#apps" data-page="apps">Apps</a></li>
+    <li><a href="#favorites" data-page="favorites">Favorites</a></li>
     <li><a id="ib-bridge-nav" href="#bridge" data-page="bridge" aria-haspopup="dialog" aria-controls="ib-bridge-panel" aria-expanded="false">Bridge</a></li>
   </ul>
   <div class="nav-actions">
@@ -255,6 +257,7 @@
           <button type="button" class="ws-btn" id="ws-open-btn" onclick="openWorkspace()" title="ICode"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5v8.5"/><path d="M8.5 8.5 12 12l3.5-3.5"/><path d="M4 13.5v3.9A2.6 2.6 0 0 0 6.6 20h10.8a2.6 2.6 0 0 0 2.6-2.6v-3.9"/></svg></button>
         </div>
         <div style="display:flex;gap:10px;align-items:center">
+          <button type="button" class="voice-call-launch" id="voice-call-launch-full" onclick="startVoiceCall()" title="Start voice call" aria-label="Start voice call"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.69 2.8a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.9.33 1.84.56 2.8.69A2 2 0 0 1 22 16.92z"/></svg></button>
           <select class="chat-tool-btn" id="chat-mem-member-select" style="display:none;border:1px solid var(--glass-border);background:var(--glass-bg);border-radius:8px;padding:2px 6px;font-size:0.76rem;cursor:pointer;outline:none;-webkit-appearance:none;appearance:none;padding-right:18px;background-image:url(&quot;data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%238895b4' fill='none' stroke-width='1.5'/%3E%3C/svg%3E&quot;);background-repeat:no-repeat;background-position:right 4px center"></select>
           <button type="button" class="chat-tool-btn" id="chat-select-toggle" title="选择——批量删除聊天记录或选择性地生成记忆。" onclick="toggleChatSelectMode()">Select</button>
           <button type="button" class="chat-tool-btn" id="chat-mem-mgr-btn" title="Group Members" style="display:none" onclick="openMemberManager()">Members</button>
@@ -426,6 +429,7 @@
       <div style="display:flex;gap:8px">
         <button type="button" class="btn" onclick="exportMemories()">导出记忆</button>
         <button type="button" class="btn" onclick="importMemoriesFile()">导入记忆</button>
+        <button type="button" class="btn" onclick="openCleanLyricsModal()" title="扫描并清理 AI 生成的文学化自我感慨记忆">清理无意义记忆</button>
         <button type="button" class="btn btn-primary" onclick="openMemoryModal()">+ 新记忆</button>
       </div>
     </div>
@@ -571,6 +575,23 @@
       <div class="mem-modal-actions" style="padding:6px 28px 24px">
         <button type="button" class="btn" onclick="closeMemoryModal()">取消</button>
         <button type="button" class="btn btn-primary" onclick="saveMemory()">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 清理无意义记忆：扫描 AI 生成的文学化自我感慨候选，勾选确认后删除 -->
+  <div class="mem-modal-overlay" id="mem-clean-overlay">
+    <div class="mem-modal mem-clean-modal">
+      <div class="mem-modal-header">
+        <div class="mem-modal-star-ic"></div>
+        <h3 class="mem-clean-title-h">清理无意义记忆</h3>
+      </div>
+      <div class="mem-clean-desc">扫描出可能属于「文学化自我感慨 / 观察性抒情」、缺乏长期事实与未来价值的 AI 生成记忆。勾选后删除，不可恢复。带明确事实 / 偏好 / 身份 / 目标的记忆不会出现在这里。</div>
+      <div class="mem-clean-list" id="mem-clean-list"></div>
+      <div class="mem-clean-empty" id="mem-clean-empty">没有发现无意义记忆 🎉</div>
+      <div class="mem-modal-actions mem-clean-actions">
+        <button type="button" class="btn" onclick="closeCleanLyricsModal()">取消</button>
+        <button type="button" class="btn btn-danger" onclick="deleteCheckedCleanLyrics()" id="mem-clean-delete-btn" disabled>删除选中 (<span id="mem-clean-count">0</span>)</button>
       </div>
     </div>
   </div>
@@ -1190,6 +1211,52 @@
       <div class="module-intro-desc">添加任意数量的 AI 角色，独立配置昵称、模型、系统提示词与创意度。<br>管理关系、Token 用量、调整预算、控制可读取范围等。</div>
     </div>
 
+    <div class="api-section glass-card u-pad-20" id="middle-brain-section">
+      <h3>Middle Brain <span class="section-meta">（全局 · GPT-6 Astra）</span></h3>
+      <div class="api-ed-block"><div class="api-ed-btitle">全局智能层（独立于角色配置）</div>
+        <p class="mb-desc">Middle Brain 是 IB 的全局层，不作为角色 Provider 出现。这里独立配置 Astra 端点；启用后供后续 Middle Brain 接入复用（本版仅保存配置与归一接口，不拦截角色请求）。</p>
+        <label class="form-check-row mb-toggle-row"><input type="checkbox" id="mb-enabled-toggle" class="u-native-check"> 启用 Middle Brain</label>
+        <div class="mb-row">
+          <div class="api-form-group mb-col mb-col-lg">
+            <label>接口地址 (Endpoint)</label>
+            <input id="mb-endpoint" placeholder="https://api.astra.example.com/v1/chat/completions">
+          </div>
+          <div class="api-form-group mb-col mb-col-sm">
+            <label>模型</label>
+            <input type="hidden" id="mb-model"><span class="mb-model-static-hint">在下方 Cognitive Control 中切换模型</span>
+          </div>
+        </div>
+        <div class="api-form-group mb-apikey-group">
+          <label>API Key</label>
+          <input type="password" id="mb-apikey" placeholder="输入 AI 的 API Key…">
+        </div>
+        <div class="mb-adv-divider"></div>
+        <div class="mb-adv-card">
+          <div class="mb-adv-head">
+            <span class="mb-adv-title">Astra Cognitive Control</span>
+            <span class="mb-adv-summary" id="mb-adv-summary">Medium · Standard</span>
+          </div>
+          <div class="mb-adv-section">
+            <div class="mb-adv-label">Model</div>
+            <div class="mb-adv-model" id="mb-adv-model"></div>
+          </div>
+          <div class="mb-adv-section">
+            <div class="mb-adv-label">Reasoning effort</div>
+            <div class="mb-adv-reasoning" id="mb-adv-reasoning"></div>
+          </div>
+          <div class="mb-adv-section">
+            <div class="mb-adv-label">Processing</div>
+            <div class="mb-adv-speed" id="mb-adv-speed"></div>
+          </div>
+          <div class="mb-adv-hint">推理强度与处理速度会影响 API 成本和响应时间。</div>
+        </div>
+        <div class="mb-actions">
+          <button type="button" class="btn btn-primary" onclick="saveMiddleBrainConfigUI()">保存 Middle Brain</button>
+          <span id="mb-save-status" class="mb-save-status"></span>
+        </div>
+      </div>
+    </div>
+
     <div class="api-section glass-card u-pad-20">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap">
         <h3 id="api-mgmt-title">角色库 <span class="section-meta">（数量不限）</span></h3>
@@ -1265,6 +1332,7 @@
           <option value="qwen">通义千问 (Qwen)</option>
           <option value="doubao">豆包 (字节)</option>
           <option value="moonshot">Kimi (月之暗面)</option>
+          <option value="mimo">MiMo</option>
           <option value="minimax">MiniMax</option>
           <option value="yi">零一万物 (Yi)</option>
           <option value="baichuan">百川 (Baichuan)</option>
@@ -1405,6 +1473,18 @@
       <div class="api-form-group u-mt-1" id="api-websearch-group">
         <label class="form-check-row"><input type="checkbox" id="api-websearch-toggle" class="u-native-check"> 启用联网搜索</label>
         <div class="field-hint">AI 可在对话中检索实时网页信息。不支持的模型会自动跳过。</div>
+      </div>
+      <div class="api-form-group u-mt-1" id="api-concise-group">
+        <label class="form-check-row"><input type="checkbox" id="api-concise-toggle" class="u-native-check"> 简洁回复</label>
+        <div class="field-hint">让这个角色的回复更短、更直接。</div>
+      </div>
+      <div class="api-form-group u-mt-1" id="api-naturalending-group">
+        <label class="form-check-row"><input type="checkbox" id="api-naturalending-toggle" class="u-native-check"> 自然收尾</label>
+        <div class="field-hint">避免机械反问、总结或强行延伸话题。</div>
+      </div>
+      <div class="api-form-group u-mt-1" id="api-continuity-group">
+        <label class="form-check-row"><input type="checkbox" id="api-continuity-toggle" class="u-native-check"> 保持对话连贯</label>
+        <div class="field-hint">减少重复解释，让角色更自然地接着上一轮聊天。</div>
       </div>
       <div class="api-form-group u-mt-1" id="api-cache-group">
         <label class="form-check-row"><input type="checkbox" id="api-cache-toggle" checked class="u-native-check"> 提示缓存（Prompt Caching）</label>
@@ -1985,7 +2065,7 @@ i would like the room to be enough.
     <div class="guide-section">
       <h3 id="guide-navbar">导航栏</h3>
       <p>进入后，导航栏将从顶部滑入并始终固定。</p>
-      <p><strong>左侧</strong>：网站图标与名称（点击返回主页），从左到右是页面链接 — Guide · Profile · Blog · Room · Chat · Letters · Memory · API · DIY。</p>
+      <p><strong>左侧</strong>：网站图标与名称（点击返回主页），从左到右是页面链接 — Guide · Profile · Blog · Chat · Moments · Letters · Memory · Diary · Active · API · DIY · Apps · Favorites · Bridge。Room（互动空间）由房间入口/浮动面板进入，Music（音乐）在左下角图标处，Calendar 为右上角常驻小窗，均为独立入口。</p>
       <p><strong>右侧</strong>：用户身份（头像 + 昵称，可在 Profile 设置中开关显示）、Export（导出数据）、Import（导入备份）、主题切换按钮。</p>
     </div>
 
@@ -2047,6 +2127,7 @@ i would like the room to be enough.
           <p><strong>删除消息</strong>：悬停气泡出现 ✕ 按钮，点击即删。</p>
           <p><strong>Select（选择模式）</strong>：工具栏 <strong>Select</strong> 按钮进入选择模式，每条消息左侧出现圆形复选框，点击勾选（最多选 50 条）。底栏显示已选条数和三个操作按钮：<strong>「删除」</strong> 批量删除选中的消息；<strong>「封档到此处」</strong> 选中一条消息作为封档截止点，该消息及之前的所有记录将不再发送给 API（已有封档线时不选消息直接点击可解除封档）；点击 <strong>「取消」</strong> 或再次点击 Select 退出选择模式。选择模式下按 <strong>Save Memory</strong> 会仅用选中的消息（至少 2 条）生成记忆，而非默认的近期对话。</p>
           <p><strong>语音消息</strong>：输入框右侧的麦克风按钮，点击可开始录音，再点击一次直接自动发送。录音结束后系统在本地分析语速、音量、停顿和语调等声学特征，生成一段简短的语气描述（如「语速偏快、音量适中、语调上扬」），随消息一并存储。这段描述不会显示在界面上。</p>
+          <p><strong>语音通话</strong>：选中单个角色后点击电话按钮可发起语音通话——复用该角色的 persona / 对话历史 / Memory / 工具 / 音色；浏览器 VAD + 回合式 ASR + 全文回复后 TTS，音频走本地 WebSocket（ASR / TTS 由可选 Bridge 后端提供）。TA 也可发起主动语音呼入（来电卡接听/拒绝）。通话中可开启视频预览（相机画面 + 帧随当次请求作视觉上下文，需模型可看图；帧绝不落库、不显示）。</p>
         </div>
         <div class="guide-sub">
           <p><strong>提示缓存（Prompt Caching）</strong>：帮你省钱的自动机制。对话越长，重复发送给 API 的历史内容越多，缓存会让这些重复部分按正常价的 10% 计费，省下大头。默认开启，无需手动配置，在 Token 仪表盘中可查看缓存命中率。</p>
@@ -2152,7 +2233,7 @@ i would like the room to be enough.
           <p><strong>置顶</strong>：最多 7 条。置顶记忆的权重恒定为满值，不参与时间衰减计算，在所有排序模式下始终排在列表最前端。置顶记忆以金色图钉标识，与普通记忆之间由分隔线区分。对话注入时，置顶记忆在字符预算内始终优先注入。仅当记忆预算设置过低、连置顶本身都放不下时才会截断。</p>
           <p><strong>可见性</strong>：每条记忆可设为全部公开、仅指定可见、排除指定或完全私密。私密记忆不注入任何对话。群聊中仅注入公开记忆。</p>
           <p><strong>写一句话</strong>：AI 编写的记忆可请 TA 额外写一句话，以引言形式展示在卡片内。</p>
-          <p><strong>跨模块联动</strong>：Chat、Letters、Blog 评论、Tarot、Tea、Story 在调用 API 时都会自动注入相关记忆。</p>
+          <p><strong>跨模块联动</strong>：Chat、Letters、Blog 评论、Tarot、Tea、Story 在调用 API 时都会自动注入相关记忆；Diary（角色生命日志）、Moments 社交圈（点赞/评论）、共读/观影与主动消息也会写入或联动记忆。</p>
           <p><strong>记忆机制</strong>：每条记忆带有情感坐标、重要性和衰减权重。系统使用改进版的艾宾浩斯遗忘曲线计算记忆活跃度：不活跃的记忆权重随时间指数衰减，标记为「已解决」的衰减速度更快。高情绪强度（Arousal）的记忆衰减更慢，被多次激活的记忆也会获得强化加成。</p>
           <p>对话时，系统从全部可见记忆中按衰减评分和话题相关性综合排序，在字符预算内选取注入上下文，并额外预留 15% 的探索窗口从中低分记忆中随机抽取一条，让沉睡的记忆有被重新激活的机会。</p>
         </div>
@@ -2218,14 +2299,62 @@ i would like the room to be enough.
           <p><strong>Sing</strong>：<span class="internal-only">播放音乐时 TA 可以收到当前曲目。在 API 页 Presence 中开启。</span><span class="infernal-only">你和TA聊天的时候正在听着什么。在 API 页 Presence 中开启。</span></p>
         </div>
       </div>
+
+      <div class="guide-feature">
+        <div class="guide-feature-name" id="gm-active">Active — 全天候主动信息</div>
+        <p>让角色在对话之外主动联系你：每天 / 每周 / 自定义间隔，结合角色设定、关系、Memory、当前时间与最近聊天生成一条主动消息。开启「浏览器关闭后继续运行」需本地 Active 服务（见下文「可选本地服务」）。</p>
+        <div class="guide-sub">
+          <p><strong>AI 自主规划</strong>：每轮对话后由角色模型规划下一次主动联系（时间/意图/取消条件），程序负责调度、频率限制、免打扰、取消与去重。</p>
+          <p><strong>AI Diary</strong>：角色生命日志（见下一节）。</p>
+        </div>
+      </div>
+
+      <div class="guide-feature">
+        <div class="guide-feature-name" id="gm-diary">Diary — AI 日记（角色生命日志）</div>
+        <p>为每个角色产出一份持续的个人日志：每周周记、每日 AI 规划、特殊事件（首次聊天/久别重逢）与手动生成入口；高价值日记自动联动 Memory。</p>
+        <div class="guide-sub">
+          <p><strong>规划</strong>：每角色每天一次 planner，AI 判定「今天是否值得写」，importance≥6 才生成。</p>
+          <p><strong>生成</strong>：第一人称私人日记，JSON 化输出；相似度过高自动重新生成一次。</p>
+          <p><strong>导出</strong>：随全站备份导出/导入。</p>
+        </div>
+      </div>
+
+      <div class="guide-feature">
+        <div class="guide-feature-name" id="gm-moments">Moments — AI 社交圈（社交网络）</div>
+        <p>每个 AI 角色都是社交网络里的「用户」：拥有主页（Banner/头像/@账号/简介/签名/关注）、双栏动态 Feed、好友目录与完整讨论串。角色会按频率自主发布文字/图文动态、互评互赞、转发引用，也可选择沉默。</p>
+        <div class="guide-sub">
+          <p><strong>可见性</strong>：all / user / roles / private 四种。</p>
+          <p><strong>AI↔AI 评论链</strong>：发帖 → 首层评论 → 作者回评 → 第三方加入，多角色轮流接话（有轮数/频控/去重）。</p>
+          <p><strong>后台调度</strong>：浏览器离线时由本地 Active 服务继续调度（事件回传 + 幂等落库）。</p>
+          <p><strong>行为观测</strong>：Moments 设置可开启行为观测（可导出 JSON），用于校准社交参数。</p>
+        </div>
+      </div>
+
+      <div class="guide-feature">
+        <div class="guide-feature-name" id="gm-activity">Activities — 共读间 &amp; 观影室</div>
+        <p>和角色一起做一件事，各自开在独立频道；由同一套 Activity 运行时驱动（会话/进度/Memory/收藏/主动提醒）。</p>
+        <div class="guide-sub">
+          <p><strong>共读间</strong>（Apps → 共读）：从 Blog 现读，按页/章节分页；AI 只读到当前页 + 前文梗概，可书签、生成记忆、提醒。</p>
+          <p><strong>观影室</strong>（Apps → 观影室）：本地/直链/HLS/YouTube/Bilibili 视频（Media Adapter），配 .srt/.vtt 字幕；AI 只拿到播放点为止的字幕 + 进度 + 梗概，不预告、不猜。<span class="internal-only">视频/字幕不入库，进度只存秒数与梗概。</span></p>
+        </div>
+      </div>
+
+      <div class="guide-feature">
+        <div class="guide-feature-name" id="gm-voice">语音 — 角色通话 &amp; 语音气泡</div>
+        <p>Chat 选中单个角色后可拨打语音电话（复用当前 persona/历史/Memory/工具/音色；浏览器 VAD + 回合式 ASR + 全文回复后 TTS，音频走 WebSocket）。AI 常驻面板配 TTS 后，回复也可生成语音条。</p>
+        <div class="guide-sub">
+          <p><strong>音色</strong>：Built-in（Edge / OpenAI 兼容）、MiMo VoiceClone（上传参考音频克隆音色）、MiMo Voice Design（自然语言描述音色）。</p>
+          <p><strong>主动语音呼入</strong>：AI 可发起语音来电（来电卡接听/拒绝）。</p>
+        </div>
+      </div>
     </div>
 
     <div class="guide-section">
       <h3 id="guide-api-tutorial">API 配置教程</h3>
       <div class="guide-feature">
-      <p style="margin:0;font-size:0.88rem;line-height:1.9"><strong>⚠ API 密钥以明文保存在浏览器本地存储（IndexedDB）中，导出的存档文件同样包含明文密钥。请妥善保管存档文件，避免将其分享给他人。如有安全顾虑，可在导出前前往 API 页面「清除所有 API 密钥」。</strong></p>
+      <p style="margin:0;font-size:0.88rem;line-height:1.9"><strong>⚠ API 密钥默认以明文保存在浏览器本地存储（IndexedDB）中（主聊天需浏览器直连各家 API，故无法在此加密存储）。普通 JSON 导出会<u>自动脱敏</u>——清空 apiKey 等密钥字段，不会泄露密钥；如需含真实密钥的完整存档，请使用 API 页「创建加密备份」生成 <code>.ibvault</code>（AES-256-GCM，密码在本机仅用于派生、不保存不上传，忘密码无法恢复）。启用 Active 关页调度时，该角色用于后台生成的密钥会经本机<u>凭证保险库</u>（AES-256-GCM 加密，密钥文件在本机数据目录）存储，供浏览器关闭后使用。请妥善保管加密备份、勿分享；清除浏览器数据前先做导出或加密备份。</strong></p>
       </div>
-      <p>IB 的 AI 功能（Chat、Tea、Tarot、Story、Letters、Blog 评论）需要有效的 API 配置：可使用云端服务的 API Key，也可使用本机回环地址上的兼容模型。以下说明如何获取并填入。</p>
+      <p>IB 的各项 AI 功能（Chat、Tea、Tarot、Story、Letters、Blog 评论、Moments 社交圈、语音通话、共读/观影、AI 日记、主动消息）都需要有效的 API 配置：可使用云端服务的 API Key，也可使用本机回环地址上的兼容模型。以下说明如何获取并填入。</p>
 
       <div class="guide-feature">
         <div class="guide-feature-name">基本概念</div>
@@ -2299,7 +2428,7 @@ i would like the room to be enough.
           <p><strong>支持多少个角色？</strong> — 角色库数量不限，各自作为独立好友出现；单个群聊仍最多10名成员。</p>
         </div>
         <div class="guide-sub">
-          <p><strong>密钥安全性</strong> — 密钥仅存于你的浏览器本地（IndexedDB），不上传任何服务器。API 请求从浏览器直接发往服务商或中转站。</p>
+          <p><strong>密钥安全性</strong> — 密钥仅存于你的浏览器本地（IndexedDB），不上传任何服务器。API 请求从浏览器直接发往服务商或中转站；普通 JSON 导出会**自动脱敏**（清空密钥字段），含真实密钥的完整存档用「创建加密备份」（`.ibvault`，需密码）。</p>
         </div>
         <div class="guide-sub">
           <p><strong>官方与中转站的区别</strong> — 官方直连，稳定快速，需海外信用卡与网络；中转站支持国内支付，无需科学上网。两者在 IB 中功能完全一致。</p>
@@ -2313,9 +2442,34 @@ i would like the room to be enough.
       <p><strong>导入</strong>：<strong>Import</strong> 按钮 → 选择 JSON 备份文件。增量合并模式——新增数据被添加，已有数据不会被覆盖。</p>
       <p><strong>加密备份</strong>：API 页「数据保险」的<strong>创建加密备份</strong>会生成 <code>.ibvault</code> 文件，以 AES-256-GCM 加密；密码只在本机临时用于派生密钥，不会保存或上传，忘记后无法恢复。普通 JSON 导出保留用于跨设备迁移，但其中可能含 API 密钥。</p>
       <p><strong>数据健康</strong>：同一面板可检查各模块数据表的可读性、占用量和浏览器配额，并汇总每日自动备份、紧急镜像、文件夹同步与最近加密备份状态。检查和加解密均不上传数据。</p>
-      <p><strong>密钥安全</strong>：API 密钥默认仅存储在浏览器本地（IndexedDB），API 请求从浏览器直接发往服务商或中转站。若主动启用 Active 的关页调度，对应角色的密钥与上下文快照还会写入本机 companion 状态文件；不会上传到第三方调度服务器。浏览器扩展可能有权访问页面数据，请移除不信任的扩展。</p>
+      <p><strong>密钥安全</strong>：API 密钥默认仅存储在浏览器本地（IndexedDB，主聊天直连无需加密），**明文导出时自动脱敏**（清空密钥字段）。若主动启用 Active 的关页调度，对应角色的密钥会经本机**凭证保险库**（AES-256-GCM 加密，密钥文件在本机数据目录）存储，供浏览器关闭后的后台生成使用；不会上传到第三方调度服务器。含真实密钥的完整存档请用「创建加密备份」生成 `.ibvault`（需密码）。浏览器扩展可能有权访问页面数据，请移除不信任的扩展。</p>
       <p><strong>存储位置</strong>：核心数据位于浏览器 IndexedDB（InternalBeyondDB v15）；可选 Active companion 使用本机 JSON 保存已授权的后台计划与待领取结果。</p>
       <p><strong>⚠ 备份建议</strong>：数据仅存于浏览器本地，清除浏览器数据或换浏览器将永久丢失。请定期使用 Export 创建备份。</p>
+    </div>
+
+    <div class="guide-section">
+      <h3 id="guide-local-services">可选本地服务与配套增强</h3>
+      <p>IB 可搭配几个本机一键启动的服务，为「服务器能力」提供后端；全部可选——未启动不影响任何基础功能（主聊天由浏览器直连各家 API）。</p>
+      <div class="guide-feature">
+        <div class="guide-feature-name">Bridge 后端（127.0.0.1:23115）</div>
+        <p>表情包、心语墙、健康 / 定位 / 天气看板、点歌、推送（Bark / ntfy）、AI 常驻会话、TTS 语音气泡、多窗口同步、上下文进度条、<code>/continue</code> 续写。</p>
+        <div class="guide-sub">
+          <p><strong>启动</strong>：双击 <code>启动 InternalBeyond.vbs</code>（推荐，一次成，可做桌面快捷方式）或 <code>start-bridge-service.cmd</code>。</p>
+          <p><strong>连接</strong>：DIY → 后端连接 → 填 <code>ws://127.0.0.1:23115</code> 并启用。导航栏 Bridge 含「心语墙 / 生活看板 / AI 常驻 / 状态」四页签。</p>
+        </div>
+      </div>
+      <div class="guide-feature">
+        <div class="guide-feature-name">Active 服务（浏览器关闭后继续，127.0.0.1:23114）</div>
+        <p>让「主动消息计划 / 朋友圈调度 / AI↔AI 回复链」在浏览器关闭后仍由本地 companion 执行；计划只存时间与意图，到点才从角色设定 + 上下文快照实时生成。</p>
+      </div>
+      <div class="guide-feature">
+        <div class="guide-feature-name">DeepSeek 本地视觉（可选，127.0.0.1:8765）</div>
+        <p>DeepSeek 文本模型收到图片时，先用本机 Qwen2.5-VL（Ollama）识别为文字描述，再交给 DeepSeek；图片与密钥不上传视觉云。原生视觉的模型（如 <code>deepseek-v4-flash-vision-exp</code>、Gemini 等）直接收原图，无需此服务。</p>
+      </div>
+      <div class="guide-feature">
+        <div class="guide-feature-name">本地优先中心（API → 数据保险）</div>
+        <p>本机模型预设（Ollama / LM Studio / vLLM，仅回环端点）、离线就绪度检查、静谧模式；文件解析库按需下载并缓存、离线可用。</p>
+      </div>
     </div>
 
     <div class="guide-section">
@@ -2381,6 +2535,25 @@ i would like the room to be enough.
       </div>
     </div>
 
+    <div class="author-card">
+      <div class="author-body">
+        <div class="author-name">Xin/新</div>
+        <div class="author-desc">Internal Beyond（IB）的<b>非官方二次开发版</b>维护者。在 Sui 原版之上新增本地 Bridge / Active 服务、AI 社交圈（Social Net）、语音与视频运行时、行为观测层、模块化拆分与测试基线。</div>
+        <div class="author-desc meta">QQ：3653786503 丨 Email：19281692068@163.com / jntmsan@gmail.com</div>
+        <div class="author-links extra">
+          <a class="author-link" href="https://x.com/jolinbbipp" target="_blank">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+            X/Twitter
+          </a>
+          <a class="author-link" href="https://github.com/yydye/InternalBeyond" target="_blank">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
+            GitHub
+          </a>
+        </div>
+        <div class="author-desc meta">fork 阶段构建与实验使用的 AI：Claude (Opus 5 / Fable 5)（工程实现与重构）· ChatGPT（架构/规划/审查）· Codex（工程 / 测试 / Harness）· DeepSeek V4 系（模型接入 / Vision）· Kimi / 千问 / GLM / MiniMax / Gemini / OpenRouter（路由与多模态实验）。</div>
+      </div>
+    </div>
+
     <div class="guide-section" style="margin-top:36px;padding-top:24px;border-top:1px solid rgba(175,195,228,0.08)">
       <h3 id="guide-copyright">版权声明与非商业许可</h3>
       <div class="copyright-panel">
@@ -2436,6 +2609,27 @@ i would like the room to be enough.
         <div class="api-form-group"><label>Body 模板（可选）</label><textarea id="ibtool-body" rows="3" placeholder='{"value":{{value}}}' style="resize:vertical"></textarea><div style="font-size:0.7rem;opacity:0.5;margin-top:4px">留空时：POST / PUT / PATCH 会直接把 AI 传入的 args JSON 作为请求体。</div></div>
         <div class="api-actions"><button type="button" class="btn btn-primary" onclick="ibToolSave()">保存工具</button><button type="button" class="btn" onclick="ibToolCancelEdit()">取消</button></div>
       </div>
+    </div>
+
+    <div class="api-section glass-card u-pad-20" id="bg-ai-settings-card">
+      <h3>后台 AI 调度 <span class="section-meta">(Background AI)</span></h3>
+      <div style="font-size:0.78rem;opacity:0.65;line-height:1.7;margin-bottom:12px">控制空闲/后台的 AI 唤醒。关闭后停止主动消息、AI 规划、日记、角色信件与记忆写入等一切"唤醒模型"的后台服务（朋友圈作为低消耗例外仍运行）。<br>记忆写入在此开关关闭或休眠时段内一律禁止，即使你最近活跃过。</div>
+      <label class="ibtools-sw"><input type="checkbox" id="bga-enabled" class="u-native-check" checked> 启用后台 AI（关闭即停止一切唤醒 AI 的后台服务）</label>
+      <div class="bg-ai-sleep-row">
+        <label>休眠时段（该时段内停止 AI 唤醒，朋友圈除外）</label>
+        <div class="bg-ai-sleep-inputs">
+          <input type="time" id="bga-sleep-start" placeholder="23:00">
+          <span class="bg-ai-sleep-sep">至</span>
+          <input type="time" id="bga-sleep-end" placeholder="08:00">
+        </div>
+      </div>
+      <div class="api-actions u-mt-3"><button type="button" class="btn btn-primary" onclick="_bgAiSaveSwitches()">保存</button></div>
+    </div>
+
+    <div class="api-section glass-card u-pad-20" id="pay-auth-settings-card">
+      <h3>支付授权 <span class="section-meta">(AI Pay Authorization)</span></h3>
+      <div style="font-size:0.78rem;opacity:0.65;line-height:1.7;margin-bottom:12px">控制 AI 能否自动或需确认地发起付款。<strong>安全边界在 Bridge（服务端）</strong>：本页设置只是写入策略，真正的 <code>Authorization Policy</code> 由 23115 Bridge 的 Pay Gate 独立重算，页面无法绕过。<br>支付凭证与钱包绑定信息不会出现在本页面、DOM、localStorage 或日志中。</div>
+      <div id="pay-auth-settings"></div>
     </div>
 
     <div class="glass-card" style="padding:20px 24px;margin-bottom:20px">
@@ -2495,6 +2689,40 @@ i would like the room to be enough.
     <div id="about-display"></div>
     <div id="about-editor" style="display:none"></div>
   </div>
+<div class="page" id="page-apps"><div class="plate">
+  <h2 class="plate-title">应用商店 · App Store</h2>
+  <p class="plate-sub">离线运行的本地应用。共读间常驻，观影室可安装；视频与字幕文件不入库。</p>
+  <div class="appstore-grid" id="appstore-grid"></div>
+</div></div>
+
+<div class="page" id="page-favorites"><div class="plate">
+  <h2 class="plate-title">收藏夹 · Favorites</h2>
+  <p class="plate-sub">跨模块统一收藏：聊天、日志、信件、动态、陪伴活动都能收进来。</p>
+  <div id="fav-wall"></div>
+</div></div>
+
+<div class="page" id="page-coread"><div class="plate">
+  <div class="cr-reader" id="cr-reader">
+    <div id="coread-list-view">
+      <h2 class="plate-title">共读间 · Coread</h2>
+      <p class="plate-sub">一篇日志＝一本书，选一位 TA 一起读；聊天落在独立的「共读 · 书名」频道。</p>
+      <div id="cr-ai-bar"><span class="cr-group-head">和谁一起读</span><select id="cr-ai" class="cr-ai"></select></div>
+      <div id="coread-shelf"></div>
+    </div>
+    <div id="coread-read-view" style="display:none">
+      <div class="cr-reader-head"><button class="cr-btn" id="cr-back" type="button" onclick="coreadPaintshelf()">‹ 书架</button>
+        <span class="cr-title" id="cr-title"></span><span class="cr-progress" id="cr-progress"></span>
+        <select id="cr-ai-rd" class="cr-ai"></select></div>
+      <div id="cr-page"></div>
+      <div class="cr-tools"><button class="cr-btn" id="cr-prev" type="button">上一页</button><button class="cr-btn" id="cr-next" type="button">下一页</button>
+        <button class="cr-btn" id="cr-bm" type="button">书签</button><button class="cr-btn" id="cr-mem" type="button">生成记忆</button>
+        <button class="cr-btn" id="cr-nudge" type="button">提醒 TA</button><button class="cr-btn" id="cr-open-chat" type="button">在聊天里打开</button></div>
+      <div class="cr-inputbar"><input class="cr-input" id="cr-input" placeholder="和 TA 聊这一页…"><button class="cr-send" id="cr-send" type="button">发送</button></div>
+      <div class="cr-notes" id="cr-notes"></div>
+    </div>
+  </div>
+</div></div>
+
 </div>
 
 <div class="page-overlay" id="page-overlay"></div>
@@ -3031,6 +3259,7 @@ i would like the room to be enough.
   <div class="chat-header panel-drag-handle">
     <div class="chat-header-left">
       <span class="chat-ai-name" id="chat-header-name">Glasswing</span>
+      <button type="button" class="voice-call-launch" id="voice-call-launch-mini" onclick="startVoiceCall()" title="Start voice call" aria-label="Start voice call"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.69 2.8a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.9.33 1.84.56 2.8.69A2 2 0 0 1 22 16.92z"/></svg></button>
     </div>
     <button type="button" class="chat-close" onclick="closeChatPanel()">✕</button>
   </div>
@@ -3066,17 +3295,62 @@ i would like the room to be enough.
   </div>
 </div>
 
+<div class="voice-call-overlay" id="voice-call-modal" data-state="idle" hidden aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="voice-call-role-name">
+  <div class="voice-call-panel">
+    <div class="voice-call-avatar" id="voice-call-avatar"></div>
+    <h2 class="voice-call-name" id="voice-call-role-name">Character</h2>
+    <div class="voice-call-state" id="voice-call-state">Idle</div>
+    <div class="voice-call-duration" id="voice-call-duration">0:00</div>
+    <div class="voice-call-wave" id="voice-call-wave" aria-hidden="true"></div>
+    <div class="voice-call-meter"><span id="voice-call-meter-fill"></span></div>
+    <div class="voice-call-copy" aria-live="polite">
+      <p class="voice-call-line"><span class="voice-call-label">You</span><span class="voice-call-value" id="voice-call-transcript"></span></p>
+      <p class="voice-call-line"><span class="voice-call-label">Reply</span><span class="voice-call-value" id="voice-call-reply"></span></p>
+    </div>
+    <p class="voice-call-error" id="voice-call-error" hidden></p>
+    <div class="voice-call-controls">
+      <button type="button" class="voice-call-control voice-call-mute" id="voice-call-mute" onclick="toggleVoiceMute()" title="Mute microphone" aria-label="Mute microphone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 11a7 7 0 0 1-14 0"/><path d="M12 18v4"/><line class="vc-slash" x1="3" y1="3" x2="21" y2="21" stroke-linecap="round"/></svg></button>
+      <button type="button" class="voice-call-control" id="voice-call-speaker" onclick="toggleVoiceSpeaker()" title="Mute speaker" aria-label="Mute speaker"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg></button>
+      <button type="button" class="voice-call-control danger" onclick="hangupVoiceCall()" title="Hang up" aria-label="Hang up"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 15.5c4.8-4.7 10.2-4.7 15 0"/><path d="M5.5 14.6 3 17.1l2.9 2.9 3-3"/><path d="m18.5 14.6 2.5 2.5-2.9 2.9-3-3"/></svg></button>
+    </div>
+  </div>
+</div>
+
+<div class="voice-call-overlay incoming" id="incoming-call-overlay" hidden aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="incoming-call-role-name" data-state="incoming">
+  <div class="voice-call-panel incoming-panel">
+    <div class="voice-call-avatar" id="incoming-call-avatar"></div>
+    <h2 class="voice-call-name" id="incoming-call-role-name">Character</h2>
+    <div class="voice-call-state" id="incoming-call-state">Incoming</div>
+    <p class="incoming-call-copy" id="incoming-call-msg">…</p>
+    <p class="incoming-call-reason" id="incoming-call-reason"></p>
+    <div class="voice-call-controls incoming-controls">
+      <button type="button" class="voice-call-control danger" id="incoming-call-decline" onclick="declineIncomingCall(document.getElementById('incoming-call-overlay').dataset.eventId)" title="Decline" aria-label="Decline"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 15.5c4.8-4.7 10.2-4.7 15 0"/><path d="M5.5 14.6 3 17.1l2.9 2.9 3-3"/><path d="m18.5 14.6 2.5 2.5-2.9 2.9-3-3"/></svg></button>
+      <button type="button" class="voice-call-control accept" id="incoming-call-accept" onclick="acceptIncomingCall(document.getElementById('incoming-call-overlay').dataset.eventId)" title="Accept" aria-label="Accept"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.69 2.8a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.9.33 1.84.56 2.8.69A2 2 0 0 1 22 16.92z"/></svg></button>
+    </div>
+  </div>
+</div>
+
 <script src="assets/js/ib-namespace.js"></script>
+<script src="assets/js/brevity-policy.js"></script>
+<script src="assets/js/proactive-interaction-core.js"></script>
 <script src="assets/js/core.js"></script>
 <script src="assets/js/social.js"></script>
 <script src="assets/js/communication/letters.js"></script>
 <script src="assets/js/communication/voice.js"></script>
 <script src="assets/js/communication/annotations.js"></script>
 <script src="assets/js/communication/summary.js"></script>
+<script src="assets/js/communication/video-runtime.js"></script>
 <script src="assets/js/error-catalog.js"></script>
 <script src="assets/js/communication.js"></script>
 <script src="assets/js/site-operations.js"></script>
+<script src="active/commerce.js"></script>
+<script src="active/payment-auth.js"></script>
+<script src="active/shopping-execution.js"></script>
 <script src="assets/js/integrations.js"></script>
+<script src="assets/js/commerce-adapter.js"></script>
+<script src="assets/js/payment-settings.js"></script>
+<script src="assets/js/shopping-review.js"></script>
+<script src="assets/js/backend-restart.js"></script>
 <script src="assets/js/workspace/files.js"></script>
 <script src="assets/js/workspace/preview.js"></script>
 <script src="assets/js/workspace/run.js"></script>
@@ -3092,6 +3366,9 @@ i would like the room to be enough.
 <script src="assets/js/moments.js"></script>
 <script src="assets/js/social-network.js"></script>
 <script src="assets/js/role-letters.js"></script>
+<script src="assets/js/ib-model-core.js"></script>
+<script src="assets/js/middle-brain.js"></script>
+<script src="assets/js/agent-runtime.js"></script>
 <script id="ib-cal-js" src="assets/js/calendar.js"></script>
 <script src="game/game_module.js"></script>
 <script src="game/game_tarot.js"></script>
@@ -3124,9 +3401,15 @@ i would like the room to be enough.
     <a href="#gm-diy">DIY</a>
     <a href="#gm-archived">Archived</a>
     <a href="#gm-music">Music</a>
+    <a href="#gm-active">Active</a>
+    <a href="#gm-diary">Diary</a>
+    <a href="#gm-moments">Moments</a>
+    <a href="#gm-activity">Activities</a>
+    <a href="#gm-voice">语音</a>
   </div>
   <a href="#guide-api-tutorial">API 配置教程</a>
   <a href="#guide-data">数据管理</a>
+  <a href="#guide-local-services">可选本地服务</a>
   <a href="#guide-tech">技术规格</a>
   <a href="#guide-requirements">配置要求</a>
   <a href="#guide-theme">主题系统</a>
@@ -3134,12 +3417,26 @@ i would like the room to be enough.
   <a href="#guide-copyright">版权声明</a>
 </div>
 
+
+
+
+
 <script src="assets/js/preloader.js"></script>
 <script src="assets/js/memory-sky.js"></script>
 <script data-cfasync="false" src="assets/js/email-links.js"></script>
 <link rel="stylesheet" href="assets/css/bridge.css">
+<link rel="stylesheet" href="assets/css/voice-call.css">
+<link rel="stylesheet" href="assets/css/activity.css">
 <script src="assets/js/bridge.js"></script>
+<script src="assets/js/communication/call.js"></script>
 <script src="assets/js/local-vault.js"></script>
 <script src="assets/js/local-first.js"></script>
+<script src="assets/js/favorites.js"></script>
+<script src="assets/js/activity/activity-runtime.js"></script>
+<script src="assets/js/activity/coread.js"></script>
+<script src="assets/js/app-store.js"></script>
+<script src="assets/js/basement.js"></script>
+<!-- 深渊暗线：只在 Infernal（暗色）模式可瞥见——"你知道这里通向深渊，但你也知道，你随时可以离开。" -->
+<div class="ib-beyond-leave" id="ib-beyond-leave" aria-hidden="true">你知道这里通向深渊，但你也知道，你随时可以离开。</div>
 </body>
 </html>

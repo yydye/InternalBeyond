@@ -1,4 +1,4 @@
-/* AI 朋友圈 · 角色互相写信（AI↔AI 私信）域 — 独立 IIFE + window/IB 双挂载。
+﻿/* AI 朋友圈 · 角色互相写信（AI↔AI 私信）域 — 独立 IIFE + window/IB 双挂载。
    设计（复用，不新造重复架构）：
    · 调度：并入 _activeTick 30s 心跳（与 _momentsTick 同挂点，见 active-diary.js 的
      _roleLettersTick 调用）；

@@ -1,4 +1,4 @@
-﻿/* IB Bridge · AI Voice（TTS）：Edge 免费 / OpenAI 兼容 / MiMo 三 provider。
+/* IB Bridge · AI Voice（TTS）：Edge 免费 / OpenAI 兼容 / MiMo 三 provider。
    从 ib-bridge-service.js 提取为工厂：config / uid / ttsDir（mp3 输出目录）经依赖注入。
    Voice Profile 基础架构（第二阶段）：Provider Registry + normalizeVoiceProfile +
    ttsSynthesize 统一入口；ttsGenerate 降级为兼容包装（旧位置参数 → 统一管线）。
@@ -156,9 +156,127 @@ function createTts(deps) {
     });
   }
 
+  /* ── Edge 流式合成：真音频帧流（每帧一个 MP3 chunk）──
+     edgeTtsGen 已经按 WS 二进制帧逐帧累积；这里复用同一握手/帧解析，
+     改为每收到一帧就经 handlers.onChunk 前送，达到 true audio streaming。
+     与 edgeTtsGen 行为一致（含握手/帧长双分支/Path:turn.end 收尾）。 */
+  function edgeTtsStream(text, voiceId, rate, pitch, handlers) {
+    const input = String(text || '').trim().slice(0, 2000);
+    const onChunk = (handlers && handlers.onChunk) || function () {};
+    const onDone = (handlers && handlers.onDone) || function () {};
+    const onError = (handlers && handlers.onError) || function () {};
+    if (!input) { Promise.resolve().then(() => onError('text required')); return Promise.resolve(); }
+    const voice = String(voiceId || EDGE_DEFAULT_VOICE);
+    const r = String(rate || '1.0').replace('%', '');
+    const p = String(pitch || '+0Hz');
+    const ssml = 'X-RequestId:' + uid('r') + '\r\n' +
+      'Content-Type:application/ssml+xml\r\n' +
+      'Path:ssml\r\n\r\n' +
+      '<speak xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="http://www.w3.org/2001/mstts" xmlns:emo="http://www.w3.org/2009/10/emotionml" version="1.0" xml:lang="' + EDGE_DEFAULT_LANGUAGE + '">' +
+      '<voice name="' + voice + '"><prosody rate="' + r + '" pitch="' + p + '">' + input.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</prosody></voice></speak>';
+
+    function wsFrame(opcode, payload) {
+      const maskKey = crypto.randomBytes(4);
+      const masked = Buffer.allocUnsafe(payload.length);
+      for (let i = 0; i < payload.length; i++) masked[i] = payload[i] ^ maskKey[i & 3];
+      let header;
+      if (payload.length < 126) {
+        header = Buffer.alloc(6);
+        header[1] = 0x80 | payload.length;
+        maskKey.copy(header, 2);
+      } else if (payload.length < 65536) {
+        header = Buffer.alloc(8);
+        header[1] = 0x80 | 126;
+        header.writeUInt16BE(payload.length, 2);
+        maskKey.copy(header, 4);
+      } else {
+        header = Buffer.alloc(14);
+        header[1] = 0x80 | 127;
+        header.writeUInt32BE(0, 2);
+        header.writeUInt32BE(payload.length, 6);
+        maskKey.copy(header, 10);
+      }
+      header[0] = 0x80 | (opcode & 0x0f);
+      return Buffer.concat([header, masked]);
+    }
+
+    return new Promise((resolve) => {
+      let finished = false;
+      function finish(mode) {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        if (mode === 'done') onDone();
+        resolve();
+      }
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => { ctrl.abort(); onError('Edge TTS timeout'); resolve(); }, 30000);
+      const s = tls.connect({ host: 'speech.platform.bing.com', port: 443, servername: 'speech.platform.bing.com', rejectUnauthorized: true }, () => {
+        const key = crypto.randomBytes(16).toString('base64');
+        s.write('GET /consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=6A5AA1D4EAFF4E9FB37E23D68491D6F4&ConnectionId=' +
+          crypto.randomBytes(8).toString('hex') + ' HTTP/1.1\r\n' +
+          'Host: speech.platform.bing.com\r\n' +
+          'Upgrade: websocket\r\n' +
+          'Connection: Upgrade\r\n' +
+          'Sec-WebSocket-Key: ' + key + '\r\n' +
+          'Sec-WebSocket-Version: 13\r\n' +
+          'User-Agent: okhttp/4.5.0\r\n\r\n');
+      });
+      let buf = Buffer.alloc(0), handshakeDone = false;
+      s.on('data', (data) => {
+        buf = Buffer.concat([buf, data]);
+        if (!handshakeDone) {
+          const idx = buf.indexOf('\r\n\r\n');
+          if (idx < 0) return;
+          if (!buf.toString().includes('101')) { clearTimeout(timer); try { s.destroy(); } catch (e) { /* 忽略 */ } onError('Edge TTS handshake failed'); resolve(); return; }
+          handshakeDone = true;
+          buf = buf.slice(idx + 4);
+          s.write(wsFrame(0x1, Buffer.from(ssml, 'utf8')));
+        }
+        for (;;) {
+          if (buf.length < 2) break;
+          const b0 = buf[0], b1 = buf[1];
+          const opcode = b0 & 0x0f;
+          const masked = (b1 & 0x80) !== 0;
+          let len = b1 & 0x7f, off = 2;
+          if (len === 126) { if (buf.length < off + 2) break; len = buf.readUInt16BE(off); off += 2; }
+          else if (len === 127) { if (buf.length < off + 8) break; len = Number(buf.readBigUInt64BE(off)); off += 8; }
+          let maskKey = null;
+          if (masked) { if (buf.length < off + 4) break; maskKey = buf.slice(off, off + 4); off += 4; }
+          if (buf.length < off + len) break;
+          let payload = buf.slice(off, off + len);
+          buf = buf.slice(off + len);
+          if (maskKey) {
+            const out = Buffer.allocUnsafe(payload.length);
+            for (let i = 0; i < payload.length; i++) out[i] = payload[i] ^ maskKey[i & 3];
+            payload = out;
+          }
+          if (opcode === 0x2) {
+            onChunk(payload, 'audio/mpeg');
+          } else if (opcode === 0x1) {
+            if (payload.toString('utf8').indexOf('Path:turn.end') !== -1) {
+              finish('done');
+              try { s.end(); } catch (e) { /* 忽略 */ }
+              return;
+            }
+          } else if (opcode === 0x8) {
+            finish('done');
+            try { s.end(); } catch (e) { /* 忽略 */ }
+            return;
+          }
+        }
+      });
+      s.on('close', () => { finish('done'); });
+      s.on('error', (e) => {
+        if (!finished) { finish(); }
+        onError('Edge TTS: ' + String(e && e.message || e).slice(0, 200));
+      });
+      ctrl.signal.addEventListener('abort', () => { try { s.destroy(); } catch (e) { /* 忽略 */ } });
+    });
+  }
+
   /* 音频落盘（两类 provider 共用；写入失败返回与原实现一致的错误形态） */
-  function saveTtsAudio(buf, extra) {
-    const id = uid('tts');
+  function saveTtsAudio(buf, extra) { const id = uid('tts');
     try { fs.writeFileSync(path.join(ttsDir, id + '.mp3'), buf); } catch (e) { return { ok: false, error: 'write failed' }; }
     return Object.assign({ ok: true, id, url: '/tts/' + id + '.mp3', bytes: buf.length }, extra || {});
   }
@@ -562,7 +680,54 @@ function createTts(deps) {
     }));
   }
 
-  return { edgeTtsGen, ttsGenerate, normalizeVoiceProfile, ttsSynthesize };
+  /* ── 流式合成入口 streamSynthesize(profile, ctx, handlers) ──
+     Edge 走真音频帧流（edgeTtsStream，每帧一个 MP3 chunk）；其余 provider
+     （OpenAI / MiMo / clone / design）一次返回整段，回落为"单 chunk + done"
+     的句级流式（真实 provider 能力所限，绝不伪装成字节流）。
+     handlers: { onChunk(buf, mime), onDone(), onError(err) }。 */
+  async function streamSynthesize(profile, ctx, handlers) {
+    const h = handlers || {};
+    const onChunk = h.onChunk || function () {};
+    const onDone = h.onDone || function () {};
+    const onError = h.onError || function () {};
+    const prof = profile && typeof profile === 'object' ? profile : {};
+    const input = String(prof.text || '').trim();
+    if (!input) { onError('No text to speak'); return; }
+    const def = TTS_PROVIDER_REGISTRY[prof.provider];
+    if (!def) { onError('Unknown TTS provider: ' + prof.provider); return; }
+
+    if (def.id === 'edge') {
+      /* True MP3 frame streaming over the Edge websocket. */
+      try {
+        await edgeTtsStream(input, prof.voice && prof.voice.id || EDGE_DEFAULT_VOICE, prof.rate, prof.pitch, {
+          onChunk: function (buf, mime) { onChunk(buf, mime); },
+          onDone: onDone,
+          onError: onError
+        });
+      } catch (e) {
+        onError(String(e && e.message || e).slice(0, 200));
+      }
+      return;
+    }
+
+    /* Whole-clip fallback: synthesize once through the normal entry (which routes
+       clone/design correctly), read the saved file and emit it as one chunk. */
+    try {
+      const result = await ttsSynthesize(prof, ctx || {});
+      if (!result || !result.ok) { onError((result && result.error) || 'TTS failed'); return; }
+      const fileName = path.basename(String(result.url || ''));
+      const file = path.join(ttsDir, fileName);
+      if (!fileName || !file.startsWith(ttsDir) || !fs.existsSync(file)) { onError('TTS audio file is unavailable'); return; }
+      const buf = fs.readFileSync(file);
+      const mime = /\.wav$/i.test(fileName) ? 'audio/wav' : 'audio/mpeg';
+      onChunk(buf, mime);
+      onDone();
+    } catch (e) {
+      onError(String(e && e.message || e).slice(0, 200));
+    }
+  }
+
+  return { edgeTtsGen, ttsGenerate, normalizeVoiceProfile, ttsSynthesize, streamSynthesize };
 }
 
 module.exports = createTts;

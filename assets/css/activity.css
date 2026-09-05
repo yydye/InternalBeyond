@@ -1,0 +1,117 @@
+﻿/* ====================================================================
+   IB Activity / Apps / Favorites — 陪伴活动、应用商店、收藏夹样式
+   （内联样式预算已满；所有新 UI 样式一律进此文件。）
+   ==================================================================== */
+
+/* ---- App Store 宿主 overlay ---- */
+/* z-index 受宿主约束：低于 #navbar(--layer-nav:100)，保证宿主导航栏始终可见可点，不覆盖宿主页面。
+   background 用不透明实色：杜绝半透明/玻璃/白雾泄漏到宿主页面（不引入 blur/backdrop）。 */
+.ibapp-overlay{position:fixed;inset:0;z-index:50;background:#f6f9fd;display:none;flex-direction:column;padding-top:74px}
+body.theme-infernal .ibapp-overlay{background:#0e1426}
+.ibapp-overlay.show{display:flex}
+.ibapp-overlay.headless .ibapp-head{display:none}
+.ibapp-overlay.wall{background:linear-gradient(160deg,#f4f8fd,#eaf1fa)}
+body.theme-infernal .ibapp-overlay.wall{background:linear-gradient(160deg,#101832,#0b1120)}
+.ibapp-head{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--border-soft);flex:none}
+.ibapp-back{background:transparent;border:0;color:var(--content-primary);font-size:1.05rem;cursor:pointer;padding:6px 10px}
+.ibapp-title{font-weight:600;color:var(--content-primary)}
+.ibap-host{flex:1;overflow:auto;min-height:0}
+/* 打开 App（如 Cinema）时隐藏宿主左下角音乐 mini 播放器，避免它叠在播放器上 */
+body.ibapp-open #music-mini{display:none}
+/* 关闭按钮由各 App 自己提供（如 Cinema 的 .ci-head .ci-exit），宿主不再全局注入 */
+
+/* ---- Favorites 收藏墙 ---- */
+/* 通用收藏星按钮（聊天/日志/信件/动态/日程 复用） */
+.fav-toggle-btn,.chat-msg-fav{background:transparent;border:0;cursor:pointer;font-size:1rem;color:var(--content-primary);opacity:.7;padding:2px 6px;line-height:1}
+.fav-toggle-btn:hover,.chat-msg-fav:hover{opacity:1}
+.fav-inline{display:inline-block;vertical-align:middle}
+.fav-paper-acts{display:inline-flex;gap:10px}
+.fav-open{background:var(--surface-input);border:1px solid var(--border-soft);border-radius:999px;color:var(--content-primary);padding:4px 12px;cursor:pointer;font-size:.75rem}
+.fav-group{margin:0 0 20px}
+.fav-group-head{font-size:.8rem;color:var(--content-primary);opacity:.7;padding:6px 10px;letter-spacing:.06em}
+.fav-paper{background:var(--surface-card);border:1px solid var(--border-soft);border-radius:var(--radius-panel);padding:12px 14px;margin:8px 12px;box-shadow:var(--shadow-panel)}
+.fav-paper-head{display:flex;gap:8px;align-items:baseline;margin-bottom:6px}
+.fav-tag{font-size:.68rem;color:var(--content-primary);opacity:.6;border:1px solid var(--border-soft);border-radius:999px;padding:1px 8px}
+.fav-title{font-weight:600;color:var(--content-primary);font-size:.95rem}
+.fav-tx{color:var(--content-primary);opacity:.9;font-size:.92rem;line-height:1.6;word-break:break-word}
+.fav-imgs{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
+.fav-img{max-width:120px;max-height:120px;border-radius:6px;object-fit:cover}
+.fav-voice{margin-top:8px;background:var(--surface-input);border:1px solid var(--border-soft);border-radius:999px;color:var(--content-primary);padding:5px 12px;cursor:pointer}
+.fav-paper-foot{display:flex;justify-content:space-between;align-items:center;margin-top:8px;font-size:.72rem;color:var(--content-primary);opacity:.6}
+.fav-del{background:transparent;border:0;color:var(--content-primary);opacity:.6;cursor:pointer;font-size:.75rem}
+
+/* ---- App Store 页 ---- */
+.appstore-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:14px;padding:8px 0}
+.appstore-card{background:var(--surface-card);border:1px solid var(--border-soft);border-radius:var(--radius-panel);padding:16px;box-shadow:var(--shadow-panel);display:flex;flex-direction:column;gap:8px}
+.appstore-card svg{width:34px;height:34px;fill:var(--content-primary)}
+.appstore-card .appstory-name{font-weight:600;color:var(--content-primary)}
+.appstore-card .appstore-desc{color:var(--content-primary);opacity:.8;font-size:.85rem;line-height:1.5;flex:1}
+.appstore-actions{display:flex;gap:8px;flex-wrap:wrap}
+.appstore-btn{background:var(--surface-input);border:1px solid var(--border-soft);border-radius:999px;color:var(--content-primary);padding:5px 14px;cursor:pointer}
+.appstore-btn.primary{color:var(--content-primary)}
+
+/* ---- Coread 共读间 ---- */
+.cr-group{margin:0 0 18px}
+.cr-group-head{font-size:.8rem;color:var(--content-primary);opacity:.7;padding:6px 10px}
+.cr-book{background:var(--surface-card);border:1px solid var(--border-soft);border-radius:var(--radius-panel);padding:14px 16px;margin:8px 0;cursor:pointer;box-shadow:var(--shadow-panel)}
+.cr-book:hover{border-color:var(--focus-ring)}
+.cr-book-title{font-weight:600;color:var(--content-primary)}
+.cr-book-meta{color:var(--content-primary);opacity:.65;font-size:.8rem;margin-top:4px}
+.cr-reader{max-width:720px;margin:0 auto;padding:18px}
+.cr-reader-head{display:flex;gap:10px;align-items:center;margin-bottom:8px;flex-wrap:wrap}
+.cr-title{font-size:1.3rem;font-weight:600;color:var(--content-primary);flex:1}
+.cr-progress{color:var(--content-primary);opacity:.7;font-size:.85rem}
+.cr-text{background:var(--surface-card);border:1px solid var(--border-soft);border-radius:var(--radius-panel);padding:22px 26px;line-height:1.9;color:var(--content-primary)}
+.cr-text p{margin:0 0 1em}
+.cr-recap{margin-top:14px;padding:12px 14px;background:var(--surface-input);border-left:3px solid var(--border-soft);border-radius:6px;font-size:.85rem;color:var(--content-primary);opacity:.8}
+.cr-recap span{display:block;font-size:.72rem;opacity:.6;margin-bottom:4px}
+.cr-tools{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+.cr-btn{background:var(--surface-input);border:1px solid var(--border-soft);border-radius:999px;color:var(--content-primary);padding:6px 14px;cursor:pointer}
+.cr-ai{margin-left:8px;background:var(--surface-input);border:1px solid var(--border-soft);color:var(--content-primary);border-radius:999px;padding:5px 10px}
+.cr-notes{margin-top:18px;display:flex;flex-direction:column;gap:8px;max-height:280px;overflow:auto}
+.cr-note{background:var(--surface-card);border:1px solid var(--border-soft);border-radius:12px;padding:10px 12px;max-width:80%}
+.cr-note.mine{align-self:flex-end}
+.cr-note-who{font-size:.72rem;opacity:.6;color:var(--content-primary)}
+.cr-note-body{color:var(--content-primary);font-size:.92rem;line-height:1.6}
+.cr-note-empty{color:var(--content-primary);opacity:.5;text-align:center;padding:20px}
+.cr-inputbar{display:flex;gap:8px;margin-top:12px}
+.cr-input{flex:1;background:var(--surface-input);border:1px solid var(--border-soft);border-radius:12px;color:var(--content-primary);padding:10px 12px;min-height:44px}
+.cr-send{background:var(--surface-input);border:1px solid var(--border-soft);border-radius:12px;color:var(--content-primary);padding:0 16px;cursor:pointer}
+
+/* ---- Cinema 观影室 ---- */
+/* 纵向 App 布局：Header(标题+Exit) + Player + Subtitle/进度 + 共看面板 + 底部操作栏 */
+.ci-app{display:flex;flex-direction:column;height:100%;min-height:0;background:var(--surface-panel)}
+.ci-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 16px;border-bottom:1px solid var(--border-soft);flex:none}
+.ci-head-title{font-weight:600;color:var(--content-primary);font-size:1rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ci-exit{background:var(--surface-input);border:1px solid var(--border-soft);border-radius:999px;color:var(--content-primary);padding:6px 14px;cursor:pointer;font-weight:600;flex:none}
+.ci-exit:hover{border-color:var(--focus-ring)}
+.ci-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 14px;border-top:1px solid var(--border-soft);flex:none}
+.ci-btn,.ci-pick{background:var(--surface-input);border:1px solid var(--border-soft);border-radius:999px;color:var(--content-primary);padding:6px 12px;cursor:pointer;font-size:.85rem}
+.ci-pick.primary,.ci-btn.primary{background:color-mix(in srgb,var(--content-primary) 16%,var(--surface-input));border-color:var(--focus-ring);font-weight:600}
+.ci-btn:disabled{opacity:.45;cursor:not-allowed}
+.ci-ai{max-width:130px;background:var(--surface-input);border:1px solid var(--border-soft);border-radius:999px;color:var(--content-primary);padding:6px 11px}
+.ci-urlbar{flex:1 1 100%;display:flex;gap:8px;align-items:center}
+.ci-url-input{flex:1;background:var(--surface-input);border:1px solid var(--border-soft);border-radius:10px;color:var(--content-primary);padding:8px 12px;font-size:.85rem}
+.ci-empty{position:absolute;inset:0;z-index:2;display:flex;align-items:center;justify-content:center;text-align:center;color:#dfe9f7;opacity:.8;padding:0 28px;font-size:.95rem;line-height:1.7;pointer-events:none}
+.ci-stage{position:relative;background:#000;max-height:46vh;overflow:hidden;flex:none}
+.ci-player{width:100%;max-height:46vh}
+.ci-player video{width:100%;max-height:46vh;display:block;background:#000}
+.ci-player iframe{width:100%;height:calc(46vh);max-height:46vh;border:0;display:block;background:#000}
+.ci-player .ci-yt{width:100%;max-height:46vh}
+.ci-player .ci-youtube{width:100%;max-height:46vh}
+.ci-no-source{position:absolute;inset:0;z-index:3;display:flex;align-items:center;justify-content:center;text-align:center;color:#dfe9f7;padding:0 28px;font-size:.95rem;line-height:1.7}
+.ci-dm{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+.ci-dmi{position:absolute;white-space:nowrap;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.7);font-size:1.1rem;top:calc(12% + (var(--lane,0)*18%));animation-name:ci-fly;animation-timing-function:linear;animation-fill-mode:forwards;width:100%}
+@keyframes ci-fly{from{transform:translateX(100%)}to{transform:translateX(-100%)}}
+.ci-cc{position:absolute;left:0;right:0;bottom:8%;text-align:center;color:#fff;font-size:1.1rem;text-shadow:0 1px 4px rgba(0,0,0,.8);padding:0 16px}
+.ci-prog{display:flex;gap:10px;align-items:center;padding:6px 14px;color:var(--content-primary);font-size:.8rem;flex:none}
+.ci-bar{flex:1;height:6px;background:var(--surface-input);border-radius:999px;overflow:hidden}
+.ci-fill{height:100%;background:var(--focus-ring);width:0}
+.ci-chat{flex:1;min-height:150px;display:flex;flex-direction:column;overflow:hidden}
+.ci-msgs{flex:1;overflow:auto;padding:10px 14px;display:flex;flex-direction:column;gap:6px}
+.ci-msg{background:var(--surface-card);border:1px solid var(--border-soft);border-radius:10px;padding:6px 10px;color:var(--content-primary);font-size:.9rem;max-width:85%}
+.ci-msg span{opacity:.6;font-size:.72rem}
+.ci-input{display:flex;gap:8px;padding:10px 14px;border-top:1px solid var(--border-soft);flex:none}
+.ci-input textarea{flex:1;background:var(--surface-input);border:1px solid var(--border-soft);border-radius:12px;color:var(--content-primary);padding:8px 10px;min-height:44px;resize:none}
+.ci-input button{background:var(--surface-input);border:1px solid var(--border-soft);border-radius:12px;color:var(--content-primary);padding:0 16px;cursor:pointer}
+.ci-typing{color:var(--content-primary);opacity:.6;font-size:.78rem;padding:4px 14px}

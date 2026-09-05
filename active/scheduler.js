@@ -5,6 +5,20 @@
    原逻辑逐字不变（shutdown 中冗余的 saveQueued 分支按语义化简为单次 saveNow）。 */
 'use strict';
 
+/* Proactive Observability v1：无 trace 注入时零行为默认 */
+const NULL_TRACE = { enabled: function () { return false; }, begin: function () { return null; }, set: function () {}, append: function () {}, finish: function () { return null; }, recent: function () { return []; } };
+
+function _classifyError(e) {
+  const name = String((e && e.name) || '');
+  const msg = String((e && e.message) || (e ? String(e) : ''));
+  if (name === 'AbortError' || /abort/i.test(msg)) return 'abort';
+  if (name === 'TimeoutError' || /超时|timeout/i.test(msg)) return 'timeout';
+  if (/invalid JSON|不是JSON|非JSON|does not look like/i.test(msg)) return 'parse';
+  if (/no final message/i.test(msg)) return 'invalid_content';
+  if (/(\d{3})/.test(msg)) return 'http';
+  return 'model';
+}
+
 function createScheduler(ctx) {
   const {
     getState, armedUsers, saveNow, queueSave,
@@ -16,9 +30,26 @@ function createScheduler(ctx) {
     generateProactiveMessage, windowsNotify, proactiveLog,
     callCharacterModel, contentText, parsePlanJson, isCharacterModelReady,
     terminalRun, sameRunRevision, momentsTick,
-    startDelayMs, closeServer
+    startDelayMs, closeServer, proactiveTrace
   } = ctx;
 
+  const _trace = proactiveTrace || NULL_TRACE;
+  /* Credential Vault v1：运行时以 vault 为 authoritative 凭证来源；无记录时回退旧 snapshot 的 character.apiKey。 */
+  const _vault = ctx.credentialVault;
+  function _applyCredential(character, characterId) {
+    if (!character || typeof character !== 'object') return character;
+    const vid = String(character.id || characterId || '');
+    const cred = (_vault && typeof _vault.get === 'function') ? _vault.get(vid) : null;
+    if (cred && String(cred.apiKey || '').trim()) return Object.assign({}, character, { apiKey: cred.apiKey });
+    return character;
+  }
+  function _enrichTask(task) {
+    if (!task || typeof task !== 'object') return task;
+    const c = task.character || {};
+    const id = String(c.id || (task.setting && task.setting.character_id) || task.characterId || '');
+    const enriched = _applyCredential(c, id);
+    return enriched !== c ? Object.assign({}, task, { character: enriched }) : task;
+  }
   let ticking = false;
   let schedulerInterval = null;
   let schedulerStartTimer = null;
@@ -42,7 +73,7 @@ function createScheduler(ctx) {
     if (!rawTask) return;
     const preparedTask = ensureTaskMetadata(rawTask);
     if (preparedTask !== rawTask) getState().tasks[taskId] = preparedTask;
-    const task = deepClone(preparedTask);
+    const task = _enrichTask(deepClone(preparedTask));
     const setting = task.setting || {};
     const userId = String(setting.user_id || '');
     if (!userId || !armedUsers.has(userId) || !setting.enabled || !setting.background_enabled) return;
@@ -84,11 +115,23 @@ function createScheduler(ctx) {
     saveNow();
 
     const characterName = task.character && (task.character.nickname || task.character.model) || 'AI';
+    const traceId = _trace.begin({
+      kind: 'task',
+      trigger: 'scheduled',
+      taskId,
+      characterId: setting.character_id,
+      characterName,
+      provider: String(character.provider || 'custom'),
+      model: String(character.model || ''),
+      scheduledFor,
+      settings: { frequency: setting.frequency, message_type: setting.message_type }
+    });
     const skipReason = adaptiveSkipReason(task);
     if (skipReason) {
       const currentCheck = currentForRun(taskId, task);
       if (!currentCheck.current) {
         cancelRun(id, task, currentCheck.reason);
+        _trace.finish(traceId, 'cancelled', { trigger: 'adaptive_skip', reason: currentCheck.reason });
         return;
       }
       const skippedAt = Date.now();
@@ -115,13 +158,14 @@ function createScheduler(ctx) {
       s.events[event.id] = event;
       saveNow();
       console.log(`[Active] ${event.character_name} was postponed because the conversation was recently active.`);
+      _trace.finish(traceId, 'skipped', { trigger: 'adaptive_skip', reason: skipReason });
       return;
     }
 
     let output = null;
     let callError = null;
     try {
-      output = await generateProactiveMessage(task, { currentTime: Date.now() });
+      output = await generateProactiveMessage(task, { currentTime: Date.now(), traceId });
       if (!String(output && output.content || '').trim()) throw new Error('Model returned no final message');
     } catch (error) {
       callError = error;
@@ -131,6 +175,7 @@ function createScheduler(ctx) {
     if (!currentCheck.current) {
       cancelRun(id, task, currentCheck.reason);
       console.log(`[Active] Discarded an obsolete result for ${characterName}: ${currentCheck.reason}`);
+      _trace.finish(traceId, 'cancelled', { reason: currentCheck.reason });
       return;
     }
 
@@ -159,6 +204,7 @@ function createScheduler(ctx) {
       s.events[event.id] = event;
       saveNow();
       console.error(`[Active] Scheduled message failed for ${event.character_name}: ${event.error}`);
+      _trace.finish(traceId, 'failed', { errorType: _classifyError(callError), reason: trimText(callError && callError.message || callError, 200) });
       return;
     }
 
@@ -202,6 +248,7 @@ function createScheduler(ctx) {
     saveNow(); // persist the queue before showing an OS notification
     windowsNotify(event.character_name, content);
     proactiveLog('message saved', { taskId, characterId: setting.character_id || '', messageId: event.message_id, provider: event.provider, model: event.model, generatedByFallback: event.generatedByFallback });
+    _trace.finish(traceId, 'sent', { sentMessageId: event.message_id, sentAt });
     console.log(`[Active] ${event.character_name} sent a scheduled message at ${new Date(sentAt).toLocaleString()}`);
   }
 
@@ -274,7 +321,7 @@ function createScheduler(ctx) {
     };
   }
 
-  async function evaluatePlan(plan, task, nowMsOverride) {
+  async function evaluatePlan(plan, task, nowMsOverride, traceId) {
     const now = Number(nowMsOverride) || Date.now();
     const prefs = plan.prefs || {};
     /* ── 程序端硬规则（不依赖模型） ── */
@@ -311,7 +358,7 @@ function createScheduler(ctx) {
     /* ── 模型二次评估：send / reschedule / cancel ── */
     try {
       const prompt = buildPlanEvalPrompt(task, plan);
-      const out = await callCharacterModel(task, prompt, { jsonMode: true });
+      const out = await callCharacterModel(task, prompt, { jsonMode: true, traceId });
       const raw = contentText(out && out.content);
       const parsed = parsePlanJson(raw);
       if (parsed && ['send', 'reschedule', 'cancel'].includes(String(parsed.action || ''))) {
@@ -344,9 +391,25 @@ function createScheduler(ctx) {
     if (!plan.characterId) return;
     const now = Number(nowMsOverride) || Date.now();
     const due = Date.parse(plan.scheduledAt) || 0;
+    const rawCharacter = (raw && raw.character) || {};
+    const characterName = rawCharacter.nickname || rawCharacter.model || 'AI';
+    const traceId = _trace.begin({
+      kind: 'plan',
+      trigger: 'due',
+      planId,
+      characterId: plan.characterId,
+      characterName,
+      provider: String(rawCharacter.provider || ''),
+      model: String(rawCharacter.model || ''),
+      scheduledFor: plan.scheduledAt,
+      intent: plan.intent,
+      reason: plan.reason,
+      settings: { status: plan.status, source: plan.source }
+    });
     if (!due) {
       updatePlan(planId, { status: 'failed', lastError: 'invalid scheduledAt', updatedAt: new Date().toISOString() });
       saveNow();
+      _trace.finish(traceId, 'failed', { errorType: 'invalid', reason: 'invalid scheduledAt' });
       return;
     }
     proactiveLog('plan triggered', { planId, characterId: plan.characterId, scheduledAt: plan.scheduledAt });
@@ -356,6 +419,7 @@ function createScheduler(ctx) {
       updatePlan(planId, { status: 'expired', cancelReason: `missed trigger window by ${Math.round(late / 60000)} min`, updatedAt: new Date().toISOString() });
       saveNow();
       proactiveLog('plan expired', { planId, lateMs: late });
+      _trace.finish(traceId, 'expired', { reason: 'missed trigger window' });
       return;
     }
     /* 原子抢占：单进程内同步执行天然互斥；executionId 持久化用于跨实例识别 */
@@ -368,22 +432,27 @@ function createScheduler(ctx) {
     });
     getState().plans[planId] = { ...raw, ...claim };
     saveNow();
-    const task = planSnapshotTask(claim, raw);
-    const characterName = task.character && (task.character.nickname || task.character.model) || 'AI';
-    const evalResult = await evaluatePlan(claim, task, now);
+    const task = _enrichTask(planSnapshotTask(claim, raw));
+    const evalResult = await evaluatePlan(claim, task, now, traceId);
     proactiveLog('plan evaluation result', { planId, action: evalResult.action, reason: evalResult.reason });
+    if (traceId) {
+      _trace.append(traceId, 'eval', true, 'eval', String(evalResult.action || '') + (evalResult.reason ? ' | ' + evalResult.reason : ''));
+      _trace.set(traceId, { evalAction: evalResult.action, evalReason: evalResult.reason });
+    }
     if (evalResult.action === 'cancel') {
       const cancelledAt = new Date().toISOString();
       updatePlan(planId, { status: 'cancelled', cancelledAt, cancelReason: evalResult.reason, updatedAt: cancelledAt });
       const event = planEvent(claim, 'canceled', { reason: evalResult.reason, character_name: characterName });
       getState().events[event.id] = event;
       saveNow();
+      _trace.finish(traceId, 'cancelled', { evalAction: 'cancel', reason: evalResult.reason });
       return;
     }
     if (evalResult.action === 'reschedule') {
       updatePlan(planId, { status: 'scheduled', scheduledAt: evalResult.scheduledAt, updatedAt: new Date().toISOString() });
       saveNow();
       proactiveLog('plan rescheduled', { planId, to: evalResult.scheduledAt, reason: evalResult.reason });
+      _trace.finish(traceId, 'rescheduled', { evalAction: 'reschedule', reason: evalResult.reason });
       return;
     }
     if (evalResult.action === 'failed') {
@@ -391,6 +460,7 @@ function createScheduler(ctx) {
       const event = planEvent(claim, 'failed', { error: evalResult.reason, character_name: characterName });
       getState().events[event.id] = event;
       saveNow();
+      _trace.finish(traceId, 'failed', { evalAction: 'failed', errorType: 'eval', reason: evalResult.reason });
       return;
     }
     /* send */
@@ -398,7 +468,7 @@ function createScheduler(ctx) {
     let output = null;
     let callError = null;
     try {
-      output = await generateProactiveMessage(task, { currentTime: Date.now() });
+      output = await generateProactiveMessage(task, { currentTime: Date.now(), traceId });
       if (!String(output && output.content || '').trim()) throw new Error('Model returned no final message');
     } catch (error) {
       callError = error;
@@ -407,6 +477,7 @@ function createScheduler(ctx) {
     if (!current || current.status !== 'sending') {
       /* 执行期间计划被浏览器取消/替换 → 丢弃结果 */
       proactiveLog('plan discarded during generation', { planId, reason: current ? current.status : 'plan deleted' });
+      _trace.finish(traceId, 'cancelled', { reason: current ? current.status : 'plan deleted' });
       return;
     }
     if (callError) {
@@ -419,11 +490,13 @@ function createScheduler(ctx) {
         getState().events[event.id] = event;
         saveNow();
         proactiveLog('plan failed', { planId, error: String(callError && callError.message || callError).slice(0, 200) });
+        _trace.finish(traceId, 'failed', { errorType: _classifyError(callError), reason: trimText(callError && callError.message || callError, 200) });
       } else {
         const retryAt = new Date(Date.now() + 15 * 60000).toISOString();
         updatePlan(planId, { status: 'scheduled', attemptCount, lastError: trimText(callError && callError.message || callError, 300), scheduledAt: retryAt, updatedAt: failedAt });
         saveNow();
         proactiveLog('plan will retry', { planId, at: retryAt });
+        _trace.finish(traceId, 'error', { errorType: _classifyError(callError), reason: trimText(callError && callError.message || callError, 200), retryAt });
       }
       return;
     }
@@ -472,6 +545,7 @@ function createScheduler(ctx) {
     saveNow();
     windowsNotify(event.character_name, content);
     proactiveLog('plan message saved', { planId, characterId: plan.characterId, messageId, provider: event.provider, model: event.model, generatedByFallback: event.generatedByFallback });
+    _trace.finish(traceId, 'sent', { sentMessageId: messageId, sentAt });
     console.log(`[Active] ${event.character_name} sent an AI-planned message at ${new Date(sentAt).toLocaleString()}`);
   }
 

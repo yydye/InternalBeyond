@@ -12,6 +12,12 @@ const ACTIVE_PLAN_MAX_LATE_MS=30*60*1000;              /* 错过触发时间的�
 const ACTIVE_PLAN_MAX_ATTEMPTS=2;                      /* 单计划最大执行尝试次数（发送失败重试） */
 const ACTIVE_PLAN_DEFAULT_DND_START='23:00';
 const ACTIVE_PLAN_DEFAULT_DND_END='08:00';
+/* 交互类型规范化：优先用共享核心（proactive-interaction-core）的白名单，出现异常时保守回落 text_message。 */
+function _activeNormalizeInteraction(v){
+  try{const c=NS.proactiveInteraction;if(c&&c.INTERACTIONS&&c.INTERACTIONS.indexOf(v)!==-1)return v}catch(e){}
+  return v==='voice_call'?'voice_call':'text_message'
+}
+function _activeInteractionLabel(v){return v==='voice_call'?'语音通话':'文字消息'}
 function _activeAiPrefs(){
   const d={enabled:true,mode:'ai',minIntervalMinutes:30,maxPlanHours:168,maxConsecutive:1,dndStart:ACTIVE_PLAN_DEFAULT_DND_START,dndEnd:ACTIVE_PLAN_DEFAULT_DND_END,cancelIfUserReplies:true,allowReschedule:true,showDebug:false};
   try{
@@ -43,6 +49,7 @@ function _activePlanDefaults(partial,prefs){
     id:String(p.id||('proactive_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,8))),
     characterId:String(p.characterId||''),
     type:p.type==='hard_reminder'?'hard_reminder':'proactive_chat',
+    interaction:_activeNormalizeInteraction(p.interaction),
     status:['scheduled','evaluating','sending','waiting_for_user','completed','cancelled','expired','failed'].includes(p.status)?p.status:'scheduled',
     source:p.source==='user_reminder'?'user_reminder':'ai_planned',
     createdAt:p.createdAt||new Date().toISOString(),
@@ -90,6 +97,8 @@ function _activeValidatePlanResult(raw,now,prefs){
   if(!['schedule','none','cancel_existing'].includes(action))return null;
   const out={action:action,reason:String(raw.reason||'').slice(0,300)};
   if(action!=='schedule')return out;
+  const interaction=_activeNormalizeInteraction(raw.interaction);
+  out.interaction=interaction;
   const t=Date.parse(raw.scheduledAt);
   if(!Number.isFinite(t))return null;
   const nowMs=Number(now)||Date.now();
@@ -171,7 +180,7 @@ function buildPlanPrompt(args){
     '【允许的最大延迟】'+Math.min(ACTIVE_PLAN_MAX_DELAY_MS/3600000,prefs.maxPlanHours)+' 小时',
     '【输出格式】只输出一个 JSON 对象，禁止 Markdown 围栏之外的任何文字，禁止脚本、Cron 表达式或内部函数名。',
     '可选 action 与字段：',
-    '1. {"action":"schedule","scheduledAt":"ISO8601 带时区时间","intent":"下次联系的目的（≤80字）","reason":"依据（≤100字）","cancelIfUserReplies":true,"cancelIfIntentResolved":false,"allowReschedule":true,"allowFollowUpPlan":false}',
+    '1. {"action":"schedule","scheduledAt":"ISO8601 带时区时间","interaction":"text_message","intent":"下次联系的目的（≤80字）","reason":"依据（≤100字）","cancelIfUserReplies":true,"cancelIfIntentResolved":false,"allowReschedule":true,"allowFollowUpPlan":false}',
     '2. {"action":"none","reason":"当前没有自然的后续联系理由"}',
     '3. {"action":"cancel_existing","reason":"用户明确表示不希望继续提醒"}',
     '【规划规则】',
@@ -187,7 +196,8 @@ function buildPlanPrompt(args){
     '10. scheduledAt 不得早于允许的最短延迟，不得晚于允许的最大延迟。',
     '11. 用户说“我要睡了”等不适合打扰的时段，应把时间安排到合适的时段。',
     '12. allowFollowUpPlan 默认 false：除非用户明确要求持续陪伴，否则不允许本次发送后再自动规划下一条。',
-    '13. 已存在“当前仍有效的主动计划”时，若新计划更有价值才返回 schedule（程序会自动替换旧计划），否则返回 none。'
+    '13. 已存在“当前仍有效的主动计划”时，若新计划更有价值才返回 schedule（程序会自动替换旧计划），否则返回 none。',
+    '14. interaction 只能是 "text_message" 或 "voice_call"。默认 "text_message"；语音通话不是默认选项，只有对方正处在“适合直接说两句”的时刻、且你确实有理由想立刻听见对方时，才选 "voice_call"，否则一律 "text_message"。'
   ];
   return{system:system,messages:[{role:'system',content:system},{role:'user',content:prompt.join('\n')}],prompt:prompt.join('\n')}
 }
@@ -291,6 +301,7 @@ async function planNextProactiveMessage(args){
       characterId:character.id,
       status:'scheduled',
       scheduledAt:validated.scheduledAt,
+      interaction:validated.interaction,
       intent:validated.intent||'',
       reason:validated.reason||'',
       cancelConditions:{cancelIfUserReplies:validated.cancelIfUserReplies,cancelIfIntentResolved:validated.cancelIfIntentResolved,cancelIfNewerPlanExists:validated.cancelIfNewerPlanExists,respectDoNotDisturb:validated.respectDoNotDisturb},
@@ -547,6 +558,13 @@ async function _activeExecuteAiPlan(planId){
       await dbPut(ACTIVE_PLANS_STORE,plan);if(_activeCompanionOnline)_activeSyncAiPlan(plan).catch(()=>{});
       return{rescheduled:true,to:plan.scheduledAt,reason:'角色正在回复中'}
     }
+    /* 语音通话交互：走主动语音呼入分支（浏览器独占，生成开场词 + 挂起呼入事件 + 弹出来电 UI），
+       不落成文字消息，也不交给 companion 后台执行。 */
+    if(plan.interaction==='voice_call'){
+      const vres=await _activeExecuteVoiceCallPlan(cfg,plan,latest);
+      if(_activeCompanionOnline)_activeSyncAiPlan(plan).catch(()=>{});
+      return vres
+    }
     _chatSendingFor.add(cfg.id);
     try{
       const planArgs=Object.assign({},latest,{
@@ -599,6 +617,105 @@ async function _activeExecuteAiPlan(planId){
     }catch(e2){}
     return{failed:true,error:String(e&&e.message||e).slice(0,200)}
   }
+}
+/* ──── 主动语音呼入（voice_call 交互）────
+   浏览器独占：生成短开场词 → 持久化交互事件 → 弹出来电 UI；用户接听则进入现有 Voice Runtime，
+   拒绝/忽略则取消计划。不落成文字消息，也不同步 companion 以免被当作文字消息双发。 */
+const ACTIVE_INTERACTIONS_KEY='ib_active_interactions_v1';
+function _activeInteractionList(){
+  try{
+    const a=JSON.parse(localStorage.getItem(ACTIVE_INTERACTIONS_KEY)||'null');
+    const rows=Array.isArray(a)?a:[];
+    const pi=NS.proactiveInteraction;
+    return pi&&pi.purgeExpired?pi.purgeExpired(rows):rows
+  }catch(e){return[]}
+}
+function _activeSaveInteractionList(list){
+  try{localStorage.setItem(ACTIVE_INTERACTIONS_KEY,JSON.stringify(Array.isArray(list)?list:[]))}catch(e){}
+}
+function _activeUpdateInteraction(eventId,patch){
+  const list=_activeInteractionList();
+  for(const it of list){if(it.eventId===eventId)Object.assign(it,patch||{})}
+  _activeSaveInteractionList(list);
+  return list
+}
+/* 生成并挂起一条语音呼入事件；重复事件（同角色同类型且正文相似/已有 pending）返回 null，不重复弹窗。 */
+function _activeOfferVoiceCall(cfg,plan,opening){
+  const pi=NS.proactiveInteraction;
+  const raw={
+    roleId:cfg.id,roleName:cfg.nickname||cfg.model||'AI',avatar:cfg.avatar||'',
+    interaction:'voice_call',reason:plan.reason||plan.intent||'',
+    openingMessage:String(opening||'').trim(),
+    callMeta:{conversationId:'main:'+cfg.id,openingLine:String(opening||'').trim()},
+    planId:plan.id||null
+  };
+  const ev=pi&&pi.normalizeEvent?pi.normalizeEvent(raw):raw;
+  const dupe=pi&&pi.isDuplicateEvent?pi.isDuplicateEvent(ev,_activeInteractionList()):false;
+  if(dupe){
+    _activePlanLog('voice call duplicate dropped',{roleId:cfg.id,planId:plan.id});
+    return null
+  }
+  const list=_activeInteractionList();list.push(ev);_activeSaveInteractionList(list);
+  /* 弹出呼入 UI（来电卡片：头像 / 角色 / 开场词 / 接听 / 拒绝） */
+  try{if(NS.voiceCall&&typeof NS.voiceCall.offerIncoming==='function')NS.voiceCall.offerIncoming(ev)}catch(e){_activePlanLog('offerIncoming failed',{error:String(e&&e.message||e).slice(0,160)})}
+  return ev
+}
+async function _activeExecuteVoiceCallPlan(cfg,plan,latest){
+  _chatSendingFor.add(cfg.id);
+  try{
+    plan=Object.assign({},plan,{status:'sending',updatedAt:new Date().toISOString()});
+    await dbPut(ACTIVE_PLANS_STORE,plan);
+    const planArgs=Object.assign({},latest||{},{
+      taskId:plan.id,planIntent:plan.intent||'',planReason:plan.reason||'',
+      recentProactiveMessages:(latest&&latest.recentProactiveMessages)||[],
+      currentTime:new Date(),interaction:'voice_call'
+    });
+    const out=await generateProactiveMessage(planArgs);
+    if(!String(out.content||'').trim())throw new Error('模型未返回有效开场词');
+    const fresh=await dbGet(ACTIVE_PLANS_STORE,plan.id);
+    if(fresh&&fresh.status!=='sending'&&fresh.status!=='evaluating')return{skipped:true,reason:'执行期间计划状态已被其他执行器更新（'+fresh.status+'）'};
+    const ev=_activeOfferVoiceCall(cfg,plan,out.content);
+    if(!ev)return{skipped:true,reason:'重复语音呼入已存在，本次略过'};
+    const sentAt=new Date().toISOString();
+    plan=Object.assign({},plan,{
+      status:'waiting_for_user',executedAt:sentAt,attemptCount:(plan.attemptCount||0)+1,
+      updatedAt:sentAt,lastError:null,interactionEventId:ev.eventId
+    });
+    await dbPut(ACTIVE_PLANS_STORE,plan);
+    _activePlanLog('voice call offered',{planId:plan.id,eventId:ev.eventId,interaction:plan.interaction});
+    return{offered:true,eventId:ev.eventId}
+  }catch(e){
+    _activePlanLog('voice call execute failed',{planId:plan.id,error:String(e&&e.message||e).slice(0,300)});
+    try{
+      if(plan){
+        const attemptCount=(plan.attemptCount||0)+1;
+        const maxAttempts=Math.max(1,(plan.constraints&&plan.constraints.maxAttempts)||ACTIVE_PLAN_MAX_ATTEMPTS);
+        if(attemptCount>=maxAttempts){
+          plan=Object.assign({},plan,{status:'failed',attemptCount:attemptCount,lastError:String(e&&e.message||e).slice(0,300),updatedAt:new Date().toISOString()})
+        }else{
+          plan=Object.assign({},plan,{status:'scheduled',attemptCount:attemptCount,lastError:String(e&&e.message||e).slice(0,300),scheduledAt:new Date(Date.now()+15*60*1000).toISOString(),updatedAt:new Date().toISOString()})
+        }
+        await dbPut(ACTIVE_PLANS_STORE,plan)
+      }
+    }catch(e2){}
+    return{failed:true,error:String(e&&e.message||e).slice(0,200)}
+  }finally{if(_chatSendingFor.has(cfg.id))_chatSendingFor.delete(cfg.id)}
+}
+/* 用户对来电的操作结果（accept / decline / dismiss）：同步计划状态与事件。由 call.js 调用。 */
+async function _activeResolveVoiceCallPlan(planId,outcome){
+  if(!planId)return;
+  try{
+    const p=await dbGet(ACTIVE_PLANS_STORE,planId);if(!p)return;
+    const nowIso=new Date().toISOString();
+    if(outcome==='accepted'){
+      p.status='waiting_for_user';p.updatedAt=nowIso;
+    }else{
+      p.status='cancelled';p.cancelledAt=nowIso;p.cancelReason='用户未接听/已忽略本次语音呼入';p.updatedAt=nowIso;
+    }
+    await dbPut(ACTIVE_PLANS_STORE,p);
+    if(_activeCompanionOnline)_activeSyncAiPlan(p).catch(()=>{});
+    if(currentPage==='active')_activeRenderAiPlans();
+  }catch(e){}
 }
 /* 扫描到期 AI 计划并执行；同时处理休眠/重启后的过期任务（不批量轰炸，超时任务重新评估） */
 async function _activeTickAiPlans(){
@@ -658,13 +775,15 @@ async function _activeTickAiPlans(){
 async function _activeSyncAiPlan(plan,force){
   if(!force&&!_activeCompanionOnline)return false;
   if(!plan||!plan.id)return false;
+  /* 语音呼入为浏览器独占：不同步 companion，避免后台把它当作文字消息发送造成双发。 */
+  if(plan.interaction==='voice_call')return true;
   const cfg=apiConfigs.find(a=>a.id===plan.characterId);
   if(!_ibApiReady(cfg))return false;
   try{
     const ctx=await _activePlanLatestContext(cfg,plan);
     const snapshot={
       plan:plan,
-      character:{id:cfg.id,provider:cfg.provider,apiKey:cfg.apiKey,model:cfg.model,endpoint:cfg.endpoint,systemPrompt:cfg.systemPrompt||getDefaultPromptForTheme(),nickname:cfg.nickname||cfg.model||'AI',relationship:cfg.relationship||'',temperature:cfg.temperature,showThinking:_resolveShowThinking(cfg)},
+      character:{id:cfg.id,provider:cfg.provider,model:cfg.model,endpoint:cfg.endpoint,systemPrompt:cfg.systemPrompt||getDefaultPromptForTheme(),nickname:cfg.nickname||cfg.model||'AI',relationship:cfg.relationship||'',temperature:cfg.temperature,showThinking:_resolveShowThinking(cfg)},
       user:ctx.user,
       recent_memories:ctx.memories,
       recent_messages:ctx.recentMessages,
@@ -820,7 +939,7 @@ async function _activeRenderAiPlans(){
     if(cfg&&cfg.avatar){const img=document.createElement('img');img.src=cfg.avatar;img.alt='';av.appendChild(img)}else av.textContent=(name||'?').charAt(0);
     const copy=document.createElement('div'),nm=document.createElement('div'),meta=document.createElement('div');
     nm.className='active-setting-name';nm.textContent=name;
-    meta.className='active-setting-meta';meta.textContent=_activePlanSourceLabel(p.source)+' · '+_activePlanStatusLabel(p.status);
+    meta.className='active-setting-meta';meta.textContent=_activePlanSourceLabel(p.source)+' · '+_activePlanStatusLabel(p.status)+(p.interaction==='voice_call'?' · 语音通话':'');
     copy.append(nm,meta);who.append(av,copy);
     const acts=document.createElement('div');acts.className='active-setting-actions';
     if(['scheduled','waiting_for_user'].includes(p.status)){
@@ -872,6 +991,15 @@ window.ACTIVE_PLAN_MAX_LATE_MS=ACTIVE_PLAN_MAX_LATE_MS;
 window.ACTIVE_PLAN_MAX_ATTEMPTS=ACTIVE_PLAN_MAX_ATTEMPTS;
 window.ACTIVE_PLAN_DEFAULT_DND_START=ACTIVE_PLAN_DEFAULT_DND_START;
 window.ACTIVE_PLAN_DEFAULT_DND_END=ACTIVE_PLAN_DEFAULT_DND_END;
+window.ACTIVE_INTERACTIONS_KEY=ACTIVE_INTERACTIONS_KEY;
+window._activeNormalizeInteraction=_activeNormalizeInteraction;
+window._activeInteractionLabel=_activeInteractionLabel;
+window._activeInteractionList=_activeInteractionList;
+window._activeSaveInteractionList=_activeSaveInteractionList;
+window._activeUpdateInteraction=_activeUpdateInteraction;
+window._activeOfferVoiceCall=_activeOfferVoiceCall;
+window._activeExecuteVoiceCallPlan=_activeExecuteVoiceCallPlan;
+window._activeResolveVoiceCallPlan=_activeResolveVoiceCallPlan;
 window._activeAiPrefs=_activeAiPrefs;
 window._activeAiPrefsSave=_activeAiPrefsSave;
 window._activePlanDefaults=_activePlanDefaults;
@@ -913,6 +1041,15 @@ NS.expose('active.plans', {
   ACTIVE_PLAN_MAX_ATTEMPTS: ACTIVE_PLAN_MAX_ATTEMPTS,
   ACTIVE_PLAN_DEFAULT_DND_START: ACTIVE_PLAN_DEFAULT_DND_START,
   ACTIVE_PLAN_DEFAULT_DND_END: ACTIVE_PLAN_DEFAULT_DND_END,
+  ACTIVE_INTERACTIONS_KEY: ACTIVE_INTERACTIONS_KEY,
+  _activeNormalizeInteraction: _activeNormalizeInteraction,
+  _activeInteractionLabel: _activeInteractionLabel,
+  _activeInteractionList: _activeInteractionList,
+  _activeSaveInteractionList: _activeSaveInteractionList,
+  _activeUpdateInteraction: _activeUpdateInteraction,
+  _activeOfferVoiceCall: _activeOfferVoiceCall,
+  _activeExecuteVoiceCallPlan: _activeExecuteVoiceCallPlan,
+  _activeResolveVoiceCallPlan: _activeResolveVoiceCallPlan,
   _activeAiPrefs: _activeAiPrefs,
   _activeAiPrefsSave: _activeAiPrefsSave,
   _activePlanDefaults: _activePlanDefaults,

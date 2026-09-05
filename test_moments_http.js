@@ -172,6 +172,63 @@ async function waitForHealth(timeoutMs) {
     const del = await req('DELETE', '/moments/mh_char1?user_id=user_mh');
     check('DELETE /moments 成功（未执行 → executed=false）', del.status === 200 && del.body.missing === false && del.body.executed === false, del.body);
 
+    /* ── ownership 403 → 显式 reown 单角色自愈（本机 user_id churn 接管）── */
+    const rn = snapshot('mh_reown', { schedule: schedule('mh_reown', { user_id: 'user_old' }) });
+    check('reown: 先以 owner-A 创建', (await req('PUT', '/moments/mh_reown', rn)).status === 200);
+    const rnOther = snapshot('mh_reown', { schedule: schedule('mh_reown', { user_id: 'user_new' }) });
+    const rn403 = await req('PUT', '/moments/mh_reown', rnOther);
+    check('reown: 不带 reown 的 owner 不一致仍 403', rn403.status === 403 && rn403.body.error === 'Moment schedule does not belong to this user', rn403.body);
+    const rnOwn = snapshot('mh_reown', { schedule: schedule('mh_reown', { user_id: 'user_new', updatedAt: new Date(Date.now() + 1000).toISOString() }) });
+    rnOwn.reown = true;
+    const rnOk = await req('PUT', '/moments/mh_reown', rnOwn);
+    check('reown: 显式 reown 接管成功', rnOk.status === 200 && rnOk.body.schedule && rnOk.body.schedule.character_id === 'mh_reown', rnOk.body);
+    /* 接管后：新 owner 不带 reown 也能正常回写（owner 已切换） */
+    const rnAfter = snapshot('mh_reown', { schedule: schedule('mh_reown', { user_id: 'user_new', updatedAt: new Date(Date.now() + 2000).toISOString() }) });
+    check('reown: 接管后新 owner 正常 PUT', (await req('PUT', '/moments/mh_reown', rnAfter)).status === 200);
+    /* 其他角色不受影响：owner-A 的 mh_char1 已删，owner-A 仍能创建/写其他角色 */
+    check('reown: 不影响其他角色（新 owner 写另一角色成功）', (await req('PUT', '/moments/mh_other', snapshot('mh_other'))).status === 200);
+    /* Origin 禁止：伪造非 loopback Origin 即使带 reown 也一律 403（不可被自愈绕过） */
+    const originForbid = await new Promise((resolve, reject) => {
+      const data = JSON.stringify(rnOwn);
+      const r = http.request(BASE + '/moments/mh_reown', { method: 'PUT', headers: { 'Content-Type': 'application/json', 'Origin': 'https://evil.example.com' } }, res => {
+        let raw = ''; res.on('data', c => raw += c);
+        res.on('end', () => { let b = {}; try { b = raw ? JSON.parse(raw) : {}; } catch (_) { b = { raw }; } resolve({ status: res.statusCode, body: b }); });
+      });
+      r.on('error', reject); if (data) r.write(data); r.end();
+    });
+    check('reown: Origin 禁止仍 403 不可绕过', originForbid.status === 403 && originForbid.body.error === 'Origin is not allowed', originForbid.body);
+    /* cleanup 本轮自愈测试角色 */
+    await req('DELETE', '/moments/mh_reown?user_id=user_new');
+    await req('DELETE', '/moments/mh_other?user_id=user_mh');
+
+    /* ── Credential Vault v1：独立 /credentials sync + 业务剥离 + Origin ── */
+    const creds = await req('POST', '/credentials', { credentials: [
+      { characterId: 'cv_a', provider: 'deepseek', apiKey: 'sk-cv-a-AAAA', endpoint: 'https://e', model: 'm-a' },
+      { characterId: 'friend_1785260690497', provider: 'qwen', apiKey: 'sk-p7LH', model: 'qwen-plus' },
+      { characterId: 'friend_1788318367937', provider: 'qwen', apiKey: 'sk-jJag', model: 'qwen3.8-max' }
+    ] });
+    check('POST /credentials 存储 3 个', creds.status === 200 && creds.body.stored === 3, creds.body);
+    check('POST /credentials 响应不回传完整 Key', !JSON.stringify(creds.body).match(/sk-(cv-a-AAAA|p7LH|jJag)/), creds.body);
+    const credOrigin = await new Promise((resolve, reject) => {
+      const data = JSON.stringify({ credentials: [{ characterId: 'cv_o', apiKey: 'sk-o' }] });
+      const r = http.request(BASE + '/credentials', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Origin': 'https://evil.example.com' } }, res => {
+        let raw = ''; res.on('data', c => raw += c);
+        res.on('end', () => { let b = {}; try { b = raw ? JSON.parse(raw) : {}; } catch (_) { b = { raw }; } resolve({ status: res.statusCode, body: b }); });
+      });
+      r.on('error', reject); r.write(data); r.end();
+    });
+    check('POST /credentials Origin 仍被拒（403，不可绕过）', credOrigin.status === 403 && credOrigin.body.error === 'Origin is not allowed', credOrigin.body);
+    /* 业务 snapshot 即使携带 apiKey，落盘也不含明文 key（strip 纵深防御） */
+    const sp = snapshot('cv_probe');
+    sp.character.apiKey = 'sk-CV-PLAINTEXT-PROBE';
+    await req('PUT', '/moments/cv_probe', sp);
+    const persisted = fs.readFileSync(path.join(DATA_DIR, 'active-message-service.json'), 'utf8');
+    check('23114 业务 JSON 不持久化明文 apiKey', persisted.indexOf('sk-CV-PLAINTEXT-PROBE') === -1, 'plaintext leak in business state');
+    /* vault 文件存在且不含明文 key */
+    const vaultRaw = fs.existsSync(path.join(DATA_DIR, 'credential-vault.json')) ? fs.readFileSync(path.join(DATA_DIR, 'credential-vault.json'), 'utf8') : '';
+    check('credential-vault.json 已生成且不含明文', vaultRaw !== '' && vaultRaw.indexOf('sk-cv-a-AAAA') === -1, 'plaintext vault');
+    await req('DELETE', '/moments/cv_probe?user_id=user_mh');
+
     /* 坏 body 不崩溃 */
     const bad = await req('PUT', '/moments/mh_bad', { not_a_schedule: true });
     check('PUT 坏 body 400', bad.status === 400, bad.body);

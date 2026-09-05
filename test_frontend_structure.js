@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 
 /* 前端静态回归：编码、拆分资源、入口语义、设计变量与内联样式预算。 */
 const fs = require('fs');
@@ -76,7 +76,7 @@ check('split.noInlineScripts', inlineScripts.length === 0, String(inlineScripts.
 const scriptSources = [...html.matchAll(/<script[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi)].map(m => m[1]);
 const styleSources = [...html.matchAll(/<link[^>]*\brel\s*=\s*["'][^"']*stylesheet[^"']*["'][^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*>/gi)].map(m => m[1]);
 check('split.externalScriptCount', scriptSources.length >= 15, String(scriptSources.length));
-check('split.externalStyleCount', styleSources.length === 18, String(styleSources.length));
+check('split.externalStyleCount', styleSources.length === 20, String(styleSources.length));
 const expectedCoreStyles = [
   'assets/css/core.css',
   'assets/css/core/chat-shell.css',
@@ -214,6 +214,51 @@ if (fs.existsSync(activeDir)) {
     check('active.syntax.' + rel, syntaxOk, rel + ' failed node --check');
   }
 }
+
+/* Activity 子模块（陪伴活动运行时）：与 communication 同一套切片边界断言。 */
+const actDir = path.join(root, 'assets', 'js', 'activity');
+if (fs.existsSync(actDir)) {
+  for (const name of fs.readdirSync(actDir)) {
+    if (!/\.js$/i.test(name)) continue;
+    const file = path.join(actDir, name);
+    const rel = 'activity/' + name;
+    const text = fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
+    check('act.iifeOpener.' + rel, text.includes('(function(NS){'), rel + ' missing IIFE opener');
+    check('act.iifeCloser.' + rel, text.includes('})(window.IB || (window.IB = {}));'), rel + ' missing IIFE closer');
+    let syntaxOk = true;
+    try { execFileSync(process.execPath, ['--check', file], { stdio: 'pipe' }); } catch (error) { syntaxOk = false; }
+    check('act.syntax.' + rel, syntaxOk, rel + ' failed node --check');
+  }
+}
+
+/* GPT-6 Astra · Middle Brain：Astra 是全局层，不作为角色 Provider 出现；
+   角色 provider 下拉与 PROVIDERS 注册表均不得含 astra；全局 Middle Brain 配置模块已加载。 */
+const socialText = fs.readFileSync(path.join(root, 'assets', 'js', 'social.js'), 'utf8').replace(/^\uFEFF/, '');
+const ibmcText = fs.readFileSync(path.join(root, 'assets', 'js', 'ib-model-core.js'), 'utf8').replace(/^\uFEFF/, '');
+const roleProviderNoAstra = !/<option value="astra">/.test(html) && !/astra:\s*\{/.test(socialText) && !/astra:\s*\{/.test(ibmcText);
+check('astra.notRoleProvider', roleProviderNoAstra, 'astra 仍残留为角色 Provider（HTML option / PROVIDERS）');
+const mbScriptOk = /<script src="assets\/js\/middle-brain\.js">/.test(html);
+check('middleBrain.scriptLoaded', mbScriptOk, 'middle-brain.js 未挂载');
+const mbFile = path.join(root, 'assets', 'js', 'middle-brain.js');
+const mbText = mbFile && fs.readFileSync(mbFile, 'utf8').replace(/^\uFEFF/, '');
+const mbApiOk = /getMiddleBrainConfig/.test(mbText) && /saveMiddleBrainConfig/.test(mbText);
+check('middleBrain.configAPI', mbApiOk, 'middle-brain 缺少 config API');
+const mbUiOk = /id="middle-brain-section"/.test(html) && /id="mb-endpoint"/.test(html) && /id="mb-model"/.test(html) && /id="mb-apikey"/.test(html);
+check('middleBrain.uiSection', mbUiOk, 'middle-brain 设置 UI 缺失（section/endpoint/model/apikey）');
+const mbReuseAdapter = /AstraAdapter/.test(mbText) || /IBModelCore/.test(mbText);
+check('middleBrain.reuseAdapter', mbReuseAdapter, 'middle-brain 未复用 ib-model-core 的 AstraAdapter');
+/* Middle Brain 系统提示词 = 前端只读常量：不出现在 editable 字段（无 mb-system/textarea 绑定），只作为 JS 常量。 */
+check('middleBrain.sysPromptConst', /MB_SYSTEM_PROMPT\s*=/.test(mbText) && /getMiddleBrainSystemPrompt/.test(mbText), 'middle-brain 缺少系统提示词只读常量');
+check('middleBrain.sysPromptNoEditableUI', !/<textarea[^>]*id="mb-system/.test(html) && !/id="mb-system/.test(html), '用户不应有可编辑的 Middle Brain 系统提示词字段');
+/* Middle Brain v0 context pipeline 只读：context 组织/压缩函数体不得改写 memories/understandings/threads。 */
+const ctxFns = ['middleBrainOrganizeContext', 'middleBrainCompressContext', 'middleBrainContextPipeline', '_mbCompressLines'];
+let mbMutating = [];
+for (const fn of ctxFns) {
+  const re = new RegExp('function ' + fn + '[\\s\\S]*?\\n  \\}', 'm');
+  const m = mbText.match(re);
+  if (m && /dbPut|dbDelete/.test(m[0])) mbMutating.push(fn);
+}
+check('middleBrain.ctxReadOnly', mbMutating.length === 0, 'middle brain context 函数不得写存储: ' + mbMutating.join(','));
 
 console.log(failures ? `\nFrontend structure regression failed: ${failures}` : '\nFrontend structure regression passed ✔');
 process.exit(failures ? 1 : 0);

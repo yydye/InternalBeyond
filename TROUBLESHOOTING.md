@@ -1,4 +1,4 @@
-# Internal Beyond · 故障排查与踩坑记录
+﻿# Internal Beyond · 故障排查与踩坑记录
 
 > 本文档回答「以前踩过什么坑、怎么解决」。遇到问题先来这里查；机制背景见 [ARCHITECTURE.md](ARCHITECTURE.md)，设计取舍见 [DECISIONS.md](DECISIONS.md)。
 
@@ -123,6 +123,25 @@ companion 执行发帖后若不把本次动态并入持久化快照 recent_momen
 ### T21. CDP 里 Object.defineProperty 返回值报错
 
 CDP 测试中 `Object.defineProperty` 的返回值是 window 对象，`returnByValue` 报 "Object reference chain is too long"。解法：用 IIFE 返回 true。
+
+### T40. MiMo 图片注入 400 `base64 data is not valid`（2026-09-02 修复并官方端点复现验证）
+
+- **现象**：MiMo `api.xiaomimimo.com/v1/chat/completions` 在 AI 朋友圈生成时回 400，`error.param = "messages[1] user content: the provided base64 data is not valid"`。
+- **真因**：`_momentsImagePayload`(moments.js) 提取 mime 误写 `(String(src.match(...)||[])[1])`——`String(数组)[1]` 取的是字符串下标 1（即 `'a'`），导致 **mime 恒为 `"a"`**，`image_url` 变成 `data:a;base64,…` 被 MiMo 拒。
+- **修复**：`moments.js` 改 `((src.match(...)||[])[1])` 正确取捕获组；`communication.js` `_adaptContentForApi` 强制 mime 为合法 `image/*`（`/^image\//i.test(p.mime)?p.mime:'image/jpeg'`）+ base64 去空白/剥重复 `data:…;base64,` 前缀。
+- **验证**：`data:a;base64,…`=400（与报错逐字一致），`data:image/jpeg;base64,…`=200，官方端点实测 400→200。
+- **排查**：Network→该 400→Response 的 `error.param`；或临时在 `_adaptContentForApi` 打 `[IB-DIAG] img mime=…`。
+- **教训**：data URI 的 mime/捕获组提取勿用 `String(数组)[1]`；发给第三方端点的底层数据要校验（mime 白名单 + base64 清洗）。
+
+---
+
+### T41. Guide 功能模块 TOC 加子项后被 `max-height` 裁剪（只显示到某一项）
+
+- **现象**：在 `InternalBeyond.html` 的 Guide「功能模块」Contents 折叠区新增几个子项（Active/Diary/Moments/Activities/语音，凑成 17 项）后，**展开仍只到旧的「Music」**，新增项不显示；刷新（Ctrl+F5）无效。
+- **真因**：`assets/css/core/pages.css` 的 `.toc-sub.open{max-height:400px}` + `overflow:hidden`——子列表 17 项约 440px，**超出 400px 上限被 `overflow:hidden` 截掉**，并非 TOC 锚点/Q 没加。
+- **修复**：把 `.toc-sub.open` 的 `max-height` 调大（本次改为 `1100px`，覆盖当前 + 未来再加项）；外层 `.guide-toc` 本身 `max-height:calc(100vh-140px); overflow-y:auto`，再多也能在视口内滚动，不撑破布局。
+- **排查**：先确认源码锚点确实在 `#toc-sub-modules` 内（用 grep `gm-active|guide-local-services`），再查 `.toc-sub.open` 的 `max-height`/`overflow`——**"加了内容但联动样式没跟着涨"**是常见根因。
+- **教训**：给 Guide TOC（或任何 `max-height`+`overflow:hidden` 的折叠展开容器）加子项时，需同步调大展开上限；`toggleTocSub`(core.js:332) 的展开逻辑不变（切换 `.toc-parent` 的 `nextElementSibling` `.toc-sub`）。
 
 ---
 

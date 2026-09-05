@@ -258,6 +258,24 @@ function _vmToneAnalyze(ab,transcript){
     return parts.filter(Boolean).join('；');
   }catch(e){return ''}
 }
+/* Call 路径适配：worklet 产出 16kHz 单声道 Int16 PCM，而 _vmToneAnalyze 需要
+   AudioBuffer。此函数把 Int16 + sampleRate 包成一个最小的 AudioBuffer 兼容壳
+   （length/duration/sampleRate/numberOfChannels/getChannelData），让 Call 路径
+   复用同一个声学算法核心，不复制 _vmToneAnalyze 算法本身。纯函数、零副作用。 */
+function _vmPcmToAudioLike(pcm, sampleRate){
+  var sr=Number(sampleRate)||16000;
+  if(!pcm)return null;
+  var arr=pcm;
+  if(pcm instanceof ArrayBuffer)arr=new Int16Array(pcm);
+  else if(ArrayBuffer.isView(pcm)&&!(pcm instanceof Int16Array))arr=pcm;
+  if(!arr||!arr.length)return null;
+  var n=arr.length,ch=new Float32Array(n);
+  for(var i=0;i<n;i++)ch[i]=arr[i]/32768;
+  var self={sampleRate:sr,numberOfChannels:1,length:n,_ch:[ch]};
+  Object.defineProperty(self,'duration',{get:function(){return n/sr}});
+  self.getChannelData=function(c){return self._ch[c]||self._ch[0]};
+  return self;
+}
 function _vmInit(){
   ['chat-voice-full','chat-voice-mini'].forEach(function(id){
     var btn=document.getElementById(id);if(!btn)return;
@@ -457,6 +475,7 @@ window._vmDecode=_vmDecode;
 window._vmWav16kBase64=_vmWav16kBase64;
 window._vmApiAudioWav=_vmApiAudioWav;
 window._vmToneAnalyze=_vmToneAnalyze;
+window._vmPcmToAudioLike=_vmPcmToAudioLike;
 window._vmInit=_vmInit;
 window._vmToggle=_vmToggle;
 window._vmStart=_vmStart;
@@ -490,6 +509,7 @@ NS.expose('chat.voice', {
   _vmWav16kBase64: _vmWav16kBase64,
   _vmApiAudioWav: _vmApiAudioWav,
   _vmToneAnalyze: _vmToneAnalyze,
+  _vmPcmToAudioLike: _vmPcmToAudioLike,
   _vmInit: _vmInit,
   _vmToggle: _vmToggle,
   _vmStart: _vmStart,

@@ -465,7 +465,7 @@ async function main() {
     /* 12b. LAN listener always obtains a token and protects REST/file APIs. */
     const dataDirLan = tmpDir('ib-bridge-lan-');
     const portLan = freePort();
-    const bridgeLan = await startLanBridge(dataDirLan, portLan, { token: '' });
+    const bridgeLan = await startLanBridge(dataDirLan, portLan, { token: '', voiceAsr: { enabled: true, endpoint: 'http://127.0.0.1/asr', apiKey: 'asr-secret', model: 'whisper-test', language: 'zh' } });
     const baseLan = 'http://127.0.0.1:' + portLan;
     try {
       const lanConfig = JSON.parse(fs.readFileSync(path.join(dataDirLan, 'config.json'), 'utf8'));
@@ -491,6 +491,7 @@ async function main() {
       ok('diagnostics.snapshot', diag.ok === true && diag.service.lan === true && diag.service.tokenRequired === true && diag.data.usage && Array.isArray(diag.data.files));
       const configSafe = await (await fetch(baseLan + '/api/config', { headers: { Authorization: 'Bearer ' + lanToken } })).json();
       ok('config.masksToken', configSafe.ok === true && configSafe.config.token === '***');
+      ok('config.masksVoiceAsrKey', configSafe.ok === true && configSafe.config.voiceAsr.apiKey === '***' && JSON.stringify(configSafe).indexOf('asr-secret') === -1);
       const lanPreflight = await fetch(baseLan + '/api/whispers', { method: 'OPTIONS', headers: { Origin: 'http://127.0.0.1:8080', 'Access-Control-Request-Headers': 'X-IB-Token,Content-Type' } });
       ok('lan.preflightAllowsTokenHeader', /x-ib-token/i.test(lanPreflight.headers.get('access-control-allow-headers') || ''));
       const lanWsMissing = await wsHandshake(portLan, '/');

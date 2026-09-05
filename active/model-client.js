@@ -6,6 +6,24 @@
 
 const { spawn } = require('child_process');
 
+/* 全局短回合策略：与浏览器 assets/js/brevity-policy.js 同一份实现（UMD），前后台零分叉。 */
+const brevityPolicy = require('../assets/js/brevity-policy.js');
+
+/* Proactive Observability v1：无 trace 注入时的零行为默认；classifyError 供 port 观测复用 */
+const NULL_TRACE = { enabled: function () { return false; }, begin: function () { return null; }, set: function () {}, append: function () {}, finish: function () { return null; }, recent: function () { return []; } };
+
+function classifyError(e) {
+  const name = String((e && e.name) || '');
+  const msg = String((e && e.message) || (e ? String(e) : ''));
+  let kind = 'model';
+  if (name === 'AbortError' || /abort/i.test(msg)) kind = 'abort';
+  else if (name === 'TimeoutError' || /超时|timeout/i.test(msg)) kind = 'timeout';
+  else if (/invalid JSON|不是JSON|非JSON|does not look like/i.test(msg)) kind = 'parse';
+  else if (/(\d{3})/.test(msg)) kind = 'http';
+  const m = msg.match(/(\d{3})/);
+  return { kind: kind, status: m ? parseInt(m[1], 10) : null };
+}
+
 function createModelClient(deps) {
   const getState = deps.getState;
   const trimText = deps.trimText;
@@ -13,28 +31,45 @@ function createModelClient(deps) {
   const mergeRecentProactiveMessages = deps.mergeRecentProactiveMessages;
   const maxAttempts = deps.maxAttempts;
   const similarityLimit = deps.similarityLimit;
+  /* Node ModelPort + Model Compatibility：本模块现作为其薄域入口 */
+  const createNodeModelPort = require('./node-model-port.js');
+  const createNodeModelCompat = require('./node-model-compat.js');
+  const _modelPort = createNodeModelPort({ fetch: deps.fetch });
+  /* Proactive Observability v1：对 modelPort 套一个零行为的计数装饰器，
+     仅在 trace 开启时记录每次 modelPort.run 的请求形状与成败，用于在
+     Domain 侧观测 compat-retry。不修改 ModelPort / Compat / Core 契约。 */
+  const _trace = deps.proactiveTrace || NULL_TRACE;
+  let _portCallSeq = 0;
+  const _portAttempts = [];
+  const _portWrap = {
+    async run(request, options) {
+      const seq = ++_portCallSeq;
+      const t0 = Date.now();
+      let ok = true, errorKind = '';
+      try {
+        const r = await _modelPort.run(request, options);
+        _portAttempts.push({ seq: seq, jsonMode: !!(request && request.jsonMode), tokenParam: String((request && request.tokenParam) || ''), ok: true, durationMs: Date.now() - t0 });
+        return r;
+      } catch (e) {
+        errorKind = classifyError(e).kind;
+        _portAttempts.push({ seq: seq, jsonMode: !!(request && request.jsonMode), tokenParam: String((request && request.tokenParam) || ''), ok: false, errorKind: errorKind, durationMs: Date.now() - t0 });
+        throw e;
+      }
+    }
+  };
+  const _modelCompat = createNodeModelCompat({ modelPort: _portWrap });
+
+  /* 根据 port 的 attempts 推断 compat-retry 种类（jsonMode 降级 / max_completion_tokens 切换） */
+  function _recordCompatRetry(traceId, attempts) {
+    if (!traceId || !_trace.enabled() || !attempts || attempts.length < 2) return;
+    let kind = '';
+    if (attempts.some(a => a.tokenParam === 'max_completion_tokens')) kind = 'max_completion_tokens';
+    else if (attempts[0] && attempts[0].jsonMode && attempts.slice(1).some(a => !a.jsonMode)) kind = 'jsonMode';
+    _trace.set(traceId, { compatRetry: true, compatRetryKind: kind });
+  }
 
   function proactiveLog(step, detail) {
     console.log(`[ProactiveMessage] ${step}`, detail || '');
-  }
-
-  /* ── 消息内容适配（v5 图片注入）：朋友圈/回复链注入的 _image part → 各 provider 格式；
-     纯文本消息原样返回（与旧行为完全一致，零回退风险） ── */
-  function adaptMessageParts(fmt, content) {
-    if (typeof content === 'string' || !Array.isArray(content)) return content;
-    return content.map(p => {
-      if (p && p.type === '_image' && p.base64) {
-        if (fmt === 'anthropic') return { type: 'image', source: { type: 'base64', media_type: p.mime || 'image/jpeg', data: p.base64 } };
-        if (fmt === 'gemini') return { inlineData: { mimeType: p.mime || 'image/jpeg', data: p.base64 } };
-        return { type: 'image_url', image_url: { url: 'data:' + (p.mime || 'image/jpeg') + ';base64,' + p.base64 } };
-      }
-      return { type: 'text', text: String((p && p.text) || '') };
-    });
-  }
-  function geminiParts(content) {
-    if (typeof content === 'string') return [{ text: content }];
-    if (!Array.isArray(content)) return [{ text: String(content || '') }];
-    return adaptMessageParts('gemini', content);
   }
 
   function currentTimeText(setting, currentTime) {
@@ -148,6 +183,14 @@ function createModelClient(deps) {
       '6. 不要复读最近回复，只输出最终可见正文。'
     );
 
+    /* 全局短回合策略：主动消息 1-2 句；语音开场（voice_call）更短。 */
+    try {
+      system = brevityPolicy.apply(system, {
+        mode: opts.interaction === 'voice_call' ? 'voice' : 'proactive',
+        detailed: brevityPolicy.isDetailedRequest(trimText(setting.custom_instruction || setting.customInstruction || '', 200))
+      });
+    } catch (_) { /* 不因策略失败而中断生成 */ }
+
     return {
       system,
       messages: [{ role: 'user', content: prompt.join('\n') }],
@@ -255,106 +298,39 @@ function createModelClient(deps) {
       throw new Error('Character API configuration is incomplete');
     }
     const prompt = preparedPrompt || buildProactivePrompt(task);
-    const provider = String(character.provider || 'custom').toLowerCase();
-
-    if (provider === 'anthropic') {
-      const body = {
+    /* 把 Character/Task 数据转成 ModelPort request（provider 分支 / body / parse / retry / thinking 归一 全在 compat+port） */
+    const request = {
+      spec: {
+        provider: String(character.provider || 'custom').toLowerCase(),
         model: character.model,
-        max_tokens: 512,
-        system: prompt.system,
-        messages: prompt.messages.map(m => ({ role: m.role, content: adaptMessageParts('anthropic', m.content) }))
-      };
-      /* AI 规划/朋友圈结构化输出：预填 JSON 前缀引导模型续写。前缀必须与目标 schema 一致
-         （规划='{"action":'、动态='{"publish":'、回复链='{"publishReply":'}，
-         否则模型被迫在两个 schema 间强行拼接，是 replyTo 残片漏进正文的诱因之一。 */
-      if (opts.jsonMode) body.messages = body.messages.concat([{ role: 'assistant', content: opts.jsonPrefill || '{"action":' }]);
-      if (Number.isFinite(Number(character.temperature))) body.temperature = Number(character.temperature);
-      const data = await fetchJson(character.endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': character.apiKey,
-          'anthropic-version': '2023-06-01'
-        },
-        body: JSON.stringify(body)
-      });
-      const blocks = Array.isArray(data.content) ? data.content : [];
-      return responseParts(
-        blocks.filter(block => block && block.type === 'text').map(block => block.text || '').join(''),
-        blocks.filter(block => block && block.type === 'thinking').map(block => block.thinking || block.text || '').join('\n')
-      );
-    }
-
-    if (provider === 'gemini') {
-      let endpoint = String(character.endpoint);
-      endpoint = endpoint.includes('{model}')
-        ? endpoint.replace('{model}', encodeURIComponent(character.model))
-        : endpoint;
-      const url = new URL(endpoint);
-      if (!url.searchParams.has('key')) url.searchParams.set('key', character.apiKey);
-      const body = {
-        system_instruction: { parts: [{ text: prompt.system }] },
-        contents: prompt.messages.map(message => ({
-          role: message.role === 'assistant' ? 'model' : 'user',
-          parts: geminiParts(message.content)
-        })),
-        generationConfig: { maxOutputTokens: 512 }
-      };
-      if (opts.jsonMode) body.generationConfig.responseMimeType = 'application/json';
-      if (Number.isFinite(Number(character.temperature))) body.generationConfig.temperature = Number(character.temperature);
-      const data = await fetchJson(url.toString(), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-      });
-      const candidate = data.candidates && data.candidates[0] || {};
-      const parts = candidate.content && candidate.content.parts || [];
-      return responseParts(
-        parts.filter(part => !part.thought).map(part => part.text || '').join(''),
-        parts.filter(part => part.thought).map(part => part.text || '').join('\n')
-      );
-    }
-
-    const baseMessages = [{ role: 'system', content: prompt.system }, ...prompt.messages.map(m => ({ role: m.role, content: adaptMessageParts('openai', m.content) }))];
-    const body = {
-      model: character.model,
-      messages: baseMessages,
-      max_tokens: 512
+        endpoint: String(character.endpoint || ''),
+        apiKey: String(character.apiKey || ''),
+        systemPrompt: String(prompt.system || ''),
+        temperature: Number.isFinite(Number(character.temperature)) ? Number(character.temperature) : null
+      },
+      messages: prompt.messages,
+      jsonMode: !!opts.jsonMode,
+      jsonPrefill: opts.jsonPrefill,
+      maxTokens: 512
     };
-    if (opts.jsonMode) body.response_format = { type: 'json_object' };/* AI 规划：结构化 JSON 输出（不支持时降级重试） */
-    if (Number.isFinite(Number(character.temperature))) body.temperature = Number(character.temperature);
-    const request = tokenParam => {
-      const payload = { ...body };
-      if (tokenParam === 'max_completion_tokens') {
-        delete payload.max_tokens;
-        payload.max_completion_tokens = 512;
-      }
-      return fetchJson(character.endpoint, {
-        method: 'POST',
-        headers: Object.assign({ 'Content-Type': 'application/json' }, character.apiKey ? { Authorization: `Bearer ${character.apiKey}` } : {}),
-        body: JSON.stringify(payload)
-      });
-    };
-
-    let data;
+    /* 兼容性重试（max_completion_tokens / jsonMode）+ legacy 归一 由 compat 负责；timeout/abort/单次 POST 由 port 负责 */
+    const attemptsBefore = _portAttempts.length;
+    let result;
     try {
-      data = await request('max_tokens');
+      result = await _modelCompat.run(request, { signal: opts.signal, timeoutMs: opts.timeoutMs });
     } catch (error) {
-      if (opts.jsonMode && /response_format|json[ _-]?mode|json_object/i.test(String(error.message))) {
-        opts.jsonMode = false; /* 端点不认 JSON 模式 → 降级为提示词 + 容错解析 */
-        delete body.response_format;
-        data = await request('max_tokens');
-      } else if (/max_completion_tokens/i.test(String(error.message)) && /max_tokens|unsupported|not supported/i.test(String(error.message))) {
-        data = await request('max_completion_tokens');
-      } else {
-        throw error;
-      }
+      const attempts = _portAttempts.slice(attemptsBefore);
+      const c = classifyError(error);
+      _trace.append(opts.traceId, 'model_call', false, c.kind, trimText(error && error.message || error, 160));
+      _trace.set(opts.traceId, { errorType: c.kind });
+      _recordCompatRetry(opts.traceId, attempts);
+      throw error;
     }
-    const choice = data.choices && data.choices[0] || {};
-    const message = choice.message || {};
-    return responseParts(message.content, message.reasoning_content || message.reasoning || message.analysis || message.thinking || '');
+    const attempts = _portAttempts.slice(attemptsBefore);
+    _recordCompatRetry(opts.traceId, attempts);
+    _trace.append(opts.traceId, 'model_call', true, 'success', '');
+    return result; /* { content, reasoning_content } */
   }
-
   function visibleProactiveReply(output) {
     let text = contentText(output && output.content).trim();
     /* Native reasoning was already separated by the provider adapter. Tag removal is only a
@@ -440,12 +416,16 @@ function createModelClient(deps) {
 
   async function generateProactiveMessage(task, options) {
     const opts = options || {};
+    const traceId = opts.traceId;
     const character = task.character || {};
     const setting = task.setting || {};
     const recent = recentProactiveMessages(task);
     const currentTime = Number(opts.currentTime || Date.now());
     let lastError = null;
     let retryInstruction = '';
+    /* Proactive Observability v1：context 步骤只记计数，不存任何对话/记忆内容 */
+    _trace.append(traceId, 'context', true, 'counts',
+      `mem:${Array.isArray(task.recent_memories) ? task.recent_memories.length : 0},msg:${Array.isArray(task.recent_messages) ? task.recent_messages.length : 0},proactive:${recent.length}`);
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       const preparedPrompt = buildProactivePrompt(task, {
         currentTime,
@@ -460,10 +440,12 @@ function createModelClient(deps) {
         attempt
       });
       try {
-        const output = await callCharacterModel(task, preparedPrompt);
+        const output = await callCharacterModel(task, preparedPrompt, { traceId });
         const content = visibleProactiveReply(output);
         const check = validateProactiveReply(content, recent);
+        _trace.append(traceId, 'validation', check.ok, check.ok ? 'pass' : 'invalid', check.reason);
         if (check.ok) {
+          _trace.set(traceId, { generationAttempts: attempt, errorType: '', fallback: false });
           proactiveLog('generated successfully', {
             taskId: setting.id || '',
             characterId: character.id || setting.character_id || '',
@@ -480,10 +462,15 @@ function createModelClient(deps) {
             model: character.model || ''
           };
         }
+        /* validation 失败：若原因是相似度，视为 dedup 命中 */
+        const dedup = /相似度/.test(check.reason);
+        if (dedup) _trace.set(traceId, { dedup: true });
+        _trace.append(traceId, dedup ? 'dedup' : 'validation', false, dedup ? 'similarity' : 'invalid', check.reason);
         lastError = new Error(check.reason);
         retryInstruction = `${check.reason}。上一条被拒绝的正文是：${trimText(content, 600)}。请换一个开头、话题和句式，完整重写，不要解释原因。`;
       } catch (error) {
         lastError = error;
+        _trace.set(traceId, { errorType: classifyError(error).kind });
         retryInstruction = '上一次模型调用失败或没有产生可用正文。请重新生成，只返回最终消息。';
         console.warn('[ProactiveMessage] model attempt failed', {
           taskId: setting.id || '',
@@ -504,6 +491,8 @@ function createModelClient(deps) {
       model: character.model || '',
       error: generationError
     });
+    _trace.set(traceId, { fallback: true, generationAttempts: maxAttempts });
+    _trace.append(traceId, 'fallback', false, 'generated', trimText(generationError, 160));
     return {
       content: proactiveFallbackMessage(character, recent, currentTime),
       reasoning_content: '',

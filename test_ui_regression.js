@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 
 /* Chrome / Edge UI 回归（Node 18+，零依赖）。 */
 const { spawn } = require('child_process');
@@ -251,7 +251,7 @@ async function main() {
       unnamedRoleButtons:[...document.querySelectorAll('[role="button"]')].filter(b=>!(b.getAttribute('aria-label')||b.getAttribute('title')||b.textContent||'').trim()).map(b=>b.id||b.className||b.tagName).slice(0,20)
     }))()`);
     check('assets.externalScriptsLoaded', structure.scripts >= 15, String(structure.scripts));
-    check('assets.externalStylesLoaded', structure.styles === 18, String(structure.styles));
+    check('assets.externalStylesLoaded', structure.styles === 20, String(structure.styles));
     check('assets.backgroundResolved', /bg-internal\.jpg/.test(structure.background), structure.background);
     check('bridge.singleEntry', structure.nav === 1 && structure.panel === 1 && structure.fab === 0, JSON.stringify(structure));
     check('a11y.landmarks', structure.skip && structure.main === 'main' && structure.navLinkIssues.length === 0, JSON.stringify(structure));

@@ -11,6 +11,7 @@ const PROVIDERS={
   qwen:{name:'通义千问',endpoint:'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',model:'qwen-plus',format:'openai',vision:true,streaming:true},
   doubao:{name:'豆包',endpoint:'https://ark.cn-beijing.volces.com/api/v3/chat/completions',model:'doubao-seed-2-0-lite',format:'openai',vision:true,streaming:true},
   moonshot:{name:'Kimi',endpoint:'https://api.moonshot.cn/v1/chat/completions',model:'kimi-k2.6',format:'openai',vision:true,streaming:true},
+  mimo:{name:'MiMo',endpoint:'https://api.xiaomimimo.com/v1/chat/completions',model:'mimo-v2.5',format:'openai',vision:true,streaming:true,showThinking:true},
   minimax:{name:'MiniMax',endpoint:'https://api.minimax.chat/v1/text/chatcompletion_v2',model:'MiniMax-Text-01',format:'openai',vision:false,streaming:true},
   yi:{name:'零一万物',endpoint:'https://api.lingyiwanwu.com/v1/chat/completions',model:'yi-lightning',format:'openai',vision:false,streaming:true},
   baichuan:{name:'百川',endpoint:'https://api.baichuan-ai.com/v1/chat/completions',model:'Baichuan4',format:'openai',vision:false,streaming:true},
@@ -602,8 +603,11 @@ async function loadApiConfigs(){
   /* 保留可读记录，并让本地镜像中的新版本覆盖同 id 的旧记录。 */
   const fallback=_apiFallbackRead();
   if(fallback.length){
+    /* ⚠ IndexedDB 是权威配置源；localStorage 镜像仅在 IndexedDB 缺失该 id 时兜底补入，
+       绝不反向覆盖。否则任一「无 key」的旧/残留镜像拷贝会遮蔽 IndexedDB 中仍完好
+       的凭证（apiKey），导致 API 页误报「（无密钥）」而真实凭证并未丢失。 */
     const merged=new Map(all.map(a=>[a.id,a]));
-    fallback.forEach(a=>merged.set(a.id,a));
+    fallback.forEach(a=>{ if(!merged.has(a.id)) merged.set(a.id,a); });
     all=Array.from(merged.values());
   }
   apiConfigs=all.filter(a=>!a.archived);
@@ -937,6 +941,9 @@ function editApi(id){
   _showThinkingTouched=typeof cfg.showThinking==='boolean';
   var wsEl=document.getElementById('api-websearch-toggle');
   if(wsEl)wsEl.checked=!!cfg.webSearch;
+  var _ct2=document.getElementById('api-concise-toggle');if(_ct2)_ct2.checked=(cfg.replyStyle==='concise');
+  var _ne2=document.getElementById('api-naturalending-toggle');if(_ne2)_ne2.checked=!!cfg.naturalEnding;
+  var _cc2=document.getElementById('api-continuity-toggle');if(_cc2)_cc2.checked=!!cfg.conversationContinuity;
   var _igT2=document.getElementById('api-imagegen-toggle');if(_igT2)_igT2.checked=!!cfg.imageGen;
   var _igW2=document.getElementById('api-waifu-toggle');if(_igW2)_igW2.checked=!!cfg.waifu;
   var _igM2=document.getElementById('api-imagegen-model');if(_igM2)_igM2.value=cfg.imageGenModel||'';
@@ -1040,6 +1047,9 @@ async function saveCurrentApi(btn){
     vision:_isDeepSeekNativeVisionModel(modelVal)?true:!!document.getElementById('api-vision-toggle').checked,
     streaming:!!document.getElementById('api-streaming-toggle').checked,
     webSearch:!!(document.getElementById('api-websearch-toggle')&&document.getElementById('api-websearch-toggle').checked),
+    replyStyle:(document.getElementById('api-concise-toggle')&&document.getElementById('api-concise-toggle').checked)?'concise':'normal',
+    naturalEnding:!!(document.getElementById('api-naturalending-toggle')&&document.getElementById('api-naturalending-toggle').checked),
+    conversationContinuity:!!(document.getElementById('api-continuity-toggle')&&document.getElementById('api-continuity-toggle').checked),
     imageGen:(document.getElementById('api-imagegen-toggle')&&document.getElementById('api-imagegen-toggle').checked),
     imageGenModel:(document.getElementById('api-imagegen-model')?document.getElementById('api-imagegen-model').value.trim():''),
     waifu:!!(document.getElementById('api-waifu-toggle')&&document.getElementById('api-waifu-toggle').checked),

@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 
 /*
  * Internal Beyond — local Active Messages companion
@@ -102,6 +102,16 @@ const mergeRecentProactiveMessages = planDomain.mergeRecentProactiveMessages;
 const buildTaskReplacement = planDomain.buildTaskReplacement;
 
 /* ------------------------------------------------------------------ */
+/* Proactive Observability v1：零决策 trace（IB_PROACTIVE_TRACE=on 才记录） */
+/* ------------------------------------------------------------------ */
+
+const createProactiveTrace = require('./active/proactive-trace');
+const proactiveTrace = createProactiveTrace({
+  enabled: String(process.env.IB_PROACTIVE_TRACE || '').trim().toLowerCase() === 'on',
+  limit: 50
+});
+
+/* ------------------------------------------------------------------ */
 /* 模型客户端（已提取到 active/model-client.js 工厂；getState / 常量注入） */
 /* ------------------------------------------------------------------ */
 
@@ -112,7 +122,8 @@ const modelClient = createModelClient({
   finiteTimestamp,
   mergeRecentProactiveMessages,
   maxAttempts: PROACTIVE_MAX_ATTEMPTS,
-  similarityLimit: PROACTIVE_SIMILARITY_LIMIT
+  similarityLimit: PROACTIVE_SIMILARITY_LIMIT,
+  proactiveTrace
 });
 const proactiveLog = modelClient.proactiveLog;
 const currentTimeText = modelClient.currentTimeText;
@@ -135,6 +146,22 @@ const proactiveFallbackMessage = modelClient.proactiveFallbackMessage;
 const delay = modelClient.delay;
 const generateProactiveMessage = modelClient.generateProactiveMessage;
 const windowsNotify = modelClient.windowsNotify;
+
+/* ------------------------------------------------------------------ */
+/* Credential Vault v1：凭证与角色业务状态分离（AES-256-GCM 加密落盘）   */
+/*   旧业务 snapshot 中的 character.apiKey 一次性迁移进 vault（幂等；   */
+/*   不覆盖已存在的有效凭证），之后业务 snapshot 不再持久化明文 Key。   */
+/* ------------------------------------------------------------------ */
+
+const createCredentialVault = require('./active/credential-vault');
+const credentialVault = createCredentialVault({ dataDir: DATA_DIR });
+credentialVault.load();
+try {
+  const mig = credentialVault.migrateFromState(() => state);
+  if (mig.migrated > 0) console.log(`[CredentialVault] migrated ${mig.migrated} legacy credential(s); ${mig.skipped} already present (not overwritten).`);
+  else if (mig.skipped > 0) console.log(`[CredentialVault] ${mig.skipped} credential(s) already present; none overwritten.`);
+} catch (_) { /* migration must never prevent startup */ }
+
 
 /* ------------------------------------------------------------------ */
 /* Moments 域（后台朋友圈调度：每角色 nextAt + 频率；事件经 events 回传） */
@@ -182,7 +209,8 @@ const momentsDomain = createMomentsDomain({
   callCharacterModel,
   proactiveTextSimilarity,
   replyChainCore,
-  observe: socialObserver ? socialObserver.record.bind(socialObserver) : undefined
+  observe: socialObserver ? socialObserver.record.bind(socialObserver) : undefined,
+  credentialVault
 });
 const sanitizeMomentSchedule = momentsDomain.sanitizeMomentSchedule;
 const publicMomentSchedule = momentsDomain.publicMomentSchedule;
@@ -220,7 +248,9 @@ const scheduler = createScheduler({
   callCharacterModel, contentText, parsePlanJson, isCharacterModelReady,
   terminalRun, sameRunRevision, momentsTick,
   startDelayMs: START_DELAY_MS,
-  closeServer: callback => server.close(callback)
+  closeServer: callback => server.close(callback),
+  proactiveTrace,
+  credentialVault
 });
 const adaptiveSkipReason = scheduler.adaptiveSkipReason;
 const executeTask = scheduler.executeTask;
@@ -247,7 +277,9 @@ const httpLayer = createHttp({
   queueSave,
   publicPlan, sanitizeAiPlan, buildTaskReplacement, recordUserId,
   trimText, deepClone, finiteTimestamp,
-  sanitizeMomentSchedule, publicMomentSchedule
+  sanitizeMomentSchedule, publicMomentSchedule,
+  proactiveTrace,
+  credentialVault
 });
 const server = httpLayer.server;
 const originAllowed = httpLayer.originAllowed;
@@ -319,6 +351,8 @@ module.exports = {
   executePlan,
   evaluatePlan,
   schedulerTick,
+  executeTask,
+  adaptiveSkipReason,
   buildPlanEvalPrompt,
   settingFromPlan,
   planSnapshotTask,
@@ -338,6 +372,7 @@ module.exports = {
   setArmed: userId => { armedUsers.add(userId); },
   saveNow,
   resetStateForTest: () => { state = emptyData(); },
+  proactiveTrace,
   replyChainTick,
   syncReplyChainThreads,
   maybeCreateReplyTask,
@@ -347,5 +382,6 @@ module.exports = {
   sanitizeReplyThread,
   mergeThreadComments,
   replyTaskKey,
-  replyChainCore
+  replyChainCore,
+  credentialVault
 };

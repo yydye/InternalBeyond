@@ -1,8 +1,8 @@
-# Internal Beyond（IB）
+﻿# Internal Beyond（IB）
 
 一个离线运行、无需构建的个人网站项目，支持同时对接多个 AI 模型。
 
-该项目包含 12 个核心功能模块与两套视觉主题。核心数据储存在本地；Active 关页调度可按需启用本地 companion 服务。
+该项目包含 13 个核心功能模块与两套视觉主题。核心数据储存在本地；Active 关页调度可按需启用本地 companion 服务。（另含语音通话、共读/观影、AI 日记、收藏夹等配套能力，见功能一览与 `docs/`。）
 
 个人资料、角色立绘、系统提示词等均可自定义，用户数据支持一键导出与导入。
 
@@ -296,6 +296,22 @@ game/
 
 冒烟测试：`node test_bridge.js`（零依赖，覆盖 REST / WebSocket / CORS / 鉴权 / AI 常驻并发锁与 `/continue` / 重启恢复 / 数据损坏自愈）；`node test_dual_window.js`（双窗口同步与重复初始化）；`node test_ui_regression.js`（桌面 / 移动、浅色 / 深色、Bridge 交互与可访问性，后两项需本机 Chrome / Edge）。
 
+### 一键启动器（Windows 推荐）
+
+双击 **`启动 InternalBeyond.vbs`** 一次搞定，全程无需接触 CMD / PowerShell / Node 命令或端口：它先检测本地服务（Bridge `127.0.0.1:23115`、Active `127.0.0.1:23114`）的真实 `/health`，**健康就直接复用、绝不重复启动**；未启动才自动拉起 `local-services-runner`；随后启动静态 Web 服务（仅绑定 `127.0.0.1:23120`，复用已有健康实例），等全部就绪后打开 `http://127.0.0.1:23120/InternalBeyond.html`。
+
+**桌面入口**：项目自带一键安装器 `create-desktop-shortcut.cmd`（双击运行，幂等），会在桌面创建 **`InternalBeyond.lnk`** ——
+目标指向 `启动 InternalBeyond.vbs`、图标复用官方品牌图标 **`IB-icon.ico`**（多尺寸 16–256，无需重新生成）。移动项目后重跑一次即可重新指向。
+
+- **VBS 只做编排**：定位自身目录（支持中文/空格路径、任意当前目录、桌面快捷方式）、隐藏窗口、检测 Node、把启动委托给唯一真实逻辑 `launch-internal-beyond.js`；`--debug` 参数可让启动过程可见（方便排查）。
+- **为什么走 localhost**：从 `http://127.0.0.1` 加载时浏览器 API（如 AudioWorklet 语音采集）可正常工作；`file://` 空源下 Blob AudioWorklet 会被拒绝（"Unable to load a worklet's module."）。
+- **检测与幂等**：服务健康 → 复用；服务正在启动 → 等待不重复拉起；端口被其他进程占用（身份不符）→ 报错不覆盖；失败 → Windows 原生弹窗 + 写日志，**不打开一个残缺页面**。
+- **诊断**：启动全流程日志写在 `logs\launcher.log`（记录阶段、端口检测、健康检查与错误原因，不记录任何密钥/Token）；各服务日志在 `logs\bridge.log`、`logs\active.log`；可用 `node local-services-runner.js --status` 查看服务在线状态。
+- 需要显式看到 / 控制服务进程时，仍可直接双击 `start-local-services.cmd`（配合 `--vision` 启动视觉助手）。
+- 旧入口 `Start Internal Beyond.cmd` 保留为兼容别名（同样只调用 `launch-internal-beyond.js`，**非第二套逻辑**），**推荐使用 `启动 InternalBeyond.vbs` 及其桌面快捷方式**。
+
+**端口一览**：Bridge = `23115`、Active = `23114`、Vision（可选）= `8765`、静态 Web（本启动器新增）= `23120`。均可用环境变量 `IB_BRIDGE_PORT` / `IB_ACTIVE_PORT` / `IB_VISION_PORT` / `IB_WEB_PORT` 覆盖。
+
 ### 功能一览
 
 | 功能 | 说明 |
@@ -423,6 +439,24 @@ GET  /api/ai/sessions        # 会话列表（API Key 自动脱敏）
 - 「桥 → AI 常驻」页签里有「自动朗读」勾选，勾上后新回复自动朗读
 - 没配 TTS 时自动降级为浏览器自带语音（`speechSynthesis`），功能不中断
 - AI 也有 `tts_speak` 工具，可以在回复里主动生成语音气泡
+
+### 角色语音通话（Phase 1）
+
+Chat 选择单个角色后，点击电话按钮即可开始通话。通话复用角色当前的 Persona、对话历史、Memory、Tools、Model Router 和 Voice Profile；语音 transcript 与角色回复都会写入原对话。ASR 密钥只配置在 Bridge 的 `config.json`：
+
+```json
+"voiceAsr": {
+  "enabled": true,
+  "endpoint": "https://api.openai.com/v1/audio/transcriptions",
+  "apiKey": "你的服务端 ASR Key",
+  "model": "whisper-1",
+  "language": "zh",
+  "timeoutMs": 60000,
+  "maxTurnSeconds": 60
+}
+```
+
+当前使用浏览器 VAD、回合式 ASR、完整文本回复后 TTS 和 WebSocket 音频传输。详细协议、interrupt 语义与实时性限制见 [`docs/voice-runtime-phase1.md`](docs/voice-runtime-phase1.md)。
 
 ### MiMo TTS（mimo-v2.5-tts）
 

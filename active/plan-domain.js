@@ -1,4 +1,4 @@
-﻿/* IB Active · 计划域：调度计算（nextRun / 免打扰）、setting 与 AI 计划净化器、
+/* IB Active · 计划域：调度计算（nextRun / 免打扰）、setting 与 AI 计划净化器、
    指纹 / 任务元数据 / 任务运行时替换与取消。从 active-message-service.js 提取为工厂。
    state 由 composition root 持有（测试钩子会重新赋值），所有读写经注入的 getState()；
    armedUsers 集合与 saveNow 亦注入。原逻辑逐字不变。 */
@@ -438,6 +438,7 @@ function createPlanDomain(deps) {
     const incomingSetting = sanitizeActiveSetting(body.setting || {});
     if (!incomingSetting.id) incomingSetting.id = trimText(taskId, 180);
     const incomingCharacter = deepClone(body.character || {});
+    delete incomingCharacter.apiKey;/* Credential Vault v1：任务业务 snapshot 不持久化明文 apiKey（凭证走 /credentials） */
     const incomingUpdatedAt = finiteTimestamp(incomingSetting.updated_at);
     const incomingFingerprints = taskFingerprints(incomingSetting, incomingCharacter);
     const existing = ensureTaskMetadata(existingRaw);

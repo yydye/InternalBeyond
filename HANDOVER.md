@@ -1,7 +1,27 @@
 ﻿# Internal Beyond · 交接文档（Agent 第一入口）
 
 > 本文档回答「项目现在是什么情况、我接下来该干什么」。
-> 深入阅读：[ARCHITECTURE.md](ARCHITECTURE.md)（怎么工作）· [DECISIONS.md](DECISIONS.md)（为什么这么设计，**含"不要随便改"清单**）· [CHANGELOG.md](CHANGELOG.md)（以前发生过什么）· [TROUBLESHOOTING.md](TROUBLESHOOTING.md)（踩过什么坑）。
+>
+> **必读（按顺序）：**
+> 1. [INTERNALBEYOND_AI_RULES.md](INTERNALBEYOND_AI_RULES.md) —— **开发契约**：执行者/权限边界、先理解再执行、尊重现有架构、修改必须有边界、不制造隐性行为、改后验证、最小化修改、不越权。（此后一切开发行为以此为准）
+> 2. [CHRONICLE.md](docs/CHRONICLE.md) —— **编年史**：上游 Sui 时代 → fork(yydye) 时代全史 + 近期 P1/P2 工程记录，先说清"这个项目从哪来、最近在做什么"。
+> 3. [ARCHITECTURE.md](ARCHITECTURE.md) —— **怎么工作**：目录/模块/端口/WS 协议/命名空间/前端加载顺序/前端约束（双挂载、BOM、IIFE）。
+> 4. [HANDOVER.md](HANDOVER.md)（本篇）—— 现状、当前待办、DO/DON'T、常用命令。
+>
+> **按需深入：**
+> - [DECISIONS.md](DECISIONS.md) —— 为什么这么设计，**含"不要随便改"清单**（D1–D18）。
+> - [CHANGELOG.md](CHANGELOG.md) —— 以前发生过什么（逐条演进）。
+> - [TROUBLESHOOTING.md](TROUBLESHOOTING.md) —— 踩过什么坑（ENOENT T31/D16、MiMo 'a' T40 等）。
+> - [P1-ACOUSTIC-REFERENCE.md](docs/P1-ACOUSTIC-REFERENCE.md) —— 声学语气参考：唯一算法核心 `voice.js::_vmToneAnalyze` + `_vmPcmToAudioLike` 适配层 + request-local 注入、绝不持久化。
+> - [VIDEO-RUNTIME-P2.md](docs/VIDEO-RUNTIME-P2.md) —— Video Runtime：三层边界（Video/Communication/Call）、帧→LLM 复用既有路由、**本地 Qwen 定位**（"DeepSeek 瞎子"补丁、保留兜底）。P1/P2 都是"把上游 Call 当素材库取用"的示范。
+>
+> **IB 定位 / 机制（想懂"它是什么"再看这组）：**
+> - [WHY_IB.md](docs/WHY_IB.md) —— **为什么做这个**：设计哲学 + 传统 AI vs IB 的对比 + 三支柱 + "它不是什么"。
+> - [SOCIAL_RUNTIME.md](docs/SOCIAL_RUNTIME.md) —— **社会闭环**：为什么 IB 不是"带朋友圈的聊天机"（Event→感知→情绪→记忆→关系→决策→动作→新事件）。
+> - [MEMORY.md](docs/MEMORY.md) —— **记忆系统**：数据模型/评分/召回/情绪权重/遗忘/固化；**非向量库、文本评分召回**。
+> - [AUTONOMY.md](docs/AUTONOMY.md) —— **自主性**：Proactive/Moments/回复链/主动语音/去重降级；**自主≠随机**、无长时程规划、无内容级 OOC 防火墙。
+> - [OFFLINE.md](docs/OFFLINE.md) —— **离线能力**：有本地模式 ≠ 真降级；基础功能全离线、配套 fail-open、**模型级需手动本机模型（无自动云→本地切换）**。
+>
 > 文档状态截至 **2026-08-26**。
 
 ## 1. 一句话定位

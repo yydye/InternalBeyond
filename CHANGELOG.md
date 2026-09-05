@@ -197,3 +197,64 @@
 3. **Voice 下拉跨角色残留**：无官方预置目录的 provider（edge/openai）同步下拉时把上一个角色/上一次会话残留的 id 以「(当前配置)」形式保留，切回有目录 provider 时选中错误音色。修复：`_voiceSyncVoiceOptions` 无目录时清空下拉；`_voiceToggleDetail` 无条件调用同步。
 
 测试：`test_ui_regression.js` B1 块增 `unbindNoDirtyModel` / `unbindProviderConsistent` 两项回归；`node --check`、`test-all.js --quick`、`test_ui_regression.js`、`test-all.js --all` 全部通过。真实 MiMo 上游 API **未调用**（本机无 Key；request shape 均为本地 mock 验证）。
+
+## 2026-09-02 · Proactive Interaction v1（AI 主动发起联系 + 全屏语音通话 UI + 全局短回合策略）
+
+在既有主动消息规划（`active-plans.js` AI 计划域）与 Voice Runtime（`bridge/voice-runtime.js` + `assets/js/communication/call.js`）之上做**增量扩展**，不新建第二套 Chat/Memory/Tool/Voice runtime，不改 Harness 4 文件。
+
+- **交互模型**：主动计划新增 `interaction ∈ {text_message, voice_call}`（默认 `text_message`）。规划 Prompt 让模型按白名单选择并守规「语音通话不是默认项」；`_activeValidatePlanResult` 白名单校验，`_activePlanDefaults` 持久化 `interaction`。纯逻辑集中在新增共享核心 `assets/js/proactive-interaction-core.js`（UMD，浏览器 + Node 测试同源）。
+- **主动文字**：`text_message` 走既有 `_activeExecuteAiPlan` → `generateProactiveMessage` → `_activeStoreAiPlanMessage`（chatMessages `source:'active_message'`），`interaction` 仅影响 prompt 短回合策略，不做二次调度。
+- **主动语音呼入**：`voice_call` 计划由浏览器独占执行（`_activeExecuteVoiceCallPlan`；`_activeSyncAiPlan` 对 voice_call 不再 PUT companion，杜绝后台把它当文字消息双发）。生成短开场词 → 持久化交互事件（localStorage `ib_active_interactions_v1`，复用 `purgeExpired`/`isDuplicateEvent` 防重复）→ 调用 `IB.voiceCall.offerIncoming(ev)` 弹出来电卡片（头像/角色/开场词/接听/拒绝）→ 接听进入现有 Voice Runtime；拒绝/忽略取消计划并同步事件状态。
+- **全屏通话 UI**：`voice-call.css` 改为沉浸式全屏（大圆形角色头像、角色名、状态、`voice-call-duration` 计时、`voice-call-wave` 波形、实时字幕、中断/静音/扬声器/挂断控制）；`InternalBeyond.html` 新增 `incoming-call-overlay` 来电卡片与 `startVoiceCallFor` 参数化入口。前端状态机（incoming/connecting/connected/ending）与 runtime 状态解耦，真实语音状态仍由 `bridge/voice-runtime.js` 同步。`bridge/voice-runtime.js` 新增 `greeting` 消息（复用同一 TTS 队列 + generation 护栏，让开场词可由 AI 说出）。
+- **全局短回合策略**：新增 `assets/js/brevity-policy.js`（UMD，前后台同源——`communication.js`、`active-diary.js`、`active/model-client.js` 共 3 处注入）。`text` 1-3 句 / `proactive` 1-2 句 / `voice` 明显短于文本（1-2 句）；用户明确要求详细（`isDetailedRequest`）时整体跳过；`maxTokens` 仅作安全边界，不替代行为策略。
+- **持久化与护栏**：语音转录/回复继续经 `sendChatMessage`（voiceCall）写入 chatMessages 并参与既有 summary/Auto-Memory；`generation`/`asrGeneration`/`interrupt`/TTS 队列/Stale 音频保护由既有 Voice Runtime 保持不变。
+- **测试**：新增 `test_proactive_interaction.js`（36 项：交互模型/事件规范化/去重/状态机/时长/brevity）；`test-voice_runtime.js`、`test_voice_streaming.js`、`test_chat_smoke.js`、`test_active_diary_smoke.js` 全绿（runtime 0 异常）；`node test-all.js --quick` 全绿（static 4 + service 14）。
+
+### 追加修复：通话工具栏重复麦克风按钮
+
+全屏通话工具栏原先渲染两个麦克风图标（`voice-call-mic`=打断、`voice-call-mute`=静音切换），视觉重复。已合并为**单个麦克风按钮**（`voice-call-mute`，负责静音/取消静音）——移除 `voice-call-mic` 打断按钮（打断仍由 VAD 插话 `interrupt('barge_in')` 触发，非移除功能）；说话高亮 `.active` 与静音斜杠 `.vc-slash` 都落到同一按钮；`toggleMute` 更新 `micMuted`/`.muted`/title/aria。最终工具栏 = [ 麦克风 ] [ 扬声器 ] [ 挂断 ]。`test_chat_smoke.js` 新增 `voiceCall.singleMicControl` / `voiceCall.muteToggle` 断言；`node test-all.js --quick` 全绿。
+
+## 2026-09-02 · 零命令 Windows 启动器（双击即起、幂等检测 + localhost 静态服务）
+
+新增「双击即用」的本地启动基础设施：双击 `Start Internal Beyond.cmd` 自动拉起/复用本地服务与静态 Web 服务器并打开页面；**只通过真实健康端点判定服务是否已运行，绝不盲目重复启动**。
+
+- **`launch-internal-beyond.js`**（Node 启动器）：①`node local-services-runner.js --json` 读取 Bridge/Active 真实 `/health`（`server==='IB Bridge'` / `service==='internal-beyond-active-messages'`），健康则复用；②仅当「未健康且无运行中 manager 进程」才拉起 `local-services-runner`（幂等，避免双实例）；③有界轮询等待就绪（默认 25s）；④`internal-beyond-server.js` 静态服务（`127.0.0.1:23120`，`/health`，默认 `server==='InternalBeyond Web'`），健康复用 / 冲突报错 / 未启动才拉起；⑤全部就绪才打开 `http://127.0.0.1:23120/InternalBeyond.html`；失败弹窗 + 写 `logs\launcher.log`，**不打开残缺页面**。
+- **`internal-beyond-server.js`**：仅绑定回环 `127.0.0.1`，静态服务项目根，`/health` 身份端点，路径穿越防护；`EADDRINUSE` 以码 3 退出供启动器识别冲突。
+- **AudioWorklet**：新增 `assets/js/voice-worklet.js`（静态模块），`call.js` 改为 `audioContext.audioWorklet.addModule('assets/js/voice-worklet.js')`（失败回退原 Blob 路径）；处理器逻辑与 VAD/打断/静音不变。已用真实 Chrome 验证 **localhost 下静态 worklet 模块可加载并注册**（`AudioWorkletNode('ib-voice-capture')` 创建成功，0 运行时异常）。
+- **入口**：`Start Internal Beyond.cmd`（`start /min` 最小化窗口运行启动器）。
+- **测试**：新增 `test_launcher.js`（service 组，15 项：静态服务身份/MIME/穿越防护、webServerState 健康/冲突/空闲三种复用决策、servicesHealthy、runner `--json` 身份解析）；`test_worklet_localhost.js`（browser 组，真实 Chrome：localhost 页面加载、`IB.voiceCall` 挂载、静态 worklet 加载+注册、0 异常）。`test_proactive_interaction.js`、`test_voice_streaming.js`、`test_voice_runtime.js`、`test_chat_smoke.js`、`test_active_diary_smoke.js` 均保持全绿。
+- **不新建第二套 runtime**：静态服务只做文件伺服，不改 Chat/Memory/Tool/Voice runtime；Harness 4 文件未动。
+
+### 升级：真正的「傻瓜式单击启动」— `启动 InternalBeyond.vbs`
+
+把 Windows 推荐入口从 `.cmd` 升级为 **双击 `启动 InternalBeyond.vbs`**（无需接触 CMD / PowerShell / Node 命令或端口）。VBS 只做**编排**：定位自身目录（支持中文/空格路径、任意当前目录、桌面快捷方式）、`shell.CurrentDirectory` 切到项目目录、默认隐藏窗口（`--debug` 可见）、检测 Node（`where node.exe`，缺省弹原生提示并写日志后退出）、然后 `shell.Run("node.exe launch-internal-beyond.js", …)` 委托给**唯一真实启动逻辑**——不复制第二套实现。
+
+- **`启动 InternalBeyond.vbs`**（新增，GBK/无 BOM——WSH 按系统 ACP 936 读取，用 UTF-8 BOM 会报「无效字符」）：`[VBS]` 阶段日志写入项目 `logs\launcher.log`；退出码透传（Node 缺省 → 1，成功 → 0）。
+- **`launch-internal-beyond.js`**（唯一启动逻辑，沿用）：日志路径由 `%LOCALAPPDATA%\InternalBeyond\logs\launcher.log` 改为项目 **`logs\launcher.log`**（要求 7）；其余 Bridge 检测/复用/健康检查、Web 服务端口/超时/冲突、失败原生弹窗、成功后开浏览器、完成后退出等全部保持。
+- **`Start Internal Beyond.cmd`**：保留为**兼容别名**，仍只调用 `launch-internal-beyond.js`（非第二套逻辑）；推荐使用 `.vbs`。
+- **`.gitignore`**：新增 `logs/`（运行时日志不入库）。
+- **验证**（真实本机执行）：`cscript 启动…vbs` 冷/复用均跑通（服务健康即复用、Web 首次启动后二次运行检测到已结束复用作 —— 0 重复）；`--debug` 路径可见运行并退出 0；**从任意不同当前目录**（`%TEMP%` + 中文/空格路径设计）启动正常；`logs\launcher.log` 记录节点实测全阶段；Web 23120、服务 23115/23114 健康端点身份吻合；工具调试验证后已清理我启动的 23120、保留用户原有 23115/23114 服务。`test_launcher.js` / `test_worklet_localhost.js` / `test_harness_boundary.js` / `node test-all.js --quick` 全部通过。
+
+### 为启动器配官方图标：`IB-icon.ico` + 桌面 `InternalBeyond.lnk`
+
+先审计素材库，复用**已有的官方品牌图标**，未重新生成任何图片。
+
+- **候选**：`IB-icon.ico`（根目录官方图标，16–256 多尺寸）、`Gemini_Generated_Image_*.png`、`bg-*.jpg/png`、`game\portraits\*`、`game\sleep_bubble_*` 等。选 `IB-icon.ico`：它本就是正式 logo（钻石形 + 靛蓝 "IB" 徽标，小尺寸清晰、与项目蓝/深色视觉一致），且**已是 `.ico` 多尺寸**，无需转换成单尺寸 PNG。
+- **绑定**：`启动 InternalBeyond.vbs` 本身无法直接设置 Windows 文件图标，故采用 Windows 快捷方式作为最终桌面入口：桌面 **`InternalBeyond.lnk`** → 目标 = `启动 InternalBeyond.vbs`、工作目录 = 项目根、图标 = `IB-icon.ico`。
+- **可复现安装器**：新增 `create-desktop-shortcut.cmd`（幂等，双击运行即在桌面创建/刷新 `InternalBeyond.lnk`；移动项目后重跑重新指向）。纯 ASCII 内容 + CRLF，避免 cmd/GBK 编码问题。
+- **启动逻辑完全不变**：`.lnk` 只是转发到 `启动 InternalBeyond.vbs`（GBK 无 BOM），底层仍复用唯一 `launch-internal-beyond.js`——Bridge/Active 检测复用、23120 Web 检测复用、自动打开 localhost、0 重复服务、失败原生提示、日志，全部不变。
+- **验证**：`create-desktop-shortcut.cmd` 实跑创建 `C:\Users\admin\Desktop\InternalBeyond.lnk`（Target=`E:\InternalBeyond-main\启动 InternalBeyond.vbs`、Icon=`E:\InternalBeyond-main\IB-icon.ico,0`、WorkingDir=项目根）；双击该 `.lnk` 实际跑通启动链路（Bridge/Active 复用、Web 拉起并健康、0 重复，测试以 `IB_LAUNCH_NO_OPEN=1` 抑制浏览器、测后清理 23120）。`test_harness_boundary.js` / `test_launcher.js` / `test_worklet_localhost.js` 未受影响。
+
+## 2026-09-02 · 修复 MiMo 朋友圈图片注入 400「base64 data is not valid」
+
+- **现象**：AI 朋友圈生成（`generateRoleMoment` → `callApiChat` → `_callApiChatOnce` openai 分支）对 `api.xiaomimimo.com/v1/chat/completions` 返回 400，`error.param = "messages[1] user content: the provided base64 data is not valid"`。
+- **根因**：`assets/js/moments.js` `_momentsImagePayload` 提取 mime 误写 `(String(src.match(...)||[])[1])`——`String(数组)` 先把匹配数组转字符串，再 `[1]` 取的是**字符串下标 1**（`"data:..."` 的字母 `'a'`），而非匹配数组的捕获组 → **mime 恒为 `"a"`**，`image_url` 变成 `data:a;base64,/9j/…`，MiMo 无法识别 `a` 类型的 data URI → 400。base64 本身完全合法（`/9j/`、`validCharset=true`），纯属 mime 提取坏代码。
+- **修复（2 处，各约 1 行）**：
+  1. `assets/js/moments.js` `_momentsImagePayload`：`(src.match(...)||[])[1]` 正确取捕获组 + base64 去空白/剥重复 `data:…;base64,` 前缀；
+  2. `assets/js/communication.js` `_adaptContentForApi`（openai 图片分支）：构造 `image_url` 时把 mime 强制为合法 `image/*`（`/^image\//i.test(p.mime) ? p.mime : 'image/jpeg'`）+ base64 去空白/剥重复前缀——wire 层兜底，覆盖任何来源的图片注入。
+- **验证（官方端点，mimo-v2.5，经 FlClash:7890 代理直连对照）**：`data:a;base64,…` = 400（与上述报错逐字一致）；`data:image/jpeg;base64,…` = 200；修复逻辑真实请求 400→200 确认。
+- **排查方法**：DevTools→Network→该 400 请求→Response 看 `error.param`；或临时在 `_adaptContentForApi` 打 `[IB-DIAG] img mime=…`（本次已移除）。详见 [TROUBLESHOOTING.md](TROUBLESHOOTING.md) T40、[docs/multimodal-image-inject-notes.md](docs/multimodal-image-inject-notes.md)。
+- **此前"强制 MiMo 契约"改动**（`communication.js` `callApi` + `active/node-model-port.js`）为防御性、非本次 400 根因，保留。
+
+
+

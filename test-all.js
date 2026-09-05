@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 
 /* Internal Beyond · 一键全量测试入口（Node 18+，零依赖，跨平台）。
  *
@@ -21,7 +21,21 @@ const GROUPS = [
     tests: [
       ['scripts_check_html.js', 'InternalBeyond.html'],
       ['test_frontend_structure.js'],
-      ['test_cache_audit.js']
+      ['test_voice_capture.js'],
+      ['test_voice_focus.js'],
+      ['test_cache_audit.js'],
+      ['test_harness_boundary.js'],
+      ['test_credential_vault.js'],
+      ['test_error_catalog.js'],
+      ['test_commerce_domain.js'],
+      ['test_commerce_mcp_contract.js'],
+      ['test_payment_auth.js'],
+      ['test_pay_gate.js'],
+      ['test_payment_e2e.js'],
+      ['test_shopping_agent.js'],
+      ['test_shopping_review.js'],
+      ['test_payment_canonical.js'],
+      ['test_shopping_execution_e2e.js']
     ]
   },
   {
@@ -29,16 +43,21 @@ const GROUPS = [
     note: 'Bridge / Active 本地服务（随机端口 + 临时数据目录）',
     tests: [
       ['test_bridge.js'],
+      ['test_voice_runtime.js'],
+      ['test_voice_streaming.js'],
       ['test_mimo_tts.js'],
       ['test_tts_voices.js'],
       ['test_mimo_voiceclone.js'],
       ['test_mimo_voicedesign.js'],
       ['test_active_http.js'],
       ['test_active_plans.js'],
+      ['test_proactive_interaction.js'],
+      ['test_launcher.js'],
       ['test_moments_companion.js'],
       ['test_moments_http.js'],
       ['test_socialnet_chain_companion_smoke.js'],
-      ['test_local_services_runner.js']
+      ['test_local_services_runner.js'],
+      ['test_restart_backend.js']
     ]
   },
   {
@@ -56,8 +75,12 @@ const GROUPS = [
       ['test_moments_user_smoke.js'],
       ['test_socialnet_smoke.js'],
       ['test_socialnet_chain_smoke.js'],
+      ['test_activity_smoke.js'],
+      ['test_media_adapter_smoke.js'],
       ['test_ui_regression.js'],
-      ['test_dual_window.js']
+      ['test_dual_window.js'],
+      ['test_worklet_localhost.js'],
+      ['test_voice_capture_live.js']
     ]
   }
 ];

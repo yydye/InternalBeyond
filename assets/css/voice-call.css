@@ -1,0 +1,49 @@
+﻿.voice-call-launch{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;padding:0;border:1px solid var(--glass-border);background:var(--glass-bg);color:var(--text);cursor:pointer}
+.voice-call-launch:hover{border-color:var(--accent);color:var(--accent)}
+.voice-call-launch svg{width:15px;height:15px}
+.voice-call-overlay{position:fixed;inset:0;z-index:12000;display:grid;place-items:center;padding:20px;background:radial-gradient(120% 120% at 50% 0%,rgba(24,30,46,.88),rgba(5,7,11,.96));backdrop-filter:blur(18px)}
+.voice-call-overlay[hidden]{display:none}
+/* 沉浸式全屏通话面板（参考：真实电话 UI——深色、大圆形头像、角色名、状态、时长、波形、实时字幕、控制） */
+.voice-call-panel{width:100%;min-height:100%;max-width:none;padding:7vh 22px 5vh;border:0;border-radius:0;background:transparent;box-shadow:none;color:#eef1f6;text-align:center;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:2px}
+.voice-call-panel:not(.incoming-panel) .voice-call-avatar{width:128px;height:128px;margin:1vh auto 18px;border:2px solid rgba(255,255,255,.22);background:radial-gradient(circle at 50% 35%,rgba(103,197,154,.22),transparent 70%);box-shadow:0 0 0 10px rgba(255,255,255,.04),0 0 60px rgba(103,197,154,.22);animation:voice-pulse 3.2s ease-in-out infinite}
+.voice-call-panel:not(.incoming-panel) .voice-call-avatar img{width:100%;height:100%;object-fit:cover;border-radius:50%}
+.voice-call-panel:not(.incoming-panel) .voice-call-name{font:500 28px/1.2 Georgia,serif;letter-spacing:.5px}
+.voice-call-panel:not(.incoming-panel) .voice-call-state{margin-top:6px;color:#9aa2b0;font-size:13px;text-transform:uppercase;letter-spacing:.14em}
+.voice-call-duration{margin-top:6px;color:#c3c9d4;font:500 15px/1.2 ui-monospace,Menlo,Consolas,monospace}
+.voice-call-wave{width:min(360px,86vw);height:46px;margin:18px auto 6px;display:flex;align-items:center;justify-content:center;gap:3px}
+.voice-call-wave-bar{display:block;width:4px;height:100%;border-radius:2px;background:linear-gradient(180deg,#79aee8,#67c59a);transform:scaleY(.22);transform-origin:center;opacity:.85;animation:voice-wave-idle 1.6s ease-in-out infinite}
+.voice-call-wave-bar:nth-child(3n){animation-delay:.2s}.voice-call-wave-bar:nth-child(3n+1){animation-delay:.4s}.voice-call-wave-bar:nth-child(4n){animation-delay:.6s}
+.voice-call-meter{width:170px;height:3px;margin:14px auto;background:rgba(255,255,255,.10);overflow:hidden}
+.voice-call-meter span{display:block;width:100%;height:100%;transform:scaleX(0);transform-origin:left;background:#67c59a;transition:transform 70ms linear}
+.voice-call-copy{width:min(520px,92vw);min-height:150px;margin:12px auto 0;text-align:left;border-top:1px solid rgba(255,255,255,.09);border-bottom:1px solid rgba(255,255,255,.09);padding:16px 4px;overflow:auto;max-height:32vh}
+.voice-call-line{display:grid;grid-template-columns:64px 1fr;gap:10px;margin:0 0 12px;font-size:13px;line-height:1.55}
+.voice-call-line:last-child{margin-bottom:0}
+.voice-call-label{color:#858c98}.voice-call-value{color:#e6e8eb;overflow-wrap:anywhere}
+.voice-call-error{margin:14px 0 0;color:#ff9b9b;font-size:12px;line-height:1.45}
+.voice-call-controls{display:flex;justify-content:center;gap:22px;margin-top:auto;padding-top:22px}
+.voice-call-control{width:56px;height:56px;display:grid;place-items:center;border:0;border-radius:50%;cursor:pointer;color:#fff;background:rgba(54,58,66,.9)}
+.voice-call-control:hover{background:#464b55}.voice-call-control.danger{background:#cf4d4d}.voice-call-control.danger:hover{background:#df5a5a}
+.voice-call-control.accept{background:#2f9e63}.voice-call-control.accept:hover{background:#36b573}
+.voice-call-control svg{width:21px;height:21px}
+.voice-call-control .vc-slash{opacity:0;transition:opacity .12s ease}
+.voice-call-control.muted .vc-slash{opacity:1}
+.voice-call-mute.active{box-shadow:0 0 0 8px rgba(103,197,154,.12);background:#347b5d}
+.voice-call-control.muted,.voice-call-control.speaker-off{opacity:.55;background:#5a3741}
+.voice-call-control.muted:hover,.voice-call-control.speaker-off:hover{opacity:.8}
+.voice-call-overlay[data-state="thinking"] .voice-call-meter span{background:#dfb866;animation:voice-thinking 1s ease-in-out infinite}
+.voice-call-overlay[data-state="speaking"] .voice-call-meter span{background:#79aee8}
+.voice-call-overlay[data-state="error"] .voice-call-meter span{background:#d66}
+/* 呼入卡片（参考：AI 主动发起联系）——居中卡片式，复用 voice-call-panel 但收窄为卡片 */
+.voice-call-overlay.incoming{background:rgba(7,9,13,.72);backdrop-filter:blur(12px)}
+.voice-call-panel.incoming-panel{width:min(420px,calc(100vw - 32px));min-height:auto;padding:34px 28px 26px;border:1px solid rgba(255,255,255,.15);border-radius:8px;background:rgba(18,20,25,.96);box-shadow:0 28px 80px rgba(0,0,0,.48);text-align:center;gap:0}
+.voice-call-panel.incoming-panel .voice-call-avatar{width:88px;height:88px;margin:0 auto 16px;border-radius:50%;border:1px solid rgba(255,255,255,.2);background:#2a2d33;font:500 32px/1 Georgia,serif;box-shadow:none;animation:none}
+.voice-call-panel.incoming-panel .voice-call-avatar img{width:100%;height:100%;object-fit:cover;border-radius:50%}
+.voice-call-panel.incoming-panel .voice-call-name{margin:0;font:500 24px/1.2 Georgia,serif;letter-spacing:0}
+.voice-call-panel.incoming-panel .voice-call-state{margin-top:8px;color:#aeb4be;font-size:13px;text-transform:uppercase;letter-spacing:0}
+.incoming-call-copy{margin:22px 0 0;color:#e6e8eb;font-size:15px;line-height:1.65;border-radius:10px;background:rgba(255,255,255,.05);padding:14px 16px}
+.incoming-call-reason{margin:12px 0 0;color:#8a92a0;font-size:12px;line-height:1.5}
+.voice-call-controls.incoming-controls{margin-top:26px;gap:26px}
+@keyframes voice-thinking{0%,100%{transform:scaleX(.18)}50%{transform:scaleX(.82)}}
+@keyframes voice-pulse{0%,100%{box-shadow:0 0 0 10px rgba(255,255,255,.04),0 0 40px rgba(103,197,154,.16)}50%{box-shadow:0 0 0 16px rgba(255,255,255,.06),0 0 70px rgba(103,197,154,.34)}}
+@keyframes voice-wave-idle{0%,100%{transform:scaleY(.2)}50%{transform:scaleY(.4)}}
+@media(max-width:560px){.voice-call-panel{padding:6vh 16px 4vh}.voice-call-panel:not(.incoming-panel) .voice-call-avatar{width:104px;height:104px}.voice-call-panel:not(.incoming-panel) .voice-call-name{font-size:22px}.voice-call-controls{gap:16px}}

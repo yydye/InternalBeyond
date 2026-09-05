@@ -43,6 +43,15 @@ function createConfig(deps) {
         apiKey: '',
         voice: ''                    // 留空时按角色 voiceId，再兜底注册表默认（mimo_default）
       },
+      voiceAsr: {                    // 语音通话 ASR：OpenAI-compatible /audio/transcriptions
+        enabled: false,
+        endpoint: 'https://api.openai.com/v1/audio/transcriptions',
+        apiKey: '',                  // 仅保存在 Bridge；绝不发送到浏览器
+        model: 'whisper-1',
+        language: 'zh',
+        timeoutMs: 60000,
+        maxTurnSeconds: 60
+      },
       bark: { enabled: false, url: '' },   // 例：https://api.day.app/你的Key
       ntfy: { enabled: false, server: 'https://ntfy.sh', topic: '' },  // Android/OPPO 推荐
       webhooks: {},                  // { 名称: { url, method, headers, confirm } }
@@ -129,7 +138,7 @@ function createConfig(deps) {
     if (!configRaw || typeof configRaw !== 'object') return false;
     if (Object.keys(d).some(k => !(k in configRaw))) return true;
     let nestedMissing = false;
-    ['music', 'tts', 'ttsMimo', 'bark', 'ntfy', 'proactive'].forEach(k => {
+    ['music', 'tts', 'ttsMimo', 'voiceAsr', 'bark', 'ntfy', 'proactive'].forEach(k => {
       const dv = d[k], rv = configRaw[k];
       if (dv && typeof dv === 'object' && rv && typeof rv === 'object') {
         if (Object.keys(dv).some(n => !(n in rv))) nestedMissing = true;

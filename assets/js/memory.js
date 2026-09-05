@@ -248,6 +248,7 @@ async function saveMemory(){
 async function deleteMemory(id){
   if(!confirm('确定删除这条记忆？'))return;
   await dbDelete('memories',id);
+  try{await _reconcileReferences(id)}catch(e){}/* 证据失效→建议的 Understanding/Thread 置 stale/orphan（不级联删） */
   renderMemories();updateMemDashboard();toast('记忆已删除');
 }
 
@@ -658,6 +659,8 @@ async function saveInlineEdit(id){
   if(m.createdBy&&m.createdBy!=='user')m.editedByUser=true;
   m.lastActivated=Date.now();
   await dbPut('memories',m);
+  /* 编辑可能使引用它的 Understanding/Thread 的证据口径变化 → 轻度调和（内容修订不降级，仅更新） */
+  if(id)try{await _reconcileReferences(id)}catch(e){}
   renderMemories();updateMemDashboard();
   toast('记忆已更新');
 }
@@ -794,7 +797,75 @@ async function writeOneLineToMemory(memId){
   }catch(e){toast('请求失败：'+e.message)}
 }
 
-/* --- 快捷创建记忆（供其他模块调用）--- */
+/* --- 存量审计：扫描已有记忆中的"文学化自我感慨 / 无未来价值观察"候选 ---
+   只读返回候选列表（title/content/id/creator/lyricFlags），不删除。
+   供清理 UI / 用户确认后手动删除；绝不自动删。仅针对 AI 生成（createdBy!='user'）的真实
+   self-reflection 记忆，避免误伤用户手记或带明确事实/偏好/身份/重复的证据型记忆。 */
+async function scanLyricalMemories(){
+  try{
+    const all=await dbGetAll('memories');
+    const flags=(typeof window._memoryLyricFlags==='function')?window._memoryLyricFlags:null;
+    if(!flags)return [];
+    const candidates=[];
+    for(const m of all||[]){
+      if(!m||String(m.createdBy||'')==='user')continue;/* 只扫描 AI 生成 */
+      const text=String((m.title||'')+' '+(m.summary||'')+' '+(m.content||''));
+      const f=flags(text);
+      /* 命中文学感慨或自我观察，且无明显事实标记(偏好/身份/目标/重复)则列为候选 */
+      const hasFact=/偏好|喜欢|习惯|身份|职业|目标|承诺|约定|希望|想要|决定|说|明确|告诉/i.test(text);
+      if((f.lyric||f.personReflect)&&!hasFact){
+        candidates.push({id:m.id,title:m.title||'',content:(m.content||'').slice(0,80),createdBy:m.createdBy,createdByName:m.createdByName||'',domain:m.domain||'',created:m.created||0,flags:f});
+      }
+    }
+    return candidates;
+  }catch(e){return[]}
+}
+/* ── 清理无意义记忆 UI：扫描候选 → 勾选 → 确认删除（不自动删） ── */
+var _cleanLyricsCandidates=[];
+function _cleanLyricsEl(id){return document.getElementById(id)}
+function _renderCleanLyricsList(candidates){
+  var list=_cleanLyricsEl('mem-clean-list'),empty=_cleanLyricsEl('mem-clean-empty'),delBtn=_cleanLyricsEl('mem-clean-delete-btn'),cnt=_cleanLyricsEl('mem-clean-count');
+  if(!list)return;
+  if(!candidates||!candidates.length){list.innerHTML='';if(empty)empty.style.display='block';if(delBtn)delBtn.disabled=true;if(cnt)cnt.textContent='0';return}
+  if(empty)empty.style.display='none';
+  list.innerHTML=candidates.map(function(c){
+    var name=c.createdByName||c.createdBy||'AI';
+    var date=c.created?new Date(c.created).toLocaleDateString('zh-CN'):'';
+    return '<label class="mem-clean-item">'
+      +'<input type="checkbox" class="mem-clean-cb" value="'+esc(c.id)+'" onchange="updateCleanLyricsBtns()">'
+      +'<span class="mem-clean-body"><span class="mem-clean-title">'+esc(c.title||'无标题')+'</span>'
+      +'<span class="mem-clean-meta">'+esc(name)+' · '+esc(c.domain||'')+' · '+esc(date)+'</span>'
+      +'<span class="mem-clean-preview">'+esc(c.content||'')+'</span></span></label>';
+  }).join('');
+  if(delBtn)delBtn.disabled=true;if(cnt)cnt.textContent='0';
+}
+function updateCleanLyricsBtns(){
+  var checked=document.querySelectorAll('.mem-clean-cb:checked');
+  var delBtn=_cleanLyricsEl('mem-clean-delete-btn'),cnt=_cleanLyricsEl('mem-clean-count');
+  if(delBtn)delBtn.disabled=checked.length===0;
+  if(cnt)cnt.textContent=String(checked.length);
+}
+async function openCleanLyricsModal(){
+  var ov=_cleanLyricsEl('mem-clean-overlay');if(!ov)return;
+  ov.classList.add('show');
+  var list=_cleanLyricsEl('mem-clean-list');if(list)list.innerHTML='<div class="mem-clean-loading">扫描中…</div>';
+  _cleanLyricsCandidates=await scanLyricalMemories();
+  _renderCleanLyricsList(_cleanLyricsCandidates);
+  if(_cleanLyricsCandidates.length)toast('发现 '+_cleanLyricsCandidates.length+' 条无意义记忆候选');
+}
+function closeCleanLyricsModal(){
+  var ov=_cleanLyricsEl('mem-clean-overlay');if(ov)ov.classList.remove('show');
+}
+async function deleteCheckedCleanLyrics(){
+  var ids=[].map.call(document.querySelectorAll('.mem-clean-cb:checked'),function(cb){return cb.value});
+  if(!ids.length)return;
+  if(!confirm('确定删除选中的 '+ids.length+' 条记忆？此操作不可恢复。'))return;
+  for(var i=0;i<ids.length;i++){try{await dbDelete('memories',ids[i])}catch(e){}}
+  _cleanLyricsCandidates=_cleanLyricsCandidates.filter(function(c){return ids.indexOf(c.id)<0});
+  _renderCleanLyricsList(_cleanLyricsCandidates);
+  renderMemories();updateMemDashboard();
+  toast('已删除 '+ids.length+' 条无意义记忆');
+}
 async function quickCreateMemory(data){
   const mem={
     id:'mem_'+Date.now()+'_'+Math.floor(Math.random()*10000),
@@ -813,10 +884,232 @@ async function quickCreateMemory(data){
     activationCount:0,created:Date.now(),lastActivated:Date.now(),
     createdBy:data.createdBy||'user',
     createdByName:data.createdByName||'',
-    editedByUser:false
+    editedByUser:false,
+    /* Memory Consolidation v1：可选字段（无则缺省，不影响既有记忆与评分/召回） */
+    kind:data.kind||'episodic',
+    consolidatedFrom:Array.isArray(data.consolidatedFrom)?data.consolidatedFrom.slice(0,50):[],
+    lastConsolidatedAt:data.lastConsolidatedAt!=null?Number(data.lastConsolidatedAt):null
   };
   await dbPut('memories',mem);
   return mem.id;
+}
+
+/* ====================== UNDERSTANDING + THREAD v1（认识层·线索层） ======================
+   独立 domain，与 memories / autoMemory 分离。
+   Understanding：对"这个人/这段关系"的活文档（rewrite 式），current + history(cap 20) + evidenceIds + basis + conviction + status。
+   Thread：最小 open thread（open/close + evidenceIds + mentionCount），v1 不实现三池/HyDE/向量/merge-split。
+   硬约束：二者是独立 objectStore；不进入 getMemoryContext / getMemoryScore（recall 池）。
+   ==================================================================================== */
+var U_HISTORY_CAP = 20;
+var U_DIMENSIONS = ['values','habits','identity','relationship','preferences','context'];
+var U_BASIS = ['user_stated','user_corroborated','ai_inference','ai_guess'];
+/* Thread 近重复去重：两条 question 的 _activeTextSimilarity ≥ 此阈值视为同一未闭合事项，复用已有 open Thread。
+   注意：_activeTextSimilarity 是字符 bigram Jaccard，对近字面重复（≥0.5）可靠；对改写式释义不敏感，
+   阈值 0.5 只拦截近字面同义重复，避免对真正不同事项误合并。 */
+var THREAD_SIM_THRESHOLD = 0.5;
+
+function _unNewId(){return 'un_'+Date.now().toString(36)+'_'+Math.floor(Math.random()*46656).toString(36)}
+function _thNewId(){return 'th_'+Date.now().toString(36)+'_'+Math.floor(Math.random()*46656).toString(36)}
+
+/* --- Understanding：按角色取当前活文档（取 status==='active' 的最新一条） --- */
+async function unGetActive(characterId){
+  try{
+    const list=await dbGetByIndex('understandings','byCharacter',characterId);
+    const active=list.filter(u=>u&&u.status==='active'&&String(u.characterId||'')===String(characterId));
+    active.sort((a,b)=>(b.lastUpdatedAt||b.createdAt||0)-(a.lastUpdatedAt||a.createdAt||0));
+    return active[0]||null;
+  }catch(e){return null}
+}
+async function unGetAll(characterId){
+  try{return await dbGetByIndex('understandings','byCharacter',characterId)}catch(e){return[]}
+}
+/* --- Understanding：创建/更新活文档（rewrite 式：写 current，旧 current 入 history，cap 20） --- */
+async function unSave(u){
+  if(!u||!u.characterId)return null;
+  if(!u.id)u.id=_unNewId();
+  u.kind='understanding';
+  if(!u.status)u.status='active';
+  if(!Array.isArray(u.history))u.history=[];
+  if(!Array.isArray(u.current.evidenceIds))u.current.evidenceIds=[];
+  if(u.current.updatedAt==null)u.current.updatedAt=Date.now();
+  u.lastUpdatedAt=Date.now();
+  if(!u.createdAt)u.createdAt=Date.now();
+  if(u.history.length>U_HISTORY_CAP)u.history=u.history.slice(-U_HISTORY_CAP);
+  await dbPut('understandings',u);
+  return u;
+}
+/* --- Understanding：更新活文档（重写 current + 留版本）。existing 存在则追加 history，否则新建 --- */
+async function unWrite(characterId,next){
+  const existing=await unGetActive(characterId);
+  const now=Date.now();
+  const nextCurrent={
+    content:String(next.content||'').trim(),
+    conviction:Math.max(0,Math.min(100,Number(next.conviction)||0)),
+    evidenceIds:(Array.isArray(next.evidenceIds)?next.evidenceIds:(next.evidenceIds?[next.evidenceIds]:[])).slice(0,100),
+    basis:U_BASIS.includes(next.basis)?next.basis:'ai_guess',
+    updatedAt:now,
+    updatedBy:next.updatedBy||''
+  };
+  if(!nextCurrent.content)return null;
+  const u=existing||{id:_unNewId(),characterId:characterId,status:'active',dimension:U_DIMENSIONS.includes(next.dimension)?next.dimension:'context',createdAt:now};
+  if(u.dimension!==next.dimension&&U_DIMENSIONS.includes(next.dimension))u.dimension=next.dimension;
+  /* 版本史：现有 current 除非与新版完全一致，否则入 history */
+  if(u.current&&u.current.content){
+    if(u.current.content!==nextCurrent.content){
+      u.history.push(u.current);
+      if(u.history.length>U_HISTORY_CAP)u.history=u.history.slice(-U_HISTORY_CAP);
+    }
+  }
+  u.current=nextCurrent;
+  return await unSave(u);
+}
+/* --- Understanding：标记状态（contested / stale），不删除、保留 history --- */
+async function unSetStatus(id,status,reason){
+  const u=await dbGet('understandings',id);if(!u)return null;
+  u.status=status;
+  if(reason)u.closedReason=reason;
+  u.lastUpdatedAt=Date.now();
+  return await unSave(u);
+}
+/* 用户否决一条理解：置 contaminated/contested，保留 history，退出注入 */
+async function rejectUnderstanding(id){
+  const u=await dbGet('understandings',id);if(!u)return null;
+  return await unSetStatus(id,'contested','user-vetoed');
+}
+
+/* --- Thread：最小 open thread（open/close） --- */
+async function thGetOpen(characterId){
+  try{
+    const list=await dbGetByIndex('threads','byCharacter',characterId);
+    return list.filter(t=>t&&t.status==='open'&&String(t.characterId||'')===String(characterId)).sort((a,b)=>(b.lastUpdatedAt||b.createdAt||0)-(a.lastUpdatedAt||a.createdAt||0));
+  }catch(e){return[]}
+}
+async function thGetAll(characterId){
+  try{return await dbGetByIndex('threads','byCharacter',characterId)}catch(e){return[]}
+}
+async function thSave(t){
+  if(!t||!t.characterId)return null;
+  if(!t.id)t.id=_thNewId();
+  t.kind='thread';
+  if(!t.status)t.status='open';
+  if(!Array.isArray(t.evidenceIds))t.evidenceIds=[];
+  t.lastUpdatedAt=Date.now();
+  if(!t.createdAt)t.createdAt=Date.now();
+  await dbPut('threads',t);
+  return t;
+}
+/* --- Thread：开 open（重复开同类 question 则复用，evidenceIds 并集） --- */
+async function thOpen(characterId,question,evidenceIds,createdBy){
+  question=String(question||'').trim();
+  if(!question||!characterId)return null;
+  const ev=Array.isArray(evidenceIds)?evidenceIds:(evidenceIds?[evidenceIds]:[]);
+  const open=await thGetOpen(characterId);
+  /* 精确复用：完全相同 question → 复用（既有行为，保留） */
+  const existing=open.find(t=>t.question===question);
+  if(existing){
+    const merged=Array.from(new Set((existing.evidenceIds||[]).concat(ev)));
+    existing.evidenceIds=merged;
+    existing.mentionCount=(existing.mentionCount||0)+1;
+    existing.lastUpdatedAt=Date.now();
+    return await thSave(existing);
+  }
+  /* 近重复去重：无完全相等 question 时，找语义相似（≥ THREAD_SIM_THRESHOLD）的 open Thread → 复用，不新建。
+     仅当 _activeTextSimilarity 可用时才启用（运行时已加载 active-diary.js）。 */
+  const sim=(typeof window._activeTextSimilarity==='function')?window._activeTextSimilarity:null;
+  if(sim){
+    const near=open.find(t=>t.question&&sim(t.question,question)>=THREAD_SIM_THRESHOLD);
+    if(near){
+      const merged=Array.from(new Set((near.evidenceIds||[]).concat(ev)));
+      near.evidenceIds=merged;
+      near.mentionCount=(near.mentionCount||0)+1;
+      near.lastUpdatedAt=Date.now();
+      /* 保留更完整的 question 表述：只在原 question 过短时用新 question 兜底，避免频繁改写主线 */
+      if(near.question.length<question.length)near.question=question;
+      return await thSave(near);
+    }
+  }
+  return await thSave({characterId:characterId,question:question,status:'open',evidenceIds:ev.slice(0,100),mentionCount:1,createdBy:createdBy||'ai',createdAt:Date.now(),lastUpdatedAt:Date.now()});
+}
+/* --- Thread：标记关闭（记录 closure，不删除） --- */
+async function thClose(id,reason){
+  const t=await dbGet('threads',id);if(!t)return null;
+  t.status='closed';
+  t.closedAt=Date.now();
+  t.closedReason=reason||'';
+  t.lastUpdatedAt=Date.now();
+  return await thSave(t);
+}
+/* --- Thread：同主题推进（mention） --- */
+async function thMention(id,evidenceId){
+  const t=await dbGet('threads',id);if(!t||t.status!=='open')return null;
+  if(evidenceId&&!t.evidenceIds.includes(evidenceId))t.evidenceIds.push(evidenceId);
+  t.mentionCount=(t.mentionCount||0)+1;
+  t.lastUpdatedAt=Date.now();
+  return await thSave(t);
+}
+
+/* --- Context 注入：Understanding / Thread（走 tail，不进 system；独立于 getMemoryContext） --- */
+async function getUnderstandingContext(characterId,opts){
+  opts=opts||{};
+  try{
+    const u=await unGetActive(characterId);
+    if(!u||!u.current||!u.current.content)return '';
+    const head=u.current.content.slice(0,opts.maxChars||300);
+    const dim=u.dimension||'context';
+    let ctx='【对TA的当前理解（后台参考，勿向对方复述此段的存在）】\n'
+      +'- 维度：'+dim+' · 置信：'+u.current.conviction+'% · 依据：'+(u.current.evidenceIds||[]).length+' 条记忆\n'
+      +'- '+head;
+    return ctx;
+  }catch(e){return ''}
+}
+async function getThreadContext(characterId,opts){
+  opts=opts||{};
+  try{
+    const open=await thGetOpen(characterId);
+    if(!open.length)return '';
+    let ctx='【仍在推进的线索（后台参考，勿向对方复述此段的存在）】';
+    open.slice(0,opts.maxThreads||3).forEach(t=>{
+      ctx+='\n- '+t.question+'（提到 '+((t.mentionCount||0))+' 次，依据 '+(t.evidenceIds||[]).length+' 条记忆）';
+    });
+    return ctx;
+  }catch(e){return ''}
+}
+/* --- 生命周期调和：记忆被删/改后，同步引用它的 Understanding/Thread 的失效标记（不级联删） --- */
+async function _reconcileReferences(memId){
+  try{
+    if(!memId)return;
+    const us=await dbGetAll('understandings');
+    for(const u of us){
+      if(!u)continue;
+      const ev=Array.isArray(u.current&&u.current.evidenceIds)?u.current.evidenceIds:[];
+      if(ev.includes(memId)){
+        /* 证据含被删记忆：若所有证据都失效 → stale；否则仅标记 */
+        const fresh=Array.isArray(u.current.evidenceIds)?u.current.evidenceIds:[];
+        const alive=await unEvidenceAlive(fresh);
+        if(!alive.length){u.status='stale';u.closedReason='evidence-lost';
+          try{await dbPut('understandings',u)}catch(e){}}
+      }
+    }
+    const ts=await dbGetAll('threads');
+    for(const t of ts){
+      if(!t)continue;
+      if((t.evidenceIds||[]).includes(memId)){
+        const full=await thEvidenceAlive(t.evidenceIds||[]);
+        if(!full.length){t.status='orphan';t.closedReason='evidence-lost';t.closedAt=Date.now();
+          try{await dbPut('threads',t)}catch(e){}}
+      }
+    }
+  }catch(e){}
+}
+async function unEvidenceAlive(ids){
+  if(!ids||!ids.length)return[];
+  try{
+    const all=await dbGetAll('memories');
+    return ids.filter(id=>all.some(m=>m&&m.id===id));
+  }catch(e){return ids}
+}
+async function thEvidenceAlive(ids){
+  return await unEvidenceAlive(ids);
 }
 
 /* 解析 AI 生成记忆时返回的「字段：值」文本。
@@ -953,7 +1246,12 @@ async function _generateMemoryCore(cfg,prompt,opts){
     const visibility=/private|私密/i.test(parsedCandidate.visibility)?'private':'public';
     const memoryData={title,summary,content,source:opts.source||'manual',sourceId:opts.sourceId||'',domain,tags,valence,arousal,importance,resolved,visibility,
       createdBy:opts.createdBy||cfg.id,createdByName:opts.createdByName||''};
-    const confidence=await _calibrateMemoryCandidate({content:title+' '+summary+' '+content,confidence:parsedCandidate.confidence,reasons:parsedCandidate.reasons,operation:'create',targetStore:'memories',cfg,category:domain});
+    const confidence=await _calibrateMemoryCandidate({content:title+' '+summary+' '+content,confidence:parsedCandidate.confidence,reasons:parsedCandidate.reasons,operation:'create',targetStore:'memories',cfg,category:domain,createdByUser:((opts.createdBy==='user')||!opts.createdBy)});
+    /* 硬拒（如文学化自我感慨）→ 直接放弃，不进入审批弹窗，也不写库 */
+    if(confidence&&confidence.rejected){
+      toast((opts.successPrefix||'记忆')+' 已拒绝写入：'+(confidence.reasons&&confidence.reasons[0]||'无长期价值'));
+      return;
+    }
     const decision=await requestMemoryApproval({
       operation:'create',targetStore:'memories',characterName:opts.createdByName||cfg.nickname||cfg.model||'AI',avatar:cfg.avatar||'',
       content:title+(summary?'\n\n'+summary:'')+(content?'\n\n'+content:''),source:(opts.source||'memory')+' · '+domain,
@@ -1597,6 +1895,27 @@ window.exportMemories=exportMemories;
 window.importMemoriesFile=importMemoriesFile;
 window.writeOneLineToMemory=writeOneLineToMemory;
 window.quickCreateMemory=quickCreateMemory;
+window.scanLyricalMemories=scanLyricalMemories;
+window.openCleanLyricsModal=openCleanLyricsModal;
+window.closeCleanLyricsModal=closeCleanLyricsModal;
+window.deleteCheckedCleanLyrics=deleteCheckedCleanLyrics;
+window.updateCleanLyricsBtns=updateCleanLyricsBtns;
+window.unGetActive=unGetActive;
+window.unGetAll=unGetAll;
+window.unSave=unSave;
+window.unWrite=unWrite;
+window.unSetStatus=unSetStatus;
+window.rejectUnderstanding=rejectUnderstanding;
+window.thGetOpen=thGetOpen;
+window.thGetAll=thGetAll;
+window.thSave=thSave;
+window.thOpen=thOpen;
+window.THREAD_SIM_THRESHOLD=THREAD_SIM_THRESHOLD;
+window.thClose=thClose;
+window.thMention=thMention;
+window.getUnderstandingContext=getUnderstandingContext;
+window.getThreadContext=getThreadContext;
+window._reconcileReferences=_reconcileReferences;
 window.parseMemoryFields=parseMemoryFields;
 window.parseMemoryCandidateResponse=parseMemoryCandidateResponse;
 window._memoryCandidateJsonPrompt=_memoryCandidateJsonPrompt;
@@ -1662,6 +1981,23 @@ NS.expose('memory', {
   importMemoriesFile: importMemoriesFile,
   writeOneLineToMemory: writeOneLineToMemory,
   quickCreateMemory: quickCreateMemory,
+  scanLyricalMemories: scanLyricalMemories,
+  unGetActive: unGetActive,
+  unGetAll: unGetAll,
+  unSave: unSave,
+  unWrite: unWrite,
+  unSetStatus: unSetStatus,
+  rejectUnderstanding: rejectUnderstanding,
+  thGetOpen: thGetOpen,
+  thGetAll: thGetAll,
+  thSave: thSave,
+  thOpen: thOpen,
+  THREAD_SIM_THRESHOLD: THREAD_SIM_THRESHOLD,
+  thClose: thClose,
+  thMention: thMention,
+  getUnderstandingContext: getUnderstandingContext,
+  getThreadContext: getThreadContext,
+  _reconcileReferences: _reconcileReferences,
   parseMemoryFields: parseMemoryFields,
   parseMemoryCandidateResponse: parseMemoryCandidateResponse,
   _memoryCandidateJsonPrompt: _memoryCandidateJsonPrompt,

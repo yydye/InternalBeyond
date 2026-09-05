@@ -108,6 +108,7 @@ function createRoutes(ctx) {
     if (copy.music) copy.music.kugouCookie = mask(copy.music.kugouCookie);
     if (copy.tts) copy.tts.apiKey = mask(copy.tts.apiKey);
     if (copy.ttsMimo) copy.ttsMimo.apiKey = mask(copy.ttsMimo.apiKey);
+    if (copy.voiceAsr) copy.voiceAsr.apiKey = mask(copy.voiceAsr.apiKey);
     if (copy.bark) copy.bark.url = mask(copy.bark.url);
     if (copy.webhooks && typeof copy.webhooks === 'object') {
       Object.keys(copy.webhooks).forEach(key => {
@@ -173,6 +174,7 @@ function createRoutes(ctx) {
         ntfy: !!(config.ntfy && config.ntfy.enabled && config.ntfy.topic),
         openaiTts: !!(config.tts && config.tts.enabled && config.tts.endpoint && config.tts.apiKey),
         mimoTts: !!(config.ttsMimo && config.ttsMimo.enabled && config.ttsMimo.endpoint && config.ttsMimo.apiKey),
+        voiceAsr: !!(config.voiceAsr && config.voiceAsr.enabled && config.voiceAsr.endpoint && config.voiceAsr.apiKey && config.voiceAsr.model),
         proactive: !!(config.proactive && config.proactive.enabled && config.proactive.endpoint),
         localAddresses: LAN_EXPOSED ? lanAddresses() : []
       },
@@ -291,6 +293,7 @@ function createRoutes(ctx) {
         ntfy: !!(config.ntfy && config.ntfy.enabled && config.ntfy.topic),
         tts: !!(config.tts && config.tts.enabled && config.tts.endpoint && config.tts.apiKey),
         mimoTts: !!(config.ttsMimo && config.ttsMimo.enabled && config.ttsMimo.endpoint && config.ttsMimo.apiKey),
+        voiceAsr: !!(config.voiceAsr && config.voiceAsr.enabled && config.voiceAsr.endpoint && config.voiceAsr.apiKey && config.voiceAsr.model),
         resident: Object.keys(resident).length,
         musicProvider: (config.music && config.music.provider) || 'kugou',
         lan: LAN_EXPOSED,

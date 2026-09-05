@@ -280,7 +280,7 @@ body:not(.theme-infernal) #navbar.on-subpage .nav-user-avatar{border-color:rgba(
 #navbar.on-subpage{background:rgba(25,38,65,0.12)}
 
 /* Internal theme: white/light-blue sub-page overlay & UI */
-body:not(.theme-infernal) .page-overlay.show{background:rgba(235,244,255,0.5);backdrop-filter:blur(32px);transition:background 3s ease,backdrop-filter 3s ease saturate(1.2);-webkit-backdrop-filter:blur(32px) saturate(1.2)}
+body:not(.theme-infernal) .page-overlay.show{background:rgba(235,244,255,0.32);backdrop-filter:blur(14px) saturate(1.1);transition:background 3s ease,backdrop-filter 3s ease saturate(1.1);-webkit-backdrop-filter:blur(14px) saturate(1.1)}
 
 /* === Light mode: white text glow for readability === */
 body:not(.theme-infernal) .page.active,body:not(.theme-infernal) .page.active h2,body:not(.theme-infernal) .page.active h3,body:not(.theme-infernal) .page.active h4,body:not(.theme-infernal) .page.active p,body:not(.theme-infernal) .page.active span,body:not(.theme-infernal) .page.active label,body:not(.theme-infernal) .page.active div,body:not(.theme-infernal) .page.active button{text-shadow:0 0 8px rgba(255,255,255,0.4),0 0 18px rgba(255,255,255,0.25),0 0 32px rgba(255,255,255,0.1)}
@@ -377,6 +377,138 @@ body:not(.theme-infernal) .page.active .module-intro-sub{color:rgba(40,85,145,0.
 body:not(.theme-infernal) .page.active .module-intro-desc{color:#1a3262;text-shadow:0 0 8px rgba(255,255,255,0.3)}
 body:not(.theme-infernal) .module-intro{--mi-rule:rgba(38,84,140,0.28)}
 /* Infernal theme: inherits Internal B */
-body.theme-infernal .page-overlay.show{background:rgba(25,45,70,0.18);backdrop-filter:blur(26px) saturate(1.15);-webkit-backdrop-filter:blur(26px) saturate(1.15)}
+body.theme-infernal .page-overlay.show{background:rgba(25,45,70,0.16);backdrop-filter:blur(12px) saturate(1.1);-webkit-backdrop-filter:blur(12px) saturate(1.1)}
 body.theme-infernal .glass-card{background:var(--surface-card);border-color:var(--border-soft);box-shadow:var(--shadow-card)}
 body.theme-infernal .glass-card:hover{border-color:var(--border-strong);box-shadow:var(--shadow-panel)}
+
+/* 深渊暗线：只在 Infernal（暗色）模式可瞥见——出口线索藏在暗处，非警告 */
+body.theme-infernal .ib-beyond-leave{position:fixed;left:50%;bottom:6px;transform:translateX(-50%);font-size:10px;line-height:1;letter-spacing:.06em;opacity:.13;color:var(--content-primary);pointer-events:none;user-select:none;z-index:5}
+
+/* ── IB 隐藏彩蛋 · The Basement / INFERNAL BEYOND（纯展示层，均不参与正常 UI） ── */
+.ib-basement-crack{position:absolute;width:34px;height:30px;pointer-events:none;opacity:.8;z-index:3;
+  background:radial-gradient(ellipse at center,rgba(0,0,0,.85) 0%,transparent 68%);}
+.ib-basement-crack::after{content:'';position:absolute;inset:0;
+  background:linear-gradient(120deg,transparent 40%,rgba(0,0,0,.9) 47%,transparent 54%),
+             linear-gradient(60deg,transparent 44%,rgba(0,0,0,.8) 51%,transparent 58%);}
+.ib-basement-stairs{position:absolute;width:46px;height:58px;cursor:pointer;opacity:0;pointer-events:none;transition:opacity .5s ease;z-index:4;
+  background:repeating-linear-gradient(to bottom,rgba(20,28,44,.9) 0 7px,rgba(6,10,18,.95) 7px 14px);}
+.ib-basement-stairs:hover{opacity:1;pointer-events:auto;}
+.ib-basement{position:fixed;inset:0;z-index:900;background:#04060c;display:flex;align-items:center;justify-content:center;}
+.ib-basement[hidden]{display:none;}
+.ib-basement-core{font-family:'Cormorant Garamond',serif;letter-spacing:.4em;color:#c8b6f0;font-size:1.6rem;text-transform:uppercase;
+  padding:30px 44px;cursor:pointer;border:1px solid rgba(140,120,200,.25);border-radius:6px;
+  text-shadow:0 0 24px rgba(150,120,255,.5);}
+.ib-basement-core:hover{color:#eadcff;border-color:rgba(170,150,255,.5);}
+.ib-basement-return{position:fixed;right:10px;bottom:8px;z-index:901;color:rgba(150,160,190,.18);font-size:14px;cursor:pointer;pointer-events:auto;user-select:none;}
+.ib-basement-return:hover{color:rgba(200,210,240,.7);}
+.ib-basement-blind{position:fixed;inset:0;z-index:1100;background:#000;color:#d9d2f2;display:flex;align-items:center;justify-content:center;
+  font-size:1.05rem;letter-spacing:.14em;text-align:center;padding:0 28px;opacity:1;transition:opacity .9s ease;
+  text-shadow:0 0 18px rgba(170,140,255,.4);}
+/* INFERNAL BEYOND Mode：可感知但克制的深渊化叠加（只加一层暗部与细线，不动现有主题变量） */
+body.infernal-beyond::after{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:radial-gradient(ellipse at 50% 120%,rgba(60,30,90,.28),transparent 62%);}
+body.infernal-beyond #app{position:relative;z-index:1;}
+
+/* ── 书柜入口：复用 ix-marker 视觉，仅收敛触点尺寸以避免挡到地面 ── */
+.ib-bookshelf-marker{width:64px;height:64px;}
+
+/* ── 密码锁 overlay（同地下室，纯展示层，不参与正常 UI 渲染） ── */
+.ib-lock{position:fixed;inset:0;z-index:950;background:rgba(4,6,12,.86);display:flex;align-items:center;justify-content:center;}
+.ib-lock[hidden]{display:none;}
+.ib-lock-panel{width:min(340px,86vw);background:linear-gradient(160deg,rgba(24,30,48,.96),rgba(14,18,32,.97));
+  border:1px solid rgba(150,130,210,.28);border-radius:14px;padding:22px 24px 26px;box-shadow:0 14px 44px rgba(0,0,0,.55),0 0 24px rgba(120,95,220,.14);
+  color:#d9d2f2;text-align:center;font-family:'Cormorant Garamond',serif;}
+.ib-lock-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;}
+.ib-lock-title{font-size:1.15rem;letter-spacing:.4em;text-transform:uppercase;color:#c8b6f0;text-shadow:0 0 12px rgba(150,120,255,.4);}
+.ib-lock-x{background:none;border:none;color:rgba(160,170,200,.5);font-size:1rem;cursor:pointer;padding:2px 6px;line-height:1;}
+.ib-lock-x:hover{color:#eae2ff;}
+.ib-lock-readout{display:flex;justify-content:center;gap:14px;margin:16px 0 20px;}
+.ib-lock-digit{width:52px;height:64px;display:flex;align-items:center;justify-content:center;
+  font-size:2rem;letter-spacing:.05em;color:#efe8ff;background:rgba(8,12,24,.72);
+  border:1px solid rgba(150,130,210,.22);border-radius:10px;text-shadow:0 0 12px rgba(170,140,255,.45);}
+.ib-lock-pad{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;}
+.ib-lock-key{background:rgba(30,38,60,.72);border:1px solid rgba(150,130,210,.2);border-radius:9px;color:#e6defc;
+  font-family:'Cormorant Garamond',serif;font-size:1.3rem;padding:12px 0;cursor:pointer;transition:background .15s ease,transform .05s ease;}
+.ib-lock-key:hover{background:rgba(50,60,90,.8);}
+.ib-lock-key:active{transform:scale(.96);}
+.ib-lock-key-ok{grid-column:1 / span 3;color:#b9a8ff;}
+.ib-lock-hint{min-height:18px;margin-top:14px;font-size:.8rem;letter-spacing:.1em;color:rgba(160,150,200,.55);}
+.ib-shake{animation:ibShake .4s ease;}
+@keyframes ibShake{0%,100%{transform:translateX(0)}20%{transform:translateX(-7px)}40%{transform:translateX(7px)}60%{transform:translateX(-5px)}80%{transform:translateX(5px)}}
+
+/* ── Middle Brain（全局 · GPT-6 Astra）设置卡片：仅布局样式，避免 inline style 预算 ── */
+.mb-desc{opacity:.75;font-size:.88rem;margin:4px 0 12px;}
+.mb-toggle-row{margin-bottom:10px;}
+.mb-row{display:flex;gap:14px;flex-wrap:wrap;}
+.mb-col{flex:1;min-width:220px;margin-bottom:0;}
+.mb-col-sm{min-width:180px;}
+.mb-apikey-group{margin-top:12px;margin-bottom:0;}
+.mb-actions{margin-top:14px;display:flex;gap:10px;}
+.mb-save-status{opacity:.75;align-self:center;font-size:.85rem;}
+/* ── Middle Brain · Astra Cognitive Control（Phase 4 高级设置）── */
+.mb-adv-divider{height:1px;background:var(--glass-border);opacity:.5;margin:16px 0;}
+.mb-adv-card{border:1px solid var(--glass-border);border-radius:12px;padding:14px 16px;background:linear-gradient(180deg,rgba(120,140,255,.05),transparent);}
+.mb-adv-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px;}
+.mb-adv-title{font-weight:600;font-size:.92rem;letter-spacing:.02em;opacity:.9;}
+.mb-adv-summary{font-size:.78rem;padding:3px 10px;border-radius:999px;background:var(--glass-bg);border:1px solid var(--glass-border);opacity:.9;}
+.mb-adv-section{margin-top:12px;}
+.mb-adv-label{font-size:.72rem;text-transform:uppercase;letter-spacing:.1em;opacity:.6;margin-bottom:7px;}
+.mb-model-static-hint{font-size:.75rem;opacity:.55;}
+/* 模型 swiper：左右箭头 + 中央当前模型 + 档位条 */
+.mb-model-row{display:flex;align-items:center;gap:10px;}
+.mb-model-arrow{flex:0 0 auto;width:34px;height:34px;border:1px solid var(--glass-border);background:transparent;color:var(--content-primary);border-radius:9px;cursor:pointer;font-size:.8rem;transition:border-color .15s,background .15s;}
+.mb-model-arrow:hover{border-color:var(--accent);background:var(--glass-bg);}
+.mb-model-center{flex:1;text-align:center;min-width:0;}
+.mb-model-name{font-weight:600;font-size:.98rem;letter-spacing:.01em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.mb-model-sub{margin-top:2px;font-size:.72rem;opacity:.5;text-transform:uppercase;letter-spacing:.08em;}
+.mb-model-strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(0,1fr));gap:6px;margin-top:10px;}
+.mb-model-cell{margin:0;padding:7px 6px;font-size:.74rem;text-align:center;border:1px solid var(--glass-border);border-radius:8px;background:transparent;color:var(--content-primary);cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;transition:border-color .15s,background .15s;}
+.mb-model-cell:hover{border-color:var(--accent);}
+.mb-model-cell.mb-model-active{border-color:var(--accent);background:linear-gradient(180deg,rgba(120,140,255,.14),transparent);color:var(--accent);font-weight:600;}
+/* 可拖拽 slider（Reasoning / Speed 共用） */
+.mb-reasoning,.mb-speed{user-select:none;-webkit-user-select:none;}
+.mb-adv-slider-value{margin-bottom:8px;font-size:.95rem;font-weight:600;color:var(--accent);}
+.mb-trk{position:relative;height:26px;cursor:pointer;touch-action:none;}
+.mb-trk::before{content:"";position:absolute;left:0;right:0;top:50%;height:2px;transform:translateY(-50%);background:var(--glass-border);border-radius:2px;}
+.mb-fill{position:absolute;left:0;top:50%;height:2px;transform:translateY(-50%);background:var(--accent);border-radius:2px;pointer-events:none;}
+.mb-thumb{position:absolute;top:50%;width:14px;height:14px;transform:translate(-50%,-50%);background:var(--accent);border-radius:50%;border:2px solid var(--surface-card);box-shadow:0 1px 4px rgba(0,0,0,.2);pointer-events:none;}
+.mb-thumb-grab{pointer-events:auto;cursor:grab;}
+.mb-thumb-grab:active{cursor:grabbing;}
+.mb-adv-reasoning .mb-trk{cursor:grab;}
+.mb-adv-reasoning .mb-ticks{cursor:grab;}
+.mb-ticks{position:absolute;inset:0;}
+.mb-tick{position:absolute;top:50%;width:6px;height:6px;transform:translate(-50%,-50%);border-radius:50%;background:var(--glass-border);cursor:pointer;}
+.mb-tick.mb-tick-active{background:var(--accent);box-shadow:0 0 0 3px rgba(120,140,255,.18);}
+.mb-labels{display:flex;justify-content:space-between;margin-top:8px;}
+.mb-lbl{font-size:.72rem;opacity:.62;font-weight:500;}
+/* Speed：⚡ 闪电切换按钮（激活时平滑过渡为紫色，非瞬间） */
+.mb-adv-speed{display:flex;flex-direction:column;align-items:flex-start;gap:0;}
+.mb-speed-btn{display:inline-flex;align-items:center;gap:9px;padding:9px 18px;border:1px solid var(--glass-border);border-radius:999px;background:transparent;color:var(--content-primary);font-size:.9rem;font-weight:600;cursor:pointer;transition:background .9s ease,border-color .9s ease,color .9s ease,box-shadow .9s ease;}
+.mb-speed-btn:hover{border-color:var(--accent);}
+.mb-speed-bolt{font-size:1.08rem;line-height:1;opacity:.95;}
+.mb-speed-btn.mb-speed-on{background:rgba(168,85,247,.22);border-color:#a855f7;color:#c9b8fd;box-shadow:0 0 0 3px rgba(168,85,247,.16);}
+.mb-speed-note{margin-top:8px;font-size:.74rem;opacity:.6;}
+.mb-adv-hint{margin-top:12px;font-size:.76rem;opacity:.55;line-height:1.5;}
+@media (max-width:560px){.mb-model-cell{font-size:.68rem;}.mb-adv-card{padding:10px 12px;}}
+.bg-ai-sleep-row{margin-top:12px;font-size:.85rem;opacity:.85;}
+.bg-ai-sleep-row label{display:block;margin-bottom:6px;}
+.bg-ai-sleep-row input[type=time]{padding:6px 10px;border-radius:8px;border:1px solid var(--glass-border);background:var(--surface-card);color:var(--content-primary);}
+.bg-ai-sleep-inputs{display:flex;gap:10px;align-items:center;flex-wrap:wrap;}
+.bg-ai-sleep-sep{opacity:.6;}
+
+/* ── 清理无意义记忆 modal ── */
+.mem-clean-modal{max-width:640px;display:flex;flex-direction:column;max-height:82vh;}
+.mem-clean-title-h{font-family:'Noto Serif SC',serif;font-weight:600;font-size:1.3rem;margin:0;letter-spacing:0.05em;}
+.mem-clean-desc{font-size:.85rem;opacity:.8;padding:0 28px 12px;letter-spacing:.02em;}
+.mem-clean-list{overflow-y:auto;padding:0 28px;display:flex;flex-direction:column;gap:8px;flex:1;}
+.mem-clean-loading{opacity:.7;font-size:.88rem;padding:16px 28px;text-align:center;}
+.mem-clean-empty{display:none;opacity:.7;font-size:.88rem;padding:16px 28px;text-align:center;}
+.mem-clean-actions{padding:6px 28px 24px;}
+.mem-clean-item{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:10px;cursor:pointer;
+  background:rgba(14,20,36,0.5);border:1px solid rgba(150,180,220,0.12);}
+.mem-clean-item:hover{background:rgba(30,42,66,0.6);}
+.mem-clean-item input[type=checkbox]{margin-top:3px;accent-color:var(--accent,#5080b0);}
+.mem-clean-body{display:flex;flex-direction:column;gap:3px;min-width:0;}
+.mem-clean-title{font-weight:600;letter-spacing:.03em;}
+.mem-clean-meta{font-size:.72rem;opacity:.6;}
+.mem-clean-preview{font-size:.82rem;opacity:.8;word-break:break-word;}

@@ -1,4 +1,4 @@
-/* AI 朋友圈（Moments）域 — 独立 IIFE + window/IB 双挂载。
+﻿/* AI 朋友圈（Moments）域 — 独立 IIFE + window/IB 双挂载。
    复用（不重复实现）：IndexedDB 存储（dbPut/dbGet/dbGetAll/dbDelete/dbGetByIndex）、
    AI 调用（callApiChat + jsonMode）、主动消息相似度（_activeTextSimilarity，bigram Dice）、
    JSON 容错解析（_activeParsePlanJson）、上下文加载（_activeRecentMemories/_activeRecentMessages/
@@ -631,8 +631,11 @@ function _momentsShrinkDataUrl(dataUrl,maxPx,quality){
 }
 async function _momentsMakeImage(cfg,parsed,force){
   try{
-    /* wantImage 是模型建议，不是强制；不满足建议/能力/概率门任一条件都按"不配图"处理 */
-    if(!(parsed&&(parsed.wantImage===true||parsed.includeImage===true)))return[];
+    /* wantImage 是模型建议，不是强制；不满足建议/能力/概率门任一条件都按"不配图"处理。
+       force=true（仅测试/手动"立即发布"）时跳过模型 wantImage 判断与能力/概率门，
+       让用户确定性地看到配图效果；自动发布维持原有自然判断。 */
+    const want=!!(parsed&&(parsed.wantImage===true||parsed.includeImage===true));
+    if(!want&&!force)return[];
     if(!force&&!_momentsImageGate(cfg,parsed))return[];
     if(await _momentsRecentImagesBurst(cfg&&cfg.id))return[];
     _obsRec('image_attempt',{actor:cfg&&cfg.id});
@@ -691,8 +694,9 @@ function _momentsVisionKind(cfg){
 function _momentsImagePayload(im){
   const src=String(im&&im.dataUrl||'').trim();
   if(src.slice(0,5)!=='data:'||src.length>3e6)return null;
-  const mime=(String(src.match(/^data:([^;,]+)/i)||[])[1]||'')||String(im&&im.mime||'').trim()||'image/jpeg';
-  const base64=String(im&&im.base64||'').trim()||String(src.split(',')[1]||'');
+  const mime=((src.match(/^data:([^;,]+)/i)||[])[1]||'')||String(im&&im.mime||'').trim()||'image/jpeg';
+  /* 取 base64 并清洗：去全部空白，并剥掉误嵌入的 data:...;base64, 前缀（防双重编码，否则 MiMo 回『base64 data is not valid』） */
+  const base64=(String(im&&im.base64||'')||String(src.split(',')[1]||'')).replace(/\s+/g,'').replace(/^(?:data:[^,]*;base64,)+/i,'');
   return base64?{dataUrl:src,base64:base64,mime:mime}:null;
 }
 /* 在最后一条 user 消息上追加文本（兼容 content 为数组的情况：更新 text part，保留图片 parts） */
@@ -792,8 +796,9 @@ async function generateRoleMoment(roleId,opts){
         break
       }
       /* 图文增强：wantImage 只是模型建议；能力/概率允许 → 独立 Image Provider 生图+压缩；失败保留纯文字（图片非硬依赖）。
-         opts.forceImage=true 仅测试/手动调用时绕过概率门 */
-      const images=await _momentsMakeImage(cfg,parsed,opts.forceImage===true);
+         opts.forceImage=true 仅测试/手动调用时绕过概率门与 wantImage 判断；
+         opts.noImage=true 则完全跳过配图（纯文字手动发布）。 */
+      const images=(opts.noImage===true)?[]:await _momentsMakeImage(cfg,parsed,opts.forceImage===true);
       const res=await createMoment({roleId:roleId,content:parsed.content,images:images,visibility:parsed.visibility,visibleRoleIds:parsed.visibleRoleIds,source:'proactive',motive:parsed.motive});
       if(!res.ok)return res;
       _obsRec('post',{actor:roleId,origin:'local',vis:parsed.visibility,trigger:opts.trigger||'schedule',motive:parsed.motive,wantImage:parsed.wantImage===true,imageGenerated:(images&&images.length>0)});
@@ -1388,6 +1393,7 @@ function _momentsFreqMs(){
 }
 /* ── companion 后台调度：companion 在线且支持 /moments 时由后台独占执行 ── */
 let _momentsLastSyncAt=0,_momentsCompanionBrokenAt=0;
+let _momentsReownTried={};             /* 归属 403 后单角色单次 re-own 接管（防无限重试） */
 let _momentsCompanionReplyChainsOk=false;/* /health 携带 reply_chains 字段 → 后台支持回复链（接收线程快照并独占推进） */
 let _momentsReplySyncAt=0;               /* 回复链触发后的节流同步（防评论风暴连发同步） */
 function _momentsCompanionOwnsReplyChain(){
@@ -1449,7 +1455,7 @@ async function _momentsCompanionSnapshot(cfg){
       return { id: m.id, roleId: m.roleId, authorType: _momentIsUserAuthor(m) ? 'user' : 'role', content: m.content, visibility: m.visibility, createdAt: m.createdAt, role_name: authorName(m), images: imgs, image: imgs[0] || '' };
     };
     return {
-      character: { id: cfg.id, provider: cfg.provider, apiKey: cfg.apiKey, model: cfg.model, endpoint: cfg.endpoint, systemPrompt: cfg.systemPrompt || getDefaultPromptForTheme(), nickname: cfg.nickname || cfg.model || 'AI', relationship: cfg.relationship || '', temperature: cfg.temperature, vision: cfg.vision === true || (cfg.vision === undefined && !(((typeof _usesLocalDeepSeekVision === 'function' && _usesLocalDeepSeekVision(cfg)))) ) },
+      character: { id: cfg.id, provider: cfg.provider, model: cfg.model, endpoint: cfg.endpoint, systemPrompt: cfg.systemPrompt || getDefaultPromptForTheme(), nickname: cfg.nickname || cfg.model || 'AI', relationship: cfg.relationship || '', temperature: cfg.temperature, vision: cfg.vision === true || (cfg.vision === undefined && !(((typeof _usesLocalDeepSeekVision === 'function' && _usesLocalDeepSeekVision(cfg)))) ) },
       user: ctx.user,
       recent_memories: ctx.memories,
       recent_messages: ctx.recentMessages,
@@ -1461,12 +1467,14 @@ async function _momentsCompanionSnapshot(cfg){
       prefs: { aiComment: prefs.aiComment !== false, enabled: prefs.enabled !== false },
       recent_threads: threads
     }
-  }catch(e){return{character:{id:cfg.id,provider:cfg.provider,apiKey:cfg.apiKey,model:cfg.model,endpoint:cfg.endpoint,systemPrompt:cfg.systemPrompt||getDefaultPromptForTheme(),nickname:cfg.nickname||cfg.model||'AI',relationship:cfg.relationship||'',temperature:cfg.temperature,vision:cfg.vision===true||(cfg.vision===undefined&&!(((typeof _usesLocalDeepSeekVision==='function')&&_usesLocalDeepSeekVision(cfg))))},user:{id:_activeUserId(),name:'用户'},recent_memories:[],recent_messages:[],recent_proactive_messages:[],chat_summary:'',last_interaction_at:0,recent_moments:[],other_role_moments:[],prefs:{aiComment:true,enabled:true},recent_threads:[]}}
+  }catch(e){return{character:{id:cfg.id,provider:cfg.provider,model:cfg.model,endpoint:cfg.endpoint,systemPrompt:cfg.systemPrompt||getDefaultPromptForTheme(),nickname:cfg.nickname||cfg.model||'AI',relationship:cfg.relationship||'',temperature:cfg.temperature,vision:cfg.vision===true||(cfg.vision===undefined&&!(((typeof _usesLocalDeepSeekVision==='function')&&_usesLocalDeepSeekVision(cfg))))},user:{id:_activeUserId(),name:'用户'},recent_memories:[],recent_messages:[],recent_proactive_messages:[],chat_summary:'',last_interaction_at:0,recent_moments:[],other_role_moments:[],prefs:{aiComment:true,enabled:true},recent_threads:[]}}
 }
 async function _momentsSyncCompanion(){
   try{
     if(!window._activeCompanionOnline)return false;
     if(_momentsCompanionBrokenAt&&Date.now()-_momentsCompanionBrokenAt<5*60000)return false;
+    /* Credential Vault v1：业务 snapshot 不再携带 apiKey；先把凭证同步到独立 vault */
+    if(typeof _credentialSync==='function'){try{await _credentialSync()}catch(e){}}
     const prefs=_momentsPrefs();/* 注意：enabled=false 也必须继续同步——关闭状态要传给后台，由后台停发（见 momentsTick） */
     /* 能力预检（复用既有 /health：新版响应携带 moments 计数字段）。
        旧版 companion（无 /moments 路由）→ 不发任何 PUT，直接回退浏览器本地执行，
@@ -1499,12 +1507,27 @@ async function _momentsSyncCompanion(){
         synced.push(cfg.id);
         _momentsSetState(cfg.id,{companionSynced:true})
       }catch(e){
+        const emsg=String(e&&e.message||e);
+        /* 归属 403（本机 user_id churn 后当前 incoming 与服务端已存量不一致）：
+           仅对该角色做一次显式 re-own 接管，随后继续；绝不匹配/绕过 Origin 403。 */
+        if(emsg.indexOf('does not belong to this user')>=0){
+          if(!_momentsReownTried[cfg.id]){
+            _momentsReownTried[cfg.id]=true;
+            try{
+              const r=await _activeCompanionRequest('/moments/'+encodeURIComponent(cfg.id),{method:'PUT',body:Object.assign({reown:true,schedule:schedule},snapshot),timeout:6000});
+              if(r&&r.schedule&&typeof r.schedule.decline_streak==='number'&&r.schedule.decline_streak!==Math.max(0,Number(s.declineStreak||0))){_momentsSetState(cfg.id,{declineStreak:Math.max(0,r.schedule.decline_streak)})}
+              if(r&&r.stale){continue}
+              _momentsSetState(cfg.id,{companionSynced:true});synced.push(cfg.id);continue
+            }catch(e2){console.warn('[Moments] re-own failed for '+cfg.id+': '+String(e2&&e2.message||e2).slice(0,160))}
+          }
+          break
+        }
         /* 单角色同步失败：404/400 视为版本不匹配 → 立即中断本轮剩余角色的 PUT（不再连发 404），按窗口回退本地 */
-        if(String(e&&e.message||e).indexOf('404')>=0||String(e&&e.message||e).indexOf('400')>=0){
+        if(emsg.indexOf('404')>=0||emsg.indexOf('400')>=0){
           _momentsCompanionBrokenAt=Date.now();
           console.warn('[Moments] companion lacks /moments routes (legacy build); falling back to local scheduling')
         }else{
-          console.warn('[Moments] companion sync failed for '+cfg.id+': '+String(e&&e.message||e).slice(0,160))
+          console.warn('[Moments] companion sync failed for '+cfg.id+': '+emsg.slice(0,160))
         }
         break
       }
@@ -1885,14 +1908,15 @@ async function _momentsDeleteMoment(id){
   await deleteMoment(id);toast('已删除')
 }
 /* 手动生成：指定角色（缺省取第一个可用角色） */
-async function _momentsAskGenerate(roleId){
+async function _momentsAskGenerate(roleId,opts){
+  opts=opts||{};
   const sel=document.getElementById('mom-role-filter');
   const ready=apiConfigs.filter(a=>_ibApiReady(a));
   const id=roleId||(sel&&sel.value&&_ibApiReady(_momentsCfg(sel.value))?sel.value:(ready.length?ready[0].id:''));
   if(!id){toast('请先在 API 页面添加可用角色');return}
   toast('正在让 '+(function(){const c=_momentsCfg(id);return c?(c.nickname||c.model||'TA'):'TA'})()+' 思考朋友圈…');
-  const r=await generateRoleMoment(id,{trigger:'manual'});
-  if(r.ok&&r.published)toast('已发布：'+(r.moment?String(r.moment.content||'').slice(0,24)+'…':''));
+  const r=await generateRoleMoment(id,Object.assign({trigger:'manual'},opts)); /* opts: {noImage:true}纯文字 / {forceImage:true}强制配图 */
+  if(r.ok&&r.published)toast('已发布'+(r.imageGenerated?'（已配图）':'（纯文字）')+'：'+(r.moment?String(r.moment.content||'').slice(0,24)+'…':''));
   else if(r.ok&&!r.published)toast('TA 选择今天不发布'+(r.reason?('（'+r.reason+'）'):''));
   else toast('发布失败：'+(r.error||'未知错误'))
 }
@@ -2020,7 +2044,7 @@ function _momentsOpenRole(roleId){
 }
 
 /* 测试辅助：重置同步节流与版本不匹配窗口（生产路径不调用） */
-function _momentsResetSyncForTest(){_momentsLastSyncAt=0;_momentsCompanionBrokenAt=0;return true}
+function _momentsResetSyncForTest(){_momentsLastSyncAt=0;_momentsCompanionBrokenAt=0;_momentsReownTried={};return true}
 
 /* 迁移期双挂载：HTML 与其他脚本仍通过 window 访问。 */
 window.MOMENT_STORE=MOMENT_STORE;
