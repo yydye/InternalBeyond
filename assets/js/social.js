@@ -559,17 +559,21 @@ function _apiFallbackPut(cfg){
 }
 /* 返回 {durability,backend,idb}：durability 如实反映持久化强度，供 UI 区分提示。 */
 async function _persistApiConfig(cfg){
+  /* 成功写入状态标记：每次保存都把 updatedAt 推进到当前时间（只增不减），
+     供 loadApiConfigs 判断「刚保存成功的配置」vs「IndexedDB 里仍可读的旧记录」。
+     同源同 payload 幂等，不影响既有读取；仅新增可选字段，向后兼容。 */
+  const saved=Object.assign({},cfg,{updatedAt:Math.max(Number(cfg&&cfg.updatedAt)||0,Date.now())});
   try{
     /* 正常 http/https 环境维持原有首选路径：IndexedDB 写入成功后照旧留一份轻量同源镜像，
        因为部分损坏状态会出现 put/get 成功、随后的 getAll 却返回空列表，
        导致界面看起来像“保存后消失”。 */
-    await dbPut('apiConfigs',cfg);
+    await dbPut('apiConfigs',saved);
     let mirror='unavailable';
-    try{mirror=_apiFallbackPut(cfg)}catch(e){console.warn('API config mirror write failed',e)}
+    try{mirror=_apiFallbackPut(saved)}catch(e){console.warn('API config mirror write failed',e)}
     return {durability:'persistent',backend:'indexeddb',idb:true,mirror:mirror};
   }catch(e){
     /* IndexedDB 不可用（file:// 常见）→ localStorage → sessionStorage → 内存 逐级降级 */
-    const tier=_apiFallbackPut(cfg);
+    const tier=_apiFallbackPut(saved);
     console.warn('IndexedDB API config write failed; fell back to '+tier+' storage',e);
     return {durability:tier,backend:tier==='persistent'?'localstorage':(tier==='session'?'sessionstorage':'memory'),idb:false,mirror:tier};
   }
@@ -586,14 +590,22 @@ function _apiSaveNotice(res){
 async function loadApiConfigs(){
   let all=[];
   try{all=await dbGetAll('apiConfigs')}catch(e){console.warn('IndexedDB API config read failed; using local fallback',e)}
-  /* 保留可读记录，并让本地镜像中的新版本覆盖同 id 的旧记录。 */
+  /* 保留可读记录，并让本地镜像中的新版本覆盖同 id 的旧记录。
+     precedence 规则：IndexedDB 为权威配置源；local/session/memory 镜像仅在两种情况补入/覆盖——
+     1) IndexedDB 缺失该 id；2) 镜像记录更新（其 updatedAt 比 IndexedDB 记录更新，或镜像带成功写
+     标记而 IndexedDB 记录缺失该标记——即「刚保存成功但 IndexedDB 写入失败」的降级场景）。
+     绝不因旧/残留无 updatedAt 的镜像遮蔽 IndexedDB 中仍完好的凭证（apiKey）。 */
   const fallback=_apiFallbackRead();
   if(fallback.length){
-    /* ⚠ IndexedDB 是权威配置源；localStorage 镜像仅在 IndexedDB 缺失该 id 时兜底补入，
-       绝不反向覆盖。否则任一「无 key」的旧/残留镜像拷贝会遮蔽 IndexedDB 中仍完好
-       的凭证（apiKey），导致 API 页误报「（无密钥）」而真实凭证并未丢失。 */
     const merged=new Map(all.map(a=>[a.id,a]));
-    fallback.forEach(a=>{ if(!merged.has(a.id)) merged.set(a.id,a); });
+    fallback.forEach(a=>{
+      const id=String(a&&a.id);
+      if(!merged.has(id)){merged.set(id,a);return}
+      const cur=merged.get(id);
+      const fa=Number(a&&a.updatedAt||0),ca=Number(cur&&cur.updatedAt||0);
+      const mirrorIsNewer=(fa>ca)||(fa&&!ca);
+      if(mirrorIsNewer)merged.set(id,a);
+    });
     all=Array.from(merged.values());
   }
   apiConfigs=all.filter(a=>!a.archived);

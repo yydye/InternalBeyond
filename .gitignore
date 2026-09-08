@@ -25,3 +25,9 @@ browser-data/
 logs/
 tmp_ib_probe*.js
 _icon_preview.png
+
+# WorkBuddy AI 工具产物（本地记忆/缓存），不属于项目源码
+.workbuddy-ai/
+
+# 审计脚本生成的机器可读结果（人工报告正文仍提交）
+docs/*.results.json

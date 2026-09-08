@@ -1595,7 +1595,10 @@ async function _momentsSyncCompanion(){
           _momentsSetState(cfg.id,{declineStreak:Math.max(0,res.schedule.decline_streak)})
         }
         if(res&&res.stale){/* companion 已执行（事件随后拉取回传，本地 nextAt 会更新） */
+          /* stale 分支同样要把角色纳入 reconcile keep set：服务端已有该角色的
+             schedule（只是拒绝旧快照回写），省略会导致 /reconcile 把它误删。 */
           _momentsSetState(cfg.id,{companionSynced:true});
+          synced.push(cfg.id);
           continue
         }
         synced.push(cfg.id);
@@ -1610,7 +1613,7 @@ async function _momentsSyncCompanion(){
             try{
               const r=await _activeCompanionRequest('/moments/'+encodeURIComponent(cfg.id),{method:'PUT',body:Object.assign({reown:true,schedule:schedule},snapshot),timeout:6000});
               if(r&&r.schedule&&typeof r.schedule.decline_streak==='number'&&r.schedule.decline_streak!==Math.max(0,Number(s.declineStreak||0))){_momentsSetState(cfg.id,{declineStreak:Math.max(0,r.schedule.decline_streak)})}
-              if(r&&r.stale){continue}
+              if(r&&r.stale){_momentsSetState(cfg.id,{companionSynced:true});synced.push(cfg.id);continue}
               _momentsSetState(cfg.id,{companionSynced:true});synced.push(cfg.id);continue
             }catch(e2){console.warn('[Moments] re-own failed for '+cfg.id+': '+String(e2&&e2.message||e2).slice(0,160))}
           }
@@ -1717,7 +1720,9 @@ async function _momentsPullCompanionEvents(){
       let payload=null;
       try{payload=await _activeCompanionRequest('/events?limit=100&user_id='+encodeURIComponent(userId),{timeout:4000})}catch(e){continue}
       for(const ev of (Array.isArray(payload&&payload.events)?payload.events:[])){
-        if(!ev||(ev.kind!=='moment'&&ev.kind!=='moment_reply'))continue;
+        /* 只消费 Moments 域事件：动态、后台回复、后台删评。删评（moment_comment_deleted）
+           必须在此分发到 _momentsIngestEvent，否则后台删除的评论不会反映到前端状态。 */
+        if(!ev||(ev.kind!=='moment'&&ev.kind!=='moment_reply'&&ev.kind!=='moment_comment_deleted'))continue;
         if(await _momentsIngestEvent(ev,userId))pulled++
       }
     }
@@ -1834,9 +1839,14 @@ function _momentsSyncScopeUI(filterRole){
   const el=document.getElementById('mom-role-scope');
   if(el)el.hidden=!filterRole/* 私人日志入口只在某个角色的页面出现 */
 }
+/* 渲染序号：_momentsRenderFeed 在 await 读取后可能乱序完成（全表游标扫描比按角色索引慢，
+   且 loadMomentsPage 不等待它）。只有最新一次渲染允许写 DOM，避免旧渲染覆盖新筛选结果
+   （表现为：切到"私人日志"后锁占位卡被上一次无筛选渲染冲掉）。 */
+var _momentsRenderSeq=0;
 async function _momentsRenderFeed(opts){
   opts=opts||{};
   const feed=document.getElementById('mom-feed');if(!feed)return;
+  const seq=++_momentsRenderSeq;
   const sel=document.getElementById('mom-role-filter');
   const filterRole=sel?sel.value:'';
   _momentsSyncScopeUI(filterRole);
@@ -1853,9 +1863,11 @@ async function _momentsRenderFeed(opts){
       list=list.filter(m=>m.visibility!=='private')/* 私密动态只有角色自己可读，用户 UI 不展示内容 */
     }else list=await getMoments(MOMENT_FEED_FIRST_SCAN);/* 首屏只读最近 MOMENT_FEED_FIRST_SCAN(60) 条，游标即停，不扫 360 */
   }catch(e){
+    if(seq!==_momentsRenderSeq)return;/* 已有更新的渲染在进行：旧渲染不再写 DOM */
     feed.innerHTML='<div class="mom-state">加载失败：'+esc(String(e&&e.message||e).slice(0,120))+' <button type="button" class="btn mom-retry" onclick="loadMomentsPage()">重试</button></div>';
     return
   }
+  if(seq!==_momentsRenderSeq)return;/* 读取期间发起了更新的渲染 → 丢弃本次结果 */
   if(!opts.keepPage)_momentsFeedShown=MOMENT_FEED_PAGE;/* 查询变化时重置分页；加载更多时保留 */
   const stats=document.getElementById('mom-stats');
   if(stats)stats.textContent=(filterRole?'「'+_momentsRoleName(_momentsCfg(filterRole))+'」的朋友圈 · ':'朋友圈 · ')+list.length+' 条'+(scope==='private'?'（私人日志）':'');

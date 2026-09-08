@@ -207,6 +207,23 @@ function createHttp(ctx) {
         json(response, 200, { ok: true, stored });
         return;
       }
+      if (request.method === 'GET' && url.pathname === '/bg-ai') {
+        const s = getState();
+        const b = s.bgAi && typeof s.bgAi === 'object' ? s.bgAi : {};
+        json(response, 200, { enabled: b.enabled !== false, sleepStart: String(b.sleepStart || ''), sleepEnd: String(b.sleepEnd || '') });
+        return;
+      }
+      if (request.method === 'POST' && url.pathname === '/bg-ai') {
+        const body = await readBody(request);
+        /* 后台 AI 总开关（含休眠时段）传播到 companion：关闭后已同步任务/计划不得再执行 AI 调用；
+           仅覆盖 enabled / sleepStart / sleepEnd，不触碰其他 state。缺失字段缺省启用，兼容旧客户端。 */
+        const next = Object.assign({ enabled: true, sleepStart: '', sleepEnd: '' }, body && typeof body === 'object' ? body : {});
+        const s = getState();
+        s.bgAi = { enabled: next.enabled !== false, sleepStart: String(next.sleepStart || ''), sleepEnd: String(next.sleepEnd || '') };
+        saveNow();
+        json(response, 200, { ok: true, bgAi: s.bgAi });
+        return;
+      }
       if (request.method === 'GET' && url.pathname === '/tasks') {
         const userId = String(url.searchParams.get('user_id') || '');
         if (!userId) {

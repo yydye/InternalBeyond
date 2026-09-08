@@ -54,6 +54,29 @@ function createScheduler(ctx) {
   let schedulerInterval = null;
   let schedulerStartTimer = null;
 
+  /* 后台 AI 总开关（与浏览器 _bgAiGate 同语义）：enabled=false 或落在休眠时段 →
+     hibernate → 已同步到 companion 的主动消息/AI 计划任务不得再执行 AI 调用。
+     朋友圈（moments）作为低消耗例外继续运行；任务/计划只在暂停时不执行、不删除，
+     恢复后沿用原调度，不制造重复任务。 */
+  function _bgInSleepWindow(cfg) {
+    var start = String((cfg && cfg.sleepStart) || '').trim();
+    var end = String((cfg && cfg.sleepEnd) || '').trim();
+    if (!start || !end) return false;
+    var now = new Date();
+    var hm = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
+    if (start <= end) return hm >= start && hm <= end;
+    return hm >= start || hm <= end;
+  }
+  function _bgAiGateState() {
+    const b = getState().bgAi && typeof getState().bgAi === 'object' ? getState().bgAi : {};
+    if (b.enabled === false) return 'hibernate';
+    if (_bgInSleepWindow(b)) return 'hibernate';
+    return 'run';
+  }
+  function _bgAiHibernating() {
+    return _bgAiGateState() === 'hibernate';
+  }
+
   function adaptiveSkipReason(task) {
     const setting = task && task.setting || {};
     if (!setting.adaptive_enabled) return '';
@@ -555,8 +578,12 @@ function createScheduler(ctx) {
     try {
       const now = Date.now();
       const s = getState();
+      /* 后台 AI 总开关：hibernate 时不执行任何主动消息/AI 计划（不发 AI 调用），
+         但仍做历史裁剪与朋友圈（低消耗例外）执行。暂停只跳过执行，不删除任务/计划。 */
+      const aiHibernate = _bgAiHibernating();
       const ids = Object.keys(s.tasks);
       for (const id of ids) {
+        if (aiHibernate) break;
         const rawTask = s.tasks[id];
         let task = ensureTaskMetadata(rawTask);
         if (task && task !== rawTask) s.tasks[id] = task;
@@ -577,6 +604,7 @@ function createScheduler(ctx) {
       const planIds = Object.keys(s.plans);
       const staleWindow = 10 * 60 * 1000;
       for (const id of planIds) {
+        if (aiHibernate) break;
         const rawPlan = s.plans[id];
         const plan = sanitizeAiPlan(rawPlan);
         /* 崩溃恢复：evaluating/sending 停留超过 10 分钟 → 回收为 scheduled（尊重 maxAttempts） */
