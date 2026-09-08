@@ -149,9 +149,14 @@ async function _ibApiPost(url,headers,body,o){
 }
 
 
-/* API CALL HELPER */
+/* API CALL HELPER
+   provider → wire format 统一通过 canonical helper 取（PROVIDERS 唯一真源 = window.PROVIDERS，
+   由 social.js 从 provider-directory.js 注入）。不再散落裸的 PROVIDERS[cfg.provider]?.format。 */
+function _providerFormat(cfg){
+  return (cfg&&PROVIDERS&&PROVIDERS[cfg.provider]&&PROVIDERS[cfg.provider].format)||'openai';
+}
 async function callApi(cfg,userMsg){
-  const format=PROVIDERS[cfg.provider]?.format||'openai';
+  const format=_providerFormat(cfg);
   let url=cfg.endpoint;
   let headers={'Content-Type':'application/json'};
   let body;
@@ -3187,7 +3192,7 @@ async function callApiChatStream(cfg,messages,opts){
   var st=_newCallState(opts);/* 并发隔离：本次调用的独立状态（思考/结束原因/停止/可中止句柄），按 chatKey 注册供停止按钮定位 */
   /* FC：原生函数调用（anthropic/openai 走 tools 参数；无工具块/开关关/其他厂商 → 不激活，回落 XML 通道） */
   var _fcCtx=null;
-  try{if(!opts.disableTools&&typeof IBFC!=='undefined'){var _fcv=IBFC.prepare(messages,PROVIDERS[cfg.provider]?.format||'openai',{vision:_usesNativeDeepSeekVision(cfg)||(cfg.vision!==undefined?!!cfg.vision:true)});if(_fcv&&_fcv.active){_fcCtx=_fcv;msgs=_fcCtx.messages}}}catch(e){_fcCtx=null}
+  try{if(!opts.disableTools&&typeof IBFC!=='undefined'){var _fcv=IBFC.prepare(messages,_providerFormat(cfg),{vision:_usesNativeDeepSeekVision(cfg)||(cfg.vision!==undefined?!!cfg.vision:true)});if(_fcv&&_fcv.active){_fcCtx=_fcv;msgs=_fcCtx.messages}}}catch(e){_fcCtx=null}
   try{/* 并发隔离：任何退出路径都在函数尾 finally 注销本对话的调用状态 */
   for(var round=0;;round++){
     var hold='',holding=round>0;/* 续写轮先缓冲开头，做接缝去重后再上屏 */
@@ -3257,7 +3262,7 @@ async function callApiChat(cfg,messages,opts){
   var st=_newCallState(null);/* 并发隔离：仅用于按调用隔离思考/结束原因；非流式没有停止入口，不注册停止路由（与原行为一致） */
   /* FC：原生函数调用（与流式同一套；无工具块/开关关/其他厂商 → 不激活） */
   var _fcCtx=null;
-  try{if(!opts.disableTools&&typeof IBFC!=='undefined'){var _fcv=IBFC.prepare(messages,PROVIDERS[cfg.provider]?.format||'openai',{vision:_usesNativeDeepSeekVision(cfg)||(cfg.vision!==undefined?!!cfg.vision:true)});if(_fcv&&_fcv.active){_fcCtx=_fcv;msgs=_fcCtx.messages}}}catch(e){_fcCtx=null}
+  try{if(!opts.disableTools&&typeof IBFC!=='undefined'){var _fcv=IBFC.prepare(messages,_providerFormat(cfg),{vision:_usesNativeDeepSeekVision(cfg)||(cfg.vision!==undefined?!!cfg.vision:true)});if(_fcv&&_fcv.active){_fcCtx=_fcv;msgs=_fcCtx.messages}}}catch(e){_fcCtx=null}
   try{/* 并发隔离：任何退出路径都在函数尾 finally 注销状态 */
   for(var round=0;;round++){
     var o=Object.assign({},opts,{maxTokens:budget,wantMeta:true});
@@ -3345,7 +3350,7 @@ async function _callApiChatStreamOnce(cfg,messages,opts){
   const wantThink=!!opts.wantThinking;
   const onChunk=opts.onChunk||(()=>{});
   const onThink=opts.onThink||(()=>{});/* 思考链实时回调 */
-  const fmt=PROVIDERS[cfg.provider]?.format||'openai';
+  const fmt=_providerFormat(cfg);
   /* 不改写用户消息来索取思维链。原生 reasoning delta 走独立侧通道。 */
   let _msgs=messages;
   /* 联网搜索边界：开关开启时在 system 末尾追加一句使用边界，与搜索工具同时出现、同时消失 */
@@ -3493,11 +3498,11 @@ async function _callApiChatStreamOnce(cfg,messages,opts){
     }
     if(_anthWebThinkMux)_anthWebThinkMux.finish();
     if(thinkingText)_mSetThink(opts,thinkingText);
-    if(opts._tkU){try{_tkRecord(cfg,opts._tkU)}catch(e2){}opts._tkU=null}/* 记账加固：流末统一落账 */
+    if(opts._tkU){try{_tkRecord(cfg,opts._tkU,opts)}catch(e2){}opts._tkU=null}/* 记账加固：流末统一落账 */
     if(!_extAC&&_streamAbortController===ac)_streamAbortController=null;if(opts._st&&opts._st.ac===ac)opts._st.ac=null;if(_heartbeat)clearTimeout(_heartbeat);_ibwsFlushSearchMeta(opts);return fullText;
   }catch(e){
     clearTimeout(tm);if(!_extAC&&_streamAbortController===ac)_streamAbortController=null;if(opts._st&&opts._st.ac===ac)opts._st.ac=null;if(_heartbeat)clearTimeout(_heartbeat);
-    if(opts._tkU){try{_tkRecord(cfg,opts._tkU)}catch(e2){}opts._tkU=null}/* 记账加固：手动停止/超时的请求输入侧照样计费，此前一律漏记，现按已知量落账（输出可能少记） */
+    if(opts._tkU){try{_tkRecord(cfg,opts._tkU,opts)}catch(e2){}opts._tkU=null}/* 记账加固：手动停止/超时的请求输入侧照样计费，此前一律漏记，现按已知量落账（输出可能少记） */
     if(e.name==='AbortError'){
       if(_anthWebThinkMux)_anthWebThinkMux.finish();
       if(thinkingText)_mSetThink(opts,thinkingText);
@@ -3596,7 +3601,7 @@ async function _callApiChatOnce(cfg,messages,opts){
   const timeoutMs=opts.timeoutMs||60000;
   const wantThink=!!opts.wantThinking;
   const pack=(text,truncated)=>opts.wantMeta?{text:text,truncated:!!truncated}:text;
-  const fmt=PROVIDERS[cfg.provider]?.format||'openai';
+  const fmt=_providerFormat(cfg);
 
   /* 不要求模型把内部推理写进正文；仅接收 API 的原生 reasoning/thinking block。 */
   let _msgs=messages, _prefillThinking=false;
@@ -3625,7 +3630,7 @@ async function _callApiChatOnce(cfg,messages,opts){
       clearTimeout(tm);
       if(!res.ok){const e=await res.text();throw new Error(res.status+': '+e)}
       const data=await res.json();
-      try{if(data&&data.usage){_tkRecord(cfg,{i:data.usage.input_tokens||0,cr:data.usage.cache_read_input_tokens||0,cw:data.usage.cache_creation_input_tokens||0,o:data.usage.output_tokens||0})}}catch(e){}/* 清理：原第二行按 OpenAI 字段解析 Anthropic 响应的死代码已删（恒为全零被守卫拦下） */
+      try{if(data&&data.usage){_tkRecord(cfg,{i:data.usage.input_tokens||0,cr:data.usage.cache_read_input_tokens||0,cw:data.usage.cache_creation_input_tokens||0,o:data.usage.output_tokens||0},opts)}}catch(e){}/* 清理：原第二行按 OpenAI 字段解析 Anthropic 响应的死代码已删（恒为全零被守卫拦下） */
   if(opts._fcCtx){try{opts._fcCtx._nsCalls=IBFC.extractFromResponse(opts._fcCtx,data)}catch(e){opts._fcCtx._nsCalls=null}}
       /* 任务A：非流式响应里的服务端搜索块 → searchLog（query 块在结果块之前出现） */
       try{if(opts.searchLog&&data.content&&Array.isArray(data.content)){let _q='';data.content.forEach(c=>{if(c&&c.type==='server_tool_use'&&/search/i.test(c.name||'')){_q=(c.input&&c.input.query)||''}else if(c&&c.type==='web_search_tool_result'){const rs=[];(Array.isArray(c.content)?c.content:[]).forEach(r=>{if(r&&(r.title||r.url))rs.push({title:r.title||r.url,url:r.url||''})});opts.searchLog.push({query:_q,results:rs});_q=''}})}}catch(e){}
@@ -3676,7 +3681,7 @@ async function _callApiChatOnce(cfg,messages,opts){
       clearTimeout(tm);
       if(!res.ok){const e=await res.text();throw new Error(res.status+': '+e)}
       const data=await res.json();
-      try{if(data.usageMetadata){var _gu2=data.usageMetadata,_gc2=_gu2.cachedContentTokenCount||0;_tkRecord(cfg,{i:Math.max(0,(_gu2.promptTokenCount||0)-_gc2),cr:_gc2,cw:0,o:(_gu2.candidatesTokenCount||0)+(_gu2.thoughtsTokenCount||0)})}}catch(e){}
+      try{if(data.usageMetadata){var _gu2=data.usageMetadata,_gc2=_gu2.cachedContentTokenCount||0;_tkRecord(cfg,{i:Math.max(0,(_gu2.promptTokenCount||0)-_gc2),cr:_gc2,cw:0,o:(_gu2.candidatesTokenCount||0)+(_gu2.thoughtsTokenCount||0)},opts)}}catch(e){}
       const cand=(data.candidates&&data.candidates[0])||{};
       try{if(cand.groundingMetadata){_ibwsFeedGrounding(cand.groundingMetadata,opts);_ibwsFlushSearchMeta(opts)}}catch(e){}/* 任务A */
       if(cand.content&&cand.content.parts){
@@ -3708,7 +3713,7 @@ async function _callApiChatOnce(cfg,messages,opts){
   const _oct=res.headers.get('content-type')||'';
   if(_oct.includes('text/html')){throw new Error('API端点返回了网页而非JSON——请检查端点URL是否正确。如使用中转站，请确认API地址填写到完整路径（如 https://xxx.com/v1/chat/completions）')}
   const data=await res.json();
-  try{if(data.usage){var _pu4=data.usage,_pc4=(_pu4.prompt_tokens_details&&_pu4.prompt_tokens_details.cached_tokens)||(_pu4.input_tokens_details&&_pu4.input_tokens_details.cached_tokens)||_pu4.prompt_cache_hit_tokens||0;if(cfg.promptCache!==false)try{console.info('[IB缓存诊断] usage 原文: '+JSON.stringify(_pu4))}catch(e2){}_tkRecord(cfg,{i:Math.max(0,(_pu4.prompt_tokens||0)-_pc4),cr:_pc4,cw:0,o:_pu4.completion_tokens||0})}}catch(e){}/* 修复：OpenAI 兼容非流式聊天此前完全不记用量；DeepSeek / Responses 形状命中字段一并兼容 */
+  try{if(data.usage){var _pu4=data.usage,_pc4=(_pu4.prompt_tokens_details&&_pu4.prompt_tokens_details.cached_tokens)||(_pu4.input_tokens_details&&_pu4.input_tokens_details.cached_tokens)||_pu4.prompt_cache_hit_tokens||0;if(cfg.promptCache!==false)try{console.info('[IB缓存诊断] usage 原文: '+JSON.stringify(_pu4))}catch(e2){}_tkRecord(cfg,{i:Math.max(0,(_pu4.prompt_tokens||0)-_pc4),cr:_pc4,cw:0,o:_pu4.completion_tokens||0},opts)}}catch(e){}/* 修复：OpenAI 兼容非流式聊天此前完全不记用量；DeepSeek / Responses 形状命中字段一并兼容 */
   if(opts._fcCtx){try{opts._fcCtx._nsCalls=IBFC.extractFromResponse(opts._fcCtx,data)}catch(e){opts._fcCtx._nsCalls=null}}
   const ch=(data.choices&&data.choices[0])||{};
   try{const _annN=ch.message&&ch.message.annotations;if(_annN&&_annN.length){_ibwsFeedAnnotations(_annN,opts);_ibwsFlushSearchMeta(opts)}}catch(e){}/* 任务A */

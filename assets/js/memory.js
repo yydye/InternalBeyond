@@ -880,7 +880,12 @@ async function quickCreateMemory(data){
     arousal:data.arousal!=null?data.arousal:0.3,
     importance:data.importance||5,
     resolved:data.resolved!=null?!!data.resolved:false,pinned:false,
-    visibility:data.visibility||'public',visibleTo:[],excludeFrom:[],
+    /* visibility 三件套必须一起落地：早期实现把 visibleTo/excludeFrom 写死为空数组，
+       导致调用方传入的 only+visibleTo（活动记忆、consolidation 派生记忆）变成"only 且无人可见"，
+       连作者角色自己都召回不到。缺省仍为空数组，既有调用方行为不变。 */
+    visibility:data.visibility||'public',
+    visibleTo:Array.isArray(data.visibleTo)?data.visibleTo.map(String):[],
+    excludeFrom:Array.isArray(data.excludeFrom)?data.excludeFrom.map(String):[],
     activationCount:0,created:Date.now(),lastActivated:Date.now(),
     createdBy:data.createdBy||'user',
     createdByName:data.createdByName||'',

@@ -9,6 +9,14 @@
  *
  * 子进程输出透传；任一失败最终返回非零退出码；浏览器测试串行执行
  * （避免 Chrome/CDP 相互干扰）；服务测试自带随机端口与临时数据目录。
+ *
+ * P2-07：入口不再遗漏仓库内的测试脚本。当前仓库共有 87 个 test_*.js，
+ * 全部登记在下面三组中（此前只有 49 个，导致"全绿"结论不覆盖真实测试面）。
+ * 登记条目共 88 条 = 87 个 test_*.js + scripts_check_html.js（HTML 结构检查）；
+ * 分组：static 29 / service 16 / browser 43。
+ * 归类规则：使用 CDP（remote-debugging-port）→ browser；否则 static。
+ * 外部依赖测试（需要 Python + 本地 Vision 服务 + test.jpg 的 python test_vision.py）
+ * 不进入 --all，单独运行并在报告中如实记录。
  */
 
 const { spawnSync } = require('child_process');
@@ -17,7 +25,7 @@ const path = require('path');
 const GROUPS = [
   {
     name: 'static',
-    note: '语法 / 结构 / 编码（无浏览器）',
+    note: '语法 / 结构 / 编码 / 纯 Node 契约（无浏览器）',
     tests: [
       ['scripts_check_html.js', 'InternalBeyond.html'],
       ['test_frontend_structure.js'],
@@ -35,7 +43,20 @@ const GROUPS = [
       ['test_shopping_agent.js'],
       ['test_shopping_review.js'],
       ['test_payment_canonical.js'],
-      ['test_shopping_execution_e2e.js']
+      ['test_shopping_execution_e2e.js'],
+      ['test_commerce_playwright_smoke.js'],
+      /* P2-07 补齐：此前遗漏的纯 Node 测试 */
+      ['test_model_core_contract.js'],
+      ['test_astra_adapter.js'],
+      ['test_llm_transport.js'],
+      ['test_llm_proxy.js'],
+      ['test_call_acoustic_inject.js'],
+      ['test_proactive_trace.js'],
+      ['test_proactive_phase2.js'],
+      ['test_role_letters.js'],
+      ['test_video_runtime.js'],
+      ['test_voice_pcm_adapter.js'],
+      ['test_voice_reconnect.js']
     ]
   },
   {
@@ -80,7 +101,34 @@ const GROUPS = [
       ['test_ui_regression.js'],
       ['test_dual_window.js'],
       ['test_worklet_localhost.js'],
-      ['test_voice_capture_live.js']
+      ['test_voice_capture_live.js'],
+      /* P2-07 补齐：此前遗漏的浏览器/CDP 测试 */
+      ['test_api_key_mutation_repro.js'],
+      ['test_api_key_persist_repro.js'],
+      ['test_api_key_ui_status_repro.js'],
+      ['test_basement_cdp.js'],
+      ['test_bgai_gate.js'],
+      ['test_chat_smoke_provider_contract.js'],
+      ['test_easteregg.js'],
+      ['test_memory_consolidation.js'],
+      ['test_memory_lyric_gate.js'],
+      ['test_memory_repair_dryrun.js'],
+      ['test_middle_brain.js'],
+      ['test_middle_brain_admission.js'],
+      ['test_middle_brain_advanced.js'],
+      ['test_middle_brain_astral.js'],
+      ['test_middle_brain_ctx.js'],
+      ['test_middle_brain_judge.js'],
+      ['test_moments_phase4_smoke.js'],
+      ['test_runtime_optin_smoke.js'],
+      ['test_runtime_convergence_proactive.js'],
+      ['test_runtime_convergence_moments.js'],
+      ['test_runtime_convergence_diary.js'],
+      ['test_runtime_convergence_phase4.js'],
+      ['test_understanding_admission.js'],
+      ['test_understanding_generation.js'],
+      ['test_understanding_thread.js'],
+      ['test_video_runtime_cdp.js']
     ]
   }
 ];

@@ -282,8 +282,10 @@ async function ibCtxRefresh(){
 (function(NS){
   var orig=window._tkRecord;
   if(typeof orig!=='function')return;
-  window._tkRecord=async function(cfg,u){
-    try{ await orig(cfg,u); }catch(e){}
+  /* 透传全部参数：第三个 opts 是调用方（opt-in Runtime）用来接收本次计量的载体，
+     包装器吞掉它会让 usage 契约在最外层失效。 */
+  window._tkRecord=async function(cfg,u,opts){
+    try{ await orig(cfg,u,opts); }catch(e){}
     try{
       var friend=(typeof activeFriendId!=='undefined'&&activeFriendId)?activeFriendId:(cfg&&cfg.id)||'';
       var uu=u||{};

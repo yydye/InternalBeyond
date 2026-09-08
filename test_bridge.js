@@ -169,11 +169,12 @@ async function startMockAnthropic() {
 }
 
 async function startMockGemini() {
-  let lastBody = null, lastHeaders = null;
+  let lastBody = null, lastHeaders = null, requests = 0;
   const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', c => { body += c; });
     req.on('end', () => {
+      requests++;
       lastBody = JSON.parse(body);
       lastHeaders = req.headers;
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -184,7 +185,14 @@ async function startMockGemini() {
     });
   });
   const port = await listenFree(server);
-  return { port, server, lastBody: () => lastBody, lastHeaders: () => lastHeaders };
+  /* 请求捕获是异步的：断言前轮询等待，避免读到 null 快照（断言强度不变；
+     requests 计数用于区分"mock 没收到请求"与"捕获尚未完成"）。 */
+  const waitBody = async (ms = 2000) => {
+    const end = Date.now() + ms;
+    while (Date.now() < end && lastBody == null) await new Promise(r => setTimeout(r, 25));
+    return lastBody;
+  };
+  return { port, server, lastBody: () => lastBody, lastHeaders: () => lastHeaders, requests: () => requests, waitBody };
 }
 
 async function startMockTts() {
@@ -605,10 +613,11 @@ async function main() {
         body: JSON.stringify({ key: 'resident_gem', message: '你好' })
       })).json();
       ok('gemini.chat', chatGem.ok === true && chatGem.reply === '来自Gemini的回复');
-      const gb = mockGem.lastBody();
-      ok('gemini.body.system', gb.systemInstruction && gb.systemInstruction.parts[0].text.indexOf('你是测试角色') !== -1);
-      ok('gemini.body.contents', gb.contents.length > 0 && (gb.contents[0].role === 'user' || gb.contents[0].role === 'model'));
-      ok('gemini.headers', mockGem.lastHeaders()['x-goog-api-key'] === 'gem-key');
+      const gb = await mockGem.waitBody();
+      ok('gemini.mockReceived', mockGem.requests() >= 1 && gb != null, 'requests=' + mockGem.requests());
+      ok('gemini.body.system', gb && gb.systemInstruction && gb.systemInstruction.parts[0].text.indexOf('你是测试角色') !== -1);
+      ok('gemini.body.contents', gb && gb.contents.length > 0 && (gb.contents[0].role === 'user' || gb.contents[0].role === 'model'));
+      ok('gemini.headers', (mockGem.lastHeaders() || {})['x-goog-api-key'] === 'gem-key');
       await fetch(base + '/api/ai/sessions/resident_gem', { method: 'DELETE' });
     } finally { mockGem.server.close(); }
 

@@ -31,11 +31,104 @@ const RC=(typeof window!=='undefined'&&window._replyChainCore)||{};/* 共享核�
 const OBS=(typeof window!=='undefined'&&window._socialObserve)||null;
 const OBS_USER=(OBS&&OBS.USER)||'user';/* 观测矩阵中"用户"的哨兵 id */
 function _obsRec(type,data){try{if(OBS)OBS.record(type,data)}catch(e){}}
+/* ── 统一迁移诊断适配：结构与白名单在 IB.runtime.telemetry（Active/Moments 共用，避免两套结构漂移）；
+      本文件只做 sink 适配（console + 各自 logger）。Runtime 未加载时退回原对象。 ── */
+function _momentsTelemetry(consumer,data){
+  try{
+    if(typeof window!=='undefined'&&window.IB&&IB.runtime&&IB.runtime.telemetry&&typeof IB.runtime.telemetry.record==='function')
+      return IB.runtime.telemetry.record(consumer,data);
+  }catch(e){}
+  return data;
+}
+/* ══════════ Runtime Convergence Phase 2 · Moments 统一执行接缝 ══════════
+   _obsCall 既是行为观测入口，也是本域唯一的模型执行接缝；三个上层 consumer 不感知执行器差异：
+     generateRoleMoment / generateRoleComment / generateRoleReply
+       → _obsCall(kind,cfg,messages,opts)
+           ├─ IB.runtime.instance.execute({spec,messages,jsonMode,budget,executor},{signal,onEvent})  ← 默认
+           └─ callApiChat(cfg,messages,opts)                                                            ← 回滚/不可用
+   硬约束：
+     · ModelSpec 只由 runtime.resolveModel(cfg) 派生（provider metadata 唯一真源仍是 provider-directory.js）；
+       强制 streaming:false，与既有 direct 路径（callApiChat）一致。
+     · 显式白名单：jsonMode 走 request.jsonMode；disableTools/timeoutMs 走 request.executor（见 agent-runtime.js）。
+       budget 走 request.budget（= opts.maxTokens）。
+     · 回滚：window.runtimeExecuteEnabled=false（全局）或 window.runtimeMomentsExecuteEnabled=false（仅本域）。
+     · fallback：仅"接缝不可用/开关关闭"时才走 direct，并记录 fallbackReason；execute 已发出请求后（抛错/返回 error）
+       一律不回落，避免同一 attempt 双模型调用。
+     · abort：signal 已中止 → 不发起调用；execute 返回 aborted → 抛 AbortError（既有 catch 会 break，不再重试）。
+   禁止接入 loadContext / composeMessages：prompt/context 组装完全留在原处。 */
+function _momentsRuntimeGate(){
+  try{
+    if(typeof window==='undefined')return true;
+    if(window.runtimeMomentsExecuteEnabled!==undefined)return window.runtimeMomentsExecuteEnabled!==false;
+    return window.runtimeExecuteEnabled!==false;
+  }catch(e){return true}
+}
+function _momentsRuntimeInstance(){
+  try{
+    var IB=(typeof window!=='undefined')?window.IB:null;
+    return (IB&&IB.runtime&&IB.runtime.instance&&typeof IB.runtime.instance.execute==='function')?IB.runtime.instance:null;
+  }catch(e){return null}
+}
+/* 诊断用 format：与执行链同源（resolveModel → provider-directory），不维护第二份 provider metadata */
+function _momentsFormat(cfg,runtime){
+  try{if(runtime&&typeof runtime.resolveModel==='function'){var m=runtime.resolveModel(cfg||{});if(m&&m.format)return String(m.format)}}catch(e){}
+  try{if(typeof window!=='undefined'&&window.IBModelCore&&typeof window.IBModelCore.providerFormat==='function')return String(window.IBModelCore.providerFormat((cfg||{}).provider)||'')}catch(e){}
+  return ''
+}
+function _momentsExecLog(kind,cfg,rec){
+  try{
+    var record=_momentsTelemetry('moments',Object.assign({kind:String(kind||''),provider:String((cfg&&cfg.provider)||''),
+      characterId:String((cfg&&cfg.id)||''),model:String((cfg&&cfg.model)||'')},rec||{}));
+    console.info('[Moments] model executor',record);
+  }catch(e){}
+}
+async function _momentsModelCall(kind,cfg,messages,opts){
+  opts=opts||{};
+  if(opts.signal&&opts.signal.aborted){var ae=new Error('已中止');ae.name='AbortError';ae.kind='abort';throw ae}
+  const runtime=_momentsRuntimeInstance(),gate=_momentsRuntimeGate(),jsonMode=!!opts.jsonMode;
+  if(!(gate&&runtime)){
+    const reason=gate?'runtime_unavailable':'gate_disabled',t0=Date.now();
+    const raw=await callApiChat(cfg,messages,opts);/* 原样 opts：direct 行为逐位不变（不追加任何字段） */
+    _momentsExecLog(kind,cfg,{executor:'direct',format:_momentsFormat(cfg,null),jsonMode:jsonMode,
+      usage:'unavailable',abortMode:'none',abortReason:'',fallbackReason:reason,ok:true,ms:Date.now()-t0});
+    return raw;
+  }
+  const spec=Object.assign({},runtime.resolveModel(cfg||{}),{streaming:false});
+  const executor={};
+  if(opts.timeoutMs!=null)executor.timeoutMs=opts.timeoutMs;
+  if(opts.disableTools!==undefined)executor.disableTools=opts.disableTools===true;
+  const t0=Date.now();
+  let abortReason='';
+  let outcome;
+  try{
+    outcome=await runtime.execute(
+      {spec:spec,messages:messages,jsonMode:jsonMode,budget:(opts.maxTokens!=null?opts.maxTokens:null),executor:executor},
+      {signal:opts.signal||undefined,onEvent:function(ev){if(ev&&ev.type==='error'&&ev.kind==='abort'&&!abortReason)abortReason='abort'}}
+    );
+  }catch(e){
+    /* execute 自身抛异常（非 provider error）：不回落（可能已发出模型请求），交给原 retry/错误链 */
+    _momentsExecLog(kind,cfg,{executor:'runtime',format:spec.format,jsonMode:jsonMode,usage:'unavailable',
+      abortMode:'none',abortReason:'',fallbackReason:'runtime_execute_threw',ok:false,ms:Date.now()-t0});
+    throw e;
+  }
+  _momentsExecLog(kind,cfg,{executor:'runtime',format:spec.format,jsonMode:jsonMode,
+    usage:(outcome&&outcome.usage)?'present':'absent',abortMode:(outcome&&outcome.abortMode)||'none',
+    abortReason:abortReason||'',fallbackReason:'',ok:!(outcome&&outcome.error),ms:Date.now()-t0});
+  if(outcome&&outcome.aborted){
+    var ab=new Error('模型调用已中止');ab.name='AbortError';ab.kind='abort';ab.abortReason=abortReason||'abort';throw ab;
+  }
+  if(outcome&&outcome.error){
+    var err=new Error(String(outcome.error.message||'model error'));
+    err.kind=outcome.error.kind||'unknown';/* 与 direct 抛错等价：交给原有解析/重试链 */
+    throw err;
+  }
+  return (outcome&&outcome.text!=null)?outcome.text:'';
+}
 async function _obsCall(kind,cfg,messages,opts){
   let h=null;try{if(OBS)h=OBS.callBegin(kind,cfg,messages)}catch(e){}
   const __t0=Date.now();
   try{
-    const r=await callApiChat(cfg,messages,opts);
+    const r=await _momentsModelCall(kind,cfg,messages,opts);
     try{if(OBS)OBS.callEnd(h,true,Date.now()-__t0,'')}catch(e){}
     return r
   }catch(e){
@@ -762,7 +855,7 @@ async function generateRoleMoment(roleId,opts){
     let raw='',lastError=null,genBudget=MOMENT_GEN_MAX_TOKENS;
     for(let attempt=0;attempt<MOMENT_MAX_ATTEMPTS;attempt++){
       try{
-        raw=await _obsCall('moment',cfg,built.messages,{maxTokens:genBudget,timeoutMs:120000,wantMeta:false,jsonMode:true,_noWebSearch:true,disableTools:true});
+        raw=await _obsCall('moment',cfg,built.messages,{maxTokens:genBudget,timeoutMs:120000,wantMeta:false,jsonMode:true,_noWebSearch:true,disableTools:true,signal:opts.signal});
       }catch(e){lastError=e;break}
       const parsed=_momentsParseOutput(raw);
       if(!parsed||parsed.publish===false){
@@ -810,7 +903,8 @@ async function generateRoleMoment(roleId,opts){
 }
 
 /* ══════════ AI 评论其他角色 ══════════ */
-async function generateRoleComment(commenterRoleId,momentId){
+async function generateRoleComment(commenterRoleId,momentId,opts){
+  opts=opts||{};
   try{
     const prefs=_momentsPrefs();if(!prefs.aiComment)return{ok:false,error:'AI 评论已关闭'};
     const cfg=_momentsCfg(commenterRoleId);if(!cfg)return{ok:false,error:'角色配置不存在'};
@@ -833,7 +927,7 @@ async function generateRoleComment(commenterRoleId,momentId){
     let raw='',lastError=null;
     for(let attempt=0;attempt<MOMENT_MAX_ATTEMPTS;attempt++){
       try{
-        raw=await _obsCall('comment',cfg,built.messages,{maxTokens:300,timeoutMs:90000,wantMeta:false,jsonMode:true,_noWebSearch:true,disableTools:true})
+        raw=await _obsCall('comment',cfg,built.messages,{maxTokens:300,timeoutMs:90000,wantMeta:false,jsonMode:true,_noWebSearch:true,disableTools:true,signal:opts.signal})
       }catch(e){lastError=e;break}
       const parsed=_momentsParseCommentOutput(raw);
       if(!parsed||parsed.publish===false){
@@ -1232,7 +1326,7 @@ async function generateRoleReply(commenterRoleId,momentId,options){
       try{
         /* @ 点名：首次正常预算，空输出时第二次提额重试（推理模型吃满预算的常见成因） */
         const _replyBudget=(options.mention===true&&attempt>0)?1200:600;
-        raw=await _obsCall('reply',cfg,built.messages,{maxTokens:_replyBudget,timeoutMs:90000,wantMeta:false,jsonMode:true,_noWebSearch:true,disableTools:true})
+        raw=await _obsCall('reply',cfg,built.messages,{maxTokens:_replyBudget,timeoutMs:90000,wantMeta:false,jsonMode:true,_noWebSearch:true,disableTools:true,signal:options&&options.signal})
       }catch(e){lastError=e;break}
       const parsed=_momentsParseReplyOutput(raw);
       if(!parsed||parsed.publish===false){
@@ -2069,6 +2163,9 @@ window._momentsContext=_momentsContext;
 window.buildMomentPrompt=buildMomentPrompt;
 window.buildMomentCommentPrompt=buildMomentCommentPrompt;
 window._momentsParseOutput=_momentsParseOutput;
+/* Runtime Convergence Phase 2：Moments 统一执行接缝（测试/诊断入口；开关见 window.runtimeExecuteEnabled / runtimeMomentsExecuteEnabled） */
+window._obsCall=_obsCall;
+window._momentsModelCall=_momentsModelCall;
 window._momentsParseCommentOutput=_momentsParseCommentOutput;
 window._momentsDuplicateCheck=_momentsDuplicateCheck;
 window.generateRoleMoment=generateRoleMoment;
@@ -2222,6 +2319,9 @@ NS.expose('moments',{
   _momentsUserDisplayName:_momentsUserDisplayName,
   _momentsResetSyncForTest:_momentsResetSyncForTest,
   _momentsDiagnoseOutput:_momentsDiagnoseOutput,
+  /* ── Runtime Convergence Phase 2：统一执行接缝 ── */
+  _obsCall:_obsCall,
+  _momentsModelCall:_momentsModelCall,
   _momentsOpenRole:_momentsOpenRole,
   /* ── 行为观测 ── */
   _socialObsStats:_socialObsStats,

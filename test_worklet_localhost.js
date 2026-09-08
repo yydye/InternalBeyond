@@ -128,7 +128,9 @@ function listen(server) {
     cdp.on('Runtime.exceptionThrown', params => { const d = params.exceptionDetails || {}; exceptions.push(JSON.stringify(d.exception && d.exception.description || d.text || '')); });
 
     check('page loads over localhost', await waitFor(cdp, "typeof window.IB === 'object' && typeof window.activeFriendId !== 'undefined'", 20000));
-    check('IB.voiceCall mounted', await evaluate(cdp, "window.IB && window.IB.voiceCall && typeof window.IB.voiceCall.start === 'function'"));
+    /* voiceCall 由 call.js 挂载；上面的 page-ready 条件先于该脚本成立（HTML 脚本按序执行，
+       CDP 评估可在两个 <script> 之间落地）。等它挂载，而不是把加载竞态当成功能缺失。 */
+    check('IB.voiceCall mounted', await waitFor(cdp, "window.IB && window.IB.voiceCall && typeof window.IB.voiceCall.start === 'function'", 15000));
 
     const wl = await evaluate(cdp, "(async function(){ try{ var AC=window.AudioContext||window.webkitAudioContext; var ctx=new AC({latencyHint:'interactive'}); await ctx.audioWorklet.addModule('assets/js/voice-worklet.js'); var node=new AudioWorkletNode(ctx,'ib-voice-capture'); var ok=!!node; try{ctx.close()}catch(e){} return {ok:ok}; }catch(e){ return {ok:false, err:String(e&&e.message||e)}; } })()");
     check('AudioWorklet static module loads + registers over localhost', wl && wl.ok, wl && wl.err);

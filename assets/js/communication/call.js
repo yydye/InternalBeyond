@@ -108,15 +108,42 @@ VoiceCall.prototype.start=async function(){
   await this.connect(false);
 };
 
+/* 连接 Promise 的三种终止语义（调用方据 e.voiceKind / e.voiceCancelled 决定后续动作）：
+     connect    —— 首次连接在握手完成前失败（onerror/onclose）→ reject，调用方上报
+     handshake  —— 重连尝试在握手完成前失败 → reject，由 scheduleReconnect 的 catch 继续重试
+     cancelled  —— 用户已挂断 / 已销毁 → reject，调用方必须停止，不得再重试
+   握手完成的唯一判据是收到 hello_ack；只有 hello_ack 会 resolve。 */
+function _voiceConnError(kind){
+  var message=kind==='handshake'?'Voice reconnection closed before handshake':
+    (kind==='cancelled'?'Voice call ended':'Voice connection closed');
+  var error=new Error(message);
+  error.voiceKind=kind;
+  error.voiceCancelled=(kind==='cancelled');
+  return error;
+}
+
 VoiceCall.prototype.connect=function(isReconnect){
   var self=this;
   return new Promise(function(resolve,reject){
-    if(self.destroyed)return reject(new Error('closed'));
-    var settled=false,ws=new WebSocket(wsUrl());ws.binaryType='arraybuffer';self.ws=ws;
+    if(self.destroyed||self.state==='ended')return reject(_voiceConnError('cancelled'));
+    var settled=false,handshake=false,ws=new WebSocket(wsUrl());ws.binaryType='arraybuffer';self.ws=ws;
+    /* 单次 settle：Promise 只结束一次（resolve=hello_ack，reject=握手前断开/取消）。 */
+    function settle(fn,value){if(settled)return;settled=true;fn(value)}
+    function failed(){
+      /* 握手完成前断开：必须结束本次 connect，否则调用方 await 永久悬挂。
+         重连失败的重试调度统一由 scheduleReconnect 的 catch 负责，此处不重复调度。 */
+      if(self.destroyed||self.state==='ended'){settle(reject,_voiceConnError('cancelled'));return}
+      settle(reject,_voiceConnError(isReconnect?'handshake':'connect'));
+    }
     ws.onopen=function(){self.send({type:'hello',token:token()})};
-    ws.onerror=function(){if(!settled){settled=true;if(!isReconnect)reject(new Error('Cannot connect to the InternalBeyond Bridge'))}};
+    ws.onerror=function(){
+      /* 部分实现对断线只派发 error 不派发 close；握手前与 close 等价处理。 */
+      if(handshake)return;
+      if(!settled&&!isReconnect)self.showError('');
+      failed();
+    };
     ws.onclose=function(){
-      if(!settled){settled=true;if(!isReconnect)reject(new Error('Voice connection closed'));else return}
+      if(!handshake){failed();return}
       if(self.state==='ended'||self.destroyed)return;
       self.setState('error');self.showError('Voice connection lost');
       self.scheduleReconnect();
@@ -124,8 +151,10 @@ VoiceCall.prototype.connect=function(isReconnect){
     ws.onmessage=function(event){
       var msg;try{msg=JSON.parse(event.data)}catch(e){return}
       if(msg.type==='hello_ack'){
+        if(self.destroyed||self.state==='ended'){settle(reject,_voiceConnError('cancelled'));return}
+        handshake=true;
         self.send({type:'start',roleId:self.roleId,conversationId:self.conversationId,voice:self.role.voice||{}});
-        if(!settled){settled=true;resolve()}
+        settle(resolve);
         return;
       }
       self.onMessage(msg);
@@ -143,7 +172,12 @@ VoiceCall.prototype.scheduleReconnect=function(){
   this.reconnectTimer=setTimeout(async function(){
     self.reconnecting=false;self.setState('connecting');self.showError('');
     try{await self.connect(true);self.reconnectAttempts=0}
-    catch(e){self.scheduleReconnect()}
+    catch(e){
+      /* 主动挂断（cancelled）→ 停止重试；其余握手前失败 → 继续下一次退避重试 */
+      if(e&&e.voiceCancelled)return;
+      if(self.destroyed||self.state==='ended')return;
+      self.scheduleReconnect();
+    }
   },delay);
 };
 

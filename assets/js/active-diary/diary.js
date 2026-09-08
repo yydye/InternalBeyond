@@ -137,7 +137,10 @@ async function _diaryWriteMemory(character,memoryCandidate){
       const text=((m.title||'')+' '+(m.summary||'')+' '+String(m.content||''));
       if(text&&_activeTextSimilarity(content,text)>=0.8)return null
     }
-    const mem={id:'mem_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,8),title:content.slice(0,24),summary:content.slice(0,80),content:content,created:Date.now(),category:'experience',importance:importance,source:'diary',createdBy:'ai',createdByName:character.nickname||character.model||'AI',characterId:character.id,resolved:false,activationCount:0};
+    /* 用当前 Memory schema 的可见性字段：日记记忆属于角色自己（characterId），
+       标记为 only → visibleTo=[character.id]，保证角色（单聊 getMemoryContext(cfg.id)）能召回，
+       同时不会泄给 group memory 或其他角色。缺失 visibility 的旧记录会被 isMemoryVisibleTo 判不可见。 */
+    const mem={id:'mem_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,8),title:content.slice(0,24),summary:content.slice(0,80),content:content,created:Date.now(),category:'experience',importance:importance,source:'diary',createdBy:'ai',createdByName:character.nickname||character.model||'AI',characterId:character.id,visibility:'only',visibleTo:[String(character.id)],excludeFrom:[],resolved:false,activationCount:0};
     await dbPut('memories',mem);
     try{if(typeof updateMemDashboard==='function')updateMemDashboard()}catch(e){}
     return mem
@@ -166,6 +169,94 @@ function _diaryParseOutput(raw){
   }
   return out
 }
+/* ══════════ Runtime Convergence Phase 3 · Diary 统一执行接缝 ══════════
+   只收敛"最终模型执行"，其余全部留在 Diary 业务链（未改一行）：
+     触发条件 → _diaryContext → buildDiaryPrompt → _diaryModelCall
+                                                     ├─ IB.runtime.instance.execute（默认）
+                                                     └─ callApiChat（回滚 / 接缝不可用）
+     → _diaryParseOutput → 去重 → dbPut(DIARY_STORE) → _diaryWriteMemory → 返回
+   硬约束：
+     · ModelSpec 只由 runtime.resolveModel(cfg) 派生（provider metadata 唯一真源仍是 provider-directory.js）；
+       强制 streaming:false，与既有 direct 路径（callApiChat）一致。
+     · 白名单：jsonMode 走 request.jsonMode；timeoutMs / disableTools / wantThinking 走 request.executor；
+       budget 走 request.budget（= opts.maxTokens）。本调用点不传 wantThinking → 与 direct 同为"未开启"。
+     · 本接缝**只返回模型原始文本**，绝不写 Diary / Memory / consolidation / visibility / scheduler 状态。
+     · 回滚：window.runtimeExecuteEnabled=false（全局）或 window.runtimeDiaryExecuteEnabled=false（仅本域）。
+     · fallback：仅"接缝不可用/开关关闭"时走 direct 并记录 fallbackReason；execute 已发出请求后
+       （抛错/返回 error）一律不回落，避免同一 attempt 双模型调用。
+     · abort：signal 已中止 → 不发起调用；execute 返回 aborted → 抛 AbortError（既有 catch 会 break，不再 retry）。
+   禁止接入 loadContext / composeMessages。 */
+function _diaryRuntimeGate(){
+  try{
+    if(typeof window==='undefined')return true;
+    if(window.runtimeDiaryExecuteEnabled!==undefined)return window.runtimeDiaryExecuteEnabled!==false;
+    return window.runtimeExecuteEnabled!==false;
+  }catch(e){return true}
+}
+function _diaryRuntimeInstance(){
+  try{
+    var IB=(typeof window!=='undefined')?window.IB:null;
+    return (IB&&IB.runtime&&IB.runtime.instance&&typeof IB.runtime.instance.execute==='function')?IB.runtime.instance:null;
+  }catch(e){return null}
+}
+/* 诊断用 format：与执行链同源（resolveModel → provider-directory），不维护第二份 provider metadata */
+function _diaryFormat(cfg,runtime){
+  try{if(runtime&&typeof runtime.resolveModel==='function'){var m=runtime.resolveModel(cfg||{});if(m&&m.format)return String(m.format)}}catch(e){}
+  try{if(typeof window!=='undefined'&&window.IBModelCore&&typeof window.IBModelCore.providerFormat==='function')return String(window.IBModelCore.providerFormat((cfg||{}).provider)||'')}catch(e){}
+  return ''
+}
+function _diaryExecLog(cfg,rec,meta){
+  try{
+    var base=Object.assign({kind:String((meta&&meta.kind)||'generate'),provider:String((cfg&&cfg.provider)||''),characterId:String((cfg&&cfg.id)||''),model:String((cfg&&cfg.model)||'')},rec||{});
+    var record=base;
+    if(typeof window!=='undefined'&&window.IB&&IB.runtime&&IB.runtime.telemetry&&typeof IB.runtime.telemetry.record==='function')
+      record=IB.runtime.telemetry.record('diary',base);
+    console.info('[Diary] model executor',record);
+  }catch(e){}
+}
+/* meta（可选第 4 参）只用于 telemetry 区分调用点（kind），绝不进入执行器 opts */
+async function _diaryModelCall(cfg,messages,opts,meta){
+  opts=opts||{};
+  if(opts.signal&&opts.signal.aborted){var ae=new Error('已中止');ae.name='AbortError';ae.kind='abort';throw ae}
+  const runtime=_diaryRuntimeInstance(),gate=_diaryRuntimeGate(),jsonMode=!!opts.jsonMode;
+  if(!(gate&&runtime)){
+    const reason=gate?'runtime_unavailable':'gate_disabled',t0=Date.now();
+    const raw=await callApiChat(cfg,messages,opts);/* 原样 opts：direct 行为逐位不变（不追加任何字段） */
+    _diaryExecLog(cfg,{executor:'direct',format:_diaryFormat(cfg,null),jsonMode:jsonMode,
+      usage:'unavailable',abortMode:'none',abortReason:'',fallbackReason:reason,ok:true,ms:Date.now()-t0},meta);
+    return raw;
+  }
+  const spec=Object.assign({},runtime.resolveModel(cfg||{}),{streaming:false});
+  const executor={};
+  if(opts.timeoutMs!=null)executor.timeoutMs=opts.timeoutMs;
+  if(opts.disableTools!==undefined)executor.disableTools=opts.disableTools===true;
+  if(opts.wantThinking!==undefined)executor.wantThinking=opts.wantThinking===true;
+  const t0=Date.now();
+  let abortReason='',outcome;
+  try{
+    outcome=await runtime.execute(
+      {spec:spec,messages:messages,jsonMode:jsonMode,budget:(opts.maxTokens!=null?opts.maxTokens:null),executor:executor},
+      {signal:opts.signal||undefined,onEvent:function(ev){if(ev&&ev.type==='error'&&ev.kind==='abort'&&!abortReason)abortReason='abort'}}
+    );
+  }catch(e){
+    /* execute 自身抛异常：不回落（可能已发出模型请求），交给原 retry/错误链 */
+    _diaryExecLog(cfg,{executor:'runtime',format:spec.format,jsonMode:jsonMode,usage:'unavailable',
+      abortMode:'none',abortReason:'',fallbackReason:'runtime_execute_threw',ok:false,ms:Date.now()-t0},meta);
+    throw e;
+  }
+  _diaryExecLog(cfg,{executor:'runtime',format:spec.format,jsonMode:jsonMode,
+    usage:(outcome&&outcome.usage)?'present':'absent',abortMode:(outcome&&outcome.abortMode)||'none',
+    abortReason:abortReason||'',fallbackReason:'',ok:!(outcome&&outcome.error),ms:Date.now()-t0},meta);
+  if(outcome&&outcome.aborted){
+    var ab=new Error('模型调用已中止');ab.name='AbortError';ab.kind='abort';ab.abortReason=abortReason||'abort';throw ab;
+  }
+  if(outcome&&outcome.error){
+    var err=new Error(String(outcome.error.message||'model error'));
+    err.kind=outcome.error.kind||'unknown';/* 与 direct 抛错等价：交给原有解析/重试链 */
+    throw err;
+  }
+  return (outcome&&outcome.text!=null)?outcome.text:'';
+}
 /* 主生成管线：手动/周记/每日/事件共用 */
 async function generateDiaryEntry(characterId,opts){
   opts=opts||{};
@@ -179,7 +270,7 @@ async function generateDiaryEntry(characterId,opts){
     let raw='',lastError=null;
     for(let attempt=0;attempt<2;attempt++){
       try{
-        raw=await callApiChat(cfg,built.messages,{maxTokens:2000,timeoutMs:120000,wantMeta:false,jsonMode:true,_noWebSearch:true,disableTools:true})
+        raw=await _diaryModelCall(cfg,built.messages,{maxTokens:2000,timeoutMs:120000,wantMeta:false,jsonMode:true,_noWebSearch:true,disableTools:true,signal:opts.signal})
       }catch(e){lastError=e;break}
       const parsed=_diaryParseOutput(raw);
       if(!parsed){
@@ -216,8 +307,9 @@ async function generateDiaryEntry(characterId,opts){
     return{ok:false,error:lastError?String(lastError.message||lastError).slice(0,200):'生成失败'}
   }catch(e){console.warn('[Diary] generate failed',String(e&&e.message||e).slice(0,200));return{ok:false,error:String(e&&e.message||e).slice(0,200)}}
 }
-/* 每日 AI planner：判断今天是否值得写日记 */
-async function _diaryDailyPlanner(character){
+/* 每日 AI planner：判断今天是否值得写日记（Phase 4：执行经同一 _diaryModelCall 接缝，kind='planner'） */
+async function _diaryDailyPlanner(character,opts){
+  opts=opts||{};
   try{
     const cfg=character,context=await _diaryContext(cfg);
     const today=new Date().toLocaleString('zh-CN',{year:'numeric',month:'long',day:'numeric',weekday:'long'});
@@ -235,7 +327,7 @@ async function _diaryDailyPlanner(character){
       '【输出格式】只输出 JSON：{"shouldWrite":true/false,"reason":"原因（≤50字）","diaryType":"emotion|event|daily|weekly","importance":1-10}',
       '【规则】1. 今天有值得记录的事（重要对话、新记忆、情绪变化、事件）才 shouldWrite:true。2. 普通平淡的一天返回 false。3. importance<6 时不应写。4. 不要为了写而写。'
     ];
-    const raw=await callApiChat(cfg,[{role:'system',content:system},{role:'user',content:prompt.join('\n')}],{maxTokens:300,timeoutMs:60000,wantMeta:false,jsonMode:true,_noWebSearch:true,disableTools:true});
+    const raw=await _diaryModelCall(cfg,[{role:'system',content:system},{role:'user',content:prompt.join('\n')}],{maxTokens:300,timeoutMs:60000,wantMeta:false,jsonMode:true,_noWebSearch:true,disableTools:true,signal:opts.signal},{kind:'planner'});
     const parsed=_activeParsePlanJson(raw);
     if(parsed&&parsed.shouldWrite===true){
       const importance=Math.max(0,Math.min(10,parseInt(parsed.importance,10)||0));
@@ -246,8 +338,10 @@ async function _diaryDailyPlanner(character){
     return{shouldWrite:false}
   }catch(e){return{shouldWrite:false}}
 }
-/* 调度 tick：每周周记 + 每日 planner（浏览器前端，每角色独立水位线防重复） */
-async function _diaryTick(){
+/* 调度 tick：每周周记 + 每日 planner（浏览器前端，每角色独立水位线防重复）
+   opts.signal（可选）：仅用于把取消/中止传到 planner 的模型执行；不传时行为与之前完全一致。 */
+async function _diaryTick(opts){
+  opts=opts||{};
   if(!db)return;
   try{
     const prefs=_diaryPrefs();
@@ -269,7 +363,7 @@ async function _diaryTick(){
         const dm=String(watermarks['dl_'+cfg.id]||'');
         if(dm!==todayKey){
           _diarySetWatermark('dl_'+cfg.id,todayKey);/* 先占位防重复，当天失败不重试 */
-          const plan=await _diaryDailyPlanner(cfg);
+          const plan=await _diaryDailyPlanner(cfg,{signal:opts.signal});
           if(plan.shouldWrite){
             generateDiaryEntry(cfg.id,{trigger:'daily_plan',diaryType:plan.diaryType,reason:plan.reason})
           }
@@ -423,6 +517,8 @@ window._diaryTodayWish=_diaryTodayWish;
 window._diaryRenderPrefs=_diaryRenderPrefs;
 window._diarySavePrefs=_diarySavePrefs;
 window.loadDiaryPage=loadDiaryPage;
+/* Runtime Convergence Phase 3：Diary 统一执行接缝（测试/诊断入口；开关见 window.runtimeExecuteEnabled / runtimeDiaryExecuteEnabled） */
+window._diaryModelCall=_diaryModelCall;
 NS.expose('active.diary', {
   DIARY_STORE: DIARY_STORE,
   DIARY_PREFS_KEY: DIARY_PREFS_KEY,
@@ -441,6 +537,8 @@ NS.expose('active.diary', {
   buildDiaryPrompt: buildDiaryPrompt,
   _diaryWriteMemory: _diaryWriteMemory,
   _diaryParseOutput: _diaryParseOutput,
+  /* ── Runtime Convergence Phase 3：统一执行接缝 ── */
+  _diaryModelCall: _diaryModelCall,
   generateDiaryEntry: generateDiaryEntry,
   _diaryDailyPlanner: _diaryDailyPlanner,
   _diaryTick: _diaryTick,

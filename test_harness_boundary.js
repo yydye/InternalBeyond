@@ -67,8 +67,18 @@ console.log('Harness 边界守卫测试\n');
   check('IBModelCore 不引用 DOM', !DOM_RE.test(c));
   check('IBModelCore 不引用 fetch()', !FETCH_RE.test(c));
   check('IBModelCore 无 Domain 域符号', !DOMAIN_RE.test(c), (c.match(DOMAIN_RE) || [])[0] || '');
+  /* provider metadata 目录（assets/js/provider-directory.js）是 harness 级纯数据模块：
+     零 require / 无 window / 无 DOM / 无 fetch / 无 Domain，允许 IBModelCore 依赖它，
+     但依赖边界仍被白名单锁死——不得再 require 其它任何模块。 */
   const requires = (c.match(/require\s*\([^)]*\)/g) || []);
-  check('IBModelCore 零 require（纯模块/UMD）', requires.length === 0, requires.join('; '));
+  const allowed = requires.every(r => /^require\s*\(\s*['"]\.\/provider-directory\.js['"]\s*\)$/.test(r));
+  check('IBModelCore 仅可 require provider-directory（纯 metadata）', allowed && !FORBID_REQ_RE.test(c), requires.join('; '));
+  const dir = code(path.join(ROOT, 'provider-directory.js'));
+  check('provider-directory 零 require', !/require\s*\(/.test(dir), (dir.match(/require\s*\([^)]*\)/g) || []).join('; '));
+  check('provider-directory 不引用 window', !WINDOW_RE.test(dir));
+  check('provider-directory 不引用 DOM', !DOM_RE.test(dir));
+  check('provider-directory 不引用 fetch()', !FETCH_RE.test(dir));
+  check('provider-directory 无 Domain 域符号', !DOMAIN_RE.test(dir), (dir.match(DOMAIN_RE) || [])[0] || '');
 }
 
 /* ── 2. NodeModelPort：单次执行 + timeout/abort，无 Domain ── */

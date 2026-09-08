@@ -255,9 +255,10 @@ async function main() {
     const b = await evaluate(cdp, "generateRoleMoment('p4b',{trigger:'manual',forceImage:true})");
     check('B.differentTextModelSameImageProvider', b && b.ok === true && b.published === true && b.moment && b.moment.images.length === 1 && mock.imageHits.length === imgHitsAfterA + 1 && (mock.chatByModel['p4-noimg'] || 0) >= 1, JSON.stringify(b && { ok: b.ok, images: b.moment && b.moment.images.length, imgHits: mock.imageHits.length }));
 
-    /* ══ C：wantImage=false → 不调用图片 Provider ══ */
+    /* ══ C：wantImage=false → 不调用图片 Provider（手动 forceImage 会强制配图，故此用例按
+       自然判断路径调用；force 语义由 phase2 的 ai.forceImageOverridesWant 覆盖） ══ */
     const imgHitsAfterB = mock.imageHits.length;
-    const c = await evaluate(cdp, "generateRoleMoment('p4c',{trigger:'manual',forceImage:true})");
+    const c = await evaluate(cdp, "generateRoleMoment('p4c',{trigger:'manual'})");
     check('C.wantImageFalseNoImageCall', c && c.ok === true && c.published === true && c.wantImage === false && c.moment && c.moment.images.length === 0 && mock.imageHits.length === imgHitsAfterB, JSON.stringify(c && { ok: c.ok, wantImage: c.wantImage, images: c.moment && c.moment.images.length, imgHits: mock.imageHits.length }));
 
     /* ══ E：wantImage=true + 图片 Provider 失败 → 纯文字 Moment 正常发布 + image_generation_failed ══ */

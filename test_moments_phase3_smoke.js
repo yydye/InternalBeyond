@@ -172,6 +172,16 @@ async function main() {
     check('page.ready', await waitFor(cdp, "window.IB&&IB.moments&&typeof _momentsLocalTick==='function'&&typeof _momentsPairAffinity==='function'&&typeof _momentsScanDesc==='function'", 20000));
     check('dual.p3', await evaluate(cdp, "typeof _momentsLocalTick==='function'&&typeof IB.moments._momentsLocalTick==='function'&&typeof IB.moments._momentsPairAffinity==='function'"));
     await evaluate(cdp, "(function(){Object.defineProperty(window,'_activeCompanionOnline',{value:false,writable:true,configurable:true});return true})()");
+    /* 隔离（1/2）：init() 会 `setTimeout(_activeTick,2500)` 跑一次性 tick。此时尚未写入任何
+       apiConfig，因此它是无副作用的；先等它跑完，后续不再有一次性 tick。 */
+    await new Promise(r => setTimeout(r, 3500));
+    /* 隔离（2/2）：持续压制后台调度。_activeTimer 每 30s 会跑 _activeTick → _momentsTick/_momentsSyncCompanion，
+       与本测试的 companion 请求计数、mock 每模型调用计数冲突（曾随机出现 totalPuts/reownPuts/burst 失败）。
+       单次 clearInterval 会被 init() 之后的 setInterval 覆盖，因此装一个常驻守卫。本测试所有 tick 都是显式调用。 */
+    const pauseBackground = "(function(){if(window.__ibPauseGuard)return true;"
+      + "window.__ibPauseGuard=setInterval(function(){try{if(window._activeTimer){clearInterval(window._activeTimer);window._activeTimer=null}}catch(e){}},50);"
+      + "try{if(window._activeTimer){clearInterval(window._activeTimer);window._activeTimer=null}}catch(e){}return true})()";
+    await evaluate(cdp, pauseBackground);
     await evaluate(cdp, "_momentsPrefsSave({aiComment:false,aiLike:false,frequency:'medium'})");
 
     const cfg = (id, model, endpoint, extra) => "{id:'" + id + "',provider:'openai',model:'" + model + "',endpoint:'" + endpoint + "',apiKey:'',nickname:'" + id + "',systemPrompt:'你是测试角色'" + (extra || '') + "}";
@@ -308,6 +318,7 @@ async function main() {
     check('storage.exportImportIdempotent', roundtrip && roundtrip.ok && roundtrip.before === roundtrip.after && roundtrip.noDupe && privKept === true, JSON.stringify(roundtrip) + ' priv=' + privKept);
 
     /* ── Companion 同步契约（能力预检 / 旧版服务不连发 404 / 升级自动恢复） ── */
+    await evaluate(cdp, pauseBackground);/* 二次确认后台 tick 已停（避免 init 晚于首次暂停时重新启动） */
     await evaluate(cdp, "(function(){window.__ibReq=[];window.__ibCaps={ok:true,moments:0};window.__ibFailPut=false;window.__ibOrigReq=window._activeCompanionRequest;window._activeCompanionRequest=async function(p,o){window.__ibReq.push((o&&o.method||'GET')+' '+p);if(p==='/health')return window.__ibCaps;if(p.indexOf('/moments/')===0){if(window.__ibFailPut)throw new Error('后台服务 404');return{ok:true}}if(p==='/reconcile')return{ok:true};return{}};Object.defineProperty(window,'_activeCompanionOnline',{value:true,writable:true,configurable:true});__ibP3.solo('p3a',false);__ibP3.solo('p3b',false);return true})()");
     const syncOk = await evaluate(cdp, "_momentsSyncCompanion()");
     const reqStats = await evaluate(cdp, "(function(){var q=window.__ibReq;return{puts:q.filter(function(x){return x.indexOf('PUT /moments/')===0}).length,healths:q.filter(function(x){return x==='GET /health'}).length,reconciles:q.filter(function(x){return x==='POST /reconcile'}).length}})()");

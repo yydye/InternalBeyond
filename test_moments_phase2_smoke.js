@@ -135,6 +135,7 @@ function startMockApi() {
         let content;
         if (model === 'p2-img') content = JSON.stringify({ publish: true, content: '今天看到一只很奇怪的猫。', visibility: 'all', includeImage: true, imagePrompt: 'A casual smartphone photo of a strange cat on a street' });
         else if (model === 'p2-tex') content = JSON.stringify({ publish: true, content: '今天突然想起以前的一件事。', visibility: 'all', includeImage: false });
+        else if (model === 'p2-nw') content = JSON.stringify({ publish: true, content: '今天只想安静地散个步。', visibility: 'all', includeImage: false });
         else if (model === 'p2-noim') content = JSON.stringify({ publish: true, content: '这只猫真的太奇怪了，拍一张留个证据。', visibility: 'all', includeImage: true });
         else if (model === 'p2-dec') content = JSON.stringify({ publish: false, reason: '今天没有值得分享的事' });
         else content = JSON.stringify({ publish: true, content: '默认内容', visibility: 'all' });
@@ -170,13 +171,17 @@ async function main() {
     await evaluate(cdp, "_momentsPrefsSave({aiComment:false,aiLike:false,frequency:'low'})");
 
     const cfg = (id, model, extra) => "{id:'" + id + "',provider:'openai',model:'" + model + "',endpoint:'http://127.0.0.1:" + mock.port + "/v1/chat/completions',apiKey:'',nickname:'" + id + "',systemPrompt:'你是测试角色'" + (extra || '') + "}";
-    await evaluate(cdp, "(async function(){await dbPut('apiConfigs'," + cfg('p2a','p2-img',",imageGen:true,imageGenModel:'p2-img'") + ");await dbPut('apiConfigs'," + cfg('p2b','p2-tex',",imageGen:true,imageGenModel:'p2-img'") + ");await dbPut('apiConfigs'," + cfg('p2c','p2-noim',",imageGen:true,imageGenModel:'p2-noim'") + ");await dbPut('apiConfigs'," + cfg('p2d','p2-dec',",imageGen:true,imageGenModel:'p2-img'") + ");await loadApiConfigs();})()");
+    await evaluate(cdp, "(async function(){await dbPut('apiConfigs'," + cfg('p2a','p2-img',",imageGen:true,imageGenModel:'p2-img'") + ");await dbPut('apiConfigs'," + cfg('p2b','p2-tex',",imageGen:true,imageGenModel:'p2-img'") + ");await dbPut('apiConfigs'," + cfg('p2c','p2-noim',",imageGen:true,imageGenModel:'p2-noim'") + ");await dbPut('apiConfigs'," + cfg('p2d','p2-dec',",imageGen:true,imageGenModel:'p2-img'") + ");await dbPut('apiConfigs'," + cfg('p2e','p2-nw',",imageGen:true,imageGenModel:'p2-img'") + ");await loadApiConfigs();})()");
 
     /* AI 图文 */
     const img = await evaluate(cdp, "generateRoleMoment('p2a',{trigger:'manual',forceImage:true})");
     check('ai.imgPublish', img && img.ok && img.published && img.moment && img.moment.images.length === 1 && String(img.moment.images[0].dataUrl || '').indexOf('data:image/jpeg') === 0, JSON.stringify(img && { ok: img.ok, published: img.published, images: img.moment && img.moment.images.length }));
-    const txt = await evaluate(cdp, "generateRoleMoment('p2b',{trigger:'manual',forceImage:true})");
-    check('ai.textOnly', txt && txt.ok && txt.published && txt.moment.images.length === 0, JSON.stringify(txt));
+    const txt = await evaluate(cdp, "generateRoleMoment('p2b',{trigger:'manual'})");
+    check('ai.textOnly', txt && txt.ok && txt.published && txt.wantImage === false && txt.moment.images.length === 0, JSON.stringify(txt && { ok: txt.ok, wantImage: txt.wantImage, images: txt.moment && txt.moment.images.length }));
+    /* 手动强制配图语义（v5）：forceImage:true 是"立即发布并配图"的用户动作，
+       按当前实现明确跳过模型 wantImage 判断（同 wantImage=false 也出图）。 */
+    const forced = await evaluate(cdp, "(async function(){var r=await generateRoleMoment('p2e',{trigger:'manual',forceImage:true});return{ok:r.ok,published:r.published,wantImage:r.wantImage,images:r.moment&&r.moment.images.length}})()");
+    check('ai.forceImageOverridesWant', forced && forced.ok === true && forced.published === true && forced.wantImage === false && forced.images === 1, JSON.stringify(forced));
     const failImg = await evaluate(cdp, "generateRoleMoment('p2c',{trigger:'manual',forceImage:true})");
     check('ai.imgFailKeepsText', failImg && failImg.ok && failImg.published && failImg.moment && failImg.moment.images.length === 0 && failImg.moment.content.indexOf('猫') >= 0, JSON.stringify(failImg));
     const dec = await evaluate(cdp, "generateRoleMoment('p2d',{trigger:'manual',forceImage:true})");
@@ -198,8 +203,13 @@ async function main() {
     check('like.eligible', await evaluate(cdp, "(function(){return _momentsLikeEligible({roleId:'p2d',visibility:'all',likes:[]},'p2a')})()"));
     const vis = await evaluate(cdp, "(function(){return _momentsLikeEligible({roleId:'p2a',visibility:'roles',visibleRoleIds:['p2b'],likes:[]},'p2b')})()");
     check('like.notVisible', vis === false, String(vis));
-    const applied = await evaluate(cdp, "(async function(){localStorage.removeItem('ib_moments_likes_v1');var m=await createMoment({roleId:'p2d',content:'点赞上限测试动态。',source:'manual',visibility:'all'});var r=await _momentsApplyLikes(m.moment.id,{force:true,max:2});var r2=await _momentsApplyLikes(m.moment.id,{force:true,max:2});var fresh=await getMoment(m.moment.id);var roleLikes=(fresh.likes||[]).filter(x=>x!==_activeUserId()).length;return{first:r,second:r2,roleLikes:roleLikes}})()");
-    check('like.applyBounded', applied && applied.first.ok && applied.first.liked === 2 && applied.second.ok && applied.second.liked <= 1 && applied.roleLikes <= 3, JSON.stringify(applied));
+    /* 上限语义与"可用角色数"绑定：作者角色不能给自己点赞，因此 eligible = 配置角色数 - 1。
+       断言按真实不变量写（与角色数量无关）：每次调用最多 max 人、两次不重复点同一角色、
+       总点赞数 = 两次之和且不超过 eligible。 */
+    const applied = await evaluate(cdp, "(async function(){localStorage.removeItem('ib_moments_likes_v1');var m=await createMoment({roleId:'p2d',content:'点赞上限测试动态。',source:'manual',visibility:'all'});var r=await _momentsApplyLikes(m.moment.id,{force:true,max:2});var r2=await _momentsApplyLikes(m.moment.id,{force:true,max:2});var fresh=await getMoment(m.moment.id);var roleLikes=(fresh.likes||[]).filter(x=>x!==_activeUserId()).length;var eligible=apiConfigs.filter(function(c){return c.id!=='p2d'}).length;var by1=r.by||[],by2=r2.by||[];var disjoint=by1.every(function(x){return by2.indexOf(x)<0});return{first:r,second:r2,roleLikes:roleLikes,eligible:eligible,disjoint:disjoint}})()");
+    check('like.applyBounded', applied && applied.first.ok && applied.first.liked === Math.min(2, applied.eligible)
+      && applied.second.ok && applied.second.liked <= 2 && applied.disjoint === true
+      && applied.roleLikes === applied.first.liked + applied.second.liked && applied.roleLikes <= applied.eligible, JSON.stringify(applied));
     /* 冷却 + 每小时上限 */
     const cool = await evaluate(cdp, "(async function(){var m=await createMoment({roleId:'p2d',content:'冷却测试动态。',source:'manual',visibility:'all'});_momentsRecordLike('p2b','p2d',Date.now());return _momentsLikeEligible(m.moment,'p2b')})()");
     check('like.cooldown', cool === false, String(cool));

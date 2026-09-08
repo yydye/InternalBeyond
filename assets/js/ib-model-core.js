@@ -9,29 +9,15 @@
    - 结构参考仓库已有 UMD 共享模块 reply-chain-core.js。
    ==================================================================== */
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) { module.exports = factory(); }
-  else { root.IBModelCore = factory(); }
-})(typeof self !== 'undefined' ? self : this, function () {
+  if (typeof module === 'object' && module.exports) { module.exports = factory(require('./provider-directory.js')); }
+  else { root.IBModelCore = factory(root.PROVIDERS_DIR || {}); }
+})(typeof self !== 'undefined' ? self : this, function (CANON) {
   'use strict';
 
-  /* 提供者目录（镜像 browser social.js 的 PROVIDERS，供 runtime-neutral 解析使用） */
-  var PROVIDERS = {
-    anthropic: { name: 'Claude', endpoint: 'https://api.anthropic.com/v1/messages', model: 'claude-sonnet-4-6', format: 'anthropic', vision: true, streaming: true },
-    openai: { name: 'GPT', endpoint: 'https://api.openai.com/v1/chat/completions', model: 'gpt-4o-mini', format: 'openai', vision: true, streaming: true },
-    grok: { name: 'Grok', endpoint: 'https://api.x.ai/v1/chat/completions', model: 'grok-4', format: 'openai', vision: true, streaming: true },
-    deepseek: { name: 'DeepSeek', endpoint: 'https://api.deepseek.com/v1/chat/completions', model: 'deepseek-v4-flash', format: 'openai', vision: true, streaming: true, showThinking: true },
-    gemini: { name: 'Gemini', endpoint: 'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent', model: 'gemini-2.0-flash', format: 'gemini', vision: true, streaming: true },
-    glm: { name: 'GLM', endpoint: 'https://open.bigmodel.cn/api/paas/v4/chat/completions', model: 'glm-4-flash', format: 'openai', vision: true, streaming: true, showThinking: false },
-    qwen: { name: '通义千问', endpoint: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', model: 'qwen-plus', format: 'openai', vision: true, streaming: true },
-    doubao: { name: '豆包', endpoint: 'https://ark.cn-beijing.volces.com/api/v3/chat/completions', model: 'doubao-seed-2-0-lite', format: 'openai', vision: true, streaming: true },
-    moonshot: { name: 'Kimi', endpoint: 'https://api.moonshot.cn/v1/chat/completions', model: 'kimi-k2.6', format: 'openai', vision: true, streaming: true },
-    mimo: { name: 'MiMo', endpoint: 'https://api.xiaomimimo.com/v1/chat/completions', model: 'mimo-v2.5', format: 'openai', vision: true, streaming: true, showThinking: true },
-    minimax: { name: 'MiniMax', endpoint: 'https://api.minimax.chat/v1/text/chatcompletion_v2', model: 'MiniMax-Text-01', format: 'openai', vision: false, streaming: true },
-    yi: { name: '零一万物', endpoint: 'https://api.lingyiwanwu.com/v1/chat/completions', model: 'yi-lightning', format: 'openai', vision: false, streaming: true },
-    baichuan: { name: '百川', endpoint: 'https://api.baichuan-ai.com/v1/chat/completions', model: 'Baichuan4', format: 'openai', vision: false, streaming: true },
-    mistral: { name: 'Mistral', endpoint: 'https://api.mistral.ai/v1/chat/completions', model: 'mistral-large-latest', format: 'openai', vision: false, streaming: true },
-    custom: { name: 'Custom', endpoint: '', model: '', format: 'openai', vision: true, streaming: true }
-  };
+  /* 提供者目录：唯一 canonical 数据源为 assets/js/provider-directory.js。
+     此处不再维护第二份 provider metadata 字面量；
+     Node 下由上方 require 传入，browser 下由 window.PROVIDERS_DIR 传入。 */
+  var PROVIDERS = (CANON && CANON.PROVIDERS) || {};
 
   /* provider → wire format（model-client 分支保持一致：anthropic/gemini/else-openai） */
   function providerFormat(provider) {

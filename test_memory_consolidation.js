@@ -3,7 +3,12 @@
    Gate：importance≥6 不再是唯一准入；需 非单次临时 且 (explicit/future/跨来源重复)。
    覆盖：create / merge(noDuplicate) / 各 reject / repeats·explicit allow /
          被拒绝不污染已有 semantic / silent 回归。
-   只测 consolidation；不改生产代码。运行：node test_memory_consolidation.js
+   P2-05 契约更新（测试随真实语义调整，未放宽任何断言）：
+     · 水位：来源 episodic 归纳成功后写入 lastConsolidatedAt；同一批来源在 24h 内不再重复归纳
+       → 每个用例前必须铺入"新来源"，否则调用在无新素材时直接返回 null（不是 Gate 拒绝）。
+     · provenance：模型返回的 consolidatedFrom 只接受真实存在的来源 id（prompt 已带 id），
+       伪造 id 必须被丢弃并回退到真实来源。
+   运行：node test_memory_consolidation.js
    ==================================================================== */
 'use strict';
 const { spawn } = require('child_process');
@@ -17,8 +22,8 @@ async function wait(c,e,t=15000){const end=Date.now()+t;while(Date.now()<end){tr
 function freePort(){return new Promise((res,rej)=>{const s=net.createServer();s.unref();s.on('error',rej);s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(e=>e?rej(e):res(p))})})}
 async function main(){
   const chrome=chromePath(); if(!chrome)throw new Error('未找到 Chrome / Edge');
-  const mock={consolPayload:'', server:null, port:0};
-  mock.server=http.createServer((req,res)=>{const H={'Content-Type':'application/json','Access-Control-Allow-Origin':'*','Access-Control-Allow-Methods':'GET,POST,OPTIONS','Access-Control-Allow-Headers':'Content-Type,Authorization'};if(req.method==='OPTIONS'){res.writeHead(204,H);res.end();return}if(req.method==='POST'&&req.url.includes('/chat/completions')){let ch=[];req.on('data',c=>ch.push(c));req.on('end',()=>{res.writeHead(200,H);res.end(JSON.stringify({choices:[{message:{role:'assistant',content:mock.consolPayload},finish_reason:'stop'}]}))});return}res.writeHead(404,H);res.end(JSON.stringify({error:'nf'}))}).listen(0,'127.0.0.1',()=>{mock.port=mock.server.address().port});
+  const mock={consolPayload:'', server:null, port:0, reqs:0};
+  mock.server=http.createServer((req,res)=>{const H={'Content-Type':'application/json','Access-Control-Allow-Origin':'*','Access-Control-Allow-Methods':'GET,POST,OPTIONS','Access-Control-Allow-Headers':'Content-Type,Authorization'};if(req.method==='OPTIONS'){res.writeHead(204,H);res.end();return}if(req.method==='POST'&&req.url.includes('/chat/completions')){let ch=[];req.on('data',c=>ch.push(c));req.on('end',()=>{mock.reqs++;res.writeHead(200,H);res.end(JSON.stringify({choices:[{message:{role:'assistant',content:mock.consolPayload},finish_reason:'stop'}]}))});return}res.writeHead(404,H);res.end(JSON.stringify({error:'nf'}))}).listen(0,'127.0.0.1',()=>{mock.port=mock.server.address().port});
   const port=await freePort(), profile=fs.mkdtempSync(path.join(os.tmpdir(),'ib-cons-'));
   const browser=spawn(chrome,['--headless=new','--disable-gpu','--no-sandbox','--no-first-run','--allow-file-access-from-files','--force-color-profile=srgb','--window-size=800,600','--remote-debugging-address=127.0.0.1','--remote-debugging-port='+port,'--user-data-dir='+profile,'about:blank'],{stdio:'ignore'});
   let failures=0; const check=(n,c,d='')=>{if(c)console.log('  PASS  '+n);else{failures++;console.error('  FAIL  '+n+(d?'  -> '+d:''))}};
@@ -36,40 +41,65 @@ async function main(){
     const cfgExpr="apiConfigs.find(a=>a.id==='consac')";
     await ev(cdp,"(async function(){ await dbPut('memories',{id:'epi_1',createdBy:'consac',createdByName:'ConsAI',kind:'episodic',title:'零散片段',summary:'',content:'角色近期零散的经历片段',domain:'日常',tags:[],valence:0.5,arousal:0.4,importance:5,resolved:false,visibility:'public',visibleTo:[],excludeFrom:[],activationCount:1,created:Date.now(),lastActivated:Date.now(),consolidatedFrom:[],lastConsolidatedAt:null}); })()");
     const semCount=function(f){return "(async function(){ var all=await dbGetAll('memories'); return all.filter(m=>m.kind==='semantic'&&m.createdBy==='consac').length; })()"};
+    /* P2-05：每个用例前铺入"新来源"（水位生效后同一来源 24h 内不再重复归纳） */
+    const seedEpi=async(id,content)=>ev(cdp,"(async function(){ await dbPut('memories',{id:'"+id+"',createdBy:'consac',createdByName:'ConsAI',kind:'episodic',title:'',summary:'',content:'"+content+"',domain:'日常',tags:[],valence:0.5,arousal:0.4,importance:5,resolved:false,visibility:'public',visibleTo:[],excludeFrom:[],activationCount:1,created:Date.now(),lastActivated:Date.now(),consolidatedFrom:[],lastConsolidatedAt:null}); })()");
     /* ① create（future 证据） */
     mock.consolPayload='{"shouldConsolidate":true,"title":"关系的支柱","summary":"共同经历","content":"在未来，这件共同经历会成为我们关系的支柱。","importance":7,"consolidatedFrom":["src_1","src_2"]}';
+    const reqsBeforeCreate=mock.reqs;
     const a=await ev(cdp,"(async function(){ window.__r_a=await _activeConsolidate("+cfgExpr+"); return !!(window.__r_a&&window.__r_a.id||window.__r_a); })()");
     check('create.created',a===true);
+    check('create.modelCalled',mock.reqs===reqsBeforeCreate+1);
     check('create.semantic1',await ev(cdp,semCount())===1);
-    check('create.provenance',await ev(cdp,"(async function(){ var all=await dbGetAll('memories'); var s=all.find(m=>m.kind==='semantic'&&m.createdBy==='consac'); return !!(s&&Array.isArray(s.consolidatedFrom)&&s.consolidatedFrom.includes('src_1')); })()"));
-    /* ② merge（相似 → 更新同一条，不重造） */
-    mock.consolPayload='{"shouldConsolidate":true,"title":"关系的支柱2","summary":"共同经历2","content":"在未来，这件共同经历会成为我们关系的支柱。","importance":9,"consolidatedFrom":["src_3"]}';
+    /* provenance：真实来源 id 必须落库；模型编造的 id 必须被丢弃 */
+    check('create.provenanceRealSource',await ev(cdp,"(async function(){ var all=await dbGetAll('memories'); var s=all.find(m=>m.kind==='semantic'&&m.createdBy==='consac'); return !!(s&&Array.isArray(s.consolidatedFrom)&&s.consolidatedFrom.includes('epi_1')); })()"));
+    check('create.provenanceRejectsFabricated',await ev(cdp,"(async function(){ var all=await dbGetAll('memories'); var s=all.find(m=>m.kind==='semantic'&&m.createdBy==='consac'); return !!(s&&!s.consolidatedFrom.includes('src_1')&&!s.consolidatedFrom.includes('src_2')); })()"));
+    /* 水位：来源 episodic 必须被标记为已固化 */
+    check('watermark.sourceMarked',await ev(cdp,"(async function(){ var m=await dbGet('memories','epi_1'); return !!(m&&Number(m.lastConsolidatedAt)>0); })()"));
+    /* 水位：无新来源时不再重复调用模型（不重做旧素材） */
+    const reqsBeforeIdle=mock.reqs;
+    const idle=await ev(cdp,"(async function(){ return await _activeConsolidate("+cfgExpr+"); })()");
+    check('watermark.noRedoWithoutNewSources',idle===null&&mock.reqs===reqsBeforeIdle,'reqs='+mock.reqs);
+    /* ② merge（新来源 + 相似内容 → 更新同一条，不重造） */
+    await seedEpi('epi_2','另一段近期经历片段');
+    mock.consolPayload='{"shouldConsolidate":true,"title":"关系的支柱2","summary":"共同经历2","content":"在未来，这件共同经历会成为我们关系的支柱。","importance":9,"consolidatedFrom":["epi_2"]}';
     await ev(cdp,"(async function(){ window.__r_b=await _activeConsolidate("+cfgExpr+"); return !!window.__r_b; })()");
     check('merge.noDuplicate',await ev(cdp,semCount())===1);
     check('merge.bumpedImportance',await ev(cdp,"(async function(){ var all=await dbGetAll('memories'); var s=all.find(m=>m.kind==='semantic'&&m.createdBy==='consac'); return s&&s.importance===9; })()"));
-    /* ③④⑤ 被 Gate 拒：文学化 / 今天临时 / 高 importance 无证据 → 都不建（count 恒 1） */
+    check('merge.provenanceUnion',await ev(cdp,"(async function(){ var all=await dbGetAll('memories'); var s=all.find(m=>m.kind==='semantic'&&m.createdBy==='consac'); return !!(s&&s.consolidatedFrom.includes('epi_1')&&s.consolidatedFrom.includes('epi_2')); })()"));
+    /* ③④⑤ 被 Gate 拒：文学化 / 今天临时 / 高 importance 无证据 → 都不建（count 恒 1）
+       每个用例前铺新来源，确保确实走到了模型与 Gate（而不是因无素材提前返回）。 */
+    await seedEpi('epi_lit','零散经历A');
     mock.consolPayload='{"shouldConsolidate":true,"title":"雨夜","summary":"","content":"雨夜独行，霓虹在雨水中破碎，我的影子被拉扯成碎片。","importance":9,"consolidatedFrom":[]}';
+    const reqsBeforeLit=mock.reqs;
     await ev(cdp,"(async function(){ window.__r_lit=await _activeConsolidate("+cfgExpr+"); return !!window.__r_lit; })()");
-    check('reject.literaryNoSemantic',await ev(cdp,semCount())===1);
+    check('reject.literaryNoSemantic',await ev(cdp,semCount())===1&&mock.reqs===reqsBeforeLit+1,'reqs='+mock.reqs);
+    await seedEpi('epi_tod','零散经历B');
     mock.consolPayload='{"shouldConsolidate":true,"title":"今晚","summary":"","content":"今晚和漂泊者聊得很晚，我很开心。","importance":9,"consolidatedFrom":[]}';
+    const reqsBeforeTod=mock.reqs;
     await ev(cdp,"(async function(){ window.__r_tod=await _activeConsolidate("+cfgExpr+"); return !!window.__r_tod; })()");
-    check('reject.todayTemporaryNoSemantic',await ev(cdp,semCount())===1);
+    check('reject.todayTemporaryNoSemantic',await ev(cdp,semCount())===1&&mock.reqs===reqsBeforeTod+1,'reqs='+mock.reqs);
+    await seedEpi('epi_hi','零散经历C');
     mock.consolPayload='{"shouldConsolidate":true,"title":"高价值却无据","summary":"","content":"灯影摇曳，影子的边缘在雾里溶解成一片深蓝。","importance":10,"consolidatedFrom":[]}';
+    const reqsBeforeHi=mock.reqs;
     await ev(cdp,"(async function(){ window.__r_hi=await _activeConsolidate("+cfgExpr+"); return !!window.__r_hi; })()");
-    check('reject.highImportanceNoEvidence',await ev(cdp,semCount())===1);
+    check('reject.highImportanceNoEvidence',await ev(cdp,semCount())===1&&mock.reqs===reqsBeforeHi+1,'reqs='+mock.reqs);
     /* ⑥ allow：跨来源重复稳定模式（seeded 2 条同内容，无 explicit/future 关键词） */
     await ev(cdp,"(async function(){ await dbPut('memories',{id:'rep_1',createdBy:'consac',createdByName:'ConsAI',kind:'episodic',title:'',summary:'',content:'山丘花开时我们会重逢',domain:'日常',tags:[],valence:0.5,arousal:0.4,importance:5,resolved:false,visibility:'public',visibleTo:[],excludeFrom:[],activationCount:1,created:Date.now(),lastActivated:Date.now(),consolidatedFrom:[],lastConsolidatedAt:null}); await dbPut('memories',{id:'rep_2',createdBy:'consac',createdByName:'ConsAI',kind:'episodic',title:'',summary:'',content:'山丘花开时我们会重逢',domain:'日常',tags:[],valence:0.5,arousal:0.4,importance:5,resolved:false,visibility:'public',visibleTo:[],excludeFrom:[],activationCount:1,created:Date.now(),lastActivated:Date.now(),consolidatedFrom:[],lastConsolidatedAt:null}); })()");
     mock.consolPayload='{"shouldConsolidate":true,"title":"重逢","summary":"","content":"山丘花开时我们会重逢","importance":6,"consolidatedFrom":["rep_1","rep_2"]}';
     const f=await ev(cdp,"(async function(){ window.__r_rep=await _activeConsolidate("+cfgExpr+"); return !!(window.__r_rep&&window.__r_rep.id||window.__r_rep); })()");
     check('allow.repeatsPattern',f===true&&await ev(cdp,semCount())===2,'count='+await ev(cdp,semCount()));
-    /* ⑦ allow：explicit/future 长期信息 */
-    mock.consolPayload='{"shouldConsolidate":true,"title":"偏好","summary":"","content":"我偏好雨天出门，请你记住这个习惯。","importance":6,"consolidatedFrom":["src_x"]}';
+    /* ⑦ allow：explicit/future 长期信息（新来源） */
+    await seedEpi('epi_exp','零散经历D');
+    mock.consolPayload='{"shouldConsolidate":true,"title":"偏好","summary":"","content":"我偏好雨天出门，请你记住这个习惯。","importance":6,"consolidatedFrom":["epi_exp"]}';
     const g=await ev(cdp,"(async function(){ window.__r_exp=await _activeConsolidate("+cfgExpr+"); return !!(window.__r_exp&&window.__r_exp.id||window.__r_exp); })()");
     check('allow.explicitFuture',g===true&&await ev(cdp,semCount())===3,'count='+await ev(cdp,semCount()));
-    /* ⑧ silent：JSON 解析失败 → 静默，不影响已有 */
+    /* ⑧ silent：JSON 解析失败 → 静默，不影响已有（新来源，确保真的调用了模型） */
+    await seedEpi('epi_sil','零散经历E');
     mock.consolPayload='这不是 JSON';
+    const reqsBeforeSil=mock.reqs;
     const sil=await ev(cdp,"(async function(){ try{ window.__r_sil=await _activeConsolidate("+cfgExpr+"); return {ok:true,ret:window.__r_sil}; }catch(e){ return {ok:false,err:String(e&&e.message||e)}; } })()");
     check('silent.parseFailNoThrow',sil&&sil.ok===true&&sil.ret===null);
+    check('silent.modelWasCalled',mock.reqs===reqsBeforeSil+1,'reqs='+mock.reqs);
     check('silent.noNewOnParseFail',await ev(cdp,semCount())===3);
   } finally { if(cdp)cdp.close(); try{browser.kill()}catch(e){} try{mock.server.close()}catch(e){} }
   console.log(failures===0?'\nMemory Consolidation + Gate CDP passed ✔':'\nMemory Consolidation + Gate CDP FAILED ✘');

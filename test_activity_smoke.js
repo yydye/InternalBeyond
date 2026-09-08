@@ -56,8 +56,10 @@ async function main() {
     await evaluate(cdp, "window.confirm=function(){return true;}");
     check('page.ready', await waitFor(cdp, "window.IB&&IB.activity&&typeof dbPut==='function'", 20000));
 
-    /* v21 新 store + 双挂载 */
-    check('db.stores', await evaluate(cdp, "(async function(){var d=await ensureDB();return DB_VER===21&&d.objectStoreNames.contains('activities')&&d.objectStoreNames.contains('favorites')})()"));
+    /* v21 新 store + 双挂载。
+       版本断言按"引入该 store 的版本"而不是把当前 DB_VER 写死：DB_VER 已随 v22/v23
+       （understandings / threads）前进，写死 21 只会在每次升版时误报，且不能证明 store 存在。 */
+    check('db.stores', await evaluate(cdp, "(async function(){var d=await ensureDB();return DB_VER>=21&&d.objectStoreNames.contains('activities')&&d.objectStoreNames.contains('favorites')})()"));
     check('dual.activity', await evaluate(cdp, "typeof window.IBActivity==='object'&&typeof IB.activity.createActivity==='function'"));
     check('dual.favorites', await evaluate(cdp, "typeof window.favAdd==='function'&&typeof IB.favorites.add==='function'"));
     check('dual.appstore', await evaluate(cdp, "typeof IB.apps==='object'&&typeof IB.apps.register==='function'&&typeof IBApps.boot==='function'"));

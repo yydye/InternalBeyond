@@ -295,6 +295,15 @@ const ACTIVE_PROACTIVE_SIMILARITY=0.82;
 function _activeProactiveLog(step,detail){
   try{console.info('[ProactiveMessage] '+step,detail||'')}catch(e){}
 }
+/* 统一迁移诊断适配：结构与白名单在 IB.runtime.telemetry（与 Moments 共用，避免两套结构漂移）；
+   本文件只做 sink 适配（console）。Runtime 未加载时退回原对象。 */
+function _activeRuntimeTelemetry(consumer,data){
+  try{
+    if(typeof window!=='undefined'&&window.IB&&IB.runtime&&IB.runtime.telemetry&&typeof IB.runtime.telemetry.record==='function')
+      return IB.runtime.telemetry.record(consumer,data);
+  }catch(e){}
+  return data;
+}
 function _activeCustomInstruction(setting){return String((setting&&(setting.custom_instruction!=null?setting.custom_instruction:setting.customInstruction))||'').trim().slice(0,500)}
 function _activeModeGuide(mode){return({
   greeting:'从此刻真实情境出发自然开口，不套用“早上好”“在吗”“今天过得怎么样”“记得休息”等固定问候。',
@@ -401,19 +410,193 @@ function buildProactivePrompt(args){
   try{if(window.IB&&IB.brevity)system=IB.brevity.apply(system,{mode:(args.interaction==='voice_call'?'voice':'proactive'),detailed:IB.brevity.isDetailedRequest(String(args.planIntent||args.userMessage||''))});}catch(e){}
   return{messages:[{role:'system',content:system},{role:'user',content:prompt.join('\n')}],system:system,prompt:prompt.join('\n')}
 }
+/* ══════════ Runtime Convergence Phase 1 · 主动消息执行接缝 ══════════
+   本阶段只替换"最终模型执行"，不迁移 context。调用链变为：
+     Prompt/Context（loadProactiveMessageContext + buildProactivePrompt，未改动）
+       ↓
+     _activeProactiveModelCall()  ← 唯一执行接缝（本阶段新增）
+       ├── IB.runtime.instance.execute({spec,messages,budget,executor}, {signal,onEvent})  ← 默认
+       └── callApiChat(cfg,messages,opts)                                                  ← 回滚/不可用
+   硬约束：
+     · ModelSpec 只由 runtime.resolveModel(cfg) 派生（provider metadata 唯一真源仍是 provider-directory.js）；
+       强制 streaming:false，与既有 direct 路径（callApiChat）逐位一致；
+       budget=512 / executor.wantThinking=true / executor.timeoutMs=120000 与旧调用完全相同。
+     · 回滚：window.runtimeExecuteEnabled=false → 全部回到 direct executor，不改代码即可回退。
+     · fallback：仅当"Runtime 接缝不可用"或调用方注入了 requestModel 时才回落 direct，并记录 fallbackReason；
+       execute 抛异常或返回 error 时**不回落**（可能已经发生过模型调用），交给既有 retry 循环处理，
+       避免同一轮发生双模型调用而用户无感。
+     · abort：signal 已中止 → 立即结束、不再重试、不回落（禁止中止后二次调用），并抛出 AbortError。 */
+try{if(typeof window!=='undefined'&&window.runtimeExecuteEnabled===undefined)window.runtimeExecuteEnabled=true}catch(e){}
+var _activeProactiveExecStats={runtime:0,direct:0,abort:0,lastExecutor:'',lastFallbackReason:'',lastAbortReason:''};
+function _activeProactiveExecStatsSnapshot(){return Object.assign({},_activeProactiveExecStats)}
+function _activeRuntimeGate(overrideKey){
+  try{
+    if(typeof window==='undefined')return true;
+    if(overrideKey&&window[overrideKey]!==undefined)return window[overrideKey]!==false;
+    return window.runtimeExecuteEnabled!==false;
+  }catch(e){return true}
+}
+function _activeRuntimeInstance(){
+  try{
+    var IB=(typeof window!=='undefined')?window.IB:null;
+    return (IB&&IB.runtime&&IB.runtime.instance&&typeof IB.runtime.instance.execute==='function')?IB.runtime.instance:null;
+  }catch(e){return null}
+}
+/* 诊断用 format：与执行链同源（resolveModel → provider-directory），不维护第二份 provider metadata */
+function _activeModelFormat(cfg,runtime){
+  try{if(runtime&&typeof runtime.resolveModel==='function'){var m=runtime.resolveModel(cfg||{});if(m&&m.format)return String(m.format)}}catch(e){}
+  try{if(typeof window!=='undefined'&&window.IBModelCore&&typeof window.IBModelCore.providerFormat==='function')return String(window.IBModelCore.providerFormat((cfg||{}).provider)||'')}catch(e){}
+  return ''
+}
+/* direct executor（本阶段之前的行为）：单次 callApiChat，opts 逐字段保持原样。 */
+async function _activeDirectProactiveCall(cfg,messages,opts){
+  opts=opts||{};
+  var result={};
+  var raw=await (opts.requestModel||((c,m,o)=>callApiChat(c,m,o)))(cfg,messages,{maxTokens:512,timeoutMs:120000,wantThinking:true,result:result,_noWebSearch:true,disableTools:true});
+  return{text:raw,reasoning:String(result.reasoning_content||''),usage:result.usage||null,
+    usageSource:result.usage?'executor':'unavailable',executor:'direct',abortMode:'none',
+    format:_activeModelFormat(cfg,null),aborted:false,abortReason:'',fallbackReason:String(opts.fallbackReason||'')};
+}
+/* Runtime executor：与 direct 的输入语义一一对应（非流式、单次、同 budget/同执行器选项）。 */
+async function _activeRuntimeProactiveCall(runtime,cfg,messages,opts){
+  opts=opts||{};
+  var spec=Object.assign({},runtime.resolveModel(cfg||{}),{streaming:false});
+  var abortReason='';
+  var outcome=await runtime.execute(
+    {spec:spec,messages:messages,budget:512,executor:{wantThinking:true,timeoutMs:120000}},
+    {signal:opts.signal||undefined,onEvent:function(ev){if(ev&&ev.type==='error'&&ev.kind==='abort'&&!abortReason)abortReason='abort'}}
+  );
+  if(outcome&&outcome.aborted){
+    return{text:'',reasoning:'',usage:outcome.usage||null,usageSource:outcome.usageSource||'unavailable',
+      executor:'runtime',format:spec.format,abortMode:outcome.abortMode||'none',
+      aborted:true,abortReason:abortReason||'abort',fallbackReason:''};
+  }
+  if(outcome&&outcome.error){
+    var err=new Error(String(outcome.error.message||'model error'));
+    err.kind=outcome.error.kind||'unknown';
+    throw err;/* 与 direct 抛错等价：交给既有 retry 循环 */
+  }
+  return{text:(outcome&&outcome.text!=null)?outcome.text:'',reasoning:String((outcome&&outcome.reasoning)||''),
+    usage:(outcome&&outcome.usage)||null,usageSource:(outcome&&outcome.usageSource)||'unavailable',
+    executor:'runtime',format:spec.format,abortMode:(outcome&&outcome.abortMode)||'none',
+    aborted:false,abortReason:'',fallbackReason:''};
+}
+async function _activeProactiveModelCall(cfg,messages,opts){
+  opts=opts||{};
+  if(opts.signal&&opts.signal.aborted){var ae=new Error('已中止');ae.name='AbortError';ae.kind='abort';throw ae}
+  var runtime=_activeRuntimeInstance();
+  var useRuntime=!!(_activeRuntimeGate()&&runtime&&!opts.requestModel);
+  /* 诊断是"本次调用"的快照：每次进入先清空上一次的回落/中止原因，避免读到陈旧值 */
+  _activeProactiveExecStats.lastFallbackReason='';
+  _activeProactiveExecStats.lastAbortReason='';
+  if(!useRuntime){
+    var reason=opts.requestModel?'injected_executor':(_activeRuntimeGate()?'runtime_unavailable':'gate_disabled');
+    var direct=await _activeDirectProactiveCall(cfg,messages,Object.assign({},opts,{fallbackReason:reason}));
+    _activeProactiveExecStats.direct++;_activeProactiveExecStats.lastExecutor='direct';_activeProactiveExecStats.lastFallbackReason=reason;
+    return direct;
+  }
+  try{
+    var out=await _activeRuntimeProactiveCall(runtime,cfg,messages,opts);
+    _activeProactiveExecStats.runtime++;_activeProactiveExecStats.lastExecutor='runtime';
+    if(out.aborted){_activeProactiveExecStats.abort++;_activeProactiveExecStats.lastAbortReason=out.abortReason||'abort'}
+    return out;
+  }catch(e){
+    _activeProactiveExecStats.lastExecutor='runtime';
+    _activeProactiveExecStats.lastFallbackReason='runtime_execute_threw';
+    throw e;/* 不回落：可能已发生模型调用 */
+  }
+}
+/* ══════════ Runtime Convergence Phase 4 · Memory Consolidation 执行接缝 ══════════
+   与主动消息共用同一套 Active 域机制（_activeRuntimeGate / _activeRuntimeInstance /
+   _activeModelFormat / IB.runtime.telemetry 白名单），不另起一套 migration framework。
+   只收敛"最终模型执行"：候选选择、可见性门、来源排序、水位、prompt、解析、provenance、
+   _memoryDeriveVisibility、merge/create、历史修复、IndexedDB 写入全部留在 consolidateCharacterMemory。
+   本接缝**只返回模型结果，不做任何持久化/状态写入**。
+     · 白名单：jsonMode 走 request.jsonMode；timeoutMs/disableTools/wantThinking 走 request.executor；
+       budget 走 request.budget（= opts.maxTokens）。本调用点不传 wantThinking → 与 direct 同为未开启。
+     · 回滚：window.runtimeExecuteEnabled=false 或 window.runtimeConsolidationExecuteEnabled=false。
+     · fallback：仅 gate=false / runtime 不可用时走 direct（执行前判定）；已发出请求后一律不回落。
+     · abort：signal 已中止 → 不发起调用；execute 返回 aborted → 抛 AbortError（调用方 catch → return null）。
+   telemetry：consumer='memory_consolidation'，kind='consolidate'；不含 Memory 正文 / prompt / apiKey。 */
+async function _activeConsolidationModelCall(cfg,messages,opts){
+  opts=opts||{};
+  if(opts.signal&&opts.signal.aborted){var ae=new Error('已中止');ae.name='AbortError';ae.kind='abort';throw ae}
+  var runtime=_activeRuntimeInstance();
+  var gate=_activeRuntimeGate('runtimeConsolidationExecuteEnabled');
+  var jsonMode=!!opts.jsonMode;
+  var log=function(rec){
+    try{
+      var base=Object.assign({kind:'consolidate',provider:String((cfg&&cfg.provider)||''),characterId:String((cfg&&cfg.id)||''),model:String((cfg&&cfg.model)||'')},rec||{});
+      console.info('[Consolidation] model executor',_activeRuntimeTelemetry('memory_consolidation',base));
+    }catch(e){}
+  };
+  if(!(gate&&runtime)){
+    var reason=gate?'runtime_unavailable':'gate_disabled',t0=Date.now();
+    var raw=await callApiChat(cfg,messages,opts);/* 原样 opts：direct 行为逐位不变 */
+    log({executor:'direct',format:_activeModelFormat(cfg,null),jsonMode:jsonMode,usage:'unavailable',
+      abortMode:'none',abortReason:'',fallbackReason:reason,ok:true,ms:Date.now()-t0});
+    return{text:raw,reasoning:'',usage:null,usageSource:'unavailable',executor:'direct',
+      format:_activeModelFormat(cfg,null),abortMode:'none',aborted:false,abortReason:'',fallbackReason:reason};
+  }
+  var spec=Object.assign({},runtime.resolveModel(cfg||{}),{streaming:false});
+  var executor={};
+  if(opts.timeoutMs!=null)executor.timeoutMs=opts.timeoutMs;
+  if(opts.disableTools!==undefined)executor.disableTools=opts.disableTools===true;
+  if(opts.wantThinking!==undefined)executor.wantThinking=opts.wantThinking===true;
+  var t0r=Date.now(),abortReason='',outcome;
+  try{
+    outcome=await runtime.execute(
+      {spec:spec,messages:messages,jsonMode:jsonMode,budget:(opts.maxTokens!=null?opts.maxTokens:null),executor:executor},
+      {signal:opts.signal||undefined,onEvent:function(ev){if(ev&&ev.type==='error'&&ev.kind==='abort'&&!abortReason)abortReason='abort'}}
+    );
+  }catch(e){
+    log({executor:'runtime',format:spec.format,jsonMode:jsonMode,usage:'unavailable',abortMode:'none',
+      abortReason:'',fallbackReason:'runtime_execute_threw',ok:false,ms:Date.now()-t0r});
+    throw e;/* 不回落：可能已发出模型请求 */
+  }
+  log({executor:'runtime',format:spec.format,jsonMode:jsonMode,usage:(outcome&&outcome.usage)?'present':'absent',
+    abortMode:(outcome&&outcome.abortMode)||'none',abortReason:abortReason||'',fallbackReason:'',
+    ok:!(outcome&&outcome.error),ms:Date.now()-t0r});
+  if(outcome&&outcome.aborted){
+    var ab=new Error('模型调用已中止');ab.name='AbortError';ab.kind='abort';ab.abortReason=abortReason||'abort';throw ab;
+  }
+  if(outcome&&outcome.error){
+    var err=new Error(String(outcome.error.message||'model error'));
+    err.kind=outcome.error.kind||'unknown';/* 与 direct 抛错等价：调用方 catch → return null */
+    throw err;
+  }
+  return{text:(outcome&&outcome.text!=null)?outcome.text:'',reasoning:String((outcome&&outcome.reasoning)||''),
+    usage:(outcome&&outcome.usage)||null,usageSource:(outcome&&outcome.usageSource)||'unavailable',
+    executor:'runtime',format:spec.format,abortMode:(outcome&&outcome.abortMode)||'none',
+    aborted:false,abortReason:'',fallbackReason:''};
+}
 async function generateProactiveMessage(args){
-  const character=args.character||{},recent=args.recentProactiveMessages||[],requestModel=args.requestModel||((cfg,messages,opts)=>callApiChat(cfg,messages,opts));
-  let lastError=null,retryInstruction='';
+  const character=args.character||{},recent=args.recentProactiveMessages||[],requestModel=args.requestModel||null,signal=args.signal||null;
+  let lastError=null,retryInstruction='',abortReason='';
   for(let attempt=1;attempt<=ACTIVE_PROACTIVE_MAX_ATTEMPTS;attempt++){
-    const built=buildProactivePrompt(Object.assign({},args,{retryInstruction:retryInstruction})),result={};
+    if(signal&&signal.aborted){abortReason='signal_aborted';break}
+    const built=buildProactivePrompt(Object.assign({},args,{retryInstruction:retryInstruction}));
     _activeProactiveLog('requesting model',{taskId:args.taskId||'',characterId:character.id||'',provider:character.provider||'custom',model:character.model||'',attempt:attempt});
     try{
-      const raw=await requestModel(character,built.messages,{maxTokens:512,timeoutMs:120000,wantThinking:true,result:result,_noWebSearch:true,disableTools:true});
-      const content=_activeVisibleProactiveReply(raw,result.reasoning_content||''),check=_activeValidateProactiveReply(content,recent);
+      const call=await _activeProactiveModelCall(character,built.messages,{requestModel:requestModel,signal:signal});
+      /* 迁移诊断：executor/format/model/用量有无/中止与回落原因；不含 apiKey、prompt 正文或 Memory 内容
+         （字段白名单与 Moments 共用 IB.runtime.telemetry，避免两套结构漂移） */
+      _activeProactiveLog('model executor',_activeRuntimeTelemetry('active.proactive',{taskId:args.taskId||'',characterId:character.id||'',attempt:attempt,executor:call.executor,provider:character.provider||'custom',format:call.format||'',model:character.model||'',usage:call.usage?'present':'absent',abortMode:call.abortMode||'none',abortReason:call.abortReason||'',fallbackReason:call.fallbackReason||''}));
+      if(call.aborted){abortReason=call.abortReason||'abort';lastError=new Error('已中止');break}
+      const content=_activeVisibleProactiveReply(call.text,call.reasoning||''),check=_activeValidateProactiveReply(content,recent);
       if(check.ok){_activeProactiveLog('generated successfully',{taskId:args.taskId||'',characterId:character.id||'',provider:character.provider||'custom',model:character.model||'',attempt:attempt});return{content:content,reasoning_content:'',generatedByFallback:false,generationAttempts:attempt,provider:character.provider||'custom',model:character.model||'',context:args}}
       lastError=new Error(check.reason);retryInstruction=check.reason+'。请换一个开头、话题和句式，完整重写，不要解释原因。'
-    }catch(e){lastError=e;retryInstruction='上一次模型调用失败或没有产生可用正文。请重新生成，只返回最终消息。';console.warn('[ProactiveMessage] model attempt failed',{taskId:args.taskId||'',characterId:character.id||'',provider:character.provider||'custom',model:character.model||'',attempt:attempt,error:String(e&&e.message||e).slice(0,300)})}
+    }catch(e){
+      if(e&&(e.kind==='abort'||e.name==='AbortError')){abortReason=e.abortReason||'abort';lastError=e;break}
+      lastError=e;retryInstruction='上一次模型调用失败或没有产生可用正文。请重新生成，只返回最终消息。';console.warn('[ProactiveMessage] model attempt failed',{taskId:args.taskId||'',characterId:character.id||'',provider:character.provider||'custom',model:character.model||'',attempt:attempt,error:String(e&&e.message||e).slice(0,300)})
+    }
     if(attempt<ACTIVE_PROACTIVE_MAX_ATTEMPTS)await new Promise(r=>setTimeout(r,250*attempt))
+  }
+  /* 中止不是生成结果：不重试、不回落、也不产出兜底文案，直接抛出（调用方的既有 catch 会记为失败且不落库） */
+  if(abortReason){
+    _activeProactiveLog('generation aborted',{taskId:args.taskId||'',characterId:character.id||'',abortReason:abortReason});
+    const aborted=new Error('主动消息生成已中止');aborted.name='AbortError';aborted.kind='abort';aborted.abortReason=abortReason;
+    throw aborted;
   }
   const fallback=_activeFallbackMessage(character,recent,args.currentTime);
   console.warn('[ProactiveMessage] using fallback after model attempts failed',{taskId:args.taskId||'',characterId:character.id||'',provider:character.provider||'custom',model:character.model||'',error:String(lastError&&lastError.message||lastError||'unknown').slice(0,300)});
@@ -499,30 +682,57 @@ async function _activeRunNow(id){
 /* ---- Memory Consolidation v1：episodic → semantic（最小，复用现有 memories） ----
    只做 episodic→semantic；不新增 store、不升 DB_VER；kind/consolidatedFrom/lastConsolidatedAt
    为 memories 可选字段；LLM 决策 + importance≥6 门槛；merge 须真 merge（不重复创建）；
-   保留 provenance（consolidatedFrom）；任何失败/解析异常静默旁路，不影响正常聊天。 */
-async function consolidateCharacterMemory(cfg){
+   保留 provenance（consolidatedFrom）；任何失败/解析异常静默旁路，不影响正常聊天。
+   Phase 4：模型执行经 _activeConsolidationModelCall 接缝；opts.signal 可选（仅测试/取消用）。 */
+async function consolidateCharacterMemory(cfg,opts){
+  opts=opts||{};
   if(!cfg||!cfg.id||!cfg.systemPrompt)return null;
   if(typeof _ibApiReady==='function'&&!_ibApiReady(cfg))return null;
   try{
     const roleId=String(cfg.id);
     const all=await dbGetAll('memories');
-    const visibleSemantic=m=>m&&m.kind==='semantic'&&(String(m.createdBy||'')===roleId||(Array.isArray(m.visibleTo)&&m.visibleTo.map(String).includes(roleId)));
-    /* 该角色近期未固化的 episodic 记忆 */
-    const episodics=all.filter(m=>m&&m.kind!=='semantic'&&m.kind!=='core'&&(String(m.createdBy||'')===roleId||(Array.isArray(m.visibleTo)&&m.visibleTo.map(String).includes(roleId))));
-    const recentEpi=episodics.filter(m=>!(m.lastConsolidatedAt)||(Date.now()-Number(m.lastConsolidatedAt)>86400000)).slice(-12);
-    /* 近期 sources：moments / diary / chat summary */
+    /* 可见性边界与普通召回一致（isMemoryVisibleTo）：private / 缺失 visibility 的记忆——
+       即使 createdBy 是角色自己——也不进入归纳，避免受限内容进入模型请求或经归纳泄给其他角色。 */
+    const _vis=m=>{try{if(typeof isMemoryVisibleTo==='function')return isMemoryVisibleTo(m,roleId,false,false);return !!(m&&m.visibility&&m.visibility!=='private')}catch(e){return false}};
+    const visibleSemantic=m=>m&&m.kind==='semantic'&&_vis(m)&&(String(m.createdBy||'')===roleId||(Array.isArray(m.visibleTo)&&m.visibleTo.map(String).includes(roleId)));
+    const episodics=all.filter(m=>m&&m.kind!=='semantic'&&m.kind!=='core'&&_vis(m)&&(String(m.createdBy||'')===roleId||(Array.isArray(m.visibleTo)&&m.visibleTo.map(String).includes(roleId))));
+    /* 该角色近期未固化的 episodic 记忆。真实时间顺序：按 created（缺失时 lastActivated/
+       lastConsolidatedAt）升序后再取最近 12 条。原实现直接对 dbGetAll('memories') 的返回顺序
+       slice(-12)，顺序不确定 → 归纳输入可能不是真实时间顺序。 */
+    const _tsOf=v=>{if(v==null)return 0;if(typeof v==='number')return v;const t=Date.parse(String(v));return isFinite(t)?t:0};
+    const _epiTime=m=>Number(m&&(m.created!=null?m.created:(m.lastActivated!=null?m.lastActivated:m.lastConsolidatedAt)))||0;
+    const recentEpi=episodics.filter(m=>!(m.lastConsolidatedAt)||(Date.now()-Number(m.lastConsolidatedAt)>86400000))
+      .sort((a,b)=>_epiTime(a)-_epiTime(b)).slice(-12);
+    /* 近期 sources：moments / diary / chat summary（同样按真实时间升序取最近若干条） */
     let recentMoments=[],recentDiary=[],summary='';
-    try{const ms=await dbGetAll('moments');recentMoments=ms.filter(m=>String(m.roleId||'')===roleId).slice(-6)}catch(e){}
-    try{const de=await dbGetAll('diary_entries');recentDiary=de.filter(e=>String(e.characterId||'')===roleId).slice(-3)}catch(e){}
+    try{const ms=await dbGetAll('moments');recentMoments=ms.filter(m=>String(m.roleId||'')===roleId).sort((a,b)=>_tsOf(a&&a.createdAt)-_tsOf(b&&b.createdAt)).slice(-6)}catch(e){}
+    try{const de=await dbGetAll('diary_entries');recentDiary=de.filter(e=>String(e.characterId||'')===roleId).sort((a,b)=>_tsOf(a&&(a.created!=null?a.created:a.date))-_tsOf(b&&(b.created!=null?b.created:b.date))).slice(-3)}catch(e){}
     try{const s=await dbGet('chatSummaries','sum_'+roleId);summary=(s&&s.summary)||''}catch(e){}
     if(!recentEpi.length&&!recentMoments.length&&!recentDiary.length&&!summary)return null;
+    /* 本次实际来源 id：既用于 prompt（让模型能引用真实来源 id），也用于 provenance 校验与水位标记 */
+    const _sourceIds=recentEpi.map(m=>String((m&&m.id)||'')).filter(Boolean);
+    /* 水位（watermark）回写：把本次进入归纳的 episodic 标记为已固化。
+       此前 lastConsolidatedAt 只读不写 → 同一批来源永远满足"未固化"条件，被反复重做。 */
+    const _markConsolidated=async function(){
+      const at=Date.now();
+      for(const m of recentEpi){
+        if(!m||!m.id)continue;
+        try{
+          const row=await dbGet('memories',m.id);
+          if(!row)continue;
+          row.lastConsolidatedAt=at;
+          await dbPut('memories',row);
+          m.lastConsolidatedAt=at;
+        }catch(e){}
+      }
+    };
     const charName=cfg.nickname||cfg.model||'AI';
     const system=String(cfg.systemPrompt||'').slice(0,20000)
       +'\n\n你正在为角色「'+charName+'」把近期零散经历固化(consolidate)成一条连贯的【语义记忆】(semantic)。只输出严格 JSON 对象，不输出任何其他文字。';
     const prompt=[
       '【任务】把以下零散记忆/事件归纳成一条【语义记忆】——反映"这段时间角色经历、感受、在乎什么"。没有值得扎根的东西就 shouldConsolidate:false。',
       '【角色】'+charName+'；与用户关系：'+(cfg.relationship||'未设')+'。',
-      '【近期零散记忆】'+(recentEpi.map(m=>'- ['+(m.domain||'记忆')+'] '+((m.title||'')+' '+String(m.content||m.summary||'')).slice(0,300)).join('\n')||'（无）'),
+      '【近期零散记忆】'+(recentEpi.map(m=>'- [id='+m.id+'] ['+(m.domain||'记忆')+'] '+((m.title||'')+' '+String(m.content||m.summary||'')).slice(0,300)).join('\n')||'（无）'),
       '【近期日记】'+(recentDiary.map(e=>'- '+String(e.date||'')+'「'+(e.title||'')+'」'+(e.mood?'（'+e.mood+'）':'')+': '+String(e.content||'').slice(0,200)).join('\n')||'（无）'),
       '【近期动态】'+(recentMoments.map(m=>'- '+String(m.content||'').slice(0,200)).join('\n')||'（无）'),
       '【最近聊天摘要】'+String(summary||'').slice(0,800),
@@ -530,7 +740,7 @@ async function consolidateCharacterMemory(cfg){
       '【规则】1. 只有近期确实有值得扎根的事才 true。2. 平淡/无新增 → false。3. importance<6 表示不值得固化。4. 不要为了固化而固化。'
     ];
     let raw='';
-    try{raw=await callApiChat(cfg,[{role:'system',content:system},{role:'user',content:prompt.join('\n')}],{maxTokens:800,timeoutMs:120000,wantMeta:false,jsonMode:true,_noWebSearch:true,disableTools:true})}catch(e){return null}
+    try{const call=await _activeConsolidationModelCall(cfg,[{role:'system',content:system},{role:'user',content:prompt.join('\n')}],{maxTokens:800,timeoutMs:120000,wantMeta:false,jsonMode:true,_noWebSearch:true,disableTools:true,signal:opts.signal});raw=call.text}catch(e){return null}
     const parsed=(typeof window._activeParsePlanJson==='function')?window._activeParsePlanJson(raw):null;
     if(!parsed||parsed.shouldConsolidate!==true)return null;
     const importance=Math.max(0,Math.min(10,parseInt(parsed.importance,10)||0));
@@ -554,7 +764,11 @@ async function consolidateCharacterMemory(cfg){
     }catch(e){_repeats=0}
     const _longTermValue=_explicit||_future||_repeats>0;
     if(_temporary||!_longTermValue)return null;/* 被 Gate 拒绝：不建、不改已有、不抛 */
-    const refs=(Array.isArray(parsed.consolidatedFrom)?parsed.consolidatedFrom:recentEpi.map(m=>m.id)).filter(Boolean).slice(0,50);
+    /* provenance：模型返回的 consolidatedFrom 只接受本次真实存在的来源 id；
+       空数组 / 全部无效（幻觉 id、已删除来源）→ 回退到本次实际来源，绝不留下空 provenance。 */
+    const _modelRefs=(Array.isArray(parsed.consolidatedFrom)?parsed.consolidatedFrom:[])
+      .map(x=>String(x==null?'':x)).filter(id=>id&&_sourceIds.indexOf(id)>=0);
+    const refs=(_modelRefs.length?_modelRefs:_sourceIds).slice(0,50);
     const now=Date.now();
     /* merge：该角色已有 semantic 且相似 → 真 merge（更新同一条，不重复创建） */
     const existingSemantic=all.find(visibleSemantic);
@@ -568,22 +782,166 @@ async function consolidateCharacterMemory(cfg){
         existingSemantic.kind='semantic';
         existingSemantic.consolidatedFrom=Array.from(new Set((existingSemantic.consolidatedFrom||[]).concat(refs)));
         existingSemantic.lastConsolidatedAt=now;
+        /* merge 同样不放宽可见性：以 recentEpi 来源 + 已有 semantic 的最严格可见范围为合并后可见范围 */
+        const _mv=_memoryDeriveVisibility(recentEpi.concat([existingSemantic]),roleId);
+        existingSemantic.visibility=_mv.visibility;
+        if(_mv.visibleTo)existingSemantic.visibleTo=_mv.visibleTo;
+        if(_mv.excludeFrom)existingSemantic.excludeFrom=_mv.excludeFrom;
         await dbPut('memories',existingSemantic);
+        await _markConsolidated();/* 水位：本次来源标记为已固化，避免下一轮重复归纳 */
         try{if(typeof updateMemDashboard==='function')updateMemDashboard()}catch(e){}
         return existingSemantic
       }
     }
+    const _dv=_memoryDeriveVisibility(recentEpi,roleId);
     const newId=await quickCreateMemory({
       title:String(parsed.title||'').slice(0,24)||content.slice(0,24),
       summary:String(parsed.summary||'').slice(0,80),
       content:content,source:'consolidation',sourceId:roleId,
       domain:'日常',tags:['consolidated'],valence:0.5,arousal:0.4,importance:importance,
-      resolved:false,visibility:'public',createdBy:roleId,createdByName:charName,
+      resolved:false,visibility:_dv.visibility,visibleTo:_dv.visibleTo,excludeFrom:_dv.excludeFrom,
+      createdBy:roleId,createdByName:charName,
       kind:'semantic',consolidatedFrom:refs,lastConsolidatedAt:now
     });
-    if(newId){try{const nm=all.find(m=>m.id===newId);return nm||{id:newId}}catch(e){return{id:newId}}}
+    if(newId){await _markConsolidated();try{const nm=all.find(m=>m.id===newId);return nm||{id:newId}}catch(e){return{id:newId}}}
     return null
   }catch(e){return null}/* 静默旁路 */
+}
+/* 多来源合并采用最严格 visibility：派生 memory 的可见范围不得比任何来源更宽。
+   private / 缺失 visibility（旧数据、日记）按"不能证明公开"保守处理，绝不放宽成 public。
+   - 全部 public → public
+   - 任一 only → only（visibleTo 取各 only 来源圈定的交集，并保证角色自己能召回）
+   - 任一 except → except（excludeFrom 取各 except 来源的并集，确保不放开任何一项排除）
+   - 任一 private → private */
+function _memoryDeriveVisibility(sources,roleId){
+  if(!sources||!sources.length)return{visibility:'public',visibleTo:[],excludeFrom:[]};
+  var rank=4,onlySets=[],exceptSets=[];
+  for(var i=0;i<sources.length;i++){
+    var m=sources[i],v=m&&m.visibility;
+    var r=4;
+    if(v==='private')r=1;
+    else if(v==='only')r=2;
+    else if(v==='except')r=3;
+    else if(v==='public')r=4;
+    else r=2;/* 缺失 visibility（旧数据/日记）：不能证明公开，按 only 级保守 */
+    if(r<rank)rank=r;
+    if(v==='only')onlySets.push((m.visibleTo||[]).map(String));
+    else if(v==='except'){var ex=(m.excludeFrom||[]).map(String);exceptSets=exceptSets.concat(ex)}
+  }
+  if(rank<=1)return{visibility:'private',visibleTo:[],excludeFrom:[]};
+  if(rank===2&&onlySets.length){
+    var inter=onlySets[0].filter(function(x){for(var j=1;j<onlySets.length;j++)if(onlySets[j].indexOf(x)<0)return false;return true});
+    if(inter.indexOf(String(roleId))<0)inter.push(String(roleId));/* 保证角色自己能召回 */
+    return{visibility:'only',visibleTo:inter,excludeFrom:[]};
+  }
+  if(rank===2)return{visibility:'only',visibleTo:[String(roleId)],excludeFrom:[]};
+  if(rank===3)return{visibility:'except',visibleTo:[],excludeFrom:Array.from(new Set(exceptSets))};
+  return{visibility:'public',visibleTo:[],excludeFrom:[]};
+}
+/* ══════════ Memory Provenance Repair（P2-05 · 保守修复，dry-run 优先） ══════════
+   只处理两类可判定的历史坏记录，且只收窄、绝不放宽任何 visibility：
+     ① semantic-broadened —— consolidation 产物的可见范围比其 provenance 来源更宽
+        → 收窄到来源派生的最严格范围（复用 _memoryDeriveVisibility）；
+     ② diary-missing-visibility —— 旧日记记忆缺 visibility（isMemoryVisibleTo 判为不可见）
+        → 补 visibility:'only' + visibleTo:[characterId]，只恢复其所属角色的召回。
+   其余可疑记录只报告不修改：provenance 无法解析的 semantic、only 但 visibleTo 为空的记录
+   （后者成因是 quickCreateMemory 早期丢字段，修复写入侧后新记录不再产生）。
+   幂等：已修复记录不会再次出现在 plan.repairs；apply 以当前库内状态再判定一次。
+   不新建 store、不改 schema、不升 DB_VER；新增的 visibilityRepairedAt/visibilityRepairReason
+   只是被修改行上的可选审计字段。 */
+function _memRepairVisState(m){
+  return {visibility:String((m&&m.visibility)||''),
+    visibleTo:(m&&Array.isArray(m.visibleTo)?m.visibleTo:[]).map(String),
+    excludeFrom:(m&&Array.isArray(m.excludeFrom)?m.excludeFrom:[]).map(String)};
+}
+function _memRepairRank(v){if(v==='private')return 1;if(v==='only')return 2;if(v==='except')return 3;if(v==='public')return 4;return 2}/* 缺失=不能证明公开 → only 级 */
+/* next 是否严格窄于 cur（同 rank 时比较受众集合；相同或更宽一律 false） */
+function _memRepairNarrower(cur,next){
+  var rc=_memRepairRank(cur.visibility),rn=_memRepairRank(next.visibility);
+  if(rn<rc)return true;
+  if(rn>rc)return false;
+  if(rn===2){
+    if(!cur.visibleTo.length)return false;/* cur 已无人可见：补名单属于放宽 */
+    return next.visibleTo.every(function(x){return cur.visibleTo.indexOf(x)>=0})&&next.visibleTo.length<cur.visibleTo.length;
+  }
+  if(rn===3){
+    return cur.excludeFrom.every(function(x){return next.excludeFrom.indexOf(x)>=0})&&next.excludeFrom.length>cur.excludeFrom.length;
+  }
+  return false;
+}
+/* dry-run：只读扫描，返回 {scanned, repairs[], report{...}}；不写任何数据。 */
+async function _memRepairPlan(){
+  var out={generatedAt:new Date().toISOString(),scanned:0,repairs:[],
+    report:{semanticBroadened:[],diaryMissingVisibility:[],unresolvedProvenance:[],onlyEmptyVisibleTo:[]}};
+  var all=[];
+  try{all=await dbGetAll('memories')}catch(e){out.error=String(e&&e.message||e);return out}
+  var byId={};all.forEach(function(m){if(m&&m.id)byId[String(m.id)]=m});
+  out.scanned=all.length;
+  all.forEach(function(m){
+    if(!m||!m.id)return;
+    var id=String(m.id);
+    /* ① consolidation 派生的 semantic：可见范围不得宽于其来源 */
+    if(m.kind==='semantic'&&String(m.source||m.rawSource||'')==='consolidation'){
+      var srcIds=(Array.isArray(m.consolidatedFrom)?m.consolidatedFrom:[]).map(String).filter(Boolean);
+      var sources=srcIds.map(function(sid){return byId[sid]}).filter(Boolean);
+      if(!sources.length){
+        out.report.unresolvedProvenance.push({id:id,reason:'provenance 来源已不存在或为空',current:_memRepairVisState(m)});
+        return;
+      }
+      var derived=_memoryDeriveVisibility(sources,String(m.createdBy||''));
+      var cur=_memRepairVisState(m);
+      var want={visibility:derived.visibility,visibleTo:(derived.visibleTo||[]).map(String),excludeFrom:(derived.excludeFrom||[]).map(String)};
+      if(_memRepairNarrower(cur,want)){
+        out.repairs.push({id:id,class:'semantic-broadened',from:cur,to:want,reason:'可见范围宽于 provenance 来源',sources:srcIds});
+        out.report.semanticBroadened.push({id:id,from:cur,to:want});
+      }
+      return;
+    }
+    /* ② 旧日记记忆缺 visibility */
+    if(!m.visibility&&(String(m.source||m.rawSource||'')==='diary'||(String(m.createdBy||'')==='ai'&&m.characterId))){
+      var owner=String(m.characterId||'').trim();
+      if(!owner){
+        out.report.unresolvedProvenance.push({id:id,reason:'日记记忆缺 characterId，无法确定归属',current:_memRepairVisState(m)});
+        return;
+      }
+      var to={visibility:'only',visibleTo:[owner],excludeFrom:[]};
+      out.repairs.push({id:id,class:'diary-missing-visibility',from:_memRepairVisState(m),to:to,reason:'缺 visibility → 仅恢复所属角色召回'});
+      out.report.diaryMissingVisibility.push({id:id,to:to});
+      return;
+    }
+    /* 只报告：only 但 visibleTo 为空（任何角色，含作者自己，都召回不到） */
+    if(m.visibility==='only'&&(!Array.isArray(m.visibleTo)||!m.visibleTo.length)){
+      out.report.onlyEmptyVisibleTo.push({id:id,createdBy:String(m.createdBy||''),source:String(m.source||m.rawSource||'')});
+    }
+  });
+  return out;
+}
+/* 执行修改：默认先 plan 再 apply；只对 plan 里的 id 生效，并在写前按库内当前状态再校验一次。 */
+async function _memRepairApply(plan){
+  var p=(plan&&Array.isArray(plan.repairs))?plan:await _memRepairPlan();
+  var res={applied:0,skipped:0,failed:0,ids:[],planned:p.repairs.length};
+  for(var i=0;i<p.repairs.length;i++){
+    var r=p.repairs[i];
+    try{
+      var row=await dbGet('memories',r.id);
+      if(!row){res.skipped++;continue}
+      var cur=_memRepairVisState(row),want=r.to;
+      if(cur.visibility===want.visibility&&cur.visibleTo.join(',')===want.visibleTo.join(',')&&cur.excludeFrom.join(',')===want.excludeFrom.join(',')){
+        res.skipped++;continue
+      }
+      var ok=(r['class']==='diary-missing-visibility')?(!row.visibility):_memRepairNarrower(cur,want);
+      if(!ok){res.skipped++;continue}
+      row.visibility=want.visibility;
+      row.visibleTo=want.visibleTo.slice();
+      row.excludeFrom=want.excludeFrom.slice();
+      row.visibilityRepairedAt=Date.now();
+      row.visibilityRepairReason=r['class'];
+      await dbPut('memories',row);
+      res.applied++;res.ids.push(String(r.id));
+    }catch(e){res.failed++}
+  }
+  try{if(typeof updateMemDashboard==='function')updateMemDashboard()}catch(e){}
+  return res;
 }
 var _consolidationWaterline=0;/* 全局限流：10 分钟至少一次 */
 /* 用户活跃门控：检查最近 withinMs 内用户是否发出过消息（任一好友）。
@@ -747,7 +1105,19 @@ async function _bgAiSaveSwitches(){
   var sleepEnd=(document.getElementById('bga-sleep-end')?document.getElementById('bga-sleep-end').value:'');
   var cfg=Object.assign({id:BG_AI_KEY},await getBgAiConfig(),{enabled:enabled,sleepStart:sleepStart,sleepEnd:sleepEnd});
   try{await dbPut('apiSettings',cfg)}catch(e){}
+  /* 总开关传播到 companion：关闭后已同步的后台任务/计划不得再执行 AI 调用 */
+  try{await _bgAiPushToCompanion()}catch(e){}
   if(typeof toast==='function')toast(enabled?'后台 AI 已启用':'后台 AI 已停止（朋友圈除外）');
+}
+/* 把后台 AI 总开关（enabled + 休眠时段）推给 companion，使已同步任务/计划的执行也受其约束；
+   仅当 companion 在线时推送（后台离线时无需推送，浏览器自身已按本地 gate 停发）。 */
+async function _bgAiPushToCompanion(){
+  if(!_activeCompanionOnline)return false;
+  try{
+    const cfg=await getBgAiConfig();
+    await _activeCompanionRequest('/bg-ai',{method:'POST',body:{enabled:cfg.enabled!==false,sleepStart:String(cfg.sleepStart||''),sleepEnd:String(cfg.sleepEnd||'')},timeout:3000});
+    return true;
+  }catch(e){return false}
 }
 async function _bgAiLoadUI(){
   var cfg=await getBgAiConfig();
@@ -866,7 +1236,7 @@ async function _activeSyncAllBackground(){
   }
   _activeCompanionReady=ok;_activeSetServiceStatus(_activeCompanionOnline);
   await _activeSyncAllAiPlans();/* AI 自主规划任务同步（companion 在线时由后台独占执行） */
-  if(ok){_activeLastContextSync=Date.now();await _activeFlushPendingHistoryClear()}return ok
+  if(ok){_activeLastContextSync=Date.now();await _activeFlushPendingHistoryClear();try{await _bgAiPushToCompanion()}catch(e){}}return ok
 }
 async function _activeDeleteCompanionTask(id,required){
   if(!_activeCompanionOnline){if(required)toast('后台服务未连接，操作尚未执行');return false}
@@ -886,6 +1256,11 @@ async function _activePullCompanionEvents(){
   }
   for(const wrapped of events){
     const ev=wrapped.event,eventUserId=wrapped.user_id;
+    /* 事件队列由 Active 与 Moments 两个独立消费者共用：Moments 域事件
+       （moment / moment_reply / moment_comment_deleted）由 Moments 消费者负责
+       落库与 ACK。Active 消费者在此直接跳过（不处理、不 ACK），确保事件保留到
+       Moments 消费者真正持久化之后再消费，避免提前 ACK 造成动态丢失/误入聊天分支。 */
+    if(ev&&typeof ev.kind==='string'&&(ev.kind==='moment'||ev.kind==='moment_reply'||ev.kind==='moment_comment_deleted'))continue;
     try{
       const s=await dbGet(ACTIVE_SETTINGS_STORE,ev.setting_id);
       const cfg=apiConfigs.find(a=>a.id===ev.character_id)||archivedConfigs.find(a=>a.id===ev.character_id);
@@ -1015,6 +1390,12 @@ window._activeClearHistory=_activeClearHistory;
 window.loadActiveMessagePage=loadActiveMessagePage;
 window._activeClaimDue=_activeClaimDue;
 window._activeProactiveLog=_activeProactiveLog;
+/* Runtime Convergence Phase 1：迁移诊断与接缝（只读快照 + 可测的执行接缝；开关见 window.runtimeExecuteEnabled） */
+window._activeProactiveExecStatsSnapshot=_activeProactiveExecStatsSnapshot;
+window._activeProactiveModelCall=_activeProactiveModelCall;
+window._activeModelFormat=_activeModelFormat;
+/* Runtime Convergence Phase 4：Memory Consolidation 执行接缝（测试/诊断入口） */
+window._activeConsolidationModelCall=_activeConsolidationModelCall;
 window._activeCustomInstruction=_activeCustomInstruction;
 window._activeModeGuide=_activeModeGuide;
 window._activeElapsedText=_activeElapsedText;
@@ -1060,6 +1441,11 @@ window._activeSyncSetting=_activeSyncSetting;
 window._activeSyncAllBackground=_activeSyncAllBackground;
 window._activeDeleteCompanionTask=_activeDeleteCompanionTask;
 window._activePullCompanionEvents=_activePullCompanionEvents;
+/* Memory provenance 修复入口（P2-05）：先 _memRepairPlan()（只读报告），确认后再 _memRepairApply(plan)。 */
+window._memRepairPlan=_memRepairPlan;
+window._memRepairApply=_memRepairApply;
+/* Memory Consolidation（Phase 4）：测试/诊断入口（业务调用仍走 _consolidationTick） */
+window.consolidateCharacterMemory=consolidateCharacterMemory;
 window.initActiveMessages=initActiveMessages;
 window.init=init;
 window.ACTIVE_SETTINGS_STORE=ACTIVE_SETTINGS_STORE;

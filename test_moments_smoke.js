@@ -168,10 +168,16 @@ async function main() {
     check('service.roleFeed', await evaluate(cdp, "(async function(){return (await getRoleMoments('mom_a')).length>=1&&(await getRoleMoments('mom_c')).length===0})()"));
     const liked = await evaluate(cdp, "(async function(){var m=(await getRoleMoments('mom_a'))[0];var a=await likeMoment(m.id);var b=await likeMoment(m.id);return{first:a,second:b,count:m.id}})()");
     check('service.likeCycle', liked && liked.first.ok && liked.first.liked === true && liked.first.count === 1 && liked.second.ok && liked.second.liked === false && liked.second.count === 0, JSON.stringify(liked));
-    const c1 = await evaluate(cdp, "(async function(){var m=(await getRoleMoments('mom_a'))[0];return await addMomentComment(m.id,{authorType:'user',authorId:'local_user',content:'第一条评论'})})()");
+    /* 评论者身份必须用当前登录用户（_activeUserId()）：角色动态下的评论删除权限按
+       c.authorId === _activeUserId() 判定（_momentsCanDeleteComment），固定写死 'local_user'
+       只在该函数回退分支才成立，会误报成产品缺陷。 */
+    const c1 = await evaluate(cdp, "(async function(){var m=(await getRoleMoments('mom_a'))[0];return await addMomentComment(m.id,{authorType:'user',authorId:_activeUserId(),content:'第一条评论'})})()");
     check('service.commentAdd', c1 && c1.ok === true && c1.comment && /^mc_/.test(c1.comment.id), JSON.stringify(c1));
     const c2 = await evaluate(cdp, "(async function(){var m=(await getRoleMoments('mom_a'))[0];var r=await deleteMomentComment(m.id,'" + (c1 && c1.comment ? c1.comment.id : 'none') + "');var after=await getRoleMoments('mom_a');return r.ok&&(after[0].comments||[]).length===0})()");
     check('service.commentDelete', c2 === true, String(c2));
+    /* 权限边界（不得为了通过删除权限检查）：角色动态下，别的用户不能删他人评论 */
+    const cOther = await evaluate(cdp, "(async function(){var m=(await getRoleMoments('mom_a'))[0];var add=await addMomentComment(m.id,{authorType:'user',authorId:'someone_else',content:'别人的评论'});var del=await deleteMomentComment(m.id,add.comment.id);var still=(await getRoleMoments('mom_a'))[0].comments.some(function(x){return x.id===add.comment.id});return{delOk:del.ok,still:still}})()");
+    check('service.commentDeletePermission', cOther && cOther.delOk === false && cOther.still === true, JSON.stringify(cOther));
 
     /* 可见性 */
     const vis = await evaluate(cdp, "(async function(){const r=await createMoment({roleId:'mom_b',content:'仅三个角色可见',visibility:'roles',visibleRoleIds:['mom_c'],source:'manual'});const p=await createMoment({roleId:'mom_a',content:'私密日志',visibility:'private',source:'manual'});const feed2=await getMoments();const roleA=await getRoleMoments('mom_a');return{excluded:!feed2.some(m=>m.content==='仅三个角色可见')&&!feed2.some(m=>m.content==='私密日志'),visibleToC:_momentsVisibleToRole(r.moment,'mom_c'),visibleToA:_momentsVisibleToRole(r.moment,'mom_a'),privateInOwn:roleA.some(m=>m.content==='私密日志')}})()");

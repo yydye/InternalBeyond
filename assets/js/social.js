@@ -1,23 +1,9 @@
 ﻿/* IB 命名空间迁移：IIFE 私有作用域 + 全量双挂载（window 实时 + IB.social 注册）。 */
 (function(NS){
-/* CHAT & API */
-const PROVIDERS={
-  anthropic:{name:'Claude',endpoint:'https://api.anthropic.com/v1/messages',model:'claude-sonnet-4-6',format:'anthropic',vision:true,streaming:true},
-  openai:{name:'GPT',endpoint:'https://api.openai.com/v1/chat/completions',model:'gpt-4o-mini',format:'openai',vision:true,streaming:true},
-  grok:{name:'Grok',endpoint:'https://api.x.ai/v1/chat/completions',model:'grok-4',format:'openai',vision:true,streaming:true},
-  deepseek:{name:'DeepSeek',endpoint:'https://api.deepseek.com/v1/chat/completions',model:'deepseek-v4-flash',format:'openai',vision:true,streaming:true,showThinking:true},
-  gemini:{name:'Gemini',endpoint:'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent',model:'gemini-2.0-flash',format:'gemini',vision:true,streaming:true},
-  glm:{name:'GLM',endpoint:'https://open.bigmodel.cn/api/paas/v4/chat/completions',model:'glm-4-flash',format:'openai',vision:true,streaming:true,showThinking:false},
-  qwen:{name:'通义千问',endpoint:'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',model:'qwen-plus',format:'openai',vision:true,streaming:true},
-  doubao:{name:'豆包',endpoint:'https://ark.cn-beijing.volces.com/api/v3/chat/completions',model:'doubao-seed-2-0-lite',format:'openai',vision:true,streaming:true},
-  moonshot:{name:'Kimi',endpoint:'https://api.moonshot.cn/v1/chat/completions',model:'kimi-k2.6',format:'openai',vision:true,streaming:true},
-  mimo:{name:'MiMo',endpoint:'https://api.xiaomimimo.com/v1/chat/completions',model:'mimo-v2.5',format:'openai',vision:true,streaming:true,showThinking:true},
-  minimax:{name:'MiniMax',endpoint:'https://api.minimax.chat/v1/text/chatcompletion_v2',model:'MiniMax-Text-01',format:'openai',vision:false,streaming:true},
-  yi:{name:'零一万物',endpoint:'https://api.lingyiwanwu.com/v1/chat/completions',model:'yi-lightning',format:'openai',vision:false,streaming:true},
-  baichuan:{name:'百川',endpoint:'https://api.baichuan-ai.com/v1/chat/completions',model:'Baichuan4',format:'openai',vision:false,streaming:true},
-  mistral:{name:'Mistral',endpoint:'https://api.mistral.ai/v1/chat/completions',model:'mistral-large-latest',format:'openai',vision:false,streaming:true},
-  custom:{name:'Custom',endpoint:'',model:'',format:'openai',vision:true,streaming:true}
-};
+/* CHAT & API
+   PROVIDERS 唯一 canonical 来源已迁至 assets/js/provider-directory.js（window.PROVIDERS_DIR）。
+   social.js 不再维护第二份 provider metadata 字面量，仅作 window.PROVIDERS 兼容暴露。 */
+const PROVIDERS=(window.PROVIDERS_DIR&&window.PROVIDERS_DIR.PROVIDERS)||{};
 /* Local OpenAI-compatible runtimes such as Ollama and LM Studio normally do
    not use a credential.  Treat that narrow, loopback-only case as ready while
    keeping the normal API-key requirement for every network endpoint. */
@@ -759,7 +745,7 @@ var _tkCacheDoc=null;
 var _tkT0=(function(){var d=new Date();d.setHours(0,0,0,0);return d.getTime()})(),_tkT1=_tkT0;/* 选定起止日（含端点，本地零点），默认为今日单日 */
 async function _tkLoad(){if(_tkCacheDoc)return _tkCacheDoc;try{const r=await dbGet('apiSettings','ibTokenStats');_tkCacheDoc=(r&&r.data)||null}catch(e){}if(!_tkCacheDoc)_tkCacheDoc={since:Date.now(),records:[],prices:{}};if(!_tkCacheDoc.records)_tkCacheDoc.records=[];if(!_tkCacheDoc.prices)_tkCacheDoc.prices={};return _tkCacheDoc}
 function _tkSave(){if(_tkCacheDoc)try{dbPut('apiSettings',{id:'ibTokenStats',data:_tkCacheDoc})}catch(e){}}
-async function _tkRecord(cfg,u){try{if(!u)return;u={i:Math.max(0,u.i|0),cr:Math.max(0,u.cr|0),cw:Math.max(0,u.cw|0),o:Math.max(0,u.o|0)};if(!(u.i||u.cr||u.cw||u.o))return;const d=await _tkLoad();const _r={t:Date.now(),cid:(cfg&&cfg.id)||'',m:(cfg&&cfg.model)||'',i:u.i,cr:u.cr,cw:u.cw,o:u.o};if(cfg&&cfg.cacheTtl1h&&cfg.promptCache!==false)_r.h=1;/* 与 _ccObj 同判定：该次请求的缓存写入按 1 小时 ×2 计价 */d.records.push(_r);if(d.records.length>5000)d.records.splice(0,d.records.length-5000);_tkSave();}catch(e){}}
+async function _tkRecord(cfg,u,opts){try{if(!u)return;u={i:Math.max(0,u.i|0),cr:Math.max(0,u.cr|0),cw:Math.max(0,u.cw|0),o:Math.max(0,u.o|0)};/* 用量回传（可选）：调用方传了 opts.result 时把本次计量挂到 result.usage，供 opt-in Runtime 的 usage 契约读取；生产聊天不传 result，行为不变 */if(opts&&opts.result&&!opts.result.usage&&(u.i||u.cr||u.cw||u.o))opts.result.usage={i:u.i,cr:u.cr,cw:u.cw,o:u.o};if(!(u.i||u.cr||u.cw||u.o))return;const d=await _tkLoad();const _r={t:Date.now(),cid:(cfg&&cfg.id)||'',m:(cfg&&cfg.model)||'',i:u.i,cr:u.cr,cw:u.cw,o:u.o};if(cfg&&cfg.cacheTtl1h&&cfg.promptCache!==false)_r.h=1;/* 与 _ccObj 同判定：该次请求的缓存写入按 1 小时 ×2 计价 */d.records.push(_r);if(d.records.length>5000)d.records.splice(0,d.records.length-5000);_tkSave();}catch(e){}}
 function _tkFmt(n){n=n||0;if(n>=1e6)return(n/1e6).toFixed(2)+'M';if(n>=1e3)return(n/1e3).toFixed(1)+'K';return String(n)}
 function _tkEsc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
 function _tkCost(a,p){if(!p||(p.i==null&&p.o==null))return null;var pi=+p.i||0,po=+p.o||0;var ch=a.cwh!=null?(+a.cwh||0):(a.h?(a.cw||0):0);return(a.i*pi+a.cr*pi*0.1+a.cw*pi*1.25+ch*pi*0.75+a.o*po)/1e6}/* 官方口径：缓存读取 ×0.1；缓存写入 5 分钟 ×1.25、1 小时 ×2（ch 为 1h 写入量，在 ×1.25 基础上补 ×0.75）；无 h/cwh 的历史记录与旧版结果逐位一致 */
