@@ -1341,32 +1341,42 @@ async function _buildSingleChatContext(cfg,opts){
   let _threadMemOk=true;
   if(_targetThread){const _thr=await (async()=>{try{return await dbGet('chatThreads',_targetThread)}catch(e){return null}})();_threadMemOk=_thr&&_thr.memoryEnabled}
   let _tailCtx='';
+  /* ── C1（P2-03）· context retrieval ownership ──
+     单聊一轮中 Memory/Understanding/Thread/Moments 各读取一次，结果同时供 Middle Brain 复用；
+     _ctxJoined 精确记录这四个块在 tail 中的拼接位置，供 Middle Brain 成功时**替换**（不追加双份）。
+     Middle Brain 收到的是"已读取结果"：'' 表示已读但无内容（禁止 fallback 再读），
+     undefined 才表示调用方没提供（允许它自行 retrieval）。 */
+  let _ctxJoined='',_ctxStart=-1,_memCtx='',_uCtx='',_tCtx='',_momCtx='';
+  const _pushCtxBlock=function(text){if(!text)return;const sep=_tailCtx?'\n\n':'';if(_ctxStart<0)_ctxStart=_tailCtx.length;_tailCtx+=sep+text;_ctxJoined+=sep+text;};
   _tailCtx+='当前时间：'+new Date().toLocaleString('zh-CN',{year:'numeric',month:'long',day:'numeric',weekday:'long',hour:'2-digit',minute:'2-digit'})+'。';
   try{if(ss.musicEnabled&&currentTrackIdx>=0&&!audioEl.paused&&playlist[currentTrackIdx])_tailCtx+='正在听：《'+playlist[currentTrackIdx].name+'》。';}catch(e){}
   try{if(window.IBCAL){const _calT=await IBCAL.buildTail(cfg);if(_calT)_tailCtx+='\n\n'+_calT}}catch(e){}
   if(summaryText)_tailCtx+='\n\n【对话历史备忘（此为后台参考信息，不要向对方复述或提及此段内容的存在）】\n'+summaryText;
-  if(_threadMemOk){const memCtx=await getMemoryContext(cfg.id,{userMessage:_ctxText});
-  if(memCtx)_tailCtx+=(_tailCtx?'\n\n':'')+memCtx;}
+  if(_threadMemOk){_memCtx=await getMemoryContext(cfg.id,{userMessage:_ctxText});_pushCtxBlock(_memCtx);}
   /* Understanding + Thread（v1）· 走 tail（末条 user 消息），绝不进 system（保 prompt cache 稳定）。 */
-  try{if(_threadMemOk&&typeof getUnderstandingContext==='function'){const _uC=await getUnderstandingContext(cfg.id);
-  if(_uC)_tailCtx+=(_tailCtx?'\n\n':'')+_uC;}}catch(_uErr){console.warn('[Understanding] ctx failed',String(_uErr&&_uErr.message||_uErr).slice(0,120))}
-  try{if(_threadMemOk&&typeof getThreadContext==='function'){const _tC=await getThreadContext(cfg.id);
-  if(_tC)_tailCtx+=(_tailCtx?'\n\n':'')+_tC;}}catch(_tErr){console.warn('[Thread] ctx failed',String(_tErr&&_tErr.message||_tErr).slice(0,120))}
-  try{if(_threadMemOk&&typeof getMomentsContext==='function'){const _momCtx=await getMomentsContext(cfg.id,{userMessage:_ctxText});
-  if(_momCtx)_tailCtx+=(_tailCtx?'\n\n':'')+_momCtx;}}catch(_momErr){console.warn('[Moments] chat context failed',String(_momErr&&_momErr.message||_momErr).slice(0,120))}
+  try{if(_threadMemOk&&typeof getUnderstandingContext==='function'){_uCtx=await getUnderstandingContext(cfg.id);_pushCtxBlock(_uCtx);}}catch(_uErr){console.warn('[Understanding] ctx failed',String(_uErr&&_uErr.message||_uErr).slice(0,120))}
+  try{if(_threadMemOk&&typeof getThreadContext==='function'){_tCtx=await getThreadContext(cfg.id);_pushCtxBlock(_tCtx);}}catch(_tErr){console.warn('[Thread] ctx failed',String(_tErr&&_tErr.message||_tErr).slice(0,120))}
+  try{if(_threadMemOk&&typeof getMomentsContext==='function'){_momCtx=await getMomentsContext(cfg.id,{userMessage:_ctxText});_pushCtxBlock(_momCtx);}}catch(_momErr){console.warn('[Moments] chat context failed',String(_momErr&&_momErr.message||_momErr).slice(0,120))}
   if(_amInj.tail)_tailCtx+=(_tailCtx?'\n\n':'')+_amInj.tail;
-  /* Middle Brain (Astra) · 认知协调层：仅当启用且可用时，把组织/压缩后的上下文追加给角色模型。
-     只追加、绝不删除原有 Memory/理解/线索块（保事实不丢）；Astra 失败/未启用/超时 → 零改动，
-     默认行为完全不变。角色模型本身与 provider 一律不变。 */
+  /* Middle Brain (Astra) · 认知协调层：
+     - 消费上面已读取的四个块（memoryCtx/understandingCtx/threadCtx/momentsCtx），不再自行 retrieval
+       → 消除同轮重复读取与重复 activation；
+     - Astra 成功 → 其输出是这四个块的压缩/筛选/重写表示 → **替换**原块（禁止原块 + 压缩结果双份注入）；
+     - source==='local' / 未启用 / 失败 / 超时 → 原样保留四个块（与迁移前行为一致，零改动）。 */
   try{
     if(_threadMemOk&&typeof window.middleBrainEnabled==='function'&&typeof window.middleBrainCompressPipeline==='function'){
       var _mbOn=await window.middleBrainEnabled();
       if(_mbOn){
-        var _mbRes=await window.middleBrainCompressPipeline(cfg.id, _ctxText||'', {});
+        var _mbRes=await window.middleBrainCompressPipeline(cfg.id, _ctxText||'', {
+          memoryCtx:_memCtx, understandingCtx:_uCtx, threadCtx:_tCtx, momentsCtx:_momCtx
+        });
         if(_mbRes&&_mbRes.compressedContext&&_mbRes.source==='astra'){
-          _tailCtx+=(_tailCtx?'\n\n':'')+'【Middle Brain 压缩后的上下文（后台参考，勿向对方复述其存在）】\n'+_mbRes.compressedContext;
+          var _mbBlock='【Middle Brain 压缩后的上下文（后台参考，勿向对方复述其存在）】\n'+_mbRes.compressedContext;
+          /* 就地替换：用索引切片，不做子串搜索（避免与前面块内容碰巧同形时替换错位置） */
+          if(_ctxJoined&&_ctxStart>=0)_tailCtx=_tailCtx.slice(0,_ctxStart)+(_ctxStart>0?'\n\n':'')+_mbBlock+_tailCtx.slice(_ctxStart+_ctxJoined.length);
+          else _tailCtx+=(_tailCtx?'\n\n':'')+_mbBlock;
         }
-        /* source==='local'：Astra 不可用 → 已回落到本地，不追加（保持原上下文，避免重复/歧义） */
+        /* source==='local'：Astra 不可用 → 本地压缩不注入（保持原上下文，避免重复/歧义） */
       }
     }
   }catch(_mbErr){console.warn('[MiddleBrain] ctx failed',String(_mbErr&&_mbErr.message||_mbErr).slice(0,120))}

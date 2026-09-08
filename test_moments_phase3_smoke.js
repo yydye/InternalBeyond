@@ -370,19 +370,21 @@ async function main() {
     const diag = await evaluate(cdp, "(function(){var D=_momentsDiagnoseOutput;return{empty:D('').stage,nl:D('今天出去走了走，天气还不错。').stage,trunc:D('{\"publish\":true,\"con').stage,strType:D('{\"publish\":\"true\",\"content\":\"x\"}').stage,type:D(123).outType}})()");
     check('diag.classification', diag && diag.empty === 'empty-output' && diag.nl === 'no-json-object' && diag.trunc === 'json-parse-failed' && diag.strType === 'schema-publish-not-boolean' && diag.type === 'number', JSON.stringify(diag));
 
-    /* ── 复现：reasoning 吃满 maxTokens → empty-output；自适应提额重试可救回 ── */
-    const warns = []; cdp.on('Runtime.consoleAPICalled', p => { if (p.type === 'warning') { try { warns.push((p.args || []).map(a => a.value != null ? String(a.value) : (a.description || '')).join(' ')); } catch (e) {} } });
-    const rsnAlways = await evaluate(cdp, "(async function(){__ibP3.reset();var r=await generateRoleMoment('p3rsn',{trigger:'manual'});return{ok:r.ok,err:r.error}})()");
-    const rsnWarns = warns.filter(w => w.indexOf('[Moments] output unparseable') >= 0);
+    /* ── 复现：reasoning 吃满 maxTokens → empty-output；自适应提额重试可救回 ──
+       日志断言改为**页面内**记录 console.warn：CDP 的 consoleAPICalled 在机器负载下会延迟甚至漏送，
+       而这里断言的是"页面确实打印了该警告"，页面内记录更直接、更稳（断言强度不变）。 */
+    await evaluate(cdp, "(function(){if(window.__p3warns)return true;window.__p3warns=[];var ow=console.warn;"
+      + "console.warn=function(){try{window.__p3warns.push(Array.prototype.map.call(arguments,function(a){return typeof a==='string'?a:(function(){try{return JSON.stringify(a)}catch(e){return String(a)}})()}).join(' '))}catch(e){}return ow.apply(console,arguments)};return true})()");
+    await evaluate(cdp, "(function(){window.__p3warns.length=0;__ibP3.reset();return true})()");
+    const rsnAlways = await evaluate(cdp, "(async function(){var r=await generateRoleMoment('p3rsn',{trigger:'manual'});return{ok:r.ok,err:r.error}})()");
+    const rsnWarns = await evaluate(cdp, "(function(){return (window.__p3warns||[]).filter(function(w){return w.indexOf('[Moments] output unparseable')>=0})})()");
     check('rsn.reproducedEmptyOutput', rsnAlways && rsnAlways.ok === false && /无法解析/.test(rsnAlways.err || ''), JSON.stringify(rsnAlways));
     check('rsn.diagStageEmptyOutput', rsnWarns.length >= 2 && rsnWarns.every(w => w.indexOf('"stage":"empty-output"') >= 0), rsnWarns.join(' | ').slice(0, 300));
     /* 自适应：首次空输出 → 提高生成预算重试 → 推理型模型第二次成功发布 */
-    warns.length = 0;
+    await evaluate(cdp, "(function(){window.__p3warns.length=0;return true})()");
     const rsnOk = await evaluate(cdp, "(async function(){var r=await generateRoleMoment('p3rsnok',{trigger:'manual'});return{ok:r.ok,published:r.published,content:r.moment&&r.moment.content}})()");
-    /* console 事件经 CDP 异步送达：固定等待不够稳，改为轮询等 warn 事件（最多 4s） */
-    let retryLine = false;
-    for (let _w = 0; _w < 40; _w++) { if (warns.some(w => w.indexOf('(retrying)') >= 0 && w.indexOf('"stage":"empty-output"') >= 0)) { retryLine = true; break; } await new Promise(r => setTimeout(r, 100)); }
-    check('rsn.adaptiveRetryPublishes', rsnOk && rsnOk.ok === true && rsnOk.published === true && rsnOk.content === '推理后终于想好了。' && retryLine === true, JSON.stringify({ rsnOk, retryLine }));
+    const retryLine = await evaluate(cdp, "(function(){return (window.__p3warns||[]).some(function(w){return w.indexOf('(retrying)')>=0&&w.indexOf('\"stage\":\"empty-output\"')>=0})})()");
+    check('rsn.adaptiveRetryPublishes', rsnOk && rsnOk.ok === true && rsnOk.published === true && rsnOk.content === '推理后终于想好了。' && retryLine === true, JSON.stringify({ rsnOk, retryLine, rsnokHits: (mock.hitsBy() || {})['p3-rsnok'], warns: await evaluate(cdp, "(window.__p3warns||[]).slice(-3)") }));
 
     await new Promise(r => setTimeout(r, 300));
     check('runtime.noExceptions', exceptions.length === 0, exceptions.join('\n').slice(0, 500));

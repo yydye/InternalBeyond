@@ -10,10 +10,10 @@
  * 子进程输出透传；任一失败最终返回非零退出码；浏览器测试串行执行
  * （避免 Chrome/CDP 相互干扰）；服务测试自带随机端口与临时数据目录。
  *
- * P2-07：入口不再遗漏仓库内的测试脚本。当前仓库共有 87 个 test_*.js，
+ * P2-07：入口不再遗漏仓库内的测试脚本。当前仓库共有 88 个 test_*.js，
  * 全部登记在下面三组中（此前只有 49 个，导致"全绿"结论不覆盖真实测试面）。
- * 登记条目共 88 条 = 87 个 test_*.js + scripts_check_html.js（HTML 结构检查）；
- * 分组：static 29 / service 16 / browser 43。
+ * 登记条目共 89 条 = 88 个 test_*.js + scripts_check_html.js（HTML 结构检查）；
+ * 分组：static 29 / service 16 / browser 44。
  * 归类规则：使用 CDP（remote-debugging-port）→ browser；否则 static。
  * 外部依赖测试（需要 Python + 本地 Vision 服务 + test.jpg 的 python test_vision.py）
  * 不进入 --all，单独运行并在报告中如实记录。
@@ -125,6 +125,7 @@ const GROUPS = [
       ['test_runtime_convergence_moments.js'],
       ['test_runtime_convergence_diary.js'],
       ['test_runtime_convergence_phase4.js'],
+      ['test_context_convergence_c1.js'],
       ['test_understanding_admission.js'],
       ['test_understanding_generation.js'],
       ['test_understanding_thread.js'],
