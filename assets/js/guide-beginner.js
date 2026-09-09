@@ -425,7 +425,254 @@
 
     wrap.appendChild(buildTechNote());
     host.appendChild(wrap);
+    bindImgFollow();   /* 截图是懒加载的：占位后要把落点重新对齐 */
     return true;
+  }
+
+  /* ══ 阅读位置（只属于 Guide） ══════════════════════════════
+     切到 Chat / Memory / Moments 再回到 Guide 时，回到原来的阅读位置。
+     显式章节锚点（目录里的 #gb-* / #guide-*）优先于历史位置。
+     边界：状态只属于 Guide，不扩展为全站 scroll 恢复，也不接管导航——
+     由既有导航生命周期（core.js 的 navTo）在离开前、进入后各通知一次。
+     存放：内存（本次打开 IB 期间）+ 会话级 Web Storage（误刷新不丢）；
+     不写入任何浏览器数据库，不新增 DB schema。 */
+
+  var PAGE_ID = 'page-guide';
+  var POS_KEY = 'ib_guide_readpos';
+  var SAVE_DELAY = 120;   /* 滚动中落盘的节流间隔（毫秒） */
+  var SETTLE_PX = 2;      /* 恢复后的容差：偏差小于它就不再纠正 */
+
+  var posMem = null;      /* 最近一次快照 */
+  var saveTimer = 0;
+  var bound = false;
+  var area;               /* undefined = 未探测；null = 不可用 */
+  var followTarget = null; /* 恢复目标：截图占位后继续对齐 */
+  var followMine = 0;     /* 我们最后写下的位置 */
+  var followBudget = 0;   /* 允许对齐的次数上限 */
+
+  function raf(fn) {
+    if (typeof requestAnimationFrame === 'function') return requestAnimationFrame(fn);
+    return setTimeout(fn, 16);
+  }
+  /* 事件绑定：宿主缺 API 时静默跳过（本模块在无 DOM 环境下也要能加载）。 */
+  function on(target, type, fn) {
+    try { if (target && typeof target.addEventListener === 'function') target.addEventListener(type, fn, false); } catch (e) { }
+  }
+  function guidePage() { return byId(PAGE_ID); }
+  function isActive() {
+    var p = guidePage();
+    try { return !!(p && p.classList && p.classList.contains('active')); } catch (e) { return false; }
+  }
+
+  /* 会话级存储：不可用时退化为纯内存，功能仍然成立。 */
+  function store() {
+    if (area !== undefined) return area;
+    area = null;
+    try {
+      var s = window.sessionStorage;
+      if (s) { s.setItem(POS_KEY + '_probe', '1'); s.removeItem(POS_KEY + '_probe'); area = s; }
+    } catch (e) { area = null; }
+    return area;
+  }
+  function readStore() {
+    var s = store();
+    if (!s) return null;
+    try {
+      var o = JSON.parse(s.getItem(POS_KEY) || 'null');
+      if (!o || typeof o.y !== 'number' || !isFinite(o.y)) return null;
+      return {
+        v: 1,
+        y: Math.max(0, Math.round(o.y)),
+        anchor: typeof o.anchor === 'string' ? o.anchor : '',
+        hash: typeof o.hash === 'string' ? o.hash : '',
+        h: (typeof o.h === 'number' && isFinite(o.h)) ? Math.max(0, Math.round(o.h)) : 0,
+        t: (typeof o.t === 'number' && isFinite(o.t)) ? o.t : 0
+      };
+    } catch (e) { return null; }
+  }
+  function writeStore(v) {
+    var s = store();
+    if (!s) return;
+    try { s.setItem(POS_KEY, JSON.stringify(v)); } catch (e) { }
+  }
+
+  /* ── 读取当前位置 ──────────────────────────────────────────
+     桌面端滚动落在根元素上，个别移动端落在 body 上；取各候选的最大值，
+     不需要猜是哪一种。 */
+  function readY() {
+    var y = 0;
+    try { if (typeof window.pageYOffset === 'number' && window.pageYOffset > y) y = window.pageYOffset; } catch (e) { }
+    try { if (document.scrollingElement && document.scrollingElement.scrollTop > y) y = document.scrollingElement.scrollTop; } catch (e) { }
+    try { if (document.documentElement && document.documentElement.scrollTop > y) y = document.documentElement.scrollTop; } catch (e) { }
+    try { if (document.body && document.body.scrollTop > y) y = document.body.scrollTop; } catch (e) { }
+    return y > 0 ? Math.round(y) : 0;
+  }
+  function maxY() {
+    var h = 0, c = 0, se = null;
+    try { se = document.scrollingElement || document.documentElement; } catch (e) { }
+    try { if (se) { h = se.scrollHeight || 0; c = se.clientHeight || 0; } } catch (e) { }
+    if (!h) { try { h = (document.body && document.body.scrollHeight) || 0; } catch (e) { } }
+    if (!c) { try { c = window.innerHeight || 0; } catch (e) { } }
+    return Math.max(0, h - c);
+  }
+  /* 0 <= y <= scrollHeight - clientHeight：内容变短后不会恢复到不存在的位置。 */
+  function clampY(y) {
+    var v = Math.round(y);
+    if (!isFinite(v) || v < 0) v = 0;
+    return Math.min(v, maxY());
+  }
+  /* 瞬时定位：全局 html{scroll-behavior:smooth} 会让普通滚动调用变成动画，
+     这里临时把滚动容器自己的 scroll-behavior 压成 auto，落点后再还原。 */
+  function instant(fn) {
+    var roots = [], prev = [], i;
+    try { if (document.documentElement) roots.push(document.documentElement); } catch (e) { }
+    try { if (document.body && document.body !== document.documentElement) roots.push(document.body); } catch (e) { }
+    for (i = 0; i < roots.length; i++) {
+      var keep = '';
+      try { if (roots[i].style) { keep = roots[i].style.scrollBehavior || ''; roots[i].style.scrollBehavior = 'auto'; } } catch (e) { }
+      prev.push(keep);
+    }
+    try { fn(); } catch (e) { }
+    for (i = 0; i < roots.length; i++) {
+      try { if (roots[i].style) roots[i].style.scrollBehavior = prev[i]; } catch (e) { }
+    }
+  }
+  function writeY(y) {
+    instant(function () {
+      if (typeof window.scrollTo === 'function') { window.scrollTo(0, y); return; }
+      try { if (document.documentElement) document.documentElement.scrollTop = y; } catch (e) { }
+      try { if (document.body) document.body.scrollTop = y; } catch (e) { }
+    });
+  }
+  /* 布局尚未落定时再纠正一次；偏差在容差内就不动，避免可见跳动。
+     截图是懒加载的：刷新后它们还没有占位，文档比真实高度短，落点会被夹小；
+     因此把目标记下来，等每张图真正占位后再对齐一次（见 bindImgFollow）。 */
+  function settle(target) {
+    followTarget = target;
+    followMine = clampY(target);
+    followBudget = 24;
+    raf(function () {
+      raf(function () {
+        if (!isActive()) return;
+        if (Math.abs(readY() - followMine) > SETTLE_PX) writeY(followMine);
+      });
+    });
+  }
+  /* 图片占位后把落点重新对齐到目标：只在「位置还是我们自己放的那一处」时动手，
+     用户一旦自己滚动（位置不再等于我们写下的值）就立即让位。 */
+  function onShotSettled() {
+    if (followTarget === null || !followBudget) return;
+    followBudget--;
+    if (!isActive()) return;
+    if (Math.abs(readY() - followMine) > SETTLE_PX) { followTarget = null; return; }
+    var want = clampY(followTarget);
+    if (Math.abs(want - followMine) > SETTLE_PX) { followMine = want; writeY(want); }
+  }
+  function bindImgFollow() {
+    var page = guidePage();
+    if (!page) return;
+    var imgs = null;
+    try { imgs = page.querySelectorAll('img'); } catch (e) { return; }
+    for (var i = 0; i < imgs.length; i++) {
+      if (imgs[i]._ibGuideFollow) continue;
+      imgs[i]._ibGuideFollow = true;
+      on(imgs[i], 'load', onShotSettled);
+      on(imgs[i], 'error', onShotSettled);
+    }
+  }
+
+  /* ── 可识别章节（仅记录，用于诊断与断言，不参与定位） ─────── */
+  function currentAnchor() {
+    var page = guidePage();
+    if (!page) return '';
+    var best = '';
+    try {
+      var nodes = page.querySelectorAll('[data-guide-chapter]');
+      var line = readY() + 8;
+      for (var i = 0; i < nodes.length; i++) {
+        var r = nodes[i].getBoundingClientRect();
+        if ((r.top + readY()) <= line) best = nodes[i].id || best;
+      }
+    } catch (e) { }
+    return best;
+  }
+
+  /* ── 显式锚点识别 ──────────────────────────────────────────
+     只认 Guide 页内的章节锚点（#gb-* 与 #guide-*），并且必须真的是
+     #page-guide 的后代；页面容器自己不算。 */
+  function hashId() {
+    try { return String(location.hash || '').replace(/^#/, ''); } catch (e) { return ''; }
+  }
+  function guideAnchor(id) {
+    if (!id || id === PAGE_ID || !/^(?:gb-|guide-)/.test(id)) return '';
+    var page = guidePage();
+    if (!page) return '';
+    var el = null;
+    try { el = document.getElementById(id); } catch (e) { el = null; }
+    if (!el || el === page) return '';
+    var n = el;
+    while (n) { if (n === page) return id; n = n.parentNode; }
+    return '';
+  }
+  function jumpTo(el) {
+    instant(function () {
+      if (typeof el.scrollIntoView !== 'function') return;
+      try { el.scrollIntoView({ block: 'start', behavior: 'instant' }); }
+      catch (e) { try { el.scrollIntoView(true); } catch (e2) { } }
+    });
+    /* 以浏览器实际落点为基准（它会尊重 CSS 的 scroll-margin-top）。 */
+    settle(readY());
+  }
+
+  /* ── 记录 / 恢复 ────────────────────────────────────────── */
+  function snapshot() {
+    return { v: 1, y: readY(), anchor: currentAnchor(), hash: hashId(), h: maxY(), t: Date.now() };
+  }
+  function save() {
+    if (!isActive()) return;
+    posMem = snapshot();
+    writeStore(posMem);
+  }
+  function flush() {
+    if (saveTimer) { clearTimeout(saveTimer); saveTimer = 0; }
+    save();
+  }
+  function scheduleSave() {
+    if (saveTimer) return;
+    saveTimer = setTimeout(function () { saveTimer = 0; save(); }, SAVE_DELAY);
+  }
+  function clear() {
+    posMem = null;
+    var s = store();
+    if (s) { try { s.removeItem(POS_KEY); } catch (e) { } }
+  }
+  function restore() {
+    if (!guidePage()) return false;
+    /* 内存是本次打开的最新值；会话存储用于刷新后的同一会话。 */
+    var saved = posMem || readStore();
+    var id = guideAnchor(hashId());
+    /* 显式导航优先：只有当 URL 上的章节锚点不是上次记录时的那个，
+       才算「用户刚刚指定了章节」；否则按历史阅读位置恢复。 */
+    if (id && (!saved || saved.hash !== hashId())) {
+      var el = null;
+      try { el = document.getElementById(id); } catch (e) { el = null; }
+      if (el) { jumpTo(el); return true; }
+    }
+    if (!saved) return false;
+    var target = clampY(saved.y);
+    writeY(target);
+    settle(saved.y);   /* 记下未夹取的目标：截图占位后还要再对齐一次 */
+    return true;
+  }
+
+  function bind() {
+    if (bound) return;
+    bound = true;
+    /* 滚动时持续更新，保证刷新 / 关闭前拿到的就是最后的位置。 */
+    on(window, 'scroll', function () { if (isActive()) scheduleSave(); });
+    on(window, 'pagehide', flush);
+    on(window, 'beforeunload', flush);
+    bindImgFollow();
   }
 
   /* ══ 对外接口（测试与后续阶段复用） ════════════════════════ */
@@ -444,11 +691,34 @@
   NS.version = version;
   NS.render = render;
 
+  /* 阅读位置：由 core.js 的 navTo 调用 leave / enter，模块自己不接管导航。 */
+  NS.pos = {
+    key: POS_KEY,
+    PAGE_ID: PAGE_ID,
+    leave: function (fromPage) { if (fromPage === 'guide' || isActive()) flush(); },
+    enter: function (toPage) { if (toPage !== 'guide') return false; return restore(); },
+    save: save,
+    flush: flush,
+    restore: restore,
+    clear: clear,
+    bind: bind,
+    read: function () { return posMem; },
+    stored: readStore,
+    clamp: clampY,
+    readY: readY,
+    maxY: maxY,
+    active: isActive,
+    anchorOf: guideAnchor,
+    shotSettled: onShotSettled,
+    bindImgs: bindImgFollow
+  };
+
   function boot() {
     if (!render()) {
       /* 页面还没就绪时重试一次，避免脚本顺序造成的空挂载。 */
       setTimeout(render, 300);
     }
+    bind();
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);

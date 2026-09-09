@@ -1,7 +1,24 @@
 ﻿/* GUIDE PAGE */
 
-/* GUIDE TOC */
-.guide-toc{position:fixed;right:calc((100vw - 900px)/2 - 170px);top:50%;transform:translateY(-50%);z-index:50;width:auto;padding:16px 0 16px 18px;border-radius:0;border:none;background:none;max-height:calc(100vh - 140px);overflow-y:auto;opacity:0;pointer-events:none;transition:opacity 0.5s ease}
+/* GUIDE PAGE · P9-D 统一内容轨道 canonical content rail（只改布局与样式，不改内容/章节/截图/锚点/逻辑）
+   全页只有一条宽度来源：#page-guide 的内容盒就是 --guide-rail（908px，取自 P6 正文列宽）。
+   max-width 里的 +64px 是 .page 的左右内边距（各 32px），所以内容盒恰好等于轨道宽度。
+   直接子元素（guide-header / #guide-beginner / 中间状态条 / 技术说明 / 技术规格 / 配置要求 /
+   作者 / 版权 / credits）因此共享完全相同的 left edge 与 right edge：
+   子元素一律不再声明自己的 max-width / margin-left / padding-left；
+   确实需要更窄的行宽时，只在 section 内部再缩进，外层轨道不动。
+   约束：选择器全部以 #page-guide / #guide-toc 限定，不影响其它页面；
+        P6 指南自身的排版在 assets/css/guide-beginner.css 内。 */
+#page-guide{--guide-rail:908px;max-width:calc(var(--guide-rail) + 64px);padding-top:74px}
+#page-guide .guide-header{margin-bottom:18px;padding-bottom:12px;border-bottom:1px solid var(--border-soft)}
+#page-guide .guide-header h2{font-size:1.5rem;margin-bottom:4px;opacity:0.92}
+#page-guide .guide-header p{font-size:0.64rem;letter-spacing:0.16em;opacity:0.5}
+/* 轨道已由 #page-guide 的内容盒给出：此前并列的 1240px（页面）与 900px（非 P6 章节）两条宽度规则已删除。 */
+/* 右侧浮动 CONTENTS 退役：元素与 core.js 的 .visible 逻辑保留（深链与测试仍引用该锚点） */
+#guide-toc.visible{visibility:hidden;opacity:0;pointer-events:none}
+
+/* GUIDE TOC（已退役，见上；定位里的 908px 只是跟随同一条轨道，不影响任何显示） */
+.guide-toc{position:fixed;right:calc((100vw - 908px)/2 - 170px);top:50%;transform:translateY(-50%);z-index:50;width:auto;padding:16px 0 16px 18px;border-radius:0;border:none;background:none;max-height:calc(100vh - 140px);overflow-y:auto;opacity:0;pointer-events:none;transition:opacity 0.5s ease}
 .guide-toc.visible{opacity:1;pointer-events:auto}
 .guide-toc-title{font-family:'Cormorant Garamond',serif;font-size:1.05rem;font-weight:700;color:var(--white);letter-spacing:0.22em;margin-bottom:16px;text-transform:uppercase;opacity:1;text-shadow:0 0 16px rgba(114,168,216,0.55),0 1px 2px rgba(0,0,0,0.45)}
 .guide-toc-title::after{content:'';display:block;width:40px;height:2px;margin-top:9px;border-radius:2px;background:linear-gradient(90deg,var(--accent-light),transparent)}

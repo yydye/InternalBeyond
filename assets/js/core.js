@@ -230,6 +230,8 @@ function navTo(page){
     editorDirty=false;
   }
   if(typeof window.ibBridgeClose==='function'&&!window.ibBridgeClose(false))return;
+  /* Guide 阅读位置：离开前记录（状态由 Guide 自己持有，这里只通知一次） */
+  try{if(window.IBGuide&&IBGuide.pos&&typeof IBGuide.pos.leave==='function')IBGuide.pos.leave(currentPage)}catch(e){}
   currentPage=page;
   _annoHideAll();_annoPostId='';
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
@@ -239,6 +241,8 @@ function navTo(page){
     a.classList.toggle('active',active);
     if(active)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');
   });
+  /* Guide 阅读位置：页面已可见后同步恢复（不触发平滑滚动，也不会先闪顶部再跳下来） */
+  try{if(window.IBGuide&&IBGuide.pos&&typeof IBGuide.pos.enter==='function')IBGuide.pos.enter(page)}catch(e){}
   const ov=document.getElementById('page-overlay');
   const bgI=document.getElementById('bg-internal-img'),bgF=document.getElementById('bg-infernal-img');
   if(page!=='home'){

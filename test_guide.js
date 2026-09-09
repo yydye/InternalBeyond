@@ -381,5 +381,225 @@ check('支持宿主注入产品版本', /window\.IB_GUIDE_VERSION/.test(jsSrc));
 check('清单与默认版本一致', jsSrc.indexOf("VERSION_FALLBACK = '" + manifest.guideVersion + "'") !== -1);
 check('不把发布日期写进正文', !/20\d\d-\d\d-\d\d/.test(renderedText));
 
+/* ═══ H. 阅读位置恢复 ═════════════════════════════════════════ */
+section('阅读位置恢复（切页返回 / 显式锚点优先 / clamp）');
+
+/* H1. 与既有导航生命周期对接（静态） */
+const coreSrc = fs.readFileSync(path.join(ROOT, 'assets', 'js', 'core.js'), 'utf8').replace(/^\uFEFF/, '');
+const atLeave = coreSrc.indexOf('IBGuide.pos.leave');
+const atEnter = coreSrc.indexOf('IBGuide.pos.enter');
+const atActive = coreSrc.indexOf("classList.add('active')");
+const atPage = coreSrc.indexOf('currentPage=page');
+check('导航生命周期：离开 Guide 前记录（早于切换 currentPage）', atLeave !== -1 && atPage !== -1 && atLeave < atPage, { atLeave, atPage });
+check('导航生命周期：页面激活后恢复（同一 tick，不会先闪顶部）', atEnter !== -1 && atActive !== -1 && atEnter > atActive, { atEnter, atActive });
+check('钩子有存在性判断，不依赖模块加载顺序',
+  /window\.IBGuide&&IBGuide\.pos&&typeof IBGuide\.pos\.leave==='function'/.test(coreSrc) &&
+  /window\.IBGuide&&IBGuide\.pos&&typeof IBGuide\.pos\.enter==='function'/.test(coreSrc));
+check('恢复是同步调用，没有包在定时器 / 帧回调里',
+  !/setTimeout\([^)]*IBGuide\.pos\.enter/.test(coreSrc) && !/requestAnimationFrame\([^)]*IBGuide\.pos\.enter/.test(coreSrc));
+check('状态只用内存 + 会话级 Web Storage，不新增数据库',
+  /sessionStorage/.test(jsSrc) && !/indexedDB|openDatabase/i.test(jsSrc) && /POS_KEY = 'ib_guide_readpos'/.test(jsSrc));
+check('不接管浏览器全局滚动恢复', !/scrollRestoration/.test(jsSrc) && !/scrollRestoration/.test(coreSrc));
+check('恢复不触发平滑滚动（瞬时落点）', /scrollBehavior\s*=\s*'auto'/.test(jsSrc) && /behavior:\s*'instant'/.test(jsSrc));
+check('对异常值做 clamp：0 ≤ y ≤ scrollHeight − clientHeight',
+  /function clampY/.test(jsSrc) && /Math\.min\(v, maxY\(\)\)/.test(jsSrc) && /Math\.max\(0, h - c\)/.test(jsSrc));
+check('只作用于 guide 页，不扩散成全站 scroll 恢复',
+  /fromPage === 'guide'/.test(jsSrc) && /toPage !== 'guide'/.test(jsSrc));
+
+/* H2. 定点单元：用最小滚动环境驱动 leave / enter */
+function makeScrollEnv(seed) {
+  const d = {
+    readyState: 'complete', head: makeEl('head'), body: makeEl('body'),
+    createElement: makeEl,
+    getElementById(id) { return findById(this.body, id) || findById(this.head, id); },
+    querySelector() { return null; }, querySelectorAll() { return []; },
+    addEventListener() { }, removeEventListener() { }
+  };
+  const se = { scrollTop: 0, scrollHeight: 6000, clientHeight: 1000, style: {} };
+  d.scrollingElement = se;
+  d.documentElement = se;
+
+  const pageEl = makeEl('div'); pageEl.id = 'page-guide';
+  d.body.appendChild(pageEl);
+
+  /* 章内锚点：#gb-chat 在文档 4200 处，CSS 给了 70px 的 scroll-margin-top */
+  const chapter = makeEl('section');
+  chapter.id = 'gb-chat';
+  chapter.setAttribute('data-guide-chapter', 'chat');
+  chapter._abs = 4200; chapter._margin = 70;
+  chapter.getBoundingClientRect = () => ({ top: chapter._abs - se.scrollTop, left: 0, width: 900, height: 400 });
+  chapter.scrollIntoView = () => { se.scrollTop = Math.max(0, Math.min(chapter._abs - chapter._margin, Math.max(0, se.scrollHeight - se.clientHeight))); };
+  pageEl.appendChild(chapter);
+  pageEl.querySelectorAll = sel => (sel === '[data-guide-chapter]' ? [chapter] : []);
+
+  /* Guide 页外的锚点（右侧固定目录）——不该被当成章节深链 */
+  const outside = makeEl('div'); outside.id = 'guide-toc';
+  d.body.appendChild(outside);
+
+  const rafQ = [];
+  const mem = Object.assign({}, seed || {});
+  const box = {
+    console: { log() { }, warn() { }, error() { } },
+    setTimeout, clearTimeout, Promise, Object, Array, String, Number, Math, JSON, Date, Error, RegExp, Set, Map, isFinite,
+    document: d,
+    location: { hash: '' },
+    innerHeight: 1000,
+    requestAnimationFrame(fn) { rafQ.push(fn); return rafQ.length; },
+    scrollTo(x, y) { se.scrollTop = y; },
+    addEventListener(type, fn) { (this._ev = this._ev || {}); (this._ev[type] = this._ev[type] || []).push(fn); },
+    sessionStorage: {
+      _m: mem,
+      getItem(k) { return Object.prototype.hasOwnProperty.call(this._m, k) ? this._m[k] : null; },
+      setItem(k, v) { this._m[k] = String(v); },
+      removeItem(k) { delete this._m[k]; }
+    }
+  };
+  box.window = box;
+  Object.defineProperty(box, 'pageYOffset', { get() { return se.scrollTop; }, configurable: true });
+  vm.createContext(box);
+  new vm.Script(jsSrc, { filename: 'guide-beginner.js' }).runInContext(box);
+  return {
+    box, se, pageEl, chapter, outside,
+    pos: box.IBGuide.pos,
+    flushRaf() { let n = 0; while (rafQ.length && n++ < 8) { const q = rafQ.splice(0); q.forEach(f => f()); } },
+    storage() { return Object.assign({}, mem); }
+  };
+}
+const env = makeScrollEnv();
+const pos = env.pos;
+const se = env.se;
+check('暴露阅读位置接口', !!pos && typeof pos.leave === 'function' && typeof pos.enter === 'function' && typeof pos.clamp === 'function');
+
+/* 场景 1：滚到 60% → 切页 → 返回 */
+env.pos.clear();
+env.pageEl.classList.add('active');
+env.se.scrollTop = 3000;                     /* 可滚范围 0–4000，约 75% */
+env.pos.leave('guide');
+check('离开 Guide 时记录当前 scrollTop', !!env.pos.read() && env.pos.read().y === 3000, env.pos.read());
+env.pageEl.classList.remove('active');       /* 页面隐藏：浏览器把滚动位置夹回 0 */
+env.se.scrollTop = 0;
+env.pageEl.classList.add('active');
+env.pos.enter('guide');
+check('回到 Guide 恢复原阅读位置', env.se.scrollTop === 3000, env.se.scrollTop);
+env.flushRaf();
+check('settle 之后位置不变（无可见跳动）', env.se.scrollTop === 3000, env.se.scrollTop);
+check('恢复过程没有留下 inline scroll-behavior', env.se.scrollTop === 3000 && se.style.scrollBehavior === '' , se.style.scrollBehavior);
+
+/* 场景 2：内容变短 / 异常值一律 clamp */
+env.pos.clear();
+env.pageEl.classList.add('active');
+env.se.scrollTop = 3000; env.pos.leave('guide');
+env.se.scrollHeight = 1200;                  /* 指南变短：最大可滚 200 */
+env.se.scrollTop = 0;
+env.pos.enter('guide');
+env.flushRaf();
+check('内容变更后 clamp 到最大可滚位置', env.se.scrollTop === 200, env.se.scrollTop);
+env.se.scrollHeight = 6000;
+check('clamp：负值 / NaN → 0，超界 → 最大值',
+  env.pos.clamp(-50) === 0 && env.pos.clamp(NaN) === 0 && env.pos.clamp(1e9) === 5000, [env.pos.clamp(-50), env.pos.clamp(NaN), env.pos.clamp(1e9)]);
+env.box.sessionStorage.setItem(env.pos.key, JSON.stringify({ y: 'oops' }));
+check('存储里的非法值被丢弃', env.pos.stored() === null, env.pos.stored());
+env.box.sessionStorage.setItem(env.pos.key, '{broken');
+check('存储里的坏 JSON 被丢弃', env.pos.stored() === null);
+
+/* 场景 3：显式章节深链优先于历史位置 */
+env.pos.clear();
+env.box.location.hash = '';
+env.pageEl.classList.add('active');
+env.se.scrollTop = 3000; env.pos.leave('guide');
+env.pageEl.classList.remove('active');
+env.box.location.hash = '#gb-chat';          /* 用户明确点了章节目录 */
+env.se.scrollTop = 0;
+env.pageEl.classList.add('active');
+env.pos.enter('guide');
+check('显式章节深链优先，跳到该章节而不是恢复旧位置', env.se.scrollTop === 4130, env.se.scrollTop);
+env.flushRaf();
+check('深链落点尊重 scroll-margin-top 且保持稳定', env.se.scrollTop === 4130, env.se.scrollTop);
+
+/* 场景 4：URL 上还是同一个锚点（不是新的显式导航）→ 按阅读位置恢复 */
+env.pos.clear();
+env.box.location.hash = '#gb-chat';
+env.pageEl.classList.add('active');
+env.se.scrollTop = 4200; env.pos.leave('guide');
+check('快照里记下可识别章节', !!env.pos.read() && env.pos.read().anchor === 'gb-chat', env.pos.read());
+env.pageEl.classList.remove('active');
+env.se.scrollTop = 0;
+env.pageEl.classList.add('active');
+env.pos.enter('guide');
+env.flushRaf();
+check('同一个锚点不算新的显式导航，仍按阅读位置恢复', env.se.scrollTop === 4200, env.se.scrollTop);
+
+/* 场景 5：Guide 页外的锚点（右侧固定目录）不触发跳转 */
+env.pos.clear();
+env.box.location.hash = '';
+env.pageEl.classList.add('active');
+env.se.scrollTop = 1800; env.pos.leave('guide');
+env.pageEl.classList.remove('active');
+env.box.location.hash = '#guide-toc';
+env.se.scrollTop = 0;
+env.pageEl.classList.add('active');
+env.pos.enter('guide');
+env.flushRaf();
+check('#page-guide 之外的锚点不算章节深链', env.se.scrollTop === 1800, env.se.scrollTop);
+check('页外锚点识别返回空', env.pos.anchorOf('guide-toc') === '' && env.pos.anchorOf('gb-chat') === 'gb-chat', [env.pos.anchorOf('guide-toc'), env.pos.anchorOf('gb-chat')]);
+
+/* 场景 6：其它页面不参与 */
+env.pos.clear();
+env.box.location.hash = '';
+env.pageEl.classList.remove('active');
+env.se.scrollTop = 1200;
+env.pos.leave('chat');
+check('离开非 Guide 页面不记录', env.pos.read() === null);
+env.box.location.hash = '#gb-chat';
+env.se.scrollTop = 700;
+check('进入非 Guide 页面不恢复', env.pos.enter('chat') === false && env.se.scrollTop === 700, env.se.scrollTop);
+
+/* 场景 7：没有历史位置时保持原地 */
+env.pos.clear();
+env.box.location.hash = '';
+env.pageEl.classList.add('active');
+env.se.scrollTop = 640;
+check('没有历史位置时保持原地（不强制回顶部）', env.pos.enter('guide') === false && env.se.scrollTop === 640, env.se.scrollTop);
+
+/* 场景 8：误刷新（同会话新实例 + 同一份会话存储） */
+env.pos.clear();
+env.box.location.hash = '';
+env.pageEl.classList.add('active');
+env.se.scrollTop = 2200; env.pos.leave('guide');
+const seeded = env.storage();
+check('会话级存储写入了快照', !!seeded[env.pos.key] && JSON.parse(seeded[env.pos.key]).y === 2200, seeded[env.pos.key]);
+const env2 = makeScrollEnv(seeded);
+env2.pageEl.classList.add('active');
+env2.pos.enter('guide');
+env2.flushRaf();
+check('刷新后同一会话内仍能恢复阅读位置', env2.se.scrollTop === 2200, env2.se.scrollTop);
+check('刷新后仍不触发平滑滚动', env2.se.style.scrollBehavior === '', env2.se.style.scrollBehavior);
+
+/* 场景 9：会话存储不可用时退化为纯内存 */
+const env3 = makeScrollEnv();
+delete env3.box.sessionStorage;
+env3.pageEl.classList.add('active');
+env3.se.scrollTop = 1500; env3.pos.leave('guide');
+env3.pageEl.classList.remove('active'); env3.se.scrollTop = 0; env3.pageEl.classList.add('active');
+env3.pos.enter('guide');
+env3.flushRaf();
+check('会话存储不可用时用内存仍然恢复', env3.se.scrollTop === 1500, env3.se.scrollTop);
+
+/* 场景 10：刷新后截图尚未占位 —— 先夹到当前可用范围，图片占位后再对齐 */
+const env4 = makeScrollEnv();
+env4.pageEl.classList.add('active');
+env4.se.scrollHeight = 2000;                 /* 截图还没占位：文档比真实高度短 */
+env4.box.sessionStorage.setItem(env4.pos.key, JSON.stringify({ v: 1, y: 3000, anchor: 'gb-chat', hash: '', h: 5000, t: 1 }));
+env4.pos.restore();
+env4.flushRaf();
+check('截图未占位时先夹到当前可用范围（不恢复到不存在的位置）', env4.se.scrollTop === 1000, env4.se.scrollTop);
+env4.se.scrollHeight = 6000;                 /* 截图占位，文档回到真实高度 */
+env4.pos.shotSettled();
+check('截图占位后把落点对齐回原目标', env4.se.scrollTop === 3000, env4.se.scrollTop);
+env4.se.scrollTop = 800;                     /* 用户自己滚走了 */
+env4.se.scrollHeight = 7000;
+env4.pos.shotSettled();
+check('用户自己滚动后不再纠正（不抢用户的位置）', env4.se.scrollTop === 800, env4.se.scrollTop);
+
 console.log('\n结果: ' + passed + ' 通过, ' + failures + ' 失败');
 process.exitCode = failures ? 1 : 0;
