@@ -6,10 +6,12 @@
          不生成角色回复、失败一律 null（绝不重试、绝不影响聊天）。
    默认关闭（middleBrainJudgeEnabled=false）；关闭时 Phase 2 行为完全不变。
    拆分只动位置，不改逻辑。
+   P11-1B：本层只读 MBC.config / MBC.policy / MBC.astra（上游契约）；对外唯一出口 = MBC.judge（冻结）。
    ==================================================================== */
-(function (NS) {
+(function (root) {
   'use strict';
-  var root = typeof self !== 'undefined' ? self : globalThis;
+  var MBC = (root.IB = root.IB || {}).__middleBrainContracts || (root.IB.__middleBrainContracts = {});
+  var CFG = MBC.config, POL = MBC.policy, ASTRA = MBC.astra;   /* contract 依赖：config / policy / astra（只读） */
   /* ====================================================================
      Middle Brain Phase 3 · Astra Context Judge（只读质量评估 / observe）
      --------------------------------------------------------------------
@@ -54,7 +56,7 @@
     last: null /* 最近一次数值快照（不含用户内容/API Key） */
   };
   function middleBrainJudgeEnabled() {
-    try { return NS.getMiddleBrainConfig().then(function (c) { return !!(c && c.middleBrainJudgeEnabled === true); }); } catch (e) { return Promise.resolve(false); }
+    try { return CFG.getMiddleBrainConfig().then(function (c) { return !!(c && c.middleBrainJudgeEnabled === true); }); } catch (e) { return Promise.resolve(false); }
   }
   function _mbStrArr(v) { return Array.isArray(v) ? v.map(function (x) { return String(x); }).filter(function (x) { return x; }) : []; }
   /* 解析 + 校验 Judge JSON：clamp 0..1，白名单字段，异常/非 JSON → null。 */
@@ -68,21 +70,21 @@
       if (!obj || typeof obj !== 'object') return null;
       var c = obj.contradiction || {};
       return {
-        relevance: NS._mbClamp01(Number(obj.relevance)),
+        relevance: POL._mbClamp01(Number(obj.relevance)),
         contradiction: { detected: !!(c.detected), items: _mbStrArr(c.items) },
         stale: _mbStrArr(obj.stale),
         duplicate: _mbStrArr(obj.duplicate),
         missing_context: _mbStrArr(obj.missing_context),
-        current_turn_coverage: NS._mbClamp01(Number(obj.current_turn_coverage)),
-        compression_quality: NS._mbClamp01(Number(obj.compression_quality)),
-        overall: NS._mbClamp01(Number(obj.overall)),
+        current_turn_coverage: POL._mbClamp01(Number(obj.current_turn_coverage)),
+        compression_quality: POL._mbClamp01(Number(obj.compression_quality)),
+        overall: POL._mbClamp01(Number(obj.overall)),
         warnings: _mbStrArr(obj.warnings)
       };
     } catch (e) { return null; }
   }
   /* Judge 专用请求体：复用现有 Responses 归一，仅替换 structured-output schema（不重实现 HTTP/鉴权）。 */
   async function _mbBuildJudgeRequest(prompt, options) {
-    var base = await NS.buildMiddleBrainResponsesRequest(null, prompt, { maxTokens: options.maxTokens || 900, jsonMode: true });
+    var base = await ASTRA.buildMiddleBrainResponsesRequest(null, prompt, { maxTokens: options.maxTokens || 900, jsonMode: true });
     base.body.text = { format: { type: 'json_schema', name: 'context_quality_report', schema: MB_JUDGE_SCHEMA } };
     return base;
   }
@@ -110,8 +112,8 @@
     try {
       /* disabled → 完全不调用 Judge（不计 telemetry，恢复 Phase 2 行为） */
       if (!(await middleBrainJudgeEnabled())) return null;
-      if (!(await NS.middleBrainReady())) return null;
-      var cfg = await NS.getMiddleBrainConfig();
+      if (!(await CFG.middleBrainReady())) return null;
+      var cfg = await CFG.getMiddleBrainConfig();
       var t0 = Date.now();
       _mbJudgeTelemetry.attempted++;
       var prompt = _mbBuildJudgePrompt(organized, compressedContext, userMessage);
@@ -130,7 +132,7 @@
       var data = await res.json().catch(function () { return null; });
       if (!data) return null;
       var parsed = null;
-      try { var _a = NS.adapter(); if (_a && typeof _a.parseResponsesResponse === 'function') parsed = _a.parseResponsesResponse(data, null, {}); } catch (e) { parsed = null; }
+      try { var _a = ASTRA.adapter(); if (_a && typeof _a.parseResponsesResponse === 'function') parsed = _a.parseResponsesResponse(data, null, {}); } catch (e) { parsed = null; }
       if (!parsed) parsed = { content: '', reasoning: '', truncated: false, usage: null };
       if (!parsed.content) return null;
       var report = _mbParseJudgeJson(parsed.content);
@@ -159,12 +161,14 @@
   function middleBrainJudgeTelemetry() { return _mbJudgeTelemetry; }
   function middleBrainJudgeReset() { _mbJudgeTelemetry.attempted = 0; _mbJudgeTelemetry.success = 0; _mbJudgeTelemetry.failed = 0; _mbJudgeTelemetry.totalLatencyMs = 0; _mbJudgeTelemetry.overallSum = 0; _mbJudgeTelemetry.contradictionDetected = 0; _mbJudgeTelemetry.missingTotal = 0; _mbJudgeTelemetry.staleTotal = 0; _mbJudgeTelemetry.duplicateTotal = 0; _mbJudgeTelemetry.currentTurnCoverageSum = 0; _mbJudgeTelemetry.last = null; }
 
-  /* —— 注册到 IB.__middleBrain（内部装配点，非公开契约）—— */
-  NS.middleBrainAstraJudge = middleBrainAstraJudge;
-  NS.middleBrainJudgeEnabled = middleBrainJudgeEnabled;
-  NS.middleBrainJudgeTelemetry = middleBrainJudgeTelemetry;
-  NS.middleBrainJudgeReset = middleBrainJudgeReset;
-  NS._mbParseJudgeJson = _mbParseJudgeJson;
-  NS.MB_JUDGE_SCHEMA = MB_JUDGE_SCHEMA;
-  NS.MB_JUDGE_TIMEOUT_MS = MB_JUDGE_TIMEOUT_MS;
-})((function (r) { var ib = r.IB || (r.IB = {}); return ib.__middleBrain || (ib.__middleBrain = {}); })(typeof self !== 'undefined' ? self : globalThis));
+  /* —— layer contract（P11-1B）：judge 层唯一出口，冻结后下游只读 —— */
+  MBC.judge = Object.freeze({
+    middleBrainAstraJudge: middleBrainAstraJudge,
+    middleBrainJudgeEnabled: middleBrainJudgeEnabled,
+    middleBrainJudgeTelemetry: middleBrainJudgeTelemetry,
+    middleBrainJudgeReset: middleBrainJudgeReset,
+    _mbParseJudgeJson: _mbParseJudgeJson,
+    MB_JUDGE_SCHEMA: MB_JUDGE_SCHEMA,
+    MB_JUDGE_TIMEOUT_MS: MB_JUDGE_TIMEOUT_MS
+  });
+})(typeof self !== 'undefined' ? self : globalThis);

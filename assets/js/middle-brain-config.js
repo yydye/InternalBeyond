@@ -10,9 +10,12 @@
    拆分只动位置，不改逻辑；window.* / _middleBrain 兼容符号由 middle-brain.js 代理。
    加载顺序：middle-brain-config.js → middle-brain-policy.js → middle-brain-astra.js
              → middle-brain-judge.js → middle-brain.js
+   P11-1B：本层对外只经 MBC.config（冻结契约）暴露，不依赖任何其它层（DAG 起点）。
    ==================================================================== */
-(function (NS) {
+(function (root) {
   'use strict';
+  /* layer contract 登记处（P11-1B）：每层只向自己的键写入一个冻结契约对象。 */
+  var MBC = (root.IB = root.IB || {}).__middleBrainContracts || (root.IB.__middleBrainContracts = {});
   var KEY = 'middle_brain';
   var MB_DEFAULTS = {
     enabled: false,
@@ -340,24 +343,27 @@
     }).catch(function () {});
   }
 
-  /* —— 注册到 IB.__middleBrain（内部装配点，非公开契约）—— */
-  NS.getMiddleBrainConfig = getMiddleBrainConfig;
-  NS.saveMiddleBrainConfig = saveMiddleBrainConfig;
-  NS.isMiddleBrainEnabled = isMiddleBrainEnabled;
-  NS.middleBrainReady = middleBrainReady;
-  NS.getMiddleBrainSystemPrompt = getMiddleBrainSystemPrompt;
-  NS.normalizeMiddleBrainReasoningEffort = normalizeMiddleBrainReasoningEffort;
-  NS.normalizeMiddleBrainSpeed = normalizeMiddleBrainSpeed;
-  NS.saveMiddleBrainConfigUI = saveMiddleBrainConfigUI;
-  NS.loadMiddleBrainConfigUI = loadMiddleBrainConfigUI;
-  NS.mbReasoningPick = mbReasoningPick;
-  NS.mbSpeedPick = mbSpeedPick;
-  NS.mbModelPick = mbModelPick;
-  NS.mbModelStep = mbModelStep;
-  NS._mbReadReasoning = _mbReadReasoning;
-  NS._mbReadSpeed = _mbReadSpeed;
-  NS._mbReadModel = _mbReadModel;
-
-  /* 内部共享（同层其它 part 使用，不进入 window/_middleBrain 契约） */
-  NS.MB_SYSTEM_PROMPT = MB_SYSTEM_PROMPT;
-})((function (r) { var ib = r.IB || (r.IB = {}); return ib.__middleBrain || (ib.__middleBrain = {}); })(typeof self !== 'undefined' ? self : globalThis));
+  /* —— layer contract（P11-1B）：config 层唯一出口，冻结后下游只读 —— */
+  MBC.config = Object.freeze({
+    /* 配置读写 + 就绪判定 */
+    getMiddleBrainConfig: getMiddleBrainConfig,
+    saveMiddleBrainConfig: saveMiddleBrainConfig,
+    isMiddleBrainEnabled: isMiddleBrainEnabled,
+    middleBrainReady: middleBrainReady,
+    getMiddleBrainSystemPrompt: getMiddleBrainSystemPrompt,
+    MB_SYSTEM_PROMPT: MB_SYSTEM_PROMPT,   /* astra 注入 system 的只读常量 */
+    /* Phase 4 · 推理强度 / 速度归一 */
+    normalizeMiddleBrainReasoningEffort: normalizeMiddleBrainReasoningEffort,
+    normalizeMiddleBrainSpeed: normalizeMiddleBrainSpeed,
+    /* 设置卡片 UI */
+    saveMiddleBrainConfigUI: saveMiddleBrainConfigUI,
+    loadMiddleBrainConfigUI: loadMiddleBrainConfigUI,
+    mbReasoningPick: mbReasoningPick,
+    mbSpeedPick: mbSpeedPick,
+    mbModelPick: mbModelPick,
+    mbModelStep: mbModelStep,
+    _mbReadReasoning: _mbReadReasoning,
+    _mbReadSpeed: _mbReadSpeed,
+    _mbReadModel: _mbReadModel
+  });
+})(typeof self !== 'undefined' ? self : globalThis);

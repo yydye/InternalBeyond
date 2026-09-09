@@ -7,10 +7,12 @@
      3. Astra 调用 + 结构化 JSON 解析 + 安全校验（失败一律返回 null）
    不含：配置 UI、本地压缩、Admission Gate、Judge。
    拆分只动位置，不改逻辑。
+   P11-1B：本层只读 MBC.config / MBC.policy（上游契约）；对外唯一出口 = MBC.astra（冻结）。
    ==================================================================== */
-(function (NS) {
+(function (root) {
   'use strict';
-  var root = typeof self !== 'undefined' ? self : globalThis;
+  var MBC = (root.IB = root.IB || {}).__middleBrainContracts || (root.IB.__middleBrainContracts = {});
+  var CFG = MBC.config, POL = MBC.policy;   /* contract 依赖：config / policy（DAG 上游，只读） */
   /* 归一：adapter 解析（运行时已加载 ib-model-core.js；缺失则回落内置 openai 归一） */
   function adapter() {
     try { if (root.IBModelCore && root.IBModelCore.AstraAdapter) return root.IBModelCore.AstraAdapter; } catch (e) {}
@@ -21,23 +23,23 @@
      供后续 Middle Brain 接入复用；不在此处发起 fetch（保留独立调用权给中间层）。 */
   async function buildMiddleBrainRequest(spec, prompt, options) {
     var a = adapter();
-    var cfg = spec || (await NS.getMiddleBrainConfig());
+    var cfg = spec || (await CFG.getMiddleBrainConfig());
     /* Middle Brain 系统提示词：缺省注入引擎内部的认知约束（用户不可修改）；
        调用方若显式传入 system 则尊重之（覆盖），否则使用 config 层的 MB_SYSTEM_PROMPT。 */
     var effPrompt = prompt;
     if (effPrompt && effPrompt.messages !== undefined && !effPrompt.system) {
-      effPrompt = { system: NS.MB_SYSTEM_PROMPT, messages: effPrompt.messages };
+      effPrompt = { system: CFG.MB_SYSTEM_PROMPT, messages: effPrompt.messages };
     } else if (effPrompt && effPrompt.messages === undefined && Array.isArray(effPrompt)) {
       var hasSys = effPrompt.some(function (m) { return m && m.role === 'system'; });
-      if (!hasSys) effPrompt = [{ role: 'system', content: NS.MB_SYSTEM_PROMPT }].concat(effPrompt);
+      if (!hasSys) effPrompt = [{ role: 'system', content: CFG.MB_SYSTEM_PROMPT }].concat(effPrompt);
     }
     if (a && typeof a.buildRequest === 'function') {
       var r = a.buildRequest(cfg, effPrompt, options || {});
       return { endpoint: cfg.endpoint, headers: Object.assign({ 'Content-Type': 'application/json' }, (r.headers || {})), body: r.body };
     }
     /* 回落：内置 openai-兼容归一（无 astra adapter 时也能用） */
-    var p = (effPrompt && effPrompt.messages !== undefined ? effPrompt : { system: NS.MB_SYSTEM_PROMPT, messages: effPrompt || [] });
-    var model = cfg.model, ps = (p.system || NS.MB_SYSTEM_PROMPT), msgs = Array.isArray(p.messages) ? p.messages : [];
+    var p = (effPrompt && effPrompt.messages !== undefined ? effPrompt : { system: CFG.MB_SYSTEM_PROMPT, messages: effPrompt || [] });
+    var model = cfg.model, ps = (p.system || CFG.MB_SYSTEM_PROMPT), msgs = Array.isArray(p.messages) ? p.messages : [];
     var body = { model: model, messages: [{ role: 'system', content: ps }].concat(msgs), max_tokens: (options && options.maxTokens) || 512 };
     if (options && options.jsonMode) body.response_format = { type: 'json_object' };
     if (cfg.temperature != null) body.temperature = Number(cfg.temperature);
@@ -47,7 +49,7 @@
   /* —— 归一响应（委托 AstraAdapter.parseResponse → {content, reasoning, truncated, usage}） —— */
   async function parseMiddleBrainResponse(wire, spec, options) {
     var a = adapter();
-    var cfg = spec || (await NS.getMiddleBrainConfig());
+    var cfg = spec || (await CFG.getMiddleBrainConfig());
     if (a && typeof a.parseResponse === 'function') {
       return a.parseResponse(wire, cfg, options || {});
     }
@@ -66,11 +68,11 @@
      绝不用 temperature / top_p / logprobs / reasoning_effort。 */
   async function buildMiddleBrainResponsesRequest(spec, prompt, options) {
     var a = adapter();
-    var cfg = spec || (await NS.getMiddleBrainConfig());
+    var cfg = spec || (await CFG.getMiddleBrainConfig());
     options = options || {};
     /* Phase 4：从配置归一推理强度/速度（显式 options 覆盖 > 配置 > 默认）。 */
-    var effort = NS.normalizeMiddleBrainReasoningEffort(options.reasoningEffort != null ? options.reasoningEffort : cfg.reasoningEffort);
-    var speed = NS.normalizeMiddleBrainSpeed(options.speed != null ? options.speed : cfg.speed);
+    var effort = CFG.normalizeMiddleBrainReasoningEffort(options.reasoningEffort != null ? options.reasoningEffort : cfg.reasoningEffort);
+    var speed = CFG.normalizeMiddleBrainSpeed(options.speed != null ? options.speed : cfg.speed);
     var reqOptions = Object.assign({}, options, { reasoningEffort: effort });
     if (a && typeof a.buildResponsesRequest === 'function') {
       var r = a.buildResponsesRequest(cfg, prompt, reqOptions);
@@ -81,18 +83,18 @@
     }
     /* 回落：无 Responses API adapter → 走旧 openai-compat（保可用性，聊天不破）。
        Chat Completions 用 max_tokens / temperature，无 service_tier；仍可带 reasoning.effort。 */
-    return await NS.buildMiddleBrainRequest(cfg, prompt, reqOptions);
+    return await buildMiddleBrainRequest(cfg, prompt, reqOptions);
   }
 
   /* —— OpenAI Responses API · Middle Brain 专用 parser（委托 AstraAdapter）—— */
   async function parseMiddleBrainResponsesResponse(wire, spec) {
     var a = adapter();
-    var cfg = spec || (await NS.getMiddleBrainConfig());
+    var cfg = spec || (await CFG.getMiddleBrainConfig());
     if (a && typeof a.parseResponsesResponse === 'function') {
       return a.parseResponsesResponse(wire, cfg, {});
     }
     /* 回落：Chat Completions 解析（保可用性） */
-    return await NS.parseMiddleBrainResponse(wire, cfg, {});
+    return await parseMiddleBrainResponse(wire, cfg, {});
   }
 
   /* ====================================================================
@@ -150,8 +152,8 @@
   async function middleBrainAstraInvoke(characterId, userMessage, opts) {
     opts = opts || {};
     try {
-      if (!(await NS.middleBrainReady())) return null;
-      var organized = await NS.middleBrainOrganizeContext(characterId, userMessage, opts);
+      if (!(await CFG.middleBrainReady())) return null;
+      var organized = await POL.middleBrainOrganizeContext(characterId, userMessage, opts);
       var hasAnything = organized.memory.length || organized.understanding.length || organized.threads.length || organized.moments.length || (organized.dialogue && organized.dialogue.length);
       if (!hasAnything) return { structured: organized, compressedContext: '', stats: { empty: true }, source: 'astra', keep: [], merge: [], drop: [] };
 
@@ -169,9 +171,9 @@
         + '只输出 JSON：{"keep":["保留条目..."],"merge":[{"from":"条目","into":"条目"}],"drop":["应删条目..."],"compressedContext":"合并整理后的精简上下文（含必要的事实、关系、状态、未完成线索；当前对话完整）","currentKept":true}\n'
         + '【上下文】\n' + ctxBlocks.join('\n\n');
       var messages = [{ role: 'user', content: userPrompt }];
-      var cfg = await NS.getMiddleBrainConfig();
+      var cfg = await CFG.getMiddleBrainConfig();
       /* Responses API 请求：优先 buildResponsesRequest；失败回落 Chat Completions（保聊天不破）。 */
-      var req = await NS.buildMiddleBrainResponsesRequest(null, messages, { maxTokens: 1600, jsonMode: true });
+      var req = await buildMiddleBrainResponsesRequest(null, messages, { maxTokens: 1600, jsonMode: true });
       /* 若用户自定义了 endpoint 且非 responses 路径，仍尊重用户配置（不硬编码覆盖） */
       if (req && cfg.endpoint) req.endpoint = cfg.endpoint;
 
@@ -217,15 +219,18 @@
     } catch (e) { return null; }   /* 超时/网络/校验失败 → fallback */
   }
 
-  /* —— 注册到 IB.__middleBrain（内部装配点，非公开契约）—— */
-  NS.buildMiddleBrainRequest = buildMiddleBrainRequest;
-  NS.buildMiddleBrainResponsesRequest = buildMiddleBrainResponsesRequest;
-  NS.parseMiddleBrainResponsesResponse = parseMiddleBrainResponsesResponse;
-  NS.parseMiddleBrainResponse = parseMiddleBrainResponse;
-  NS.middleBrainAstraInvoke = middleBrainAstraInvoke;
-  NS._mbParseAstraJson = _mbParseAstraJson;
-  NS.MB_ASTRA_TIMEOUT_MS = MB_ASTRA_TIMEOUT_MS;
-
-  /* 内部共享（同层其它 part 使用，不进入 window/_middleBrain 契约） */
-  NS.adapter = adapter;
-})((function (r) { var ib = r.IB || (r.IB = {}); return ib.__middleBrain || (ib.__middleBrain = {}); })(typeof self !== 'undefined' ? self : globalThis));
+  /* —— layer contract（P11-1B）：astra 层唯一出口，冻结后下游只读 —— */
+  MBC.astra = Object.freeze({
+    /* 请求 / 响应归一 */
+    buildMiddleBrainRequest: buildMiddleBrainRequest,
+    buildMiddleBrainResponsesRequest: buildMiddleBrainResponsesRequest,
+    parseMiddleBrainResponsesResponse: parseMiddleBrainResponsesResponse,
+    parseMiddleBrainResponse: parseMiddleBrainResponse,
+    /* Astra 调用 + 结构化解析 */
+    middleBrainAstraInvoke: middleBrainAstraInvoke,
+    _mbParseAstraJson: _mbParseAstraJson,
+    MB_ASTRA_TIMEOUT_MS: MB_ASTRA_TIMEOUT_MS,
+    /* judge 复用（Responses 解析器） */
+    adapter: adapter
+  });
+})(typeof self !== 'undefined' ? self : globalThis);

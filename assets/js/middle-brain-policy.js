@@ -7,10 +7,13 @@
      3. Admission Gate（是否值得花一次 Astra 调用的成本闸门；无 LLM）
    不含：配置 UI、Astra 传输、Judge。gate 状态仍为纯内存 MB_GATE_STATE（不落盘）。
    拆分只动位置，不改逻辑。
+   P11-1B：本层只读 MBC.config（上游契约）；对外唯一出口 = MBC.policy（冻结）。
+   同层内部函数直接调用，不再绕共享隐式 namespace。
    ==================================================================== */
-(function (NS) {
+(function (root) {
   'use strict';
-  var root = typeof self !== 'undefined' ? self : globalThis;
+  var MBC = (root.IB = root.IB || {}).__middleBrainContracts || (root.IB.__middleBrainContracts = {});
+  var CFG = MBC.config;   /* contract 依赖：config（DAG 上游，只读） */
   /* ====================================================================
      Middle Brain v0 · Context Organization + Compression（独立 pipeline）
      --------------------------------------------------------------------
@@ -185,12 +188,12 @@
      空上下文 / Astra 不可用 → 安全回落（返回组织后的原样，不丢信息）。 */
   async function middleBrainContextPipeline(characterId, userMessage, opts) {
     opts = opts || {};
-    var organized = await NS.middleBrainOrganizeContext(characterId, userMessage, opts);
+    var organized = await middleBrainOrganizeContext(characterId, userMessage, opts);
     var hasAnything = organized.memory.length || organized.understanding.length || organized.threads.length || organized.moments.length || (opts.dialogue && opts.dialogue.length);
     if (!hasAnything) {
       return { structured: organized, compressedContext: '', stats: { totalChars: 0, compressedChars: 0, droppedChars: 0, deduped: 0, categories: 0, empty: true, fallback: false } };
     }
-    var compressed = NS.middleBrainCompressContext(organized, opts);
+    var compressed = middleBrainCompressContext(organized, opts);
     compressed.stats.empty = false;
     return { structured: organized, compressedContext: compressed.compressedContext, stats: compressed.stats };
   }
@@ -289,7 +292,7 @@
      支持 opts.organized 复用（测试/接入方），否则组织一次。 */
   async function _mbAnalyzeSignals(characterId, userMessage, opts, cfg) {
     opts = opts || {};
-    var organized = opts.organized || await NS.middleBrainOrganizeContext(characterId, userMessage, opts);
+    var organized = opts.organized || await middleBrainOrganizeContext(characterId, userMessage, opts);
     var dialogueArr = (
       organized && Array.isArray(organized.dialogue) && organized.dialogue.length
     ) ? organized.dialogue : (userMessage ? [userMessage] : []);
@@ -305,7 +308,7 @@
     /* 本地压缩比例：越低 = 被压缩/冗余越多 = 越值得 Astra 语义整理 */
     var local, total = 0, comp = 0, deduped = 0;
     try {
-      local = NS.middleBrainCompressContext(organized, opts);
+      local = middleBrainCompressContext(organized, opts);
       total = (local && local.stats && local.stats.totalChars) || 0;
       comp = (local && local.stats && local.stats.compressedChars) || 0;
       deduped = (local && local.stats && local.stats.deduped) || 0;
@@ -339,12 +342,12 @@
      - Astra 未就绪 → NO（本地压缩，不打 Astra）。
      - opts.signals 可注入（确定性测试）；opts.now / opts.state 可注入。 */
   async function middleBrainAdmissionGate(characterId, userMessage, opts, cfg) {
-    opts = opts || {}; cfg = cfg || await NS.getMiddleBrainConfig();
+    opts = opts || {}; cfg = cfg || await CFG.getMiddleBrainConfig();
     var now = (opts.now != null ? opts.now : Date.now());
     /* feature flag 完全关闭 → 恢复 Phase 1（永远尝试 Astra） */
     if (cfg.admissionEnabled === false) return { useAstra: true, reason: 'gate_disabled', signals: {} };
     /* Astra 未配置/未启用 → 无 Astra 可用 → 本地压缩 */
-    if (!(await NS.middleBrainReady())) return { useAstra: false, reason: 'astra_not_ready', signals: {} };
+    if (!(await CFG.middleBrainReady())) return { useAstra: false, reason: 'astra_not_ready', signals: {} };
     var signals = opts.signals || await _mbAnalyzeSignals(characterId, userMessage, opts, cfg);
     var state = opts.state ? opts.state : (_mbGateState(String(characterId)) || {});
     /* 时间型信号：距离上次 Astra 调用 / 长时间离开后重进 */
@@ -368,19 +371,22 @@
     };
   }
 
-  /* —— 注册到 IB.__middleBrain（内部装配点，非公开契约）—— */
-  NS.middleBrainOrganizeContext = middleBrainOrganizeContext;
-  NS.middleBrainCompressContext = middleBrainCompressContext;
-  NS.middleBrainContextPipeline = middleBrainContextPipeline;
-  NS.middleBrainPipelineAvailable = middleBrainPipelineAvailable;
-  NS.middleBrainAdmissionGate = middleBrainAdmissionGate;
-  NS.middleBrainAdmissionGateReset = middleBrainAdmissionGateReset;
-  NS._mbAnalyzeSignals = _mbAnalyzeSignals;
-  NS._mbDecisionFromSignals = _mbDecisionFromSignals;
-  NS._mbGateScore = _mbGateScore;
-  NS.MB_GATE_DEFAULTS = MB_GATE_DEFAULTS;
-  NS.MB_CTX_DEFAULT_BUDGET = MB_CTX_DEFAULT_BUDGET;
-
-  /* 内部共享（同层其它 part 使用，不进入 window/_middleBrain 契约） */
-  NS._mbClamp01 = _mbClamp01;
-})((function (r) { var ib = r.IB || (r.IB = {}); return ib.__middleBrain || (ib.__middleBrain = {}); })(typeof self !== 'undefined' ? self : globalThis));
+  /* —— layer contract（P11-1B）：policy 层唯一出口，冻结后下游只读 —— */
+  MBC.policy = Object.freeze({
+    /* Context Organization + local Compression */
+    middleBrainOrganizeContext: middleBrainOrganizeContext,
+    middleBrainCompressContext: middleBrainCompressContext,
+    middleBrainContextPipeline: middleBrainContextPipeline,
+    middleBrainPipelineAvailable: middleBrainPipelineAvailable,
+    MB_CTX_DEFAULT_BUDGET: MB_CTX_DEFAULT_BUDGET,
+    /* Phase 2 · Admission Gate */
+    middleBrainAdmissionGate: middleBrainAdmissionGate,
+    middleBrainAdmissionGateReset: middleBrainAdmissionGateReset,
+    _mbAnalyzeSignals: _mbAnalyzeSignals,
+    _mbDecisionFromSignals: _mbDecisionFromSignals,
+    _mbGateScore: _mbGateScore,
+    MB_GATE_DEFAULTS: MB_GATE_DEFAULTS,
+    /* judge 复用（数值 clamp） */
+    _mbClamp01: _mbClamp01
+  });
+})(typeof self !== 'undefined' ? self : globalThis);

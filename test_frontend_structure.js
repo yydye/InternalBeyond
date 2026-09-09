@@ -321,10 +321,12 @@ const decisionLeaks = [['agent-runtime.js', rtText], ['communication.js', comMai
   .map(([rel]) => rel);
 check('provider.noDecisionInConsumers', decisionLeaks.length === 0, '这些文件复制了 canonical 决策体: ' + decisionLeaks.join(', '));
 
-/* ── Middle Brain 分层守卫（P11-1A 物理拆分）─────────────────────────────
-   实现拆成 config / policy / astra / judge 四层 + thin facade，职责不再混在一个文件。
-   本守卫是拆分的锁：文件缺失、层间串味、window 兼容符号被删、local fallback 开始注入、
-   Gate 落盘、Judge 默认开启、或出现新的生产消费者，都会失败。 */
+/* ── Middle Brain 分层 + 层契约守卫（P11-1A 物理拆分 / P11-1B 内部契约）──
+   实现拆成 config / policy / astra / judge 四层 + thin facade，职责不再混在一个文件；
+   层间只经 IB.__middleBrainContracts 上的冻结契约通信（单向 DAG），不再共享可写 namespace。
+   本守卫是契约的锁：文件缺失、层间串味、契约未冻结、跨层读越界或读到未声明符号、
+   window 兼容符号 / 公共 API 变化、local fallback 开始注入、Gate 落盘、
+   Judge 默认开启、或出现新的生产消费者，都会失败。 */
 const mbLayerFiles = ['middle-brain-config.js', 'middle-brain-policy.js', 'middle-brain-astra.js',
   'middle-brain-judge.js', 'middle-brain.js'];
 const mbTexts = {};
@@ -349,6 +351,59 @@ const mbLayerBad = Object.entries(mbLayerSymbols)
   .filter(([name, res]) => res.some(re => !re.test(mbTexts[name])))
   .map(([name]) => name);
 check('middleBrain.layerSplit', mbLayerBad.length === 0, '分层职责缺失或混回单文件: ' + mbLayerBad.join(', '));
+/* P11-1B · 层契约：每层只向自己的键写入一个冻结对象，契约出口唯一。 */
+const mbContractLayer = { 'middle-brain-config.js': 'config', 'middle-brain-policy.js': 'policy',
+  'middle-brain-astra.js': 'astra', 'middle-brain-judge.js': 'judge' };
+function mbContractKeys(text, layer) {
+  const m = text.match(new RegExp('MBC\\.' + layer + ' = Object\\.freeze\\(\\{([\\s\\S]*?)\\n  \\}\\);'));
+  if (!m) return null;
+  return (m[1].match(/^\s{4}(\w+):/gm) || []).map(s => s.trim().replace(/:$/, ''));
+}
+const mbContracts = {};
+for (const [file, layer] of Object.entries(mbContractLayer)) mbContracts[layer] = mbContractKeys(mbTexts[file], layer);
+const mbContractBad = Object.entries(mbContracts).filter(([, keys]) => !keys || !keys.length).map(([layer]) => layer);
+check('middleBrain.layerContractFrozen', mbContractBad.length === 0, '层契约缺失或未冻结: ' + mbContractBad.join(', '));
+const mbContractAll = Object.values(mbContracts).filter(Boolean).flat();
+check('middleBrain.layerContractUnique', mbContractAll.length === new Set(mbContractAll).size,
+  '同一符号被多层声明为 owner: ' + mbContractAll.filter((s, i) => mbContractAll.indexOf(s) !== i).join(', '));
+/* 依赖方向：alias 固定映射到 owner 层；每层只能读自己的上游，且读取的符号必须在 owner 契约中声明。 */
+const mbAliasLayer = { CFG: 'config', POL: 'policy', ASTRA: 'astra', JUDGE: 'judge' };
+const mbAllowedAlias = { 'middle-brain-config.js': [], 'middle-brain-policy.js': ['CFG'],
+  'middle-brain-astra.js': ['CFG', 'POL'], 'middle-brain-judge.js': ['CFG', 'POL', 'ASTRA'],
+  'middle-brain.js': ['CFG', 'POL', 'ASTRA', 'JUDGE'] };
+const mbCrossBad = [];
+for (const [file, allowed] of Object.entries(mbAllowedAlias)) {
+  const text = mbTexts[file];
+  for (const alias of new Set((text.match(/\b(?:CFG|POL|ASTRA|JUDGE)\.\w+/g) || []).map(s => s.split('.')[0]))) {
+    if (!allowed.includes(alias)) mbCrossBad.push(file + ':读越界 ' + alias);
+  }
+  for (const [, alias, symbol] of text.matchAll(/\b(CFG|POL|ASTRA|JUDGE)\.(\w+)/g)) {
+    const owner = mbAliasLayer[alias];
+    if (!mbContracts[owner] || !mbContracts[owner].includes(symbol)) mbCrossBad.push(file + ':' + alias + '.' + symbol);
+  }
+}
+check('middleBrain.crossLayerContract', mbCrossBad.length === 0, '跨层读取未声明/越界: ' + [...new Set(mbCrossBad)].join(', '));
+/* 共享可写 namespace 已删除：五层文件内不得残留 NS.*，也不得再出现扁平 __middleBrain。 */
+check('middleBrain.noFlatNamespace', !/\bNS\./.test(mbAllText) && !/__middleBrain\b/.test(mbAllText),
+  '仍存在共享隐式 namespace 依赖');
+/* canonical 门面 34 个 key：内容与顺序由 MB_PUBLIC_API 锁定，owner 必须真实存在。 */
+const mbPublicExpected = ['getMiddleBrainConfig', 'saveMiddleBrainConfig', 'isMiddleBrainEnabled', 'middleBrainReady',
+  'getMiddleBrainSystemPrompt', 'buildMiddleBrainRequest', 'buildMiddleBrainResponsesRequest',
+  'parseMiddleBrainResponsesResponse', 'parseMiddleBrainResponse', 'middleBrainOrganizeContext',
+  'middleBrainCompressContext', 'middleBrainContextPipeline', 'middleBrainAstraInvoke', 'middleBrainCompressPipeline',
+  'middleBrainAdmissionGate', 'middleBrainAdmissionGateReset', '_mbAnalyzeSignals', '_mbDecisionFromSignals',
+  '_mbGateScore', 'MB_GATE_DEFAULTS', 'middleBrainAstraJudge', 'middleBrainJudgeEnabled',
+  'middleBrainJudgeTelemetry', 'middleBrainJudgeReset', '_mbParseJudgeJson', 'MB_JUDGE_SCHEMA',
+  'MB_JUDGE_TIMEOUT_MS', 'middleBrainAstraEnabled', '_mbParseAstraJson', 'MB_ASTRA_TIMEOUT_MS',
+  'middleBrainPipelineAvailable', 'MB_CTX_DEFAULT_BUDGET', 'saveMiddleBrainConfigUI', 'loadMiddleBrainConfigUI'];
+const mbPublicPairs = [...mbText.matchAll(/^\s*\['(\w+)', '(\w+)'\],?$/gm)].map(m => [m[1], m[2]]);
+check('middleBrain.publicApiContract', JSON.stringify(mbPublicPairs.map(p => p[0])) === JSON.stringify(mbPublicExpected),
+  'IB.middleBrain 公共 API 内容/顺序变化: ' + mbPublicPairs.map(p => p[0]).join(','));
+const mbFacadeOwned = ['middleBrainCompressPipeline', 'middleBrainAstraEnabled'];
+const mbOwnerBad = mbPublicPairs.filter(([symbol, owner]) => mbFacadeOwned.includes(symbol)
+  ? owner !== 'facade' : !(mbContracts[owner] && mbContracts[owner].includes(symbol)))
+  .map(([symbol, owner]) => owner + '.' + symbol);
+check('middleBrain.publicApiOwnership', mbOwnerBad.length === 0, '公共 API owner 未声明: ' + mbOwnerBad.join(', '));
 const mbApiOk = /getMiddleBrainConfig/.test(mbTexts['middle-brain-config.js']) && /saveMiddleBrainConfig/.test(mbTexts['middle-brain-config.js']);
 check('middleBrain.configAPI', mbApiOk, 'middle-brain 缺少 config API');
 const mbUiOk = /id="middle-brain-section"/.test(html) && /id="mb-endpoint"/.test(html) && /id="mb-model"/.test(html) && /id="mb-apikey"/.test(html);
@@ -369,9 +424,21 @@ for (const [name, text] of Object.entries(mbTexts)) {
   }
 }
 check('middleBrain.ctxReadOnly', mbMutating.length === 0, 'middle brain context 函数不得写存储: ' + mbMutating.join(', '));
-/* window 兼容符号：1A 不删除（43 条赋值，含历史重复项）。 */
-const mbWinCompat = (mbText.match(/^\s*window\.\w+ = (?:NS\.)?\w+;\s*$/gm) || []).length;
-check('middleBrain.windowCompatPreserved', mbWinCompat === 43, 'window 兼容符号数量变化: ' + mbWinCompat);
+/* window 兼容符号：1A 不删除；名称与顺序逐条锁定（43 条赋值，含历史重复项 middleBrainAstraEnabled）。 */
+const mbWinExpected = ['middleBrainOrganizeContext', 'middleBrainCompressContext', 'middleBrainContextPipeline',
+  'middleBrainAstraInvoke', 'middleBrainCompressPipeline', 'middleBrainAdmissionGate', 'middleBrainAdmissionGateReset',
+  '_mbAnalyzeSignals', '_mbDecisionFromSignals', '_mbGateScore', 'MB_GATE_DEFAULTS', 'middleBrainAstraJudge',
+  'middleBrainJudgeEnabled', 'middleBrainJudgeTelemetry', 'middleBrainJudgeReset', '_mbParseJudgeJson',
+  'MB_JUDGE_SCHEMA', 'MB_JUDGE_TIMEOUT_MS', 'mbReasoningPick', 'mbSpeedPick', 'mbModelPick', 'mbModelStep',
+  'normalizeMiddleBrainReasoningEffort', 'normalizeMiddleBrainSpeed', '_mbReadReasoning', '_mbReadSpeed',
+  '_mbReadModel', 'middleBrainAstraEnabled', 'middleBrainPipelineAvailable', 'middleBrainAstraEnabled',
+  '_mbParseAstraJson', 'saveMiddleBrainConfigUI', 'loadMiddleBrainConfigUI', 'getMiddleBrainConfig',
+  'saveMiddleBrainConfig', 'isMiddleBrainEnabled', 'middleBrainEnabled', 'middleBrainReady',
+  'buildMiddleBrainRequest', 'buildMiddleBrainResponsesRequest', 'parseMiddleBrainResponsesResponse',
+  'parseMiddleBrainResponse', 'getMiddleBrainSystemPrompt'];
+const mbWinActual = [...mbText.matchAll(/^\s*window\.(\w+) = /gm)].map(m => m[1]);
+check('middleBrain.windowCompatPreserved', JSON.stringify(mbWinActual) === JSON.stringify(mbWinExpected),
+  'window 兼容符号变化: ' + mbWinActual.join(','));
 /* local fallback 当前语义 = 不注入：仅 source==='astra' 才替换 context。 */
 check('middleBrain.localNoInject', /_mbRes\.source==='astra'/.test(comMainText), 'communication 的 local fallback 语义被改动（local 不得注入）');
 /* Admission Gate 状态仍是纯内存：policy 层不得落盘 / 不得用 web storage。 */
