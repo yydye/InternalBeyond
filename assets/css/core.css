@@ -2,7 +2,9 @@
   --bg-deep:#181e32;--bg-mid:#263050;
   --mist:#8895b4;--silver:#b2c0d8;--light:#cdd6ea;--pale:#e2e9f5;--white:#eff2fa;
   --accent:#5080b0;--accent-light:#72a8d8;
-  --glass-bg:rgba(155,180,218,0.1);--glass-border:rgba(165,188,230,0.2);--glass-shadow:rgba(0,0,0,0.18);
+  /* 旧玻璃 token（P10）：全部 alias 到 ladder 的 1 档，取值与历史完全一致 → 零视觉变化。
+     新代码请用下面的 --glass-* ladder，按 elevation 选档，不要再写死 rgba/blur。 */
+  --glass-bg:var(--glass-bg-ambient);--glass-border:var(--glass-border-soft);--glass-shadow:var(--glass-shadow-soft);
   --text-primary:#e0e6f2;--text-secondary:#adb8d0;--text-muted:#7e90b2;
   --transition:cubic-bezier(0.4,0,0.2,1);
   /* Shared semantic UI tokens — default Internal/light theme. */
@@ -32,6 +34,48 @@
   --radius-panel:16px;
   --radius-card:12px;
   --radius-control:10px;
+  /* ── Glass elevation ladder（P10）─────────────────────────────
+     1 ambient  薄雾层：页面背景之上，几乎不抢正文
+     2 surface  主面板 / 章节卡：正文所在的层
+     3 elevated 抬升面板：侧栏 / 诊断 / 工具栏
+     4 floating 浮动控件：时钟 / dock / toast
+     5 modal    最高层：遮罩与弹窗
+     同一层只允许一套 bg / border / blur / shadow；不同层必须能一眼分开。
+     blur 只保留 8 / 16 / 24 / 40 四档，禁止再新增任意数值。 */
+  --glass-bg-ambient:rgba(155,180,218,.10);
+  --glass-bg-surface:rgba(250,253,255,.58);
+  --glass-bg-elevated:rgba(248,252,255,.72);
+  --glass-bg-floating:rgba(252,254,255,.84);
+  --glass-bg-modal:rgba(250,253,255,.92);
+  --glass-border-soft:rgba(165,188,230,.20);
+  --glass-border-strong:rgba(145,190,230,.46);
+  --glass-border-floating:rgba(190,218,244,.62);
+  --glass-blur-sm:8px;
+  --glass-blur-md:16px;
+  --glass-blur-lg:24px;
+  --glass-blur-xl:40px;
+  --glass-filter-sm:blur(var(--glass-blur-sm)) saturate(1.08);
+  --glass-filter-md:blur(var(--glass-blur-md)) saturate(1.14);
+  --glass-filter-lg:blur(var(--glass-blur-lg)) saturate(1.18);
+  --glass-filter-xl:blur(var(--glass-blur-xl)) saturate(1.22);
+  --glass-shadow-soft:0 6px 24px rgba(92,140,192,.10);
+  --glass-shadow-elevated:0 18px 54px rgba(72,118,172,.14);
+  --glass-shadow-floating:0 12px 32px rgba(72,118,172,.18);
+  --glass-shadow-modal:0 28px 80px rgba(52,96,148,.22);
+  --glass-radius-sm:var(--radius-control);
+  --glass-radius-md:var(--radius-card);
+  --glass-radius-lg:var(--radius-panel);
+  /* ── Neumorphism 2.0：只给交互控件触感，不做容器 ─────────────
+     rest=--neo-depth-sm / hover=--neo-depth-md / pressed=--neo-pressed(inset)
+     位移 ≤1px，禁止缩放与弹跳；正文、长列表、页面级容器一律不用。 */
+  --neo-highlight:rgba(255,255,255,.72);
+  --neo-shadow:rgba(120,152,196,.30);
+  --neo-inset-highlight:rgba(255,255,255,.55);
+  --neo-inset-shadow:rgba(96,132,180,.28);
+  --neo-depth-sm:0 1px 2px var(--neo-shadow),inset 0 1px 0 var(--neo-highlight);
+  --neo-depth-md:0 2px 6px var(--neo-shadow),inset 0 1px 0 var(--neo-highlight);
+  --neo-pressed:inset 0 2px 4px var(--neo-inset-shadow),inset 0 1px 0 var(--neo-inset-highlight);
+  --neo-ring:0 0 0 3px rgba(80,128,176,.16);
   --motion-fast:.2s;
   --motion-normal:.35s;
   --layer-nav:100;
@@ -62,6 +106,24 @@ body.theme-infernal{
   --focus-ring:rgba(114,168,216,.68);
   --shadow-panel:0 18px 56px rgba(16,22,42,.28),inset 0 1px 0 rgba(255,255,255,.10);
   --shadow-card:0 8px 30px rgba(8,14,30,.16);
+  /* Glass ladder / Neo — 暗色反相。
+     ambient 与 --glass-border-soft 不在暗色重定义：它们的历史取值本就通用，
+     别名因此保持零视觉变化；其余档位在暗色下重新取值。 */
+  --glass-bg-surface:rgba(155,180,218,.10);
+  --glass-bg-elevated:rgba(38,48,80,.82);
+  --glass-bg-floating:rgba(35,45,74,.92);
+  --glass-bg-modal:rgba(30,40,68,.92);
+  --glass-border-strong:rgba(165,188,230,.34);
+  --glass-border-floating:rgba(175,200,238,.44);
+  --glass-shadow-soft:0 8px 30px rgba(8,14,30,.16);
+  --glass-shadow-elevated:0 18px 56px rgba(16,22,42,.28);
+  --glass-shadow-floating:0 12px 32px rgba(6,12,28,.34);
+  --glass-shadow-modal:0 28px 80px rgba(4,10,24,.46);
+  --neo-highlight:rgba(255,255,255,.10);
+  --neo-shadow:rgba(4,10,26,.42);
+  --neo-inset-highlight:rgba(255,255,255,.06);
+  --neo-inset-shadow:rgba(0,0,0,.45);
+  --neo-ring:0 0 0 3px rgba(114,168,216,.20);
 }
 
 *{margin:0;padding:0;box-sizing:border-box}

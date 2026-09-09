@@ -10,9 +10,9 @@
    约束：选择器全部以 #page-guide / #guide-toc 限定，不影响其它页面；
         P6 指南自身的排版在 assets/css/guide-beginner.css 内。 */
 #page-guide{--guide-rail:908px;max-width:calc(var(--guide-rail) + 64px);padding-top:74px}
-#page-guide .guide-header{margin-bottom:18px;padding-bottom:12px;border-bottom:1px solid var(--border-soft)}
-#page-guide .guide-header h2{font-size:1.5rem;margin-bottom:4px;opacity:0.92}
-#page-guide .guide-header p{font-size:0.64rem;letter-spacing:0.16em;opacity:0.5}
+#page-guide .guide-header{margin-bottom:22px;padding-bottom:14px;border-bottom:1px solid var(--border-soft)}
+#page-guide .guide-header h2{font-size:1.5rem;font-weight:600;margin-bottom:6px;color:var(--content-primary)}
+#page-guide .guide-header p{font-size:0.72rem;letter-spacing:0.16em;color:var(--content-muted)}
 /* 轨道已由 #page-guide 的内容盒给出：此前并列的 1240px（页面）与 900px（非 P6 章节）两条宽度规则已删除。 */
 /* 右侧浮动 CONTENTS 退役：元素与 core.js 的 .visible 逻辑保留（深链与测试仍引用该锚点） */
 #guide-toc.visible{visibility:hidden;opacity:0;pointer-events:none}
@@ -44,84 +44,85 @@ body:not(.theme-infernal) .guide-toc a:hover{color:#0a1e42;border-left-color:#50
 .page .guide-header h2{font-family:'Cormorant Garamond',serif;font-weight:300;font-style:italic;font-size:2.4rem;color:var(--silver);margin-bottom:10px}
 .guide-header p{font-size:0.72rem;color:var(--text-muted);letter-spacing:0.14em;font-family:'Raleway',sans-serif;font-weight:300;opacity:0.7}
 .guide-section{margin-bottom:36px}
-.guide-section h3{font-family:'Noto Serif SC',serif;font-weight:600;font-size:1.1rem;color:rgba(175,195,228,0.85);margin-bottom:16px;padding-bottom:8px;border-bottom:1px solid rgba(175,195,228,0.1);letter-spacing:0.08em;text-transform:uppercase;scroll-margin-top:80px}
+/* P10-B final polish：章节级规则收到直接子元素，避免泄漏进 #guide-beginner
+   （#guide-beginner 本身就是 .guide-section，它内部的 h3 / li 有自己的排版）。 */
+.guide-section > h3{font-family:'Noto Serif SC',serif;font-weight:600;font-size:1.1rem;color:var(--content-secondary);margin-bottom:16px;padding-bottom:8px;border-bottom:1px solid var(--glass-border-soft);letter-spacing:0.08em;text-transform:uppercase;scroll-margin-top:80px}
 .guide-feature-name[id]{scroll-margin-top:80px}
-.guide-section p,.guide-section li{font-family:'Noto Sans SC',sans-serif;font-size:0.95rem;line-height:2;color:var(--text-secondary);font-weight:300}
-.guide-section strong{font-weight:500;color:var(--light)}
-.guide-section ul{list-style:none;padding:0}
-.guide-section li{padding:4px 0;padding-left:18px;position:relative}
-.guide-section li::before{content:'·';position:absolute;left:4px;color:var(--accent)}
-.guide-feature{padding:18px 22px;border-radius:12px;background:linear-gradient(172deg,rgba(175,195,228,0.055),rgba(150,172,210,0.025));border:1px solid rgba(175,195,228,0.1);box-shadow:inset 0 1px 0 rgba(205,224,252,0.07);margin-bottom:14px}
-.guide-feature-name{font-family:'Noto Sans SC',sans-serif;font-weight:500;font-size:1.02rem;color:var(--light);margin-bottom:8px;letter-spacing:0.04em}
+/* 段落保持后代选择器：.guide-feature p / .copyright-panel .cp-group p 依赖这里的字体与字色继承。 */
+.guide-section p,.guide-section > ul > li{font-family:'Noto Sans SC',sans-serif;font-size:0.95rem;line-height:2;color:var(--content-primary);font-weight:300}
+.guide-section strong{font-weight:600;color:var(--content-primary)}
+.guide-section > ul{list-style:none;padding:0}
+.guide-section > ul > li{padding:4px 0;padding-left:18px;position:relative}
+.guide-section > ul > li::before{content:'·';position:absolute;left:4px;color:var(--accent)}
+.guide-feature{padding:18px 22px;border-radius:var(--glass-radius-md);background:var(--glass-bg-surface);border:1px solid var(--glass-border-soft);margin-bottom:14px}
+.guide-feature-name{font-family:'Noto Sans SC',sans-serif;font-weight:600;font-size:1.02rem;color:var(--content-primary);margin-bottom:8px;letter-spacing:0.04em}
 .guide-feature p{margin:0;font-size:0.95rem}
-.guide-feature .guide-sub{margin-top:10px;padding-top:10px;border-top:1px solid rgba(175,195,228,0.09)}
+.guide-feature .guide-sub{margin-top:10px;padding-top:10px;border-top:1px solid var(--glass-border-soft)}
 .guide-feature .guide-sub p{font-size:0.88rem;line-height:1.9;margin-bottom:4px}
 /* Unified copyright panel — one background box holding the whole licence block. */
-.copyright-panel{padding:20px 24px;border-radius:12px;background:linear-gradient(172deg,rgba(175,195,228,0.055),rgba(150,172,210,0.025));border:1px solid rgba(175,195,228,0.1);box-shadow:inset 0 1px 0 rgba(205,224,252,0.07);margin-top:16px}
+.copyright-panel{padding:20px 24px;border-radius:var(--glass-radius-md);background:var(--glass-bg-surface);border:1px solid var(--glass-border-soft);margin-top:16px}
 .copyright-panel>p{margin:0 0 12px}
 .copyright-panel>p:last-child{margin-bottom:0}
 .copyright-panel .cp-group{margin-top:16px}
-.copyright-panel .cp-group-name{font-family:'Noto Sans SC',sans-serif;font-weight:500;font-size:1.02rem;color:var(--light);margin-bottom:8px;letter-spacing:0.04em}
+.copyright-panel .cp-group-name{font-family:'Noto Sans SC',sans-serif;font-weight:600;font-size:1.02rem;color:var(--content-primary);margin-bottom:8px;letter-spacing:0.04em}
 .copyright-panel .cp-group p{margin:0;font-size:0.95rem}
 .copyright-panel .cp-warn{margin-top:16px;font-size:0.88rem;line-height:1.9}
-.guide-credits{text-align:center;margin-top:52px;padding-top:28px;border-top:1px solid rgba(175,195,228,0.08);font-family:'Cormorant Garamond',serif;font-style:italic;font-size:0.95rem;color:var(--text-muted);line-height:2}
+.guide-credits{text-align:center;margin-top:52px;padding-top:28px;border-top:1px solid var(--glass-border-soft);font-family:'Cormorant Garamond',serif;font-style:italic;font-size:0.95rem;color:var(--content-muted);line-height:2}
 
-/* Guide — Internal mode (light) readability */
-body:not(.theme-infernal) .guide-header h2{color:#152c58;text-shadow:0 0 12px rgba(255,255,255,0.5)}
-body:not(.theme-infernal) .guide-header p{color:#2b487a}
-body:not(.theme-infernal) .guide-section h3{color:rgba(20,50,100,0.85);border-bottom-color:rgba(50,90,140,0.15)}
-body:not(.theme-infernal) .guide-section p,body:not(.theme-infernal) .guide-section li{color:#1a3262}
-body:not(.theme-infernal) .guide-section strong{color:#0a1e42}
-body:not(.theme-infernal) .guide-feature{background:linear-gradient(172deg,rgba(242,249,255,0.55),rgba(228,241,253,0.36));border-color:rgba(165,205,245,0.32);box-shadow:inset 0 1px 0 rgba(255,255,255,0.6)}
-body:not(.theme-infernal) .guide-feature .guide-sub{border-top-color:rgba(130,175,225,0.2)}
-body:not(.theme-infernal) .guide-feature-name{color:#0a1e42}
-body:not(.theme-infernal) .copyright-panel{background:linear-gradient(172deg,rgba(242,249,255,0.55),rgba(228,241,253,0.36));border-color:rgba(165,205,245,0.32);box-shadow:inset 0 1px 0 rgba(255,255,255,0.6)}
-body:not(.theme-infernal) .copyright-panel .cp-group-name{color:#0a1e42}
-body:not(.theme-infernal) .guide-credits{color:#2b487a}
+/* Guide — 正文可读性：浅色 / 深色都由 token 决定，不再逐条覆盖 */
+body:not(.theme-infernal) .guide-header h2{text-shadow:0 0 12px rgba(255,255,255,0.5)}
+/* P10-B final polish：浅色主题给 .page.active 里每个元素都加了白色发光。
+   发光属于标题层；正文 / 列表 / 图注 / 容器文字回到 Flat，先把长文可读性做实。 */
+body:not(.theme-infernal) #page-guide p,
+body:not(.theme-infernal) #page-guide li,
+body:not(.theme-infernal) #page-guide dd,
+body:not(.theme-infernal) #page-guide figcaption,
+body:not(.theme-infernal) #page-guide div,
+body:not(.theme-infernal) #page-guide span{text-shadow:none}
 
 /* AUTHOR CARD */
-.author-card{display:flex;align-items:center;gap:28px;padding:28px 32px;border-radius:14px;
-  background:linear-gradient(168deg,rgba(178,200,235,0.075),rgba(150,172,210,0.03));
-  border:1px solid rgba(178,200,238,0.14);
-  box-shadow:inset 0 1px 0 rgba(210,228,255,0.09),0 6px 24px rgba(3,8,20,0.12);margin-top:8px}
+.author-card{display:flex;align-items:center;gap:28px;padding:28px 32px;border-radius:var(--glass-radius-lg);
+  background:var(--glass-bg-surface);
+  border:1px solid var(--glass-border-soft);
+  box-shadow:var(--glass-shadow-soft);margin-top:8px}
 .author-avatar{width:80px;height:80px;border-radius:50%;overflow:hidden;flex-shrink:0;
-  border:1px solid rgba(190,212,246,0.32);
-  box-shadow:0 0 0 4px rgba(165,192,235,0.07),0 4px 18px rgba(3,8,20,0.22)}
+  border:1px solid var(--border-strong);
+  box-shadow:0 0 0 4px var(--glass-bg-ambient),0 4px 18px var(--glass-shadow-soft)}
 .author-avatar img{width:100%;height:100%;object-fit:cover;display:block}
 .author-body{flex:1;min-width:0}
 .author-name{font-family:'Cormorant Garamond',serif;font-weight:400;font-size:1.35rem;
-  color:var(--light);letter-spacing:0.04em;margin-bottom:4px}
+  color:var(--content-primary);letter-spacing:0.04em;margin-bottom:4px}
 .author-desc{font-family:'Noto Sans SC',sans-serif;font-size:0.85rem;font-weight:300;
-  color:var(--text-secondary);line-height:1.8;margin-bottom:14px}
+  color:var(--content-secondary);line-height:1.8;margin-bottom:14px}
 .author-links{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
-.author-desc.meta{margin-top:6px;font-size:0.8rem;opacity:0.85}
+.author-desc.meta{margin-top:6px;font-size:0.8rem;color:var(--content-muted)}
 .author-links.extra{margin-top:14px}
-.author-link{display:inline-flex;align-items:center;gap:6px;padding:5px 14px;border-radius:20px;
+/* 作者链接 = 控件：rest 微凸 → hover 抬 1px → 按下 inset */
+.author-link{display:inline-flex;align-items:center;gap:6px;padding:5px 14px;border-radius:999px;
   font-family:'Noto Sans SC',sans-serif;font-size:0.78rem;font-weight:400;
-  color:var(--silver);text-decoration:none;
-  background:rgba(155,180,218,0.06);border:1px solid rgba(165,188,230,0.1);
-  transition:all 0.3s var(--transition);cursor:pointer}
-.author-link:hover{background:rgba(155,180,218,0.14);border-color:rgba(165,188,230,0.3);color:var(--white)}
+  color:var(--content-secondary);text-decoration:none;
+  background:var(--glass-bg-ambient);border:1px solid var(--glass-border-soft);
+  box-shadow:var(--neo-depth-sm);
+  transition:background var(--motion-fast) var(--transition),border-color var(--motion-fast) var(--transition),
+    color var(--motion-fast) var(--transition),box-shadow var(--motion-fast) var(--transition),
+    transform var(--motion-fast) var(--transition);cursor:pointer}
+.author-link:hover{background:var(--glass-bg-elevated);border-color:var(--glass-border-strong);color:var(--content-primary);box-shadow:var(--neo-depth-md);transform:translateY(-1px)}
+.author-link:active{box-shadow:var(--neo-pressed);transform:translateY(0)}
+.author-link:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}
 .author-link svg{width:13px;height:13px;flex-shrink:0}
 .author-link.tip-btn{background:rgba(220,180,120,0.08);border-color:rgba(220,180,120,0.18);color:rgba(220,195,150,0.9)}
 .author-link.tip-btn:hover{background:rgba(220,180,120,0.18);border-color:rgba(220,180,120,0.35);color:rgba(240,210,160,1)}
 .tip-dropdown{max-height:0;overflow:hidden;transition:max-height 0.4s var(--transition),margin 0.3s;margin-top:0}
 .tip-dropdown.open{max-height:360px;margin-top:14px}
-.tip-dropdown-inner{text-align:center;padding:18px;border-radius:12px;
-  background:rgba(155,180,218,0.05);border:1px solid rgba(165,188,230,0.1)}
-.tip-dropdown-inner p{font-family:'Noto Sans SC',sans-serif;font-size:0.8rem;color:var(--text-muted);margin-bottom:12px;line-height:1.7}
-.tip-qr{width:180px;height:180px;border-radius:10px;overflow:hidden;margin:0 auto;
-  border:1px solid rgba(165,188,230,0.12);background:rgba(255,255,255,0.95)}
+.tip-dropdown-inner{text-align:center;padding:18px;border-radius:var(--glass-radius-md);
+  background:var(--glass-bg-ambient);border:1px solid var(--glass-border-soft)}
+.tip-dropdown-inner p{font-family:'Noto Sans SC',sans-serif;font-size:0.8rem;color:var(--content-muted);margin-bottom:12px;line-height:1.7}
+.tip-qr{width:180px;height:180px;border-radius:var(--glass-radius-sm);overflow:hidden;margin:0 auto;
+  border:1px solid var(--glass-border-soft);background:rgba(255,255,255,0.95)}
 .tip-qr img{width:100%;height:100%;object-fit:contain;display:block}
-body:not(.theme-infernal) .author-card{background:linear-gradient(168deg,rgba(246,251,255,0.6),rgba(230,242,253,0.4));border-color:rgba(170,208,246,0.36);box-shadow:inset 0 1px 0 rgba(255,255,255,0.7),0 6px 22px rgba(110,165,238,0.1)}
 body:not(.theme-infernal) .author-avatar{border-color:rgba(150,195,242,0.45);box-shadow:0 0 0 4px rgba(160,200,245,0.12),0 4px 16px rgba(110,165,238,0.16)}
-body:not(.theme-infernal) .author-name{color:#0f2045}
-body:not(.theme-infernal) .author-desc{color:#1a3262}
-body:not(.theme-infernal) .author-link{color:#233e6c;background:rgba(230,242,255,0.5);border-color:rgba(170,210,245,0.3)}
-body:not(.theme-infernal) .author-link:hover{background:rgba(215,235,255,0.7);border-color:rgba(140,190,240,0.45);color:#0a1e42}
 body:not(.theme-infernal) .author-link.tip-btn{color:#8a6520;background:rgba(255,235,180,0.35);border-color:rgba(210,175,100,0.25)}
 body:not(.theme-infernal) .author-link.tip-btn:hover{background:rgba(255,230,160,0.5);border-color:rgba(200,165,80,0.4);color:#6b4e10}
-body:not(.theme-infernal) .tip-dropdown-inner{background:rgba(240,248,255,0.5);border-color:rgba(180,210,245,0.25)}
 @media(max-width:600px){
   .author-card{flex-direction:column;text-align:center;gap:16px;padding:24px 20px}
   .author-links{justify-content:center}
@@ -137,23 +138,20 @@ body:not(.theme-infernal) .tip-dropdown-inner{background:rgba(240,248,255,0.5);b
 }
 
 /* THINKING CHAIN */
-.thinking-block{margin:20px 0 36px;border-radius:12px;overflow:hidden}
-.thinking-block summary{padding:12px 18px;font-size:0.8rem;color:var(--text-muted);cursor:pointer;
-  background:linear-gradient(90deg,rgba(175,195,228,0.05),rgba(175,195,228,0.015));border:1px solid rgba(175,195,228,0.08);border-radius:12px;
-  font-family:'Raleway','Noto Sans SC',sans-serif;font-weight:300;letter-spacing:0.05em;transition:all 0.3s;list-style:none;display:flex;align-items:center;gap:9px}
+.thinking-block{margin:20px 0 36px;border-radius:var(--glass-radius-md);overflow:hidden}
+.thinking-block summary{padding:12px 18px;font-size:0.8rem;color:var(--content-muted);cursor:pointer;
+  background:var(--glass-bg-ambient);border:1px solid var(--glass-border-soft);border-radius:var(--glass-radius-md);
+  font-family:'Raleway','Noto Sans SC',sans-serif;font-weight:300;letter-spacing:0.05em;transition:background var(--motion-fast) var(--transition),border-color var(--motion-fast) var(--transition),color var(--motion-fast) var(--transition);list-style:none;display:flex;align-items:center;gap:9px}
 .thinking-block summary::-webkit-details-marker{display:none}
 .thinking-block summary::before{content:'▸';font-size:0.66rem;transition:transform 0.3s,opacity 0.3s;color:var(--accent);opacity:0.7}
 .thinking-block[open] summary::before{transform:rotate(90deg);opacity:1}
-.thinking-block[open] summary{border-radius:12px 12px 0 0;border-bottom-color:rgba(175,195,228,0.04)}
-.thinking-block summary:hover{background:linear-gradient(90deg,rgba(175,195,228,0.09),rgba(175,195,228,0.035));color:var(--silver)}
+.thinking-block[open] summary{border-radius:var(--glass-radius-md) var(--glass-radius-md) 0 0;border-bottom-color:var(--glass-border-soft)}
+.thinking-block summary:hover{background:var(--glass-bg-elevated);color:var(--content-secondary)}
+/* 正文/长文本一律 Flat：不叠 backdrop-filter，靠底色与字色保证可读 */
 .thinking-block .thinking-content{padding:22px;font-family:'SF Mono','Fira Code','Noto Sans SC',monospace;
-  font-size:0.78rem;line-height:2;color:var(--text-muted);background:rgba(9,14,26,0.16);
-  border:1px solid rgba(175,195,228,0.08);border-top:none;border-radius:0 0 12px 12px;
-  backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+  font-size:0.78rem;line-height:2;color:var(--content-secondary);background:var(--glass-bg-ambient);
+  border:1px solid var(--glass-border-soft);border-top:none;border-radius:0 0 var(--glass-radius-md) var(--glass-radius-md);
   white-space:pre-wrap;word-break:break-word;max-height:60vh;overflow-y:auto}
-body:not(.theme-infernal) .thinking-block .thinking-content{background:rgba(240,248,255,0.26);color:#1a3262;border-color:rgba(160,200,245,0.2)}
-body:not(.theme-infernal) .thinking-block summary{background:linear-gradient(90deg,rgba(234,244,255,0.42),rgba(234,244,255,0.2));color:#2c4a78;border-color:rgba(150,195,240,0.22)}
-body:not(.theme-infernal) .thinking-block summary:hover{background:linear-gradient(90deg,rgba(234,244,255,0.58),rgba(234,244,255,0.3));color:#152c58}
 
 /* THEME-SPECIFIC CONTENT */
 body:not(.theme-infernal) .infernal-only{display:none!important}

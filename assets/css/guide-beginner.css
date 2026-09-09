@@ -13,6 +13,29 @@
  *   · 外壳不再是一根深蓝长卡：每章改为独立轻量 glass section。
  *   · 截图：单图章节占满内容宽度，多图章节两列。
  *   · 窄屏（<=1040px）：章节条收成单行横向滚动，截图转单列。
+ *
+ * P10-B Batch 1 · 阅读工作面（只改视觉；宽度 / 锚点 / 阅读位置逻辑一律未动）：
+ *   · 正文层不叠 backdrop-filter：长文本优先可读性（Guide 0 个 blur，不参与玻璃特效）。
+ *   · 层级不再靠 opacity：正文 / 次要 / 元信息分别用 --content-primary/-secondary/-muted。
+ *   · 章节条是控件，允许克制的 Neumorphism 2.0：rest 无凸起 → hover 微抬 1px → 按下 inset。
+ *   · 章卡左右内边距保持 22px → 正文列 864px、截图宽度与 P9-D 完全一致。
+ *
+ * P10-B Batch 1.1 · Guide 减重微调（只调视觉权重；rail / scroll restore / anchor / DOM / token 一律未动）：
+ *   · 章节目录（「这一页包含」）从面板降为纯链接列表：无底色 / 无边框 / 上下 padding 收到 2-4px；
+ *     序号改为轻量 inline 编号。
+ *   · 章卡从 card 降为 reading sheet：去掉边框与阴影。
+ *   · 截图框再轻一档：去掉阴影、边框降到 --glass-border-soft、caption 去掉分隔线与独立底色。
+ *
+ * P10-B Batch 1.2 · final polish（只改视觉；token / rail / 锚点 / 滚动恢复 / DOM / JS 一律未动）：
+ *   · 地板分档：章卡 = --glass-bg-surface（正文所在层），tip / tech = --glass-bg-elevated
+ *     （嵌套面板层）→ 父子有明确但克制的明度差；仍无重阴影、无边框重影、0 个 backdrop-filter。
+ *   · 可读内容不再用 --content-muted：caption / gb-meta / 步骤序号 / 目录序号升到
+ *     --content-secondary；--content-muted 只留给版本 pill 这类非必要 chrome。
+ *   · 字体收口：gb-title 显式用 --font-reading（不再被通用 .page h2 的 Cormorant 接管）；
+ *     正文 0.95rem、行高 1.9 统一。
+ *   · 降噪：当前章节 = 换色 + 2px 强调线（不再用 Neo inset）；gb-num 去掉 chip 感；
+ *     目录标签去掉 uppercase 与过大字距；装饰线改用 --accent，focus-ring 只留给焦点。
+ *   · Neo 本页只保留真正交互控件（.author-link，在 pages.css）。
  */
 
 /* ── 外壳：单列栅格，宽度完全由外部轨道决定 ───────────── */
@@ -33,24 +56,28 @@
   box-shadow: none;
 }
 
+/* ── 页头 ─────────────────────────────────────────────── */
 #guide-beginner .gb-head {
   grid-column: 1 / -1;
-  padding-bottom: 14px;
+  padding-bottom: 16px;
   border-bottom: 1px solid var(--border-soft);
 }
 
 #guide-beginner .gb-title {
   margin: 0 0 6px;
-  font-size: 1.34rem;
-  letter-spacing: 0.02em;
+  font-family: var(--font-reading);
+  font-size: 1.4rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--content-primary);
 }
 
 #guide-beginner .gb-sub {
   margin: 0 0 10px;
   max-width: 72ch;
-  font-size: 0.88rem;
-  line-height: 1.8;
-  opacity: 0.86;
+  font-size: 0.95rem;
+  line-height: 1.9;
+  color: var(--content-secondary);
 }
 
 #guide-beginner .gb-meta {
@@ -59,14 +86,16 @@
   flex-wrap: wrap;
   gap: 8px 16px;
   font-size: 0.76rem;
-  opacity: 0.68;
+  color: var(--content-secondary);
 }
 
+/* 版本 pill 是 chrome：本页唯一保留 --content-muted 的地方 */
 #guide-beginner .gb-meta-version {
   padding: 2px 9px;
   border-radius: 999px;
-  border: 1px solid var(--border-soft);
-  background: var(--surface-card);
+  border: 1px solid var(--glass-border-soft);
+  background: var(--glass-bg-ambient);
+  color: var(--content-muted);
 }
 
 /* ── 章节目录：轨道顶部的章节条（12 项锚点，宽屏换行 / 窄屏横向滚动） ── */
@@ -74,18 +103,14 @@
   grid-column: 1;
   grid-row: 2;
   margin: 0;
-  padding: 10px 12px 12px;
-  border-radius: var(--radius-panel);
-  border: 1px solid var(--border-soft);
-  background: var(--surface-card);
+  padding: 2px 0 4px;
 }
 
 #guide-beginner .gb-index-title {
-  margin-bottom: 10px;
-  font-size: 0.7rem;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  opacity: 0.55;
+  margin-bottom: 8px;
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  color: var(--content-muted);
 }
 
 #guide-beginner .gb-index-list {
@@ -107,22 +132,56 @@
 
 #guide-beginner .gb-index-item::before {
   content: counter(gb-index) '.';
-  display: inline-block;
-  width: 1.5em;
-  opacity: 0.45;
+  margin-right: 5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--content-secondary);
 }
 
+/* 章节条链接 = 轻量 chapter link：rest 无盒 → hover 只换色 + 极轻底 → 按下稍实 */
 #guide-beginner .gb-index-link {
   display: inline-block;
-  padding: 3px 0;
-  color: inherit;
+  padding: 2px 6px;
+  border-radius: var(--glass-radius-sm);
+  color: var(--content-secondary);
   text-decoration: none;
-  border-bottom: 1px solid transparent;
+  background: none;
+  transition: background var(--motion-fast) var(--transition),
+    color var(--motion-fast) var(--transition),
+    box-shadow var(--motion-fast) var(--transition);
 }
 
-#guide-beginner .gb-index-link:hover,
+#guide-beginner .gb-index-link:hover {
+  color: var(--content-primary);
+  background: var(--glass-bg-ambient);
+}
+
+#guide-beginner .gb-index-link:active {
+  color: var(--content-primary);
+  background: var(--glass-bg-elevated);
+}
+
 #guide-beginner .gb-index-link:focus-visible {
-  border-bottom-color: var(--focus-ring);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  color: var(--content-primary);
+}
+
+/* 当前章节：目录项 = 换色 + 2px 强调线（纯 :target，不引入滚动监听 / JS / DOM） */
+#guide-beginner .gb-wrap:has(#gb-welcome:target) .gb-index-link[href="#gb-welcome"],
+#guide-beginner .gb-wrap:has(#gb-setup:target) .gb-index-link[href="#gb-setup"],
+#guide-beginner .gb-wrap:has(#gb-ai:target) .gb-index-link[href="#gb-ai"],
+#guide-beginner .gb-wrap:has(#gb-role:target) .gb-index-link[href="#gb-role"],
+#guide-beginner .gb-wrap:has(#gb-chat:target) .gb-index-link[href="#gb-chat"],
+#guide-beginner .gb-wrap:has(#gb-memory:target) .gb-index-link[href="#gb-memory"],
+#guide-beginner .gb-wrap:has(#gb-active:target) .gb-index-link[href="#gb-active"],
+#guide-beginner .gb-wrap:has(#gb-moments:target) .gb-index-link[href="#gb-moments"],
+#guide-beginner .gb-wrap:has(#gb-voice:target) .gb-index-link[href="#gb-voice"],
+#guide-beginner .gb-wrap:has(#gb-more:target) .gb-index-link[href="#gb-more"],
+#guide-beginner .gb-wrap:has(#gb-diagnostics:target) .gb-index-link[href="#gb-diagnostics"],
+#guide-beginner .gb-wrap:has(#gb-faq:target) .gb-index-link[href="#gb-faq"] {
+  color: var(--content-primary);
+  font-weight: 500;
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 /* ── 正文列：与轨道同宽，每章一张轻量 glass section ───── */
@@ -135,45 +194,46 @@
 }
 
 #guide-beginner .gb-chapter {
-  padding: 18px 22px 20px;
-  border-radius: var(--radius-panel);
-  border: 1px solid var(--border-soft);
-  background: var(--surface-card);
+  padding: 20px 22px 22px;
+  border-radius: var(--glass-radius-lg);
+  background: var(--glass-bg-surface);
   scroll-margin-top: 70px;
+}
+
+/* 当前章节：正文章卡只做轻微提示（2px 左强调线），不与目录项同时强高亮 */
+#guide-beginner .gb-chapter:target {
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 #guide-beginner .gb-chapter-head {
   display: flex;
   align-items: baseline;
   gap: 10px;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
 }
 
 #guide-beginner .gb-num {
   flex: 0 0 auto;
   width: 24px;
-  height: 24px;
-  border-radius: 999px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 0.76rem;
-  background: var(--surface-panel);
-  border: 1px solid var(--border-soft);
-  opacity: 0.85;
+  font-size: 0.8rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--content-secondary);
 }
 
 #guide-beginner .gb-chapter-title {
   margin: 0;
-  font-size: 1.06rem;
+  font-size: 1.08rem;
+  font-weight: 600;
   letter-spacing: 0.01em;
+  color: var(--content-primary);
 }
 
 #guide-beginner .gb-goal {
   margin: 0 0 14px 34px;
-  font-size: 0.88rem;
+  font-size: 0.95rem;
   line-height: 1.9;
-  opacity: 0.86;
+  color: var(--content-secondary);
 }
 
 /* ── 截图：单图占满内容宽度，多图两列 ─────────────────── */
@@ -184,11 +244,12 @@
   margin: 0 0 16px;
 }
 
+/* 截图框：只剩一层发丝边框，不再抬升 / 不再自带底色 */
 #guide-beginner .gb-figure {
   margin: 0;
-  border-radius: var(--radius-panel);
-  border: 1px solid var(--border-soft);
-  background: var(--surface-panel);
+  border-radius: var(--glass-radius-md);
+  border: 1px solid var(--glass-border-soft);
+  background: none;
   overflow: hidden;
 }
 
@@ -200,35 +261,33 @@
   display: block;
   width: 100%;
   height: auto;
+  background: none;
 }
 
+/* caption 不再是一条独立 footer：无底色 / 无分隔线，与截图融为一块 */
 #guide-beginner .gb-caption {
-  padding: 9px 12px;
-  font-size: 0.76rem;
+  padding: 8px 14px 10px;
+  font-size: 0.78rem;
   line-height: 1.7;
-  opacity: 0.72;
-  border-top: 1px solid var(--border-soft);
+  color: var(--content-secondary);
 }
 
 #guide-beginner .gb-shot-missing {
   margin: 0;
   padding: 22px 14px;
-  font-size: 0.8rem;
+  font-size: 0.82rem;
   line-height: 1.8;
-  opacity: 0.7;
+  color: var(--content-secondary);
   text-align: center;
-}
-
-#guide-beginner .gb-figure.is-missing .gb-caption {
-  border-top: none;
 }
 
 /* ── 步骤 / 常见问题 / 提示（与章节序号对齐的缩进） ───── */
 #guide-beginner .gb-steps {
   margin: 0 0 14px;
   padding-left: 34px;
-  font-size: 0.88rem;
-  line-height: 1.95;
+  font-size: 0.95rem;
+  line-height: 1.9;
+  color: var(--content-primary);
 }
 
 #guide-beginner .gb-steps li {
@@ -236,18 +295,19 @@
 }
 
 #guide-beginner .gb-steps li::marker {
-  opacity: 0.55;
+  color: var(--content-secondary);
 }
 
 #guide-beginner .gb-faq {
   margin: 0 0 14px 34px;
-  font-size: 0.86rem;
+  font-size: 0.88rem;
   line-height: 1.9;
 }
 
 #guide-beginner .gb-faq-q {
   font-weight: 600;
-  margin-top: 12px;
+  color: var(--content-primary);
+  margin-top: 14px;
 }
 
 #guide-beginner .gb-faq-q:first-child {
@@ -255,27 +315,29 @@
 }
 
 #guide-beginner .gb-faq-a {
-  margin: 4px 0 0;
-  opacity: 0.85;
+  margin: 5px 0 0;
+  color: var(--content-secondary);
 }
 
 #guide-beginner .gb-tip {
   margin: 0 0 12px 34px;
   padding: 12px 14px;
-  border-radius: var(--radius-panel);
-  background: var(--surface-panel);
-  border: 1px solid var(--border-soft);
-  border-left: 3px solid var(--focus-ring);
-  font-size: 0.84rem;
+  border-radius: var(--glass-radius-md);
+  background: var(--glass-bg-elevated);
+  border: 1px solid var(--glass-border-soft);
+  border-left: 3px solid var(--accent);
+  font-size: 0.86rem;
   line-height: 1.9;
+  color: var(--content-secondary);
 }
 
 #guide-beginner .gb-tip-title {
   margin-right: 6px;
+  color: var(--content-primary);
 }
 
 #guide-beginner .gb-tip-text {
-  opacity: 0.88;
+  color: var(--content-secondary);
 }
 
 #guide-beginner .gb-action-row {
@@ -287,23 +349,24 @@
   grid-column: 1;
   grid-row: 4;
   margin-top: 0;
-  padding: 12px 14px;
-  border-radius: var(--radius-panel);
-  border: 1px solid var(--border-soft);
-  background: var(--surface-card);
+  padding: 14px 16px;
+  border-radius: var(--glass-radius-md);
+  border: 1px solid var(--glass-border-soft);
+  background: var(--glass-bg-elevated);
   font-size: 0.8rem;
   line-height: 1.9;
+  color: var(--content-secondary);
 }
 
 #guide-beginner .gb-tech > summary {
   cursor: pointer;
-  opacity: 0.75;
+  color: var(--content-secondary);
   letter-spacing: 0.04em;
 }
 
 #guide-beginner .gb-tech-body p {
   margin: 10px 0 0;
-  opacity: 0.8;
+  color: var(--content-secondary);
 }
 
 /* ── 窄屏：章节条收成单行横向滚动，截图转单列 ─────────── */
@@ -333,12 +396,20 @@
 
 @media (max-width: 720px) {
   #guide-beginner .gb-chapter {
-    padding: 14px 14px 16px;
+    padding: 16px 16px 18px;
   }
   #guide-beginner .gb-shots {
     gap: 10px;
   }
   #guide-beginner .gb-index-item {
     font-size: 0.78rem;
+  }
+}
+
+/* 触屏没有真正的 hover：不做抬升，只保留按下反馈 */
+@media (hover: none) {
+  #guide-beginner .gb-index-link:hover {
+    color: var(--content-secondary);
+    background: none;
   }
 }
