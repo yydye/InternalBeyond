@@ -1,14 +1,13 @@
-﻿/* FAB DOCK — 右下角 ICode / Chat 组合按钮 */
-#fab-dock{position:fixed;bottom:24px;right:24px;z-index:90;display:flex;align-items:stretch;box-sizing:border-box;height:var(--fab-h,42px);background:var(--glass-bg);border:1px solid var(--glass-border);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border-radius:28px;opacity:0;transform:translateY(20px);transition:opacity 0.65s cubic-bezier(0.22,1,0.36,1),transform 0.65s cubic-bezier(0.22,1,0.36,1),background 0.5s var(--transition),border-color 0.5s var(--transition),box-shadow 0.5s var(--transition)}
+﻿/* FAB DOCK — 右下角 ICode / Chat 组合按钮（floating 档：一套 bg / border / blur / shadow） */
+#fab-dock{position:fixed;bottom:24px;right:24px;z-index:90;display:flex;align-items:stretch;box-sizing:border-box;height:var(--fab-h,42px);background:var(--glass-bg-floating);border:1px solid var(--glass-border-floating);backdrop-filter:var(--glass-filter-md);-webkit-backdrop-filter:var(--glass-filter-md);box-shadow:var(--glass-shadow-floating);border-radius:28px;opacity:0;transform:translateY(20px);transition:opacity 0.65s cubic-bezier(0.22,1,0.36,1),transform 0.65s cubic-bezier(0.22,1,0.36,1),background 0.5s var(--transition),border-color 0.5s var(--transition),box-shadow 0.5s var(--transition)}
 #fab-dock.visible{opacity:1;transform:translateY(0)}
 #icode-mini,#chat-mini{position:relative;display:flex;align-items:center;box-sizing:border-box;background:none;border:none;cursor:pointer}
-/* 悬停 / 按下态 */
-#icode-mini::before,#chat-mini::before{content:'';position:absolute;top:3px;bottom:3px;border-radius:999px;background:rgba(175,195,228,0);transition:background 0.45s var(--transition);pointer-events:none}
+/* 悬停 / 按下态：dock 内的分段是小控件 → 用 Neo 2.0 的深浅，不再靠换底色 */
+#icode-mini::before,#chat-mini::before{content:'';position:absolute;top:3px;bottom:3px;border-radius:999px;background:transparent;transition:background 0.45s var(--transition),box-shadow 0.45s var(--transition);pointer-events:none}
 #icode-mini::before{left:3px;right:1px}
 #chat-mini::before{left:1px;right:3px}
-#icode-mini:hover::before{background:rgba(175,195,228,0.14)}
-#chat-mini:hover::before{background:rgba(175,195,228,0.14)}
-#icode-mini:active::before,#chat-mini:active::before{background:rgba(175,195,228,0.2);transition-duration:0.25s}
+#icode-mini:hover::before,#chat-mini:hover::before{background:var(--surface-hover);box-shadow:var(--neo-depth-sm)}
+#icode-mini:active::before,#chat-mini:active::before{background:var(--surface-pressed);box-shadow:var(--neo-pressed);transition-duration:0.25s}
 #icode-mini{padding:0 13px 0 16px}
 #chat-mini{gap:10px;padding:0 16px 0 13px}
 #icode-mini>*,#chat-mini>*{position:relative;z-index:1}
@@ -19,7 +18,9 @@
 #icode-mini:hover .mini-icon{opacity:1}
 #icode-mini .mini-icon svg{display:block;color:var(--silver)}
 #icode-mini .icode-label{display:none;font-size:0.7rem;color:var(--silver);white-space:nowrap}
-.fab-sep{align-self:center;width:1px;height:46%;background:var(--glass-border);flex-shrink:0}
+/* 分隔线用 --border-strong 而不是 floating 描边色：dock 底面已经很白，
+   再用一条浅蓝的 floating 描边会看不见；--border-strong 在浅色/暗色下都还看得清。 */
+.fab-sep{align-self:center;width:1px;height:46%;background:var(--border-strong);flex-shrink:0}
 /* solo 形态：聊天面板打开时只隐藏 Chat 段与其相邻分隔线；Calendar 与 ICode 保持原样（v38 修正：此前误将两段一并收起） */
 #fab-dock.solo #chat-mini{display:none}
 #fab-dock.solo .fab-sep:last-of-type{display:none}

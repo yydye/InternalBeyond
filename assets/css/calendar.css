@@ -390,8 +390,11 @@ body.theme-infernal .d-capdot{fill:var(--ice-accent)}
 
 /* v18 — 主表盘改为淘汰版 A「霜盏」；删除两层 ck-lathe 内环圆线 */
 .clock-wrap{width:130px;height:130px;display:flex;align-items:center;justify-content:center}
-.clock-wrap::before{inset:1px;background:radial-gradient(circle at 50% 40%,rgba(248,252,255,0.09),rgba(208,229,248,0.04) 54%,transparent 72%);border:1px solid rgba(182,213,242,0.2);box-shadow:inset 0 1px 0 rgba(255,255,255,0.3),0 8px 18px rgba(49,84,119,0.08);backdrop-filter:blur(5px);-webkit-backdrop-filter:blur(5px)}
-body.theme-infernal .clock-wrap::before{background:rgba(150,180,216,0.03);border-color:rgba(160,190,220,0.1);box-shadow:0 10px 22px rgba(0,0,0,0.22)}
+/* P10 Batch 2 — 霜盏盘面按 ladder 的 floating 档重写：描边取 --glass-border-soft（与原 0.2 同值），
+   投影换成 floating 档（更散、更托底），磨砂取 ladder 最小档 sm=8px（原 5px 是任意值）。
+   盘内仍只有一层模糊：外层窗体玻璃的模糊是窗体自己的，这里不再叠高 blur。 */
+.clock-wrap::before{inset:1px;background:radial-gradient(circle at 50% 40%,rgba(248,252,255,0.09),rgba(208,229,248,0.04) 54%,transparent 72%);border:1px solid var(--glass-border-soft);box-shadow:inset 0 1px 0 rgba(255,255,255,0.3),var(--glass-shadow-floating);backdrop-filter:var(--glass-filter-sm);-webkit-backdrop-filter:var(--glass-filter-sm)}
+body.theme-infernal .clock-wrap::before{background:rgba(150,180,216,0.03);border-color:var(--glass-border-soft);box-shadow:inset 0 1px 0 rgba(255,255,255,0.06),var(--glass-shadow-floating)}
 /* v45 — 表盘外圈闪帧的根治（撤掉 v43/v44 的「动画期间临时关模糊」做法，那个思路本身就是错的：
    关模糊/开模糊这件事自己就是一次看得见的跳变，反而把原本只在 INF 出现的毛刺带进了 INT）。
    闪帧的根源：外圈的实时磨砂平时透过页面直接取样窗体玻璃；切页动画一动（整页透明度与位移变化），
@@ -878,14 +881,14 @@ body.theme-infernal .vis-pick button.on{background:rgba(126,160,206,0.24);border
 #cal-widget{position:fixed;z-index:99;right:26px;top:86px;width:316px;/* v47 — 95→99：悬浮小窗压在快捷聊天窗(98)之上；悬浮大窗仍为 97，层级不变 */
   border-radius:22px;overflow:hidden;user-select:none;-webkit-user-select:none;/* v41 — 小窗内文字不可选中复制 */
   border:1px solid var(--eph-border);
-  backdrop-filter:blur(28px) saturate(1.05);-webkit-backdrop-filter:blur(28px) saturate(1.05);
-  box-shadow:0 12px 36px rgba(52,92,142,0.15),0 3px 9px rgba(70,112,158,0.07),
-    inset 0 1px 0 rgba(255,255,255,0.82),inset 0 -1px 0 rgba(112,152,194,0.2);/* v39 — 小窗投影整体减淡 */
+  backdrop-filter:var(--glass-filter-lg);-webkit-backdrop-filter:var(--glass-filter-lg);
+  box-shadow:var(--glass-shadow-floating),
+    inset 0 1px 0 rgba(255,255,255,0.82),inset 0 -1px 0 rgba(112,152,194,0.2);/* v39 — 小窗投影整体减淡；P10 Batch 2 — 外投影改取 floating 档 */
   opacity:0;transform:translateY(14px) scale(0.94);pointer-events:none;
   transition:opacity 0.5s var(--transition),transform 0.55s cubic-bezier(0.22,1,0.36,1),box-shadow 0.4s,width 0.45s var(--transition),border-color 2.4s ease}/* v37 — 透明度略升；渐变底色无法用 transition 插值，改由 ::before/::after 双层罩以 2.4s 对向淡化，元素本体只慢速过渡边色 */
 body.theme-infernal #cal-widget{
   border-color:rgba(78,100,140,0.2);/* v39 — 描边改取贴近窗内底色的深蓝灰，边界感更弱；随既有 2.4s 边色过渡漂移 */
-  box-shadow:0 14px 40px rgba(0,0,0,0.3),inset 0 1px 0 rgba(221,235,251,0.06)}
+  box-shadow:var(--glass-shadow-floating),inset 0 1px 0 rgba(221,235,251,0.06)}
 #cal-widget.show{opacity:1;transform:translateY(0) scale(1);pointer-events:auto}
 #cal-widget.dragging{transition:none;box-shadow:0 26px 70px rgba(52,92,142,0.3),inset 0 1px 0 rgba(255,255,255,0.82)}
 #cal-widget:hover{box-shadow:0 20px 56px rgba(52,92,142,0.26),0 0 0 1px rgba(160,200,240,0.24),inset 0 1px 0 rgba(255,255,255,0.85)}
@@ -915,8 +918,9 @@ body.theme-infernal .wg-clockwrap::before{background:radial-gradient(circle at 5
 #wg-hr{animation:handRot 43200s linear infinite}
 /* v19 — 收起小窗同步采用 A「霜盏」表盘，并移除两层内环圆线 */
 .wg-clockwrap{display:flex;align-items:center;justify-content:center}
-.wg-clockwrap::before{inset:1px;background:radial-gradient(circle at 50% 40%,rgba(248,252,255,0.09),rgba(208,229,248,0.04) 54%,transparent 72%);border:1px solid rgba(182,213,242,0.2);box-shadow:inset 0 1px 0 rgba(255,255,255,0.3),0 6px 14px rgba(49,84,119,0.08);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)}
-body.theme-infernal .wg-clockwrap::before{background:rgba(150,180,216,0.03);border-color:rgba(160,190,220,0.1);box-shadow:0 8px 18px rgba(0,0,0,0.22)}
+/* P10 Batch 2 — 收起小窗的表盘同上：floating 档描边 + 投影，磨砂取 sm（原 4px 是任意值） */
+.wg-clockwrap::before{inset:1px;background:radial-gradient(circle at 50% 40%,rgba(248,252,255,0.09),rgba(208,229,248,0.04) 54%,transparent 72%);border:1px solid var(--glass-border-soft);box-shadow:inset 0 1px 0 rgba(255,255,255,0.3),var(--glass-shadow-floating);backdrop-filter:var(--glass-filter-sm);-webkit-backdrop-filter:var(--glass-filter-sm)}
+body.theme-infernal .wg-clockwrap::before{background:rgba(150,180,216,0.03);border-color:var(--glass-border-soft);box-shadow:inset 0 1px 0 rgba(255,255,255,0.06),var(--glass-shadow-floating)}
 #wg-clock{width:108px;height:108px}
 #wg-clock .ck-halo{fill:rgba(178,212,244,0.05);filter:url(#ckBlur)}
 body.theme-infernal #wg-clock .ck-halo{fill:rgba(140,172,210,0.04)}

@@ -1,9 +1,9 @@
-﻿/* MUSIC */
-#music-mini{position:fixed;bottom:24px;left:24px;z-index:90;display:flex;align-items:center;gap:10px;padding:8px 14px;border-radius:28px;background:var(--glass-bg);border:1px solid var(--glass-border);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);cursor:pointer;transition:all 0.4s var(--transition),background 1.5s ease-out,border-color 1.5s ease-out,box-shadow 1.5s ease-out;max-width:220px;opacity:0;transform:translateY(20px)}
+﻿/* MUSIC — 左下角浮动控件，走 ladder 的 floating 档（bg / border / blur / shadow 各一套） */
+#music-mini{position:fixed;bottom:24px;left:24px;z-index:90;display:flex;align-items:center;gap:10px;padding:8px 14px;border-radius:28px;background:var(--glass-bg-floating);border:1px solid var(--glass-border-floating);backdrop-filter:var(--glass-filter-md);-webkit-backdrop-filter:var(--glass-filter-md);box-shadow:var(--glass-shadow-floating);cursor:pointer;transition:all 0.4s var(--transition),background 1.5s ease-out,border-color 1.5s ease-out,box-shadow 1.5s ease-out;max-width:220px;opacity:0;transform:translateY(20px)}
 #music-mini.visible{opacity:1;transform:translateY(0)}
-/* 悬停加强：轻浮 2px + 柔影托底 + 顶缘冰光变亮；按下沉回并微缩，节奏仍是站点缓动 */
-#music-mini.visible:hover{transform:translateY(-2px)}
-#music-mini.visible:active{transform:translateY(0) scale(0.985);transition-duration:0.2s}
+/* 悬停抬 1px + neo 加深；按下内凹落回，不缩放（Neo 2.0 禁缩放与弹跳） */
+#music-mini.visible:hover{transform:translateY(-1px)}
+#music-mini.visible:active{transform:translateY(0);transition-duration:0.2s}
 /* Welcome page: music player uses Infernal (dark glass) style regardless of active theme */
 #splash:not(.hidden)~#music-mini{z-index:10000;
   background:var(--glass-bg);border-color:var(--glass-border);
@@ -30,9 +30,9 @@
 #splash:not(.hidden)~#music-panel .p-btn,
 #splash:not(.hidden)~#music-panel .playlist-item,
 #splash:not(.hidden)~#music-panel h4{text-shadow:none}
-#music-mini:hover{background:rgba(175,195,228,0.16);border-color:rgba(188,208,240,0.34);box-shadow:0 9px 26px rgba(3,8,20,0.32),inset 0 1px 0 rgba(222,236,255,0.16)}
-#music-mini:active{background:rgba(175,195,228,0.2)}
-#music-mini:hover .mini-icon{text-shadow:0 0 10px rgba(190,215,250,0.5)}
+/* hover / active 只调描边与深度，底色留在 floating 档，不新增第二层玻璃；发光已删 */
+#music-mini:hover{border-color:var(--glass-border-strong);box-shadow:var(--glass-shadow-floating),var(--neo-depth-md)}
+#music-mini:active{box-shadow:var(--glass-shadow-floating),var(--neo-pressed)}
 .mini-icon{font-size:1.1rem;flex-shrink:0}.mini-title{font-size:0.72rem;color:var(--text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:color 1.5s ease-out,text-shadow 1.5s ease-out}
 #music-panel{position:fixed;bottom:24px;left:24px;z-index:91;width:300px;max-width:calc(100vw - 48px);padding:20px;border-radius:20px;display:none;animation:panelIn 0.4s var(--transition);
   transition:background 1.5s ease-out,border-color 1.5s ease-out,box-shadow 1.5s ease-out,color 1.5s ease-out}
@@ -61,8 +61,9 @@
 .page-overlay.show{display:block}
 ::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:rgba(175,195,228,0.2);border-radius:2px}
 .toast-stack{position:fixed;bottom:80px;left:0;right:0;z-index:600;display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:none}
-.toast{padding:10px 24px;border-radius:12px;background:rgba(175,195,228,0.1);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border:1px solid var(--glass-border);color:var(--text-primary);font-size:0.82rem;white-space:nowrap;animation:toastIn 0.4s var(--transition),toastOut 0.4s var(--transition) 2.2s forwards}
-body:not(.theme-infernal) .toast{background:linear-gradient(160deg,rgba(255,255,255,0.62),rgba(224,237,252,0.42));backdrop-filter:blur(22px) saturate(1.5);-webkit-backdrop-filter:blur(22px) saturate(1.5);border:1px solid rgba(255,255,255,0.65);border-radius:14px;box-shadow:0 10px 30px rgba(70,110,170,0.16),inset 0 1px 0 rgba(255,255,255,0.85),inset 0 -1px 0 rgba(150,190,235,0.28);color:#12305a;font-weight:400;text-shadow:none}
+/* Toast：与 dock / 时钟同属 floating 档 —— 一套 bg / border / blur / shadow，两套主题各自成立，
+   因此不再需要浅色主题的单独皮肤。 */
+.toast{padding:10px 24px;border-radius:var(--glass-radius-md);background:var(--glass-bg-floating);border:1px solid var(--glass-border-floating);backdrop-filter:var(--glass-filter-md);-webkit-backdrop-filter:var(--glass-filter-md);box-shadow:var(--glass-shadow-floating);color:var(--content-primary);font-size:0.82rem;white-space:nowrap;animation:toastIn 0.4s var(--transition),toastOut 0.4s var(--transition) 2.2s forwards}
 @keyframes toastIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
 @keyframes toastOut{to{opacity:0;transform:translateY(-10px)}}
 .empty-state{text-align:center;padding:60px 20px;color:var(--silver);font-size:0.88rem;opacity:0.8}
@@ -96,15 +97,10 @@ body:not(.theme-infernal) .toast{background:linear-gradient(160deg,rgba(255,255,
   .home-content{padding-top:10vh}
 }
 /* === DEFAULT THEME: glassmorphism mini-windows === */
-body:not(.theme-infernal) #music-mini{background:rgba(255,255,255,0.32);border-color:rgba(180,215,245,0.5);backdrop-filter:blur(22px) saturate(1.5);-webkit-backdrop-filter:blur(22px) saturate(1.5);box-shadow:0 4px 20px rgba(100,160,220,0.1)}
-body:not(.theme-infernal) #music-mini:hover{background:rgba(255,255,255,0.5);border-color:rgba(140,195,240,0.65);box-shadow:0 9px 26px rgba(100,160,220,0.2),inset 0 1px 0 rgba(255,255,255,0.85)}
-body:not(.theme-infernal) #music-mini:active{background:rgba(240,248,255,0.55)}
 body:not(.theme-infernal) #music-mini .mini-title{color:#1e3a50}
 body:not(.theme-infernal) #music-mini .mini-icon{color:#2a5070}
-body:not(.theme-infernal) #fab-dock{background:rgba(255,255,255,0.32);border-color:rgba(180,215,245,0.5);backdrop-filter:blur(22px) saturate(1.5);-webkit-backdrop-filter:blur(22px) saturate(1.5);box-shadow:0 4px 20px rgba(100,160,220,0.1)}
-body:not(.theme-infernal) #icode-mini:hover::before,body:not(.theme-infernal) #chat-mini:hover::before{background:rgba(255,255,255,0.4)}
-body:not(.theme-infernal) #icode-mini:active::before,body:not(.theme-infernal) #chat-mini:active::before{background:rgba(255,255,255,0.5)}
-body:not(.theme-infernal) .fab-sep{background:rgba(120,170,220,0.35)}
+/* #music-mini / #fab-dock / .fab-sep / dock 分段的浅色皮肤已删：它们现在直接吃 floating 档
+   token，浅色与暗色各自成立，不再需要主题覆写。字色仍按主题保留（见下）。 */
 body:not(.theme-infernal) #icode-mini .icode-label,body:not(.theme-infernal) #chat-mini .mini-title{color:#1e3a50}
 body:not(.theme-infernal) #chat-mini .mini-icon svg{stroke:#2a5070}
 body:not(.theme-infernal) #icode-mini .mini-icon svg{color:#2a5070}

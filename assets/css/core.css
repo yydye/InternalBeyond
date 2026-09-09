@@ -289,19 +289,33 @@ body.theme-infernal .bg-blur-active{filter:blur(22px) brightness(0.48) saturate(
   animation:splashDawn 58s ease-in-out infinite alternate}
 @keyframes splashDawn{0%{opacity:0.88;filter:brightness(1.0) saturate(1.03)}100%{opacity:1;filter:brightness(1.08) saturate(1.06)}}
 
-/* NAVIGATION */
+/* NAVIGATION — P10 Batch 2
+   导航不再是「一条有边框的白玻璃板」，而是一层上浓下淡、两端化开的面纱：
+   罩色取 ladder 的 elevated 档，只在标题与链接背后最实（正文行处约 0.47，
+   与原 0.45 的平铺底同量级，因此对比度没有回退），向下收到 ~0.31、两端收到 ~0.34。
+   没有描边、没有投影、没有发光；blur 只用 ladder 的 md 档（原 24px 为任意值）。
+   底部刻意留一层薄底而不是收干净：磨砂层的下边缘需要一点罩色压住，
+   否则滚动时正文会从模糊带的下沿「切」出来。 */
 #navbar{position:fixed;top:10px;left:28px;right:28px;z-index:var(--layer-nav);display:flex;align-items:center;justify-content:flex-start;gap:28px;
-  padding:0 22px;height:44px;border-radius:14px;background:transparent;
-  backdrop-filter:blur(24px) saturate(1.15);-webkit-backdrop-filter:blur(24px) saturate(1.15);
-  border:1px solid rgba(175,195,228,0.15);box-shadow:0 3px 16px rgba(0,0,0,0.1),0 1px 6px rgba(132,162,210,0.08);
-  transition:all 0.8s var(--transition);opacity:0;transform:translateY(-30px)}
+  padding:0 22px;height:44px;border-radius:14px;border:0;box-shadow:none;
+  /* 底罩写成与子页同形的 radial-gradient（三停靠点、同位置），只是全透明：
+     这样 home → 子页切换时 background 仍可插值，不会突然跳一下。 */
+  background:radial-gradient(105% 165% at 50% -12%,transparent 0%,transparent 46%,transparent 100%);
+  backdrop-filter:var(--glass-filter-md);-webkit-backdrop-filter:var(--glass-filter-md);
+  transition:background 0.8s var(--transition),opacity 0.8s var(--transition),transform 0.8s var(--transition);
+  opacity:0;transform:translateY(-30px)}
 #navbar.visible{opacity:1;transform:translateY(0)}
 .nav-brand{font-family:var(--font-display);font-style:normal;font-weight:300;font-size:1.1rem;letter-spacing:0.02em;
   cursor:pointer;transition:color 0.4s;display:flex;align-items:center;gap:6px;white-space:nowrap}
 .nav-brand:hover{opacity:0.8}
 #ghost-icon path,#ghost-icon line,#ghost-icon use,#ghost-icon g{transition:fill 1.2s ease,opacity 1.2s ease}
 .nav-links{display:flex;gap:26px;list-style:none}
-.nav-links a{text-decoration:none;font-family:var(--font-display);font-size:0.92rem;font-weight:400;letter-spacing:0.08em;transition:all 0.3s;cursor:pointer}
+/* 链接状态只靠字色 + 一道 1px 下划线：hover 起线到 38%，active 实线到满。
+   不用发光、不用药丸底色，也不占布局（text-decoration 不参与排版）。 */
+.nav-links a{text-decoration:none;font-family:var(--font-display);font-size:0.92rem;font-weight:400;letter-spacing:0.08em;cursor:pointer;
+  transition:color 0.3s var(--transition),text-decoration-color 0.3s var(--transition)}
+.nav-links a:hover{text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:4px;text-decoration-color:color-mix(in srgb,currentColor 38%,transparent)}
+.nav-links a.active{text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:4px;text-decoration-color:currentColor}
 .nav-links a:focus-visible{outline:1px solid currentColor;outline-offset:4px;border-radius:3px}
 .nav-actions{display:flex;gap:8px;align-items:center;margin-left:auto}
 /* Nav user identity — avatar + name (display only) */
@@ -314,32 +328,46 @@ body.theme-infernal .bg-blur-active{filter:blur(22px) brightness(0.48) saturate(
 #navbar.on-subpage .nav-user-name{color:#bccae2}
 body:not(.theme-infernal) #navbar.on-subpage .nav-user-name{color:#1a3262}
 body:not(.theme-infernal) #navbar.on-subpage .nav-user-avatar{border-color:rgba(50,90,130,0.35)}
-.nav-btn{padding:5px 13px;border-radius:18px;border:1px solid rgba(175,195,228,0.3);background:rgba(255,255,255,0.08);
-  font-size:0.65rem;font-weight:500;cursor:pointer;transition:all 0.4s;font-family:'Noto Sans SC',sans-serif}
-.nav-btn:hover{box-shadow:0 0 14px rgba(172,202,238,0.25),0 0 24px rgba(172,202,238,0.12);border-color:rgba(172,202,238,0.5)}
-.theme-toggle{width:28px;height:28px;border-radius:50%;border:1px solid rgba(175,195,228,0.3);background:rgba(255,255,255,0.08);
-  cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all 0.4s;font-size:0.85rem}
-.theme-toggle:hover{box-shadow:0 0 14px rgba(172,202,238,0.25);border-color:rgba(172,202,238,0.5)}
+/* 导航里的小控件是「键」，不是玻璃面板 —— 唯一的 Neumorphism 2.0 落点：
+   rest=neo-depth-sm / hover=neo-depth-md / active=neo-pressed，位移 1px，无缩放。
+   描边由 currentColor 派生（首页深字→深边、暗色浅字→浅边），一行规则通吃四种底色；
+   前面先给一条 --border-soft 兜底，color-mix 万一不被支持也不会丢边框。 */
+.nav-btn{padding:5px 13px;border-radius:18px;background:transparent;border:1px solid var(--border-soft);
+  border-color:color-mix(in srgb,currentColor 34%,transparent);
+  font-size:0.65rem;font-weight:500;cursor:pointer;font-family:var(--font-ui);box-shadow:var(--neo-depth-sm);
+  transition:box-shadow var(--motion-fast) var(--transition),background var(--motion-fast) var(--transition),border-color var(--motion-fast) var(--transition),color var(--motion-fast) var(--transition)}
+.nav-btn:hover{background:var(--glass-bg-surface);border-color:color-mix(in srgb,currentColor 60%,transparent);box-shadow:var(--neo-depth-md)}
+.nav-btn:active{box-shadow:var(--neo-pressed);transform:translateY(1px)}
+.theme-toggle{width:28px;height:28px;border-radius:50%;background:transparent;border:1px solid var(--border-soft);
+  border-color:color-mix(in srgb,currentColor 34%,transparent);
+  cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:0.85rem;box-shadow:var(--neo-depth-sm);
+  transition:box-shadow var(--motion-fast) var(--transition),background var(--motion-fast) var(--transition),border-color var(--motion-fast) var(--transition),color var(--motion-fast) var(--transition)}
+.theme-toggle:hover{background:var(--glass-bg-surface);border-color:color-mix(in srgb,currentColor 60%,transparent);box-shadow:var(--neo-depth-md)}
+.theme-toggle:active{box-shadow:var(--neo-pressed);transform:translateY(1px)}
+.nav-btn:focus-visible,.theme-toggle:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px;box-shadow:var(--neo-depth-sm)}
 
-/* Nav Home: dark text */
-#navbar:not(.on-subpage) .nav-brand{color:#304870;text-shadow:0 1px 8px rgba(255,255,255,0.15)}
-#navbar:not(.on-subpage) .nav-links a{color:#364c74;text-shadow:0 1px 6px rgba(255,255,255,0.1)}
-#navbar:not(.on-subpage) .nav-links a:hover{color:#182852;text-shadow:0 0 12px rgba(30,60,90,0.35),0 0 24px rgba(30,60,90,0.15)}
-#navbar:not(.on-subpage) .nav-links a.active{color:#182852;text-shadow:0 0 12px rgba(30,60,90,0.28)}
-#navbar:not(.on-subpage) .nav-btn{color:#304870;border-color:rgba(50,70,90,0.3)}
-#navbar:not(.on-subpage) .nav-btn:hover{box-shadow:0 0 14px rgba(50,90,130,0.25),0 0 24px rgba(50,90,130,0.12);border-color:rgba(50,90,130,0.5)}
+/* Nav Home：首页两套主题都是浅雾底 → 一律深字。原有的白色发光已删。 */
+#navbar:not(.on-subpage) .nav-brand{color:#304870}
+#navbar:not(.on-subpage) .nav-links a{color:#364c74}
+#navbar:not(.on-subpage) .nav-links a:hover{color:#182852}
+#navbar:not(.on-subpage) .nav-links a.active{color:#182852}
+#navbar:not(.on-subpage) .nav-btn{color:#304870}
 #navbar:not(.on-subpage) .nav-brand svg{color:#304870}
-#navbar:not(.on-subpage) .theme-toggle{color:#304870;border-color:rgba(50,70,90,0.3)}
-#navbar:not(.on-subpage) .theme-toggle:hover{box-shadow:0 0 14px rgba(50,90,130,0.25);border-color:rgba(50,90,130,0.5)}
-/* Nav Subpage: light text */
+#navbar:not(.on-subpage) .theme-toggle{color:#304870}
+/* Nav Subpage：面纱罩色直接取 ladder 的 elevated 档 —— 浅色档是白雾、暗色档是深蓝雾，
+   同一行声明在两套主题下各自成立，因此不再需要按主题写两条背景。 */
+#navbar.on-subpage{background:radial-gradient(105% 165% at 50% -12%,
+  color-mix(in srgb,var(--glass-bg-elevated) 96%,transparent) 0%,
+  color-mix(in srgb,var(--glass-bg-elevated) 58%,transparent) 46%,
+  color-mix(in srgb,var(--glass-bg-elevated) 20%,transparent) 100%)}
+/* 暗色（Infernal）子页：浅字。hover / active 的 0 0 12px 光晕已删，状态只靠字色与下划线。 */
 #navbar.on-subpage .nav-brand{color:#dae5f5}
 #navbar.on-subpage .nav-links a{color:#bccae2}
 #navbar.on-subpage .nav-links a:hover{color:#eef2fa}
-#navbar.on-subpage .nav-links a.active{color:#eef2fa;text-shadow:0 0 10px rgba(140,185,240,.22)}
-#navbar.on-subpage .nav-btn{color:#bccae2;border-color:rgba(175,195,228,0.3)}
+#navbar.on-subpage .nav-links a.active{color:#eef2fa}
+#navbar.on-subpage .nav-btn{color:#bccae2}
 #navbar.on-subpage .nav-brand svg{color:#bccae2}
-#navbar.on-subpage .theme-toggle{color:#bccae2;border-color:rgba(175,195,228,0.3)}
-#navbar.on-subpage{background:rgba(25,38,65,0.12)}
+#navbar.on-subpage .theme-toggle{color:#bccae2}
 
 /* Internal theme: white/light-blue sub-page overlay & UI */
 body:not(.theme-infernal) .page-overlay.show{background:rgba(235,244,255,0.32);backdrop-filter:blur(14px) saturate(1.1);transition:background 3s ease,backdrop-filter 3s ease saturate(1.1);-webkit-backdrop-filter:blur(14px) saturate(1.1)}
@@ -350,21 +378,21 @@ body:not(.theme-infernal) .modal h3,body:not(.theme-infernal) .modal label,body:
 body:not(.theme-infernal) .group-dialog h3,body:not(.theme-infernal) .group-dialog label,body:not(.theme-infernal) .group-dialog span{text-shadow:0 0 8px rgba(255,255,255,0.4),0 0 18px rgba(255,255,255,0.25),0 0 32px rgba(255,255,255,0.1)}
 body:not(.theme-infernal) #music-panel h4,body:not(.theme-infernal) #music-panel .now-playing,body:not(.theme-infernal) #music-panel .playlist-item,body:not(.theme-infernal) #music-panel .p-btn{text-shadow:0 0 8px rgba(255,255,255,0.4),0 0 18px rgba(255,255,255,0.25),0 0 32px rgba(255,255,255,0.1)}
 body:not(.theme-infernal) #chat-panel .chat-ai-name,body:not(.theme-infernal) #chat-panel .chat-msg,body:not(.theme-infernal) #chat-panel .cpf-item,body:not(.theme-infernal) #chat-panel .chat-typing{text-shadow:0 0 8px rgba(255,255,255,0.4),0 0 18px rgba(255,255,255,0.25),0 0 32px rgba(255,255,255,0.1)}
-body:not(.theme-infernal) #music-mini .mini-title,body:not(.theme-infernal) #chat-mini .mini-title,body:not(.theme-infernal) #icode-mini .icode-label{text-shadow:0 0 8px rgba(255,255,255,0.4),0 0 18px rgba(255,255,255,0.25),0 0 32px rgba(255,255,255,0.1)}
+/* 浮动控件（music-mini / dock 标签）的白色发光已删：Batch 2 起它们各自带 floating 玻璃底，
+   对比度由底自己给，不靠光晕。 */
 
 /* === Light mode: brighten cards & buttons === */
 body:not(.theme-infernal) .glass-card{background:var(--surface-card);border-color:var(--border-soft);box-shadow:var(--shadow-card);color:var(--content-primary)}
 body:not(.theme-infernal) .glass-card:hover{border-color:var(--border-strong);box-shadow:var(--shadow-panel)}
-body:not(.theme-infernal) #navbar.on-subpage{background:rgba(248,252,255,0.45);border-color:rgba(200,225,248,0.3)}
-body:not(.theme-infernal) #navbar.on-subpage .nav-brand{color:#1a3262;text-shadow:0 0 10px rgba(255,255,255,0.4)}
-body:not(.theme-infernal) #navbar.on-subpage .nav-links a{color:#233e6c;text-shadow:0 0 10px rgba(255,255,255,0.4)}
-body:not(.theme-infernal) #navbar.on-subpage .nav-links a:hover{color:#0a1e42;text-shadow:0 0 12px rgba(20,50,80,0.35),0 0 24px rgba(20,50,80,0.15)}
-body:not(.theme-infernal) #navbar.on-subpage .nav-links a.active{color:#0a1e42;text-shadow:0 0 10px rgba(255,255,255,.4)}
-body:not(.theme-infernal) #navbar.on-subpage .nav-btn{color:#1a3262;border-color:rgba(50,90,130,0.35)}
-body:not(.theme-infernal) #navbar.on-subpage .nav-btn:hover{box-shadow:0 0 14px rgba(50,100,160,0.3),0 0 24px rgba(50,100,160,0.15);border-color:rgba(50,100,160,0.55)}
+/* 浅色子页：背景罩已由 --glass-bg-elevated 的浅色档统一给出（见上），这里只留字色。
+   发光全删；.nav-btn / .theme-toggle 的描边改由 currentColor 派生，不再按主题覆盖。 */
+body:not(.theme-infernal) #navbar.on-subpage .nav-brand{color:#1a3262}
+body:not(.theme-infernal) #navbar.on-subpage .nav-links a{color:#233e6c}
+body:not(.theme-infernal) #navbar.on-subpage .nav-links a:hover{color:#0a1e42}
+body:not(.theme-infernal) #navbar.on-subpage .nav-links a.active{color:#0a1e42}
+body:not(.theme-infernal) #navbar.on-subpage .nav-btn{color:#1a3262}
 body:not(.theme-infernal) #navbar.on-subpage .nav-brand svg{color:#1a3262}
-body:not(.theme-infernal) #navbar.on-subpage .theme-toggle{color:#1a3262;border-color:rgba(50,90,130,0.35)}
-body:not(.theme-infernal) #navbar.on-subpage .theme-toggle:hover{box-shadow:0 0 14px rgba(50,100,160,0.3);border-color:rgba(50,100,160,0.55)}
+body:not(.theme-infernal) #navbar.on-subpage .theme-toggle{color:#1a3262}
 body:not(.theme-infernal) .page.active .post-card-title{color:#0f2045}
 body:not(.theme-infernal) .page.active .post-card-preview{color:#0a1e42}
 body:not(.theme-infernal) .page.active .post-card-meta{color:#2b487a;background-image:linear-gradient(90deg,rgba(50,100,160,0.22),transparent 60%)}

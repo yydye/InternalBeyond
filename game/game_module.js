@@ -141,17 +141,19 @@ const CSS = `
 #game-panel,#page-game{-webkit-user-select:none;-moz-user-select:none;user-select:none;-webkit-touch-callout:none}
 #game-panel input,#game-panel textarea,#page-game input,#page-game textarea{-webkit-user-select:text;-moz-user-select:text;user-select:text}
 
-/* ── GAME MINI ICON ──────────────────────────────────── */
+/* ── GAME MINI ICON（Room 边缘标签）────────────────────
+   P10 Batch 2：贴右缘的浮动标签走 ladder 的 floating 档，两套主题共用一套 token，
+   因此删掉原来的按主题皮肤覆写；hover 只加深描边与深度（Neo 落在小控件上）。 */
 #game-mini{position:fixed;right:0;top:50%;transform:translateY(-50%);z-index:90;
-  padding:48px 11px;border-radius:8px 0 0 8px;background:rgba(20,30,50,0.35);border:1px solid var(--glass-border);border-right:none;
-  backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);cursor:pointer;
-  transition:all 0.4s var(--transition);opacity:0;writing-mode:vertical-lr;
-  letter-spacing:0.18em;font-family:'Cormorant Garamond',serif;font-style:italic;font-size:0.88rem;color:var(--text-muted)}
+  padding:48px 11px;border-radius:var(--glass-radius-sm) 0 0 var(--glass-radius-sm);
+  background:var(--glass-bg-floating);border:1px solid var(--glass-border-floating);border-right:none;
+  backdrop-filter:var(--glass-filter-md);-webkit-backdrop-filter:var(--glass-filter-md);
+  box-shadow:var(--glass-shadow-floating);cursor:pointer;
+  transition:background .4s var(--transition),border-color .4s var(--transition),box-shadow .4s var(--transition),color .4s var(--transition);
+  opacity:0;writing-mode:vertical-lr;
+  letter-spacing:0.18em;font-family:var(--font-display);font-style:italic;font-size:0.88rem;color:var(--content-secondary)}
 #game-mini.visible{opacity:1;transform:translateY(-50%)}
-#game-mini:hover{background:rgba(175,195,228,0.15);color:var(--light)}
-body.theme-infernal #game-mini{color:#ffffff}
-body:not(.theme-infernal) #game-mini{background:rgba(255,255,255,0.28);border-color:rgba(180,215,245,0.4);color:#2b487a}
-body:not(.theme-infernal) #game-mini:hover{background:rgba(255,255,255,0.45);color:#152c58}
+#game-mini:hover{border-color:var(--glass-border-strong);color:var(--content-primary);box-shadow:var(--glass-shadow-floating),var(--neo-depth-md)}
 
 /* ── PET WINDOW (350×350 viewport + panel header) ────── */
 #game-pet-window{position:fixed;z-index:91;width:350px;border-radius:12px;overflow:hidden;display:none;
