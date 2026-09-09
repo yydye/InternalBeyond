@@ -242,6 +242,85 @@ const socialText = fs.readFileSync(path.join(root, 'assets', 'js', 'social.js'),
 const ibmcText = fs.readFileSync(path.join(root, 'assets', 'js', 'ib-model-core.js'), 'utf8').replace(/^\uFEFF/, '');
 const roleProviderNoAstra = !/<option value="astra">/.test(html) && !/astra:\s*\{/.test(socialText) && !/astra:\s*\{/.test(ibmcText);
 check('astra.notRoleProvider', roleProviderNoAstra, 'astra 仍残留为角色 Provider（HTML option / PROVIDERS）');
+
+/* ── Provider read-path 收敛守卫（P11-0）────────────────────────────────
+   唯一 wire-format 决策点 = assets/js/provider-directory.js（canonical 层）。
+   5 条读取路径必须"委托 canonical + 只保留同域兜底"，不得各自复制决策表达式：
+     communication._providerFormat        → PROVIDERS_DIR.providerFormat
+     agent-runtime.resolveProviderFormat  → 同源 resolveProviderFormat（禁止跨表）
+     ib-model-core.providerFormat         → CANON.providerFormat
+     active-diary._activeModelFormat      → IB.runtime.modelFormat
+     moments._momentsFormat               → IB.runtime.modelFormat
+     active-diary/diary._diaryFormat      → IB.runtime.modelFormat
+   本守卫是 P11-0 收敛的锁：内联回去（复制 known/hasFormat 决策或直读裸表）即失败。 */
+const readJs = rel => fs.readFileSync(path.join(root, rel), 'utf8').replace(/^\uFEFF/, '');
+const dirText = readJs('assets/js/provider-directory.js');
+const rtText = readJs('assets/js/agent-runtime.js');
+const domainShims = [
+  ['assets/js/active-diary.js', '_activeModelFormat'],
+  ['assets/js/moments.js', '_momentsFormat'],
+  ['assets/js/active-diary/diary.js', '_diaryFormat']
+].map(([rel, fn]) => [rel, readJs(rel), fn]);
+
+/* 1 · canonical 层：三个导出 + 单一决策体 + providerFormat 委托 */
+for (const fn of ['providerEntry', 'resolveProviderFormat', 'providerFormat']) {
+  check('provider.canonicalExport.' + fn, new RegExp('\\b' + fn + ': ' + fn + '\\b').test(dirText), 'provider-directory.js 未导出 ' + fn);
+}
+check('provider.canonicalDecisionBody', /known:\s*true,\s*hasFormat:\s*!!fmt/.test(dirText) && /known:\s*false,\s*hasFormat:\s*false/.test(dirText), 'canonical 决策体（known/hasFormat 两分支）缺失');
+check('provider.canonicalFormatDelegates', /function providerFormat\(provider\) \{\s*return resolveProviderFormat\(provider\)\.format;\s*\}/.test(dirText), 'providerFormat 未委托 resolveProviderFormat');
+check('provider.htmlLoadOrder', scriptSources.includes('assets/js/provider-directory.js')
+  && scriptSources.indexOf('assets/js/provider-directory.js') < scriptSources.indexOf('assets/js/ib-model-core.js')
+  && scriptSources.indexOf('assets/js/provider-directory.js') < scriptSources.indexOf('assets/js/agent-runtime.js'),
+  'provider-directory.js 未在 ib-model-core / agent-runtime 之前加载');
+
+/* 2 · canonical 行为锁：providerFormat(p) ≡ resolveProviderFormat(p).format（含未知/空/null） */
+const canon = require(path.join(root, 'assets', 'js', 'provider-directory.js'));
+check('provider.canonicalSurface', typeof canon.providerEntry === 'function' && typeof canon.resolveProviderFormat === 'function' && typeof canon.providerFormat === 'function', 'canonical 层导出不完整');
+check('provider.canonicalDirNotEmpty', Object.keys(canon.PROVIDERS).length >= 15, String(Object.keys(canon.PROVIDERS).length));
+const canonDrift = [];
+for (const p of Object.keys(canon.PROVIDERS).concat(['__unknown__', '', null, undefined])) {
+  const decided = canon.resolveProviderFormat(p);
+  if (decided.format !== canon.providerFormat(p)) canonDrift.push('format:' + String(p));
+  if (!decided.format || typeof decided.known !== 'boolean' || typeof decided.hasFormat !== 'boolean') canonDrift.push('shape:' + String(p));
+}
+check('provider.canonicalFormatEquivalence', canonDrift.length === 0, canonDrift.join(', '));
+check('provider.canonicalUnknownDefault', JSON.stringify(canon.resolveProviderFormat('__unknown__')) === JSON.stringify({ format: 'openai', known: false, hasFormat: false }), JSON.stringify(canon.resolveProviderFormat('__unknown__')));
+check('provider.canonicalEntryNull', canon.providerEntry(null) === null && canon.providerEntry('__unknown__') === null);
+
+/* 3 · ib-model-core：委托 CANON（裸表兜底仅限无 resolver 的宿主） */
+check('provider.ibmcDelegatesFormat', /typeof CANON\.providerFormat === 'function'\) return CANON\.providerFormat\(provider\)/.test(ibmcText), 'ib-model-core.providerFormat 未委托 CANON');
+check('provider.ibmcDelegatesResolve', /typeof CANON\.resolveProviderFormat === 'function'\) return CANON\.resolveProviderFormat\(provider\)/.test(ibmcText), 'ib-model-core.resolveProviderFormat 未委托 CANON');
+check('provider.ibmcExportsResolve', /resolveProviderFormat:\s*resolveProviderFormat/.test(ibmcText), 'ib-model-core 未导出 resolveProviderFormat');
+
+/* 4 · agent-runtime：同源 resolver（跨表读取会让 known/hasFormat 漂移） */
+check('provider.rtSameSourceResolver', /source === 'IBModelCore'\) return pick\(window\.IBModelCore\)/.test(rtText)
+  && /source === 'PROVIDERS_DIR'\) return pick\(window\.PROVIDERS_DIR\)/.test(rtText),
+  'agent-runtime 必须从本次实际读到的表取 resolver');
+check('provider.rtConsumesCanonical', /const decided = canon \? canon\(provider\) : null;/.test(rtText), 'agent-runtime 未消费 canonical 决策');
+check('provider.rtLabels', /'unknown-provider-default'/.test(rtText) && /'\(no-format-default\)'/.test(rtText), 'agent-runtime 的 source 标签被改写');
+check('provider.rtModelFormatExported', /modelFormat:\s*modelFormat/.test(rtText), 'agent-runtime 未导出 modelFormat（三个后台域的唯一实现）');
+
+/* 5 · communication：委托 canonical */
+check('provider.commDelegatesCanonical', /_dir\.providerFormat\(cfg&&cfg\.provider\)/.test(comMainText), 'communication._providerFormat 未委托 PROVIDERS_DIR.providerFormat');
+
+/* 6 · 三个后台域 shim：委托 IB.runtime.modelFormat、逐字一致、不内联裸表 */
+const shimBodies = domainShims.map(([, text, fn]) => {
+  const body = (text.match(new RegExp('function ' + fn + '\\(cfg,runtime\\)\\{[\\s\\S]*?\\n\\}')) || [''])[0];
+  return body.replace('function ' + fn, 'function _XFormat').replace(/\r\n/g, '\n');
+});
+domainShims.forEach(([rel, text, fn], i) => {
+  check('provider.shimDelegates.' + rel, /IB\.runtime\.modelFormat\(cfg,runtime\)/.test(shimBodies[i]), fn + ' 未委托 IB.runtime.modelFormat');
+  check('provider.shimNoRawTable.' + rel, !/PROVIDERS\s*\[[^\]]*\]\s*&&[^;]*\.format/.test(text), rel + ' 重新内联了裸表 format 读取');
+});
+check('provider.shimsIdentical', shimBodies.every(b => b && b === shimBodies[0]), '三个后台域 shim 必须逐字一致（同一实现的同域副本）');
+
+/* 7 · 消费者不得复制 canonical 决策体 */
+const decisionLeaks = [['agent-runtime.js', rtText], ['communication.js', comMainText]]
+  .concat(domainShims.map(([rel, text]) => [rel, text]))
+  .filter(([, text]) => /known:\s*(?:true|false)\s*,\s*hasFormat/.test(text))
+  .map(([rel]) => rel);
+check('provider.noDecisionInConsumers', decisionLeaks.length === 0, '这些文件复制了 canonical 决策体: ' + decisionLeaks.join(', '));
+
 const mbScriptOk = /<script src="assets\/js\/middle-brain\.js">/.test(html);
 check('middleBrain.scriptLoaded', mbScriptOk, 'middle-brain.js 未挂载');
 const mbFile = path.join(root, 'assets', 'js', 'middle-brain.js');
