@@ -321,28 +321,69 @@ const decisionLeaks = [['agent-runtime.js', rtText], ['communication.js', comMai
   .map(([rel]) => rel);
 check('provider.noDecisionInConsumers', decisionLeaks.length === 0, '这些文件复制了 canonical 决策体: ' + decisionLeaks.join(', '));
 
-const mbScriptOk = /<script src="assets\/js\/middle-brain\.js">/.test(html);
-check('middleBrain.scriptLoaded', mbScriptOk, 'middle-brain.js 未挂载');
-const mbFile = path.join(root, 'assets', 'js', 'middle-brain.js');
-const mbText = mbFile && fs.readFileSync(mbFile, 'utf8').replace(/^\uFEFF/, '');
-const mbApiOk = /getMiddleBrainConfig/.test(mbText) && /saveMiddleBrainConfig/.test(mbText);
+/* ── Middle Brain 分层守卫（P11-1A 物理拆分）─────────────────────────────
+   实现拆成 config / policy / astra / judge 四层 + thin facade，职责不再混在一个文件。
+   本守卫是拆分的锁：文件缺失、层间串味、window 兼容符号被删、local fallback 开始注入、
+   Gate 落盘、Judge 默认开启、或出现新的生产消费者，都会失败。 */
+const mbLayerFiles = ['middle-brain-config.js', 'middle-brain-policy.js', 'middle-brain-astra.js',
+  'middle-brain-judge.js', 'middle-brain.js'];
+const mbTexts = {};
+for (const name of mbLayerFiles) {
+  const file = path.join(root, 'assets', 'js', name);
+  mbTexts[name] = fs.existsSync(file) ? fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '') : '';
+}
+const mbAllText = Object.values(mbTexts).join('\n');
+const mbText = mbTexts['middle-brain.js'];
+const mbScriptOk = mbLayerFiles.every((name, i) => scriptSources.includes('assets/js/' + name)
+  && (i === 0 || scriptSources.indexOf('assets/js/' + name) > scriptSources.indexOf('assets/js/' + mbLayerFiles[i - 1])));
+check('middleBrain.scriptLoaded', mbScriptOk, 'middle-brain 分层脚本未按序挂载（config → policy → astra → judge → facade）');
+/* 四层职责不得再混回单文件：每层必须自带其代表符号。 */
+const mbLayerSymbols = {
+  'middle-brain-config.js': [/MB_DEFAULTS\s*=/, /async function getMiddleBrainConfig/, /MB_SYSTEM_PROMPT\s*=/],
+  'middle-brain-policy.js': [/async function middleBrainOrganizeContext/, /function middleBrainCompressContext/, /async function middleBrainAdmissionGate/],
+  'middle-brain-astra.js': [/async function middleBrainAstraInvoke/, /buildMiddleBrainResponsesRequest/, /AstraAdapter|IBModelCore/],
+  'middle-brain-judge.js': [/async function middleBrainAstraJudge/, /MB_JUDGE_SCHEMA\s*=/],
+  'middle-brain.js': [/IB\.middleBrain\s*=/, /middleBrainCompressPipeline/]
+};
+const mbLayerBad = Object.entries(mbLayerSymbols)
+  .filter(([name, res]) => res.some(re => !re.test(mbTexts[name])))
+  .map(([name]) => name);
+check('middleBrain.layerSplit', mbLayerBad.length === 0, '分层职责缺失或混回单文件: ' + mbLayerBad.join(', '));
+const mbApiOk = /getMiddleBrainConfig/.test(mbTexts['middle-brain-config.js']) && /saveMiddleBrainConfig/.test(mbTexts['middle-brain-config.js']);
 check('middleBrain.configAPI', mbApiOk, 'middle-brain 缺少 config API');
 const mbUiOk = /id="middle-brain-section"/.test(html) && /id="mb-endpoint"/.test(html) && /id="mb-model"/.test(html) && /id="mb-apikey"/.test(html);
 check('middleBrain.uiSection', mbUiOk, 'middle-brain 设置 UI 缺失（section/endpoint/model/apikey）');
-const mbReuseAdapter = /AstraAdapter/.test(mbText) || /IBModelCore/.test(mbText);
+const mbReuseAdapter = /AstraAdapter/.test(mbAllText) || /IBModelCore/.test(mbAllText);
 check('middleBrain.reuseAdapter', mbReuseAdapter, 'middle-brain 未复用 ib-model-core 的 AstraAdapter');
 /* Middle Brain 系统提示词 = 前端只读常量：不出现在 editable 字段（无 mb-system/textarea 绑定），只作为 JS 常量。 */
-check('middleBrain.sysPromptConst', /MB_SYSTEM_PROMPT\s*=/.test(mbText) && /getMiddleBrainSystemPrompt/.test(mbText), 'middle-brain 缺少系统提示词只读常量');
+check('middleBrain.sysPromptConst', /MB_SYSTEM_PROMPT\s*=/.test(mbAllText) && /getMiddleBrainSystemPrompt/.test(mbAllText), 'middle-brain 缺少系统提示词只读常量');
 check('middleBrain.sysPromptNoEditableUI', !/<textarea[^>]*id="mb-system/.test(html) && !/id="mb-system/.test(html), '用户不应有可编辑的 Middle Brain 系统提示词字段');
 /* Middle Brain v0 context pipeline 只读：context 组织/压缩函数体不得改写 memories/understandings/threads。 */
 const ctxFns = ['middleBrainOrganizeContext', 'middleBrainCompressContext', 'middleBrainContextPipeline', '_mbCompressLines'];
 let mbMutating = [];
-for (const fn of ctxFns) {
-  const re = new RegExp('function ' + fn + '[\\s\\S]*?\\n  \\}', 'm');
-  const m = mbText.match(re);
-  if (m && /dbPut|dbDelete/.test(m[0])) mbMutating.push(fn);
+for (const [name, text] of Object.entries(mbTexts)) {
+  for (const fn of ctxFns) {
+    const re = new RegExp('function ' + fn + '[\\s\\S]*?\\n  \\}', 'm');
+    const m = text.match(re);
+    if (m && /dbPut|dbDelete/.test(m[0])) mbMutating.push(name + ':' + fn);
+  }
 }
-check('middleBrain.ctxReadOnly', mbMutating.length === 0, 'middle brain context 函数不得写存储: ' + mbMutating.join(','));
+check('middleBrain.ctxReadOnly', mbMutating.length === 0, 'middle brain context 函数不得写存储: ' + mbMutating.join(', '));
+/* window 兼容符号：1A 不删除（43 条赋值，含历史重复项）。 */
+const mbWinCompat = (mbText.match(/^\s*window\.\w+ = (?:NS\.)?\w+;\s*$/gm) || []).length;
+check('middleBrain.windowCompatPreserved', mbWinCompat === 43, 'window 兼容符号数量变化: ' + mbWinCompat);
+/* local fallback 当前语义 = 不注入：仅 source==='astra' 才替换 context。 */
+check('middleBrain.localNoInject', /_mbRes\.source==='astra'/.test(comMainText), 'communication 的 local fallback 语义被改动（local 不得注入）');
+/* Admission Gate 状态仍是纯内存：policy 层不得落盘 / 不得用 web storage。 */
+check('middleBrain.gateStateMemoryOnly', /var MB_GATE_STATE = \{\}/.test(mbTexts['middle-brain-policy.js'])
+  && !/dbPut|dbDelete|sessionStorage|localStorage/.test(mbTexts['middle-brain-policy.js']),
+  'Gate 状态被持久化（1A 要求保持纯内存）');
+/* Judge 默认关闭 + 生产调用点仍只有 single-chat 一条。 */
+check('middleBrain.judgeDefaultOff', /middleBrainJudgeEnabled:\s*false/.test(mbTexts['middle-brain-config.js']), 'Judge 默认值被改为开启');
+const mbConsumers = sources.filter(f => f.endsWith('.js') && !mbLayerFiles.includes(path.basename(f)))
+  .filter(f => /middleBrainCompressPipeline|middleBrainAstraInvoke|middleBrainAdmissionGate\s*\(/.test(fs.readFileSync(f, 'utf8')))
+  .map(f => path.relative(root, f));
+check('middleBrain.singleConsumer', mbConsumers.length === 1 && mbConsumers[0] === path.join('assets', 'js', 'communication.js'), 'Middle Brain 生产消费者数量变化: ' + mbConsumers.join(', '));
 
 console.log(failures ? `\nFrontend structure regression failed: ${failures}` : '\nFrontend structure regression passed ✔');
 process.exit(failures ? 1 : 0);

@@ -1393,12 +1393,15 @@ async function _buildSingleChatContext(cfg,opts){
      - Astra 成功 → 其输出是这四个块的压缩/筛选/重写表示 → **替换**原块（禁止原块 + 压缩结果双份注入）；
      - source==='local' / 未启用 / 失败 / 超时 → 原样保留四个块（与迁移前行为一致，零改动）。 */
   try{
-    if(_threadMemOk&&typeof window.middleBrainEnabled==='function'&&typeof window.middleBrainCompressPipeline==='function'){
-      var _mbOn=await window.middleBrainEnabled();
+    /* P11-1A：统一走 canonical 门面 IB.middleBrain（与 window._middleBrain 同一对象，
+       由 middle-brain.js 建立）；不再直接读散落的 window.middleBrain* 符号。 */
+    var _mbFacade=(window.IB&&window.IB.middleBrain)||window._middleBrain||null;
+    if(_threadMemOk&&_mbFacade&&typeof _mbFacade.isMiddleBrainEnabled==='function'&&typeof _mbFacade.middleBrainCompressPipeline==='function'){
+      var _mbOn=await _mbFacade.isMiddleBrainEnabled();
       if(_mbOn){
-        var _mbRes=await window.middleBrainCompressPipeline(cfg.id, _ctxText||'', {
+        var _mbRes=await _mbFacade.middleBrainCompressPipeline(cfg.id, _ctxText||'', {
           memoryCtx:_memCtx, understandingCtx:_uCtx, threadCtx:_tCtx, momentsCtx:_momCtx,
-          /* C2 step 1：同一个只读快照一并交给 Middle Brain（其 organize 优先读快照，见 middle-brain.js）。
+          /* C2 step 1：同一个只读快照一并交给 Middle Brain（其 organize 优先读快照，见 middle-brain-policy.js）。
              两者值逐位一致，快照缺失时 MB 回落到 opts.*Ctx → 行为与 C1 完全相同。 */
           contextSnapshot:_ctxSnapshot
         });
