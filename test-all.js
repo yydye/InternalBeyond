@@ -16,6 +16,7 @@
  * （不属于 P2/P3/P4/P5 改动面，登记与否由该会话决定）。
  * P4：登记 test_setup_wizard.js（static）+ test_setup_wizard_smoke.js（browser）。
  * P5：登记 test_diagnostics.js（static）+ test_diagnostics_smoke.js（browser）。
+ * P11-2：登记 test_middle_brain_integrity.js（browser，角色一致性守卫 / OOC Guard）。
  * P6：登记 test_guide.js（static）+ test_guide_shots.js / test_guide_smoke.js（browser）。
  *     test_guide_shots.js 会真实跑一遍截图管线（约 70s），输出到系统临时目录。
  * P7：登记 test_installer.js + test_installer_mock.js（static，均不安装、不开浏览器）。
@@ -136,6 +137,7 @@ const GROUPS = [
       ['test_middle_brain_astral.js'],
       ['test_middle_brain_ctx.js'],
       ['test_middle_brain_judge.js'],
+      ['test_middle_brain_integrity.js'],
       ['test_middle_brain_seam.js'],
       ['test_moments_phase4_smoke.js'],
       ['test_runtime_browser_audit.js'],

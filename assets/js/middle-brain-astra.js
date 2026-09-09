@@ -97,6 +97,54 @@
     return await parseMiddleBrainResponse(wire, cfg, {});
   }
 
+  /* —— 统一模型调用（P11-2）———————————————————————————————————————————
+     本层是 Middle Brain 的**唯一网络边界**：任何需要"额外一次模型调用"的层
+     （judge / integrity）都必须走这里，不得各自实现 HTTP / 鉴权 / SSE / parser。
+     复用 buildMiddleBrainResponsesRequest（含 AstraAdapter 归一与 Chat Completions 回落）
+     + root._ibApiPost 传输（Bridge-aware）。
+     失败不抛异常：返回 {ok:false, error:'not_ready'|'request'|'timeout'|'network'|'http'|'parse'|'empty'|'error'}，
+     供调用方做 telemetry 分类与安全 fallback（绝不重试）。
+     opts: {maxTokens, jsonMode, schema, schemaName, timeoutMs} */
+  async function middleBrainModelCall(prompt, opts) {
+    opts = opts || {};
+    try {
+      if (!(await CFG.middleBrainReady())) return { ok: false, error: 'not_ready' };
+      var cfg = await CFG.getMiddleBrainConfig();
+      var req = await buildMiddleBrainResponsesRequest(null, prompt, { maxTokens: opts.maxTokens || 900, jsonMode: opts.jsonMode !== false });
+      if (!req || !req.body) return { ok: false, error: 'request' };
+      /* 结构化输出 schema 覆盖：仅 Responses 风格 body 才有 text.format（Chat Completions 回落不加此字段） */
+      if (opts.schema && req.body.messages === undefined) {
+        req.body.text = { format: { type: 'json_schema', name: opts.schemaName || 'middle_brain_report', schema: opts.schema } };
+      }
+      if (cfg.endpoint) req.endpoint = cfg.endpoint;
+      var ac = new AbortController();
+      var timedOut = false;
+      var tm = setTimeout(function () { timedOut = true; ac.abort(); }, (opts.timeoutMs != null ? Number(opts.timeoutMs) : MB_ASTRA_TIMEOUT_MS));
+      var res;
+      try {
+        if (typeof root._ibApiPost === 'function') {
+          res = await root._ibApiPost(req.endpoint, Object.assign({}, req.headers, { Authorization: 'Bearer ' + (cfg.apiKey || '') }), JSON.stringify(req.body), { signal: ac.signal });
+        } else {
+          res = await fetch(req.endpoint, {
+            method: 'POST',
+            headers: Object.assign({}, req.headers, { Authorization: 'Bearer ' + (cfg.apiKey || '') }),
+            body: JSON.stringify(req.body),
+            signal: ac.signal
+          });
+        }
+      } catch (e) { clearTimeout(tm); return { ok: false, error: timedOut ? 'timeout' : 'network' }; }
+      clearTimeout(tm);
+      if (!res || !res.ok) return { ok: false, error: 'http' };
+      var data = await res.json().catch(function () { return null; });
+      if (!data) return { ok: false, error: 'parse' };
+      var parsed = null;
+      try { var _a = adapter(); if (_a && typeof _a.parseResponsesResponse === 'function') parsed = _a.parseResponsesResponse(data, null, {}); } catch (e) { parsed = null; }
+      if (!parsed) parsed = { content: '', reasoning: '', truncated: false, usage: null };
+      if (!parsed.content) return { ok: false, error: 'empty' };
+      return { ok: true, content: String(parsed.content), usage: parsed.usage || null };
+    } catch (e) { return { ok: false, error: 'error' }; }
+  }
+
   /* ====================================================================
      Middle Brain v0 · Astra 认知协调接入（Context Organization + Compression）
      --------------------------------------------------------------------
@@ -226,6 +274,8 @@
     buildMiddleBrainResponsesRequest: buildMiddleBrainResponsesRequest,
     parseMiddleBrainResponsesResponse: parseMiddleBrainResponsesResponse,
     parseMiddleBrainResponse: parseMiddleBrainResponse,
+    /* 统一模型调用（judge / integrity 共用；唯一网络边界） */
+    middleBrainModelCall: middleBrainModelCall,
     /* Astra 调用 + 结构化解析 */
     middleBrainAstraInvoke: middleBrainAstraInvoke,
     _mbParseAstraJson: _mbParseAstraJson,

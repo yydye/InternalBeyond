@@ -382,6 +382,8 @@
     /* Phase 2 · Admission Gate */
     middleBrainAdmissionGate: middleBrainAdmissionGate,
     middleBrainAdmissionGateReset: middleBrainAdmissionGateReset,
+    /* 只读 Context 快照读取（judge / integrity 复用，不重复实现快照语义） */
+    _mbSnapshotCtx: _mbSnapshotCtx,
     _mbAnalyzeSignals: _mbAnalyzeSignals,
     _mbDecisionFromSignals: _mbDecisionFromSignals,
     _mbGateScore: _mbGateScore,

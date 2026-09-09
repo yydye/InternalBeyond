@@ -7,23 +7,26 @@
      3. 组装：按 MB_PUBLIC_API 把四层冻结契约拼成 canonical 门面 IB.middleBrain
      4. 兼容代理：window.* 43 个公开符号 + window._middleBrain（1A 不删除）
      5. 初始化设置卡片（与拆分前执行时机逐字一致）
-   四层实现与其唯一出口（IB.__middleBrainContracts）：
-     middle-brain-config.js  · config → MBC.config（无上游依赖）
-     middle-brain-policy.js  · policy → MBC.policy（依赖 config）
-     middle-brain-astra.js   · astra  → MBC.astra （依赖 config / policy）
-     middle-brain-judge.js   · judge  → MBC.judge （依赖 config / policy / astra）
-   依赖是单向 DAG：config ← policy ← astra ← judge ← facade；层间只读冻结契约。
+   五层实现与其唯一出口（IB.__middleBrainContracts）：
+     middle-brain-config.js    · config    → MBC.config（无上游依赖）
+     middle-brain-policy.js    · policy    → MBC.policy（依赖 config）
+     middle-brain-astra.js     · astra     → MBC.astra （依赖 config / policy，唯一网络边界）
+     middle-brain-judge.js     · judge     → MBC.judge （依赖 config / policy / astra）
+     middle-brain-integrity.js · integrity → MBC.integrity（依赖 config / policy / astra，P11-2）
+   依赖是单向 DAG：config ← policy ← astra ← {judge, integrity} ← facade；层间只读冻结契约。
    P11-1B 已删除 P11-1A 的共享可写 namespace（唯一入口现为 IB.__middleBrainContracts）。
    P11-1C：生产唯一消费者 communication.js single-chat 只经 IB.middleBrain.middleBrainExecute
      进入 Middle Brain——不读 IB.__middleBrainContracts、不调用层契约、不自行编排 readiness、
      不依赖 window.* 兼容别名作为 canonical path。
+   P11-2：生成后执行缝 IB.middleBrain.middleBrainFinalizeReply（Character Integrity Guard），
+     同样只存在于 facade、**不挂 window 兼容别名**；调用方只交候选回复、只取回文本。
    拆分只动位置，不改 observable behavior。
    ==================================================================== */
 (function (root) {
   'use strict';
   var MBC = (root.IB = root.IB || {}).__middleBrainContracts || (root.IB.__middleBrainContracts = {});
-  /* contract 依赖（单向 DAG：config → policy → astra → judge → facade） */
-  var CFG = MBC.config, POL = MBC.policy, ASTRA = MBC.astra, JUDGE = MBC.judge;
+  /* contract 依赖（单向 DAG：config → policy → astra → judge / integrity → facade） */
+  var CFG = MBC.config, POL = MBC.policy, ASTRA = MBC.astra, JUDGE = MBC.judge, INTEG = MBC.integrity;
   /* —— 统一入口：Admission Gate →（YES）Astra →（失败/NO）本地 pipeline ——
      网关只做成本开关：NO 时绝不发起 Astra 网络请求；YES 时沿用 Phase 1 Astra 管线不变。 */
   async function middleBrainCompressPipeline(characterId, userMessage, opts) {
@@ -75,6 +78,22 @@
     return middleBrainCompressPipeline(characterId, userMessage, opts);
   }
 
+  /* ── canonical 生成后执行缝（P11-2）──────────────────────────────────
+     生产调用方（single-chat）在**角色模型生成候选回复之后**的唯一入口。
+     语义：交候选回复 → 取回最终文本；调用方不感知内部任何判定/重写策略。
+     硬保证：
+       ① 未启用 / 任何故障 / 返回非法值 → 原样返回候选（Guard 绝不是聊天单点故障）；
+       ② 只返回字符串，永不返回 null/undefined/空串；
+       ③ 内部每条候选最多一次重写（由 integrity 层保证，本缝不参与编排）。 */
+  async function middleBrainFinalizeReply(characterId, userMessage, candidate, opts) {
+    if (typeof candidate !== 'string' || !candidate) return candidate;
+    try {
+      var r = await INTEG.middleBrainCharacterIntegrity(characterId, userMessage, candidate, opts || {});
+      if (r && typeof r.reply === 'string' && r.reply) return r.reply;
+    } catch (e) {}
+    return candidate;
+  }
+
   /* ── 公共 API 组装表（P11-1B）────────────────────────────────────────
      每项 = [public key, owner layer]；key 顺序即 IB.middleBrain 的键顺序，
      由 test_frontend_structure.js 锁定（不得重排 / 改名 / 改 owner）。
@@ -114,12 +133,22 @@
     ['middleBrainPipelineAvailable', 'policy'],
     ['MB_CTX_DEFAULT_BUDGET', 'policy'],
     ['saveMiddleBrainConfigUI', 'config'],
-    ['loadMiddleBrainConfigUI', 'config']
+    ['loadMiddleBrainConfigUI', 'config'],
+    ['normalizeMiddleBrainIntegritySensitivity', 'config'],
+    ['middleBrainFinalizeReply', 'facade'],
+    ['middleBrainCharacterIntegrity', 'integrity'],
+    ['middleBrainCharacterIntegrityTelemetry', 'integrity'],
+    ['middleBrainCharacterIntegrityReset', 'integrity'],
+    ['_mbParseCiJson', 'integrity'],
+    ['_mbCiGate', 'integrity'],
+    ['_mbCiVisibleText', 'integrity'],
+    ['MB_CI_SCHEMA', 'integrity'],
+    ['MB_CI_TIMEOUT_MS', 'integrity']
   ];
   var MB_LAYERS = {
-    config: CFG, policy: POL, astra: ASTRA, judge: JUDGE,
+    config: CFG, policy: POL, astra: ASTRA, judge: JUDGE, integrity: INTEG,
     /* facade 自身导出的符号（不来自任何层契约） */
-    facade: { middleBrainCompressPipeline: middleBrainCompressPipeline, middleBrainExecute: middleBrainExecute, middleBrainAstraEnabled: middleBrainAstraEnabled }
+    facade: { middleBrainCompressPipeline: middleBrainCompressPipeline, middleBrainExecute: middleBrainExecute, middleBrainAstraEnabled: middleBrainAstraEnabled, middleBrainFinalizeReply: middleBrainFinalizeReply }
   };
   var _mbApi = {};
   MB_PUBLIC_API.forEach(function (entry) { _mbApi[entry[0]] = MB_LAYERS[entry[1]][entry[0]]; });

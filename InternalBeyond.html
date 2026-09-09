@@ -1251,6 +1251,20 @@
           </div>
           <div class="mb-adv-hint">推理强度与处理速度会影响 API 成本和响应时间。</div>
         </div>
+        <div class="mb-adv-card mb-ci-card">
+          <div class="mb-adv-head">
+            <span class="mb-adv-title">Character Integrity Guard</span>
+            <span class="mb-adv-summary" id="mb-ci-summary">Off</span>
+          </div>
+          <label class="form-check-row"><input type="checkbox" id="mb-ci-enabled" class="u-native-check"> 启用角色一致性守卫（检测明显 OOC）</label>
+          <div class="mb-adv-section">
+            <div class="mb-adv-label">Sensitivity</div>
+            <div class="mb-ci-sensitivity" id="mb-ci-sensitivity"></div>
+          </div>
+          <label class="form-check-row"><input type="checkbox" id="mb-ci-rewrite" class="u-native-check"> 强 OOC 时自动定向重写（每条回复最多一次）</label>
+          <label class="form-check-row"><input type="checkbox" id="mb-ci-verify" class="u-native-check"> 重写后复判（只观测，不会二次重写）</label>
+          <div class="mb-adv-hint">保守优先：只修明显违反角色证据的回复，轻微风格差异不干预；当前上下文中的明确变化证据优先于静态人设。默认关闭。</div>
+        </div>
         <div class="mb-actions">
           <button type="button" class="btn btn-primary" onclick="saveMiddleBrainConfigUI()">保存 Middle Brain</button>
           <span id="mb-save-status" class="mb-save-status"></span>
@@ -2934,6 +2948,7 @@ i would like the room to be enough.
 <script src="assets/js/middle-brain-policy.js"></script>
 <script src="assets/js/middle-brain-astra.js"></script>
 <script src="assets/js/middle-brain-judge.js"></script>
+<script src="assets/js/middle-brain-integrity.js"></script>
 <script src="assets/js/middle-brain.js"></script>
 <script src="assets/js/agent-runtime.js"></script>
 <script id="ib-cal-js" src="assets/js/calendar.js"></script>

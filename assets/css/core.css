@@ -580,6 +580,12 @@ body.infernal-beyond #app{position:relative;z-index:1;}
 .mb-speed-note{margin-top:8px;font-size:.74rem;opacity:.6;}
 .mb-adv-hint{margin-top:12px;font-size:.76rem;opacity:.55;line-height:1.5;}
 @media (max-width:560px){.mb-model-cell{font-size:.68rem;}.mb-adv-card{padding:10px 12px;}}
+.mb-ci-card{margin-top:14px;}
+.mb-ci-card .form-check-row{margin:8px 0;font-size:.88rem;}
+.mb-ci-card .form-check-row input:disabled{cursor:not-allowed;opacity:.5;}
+.mb-ci-card .form-check-row:has(input:disabled){opacity:.55;cursor:not-allowed;}
+.mb-ci-sensitivity{margin-top:2px;}
+
 .bg-ai-sleep-row{margin-top:12px;font-size:.85rem;opacity:.85;}
 .bg-ai-sleep-row label{display:block;margin-bottom:6px;}
 .bg-ai-sleep-row input[type=time]{padding:6px 10px;border-radius:8px;border:1px solid var(--glass-border);background:var(--surface-card);color:var(--content-primary);}

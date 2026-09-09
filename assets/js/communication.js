@@ -2119,6 +2119,16 @@ async function sendChatMessage(voiceMsg){
       var replyText=responseParts.content;
       /* 空输出防护：模型什么都没回（连思考链都没有）→ 按统一错误分类走友好提示，不再静默保存空气泡 */
       if(!(replyText&&String(replyText).trim())&&!(thinkingText&&String(thinkingText).trim()))throw window.IBERR?window.IBERR.err('empty_output'):new Error('API 返回了空内容');
+      /* P11-2 · Middle Brain 生成后收口（唯一新增调用点）：调用方只交候选回复、只取回最终文本，
+         不感知其内部判定/修复策略。未启用或任何故障 → 原样返回候选，聊天不受影响。
+         位置在功能标签截取之前：只作用于角色可见文本，工具/记忆指令仍走既有解析。 */
+      try{
+        var _mbFS=(window.IB&&window.IB.middleBrain)||null;
+        if(_mbFS&&typeof _mbFS.middleBrainFinalizeReply==='function'){
+          var _mbFinS=await _mbFS.middleBrainFinalizeReply(cfg.id,_ctxText||'',replyText,{character:cfg,history:messages,contextSnapshot:_bcc.snapshot,voice:!!_callTurn});
+          if(typeof _mbFinS==='string'&&_mbFinS&&_mbFinS!==replyText)replyText=_mbFinS;
+        }
+      }catch(_mbFinErrS){console.warn('[MiddleBrain] finalize failed',String(_mbFinErrS&&_mbFinErrS.message||_mbFinErrS).slice(0,120))}
       if(_showThinking&&thinkingText){_ensureStreamThinking(streamRefs,_liveThinkEls);_finishStreamThinking(_liveThinkEls,thinkingText)}
       /* AUTO MEMORY：截取并执行 mem_* 指令（先于 ws 解析与收尾渲染，防止标签原文入库/上屏） */
       var _memR=[];
@@ -2179,6 +2189,16 @@ async function sendChatMessage(voiceMsg){
       var replyText=responsePartsN.content;
       /* 空输出防护（非流式）：与流式路径同一处理，走统一错误分类 */
       if(!(replyText&&String(replyText).trim())&&!(thinkingText&&String(thinkingText).trim()))throw window.IBERR?window.IBERR.err('empty_output'):new Error('API 返回了空内容');
+      /* P11-2 · Middle Brain 生成后收口（唯一新增调用点）：调用方只交候选回复、只取回最终文本，
+         不感知其内部判定/修复策略。未启用或任何故障 → 原样返回候选，聊天不受影响。
+         位置在功能标签截取之前：只作用于角色可见文本，工具/记忆指令仍走既有解析。 */
+      try{
+        var _mbFN=(window.IB&&window.IB.middleBrain)||null;
+        if(_mbFN&&typeof _mbFN.middleBrainFinalizeReply==='function'){
+          var _mbFinN=await _mbFN.middleBrainFinalizeReply(cfg.id,_ctxText||'',replyText,{character:cfg,history:messages,contextSnapshot:_bcc.snapshot,voice:!!_callTurn});
+          if(typeof _mbFinN==='string'&&_mbFinN&&_mbFinN!==replyText)replyText=_mbFinN;
+        }
+      }catch(_mbFinErrN){console.warn('[MiddleBrain] finalize failed',String(_mbFinErrN&&_mbFinErrN.message||_mbFinErrN).slice(0,120))}
       /* 非流式路径：先截取 mem_* 指令，再按顺序执行工作区操作 */
       var _memRNs=[];
       replyText=await _applyWithdraw(cfg,replyText,_targetFriend,cfg.nickname||cfg.model||'AI');

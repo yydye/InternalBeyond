@@ -328,7 +328,7 @@ check('provider.noDecisionInConsumers', decisionLeaks.length === 0, '这些文�
    window 兼容符号 / 公共 API 变化、local fallback 开始注入、Gate 落盘、
    Judge 默认开启、或出现新的生产消费者，都会失败。 */
 const mbLayerFiles = ['middle-brain-config.js', 'middle-brain-policy.js', 'middle-brain-astra.js',
-  'middle-brain-judge.js', 'middle-brain.js'];
+  'middle-brain-judge.js', 'middle-brain-integrity.js', 'middle-brain.js'];
 const mbTexts = {};
 for (const name of mbLayerFiles) {
   const file = path.join(root, 'assets', 'js', name);
@@ -345,6 +345,7 @@ const mbLayerSymbols = {
   'middle-brain-policy.js': [/async function middleBrainOrganizeContext/, /function middleBrainCompressContext/, /async function middleBrainAdmissionGate/],
   'middle-brain-astra.js': [/async function middleBrainAstraInvoke/, /buildMiddleBrainResponsesRequest/, /AstraAdapter|IBModelCore/],
   'middle-brain-judge.js': [/async function middleBrainAstraJudge/, /MB_JUDGE_SCHEMA\s*=/],
+  'middle-brain-integrity.js': [/async function middleBrainCharacterIntegrity/, /MB_CI_SCHEMA\s*=/, /_mbCiGate\s*\(/],
   'middle-brain.js': [/IB\.middleBrain\s*=/, /middleBrainCompressPipeline/]
 };
 const mbLayerBad = Object.entries(mbLayerSymbols)
@@ -353,7 +354,7 @@ const mbLayerBad = Object.entries(mbLayerSymbols)
 check('middleBrain.layerSplit', mbLayerBad.length === 0, '分层职责缺失或混回单文件: ' + mbLayerBad.join(', '));
 /* P11-1B · 层契约：每层只向自己的键写入一个冻结对象，契约出口唯一。 */
 const mbContractLayer = { 'middle-brain-config.js': 'config', 'middle-brain-policy.js': 'policy',
-  'middle-brain-astra.js': 'astra', 'middle-brain-judge.js': 'judge' };
+  'middle-brain-astra.js': 'astra', 'middle-brain-judge.js': 'judge', 'middle-brain-integrity.js': 'integrity' };
 function mbContractKeys(text, layer) {
   const m = text.match(new RegExp('MBC\\.' + layer + ' = Object\\.freeze\\(\\{([\\s\\S]*?)\\n  \\}\\);'));
   if (!m) return null;
@@ -367,17 +368,18 @@ const mbContractAll = Object.values(mbContracts).filter(Boolean).flat();
 check('middleBrain.layerContractUnique', mbContractAll.length === new Set(mbContractAll).size,
   '同一符号被多层声明为 owner: ' + mbContractAll.filter((s, i) => mbContractAll.indexOf(s) !== i).join(', '));
 /* 依赖方向：alias 固定映射到 owner 层；每层只能读自己的上游，且读取的符号必须在 owner 契约中声明。 */
-const mbAliasLayer = { CFG: 'config', POL: 'policy', ASTRA: 'astra', JUDGE: 'judge' };
+const mbAliasLayer = { CFG: 'config', POL: 'policy', ASTRA: 'astra', JUDGE: 'judge', INTEG: 'integrity' };
 const mbAllowedAlias = { 'middle-brain-config.js': [], 'middle-brain-policy.js': ['CFG'],
   'middle-brain-astra.js': ['CFG', 'POL'], 'middle-brain-judge.js': ['CFG', 'POL', 'ASTRA'],
-  'middle-brain.js': ['CFG', 'POL', 'ASTRA', 'JUDGE'] };
+  'middle-brain-integrity.js': ['CFG', 'POL', 'ASTRA'],
+  'middle-brain.js': ['CFG', 'POL', 'ASTRA', 'JUDGE', 'INTEG'] };
 const mbCrossBad = [];
 for (const [file, allowed] of Object.entries(mbAllowedAlias)) {
   const text = mbTexts[file];
-  for (const alias of new Set((text.match(/\b(?:CFG|POL|ASTRA|JUDGE)\.\w+/g) || []).map(s => s.split('.')[0]))) {
+  for (const alias of new Set((text.match(/\b(?:CFG|POL|ASTRA|JUDGE|INTEG)\.\w+/g) || []).map(s => s.split('.')[0]))) {
     if (!allowed.includes(alias)) mbCrossBad.push(file + ':读越界 ' + alias);
   }
-  for (const [, alias, symbol] of text.matchAll(/\b(CFG|POL|ASTRA|JUDGE)\.(\w+)/g)) {
+  for (const [, alias, symbol] of text.matchAll(/\b(CFG|POL|ASTRA|JUDGE|INTEG)\.(\w+)/g)) {
     const owner = mbAliasLayer[alias];
     if (!mbContracts[owner] || !mbContracts[owner].includes(symbol)) mbCrossBad.push(file + ':' + alias + '.' + symbol);
   }
@@ -400,12 +402,18 @@ const mbPublicBaseline34 = ['getMiddleBrainConfig', 'saveMiddleBrainConfig', 'is
   'middleBrainPipelineAvailable', 'MB_CTX_DEFAULT_BUDGET', 'saveMiddleBrainConfigUI', 'loadMiddleBrainConfigUI'];
 const mbPublicExpected = mbPublicBaseline34.slice();
 mbPublicExpected.splice(mbPublicExpected.indexOf('middleBrainCompressPipeline') + 1, 0, 'middleBrainExecute');
+/* P11-2 新增键（追加在末尾）：config 归一 + 生成后执行缝 + integrity 层契约。 */
+const mbP11IntegrityKeys = ['normalizeMiddleBrainIntegritySensitivity', 'middleBrainFinalizeReply',
+  'middleBrainCharacterIntegrity', 'middleBrainCharacterIntegrityTelemetry', 'middleBrainCharacterIntegrityReset',
+  '_mbParseCiJson', '_mbCiGate', '_mbCiVisibleText', 'MB_CI_SCHEMA', 'MB_CI_TIMEOUT_MS'];
+const mbP11Keys = ['middleBrainExecute'].concat(mbP11IntegrityKeys);
+mbP11IntegrityKeys.forEach(k => mbPublicExpected.push(k));
 const mbPublicPairs = [...mbText.matchAll(/^\s*\['(\w+)', '(\w+)'\],?$/gm)].map(m => [m[1], m[2]]);
 check('middleBrain.publicApiContract', JSON.stringify(mbPublicPairs.map(p => p[0])) === JSON.stringify(mbPublicExpected),
   'IB.middleBrain 公共 API 内容/顺序变化: ' + mbPublicPairs.map(p => p[0]).join(','));
-check('middleBrain.publicApiBaseline34', JSON.stringify(mbPublicPairs.map(p => p[0]).filter(k => k !== 'middleBrainExecute')) === JSON.stringify(mbPublicBaseline34),
-  'P11-1C 之外原有 34 个 key 的内容/顺序被改动');
-const mbFacadeOwned = ['middleBrainCompressPipeline', 'middleBrainExecute', 'middleBrainAstraEnabled'];
+check('middleBrain.publicApiBaseline34', JSON.stringify(mbPublicPairs.map(p => p[0]).filter(k => !mbP11Keys.includes(k))) === JSON.stringify(mbPublicBaseline34),
+  'P11-1C/1D 之外原有 34 个 key 的内容/顺序被改动');
+const mbFacadeOwned = ['middleBrainCompressPipeline', 'middleBrainExecute', 'middleBrainAstraEnabled', 'middleBrainFinalizeReply'];
 const mbOwnerBad = mbPublicPairs.filter(([symbol, owner]) => mbFacadeOwned.includes(symbol)
   ? owner !== 'facade' : !(mbContracts[owner] && mbContracts[owner].includes(symbol)))
   .map(([symbol, owner]) => owner + '.' + symbol);
@@ -454,7 +462,7 @@ check('middleBrain.gateStateMemoryOnly', /var MB_GATE_STATE = \{\}/.test(mbTexts
 /* Judge 默认关闭 + 生产调用点仍只有 single-chat 一条。 */
 check('middleBrain.judgeDefaultOff', /middleBrainJudgeEnabled:\s*false/.test(mbTexts['middle-brain-config.js']), 'Judge 默认值被改为开启');
 const mbConsumers = sources.filter(f => f.endsWith('.js') && !mbLayerFiles.includes(path.basename(f)))
-  .filter(f => /middleBrainExecute\s*\(|middleBrainCompressPipeline|middleBrainAstraInvoke|middleBrainAdmissionGate\s*\(/.test(fs.readFileSync(f, 'utf8')))
+  .filter(f => /middleBrainExecute\s*\(|middleBrainCompressPipeline|middleBrainAstraInvoke|middleBrainAdmissionGate\s*\(|middleBrainFinalizeReply\s*\(/.test(fs.readFileSync(f, 'utf8')))
   .map(f => path.relative(root, f));
 check('middleBrain.singleConsumer', mbConsumers.length === 1 && mbConsumers[0] === path.join('assets', 'js', 'communication.js'), 'Middle Brain 生产消费者数量变化: ' + mbConsumers.join(', '));
 
@@ -481,7 +489,8 @@ check('middleBrain.consumerFacadeOnly', !!mbConsumerBlock
   && /_mbFacade\.middleBrainExecute\(/.test(mbConsumerBlock)
   && !/window\._middleBrain|__middleBrainContracts|window\.middleBrain\w+/.test(mbConsumerBlock),
   'single-chat 未只经 IB.middleBrain.middleBrainExecute');
-const mbSeamNames = [...new Set([...mbPublicExpected, ...mbWinExpected])].filter(n => n !== 'middleBrainExecute');
+const mbSeamNames = [...new Set([...mbPublicExpected, ...mbWinExpected])]
+  .filter(n => !mbP11Keys.includes(n));
 const mbConsumerLeaks = mbConsumerBlock ? mbSeamNames.filter(n => mbConsumerBlock.includes(n)) : ['consumer block not found'];
 check('middleBrain.consumerNoInternalSymbols', mbConsumerLeaks.length === 0,
   'consumer 仍点名门面/兼容符号: ' + mbConsumerLeaks.join(', '));
@@ -497,6 +506,78 @@ const mbAliasLeaks = sources.filter(f => f.endsWith('.js') && !mbLayerFiles.incl
   .map(f => path.relative(root, f));
 check('middleBrain.compatNotCanonical', mbAliasLeaks.length === 0,
   'production 仍依赖 MB 兼容别名/门面符号（_middleBrain / window.middleBrain* 等）: ' + mbAliasLeaks.join(', '));
+
+/* ── P11-2 · Character Integrity Guard（生成后执行缝）────────────────────
+   新增能力必须满足：默认关闭、零额外模型调用、只经 facade 的生成后执行缝、
+   调用方不知道任何内部概念、单请求最多一次重写、失败一律回退原候选、
+   传输不重复实现、只读不落盘。以下守卫把这些约束锁在结构上。 */
+const mbIntegrityText = mbTexts['middle-brain-integrity.js'];
+const mbFinalizeSeam = mbText.match(/async function middleBrainFinalizeReply\([\s\S]*?\n  \}/);
+check('middleBrain.finalizeSeamDefined', !!mbFinalizeSeam
+  && /typeof candidate !== 'string'/.test(mbFinalizeSeam[0])
+  && /INTEG\.middleBrainCharacterIntegrity\(/.test(mbFinalizeSeam[0])
+  && /return candidate;/.test(mbFinalizeSeam[0]),
+  'middleBrainFinalizeReply 未按"候选 → integrity → 失败回退候选"定义');
+check('middleBrain.finalizeSeamCanonicalOnly', !/window\.middleBrainFinalizeReply\s*=/.test(mbText),
+  '生成后执行缝被挂成 window 兼容别名');
+check('middleBrain.integrityDefaultOff', /characterIntegrityEnabled:\s*false/.test(mbTexts['middle-brain-config.js'])
+  && /characterIntegrityRewrite:\s*false/.test(mbTexts['middle-brain-config.js'])
+  && /characterIntegrityVerify:\s*false/.test(mbTexts['middle-brain-config.js']),
+  'Character Integrity 默认值被改为开启');
+/* 零开销：未启用必须在任何模型调用/证据组装之前返回原候选（函数体内先于 _ciCall）。 */
+const mbCiFnSeg = mbIntegrityText.slice(mbIntegrityText.indexOf('async function middleBrainCharacterIntegrity'),
+  mbIntegrityText.indexOf('layer contract（P11-2）'));
+check('middleBrain.integrityZeroOverheadWhenOff', /if \(!\(cfg && cfg\.characterIntegrityEnabled === true\)\) \{ _ciSkip\('disabled'\); return out; \}/.test(mbCiFnSeg)
+  && mbCiFnSeg.indexOf("_ciSkip('disabled')") < mbCiFnSeg.indexOf('_ciCall(')
+  && mbCiFnSeg.indexOf("_ciSkip('disabled')") < mbCiFnSeg.indexOf('_mbCiBuildEvidence('),
+  'Guard OFF 未在模型调用/证据组装之前短路');
+/* 传输不重复实现：integrity 层不得自己 fetch / 自己打 _ibApiPost。 */
+check('middleBrain.integrityNoTransportDup', !/\bfetch\s*\(|_ibApiPost/.test(mbIntegrityText)
+  && /ASTRA\.middleBrainModelCall\(/.test(mbIntegrityText),
+  'integrity 层重复实现了 Astra 传输（必须走 ASTRA.middleBrainModelCall）');
+/* 只读：不得落盘 / 不得写 web storage（先剥离注释，注释里的"绝不写"说明不算实现）。 */
+const mbCiCode = mbIntegrityText.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+check('middleBrain.integrityReadOnly', !/dbPut|dbDelete|localStorage|sessionStorage/.test(mbCiCode),
+  'integrity 层写入了存储');
+/* 单请求最多一次重写：静态上只能有一次重写调用点，且重写段内无循环。 */
+const mbRewriteCalls = (mbCiCode.match(/await _ciCall\(_mbCiRewritePrompt\(/g) || []).length;
+const mbRewriteSeg = mbCiCode.slice(mbCiCode.indexOf("'character_integrity_rewrite'"),
+  mbCiCode.indexOf('Optional verify'));
+check('middleBrain.integritySingleRewrite', mbRewriteCalls === 1
+  && /rewriteUsed: false/.test(mbCiCode)
+  && !/\bwhile\s*\(|\bfor\s*\([\s\S]{0,80}rewrite/i.test(mbRewriteSeg),
+  '重写调用点数量或循环结构异常: ' + mbRewriteCalls);
+/* verify 段不得再次触发重写。 */
+const mbVerifySeg = mbCiCode.slice(mbCiCode.indexOf('Optional verify'));
+check('middleBrain.integrityVerifyNoRewrite', !/await _ciCall\(_mbCiRewritePrompt\(|rewriteTriggered\+\+/.test(mbVerifySeg),
+  'verify 段重新触发了重写');
+/* 调用方边界：生成后调用点不得点名任何内部概念/符号。 */
+const mbFinalizeStart = comMainText.indexOf('P11-2 · Middle Brain 生成后收口');
+const mbFinalizeEnd = comMainText.indexOf("console.warn('[MiddleBrain] finalize failed'", mbFinalizeStart);
+const mbFinalizeBlock = mbFinalizeStart >= 0 && mbFinalizeEnd > mbFinalizeStart
+  ? comMainText.slice(mbFinalizeStart, mbFinalizeEnd) : '';
+const mbIntegrityForbidden = ['ooc', 'integrity', 'violation', 'rewrite', 'threshold', 'judge',
+  'sensitivity', 'MB_CI', '__middleBrainContracts', '_middleBrain'];
+const mbFinalizeLeaks = mbFinalizeBlock
+  ? mbIntegrityForbidden.filter(t => mbFinalizeBlock.toLowerCase().includes(t.toLowerCase()))
+  : ['finalize block not found'];
+check('middleBrain.consumerNoIntegritySymbols', !!mbFinalizeBlock && mbFinalizeLeaks.length === 0,
+  'consumer 的生成后调用点泄漏了内部概念/符号: ' + mbFinalizeLeaks.join(', '));
+check('middleBrain.consumerFinalizeFacadeOnly', !!mbFinalizeBlock
+  && /window\.IB&&window\.IB\.middleBrain/.test(mbFinalizeBlock)
+  && /middleBrainFinalizeReply\(/.test(mbFinalizeBlock)
+  && !/window\.middleBrain\w+\s*=/.test(mbFinalizeBlock),
+  '生成后调用点未只经 IB.middleBrain.middleBrainFinalizeReply');
+/* 生产消费者仍然只有一个文件（新增调用点不得引入第二个消费者文件）。 */
+check('middleBrain.singleConsumerAfterP11_2', mbConsumers.length === 1 && mbConsumers[0] === path.join('assets', 'js', 'communication.js'),
+  'P11-2 后 Middle Brain 生产消费者数量变化: ' + mbConsumers.join(', '));
+/* UI：新设置必须挂在既有 Middle Brain 卡片内，且走 canonical config（无第二份配置源）。 */
+check('middleBrain.integrityUiSection', /id="mb-ci-enabled"/.test(html) && /id="mb-ci-rewrite"/.test(html)
+  && /id="mb-ci-verify"/.test(html) && /id="mb-ci-sensitivity"/.test(html) && /id="mb-ci-summary"/.test(html),
+  'Character Integrity 设置 UI 缺失');
+check('middleBrain.integrityUiCanonicalConfig', /characterIntegrityEnabled: _mbUi\.integrity\.enabled/.test(mbTexts['middle-brain-config.js'])
+  && !/localStorage/.test(mbTexts['middle-brain-config.js']),
+  'Character Integrity 设置未走 canonical config');
 
 console.log(failures ? `\nFrontend structure regression failed: ${failures}` : '\nFrontend structure regression passed ✔');
 process.exit(failures ? 1 : 0);

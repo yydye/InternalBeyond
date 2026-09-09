@@ -37,7 +37,16 @@
        speed: standard/fast → fast 时发送 service_tier:"fast"（官方参数，standard=不发送）。
        非法值一律回退默认，其余 Phase 1/2/3 业务逻辑不变。 */
     reasoningEffort: 'medium',
-    speed: 'standard'
+    speed: 'standard',
+    /* P11-2 · Character Integrity Guard（角色一致性守卫）：
+       检测候选回复是否**明显**偏离当前角色，仅在高置信度强 OOC 时做最多一次 targeted rewrite。
+       默认关闭（关闭时零模型调用，行为与 P11-1C 等价）。
+       sensitivity: conservative/balanced/strict → 映射判定阈值（阈值本身在 integrity 层）。
+       rewrite: 是否允许自动重写；verify: 重写后是否复判（只观测，绝不二次重写）。 */
+    characterIntegrityEnabled: false,
+    characterIntegritySensitivity: 'conservative',
+    characterIntegrityRewrite: false,
+    characterIntegrityVerify: false
   };
 
   /* ── Middle Brain 系统提示词：引擎内部的认知约束，前端只读，用户不可修改。──
@@ -148,6 +157,12 @@
     var s = String(v == null ? '' : v).trim().toLowerCase();
     return MB_SPEEDS.indexOf(s) >= 0 ? s : 'standard';
   }
+  /* P11-2 · Character Integrity 灵敏度归一（UI 与配置共用的白名单；非法值回退 conservative） */
+  var MB_CI_SENSITIVITIES = ['conservative', 'balanced', 'strict'];
+  function normalizeMiddleBrainIntegritySensitivity(v) {
+    var s = String(v == null ? '' : v).trim().toLowerCase();
+    return MB_CI_SENSITIVITIES.indexOf(s) >= 0 ? s : 'conservative';
+  }
 
   /* —— 设置 UI（API Settings 页 · 全局 Middle Brain 卡片） —— */
   function _mbEl(id) { return document.getElementById(id); }
@@ -166,15 +181,18 @@
   var MB_SPEED_ORDER = ['standard', 'fast'];
   var MB_SPEED_LABELS = { standard: 'Standard', fast: 'Fast' };
   var MB_MODEL_CANDIDATES = ['gpt-6-astra', 'gpt-5.6-sol'];
-  var _mbUi = { reasoning: 'medium', speed: 'standard', model: 'gpt-6-astra' };
-  var _mbReasoningSlider = null, _mbSpeedBtn = null;
+  /* P11-2 · Character Integrity Guard UI 档位 */
+  var MB_CI_ORDER = ['conservative', 'balanced', 'strict'];
+  var MB_CI_LABELS = { conservative: 'Conservative', balanced: 'Balanced', strict: 'Strict' };
+  var _mbUi = { reasoning: 'medium', speed: 'standard', model: 'gpt-6-astra', integrity: { enabled: false, sensitivity: 'conservative', rewrite: false, verify: false } };
+  var _mbReasoningSlider = null, _mbSpeedBtn = null, _mbCiSlider = null;
 
   function _mbReasoningDesc(v) { return MB_REASONING_DESC[v] || '默认平衡'; }
   function _mbModelList(cur) { var l = MB_MODEL_CANDIDATES.slice(); if (cur && l.indexOf(cur) < 0) l.unshift(cur); return l; }
   function _mbModelIdx(cur) { var l = _mbModelList(cur); var i = l.indexOf(cur); return i >= 0 ? i : 0; }
   function _mbSummaryText(re, sp) { return (MB_REASONING_LABELS[re] || re) + ' · ' + (MB_SPEED_LABELS[sp] || sp); }
   function _mbUpdateSummary(re, sp) { var s = _mbEl('mb-adv-summary'); if (s) s.textContent = _mbSummaryText(re, sp); }
-  function _mbLbl(v) { return MB_REASONING_LABELS[v] || MB_SPEED_LABELS[v] || v; }
+  function _mbLbl(v) { return MB_REASONING_LABELS[v] || MB_SPEED_LABELS[v] || MB_CI_LABELS[v] || v; }
 
   function _mbReadReasoning() { return normalizeMiddleBrainReasoningEffort(_mbUi.reasoning); }
   function _mbReadSpeed() { return normalizeMiddleBrainSpeed(_mbUi.speed); }
@@ -314,6 +332,45 @@
     _mbReasoningSlider = _mbSliderBuild('mb-adv-reasoning', MB_REASONING_ORDER, _mbReadReasoning(), function (v) { mbReasoningPick(v); }, { dragOnly: true });
     _mbBuildSpeedButton();
     _mbModelBuild();
+    _mbCiBuild();
+  }
+  /* ── P11-2 · Character Integrity Guard UI ──────────────────────────────
+     静态卡片（HTML）+ 事件绑定（addEventListener，**不新增 window 全局**，兼容面保持 43 条）。
+     点击即写 canonical config（与既有卡片一致，无需 Save）；Rewrite/Verify 在未启用时禁用。 */
+  function _mbCiReadUi() {
+    /* 元素缺失时保持内存态不变（避免卡片未挂载时把已保存的开关写成 false） */
+    var e = _mbEl('mb-ci-enabled'); if (e) _mbUi.integrity.enabled = !!e.checked;
+    var r = _mbEl('mb-ci-rewrite'); if (r) _mbUi.integrity.rewrite = !!r.checked;
+    var v = _mbEl('mb-ci-verify'); if (v) _mbUi.integrity.verify = !!v.checked;
+  }
+  function _mbCiPaint() {
+    var it = _mbUi.integrity, s = _mbEl('mb-ci-summary');
+    if (s) s.textContent = it.enabled ? ((MB_CI_LABELS[it.sensitivity] || it.sensitivity) + (it.rewrite ? ' · Rewrite' : ' · Detect only')) : 'Off';
+    var rw = _mbEl('mb-ci-rewrite'), vf = _mbEl('mb-ci-verify');
+    if (rw) rw.disabled = !it.enabled;
+    if (vf) vf.disabled = !(it.enabled && it.rewrite);
+  }
+  function _mbCiPersist() {
+    saveMiddleBrainConfig({
+      characterIntegrityEnabled: _mbUi.integrity.enabled,
+      characterIntegritySensitivity: _mbUi.integrity.sensitivity,
+      characterIntegrityRewrite: _mbUi.integrity.rewrite,
+      characterIntegrityVerify: _mbUi.integrity.verify
+    });
+  }
+  function mbIntegrityToggle() { _mbCiReadUi(); _mbCiPaint(); _mbCiPersist(); }
+  function mbIntegritySensitivityPick(v) {
+    v = normalizeMiddleBrainIntegritySensitivity(v);
+    _mbUi.integrity.sensitivity = v;
+    if (_mbCiSlider) _mbCiSlider.setValue(v);
+    _mbCiPaint(); _mbCiPersist();
+  }
+  function _mbCiBuild() {
+    ['mb-ci-enabled', 'mb-ci-rewrite', 'mb-ci-verify'].forEach(function (id) {
+      var el = _mbEl(id); if (el) el.addEventListener('change', mbIntegrityToggle);
+    });
+    _mbCiSlider = _mbSliderBuild('mb-ci-sensitivity', MB_CI_ORDER, _mbUi.integrity.sensitivity, function (v) { mbIntegritySensitivityPick(v); });
+    _mbCiPaint();
   }
   function mbReasoningPick(v) { v = normalizeMiddleBrainReasoningEffort(v); _mbUi.reasoning = v; if (_mbReasoningSlider) _mbReasoningSlider.setValue(v); _mbUpdateSummary(v, _mbReadSpeed()); saveMiddleBrainConfig({ reasoningEffort: v }); }
   function mbSpeedPick(v) { v = normalizeMiddleBrainSpeed(v); _mbUi.speed = v; _mbRenderSpeed(); _mbUpdateSummary(_mbReadReasoning(), v); saveMiddleBrainConfig({ speed: v }); }
@@ -324,7 +381,8 @@
     var enabled = !!(_mbEl('mb-enabled-toggle') && _mbEl('mb-enabled-toggle').checked);
     var endpoint = (_mbEl('mb-endpoint') ? _mbEl('mb-endpoint').value : '').trim();
     var apiKey = (_mbEl('mb-apikey') ? _mbEl('mb-apikey').value : '').trim();
-    saveMiddleBrainConfig({ enabled: enabled, endpoint: endpoint, model: _mbReadModel(), apiKey: apiKey, reasoningEffort: _mbReadReasoning(), speed: _mbReadSpeed() }).then(function () {
+    _mbCiReadUi();
+    saveMiddleBrainConfig({ enabled: enabled, endpoint: endpoint, model: _mbReadModel(), apiKey: apiKey, reasoningEffort: _mbReadReasoning(), speed: _mbReadSpeed(), characterIntegrityEnabled: _mbUi.integrity.enabled, characterIntegritySensitivity: _mbUi.integrity.sensitivity, characterIntegrityRewrite: _mbUi.integrity.rewrite, characterIntegrityVerify: _mbUi.integrity.verify }).then(function () {
       var st = _mbEl('mb-save-status'); if (st) { st.textContent = '已保存'; setTimeout(function () { st.textContent = ''; }, 1600); }
       if (typeof toast === 'function') toast('Middle Brain 已保存');
     }).catch(function (e) { if (typeof toast === 'function') toast('Middle Brain 保存失败：' + String(e && e.message || e)); });
@@ -337,6 +395,13 @@
       _mbUi.reasoning = normalizeMiddleBrainReasoningEffort(c.reasoningEffort);
       _mbUi.speed = normalizeMiddleBrainSpeed(c.speed);
       _mbUi.model = String(c.model || '').trim() || 'gpt-6-astra';
+      _mbUi.integrity.enabled = c.characterIntegrityEnabled === true;
+      _mbUi.integrity.sensitivity = normalizeMiddleBrainIntegritySensitivity(c.characterIntegritySensitivity);
+      _mbUi.integrity.rewrite = c.characterIntegrityRewrite === true;
+      _mbUi.integrity.verify = c.characterIntegrityVerify === true;
+      if (_mbEl('mb-ci-enabled')) _mbEl('mb-ci-enabled').checked = _mbUi.integrity.enabled;
+      if (_mbEl('mb-ci-rewrite')) _mbEl('mb-ci-rewrite').checked = _mbUi.integrity.rewrite;
+      if (_mbEl('mb-ci-verify')) _mbEl('mb-ci-verify').checked = _mbUi.integrity.verify;
       if (_mbEl('mb-model')) _mbEl('mb-model').value = _mbUi.model;
       _mbInitAdvancedUI();
       _mbUpdateSummary(_mbUi.reasoning, _mbUi.speed);
@@ -355,6 +420,8 @@
     /* Phase 4 · 推理强度 / 速度归一 */
     normalizeMiddleBrainReasoningEffort: normalizeMiddleBrainReasoningEffort,
     normalizeMiddleBrainSpeed: normalizeMiddleBrainSpeed,
+    /* P11-2 · Character Integrity 灵敏度归一 */
+    normalizeMiddleBrainIntegritySensitivity: normalizeMiddleBrainIntegritySensitivity,
     /* 设置卡片 UI */
     saveMiddleBrainConfigUI: saveMiddleBrainConfigUI,
     loadMiddleBrainConfigUI: loadMiddleBrainConfigUI,
