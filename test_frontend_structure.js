@@ -579,6 +579,86 @@ check('middleBrain.integrityUiCanonicalConfig', /characterIntegrityEnabled: _mbU
   && !/localStorage/.test(mbTexts['middle-brain-config.js']),
   'Character Integrity 设置未走 canonical config');
 
+/* ── P11-2A · Character Integrity Calibration Harness（生产行为冻结）──────────
+   P11-2A 只增加**校准**能力，不改变任何生产语义。以下守卫把 P11-2 的观测面逐项钉住：
+     ① 阈值表 / 维度白名单 / schema 形状 / rewrite gate 判定顺序 / telemetry 字段集合不变；
+     ② Judge / Rewrite prompt 的关键约束不变；
+     ③ 生成后执行缝（facade）语义与 window 兼容面不变；
+     ④ calibration harness 只存在于测试侧：不被 HTML 加载、不在 assets/js 内、不被生产文件引用、
+        不成为 Middle Brain 的生产消费者。
+   若这些断言失败，说明 P11-2A 越界改了生产行为——必须停下来单独决策，不允许顺手改。 */
+const mbCiSrc = mbTexts['middle-brain-integrity.js'];
+check('middleBrain.ciThresholdsFrozen',
+  /conservative:\s*\{ confidence: 0\.80, score: 0\.35, severity: 0\.85, failBelow: 0\.50 \}/.test(mbCiSrc)
+  && /balanced:\s*\{ confidence: 0\.65, score: 0\.45, severity: 0\.70, failBelow: 0\.60 \}/.test(mbCiSrc)
+  && /strict:\s*\{ confidence: 0\.50, score: 0\.55, severity: 0\.60, failBelow: 0\.70 \}/.test(mbCiSrc)
+  && /MB_CI_DEFAULT_SENSITIVITY = 'conservative'/.test(mbCiSrc),
+  'Character Integrity 阈值表/默认档被改动');
+check('middleBrain.ciDimensionsFrozen',
+  /var MB_CI_DIMENSIONS = \['persona', 'speech_style', 'relationship', 'emotional_continuity', 'knowledge_boundary', 'behavior'\]/.test(mbCiSrc),
+  'Character Integrity 维度白名单被改动');
+check('middleBrain.ciSchemaFrozen',
+  /required: \['pass', 'score', 'confidence', 'violations'\]/.test(mbCiSrc)
+  && /required: \['dimension', 'severity', 'evidence', 'reason'\]/.test(mbCiSrc)
+  && /required: \['reply'\]/.test(mbCiSrc)
+  && /var MB_CI_MAX_VIOLATIONS = 8;/.test(mbCiSrc)
+  && /var MB_CI_EVIDENCE_CHARS = 200;/.test(mbCiSrc)
+  && /var MB_CI_TIMEOUT_MS = 20000;/.test(mbCiSrc)
+  && /var MB_CI_JUDGE_MAX_TOKENS = 900;/.test(mbCiSrc)
+  && /var MB_CI_REWRITE_MAX_TOKENS = 1600;/.test(mbCiSrc),
+  'Character Integrity schema / 上限常量被改动');
+check('middleBrain.ciGateOrderFrozen', (() => {
+  const g = mbCiSrc.slice(mbCiSrc.indexOf('function _mbCiGate'), mbCiSrc.indexOf('/* —— Prompt 构建 —— */'));
+  const order = ['no_report', 'judge_pass', 'rewrite_disabled', 'rewrite_already_used',
+    'control_tags_present', 'low_confidence', 'score_above_threshold', 'severity_below_threshold', 'strong_ooc'];
+  let pos = -1;
+  return order.every(k => { const i = g.indexOf("'" + k + "'"); if (i < 0 || i < pos) return false; pos = i; return true; });
+})(), 'rewrite gate 判定顺序被改动');
+check('middleBrain.ciTelemetryFieldsFrozen', (() => {
+  const seg = mbCiSrc.slice(mbCiSrc.indexOf('var _mbCiTelemetry = {'), mbCiSrc.indexOf('function middleBrainCharacterIntegrityTelemetry'));
+  return ['checked', 'skipped', 'judgeRuns', 'judgePass', 'judgeFail', 'judgeError', 'judgeMalformed',
+    'rewriteTriggered', 'rewriteOk', 'rewriteError', 'rewriteSkipped', 'verifyRuns', 'verifyPass',
+    'verifyFail', 'verifyError', 'judgeLatencyMs', 'rewriteLatencyMs', 'maxRewritesPerTurn', 'last']
+    .every(k => seg.indexOf(k) >= 0);
+})(), 'Character Integrity telemetry 字段集合被改动');
+check('middleBrain.ciJudgePromptFrozen',
+  /当前上下文中的明确变化证据 > 静态人设刻板印象/.test(mbCiSrc)
+  && /角色按用户要求暂时正式\/冷淡\/生气\/开玩笑 → 不是 OOC/.test(mbCiSrc)
+  && /角色正常生气、正常冷淡、正常开玩笑 → 不是 OOC/.test(mbCiSrc)
+  && /下列维度缺少证据，\*\*不得\*\*据此判 fail/.test(mbCiSrc)
+  && /不要 chain-of-thought/.test(mbCiSrc),
+  'Judge prompt 的防误杀/缺证据禁判原则被改动');
+check('middleBrain.ciRewritePromptFrozen',
+  /必须保留：原意、信息量、事实内容、对用户请求的完成度、当前对话任务/.test(mbCiSrc)
+  && /严禁：增加剧情\/新事实\/新记忆/.test(mbCiSrc)
+  && /若无法在不改变原意的前提下修正，则原样返回原回复/.test(mbCiSrc),
+  'Rewrite prompt 的保意/禁止编造约束被改动');
+/* calibration harness 只允许存在于测试侧 */
+const calFiles = ['middle-brain-calibration.js', 'middle-brain-calibration-cases.js',
+  'test_middle_brain_calibration.js', 'test_middle_brain_calibration_live.js'];
+check('middleBrain.calibrationNotInHtml', !/middle-brain-calibration/.test(html)
+  && !/middle-brain-calibration/.test(scriptSources.join(' ')),
+  'calibration harness 被加载进生产页面');
+check('middleBrain.calibrationNotInAssets', !fs.existsSync(path.join(root, 'assets', 'js', 'middle-brain-calibration.js'))
+  && !fs.existsSync(path.join(root, 'assets', 'js', 'middle-brain-calibration-cases.js')),
+  'calibration harness 进入了生产 assets/js');
+check('middleBrain.calibrationNotReferencedByProduction', (() => {
+  const hits = sources.filter(f => f.endsWith('.js')).filter(f => /middle-brain-calibration/.test(fs.readFileSync(f, 'utf8')));
+  return hits.length === 0;
+})(), '生产文件引用了 calibration harness');
+check('middleBrain.calibrationFilesExist', calFiles.every(f => fs.existsSync(path.join(root, f))),
+  calFiles.filter(f => !fs.existsSync(path.join(root, f))).join(', '));
+check('middleBrain.calibrationIsNotConsumer', (() => {
+  /* harness 允许读层契约（测试侧），但不得成为生产消费者：不得出现在 mbConsumers 中 */
+  return mbConsumers.length === 1 && mbConsumers[0] === path.join('assets', 'js', 'communication.js');
+})(), mbConsumers.join(', '));
+check('middleBrain.calibrationCasesSeparated', (() => {
+  const t = fs.readFileSync(path.join(root, 'middle-brain-calibration.js'), 'utf8');
+  return /EXPECTED_KEYS/.test(t) && /OBSERVED_KEYS/.test(t)
+    && /不得用 ground truth 代替 Judge 输出/.test(t)
+    && /observedJudge/.test(t);
+})(), 'calibration 未把 Ground Truth 与 Judge 输出分离');
+
 /* ── P11-FIX · [IB Cache Audit] baseline 身份隔离守卫 ──
    现象：Chat 页面聊天时后台 Diary 被触发，审计把两个不同 consumer 的请求当成"上一轮/本轮"比较。
    守卫锁死：baseline key 必须包含真实请求身份；consumer 必须来自执行上下文（不得猜）；

@@ -17,6 +17,9 @@
  * P4：登记 test_setup_wizard.js（static）+ test_setup_wizard_smoke.js（browser）。
  * P5：登记 test_diagnostics.js（static）+ test_diagnostics_smoke.js（browser）。
  * P11-2：登记 test_middle_brain_integrity.js（browser，角色一致性守卫 / OOC Guard）。
+ * P11-2A：登记 test_middle_brain_calibration.js（static，校准框架 Layer A · 确定性契约校准）
+ *     + test_middle_brain_calibration_live.js（browser，Layer B 默认离线 mock 走真实执行路径；
+ *     真实模型校准需手动 --live + IB_CI_CALIBRATION_KEY，不进本强制路径）。
  * P11-FIX：登记 test_cache_audit_isolation.js（browser，Cache Audit baseline 按 runtime consumer 隔离）。
  * P6：登记 test_guide.js（static）+ test_guide_shots.js / test_guide_smoke.js（browser）。
  *     test_guide_shots.js 会真实跑一遍截图管线（约 70s），输出到系统临时目录。
@@ -42,6 +45,8 @@ const GROUPS = [
       ['test_voice_capture.js'],
       ['test_voice_focus.js'],
       ['test_cache_audit.js'],
+      /* P11-2A：角色一致性校准 Layer A（确定性契约校准，零依赖离线） */
+      ['test_middle_brain_calibration.js'],
       ['test_harness_boundary.js'],
       ['test_credential_vault.js'],
       ['test_error_catalog.js'],
@@ -140,6 +145,8 @@ const GROUPS = [
       ['test_middle_brain_judge.js'],
       ['test_middle_brain_integrity.js'],
       ['test_middle_brain_seam.js'],
+      /* P11-2A：角色一致性校准（Layer B · 离线 mock 真实执行路径；--live 才接真实端点） */
+      ['test_middle_brain_calibration_live.js'],
       /* Cache Audit baseline 身份隔离（真实 chat→diary→chat 行为链） */
       ['test_cache_audit_isolation.js'],
       ['test_moments_phase4_smoke.js'],
