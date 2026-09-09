@@ -16,7 +16,7 @@
 | `assets/js/active-diary.js` | Phase 1 的迁移诊断改为经统一 helper 生成记录（sink 仍是 `_activeProactiveLog`，结构与 Moments 不再各自漂移） |
 | `test_runtime_convergence_moments.js` | 新增 Phase 2 convergence regression（18 个用例，覆盖要求的 20 项） |
 | `test-all.js` | 登记新测试 |
-| `docs/RUNTIME-CONVERGENCE-PHASE2-REPORT.md` | 本报告 |
+| `docs/history/runtime/RUNTIME-CONVERGENCE-PHASE2-REPORT.md` | 本报告 |
 
 未改动：`buildMomentPrompt` / `buildMomentCommentPrompt` / `buildMomentReplyPrompt`、`_momentsContext`、`_momentsParseOutput` / `_momentsParseCommentOutput` / `_momentsParseReplyOutput`、去重/频控/冷却/低信息过滤、`createMoment`/`addMomentComment`、event/ACK、`_momentsTick` 与 companion 同步、图片链路。
 

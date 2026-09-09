@@ -1,33 +1,34 @@
+# ── 本地环境 / 缓存（不属于项目源码）────────────────────────────
 .venv-vision/
 vision/__pycache__/
+vision/.cache/
 __pycache__/
 .pytest_cache/
-vision/.cache/
 
-# 桌面工具本地缓存与临时生成的素材，不属于项目源码
+# 桌面工具本地缓存与临时生成的素材
 .reasonix/
 Gemini_Generated_Image_*.png
 
-# 本地故障恢复副本：保留在工作机上，不进入版本�?.dsh-recovery/
-
-# ���湤���ļ�����״̬��������
-.dsh-file-claim/
-
-# launcher runtime log (local machine) �� not part of the project source
-logs/
-
-# 本机运行/开发垃圾，不属于项目源码
+# 本机故障恢复副本与文件认领状态：保留在工作机上，不进入版本库
 .dsh/
 .dsh-recovery/
 .dsh-file-claim/
+
+# 本机运行 / 开发垃圾
 .playwright-mcp/
 browser-data/
 logs/
 tmp_ib_probe*.js
 _icon_preview.png
 
-# WorkBuddy AI 工具产物（本地记忆/缓存），不属于项目源码
+# WorkBuddy AI 工具产物（本地记忆/缓存）
 .workbuddy-ai/
 
 # 审计脚本生成的机器可读结果（人工报告正文仍提交）
 docs/*.results.json
+
+# 发行产物：安装包 / staging / 构建日志通过 GitHub Releases 发布，不进入源码历史
+dist/
+
+# bundled Node runtime binary: fetched by scripts/update-node-runtime.ps1, never committed
+runtime/node/node.exe

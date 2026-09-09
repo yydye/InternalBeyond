@@ -1,0 +1,22 @@
+{
+  "schema": "internalbeyond.runtime-pin",
+  "version": 1,
+  "product": "InternalBeyond",
+  "runtime": {
+    "name": "node",
+    "line": "24",
+    "version": "24.18.0",
+    "platform": "win-x64",
+    "sha256": "9a4eb5f1c29c6a2e93852ead46b999e284a6a5ca8bab4d4e241d587d025a52de",
+    "source": "https://nodejs.org/dist/v24.18.0/win-x64/node.exe",
+    "sumsSource": "https://nodejs.org/dist/v24.18.0/SHASUMS256.txt",
+    "metadata": {
+      "versionFile": "runtime/node/VERSION",
+      "sumsFile": "runtime/node/SHA256SUMS",
+      "licenseFile": "runtime/node/LICENSE",
+      "noticeFile": "LICENSES/THIRD-PARTY-NODE.md"
+    },
+    "requiredMajor": 18,
+    "why": "随包分发的唯一运行时。安装包不得依赖系统 Node.js，也不得静默回退到 PATH。"
+  }
+}

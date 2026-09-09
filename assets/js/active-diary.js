@@ -157,7 +157,12 @@ async function _activeSaveSetting(){
     if((setting.background_enabled||(old&&old.background_enabled))&&_activeCompanionOnline)await _activeSyncAllBackground();
     _activeResetEditor();await _activeRenderSettings();await _activeRenderHistory();
     toast(setting.background_enabled&&!_activeCompanionOnline?'计划已保存；启动后台服务后将自动同步':'主动计划已保存')
-  }catch(e){console.error(e);toast('计划保存失败：'+(e.message||e))}
+  }catch(e){
+    console.error(e);
+    /* P3：保存失败也走统一模型（普通提示 + 详情），不再把原始 message 直接给用户 */
+    if(window.IBERR&&window.IBERR.show)window.IBERR.show(window.IBERR.present(e,{stage:'active_save_plan'}));
+    else toast('计划保存失败，请重试');
+  }
 }
 async function _activeEditSetting(id){
   const s=await dbGet(ACTIVE_SETTINGS_STORE,id);if(!s)return;
@@ -246,7 +251,15 @@ async function _activeRenderHistory(){
     const cfg=apiConfigs.find(a=>a.id===h.character_id)||archivedConfigs.find(a=>a.id===h.character_id);
     const row=document.createElement('div');row.className='active-history-row'+(h.status==='failed'?' failed':'');
     const name=document.createElement('div');name.className='active-history-name';name.textContent=(cfg&&(cfg.nickname||cfg.model))||h.character_name||'AI';
-    const content=document.createElement('div');content.className='active-history-content';content.textContent=h.status==='failed'?('发送失败：'+(h.error||'未知错误')):(h.status==='skipped'?('已顺延：'+(h.reason||'最近刚互动过')):(h.content||''));
+    const content=document.createElement('div');content.className='active-history-content';
+    if(h.status==='failed'){
+      /* P3：列表只给普通人能懂的一句话；原始原因（h.error）放 title 供排查，不铺在正文里 */
+      const _m=window.IBERR?window.IBERR.model('local_service',{component:'active',stage:'active_history',detail:String(h.error||'')}):null;
+      content.textContent='发送失败 · '+(_m?_m.message:'稍后会自动重试');
+      if(_m){content.title=window.IBERR.detailsText(_m);}
+    }else{
+      content.textContent=h.status==='skipped'?('已顺延：'+(h.reason||'最近刚互动过')):(h.content||'');
+    }
     const time=document.createElement('div');time.className='active-history-time';time.textContent=new Date(h.sent_at||h.created_at||Date.now()).toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});
     row.append(name,content,time);box.appendChild(row)
   })
@@ -669,7 +682,14 @@ async function _activeExecuteRun(run){
     if(_chatSendingFor.has(cfg.id))throw new Error('角色正在回复，已跳过本次主动消息');
     _chatSendingFor.add(cfg.id);
     const out=await _activeGenerate(cfg,s);await _activeStoreMessage(cfg,s,run,out);await _activeFinishRun(run,out,null)
-  }catch(e){console.error('[Active Messages]',e);await _activeFinishRun(run,null,e);if(run.manual)toast('主动消息发送失败：'+(e.message||e))}
+  }catch(e){
+    console.error('[Active Messages]',e);await _activeFinishRun(run,null,e);
+    if(run.manual){
+      /* P3：主动消息失败可能来自 provider 也可能来自本地后台服务，统一模型自动判定 */
+      if(window.IBERR&&window.IBERR.show)window.IBERR.show(window.IBERR.present(e,{stage:'active_send',cfg:cfg,source:(e&&e.ibSource)||''}));
+      else toast('主动消息发送失败，请稍后重试');
+    }
+  }
   finally{if(cfg)_chatSendingFor.delete(cfg.id)}
 }
 async function _activeRunNow(id){
@@ -1174,7 +1194,10 @@ async function _activeCompanionRequest(path,opts){
       /* 不吞掉服务端非 2xx 的原因：解析 body.error，让错误可读（如归 属 403 的
          "Moment schedule does not belong to this user"，而非只报 状态码）。 */
       let reason='';try{const j=JSON.parse(raw);reason=(j&&j.error)||''}catch(_e){reason=String(raw||'').slice(0,200)}
-      throw new Error('后台服务 '+res.status+(reason?': '+reason:''))
+      /* P3：标明来源，否则「后台服务 500」会被 IBERR 当成 provider 5xx 报给用户 */
+      const err=new Error('后台服务 '+res.status+(reason?': '+reason:''));
+      err.ibSource='local_service';err.ibComponent='active';err.status=res.status;
+      throw err;
     }
     return raw?JSON.parse(raw):{}
   }finally{clearTimeout(tm)}
@@ -1188,7 +1211,16 @@ async function _activeCheckCompanion(showToast,force){
   if(Date.now()-_activeCompanionCheckedAt<15000&&!showToast&&!force)return _activeCompanionOnline;
   _activeCompanionCheckedAt=Date.now();
   try{await _activeCompanionRequest('/health',{timeout:1800});_activeSetServiceStatus(true);if(showToast){const synced=await _activeSyncAllBackground();toast(synced?'后台服务连接正常，计划已同步':'后台服务已连接，但计划同步未完成，请重试')}return true}
-  catch(e){_activeSetServiceStatus(false);if(showToast)toast('未检测到后台服务，请先运行 start-active-service.cmd');return false}
+  catch(e){
+    _activeSetServiceStatus(false);
+    if(showToast){
+      /* P3：普通用户只看能力层面的影响；「后台服务 404 / ECONNREFUSED」进「查看详情」 */
+      if(window.IBERR&&window.IBERR.show){
+        window.IBERR.show(window.IBERR.model('local_service',{component:'active',stage:'active_health',detail:String(e&&e.message||e)}),{onRetry:function(){_activeCheckCompanion(true,true)}});
+      }else toast('未检测到后台服务，请先运行 start-active-service.cmd');
+    }
+    return false;
+  }
 }
 async function _activeBuildSnapshot(setting){
   const cfg=apiConfigs.find(a=>a.id===setting.character_id);if(!cfg)throw new Error('角色配置不存在');

@@ -786,7 +786,9 @@ async function continueTruncatedMsg(msgId,pillEl){
     liveSpans.forEach(function(s){s.remove()});
     if(btn){btn.disabled=false;btn.textContent='▸ 继续生成'}
     _contBusy.delete(msgId);
-    toast('续写失败：'+String(e&&e.message||e).slice(0,80));
+    /* P3：续写走的是真实 API 通道，用统一用户错误模型（状态码/原始信息进详情） */
+    if(window.IBERR&&window.IBERR.show)window.IBERR.show(window.IBERR.present(e,{stage:'workspace_continue'}));
+    else toast('续写失败，请稍后重试');
     return;
   }
   var _ctParts=_assistantResponseParts(piece,_ctRes.reasoning_content||'');

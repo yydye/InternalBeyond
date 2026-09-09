@@ -248,6 +248,10 @@ async function stopService(service) {
 
 /* ── Restart state machine (idle → restarting → ready | failed) ── */
 const restartState = { state: 'idle', lastError: '', startedAt: 0 };
+/* P7: a graceful stop requested through the control plane (installer upgrade /
+   uninstall). Kept separate from the restart state so a stop can never be
+   mistaken for an in-flight restart. */
+const shutdownState = { requested: false };
 
 function restartRunning() {
   return restartState.state === 'restarting';
@@ -282,8 +286,26 @@ async function runRestart() {
   }
 }
 
-/* ── Restart control server (localhost-only; Origin guard) ── */
-function restartOriginAllowed(req) {
+/*
+ * P7 graceful stop: used by the Windows installer before it replaces files on
+ * upgrade/uninstall. Reuses the exact same verified stop path as restart —
+ * stopService() only ever terminates a process whose command line contains both
+ * this project directory and the service script, so an unrelated node.exe on
+ * the machine is never touched. Bounded waits; then this runner exits.
+ */
+async function runShutdown() {
+  appendRestartLog('shutdown requested');
+  try {
+    for (const service of SERVICES) await stopService(service);
+    for (const service of SERVICES) await waitPortFree(service.port, 10000);
+  } catch (e) {
+    appendRestartLog('shutdown error: ' + redact(String(e && e.message || e)).slice(0, 300));
+  }
+  appendRestartLog('shutdown complete');
+  shutdown(0);
+}
+
+/* ── Restart control server (localhost-only; Origin guard) ── */function restartOriginAllowed(req) {
   const origin = String(req.headers.origin || '').trim();
   if (!origin) return true; /* loopback / non-browser local call */
   if (origin === 'null') return true; /* file:// */
@@ -325,7 +347,22 @@ function startRestartServer() {
     if (req.method === 'OPTIONS') { sendJsonRes(res, 204, {}, origin); return; }
 
     if (req.method === 'GET' && url.pathname === '/status') {
-      sendJsonRes(res, 200, { ok: true, service: RESTART_SERVER_NAME, state: restartState.state, error: restartState.lastError || '' }, origin);
+      sendJsonRes(res, 200, {
+        ok: true,
+        service: RESTART_SERVER_NAME,
+        state: shutdownState.requested ? 'shutting-down' : restartState.state,
+        error: restartState.lastError || ''
+      }, origin);
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/shutdown') {
+      if (!restartOriginAllowed(req)) { sendJsonRes(res, 403, { ok: false, error: 'origin-denied' }, origin); return; }
+      if (shutdownState.requested) { sendJsonRes(res, 202, { ok: true, state: 'shutting-down' }, origin); return; }
+      if (restartRunning()) { sendJsonRes(res, 409, { ok: false, state: 'restarting', error: 'restart-in-progress' }, origin); return; }
+      shutdownState.requested = true;
+      /* Fire-and-forget: the response must flush before this process exits. */
+      setTimeout(runShutdown, 60).unref();
+      sendJsonRes(res, 202, { ok: true, state: 'shutting-down' }, origin);
       return;
     }
     if (req.method === 'POST' && url.pathname === '/restart') {

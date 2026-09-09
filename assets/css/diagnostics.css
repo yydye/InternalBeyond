@@ -1,0 +1,76 @@
+﻿/* InternalBeyond · P5 系统诊断页样式
+   由 assets/js/diagnostics.js 在运行时注入（不占用 HTML 的样式表预算）。
+   颜色一律使用 core.css 既有 token，深色 / 浅色主题都跟随。 */
+
+/* ── 导航：为新增的第 15 个入口让出空间 ──
+   现有 .nav-links 是 nowrap flex，1440px 下只剩 ~21px 余量；再加一项会
+   把导航项压到右侧操作区上。这里只做「可收缩 + 横向滚动」，不重排导航。 */
+#navbar .nav-links{flex:1 1 auto;min-width:0;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;-ms-overflow-style:none}
+#navbar .nav-links::-webkit-scrollbar{display:none}
+#navbar .nav-links a{white-space:nowrap}
+#navbar .nav-actions{flex:0 0 auto}
+
+/* ── 页面容器 ── */
+#page-diagnostics{max-width:1140px}
+.ib-diag{padding:22px 24px;display:flex;flex-direction:column;gap:16px}
+
+/* ── 顶部总览 ── */
+.ib-diag-head{display:flex;flex-direction:column;gap:4px}
+.ib-diag-headline{font-size:1.08rem;font-weight:500;letter-spacing:0.02em;color:var(--content-primary)}
+.ib-diag-headline.is-ok{color:var(--status-success)}
+.ib-diag-headline.is-attention{color:var(--status-warning)}
+.ib-diag-headline.is-down{color:var(--status-danger)}
+.ib-diag-sub{font-size:0.84rem;color:var(--text-secondary)}
+.ib-diag-meta{font-size:0.76rem;color:var(--text-muted)}
+
+/* ── 能力列表 ── */
+.ib-diag-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
+.ib-diag-row{padding:11px 2px;border-top:1px solid var(--border-soft)}
+.ib-diag-row:first-child{border-top:0}
+.ib-diag-row-top{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.ib-diag-label{font-size:0.92rem;color:var(--content-primary);flex:1 1 auto;min-width:132px}
+.ib-diag-status{font-size:0.8rem;letter-spacing:0.02em;padding:2px 10px;border-radius:999px;border:1px solid var(--border-soft);background:var(--surface-card);color:var(--text-secondary);white-space:nowrap}
+.ib-diag-status.is-ok{color:var(--status-success);border-color:color-mix(in srgb,var(--status-success) 45%,transparent)}
+.ib-diag-status.is-attention{color:var(--status-warning);border-color:color-mix(in srgb,var(--status-warning) 45%,transparent)}
+.ib-diag-status.is-down{color:var(--status-danger);border-color:color-mix(in srgb,var(--status-danger) 45%,transparent)}
+.ib-diag-status.is-optional{color:var(--text-muted)}
+.ib-diag-status.is-checking{color:var(--accent-light);border-color:color-mix(in srgb,var(--accent-light) 45%,transparent)}
+.ib-diag-status.is-unknown{color:var(--text-muted)}
+.ib-diag-detail{margin:5px 0 0;font-size:0.82rem;color:var(--text-secondary)}
+.ib-diag-note{margin:3px 0 0;font-size:0.78rem;color:var(--text-muted)}
+.ib-diag-hint{margin:3px 0 0;font-size:0.78rem;color:var(--text-muted)}
+
+/* ── 修复区 ── */
+.ib-diag-repair{border-top:1px solid var(--border-soft);padding-top:14px;display:flex;flex-direction:column;gap:10px;align-items:flex-start}
+.ib-diag-repair-msg{margin:0;font-size:0.84rem;color:var(--text-secondary)}
+.ib-diag-repair-msg.is-ok{color:var(--status-success)}
+.ib-diag-repair-msg.is-fail{color:var(--status-danger)}
+
+/* ── AI 连接测试 ── */
+.ib-diag-ai{border-top:1px solid var(--border-soft);padding-top:14px;display:flex;flex-direction:column;gap:8px}
+.ib-diag-ai-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.ib-diag-ai-label{font-size:0.82rem;color:var(--text-secondary)}
+.ib-diag-ai-select{padding:5px 10px;border-radius:8px;border:1px solid var(--border-soft);background:var(--surface-card);color:var(--content-primary);font-family:inherit;font-size:0.82rem;max-width:220px}
+.ib-diag-ai-note{margin:0;font-size:0.76rem;color:var(--text-muted)}
+.ib-diag-ai-result{margin:0;font-size:0.82rem;color:var(--text-secondary)}
+.ib-diag-ai-result.is-ok{color:var(--status-success)}
+.ib-diag-ai-result.is-fail{color:var(--text-secondary);display:flex;flex-direction:column;gap:2px}
+.ib-diag-ai-title{font-weight:500;color:var(--status-danger)}
+.ib-diag-ai-message,.ib-diag-ai-suggestion{margin:0;font-size:0.8rem}
+
+/* ── 操作栏 / 技术详情 ── */
+.ib-diag-actions{display:flex;gap:10px;flex-wrap:wrap;border-top:1px solid var(--border-soft);padding-top:14px}
+.ib-diag-tech{margin:0;padding:12px 14px;border-radius:10px;background:var(--surface-card);border:1px solid var(--border-soft);font-size:0.74rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;max-height:340px;overflow:auto;color:var(--text-secondary)}
+
+/* ── API 设置页入口 ── */
+.ib-diag-entry{padding:16px 20px;display:flex;flex-direction:column;gap:8px;align-items:flex-start}
+.ib-diag-entry h3{margin:0}
+.ib-diag-entry-desc{margin:0;font-size:0.84rem;color:var(--text-secondary)}
+
+/* ── 小屏 ── */
+@media (max-width:560px){
+  .ib-diag{padding:16px 14px}
+  .ib-diag-label{flex-basis:100%}
+  .ib-diag-actions .btn{flex:1 1 auto}
+  .ib-diag-ai-select{max-width:100%}
+}

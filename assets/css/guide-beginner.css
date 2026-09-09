@@ -1,0 +1,296 @@
+﻿/* Internal Beyond — P6 · 零基础使用指南样式
+ * 由 assets/js/guide-beginner.js 在运行时注入（不占用 HTML 的样式表预算）。
+ * 只作用于 #guide-beginner 内部，不改既有 Guide 页任何既有样式。
+ * 全部使用 core.css 的设计令牌，跟随双主题自动适配。
+ */
+
+#guide-beginner {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 8px 20px 40px;
+  font-family: var(--font-ui);
+  color: var(--content-primary);
+}
+
+#guide-beginner .gb-wrap {
+  border-radius: var(--radius-panel);
+  border: 1px solid var(--border-soft);
+  background: var(--surface-panel);
+  box-shadow: var(--shadow-panel);
+  padding: 26px 28px 30px;
+}
+
+#guide-beginner .gb-head {
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--border-soft);
+  margin-bottom: 18px;
+}
+
+#guide-beginner .gb-title {
+  margin: 0 0 8px;
+  font-size: 1.5rem;
+  letter-spacing: 0.02em;
+}
+
+#guide-beginner .gb-sub {
+  margin: 0 0 12px;
+  font-size: 0.9rem;
+  line-height: 1.85;
+  opacity: 0.86;
+}
+
+#guide-beginner .gb-meta {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  font-size: 0.76rem;
+  opacity: 0.68;
+}
+
+#guide-beginner .gb-meta-version {
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border-soft);
+  background: var(--surface-card);
+}
+
+/* ── 目录 ─────────────────────────────────────────────── */
+#guide-beginner .gb-index {
+  margin: 0 0 26px;
+  padding: 16px 18px;
+  border-radius: var(--radius-panel);
+  background: var(--surface-card);
+  border: 1px solid var(--border-soft);
+}
+
+#guide-beginner .gb-index-title {
+  font-size: 0.78rem;
+  letter-spacing: 0.12em;
+  opacity: 0.6;
+  margin-bottom: 10px;
+}
+
+#guide-beginner .gb-index-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 6px 18px;
+  counter-reset: gb-index;
+}
+
+#guide-beginner .gb-index-item {
+  counter-increment: gb-index;
+  font-size: 0.84rem;
+  line-height: 1.9;
+}
+
+#guide-beginner .gb-index-item::before {
+  content: counter(gb-index) '.';
+  display: inline-block;
+  width: 1.6em;
+  opacity: 0.5;
+}
+
+#guide-beginner .gb-index-link {
+  color: inherit;
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+}
+
+#guide-beginner .gb-index-link:hover,
+#guide-beginner .gb-index-link:focus-visible {
+  border-bottom-color: var(--focus-ring);
+}
+
+/* ── 章节 ─────────────────────────────────────────────── */
+#guide-beginner .gb-chapter {
+  padding: 22px 0;
+  border-top: 1px solid var(--border-soft);
+}
+
+#guide-beginner .gb-chapter:first-child {
+  border-top: none;
+  padding-top: 4px;
+}
+
+#guide-beginner .gb-chapter-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+#guide-beginner .gb-num {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.76rem;
+  background: var(--surface-card);
+  border: 1px solid var(--border-soft);
+  opacity: 0.8;
+}
+
+#guide-beginner .gb-chapter-title {
+  margin: 0;
+  font-size: 1.08rem;
+  letter-spacing: 0.01em;
+}
+
+#guide-beginner .gb-goal {
+  margin: 0 0 14px 34px;
+  font-size: 0.88rem;
+  line-height: 1.9;
+  opacity: 0.86;
+}
+
+/* ── 截图 ─────────────────────────────────────────────── */
+#guide-beginner .gb-shots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin: 0 0 16px 34px;
+}
+
+#guide-beginner .gb-figure {
+  margin: 0;
+  flex: 1 1 320px;
+  min-width: 260px;
+  border-radius: var(--radius-panel);
+  border: 1px solid var(--border-soft);
+  background: var(--surface-card);
+  overflow: hidden;
+}
+
+#guide-beginner .gb-shot {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+#guide-beginner .gb-caption {
+  padding: 9px 12px;
+  font-size: 0.76rem;
+  line-height: 1.7;
+  opacity: 0.72;
+  border-top: 1px solid var(--border-soft);
+}
+
+#guide-beginner .gb-shot-missing {
+  margin: 0;
+  padding: 22px 14px;
+  font-size: 0.8rem;
+  line-height: 1.8;
+  opacity: 0.7;
+  text-align: center;
+}
+
+#guide-beginner .gb-figure.is-missing .gb-caption {
+  border-top: none;
+}
+
+/* ── 步骤 ─────────────────────────────────────────────── */
+#guide-beginner .gb-steps {
+  margin: 0 0 14px;
+  padding-left: 34px;
+  font-size: 0.88rem;
+  line-height: 1.95;
+}
+
+#guide-beginner .gb-steps li {
+  margin-bottom: 6px;
+}
+
+#guide-beginner .gb-steps li::marker {
+  opacity: 0.55;
+}
+
+/* ── 常见问题 ─────────────────────────────────────────── */
+#guide-beginner .gb-faq {
+  margin: 0 0 14px 34px;
+  font-size: 0.86rem;
+  line-height: 1.9;
+}
+
+#guide-beginner .gb-faq-q {
+  font-weight: 600;
+  margin-top: 12px;
+}
+
+#guide-beginner .gb-faq-q:first-child {
+  margin-top: 0;
+}
+
+#guide-beginner .gb-faq-a {
+  margin: 4px 0 0;
+  opacity: 0.85;
+}
+
+/* ── 提示 ─────────────────────────────────────────────── */
+#guide-beginner .gb-tip {
+  margin: 0 0 12px 34px;
+  padding: 12px 14px;
+  border-radius: var(--radius-panel);
+  background: var(--surface-card);
+  border: 1px solid var(--border-soft);
+  border-left: 3px solid var(--focus-ring);
+  font-size: 0.84rem;
+  line-height: 1.9;
+}
+
+#guide-beginner .gb-tip-title {
+  margin-right: 6px;
+}
+
+#guide-beginner .gb-tip-text {
+  opacity: 0.88;
+}
+
+#guide-beginner .gb-action-row {
+  margin: 0 0 0 34px;
+}
+
+/* ── 技术说明折叠区 ───────────────────────────────────── */
+#guide-beginner .gb-tech {
+  margin-top: 26px;
+  padding: 12px 14px;
+  border-radius: var(--radius-panel);
+  border: 1px solid var(--border-soft);
+  background: var(--surface-card);
+  font-size: 0.8rem;
+  line-height: 1.9;
+}
+
+#guide-beginner .gb-tech > summary {
+  cursor: pointer;
+  opacity: 0.75;
+  letter-spacing: 0.04em;
+}
+
+#guide-beginner .gb-tech-body p {
+  margin: 10px 0 0;
+  opacity: 0.8;
+}
+
+@media (max-width: 720px) {
+  #guide-beginner {
+    padding: 6px 12px 32px;
+  }
+  #guide-beginner .gb-wrap {
+    padding: 18px 16px 22px;
+  }
+  #guide-beginner .gb-goal,
+  #guide-beginner .gb-shots,
+  #guide-beginner .gb-steps,
+  #guide-beginner .gb-faq,
+  #guide-beginner .gb-tip,
+  #guide-beginner .gb-action-row {
+    margin-left: 0;
+  }
+}

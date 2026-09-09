@@ -86,7 +86,7 @@
 
 ### E. P2-03 / P2-04（只读核实，未统一）
 
-见 `docs/P2-CONTEXT-CONVERGENCE-AUDIT.md`。要点：
+见 `docs/history/runtime/P2-CONTEXT-CONVERGENCE-AUDIT.md`。要点：
 - **P2-03 仍存在**：`communication.js:1348` 先召回 Memory（含激活计数写库），`:1365` 又以**空 opts** 调 `middleBrainCompressPipeline`，`middle-brain.js:455-480` 因此**再次**读取 Memory/Understanding/Thread/Moments；`:1367` 把压缩结果**追加**而非替换 → 同轮同一事实出现两次、token 反而增加。pipeline 已支持 `opts.*Ctx` 直传，修复只需调用点，不需改 middle-brain。
 - **P2-04 仍存在**：`roleLetterMemories` 在前台 Proactive/Moments 的 prompt 中存在（`active-diary.js:392`、`moments.js:492`），但两个 companion 快照（`moments.js:1457-1469`、`active-diary.js:1012`）与两个 Node prompt（`active/moments.js:165-214`、`active/model-client.js:126-185`）都没有该字段；Memory 存在两套召回实现（`getMemoryContext` vs `_activeRecentMemories`）；门控位（普通 Memory / Auto Memory / 话题 memoryEnabled）语义互不等价。可收敛字段清单见该文档 §2.4。
 

@@ -382,7 +382,11 @@ async function _voiceCloneUploadFile(file){
       };
       toast('参考音频已上传：'+_voiceCloneSelection.refAudioId);
     }else toast('上传失败：'+(j&&j.error||'未知错误'));
-  }catch(e){toast('上传失败：'+String(e&&e.message||e).slice(0,80));}
+  }catch(e){
+    /* P3：上传失败可能是本地服务未启动或网络问题，统一模型自动判定 */
+    if(window.IBERR&&window.IBERR.show)window.IBERR.show(window.IBERR.present(e,{stage:'voice_ref_upload',source:'local_service',component:'bridge'}));
+    else toast('上传失败，请重试');
+  }
   finally{if(btn)btn.disabled=false;}
   _voiceCloneRender();
 }
@@ -401,7 +405,10 @@ async function _voiceCloneDeleteCurrent(){
     }).then(function(r){return r.json()}).catch(function(NS){return {ok:false,error:'Bridge 未连接'}});
     if(j&&j.ok){_voiceCloneSelection=null;toast('参考音频已删除');}
     else toast('删除失败：'+(j&&j.error||'未知错误'));
-  }catch(e){toast('删除失败：'+String(e&&e.message||e).slice(0,80));}
+  }catch(e){
+    if(window.IBERR&&window.IBERR.show)window.IBERR.show(window.IBERR.present(e,{stage:'voice_ref_delete',source:'local_service',component:'bridge'}));
+    else toast('删除失败，请重试');
+  }
   finally{if(btn)btn.disabled=false;}
   _voiceCloneRender();
 }
@@ -1116,7 +1123,8 @@ async function saveCurrentApi(btn){
     toast(_apiSaveNotice(persisted));
   }catch(e){
     console.error('API config save failed',e);
-    toast('API保存失败：'+String(e&&e.message||e||'浏览器存储不可用').slice(0,80));
+    if(window.IBERR&&window.IBERR.show)window.IBERR.show(window.IBERR.present(e,{stage:'api_config_save'}));
+    else toast('API 配置保存失败，请重试');
   }finally{
     if(btn){btn.disabled=false;btn.textContent=oldBtnText}
   }

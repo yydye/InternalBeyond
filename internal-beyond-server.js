@@ -14,14 +14,39 @@
  * Idempotency: the launcher checks /health before starting; this server exits
  * with a distinct code (3) if its port is already bound by another process so
  * the launcher can report a conflict instead of creating a duplicate.
+ *
+ * GET /__boot-state (P2): read-only view of the launch record written by
+ * launch-internal-beyond.js, so the UI can tell normal / degraded / fatal apart
+ * without inventing a second state model. Same-origin only (no CORS headers),
+ * no-store, and the record is re-scrubbed on read (no credentials, ever).
+ *
+ * GET /health (P7): also reports the product version from the single release
+ * source (./VERSION), so Diagnostics and the Guide never hand-write a version.
+ *
+ * POST /__shutdown (P7): graceful stop of this static server, used by the
+ * installer before replacing files on upgrade. Loopback bind + Origin guard
+ * only; there is no unauthenticated remote surface.
+ *
+ * Path safety (P7 hardening): requests are resolved inside the served root and
+ * hidden/denylisted segments (`.git`, `.env`, `logs`, `node_modules`, ...) are
+ * refused outright, so a dev checkout served by this process cannot be walked
+ * into from the browser even though the release payload never contains them.
  */
 
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const bootState = require('./boot-state.js');
+const productVersion = require('./product-version.js');
 
 const ROOT = __dirname;
+
+/* Top-level directories that are never part of the web app. Hidden segments
+   (any segment starting with ".") are refused separately. `runtime` and `tools`
+   exist only for the launcher/installer: the browser never requests them, and
+   serving a 92 MB node.exe or internal helper scripts over HTTP is pointless. */
+const DENY_SEGMENTS = ['logs', 'node_modules', 'browser-data', '__pycache__', '.venv-vision', 'runtime', 'tools'];
 
 function optionPort(name, fallback) {
   const raw = process.env[name];
@@ -55,12 +80,26 @@ const MIME = {
 };
 
 /* Resolve a request path safely within the project root. Returns null when the
-   target escapes the root (path traversal) or is a directory. */
+   target escapes the root (path traversal), is denylisted, is hidden, or is a
+   directory. */
 function resolveRequest(root, urlPath) {
-  let rel = decodeURIComponent(String(urlPath || '').split('?')[0].split('#')[0]);
+  let rel = '';
+  try { rel = decodeURIComponent(String(urlPath || '').split('?')[0].split('#')[0]); }
+  catch (e) { return null; } /* malformed percent-encoding → refuse */
   if (rel === '' || rel === '/') rel = '/InternalBeyond.html';
   if (rel === '/health' || rel === '/__health') return null; /* handled by caller */
-  const target = path.resolve(root, '.' + path.sep + rel.replace(/^\//, ''));
+  const relNoLead = rel.replace(/^[/\\]+/, '');
+  /* Hidden and denylisted segments are refused before touching the filesystem:
+     .git/, .env, logs/, node_modules/, browser-data/ can never be served even
+     from a developer checkout. */
+  const segments = relNoLead.split(/[/\\]+/).filter(Boolean);
+  for (const seg of segments) {
+    if (seg === '.' || seg === '..') return null;
+    if (seg.charAt(0) === '.') return null;
+  }
+  const top = String(segments[0] || '').toLowerCase();
+  if (DENY_SEGMENTS.indexOf(top) >= 0) return null;
+  const target = path.resolve(root, '.' + path.sep + relNoLead);
   const normRoot = path.resolve(root);
   if (target !== normRoot && !target.startsWith(normRoot + path.sep)) return null; /* traversal */
   let stat = null;
@@ -76,6 +115,44 @@ function resolveRequest(root, urlPath) {
   return { file: target, type: type };
 }
 
+/* Same origin policy as the runner's restart control plane: local callers (no
+   Origin), file:// pages and loopback origins are allowed; anything else is
+   denied. This server is loopback-bound, so this only defends against a
+   browser page on a foreign origin. */
+function shutdownOriginAllowed(req) {
+  const origin = String(req.headers.origin || '').trim();
+  if (!origin) return true;
+  if (origin === 'null') return true;
+  try {
+    const u = new URL(origin);
+    if (u.protocol === 'file:') return true;
+    if (u.protocol === 'http:' || u.protocol === 'https:') {
+      const host = String(u.hostname).toLowerCase();
+      if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]') return true;
+    }
+  } catch (e) { /* illegal origin → deny */ }
+  return false;
+}
+
+/* Stop accepting connections and exit. `opts.onShutdown` lets tests observe the
+   request without terminating the test process. */
+function performShutdown(server, opts) {
+  const o = opts || {};
+  if (typeof o.onShutdown === 'function') {
+    try { o.onShutdown({ port: server.port, identity: server.identity }); } catch (e) { }
+    return;
+  }
+  const exit = function () { try { process.exit(0); } catch (e) { } };
+  setTimeout(function () {
+    try {
+      server.close(exit);
+      /* Bounded: a lingering keep-alive connection must never keep the old
+         build alive while the installer replaces files. */
+      setTimeout(exit, 2000).unref();
+    } catch (e) { exit(); }
+  }, 120);
+}
+
 function createWebServer(opts) {
   const o = opts || {};
   const root = o.root || ROOT;
@@ -86,8 +163,50 @@ function createWebServer(opts) {
   const server = http.createServer(function (req, res) {
     const pathname = String(req.url || '/').split('?')[0];
     if (pathname === '/health' || pathname === '/__health') {
-      const body = JSON.stringify({ ok: true, server: identity });
+      const pv = productVersion.get();
+      const body = JSON.stringify({ ok: true, server: identity, version: pv.ok ? pv.version : '' });
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(body);
+      return;
+    }
+    if (pathname === '/__shutdown') {
+      if (req.method !== 'POST') {
+        res.writeHead(405, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: 'method-not-allowed' }));
+        return;
+      }
+      if (!shutdownOriginAllowed(req)) {
+        res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: 'origin-denied' }));
+        return;
+      }
+      res.writeHead(202, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ ok: true, server: identity, shuttingDown: true }));
+      performShutdown(server, o);
+      return;
+    }
+    if (pathname === '/__boot-state') {
+      /* Read-only launch record. Never fatal when absent: present=false is an
+         honest answer (e.g. the server was started outside the launcher). */
+      const live = server.address();
+      const listeningPort = live && typeof live === 'object' ? live.port : port;
+      const read = bootState.readBootState({ expectWebPort: listeningPort });
+      const body = JSON.stringify({
+        ok: read.ok,
+        present: read.present,
+        stale: read.stale,
+        staleReason: read.staleReason,
+        ageMs: read.ageMs,
+        schema: bootState.SCHEMA,
+        version: bootState.VERSION,
+        path: read.path,
+        error: read.error,
+        bootState: read.state
+      });
+      res.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'no-store'
+      });
       res.end(body);
       return;
     }

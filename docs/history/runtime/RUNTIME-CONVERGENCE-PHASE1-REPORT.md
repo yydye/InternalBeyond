@@ -16,7 +16,7 @@
 | `test_runtime_convergence_proactive.js` | 新增 convergence regression（14 项，真实 localhost 页面 + mock provider） |
 | `test-all.js` | 登记新测试（browser 组） |
 | `test_moments_phase3_smoke.js` | **测试隔离修复（与本迁移无关的既有抖动）**：暂停后台 `_activeTimer`，避免 30s 后台 tick 与本测试的 companion 请求计数/mock 每模型计数竞争；4/4 次独立运行稳定 |
-| `docs/RUNTIME-CONVERGENCE-PHASE1-REPORT.md` | 本报告 |
+| `docs/history/runtime/RUNTIME-CONVERGENCE-PHASE1-REPORT.md` | 本报告 |
 
 未改动：`loadProactiveMessageContext`、`buildProactivePrompt`、`_activeVisibleProactiveReply`、`_activeValidateProactiveReply`、`_activeFallbackMessage`、`ACTIVE_PROACTIVE_MAX_ATTEMPTS`、`_activeExecuteRun`/`_activeStoreMessage`、`active-plans.js` 调用方。
 

@@ -4,27 +4,45 @@
 
 ## 1. 总览
 
-Internal Beyond 是一个**个人本地 AI 陪伴站**：入口是 [InternalBeyond.html](InternalBeyond.html)，配套两个本地 Node 服务：
+Internal Beyond 是一个**个人本地 AI 陪伴站**。**正式发行形态是 Windows 安装包**（P7）：
+用户从 GitHub Releases 下载 `InternalBeyond-Setup-<版本号>.exe` 安装，从开始菜单 / 桌面快捷方式启动；
+快捷方式最终执行 `启动 InternalBeyond.vbs` → [launch-internal-beyond.js](launch-internal-beyond.js)，
+由它解析内置 Node 运行时并拉起静态页面服务与可选本地服务。**普通用户不需要 Node.js、命令行或直接打开 HTML。**
 
-| 组件 | 端口 | 入口脚本 | 职责 |
+页面入口是 [InternalBeyond.html](InternalBeyond.html)，配套两个本地 Node 服务（开发期用 `.cmd` 脚本单独启动）：
+
+| 组件 | 端口 | 入口 | 职责 |
 |---|---|---|---|
-| 主站（浏览器） | — | 直接打开 `InternalBeyond.html`（`file://`） | 主聊天（浏览器直连各家 AI API）、社交圈、日记、记忆、工作区、游戏等全部页面功能 |
-| Bridge 后端 | `127.0.0.1:23115` | `start-bridge-service.cmd` → [ib-bridge-service.js](ib-bridge-service.js) | 表情包、心语墙、健康/定位/天气看板、酷狗点歌、Bark/ntfy 推送、上下文进度条、`/continue` 续写、AI 常驻会话（多模型）、TTS 语音气泡、多窗口同步 |
-| Active companion | `127.0.0.1:23114` | `start-active-service.cmd` / `start-local-services.cmd` → [active-message-service.js](active-message-service.js) | 浏览器关闭后的后台执行：主动消息计划（plans）、朋友圈调度（moments）、AI↔AI 回复链续推、事件回传 |
+| 主站（浏览器） | `127.0.0.1:23120`（安装版由启动链提供） | 快捷方式 → `启动 InternalBeyond.vbs` → `launch-internal-beyond.js` → [internal-beyond-server.js](internal-beyond-server.js)；开发期也可直接打开 `InternalBeyond.html`（`file://`） | 主聊天（浏览器直连各家 AI API）、社交圈、日记、记忆、工作区、游戏等全部页面功能 |
+| Bridge 后端 | `127.0.0.1:23115` | 安装版随启动链自动拉起；开发期 `start-bridge-service.cmd` → [ib-bridge-service.js](ib-bridge-service.js) | 表情包、心语墙、健康/定位/天气看板、酷狗点歌、Bark/ntfy 推送、上下文进度条、`/continue` 续写、AI 常驻会话（多模型）、TTS 语音气泡、多窗口同步 |
+| Active companion | `127.0.0.1:23114` | 安装版随启动链自动拉起；开发期 `start-active-service.cmd` / `start-local-services.cmd` → [active-message-service.js](active-message-service.js) | 浏览器关闭后的后台执行：主动消息计划（plans）、朋友圈调度（moments）、AI↔AI 回复链续推、事件回传 |
+| 静默重启控制面 | `127.0.0.1:23116` | [local-services-runner.js](local-services-runner.js) | 诊断页「尝试修复」调用的真实恢复动作 |
 
-- **无构建步骤**：全部是原生经典脚本，HTML 按固定顺序 `<script>` 加载；直接打开 HTML 的启动方式不变。
-- Bridge 纯 Node 内置模块零依赖（Node 18+）；WebSocket 为手写 RFC6455 实现。
+- **无构建步骤**：全部是原生经典脚本，HTML 按固定顺序 `<script>` 加载。
+- **内置 Node 运行时**（P1）：安装包自带 `runtime\node\node.exe`（Node 24 LTS 精确 patch，见 `runtime/node/VERSION`），
+  解析顺序 `IB_NODE` → `runtime\node\node.exe` → PATH（**PATH 仅开发/兼容兜底**）；内置运行时损坏时报错且不回退。
+- Bridge 纯 Node 内置模块零依赖；WebSocket 为手写 RFC6455 实现。
 - 主聊天仍由浏览器直连各家 API；Bridge 不做主聊天代理。AI 常驻会话是独立于主聊天的一套。
+- **启动状态**：每次启动把真实状态写入 `%LOCALAPPDATA%\InternalBeyond\boot-state.json`（P2），
+  诊断页（P5）以它解释"本次启动发生了什么"、再以实时探测给出当前状态。
 
-可用环境变量覆盖服务参数：`IB_BRIDGE_PORT` / `IB_BRIDGE_HOST` / `IB_BRIDGE_DATA_DIR`、`IB_RESIDENT_TICK_MS`（Bridge 定时扫描间隔）、`IB_ACTIVE_DATA_DIR`（companion 数据目录，测试用）、`IB_SOCIAL_OBSERVE=off`（关闭观测持久化）。
+可用环境变量覆盖服务参数：`IB_BRIDGE_PORT` / `IB_BRIDGE_HOST` / `IB_BRIDGE_DATA_DIR`、`IB_RESIDENT_TICK_MS`（Bridge 定时扫描间隔）、`IB_ACTIVE_DATA_DIR`（companion 数据目录，测试用）、`IB_WEB_PORT` / `IB_RESTART_PORT` / `IB_VISION_PORT`、`IB_SOCIAL_OBSERVE=off`（关闭观测持久化）。
 
 ## 2. 目录与模块结构
 
 ```
 InternalBeyond/  # 仓库根目录
 ├── InternalBeyond.html          # 入口 HTML（页内仍有少量内联脚本与全部页面 DOM）
+├── VERSION / product-version.js # 单一发行版本源与版本解析
+├── launch-internal-beyond.js    # 正式静默启动链（快捷方式最终执行）
+├── internal-beyond-server.js    # 本地静态页面服务（AudioWorklet 必需）
+├── local-services-runner.js     # Bridge + Active 统一控制器 + 23116 重启/停止控制面
+├── boot-state.js                # 启动状态记录（诊断唯一来源）
+├── 启动 InternalBeyond.vbs      # 用户启动入口实现（安装包快捷方式目标）
+├── Start Internal Beyond.cmd    # 兼容别名（同样只调用 launch-internal-beyond.js）
+├── start-{bridge,active,local,vision}-service.cmd  # 开发期单服务 / 统一启动脚本（不随包分发）
 ├── ib-bridge-service.js         # Bridge composition root（约 998 行）
-├── bridge/                      # Bridge 七个 CommonJS 工厂模块
+├── bridge/                      # Bridge 工厂模块
 │   ├── util.js                  # deepMerge / backupBrokenFile / uid / todayStr / constantTimeTokenMatch / parseQuery
 │   ├── config.js                # createConfig({dataDir, writeJson})：config/configRaw/configInvalid/LAN_EXPOSED/鉴权辅助
 │   ├── clients.js               # createClients({config, getGeoLatest})：天气(wttr.in)、网易云/酷狗、Bark/ntfy
@@ -33,7 +51,7 @@ InternalBeyond/  # 仓库根目录
 │   ├── ws.js                    # createWs({...})：心跳/recordPush/broadcast/WSConnection
 │   └── routes.js                # createRoutes(ctx)：CORS/rateCheck/readBody/diagnostics/handleHttp
 ├── active-message-service.js    # companion composition root（约 268 行，require.main 守卫自启）
-├── active/                      # companion 五个域模块（CommonJS 工厂 + 依赖注入）
+├── active/                      # companion 域模块（CommonJS 工厂 + 依赖注入）
 │   ├── persistence.js           # 状态加载(主→.tmp→.bak)/原子写(tmp+fsync+备份轮换)/50ms 合并保存队列
 │   ├── plan-domain.js           # 调度计算(nextRun/免打扰)、setting 与 AI 计划净化器、指纹/替换/取消
 │   ├── model-client.js          # 主动消息 prompt、anthropic/gemini/openai 三适配、重试与相似度校验、Windows 气泡通知
@@ -44,7 +62,7 @@ InternalBeyond/  # 仓库根目录
 │                                #   replyChainCrashRecover/replyChainPrune)
 ├── assets/css/                  # core.css(基础主题前 383 行) + core/ 12 段(chat-shell/letters/memory/pages/chat/
 │                                #   workspace/api-components/blog/about/widgets/archive-active) +
-│                                #   calendar.css / bridge.css / moments.css / social.css
+│                                #   calendar.css / bridge.css / moments.css / social.css + 诊断/向导/指南样式
 ├── assets/js/                   # 前端模块（见 §3）
 │   ├── core.js communication.js workspace.js memory.js active-diary.js social.js integrations.js ...
 │   ├── communication/{letters,voice,annotations,summary}.js
@@ -52,13 +70,21 @@ InternalBeyond/  # 仓库根目录
 │   ├── memory/{auto-memory,constellations}.js
 │   ├── active-diary/{active-plans,diary}.js
 │   ├── moments.js social-network.js reply-chain-core.js social-observe.js
+│   ├── setup-wizard.js diagnostics.js guide-beginner.js context-snapshot.js error-catalog.js
 │   ├── ib-namespace.js local-first.js local-vault.js site-operations.js bridge.js calendar.js preloader.js ...
 │   └── game 六文件在 game/ 下（见 §8）
+├── apps/                        # APP 目录（catalog.json 运行时 fetch，catalog.js 为 file:// 回退）
 ├── game/                        # game_module.js / game_tarot.js / game_story.js / game_dialogue.js / game_room.js / game_tea.js
+├── installer/                   # Inno Setup 脚本 + 语言文件 + 运行时 pin + tools/ib-stop.js
+├── runtime/node/                # 内置 Node 运行时（node.exe 不入库，由 scripts/update-node-runtime.ps1 下载）
+├── scripts/                     # 构建 / 发行审计 / 载荷清单 / 截图管线 / 进程与运行时脚本
+├── docs/                        # 机制文档 + guide 截图 + history 归档
+├── vision/                      # 可选本地视觉服务（Python，默认不随包分发）
 ├── test-all.js                  # 统一测试入口（--quick / --browser / --all）
-├── test_*.js                    # 各冒烟/单元/集成套件（见 §10）
+├── test_*.js                    # 各冒烟/单元/集成套件
 └── scripts_check_html.js        # 提取 HTML 内全部 <script> 块逐个 node --check
 ```
+
 
 ### HTML 加载顺序（关键约束）
 
@@ -188,7 +214,7 @@ Bark（iOS）与 ntfy（Android/OPPO）都支持；`recordPush` 同时记录两�
 
 ## 6. AI 社交系统（Moments / Social Net）
 
-### 数据模型（IndexedDB store `moments`，DB_VER 18）
+### 数据模型（IndexedDB store `moments`，DB_VER 23）
 
 Moment 字段：`id/roleId/authorType('user'|'role')/authorId/content/images[]/visibility(all|user|roles|private)/visibleRoleIds/likes[](string[])/comments[]/source(manual|proactive)/createdAt(ISO)/repostOf/repostText`；Comment：`id/authorType(user|role)/authorId/content/replyTo?/createdAt`。
 
@@ -266,9 +292,9 @@ Moment 字段：`id/roleId/authorType('user'|'role')/authorId/content/images[]/v
 
 ## 10. 数据存储全景
 
-### IndexedDB（DB_VER 21）
+### IndexedDB（DB_VER 23）
 
-stores 包括：聊天消息（经 dbPut）、`apiConfigs`、`memories`、`blogAnnotations`、`active_message_plans`（v17 起）、`diary_entries`（v17 起）、`moments`（v18，keyPath `id`，索引 `byRole(roleId)`/`byCreated(createdAt)`）、`activities` / `favorites`（v21 起，见 §11.1）。导出/导入：`_ibBuildExportData` 含全部 store（顶层 version 9）、`importAll` 按 keyPath 回灌天然去重。`openDB` 带 `onblocked` 监听（提示关闭旧标签页）。
+stores 包括：聊天消息（经 dbPut）、`apiConfigs`、`memories`、`blogAnnotations`、`active_message_plans`（v17 起）、`diary_entries`（v17 起）、`moments`（v18，keyPath `id`，索引 `byRole(roleId)`/`byCreated(createdAt)`）、`roleLetters`/`roleLetterMemories`（v19/v20）、`activities` / `favorites`（v21 起，见 §11.1）、`understandings` / `threads`（v23 起，认识层与线索层）。导出/导入：`_ibBuildExportData` 含全部 store（顶层 version 9）、`importAll` 按 keyPath 回灌天然去重。`openDB` 带 `onblocked` 监听（提示关闭旧标签页）。
 
 ### localStorage 键（部分）
 
@@ -282,7 +308,7 @@ stores 包括：聊天消息（经 dbPut）、`apiConfigs`、`memories`、`blogA
 
 > 本组目标是让 InternalBeyond 从「聊天 + 朋友圈 + 通话」进一步变成共享同一套角色/记忆/活动状态/持久化的 **AI Companion World**：Chat / Moments / Call / Coread / Cinema / Favorites / Apps 共用同一套角色、记忆与活动基础设施。全部为 UI 与数据层新增，**不改动** Harness 四文件、ModelPort 等既有边界。
 
-### 11.1 IndexedDB（DB_VER 21）
+### 11.1 IndexedDB（DB_VER 23）
 
 在既有 28 个 store 之上**增量**新增两个 store（keyPath `id`）：
 

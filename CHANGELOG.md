@@ -251,7 +251,7 @@
 - **绑定**：`启动 InternalBeyond.vbs` 本身无法直接设置 Windows 文件图标，故采用 Windows 快捷方式作为最终桌面入口：桌面 **`InternalBeyond.lnk`** → 目标 = `启动 InternalBeyond.vbs`、工作目录 = 项目根、图标 = `IB-icon.ico`。
 - **可复现安装器**：新增 `create-desktop-shortcut.cmd`（幂等，双击运行即在桌面创建/刷新 `InternalBeyond.lnk`；移动项目后重跑重新指向）。纯 ASCII 内容 + CRLF，避免 cmd/GBK 编码问题。
 - **启动逻辑完全不变**：`.lnk` 只是转发到 `启动 InternalBeyond.vbs`（GBK 无 BOM），底层仍复用唯一 `launch-internal-beyond.js`——Bridge/Active 检测复用、23120 Web 检测复用、自动打开 localhost、0 重复服务、失败原生提示、日志，全部不变。
-- **验证**：`create-desktop-shortcut.cmd` 实跑创建 `C:\Users\admin\Desktop\InternalBeyond.lnk`（Target=`E:\InternalBeyond-main\启动 InternalBeyond.vbs`、Icon=`E:\InternalBeyond-main\IB-icon.ico,0`、WorkingDir=项目根）；双击该 `.lnk` 实际跑通启动链路（Bridge/Active 复用、Web 拉起并健康、0 重复，测试以 `IB_LAUNCH_NO_OPEN=1` 抑制浏览器、测后清理 23120）。`test_harness_boundary.js` / `test_launcher.js` / `test_worklet_localhost.js` 未受影响。
+- **验证**：`create-desktop-shortcut.cmd` 实跑创建 `C:\Users\<user>\Desktop\InternalBeyond.lnk`（Target=`<repo-root>\启动 InternalBeyond.vbs`、Icon=`<repo-root>\IB-icon.ico,0`、WorkingDir=项目根）；双击该 `.lnk` 实际跑通启动链路（Bridge/Active 复用、Web 拉起并健康、0 重复，测试以 `IB_LAUNCH_NO_OPEN=1` 抑制浏览器、测后清理 23120）。`test_harness_boundary.js` / `test_launcher.js` / `test_worklet_localhost.js` 未受影响。
 
 ## 2026-09-02 · 修复 MiMo 朋友圈图片注入 400「base64 data is not valid」
 

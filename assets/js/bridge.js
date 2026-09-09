@@ -75,6 +75,21 @@ var _ibToastEl=null;
 function ibToast(m){ try{ if(typeof toast==='function'){toast(m);return;} }catch(e){} var s=String(m||''); try{ console.log(s); }catch(e2){} try{ if(!_ibToastEl){ _ibToastEl=document.createElement('div'); _ibToastEl.id='ib-toast-fallback'; _ibToastEl.style.cssText='position:fixed;bottom:120px;left:50%;transform:translateX(-50%);z-index:9999;padding:10px 22px;border-radius:10px;background:rgba(16,22,38,.92);border:1px solid rgba(140,200,255,.35);color:#e0edff;font-size:.82rem;font-family:\"Noto Sans SC\",sans-serif;pointer-events:none;opacity:0;transition:opacity .3s ease;max-width:85vw;text-align:center;word-break:break-word'; document.body.appendChild(_ibToastEl); } _ibToastEl.textContent=s; _ibToastEl.style.opacity='1'; clearTimeout(_ibToastEl._t); _ibToastEl._t=setTimeout(function(NS){ _ibToastEl.style.opacity='0'; },2500); }catch(e){} }
 function ibEsc(s){ try{ if(typeof esc==='function')return esc(s); }catch(e){} return String(s==null?'':s).replace(/[&<>"']/g,function(c){return({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]}) }
 
+/* ---------- P3：本地服务 / TTS 错误的统一用户提示 ----------
+   普通用户只看「发生了什么 + 可以做什么」；ECONNREFUSED / ws://127.0.0.1:23115
+   这类信息只出现在「查看详情」里（已脱敏）。retry 传回调时卡片才显示「重试」，
+   回调就是「再点一次刚才那个按钮」，不新增任何后台能力。 */
+function ibErrLocal(component,err,retry,extra){
+  try{
+    if(!window.IBERR||typeof window.IBERR.show!=='function'){ ibToast(component==='tts'?'语音生成失败':'Bridge 未连接'); return; }
+    var ctx={source:(component==='tts'?'tts':'local_service'),component:(component==='tts'?'bridge':component),stage:'bridge',detail:String((err&&err.message)||err||'')};
+    if(extra)for(var k in extra)if(Object.prototype.hasOwnProperty.call(extra,k))ctx[k]=extra[k];
+    window.IBERR.show(window.IBERR.model(component==='tts'?'tts':'local_service',ctx),{onRetry:(typeof retry==='function')?retry:null});
+  }catch(e){ try{ ibToast('本地功能暂时不可用'); }catch(e2){} }
+}
+/* 按钮重试：把「再点一次」包装成回调（按钮在 catch 的 finally 里已恢复可用） */
+function ibRetryBtn(el){ return function(){ try{ if(el&&el.click)el.click(); }catch(e){} }; }
+
 /* ---------- 默认桥接地址：为空时自动填入本地地址 ---------- */
 function ibNetDefaults(){
   try{
@@ -190,7 +205,7 @@ function ibStickerPop(anchor,inp){
       img.onclick=function(){ inp.value+='[sticker:'+s.name+'] ';inp.focus();_ibClosePop(); };
       pop.appendChild(img);
     });
-  }).catch(function(NS){ pop.textContent='Bridge 未连接，无法加载表情（先运行 start-bridge-service.cmd）。'; });
+  }).catch(function(NS){ pop.textContent='本地增强服务未连接，表情暂时用不了。'; });
   /* 修复：统一关闭函数，pop 被移除时同步注销 document 级监听器，避免每次弹窗累积一个常驻监听 */
   function _ibClosePop(){ pop.remove(); document.removeEventListener('click',_ibStickerDismiss,true); }
   function _ibStickerDismiss(ev){ if(!pop.contains(ev.target)){ _ibClosePop(); } }
@@ -224,7 +239,7 @@ window.ibMusicPlay=function(id,title){
     try{
       window.open('https://www.kugou.com/song/#hash='+encodeURIComponent(sid),'_blank');
       ibToast('已为你打开酷狗《'+(name||('歌曲 '+sid))+'》');
-    }catch(e){ ibToast('Bridge 未连接，且无法打开酷狗'); }
+    }catch(e){ ibToast('本地增强服务未连接，暂时打不开这首歌。'); }
   });
 };
 
@@ -559,7 +574,7 @@ function ibPanelInit(){
     var text=inp.value.trim();if(!text){ btn.disabled=false; return; }
     ibBridgeFetch(ibBridgeBase()+'/api/whispers',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:text,author:'你'})}).then(function(r){return r.json()}).then(function(j){
       if(j&&j.ok){ inp.value=''; ibLoadWhispers(); ibToast('已写下心语'); }else ibToast('写入失败：'+(j&&j.error||''));
-    }).catch(function(NS){ ibToast('Bridge 未连接'); }).finally(function(NS){ btn.disabled=false; });
+    }).catch(function(NS){ ibErrLocal('bridge',NS,ibRetryBtn(btn)); }).finally(function(NS){ btn.disabled=false; });
   };
   document.getElementById('ib-board-locate').onclick=function(){
     var btn=this;if(btn.disabled)return;btn.disabled=true;
@@ -568,14 +583,14 @@ function ibPanelInit(){
       var body={lat:pos.coords.latitude,lng:pos.coords.longitude,accuracy:pos.coords.accuracy,source:'browser'};
       ibBridgeFetch(ibBridgeBase()+'/api/geo',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){return r.json()}).then(function(j){
         ibToast(j&&j.ok?'定位已更新':'定位更新失败'); ibLoadBoard();
-      }).catch(function(NS){ ibToast('Bridge 未连接'); }).finally(function(NS){ btn.disabled=false; });
+      }).catch(function(NS){ ibErrLocal('bridge',NS,ibRetryBtn(btn)); }).finally(function(NS){ btn.disabled=false; });
     },function(){ ibToast('定位失败'); btn.disabled=false; },{enableHighAccuracy:false,timeout:10000});
   };
   document.getElementById('ib-board-push').onclick=function(){
     var btn=this;if(btn.disabled)return;btn.disabled=true;
     ibBridgeFetch(ibBridgeBase()+'/api/push',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:'测试推送',text:'这是一条来自 Bridge 的测试消息。',from:'Sui',bark:false})}).then(function(r){return r.json()}).then(function(j){
       ibToast(j&&j.ok?'已推送':'推送失败');
-    }).catch(function(NS){ ibToast('Bridge 未连接'); }).finally(function(NS){ btn.disabled=false; });
+    }).catch(function(NS){ ibErrLocal('bridge',NS,ibRetryBtn(btn)); }).finally(function(NS){ btn.disabled=false; });
   };
   document.getElementById('ib-board-refresh').onclick=ibLoadBoard;
   document.getElementById('ib-ai-refresh').onclick=function(){ var b=this;if(b.disabled)return;ibAiLoadSessions(true); };
@@ -588,7 +603,7 @@ function ibPanelInit(){
     if(!confirm('删除常驻会话「'+key+'」？（服务器上的记忆也会删掉）')){ btn.disabled=false; return; }
     ibBridgeFetch(ibBridgeBase()+'/api/ai/sessions/'+encodeURIComponent(key),{method:'DELETE'}).then(function(r){return r.json()}).then(function(NS){
       ibToast('已删除'); ibAiLoadSessions(true);
-    }).catch(function(NS){ ibToast('Bridge 未连接'); }).finally(function(NS){ btn.disabled=false; });
+    }).catch(function(NS){ ibErrLocal('bridge',NS,ibRetryBtn(btn)); }).finally(function(NS){ btn.disabled=false; });
   };
   document.getElementById('ib-ai-new').onclick=ibAiNew;
   document.getElementById('ib-ai-send').onclick=ibAiSend;
@@ -633,19 +648,19 @@ function ibLoadWhispers(){
         ibBridgeFetch(ibBridgeBase()+'/api/whispers/'+encodeURIComponent(w.id),{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:v})}).then(function(r){return r.json()}).then(function(j){
           ibToast(j&&j.ok?'已更新':'更新失败：'+(j&&j.error||'未知错误'));
           ibLoadWhispers();
-        }).catch(function(NS){ ibToast('Bridge 未连接'); }).finally(function(NS){ eb.disabled=false; });
+        }).catch(function(NS){ ibErrLocal('bridge',NS,ibRetryBtn(eb)); }).finally(function(NS){ eb.disabled=false; });
       };
       var del=document.createElement('button');del.type='button';del.className='ib-whisper-del';del.textContent='×';del.setAttribute('aria-label','删除心语');
       del.onclick=function(){
         var db=this;if(db.disabled)return;db.disabled=true;
         ibBridgeFetch(ibBridgeBase()+'/api/whispers/'+encodeURIComponent(w.id),{method:'DELETE'}).then(function(r){return r.json()}).then(function(j){
           if(j&&j.ok){ ibToast('已删除心语'); ibLoadWhispers(); }else{ ibToast('删除失败：'+(j&&j.error||'未知错误')); db.disabled=false; }
-        }).catch(function(NS){ ibToast('Bridge 未连接'); db.disabled=false; });
+        }).catch(function(NS){ ibErrLocal('bridge',NS,ibRetryBtn(db)); db.disabled=false; });
       };
       row.appendChild(who);row.appendChild(txt);row.appendChild(edit);row.appendChild(del);
       el.appendChild(row);
     });
-  }).catch(function(NS){ el.innerHTML='<div class="ib-empty">Bridge 未连接。</div>'; });
+  }).catch(function(NS){ el.innerHTML='<div class="ib-empty">本地增强服务未连接。</div>'; });
 }
 
 function ibLoadBoard(){
@@ -663,7 +678,7 @@ function ibLoadBoard(){
     html+='<div class="ib-card"><div class="ib-card-title">天气</div>'+(weather&&weather.ok?('<div>'+ibEsc(weather.city||'')+' '+ibEsc(weather.text||'')+' '+ibEsc(weather.temp||'?')+'°C（体感 '+ibEsc(weather.feels||'?')+'°C）</div><div style="opacity:.65">湿度 '+ibEsc(weather.humidity||'?')+'% · 风速 '+ibEsc(weather.wind||'?')+'km/h</div>'):'<div class="ib-empty">天气暂不可用</div>')+'</div>';
     html+='<div class="ib-card"><div class="ib-card-title">健康（近 7 天）</div>'+(health&&health.count?(function(NS){var rows='';health.records.forEach(function(h){var kv=Object.keys(h.metrics||{}).map(function(k){return k+' '+h.metrics[k]}).join(' · ');rows+='<div>'+ibEsc(h.date)+(kv?'：'+ibEsc(kv):'')+'</div>';});return rows;})():'<div class="ib-empty">还没有健康数据（用 iOS 快捷指令 POST 到 /api/health）</div>')+'</div>';
     el.innerHTML=html;
-  }).catch(function(NS){ el.innerHTML='<div class="ib-empty">Bridge 未连接。</div>'; });
+  }).catch(function(NS){ el.innerHTML='<div class="ib-empty">本地增强服务未连接。</div>'; });
 }
 
 function ibLoadStatus(){
@@ -677,7 +692,7 @@ function ibLoadStatus(){
     ibBridgeFetch(base+'/api/diagnostics',{cache:'no-store'}).then(function(r){return r.ok?r.json():null}).catch(function(NS){return null})
   ]).then(function(rs){
     var h=rs[0],s=rs[1],c=rs[2],ph=rs[3],diag=rs[4];
-    if(!h){ el.innerHTML='<div class="ib-empty">Bridge 未连接。<br>请先双击运行 start-bridge-service.cmd，然后在 DIY → 后端连接 填写 ws://127.0.0.1:23115 并启用。</div>'; return; }
+    if(!h){ el.innerHTML='<div class="ib-empty">本地增强服务未连接。<br>心语墙 / 定位 / 天气 / 语音等本地功能暂时不可用，聊天不受影响。<br>可以重新启动 InternalBeyond 再试。</div>'; return; }
     el.innerHTML=
       '<div class="ib-card"><div class="ib-card-title">服务</div>'+
       '<div>'+ibEsc(h.server||'')+' v'+ibEsc(h.version||'')+' · 运行 '+Math.round(h.uptime/60)+' 分钟</div>'+
@@ -812,12 +827,12 @@ function _ibTtsSpeakImpl(bubble,btn,vc,done){
     }else{
       if(btn)btn.classList.remove('playing');
       /* 修复：Bridge TTS 失败时按 README 承诺降级到浏览器自带语音（原 ibTtsFallback 定义了却从未被调用） */
-      ibTtsFallback(text,btn);
+      ibTtsFallback(text,btn,{message:String((j&&j.error)||'语音生成失败')});
       if(done)done();
     }
   }).catch(function(NS){
     if(btn)btn.classList.remove('playing');
-    ibTtsFallback(text,btn);
+    ibTtsFallback(text,btn,NS);
     if(done)done();
   });
 }
@@ -862,14 +877,14 @@ function ibTtsBar(url,text){
     ev.stopPropagation();
     if(!au.paused){ au.pause(); el.classList.remove('playing'); return; }
     au.currentTime=0;
-    au.play().then(function(NS){ el.classList.add('playing'); }).catch(function(NS){ ibToast('播放失败'); });
+    au.play().then(function(NS){ el.classList.add('playing'); }).catch(function(NS){ ibErrLocal('tts',NS,function(){ try{ el.click(); }catch(e){} },{reason:'playback'}); });
   };
   au.onended=function(){ el.classList.remove('playing'); };
-  au.onerror=function(){ el.classList.remove('playing'); ibToast('语音播放失败'); };
+  au.onerror=function(){ el.classList.remove('playing'); ibErrLocal('tts',null,function(){ try{ el.click(); }catch(e){} },{reason:'playback'}); };
   return el;
 }
 
-function ibTtsFallback(text,btn){
+function ibTtsFallback(text,btn,err){
   try{
     if(typeof speechSynthesis!=='undefined'&&speechSynthesis){
       speechSynthesis.cancel();
@@ -881,9 +896,10 @@ function ibTtsFallback(text,btn){
         u.onerror=function(){ btn.classList.remove('playing'); };
       }
       speechSynthesis.speak(u);
-      ibToast('Bridge TTS 未配置，已用浏览器语音朗读');
-    }else ibToast('TTS 未配置');
-  }catch(e){ ibToast('TTS 未配置'); }
+      /* P3：普通提示只说「语音生成失败，不影响文字聊天」，Bridge 原始原因进详情 */
+      ibErrLocal('tts',err,ibRetryBtn(btn));
+    }else ibErrLocal('tts',err,ibRetryBtn(btn));
+  }catch(e){ ibErrLocal('tts',e,ibRetryBtn(btn)); }
 }
 
 /* ---------- VoiceClone Reference Audio（第三阶段 B1：文件基础设施） ----------
@@ -971,7 +987,7 @@ function ibAiLoadSessions(keepSel, selectKey){
     ibAiLoadMsgs();
   }).catch(function(NS){
     sel.innerHTML='';
-    var o=document.createElement('option');o.value='';o.textContent='Bridge 未连接';sel.appendChild(o);
+    var o=document.createElement('option');o.value='';o.textContent='本地增强服务未连接';sel.appendChild(o);
     ibAiLoadMsgs();
   });
 }
@@ -1009,7 +1025,7 @@ function ibAiNew(){
       ibToast('常驻会话已创建：'+(j.session.name||key));
       ibAiLoadSessions(false,key);
     }else ibToast('创建失败：'+(j&&j.error||'未知错误'));
-  }).catch(function(NS){ ibToast('Bridge 未连接'); }).finally(function(NS){ btn.disabled=false; });
+  }).catch(function(NS){ ibErrLocal('bridge',NS,ibRetryBtn(btn)); }).finally(function(NS){ btn.disabled=false; });
 }
 
 function ibAiEdit(){
@@ -1025,8 +1041,8 @@ function ibAiEdit(){
     ibBridgeFetch(ibBridgeBase()+'/api/ai/sessions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:key,system:v})}).then(function(r){return r.json()}).then(function(k){
       ibToast(k&&k.ok?'人设已更新':'更新失败：'+(k&&k.error||'未知错误'));
       ibAiLoadSessions(true);
-    }).catch(function(NS){ ibToast('Bridge 未连接'); }).finally(function(NS){ btn.disabled=false; });
-  }).catch(function(NS){ ibToast('Bridge 未连接'); btn.disabled=false; });
+    }).catch(function(NS){ ibErrLocal('bridge',NS,ibRetryBtn(btn)); }).finally(function(NS){ btn.disabled=false; });
+  }).catch(function(NS){ ibErrLocal('bridge',NS,ibRetryBtn(btn)); btn.disabled=false; });
 }
 
 function ibAiMsgsEl(){ return document.getElementById('ib-ai-msgs'); }
@@ -1051,7 +1067,7 @@ function ibAiLoadMsgs(){
     });
     try{ ibRichifyAny(el); }catch(e){}
     el.scrollTop=el.scrollHeight;
-  }).catch(function(NS){ el.innerHTML='<div class="ib-ai-msg sys">Bridge 未连接。</div>'; });
+  }).catch(function(NS){ el.innerHTML='<div class="ib-ai-msg sys">本地增强服务未连接。</div>'; });
 }
 
 function ibAiSend(){
@@ -1082,7 +1098,7 @@ function ibAiSend(){
       t.textContent='[错误] '+(j&&j.error||'未知错误');
     }
     done();
-  }).catch(function(NS){ t.textContent='[错误] Bridge 未连接'; done(); });
+  }).catch(function(NS){ t.textContent='[错误] 本地增强服务未连接'; ibErrLocal('bridge',NS,ibRetryBtn(document.getElementById('ib-ai-proactive'))); done(); });
 }
 
 function ibAiProactive(){
@@ -1098,7 +1114,7 @@ function ibAiProactive(){
     ibAiLoadMsgs();
     ibAiLoadSessions(true);
     done();
-  }).catch(function(NS){ ibToast('Bridge 未连接'); done(); });
+  }).catch(function(NS){ ibErrLocal('bridge',NS,ibRetryBtn(document.getElementById('ib-ai-send'))); done(); });
 }
 
 /* ---------- 初始化 ---------- */

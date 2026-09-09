@@ -14,7 +14,7 @@
 | `assets/js/active-diary/diary.js` | 新增统一执行接缝 `_diaryModelCall` + `_diaryRuntimeGate` / `_diaryRuntimeInstance` / `_diaryFormat` / `_diaryExecLog`；`generateDiaryEntry` 的模型调用改为经该接缝（其余代码行未动）；双挂载 `window._diaryModelCall` + `IB.active.diary._diaryModelCall` |
 | `test_runtime_convergence_diary.js` | 新增 Phase 3 convergence regression（16 用例，覆盖要求的 23 项） |
 | `test-all.js` | 登记新测试（browser 组） |
-| `docs/RUNTIME-CONVERGENCE-PHASE3-REPORT.md` | 本报告 |
+| `docs/history/runtime/RUNTIME-CONVERGENCE-PHASE3-REPORT.md` | 本报告 |
 
 未改动：`_diaryTick`、`_diaryDailyPlanner`、`_diaryMaybeEvent`、`_diaryContext`、`buildDiaryPrompt`、`_diaryParseOutput`、`_diaryDuplicateCheck`、`_diaryDefaults`、`dbPut(DIARY_STORE)`、`_diaryWriteMemory`、`_diaryPrefs`/水位线、UI 渲染。
 

@@ -14,6 +14,7 @@
 > - [TROUBLESHOOTING.md](TROUBLESHOOTING.md) —— 踩过什么坑（ENOENT T31/D16、MiMo 'a' T40 等）。
 > - [P1-ACOUSTIC-REFERENCE.md](docs/P1-ACOUSTIC-REFERENCE.md) —— 声学语气参考：唯一算法核心 `voice.js::_vmToneAnalyze` + `_vmPcmToAudioLike` 适配层 + request-local 注入、绝不持久化。
 > - [VIDEO-RUNTIME-P2.md](docs/VIDEO-RUNTIME-P2.md) —— Video Runtime：三层边界（Video/Communication/Call）、帧→LLM 复用既有路由、**本地 Qwen 定位**（"DeepSeek 瞎子"补丁、保留兜底）。P1/P2 都是"把上游 Call 当素材库取用"的示范。
+> - [docs/history/](docs/history/README.md) —— **阶段报告归档**：Zero-Setup P0–P7、Runtime Stabilization / Convergence 的原始实施报告与审计记录（只读历史，不代表当前实现）。
 >
 > **IB 定位 / 机制（想懂"它是什么"再看这组）：**
 > - [WHY_IB.md](docs/WHY_IB.md) —— **为什么做这个**：设计哲学 + 传统 AI vs IB 的对比 + 三支柱 + "它不是什么"。
@@ -22,20 +23,22 @@
 > - [AUTONOMY.md](docs/AUTONOMY.md) —— **自主性**：Proactive/Moments/回复链/主动语音/去重降级；**自主≠随机**、无长时程规划、无内容级 OOC 防火墙。
 > - [OFFLINE.md](docs/OFFLINE.md) —— **离线能力**：有本地模式 ≠ 真降级；基础功能全离线、配套 fail-open、**模型级需手动本机模型（无自动云→本地切换）**。
 >
-> 文档状态截至 **2026-08-26**。
+> 文档状态截至 **2026-09-09**（P9 仓库整理后）。
 
 ## 1. 一句话定位
 
-个人本地 AI 陪伴站：入口 [InternalBeyond.html](InternalBeyond.html)（无构建步骤，`file://` 直接打开），配套两个本地零依赖 Node 服务——Bridge 后端 [ib-bridge-service.js](ib-bridge-service.js)（23115：工具/看板/推送/AI 常驻/TTS）与 companion [active-message-service.js](active-message-service.js)（23114：后台主动消息计划、朋友圈调度、AI↔AI 回复链续推）。**是个人本地应用，不是 SaaS——不引入 RBAC/鉴权/多用户设计**（[DECISIONS.md](DECISIONS.md) D1）。
+个人本地 AI 陪伴站。**用户入口是 Windows 安装包**：从 GitHub Releases 下载 `InternalBeyond-Setup-<版本号>.exe` 安装后，从开始菜单 / 桌面快捷方式启动（快捷方式 → `启动 InternalBeyond.vbs` → [launch-internal-beyond.js](launch-internal-beyond.js)，内置 Node 运行时随包分发，普通用户不需要装 Node、不需要命令行）。页面本体是 [InternalBeyond.html](InternalBeyond.html)（无构建步骤），配套两个本地零依赖 Node 服务——Bridge 后端 [ib-bridge-service.js](ib-bridge-service.js)（23115：工具/看板/推送/AI 常驻/TTS）与 companion [active-message-service.js](active-message-service.js)（23114：后台主动消息计划、朋友圈调度、AI↔AI 回复链续推），安装版由启动链自动拉起，开发期用 `.cmd` 单独启动。**是个人本地应用，不是 SaaS——不引入 RBAC/鉴权/多用户设计**（[DECISIONS.md](DECISIONS.md) D1）。
 
-> **上游出处**：本仓库是 [Sui-IB/InternalBeyond](https://github.com/Sui-IB/InternalBeyond) 的非官方二次开发版（已与原作者沟通）。对外分发时必须保留原作者署名、原项目地址与许可文件，并在显著位置说明修改内容——README 顶部「关于本仓库」与「许可与版权 · 衍生版本说明」已按此维护，改动 README 时勿删除这两处。
+> **上游出处**：本仓库是 [Sui-IB/InternalBeyond](https://github.com/Sui-IB/InternalBeyond) 的非官方二次开发版（已与原作者沟通）。对外分发时必须保留原作者署名、原项目地址与许可文件，并在显著位置说明修改内容——README 的「关于本仓库 / About this fork」与「许可与版权 · 衍生版本说明」已按此维护，改动 README 时勿删除这两处。
 
 ## 2. 当前状态
 
 - **功能面**：主聊天（浏览器直连各家 API）、社交圈（Moments → Social Net：Feed/Profile/好友/讨论串/转发 + AI↔AI 回复链前后台）、AI 日记、记忆系统、工作区、游戏模块、行为观测层。全部模块已拆分完毕并注册 `window.IB` 命名空间。
 - **测试基线全绿**：`node test-all.js --all`（static / service / browser 三组，约 150–165s）。改动后跑这个作为最终验收。
-- **git**：基线 `e4074cc`、模块化检查点 `800411d`；2026-08-26 起发布到 GitHub 私有仓库（旧的"不碰 GitHub"约束已由用户解除）。
-- **服务运行方式**：`start-bridge-service.cmd`（23115）、`start-active-service.cmd` / `start-local-services.cmd`（23114）。改配置后必须重启服务（配置只在启动时读取一次）。
+- **发行形态（P1–P7 已完成）**：内置 Node 24 LTS 运行时（P1）、降级启动 / boot state（P2）、错误产品化 IBERR（P3）、首启设置向导（P4）、系统诊断与自恢复（P5）、零基础图文教程 + 截图管线（P6）、Windows 安装包（P7，产物 `dist\InternalBeyond-Setup-1.0.0.exe`，per-user 免 UAC，白名单载荷）。
+- **仓库为 GitHub Public**：`https://github.com/yydye/InternalBeyond`，安装包通过 [Releases](https://github.com/yydye/InternalBeyond/releases) 发布；`dist/` 已 gitignore，发行产物不进入源码历史。
+- **git**：基线 `e4074cc`、模块化检查点 `800411d`。
+- **服务运行方式**：安装版由快捷方式启动链自动拉起；开发期 `start-bridge-service.cmd`（23115）、`start-active-service.cmd` / `start-local-services.cmd`（23114）。改配置后必须重启服务（配置只在启动时读取一次）。
 - **用户配置实况**（2026-08-06 记录，需与用户确认是否更新）：酷狗 Cookie 已填但直连播放被服务端限制（走"打开酷狗"方案）；`tts.enabled=false`（未配真实 Key）；ntfy/bark 未启用；`lan=false`、token 空；旧式 proactive 关闭（AI 规划主动消息已替代）。配置在 `%LOCALAPPDATA%\InternalBeyond\bridge\config.json`（**含敏感值勿打印勿外传**）。
 
 ## 3. 当前正在进行的工作（观察期）
@@ -57,12 +60,13 @@
    - 可选收紧：逐步删除 window 双挂载（每删一个跑全套浏览器回归，[DECISIONS.md](DECISIONS.md) D6）。
 3. **老清单遗留**（2026-08-06 审计标记）：#22 主聊天未接入服务端通用会话；输入状态条、MCP 按需加载等。
 4. **可引导用户配置**（截至 08-06 未配）：TTS 真实 Key、ntfy topic、lan/token。
+5. **P8 · 干净 Windows / 用户视角验证矩阵**（P7 遗留）：全新机器、无系统 Node、多用户、UAC 交互路径；以及首次公开发行前的 Release 检查（`dist` 产物 + `SHA256SUMS.txt` 上传、README 下载链接可用）。
 
 ## 5. 必读关键信息（DO / DON'T）
 
 ### DON'T
 
-- ❌ 仓库已发布为 **GitHub 私有仓库**（个人陪伴应用内容，勿改为 public）。提交前必须全量测试绿；不要 force-push（[DECISIONS.md](DECISIONS.md) D18）。
+- ❌ 仓库是 **GitHub Public**（`github.com/yydye/InternalBeyond`），对外可见：**禁止提交密钥 / Token / 本地绝对路径 / 真实用户数据 / `dist/` 发行产物**；提交前必须全量测试绿；不要 force-push（[DECISIONS.md](DECISIONS.md) D18）。
 - ❌ **禁止提前实现关系状态层**（观察期未结束）。
 - ❌ 不要试图恢复酷狗内嵌流式播放（服务端限制，[DECISIONS.md](DECISIONS.md) D3）。
 - ❌ 不给项目加企业级设计（RBAC/token 鉴权/多用户隔离）。

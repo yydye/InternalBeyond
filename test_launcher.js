@@ -10,6 +10,9 @@
 const assert = require('assert');
 const http = require('http');
 const net = require('net');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
 const WEB = require('./internal-beyond-server.js');
 const LAUNCH_PATH = require.resolve('./launch-internal-beyond.js');
@@ -178,16 +181,23 @@ async function check(name, fn) {
     const bp = await listen(bridgeSrv);
     const ap = await listen(activeSrv);
     const wp = await listen(webSrv);
+    /* P2: boot-state must never be written to the real per-user location by a test. */
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-launcher-'));
     try {
       process.env.IB_BRIDGE_PORT = String(bp);
       process.env.IB_ACTIVE_PORT = String(ap);
       const mod = reRequireLauncher(wp);
-      const result = await mod.main({ silent: true, noOpen: true, servicesTimeout: 5000, webTimeout: 5000 });
+      const result = await mod.main({ silent: true, noOpen: true, servicesTimeout: 5000, webTimeout: 5000, stateDir: stateDir });
       assert.strictEqual(result.ok, true, 'should reuse and succeed');
       assert.ok(result.url.indexOf(':' + wp) !== -1);
+      assert.strictEqual(result.overall, 'normal', 'all-healthy reuse must classify as normal');
+      const written = JSON.parse(fs.readFileSync(path.join(stateDir, 'boot-state.json'), 'utf8'));
+      assert.strictEqual(written.overall, 'normal');
+      assert.strictEqual(written.components.static.reused, true);
     } finally {
       delete process.env.IB_BRIDGE_PORT; delete process.env.IB_ACTIVE_PORT;
       await close(bridgeSrv); await close(activeSrv); await close(webSrv);
+      fs.rmSync(stateDir, { recursive: true, force: true });
     }
   });
 

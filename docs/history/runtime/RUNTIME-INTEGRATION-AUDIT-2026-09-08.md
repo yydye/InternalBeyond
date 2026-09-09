@@ -50,7 +50,7 @@ flowchart TD
 
 ### 入口与生命周期
 
-- HTML 明确按顺序加载经典脚本；`provider-directory.js` 在 `social.js` 前，`ib-model-core.js` 在 `agent-runtime.js` 前。[HTML](E:/InternalBeyond-main/InternalBeyond.html:3333)
+- HTML 明确按顺序加载经典脚本；`provider-directory.js` 在 `social.js` 前，`ib-model-core.js` 在 `agent-runtime.js` 前。[HTML](../../../InternalBeyond.html)
 - `launch-internal-beyond.js:186` 先确认 Bridge／Active 就绪，再确认 Web server，最后打开页面；manager 另有 `23116` 重启控制端口。Vision 是可选进程。
 - `active-diary.js:948` 附近的 `init()` 完成 openDB、配置加载、录音初始化与页面调度启动；不是 React／Next.js，也没有从命名推断出来的统一 Router 框架。
 - 当前源码中未找到生产调用方调用 `IB.runtime.instance.run/create`；它是已加载的 opt-in 接缝。新增浏览器测试对 singleton 安装计数，单聊＋群聊运行后为 **0**。不能据此删除对外暴露的接缝。

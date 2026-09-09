@@ -1864,7 +1864,9 @@ async function _momentsRenderFeed(opts){
     }else list=await getMoments(MOMENT_FEED_FIRST_SCAN);/* 首屏只读最近 MOMENT_FEED_FIRST_SCAN(60) 条，游标即停，不扫 360 */
   }catch(e){
     if(seq!==_momentsRenderSeq)return;/* 已有更新的渲染在进行：旧渲染不再写 DOM */
-    feed.innerHTML='<div class="mom-state">加载失败：'+esc(String(e&&e.message||e).slice(0,120))+' <button type="button" class="btn mom-retry" onclick="loadMomentsPage()">重试</button></div>';
+    /* P3：动态流加载失败也只给普通人能懂的一句话；原始错误放 title 供排查 */
+    var _mlm=window.IBERR?window.IBERR.present(e,{stage:'moments_feed'}):null;
+    feed.innerHTML='<div class="mom-state" title="'+esc(_mlm?window.IBERR.detailsText(_mlm):'')+'">'+esc(_mlm?(_mlm.title+' · '+_mlm.message):'加载失败')+' <button type="button" class="btn mom-retry" onclick="loadMomentsPage()">重试</button></div>';
     return
   }
   if(seq!==_momentsRenderSeq)return;/* 读取期间发起了更新的渲染 → 丢弃本次结果 */
@@ -2118,7 +2120,11 @@ async function _socialObsDownload(){
     document.body.appendChild(a);a.click();a.remove();
     setTimeout(function(){try{URL.revokeObjectURL(a.href)}catch(e){}},4000);
     toast('观测数据已导出（仅本机）')
-  }catch(e){toast('导出失败：'+String(e&&e.message||e).slice(0,60))}
+  }catch(e){
+    /* P3：导出失败不再截断原始 message 给用户；原始信息进「查看详情」 */
+    if(window.IBERR&&window.IBERR.show)window.IBERR.show(window.IBERR.present(e,{stage:'moments_export'}));
+    else toast('导出失败，请重试');
+  }
 }
 function loadMomentsPage(opts){
   opts=opts||{};

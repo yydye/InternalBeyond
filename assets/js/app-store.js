@@ -195,7 +195,11 @@
     try{
       var ret=def.mount(body,_ctx(def));
       if(ret&&typeof ret.then==='function')await ret;
-    }catch(e){_toast('应用启动失败：'+(e&&e.message||e))}
+    }catch(e){
+      /* P3：应用启动失败不再把原始 message 直接给用户 */
+      if(window.IBERR&&window.IBERR.show)window.IBERR.show(window.IBERR.present(e,{stage:'app_launch'}));
+      else _toast('应用启动失败，请重试');
+    }
   }
   function closeActive(){
     var def=_defs[_activeId];

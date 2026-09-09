@@ -3,7 +3,7 @@
 > 本文记录 Internal Beyond 从上游原作到本仓库（fork）的全部演进。分两卷：
 > **第一卷 = 上游卷（Sui 时代，InternalBeyond 1.x）**；**第二卷 = fork 卷（yydye 时代，2026-08 → 09）**；**第三卷 = 两卷对照**。
 >
-> 目录结构：与 [ARCHITECTURE.md](ARCHITECTURE.md)（怎么工作）· [CHANGELOG.md](CHANGELOG.md)（发明了什么）· [DECISIONS.md](DECISIONS.md)（为什么这么设计）· [HANDOVER.md](HANDOVER.md)（现状与待办）并列，互为索引。
+> 目录结构：与 [ARCHITECTURE.md](../ARCHITECTURE.md)（怎么工作）· [CHANGELOG.md](../CHANGELOG.md)（发明了什么）· [DECISIONS.md](../DECISIONS.md)（为什么这么设计）· [HANDOVER.md](../HANDOVER.md)（现状与待办）并列，互为索引。
 
 ---
 

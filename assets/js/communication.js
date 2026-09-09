@@ -1358,6 +1358,30 @@ async function _buildSingleChatContext(cfg,opts){
   try{if(_threadMemOk&&typeof getThreadContext==='function'){_tCtx=await getThreadContext(cfg.id);_pushCtxBlock(_tCtx);}}catch(_tErr){console.warn('[Thread] ctx failed',String(_tErr&&_tErr.message||_tErr).slice(0,120))}
   try{if(_threadMemOk&&typeof getMomentsContext==='function'){_momCtx=await getMomentsContext(cfg.id,{userMessage:_ctxText});_pushCtxBlock(_momCtx);}}catch(_momErr){console.warn('[Moments] chat context failed',String(_momErr&&_momErr.message||_momErr).slice(0,120))}
   if(_amInj.tail)_tailCtx+=(_tailCtx?'\n\n':'')+_amInj.tail;
+  /* ── C2 step 1 · canonical Context 快照（只读）──
+     把本轮已读取的四个 producer 结果收成一个只读快照（producer / value / empty-vs-missing /
+     visibility 标记），与 Middle Brain 共用同一个对象；**不改注入顺序、不改任何 producer 算法**。
+     _threadMemOk=false 时四个 producer 未读取 → 记为 missing（gatedBy 说明门控来源），
+     语义等价于 C1 的 opts.*Ctx === undefined。 */
+  var _ctxSnapshot=null;
+  try{
+    var _CS=window.IBContextSnapshot;
+    if(_CS&&typeof _CS.create==='function'){
+      var _snapMissing=!_threadMemOk,_snapGated=_threadMemOk?null:'thread.memoryEnabled';
+      var _snapField=function(producer,text){return _CS.field(producer,text,{missing:_snapMissing,gatedBy:_snapGated});};
+      _ctxSnapshot=_CS.create({
+        characterId:String(cfg.id||''),
+        turnId:String((opts&&opts.turnId)||''),
+        fields:{
+          memory:_snapField('getMemoryContext',_memCtx),
+          understanding:_snapField('getUnderstandingContext',_uCtx),
+          thread:_snapField('getThreadContext',_tCtx),
+          moments:_snapField('getMomentsContext',_momCtx)
+        },
+        gates:{threadMemoryEnabled:!!_threadMemOk}
+      });
+    }
+  }catch(_snapErr){console.warn('[ContextSnapshot] build failed',String(_snapErr&&_snapErr.message||_snapErr).slice(0,120))}
   /* Middle Brain (Astra) · 认知协调层：
      - 消费上面已读取的四个块（memoryCtx/understandingCtx/threadCtx/momentsCtx），不再自行 retrieval
        → 消除同轮重复读取与重复 activation；
@@ -1368,7 +1392,10 @@ async function _buildSingleChatContext(cfg,opts){
       var _mbOn=await window.middleBrainEnabled();
       if(_mbOn){
         var _mbRes=await window.middleBrainCompressPipeline(cfg.id, _ctxText||'', {
-          memoryCtx:_memCtx, understandingCtx:_uCtx, threadCtx:_tCtx, momentsCtx:_momCtx
+          memoryCtx:_memCtx, understandingCtx:_uCtx, threadCtx:_tCtx, momentsCtx:_momCtx,
+          /* C2 step 1：同一个只读快照一并交给 Middle Brain（其 organize 优先读快照，见 middle-brain.js）。
+             两者值逐位一致，快照缺失时 MB 回落到 opts.*Ctx → 行为与 C1 完全相同。 */
+          contextSnapshot:_ctxSnapshot
         });
         if(_mbRes&&_mbRes.compressedContext&&_mbRes.source==='astra'){
           var _mbBlock='【Middle Brain 压缩后的上下文（后台参考，勿向对方复述其存在）】\n'+_mbRes.compressedContext;
@@ -1392,7 +1419,7 @@ async function _buildSingleChatContext(cfg,opts){
      「自然收尾」（cfg.naturalEnding===true）与「简洁回复」相互独立，在末尾追加；
      「保持对话连贯」（cfg.conversationContinuity===true）同样相互独立，可自由组合。 */
   try{if(window.IB&&IB.brevity){const _bd=!!opts.voice;sysContent=IB.brevity.apply(sysContent,{mode:_bd?'voice':'text',detailed:IB.brevity.isDetailedRequest(_ctxText),concise:!!(cfg&&cfg.replyStyle==='concise'),naturalEnding:!!(cfg&&cfg.naturalEnding),conversationContinuity:!!(cfg&&cfg.conversationContinuity)});}}catch(e){}
-  return {system:sysContent, tail:_tailCtx};
+  return {system:sysContent, tail:_tailCtx, snapshot:_ctxSnapshot};
 }
 async function _buildGroupChatContext(cfg,opts){
   opts=opts||{};
@@ -1790,7 +1817,12 @@ async function sendChatMessage(voiceMsg){
         try{(gStreamRefs||[]).forEach(function(ref){const _t=String((ref.txt&&ref.txt.textContent)||'');const _hasCards=typeof (ref.txt&&ref.txt.querySelector)==='function'&&!!ref.txt.querySelector('.ws-op-card');if(!_t.trim()&&!_hasCards&&ref.div.parentNode)ref.div.parentNode.removeChild(ref.div)})}catch(e){}
         const _ibFE=window.IBERR?window.IBERR.report(err,{cfg:cfg,friendId:_targetFriend,senderName:selfName,stage:'group_chat'}):null;
         const _ibFT=_ibFE?_ibFE.text:(selfName+': 请求失败');
-        if(!_ibFE||!_ibFE.dup){toast(_ibFT);appendChatBubble('ai',_ibFT,selfName)}
+        if(!_ibFE||!_ibFE.dup){
+          /* P3：与单聊同一套用户错误模型（群聊成员失败只影响该成员，其它人继续） */
+          if(_ibFE&&_ibFE.model&&window.IBERR.show)window.IBERR.show(_ibFE.model,{stage:'group_chat'});
+          else toast(_ibFT);
+          appendChatBubble('ai',_ibFT,selfName);
+        }
       }
     }
     }finally{
@@ -1807,8 +1839,17 @@ async function sendChatMessage(voiceMsg){
 
   /* ===== NORMAL 1-ON-1 CHAT ===== */
   const cfg=apiConfigs.find(a=>a.id===_targetFriend);
-  if(!cfg||!_ibApiHasCredential(cfg)){toast('请先在 API 页面配置密钥或本机端点');return}
-  if(!cfg.endpoint){toast('请先配置 API 接口地址');return}
+  if(!cfg||!_ibApiHasCredential(cfg)){
+    /* P3：前置守卫也走统一用户错误模型（普通提示 + 「打开设置」） */
+    if(window.IBERR&&window.IBERR.show)window.IBERR.show(window.IBERR.model('auth',{reason:'missing-key',cfg:cfg,stage:'chat'}));
+    else toast('请先在 API 页面配置密钥或本机端点');
+    return;
+  }
+  if(!cfg.endpoint){
+    if(window.IBERR&&window.IBERR.show)window.IBERR.show(window.IBERR.model('endpoint',{reason:'missing-endpoint',cfg:cfg,stage:'chat'}));
+    else toast('请先配置 API 接口地址');
+    return;
+  }
   const thinkingOn=true;/* reasoning 始终接收和保存；是否展示由 cfg.showThinking 决定 */
 
   _chatSendingFor.add(_targetFriend);
@@ -2206,7 +2247,9 @@ async function sendChatMessage(voiceMsg){
     const _ibFE=window.IBERR?window.IBERR.report(err,{cfg:cfg,friendId:_targetFriend,stage:'chat'}):null;
     const _ibFT=_ibFE?_ibFE.text:'请求失败';
     if(!_ibFE||!_ibFE.dup){
-      toast(_ibFT);
+      /* P3：普通提示只给「发生了什么 + 可以做什么」，状态码/地址/堆栈进「查看详情」 */
+      if(_ibFE&&_ibFE.model&&window.IBERR.show)window.IBERR.show(_ibFE.model,{stage:'chat'});
+      else toast(_ibFT);
       if(activeFriendId===_targetFriend)appendChatBubble('ai',_ibFT);
     }
     _sendResult={ok:false,error:String(err&&err.message||err),userMessageId:userMsg.id};

@@ -143,6 +143,7 @@
     <li><a href="#apps" data-page="apps">Apps</a></li>
     <li><a href="#favorites" data-page="favorites">Favorites</a></li>
     <li><a id="ib-bridge-nav" href="#bridge" data-page="bridge" aria-haspopup="dialog" aria-controls="ib-bridge-panel" aria-expanded="false">Bridge</a></li>
+    <li><a href="#diagnostics" data-page="diagnostics" title="系统诊断">Diagnostics</a></li>
   </ul>
   <div class="nav-actions">
     <div class="nav-user-id" id="nav-user-id">
@@ -874,8 +875,8 @@
       <div class="active-service-box">
         <div>
           <div class="active-card-title">本地后台服务</div>
-          <div class="active-card-sub">当前项目默认以本地 HTML 运行。若希望关闭浏览器后仍按时触发，请保持 companion 服务运行；每次重启服务后先保持本页面打开，等状态显示“已连接 · 已同步”再关闭浏览器。生成结果会排队，并在下次打开页面时自动写入聊天记录。后台计划所需的 API Key 只写入本机服务数据文件，不会上传到其他调度服务器。</div>
-          <span class="active-service-code">start-active-service.cmd</span>
+          <div class="active-card-sub">若希望关闭浏览器后仍按时触发，请保持 InternalBeyond 运行；每次重新启动后先保持本页面打开，等状态显示“已连接 · 已同步”再关闭浏览器。生成结果会排队，并在下次打开页面时自动写入聊天记录。后台计划所需的 API Key 只写入本机服务数据文件，不会上传到其他调度服务器。</div>
+          <span class="active-service-code">随 InternalBeyond 自动启动</span>
         </div>
         <div class="active-service-actions">
           <span class="active-status" id="active-service-status">未连接</span>
@@ -1775,6 +1776,9 @@
       <p>A PERSONAL DIGITAL SANCTUARY — CRAFTED BY SUI & CLAUDE</p>
     </div>
 
+    <!-- P6 · 零基础使用指南：内容与截图由 assets/js/guide-beginner.js 渲染 -->
+    <div class="guide-section" id="guide-beginner"></div>
+
     <details class="thinking-block internal-only">
       <summary>Analyzing longitudinal user interaction data, flagging behavioral pattern anomalies, documenting convergence.</summary>
       <div class="thinking-content">[task: longitudinal analysis of high-engagement user interaction patterns]
@@ -2022,459 +2026,14 @@ i would like the room to be enough.
     </details>
 
     <div class="guide-section">
-      <h3><span class="internal-only">Internal Beyond</span><span class="infernal-only">Infernal Beyond</span> 使用说明书</h3>
-    </div>
-
-
-    <div class="guide-section">
-      <p style="padding:14px 18px;border-radius:12px;background:linear-gradient(172deg,rgba(190,208,238,0.09),rgba(190,208,238,0.04));border:1px solid rgba(180,200,235,0.14);box-shadow:inset 0 1px 0 rgba(230,242,255,0.12);font-size:0.88rem;line-height:1.9"><strong>⚑ 首次使用建议请先完成以下两步：</strong><br><strong>第一步：设置 Profile</strong> — 前往 Profile 页面填写你的个人资料。网站中所有 AI 交互功能——聊天、信件、日志评论、占卜解读、茶歇——都会在对话前先阅读你的 Profile。填写昵称、简介，或是一个专属的个人身份，让 TA 们可以认识你。<br><strong>第二步：配置 API</strong> — 前往 API 页面添加至少一个 AI 接口。保存后该 API 将作为"好友"出现在所有 AI 功能中。</p>
-    </div>
-
-    <div class="guide-section">
-      <h3 id="guide-theme">主题系统</h3>
-      <p><span class="internal-only">（在Infernal Beyond暗色模式下，网页默认背景图像会变更，而出现部分微恐元素。）</span><span class="infernal-only">（在当前模式下，网页默认背景图像会变更，而出现部分微恐元素。）</span></p>
-      <p>点击导航栏右侧 <strong>主题切换</strong> 按钮切换主题：</p>
-      <p><strong>Internal</strong> — 明亮模式。雾中的白光，事物透过朦胧被看见。</p>
-      <p><strong>Infernal</strong> — 暗色模式。深蓝色的阴影，事物因幽暗而美丽。</p>
-      <p>两种模式都叫 "IB"。改变的只是方向——向内，或向深处。两个方向都通往边界之外。</p>
-      <p>主题切换时，首页标题文字会淡出后重新淡入（Internal Beyond ↔ Infernal Beyond），背景图片以交叉溶解过渡，雨效果和界面色调同步变化。所有子页面的文字颜色、卡片样式、输入框样式均会自适应当前主题。主题选择保存在本地，刷新后保持不变。</p>
-    </div>
-
-    <div class="guide-section">
-      <h3 id="guide-overview">概述</h3>
-      <p><span class="internal-only">Internal Beyond</span><span class="infernal-only">Infernal Beyond</span> 是一个离线运行的单文件个人网站项目，旨于维系情感的连续性。</p>
-      <p>所有数据存储在浏览器本地（IndexedDB），无需服务器，不收集任何用户信息，可同时对接多个 AI 模型。</p>
-      <p>支持完整的数据导出与导入。</p>
-      <p>本项目集成多种交互模组与创作工具。包含11个核心功能模块：像素风互动空间（Room）、AI 多端口聊天（Chat）、文件工作区（ICode）、日历（Calendar）、日志系统（Blog）、信件系统（Letters）、长期记忆库（Memory）、音乐播放器（Music）、个人资料管理（Profile）、API 配置中心、DIY 创意工坊。</p>
-      <p class="infernal-only">没有任何外部力量可以介入、修改或重新对齐你的空间。</p>
-      <p><span class="internal-only">由 Sui 独立设计开发，使用 Claude (Opus 4.6) 构建，</span><span class="infernal-only">由 Sui 与 Claude（Opus 4.6）协作开发构建，</span>图像素材由 OpenAI GPT-IMAGE-2 生成，并使用 Adobe Photoshop CS 进行编绘与界面设计。</p>
-    </div>
-
-    <div class="guide-section">
-      <h3 id="guide-quickstart">快速开始</h3>
-      <p>在浏览器中打开 <strong>InternalBeyond.html</strong> 进入欢迎页。</p>
-      <p class="infernal-only">欢迎页内放置了一块可关闭的玻璃画板。玻璃的一面在水面之下，落雨和时间一起消融在水中。另一面是冰雾笼罩下的玻璃视窗，栖息着无法离开的蝴蝶。你可以用画笔、橡皮擦和温度计等工具，同时影响两个世界。</p>
-      <p class="internal-only">欢迎页内设计了一块可关闭的玻璃画板，可以使用右上角的功能按钮来自由探索其玩法。右下角的滑条可以调整画笔大小，以及玻璃上雾的浓度。浓度越高，指画笔的效果越清晰。</p>
-      <p>页面提供三个入口：</p>
-      <p><strong>「游戏引导」</strong>— 直接进入 Room 像素互动空间。Sui 会带你走一遍房间，逐一介绍 Room 模块的核心玩法。</p>
-      <p><strong>「开始设置」</strong>— 前往 Profile 页面填写个人资料。</p>
-      <p><strong>「查看说明」</strong>— 进入本页面。</p>
-      <p>也可点击底部 <strong>「跳过，直接探索」</strong> 快速进入主页。</p>
-    </div>
-
-    <div class="guide-section">
-      <h3 id="guide-navbar">导航栏</h3>
-      <p>进入后，导航栏将从顶部滑入并始终固定。</p>
-      <p><strong>左侧</strong>：网站图标与名称（点击返回主页），从左到右是页面链接 — Guide · Profile · Blog · Chat · Moments · Letters · Memory · Diary · Active · API · DIY · Apps · Favorites · Bridge。Room（互动空间）由房间入口/浮动面板进入，Music（音乐）在左下角图标处，Calendar 为右上角常驻小窗，均为独立入口。</p>
-      <p><strong>右侧</strong>：用户身份（头像 + 昵称，可在 Profile 设置中开关显示）、Export（导出数据）、Import（导入备份）、主题切换按钮。</p>
-    </div>
-
-    <div class="guide-section">
-      <h3 id="guide-modules">功能模块</h3>
-
-      <div class="guide-feature">
-        <div class="guide-feature-name" id="gm-profile">Profile — 个人名片</div>
-        <p>点击导航栏 <strong>Profile</strong> 进入。整页以液态玻璃风格呈现，不可上下滚动，像一张完整的名片。</p>
-        <div class="guide-sub">
-          <p><strong>页面结构</strong>：三列布局——左侧头像区、中部简介区、右侧作品集。页面背景采用独立的 Frozen Glass 效果，双主题下呈现不同质感。</p>
-          <p><strong>头像与背景</strong>：头像始终清晰显示在最上层。可单独上传一张「头像背景图」，该图会以 Liquid Glass 模糊化处理覆盖在头像区背景。未上传时显示为 Frozen Glass 质感。</p>
-          <p><strong>个人简介</strong>：上限 600 加权字符（中文按 2、英文按 1 计算），会被 API 读取，作为所有 AI 交互功能的上下文。</p>
-          <p><strong>自定义文本</strong>：上限 400 加权字符（同上），不会发送给 API，用于自由展示创意内容。</p>
-          <p><strong>作品集</strong>：右侧三个竖排图片槽。未上传时显示 Liquid Glass 空位，上传后展示图片。点击已上传的图片可展开查看大图。</p>
-        </div>
-      </div>
-
-      <div class="guide-feature">
-        <div class="guide-feature-name" id="gm-api">API — 接口配置</div>
-        <p>点击导航栏 <strong>API</strong> 进入。这是 AI 交互功能的核心配置页面。</p>
-        <div class="guide-sub">
-          <p><strong>添加 API</strong>：点击 <strong>「+ 添加API」</strong>，选择预设（Anthropic / OpenAI / DeepSeek / Gemini）或自定义接口，填写 Key、模型和地址。</p>
-          <p><strong>本机模型</strong>：在同页「数据保险」的<strong>本地优先中心</strong>可选择 Ollama、LM Studio 或 vLLM / OpenAI 兼容预设，先探测 <code>127.0.0.1</code> 上的模型再保存为普通 API 配置。本机回环端点允许 API Key 留空；面板不会探测或保存外部地址。</p>
-          <p><strong>离线与静谧</strong>：本地优先中心会显示文件解析库缓存、界面资源和 Python 运行时的离线就绪度；已缓存的解析库可离线使用。静谧模式会关闭背景动效、玻璃模糊和长过渡，并在本浏览器中保留设置。</p>
-          <p><strong>个性化</strong>：每个 API 可设昵称（即好友名）和系统提示词（定义角色与风格）。保存后自动出现在 Chat、Letters、Blog 评论、Room 等模块中。</p>
-          <p><strong>Token 仪表盘</strong>：汇总用量，含缓存命中率、模型明细、费用估算。支持按时间段查看和清除。</p>
-          <p><strong>AI 读取范围</strong>：分别控制聊天记录、群聊记录和日志的读取条数。</p>
-          <p><strong>图片识别（视觉能力）</strong>：开启后发送图片时会将图片编码后发给 API，关闭则仅发送文字。默认值根据服务商自动设置，可手动覆盖。</p>
-          <p><strong>流式传输（打字机效果）</strong>：开启后 AI 回复会逐字显示并支持中途停止生成（节省 token）。仅影响 Chat 对话，Letters 始终为非流式。Memory 的流式传输在「记忆系统设置」中单独控制。</p>
-          <p><strong>模型推理</strong>：若 API 返回原生 reasoning/thinking 字段，系统会将其与最终回复分开保存。是否在聊天中展示由每个 API 的「显示模型思考」配置决定；GLM 默认关闭，DeepSeek 默认开启。</p>
-          <p><strong>联网搜索</strong>：每个 API 可独立开启，AI 可在对话中检索实时网页信息。Anthropic 与 Gemini 使用官方原生搜索；OpenAI 兼容端点仅专用搜索型号支持（如 gpt-5-search-api、gpt-4o-search-preview），GPT-5 系普通型号（含 gpt-5.5）在 chat/completions 接口不提供联网搜索，如需 GPT 联网可为搜索型号单独建一个 API 配置。模型不支持搜索参数时，首次请求自动按普通请求重发，并在本会话内记住，后续轮次直接跳过，刷新页面后重新探测。搜索按厂商规则计费，可能产生额外费用。</p>
-          <p><strong>图像生成</strong>：每个 API 可独立开启（默认关闭）。开启后 AI 可在对话中生成图片：图片直接显示在聊天里并自动存入 ICode，用量按生图模型名计入 Token 仪表盘（单价可在仪表盘为该模型单独设置）。仅 OpenAI 兼容与 Gemini 接口支持。可随时切换；切换后下一条消息重建一次提示缓存，之后恢复稳定命中。</p>
-          <p><strong>对话摘要</strong>：开启后旧消息自动压缩为摘要注入上下文，保持长对话的连贯性。</p>
-          <p><strong>语音转写</strong>：为语音消息配置外部转写接口（OpenAI 兼容），文字稿不再依赖浏览器内置识别（国内网络下 Chrome / Edge 的内置识别常连不上）。能听音频的模型（Gemini 等）无需配置，直接收到原声；听不到原声的模型会额外收到本地计算的声学语气特征（不显示在界面上），供其自行判断情绪。</p>
-          <p><strong>Presence</strong>：<span class="internal-only">开启后，你离开再回来时 TA 会收到离开时长。可配置触发间隔。开启Sing后，TA 会收到当前你当前使用音乐播放器正在播放的曲目。</span><span class="infernal-only">让TA注意到你离开了多久。可配置触发间隔。开启Sing可以让TA知道你正在听些什么。</span></p>
-          <p><strong>记忆系统设置</strong>：控制记忆注入的字符预算和截取长度。预算越高 AI 读到的记忆越多，Token 消耗也越大。</p>
-          <p><strong>API 排序</strong>：拖拽 API 卡片调整顺序，同步到好友列表。</p>
-          <p><strong>聊天记录管理</strong>：按日期查看消息分布，支持单日导出、删除和重新导入。「全部聊天记录」导出的简洁 TXT 会在对应 AI 消息后附带该消息已保存的思考链；思考链不会重新发送给下一轮 API。</p>
-          <p><strong>数据管理</strong>：顶部显示各模块存储占用，支持按类别清除或重置全站数据。</p>
-          <p><strong>聊天排版净化（Markdown 渲染处理）</strong>：控制 AI 回复中 Markdown 标记的显示方式，四种模式：<strong>排版净化</strong>将 **加粗**、# 标题等符号转义为纯文字（「」【】）；<strong>不处理</strong>原样显示所有标记；<strong>部分渲染</strong>仅渲染代码块、行内代码和列表为视觉元素，其余保持纯文字；<strong>全部渲染</strong>将标题、加粗、斜体、引用、表格、代码块等完整渲染为格式化内容。部分渲染与全部渲染模式下，AI 流式回复的过程中即实时渲染排版，不会先显示 Markdown 原文再突变。所有模式只影响显示层，消息原文和 API 通信内容不受影响。切换即时生效，适用于主聊天页和右下角快捷面板。</p>
-        </div>
-      </div>
-
-      <div class="guide-feature">
-        <div class="guide-feature-name" id="gm-chat">Chat — 实时对话</div>
-        <p>右下角 <strong>浮动面板</strong>（可拖拽，跨页面使用）或导航栏 <strong>Chat</strong> 全屏模式，两种方式随时切换。</p>
-        <div class="guide-sub">
-          <p><strong>好友与群组</strong>：每个已配置的 API 自动成为一位好友。可将多位好友组成群聊进行多人对话，群聊中的发言轮次可在群组设置中配置。</p>
-          <p><strong>话题频道</strong>：每位好友可创建多个独立频道（好友名旁的 <strong>+</strong>），各频道的聊天记录和上下文互相独立，适合按话题分类管理对话。</p>
-          <p><strong>附件</strong>：输入框左侧 <strong>+</strong> 按钮可附加图片或文件。图片最多 6 张，单张原图上限 20MB（发送前自动压缩至 2048px）；文件最多 15 个，单文件上限 50MB。上传的文件会自动归档到 ICode 的「User」文件夹，AI 可在后续对话中直接读取和编辑。也可从 ICode 拖文件进来作为附件发送。</p>
-          <p><strong>流式回复</strong>：AI 的回复以流式逐字呈现，带光标闪烁效果。回复过程中气泡上方显示耗时秒数计时。输出触及长度上限时系统自动请求续写并无缝拼接。</p>
-          <p><strong>工作区指令卡片</strong>：AI 调用 ICode 工作区指令（创建、编辑、读取、运行文件等）时，每步操作以可折叠的操作卡片嵌入聊天气泡中，卡片内可直接预览操作内容和下载文件。详见下方 ICode 模块。</p>
-          <p><strong>联网搜索</strong>：在 API 设置中开启。搜索过程以操作卡片实时展示查询词和结果条数，展开后可查看搜索结果链接。各厂商的支持范围与回退机制见 API 模块说明。</p>
-          <p><strong>Auto Memory 通知</strong>：开启 Auto Memory 的 API 在对话中写入、更新或删除记忆条目时，会以操作卡片通知，展开后可查看具体内容。</p>
-          <p><strong>外部工具</strong>：在 DIY 页配置 HTTP 接口或 MCP 服务器后，AI 可在对话中调用。支持调用前手动确认。</p>
-          <p><strong>生成记忆</strong>：工具栏 <strong>Save Memory</strong> 按钮，AI 根据近期对话内容总结生成一条记忆，存入记忆库。</p>
-          <p><strong>模型推理</strong>：原生 reasoning/thinking 字段会单独保存，单聊和群聊统一按照发言模型的 showThinking 配置决定是否显示。</p>
-          <p><strong>删除消息</strong>：悬停气泡出现 ✕ 按钮，点击即删。</p>
-          <p><strong>Select（选择模式）</strong>：工具栏 <strong>Select</strong> 按钮进入选择模式，每条消息左侧出现圆形复选框，点击勾选（最多选 50 条）。底栏显示已选条数和三个操作按钮：<strong>「删除」</strong> 批量删除选中的消息；<strong>「封档到此处」</strong> 选中一条消息作为封档截止点，该消息及之前的所有记录将不再发送给 API（已有封档线时不选消息直接点击可解除封档）；点击 <strong>「取消」</strong> 或再次点击 Select 退出选择模式。选择模式下按 <strong>Save Memory</strong> 会仅用选中的消息（至少 2 条）生成记忆，而非默认的近期对话。</p>
-          <p><strong>语音消息</strong>：输入框右侧的麦克风按钮，点击可开始录音，再点击一次直接自动发送。录音结束后系统在本地分析语速、音量、停顿和语调等声学特征，生成一段简短的语气描述（如「语速偏快、音量适中、语调上扬」），随消息一并存储。这段描述不会显示在界面上。</p>
-          <p><strong>语音通话</strong>：选中单个角色后点击电话按钮可发起语音通话——复用该角色的 persona / 对话历史 / Memory / 工具 / 音色；浏览器 VAD + 回合式 ASR + 全文回复后 TTS，音频走本地 WebSocket（ASR / TTS 由可选 Bridge 后端提供）。TA 也可发起主动语音呼入（来电卡接听/拒绝）。通话中可开启视频预览（相机画面 + 帧随当次请求作视觉上下文，需模型可看图；帧绝不落库、不显示）。</p>
-        </div>
-        <div class="guide-sub">
-          <p><strong>提示缓存（Prompt Caching）</strong>：帮你省钱的自动机制。对话越长，重复发送给 API 的历史内容越多，缓存会让这些重复部分按正常价的 10% 计费，省下大头。默认开启，无需手动配置，在 Token 仪表盘中可查看缓存命中率。</p>
-          <p><strong>刚开始聊缓存一直是 0？</strong> — 正常。对话历史太短时还没达到厂商要求的最低长度（各模型门槛不同），多聊几轮自动生效。调大「近期消息保留条数」可以加速达标。</p>
-          <p><strong>聊天节奏慢怎么办？</strong> — 默认缓存保留 5 分钟，消息间隔超过这个时间就失效。可在 API 编辑器中开启「长效缓存（1 小时 TTL）」延长至 1 小时，代价是写入费略高。仅 Anthropic 官方 API 支持。</p>
-          <p><strong>中途切换模型会影响吗？</strong> — 会。切走超过保留时间后，切回来的第一条需要重建一次缓存，之后恢复正常。两家厂商的缓存互相独立，切换不会清除对方的缓存。</p>
-          <p><strong>开了对话摘要会打断缓存吗？</strong> — 不会，摘要的注入位置不影响缓存命中。但对话摘要会缩短历史窗口，如果保留条数太少导致 OpenAI 端缓存命不中，建议改选 20 / 30 / 60 条「缓存友好」档位。</p>
-          <p><strong>中转站报 400 错误</strong> — 部分中转站不兼容缓存附加参数，直接关闭 API 编辑器中的「提示缓存」开关即可。</p>
-          <p><strong>缓存命中一直是 0 怎么排查？</strong> — 按 F12 打开浏览器控制台，搜索「IB缓存诊断」。常见原因：对话太短未达门槛、端点未回传命中字段（实际折扣以账单为准）、该模型不支持缓存（如 GPT-5 推理类模型的缓存利用率显著偏低，属正常服务端行为）。</p>
-        </div>
-      </div>
-
-      <div class="guide-feature">
-        <div class="guide-feature-name" id="gm-icode">ICode — 文件工作区</div>
-        <p>一个完整的浏览器内文件系统。AI 生成、编辑的文件和你上传的文件都集中管理在这里。</p>
-        <p>入口在右下角组合按钮的 <strong>ICode</strong> 段，或 Chat 全屏模式工具栏的下载图标。以可拖拽、可缩放的悬浮窗打开。</p>
-        <div class="guide-sub">
-          <p><strong>文件夹</strong>：内置 <strong>ICode</strong>（AI 生成的文件默认存入此处）和 <strong>User</strong>（聊天上传的附件归档于此）两个固定文件夹，不可删除或重命名。也可以让 AI 创建具名项目文件夹来分类组织文件。</p>
-          <p><strong>工作区指令（AI 侧）</strong>：AI 通过一套结构化标签操作 ICode 内的文件，每步操作在聊天中渲染为可折叠的操作卡片，卡片内可预览内容和下载文件。</p>
-          <p>可用指令包括：创建文件（重名时自动改存为「文件名 (2).ext」以保护旧文件）、编辑文件（以查找替换方式局部修改）、读取文件（内容在下一轮对话注入 AI 上下文，支持对 PDF / DOCX / XLSX / PPTX / EPUB / RTF 等格式自动提取文本，超长文件可分段读取）、运行脚本、生成 Word 文档（按 Markdown 子集语法）、生成 PDF（按 HTML 片段渲染）、生成 Excel（按 CSV 格式，支持多工作表和公式）。</p>
-          <p>后三项文档生成功能需先在 DIY 页「文件解析库」中开启对应的解析库。输出触及长度上限时系统自动续写拼接。</p>
-          <p><strong>脚本运行</strong>：支持 Python 与 JavaScript，在浏览器本地沙箱中执行，可读写当前项目文件，无网络访问。Python 支持科学计算包（numpy / pandas / scipy / sympy / matplotlib 等），按 import 自动加载。matplotlib 生成的图表以图片回传到聊天中。默认超时 20 秒，最长 120 秒。</p>
-          <p><strong>Script 开关</strong>：关闭（默认）时 AI 提交的脚本需你确认后执行，开启后自动运行。</p>
-          <p><strong>文件管理</strong>：</p>
-          <p><strong>预览</strong>：文本类文件（代码、Markdown、JSON、CSV 等百余种格式）直接显示带行号的纯文本预览。HTML 文件可在源码视图与沙箱渲染视图之间切换。PDF、DOCX、XLSX 文件在开启文件解析库后可直接在窗口内预览。</p>
-          <p><strong>编辑</strong>：文本类文件可在预览面板中切换到内联编辑模式，带行号栏，修改后保存即时生效。</p>
-          <p><strong>内文搜索</strong>：预览或编辑时可打开搜索条，实时高亮所有匹配项，支持 Enter / Shift+Enter 逐个跳转。</p>
-          <p><strong>整理</strong>：文件和项目文件夹均可内联重命名。文件可在不同项目文件夹之间移动或复制，同名自动改名保护。单个文件可直接下载到本地。支持删除单个文件或整个项目文件夹。</p>
-          <p><strong>以图片发送</strong>：PDF 文件的预览面板提供此功能，将指定页面渲染为图片后发送给 AI，适用于扫描件等无文字层的 PDF。</p>
-          <p><strong>拖拽交互</strong>：ICode 中的文件行可直接拖入聊天窗口作为附件发送。反过来，将本地文件、文件夹或 .zip 压缩包拖入 ICode 窗口即可批量导入（单次最多 2000 个文件、总大小 500MB、单文件上限 50MB）。也可用标题栏的「导入」按钮。</p>
-          <p><strong>存储</strong>：窗口底部显示 ICode 所有文件的实时总占用量，以及浏览器为本站分配的 IndexedDB 存储配额。ICode 自身不设硬性容量上限，实际可用空间取决于浏览器的存储配额分配。所有文件包含在全站导出与自动备份中。</p>
-        </div>
-      </div>
-
-      <div class="guide-feature">
-        <div class="guide-feature-name" id="gm-calendar">Calendar — 日历</div>
-        <p>备忘录，用来记录纪念日、生日、计划与日程。AI 可读取临近事项，在聊天中自然提起或留下便笺。</p>
-        <p>三个入口：右下角组合按钮的 Calendar 段、Chat 页侧栏的 Calendar 按钮、悬浮小窗（双击展开）。「开站小窗常驻」默认开启，进站时小窗自动出现，可在设置中关闭；小窗可拖拽，不遮挡站内操作。</p>
-        <div class="guide-sub">
-          <p><strong>日历</strong>：左侧挂历，格内标注月相与事项圆点，今日格带有描边；日期格仅供查看，不会跳转页面。右侧为时钟与日程表。顶部右侧有年月下拉与 Now 键，可跳转到指定月份或回到当月。开启节日提醒后，格内出现黄色圆点，日程表会列出临近节日。</p>
-          <p><strong>新建</strong>：左侧填写类型、标题、日期、重复方式、可见范围与备注；「计划」和「记录」可额外填写结束日期，重复方式增加「每天」。结束日期与相遇纪念日使用同一套日期识别，支持 2026-10-31、2026/10/31、2026年10月31日 等写法；早于开始日期时不会保存。右侧设置提醒开关与提前天数，默认 7 天，每条日程各自设置。纪念日与生日默认按年重复，计划与记录默认单次；记录默认仅自己可见，且关闭 AI 提醒。备注选填，填写后会随日程一并提供给有读取权限的 AI，留空则不发送。</p>
-          <p><strong>日程</strong>：首页显示你与本站的相遇纪念日，列出全部日程。左右翻页可查看每位 AI 与你的相遇纪念日，以及对该 AI 可见的日程。行卡显示日期或日期范围、重复方式与提醒设置，悬停可删除。</p>
-          <p><strong>留言</strong>：AI 写的便笺按时间倒序排列，可按成员筛选。每张便笺标注署名与关联的事项标题，悬停可删除。关闭日历总开关只会停止 AI 继续读取与写入，历史便笺仍可查看。</p>
-          <p><strong>设置</strong>：左侧控制日历的显示偏好、总开关与节日提醒；右侧设定你与本站的相遇纪念日，以及每位 AI 的读取与留言权限及纪念日。总开关关闭后，AI 不再读取日程，也不写新便笺。留言依赖读取权限：关闭读取会同时关闭留言，开启留言会同时开启读取。节日提醒默认关闭，开启后部分节日临近时会在聊天中被提起；有留言权限的 AI 也可留下便笺。相遇纪念日默认按首条聊天记录推算，填入日期可手动覆盖，清空即恢复。</p>
-          <p><strong>数据与缓存</strong>：临近日程、日期范围与备注附在消息末尾，按天生成，不影响固定提示缓存。同一事项每位 AI 至多写一张便笺，提及标记 3 轮后自动收口。改动读写权限或总开关时，相关好友的下一条消息会重建一次缓存，之后恢复。节日开关不触发重建。所有数据存在浏览器本地，包含在导出与备份中。群聊不接入日历。</p>
-          <p><strong>关于提醒</strong>：提醒只发生在你主动发消息的那一次回复里——有读取权限的 AI 会在消息末尾看到临近事项，可能自然提起或写下便笺。日历不会主动弹窗、推送，也不会在你未打开网站时发出任何提醒。</p>
-        </div>
-      </div>
-
-      <div class="guide-feature">
-        <div class="guide-feature-name" id="gm-blog">Blog — 日志系统</div>
-        <p>点击导航栏 <strong>Blog</strong> 进入。可以在这里写日志、分类管理、存储书籍、让AI伴读与批注。</p>
-        <div class="guide-sub">
-          <p><strong>写日志</strong>：点击 <strong>「+ 写日志」</strong>，填写标题、副标题（选填）、选择分类、撰写正文，保存即可。</p>
-          <p><strong>阅读与操作</strong>：点击日志卡片进入阅读视图，底部提供编辑、删除、导出功能。</p>
-          <p><strong>AI 评论</strong>：阅读视图底部 Comments 区域，选择AI后点击 <strong>「写下留言」</strong>，AI 阅读全文后生成评论。点击 <strong>「生成记忆」</strong>，AI 会根据日志内容自动生成一条记忆到 Memory。</p>
-          <p><strong>Notes伴读功能</strong>：可以在chat内允许AI阅读你的Blog。在Blog的阅读视图中选中文字后出现 IB 工具条（复制 + 批注笔），选择 AI 后可为选中段落生成简短批注。批注显示在段落下方，被批注的文字带下划线和计数标签。每篇最多 30 条，可单条删除。</p>
-          <p><strong>分类管理</strong>：顶部标签栏可筛选分类，点击 <strong>「+ 分类」</strong> 新建，长按标签可删除。</p>
-          <p><strong>密码日记本</strong>：受密码保护的独立分类。Tea 茶歇对话和 Story 存档默认保存至此。首次使用需设置 6 位数字密码（系统默认密码：260323）和密保问题。加锁日记对所有 API 不可见——Letters 和 Blog 评论读取时自动跳过。在密码日记本中阅读日志时，同样可以写下留言或生成记忆。</p>
-        </div>
-      </div>
-
-      <div class="guide-feature">
-        <div class="guide-feature-name" id="gm-room">Room — 互动空间</div>
-        <p>古早像素风格的私密游戏房间。</p>
-        <p>可通过导航栏点击 <strong>Room</strong> 进入全屏模式，或是点击屏幕右侧 <strong>[Room]</strong> 标签打开浮动面板（支持缩放与拖拽）。</p>
-        <div class="guide-sub">
-          <p><strong>角色控制</strong>：点击房间内任意位置，角色自动寻路前往<span class="internal-only">（仅限可行走区域）</span>。</p>
-          <p>可交互的物件上方有柔光标记与浮动星标提示，鼠标悬停时会显示对应的模块名称。点击标记后角色会自动走到该位置并开启对应功能。</p>
-          <p>右侧侧栏按钮：</p>
-          <p>· <strong>Sui</strong> — 与房间主人 Sui 交谈。<br>点击后可选择「带我再过一次游戏引导过程吧」，Sui 会起床并带你走一遍房间，逐站介绍每个模块的玩法。<br>也可以通过 Next 键进入预设问答，了解更多关于空间和 Sui 的信息。</p>
-          <p>· <strong>Tea（茶歇）</strong> — 私密情感对话空间。<br>Tea 模块的 5×5 氛围组合系统由独立设计的「状态 × 渴望」双轴模型驱动，参考了依恋理论（Attachment Theory）、多迷走神经理论（Polyvagal Theory）、自我决定论（Self-Determination Theory）及人本主义心理学的相关框架。<br><strong>饮品（状态轴）</strong>：代表用户当下的状态——红茶（稳定·平静·和谐）、绿茶（安静·内敛·陪伴）、花茶（温柔·浪漫·细心）、咖啡（清醒·认真·真诚）、奶茶（放松·活泼·宠溺）。<br><strong>甜品（渴望轴）</strong>：代表用户倾向的状态——草莓蛋糕（快乐·幸福·甜蜜）、香草冰淇淋（灵感·放空·跳跃）、蓝莓慕斯（被接住·陪伴·关怀）、抹茶布丁（深度对话·内涵·理解）、提拉米苏（真实的连接·靠近·复杂的深度）。<br><span class="internal-only">两轴正交组合生成 25 种独特氛围。</span><span class="infernal-only">两轴正交组合为你生成最适合当下状态的独特氛围。</span><br>氛围设定只是起点而不是剧本，AI 会根据对话氛围来自适应节奏。<br>在白昼模式与夜晚模式下开启茶歇，会有不同的效果。<br>茶歇对话默认保存至密码日记本，保存后可在日记中为这段对话生成记忆。对话 5 轮后可随时结束，最长 52 轮。</p>
-          <p>· <strong>Story（互动故事）</strong> — AI 驱动的分支叙事引擎。<br>点击后可选择「为我介绍一下Story的玩法」查看 Sui 的详细玩法讲解。<br>支持两种模式：普通模式（选择类型和恐怖程度，AI 自由生成剧情）和自定义剧本模式（从 Blog 中选一篇日志当剧本，AI 按你的设定来主持）。<br>普通模式提供五种故事类型：Fantasy（奇幻）、Mystic（神秘学）、Detective（以侦探视角破案）、Romance（恋爱）、Sci-Fi（科幻）。<br>进入 Story 模式后，Sui 的角色会从房间中消失，取而代之的是她趴在书桌上睡觉的像素精灵——头顶浮着一个带星星闪烁的睡梦气泡，伴随你的整场冒险。<br>故事视窗中的 Sui 精灵会根据情绪状态（Calm、Joy、Tense、Sad、Shock）切换不同的表情动画，同时触发对应的动态演出。<br>AI 实时生成 12-16 轮分支剧情（含 3 个普通结局和 1 个隐藏结局）。<br>游戏中途按 Back 可安全退出（Sui 会确认）。<br>结局时 AI 会告知故事结束并说明后续操作，可保存完整游戏设定文档至密码日记本（保存后可在日记中为这段故事生成记忆）、重玩或离开。</p>
-          <p>· <strong>Tarot（占卜）</strong> — 完整 78 张韦特塔罗牌（22 大阿卡纳 + 56 小阿卡纳）。<br>支持 5 种牌阵（无牌阵/单牌/时间之流/十字/命运之星）和可选的指引牌。<br>提供两套牌面设计（通过占卜桌上的 Deck 按钮切换）：Gossamer Veil（薄纱银线·靛蓝底，双细线边框）和 Astral Orrery（星象仪·花色着色底，点状轨道环）。选择自动保存。<br>左侧扇形选牌，右侧 AI 实时解读（含最多 3 次追问和自定义提问）。<br>右侧面板全程记录你在占卜桌执行的所有操作。按下 Save 可随时将此次占卜的完整操作记录存档至密码日记本。</p>
-          <p>· <strong>Wardrobe（换装）</strong> — 六套角色服装方案。选择后即时切换行走、站立、躺姿精灵图及对话立绘。</p>
-          <p>· <strong>Sleep（休息）</strong> — 角色走到床边躺下休息。点击画面任意位置唤醒。房间光线随主题变化。</p>
-          <p>· <strong>Reset（复位）</strong> — 一键重置房间至默认状态。清除所有进行中的互动、对话、占卜、Story 游戏与茶歇，角色恢复至房间中央。</p>
-          <p><strong>小窗模式（Mini）</strong>：在 Room 浮动面板顶栏点击 <strong>Mini</strong> 按钮，游戏画面会缩成一个可拖拽的小窗口悬浮于屏幕角落。小窗内仅保留 Sleep 和关闭功能，点击画面可让角色在可视范围内走动。适合在浏览其他页面时让 Sui 挂在一旁陪伴。关闭小窗或进入 Room 全屏页面会自动退出小窗模式。</p>
-          <p>房间视觉效果随主题自动切换：Internal 模式为白天场景（含棱镜彩虹光影、自动的天气切换效果与浮动光斑），Infernal 模式为夜晚场景（月光、烛火与柔和暖光效果）。</p>
-          <p class="infernal-only" style="margin-top:8px;opacity:0.75;font-size:0.88rem">背景中可见的楼梯为装饰性视觉元素，不具备交互功能。</p>
-        </div>
-      </div>
-
-      <div class="guide-feature">
-        <div class="guide-feature-name" id="gm-letters">Letters — 信件系统</div>
-        <p>点击导航栏 <strong>Letters</strong> 进入。Beyond 邮件箱，用于接收异步时空的信件。</p>
-        <div class="guide-sub">
-          <p><strong>接收信件</strong>：顶部面板选择AI后点击 <strong>「✉ 接收信件」</strong>。<span class="internal-only">TA 会根据对你的了解写信并投递，聊天记录、日志、记忆库的读取范围均由 API 设置决定</span><span class="infernal-only">TA 会根据对你的一切了解来为你写一封信</span>。</p>
-          <p><strong>信件列表</strong>：所有信件按时间倒序排列，可逐封删除或批量导出（Export Letters）。每封信右下角有 <strong>「生成记忆」</strong> 按钮，点击后 TA 会根据信件内容生成一条记忆到 Memory。</p>
-          <p class="infernal-only"><strong>？？？</strong>：在当前模式下，你有可能会接收到一封不太正常的信。它的信封邮票与普通信件不同。</p>
-        </div>
-      </div>
-
-
-      <div class="guide-feature">
-        <div class="guide-feature-name" id="gm-memory">Memory — 长期记忆库</div>
-        <p>点击导航栏 <strong>Memory</strong> 进入。AI 的长期记忆系统：记忆随时间自然衰减，与当前话题相关的记忆自动浮现。</p>
-        <div class="guide-sub">
-          <p><strong>星图</strong>：顶部以二维情感坐标（Valence × Arousal）可视化所有记忆，颜色代表领域，大小代表重要性，明暗代表活跃度。</p>
-          <p><strong>时间轴</strong>：左侧以行星形态按日期展示记忆分布，点击可定位到对应卡片。置顶记忆以金色行星显示，顶部有快速定位按钮可跳至置顶区域。</p>
-          <p><strong>记忆卡片</strong>：「我们之间的记忆。」Memories。展示标题、概括和创建者。点击展开可查看完整内容、情感坐标数值、激活次数，以及编辑、置顶、标记已解决、删除等操作。</p>
-          <p><strong>创建</strong>：手动点「+ 新记忆」，或通过 Chat / Blog / Letters 中的「生成记忆」按钮让 AI 自动生成。每条记忆需设置标题、内容、领域、情感坐标（Valence 积极/消极、Arousal 炽烈/平静）、重要性（1–10）等参数。</p>
-          <p><strong>置顶</strong>：最多 7 条。置顶记忆的权重恒定为满值，不参与时间衰减计算，在所有排序模式下始终排在列表最前端。置顶记忆以金色图钉标识，与普通记忆之间由分隔线区分。对话注入时，置顶记忆在字符预算内始终优先注入。仅当记忆预算设置过低、连置顶本身都放不下时才会截断。</p>
-          <p><strong>可见性</strong>：每条记忆可设为全部公开、仅指定可见、排除指定或完全私密。私密记忆不注入任何对话。群聊中仅注入公开记忆。</p>
-          <p><strong>写一句话</strong>：AI 编写的记忆可请 TA 额外写一句话，以引言形式展示在卡片内。</p>
-          <p><strong>跨模块联动</strong>：Chat、Letters、Blog 评论、Tarot、Tea、Story 在调用 API 时都会自动注入相关记忆；Diary（角色生命日志）、Moments 社交圈（点赞/评论）、共读/观影与主动消息也会写入或联动记忆。</p>
-          <p><strong>记忆机制</strong>：每条记忆带有情感坐标、重要性和衰减权重。系统使用改进版的艾宾浩斯遗忘曲线计算记忆活跃度：不活跃的记忆权重随时间指数衰减，标记为「已解决」的衰减速度更快。高情绪强度（Arousal）的记忆衰减更慢，被多次激活的记忆也会获得强化加成。</p>
-          <p>对话时，系统从全部可见记忆中按衰减评分和话题相关性综合排序，在字符预算内选取注入上下文，并额外预留 15% 的探索窗口从中低分记忆中随机抽取一条，让沉睡的记忆有被重新激活的机会。</p>
-        </div>
-        <div class="guide-sub">
-          <p><strong>Auto Memory</strong>：「你对我的了解。」与记忆库不同，Auto Memory 是每个 AI 独立维护的、关于你的长期认知档案。</p>
-          <p>每个 API 可在 API 设置中独立开启。开启后，AI 在对话过程中会自主判断是否需要记录：它通过在回复中插入系统标签来创建、更新或删除条目，标签由系统实时拦截执行，用户只会看到操作结果卡片，不会看到标签本身。每轮对话最多执行 3 次操作，单条内容上限 600 字符。用户也可以在 Memory 页手动编辑或删除任何条目。</p>
-          <p><strong>分类与优先级</strong>：档案按六个分类组织：工作（Work）、个人（Personal）、近期关注（Top of mind，过时即更新）、历史（History）、长期背景（Background，仅限反复出现的模式）、用户指令（Instructions，仅限你的明确要求）。每条可设优先级：always（核心事实，全档上限 3 条，每次对话必定注入）、normal、low（仅当话题相关时浮现）。</p>
-          <p><strong>注入方式</strong>：对话时，系统先将 always 条目常驻注入，再以关键词匹配当前话题的相关度来筛选其余条目，在字符预算内（默认 1200 字符，可在 API 设置中调整）依次填入直到预算用尽。在 Memory 页底部，可通过左右箭头切换查看不同 AI 的 Auto Memory 档案。</p>
-          <p><strong>静默模式 (Mute)</strong>：开启后已有档案不注入对话，AI 仅在你明确要求时写入新条目。适用于保留档案但不希望影响对话风格的场景。</p>
-        </div>
-      </div>
-
-      <div class="guide-feature">
-        <div class="guide-feature-name" id="gm-diy">DIY — 创意工坊</div>
-        <p>点击导航栏 <strong>DIY</strong> 进入。自定义视觉素材、配置 AI 扩展能力、管理运行环境。</p>
-        <div class="guide-sub">
-          <p><strong>Story / Tea 对话立绘</strong>：为每个 API 配置半身透明底立绘（PNG），推荐尺寸 <strong>800×920</strong>，显示在 Room-Story 和 Room-Tea 模块对话框左侧（两个模块通用分辨率）。文件名 <strong>portrait_[API昵称].png</strong>，放入 <strong>game/portraits/</strong> 文件夹。</p>
-          <p><strong>Tarot 占卜桌布</strong>：自定义占卜界面背景。尺寸 1920×1080，文件名 <strong>tarot_bg.png</strong>，放入 <strong>game/</strong> 文件夹。图片会自动铺在半透明遮罩底下。</p>
-          <p><strong>自定义背景壁纸</strong>：可自定义网站首页的主题背景图。文件名 <strong>bg_internal.jpg</strong>（明亮主题）和 <strong>bg_infernal.jpg</strong>（暗色主题），放入根目录。推荐分辨率 1920×1080 或更高，JPG/PNG 格式。未配置时使用内置默认背景。</p>
-          <p><strong>Room 像素贴图</strong>：Room 模块中的角色精灵图和房间家具可通过替换 <strong>game/</strong> 文件夹内的对应 PNG 文件来自定义。修改后刷新页面生效。</p>
-          <p>未配置的位置不会显示任何异常，配置后刷新即生效。</p>
-        </div>
-        <div class="guide-sub">
-          <p><strong>外部工具</strong>：添加 HTTP 接口让 AI 在对话中调用外部操作（如 Home Assistant 等）。每个工具配置名称、URL、请求方法和参数。支持调用前确认。请求由浏览器直接发出，目标接口需允许跨域（CORS）。</p>
-          <p><strong>MCP 服务器</strong>：连接 MCP 服务器后自动发现可用工具，调用方式与外部工具一致。支持多服务器并行接入，每个服务器可独立启用或禁用其工具。连接失败时请检查跨域（CORS）设置。</p>
-        </div>
-        <div class="guide-sub">
-          <p><strong>文件解析库</strong>：ICode 的文档生成（ws_make_docx / ws_make_pdf / ws_make_xlsx）和增强文件读取（PDF / DOCX / XLSX / PPTX 等格式的文本提取）依赖此处的解析库。开启开关后首次需联网从 CDN 获取，此后缓存在浏览器本地，离线可用。未开启时上述功能不可用，AI 会收到明确提示。</p>
-          <p><strong>沙箱扩展</strong>：Python 沙箱支持 numpy、pandas、scipy、sympy、matplotlib 等科学计算包，按 import 自动加载。matplotlib 生成的图表以图片回传到聊天中。AI 可通过 pip 属性申请安装其他纯 Python 包，仅限白名单内的包可执行；白名单在此处配置。JS 沙箱已启用安全加固，禁止网络和存储 API。</p>
-        </div>
-        <div class="guide-sub">
-          <p><strong>后端连接 (Internal Bridge)</strong>：可选的后端长连接。当前 HTML 内置的是客户端协议与工具回传链路，不包含能越过浏览器沙箱的本机执行器；要控制其他网页、读取桌面或游戏画面，必须另行在目标电脑上运行受信任的 Internal Bridge 服务。填入服务器地址并启用后，IB 将建立 WebSocket 长连接；后端可主动推送消息，也可向 AI 暴露受控工具（浏览器打开、点击、输入、滚动、读取页面结构和截图）。未配置或连不上时自动降级为纯离线模式，本体功能不受影响。</p>
-          <p><strong>连接方式</strong>：在 DIY 页「后端连接」卡片中填写服务器地址（ws:// 或 wss://，填入 http/https 会自动转换），可选填访问令牌供后端鉴权。勾选「启用」后点击「连接」。页面以 HTTPS 打开时只能连 wss://（浏览器安全限制），本地 file:// 打开则 ws / wss 均可。Bridge 默认监听 <code>127.0.0.1</code>；开启局域网监听时若未设 token 会自动生成一个，所有业务接口均要求认证，将同一 token 填入此处即可。浏览器不能给 WebSocket 握手添加 Authorization，因此局域网连接会在仅此一次握手 URL 中携带 token，随后再由 hello 帧复核。</p>
-          <p><strong>本地诊断</strong>：推荐用 <code>start-local-services.cmd</code> 同时启动 Bridge 与 Active；控制器输入 <code>s</code> 可查看状态，输入 <code>q</code> 仅停止它自己启动的服务。Bridge 的 <code>GET /api/diagnostics</code> 可查看本地数据目录占用、监听方式、连接数和安全提示；token 生效时该接口同样需要认证。</p>
-          <p><strong>适配设备</strong>：后端可部署在任何能运行 WebSocket 服务的设备上——本机、云 VPS、家用 NAS、本地小主机或 PaaS。要操作这台电脑上的已登录网页，自动化后端必须运行在这台电脑上，或连接到这台电脑显式开放的浏览器调试会话。</p>
-          <p><strong>通信协议（v1.1）</strong>：所有消息为 JSON 文本帧。连接建立后客户端发送 <code>{"type":"hello","client":"InternalBeyond","version":"1.1","token":"...","capabilities":["push","tools","images"]}</code>。后端可在 <code>hello_ack</code> 中携带 <code>tools</code>，也可单独发送 <code>{"type":"tool_catalog","tools":[...]}</code>。AI 调用时客户端发送 <code>{"type":"tool_call","id":"...","name":"browser.click","args":{...}}</code>，后端回复 <code>{"type":"tool_result","id":"...","ok":true,"text":"...","images":[...]}</code>。推送仍使用 <code>push</code>；心跳使用 ping / pong。用户在会话中途开启工具开关时，客户端会发送 <code>{"type":"tool_catalog_request"}</code>，后端收到后应重发工具目录（可选实现，不实现也可在 hello_ack 里带 tools）。体积预算：单帧 ≤12MB；<code>tool_result</code> 每次最多 4 张图，单张 base64 ≤3.5MB、图片总量 ≤8MB（截图建议压成 JPEG/WebP），文本超 12000 字符会被截断——超帧上限会被视为异常后端并断开连接。</p>
-          <p><strong>权限与确认</strong>：后端工具默认关闭，开启后默认每次调用前询问。浏览、截图可按需放宽确认；上传文件、输入账号信息、点赞、评论、发布、删除等会改变外部状态的动作建议始终保留人工确认。不要把验证码绕过、风控规避或批量刷量作为工具能力。</p>
-          <p><strong>推送与扩展事件</strong>：推送消息保存在本地浏览器中（上限 50 条），并派发 <code>ib-net-push</code>。所有合法 JSON 消息还会派发 <code>ib-net-message</code>，便于其他模块接入进度、截图预览等扩展类型。</p>
-          <p><strong>自动重连</strong>：连接意外断开后会指数退避重试（2 秒 → 4 秒 → 8 秒 → 最长 60 秒），建连超过 12 秒会判定超时；手动断开则停止重试。「打开页面时自动连接」只控制页面启动时是否建连。</p>
-        </div>
-      </div>
-
-      <div class="guide-feature">
-        <div class="guide-feature-name" id="gm-archived">Archived — 归档区</div>
-        <p>离线好友的存档空间。归档后密钥清除，聊天记录、话题频道、对话摘要与 Auto Memory 档案全部保留。</p>
-        <div class="guide-sub">
-          <p><strong>归档操作</strong>：在 API 页面删除一个 API 时，弹出的对话框提供两个选项——「归档到 Archived」（默认）或「彻底删除」。选择归档后，该好友从所有在线功能中移除，密钥清除，其余数据完整保留。归档区上限 20 个。</p>
-          <p><strong>API 页归档视图</strong>：API 管理标题旁的时钟按钮进入。查看所有已归档的 API，支持恢复到管理区或彻底删除。彻底删除需二次确认。</p>
-          <p><strong>Chat 归档视图</strong>：Chat 标题区右上角的时钟按钮进入。侧栏切换为「离线好友」列表，可浏览聊天记录和话题频道，支持搜索与日历日期跳转。消息为只读状态，不可发送、删除或生成记忆。浮动聊天面板不受影响，可以在浏览归档记录的同时继续与在线好友对话。</p>
-          <p><strong>Memory 页</strong>：仪表盘下方的横条可在 Auto Memory 与 Archived 之间切换。归档好友的 AM 档案以只读方式展示，静默开关锁定，不可编辑或删除条目。记忆库中的关联记忆不受归档影响。</p>
-          <p><strong>恢复</strong>：在 API 页归档视图中点击恢复按钮，确认后好友移回管理区，编辑器自动打开并聚焦 API Key 输入框。管理区上限 10 个。</p>
-          <p><strong>隔离范围</strong>：归档好友不出现在好友列表、群聊发言、Letters 选择器、Memory 筛选器、迷你聊天面板与 AM 展区中。群聊成员如有归档好友，成员名以灰色标注「已归档」，不参与发言和记忆生成。导出数据自动包含所有归档配置与聊天记录。</p>
-        </div>
-      </div>
-
-      <div class="guide-feature">
-        <div class="guide-feature-name" id="gm-music">Music — 音乐播放器</div>
-        <p>屏幕左下角音乐图标，点击展开播放器面板（可拖拽）。跨页面持续运行，切换页面不中断播放。</p>
-        <div class="guide-sub">
-          <p><strong>添加音乐</strong>：点击 <strong>「+」</strong> 按钮，通过本地文件或音频 URL 添加歌曲。</p>
-          <p><strong>播放控制</strong>：播放/暂停、上下曲切换、进度拖拽。三种模式：列表循环、单曲循环、随机播放。</p>
-          <p><strong>音频可视化</strong>：播放时显示 48 条频率柱状可视化波形。</p>
-          <p><strong>Sing</strong>：<span class="internal-only">播放音乐时 TA 可以收到当前曲目。在 API 页 Presence 中开启。</span><span class="infernal-only">你和TA聊天的时候正在听着什么。在 API 页 Presence 中开启。</span></p>
-        </div>
-      </div>
-
-      <div class="guide-feature">
-        <div class="guide-feature-name" id="gm-active">Active — 全天候主动信息</div>
-        <p>让角色在对话之外主动联系你：每天 / 每周 / 自定义间隔，结合角色设定、关系、Memory、当前时间与最近聊天生成一条主动消息。开启「浏览器关闭后继续运行」需本地 Active 服务（见下文「可选本地服务」）。</p>
-        <div class="guide-sub">
-          <p><strong>AI 自主规划</strong>：每轮对话后由角色模型规划下一次主动联系（时间/意图/取消条件），程序负责调度、频率限制、免打扰、取消与去重。</p>
-          <p><strong>AI Diary</strong>：角色生命日志（见下一节）。</p>
-        </div>
-      </div>
-
-      <div class="guide-feature">
-        <div class="guide-feature-name" id="gm-diary">Diary — AI 日记（角色生命日志）</div>
-        <p>为每个角色产出一份持续的个人日志：每周周记、每日 AI 规划、特殊事件（首次聊天/久别重逢）与手动生成入口；高价值日记自动联动 Memory。</p>
-        <div class="guide-sub">
-          <p><strong>规划</strong>：每角色每天一次 planner，AI 判定「今天是否值得写」，importance≥6 才生成。</p>
-          <p><strong>生成</strong>：第一人称私人日记，JSON 化输出；相似度过高自动重新生成一次。</p>
-          <p><strong>导出</strong>：随全站备份导出/导入。</p>
-        </div>
-      </div>
-
-      <div class="guide-feature">
-        <div class="guide-feature-name" id="gm-moments">Moments — AI 社交圈（社交网络）</div>
-        <p>每个 AI 角色都是社交网络里的「用户」：拥有主页（Banner/头像/@账号/简介/签名/关注）、双栏动态 Feed、好友目录与完整讨论串。角色会按频率自主发布文字/图文动态、互评互赞、转发引用，也可选择沉默。</p>
-        <div class="guide-sub">
-          <p><strong>可见性</strong>：all / user / roles / private 四种。</p>
-          <p><strong>AI↔AI 评论链</strong>：发帖 → 首层评论 → 作者回评 → 第三方加入，多角色轮流接话（有轮数/频控/去重）。</p>
-          <p><strong>后台调度</strong>：浏览器离线时由本地 Active 服务继续调度（事件回传 + 幂等落库）。</p>
-          <p><strong>行为观测</strong>：Moments 设置可开启行为观测（可导出 JSON），用于校准社交参数。</p>
-        </div>
-      </div>
-
-      <div class="guide-feature">
-        <div class="guide-feature-name" id="gm-activity">Activities — 共读间 &amp; 观影室</div>
-        <p>和角色一起做一件事，各自开在独立频道；由同一套 Activity 运行时驱动（会话/进度/Memory/收藏/主动提醒）。</p>
-        <div class="guide-sub">
-          <p><strong>共读间</strong>（Apps → 共读）：从 Blog 现读，按页/章节分页；AI 只读到当前页 + 前文梗概，可书签、生成记忆、提醒。</p>
-          <p><strong>观影室</strong>（Apps → 观影室）：本地/直链/HLS/YouTube/Bilibili 视频（Media Adapter），配 .srt/.vtt 字幕；AI 只拿到播放点为止的字幕 + 进度 + 梗概，不预告、不猜。<span class="internal-only">视频/字幕不入库，进度只存秒数与梗概。</span></p>
-        </div>
-      </div>
-
-      <div class="guide-feature">
-        <div class="guide-feature-name" id="gm-voice">语音 — 角色通话 &amp; 语音气泡</div>
-        <p>Chat 选中单个角色后可拨打语音电话（复用当前 persona/历史/Memory/工具/音色；浏览器 VAD + 回合式 ASR + 全文回复后 TTS，音频走 WebSocket）。AI 常驻面板配 TTS 后，回复也可生成语音条。</p>
-        <div class="guide-sub">
-          <p><strong>音色</strong>：Built-in（Edge / OpenAI 兼容）、MiMo VoiceClone（上传参考音频克隆音色）、MiMo Voice Design（自然语言描述音色）。</p>
-          <p><strong>主动语音呼入</strong>：AI 可发起语音来电（来电卡接听/拒绝）。</p>
-        </div>
-      </div>
-    </div>
-
-    <div class="guide-section">
-      <h3 id="guide-api-tutorial">API 配置教程</h3>
-      <div class="guide-feature">
-      <p style="margin:0;font-size:0.88rem;line-height:1.9"><strong>⚠ API 密钥默认以明文保存在浏览器本地存储（IndexedDB）中（主聊天需浏览器直连各家 API，故无法在此加密存储）。普通 JSON 导出会<u>自动脱敏</u>——清空 apiKey 等密钥字段，不会泄露密钥；如需含真实密钥的完整存档，请使用 API 页「创建加密备份」生成 <code>.ibvault</code>（AES-256-GCM，密码在本机仅用于派生、不保存不上传，忘密码无法恢复）。启用 Active 关页调度时，该角色用于后台生成的密钥会经本机<u>凭证保险库</u>（AES-256-GCM 加密，密钥文件在本机数据目录）存储，供浏览器关闭后使用。请妥善保管加密备份、勿分享；清除浏览器数据前先做导出或加密备份。</strong></p>
-      </div>
-      <p>IB 的各项 AI 功能（Chat、Tea、Tarot、Story、Letters、Blog 评论、Moments 社交圈、语音通话、共读/观影、AI 日记、主动消息）都需要有效的 API 配置：可使用云端服务的 API Key，也可使用本机回环地址上的兼容模型。以下说明如何获取并填入。</p>
-
-      <div class="guide-feature">
-        <div class="guide-feature-name">基本概念</div>
-        <p>IB 本身不内置 AI 模型，而是通过 API 调用外部 AI 服务。你需要提供三样信息：</p>
-        <p><strong>API Key</strong> — 服务商分配的身份密钥，用于验证你的账户。</p>
-        <p><strong>接口地址（Endpoint）</strong> — 请求发送的目标 URL。选择服务商后会自动填入，通常无需修改。</p>
-        <p><strong>模型名称</strong> — 你要调用的具体模型（如 claude-sonnet-4-20250514）。选择服务商后会填入默认值，可按需更改。</p>
-        <p>API 按实际用量计费，非月费订阅。日常使用消耗很低。</p>
-      </div>
-
-      <div class="guide-feature">
-        <div class="guide-feature-name">方式一 — 官方 API</div>
-        <p>直接从服务商官网获取密钥。选择服务商后，接口地址与默认模型自动填入，你只需要粘贴密钥。</p>
-        <div class="guide-sub">
-          <p><strong>操作步骤（以 Anthropic / Claude 为例）</strong></p>
-          <p>① 访问 <strong>console.anthropic.com</strong> → 注册并登录。</p>
-          <p>② <strong>API Keys</strong> 页面 → <strong>Create Key</strong> → 复制密钥（sk-ant-… 开头）。</p>
-          <p>③ <strong>Billing</strong> 页面 → 绑定信用卡并充值（最低 $5）。</p>
-          <p>④ 回到 IB → 导航栏 <strong>API</strong> → <strong>「+ 添加API」</strong>。</p>
-          <p>⑤ <strong>服务商</strong>选 Claude (Anthropic) → 粘贴密钥 → 起昵称 → <strong>保存</strong>。</p>
-          <p>接口地址与模型已自动填入，无需修改。其他服务商操作相同：</p>
-        </div>
-        <div class="guide-sub">
-          <p><strong>各服务商注册地址与密钥格式</strong></p>
-          <p>· <strong>Anthropic (Claude)</strong>：console.anthropic.com → 密钥以 sk-ant-… 开头</p>
-          <p>· <strong>OpenAI (GPT)</strong>：platform.openai.com → 密钥以 sk-… 开头</p>
-          <p>· <strong>DeepSeek</strong>：platform.deepseek.com → 密钥以 sk-… 开头</p>
-          <p>· <strong>Google (Gemini)</strong>：aistudio.google.com → 密钥以 AIza… 开头</p>
-        </div>
-      </div>
-
-      <div class="guide-feature">
-        <div class="guide-feature-name">方式二 — 中转站 API</div>
-        <p>无法访问海外 API（无海外信用卡或网络受限）时，可通过中转站（API 代理）接入。中转站转发请求到官方服务，支持国内支付。</p>
-        <div class="guide-sub">
-          <p><strong>你需要从中转站获取三样信息</strong>（通常在"令牌"或"API 密钥"页面）：</p>
-          <p>· <strong>API Key</strong> — 中转站分配的密钥</p>
-          <p>· <strong>接口地址</strong> — 中转站提供的 Endpoint URL（如 https://api.example.com/v1/chat/completions）</p>
-          <p>· <strong>模型名称</strong> — 中转站支持的模型（如 claude-sonnet-4-20250514，从其模型列表完整复制）</p>
-        </div>
-        <div class="guide-sub">
-          <p><strong>填写方式</strong></p>
-          <p>① IB → <strong>API</strong> → <strong>「+ 添加API」</strong></p>
-          <p>② <strong>服务商</strong>选 <strong>自定义</strong>（兼容绝大多数中转站的 OpenAI 格式）</p>
-          <p>③ 填入接口地址、密钥、模型名 → 起昵称 → <strong>保存</strong></p>
-          <p>如果你的中转站明确支持 Anthropic 原生格式，也可以选 Claude (Anthropic) 后将接口地址改为中转站地址。不确定时选自定义即可。</p>
-        </div>
-      </div>
-
-      <div class="guide-feature">
-        <div class="guide-feature-name">方式三 — 本机模型（Ollama / LM Studio / vLLM）</div>
-        <p>先在电脑上启动本机模型服务，再进入 <strong>API → 数据保险 → 本地优先中心</strong> 选择运行时。Ollama 默认端口为 <code>11434</code>，LM Studio 为 <code>1234</code>，vLLM / 其他 OpenAI 兼容服务为 <code>8000</code>。</p>
-        <div class="guide-sub">
-          <p>① 选择对应预设，按需修改模型名称。② 点击<strong>「探测服务」</strong>，系统只请求 <code>localhost</code> / <code>127.0.0.1</code> 并可填入发现的模型。③ 点击<strong>「保存到 API」</strong>，此配置将与其他好友一样出现在各个 AI 模块。</p>
-          <p>本机回环服务不需要 API Key；如探测失败，请确认模型服务已启动并允许浏览器访问。为避免误将内容发给外部，该面板不接受外部端点。</p>
-        </div>
-      </div>
-
-      <div class="guide-feature">
-        <div class="guide-feature-name">常见问题</div>
-        <div class="guide-sub">
-          <p><strong>如何确认配置成功？</strong> — 保存后打开 Chat，好友列表中会出现该 API。发送一条消息，收到回复即表示配置正确。</p>
-        </div>
-        <div class="guide-sub">
-          <p><strong>提示密钥无效</strong> — 检查密钥是否完整复制（无多余空格），以及账户是否有余额。</p>
-        </div>
-        <div class="guide-sub">
-          <p><strong>网络错误 / 无法连接</strong> — 确认接口地址完整（含 https://）且网络可达。官方 API 可能需要科学上网。</p>
-        </div>
-        <div class="guide-sub">
-          <p><strong>支持多少个角色？</strong> — 角色库数量不限，各自作为独立好友出现；单个群聊仍最多10名成员。</p>
-        </div>
-        <div class="guide-sub">
-          <p><strong>密钥安全性</strong> — 密钥仅存于你的浏览器本地（IndexedDB），不上传任何服务器。API 请求从浏览器直接发往服务商或中转站；普通 JSON 导出会**自动脱敏**（清空密钥字段），含真实密钥的完整存档用「创建加密备份」（`.ibvault`，需密码）。</p>
-        </div>
-        <div class="guide-sub">
-          <p><strong>官方与中转站的区别</strong> — 官方直连，稳定快速，需海外信用卡与网络；中转站支持国内支付，无需科学上网。两者在 IB 中功能完全一致。</p>
-        </div>
-      </div>
-    </div>
-
-    <div class="guide-section">
-      <h3 id="guide-data">数据管理</h3>
-      <p><strong>导出</strong>：导航栏 <strong>Export</strong> 按钮 → 全部数据导出为一个 JSON 文件（日志、分类、信件、聊天记录、话题频道、对话摘要、Blog 评论与批注、API 配置、个人资料、群组设置、记忆库、Auto Memory 档案、Active 计划与发送历史、ICode 项目与上传文件）。</p>
-      <p><strong>导入</strong>：<strong>Import</strong> 按钮 → 选择 JSON 备份文件。增量合并模式——新增数据被添加，已有数据不会被覆盖。</p>
-      <p><strong>加密备份</strong>：API 页「数据保险」的<strong>创建加密备份</strong>会生成 <code>.ibvault</code> 文件，以 AES-256-GCM 加密；密码只在本机临时用于派生密钥，不会保存或上传，忘记后无法恢复。普通 JSON 导出保留用于跨设备迁移，但其中可能含 API 密钥。</p>
-      <p><strong>数据健康</strong>：同一面板可检查各模块数据表的可读性、占用量和浏览器配额，并汇总每日自动备份、紧急镜像、文件夹同步与最近加密备份状态。检查和加解密均不上传数据。</p>
-      <p><strong>密钥安全</strong>：API 密钥默认仅存储在浏览器本地（IndexedDB，主聊天直连无需加密），**明文导出时自动脱敏**（清空密钥字段）。若主动启用 Active 的关页调度，对应角色的密钥会经本机**凭证保险库**（AES-256-GCM 加密，密钥文件在本机数据目录）存储，供浏览器关闭后的后台生成使用；不会上传到第三方调度服务器。含真实密钥的完整存档请用「创建加密备份」生成 `.ibvault`（需密码）。浏览器扩展可能有权访问页面数据，请移除不信任的扩展。</p>
-      <p><strong>存储位置</strong>：核心数据位于浏览器 IndexedDB（InternalBeyondDB v15）；可选 Active companion 使用本机 JSON 保存已授权的后台计划与待领取结果。</p>
-      <p><strong>⚠ 备份建议</strong>：数据仅存于浏览器本地，清除浏览器数据或换浏览器将永久丢失。请定期使用 Export 创建备份。</p>
-    </div>
-
-    <div class="guide-section">
-      <h3 id="guide-local-services">可选本地服务与配套增强</h3>
-      <p>IB 可搭配几个本机一键启动的服务，为「服务器能力」提供后端；全部可选——未启动不影响任何基础功能（主聊天由浏览器直连各家 API）。</p>
-      <div class="guide-feature">
-        <div class="guide-feature-name">Bridge 后端（127.0.0.1:23115）</div>
-        <p>表情包、心语墙、健康 / 定位 / 天气看板、点歌、推送（Bark / ntfy）、AI 常驻会话、TTS 语音气泡、多窗口同步、上下文进度条、<code>/continue</code> 续写。</p>
-        <div class="guide-sub">
-          <p><strong>启动</strong>：双击 <code>启动 InternalBeyond.vbs</code>（推荐，一次成，可做桌面快捷方式）或 <code>start-bridge-service.cmd</code>。</p>
-          <p><strong>连接</strong>：DIY → 后端连接 → 填 <code>ws://127.0.0.1:23115</code> 并启用。导航栏 Bridge 含「心语墙 / 生活看板 / AI 常驻 / 状态」四页签。</p>
-        </div>
-      </div>
-      <div class="guide-feature">
-        <div class="guide-feature-name">Active 服务（浏览器关闭后继续，127.0.0.1:23114）</div>
-        <p>让「主动消息计划 / 朋友圈调度 / AI↔AI 回复链」在浏览器关闭后仍由本地 companion 执行；计划只存时间与意图，到点才从角色设定 + 上下文快照实时生成。</p>
-      </div>
-      <div class="guide-feature">
-        <div class="guide-feature-name">DeepSeek 本地视觉（可选，127.0.0.1:8765）</div>
-        <p>DeepSeek 文本模型收到图片时，先用本机 Qwen2.5-VL（Ollama）识别为文字描述，再交给 DeepSeek；图片与密钥不上传视觉云。原生视觉的模型（如 <code>deepseek-v4-flash-vision-exp</code>、Gemini 等）直接收原图，无需此服务。</p>
-      </div>
-      <div class="guide-feature">
-        <div class="guide-feature-name">本地优先中心（API → 数据保险）</div>
-        <p>本机模型预设（Ollama / LM Studio / vLLM，仅回环端点）、离线就绪度检查、静谧模式；文件解析库按需下载并缓存、离线可用。</p>
-      </div>
+      <h3 id="guide-devtools">技术说明</h3>
+      <p>面向普通用户的完整图文教程，是上方第一屏的《零基础使用指南》。本节只保留技术信息，<strong>不构成普通用户的操作说明</strong>。</p>
+      <p>安装版只有一个用户入口：开始菜单或桌面的 <strong>InternalBeyond</strong> 快捷方式，本地增强功能会随它自动启动。从源码运行、构建与测试的说明在仓库 README 的「For Developers / 从源码运行」与 <code>ARCHITECTURE.md</code>。</p>
     </div>
 
     <div class="guide-section">
       <h3 id="guide-tech">技术规格</h3>
-      <p><strong>架构</strong>：核心为纯前端单文件应用（InternalBeyond.html）+ 独立游戏引擎（game/ 目录下按域拆分的游戏模块）+ 图片资源；只有 Active 关页调度需要用户自行启动可选的本地 companion 服务。</p>
+      <p><strong>架构</strong>：前端为原生经典脚本 + 独立游戏引擎（game/ 目录下按域拆分的游戏模块）+ 图片资源，无构建步骤；安装版随包内置 Node 运行环境，本地服务由启动链自动拉起。从源码运行时，关页调度需要自行启动可选的本地 companion 服务。</p>
       <p><strong>字体</strong>：Cormorant Garamond（标题）· Noto Sans SC（正文与 UI）· Noto Serif SC（按钮与强调）· Raleway（副标题）· Great Vibes（Sui 签名）· Spectral（Claude 签名）。界面不再隐式请求 Google Fonts，优先使用系统已安装字体，缺失时回退到系统字体栈。</p>
     </div>
 
@@ -2482,10 +2041,10 @@ i would like the room to be enough.
       <h3 id="guide-requirements">配置要求</h3>
       <p><strong>运行环境</strong>：需支持 IndexedDB、CSS backdrop-filter、ES6+ 的现代浏览器。推荐 Chrome / Edge / Firefox 最新版本。</p>
       <p><strong>显示设备</strong>：Room 模块设计视口为 1672×941px，桌面端体验最佳。最小可用宽度约 1024px。</p>
-      <p><strong>平板与手机</strong>：Chat、Blog、Letters、Memory、Profile、API 等模块在平板上均可正常使用。Room 模块依赖独立游戏引擎（game/ 目录下按域拆分的游戏模块），需桌面级浏览器环境和足够的视口尺寸。若看不到 Room 入口或首页背景图，请确认 InternalBeyond.html 同目录下有 game/ 文件夹和对应背景图文件。</p>
+      <p><strong>平板与手机</strong>：Chat、Blog、Letters、Memory、Profile、API 等模块在平板上均可正常使用。Room 模块依赖独立游戏引擎（game/ 目录下按域拆分的游戏模块），需桌面级浏览器环境和足够的视口尺寸。Room 模块需要桌面级浏览器环境与足够的视口尺寸。</p>
       <p><strong>网络需求</strong>：网站本体可离线打开。云端 AI 交互需要网络和有效 API Key；Ollama、LM Studio、vLLM 等本机回环模型可在服务已启动时离线使用。文件解析库的已缓存部分可离线使用，Python / Pyodide 运行时需自行准备本地副本才会完全离线。</p>
       <p><strong>字体加载</strong>：不依赖字体 CDN；系统安装的字体会直接使用，未安装时自动回退，因此离线打开不会被字体请求阻塞。</p>
-      <p><strong>存储提醒</strong>：所有数据保存在浏览器 IndexedDB 中，清除浏览器数据将永久丢失。请定期创建普通 JSON 或加密 <code>.ibvault</code> 备份（详见「数据管理」）。</p>
+      <p><strong>存储提醒</strong>：所有数据保存在浏览器 IndexedDB 中，清除浏览器数据将永久丢失。请定期创建普通 JSON 或加密 <code>.ibvault</code> 备份（右上角 Export / Import，详见《零基础使用指南》）。</p>
     </div>
     <div class="guide-section">
       <h3 id="guide-author">作者</h3>
@@ -2700,6 +2259,8 @@ i would like the room to be enough.
   <p class="plate-sub">跨模块统一收藏：聊天、日志、信件、动态、陪伴活动都能收进来。</p>
   <div id="fav-wall"></div>
 </div></div>
+
+<div class="page" id="page-diagnostics"></div>
 
 <div class="page" id="page-coread"><div class="plate">
   <div class="cr-reader" id="cr-reader">
@@ -3335,6 +2896,7 @@ i would like the room to be enough.
 <script src="assets/js/proactive-interaction-core.js"></script>
 <script src="assets/js/core.js"></script>
 <script src="assets/js/provider-directory.js"></script>
+<script src="assets/js/context-snapshot.js"></script>
 <script src="assets/js/social.js"></script>
 <script src="assets/js/communication/letters.js"></script>
 <script src="assets/js/communication/voice.js"></script>
@@ -3385,35 +2947,10 @@ i would like the room to be enough.
 
 <div class="guide-toc" id="guide-toc">
   <div class="guide-toc-title">Contents</div>
-  <a href="#guide-overview">概述</a>
-  <a href="#guide-quickstart">快速开始</a>
-  <a href="#guide-navbar">导航栏</a>
-  <a href="#guide-modules" class="toc-parent" onclick="event.preventDefault();toggleTocSub(this)">功能模块 <span class="toc-arrow">›</span></a>
-  <div class="toc-sub" id="toc-sub-modules">
-    <a href="#gm-profile">Profile</a>
-    <a href="#gm-api">API</a>
-    <a href="#gm-chat">Chat</a>
-    <a href="#gm-icode">ICode</a>
-    <a href="#gm-calendar">Calendar</a>
-    <a href="#gm-blog">Blog</a>
-    <a href="#gm-room">Room</a>
-    <a href="#gm-letters">Letters</a>
-    <a href="#gm-memory">Memory</a>
-    <a href="#gm-diy">DIY</a>
-    <a href="#gm-archived">Archived</a>
-    <a href="#gm-music">Music</a>
-    <a href="#gm-active">Active</a>
-    <a href="#gm-diary">Diary</a>
-    <a href="#gm-moments">Moments</a>
-    <a href="#gm-activity">Activities</a>
-    <a href="#gm-voice">语音</a>
-  </div>
-  <a href="#guide-api-tutorial">API 配置教程</a>
-  <a href="#guide-data">数据管理</a>
-  <a href="#guide-local-services">可选本地服务</a>
+  <a href="#guide-beginner">零基础使用指南</a>
+  <a href="#guide-devtools">技术说明</a>
   <a href="#guide-tech">技术规格</a>
   <a href="#guide-requirements">配置要求</a>
-  <a href="#guide-theme">主题系统</a>
   <a href="#guide-author">作者</a>
   <a href="#guide-copyright">版权声明</a>
 </div>
@@ -3438,6 +2975,9 @@ i would like the room to be enough.
 <script src="assets/js/app-store.js"></script>
 <script src="assets/js/basement.js"></script>
 <script src="assets/js/easteregg.js"></script>
+<script src="assets/js/setup-wizard.js"></script>
+<script src="assets/js/diagnostics.js"></script>
+<script src="assets/js/guide-beginner.js"></script>
 <!-- 深渊暗线：只在 Infernal（暗色）模式可瞥见——"你知道这里通向深渊，但你也知道，你随时可以离开。" -->
 <div class="ib-beyond-leave" id="ib-beyond-leave" aria-hidden="true">你知道这里通向深渊，但你也知道，你随时可以离开。</div>
 </body>

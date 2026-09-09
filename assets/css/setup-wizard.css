@@ -1,0 +1,179 @@
+﻿/* ============================================================
+   P4 · First-Run Setup Wizard（首次设置向导）样式
+   ------------------------------------------------------------
+   由 assets/js/setup-wizard.js 在运行时注入（<link>），因此不占用
+   InternalBeyond.html 的样式表计数/内联样式预算；颜色一律走 core.css
+   语义 token，深浅主题自动适配。
+   ============================================================ */
+
+.ib-setup-overlay{
+  position:fixed;inset:0;z-index:10000;
+  display:none;align-items:center;justify-content:center;
+  padding:clamp(10px,3vw,32px);
+  background:rgba(12,18,34,0.42);
+  backdrop-filter:blur(14px) saturate(0.92);
+  -webkit-backdrop-filter:blur(14px) saturate(0.92);
+}
+.ib-setup-overlay.is-open{display:flex}
+
+.ib-setup-card{
+  width:min(560px,100%);max-height:min(92vh,860px);
+  display:flex;flex-direction:column;
+  padding:22px 24px 18px;
+  border-radius:var(--radius-panel);
+  background:var(--surface-panel-strong);
+  border:1px solid var(--border-soft);
+  box-shadow:var(--shadow-panel);
+  color:var(--content-primary);
+  font-family:var(--font-ui);
+  animation:ib-setup-in var(--motion-normal) var(--transition) both;
+}
+@keyframes ib-setup-in{from{opacity:0;transform:translateY(10px) scale(0.99)}to{opacity:1;transform:none}}
+
+.ib-setup-head{display:flex;align-items:flex-start;gap:12px}
+.ib-setup-headtext{flex:1;min-width:0}
+.ib-setup-step{
+  font-size:0.72rem;letter-spacing:0.08em;text-transform:uppercase;
+  color:var(--content-muted);
+}
+.ib-setup-title{
+  margin:4px 0 0;font-family:var(--font-display);
+  font-size:1.42rem;font-weight:600;line-height:1.3;color:var(--content-primary);
+}
+.ib-setup-close{
+  flex:0 0 auto;width:28px;height:28px;border-radius:50%;
+  border:1px solid var(--border-soft);background:transparent;color:var(--content-secondary);
+  font-size:0.86rem;line-height:1;cursor:pointer;
+  transition:background var(--motion-fast) var(--transition),color var(--motion-fast) var(--transition);
+}
+.ib-setup-close:hover{background:var(--surface-hover);color:var(--content-primary)}
+.ib-setup-close:focus-visible,.ib-setup-provider:focus-visible,.ib-setup-reveal:focus-visible,
+.ib-setup-adv-btn:focus-visible,.ib-setup-link:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}
+
+.ib-setup-progress{margin:14px 0 4px;height:3px;border-radius:999px;background:var(--border-soft);overflow:hidden}
+.ib-setup-bar{display:block;height:100%;width:0;border-radius:999px;background:var(--accent-light);transition:width var(--motion-normal) var(--transition)}
+
+.ib-setup-body{
+  flex:1 1 auto;min-height:0;overflow-y:auto;
+  padding:14px 2px 6px;
+  font-size:0.9rem;line-height:1.72;color:var(--content-secondary);
+}
+.ib-setup-body p{margin:0 0 10px}
+.ib-setup-body strong{color:var(--content-primary);font-weight:600}
+.ib-setup-lead{font-size:1.02rem;color:var(--content-primary)}
+.ib-setup-bullets{margin:12px 0 0;padding-left:1.15em}
+.ib-setup-bullets li{margin-bottom:6px}
+.ib-setup-hint{font-size:0.78rem;line-height:1.6;color:var(--content-muted)}
+.ib-setup-hint-inline{font-size:0.76rem;color:var(--content-muted);font-weight:400}
+
+.ib-setup-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:6px}
+.ib-setup-provider{
+  display:flex;flex-direction:column;gap:2px;text-align:left;
+  padding:9px 11px;border-radius:var(--radius-control);
+  border:1px solid var(--border-soft);background:var(--surface-input);
+  color:var(--content-primary);font-family:var(--font-ui);font-size:0.86rem;cursor:pointer;
+  transition:background var(--motion-fast) var(--transition),border-color var(--motion-fast) var(--transition);
+}
+.ib-setup-provider:hover{background:var(--surface-hover)}
+.ib-setup-provider.is-on{background:var(--surface-pressed);border-color:var(--border-strong);box-shadow:inset 0 0 0 1px var(--focus-ring)}
+.ib-setup-provider-name{font-weight:600}
+.ib-setup-provider-hint{font-size:0.72rem;color:var(--content-muted)}
+
+.ib-setup-field{margin-top:14px}
+.ib-setup-label{display:block;font-size:0.8rem;font-weight:600;color:var(--content-primary);margin-bottom:6px}
+.ib-setup-input,.ib-setup-area{
+  width:100%;box-sizing:border-box;
+  padding:9px 11px;border-radius:var(--radius-control);
+  border:1px solid var(--border-soft);background:var(--surface-input);
+  color:var(--content-primary);font-family:var(--font-ui);font-size:0.88rem;line-height:1.5;
+  transition:border-color var(--motion-fast) var(--transition);
+}
+.ib-setup-input:focus,.ib-setup-area:focus{outline:none;border-color:var(--border-strong);box-shadow:0 0 0 2px var(--focus-ring)}
+.ib-setup-area{resize:vertical;min-height:72px}
+.ib-setup-keyrow{display:flex;gap:8px;align-items:center}
+.ib-setup-keyrow .ib-setup-input{flex:1 1 auto}
+.ib-setup-reveal{
+  flex:0 0 auto;padding:8px 12px;border-radius:var(--radius-control);
+  border:1px solid var(--border-soft);background:var(--surface-input);
+  color:var(--content-secondary);font-family:var(--font-ui);font-size:0.78rem;cursor:pointer;
+}
+.ib-setup-reveal:hover{background:var(--surface-hover);color:var(--content-primary)}
+.ib-setup-err{font-size:0.78rem;color:var(--status-danger);margin-top:6px;min-height:1em}
+.ib-setup-err:empty{display:none}
+
+.ib-setup-adv{margin-top:16px;border-top:1px solid var(--border-soft);padding-top:10px}
+.ib-setup-adv-btn{
+  width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;
+  padding:6px 2px;border:none;background:transparent;
+  color:var(--content-secondary);font-family:var(--font-ui);font-size:0.82rem;cursor:pointer;
+}
+.ib-setup-adv-btn:hover{color:var(--content-primary)}
+.ib-setup-adv-body{display:none;padding-top:6px}
+.ib-setup-adv-body.is-open{display:block}
+
+.ib-setup-msg{
+  margin-top:12px;padding:11px 13px;border-radius:var(--radius-card);
+  border:1px solid var(--border-soft);background:var(--surface-card);
+  font-size:0.84rem;line-height:1.65;
+}
+.ib-setup-msg.is-ok{border-color:var(--status-success);color:var(--content-primary)}
+.ib-setup-msg.is-err{border-color:var(--status-danger)}
+.ib-setup-err-title{font-weight:600;color:var(--content-primary);margin-bottom:4px}
+.ib-setup-err-suggestion{color:var(--content-muted);margin-top:4px}
+.ib-setup-err-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.ib-setup-err-details{
+  display:none;margin-top:10px;padding:8px 10px;border-radius:8px;
+  background:rgba(0,0,0,0.22);color:var(--content-secondary);
+  font-size:0.72rem;line-height:1.55;white-space:pre-wrap;word-break:break-word;
+  max-height:200px;overflow:auto;
+}
+.ib-setup-err-details.is-open{display:block}
+
+.ib-setup-mini{
+  padding:5px 11px;border-radius:var(--radius-control);
+  border:1px solid var(--border-soft);background:var(--surface-input);
+  color:var(--content-secondary);font-family:var(--font-ui);font-size:0.76rem;cursor:pointer;
+}
+.ib-setup-mini:hover{background:var(--surface-hover);color:var(--content-primary)}
+
+.ib-setup-avatar{display:flex;align-items:center;gap:12px;margin-top:6px}
+.ib-setup-avatar-img{
+  width:52px;height:52px;border-radius:50%;flex:0 0 auto;
+  border:1px solid var(--border-soft);background:var(--surface-input);
+  background-size:cover;background-position:center;
+  display:flex;align-items:center;justify-content:center;
+  color:var(--content-muted);font-size:1.1rem;
+}
+
+.ib-setup-summary{margin-top:12px;border:1px solid var(--border-soft);border-radius:var(--radius-card);overflow:hidden}
+.ib-setup-summary-row{display:flex;gap:10px;padding:8px 12px;font-size:0.82rem;border-bottom:1px solid var(--border-soft)}
+.ib-setup-summary-row:last-child{border-bottom:none}
+.ib-setup-summary-key{flex:0 0 84px;color:var(--content-muted)}
+.ib-setup-summary-val{flex:1 1 auto;min-width:0;color:var(--content-primary);word-break:break-word}
+
+.ib-setup-degraded{
+  margin:0 0 12px;padding:9px 11px;border-radius:var(--radius-card);
+  border:1px solid var(--status-warning);background:var(--surface-card);
+  font-size:0.78rem;line-height:1.6;color:var(--content-secondary);
+}
+
+.ib-setup-foot{display:flex;align-items:center;gap:10px;margin-top:14px;padding-top:12px;border-top:1px solid var(--border-soft)}
+.ib-setup-foot-note{flex:1 1 auto;min-width:0;font-size:0.76rem;color:var(--content-muted)}
+.ib-setup-link{
+  border:none;background:transparent;padding:0;cursor:pointer;
+  color:var(--accent-light);font-family:var(--font-ui);font-size:0.76rem;text-decoration:underline;
+}
+.ib-setup-foot .btn{flex:0 0 auto}
+
+/* 聊天区空状态：没有角色时的明确引导（含「开始设置」入口） */
+.ib-setup-empty{text-align:center;padding:clamp(24px,6vh,64px) 18px;color:var(--content-secondary)}
+.ib-setup-empty-title{font-family:var(--font-display);font-size:1.3rem;color:var(--content-primary);margin-bottom:8px}
+.ib-setup-empty-text{font-size:0.86rem;line-height:1.7;margin-bottom:16px}
+
+@media (max-width:560px){
+  .ib-setup-card{padding:18px 16px 14px;max-height:94vh}
+  .ib-setup-grid{grid-template-columns:1fr}
+  .ib-setup-foot{flex-wrap:wrap}
+  .ib-setup-foot-note{order:3;flex-basis:100%}
+  .ib-setup-title{font-size:1.2rem}
+}

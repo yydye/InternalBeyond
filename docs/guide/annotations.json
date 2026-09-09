@@ -1,0 +1,192 @@
+{
+  "schema": "ib-guide-shots/1",
+  "guideVersion": "1.0",
+  "viewport": { "width": 1440, "height": 900, "deviceScaleFactor": 1 },
+  "shotDir": "docs/guide/shots",
+  "renderer": "scripts/capture-guide-shots.js",
+  "demoData": "scripts/guide-fixtures.js",
+  "notes": [
+    "每条 shot 都是「真实 IB 页面 + 全新临时浏览器配置目录 + 合成演示数据」，不使用开发者本机数据。",
+    "prepare 是截图管线里的具名动作；manifest 的数组顺序就是执行顺序（向导章节必须按序推进）。",
+    "target 用页面里真实存在的选择器；label 是画在图上的说明文字；region=box 画高亮框，region=none 出干净图。",
+    "正文只引用 <id>.png，图片缺失时正文照旧可读（assets/js/guide-beginner.js 里的 fallback）。"
+  ],
+  "shots": [
+    {
+      "id": "01-welcome",
+      "file": "01-welcome.png",
+      "title": "首启欢迎页",
+      "chapter": "welcome",
+      "prepare": "splash",
+      "target": ".splash-buttons",
+      "label": "第一次使用，点「开始设置」",
+      "region": "box",
+      "caption": "第一次打开 IB 时看到的欢迎页"
+    },
+    {
+      "id": "02-provider",
+      "file": "02-provider.png",
+      "title": "选择 AI 服务",
+      "chapter": "setup",
+      "prepare": "wizard-provider",
+      "target": ".ib-setup-provider[data-provider=\"openai\"]",
+      "label": "选一个你正在使用的 AI 服务",
+      "region": "box",
+      "caption": "向导第 2 步：选择你正在使用的 AI 服务"
+    },
+    {
+      "id": "03-api-key",
+      "file": "03-api-key.png",
+      "title": "填写 API Key",
+      "chapter": "setup",
+      "prepare": "wizard-key",
+      "target": "#ib-setup-key",
+      "label": "把 API Key 填在这里",
+      "region": "box",
+      "caption": "向导第 3 步：填入 API Key（输入框默认只显示圆点）"
+    },
+    {
+      "id": "04-test-ok",
+      "file": "04-test-ok.png",
+      "title": "测试连接成功",
+      "chapter": "ai",
+      "prepare": "wizard-test-ok",
+      "target": ".ib-setup-msg.is-ok",
+      "label": "看到「连接成功」就对了",
+      "region": "box",
+      "caption": "向导第 5 步：点「测试连接」，看到成功的提示"
+    },
+    {
+      "id": "05-role",
+      "file": "05-role.png",
+      "title": "创建角色",
+      "chapter": "role",
+      "prepare": "wizard-role",
+      "target": "#ib-setup-name",
+      "label": "给 TA 起个名字",
+      "region": "box",
+      "caption": "向导第 6 步：填写角色昵称与说话方式"
+    },
+    {
+      "id": "06-done",
+      "file": "06-done.png",
+      "title": "设置完成",
+      "chapter": "role",
+      "prepare": "wizard-done",
+      "target": "#ib-setup-next",
+      "label": "点「开始聊天」",
+      "region": "box",
+      "caption": "向导第 7 步：设置完成，点「开始聊天」"
+    },
+    {
+      "id": "07-chat",
+      "file": "07-chat.png",
+      "title": "主聊天页",
+      "chapter": "chat",
+      "prepare": "chat-demo",
+      "target": "#chat-full-input",
+      "label": "在这里输入，按回车发送",
+      "region": "box",
+      "caption": "Chat 页：左侧是好友列表，底部是输入框与发送按钮"
+    },
+    {
+      "id": "08-api-entry",
+      "file": "08-api-entry.png",
+      "title": "API 设置入口",
+      "chapter": "ai",
+      "prepare": "api-page",
+      "target": "#api-add-actions",
+      "label": "点「+ 添加API」再加一个角色",
+      "region": "box",
+      "caption": "API 设置页：右上角「+ 添加API」，顶部是「重新运行设置向导」"
+    },
+    {
+      "id": "09-memory",
+      "file": "09-memory.png",
+      "title": "Memory 入口",
+      "chapter": "memory",
+      "prepare": "memory-page",
+      "target": "#mem-list",
+      "label": "已经记住的事情都在这里",
+      "region": "box",
+      "caption": "Memory 页：共同记忆的列表与统计"
+    },
+    {
+      "id": "10-active",
+      "file": "10-active.png",
+      "title": "主动消息入口",
+      "chapter": "active",
+      "prepare": "active-page",
+      "target": ".active-switch-line",
+      "label": "打开这个开关，TA 才会主动找你",
+      "region": "box",
+      "caption": "Active 页：打开「允许角色主动联系」并设置频率"
+    },
+    {
+      "id": "11-moments",
+      "file": "11-moments.png",
+      "title": "朋友圈 / 动态",
+      "chapter": "moments",
+      "prepare": "moments-page",
+      "target": "#mom-compose-text",
+      "label": "在这里发布一条动态",
+      "region": "box",
+      "caption": "Moments 页：社交圈动态流与发布框"
+    },
+    {
+      "id": "12-voice",
+      "file": "12-voice.png",
+      "title": "语音入口",
+      "chapter": "voice",
+      "prepare": "voice-entry",
+      "target": "#voice-call-launch-full",
+      "label": "点这里发起语音通话",
+      "region": "box",
+      "caption": "Chat 页右上角的电话按钮：发起语音通话"
+    },
+    {
+      "id": "13-diagnostics-ok",
+      "file": "13-diagnostics-ok.png",
+      "title": "Diagnostics 正常",
+      "chapter": "diagnostics",
+      "prepare": "diag-normal",
+      "target": "#ib-diag-headline",
+      "label": "一切正常时会这样写",
+      "region": "box",
+      "caption": "一切正常时，Diagnostics 顶部会写「系统运行正常」"
+    },
+    {
+      "id": "14-diagnostics-degraded",
+      "file": "14-diagnostics-degraded.png",
+      "title": "Diagnostics 部分不可用",
+      "chapter": "diagnostics",
+      "prepare": "diag-degraded",
+      "target": "#ib-diag-list",
+      "label": "看哪一项显示「不可用」",
+      "region": "box",
+      "caption": "部分功能不可用时，会写清哪一项出了问题"
+    },
+    {
+      "id": "15-repair",
+      "file": "15-repair.png",
+      "title": "尝试修复",
+      "chapter": "diagnostics",
+      "prepare": "diag-repair",
+      "target": "#ib-diag-repair-btn",
+      "label": "能修的问题，点这里自动修",
+      "region": "box",
+      "caption": "可以修复的问题会出现「尝试修复」按钮"
+    },
+    {
+      "id": "16-export",
+      "file": "16-export.png",
+      "title": "导出诊断报告",
+      "chapter": "diagnostics",
+      "prepare": "diag-export",
+      "target": "#ib-diag-export",
+      "label": "修不好就导出报告，发给帮你的人",
+      "region": "box",
+      "caption": "修不好就点「导出诊断报告」，把文件发给维护者"
+    }
+  ]
+}

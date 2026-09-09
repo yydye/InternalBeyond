@@ -10,10 +10,18 @@
  * 子进程输出透传；任一失败最终返回非零退出码；浏览器测试串行执行
  * （避免 Chrome/CDP 相互干扰）；服务测试自带随机端口与临时数据目录。
  *
- * P2-07：入口不再遗漏仓库内的测试脚本。当前仓库共有 91 个 test_*.js，
- * 全部登记在下面三组中（此前只有 49 个，导致"全绿"结论不覆盖真实测试面）。
- * 登记条目共 92 条 = 91 个 test_*.js + scripts_check_html.js（HTML 结构检查）；
- * 分组：static 31 / service 16 / browser 45。
+ * P2-07：入口不再遗漏仓库内的测试脚本。登记条目共 100 条 = 99 个 test_*.js
+ * + scripts_check_html.js（HTML 结构检查）；分组：static 37 / service 16 / browser 49。
+ * 仓库当前有 99 个 test_*.js；并行会话在途的 test_context_snapshot.js 尚未登记
+ * （不属于 P2/P3/P4/P5 改动面，登记与否由该会话决定）。
+ * P4：登记 test_setup_wizard.js（static）+ test_setup_wizard_smoke.js（browser）。
+ * P5：登记 test_diagnostics.js（static）+ test_diagnostics_smoke.js（browser）。
+ * P6：登记 test_guide.js（static）+ test_guide_shots.js / test_guide_smoke.js（browser）。
+ *     test_guide_shots.js 会真实跑一遍截图管线（约 70s），输出到系统临时目录。
+ * P7：登记 test_installer.js + test_installer_mock.js（static，均不安装、不开浏览器）。
+ *     真实安装 smoke（test_installer_smoke.js --real-install-smoke）与构建回归
+ *     （test_installer_build.js --force）刻意不登记：每个构建只允许一次真实安装，
+ *     见 docs/P7-TEST-BUDGET.md。
  * 归类规则：使用 CDP（remote-debugging-port）→ browser；否则 static。
  * 外部依赖测试（需要 Python + 本地 Vision 服务 + test.jpg 的 python test_vision.py）
  * 不进入 --all，单独运行并在报告中如实记录。
@@ -58,7 +66,14 @@ const GROUPS = [
       ['test_video_runtime.js'],
       ['test_voice_pcm_adapter.js'],
       ['test_voice_reconnect.js'],
-      ['test_runtime_integration_audit.js']
+      ['test_runtime_integration_audit.js'],
+      ['test_node_runtime.js'],
+      ['test_boot_state.js'],
+      ['test_setup_wizard.js'],
+      ['test_diagnostics.js'],
+      ['test_guide.js'],
+      ['test_installer.js'],
+      ['test_installer_mock.js']
     ]
   },
   {
@@ -132,7 +147,13 @@ const GROUPS = [
       ['test_understanding_admission.js'],
       ['test_understanding_generation.js'],
       ['test_understanding_thread.js'],
-      ['test_video_runtime_cdp.js']
+      ['test_video_runtime_cdp.js'],
+      ['test_boot_smoke.js'],
+      ['test_error_ui_smoke.js'],
+      ['test_setup_wizard_smoke.js'],
+      ['test_diagnostics_smoke.js'],
+      ['test_guide_shots.js'],
+      ['test_guide_smoke.js']
     ]
   }
 ];

@@ -445,13 +445,31 @@
     return (2 * ov) / (gx.size + gy.size);
   }
 
+  /* C2 step 1 · canonical Context 快照优先（只读）。
+     返回 null → 调用方走既有 opts.*Ctx 逻辑（未接入快照，行为完全不变）。
+     返回 {provided:true,value} → present（原文）/ empty（''）：本轮已读取，**禁止**再次 retrieval。
+     返回 {provided:false}     → missing：本轮未读取/被门控，等价于 undefined，
+                                 调用方继续走既有链（opts.*Ctx → producer retrieval）。 */
+  function _mbSnapshotCtx(opts, name) {
+    try {
+      var snap = opts && opts.contextSnapshot;
+      var CS = root.IBContextSnapshot;
+      if (!snap || !CS || typeof CS.state !== 'function' || typeof CS.value !== 'function') return null;
+      var st = CS.state(snap, name);
+      if (st === 'present' || st === 'empty') return { provided: true, value: CS.value(snap, name) };
+      return { provided: false };
+    } catch (e) { return null; }
+  }
+
   /* ① 组织：复用现有 Context 构建，把上下文聚成结构化分类。 */
   async function middleBrainOrganizeContext(characterId, userMessage, opts) {
     opts = opts || {};
     var organized = { memory: [], understanding: [], threads: [], moments: [], dialogue: opts.dialogue || [], stats: {} };
     /* 记忆（复用现有召回） */
     try {
-      if (opts.memoryCtx != null) { if (opts.memoryCtx) organized.memory = [opts.memoryCtx]; }
+      var mSnap = _mbSnapshotCtx(opts, 'memory');
+      if (mSnap && mSnap.provided) { if (mSnap.value) organized.memory = [mSnap.value]; }
+      else if (opts.memoryCtx != null) { if (opts.memoryCtx) organized.memory = [opts.memoryCtx]; }
       else if (typeof root.getMemoryContext === 'function') {
         var mc = await root.getMemoryContext(characterId, { userMessage: userMessage || '' });
         if (mc) organized.memory = [mc];
@@ -459,7 +477,9 @@
     } catch (e) {}
     /* 理解（活文档） */
     try {
-      if (opts.understandingCtx != null) { if (opts.understandingCtx) organized.understanding = [opts.understandingCtx]; }
+      var uSnap = _mbSnapshotCtx(opts, 'understanding');
+      if (uSnap && uSnap.provided) { if (uSnap.value) organized.understanding = [uSnap.value]; }
+      else if (opts.understandingCtx != null) { if (opts.understandingCtx) organized.understanding = [opts.understandingCtx]; }
       else if (typeof root.getUnderstandingContext === 'function') {
         var uc = await root.getUnderstandingContext(characterId);
         if (uc) organized.understanding = [uc];
@@ -467,7 +487,9 @@
     } catch (e) {}
     /* 线索（open thread） */
     try {
-      if (opts.threadCtx != null) { if (opts.threadCtx) organized.threads = [opts.threadCtx]; }
+      var tSnap = _mbSnapshotCtx(opts, 'thread');
+      if (tSnap && tSnap.provided) { if (tSnap.value) organized.threads = [tSnap.value]; }
+      else if (opts.threadCtx != null) { if (opts.threadCtx) organized.threads = [opts.threadCtx]; }
       else if (typeof root.getThreadContext === 'function') {
         var tc = await root.getThreadContext(characterId);
         if (tc) organized.threads = [tc];
@@ -475,7 +497,9 @@
     } catch (e) {}
     /* 动态（moments） */
     try {
-      if (opts.momentsCtx != null) { if (opts.momentsCtx) organized.moments = [opts.momentsCtx]; }
+      var mMom = _mbSnapshotCtx(opts, 'moments');
+      if (mMom && mMom.provided) { if (mMom.value) organized.moments = [mMom.value]; }
+      else if (opts.momentsCtx != null) { if (opts.momentsCtx) organized.moments = [opts.momentsCtx]; }
       else if (typeof root.getMomentsContext === 'function') {
         var mC = await root.getMomentsContext(characterId, { userMessage: userMessage || '' });
         if (mC) organized.moments = [mC];

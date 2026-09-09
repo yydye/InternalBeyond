@@ -1,4 +1,4 @@
-﻿﻿/* Local-first controls: local model presets, offline readiness, and quiet mode. */
+﻿/* Local-first controls: local model presets, offline readiness, and quiet mode. */
 (function(NS){
   'use strict';
 
@@ -113,7 +113,12 @@
       var payload=await response.json(),models=modelsFromPayload(payload,info.preset);
       if(models.length){byId('ib-local-first-model').value=models[0];persistDraft();state.textContent='服务可用，发现 '+models.length+' 个模型；已选 '+models[0]+'。'}
       else state.textContent='服务可用，但未返回模型列表；请手动填写模型名称。';
-    }catch(error){state.textContent='未能连接本机模型：'+(error&&error.name==='AbortError'?'超时':String(error&&error.message||error))+'。请确认服务已启动且允许浏览器访问。'}
+    }catch(error){
+      /* P3：本机模型探测失败 = 本地服务不可用；只给能力层面的说明，原始错误进 title */
+      var _lfm=window.IBERR?window.IBERR.model('local_service',{component:'bridge',stage:'local_first_probe',detail:String(error&&error.message||error)}):null;
+      state.textContent=(_lfm?(_lfm.title+'。'+_lfm.message):'未能连接本机模型。')+'请确认服务已启动且允许浏览器访问。';
+      if(_lfm&&window.IBERR.detailsText)state.title=window.IBERR.detailsText(_lfm);
+    }
     finally{button.disabled=false;button.textContent='探测服务'}
   }
   async function saveModel(){
@@ -130,7 +135,11 @@
       if(typeof window.loadApiConfigs==='function')await window.loadApiConfigs();
       if(typeof window.renderApiList==='function')await window.renderApiList();
       persistDraft();state.textContent='已保存为 API「'+cfg.nickname+'」；本机服务不需要填写 API Key。';say('本机模型已保存到 API 配置');
-    }catch(error){state.textContent='保存失败：'+String(error&&error.message||error)}
+    }catch(error){
+      var _lfs=window.IBERR?window.IBERR.present(error,{stage:'local_first_save'}):null;
+      state.textContent=_lfs?(_lfs.title+'：'+_lfs.message):'保存失败，请重试。';
+      if(_lfs&&window.IBERR.detailsText)state.title=window.IBERR.detailsText(_lfs);
+    }
     finally{button.disabled=false;button.textContent='保存到 API'}
   }
   async function clearLibraries(){

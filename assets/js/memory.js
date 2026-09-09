@@ -794,7 +794,11 @@ async function writeOneLineToMemory(memId){
     await dbPut('memories',mem);
     renderMemories();
     toast(aiName+' 写下了一句话');
-  }catch(e){toast('请求失败：'+e.message)}
+  }catch(e){
+    /* P3：不再把原始 message 直接 toast 给用户；技术信息进「查看详情」 */
+    if(window.IBERR&&window.IBERR.show)window.IBERR.show(window.IBERR.present(e,{stage:'memory_one_line',cfg:typeof cfg!=='undefined'?cfg:null}));
+    else toast('请求失败，请稍后重试');
+  }
 }
 
 /* --- 存量审计：扫描已有记忆中的"文学化自我感慨 / 无未来价值观察"候选 ---
@@ -1270,7 +1274,9 @@ async function _generateMemoryCore(cfg,prompt,opts){
       toast('已忽略记忆候选：'+title);
     }
   }catch(e){
-    toast('生成记忆失败：'+(e.message||'请重试'));
+    /* P3：记忆生成调用真实 API，统一错误模型（原始 message 进「查看详情」） */
+    if(window.IBERR&&window.IBERR.show)window.IBERR.show(window.IBERR.present(e,{stage:'memory_generate',cfg:typeof cfg!=='undefined'?cfg:null}));
+    else toast('生成记忆失败，请重试');
   }finally{
     /* 恢复按钮和附加元素 */
     if(btn){
@@ -1509,7 +1515,10 @@ async function sealSelectedMessages(){
     toast('已封档 '+sealedCount+' 条消息');
     exitChatSelectMode();
     if(activeFriendId)selectFriend(activeFriendId);
-  }catch(e){toast('封档失败：'+(e.message||'未知错误'))}
+  }catch(e){
+    if(window.IBERR&&window.IBERR.show)window.IBERR.show(window.IBERR.present(e,{stage:'memory_seal',cfg:typeof cfg!=='undefined'?cfg:null}));
+    else toast('封档失败，请重试');
+  }
 }
 /* 更新封档按钮的状态文字 */
 async function _updateSealBtnState(){

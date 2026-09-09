@@ -2,10 +2,19 @@
 
 > 本文档回答「以前踩过什么坑、怎么解决」。遇到问题先来这里查；机制背景见 [ARCHITECTURE.md](ARCHITECTURE.md)，设计取舍见 [DECISIONS.md](DECISIONS.md)。
 
+## 普通用户：先做这三件事
+
+1. **看诊断**：导航栏 **Diagnostics**（或 API 页顶部的「打开系统诊断」）会说明哪个功能出了问题、是否影响聊天、能不能一键恢复；无法自动修复的问题会直接给出下一步建议。
+2. **重启应用**：从**开始菜单**或**桌面**重新打开 **InternalBeyond** 即可，本地增强功能会随它一起启动——不需要打开任何命令行窗口，也不需要运行任何脚本。
+3. **看图文教程**：导航栏 **Guide** 最前面的《零基础使用指南》覆盖第一次设置、添加 AI、常见问题与故障处理。
+
+下面的 T1–T41 是**开发者视角**的排查记录，会提到端口、命令行与内部文件名；普通用户不需要阅读。
+
 ## 排查入口速查（控制台日志锚点）
 
 | 现象 | 先看什么 |
 |---|---|
+| 功能不可用 / 应用打不开（普通用户） | 导航栏 **Diagnostics**，或按上面「先做这三件事」重启应用 |
 | API 编辑页头像问题 | 控制台 `API Editor character avatar:` 日志 |
 | 日记生成失败 | 控制台 `[Diary] output unparseable:`（模型原始输出前 300 字） |
 | Moments 生成失败 | `[Moments] output unparseable:` + `_momentsDiagnoseOutput` 结构化 JSON（stage 字段，见 T13） |
@@ -44,7 +53,7 @@
 
 - **现象**：23114 持续 404，多个 friend_* ID 反复出现。
 - **真因**：代码树路由正确（test_moments_http 对真实服务全过）；运行中的是功能上线前启动的旧版 companion 进程，其路由表没有 /moments。friend_* 就是 API Config（Role）ID，前端语义正确。
-- **解决**：关闭旧窗口重跑 `start-active-service.cmd` 或 `start-local-services.cmd` 重启一次 companion。未重启期间浏览器本地调度照常工作。
+- **解决**：重新启动 **InternalBeyond**（开始菜单 / 桌面快捷方式；从源码运行的用户可重跑 `start-active-service.cmd` 或 `start-local-services.cmd`）重启一次 companion。未重启期间浏览器本地调度照常工作。
 - **已加固**：前端同步前 GET /health 能力预检（无 moments/reply_chains 字段判旧版 → 零 PUT 回退），循环内单角色 404/400 立即 break，不再 N 连发（DECISIONS D9）。
 
 ### T6. PowerShell 中文 body 变问号
