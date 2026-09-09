@@ -150,9 +150,14 @@ async function _ibApiPost(url,headers,body,o){
 
 
 /* API CALL HELPER
-   provider → wire format 统一通过 canonical helper 取（PROVIDERS 唯一真源 = window.PROVIDERS，
-   由 social.js 从 provider-directory.js 注入）。不再散落裸的 PROVIDERS[cfg.provider]?.format。 */
+   provider → wire format 统一通过 canonical 决策取（唯一实现 = provider-directory.js）。
+   P11-0：不再就地复制表达式，直接委托 window.PROVIDERS_DIR.providerFormat；
+   window.PROVIDERS 只是它的兼容别名（social.js 暴露同一对象引用）。 */
 function _providerFormat(cfg){
+  try{
+    var _dir=(typeof window!=='undefined')?window.PROVIDERS_DIR:null;
+    if(_dir&&typeof _dir.providerFormat==='function')return _dir.providerFormat(cfg&&cfg.provider);
+  }catch(e){}
   return (cfg&&PROVIDERS&&PROVIDERS[cfg.provider]&&PROVIDERS[cfg.provider].format)||'openai';
 }
 async function callApi(cfg,userMsg){

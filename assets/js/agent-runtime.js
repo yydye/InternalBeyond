@@ -42,15 +42,39 @@
     if (isObj(window.PROVIDERS) && Object.keys(window.PROVIDERS).length) return { table: window.PROVIDERS, source: 'PROVIDERS' };
     return { table: null, source: '' };
   }
+  /* P11-0：format 决策委托 canonical provider-directory.js。
+     只从 **本次实际读到的那张表** 取 resolver（IBModelCore / PROVIDERS_DIR 各自导出的
+     resolveProviderFormat），避免跨表读取造成 known / hasFormat 漂移；
+     window.PROVIDERS 是纯表别名、无 resolver → 用与 canonical 等值的本地表达式。 */
+  function _canonResolver(source) {
+    const pick = obj => (isObj(obj) && typeof obj.resolveProviderFormat === 'function') ? obj.resolveProviderFormat : null;
+    if (source === 'IBModelCore') return pick(window.IBModelCore);
+    if (source === 'PROVIDERS_DIR') return pick(window.PROVIDERS_DIR);
+    return null;
+  }
   function resolveProviderFormat(provider) {
     const name = String(provider || '');
     const picked = _providerTable();
     const entry = picked.table ? picked.table[name] : null;
     if (entry) {
-      const fmt = String(entry.format || '');
-      return { format: fmt || 'openai', known: true, source: picked.source + (fmt ? '' : '(no-format-default)') };
+      const canon = _canonResolver(picked.source);
+      const decided = canon ? canon(provider) : null;
+      const localFmt = String(entry.format || '');
+      const fmt = (decided && decided.format) ? String(decided.format) : (localFmt || 'openai');
+      const hasFormat = decided ? !!decided.hasFormat : !!localFmt;
+      return { format: fmt || 'openai', known: true, source: picked.source + (hasFormat ? '' : '(no-format-default)') };
     }
     return { format: 'openai', known: false, source: 'unknown-provider-default' };
+  }
+
+  /* 诊断用 format（唯一实现）：与执行链同源 —— resolveModel → provider-directory。
+     P11-0：Active / Moments / Diary 三个后台域的 telemetry 共用本函数，
+     不再各自复制同一段 3 行代码（各自只保留同域兜底 shim）。 */
+  function modelFormat(cfg, runtime) {
+    try { if (runtime && typeof runtime.resolveModel === 'function') { const m = runtime.resolveModel(cfg || {}); if (m && m.format) return String(m.format); } } catch (e) { /* 继续兜底 */ }
+    try { const core = window.IBModelCore; if (isObj(core) && typeof core.providerFormat === 'function') return String(core.providerFormat((cfg || {}).provider) || ''); } catch (e) { /* 继续兜底 */ }
+    try { const dir = window.PROVIDERS_DIR; if (isObj(dir) && typeof dir.providerFormat === 'function') return String(dir.providerFormat((cfg || {}).provider) || ''); } catch (e) { /* 兜底结束 */ }
+    return '';
   }
 
   /* 用量归一：执行器回传的原始形态（{i,cr,cw,o} 或 provider 原生字段）→ 统一结构。
@@ -458,6 +482,8 @@
     defaultPorts: defaultPorts,
     /* 默认 modelPort 也暴露，便于外部构造自定义 port 时参考/复用 */
     defaultModelPort: defaultModelPort,
+    /* P11-0：诊断用 format 的唯一实现（Active / Moments / Diary 共用） */
+    modelFormat: modelFormat,
     /* 统一迁移诊断：consumer 用 record() 生成白名单记录，再由各自的 logger 输出 */
     telemetry: { build: telemetryBuild, record: telemetryRecord, recent: telemetryRecent, fields: TELEMETRY_FIELDS },
     /* 方便单例：默认端口组装，加载即得，但无任何副作用 */

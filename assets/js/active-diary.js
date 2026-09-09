@@ -455,9 +455,10 @@ function _activeRuntimeInstance(){
     return (IB&&IB.runtime&&IB.runtime.instance&&typeof IB.runtime.instance.execute==='function')?IB.runtime.instance:null;
   }catch(e){return null}
 }
-/* 诊断用 format：与执行链同源（resolveModel → provider-directory），不维护第二份 provider metadata */
+/* 诊断用 format：唯一实现 = IB.runtime.modelFormat（agent-runtime.js → provider-directory.js）。
+   P11-0：本域只保留同域兜底 shim，不再复制决策逻辑（agent-runtime 未加载时仍读 canonical 目录）。 */
 function _activeModelFormat(cfg,runtime){
-  try{if(runtime&&typeof runtime.resolveModel==='function'){var m=runtime.resolveModel(cfg||{});if(m&&m.format)return String(m.format)}}catch(e){}
+  try{if(typeof window!=='undefined'&&window.IB&&IB.runtime&&typeof IB.runtime.modelFormat==='function')return IB.runtime.modelFormat(cfg,runtime)}catch(e){}
   try{if(typeof window!=='undefined'&&window.IBModelCore&&typeof window.IBModelCore.providerFormat==='function')return String(window.IBModelCore.providerFormat((cfg||{}).provider)||'')}catch(e){}
   return ''
 }

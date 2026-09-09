@@ -19,9 +19,21 @@
      Node 下由上方 require 传入，browser 下由 window.PROVIDERS_DIR 传入。 */
   var PROVIDERS = (CANON && CANON.PROVIDERS) || {};
 
-  /* provider → wire format（model-client 分支保持一致：anthropic/gemini/else-openai） */
+  /* provider → wire format（model-client 分支保持一致：anthropic/gemini/else-openai）
+     P11-0：唯一 canonical 决策在 provider-directory.js。
+       Node    —— CANON = require('./provider-directory.js')
+       Browser —— CANON = window.PROVIDERS_DIR
+     宿主只传了裸 PROVIDERS 表（无 providerFormat）时保留原表达式，行为逐位不变。 */
   function providerFormat(provider) {
+    if (CANON && typeof CANON.providerFormat === 'function') return CANON.providerFormat(provider);
     return (PROVIDERS[provider] && PROVIDERS[provider].format) || 'openai';
+  }
+  /* canonical 结构化决策（供 agent-runtime 等读取 known/hasFormat）。 */
+  function resolveProviderFormat(provider) {
+    if (CANON && typeof CANON.resolveProviderFormat === 'function') return CANON.resolveProviderFormat(provider);
+    var entry = (provider == null ? null : PROVIDERS[provider]) || null;
+    if (entry) { var fmt = String(entry.format || ''); return { format: fmt || 'openai', known: true, hasFormat: !!fmt }; }
+    return { format: 'openai', known: false, hasFormat: false };
   }
 
   /* 内容 part 适配（提取自 active/model-client.js adaptMessageParts） */
@@ -291,6 +303,7 @@
   return {
     PROVIDERS: PROVIDERS,
     providerFormat: providerFormat,
+    resolveProviderFormat: resolveProviderFormat,
     adaptMessageParts: adaptMessageParts,
     geminiParts: geminiParts,
     buildRequestBody: buildRequestBody,

@@ -45,13 +45,40 @@
     custom: { name: 'Custom', endpoint: '', model: '', format: 'openai', vision: true, streaming: true }
   };
 
-  /* provider → wire format（model-client 分支保持一致：anthropic/gemini/else-openai） */
+  /* ── P11-0 · provider read-path canonical 层 ──────────────────────────
+     本文件是 provider metadata 与 wire-format 判定的**唯一决策点**。
+     communication.js / agent-runtime.js / ib-model-core.js / 三个后台域的
+     诊断 helper 全部委托到这里，不再各自复制表达式。 */
+
+  /* 目录条目查找（唯一 canonical lookup）。 */
+  function providerEntry(provider) {
+    return (provider == null ? null : PROVIDERS[provider]) || null;
+  }
+
+  /* provider → wire format 决策（唯一 canonical 决策）。
+     返回 {format, known, hasFormat}：
+       known     —— provider 是否存在于目录（未知 provider 不再静默：调用方可如实标记）
+       hasFormat —— 目录条目是否自带 format（缺失时回落 openai，调用方可标注来源）
+     与旧表达式 `(PROVIDERS[p] && PROVIDERS[p].format) || 'openai'` 逐值等价：
+     15 个条目的 format 均为非空字符串，缺失/未知一律 'openai'。 */
+  function resolveProviderFormat(provider) {
+    var entry = providerEntry(provider);
+    if (entry) {
+      var fmt = String(entry.format || '');
+      return { format: fmt || 'openai', known: true, hasFormat: !!fmt };
+    }
+    return { format: 'openai', known: false, hasFormat: false };
+  }
+
+  /* provider → wire format（字符串形态；model-client 分支保持一致：anthropic/gemini/else-openai） */
   function providerFormat(provider) {
-    return (PROVIDERS[provider] && PROVIDERS[provider].format) || 'openai';
+    return resolveProviderFormat(provider).format;
   }
 
   return {
     PROVIDERS: PROVIDERS,
+    providerEntry: providerEntry,
+    resolveProviderFormat: resolveProviderFormat,
     providerFormat: providerFormat
   };
 });
