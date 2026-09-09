@@ -777,10 +777,10 @@ async function continueTruncatedMsg(msgId,pillEl){
   try{
     var streamOk=cfg.streaming!==undefined?!!cfg.streaming:!!(PROVIDERS[cfg.provider]&&PROVIDERS[cfg.provider].streaming);
     if(streamOk&&typeof callApiChatStream==='function'){
-      piece=await callApiChatStream(cfg,msgs,{wantThinking:false,autoContinue:true,chatKey:m.friendId,result:_ctRes,
+      piece=await callApiChatStream(cfg,msgs,{_ibConsumer:'chat',wantThinking:false,autoContinue:true,chatKey:m.friendId,result:_ctRes,
         onChunk:function(){/* wait for normalized final content so legacy thinking tags never flash on screen */}});
     }else{
-      piece=await callApiChat(cfg,msgs,{wantThinking:false,autoContinue:true,result:_ctRes});
+      piece=await callApiChat(cfg,msgs,{_ibConsumer:'chat',wantThinking:false,autoContinue:true,result:_ctRes});
     }
   }catch(e){
     liveSpans.forEach(function(s){s.remove()});

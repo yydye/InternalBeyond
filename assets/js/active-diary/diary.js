@@ -222,7 +222,7 @@ async function _diaryModelCall(cfg,messages,opts,meta){
   const runtime=_diaryRuntimeInstance(),gate=_diaryRuntimeGate(),jsonMode=!!opts.jsonMode;
   if(!(gate&&runtime)){
     const reason=gate?'runtime_unavailable':'gate_disabled',t0=Date.now();
-    const raw=await callApiChat(cfg,messages,opts);/* 原样 opts：direct 行为逐位不变（不追加任何字段） */
+    const raw=await callApiChat(cfg,messages,Object.assign({_ibConsumer:'diary'},opts));/* opts 逐字段原样，仅追加诊断用 _ibConsumer（不进请求体） */
     _diaryExecLog(cfg,{executor:'direct',format:_diaryFormat(cfg,null),jsonMode:jsonMode,
       usage:'unavailable',abortMode:'none',abortReason:'',fallbackReason:reason,ok:true,ms:Date.now()-t0},meta);
     return raw;
@@ -236,7 +236,7 @@ async function _diaryModelCall(cfg,messages,opts,meta){
   let abortReason='',outcome;
   try{
     outcome=await runtime.execute(
-      {spec:spec,messages:messages,jsonMode:jsonMode,budget:(opts.maxTokens!=null?opts.maxTokens:null),executor:executor},
+      {consumer:'diary',spec:spec,messages:messages,jsonMode:jsonMode,budget:(opts.maxTokens!=null?opts.maxTokens:null),executor:executor},
       {signal:opts.signal||undefined,onEvent:function(ev){if(ev&&ev.type==='error'&&ev.kind==='abort'&&!abortReason)abortReason='abort'}}
     );
   }catch(e){

@@ -167,7 +167,7 @@ function _rlBuildReplyPrompt(cfg,context,letter,senderCfg){
 /* ── 生成调用（复用 callApiChat + jsonMode；失败可一提额重试） ── */
 async function _rlCall(cfg,built,maxTok){
   if(typeof window.callApiChat!=='function')throw new Error('callApiChat 不可用');
-  return await window.callApiChat(cfg,built.messages,{maxTokens:maxTok,timeoutMs:90000,wantMeta:false,jsonMode:true,_noWebSearch:true,disableTools:true})
+  return await window.callApiChat(cfg,built.messages,{_ibConsumer:'role_letters',maxTokens:maxTok,timeoutMs:90000,wantMeta:false,jsonMode:true,_noWebSearch:true,disableTools:true})
 }
 async function _rlGenerateInit(cfg,now){
   const context=typeof window._momentsContext==='function'?await window._momentsContext(cfg):{};

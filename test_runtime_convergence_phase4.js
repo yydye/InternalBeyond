@@ -237,7 +237,9 @@ const api = http.createServer(async (req, res) => {
       const all = src.match(/callApiChat\s*\(/g) || [];
       assert.equal(all.length, 1, 'diary.js 只应保留 _diaryModelCall 内的 direct 回退，实际 ' + all.length);
       const seam = src.slice(src.indexOf('async function _diaryModelCall('), src.indexOf('/* 主生成管线'));
-      assert.ok(seam.includes('callApiChat(cfg,messages,opts)'), '唯一 direct 调用必须在接缝内');
+      /* P11-FIX：接缝内的 direct 回退在 opts 前追加诊断用 _ibConsumer（不进请求体），
+         仍是唯一 direct 调用；此处锁死"只有这一处、且在接缝内"。 */
+      assert.ok(seam.includes("callApiChat(cfg,messages,Object.assign({_ibConsumer:'diary'},opts))"), '唯一 direct 调用必须在接缝内');
       assert.ok(!/await callApiChat\(/.test(src.replace(seam, '')), '接缝之外不得再有 await callApiChat');
     });
 

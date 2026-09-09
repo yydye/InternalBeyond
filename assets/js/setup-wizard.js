@@ -831,6 +831,7 @@
     var cfg = testConfig(S);
     try {
       await window.callApiChat(cfg, [{ role: 'user', content: '你好' }], {
+        _ibConsumer: 'setup',/* 诊断身份：testConfig().promptCache=false → 审计不运行，此键为身份完整性预留 */
         maxTokens: 16,
         timeoutMs: 30000,
         disableTools: true,

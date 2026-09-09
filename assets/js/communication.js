@@ -1732,7 +1732,7 @@ async function sendChatMessage(voiceMsg){
           const _gMemLive=_mkMemLiveFilter(function(ch){_gWsFilter.push(ch)},function(build){return _gWsFilter.card(build)});
           const _gFlush=(ch)=>{_gMemLive.push(ch)};
           try{
-          rawReply=await callApiChatStream(cfg,messages,{wantThinking:thinkingOn,autoContinue:true,chatKey:_targetFriend,result:_gCallRes,searchLog:_gSrchLog,onSearch:_gOnSearch,
+          rawReply=await callApiChatStream(cfg,messages,{_ibConsumer:'group',wantThinking:thinkingOn,autoContinue:true,chatKey:_targetFriend,result:_gCallRes,searchLog:_gSrchLog,onSearch:_gOnSearch,
             onThink:function(tk){_gThinkF(tk)},
             onChunk:function(chunk){
               if(_gSState===2){_gFlush(chunk);return}
@@ -1746,7 +1746,7 @@ async function sendChatMessage(voiceMsg){
               }
               if(_gSState===1){_gSThinkBuf+=chunk;_gSBuf='';_gThinkF(chunk);const ct=_gSThinkBuf.match(/<\/think(?:ing)?>/i);if(ct){const _gAfter=_gSThinkBuf.slice(ct.index+ct[0].length);_gSThinkBuf=_gSThinkBuf.slice(0,ct.index);_gSState=2;if(_gShowThinking)_finishStreamThinking(_gLiveThink,_gSThinkBuf);if(_gAfter&&_gAfter.trim())_gFlush(_gAfter.trim())}}
             }});
-          }catch(_streamErr){if(!rawReply)rawReply=await callApiChat(cfg,messages,{wantThinking:thinkingOn,autoContinue:true,chatKey:_targetFriend,result:_gCallRes,searchLog:_gSrchLog});groupThinking=_gCallRes.reasoning_content||''}
+          }catch(_streamErr){if(!rawReply)rawReply=await callApiChat(cfg,messages,{_ibConsumer:'group',wantThinking:thinkingOn,autoContinue:true,chatKey:_targetFriend,result:_gCallRes,searchLog:_gSrchLog});groupThinking=_gCallRes.reasoning_content||''}
           _showStreamingUI(false);
           _gMemLive.finish();
           _gWsFilter.finish();
@@ -1757,7 +1757,7 @@ async function sendChatMessage(voiceMsg){
           if(_gShowThinking&&groupThinking){_ensureStreamThinking(gStreamRefs,_gLiveThink);_finishStreamThinking(_gLiveThink,groupThinking)}
         }else{
           /* 群聊非流式 */
-          rawReply=await callApiChat(cfg,messages,{wantThinking:thinkingOn,autoContinue:true,chatKey:_targetFriend,result:_gCallRes,searchLog:_gSrchLog});
+          rawReply=await callApiChat(cfg,messages,{_ibConsumer:'group',wantThinking:thinkingOn,autoContinue:true,chatKey:_targetFriend,result:_gCallRes,searchLog:_gSrchLog});
           groupThinking=_gCallRes.reasoning_content||'';
           clearInterval(_gTypTimer);
           const _gElapsed=Math.round((Date.now()-_gTypStart)/1000);
@@ -2070,7 +2070,7 @@ async function sendChatMessage(voiceMsg){
       }
       const _sFlush=(ch)=>{_calLive?_calLive.push(ch):_memLive.push(ch);if(_voiceSink)_voiceSink.feed(ch)};
       const _callRes={};/* 并发隔离：本次调用的思考与截断结果（不再读共享全局量） */
-      let rawReply=await callApiChatStream(cfg,messages,{wantThinking:thinkingOn,autoContinue:true,chatKey:_targetFriend,result:_callRes,searchLog:_srchLog,onSearch:_onSearch,
+      let rawReply=await callApiChatStream(cfg,messages,{_ibConsumer:'chat',wantThinking:thinkingOn,autoContinue:true,chatKey:_targetFriend,result:_callRes,searchLog:_srchLog,onSearch:_onSearch,
         onThink:function(tk){_thinkFlush(tk)},
         onChunk:function(chunk){
         if(_sState===2){_sFlush(chunk);return}
@@ -2179,7 +2179,7 @@ async function sendChatMessage(voiceMsg){
       /* ===== 非流式传输路径（原有逻辑） ===== */
       const _srchLogN=[];/* 任务A：非流式同样收集搜索记录（三家通用） */
       const _callResN={};/* 并发隔离：本次调用的思考与截断结果 */
-      let rawReply=await callApiChat(cfg,messages,{wantThinking:thinkingOn,autoContinue:true,chatKey:_targetFriend,result:_callResN,searchLog:_srchLogN});
+      let rawReply=await callApiChat(cfg,messages,{_ibConsumer:'chat',wantThinking:thinkingOn,autoContinue:true,chatKey:_targetFriend,result:_callResN,searchLog:_srchLogN});
       clearInterval(_typTimer);
       const _elapsed=Math.round((Date.now()-_typStart)/1000);
       const te=document.getElementById('chat-typing-'+_targetFriend);
@@ -2591,10 +2591,30 @@ function _cacheSeg(role,c){return '\u00b6'+(role||'')+'\u00a7'+_cacheSegText(c)}
 function _cacheTok(s){var t=0;for(var i=0;i<s.length;i++){var c=s.charCodeAt(i);t+=(c>=0x4e00&&c<=0x9fff)?1:0.33}return Math.round(t)}
 /* 截断 + 脱敏：只展示变更片段附近，隐藏完整 Memory / 用户对话 */
 function _cacheRedact(s){return String(s).replace(/[\r\n]+/g,'⏎').replace(/[ \t]{2,}/g,' ')}
-function _ibCacheAudit(cfg,body,fmt){
+/* ── 审计快照的请求身份（baseline key）──
+   只放"决定两个请求能否被当作同一 cache-prefix 连续请求来比较"的字段：
+   · consumer —— 必须来自真实执行上下文（callApiChat* 的 opts._ibConsumer ← runtime request.consumer）。
+     缺失时留空，绝不按当前页面（#chat/#diary）、system prompt 文本或调用栈字符串猜测；
+     空 consumer 自成一档，永远不会污染任何具名 consumer 的基线。
+   · character —— 不同角色的 system/history 本来就不同，互相比较没有意义。
+   · provider / model / format —— 决定 cache 池归属与 wire 形态，换模型/换协议必然换缓存。
+   刻意不入 key：requestId、timestamp、正文长度等每轮变化字段（入了就永远形成不了基线），
+   以及 endpoint（用户显式改配置属于配置变更，与"同一请求流前缀是否稳定"无关，过度隔离只会让基线频繁丢失）。 */
+function _ibCacheAuditKey(consumer,cfg,fmt,idModel){
+  return String(consumer||'')+'::'+String((cfg&&cfg.id)||'')+'::'+String((cfg&&cfg.provider)||'')+'::'+String(idModel||'')+'::'+fmt;
+}
+function _ibCacheAuditLabel(consumer,cfg,fmt,idModel){
+  return 'Consumer: '+(String(consumer||'')||'(unspecified)')
+    +' | Character: '+(String((cfg&&cfg.id)||'')||'-')
+    +' | Provider: '+(String((cfg&&cfg.provider)||'')||'-')
+    +' | Model: '+(String(idModel||'')||'-')
+    +' | Format: '+fmt;
+}
+function _ibCacheAudit(cfg,body,fmt,meta){
   try{
     if(!body||!cfg)return;
     fmt=fmt==='gemini'?'gemini':(fmt==='anthropic'?'anthropic':'openai');
+    var consumer=String((meta&&meta.consumer)||'');
     var model='',system='',hist='',tools='',struct='';
     if(fmt==='anthropic'){
       model=body.model||'';
@@ -2623,10 +2643,13 @@ function _ibCacheAudit(cfg,body,fmt){
     }
     /* 真实发送字节（与 provider 视角一致的 token 前缀用于计算稳定前缀/首分歧） */
     var bodyStr=JSON.stringify(body);
-    var key=String((cfg&&cfg.id)||'')+'::'+fmt;/* 按 provider 形态隔离快照，避免 openai/anthropic/gemini 串比 */
+    /* 实际发出的 model 优先（gemini 的 model 在 URL 上、body 里没有 → 回落 cfg.model） */
+    var idModel=String(model||'')||String((cfg&&cfg.model)||'');
+    var key=_ibCacheAuditKey(consumer,cfg,fmt,idModel);/* 同一请求流（consumer+角色+provider+model+格式）内比较 */
+    var label=_ibCacheAuditLabel(consumer,cfg,fmt,idModel);
     var prev=_ibCacheAuditPrev[key];
     _ibCacheAuditPrev[key]={bs:bodyStr,model:model,system:system,hist:hist,tools:tools,struct:struct};
-    if(!prev){console.info('[IB Cache Audit] Model: '+model+' | Prompt text: '+_cacheTok(system+hist)+' chars-est | 已记录本对话请求基线。从下一轮请求开始输出前缀稳定性对比。');return}
+    if(!prev){console.info('[IB Cache Audit] '+label+' | Prompt text: '+_cacheTok(system+hist)+' chars-est | 已记录本请求流基线。从同一 Consumer 的下一轮请求开始输出前缀稳定性对比。');return}
     /* 各段 SAME/CHANGED：仅 History 允许"末尾追加"不视为破坏（新 user 消息追加在数组尾）；
        System / Tools / Request structure 任何变化都视为破坏（system 位于 token 流前端、tools/结构决定请求形状）。 */
     function eff(p,c){if(p===c)return false;if(typeof p==='string'&&typeof c==='string'&&c.indexOf(p)===0)return false;return true}
@@ -2640,7 +2663,7 @@ function _ibCacheAudit(cfg,body,fmt){
     var stable=d;/* 稳定前缀（真实请求字节） */
     /* 无任何段被破坏 → 前缀稳定（纯追加或完全一致） */
     if(!sysC&&!hisC&&!toolC&&!structC){
-      console.info('[IB Cache Audit] Model: '+model
+      console.info('[IB Cache Audit] '+label
         +' | Prompt chars: '+_cacheTok(system+hist)+' (~'+_cacheTok(system+hist)+' tok)'
         +' | Stable prefix: '+stable+' request-bytes (~'+_cacheTok(bodyStr.slice(0,stable))+' tok est)'
         +' | First difference: (纯追加/无，无)'
@@ -2655,7 +2678,7 @@ function _ibCacheAudit(cfg,body,fmt){
     var k=0,mn=Math.min(pd.length,ct.length);while(k<mn&&pd.charCodeAt(k)===ct.charCodeAt(k))k++;
     var a=_cacheRedact(pd.slice(Math.max(0,k-140),k+180));
     var b=_cacheRedact(ct.slice(Math.max(0,k-140),k+180));
-    console.warn('[IB Cache Audit] Model: '+model
+    console.warn('[IB Cache Audit] '+label
       +' | Prompt chars: '+_cacheTok(system+hist)+' (~'+_cacheTok(system+hist)+' tok)'
       +' | Stable prefix: '+stable+' request-bytes (~'+_cacheTok(bodyStr.slice(0,stable))+' tok est)'
       +' | First difference: request-byte '+stable
@@ -2664,12 +2687,12 @@ function _ibCacheAudit(cfg,body,fmt){
       +' | Tools: '+(toolC?'CHANGED':'SAME')
       +' | Request structure: '+(structC?'CHANGED':'SAME')
       +' | 分歧段: '+sec);
-    console.warn('[IB Cache Audit] Changed section (截断+脱敏) 定位首次分歧:\n【上一轮】…'+a+'…\n【本　轮】…'+b+'…');
+    console.warn('[IB Cache Audit] Consumer: '+(consumer||'(unspecified)')+' | Changed section (截断+脱敏) 定位首次分歧:\n【上一轮】…'+a+'…\n【本　轮】…'+b+'…');
   }catch(e){}
 }
-/* 向后兼容别名：旧签名 (cfg, messages) 仍可用，等价于仅 messages 的 OpenAI 审计 */
-function _ibOaiCacheDiag(cfg,msgs){
-  try{_ibCacheAudit(cfg,{model:(cfg&&cfg.model)||'',messages:msgs||[]},'openai')}catch(e){}
+/* 向后兼容别名：旧签名 (cfg, messages) 仍可用，等价于仅 messages 的 OpenAI 审计；meta 可选（同 _ibCacheAudit） */
+function _ibOaiCacheDiag(cfg,msgs,meta){
+  try{_ibCacheAudit(cfg,{model:(cfg&&cfg.model)||'',messages:msgs||[]},'openai',meta)}catch(e){}
 }
 /* ── Anthropic 消息级缓存断点注入 ──
    在 chatMsgs 数组的倒数第二条消息（新 user 消息之前的最后一条历史消息）上
@@ -2909,7 +2932,7 @@ async function _wsToolContinue(cfg,o){
       +'\n若结果满足要求，用一句自然的话向用户收尾即可；若有需要修正或继续的操作，请继续输出相应指令。';
     var userMsg={role:'user',content:imgParts.length?[{type:'text',text:userText}].concat(imgParts):userText};
     msgs.push(userMsg);
-    var r=await callApiChat(cfg,msgs,{maxTokens:Math.max(1024,o.maxTokens||2048),timeoutMs:90000,wantMeta:false,autoContinue:true});
+    var r=await callApiChat(cfg,msgs,{_ibConsumer:'chat',maxTokens:Math.max(1024,o.maxTokens||2048),timeoutMs:90000,wantMeta:false,autoContinue:true});/* 工具续轮：同一 Chat 请求流 */
     if(!r||!String(r).trim())return null;
     /* ④ 续轮回复里的工具继续执行（常见于链式操作：生成→继续调整） */
     var parsed=_assistantResponseParts(r,'');
@@ -3463,7 +3486,7 @@ async function _callApiChatStreamOnce(cfg,messages,opts){
       if(opts._fcCtx&&opts._fcCtx.tools){b.tools=opts._fcCtx.tools.anthropic;IBFC.newAcc(opts._fcCtx)}
       try{if(typeof IBWS!=='undefined')IBWS.attach(b,'anthropic',cfg,opts)}catch(e){}
       if(sysMsg){if(cfg.promptCache!==false&&cfg.provider==='anthropic'){b.system=[{type:'text',text:sysMsg.content,cache_control:_ccObj(cfg)}]}else{b.system=sysMsg.content}}if(cfg.temperature!=null)b.temperature=cfg.temperature;
-      if(cfg.promptCache!==false){try{_ibCacheAudit(cfg,b,'anthropic')}catch(e){}}/* 前缀缓存审计（console-only） */
+      if(cfg.promptCache!==false){try{_ibCacheAudit(cfg,b,'anthropic',{consumer:opts._ibConsumer})}catch(e){}}/* 前缀缓存审计（console-only） */
       body=JSON.stringify(b);
     }else if(fmt==='gemini'){
       url=cfg.endpoint.replace('{model}',cfg.model).replace('generateContent','streamGenerateContent')+'?key='+cfg.apiKey+'&alt=sse';
@@ -3479,7 +3502,7 @@ async function _callApiChatStreamOnce(cfg,messages,opts){
       gB.generationConfig={maxOutputTokens:maxTok};/* 之前完全没设，Gemini 按默认值截断输出 */
       if(cfg.temperature!=null)gB.generationConfig.temperature=cfg.temperature;
       try{if(typeof IBWS!=='undefined')IBWS.attach(gB,'gemini',cfg,opts)}catch(e){}
-      if(cfg.promptCache!==false){try{_ibCacheAudit(cfg,gB,'gemini')}catch(e){}}/* 前缀缓存审计（console-only） */
+      if(cfg.promptCache!==false){try{_ibCacheAudit(cfg,gB,'gemini',{consumer:opts._ibConsumer})}catch(e){}}/* 前缀缓存审计（console-only） */
       body=JSON.stringify(gB);
     }else{
       url=cfg.endpoint;
@@ -3491,7 +3514,7 @@ async function _callApiChatStreamOnce(cfg,messages,opts){
       ob[_mimoTokenKey(cfg,opts)]=maxTok;/* 新款 OpenAI 系模型由包装器切换为 max_completion_tokens；MiMo 端点强制 max_completion_tokens */
       if(cfg.promptCache!==false&&!_isMimoEndpoint(cfg))ob.prompt_cache_key='ib_'+String(cfg.id||'');/* OpenAI 缓存本自动生效；此 key 只用于提升路由命中率。MiMo 无此字段且自行缓存，发出去反而 400 */
       if(cfg.promptCache!==false&&!_isMimoEndpoint(cfg))ob.stream_options={include_usage:true};/* 用量回传：与上方附加参数同受"提示缓存"开关控制。MiMo 未定义此字段，省略以免 400 */
-      if(cfg.promptCache!==false){try{_ibCacheAudit(cfg,ob,'openai')}catch(e){}}/* 前缀缓存审计（console-only） */
+      if(cfg.promptCache!==false){try{_ibCacheAudit(cfg,ob,'openai',{consumer:opts._ibConsumer})}catch(e){}}/* 前缀缓存审计（console-only） */
       if(cfg.temperature!=null)ob.temperature=cfg.temperature;
       /* ── 临时调试（定位 OpenRouter 400；测试完删除本段）──
          console 执行：localStorage.setItem('ib_debug_omit','prompt_cache_key,stream_options') 可逐项剔除；
@@ -3700,7 +3723,7 @@ async function _callApiChatOnce(cfg,messages,opts){
     try{if(typeof IBWS!=='undefined')IBWS.attach(body,'anthropic',cfg,opts)}catch(e){}
     if(sysMsg){if(cfg.promptCache!==false&&cfg.provider==='anthropic'){body.system=[{type:'text',text:sysMsg.content,cache_control:_ccObj(cfg)}]}else{body.system=sysMsg.content}}
     if(cfg.temperature!=null)body.temperature=cfg.temperature;
-    if(cfg.promptCache!==false){try{_ibCacheAudit(cfg,body,'anthropic')}catch(e){}}/* 前缀缓存审计（console-only） */
+    if(cfg.promptCache!==false){try{_ibCacheAudit(cfg,body,'anthropic',{consumer:opts._ibConsumer})}catch(e){}}/* 前缀缓存审计（console-only） */
     const hdrs={'Content-Type':'application/json','x-api-key':cfg.apiKey,
       'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'};
     _ccBeta(hdrs,cfg);
@@ -3753,7 +3776,7 @@ async function _callApiChatOnce(cfg,messages,opts){
     if(opts.jsonMode)gBody.generationConfig.responseMimeType='application/json';/* AI 规划：结构化 JSON 输出 */
     if(cfg.temperature!=null)gBody.generationConfig.temperature=cfg.temperature;
     try{if(typeof IBWS!=='undefined')IBWS.attach(gBody,'gemini',cfg,opts)}catch(e){}
-    if(cfg.promptCache!==false){try{_ibCacheAudit(cfg,gBody,'gemini')}catch(e){}}/* 前缀缓存审计（console-only） */
+    if(cfg.promptCache!==false){try{_ibCacheAudit(cfg,gBody,'gemini',{consumer:opts._ibConsumer})}catch(e){}}/* 前缀缓存审计（console-only） */
     /* Gemini: thinking is handled by system prompt <thinking> tags, not native API */
     const ac=new AbortController();const tm=setTimeout(()=>ac.abort(),timeoutMs);
     try{
@@ -3784,7 +3807,7 @@ async function _callApiChatOnce(cfg,messages,opts){
   try{if(typeof IBWS!=='undefined')IBWS.attach(oBody,'openai',cfg,opts)}catch(e){}
   oBody[_mimoTokenKey(cfg,opts)]=maxTok;/* 新款 OpenAI 系模型由包装器切换为 max_completion_tokens；MiMo 端点强制 max_completion_tokens */
   if(cfg.promptCache!==false&&!_isMimoEndpoint(cfg))oBody.prompt_cache_key='ib_'+String(cfg.id||'');/* OpenAI 缓存本自动生效；此 key 只用于提升路由命中率。MiMo 无此字段且自行缓存，发出去反而 400 */
-  if(cfg.promptCache!==false){try{_ibCacheAudit(cfg,oBody,'openai')}catch(e){}}/* 前缀缓存审计（console-only） */
+  if(cfg.promptCache!==false){try{_ibCacheAudit(cfg,oBody,'openai',{consumer:opts._ibConsumer})}catch(e){}}/* 前缀缓存审计（console-only） */
   if(cfg.temperature!=null)oBody.temperature=cfg.temperature;
   const _hdrN=Object.assign({'Content-Type':'application/json'},cfg.apiKey?{Authorization:'Bearer '+cfg.apiKey}:{});
   const res=await _ibApiPost(cfg.endpoint,_hdrN,JSON.stringify(oBody),{signal:ac.signal});

@@ -1233,6 +1233,7 @@ async function _generateMemoryCore(cfg,prompt,opts){
       _memStreamAbortController=ac;
       try{
         resp=await callApiChatStream(cfg,messages,{
+          _ibConsumer:'memory',
           maxTokens:1024,timeoutMs:120000,heartbeatMs:60000,
           abortController:ac,onChunk:()=>{}
         });

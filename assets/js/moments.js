@@ -89,7 +89,7 @@ async function _momentsModelCall(kind,cfg,messages,opts){
   const runtime=_momentsRuntimeInstance(),gate=_momentsRuntimeGate(),jsonMode=!!opts.jsonMode;
   if(!(gate&&runtime)){
     const reason=gate?'runtime_unavailable':'gate_disabled',t0=Date.now();
-    const raw=await callApiChat(cfg,messages,opts);/* 原样 opts：direct 行为逐位不变（不追加任何字段） */
+    const raw=await callApiChat(cfg,messages,Object.assign({_ibConsumer:'moments'},opts));/* opts 逐字段原样，仅追加诊断用 _ibConsumer（不进请求体） */
     _momentsExecLog(kind,cfg,{executor:'direct',format:_momentsFormat(cfg,null),jsonMode:jsonMode,
       usage:'unavailable',abortMode:'none',abortReason:'',fallbackReason:reason,ok:true,ms:Date.now()-t0});
     return raw;
@@ -103,7 +103,7 @@ async function _momentsModelCall(kind,cfg,messages,opts){
   let outcome;
   try{
     outcome=await runtime.execute(
-      {spec:spec,messages:messages,jsonMode:jsonMode,budget:(opts.maxTokens!=null?opts.maxTokens:null),executor:executor},
+      {consumer:'moments',spec:spec,messages:messages,jsonMode:jsonMode,budget:(opts.maxTokens!=null?opts.maxTokens:null),executor:executor},
       {signal:opts.signal||undefined,onEvent:function(ev){if(ev&&ev.type==='error'&&ev.kind==='abort'&&!abortReason)abortReason='abort'}}
     );
   }catch(e){

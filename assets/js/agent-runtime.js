@@ -151,7 +151,12 @@
                    用途：迁移既有 consumer 时保持"思考通道开关""超时""工具开关"等执行器行为逐位一致
                    （否则会静默改变现有语义）。这里不是任意 opts 通道，禁止塞入 result/abortController/
                    onChunk/onThink/onSearch/autoContinue 等由 Runtime 掌管的字段。
-                   disableTools 未显式给出时保持历史默认 true（ModelPort 不参与工具轮）。 */
+                   disableTools 未显式给出时保持历史默认 true（ModelPort 不参与工具轮）。
+     · consumer —— request.consumer 是**调用方声明的请求身份**（诊断 metadata，可选）：
+                   'diary' / 'moments' / 'active.proactive' / 'memory_consolidation' 等，取自调用方
+                   自己的执行上下文（不是页面、不是 prompt 文本、不是调用栈）。唯一用途是让
+                   [IB Cache Audit] 按请求流隔离 baseline；Runtime 不解释其语义、不写回 outcome，
+                   也绝不进入 provider 请求体（只作为 callOpts._ibConsumer 传给执行器）。 */
   const EXECUTOR_PASSTHROUGH = ['wantThinking', 'timeoutMs', 'heartbeatMs', 'disableTools'];
   function executorPassthrough(request) {
     const out = {};
@@ -174,6 +179,10 @@
       const rawBudget = request ? request.budget : null;
       const budget = (rawBudget != null && isFinite(Number(rawBudget))) ? Number(rawBudget) : null;
       const executorOpts = executorPassthrough(request);
+      /* 请求身份（诊断用，非 wire 字段）：request.consumer 是调用方声明的真实执行上下文
+         （'diary' / 'moments' / 'active.proactive' / 'memory_consolidation' …），
+         只用于把 Cache Audit 的 baseline 按请求流隔离；不进入 cfg、不进入任何 provider body。 */
+      const consumer = String((request && request.consumer) || '').trim().slice(0, 40);
       /* 从 ModelSpec 还原执行器需要的最小 cfg 形态（≠ 整个 cfg）。
          必须带上 id / maxTokens / promptCache / vision / streaming：这些字段参与缓存键、
          输出上限与请求参数决策，早期版本丢字段会让执行器悄悄回落到默认行为。 */
@@ -231,6 +240,8 @@
           disableTools: (executorOpts.disableTools !== undefined) ? !!executorOpts.disableTools : true,
           jsonMode: jsonMode,
           _noWebSearch: true,
+          /* 诊断身份：只被 [IB Cache Audit] 读取用于隔离 baseline，执行器不把它写进任何请求体 */
+          _ibConsumer: consumer,
           wantMeta: true
         };
         if (budget != null) callOpts.maxTokens = budget;

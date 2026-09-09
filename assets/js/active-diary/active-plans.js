@@ -278,7 +278,7 @@ async function planNextProactiveMessage(args){
     });
     let raw='';
     try{
-      raw=await callApiChat(character,built.messages,{maxTokens:600,timeoutMs:90000,wantMeta:false,jsonMode:true,_noWebSearch:true,disableTools:true});
+      raw=await callApiChat(character,built.messages,{_ibConsumer:'active.planner',maxTokens:600,timeoutMs:90000,wantMeta:false,jsonMode:true,_noWebSearch:true,disableTools:true});
     }catch(e){
       _activePlanLog('model request failed',{characterId:character.id,error:String(e&&e.message||e).slice(0,200)});
       return null                                                    /* 模型请求失败：不影响聊天 */
@@ -406,7 +406,7 @@ async function evaluateProactiveTask(task,latestContext){
         '用户是否已在计划创建后回复过：'+(userRepliedSince?'是（此时应优先 cancel）':'否'),
         '【输出格式】只输出 JSON：{"action":"send"} 或 {"action":"reschedule","scheduledAt":"ISO8601","reason":"..."} 或 {"action":"cancel","reason":"..."}',
         '【评估规则】1. 原意图已完成或用户已说明不需要 → cancel。2. 用户已回复且任务仍有意 → 默认 cancel。3. 免打扰程序已处理。4. 没有把握时倾向 cancel，不要为了发送而发送。5. 不得安排超过 '+(prefs.maxPlanHours||168)+' 小时后的时间。']).join('\n');
-      const raw=await callApiChat(cfg,[{role:'system',content:built.system},{role:'user',content:evalPrompt}],{maxTokens:300,timeoutMs:60000,wantMeta:false,jsonMode:true,_noWebSearch:true,disableTools:true});
+      const raw=await callApiChat(cfg,[{role:'system',content:built.system},{role:'user',content:evalPrompt}],{_ibConsumer:'active.evaluator',maxTokens:300,timeoutMs:60000,wantMeta:false,jsonMode:true,_noWebSearch:true,disableTools:true});
       const parsed=_activeParsePlanJson(raw);
       if(parsed&&['send','reschedule','cancel'].includes(String(parsed.action||''))){
         if(parsed.action==='send')return{action:'send',reason:String(parsed.reason||'').slice(0,300)};

@@ -125,7 +125,7 @@
         var cfg=(apiConfigs||[]).find(function(a){return a.id===o.cfgId})||(apiConfigs||[]).find(function(a){return a.id===activeFriendId})||(apiConfigs||[])[0];
         if(!cfg||typeof callApiChat!=='function')return'';
         var msgs=[{role:'system',content:o.system||cfg.systemPrompt||''},{role:'user',content:prompt}];
-        try{return await callApiChat(cfg,msgs,{maxTokens:o.maxTokens||600,wantMeta:false,jsonMode:false,disableTools:true,_noWebSearch:true})}catch(e){return''}
+        try{return await callApiChat(cfg,msgs,{_ibConsumer:'app',maxTokens:o.maxTokens||600,wantMeta:false,jsonMode:false,disableTools:true,_noWebSearch:true})}catch(e){return''}
       }
     };
   }

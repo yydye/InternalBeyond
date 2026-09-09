@@ -750,6 +750,7 @@
     render();
     var t0 = Date.now();
     return window.callApiChat(testCfg, [{ role: 'user', content: '你好' }], {
+      _ibConsumer: 'diagnostics',/* 诊断身份：testCfg.promptCache=false → 审计不运行，此键为身份完整性预留 */
       maxTokens: 16,
       timeoutMs: AI_TEST_TIMEOUT_MS,
       disableTools: true,

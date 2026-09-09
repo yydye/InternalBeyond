@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 
 /* 前端静态回归：编码、拆分资源、入口语义、设计变量与内联样式预算。 */
 const fs = require('fs');
@@ -578,6 +578,103 @@ check('middleBrain.integrityUiSection', /id="mb-ci-enabled"/.test(html) && /id="
 check('middleBrain.integrityUiCanonicalConfig', /characterIntegrityEnabled: _mbUi\.integrity\.enabled/.test(mbTexts['middle-brain-config.js'])
   && !/localStorage/.test(mbTexts['middle-brain-config.js']),
   'Character Integrity 设置未走 canonical config');
+
+/* ── P11-FIX · [IB Cache Audit] baseline 身份隔离守卫 ──
+   现象：Chat 页面聊天时后台 Diary 被触发，审计把两个不同 consumer 的请求当成"上一轮/本轮"比较。
+   守卫锁死：baseline key 必须包含真实请求身份；consumer 必须来自执行上下文（不得猜）；
+   审计 metadata 不得进入 provider 请求体；每个真实调用点都必须声明 consumer。 */
+const auditStart = comMainText.indexOf('var _ibCacheAuditPrev={};');
+const auditEnd = comMainText.indexOf('/* ── Anthropic 消息级缓存断点注入 ──', auditStart);
+const auditBlock = auditStart >= 0 && auditEnd > auditStart ? comMainText.slice(auditStart, auditEnd) : '';
+check('cacheAudit.blockExtracted', !!auditBlock, '未找到缓存审计块');
+check('cacheAudit.keyHasRequestIdentity',
+  /function _ibCacheAuditKey\(consumer,cfg,fmt,idModel\)/.test(auditBlock)
+  && /return String\(consumer\|\|''\)\+'::'\+String\(\(cfg&&cfg\.id\)\|\|''\)\+'::'\+String\(\(cfg&&cfg\.provider\)\|\|''\)\+'::'\+String\(idModel\|\|''\)\+'::'\+fmt/.test(auditBlock),
+  'baseline key 未升级为 consumer::character::provider::model::format');
+check('cacheAudit.noLegacyGlobalSlot',
+  !/'::'\+fmt;\s*\/\* 按 provider 形态隔离快照/.test(auditBlock)
+  && /var key=_ibCacheAuditKey\(consumer,cfg,fmt,idModel\);/.test(auditBlock),
+  '仍存在只按 cfg.id + 格式分槽的旧 baseline key');
+/* 审计仍完全受 cfg.promptCache 门控：关闭时零审计开销、零日志、生产请求不变。 */
+const auditSites = (comMainText.match(/try\{_ibCacheAudit\(cfg,/g) || []).length;
+const gatedSites = (comMainText.match(/if\(cfg\.promptCache!==false\)\{try\{_ibCacheAudit\(cfg,/g) || []).length;
+const legacyDiagOnly = /function _ibOaiCacheDiag\(cfg,msgs,meta\)\{\s*\n?\s*try\{_ibCacheAudit\(cfg,/.test(comMainText);
+check('cacheAudit.gatedByPromptCache', gatedSites === 6 && auditSites - gatedSites === (legacyDiagOnly ? 1 : 0),
+  '审计调用点未被 promptCache 门控：' + gatedSites + '/' + auditSites);
+/* 注释剥离：只在代码上做负向断言（注释里出现 #chat/#diary 等字样不应导致误判），
+   行数保持不变以便报错定位。 */
+function codeOnly(text) {
+  return text.replace(/\/\*[\s\S]*?\*\//g, m => m.replace(/[^\n]/g, ' '))
+    .split('\n').map(line => (/^\s*\/\//.test(line) ? '' : line)).join('\n');
+}
+const auditCode = codeOnly(auditBlock);
+check('cacheAudit.consumerFromContextOnly',
+  /var consumer=String\(\(meta&&meta\.consumer\)\|\|''\);/.test(auditCode)
+  && !/currentPage|location\.hash|#chat|#diary|\.stack/.test(auditCode),
+  'consumer 必须只来自调用方 meta，不得按页面/URL/调用栈猜测');
+check('cacheAudit.logIdentity',
+  /'Consumer: '\+\(String\(consumer\|\|''\)\|\|'\(unspecified\)'\)/.test(auditCode)
+  && /\| Character: /.test(auditCode) && /\| Provider: /.test(auditCode)
+  && /\| Model: /.test(auditCode) && /\| Format: '\+fmt/.test(auditCode),
+  '审计日志未打印 Consumer/Character/Provider/Model/Format');
+check('cacheAudit.noApiKeyInLog', !/apiKey/.test(auditCode), '审计块不得引用 apiKey');
+check('cacheAudit.readOnlyBookkeeping',
+  !/\b(body|cfg|messages)\s*=(?!=)/.test(auditCode)
+  && !/\b(body|messages|cfg)\.[\w$]+\s*=(?!=)/.test(auditCode)
+  && !/prompt_cache_key\s*=[^=]/.test(auditCode),
+  '审计必须是只读 bookkeeping（不得改写 body/cfg/messages/缓存参数）');
+/* 每个真实 callApiChat* 调用点都必须声明 consumer（runtime 桥接点传 callOpts，其中已含该键）。 */
+const consumerSites = [];
+(function walk(dir) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const file = path.join(dir, entry.name);
+    if (entry.isDirectory()) { walk(file); continue; }
+    if (!/\.js$/i.test(entry.name)) continue;
+    const text = codeOnly(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
+    const rel = path.relative(root, file).split(path.sep).join('/');
+    const re = /callApiChat(?:Stream)?\(/g;
+    let m;
+    while ((m = re.exec(text))) {
+      const lineStart = text.lastIndexOf('\n', m.index) + 1;
+      const line = text.slice(lineStart, text.indexOf('\n', m.index));
+      if (/^\s*(?:async\s+)?function\s/.test(line)) continue;                       /* 定义 */
+      if (/window\.callApiChat\w*\s*=\s*$/.test(line.trim())) continue;             /* 导出别名 */
+      if (/callApiChat(?:Stream)?\(cfg,\s*messages,\s*callOpts\)/.test(text.slice(m.index, m.index + 80))) continue; /* runtime 桥接 */
+      const seg = text.slice(m.index, m.index + 700);
+      consumerSites.push({ file: rel, line: text.slice(0, m.index).split('\n').length, ok: seg.includes('_ibConsumer') });
+    }
+  }
+})(path.join(root, 'assets', 'js'));
+const undeclared = consumerSites.filter(s => !s.ok);
+check('cacheAudit.everyCallSiteDeclaresConsumer', consumerSites.length >= 15 && undeclared.length === 0,
+  '未声明 consumer 的调用点: ' + undeclared.map(s => s.file + ':' + s.line).join(', '));
+const runtimeText = fs.readFileSync(path.join(root, 'assets', 'js', 'agent-runtime.js'), 'utf8').replace(/^\uFEFF/, '');
+check('cacheAudit.runtimeConsumerBridge',
+  /const consumer = String\(\(request && request\.consumer\) \|\| ''\)\.trim\(\)\.slice\(0, 40\);/.test(runtimeText)
+  && /_ibConsumer: consumer,/.test(runtimeText),
+  'runtime request.consumer 未桥接到执行器 _ibConsumer');
+/* 审计身份键不得进入 provider 请求体构造：在代码中，_ibConsumer 只能作为 callApiChat* 的 opts 键，
+   或在 runtime 桥接里由 request.consumer 派生。 */
+const bodyBuildLeak = [];
+for (const [file, text] of [['communication.js', comMainText],
+  ['agent-runtime.js', runtimeText],
+  ['active-diary.js', fs.readFileSync(path.join(root, 'assets', 'js', 'active-diary.js'), 'utf8').replace(/^\uFEFF/, '')],
+  ['diary.js', fs.readFileSync(path.join(root, 'assets', 'js', 'active-diary', 'diary.js'), 'utf8').replace(/^\uFEFF/, '')],
+  ['moments.js', fs.readFileSync(path.join(root, 'assets', 'js', 'moments.js'), 'utf8').replace(/^\uFEFF/, '')]]) {
+  const code = codeOnly(text);
+  const re = /_ibConsumer/g;
+  let m;
+  while ((m = re.exec(code))) {
+    const before = code.slice(Math.max(0, m.index - 700), m.index);
+    const line = code.slice(code.lastIndexOf('\n', m.index) + 1, code.indexOf('\n', m.index));
+    const okSite = /callApiChat(?:Stream)?\(/.test(before.slice(before.lastIndexOf(';') + 1))
+      || /_ibConsumer:\s*consumer,/.test(line)
+      || /_ibCacheAudit\([^)]*opts\._ibConsumer/.test(line);
+    if (!okSite) bodyBuildLeak.push(file + ':' + code.slice(0, m.index).split('\n').length);
+  }
+}
+check('cacheAudit.metadataNeverInProviderBody', bodyBuildLeak.length === 0,
+  '审计身份键出现在请求体构造/其它位置: ' + bodyBuildLeak.join(', '));
 
 console.log(failures ? `\nFrontend structure regression failed: ${failures}` : '\nFrontend structure regression passed ✔');
 process.exit(failures ? 1 : 0);

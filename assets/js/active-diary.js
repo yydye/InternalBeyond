@@ -466,7 +466,7 @@ function _activeModelFormat(cfg,runtime){
 async function _activeDirectProactiveCall(cfg,messages,opts){
   opts=opts||{};
   var result={};
-  var raw=await (opts.requestModel||((c,m,o)=>callApiChat(c,m,o)))(cfg,messages,{maxTokens:512,timeoutMs:120000,wantThinking:true,result:result,_noWebSearch:true,disableTools:true});
+  var raw=await (opts.requestModel||((c,m,o)=>callApiChat(c,m,o)))(cfg,messages,{_ibConsumer:'active.proactive',maxTokens:512,timeoutMs:120000,wantThinking:true,result:result,_noWebSearch:true,disableTools:true});
   return{text:raw,reasoning:String(result.reasoning_content||''),usage:result.usage||null,
     usageSource:result.usage?'executor':'unavailable',executor:'direct',abortMode:'none',
     format:_activeModelFormat(cfg,null),aborted:false,abortReason:'',fallbackReason:String(opts.fallbackReason||'')};
@@ -477,7 +477,7 @@ async function _activeRuntimeProactiveCall(runtime,cfg,messages,opts){
   var spec=Object.assign({},runtime.resolveModel(cfg||{}),{streaming:false});
   var abortReason='';
   var outcome=await runtime.execute(
-    {spec:spec,messages:messages,budget:512,executor:{wantThinking:true,timeoutMs:120000}},
+    {consumer:'active.proactive',spec:spec,messages:messages,budget:512,executor:{wantThinking:true,timeoutMs:120000}},
     {signal:opts.signal||undefined,onEvent:function(ev){if(ev&&ev.type==='error'&&ev.kind==='abort'&&!abortReason)abortReason='abort'}}
   );
   if(outcome&&outcome.aborted){
@@ -546,7 +546,7 @@ async function _activeConsolidationModelCall(cfg,messages,opts){
   };
   if(!(gate&&runtime)){
     var reason=gate?'runtime_unavailable':'gate_disabled',t0=Date.now();
-    var raw=await callApiChat(cfg,messages,opts);/* 原样 opts：direct 行为逐位不变 */
+    var raw=await callApiChat(cfg,messages,Object.assign({_ibConsumer:'memory_consolidation'},opts));/* opts 逐字段原样，仅追加诊断用 _ibConsumer（不进请求体） */
     log({executor:'direct',format:_activeModelFormat(cfg,null),jsonMode:jsonMode,usage:'unavailable',
       abortMode:'none',abortReason:'',fallbackReason:reason,ok:true,ms:Date.now()-t0});
     return{text:raw,reasoning:'',usage:null,usageSource:'unavailable',executor:'direct',
@@ -560,7 +560,7 @@ async function _activeConsolidationModelCall(cfg,messages,opts){
   var t0r=Date.now(),abortReason='',outcome;
   try{
     outcome=await runtime.execute(
-      {spec:spec,messages:messages,jsonMode:jsonMode,budget:(opts.maxTokens!=null?opts.maxTokens:null),executor:executor},
+      {consumer:'memory_consolidation',spec:spec,messages:messages,jsonMode:jsonMode,budget:(opts.maxTokens!=null?opts.maxTokens:null),executor:executor},
       {signal:opts.signal||undefined,onEvent:function(ev){if(ev&&ev.type==='error'&&ev.kind==='abort'&&!abortReason)abortReason='abort'}}
     );
   }catch(e){
@@ -1033,7 +1033,7 @@ async function _understandingTick(cfg){
       '【规则】1. 只有稳定模式才 true。2. 不要对心理健康下推断(只记用户自述)。3. 不要人格定性(不写"她是...型人")。4. basis 必须诚实：用户明确说=user_stated；多方一致=user_corroborated；你自己推测=ai_inference。'
     ];
     let raw='';
-    try{raw=await callApiChat(cfg,[{role:'system',content:system},{role:'user',content:prompt.join('\n')}],{maxTokens:700,timeoutMs:120000,wantMeta:false,jsonMode:true,_noWebSearch:true,disableTools:true})}catch(e){return null}
+    try{raw=await callApiChat(cfg,[{role:'system',content:system},{role:'user',content:prompt.join('\n')}],{_ibConsumer:'understanding',maxTokens:700,timeoutMs:120000,wantMeta:false,jsonMode:true,_noWebSearch:true,disableTools:true})}catch(e){return null}
     const parsed=(typeof window._activeParsePlanJson==='function')?window._activeParsePlanJson(raw):null;
     if(!parsed||parsed.shouldUpdate!==true)return null;
     const content=String(parsed.content||'').trim().slice(0,500);
