@@ -133,7 +133,7 @@ const api = http.createServer(async (req, res) => {
         + `if(u.origin!==${JSON.stringify(apiBase)}&&u.origin!==${JSON.stringify(webBase)})return Promise.reject(new Error('c2 smoke blocks external service'));return _of(input,opts);};window.confirm=()=>true;`
     });
     await cdp.send('Page.navigate', { url: webBase + '/InternalBeyond.html' });
-    assert.ok(await waitFor(cdp, "document.readyState==='complete' && typeof getMemoryContext==='function' && typeof middleBrainCompressPipeline==='function' && typeof IBContextSnapshot==='object' && typeof IBContextSnapshot.create==='function'", 20000), 'page + snapshot module + producers mounted');
+    assert.ok(await waitFor(cdp, "document.readyState==='complete' && typeof getMemoryContext==='function' && typeof IB.middleBrain.middleBrainExecute==='function' && typeof IBContextSnapshot==='object' && typeof IBContextSnapshot.create==='function'", 20000), 'page + snapshot module + producers mounted');
 
     /* 探针：记录每次 create 的快照、每次 pipeline 的 opts、每个 producer 的读取次数 */
     await evaluate(cdp, `(function(){
@@ -141,8 +141,11 @@ const api = http.createServer(async (req, res) => {
       window.__c2={snaps:[],opts:[],count:{}};
       var oc=IBContextSnapshot.create;
       IBContextSnapshot.create=function(input){var s=oc(input);window.__c2.snaps.push(s);return s};
-      var op=window.middleBrainCompressPipeline;
-      window.middleBrainCompressPipeline=function(id,msg,opts){window.__c2.opts.push(opts||{});return op.apply(null,arguments)};
+      /* P11-1C：production 走 canonical execution seam IB.middleBrain.middleBrainExecute。
+         探针必须 patch 这个 canonical seam——patch window.middleBrainCompressPipeline 兼容别名
+         已无法观测生产调用（两者是不同属性，别名不再是 canonical path）。 */
+      var op=IB.middleBrain.middleBrainExecute;
+      IB.middleBrain.middleBrainExecute=function(id,msg,opts){window.__c2.opts.push(opts||{});return op.apply(null,arguments)};
       ['getMemoryContext','getUnderstandingContext','getThreadContext','getMomentsContext'].forEach(function(n){
         var orig=window[n];if(typeof orig!=='function')return;
         window[n]=function(){window.__c2.count[n]=(window.__c2.count[n]||0)+1;return orig.apply(null,arguments)};

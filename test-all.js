@@ -136,6 +136,7 @@ const GROUPS = [
       ['test_middle_brain_astral.js'],
       ['test_middle_brain_ctx.js'],
       ['test_middle_brain_judge.js'],
+      ['test_middle_brain_seam.js'],
       ['test_moments_phase4_smoke.js'],
       ['test_runtime_browser_audit.js'],
       ['test_runtime_optin_smoke.js'],

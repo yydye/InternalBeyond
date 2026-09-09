@@ -108,7 +108,11 @@ async function main(){
     check('ui.modelPickRequest',await ev(cdp,"(async function(){var q=await buildMiddleBrainResponsesRequest(null,[{role:'user',content:'x'}],{});return q.body.model==='gpt-5.6-sol'})()"));
     /* mbModelStep 切换（从 gpt-6-astra 步进 1 档） */
     await ev(cdp,"(async function(){mbModelPick('gpt-6-astra');mbModelStep(1)})()");
-    check('ui.modelStep',await ev(cdp,"(async function(){var c=await getMiddleBrainConfig();return c.model==='gpt-5.6-sol'})()"));
+    /* mbModelPick / mbModelStep 是 fire-and-forget 持久化（"点击即写配置，无需 Save"）：
+       两次 UI 提交各自 read-modify-write 整条配置，写事务在 await 读之后才创建，因此紧随其后的
+       读事务可能排在写事务之前 → 立即断言持久化值是时序假设，不是 UI 契约。契约 = UI 选择最终落盘。
+       这里等待收敛（若真的回退成旧值，轮询仍会超时失败，不会掩盖缺陷）。 */
+    check('ui.modelStep',await ev(cdp,"(async function(){var end=Date.now()+3000;for(;;){var c=await getMiddleBrainConfig();if(c.model==='gpt-5.6-sol')return true;if(Date.now()>end)return false;await new Promise(function(r){setTimeout(r,25)})}})()"));
   } finally { if(cdp)cdp.close(); try{browser.kill()}catch(e){} try{mock.server&&mock.server.close()}catch(e){} }
   console.log(failures===0?'\nMiddle Brain Phase 4 Advanced Settings CDP passed ✔':'\nMiddle Brain Phase 4 Advanced Settings CDP FAILED ✘');
   process.exit(failures?1:0);

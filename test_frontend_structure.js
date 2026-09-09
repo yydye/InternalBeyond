@@ -386,8 +386,10 @@ check('middleBrain.crossLayerContract', mbCrossBad.length === 0, '跨层读取�
 /* 共享可写 namespace 已删除：五层文件内不得残留 NS.*，也不得再出现扁平 __middleBrain。 */
 check('middleBrain.noFlatNamespace', !/\bNS\./.test(mbAllText) && !/__middleBrain\b/.test(mbAllText),
   '仍存在共享隐式 namespace 依赖');
-/* canonical 门面 34 个 key：内容与顺序由 MB_PUBLIC_API 锁定，owner 必须真实存在。 */
-const mbPublicExpected = ['getMiddleBrainConfig', 'saveMiddleBrainConfig', 'isMiddleBrainEnabled', 'middleBrainReady',
+/* canonical 门面 key：内容与顺序由 MB_PUBLIC_API 锁定，owner 必须真实存在。
+   P11-1C 新增 1 个 facade-level 执行缝 middleBrainExecute（readiness + pipeline），
+   原有 34 个 key 的名称、相对顺序与 owner 全部不变（见下方 publicApiBaseline34）。 */
+const mbPublicBaseline34 = ['getMiddleBrainConfig', 'saveMiddleBrainConfig', 'isMiddleBrainEnabled', 'middleBrainReady',
   'getMiddleBrainSystemPrompt', 'buildMiddleBrainRequest', 'buildMiddleBrainResponsesRequest',
   'parseMiddleBrainResponsesResponse', 'parseMiddleBrainResponse', 'middleBrainOrganizeContext',
   'middleBrainCompressContext', 'middleBrainContextPipeline', 'middleBrainAstraInvoke', 'middleBrainCompressPipeline',
@@ -396,10 +398,14 @@ const mbPublicExpected = ['getMiddleBrainConfig', 'saveMiddleBrainConfig', 'isMi
   'middleBrainJudgeTelemetry', 'middleBrainJudgeReset', '_mbParseJudgeJson', 'MB_JUDGE_SCHEMA',
   'MB_JUDGE_TIMEOUT_MS', 'middleBrainAstraEnabled', '_mbParseAstraJson', 'MB_ASTRA_TIMEOUT_MS',
   'middleBrainPipelineAvailable', 'MB_CTX_DEFAULT_BUDGET', 'saveMiddleBrainConfigUI', 'loadMiddleBrainConfigUI'];
+const mbPublicExpected = mbPublicBaseline34.slice();
+mbPublicExpected.splice(mbPublicExpected.indexOf('middleBrainCompressPipeline') + 1, 0, 'middleBrainExecute');
 const mbPublicPairs = [...mbText.matchAll(/^\s*\['(\w+)', '(\w+)'\],?$/gm)].map(m => [m[1], m[2]]);
 check('middleBrain.publicApiContract', JSON.stringify(mbPublicPairs.map(p => p[0])) === JSON.stringify(mbPublicExpected),
   'IB.middleBrain 公共 API 内容/顺序变化: ' + mbPublicPairs.map(p => p[0]).join(','));
-const mbFacadeOwned = ['middleBrainCompressPipeline', 'middleBrainAstraEnabled'];
+check('middleBrain.publicApiBaseline34', JSON.stringify(mbPublicPairs.map(p => p[0]).filter(k => k !== 'middleBrainExecute')) === JSON.stringify(mbPublicBaseline34),
+  'P11-1C 之外原有 34 个 key 的内容/顺序被改动');
+const mbFacadeOwned = ['middleBrainCompressPipeline', 'middleBrainExecute', 'middleBrainAstraEnabled'];
 const mbOwnerBad = mbPublicPairs.filter(([symbol, owner]) => mbFacadeOwned.includes(symbol)
   ? owner !== 'facade' : !(mbContracts[owner] && mbContracts[owner].includes(symbol)))
   .map(([symbol, owner]) => owner + '.' + symbol);
@@ -448,9 +454,49 @@ check('middleBrain.gateStateMemoryOnly', /var MB_GATE_STATE = \{\}/.test(mbTexts
 /* Judge 默认关闭 + 生产调用点仍只有 single-chat 一条。 */
 check('middleBrain.judgeDefaultOff', /middleBrainJudgeEnabled:\s*false/.test(mbTexts['middle-brain-config.js']), 'Judge 默认值被改为开启');
 const mbConsumers = sources.filter(f => f.endsWith('.js') && !mbLayerFiles.includes(path.basename(f)))
-  .filter(f => /middleBrainCompressPipeline|middleBrainAstraInvoke|middleBrainAdmissionGate\s*\(/.test(fs.readFileSync(f, 'utf8')))
+  .filter(f => /middleBrainExecute\s*\(|middleBrainCompressPipeline|middleBrainAstraInvoke|middleBrainAdmissionGate\s*\(/.test(fs.readFileSync(f, 'utf8')))
   .map(f => path.relative(root, f));
 check('middleBrain.singleConsumer', mbConsumers.length === 1 && mbConsumers[0] === path.join('assets', 'js', 'communication.js'), 'Middle Brain 生产消费者数量变化: ' + mbConsumers.join(', '));
+
+/* ── P11-1C · canonical production execution seam ──────────────────────
+   执行缝 = IB.middleBrain.middleBrainExecute：readiness 判定 + pipeline 两步，
+   逐字等价于 1A 之前 communication.js 自己编排的那两步。以下守卫锁定：
+     ① 执行缝语义未变（仍是 readiness → pipeline，不新增判定）；
+     ② 执行缝只存在于 facade，不挂 window 兼容别名；
+     ③ production consumer 只经 IB.middleBrain，且不点名任何门面/兼容符号；
+     ④ 内部层契约不泄漏给 Middle Brain 之外的 production 代码；
+     ⑤ 兼容别名不得重新成为 canonical 依赖。 */
+const mbSeam = mbText.match(/async function middleBrainExecute\([\s\S]*?\n  \}/);
+check('middleBrain.seamDefined', !!mbSeam
+  && /await CFG\.isMiddleBrainEnabled\(\)/.test(mbSeam[0])
+  && /return middleBrainCompressPipeline\(characterId, userMessage, opts\)/.test(mbSeam[0]),
+  'middleBrainExecute 未按 readiness → pipeline 定义');
+check('middleBrain.seamCanonicalOnly', !/window\.middleBrainExecute\s*=/.test(mbText),
+  'middleBrainExecute 被挂成 window 兼容别名（会重新变成散落全局依赖）');
+const mbConsumerStart = comMainText.indexOf('P11-1C：production 只经 canonical facade');
+const mbConsumerEnd = comMainText.indexOf("console.warn('[MiddleBrain] ctx failed'", mbConsumerStart);
+const mbConsumerBlock = mbConsumerStart >= 0 && mbConsumerEnd > mbConsumerStart ? comMainText.slice(mbConsumerStart, mbConsumerEnd) : '';
+check('middleBrain.consumerFacadeOnly', !!mbConsumerBlock
+  && /window\.IB&&window\.IB\.middleBrain/.test(mbConsumerBlock)
+  && /_mbFacade\.middleBrainExecute\(/.test(mbConsumerBlock)
+  && !/window\._middleBrain|__middleBrainContracts|window\.middleBrain\w+/.test(mbConsumerBlock),
+  'single-chat 未只经 IB.middleBrain.middleBrainExecute');
+const mbSeamNames = [...new Set([...mbPublicExpected, ...mbWinExpected])].filter(n => n !== 'middleBrainExecute');
+const mbConsumerLeaks = mbConsumerBlock ? mbSeamNames.filter(n => mbConsumerBlock.includes(n)) : ['consumer block not found'];
+check('middleBrain.consumerNoInternalSymbols', mbConsumerLeaks.length === 0,
+  'consumer 仍点名门面/兼容符号: ' + mbConsumerLeaks.join(', '));
+const mbContractLeaks = sources.filter(f => !mbLayerFiles.includes(path.basename(f)))
+  .filter(f => /__middleBrainContracts/.test(fs.readFileSync(f, 'utf8')))
+  .map(f => path.relative(root, f));
+check('middleBrain.contractsNotLeaked', mbContractLeaks.length === 0, '内部层契约泄漏给 Middle Brain 之外的生产代码: ' + mbContractLeaks.join(', '));
+const mbAliasLeaks = sources.filter(f => f.endsWith('.js') && !mbLayerFiles.includes(path.basename(f)))
+  .filter(f => {
+    const t = fs.readFileSync(f, 'utf8');
+    return mbSeamNames.some(n => t.includes(n)) || /\b_middleBrain\b/.test(t);
+  })
+  .map(f => path.relative(root, f));
+check('middleBrain.compatNotCanonical', mbAliasLeaks.length === 0,
+  'production 仍依赖 MB 兼容别名/门面符号（_middleBrain / window.middleBrain* 等）: ' + mbAliasLeaks.join(', '));
 
 console.log(failures ? `\nFrontend structure regression failed: ${failures}` : '\nFrontend structure regression passed ✔');
 process.exit(failures ? 1 : 0);

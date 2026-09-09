@@ -1,11 +1,12 @@
 ﻿/* ====================================================================
-   Middle Brain · Thin Compatibility Facade + Assembly Root（P11-1A / 1B）
+   Middle Brain · Thin Compatibility Facade + Assembly Root + Execution Seam（P11-1A / 1B / 1C）
    --------------------------------------------------------------------
-   本文件不含任何业务逻辑，只做四件事：
+   本文件不含任何业务逻辑，只做五件事：
      1. 编排：Admission Gate →（YES）Astra →（失败/NO）本地 pipeline
-     2. 组装：按 MB_PUBLIC_API 把四层冻结契约拼成 canonical 门面 IB.middleBrain
-     3. 兼容代理：window.* 43 个公开符号 + window._middleBrain（1A 不删除）
-     4. 初始化设置卡片（与拆分前执行时机逐字一致）
+     2. 执行缝：middleBrainExecute = readiness 判定 + pipeline（生产调用方唯一入口，P11-1C）
+     3. 组装：按 MB_PUBLIC_API 把四层冻结契约拼成 canonical 门面 IB.middleBrain
+     4. 兼容代理：window.* 43 个公开符号 + window._middleBrain（1A 不删除）
+     5. 初始化设置卡片（与拆分前执行时机逐字一致）
    四层实现与其唯一出口（IB.__middleBrainContracts）：
      middle-brain-config.js  · config → MBC.config（无上游依赖）
      middle-brain-policy.js  · policy → MBC.policy（依赖 config）
@@ -13,7 +14,9 @@
      middle-brain-judge.js   · judge  → MBC.judge （依赖 config / policy / astra）
    依赖是单向 DAG：config ← policy ← astra ← judge ← facade；层间只读冻结契约。
    P11-1B 已删除 P11-1A 的共享可写 namespace（唯一入口现为 IB.__middleBrainContracts）。
-   生产唯一消费者：communication.js single-chat 路径（经 IB.middleBrain）。
+   P11-1C：生产唯一消费者 communication.js single-chat 只经 IB.middleBrain.middleBrainExecute
+     进入 Middle Brain——不读 IB.__middleBrainContracts、不调用层契约、不自行编排 readiness、
+     不依赖 window.* 兼容别名作为 canonical path。
    拆分只动位置，不改 observable behavior。
    ==================================================================== */
 (function (root) {
@@ -58,6 +61,20 @@
   }
   function middleBrainAstraEnabled() { return true; }  /* 启用开关由 middleBrainReady 判定 */
 
+  /* ── canonical execution seam（P11-1C）────────────────────────────────
+     生产调用方（single-chat）唯一执行入口。语义 = P11-1A 之前 communication.js 自己
+     编排的那两步，逐字搬进来，不新增任何判定：
+       未启用（enabled/endpoint/model 任一缺失）→ 返回 null，调用方不做任何事；
+       已启用 → 执行 middleBrainCompressPipeline，返回其结果（source: 'astra' | 'local'）。
+     调用方因此不需要知道 config/policy/astra/judge，也不需要知道 isMiddleBrainEnabled /
+     middleBrainCompressPipeline 等符号，只需处理"有结果且 source==='astra' 才注入"。
+     注：readiness 判定沿用 isMiddleBrainEnabled（不含 apiKey），与迁移前完全一致；
+     真正的 Astra 就绪判定仍由 Admission Gate 负责（apiKey 缺失 → local 兜底）。 */
+  async function middleBrainExecute(characterId, userMessage, opts) {
+    if (!(await CFG.isMiddleBrainEnabled())) return null;
+    return middleBrainCompressPipeline(characterId, userMessage, opts);
+  }
+
   /* ── 公共 API 组装表（P11-1B）────────────────────────────────────────
      每项 = [public key, owner layer]；key 顺序即 IB.middleBrain 的键顺序，
      由 test_frontend_structure.js 锁定（不得重排 / 改名 / 改 owner）。
@@ -77,6 +94,7 @@
     ['middleBrainContextPipeline', 'policy'],
     ['middleBrainAstraInvoke', 'astra'],
     ['middleBrainCompressPipeline', 'facade'],
+    ['middleBrainExecute', 'facade'],
     ['middleBrainAdmissionGate', 'policy'],
     ['middleBrainAdmissionGateReset', 'policy'],
     ['_mbAnalyzeSignals', 'policy'],
@@ -101,14 +119,16 @@
   var MB_LAYERS = {
     config: CFG, policy: POL, astra: ASTRA, judge: JUDGE,
     /* facade 自身导出的符号（不来自任何层契约） */
-    facade: { middleBrainCompressPipeline: middleBrainCompressPipeline, middleBrainAstraEnabled: middleBrainAstraEnabled }
+    facade: { middleBrainCompressPipeline: middleBrainCompressPipeline, middleBrainExecute: middleBrainExecute, middleBrainAstraEnabled: middleBrainAstraEnabled }
   };
   var _mbApi = {};
   MB_PUBLIC_API.forEach(function (entry) { _mbApi[entry[0]] = MB_LAYERS[entry[1]][entry[0]]; });
 
   /* ── canonical 门面 + 兼容代理 ────────────────────────────────────────
      IB.middleBrain 是唯一 canonical 入口（与 window._middleBrain 同一对象）；
-     window.* 为 1A 期间的兼容代理，语义与拆分前逐字一致，暂不删除。 */
+     window.* 为 1A 期间的兼容代理，语义与拆分前逐字一致，暂不删除。
+     注意：middleBrainExecute（P11-1C 执行缝）**故意不挂 window 兼容别名**，
+     避免它退化成一个新的散落全局依赖；canonical 路径只有 IB.middleBrain。 */
   root._middleBrain = _mbApi;
   root.IB = root.IB || {};
   root.IB.middleBrain = _mbApi;

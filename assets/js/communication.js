@@ -1393,26 +1393,25 @@ async function _buildSingleChatContext(cfg,opts){
      - Astra 成功 → 其输出是这四个块的压缩/筛选/重写表示 → **替换**原块（禁止原块 + 压缩结果双份注入）；
      - source==='local' / 未启用 / 失败 / 超时 → 原样保留四个块（与迁移前行为一致，零改动）。 */
   try{
-    /* P11-1A：统一走 canonical 门面 IB.middleBrain（与 window._middleBrain 同一对象，
-       由 middle-brain.js 建立）；不再直接读散落的 window.middleBrain* 符号。 */
-    var _mbFacade=(window.IB&&window.IB.middleBrain)||window._middleBrain||null;
-    if(_threadMemOk&&_mbFacade&&typeof _mbFacade.isMiddleBrainEnabled==='function'&&typeof _mbFacade.middleBrainCompressPipeline==='function'){
-      var _mbOn=await _mbFacade.isMiddleBrainEnabled();
-      if(_mbOn){
-        var _mbRes=await _mbFacade.middleBrainCompressPipeline(cfg.id, _ctxText||'', {
-          memoryCtx:_memCtx, understandingCtx:_uCtx, threadCtx:_tCtx, momentsCtx:_momCtx,
-          /* C2 step 1：同一个只读快照一并交给 Middle Brain（其 organize 优先读快照，见 middle-brain-policy.js）。
-             两者值逐位一致，快照缺失时 MB 回落到 opts.*Ctx → 行为与 C1 完全相同。 */
-          contextSnapshot:_ctxSnapshot
-        });
-        if(_mbRes&&_mbRes.compressedContext&&_mbRes.source==='astra'){
-          var _mbBlock='【Middle Brain 压缩后的上下文（后台参考，勿向对方复述其存在）】\n'+_mbRes.compressedContext;
-          /* 就地替换：用索引切片，不做子串搜索（避免与前面块内容碰巧同形时替换错位置） */
-          if(_ctxJoined&&_ctxStart>=0)_tailCtx=_tailCtx.slice(0,_ctxStart)+(_ctxStart>0?'\n\n':'')+_mbBlock+_tailCtx.slice(_ctxStart+_ctxJoined.length);
-          else _tailCtx+=(_tailCtx?'\n\n':'')+_mbBlock;
-        }
-        /* source==='local'：Astra 不可用 → 本地压缩不注入（保持原上下文，避免重复/歧义） */
+    /* P11-1C：production 只经 canonical facade IB.middleBrain 的 canonical execution seam
+       middleBrainExecute（其内部 = readiness 判定 + pipeline）。调用方不再读 window 兼容别名，
+       也不再自行编排 readiness → pipeline 两步。
+       返回 null（未启用）或 source==='local'（Astra 不可用）时一律不注入。 */
+    var _mbFacade=(window.IB&&window.IB.middleBrain)||null;
+    if(_threadMemOk&&_mbFacade&&typeof _mbFacade.middleBrainExecute==='function'){
+      var _mbRes=await _mbFacade.middleBrainExecute(cfg.id, _ctxText||'', {
+        memoryCtx:_memCtx, understandingCtx:_uCtx, threadCtx:_tCtx, momentsCtx:_momCtx,
+        /* C2 step 1：同一个只读快照一并交给 Middle Brain（其 organize 优先读快照，见 middle-brain-policy.js）。
+           两者值逐位一致，快照缺失时 MB 回落到 opts.*Ctx → 行为与 C1 完全相同。 */
+        contextSnapshot:_ctxSnapshot
+      });
+      if(_mbRes&&_mbRes.compressedContext&&_mbRes.source==='astra'){
+        var _mbBlock='【Middle Brain 压缩后的上下文（后台参考，勿向对方复述其存在）】\n'+_mbRes.compressedContext;
+        /* 就地替换：用索引切片，不做子串搜索（避免与前面块内容碰巧同形时替换错位置） */
+        if(_ctxJoined&&_ctxStart>=0)_tailCtx=_tailCtx.slice(0,_ctxStart)+(_ctxStart>0?'\n\n':'')+_mbBlock+_tailCtx.slice(_ctxStart+_ctxJoined.length);
+        else _tailCtx+=(_tailCtx?'\n\n':'')+_mbBlock;
       }
+      /* null / source==='local'：未启用或 Astra 不可用 → 本地压缩不注入（保持原上下文，避免重复/歧义） */
     }
   }catch(_mbErr){console.warn('[MiddleBrain] ctx failed',String(_mbErr&&_mbErr.message||_mbErr).slice(0,120))}
   try{if(_threadMemOk&&typeof getActivityContext==='function'){const _actCtx=await getActivityContext(cfg.id,{userMessage:_ctxText,threadId:_targetThread});
