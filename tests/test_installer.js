@@ -188,6 +188,7 @@ check('payload contains the full application closure', () => {
   const files = resolved.files.map(f => f.to);
   const set = new Set(files);
   for (const need of ['InternalBeyond.html', 'VERSION', 'runtime/product-version.js', 'runtime/boot-state.js',
+    'runtime/update-manifest.js',
     'runtime/launch-internal-beyond.js', 'runtime/local-services-runner.js', 'services/internal-beyond-server.js',
     'services/ib-bridge-service.js', 'services/active-message-service.js', '启动 InternalBeyond.vbs',
     'assets/js/guide-beginner.js', 'assets/css/guide-beginner.css', 'assets/js/diagnostics.js',
@@ -244,6 +245,65 @@ check('staging is guarded against wiping a non-staging directory', () => {
   const bad = manifest.stage(path.join(ROOT, 'assets'), { clean: true });
   assert.strictEqual(bad.ok, false, 'staging must refuse a non-staging target');
   assert.ok(fs.existsSync(path.join(ROOT, 'assets', 'js')), 'refusal must not have deleted anything');
+});
+
+/* ── [3b] release contract: build-side wiring (U1) ──────────────────────── */
+console.log('\n[3b] update manifest wiring (U1)');
+
+check('build script keeps the UTF-8 BOM PowerShell 5.1 needs', () => {
+  /* PowerShell 5.1 decodes a BOM-less file as ANSI, which turns the Chinese
+     [FAIL]/Write-Ok messages into mojibake and can break string literals
+     outright. The edit tool strips BOMs (docs/TROUBLESHOOTING.md T10), and a
+     stripped BOM makes the whole build fail to parse. */
+  const raw = fs.readFileSync(path.join(ROOT, 'scripts', 'build-installer.ps1'));
+  assert.strictEqual(raw[0], 0xEF, 'build-installer.ps1 must start with a UTF-8 BOM');
+  assert.strictEqual(raw[1], 0xBB, 'build-installer.ps1 must start with a UTF-8 BOM');
+  assert.strictEqual(raw[2], 0xBF, 'build-installer.ps1 must start with a UTF-8 BOM');
+});
+
+check('build produces the manifest from the bytes it just produced', () => {
+  assert.ok(/Write-Step '7\/9' 'update manifest'/.test(BUILD_SRC), 'the manifest must be its own numbered step');
+  for (const flag of ['--write', '--version', '--sha256', '--sizeBytes', '--productVersion']) {
+    assert.ok(BUILD_SRC.indexOf(flag) >= 0, 'build must pass ' + flag + ' to the shared module');
+  }
+});
+
+check('manifest step runs after the installer hash step', () => {
+  const hashAt = BUILD_SRC.indexOf("Write-Step '6/9' 'SHA-256'");
+  const manAt = BUILD_SRC.indexOf("Write-Step '7/9' 'update manifest'");
+  assert.ok(hashAt > 0 && manAt > hashAt, 'the hash must exist before the manifest can pin it');
+});
+
+check('build never hand-writes the download URL', () => {
+  assert.ok(BUILD_SRC.indexOf('releases/download') < 0, 'the URL comes from runtime/update-manifest.js');
+  assert.ok(BUILD_SRC.indexOf('github.com/yydye') < 0, 'the repository URL belongs to one module only');
+});
+
+check('build ties the manifest URL asset name to the file it actually produced', () => {
+  /* ISCC's OutputBaseFilename and installerAssetName() are two independent
+     spellings; only comparing them against the real output closes the drift. */
+  assert.ok(/\$urlAsset/.test(BUILD_SRC), 'must extract the asset segment from the manifest URL');
+  assert.ok(/\$urlAsset -ne \$exeItem\.Name/.test(BUILD_SRC), 'must compare it against the built file name');
+});
+
+check('build confirms the PE product version before writing the manifest', () => {
+  assert.ok(/VersionInfo\.ProductVersion/.test(BUILD_SRC), 'must read ProductVersion back from the exe');
+  assert.ok(/PE ProductVersion \(\$peVersion\) 与 VERSION/.test(BUILD_SRC), 'a PE/VERSION mismatch must fail the build');
+  assert.ok(/Get-Sha256 \$exe/.test(BUILD_SRC), 'the manifest hash must be the hash of the built exe');
+});
+
+check('releasedAt/notes are explicit inputs, never fabricated by the build', () => {
+  assert.ok(/\[string\]\$ReleasedAt/.test(BUILD_SRC) && /\[string\]\$NotesFile/.test(BUILD_SRC),
+    'both must be explicit build parameters');
+  /* The build may print its own local build time inside SHA256SUMS.txt comments,
+     but nothing may auto-fill releasedAt (runtime/update-manifest.js has no clock). */
+  const manifestCall = BUILD_SRC.slice(BUILD_SRC.indexOf("Write-Step '7/9'"), BUILD_SRC.indexOf("Write-Step '8/9'"));
+  assert.ok(!/Get-Date/.test(manifestCall), 'the manifest step must not invent a timestamp');
+});
+
+check('build preflight validates the optional release inputs', () => {
+  assert.ok(/-NotesFile 指定的文件不存在/.test(BUILD_SRC), 'a missing notes file must fail the build');
+  assert.ok(/ISO-8601 UTC/.test(BUILD_SRC), 'a malformed -ReleasedAt must fail the build');
 });
 
 /* ── [4] Inno Setup contract ───────────────────────────────────────────── */

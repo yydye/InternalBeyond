@@ -738,3 +738,64 @@ MIME 归一（BMP / SVG 栅格化）留给 P21，Transport Profiles 登记为 P2
 `test_chat_smoke_provider_contract.js` 全绿（真实 `sendChatMessage → callApiChat → _callApiChatOnce` 链上
 断言 anthropic body「顶层 system 为字符串 + messages 无 system role」）、
 `test_runtime_convergence_moments.js` 0 failed（Moments 注入 system 消息后三协议 body 契约不回归）。
+
+## 2026-09-10 · U1 · 更新发布契约（update-stable.json / Stable 通道）
+
+Zero-Touch Update 的第一阶段。U0 只读审计确认：IB 有完整的「被更新」基础设施（覆盖安装、
+身份归因停止、白名单载荷、失败回滚），但**产品侧没有任何「更新别人」的能力**——0 处版本检查、
+0 个下载器、0 个 Update UI，且静默升级**刻意不重启**应用。U1 只做发布侧契约：先把「最新版是什么、
+它的字节是什么」变成机器可读，其余交给 U2–U4。
+
+**新增 `runtime/update-manifest.js`（唯一真源）**：schema（`internalbeyond.update` v1）+
+**唯一** URL 构造 `installerUrl()`（构建期使用）+ 客户端 `validate()` / `parseInstallerUrl()`。
+职责刻意分离：**构建端构造，客户端只校验/解析**，所以没有任何脚本或人能自己拼 tag / asset 名。
+零依赖、无 fs、无网络、**无时钟**（有测试守着）。
+
+**构建期（`build-installer.ps1` 新增第 7 步）**：EXE 与 SHA256SUMS 之后产出
+`dist\update-stable.json`，三个值全部取自本次构建刚产生的字节——`sha256` 用第 6 步实测值、
+`sizeBytes` 取实际长度、`productVersion` 从 exe 的 PE `VersionInfo.ProductVersion` **读回**并
+必须等于 `VERSION`；再比一次 **清单 URL 的资产名 vs 本次真正产出的文件名**（ISCC 的
+`OutputBaseFilename` 与 `installerAssetName()` 是两处独立拼写，只有拿真实字节比对才能钉死，
+否则清单可能指向不存在的资产）。任一不符 → 构建失败：宁可不产出，也不产出和字节对不上的清单。
+
+**诚实性**：`releasedAt` / `notes` 没有可靠的构建期来源，因此只在显式传参
+（`-ReleasedAt` / `-NotesFile`）时写入，**没传就省略并告警，绝不编造时间戳**；
+`-MinimumVersion` 可选。为守住"清单只能和同一次构建的 exe 一起发布"这条硬规则，
+实测记录了同一 `VERSION` 两次构建字节不同（已发布 v1.0.0 = 50,724,579 B /
+`5f7353b8…`；本机重建 = 50,788,752 B / `e46df857…`），写进发布手册。
+
+**新增 `docs/RELEASE.md`**：发行契约唯一真源——产物清单、**发布顺序即契约**
+（exe → SHA256SUMS.txt → update-stable.json **最后**；上传清单即进入 Stable 通道，
+半成品发行对客户端不可见）、字段表、构建期闸门、发布复核三条等式、**安全边界**
+（未签名：SHA-256 只证明「字节与清单一致」，**不是**发布者身份验证）以及分发可达性实测记录。
+
+**U0 冻结决策入库**（DECISIONS 新增 U 系列）：U-D1 manifest 载体与发布顺序、U-D2 UI 落
+Diagnostics（不新建页面）、U-D3 固定静默安装参数 `/IBRELAUNCH=1`、U-D4 检查/校验/semver/cache
+以 Node 为唯一真源、U-D5 **重启由 Inno 完成、helper 绝不活过安装阶段**，外加全阶段安全不变量。
+同时更正 D18：仓库当前是 **public**（实测 `"private": false`），"保持 private"一条失效。
+
+**过程中发现的真实缺陷（已修）**：`edit` 工具剥掉 UTF-8 BOM 后，Windows PowerShell 5.1 按
+ANSI 解码 `build-installer.ps1` 的中文提示，直接导致**整个构建脚本解析失败**
+（`docs/TROUBLESHOOTING.md` T10 的又一次复发）。已补回 BOM，并新增静态守卫断言
+`build-installer.ps1` 必须带 BOM——这类"文件损坏但测试全绿"的坑不能再靠人眼发现。
+
+**分发可达性实测**（供 U2/U3 设计）：本机（中国大陆网络）`api.github.com` ✅、
+`objects.githubusercontent.com` ✅、`release-assets.githubusercontent.com` ✅，
+而 `github.com` / `raw.githubusercontent.com` / `codeload.github.com` ❌ 连接超时（10 s）。
+即 `/releases/latest/download/...` 入口在部分网络不可达而 API 端点与资产落点可达。
+结论：更新检查**绝不能进入 launcher 启动关键路径**，且一切网络失败必须 fail-open。
+
+| 文件 | 改动 |
+|---|---|
+| `runtime/update-manifest.js` | **新增**：更新清单契约唯一真源（schema / 唯一 URL 构造 / validate / parseInstallerUrl / writeManifest + CLI `--write` / `--validate`） |
+| `scripts/build-installer.ps1` | 新增第 7 步「update manifest」（8 步流水线 → 9 步）；新增 `-ReleasedAt` / `-NotesFile` / `-MinimumVersion` 及 preflight 校验；PE 版本读回与 URL 资产名比对两道闸门；summary 打印发布顺序 |
+| `scripts/release-manifest.js` | 白名单新增 `runtime/update-manifest.js`（客户端要用，必须随包发行） |
+| `tests/test_update_manifest.js` | **新增** 33 项：冻结身份、build() 诚实性（省略而非编造）、validate() 接受/拒绝矩阵、parseInstallerUrl、writeManifest 拒绝落盘、无执行面、依赖收敛 |
+| `tests/test_installer_build.js` | 新增 [2b] 真实构建期清单断言 5 项（schema 有效 / hash+size 实测 / URL 版本固定 / 不编造时间戳 / 不进载荷） |
+| `tests/test_installer.js` | 新增 [3b] 构建接线 8 项（含 BOM 守卫、清单步骤在 hash 之后、资产名绑定、可选入参 preflight） |
+| `tests/test-all.js` | 登记 `test_update_manifest.js`（static，不联网、不安装） |
+| `docs/RELEASE.md` | **新增**：发布契约唯一真源 |
+| `docs/DECISIONS.md` | 新增 U-D1–U-D5 冻结决策 + 安全不变量；更正 D18 仓库可见性 |
+
+验证：`test_update_manifest.js` 33 ✔、`test_installer.js` 46 ✔、
+`test_installer_build.js --force` 15 ✔（真实 ISCC 构建 34 s，产出清单自校验通过，**未安装任何东西**）。

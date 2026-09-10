@@ -30,6 +30,7 @@ const { execFileSync } = require('child_process');
 const manifest = require(path.join(ROOT, 'scripts', 'release-manifest.js'));
 const audit = require(path.join(ROOT, 'scripts', 'release-audit.js'));
 const productVersion = require(path.join(ROOT, 'runtime', 'product-version.js'));
+const updateManifest = require(path.join(ROOT, 'runtime', 'update-manifest.js'));
 
 const argv = process.argv.slice(2);
 const ENABLED = argv.indexOf('--force') >= 0 || process.env.IB_INSTALLER_BUILD === '1';
@@ -39,6 +40,7 @@ const STAGING = path.join(DIST, 'staging');
 const PRODUCT = productVersion.read();
 const EXE = path.join(DIST, 'InternalBeyond-Setup-' + PRODUCT.version + '.exe');
 const SUMS = path.join(DIST, 'SHA256SUMS.txt');
+const UPD = path.join(DIST, 'update-stable.json');
 
 let pass = 0, fail = 0, skip = 0;
 const failures = [];
@@ -99,6 +101,47 @@ if (!ENABLED) {
     const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
       '(Get-AuthenticodeSignature -LiteralPath ' + JSON.stringify(EXE) + ').Status'], { encoding: 'utf8', windowsHide: true }).trim();
     assert.strictEqual(out, 'NotSigned', 'expected unsigned, got ' + out);
+  });
+
+  console.log('\n[2b] update manifest (Stable channel contract)');
+  check('update-stable.json produced and schema-valid', () => {
+    assert.ok(fs.existsSync(UPD), 'update-stable.json missing: ' + UPD);
+    const parsed = JSON.parse(fs.readFileSync(UPD, 'utf8'));
+    const report = updateManifest.validate(parsed);
+    assert.strictEqual(report.ok, true, 'manifest invalid: ' + JSON.stringify(report.errors));
+    assert.strictEqual(parsed.channel, 'stable');
+    assert.strictEqual(parsed.version, PRODUCT.version);
+  });
+  check('manifest hash and size are measured from the built installer, not re-typed', () => {
+    const parsed = JSON.parse(fs.readFileSync(UPD, 'utf8'));
+    assert.strictEqual(parsed.installer.sha256, sha256(EXE), 'manifest sha256 must match the built exe');
+    assert.strictEqual(parsed.installer.sizeBytes, fs.statSync(EXE).size, 'manifest sizeBytes must match the built exe');
+    const sumsText = fs.readFileSync(SUMS, 'ascii');
+    assert.ok(sumsText.toLowerCase().indexOf(parsed.installer.sha256) >= 0,
+      'SHA256SUMS.txt and the manifest must agree on the same hash');
+  });
+  check('manifest URL is complete, version-pinned and matches VERSION', () => {
+    const parsed = JSON.parse(fs.readFileSync(UPD, 'utf8'));
+    assert.strictEqual(parsed.installer.url, updateManifest.installerUrl(PRODUCT.version));
+    assert.strictEqual(parsed.installer.productVersion, PRODUCT.version);
+    const p = updateManifest.parseInstallerUrl(parsed.installer.url);
+    assert.strictEqual(p.ok, true, 'url must parse: ' + p.why);
+    assert.strictEqual(p.version, PRODUCT.version, 'the URL must be pinned to this build version');
+  });
+  check('manifest does not invent releasedAt or notes', () => {
+    const text = fs.readFileSync(UPD, 'utf8');
+    const parsed = JSON.parse(text);
+    /* This build ran without -ReleasedAt/-NotesFile, so both must be absent —
+       and whatever is present must not be a fabricated timestamp. */
+    if (!('releasedAt' in parsed)) assert.ok(true);
+    else assert.ok(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/.test(parsed.releasedAt));
+    assert.ok(text.indexOf('__unknown') < 0, 'no build-only field may reach the published file');
+  });
+  check('manifest never ships inside the payload', () => {
+    assert.strictEqual(fs.existsSync(path.join(STAGING, 'update-stable.json')), false,
+      'dist/update-stable.json is a release asset, not a payload file');
+    assert.strictEqual(manifest.resolve({}).files.some(f => /update-stable\.json$/.test(f.to)), false,
+      'the whitelist must not carry the manifest');
   });
 
   console.log('\n[3] staging (kept for inspection)');

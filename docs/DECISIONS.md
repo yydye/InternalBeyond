@@ -106,4 +106,54 @@ Moments "output unparseable" 根因是推理型模型把 maxTokens=900 耗在 re
 
 - 2026-08-04 用户曾要求"不要提交、不要碰 GitHub"；2026-08-14 起建立本地安全基线：全量测试绿后才做本地提交（`800411d` `refactor: modularize local services and frontend domains`，将 assets/、active/、bridge/、游戏子模块和测试入口纳入版本控制）；`.dsh-recovery/` 加入 .gitignore。
 - **2026-08-26 用户决定发布**：创建 GitHub **私有仓库**并推送，旧的"不碰远程"约束解除。
-- 继续遵守：全量测试绿才提交；仓库保持 private（含个人应用内容）；敏感配置（AI API Key、酷狗 Cookie）只存在于本机 `%LOCALAPPDATA%`，永不入库——发布前已完成密钥扫描（kugouCookie 在库内均为占位符/空默认值/脱敏输出）。
+- 继续遵守：全量测试绿才提交；敏感配置（AI API Key、酷狗 Cookie）只存在于本机 `%LOCALAPPDATA%`，永不入库——发布前已完成密钥扫描（kugouCookie 在库内均为占位符/空默认值/脱敏输出）。
+- **2026-09-10 事实更正：仓库当前是 public，不是 private。** U1 实现期实测 `GET api.github.com/repos/yydye/InternalBeyond` 返回 `"private": false`（`visibility: public`，默认分支 `master`）。README 面向普通用户提供 Releases 下载链接，也只有公开仓库才成立。因此上面那条"仓库保持 private"**已失效**，改按公开仓库处理：更新功能依赖的 `releases/latest/download/...` 匿名读取正是建立在公开只读之上。**入库内容仍需按公开可见来审查**（历史密钥扫描结论不变，但仍需继续遵守）。
+
+## U-D1–U-D5. Zero-Touch Update 冻结决策（U 系列）
+
+> 2026-09-10 用户批准 Zero-Touch Update **U1–U4** 并冻结以下架构决策。U0 为只读审计（已完成，无改动）。
+> 实现必须逐阶段（U1→U2→U3→U4）独立测试、独立提交；**偏离以下任一条必须先停下报告，不得就地"顺手改掉"。**
+> 发布侧契约细节见 [RELEASE.md](RELEASE.md)。
+
+### U-D1 · Manifest 载体与发布顺序
+
+- Stable 更新契约采用 **GitHub Release asset** `update-stable.json`，客户端稳定读取
+  `https://github.com/yydye/InternalBeyond/releases/latest/download/update-stable.json`。
+- 清单内 installer URL 必须是**完整、版本固定**的 URL；**禁止客户端自行拼 tag / asset 名**。
+  唯一构造点是 `runtime/update-manifest.js` 的 `installerUrl()`（构建期使用），客户端只
+  `validate()` + `parseInstallerUrl()`。
+- 发布顺序固定：`...exe` → `SHA256SUMS.txt` → `update-stable.json`（**LAST**）。
+  上传清单 = 该版本正式进入 Stable 通道。
+
+### U-D2 · UI 落点
+
+Update UI 放入现有 **Diagnostics** 页，**不新建 Settings / Update 页面**。展示当前版本、更新通道
+（Stable）、自动检查更新开关、[检查更新]；有更新时显示版本 + 更新说明 + [稍后] / [下载并安装]。
+
+### U-D3 · 安装参数
+
+自动更新固定使用 `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /IBRELAUNCH=1`。
+用户在 IB 内点击一次"下载并安装"**即视为安装确认**，不再显示第二套 Inno Setup UI。
+
+### U-D4 · 检查运行时（单一真源）
+
+更新检查、manifest schema 校验、semver compare、缓存 **全部由 Node 侧完成**，是唯一真源。
+Browser 只负责 UI；**禁止 browser 自己实现第二份 semver / manifest validator**。
+
+### U-D5 · 重启由安装器完成
+
+成功安装后的 relaunch 由 **Inno Setup** 完成。**禁止 bundled Node updater helper 活过安装阶段**：
+helper 只做「下载 → hash/version 校验 → spawn installer detached → **EXIT**」（必须在安装器开始
+替换 `node.exe` 之前退出），随后由安装器 `StopInternalBeyond → wait unlock → replace →
+validate runtime → /IBRELAUNCH=1 → wscript 启动 InternalBeyond.vbs`。
+**保留现有普通交互安装 `[Run] postinstall skipifsilent` 行为，不得为了 updater 改坏它。**
+
+### U 系列安全不变量（全阶段冻结）
+
+HTTPS only · hash 不符**绝不执行** · installer 版本不符**绝不执行** · `shell:false` ·
+不执行远端命令 · 不做自修改/热更新 JS · 不按端口盲杀（复用 `ib-stop.js`）·
+更新失败不得阻塞启动（fail-open）· 用户数据（在 `{app}` 之外）不受影响 ·
+**更新载荷绝不下载进 `{app}`** · 不得存在使用 bundled `node.exe` 的长命 helper。
+未代码签名的事实必须留在文档中；**SHA-256 只能证明「字节与清单一致」，绝不能描述成
+「验证发布者身份」。**
+

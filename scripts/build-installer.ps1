@@ -4,7 +4,8 @@
   InternalBeyond · one-command release build (P7).
 
 .DESCRIPTION
-  Produces dist\InternalBeyond-Setup-<version>.exe plus dist\SHA256SUMS.txt.
+  Produces dist\InternalBeyond-Setup-<version>.exe, dist\SHA256SUMS.txt and
+  dist\update-stable.json (the Stable update channel contract).
 
   Pipeline (no manual file copying anywhere):
     1. preflight        — VERSION / pin / Inno Setup / required sources
@@ -13,10 +14,24 @@
     4. content + secret — release-audit over the staged bytes
     5. compile          — ISCC (per-user, no UAC, no console window)
     6. hash             — installer SHA-256 → dist\SHA256SUMS.txt
-    7. install audit    — OPT-IN only (-InstallAudit): silent install into a
+    7. update manifest  — dist\update-stable.json, assembled from the bytes this
+                          run just produced (hash + size + PE product version are
+                          all read back, never re-typed) and self-validated by
+                          runtime\update-manifest.js
+    8. install audit    — OPT-IN only (-InstallAudit): silent install into a
                           temp dir, enumerate + audit the installed payload,
                           then uninstall (tests\test_installer_smoke.js --install-audit)
-    8. summary
+    9. summary
+
+  Release order is a contract, not a preference (docs\RELEASE.md):
+      InternalBeyond-Setup-<version>.exe  →  SHA256SUMS.txt  →  update-stable.json
+  The manifest goes LAST; uploading it is what puts the version on the Stable
+  update channel, so a half-uploaded release is never advertised to clients.
+
+  `releasedAt` and `notes` have no reliable build-time source, so they are only
+  written when passed explicitly (-ReleasedAt / -NotesFile). When they are
+  missing the field is OMITTED and the build says so — it never invents a
+  timestamp or release prose.
 
   The install audit is off by default: the P7 test budget allows exactly one
   real install smoke per built installer (docs\P7-TEST-BUDGET.md), so a plain
@@ -31,8 +46,19 @@
 .PARAMETER IsccPath
   Explicit path to ISCC.exe. Default: ISCC on PATH, then Program Files.
 
+.PARAMETER ReleasedAt
+  ISO-8601 UTC release timestamp for the update manifest, e.g.
+  2026-09-10T06:00:00Z. Optional; omitted from the manifest when not given.
+
+.PARAMETER NotesFile
+  UTF-8 file with user-facing release notes for the update manifest. Optional;
+  omitted when not given. Rendered as plain text in Diagnostics (never HTML).
+
+.PARAMETER MinimumVersion
+  Oldest version allowed to update in place (informational for now). Optional.
+
 .PARAMETER InstallAudit
-  Run step 7 (isolated install + payload audit + uninstall). Off by default.
+  Run step 8 (isolated install + payload audit + uninstall). Off by default.
 
 .PARAMETER SkipInstallAudit
   Accepted for compatibility; skipping the audit is now the default.
@@ -49,6 +75,9 @@
 [CmdletBinding()]
 param(
   [string]$IsccPath = '',
+  [string]$ReleasedAt = '',
+  [string]$NotesFile = '',
+  [string]$MinimumVersion = '',
   [switch]$InstallAudit,
   [switch]$SkipInstallAudit,
   [switch]$KeepStaging,
@@ -74,6 +103,8 @@ $pinFile   = Join-Path $repo 'installer\runtime-pin.json'
 $versionFile = Join-Path $repo 'VERSION'
 $nodeExe   = Join-Path $repo 'runtime\node\node.exe'
 $smoke     = Join-Path $repo 'tests\test_installer_smoke.js'
+$manifestOut = Join-Path $dist 'update-stable.json'
+$manifestTool = Join-Path $repo 'runtime\update-manifest.js'
 
 function Write-Step([string]$n, [string]$t) {
   Write-Host ''
@@ -135,7 +166,7 @@ function Resolve-Iscc {
 Write-Host 'InternalBeyond · release build (P7)' -ForegroundColor White
 
 # ── 1. preflight ────────────────────────────────────────────────────────────
-Write-Step '1/8' 'preflight'
+Write-Step '1/9' 'preflight'
 if (-not (Test-Path -LiteralPath $versionFile)) { Fail "缺少 $versionFile（唯一版本源）" }
 $version = (Get-Content -LiteralPath $versionFile -Raw -Encoding UTF8).Trim()
 if ($version -notmatch '^\d+\.\d+\.\d+$') { Fail "VERSION 内容非法：'$version'（期望 MAJOR.MINOR.PATCH）" }
@@ -152,10 +183,20 @@ foreach ($required in @(
     (Join-Path $repo 'installer\tools\ib-stop.js'),
     (Join-Path $repo 'scripts\release-manifest.js'),
     (Join-Path $repo 'scripts\release-audit.js'),
+    $manifestTool,
     (Join-Path $repo 'LICENSE'),
     (Join-Path $repo 'LICENSES\THIRD-PARTY-NODE.md')
   )) {
   if (-not (Test-Path -LiteralPath $required)) { Fail "缺少必需文件：$required" }
+}
+if ($NotesFile -ne '' -and -not (Test-Path -LiteralPath $NotesFile)) {
+  Fail "-NotesFile 指定的文件不存在：$NotesFile"
+}
+if ($ReleasedAt -ne '' -and $ReleasedAt -notmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$') {
+  Fail "-ReleasedAt 必须是 ISO-8601 UTC 时间戳，例如 2026-09-10T06:00:00Z（实际：'$ReleasedAt'）"
+}
+if ($MinimumVersion -ne '' -and $MinimumVersion -notmatch '^\d+\.\d+\.\d+$') {
+  Fail "-MinimumVersion 必须是 MAJOR.MINOR.PATCH（实际：'$MinimumVersion'）"
 }
 if ($InstallAudit) {
   # 显式要求的安装审计不允许静默降级：脚本缺失必须在编译前就失败。
@@ -166,7 +207,7 @@ $iscc = Resolve-Iscc
 Write-Ok "ISCC = $iscc"
 
 # ── 2. bundled runtime gate (fail hard, never fall back to system Node) ─────
-Write-Step '2/8' 'bundled Node runtime gate'
+Write-Step '2/9' 'bundled Node runtime gate'
 $script:stage = 'runtime gate'
 if (-not (Test-Path -LiteralPath $nodeExe)) {
   Fail @"
@@ -209,7 +250,7 @@ if ($requireCheck -ne 'ok') { Fail "内置 node.exe 无法加载内置模块：$
 Write-Ok "node.exe 可执行 · --version = $reported · process.version = $procVer"
 
 # ── 3. staging from the whitelist manifest ─────────────────────────────────
-Write-Step '3/8' 'staging (whitelist manifest)'
+Write-Step '3/9' 'staging (whitelist manifest)'
 $script:stage = 'staging'
 # 从此处起 dist\staging 归本次构建所有：之后任何失败都必须清掉它。
 $script:stagingOwned = $true
@@ -222,7 +263,7 @@ if (-not $stageResult.ok) { Fail "staging 不完整：$stageJson" }
 Write-Ok ("staged {0} files · {1:N1} MiB → {2}" -f $stageResult.staged, ($stageResult.totalBytes / 1MB), $stageResult.dir)
 
 # ── 4. content + secret audit on the staged bytes ──────────────────────────
-Write-Step '4/8' 'content + secret audit'
+Write-Step '4/9' 'content + secret audit'
 $script:stage = 'content + secret audit'
 if ($SkipAudit) {
   Write-Warn '已按 -SkipAudit 跳过（不推荐）'
@@ -247,7 +288,7 @@ if ($SkipAudit) {
 }
 
 # ── 5. compile ─────────────────────────────────────────────────────────────
-Write-Step '5/8' 'ISCC compile'
+Write-Step '5/9' 'ISCC compile'
 $script:stage = 'compile'
 $stagingAbs = (Resolve-Path -LiteralPath $staging).Path.TrimEnd('\')
 $distAbs = (Resolve-Path -LiteralPath $dist).Path.TrimEnd('\')
@@ -265,7 +306,7 @@ $exeItem = Get-Item -LiteralPath $exe
 Write-Ok ("{0} · {1:N1} MiB" -f $exeItem.Name, ($exeItem.Length / 1MB))
 
 # ── 6. hash ────────────────────────────────────────────────────────────────
-Write-Step '6/8' 'SHA-256'
+Write-Step '6/9' 'SHA-256'
 $script:stage = 'hash'
 $exeHash = Get-Sha256 $exe
 $sumsOut = Join-Path $dist 'SHA256SUMS.txt'
@@ -281,8 +322,67 @@ $lines | Set-Content -LiteralPath $sumsOut -Encoding ASCII
 Write-Ok "installer sha256 = $exeHash"
 Write-Ok "checksums → $sumsOut"
 
+# ── 7. update manifest (Stable channel contract) ───────────────────────────
+# 值全部来自本次构建刚刚产生的字节，绝不重新输入：hash 用第 6 步算出的值，
+# size 取文件实际长度，productVersion 从 PE 里读回来核对。三者任一不符即失败
+# —— 发布契约宁可不产出，也不能产出一份和 exe 对不上的清单。
+Write-Step '7/9' 'update manifest'
+$script:stage = 'update manifest'
+$peProduct = (Get-Item -LiteralPath $exe).VersionInfo.ProductVersion
+$peMatch = [regex]::Match([string]$peProduct, '\d+\.\d+\.\d+')
+if (-not $peMatch.Success) { Fail "无法从安装包读取 ProductVersion：'$peProduct'" }
+$peVersion = $peMatch.Value
+if ($peVersion -ne $version) {
+  Fail "安装包 PE ProductVersion ($peVersion) 与 VERSION ($version) 不一致；请检查 ISCC define 传递。"
+}
+Write-Ok "PE ProductVersion = $peVersion（与 VERSION 一致）"
+
+$manifestArgs = @(
+  $manifestTool, '--write', $manifestOut,
+  '--version', $version,
+  '--sha256', $exeHash,
+  '--sizeBytes', [string]$exeItem.Length,
+  '--productVersion', $peVersion
+)
+if ($ReleasedAt -ne '') { $manifestArgs += @('--releasedAt', $ReleasedAt) }
+if ($MinimumVersion -ne '') { $manifestArgs += @('--minimumVersion', $MinimumVersion) }
+if ($NotesFile -ne '') { $manifestArgs += @('--notesFile', (Resolve-Path -LiteralPath $NotesFile).Path) }
+
+$manifestJson = & $nodeExe @manifestArgs 2>&1 | Out-String
+$manifestCode = $LASTEXITCODE
+$manifestResult = $null
+try { $manifestResult = $manifestJson.Trim() | ConvertFrom-Json } catch { }
+if ($manifestCode -ne 0 -or -not $manifestResult -or -not $manifestResult.ok) {
+  if ($manifestResult -and $manifestResult.errors) {
+    $manifestResult.errors | ForEach-Object { Write-Host ("     ✗ {0} — {1}" -f $_.field, $_.why) -ForegroundColor Red }
+  }
+  Fail "更新清单生成失败（退出码 $manifestCode）：$manifestJson"
+}
+$man = $manifestResult.manifest
+# 反漂移闸门：清单 URL 的资产名必须就是这次真正产出的文件名。ISCC 的
+# OutputBaseFilename 与 runtime\update-manifest.js 的 installerAssetName() 是两处
+# 独立拼写，这里用真实字节把它们钉在一起 —— 否则清单可能指向一个不存在的资产。
+$urlAsset = ($man.installer.url -split '/')[-1]
+if ($urlAsset -ne $exeItem.Name) {
+  Fail "清单 URL 的资产名 ($urlAsset) 与实际产出文件 ($($exeItem.Name)) 不一致。"
+}
+Write-Ok ("update-stable.json → {0}" -f $manifestOut)
+Write-Ok ("  version {0} · {1:N1} MiB · sha256 {2}" -f $man.version, ($man.installer.sizeBytes / 1MB), $man.installer.sha256.Substring(0, 16))
+Write-Ok ("  url {0}" -f $man.installer.url)
+if ($manifestResult.warnings) {
+  $manifestResult.warnings | ForEach-Object { Write-Info ("  warn [{0}] {1}" -f $_.field, $_.why) }
+}
+# releasedAt / notes 没有可靠的构建期来源：没显式给就不写，绝不编造。
+if (-not $manifestResult.releasedAtSupplied) {
+  Write-Warn '清单未包含 releasedAt（未传 -ReleasedAt）：发布阶段可补，或接受缺省'
+}
+if (-not $manifestResult.notesSupplied) {
+  Write-Warn '清单未包含 notes（未传 -NotesFile）：用户在更新卡片上看不到更新说明'
+}
+Write-Info '发布顺序：exe → SHA256SUMS.txt → update-stable.json（清单最后上传才进入 Stable 通道）'
+
 # ── 7. install audit (opt-in: one real install per built installer) ────────
-Write-Step '7/8' 'install / content audit'
+Write-Step '8/9' 'install / content audit'
 $script:stage = 'install audit'
 if ($SkipInstallAudit) {
   Write-Info '安装审计已跳过（-SkipInstallAudit，现在也是默认行为）'
@@ -300,7 +400,7 @@ if ($SkipInstallAudit) {
 }
 
 # ── 8. summary ─────────────────────────────────────────────────────────────
-Write-Step '8/8' 'summary'
+Write-Step '9/9' 'summary'
 $script:stage = 'summary'
 if (-not $KeepStaging) { Remove-Staging; Write-Ok 'staging 已清理' } else { Write-Info "保留 staging：$staging" }
 Write-Host ''
@@ -310,5 +410,10 @@ Write-Host ("  installer  : {0}" -f $exe)
 Write-Host ("  size       : {0:N1} MiB ({1} bytes)" -f ($exeItem.Length / 1MB), $exeItem.Length)
 Write-Host ("  sha256     : {0}" -f $exeHash)
 Write-Host ("  checksums  : {0}" -f $sumsOut)
+Write-Host ("  manifest   : {0}" -f $manifestOut)
+Write-Host ''
+Write-Host '  发布（顺序即契约，清单最后）：' -ForegroundColor White
+Write-Host '    gh release create v<version> "<exe>" "dist\SHA256SUMS.txt" --title "InternalBeyond v<version>" --notes-file <notes>'
+Write-Host '    gh release upload v<version> "dist\update-stable.json"   # LAST: 进入 Stable 通道'
 Write-Host ''
 exit 0

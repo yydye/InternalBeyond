@@ -117,6 +117,9 @@ const GROUPS = [
       ['test_anthropic_wire_contract.js'],
       ['test_installer.js'],
       ['test_installer_mock.js'],
+      /* U1：更新清单契约（Stable 通道 schema / 唯一 URL 构造 / 客户端校验与解析），
+         纯 Node、不联网、不安装。真实构建期的清单断言在 test_installer_build.js --force。 */
+      ['test_update_manifest.js'],
       /* P12：Image Router / Image Scheduler 专项（纯 Node，确定性并发/优先级/失败恢复） */
       ['test_image_router.js'],
       /* P13：图片编辑 / 参考图解析专项（归一化/限额/选源优先级/lineage/多轮 A→B→C/edit 路由） */
