@@ -15,7 +15,7 @@
     6. hash             — installer SHA-256 → dist\SHA256SUMS.txt
     7. install audit    — OPT-IN only (-InstallAudit): silent install into a
                           temp dir, enumerate + audit the installed payload,
-                          then uninstall (test_installer_smoke.js --install-audit)
+                          then uninstall (tests\test_installer_smoke.js --install-audit)
     8. summary
 
   The install audit is off by default: the P7 test budget allows exactly one
@@ -65,7 +65,7 @@ $iss       = Join-Path $repo 'installer\InternalBeyond.iss'
 $pinFile   = Join-Path $repo 'installer\runtime-pin.json'
 $versionFile = Join-Path $repo 'VERSION'
 $nodeExe   = Join-Path $repo 'runtime\node\node.exe'
-$smoke     = Join-Path $repo 'test_installer_smoke.js'
+$smoke     = Join-Path $repo 'tests\test_installer_smoke.js'
 
 function Write-Step([string]$n, [string]$t) {
   Write-Host ''
@@ -142,6 +142,11 @@ foreach ($required in @(
     (Join-Path $repo 'LICENSES\THIRD-PARTY-NODE.md')
   )) {
   if (-not (Test-Path -LiteralPath $required)) { Fail "缺少必需文件：$required" }
+}
+if ($InstallAudit) {
+  # 显式要求的安装审计不允许静默降级：脚本缺失必须在编译前就失败。
+  if (-not (Test-Path -LiteralPath $smoke)) { Fail "-InstallAudit 需要安装审计脚本，但找不到：$smoke" }
+  Write-Ok "install audit script = $smoke"
 }
 $iscc = Resolve-Iscc
 Write-Ok "ISCC = $iscc"
@@ -264,7 +269,8 @@ if ($SkipInstallAudit) {
   Write-Info '需要隔离载荷审计时显式加 -InstallAudit'
   Write-Info '真实安装 smoke：node tests/test_installer_smoke.js --real-install-smoke'
 } elseif (-not (Test-Path -LiteralPath $smoke)) {
-  Write-Warn "缺少 $smoke，跳过"
+  # 显式安装审计绝不能降级成「跳过」：缺脚本即构建失败（非零退出）。
+  Fail "-InstallAudit 需要安装审计脚本，但找不到：$smoke`n  期望位置：tests\test_installer_smoke.js（测试套件位于 tests\）"
 } else {
   & $nodeExe $smoke '--install-audit' '--exe' $exe
   if ($LASTEXITCODE -ne 0) { Fail '安装审计未通过（安装后的载荷包含被禁止的内容或安装失败）' }
