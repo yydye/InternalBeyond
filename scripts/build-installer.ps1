@@ -22,7 +22,9 @@
   real install smoke per built installer (docs\P7-TEST-BUDGET.md), so a plain
   build never touches the machine. Run it deliberately, once.
 
-  Any failure aborts with a non-zero exit code and leaves dist\staging removed.
+  Any failure aborts with a non-zero exit code. From step 3 onwards a failure
+  also removes dist\staging again; a preflight or runtime-gate failure never
+  touches it, because this run has not taken it over yet.
 
 .PARAMETER IsccPath
   Explicit path to ISCC.exe. Default: ISCC on PATH, then Program Files.
@@ -56,7 +58,11 @@ $ErrorActionPreference = 'Stop'
 # Windows PowerShell 5.1 decodes native command output with the OEM code page by
 # default, while our Node tools emit UTF-8 JSON (audit reasons are Chinese).
 try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
+# $script:stage 只负责 [FAIL @ <stage>] 里的阶段名。是否清理 dist\staging 由
+# $script:stagingOwned 单独决定：只有第 3 步真正接管了 staging 之后，失败才允许
+# 删除它 —— preflight / runtime gate 失败绝不能删掉不是本次构建创建的目录。
 $script:stage = 'preflight'
+$script:stagingOwned = $false
 
 $repo      = Split-Path -Parent $PSScriptRoot
 $dist      = Join-Path $repo 'dist'
@@ -87,7 +93,7 @@ function Remove-Staging {
 function Fail([string]$message) {
   Write-Host ''
   Write-Host "[FAIL @ $script:stage] $message" -ForegroundColor Red
-  if ($script:stage -ne 'preflight') { Remove-Staging }
+  if ($script:stagingOwned) { Remove-Staging }
   exit 1
 }
 
@@ -153,6 +159,7 @@ Write-Ok "ISCC = $iscc"
 
 # ── 2. bundled runtime gate (fail hard, never fall back to system Node) ─────
 Write-Step '2/8' 'bundled Node runtime gate'
+$script:stage = 'runtime gate'
 if (-not (Test-Path -LiteralPath $nodeExe)) {
   Fail @"
 缺少内置运行时 runtime\node\node.exe。
@@ -195,6 +202,9 @@ Write-Ok "node.exe 可执行 · --version = $reported · process.version = $proc
 
 # ── 3. staging from the whitelist manifest ─────────────────────────────────
 Write-Step '3/8' 'staging (whitelist manifest)'
+$script:stage = 'staging'
+# 从此处起 dist\staging 归本次构建所有：之后任何失败都必须清掉它。
+$script:stagingOwned = $true
 Remove-Staging
 New-Item -ItemType Directory -Path $dist -Force | Out-Null
 $stageJson = & $nodeExe (Join-Path $repo 'scripts\release-manifest.js') '--stage' $staging 2>&1 | Out-String
@@ -205,6 +215,7 @@ Write-Ok ("staged {0} files · {1:N1} MiB → {2}" -f $stageResult.staged, ($sta
 
 # ── 4. content + secret audit on the staged bytes ──────────────────────────
 Write-Step '4/8' 'content + secret audit'
+$script:stage = 'content + secret audit'
 if ($SkipAudit) {
   Write-Warn '已按 -SkipAudit 跳过（不推荐）'
 } else {
@@ -229,6 +240,7 @@ if ($SkipAudit) {
 
 # ── 5. compile ─────────────────────────────────────────────────────────────
 Write-Step '5/8' 'ISCC compile'
+$script:stage = 'compile'
 $stagingAbs = (Resolve-Path -LiteralPath $staging).Path.TrimEnd('\')
 $distAbs = (Resolve-Path -LiteralPath $dist).Path.TrimEnd('\')
 $logFile = Join-Path $dist 'build-compile.log'
@@ -246,6 +258,7 @@ Write-Ok ("{0} · {1:N1} MiB" -f $exeItem.Name, ($exeItem.Length / 1MB))
 
 # ── 6. hash ────────────────────────────────────────────────────────────────
 Write-Step '6/8' 'SHA-256'
+$script:stage = 'hash'
 $exeHash = Get-Sha256 $exe
 $sumsOut = Join-Path $dist 'SHA256SUMS.txt'
 $lines = @(
@@ -262,6 +275,7 @@ Write-Ok "checksums → $sumsOut"
 
 # ── 7. install audit (opt-in: one real install per built installer) ────────
 Write-Step '7/8' 'install / content audit'
+$script:stage = 'install audit'
 if ($SkipInstallAudit) {
   Write-Info '安装审计已跳过（-SkipInstallAudit，现在也是默认行为）'
 } elseif (-not $InstallAudit) {
@@ -279,6 +293,7 @@ if ($SkipInstallAudit) {
 
 # ── 8. summary ─────────────────────────────────────────────────────────────
 Write-Step '8/8' 'summary'
+$script:stage = 'summary'
 if (-not $KeepStaging) { Remove-Staging; Write-Ok 'staging 已清理' } else { Write-Info "保留 staging：$staging" }
 Write-Host ''
 Write-Host '  InternalBeyond release build complete' -ForegroundColor Green
