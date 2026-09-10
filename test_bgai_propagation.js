@@ -17,6 +17,15 @@ const fs = require('fs');
 const PORT = 23200 + Math.floor(Math.random() * 500);
 const BASE = `http://127.0.0.1:${PORT}`;
 const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-bgai-prop-'));
+
+/* 本进程的数据目录隔离（P7 测试隔离契约）：partB() 在**同进程内**
+   require('./active-message-service.js')（见下方 bgAi gate 用例），而 service 在
+   require 时即从 IB_ACTIVE_DATA_DIR 计算 DATA_DIR。启动子进程的那一处已单独注入
+   DATA_DIR，但同进程这次 require 仍会落到真实的 %LOCALAPPDATA%\InternalBeyond\ 并
+   经 schedulerTick → saveNow 写盘。故这里必须给本进程另设一个隔离目录，且刻意与
+   子进程的 DATA_DIR 分开——否则两个进程会并发写同一个 JSON（EPERM unlink）。 */
+process.env.IB_ACTIVE_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-bgai-prop-proc-'));
+
 let failures = 0;
 let passed = 0;
 function check(name, cond, extra) {
