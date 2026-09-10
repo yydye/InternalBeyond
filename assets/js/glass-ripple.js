@@ -257,9 +257,11 @@ function idleNow(){
   if(document.hidden)return true;
   if(slot.classList.contains('gw-exit'))return true;
   if(sp&&(sp.classList.contains('hidden')||sp.classList.contains('dissolving')))return true;
-  /* 性能守卫：离开欢迎页（home）后暂停逐帧水波模拟，仅保留已渲染的静态画面，
-     内容页（朋友圈/聊天/日历等）不再每帧重算，消除鼠标拖动卡顿；欢迎页效果不变。 */
-  if(typeof window!=='undefined'&&typeof window.currentPage==='string'&&window.currentPage!=='home')return true;
+  /* 此处曾有一条「离开欢迎页(home)后暂停逐帧水波模拟」的性能守卫，已移除：
+     深链进入内容页（如 #diagnostics）而欢迎页仍然可见时，它会把画窗整帧渲染掐掉，
+     水纹画布保持全透明（slot 不出现 gw-rippling），表现为「背景正常但水纹不动」。
+     它想要的暂停已由上面的 splash hidden/dissolving 判定覆盖——欢迎页不可见后
+     这两条必有一真，逐帧模拟照样停止。 */
   return false;
 }
 
