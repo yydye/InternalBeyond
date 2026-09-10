@@ -24,7 +24,9 @@
 
   Any failure aborts with a non-zero exit code. From step 3 onwards a failure
   also removes dist\staging again; a preflight or runtime-gate failure never
-  touches it, because this run has not taken it over yet.
+  touches it, because this run has not taken it over yet. A terminating error
+  raised by a native tool (ISCC reports compile errors on stderr) is caught by
+  the script-level trap and handled the same way.
 
 .PARAMETER IsccPath
   Explicit path to ISCC.exe. Default: ISCC on PATH, then Program Files.
@@ -96,6 +98,12 @@ function Fail([string]$message) {
   if ($script:stagingOwned) { Remove-Staging }
   exit 1
 }
+
+# Fail() 只覆盖我们显式判断过的失败。原生命令往 stderr 写一行（Inno Setup 的编译
+# 错误正是这样）在 Windows PowerShell 5.1 里会变成终止性错误，直接跳过 Fail()：
+# 既不打印阶段名也不清理 staging。这个 trap 让任何未预料的终止性错误走同一条
+# 收尾路径，因此没有哪条失败路径能绕过清理。
+trap { Fail $_.Exception.Message }
 
 function Get-Sha256([string]$file) {
   return (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
