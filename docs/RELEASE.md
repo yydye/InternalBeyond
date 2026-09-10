@@ -118,22 +118,24 @@ primary   GET manifest.installer.url            （版本钉死的 release asset
   "schema": "internalbeyond.update",
   "schemaVersion": 1,
   "channel": "stable",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "installer": {
-    "url": "https://github.com/yydye/InternalBeyond/releases/download/v1.0.1/InternalBeyond-Setup-1.0.1.exe",
+    "url": "https://github.com/yydye/InternalBeyond/releases/download/v1.0.2/InternalBeyond-Setup-1.0.2.exe",
     "sha256": "<64 位小写十六进制>",
-    "sizeBytes": 50828077,
-    "productVersion": "1.0.1"
+    "sizeBytes": 51749231,
+    "productVersion": "1.0.2"
   },
+  "minimumVersion": "1.0.1",
   "releasedAt": "<ISO-8601 UTC 的实际发布时刻；写不出就整个字段不出现>",
   "notes": "面向普通用户的更新说明（纯文本）",
-  "notesUrl": "https://github.com/yydye/InternalBeyond/releases/tag/v1.0.1"
+  "notesUrl": "https://github.com/yydye/InternalBeyond/releases/tag/v1.0.2"
 }
 ```
 
-> 上面是**字段全集**示例：`installer` 块与 `notes` 取自 1.0.1 的真实构建，
-> `releasedAt` / `notesUrl` 只演示形状。1.0.1 实际**省略**了 `releasedAt`（§4）、
-> `minimumVersion`（§8）与 `notesUrl`——省略是契约允许的，也是本次发布的事实。
+> 上面是**字段全集**示例：`installer` 块取自 1.0.2 的真实构建，`notes` 来自
+> [release-notes/1.0.2.md](release-notes/1.0.2.md)；`releasedAt` / `notesUrl` 只演示形状。
+> 1.0.2 实际**省略**了 `releasedAt`（§4）与 `notesUrl`——省略是契约允许的，也是本次发布的事实；
+> `minimumVersion` 则是**真实写入**的（§8）。
 
 | 字段 | 必填 | 说明 |
 |---|---|---|
@@ -427,6 +429,44 @@ release 上的三个资产与 `manifest.installer.sha256` 逐项交叉核对通�
 **结论**：Stable 通道已真实生效；回退门（U-D1 Revised）也在真实数据上被验证——primary 是
 **网络失败**（无完整响应实体），故恰好换路一次，成功即止。§8 上一节描述的
 `no-information` 状态**自本次发布起不再成立**。
+
+### v1.0.2 发布准备与构建实测（U5-3）
+
+`v1.0.2` 是**第一个由真实自动更新链到达**的版本，也是 `minimumVersion` 第一次真实写进清单
+（上一节第 2 条）。本次构建的事实——三件产物来自**同一份源码的同一次构建**：
+
+| 项 | 实测 |
+|---|---|
+| 源码状态 | commit `6d90c54`（`release: InternalBeyond 1.0.2`），构建时工作树干净 |
+| 构建命令 | `build-installer.ps1 -NotesFile docs\release-notes\1.0.2.md -MinimumVersion 1.0.1`（**不传** `-ReleasedAt`） |
+| `InternalBeyond-Setup-1.0.2.exe` | **51,749,231 B**（49.4 MiB）· `sha256=508ee08f9001de7b…820591` |
+| 载荷 | 238 文件 · 124,024,275 B（118.3 MiB）；`release-audit.js` PASS（0 error / 8 warn） |
+| PE `ProductVersion` | `1.0.2`（与 `VERSION` 一致） |
+| 清单 | `minimumVersion = 1.0.1` · **无** `releasedAt` · `notes` 取自 [release-notes/1.0.2.md](release-notes/1.0.2.md) |
+
+四条等式全部用**独立工具**复核：`certutil -hashfile` 与 coreutils `sha256sum` 各自算出同一个
+哈希；文件长度用 `stat` 实测；PE 版本由 PowerShell `VersionInfo` 与项目自己的
+`runtime/pe-version.js` **两个独立读取器**读回，都是 `1.0.2`；清单 URL 的资产名与实际产出
+文件名逐字相同。清单本身再经 `runtime/update-manifest.js --validate` 自校验通过。
+
+**载荷里的欢迎页背景**（U5-2A 的修复目标）：
+
+| 断言 | 结果 |
+|---|---|
+| `assets/images/bg-canvas.jpg` 存在 | ✅ 921,213 B · `sha256=f57a4751…d2217`（与仓库源文件逐字节相同） |
+| `assets/images/bg-canvas.png` 不存在 | ✅ 载荷内 `bg-canvas*` 只匹配到那一个 `.jpg` |
+
+> **诚实边界**：载荷结论是在**编译前的那份 staging 字节集**上得出的——ISCC 正是用
+> `{#StagingDir}\*` 把那 238 个文件编进安装包的，构建脚本第 3/4 步（staging → 真实字节审计）
+> 就是为此设的闸门。**没有**从已编译的 exe 里反解文件表：Inno Setup 6 用 `lzma2/max` +
+> SolidCompression 保存条目名，安装包里搜不到 `bg-canvas.jpg` / `bg-canvas.png` 明文。
+> （本机做过对照：**已发布的 1.0.1 安装包同样两者都搜不到** → 该探测没有判别力，
+> 不能用来证明「文件不在包里」。）本机也没有 `innoextract`。
+> 唯一能直接枚举**安装后**载荷的是 `test_installer_smoke.js --install-audit`，但本机已存在
+> 真实安装的 1.0.1 baseline（`E:\IB-E2E-1.0.1\InternalBeyond`，与之共用同一个 AppId
+> `{78B427F6-…}_is1`）：审计安装会以同一 AppId 覆盖、并在卸载时**删掉那条卸载注册表项**，
+> 从而破坏 E2E 的 baseline。因此本阶段**不跑**该审计——安装后的载荷改由紧随其后的
+> `1.0.1 → 1.0.2` E2E 在真实安装实例上直接核对。
 
 ---
 

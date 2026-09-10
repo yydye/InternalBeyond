@@ -1247,3 +1247,87 @@ U5-2 前置定位（只读）确认了一件事：欢迎页那张画窗背景在
 不影响功能（新代码只按 `assets/images/` 探测），但会留死文件。已记入
 `HANDOVER.md` 已知限制，**与本次视觉 payload 修复分开提交**。
 
+## 2026-09-10 · U5-3 · v1.0.2 发布准备（第一个可自动到达的版本）
+
+`v1.0.2` 只有一处用户可见改动——U5-2A 的欢迎页画窗背景随包发布——但它承担两个流程上的
+第一次：它是**第一个由真实自动更新链到达**的版本，也是 `minimumVersion` 第一次真实写进清单。
+
+### 版本与契约
+
+| 项 | 值 |
+|---|---|
+| `VERSION` | `1.0.1` → **`1.0.2`** |
+| 清单 `version` | `1.0.2` |
+| 清单 `minimumVersion` | **`1.0.1`**（1.0.1 刻意省略：写 `1.0.0` 是一句不成立的产品承诺——1.0.0 没有读取清单/更新端点的能力，见 RELEASE.md §8） |
+| 清单 `releasedAt` | **省略**（构建时刻不是发布时刻，RELEASE.md §4） |
+| 用户升级说明 | 新增 `docs/release-notes/1.0.2.md`，同时就是清单 `notes` 的来源 |
+
+`minimumVersion` 的语义借本次写清：客户端**只做形状校验，不据此拒绝安装**——它不是安装闸门。
+
+### 构建（同一份源码的同一次构建产出三件产物）
+
+| 项 | 实测 |
+|---|---|
+| 源码状态 | commit **`6d90c54`**，构建时工作树干净 |
+| 命令 | `build-installer.ps1 -NotesFile docs\release-notes\1.0.2.md -MinimumVersion 1.0.1`（**不传** `-ReleasedAt`） |
+| exe | `dist\InternalBeyond-Setup-1.0.2.exe` · **51,749,231 B**（49.4 MiB）· `sha256=508ee08f9001de7b…820591` |
+| 载荷 | 238 文件 · 124,024,275 B · `release-audit` PASS（0 error / 8 warn） |
+| PE `ProductVersion` | `1.0.2`（与 `VERSION` 一致） |
+
+8 条 warn 全部是文档中**既有的**署名/联系方式命中（`README.md` 的作者 QQ/Email、
+`InternalBeyond.html` 的 author-desc、`LICENSES/*` 的版权联系），本次改动一行未碰，非新增。
+
+### 四条等式 + 载荷断言的独立核对
+
+| 断言 | 独立证据 |
+|---|---|
+| `sha256` | `certutil -hashfile` **与** coreutils `sha256sum` 各自算出 `508ee08f…` == 清单 |
+| `sizeBytes` | `stat` 实测 51,749,231 == 清单 |
+| PE `ProductVersion` | PowerShell `VersionInfo` **与** `runtime/pe-version.js` 两个独立读取器都读回 `1.0.2` == `VERSION` |
+| 资产名 / URL | 清单 URL 末段 `InternalBeyond-Setup-1.0.2.exe` == 实际产出文件名 |
+| 背景图在包里 | `assets/images/bg-canvas.jpg` **存在** 921,213 B · `sha256=f57a4751…d2217`（与仓库源文件逐字节相同） |
+| 原图不在包里 | `assets/images/bg-canvas.png` **不存在**（载荷内 `bg-canvas*` 只匹配到那一个 `.jpg`） |
+
+清单本身再经 `runtime/update-manifest.js --validate` 自校验通过；`update-stable.json` /
+`SHA256SUMS.txt` 均**不在**载荷内（各自 0 命中）。
+
+**诚实边界**：载荷结论建立在**编译前那份 staging 字节集**之上——ISCC 正是用
+`{#StagingDir}\*` 把这 238 个文件编进安装包的，构建脚本第 3/4 步（staging → 真实字节审计）
+就是为此设的闸门。**没有**从已编译的 exe 反解文件表：Inno Setup 6 用 `lzma2/max` +
+SolidCompression 保存条目名，包里搜不到 `bg-canvas.jpg` / `bg-canvas.png` 明文；本机做过
+对照实验，**已发布的 1.0.1 安装包同样两者都搜不到**——说明该探测没有判别力，不能反过来
+用来证明「文件不在包里」；本机也没有 `innoextract`。唯一能直接枚举**安装后**载荷的是
+`test_installer_smoke.js --install-audit`，但本机已有真实安装的 1.0.1 baseline
+（`E:\IB-E2E-1.0.1\InternalBeyond`），它与审计安装**共用同一个 AppId** `{78B427F6-…}_is1`：
+审计安装会以同一 AppId 覆盖、并在卸载时删掉那条卸载注册表项，从而**破坏 E2E 的 baseline**。
+因此本阶段刻意**不跑**该审计，安装后的载荷交给紧随其后的 `1.0.1 → 1.0.2` E2E 在真实安装
+实例上直接核对。
+
+### gates（构建前全部实跑，0 失败）
+
+`test_welcome_canvas_payload` 17 · `test_ui_regression` ✓ · `test_update_manifest` 41 ·
+`test_update_check` 51 · `test_update_install` 57 · `test_update_card` 192 · `test_pe_version` 13 ·
+`test_installer` 47 · `test_installer_mock` 26（+1 skip）· `test_launcher` 16 · `test_boot_state` 37 ·
+`test_node_runtime` 18 · `test_frontend_structure` ✓；
+`test-all.js --quick` = static 54 + service 16 项全部通过（191.3s）。
+
+### 明确**没有**改动
+
+`apps/catalog.json` 的 APP 版本、Bridge 服务自身版本、`runtime/node/VERSION` 一律未动；
+updater 的全部代码路径（`runtime/update-*.js`、`assets/js/update-card.js`）与 `v1.0.1` 的
+tag / release / 资产一字未改；**不做 U5-2B**（不加 `[InstallDelete]`，legacy root-layout
+cleanup 仍是独立后续项）。
+
+### 用户说明的诚实取舍
+
+需求里提到「改进应用内更新相关可靠性」，但 `v1.0.1..v1.0.2` 的差异**不包含任何 update 路径改动**
+（`runtime/update-*.js` 与 `assets/js/update-card.js` 相对 v1.0.1 逐字节相同），所以
+`release-notes/1.0.2.md` **没有**写任何关于更新可靠性的说法——只写了真实发生的欢迎页背景修复，
+以及两条真实的升级路径说明。**宁可少写一句，不写一句没发生的事。**
+
+### 停在此处
+
+本阶段在 **push / tag / release 之前**停手：本地已有未 push 的提交，`dist\` 三件产物
+已就绪且核对通过，但**尚未上传**。发布顺序仍是 RELEASE.md §2 的契约：
+exe → `SHA256SUMS.txt` → **`update-stable.json` LAST**；tag 必须指向明确 HEAD（先 push、后 tag）。
+
