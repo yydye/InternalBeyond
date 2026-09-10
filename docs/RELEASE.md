@@ -21,12 +21,15 @@
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-installer.ps1 `
-  -NotesFile docs\release-notes\1.0.1.md
+  -NotesFile docs\release-notes\1.0.2.md `
+  -MinimumVersion 1.0.1
 ```
 
 `-ReleasedAt` / `-NotesFile` / `-MinimumVersion` 都是**可选**的，见 §4 / §8。
-1.0.1 刻意**两个都不传**：不传 `-ReleasedAt`（构建时刻不是发布时刻，见 §4），
-不传 `-MinimumVersion`（理由见 §8）。
+
+- **1.0.1**：三个都不传（构建时刻不是发布时刻，见 §4；`minimumVersion` 的理由见 §8）。
+- **1.0.2**：传 `-NotesFile docs\release-notes\1.0.2.md` 与 `-MinimumVersion 1.0.1`
+  （`minimumVersion` 从这一版起第一次成为真实契约），仍然**不传** `-ReleasedAt`（§4）。
 
 ---
 
@@ -142,7 +145,7 @@ primary   GET manifest.installer.url            （版本钉死的 release asset
 | `installer.sizeBytes` | ✅ | 实测字节数；另有合理区间闸门（见 §5） |
 | `installer.productVersion` | ✅ | 从 exe 的 PE `ProductVersion` 读回，必须等于 `version` |
 | `releasedAt` | 可选 | ISO-8601 UTC。**只写实际发布时刻**；没有可靠来源（构建时刻不算）就省略不写，见 §4 |
-| `minimumVersion` | 可选 | 目前只做形状校验，不强制。**1.0.1 刻意省略**（写 `1.0.0` 会是一句不成立的产品承诺——1.0.0 没有读取清单/更新端点的能力）；**1.0.2 起写 `1.0.1`**，那时它才第一次成为真实契约（见 §8） |
+| `minimumVersion` | 可选 | 客户端**只做形状校验，不据此拒绝安装**（它不是安装闸门）。**1.0.1 刻意省略**（写 `1.0.0` 会是一句不成立的产品承诺——1.0.0 没有读取清单/更新端点的能力）；**1.0.2 起写 `1.0.1`**，见 §8 |
 | `notes` | 可选 | 面向用户的纯文本；UI 必须以 textContent 渲染，**永不 innerHTML** |
 | `notesUrl` | 可选 | 必须是 `https://github.com/...` |
 
@@ -181,11 +184,12 @@ primary   GET manifest.installer.url            （版本钉死的 release asset
 ```powershell
 # 只重生成清单（不重新编译安装包）。省略 --releasedAt 就是「无发布时间」清单。
 node runtime\update-manifest.js --write dist\update-stable.json `
-  --version 1.0.1 `
-  --sha256 <实测：sha256sum dist\InternalBeyond-Setup-1.0.1.exe> `
+  --version 1.0.2 `
+  --sha256 <实测：sha256sum dist\InternalBeyond-Setup-1.0.2.exe> `
   --sizeBytes <实测字节数> `
   --productVersion <从同一 exe 的 PE ProductVersion 读回> `
-  --notesFile docs\release-notes\1.0.1.md
+  --minimumVersion 1.0.1 `
+  --notesFile docs\release-notes\1.0.2.md
 ```
 
 重生成后必须复核三件事：`--validate` 通过、`installer` 块与重生成前**逐字节相同**、
@@ -220,15 +224,15 @@ exe 的 sha256 与字节数**没有变**。**不要**为了改一个可选字段
 
 ```bash
 # 1) 创建 release 并上传前两个产物（顺序 1 → 2）
-gh release create v1.0.1 \
-  "dist/InternalBeyond-Setup-1.0.1.exe" \
+gh release create v1.0.2 \
+  "dist/InternalBeyond-Setup-1.0.2.exe" \
   "dist/SHA256SUMS.txt" \
-  --title "InternalBeyond v1.0.1" --notes-file docs/release-notes/1.0.1.md
+  --title "InternalBeyond v1.0.2" --notes-file docs/release-notes/1.0.2.md
 
 # 2) 复核：上传后的资产 digest 必须与清单里的 sha256 一致（见下方硬规则）
 
 # 3) 最后上传清单（顺序 3）
-gh release upload v1.0.1 "dist/update-stable.json"
+gh release upload v1.0.2 "dist/update-stable.json"
 ```
 
 ### 硬规则：exe / `SHA256SUMS.txt` / 清单必须来自同一份已核验构建资产

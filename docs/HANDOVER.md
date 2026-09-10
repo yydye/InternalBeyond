@@ -35,8 +35,11 @@
 
 - **功能面**：主聊天（浏览器直连各家 API）、社交圈（Moments → Social Net：Feed/Profile/好友/讨论串/转发 + AI↔AI 回复链前后台）、AI 日记、记忆系统、工作区、游戏模块、行为观测层。全部模块已拆分完毕并注册 `window.IB` 命名空间。
 - **测试基线全绿**：`node tests/test-all.js --all`（static / service / browser 三组，约 150–165s）。改动后跑这个作为最终验收。
-- **发行形态（P1–P7 已完成）**：内置 Node 24 LTS 运行时（P1）、降级启动 / boot state（P2）、错误产品化 IBERR（P3）、首启设置向导（P4）、系统诊断与自恢复（P5）、零基础图文教程 + 截图管线（P6）、Windows 安装包（P7，产物 `dist\InternalBeyond-Setup-1.0.0.exe`，per-user 免 UAC，白名单载荷）。
-- **Zero-Touch Update（U1–U4 已完成，U5 发布中）**：应用内更新已实现——发布侧清单契约（`runtime/update-manifest.js`）、检查运行时（`runtime/update-check.js`：U-D1 Revised 一主一备 + 24h 缓存 + fail-open）、安装运行时（`runtime/update-install.js`：U-D6 载荷回退 + 四道校验 + detached 启动安装器）、诊断页更新卡片（`assets/js/update-card.js`）。**当前在发版本为 1.0.1**；已发布的 `v1.0.0` 早于全部 U 系列，**其用户无法自动升级，必须手动安装一次 1.0.1**（版本语义与发布顺序见 [RELEASE.md](RELEASE.md) §8，用户升级说明见 [release-notes/1.0.1.md](release-notes/1.0.1.md)）。
+- **发行形态（P1–P7 已完成）**：内置 Node 24 LTS 运行时（P1）、降级启动 / boot state（P2）、错误产品化 IBERR（P3）、首启设置向导（P4）、系统诊断与自恢复（P5）、零基础图文教程 + 截图管线（P6）、Windows 安装包（P7，产物 `dist\InternalBeyond-Setup-<版本号>.exe`，**当前 1.0.2**，per-user 免 UAC，白名单载荷）。
+- **Zero-Touch Update（U1–U4 已完成，U5 发布中）**：应用内更新已实现——发布侧清单契约（`runtime/update-manifest.js`）、检查运行时（`runtime/update-check.js`：U-D1 Revised 一主一备 + 24h 缓存 + fail-open）、安装运行时（`runtime/update-install.js`：U-D6 载荷回退 + 四道校验 + detached 启动安装器）、诊断页更新卡片（`assets/js/update-card.js`）。**当前在发版本为 1.0.2（U5-3 发布准备）**；已发布的 `v1.0.0` 早于全部 U 系列，**其用户无法自动升级，必须手动安装一次最新版**（版本语义与发布顺序见 [RELEASE.md](RELEASE.md) §8，用户升级说明见 [release-notes/1.0.2.md](release-notes/1.0.2.md)）。
+  - **U5-2A 已修**：安装版欢迎页画窗背景缺失（`bg-canvas.jpg` 随包发布，`bg-canvas.png` 仍是仓库源图、不入包）。
+  - **v1.0.2 的发布契约增量**：清单第一次写 `minimumVersion = 1.0.1`（1.0.1 刻意省略，理由见 RELEASE.md §8）；`releasedAt` 继续省略（构建时刻不是发布时刻，§4）。
+  - **E2E baseline 是真实已发布资产**：`1.0.1 → 1.0.2` 的 Zero-Touch Update E2E 必须用 GitHub 上已发布的 1.0.1 安装实例，**不得**用本地 `dist/` 重建产物替代。
 - **图片链路（P12 已完成）**：全部图片生成入口（Chat `<ws_gen_image>`、Moments / AI 自主 Moments 配图）统一经 `IB.imageRouter`（`assets/js/image-router-core.js` + `assets/js/image-router.js`）→ Image Scheduler → 现有 `_wsExecImageGen`；GPT Image 2.5 Flare/Sunburst 双模型策略由 Middle Brain 的 `Image Generation`（Fast / Auto / Precision）控制，默认 Auto。并发 global=2 / Flare=2 / Sunburst=1 / 每角色=1，队列上限 8，后台有冷却与降级保护，telemetry 可查（`IB.imageRouter.telemetry()`）。
 - **图片编辑（P13 已完成）**：`<ws_edit_image>正文=修改要求</ws_edit_image>`（可选 `path="图片文件"`）→ Image Reference Resolver（`assets/js/image-edit-core.js` + `image-edit.js`，选源优先级：用户显式选中 > 本轮附带图片 > 最近一张可编辑图片）→ `IB.imageRouter.routeImageRequest({operation:'edit',…})` → Scheduler → 既有 `_wsExecImageGen`（内部薄的 `_wsExecImageEdit`）→ provider `/v1/images/edits`（OpenAI 兼容 multipart）或 Gemini `inlineData`。多轮编辑靠 `aiMsg.images` 上的 lineage（`imageId/parentImageId/editDepth`）形成 A→B→C；不支持编辑的模型返回 `IMAGE_EDIT_UNSUPPORTED` 且不发任何请求；参考图上限 4 张 / 单张 4MB / 合计 8MB。
 - **Image Router 配置层（P15 已完成）**：Settings → API → Image Router 有两条独立路由（Image Generation / Image Editing），各自绑定 **API Config + Model + Enabled + 可选备用通道**。模型下拉的唯一来源是 `assets/js/image-models-core.js`（含 Image 2.5 的真实 id `gpt-image-2.5-flare` / `gpt-image-2.5-sunburst`，按 `image-generation` / `image-editing` 能力过滤）；路由配置存 `apiSettings['image_router'].routes`（与既有并发覆盖字段同 key）。解析语义：`apiConfigId` 留空 = 沿用角色配置（旧行为不变），有值 = 该路由固定用这个 API 配置；`model` 留空 = 交回 Fast/Auto/Precision 双模型策略，有值 = 显式优先（Fast/Precision 不能改它）。配置问题（路由关闭 / 绑定配置不存在 / 模型不支持 / 公网端点缺 Key）在**发请求前**给出明确错误码与「去哪修」的文案，0 次 provider 请求；本地/内网端点允许不填 Key。
@@ -54,6 +57,8 @@
 - 数据查看：Moments 设置区开关 + 导出 JSON；控制台 `await _socialObsPrint(14)` / `await _socialObsStats(30)`；companion 侧文件 `%LOCALAPPDATA%\InternalBeyond\social-observe.json`。
 
 ## 4. 接下来做什么（候选，按建议优先级）
+
+**当前阶段（U5-3 · v1.0.2 发布准备）：** `VERSION` 已升到 1.0.2，清单契约新增 `minimumVersion = 1.0.1`，用户升级说明见 [release-notes/1.0.2.md](release-notes/1.0.2.md)。流程为**构建 → 核对三条等式与载荷 → push → tag → release**；发布后立即用**真实已安装的 1.0.1 实例**执行 `1.0.1 → 1.0.2` Zero-Touch Update E2E，并复验欢迎页画窗背景确实用的是随包 `bg-canvas.jpg`。**不要为了 E2E 卸载现有 1.0.1 baseline。** U5-2B（legacy root-layout cleanup / `[InstallDelete]`）仍是独立后续项，本阶段不做。
 
 1. **观察期结束后的关系系统校准**（§3 的参数定值与实现）——唯一被明确规划的下一阶段。
 2. **诚实清单中仍开放的缺口**（均为可选增强，非缺陷）：
