@@ -83,7 +83,8 @@ InternalBeyond/  # 仓库根目录（根只放入口 / 许可 / 版本 / 元数�
 │   ├── setup-wizard.js diagnostics.js guide-beginner.js context-snapshot.js error-catalog.js
 │   ├── ib-namespace.js local-first.js local-vault.js site-operations.js bridge.js calendar.js preloader.js ...
 │   └── game 六文件在 game/ 下（见 §8）
-├── assets/images/               # 主题背景：bg-internal.jpg / bg-infernal.jpg / bg-canvas.png（后者 6MB，不入发行包）
+├── assets/images/               # 主题背景：bg-internal.jpg / bg-infernal.jpg / bg-canvas.{png,jpg}
+│                                #   bg-canvas.png = 6 MB 源图（留仓库，不入包）；bg-canvas.jpg = 随包发布的压缩副本
 ├── assets/icons/IB-icon.ico      # 官方图标（快捷方式 / 卸载项 / 通知）
 ├── apps/                        # APP 目录（catalog.json 运行时 fetch，catalog.js 为 file:// 回退）
 ├── game/                        # game_module.js / game_tarot.js / game_story.js / game_dialogue.js / game_room.js / game_tea.js

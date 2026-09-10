@@ -260,6 +260,31 @@ async function main() {
        因此这里只能断言“静态声明的 20 个全部装载”，不能钉死等于 20。 */
     check('assets.externalStylesLoaded', structure.styles >= 20, String(structure.styles));
     check('assets.backgroundResolved', /bg-internal\.jpg/.test(structure.background), structure.background);
+
+    /* U5-2A · 欢迎页画窗背景（玻璃画布）：不只断言 URL 字符串，而是断言真实探测链
+       （glass-canvas.js: bg-canvas.png → bg-canvas.jpg）最终换上了一张**已解码**的资源：
+         · #gw-slot.gw-has-img 只在探测成功的 im.onload 里被加上 → 证明"真的加载成功"，
+           而不是 backgroundImage 字符串恰好写对；
+         · --gw-ar 由 JS 按 naturalWidth/naturalHeight 覆写（CSS 默认 1.924779 与真实值
+           1.924500 不同）→ 证明解码尺寸就是 payload 里的原生 2600×1351；
+         · 安装版 PNG 不入包（第一个探测必然 404），所以 payload 里那张压缩副本
+           bg-canvas.jpg 必须也能被浏览器解码，回退才接得住。 */
+    const gw = await evaluate(cdp, `(async()=>{
+      const slot=document.getElementById('gw-slot'),img=document.getElementById('gw-img');
+      const probe=src=>new Promise(resolve=>{const im=new Image();
+        im.onload=()=>resolve({ok:true,w:im.naturalWidth,h:im.naturalHeight});
+        im.onerror=()=>resolve({ok:false,w:0,h:0});im.src=src;});
+      return {hasImg:!!slot&&slot.classList.contains('gw-has-img'),
+        inline:img?img.style.backgroundImage:'',
+        ar:getComputedStyle(document.documentElement).getPropertyValue('--gw-ar').trim(),
+        png:await probe('assets/images/bg-canvas.png'),
+        jpg:await probe('assets/images/bg-canvas.jpg')};
+    })()`);
+    check('welcomeCanvas.imageResolved', gw.hasImg && /assets\/images\/bg-canvas\.(png|jpg)/.test(gw.inline),
+      JSON.stringify({ hasImg: gw.hasImg, inline: gw.inline }));
+    check('welcomeCanvas.decodedAtNativeSize', Math.abs(parseFloat(gw.ar) - 2600 / 1351) < 0.0005, gw.ar);
+    check('welcomeCanvas.repoPngDecodes', gw.png.ok && gw.png.w === 2600 && gw.png.h === 1351, JSON.stringify(gw.png));
+    check('welcomeCanvas.shippedJpgDecodes', gw.jpg.ok && gw.jpg.w === 2600 && gw.jpg.h === 1351, JSON.stringify(gw.jpg));
     check('bridge.singleEntry', structure.nav === 1 && structure.panel === 1 && structure.fab === 0, JSON.stringify(structure));
     check('a11y.landmarks', structure.skip && structure.main === 'main' && structure.navLinkIssues.length === 0, JSON.stringify(structure));
     check('a11y.staticButtonsNamed', structure.unnamedButtons.length === 0, JSON.stringify(structure.unnamedButtons));

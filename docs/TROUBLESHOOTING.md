@@ -1,4 +1,4 @@
-﻿# Internal Beyond · 故障排查与踩坑记录
+# Internal Beyond · 故障排查与踩坑记录
 
 > 本文档回答「以前踩过什么坑、怎么解决」。遇到问题先来这里查；机制背景见 [ARCHITECTURE.md](ARCHITECTURE.md)，设计取舍见 [DECISIONS.md](DECISIONS.md)。
 
@@ -70,7 +70,8 @@ PowerShell 5.1 的 `Invoke-RestMethod -Body` 发送中文默认按 Latin-1 转�
 
 ### T9. 无害噪音报错（不用修）
 
-- `bg-canvas.jpg` 404（背景图缺失）
+- `assets/images/bg-canvas.png` 404（**预期**：6 MB 原图有意不随包发布，只留在仓库里做源图；
+  同目录的压缩副本 `assets/images/bg-canvas.jpg` 会接住探测，欢迎页画窗背景正常显示）
 - Cloudflare RUM 脚本在 `file://` 下 CORS/sendBeacon 报错
 - 均不影响功能。
 

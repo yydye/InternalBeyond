@@ -1183,3 +1183,67 @@ U2 期记录的 `no-information` 状态自本次发布起不再成立（`docs/RE
 
 发布过程仍遵守 P7 测试预算：**没有真实安装、没有卸载、没有打开浏览器**（0 消耗）。
 
+## 2026-09-10 · U5-2A · 欢迎页画窗背景 payload 闭合（`bg-canvas.jpg` 随包发布）
+
+U5-2 前置定位（只读）确认了一件事：欢迎页那张画窗背景在**安装版里一直是空的**。
+冻结的根因不是路径写错——repo layout refactor（`e612197`）把四处引用全部改对了，
+真实静态服务对 repo 与已安装 v1.0.1 都返回 200——而是**载荷契约缺口**：
+
+- 画窗背景由 `glass-canvas.js` / `glass-ripple.js` 的**文档相对**探测链加载，顺序冻结为
+  `assets/images/bg-canvas.png` → `assets/images/bg-canvas.jpg`；
+- 6,268,353 B 的 PNG 原图**有意不入包**（`release-manifest.js` 的 `exclude` + `DENY_PATH` 双重规则）；
+- 而 `bg-canvas.jpg` **不存在** → 安装版两个探测都 404 → 画窗退化成空雾玻璃；
+- 仓库里（dev）PNG 存在，所以这个问题在开发机上永远看不见。
+
+修法是最小闭合：**保留 PNG 作为仓库源图，新增一张同尺寸压缩副本随包发布**。
+
+### 新增资产（未改动任何探测代码）
+
+| 文件 | 前 | 后 |
+|---|---|---|
+| `assets/images/bg-canvas.png` | 6,268,353 B · 2600×1351 RGBA · `sha256=2203f12f…aa4ad` | **不动**（仍是仓库源图，不入包） |
+| `assets/images/bg-canvas.jpg` | 不存在 | **新增** 921,213 B · 2600×1351 · progressive 4:4:4 · `sha256=f57a4751…d2217` |
+
+转换参数与实测：`quality=90`、`subsampling=4:4:4`、`optimize`、`progressive`、保留原 DPI；
+**同尺寸、不裁剪、不缩放、不加锐化/滤镜/调色**，只是丢掉 alpha 通道。
+体积 **−85.3%（6.80×）**；与 PNG 解码后逐像素比较 **PSNR 41.28 dB**，最大差值 27/255，
+差值 >12 的像素占 **0.0188%**（该图以 `background-size:cover` 在 ~1440px 宽、且叠了磨砂/色阶/水波层
+的画窗里显示，源图按 ~0.55 倍渲染，肉眼无差）。
+
+**alpha 审计（Phase 0 结论）**：没有必须保留的透明语义。PNG 虽然带 alpha 通道，但
+99.7367% 的像素 alpha=255，非全不透明像素只有 9,249 个且**全部落在最外一圈 1px 边框**
+（内部区域 alpha 仅 253–255 两个杂点）：左列 232、右列 234、上下行 232，即 0.91/0.92 的
+1 像素边。该边又处在 `#gw-pane` 的 CSS 羽化遮罩最外沿（那里只有 0.34 不透明度）——
+丢 alpha 带来的差异在最外 1 像素上约 3%，不可见。
+
+### 明确**没有**改动的部分
+
+- `glass-canvas.js` / `glass-ripple.js`：探测顺序、实现、注释一字未动（审计未发现顺序问题）。
+- `scripts/release-manifest.js`：**零改动**。新资产经既有 `{ from: 'assets', dir: true }` 白名单
+  自动入包，PNG 继续被既有 `exclude` + `DENY_PATH` 挡住。**不为"显式写出来"增加冗余规则**
+  （新增测试专门守这条）。
+- updater / U-D1 / U-D6 / 安装器更新流程 / `VERSION` / `v1.0.1` 的 tag·release·资产：全部未动。
+
+### 测试
+
+| 测试 | 覆盖 | 结果 |
+|---|---|---|
+| `tests/test_welcome_canvas_payload.js`（新增，static） | PNG 仍在且是同尺寸 RGBA 源图 / JPG 同尺寸且显著更小 / 两个脚本探测顺序逐字冻结 / **真实静态服务**对 repo 根 200（PNG 与 JPG，字节与磁盘一致）/ **安装态 fixture**（PNG 缺失 → 404，JPG 回退 → 200）/ **真实 staging** 产出 JPG、不含 PNG / manifest 未被加冗余规则 | 17 通过 |
+| `tests/test_ui_regression.js`（browser，+4 项） | `#gw-slot.gw-has-img`（只在探测成功回调里加）→ 证明图**真的加载**；`--gw-ar` 被 JS 按解码尺寸覆写为 2600/1351；PNG 与随包 JPG 都能被浏览器解码 | 通过 |
+| `tests/test_installer.js` / `test_installer_mock.js`（static） | 载荷契约 / 安装器 mock | 47 + 26 通过 |
+
+回归入口已登记：`tests/test-all.js` 的 static 组新增 `test_welcome_canvas_payload.js`。
+
+### 文档更正
+
+`TROUBLESHOOTING.md` T9 与 `HANDOVER.md` 已知限制里那句「`bg-canvas.jpg` 404（背景图缺失）是无害噪音」
+**已不成立**（当时它确实缺，现在随包发布），改写为事实：`bg-canvas.png` 404 是**预期**（6 MB 原图
+有意不随包），由同目录压缩副本接住。`ARCHITECTURE.md` 的目录树同步标注 png/jpg 分工。
+
+### 遗留（不在本阶段修）
+
+**U5-2B 候选 · legacy cleanup**：`installer/InternalBeyond.iss` 没有 `[InstallDelete]`，
+1.0.0（旧布局：背景图在仓库根）→ 后续版本在**同一目录**升级时，旧根级文件会残留。
+不影响功能（新代码只按 `assets/images/` 探测），但会留死文件。已记入
+`HANDOVER.md` 已知限制，**与本次视觉 payload 修复分开提交**。
+

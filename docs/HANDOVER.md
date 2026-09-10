@@ -122,7 +122,8 @@ node tests/test-all.js --all                 # 最终验收（--quick 约 17s）
 - 主聊天由浏览器直连各家 API；Bridge 不做主聊天代理。
 - 双执行器极小竞态（companion 误判离线 + DEL/PUT 双网络失败的理论窗口可能双发，消息 ID 秒级幂等兜底）——按定位接受。
 - companion 无鉴权 + null-origin 放行（file:// 必需）的 PNA 理论风险——按个人本地应用定位接受。
-- 无害噪音：`bg-canvas.jpg` 404、Cloudflare RUM 在 file:// 下报错。
+- 无害噪音：`assets/images/bg-canvas.png` 404（**预期**：6 MB 原图有意不随包发布，仅作仓库源图；同目录压缩副本 `bg-canvas.jpg` 接住探测，欢迎页画窗背景正常）、Cloudflare RUM 在 file:// 下报错。
+- 升级遗留（U5-2B 候选，**未修**）：`installer/InternalBeyond.iss` 没有 `[InstallDelete]`，所以 1.0.0（旧布局，背景图在仓库根）→ 后续版本在**同一目录**升级时，旧布局的根级文件（`bg-internal.jpg` / `bg-infernal.jpg` / `bg-canvas.png` / `boot-state.js` / `Start Internal Beyond.cmd` 等）会留在安装目录里。当前不影响功能（新代码只按 `assets/images/` 探测），但会留下死文件；清理方案与 U5-2A 的视觉 payload 修复分开提交。
 - Image Router（P12）：`quality` 目前只在 gpt-image 家族下发（dall-e / Gemini 忽略）；双模型策略不接管用户显式配置的非 gpt-image 模型（`provider_managed`，只做并发控制）。
 - Image Router 配置层（P15）已知限制：① 角色的「启用图像生成」开关仍然生效——绑定了路由但角色没开生图，仍会被拦在聊天入口（提示可在 API 设置中开启），这是有意的产品语义（角色级开关 ≠ 凭证级配置）；② 路由配置存在 IndexedDB（`apiSettings['image_router']`），保存后经 `IB.imageRouter.reloadConfig()` 让下一次请求重读；③ 显式选定模型时 Fast/Precision 不再能改变它（要交给 Middle Brain 决策就把模型留空=自动）；④ 备用通道只在 provider/执行器类失败时重试一次，配置类失败不重试；⑤ 模型目录是本地静态表，新增/下线模型需改 `image-models-core.js`（不联网拉取）。
 - 图片编辑（P13）已知限制：① 编辑端点按与生图端点同源推导（`/v1/images/generations` → `/v1/images/edits`），**中转站/自建代理必须自己实现该端点**，否则返回 `IMAGE_EDIT_UNSUPPORTED`（HTTP 404/405），绝不回退成重新生成；② 能编辑的模型白名单是 `gpt-image*` / `dall-e-2`（OpenAI 兼容）与 Gemini，`dall-e-3`、自定义模型、anthropic/deepseek 一律不支持编辑；③ 多输入参考图用 `image[]` 字段（gpt-image 家族约定），若某代理只接受单张 `image`，会由 provider 报错；④ 没有 mask / 局部重绘 UI，也没有画笔式编辑器（自然语言多轮编辑已完整可用）；⑤ 参考图超限时复用 `IB.moments._momentsShrinkDataUrl`（1536px JPEG）压缩一次，仍超限则如实报 `IMAGE_REFERENCE_TOO_LARGE`；⑥ 显式选中态只在内存中（刷新后回到「最近一张可编辑图片」语义）；⑦ telemetry 只存内存、不持久化，跨标签页各自一份 Scheduler。

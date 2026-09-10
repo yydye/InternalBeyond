@@ -148,7 +148,11 @@ const GROUPS = [
       /* P13：图片编辑 / 参考图解析专项（归一化/限额/选源优先级/lineage/多轮 A→B→C/edit 路由） */
       ['test_image_edit.js'],
       /* P15：Image Router 配置层专项（唯一模型目录 / 路由解析 / 能力过滤 / 备用通道 / 错误文案） */
-      ['test_image_router_config.js']
+      ['test_image_router_config.js'],
+      /* U5-2A：欢迎页画窗背景 payload 闭合（PNG 源留在仓库、压缩副本入包、
+         探测顺序冻结、真实静态服务 200、安装态 PNG 缺失时 JPG 回退 200、
+         真实 staging 不含 PNG）。纯 Node：不联网、不开浏览器、不安装、不构建。 */
+      ['test_welcome_canvas_payload.js']
     ]
   },
   {
