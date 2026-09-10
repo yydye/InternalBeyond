@@ -406,13 +406,156 @@ mbPublicExpected.splice(mbPublicExpected.indexOf('middleBrainCompressPipeline') 
 const mbP11IntegrityKeys = ['normalizeMiddleBrainIntegritySensitivity', 'middleBrainFinalizeReply',
   'middleBrainCharacterIntegrity', 'middleBrainCharacterIntegrityTelemetry', 'middleBrainCharacterIntegrityReset',
   '_mbParseCiJson', '_mbCiGate', '_mbCiVisibleText', 'MB_CI_SCHEMA', 'MB_CI_TIMEOUT_MS'];
-const mbP11Keys = ['middleBrainExecute'].concat(mbP11IntegrityKeys);
+/* P12 · Image Router 接入键（追加在末尾）：Middle Brain 只输出图片策略决策，
+   执行/并发/队列在 assets/js/image-router*.js；这两个 key 允许被 Router 消费。 */
+const mbP12ImageKeys = ['middleBrainImageMode', 'normalizeMiddleBrainImageMode'];
+const mbP11Keys = ['middleBrainExecute'].concat(mbP11IntegrityKeys).concat(mbP12ImageKeys);
 mbP11IntegrityKeys.forEach(k => mbPublicExpected.push(k));
+mbP12ImageKeys.forEach(k => mbPublicExpected.push(k));
 const mbPublicPairs = [...mbText.matchAll(/^\s*\['(\w+)', '(\w+)'\],?$/gm)].map(m => [m[1], m[2]]);
 check('middleBrain.publicApiContract', JSON.stringify(mbPublicPairs.map(p => p[0])) === JSON.stringify(mbPublicExpected),
   'IB.middleBrain 公共 API 内容/顺序变化: ' + mbPublicPairs.map(p => p[0]).join(','));
 check('middleBrain.publicApiBaseline34', JSON.stringify(mbPublicPairs.map(p => p[0]).filter(k => !mbP11Keys.includes(k))) === JSON.stringify(mbPublicBaseline34),
   'P11-1C/1D 之外原有 34 个 key 的内容/顺序被改动');
+/* ── P12 · Image Router（统一图片策略层）结构守卫 ──────────────────────
+   契约：producers → IB.imageRouter → Scheduler → 现有 _wsExecImageGen → provider。
+   这里锁住"不复制第二套执行器/provider metadata/第二套 Middle Brain"这条底线。 */
+const imgCorePath = path.join(root, 'assets', 'js', 'image-router-core.js');
+const imgAdapterPath = path.join(root, 'assets', 'js', 'image-router.js');
+const imgCoreText = fs.existsSync(imgCorePath) ? fs.readFileSync(imgCorePath, 'utf8').replace(/^﻿/, '') : '';
+const imgAdapterText = fs.existsSync(imgAdapterPath) ? fs.readFileSync(imgAdapterPath, 'utf8').replace(/^﻿/, '') : '';
+check('imageRouter.coreExists', !!imgCoreText && !!imgAdapterText, '缺少 image-router-core.js / image-router.js');
+check('imageRouter.scriptLoaded', scriptSources.includes('assets/js/image-router-core.js')
+  && scriptSources.includes('assets/js/image-router.js')
+  && scriptSources.indexOf('assets/js/image-router-core.js') < scriptSources.indexOf('assets/js/image-router.js'),
+  'Image Router 脚本未按序挂载（core → adapter）');
+check('imageRouter.noSecondExecutor', !/fetch\s*\(/.test(imgCoreText + imgAdapterText) && !/images\/generations/.test(imgCoreText + imgAdapterText),
+  'Image Router 不得自行发 provider 请求（必须复用 _wsExecImageGen）');
+check('imageRouter.reusesExistingExecutor', /_wsExecImageGen/.test(imgAdapterText),
+  'Image Router 未复用现有图片执行器');
+check('imageRouter.noSecondProviderMetadata', !/api\.openai\.com|generativelanguage|api\.anthropic/.test(imgCoreText + imgAdapterText),
+  'Image Router 不得内置第二份 provider metadata/endpoint');
+check('imageRouter.reusesProviderInference', /_imgResolveProvider/.test(imgAdapterText),
+  'Image Router 未复用 workspace 的图片 provider 推断');
+check('imageRouter.singlePolicyLayer', /createImageScheduler/.test(imgCoreText) && /createImageRouter/.test(imgCoreText),
+  'Image Router core 未提供 scheduler/router 工厂');
+check('imageRouter.noSecondMiddleBrain', !/MB_PUBLIC_API|__middleBrainContracts|MB_SYSTEM_PROMPT/.test(imgCoreText + imgAdapterText),
+  'Image Router 不得复制 Middle Brain');
+check('imageRouter.mbDecisionSeamOnly', /middleBrainImageMode/.test(imgAdapterText) && !/getMiddleBrainConfig/.test(imgAdapterText),
+  'Image Router 应只经 Middle Brain 的 canonical 决策缝读用户策略');
+/* producers 必须经 Router：不得再直接调用执行器（避免绕过 Scheduler 的旁路） */
+const imgProducerLeaks = ['assets/js/workspace.js', 'assets/js/moments.js']
+  .map(rel => ({ rel: rel, text: fs.readFileSync(path.join(root, rel), 'utf8').replace(/^\uFEFF/, '') }))
+  .filter(item => /await\s*_wsExecImageGen\s*\(/.test(item.text))
+  .map(item => item.rel);
+check('imageRouter.producersRoutedOnly', imgProducerLeaks.length === 0,
+  'producers 仍直接调用图片执行器（绕过 Scheduler）: ' + imgProducerLeaks.join(', '));
+check('imageRouter.uiSection', /id="mb-adv-image"/.test(html) && /id="mb-image-summary"/.test(html) && /id="mb-adv-image-hint"/.test(html),
+  'Image Generation 高级设置卡片缺失（Fast/Auto/Precision）');
+/* ── P13 · Image Editing Runtime（图片编辑 / 参考图）结构守卫 ────────────
+   契约：Chat <ws_edit_image> → Image Reference Resolver → IB.imageRouter
+         → Scheduler → 既有 _wsExecImageGen（内部委托薄的 _wsExecImageEdit）。
+   锁住：解析层不选模型/不管并发/不调 provider；编辑能力不足时不得偷偷降级成生成。 */
+const ieCorePath = path.join(root, 'assets', 'js', 'image-edit-core.js');
+const ieWiringPath = path.join(root, 'assets', 'js', 'image-edit.js');
+const ieCoreText = fs.existsSync(ieCorePath) ? fs.readFileSync(ieCorePath, 'utf8').replace(/^\uFEFF/, '') : '';
+const ieWiringText = fs.existsSync(ieWiringPath) ? fs.readFileSync(ieWiringPath, 'utf8').replace(/^\uFEFF/, '') : '';
+const ieAllText = ieCoreText + ieWiringText;
+const wsText = fs.readFileSync(path.join(root, 'assets', 'js', 'workspace.js'), 'utf8').replace(/^\uFEFF/, '');
+const momText = fs.readFileSync(path.join(root, 'assets', 'js', 'moments.js'), 'utf8').replace(/^\uFEFF/, '');
+const siteOpsText = fs.readFileSync(path.join(root, 'assets', 'js', 'site-operations.js'), 'utf8').replace(/^\uFEFF/, '');
+check('imageEdit.coreExists', !!ieCoreText && !!ieWiringText, '缺少 image-edit-core.js / image-edit.js');
+check('imageEdit.scriptLoaded', scriptSources.includes('assets/js/image-edit-core.js')
+  && scriptSources.includes('assets/js/image-edit.js')
+  && scriptSources.indexOf('assets/js/image-edit-core.js') < scriptSources.indexOf('assets/js/image-edit.js')
+  && scriptSources.indexOf('assets/js/image-router.js') < scriptSources.indexOf('assets/js/image-edit.js'),
+  'image-edit 脚本未按序挂载（image-router → image-edit-core → image-edit）');
+check('imageEdit.noProviderRequests', !/fetch\s*\(|XMLHttpRequest|images\/edits/.test(ieAllText),
+  '图片解析层不得自行发 provider 请求（provider 只在 workspace.js 执行器里）');
+check('imageEdit.noModelDecision', !/gpt-image|sunburst|flare|decideImageRoute|classifyImageTask/.test(codeOnly(ieAllText)),
+  '图片解析层不得选模型/判精度（属于 Image Router）');
+check('imageEdit.noScheduler', !/createImageScheduler|queueLimit|maxConcurrent/.test(codeOnly(ieAllText)),
+  '图片解析层不得实现并发/队列（属于 Scheduler）');
+check('imageEdit.limitsCentralized', /maxReferenceImages/.test(ieCoreText) && /maxReferenceBytes/.test(ieCoreText)
+  && /maxTotalReferenceBytes/.test(ieCoreText), '参考图数量/体积限额未集中配置');
+check('imageEdit.reusesMomentsShrink', /_momentsShrinkDataUrl/.test(ieWiringText) && /_momentsShrinkDataUrl:_momentsShrinkDataUrl/.test(momText),
+  '参考图超限时应复用 moments 的压缩 helper，不得复制压缩算法');
+check('imageEdit.tagParsed', /edit_image/.test(comMainText) && /<ws_edit_image/.test(comMainText),
+  'communication.js 未解析 <ws_edit_image>');
+check('imageEdit.streamTagOrder', /'<ws_edit_image','<ws_edit'/.test(wsText),
+  '_WS_STREAM_STARTS 中 <ws_edit_image 必须排在 <ws_edit 之前（否则流式误判）');
+check('imageEdit.instructionDocumented', /<ws_edit_image>/.test(siteOpsText),
+  '图像生成指令块未向模型说明 <ws_edit_image>');
+check('imageEdit.executorDelegates', /_wsExecImageEdit/.test(wsText) && /_imgEditCapability/.test(wsText),
+  'workspace.js 缺少薄编辑执行函数或能力判定');
+const ieExecSlice = wsText.slice(wsText.indexOf('async function _wsExecImageEdit'), wsText.indexOf('window._wsExecImageEdit'));
+check('imageEdit.capabilityGuardNoSilentFallback',
+  /IMAGE_EDIT_UNSUPPORTED/.test(wsText) && /if\(!cap\.ok\)return\{ok:false,code:cap\.code/.test(ieExecSlice) && !/_wsExecImageGen\s*\(/.test(ieExecSlice),
+  '编辑能力不足时必须返回 IMAGE_EDIT_UNSUPPORTED，不得偷偷重新生成');
+check('imageEdit.editGoesThroughRouter',
+  /_wsBuildEditIctx/.test(wsText) && /routeImageRequest/.test(wsText) && /IB\.imageEdit/.test(wsText),
+  '编辑请求必须经 Reference Resolver → IB.imageRouter');
+check('imageEdit.lineageFields', /parentImageId/.test(ieCoreText) && /editDepth/.test(ieCoreText)
+  && /parentImageId/.test(wsText), 'lineage（imageId/parentImageId/editDepth）未接通');
+
+/* ── P15 · Image Router 前端配置层（模型目录 / 路由配置 / Settings UI）结构守卫 ──
+   契约：Settings → Image Router 绑定 API 配置 + 模型 → image-router-config 解析
+        → image-router-core 决策 → 现有 _wsExecImageGen；模型只来自唯一目录。 */
+const imPath = path.join(root, 'assets', 'js', 'image-models-core.js');
+const ircPath = path.join(root, 'assets', 'js', 'image-router-config.js');
+const irsPath = path.join(root, 'assets', 'js', 'image-router-settings.js');
+const imText = fs.existsSync(imPath) ? fs.readFileSync(imPath, 'utf8').replace(/^\uFEFF/, '') : '';
+const ircText = fs.existsSync(ircPath) ? fs.readFileSync(ircPath, 'utf8').replace(/^\uFEFF/, '') : '';
+const irsText = fs.existsSync(irsPath) ? fs.readFileSync(irsPath, 'utf8').replace(/^\uFEFF/, '') : '';
+check('imageRouterConfig.coreFilesExist', !!imText && !!ircText && !!irsText,
+  '缺少 image-models-core.js / image-router-config.js / image-router-settings.js');
+check('imageRouterConfig.scriptOrder', scriptSources.includes('assets/js/image-models-core.js')
+  && scriptSources.indexOf('assets/js/image-models-core.js') < scriptSources.indexOf('assets/js/image-router-core.js')
+  && scriptSources.indexOf('assets/js/image-router-core.js') < scriptSources.indexOf('assets/js/image-router-config.js')
+  && scriptSources.indexOf('assets/js/image-router-config.js') < scriptSources.indexOf('assets/js/image-router.js')
+  && scriptSources.indexOf('assets/js/image-router.js') < scriptSources.indexOf('assets/js/image-router-settings.js'),
+  '图片模型/路由配置脚本未按序挂载（models → core → config → router → settings）');
+check('imageRouterConfig.catalogIsImage25', /'gpt-image-2\.5-flare'/.test(imText) && /'gpt-image-2\.5-sunburst'/.test(imText),
+  '唯一模型目录缺少 Image 2.5 的真实 model id');
+check('imageRouterConfig.noSecondModelArray', !/gpt-image-\d/.test(codeOnly(imgCoreText)) && !/gpt-image-\d/.test(codeOnly(irsText))
+  && !/gemini-\d/.test(codeOnly(irsText)),
+  'Router core / Settings 层不得硬编码图片模型名（必须来自 image-models-core.js）');
+check('imageRouterConfig.coreDerivesModels', /tierModelId\('flare'\)/.test(imgCoreText) && /tierModelId\('sunburst'\)/.test(imgCoreText),
+  'Router 的 Flare/Sunburst 模型名必须从唯一目录派生');
+check('imageRouterConfig.capabilityFiltered', /CAPABILITIES = \['image-generation', 'image-editing'\]/.test(imText)
+  && /list\(\{\s*capability/.test(irsText) && /'image-editing'/.test(irsText) && /'image-generation'/.test(irsText),
+  '模型必须带 capability 并按操作过滤');
+check('imageRouterConfig.noSecondApiStorage', /dbPut\('apiSettings'/.test(ircText) && !/dbPut\('(?!apiSettings)/.test(ircText)
+  && /dbGetAll\('apiConfigs'\)|apiConfigs/.test(ircText),
+  '路由配置必须复用 apiSettings + 既有 apiConfigs，不得新建第二套存储');
+check('imageRouterConfig.noSecretCopy', !/\bapiKey\b/.test(codeOnly(irsText)) && !/\bapiKey\b/.test(codeOnly(ircText.replace(/imageGenApiKey/g, 'X').replace(/cfg\.apiKey/g, 'X'))),
+  '配置/设置层不得读取或渲染 apiKey（只按 apiConfigId 引用既有配置）');
+check('imageRouterConfig.reusesExecutorInference', /window\._imgResolveProvider/.test(ircText) && /window\._imgEditCapability/.test(ircText),
+  '配置层必须复用执行器的唯一 provider/编辑能力判定，不得复制表达式');
+check('imageRouterConfig.resolveWired', /resolveRoute/.test(ircText) && /resolveRoute: _resolveRoute/.test(imgAdapterText) && /deps\.resolveRoute/.test(imgCoreText),
+  '路由配置必须真正接进 Router（resolveRoute 未接线）');
+check('imageRouterConfig.routeModelPolicy', /'route_model'/.test(imgCoreText) && /route_model_configured/.test(imgCoreText)
+  && /ctx\.routeModel/.test(imgCoreText), '显式路由模型未进入决策（UI 会与请求体分裂）');
+check('imageRouterConfig.capabilityBeforeRequest', /imageModelProblem\(routeModel, operation\)/.test(imgCoreText)
+  && /_fail\(base, decision, modelProblem/.test(imgCoreText),
+  '模型能力不足必须在发请求前失败');
+check('imageRouterConfig.fallbackEligibleOnlyProvider', /IMAGE_FALLBACK_CODES/.test(imgCoreText) && /imageFallbackEligible/.test(imgCoreText)
+  && /IMAGE_PROVIDER_ERROR/.test(imgCoreText), '备用通道必须有明确的失败类别白名单');
+check('imageRouterConfig.executorFailureCodes', /code:'IMAGE_PROVIDER_ERROR'/.test(wsText) && /code:'IMAGE_ROUTER_PROVIDER_UNSUPPORTED'/.test(wsText),
+  '生图执行器失败必须带错误码（否则 telemetry/备用通道无法分类）');
+check('imageRouterSettings.uiSection', /id="image-router-section"/.test(html) && /id="ir-route-generation"/.test(html)
+  && /id="ir-route-editing"/.test(html) && /id="ir-collapse-body"/.test(html),
+  'Settings 缺少 Image Router 区块或两条路由容器');
+check('imageRouterSettings.reusesApiEditor', /onclick="addNewApi\(\)"/.test(irsText),
+  '「+ 新建」必须复用既有 API 编辑器，不得复制表单');
+check('imageRouterSettings.modelOptionsFromCatalog', /NS\.imageModels/.test(irsText) && /\.list\(\{\s*capability/.test(irsText),
+  '模型下拉必须来自 IB.imageModels（唯一目录）');
+check('imageRouterSettings.refreshHooked', /loadImageRouterSettingsUI/.test(comMainText) || /loadImageRouterSettingsUI/.test(html) || /loadImageRouterSettingsUI/.test(fs.readFileSync(path.join(root, 'assets', 'js', 'social.js'), 'utf8')),
+  'Image Router 设置未接入 API 页面刷新（navTo api / 保存 API 配置后）');
+check('imageRouterSettings.datalistFromCatalog', /api-imagegen-model-list/.test(html) && /_fillModelDatalist/.test(irsText),
+  'API 编辑器的生图模型输入未接唯一目录候选');
+check('imageRouterSettings.showsCurrentRoute', /_routeLine/.test(irsText) && /ir-line-/.test(irsText),
+  '页面必须展示"当前实际路由"（Generation → 配置 / 模型）');
 const mbFacadeOwned = ['middleBrainCompressPipeline', 'middleBrainExecute', 'middleBrainAstraEnabled', 'middleBrainFinalizeReply'];
 const mbOwnerBad = mbPublicPairs.filter(([symbol, owner]) => mbFacadeOwned.includes(symbol)
   ? owner !== 'facade' : !(mbContracts[owner] && mbContracts[owner].includes(symbol)))

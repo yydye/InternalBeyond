@@ -264,5 +264,477 @@
 - **排查方法**：DevTools→Network→该 400 请求→Response 看 `error.param`；或临时在 `_adaptContentForApi` 打 `[IB-DIAG] img mime=…`（本次已移除）。详见 [TROUBLESHOOTING.md](TROUBLESHOOTING.md) T40、[docs/multimodal-image-inject-notes.md](docs/multimodal-image-inject-notes.md)。
 - **此前"强制 MiMo 契约"改动**（`communication.js` `callApi` + `active/node-model-port.js`）为防御性、非本次 400 根因，保留。
 
+## 2026-09-10 · P12 · Image Router + GPT Image 2.5 双模型路由与并发控制
+
+给全部图片生成入口建立**统一策略层**：`producers → IB.imageRouter → Image Scheduler → 现有 _wsExecImageGen → provider`。
+核心约束是**不为了接两个模型再造第二套图片执行链**——Router 只做任务识别 / 模型选择 / 优先级 / 资源控制，
+真正的 provider 请求仍然是 `assets/js/workspace.js` 里那一个 `_wsExecImageGen`（本阶段只给它加了可选的
+`opts.signal`（复用其既有 AbortController）与 `opts.quality`（仅 gpt-image 家族下发））。
+
+**审计结论（插入层）**：真实图片 producer 只有两处——Chat 的 `<ws_gen_image>`（`_execWsOps`）与
+Moments / AI 自主 Moments 配图（`_momentsMakeImage`）；Blog / Diary / Activity / Character Runtime 目前
+**没有任何图片生成入口**（companion 只输出 `wantImage/imagePrompt`，由浏览器侧出图），图片编辑与参考图
+链路尚不存在。全仓库只有一个 executor（`_wsExecImageGen`）、一个 provider 推断（`_imgResolveProvider`）、
+一套 provider metadata（`provider-directory.js`），没有任何 semaphore / 队列 / 重试 / 取消系统——Router 因此
+插在 executor 之上，而不是新建执行链。
+
+| 文件 | 改动 |
+|---|---|
+| `assets/js/image-router-core.js` | **新增**：UMD dual-load 运行时中立核心（零 DOM/fetch/db）。`classifyImageTask`（结构化任务画像，文本线索仅补充）、`decideImageRoute`（Fast→Flare 永不升级 / Precision→Sunburst 永不降级 / Auto 按画像选择）、`decideImagePriority`（P0–P3）、`createImageScheduler`（global=2 / Flare=2 / Sunburst=1 / 每角色=1 / queueLimit=8 + aging 防饥饿 + 重复合并 + 队列溢出驱逐 + 后台冷却与降级 + 槽位 finally 释放）、`createImageRouter`、`IMAGE_ROUTER_DEFAULTS`（唯一配置点） |
+| `assets/js/image-router.js` | **新增**：浏览器接线，注入现有 `_wsExecImageGen` / `_imgResolveProvider` / MB 决策缝 / `apiSettings['image_router']` 覆盖；导出 `IB.imageRouter` |
+| `assets/js/middle-brain-config.js` | `imageMode` 配置 + Advanced Settings 新增 `Image Generation` 卡片（`Fast ─ Auto ─ Precision`，复用既有滑动组件）；新增 canonical 决策缝 `middleBrainImageMode()` |
+| `assets/js/middle-brain.js` | `MB_PUBLIC_API` 追加 2 个 config 层键（`middleBrainImageMode` / `normalizeMiddleBrainImageMode`，**不挂 window 兼容别名**），门面 key 45 → 47 |
+| `assets/js/workspace.js` | `_wsExecImageGen` 支持 `opts.signal/quality`；`_execWsOps` 增第 4 参图片上下文并让 `gen_image` 经 Router |
+| `assets/js/moments.js` | 新增 `_momentsRouteImage`（经 Router，无绕过旁路）；`_momentsMakeImage` 传 source/background（手动发布 P1、AI 自主 P3） |
+| `InternalBeyond.html` | 挂载两个新脚本（core → adapter，位于 middle-brain.js 之后）+ Image Generation 卡片 |
+| `test_image_router.js` | **新增**：纯 Node 专项 85 项（路由/并发/优先级与防饥饿/失败与 abort 槽位恢复/队列溢出/重复合并/后台冷却与降级/auto 升级/telemetry 脱敏），自带看门狗防止用例挂起被 `process.exit(0)` 掩盖 |
+| `test_image_router_smoke.js` | **新增**：浏览器最小冒烟 18 项（真实链路 + UI 策略切换 + 真实并发峰值） |
+| `test_frontend_structure.js` | 追加 Image Router 结构守卫（不复制执行器/provider metadata/Middle Brain、producers 不得绕过 Scheduler） |
+| `test_middle_brain_seam.js` / `test_middle_brain_integrity.js` | 门面 key 数 45 → 47、facade-only 集合追加 2 键（有意契约扩展） |
+| `test-all.js` | 登记 `test_image_router.js`（static）+ `test_image_router_smoke.js`（browser） |
+
+**行为边界（重要）**：双模型策略只治理 gpt-image 家族（配置为空或 `gpt-image*`）；provider 为 gemini/anthropic/deepseek
+或用户显式配置了非 gpt-image 模型时一律 `provider_managed`（只做并发控制，**不改用户填的模型**）。
+用户显式 Fast/Precision 永远高于 Auto Router；后台任务最多通过 aging 提升到 P1，永远不会超过用户主动编辑 P0。
+
+## 2026-09-10 · P13 · Image Editing Runtime / Reference Image 生产接入
+
+P12 的 Image Router 早已支持 `operation:'edit'` / `previousImage` / `referenceImages` / `multiTurnEdits`，
+但**没有任何生产入口**（模型想改图只能重新生成一张）。本阶段把这一个缺口接通，全程不重写 Router / Scheduler：
+
+```
+Chat <ws_edit_image> → Image Reference Resolver → IB.imageRouter → Scheduler → 既有 _wsExecImageGen
+                                                                        └─ 内部薄的 _wsExecImageEdit（edit wire format）
+```
+
+**审计结论**：图片消息的 canonical 表示就是 `chatMessages.images[]` 里的 `{dataUrl, base64, mime, name}`
+（用户上传经 `compressImage` 压缩后同形；ICode 里同一条 dataUrl 作为文件内容存储）——**没有第二套图片结构，也没有稳定 imageId**。
+`<ws_gen_image>` 链路：`_segmentAiText`（`_WS_OPEN_RE`）→ `_execWsOps` → Router → `_wsExecImageGen` → `_wsCollectGenImages` → `aiMsg.images` + `_ibImageDrain` + ICode。
+provider 侧审计：OpenAI 兼容只有 `/v1/images/generations`（JSON）、Gemini 只有 `generateContent`，
+**仓库内没有任何 edit endpoint / multipart / 图像输入**——因此编辑 wire format 是本阶段新增的最小扩展。
+
+| 文件 | 改动 |
+|---|---|
+| `assets/js/image-edit-core.js` | **新增**：UMD 运行时中立解析内核（零 DOM/fetch/db）。`normalizeImage`（dataUrl / base64 / url / src / 对象 → 同一 canonical 表示 + 保留 lineage）、`checkBudget`（数量/单张/合计）、`pickPreviousImage`（explicit > attached > latest）、`buildEditRequest`、`lineageFor`、`IMAGE_EDIT_DEFAULTS`（唯一限额点：`maxReferenceImages=4` / `maxReferenceBytes=4MB` / `maxTotalReferenceBytes=8MB`） |
+| `assets/js/image-edit.js` | **新增**：浏览器接线。读 `chatMessages` 历史与 ICode 图片文件、超限复用 `IB.moments._momentsShrinkDataUrl`、显式选中态（`selectImage` / 预览条 chip / 图片查看器「编辑这张图」按钮）、`apiSettings['image_edit']` 限额覆盖。**不选模型、不管并发、不调 provider** |
+| `assets/js/workspace.js` | `_wsExecImageGen(opts.operation==='edit')` 委托薄函数 `_wsExecImageEdit`（复用 provider 推断/凭证/120s 超时/响应解析/用量计量）；新增 `_imgEditCapability`（能力判定）、`_imgEditRefs`、`_imgGeminiUrl` / `_imgGeminiGenerate` / `_imgPickOpenAIImage` / `_imgSizeOk`（生图与编辑共用的公共能力）；`_execWsOps` 增 `edit_image` 分支（经 `_wsBuildEditIctx` → Router，无旁路）；`_wsCollectGenImages` 透传 lineage；`_WS_STREAM_STARTS` + 流式卡 + 结果卡文案支持编辑 |
+| `assets/js/communication.js` | `_WS_OPEN_RE` / `_segmentAiText` 解析 `<ws_edit_image>`（正文=修改要求，可选 `path`）；`_viewImageFull(src,image)` 增加「编辑这张图」；`renderAttachPreviews` 渲染选中态 chip；4 处 `_execWsOps` 调用点补传 `friendId/threadId/senderName/userMessageId` |
+| `assets/js/site-operations.js` | `_IMGGEN_INSTR_BLOCK` 说明 `<ws_edit_image>`（模型不必传 base64/URL/messageId；连续改图默认改上一次的结果） |
+| `assets/js/image-router-core.js` | 编辑请求把 `operation/previousImage/referenceImages` 一并交给**同一个** executor；telemetry 增 `operation/referenceCount/editDepth`；`IMAGE_REJECT_TEXT` 增 8 个编辑/参考图错误码 |
+| `assets/js/moments.js` | 导出既有 `_momentsShrinkDataUrl`（参考图超限复用，不复制压缩算法） |
+| `InternalBeyond.html` | 挂载 `image-edit-core.js` → `image-edit.js`（位于 image-router.js 之后） |
+| `test_image_edit.js` | **新增**：纯 Node 专项 113 项（归一化/限额/选源优先级/lineage 链/多轮 A→B→C 第三步必须改 B/edit 路由与 Fast·Precision 覆盖/优先级 P0 与不抢占/并发上限/失败与 abort 槽位恢复/重复合并与溢出/错误文案） |
+| `test_image_edit_smoke.js` | **新增**：浏览器冒烟 50 项（真实 `<ws_gen_image>`→A→`<ws_edit_image>`→multipart `/v1/images/edits`→B→再编辑必须以上一张 B 为输入；页面重载后仍可解析；capability guard 0 次请求；显式选中；参考图限额与缩放；并发上限；telemetry 脱敏） |
+| `test_frontend_structure.js` | 追加 13 条 P13 结构守卫（解析层不选模型/不管并发/不调 provider、复用压缩 helper、标签顺序、能力不足不得偷偷重新生成、lineage 接通） |
+| `test-all.js` | 登记 `test_image_edit.js`（static）+ `test_image_edit_smoke.js`（browser） |
+
+**能力边界（capability guard）**：OpenAI 兼容 + `gpt-image*` / `dall-e-2` → `POST {origin}/v1/images/edits`（multipart，`image` / 多图 `image[]`）；
+Gemini → `generateContent` + `inlineData`；`anthropic` / `deepseek` / `dall-e-3` / 自定义模型 → `IMAGE_EDIT_UNSUPPORTED` 且 **0 次 provider 请求**。
+端点不存在（HTTP 404/405）同样报不支持编辑——**编辑失败绝不偷偷降级成重新生成**（"只改头发"语义会变）。
+
+**多轮编辑**：`aiMsg.images` 上的可选 lineage（`imageId / parentImageId / generationType / editDepth / model`）随消息持久化，
+所以第二步编辑以 B 为 `previousImage`、第三步以 C 为输入，形成 `A → B → C` 而不是 `A → B / A → C`。
+
+## 2026-09-10 · P14 · API 页 Middle Brain 整块折叠（视觉占用优化）
+
+API Settings 页的 Middle Brain 配置区（说明 / 启用 / Endpoint / API Key / Astra Cognitive Control / Model /
+Reasoning / Processing / Image Generation / Character Integrity Guard 及后续所有 Advanced Settings）在窄屏与
+默认状态下占用过高。本阶段把它收进**一个可折叠 section**，全程不动 Middle Brain contract、Image Router、
+模型选择逻辑、reasoning / service tier / image mode 行为，也不重写 API 页面：
+
+- **折叠头常驻**：`Middle Brain` + 动态摘要 `model · reasoning effort · processing(service tier) · image mode`
+  + `Enabled / Disabled` 徽标 + chevron；点击 header 或 chevron、键盘 Enter / Space 均可切换。
+- **只隐藏 body，不销毁 DOM**：收起后所有 input / slider / API Key 状态原样保留，再展开不重新初始化、
+  不重复绑定 listener（`_mbCollapseBound` 幂等守卫）。
+- **持久化复用现有设置存储**：`apiSettings` 私有 key `middle_brain_ui = { collapsed }`（与 `image_router` /
+  `image_edit` / `bgAi` 同一套 IndexedDB 方式）；**不写 canonical `middle_brain` 配置**、不用 localStorage。
+- **默认态**：无用户偏好时，配置不完整（首次配置 / 未启用 / 缺 endpoint·model·API Key）→ 展开；
+  配置完整（已有用户）→ 收起；用户手动切换后其偏好优先，不因 `enabled=true` 强制展开。
+- **动效**：`max-height + opacity + visibility` 过渡（非 `display:none`），`prefers-reduced-motion` 沿用
+  `core.css` 全局降级；窄屏摘要允许换行但不把 header 撑到接近展开态高度。
+
+| 文件 | 改动 |
+|---|---|
+| `InternalBeyond.html` | `#middle-brain-section` 内新增 compact header `<button id="mb-collapse-toggle" aria-expanded="false" aria-controls="mb-collapse-body">` + body wrapper `<div class="mb-collapse-body" id="mb-collapse-body">`；**内部控件逐字未动**（只包一层） |
+| `assets/css/core.css` | 新增 `.mb-collapse-head / -title / -summary / -badge / -chev / -body` 折叠样式与过渡（复用既有 glass / accent token，未新增样式表，20 个 stylesheet 计数不变） |
+| `assets/js/middle-brain-config.js` | 新增折叠状态机（`_mbCollapseApply` / `_mbRenderHeader` / `_mbHeaderSummary` / `_mbConfigIncomplete` / `_mbBindCollapse` / `_mbInitCollapse`）+ `apiSettings['middle_brain_ui']` 读写；`loadMiddleBrainConfigUI` 返回 Promise（折叠初始化纳入同一条链）；model / reasoning / speed / image / enabled 变化时同步刷新摘要与徽标 |
+| `test_middle_brain_collapse.js` | **新增**：静态专项 35 项（DOM stub 驱动真实 config 层）：初始态、点击与键盘切换、aria、状态保持、API Key 不丢、刷新恢复、摘要动态、不重复绑定、无异常 |
+| `test_middle_brain_advanced.js` | 追加 9 条真实浏览器（CDP）折叠 smoke：默认收起（`visibility:hidden` + 高度 0）、摘要随配置、header 紧凑、点击展开/收起、button 原生键盘语义 + 焦点保留、API Key 与 slider DOM 状态保持、`middle_brain_ui` 落盘与重新 load 恢复、重复 load 不重复绑定、过渡为 max-height/opacity 而非 display:none |
+| `test-all.js` | 登记 `test_middle_brain_collapse.js`（static） |
+
+## 2026-09-10 · P15 · Image Router 前端配置层（模型目录 / 路由绑定 / Settings UI）
+
+P12/P13 已经让图片请求统一经 Image Router、让「编辑这张图」可用，但**没有任何配置入口**：
+用户无法决定图片请求用哪个 API 配置、哪个模型，模型目录里也看不到 Image 2.5。
+本阶段补齐「可见、可配、可工作」的配置层，全程不新建第二套 Secret Store / provider metadata / executor。
+
+```
+设置 → API → Image Router
+   ├─ Image Generation：API Config + Model + Enabled + 备用通道
+   └─ Image Editing  ：API Config + Model + Enabled + 备用通道
+        ↓ 保存  apiSettings['image_router'].routes（与既有并发覆盖字段同 key 共存）
+   IB.imageRouter.routeImageRequest → resolveRoute → route_model / dual_model 决策
+        ↓ apiConfigId → 既有 apiConfigs（endpoint/apiKey/provider）；model → 唯一模型目录
+   Scheduler → 现有 _wsExecImageGen → Provider
+```
+
+**审计结论（缺口）**：① 没有任何 Image Router 设置页/面板；② 图片模型散落在三处（`image-router-core.js` 的
+`IMAGE_MODELS` 字面量、`workspace.js` 执行器里的 `|| 'gpt-image-1'` 回落、API 编辑器手填的 `imageGenModel`），
+UI 与请求体可能不一致；③ 路由配置只有并发覆盖字段（`apiSettings['image_router']`），没有「用哪个 API 配置/模型」；
+④ 配置问题只会变成 fetch 401/404，不告诉用户去哪修。
+
+| 文件 | 改动 |
+|---|---|
+| `assets/js/image-models-core.js` | **新增**：唯一 canonical 图片模型目录（UMD，零 DOM/fetch/db）。每条记录含 `id / label / provider / family / tier / capabilities / wire / qualities / sizes`；含 **Image 2.5 的真实 id** `gpt-image-2.5-flare` / `gpt-image-2.5-sunburst`（证据：Vercel AI Gateway 模型页 `gpt-image-2.5-sunburst` 与 "GPT Image 2.5 Flare and Sunburst now available on AI Gateway" 变更日志），以及 `gpt-image-1` / `dall-e-3` / `dall-e-2` / `gemini-2.5-flash-image`；`listImageModels({capability})` 是能力过滤唯一实现，`tierModelId()` 是双模型档位唯一映射 |
+| `assets/js/image-router-config.js` | **新增**：路由配置层（零 DOM/fetch）。`getRoutes`/`saveRoutes` 写 `apiSettings['image_router'].routes`（**保留** maxConcurrent 等既有字段）、`resolveRoute`（route → 执行器 cfg + 模型 + 备用通道 + 错误码）、`describe`（Settings UI 只读描述）。provider 推断与编辑能力判定复用执行器的 `_imgResolveProvider` / `_imgEditCapability` |
+| `assets/js/image-router-settings.js` | **新增**：Settings UI（只做界面）。两条路由卡片（API Config / Model / Enabled / 备用）、能力过滤下拉、**「+ 新建」直接调用既有 `addNewApi()`**、当前实际路由展示（`Generation → API 配置 / 模型`）、折叠态 `apiSettings['image_router_ui']`、给 API 编辑器的生图模型输入框填同一份目录的 `datalist` |
+| `assets/js/image-router-core.js` | 模型 id 改为从唯一目录派生（`tierModelId`）；新增 `route_model` 策略（显式模型最高优先，Fast/Precision 不能改它）、`imageModelProblem`（目录/能力校验）、`resolveRoute` 注入缝、备用通道重试（仅 `IMAGE_FALLBACK_CODES`）、`normalizeImageOperation`、telemetry 增 `apiConfigId/routeName/modelSource/fallbackUsed`、`IMAGE_REJECT_TEXT` 增 9 个配置类错误码 |
+| `assets/js/image-router.js` | 注入 `resolveRoute`；导出 `IB.imageModels`（UI 唯一模型来源）与 `normalizeImageOperation` / `imageModelProblem` / `IMAGE_FALLBACK_CODES` |
+| `assets/js/workspace.js` | 生图执行器失败返回补错误码（`IMAGE_PROVIDER_ERROR` / `IMAGE_TIMEOUT` / `IMAGE_ABORTED` / `IMAGE_ROUTER_PROVIDER_UNSUPPORTED`）；结果回传 `route` / `fallbackUsed`（上层不必猜实际路由） |
+| `assets/js/social.js` | `loadApiSettingsUI()` 与 `saveCurrentApi()` 成功后刷新 Image Router 设置（绑定下拉立刻看到新配置） |
+| `assets/js/moments.js` | 图片失败观测 `reason_class` 同时保留错误码与可读原因（`CODE:reason`），新错误码不抹掉可读信息 |
+| `InternalBeyond.html` | API 页新增 Image Router 区块（两条路由容器 + 折叠头 + 保存按钮）；挂载 `image-models-core.js` → `image-router-core.js` → `image-router-config.js` → `image-router.js` → `image-router-settings.js`；生图模型输入框接 `datalist` |
+| `assets/css/core/api-components.css` | 新增 `.ir-card / -head / -state / -grid / -select-row / -adv / -route-line` 等路由卡片样式（复用既有 token，未新增样式表） |
+| `test_image_router_config.js` | **新增**：纯 Node 专项 48 项（模型目录/能力过滤/wire、路由归一与持久化不丢并发字段、inherit/bound/disabled/配置缺失/缺 Key/缺 Endpoint/不支持 provider/本地端点免 Key、模型能力校验、备用通道解析、Core 接线与 0 次请求、telemetry 脱敏、describe、错误文案） |
+| `test_image_router_settings_smoke.js` | **新增**：浏览器冒烟 36 项（UI 真实存在 → 保存 → 刷新后配置仍在 → Generation/Editing 各用自己的 API 配置与模型发真实请求（含 multipart `/images/edits` 的源图字节）→ 改模型后 request body 同步改变 → 缺 Key/配置不存在/路由关闭明确报错且 0 次请求 → 本地端点免 Key 放行 → 备用通道重试一次） |
+| `test_frontend_structure.js` | 追加 15 条 P15 结构守卫（脚本按序挂载、core/Settings 不得硬编码模型名、模型必须按 capability 过滤、只写 `apiSettings` 且只按 apiConfigId 引用既有配置、不得读取/渲染 apiKey、必须复用执行器判定、显式模型必须进决策、能力不足在发请求前失败、备用白名单、复用 `addNewApi()`、展示当前实际路由） |
+| `test-all.js` | 登记 `test_image_router_config.js`（static）+ `test_image_router_settings_smoke.js`（browser） |
+
+**解析语义**：`apiConfigId` 留空 → `inherit`（沿用角色 cfg，与 P12/P13 逐字一致，老用户无需重配）；
+有值 → `bound`（完全使用该 API 配置的 endpoint/apiKey/provider，与"正在和谁聊天"解耦）；
+`model` 留空 → `auto`（交回 Fast/Auto/Precision 双模型策略）；有值 → `route_model`（显式最高优先）。
+
+**只拦确定不可用的配置**：路由关闭 / 绑定配置不存在 / 模型不在目录或不支持该操作 / 公网端点缺 Key →
+明确错误码 + **0 次 provider 请求**；端点留空但 provider 有官方默认端点、本地与内网端点不填 Key → 放行并记警告
+（local-first 与 Bridge 本地服务就是这种形态，不得判死）。
+
+## 2026-09-10 · P18 · 模型目录时效审计（Model Catalog Freshness Audit）
+
+P17 把「有哪些服务、怎么摆」收敛成一份真源，但**「新建配置默认用哪个模型」一直没人对着官方文档核过**：
+`gemini-2.0-flash` 已被官方停用、`grok-4` 已于 2026-05-15 退役、Anthropic 自 Sonnet 5 / Opus 4.7 起
+**移除采样参数**（照发 `temperature` 会 400）。本阶段先做只读取证，再只改「新建配置的默认值」，
+并补上 runtime 真正需要的最小 model policy——**已有用户配置一律不迁移**。
+
+```
+provider-directory.js
+   ├── PROVIDERS[id].model        新建配置默认模型（唯一真源）—— P18 改 3 个
+   ├── MODEL_POLICIES             model id → 请求侧硬约束（目前只有 supportsSamplingParameters）
+   └── MODEL_AUDIT                provider id → 审计状态（current / deprecation-risk / unverified）
+        ↓ 读取面 modelPolicy / modelSupportsSamplingParameters / providerDefaultModel / modelAuditEntry
+communication.js  _modelSupportsSampling(cfg) → 门控 3 处 anthropic temperature
+ib-model-core.js  buildRequestBody（anthropic 分支）→ active/node-model-port.js 自动继承
+```
+
+**默认值变更（仅 3 个，均有官方取证）**
+
+| Provider | 旧 default | 新 default | 依据 |
+|---|---|---|---|
+| Anthropic | `claude-sonnet-4-6` | `claude-sonnet-5` | 官方迁移指南：Sonnet 5 是 4.6 的 drop-in upgrade（2026-06-30 发布） |
+| Gemini | `gemini-2.0-flash` | `gemini-3.5-flash` | 官方 Firebase AI Logic 文档把 `gemini-2.0-flash(-001)` 列入已停用模型；3.5 Flash 有官方 what's-new 页 |
+| xAI | `grok-4` | `grok-4.3` | 官方 `docs.x.ai/developers/migration/may-15-retirement`：`grok-4` 系列 2026-05-15 退役 |
+
+其余 11 个**保持原值**：`deepseek-v4-flash` / `kimi-k2.6` / `mimo-v2.5` / `qwen-plus` / `glm-4-flash`
+官方仍可调用（`current`）；`gpt-4o-mini` / `doubao-seed-2-0-lite` 有官方弃用信号但缺官方 API 表
+（`deprecation-risk`）；`MiniMax-Text-01` / `mistral-large-latest` / `yi-lightning` / `Baichuan4`
+查不到官方来源（`unverified`）——**不猜替代值**。
+
+**Claude 请求兼容（本轮最重要的边界）**：`MODEL_POLICIES` 登记 `claude-sonnet-5` / `claude-opus-4-7`
+/ `claude-opus-4-8` / `claude-opus-5` 为 `supportsSamplingParameters: false`，请求不再发送
+`temperature`；**表里没有的 model（含 `claude-sonnet-4-6` 与用户自填的未知 id）行为逐位不变**。
+`communication.js` 三处 anthropic 请求体（`callApi` / 流式 / 非流式）与 `ib-model-core.js` 共用同一判定，
+目录缺失时回落「照发」。
+
+**不迁移已有配置**：只有 `onProviderChange()`（新建 API / 用户主动切 provider）会写 `#api-model`；
+`editApi()` 从配置恢复并标记「非自动填入」，`saveCurrentApi()` 写表单值，启动 / 加载 / 保存链
+都不改写 `model`。DeepSeek 的 `deepseek-v4-flash-vision-exp` **未删除**（精确匹配、无策略限制）。
+
+**证据补充（2026-09-10，P18 交付后按用户提供的官方文档页复核）**：DeepSeek 官方「首次调用 API」
+页（`https://api-docs.deepseek.com/zh-cn/`）的模型清单为 `deepseek-v4-flash` / `deepseek-v4-pro` /
+`deepseek-v4-flash-vision-exp`，脚注说明前两者内部版本名（`DeepSeek-V4-Flash-0731` /
+`DeepSeek-V4-Pro-0813`）**不影响调用 ID**，`deepseek-v4-flash-vision-exp` 为**实验性视觉模型**
+（额外支持图片输入，模型名精确匹配即可调用，官方「图像理解」页有完整说明）。据此纠正 P18 报告中
+「vision exp 查不到公开出处」的结论：`MODEL_AUDIT.deepseek.evidence` 改指该官方页，`status` 仍为
+`current`；官方视觉约束（图片仅限 user 消息、仅视觉模型接受图片、JPEG/PNG/GIF/WebP 按内容判定、
+单请求最多 600 张、单边最长 8192px / ≥15 张时 4096px）记入 `HANDOVER.md`。**未改任何默认模型、
+未改任何请求行为。**
+
+| 文件 | 改动 |
+|---|---|
+| `assets/js/provider-directory.js` | 3 个默认模型变更；新增 `MODEL_POLICIES` / `MODEL_AUDIT` / 4 个读取函数；MiniMax `docsUrl` 补齐 |
+| `assets/js/communication.js` | 新增 `_modelSupportsSampling(cfg)`（委托目录）；3 处 anthropic `temperature` 赋值加门控 |
+| `assets/js/ib-model-core.js` | `buildRequestBody` anthropic 分支加门控；导出 `modelSupportsSamplingParameters` |
+| `test_model_catalog_freshness.js` | **新增**：P18 防漂移 68 项（审计覆盖 / 默认表锁定 / policy 语义 / vision exp / Claude 新旧策略 / 三处门控 / 新建与切换预填 / 不迁移 / 子进程无回归门） |
+| `test_setup_wizard.js` / `test_api_onboarding.js` / `test_provider_presentation.js` | 「不复制默认模型」清单改为**从目录派生**（换默认值 / 新增 provider 自动跟随，不再人工同步） |
+| `test-all.js` / `ARCHITECTURE.md` / `HANDOVER.md` | 登记新测试、补 P18 架构与已知限制 |
+
+验证：`test_model_catalog_freshness.js` 68 ✔、`test_model_core_contract.js` ✔、
+`test_provider_presentation.js` 104 ✔、`test_api_onboarding.js` 128 ✔、`test_setup_wizard.js` 86 ✔、
+`test_diagnostics.js` 120 ✔、`test_harness_boundary.js` 42 ✔、`test_frontend_structure.js` ✔、
+`test_astra_adapter.js` ✔、`test_call_acoustic_inject.js` 19 ✔；一次完整 quick regression 全绿。
+浏览器：既有最小 smoke `test_api_key_mutation_repro.js` 全绿；另跑一次临时 CDP 冒烟 15 项全绿
+（新建 Anthropic / DeepSeek / xAI 预填、`IBOnboarding.configure` 预填、legacy `claude-sonnet-4-6`
+reload 与保存后不变、手改 model 不被覆盖、切 provider 取新默认、未知 model 不被替换、
+页面内 `IBModelCore` 对 Sonnet 5 不带 `temperature` 而对 4.6 仍带）。该脚本写在 `logs/`（gitignored）验证后已删除。
+本阶段**未**做动态模型发现、模型列表 / 价格、Model Registry、Model Router 改动、
+Provider Presentation 架构改动，也未迁移任何已有配置的模型。
+
+## 2026-09-10 · P17 · Provider 呈现层真源收敛（Presentation Convergence）
+
+P16 把「怎么拿到 Key」讲清楚了，但**「IB 有哪些服务、以什么顺序摆、叫什么、给新手看哪句话」当时还有四份表**：
+`InternalBeyond.html` 里 15 个硬编码 `<option>`、`setup-wizard.js` 的 `PROVIDER_ORDER` + `PROVIDER_HINT`、
+`api-onboarding.js` 的 `OFFICIAL_ORDER` + `PROVIDER_HINT`，以及 `provider-directory.js` 自己那份
+`ONBOARDING_ORDER`。四份表顺序各不相同（下拉是目录字面量序、向导是 openai 开头、获取向导是国内优先），
+新增一个服务商要改四处、且极易漏改。本阶段把**呈现层也收敛到唯一目录**：协议配置早就是 canonical，
+现在顺序 / 分组 / 文案 / 出现位置也只剩一份。
+
+```
+provider-directory.js
+   ├── PROVIDERS              协议配置真源（endpoint/format/model/vision/streaming）—— 未改动
+   ├── PROVIDER_PRESENTATION  呈现层真源（P17 新增，key = canonical provider id）
+   │     order · group · kind · shortHint · showInPicker/Setup/Onboarding · capabilitiesKnown
+   └── 读取面 providerPresentation / providerList / providerPickerList / setupProviderList /
+              onboardingProviderList / pickerGroups / providerDisplayName / providerHint /
+              providerBeginnerHint / providerCapabilitiesKnown / providerKind
+        ↑                    ↑                        ↑
+   social.js 下拉        setup-wizard 卡片        api-onboarding 官方卡片
+   （optgroup 分组）     （无本地顺序表）          （无本地顺序表）
+```
+
+**删掉的四份重复表**：HTML 的 14 个 canonical `<option>`（只剩 1 个兼容模式 fallback）、
+`setup-wizard.js` 的 `PROVIDER_ORDER` / `PROVIDER_HINT`、`api-onboarding.js` 的 `OFFICIAL_ORDER` /
+`PROVIDER_HINT`、目录内的 `ONBOARDING_ORDER`（顺序改由 `presentation.order` 唯一决定）。
+
+| 文件 | 改动 |
+|---|---|
+| `assets/js/provider-directory.js` | 新增 `PROVIDER_PRESENTATION` / `GROUP_ORDER` / `GROUP_LABELS` / `PRESENTATION_DEFAULTS` 与 10 个读取函数；删除 `ONBOARDING_ORDER`；`officialList()` 改为 `onboardingProviderList()`（presentation 驱动）；`providerKind()` 增 `'compatible'` 分支；`custom` 显示名改 `自定义 / OpenAI Compatible`（端点 / 模型仍为空，`vision/streaming` 旧默认不动） |
+| `assets/js/social.js` | 新增 `_ibSyncProviderOptions()`（按 `pickerGroups()` 重建 `<select>`，optgroup 分组、`providerDisplayName()` 作文案、幂等、目录缺失时保留 HTML fallback）、`_ibSetProviderSelection()`（历史 / 未知 provider 补「未知服务商（id）」占位选项，绝不静默清空）、`_ibDefaultProvider()`；`addNewApi()` / `editApi()` 改走上述函数；`onProviderChange()` 增刷兼容模式说明位 |
+| `assets/js/setup-wizard.js` | 删除 `PROVIDER_ORDER` / `PROVIDER_HINT`，改 `setupProviderIds()` + `providerHintOf()` 取目录（旧版目录才退到键序）；`__test` 导出相应调整 |
+| `assets/js/api-onboarding.js` | 删除 `OFFICIAL_ORDER` / `PROVIDER_HINT`，改 `officialIds()`（目录 `onboardingProviderList()`）+ `providerHint()`；新增 `renderProviderNote()`：只对 `kind=compatible` / `capabilitiesKnown=false` 的服务说明「IB 不声明它的能力」 |
+| `InternalBeyond.html` | `#api-provider` 只留 1 个 fallback `<option value="custom">`，其余由目录构建；新增 `#ibo-provider-note` 说明位 |
+| `test_harness_boundary.js` | DOM 守卫收紧：先挖空字符串字面量再扫描（URL / 文案里的 `document`·`navigator` 不再误报），单列 `window['document']` 形态；新增 6 负例 + 8 正例自测（42 项） |
+| `test_provider_presentation.js` | **新增**：P17 防漂移专项 104 项（顺序 / 分组 / 无第二份表 / HTML fallback / 下拉构建真实行为 / 临时目录副本验证新增与隐藏 / `custom` 语义 / 目录无重复协议真相 / boundary 正负例） |
+| `test_api_onboarding.js` | 更新「HTML 硬编码 15 项」断言为 P17 语义；纯数据守卫断言改为「无 DOM 访问」而非「无同名单词」 |
+
+**custom 的语义（本阶段明确）**：它不是某一家服务，而是 **Generic / OpenAI-Compatible 兼容模式**。
+`providerKind('custom') === 'compatible'`，不进官方列表、没有官方 onboarding 条目（不给它官方站点）、
+endpoint 与 model 均为空、`capabilitiesKnown=false`。底层 `vision/streaming` 仍是 `true/true`——
+**有意保留旧默认**，因为改它会影响既有用户配置；能力未知这一事实改由呈现层声明 + 编辑器里一句人话
+（「IB 不声明这个服务的能力…填完点『测试连接』就知道」）如实传达。
+
+**验证**：`test_provider_presentation.js` 104 ✔、`test_api_onboarding.js` 128 ✔、`test_setup_wizard.js` ✔、
+`test_harness_boundary.js` 42 ✔、`test_guide.js` 314 ✔、`test_frontend_structure.js` ✔、
+`test_diagnostics.js` 120 ✔、`scripts_check_html.js` ✔；一次完整 quick regression（static 45 + service 16）全绿。
+浏览器：既有最小 smoke `test_api_key_mutation_repro.js` 全绿，另跑一次临时 CDP 冒烟 12 项全绿
+（下拉选项/分组/文案逐项等于目录、新建默认值、`onProviderChange` 预填、`custom` 说明位、
+`editApi` 恢复选中、未知 legacy provider 占位、`IBOnboarding.configure` 预选）。
+本阶段**未**改动任何模型 id、Model Router、wire format、API Key 存储，也未新增第三方站点。
+
+## 2026-09-10 · P16 · 零门槛 API 获取向导（Guide / API 配置体验）
+
+P4 的首次设置向导、P6 的零基础指南已经能让用户「照着做」，但**第一次听说 API Key 的人仍然卡在最前面一步**：
+不知道自己该用哪家服务、不知道 Key 去哪创建、更不知道「接口地址 / 格式」是什么。本阶段把
+「我没有 API Key」→「选服务 → 打开官方平台 → 创建 Key → 回到 IB 自动填好 → 只粘贴 Key → 测试连接」
+这条路径补齐，全程不新建第二套 provider metadata、不新建第二套保存链、不削弱高级用户的完整手动能力。
+
+```
+API 页顶部（#api-onboarding-entry）
+   ├─ 我还没有 API Key  → 获取向导（弹层）
+   │      ├─ 官方 API 卡片（14 家，含任务要求的 8 家）
+   │      │     · 一句人话：地区 / 是否要充值 / 适合谁
+   │      │     · 「打开官网拿 Key」→ 官方平台（新窗口，安全 rel）
+   │      │     · 「配置到 IB」→ 预填 provider/endpoint/model/能力 → 光标落在 Key 输入框
+   │      └─ 第三方聚合 / 中转（视觉 + 语义独立分区 + 统一风险说明 + 状态标签）
+   ├─ 我已经有 API Key  → 直接进编辑器（同样预填）
+   └─ 导入 OpenAI Compatible API → custom provider 全手动
+```
+
+**审计结论（缺口）**：① API 页没有任何「我还没有 Key」的入口，只有「+ 添加API」；② `provider-directory.js`
+只有名称 / 端点 / 格式 / 能力，没有任何「去哪注册、去哪创建 Key、地区与充值提示、几步教程」；③ 用户即使选对了
+provider，仍需自己确认「接口地址」这类术语；④ 仓库没有第三方中转的接入说明，只有 error-catalog 里零散的「中转站」报错文案。
+
+| 文件 | 改动 |
+|---|---|
+| `assets/js/provider-directory.js` | 新增 **keyed onboarding metadata**：`OFFICIAL_ONBOARDING`（14 家官方，按 provider id 关联，含 signupUrl / apiKeyUrl / docsUrl / regionHint / billingHint / audience / 3–5 步 guideSteps）、`THIRD_PARTY_SITES`（第三方聚合/中转，单点增删）、`THIRD_PARTY_RISK`（统一风险说明唯一一份）、`TAG_LABELS`（状态标签文案唯一一份）；新增 `onboardingEntry / officialOnboardingEntry / thirdPartyEntry / officialList / thirdPartyList / providerKind`。**不复制** endpoint / format / model / vision / streaming，保持 harness 级纯数据模块（无 DOM / window / fetch / require） |
+| `assets/js/api-onboarding.js` | **新增**：入口分流 + 获取向导（弹层）+ 预填链路 + 外链安全。所有 provider 数据取 `PROVIDERS_DIR`，配置落地复用既有 `addNewApi()` / `onProviderChange()` / API 编辑器；**永不读取 / 生成 / 保存 / 拼接用户的 API Key**（只把光标放到 Key 输入框）；预填只写 endpoint/model，且带「自动填入」来源标记——用户手改过就绝不覆盖，编辑器里有正在编辑的内容时先确认 |
+| `assets/css/api-onboarding.css` | **新增**：入口卡 / 向导卡 / 官方-第三方分区 / 状态标签 / 折叠教程 / 新手模式样式；只用 core.css 语义 token，运行时注入（不占 HTML 样式表预算），1040/860/640 三档窄屏 |
+| `InternalBeyond.html` | API 页新增 `#api-onboarding-entry` 容器；API Key 标签旁新增 `#ibo-key-help`（「Key 在哪里获取？」）；接口地址标注「高级 · 一般不用改」并新增 `#ibo-guided-hint` 提示位与 `#ibo-compatible-hint`；挂载 `api-onboarding.js`（provider-directory → social → api-onboarding）；**9 处外链补齐 `rel="noopener noreferrer"`** |
+| `assets/js/social.js` | `onProviderChange()` 给自动填入的 endpoint/model 打来源标记（用户输入即摘除），并刷新「Key 在哪里获取？」链接；`editApi()` 明确把既有配置视为用户数据（不打自动标记）。填值行为逐字未改 |
+| `assets/js/setup-wizard.js` | 「填写 API Key」步新增「还没有 Key？点这里带你获取」→ 打开获取向导（数据仍取目录） |
+| `assets/js/guide-beginner.js` | 「添加 / 配置 AI」章改为走新路径（带我获取 / 去粘贴）；FAQ 增「我还没有 API Key，从哪里开始」「别人卖我的中转 Key 能用吗」 |
+| `docs/guide/annotations.json` | `08-api-entry` 的标注与说明改为「顶部是获取 API Key 的入口，+ 添加API 在页面中部」 |
+| `test_api_onboarding.js` | **新增**：纯 Node + DOM shim 126 项（编码/挂载/单一数据源/官方-第三方分区/风险说明/metadata 缺失回落/预填与不覆盖/链接安全/回归守卫/移动端） |
+| `test-all.js` | 登记 `test_api_onboarding.js`（static） |
+| `CHANGELOG.md` | 本条 |
+
+**官方 / 第三方怎么区分**：只依据目录里的显式 metadata（两张表分置 + `kind` 字段 + `providerKind()`），
+**禁止**按域名或字符串猜测；第三方条目永不进入 `PROVIDERS`（不污染 Provider Core），接入时统一走
+canonical `custom`（OpenAI 兼容），状态标签「IB 已验证兼容」只声明协议跑通，不含官方 / 安全 / 可信含义。
+
+**本轮加入的第三方**：`OpenRouter`（公开文档的聚合网关，OpenAI 兼容、支持多模型，标 `未验证` —— 因为
+IB 尚未实际跑通该服务的调用）与「我用的是别家中转 / 自建网关」（不绑定任何具体商家，只提供手动填写入口，
+覆盖 one-api / new-api 这类自建网关）。第三方站点列表是单点数据结构，增删一家只改 `THIRD_PARTY_SITES`。
+
+**安全**：外链一律 https 白名单 + `target="_blank"` + `rel="noopener noreferrer"`；URL 中一旦出现
+`api_key / apikey / key / token / secret / password / auth` 等参数名直接拒绝渲染；模块零网络请求、
+零存储写入、不记录 Key；普通提示不出现 Endpoint / Base URL / wire format 这类前置术语（只在「接口地址
+（高级）」里保留，且新手模式下默认收起，字段仍在 DOM 中，高级用户随时展开）。
+
+## 2026-09-10 · P19 · Anthropic Assistant Prefill 兼容修复
+
+P18 留下的已知限制 ④ 在本轮修复：Anthropic 自 **Claude 4.6** 起不再接受「最后一条 assistant 消息作为
+seed」（官方 400 `This model does not support assistant message prefill`；多个独立项目已在 4.6 上复现并改为
+剥离尾部 assistant seed）。而 IB 的 Node 主动消息链（`active/moments.js` → `model-client` →
+`node-model-compat` → `node-model-port` → `IBModelCore.buildRequestBody`）恰好用 `jsonPrefill` 给
+anthropic 追加 `{"publish":` / `{"publishReply":` seed，且 `parsePlanJson` 依赖 seed 提供的开头 `{`
+——**两个方向同时坏**：新模型直接 400，老模型返回的续写又缺 `{` 而解析失败。
+
+```
+jsonMode（业务意图：需要结构化 JSON）
+        ↓  IBModelCore.buildRequestBody（anthropic 分支）
+   MODEL_POLICIES[model].supportsAssistantPrefill
+        ├── true  → 追加 {role:'assistant', content: seed}     ← legacy / 未知 model（行为逐位不变）
+        └── false → 不追加 seed；注入一次 JSON-only prompt 约束 ← Claude 4.6+ / 5
+        ↓
+   active/node-model-port 透传 prefillApplied / prefillSeed
+        ↓
+   parsePlanJson(text, {prefillSeed})：完整 JSON → 围栏 → 受控续写 → 既有杂文容错
+```
+
+**MODEL_POLICIES 扩展（同一张表、同一个 lookup，无第二份能力表）**
+
+| model | supportsSamplingParameters | supportsAssistantPrefill |
+|---|---|---|
+| `claude-sonnet-4-6` / `claude-opus-4-6` | 默认（true） | **false**（4.6 仍接受 temperature） |
+| `claude-sonnet-5` / `claude-opus-4-7` / `claude-opus-4-8` / `claude-opus-5` | false（P18） | **false** |
+| 其它（含 `claude-sonnet-4-5`、未知 id、`custom`） | 默认 | 默认（true） |
+
+dated snapshot（`claude-sonnet-5-20260701`）与别名共用同一个 `modelPolicy()` 归一化，两项能力一起命中。
+
+**请求侧**：不支持 prefill 时不发 seed，改为把稳定的一句话约束追加到**最后一条 user 消息**（不进
+`system`，不污染角色设定与缓存前缀）；同一约束在重建 / 重试时**只出现一次**，consumer 已自带等价
+JSON 指令（moments「只输出一个 JSON 对象」/ scheduler「只输出严格 JSON」）时**不插第二份**。
+**普通聊天里的 assistant 历史永远不受影响**——受控的只有请求构造器自己追加的 seed。
+
+**解析侧**：`parsePlanJson(text, opts)` 新契约 = A 完整 JSON（canonical）→ B ```json 围栏 →
+C 续写（**仅当调用方给出真实 `prefillSeed`**，且只接受 `{` 开头的 seed，回填完整 seed 再解析；
+绝不做全局 `'{' + anything` 修复）→ D 既有「首个 `{` 到末个 `}`」容错；malformed 一律 null。
+Node 与浏览器两侧实现逐字同源，Node 侧新增 `prefillSeed` 透传（port → compat → model-client →
+moments / scheduler / reply 链）。
+
+**各 consumer 影响**：Moments（Node + 浏览器）→ 修复后正常；Active Messages（scheduler 二次评估）→
+同样继承；Diary / Role Letters / Middle Brain → **零变化**（不是 jsonMode 路径或不经 core）；
+普通 Chat → 无 JSON 指令、历史完整保留。
+
+**顺手纠正**：P13 日期 `2026-09-11` → `2026-09-10`（工作树未提交内容不可能完成于未来日期）；
+DeepSeek Vision 审计元数据已在上一轮按官方页纠正为 `current`，本轮只加防回归断言，未再改 runtime。
+
+**Structured Outputs 可行性结论（只审计，未接入）**：Anthropic 已有官方结构化输出能力
+（`output_config.format` / `json_schema`，旧的顶层 `output_format` + beta header 已进入过渡期弃用），
+但 IB 侧目前只有 Astra/Responses 路径的 `middle_brain_result` 一个 schema，Moments plan / scheduler
+evaluator 都只有「自然语言里写清楚的字段清单」而没有 schema 对象；把它升级为 schema-constrained
+output 需要为每个 consumer 定义 schema + 处理不支持该能力的 model 的降级，**不属于「只差极小一步」**，
+本轮不做。
+
+| 文件 | 改动 |
+|---|---|
+| `assets/js/provider-directory.js` | `MODEL_POLICIES` 增 `supportsAssistantPrefill`（6 个 Claude 条目）+ 新读取面 `modelSupportsAssistantPrefill` |
+| `assets/js/ib-model-core.js` | anthropic 分支按 policy 分流：seed / JSON 约束；新增幂等约束注入与等价指令识别 |
+| `active/node-model-port.js` / `node-model-compat.js` / `model-client.js` | 透传 `prefillApplied` / `prefillSeed`（不改 content / reasoning 语义） |
+| `active/plan-domain.js` / `assets/js/active-diary/active-plans.js` | `parsePlanJson` 新契约（两侧逐字同源） |
+| `active/moments.js` / `active/scheduler.js` / `assets/js/reply-chain-core.js` | consumer 按端口声明决定是否允许续写解析 |
+| `assets/js/social.js` / `InternalBeyond.html` | Temperature 控件按 policy 禁用 + 说明（**保留用户数值**），新增 `#api-temp-hint` |
+| `test_anthropic_prefill_policy.js` | **新增**：75 项（policy / 请求构造 / parser 契约 / Moments 真实 prompt + 真实 port / 反回归） |
+| `test_model_core_contract.js` / `test_model_catalog_freshness.js` | 契约随 P19 更新（legacy 用 `claude-sonnet-4-5`；shim 补 `_syncSamplingUI`） |
+| `test-all.js` / `ARCHITECTURE.md` / `HANDOVER.md` / `CHANGELOG.md` | 登记新测试、P19 架构与已知限制、P20/P21 待办 |
+
+验证：`test_anthropic_prefill_policy.js` 75 ✔、`test_model_core_contract.js` ✔、
+`test_model_catalog_freshness.js` 68 ✔、`test_active_plans.js` 31 ✔、`test_moments_companion.js` 25 ✔、
+`test_provider_presentation.js` 104 ✔、`test_api_onboarding.js` 128 ✔、`test_setup_wizard.js` 86 ✔、
+`test_harness_boundary.js` 42 ✔、`test_frontend_structure.js` ✔；
+浏览器 smoke（headless CDP，合成数据、无真实 Key）9 ✔：Sonnet 5 禁用滑块 + 提示 → 4.6 恢复 →
+设 0.4 后切回 5 值仍在 → 真实保存后配置里 temperature 仍为 0.4 → 重新打开编辑器状态正确。
+
+## 2026-09-10 · P20 · Anthropic Wire Contract 收敛（Browser / Node 单一归一真源）
+
+P19 遗留的已知限制 ④ 在本轮修复，并把修复从「补一个 if」升级为**建立唯一的 Anthropic request
+normalization**。原来的问题是 transport contract 层面的：Node 主动消息链把 consumer prompt 里自带的
+`{role:'system'}` 原样留在 Anthropic `messages` 数组里（Anthropic 只接受 user / assistant），而 Browser
+侧自己有一套就地归一（`find(role==='system')` + filter）——**同一个 provider 的 wire body 由两套不同
+逻辑产出**，长此以往必然漂移。
+
+```
+Browser canonical messages[]            Node canonical {system, messages}
+ （system 在数组内）                        （model-client 把 built.system 放进 spec.systemPrompt）
+            │                                            │
+            ▼                                            ▼
+ communication.js _ibAnthropicWire()          IBModelCore.buildRequestBody()
+            └──────────────────┬─────────────────────────┘
+                               ▼
+        IBModelCore.normalizeAnthropicMessages(prompt, spec)   ← 唯一真源（纯函数）
+                               ▼
+        { system, messages }（messages 只剩 user / assistant）
+```
+
+**不变量**：*Canonical IB messages may contain system messages. Provider adapters are responsible for
+wire normalization. Anthropic wire messages never contain `system` role; system content is represented
+using Anthropic's top-level `system` field.* 且 *Browser and Node must use the same Anthropic
+normalization truth.* —— 修正方向**不是**禁止 consumer 产生 system。
+
+**归一规则**（`normalizeAnthropicMessages`，Browser / Node 同一实现）：
+
+| # | 规则 |
+|---|---|
+| 1 | 候选顺序 = 顶层 `system` → `messages` 里按出现顺序的 system |
+| 2 | 完全相同（忽略首尾空白）的文本只保留一份 —— consumer 普遍把同一段 system 同时放进两处，去重后与 P20 之前的浏览器语义**逐位相同**（角色设定不会被投喂两遍） |
+| 3 | 不同文本用 `'\n\n'` 连接（稳定分隔符，不 `join('')`；多条 system 一条不丢、顺序稳定） |
+| 4 | 都没解析到时回落 `spec.systemPrompt`（与旧数组形态一致） |
+| 5 | `messages` 只保留非 system 项，**逐条浅拷贝**（冻结输入也不报错） |
+| 6 | 无法映射的 role（`tool` / `developer` / 自定义）**不静默删除**，保留原样交 provider 判定，并记入 `unmappedRoles` 供诊断 |
+
+system content 的 canonical 契约是 **string**；block 数组 / `{text}` 只做最小安全兼容，**绝不**
+`String(content)`（不产出 `[object Object]`）。新增纯诊断函数 `validateAnthropicRequestBody(body)`
+（`messages-not-array` / `system-role-in-messages` / `unmapped-role:*` / `missing-model` /
+`system-not-string`）——生产路径不据此抛错。
+
+**收敛范围**：`communication.js` 三处 anthropic builder（`callApi` / 流式 `_callApiChatStreamOnce` /
+非流式 `_callApiChatOnce`）统一经 `_ibAnthropicWire()` 转调同一个函数（核心未加载时明确报错，不静默
+降级）；`active/node-model-port.js` 不自己处理 system（body 全部由 core 产出），Moments / Scheduler /
+回复链 / Proactive 自动继承。**只共享纯请求形状归一**：fetch 生命周期、SSE 解析、AbortController、
+retry UI、`cache_control` 断点、浏览器直连头、telemetry、Cache Audit 仍留在各自 runtime，core 保持
+零 window / 零 DOM / 零 fetch（`test_harness_boundary.js` 继续锁死）。
+
+**P19 policy 不回归**：Sonnet 5 不发 `temperature`、不发 artificial assistant prefill、jsonMode 走
+JSON-only 约束；Sonnet 4.6 同样禁 prefill；legacy / 表外 model 保留旧 seed；dated snapshot 继续走同一个
+`modelPolicy()`（normalizer 里不复制任何 model 判断）。JSON 约束仍然**只**追加到最后一条 user 消息
+（不进 system、不污染缓存前缀），且没有因为「现在有统一 system normalizer」而搬家。
+
+**tools / tool_choice / vision 结论**：Anthropic wire 上 `tool_choice` 两侧都不发送（Browser 只在
+Cache Audit 里读它）；`tools` 仍由 Browser 的 IBFC / IBWS 提供、Node 端口不支持——属真正的 Tool Runtime
+能力差异，**不在本轮范围**（未重构 Tool Calling）。图片块形状两侧一致（`{type:'image', source:{type:
+'base64', media_type, data}}`），Browser 的 vision adapter 与 system 归一互不影响；Node 侧仍无 vision，
+本轮**未**增加。
+
+**明确未做**（范围纪律）：DeepSeek `/anthropic`、API config `format` / transport selector、Transport
+Profiles、`/models` 探测、Model Registry / Marketplace、Structured Outputs 框架、Provider 默认模型改动、
+用户配置迁移、Provider Presentation 改动、Tool Runtime / stream parser 重构、canonical storage 改动。
+MIME 归一（BMP / SVG 栅格化）留给 P21，Transport Profiles 登记为 P22 Candidate，只读模型探测登记为 Future。
+
+| 文件 | 改动 |
+|---|---|
+| `assets/js/ib-model-core.js` | 新增 `normalizeAnthropicMessages`（唯一归一真源，纯函数）+ `_systemText` + `validateAnthropicRequestBody`；anthropic 分支改为先归一再适配 content blocks |
+| `assets/js/communication.js` | 新增 `_ibAnthropicWire()` 转调；三处 anthropic builder 删除就地 `find/filter(role==='system')`，改走同一归一（`cache_control` / `tools` / 流式标志等 transport 形状不变） |
+| `test_anthropic_wire_contract.js` | **新增**：122 项（canonical contract / 归一规则 / role invariant / Browser×Node parity / P19 不回归 / 非 anthropic wire 不变 / 单一真源守卫） |
+| `test_anthropic_prefill_policy.js` | 把「已知 Node 侧 system 透传」断言改写为 P20 契约断言（75 项仍全绿） |
+| `test-all.js` / `ARCHITECTURE.md` / `HANDOVER.md` / `CHANGELOG.md` | 登记新测试、P20 架构与不变量、阶段重编号（P21 Native Vision / P22 Transport Profiles / Future Read-only Model Probe） |
 
 
+验证：`test_anthropic_wire_contract.js` 122 ✔、`test_anthropic_prefill_policy.js` 75 ✔、
+`test_model_core_contract.js` ✔、`test_model_catalog_freshness.js` ✔、`test_harness_boundary.js` 42 ✔、
+`test_frontend_structure.js` ✔、`test_astra_adapter.js` ✔、`test_cache_audit.js` ✔、`test_llm_transport.js` ✔、
+`test_role_letters.js` ✔、`test_active_plans.js` ✔、`test_provider_presentation.js` ✔、
+`test_api_onboarding.js` ✔、`test_setup_wizard.js` ✔、`test_moments_companion.js` ✔、
+`test_runtime_integration_audit.js` ✔；
+浏览器 smoke（headless CDP，本地 mock server、合成配置、**无真实 Key、无计费请求**）：
+`test_chat_smoke_provider_contract.js` 全绿（真实 `sendChatMessage → callApiChat → _callApiChatOnce` 链上
+断言 anthropic body「顶层 system 为字符串 + messages 无 system role」）、
+`test_runtime_convergence_moments.js` 0 failed（Moments 注入 system 消息后三协议 body 契约不回归）。

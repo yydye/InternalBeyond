@@ -143,7 +143,9 @@
     ['_mbCiGate', 'integrity'],
     ['_mbCiVisibleText', 'integrity'],
     ['MB_CI_SCHEMA', 'integrity'],
-    ['MB_CI_TIMEOUT_MS', 'integrity']
+    ['MB_CI_TIMEOUT_MS', 'integrity'],
+    ['middleBrainImageMode', 'config'],
+    ['normalizeMiddleBrainImageMode', 'config']
   ];
   var MB_LAYERS = {
     config: CFG, policy: POL, astra: ASTRA, judge: JUDGE, integrity: INTEG,

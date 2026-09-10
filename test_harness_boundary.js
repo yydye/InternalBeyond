@@ -40,9 +40,61 @@ function stripComments(code) {
   return out;
 }
 
+/* 剥离字符串字面量内容（保留长度与换行，模板字面量里的 ${...} 仍按代码扫描）。
+   P17：URL / 文案里出现 document、navigator 是**纯数据**，不是 DOM 访问；
+   只有把它们挖空后再扫描，守卫才不会把
+   `https://platform.example.com/document/guides` 误判成 DOM 访问。 */
+function stripStrings(code) {
+  let out = '', i = 0, n = code.length;
+  const stack = [];                       /* '`' = 模板字面量；'{' = 模板表达式；引号 = 字符串 */
+  const top = () => stack[stack.length - 1];
+  while (i < n) {
+    const c = code[i], d = code[i + 1];
+    const t = top();
+    if (t === '{') {                      /* 模板表达式内部：按代码扫描（含嵌套字符串 / 模板） */
+      if (c === '{') { stack.push('{'); out += c; i++; continue; }
+      if (c === '}') { stack.pop(); out += (top() === '`' ? ' ' : '}'); i++; continue; }
+      if (c === '"' || c === "'") { stack.push(c); out += c; i++; continue; }
+      if (c === '`') { stack.push('`'); out += c; i++; continue; }
+      out += c; i++; continue;
+    }
+    if (t === '"' || t === "'") {
+      if (c === '\\') { out += '  '; i += 2; continue; }
+      if (c === t) { stack.pop(); out += c; i++; continue; }
+      out += (c === '\n' ? '\n' : ' '); i++; continue;
+    }
+    if (t === '`') {
+      if (c === '\\') { out += '  '; i += 2; continue; }
+      if (c === '`') { stack.pop(); out += c; i++; continue; }
+      if (c === '$' && d === '{') { stack.push('{'); out += '  '; i += 2; continue; }
+      out += (c === '\n' ? '\n' : ' '); i++; continue;
+    }
+    if (c === '"' || c === "'" || c === '`') { stack.push(c); out += c; i++; continue; }
+    out += c; i++;
+  }
+  return out;
+}
+
 const DOMAIN_RE = /\b(_momentsContext|_parseMemOps|_activeParsePlanJson|proactive|moments|letters|social|plan|dnd|dedup|fallback|memory)\b/i;
 const WINDOW_RE = /\bwindow\b/;
+/* DOM 访问检测（P17 收紧）：
+   ① 主检测在「注释 + 字符串字面量内容都挖空」的代码上跑，保留原来的五个保留词，
+      检测能力不降低（真实的 document / navigator / querySelector / getElementById /
+      innerHTML 仍会被抓到），但 URL 与文案里的同名单词不再误报；
+   ② 另外单列「用字符串下标绕过」的形态：window['document'] / self["navigator"]，
+      它在 ① 里会被挖空，所以单独用注释剥离后的源码匹配。 */
 const DOM_RE = /\b(document|querySelector|getElementById|innerHTML|navigator)\b/;
+const DOM_BRACKET_RE = /\b(?:window|self|globalThis|global)\s*\[\s*['"](?:document|navigator)['"]\s*\]/;
+
+function domScan(src) {
+  const data = stripStrings(stripComments(String(src)));
+  const hits = [];
+  const re = new RegExp(DOM_RE.source, 'g');
+  let m;
+  while ((m = re.exec(data)) !== null) hits.push(m[1]);
+  if (DOM_BRACKET_RE.test(stripComments(String(src)))) hits.push("window['document']");
+  return hits;
+}
 const FETCH_RE = /\bfetch\s*\(/;
 const FORBID_REQ_RE = /(active\/scheduler|plan-domain|active\/model-client|active-plans|active\/moment|active\/letters|assets\/js\/agent-runtime)/;
 
@@ -57,6 +109,8 @@ function known(name, present) {
 }
 function read(f) { return fs.readFileSync(f, 'utf8'); }
 function code(f) { return stripComments(read(f)); }
+function domHits(f) { return domScan(read(f)); }
+function domFree(f) { return domHits(f).length === 0; }
 
 console.log('Harness 边界守卫测试\n');
 
@@ -64,7 +118,7 @@ console.log('Harness 边界守卫测试\n');
 {
   const c = code(V);
   check('IBModelCore 不引用 window', !WINDOW_RE.test(c));
-  check('IBModelCore 不引用 DOM', !DOM_RE.test(c));
+  check('IBModelCore 不引用 DOM', domFree(V), domHits(V).join(','));
   check('IBModelCore 不引用 fetch()', !FETCH_RE.test(c));
   check('IBModelCore 无 Domain 域符号', !DOMAIN_RE.test(c), (c.match(DOMAIN_RE) || [])[0] || '');
   /* provider metadata 目录（assets/js/provider-directory.js）是 harness 级纯数据模块：
@@ -76,7 +130,7 @@ console.log('Harness 边界守卫测试\n');
   const dir = code(path.join(ROOT, 'provider-directory.js'));
   check('provider-directory 零 require', !/require\s*\(/.test(dir), (dir.match(/require\s*\([^)]*\)/g) || []).join('; '));
   check('provider-directory 不引用 window', !WINDOW_RE.test(dir));
-  check('provider-directory 不引用 DOM', !DOM_RE.test(dir));
+  check('provider-directory 不引用 DOM', domFree(path.join(ROOT, 'provider-directory.js')), domHits(path.join(ROOT, 'provider-directory.js')).join(','));
   check('provider-directory 不引用 fetch()', !FETCH_RE.test(dir));
   check('provider-directory 无 Domain 域符号', !DOMAIN_RE.test(dir), (dir.match(DOMAIN_RE) || [])[0] || '');
 }
@@ -85,7 +139,7 @@ console.log('Harness 边界守卫测试\n');
 {
   const c = code(PORT);
   check('NodeModelPort 不引用 window', !WINDOW_RE.test(c));
-  check('NodeModelPort 不引用 DOM', !DOM_RE.test(c));
+  check('NodeModelPort 不引用 DOM', domFree(PORT), domHits(PORT).join(','));
   check('NodeModelPort 无 Domain 域符号', !DOMAIN_RE.test(c), (c.match(DOMAIN_RE) || [])[0] || '');
   const reqs = (c.match(/require\s*\([^)]*\)/g) || []);
   check('NodeModelPort 仅 require Harness(ib-model-core)', reqs.length === 1 && /ib-model-core/.test(reqs[0]), reqs.join('; '));
@@ -125,6 +179,40 @@ console.log('Harness 边界守卫测试\n');
     if (FORBID_REQ_RE.test(c)) bad.push(name);
   }
   check('Harness→Domain 依赖方向为零（4 文件）', bad.length === 0, bad.join(', '));
+}
+
+/* ── 6. 守卫自身的正 / 负测试（P17）──
+   负例：URL / 文案里的 document、navigator 是纯数据，不得误判为 DOM 访问。
+   正例：真实 DOM 访问（含字符串下标绕过）必须仍然被抓到。
+   这一节保护的是「守卫」本身，防止它被改松或被改回裸文本匹配。 */
+{
+  const negatives = [
+    ['URL 路径含 document', 'var u = "https://example.com/documentation";'],
+    ['URL 路径段恰为 document', 'var u = "https://platform.example.com/document/guides";'],
+    ['URL 文件名含 navigator', 'var u = "https://example.com/navigator.js";'],
+    ['文案里出现 DOM 术语', 'var t = "document.querySelector 就是 DOM 访问";'],
+    ['模板字面量 URL', 'var t = `https://a.io/document/navigator.html`;'],
+    ['模板字面量文案', 'var t = `别写 document.getElementById`;']
+  ];
+  const positives = [
+    ['document.querySelector', 'document.querySelector("#a");'],
+    ['document.getElementById', 'document.getElementById("a");'],
+    ['window.document', 'window.document.title = "x";'],
+    ['navigator', 'var ua = navigator.userAgent;'],
+    ['innerHTML', 'el.innerHTML = "";'],
+    ['document[...]', 'document["getElementById"]("a");'],
+    ['window["document"]', 'window["document"].querySelector("a");'],
+    ['模板表达式内 DOM', 'var t = `x${document.title}y`;']
+  ];
+  for (const [name, src] of negatives) {
+    check('DOM 守卫不误伤：' + name, domScan(src).length === 0, domScan(src).join(','));
+  }
+  for (const [name, src] of positives) {
+    check('DOM 守卫仍抓得到：' + name, domScan(src).length > 0, src);
+  }
+  /* 反向验证：把一个合法的文档 URL 放进 provider-directory 风格的代码里，守卫仍判干净 */
+  const withDocUrl = 'var ONBOARDING = { docsUrl: "https://example.com/document/api-navigator", steps: ["打开官网"] };\n';
+  check('纯数据模块可安全登记含 document / navigator 的文档 URL', domScan(withDocUrl).length === 0, domScan(withDocUrl).join(','));
 }
 
 console.log('\n结果: ' + pass + ' 通过, ' + fail + ' 失败' + (knownP1.length ? ('；KNOWN P1: ' + knownP1.join(', ')) : ''));

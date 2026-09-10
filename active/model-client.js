@@ -329,7 +329,7 @@ function createModelClient(deps) {
     const attempts = _portAttempts.slice(attemptsBefore);
     _recordCompatRetry(opts.traceId, attempts);
     _trace.append(opts.traceId, 'model_call', true, 'success', '');
-    return result; /* { content, reasoning_content } */
+    return result; /* { content, reasoning_content, prefillApplied? }（P19：prefillApplied 由 compat/port 透传） */
   }
   function visibleProactiveReply(output) {
     let text = contentText(output && output.content).trim();

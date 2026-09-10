@@ -36,6 +36,77 @@
     return { format: 'openai', known: false, hasFormat: false };
   }
 
+  /* P18 · model policy：该 model 是否接受 temperature / top_p / top_k。
+     唯一判定在 provider-directory.js（MODEL_POLICIES）；宿主只传了裸 PROVIDERS 表
+     （无该函数）时返回 true = 照发，与 P18 之前逐位一致。 */
+  function modelSupportsSamplingParameters(model) {
+    if (CANON && typeof CANON.modelSupportsSamplingParameters === 'function') {
+      return CANON.modelSupportsSamplingParameters(model) !== false;
+    }
+    return true;
+  }
+
+  /* P19 · model policy：该 model 是否接受「最后一条 assistant 消息作为 seed」
+     （assistant prefill）。唯一判定仍在 provider-directory.js（MODEL_POLICIES），
+     与 sampling 共用同一个 canonical lookup；宿主没有该函数时返回 true =
+     保留历史行为（未知 model 绝不擅自改变请求语义）。 */
+  function modelSupportsAssistantPrefill(model) {
+    if (CANON && typeof CANON.modelSupportsAssistantPrefill === 'function') {
+      return CANON.modelSupportsAssistantPrefill(model) !== false;
+    }
+    return true;
+  }
+
+  /* ── P19 · 结构化输出意图（intent）vs 传输实现（transport）────────────────
+     调用方只表达「本次请求需要结构化 JSON」（options.jsonMode）。实现方式由
+     model policy 决定：
+       A. 支持 assistant prefill 的 model → 追加 seed assistant 消息（历史行为）
+       B. 不支持的 model（Claude 4.6+）→ 不追加 seed，改为等价的 prompt 约束
+     旧的 options.jsonPrefill 仍然被接受，但它只是 A 方案的 seed 文本，
+     不再等同于「要 JSON」这个业务语义。 */
+  var JSON_ONLY_CONSTRAINT = 'Return exactly one valid JSON object. The first non-whitespace character must be { and the final non-whitespace character must be }. Do not use Markdown code fences. Do not include commentary before or after the JSON.';
+  /* 等价 JSON-only 指令的识别标记：命中即认为请求已自带约束（复用，不再插第二份）。
+     含本实现自己的标记（保证 rebuild / retry 幂等）与 IB 现有 consumer 的措辞。 */
+  var JSON_ONLY_MARKS = [
+    'Return exactly one valid JSON object.',
+    '只输出一个 JSON',
+    '只返回一个 JSON',
+    '仅输出一个 JSON',
+    '输出严格 JSON'
+  ];
+
+  function _contentTextOf(content) {
+    if (typeof content === 'string') return content;
+    if (!Array.isArray(content)) return content == null ? '' : String(content);
+    return content.map(function (p) { return (p && typeof p.text === 'string') ? p.text : ''; }).join('\n');
+  }
+  function _hasJsonOnlyInstruction(system, messages) {
+    var hay = String(system || '');
+    for (var i = 0; i < messages.length; i++) hay += '\n' + _contentTextOf(messages[i] && messages[i].content);
+    for (var j = 0; j < JSON_ONLY_MARKS.length; j++) { if (hay.indexOf(JSON_ONLY_MARKS[j]) !== -1) return true; }
+    return false;
+  }
+  /* 把 JSON 意图写进最后一条 user 消息（无 user 消息时追加一条）。
+     纯函数：不改入参数组 / 不重复注入（同一约束已存在时原样返回）。 */
+  function _appendJsonOnlyConstraint(system, messages) {
+    var list = Array.isArray(messages) ? messages : [];
+    if (_hasJsonOnlyInstruction(system, list)) return list;
+    var idx = -1;
+    for (var i = list.length - 1; i >= 0; i--) { if (list[i] && list[i].role === 'user') { idx = i; break; } }
+    if (idx < 0) return list.concat([{ role: 'user', content: JSON_ONLY_CONSTRAINT }]);
+    var msg = list[idx];
+    var content = msg.content;
+    var next = list.slice();
+    if (typeof content === 'string') {
+      next[idx] = { role: msg.role, content: content ? (content + '\n\n' + JSON_ONLY_CONSTRAINT) : JSON_ONLY_CONSTRAINT };
+    } else if (Array.isArray(content)) {
+      next[idx] = { role: msg.role, content: content.concat([{ type: 'text', text: JSON_ONLY_CONSTRAINT }]) };
+    } else {
+      next[idx] = { role: msg.role, content: JSON_ONLY_CONSTRAINT };
+    }
+    return next;
+  }
+
   /* 内容 part 适配（提取自 active/model-client.js adaptMessageParts） */
   function adaptMessageParts(fmt, content) {
     if (typeof content === 'string' || !Array.isArray(content)) return content;
@@ -73,6 +144,109 @@
     return { system: '', messages: [] };
   }
 
+  /* ── P20 · canonical prompt → Anthropic wire 归一（Browser / Node 唯一真源）──────
+     IB canonical 输入**允许**出现 system 消息。consumer 的常见形态是「顶层 system 与
+     messages 首条 system 同时给同一段文本」，例如：
+       { system: '角色设定', messages: [{role:'system',content:'角色设定'},{role:'user',content:'你好'}] }
+     这是合法的 IB 内部表示；**provider adapter 负责**把它转成各家的 wire format，
+     不能靠"禁止 consumer 产生 system"来解决。
+
+     Anthropic 的 messages 只接受 user / assistant，system 必须放在顶层 system 字段。
+     本函数是这条归一的唯一实现（浏览器经 window.IBModelCore 调用同一函数，Node 由
+     buildRequestBody 调用同一函数）——禁止在别处复制第二份。
+
+     规则（Browser / Node 逐位一致）：
+       ① 候选文本顺序 = 顶层 system（{system,messages} 形态）→ 随后按出现顺序的 messages system；
+       ② 完全相同（忽略首尾空白）的文本只保留一次 —— consumer 普遍把同一段 system 同时放进
+          两处，去重后与 P20 之前的浏览器语义逐位相同，不会把角色设定送两遍；
+       ③ 不同文本用 '\n\n' 连接（稳定分隔符，绝不 join('')）；顺序稳定，多条 system 不丢；
+       ④ 都没解析到时回落到 spec.systemPrompt（与 _prompt 的数组形态一致）；
+       ⑤ messages 只保留非 system 项（逐条浅拷贝，**绝不改动入参对象**）；
+       ⑥ 无法映射的 role **不静默删除**（保留原样，由 provider 判定并报错），
+          只记入 unmappedRoles 供诊断使用。
+     返回 {system, messages, systemParts, unmappedRoles, extractedSystems}。 */
+  var ANTHROPIC_SYSTEM_SEPARATOR = '\n\n';
+
+  /* system content → 文本。canonical 契约里 system 是 string；此处对 block 数组 /
+     {text} 形态做最小安全兼容，**绝不用 String(content)**（否则会变 [object Object]）。 */
+  function _systemText(content) {
+    if (content == null) return '';
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+      var texts = [];
+      for (var i = 0; i < content.length; i++) {
+        var p = content[i];
+        if (typeof p === 'string') { if (p) texts.push(p); }
+        else if (p && typeof p.text === 'string') { if (p.text) texts.push(p.text); }
+      }
+      return texts.join('\n');
+    }
+    if (typeof content === 'object' && typeof content.text === 'string') return content.text;
+    return '';
+  }
+
+  function normalizeAnthropicMessages(prompt, spec) {
+    var raw = [];
+    var base = '';
+    if (prompt && prompt.messages && (prompt.system !== undefined || Array.isArray(prompt.messages))) {
+      base = _systemText(prompt.system);
+      raw = Array.isArray(prompt.messages) ? prompt.messages : [];
+    } else if (Array.isArray(prompt)) {
+      raw = prompt;
+    }
+    if (!base) base = _systemText(spec && spec.systemPrompt);
+
+    var parts = [], seen = {};
+    function _collect(text) {
+      if (!text) return;
+      var key = String(text).replace(/^\s+/, '').replace(/\s+$/, '');
+      if (!key || seen[key]) return;
+      seen[key] = true;
+      parts.push(text);
+    }
+    _collect(base);
+
+    var messages = [], unmapped = [], extracted = 0;
+    for (var j = 0; j < raw.length; j++) {
+      var m = raw[j];
+      if (!m || typeof m !== 'object') continue;
+      if (m.role === 'system') { extracted++; _collect(_systemText(m.content)); continue; }
+      messages.push(Object.assign({}, m));   /* 浅拷贝：调用方数组与其元素对象都不被改动 */
+      if (m.role !== 'user' && m.role !== 'assistant') {
+        var label = String(m.role);
+        if (unmapped.indexOf(label) < 0) unmapped.push(label);
+      }
+    }
+    return {
+      system: parts.join(ANTHROPIC_SYSTEM_SEPARATOR),
+      messages: messages,
+      systemParts: parts,
+      unmappedRoles: unmapped,
+      extractedSystems: extracted
+    };
+  }
+
+  /* P20 · Anthropic wire invariant 诊断（纯函数，不抛错）：
+     messages 必须是数组、不得残留 system（developer 同样非法）、model 必须存在、
+     system 只能是 string 或 block 数组。用于测试与诊断 seam；
+     生产路径**不**据此抛错（IB 没有 body 级 fail-fast 契约，不能为一个诊断断言炸掉用户请求）。 */
+  function validateAnthropicRequestBody(body) {
+    if (!body || typeof body !== 'object') return { ok: false, problems: ['body-not-object'] };
+    var problems = [];
+    var list = body.messages;
+    if (!Array.isArray(list)) problems.push('messages-not-array');
+    else {
+      for (var i = 0; i < list.length; i++) {
+        var role = list[i] && list[i].role;
+        if (role === 'system' || role === 'developer') problems.push('system-role-in-messages');
+        else if (role !== 'user' && role !== 'assistant') problems.push('unmapped-role:' + String(role));
+      }
+    }
+    if (body.model === undefined || body.model === null || body.model === '') problems.push('missing-model');
+    if (body.system !== undefined && typeof body.system !== 'string' && !Array.isArray(body.system)) problems.push('system-not-string');
+    return { ok: problems.length === 0, problems: problems };
+  }
+
   /* 构建 provider-specific request body（纯；transport 的 endpoint/headers 由调用方处理）
      spec: {provider, model, format?, temperature?, systemPrompt?}
      prompt: {system, messages} | messages[]
@@ -87,17 +261,24 @@
     var system = pres.system, messages = pres.messages;
 
     if (fmt === 'anthropic') {
+      /* P20：system/messages 归一走唯一真源 normalizeAnthropicMessages（Browser 同一函数）。
+         buildRequestBody 只负责把归一后的 canonical messages 适配成 Anthropic content blocks。 */
+      var an = normalizeAnthropicMessages(prompt, spec);
       var ab = {
         model: model,
         max_tokens: maxTokens,
-        system: system,
-        messages: messages.map(function (m) { return { role: m.role, content: adaptMessageParts('anthropic', m.content) }; })
+        system: an.system,
+        messages: an.messages.map(function (m) { return { role: m.role, content: adaptMessageParts('anthropic', m.content) }; })
       };
       if (options.jsonMode) {
-        var jp = options.jsonPrefill || '{"action":';
-        ab.messages = ab.messages.concat([{ role: 'assistant', content: jp }]);
+        if (modelSupportsAssistantPrefill(model)) {
+          var jp = options.jsonPrefill || '{"action":';
+          ab.messages = ab.messages.concat([{ role: 'assistant', content: jp }]);
+        } else {
+          ab.messages = _appendJsonOnlyConstraint(ab.system, ab.messages);
+        }
       }
-      if (temperature != null) ab.temperature = Number(temperature);
+      if (temperature != null && modelSupportsSamplingParameters(model)) ab.temperature = Number(temperature);
       return ab;
     }
     if (fmt === 'gemini') {
@@ -304,6 +485,11 @@
     PROVIDERS: PROVIDERS,
     providerFormat: providerFormat,
     resolveProviderFormat: resolveProviderFormat,
+    modelSupportsSamplingParameters: modelSupportsSamplingParameters,
+    modelSupportsAssistantPrefill: modelSupportsAssistantPrefill,
+    /* P20：Anthropic wire 归一的唯一真源（Browser / Node 共用同一实现） */
+    normalizeAnthropicMessages: normalizeAnthropicMessages,
+    validateAnthropicRequestBody: validateAnthropicRequestBody,
     adaptMessageParts: adaptMessageParts,
     geminiParts: geminiParts,
     buildRequestBody: buildRequestBody,

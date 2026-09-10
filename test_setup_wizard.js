@@ -62,7 +62,9 @@ const endpoints = [
   'api.minimax.chat', 'api.lingyiwanwu.com', 'api.baichuan-ai.com', 'api.mistral.ai'
 ];
 check('不复制任何 provider endpoint', endpoints.every(e => jsSrc.indexOf(e) === -1), endpoints.filter(e => jsSrc.indexOf(e) !== -1));
-const models = ['claude-sonnet-4-6', 'gpt-4o-mini', 'grok-4', 'deepseek-v4-flash', 'gemini-2.0-flash', 'glm-4-flash', 'qwen-plus', 'doubao-seed-2-0-lite', 'kimi-k2.6', 'mimo-v2.5', 'MiniMax-Text-01', 'yi-lightning', 'Baichuan4', 'mistral-large-latest'];
+/* P18：默认模型从目录派生，不再硬编码（换默认值 / 新增 provider 自动跟随）。 */
+const canonDir = require(path.join(ROOT, 'assets', 'js', 'provider-directory.js'));
+const models = Object.keys(canonDir.PROVIDERS).map(id => canonDir.PROVIDERS[id].model).filter(Boolean);
 check('不复制任何 provider 默认模型', models.every(m => jsSrc.indexOf(m) === -1), models.filter(m => jsSrc.indexOf(m) !== -1));
 
 section('不新建第二套保存链 / 角色表');

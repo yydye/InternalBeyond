@@ -74,6 +74,14 @@ function createNodeModelPort(deps) {
       maxTokens: maxTok,
       temperature: temperature
     });
+    /* P19 · 本次请求是否真的用了 legacy assistant prefill（唯一判定 = IBModelCore 的
+       model policy），以及真实使用的 seed 文本。供 consumer 决定解析时是否允许
+       「续写形态」容错（续写必须补回**完整 seed**，只补 '{' 会拼出非法 JSON）；
+       不支持 prefill 的 model（Claude 4.6+）恒为空 —— 它们收到的是完整 JSON。 */
+    const prefillApplied = !!(request && request.jsonMode)
+      && IBMC.providerFormat(spec.provider) === 'anthropic'
+      && IBMC.modelSupportsAssistantPrefill(spec.model);
+    const prefillSeed = prefillApplied ? ((request && request.jsonPrefill) || '{"action":') : '';
     /* openai 系参数协商（与 callCharacterModel 的 request('max_completion_tokens') 一致）：
        某些 GPT-5 系模型只接受 max_completion_tokens；此处仍为单次执行，仅切换 body 形状。 */
     if (request && request.tokenParam === 'max_completion_tokens' && body && body.max_tokens != null
@@ -121,7 +129,7 @@ function createNodeModelPort(deps) {
       try { wire = JSON.parse(rawText); } catch (e) { throw new Error('invalid JSON response'); }
       const parsed = IBMC.parseResponse(wire, spec);
       onEvent({ type: 'done', truncated: parsed.truncated, reasoning: parsed.reasoning, usage: parsed.usage });
-      return { text: parsed.content, reasoning: parsed.reasoning, truncated: parsed.truncated, usage: parsed.usage };
+      return { text: parsed.content, reasoning: parsed.reasoning, truncated: parsed.truncated, usage: parsed.usage, prefillApplied: prefillApplied, prefillSeed: prefillSeed };
     } catch (e) {
       const isAbort = (e && e.name === 'AbortError') || /abort/i.test(String((e && e.message) || ''));
       if (isAbort && cancelReason === 'timeout') {

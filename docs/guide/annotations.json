@@ -96,9 +96,9 @@
       "chapter": "ai",
       "prepare": "api-page",
       "target": "#api-add-actions",
-      "label": "点「+ 添加API」再加一个角色",
+      "label": "没有 Key 就先点页面顶部的「带我获取」",
       "region": "box",
-      "caption": "API 设置页：右上角「+ 添加API」，顶部是「重新运行设置向导」"
+      "caption": "API 设置页：「+ 添加API」在页面中部，顶部是获取 API Key 的入口"
     },
     {
       "id": "09-memory",

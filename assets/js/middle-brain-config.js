@@ -46,7 +46,13 @@
     characterIntegrityEnabled: false,
     characterIntegritySensitivity: 'conservative',
     characterIntegrityRewrite: false,
-    characterIntegrityVerify: false
+    characterIntegrityVerify: false,
+    /* Image Router · 全局图片生成策略（Fast / Auto / Precision）。
+       这是**用户策略**，不是执行：Middle Brain 只提供决策输入，
+       真正的模型选择 / 并发 / 队列全部由 assets/js/image-router.js 负责。
+       auto=Router 按任务画像选 Flare/Sunburst；fast=强制 Flare（永不偷偷升级）；
+       precision=强制 Sunburst（永不自动降级）。默认 auto。 */
+    imageMode: 'auto'
   };
 
   /* ── Middle Brain 系统提示词：引擎内部的认知约束，前端只读，用户不可修改。──
@@ -163,6 +169,22 @@
     var s = String(v == null ? '' : v).trim().toLowerCase();
     return MB_CI_SENSITIVITIES.indexOf(s) >= 0 ? s : 'conservative';
   }
+  /* Image Router · 图片生成策略归一（白名单；非法值回退 auto）。
+     只经 MBC.config 契约暴露给门面，**不挂 window 兼容别名**（避免散落全局依赖）。 */
+  var MB_IMAGE_MODES = ['fast', 'auto', 'precision'];
+  function normalizeMiddleBrainImageMode(v) {
+    var s = String(v == null ? '' : v).trim().toLowerCase();
+    return MB_IMAGE_MODES.indexOf(s) >= 0 ? s : 'auto';
+  }
+
+  /* ── Image Router 接入缝（P12）：Middle Brain 只输出**决策**，不执行图片请求 ──
+     返回归一后的用户图片策略（fast / auto / precision）+ 决策来源，供 Image Router 读取。
+     Router 负责模型选择/并发/队列；Scheduler 负责资源控制；executor 负责 provider 执行。 */
+  async function middleBrainImageMode() {
+    var c = await getMiddleBrainConfig();
+    var mode = normalizeMiddleBrainImageMode(c && c.imageMode);
+    return { mode: mode, reason: 'user_policy', source: 'middle_brain_config' };
+  }
 
   /* —— 设置 UI（API Settings 页 · 全局 Middle Brain 卡片） —— */
   function _mbEl(id) { return document.getElementById(id); }
@@ -184,15 +206,95 @@
   /* P11-2 · Character Integrity Guard UI 档位 */
   var MB_CI_ORDER = ['conservative', 'balanced', 'strict'];
   var MB_CI_LABELS = { conservative: 'Conservative', balanced: 'Balanced', strict: 'Strict' };
-  var _mbUi = { reasoning: 'medium', speed: 'standard', model: 'gpt-6-astra', integrity: { enabled: false, sensitivity: 'conservative', rewrite: false, verify: false } };
-  var _mbReasoningSlider = null, _mbSpeedBtn = null, _mbCiSlider = null;
+  /* Image Router · 图片生成策略档位（Fast ─ Auto ─ Precision，默认 Auto 居中） */
+  var MB_IMAGE_ORDER = ['fast', 'auto', 'precision'];
+  var MB_IMAGE_LABELS = { fast: 'Fast', auto: 'Auto', precision: 'Precision' };
+  var MB_IMAGE_DESC = { fast: 'Prefer faster image generation', auto: 'Let Middle Brain choose', precision: 'Prefer highest editing fidelity' };
+  var _mbUi = { enabled: false, reasoning: 'medium', speed: 'standard', model: 'gpt-6-astra', imageMode: 'auto', integrity: { enabled: false, sensitivity: 'conservative', rewrite: false, verify: false } };
+  var _mbReasoningSlider = null, _mbSpeedBtn = null, _mbCiSlider = null, _mbImageSlider = null;
 
   function _mbReasoningDesc(v) { return MB_REASONING_DESC[v] || '默认平衡'; }
   function _mbModelList(cur) { var l = MB_MODEL_CANDIDATES.slice(); if (cur && l.indexOf(cur) < 0) l.unshift(cur); return l; }
   function _mbModelIdx(cur) { var l = _mbModelList(cur); var i = l.indexOf(cur); return i >= 0 ? i : 0; }
   function _mbSummaryText(re, sp) { return (MB_REASONING_LABELS[re] || re) + ' · ' + (MB_SPEED_LABELS[sp] || sp); }
-  function _mbUpdateSummary(re, sp) { var s = _mbEl('mb-adv-summary'); if (s) s.textContent = _mbSummaryText(re, sp); }
+  function _mbUpdateSummary(re, sp) { var s = _mbEl('mb-adv-summary'); if (s) s.textContent = _mbSummaryText(re, sp); _mbRenderHeader(); }
   function _mbLbl(v) { return MB_REASONING_LABELS[v] || MB_SPEED_LABELS[v] || MB_CI_LABELS[v] || v; }
+
+  /* ====================================================================
+     P14 · Middle Brain 整块折叠（compact header + 轻量 height/opacity 过渡）
+     --------------------------------------------------------------------
+     折叠对象 = 整个 Middle Brain 区块（说明 / 启用 / Endpoint / API Key /
+     Astra Cognitive Control / Model / Reasoning / Processing / Image Generation /
+     Character Integrity Guard 及后续所有 Advanced Settings），不是只折叠子卡片。
+     - 只切 body 的 class（隐藏 body，**不销毁 DOM**）：再展开后 input / slider /
+       API Key 状态原样保留，不重新初始化 Middle Brain。
+     - 事件只绑一次（_mbCollapseBound 幂等守卫），loadMiddleBrainConfigUI 重复调用
+       不会重复绑定 listener。
+     - 状态持久化：apiSettings 私有 key 'middle_brain_ui'（与其它子系统
+       'image_router' / 'image_edit' / 'bgAi' 同一套 IndexedDB 设置存储方式；
+       **不新建第二套存储**，也不写进 'middle_brain' 配置契约，避免 UI 态污染
+       被 astra / policy / judge 层读取的 canonical 配置）。
+     ==================================================================== */
+  var MB_UI_KEY = 'middle_brain_ui';
+  var _mbCollapseBound = false;
+  var _mbUiPref = { collapsed: null };   /* null = 用户从未手动折叠过 */
+  var _mbCollapsed = true;               /* 当前折叠态（内存）；持久化值见 _mbUiPref */
+
+  /* 折叠态持久化（只存 UI 态，不碰 'middle_brain' 配置） */
+  async function _mbLoadUiPref() {
+    try {
+      var c = await dbGet('apiSettings', MB_UI_KEY);
+      _mbUiPref.collapsed = (c && typeof c.collapsed === 'boolean') ? c.collapsed : null;
+    } catch (e) { _mbUiPref.collapsed = null; }
+    return _mbUiPref.collapsed;
+  }
+  function _mbSaveUiPref(collapsed) {
+    _mbUiPref.collapsed = !!collapsed;
+    try { return dbPut('apiSettings', { id: MB_UI_KEY, collapsed: !!collapsed }); } catch (e) {}
+  }
+  /* header 摘要：model · reasoning effort · processing(service tier) · image mode */
+  function _mbHeaderSummary() {
+    return _mbReadModel() + ' · ' + (MB_REASONING_LABELS[_mbReadReasoning()] || _mbReadReasoning())
+      + ' · ' + (MB_SPEED_LABELS[_mbReadSpeed()] || _mbReadSpeed())
+      + ' · ' + (MB_IMAGE_LABELS[normalizeMiddleBrainImageMode(_mbUi.imageMode)] || _mbUi.imageMode);
+  }
+  /* 摘要 + enabled/disabled 徽标 + aria-expanded 全部收敛到一处刷新 */
+  function _mbRenderHeader() {
+    var s = _mbEl('mb-collapse-summary'); if (s) s.textContent = _mbHeaderSummary();
+    var b = _mbEl('mb-collapse-badge');
+    if (b) { b.textContent = _mbUi.enabled ? 'Enabled' : 'Disabled'; b.classList.toggle('is-on', !!_mbUi.enabled); }
+    var t = _mbEl('mb-collapse-toggle'), body = _mbEl('mb-collapse-body');
+    if (t) t.setAttribute('aria-expanded', _mbCollapsed ? 'false' : 'true');
+    if (body) body.classList.toggle('is-collapsed', !!_mbCollapsed);
+  }
+  function _mbCollapseApply(collapsed) {
+    _mbCollapsed = !!collapsed;
+    _mbRenderHeader();
+  }
+  /* 首次配置 / 配置不完整 / 校验不通过 → 默认展开；否则（含已有用户）默认收起。
+     enabled=true 但缺 endpoint / API Key 时仍算不完整（不因为 enabled 就强制展开）。 */
+  function _mbConfigIncomplete(c) {
+    c = c || {};
+    if (!c.enabled) return true;
+    return !(String(c.endpoint || '').trim() && String(c.model || '').trim() && String(c.apiKey || '').trim());
+  }
+  /* 事件只绑一次：header 点击 / Enter / Space（button 原生支持键盘，这里只防重复绑定） */
+  function _mbBindCollapse() {
+    if (_mbCollapseBound) return;
+    var t = _mbEl('mb-collapse-toggle'); if (!t) return;
+    t.addEventListener('click', function () { _mbCollapseApply(!_mbCollapsed); _mbSaveUiPref(_mbCollapsed); });
+    var en = _mbEl('mb-enabled-toggle');
+    if (en) en.addEventListener('change', function () { _mbUi.enabled = !!en.checked; _mbRenderHeader(); });
+    _mbCollapseBound = true;
+  }
+  async function _mbInitCollapse(c) {
+    _mbBindCollapse();
+    var saved = await _mbLoadUiPref();
+    _mbUi.enabled = !!(c && c.enabled);
+    /* 无用户偏好时：配置不完整 → 展开；配置完整（已有用户）→ 收起 */
+    _mbCollapseApply(saved === null ? !_mbConfigIncomplete(c) : saved);
+    return _mbCollapsed;
+  }
 
   function _mbReadReasoning() { return normalizeMiddleBrainReasoningEffort(_mbUi.reasoning); }
   function _mbReadSpeed() { return normalizeMiddleBrainSpeed(_mbUi.speed); }
@@ -205,6 +307,9 @@
   function _mbSliderBuild(hostId, values, current, onCommit, opts) {
     var host = _mbEl(hostId); if (!host) return null;
     var dragOnly = !!(opts && opts.dragOnly);
+    /* opts.labels：该 slider 专属档位文案（不传则沿用全局 _mbLbl，既有 slider 行为不变） */
+    var labelMap = (opts && opts.labels) || null;
+    function _lbl(v) { return (labelMap && labelMap[v]) || _mbLbl(v); }
     host.innerHTML = '';
     var n = values.length;
     var track = document.createElement('div'); track.className = 'mb-trk';
@@ -222,7 +327,7 @@
       t.style.left = (n > 1 ? (i / (n - 1) * 100) : 0) + '%';
       if (!dragOnly) t.addEventListener('click', function (e) { e.stopPropagation(); _paint(i); onCommit(v); });
       ticks.appendChild(t); tickEls.push(t);
-      var l = document.createElement('span'); l.className = 'mb-lbl'; l.textContent = _mbLbl(v); labs.appendChild(l);
+      var l = document.createElement('span'); l.className = 'mb-lbl'; l.textContent = _lbl(v); labs.appendChild(l);
     });
     track.appendChild(ticks);
     host.appendChild(track); host.appendChild(labs);
@@ -233,7 +338,7 @@
       var pct = _pct(i);
       fill.style.width = pct + '%'; thumb.style.left = pct + '%';
       tickEls.forEach(function (t, j) { t.classList.toggle('mb-tick-active', j === i); });
-      valueEl.textContent = _mbLbl(values[i]);
+      valueEl.textContent = _lbl(values[i]);
     }
     /* 拖动过程中的连续预览：只移动 thumb/fill，不吸附、不切换 value 标签。 */
     function _paintFrac(frac) {
@@ -275,6 +380,7 @@
     var nm = _mbEl('mb-model-name'); if (nm) nm.textContent = m;
     (document.querySelectorAll('.mb-model-cell') || []).forEach(function (c) { c.classList.toggle('mb-model-active', c.textContent === m); });
     _mbUpdateSummary(_mbReadReasoning(), _mbReadSpeed());
+    _mbRenderHeader();
     saveMiddleBrainConfig({ model: m });
   }
   function _mbModelBuild() {
@@ -333,6 +439,29 @@
     _mbBuildSpeedButton();
     _mbModelBuild();
     _mbCiBuild();
+    _mbImageBuild();
+    _mbRenderHeader();
+  }
+  /* ── Image Router · 图片生成策略 UI（Fast ─ Auto ─ Precision）──────────
+     与既有高级设置同一套滑动组件（_mbSliderBuild），不做三个大按钮；
+     点击/拖动即写 canonical config（imageMode），与其它卡片一致无需 Save。
+     本卡片**只写策略**，不触发任何图片请求：执行边界在 assets/js/image-router.js。 */
+  function _mbImagePaint() {
+    var m = normalizeMiddleBrainImageMode(_mbUi.imageMode);
+    var s = _mbEl('mb-image-summary'); if (s) s.textContent = MB_IMAGE_LABELS[m] || m;
+    var h = _mbEl('mb-adv-image-hint'); if (h) h.textContent = MB_IMAGE_DESC[m] || MB_IMAGE_DESC.auto;
+  }
+  function mbImageModePick(v) {
+    v = normalizeMiddleBrainImageMode(v);
+    _mbUi.imageMode = v;
+    if (_mbImageSlider) _mbImageSlider.setValue(v);
+    _mbImagePaint();
+    saveMiddleBrainConfig({ imageMode: v });
+  }
+  function _mbImageBuild() {
+    _mbImageSlider = _mbSliderBuild('mb-adv-image', MB_IMAGE_ORDER, normalizeMiddleBrainImageMode(_mbUi.imageMode),
+      function (v) { mbImageModePick(v); }, { labels: MB_IMAGE_LABELS });
+    _mbImagePaint();
   }
   /* ── P11-2 · Character Integrity Guard UI ──────────────────────────────
      静态卡片（HTML）+ 事件绑定（addEventListener，**不新增 window 全局**，兼容面保持 43 条）。
@@ -373,7 +502,7 @@
     _mbCiPaint();
   }
   function mbReasoningPick(v) { v = normalizeMiddleBrainReasoningEffort(v); _mbUi.reasoning = v; if (_mbReasoningSlider) _mbReasoningSlider.setValue(v); _mbUpdateSummary(v, _mbReadSpeed()); saveMiddleBrainConfig({ reasoningEffort: v }); }
-  function mbSpeedPick(v) { v = normalizeMiddleBrainSpeed(v); _mbUi.speed = v; _mbRenderSpeed(); _mbUpdateSummary(_mbReadReasoning(), v); saveMiddleBrainConfig({ speed: v }); }
+  function mbSpeedPick(v) { v = normalizeMiddleBrainSpeed(v); _mbUi.speed = v; _mbRenderSpeed(); _mbUpdateSummary(_mbReadReasoning(), v); _mbRenderHeader(); saveMiddleBrainConfig({ speed: v }); }
   function mbModelPick(m) { _mbModelSet(m); }
   function mbModelStep(delta) { var list = _mbModelList(_mbReadModel()); _mbModelSet(list[Math.max(0, Math.min(list.length - 1, _mbModelIdx(_mbReadModel()) + delta))]); }
 
@@ -382,13 +511,15 @@
     var endpoint = (_mbEl('mb-endpoint') ? _mbEl('mb-endpoint').value : '').trim();
     var apiKey = (_mbEl('mb-apikey') ? _mbEl('mb-apikey').value : '').trim();
     _mbCiReadUi();
-    saveMiddleBrainConfig({ enabled: enabled, endpoint: endpoint, model: _mbReadModel(), apiKey: apiKey, reasoningEffort: _mbReadReasoning(), speed: _mbReadSpeed(), characterIntegrityEnabled: _mbUi.integrity.enabled, characterIntegritySensitivity: _mbUi.integrity.sensitivity, characterIntegrityRewrite: _mbUi.integrity.rewrite, characterIntegrityVerify: _mbUi.integrity.verify }).then(function () {
+    saveMiddleBrainConfig({ enabled: enabled, endpoint: endpoint, model: _mbReadModel(), apiKey: apiKey, reasoningEffort: _mbReadReasoning(), speed: _mbReadSpeed(), characterIntegrityEnabled: _mbUi.integrity.enabled, characterIntegritySensitivity: _mbUi.integrity.sensitivity, characterIntegrityRewrite: _mbUi.integrity.rewrite, characterIntegrityVerify: _mbUi.integrity.verify, imageMode: normalizeMiddleBrainImageMode(_mbUi.imageMode) }).then(function () {
       var st = _mbEl('mb-save-status'); if (st) { st.textContent = '已保存'; setTimeout(function () { st.textContent = ''; }, 1600); }
       if (typeof toast === 'function') toast('Middle Brain 已保存');
     }).catch(function (e) { if (typeof toast === 'function') toast('Middle Brain 保存失败：' + String(e && e.message || e)); });
   }
+  /* 填充设置卡片（dom 就绪后由 middle-brain.js 调用）。
+     返回 Promise：新增折叠态初始化也纳入同一条链（便于等待与测试，不改变既有语义）。 */
   function loadMiddleBrainConfigUI() {
-    getMiddleBrainConfig().then(function (c) {
+    return getMiddleBrainConfig().then(function (c) {
       if (_mbEl('mb-enabled-toggle')) _mbEl('mb-enabled-toggle').checked = !!c.enabled;
       if (_mbEl('mb-endpoint')) _mbEl('mb-endpoint').value = c.endpoint || '';
       if (_mbEl('mb-apikey')) _mbEl('mb-apikey').value = c.apiKey || '';
@@ -399,12 +530,14 @@
       _mbUi.integrity.sensitivity = normalizeMiddleBrainIntegritySensitivity(c.characterIntegritySensitivity);
       _mbUi.integrity.rewrite = c.characterIntegrityRewrite === true;
       _mbUi.integrity.verify = c.characterIntegrityVerify === true;
+      _mbUi.imageMode = normalizeMiddleBrainImageMode(c.imageMode);
       if (_mbEl('mb-ci-enabled')) _mbEl('mb-ci-enabled').checked = _mbUi.integrity.enabled;
       if (_mbEl('mb-ci-rewrite')) _mbEl('mb-ci-rewrite').checked = _mbUi.integrity.rewrite;
       if (_mbEl('mb-ci-verify')) _mbEl('mb-ci-verify').checked = _mbUi.integrity.verify;
       if (_mbEl('mb-model')) _mbEl('mb-model').value = _mbUi.model;
       _mbInitAdvancedUI();
       _mbUpdateSummary(_mbUi.reasoning, _mbUi.speed);
+      return _mbInitCollapse(c);
     }).catch(function () {});
   }
 
@@ -422,6 +555,9 @@
     normalizeMiddleBrainSpeed: normalizeMiddleBrainSpeed,
     /* P11-2 · Character Integrity 灵敏度归一 */
     normalizeMiddleBrainIntegritySensitivity: normalizeMiddleBrainIntegritySensitivity,
+    /* P12 · Image Router 决策缝（图片策略：fast/auto/precision） */
+    middleBrainImageMode: middleBrainImageMode,
+    normalizeMiddleBrainImageMode: normalizeMiddleBrainImageMode,
     /* 设置卡片 UI */
     saveMiddleBrainConfigUI: saveMiddleBrainConfigUI,
     loadMiddleBrainConfigUI: loadMiddleBrainConfigUI,

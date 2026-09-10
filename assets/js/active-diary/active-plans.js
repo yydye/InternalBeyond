@@ -80,15 +80,28 @@ function _activePlanDefaults(partial,prefs){
     user_id:String(p.user_id||_activeUserId())
   }
 }
-/* 解析模型输出中的严格 JSON（兼容 ```json 围栏与前后杂文），失败返回 null */
-function _activeParsePlanJson(text){
-  let s=String(text||'').trim();
+/* 解析模型输出中的结构化 JSON（P19 契约，与 Node 侧 active/plan-domain.js 逐字一致）：
+   A 完整 JSON（canonical）→ B ```json 围栏 → C legacy prefill 续写（仅当调用方声明
+   本次请求真的用了 assistant prefill：opts.prefillSeed = 实际 seed 文本，或旧式布尔
+   opts.allowPrefillContinuation===true 等价于 seed '{'）→ D 既有「首个 { 到末个 }」容错。
+   全部失败返回 null。 */
+function _activeParsePlanJson(text,opts){
+  const s=String(text||'').trim();
   if(!s)return null;
+  const asObject=raw=>{try{const j=JSON.parse(raw);return (j&&typeof j==='object'&&!Array.isArray(j))?j:null}catch(e){return null}};
+  const full=asObject(s);
+  if(full)return full;
   const fence=s.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if(fence&&fence[1]&&fence[1].trim())s=fence[1].trim();
+  if(fence&&fence[1]&&fence[1].trim()){const fenced=asObject(fence[1].trim());if(fenced)return fenced}
+  const seed=(opts&&typeof opts.prefillSeed==='string'&&opts.prefillSeed.charAt(0)==='{')
+    ?opts.prefillSeed
+    :((opts&&opts.allowPrefillContinuation===true)?'{':'');
+  if(seed&&s.charAt(0)!=='{'&&/}\s*$/.test(s)){
+    const continued=asObject(seed+s);if(continued)return continued;
+  }
   const start=s.indexOf('{'),end=s.lastIndexOf('}');
   if(start<0||end<=start)return null;
-  try{return JSON.parse(s.slice(start,end+1))}catch(e){return null}
+  return asObject(s.slice(start,end+1));
 }
 /* 白名单校验 + 安全裁剪。返回规范化计划结果，非法输入返回 null（调用方放弃创建，不影响聊天）。 */
 function _activeValidatePlanResult(raw,now,prefs){

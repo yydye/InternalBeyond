@@ -580,6 +580,24 @@ body.infernal-beyond #app{position:relative;z-index:1;}
 .mb-speed-note{margin-top:8px;font-size:.74rem;opacity:.6;}
 .mb-adv-hint{margin-top:12px;font-size:.76rem;opacity:.55;line-height:1.5;}
 @media (max-width:560px){.mb-model-cell{font-size:.68rem;}.mb-adv-card{padding:10px 12px;}}
+/* ── Middle Brain · 整块折叠头（P14：解决配置区过高、视觉占用过大）──
+   只折叠 body，不销毁 DOM：收起时 body 用 max-height:0 + opacity + visibility 过渡，
+   input / slider / API Key 的 DOM 与值原样保留（再展开不重新初始化 Middle Brain）。
+   展开/收起态由 JS 切 body 上的 is-collapsed 与头部的 aria-expanded。 */
+.mb-collapse-head{display:flex;align-items:center;justify-content:space-between;gap:10px 14px;flex-wrap:wrap;width:100%;margin:2px 0 0;padding:10px 12px;border:1px solid var(--glass-border);border-radius:12px;background:var(--glass-bg);color:var(--content-primary);font:inherit;text-align:left;cursor:pointer;transition:border-color .18s ease,background .18s ease;}
+.mb-collapse-head:hover{border-color:var(--accent);}
+.mb-collapse-title{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1 1 180px;}
+.mb-collapse-name{font-weight:600;font-size:.92rem;letter-spacing:.02em;opacity:.92;}
+/* 摘要允许换行，但每行截断；窄屏也不会把 header 撑到接近展开态高度 */
+.mb-collapse-summary{font-size:.76rem;line-height:1.45;opacity:.62;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.mb-collapse-meta{display:flex;align-items:center;gap:8px;flex:0 0 auto;margin-left:auto;}
+.mb-collapse-badge{font-size:.72rem;letter-spacing:.02em;padding:3px 10px;border-radius:999px;border:1px solid var(--glass-border);background:var(--glass-bg);opacity:.9;white-space:nowrap;}
+.mb-collapse-badge.is-on{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 45%,transparent);}
+.mb-collapse-chev{width:8px;height:8px;flex:0 0 auto;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:rotate(45deg);transition:transform .22s ease;opacity:.75;}
+.mb-collapse-head[aria-expanded="true"] .mb-collapse-chev{transform:rotate(-135deg);}
+.mb-collapse-body{overflow:hidden;max-height:4200px;opacity:1;visibility:visible;transition:max-height .28s ease,opacity .22s ease,visibility 0s linear 0s;}
+.mb-collapse-body.is-collapsed{max-height:0;opacity:0;visibility:hidden;pointer-events:none;transition:max-height .28s ease,opacity .16s ease,visibility 0s linear .28s;}
+@media (max-width:560px){.mb-collapse-head{padding:9px 10px;gap:6px 10px;}.mb-collapse-summary{white-space:normal;}.mb-collapse-title{flex-basis:100%;}}
 .mb-ci-card{margin-top:14px;}
 .mb-ci-card .form-check-row{margin:8px 0;font-size:.88rem;}
 .mb-ci-card .form-check-row input:disabled{cursor:not-allowed;opacity:.5;}

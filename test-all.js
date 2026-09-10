@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 
 /* Internal Beyond · 一键全量测试入口（Node 18+，零依赖，跨平台）。
  *
@@ -21,7 +21,12 @@
  *     + test_middle_brain_calibration_live.js（browser，Layer B 默认离线 mock 走真实执行路径；
  *     真实模型校准需手动 --live + IB_CI_CALIBRATION_KEY，不进本强制路径）。
  * P11-FIX：登记 test_cache_audit_isolation.js（browser，Cache Audit baseline 按 runtime consumer 隔离）。
+ * P14：登记 test_middle_brain_collapse.js（static，API 页 Middle Brain 整块折叠：默认态 /
+ *     点击与键盘切换 / 状态保持 / 持久化恢复 / 不重复绑定）。
  * P6：登记 test_guide.js（static）+ test_guide_shots.js / test_guide_smoke.js（browser）。
+ * P16：登记 test_api_onboarding.js（static，纯 Node + DOM shim）。
+ * P18：登记 test_model_catalog_freshness.js（static，纯 Node + DOM shim；
+ *     末尾以子进程跑 test_provider_presentation / test_api_onboarding 作为无回归门）。
  *     test_guide_shots.js 会真实跑一遍截图管线（约 70s），输出到系统临时目录。
  * P7：登记 test_installer.js + test_installer_mock.js（static，均不安装、不开浏览器）。
  *     真实安装 smoke（test_installer_smoke.js --real-install-smoke）与构建回归
@@ -47,6 +52,8 @@ const GROUPS = [
       ['test_cache_audit.js'],
       /* P11-2A：角色一致性校准 Layer A（确定性契约校准，零依赖离线） */
       ['test_middle_brain_calibration.js'],
+      /* P14：Middle Brain 整块折叠（静态 DOM stub 驱动真实 config 层，零依赖离线） */
+      ['test_middle_brain_collapse.js'],
       ['test_harness_boundary.js'],
       ['test_credential_vault.js'],
       ['test_error_catalog.js'],
@@ -79,8 +86,28 @@ const GROUPS = [
       ['test_setup_wizard.js'],
       ['test_diagnostics.js'],
       ['test_guide.js'],
+      /* P16：零门槛 API 获取向导（onboarding metadata / 官方-第三方分区 / 预填链路 / 链接安全） */
+      ['test_api_onboarding.js'],
+      /* P17：Provider 呈现层真源收敛（presentation metadata / 目录驱动下拉 / custom 语义 / 防漂移） */
+      ['test_provider_presentation.js'],
+      /* P18：模型目录时效（默认模型审计状态 / 新建与切换预填 / 已有配置不迁移 /
+         Claude Sonnet 5 采样参数策略 / DeepSeek vision exp 不误判） */
+      ['test_model_catalog_freshness.js'],
+      /* P19：Anthropic assistant prefill 兼容（Claude 4.6+ 不收 seed → JSON 约束 /
+         parser 完整 JSON 优先 / Node port 继承同一 policy / assistant 历史不误删） */
+      ['test_anthropic_prefill_policy.js'],
+      /* P20：Anthropic wire contract 收敛（system/messages 归一单一真源 /
+         Browser（逐字抽取的真实 body builder）× Node（core + node-model-port）parity /
+         role invariant / 非 anthropic wire 不变化） */
+      ['test_anthropic_wire_contract.js'],
       ['test_installer.js'],
-      ['test_installer_mock.js']
+      ['test_installer_mock.js'],
+      /* P12：Image Router / Image Scheduler 专项（纯 Node，确定性并发/优先级/失败恢复） */
+      ['test_image_router.js'],
+      /* P13：图片编辑 / 参考图解析专项（归一化/限额/选源优先级/lineage/多轮 A→B→C/edit 路由） */
+      ['test_image_edit.js'],
+      /* P15：Image Router 配置层专项（唯一模型目录 / 路由解析 / 能力过滤 / 备用通道 / 错误文案） */
+      ['test_image_router_config.js']
     ]
   },
   {
@@ -166,7 +193,13 @@ const GROUPS = [
       ['test_setup_wizard_smoke.js'],
       ['test_diagnostics_smoke.js'],
       ['test_guide_shots.js'],
-      ['test_guide_smoke.js']
+      ['test_guide_smoke.js'],
+      /* P12：Image Router 浏览器最小冒烟（真实链路：Chat/Moments → Router → 现有执行器 → mock provider） */
+      ['test_image_router_smoke.js'],
+      /* P13：图片编辑浏览器冒烟（<ws_edit_image> → Resolver → Router → multipart /images/edits → A→B→C） */
+      ['test_image_edit_smoke.js'],
+      /* P15：Image Router 配置层浏览器冒烟（设置 UI → 保存 → 刷新 → 真实请求体用配置的 Key/模型 → 备用通道） */
+      ['test_image_router_settings_smoke.js']
     ]
   }
 ];
@@ -177,6 +210,12 @@ if (mode !== '--all' && mode !== '--quick' && mode !== '--browser') {
   console.error('用法：node test-all.js [--quick|--browser|--all]');
   process.exit(2);
 }
+
+/* 每个子测试的硬超时（毫秒）：默认 300s，可用 IB_TEST_TIMEOUT_MS 覆盖。
+ * 目的：任何用例“跑完不退出”（Chrome/CDP 残留、未 close 的 server、残留 timer）
+ * 都必须表现为 TIMEOUT 失败并继续跑下一项，而不是把整轮全量测试挂死。
+ * 实测最长用例 test_guide_shots.js ≈ 70s，300s 有充足余量。 */
+const PER_TEST_TIMEOUT_MS = Number(process.env.IB_TEST_TIMEOUT_MS || 300000);
 
 const startedAt = Date.now();
 const results = [];
@@ -194,13 +233,20 @@ for (const group of groups) {
     const r = spawnSync(process.execPath, [path.join(__dirname, script), ...args], {
       cwd: __dirname,
       stdio: 'inherit',
-      shell: false
+      shell: false,
+      timeout: PER_TEST_TIMEOUT_MS,
+      killSignal: 'SIGKILL'
     });
     const ms = Date.now() - t0;
-    const ok = r.status === 0;
+    const timedOut = !!(r.error && r.error.code === 'ETIMEDOUT');
+    const ok = !timedOut && r.status === 0;
     if (!ok) failures++;
-    results.push({ group: group.name, label, ms, ok });
-    console.log('│ ' + (ok ? 'PASS' : 'FAIL') + '  ' + label + '  (' + (ms / 1000).toFixed(1) + 's)');
+    results.push({ group: group.name, label, ms, ok, timedOut });
+    const mark = timedOut ? 'TIMEOUT' : (ok ? 'PASS' : 'FAIL');
+    console.log('│ ' + mark.padEnd(7) + ' ' + label + '  (' + (ms / 1000).toFixed(1) + 's)');
+    if (timedOut) {
+      console.log('│         ↳ 超过 ' + (PER_TEST_TIMEOUT_MS / 1000) + 's 未退出，已强杀（该用例很可能未清理浏览器/CDP/服务句柄）');
+    }
   }
 }
 
@@ -210,8 +256,9 @@ for (const group of groups) {
   const rs = results.filter(r => r.group === group.name);
   const total = rs.reduce((s, r) => s + r.ms, 0);
   const fails = rs.filter(r => !r.ok).length;
+  const hangs = rs.filter(r => r.timedOut).length;
   console.log('  ' + group.name.padEnd(8) + rs.length + ' 项 · ' + (total / 1000).toFixed(1) + 's · ' +
-    (fails === 0 ? '全部通过' : fails + ' 失败'));
+    (fails === 0 ? '全部通过' : fails + ' 失败' + (hangs ? '（其中 ' + hangs + ' 项超时未退出）' : '')));
 }
 console.log('总耗时 ' + ((Date.now() - startedAt) / 1000).toFixed(1) + 's · ' +
   (failures === 0 ? '全部通过 ✔' : failures + ' 项失败 ✘'));

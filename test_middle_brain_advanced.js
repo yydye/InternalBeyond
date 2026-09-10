@@ -1,4 +1,4 @@
-﻿/* ====================================================================
+/* ====================================================================
    Middle Brain Phase 4 · Astra Advanced Settings · CDP 测试
    覆盖：默认 reasoningEffort/speed / 全档保存恢复 / 非法回退默认 /
         老配置无字段 → 默认 / Responses 映射逐档 reasoning.effort /
@@ -113,6 +113,30 @@ async function main(){
        读事务可能排在写事务之前 → 立即断言持久化值是时序假设，不是 UI 契约。契约 = UI 选择最终落盘。
        这里等待收敛（若真的回退成旧值，轮询仍会超时失败，不会掩盖缺陷）。 */
     check('ui.modelStep',await ev(cdp,"(async function(){var end=Date.now()+3000;for(;;){var c=await getMiddleBrainConfig();if(c.model==='gpt-5.6-sol')return true;if(Date.now()>end)return false;await new Promise(function(r){setTimeout(r,25)})}})()"));
+
+    /* ============ B. P14 · Middle Brain 整块折叠（真实 DOM / CSS 最小 smoke） ============
+       注意：本段在 A 段之后运行，reasoning/speed 已被前面的 UI 用例改过；因此这里只断言
+       "摘要 = 当前配置的四个字段"，不硬编码档位值。 */
+    await ev(cdp,"(async function(){navTo('api');await dbDelete('apiSettings','middle_brain_ui');await loadMiddleBrainConfigUI();})()");
+    check('collapse.defaultCollapsed',await ev(cdp,"(function(){var b=document.getElementById('mb-collapse-body'),t=document.getElementById('mb-collapse-toggle');return !!b&&b.classList.contains('is-collapsed')&&t.getAttribute('aria-expanded')==='false'&&getComputedStyle(b).visibility==='hidden'&&b.getBoundingClientRect().height===0})()"));
+    /* 摘要必须由当前配置动态生成：model · reasoning · processing · image mode */
+    check('collapse.headerSummary',await ev(cdp,"(async function(){var c=await getMiddleBrainConfig();var R={low:'Low',medium:'Medium',high:'High',xhigh:'XHigh',max:'Max'};var S={standard:'Standard',fast:'Fast'};var I={fast:'Fast',auto:'Auto',precision:'Precision'};var exp=c.model+' · '+R[c.reasoningEffort]+' · '+S[c.speed]+' · '+I[c.imageMode];var s=document.getElementById('mb-collapse-summary');var b=document.getElementById('mb-collapse-badge');return !!s&&s.textContent===exp&&b&&b.textContent===(c.enabled?'Enabled':'Disabled')})()"));
+    /* header 始终可见且紧凑（不接近展开态高度） */
+    check('collapse.headerCompact',await ev(cdp,"(function(){var t=document.getElementById('mb-collapse-toggle'),b=document.getElementById('mb-collapse-body');var r=t.getBoundingClientRect();return r.height>0&&r.height<120&&getComputedStyle(t).visibility!=='hidden'&&b.getBoundingClientRect().height===0})()"));
+    /* 点击展开 → aria-expanded=true、body 可见有高度；再点击收起 */
+    check('collapse.clickToggle',await ev(cdp,"(async function(){var b=document.getElementById('mb-collapse-body'),t=document.getElementById('mb-collapse-toggle');t.click();await new Promise(function(r){setTimeout(r,600)});var m1=getComputedStyle(b).maxHeight,h1=b.getBoundingClientRect().height,v1=getComputedStyle(b).visibility;var open=!b.classList.contains('is-collapsed')&&t.getAttribute('aria-expanded')==='true'&&v1!=='hidden'&&h1>0;t.click();await new Promise(function(r){setTimeout(r,600)});var m2=getComputedStyle(b).maxHeight,h2=b.getBoundingClientRect().height,v2=getComputedStyle(b).visibility;var closed=b.classList.contains('is-collapsed')&&t.getAttribute('aria-expanded')==='false';window.__mbCollapseDiag={m1:m1,h1:h1,v1:v1,m2:m2,h2:h2,v2:v2};return open&&closed})()"));
+    /* 键盘 Enter / Space：原生 button 语义（keydown+keyup 后浏览器派发 click） */
+    /* 键盘：折叠头必须是可聚焦的原生 <button>（Enter / Space 由浏览器原生转成 click） */
+    check('collapse.keyboardEnterSpace',await ev(cdp,"(function(){var b=document.getElementById('mb-collapse-body'),t=document.getElementById('mb-collapse-toggle');t.focus();var focusable=document.activeElement===t;var nativeBtn=t.tagName==='BUTTON'&&t.type==='button';var before=b.classList.contains('is-collapsed');t.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));t.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',bubbles:true,cancelable:true}));t.click();var toggled=b.classList.contains('is-collapsed')!==before;return focusable&&nativeBtn&&toggled&&t.getAttribute('aria-expanded')==='true'})()"));
+    /* 状态保持：写入 API Key + 记录 slider 节点数，收起再展开后必须原样（DOM 不销毁、不重新初始化） */
+    await ev(cdp,"(function(){document.getElementById('mb-apikey').value='sk-collapse-keep';})()");
+    check('collapse.stateKept',await ev(cdp,"(function(){var b=document.getElementById('mb-collapse-body'),t=document.getElementById('mb-collapse-toggle');var n=b.querySelectorAll('#mb-adv-reasoning .mb-tick').length;t.click();t.click();return document.getElementById('mb-apikey').value==='sk-collapse-keep'&&b.querySelectorAll('#mb-adv-reasoning .mb-tick').length===n&&n===5&&document.getElementById('mb-model-name').textContent==='gpt-5.6-sol'})()"));
+    /* 持久化：手动切换写 apiSettings['middle_brain_ui']，重新 load 后恢复 */
+    check('collapse.persistAndRestore',await ev(cdp,"(async function(){var t=document.getElementById('mb-collapse-toggle'),b=document.getElementById('mb-collapse-body');if(b.classList.contains('is-collapsed'))t.click();if(b.classList.contains('is-collapsed'))return false;var stored=false;for(var i=0;i<40;i++){var rec=await dbGet('apiSettings','middle_brain_ui');if(rec&&rec.collapsed===false){stored=true;break}await new Promise(function(r){setTimeout(r,25)})}await loadMiddleBrainConfigUI();var restored=!b.classList.contains('is-collapsed')&&t.getAttribute('aria-expanded')==='true';if(!restored)return false;t.click();var stored2=false;for(var j=0;j<40;j++){var rec2=await dbGet('apiSettings','middle_brain_ui');if(rec2&&rec2.collapsed===true){stored2=true;break}await new Promise(function(r){setTimeout(r,25)})}await loadMiddleBrainConfigUI();return stored&&stored2&&b.classList.contains('is-collapsed')&&t.getAttribute('aria-expanded')==='false'})()"));
+    /* 不重复绑定：多次 load 后单次点击只切换一次 */
+    check('collapse.noDuplicateListener',await ev(cdp,"(async function(){var t=document.getElementById('mb-collapse-toggle'),b=document.getElementById('mb-collapse-body');await loadMiddleBrainConfigUI();await loadMiddleBrainConfigUI();var before=b.classList.contains('is-collapsed');t.click();var once=(b.classList.contains('is-collapsed')!==before);return once})()"));
+    /* 动画：真实计算样式有 max-height/opacity 过渡，且未用 display:none；reduced-motion 由 core.css 全局降级 */
+    check('collapse.transitionNotDisplayNone',await ev(cdp,"(function(){var b=document.getElementById('mb-collapse-body');var cs=getComputedStyle(b);var tr=cs.transitionProperty||'';return /max-height/.test(tr)&&/opacity/.test(tr)&&cs.display!=='none'})()"));
   } finally { if(cdp)cdp.close(); try{browser.kill()}catch(e){} try{mock.server&&mock.server.close()}catch(e){} }
   console.log(failures===0?'\nMiddle Brain Phase 4 Advanced Settings CDP passed ✔':'\nMiddle Brain Phase 4 Advanced Settings CDP FAILED ✘');
   process.exit(failures?1:0);

@@ -40,6 +40,18 @@ async function evaluate(cdp, expression) { const r = await cdp.send('Runtime.eva
 async function waitFor(cdp, expression, timeoutMs = 15000) { const end = Date.now() + timeoutMs; while (Date.now() < end) { try { if (await evaluate(cdp, expression)) return true; } catch (e) {} await new Promise(r => setTimeout(r, 120)); } return false; }
 function freePort() { return new Promise((resolve, reject) => { const s = net.createServer(); s.unref(); s.on('error', reject); s.listen(0, '127.0.0.1', () => { const port = s.address().port; s.close(e => e ? reject(e) : resolve(port)); }); }); }
 
+/* reload 后必须确认“新文档”真的装载完成。
+   只轮询 `typeof window.loadApiConfigs === 'function'` 是不够的：reload 尚未提交时，
+   旧文档同样满足该条件，waitFor 会立刻返回，随后 evaluate 落进还没有执行 social.js 的新文档，
+   于是抛出 ReferenceError: loadApiConfigs is not defined（曾经的 M1/M7 假失败）。
+   用一次性标记区分文档代次：旧文档带标记 → 条件不成立；新文档无标记且全局已就绪 → 通过。 */
+async function reloadAndWaitApp(cdp) {
+  await evaluate(cdp, "window.__ibTestDocGen = (window.__ibTestDocGen || 0) + 1;");
+  await cdp.send('Page.reload', { ignoreCache: true });
+  const ok = await waitFor(cdp, "typeof window.__ibTestDocGen === 'undefined' && typeof window.IB === 'object' && typeof window.loadApiConfigs === 'function'", 30000);
+  if (!ok) throw new Error('reload 后新文档未完成装载（IB / loadApiConfigs 未就绪）');
+}
+
 async function main() {
   const chrome = chromePath();
   if (!chrome) { console.error('unavailable'); process.exit(2); }
@@ -78,9 +90,8 @@ async function main() {
     const t0 = await evaluate(cdp, keyTruth(idAUsed));
     check('M0.createRoleA.keyPresent', t0 && t0.found && t0.eq, JSON.stringify(t0));
 
-    /* 步骤1：reload */
-    await cdp.send('Page.reload', { ignoreCache: true });
-    await waitFor(cdp, "typeof window.apiConfigs !== 'undefined' && typeof window.editApi === 'function'", 25000);
+    /* 步骤1：reload（等待新文档装载完成，见 reloadAndWaitApp 注释） */
+    await reloadAndWaitApp(cdp);
     await evaluate(cdp, "loadApiConfigs()");
     check('M1.reload.keyIntact', (await evaluate(cdp, keyTruth(idAUsed))).eq, JSON.stringify(await evaluate(cdp, keyTruth(idAUsed))));
 
@@ -114,9 +125,8 @@ async function main() {
     await new Promise(r => setTimeout(r, 400));
     check('M6.navigate.keyIntact', (await evaluate(cdp, keyTruth(idAUsed))).eq, JSON.stringify(await evaluate(cdp, keyTruth(idAUsed))));
 
-    /* 步骤7：reload again */
-    await cdp.send('Page.reload', { ignoreCache: true });
-    await waitFor(cdp, "typeof window.apiConfigs !== 'undefined' && typeof window.editApi === 'function'", 25000);
+    /* 步骤7：reload again（同样等待新文档装载完成） */
+    await reloadAndWaitApp(cdp);
     await evaluate(cdp, "loadApiConfigs()");
     check('M7.reloadAgain.keyIntact', (await evaluate(cdp, keyTruth(idAUsed))).eq, JSON.stringify(await evaluate(cdp, keyTruth(idAUsed))));
 

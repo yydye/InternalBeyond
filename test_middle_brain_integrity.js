@@ -126,9 +126,12 @@ const api = http.createServer(async (req, res) => {
         && typeof C.integrity._mbCiGate==='function' && typeof C.integrity.MB_CI_SCHEMA==='object';
     })()`));
     check('A2.publicKeys45', await evaluate(cdp, `(function(){
+      /* P11-2 之后 45 个门面 key；P12 追加 Image Router 决策键（middleBrainImageMode /
+         normalizeMiddleBrainImageMode）→ 47。数量变化必须是有意的契约扩展。 */
       var k=Object.keys(IB.middleBrain);
-      return k.length===45 && k.indexOf('middleBrainFinalizeReply')>=0 && k.indexOf('middleBrainCharacterIntegrity')>=0
-        && k.indexOf('_mbParseCiJson')>=0 && k.indexOf('MB_CI_SCHEMA')>=0;
+      return k.length===47 && k.indexOf('middleBrainFinalizeReply')>=0 && k.indexOf('middleBrainCharacterIntegrity')>=0
+        && k.indexOf('_mbParseCiJson')>=0 && k.indexOf('MB_CI_SCHEMA')>=0
+        && k.indexOf('middleBrainImageMode')>=0;
     })()`), await evaluate(cdp, `(function(){return Object.keys(IB.middleBrain).length})()`));
     check('A3.noWindowAliasForNewKeys', await evaluate(cdp, `(function(){
       return typeof window.middleBrainFinalizeReply==='undefined' && typeof window.middleBrainCharacterIntegrity==='undefined'

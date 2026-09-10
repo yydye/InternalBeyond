@@ -1212,8 +1212,25 @@
       <div class="module-intro-desc">添加任意数量的 AI 角色，独立配置昵称、模型、系统提示词与创意度。<br>管理关系、Token 用量、调整预算、控制可读取范围等。</div>
     </div>
 
+    <!-- P16 · 零门槛 API 获取入口：分流「没有 Key / 已有 Key / 导入兼容 API」
+         内容由 assets/js/api-onboarding.js 渲染（数据取 provider-directory.js） -->
+    <div id="api-onboarding-entry"></div>
+
     <div class="api-section glass-card u-pad-20" id="middle-brain-section">
       <h3>Middle Brain <span class="section-meta">（全局 · GPT-6 Astra）</span></h3>
+      <!-- 折叠头（始终可见）：点击 / Enter / Space 切换整个 Middle Brain 区块；
+           默认 aria-expanded="false"（已有用户默认收起），首次配置 / 配置不完整时由 JS 展开 -->
+      <button type="button" class="mb-collapse-head" id="mb-collapse-toggle" aria-expanded="false" aria-controls="mb-collapse-body">
+        <span class="mb-collapse-title">
+          <span class="mb-collapse-name">Middle Brain</span>
+          <span class="mb-collapse-summary" id="mb-collapse-summary"></span>
+        </span>
+        <span class="mb-collapse-meta">
+          <span class="mb-collapse-badge" id="mb-collapse-badge">Disabled</span>
+          <span class="mb-collapse-chev" id="mb-collapse-chev" aria-hidden="true"></span>
+        </span>
+      </button>
+      <div class="mb-collapse-body" id="mb-collapse-body">
       <div class="api-ed-block"><div class="api-ed-btitle">全局智能层（独立于角色配置）</div>
         <p class="mb-desc">Middle Brain 是 IB 的全局层，不作为角色 Provider 出现。这里独立配置 Astra 端点；启用后供后续 Middle Brain 接入复用（本版仅保存配置与归一接口，不拦截角色请求）。</p>
         <label class="form-check-row mb-toggle-row"><input type="checkbox" id="mb-enabled-toggle" class="u-native-check"> 启用 Middle Brain</label>
@@ -1251,6 +1268,17 @@
           </div>
           <div class="mb-adv-hint">推理强度与处理速度会影响 API 成本和响应时间。</div>
         </div>
+        <div class="mb-adv-card" id="mb-image-card">
+          <div class="mb-adv-head">
+            <span class="mb-adv-title">Image Generation</span>
+            <span class="mb-adv-summary" id="mb-image-summary">Auto</span>
+          </div>
+          <div class="mb-adv-section">
+            <div class="mb-adv-label">Mode</div>
+            <div class="mb-adv-image" id="mb-adv-image"></div>
+          </div>
+          <div class="mb-adv-hint" id="mb-adv-image-hint">Let Middle Brain choose</div>
+        </div>
         <div class="mb-adv-card mb-ci-card">
           <div class="mb-adv-head">
             <span class="mb-adv-title">Character Integrity Guard</span>
@@ -1268,6 +1296,32 @@
         <div class="mb-actions">
           <button type="button" class="btn btn-primary" onclick="saveMiddleBrainConfigUI()">保存 Middle Brain</button>
           <span id="mb-save-status" class="mb-save-status"></span>
+        </div>
+      </div>
+      </div>
+    </div>
+
+    <div class="api-section glass-card u-pad-20" id="image-router-section">
+      <h3>Image Router <span class="section-meta">（全局 · 图片生成 / 编辑路由）</span></h3>
+      <button type="button" class="mb-collapse-head" id="ir-collapse-toggle" aria-expanded="true" aria-controls="ir-collapse-body">
+        <span class="mb-collapse-title">
+          <span class="mb-collapse-name">Image Router</span>
+          <span class="mb-collapse-summary" id="ir-collapse-summary"></span>
+        </span>
+        <span class="mb-collapse-meta">
+          <span class="mb-collapse-badge" id="ir-collapse-badge">—</span>
+          <span class="mb-collapse-chev" id="ir-collapse-chev" aria-hidden="true"></span>
+        </span>
+      </button>
+      <div class="mb-collapse-body" id="ir-collapse-body">
+        <div class="api-ed-block"><div class="api-ed-btitle">路由配置</div>
+          <p class="mb-desc">所有图片请求（聊天生图 / 「编辑这张图」/ 朋友圈配图 / 后台任务）统一经 Image Router。这里决定每条路由用哪个 API 配置与模型：留空 = 跟随角色配置（与旧行为一致）；绑定具体 API 配置后，该路由与「正在和谁聊天」解耦。</p>
+        </div>
+        <div id="ir-route-generation"></div>
+        <div id="ir-route-editing"></div>
+        <div class="mb-actions">
+          <button type="button" class="btn btn-primary" onclick="saveImageRouterSettingsUI(this)">保存 Image Router</button>
+          <span id="ir-save-status" class="mb-save-status"></span>
         </div>
       </div>
     </div>
@@ -1337,34 +1391,26 @@
       </div>
       <div class="api-form-group">
         <label>服务商</label>
+        <!-- P17：选项由 assets/js/social.js 从唯一 provider 目录（provider-directory.js）构建：
+             顺序 / 分组 / 文案全部来自目录的 presentation metadata。
+             这里只保留一个最小 fallback（兼容模式），保证目录加载失败时仍能手动填写。 -->
         <select id="api-provider" onchange="onProviderChange()">
-          <option value="anthropic">Claude (Anthropic)</option>
-          <option value="openai">GPT (OpenAI)</option>
-          <option value="grok">Grok (xAI)</option>
-          <option value="deepseek">DeepSeek</option>
-          <option value="gemini">Gemini (Google)</option>
-          <option value="glm">GLM (智谱)</option>
-          <option value="qwen">通义千问 (Qwen)</option>
-          <option value="doubao">豆包 (字节)</option>
-          <option value="moonshot">Kimi (月之暗面)</option>
-          <option value="mimo">MiMo</option>
-          <option value="minimax">MiniMax</option>
-          <option value="yi">零一万物 (Yi)</option>
-          <option value="baichuan">百川 (Baichuan)</option>
-          <option value="mistral">Mistral</option>
-          <option value="custom">自定义</option>
+          <option value="custom">自定义 / OpenAI Compatible</option>
         </select>
       </div>
+      <div class="api-form-group" id="ibo-provider-note"></div>
       <div class="api-form-group">
-        <label>API Key</label>
+        <label>API Key <span class="field-note-inline" id="ibo-key-help"></span></label>
         <input type="password" id="api-key" placeholder="输入你的 API Key…">
       </div>
+      <div class="api-form-group" id="ibo-compatible-hint"></div>
       <div class="api-form-group">
         <label>模型</label>
-        <input id="api-model" placeholder="例如 claude-sonnet-4-6" oninput="_syncShowThinkingDefault();_syncVisionUI()">
+        <input id="api-model" placeholder="例如 claude-sonnet-4-6" oninput="_syncShowThinkingDefault();_syncVisionUI();_syncSamplingUI()">
       </div>
       <div class="api-form-group">
-        <label>接口地址</label>
+        <label>接口地址 <span class="field-note-inline">（高级 · 一般不用改）</span></label>
+        <div id="ibo-guided-hint" class="ibo-guided-hint"></div>
         <input id="api-endpoint" placeholder="API Endpoint URL">
       </div>
       <div class="api-form-group">
@@ -1374,7 +1420,8 @@
       </div>
       <div class="api-form-group u-mt-1" id="api-imagegen-group">
         <label class="form-check-row"><input type="checkbox" id="api-imagegen-toggle" class="u-native-check"> 启用图像生成 <span class="field-note-inline">（仅限 OpenAI 兼容 / Gemini 的生图模型）</span></label>
-        <input id="api-imagegen-model" placeholder="生图模型（留空自动：gpt-image-1 / gemini-2.5-flash-image）" style="margin-top:6px">
+        <input id="api-imagegen-model" list="api-imagegen-model-list" placeholder="生图模型（留空自动：gpt-image-2.5-flare / gpt-image-2.5-sunburst / gemini-2.5-flash-image）" style="margin-top:6px">
+        <datalist id="api-imagegen-model-list"></datalist><!-- 选项由 assets/js/image-router-settings.js 从唯一模型目录（image-models-core.js）填充 -->
         <div class="img-svc-row">
           <select id="api-imagegen-provider">
             <option value="">图片服务商：跟随文字（自动）</option>
@@ -1408,6 +1455,7 @@
         <label>Temperature (创意度) <span id="api-temp-val" style="font-weight:400;opacity:0.7">1.0</span></label>
         <input type="range" id="api-temperature" min="0" max="2" step="0.1" value="1.0" oninput="document.getElementById('api-temp-val').textContent=this.value" style="width:100%">
         <div style="display:flex;justify-content:space-between;font-size:0.68rem;opacity:0.5;margin-top:2px"><span>精准</span><span>创意</span></div>
+        <div id="api-temp-hint" class="field-hint" style="display:none"></div>
       </div>
       <div class="api-form-group u-mt-1">
         <label class="form-check-row"><input type="checkbox" id="api-story-personalize" class="u-native-check"> Story 个性化</label>
@@ -2073,23 +2121,23 @@ i would like the room to be enough.
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M22 4L12 13 2 4"/></svg>
               Email
             </a>
-            <a class="author-link" href="https://x.com/underthepuresky" target="_blank">
+            <a class="author-link" href="https://x.com/underthepuresky" target="_blank" rel="noopener noreferrer">
               <svg viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
               X/Twitter
             </a>
-            <a class="author-link" href="https://github.com/Sui-IB" target="_blank">
+            <a class="author-link" href="https://github.com/Sui-IB" target="_blank" rel="noopener noreferrer">
               <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
               GitHub
             </a>
-            <a class="author-link" href="https://www.xiaohongshu.com/user/profile/3628686381" target="_blank">
+            <a class="author-link" href="https://www.xiaohongshu.com/user/profile/3628686381" target="_blank" rel="noopener noreferrer">
               <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.5 14h-2l-1-2H10.5l-1 2h-2l3.5-8h2l3.5 8z"/></svg>
               小红书
             </a>
-            <a class="author-link" href="https://space.bilibili.com/3546561346800463" target="_blank">
+            <a class="author-link" href="https://space.bilibili.com/3546561346800463" target="_blank" rel="noopener noreferrer">
               <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.813 4.653h.854c1.51.054 2.769.578 3.773 1.574 1.004.995 1.524 2.249 1.56 3.76v7.36c-.036 1.51-.556 2.769-1.56 3.773s-2.262 1.524-3.773 1.56H5.333c-1.51-.036-2.769-.556-3.773-1.56S.036 18.858 0 17.347v-7.36c.036-1.511.556-2.765 1.56-3.76 1.004-.996 2.262-1.52 3.773-1.574h.774l-1.174-1.12a1.234 1.234 0 0 1-.373-.906c0-.356.124-.658.373-.907l.027-.027c.267-.249.573-.373.92-.373.347 0 .653.124.92.373L9.653 4.44c.071.071.134.142.187.213h4.267a.836.836 0 0 1 .16-.213l2.853-2.747c.267-.249.573-.373.92-.373.347 0 .662.151.929.4.267.249.391.551.391.907 0 .355-.124.657-.373.906zM5.333 7.24c-.746.018-1.373.276-1.88.773-.506.498-.769 1.13-.786 1.894v7.52c.017.764.28 1.395.786 1.893.507.498 1.134.756 1.88.773h13.334c.746-.017 1.373-.275 1.88-.773.506-.498.769-1.129.786-1.893v-7.52c-.017-.765-.28-1.396-.786-1.894-.507-.497-1.134-.755-1.88-.773zM8 11.107c.373 0 .684.124.933.373.25.249.383.569.4.96v1.173c-.017.391-.15.711-.4.96-.249.25-.56.374-.933.374s-.684-.125-.933-.374c-.25-.249-.383-.569-.4-.96V12.44c.017-.391.15-.711.4-.96.249-.249.56-.373.933-.373zm8 0c.373 0 .684.124.933.373.25.249.383.569.4.96v1.173c-.017.391-.15.711-.4.96-.249.25-.56.374-.933.374s-.684-.125-.933-.374c-.25-.249-.383-.569-.4-.96V12.44c.017-.391.15-.711.4-.96.249-.249.56-.373.933-.373z"/></svg>
               Bilibili
             </a>
-            <a class="author-link" href="https://www.douyin.com/search/InternalBeyond?type=user" target="_blank" id="author-douyin-link">
+            <a class="author-link" href="https://www.douyin.com/search/InternalBeyond?type=user" target="_blank" rel="noopener noreferrer" id="author-douyin-link">
               <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.589 6.686a4.793 4.793 0 0 1-3.77-4.245V2h-3.445v13.672a2.896 2.896 0 0 1-2.895 2.76 2.896 2.896 0 0 1-2.895-2.895 2.896 2.896 0 0 1 2.895-2.895c.318 0 .624.052.916.136v-3.52a6.278 6.278 0 0 0-.916-.065 6.375 6.375 0 0 0-6.375 6.375 6.376 6.376 0 0 0 6.375 6.376 6.375 6.375 0 0 0 6.375-6.376V8.889a8.166 8.166 0 0 0 4.735 1.504V6.95a4.8 4.8 0 0 1-1-.264z"/></svg>
               抖音
             </a>
@@ -2114,11 +2162,11 @@ i would like the room to be enough.
         <div class="author-desc">Internal Beyond（IB）的<b>非官方二次开发版</b>维护者。在 Sui 原版之上新增本地 Bridge / Active 服务、AI 社交圈（Social Net）、语音与视频运行时、行为观测层、模块化拆分与测试基线。</div>
         <div class="author-desc meta">QQ：3653786503 丨 Email：19281692068@163.com / jntmsan@gmail.com</div>
         <div class="author-links extra">
-          <a class="author-link" href="https://x.com/jolinbbipp" target="_blank">
+          <a class="author-link" href="https://x.com/jolinbbipp" target="_blank" rel="noopener noreferrer">
             <svg viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
             X/Twitter
           </a>
-          <a class="author-link" href="https://github.com/yydye/InternalBeyond" target="_blank">
+          <a class="author-link" href="https://github.com/yydye/InternalBeyond" target="_blank" rel="noopener noreferrer">
             <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
             GitHub
           </a>
@@ -2134,11 +2182,11 @@ i would like the room to be enough.
         <p>本项目在 GitHub 公开源代码，并免费供个人、学习、研究及其他非商业用途使用。公开源代码不等于放弃版权，也不代表授权任何形式的商业使用。</p>
         <div class="cp-group">
           <div class="cp-group-name">代码许可</div>
-          <p>程序代码采用 <a href="https://polyformproject.org/licenses/noncommercial/1.0.0" target="_blank" rel="noopener">PolyForm Noncommercial License 1.0.0</a>。在非商业前提下，你可以自由使用、学习、修改和分享，但须保留作者署名、版权声明与许可文件。未经 Sui 书面授权，不得将代码用于出售、收费分发、付费产品或服务、商业托管，或以其他方式获取商业利益。</p>
+          <p>程序代码采用 <a href="https://polyformproject.org/licenses/noncommercial/1.0.0" target="_blank" rel="noopener noreferrer">PolyForm Noncommercial License 1.0.0</a>。在非商业前提下，你可以自由使用、学习、修改和分享，但须保留作者署名、版权声明与许可文件。未经 Sui 书面授权，不得将代码用于出售、收费分发、付费产品或服务、商业托管，或以其他方式获取商业利益。</p>
         </div>
         <div class="cp-group">
           <div class="cp-group-name">视觉素材许可</div>
-          <p>项目图像素材均由 OpenAI GPT-IMAGE-2 生成，并由 Sui 使用 Adobe Photoshop CS 进行修改、合成与编绘。对于 Sui 依法享有或有权授权的部分——包括界面设计、图标、插画、精灵图、场景、背景与项目文档——采用 <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/" target="_blank" rel="noopener">CC BY-NC-SA 4.0</a>。署名后可进行非商业分享与改作；公开衍生素材时，须注明修改内容并采用同一许可。项目名称、Logo 与作者标识不授予商标权，不得冒充官方版本或造成由 Sui 官方发布与认可的误认。</p>
+          <p>项目图像素材均由 OpenAI GPT-IMAGE-2 生成，并由 Sui 使用 Adobe Photoshop CS 进行修改、合成与编绘。对于 Sui 依法享有或有权授权的部分——包括界面设计、图标、插画、精灵图、场景、背景与项目文档——采用 <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/" target="_blank" rel="noopener noreferrer">CC BY-NC-SA 4.0</a>。署名后可进行非商业分享与改作；公开衍生素材时，须注明修改内容并采用同一许可。项目名称、Logo 与作者标识不授予商标权，不得冒充官方版本或造成由 Sui 官方发布与认可的误认。</p>
         </div>
         <div class="cp-group">
           <div class="cp-group-name">授权范围</div>
@@ -2912,6 +2960,7 @@ i would like the room to be enough.
 <script src="assets/js/provider-directory.js"></script>
 <script src="assets/js/context-snapshot.js"></script>
 <script src="assets/js/social.js"></script>
+<script src="assets/js/api-onboarding.js"></script>
 <script src="assets/js/communication/letters.js"></script>
 <script src="assets/js/communication/voice.js"></script>
 <script src="assets/js/communication/annotations.js"></script>
@@ -2950,6 +2999,13 @@ i would like the room to be enough.
 <script src="assets/js/middle-brain-judge.js"></script>
 <script src="assets/js/middle-brain-integrity.js"></script>
 <script src="assets/js/middle-brain.js"></script>
+<script src="assets/js/image-models-core.js"></script>
+<script src="assets/js/image-router-core.js"></script>
+<script src="assets/js/image-router-config.js"></script>
+<script src="assets/js/image-router.js"></script>
+<script src="assets/js/image-router-settings.js"></script>
+<script src="assets/js/image-edit-core.js"></script>
+<script src="assets/js/image-edit.js"></script>
 <script src="assets/js/agent-runtime.js"></script>
 <script id="ib-cal-js" src="assets/js/calendar.js"></script>
 <script src="game/game_module.js"></script>

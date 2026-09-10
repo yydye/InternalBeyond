@@ -115,3 +115,26 @@ body.theme-infernal .mi-sub-inf{display:inline}
 .game-cine-desc{font-size:0.76rem;margin-top:8px}
 .glass-card{background:var(--surface-card);border:1px solid var(--border-soft);border-radius:var(--radius-panel);backdrop-filter:blur(16px) saturate(1.2);-webkit-backdrop-filter:blur(16px) saturate(1.2);box-shadow:var(--shadow-card);transition:border-color var(--motion-normal) var(--transition),box-shadow var(--motion-normal) var(--transition),background var(--motion-normal) var(--transition)}
 .glass-card:hover{border-color:var(--border-strong);box-shadow:var(--shadow-panel)}
+
+/* ── P15 · Image Router 配置卡片（Settings → API → Image Router）───────────
+   与 Middle Brain 区块同一视觉语言：glass 卡片 + api-form-group 表单 + mb-collapse 折叠。
+   新增样式只覆盖"路由卡片"本身，不复制既有控件样式。 */
+.ir-card{margin:14px 0;padding:14px 16px;border:1px solid var(--border-soft);border-radius:var(--radius-panel);background:var(--surface-card)}
+.ir-card-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+.ir-card-title{font-family:'Raleway',sans-serif;font-size:.82rem;letter-spacing:.14em;text-transform:uppercase;color:var(--content-primary);opacity:.9}
+.ir-card-state{font-size:.74rem;line-height:1.4;padding:3px 10px;border-radius:999px;border:1px solid var(--border-soft);background:var(--glass-bg);color:var(--text-muted);max-width:min(100%,46ch);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ir-card-state.is-on{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 45%,transparent)}
+.ir-card-state.is-bad{color:#e57373;border-color:rgba(220,100,100,.35)}
+.ir-card-state.is-off{opacity:.6}
+.ir-card-switch{margin-left:auto;flex:0 0 auto}
+.ir-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:0 16px}
+.ir-select-row{display:flex;align-items:center;gap:8px}
+.ir-select-row select{flex:1 1 auto;min-width:0}
+.ir-new{flex:0 0 auto;padding:11px 14px;font-size:.82rem;white-space:nowrap}
+.ir-adv{margin-top:6px;border-top:1px dashed var(--border-soft);padding-top:10px}
+.ir-adv>summary{cursor:pointer;font-size:.8rem;color:var(--text-muted);letter-spacing:.02em;margin-bottom:10px}
+.ir-adv>summary:hover{color:var(--accent)}
+.ir-route-line{margin-top:10px;padding-top:10px;border-top:1px solid var(--border-soft);font-size:.78rem;line-height:1.7;color:var(--text-muted);word-break:break-word}
+.ir-line-k{color:var(--content-primary);opacity:.9;letter-spacing:.02em}
+.ir-line-dim{opacity:.7}
+@media (max-width:560px){.ir-select-row{flex-wrap:wrap}.ir-new{width:100%}}

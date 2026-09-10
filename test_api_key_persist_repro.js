@@ -61,6 +61,18 @@ async function waitFor(cdp, expression, timeoutMs = 15000) { const end = Date.no
 
 function freePort() { return new Promise((resolve, reject) => { const server = net.createServer(); server.unref(); server.on('error', reject); server.listen(0, '127.0.0.1', () => { const port = server.address().port; server.close(e => e ? reject(e) : resolve(port)); }); }); }
 
+/* reload 后必须确认“新文档”真的装载完成。
+   只轮询 `typeof window.loadApiConfigs === 'function'` 是不够的：reload 尚未提交时，
+   旧文档同样满足该条件，waitFor 会立刻返回，随后 evaluate 落进还没有执行 social.js 的新文档，
+   于是抛出 ReferenceError: loadApiConfigs is not defined（曾经的 P1 假失败）。
+   用一次性标记区分文档代次：旧文档带标记 → 条件不成立；新文档无标记且全局已就绪 → 通过。 */
+async function reloadAndWaitApp(cdp) {
+  await evaluate(cdp, "window.__ibTestDocGen = (window.__ibTestDocGen || 0) + 1;");
+  await cdp.send('Page.reload', { ignoreCache: true });
+  const ok = await waitFor(cdp, "typeof window.__ibTestDocGen === 'undefined' && typeof window.IB === 'object' && typeof window.loadApiConfigs === 'function'", 30000);
+  if (!ok) throw new Error('reload 后新文档未完成装载（IB / loadApiConfigs 未就绪）');
+}
+
 async function main() {
   const chrome = chromePath();
   if (!chrome) { console.error('unavailable: 未找到 Chrome/Edge'); process.exit(2); }
@@ -98,8 +110,7 @@ async function main() {
     const p1fb = await evaluate(cdp, "(function(){ try{ var raw=localStorage.getItem(API_CONFIG_FALLBACK_KEY); var arr=JSON.parse(raw||'[]'); var c=arr.find(function(a){return a.id==='audit_1'}); return !!c && c.apiKey==='" + TEST_KEY + "'; }catch(e){ return false; } })()");
     check('P1.fallbackMirrorStoresKey', p1fb);
 
-    await cdp.send('Page.reload', { ignoreCache: true });
-    await waitFor(cdp, "typeof window.loadApiConfigs === 'function' && typeof window.apiConfigs !== 'undefined'", 25000);
+    await reloadAndWaitApp(cdp);
     await evaluate(cdp, "loadApiConfigs()");
     const p1reload = await evaluate(cdp, "\n(function(){ try{ var all=apiConfigs || []; var c=all.find(function(a){return a.id==='audit_1'}); return c ? { found:true, apiKey: c.apiKey || '' } : { found:false }; }catch(e){ return { found:false, err:String(e&&e.message||e) }; } })()");
     check('P1.reloadKeepsKey', p1reload && p1reload.found === true && p1reload.apiKey === TEST_KEY, JSON.stringify(p1reload));

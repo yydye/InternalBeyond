@@ -101,8 +101,10 @@ const api = http.createServer(async (req, res) => {
     check('A2.noWindowCompatAlias', await evaluate(cdp, `(function(){return typeof window.middleBrainExecute==='undefined'})()`));
     check('A3.keyShape', await evaluate(cdp, `(function(){
       var k=Object.keys(IB.middleBrain);
-      return k.length===45 && k[k.indexOf('middleBrainCompressPipeline')+1]==='middleBrainExecute'
-        && typeof IB.middleBrain.middleBrainFinalizeReply==='function';
+      /* 45 = P11-2 之后的门面 key 数；P12 追加 2 个 Image Router 决策键 → 47 */
+      return k.length===47 && k[k.indexOf('middleBrainCompressPipeline')+1]==='middleBrainExecute'
+        && typeof IB.middleBrain.middleBrainFinalizeReply==='function'
+        && typeof IB.middleBrain.middleBrainImageMode==='function';
     })()`), await evaluate(cdp, `(function(){return Object.keys(IB.middleBrain).length})()`));
     check('A4.layerContractsNotOnFacade', await evaluate(cdp, `(function(){
       return !('config' in IB.middleBrain)&&!('policy' in IB.middleBrain)&&!('astra' in IB.middleBrain)&&!('judge' in IB.middleBrain)&&!('__middleBrainContracts' in IB.middleBrain);
@@ -113,8 +115,8 @@ const api = http.createServer(async (req, res) => {
       return typeof window.middleBrainCompressPipeline==='function' && typeof window.saveMiddleBrainConfig==='function' && typeof window.middleBrainReady==='function';
     })()`));
     /* 门面 key 与同名 window 兼容符号必须同一对象（identity 不变）；没有 window 别名的只能是
-       P11-1C 执行缝 + P11-2 生成后执行缝与 integrity 契约 + 2 个历史 facade-only 常量
-       ——多一个少一个都失败。 */
+       P11-1C 执行缝 + P11-2 生成后执行缝与 integrity 契约 + P12 Image Router 决策键
+       + 2 个历史 facade-only 常量 ——多一个少一个都失败。 */
     check('A7.compatIdentityPreserved', await evaluate(cdp, `(function(){
       var bad=[],facadeOnly=[];Object.keys(IB.middleBrain).forEach(function(k){
         if(!(k in window)){facadeOnly.push(k);return;}
@@ -123,7 +125,7 @@ const api = http.createServer(async (req, res) => {
       window.__seamIdentityBad=bad;window.__seamFacadeOnly=facadeOnly;return bad.length===0;
     })()`), await evaluate(cdp, `(function(){return JSON.stringify(window.__seamIdentityBad||[])})()`));
     check('A8.facadeOnlySetStable', await evaluate(cdp, `(function(){
-      return JSON.stringify((window.__seamFacadeOnly||[]).slice().sort())===JSON.stringify(['MB_ASTRA_TIMEOUT_MS','MB_CI_SCHEMA','MB_CI_TIMEOUT_MS','MB_CTX_DEFAULT_BUDGET','_mbCiGate','_mbCiVisibleText','_mbParseCiJson','middleBrainCharacterIntegrity','middleBrainCharacterIntegrityReset','middleBrainCharacterIntegrityTelemetry','middleBrainExecute','middleBrainFinalizeReply','normalizeMiddleBrainIntegritySensitivity']);
+      return JSON.stringify((window.__seamFacadeOnly||[]).slice().sort())===JSON.stringify(['MB_ASTRA_TIMEOUT_MS','MB_CI_SCHEMA','MB_CI_TIMEOUT_MS','MB_CTX_DEFAULT_BUDGET','_mbCiGate','_mbCiVisibleText','_mbParseCiJson','middleBrainCharacterIntegrity','middleBrainCharacterIntegrityReset','middleBrainCharacterIntegrityTelemetry','middleBrainExecute','middleBrainFinalizeReply','middleBrainImageMode','normalizeMiddleBrainImageMode','normalizeMiddleBrainIntegritySensitivity']);
     })()`), await evaluate(cdp, `(function(){return JSON.stringify(window.__seamFacadeOnly||[])})()`));
 
     /* ── B. 执行语义 ── */

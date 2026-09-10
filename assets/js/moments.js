@@ -723,7 +723,18 @@ function _momentsShrinkDataUrl(dataUrl,maxPx,quality){
     }catch(e){resolve(String(dataUrl))}
   })
 }
-async function _momentsMakeImage(cfg,parsed,force){
+/* ── 图片请求统一入口：经 Image Router（策略 + 全局/模型/角色并发 + 优先级队列）──
+   Router 内部调用同一套 _wsExecImageGen 执行器；Router 未加载时明确失败，
+   绝不回落到绕过 Scheduler 的旁路（后台任务必须受统一资源控制）。 */
+async function _momentsRouteImage(cfg,prompt,size,ictx){
+  const R=(typeof window!=='undefined'&&window.IB&&window.IB.imageRouter&&window.IB.imageRouter.available)?window.IB.imageRouter:null;
+  if(!R)return{ok:false,code:'IMAGE_NO_ROUTER',reason:'Image Router 未加载'};
+  return R.routeImageRequest(Object.assign({
+    source:'ai_moments',characterId:(cfg&&cfg.id)||'',cfg:cfg,prompt:prompt,size:size,
+    operation:'generate',userInitiated:false,background:true
+  },ictx||{}));
+}
+async function _momentsMakeImage(cfg,parsed,force,ictx){
   try{
     /* wantImage 是模型建议，不是强制；不满足建议/能力/概率门任一条件都按"不配图"处理。
        force=true（仅测试/手动"立即发布"）时跳过模型 wantImage 判断与能力/概率门，
@@ -734,11 +745,11 @@ async function _momentsMakeImage(cfg,parsed,force){
     if(await _momentsRecentImagesBurst(cfg&&cfg.id))return[];
     _obsRec('image_attempt',{actor:cfg&&cfg.id});
     const imagePrompt=String(parsed.imagePrompt||'').trim()||('A casual smartphone photo, natural light, everyday life: '+String(parsed.content||'').slice(0,160));
-    const gen=await _wsExecImageGen(cfg,imagePrompt,'1024x1024');
+    const gen=await _momentsRouteImage(cfg,imagePrompt,'1024x1024',ictx);
     if(!(gen&&gen.ok&&gen.dataUrl)){
-      /* 图片失败绝不拖垮发文：记录失败观测（含错误分类），调用方继续纯文字发布 */
-      _obsRec('image_generation_failed',{actor:cfg&&cfg.id,reason_class:gen&&gen.reason?String(gen.reason).slice(0,60):'unknown'});
-      console.warn('[Moments] 图片生成失败（保留文字动态）：'+String(gen&&gen.reason||'').slice(0,160));
+      /* 图片失败绝不拖垮发文：记录失败观测（错误码 + 可读原因都保留，便于定位与聚合） */
+      _obsRec('image_generation_failed',{actor:cfg&&cfg.id,reason_class:gen&&(gen.code||gen.reason)?String((gen.code?gen.code+':':'')+(gen.reason||'')).slice(0,60):'unknown'});
+      console.warn('[Moments] 图片生成失败（保留文字动态）：'+String((gen&&(gen.code||gen.reason))||'').slice(0,160));
       return[]
     }
     const shrunk=await _momentsShrinkDataUrl(gen.dataUrl,1024,0.85);
@@ -892,7 +903,10 @@ async function generateRoleMoment(roleId,opts){
       /* 图文增强：wantImage 只是模型建议；能力/概率允许 → 独立 Image Provider 生图+压缩；失败保留纯文字（图片非硬依赖）。
          opts.forceImage=true 仅测试/手动调用时绕过概率门与 wantImage 判断；
          opts.noImage=true 则完全跳过配图（纯文字手动发布）。 */
-      const images=(opts.noImage===true)?[]:await _momentsMakeImage(cfg,parsed,opts.forceImage===true);
+      const images=(opts.noImage===true)?[]:await _momentsMakeImage(cfg,parsed,opts.forceImage===true,
+        (opts.trigger==='manual')
+          ?{source:'moments',userInitiated:true,background:false}   /* 用户手动发布 → P1 */
+          :{source:'ai_moments',userInitiated:false,background:true}/* AI 自主发布 → P3 */);
       const res=await createMoment({roleId:roleId,content:parsed.content,images:images,visibility:parsed.visibility,visibleRoleIds:parsed.visibleRoleIds,source:'proactive',motive:parsed.motive});
       if(!res.ok)return res;
       _obsRec('post',{actor:roleId,origin:'local',vis:parsed.visibility,trigger:opts.trigger||'schedule',motive:parsed.motive,wantImage:parsed.wantImage===true,imageGenerated:(images&&images.length>0)});
@@ -1689,7 +1703,7 @@ async function _momentsIngestEvent(ev,userId){
     if(wantImage&&imagePrompt){
       try{
         const imgCfg=_momentsCfg(moment.roleId);/* 独立 Image Provider 配置随角色 API Config（imageGen/imageGenModel），与文字模型解耦 */
-        if(imgCfg&&imgCfg.imageGen===true){images=await _momentsMakeImage(imgCfg,Object.assign({},moment,{wantImage:true,imagePrompt:imagePrompt}))}
+        if(imgCfg&&imgCfg.imageGen===true){images=await _momentsMakeImage(imgCfg,Object.assign({},moment,{wantImage:true,imagePrompt:imagePrompt}),false,{source:'ai_moments',userInitiated:false,background:true})}
       }catch(e){/* 任何图片异常都不影响 Moment 发布 */
         _obsRec('image_generation_failed',{actor:moment.roleId,reason_class:String(e&&e.message||e).slice(0,60)});
       }
@@ -2303,6 +2317,7 @@ NS.expose('moments',{
   _momentsPullCompanionEvents:_momentsPullCompanionEvents,
   _momentsIngestEvent:_momentsIngestEvent,
   _momentsMakeImage:_momentsMakeImage,
+  _momentsShrinkDataUrl:_momentsShrinkDataUrl,/* 数据 URL 缩放：Image Edit 参考图超限时复用（不复制压缩算法） */
   getMomentsContext:getMomentsContext,
   _momentsTimeLabel:_momentsTimeLabel,
   loadMomentsPage:loadMomentsPage,

@@ -39,27 +39,41 @@
     { id: 'done', title: '设置完成' }
   ];
 
-  /* ── 呈现层：卡片顺序 + 一句话说明 ──
-     这里只决定「怎么摆、怎么称呼」，绝不携带 provider 的 endpoint / model /
-     format / vision / streaming —— 那些一律取 provider-directory.js。 */
-  var PROVIDER_ORDER = ['openai', 'anthropic', 'gemini', 'deepseek', 'moonshot', 'glm', 'qwen', 'doubao', 'mimo', 'minimax', 'grok', 'mistral', 'yi', 'baichuan', 'custom'];
-  var PROVIDER_HINT = {
-    openai: 'OpenAI 官方',
-    anthropic: 'Anthropic 官方',
-    gemini: 'Google 官方',
-    deepseek: 'DeepSeek 官方',
-    moonshot: '月之暗面 Kimi',
-    glm: '智谱 AI',
-    qwen: '阿里云',
-    doubao: '字节跳动',
-    mimo: '小米',
-    minimax: 'MiniMax',
-    grok: 'xAI 官方',
-    mistral: 'Mistral 官方',
-    yi: '零一万物',
-    baichuan: '百川智能',
-    custom: '自己填写接口地址'
-  };
+  /* ── 呈现层：顺序 + 一句话说明全部取 provider-directory.js（P17） ──
+     本文件**不**维护第二份 provider 顺序 / 文案表：展示集合、顺序、说明一律来自
+     唯一 canonical 目录的 presentation metadata（setupProviderList / providerHint），
+     更不携带 provider 的 endpoint / model / format / vision / streaming。 */
+  function presentationDir() {
+    try { return window.PROVIDERS_DIR || null; } catch (e) { return null; }
+  }
+
+  /* 向导要展示的 provider id：**目录说了算**（含 showInSetup=false 的隐藏语义，
+     以及「没有呈现条目也出现」的缺省语义都由目录实现）。只有目录没提供该读取面
+     （旧版 / 加载失败）时才退到 PROVIDERS 键序。 */
+  function setupProviderIds() {
+    var d = presentationDir(), all = providers(), seen = {}, out = [], ids = null, i, keys, trusted = false;
+    if (d && typeof d.setupProviderList === 'function') {
+      try { ids = d.setupProviderList(); trusted = true; } catch (e) { ids = null; trusted = false; }
+    }
+    if (!trusted) {
+      keys = Object.keys(all);
+      ids = keys.filter(function (p) { return p !== 'custom'; });
+      if (all.custom) ids.push('custom');
+    }
+    for (i = 0; i < ids.length; i++) {
+      if (seen[ids[i]] || !all[ids[i]]) continue;
+      seen[ids[i]] = true; out.push(ids[i]);
+    }
+    return out;
+  }
+
+  function providerHintOf(p) {
+    var d = presentationDir();
+    if (d && typeof d.providerHint === 'function') {
+      try { var h = d.providerHint(p); if (h) return h; } catch (e) { }
+    }
+    return '';
+  }
 
   /* ── 运行状态（内存；只有非敏感字段会进草稿） ── */
   var S = null;
@@ -450,18 +464,14 @@
     body.appendChild(el('p', null, '先选一个你准备使用的 AI 服务。列表来自 InternalBeyond 内置的服务商目录。'));
     var grid = el('div', 'ib-setup-grid');
     var all = providers();
-    var seen = {};
-    var order = PROVIDER_ORDER.filter(function (p) { return !!all[p]; });
-    Object.keys(all).forEach(function (p) { if (order.indexOf(p) === -1) order.push(p); });
+    var order = setupProviderIds();
     order.forEach(function (p) {
-      if (seen[p]) return;
-      seen[p] = true;
       var meta = all[p] || {};
       var btn = el('button', 'ib-setup-provider' + (S.provider === p ? ' is-on' : ''));
       btn.type = 'button';
       btn.setAttribute('data-provider', p);
       btn.appendChild(el('span', 'ib-setup-provider-name', meta.name || p));
-      var hint = PROVIDER_HINT[p];
+      var hint = providerHintOf(p);
       if (hint) btn.appendChild(el('span', 'ib-setup-provider-hint', hint));
       btn.onclick = function () {
         readFields();
@@ -481,6 +491,19 @@
 
   function renderKey(body) {
     body.appendChild(el('p', null, '把 ' + providerName(S.provider) + ' 的 API Key 粘贴到这里。'));
+    /* P16：还不知道去哪拿 Key 的用户，直接进「API 获取向导」（数据来自 provider-directory） */
+    var help = el('button', 'ib-setup-link', '还没有 Key？点这里带你获取');
+    help.type = 'button';
+    help.id = 'ib-setup-keyhelp';
+    help.onclick = function () {
+      readFields();
+      try {
+        if (window.IBOnboarding && typeof window.IBOnboarding.openWizard === 'function') window.IBOnboarding.openWizard();
+      } catch (e) { }
+    };
+    var helpP = el('p', 'ib-setup-hint');
+    helpP.appendChild(help);
+    body.appendChild(helpP);
     var row = el('div', 'ib-setup-keyrow');
     var input = el('input', 'ib-setup-input');
     input.id = 'ib-setup-key';
@@ -1165,7 +1188,8 @@
     __test: {
       STEPS: STEPS,
       TOTAL_STEPS: TOTAL_STEPS,
-      PROVIDER_ORDER: PROVIDER_ORDER,
+      setupProviderIds: setupProviderIds,
+      providerHintOf: providerHintOf,
       DONE_KEY: DONE_KEY,
       DRAFT_KEY: DRAFT_KEY,
       TEST_CFG_ID: TEST_CFG_ID,

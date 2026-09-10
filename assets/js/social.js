@@ -85,6 +85,23 @@ function _syncVisionUI(){
   }
 }
 
+/* P19 · API 编辑器：按当前 model policy 同步 Temperature 控件可用性。
+   不支持采样参数的 model（Claude Sonnet 5 / Opus 4.7+）→ 禁用滑块并说明「不会发送」，
+   但**不删除用户已保存的温度值**（disabled 时 .value 仍保留，保存链照旧写回；
+   切回支持采样的模型后自动恢复可用）。判定唯一来源 = PROVIDERS_DIR.MODEL_POLICIES。 */
+function _syncSamplingUI(){
+  const el=document.getElementById('api-temperature');if(!el)return;
+  const hintEl=document.getElementById('api-temp-hint');
+  const model=String((document.getElementById('api-model')||{}).value||'').trim();
+  let supported=true;
+  try{const _d=(typeof window!=='undefined')?window.PROVIDERS_DIR:null;if(_d&&typeof _d.modelSupportsSamplingParameters==='function')supported=_d.modelSupportsSamplingParameters(model)!==false;}catch(e){}
+  el.disabled=!supported;
+  if(hintEl){
+    hintEl.style.display=supported?'none':'block';
+    if(!supported)hintEl.textContent='当前模型不接受自定义 Temperature，此设置不会发送给 API；你的数值已保留，切回支持该参数的服务后自动恢复生效。';
+  }
+}
+
 /* Voice UI helpers */
 /* Voice Provider 目录：与 bridge/tts.js 的 TTS_PROVIDER_REGISTRY 字段对齐（label/capabilities/models/cloneModels/designModels）。
    B2 起 MiMo clone=true（mimo-v2.5-tts-voiceclone，参考音频 data URI）；C 起 design=true
@@ -445,12 +462,127 @@ async function testCharacterVoice(){
 const _chatSendingFor=new Set();
 /* 全量渲染：不做分批、不做 content-visibility 跳过，打开即渲染全部消息 */
 
+/* P16 · 预填来源标记：只有「由目录自动填入」的字段才允许被再次预填覆盖；
+   用户一旦手动输入就摘掉标记，一键预填不再动它（见 api-onboarding.js 的 anyEdited）。
+   这里只加标记，不改变任何既有填值行为。 */
+function _ibMarkAutoFilled(id,on){
+  try{
+    var n=document.getElementById(id);
+    if(!n||!n.dataset)return;
+    if(on){
+      n.dataset.ibAutoFilled='1';
+      if(!n._ibAutoBound){
+        n._ibAutoBound=true;
+        n.addEventListener('input',function(){try{n.dataset.ibAutoFilled=''}catch(e){}});
+      }
+    }else{n.dataset.ibAutoFilled=''}
+  }catch(e){}
+}
+function _ibRefreshKeyHelp(){
+  try{
+    var sel=document.getElementById('api-provider');
+    if(window.IBOnboarding&&typeof IBOnboarding.renderKeyHelp==='function')IBOnboarding.renderKeyHelp(sel?sel.value:'');
+  }catch(e){}
+}
+/* P17 · 兼容 / 自定义服务的说明位（内容由 api-onboarding.js 依目录 metadata 决定）。 */
+function _ibRefreshProviderNote(){
+  try{
+    var sel=document.getElementById('api-provider');
+    if(window.IBOnboarding&&typeof IBOnboarding.renderProviderNote==='function')IBOnboarding.renderProviderNote(sel?sel.value:'');
+  }catch(e){}
+}
+
+/* ══ P17 · API 编辑器「服务商」下拉由唯一 provider 目录构建 ══════════════
+   集合 / 顺序 / 分组 / 文案全部来自 provider-directory.js 的 presentation metadata：
+   本文件**不**维护第二份 provider 列表、顺序或说明。HTML 里只留一个最小 fallback，
+   目录不可用时保留它（兼容模式仍可手动填写），不抛错、不清空。 */
+function _ibDir(){
+  try{return window.PROVIDERS_DIR||null}catch(e){return null}
+}
+function _ibProviderPickerIds(){
+  var d=_ibDir();
+  if(d&&typeof d.providerPickerList==='function'){
+    /* 目录说了算：即使返回空列表（全部 showInPicker=false）也照做，不自行补回 */
+    try{var l=d.providerPickerList();if(l)return l}catch(e){}
+  }
+  return Object.keys(PROVIDERS);
+}
+function _ibProviderLabel(id){
+  var d=_ibDir();
+  if(d&&typeof d.providerDisplayName==='function'){
+    try{var n=d.providerDisplayName(id);if(n)return n}catch(e){}
+  }
+  var m=PROVIDERS[id];
+  return (m&&m.name)||String(id);
+}
+function _ibProviderGroups(){
+  var d=_ibDir();
+  if(d&&typeof d.pickerGroups==='function'){
+    try{var g=d.pickerGroups();if(g&&g.length)return g}catch(e){}
+  }
+  return [{group:'all',label:'',providers:_ibProviderPickerIds()}];
+}
+/* 幂等重建（目录变化后再次调用安全）；保留当前选中值。
+   先算好要加多少项，再清空——目录不可用时保留 HTML fallback。 */
+function _ibSyncProviderOptions(){
+  var sel=document.getElementById('api-provider');
+  if(!sel)return false;
+  var groups=_ibProviderGroups(),total=0,i,j;
+  for(i=0;i<groups.length;i++)total+=(groups[i].providers||[]).length;
+  if(!total)return false;                       /* 目录不可用：保留 HTML fallback */
+  var cur=sel.value||'';
+  sel.innerHTML='';
+  for(i=0;i<groups.length;i++){
+    var g=groups[i],ids=(g.providers||[]);
+    if(!ids.length)continue;
+    var host=sel;
+    if(g.label){host=document.createElement('optgroup');host.label=g.label;sel.appendChild(host)}
+    for(j=0;j<ids.length;j++){
+      var o=document.createElement('option');
+      o.value=ids[j];o.textContent=_ibProviderLabel(ids[j]);
+      host.appendChild(o);
+    }
+  }
+  sel.dataset.ibProviders='1';
+  /* 保留原选中值；若是目录里没有的历史值，_ibSetProviderSelection 会补回占位选项 */
+  if(cur)_ibSetProviderSelection(cur);
+  return true;
+}
+function _ibHasProviderOption(sel,val){
+  if(!sel||!sel.options)return false;
+  for(var i=0;i<sel.options.length;i++)if(sel.options[i].value===val)return true;
+  return false;
+}
+/* 历史默认（新建 API 预选）仍是 anthropic；目录里没有就退到列表第一项。 */
+function _ibDefaultProvider(){
+  var ids=_ibProviderPickerIds();
+  if(ids.indexOf('anthropic')!==-1)return 'anthropic';
+  return ids[0]||'';
+}
+/* 选中一个 provider。目录里没有的服务（历史数据 / 未知 legacy provider）补一个占位
+   选项，避免保存时把用户的 provider 静默清空。 */
+function _ibSetProviderSelection(id){
+  var sel=document.getElementById('api-provider');
+  if(!sel)return '';
+  var want=String(id==null?'':id);
+  if(!want)want=_ibDefaultProvider();
+  if(want&&!_ibHasProviderOption(sel,want)){
+    var o=document.createElement('option');
+    o.value=want;o.textContent='未知服务商（'+want+'）';
+    sel.appendChild(o);
+  }
+  sel.value=want;
+  return sel.value;
+}
+
 function onProviderChange(){
   const p=document.getElementById('api-provider').value;
   const cfg=PROVIDERS[p];
   if(cfg){
     document.getElementById('api-endpoint').value=cfg.endpoint;
     document.getElementById('api-model').value=cfg.model;
+    _ibMarkAutoFilled('api-endpoint',!!cfg.endpoint);
+    _ibMarkAutoFilled('api-model',!!cfg.model);
     var ve=document.getElementById('api-vision-toggle');
     if(ve)ve.checked=!!cfg.vision;
     var se=document.getElementById('api-streaming-toggle');
@@ -458,7 +590,10 @@ function onProviderChange(){
     _showThinkingTouched=false;
     _syncShowThinkingDefault();
     _syncVisionUI();
+    _syncSamplingUI();
   }
+  _ibRefreshKeyHelp();
+  _ibRefreshProviderNote();
 }
 
 /* MULTI-API MANAGEMENT */
@@ -719,7 +854,7 @@ function addNewApi(){
   document.getElementById('api-editor').style.display='block';
   var _dw0=document.getElementById('api-daywrap');if(_dw0)_dw0.style.display='none';
   document.getElementById('api-ai-name').value='';
-  document.getElementById('api-provider').value='anthropic';
+  _ibSetProviderSelection(_ibDefaultProvider());   /* P17：选项由目录构建，默认值取目录 */
   onProviderChange();
   document.getElementById('api-key').value='';
   document.getElementById('api-system').value='';
@@ -740,6 +875,7 @@ function addNewApi(){
   var wsEl=document.getElementById('api-websearch-toggle');
   if(wsEl)wsEl.checked=false;
   _syncVisionUI();
+  _syncSamplingUI();
   var _igT=document.getElementById('api-imagegen-toggle');if(_igT)_igT.checked=false;
   var _igM=document.getElementById('api-imagegen-model');if(_igM)_igM.value='';
   var amT=document.getElementById('api-automem-toggle');if(amT)amT.checked=false;
@@ -919,7 +1055,8 @@ function editApi(id){
   var _dc1=document.getElementById('api-daycaret');if(_dc1)_dc1.classList.remove('open');
   document.getElementById('api-ai-name').value=cfg.nickname||'';
   document.getElementById('api-relationship').value=cfg.relationship||'';
-  document.getElementById('api-provider').value=cfg.provider||'anthropic';
+  /* P17：按目录选中既有 provider；历史 / 未知 provider 补占位选项，绝不静默清空。 */
+  _ibSetProviderSelection(cfg.provider||_ibDefaultProvider());
   document.getElementById('api-key').value=cfg.apiKey||'';
   document.getElementById('api-model').value=cfg.model||'';
   document.getElementById('api-endpoint').value=cfg.endpoint||'';
@@ -933,7 +1070,13 @@ function editApi(id){
   if(visionEl)visionEl.checked=cfg.vision!==undefined?!!cfg.vision:!!(PROVIDERS[cfg.provider]&&PROVIDERS[cfg.provider].vision);
   var streamEl=document.getElementById('api-streaming-toggle');
   if(streamEl)streamEl.checked=cfg.streaming!==undefined?!!cfg.streaming:!!(PROVIDERS[cfg.provider]&&PROVIDERS[cfg.provider].streaming);
+  /* P16：编辑既有配置时，endpoint/model 是用户数据而非「自动填入」，不得被一键预填覆盖 */
+  _ibMarkAutoFilled('api-endpoint',false);
+  _ibMarkAutoFilled('api-model',false);
+  _ibRefreshKeyHelp();
+  _ibRefreshProviderNote();
   _syncVisionUI();
+  _syncSamplingUI();
   var _amT=document.getElementById('api-automem-toggle');if(_amT)_amT.checked=!!cfg.autoMem;
   var _amM=document.getElementById('api-automem-mode');if(_amM)_amM.value=cfg.autoMemMode||'hybrid';
   var _amB=document.getElementById('api-automem-budget');if(_amB)_amB.value=cfg.autoMemBudget||1200;
@@ -1120,6 +1263,8 @@ async function saveCurrentApi(btn){
     try{if(activeFriendId)await loadChatMessages()}catch(e){}
     try{if(typeof _activeSyncAllBackground==='function'&&_activeCompanionOnline){_activeLastContextSync=0;await _activeSyncAllBackground()}}catch(e){console.warn('[Active Messages] API update sync failed',e)}
     document.getElementById('api-editor').style.display='none';
+    /* Image Router 设置里的"API Config"下拉必须立刻看到刚保存的配置（同一份 apiConfigs 数据） */
+    try{if(typeof window.loadImageRouterSettingsUI==='function')await window.loadImageRouterSettingsUI()}catch(e){}
     toast(_apiSaveNotice(persisted));
   }catch(e){
     console.error('API config save failed',e);
@@ -1306,6 +1451,8 @@ async function confirmApiRestore(){
 }
 
 async function loadApiSettingsUI(){_apiArchView=false;_apiArchToggleUI();renderApiList();updateChatCount();try{renderTokenDash()}catch(e){}loadReadingLimitsUI();loadVoiceTransUI();loadMemorySettingsUI();loadSummarySettingsUI();loadOutputSettings();updateDangerStorageInfo();
+  /* Image Router 配置区：与 API 配置列表同页，进来即刷新（绑定下拉 / 当前路由状态） */
+  try{if(typeof window.loadImageRouterSettingsUI==='function')await window.loadImageRouterSettingsUI()}catch(e){}
   /* Sync memory budget hint in the Memory page dashboard */
   getMemorySettings().then(function(s){var hint=document.getElementById('mem-deck-tok-hint');if(hint)hint.textContent='每次注入上限约 '+s.budget+' 字符'})
 }
@@ -2145,6 +2292,7 @@ window._ibApiReady=_ibApiReady;
 window._modelThinkingDefault=_modelThinkingDefault;
 window._resolveShowThinking=_resolveShowThinking;
 window._syncShowThinkingDefault=_syncShowThinkingDefault;
+window._syncSamplingUI=_syncSamplingUI;
 window.DEEPSEEK_NATIVE_VISION_MODEL=DEEPSEEK_NATIVE_VISION_MODEL;
 window._isDeepSeekNativeVisionModel=_isDeepSeekNativeVisionModel;
 window._syncVisionUI=_syncVisionUI;
@@ -2455,6 +2603,7 @@ NS.expose('social', {
   DEEPSEEK_NATIVE_VISION_MODEL: DEEPSEEK_NATIVE_VISION_MODEL,
   _isDeepSeekNativeVisionModel: _isDeepSeekNativeVisionModel,
   _syncVisionUI: _syncVisionUI,
+  _syncSamplingUI: _syncSamplingUI,
   apiConfigs: apiConfigs,
   archivedConfigs: archivedConfigs,
   editingApiId: editingApiId,
@@ -2484,4 +2633,8 @@ NS.expose('social', {
   _calChatDays: _calChatDays,
   _calEarliest: _calEarliest,
 });
+
+/* P17 · 启动时把「服务商」下拉按唯一目录建好（脚本在 body 末尾，DOM 已就绪）。
+   幂等；目录不可用时保留 HTML 里的最小 fallback，不抛错。 */
+try{_ibSyncProviderOptions();}catch(e){}
 })(window.IB || (window.IB = {}));

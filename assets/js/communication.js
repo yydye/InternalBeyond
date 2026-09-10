@@ -160,6 +160,28 @@ function _providerFormat(cfg){
   }catch(e){}
   return (cfg&&PROVIDERS&&PROVIDERS[cfg.provider]&&PROVIDERS[cfg.provider].format)||'openai';
 }
+/* P18 · model policy：该 model 是否接受 temperature / top_p / top_k。
+   判定唯一实现 = provider-directory.js 的 MODEL_POLICIES；这里只委托。
+   拿不到目录（旧宿主 / 目录加载失败）时返回 true = 照发，与 P18 之前逐位一致。
+   只对已取证的 model id 生效；未知 id 不改变任何行为。 */
+function _modelSupportsSampling(cfg){
+  try{
+    var _dir=(typeof window!=='undefined')?window.PROVIDERS_DIR:null;
+    if(_dir&&typeof _dir.modelSupportsSamplingParameters==='function')return _dir.modelSupportsSamplingParameters(cfg&&cfg.model)!==false;
+  }catch(e){}
+  return true;
+}
+/* P20 · Anthropic wire 归一：唯一真源 = ib-model-core.js（Browser 与 Node 走同一函数）。
+   本模块只转调，**禁止**在 communication.js 里再写第二份 system/messages 归一
+   （P20 之前这里用 `_msgs.find(role==='system')` + filter 就地归一，与 Node 不一致）。
+   核心缺失时明确报错（不静默降级成另一套语义）。 */
+function _ibAnthropicWire(prompt){
+  var core=(typeof window!=='undefined')?window.IBModelCore:null;
+  if(!core||typeof core.normalizeAnthropicMessages!=='function'){
+    throw new Error('Anthropic 请求归一不可用：IBModelCore.normalizeAnthropicMessages 未加载');
+  }
+  return core.normalizeAnthropicMessages(prompt);
+}
 async function callApi(cfg,userMsg){
   const format=_providerFormat(cfg);
   let url=cfg.endpoint;
@@ -170,9 +192,11 @@ async function callApi(cfg,userMsg){
     headers['anthropic-version']='2023-06-01';
     headers['anthropic-dangerous-direct-browser-access']='true';
     _ccBeta(headers,cfg);
-    const ab={model:cfg.model,max_tokens:4096,messages:[{role:'user',content:userMsg}]};
-    if(cfg.systemPrompt){if(cfg.promptCache!==false){ab.system=[{type:'text',text:cfg.systemPrompt,cache_control:_ccObj(cfg)}]}else{ab.system=cfg.systemPrompt}}
-    if(cfg.temperature!=null)ab.temperature=cfg.temperature;
+    /* P20：system 归一走 Core（顶层 system 与 messages 里的 system 合并去重） */
+    const _an=_ibAnthropicWire({system:cfg.systemPrompt,messages:[{role:'user',content:userMsg}]});
+    const ab={model:cfg.model,max_tokens:4096,messages:_an.messages.map(m=>({role:m.role,content:m.content}))};
+    if(_an.system){if(cfg.promptCache!==false){ab.system=[{type:'text',text:_an.system,cache_control:_ccObj(cfg)}]}else{ab.system=_an.system}}
+    if(cfg.temperature!=null&&_modelSupportsSampling(cfg))ab.temperature=cfg.temperature;
     body=JSON.stringify(ab);
   }else if(format==='gemini'){
     url=url.replace('{model}',cfg.model)+'?key='+cfg.apiKey;
@@ -414,7 +438,7 @@ function _buildMsgEl(m,isFullscreen,isGroupCont){
       div.appendChild(txt);
     }
     if(m.files&&m.files.length)m.files.forEach(function(f){div.appendChild(_buildFileCard(f))});
-    if(m.images&&m.images.length)m.images.forEach(function(img){var el=document.createElement('img');el.className='chat-bubble-img';el.loading='lazy';el.decoding='async';el.src=img.dataUrl;el.alt=img.name||'image';el.onclick=function(){_viewImageFull(img.dataUrl)};div.appendChild(el)});
+    if(m.images&&m.images.length)m.images.forEach(function(img){var el=document.createElement('img');el.className='chat-bubble-img';el.loading='lazy';el.decoding='async';el.src=img.dataUrl;el.alt=img.name||'image';el.onclick=function(){_viewImageFull(img.dataUrl,img)};div.appendChild(el)});
     if(m.wsSearches||m.memOps)_amAppendExtraCards(div,m.wsSearches||[],m.memOps||[]);
     if(m.calNotes&&window.IBCAL)try{m.calNotes.forEach(function(r){div.appendChild(IBCAL.noteCard(r))})}catch(e){}
     if(m.id){div.appendChild(_msgFavBtn(m));const db=document.createElement('button');db.className='chat-msg-del';db.textContent='✕';db.title='删除此消息';db.onclick=function(ev){ev.stopPropagation();deleteSingleMsg(m.id,div,frag)};div.appendChild(db)}
@@ -437,7 +461,7 @@ function _buildMsgEl(m,isFullscreen,isGroupCont){
       div.textContent=m.content;
     }
     if(m.files&&m.files.length)m.files.forEach(function(f){div.appendChild(_buildFileCard(f))});
-    if(m.images&&m.images.length)m.images.forEach(function(img){var el=document.createElement('img');el.className='chat-bubble-img';el.loading='lazy';el.decoding='async';el.src=img.dataUrl;el.alt=img.name||'image';el.style.maxWidth='180px';el.onclick=function(){_viewImageFull(img.dataUrl)};div.appendChild(el)});
+    if(m.images&&m.images.length)m.images.forEach(function(img){var el=document.createElement('img');el.className='chat-bubble-img';el.loading='lazy';el.decoding='async';el.src=img.dataUrl;el.alt=img.name||'image';el.style.maxWidth='180px';el.onclick=function(){_viewImageFull(img.dataUrl,img)};div.appendChild(el)});
     if(m.wsSearches||m.memOps)_amAppendExtraCards(div,m.wsSearches||[],m.memOps||[]);
     if(m.calNotes&&window.IBCAL)try{m.calNotes.forEach(function(r){div.appendChild(IBCAL.noteCard(r))})}catch(e){}
     if(m.id){div.appendChild(_msgFavBtn(m));const db=document.createElement('button');db.className='chat-msg-del';db.textContent='✕';db.title='删除此消息';db.onclick=function(ev){ev.stopPropagation();deleteSingleMsg(m.id,div,frag)};div.appendChild(db)}
@@ -758,7 +782,10 @@ function renderAttachPreviews(){
   ['chat-full-preview','chat-mini-preview'].forEach(id=>{
     const bar=document.getElementById(id);if(!bar)return;
     bar.innerHTML='';
-    if(_pendingImages.length===0&&_pendingFiles.length===0){bar.classList.remove('has-items');return}
+    /* 图片编辑选中态（Phase 3）：与附件同一排显示"正在编辑这张图片"，复用既有 .chat-preview-item 样式 */
+    let _editChip=false;
+    try{if(window.IB&&IB.imageEdit&&IB.imageEdit.renderSelectionChip)_editChip=!!IB.imageEdit.renderSelectionChip(bar)}catch(e){}
+    if(_pendingImages.length===0&&_pendingFiles.length===0&&!_editChip){bar.classList.remove('has-items');return}
     bar.classList.add('has-items');
     _pendingImages.forEach((img,i)=>{
       const item=document.createElement('div');item.className='chat-preview-item';
@@ -1029,7 +1056,7 @@ function _mkLiveMdCleaner(){
   }
   return{push:push,finish:finish};
 }
-var _WS_OPEN_RE=/<ws_(project|read|read_image|create|edit|run|tool|gen_image|make_docx|make_pdf|make_xlsx)\b([^>]*)>|```file:([^\n]+)\n/gi;
+var _WS_OPEN_RE=/<ws_(project|read|read_image|create|edit|edit_image|run|tool|gen_image|make_docx|make_pdf|make_xlsx)\b([^>]*)>|```file:([^\n]+)\n/gi;
 function _segmentAiText(text){
   text=text||'';
   var segs=[],last=0,m;
@@ -1111,6 +1138,25 @@ function _segmentAiText(text){
       if(giBody2)giOp.prompt=giBody2;
       segs.push({type:'op',op:giOp});
       last=giClose.lastIndex;_WS_OPEN_RE.lastIndex=last;continue;
+    }
+    if(kind==='edit_image'){
+      /* <ws_edit_image path?>正文=修改要求</ws_edit_image>
+         编辑当前会话"最近一张可编辑图片"（或 path 指定的 ICode 图片）。
+         模型**不需要**自己传 base64 / URL / messageId —— 实际图片由 Reference Resolver 解析。 */
+      var eiOp={type:'edit_image',prompt:_wsAttr(attrs,'prompt')||'',path:_wsAttr(attrs,'path')||_wsAttr(attrs,'name')||'',size:_wsAttr(attrs,'size')||'',file:_wsAttr(attrs,'file')||_wsAttr(attrs,'path')||''};
+      if(/\/\s*$/.test(attrs)){segs.push({type:'op',op:eiOp});last=afterOpen;continue}
+      var eiClose=/<\/ws_edit_image\s*>/ig;eiClose.lastIndex=afterOpen;
+      var eim=eiClose.exec(text);
+      if(!eim){/* 截断补救：修改要求可能不完整，标记后由执行层拒绝 */
+        var eiBody=text.slice(afterOpen).trim();
+        if(eiBody)eiOp.prompt=eiBody;
+        eiOp.truncated=true;segs.push({type:'op',op:eiOp});
+        last=text.length;break;
+      }
+      var eiBody2=text.slice(afterOpen,eim.index).trim();
+      if(eiBody2)eiOp.prompt=eiBody2;
+      segs.push({type:'op',op:eiOp});
+      last=eiClose.lastIndex;_WS_OPEN_RE.lastIndex=last;continue;
     }
     if(kind==='tool'){
       /* <ws_tool name args/> —— 自闭合=参数在 args 属性；带正文=正文即 args JSON（参数较长时用） */
@@ -1233,9 +1279,25 @@ function getTextContent(msg){
   return t;
 }
 
-function _viewImageFull(src){
+function _viewImageFull(src,image){
   const ov=document.createElement('div');ov.className='chat-bubble-img-full';
   ov.innerHTML='<img src="'+src+'">';ov.onclick=function(){ov.remove()};
+  /* 图片编辑入口（Phase 3）：选中这张图 → 回到输入框，用户直接说"把背景换成晚上"即可。
+     选中后 <ws_edit_image> / 自然语言续改都优先使用这张图（explicit > attached > latest）。 */
+  try{
+    if(image&&(image.dataUrl||image.base64)&&window.IB&&IB.imageEdit&&IB.imageEdit.available){
+      ov.style.flexDirection='column';ov.style.gap='14px';
+      const btn=document.createElement('button');
+      btn.type='button';btn.className='btn';btn.textContent='编辑这张图';
+      btn.onclick=function(ev){
+        ev.stopPropagation();
+        const r=IB.imageEdit.selectImage(image,{conversationId:(typeof activeFriendId!=='undefined'&&activeFriendId)||''});
+        if(r&&r.ok){ov.remove();if(typeof toast==='function')toast('已选中这张图片，直接说要改哪里就行')}
+        else if(typeof toast==='function')toast((r&&r.reason)||'这张图片无法编辑');
+      };
+      ov.appendChild(btn);
+    }
+  }catch(e){}
   document.body.appendChild(ov)
 }
 
@@ -1775,7 +1837,7 @@ async function sendChatMessage(voiceMsg){
          if(_gmp.ops.length){reply=_gmp.clean;if(amEnabled(cfg))_gMemR=await _execMemOps(_gmp.ops,cfg,selfName)}}
         /* 群聊同样支持工作区：按顺序执行操作，操作者标注为发言成员 */
         var _gws=_parseWsOps(reply),_gwsR=[];
-        if(_gws.ops.length){try{_gwsR=await _execWsOps(_gws.ops,selfName,cfg)}catch(e){}}
+        if(_gws.ops.length){try{_gwsR=await _execWsOps(_gws.ops,selfName,cfg,{source:'chat',friendId:_targetFriend,senderName:selfName,threadId:_targetThread||''})}catch(e){}}
         if(_gws.files&&_gws.files.length){try{await _wsArchiveFileBlocks(_gws.files,selfName)}catch(e){}}
         /* 工具回合续（v6）：本成员执行了工具 → 结果自动回喂再生成一轮，用户无需再说一句 */
         if(_gws.ops.length||_gws.files.length){
@@ -2144,7 +2206,7 @@ async function sendChatMessage(voiceMsg){
       /* 以完整回复为准重建气泡：文本 + 操作卡 + 下载卡按原始顺序分段渲染，卡片状态对齐真实执行结果 */
       var _wsParsed=_parseWsOps(replyText);
       var _wsResults=[];
-      if(_wsParsed.ops.length)_wsResults=await _execWsOps(_wsParsed.ops,cfg.nickname||cfg.model||'AI',cfg);
+      if(_wsParsed.ops.length)_wsResults=await _execWsOps(_wsParsed.ops,cfg.nickname||cfg.model||'AI',cfg,{source:'chat',friendId:_targetFriend,threadId:_targetThread||'',userMessageId:userMsg.id});
       if(_wsParsed.files&&_wsParsed.files.length){try{await _wsArchiveFileBlocks(_wsParsed.files,cfg.nickname||cfg.model||'AI')}catch(e){}}
       var _wsPhantom=_wsCheckPhantom(_wsParsed.cleanText,_wsParsed.ops.length);
       streamRefs.forEach(ref=>{_wsFinalizeBubble(ref,replyText,_wsResults)});
@@ -2213,7 +2275,7 @@ async function sendChatMessage(voiceMsg){
        if(_bpn.ops.length){replyText=_bpn.clean;try{_brCardsNs=await _execBlogReadOps(_bpn.ops)}catch(e){}}}
       var _wsNs=_parseWsOps(replyText);
       var _wsRNs=[];
-      if(_wsNs.ops.length)_wsRNs=await _execWsOps(_wsNs.ops,cfg.nickname||cfg.model||'AI',cfg);
+      if(_wsNs.ops.length)_wsRNs=await _execWsOps(_wsNs.ops,cfg.nickname||cfg.model||'AI',cfg,{source:'chat',friendId:_targetFriend,threadId:_targetThread||'',userMessageId:userMsg.id});
       if(_wsNs.files&&_wsNs.files.length){try{await _wsArchiveFileBlocks(_wsNs.files,cfg.nickname||cfg.model||'AI')}catch(e){}}
       var _wsNsPhantom=_wsCheckPhantom(_wsNs.cleanText,_wsNs.ops.length);
       /* 工具回合续（v6）：非流式主对话同样自动回喂再生成一轮 */
@@ -2365,7 +2427,7 @@ function appendChatBubble(role,text,senderName,reasoningContent,msgId,images,fil
         div.appendChild(txt);
       }
       fls.forEach(function(f){div.appendChild(_buildFileCard(f))});
-      imgs.forEach(img=>{const el=document.createElement('img');el.className='chat-bubble-img';el.src=img.dataUrl;el.alt=img.name||'image';el.onclick=function(){_viewImageFull(img.dataUrl)};div.appendChild(el)});
+      imgs.forEach(img=>{const el=document.createElement('img');el.className='chat-bubble-img';el.src=img.dataUrl;el.alt=img.name||'image';el.onclick=function(){_viewImageFull(img.dataUrl,img)};div.appendChild(el)});
       if(msgId){div.appendChild(_msgFavBtn(msgId));const db=document.createElement('button');db.className='chat-msg-del';db.textContent='✕';db.title='删除此消息';db.onclick=function(ev){ev.stopPropagation();deleteSingleMsg(msgId,div)};div.appendChild(db)}
     }else{
       if(senderName&&role==='ai'){
@@ -2385,7 +2447,7 @@ function appendChatBubble(role,text,senderName,reasoningContent,msgId,images,fil
         div.textContent=text;
       }
       fls.forEach(function(f){div.appendChild(_buildFileCard(f))});
-      imgs.forEach(img=>{const el=document.createElement('img');el.className='chat-bubble-img';el.loading='lazy';el.decoding='async';el.src=img.dataUrl;el.alt=img.name||'image';el.style.maxWidth='180px';el.onclick=function(){_viewImageFull(img.dataUrl)};div.appendChild(el)});
+      imgs.forEach(img=>{const el=document.createElement('img');el.className='chat-bubble-img';el.loading='lazy';el.decoding='async';el.src=img.dataUrl;el.alt=img.name||'image';el.style.maxWidth='180px';el.onclick=function(){_viewImageFull(img.dataUrl,img)};div.appendChild(el)});
       if(msgId){div.appendChild(_msgFavBtn(msgId));const db=document.createElement('button');db.className='chat-msg-del';db.textContent='✕';db.title='删除此消息';db.onclick=function(ev){ev.stopPropagation();deleteSingleMsg(msgId,div)};div.appendChild(db)}
     }
     container.appendChild(div);
@@ -2938,7 +3000,7 @@ async function _wsToolContinue(cfg,o){
     var parsed=_assistantResponseParts(r,'');
     var contText=parsed.content;
     var _cOp=_parseWsOps(contText),_cResults=[];
-    try{_cResults=await _execWsOps(_cOp.ops,o.senderName||(cfg.nickname||cfg.model||'AI'),cfg)}catch(e){}
+    try{_cResults=await _execWsOps(_cOp.ops,o.senderName||(cfg.nickname||cfg.model||'AI'),cfg,{source:'chat',friendId:o.friendId||'',threadId:o.threadId||'',senderName:o.senderName||''})}catch(e){}
     if(_cOp.files&&_cOp.files.length){try{await _wsArchiveFileBlocks(_cOp.files,o.senderName||(cfg.nickname||cfg.model||'AI'))}catch(e){}}
     /* ⑤ 渲染为同角色续接气泡（含操作卡），与主流程同款 */
     var _cId='msg_'+Date.now()+'_'+Math.floor(Math.random()*100000);
@@ -3479,13 +3541,13 @@ async function _callApiChatStreamOnce(cfg,messages,opts){
       url=cfg.endpoint;
       hdrs={'Content-Type':'application/json','x-api-key':cfg.apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'};
       _ccBeta(hdrs,cfg);
-      const sysMsg=_msgs.find(m=>m.role==='system');
-      const chatMsgs=_msgs.filter(m=>m.role!=='system').map(m=>{if(m&&m._fc){var _c=Object.assign({},m);delete _c._fc;return _c}return{role:m.role,content:_adaptContentForApi(m.content,'anthropic')}});
+      const _an=_ibAnthropicWire(_msgs);/* P20：system 归一唯一真源 = IBModelCore */
+      const chatMsgs=_an.messages.map(m=>{if(m&&m._fc){var _c=Object.assign({},m);delete _c._fc;return _c}return{role:m.role,content:_adaptContentForApi(m.content,'anthropic')}});
       _injectAnthropicMsgCache(chatMsgs,cfg);/* 消息级缓存断点 */
       const b={model:cfg.model,max_tokens:maxTok,stream:true,messages:chatMsgs};
       if(opts._fcCtx&&opts._fcCtx.tools){b.tools=opts._fcCtx.tools.anthropic;IBFC.newAcc(opts._fcCtx)}
       try{if(typeof IBWS!=='undefined')IBWS.attach(b,'anthropic',cfg,opts)}catch(e){}
-      if(sysMsg){if(cfg.promptCache!==false&&cfg.provider==='anthropic'){b.system=[{type:'text',text:sysMsg.content,cache_control:_ccObj(cfg)}]}else{b.system=sysMsg.content}}if(cfg.temperature!=null)b.temperature=cfg.temperature;
+      if(_an.system){if(cfg.promptCache!==false&&cfg.provider==='anthropic'){b.system=[{type:'text',text:_an.system,cache_control:_ccObj(cfg)}]}else{b.system=_an.system}}if(cfg.temperature!=null&&_modelSupportsSampling(cfg))b.temperature=cfg.temperature;
       if(cfg.promptCache!==false){try{_ibCacheAudit(cfg,b,'anthropic',{consumer:opts._ibConsumer})}catch(e){}}/* 前缀缓存审计（console-only） */
       body=JSON.stringify(b);
     }else if(fmt==='gemini'){
@@ -3714,15 +3776,15 @@ async function _callApiChatOnce(cfg,messages,opts){
   try{if(typeof IBWS!=='undefined'&&IBWS.steer)_msgs=IBWS.steer(_msgs,cfg,opts)}catch(e){}
 
   if(fmt==='anthropic'){
-    const sysMsg=_msgs.find(m=>m.role==='system');
-    const chatMsgs=_msgs.filter(m=>m.role!=='system').map(m=>{if(m&&m._fc){var _c=Object.assign({},m);delete _c._fc;return _c}return{role:m.role,content:_adaptContentForApi(m.content,'anthropic')}});
+    const _an=_ibAnthropicWire(_msgs);/* P20：system 归一唯一真源 = IBModelCore */
+    const chatMsgs=_an.messages.map(m=>{if(m&&m._fc){var _c=Object.assign({},m);delete _c._fc;return _c}return{role:m.role,content:_adaptContentForApi(m.content,'anthropic')}});
     _injectAnthropicMsgCache(chatMsgs,cfg);/* 消息级缓存断点 */
     if(_prefillThinking) chatMsgs.push({role:'assistant',content:'<thinking>'});
     const body={model:cfg.model,max_tokens:maxTok,messages:chatMsgs};
     if(opts._fcCtx&&opts._fcCtx.tools)body.tools=opts._fcCtx.tools.anthropic;
     try{if(typeof IBWS!=='undefined')IBWS.attach(body,'anthropic',cfg,opts)}catch(e){}
-    if(sysMsg){if(cfg.promptCache!==false&&cfg.provider==='anthropic'){body.system=[{type:'text',text:sysMsg.content,cache_control:_ccObj(cfg)}]}else{body.system=sysMsg.content}}
-    if(cfg.temperature!=null)body.temperature=cfg.temperature;
+    if(_an.system){if(cfg.promptCache!==false&&cfg.provider==='anthropic'){body.system=[{type:'text',text:_an.system,cache_control:_ccObj(cfg)}]}else{body.system=_an.system}}
+    if(cfg.temperature!=null&&_modelSupportsSampling(cfg))body.temperature=cfg.temperature;
     if(cfg.promptCache!==false){try{_ibCacheAudit(cfg,body,'anthropic',{consumer:opts._ibConsumer})}catch(e){}}/* 前缀缓存审计（console-only） */
     const hdrs={'Content-Type':'application/json','x-api-key':cfg.apiKey,
       'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'};

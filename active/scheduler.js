@@ -383,7 +383,9 @@ function createScheduler(ctx) {
       const prompt = buildPlanEvalPrompt(task, plan);
       const out = await callCharacterModel(task, prompt, { jsonMode: true, traceId });
       const raw = contentText(out && out.content);
-      const parsed = parsePlanJson(raw);
+      /* P19：只有端口确认本次真的用了 legacy assistant prefill，解析才允许续写容错
+         （必须补回完整 seed，只补 { 会拼出非法 JSON） */
+      const parsed = parsePlanJson(raw, { prefillSeed: (out && out.prefillSeed) || '' });
       if (parsed && ['send', 'reschedule', 'cancel'].includes(String(parsed.action || ''))) {
         if (parsed.action === 'send') return { action: 'send', reason: trimText(parsed.reason, 300) };
         if (parsed.action === 'cancel') return { action: 'cancel', reason: trimText(parsed.reason || 'model evaluation cancelled', 300) };

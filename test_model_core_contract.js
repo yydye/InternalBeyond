@@ -49,19 +49,37 @@ check('format.glmIsOpenai', IBModelCore.providerFormat('glm') === 'openai');
 check('format.unknownFallsBackOpenai', IBModelCore.providerFormat('不存在的厂商') === 'openai');
 check('format.nullFallsBackOpenai', IBModelCore.providerFormat(null) === 'openai');
 
-/* A2. anthropic 请求体 */
+/* A2. anthropic 请求体（P19 起：assistant prefill 由 model policy 决定）
+   · legacy model（未登记 policy）→ 保留历史 seed 行为 */
 const abBody = IBModelCore.buildRequestBody(
-  { provider: 'anthropic', model: 'claude-sonnet-4-6' },
+  { provider: 'anthropic', model: 'claude-sonnet-4-5' },
   { system: '你是 Sui。', messages: [{ role: 'user', content: '你好' }] },
   { maxTokens: 1024, temperature: 0.5, jsonMode: true, jsonPrefill: '{"action":' }
 );
-check('anth.body.model', abBody.model === 'claude-sonnet-4-6');
+check('anth.body.model', abBody.model === 'claude-sonnet-4-5');
 check('anth.body.systemTopLevel', abBody.system === '你是 Sui。');
 check('anth.body.maxTokens', abBody.max_tokens === 1024);
 check('anth.body.temperature', abBody.temperature === 0.5);
 check('anth.body.noMessagesSystem', abBody.messages.every(m => m.role !== 'system'));
-check('anth.body.jsonPrefill', abBody.messages[abBody.messages.length - 1].role === 'assistant'
+check('anth.body.jsonPrefill.legacyModel', abBody.messages[abBody.messages.length - 1].role === 'assistant'
   && abBody.messages[abBody.messages.length - 1].content === '{"action":');
+
+/* A2b. P19 · Claude 4.6+ 不接受 assistant prefill → 改为 JSON 约束 */
+const ab46 = IBModelCore.buildRequestBody(
+  { provider: 'anthropic', model: 'claude-sonnet-4-6' },
+  { system: '你是 Sui。', messages: [{ role: 'user', content: '你好' }] },
+  { maxTokens: 1024, temperature: 0.5, jsonMode: true, jsonPrefill: '{"action":' }
+);
+check('anth.body.46.noPrefill', ab46.messages.every(m => m.role !== 'assistant'));
+check('anth.body.46.jsonConstraint', /Return exactly one valid JSON object/.test(ab46.messages[0].content));
+check('anth.body.46.temperatureKept', ab46.temperature === 0.5);
+const ab5 = IBModelCore.buildRequestBody(
+  { provider: 'anthropic', model: 'claude-sonnet-5' },
+  { system: '你是 Sui。', messages: [{ role: 'user', content: '你好' }] },
+  { maxTokens: 1024, temperature: 0.5, jsonMode: true, jsonPrefill: '{"action":' }
+);
+check('anth.body.5.noPrefill', ab5.messages.every(m => m.role !== 'assistant'));
+check('anth.body.5.noTemperature', ab5.temperature === undefined);
 
 /* A3. gemini 请求体 */
 const gbBody = IBModelCore.buildRequestBody(

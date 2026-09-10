@@ -197,14 +197,42 @@ function createPlanDomain(deps) {
     };
   }
 
-  function parsePlanJson(text) {
-    let s = String(text || '').trim();
+  /* 解析模型输出中的结构化 JSON（P19 契约，与浏览器侧 _activeParsePlanJson 逐字一致）：
+       A. 完整 JSON —— 整段就是合法 JSON 对象（canonical path，Claude 4.6+ 走这条）；
+       B. Markdown 围栏 —— ```json … ``` 内是完整 JSON 时严格解析；
+       C. legacy prefill 续写 —— **仅当调用方声明本次请求真的用了 assistant prefill**
+          （opts.prefillSeed = 实际 seed 文本，例如 '{"publish":'）且响应形态确实是续写
+          （不以 { 开头、以 } 结尾）时，补回**完整 seed** 再解析。
+          只接受以 { 开头的 seed；绝不做全局 '{' + anything 修复。
+          opts.allowPrefillContinuation === true 是旧式布尔写法，等价于 seed = '{'。
+       D. 前后杂文 —— 既有产品契约：回落到「第一个 { 到最后一个 }」切片解析。
+     全部失败返回 null（malformed 必须失败）。 */
+  function parsePlanJson(text, opts) {
+    const s = String(text || '').trim();
     if (!s) return null;
+    const asObject = raw => {
+      try {
+        const j = JSON.parse(raw);
+        return (j && typeof j === 'object' && !Array.isArray(j)) ? j : null;
+      } catch (_) { return null; }
+    };
+    const full = asObject(s);
+    if (full) return full;
     const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
-    if (fence && fence[1] && fence[1].trim()) s = fence[1].trim();
+    if (fence && fence[1] && fence[1].trim()) {
+      const fenced = asObject(fence[1].trim());
+      if (fenced) return fenced;
+    }
+    const seed = (opts && typeof opts.prefillSeed === 'string' && opts.prefillSeed.charAt(0) === '{')
+      ? opts.prefillSeed
+      : ((opts && opts.allowPrefillContinuation === true) ? '{' : '');
+    if (seed && s.charAt(0) !== '{' && /}\s*$/.test(s)) {
+      const continued = asObject(seed + s);
+      if (continued) return continued;
+    }
     const start = s.indexOf('{'), end = s.lastIndexOf('}');
     if (start < 0 || end <= start) return null;
-    try { return JSON.parse(s.slice(start, end + 1)); } catch (_) { return null; }
+    return asObject(s.slice(start, end + 1));
   }
 
   function isInDnd(nowMs, prefs) {

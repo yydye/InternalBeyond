@@ -129,8 +129,10 @@
     c = c.replace(/[\\"]+$/, '');
     return { comment: c.trim(), replyTo: r.trim() };
   }
-  function parseReplyOutput(raw, parseJson) {
-    const j = parseJson(raw);
+  /* parseOpts（P19 可选）：原样转交注入的 parseJson，用于声明「本次请求真的用了
+     legacy assistant prefill」→ 允许解析续写形态。缺省 = 严格完整 JSON。 */
+  function parseReplyOutput(raw, parseJson, parseOpts) {
+    const j = parseJson(raw, parseOpts);
     if (!j || typeof j !== 'object') return null;
     if (j.publishReply === false) return { publish: false };
     if (j.publishReply !== true) return null;

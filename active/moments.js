@@ -239,8 +239,10 @@ function createMomentsDomain(deps) {
     return { system, messages: [{ role: 'system', content: system }, { role: 'user', content: prompt.join('\n') }] };
   }
 
-  function parseMomentOutput(raw) {
-    const parsed = parsePlanJson(raw);
+  /* parseOpts（P19）：由调用方按 model policy 声明本次请求是否真的用了 assistant
+     prefill（端口透传的 prefillApplied），决定解析是否允许「续写形态」。 */
+  function parseMomentOutput(raw, parseOpts) {
+    const parsed = parsePlanJson(raw, parseOpts);
     if (!parsed || typeof parsed !== 'object') return null;
     if (parsed.publish === false) return { publish: false, reason: trimText(parsed.reason, 200), motive: 'none' }; /* none 语义强制：不发布=无动机 */
     if (parsed.publish !== true) return null;
@@ -379,18 +381,22 @@ function createMomentsDomain(deps) {
     }
     let rawOut = '';
     let lastError = null;
+    /* P19：本次生成请求真的用过的 legacy assistant prefill seed（由端口按 model policy
+       透传；空串 = 没用过）。Claude 4.6+ 恒为空 —— 它们返回完整 JSON，解析不做续写容错。 */
+    let prefillSeed = '';
     for (let attempt = 0; attempt < MOMENT_MAX_ATTEMPTS; attempt += 1) {
       const __t0 = Date.now();
       try {
         const out = await callCharacterModel(task, built, { jsonMode: true, jsonPrefill: '{"publish":' });
         rawOut = contentText(out && out.content);
+        prefillSeed = (out && out.prefillSeed) || '';
         obs({ t: 'llm_call', kind: 'moment', ok: true, ms: Date.now() - __t0, origin: 'companion' });
       } catch (error) {
         lastError = error;
         obs({ t: 'llm_call', kind: 'moment', ok: false, ms: Date.now() - __t0, origin: 'companion' });
         break;
       }
-      const parsed = parseMomentOutput(rawOut);
+      const parsed = parseMomentOutput(rawOut, { prefillSeed: prefillSeed });
       if (!parsed || parsed.publish === false) {
         if (parsed && parsed.publish === false) {
           /* 模型选择不发布：按频率安静重排；declineStreak 只累计上下文，绝不强制发布 */
@@ -858,19 +864,22 @@ function createMomentsDomain(deps) {
     let rawOut = '';
     let lastError = null;
     let generated = null;
+    /* P19：见 generateRoleMoment —— 端口按 model policy 透传的真实 prefill seed */
+    let prefillSeed = '';
     const validIds = new Set(comments.map(c => String(c.id)));
     for (let attempt = 0; attempt < CORE.LIMITS.MAX_ATTEMPTS; attempt += 1) {
       const __t0 = Date.now();
       try {
         const out = await callCharacterModel(callTask, built, { jsonMode: true, jsonPrefill: '{"publishReply":' });
         rawOut = contentText(out && out.content);
+        prefillSeed = (out && out.prefillSeed) || '';
         obs({ t: 'llm_call', kind: 'reply', ok: true, ms: Date.now() - __t0, origin: 'companion' });
       } catch (error) {
         lastError = error;
         obs({ t: 'llm_call', kind: 'reply', ok: false, ms: Date.now() - __t0, origin: 'companion' });
         break;
       }
-      const parsed = CORE.parseReplyOutput(rawOut, parsePlanJson);
+      const parsed = CORE.parseReplyOutput(rawOut, parsePlanJson, { prefillSeed: prefillSeed });
       if (!parsed || parsed.publish === false) {
         if (parsed && parsed.publish === false) { obs({ t: 'reply_declined', actor: task.roleId, origin: 'companion', reason: trimText(parsed.reason || '', 60) }); generated = { published: false, reason: parsed.reason || '选择不参与' }; break; }
         if (attempt === 0) {
@@ -956,7 +965,7 @@ function createMomentsDomain(deps) {
        并从线程移除 + 回传删除事件给浏览器（browser ingest 同步删除对应评论） */
     if (String(task.roleId || '') === String(rec.thread.roleId || '')) {
       try {
-        const j = parsePlanJson(rawOut);
+        const j = parsePlanJson(rawOut, { prefillSeed: prefillSeed });
         if (j && Array.isArray(j.delComments)) {
           for (const cid of j.delComments) {
             const tgt = (rec.thread.comments || []).find(x => String(x.id) === String(cid));

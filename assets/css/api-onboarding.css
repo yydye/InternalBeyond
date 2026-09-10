@@ -1,0 +1,301 @@
+﻿/* Internal Beyond — P16 · 零门槛 API 获取向导样式
+ * 由 assets/js/api-onboarding.js 在运行时注入（不占用 InternalBeyond.html 的样式表预算）。
+ * 只作用于 #api-onboarding-entry 与 #ib-onboarding 内部，不改既有 API 页任何既有样式。
+ * 颜色 / 圆角 / 动效一律走 core.css 语义 token，双主题自动适配；
+ * 不引入任何新 UI framework，不使用 style= 内联样式。
+ */
+
+/* ── API 页顶部的新手入口 ─────────────────────────────── */
+#api-onboarding-entry { margin: 0 0 28px; }
+
+#api-onboarding-entry .ibo-entry {
+  padding: 18px 20px;
+  border-radius: var(--radius-panel);
+  border: 1px solid var(--border-soft);
+  background: var(--surface-card);
+  box-shadow: var(--shadow-card);
+}
+
+#api-onboarding-entry .ibo-entry-head { margin-bottom: 14px; }
+
+#api-onboarding-entry .ibo-entry-h {
+  margin: 0 0 4px;
+  font-family: var(--font-display);
+  font-size: 1.18rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--content-primary);
+}
+
+#api-onboarding-entry .ibo-entry-lead {
+  margin: 0;
+  font-size: 0.84rem;
+  line-height: 1.7;
+  color: var(--content-secondary);
+}
+
+#api-onboarding-entry .ibo-entry-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+#api-onboarding-entry .ibo-entry-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 13px 14px;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--border-soft);
+  background: var(--surface-input);
+  transition: background var(--motion-fast) var(--transition), border-color var(--motion-fast) var(--transition);
+}
+#api-onboarding-entry .ibo-entry-card:hover { background: var(--surface-hover); }
+
+#api-onboarding-entry .ibo-entry-title {
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--content-primary);
+}
+
+#api-onboarding-entry .ibo-entry-sub {
+  flex: 1 1 auto;
+  font-size: 0.78rem;
+  line-height: 1.65;
+  color: var(--content-muted);
+}
+
+#api-onboarding-entry .ibo-entry-btn { align-self: flex-start; }
+
+#api-onboarding-entry .ibo-entry-note {
+  margin: 12px 0 0;
+  font-size: 0.76rem;
+  line-height: 1.6;
+  color: var(--content-muted);
+}
+
+/* ── 获取向导弹层 ─────────────────────────────────────── */
+.ibo-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: clamp(10px, 3vw, 32px);
+  background: rgba(12, 18, 34, 0.42);
+  backdrop-filter: blur(14px) saturate(0.92);
+  -webkit-backdrop-filter: blur(14px) saturate(0.92);
+}
+.ibo-overlay.is-open { display: flex; }
+
+.ibo-card {
+  width: min(760px, 100%);
+  max-height: min(92vh, 880px);
+  display: flex;
+  flex-direction: column;
+  padding: 22px 24px 18px;
+  border-radius: var(--radius-panel);
+  background: var(--surface-panel-strong);
+  border: 1px solid var(--border-soft);
+  box-shadow: var(--shadow-panel);
+  color: var(--content-primary);
+  font-family: var(--font-ui);
+  animation: ibo-in var(--motion-normal) var(--transition) both;
+}
+@keyframes ibo-in { from { opacity: 0; transform: translateY(10px) scale(0.99); } to { opacity: 1; transform: none; } }
+
+.ibo-head { display: flex; align-items: flex-start; gap: 12px; }
+.ibo-headtext { flex: 1 1 auto; min-width: 0; }
+.ibo-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.42rem;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--content-primary);
+}
+.ibo-sub { margin: 4px 0 0; font-size: 0.82rem; line-height: 1.6; color: var(--content-muted); }
+.ibo-close {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px solid var(--border-soft);
+  background: transparent;
+  color: var(--content-secondary);
+  font-size: 0.86rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--transition), color var(--motion-fast) var(--transition);
+}
+.ibo-close:hover { background: var(--surface-hover); color: var(--content-primary); }
+.ibo-close:focus-visible,
+.ibo-card .btn:focus-visible,
+.ibo-link-btn:focus-visible,
+.ibo-link:focus-visible,
+.ibo-steps summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+
+.ibo-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 2px 6px;
+  font-size: 0.88rem;
+  line-height: 1.72;
+  color: var(--content-secondary);
+}
+
+.ibo-sec { margin-bottom: 20px; }
+/* 第三方分区：与官方分区在视觉上明确分开（左侧强调线 + 独立底色） */
+.ibo-sec-third {
+  padding: 14px 14px 6px;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--border-soft);
+  border-left: 3px solid var(--status-warning);
+  background: var(--surface-card);
+}
+
+.ibo-sec-head { margin-bottom: 10px; }
+.ibo-sec-title {
+  margin: 0;
+  font-size: 0.98rem;
+  font-weight: 600;
+  color: var(--content-primary);
+}
+.ibo-sec-note { margin: 3px 0 0; font-size: 0.76rem; line-height: 1.6; color: var(--content-muted); }
+
+.ibo-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+
+.ibo-card-item {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 12px 13px;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--border-soft);
+  background: var(--surface-input);
+}
+.ibo-card-official { border-left: 3px solid var(--accent-light); }
+
+.ibo-card-top { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.ibo-card-name { font-size: 0.94rem; font-weight: 600; color: var(--content-primary); }
+.ibo-card-kind {
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border-soft);
+  color: var(--content-muted);
+}
+.ibo-card-kind-third { border-color: var(--status-warning); color: var(--status-warning); }
+
+.ibo-card-hint { font-size: 0.78rem; line-height: 1.65; color: var(--content-secondary); }
+.ibo-card-warn {
+  margin: 0;
+  font-size: 0.76rem;
+  line-height: 1.6;
+  color: var(--status-warning);
+}
+.ibo-card-nokey { font-size: 0.74rem; color: var(--content-muted); }
+
+.ibo-meta { margin: 0; padding-left: 1.05em; font-size: 0.75rem; line-height: 1.65; color: var(--content-muted); }
+.ibo-meta li { margin-bottom: 2px; }
+
+.ibo-tags { display: flex; flex-wrap: wrap; gap: 5px; }
+.ibo-tag {
+  font-size: 0.68rem;
+  line-height: 1.5;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border-soft);
+  color: var(--content-muted);
+  background: transparent;
+}
+.ibo-tag-verified { border-color: var(--status-success); color: var(--status-success); }
+.ibo-tag-unverified { border-color: var(--status-warning); color: var(--status-warning); }
+
+.ibo-steps { margin-top: 2px; }
+.ibo-steps > summary {
+  cursor: pointer;
+  font-size: 0.76rem;
+  color: var(--accent-light);
+  list-style: none;
+}
+.ibo-steps > summary::-webkit-details-marker { display: none; }
+.ibo-steps > summary::before { content: '▸ '; }
+.ibo-steps[open] > summary::before { content: '▾ '; }
+.ibo-step-list {
+  margin: 8px 0 2px;
+  padding-left: 1.25em;
+  font-size: 0.78rem;
+  line-height: 1.7;
+  color: var(--content-secondary);
+}
+.ibo-step-list li { margin-bottom: 4px; }
+
+.ibo-card-acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.ibo-card-acts .btn { font-size: 0.78rem; padding: 6px 12px; }
+.ibo-link { color: var(--accent-light); text-decoration: underline; }
+
+.ibo-risk {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--border-soft);
+  background: var(--surface-panel);
+}
+.ibo-risk-title { display: block; font-size: 0.8rem; color: var(--content-primary); margin-bottom: 4px; }
+.ibo-risk-list { margin: 0; padding-left: 1.1em; font-size: 0.75rem; line-height: 1.68; color: var(--content-secondary); }
+.ibo-risk-list li { margin-bottom: 2px; }
+
+.ibo-others { margin: 4px 0 0; font-size: 0.78rem; color: var(--content-muted); }
+.ibo-link-btn {
+  border: none;
+  background: transparent;
+  padding: 0 2px;
+  cursor: pointer;
+  color: var(--accent-light);
+  font-family: var(--font-ui);
+  font-size: 0.78rem;
+  text-decoration: underline;
+}
+
+.ibo-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-soft);
+}
+.ibo-foot-note { flex: 1 1 auto; min-width: 0; font-size: 0.74rem; line-height: 1.6; color: var(--content-muted); }
+
+/* ── API 编辑器：新手模式（只收起协议术语，字段仍在 DOM 中） ── */
+#api-editor .ibo-guided-hint {
+  margin: 0 0 6px;
+  font-size: 0.76rem;
+  line-height: 1.6;
+  color: var(--content-muted);
+}
+#api-editor.ibo-guided #api-endpoint { display: none; }
+
+/* ── 窄屏 ─────────────────────────────────────────────── */
+@media (max-width: 1040px) {
+  #api-onboarding-entry .ibo-entry-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 860px) {
+  .ibo-card { padding: 18px 16px 14px; max-height: 94vh; }
+  .ibo-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 640px) {
+  #api-onboarding-entry .ibo-entry { padding: 15px 14px; }
+  #api-onboarding-entry .ibo-entry-grid { grid-template-columns: minmax(0, 1fr); }
+  #api-onboarding-entry .ibo-entry-btn { align-self: stretch; }
+  .ibo-title { font-size: 1.2rem; }
+  .ibo-foot { flex-direction: column; align-items: stretch; }
+  .ibo-foot-note { order: 2; }
+}

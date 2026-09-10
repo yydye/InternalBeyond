@@ -113,7 +113,15 @@ function createNodeModelCompat(deps) {
     }
     /* legacy 归一（若后续想用自定义 responseParts，经 deps.responseParts 注入） */
     const rp = _responseParts(result && result.text, result && result.reasoning);
-    return { content: rp.content, reasoning_content: rp.reasoning_content };
+    /* P19 · 透传「本次请求是否真的用了 legacy assistant prefill」与真实 seed 文本，
+       供 consumer 决定解析时能否接受「续写形态」（缺开头 seed）的容错。
+       不影响 content / reasoning 语义。 */
+    return {
+      content: rp.content,
+      reasoning_content: rp.reasoning_content,
+      prefillApplied: !!(result && result.prefillApplied),
+      prefillSeed: (result && result.prefillSeed) || ''
+    };
   }
 
   return { run: run };
