@@ -21,7 +21,7 @@
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-installer.ps1 `
-  -NotesFile docs\release-notes\1.0.2.md `
+  -NotesFile docs\release-notes\1.0.3.md `
   -MinimumVersion 1.0.1
 ```
 
@@ -30,6 +30,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-installer.ps1 
 - **1.0.1**：三个都不传（构建时刻不是发布时刻，见 §4；`minimumVersion` 的理由见 §8）。
 - **1.0.2**：传 `-NotesFile docs\release-notes\1.0.2.md` 与 `-MinimumVersion 1.0.1`
   （`minimumVersion` 从这一版起第一次成为真实契约），仍然**不传** `-ReleasedAt`（§4）。
+- **1.0.3**：与 1.0.2 相同——传 `-NotesFile docs\release-notes\1.0.3.md` 与
+  `-MinimumVersion 1.0.1`，仍然**不传** `-ReleasedAt`（§4）。本版没有契约增量。
 
 ---
 
@@ -186,12 +188,12 @@ primary   GET manifest.installer.url            （版本钉死的 release asset
 ```powershell
 # 只重生成清单（不重新编译安装包）。省略 --releasedAt 就是「无发布时间」清单。
 node runtime\update-manifest.js --write dist\update-stable.json `
-  --version 1.0.2 `
-  --sha256 <实测：sha256sum dist\InternalBeyond-Setup-1.0.2.exe> `
+  --version 1.0.3 `
+  --sha256 <实测：sha256sum dist\InternalBeyond-Setup-1.0.3.exe> `
   --sizeBytes <实测字节数> `
   --productVersion <从同一 exe 的 PE ProductVersion 读回> `
   --minimumVersion 1.0.1 `
-  --notesFile docs\release-notes\1.0.2.md
+  --notesFile docs\release-notes\1.0.3.md
 ```
 
 重生成后必须复核三件事：`--validate` 通过、`installer` 块与重生成前**逐字节相同**、
@@ -385,6 +387,7 @@ API 匿名限额实测：`x-ratelimit-remaining: 57/60`（60 次/小时/IP）。
 | `v1.0.0` | legacy release：不包含 Zero-Touch Update，用户**必须手动安装一次 1.0.1** |
 | `v1.0.1` | **第一个正式包含 Zero-Touch Update 的 release**；此后作为真实 E2E 的 baseline |
 | `v1.0.2` | **第一个由真实自动更新链到达的 release**；E2E 验证 `1.0.1 → 1.0.2` |
+| `v1.0.3` | **第二个由真实自动更新链到达的 release**；修欢迎页水纹（§8「v1.0.3 发布准备」），E2E 验证 `1.0.2 → 1.0.3` |
 
 由此产生四条硬约束：
 
@@ -493,6 +496,42 @@ release 上的三个资产与 `manifest.installer.sha256` 逐项交叉核对通�
 
 `v1.0.1` 仍是 `1.0.1 → 1.0.2` E2E 的 baseline：**发布后不要卸载它**（本地真实安装实例
 `E:\IB-E2E-1.0.1\InternalBeyond`）。
+
+### v1.0.3 发布准备（U5-5 · 欢迎页水纹修复）
+
+`v1.0.3` 的唯一功能性改动是 `assets/js/glass-ripple.js` 里的一处**渲染闸门**（commit `cbd798f`）。
+**本版没有发布契约增量**：更新链、清单 schema、上传顺序、`minimumVersion`（仍为 `1.0.1`）全部按
+1.0.2 原样沿用。
+
+这不是 U 系列引入的缺陷：闸门自 `v1.0.0`（`6a61c3c`）起就在，1.0.2 之前一直被「欢迎页背景不显示」
+掩盖着——画布本来就全透明，看不出水纹也没在跑。
+
+**根因（R0）**：`idleNow()` 里有一条「离开欢迎页（`currentPage !== 'home'`）后暂停逐帧水波模拟」
+的性能守卫。当深链把某个内容页设为打开页（如 `#diagnostics`）、而欢迎页仍然可见时，这条守卫
+让 `renderWater()` 每帧提前返回：画布保持全透明、`#gw-slot` 永远不出现 `gw-rippling`，看起来
+就是「背景正常、水纹不动」。同一页面的背景图走的是另一条**一次性 DOM 写入**路径，所以它不受影响。
+
+实测（同一台机器、同一个已安装的 v1.0.2、同一份页面）：
+
+| 入口 | `#gw-slot` | 水纹非透明像素 | opacity |
+|---|---|---|---|
+| 启动器默认 URL（无 hash） | `gw-has-img gw-gloss gw-rippling` | 643,689 | 1 |
+| 同一 URL + `#diagnostics` | `gw-has-img gw-gloss` | **0** | **0** |
+
+在不刷新的同一页面上**只**把 `window.currentPage` 改回 `'home'`，水纹立刻恢复
+（0 → 749,942 像素，opacity 0.9968）——这证明渲染循环一直在跑，是守卫在提前返回，
+而不是循环没启动、图片没对上、或异常被吞掉（全程 `window.onerror` / `unhandledrejection` 为空）。
+
+**修复**：删掉那条守卫。它想要的暂停**已经**由紧邻上方的 splash 判定覆盖——`hidden` /
+`dissolving` 任一成立即暂停，而画窗只可能在欢迎页可见时被看到。实测确认这条覆盖成立：
+欢迎页可见时逐帧动画在跑（`alphaSum` 逐帧变化），splash 隐藏后画面冻结（`alphaSum` 1.8 s 内不变）。
+
+**验证**（修复后的源码 + 模拟「安装态载荷」条件：`bg-canvas.png` 请求失败、`bg-canvas.jpg` 兜底成功
++ `#diagnostics`）：`#gw-slot` = `gw-rippling`，水纹非透明像素 654,025 → 735,897 → 829,778
+（逐帧变化），opacity 1，控制台无错误；默认入口 URL 行为不变。
+
+> **诚实边界**：以上都在**本机 headless Chrome** 上对**本地静态服务**复现；「已安装的 1.0.2」
+> 那一列是在真实安装实例上跑的。最终验收仍是 `1.0.2 → 1.0.3` E2E 之后在真实安装态里复核水纹。
 
 ---
 
