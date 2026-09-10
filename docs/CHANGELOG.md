@@ -1411,3 +1411,23 @@ R0 只做定位、不动代码，根因冻结之后才提交修复。
 资产名 vs 真实文件名），清单经 `--validate` 自校验。载荷数字的**记法边界**已写入 RELEASE.md §8：本次构建
 默认清理了 staging，数字来自构建**之后重新物化**的 staging（同源、同参数、同白名单，但不是被编译的那份
 字节），安装后的载荷仍由 `1.0.2 → 1.0.3` E2E 在真实安装实例上核对。
+
+### 发布后实测（v1.0.3 已上线）
+
+`v1.0.3` 已按 RELEASE.md §2 顺序发布：先 push `master`，再打 tag `v1.0.3` → `666adc0`（显式 HEAD，
+不是 `gh` 的默认 `target_commitish`），最后 `gh release create --verify-tag`（非 draft / 非 prerelease，
+`Latest`）。三个资产 digest 与清单逐项交叉核对通过：
+
+| 资产 | 大小 | GitHub `digest` |
+|---|---|---|
+| `InternalBeyond-Setup-1.0.3.exe` | 51,749,877 B | `sha256:3345f461…9434c` ✅ == 清单 `installer.sha256` |
+| `SHA256SUMS.txt` | 406 B | `sha256:f3dda63a…6f77` |
+| `update-stable.json` | 1,767 B | `sha256:3606e524…5014`（经资产 API/CDN 回读，与本地 `cmp` 逐字节相同） |
+
+真实客户端路径实测（只读：不下载安装包、不安装、缓存写临时文件）：`1.0.2` 读到 `update-available`
+→ `1.0.3`（`installer` 三字段与上表一致、`minimumVersion=1.0.1`、`notes` 531 字符）；`1.0.3` 读到
+`up-to-date`。两次的传输都是 `direct` connect-timeout → **恰好换路一次** → `api` 200——本机此刻
+`github.com` 被连接重置（`curl` 一个字节都拿不到），而 `api.github.com` 与资产 CDN 正常，
+这是回退门（U-D1 Revised）第三次在**真实**网络失败上被验证。
+
+剩余唯一待做项：`1.0.2 → 1.0.3` 的真实安装态 E2E，含欢迎页水纹的最终验收。

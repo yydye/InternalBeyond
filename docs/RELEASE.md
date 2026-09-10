@@ -561,6 +561,31 @@ HEAD 逐字节相同（`sha256=1dc0a3f3…8b51`）且**不再出现 `currentPage
 > 字节。这是一次可复现的一致性核对，不能替代「安装后枚举载荷」；后者仍由 `1.0.2 → 1.0.3` E2E 在
 > 真实安装实例上完成。
 
+### 发布后实测（v1.0.3 已上线，真机联网）
+
+`v1.0.3` 已按 §2 顺序发布：先 push `master`，再打 tag **`v1.0.3` → `666adc0`**（显式 HEAD，
+不是 `gh` 的默认 `target_commitish`），最后用 `gh release create --verify-tag` 建 release
+（非 draft / 非 prerelease，`Latest`）。三个资产的 digest 与清单逐项交叉核对通过：
+
+| 资产 | 大小 | GitHub `digest` |
+|---|---|---|
+| `InternalBeyond-Setup-1.0.3.exe` | 51,749,877 B | `sha256:3345f461…9434c` ✅ **== 清单 `installer.sha256`** |
+| `SHA256SUMS.txt` | 406 B | `sha256:f3dda63a…6f77` |
+| `update-stable.json` | 1,767 B | `sha256:3606e524…5014`（经资产 API/CDN 回读，与本地 `cmp` 逐字节相同） |
+
+`releases/latest` 经 API 复核为 `v1.0.3`（`draft=false`、`prerelease=false`）。真实客户端路径实测
+（只读：不下载安装包、不安装、缓存写临时文件）：
+
+| 运行版本 | 结果 | 传输 |
+|---|---|---|
+| `1.0.2` | `update-available` → `1.0.3`；`manifest.installer` 的 `sha256` / `sizeBytes` / `productVersion` 与上表一致；`minimumVersion = 1.0.1`；`notes` 531 字符 | `direct` **connect-timeout** → **恰好换路一次** → `api` 200 |
+| `1.0.3` | `up-to-date`（`latestVersion` = `1.0.3`） | 同左 |
+
+**本次的网络事实（诚实记录）**：`releases/latest/download/...`（`github.com`）在本机被**连接重置**，
+`curl` 一个字节都拿不到；同期 `api.github.com` 与资产 CDN 正常，`gh` 也因此能完成上传与回读。
+这正是 §8 开头那句「记录的是某时刻的观测，而不是网络的稳定属性」的又一次实例——也再次说明回退门
+为什么必须存在、且必须廉价。
+
 ---
 
 ## 9. 相关测试
