@@ -12,6 +12,7 @@
  *   internal-beyond-server.js       → GET /health .version
  *   assets/js/guide-beginner.js     → 指南版本标识（同源读取 VERSION）
  *   assets/js/diagnostics.js        → 诊断页「版本」与导出报告
+ *   runtime/update-check.js         → 版本比较（compare 是产品内唯一 semver 比较）
  *
  * Never hand-write a version literal anywhere else: read it through this module
  * on the Node side, or through the VERSION file on the browser side.
@@ -81,6 +82,29 @@ function read(opts) {
   };
 }
 
+/*
+ * THE semver comparison of this product (U-D4). Nothing else may implement one:
+ * the browser is forbidden from comparing versions itself, and the update
+ * runtime, the Diagnostics UI and the tests all go through this function.
+ *
+ * Returns -1 | 0 | 1, or null when either side is not MAJOR.MINOR.PATCH (that is
+ * an honest "cannot compare", never a silent 0 — a caller that treated null as
+ * "equal" would hide a broken version and could offer a downgrade).
+ *
+ * Numeric per-field comparison, so 1.10.0 > 1.9.0 (the string compare that a
+ * naive implementation reaches for gets this backwards). No prerelease/build
+ * metadata exists in this scheme; parse() rejects anything with a suffix.
+ */
+function compare(a, b) {
+  const pa = parse(a);
+  const pb = parse(b);
+  if (!pa || !pb) return null;
+  if (pa.major !== pb.major) return pa.major < pb.major ? -1 : 1;
+  if (pa.minor !== pb.minor) return pa.minor < pb.minor ? -1 : 1;
+  if (pa.patch !== pb.patch) return pa.patch < pb.patch ? -1 : 1;
+  return 0;
+}
+
 /* Cached read for long-lived processes (server, launcher). Tests call reset(). */
 let cached = null;
 function get() {
@@ -94,6 +118,7 @@ module.exports = {
   FALLBACK: FALLBACK,
   SEMVER_RE: SEMVER_RE,
   parse: parse,
+  compare: compare,
   read: read,
   get: get,
   reset: reset

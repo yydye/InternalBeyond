@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 
 /* Internal Beyond · 一键全量测试入口（Node 18+，零依赖，跨平台）。
  *
@@ -120,6 +120,10 @@ const GROUPS = [
       /* U1：更新清单契约（Stable 通道 schema / 唯一 URL 构造 / 客户端校验与解析），
          纯 Node、不联网、不安装。真实构建期的清单断言在 test_installer_build.js --force。 */
       ['test_update_manifest.js'],
+      /* U2：更新检查运行时（primary/API 回退门、唯一 semver 比较、24h 缓存、
+         手动绕过、fail-open、GET /__update-check 端点）。纯 Node、不联网
+         （transport 全部注入；唯一的服务器测试 patch 掉 checkShared）。 */
+      ['test_update_check.js'],
       /* P12：Image Router / Image Scheduler 专项（纯 Node，确定性并发/优先级/失败恢复） */
       ['test_image_router.js'],
       /* P13：图片编辑 / 参考图解析专项（归一化/限额/选源优先级/lineage/多轮 A→B→C/edit 路由） */

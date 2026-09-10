@@ -51,6 +51,34 @@ https://github.com/yydye/InternalBeyond/releases/latest/download/update-stable.j
 反向推论（同样重要）：**不要把清单先传上去**。先传清单再传 exe，会让客户端在一段
 窗口期内拿到一份指向尚不存在（或尚未传完）的资产的清单。
 
+### 2.1 客户端怎么读到它：一条主路 + 一条只在网络失败时启用的备路（U-D1 Revised）
+
+```
+primary   GET https://github.com/yydye/InternalBeyond/releases/latest/download/update-stable.json
+             │
+             ├─ 拿到完整响应实体 ──► 解析 → 校验 → 比较版本。**到此为止，不再走别的路。**
+             │
+             └─ 连一个完整响应实体都没拿到（DNS/超时/重置/不可达/TLS/跳转 hop 传输失败）
+                    │
+                    └─► fallback  GET https://api.github.com/repos/yydye/InternalBeyond/releases/latest
+                                   仅接受 draft === false 且 prerelease === false
+                                   且资产名精确等于 update-stable.json
+                                   → 经资产 API/CDN（api.github.com/.../releases/assets/<id>）取同一份清单
+```
+
+- **备路不是第二真源**：两条路取到的是**同一个 Release asset**。schema、校验、semver 比较
+  完全共用同一套代码（`runtime/update-manifest.js` + `runtime/update-check.js`），没有第二份实现。
+- **只在「没拿到完整响应实体」时启用**。一旦拿到过响应，其后任何问题——404、403、
+  429 限流、非法 JSON、schema 不符、hash 非法、installer URL / 版本 / 资产身份不一致、
+  跳转目标不在白名单——都是 **hard failure**，如实降级为「本次无更新信息」，
+  **绝不换路径重试**（换路径等于让第二条路推翻一条校验结论）。
+  实现上是一个可审计的等式：`fallbackAllowed(result) === (result.outcome === 'network')`。
+- **跳转白名单**：`github.com`、`api.github.com`、`objects.githubusercontent.com`、
+  `release-assets.githubusercontent.com`。**每一跳**都校验（重定向由代码手动跟随，不交给
+  HTTP 客户端自动跟随），跳到白名单外即安全拒绝，且不构成走备路的理由。
+- **无需任何凭据**：匿名只读，不引入 token / 登录 / 额外配置。API 限额 60 次/小时/IP，
+  只在 primary 网络失败时消耗，且不重试。
+
 ---
 
 ## 3. 清单长什么样
@@ -187,7 +215,10 @@ manifest.version           ==  tag 去掉 v 前缀
 
 ## 8. 分发可达性的实测记录（诚实提示）
 
-U1 期间在本机（中国大陆网络）实测的连通性，供发布与排障参考：
+同一台机器（中国大陆网络）**两次**实测，结果不同——所以它记录的是「某时刻的观测」，
+而不是「网络的稳定属性」。
+
+**U1 期（2026-09-10 上午）**
 
 | 主机 | 结果 |
 |---|---|
@@ -198,11 +229,46 @@ U1 期间在本机（中国大陆网络）实测的连通性，供发布与排�
 | `raw.githubusercontent.com` | ❌ 连接超时 |
 | `codeload.github.com` | ❌ 连接超时 |
 
-含义：`/releases/latest/download/...` 这个入口在部分网络下不可达，而 **API 端点与资产
-落点是通的**。U-D1 冻结的清单地址保持不变（它是规范地址）；客户端（U2/U3）必须做到
-**任何网络失败都 fail-open**（更新检查失败绝不影响启动），并在入口不可达时如实降级，
-而不是把「检查更新失败」变成一个错误弹窗。此事实同时说明：**更新检查绝不能进入
-launcher 的启动关键路径**。
+**U2 期（同日稍后，重测）**
+
+| 主机 | 结果 |
+|---|---|
+| `github.com` | ✅ 302（1.6 s）→ `.../releases/download/v1.0.0/...` |
+| `api.github.com` | ✅ 200（0.6 s） |
+| `objects.githubusercontent.com` | ✅ 299 ms（下方的 404 是「该路径不存在」，不是网络失败） |
+| `release-assets.githubusercontent.com` | ✅ 299 ms（同上） |
+| `raw.githubusercontent.com` | ✅ 200（0.7 s） |
+| `codeload.github.com` | ✅ 200（0.6 s） |
+
+**结论**：该网络对 `github.com` 是**间歇性**可达，而非稳定阻断。因此
+
+1. **primary 仍然是 primary**：常规路径直接给出结果、零 API 限额，不因为偶发阻断就常驻走 API；
+2. **回退必须存在，且必须廉价**：只在 primary 连一个完整响应实体都拿不到时才启用（U-D1 Revised）；
+3. 更新检查**绝不能进入 launcher 启动关键路径**，一切网络失败必须 fail-open。
+
+### 当前 Stable 通道的实际状态（U2 实测，重要）
+
+已发布的 `v1.0.0` release 只有两个资产：
+
+| 资产 | 大小 | API `digest` |
+|---|---|---|
+| `InternalBeyond-Setup-1.0.0.exe` | 50,724,579 B | `sha256:5f7353b8f787f8147d1fba937e155e0ef34de7aef5e73d369c821013b6f3b7e0` |
+| `SHA256SUMS.txt` | 406 B | `sha256:b8ffd16f…` |
+
+**没有 `update-stable.json`**（该 release 早于 U1 的清单能力；`digest` 与 U1 记录一致，
+说明 exe 未变）。因此今天 primary 返回 **404**，而 API 回退也找不到该资产，
+客户端如实报告 `no-information`（「暂时无法检查更新」），**不会**谎报「已是最新」。
+
+这是对「hard failure 不回退」的**实测验证**：primary 的 404 是一个**响应**，所以客户端
+**没有**改走 API——走 API 也只会再失败一次，纯属浪费限额。API 回退路径本身也在 U2 用
+「primary 注入网络失败 + API 真实请求」跑通过：API 返回真实 v1.0.0 数据，`selectManifestAsset()`
+以 `release has no asset named update-stable.json` 正确拒绝。
+
+**要让自动更新真正生效，必须先发布一个带 `update-stable.json` 的 release**（顺序见 §2）。
+在此之前 U2 的可观测结果只有 `no-information`——这是设计正确的失败姿势，不是缺陷。
+
+API 匿名限额实测：`x-ratelimit-remaining: 57/60`（60 次/小时/IP）。回退只在 primary 网络
+失败时消耗它，且**不做重试**（U-D1 Revised 第 7 条）。
 
 ---
 

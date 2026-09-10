@@ -27,6 +27,24 @@
  * installer before replacing files on upgrade. Loopback bind + Origin guard
  * only; there is no unauthenticated remote surface.
  *
+ * GET /__update-check (U2): the browser's only way to ask "is there a newer
+ * version?". It is a THIN endpoint: every decision (transport, validation,
+ * version comparison, caching) lives in runtime/update-check.js, because U-D4
+ * makes Node the single source of truth and forbids the browser from
+ * implementing a second manifest validator or semver compare.
+ *
+ *   · Never runs at startup — nothing here fires a check while booting, so a
+ *     slow or dead network can never delay or break a launch.
+ *   · `?force=1` is the manual check (bypasses the 24 h cache); without it the
+ *     cached answer is served when it is younger than 24 h.
+ *   · Concurrent callers share one round trip (single flight), so a reloaded
+ *     Diagnostics page cannot stampede GitHub.
+ *   · Always HTTP 200 with a status field. "Cannot check" is a normal answer
+ *     ('no-information'), never an error status the UI would have to treat as a
+ *     failure. Failures never write the cache.
+ *   · This is the only outbound request the product makes on its own behalf,
+ *     and it is same-origin guarded like /__shutdown.
+ *
  * Path safety (P7 hardening): requests are resolved inside the served root and
  * hidden/denylisted segments (`.git`, `.env`, `logs`, `node_modules`, ...) are
  * refused outright, so a dev checkout served by this process cannot be walked
@@ -39,6 +57,26 @@ const path = require('path');
 const os = require('os');
 const bootState = require('../runtime/boot-state.js');
 const productVersion = require('../runtime/product-version.js');
+
+/*
+ * The update runtime is loaded DEFENSIVELY, and this is load-bearing.
+ *
+ * The U-series invariant is "更新失败不得阻塞启动" (fail-open). A hard require
+ * would mean a missing or unloadable update module — a partial install, a
+ * mid-refactor checkout, a future edit gone wrong — takes down the static
+ * server, and with it the entire app: the user would see IB simply fail to
+ * start because of a feature they never asked for. So the module is optional
+ * here: without it the server starts normally and /__update-check answers
+ * "no information".
+ */
+let updateCheck = null;
+let updateCheckLoadError = null;
+try {
+  updateCheck = require('../runtime/update-check.js');
+} catch (err) {
+  updateCheck = null;
+  updateCheckLoadError = 'the update runtime could not be loaded: ' + String((err && err.message) || err);
+}
 
 /* Served web root == repository root (and == installed app root). This file
    lives in services/, so the root is one level up — never __dirname itself,
@@ -121,7 +159,11 @@ function resolveRequest(root, urlPath) {
 /* Same origin policy as the runner's restart control plane: local callers (no
    Origin), file:// pages and loopback origins are allowed; anything else is
    denied. This server is loopback-bound, so this only defends against a
-   browser page on a foreign origin. */
+   browser page on a foreign origin.
+   Shared by BOTH control endpoints: /__shutdown and /__update-check (which
+   reaches out to the network, so a foreign page must never be able to trigger
+   it — that would be free GitHub API quota for anyone who can get the user to
+   open a page). */
 function shutdownOriginAllowed(req) {
   const origin = String(req.headers.origin || '').trim();
   if (!origin) return true;
@@ -211,6 +253,65 @@ function createWebServer(opts) {
         'Cache-Control': 'no-store'
       });
       res.end(body);
+      return;
+    }
+    if (pathname === '/__update-check') {
+      if (req.method !== 'GET' && req.method !== 'POST') {
+        res.writeHead(405, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: 'method-not-allowed' }));
+        return;
+      }
+      if (!shutdownOriginAllowed(req)) {
+        res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: 'origin-denied' }));
+        return;
+      }
+      /* Manual check = force. Anything else may be served from the 24 h cache.
+         A malformed query string is simply "not forced". */
+      let force = false;
+      try {
+        const q = new URL(String(req.url || '/'), 'http://127.0.0.1').searchParams;
+        force = q.get('force') === '1' || q.get('force') === 'true';
+      } catch (e) { force = false; }
+
+      const respond = function (payload) {
+        /* The client may have navigated away while we were on the network. */
+        if (res.writableEnded || res.destroyed) return;
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(payload));
+      };
+
+      /* "Cannot check" is always a 200 with a status in the body — never a
+         status code the UI would have to interpret as a failure. */
+      const respondNoInformation = function (kind, message) {
+        respond({
+          ok: false,
+          /* Frozen literal, used only when the module is unavailable and its
+             constant therefore cannot be read. Same value, same contract. */
+          status: updateCheck ? updateCheck.STATUS_NO_INFORMATION : 'no-information',
+          updateAvailable: false,
+          currentVersion: '',
+          latestVersion: '',
+          fromCache: false,
+          transport: '',
+          checkedAt: '',
+          error: { kind: kind, message: message },
+          update: null
+        });
+      };
+
+      if (!updateCheck) {
+        respondNoInformation('update-module-unavailable', updateCheckLoadError);
+        return;
+      }
+
+      updateCheck.checkShared({ force: force }).then(function (result) {
+        respond(updateCheck.summarize(result));
+      }, function (err) {
+        /* check() never rejects, and this branch exists so a future bug cannot
+           leave a Diagnostics request hanging forever. */
+        respondNoInformation('internal-error', String((err && err.message) || err));
+      });
       return;
     }
     const hit = resolveRequest(root, req.url);

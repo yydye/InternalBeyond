@@ -47,6 +47,7 @@ const ENTRIES = [
   { from: 'VERSION', why: '单一发行版本源' },
   { from: 'runtime/product-version.js', why: '版本解析（launcher / 静态服务 / 构建脚本共用）' },
   { from: 'runtime/update-manifest.js', why: '更新清单契约（客户端校验 manifest / 解析 installer URL；构建期由 build-installer.ps1 生成清单）' },
+  { from: 'runtime/update-check.js', why: '更新检查运行时（Node 侧唯一真源：传输 + 校验 + semver 比较 + 24h 缓存；/__update-check 端点使用）' },
   { from: 'runtime/boot-state.js', why: '启动记录（P2 诊断唯一来源）' },
   { from: 'runtime/launch-internal-beyond.js', why: '正式静默启动链（快捷方式最终执行）' },
   { from: 'runtime/local-services-runner.js', why: '本地服务管理进程（Bridge / Active + 重启与停止控制面）' },

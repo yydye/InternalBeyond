@@ -330,6 +330,65 @@ check('the module stays dependency-free (ships inside the payload)', () => {
   }
 });
 
+/* ── [8] transport routes (U-D1 Revised) ────────────────────────────────── */
+console.log('\n[8] transport routes (U-D1 Revised)');
+
+check('the revision did NOT move the frozen stable manifest URL', () => {
+  /* The whole point of U-D1 Revised is that the canonical address and the
+     publish order are untouched; only an extra transport route was added. */
+  assert.strictEqual(um.MANIFEST_URL,
+    'https://github.com/yydye/InternalBeyond/releases/latest/download/update-stable.json');
+  assert.strictEqual(um.MANIFEST_ASSET, 'update-stable.json');
+  assert.deepStrictEqual(um.ALLOWED_HOSTS, ['github.com'],
+    'the manifest-declared host allowlist must not be widened by the transport revision');
+});
+
+check('the API route is the frozen endpoint, anonymously readable', () => {
+  assert.strictEqual(um.API_BASE, 'https://api.github.com');
+  assert.strictEqual(um.API_LATEST_RELEASE,
+    'https://api.github.com/repos/yydye/InternalBeyond/releases/latest');
+  assert.strictEqual(um.API_VERSION_HEADER, '2022-11-28');
+  assert.ok(um.API_LATEST_RELEASE.indexOf('?') < 0, 'no query string: the endpoint is exactly this');
+});
+
+check('the transport allowlist is exactly the four documented hosts', () => {
+  assert.deepStrictEqual(um.TRANSPORT_HOSTS.slice().sort(),
+    ['api.github.com', 'github.com', 'objects.githubusercontent.com', 'release-assets.githubusercontent.com']);
+  for (const h of um.TRANSPORT_HOSTS) {
+    assert.ok(/^[a-z0-9.-]+$/.test(h), 'host must be a bare hostname: ' + h);
+  }
+});
+
+check('assetApiUrl() is the only asset-routing constructor', () => {
+  assert.strictEqual(um.assetApiUrl(12345),
+    'https://api.github.com/repos/yydye/InternalBeyond/releases/assets/12345');
+  for (const bad of [0, -1, 1.5, 'abc', null, undefined, '', NaN, {}]) {
+    assert.strictEqual(um.assetApiUrl(bad), null, 'must refuse ' + JSON.stringify(bad));
+  }
+});
+
+check('selectManifestAsset() refuses anything not provably the stable manifest', () => {
+  const at = (over) => Object.assign({ draft: false, prerelease: false, tag_name: 'v1.0.1', assets: [{ name: 'update-stable.json', id: 9 }] }, over);
+  assert.strictEqual(um.selectManifestAsset(at({})).ok, true);
+  assert.strictEqual(um.selectManifestAsset(at({})).version, '1.0.1');
+  const rejects = [
+    ['draft', at({ draft: true })], ['draft missing', at({ draft: undefined })],
+    ['prerelease', at({ prerelease: true })], ['prerelease missing', at({ prerelease: undefined })],
+    ['bad tag', at({ tag_name: '1.0.1' })], ['non-semver tag', at({ tag_name: 'v1.0' })],
+    ['no assets array', at({ assets: undefined })], ['empty assets', at({ assets: [] })],
+    ['wrong asset name', at({ assets: [{ name: 'SHA256SUMS.txt', id: 1 }] })],
+    ['case-different name', at({ assets: [{ name: 'Update-Stable.json', id: 1 }] })],
+    ['duplicate asset', at({ assets: [{ name: 'update-stable.json', id: 1 }, { name: 'update-stable.json', id: 2 }] })],
+    ['asset without id', at({ assets: [{ name: 'update-stable.json' }] })],
+    ['not an object', null], ['a string', 'v1.0.1']
+  ];
+  for (const [label, release] of rejects) {
+    const r = um.selectManifestAsset(release);
+    assert.strictEqual(r.ok, false, 'must refuse ' + label);
+    assert.ok(r.why, 'a refusal must say why: ' + label);
+  }
+});
+
 /* ── cleanup ────────────────────────────────────────────────────────────── */
 try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (e) { /* best effort */ }
 

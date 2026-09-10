@@ -125,6 +125,50 @@ Moments "output unparseable" 根因是推理型模型把 maxTokens=900 耗在 re
 - 发布顺序固定：`...exe` → `SHA256SUMS.txt` → `update-stable.json`（**LAST**）。
   上传清单 = 该版本正式进入 Stable 通道。
 
+### U-D1 Revised · 传输回退（2026-09-10 用户正式修订，**不覆盖**上面原决策）
+
+> 修订原因（实测事实，不是推测）：U1 期在本机（中国大陆网络）实测 `github.com` /
+> `raw.githubusercontent.com` / `codeload.github.com` **连接超时（10 s）**，而
+> `api.github.com` ✅、`objects.githubusercontent.com` ✅、`release-assets.githubusercontent.com` ✅。
+> 若严格只走 `releases/latest/download/...`，则在这类网络下更新检查永远失败——功能等于不存在。
+> 上面 U-D1 的**规范地址与发布顺序不变**；本条只追加**传输回退**，并把回退的边界钉死。
+>
+> **U2 期更正（诚实记录，规则不变）**：U2 实现期在**同一台机器**重新实测，`github.com`
+> 已可达（302，1.6 s），`raw.githubusercontent.com` / `codeload.github.com` 也恢复 200。
+> 即 U1 观测到的**不是网络的稳定属性，而是间歇性阻断**。这不削弱本修订，反而加强它：
+> 「有时通、有时不通」的入口正是必须有后备路径的情形；同时因为**常规路径仍然更快**
+> （primary 1.6 s 内直接给出结果，且零 API 限额），primary 的地位不变。实测细节见
+> [RELEASE.md](RELEASE.md) §8。
+
+1. **Primary transport 不变**：`https://github.com/yydye/InternalBeyond/releases/latest/download/update-stable.json`。
+   常规路径零 API 限额。
+2. **只有 primary 发生 transport / network-level failure 时才允许 fallback**，即**根本没有拿到
+   HTTP response**：DNS 失败 · 连接超时 · 连接被重置 · 不可达（host/net unreachable）·
+   跳转 hop 的传输层失败（超时/DNS/重置）· 其他明确无法取得 HTTP response 的网络错误。
+3. **Fallback 一律走 GitHub Releases API**：`GET https://api.github.com/repos/yydye/InternalBeyond/releases/latest`，
+   且只接受：`draft === false`、`prerelease === false`、asset 名**精确等于** `update-stable.json`；
+   再经 asset API/CDN 端点下载该 manifest。
+4. **以下情况禁止 fallback（hard validation failure）**，必须 fail-open 为「本次无更新信息」，
+   **不得换路径绕过**：primary 已返回 HTTP response 但 manifest schema 非法 · `sha256` 字段非法 ·
+   installer URL / asset identity 不一致 · version / productVersion 不一致 · manifest 安全校验失败 ·
+   **跳转目标不在传输层白名单内（安全拒绝）** · 拿到任何 HTTP 错误状态码（含 404 / 403 / 429）。
+   判定原则一句话：**没能完整取到一份 HTTP response 实体 = 允许回退；已经完整取到实体 = 其后
+   任何问题都是 hard failure，且不得再换路径。**（响应头已到但实体读失败/被 RST 属「没取到实体」，
+   即传输层失败——这正是上面第 2 条「连接被重置」的适用情形。）
+   实现上这条规则压缩成一个可审计的等式：
+   `fallbackAllowed(result) === (result.outcome === 'network')`
+   ——`outcome` 只有 `response` / `network` / `protocol` 三种，回退只在 `network` 成立。
+   实测（U2）：对真实 404 的 primary 响应**没有**触发回退（见 RELEASE.md §8）。
+5. **API fallback 不是第二真源**：primary 与 API 最终取到的都是**同一个 Release asset**
+   （`update-stable.json`）。API 只提供一条到达同一字节的替代路径，schema/校验/比较逻辑完全共用。
+6. U2 其余约束不变：Node 侧唯一 manifest validator、Node 侧唯一 semver compare、24h cache、
+   手动检查绕过 cache、**检查失败绝不进入 launcher 启动关键路径**、GitHub API 失败/限流也只视为
+   「本次无更新信息」。
+7. **不因回退引入 GitHub token、登录或任何额外配置**（匿名只读；`/repos/.../releases/latest`
+   匿名限额 60 次/小时/IP，仅在 primary 网络失败时消耗）。
+8. U1 的 `installer.url` / `version` / `hash` / `size` / `productVersion` 一致性约束**全部保留**；
+   回退路径下这四条校验一字不改。
+
 ### U-D2 · UI 落点
 
 Update UI 放入现有 **Diagnostics** 页，**不新建 Settings / Update 页面**。展示当前版本、更新通道

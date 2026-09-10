@@ -46,7 +46,9 @@ InternalBeyond/  # 仓库根目录（根只放入口 / 许可 / 版本 / 元数�
 │   ├── launch-internal-beyond.js# 正式静默启动链（快捷方式最终执行）
 │   ├── local-services-runner.js # Bridge + Active 统一控制器 + 23116 重启/停止控制面
 │   ├── boot-state.js            # 启动状态记录（诊断唯一来源）
-│   ├── product-version.js       # VERSION 的唯一 Node 侧解析器
+│   ├── product-version.js       # VERSION 的唯一 Node 侧解析器 + 唯一 semver compare（U-D4）
+│   ├── update-manifest.js       # 更新清单契约（U1）：schema / 唯一 URL 构造 / validate / parseInstallerUrl
+│   ├── update-check.js          # 更新检查运行时（U2）：传输 + 回退门 + 缓存 + fail-open
 │   └── node/                    # 内置 Node 运行时（node.exe 不入库，由 scripts/update-node-runtime.ps1 下载）
 ├── bridge/                      # Bridge 工厂模块
 │   ├── util.js                  # deepMerge / backupBrokenFile / uid / todayStr / constantTimeTokenMatch / parseQuery
@@ -704,6 +706,9 @@ Coread 与 Cinema 不各自为政，统一跑在这套运行时上，天然可�
 - `test_provider_presentation.js`（P17，纯 Node，104 项）：presentation 读取面与顺序 / 分组、两个消费方不存在第二份 order·hint 表、HTML 只剩 1 个 fallback、`social.js` 下拉构建（抽出真实函数 + 最小 DOM shim：选项顺序/分组/文案、默认值、编辑恢复、未知 legacy provider 补占位、目录缺失保留 fallback）、临时目录副本验证「新增 provider 自动出现 / `showIn*` 隐藏 / 无呈现条目也出现」、`custom` 兼容模式语义、目录不含重复 endpoint·format·model、以及 boundary guard 的正负例（真实子进程）。
 - `test_harness_boundary.js`（P17 扩充）：DOM 检测在「注释 + 字符串字面量挖空」后的代码上运行，并单列 `window['document']` 形态；自带 6 个负例（URL / 文案含 document·navigator 不报错）与 8 个正例（真实 DOM 访问仍报错）。
 
+- `test_update_manifest.js`（U1，纯 Node，38 项，不联网）：更新清单契约——schema/键序、`build()` 的诚实性（`releasedAt`/`notes` 缺失即省略、绝不编造时间戳）、`validate()` 接受/拒绝矩阵（含 URL 与版本必须互相钉死、`sizeBytes` 合理区间）、`parseInstallerUrl()`、`writeManifest()` 拒绝落盘、构建端不得自行拼 tag/资产名、无执行面、依赖收敛；U2 追加 **U-D1 Revised 传输路由**（冻结地址未被改动、API 端点与版本头、传输白名单四个主机、`assetApiUrl()` 唯一构造、`selectManifestAsset()` 对 draft/prerelease/资产名的严格接受与拒绝）。
+- `test_update_check.js`（U2，纯 Node，50 项，**不联网**）：回退门（`fallbackAllowed() === (outcome === 'network')`，且所有 hard failure **一次都不碰** API 路）、网络错误分类到冻结种类、每个跳转 hop 的白名单校验、唯一 semver 比较（数值而非字典序、非法输入返回 null、浏览器侧无第二实现）、24h 缓存（恰好 24h 才过期/手动 `force` 绕过并刷新/校验失败的缓存只算未命中/**失败绝不缓存**/缓存写在 `{app}` 之外/写不进只是 warning）、fail-open（transport 抛异常、reject、返回垃圾都只得到 `no-information`，绝不抛出）、单飞（并发自动检查共用一次往返，手动检查不并入）、`GET /__update-check` 的**真实服务器**行为（启动时 0 次检查、`?force=1`、异源 403、非 GET/POST 405、永远 200、`summarize()` 投影精确且不转发原始 manifest internals），以及接线（发行白名单、启动链不引用、test-all 登记）。
+
 ### service 组
 
 - `test_bridge.js`（82 项断言，零依赖）：健康/CORS/心语 CRUD/上下文/地理/通用会话/AI 常驻(/continue/并发锁/主动消息)/TTS 未配置 503/表情与路径穿越/无效音乐 ID/WS 工具调用/Origin/token/配置自愈/推送历史/Anthropic/Gemini mock 校验/TTS mock 全链路/重启恢复/定时器恢复/数据损坏备份。
@@ -719,3 +724,65 @@ Coread 与 Cinema 不各自为政，统一跑在这套运行时上，天然可�
 
 - mock 服务器端口 0 自动分配（`listenFree`）；测试端口 `usedPorts` 去重；Bridge 启动 EADDRINUSE 自动换端口重试。
 - CDP 测试通用手法与坑（confirm 阻塞、textContent vs innerText、fire-and-forget 审批 Promise 等）见 [TROUBLESHOOTING.md](TROUBLESHOOTING.md) §测试。
+
+## 13. 更新机制（Zero-Touch Update）
+
+> 发布侧契约（产物、上传顺序、清单字段、构建期闸门、安全边界）见 [RELEASE.md](RELEASE.md)；
+> 架构决策见 [DECISIONS.md](DECISIONS.md) U 系列。本节只讲**客户端这一侧的形状**。
+>
+> 进度：**U1（发布契约）+ U2（检查运行时）已实现**；U3（下载/安装）与 U4（Diagnostics UI）待做。
+
+### 三个真源，各自唯一
+
+| 关注点 | 唯一真源 | 谁可以用 |
+|---|---|---|
+| 清单 schema / URL 构造 / 校验 / 解析 | `runtime/update-manifest.js` | 构建脚本（构造）、Node 侧（校验）、测试 |
+| 版本解析与 **semver 比较** | `runtime/product-version.js`（`parse` / `compare`） | Node 侧任意模块；浏览器**不得**再实现一份 |
+| 检查（传输 / 回退 / 缓存 / 判定） | `runtime/update-check.js` | `services/internal-beyond-server.js` 的端点；U3 复用其解析结果 |
+
+浏览器只渲染。U4 的诊断页不实现传输、不实现 manifest 校验、不实现版本比较——它只调
+`GET /__update-check` 并把返回的投影画出来（`notes` 必须以 `textContent` 渲染，**永不 innerHTML**）。
+
+### 检查路径
+
+```
+浏览器  GET /__update-check[?force=1]        （同源守卫：file:// / loopback 允许，其余 403）
+   │
+   └─► runtime/update-check.js  check() / checkShared()（单飞：并发自动检查共用一次往返）
+          ├─ 缓存（24h，%LOCALAPPDATA%\InternalBeyond\update-check.json；force 绕过；失败不写）
+          ├─ primary  https://github.com/.../releases/latest/download/update-stable.json
+          └─ 仅当 primary 连完整响应实体都没拿到 ──► fallback  GitHub Releases API
+                                                        （draft/prerelease 必须为 false、资产名精确匹配）
+```
+
+### 五条不可动摇的性质
+
+1. **不在启动关键路径上**：`launch-internal-beyond.js` 与 `local-services-runner.js` 都不引用
+   更新模块；`createWebServer()` **不做任何检查**（有测试守着：启动后 0 次）。启动永远不会
+   因为网络而变慢或失败。
+2. **fail-open**：`check()` 永不抛出、永不返回"非答案"。每条失败路径都归到
+   `no-information`，UI 显示"暂时无法检查更新"，绝不变成错误弹窗。端点永远 HTTP 200
+   （失败也在 body 的 `status` 里，不在状态码里）。**更新模块本身是静态服务的"可选依赖"**
+   （defensive require）：模块缺失或加载失败时服务器照常启动、端点降级为
+   `update-module-unavailable`，绝不让更新功能把整个 App 拖下水。
+3. **拿到过响应就不换路**：回退条件压缩成一个可审计等式
+   `fallbackAllowed(result) === (result.outcome === 'network')`。404 / 403 / 429 / 非法 JSON /
+   schema 不符 / hash 非法 / 身份不一致 / 跳转出白名单 —— 全部是终局，**不重试、不换路**。
+   回退本身也只走一次，不做重试循环。
+4. **手动优先于缓存，缓存优先于网络**：`?force=1`（用户在 UI 点"检查更新"）绕过 24h 缓存并
+   刷新它；反之自动检查先用缓存，避免每次开面板都打 GitHub。
+5. **无凭据**：匿名只读，不发送 token/Authorization，不读任何 `*_TOKEN` 环境变量。API 限额
+   （60 次/小时/IP）只在 primary 网络失败时消耗。
+
+### 端点对外形状（U4 契约）
+
+`GET /__update-check` 返回 `runtime/update-check.js` 的 `summarize()` 投影，字段固定：
+
+```
+{ ok, status, updateAvailable, currentVersion, latestVersion,
+  fromCache, transport, checkedAt, error: {kind, message}|null,
+  update: {version, releasedAt, minimumVersion, notes, notesUrl, sizeBytes, sha256}|null }
+```
+
+`status` ∈ `update-available` / `up-to-date` / `no-information`。**原始 manifest、attempts、
+warnings 一律不转发**（有测试断言精确键集），所以 UI 不可能意外依赖内部结构。

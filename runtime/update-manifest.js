@@ -10,8 +10,8 @@
  * Who uses this file:
  *   scripts/build-installer.ps1  → --write: assemble dist\update-stable.json
  *                                  from the bytes it just produced
- *   services/internal-beyond-server.js (U2) → validate / parseInstallerUrl
- *                                  on the fetched manifest (client side)
+ *   runtime/update-check.js (U2) → validate / parseInstallerUrl on the fetched
+ *                                  manifest, plus the API route constants below
  *   tests/test_update_manifest.js → the contract itself
  *
  * Division of labour (deliberate, do not blur it):
@@ -62,6 +62,88 @@ const MANIFEST_URL = RELEASES_BASE + '/latest/download/' + MANIFEST_ASSET;
    .com / release-assets.githubusercontent.com) is a transport concern, not part
    of the declared contract, so it is not listed here. */
 const ALLOWED_HOSTS = ['github.com'];
+
+/* ── Transport routes (U-D1 Revised) ──────────────────────────────────────── */
+
+/*
+ * The API route exists ONLY because `github.com` is unreachable on some
+ * networks while `api.github.com` and the asset CDN are reachable (measured,
+ * see docs/RELEASE.md §8). It is NOT a second source of truth: both routes end
+ * at the same Release asset, `update-stable.json`.
+ *
+ * Who may take the API route is decided by runtime/update-check.js, and the rule
+ * is exactly one line: only when the primary route produced no complete HTTP
+ * response entity at all. Anything else — a bad schema, a bad hash, a 404 — is a
+ * hard failure that must degrade to "no update information" and must NOT be
+ * retried down another path (docs/DECISIONS.md, U-D1 Revised).
+ *
+ * No token, no login, no configuration: anonymous read-only.
+ */
+const API_BASE = 'https://api.github.com';
+const API_LATEST_RELEASE = API_BASE + '/repos/' + REPO + '/releases/latest';
+const API_VERSION_HEADER = '2022-11-28';
+
+/* Every host the updater's transport may talk to — the initial request AND every
+   redirect hop. A redirect to anything else is refused as a security failure
+   (never silently followed, never a reason to try the other route). */
+const TRANSPORT_HOSTS = [
+  'github.com',
+  'api.github.com',
+  'objects.githubusercontent.com',
+  'release-assets.githubusercontent.com'
+];
+
+/* The asset route: api.github.com redirects this to the release-assets CDN,
+   which is what makes the fallback work where github.com is blocked. */
+function assetApiUrl(assetId) {
+  const id = Number(assetId);
+  if (!Number.isInteger(id) || id <= 0) return null;
+  return API_BASE + '/repos/' + REPO + '/releases/assets/' + id;
+}
+
+/*
+ * Pick the stable manifest asset out of a `GET /releases/latest` payload.
+ *
+ * Accepts the release ONLY when it is a published, non-prerelease release that
+ * carries exactly one asset named `update-stable.json`. Missing `draft` /
+ * `prerelease` count as "not proven false" and are refused: a draft or a
+ * prerelease leaking onto the Stable channel would hand users a version we never
+ * meant to publish, so the check is affirmative, not defaulting.
+ *
+ * Returns { ok, why, assetId, tag, version, release }.
+ */
+function selectManifestAsset(release) {
+  const fail = function (why) {
+    return { ok: false, why: why, assetId: null, tag: null, version: null, release: null };
+  };
+  if (!isPlainObject(release)) return fail('release payload is not a JSON object');
+  if (release.draft !== false) return fail('release is not proven published (draft !== false)');
+  if (release.prerelease !== false) return fail('release is not proven stable (prerelease !== false)');
+
+  const tag = String(release.tag_name == null ? '' : release.tag_name).trim();
+  if (tag.indexOf(TAG_PREFIX) !== 0) return fail('release tag must start with "' + TAG_PREFIX + '": ' + tag);
+  const parsed = productVersion.parse(tag.slice(TAG_PREFIX.length));
+  if (!parsed) return fail('release tag is not vMAJOR.MINOR.PATCH: ' + tag);
+
+  if (!Array.isArray(release.assets)) return fail('release payload has no assets array');
+  const matches = release.assets.filter(function (a) {
+    return isPlainObject(a) && String(a.name) === MANIFEST_ASSET;
+  });
+  if (matches.length === 0) return fail('release has no asset named ' + MANIFEST_ASSET);
+  if (matches.length > 1) return fail('release has ' + matches.length + ' assets named ' + MANIFEST_ASSET + '; ambiguous');
+
+  const url = assetApiUrl(matches[0].id);
+  if (!url) return fail('asset ' + MANIFEST_ASSET + ' has no usable id: ' + JSON.stringify(matches[0].id));
+
+  return {
+    ok: true,
+    why: null,
+    assetId: Number(matches[0].id),
+    tag: tag,
+    version: parsed.version,
+    release: { tag: tag, name: String(release.name == null ? '' : release.name) }
+  };
+}
 
 /* Sanity bounds for installer.sizeBytes. Not a security control — a guard
    against a truncated or nonsense manifest. The payload always carries the
@@ -333,6 +415,12 @@ module.exports = {
   MANIFEST_ASSET: MANIFEST_ASSET,
   MANIFEST_URL: MANIFEST_URL,
   ALLOWED_HOSTS: ALLOWED_HOSTS,
+  API_BASE: API_BASE,
+  API_LATEST_RELEASE: API_LATEST_RELEASE,
+  API_VERSION_HEADER: API_VERSION_HEADER,
+  TRANSPORT_HOSTS: TRANSPORT_HOSTS,
+  assetApiUrl: assetApiUrl,
+  selectManifestAsset: selectManifestAsset,
   NOTES_MAX_CHARS: NOTES_MAX_CHARS,
   BUILD_FIELDS: BUILD_FIELDS,
   MIN_PLAUSIBLE_INSTALLER_BYTES: MIN_PLAUSIBLE_INSTALLER_BYTES,

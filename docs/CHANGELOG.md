@@ -799,3 +799,82 @@ ANSI 解码 `build-installer.ps1` 的中文提示，直接导致**整个构建�
 
 验证：`test_update_manifest.js` 33 ✔、`test_installer.js` 46 ✔、
 `test_installer_build.js --force` 15 ✔（真实 ISCC 构建 34 s，产出清单自校验通过，**未安装任何东西**）。
+
+## 2026-09-10 · U2 · 更新检查运行时（U-D1 Revised 传输回退 + 24h 缓存 + fail-open）
+
+Zero-Touch Update 第二阶段。U1 让"最新版是什么、它的字节是什么"变成机器可读；U2 把它变成
+**产品真的会去问的问题**——并把这件事**完全放在 Node 侧**（U-D4：检查、manifest 校验、semver
+比较、缓存全部由 Node 完成，浏览器只渲染；U4 的诊断页不得出现第二份实现）。
+
+### U-D1 Revised（用户正式修订，原决策历史保留）
+
+U1 期实测 `github.com` 连接超时，据此用户裁定：**主路不变**（仍是冻结的
+`https://github.com/yydye/InternalBeyond/releases/latest/download/update-stable.json`），
+**只在主路连一个完整 HTTP response 实体都拿不到时**回退到 GitHub Releases API
+（`GET /repos/yydye/InternalBeyond/releases/latest`，只接受 `draft === false`、
+`prerelease === false`、资产名精确等于 `update-stable.json`，再经资产 API/CDN 取同一份清单）。
+**拿到过响应就绝不回退**：404 / 403 / 429 / 非法 JSON / schema 不符 / hash 非法 /
+identity 不一致 / 跳转出白名单，一律 hard failure → 如实降级为"本次无更新信息"，不换路径重试。
+备路不是第二真源（两条路取到同一个 Release asset，共用同一套校验与比较），且**不引入任何
+token / 登录 / 额外配置**。DECISIONS 以「U-D1 Revised」独立小节记录，未覆盖原文。
+
+**U2 期更正（诚实记录）**：U2 实现期在同一台机器重测，`github.com` 已可达（302，1.6 s），
+`raw.githubusercontent.com` / `codeload.github.com` 也恢复 200——U1 观测到的是**间歇性阻断**，
+不是网络的稳定属性。这不削弱该修订，反而加强它（"有时通有时不通"正是必须有备路的情形），
+同时说明 primary 应当保持 primary（常规路径更快、零 API 限额）。
+
+### 新增
+
+- **`runtime/update-check.js`（新增，检查运行时唯一真源）**：`check()` / `checkShared()`（单飞）、
+  可注入 transport/时钟/缓存路径；真实 transport 手写 `https` 请求并**手动跟随后端跳转**，
+  **每一跳**都校验主机白名单（`github.com` / `api.github.com` /
+  `objects.githubusercontent.com` / `release-assets.githubusercontent.com`）——交给 HTTP 客户端
+  自动跟随就会跟出白名单。回退门被压缩成一个可审计等式：
+  `fallbackAllowed(result) === (result.outcome === 'network')`，`outcome` 只有
+  `response` / `network` / `protocol` 三种。网络错误分类到冻结种类（dns / connect-timeout /
+  reset / refused / unreachable / tls / socket）。永不抛出、永不给"非答案"；24h 缓存
+  （**失败绝不缓存**、缓存写不进只是 warning、读回时重新校验，坏缓存只算未命中）；
+  `summarize()` 给出 UI 用的固定投影（原始 manifest / attempts / warnings 不转发）。
+- **更新模块是"可选依赖"**：静态服务对 `runtime/update-check.js` 用 **defensive require**——更新模块
+  缺失/加载失败（半装、重构中的 checkout、改错的将来）时，服务器照常启动、`/__update-check`
+  降级为 `update-module-unavailable` + `no-information`，**绝不让更新功能把整个 App 拖下水**
+  （这正是"更新失败不得阻塞启动"这条冻结不变量的字面落实；有测试用 Module.require 注入
+  加载失败来验证）。
+- **`GET /__update-check`（`services/internal-beyond-server.js`，薄端点）**：启动时**不跑任何检查**
+  （有测试守着：启动后 0 次）；`?force=1` 是手动检查（绕过并刷新缓存）；并发调用共用一次往返；
+  异源 403（与 `/__shutdown` 同一守卫——否则任何网页都能花掉用户的 API 限额）、非 GET/POST 405；
+  **永远 HTTP 200**，失败也在 body 的 `status` 里（UI 不该看到错误状态码）。
+- **`product-version.compare()`（唯一 semver 比较）**：数值逐段比较（`1.10.0 > 1.9.0`，朴素字符串
+  比较会搞反），非法输入返回 `null` 而**不是** 0——把"无法比较"说成"相等"会隐藏坏版本。
+
+### 实测（真机联网，一次性验证，不进测试套件）
+
+- primary 真实请求：`github.com` 302 → `.../v1.0.0/...` → **404**，因为已发布的 `v1.0.0`
+  release **没有 `update-stable.json`**（该 release 早于 U1 的清单能力；API `digest`
+  `sha256:5f7353b8…` 与 U1 记录一致，exe 未变）。客户端据此如实报 `no-information`，
+  **不谎报"已是最新"**。
+- **回退门被真实数据验证**：primary 的 404 是响应 → **一次都没碰 API**（换路也只是再失败一次）。
+- **回退路径跑通**：注入 primary 网络失败（复现 U1 条件）+ API 真实请求 → API 返回真实 v1.0.0
+  数据，`selectManifestAsset()` 以 `release has no asset named update-stable.json` 正确拒绝。
+- API 匿名限额实测 `x-ratelimit-remaining: 57/60`。
+- **结论（供 U3/U4）**：要让自动更新真正生效，必须先发布一个带 `update-stable.json` 的 release；
+  在此之前 U2 的可观测结果只有 `no-information`——这是设计正确的失败姿势，不是缺陷。
+
+| 文件 | 改动 |
+|---|---|
+| `runtime/update-check.js` | **新增**：检查运行时唯一真源（传输 + 回退门 + 错误分类 + 24h 缓存 + 单飞 + summarize） |
+| `runtime/update-manifest.js` | 新增 U-D1 Revised 传输常量（`API_LATEST_RELEASE` / `API_VERSION_HEADER` / `TRANSPORT_HOSTS` / `assetApiUrl()` / `selectManifestAsset()`）；`ALLOWED_HOSTS` **未放宽** |
+| `runtime/product-version.js` | 新增 `compare()`（产品内唯一 semver 比较）+ 消费方清单更新 |
+| `services/internal-beyond-server.js` | 新增 `GET /__update-check` 薄端点（同源守卫、启动零检查、永远 200）；`shutdownOriginAllowed` 注释说明它现在守两个控制端点 |
+| `scripts/release-manifest.js` | 白名单新增 `runtime/update-check.js` |
+| `tests/test_update_check.js` | **新增** 50 项（不联网：transport 全部注入；服务器测试 patch 掉 `checkShared`，并注入一次 update 模块加载失败验证 fail-open） |
+| `tests/test_update_manifest.js` | 33 → 38 项：新增 [8] 传输路由（冻结地址未被改动、API 端点、白名单、`assetApiUrl`、`selectManifestAsset` 严格接受/拒绝矩阵） |
+| `tests/test-all.js` | 登记 `test_update_check.js`（static，不联网） |
+| `docs/DECISIONS.md` | **新增「U-D1 Revised」**独立小节（原 U-D1 原文保留）；补记 U2 期可达性更正；写明判定等式 |
+| `docs/RELEASE.md` | 新增 §2.1 客户端读取路径（一主一备的判定与白名单）；§8 改为"两次实测"并记录当前 Stable 通道实际状态（v1.0.0 无清单）+ 回退门/回退路径的实测结论 |
+| `docs/ARCHITECTURE.md` | 模块树补两个 runtime 模块；§12 static 组补两条测试说明；**新增 §13 更新机制**（三个真源 / 检查路径 / 五条不可动摇的性质 / 端点对外形状契约） |
+
+验证：`test_update_check.js` 50 ✔、`test_update_manifest.js` 38 ✔、`test_installer.js` 46 ✔，
+受影响的相邻套件不回归：`test_boot_state.js` 37 ✔、`test_diagnostics.js` 120 ✔、
+`test_launcher.js` 16 ✔、`test_installer_mock.js` 26 ✔（1 跳过）、`test_ib_stop_identity.js` 12 ✔、
+`test_frontend_structure.js` ✔、`test_harness_boundary.js` 42 ✔。
