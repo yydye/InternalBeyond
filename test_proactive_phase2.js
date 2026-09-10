@@ -17,7 +17,7 @@ const path = require('path');
 /* trace 必须在 service 构建前开启；通知关闭避免测试触发 OS 通知 */
 process.env.IB_PROACTIVE_TRACE = 'on';
 process.env.IB_ACTIVE_DISABLE_NOTIFICATIONS = '1';
-/* 数据目录隔离（P7 测试隔离契约）：必须在 require('./active-message-service.js') 之前
+/* 数据目录隔离（P7 测试隔离契约）：必须在 require('./services/active-message-service.js') 之前
    设置——service 在 require 时即从 IB_ACTIVE_DATA_DIR 计算 DATA_DIR。否则本套件会读写
    真实的 %LOCALAPPDATA%\InternalBeyond\，并与运行中的实例争抢同一个
    active-message-service.json。与 test_moments_companion.js 使用同一机制。 */
@@ -51,7 +51,7 @@ global.fetch = async (url, opts) => {
   return okJson('一条主动消息正文'); /* 默认 send_ok */
 };
 
-const service = require('./active-message-service.js');
+const service = require('./services/active-message-service.js');
 const createProactiveTrace = require('./active/proactive-trace.js');
 const { sanitizeAiPlan, executePlan, executeTask, getState, setArmed, resetStateForTest, proactiveTrace } = service;
 

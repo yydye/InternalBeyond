@@ -15,7 +15,7 @@ const path = require('path');
    与 test_moments_companion.js / test_active_http.js 使用同一机制，不引入新机制。 */
 process.env.IB_ACTIVE_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-active-plans-'));
 
-const service = require('./active-message-service.js');
+const service = require('./services/active-message-service.js');
 
 const {
   sanitizeAiPlan, parsePlanJson, isInDnd, nextDndFree, validatePlanResult,

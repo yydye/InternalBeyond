@@ -1,5 +1,5 @@
 ﻿/* IB Active · 持久化层：状态加载（主文件 → .tmp → .bak 依次恢复）、原子写入（临时文件 +
-   fsync + 备份轮换）、50ms 合并保存队列。从 active-message-service.js 提取为工厂。
+   fsync + 备份轮换）、50ms 合并保存队列。从 services/active-message-service.js 提取为工厂。
    state 由 composition root 持有（测试钩子 resetStateForTest 会重新赋值），工厂不保存
    state 引用，序列化时经注入的 getState() 读取当前绑定——与 bridge/routes 的 getter 模式一致。
    原逻辑逐字不变。 */

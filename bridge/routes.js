@@ -1,5 +1,5 @@
 /* IB Bridge · HTTP 路由层：JSON 响应 / CORS / 限流 / 请求体解析 / 配置脱敏 /
-   诊断快照 / REST 分发器。从 ib-bridge-service.js 提取为工厂：全部依赖经 ctx 注入。
+   诊断快照 / REST 分发器。从 services/ib-bridge-service.js 提取为工厂：全部依赖经 ctx 注入。
    whispers / geoLatest / letters 在路由内存在重新赋值，通过 getter/setter 注入
    保持与 composition root 的绑定一致；其余状态仅原地变更，按引用注入。
    原逻辑逐字不变。 */

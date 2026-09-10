@@ -14,8 +14,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const WEB = require('./internal-beyond-server.js');
-const LAUNCH_PATH = require.resolve('./launch-internal-beyond.js');
+const WEB = require('./services/internal-beyond-server.js');
+const LAUNCH_PATH = require.resolve('./runtime/launch-internal-beyond.js');
 
 function listen(server) {
   return new Promise((resolve, reject) => {

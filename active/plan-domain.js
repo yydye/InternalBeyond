@@ -1,5 +1,5 @@
 /* IB Active · 计划域：调度计算（nextRun / 免打扰）、setting 与 AI 计划净化器、
-   指纹 / 任务元数据 / 任务运行时替换与取消。从 active-message-service.js 提取为工厂。
+   指纹 / 任务元数据 / 任务运行时替换与取消。从 services/active-message-service.js 提取为工厂。
    state 由 composition root 持有（测试钩子会重新赋值），所有读写经注入的 getState()；
    armedUsers 集合与 saveNow 亦注入。原逻辑逐字不变。 */
 'use strict';

@@ -23,7 +23,13 @@ const os = require('os');
 const path = require('path');
 const { spawn, execFile } = require('child_process');
 
-const ROOT = __dirname;
+/* Repository root == installed app root. This file lives in runtime/, so the
+   root is one level up: the service scripts live in services/, the Windows
+   helper scripts in scripts/windows/. `path.basename(ROOT)` is still used for
+   the process-matching heuristic below and must stay the project directory. */
+const ROOT = path.resolve(__dirname, '..');
+const SERVICE_DIR = path.join(ROOT, 'services');
+const WINDOWS_DIR = path.join(ROOT, 'scripts', 'windows');
 const LOCAL_DIR = process.platform === 'win32' && process.env.LOCALAPPDATA
   ? path.join(process.env.LOCALAPPDATA, 'InternalBeyond')
   : path.join(os.homedir(), '.internal-beyond');
@@ -60,7 +66,7 @@ const SERVICES = [
     port: optionPort('IB_BRIDGE_PORT', 23115),
     endpoint: '/health',
     command: process.execPath,
-    commandArgs: [path.join(ROOT, 'ib-bridge-service.js')],
+    commandArgs: [path.join(SERVICE_DIR, 'ib-bridge-service.js')],
     matchesHealth: data => data && data.server === 'IB Bridge',
     env: {}
   },
@@ -69,7 +75,7 @@ const SERVICES = [
     port: optionPort('IB_ACTIVE_PORT', 23114),
     endpoint: '/health',
     command: process.execPath,
-    commandArgs: [path.join(ROOT, 'active-message-service.js')],
+    commandArgs: [path.join(SERVICE_DIR, 'active-message-service.js')],
     matchesHealth: data => data && data.service === 'internal-beyond-active-messages',
     env: {}
   }
@@ -82,7 +88,7 @@ if (includeVision) {
     endpoint: '/health',
     command: process.platform === 'win32' ? process.env.ComSpec || 'cmd.exe' : 'sh',
     commandArgs: process.platform === 'win32'
-      ? ['/d', '/c', path.join(ROOT, 'start-vision-service.cmd')]
+      ? ['/d', '/c', path.join(WINDOWS_DIR, 'start-vision-service.cmd')]
       : ['-lc', 'echo "Vision helper is currently provided by start-vision-service.cmd on Windows."; exit 1'],
     matchesHealth: data => data && data.service === 'internal-beyond-vision',
     env: {}

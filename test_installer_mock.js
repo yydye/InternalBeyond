@@ -34,7 +34,7 @@ const ROOT = __dirname;
 const VBS_NAME = '启动 InternalBeyond.vbs';
 const VBS = path.join(ROOT, VBS_NAME);
 const ISS = path.join(ROOT, 'installer', 'InternalBeyond.iss');
-const LAUNCH_PATH = require.resolve('./launch-internal-beyond.js');
+const LAUNCH_PATH = require.resolve('./runtime/launch-internal-beyond.js');
 const ibStop = require('./installer/tools/ib-stop.js');
 
 let pass = 0, fail = 0;
@@ -170,12 +170,12 @@ console.log('\n[3] stop helper selection (mocked, no process is touched)');
    answers on the same product ports. */
 const INSTALL_ROOT = 'C:\\Temp\\ib-p7-smoke\\install-1';
 const table = [
-  { pid: 101, cmd: '"C:\\Temp\\ib-p7-smoke\\install-1\\runtime\\node\\node.exe" C:\\Temp\\ib-p7-smoke\\install-1\\local-services-runner.js' },
-  { pid: 102, cmd: '"C:\\Temp\\ib-p7-smoke\\install-1\\runtime\\node\\node.exe" C:\\Temp\\ib-p7-smoke\\install-1\\internal-beyond-server.js' },
+  { pid: 101, cmd: '"C:\\Temp\\ib-p7-smoke\\install-1\\runtime\\node\\node.exe" C:\\Temp\\ib-p7-smoke\\install-1\\runtime\\local-services-runner.js' },
+  { pid: 102, cmd: '"C:\\Temp\\ib-p7-smoke\\install-1\\runtime\\node\\node.exe" C:\\Temp\\ib-p7-smoke\\install-1\\services\\internal-beyond-server.js' },
   { pid: 103, cmd: '"C:\\Temp\\ib-p7-smoke\\install-1\\runtime\\node\\node.exe" -e "setTimeout(function(){},600000)"' },
   { pid: 104, cmd: 'C:\\Program Files\\OtherApp\\node.exe server.js' },
   { pid: 105, cmd: 'python.exe C:\\x\\vision\\main.py' },
-  { pid: 106, cmd: 'node.exe C:\\dev\\InternalBeyond-main\\ib-bridge-service.js' }
+  { pid: 106, cmd: 'node.exe C:\\dev\\InternalBeyond-main\\services\\ib-bridge-service.js' }
 ];
 const selected = table.filter(row => ibStop.commandLineIsInternalBeyond(row.cmd)).map(row => row.pid);
 

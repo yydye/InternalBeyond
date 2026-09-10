@@ -1,5 +1,5 @@
 ﻿/* IB Bridge · 轻量 JSON 持久化原语（无状态：只接受文件路径 / 数据目录，不持有业务状态）。
-   从 ib-bridge-service.js 提取为工厂；业务数据（whispers 等）仍由 composition root 持有。
+   从 services/ib-bridge-service.js 提取为工厂；业务数据（whispers 等）仍由 composition root 持有。
    原逻辑逐字不变。 */
 'use strict';
 

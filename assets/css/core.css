@@ -168,8 +168,8 @@ body{font-family:var(--font-ui);font-weight:300;background:var(--bg-deep);color:
 
 /* BACKGROUNDS */
 #bg-internal-img,#bg-infernal-img{position:fixed;inset:0;z-index:0;background-size:cover;background-position:center 40%;background-repeat:no-repeat;transition:opacity 4s cubic-bezier(0.4,0,0.2,1)}
-#bg-internal-img{background-image:url("../../bg-internal.jpg")}
-#bg-infernal-img{background-image:url("../../bg-infernal.jpg");opacity:0}
+#bg-internal-img{background-image:url("../images/bg-internal.jpg")}
+#bg-infernal-img{background-image:url("../images/bg-infernal.jpg");opacity:0}
 body.theme-infernal #bg-internal-img{opacity:0}
 body.theme-infernal #bg-infernal-img{opacity:1}
 #bg-overlay{position:fixed;inset:0;z-index:0;

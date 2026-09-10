@@ -1,5 +1,5 @@
 /* IB Bridge · AI Voice（TTS）：Edge 免费 / OpenAI 兼容 / MiMo 三 provider。
-   从 ib-bridge-service.js 提取为工厂：config / uid / ttsDir（mp3 输出目录）经依赖注入。
+   从 services/ib-bridge-service.js 提取为工厂：config / uid / ttsDir（mp3 输出目录）经依赖注入。
    Voice Profile 基础架构（第二阶段）：Provider Registry + normalizeVoiceProfile +
    ttsSynthesize 统一入口；ttsGenerate 降级为兼容包装（旧位置参数 → 统一管线）。
    第三阶段 A：新增 MiMo（mimo-v2.5-tts）——官方 chat-completions 兼容格式，

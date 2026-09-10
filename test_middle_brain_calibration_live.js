@@ -107,7 +107,7 @@ const mockApi = http.createServer(async (req, res) => {
   const mode = LIVE_MODE ? 'live' : 'mock';
   const provenance = mode === 'live' ? 'live' : 'mock';
 
-  const web = require('./internal-beyond-server.js').createWebServer({ root: __dirname, port: 0 });
+  const web = require('./services/internal-beyond-server.js').createWebServer({ root: __dirname, port: 0 });
   const webPort = await listen(web), webBase = 'http://127.0.0.1:' + webPort;
   const debugPort = await freePort();
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-cal-live-'));

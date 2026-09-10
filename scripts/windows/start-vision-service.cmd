@@ -1,6 +1,9 @@
 @echo off
 setlocal
-cd /d "%~dp0"
+rem 本脚本位于 scripts\windows\，仓库根在上一层两级。
+rem .venv-vision 与 `python -m vision.bootstrap` 都按仓库根解析，故先切到根。
+for %%I in ("%~dp0..\..") do set "IB_ROOT=%%~fI"
+cd /d "%IB_ROOT%"
 
 rem 可移植的 Python 探测：环境变量优先，其次 py 启动器 / python / 常见安装位置，不再依赖本机特定路径。
 set "VISION_PYTHON="

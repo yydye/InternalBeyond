@@ -2,7 +2,7 @@
 
 > 本文给出 IB 记忆系统的**正式定义**：它如何存储、打分、召回、遗忘、固化——以及为什么某些事情"会留下来"。
 > 这是角色**情感连续性**与**社会闭环**（见 [SOCIAL_RUNTIME.md](SOCIAL_RUNTIME.md)）的底层。
-> 关联：[ARCHITECTURE.md](../ARCHITECTURE.md) · [DECISIONS.md](../DECISIONS.md)（D12/D14/D15 记忆相关决策）· CHANGELOG（Ombre Brain 演进）。
+> 关联：[ARCHITECTURE.md](ARCHITECTURE.md) · [DECISIONS.md](DECISIONS.md)（D12/D14/D15 记忆相关决策）· CHANGELOG（Ombre Brain 演进）。
 
 ---
 

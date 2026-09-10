@@ -1,5 +1,5 @@
 ﻿/* IB Bridge · 外部服务客户端：天气（wttr.in）、网易云/酷狗搜索与播放、Bark/ntfy 推送。
-   从 ib-bridge-service.js 提取为工厂：config 与 geoLatest 经依赖注入传入，
+   从 services/ib-bridge-service.js 提取为工厂：config 与 geoLatest 经依赖注入传入，
    避免反向依赖根文件。原逻辑逐字不变。 */
 'use strict';
 

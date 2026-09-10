@@ -32,7 +32,7 @@ const http = require('http');
 const net = require('net');
 const crypto = require('crypto');
 
-const WEB = require('./internal-beyond-server.js');
+const WEB = require('./services/internal-beyond-server.js');
 const ROOT = __dirname;
 
 const GOOD_KEY = 'sk-smoke-ok-123456';

@@ -26,7 +26,7 @@ const { execFileSync } = require('child_process');
 const ROOT = __dirname;
 const manifest = require('./scripts/release-manifest.js');
 const audit = require('./scripts/release-audit.js');
-const productVersion = require('./product-version.js');
+const productVersion = require('./runtime/product-version.js');
 const ibStop = require('./installer/tools/ib-stop.js');
 
 let pass = 0, fail = 0, skip = 0;
@@ -94,18 +94,18 @@ check('Guide version derives from the same source', () => {
   assert.ok(/IB_GUIDE_VERSION/.test(js), 'guide must accept a host-injected product version');
   assert.ok(/ibv=/.test(js), 'guide must read the product version from the launcher-supplied URL parameter');
   assert.ok(!/\bfetch\s*\(/.test(js), 'guide must not fetch anything (P6 no-network contract)');
-  const launcher = read(path.join(ROOT, 'launch-internal-beyond.js'));
+  const launcher = read(path.join(ROOT, 'runtime', 'launch-internal-beyond.js'));
   assert.ok(/uiUrl\(\)/.test(launcher) && /ibv=/.test(launcher), 'launcher must pass the product version to the UI');
 });
 
 check('server + launcher + diagnostics expose the same version', () => {
-  const server = read(path.join(ROOT, 'internal-beyond-server.js'));
-  assert.ok(/require\('\.\/product-version\.js'\)/.test(server), 'server must use product-version.js');
+  const server = read(path.join(ROOT, 'services', 'internal-beyond-server.js'));
+  assert.ok(/require\('\.\.\/runtime\/product-version\.js'\)/.test(server), 'server must use product-version.js');
   assert.ok(/server:\s*identity,\s*version:/.test(server), '/health must report the product version');
-  const launcher = read(path.join(ROOT, 'launch-internal-beyond.js'));
+  const launcher = read(path.join(ROOT, 'runtime', 'launch-internal-beyond.js'));
   assert.ok(/require\('\.\/product-version\.js'\)/.test(launcher), 'launcher must use product-version.js');
   assert.ok(/product:\s*productInfo\(\)/.test(launcher), 'boot-state must record product version');
-  const boot = read(path.join(ROOT, 'boot-state.js'));
+  const boot = read(path.join(ROOT, 'runtime', 'boot-state.js'));
   assert.ok(/product:\s*\{/.test(boot), 'boot-state schema must carry product version');
   const diag = read(path.join(ROOT, 'assets', 'js', 'diagnostics.js'));
   assert.ok(/launcher && b\.state\.launcher\.product|launcher\.product/.test(diag), 'diagnostics must show the product version');
@@ -185,12 +185,12 @@ check('every whitelist entry states why it is shipped', () => {
 check('payload contains the full application closure', () => {
   const files = resolved.files.map(f => f.to);
   const set = new Set(files);
-  for (const need of ['InternalBeyond.html', 'VERSION', 'product-version.js', 'boot-state.js',
-    'launch-internal-beyond.js', 'local-services-runner.js', 'internal-beyond-server.js',
-    'ib-bridge-service.js', 'active-message-service.js', '启动 InternalBeyond.vbs',
+  for (const need of ['InternalBeyond.html', 'VERSION', 'runtime/product-version.js', 'runtime/boot-state.js',
+    'runtime/launch-internal-beyond.js', 'runtime/local-services-runner.js', 'services/internal-beyond-server.js',
+    'services/ib-bridge-service.js', 'services/active-message-service.js', '启动 InternalBeyond.vbs',
     'assets/js/guide-beginner.js', 'assets/css/guide-beginner.css', 'assets/js/diagnostics.js',
     'assets/js/setup-wizard.js', 'assets/js/error-catalog.js', 'assets/js/provider-directory.js',
-    'apps/catalog.json', 'bg-internal.jpg', 'bg-infernal.jpg', 'IB-icon.ico',
+    'apps/catalog.json', 'assets/images/bg-internal.jpg', 'assets/images/bg-infernal.jpg', 'assets/icons/IB-icon.ico',
     'docs/guide/annotations.json', 'tools/ib-stop.js', 'README.md', 'TROUBLESHOOTING.md']) {
     assert.ok(set.has(need), 'payload missing runtime file: ' + need);
   }
@@ -209,7 +209,7 @@ check('payload excludes dev, private and test material', () => {
     /(^|\/)test_[^/]*$/, /^test-all\.js$/, /^scripts_check_html\.js$/,
     /^tmp_ib_probe/, /^docs\/P\d+.*REPORT\.md$/, /\.results\.json$/,
     /^start-[^/]*\.cmd$/, /^Start Internal Beyond\.cmd$/, /^create-desktop-shortcut\.cmd$/,
-    /^test-ui\.cmd$/, /^bg-canvas\.png$/, /^_icon_preview\.png$/,
+    /^test-ui\.cmd$/, /^assets\/images\/bg-canvas\.png$/, /^_icon_preview\.png$/,
     /^Gemini_Generated_Image_/, /^game\/portraits\/portrait_\[.*\]\.png$/,
     /^scripts\/capture-guide-shots\.js$/, /^scripts\/guide-fixtures\.js$/, /^scripts\/cdp-lite\.js$/,
     /^installer\/InternalBeyond\.iss$/, /^installer\/languages\//
@@ -231,7 +231,8 @@ check('manifest deny rules cover the audited leak classes', () => {
     const hit = manifest.DENY_PATH.some(rule => rule.test.test(s));
     assert.ok(hit, 'deny rules must reject: ' + s);
   }
-  for (const s of ['assets/js/core.js', 'docs/guide/shots/01-welcome.png', 'runtime/node/node.exe', 'tools/ib-stop.js']) {
+  for (const s of ['assets/js/core.js', 'docs/guide/shots/01-welcome.png', 'runtime/node/node.exe', 'tools/ib-stop.js',
+    'runtime/launch-internal-beyond.js', 'services/internal-beyond-server.js', 'assets/images/bg-internal.jpg']) {
     const hit = manifest.DENY_PATH.some(rule => rule.test.test(s));
     assert.ok(!hit, 'deny rules must allow: ' + s);
   }
@@ -314,10 +315,10 @@ console.log('\n[5] stop helper logic');
 
 check('only InternalBeyond command lines are considered ours', () => {
   const ours = [
-    'C:\\Program Files\\x\\node.exe "C:\\Users\\a\\AppData\\Local\\Programs\\InternalBeyond\\ib-bridge-service.js"',
-    '"C:\\x\\runtime\\node\\node.exe" C:\\x\\local-services-runner.js --vision',
-    'node.exe C:\\x\\internal-beyond-server.js',
-    'wscript.exe "C:\\x\\启动 InternalBeyond.vbs" launch-internal-beyond.js'
+    'C:\\Program Files\\x\\node.exe "C:\\Users\\a\\AppData\\Local\\Programs\\InternalBeyond\\services\\ib-bridge-service.js"',
+    '"C:\\x\\runtime\\node\\node.exe" C:\\x\\runtime\\local-services-runner.js --vision',
+    'node.exe C:\\x\\services\\internal-beyond-server.js',
+    'wscript.exe "C:\\x\\启动 InternalBeyond.vbs" runtime\\launch-internal-beyond.js'
   ];
   for (const cl of ours) assert.strictEqual(ibStop.commandLineIsInternalBeyond(cl), true, 'must match: ' + cl);
   const foreign = [
@@ -331,7 +332,7 @@ check('only InternalBeyond command lines are considered ours', () => {
 });
 
 check('root matching is path-based and case/separator tolerant', () => {
-  assert.strictEqual(ibStop.commandLineMatchesRoot('"C:\\X\\IB\\node.exe" "c:\\x\\ib\\ib-bridge-service.js"', 'C:\\x\\IB'), true);
+  assert.strictEqual(ibStop.commandLineMatchesRoot('"C:\\X\\IB\\node.exe" "c:\\x\\ib\\services\\ib-bridge-service.js"', 'C:\\x\\IB'), true);
   assert.strictEqual(ibStop.commandLineMatchesRoot('"D:\\other\\node.exe" a.js', 'C:\\x\\ib'), false);
 });
 
@@ -345,10 +346,10 @@ check('stop helper never uses the image name as evidence', () => {
 /* ── [6] static server hardening ───────────────────────────────────────── */
 console.log('\n[6] static server hardening');
 
-const serverSrc = read(path.join(ROOT, 'internal-beyond-server.js'));
+const serverSrc = read(path.join(ROOT, 'services', 'internal-beyond-server.js'));
 
 check('denies .git / logs / hidden / denylisted / traversal requests', () => {
-  const server = require('./internal-beyond-server.js');
+  const server = require('./services/internal-beyond-server.js');
   const root = ROOT;
   const bad = ['/.git/config', '/.env', '/logs/launcher.log', '/browser-data/x', '/node_modules/y.js',
     '/runtime/node/node.exe', '/tools/ib-stop.js',
@@ -373,7 +374,7 @@ check('exposes a loopback-only graceful stop for the installer', () => {
 console.log('\n[7] runner graceful stop');
 
 check('control plane stops IB services gracefully and verifies identity', () => {
-  const runner = read(path.join(ROOT, 'local-services-runner.js'));
+  const runner = read(path.join(ROOT, 'runtime', 'local-services-runner.js'));
   assert.ok(/url\.pathname === '\/shutdown'/.test(runner), 'must expose POST /shutdown');
   assert.ok(/restartOriginAllowed\(req\)/.test(runner), 'shutdown must reuse the Origin guard');
   assert.ok(/async function runShutdown/.test(runner), 'must implement a graceful stop path');

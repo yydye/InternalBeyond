@@ -30,9 +30,9 @@ const README_FILE = path.join(RUNTIME, 'README.md');
 const THIRD_PARTY = path.join(ROOT, 'LICENSES', 'THIRD-PARTY-NODE.md');
 const UPDATE_PS1 = path.join(ROOT, 'scripts', 'update-node-runtime.ps1');
 const VBS = path.join(ROOT, '启动 InternalBeyond.vbs');
-const CMD = path.join(ROOT, 'Start Internal Beyond.cmd');
-const RUNNER = path.join(ROOT, 'local-services-runner.js');
-const LAUNCHER = path.join(ROOT, 'launch-internal-beyond.js');
+const CMD = path.join(ROOT, 'scripts', 'windows', 'Start Internal Beyond.cmd');
+const RUNNER = path.join(ROOT, 'runtime', 'local-services-runner.js');
+const LAUNCHER = path.join(ROOT, 'runtime', 'launch-internal-beyond.js');
 
 let pass = 0, fail = 0, skip = 0;
 function check(name, fn) {

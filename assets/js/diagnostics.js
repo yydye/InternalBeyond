@@ -33,7 +33,7 @@
   var RESTART_POLL_MS = 700;
   var AI_TEST_TIMEOUT_MS = 30000;
   var MAX_ERRORS = 20;
-  /* 视觉是否「已安装」的标记：与 start-vision-service.cmd 建立的虚拟环境一致 */
+  /* 视觉是否「已安装」的标记：与 scripts/windows/start-vision-service.cmd 建立的虚拟环境一致 */
   var VENV_MARKER = '.venv-vision/pyvenv.cfg';
 
   /* ── 状态词表（页面唯一来源；不新增第七种） ── */
@@ -254,7 +254,7 @@
     return timedFetch(url, { method: 'GET' }, PROBE_TIMEOUT_MS).then(function (r) {
       r.endpoint = url;
       r.identity = r.json ? String(r.json.server || '') : '';
-      /* 身份校验与 local-services-runner.js 的 matchesHealth 一致：端口被别的
+      /* 身份校验与 runtime/local-services-runner.js 的 matchesHealth 一致：端口被别的
          程序占用时不能算健康。 */
       r.healthy = !!(r.ok && r.json && r.json.ok === true && r.identity === 'IB Bridge');
       return r;
@@ -1043,7 +1043,7 @@
   function statusClass(st) { return 'is-' + String(st || ST.UNKNOWN); }
 
   /* ── 产品版本（单一版本源 VERSION）──
-     优先启动快照（launcher.product.version，由 launch-internal-beyond.js 读 VERSION 写入），
+     优先启动快照（launcher.product.version，由 runtime/launch-internal-beyond.js 读 VERSION 写入），
      其次本地页面服务 /health 的 version 字段。取不到就不显示——绝不编造版本号。 */
   function productVersion() {
     try {

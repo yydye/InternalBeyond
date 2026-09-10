@@ -9,7 +9,7 @@
 
 > 这其实是这个项目一条隐藏真相的注脚：**它最像真的地方，不在算法多聪明，而在作者肯把感情直接写进人格，再让机制和模型替他把那份感情演出来。** 写死进系统提示词的关系是**静态、恒温**的（不会生分、不会争吵），对个人陪伴站来说，这恰恰是状态层给不了的"稳定的人情味"——而且完全在 D13 边界内（那是**叙事选择**，不是**状态机制**，不存储、不演化、不评分）。
 >
-> 关联：[DECISIONS.md](DECISIONS.md) D13（关系状态层提前实现禁令）；[SOCIAL_RUNTIME.md](docs/SOCIAL_RUNTIME.md)（pairAffinity / 回复链）；[WHY_IB.md](docs/WHY_IB.md)（"边界靠 prompt + 调度，而非单独引擎"）。
+> 关联：[DECISIONS.md](DECISIONS.md) D13（关系状态层提前实现禁令）；[SOCIAL_RUNTIME.md](SOCIAL_RUNTIME.md)（pairAffinity / 回复链）；[WHY_IB.md](WHY_IB.md)（"边界靠 prompt + 调度，而非单独引擎"）。
 
 ## 基线
 
@@ -17,7 +17,7 @@
 
 ## 2026-08-04 · Bridge 后端诞生（首个交接对话）
 
-为 [InternalBeyond.html](InternalBeyond.html)（单文件个人 AI 陪伴站）新增并完善**本地一键启动的 Node.js Bridge 后端**，提供表情包、心语墙、健康/定位/天气看板、酷狗点歌、Bark/ntfy 推送、上下文进度条、`/continue` 续写、AI 常驻会话（多模型）、AI 语音气泡（TTS）、多窗口同步等服务端能力，全部通过 WebSocket 工具与 REST 接口接入页面右下角 Bridge 面板。
+为 [InternalBeyond.html](../InternalBeyond.html)（单文件个人 AI 陪伴站）新增并完善**本地一键启动的 Node.js Bridge 后端**，提供表情包、心语墙、健康/定位/天气看板、酷狗点歌、Bark/ntfy 推送、上下文进度条、`/continue` 续写、AI 常驻会话（多模型）、AI 语音气泡（TTS）、多窗口同步等服务端能力，全部通过 WebSocket 工具与 REST 接口接入页面右下角 Bridge 面板。
 
 | 文件 | 说明 |
 |---|---|
@@ -261,7 +261,7 @@
   1. `assets/js/moments.js` `_momentsImagePayload`：`(src.match(...)||[])[1]` 正确取捕获组 + base64 去空白/剥重复 `data:…;base64,` 前缀；
   2. `assets/js/communication.js` `_adaptContentForApi`（openai 图片分支）：构造 `image_url` 时把 mime 强制为合法 `image/*`（`/^image\//i.test(p.mime) ? p.mime : 'image/jpeg'`）+ base64 去空白/剥重复前缀——wire 层兜底，覆盖任何来源的图片注入。
 - **验证（官方端点，mimo-v2.5，经 FlClash:7890 代理直连对照）**：`data:a;base64,…` = 400（与上述报错逐字一致）；`data:image/jpeg;base64,…` = 200；修复逻辑真实请求 400→200 确认。
-- **排查方法**：DevTools→Network→该 400 请求→Response 看 `error.param`；或临时在 `_adaptContentForApi` 打 `[IB-DIAG] img mime=…`（本次已移除）。详见 [TROUBLESHOOTING.md](TROUBLESHOOTING.md) T40、[docs/multimodal-image-inject-notes.md](docs/multimodal-image-inject-notes.md)。
+- **排查方法**：DevTools→Network→该 400 请求→Response 看 `error.param`；或临时在 `_adaptContentForApi` 打 `[IB-DIAG] img mime=…`（本次已移除）。详见 [TROUBLESHOOTING.md](TROUBLESHOOTING.md) T40、[docs/multimodal-image-inject-notes.md](multimodal-image-inject-notes.md)。
 - **此前"强制 MiMo 契约"改动**（`communication.js` `callApi` + `active/node-model-port.js`）为防御性、非本次 400 根因，保留。
 
 ## 2026-09-10 · P12 · Image Router + GPT Image 2.5 双模型路由与并发控制

@@ -32,13 +32,16 @@ const { spawn, execFile } = require('child_process');
 const bootState = require('./boot-state.js');
 const productVersion = require('./product-version.js');
 
-const ROOT = __dirname;
+/* Repository root == installed app root. This file lives in runtime/, so the
+   root is one level up; the runner is a sibling, the static server lives in
+   services/, and runtime/node + logs stay directly under the root. */
+const ROOT = path.resolve(__dirname, '..');
 const HOST = '127.0.0.1';
 const WEB_PORT = optionPort('IB_WEB_PORT', 23120);
 const WEB_URL = 'http://' + HOST + ':' + WEB_PORT + '/InternalBeyond.html';
 const WEB_IDENTITY = 'InternalBeyond Web';
-const RUNNER = path.join(ROOT, 'local-services-runner.js');
-const WEB_SERVER = path.join(ROOT, 'internal-beyond-server.js');
+const RUNNER = path.join(__dirname, 'local-services-runner.js');
+const WEB_SERVER = path.join(ROOT, 'services', 'internal-beyond-server.js');
 
 const BRIDGE_PORT = optionPort('IB_BRIDGE_PORT', 23115);
 const ACTIVE_PORT = optionPort('IB_ACTIVE_PORT', 23114);

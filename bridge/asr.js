@@ -12,7 +12,7 @@
      - This module owns ASR transport only. It never sees role context, model
        calls, tools, history, or memory (those stay in the browser chat runtime).
      - The runtime receives an `asr` object via deps (composed in
-       ib-bridge-service.js). For tests we inject a fake `asr`. */
+       services/ib-bridge-service.js). For tests we inject a fake `asr`. */
 'use strict';
 
 const SAMPLE_RATE = 16000;

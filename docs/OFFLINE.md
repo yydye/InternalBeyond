@@ -2,7 +2,7 @@
 
 > 本文区分两个常被混为一谈的概念：
 > **「有本地模式」**（提供本机模型选项）≠ **「真正具备离线降级能力」**（系统在断网/缺模型时仍按预期工作）。
-> 关联：[ARCHITECTURE.md](../ARCHITECTURE.md) · [AUTONOMY.md](AUTONOMY.md)（offline 降级表）· [README.md](../README.md)（本地优先中心）。
+> 关联：[ARCHITECTURE.md](ARCHITECTURE.md) · [AUTONOMY.md](AUTONOMY.md)（offline 降级表）· [README.md](../README.md)（本地优先中心）。
 
 ---
 

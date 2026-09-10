@@ -1,5 +1,5 @@
 /* IB Active · 模型客户端：主动消息 prompt 构建、三种 provider 适配（anthropic/gemini/openai）、
-   重试与相似度校验、角色化兜底、Windows 气泡通知。从 active-message-service.js 提取为工厂。
+   重试与相似度校验、角色化兜底、Windows 气泡通知。从 services/active-message-service.js 提取为工厂。
    state 经 getState() 注入（recentProactiveMessages 读 history）；trimText / finiteTimestamp /
    mergeRecentProactiveMessages 与两个 PROACTIVE_* 常量经依赖注入。原逻辑逐字不变。 */
 'use strict';

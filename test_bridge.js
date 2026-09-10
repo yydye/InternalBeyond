@@ -18,7 +18,7 @@ const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
 
-const BRIDGE = path.join(__dirname, 'ib-bridge-service.js');
+const BRIDGE = path.join(__dirname, 'services', 'ib-bridge-service.js');
 let failures = 0;
 const usedPorts = new Set();
 

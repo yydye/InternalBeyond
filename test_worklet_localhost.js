@@ -16,7 +16,7 @@ const net = require('net');
 const { spawn } = require('child_process');
 const crypto = require('crypto');
 
-const WEB = require('./internal-beyond-server.js');
+const WEB = require('./services/internal-beyond-server.js');
 
 function chromePath() {
   if (process.env.CHROME_PATH && fs.existsSync(process.env.CHROME_PATH)) return process.env.CHROME_PATH;

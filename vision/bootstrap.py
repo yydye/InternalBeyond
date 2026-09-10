@@ -64,7 +64,7 @@ def main() -> None:
     if sys.version_info >= (3, 13):
         raise SystemExit(
             "LocateAnything 的 Windows PyTorch 环境需要 Python 3.9-3.12。"
-            "请运行 start-vision-service.cmd，它会自动选择 Python 3.12。"
+            "请运行 scripts/windows/start-vision-service.cmd，它会自动选择 Python 3.12。"
         )
     ensure_torch()
     missing = [requirement for module, requirement in MODULE_REQUIREMENTS.items() if not has_module(module)]

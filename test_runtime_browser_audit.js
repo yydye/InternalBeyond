@@ -26,7 +26,7 @@ const api = http.createServer(async (req, res) => {
 });
 (async () => {
   const apiPort = await listen(api), apiBase = 'http://127.0.0.1:' + apiPort;
-  const web = require('./internal-beyond-server.js').createWebServer({ root: __dirname, port: 0 });
+  const web = require('./services/internal-beyond-server.js').createWebServer({ root: __dirname, port: 0 });
   const webPort = await listen(web), webBase = 'http://127.0.0.1:' + webPort;
   const debugPort = await freePort(), profile = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-runtime-browser-audit-'));
   const chrome = chromePath(); assert.ok(chrome, 'Chrome or Edge required');

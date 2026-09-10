@@ -89,7 +89,7 @@ async function waitForHealth(timeoutMs) {
 }
 
 (async () => {
-  const child = spawn(process.execPath, ['active-message-service.js'], {
+  const child = spawn(process.execPath, ['services/active-message-service.js'], {
     env: {
       ...process.env,
       IB_ACTIVE_PORT: String(PORT),

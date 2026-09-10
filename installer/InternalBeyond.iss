@@ -84,8 +84,8 @@ WizardStyle=modern
 SetupLogging=yes
 Uninstallable=yes
 UninstallDisplayName={#AppName} {#AppVersion}
-UninstallDisplayIcon={app}\IB-icon.ico
-SetupIconFile=..\IB-icon.ico
+UninstallDisplayIcon={app}\assets\icons\IB-icon.ico
+SetupIconFile=..\assets\icons\IB-icon.ico
 ChangesAssociations=no
 ChangesEnvironment=no
 AllowUNCPath=no
@@ -110,9 +110,9 @@ Source: "{#StagingDir}\tools\{#StopHelper}"; DestDir: "{tmp}"; Flags: dontcopy
 
 [Icons]
 ; The ONLY user-facing entry point. Users never choose between .cmd / .vbs / .js.
-Name: "{group}\{#AppName}"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\启动 InternalBeyond.vbs"""; WorkingDir: "{app}"; IconFilename: "{app}\IB-icon.ico"; Comment: "启动 InternalBeyond"
+Name: "{group}\{#AppName}"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\启动 InternalBeyond.vbs"""; WorkingDir: "{app}"; IconFilename: "{app}\assets\icons\IB-icon.ico"; Comment: "启动 InternalBeyond"
 Name: "{group}\卸载 {#AppName}"; Filename: "{uninstallexe}"; Comment: "卸载 InternalBeyond（个人数据会保留）"
-Name: "{autodesktop}\{#AppName}"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\启动 InternalBeyond.vbs"""; WorkingDir: "{app}"; IconFilename: "{app}\IB-icon.ico"; Comment: "启动 InternalBeyond"; Tasks: desktopicon
+Name: "{autodesktop}\{#AppName}"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\启动 InternalBeyond.vbs"""; WorkingDir: "{app}"; IconFilename: "{app}\assets\icons\IB-icon.ico"; Comment: "启动 InternalBeyond"; Tasks: desktopicon
 
 [Run]
 ; Finish page: launch through the same silent chain as the shortcuts.

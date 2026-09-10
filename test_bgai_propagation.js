@@ -19,7 +19,7 @@ const BASE = `http://127.0.0.1:${PORT}`;
 const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-bgai-prop-'));
 
 /* 本进程的数据目录隔离（P7 测试隔离契约）：partB() 在**同进程内**
-   require('./active-message-service.js')（见下方 bgAi gate 用例），而 service 在
+   require('./services/active-message-service.js')（见下方 bgAi gate 用例），而 service 在
    require 时即从 IB_ACTIVE_DATA_DIR 计算 DATA_DIR。启动子进程的那一处已单独注入
    DATA_DIR，但同进程这次 require 仍会落到真实的 %LOCALAPPDATA%\InternalBeyond\ 并
    经 schedulerTick → saveNow 写盘。故这里必须给本进程另设一个隔离目录，且刻意与
@@ -56,7 +56,7 @@ async function waitForHealth(timeoutMs) {
 
 /* ---- Part B：直接用 module 驱动 schedulerTick（不启动 HTTP，快速、确定） ---- */
 async function partB() {
-  const service = require('./active-message-service.js');
+  const service = require('./services/active-message-service.js');
   const { resetStateForTest, getState, setArmed, schedulerTick } = service;
   resetStateForTest();
   setArmed('user_bgai');
@@ -99,7 +99,7 @@ async function partB() {
 
 /* ---- Part A：子进程 HTTP 路由验证 ---- */
 (async () => {
-  const child = spawn(process.execPath, ['active-message-service.js'], {
+  const child = spawn(process.execPath, ['services/active-message-service.js'], {
     env: { ...process.env, IB_ACTIVE_PORT: String(PORT), IB_ACTIVE_START_DELAY_MS: '500', IB_ACTIVE_DATA_DIR: DATA_DIR },
     stdio: ['ignore', 'pipe', 'pipe']
   });

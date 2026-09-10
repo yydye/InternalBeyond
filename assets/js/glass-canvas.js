@@ -2,7 +2,7 @@
    GLASS CANVAS 画窗模块（仅欢迎页，不触碰站内其他逻辑）
    - 白笔：加粗 / 微透 / 冷光晕，模拟在玻璃上写字
    - 指雾笔：擦开凝雾层
-   - 窗内背景按文件名约定加载：bg-canvas.jpg / bg-canvas.png，缺失静默
+   - 窗内背景按路径约定加载：assets/images/bg-canvas.png（或 .jpg），缺失静默
    - Sui 签名右侧的调色盘图标开关，进入时默认打开
    - 点击 游戏引导/开始设置/查看说明/跳过 时：画窗 0.32s 先退场
    ============================================================ */
@@ -25,7 +25,7 @@ var SIZE={pen:3.6,finger:19};
 var PEN_MIN=1.4,PEN_MAX=9,FIN_MIN=8,FIN_MAX=44;
 var fogKnob=null,brushKnob=null;
 
-/* ---------- 窗内背景：bg-canvas.png → bg-canvas.jpg 依次探测，全部缺失则保持空窗 ---------- */
+/* ---------- 窗内背景：assets/images/bg-canvas.png → assets/images/bg-canvas.jpg 依次探测，全部缺失则保持空窗 ---------- */
 (function probe(names){
   if(!names.length)return;
   var name=names.shift();
@@ -41,7 +41,7 @@ var fogKnob=null,brushKnob=null;
   };
   im.onerror=function(){probe(names)};
   im.src=name;
-})(['bg-canvas.png','bg-canvas.jpg']);
+})(['assets/images/bg-canvas.png','assets/images/bg-canvas.jpg']);
 
 /* ---------- 几何工具 ---------- */
 function mid(a,b){return{x:(a.x+b.x)/2,y:(a.y+b.y)/2}}

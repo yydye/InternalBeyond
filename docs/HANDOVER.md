@@ -4,7 +4,7 @@
 >
 > **必读（按顺序）：**
 > 1. [INTERNALBEYOND_AI_RULES.md](INTERNALBEYOND_AI_RULES.md) —— **开发契约**：执行者/权限边界、先理解再执行、尊重现有架构、修改必须有边界、不制造隐性行为、改后验证、最小化修改、不越权。（此后一切开发行为以此为准）
-> 2. [CHRONICLE.md](docs/CHRONICLE.md) —— **编年史**：上游 Sui 时代 → fork(yydye) 时代全史 + 近期 P1/P2 工程记录，先说清"这个项目从哪来、最近在做什么"。
+> 2. [CHRONICLE.md](CHRONICLE.md) —— **编年史**：上游 Sui 时代 → fork(yydye) 时代全史 + 近期 P1/P2 工程记录，先说清"这个项目从哪来、最近在做什么"。
 > 3. [ARCHITECTURE.md](ARCHITECTURE.md) —— **怎么工作**：目录/模块/端口/WS 协议/命名空间/前端加载顺序/前端约束（双挂载、BOM、IIFE）。
 > 4. [HANDOVER.md](HANDOVER.md)（本篇）—— 现状、当前待办、DO/DON'T、常用命令。
 >
@@ -12,22 +12,22 @@
 > - [DECISIONS.md](DECISIONS.md) —— 为什么这么设计，**含"不要随便改"清单**（D1–D18）。
 > - [CHANGELOG.md](CHANGELOG.md) —— 以前发生过什么（逐条演进）。
 > - [TROUBLESHOOTING.md](TROUBLESHOOTING.md) —— 踩过什么坑（ENOENT T31/D16、MiMo 'a' T40 等）。
-> - [P1-ACOUSTIC-REFERENCE.md](docs/P1-ACOUSTIC-REFERENCE.md) —— 声学语气参考：唯一算法核心 `voice.js::_vmToneAnalyze` + `_vmPcmToAudioLike` 适配层 + request-local 注入、绝不持久化。
-> - [VIDEO-RUNTIME-P2.md](docs/VIDEO-RUNTIME-P2.md) —— Video Runtime：三层边界（Video/Communication/Call）、帧→LLM 复用既有路由、**本地 Qwen 定位**（"DeepSeek 瞎子"补丁、保留兜底）。P1/P2 都是"把上游 Call 当素材库取用"的示范。
-> - [docs/history/](docs/history/README.md) —— **阶段报告归档**：Zero-Setup P0–P7、Runtime Stabilization / Convergence 的原始实施报告与审计记录（只读历史，不代表当前实现）。
+> - [P1-ACOUSTIC-REFERENCE.md](P1-ACOUSTIC-REFERENCE.md) —— 声学语气参考：唯一算法核心 `voice.js::_vmToneAnalyze` + `_vmPcmToAudioLike` 适配层 + request-local 注入、绝不持久化。
+> - [VIDEO-RUNTIME-P2.md](VIDEO-RUNTIME-P2.md) —— Video Runtime：三层边界（Video/Communication/Call）、帧→LLM 复用既有路由、**本地 Qwen 定位**（"DeepSeek 瞎子"补丁、保留兜底）。P1/P2 都是"把上游 Call 当素材库取用"的示范。
+> - [docs/history/](history/README.md) —— **阶段报告归档**：Zero-Setup P0–P7、Runtime Stabilization / Convergence 的原始实施报告与审计记录（只读历史，不代表当前实现）。
 >
 > **IB 定位 / 机制（想懂"它是什么"再看这组）：**
-> - [WHY_IB.md](docs/WHY_IB.md) —— **为什么做这个**：设计哲学 + 传统 AI vs IB 的对比 + 三支柱 + "它不是什么"。
-> - [SOCIAL_RUNTIME.md](docs/SOCIAL_RUNTIME.md) —— **社会闭环**：为什么 IB 不是"带朋友圈的聊天机"（Event→感知→情绪→记忆→关系→决策→动作→新事件）。
-> - [MEMORY.md](docs/MEMORY.md) —— **记忆系统**：数据模型/评分/召回/情绪权重/遗忘/固化；**非向量库、文本评分召回**。
-> - [AUTONOMY.md](docs/AUTONOMY.md) —— **自主性**：Proactive/Moments/回复链/主动语音/去重降级；**自主≠随机**、无长时程规划、无内容级 OOC 防火墙。
-> - [OFFLINE.md](docs/OFFLINE.md) —— **离线能力**：有本地模式 ≠ 真降级；基础功能全离线、配套 fail-open、**模型级需手动本机模型（无自动云→本地切换）**。
+> - [WHY_IB.md](WHY_IB.md) —— **为什么做这个**：设计哲学 + 传统 AI vs IB 的对比 + 三支柱 + "它不是什么"。
+> - [SOCIAL_RUNTIME.md](SOCIAL_RUNTIME.md) —— **社会闭环**：为什么 IB 不是"带朋友圈的聊天机"（Event→感知→情绪→记忆→关系→决策→动作→新事件）。
+> - [MEMORY.md](MEMORY.md) —— **记忆系统**：数据模型/评分/召回/情绪权重/遗忘/固化；**非向量库、文本评分召回**。
+> - [AUTONOMY.md](AUTONOMY.md) —— **自主性**：Proactive/Moments/回复链/主动语音/去重降级；**自主≠随机**、无长时程规划、无内容级 OOC 防火墙。
+> - [OFFLINE.md](OFFLINE.md) —— **离线能力**：有本地模式 ≠ 真降级；基础功能全离线、配套 fail-open、**模型级需手动本机模型（无自动云→本地切换）**。
 >
 > 文档状态截至 **2026-09-09**（P9 仓库整理后）。
 
 ## 1. 一句话定位
 
-个人本地 AI 陪伴站。**用户入口是 Windows 安装包**：从 GitHub Releases 下载 `InternalBeyond-Setup-<版本号>.exe` 安装后，从开始菜单 / 桌面快捷方式启动（快捷方式 → `启动 InternalBeyond.vbs` → [launch-internal-beyond.js](launch-internal-beyond.js)，内置 Node 运行时随包分发，普通用户不需要装 Node、不需要命令行）。页面本体是 [InternalBeyond.html](InternalBeyond.html)（无构建步骤），配套两个本地零依赖 Node 服务——Bridge 后端 [ib-bridge-service.js](ib-bridge-service.js)（23115：工具/看板/推送/AI 常驻/TTS）与 companion [active-message-service.js](active-message-service.js)（23114：后台主动消息计划、朋友圈调度、AI↔AI 回复链续推），安装版由启动链自动拉起，开发期用 `.cmd` 单独启动。**是个人本地应用，不是 SaaS——不引入 RBAC/鉴权/多用户设计**（[DECISIONS.md](DECISIONS.md) D1）。
+个人本地 AI 陪伴站。**用户入口是 Windows 安装包**：从 GitHub Releases 下载 `InternalBeyond-Setup-<版本号>.exe` 安装后，从开始菜单 / 桌面快捷方式启动（快捷方式 → `启动 InternalBeyond.vbs` → [launch-internal-beyond.js](../runtime/launch-internal-beyond.js)，内置 Node 运行时随包分发，普通用户不需要装 Node、不需要命令行）。页面本体是 [InternalBeyond.html](../InternalBeyond.html)（无构建步骤），配套两个本地零依赖 Node 服务——Bridge 后端 [ib-bridge-service.js](../services/ib-bridge-service.js)（23115：工具/看板/推送/AI 常驻/TTS）与 companion [active-message-service.js](../services/active-message-service.js)（23114：后台主动消息计划、朋友圈调度、AI↔AI 回复链续推），安装版由启动链自动拉起，开发期用 `.cmd` 单独启动。**是个人本地应用，不是 SaaS——不引入 RBAC/鉴权/多用户设计**（[DECISIONS.md](DECISIONS.md) D1）。
 
 > **上游出处**：本仓库是 [Sui-IB/InternalBeyond](https://github.com/Sui-IB/InternalBeyond) 的非官方二次开发版（已与原作者沟通）。对外分发时必须保留原作者署名、原项目地址与许可文件，并在显著位置说明修改内容——README 的「关于本仓库 / About this fork」与「许可与版权 · 衍生版本说明」已按此维护，改动 README 时勿删除这两处。
 

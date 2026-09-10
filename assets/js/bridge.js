@@ -1,5 +1,5 @@
 ﻿/* ===================== IB Bridge 增强（本地一键后端配套） =====================
-   依赖 ib-bridge-service.js（一键 start-bridge-service.cmd）。
+   依赖 services/ib-bridge-service.js（一键 scripts/windows/start-bridge-service.cmd）。
    提供：默认桥接地址、表情渲染、点歌播放、上下文进度条、
    心语墙 / 生活看板 / 状态导航面板、/continue 自动续写。
    全部 fail-open：Bridge 没启动时不影响原功能。 */

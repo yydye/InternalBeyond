@@ -38,7 +38,7 @@ const upstream = http.createServer((req, res) => {
 });
 
 /* ── 2. 启动本地 Bridge ── */
-const bridgeProc = spawn(process.execPath, [path.join(__dirname, 'ib-bridge-service.js')], {
+const bridgeProc = spawn(process.execPath, [path.join(__dirname, 'services', 'ib-bridge-service.js')], {
   env: Object.assign({}, process.env, {
     IB_BRIDGE_PORT: String(BR_PORT),
     IB_BRIDGE_HOST: '127.0.0.1',

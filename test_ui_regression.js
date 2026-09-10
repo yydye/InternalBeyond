@@ -477,7 +477,7 @@ async function main() {
     /* ── VoiceClone Reference Audio UI（第三阶段 B1）：真实 Bridge + 编辑器上传 / 保存 / 回归 ── */
     const voiceBridgePort = await freePort();
     const voiceDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-voice-ui-'));
-    const voiceBridge = spawn(process.execPath, [path.join(__dirname, 'ib-bridge-service.js')], {
+    const voiceBridge = spawn(process.execPath, [path.join(__dirname, 'services', 'ib-bridge-service.js')], {
       cwd: __dirname,
       env: Object.assign({}, process.env, { IB_BRIDGE_PORT: String(voiceBridgePort), IB_BRIDGE_HOST: '127.0.0.1', IB_BRIDGE_DATA_DIR: voiceDataDir }),
       stdio: ['ignore', 'pipe', 'pipe']
@@ -645,7 +645,7 @@ async function main() {
     const cloneDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-clone-ui-'));
     const cloneBridgePort = await freePort();
     fs.writeFileSync(path.join(cloneDataDir, 'config.json'), JSON.stringify({ ttsMimo: { enabled: true, endpoint: 'http://127.0.0.1:' + mockPort + '/v1/chat/completions', apiKey: 'vc-key', voice: '' } }), 'utf8');
-    const cloneBridge = spawn(process.execPath, [path.join(__dirname, 'ib-bridge-service.js')], {
+    const cloneBridge = spawn(process.execPath, [path.join(__dirname, 'services', 'ib-bridge-service.js')], {
       cwd: __dirname,
       env: Object.assign({}, process.env, { IB_BRIDGE_PORT: String(cloneBridgePort), IB_BRIDGE_HOST: '127.0.0.1', IB_BRIDGE_DATA_DIR: cloneDataDir }),
       stdio: ['ignore', 'pipe', 'pipe']
@@ -721,7 +721,7 @@ async function main() {
     const designDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-design-ui-'));
     const designBridgePort = await freePort();
     fs.writeFileSync(path.join(designDataDir, 'config.json'), JSON.stringify({ ttsMimo: { enabled: true, endpoint: 'http://127.0.0.1:' + designMockPort + '/v1/chat/completions', apiKey: 'vd-key', voice: '' } }), 'utf8');
-    const designBridge = spawn(process.execPath, [path.join(__dirname, 'ib-bridge-service.js')], {
+    const designBridge = spawn(process.execPath, [path.join(__dirname, 'services', 'ib-bridge-service.js')], {
       cwd: __dirname,
       env: Object.assign({}, process.env, { IB_BRIDGE_PORT: String(designBridgePort), IB_BRIDGE_HOST: '127.0.0.1', IB_BRIDGE_DATA_DIR: designDataDir }),
       stdio: ['ignore', 'pipe', 'pipe']

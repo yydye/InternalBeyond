@@ -1,6 +1,9 @@
 @echo off
 setlocal
-cd /d "%~dp0"
+rem This script lives in scripts\windows\, so the repository root is two levels up.
+rem The checks below are invoked with root-relative paths, so run from the root.
+for %%I in ("%~dp0..\..") do set "IB_ROOT=%%~fI"
+cd /d "%IB_ROOT%"
 
 where node >nul 2>nul
 if errorlevel 1 (

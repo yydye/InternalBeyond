@@ -26,7 +26,7 @@ const http = require('http');
 const net = require('net');
 const crypto = require('crypto');
 
-const WEB = require('./internal-beyond-server.js');
+const WEB = require('./services/internal-beyond-server.js');
 const ROOT = __dirname;
 
 function chromePath() {

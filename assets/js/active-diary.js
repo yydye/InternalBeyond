@@ -1179,7 +1179,7 @@ async function _activeTick(){
   finally{_activeTicking=false}
 }
 function _activeNotify(cfg,content){
-  try{if(!('Notification'in window)||Notification.permission!=='granted')return;if(document.visibilityState==='visible'&&activeFriendId===cfg.id)return;new Notification(cfg.nickname||cfg.model||'Internal Beyond',{body:String(content||'').slice(0,180),icon:cfg.avatar||'IB-icon.ico',tag:'ib-active-'+cfg.id})}catch(e){}
+  try{if(!('Notification'in window)||Notification.permission!=='granted')return;if(document.visibilityState==='visible'&&activeFriendId===cfg.id)return;new Notification(cfg.nickname||cfg.model||'Internal Beyond',{body:String(content||'').slice(0,180),icon:cfg.avatar||'assets/icons/IB-icon.ico',tag:'ib-active-'+cfg.id})}catch(e){}
 }
 async function _activeRequestNotification(){
   if(!('Notification'in window)){toast('当前浏览器不支持系统通知');return}
@@ -1218,7 +1218,7 @@ async function _activeCheckCompanion(showToast,force){
       /* P3：普通用户只看能力层面的影响；「后台服务 404 / ECONNREFUSED」进「查看详情」 */
       if(window.IBERR&&window.IBERR.show){
         window.IBERR.show(window.IBERR.model('local_service',{component:'active',stage:'active_health',detail:String(e&&e.message||e)}),{onRetry:function(){_activeCheckCompanion(true,true)}});
-      }else toast('未检测到后台服务，请先运行 start-active-service.cmd');
+      }else toast('未检测到后台服务，请先运行 scripts/windows/start-active-service.cmd');
     }
     return false;
   }

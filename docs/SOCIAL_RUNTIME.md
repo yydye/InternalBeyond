@@ -2,7 +2,7 @@
 
 > 本文回答一个核心问题：**为什么 InternalBeyond 不是"一个带朋友圈的聊天机器人"。**
 > 它会解释 IB 把"角色"当成**社会实体**而非"API 回复端点"的机制，以及这个**社会闭环**是如何由持久状态 + 离散机制近似实现的。
-> 关联文档：[ARCHITECTURE.md](../ARCHITECTURE.md)（怎么工作）· [CHRONICLE.md](CHRONICLE.md)（前世今生）· [MEMORY.md](MEMORY.md)（记忆系统）· [AUTONOMY.md](AUTONOMY.md)（自主性）· [OFFLINE.md](OFFLINE.md)（离线）· [WHY_IB.md](WHY_IB.md)（设计哲学）。
+> 关联文档：[ARCHITECTURE.md](ARCHITECTURE.md)（怎么工作）· [CHRONICLE.md](CHRONICLE.md)（前世今生）· [MEMORY.md](MEMORY.md)（记忆系统）· [AUTONOMY.md](AUTONOMY.md)（自主性）· [OFFLINE.md](OFFLINE.md)（离线）· [WHY_IB.md](WHY_IB.md)（设计哲学）。
 
 ---
 

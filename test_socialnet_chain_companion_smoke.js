@@ -17,7 +17,7 @@ const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-chain-cmp-'));
 process.env.IB_ACTIVE_DATA_DIR = DATA_DIR;
 process.env.IB_REPLY_DELAY_MIN = '5';
 process.env.IB_REPLY_DELAY_MAX = '15';
-const service = require('./active-message-service.js');
+const service = require('./services/active-message-service.js');
 
 const {
   momentsTick, replyChainTick, syncReplyChainThreads, maybeCreateReplyTask,

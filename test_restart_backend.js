@@ -18,7 +18,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn, execFile } = require('child_process');
 
-const RUNNER = path.join(__dirname, 'local-services-runner.js');
+const RUNNER = path.join(__dirname, 'runtime', 'local-services-runner.js');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 const usedPorts = new Set();

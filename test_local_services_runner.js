@@ -5,7 +5,7 @@ const http = require('http');
 const path = require('path');
 const { execFile } = require('child_process');
 
-const RUNNER = path.join(__dirname, 'local-services-runner.js');
+const RUNNER = path.join(__dirname, 'runtime', 'local-services-runner.js');
 
 function listen(server) {
   return new Promise((resolve, reject) => {

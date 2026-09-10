@@ -1,6 +1,6 @@
 /* IB Active · HTTP 层：CORS（Origin 白名单）、JSON 响应、请求体解析、任务公开视图、
    全部 REST 路由（tasks / plans / reconcile / events / history）与 server 实例。
-   从 active-message-service.js 提取为工厂：state 经 getState() 注入（仅原地变更，
+   从 services/active-message-service.js 提取为工厂：state 经 getState() 注入（仅原地变更，
    无重新赋值），armedUsers / 持久化 / 计划域函数全部依赖注入。原逻辑逐字不变。 */
 'use strict';
 

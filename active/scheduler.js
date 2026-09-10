@@ -1,6 +1,6 @@
 /* IB Active · 调度器：任务执行（发送 / 跳过 / 失败 / 落库）、AI 计划二次评估与执行、
    每 15 秒 schedulerTick（含崩溃遗留回收与历史裁剪）、启动宽限期与优雅停机。
-   从 active-message-service.js 提取为工厂：state 经 getState() 注入，armedUsers / 持久化 /
+   从 services/active-message-service.js 提取为工厂：state 经 getState() 注入，armedUsers / 持久化 /
    计划域 / 模型客户端函数全部依赖注入；ticking 标志收在工厂闭包（根文件不再持有）。
    原逻辑逐字不变（shutdown 中冗余的 saveQueued 分支按语义化简为单次 saveNow）。 */
 'use strict';

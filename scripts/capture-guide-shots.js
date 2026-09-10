@@ -26,8 +26,8 @@ const os = require('os');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
-const WEB = require(path.join(ROOT, 'internal-beyond-server.js'));
-const bootState = require(path.join(ROOT, 'boot-state.js'));
+const WEB = require(path.join(ROOT, 'services', 'internal-beyond-server.js'));
+const bootState = require(path.join(ROOT, 'runtime', 'boot-state.js'));
 const fixtures = require('./guide-fixtures.js');
 const { ev, wait, sleep, freePort, httpJson, launchBrowser } = require('./cdp-lite.js');
 

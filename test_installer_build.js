@@ -26,7 +26,7 @@ const { execFileSync } = require('child_process');
 
 const manifest = require('./scripts/release-manifest.js');
 const audit = require('./scripts/release-audit.js');
-const productVersion = require('./product-version.js');
+const productVersion = require('./runtime/product-version.js');
 
 const argv = process.argv.slice(2);
 const ENABLED = argv.indexOf('--force') >= 0 || process.env.IB_INSTALLER_BUILD === '1';

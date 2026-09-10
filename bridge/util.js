@@ -1,5 +1,5 @@
 ﻿/* IB Bridge · 无状态工具函数（不依赖数据目录或服务状态）。
-   从 ib-bridge-service.js 提取，保持原逻辑逐字不变。 */
+   从 services/ib-bridge-service.js 提取，保持原逻辑逐字不变。 */
 'use strict';
 
 const fs = require('fs');

@@ -17,8 +17,8 @@ const os = require('os');
 const path = require('path');
 
 const ROOT = __dirname;
-const WEB = require('./internal-beyond-server.js');
-const bootState = require('./boot-state.js');
+const WEB = require('./services/internal-beyond-server.js');
+const bootState = require('./runtime/boot-state.js');
 const { ev, wait, sleep, httpJson, launchBrowser } = require('./scripts/cdp-lite.js');
 
 const VIEWPORT = { width: 1440, height: 900 };

@@ -142,7 +142,7 @@ winStyle = 0
 If debugOn Then winStyle = 1
 Dim runDesc
 If debugOn Then runDesc = " (debug, visible)" Else runDesc = " (hidden)"
-cmd = """" & nodeExe & """ """ & selfDir & "\launch-internal-beyond.js"""
+cmd = """" & nodeExe & """ """ & selfDir & "\runtime\launch-internal-beyond.js"""
 Call Log("[VBS] running: " & nodeSrc & " node," & runDesc)
 rc = shell.Run(cmd, winStyle, True)
 Call Log("[VBS] launch-internal-beyond.js exited with code " & rc)

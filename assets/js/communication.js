@@ -1714,7 +1714,7 @@ async function sendChatMessage(voiceMsg){
               _appendLocalVisionContext(messages,await _describeImagesLocally(sentImages,_gQuestion));
             }catch(_gVisionError){
               console.error('[LocalVision] group analysis failed',_gVisionError);
-              toast('本地视觉识别失败，请先运行 start-vision-service.cmd');
+              toast('本地视觉识别失败，请先运行 scripts/windows/start-vision-service.cmd');
               _appendLocalVisionContext(messages,'\n\n[本地视觉识别暂不可用，无法读取本次图片。]');
             }
           }else if(_gVisionOk){
@@ -2041,7 +2041,7 @@ async function sendChatMessage(voiceMsg){
           _appendLocalVisionContext(messages,await _describeImagesLocally(sentImages,_question));
         }catch(_visionError){
           console.error('[LocalVision] analysis failed',_visionError);
-          toast('本地视觉识别失败，请先运行 start-vision-service.cmd');
+          toast('本地视觉识别失败，请先运行 scripts/windows/start-vision-service.cmd');
           _appendLocalVisionContext(messages,'\n\n[本地视觉识别暂不可用，无法读取本次图片。]');
         }
       }else if(_visionOk){

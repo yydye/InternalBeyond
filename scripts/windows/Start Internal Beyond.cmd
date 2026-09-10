@@ -1,6 +1,10 @@
 @echo off
 setlocal
-cd /d "%~dp0"
+rem This script lives in scripts\windows\, so the repository root (== installed
+rem app root) is two levels up. Resolve it once, fully qualified, so nothing
+rem downstream has to reason about "..".
+for %%I in ("%~dp0..\..") do set "IB_ROOT=%%~fI"
+cd /d "%IB_ROOT%"
 
 rem Compat alias entry. Node runtime resolution order (see runtime\node\README.md):
 rem   1. IB_NODE environment variable (explicit override)
@@ -11,7 +15,7 @@ rem .vbs launcher; this alias only resolves the executable path.
 
 set "IB_NODE_EXE="
 if defined IB_NODE if exist "%IB_NODE%" set "IB_NODE_EXE=%IB_NODE%"
-if not defined IB_NODE_EXE if exist "%~dp0runtime\node\node.exe" set "IB_NODE_EXE=%~dp0runtime\node\node.exe"
+if not defined IB_NODE_EXE if exist "%IB_ROOT%\runtime\node\node.exe" set "IB_NODE_EXE=%IB_ROOT%\runtime\node\node.exe"
 if not defined IB_NODE_EXE (
   where node.exe >nul 2>nul
   if not errorlevel 1 set "IB_NODE_EXE=node.exe"
@@ -47,7 +51,7 @@ echo Starting Internal Beyond...
 echo This window minimizes while services start, then your browser opens.
 echo If it fails, see: %LOCALAPPDATA%\InternalBeyond\logs\launcher.log
 echo.
-start "" /min "%IB_NODE_EXE%" "%~dp0launch-internal-beyond.js"
+start "" /min "%IB_NODE_EXE%" "%IB_ROOT%\runtime\launch-internal-beyond.js"
 endlocal
 exit /b 0
 

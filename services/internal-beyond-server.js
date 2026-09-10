@@ -37,10 +37,13 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const bootState = require('./boot-state.js');
-const productVersion = require('./product-version.js');
+const bootState = require('../runtime/boot-state.js');
+const productVersion = require('../runtime/product-version.js');
 
-const ROOT = __dirname;
+/* Served web root == repository root (and == installed app root). This file
+   lives in services/, so the root is one level up — never __dirname itself,
+   or 23120 would only serve services/ and the whole UI would 404. */
+const ROOT = path.resolve(__dirname, '..');
 
 /* Top-level directories that are never part of the web app. Hidden segments
    (any segment starting with ".") are refused separately. `runtime` and `tools`

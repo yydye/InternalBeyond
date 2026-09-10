@@ -30,24 +30,28 @@ const ROOT = path.resolve(__dirname, '..');
 /* ── Whitelist ─────────────────────────────────────────────────────────── */
 
 const ENTRIES = [
-  /* Application document + front end */
+  /* Application document + front end.
+     assets/ now also carries the theme backgrounds (assets/images) and the
+     official icon (assets/icons); bg-canvas.png is a 6 MB optional background
+     that must stay out of the payload, exactly as the deny rule states. */
   { from: 'InternalBeyond.html', why: '主文档（唯一 HTML 入口）' },
-  { from: 'assets', dir: true, why: '全部前端脚本与样式（含 Guide / 诊断 / 设置向导 / 错误目录）' },
+  { from: 'assets', dir: true, exclude: ['images/bg-canvas.png'],
+    why: '全部前端脚本与样式（含 Guide / 诊断 / 设置向导 / 错误目录）+ 背景图与图标（assets/images、assets/icons；bg-canvas.png 为 6 MB 可选背景，不入包）' },
   { from: 'apps', dir: true, why: 'APP 目录（apps/catalog.json 由 app-store 运行时 fetch）' },
   { from: 'game', dir: true, exclude: ['portraits/portrait_[*].png'], why: '游戏模块与素材（个人头像 portrait_[昵称].png 属于用户数据，不入包）' },
-  { from: 'bg-internal.jpg', why: 'core.css 主题背景（Internal）' },
-  { from: 'bg-infernal.jpg', why: 'core.css 主题背景（Infernal）' },
-  { from: 'IB-icon.ico', why: '快捷方式与卸载项图标' },
 
-  /* Node runtime entry points + local services */
+  /* Node runtime entry points + local services.
+     The payload mirrors the repository layout for these so the launcher /
+     runner / static server keep identical relative resolution in dev and after
+     install (the root is one level up from runtime/ and services/). */
   { from: 'VERSION', why: '单一发行版本源' },
-  { from: 'product-version.js', why: '版本解析（launcher / 静态服务 / 构建脚本共用）' },
-  { from: 'boot-state.js', why: '启动记录（P2 诊断唯一来源）' },
-  { from: 'launch-internal-beyond.js', why: '正式静默启动链（快捷方式最终执行）' },
-  { from: 'local-services-runner.js', why: '本地服务管理进程（Bridge / Active + 重启与停止控制面）' },
-  { from: 'internal-beyond-server.js', why: '本地静态页面服务（AudioWorklet 必需）' },
-  { from: 'ib-bridge-service.js', why: 'Bridge 后端' },
-  { from: 'active-message-service.js', why: 'Active 后台主动消息服务' },
+  { from: 'runtime/product-version.js', why: '版本解析（launcher / 静态服务 / 构建脚本共用）' },
+  { from: 'runtime/boot-state.js', why: '启动记录（P2 诊断唯一来源）' },
+  { from: 'runtime/launch-internal-beyond.js', why: '正式静默启动链（快捷方式最终执行）' },
+  { from: 'runtime/local-services-runner.js', why: '本地服务管理进程（Bridge / Active + 重启与停止控制面）' },
+  { from: 'services/internal-beyond-server.js', why: '本地静态页面服务（AudioWorklet 必需）' },
+  { from: 'services/ib-bridge-service.js', why: 'Bridge 后端' },
+  { from: 'services/active-message-service.js', why: 'Active 后台主动消息服务' },
   { from: 'bridge', dir: true, why: 'Bridge 模块' },
   { from: 'active', dir: true, why: 'Active 模块' },
   { from: '启动 InternalBeyond.vbs', why: '唯一用户启动入口的实现（快捷方式目标，用户只看到名字 InternalBeyond）' },
@@ -64,7 +68,8 @@ const ENTRIES = [
   { from: 'LICENSE', why: '项目许可（PolyForm Noncommercial 1.0.0）' },
   { from: 'LICENSES', dir: true, why: '第三方与素材许可声明（含 Node 再分发声明）' },
   { from: 'README.md', why: '用户安装与使用说明' },
-  { from: 'TROUBLESHOOTING.md', why: '用户故障排查说明' },
+  /* Source lives in docs/ but the installed layout keeps it at the app root. */
+  { from: 'docs/TROUBLESHOOTING.md', to: 'TROUBLESHOOTING.md', why: '用户故障排查说明（安装到应用根目录）' },
 
   /* Guide assets (P6) */
   { from: 'docs/guide/annotations.json', why: '指南截图清单（正文引用的图片来源）' },

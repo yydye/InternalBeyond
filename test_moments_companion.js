@@ -11,7 +11,7 @@ const path = require('path');
 const fs = require('fs');
 /* 隔离状态文件：在 require 之前指向临时目录，避免测试污染用户真实 companion 状态 */
 process.env.IB_ACTIVE_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-moments-cmp-'));
-const service = require('./active-message-service.js');
+const service = require('./services/active-message-service.js');
 
 const {
   sanitizeMomentSchedule, publicMomentSchedule, parseMomentOutput, buildMomentPrompt,

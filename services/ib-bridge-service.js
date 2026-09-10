@@ -48,9 +48,9 @@ fs.mkdirSync(STICKER_DIR, { recursive: true });
 /* 模块依赖：bridge/ 下按域提取的叶子模块（composition root 注入依赖） */
 /* ------------------------------------------------------------------ */
 
-const util = require('./bridge/util');
-const createPersistence = require('./bridge/persistence');
-const createConfig = require('./bridge/config');
+const util = require('../bridge/util');
+const createPersistence = require('../bridge/persistence');
+const createConfig = require('../bridge/config');
 const uid = util.uid;
 const todayStr = util.todayStr;
 const constantTimeTokenMatch = util.constantTimeTokenMatch;
@@ -62,10 +62,10 @@ const parseQuery = util.parseQuery;
 /*   · Provider 仅在 ALLOW / 人工确认后的 CONFIRM 时被调用               */
 /*   · 支付凭证绝不进 prompt/DOM: 授权域与 Provider 均不接触凭证         */
 /* ------------------------------------------------------------------ */
-const createPaymentAuth = require('./active/payment-auth.js').createPaymentAuth;
-const createPaymentProviderRegistry = require('./bridge/payment-provider.js').createPaymentProviderRegistry;
-const createAlipayProvider = require('./bridge/alipay-provider.js');
-const createPayGate = require('./bridge/pay-gate.js');
+const createPaymentAuth = require('../active/payment-auth.js').createPaymentAuth;
+const createPaymentProviderRegistry = require('../bridge/payment-provider.js').createPaymentProviderRegistry;
+const createAlipayProvider = require('../bridge/alipay-provider.js');
+const createPayGate = require('../bridge/pay-gate.js');
 
 function jsonStore(file) {
   return {
@@ -248,7 +248,7 @@ function listStickers() {
 /* （已提取到 bridge/clients.js 工厂；config 与 geoLatest 经依赖注入）  */
 /* ------------------------------------------------------------------ */
 
-const createClients = require('./bridge/clients');
+const createClients = require('../bridge/clients');
 const clients = createClients({ config, getGeoLatest: () => geoLatest });
 const fetchJson = clients.fetchJson;
 const getWeather = clients.getWeather;
@@ -269,10 +269,10 @@ const ntfyPush = clients.ntfyPush;
 /* ── VoiceClone Reference Audio 资产层（第三阶段 B1：文件基础设施） ──
    文件在 DATA_DIR/tts-voices/<refAudioId>.<ext>；metadata 注册表 DATA_DIR/tts-voices.json。
    必须在 createTts 之前创建，供 B2 VoiceClone 适配器经 ttsVoices.resolveRefAudio 读取真实文件。 */
-const createTtsVoices = require('./bridge/tts-voices');
+const createTtsVoices = require('../bridge/tts-voices');
 const ttsVoices = createTtsVoices({ dataDir: DATA_DIR, writeJson, loadJson });
 
-const createTts = require('./bridge/tts');
+const createTts = require('../bridge/tts');
 const tts = createTts({ config, uid, ttsDir: DATA_DIR, ttsVoices });
 const edgeTtsGen = tts.edgeTtsGen;
 const ttsGenerate = tts.ttsGenerate;
@@ -283,11 +283,11 @@ const ttsSynthesize = tts.ttsSynthesize;
 /* ASR provider interface (turn-based OpenAI-Whisper-compatible default;
    streaming recognizer is opt-in). Wired into the voice runtime via deps so
    tests can inject a fake `asr`. */
-const createAsr = require('./bridge/asr');
+const createAsr = require('../bridge/asr');
 const asr = createAsr(config);
 
 /* Voice Runtime only owns audio, ASR, call state and generation lifecycle. */
-const createVoiceRuntime = require('./bridge/voice-runtime');
+const createVoiceRuntime = require('../bridge/voice-runtime');
 const voiceRuntime = createVoiceRuntime({
   config,
   ttsNormalize,
@@ -891,7 +891,7 @@ const TOOLS = [
 /* WebSocket 层（已提取到 bridge/ws.js 工厂；心跳 / 广播 / 连接 / 分发） */
 /* ------------------------------------------------------------------ */
 
-const createWs = require('./bridge/ws');
+const createWs = require('../bridge/ws');
 const pushHistory = pushes;
 const wsLayer = createWs({
   config,
@@ -921,7 +921,7 @@ const WSConnection = wsLayer.WSConnection;
 /* HTTP 路由层（已提取到 bridge/routes.js 工厂；全部依赖经 ctx 注入）  */
 /* ------------------------------------------------------------------ */
 
-const createRoutes = require('./bridge/routes');
+const createRoutes = require('../bridge/routes');
 const httpLayer = createRoutes({
   config, LAN_EXPOSED, configInvalid, SERVER_NAME, VERSION, HOST, PORT, BIND_HOST,
   DATA_DIR, STICKER_DIR, maxBody: MAX_BODY,

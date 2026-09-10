@@ -32,9 +32,9 @@ const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 
-const WEB = require('./internal-beyond-server.js');
-const BOOT = require('./boot-state.js');
-const LAUNCH_PATH = require.resolve('./launch-internal-beyond.js');
+const WEB = require('./services/internal-beyond-server.js');
+const BOOT = require('./runtime/boot-state.js');
+const LAUNCH_PATH = require.resolve('./runtime/launch-internal-beyond.js');
 const ROOT = __dirname;
 
 let pass = 0, fail = 0;
@@ -823,8 +823,8 @@ function finalize() {
     const cp = require('child_process');
     const origExecFile = cp.execFile;
     const thisRoot = path.resolve(__dirname);
-    const mine = path.join(thisRoot, 'local-services-runner.js');
-    const other = 'C:\\dev\\InternalBeyond-main\\local-services-runner.js';
+    const mine = path.join(thisRoot, 'runtime', 'local-services-runner.js');
+    const other = 'C:\\dev\\InternalBeyond-main\\runtime\\local-services-runner.js';
     const probe = (rows) => new Promise((resolve) => {
       cp.execFile = function (file, args, opts, cb) { cb(null, rows.join('\r\n'), ''); };
       delete require.cache[LAUNCH_PATH];

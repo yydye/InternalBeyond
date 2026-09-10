@@ -1,5 +1,5 @@
 ﻿/* Silent backend restart (UI) — 一键静默重启本地后端（Bridge 23115 + Active 23114）。
- * 走本地 localhost 重启控制面（local-services-runner.js 内置）：
+ * 走本地 localhost 重启控制面（runtime/local-services-runner.js 内置）：
  *   POST /restart   发起重启（互斥：进行中再点会被隔离/忽略）
  *   GET  /status    查询 idle|restarting|ready|failed
  * 页面不在重启过程中刷新、不丢聊天状态；ready 后复用既有 IBNET WebSocket 重连

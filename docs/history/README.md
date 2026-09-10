@@ -3,10 +3,10 @@
 本目录保存**已完成的阶段性实施报告与审计记录**。它们记录的是"当时做了什么、怎么验证的"，
 不是当前状态说明，也不代表现在的实现细节。
 
-> 阅读顺序建议：当前状态看 [`HANDOVER.md`](../../HANDOVER.md)，机制看
-> [`ARCHITECTURE.md`](../../ARCHITECTURE.md)，设计理由看 [`DECISIONS.md`](../../DECISIONS.md)，
-> 历史演进看 [`CHANGELOG.md`](../../CHANGELOG.md) 与 [`CHRONICLE.md`](../CHRONICLE.md)。
-> 面向普通用户的文档是根目录 [`README.md`](../../README.md) 与 [`TROUBLESHOOTING.md`](../../TROUBLESHOOTING.md)。
+> 阅读顺序建议：当前状态看 [`HANDOVER.md`](../HANDOVER.md)，机制看
+> [`ARCHITECTURE.md`](../ARCHITECTURE.md)，设计理由看 [`DECISIONS.md`](../DECISIONS.md)，
+> 历史演进看 [`CHANGELOG.md`](../CHANGELOG.md) 与 [`CHRONICLE.md`](../CHRONICLE.md)。
+> 面向普通用户的文档是根目录 [`README.md`](../../README.md) 与 [`TROUBLESHOOTING.md`](../TROUBLESHOOTING.md)。
 
 ## zero-setup/ —— Zero-Setup / Consumer Readiness 系列
 

@@ -28,8 +28,8 @@ const http = require('http');
 const net = require('net');
 const crypto = require('crypto');
 
-const WEB = require('./internal-beyond-server.js');
-const bootState = require('./boot-state.js');
+const WEB = require('./services/internal-beyond-server.js');
+const bootState = require('./runtime/boot-state.js');
 const ROOT = __dirname;
 
 const GOOD_KEY = 'sk-smoke-diag-ok-123456';

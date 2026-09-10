@@ -12,7 +12,7 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 
-const BRIDGE = path.join(__dirname, 'ib-bridge-service.js');
+const BRIDGE = path.join(__dirname, 'services', 'ib-bridge-service.js');
 const createTtsVoices = require('./bridge/tts-voices');
 
 let passCount = 0;

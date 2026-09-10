@@ -135,18 +135,18 @@ Anthropic、OpenAI、Grok、DeepSeek、Gemini、GLM、Qwen、豆包、Moonshot�
 
 需要服务器能力的功能（表情包、心语墙、健康 / 定位 / 天气看板、点歌、Bark / ntfy 推送、AI 常驻会话、TTS 语音气泡、多窗口同步，以及关页后的主动消息与朋友圈调度）由一个本机 Node 后端提供，无需云服务器。
 
-- **统一启动**：运行 `start-local-services.cmd` 一次启动 Bridge 与 Active；仅需 Bridge 时运行 `start-bridge-service.cmd`；仅需 Active 时运行 `start-active-service.cmd`。
-- **统一控制器**：`node local-services-runner.js --status`（人类可读）/ `--json`（脚本可读）/ `--vision`（一并启动可选视觉助手）；窗口内 `s` 查看状态、`q` 只停止它自己启动的子服务。
+- **统一启动**：运行 `scripts\windows\start-local-services.cmd` 一次启动 Bridge 与 Active；仅需 Bridge 时运行 `scripts\windows\start-bridge-service.cmd`；仅需 Active 时运行 `scripts\windows\start-active-service.cmd`。
+- **统一控制器**：`node runtime\local-services-runner.js --status`（人类可读）/ `--json`（脚本可读）/ `--vision`（一并启动可选视觉助手）；窗口内 `s` 查看状态、`q` 只停止它自己启动的子服务。
 - **状态与日志**：服务日志在 `%LOCALAPPDATA%\InternalBeyond\logs\`；启动记录 `boot-state.json`；启动器日志 `logs\launcher.log`（均不含密钥 / Token）。
 - **端口**：Bridge `23115`、Active `23114`、静态 Web `23120`、静默重启控制面 `23116`、Vision（可选）`8765`。均可用 `IB_BRIDGE_PORT` / `IB_ACTIVE_PORT` / `IB_WEB_PORT` / `IB_RESTART_PORT` / `IB_VISION_PORT` 覆盖。
 - **Node 运行时解析顺序**：`IB_NODE` → `runtime\node\node.exe`（随包内置，正式安装包的唯一路径）→ PATH 中的 `node.exe`（**仅开发 / 兼容兜底**）。内置运行时**缺失**时回退 PATH；**存在但无法运行**（损坏）时报错且**不回退**；主版本低于 18 拒绝启动。版本固定为 Node 24 LTS 的精确 patch（见 `runtime/node/VERSION`），由 `scripts/update-node-runtime.ps1` 下载并按官方 `SHASUMS256.txt` 校验 SHA-256，许可见 `LICENSES/THIRD-PARTY-NODE.md`。
 
 ### 从源码启动（Windows）
 
-- `启动 InternalBeyond.vbs` 是正式启动链的实现（安装包的快捷方式最终执行它）：定位自身目录 → 解析 Node 运行时 → 委托唯一真实逻辑 `launch-internal-beyond.js`；`--debug` 让启动过程可见。
-- `Start Internal Beyond.cmd` 保留为**兼容别名**（同样只调用 `launch-internal-beyond.js`，非第二套逻辑）。
-- 需要显式看到 / 控制服务进程时，用 `start-local-services.cmd`。
-- **桌面快捷方式**：`create-desktop-shortcut.cmd` 幂等创建 / 刷新桌面 `InternalBeyond.lnk`（目标指向 `启动 InternalBeyond.vbs`，图标 `IB-icon.ico`）；移动项目后重跑一次即可。
+- `启动 InternalBeyond.vbs` 是正式启动链的实现（安装包的快捷方式最终执行它）：定位自身目录 → 解析 Node 运行时 → 委托唯一真实逻辑 `runtime\launch-internal-beyond.js`；`--debug` 让启动过程可见。
+- `scripts\windows\Start Internal Beyond.cmd` 保留为**兼容别名**（同样只调用 `runtime\launch-internal-beyond.js`，非第二套逻辑）。
+- 需要显式看到 / 控制服务进程时，用 `scripts\windows\start-local-services.cmd`。
+- **桌面快捷方式**：`scripts\windows\create-desktop-shortcut.cmd` 幂等创建 / 刷新桌面 `InternalBeyond.lnk`（目标指向 `启动 InternalBeyond.vbs`，图标 `assets\icons\IB-icon.ico`）；移动项目后重跑一次即可。
 
 ### 测试
 
@@ -158,7 +158,7 @@ node test-all.js --all       # 三组全跑（static / service / browser）
 node scripts_check_html.js InternalBeyond.html   # HTML 内全部 script 块逐个 node --check
 ```
 
-- 前端回归：`test-ui.cmd`（或依次运行 `scripts_check_html.js`、`test_frontend_structure.js`、`test_game_smoke.js`、`test_ui_regression.js`）。
+- 前端回归：`scripts\windows\test-ui.cmd`（或依次运行 `scripts_check_html.js`、`test_frontend_structure.js`、`test_game_smoke.js`、`test_ui_regression.js`）。
 - 安装包相关（**不安装、不开浏览器**）：`node test_installer.js`、`node test_installer_mock.js`、`node test_ib_stop_identity.js`、`node test_node_runtime.js`。
 - 测试预算与隔离规则见 [`docs/P7-TEST-BUDGET.md`](docs/P7-TEST-BUDGET.md)。
 
@@ -176,41 +176,41 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-installer.ps1
 
 ```
 InternalBeyond.html        # 唯一 HTML 入口
+VERSION / LICENSE          # 单一发行版本源 / 项目许可
+启动 InternalBeyond.vbs    # 用户启动入口（安装包快捷方式目标）
+services/                  # 本地服务：Bridge(23115) / Active(23114) / 静态页面服务(23120)
+runtime/                   # 启动链（launcher / runner / boot-state / product-version）+ node/ 内置运行时
+bridge/                    # Bridge 域模块（config/clients/tts/ws/routes/…）
+active/                    # Active 域模块（plans/moments/scheduler/model-client/http/…）
 assets/{css,js}/           # 前端样式与脚本（无打包、按 HTML 顺序加载）
+assets/images/             # 主题背景（bg-internal / bg-infernal / bg-canvas）
+assets/icons/IB-icon.ico   # 官方图标（快捷方式 / 卸载项 / 通知）
 game/                      # Room 游戏引擎（六个模块）
 apps/                      # APP 目录（catalog.json + 外部应用）
-ib-bridge-service.js       # Bridge 后端 composition root
-bridge/                    # Bridge 域模块（config/clients/tts/ws/routes/…）
-active-message-service.js  # Active companion composition root
-active/                    # Active 域模块（plans/moments/scheduler/model-client/http/…）
-internal-beyond-server.js  # 本地静态页面服务
-launch-internal-beyond.js  # 静默启动链
-local-services-runner.js   # 本地服务统一控制器
-boot-state.js              # 启动状态记录（诊断唯一来源）
 installer/                 # Inno Setup 脚本、语言文件、运行时 pin、停止助手
-runtime/node/              # 内置 Node 运行时（node.exe 不入库）
 scripts/                   # 构建 / 发行审计 / 截图管线 / 运行时更新
+scripts/windows/           # 开发期 Windows 辅助脚本（start-*.cmd / 快捷方式 / test-ui.cmd）
 docs/                      # 架构与机制文档、教程截图、历史归档
 test_*.js / test-all.js    # 测试
 vision/                    # 可选本地视觉服务（Python，默认不随包分发）
 ```
 
-完整目录、模块职责、端口与协议见 [`ARCHITECTURE.md`](ARCHITECTURE.md)。
+完整目录、模块职责、端口与协议见 [`ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
 
 ### 文档索引
 
 | 文档 | 回答什么 |
 |---|---|
 | [`README.md`](README.md) | 安装、使用、下载（本文件） |
-| [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) | 遇到问题先查这里 |
-| [`ARCHITECTURE.md`](ARCHITECTURE.md) | 这个项目是怎么工作的 |
-| [`DECISIONS.md`](DECISIONS.md) | 为什么这么设计（D1–D18，"不要随便改"清单） |
-| [`HANDOVER.md`](HANDOVER.md) | 现状、待办、DO / DON'T（Agent 第一入口） |
-| [`CHANGELOG.md`](CHANGELOG.md) | 以前发生过什么 |
+| [`TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | 遇到问题先查这里 |
+| [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) | 这个项目是怎么工作的 |
+| [`DECISIONS.md`](docs/DECISIONS.md) | 为什么这么设计（D1–D18，"不要随便改"清单） |
+| [`HANDOVER.md`](docs/HANDOVER.md) | 现状、待办、DO / DON'T（Agent 第一入口） |
+| [`CHANGELOG.md`](docs/CHANGELOG.md) | 以前发生过什么 |
 | [`docs/CHRONICLE.md`](docs/CHRONICLE.md) | 编年史（上游 → fork 全史） |
 | [`docs/WHY_IB.md`](docs/WHY_IB.md) / [`docs/SOCIAL_RUNTIME.md`](docs/SOCIAL_RUNTIME.md) / [`docs/MEMORY.md`](docs/MEMORY.md) / [`docs/AUTONOMY.md`](docs/AUTONOMY.md) / [`docs/OFFLINE.md`](docs/OFFLINE.md) | 定位、社会闭环、记忆、自主性、离线能力 |
 | [`docs/history/`](docs/history/README.md) | 阶段性实施报告与审计归档 |
-| [`INTERNALBEYOND_AI_RULES.md`](INTERNALBEYOND_AI_RULES.md) | 开发契约（权限边界、修改纪律） |
+| [`INTERNALBEYOND_AI_RULES.md`](docs/INTERNALBEYOND_AI_RULES.md) | 开发契约（权限边界、修改纪律） |
 
 ---
 
@@ -251,7 +251,7 @@ a local service data file). Nothing is uploaded to a scheduling server. Use **Ex
 
 **Developers** — run from source by cloning the repository and opening `InternalBeyond.html`, or run the local services with
 `start-local-services.cmd`. Full details, ports, runtime resolution and test/build commands are in the Chinese
-[For Developers](#for-developers--从源码运行) section above and in [`ARCHITECTURE.md`](ARCHITECTURE.md).
+[For Developers](#for-developers--从源码运行) section above and in [`ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ---
 
@@ -263,7 +263,7 @@ a local service data file). Nothing is uploaded to a scheduling server. Use **Ex
 > This is an unofficial derivative of Sui's Internal Beyond. Original project: <https://github.com/Sui-IB/InternalBeyond>
 >
 > 在原单文件前端基础上，本版本新增了本地 Bridge / Active companion 后端、社交圈扩展（AI↔AI 回复链、后台调度）、行为观测层等模块，
-> 并将代码重构为模块化目录，补上了内置 Node 运行时与 Windows 安装包。详细差异见 [`CHANGELOG.md`](CHANGELOG.md)。
+> 并将代码重构为模块化目录，补上了内置 Node 运行时与 Windows 安装包。详细差异见 [`CHANGELOG.md`](docs/CHANGELOG.md)。
 > 本修改版遵循与原项目相同的非商业许可条款，与官方版本无从属关系。
 
 ## 联系方式
@@ -292,7 +292,7 @@ a local service data file). Nothing is uploaded to a scheduling server. Use **Ex
 
 ### 衍生版本说明
 
-- 本仓库为 Internal Beyond 的**修改版**（维护者：yydye），基于原项目 <https://github.com/Sui-IB/InternalBeyond> 二次开发。按版权声明第四节要求，此处保留作者署名、项目地址与许可文件，并说明主要修改内容：新增本地 Bridge / Active companion 后端与配套测试、社交圈扩展（AI↔AI 回复链 / 后台调度 / User 作者）、行为观测层、前端与服务端模块化拆分、内置 Node 运行时与 Windows 安装包；完整演进记录见 [`CHANGELOG.md`](CHANGELOG.md)。
+- 本仓库为 Internal Beyond 的**修改版**（维护者：yydye），基于原项目 <https://github.com/Sui-IB/InternalBeyond> 二次开发。按版权声明第四节要求，此处保留作者署名、项目地址与许可文件，并说明主要修改内容：新增本地 Bridge / Active companion 后端与配套测试、社交圈扩展（AI↔AI 回复链 / 后台调度 / User 作者）、行为观测层、前端与服务端模块化拆分、内置 Node 运行时与 Windows 安装包；完整演进记录见 [`CHANGELOG.md`](docs/CHANGELOG.md)。
 - 本修改版按与原项目相同的许可（PolyForm Noncommercial License 1.0.0 / CC BY-NC-SA 4.0）非商业分享，不由 Sui 官方发布、认可或保证；原作品的全部权利归 Sui 所有。
 
 **本项目官方版本免费提供。** 如果你通过付费方式获得了未经作者授权的副本，请停止传播，并通过上方联系方式获取免费正版。

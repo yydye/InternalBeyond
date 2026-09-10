@@ -21,7 +21,7 @@ var sim=document.createElement('canvas'),simCtx=null;
 var DAMP=0.9855;
 var REFRACT=2.0;
 /* 封面清晰化：画窗不再用低分辨率模拟网格整层替换画面（放大后模糊），
-   只在高水波处叠加水痕高光，其余区域透出清晰的 bg-canvas 原图 */
+   只在高水波处叠加水痕高光，其余区域透出清晰的 assets/images/bg-canvas 原图 */
 var GLOSS_ONLY=true;
 var LIGHT=10;
 var STEP=1/30;
@@ -306,7 +306,7 @@ window.addEventListener('resize',function(){if(mode)tgtOk=retarget(mode)});
   };
   im.onerror=function(){probe(names)};
   im.src=name;
-  })(['bg-canvas.png','bg-canvas.jpg']);
+  })(['assets/images/bg-canvas.png','assets/images/bg-canvas.jpg']);
 if(!REDUCED)requestAnimationFrame(loop);
 
 /* ---- window.IB 命名空间迁移：所有权标记 ---- */

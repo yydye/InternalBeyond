@@ -42,7 +42,7 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 /* 持久化层（已提取到 active/persistence.js 工厂；state 为共享引用）    */
 /* ------------------------------------------------------------------ */
 
-const createPersistence = require('./active/persistence');
+const createPersistence = require('../active/persistence');
 const persistence = createPersistence({ dataDir: DATA_DIR, getState: () => state });
 let state = persistence.loadData();
 const saveNow = persistence.saveNow;
@@ -59,7 +59,7 @@ const armedUsers = new Set();
 /* 计划域（已提取到 active/plan-domain.js 工厂；state 经 getState 注入） */
 /* ------------------------------------------------------------------ */
 
-const createPlanDomain = require('./active/plan-domain');
+const createPlanDomain = require('../active/plan-domain');
 const planDomain = createPlanDomain({ getState: () => state, armedUsers, saveNow });
 const pad = planDomain.pad;
 const timeParts = planDomain.timeParts;
@@ -105,7 +105,7 @@ const buildTaskReplacement = planDomain.buildTaskReplacement;
 /* Proactive Observability v1：零决策 trace（IB_PROACTIVE_TRACE=on 才记录） */
 /* ------------------------------------------------------------------ */
 
-const createProactiveTrace = require('./active/proactive-trace');
+const createProactiveTrace = require('../active/proactive-trace');
 const proactiveTrace = createProactiveTrace({
   enabled: String(process.env.IB_PROACTIVE_TRACE || '').trim().toLowerCase() === 'on',
   limit: 50
@@ -115,7 +115,7 @@ const proactiveTrace = createProactiveTrace({
 /* 模型客户端（已提取到 active/model-client.js 工厂；getState / 常量注入） */
 /* ------------------------------------------------------------------ */
 
-const createModelClient = require('./active/model-client');
+const createModelClient = require('../active/model-client');
 const modelClient = createModelClient({
   getState: () => state,
   trimText,
@@ -153,7 +153,7 @@ const windowsNotify = modelClient.windowsNotify;
 /*   不覆盖已存在的有效凭证），之后业务 snapshot 不再持久化明文 Key。   */
 /* ------------------------------------------------------------------ */
 
-const createCredentialVault = require('./active/credential-vault');
+const createCredentialVault = require('../active/credential-vault');
 const credentialVault = createCredentialVault({ dataDir: DATA_DIR });
 credentialVault.load();
 try {
@@ -172,7 +172,7 @@ try {
    - 只记后台的失败/拒绝/拦截/调用次数（成功结果由浏览器 ingest 入账）；
    - 关闭方式：环境变量 IB_SOCIAL_OBSERVE=off。 */
 const OBSERVE_DISABLED = String(process.env.IB_SOCIAL_OBSERVE || '').trim().toLowerCase() === 'off';
-const socialObserveCore = require('./assets/js/social-observe.js');
+const socialObserveCore = require('../assets/js/social-observe.js');
 const socialObserveFile = path.join(DATA_DIR, 'social-observe.json');
 let socialObserver = null;
 if (!OBSERVE_DISABLED) {
@@ -192,9 +192,9 @@ if (!OBSERVE_DISABLED) {
   socialObserver = inst;
 }
 
-const createMomentsDomain = require('./active/moments');
+const createMomentsDomain = require('../active/moments');
 /* 前后台共享核心（回复链规则/Prompt/常量唯一来源）：浏览器 <script> 与 Node require 的是同一文件 */
-const replyChainCore = require('./assets/js/reply-chain-core.js');
+const replyChainCore = require('../assets/js/reply-chain-core.js');
 const momentsDomain = createMomentsDomain({
   getState: () => state,
   armedUsers,
@@ -233,7 +233,7 @@ const replyTaskKey = momentsDomain.replyTaskKey;
 /* 调度器（已提取到 active/scheduler.js 工厂；state 经 getState 注入） */
 /* ------------------------------------------------------------------ */
 
-const createScheduler = require('./active/scheduler');
+const createScheduler = require('../active/scheduler');
 const scheduler = createScheduler({
   getState: () => state,
   armedUsers,
@@ -267,7 +267,7 @@ const shutdown = scheduler.shutdown;
 /* HTTP 层（已提取到 active/http.js 工厂；server 实例随工厂返回）       */
 /* ------------------------------------------------------------------ */
 
-const createHttp = require('./active/http');
+const createHttp = require('../active/http');
 const httpLayer = createHttp({
   HOST, PORT,
   maxBody: MAX_BODY,

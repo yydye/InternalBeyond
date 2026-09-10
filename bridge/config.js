@@ -1,5 +1,5 @@
 /* IB Bridge · 配置加载、校验、升级与鉴权辅助。
-   从 ib-bridge-service.js 提取为工厂：全部可变状态（config / configRaw / LAN_EXPOSED）
+   从 services/ib-bridge-service.js 提取为工厂：全部可变状态（config / configRaw / LAN_EXPOSED）
    收在 createConfig 闭包内，避免多模块共享全局。持久化通过注入的 writeJson(file, obj)
    完成（由 composition root 提供），避免循环依赖。原逻辑逐字不变。 */
 'use strict';

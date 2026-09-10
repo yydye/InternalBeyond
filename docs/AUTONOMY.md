@@ -1,7 +1,7 @@
 ﻿# InternalBeyond · 自主性（Autonomy Runtime）
 
 > 本文定义 IB 的**自主行为机制**：它如何让角色"自己行动"，以及为什么这是**有节制的自主（Autonomy ≠ random generation）**。
-> 关联：[SOCIAL_RUNTIME.md](SOCIAL_RUNTIME.md)（社会闭环）· [MEMORY.md](MEMORY.md)（记忆）· [ARCHITECTURE.md](../ARCHITECTURE.md) · [DECISIONS.md](../DECISIONS.md)（D11/D13）。
+> 关联：[SOCIAL_RUNTIME.md](SOCIAL_RUNTIME.md)（社会闭环）· [MEMORY.md](MEMORY.md)（记忆）· [ARCHITECTURE.md](ARCHITECTURE.md) · [DECISIONS.md](DECISIONS.md)（D11/D13）。
 
 ---
 

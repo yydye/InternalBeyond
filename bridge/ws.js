@@ -1,5 +1,5 @@
 ﻿/* IB Bridge · WebSocket 层：心跳、推送广播、连接类与消息分发。
-   从 ib-bridge-service.js 提取为工厂：config / executeTool / TOOLS / 推送历史与锁
+   从 services/ib-bridge-service.js 提取为工厂：config / executeTool / TOOLS / 推送历史与锁
    均经依赖注入；wsSockets 集合随工厂返回共享引用，供诊断与状态接口读数。
    原逻辑逐字不变（含 close 帧先发后置 closed 的修复注释）。 */
 'use strict';

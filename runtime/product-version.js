@@ -23,9 +23,10 @@
 const fs = require('fs');
 const path = require('path');
 
-/* Repo root == app root in the installed layout, so a sibling VERSION file is
-   always the right one (no cwd assumptions, no env lookups). */
-const FILE = path.join(__dirname, 'VERSION');
+/* Repo root == app root in the installed layout, so the VERSION file at the
+   root is always the right one (no cwd assumptions, no env lookups). This
+   module lives in runtime/, so that file is one level up. */
+const FILE = path.join(__dirname, '..', 'VERSION');
 const SEMVER_RE = /^\d+\.\d+\.\d+$/;
 const FALLBACK = '0.0.0';
 

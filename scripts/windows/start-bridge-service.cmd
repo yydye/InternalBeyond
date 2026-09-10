@@ -1,6 +1,8 @@
 @echo off
 setlocal
-cd /d "%~dp0"
+rem This script lives in scripts\windows\, so the repository root is two levels up.
+for %%I in ("%~dp0..\..") do set "IB_ROOT=%%~fI"
+cd /d "%IB_ROOT%"
 
 where node.exe >nul 2>nul
 if errorlevel 1 (
@@ -21,7 +23,7 @@ echo.
 echo Starting Internal Beyond Bridge service...
 echo Close this window to stop the Bridge backend.
 echo.
-node.exe "%~dp0ib-bridge-service.js"
+node.exe "%IB_ROOT%\services\ib-bridge-service.js"
 set "bridge_exit=%errorlevel%"
 
 if not "%bridge_exit%"=="0" (
