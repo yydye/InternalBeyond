@@ -1430,4 +1430,26 @@ R0 只做定位、不动代码，根因冻结之后才提交修复。
 `github.com` 被连接重置（`curl` 一个字节都拿不到），而 `api.github.com` 与资产 CDN 正常，
 这是回退门（U-D1 Revised）第三次在**真实**网络失败上被验证。
 
-剩余唯一待做项：`1.0.2 → 1.0.3` 的真实安装态 E2E，含欢迎页水纹的最终验收。
+### 安装态复核（U5-4 收尾）
+
+`v1.0.3` 已在真实安装实例 `E:\IB-E2E-1.0.1\InternalBeyond` 上复核，**Welcome 水纹修复 4/4 通过**：
+`/health` / `VERSION` / `boot-state.json` / 卸载注册表全部 `1.0.3`（全机仅一项安装）；安装目录
+`assets/js/glass-ripple.js` = **10,687 B** · `sha256=1dc0a3f3…8b51`，与仓库 HEAD 及 HTTP 下发字节
+三者逐字节相同、`currentPage` 0 次；`bg-canvas.jpg` 200 / `bg-canvas.png` 404 / `glass-canvas.js` 200；
+安装器 20:43:59 停旧版本、20:44:02 用 `?ibv=1.0.3` 自动重启（launcher.log 上一轮为 `?ibv=1.0.2`）。
+实际运行的安装包与已发布资产同源（51,749,877 B · `sha256=3345f461…9434c` == 清单 `installer.sha256`）。
+
+**但这次升级不是应用内零触达**：安装器日志 `%TEMP%\Setup Log 2026-09-10 #003.txt` 的
+`Original Setup EXE` 是 `C:\Users\admin\Downloads\InternalBeyond-Setup-1.0.3.exe`，命令行除 Inno 自身的
+`/SL5="…"` 外无任何附加参数（无 `/SILENT`、无 `IBRELAUNCH`）；`%LOCALAPPDATA%\InternalBeyond\updates`
+不存在、无 `update-install-state.json`、`update-check.json` 停在 20:08:51 且内容仍是 1.0.2 清单
+（20:44 之前没有任何一次成功检查；失败从不写缓存）。同日 19:28 / 20:07 两次同为手动覆盖安装。
+
+即：安装器那一半（停应用 → 覆盖 → 自动重启）真实跑过；**助手那一半**（读缓存清单 → 下载 →
+大小 / SHA-256 / PE 校验 → detached 拉起安装器）与卡片到助手那一跳**仍未在真实点击下跑过**。
+
+同日在真实安装态补做的检查（只写缓存，不下载不安装）：`GET /__update-check` → `fromCache=true` ·
+`latestVersion=1.0.2`（陈旧缓存在 24h TTL 内遮蔽，只会少报）；`GET /__update-check?force=1` →
+`transport=direct` · `latestVersion=1.0.3`，缓存刷新为 1,963 B / 1.0.3 —— **检查半程已通**，
+只剩「卡片点击 → 下载 → 静默安装」未验证。U5-4 对 Welcome 修复判 **PASS**；零触达安装半程记为
+**独立未结项**，等下一个有真实变更的版本做，不为测试单独发版。

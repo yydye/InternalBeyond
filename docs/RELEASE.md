@@ -532,6 +532,9 @@ release 上的三个资产与 `manifest.installer.sha256` 逐项交叉核对通�
 
 > **诚实边界**：以上都在**本机 headless Chrome** 上对**本地静态服务**复现；「已安装的 1.0.2」
 > 那一列是在真实安装实例上跑的。最终验收仍是 `1.0.2 → 1.0.3` E2E 之后在真实安装态里复核水纹。
+>
+> 后续（U5-4 收尾）：见下文「安装态复核（U5-4 收尾 · v1.0.3 已安装，真机）」——水纹部分已在真实安装态
+> 复核通过，但该次升级走的是**手动覆盖安装**，**应用内零触达 E2E 仍然没有跑过**。
 
 **构建实测**：
 
@@ -585,6 +588,48 @@ HEAD 逐字节相同（`sha256=1dc0a3f3…8b51`）且**不再出现 `currentPage
 `curl` 一个字节都拿不到；同期 `api.github.com` 与资产 CDN 正常，`gh` 也因此能完成上传与回读。
 这正是 §8 开头那句「记录的是某时刻的观测，而不是网络的稳定属性」的又一次实例——也再次说明回退门
 为什么必须存在、且必须廉价。
+
+### 安装态复核（U5-4 收尾 · v1.0.3 已安装，真机）
+
+`v1.0.3` 已在真实安装实例 `E:\IB-E2E-1.0.1\InternalBeyond` 上完成复核。**Welcome 水纹修复 4/4 通过**，
+但**这次升级走的是「手动下载安装包后双击覆盖安装」，不是应用内零触达路径**——两者必须分开记。
+
+| # | 验收项 | 实测 |
+|---|---|---|
+| 1 | 版本 | `/health` → `{"version":"1.0.3"}`；安装目录 `VERSION` = `1.0.3`；`boot-state.json` `product.version` = `1.0.3`（`source: VERSION`）；卸载注册表项 `InternalBeyond 1.0.3`（**全机仅此一项**） |
+| 2 | 修复是否真的进了安装态 | 安装目录 `assets/js/glass-ripple.js` = **10,687 B** · `sha256=1dc0a3f3…8b51`，与仓库 HEAD **及 HTTP 实际下发字节**三者逐字节相同；`currentPage` 出现 **0** 次 |
+| 3 | 欢迎页载荷（经 `:23120` 实测） | `assets/images/bg-canvas.jpg` **200** · `assets/images/bg-canvas.png` **404**（设计如此）· `assets/js/glass-canvas.js` **200**；水纹由用户目视确认恢复 |
+| 4 | 安装完整性与自动重启 | 安装器 20:43:59 停旧版本、20:44:02 用 `?ibv=1.0.3` 拉起新版本（`logs\launcher.log`；上一轮同文件里是 `?ibv=1.0.2`） |
+
+附加一条同源证据：用户实际运行的安装包与已发布资产**逐字节同源**——`InternalBeyond-Setup-1.0.3.exe`
+51,749,877 B · `sha256=3345f461…9434c` == 清单 `installer.sha256`（在用户的 `%USERPROFILE%\Downloads`）。
+
+**这次升级的路径事实（诚实记录）**：安装器日志 `%TEMP%\Setup Log 2026-09-10 #003.txt` 记
+`Original Setup EXE: C:\Users\admin\Downloads\InternalBeyond-Setup-1.0.3.exe`，命令行除 Inno 自身的
+`/SL5="…"` 外**没有任何附加参数**（既无 `/SILENT` 也无 `IBRELAUNCH`）；同日的 19:28（1.0.1）与 20:07（1.0.2）
+两次是同样形态。三条独立佐证：
+
+- `%LOCALAPPDATA%\InternalBeyond\updates`（`runtime/update-install.js` 唯一的载荷落点）**不存在**；
+- 没有 `update-install-state.json` / `update-install.lock`；
+- `update-check.json` 停在 20:08:51、内容仍是 1.0.2 清单——即 20:44 之前**没有任何一次成功的检查**
+  （失败从不写缓存，所以这正是一次「拿到不完整响应」的检查留下的痕迹，与上面发布窗口期的连接重置吻合）。
+
+**本次验证到哪为止**：安装器那一半（停应用 → 覆盖 → 自动重启）**被真实跑过**；没跑过的是**助手那一半**
+——`runtime/update-install.js` 的「读缓存清单 → 下载 → 大小 / SHA-256 / PE 版本校验 → 分离式拉起安装器」，
+以及诊断卡片到助手之间那一跳。**应用内零触达至今仍只有测试与 harness 覆盖，没有真实点击背书。**
+
+**同日在真实安装态上补做的检查**（只写更新缓存，不下载、不安装）：
+
+| 路径 | 端点 | 结果 |
+|---|---|---|
+| 自动（先用升级前留下的陈旧缓存） | `GET /__update-check` | `fromCache=true` · `latestVersion=1.0.2` · `currentVersion=1.0.3` · `status=up-to-date`——精确复现「陈旧清单在 24h TTL 内遮蔽新版本」（只会少报，不会误报有更新） |
+| 手动（等同点「检查更新」） | `GET /__update-check?force=1` | `fromCache=false` · `transport=direct` · `latestVersion=1.0.3` · `checkedAt=12:48:07Z`；缓存由 1,712 B / 1.0.2 **刷新为 1,963 B / 1.0.3**（`installer.sha256` 与已发布资产一致） |
+
+即**检查这一半已在真实安装态跑通**（而且走的是直连主路，说明发布窗口期那个连接重置已恢复）；
+只剩「卡片点击 → 下载 → 静默安装」这半程未验证。
+
+**结论**：U5-4 对 Welcome 水纹修复判 **PASS**（修复确证进了安装态，并被目视确认）；
+**零触达安装半程记为独立未结项**，等下一个有真实变更的版本自然做，不为测试单独发版。
 
 ---
 
