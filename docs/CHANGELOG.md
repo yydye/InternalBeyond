@@ -1325,9 +1325,27 @@ cleanup 仍是独立后续项）。
 `release-notes/1.0.2.md` **没有**写任何关于更新可靠性的说法——只写了真实发生的欢迎页背景修复，
 以及两条真实的升级路径说明。**宁可少写一句，不写一句没发生的事。**
 
-### 停在此处
+### 发布（已按 RELEASE.md §2 顺序完成）
 
-本阶段在 **push / tag / release 之前**停手：本地已有未 push 的提交，`dist\` 三件产物
-已就绪且核对通过，但**尚未上传**。发布顺序仍是 RELEASE.md §2 的契约：
-exe → `SHA256SUMS.txt` → **`update-stable.json` LAST**；tag 必须指向明确 HEAD（先 push、后 tag）。
+先 push `master`（到 `7e86c5e`），再打 tag **`v1.0.2` → `7e86c5e`**（显式 HEAD，不是 `gh` 的
+默认 `target_commitish`）并 push，然后 `gh release create --verify-tag`（非 draft / 非 prerelease /
+`Latest`）：
+
+| 资产 | 大小 | GitHub `digest` | 与清单 |
+|---|---|---|---|
+| `InternalBeyond-Setup-1.0.2.exe` | 51,749,231 B | `sha256:508ee08f…820591` | ✅ 一致 |
+| `SHA256SUMS.txt` | 406 B | `sha256:da520eff…a03a4` | — |
+| `update-stable.json`（**最后上传**） | 1,519 B | `sha256:bbc4a396…e1c0c` | 在线回读与本地**逐字节相同** |
+
+上传清单**之前**先做 digest 交叉核对（exe 的 GitHub `digest` == 清单 `sha256`、
+asset size == 清单 `sizeBytes`、asset URL == 清单 `installer.url`），确认无误才上传清单——
+**上传清单的那一刻，1.0.2 才进入 Stable 通道**。
+
+真实客户端只读实测：`1.0.1` → `update-available` → `1.0.2`（读到 `minimumVersion = 1.0.1`、
+`notes` 随清单下发）；`1.0.2` → `up-to-date`。其中一次运行的 primary（`direct`）
+connect-timeout 8 s，**恰好换路一次**到 `api` 成功——回退门（U-D1 Revised）在真实网络失败上
+第二次被验证。
+
+`v1.0.1` 的真实安装实例（`E:\IB-E2E-1.0.1\InternalBeyond`）**保持不动**，下一步用它执行
+`1.0.1 → 1.0.2` Zero-Touch Update E2E，并核对欢迎页画窗背景确实来自随包 `bg-canvas.jpg`。
 

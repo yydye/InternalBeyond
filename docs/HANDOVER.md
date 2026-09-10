@@ -58,7 +58,7 @@
 
 ## 4. 接下来做什么（候选，按建议优先级）
 
-**当前阶段（U5-3 · v1.0.2 发布准备）：** `VERSION` 已升到 1.0.2，清单契约新增 `minimumVersion = 1.0.1`，用户升级说明见 [release-notes/1.0.2.md](release-notes/1.0.2.md)。流程为**构建 → 核对三条等式与载荷 → push → tag → release**；发布后立即用**真实已安装的 1.0.1 实例**执行 `1.0.1 → 1.0.2` Zero-Touch Update E2E，并复验欢迎页画窗背景确实用的是随包 `bg-canvas.jpg`。**不要为了 E2E 卸载现有 1.0.1 baseline。** U5-2B（legacy root-layout cleanup / `[InstallDelete]`）仍是独立后续项，本阶段不做。
+**当前阶段（U5-3 · v1.0.2 已发布）：** `v1.0.2` 已按 RELEASE.md §2 顺序上线（tag `v1.0.2` → `7e86c5e`，三个资产 digest 与清单交叉核对通过，Stable 通道已生效：`1.0.1` 客户端读到 `update-available`）。用户升级说明见 [release-notes/1.0.2.md](release-notes/1.0.2.md)。**下一步是唯一待做项**：用**真实已安装的 1.0.1 实例**（`E:\IB-E2E-1.0.1\InternalBeyond`）执行 `1.0.1 → 1.0.2` Zero-Touch Update E2E——更新完成并自动重启后核对 `/health.version == 1.0.2`、欢迎页真实浏览器 `#gw-img` 进入 `gw-has-img`、实际用的是随包 `bg-canvas.jpg`、安装目录内 `bg-canvas.jpg` 在而 `bg-canvas.png` 不在。**不要为了 E2E 卸载现有 1.0.1 baseline。** U5-2B（legacy root-layout cleanup / `[InstallDelete]`）仍是独立后续项，本阶段不做。
 
 1. **观察期结束后的关系系统校准**（§3 的参数定值与实现）——唯一被明确规划的下一阶段。
 2. **诚实清单中仍开放的缺口**（均为可选增强，非缺陷）：

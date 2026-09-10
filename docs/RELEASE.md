@@ -468,6 +468,32 @@ release 上的三个资产与 `manifest.installer.sha256` 逐项交叉核对通�
 > 从而破坏 E2E 的 baseline。因此本阶段**不跑**该审计——安装后的载荷改由紧随其后的
 > `1.0.1 → 1.0.2` E2E 在真实安装实例上直接核对。
 
+### 发布后实测（v1.0.2 已上线，真机联网）
+
+`v1.0.2` 已按 §2 顺序发布：先 push `master`，再打 tag **`v1.0.2` → `7e86c5e`**（显式 HEAD，
+不是 `gh` 的默认 `target_commitish`），最后用 `gh release create --verify-tag` 建 release
+（非 draft / 非 prerelease，`Latest`）。三个资产的 digest 与清单逐项交叉核对通过：
+
+| 资产 | 大小 | GitHub `digest` |
+|---|---|---|
+| `InternalBeyond-Setup-1.0.2.exe` | 51,749,231 B | `sha256:508ee08f…820591` ✅ **== 清单 `installer.sha256`** |
+| `SHA256SUMS.txt` | 406 B | `sha256:da520eff…a03a4` |
+| `update-stable.json` | 1,519 B | `sha256:bbc4a396…e1c0c`（从 `releases/latest/download/` **在线回读**，与本地 `cmp` 逐字节相同） |
+
+真实客户端路径实测（只读：不下载安装包、不安装、缓存写临时文件）：
+
+| 运行版本 | 结果 | 传输 |
+|---|---|---|
+| `1.0.1` | `update-available` → `1.0.2`；`manifest.installer` 的 `sha256` / `sizeBytes` / `productVersion` 与上表一致；`minimumVersion = 1.0.1`；`notes` 随清单下发 | 两次实测：一次 `direct` 直接成功；另一次 `direct` **connect-timeout 8 s** → **恰好换路一次** → `api` 200 |
+| `1.0.2` | `up-to-date`（`latestVersion` = `1.0.2`） | 同左 |
+
+**结论**：Stable 通道再次在真实数据上生效；回退门（U-D1 Revised）第二次在**真实**网络失败上被
+验证（primary 是网络失败而非响应，故只换路一次，成功即止）。`minimumVersion` 第一次作为真实字段
+被客户端读到——它仍然只做形状校验，**不是安装闸门**。
+
+`v1.0.1` 仍是 `1.0.1 → 1.0.2` E2E 的 baseline：**发布后不要卸载它**（本地真实安装实例
+`E:\IB-E2E-1.0.1\InternalBeyond`）。
+
 ---
 
 ## 9. 相关测试
