@@ -1,7 +1,7 @@
 @echo off
 setlocal
 rem This script lives in scripts\windows\, so the repository root is two levels up.
-rem The checks below are invoked with root-relative paths, so run from the root.
+rem cwd stays the repository root; the moved test suite is invoked as tests\<name>.
 for %%I in ("%~dp0..\..") do set "IB_ROOT=%%~fI"
 cd /d "%IB_ROOT%"
 
@@ -12,10 +12,10 @@ if errorlevel 1 (
   exit /b 1
 )
 
-node scripts_check_html.js InternalBeyond.html || goto :failed
-node test_frontend_structure.js || goto :failed
-node test_game_smoke.js || goto :failed
-node test_ui_regression.js || goto :failed
+node scripts\scripts_check_html.js InternalBeyond.html || goto :failed
+node tests\test_frontend_structure.js || goto :failed
+node tests\test_game_smoke.js || goto :failed
+node tests\test_ui_regression.js || goto :failed
 
 echo.
 echo [InternalBeyond] Frontend regression passed.

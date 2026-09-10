@@ -1,4 +1,4 @@
-﻿# Internal Beyond · 交接文档（Agent 第一入口）
+# Internal Beyond · 交接文档（Agent 第一入口）
 
 > 本文档回答「项目现在是什么情况、我接下来该干什么」。
 >
@@ -34,7 +34,7 @@
 ## 2. 当前状态
 
 - **功能面**：主聊天（浏览器直连各家 API）、社交圈（Moments → Social Net：Feed/Profile/好友/讨论串/转发 + AI↔AI 回复链前后台）、AI 日记、记忆系统、工作区、游戏模块、行为观测层。全部模块已拆分完毕并注册 `window.IB` 命名空间。
-- **测试基线全绿**：`node test-all.js --all`（static / service / browser 三组，约 150–165s）。改动后跑这个作为最终验收。
+- **测试基线全绿**：`node tests/test-all.js --all`（static / service / browser 三组，约 150–165s）。改动后跑这个作为最终验收。
 - **发行形态（P1–P7 已完成）**：内置 Node 24 LTS 运行时（P1）、降级启动 / boot state（P2）、错误产品化 IBERR（P3）、首启设置向导（P4）、系统诊断与自恢复（P5）、零基础图文教程 + 截图管线（P6）、Windows 安装包（P7，产物 `dist\InternalBeyond-Setup-1.0.0.exe`，per-user 免 UAC，白名单载荷）。
 - **图片链路（P12 已完成）**：全部图片生成入口（Chat `<ws_gen_image>`、Moments / AI 自主 Moments 配图）统一经 `IB.imageRouter`（`assets/js/image-router-core.js` + `assets/js/image-router.js`）→ Image Scheduler → 现有 `_wsExecImageGen`；GPT Image 2.5 Flare/Sunburst 双模型策略由 Middle Brain 的 `Image Generation`（Fast / Auto / Precision）控制，默认 Auto。并发 global=2 / Flare=2 / Sunburst=1 / 每角色=1，队列上限 8，后台有冷却与降级保护，telemetry 可查（`IB.imageRouter.telemetry()`）。
 - **图片编辑（P13 已完成）**：`<ws_edit_image>正文=修改要求</ws_edit_image>`（可选 `path="图片文件"`）→ Image Reference Resolver（`assets/js/image-edit-core.js` + `image-edit.js`，选源优先级：用户显式选中 > 本轮附带图片 > 最近一张可编辑图片）→ `IB.imageRouter.routeImageRequest({operation:'edit',…})` → Scheduler → 既有 `_wsExecImageGen`（内部薄的 `_wsExecImageEdit`）→ provider `/v1/images/edits`（OpenAI 兼容 multipart）或 Gemini `inlineData`。多轮编辑靠 `aiMsg.images` 上的 lineage（`imageId/parentImageId/editDepth`）形成 A→B→C；不支持编辑的模型返回 `IMAGE_EDIT_UNSUPPORTED` 且不发任何请求；参考图上限 4 张 / 单张 4MB / 合计 8MB。
@@ -97,13 +97,13 @@ foreach($x in $c){ $p = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $x
 Start-Process cmd.exe -ArgumentList '/c','start-bridge-service.cmd' -WorkingDirectory '<仓库根目录>'
 Invoke-RestMethod http://127.0.0.1:23115/health
 
-# companion（23114）同理：找监听进程确认 active-message-service.js 后停止，重跑 start-active-service.cmd
+# companion（23114）同理：找监听进程确认 services/active-message-service.js 后停止，重跑 scripts/windows/start-active-service.cmd
 # companion 功能升级后必须重启一次才会启用新后台能力（否则浏览器自动本地回退，不会双发）
 
 # 全量测试验收
-node --check ib-bridge-service.js        # 快速语法
-node scripts_check_html.js InternalBeyond.html
-node test-all.js --all                   # 最终验收（--quick 约 17s）
+node --check services/ib-bridge-service.js   # 快速语法
+node scripts/scripts_check_html.js InternalBeyond.html
+node tests/test-all.js --all                 # 最终验收（--quick 约 17s）
 ```
 
 常用路径：

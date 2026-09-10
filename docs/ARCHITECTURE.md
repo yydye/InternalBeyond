@@ -1,4 +1,4 @@
-﻿# Internal Beyond · 架构文档
+# Internal Beyond · 架构文档
 
 > 本文档回答「这个项目是怎么工作的」。历史演进见 [CHANGELOG.md](CHANGELOG.md)，设计理由见 [DECISIONS.md](DECISIONS.md)，踩坑见 [TROUBLESHOOTING.md](TROUBLESHOOTING.md)。
 
@@ -84,16 +84,24 @@ InternalBeyond/  # 仓库根目录（根只放入口 / 许可 / 版本 / 元数�
 ├── game/                        # game_module.js / game_tarot.js / game_story.js / game_dialogue.js / game_room.js / game_tea.js
 ├── installer/                   # Inno Setup 脚本 + 语言文件 + 运行时 pin + tools/ib-stop.js
 ├── scripts/                     # 构建 / 发行审计 / 载荷清单 / 截图管线 / 进程与运行时脚本
+│   ├── scripts_check_html.js    # 提取 HTML 内全部 <script> 块逐个 node --check
 │   └── windows/                 # 开发期 Windows 辅助脚本（start-*.cmd / Start Internal Beyond.cmd /
 │                                #   create-desktop-shortcut.cmd / test-ui.cmd，均不随包分发）
 ├── docs/                        # 机制文档（ARCHITECTURE / CHANGELOG / DECISIONS / HANDOVER /
 │                                #   TROUBLESHOOTING / INTERNALBEYOND_AI_RULES + 其余机制文档）
 │                                #   + guide 截图 + history 归档
 ├── vision/                      # 可选本地视觉服务（Python，默认不随包分发）
-├── test-all.js                  # 统一测试入口（--quick / --browser / --all）
-├── test_*.js                    # 各冒烟/单元/集成套件
-└── scripts_check_html.js        # 提取 HTML 内全部 <script> 块逐个 node --check
+└── tests/                       # 全部测试套件（与统一入口同住，可从任意工作目录运行）
+    ├── test-all.js              # 统一测试入口（--quick / --browser / --all）
+    ├── test_*.js                # 各冒烟 / 单元 / 集成套件
+    ├── test_vision.py           # 可选 Vision 服务测试（需 Python + 本地服务，不进 --all）
+    └── middle-brain-calibration{,-cases}.js   # 角色一致性校准框架与用例表
 ```
+
+测试脚本一律用 `const ROOT = path.resolve(__dirname, '..')` 定位仓库根，
+**不依赖 `process.cwd()` 恰好等于仓库根**；`test-all.js` 显式区分
+`TEST_ROOT = __dirname` 与 `REPO_ROOT = path.resolve(__dirname, '..')`，
+并把子测试的 cwd 固定为 `REPO_ROOT`（与迁移前 `cwd === 仓库根` 的行为一致）。
 
 
 ### HTML 加载顺序（关键约束）
@@ -678,12 +686,14 @@ Coread 与 Cinema 不各自为政，统一跑在这套运行时上，天然可�
 
 ### 统一入口 test-all.js（零依赖，跨平台）
 
-- `node test-all.js --quick`（static + service，约 17s）、`--browser`（Chrome 集成组，串行）、`--all`（默认）。子进程输出透传、任一失败非零退出、分组耗时汇总。服务测试自带随机端口与临时数据目录。
+- `node tests/test-all.js --quick`（static + service，约 17s）、`--browser`（Chrome 集成组，串行）、`--all`（默认）。子进程输出透传、任一失败非零退出、分组耗时汇总。服务测试自带随机端口与临时数据目录。
 - 截至 2026-08-26：static 2 / service 7 / browser 13 个入口全绿基线（约 150–165s）。（注：原文各节记录的入口/断言计数随轮次增长存在小幅出入，以各日期条目原文为准，见 CHANGELOG。）
 
 ### static 组
 
-- `scripts_check_html.js`：提取 HTML 内全部本地 `<script>` 块逐个 `node --check`（39 个脚本）。
+> 下表脚本名均位于 `tests/`（`scripts_check_html.js` 除外，它在 `scripts/`）。
+
+- `scripts/scripts_check_html.js`：提取 HTML 内全部本地 `<script>` 块逐个 `node --check`（39 个脚本）。
 - `test_frontend_structure.js`：UTF-8/BOM/乱码检查（递归 assets/css、assets/js、game）、资源路径、拆分约束、设计变量、内联样式预算、入口语义、16+1 张样式表总数与 core 12 段精确加载顺序、子模块 IIFE 首尾断言（com./ws./mem./active.，用 includes 而非正则）；P12 追加 Image Router 结构守卫（脚本按序挂载、不自行 fetch / 不内置 provider endpoint、必须复用 `_wsExecImageGen` 与 `_imgResolveProvider`、只经 MB 决策缝、producers 不得直接调用执行器、UI 卡片存在）。
   P15 追加配置层结构守卫（模型目录/路由配置/设置脚本按序挂载、core 与 Settings 不得硬编码模型名、模型必须按 capability 过滤、配置层只写 `apiSettings` 且只按 apiConfigId 引用既有 API 配置、不得读取/渲染 apiKey、必须复用执行器的 provider 与编辑能力判定、显式模型必须进决策且能力不足在发请求前失败、备用通道必须有失败类别白名单、Settings 必须复用 `addNewApi()` 并展示当前实际路由）。
 - `test_image_router.js`（P12，纯 Node，86 项）：路由（生成/精修/参考保持/Fast·Precision 覆盖/provider_managed）、并发（global≤2、Flare≤2、Sunburst≤1、同角色互斥且不阻塞他人）、优先级与 aging 防饥饿（后台永不超过 P0、不抢占已派发）、失败/abort 槽位释放、队列溢出与驱逐、重复合并、后台冷却与降级（含定时器到期唤醒与自清理）、auto 升级、telemetry 脱敏。

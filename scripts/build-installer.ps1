@@ -262,7 +262,7 @@ if ($SkipInstallAudit) {
 } elseif (-not $InstallAudit) {
   Write-Info '默认不安装：测试预算只允许一次真实安装 smoke（docs\P7-TEST-BUDGET.md）'
   Write-Info '需要隔离载荷审计时显式加 -InstallAudit'
-  Write-Info '真实安装 smoke：node test_installer_smoke.js --real-install-smoke'
+  Write-Info '真实安装 smoke：node tests/test_installer_smoke.js --real-install-smoke'
 } elseif (-not (Test-Path -LiteralPath $smoke)) {
   Write-Warn "缺少 $smoke，跳过"
 } else {

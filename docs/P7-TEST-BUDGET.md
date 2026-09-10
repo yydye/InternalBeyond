@@ -24,13 +24,13 @@
 
 | 类别 | 入口 | 是否安装 | 是否开浏览器 |
 | --- | --- | --- | --- |
-| Inno 配置静态检查 | `node test_installer.js` [4] | 否 | 否 |
-| release manifest 检查 | `node test_installer.js` [3] | 否 | 否 |
-| 内置 Node SHA / 版本检查 | `node test_installer.js` [2] | 否 | 否 |
-| secret scan / 内容审计自检 | `node test_installer.js` [8] | 否 | 否 |
-| staging 内容审计 | `node test_installer.js` [8]（临时目录 staging + 审计 + 删除） | 否 | 否 |
-| installer 脚本单元 / Mock | `node test_installer_mock.js` | 否 | 否 |
-| 启动器 / boot-state / 运行时解析 | `node test_launcher.js`、`node test_boot_state.js`、`node test_node_runtime.js` | 否 | 否（spawn 被 mock） |
+| Inno 配置静态检查 | `node tests/test_installer.js` [4] | 否 | 否 |
+| release manifest 检查 | `node tests/test_installer.js` [3] | 否 | 否 |
+| 内置 Node SHA / 版本检查 | `node tests/test_installer.js` [2] | 否 | 否 |
+| secret scan / 内容审计自检 | `node tests/test_installer.js` [8] | 否 | 否 |
+| staging 内容审计 | `node tests/test_installer.js` [8]（临时目录 staging + 审计 + 删除） | 否 | 否 |
+| installer 脚本单元 / Mock | `node tests/test_installer_mock.js` | 否 | 否 |
+| 启动器 / boot-state / 运行时解析 | `node tests/test_launcher.js`、`node tests/test_boot_state.js`、`node tests/test_node_runtime.js` | 否 | 否（spawn 被 mock） |
 
 `test_installer.js` + `test_installer_mock.js` 是 P7 开发期的**默认回归组合**，两者都不安装、不启动、不联网。
 
@@ -109,27 +109,27 @@
 
 ```bash
 # 开发期默认（不安装、不开浏览器）
-node test_installer.js
-node test_installer_mock.js
-node test_ib_stop_identity.js
+node tests/test_installer.js
+node tests/test_installer_mock.js
+node tests/test_ib_stop_identity.js
 
 # 定向：启动器 / 运行时（仍不安装、不开浏览器）
-node test_launcher.js
-node test_boot_state.js
-node test_node_runtime.js
+node tests/test_launcher.js
+node tests/test_boot_state.js
+node tests/test_node_runtime.js
 
 # 构建（默认不安装；加 -InstallAudit 才做隔离载荷审计）
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-installer.ps1
 
 # 唯一一次隔离验证（每个构建只成功一次）
-node test_installer_smoke.js --real-install-smoke
+node tests/test_installer_smoke.js --real-install-smoke
 
 # 隔离载荷审计（构建可选步骤，不启动应用）
-node test_installer_smoke.js --install-audit
+node tests/test_installer_smoke.js --install-audit
 
 # 已退役（会被拒绝并给出替代命令）
-node test_installer_smoke.js --force
-IB_INSTALLER_SMOKE=1 node test_installer_smoke.js
+node tests/test_installer_smoke.js --force
+IB_INSTALLER_SMOKE=1 node tests/test_installer_smoke.js
 ```
 
 ---

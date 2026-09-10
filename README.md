@@ -1,4 +1,4 @@
-﻿# InternalBeyond
+# InternalBeyond
 
 **一个离线运行、数据留在本机的个人 AI 陪伴站。** 支持同时对接多个 AI 模型，
 包含像素互动房间、多角色聊天、社交圈、长期记忆、日记、书信、代码工作区等 13 个模块与两套视觉主题。
@@ -153,13 +153,13 @@ Anthropic、OpenAI、Grok、DeepSeek、Gemini、GLM、Qwen、豆包、Moonshot�
 零依赖，需要本机 Chrome / Edge 时会在浏览器组中自动使用。
 
 ```bash
-node test-all.js --quick     # 静态结构 + 本地服务（无浏览器，约 17 秒）
-node test-all.js --all       # 三组全跑（static / service / browser）
-node scripts_check_html.js InternalBeyond.html   # HTML 内全部 script 块逐个 node --check
+node tests/test-all.js --quick     # 静态结构 + 本地服务（无浏览器，约 17 秒）
+node tests/test-all.js --all       # 三组全跑（static / service / browser）
+node scripts/scripts_check_html.js InternalBeyond.html   # HTML 内全部 script 块逐个 node --check
 ```
 
-- 前端回归：`scripts\windows\test-ui.cmd`（或依次运行 `scripts_check_html.js`、`test_frontend_structure.js`、`test_game_smoke.js`、`test_ui_regression.js`）。
-- 安装包相关（**不安装、不开浏览器**）：`node test_installer.js`、`node test_installer_mock.js`、`node test_ib_stop_identity.js`、`node test_node_runtime.js`。
+- 前端回归：`scripts\windows\test-ui.cmd`（或依次运行 `scripts\scripts_check_html.js`、`tests\test_frontend_structure.js`、`tests\test_game_smoke.js`、`tests\test_ui_regression.js`）。
+- 安装包相关（**不安装、不开浏览器**）：`node tests/test_installer.js`、`node tests/test_installer_mock.js`、`node tests/test_ib_stop_identity.js`、`node tests/test_node_runtime.js`。
 - 测试预算与隔离规则见 [`docs/P7-TEST-BUDGET.md`](docs/P7-TEST-BUDGET.md)。
 
 ### 构建安装包
@@ -188,10 +188,10 @@ assets/icons/IB-icon.ico   # 官方图标（快捷方式 / 卸载项 / 通知）
 game/                      # Room 游戏引擎（六个模块）
 apps/                      # APP 目录（catalog.json + 外部应用）
 installer/                 # Inno Setup 脚本、语言文件、运行时 pin、停止助手
-scripts/                   # 构建 / 发行审计 / 截图管线 / 运行时更新
+scripts/                   # 构建 / 发行审计 / 截图管线 / 运行时更新 / scripts_check_html.js
 scripts/windows/           # 开发期 Windows 辅助脚本（start-*.cmd / 快捷方式 / test-ui.cmd）
 docs/                      # 架构与机制文档、教程截图、历史归档
-test_*.js / test-all.js    # 测试
+tests/                     # 全部测试套件（test-all.js 入口 + 各套件 + 校准框架）
 vision/                    # 可选本地视觉服务（Python，默认不随包分发）
 ```
 
