@@ -1152,3 +1152,34 @@ U1–U4 全在其后 26 个提交），那个安装包里没有更新清单、�
 `docs/RELEASE.md` 与 `docs/CHANGELOG.md` **都不在 installer 载荷内**（白名单 237 文件已核实），
 所以本次修正不需要、也没有触发重新构建。
 
+### 发布结果（v1.0.1 已上线）
+
+顺序严格按 `docs/RELEASE.md` §2 执行，**tag 指向发布时的 HEAD**，且该提交里已包含上述 §6 更正：
+
+```
+push master (8311942)  →  git tag -a v1.0.1 8311942  →  push tag  →  gh release create
+  →  上传 exe  →  上传 SHA256SUMS.txt  →  交叉核对 digest/size  →  上传 update-stable.json（LAST）
+```
+
+| 资产 | 大小 | GitHub `digest` | 与本地核对 |
+|---|---|---|---|
+| `InternalBeyond-Setup-1.0.1.exe` | 50,828,077 B | `sha256:4e5dc61a…90d7` | ✅ == 清单 `installer.sha256` == 本地实测 |
+| `SHA256SUMS.txt` | 406 B | `sha256:c53d29bc…6e38` | ✅ == 本地实测 |
+| `update-stable.json` | 1,883 B | `sha256:a3ef3b27…5e90` | ✅ 在线回读与本地 `cmp` **逐字节相同** |
+
+release 状态：非 draft、非 prerelease、`/releases/latest` == `v1.0.1`；上传后的在线清单
+`--validate` 通过（0 error / 0 warning）。
+
+**真实客户端只读实测**（`runtime/update-check.js` 真机联网；不下载、不安装、不写缓存）：
+
+| 运行版本 | 结果 | 传输 |
+|---|---|---|
+| `1.0.0` | `update-available` → `1.0.1`；读到的 `sha256` / `sizeBytes` 与上表一致，`notes` 605 字符，无 `releasedAt` / `minimumVersion` | `direct` **connect-timeout 8 s**（本机 `github.com` 此刻不可达）→ `api` 200 |
+| `1.0.1` | `up-to-date` | 同上 |
+
+回退门（U-D1 Revised）在**真实数据**上被验证：primary 是网络失败（拿不到完整响应实体），
+因此恰好换路一次，成功即止。**结论：Stable 通道自 `update-stable.json` 上传的那一刻起真实生效**；
+U2 期记录的 `no-information` 状态自本次发布起不再成立（`docs/RELEASE.md` §8 已同步）。
+
+发布过程仍遵守 P7 测试预算：**没有真实安装、没有卸载、没有打开浏览器**（0 消耗）。
+

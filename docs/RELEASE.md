@@ -341,6 +341,9 @@ manifest.version           ==  tag 去掉 v 前缀
 
 ### 当前 Stable 通道的实际状态（U2 实测，重要）
 
+> ⚠️ 本节记录的是 **U2 期（v1.0.0 时代）**的观测：那时**没有任何 release 带清单**。
+> **v1.0.1 发布之后**的当前状态见下一节的「发布后实测」。
+
 已发布的 `v1.0.0` release 只有两个资产：
 
 | 资产 | 大小 | API `digest` |
@@ -377,7 +380,7 @@ API 匿名限额实测：`x-ratelimit-remaining: 57/60`（60 次/小时/IP）。
 | `v1.0.1` | **第一个正式包含 Zero-Touch Update 的 release**；此后作为真实 E2E 的 baseline |
 | `v1.0.2` | **第一个由真实自动更新链到达的 release**；E2E 验证 `1.0.1 → 1.0.2` |
 
-由此产生三条硬约束：
+由此产生四条硬约束：
 
 1. **不构造、不使用任何未发布的「1.0.0 updater seed」。** E2E 的 baseline 必须是 GitHub 上的
    **真实已发布资产**（重新下载 + 核对 digest），不能是本地 `dist/` 里的重建产物。
@@ -398,6 +401,28 @@ API 匿名限额实测：`x-ratelimit-remaining: 57/60`（60 次/小时/IP）。
 
 用户可见的升级说明在 [release-notes/1.0.1.md](release-notes/1.0.1.md)，同时它就是清单 `notes`
 的来源。README 也随包发行，1.0.0 用户唯一能读到的升级指引就在那里（`README.md`「升级到新版本」）。
+
+### 发布后实测（v1.0.1 已上线，真机联网）
+
+`v1.0.1` 已按 §2 顺序发布（tag → **`8311942`** = 发布时 HEAD、非 draft / 非 prerelease），
+release 上的三个资产与 `manifest.installer.sha256` 逐项交叉核对通过：
+
+| 资产 | 大小 | GitHub `digest` |
+|---|---|---|
+| `InternalBeyond-Setup-1.0.1.exe` | 50,828,077 B | `sha256:4e5dc61a…90d7` ✅ == 清单 |
+| `SHA256SUMS.txt` | 406 B | `sha256:c53d29bc…6e38` |
+| `update-stable.json` | 1,883 B | `sha256:a3ef3b27…5e90`（在线回读与本地 `cmp` **逐字节相同**） |
+
+真实客户端路径实测（只读：不下载、不安装、不写缓存）：
+
+| 运行版本 | 结果 | 传输 |
+|---|---|---|
+| `1.0.0` | `update-available` → `1.0.1`，读到的 `sha256`/`sizeBytes` 与上表一致、`notes` 605 字符 | `direct` **connect-timeout 8 s**（本机 github.com 此刻不可达，与 §8 描述一致）→ `api` 200 |
+| `1.0.1` | `up-to-date` | 同上 |
+
+**结论**：Stable 通道已真实生效；回退门（U-D1 Revised）也在真实数据上被验证——primary 是
+**网络失败**（无完整响应实体），故恰好换路一次，成功即止。§8 上一节描述的
+`no-information` 状态**自本次发布起不再成立**。
 
 ---
 
