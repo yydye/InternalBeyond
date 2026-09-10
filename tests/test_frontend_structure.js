@@ -627,8 +627,30 @@ const mbWinExpected = ['middleBrainOrganizeContext', 'middleBrainCompressContext
 const mbWinActual = [...mbText.matchAll(/^\s*window\.(\w+) = /gm)].map(m => m[1]);
 check('middleBrain.windowCompatPreserved', JSON.stringify(mbWinActual) === JSON.stringify(mbWinExpected),
   'window 兼容符号变化: ' + mbWinActual.join(','));
-/* local fallback 当前语义 = 不注入：仅 source==='astra' 才替换 context。 */
-check('middleBrain.localNoInject', /_mbRes\.source==='astra'/.test(comMainText), 'communication 的 local fallback 语义被改动（local 不得注入）');
+/* P11-3 · 注入来源三态契约：astra → Astra 处理结果；local → 本地处理结果；bypass/null → 保留原始 context。
+   守卫：必须经**显式具名白名单**判定（_mbInjectable），禁止把 source 判成 truthy，
+   也禁止退回"只认 astra"（local 语义闭合是本阶段的验收项）。 */
+const mbInjectFn = comMainText.match(/function _mbInjectable\(res,userMessage\)\s*\{[\s\S]*?\n\}/);
+check('middleBrain.injectContractNamed', !!mbInjectFn
+  && /res\.source/.test(mbInjectFn[0])
+  && /!=='astra'/.test(mbInjectFn[0]) && /!=='local'/.test(mbInjectFn[0])
+  && /stats\.empty===true/.test(mbInjectFn[0]),
+  'communication 缺少显式三态注入契约（具名来源白名单 + 非空 payload + 组织过上下文）');
+check('middleBrain.injectContractUsed', /_mbInjectable\(_mbRes,_ctxText\|\|''\)/.test(comMainText),
+  'single-chat 未用 _mbInjectable 决定是否注入');
+check('middleBrain.noTruthySource', !/if\(_mbRes\.source|_mbRes\.source\s*&&/.test(comMainText),
+  'source 被当成 truthy 使用（禁止近似判定）');
+/* P11-3 · UI 编辑态与 runtime 态不得混用：徽标只读 runtime 镜像（_mbRuntime），
+   dirty 由 pristine 快照（_mbSaved）计算；toggle 事件不得写存储。 */
+const mbCfgText = mbTexts['middle-brain-config.js'];
+check('middleBrain.badgeFollowsRuntime', /function _mbBadgeState\(\)\s*\{[\s\S]*?_mbDirty\(\)[\s\S]*?_mbRuntime\.enabled/.test(mbCfgText)
+  && /_mbRuntime = \{ enabled: _mbRuntimeEnabled\(c\) \}/.test(mbCfgText),
+  'Middle Brain 徽标未绑定 runtime 态（_mbRuntime）/ 未由 dirty 快照判定');
+const mbBindText = (mbCfgText.match(/function _mbBindCollapse\(\)\s*\{[\s\S]*?\n  \}/) || [''])[0];
+check('middleBrain.toggleOnlyDirty', /function _mbDirty\(\)\s*\{[\s\S]*?_mbUi\.enabled !== _mbSaved\.enabled/.test(mbCfgText)
+  && !!mbBindText && !/saveMiddleBrainConfig\(|dbPut\(/.test(mbBindText)
+  && /_mbCaptureSaved\(merged/.test(mbCfgText),
+  'enabled toggle 事件泄漏了持久化，或保存成功未刷新 runtime 镜像（编辑态必须只改 dirty 显示）');
 /* Admission Gate 状态仍是纯内存：policy 层不得落盘 / 不得用 web storage。 */
 check('middleBrain.gateStateMemoryOnly', /var MB_GATE_STATE = \{\}/.test(mbTexts['middle-brain-policy.js'])
   && !/dbPut|dbDelete|sessionStorage|localStorage/.test(mbTexts['middle-brain-policy.js']),

@@ -143,9 +143,14 @@
     await _mbPersist(merged);
     return merged;
   }
-  async function isMiddleBrainEnabled() {
-    var c = await getMiddleBrainConfig();
+  /* P11-3 · runtime 就绪谓词 = "持久化配置是否会让 Middle Brain 在下一轮请求里参与"。
+     全仓库只有这一份判定：isMiddleBrainEnabled 与设置卡片的 runtime 徽标读同一个函数，
+     不允许各写一份"看起来一样"的条件（否则 UI 与 runtime 会再次漂移）。 */
+  function _mbRuntimeEnabled(c) {
     return !!(c && c.enabled && String(c.endpoint || '').trim() && String(c.model || '').trim());
+  }
+  async function isMiddleBrainEnabled() {
+    return _mbRuntimeEnabled(await getMiddleBrainConfig());
   }
   /* 独立 API 就绪判定：Middle Brain 走自己的 endpoint/model/apiKey，与角色配置无关 */
   async function middleBrainReady() {
@@ -213,6 +218,23 @@
   var _mbUi = { enabled: false, reasoning: 'medium', speed: 'standard', model: 'gpt-6-astra', imageMode: 'auto', integrity: { enabled: false, sensitivity: 'conservative', rewrite: false, verify: false } };
   var _mbReasoningSlider = null, _mbSpeedBtn = null, _mbCiSlider = null, _mbImageSlider = null;
 
+  /* ====================================================================
+     P11-3 · UI 编辑态 vs runtime 态（两张不同的状态，绝不混用）
+     --------------------------------------------------------------------
+     两套状态的真实来源：
+       · 编辑态（draft） = `_mbUi.enabled` + 表单里的 endpoint / API Key；
+         **只有点击「保存 Middle Brain」才落盘**（本卡片其余控件是"点击即写"，
+         见 _mbModelSet / mbReasoningPick / mbSpeedPick / mbImageModePick / mbCiPersist，
+         它们不参与 dirty 判定）。
+       · runtime 态 = 持久化 apiSettings['middle_brain']；middle-brain 的
+         isMiddleBrainEnabled / Admission Gate 只读它。
+     修复目标（Runtime Participation Audit 暴露的 "UI = Enabled / runtime = Disabled"）：
+       toggle 改了但没保存 → runtime **不变**，徽标不得显示 Enabled。
+     `_mbSaved` = 上述三个 Save-才生效字段的 pristine 快照；`_mbRuntime` = runtime 态镜像。
+     两者只在「加载配置完成」与「保存成功」两处刷新 —— 没有第三条写入路径。 */
+  var _mbSaved = { enabled: false, endpoint: '', apiKey: '' };
+  var _mbRuntime = { enabled: false };
+
   function _mbReasoningDesc(v) { return MB_REASONING_DESC[v] || '默认平衡'; }
   function _mbModelList(cur) { var l = MB_MODEL_CANDIDATES.slice(); if (cur && l.indexOf(cur) < 0) l.unshift(cur); return l; }
   function _mbModelIdx(cur) { var l = _mbModelList(cur); var i = l.indexOf(cur); return i >= 0 ? i : 0; }
@@ -252,17 +274,51 @@
     _mbUiPref.collapsed = !!collapsed;
     try { return dbPut('apiSettings', { id: MB_UI_KEY, collapsed: !!collapsed }); } catch (e) {}
   }
+  /* 表单里两个 Save-才生效的输入框（读值只归一空白，不改内容） */
+  function _mbFormEndpoint() { var e = _mbEl('mb-endpoint'); return e ? String(e.value == null ? '' : e.value).trim() : ''; }
+  function _mbFormApiKey() { var e = _mbEl('mb-apikey'); return e ? String(e.value == null ? '' : e.value).trim() : ''; }
+  /* pristine 快照：表单被填成持久化值（或保存成功后）调用，此后 DOM 与它一致 → 不 dirty。
+     runtime 镜像与它同源刷新：徽标读的是**持久化**配置，不是编辑态。 */
+  function _mbCaptureSaved(c) {
+    c = c || {};
+    _mbSaved = {
+      enabled: !!c.enabled,
+      endpoint: String(c.endpoint == null ? '' : c.endpoint).trim(),
+      apiKey: String(c.apiKey == null ? '' : c.apiKey).trim()
+    };
+    _mbRuntime = { enabled: _mbRuntimeEnabled(c) };
+  }
+  /* dirty = 编辑态（toggle + 两个 Save-才生效的输入框）与持久化态不一致 → 尚未生效 */
+  function _mbDirty() {
+    return _mbUi.enabled !== _mbSaved.enabled
+      || _mbFormEndpoint() !== _mbSaved.endpoint
+      || _mbFormApiKey() !== _mbSaved.apiKey;
+  }
+  /* 徽标三态：on（runtime 启用且无未保存改动）/ off（runtime 关闭且无改动）/ unsaved（有未保存改动）。
+     unsaved **绝不**渲染成 Enabled —— 这正是本阶段要修掉的"假 Enabled"。 */
+  function _mbBadgeState() { return _mbDirty() ? 'unsaved' : (_mbRuntime.enabled ? 'on' : 'off'); }
   /* header 摘要：model · reasoning effort · processing(service tier) · image mode */
   function _mbHeaderSummary() {
     return _mbReadModel() + ' · ' + (MB_REASONING_LABELS[_mbReadReasoning()] || _mbReadReasoning())
       + ' · ' + (MB_SPEED_LABELS[_mbReadSpeed()] || _mbReadSpeed())
       + ' · ' + (MB_IMAGE_LABELS[normalizeMiddleBrainImageMode(_mbUi.imageMode)] || _mbUi.imageMode);
   }
-  /* 摘要 + enabled/disabled 徽标 + aria-expanded 全部收敛到一处刷新 */
+  /* 摘要 + runtime 徽标 + aria-expanded 全部收敛到一处刷新。
+     徽标只回答"持久化的 Middle Brain 是否启用"（runtime 事实），不跟随编辑态 toggle；
+     两者不一致时进入 unsaved 态，真实 runtime 值退到 title，避免任何"看起来已生效"。 */
   function _mbRenderHeader() {
     var s = _mbEl('mb-collapse-summary'); if (s) s.textContent = _mbHeaderSummary();
+    var state = _mbBadgeState();
     var b = _mbEl('mb-collapse-badge');
-    if (b) { b.textContent = _mbUi.enabled ? 'Enabled' : 'Disabled'; b.classList.toggle('is-on', !!_mbUi.enabled); }
+    if (b) {
+      b.textContent = state === 'unsaved' ? 'Unsaved' : (state === 'on' ? 'Enabled' : 'Disabled');
+      b.classList.toggle('is-on', state === 'on');
+      b.classList.toggle('is-dirty', state === 'unsaved');
+      b.title = 'Runtime: ' + (_mbRuntime.enabled ? 'Enabled' : 'Disabled')
+        + (state === 'unsaved' ? ' · 有未保存的更改（点「保存 Middle Brain」后生效）' : '');
+    }
+    var st = _mbEl('mb-save-status');
+    if (st && state === 'unsaved') st.textContent = '未保存';
     var t = _mbEl('mb-collapse-toggle'), body = _mbEl('mb-collapse-body');
     if (t) t.setAttribute('aria-expanded', _mbCollapsed ? 'false' : 'true');
     if (body) body.classList.toggle('is-collapsed', !!_mbCollapsed);
@@ -278,13 +334,20 @@
     if (!c.enabled) return true;
     return !(String(c.endpoint || '').trim() && String(c.model || '').trim() && String(c.apiKey || '').trim());
   }
-  /* 事件只绑一次：header 点击 / Enter / Space（button 原生支持键盘，这里只防重复绑定） */
+  /* 事件只绑一次：header 点击 / Enter / Space（button 原生支持键盘，这里只防重复绑定）。
+     P11-3：三个 Save-才生效的控件各自独立绑定（此前 enabled 开关的绑定被
+     "折叠头不存在就直接 return" 顺带跳过）；编辑只刷新 dirty 显示，
+     **不写任何存储、不改 runtime**。 */
   function _mbBindCollapse() {
     if (_mbCollapseBound) return;
-    var t = _mbEl('mb-collapse-toggle'); if (!t) return;
-    t.addEventListener('click', function () { _mbCollapseApply(!_mbCollapsed); _mbSaveUiPref(_mbCollapsed); });
+    var t = _mbEl('mb-collapse-toggle');
+    if (t) t.addEventListener('click', function () { _mbCollapseApply(!_mbCollapsed); _mbSaveUiPref(_mbCollapsed); });
     var en = _mbEl('mb-enabled-toggle');
     if (en) en.addEventListener('change', function () { _mbUi.enabled = !!en.checked; _mbRenderHeader(); });
+    ['mb-endpoint', 'mb-apikey'].forEach(function (id) {
+      var el = _mbEl(id);
+      if (el) el.addEventListener('input', function () { _mbRenderHeader(); });
+    });
     _mbCollapseBound = true;
   }
   async function _mbInitCollapse(c) {
@@ -511,9 +574,14 @@
     var endpoint = (_mbEl('mb-endpoint') ? _mbEl('mb-endpoint').value : '').trim();
     var apiKey = (_mbEl('mb-apikey') ? _mbEl('mb-apikey').value : '').trim();
     _mbCiReadUi();
-    saveMiddleBrainConfig({ enabled: enabled, endpoint: endpoint, model: _mbReadModel(), apiKey: apiKey, reasoningEffort: _mbReadReasoning(), speed: _mbReadSpeed(), characterIntegrityEnabled: _mbUi.integrity.enabled, characterIntegritySensitivity: _mbUi.integrity.sensitivity, characterIntegrityRewrite: _mbUi.integrity.rewrite, characterIntegrityVerify: _mbUi.integrity.verify, imageMode: normalizeMiddleBrainImageMode(_mbUi.imageMode) }).then(function () {
-      var st = _mbEl('mb-save-status'); if (st) { st.textContent = '已保存'; setTimeout(function () { st.textContent = ''; }, 1600); }
+    /* P11-3：保存成功是 runtime 态唯一的更新点。pristine 快照与 runtime 镜像一起刷新，
+       徽标此刻才允许显示 runtime Enabled（未保存期间一律 unsaved / 旧 runtime 值）。 */
+    return saveMiddleBrainConfig({ enabled: enabled, endpoint: endpoint, model: _mbReadModel(), apiKey: apiKey, reasoningEffort: _mbReadReasoning(), speed: _mbReadSpeed(), characterIntegrityEnabled: _mbUi.integrity.enabled, characterIntegritySensitivity: _mbUi.integrity.sensitivity, characterIntegrityRewrite: _mbUi.integrity.rewrite, characterIntegrityVerify: _mbUi.integrity.verify, imageMode: normalizeMiddleBrainImageMode(_mbUi.imageMode) }).then(function (merged) {
+      _mbCaptureSaved(merged || { enabled: enabled, endpoint: endpoint, apiKey: apiKey });
+      _mbRenderHeader();
+      var st = _mbEl('mb-save-status'); if (st) { st.textContent = '已保存'; setTimeout(function () { if (st.textContent === '已保存') st.textContent = ''; }, 1600); }
       if (typeof toast === 'function') toast('Middle Brain 已保存');
+      return merged;
     }).catch(function (e) { if (typeof toast === 'function') toast('Middle Brain 保存失败：' + String(e && e.message || e)); });
   }
   /* 填充设置卡片（dom 就绪后由 middle-brain.js 调用）。
@@ -523,6 +591,10 @@
       if (_mbEl('mb-enabled-toggle')) _mbEl('mb-enabled-toggle').checked = !!c.enabled;
       if (_mbEl('mb-endpoint')) _mbEl('mb-endpoint').value = c.endpoint || '';
       if (_mbEl('mb-apikey')) _mbEl('mb-apikey').value = c.apiKey || '';
+      /* P11-3：先对齐编辑态与 pristine/runtime 快照，再渲染（load 之后必须 UI === runtime）。
+         之后任何 toggle / 输入都只是"未保存改动"，不会改动 _mbSaved / _mbRuntime。 */
+      _mbUi.enabled = !!c.enabled;
+      _mbCaptureSaved(c);
       _mbUi.reasoning = normalizeMiddleBrainReasoningEffort(c.reasoningEffort);
       _mbUi.speed = normalizeMiddleBrainSpeed(c.speed);
       _mbUi.model = String(c.model || '').trim() || 'gpt-6-astra';

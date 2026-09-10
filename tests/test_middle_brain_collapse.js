@@ -303,12 +303,28 @@ async function booted(opts) {
   check('H4.summaryModelDynamic', sum3.indexOf('gpt-6-astra') === 0, sum3);
   check('H5.summaryImageDynamic', /· Precision$/.test(sum0) && s10.dom.byId.get('mb-image-summary').textContent === 'Precision',
     sum0 + ' / ' + s10.dom.byId.get('mb-image-summary').textContent);
-  const badgeOn = badge(s10) === 'Enabled';
-  const en = s10.dom.byId.get('mb-enabled-toggle');
-  en.checked = false; en.dispatchEvent({ type: 'change' });
-  const badgeOff = badge(s10) === 'Disabled';
-  en.checked = true; en.dispatchEvent({ type: 'change' });
-  check('H6.badgeEnabledDisabled', badgeOn && badgeOff && badge(s10) === 'Enabled', badge(s10));
+  /* ── P11-3 · 徽标 = runtime 态（持久化配置），不是编辑态 toggle ──────────
+     toggle 改了但没保存 → 徽标进入 Unsaved（绝不显示 Enabled）、runtime 不变；
+     保存成功 → 徽标回到 runtime 真值；重新 load → UI 与 runtime 完全一致。
+     （旧断言"toggle 一变徽标就 Enabled/Disabled"正是本阶段修掉的假 Enabled。） */
+  const b10 = s10.dom.byId.get('mb-collapse-badge');
+  const en10 = s10.dom.byId.get('mb-enabled-toggle');
+  const badgeCleanOn = badge(s10) === 'Enabled' && b10.classList.contains('is-on') && !b10.classList.contains('is-dirty');
+  en10.checked = false; en10.dispatchEvent({ type: 'change' });
+  const badgeDirty = badge(s10) === 'Unsaved' && b10.classList.contains('is-dirty') && !b10.classList.contains('is-on');
+  const runtimeUntouched = (await s10.MBC.config.isMiddleBrainEnabled()) === true;   /* 未保存 → runtime 不变 */
+  s10.MBC.config.saveMiddleBrainConfigUI();
+  await settle();
+  const badgeSavedOff = badge(s10) === 'Disabled' && (await s10.MBC.config.isMiddleBrainEnabled()) === false;
+  en10.checked = true; en10.dispatchEvent({ type: 'change' });
+  const badgeDirtyAgain = badge(s10) === 'Unsaved' && (await s10.MBC.config.isMiddleBrainEnabled()) === false;
+  s10.MBC.config.saveMiddleBrainConfigUI();
+  await settle();
+  await s10.MBC.config.loadMiddleBrainConfigUI();   /* 模拟刷新 */
+  const reloadConsistent = badge(s10) === 'Enabled' && en10.checked === true && !b10.classList.contains('is-dirty')
+    && (await s10.MBC.config.isMiddleBrainEnabled()) === true;
+  check('H6.badgeRuntimeNotDraft', badgeCleanOn && badgeDirty && runtimeUntouched && badgeSavedOff && badgeDirtyAgain && reloadConsistent,
+    JSON.stringify({ badge: badge(s10), clean: badgeCleanOn, dirty: badgeDirty, runtimeUntouched: runtimeUntouched, savedOff: badgeSavedOff, dirtyAgain: badgeDirtyAgain, reload: reloadConsistent }));
 
   /* ═══════════════ I. 不重复绑定 / 不重复初始化 ═══════════════ */
   const s11 = await booted({ mbConfig: CFG_COMPLETE });

@@ -9,7 +9,8 @@
      · 空结果（''）不触发 fallback 二次读取；缺失（undefined）才允许 fallback
      · Memory activation 一轮只 +1
      · Astra 成功 → 压缩块**替换**原四块（不双份注入）；passthrough 块不重复
-     · 跨角色不泄漏 / private 不进入 / MB disabled 与失败时行为不变
+     · 跨角色不泄漏 / private 不进入 / MB disabled（bypass）时行为不变
+     · P11-3：Astra 失败 → local 回落同样**替换**注入本地处理结果（不再是"原样保留"）
      · Runtime execute 的 4 个 consumer 不受影响；Chat/Group/Voice 仍未迁
    真实 localhost 页面 + 独立 profile + mock（角色模型 + Middle Brain Responses）。
    运行：node test_context_convergence_c1.js
@@ -218,14 +219,18 @@ const api = http.createServer(async (req, res) => {
       await evaluate(cdp, `(async function(){await saveMiddleBrainConfig({enabled:true});return true})()`);
     });
 
-    /* ── 15 + 快照等价：Astra 失败 → local 回落，prompt 与 MB 关闭时等价 ── */
-    await check('Astra 失败 → local 回落且 prompt 与 MB 关闭时等价', async () => {
-      /* MB 关闭的基准尾段 */
+    /* ── 15 + 快照等价：Astra 失败 → local 回落（P11-3：local 现在**注入**） ──
+       P11-3 语义变更：local 不再是"原样保留四个块"，而是与 astra 同构的**替换**。
+       契约：astra → Astra 处理结果；local → 本地处理结果；bypass（null/未启用）→ 原样保留。
+       因此本用例不再断言"与 MB 关闭时逐字段等价"，改为断言 local 真的进入了角色请求。 */
+    await check('Astra 失败 → local 回落并注入本地处理结果（替换原四块）', async () => {
+      /* MB 关闭的基准尾段（此时 = 原始四块） */
       await evaluate(cdp, `(async function(){await saveMiddleBrainConfig({enabled:false});return true})()`);
       await chatTurn('c1_role');
       const baselineTail = tailOf(lastChatBody());
       assert.ok(baselineTail.includes('C1_MEMORY_MARKER'), '基准尾段应含原始 Memory 块');
-      /* Astra 失败：enabled 但 500 → pipeline 回落 local → 不注入压缩块 */
+      assert.ok(!baselineTail.includes('【Middle Brain 压缩后的上下文'), 'MB 关闭时不得出现 MB 块');
+      /* Astra 失败：enabled 但 500 → pipeline 回落 local → 注入本地处理结果 */
       await evaluate(cdp, `(async function(){await saveMiddleBrainConfig({enabled:true});return true})()`);
       mbMode = 'fail';
       const before = mbReqs.length;
@@ -233,8 +238,17 @@ const api = http.createServer(async (req, res) => {
       mbMode = 'ok';
       assert.ok(mbReqs.length > before, 'Astra 失败路径必须真的请求过 MB 端点');
       const body = allText(lastChatBody());
-      assert.ok(body.includes('C1_MEMORY_MARKER') && !body.includes('C1_MB_COMPRESSED'), '失败时保留原块且不注入压缩块');
-      assert.equal(tailOf(lastChatBody()), baselineTail, 'MB 失败回落后尾段必须与 MB 关闭时逐字段等价');
+      const tail = tailOf(lastChatBody());
+      assert.ok(!body.includes('C1_MB_COMPRESSED'), 'Astra 失败时不得出现 Astra 压缩块');
+      assert.ok(tail.includes('【Middle Brain 压缩后的上下文'), 'local 回落必须注入 MB 块');
+      assert.ok(tail.includes('【记忆】'), 'local payload 必须带本地 pipeline 的分类段头（证明 payload 来自本地处理）');
+      assert.ok(tail.includes('C1_MEMORY_MARKER'), 'local 压缩不得丢失 Memory 内容（只去重/去超预算，不删事实）');
+      assert.equal(body.split('【Middle Brain 压缩后的上下文').length - 1, 1, 'MB 块必须恰好一次');
+      /* 替换而非追加：MB 块必须出现在原 Memory 块**原来的位置**（即早于该块自身内容），
+         追加会把它放到所有原块之后 —— 这个下标比较就是判别式。 */
+      assert.ok(tail.indexOf('【Middle Brain 压缩后的上下文') < tail.indexOf('【记忆（系统参考，勿提及此段）】'),
+        'MB 块被追加到了原块之后（应为就地替换）：' + tail.slice(0, 200));
+      assert.notEqual(tail, baselineTail, 'local 回落已不再与 MB 关闭时等价（P11-3 语义变更）');
     });
 
     /* ── 16-19：Runtime execute consumer 不受影响 ── */

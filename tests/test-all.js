@@ -73,6 +73,9 @@ const GROUPS = [
       ['test_middle_brain_calibration.js'],
       /* P14：Middle Brain 整块折叠（静态 DOM stub 驱动真实 config 层，零依赖离线） */
       ['test_middle_brain_collapse.js'],
+      /* P11-3：Middle Brain 语义务闭合（UI/runtime 状态机 + local 注入契约纯函数表，
+         静态 DOM/IndexedDB 桩驱动真实 config 层，零依赖离线） */
+      ['test_middle_brain_semantics.js'],
       ['test_harness_boundary.js'],
       ['test_credential_vault.js'],
       ['test_error_catalog.js'],
@@ -217,6 +220,8 @@ const GROUPS = [
       ['test_middle_brain_judge.js'],
       ['test_middle_brain_integrity.js'],
       ['test_middle_brain_seam.js'],
+      /* P11-3：真实普通单聊请求的逐层 [MiddleBrain Trace]（含 local 回落注入 / bypass / provider 中立性） */
+      ['test_middle_brain_trace.js'],
       /* P11-2A：角色一致性校准（Layer B · 离线 mock 真实执行路径；--live 才接真实端点） */
       ['test_middle_brain_calibration_live.js'],
       /* Cache Audit baseline 身份隔离（真实 chat→diary→chat 行为链） */

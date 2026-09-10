@@ -593,6 +593,9 @@ body.infernal-beyond #app{position:relative;z-index:1;}
 .mb-collapse-meta{display:flex;align-items:center;gap:8px;flex:0 0 auto;margin-left:auto;}
 .mb-collapse-badge{font-size:.72rem;letter-spacing:.02em;padding:3px 10px;border-radius:999px;border:1px solid var(--glass-border);background:var(--glass-bg);opacity:.9;white-space:nowrap;}
 .mb-collapse-badge.is-on{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 45%,transparent);}
+/* P11-3 · 未保存态：编辑态与 runtime 态不一致。徽标此时显示 Unsaved（绝不显示 Enabled），
+   虚线边框把"尚未生效"与"已生效"在视觉上分开；真实 runtime 值放在 title 里。 */
+.mb-collapse-badge.is-dirty{border-style:dashed;opacity:1;}
 .mb-collapse-chev{width:8px;height:8px;flex:0 0 auto;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:rotate(45deg);transition:transform .22s ease;opacity:.75;}
 .mb-collapse-head[aria-expanded="true"] .mb-collapse-chev{transform:rotate(-135deg);}
 .mb-collapse-body{overflow:hidden;max-height:4200px;opacity:1;visibility:visible;transition:max-height .28s ease,opacity .22s ease,visibility 0s linear 0s;}

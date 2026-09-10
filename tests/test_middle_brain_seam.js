@@ -5,8 +5,8 @@
    IB.middleBrain.middleBrainExecute 进入 Middle Brain。
    验证（真实 localhost 页面 + CDP + mock Astra 端点）：
      A. 执行缝本身：存在、无 window 兼容别名、键位与门面一致、不暴露层契约；
-     B. 执行语义：未启用 → null（不注入）；Astra 不可用 → local（不注入）；
-        Astra 可用 → 注入压缩块（行为与 1A/1B 一致）；
+     B. 执行语义：未启用 → null（bypass：不注入）；Astra 不可用 → local（P11-3 起**注入**本地
+        处理结果，替换原四块）；Astra 可用 → 注入 Astra 压缩块（行为与 1A/1B 一致）；
      C. 调用方边界：production 只调用执行缝一次，并透传 canonical context 快照；
      D. 反向证明：patch window 兼容别名不会拦截生产调用（兼容别名不是 canonical path）；
         facade 缺失 → 明确降级（不抛错、不注入）。
@@ -143,7 +143,12 @@ const api = http.createServer(async (req, res) => {
     ctx = await buildCtx({ userMessage: 'SEAM_USER_MESSAGE' });
     seam = await readSeam();
     check('B3.astraNotReadyFallsLocal', seam.calls === 1 && seam.src === 'local', JSON.stringify(seam));
-    check('B4.localNotInjected', !String(ctx.tail).includes('SEAM_MB_COMPRESSED'), 'local 结果不得注入');
+    /* P11-3 · local 语义闭合：Astra 不可用（无 apiKey）时本地处理结果必须进入最终角色请求，
+       并且是**替换**原四块（不是追加）。【记忆】是本地 pipeline 的分类段头（原块头是
+       【记忆（系统参考，勿提及此段）】），它出现即证明 payload 来自本地处理结果。 */
+    check('B4.localInjectedReplacing', String(ctx.tail).includes('Middle Brain 压缩后的上下文')
+      && String(ctx.tail).includes('【记忆】') && String(ctx.tail).includes('SEAM_MEMORY_MARKER')
+      && !String(ctx.tail).includes('SEAM_MB_COMPRESSED'), String(ctx.tail).slice(0, 200));
 
     await setMb({ enabled: true, endpoint: ep, model: 'gpt-6-astra', apiKey: 'sk-x', admissionEnabled: false }); await resetSeam();
     ctx = await buildCtx({ userMessage: 'SEAM_USER_MESSAGE' });

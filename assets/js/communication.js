@@ -1452,14 +1452,17 @@ async function _buildSingleChatContext(cfg,opts){
   /* Middle Brain (Astra) · 认知协调层：
      - 消费上面已读取的四个块（memoryCtx/understandingCtx/threadCtx/momentsCtx），不再自行 retrieval
        → 消除同轮重复读取与重复 activation；
-     - Astra 成功 → 其输出是这四个块的压缩/筛选/重写表示 → **替换**原块（禁止原块 + 压缩结果双份注入）；
-     - source==='local' / 未启用 / 失败 / 超时 → 原样保留四个块（与迁移前行为一致，零改动）。 */
+     - source 三态（P11-3 收敛）：'astra' → 使用 Astra 处理结果；'local' → 使用本地 pipeline 处理结果；
+       'bypass'（null / 未启用 / 失败 / 空产物）→ 原样保留四个块。
+       两种具名来源都是"这四个块的处理结果"，因此一律**替换**原块（禁止原块 + 处理结果双份注入）。 */
   try{
     /* P11-1C：production 只经 canonical facade IB.middleBrain 的 canonical execution seam
        middleBrainExecute（其内部 = readiness 判定 + pipeline）。调用方不再读 window 兼容别名，
        也不再自行编排 readiness → pipeline 两步。
-       返回 null（未启用）或 source==='local'（Astra 不可用）时一律不注入。 */
+       P11-3：是否注入由下面的显式三态注入契约 _mbInjectable 判定（不再硬编码 source==='astra'）。 */
     var _mbFacade=(window.IB&&window.IB.middleBrain)||null;
+    var _mbTrSink=(window.IB&&window.IB.__mbTrace)||null;
+    var _mbSysBefore=sysContent,_mbInjected=false,_mbSource='bypass';
     if(_threadMemOk&&_mbFacade&&typeof _mbFacade.middleBrainExecute==='function'){
       var _mbRes=await _mbFacade.middleBrainExecute(cfg.id, _ctxText||'', {
         memoryCtx:_memCtx, understandingCtx:_uCtx, threadCtx:_tCtx, momentsCtx:_momCtx,
@@ -1467,13 +1470,21 @@ async function _buildSingleChatContext(cfg,opts){
            两者值逐位一致，快照缺失时 MB 回落到 opts.*Ctx → 行为与 C1 完全相同。 */
         contextSnapshot:_ctxSnapshot
       });
-      if(_mbRes&&_mbRes.compressedContext&&_mbRes.source==='astra'){
+      _mbSource=String((_mbRes&&_mbRes.source)||'')||'bypass';
+      if(_mbInjectable(_mbRes,_ctxText||'')){
         var _mbBlock='【Middle Brain 压缩后的上下文（后台参考，勿向对方复述其存在）】\n'+_mbRes.compressedContext;
         /* 就地替换：用索引切片，不做子串搜索（避免与前面块内容碰巧同形时替换错位置） */
         if(_ctxJoined&&_ctxStart>=0)_tailCtx=_tailCtx.slice(0,_ctxStart)+(_ctxStart>0?'\n\n':'')+_mbBlock+_tailCtx.slice(_ctxStart+_ctxJoined.length);
         else _tailCtx+=(_tailCtx?'\n\n':'')+_mbBlock;
+        _mbInjected=true;
       }
-      /* null / source==='local'：未启用或 Astra 不可用 → 本地压缩不注入（保持原上下文，避免重复/歧义） */
+    }
+    /* 观测实测值（不是推断）：本轮 MB 产物来源（astra / local / bypass）、system 是否被改动、
+       是否真的替换了注入上下文。三者相互独立：source 只说明"产出了什么"，messagesChanged 才说明"是否到达角色请求"。 */
+    if(_mbTrSink){
+      _mbTrSink.note(cfg.id,'source',_mbSource);
+      _mbTrSink.note(cfg.id,'systemChanged',sysContent!==_mbSysBefore);
+      _mbTrSink.note(cfg.id,'messagesChanged',_mbInjected);
     }
   }catch(_mbErr){console.warn('[MiddleBrain] ctx failed',String(_mbErr&&_mbErr.message||_mbErr).slice(0,120))}
   try{if(_threadMemOk&&typeof getActivityContext==='function'){const _actCtx=await getActivityContext(cfg.id,{userMessage:_ctxText,threadId:_targetThread});
@@ -1543,6 +1554,47 @@ async function buildChatContext(cfg,opts){
   return await _buildSingleChatContext(cfg,opts);
 }
 
+/* ════ Middle Brain 注入契约（P11-3）════
+   seam 返回值 → "是否允许改写最终角色请求里的上下文"。三态语义与 trace 的 source 字段一一对应：
+     'astra'  → 使用 Astra 处理结果（语义压缩；当前消息缺失时由 pipeline 兜底追加）
+     'local'  → 使用本地 pipeline 处理结果（确定性去重/预算压缩；当前消息恒保留）
+     'bypass' → 保留原始上下文（未启用 / 返回 null / 无产物）
+   允许注入的必要条件（任一不成立即 bypass，绝不"近似注入"）：
+     ① 来源必须显式具名（只有 'astra' / 'local' 可注入）——**不得**把 source 判成 truthy；
+     ② payload 是非空字符串（trim 后非空）；
+     ③ 本层确实组织过上下文（stats.empty !== true）。否则 compressedContext 只是当前用户消息的回声
+        （pipeline 在全空时的兜底产物），注入它只会给请求加一段无信息的重复块；
+     ④ 'local' 额外要求 payload 保留当前用户消息 —— 这是本地 pipeline 的输出契约
+        （middle-brain.js 的无损兜底会把当前消息补上），用它反证 payload 来自本轮上下文而非残骸。
+        'astra' 不加这一条：Astra 成功路径的行为在本阶段保持不变。 */
+function _mbInjectable(res,userMessage){
+  try{
+    if(!res||typeof res!=='object')return false;
+    var src=String(res.source||'');
+    if(src!=='astra'&&src!=='local')return false;
+    var payload=res.compressedContext;
+    if(typeof payload!=='string'||!payload.trim())return false;
+    if(res.stats&&res.stats.empty===true)return false;
+    if(src==='local'&&payload.indexOf(String(userMessage||''))<0)return false;
+    return true;
+  }catch(e){return false}
+}
+
+/* Middle Brain Trace（dev 观测）：本轮请求参数指纹。只含非敏感标量（模型名/provider/
+   format/流式/思考/token 上限），不含 API Key、system prompt 或用户正文；
+   用途 = seam 前与实际发送前各取一次逐字节比较，证明 Middle Brain 未改动模型参数。 */
+function _mbParamsFingerprint(cfg,streaming,thinking){
+  try{
+    return JSON.stringify({
+      model:String((cfg&&cfg.model)||''),
+      provider:String((cfg&&cfg.provider)||''),
+      format:String(_providerFormat(cfg)||''),
+      streaming:!!streaming,
+      thinking:!!thinking,
+      maxTokens:(typeof _chatMaxTokens==='function'?_chatMaxTokens(cfg):null)
+    });
+  }catch(e){return'{"err":1}'}
+}
 async function sendChatMessage(voiceMsg){
   /* voiceMsg：由语音模块 _vmFinish 传入的 {dataUrl,mime,duration,transcript}；按钮点击/回车调用时为空 */
   const _voice=(voiceMsg&&voiceMsg.dataUrl)?voiceMsg:null;
@@ -1993,6 +2045,10 @@ async function sendChatMessage(voiceMsg){
     }
     const keepCount=ss.enabled?(ss.keepCount||6):(lim.chatLimit||DEFAULT_READ_CHAT);
     const history=_cacheStableSlice(friendMsgs,keepCount);/* 缓存修复：阶梯窗口，起点不再逐条滑动 */
+    /* Middle Brain Trace · dev 观测（只读观测，不落盘、不含正文/密钥、不改变任何判定）：
+       本轮单聊请求开始记录；后续各参与层在同一条记录上打点，回合末尾统一打印一次。 */
+    var _mbTrace=(window.IB&&window.IB.__mbTrace)||null;
+    if(_mbTrace)_mbTrace.begin('chat',cfg.id);
     /* 修复：历史不再注入 <thinking> 占位符——长上下文中大量同形占位样本会被模型照抄（思考区整段输出占位字样）；历史仍为常量串，缓存前缀稳定性不变 */
     /* 历史只回传用户消息与最终回答；reasoning_content 仅本地保存/导出，不显示也不回传。 */
     const _vtS1=await _vtGet();
@@ -2006,6 +2062,10 @@ async function sendChatMessage(voiceMsg){
       return _mm;
     });
     /* ── 上下文构建：委托 buildChatContext（Extraction Seam），只取 system/tail 分区 ── */
+    if(_mbTrace){
+      _mbTrace.note(cfg.id,'inputMessages',messages.length);/* MB seam 之前的 messages 条数 */
+      _mbTrace.note(cfg.id,'_paramsSeam',_mbParamsFingerprint(cfg,_streamingOk,thinkingOn));
+    }
     const _bcc=await buildChatContext(cfg,{userMessage:_ctxText,ss:ss,summaryText:summaryText,threadId:_targetThread,voice:!!_callTurn});
     const sysContent=_bcc.system;
     const _tailCtx=_bcc.tail;
@@ -2132,6 +2192,13 @@ async function sendChatMessage(voiceMsg){
       }
       const _sFlush=(ch)=>{_calLive?_calLive.push(ch):_memLive.push(ch);if(_voiceSink)_voiceSink.feed(ch)};
       const _callRes={};/* 并发隔离：本次调用的思考与截断结果（不再读共享全局量） */
+      /* Middle Brain Trace · 记录最终 executor / 模型 / 实际发送的 messages 条数 + 参数指纹 */
+      if(_mbTrace){
+        _mbTrace.note(cfg.id,'executor','callApiChatStream');
+        _mbTrace.note(cfg.id,'model',String(cfg.model||''));
+        _mbTrace.note(cfg.id,'outputMessages',messages.length);
+        _mbTrace.note(cfg.id,'_paramsSend',_mbParamsFingerprint(cfg,_streamingOk,thinkingOn));
+      }
       let rawReply=await callApiChatStream(cfg,messages,{_ibConsumer:'chat',wantThinking:thinkingOn,autoContinue:true,chatKey:_targetFriend,result:_callRes,searchLog:_srchLog,onSearch:_onSearch,
         onThink:function(tk){_thinkFlush(tk)},
         onChunk:function(chunk){
@@ -2191,6 +2258,8 @@ async function sendChatMessage(voiceMsg){
           if(typeof _mbFinS==='string'&&_mbFinS&&_mbFinS!==replyText)replyText=_mbFinS;
         }
       }catch(_mbFinErrS){console.warn('[MiddleBrain] finalize failed',String(_mbFinErrS&&_mbFinErrS.message||_mbFinErrS).slice(0,120))}
+      /* Middle Brain Trace · dev 观测：回合末尾一次性打印本轮逐层 participation（只读、不落盘） */
+      if(_mbTrace)_mbTrace.finish(cfg.id,{});
       if(_showThinking&&thinkingText){_ensureStreamThinking(streamRefs,_liveThinkEls);_finishStreamThinking(_liveThinkEls,thinkingText)}
       /* AUTO MEMORY：截取并执行 mem_* 指令（先于 ws 解析与收尾渲染，防止标签原文入库/上屏） */
       var _memR=[];
@@ -2241,6 +2310,13 @@ async function sendChatMessage(voiceMsg){
       /* ===== 非流式传输路径（原有逻辑） ===== */
       const _srchLogN=[];/* 任务A：非流式同样收集搜索记录（三家通用） */
       const _callResN={};/* 并发隔离：本次调用的思考与截断结果 */
+      /* Middle Brain Trace · 记录最终 executor / 模型 / 实际发送的 messages 条数 + 参数指纹 */
+      if(_mbTrace){
+        _mbTrace.note(cfg.id,'executor','callApiChat');
+        _mbTrace.note(cfg.id,'model',String(cfg.model||''));
+        _mbTrace.note(cfg.id,'outputMessages',messages.length);
+        _mbTrace.note(cfg.id,'_paramsSend',_mbParamsFingerprint(cfg,_streamingOk,thinkingOn));
+      }
       let rawReply=await callApiChat(cfg,messages,{_ibConsumer:'chat',wantThinking:thinkingOn,autoContinue:true,chatKey:_targetFriend,result:_callResN,searchLog:_srchLogN});
       clearInterval(_typTimer);
       const _elapsed=Math.round((Date.now()-_typStart)/1000);
@@ -2261,6 +2337,8 @@ async function sendChatMessage(voiceMsg){
           if(typeof _mbFinN==='string'&&_mbFinN&&_mbFinN!==replyText)replyText=_mbFinN;
         }
       }catch(_mbFinErrN){console.warn('[MiddleBrain] finalize failed',String(_mbFinErrN&&_mbFinErrN.message||_mbFinErrN).slice(0,120))}
+      /* Middle Brain Trace · dev 观测：回合末尾一次性打印本轮逐层 participation（只读、不落盘） */
+      if(_mbTrace)_mbTrace.finish(cfg.id,{});
       /* 非流式路径：先截取 mem_* 指令，再按顺序执行工作区操作 */
       var _memRNs=[];
       replyText=await _applyWithdraw(cfg,replyText,_targetFriend,cfg.nickname||cfg.model||'AI');
@@ -2330,6 +2408,8 @@ async function sendChatMessage(voiceMsg){
     if(_typTimer)clearInterval(_typTimer);
     const te=document.getElementById('chat-typing-'+_targetFriend);if(te)te.remove();
     _showStreamingUI(false);
+    /* Middle Brain Trace · 失败轮也打印一次（层参与度与成功轮同格式，便于对照断点） */
+    if(_mbTrace)_mbTrace.finish(cfg.id,{});
     /* 失败时移除还没写入任何内容的流式气泡（含思考面板卡），避免残留带光标的空气泡；已流出内容的气泡保留 */
     try{(streamRefs||[]).forEach(function(ref){const _t=String((ref.txt&&ref.txt.textContent)||'');const _hasCards=typeof (ref.txt&&ref.txt.querySelector)==='function'&&!!ref.txt.querySelector('.ws-op-card');if(!_t.trim()&&!_hasCards&&ref.div.parentNode)ref.div.parentNode.removeChild(ref.div)})}catch(e){}
     /* 统一错误分类 + 角色化友好文案；完整技术错误已由 IBERR.report 与底层日志写入 Console */
