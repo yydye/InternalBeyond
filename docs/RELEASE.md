@@ -22,11 +22,11 @@
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-installer.ps1 `
   -ReleasedAt 2026-09-10T06:00:00Z `
-  -NotesFile docs\release-notes\1.0.1.md `
-  -MinimumVersion 1.0.0
+  -NotesFile docs\release-notes\1.0.1.md
 ```
 
 `-ReleasedAt` / `-NotesFile` / `-MinimumVersion` 都是**可选**的，见 §4。
+1.0.1 刻意**不传** `-MinimumVersion`（理由见 §8）。
 
 ---
 
@@ -123,7 +123,6 @@ primary   GET manifest.installer.url            （版本钉死的 release asset
     "productVersion": "1.0.1"
   },
   "releasedAt": "2026-09-10T06:00:00Z",
-  "minimumVersion": "1.0.0",
   "notes": "面向普通用户的更新说明（纯文本）",
   "notesUrl": "https://github.com/yydye/InternalBeyond/releases/tag/v1.0.1"
 }
@@ -139,7 +138,7 @@ primary   GET manifest.installer.url            （版本钉死的 release asset
 | `installer.sizeBytes` | ✅ | 实测字节数；另有合理区间闸门（见 §5） |
 | `installer.productVersion` | ✅ | 从 exe 的 PE `ProductVersion` 读回，必须等于 `version` |
 | `releasedAt` | 可选 | ISO-8601 UTC。**没有可靠构建期来源，没给就不写** |
-| `minimumVersion` | 可选 | 目前只做形状校验，不强制 |
+| `minimumVersion` | 可选 | 目前只做形状校验，不强制。**1.0.1 刻意省略**（写 `1.0.0` 会是一句不成立的产品承诺——1.0.0 没有读取清单/更新端点的能力）；**1.0.2 起写 `1.0.1`**，那时它才第一次成为真实契约（见 §8） |
 | `notes` | 可选 | 面向用户的纯文本；UI 必须以 textContent 渲染，**永不 innerHTML** |
 | `notesUrl` | 可选 | 必须是 `https://github.com/...` |
 
@@ -298,6 +297,37 @@ manifest.version           ==  tag 去掉 v 前缀
 
 API 匿名限额实测：`x-ratelimit-remaining: 57/60`（60 次/小时/IP）。回退只在 primary 网络
 失败时消耗它，且**不做重试**（U-D1 Revised 第 7 条）。
+
+### 版本语义与 1.0.1 发布（U5-1 冻结，重要）
+
+已发布的 `v1.0.0`（tag → `23c8960`）**早于全部 U 系列**，因此那个安装包里没有清单、没有检查、
+没有下载器、没有更新界面，服务端也没有任何 `/__update*` 端点。**它的用户无法自动升级**——
+这是产品事实，不是缺陷，必须靠手动安装一次跨过去。
+
+| 版本 | 定义 |
+|---|---|
+| `v1.0.0` | legacy release：不包含 Zero-Touch Update，用户**必须手动安装一次 1.0.1** |
+| `v1.0.1` | **第一个正式包含 Zero-Touch Update 的 release**；此后作为真实 E2E 的 baseline |
+| `v1.0.2` | **第一个由真实自动更新链到达的 release**；E2E 验证 `1.0.1 → 1.0.2` |
+
+由此产生三条硬约束：
+
+1. **不构造、不使用任何未发布的「1.0.0 updater seed」。** E2E 的 baseline 必须是 GitHub 上的
+   **真实已发布资产**（重新下载 + 核对 digest），不能是本地 `dist/` 里的重建产物。
+2. **`minimumVersion` 在 1.0.1 省略，在 1.0.2 写 `1.0.1`。** 在 1.0.1 上写 `1.0.0` 等于向一个
+   根本没有能力读它的版本许下承诺。
+3. **tag 必须指向包含 U1–U4 的提交。** `master` 在发布前领先 `origin/master`
+   （U1–U4 + 文档共 10 个提交），因此**先 push、后 tag**；绝不让 `gh` 用默认
+   `target_commitish`（那会指向尚未包含 U 系列的远端 `d6d52a6`）。
+
+发布顺序仍是 §2 的契约（exe → SHA256SUMS.txt → **update-stable.json LAST**）：
+**上传清单的那一刻，1.0.1 才第一次出现在 Stable 通道上**；在此之前客户端的诚实答案是
+`no-information`（「暂时无法检查更新」），不会谎报「已是最新」。若发布后需要紧急关闭通道，
+删掉 release 上的 `update-stable.json` 资产即可（primary 404 → API 回退也找不到该资产）；
+但要诚实说明：**已经在下载中的客户端不会被远程叫停**。
+
+用户可见的升级说明在 [release-notes/1.0.1.md](release-notes/1.0.1.md)，同时它就是清单 `notes`
+的来源。README 也随包发行，1.0.0 用户唯一能读到的升级指引就在那里（`README.md`「升级到新版本」）。
 
 ---
 

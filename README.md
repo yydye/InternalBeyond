@@ -3,13 +3,13 @@
 **一个离线运行、数据留在本机的个人 AI 陪伴站。** 支持同时对接多个 AI 模型，
 包含像素互动房间、多角色聊天、社交圈、长期记忆、日记、书信、代码工作区等 13 个模块与两套视觉主题。
 
-`Windows 10+` · 当前版本 **1.0.0** · 免管理员权限 · 内置运行环境 · [PolyForm Noncommercial 1.0.0](LICENSE)
+`Windows 10+` · 当前版本 **1.0.1** · 免管理员权限 · 内置运行环境 · [PolyForm Noncommercial 1.0.0](LICENSE)
 
 ---
 
 ## ⬇ 下载 InternalBeyond for Windows
 
-**正式发行文件：`InternalBeyond-Setup-<版本号>.exe`（当前 1.0.0，约 48 MB）**
+**正式发行文件：`InternalBeyond-Setup-<版本号>.exe`（当前 1.0.1，约 48 MB）**
 
 👉 **[前往 GitHub Releases 下载最新版](https://github.com/yydye/InternalBeyond/releases)**
 
@@ -19,7 +19,7 @@
 
 > **不需要预装 Node.js、npm、Python 或 PowerShell；不需要管理员权限，安装过程不会弹出 UAC 权限确认。**
 
-1. 在 [Releases 页面](https://github.com/yydye/InternalBeyond/releases) 下载 `InternalBeyond-Setup-1.0.0.exe`。
+1. 在 [Releases 页面](https://github.com/yydye/InternalBeyond/releases) 下载 `InternalBeyond-Setup-1.0.1.exe`。
 2. 双击安装包，按向导点「下一步」：欢迎页 → 安装位置（保持默认即可）→ 是否创建桌面快捷方式（可选）→ 安装 → 完成。
 3. 勾选「启动 InternalBeyond」，或之后从 **开始菜单** / **桌面** 的 **InternalBeyond** 打开。
 4. 第一次打开会进入设置向导，跟着 7 步完成 AI 配置与角色创建，就能发出第一条消息。
@@ -34,9 +34,19 @@
 | 程序文件（含内置运行环境） | `%LOCALAPPDATA%\Programs\InternalBeyond`（默认，可改） | 被替换为新版 | 被删除 |
 | 你的个人数据（角色、API 配置、Memory、Diary、朋友圈等） | `%LOCALAPPDATA%\InternalBeyond` 与浏览器本地数据 | **完整保留** | **默认保留** |
 
-- **升级**：直接运行新版安装包覆盖安装即可；角色、API 配置、Memory、Diary、朋友圈等全部保留，不需要重新配置。
+- **升级**：直接运行新版安装包覆盖安装即可；角色、API 配置、Memory、Diary、朋友圈等全部保留，不需要重新配置。**从 1.0.1 起也可以直接在应用内更新**，见下面的「升级到新版本」。
 - **卸载**：开始菜单 →「卸载 InternalBeyond」。卸载**默认不会删除个人数据**；如果确实要彻底清除，请手动删除 `%LOCALAPPDATA%\InternalBeyond`（浏览器本地数据请在浏览器设置里清除该站点的数据）。
 - **正在运行时安装**：安装程序只会通过 InternalBeyond 自己的服务控制面关闭 InternalBeyond 实例（先优雅停止、再有限等待、最后只结束经过身份校验的自身进程），**不会影响你电脑上其他基于 Node.js 的软件**。
+
+### 升级到新版本
+
+从 **1.0.1** 开始，InternalBeyond 可以**在应用内自己更新**：有新版本时，打开 **诊断** 页面会看到一张更新卡片，显示新版本号与更新说明；点一次「下载并安装」，程序会自动下载、校验、关闭自己、安装新版本，然后重新打开。
+
+- 从 **1.0.0**（或更早）升级到 **1.0.1**，需要**手动安装一次**：在 [Releases 页面](https://github.com/yydye/InternalBeyond/releases) 下载 `InternalBeyond-Setup-1.0.1.exe` 并运行（覆盖安装即可）。早期版本还没有应用内更新的能力，所以这一跳必须手动走一次。
+- 之后的版本（1.0.2 起）就可以直接在应用内检查、下载并安装，不必再去下载页面。
+- 更新是**可选且无感**的：检查更新失败、没联网都不会影响使用，也不会拖慢启动；你随时可以在诊断页面手动检查。
+- 升级**不会动你的数据**：角色、API 配置、Memory、Diary、朋友圈等全部保留，不需要重新配置。
+- 更新时程序会**先安全地关闭正在运行的 InternalBeyond**（只会关闭它自己的实例），然后自动重新打开新版本；不会影响电脑上其他软件。
 
 ### 首次运行时的 Windows 提示（未签名程序）
 
@@ -220,13 +230,17 @@ vision/                    # 可选本地视觉服务（Python，默认不随包
 It ships 13 feature modules, two visual themes, and can talk to 15 AI providers at once.
 
 **Download for Windows:** see [GitHub Releases](https://github.com/yydye/InternalBeyond/releases) →
-`InternalBeyond-Setup-1.0.0.exe`. No Node.js, npm, Python, PowerShell or admin rights required;
+`InternalBeyond-Setup-1.0.1.exe`. No Node.js, npm, Python, PowerShell or admin rights required;
 the installer bundles its own runtime and needs no UAC prompt.
 
 1. Download `InternalBeyond-Setup-<version>.exe` from Releases and verify it against `SHA256SUMS.txt`.
 2. Double-click and follow the wizard (welcome → install location → optional desktop icon → install → finish).
 3. Launch **InternalBeyond** from the Start menu or desktop.
 4. Finish the first-run setup wizard (7 steps), then send your first message.
+
+**Updating:** starting with **1.0.1**, InternalBeyond updates itself from inside the app — the Diagnostics page shows an update card where you can download and install a new version with one click, and the app reopens automatically when it is done.
+Upgrading from **1.0.0** (or earlier) to **1.0.1** requires **one manual install**: download `InternalBeyond-Setup-1.0.1.exe` from Releases and run it. Earlier versions predate in-app updates, so that single hop has to be done by hand; every release from **1.0.2** on can be installed from inside the app.
+Your data (characters, API settings, Memory, Diary, Moments) is always preserved.
 
 ### Features
 

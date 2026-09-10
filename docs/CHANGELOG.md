@@ -1032,3 +1032,88 @@ U4 **只渲染**——manifest 校验、semver 比较、传输与回退、SHA-25
 | `tests/test_update_card.js` / `tests/test_update_card_smoke.js` | **新增** |
 | `tests/test-all.js` | static 组登记 `test_update_card.js`，browser 组登记 `test_update_card_smoke.js` |
 | `docs/ARCHITECTURE.md` | §13 补 `/__update/status` 投影形状、端点名陷阱、U4 体验小节（阶段表 + 不可动摇性质 9/10/11） |
+
+## 2026-09-10 · U5 · v1.0.1 · 第一个可自动更新的正式版本
+
+Zero-Touch Update 的发布阶段。U1–U4 让产品具备了「问有没有新版 → 下载 → 校验 → 安装 → 重启」
+的完整能力，但它们**只存在于源码里**：已发布的 `v1.0.0` 早于全部 U 系列（tag → `23c8960`，
+U1–U4 全在其后 26 个提交），那个安装包里没有更新清单、没有检查、没有下载器、没有更新界面，
+服务端也没有任何 `/__update*` 端点。**结论（U5-0 审计实测）**：`v1.0.0` 是 legacy release，
+其用户**无法**自动升级；想让自动更新真正生效，必须先正式发布一个带 `update-stable.json`
+的 release——这正是 1.0.1 要做的事。
+
+### 冻结的版本语义（U5-1 用户裁定）
+
+| 版本 | 定义 |
+|---|---|
+| `v1.0.0` | legacy release：不包含 Zero-Touch Update，用户无法从该版本自动升级，**必须手动安装一次 1.0.1** |
+| `v1.0.1` | **第一个正式包含 Zero-Touch Update 的 release**；1.0.0 用户手动装一次；此后作为真实 E2E 的 baseline |
+| `v1.0.2` | **第一个由真实自动更新链到达的 release**；E2E 验证 `1.0.1 → 1.0.2` |
+
+配套冻结：**不构建、不使用任何未发布的「1.0.0 updater seed」**（不伪造一个假基线，
+基线必须是 GitHub 上的真实已发布资产）；`minimumVersion` 在 **1.0.1 省略**（1.0.0 根本没有
+读取清单/更新端点的能力，写 `minimumVersion=1.0.0` 会是一句不成立的产品承诺），
+**1.0.2 写 `1.0.1`**（届时它才第一次成为真实契约）。
+
+### 本阶段改动（release preparation）
+
+- **`VERSION` 1.0.0 → 1.0.1**（唯一版本源）。Guide 版本契约自动成立：`guideVersion` 取
+  `MAJOR.MINOR`，`1.0.1` 仍是 `1.0`，因此 `annotations.json` 与 `guide-beginner.js`
+  的 `VERSION_FALLBACK` **不需要改**（`test_installer.js [1]` 继续守着这条等式）。
+- **`README.md`**：版本号与安装包文件名更新到 1.0.1（中文与英文两处），并**新增
+  「升级到新版本」小节**——这是 1.0.0 用户唯一能读到的升级说明，必须明确写出
+  「从 1.0.0 升级需要手动安装一次 1.0.1，从 1.0.1 起可在应用内更新」。
+  README **随包发行**（白名单条目），所以旧版 README 会把用户指向一个过期的安装包文件名——
+  这是必须随版本一起修的用户可见缺陷。
+- **`docs/release-notes/1.0.1.md`（新增）**：面向普通用户的更新说明，同时是清单 `notes`
+  字段的来源（`-NotesFile`）。**刻意使用纯文本**：`notes` 在 UI 里以 textContent 渲染，
+  Markdown 标记会原样显示。全文不含 `U1`/`manifest`/`PE`/SHA 实现/`Node`/`endpoint`/
+  `transport fallback` 等工程术语（只有 IB 自己的用户可见名词「API 配置」）。
+- **`docs/RELEASE.md`**：§1 构建示例去掉 `-MinimumVersion`（与「1.0.1 省略」一致），
+  §8 记录 Stable 通道发布进度与本节冻结的版本语义。
+
+### 本次发布构建实测（四等式独立复核）
+
+| 项 | 实测值 |
+|---|---|
+| 版本 | `1.0.1` |
+| 安装包 | `dist\InternalBeyond-Setup-1.0.1.exe` · **50,828,077 B**（48.5 MiB） |
+| SHA-256 | `4e5dc61a3ae36460feff188d5cc76b857cbf414c6552d24011e831ff06ca90d7` |
+| PE ProductVersion / FileVersion | `1.0.1` / `1.0.1.0` |
+| 清单 | `dist\update-stable.json`（version `1.0.1` · releasedAt `2026-09-10T11:10:00Z` · notes 605 字符 · **不含 `minimumVersion`**） |
+| 载荷 | [4] 审计 237 文件 · 0 error / 8 warn（全部是许可与 README 正文里的联系邮箱/电话，人工复核后不阻断） |
+
+四条等式**全部独立于构建输出**、直接从磁盘字节重算（不是读构建打印的值）：
+
+1. `manifest.installer.sha256` == SHA-256(exe 字节)；
+2. `manifest.installer.sizeBytes` == 文件长度；
+3. `manifest.installer.productVersion` == PE `ProductVersion` == `VERSION`；
+4. `manifest.installer.url` 的**资产名** == 真实产出文件名（且 URL 版本钉死为 `v1.0.1`）。
+
+另加：清单自校验 `validate().ok`、`minimumVersion` 确实缺席、`notes` 与
+`docs/release-notes/1.0.1.md`（去 BOM 后 trim）**逐字相等**、无未知顶层字段、staging 已清理、
+`manifest.installer.sha256` 与已发布 v1.0.0 的 digest 不同（不是同一个字节）。
+
+**新鲜度证明（构建不陈旧）**：白名单 237 个载荷源文件中，**没有任何一个**的 mtime 晚于 exe 的
+构建时间；且本阶段改动的四个文档（`CHANGELOG` / `RELEASE` / `HANDOVER` / `release-notes`）
+**都不在载荷内**——因此它们可以在构建之后继续修改而不改变已构建的字节。
+载荷内唯一承载产品版本的两个文件是 `VERSION` 与 `README.md`，两者都在构建前定稿。
+
+### Gate 结果
+
+`node tests/test-all.js --quick`：**static 53 项 + service 16 项全绿**（194.1 s）。
+专项：`test_installer.js` 47 ✔、`test_update_manifest.js` 41 ✔、`test_update_check.js` 51 ✔、
+`test_update_install.js` 57 ✔、`test_pe_version.js` 13 ✔、`test_update_card.js` 192 ✔、
+`test_installer_mock.js` 26 ✔（1 跳过）、`test_guide.js` 314 ✔、`test_boot_state.js` 37 ✔、
+`test_launcher.js` 16 ✔、`test_node_runtime.js` 18 ✔、`test_ib_stop_identity.js` 12 ✔、
+`test_diagnostics.js` 120 ✔、`test_harness_boundary.js` 42 ✔、`test_frontend_structure.js` ✔、
+`test_installer_build.js --force` **15 ✔**（真实 ISCC 构建 31 s，只构建、**不安装**）。
+
+按 P7 真实安装预算：本阶段**没有真实安装、没有卸载、没有打开浏览器**。
+
+版本号 bump 对既有契约的影响（已核实为零）：`guideVersion` 取 `MAJOR.MINOR`，`1.0.1` 仍是 `1.0`，
+所以 `docs/guide/annotations.json` 与 `guide-beginner.js` 的 `VERSION_FALLBACK` **不需要改**；
+`apps/catalog.json` 的 `"version":"1.0.0"` 是**单个 APP 的目录版本**（coread / cinema），
+`services/ib-bridge-service.js` 的 `VERSION = '1.0.0'` 是 **Bridge 服务自己的版本**（诊断页单独展示），
+两者都与产品版本无耦合，本轮**一字未动**。
+
