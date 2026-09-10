@@ -50,7 +50,69 @@ async function acheck(name, fn) {
   catch (e) { fail++; failures.push(name + ': ' + (e && e.message || e)); console.log('  ✗ ' + name + ' — ' + (e && e.message || e)); }
 }
 
+/* ── temp tree lifecycle ─────────────────────────────────────────────────
+   Every sandbox below lives in one %TEMP%\ib-p7-mock-* directory, and some of
+   them hold a copy of the real node.exe — which Windows keeps a brief handle on
+   after it exits, and which a scanner may hold longer. One rmSync() call is
+   therefore not reliable, and a run killed outright cannot clean up in-process
+   at all. So: retry the removal, make sure the attempt always happens, and on
+   startup sweep what an earlier killed run left behind. */
+
+const STALE_MS = 60 * 60 * 1000;
+
+/* Bounded retry; never throws (it also runs from an exit hook). */
+function rmTree(dir, attempts) {
+  attempts = attempts || 6;
+  for (let i = 1; i <= attempts; i++) {
+    try { fs.rmSync(dir, { recursive: true, force: true }); return true; }
+    catch (e) {
+      if (i === attempts) return false;
+      /* Synchronous backoff — an exit hook cannot await a timer. */
+      try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250); } catch (err) { /* keep going */ }
+    }
+  }
+  return false;
+}
+
+/* A mock run takes ~15 s, so an hour-old ib-p7-mock-* tree can only be the
+   remains of a run that was killed before it could clean up. Best effort, and
+   never fatal: a newer tree may belong to a run happening right now. */
+function sweepStaleTemp() {
+  let swept = 0, entries = [];
+  try { entries = fs.readdirSync(os.tmpdir()); } catch (e) { return 0; }
+  for (const name of entries) {
+    if (!/^ib-p7-mock-/.test(name)) continue;
+    const dir = path.join(os.tmpdir(), name);
+    if (dir === TMP) continue;
+    try {
+      if (Date.now() - fs.statSync(dir).mtimeMs < STALE_MS) continue;
+      if (rmTree(dir, 2)) swept++;
+    } catch (e) { /* racing another run — leave it alone */ }
+  }
+  return swept;
+}
+
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-p7-mock-'));
+
+const swept = sweepStaleTemp();
+if (swept) console.log('清理上次被强杀遗留的临时目录 ' + swept + ' 个（%TEMP%' + path.sep + 'ib-p7-mock-*）');
+
+let tmpCleaned = false, tmpWarned = false;
+function cleanupTmp() {
+  if (tmpCleaned) return true;
+  if (rmTree(TMP)) { tmpCleaned = true; return true; }
+  /* Windows sometimes keeps a handle on the sandbox whose bundled runtime the
+     VBS actually executed, which pins the (already empty) directory until it
+     clears. Say so once — sweepStaleTemp() reclaims it on a later run — instead
+     of failing silently the way a single rmSync() used to. */
+  if (!tmpWarned) { tmpWarned = true; console.log('  WARN 临时目录被系统句柄占用，未能立即清理：' + TMP); }
+  return false;
+}
+
+/* Backstop for a path that leaves the process without unwinding the async
+   section below (an uncaught throw at module scope, or an explicit exit). A
+   SIGKILL cannot be caught — that case is what sweepStaleTemp() covers. */
+process.on('exit', () => { cleanupTmp(); });
 
 /* A throwaway install-shaped sandbox: the real .vbs plus a bundled runtime we
    control. Nothing here can reach the developer checkout. */
@@ -301,72 +363,76 @@ check('the installer identity probe honours the port overrides', () => {
 /* ── [6] upgrade lock · [7] post-install validation ────────────────────── */
 
 (async () => {
-  console.log('\n[6] upgrade lock (real file-lock fixture, no install)');
+  try {
+    console.log('\n[6] upgrade lock (real file-lock fixture, no install)');
 
-  check('the installer waits, bounded, for the runtime to become replaceable', () => {
-    assert.ok(/function WaitForRuntimeReplaceable\(/.test(ISS_SRC), 'must define the bounded unlock wait');
-    assert.ok(/--wait-unlock/.test(ISS_SRC), 'must use the shipped --wait-unlock probe');
-    assert.ok(/WaitForRuntimeReplaceable\(ExpandConstant\('\{app\}\\runtime\\node\\node\.exe'\),\s*20000\)/.test(ISS_SRC),
-      'must wait on the file it is about to replace, with a bounded timeout');
-    assert.ok(/仍被占用/.test(ISS_SRC) && /请关闭 InternalBeyond/.test(ISS_SRC),
-      'a locked runtime must end in a friendly message, not a blind continue');
-    /* A probe executed from the very file it probes locks itself and would
-       report "still locked" forever — it must run from a temp copy. */
-    assert.ok(/FileCopy\(NodeExe, ProbeExe, False\)/.test(ISS_SRC),
-      'the lock probe must run from a temp copy of the runtime');
-    assert.ok(/Exec\(ProbeExe, Params/.test(ISS_SRC), 'the probe must be executed from that copy');
-    const stopIdx = ISS_SRC.indexOf('if Code <> 0 then');
-    const waitIdx = ISS_SRC.indexOf('WaitForRuntimeReplaceable(ExpandConstant');
-    assert.ok(stopIdx >= 0 && waitIdx > stopIdx, 'the unlock wait must run after the stop helper');
-  });
+    check('the installer waits, bounded, for the runtime to become replaceable', () => {
+      assert.ok(/function WaitForRuntimeReplaceable\(/.test(ISS_SRC), 'must define the bounded unlock wait');
+      assert.ok(/--wait-unlock/.test(ISS_SRC), 'must use the shipped --wait-unlock probe');
+      assert.ok(/WaitForRuntimeReplaceable\(ExpandConstant\('\{app\}\\runtime\\node\\node\.exe'\),\s*20000\)/.test(ISS_SRC),
+        'must wait on the file it is about to replace, with a bounded timeout');
+      assert.ok(/仍被占用/.test(ISS_SRC) && /请关闭 InternalBeyond/.test(ISS_SRC),
+        'a locked runtime must end in a friendly message, not a blind continue');
+      /* A probe executed from the very file it probes locks itself and would
+         report "still locked" forever — it must run from a temp copy. */
+      assert.ok(/FileCopy\(NodeExe, ProbeExe, False\)/.test(ISS_SRC),
+        'the lock probe must run from a temp copy of the runtime');
+      assert.ok(/Exec\(ProbeExe, Params/.test(ISS_SRC), 'the probe must be executed from that copy');
+      const stopIdx = ISS_SRC.indexOf('if Code <> 0 then');
+      const waitIdx = ISS_SRC.indexOf('WaitForRuntimeReplaceable(ExpandConstant');
+      assert.ok(stopIdx >= 0 && waitIdx > stopIdx, 'the unlock wait must run after the stop helper');
+    });
 
-  await acheck('a running copy of the bundled runtime is locked and unlocks after exit', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-lock-'));
-    const exe = path.join(dir, 'node.exe');
-    fs.copyFileSync(path.join(ROOT, 'runtime', 'node', 'node.exe'), exe);
-    const child = spawn(exe, ['-e', 'setTimeout(function(){}, 60000)'], { stdio: 'ignore', windowsHide: true, detached: true });
-    child.unref();
-    const stop = () => { try { execFileSync('taskkill.exe', ['/F', '/T', '/PID', String(child.pid)], { windowsHide: true, stdio: 'ignore' }); } catch (e) { /* gone */ } };
-    try {
-      await new Promise(r => setTimeout(r, 2500));
-      const locked = await ibStop.waitForUnlock(exe, 1500);
-      assert.strictEqual(locked.ok, false, 'a running image must not be replaceable');
-      assert.strictEqual(locked.error, 'still-locked');
-      stop();
-      const unlocked = await ibStop.waitForUnlock(exe, 20000);
-      assert.strictEqual(unlocked.ok, true, 'after the process exits the file must become replaceable');
-    } finally { stop(); fs.rmSync(dir, { recursive: true, force: true }); }
-  });
+    await acheck('a running copy of the bundled runtime is locked and unlocks after exit', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-lock-'));
+      const exe = path.join(dir, 'node.exe');
+      fs.copyFileSync(path.join(ROOT, 'runtime', 'node', 'node.exe'), exe);
+      const child = spawn(exe, ['-e', 'setTimeout(function(){}, 60000)'], { stdio: 'ignore', windowsHide: true, detached: true });
+      child.unref();
+      const stop = () => { try { execFileSync('taskkill.exe', ['/F', '/T', '/PID', String(child.pid)], { windowsHide: true, stdio: 'ignore' }); } catch (e) { /* gone */ } };
+      try {
+        await new Promise(r => setTimeout(r, 2500));
+        const locked = await ibStop.waitForUnlock(exe, 1500);
+        assert.strictEqual(locked.ok, false, 'a running image must not be replaceable');
+        assert.strictEqual(locked.error, 'still-locked');
+        stop();
+        const unlocked = await ibStop.waitForUnlock(exe, 20000);
+        assert.strictEqual(unlocked.ok, true, 'after the process exits the file must become replaceable');
+      } finally { stop(); rmTree(dir); }
+    });
 
-  await acheck('a missing runtime needs no wait', async () => {
-    const r = await ibStop.waitForUnlock(path.join(TMP, 'not-there.exe'), 1000);
-    assert.strictEqual(r.ok, true);
-    assert.strictEqual(r.missing, true);
-  });
+    await acheck('a missing runtime needs no wait', async () => {
+      const r = await ibStop.waitForUnlock(path.join(TMP, 'not-there.exe'), 1000);
+      assert.strictEqual(r.ok, true);
+      assert.strictEqual(r.missing, true);
+    });
 
-  console.log('\n[7] post-install runtime validation');
+    console.log('\n[7] post-install runtime validation');
 
-  check('the installer validates the bundled runtime right after copying it', () => {
-    assert.ok(/function ValidateBundledRuntime\(\): String;/.test(ISS_SRC), 'must define the validation');
-    assert.ok(/procedure CurStepChanged\(CurStep: TSetupStep\)/.test(ISS_SRC), 'must hook the install step');
-    assert.ok(/CurStep = ssPostInstall/.test(ISS_SRC), 'must run after the payload is installed');
-    assert.ok(/Problem := ValidateBundledRuntime\(\);/.test(ISS_SRC), 'the hook must call the validation');
-    assert.ok(/--version > /.test(ISS_SRC), 'must actually execute the runtime (--version)');
-    assert.ok(/runtime\\node\\VERSION/.test(ISS_SRC), 'must compare against the pinned VERSION');
-    assert.ok(/runtime-invalid\.txt/.test(ISS_SRC), 'must leave a marker for diagnostics');
-    assert.ok(/重新下载安装包/.test(ISS_SRC), 'must tell the user what to do');
-    const body = ISS_SRC.slice(ISS_SRC.indexOf('function ValidateBundledRuntime'), ISS_SRC.indexOf('procedure CurStepChanged'));
-    assert.ok(!/FileSearch\('node\.exe'/.test(body), 'validation must never fall back to a system Node');
-  });
+    check('the installer validates the bundled runtime right after copying it', () => {
+      assert.ok(/function ValidateBundledRuntime\(\): String;/.test(ISS_SRC), 'must define the validation');
+      assert.ok(/procedure CurStepChanged\(CurStep: TSetupStep\)/.test(ISS_SRC), 'must hook the install step');
+      assert.ok(/CurStep = ssPostInstall/.test(ISS_SRC), 'must run after the payload is installed');
+      assert.ok(/Problem := ValidateBundledRuntime\(\);/.test(ISS_SRC), 'the hook must call the validation');
+      assert.ok(/--version > /.test(ISS_SRC), 'must actually execute the runtime (--version)');
+      assert.ok(/runtime\\node\\VERSION/.test(ISS_SRC), 'must compare against the pinned VERSION');
+      assert.ok(/runtime-invalid\.txt/.test(ISS_SRC), 'must leave a marker for diagnostics');
+      assert.ok(/重新下载安装包/.test(ISS_SRC), 'must tell the user what to do');
+      const body = ISS_SRC.slice(ISS_SRC.indexOf('function ValidateBundledRuntime'), ISS_SRC.indexOf('procedure CurStepChanged'));
+      assert.ok(!/FileSearch\('node\.exe'/.test(body), 'validation must never fall back to a system Node');
+    });
 
-  /* ── cleanup + report ──────────────────────────────────────────────────── */
-  try { fs.rmSync(TMP, { recursive: true, force: true }); } catch (e) { /* best effort */ }
+  } finally {
+    /* Every exit from the async sections drops the temp tree — including an
+       unexpected throw, which used to leak the whole thing. */
+    cleanupTmp();
+  }
 
+  /* ── report ────────────────────────────────────────────────────────────── */
   console.log('\n结果: ' + pass + ' 通过, ' + fail + ' 失败');
   if (failures.length) { console.log('失败明细:'); failures.forEach(f => console.log('  - ' + f)); }
   process.exitCode = fail ? 1 : 0;
 })().catch((e) => {
   console.error('\nUNEXPECTED FAILURE: ' + (e && e.stack || e));
-  try { fs.rmSync(TMP, { recursive: true, force: true }); } catch (err) { /* best effort */ }
   process.exitCode = 1;
 });
