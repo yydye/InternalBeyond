@@ -4,6 +4,17 @@
    覆盖：计划校验/裁剪、状态机、防重复、免打扰、恢复、替换规则、sanitize、事件幂等 */
 const test = require('node:test');
 const assert = require('node:assert');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+/* 数据目录隔离（P7 测试隔离契约）：service 在 require 时即从 IB_ACTIVE_DATA_DIR
+   计算 DATA_DIR，因此必须在 require 之前设置。否则本套件会读写真实的
+   %LOCALAPPDATA%\InternalBeyond\，并与运行中的实例争抢同一个
+   active-message-service.json（表现为 EPERM unlink …active-message-service.json.bak）。
+   与 test_moments_companion.js / test_active_http.js 使用同一机制，不引入新机制。 */
+process.env.IB_ACTIVE_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-active-plans-'));
+
 const service = require('./active-message-service.js');
 
 const {
