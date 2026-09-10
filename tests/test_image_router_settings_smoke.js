@@ -245,12 +245,43 @@ function startMockApi() {
     check('ui.sectionPresent', await evaluate(cdp, "!!document.getElementById('image-router-section')&&!!document.getElementById('ir-route-generation')&&!!document.getElementById('ir-route-editing')"));
     check('ui.twoRouteCardsRendered', await waitFor(cdp, "document.querySelectorAll('#image-router-section .ir-card').length===2"));
     check('ui.routeTitles', await evaluate(cdp, "[].map.call(document.querySelectorAll('#image-router-section .ir-card-title'),function(e){return e.textContent}).join('|')==='Image Generation|Image Editing'"));
-    check('ui.newButtonReusesApiEditor', await evaluate(cdp, "(function(){var b=document.querySelector('#ir-card-generation .ir-new');return !!b&&b.getAttribute('onclick')==='addNewApi()'})()"));
-    check('ui.configOptionsFromApiConfigs', await evaluate(cdp, "(function(){var s=document.getElementById('ir-config-generation');var t=[].map.call(s.options,function(o){return o.textContent}).join('|');return s.options.length>=4&&t.indexOf('主图片配置')>=0&&t.indexOf('跟随角色配置')>=0})()"));
+    /* A1.5：不再有「+ 新建」。IB 没有独立的图片 API 配置实体，点它会打开角色 API 编辑器，
+       所以这个入口被移除，文案改为如实描述（图片 API 来源 / 跟随当前角色）。 */
+    check('ui.noCreateEntry', await evaluate(cdp, "(function(){return !document.querySelector('#image-router-section .ir-new')&&!document.querySelector('#ir-card-generation button[onclick]')&&!document.querySelector('#ir-card-editing button[onclick]')})()"));
+    check('ui.sourceWordingAccurate', await evaluate(cdp, "(function(){var t=document.getElementById('image-router-section').textContent;return t.indexOf('图片 API 来源')>=0&&t.indexOf('跟随当前角色')>=0&&t.indexOf('API Config')<0})()"));
+    check('ui.statesCredentialOrigin', await evaluate(cdp, "document.getElementById('image-router-section').textContent.indexOf('图片服务商 / 图片接口地址 / 图片 API Key')>=0"));
+    /* 图片来源下拉里必须仍能看到具体配置：选项保持「昵称 · provider · model」 */
+    check('ui.configOptionsFromApiConfigs', await evaluate(cdp, "(function(){var s=document.getElementById('ir-config-generation');var t=[].map.call(s.options,function(o){return o.textContent}).join('|');var first=s.options[0]?s.options[0].textContent:'';return s.options.length>=4&&t.indexOf('主图片配置')>=0&&first==='跟随当前角色'&&/主图片配置 · openai · /.test(t)})()"));
     check('ui.modelOptionsFilteredByCapability', await evaluate(cdp, "(function(){var g=[].map.call(document.getElementById('ir-model-generation').options,function(o){return o.value});var e=[].map.call(document.getElementById('ir-model-editing').options,function(o){return o.value});return g.indexOf('gpt-image-2.5-flare')>=0&&g.indexOf('dall-e-3')>=0&&e.indexOf('gpt-image-2.5-sunburst')>=0&&e.indexOf('dall-e-3')<0})()"));
     check('ui.modelOptionShowsRealId', await evaluate(cdp, "[].map.call(document.getElementById('ir-model-generation').options,function(o){return o.textContent}).join('|').indexOf('gpt-image-2.5-flare')>=0"));
     check('ui.datalistFromCatalog', await evaluate(cdp, "(function(){var d=document.getElementById('api-imagegen-model-list');return !!d&&[].map.call(d.options,function(o){return o.value}).indexOf('gpt-image-2.5-sunburst')>=0})()"));
     check('ui.routeLineVisible', await evaluate(cdp, "document.getElementById('ir-line-generation').textContent.indexOf('Image Generation')>=0&&document.getElementById('ir-line-generation').textContent.indexOf('→')>=0"));
+
+    /* ── ②b A1.5 布局：API 页顶级卡片垂直节奏（结构性 contract，且与折叠状态无关） ──
+       修复前：系统诊断入口是 JS 注入的顶级卡、不带 .api-section，于是与 Middle Brain
+       之间是 0px。这里同时验证「四张顶级卡都是同一条 28px 节奏」与「折叠 / 展开
+       Middle Brain、Image Router 后间距不变」（间距挂在外层卡上，不随内容高度变化）。 */
+    await evaluate(cdp, "(async function(){try{navTo('api');}catch(e){}await loadImageRouterSettingsUI();return true})()");
+    const measureSpacing = "(function(){"
+      + "function mb(n){if(!n)return null;try{return getComputedStyle(n).marginBottom}catch(e){return null}}"
+      + "function cls(n){var e=document.getElementById(n);return e?String(e.className):null}"
+      + "var t=document.getElementById('api-mgmt-title');"
+      + "var mgmt=(t&&t.closest)?t.closest('.api-section'):null;"
+      + "return{diag:mb(document.getElementById('ib-diag-entry')),"
+      + "middle:mb(document.getElementById('middle-brain-section')),"
+      + "router:mb(document.getElementById('image-router-section')),mgmt:mb(mgmt),"
+      + "mbBody:cls('mb-collapse-body'),irBody:cls('ir-collapse-body')}})()";
+    const spTop = ['diag', 'middle', 'router', 'mgmt'];
+    const spOpen = await evaluate(cdp, measureSpacing);
+    check('spacing.fourTopLevelCardsShare28px', spOpen && spTop.every(k => spOpen[k] === '28px'), JSON.stringify(spOpen));
+    /* 真实点击两个 header 折叠（不是直接改 class），再测一次 */
+    await evaluate(cdp, "(function(){document.getElementById('mb-collapse-toggle').click();document.getElementById('ir-collapse-toggle').click();return true})()");
+    const spClosed = await evaluate(cdp, measureSpacing);
+    check('spacing.collapseActuallyTookEffect', !!(spClosed && /is-collapsed/.test(spClosed.mbBody) && /is-collapsed/.test(spClosed.irBody)), JSON.stringify(spClosed));
+    check('spacing.unchangedWhenCollapsed', spClosed && spTop.every(k => spClosed[k] === '28px'), JSON.stringify(spClosed));
+    await evaluate(cdp, "(function(){document.getElementById('mb-collapse-toggle').click();document.getElementById('ir-collapse-toggle').click();return true})()");
+    const spBack = await evaluate(cdp, measureSpacing);
+    check('spacing.unchangedWhenExpandedAgain', !!(spBack && spTop.every(k => spBack[k] === '28px') && !/is-collapsed/.test(spBack.mbBody) && !/is-collapsed/.test(spBack.irBody)), JSON.stringify(spBack));
 
     /* ── ③ 保存：Generation → 主配置 + Sunburst；Editing → 主配置 + Flare ── */
     const saved = await evaluate(cdp, "(async function(){"

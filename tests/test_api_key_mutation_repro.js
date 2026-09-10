@@ -1,7 +1,11 @@
 'use strict';
 /* API Key 浏览器生命周期复现 —— 通过真实 UI 处理器驱动，逐步检查存储中的 apiKey。
    每个步骤后都从 IndexedDB 读回该角色的 apiKey，报告是否等于哨兵 key。
-   绝不打印哨兵内容，只比较是否相等。 */
+   绝不打印哨兵内容，只比较是否相等。
+   A1.5 追加：图片凭据残留回归（M9–M12）。addNewApi() 原本只 reset
+   api-imagegen-toggle / api-imagegen-model，图片服务商 / 图片接口地址 / 图片 API Key
+   三个字段没有任何地方重置 → "编辑角色 A（填过图片接口与图片 Key）→ 新建角色 B"
+   会让 B 静默继承 A 的图片 endpoint 与图片 API Key。这里把整条链路钉死。 */
 const { spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
@@ -141,6 +145,54 @@ async function main() {
     check('M8.createRoleB.keyAIntact', (await evaluate(cdp, keyTruth(idAUsed))).eq, JSON.stringify(await evaluate(cdp, keyTruth(idAUsed))));
     const supB = await evaluate(cdp, "(async function(){ var b=(window.apiConfigs||[]).find(function(x){return x.nickname==='角色B'}); if(!b)return {found:false}; return { found:true, id:b.id, eq: b.apiKey==='SECOND_KEY_BBBB' }; })()");
     check('M8.roleB.independent', supB && supB.found && supB.eq, JSON.stringify(supB));
+
+    /* ── A1.5 图片凭据残留回归 ──────────────────────────────────────────
+       背景：addNewApi() 原本只 reset api-imagegen-toggle / api-imagegen-model，
+       图片服务商 / 图片接口地址 / 图片 API Key 三个字段没有任何地方重置。
+       于是"编辑角色 A（填过图片接口与图片 Key）→ 新建角色 B"会让 B 静默继承
+       A 的图片 endpoint 与图片 API Key。这里把整条链路钉死：DOM 必须空、
+       落盘记录必须空、且 A 自己的图片凭据不受影响。 */
+    const M_IMG_EP = 'https://img.example.com/v1/images/generations';
+    const M_IMG_KEY = 'IMG_KEY_AAAA_MUST_NOT_LEAK';
+    /* 步骤9：编辑角色 A → 写入图片凭据 → 保存 */
+    await evaluate(cdp, "(function(){ editApi('" + idAUsed + "');"
+      + "document.getElementById('api-imagegen-toggle').checked=true;"
+      + "document.getElementById('api-imagegen-model').value='gpt-image-2.5-flare';"
+      + "document.getElementById('api-imagegen-provider').value='openai';"
+      + "document.getElementById('api-imagegen-endpoint').value='" + M_IMG_EP + "';"
+      + "document.getElementById('api-imagegen-apikey').value='" + M_IMG_KEY + "';"
+      + "return true; })()");
+    await evaluate(cdp, "window.__saveResult=null; saveCurrentApi(null).then(function(){window.__saveResult='ok';}).catch(function(e){window.__saveResult='err:'+String(e&&e.message||e);});");
+    await waitFor(cdp, "window.__saveResult !== null", 15000);
+    const imgA = await evaluate(cdp, "(function(){ var c=(window.apiConfigs||[]).find(function(x){return x.id==='" + idAUsed + "'}); return c?{ saverr:window.__saveResult, endpoint:c.imageGenEndpoint, key:c.imageGenApiKey, provider:c.imageGenProvider, gen:!!c.imageGen }:{saverr:window.__saveResult}; })()");
+    check('M9.roleA.imageCredentialsSaved', !!(imgA && imgA.saverr === 'ok' && imgA.endpoint === M_IMG_EP && imgA.key === M_IMG_KEY && imgA.provider === 'openai' && imgA.gen === true), JSON.stringify(imgA));
+
+    /* 步骤10：addNewApi() → 五个图片字段必须全部为空（尤其 Key） */
+    const cleared = await evaluate(cdp, "(function(){ addNewApi(); return {"
+      + "toggle: document.getElementById('api-imagegen-toggle').checked,"
+      + "model: document.getElementById('api-imagegen-model').value,"
+      + "provider: document.getElementById('api-imagegen-provider').value,"
+      + "endpoint: document.getElementById('api-imagegen-endpoint').value,"
+      + "apikey: document.getElementById('api-imagegen-apikey').value }; })()");
+    check('M10.newConfig.allImageFieldsCleared',
+      !!(cleared && cleared.toggle === false && cleared.model === '' && cleared.provider === ''
+        && cleared.endpoint === '' && cleared.apikey === ''), JSON.stringify(cleared));
+    check('M10.newConfig.imageKeyNotCarriedOver',
+      !!(cleared && String(cleared.apikey || '').indexOf('IMG_KEY') < 0 && String(cleared.endpoint || '').indexOf('img.example.com') < 0),
+      JSON.stringify(cleared));
+
+    /* 步骤11：把这张干净表单存成新角色 B2 → 落盘记录里也不能出现 A 的图片凭据 */
+    await evaluate(cdp, "(function(){ document.getElementById('api-ai-name').value='角色B2'; document.getElementById('api-provider').value='openai'; onProviderChange(); document.getElementById('api-key').value='THIRD_KEY_CCCC'; return true; })()");
+    await evaluate(cdp, "window.__saveResult=null; saveCurrentApi(null).then(function(){window.__saveResult='ok';}).catch(function(e){window.__saveResult='err:'+String(e&&e.message||e);});");
+    await waitFor(cdp, "window.__saveResult !== null", 15000);
+    const b2 = await evaluate(cdp, "(function(){ var c=(window.apiConfigs||[]).find(function(x){return x.nickname==='角色B2'}); return c?{ found:true, saverr:window.__saveResult, gen:!!c.imageGen, model:c.imageGenModel||'', provider:c.imageGenProvider||'', endpoint:c.imageGenEndpoint||'', key:c.imageGenApiKey||'' }:{ found:false, saverr:window.__saveResult }; })()");
+    check('M11.newRoleHasNoInheritedImageCredentials',
+      !!(b2 && b2.found && b2.saverr === 'ok' && b2.gen === false && b2.model === '' && b2.provider === ''
+        && b2.endpoint === '' && b2.key === ''), JSON.stringify(b2));
+    /* 步骤12：反向确认 A 的图片凭据没有被这次新建 / 保存动过 */
+    const imgA2 = await evaluate(cdp, "(function(){ var c=(window.apiConfigs||[]).find(function(x){return x.id==='" + idAUsed + "'}); return c?{ endpoint:c.imageGenEndpoint, key:c.imageGenApiKey, gen:!!c.imageGen }:{found:false}; })()");
+    check('M12.roleA.imageCredentialsUntouched',
+      !!(imgA2 && imgA2.endpoint === M_IMG_EP && imgA2.key === M_IMG_KEY && imgA2.gen === true), JSON.stringify(imgA2));
 
   } catch (e) {
     console.error('  ERROR  ' + (e && e.message || e));

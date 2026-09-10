@@ -3,10 +3,16 @@
    --------------------------------------------------------------------
    这一层只做"人机界面"：
      · 两条路由（Image Generation / Image Editing）各自绑定：
-         API Config（已有 API 配置系统） + Model（唯一图片模型目录） + Enabled + 备用通道
-     · 显示"当前实际路由"：Generation → 配置 / 模型（一眼可见，不需要猜 <ws_edit_image> 用了谁）
+         图片 API 来源（既有 API 配置系统的某条记录） + Model（唯一图片模型目录）
+         + Enabled + 备用通道
+     · 显示"当前实际路由"：Generation → 来源 / 模型（一眼可见，不需要猜 <ws_edit_image> 用了谁）
      · 把配置写进 apiSettings['image_router'].routes（image-router-config.js 负责存储与解析）
-   不做的事：不发请求、不选并发、不复制 API 表单 —— 「+ 新建」直接调用既有 addNewApi()，
+   不做的事：不发请求、不选并发、不复制 API 表单。
+   A1.5（止血）：这里不再提供「+ 新建」按钮。理由成事实：IB 当前没有"独立的图片 API 配置"实体
+   —— 图片凭据来自角色 API 配置里的「图片服务商 / 图片接口地址 / 图片 API Key」，而那条记录同时
+   就是角色档案。所以在 Image Router 里放新建按钮会让人以为存在独立图片配置实体（点下去打开的
+   其实是角色 API 编辑器）。新建图片来源的唯一入口是下方「角色库」的 API 编辑器（addNewApi）。
+   正式解耦登记为 P16 · Image Config Decoupling，本层不预支该改动。
    模型下拉的唯一数据源是 IB.imageModels（image-models-core.js），没有第二份硬编码数组。
    ==================================================================== */
 (function (NS) {
@@ -17,7 +23,10 @@
   var ROUTE_OP = { generation: 'generate', editing: 'edit' };
   var ROUTE_CAP = { generation: 'image-generation', editing: 'image-editing' };
   var AUTO_LABEL = '自动（Image Router 决策：Flare / Sunburst）';
-  var INHERIT_LABEL = '跟随角色配置（默认）';
+  var INHERIT_LABEL = '跟随当前角色';
+  /* 两条路由共用的来源说明：把"凭据到底从哪来"讲清楚，用户不用猜 */
+  var SOURCE_HINT_PICK = '留空 = 跟随当前角色（用正在聊天的那个角色的图片凭据，与旧行为一致）；选择具体来源 = 该路由始终使用它，与正在和谁聊天无关。';
+  var SOURCE_HINT_FROM = '图片凭据取自该来源的 图片服务商 / 图片接口地址 / 图片 API Key（在下方「角色库」的 API 编辑器里设置）。';
   var _bound = false;
   var _collapsed = false;
 
@@ -107,12 +116,12 @@
       +   '</div>'
       +   '<div class="ir-grid">'
       +     '<div class="api-form-group">'
-      +       '<label>API Config</label>'
+      +       '<label>图片 API 来源</label>'
       +       '<div class="ir-select-row">'
       +         '<select id="ir-config-' + name + '">' + _configOptions(configs, st.apiConfigId) + '</select>'
-      +         '<button type="button" class="btn ir-new" onclick="addNewApi()">+ 新建</button>'
       +       '</div>'
-      +       '<div class="f-hint">留空 = 沿用当前角色的图片 API 配置；选择具体配置 = 该路由始终使用它（与正在和谁聊天无关）。</div>'
+      +       '<div class="f-hint">' + SOURCE_HINT_PICK + '</div>'
+      +       '<div class="f-hint">' + SOURCE_HINT_FROM + '</div>'
       +     '</div>'
       +     '<div class="api-form-group">'
       +       '<label>Model</label>'
@@ -123,7 +132,7 @@
       +   '<details class="ir-adv">'
       +     '<summary>备用通道（可选）</summary>'
       +     '<div class="ir-grid">'
-      +       '<div class="api-form-group"><label>备用 API Config</label>'
+      +       '<div class="api-form-group"><label>备用图片 API 来源</label>'
       +         '<select id="ir-fbconfig-' + name + '">' + _configOptions(configs, (st.fallback && st.fallback.apiConfigId) || '') + '</select></div>'
       +       '<div class="api-form-group"><label>备用 Model</label>'
       +         '<select id="ir-fbmodel-' + name + '">' + _modelOptions(name, (st.fallback && st.fallback.model) || '') + '</select></div>'
@@ -134,10 +143,10 @@
       + '</div>';
   }
 
-  /* 当前实际路由：Generation → [API Config] / [Model]（含 provider 与来源） */
+  /* 当前实际路由：Generation → [图片 API 来源] / [Model]（含 provider 与来源） */
   function _routeLine(name, st) {
     var M = _models(), L = _cfg();
-    var who = st.mode === 'bound' ? ('API 配置「' + (st.apiConfigLabel || st.apiConfigId) + '」') : INHERIT_LABEL.replace('（默认）', '');
+    var who = st.mode === 'bound' ? ('图片 API 来源「' + (st.apiConfigLabel || st.apiConfigId) + '」') : INHERIT_LABEL;
     var modelTxt;
     if (st.model) {
       modelTxt = (M ? M.label(st.model) : st.model) + '（' + st.model + '）';
@@ -162,7 +171,7 @@
         el.className = 'ir-card-state is-on';
         return;
       }
-      el.textContent = st.mode === 'bound' ? '已绑定' : '跟随角色';
+      el.textContent = st.mode === 'bound' ? '已绑定' : '跟随当前角色';
       el.className = 'ir-card-state is-on';
       return;
     }

@@ -1,5 +1,15 @@
 ﻿/* API PAGE */
 .api-section{margin-bottom:28px}
+/* ── API 页顶级卡片垂直节奏：统一 contract（结构性，不靠每个组件自愿 opt-in） ──
+   背景：#page-api（.page）不是 flex/gap 容器，页面节奏只来自各卡片自己的 margin。
+   .api-section 自带 28px，但延迟注入的顶级卡（例如系统诊断入口 .ib-diag-entry）
+   没有这个类，就会与前一张卡贴死。这里把节奏提升为结构规则：只要是 #page-api 的
+   直属玻璃卡或 section，就获得同一条 28px 间距 —— 与 .api-section 同值，且同一属性
+   不会叠加（被本规则覆盖而非相加），所以既有卡片间距不变，只补上漏掉的那些。
+   展开/折叠只改卡片内部高度（.mb-collapse-body 的 max-height），间距挂在外层卡上，
+   因此与折叠状态无关；这条性质由结构守卫断言锁死（禁止特判 / nth-child / 负 margin）。*/
+#page-api > .glass-card,
+#page-api > .api-section{margin-bottom:28px}
 /* 渲染修复：设置页玻璃卡强制与其毛玻璃底同层栅格化。页面共94处back */
 .api-section.glass-card{transform:translateZ(0);backface-visibility:hidden}
 .api-section h3{font-family:'Noto Sans SC',sans-serif;font-size:1.05rem;font-weight:500;margin-bottom:14px;color:var(--light);letter-spacing:0.02em}
@@ -130,11 +140,10 @@ body.theme-infernal .mi-sub-inf{display:inline}
 .ir-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:0 16px}
 .ir-select-row{display:flex;align-items:center;gap:8px}
 .ir-select-row select{flex:1 1 auto;min-width:0}
-.ir-new{flex:0 0 auto;padding:11px 14px;font-size:.82rem;white-space:nowrap}
 .ir-adv{margin-top:6px;border-top:1px dashed var(--border-soft);padding-top:10px}
 .ir-adv>summary{cursor:pointer;font-size:.8rem;color:var(--text-muted);letter-spacing:.02em;margin-bottom:10px}
 .ir-adv>summary:hover{color:var(--accent)}
 .ir-route-line{margin-top:10px;padding-top:10px;border-top:1px solid var(--border-soft);font-size:.78rem;line-height:1.7;color:var(--text-muted);word-break:break-word}
 .ir-line-k{color:var(--content-primary);opacity:.9;letter-spacing:.02em}
 .ir-line-dim{opacity:.7}
-@media (max-width:560px){.ir-select-row{flex-wrap:wrap}.ir-new{width:100%}}
+@media (max-width:560px){.ir-select-row{flex-wrap:wrap}}

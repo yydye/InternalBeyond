@@ -1315,7 +1315,7 @@
       </button>
       <div class="mb-collapse-body" id="ir-collapse-body">
         <div class="api-ed-block"><div class="api-ed-btitle">路由配置</div>
-          <p class="mb-desc">所有图片请求（聊天生图 / 「编辑这张图」/ 朋友圈配图 / 后台任务）统一经 Image Router。这里决定每条路由用哪个 API 配置与模型：留空 = 跟随角色配置（与旧行为一致）；绑定具体 API 配置后，该路由与「正在和谁聊天」解耦。</p>
+          <p class="mb-desc">所有图片请求（聊天生图 / 「编辑这张图」/ 朋友圈配图 / 后台任务）统一经 Image Router。这里决定每条路由用哪个图片 API 来源与模型：留空 = 跟随当前角色（与旧行为一致）；绑定具体来源后，该路由与「正在和谁聊天」解耦。图片来源就是角色 API 配置本身（含图片服务商 / 图片接口地址 / 图片 API Key），新建来源请到下方「角色库」的 API 编辑器。</p>
         </div>
         <div id="ir-route-generation"></div>
         <div id="ir-route-editing"></div>

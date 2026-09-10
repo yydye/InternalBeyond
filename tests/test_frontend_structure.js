@@ -546,8 +546,31 @@ check('imageRouterConfig.executorFailureCodes', /code:'IMAGE_PROVIDER_ERROR'/.te
 check('imageRouterSettings.uiSection', /id="image-router-section"/.test(html) && /id="ir-route-generation"/.test(html)
   && /id="ir-route-editing"/.test(html) && /id="ir-collapse-body"/.test(html),
   'Settings 缺少 Image Router 区块或两条路由容器');
-check('imageRouterSettings.reusesApiEditor', /onclick="addNewApi\(\)"/.test(irsText),
-  '「+ 新建」必须复用既有 API 编辑器，不得复制表单');
+/* A1.5：Image Router 不再提供「+ 新建」。IB 当前没有"独立的图片 API 配置"实体，那条记录
+   同时就是角色档案，所以在这里放新建按钮点下去打开的是角色 API 编辑器 → 语义误导。
+   正式解耦登记为 P16 · Image Config Decoupling；在此之前这里既不能有新建入口，
+   也不能把文案写回 "API Config"（那正是让人以为存在独立实体的措辞）。
+   断言一律只看代码（codeOnly 已剥掉块注释）：本文件的说明性注释本身就复述了这些文案，
+   若拿原文匹配，守卫会在标签被改回 "API Config" 时依然通过 —— 那是假通过。 */
+const irsCode = codeOnly(irsText);
+check('imageRouterSettings.noCreateEntry', !/onclick="addNewApi\(\)"/.test(irsCode) && !/ir-new/.test(irsCode),
+  'Image Router 不得再提供「+ 新建」入口（会打开角色 API 编辑器，语义不符）');
+check('imageRouterSettings.sourceWordingAccurate', /图片 API 来源/.test(irsCode) && /跟随当前角色/.test(irsCode)
+  && !/API Config/.test(irsCode),
+  '图片来源文案必须如实描述（「图片 API 来源」/「跟随当前角色」），不得再叫 API Config');
+check('imageRouterSettings.statesCredentialOrigin', /图片服务商 \/ 图片接口地址 \/ 图片 API Key/.test(irsCode),
+  '必须说明图片凭据来自角色 API 配置里的哪三个字段（否则用户不知道去哪配）');
+/* 只审规则本身：注释里可以自由讨论 nth-child / 负 margin 这些反面写法 */
+const apiComponentsCssPath = path.join(root, 'assets/css/core/api-components.css');
+const apiComponentsCss = codeOnly(fs.readFileSync(apiComponentsCssPath, 'utf8'));
+check('apiPage.topLevelRhythmIsStructural',
+  /#page-api\s*>\s*\.glass-card/.test(apiComponentsCss) && /#page-api\s*>\s*\.api-section/.test(apiComponentsCss)
+  && /#page-api\s*>\s*\.glass-card[\s\S]{0,200}?margin-bottom:\s*28px/.test(apiComponentsCss),
+  'API 页顶级卡片节奏必须是结构性 contract（#page-api > .glass-card），不能靠各组件自愿 opt-in');
+check('apiPage.rhythmHasNoSpecialCase',
+  !/#page-api[^{}]*nth-child/.test(apiComponentsCss) && !/#middle-brain-section\s*\{[^}]*margin/.test(apiComponentsCss)
+  && !/#page-api[^{}]*\{[^}]*margin-bottom:\s*-/.test(apiComponentsCss),
+  'API 页间距不得用特判 / nth-child / 负 margin 打补丁');
 check('imageRouterSettings.modelOptionsFromCatalog', /NS\.imageModels/.test(irsText) && /\.list\(\{\s*capability/.test(irsText),
   '模型下拉必须来自 IB.imageModels（唯一目录）');
 check('imageRouterSettings.refreshHooked', /loadImageRouterSettingsUI/.test(comMainText) || /loadImageRouterSettingsUI/.test(html) || /loadImageRouterSettingsUI/.test(fs.readFileSync(path.join(root, 'assets', 'js', 'social.js'), 'utf8')),
@@ -556,6 +579,14 @@ check('imageRouterSettings.datalistFromCatalog', /api-imagegen-model-list/.test(
   'API 编辑器的生图模型输入未接唯一目录候选');
 check('imageRouterSettings.showsCurrentRoute', /_routeLine/.test(irsText) && /ir-line-/.test(irsText),
   '页面必须展示"当前实际路由"（Generation → 配置 / 模型）');
+/* A1.5：新建 API 配置必须逐字段清空全部五个图片字段。只清 toggle/model 会让上一个角色的
+   图片服务商 / 图片接口地址 / 图片 API Key 静默带进新角色 —— 与 Voice 克隆引用同一类残留，
+   而且这里漏掉的是凭据本身。 */
+const addNewApiBody = (socialText.match(/function addNewApi\(\)\{([\s\S]*?)\n\}/) || [])[1] || '';
+check('apiEditor.newConfigResetsAllImageFields',
+  !!addNewApiBody && ['api-imagegen-toggle', 'api-imagegen-model', 'api-imagegen-provider',
+    'api-imagegen-endpoint', 'api-imagegen-apikey'].every(id => addNewApiBody.indexOf(id) >= 0),
+  'addNewApi 必须逐字段 reset 全部图片字段（否则图片 endpoint / API Key 会静默继承上一个角色）');
 const mbFacadeOwned = ['middleBrainCompressPipeline', 'middleBrainExecute', 'middleBrainAstraEnabled', 'middleBrainFinalizeReply'];
 const mbOwnerBad = mbPublicPairs.filter(([symbol, owner]) => mbFacadeOwned.includes(symbol)
   ? owner !== 'facade' : !(mbContracts[owner] && mbContracts[owner].includes(symbol)))

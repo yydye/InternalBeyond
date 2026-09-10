@@ -876,8 +876,14 @@ function addNewApi(){
   if(wsEl)wsEl.checked=false;
   _syncVisionUI();
   _syncSamplingUI();
+  /* Image：新角色必须清空**全部**五个图片字段。只清 toggle/model 会让上一个角色的
+     图片服务商 / 图片接口地址 / 图片 API Key 静默带进新角色（与 Voice 克隆引用同一类问题，
+     所以这里逐字段 reset，而不是依赖字段为空时的"复用文字凭据"回退去掩盖残留）。 */
   var _igT=document.getElementById('api-imagegen-toggle');if(_igT)_igT.checked=false;
   var _igM=document.getElementById('api-imagegen-model');if(_igM)_igM.value='';
+  var _igP=document.getElementById('api-imagegen-provider');if(_igP)_igP.value='';
+  var _igE=document.getElementById('api-imagegen-endpoint');if(_igE)_igE.value='';
+  var _igK=document.getElementById('api-imagegen-apikey');if(_igK)_igK.value='';
   var amT=document.getElementById('api-automem-toggle');if(amT)amT.checked=false;
   var amM=document.getElementById('api-automem-mode');if(amM)amM.value='hybrid';
   var amB=document.getElementById('api-automem-budget');if(amB)amB.value='1200';
