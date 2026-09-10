@@ -21,12 +21,12 @@
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-installer.ps1 `
-  -ReleasedAt 2026-09-10T06:00:00Z `
   -NotesFile docs\release-notes\1.0.1.md
 ```
 
-`-ReleasedAt` / `-NotesFile` / `-MinimumVersion` 都是**可选**的，见 §4。
-1.0.1 刻意**不传** `-MinimumVersion`（理由见 §8）。
+`-ReleasedAt` / `-NotesFile` / `-MinimumVersion` 都是**可选**的，见 §4 / §8。
+1.0.1 刻意**两个都不传**：不传 `-ReleasedAt`（构建时刻不是发布时刻，见 §4），
+不传 `-MinimumVersion`（理由见 §8）。
 
 ---
 
@@ -119,14 +119,18 @@ primary   GET manifest.installer.url            （版本钉死的 release asset
   "installer": {
     "url": "https://github.com/yydye/InternalBeyond/releases/download/v1.0.1/InternalBeyond-Setup-1.0.1.exe",
     "sha256": "<64 位小写十六进制>",
-    "sizeBytes": 50788752,
+    "sizeBytes": 50828077,
     "productVersion": "1.0.1"
   },
-  "releasedAt": "2026-09-10T06:00:00Z",
+  "releasedAt": "<ISO-8601 UTC 的实际发布时刻；写不出就整个字段不出现>",
   "notes": "面向普通用户的更新说明（纯文本）",
   "notesUrl": "https://github.com/yydye/InternalBeyond/releases/tag/v1.0.1"
 }
 ```
+
+> 上面是**字段全集**示例：`installer` 块与 `notes` 取自 1.0.1 的真实构建，
+> `releasedAt` / `notesUrl` 只演示形状。1.0.1 实际**省略**了 `releasedAt`（§4）、
+> `minimumVersion`（§8）与 `notesUrl`——省略是契约允许的，也是本次发布的事实。
 
 | 字段 | 必填 | 说明 |
 |---|---|---|
@@ -137,7 +141,7 @@ primary   GET manifest.installer.url            （版本钉死的 release asset
 | `installer.sha256` | ✅ | 64 位小写十六进制；**直接测自本次构建产出的 exe**，不重新输入 |
 | `installer.sizeBytes` | ✅ | 实测字节数；另有合理区间闸门（见 §5） |
 | `installer.productVersion` | ✅ | 从 exe 的 PE `ProductVersion` 读回，必须等于 `version` |
-| `releasedAt` | 可选 | ISO-8601 UTC。**没有可靠构建期来源，没给就不写** |
+| `releasedAt` | 可选 | ISO-8601 UTC。**只写实际发布时刻**；没有可靠来源（构建时刻不算）就省略不写，见 §4 |
 | `minimumVersion` | 可选 | 目前只做形状校验，不强制。**1.0.1 刻意省略**（写 `1.0.0` 会是一句不成立的产品承诺——1.0.0 没有读取清单/更新端点的能力）；**1.0.2 起写 `1.0.1`**，那时它才第一次成为真实契约（见 §8） |
 | `notes` | 可选 | 面向用户的纯文本；UI 必须以 textContent 渲染，**永不 innerHTML** |
 | `notesUrl` | 可选 | 必须是 `https://github.com/...` |
@@ -158,6 +162,35 @@ primary   GET manifest.installer.url            （版本钉死的 release asset
 
 代价是诚实的：省略 `releasedAt` 时客户端不显示发布日期；省略 `notes` 时更新卡片上
 没有更新说明。这比显示一个编造的时间戳要好。
+
+### `releasedAt` 只能写「实际发布时刻」，绝不写构建时刻
+
+构建期的时钟**不是**发布时刻：一次构建可能躺在 `dist\` 里好几天才被上传（1.0.1 正是如此）。
+因此：
+
+- 能确定实际发布时刻 → 才写 `releasedAt`；
+- 确定不了 → **省略字段**。构建刚结束时永远属于「确定不了」（那一刻还没发布）；
+- 绝不允许把构建时间戳填进 `releasedAt`（哪怕它看起来很接近）。
+
+### 发布前要改清单：只重生成清单，绝不重编译安装器
+
+清单的三个实质字段（`sha256` / `sizeBytes` / `productVersion`）全部**实测自 exe 字节**，
+所以针对**同一份已核验的 exe** 可以安全地只重生成清单：产出的 `installer` 块与「构建时生成的
+清单」逐字节相同（已实测），而安装包字节一个都不动。
+
+```powershell
+# 只重生成清单（不重新编译安装包）。省略 --releasedAt 就是「无发布时间」清单。
+node runtime\update-manifest.js --write dist\update-stable.json `
+  --version 1.0.1 `
+  --sha256 <实测：sha256sum dist\InternalBeyond-Setup-1.0.1.exe> `
+  --sizeBytes <实测字节数> `
+  --productVersion <从同一 exe 的 PE ProductVersion 读回> `
+  --notesFile docs\release-notes\1.0.1.md
+```
+
+重生成后必须复核三件事：`--validate` 通过、`installer` 块与重生成前**逐字节相同**、
+exe 的 sha256 与字节数**没有变**。**不要**为了改一个可选字段去重编译安装器——那会产出
+另一份字节，而发布只认已核验的那一份（§6）。
 
 ---
 
@@ -198,15 +231,49 @@ gh release create v1.0.1 \
 gh release upload v1.0.1 "dist/update-stable.json"
 ```
 
-### 硬规则：exe 与清单必须来自同一次构建
+### 硬规则：exe / `SHA256SUMS.txt` / 清单必须来自同一份已核验构建资产
 
-同一份源码、同一个版本号，**两次构建产出的 exe 字节并不相同**（时间戳/压缩等因素）。
-实测证据（v1.0.0）：
+这条规则**不依赖「构建是否可复现」**，它无条件成立：
 
-| 来源 | 字节数 | SHA-256（前 16 位） |
+- `dist\` 的三件产物必须由**同一次构建**从同一份源码产出后一起发布；
+- 清单的 `sha256` / `sizeBytes` / `productVersion` 必须**实测**自那个 exe 的字节，
+  绝不重新输入、绝不从别处抄；
+- **不允许用重新构建的产物替代原发布字节**——即使重建恰好逐字节重现了它；
+- 上传后 GitHub 给出的 asset `digest` 仍必须**独立交叉核对**（见下），
+  不能因为「应该一样」就跳过。
+
+#### 关于「构建是否可复现」：只记录实测，不做假设
+
+本机实测（同一工作树、同参数、同工具链、连续两次构建）：
+
+| 构建 | 字节数 | SHA-256（前 16 位） |
 |---|---|---|
-| 已发布的 Release asset | 50,724,579 | `5f7353b8f787f814` |
-| 本机重新构建同一个 `VERSION` | 50,788,752 | `e46df857a7a05a6d` |
+| 第 1 次 | 50,828,077 | `4e5dc61a3ae36460` |
+| 第 2 次 | 50,828,077 | `4e5dc61a3ae36460` |
+
+两次**逐字节相同**。原因是实测出来的：该 exe 的 PE `TimeDateStamp` = `1770810027`
+（= `2026-02-11T11:40:27Z`），**不是构建时刻**（构建发生在 `2026-09-10T11:11Z`），
+`CheckSum = 0`；staging 用 `fs.copyFileSync` 复制，其 mtime 不进入产出字节。
+（Inno Setup 自己也是有意固定时间戳的：`ISCC.exe` 的 `TimeDateStamp` 是 `1970-01-09`。）
+
+**历史更正**：本文件早先版本用下面这组 v1.0.0 数据论证「同一份源码两次构建必然因时间戳/压缩
+产出不同字节」——**那个论证是错的**。这两行来自**不同的源码状态**，不是同一份源码的两次构建：
+
+| 来源 | 字节数 | 差额 |
+|---|---|---|
+| 已发布的 `v1.0.0` asset（tag → `23c8960`） | 50,724,579 | — |
+| 当时的本机 HEAD（`VERSION` 仍是 `1.0.0`，但已包含 U1–U4） | 50,788,752 | +64,173 |
+
+64,173 字节的差额来自**源码差异**（U 系列新增的运行时模块与前端），因此这组数据
+**不能**证明构建非确定性，更**不能**用来推断「重建不可能撞上同一哈希」。
+
+同时**不得假设跨环境可复现**：fresh clone、`core.autocrlf`（本工作树除
+`InternalBeyond.html` 与 `installer\InternalBeyond.iss` 外都是 LF）、工具链版本、
+ISCC 版本都会改变产出字节。因此下面三条没有商量余地：
+
+- 发布只认**已核验的那一份**构建资产；
+- 想改清单（补/去 `releasedAt` 等）只能**只重生成清单**（§4），绝不重编译安装器；
+- 「反正能重建出来」永远不是替换或合并两次构建产物的理由。
 
 因此：**清单只能和它在同一次构建里产出的那个 exe 一起发布。** 把一份本地重建的清单
 挂到已有的旧 tag 上，等于向客户端宣布一个与已发布资产不符的 hash——客户端会（正确地）
@@ -317,8 +384,11 @@ API 匿名限额实测：`x-ratelimit-remaining: 57/60`（60 次/小时/IP）。
 2. **`minimumVersion` 在 1.0.1 省略，在 1.0.2 写 `1.0.1`。** 在 1.0.1 上写 `1.0.0` 等于向一个
    根本没有能力读它的版本许下承诺。
 3. **tag 必须指向包含 U1–U4 的提交。** `master` 在发布前领先 `origin/master`
-   （U1–U4 + 文档共 10 个提交），因此**先 push、后 tag**；绝不让 `gh` 用默认
+   （U1–U4 + 文档提交），因此**先 push、后 tag**；绝不让 `gh` 用默认
    `target_commitish`（那会指向尚未包含 U 系列的远端 `d6d52a6`）。
+4. **最终清单省略 `releasedAt`。** 构建可能比发布早很久，把构建时间戳当成发布时间就是
+   编造（§4）。1.0.1 的最终清单里**没有** `releasedAt`——若将来要写，只能写**实际发布时刻**，
+   且只能用「只重生成清单」的方式补（§4），不许重编译安装包。
 
 发布顺序仍是 §2 的契约（exe → SHA256SUMS.txt → **update-stable.json LAST**）：
 **上传清单的那一刻，1.0.1 才第一次出现在 Stable 通道上**；在此之前客户端的诚实答案是

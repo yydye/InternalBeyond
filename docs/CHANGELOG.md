@@ -1080,7 +1080,7 @@ U1–U4 全在其后 26 个提交），那个安装包里没有更新清单、�
 | 安装包 | `dist\InternalBeyond-Setup-1.0.1.exe` · **50,828,077 B**（48.5 MiB） |
 | SHA-256 | `4e5dc61a3ae36460feff188d5cc76b857cbf414c6552d24011e831ff06ca90d7` |
 | PE ProductVersion / FileVersion | `1.0.1` / `1.0.1.0` |
-| 清单 | `dist\update-stable.json`（version `1.0.1` · releasedAt `2026-09-10T11:10:00Z` · notes 605 字符 · **不含 `minimumVersion`**） |
+| 清单 | `dist\update-stable.json`（version `1.0.1` · notes 605 字符 · **不含 `releasedAt`** · **不含 `minimumVersion`**） |
 | 载荷 | [4] 审计 237 文件 · 0 error / 8 warn（全部是许可与 README 正文里的联系邮箱/电话，人工复核后不阻断） |
 
 四条等式**全部独立于构建输出**、直接从磁盘字节重算（不是读构建打印的值）：
@@ -1090,7 +1090,7 @@ U1–U4 全在其后 26 个提交），那个安装包里没有更新清单、�
 3. `manifest.installer.productVersion` == PE `ProductVersion` == `VERSION`；
 4. `manifest.installer.url` 的**资产名** == 真实产出文件名（且 URL 版本钉死为 `v1.0.1`）。
 
-另加：清单自校验 `validate().ok`、`minimumVersion` 确实缺席、`notes` 与
+另加：清单自校验 `validate().ok`、`releasedAt` 与 `minimumVersion` 确实缺席、`notes` 与
 `docs/release-notes/1.0.1.md`（去 BOM 后 trim）**逐字相等**、无未知顶层字段、staging 已清理、
 `manifest.installer.sha256` 与已发布 v1.0.0 的 digest 不同（不是同一个字节）。
 
@@ -1116,4 +1116,39 @@ U1–U4 全在其后 26 个提交），那个安装包里没有更新清单、�
 `apps/catalog.json` 的 `"version":"1.0.0"` 是**单个 APP 的目录版本**（coread / cinema），
 `services/ib-bridge-service.js` 的 `VERSION = '1.0.0'` 是 **Bridge 服务自己的版本**（诊断页单独展示），
 两者都与产品版本无耦合，本轮**一字未动**。
+
+### 发布前修正（纯文档 + 只重生成清单；安装包字节未动）
+
+用户裁定「先修文档、再发布」，两项修正都不触碰已构建产物：
+
+1. **`docs/RELEASE.md` §6 的错误论证被删除并更正。** 旧文写「同一份源码、同一版本号两次构建
+   产出的 exe 字节并不相同（时间戳/压缩等因素）」，并用 v1.0.0 的两行数据作证。实测证明该论证
+   是错的：**同一工作树、同参数、同工具链连续两次构建，字节数与 SHA-256 完全相同**
+   （各 50,828,077 B / `4e5dc61a…90d7`）。那两行 v1.0.0 数据来自**不同的源码状态**
+   （已发布 asset 出自 tag `v1.0.0` = `23c8960`；另一行出自当时 `VERSION` 仍为 `1.0.0` 但已含
+   U1–U4 的 HEAD），64,173 字节的差额来自源码差异，**不能**证明构建非确定性。
+   同时改为明确记录：**跨环境可复现性不得假设**（fresh clone / `core.autocrlf` / 工具链版本
+   都会改变字节），而发布硬规则不依赖可复现性——exe + `SHA256SUMS.txt` + `update-stable.json`
+   必须来自同一份已核验构建资产，上传后 GitHub asset digest 仍须独立交叉核对，
+   **不得用重建产物替代原发布字节**。
+   顺带实测并记录（供将来推理用）：该 exe 的 PE `TimeDateStamp` = `1770810027`
+   （`2026-02-11T11:40:27Z`，**不是构建时刻**，构建发生在 `2026-09-10T11:11Z`）、`CheckSum = 0`；
+   staging 用 `fs.copyFileSync`，mtime 不进入产出字节。
+2. **最终清单省略 `releasedAt`。** 原先清单里的 `releasedAt = 2026-09-10T11:10:00Z` 是
+   **构建时刻**，不是实际发布时刻；把 build timestamp 当 released timestamp 属于编造，
+   与「绝不编造」规则冲突（`docs/RELEASE.md` §4）。因此最终发布清单**不含 `releasedAt`**，
+   客户端因而不显示发布日期——这比显示一个假日期诚实。
+
+做法：**只重生成清单，不重编译安装器**（`runtime/update-manifest.js --write`，输入值全部实测自
+同一份 exe 字节：sha256 / sizeBytes / PE `ProductVersion` / `notesFile`，**省略 `--releasedAt`**）。
+重生成前后 diff 只有一行差异（`releasedAt` 被删），`installer` 块逐字节相同：
+
+| 项 | 修正前 → 修正后 |
+|---|---|
+| 安装包 `dist\InternalBeyond-Setup-1.0.1.exe` | **50,828,077 B · `4e5dc61a…90d7`（未变）** |
+| PE ProductVersion | `1.0.1`（未变） |
+| `update-stable.json` | 仅删除 `releasedAt` 一行；`validate().ok = true`；`notes` 605 字符未变 |
+
+`docs/RELEASE.md` 与 `docs/CHANGELOG.md` **都不在 installer 载荷内**（白名单 237 文件已核实），
+所以本次修正不需要、也没有触发重新构建。
 
