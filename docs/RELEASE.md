@@ -533,6 +533,34 @@ release 上的三个资产与 `manifest.installer.sha256` 逐项交叉核对通�
 > **诚实边界**：以上都在**本机 headless Chrome** 上对**本地静态服务**复现；「已安装的 1.0.2」
 > 那一列是在真实安装实例上跑的。最终验收仍是 `1.0.2 → 1.0.3` E2E 之后在真实安装态里复核水纹。
 
+**构建实测**：
+
+| 项 | 实测 |
+|---|---|
+| 源码状态 | commit **`c52eedb`**（`release: InternalBeyond 1.0.3`），构建时工作树干净 |
+| 构建命令 | `build-installer.ps1 -NotesFile docs\release-notes\1.0.3.md -MinimumVersion 1.0.1`（**不传** `-ReleasedAt`） |
+| `InternalBeyond-Setup-1.0.3.exe` | **51,749,877 B**（49.4 MiB）· `sha256=3345f461f1b52fd8…9434c` |
+| 载荷 | 238 文件 · 124,024,430 B（118.3 MiB）· `release-audit` PASS（0 error / 0 violation / 8 条既存联系方式 warn） |
+| PE `ProductVersion` | `1.0.3`（与 `VERSION` 一致） |
+| 清单 | `minimumVersion = 1.0.1` · **无** `releasedAt` · `notes` 531 字符，取自 [release-notes/1.0.3.md](release-notes/1.0.3.md) |
+
+四条等式全部用**独立工具**复核：`certutil -hashfile` 与 coreutils `sha256sum` 各自算出同一个哈希；
+文件长度用 `stat` 实测；PE 版本由 PowerShell `VersionInfo` 与 `runtime/pe-version.js::readPeVersion`
+**两个独立读取器**读回，都是 `1.0.3`；清单 URL 的资产名与实际产出文件名逐字相同。清单本身再经
+`runtime/update-manifest.js --validate` 自校验通过。
+
+**载荷一致性交叉核对**：本版载荷比 1.0.2 多 **+155 B**（124,024,430 − 124,024,275），与唯一改动文件
+`assets/js/glass-ripple.js` 的**工作树**字节差逐字节吻合（10,532 B → 10,687 B）。载荷内该文件与仓库
+HEAD 逐字节相同（`sha256=1dc0a3f3…8b51`）且**不再出现 `currentPage`**；
+`assets/images/bg-canvas.jpg` 在（921,213 B，`sha256=f57a4751…d2217`，与仓库源文件相同），
+`assets/images/bg-canvas.png` 不在。
+
+> **诚实边界（与 1.0.2 的记法不同）**：本次构建第 9 步按默认清理了 `dist\staging`，所以上表的载荷
+> 数字来自构建**之后**用 `scripts\release-manifest.js --stage` 在**同一份干净提交**上**重新物化**的
+> staging（同源、同参数、同白名单）——它与 ISCC 当时编译的那份集合同源，但**不是**同一份被编译的
+> 字节。这是一次可复现的一致性核对，不能替代「安装后枚举载荷」；后者仍由 `1.0.2 → 1.0.3` E2E 在
+> 真实安装实例上完成。
+
 ---
 
 ## 9. 相关测试

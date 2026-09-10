@@ -1349,3 +1349,65 @@ connect-timeout 8 s，**恰好换路一次**到 `api` 成功——回退门（U-
 `v1.0.1` 的真实安装实例（`E:\IB-E2E-1.0.1\InternalBeyond`）**保持不动**，下一步用它执行
 `1.0.1 → 1.0.2` Zero-Touch Update E2E，并核对欢迎页画窗背景确实来自随包 `bg-canvas.jpg`。
 
+
+## 2026-09-10 · R0 + U5-5 · 欢迎页水纹失效根因与 v1.0.3（第二个可自动到达的版本）
+
+`1.0.1 → 1.0.2` 的更新链本身在真实安装实例上跑通了（升到 1.0.2、欢迎页背景恢复），却在收尾核验时
+暴露了**另一处更早就存在的缺陷**：欢迎页的动态水纹特效整片不显示。因此 U5-4 没有给最终 PASS。
+R0 只做定位、不动代码，根因冻结之后才提交修复。
+
+### 根因：不在图片链路，而是一条渲染闸门
+
+`assets/js/glass-ripple.js` 的 `idleNow()` 里有一条「离开欢迎页（`currentPage !== 'home'`）后暂停
+逐帧水波模拟」的性能守卫。当深链把某个内容页设为打开页（实测 `#diagnostics`）、而欢迎页仍然可见时，
+这条守卫让 `renderWater()` **每帧提前返回**：画布保持全透明、`#gw-slot` 永远不出现 `gw-rippling`。
+同一页面的背景图走的是另一条**一次性 DOM 写入**路径（`glass-canvas.js`），所以它完好无损——用户看到的
+就是「背景正常、水纹不动」。
+
+| 入口（同一台机器、同一个已安装的 v1.0.2） | `#gw-slot` | 水纹非透明像素 | opacity |
+|---|---|---|---|
+| 启动器默认 URL | `gw-has-img gw-gloss gw-rippling` | 643,689 | 1 |
+| 同一 URL + `#diagnostics` | `gw-has-img gw-gloss` | **0** | **0** |
+
+三条独立证据排除了其它解释：
+
+1. **因果翻转**：在不刷新的同一页面上**只**把 `window.currentPage` 改回 `'home'`，水纹立刻恢复
+   （0 → 749,942 像素，opacity 0.9968）——渲染循环一直在跑，是守卫在提前返回；
+2. **图片链路自证清白**：用 per-`Image` 栈记录证明两个消费端都真的走了 `png(404) → jpg(200)` 兜底，
+   `naturalWidth/Height = 2600×1351` 解码成功（Chrome 把同 URL 的两个 `new Image()` 合并成一次网络
+   请求，所以「只看到一个 JPG 200」不能推出「两个都成功」——本次用栈归属证明两个都成功）；
+3. **没有异常被吞**：全程 `window.onerror` / `unhandledrejection` 捕获为 `[]`；`glass-ripple.js` 的 blob
+   在 v1.0.1 / v1.0.2 / HEAD 三处完全相同，守卫自 `v1.0.0`（`6a61c3c`）就存在——**不是 U5-2A/U5-3
+   引入的回归**，只是长期被「背景不显示」掩盖着。
+
+### 最小修复与安全验证
+
+`assets/js/glass-ripple.js` 删掉那一条守卫（commit `cbd798f`，`+5 / −3`，BOM 与 CRLF 原样保留）。
+它想要的暂停**已经**由紧邻上方的 splash 判定覆盖：`hidden` / `dissolving` 任一成立即暂停，而画窗只可能
+在欢迎页可见时被看到。实测确认这条覆盖成立——欢迎页可见时逐帧动画在跑，splash 隐藏后画面冻结
+（`alphaSum` 1.8 s 内不变）。
+
+修复后按**安装态载荷条件**验证（`bg-canvas.png` 请求失败、`bg-canvas.jpg` 兜底成功 + `#diagnostics`）：
+`#gw-slot` = `gw-rippling`，水纹像素 654,025 → 735,897 → 829,778（逐帧变化），opacity 1，无控制台错误；
+默认入口 URL 行为不变。
+
+**本阶段未做**（保持最小边界）：`glass-ripple.js` 里 `loop()` 在 splash 曾 hidden 之后**永久死亡**的
+隐患（`if(sp&&sp.classList.contains('hidden'))return;` 在 reschedule 之前返回）本次未触发、也未改动；
+`prefers-reduced-motion: reduce` 下只渲染一帧空水位场的观感问题同样留待后续。
+
+### v1.0.3 发布准备
+
+| 项 | 值 |
+|---|---|
+| `VERSION` | `1.0.2` → **`1.0.3`**（发布提交 `c52eedb`） |
+| 契约增量 | **无**：更新链、清单 schema、上传顺序、`minimumVersion`（仍 `1.0.1`）全部沿用 1.0.2 |
+| exe | `InternalBeyond-Setup-1.0.3.exe` · **51,749,877 B** · `sha256=3345f461f1b52fd8…9434c` |
+| 载荷 | 238 文件 · 124,024,430 B · `release-audit` PASS（0 error / 0 violation / 8 条既存 warn） |
+| 载荷一致性 | 比 1.0.2 多 **+155 B**，与唯一改动文件的工作树字节差逐字节吻合；载荷内 `glass-ripple.js` 与 HEAD 相同且不再含 `currentPage` |
+| 清单 | `minimumVersion=1.0.1`、**无** `releasedAt`、`notes` 531 字符 |
+| 用户升级说明 | 新增 `docs/release-notes/1.0.3.md` |
+
+四条等式用独立工具复核（certutil + sha256sum / `stat` / PowerShell `VersionInfo` + `runtime/pe-version.js` /
+资产名 vs 真实文件名），清单经 `--validate` 自校验。载荷数字的**记法边界**已写入 RELEASE.md §8：本次构建
+默认清理了 staging，数字来自构建**之后重新物化**的 staging（同源、同参数、同白名单，但不是被编译的那份
+字节），安装后的载荷仍由 `1.0.2 → 1.0.3` E2E 在真实安装实例上核对。
