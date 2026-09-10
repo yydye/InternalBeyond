@@ -969,3 +969,66 @@ U-D1 / U-D1 Revised 原文一字未动。
 | `docs/DECISIONS.md` | **新增 U-D6** 独立小节（U-D1 / U-D1 Revised 原文保留） |
 | `docs/ARCHITECTURE.md` | §13 重写为含 U3（真源表 + 安装路径图 + 端点拒绝矩阵 + 四道闸门 + 共用清单 + 不可动摇性质扩到 8 条）；§12 static 组补两条测试 |
 | `docs/RELEASE.md` | 新增 §2.2 载荷回退；§9 测试表补三行；说明 U3 同样需要先发布带清单的 release |
+
+## 2026-09-10 · U4 · 诊断页更新体验（唯一用户可见更新界面）
+
+给 Zero-Touch Update 补上**用户能看到的那一层**：诊断页新增一张更新卡片
+（`assets/js/update-card.js`，通过诊断页新开的扩展卡位 `IBDiagnostics.registerCard(fn)` 注册）。
+U4 **只渲染**——manifest 校验、semver 比较、传输与回退、SHA-256、PE 校验、安装器 spawn、
+安装状态机全部仍然只属于 U1/U2/U3 的 Node 真源；卡片只读 `GET /__update-check` 与
+`GET /__update/status`，只写 `POST /__update/start`，而且**只提交 `{version}` 一个字段**。
+
+- **八个状态 + 两个结论**：`idle / checking / up-to-date / available / downloading / verifying /
+  installing / failed`，外加启动时一次性判定的 `updated`（已更新到 x.y.z）与 `incomplete`
+  （更新未完成，当前仍为 x.y.z + [重试]）。阶段与文案全部由后端投影决定，UI 不发明任何进度。
+- **禁止假进度**：百分比只由状态文件里的真实 `bytes/totalBytes` 算出（13.0 MB / 50.2 MB · 26%），
+  没有总字节数就只报已下载；刚点完「下载并安装」、helper 还没写下第一行时显示「正在准备下载更新…」，
+  **一个数字都不给**。
+- **服务消失 ≠ 更新失败**：一旦后端状态明确进入 `launching`/`launched`，卡片进入安装阶段并**锁住**。
+  安装器在正常停止 IB 的过程中页面轮询必然读不到，此时只保留固定安装说明，绝不改判失败；
+  只有后端**明确写下** `state=failed`（安装器起不来）才如实汇报并给 [重试]。
+- **成功必须由版本证明**：安装器被 spawn ≠ 成功。开始安装时把目标版本写进 `ibUpdatePendingV1`
+  （带 schema，仅本机浏览器存储），新实例启动后读一次「当前版本 vs 目标版本」：一致 → 「已更新到
+  InternalBeyond x.y.z」，不一致 → 「更新未完成，当前仍为 x.y.z」+ [重试]，然后**立刻删除标记**，
+  所以成功提示只出现一次。版本读不到时既不说成功也不说失败（静默消费）。
+- **判定必须属于这一次尝试**：状态文件跨启动留存。卡片按「版本对得上 + 时间不早于本次尝试
+  （2 秒容差）」判断这份 `failed`/`launched` 是不是我们的——否则用户点「重试」会在 helper 写下
+  第一行的前 1~2 秒里读到上次的失败并误报。
+- **文案**：内部 `kind`/`message` 只留在 `IBUpdateCard.status()` 里给诊断与日志，**不进 DOM**；
+  用户可见文字只来自 U4 的两张分类表（install / check × network/corrupt/busy/stale/server/unknown）。
+- **notes 纯文本**：远端 `notes` 只用 `textContent` 写入（`white-space:pre-wrap` 保留换行），
+  全文件不出现 `innerHTML`——注入 `<img src=x onerror=…>` 在真实浏览器里只显示为文字。
+- **修复一个真实的端点名错误**：U3 的两处注释把状态端点写成 `/__update-status`，而实现是
+  `/__update/status`。U4 第一版照着注释写，真实浏览器里直接 404（Node 侧注入的 fetch 掩盖了它）。
+  现在有一条测试把 UI 的三个常量与 `services/internal-beyond-server.js` 里的
+  `pathname === '…'` 逐字对齐。
+
+### 测试
+
+- `tests/test_update_card.js`（**新增 192 项，纯 Node、不联网、不开浏览器**）：静态契约
+  （不重实现任何 Node 真源 / 三端点逐字对齐服务端路由 / POST 体只有 version / notes 只有
+  textContent / localStorage 只有两个键 / 不新建第二个页面 / P5 的 diagnostics.js 不被污染）、
+  纯逻辑（状态→阶段 / 一次性判定 / 失败分类 / 字节格式化）、行为（八状态各自的文案与按钮、
+  真实字节进度、XSS 防护、installing 后断开不误报、成功标记只消费一次、旧版本重开显示未完成）、
+  文案禁底层术语（逐条扫描全部渲染结果与全部文案表），末尾以子进程跑
+  `test_diagnostics.js` 与 `test_frontend_structure.js` 作为相邻回归。
+- `tests/test_update_card_smoke.js`（**新增 38 项，真实 Chrome/Edge + 真实静态服务 + 真实状态文件**）：
+  卡片真的挂在诊断页里、自动检查命中真实 24h 缓存并展示 notes、[下载并安装] 只提交 `{version}`
+  （在页面里替换 fetch 拦截，**绝不触发真实安装器**）、真实进度与真实比例、安装阶段无百分比、
+  **停掉服务后仍然是安装中**、环境零污染（无载荷文件、状态文件没有被真实 helper 改写）。
+- 环境隔离：`IB_UPDATE_DIR` 与 `IB_BOOT_STATE_DIR` 全部指向临时目录，绝不碰 `%LOCALAPPDATA%\InternalBeyond`。
+
+验证：`test_update_card.js` 192 ✔、`test_update_card_smoke.js` 38 ✔（真实浏览器）、`test_update_check.js` 51 ✔
+（U2 的 51 项原样通过），**完整 static + service 回归 53 + 16 全绿（194.5 s）**。按 P7 测试预算：
+本期**没有**构建安装包、没有安装、没有卸载、**没有触发真实安装器**。
+
+| 文件 | 改动 |
+|---|---|
+| `assets/js/update-card.js` | **新增**：更新卡片（阶段派生 / 一次性判定 / 失败分类 / 唯一文本渲染点） |
+| `assets/css/update-card.css` | **新增**：卡片样式（只用 core.css token，运行时注入，HTML 样式表预算不变） |
+| `assets/js/diagnostics.js` | 新增扩展卡位 `registerCard(fn)` 与可等待的 `readProductVersion()`（版本仍是同一条链，不设第二份实现） |
+| `InternalBeyond.html` | 新增一行 `<script src="assets/js/update-card.js">`（不新增样式表、不新增内联脚本） |
+| `services/internal-beyond-server.js` | 两处注释把状态端点从 `/__update-status` 更正为真实路由 `/__update/status`（纯注释） |
+| `tests/test_update_card.js` / `tests/test_update_card_smoke.js` | **新增** |
+| `tests/test-all.js` | static 组登记 `test_update_card.js`，browser 组登记 `test_update_card_smoke.js` |
+| `docs/ARCHITECTURE.md` | §13 补 `/__update/status` 投影形状、端点名陷阱、U4 体验小节（阶段表 + 不可动摇性质 9/10/11） |

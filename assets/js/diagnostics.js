@@ -1039,6 +1039,20 @@
     }
   }
 
+  /* ── 扩展卡位（本页只负责页面骨架）──
+     诊断页是这一页的宿主。其它模块（目前只有 U4 更新卡片）把自己的卡片挂进来，
+     避免各自 appendChild 到 #page-diagnostics —— 本页每次 render() 都会清空宿主，
+     外部塞进去的节点会被无声抹掉。注册即渲染，不建立第二套页面/状态。
+     卡片不参与能力矩阵与总览，绝不影响上面的诊断结论。 */
+  var CARDS = [];
+  function registerCard(fn) {
+    if (typeof fn !== 'function') return false;
+    if (CARDS.indexOf(fn) >= 0) return false;
+    CARDS.push(fn);
+    render();
+    return true;
+  }
+
   /* ── 页面渲染 ── */
   function statusClass(st) { return 'is-' + String(st || ST.UNKNOWN); }
 
@@ -1056,6 +1070,24 @@
       if (p && p.json && p.json.version) return String(p.json.version);
     } catch (e) { /* ignore */ }
     return '';
+  }
+
+  /*
+   * 可等待的版本读取：供更新卡片在「新实例刚起来」的那一刻判定「装的是不是目标版本」。
+   * 走的是同一条链（启动快照 → 本地页面服务 /health），不是第二份实现；
+   * 只读，不改 S.probes，因此不会影响本页的能力矩阵。
+   */
+  function readProductVersion() {
+    return readBootState().then(function () {
+      var v = productVersion();
+      if (v) return v;
+      var origin = '';
+      try { origin = String(location.origin || ''); } catch (e) { }
+      if (!origin || origin === 'null') return '';
+      return timedFetch(origin + '/health', { method: 'GET' }, PROBE_TIMEOUT_MS).then(function (r) {
+        return (r && r.ok && r.json && r.json.version) ? String(r.json.version) : '';
+      });
+    }).catch(function () { return productVersion(); });
   }
 
   function renderHead(host) {
@@ -1225,6 +1257,11 @@
     renderAiTest(card);
     renderActions(card);
     host.appendChild(card);
+
+    CARDS.forEach(function (fn) {
+      /* 扩展卡片自己负责自己的失败：一张外部卡片渲染崩了，不能让整页白掉 */
+      try { fn(host); } catch (e) { }
+    });
   }
 
   /* ── 入口 ── */
@@ -1331,6 +1368,12 @@
     exportReport: exportReport,
     reportText: reportText,
     technicalText: technicalText,
+    /* 扩展卡位：注册一个 fn(host) 渲染器，见 registerCard */
+    registerCard: registerCard,
+    /* 产品版本的唯一实现（VERSION 单一源 → boot-state → /health）。更新卡片
+       判定「装的是不是目标版本」时读这里，不自己再解析一遍版本。 */
+    productVersion: productVersion,
+    readProductVersion: readProductVersion,
     status: function () {
       return {
         overall: S.overall, headline: S.headline, rows: S.rows.slice(0),
@@ -1345,6 +1388,8 @@
       reportText: reportText,
       technicalText: technicalText,
       describeRole: describeRole,
+      productVersion: productVersion,
+      cards: CARDS,
       state: function () { return S; },
       setBoot: function (b) { S.boot = b; },
       setProbes: function (p) { S.probes = p || {}; },

@@ -735,7 +735,7 @@ Coread 与 Cinema 不各自为政，统一跑在这套运行时上，天然可�
 > 发布侧契约（产物、上传顺序、清单字段、构建期闸门、安全边界）见 [RELEASE.md](RELEASE.md)；
 > 架构决策见 [DECISIONS.md](DECISIONS.md) U 系列。本节只讲**客户端这一侧的形状**。
 >
-> 进度：**U1（发布契约）+ U2（检查运行时）+ U3（下载/校验/安装）已实现**；U4（Diagnostics UI）待做。
+> 进度：**U1（发布契约）+ U2（检查运行时）+ U3（下载/校验/安装）+ U4（诊断页更新体验）已实现**。
 
 ### 三个真源，各自唯一
 
@@ -749,7 +749,7 @@ Coread 与 Cinema 不各自为政，统一跑在这套运行时上，天然可�
 | 安装包 PE 版本 | `runtime/pe-version.js` | 只被 `update-install.js` 用于放行载荷 |
 
 浏览器只渲染。U4 的诊断页不实现传输、不实现 manifest 校验、不实现版本比较——它只调
-`GET /__update-check` 与 `GET /__update-status`，把返回的投影画出来（`notes` 必须以
+`GET /__update-check` 与 `GET /__update/status`，把返回的投影画出来（`notes` 必须以
 `textContent` 渲染，**永不 innerHTML**）。
 
 ### 检查路径
@@ -808,6 +808,20 @@ U3 追加的三条（同一份不可动摇清单的延续）：
 `status` ∈ `update-available` / `up-to-date` / `no-information`。**原始 manifest、attempts、
 warnings 一律不转发**（有测试断言精确键集），所以 UI 不可能意外依赖内部结构。
 
+`GET /__update/status` 返回 `runtime/update-install.js` 的 `summarizeState()` 投影：
+
+```
+{ ok, state, active, version, transport, bytes, totalBytes,
+  startedAt, updatedAt, finishedAt, error: {kind, message}|null }
+```
+
+`state` ∈ `downloading` / `verifying` / `launching` / `launched` / `failed`，读不到状态文件时
+是 `idle`，模块不可用是 `unavailable`。**投影不含任何路径与 pid**——浏览器不需要，也不该知道。
+
+> 端点名的坑：路径是 `/__update/status`（斜杠）。U3 落地时有两处注释把它写成了
+> `/__update-status`，U4 的第一版照着注释写，在真实浏览器里直接 404。现在有一条测试
+> 把 UI 的三个常量与 `services/internal-beyond-server.js` 里的 `pathname === '…'` 逐字对齐。
+
 ### 安装路径（U3）
 
 ```
@@ -830,7 +844,7 @@ warnings 一律不转发**（有测试断言精确键集），所以 UI 不可�
                                    ├─ spawn 安装器（frozen args，detached，shell:false）
                                    └─ 写 state=launched 后 **立刻 EXIT**
 
-浏览器  GET /__update-status   ← 安装状态文件投影（U4 渲染，服务端不发明任何进度）
+浏览器  GET /__update/status   ← 安装状态文件投影（U4 渲染，服务端不发明任何进度）
 
 随后由安装器接管：PrepareToInstall → ib-stop.js --root {app} → wait unlock → 替换文件 →
 validate runtime → [Run] Check: WantsRelaunch（/IBRELAUNCH=1 才启动）→ wscript 启动 IB。
@@ -894,3 +908,49 @@ totalBytes、transport、startedAt/updatedAt/finishedAt、error{kind,message}。
 
 U3 **没有**自己的 socket、跳转策略或错误分类；有一条测试扫描 `runtime/*.js`，断言
 `https.request(` 只出现在 `update-transport.js` 一个文件里。
+
+### 更新体验（U4）
+
+U4 是**唯一**的用户可见更新界面：`assets/js/update-card.js` 把卡片注册进诊断页的扩展卡位
+（`IBDiagnostics.registerCard(fn)`），不新建设置页、不新建第二个更新页。卡片不参与诊断页的
+能力矩阵与总览，扩展卡片自己渲染崩了也不会让整页白掉。
+
+| 卡片阶段（`#ib-update-state[data-state]`） | 来源 | 用户看到 |
+|---|---|---|
+| `idle` | 无 | 当前版本 / 更新通道 Stable / 自动检查开关 / [检查更新] |
+| `checking` | 手动或自动检查在途 | 正在检查更新… |
+| `up-to-date` | 投影 `status=up-to-date` | 已是最新版本 |
+| `available` | 投影 `status=update-available` | 发现新版本 x.y.z + `notes`(textContent) + [稍后] [下载并安装] |
+| `downloading` | `state=downloading` 且 `active` | 正在下载更新… + 真实 `bytes/totalBytes`（MB）与真实比例 |
+| `verifying` | `state=verifying`，或 `downloading` 且字节已到齐 | 正在验证更新文件… |
+| `installing` | `state=launching` / `launched` | 固定安装说明，**不再显示百分比**，无动作按钮 |
+| `failed` | 检查失败，或后端明确 `state=failed` | 稳定分类的可读文案 + [重试] |
+| `updated` / `incomplete` | 启动时的一次性判定 | 已更新到 x.y.z ／ 更新未完成，当前仍为 x.y.z + [重试] |
+
+U4 追加的三条（同一份不可动摇清单的延续）：
+
+9. **禁止假进度**：百分比只由状态文件里的真实字节数算出；没有 `totalBytes` 就只报已下载；
+   刚点完「下载并安装」、helper 还没写下第一行时显示「正在准备下载更新…」，**不给数字**。
+10. **服务消失不是失败**：一旦后端状态明确进入 `launching`/`launched`，卡片进入安装阶段并
+    **锁住**——之后轮询读不到（安装器正在正常停止 IB）只保留固定安装说明，绝不变
+   「更新失败」。只有后端**明确写下** `state=failed`（例如安装器起不来）才如实汇报。
+    这一条也是为什么「读不到」与「失败」在代码里是两条不同的路径。
+11. **成功必须由版本证明**：安装器被 spawn ≠ 成功。只有本机版本真的等于目标版本才算成功，
+    且成功/未完成提示**只消费一次**：开始安装时把目标版本写进浏览器本地存储
+    （`ibUpdatePendingV1`，带 schema），新实例启动后读一次「当前版本 vs 目标版本」的结论，
+    立刻删除标记。版本读不到时既不说成功也不说失败（静默消费）。
+
+**判定用的状态必须属于这一次尝试**：状态文件跨启动留存，上次失败的记录会一直躺在那里直到
+新 helper 写下第一行。卡片按「版本对得上 + 时间不早于本次尝试（2 秒容差）」判断归属，
+否则用户点「重试」会在 helper 开口前的那 1~2 秒里读到上次的失败并误报。
+
+**文案**：用户可见文字只来自 U4 自己的两张分类表（`install` / `check` × network/corrupt/busy/
+stale/server/unknown），内部 `kind` 与 `message` 只留在 `IBUpdateCard.status()` 里给诊断与日志，
+**不进 DOM**。有测试逐条扫描全部渲染结果与全部文案，禁止出现底层术语。
+
+**自动检查**：U4 只触发既有检查端点，不在前端做第二套缓存——打开页面用不带 `force` 的检查
+（后端 24h 缓存说了算），只有用户点「检查更新」或「重试」才 `?force=1`。
+
+**测试**：`tests/test_update_card.js`（纯 Node：最小 DOM shim + 注入 fetch，八状态 / 纯文本
+notes / 一次性标记 / 断开不误报 / POST 体只有 `version` / 文案禁术语 / 相邻回归子进程）与
+`tests/test_update_card_smoke.js`（真实浏览器 + 真实静态服务 + 真实状态文件；不下载、不安装）。

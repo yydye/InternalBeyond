@@ -54,7 +54,7 @@
  * a slow link cannot hold a request open and a crash here cannot leave a
  * half-download behind.
  *
- * GET /__update-status (U3): read-only projection of that helper's state file
+ * GET /__update/status (U3): read-only projection of that helper's state file
  * (%LOCALAPPDATA%\InternalBeyond\updates\update-install-state.json). U4 renders
  * it; this server invents nothing about the update's progress.
  *
@@ -93,7 +93,7 @@ try {
 
 /*
  * The install half (U3) is loaded DEFENSIVELY for the same reason: /__update/start
- * and /__update-status degrade to a named "unavailable" answer, and the app —
+ * and /__update/status degrade to a named "unavailable" answer, and the app —
  * which has nothing to do with updating — starts normally regardless.
  */
 let updateInstall = null;

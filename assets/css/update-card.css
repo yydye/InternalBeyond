@@ -1,0 +1,57 @@
+﻿/* InternalBeyond · U4 更新卡片样式
+   由 assets/js/update-card.js 在运行时注入（不占用 HTML 的样式表预算，
+   也不改动 P5 的 diagnostics.css）。
+   颜色一律使用 core.css 既有 token，深色 / 浅色主题都跟随；视觉语言与
+   诊断卡片一致（glass-card + .btn + 同一条分隔线）。 */
+
+/* ── 卡片 ── */
+.ib-update{padding:20px 24px;display:flex;flex-direction:column;gap:14px;margin-top:16px}
+.ib-update-head{display:flex;align-items:baseline;gap:10px}
+.ib-update-title{margin:0;font-size:1rem;font-weight:500;letter-spacing:0.02em;color:var(--content-primary)}
+.ib-update-sub{font-size:0.74rem;color:var(--text-muted);letter-spacing:0.06em;text-transform:uppercase}
+
+/* ── 静态信息行（当前版本 / 更新通道 / 自动检查） ── */
+.ib-update-rows{display:flex;flex-direction:column;gap:2px}
+.ib-update-row{display:flex;align-items:center;gap:12px;padding:8px 2px;border-top:1px solid var(--border-soft);flex-wrap:wrap}
+.ib-update-row:first-child{border-top:0}
+.ib-update-label{font-size:0.86rem;color:var(--text-secondary);flex:0 0 auto;min-width:104px}
+.ib-update-value{font-size:0.86rem;color:var(--content-primary);font-variant-numeric:tabular-nums}
+.ib-update-auto{display:flex;align-items:center;gap:8px}
+.ib-update-toggle{width:16px;height:16px;accent-color:var(--accent);cursor:pointer}
+.ib-update-auto-text{font-size:0.86rem;color:var(--content-primary)}
+.ib-update-hint{margin:0;font-size:0.76rem;color:var(--text-muted);line-height:1.55}
+
+/* ── 状态区 ── */
+.ib-update-state{border-top:1px solid var(--border-soft);padding-top:14px;display:flex;flex-direction:column;gap:8px}
+.ib-update-status{margin:0;font-size:0.88rem;line-height:1.6;color:var(--content-primary)}
+.ib-update-sub-status{margin:0;font-size:0.78rem;color:var(--text-muted)}
+.ib-update-state[data-state="available"] .ib-update-status{color:var(--accent-light)}
+.ib-update-state[data-state="up-to-date"] .ib-update-status{color:var(--status-success)}
+.ib-update-state[data-state="updated"] .ib-update-status{color:var(--status-success)}
+.ib-update-state[data-state="failed"] .ib-update-status{color:var(--status-danger)}
+.ib-update-state[data-state="incomplete"] .ib-update-status{color:var(--status-warning)}
+.ib-update-state[data-state="checking"] .ib-update-status,
+.ib-update-state[data-state="downloading"] .ib-update-status,
+.ib-update-state[data-state="verifying"] .ib-update-status,
+.ib-update-state[data-state="installing"] .ib-update-status{color:var(--text-secondary)}
+
+/* ── 真实进度（只在有真实字节数时出现） ── */
+.ib-update-progress{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.ib-update-bar{flex:1 1 220px;height:6px;border-radius:999px;background:var(--surface-card);border:1px solid var(--border-soft);overflow:hidden}
+.ib-update-bar-fill{display:block;height:100%;width:0;background:var(--accent-light);transition:width .25s ease}
+.ib-update-bytes{font-size:0.78rem;color:var(--text-secondary);font-variant-numeric:tabular-nums;white-space:nowrap}
+
+/* ── 更新说明：纯文本（textContent 写入，绝不 innerHTML） ── */
+.ib-update-notes-box{display:flex;flex-direction:column;gap:4px}
+.ib-update-notes-title{font-size:0.78rem;color:var(--text-muted)}
+.ib-update-notes{font-size:0.82rem;line-height:1.7;color:var(--text-secondary);white-space:pre-wrap;word-break:break-word;max-height:220px;overflow:auto;padding:10px 12px;border-radius:10px;background:var(--surface-card);border:1px solid var(--border-soft)}
+
+/* ── 动作 ── */
+.ib-update-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:2px}
+.ib-update .is-hidden{display:none!important}
+
+@media (max-width:720px){
+  .ib-update{padding:16px 14px}
+  .ib-update-label{flex-basis:auto}
+  .ib-update-actions .btn{flex:1 1 auto}
+}

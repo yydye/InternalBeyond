@@ -34,6 +34,10 @@
  *     真实安装 smoke（test_installer_smoke.js --real-install-smoke）与构建回归
  *     （test_installer_build.js --force）刻意不登记：每个构建只允许一次真实安装，
  *     见 docs/P7-TEST-BUDGET.md。
+ * U1/U2/U3：登记 test_update_manifest.js / test_update_check.js / test_update_install.js /
+ *     test_pe_version.js（static，纯 Node、不联网、不构建也不安装任何安装包）。
+ * U4：登记 test_update_card.js（static）+ test_update_card_smoke.js（browser）。
+ *     U4 不重新验证 U3 的安装逻辑，也不跑真实安装器。
  * 归类规则：使用 CDP（remote-debugging-port）→ browser；否则 static。
  * 外部依赖测试（需要 Python + 本地 Vision 服务 + test.jpg 的 python test_vision.py）
  * 不进入 --all，单独运行并在报告中如实记录。
@@ -133,6 +137,12 @@ const GROUPS = [
       /* U3：安装包 PE 版本资源读取（真实 node.exe + 合成 PE32/PE32+ 与具名损坏），
          纯 Node、不联网、不安装。 */
       ['test_pe_version.js'],
+      /* U4：诊断页更新卡片（只渲染：不重实现 manifest/semver/传输/回退/sha256/PE/
+         spawn/状态机；三端点逐字对齐服务端路由；八种状态 + 真实字节进度 +
+         notes XSS 防护 + installing 之后断开不误报 + 一次性成功标记 +
+         用户文案禁底层术语）。纯 Node：DOM 用最小 shim，fetch 注入，
+         不联网、不开浏览器、不安装。 */
+      ['test_update_card.js'],
       /* P12：Image Router / Image Scheduler 专项（纯 Node，确定性并发/优先级/失败恢复） */
       ['test_image_router.js'],
       /* P13：图片编辑 / 参考图解析专项（归一化/限额/选源优先级/lineage/多轮 A→B→C/edit 路由） */
@@ -223,6 +233,9 @@ const GROUPS = [
       ['test_error_ui_smoke.js'],
       ['test_setup_wizard_smoke.js'],
       ['test_diagnostics_smoke.js'],
+      /* U4：更新卡片最小浏览器 smoke（真实 Chrome/Edge + 真实静态服务 + 真实
+         状态文件；不下载、不安装、不打开系统浏览器，IB_UPDATE_DIR 指向临时目录） */
+      ['test_update_card_smoke.js'],
       ['test_guide_shots.js'],
       ['test_guide_smoke.js'],
       /* P12：Image Router 浏览器最小冒烟（真实链路：Chat/Moments → Router → 现有执行器 → mock provider） */
