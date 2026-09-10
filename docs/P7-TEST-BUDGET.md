@@ -94,7 +94,7 @@
 | 原实测场景 | 现在的验证方式 |
 | --- | --- |
 | 停止助手只停本安装目录（A） | `test_ib_stop_identity.js`：真实隔离 fixture 进程 + 空闲端口，断言 same root 被停、different root / 无法证明归属 / 无关 Node 全部存活且未收到停止请求 |
-| 损坏的内置运行时被拒绝（B） | `test_installer_mock.js` [1]：临时沙箱里用真实 `cscript` 跑 `.vbs`；截断（保留 MZ）→ 执行失败且不回退 PATH；非 MZ → 预检拒绝；真二进制 → 预检通过 |
+| 损坏的内置运行时被拒绝（B） | `test_installer_mock.js` [1]：临时沙箱里用真实 `cscript` 跑 `.vbs`；截断（保留 MZ）→ 执行失败且不回退 PATH；非 MZ → 预检拒绝；真二进制 → 预检通过。注：本机加载损坏映像这一步本身可阻塞数十秒至数分钟（与启动器无关，裸 `cmd /c` 跑同一映像同样卡住，见 [1b] 回归）——此时该用例按 `SKIP`（未验证）处理，并清理被强杀后残留的子进程，既不记为通过也不记为失败 |
 | 安装后运行时校验（B） | `test_installer_mock.js` [7]：静态断言 `CurStepChanged(ssPostInstall) → ValidateBundledRuntime()`、`--version` 与 VERSION 比对、失败留标记且不回退 PATH |
 | 运行中升级等待解锁（C） | `test_installer_mock.js` [6]：静态断言有界等待 + `--wait-unlock` + 探测从 `{tmp}` 副本启动；动态用运行中的 node.exe 副本证明「运行中不可写、退出后可写」 |
 | IB_NODE → 内置 → PATH 解析顺序 | `test_installer_mock.js` [2] + `test_node_runtime.js`（静态 + 分支断言） |

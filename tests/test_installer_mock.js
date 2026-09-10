@@ -8,6 +8,9 @@
 
      [1] VBS runtime preflight — a corrupt bundled runtime is rejected by the
          launcher script itself, before Windows is asked to load it
+     [1b] run classification — a cscript run the host stalls while loading the
+         runtime is retried, the cmd.exe it leaves behind is reaped, and the
+         check is SKIPped as unverified instead of being called a defect
      [2] VBS resolution order + preflight ordering (source contract)
      [3] stop helper selection — only InternalBeyond command lines are targets,
          the install root is evidence (not a gate), and a decoy node process is
@@ -39,15 +42,29 @@ const ISS = path.join(ROOT, 'installer', 'InternalBeyond.iss');
 const LAUNCH_PATH = require.resolve(path.join(ROOT, 'runtime', 'launch-internal-beyond.js'));
 const ibStop = require(path.join(ROOT, 'installer', 'tools', 'ib-stop.js'));
 
-let pass = 0, fail = 0;
+let pass = 0, fail = 0, skip = 0;
 const failures = [];
+
+/* A check ends in one of three ways and they must not be blurred together:
+     ✓ the launcher did what the check claims
+     ✗ it did not — a defect in the thing under test
+     – the host never let the run finish, so the claim is UNVERIFIED
+   Only the middle one is evidence about the launcher. The third is the same
+   SKIP the neighbouring installer suites use for host-dependent work
+   (test_installer.js / test_node_runtime.js): counted, printed, never a pass
+   and never a failure. */
+function skipped(name, why) { skip++; console.log('  – ' + name + ' (SKIP: ' + why + ')'); }
+function settle(name, e) {
+  if (e && e.environment) { skipped(name, e.message); return; }
+  fail++;
+  failures.push(name + ': ' + (e && e.message || e));
+  console.log('  ✗ ' + name + ' — ' + (e && e.message || e));
+}
 function check(name, fn) {
-  try { fn(); pass++; console.log('  ✓ ' + name); }
-  catch (e) { fail++; failures.push(name + ': ' + (e && e.message || e)); console.log('  ✗ ' + name + ' — ' + (e && e.message || e)); }
+  try { fn(); pass++; console.log('  ✓ ' + name); } catch (e) { settle(name, e); }
 }
 async function acheck(name, fn) {
-  try { await fn(); pass++; console.log('  ✓ ' + name); }
-  catch (e) { fail++; failures.push(name + ': ' + (e && e.message || e)); console.log('  ✗ ' + name + ' — ' + (e && e.message || e)); }
+  try { await fn(); pass++; console.log('  ✓ ' + name); } catch (e) { settle(name, e); }
 }
 
 /* ── temp tree lifecycle ─────────────────────────────────────────────────
@@ -136,14 +153,122 @@ function sandboxFromRealRuntime(name, mutate) {
   if (mutate) mutate(exe);
   return dir;
 }
-function runVbs(dir) {
+/* ── running the launcher: launcher behaviour vs a stall in the host ─────
+   A complete cscript run of the launcher takes ~3 s here, but the step that is
+   not ours to time is the one that matters: letting Windows load a bundled
+   runtime it cannot load. Measured on this host, that single step costs ~0.04 s
+   when the machine is quiet and then, for minutes at a time, never returns at
+   all — with no launcher involved, `cmd /c <batch>` around such an image hangs,
+   the batch's error message is written within 0.5 s and the cmd.exe still does
+   not exit after 25 s (no child process exists at any point; WER never runs).
+   It is a property of the host, not of the launcher, and it is what killed a
+   healthy run with the 60 s timeout. All three symptoms follow from it:
+
+     · the log stops at "node runtime resolved" (the VBS was killed inside
+       NodeVersion(), before it could report anything),
+     · no ERROR: ever reached stdout (Fatal() was never reached),
+     · the sandbox directory could not be removed (EPERM).
+
+   The last one is the mechanism: spawnSync's timeout kills cscript only, and the
+   cmd.exe cscript started keeps running with the sandbox as its working
+   directory, which pins the (otherwise empty) tree. So what a stalled run left
+   behind is reaped before anything else, and a stall is never read as launcher
+   behaviour: it is retried, and if it keeps stalling the check is SKIPped (the
+   convention the neighbouring installer suites use for host-dependent work) —
+   not passed, not failed.
+
+   Only a stall at the known point is treated that way. If the log shows the run
+   got past executing the bundled runtime, an unexplained hang is a defect. */
+const VBS_TIMEOUT_MS = 60000;
+const VBS_ATTEMPTS = 2;
+const VBS_BACKOFF_MS = 2000;
+/* The corrupt-runtime check below drives the one stimulus this host can stall
+   for minutes, so it buys one attempt with six times the healthy cost instead of
+   looping: while a stall lasts it lasts for minutes, so a retry inside the same
+   window only adds latency — and it stamps the same missing evidence as a SKIP. */
+const VBS_STALL_BUDGET_MS = 20000;
+
+function sleepMs(ms) {
+  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch (e) { /* no shared memory: skip the pause */ }
+}
+
+/* One run, and the one distinction that matters for it: did the launcher exit
+   (its behaviour can then be asserted), or did the host have to kill it? */
+function runVbsOnce(dir, timeoutMs) {
   const r = spawnSync('cscript.exe', ['//nologo', path.join(dir, VBS_NAME)], {
-    cwd: dir, encoding: 'latin1', windowsHide: true, timeout: 60000,
+    cwd: dir, encoding: 'latin1', windowsHide: true, timeout: timeoutMs || VBS_TIMEOUT_MS,
     env: Object.assign({}, process.env, { IB_LAUNCH_NO_OPEN: '1' })
   });
   const logFile = path.join(dir, 'logs', 'launcher.log');
   const log = fs.existsSync(logFile) ? fs.readFileSync(logFile, 'latin1') : '';
-  return { code: r.status, stdout: String(r.stdout || ''), stderr: String(r.stderr || ''), log: log };
+  return {
+    code: r.status, stdout: String(r.stdout || ''), stderr: String(r.stderr || ''),
+    log: log, timedOut: !!(r.error && r.error.code === 'ETIMEDOUT'), pid: r.pid || 0
+  };
+}
+
+/* The processes a killed cscript left behind. Windows does not re-parent them,
+   so the escaped cmd.exe is still listed under the pid that is now gone — and
+   `taskkill /T` on that dead pid cannot reach it (measured: it does nothing). */
+function childrenOf(pid) {
+  if (!pid) return [];
+  try {
+    const q = 'Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq ' + Number(pid) +
+      ' } | Select-Object -ExpandProperty ProcessId';
+    const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', q],
+      { encoding: 'utf8', windowsHide: true, timeout: 20000 });
+    return String(out).split(/\s+/).filter(s => /^\d+$/.test(s));
+  } catch (e) { return []; }
+}
+function reapTree(pid) {
+  for (const child of childrenOf(pid)) {
+    try { execFileSync('taskkill.exe', ['/F', '/T', '/PID', child], { windowsHide: true, stdio: 'ignore' }); }
+    catch (e) { /* already gone */ }
+  }
+}
+
+/* The stall this host causes happens while Windows is being asked to load the
+   bundled runtime — the VBS logs that resolution line immediately before it.
+   A missing log line means the run never got that far, which is the same story
+   (Log() is best-effort, so an empty log proves nothing by itself). */
+function hostStallSignature(attemptLog) {
+  const lines = String(attemptLog || '').split(/\r?\n/).filter(l => l.trim());
+  if (!lines.length) return true;
+  return /node runtime resolved/.test(lines[lines.length - 1]);
+}
+
+/* Indirected so the regression below can drive the retry loop for real. */
+let vbsAttempt = runVbsOnce;
+
+function runVbs(dir, opts) {
+  const attempts = (opts && opts.attempts) || VBS_ATTEMPTS;
+  const timeoutMs = (opts && opts.timeoutMs) || VBS_TIMEOUT_MS;
+  const backoff = opts && opts.backoffMs !== undefined ? opts.backoffMs : VBS_BACKOFF_MS;
+  let r = null, seen = 0;
+  for (let i = 1; i <= attempts; i++) {
+    const t0 = Date.now();
+    r = vbsAttempt(dir, timeoutMs);
+    /* The log is appended across attempts: judge the stall by its own lines. */
+    r.attemptLog = String(r.log || '').slice(seen);
+    seen = r.log.length;
+    if (!r.timedOut) return r;
+    reapTree(r.pid);
+    if (i < attempts) {
+      console.log('  · launcher run did not finish within ' + (timeoutMs / 1000) + ' s (attempt ' + i + '/' + attempts +
+        ', ' + ((Date.now() - t0) / 1000).toFixed(1) + ' s elapsed); leftovers reaped, retrying');
+      sleepMs(backoff);
+    }
+  }
+  const last = String(r.attemptLog).split(/\r?\n/).filter(l => l.trim()).pop() || '';
+  if (!hostStallSignature(r.attemptLog)) {
+    throw new Error('the launcher run never finished (' + (timeoutMs / 1000) + ' s x ' + attempts +
+      ' attempts, leaked children reaped) and it stalled past the runtime-execution step, which a host stall does not explain — treat as a defect. last log line: ' + JSON.stringify(last));
+  }
+  const e = new Error('host stalled the run: cscript did not finish within ' + (timeoutMs / 1000) +
+    ' s x ' + attempts + ' attempt(s), at the point where Windows loads the bundled runtime; leaked children reaped, behaviour UNVERIFIED. last log line: ' + JSON.stringify(last));
+  e.environment = true;
+  e.result = r;
+  throw e;
 }
 
 console.log('Installer / launcher mock tests (P7)\n');
@@ -169,20 +294,40 @@ check('a non-executable file of plausible size is rejected as well', () => {
   assert.ok(!/\[VBS\] node version/.test(r.log), 'a rejected binary must never be executed');
 });
 
-check('a truncated (MZ-intact) runtime fails loudly and never falls back to PATH', () => {
-  /* Passes the cheap preflight (size + MZ) but cannot be loaded by Windows —
-     exactly the "install completed, runtime broken" case. A real system Node is
-     on PATH in this environment; it must NOT be used. */
-  const dir = sandboxFromRealRuntime('truncated', (exe) => fs.truncateSync(exe, 1536 * 1024));
-  const r = runVbs(dir);
+/* The launcher-failure contract, kept separate from how the run is driven so
+   the classification below can be shown not to weaken it. */
+function assertUnloadableRuntimeReported(r) {
   assert.notStrictEqual(r.code, 0, 'launcher must fail on an unloadable bundled runtime');
   /* The VBS Log() is best-effort (append can lose a line to a scanner lock), so
      accept the log line OR the console error as proof of the failure path. */
   assert.ok(/bundled node\.exe failed to run/.test(r.log) || /ERROR:/.test(r.stdout + r.stderr),
     'the bundled-runtime failure must be reported (log: ' + JSON.stringify(r.log.slice(-300)) + ')');
+  assertBundledRuntimeNeverFallsBack(r);
+}
+/* The half of the contract a run proves even when the host never lets it finish:
+   by the time it stalls, the launcher has already resolved the bundled runtime
+   and must not have gone looking at PATH or invented a version. */
+function assertBundledRuntimeNeverFallsBack(r) {
   assert.ok(!/\[VBS\] node version/.test(r.log), 'an unloadable binary must never produce a version');
   assert.ok(!/src=PATH/.test(r.log), 'must never fall back to a system Node');
   assert.ok(!/pathNode/.test(r.log), 'must never even look at PATH for a bundled failure');
+}
+
+check('a truncated (MZ-intact) runtime fails loudly and never falls back to PATH', () => {
+  /* Passes the cheap preflight (size + MZ) but cannot be loaded by Windows —
+     exactly the "install completed, runtime broken" case. A real system Node is
+     on PATH in this environment; it must NOT be used. */
+  const dir = sandboxFromRealRuntime('truncated', (exe) => fs.truncateSync(exe, 1536 * 1024));
+  try {
+    assertUnloadableRuntimeReported(runVbs(dir, { attempts: 1, timeoutMs: VBS_STALL_BUDGET_MS }));
+  } catch (e) {
+    if (!e.environment) throw e;
+    /* The host stalled the launch (see the preamble), so the run never reached
+       Fatal(). The part of the contract its log does prove is still asserted —
+       if the launcher had fallen back to PATH we would fail, not skip. */
+    assertBundledRuntimeNeverFallsBack(e.result);
+    throw e;
+  }
 });
 
 check('a valid bundled runtime passes the preflight and is executed', () => {
@@ -196,6 +341,111 @@ check('a valid bundled runtime passes the preflight and is executed', () => {
   assert.ok(/\[VBS\] node version: v24\./.test(r.log),
     'the valid runtime must be executed and versioned (log: ' + JSON.stringify(r.log.slice(-300)) + ')');
   assert.ok(!/Opening http/.test(r.log), 'the sandbox must not start anything real');
+});
+
+/* ── [1b] a stall in the host is not a launcher defect ─────────────────── */
+console.log('\n[1b] host stall vs launcher defect (nothing is left running behind)');
+
+/* A launcher-shaped script that starts a child and then blocks: a deterministic
+   stand-in for the host stall, so this regression neither waits a minute nor
+   depends on how busy the machine happens to be. The child it leaves behind is
+   the escaped cmd.exe of the real failure, in the same place (a process whose
+   working directory is the sandbox). */
+function stallSandbox() {
+  const dir = path.join(TMP, 'stall');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, VBS_NAME),
+    'Set sh = CreateObject("WScript.Shell")\r\n' +
+    'sh.CurrentDirectory = Left(WScript.ScriptFullName, InStrRev(WScript.ScriptFullName, "\\"))\r\n' +
+    'sh.Run "cmd /c ping -n 90 127.0.0.1 > nul", 0, False\r\n' +
+    'WScript.Sleep 90000\r\n', 'latin1');
+  return dir;
+}
+
+check('a stalled run is seen as a timeout, its escaped child reaped, the sandbox freed', () => {
+  const dir = stallSandbox();
+  let pid = 0;
+  try {
+    const r = runVbsOnce(dir, 1500);
+    pid = r.pid;
+    assert.strictEqual(r.timedOut, true, 'a run the host had to kill must be reported as a timeout, not as a launcher result');
+    assert.ok(pid > 0, 'the killed process must be identified so what it left behind can be reaped');
+    assert.ok(childrenOf(pid).length >= 1, 'a killed run leaves the process it started behind — that child is what pins the sandbox');
+    assert.strictEqual(rmTree(dir, 2), false, 'while that child lives the sandbox cannot be removed (the EPERM that leaked temp trees)');
+    reapTree(pid);
+    assert.deepStrictEqual(childrenOf(pid), [], 'the escaped child must be reaped');
+    assert.strictEqual(rmTree(dir, 2), true, 'with the child gone the sandbox is removable again');
+  } finally { reapTree(pid); rmTree(dir); }
+});
+
+check('a stalled attempt is retried, bounded, and a finished run is returned untouched', () => {
+  const real = vbsAttempt, calls = [];
+  const stalled = { code: null, stdout: '', stderr: '', log: '', timedOut: true, pid: 0 };
+  const finished = { code: 1, stdout: 'ERROR: x', stderr: '', log: 'bundled node.exe failed to run', timedOut: false, pid: 0 };
+  try {
+    vbsAttempt = () => { calls.push(1); return calls.length < 2 ? stalled : finished; };
+    const r = runVbs('unused', { attempts: 3, backoffMs: 0 });
+    assert.strictEqual(r, finished, 'a run that finished must be handed back unchanged for its assertions');
+    assert.strictEqual(calls.length, 2, 'one stall must cost exactly one retry, not a loop');
+  } finally { vbsAttempt = real; }
+});
+
+check('a run that never finishes is an environment failure, never a silent pass', () => {
+  const real = vbsAttempt, calls = [];
+  const stalled = { code: null, stdout: '', stderr: '', log: '2026/1/1 0:00:00  [VBS] node runtime resolved: src=bundled path=x\n', timedOut: true, pid: 0 };
+  try {
+    vbsAttempt = () => { calls.push(1); return stalled; };
+    let caught = null;
+    try { runVbs('unused', { attempts: 2, backoffMs: 0 }); } catch (e) { caught = e; }
+    assert.ok(caught, 'a run that never finishes must not return a result');
+    assert.strictEqual(caught.environment, true, 'it must be classified as an environment condition, got: ' + caught.message);
+    assert.strictEqual(calls.length, 2, 'the retry budget must stay bounded');
+  } finally { vbsAttempt = real; }
+});
+
+check('a stall still cannot excuse a PATH fallback', () => {
+  const real = vbsAttempt;
+  try {
+    /* What the corrupt-runtime check does with a stalled run: the stall is a
+       SKIP, but the invariants the log does prove are asserted first — so a
+       launcher that had gone to PATH cannot hide behind a stalled host. */
+    vbsAttempt = () => ({
+      code: null, stdout: '', stderr: '', timedOut: true, pid: 0,
+      log: '[VBS] node runtime resolved: src=PATH path=C:\\nodejs\\node.exe\n'
+    });
+    let caught = null;
+    try { runVbs('unused', { attempts: 1, backoffMs: 0, timeoutMs: 1000 }); } catch (e) { caught = e; }
+    assert.ok(caught && caught.environment, 'the stall itself is a host condition');
+    assert.throws(() => assertBundledRuntimeNeverFallsBack(caught.result), /never fall back/,
+      'a stall whose log shows a PATH fallback must still fail the check');
+  } finally { vbsAttempt = real; }
+});
+
+check('a stall the host does not explain is still a defect', () => {
+  const real = vbsAttempt;
+  try {
+    /* The same timeout, but the log shows the run got past executing the
+       runtime: that is not the known stall, so it must not be excused. */
+    vbsAttempt = () => ({
+      code: null, stdout: '', stderr: '', timedOut: true, pid: 0,
+      log: '[VBS] node runtime resolved: src=bundled path=x\n[VBS] launch-internal-beyond.js exited with code 0\n'
+    });
+    let caught = null;
+    try { runVbs('unused', { attempts: 1, backoffMs: 0 }); } catch (e) { caught = e; }
+    assert.ok(caught && !caught.environment, 'an unexplained stall must be reported as a defect, got: ' + (caught && caught.message));
+    assert.ok(/defect/.test(caught.message), 'and it must say so: ' + caught.message);
+  } finally { vbsAttempt = real; }
+});
+
+check('the environment path cannot cover for a launcher defect', () => {
+  /* These results all came from a run that FINISHED, so the launcher assertions
+     decide — exactly as they did before the classification existed. */
+  assert.throws(() => assertUnloadableRuntimeReported({ code: 0, stdout: '', stderr: '', log: '[VBS] node version: v24.18.0' }),
+    /must fail/, 'a launcher that wrongly succeeded must still fail its assertion');
+  assert.throws(() => assertUnloadableRuntimeReported({ code: 1, stdout: '', stderr: '', log: '' }),
+    /must be reported/, 'a silent failure must still fail its assertion');
+  assert.doesNotThrow(() => assertUnloadableRuntimeReported({ code: 1, stdout: 'ERROR: x', stderr: '', log: 'bundled node.exe failed to run' }),
+    'and a correct failure must still pass');
 });
 
 /* ── [2] VBS resolution + ordering contract ────────────────────────────── */
@@ -429,7 +679,7 @@ check('the installer identity probe honours the port overrides', () => {
   }
 
   /* ── report ────────────────────────────────────────────────────────────── */
-  console.log('\n结果: ' + pass + ' 通过, ' + fail + ' 失败');
+  console.log('\n结果: ' + pass + ' 通过, ' + fail + ' 失败, ' + skip + ' 跳过');
   if (failures.length) { console.log('失败明细:'); failures.forEach(f => console.log('  - ' + f)); }
   process.exitCode = fail ? 1 : 0;
 })().catch((e) => {
