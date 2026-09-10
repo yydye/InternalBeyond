@@ -192,6 +192,48 @@ helper 只做「下载 → hash/version 校验 → spawn installer detached → 
 validate runtime → /IBRELAUNCH=1 → wscript 启动 InternalBeyond.vbs`。
 **保留现有普通交互安装 `[Run] postinstall skipifsilent` 行为，不得为了 updater 改坏它。**
 
+### U-D6 · Installer Payload Transport Fallback（2026-09-10 用户冻结）
+
+U-D1 Revised 只覆盖了「**检查**清单」的传输回退。U3 要下载 50 MB 级**载荷**，而载荷走的
+`github.com` 在同样一些网络上是间歇不可达的，因此把同一条规则扩展成载荷版本，作为**独立新增
+决策**（不改写 U-D1 / U-D1 Revised 任何一字）：
+
+1. **Primary download**：使用经过 U1/U2 `validate()` 的 `manifest.installer.url`（版本钉死的
+   release asset）。客户端不得自行拼接 URL；实现上还要用 `parseInstallerUrl()` **再解析一次**
+   自己的输入，主机 / tag / 资产名任一不符即拒绝，连连接都不开。
+2. **只有 primary 发生 network / transport-level failure，且完全没有获得有效 HTTP response
+   实体时**，才允许 GitHub API asset fallback。判定等式与 U-D1 Revised 完全同一个：
+   `fallbackAllowed(result) === (result.outcome === 'network')`。
+   响应头已到但实体读取失败 / 被 RST（含中途断流）= 没取到实体 = 传输层失败，允许回退。
+3. **fallback**：`GET GitHub release metadata`，只接受 `draft === false`、`prerelease === false`、
+   **release tag 与 `manifest.version` 一致**、**资产名精确等于
+   `InternalBeyond-Setup-<manifest.version>.exe`**；再经 asset API/CDN 下载**同一资产**。
+   fallback 只是**传输替代**，不是第二发布真源——最终用来放行的仍然是 manifest 里那一个
+   sha256，且必须由本地重新计算确认。
+4. **以下情况禁止 fallback（hard failure → 本次安装失败，不得换路径、不得重试）**：
+   HTTP 4xx/5xx（含 404 / 403 / 429）· wrong asset · wrong release/tag · invalid Content-Length
+   （缺失也算）· size mismatch（声明长度或实际字节与 `sizeBytes` 不符）· sha256 mismatch ·
+   PE ProductVersion/FileVersion mismatch · 任意安全校验失败（含跳转出传输白名单）。
+   已经完整取到实体之后的一切问题都是终局。
+5. **`asset.digest`**：若 API 声明了 digest，**必须**等于 `sha256:<manifest.installer.sha256>`，
+   不一致 = hard failure；digest 缺失**不单独构成失败**；digest 存在但无法解析（非 `sha256:` 或
+   非 64 位十六进制）同样按 hard failure 处理——「无法解读的完整性声明」不得当作「没有声明」。
+   最终**仍必须对本地下载文件重新计算 SHA-256**，API 的声明只是额外一道交叉校验。
+6. **浏览器不得向 `/__update/start` 提交 URL / hash / path**。服务端只能使用**自己已验证的
+   cached/pending manifest**（`%LOCALAPPDATA%\InternalBeyond\update-check.json`，读回时重新
+   `validate()`）。browser 最多提交**版本确认**（或 opaque update id，当前未使用）；请求体出现
+   任何其它字段一律 **400 拒绝并点名该字段**，服务端**不接受**任何定位或描述载荷的输入。
+7. **下载 helper 继续满足**：HTTPS only · redirect 每一跳 host allowlist · 下载到
+   `%LOCALAPPDATA%\InternalBeyond\updates`（**绝不进 `{app}`**，越界配置直接拒绝）·
+   `.part` → 校验完成后 **atomic rename** · hash/尺寸/PE 不符**删除文件** · `shell:false` ·
+   detached spawn installer · helper 随即 EXIT · **不实现 stop**，继续由 installer 调
+   `ib-stop.js`。
+8. **优先复用 U2 已存在的 transport / error classification / host validation**。U3 实际做法是
+   **最小抽取**：把 U2 里本来就在一个函数里的 hop 遍历 + 主机白名单 + 网络错误分类移入
+   `runtime/update-transport.js`，把「正文处理」参数化为 sink（文本 sink = U2 原语义，文件
+   sink = U3 流式落盘 + 边下边算 hash）。**没有第二份传输实现**，也没有顺手重构 U2 的行为
+   （U2 全部原有测试一字不改地继续通过）。
+
 ### U 系列安全不变量（全阶段冻结）
 
 HTTPS only · hash 不符**绝不执行** · installer 版本不符**绝不执行** · `shell:false` ·

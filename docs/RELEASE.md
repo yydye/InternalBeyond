@@ -79,6 +79,33 @@ primary   GET https://github.com/yydye/InternalBeyond/releases/latest/download/u
 - **无需任何凭据**：匿名只读，不引入 token / 登录 / 额外配置。API 限额 60 次/小时/IP，
   只在 primary 网络失败时消耗，且不重试。
 
+### 2.2 载荷（exe 本身）走同一条规则（U-D6）
+
+U-D1 Revised 只管「读清单」。**下载安装包本体**走的是同一套判定，冻结为 U-D6：
+
+```
+primary   GET manifest.installer.url            （版本钉死的 release asset URL）
+             │
+             ├─ 拿到完整响应实体 ──► 四道校验（见 §5.1）。**到此为止，不再走别的路。**
+             │
+             └─ 连一个完整响应实体都没拿到（DNS/超时/重置/不可达/TLS/中途断流）
+                    │
+                    └─► fallback  GET .../releases/latest
+                                   仅接受 draft === false、prerelease === false、
+                                   tag 精确等于 v<manifest.version>、
+                                   资产名精确等于 InternalBeyond-Setup-<manifest.version>.exe
+                                   → 经资产 API/CDN 下载**同一个 exe**
+```
+
+- **备路只是传输替代**，不是第二发布真源：放行依据仍然是 manifest 里那一个 sha256，而且
+  **必须对本地下载文件重新计算**。API 元数据里的 `asset.digest`（如存在）必须等于
+  `sha256:<manifest.installer.sha256>`，不等即 hard failure；**缺失不单独构成失败**。
+- **禁止备路的情形**（全部是 hard failure，本次安装失败，不换路、不重试）：HTTP 4xx/5xx、
+  wrong asset、wrong release/tag、invalid Content-Length（缺失也算）、size mismatch、
+  sha256 mismatch、PE ProductVersion/FileVersion mismatch、任何安全校验失败。
+- **发布者的责任没有变化**：备路不能救一个「资产名不对 / 版本没钉死 / digest 对不上」的
+  release。§2 的上传顺序与 §5 的构建期闸门仍然是唯一正确的做法。
+
 ---
 
 ## 3. 清单长什么样
@@ -266,6 +293,8 @@ manifest.version           ==  tag 去掉 v 前缀
 
 **要让自动更新真正生效，必须先发布一个带 `update-stable.json` 的 release**（顺序见 §2）。
 在此之前 U2 的可观测结果只有 `no-information`——这是设计正确的失败姿势，不是缺陷。
+同一件事对 U3 也成立：没有清单就没有「已发布的更新」，`POST /__update/start` 会以
+`no-verified-manifest` 拒绝，而不是去猜一个能装的东西。
 
 API 匿名限额实测：`x-ratelimit-remaining: 57/60`（60 次/小时/IP）。回退只在 primary 网络
 失败时消耗它，且**不做重试**（U-D1 Revised 第 7 条）。
@@ -278,6 +307,9 @@ API 匿名限额实测：`x-ratelimit-remaining: 57/60`（60 次/小时/IP）。
 |---|---|---|
 | `node tests/test_update_manifest.js` | 契约本身：schema、唯一 URL 构造、客户端校验/解析、拒绝清单、绝不编造时间戳、无执行面 | 否 |
 | `node tests/test_installer.js` | 构建脚本接线（BOM、清单步骤在 hash 之后、资产名与真实文件绑定、preflight 校验可选入参） | 否 |
+| `node tests/test_update_check.js` | U2 检查运行时：回退门、唯一 semver 比较、24h 缓存、fail-open、端点契约 | 否 |
+| `node tests/test_update_install.js` | U3 安装运行时：载荷回退门（U-D6）、四道校验、绝不进 `{app}`、spawn 契约与 helper 退出、状态文件、端点拒绝矩阵 | 否（载荷传输全部注入，**不构建也不运行安装包**） |
+| `node tests/test_pe_version.js` | 安装包 PE 版本资源读取（真实 node.exe + 合成 PE32/PE32+ + 具名损坏） | 否 |
 | `node tests/test_installer_build.js --force` | **真实构建**：清单由真实 exe 的 hash/size/PE 版本产出且自校验通过、清单不进载荷 | 否（本地编译，不安装） |
 
 真实构建回归默认不跑（需要 Inno Setup 6，约 35 s），见

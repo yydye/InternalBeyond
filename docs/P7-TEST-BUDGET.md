@@ -34,6 +34,25 @@
 
 `test_installer.js` + `test_installer_mock.js` 是 P7 开发期的**默认回归组合**，两者都不安装、不启动、不联网。
 
+### 2.1 U 系列（Zero-Touch Update）同样按这份预算执行
+
+| 类别 | 入口 | 是否安装 | 是否开浏览器 |
+| --- | --- | --- | --- |
+| 更新清单契约（U1） | `node tests/test_update_manifest.js` | 否 | 否 |
+| 更新检查运行时（U2） | `node tests/test_update_check.js` | 否 | 否 |
+| 更新安装运行时（U3） | `node tests/test_update_install.js` | 否 | 否 |
+| 安装包 PE 版本读取（U3） | `node tests/test_pe_version.js` | 否 | 否 |
+
+- 这些套件**不联网**：更新路径上的传输全部注入（U2/U3 各有一套注入式 transport），
+  服务器行为用随机端口的真实 HTTP 加桩模块。
+- 这些套件**不构建、不安装、不运行任何安装包**：U3 的载荷是合成 PE 字节，下载走注入
+  transport；真实资源只有临时目录。
+- U3 唯一一处真实进程测试（`test_update_install.js` [4]）只启动 `node.exe`，用来证明
+  detached 出来的子进程比 helper 活得久（U-D5 的"helper 必须立刻退出"）。它不跑安装器、
+  不碰 `%LOCALAPPDATA%\InternalBeyond`（用自己的临时目录），并有时间上限。
+- 因此 U 系列的改动**不触发** §4 的"唯一一次真实安装 smoke"；真实「安装 → 升级 → 卸载」
+  仍然只在 §4 那一次跨版本 smoke 里做。
+
 ---
 
 ## 3. 开发期禁止

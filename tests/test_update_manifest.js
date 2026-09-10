@@ -389,6 +389,74 @@ check('selectManifestAsset() refuses anything not provably the stable manifest',
   }
 });
 
+/* ── U3: the installer payload asset (U-D6) ─────────────────────────────── */
+
+check('installerAssetName() is the only place the payload name is spelled out', () => {
+  assert.strictEqual(um.installerAssetName('1.2.3'), 'InternalBeyond-Setup-1.2.3.exe');
+  assert.strictEqual(um.ASSET_PREFIX, 'InternalBeyond-Setup-');
+  assert.strictEqual(um.ASSET_SUFFIX, '.exe');
+  assert.strictEqual(um.installerUrl('1.2.3'),
+    'https://github.com/yydye/InternalBeyond/releases/download/v1.2.3/InternalBeyond-Setup-1.2.3.exe');
+});
+
+check('selectInstallerAsset() accepts only the version-pinned payload asset', () => {
+  const payloadSha = 'b'.repeat(64);
+  const at = (over) => Object.assign({
+    draft: false, prerelease: false, tag_name: 'v1.2.3',
+    assets: [{ name: 'InternalBeyond-Setup-1.2.3.exe', id: 55, size: 50787010 }]
+  }, over);
+  const good = um.selectInstallerAsset(at({}), '1.2.3', payloadSha);
+  assert.strictEqual(good.ok, true, good.why);
+  assert.strictEqual(good.assetId, 55);
+  assert.strictEqual(good.tag, 'v1.2.3');
+  assert.strictEqual(good.version, '1.2.3');
+  assert.strictEqual(good.name, 'InternalBeyond-Setup-1.2.3.exe');
+  assert.strictEqual(good.digestDeclared, false, 'an absent digest is not a failure');
+
+  const rejects = [
+    ['a draft', at({ draft: true })], ['draft not proven false', at({ draft: undefined })],
+    ['a prerelease', at({ prerelease: true })], ['prerelease not proven false', at({ prerelease: undefined })],
+    ['a tag for another version', at({ tag_name: 'v1.2.4' })],
+    ['a tag without the prefix', at({ tag_name: '1.2.3' })],
+    ['a mismatching asset name', at({ assets: [{ name: 'InternalBeyond-Setup-1.2.4.exe', id: 1 }] })],
+    ['the manifest asset instead of the payload', at({ assets: [{ name: 'update-stable.json', id: 1 }] })],
+    ['a duplicated asset', at({ assets: [{ name: 'InternalBeyond-Setup-1.2.3.exe', id: 1 }, { name: 'InternalBeyond-Setup-1.2.3.exe', id: 2 }] })],
+    ['an asset without an id', at({ assets: [{ name: 'InternalBeyond-Setup-1.2.3.exe' }] })],
+    ['no assets array', at({ assets: undefined })],
+    ['not an object', null], ['a string', 'v1.2.3']
+  ];
+  for (const [label, release] of rejects) {
+    const r = um.selectInstallerAsset(release, '1.2.3', payloadSha);
+    assert.strictEqual(r.ok, false, 'must refuse ' + label);
+    assert.ok(r.why, 'a refusal must say why: ' + label);
+  }
+  /* The version must be a real version, and the hash must be a real hash: this
+     function is the last thing between a release payload and a download. */
+  assert.strictEqual(um.selectInstallerAsset(at({}), 'not-a-version', payloadSha).ok, false);
+  assert.strictEqual(um.selectInstallerAsset(at({}), '1.2.3', 'nope').ok, false);
+  assert.strictEqual(um.selectInstallerAsset(at({}), '1.2.3', '').ok, false);
+});
+
+check('selectInstallerAsset() enforces the API digest when it is declared (U-D6 item 6)', () => {
+  const sha = 'c'.repeat(64);
+  const withDigest = (digest) => ({
+    draft: false, prerelease: false, tag_name: 'v1.2.3',
+    assets: [{ name: 'InternalBeyond-Setup-1.2.3.exe', id: 7, digest: digest }]
+  });
+  assert.strictEqual(um.selectInstallerAsset(withDigest('sha256:' + sha), '1.2.3', sha).ok, true);
+  assert.strictEqual(um.selectInstallerAsset(withDigest('sha256:' + sha.toUpperCase()), '1.2.3', sha).ok, true,
+    'digests are case-insensitive hex');
+  assert.strictEqual(um.selectInstallerAsset(withDigest(undefined), '1.2.3', sha).ok, true);
+  assert.strictEqual(um.selectInstallerAsset(withDigest(null), '1.2.3', sha).ok, true);
+  assert.strictEqual(um.selectInstallerAsset(withDigest(''), '1.2.3', sha).ok, true);
+  assert.strictEqual(um.selectInstallerAsset(withDigest('sha256:' + 'd'.repeat(64)), '1.2.3', sha).ok, false,
+    'a digest that disagrees with the manifest is a hard failure');
+  assert.strictEqual(um.selectInstallerAsset(withDigest('sha256:deadbeef'), '1.2.3', sha).ok, false,
+    'an uninterpretable digest must not read as "no claim"');
+  assert.strictEqual(um.selectInstallerAsset(withDigest('md5:' + sha), '1.2.3', sha).ok, false,
+    'only sha256 is the frozen algorithm');
+});
+
 /* ── cleanup ────────────────────────────────────────────────────────────── */
 try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (e) { /* best effort */ }
 

@@ -117,6 +117,12 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{sys}\wscript.exe"; Parameters: """
 [Run]
 ; Finish page: launch through the same silent chain as the shortcuts.
 Filename: "{sys}\wscript.exe"; Parameters: """{app}\启动 InternalBeyond.vbs"""; WorkingDir: "{app}"; Description: "启动 {#AppName}"; Flags: nowait postinstall skipifsilent
+; Zero-touch update (U-D5): the updater helper has already exited and the old
+; instance was stopped by StopInternalBeyond above, so the installer is the only
+; thing that can put InternalBeyond back. Gated on the /IBRELAUNCH=1 parameter
+; the updater passes (U-D3): an ordinary interactive or silent install passes no
+; such parameter and therefore launches nothing here, exactly as before.
+Filename: "{sys}\wscript.exe"; Parameters: """{app}\启动 InternalBeyond.vbs"""; WorkingDir: "{app}"; Flags: nowait; Check: WantsRelaunch
 
 [UninstallRun]
 ; Stop our own instance before program files (including the bundled node.exe)
@@ -124,6 +130,22 @@ Filename: "{sys}\wscript.exe"; Parameters: """{app}\启动 InternalBeyond.vbs"""
 Filename: "{app}\runtime\node\node.exe"; Parameters: """{app}\tools\{#StopHelper}"" --root ""{app}"""; Flags: runhidden skipifdoesntexist; RunOnceId: "StopInternalBeyond"
 
 [Code]
+var
+  { Set when a verified-broken install must not be launched automatically. See
+    WantsRelaunch below. Empty means "nothing is known to be wrong". }
+  RelaunchBlocked: String;
+
+{ ── Relaunch after a zero-touch update (U-D5) ───────────────────────────
+  /IBRELAUNCH=1 is passed by the updater helper (U-D3). It is the ONLY way an
+  install started by the updater brings the app back, because a silent install
+  suppresses the finish-page [Run] entry above. A never-verified runtime is not
+  relaunched: the user has just been told the install is broken, and opening an
+  app that cannot start would only add a second, more confusing error. }
+function WantsRelaunch(): Boolean;
+begin
+  Result := (ExpandConstant('{param:IBRELAUNCH|0}') = '1') and (RelaunchBlocked = '');
+end;
+
 { ── Product ports ───────────────────────────────────────────────────────
   Defaults are the shipping ports. The IB_* overrides exist so an automated
   smoke run can move the installer's own identity probe onto isolated ports:
@@ -364,6 +386,7 @@ begin
     Problem := ValidateBundledRuntime();
     if Problem <> '' then
     begin
+      RelaunchBlocked := Problem;
       ForceDirectories(ExpandConstant('{app}\logs'));
       SaveStringToFile(ExpandConstant('{app}\logs\runtime-invalid.txt'),
         Problem + #13#10 + '请重新下载安装包后再试。' + #13#10, False);

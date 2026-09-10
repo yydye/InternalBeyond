@@ -47,8 +47,11 @@ InternalBeyond/  # 仓库根目录（根只放入口 / 许可 / 版本 / 元数�
 │   ├── local-services-runner.js # Bridge + Active 统一控制器 + 23116 重启/停止控制面
 │   ├── boot-state.js            # 启动状态记录（诊断唯一来源）
 │   ├── product-version.js       # VERSION 的唯一 Node 侧解析器 + 唯一 semver compare（U-D4）
-│   ├── update-manifest.js       # 更新清单契约（U1）：schema / 唯一 URL 构造 / validate / parseInstallerUrl
-│   ├── update-check.js          # 更新检查运行时（U2）：传输 + 回退门 + 缓存 + fail-open
+│   ├── update-manifest.js       # 更新清单契约（U1）：schema / 唯一 URL 构造 / validate / parseInstallerUrl / 资产选择
+│   ├── update-transport.js      # 更新共用传输（U2+U3）：HTTPS + 每一跳白名单 + 网络错误分类 + 回退门 + 文本/文件 sink
+│   ├── update-check.js          # 更新检查运行时（U2）：回退门 + 24h 缓存 + fail-open
+│   ├── update-install.js        # 更新安装运行时（U3）：下载 + 四道校验 + detached 启动安装器 + 立即退出
+│   ├── pe-version.js            # 安装包 PE 版本资源读取（U3）：ProductVersion/FileVersion 闸门
 │   └── node/                    # 内置 Node 运行时（node.exe 不入库，由 scripts/update-node-runtime.ps1 下载）
 ├── bridge/                      # Bridge 工厂模块
 │   ├── util.js                  # deepMerge / backupBrokenFile / uid / todayStr / constantTimeTokenMatch / parseQuery
@@ -707,7 +710,9 @@ Coread 与 Cinema 不各自为政，统一跑在这套运行时上，天然可�
 - `test_harness_boundary.js`（P17 扩充）：DOM 检测在「注释 + 字符串字面量挖空」后的代码上运行，并单列 `window['document']` 形态；自带 6 个负例（URL / 文案含 document·navigator 不报错）与 8 个正例（真实 DOM 访问仍报错）。
 
 - `test_update_manifest.js`（U1，纯 Node，38 项，不联网）：更新清单契约——schema/键序、`build()` 的诚实性（`releasedAt`/`notes` 缺失即省略、绝不编造时间戳）、`validate()` 接受/拒绝矩阵（含 URL 与版本必须互相钉死、`sizeBytes` 合理区间）、`parseInstallerUrl()`、`writeManifest()` 拒绝落盘、构建端不得自行拼 tag/资产名、无执行面、依赖收敛；U2 追加 **U-D1 Revised 传输路由**（冻结地址未被改动、API 端点与版本头、传输白名单四个主机、`assetApiUrl()` 唯一构造、`selectManifestAsset()` 对 draft/prerelease/资产名的严格接受与拒绝）。
-- `test_update_check.js`（U2，纯 Node，50 项，**不联网**）：回退门（`fallbackAllowed() === (outcome === 'network')`，且所有 hard failure **一次都不碰** API 路）、网络错误分类到冻结种类、每个跳转 hop 的白名单校验、唯一 semver 比较（数值而非字典序、非法输入返回 null、浏览器侧无第二实现）、24h 缓存（恰好 24h 才过期/手动 `force` 绕过并刷新/校验失败的缓存只算未命中/**失败绝不缓存**/缓存写在 `{app}` 之外/写不进只是 warning）、fail-open（transport 抛异常、reject、返回垃圾都只得到 `no-information`，绝不抛出）、单飞（并发自动检查共用一次往返，手动检查不并入）、`GET /__update-check` 的**真实服务器**行为（启动时 0 次检查、`?force=1`、异源 403、非 GET/POST 405、永远 200、`summarize()` 投影精确且不转发原始 manifest internals），以及接线（发行白名单、启动链不引用、test-all 登记）。
+- `test_update_install.js`（U3，纯 Node，57 项，**不联网、不安装**）：U-D6 载荷回退门（HTTP 4xx/5xx、跳转被拒、四道校验失败**一次都不碰** API；只有 network 才走且只走一次备路，备路失败不再重试、不回到 primary；release 的 draft/prerelease/tag/资产名逐个拒绝；`asset.digest` 缺失不算失败、不符/不可解析/非 sha256 一律失败）、四道闸门（Content-Length 在**一个字节落盘前**就判、`.part` 只在全部通过后 atomic rename、任何不符都删文件、中断传输也删干净、被拆掉的 URL 连连接都不开）、载荷绝不进 `{app}`、spawn 契约（frozen args / `shell:false` / detached / unref，以及**真实进程**证明 detached 安装器比 helper 活得久）、安装状态文件（损坏文件当"没有"、`active` 三条件、原子写、投影不含路径与 pid）、helper 只信自己的已验证缓存（无/过期缓存、版本不符、失败如实记录、旧载荷清理）、以及安装锁（并发拒绝且不覆写他人状态、持有者消失可接管、成功移交给安装器、失败必释放、真实 helper 进程跑完不残留）、两个端点的完整拒绝矩阵（含 U-D6 item 7 的 `browser-supplied-transport-fields`，并断言**只有 version 一个字段**跨过 spawn 边界）、以及共用传输不回归（文本 sink 的上限/解压/炸弹、stall 期限的接线）。
+- `test_pe_version.js`（U3，纯 Node，13 项，不联网、不安装）：真实 `runtime/node/node.exe` + 合成 PE32/PE32+ 都能读出 `ProductVersion`/`FileVersion`/固定版本；四段版本的前三段必须一致而第四段刻意不钉死；StringFileInfo 与固定信息互相矛盾时拒绝；九种具名损坏（无 MZ / 无 PE / 无资源目录 / 无 RT_VERSION / 无 VS_FIXEDFILEINFO 签名 / 谎报长度的资源 / 越界 data entry / 无节 / 空文件）逐个拒绝；随机字节与目录/缺失路径/`null` 都只返回拒绝、绝不抛异常。
+- `test_update_check.js`（U2，纯 Node，51 项，**不联网**）：回退门（`fallbackAllowed() === (outcome === 'network')`，且所有 hard failure **一次都不碰** API 路）、网络错误分类到冻结种类、每个跳转 hop 的白名单校验、唯一 semver 比较（数值而非字典序、非法输入返回 null、浏览器侧无第二实现）、24h 缓存（恰好 24h 才过期/手动 `force` 绕过并刷新/校验失败的缓存只算未命中/**失败绝不缓存**/缓存写在 `{app}` 之外/写不进只是 warning）、fail-open（transport 抛异常、reject、返回垃圾都只得到 `no-information`，绝不抛出）、单飞（并发自动检查共用一次往返，手动检查不并入）、`GET /__update-check` 的**真实服务器**行为（启动时 0 次检查、`?force=1`、异源 403、非 GET/POST 405、永远 200、`summarize()` 投影精确且不转发原始 manifest internals），以及接线（发行白名单、启动链不引用、test-all 登记）。
 
 ### service 组
 
@@ -730,7 +735,7 @@ Coread 与 Cinema 不各自为政，统一跑在这套运行时上，天然可�
 > 发布侧契约（产物、上传顺序、清单字段、构建期闸门、安全边界）见 [RELEASE.md](RELEASE.md)；
 > 架构决策见 [DECISIONS.md](DECISIONS.md) U 系列。本节只讲**客户端这一侧的形状**。
 >
-> 进度：**U1（发布契约）+ U2（检查运行时）已实现**；U3（下载/安装）与 U4（Diagnostics UI）待做。
+> 进度：**U1（发布契约）+ U2（检查运行时）+ U3（下载/校验/安装）已实现**；U4（Diagnostics UI）待做。
 
 ### 三个真源，各自唯一
 
@@ -738,10 +743,14 @@ Coread 与 Cinema 不各自为政，统一跑在这套运行时上，天然可�
 |---|---|---|
 | 清单 schema / URL 构造 / 校验 / 解析 | `runtime/update-manifest.js` | 构建脚本（构造）、Node 侧（校验）、测试 |
 | 版本解析与 **semver 比较** | `runtime/product-version.js`（`parse` / `compare`） | Node 侧任意模块；浏览器**不得**再实现一份 |
-| 检查（传输 / 回退 / 缓存 / 判定） | `runtime/update-check.js` | `services/internal-beyond-server.js` 的端点；U3 复用其解析结果 |
+| 检查（传输 / 回退 / 缓存 / 判定） | `runtime/update-check.js` | `services/internal-beyond-server.js` 的端点；U3 复用其缓存结果 |
+| 传输（HTTPS / 跳转白名单 / 网络错误分类） | `runtime/update-transport.js` | 检查与安装**共用同一实现**；不得有第二份 |
+| 安装（下载 / 四道校验 / 启动安装器） | `runtime/update-install.js` | `/__update/start`；helper 子进程 |
+| 安装包 PE 版本 | `runtime/pe-version.js` | 只被 `update-install.js` 用于放行载荷 |
 
 浏览器只渲染。U4 的诊断页不实现传输、不实现 manifest 校验、不实现版本比较——它只调
-`GET /__update-check` 并把返回的投影画出来（`notes` 必须以 `textContent` 渲染，**永不 innerHTML**）。
+`GET /__update-check` 与 `GET /__update-status`，把返回的投影画出来（`notes` 必须以
+`textContent` 渲染，**永不 innerHTML**）。
 
 ### 检查路径
 
@@ -755,7 +764,7 @@ Coread 与 Cinema 不各自为政，统一跑在这套运行时上，天然可�
                                                         （draft/prerelease 必须为 false、资产名精确匹配）
 ```
 
-### 五条不可动摇的性质
+### 不可动摇的性质（U2 五条 + U3 三条）
 
 1. **不在启动关键路径上**：`launch-internal-beyond.js` 与 `local-services-runner.js` 都不引用
    更新模块；`createWebServer()` **不做任何检查**（有测试守着：启动后 0 次）。启动永远不会
@@ -774,6 +783,18 @@ Coread 与 Cinema 不各自为政，统一跑在这套运行时上，天然可�
 5. **无凭据**：匿名只读，不发送 token/Authorization，不读任何 `*_TOKEN` 环境变量。API 限额
    （60 次/小时/IP）只在 primary 网络失败时消耗。
 
+U3 追加的三条（同一份不可动摇清单的延续）：
+
+6. **载荷绝不进 `{app}`**：下载目录固定 `%LOCALAPPDATA%\InternalBeyond\updates`，并且**运行期
+   再检查一次**——`IB_UPDATE_DIR` 指到 `{app}` 里面时不是照做，而是拒绝（`payload-dir-inside-app`）。
+   有测试拿仓库根当载荷目录，断言"一个请求都不发、一个文件都不建"。
+7. **helper 必须比安装器先死**：它只做「下载 → 四道校验 → detached spawn 安装器 → EXIT」，
+   **不实现 stop、不实现重启**（U-D5）。有测试在真实进程里证明：detached 出来的安装器
+   活得比 helper 久，而 helper 不会等它。
+8. **不是第二真源**：备路只是换一条到**同一份字节**的路。放行的依据永远是 manifest 里那个
+   sha256，且由本地重新计算；API 元数据、`asset.digest`、Content-Length 都只是额外闸门，
+   任何一道不过都**不换路**。
+
 ### 端点对外形状（U4 契约）
 
 `GET /__update-check` 返回 `runtime/update-check.js` 的 `summarize()` 投影，字段固定：
@@ -786,3 +807,90 @@ Coread 与 Cinema 不各自为政，统一跑在这套运行时上，天然可�
 
 `status` ∈ `update-available` / `up-to-date` / `no-information`。**原始 manifest、attempts、
 warnings 一律不转发**（有测试断言精确键集），所以 UI 不可能意外依赖内部结构。
+
+### 安装路径（U3）
+
+```
+浏览器  POST /__update/start  {version}      ← 只允许 version 这一个字段（U-D6 item 7）
+   │      同源守卫 · 405/403/400/409/503
+   │
+   ├─ 服务端自己 readCache()：只有「已验证的缓存 manifest」能成为安装对象
+   ├─ body.version 必须等于该 manifest 的 version（否则 409 version-mismatch）
+   ├─ 已有 run 在跑 → 409 already-in-progress
+   └─ spawnHelper({version})  ──►  detached 子进程 runtime/update-install.js --version X
+                                   │（服务端立刻 202，不等结果、不转发路径/URL/hash）
+                                   ├─ 再次 readCache() 复核版本（不信任任何外部输入）
+                                   ├─ 清理其它版本的旧载荷 / 残留 .part
+                                   ├─ 下载 primary（manifest.installer.url）
+                                   │    仅当「没拿到完整响应实体」→ API asset 备路（U-D6）
+                                   ├─ 校验：Content-Length == sizeBytes → 实际字节 == sizeBytes
+                                   │        → sha256 == manifest.installer.sha256
+                                   │        → PE ProductVersion/FileVersion
+                                   ├─ .part → atomic rename（任何失败都删文件）
+                                   ├─ spawn 安装器（frozen args，detached，shell:false）
+                                   └─ 写 state=launched 后 **立刻 EXIT**
+
+浏览器  GET /__update-status   ← 安装状态文件投影（U4 渲染，服务端不发明任何进度）
+
+随后由安装器接管：PrepareToInstall → ib-stop.js --root {app} → wait unlock → 替换文件 →
+validate runtime → [Run] Check: WantsRelaunch（/IBRELAUNCH=1 才启动）→ wscript 启动 IB。
+```
+
+**helper 为什么必须退出**：它跑在 `runtime\node\node.exe` 上，而安装器要替换这个文件；
+helper 活着就会把升级变成 `DeleteFile failed; code 5`。所以它 spawn 完安装器就结束，
+停止与重启全部留给安装器（只有安装器知道文件何时真的可替换）。
+
+**状态文件**（`%LOCALAPPDATA%\InternalBeyond\updates\update-install-state.json`）：
+`state ∈ downloading / verifying / launching / launched / failed`，外加 version、bytes、
+totalBytes、transport、startedAt/updatedAt/finishedAt、error{kind,message}。
+读回时校验 schema 与 state 词表，**损坏的文件一律当"没有"**（绝不当作答案）；
+`active = 非终态 且 pid 还活着 且 状态还在动`（超过 30 分钟没动即视为死掉），
+所以崩溃的 helper 永远不会把下一次尝试永久卡住。投影**不含任何路径与 pid**。
+
+**一次只能有一个安装**：状态文件本身不够——服务端 spawn helper 到 helper 写下第一行状态之间
+有一个窗口，两次点击会变成两个 helper 往同一个 `.part` 文件里写。所以用**独立的锁文件**
+（`update-install.lock`，`O_EXCL` 原子创建）。成功 spawn 后锁**不移交给自己而是移交给安装器的 pid**：
+真正不能重叠的不是下载而是安装。锁的持有者已经不在（或超过 30 分钟没动）就接管，
+所以崩溃永远不会把功能永久锁死；失败的运行一定释放锁。
+
+**`/__update/start` 的拒绝理由**（都是 4xx/5xx，不是"假装成功"）：
+
+| 情况 | 状态 | kind |
+|---|---|---|
+| 非 POST | 405 | `method-not-allowed` |
+| 异源 | 403 | `origin-denied` |
+| 体不是 JSON / 不是对象 | 400 | `bad-json` / `bad-body` |
+| 体超过 4 KiB | 400 | `body-too-large` |
+| 出现 version 以外的任何字段 | 400 | `browser-supplied-transport-fields`（点名该字段） |
+| 没有 version 确认 | 400 | `version-required` |
+| 没有已验证的 manifest | 409 | `no-verified-manifest` |
+| version 与已验证 manifest 不符 | 409 | `version-mismatch` |
+| 已有安装在跑 | 409 | `already-in-progress` |
+| 安装模块不可用 | 503 | `update-module-unavailable` |
+| helper 起不来 | 503 | `start-failed` |
+
+### 载荷校验（四道闸门，全部在 `.part` 文件上完成）
+
+1. **Content-Length**：必须存在、是可解析的非负整数、且**恰好等于** `manifest.installer.sizeBytes`。
+   缺失或不等 = `content-length-invalid` / `size-mismatch`，**在一个字节落盘之前**就拒绝。
+2. **实际字节数**：传输结束后的真实长度必须等于同一个数（`size-mismatch`）。
+3. **SHA-256**：对**本地文件**重新计算，必须等于 `manifest.installer.sha256`（`sha256-mismatch`）。
+   API 备路声明的 `asset.digest` 若存在必须等于同一个值（U-D6 item 6），但那只是交叉校验。
+4. **PE 身份**：安装包的 `StringFileInfo\ProductVersion` 必须等于 `manifest.installer.productVersion`，
+   且 `VS_FIXEDFILEINFO` 的 product/file 版本前三段一致（第四段是构建脚本细节，刻意不钉死）。
+   这一条抓的是「字节与清单一致、但文件根本不是那个版本」——同一次哈希校验抓不到的情形。
+
+任何一道不过：删除文件、本次安装失败、**不换路径、不重试**。全部通过才 atomic rename 成
+`InternalBeyond-Setup-<version>.exe`，然后才 spawn 安装器。
+
+### 与 U2 共用的东西（U-D6 item 9）
+
+| 共用 | 位置 |
+|---|---|
+| HTTPS 请求 + **每一跳**重定向白名单 | `runtime/update-transport.js` `fetchTo()` |
+| 网络错误 → 冻结种类（dns/connect-timeout/reset/refused/unreachable/tls/socket） | 同上 `classifyNetworkError()` |
+| 回退判定（唯一等式） | 同上 `fallbackAllowed()`，U2/U3 都调它 |
+| 正文处理 | 参数化成 sink：文本 sink（U2，256 KiB + 解压）／文件 sink（U3，落盘 + 边下边算 hash） |
+
+U3 **没有**自己的 socket、跳转策略或错误分类；有一条测试扫描 `runtime/*.js`，断言
+`https.request(` 只出现在 `update-transport.js` 一个文件里。

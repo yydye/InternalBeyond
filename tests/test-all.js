@@ -124,6 +124,15 @@ const GROUPS = [
          手动绕过、fail-open、GET /__update-check 端点）。纯 Node、不联网
          （transport 全部注入；唯一的服务器测试 patch 掉 checkShared）。 */
       ['test_update_check.js'],
+      /* U3：更新安装运行时（U-D6 载荷回退门 / Content-Length·size·sha256·PE 版本
+         四道校验 / 载荷绝不落进 {app} / detached spawn + helper 立即退出 /
+         安装状态文件 / POST /__update/start 只接受版本确认）。纯 Node、不联网
+         （载荷传输全部注入，不构建也不运行任何安装包；唯一的真实进程测试只
+         启动 node.exe 以证明 detached 子进程比父进程活得久）。 */
+      ['test_update_install.js'],
+      /* U3：安装包 PE 版本资源读取（真实 node.exe + 合成 PE32/PE32+ 与具名损坏），
+         纯 Node、不联网、不安装。 */
+      ['test_pe_version.js'],
       /* P12：Image Router / Image Scheduler 专项（纯 Node，确定性并发/优先级/失败恢复） */
       ['test_image_router.js'],
       /* P13：图片编辑 / 参考图解析专项（归一化/限额/选源优先级/lineage/多轮 A→B→C/edit 路由） */

@@ -145,6 +145,98 @@ function selectManifestAsset(release) {
   };
 }
 
+/* ── Installer payload route (U-D6) ───────────────────────────────────────── */
+
+/*
+ * Pick the INSTALLER asset out of a `GET /releases/latest` payload, for the
+ * payload-transport fallback frozen by U-D6.
+ *
+ * This is the U3 sibling of selectManifestAsset() above and deliberately shares
+ * its shape, NOT its asset name: the manifest fallback looks for
+ * `update-stable.json`, the payload fallback looks for the version-pinned
+ * installer. Both are only transport detours to the SAME Release the manifest
+ * already described — neither is a second source of truth.
+ *
+ * Accepted ONLY when every one of these holds:
+ *   · the release is proven published   draft === false
+ *   · the release is proven stable      prerelease === false
+ *   · the release tag IS the manifest version   tag_name === 'v' + version
+ *   · exactly one asset is named        InternalBeyond-Setup-<version>.exe
+ *
+ * `digest` (U-D6 item 6): when the API declares one it MUST be
+ * `sha256:<manifest.installer.sha256>`, otherwise this is a hard failure. An
+ * absent digest is not itself a failure — it proves nothing, and the locally
+ * recomputed SHA-256 of the downloaded file remains the authority. A digest that
+ * is present but malformed is a failure too: an uninterpretable integrity claim
+ * must not be read as "no claim".
+ *
+ * Returns { ok, why, assetId, tag, version, name, size, digest, digestDeclared }.
+ */
+function normalizeDigest(value) {
+  if (value === null || value === undefined) return { present: false, algorithm: null, hex: null, malformed: false };
+  const raw = String(value).trim();
+  if (!raw) return { present: false, algorithm: null, hex: null, malformed: false };
+  const m = /^([a-z0-9]+):([0-9a-fA-F]{64})$/.exec(raw);
+  if (!m) return { present: true, algorithm: null, hex: null, malformed: true };
+  return { present: true, algorithm: m[1].toLowerCase(), hex: m[2].toLowerCase(), malformed: false };
+}
+
+function selectInstallerAsset(release, version, expectedSha256) {
+  const want = String(version == null ? '' : version).trim();
+  const sha = normalizeSha256(expectedSha256);
+  const fail = function (why) {
+    return {
+      ok: false, why: why, assetId: null, tag: null, version: want,
+      name: installerAssetName(want), size: null, digest: null, digestDeclared: false
+    };
+  };
+  if (!isPlainObject(release)) return fail('release payload is not a JSON object');
+  if (release.draft !== false) return fail('release is not proven published (draft !== false)');
+  if (release.prerelease !== false) return fail('release is not proven stable (prerelease !== false)');
+  if (!productVersion.parse(want)) return fail('manifest version is not MAJOR.MINOR.PATCH: ' + JSON.stringify(want));
+  if (!SHA256_RE.test(sha)) return fail('manifest installer.sha256 is not 64 hex characters');
+
+  const tag = String(release.tag_name == null ? '' : release.tag_name).trim();
+  if (tag !== tagFor(want)) return fail('release tag ' + JSON.stringify(tag) + ' is not ' + JSON.stringify(tagFor(want)));
+
+  if (!Array.isArray(release.assets)) return fail('release payload has no assets array');
+  const name = installerAssetName(want);
+  const matches = release.assets.filter(function (a) {
+    return isPlainObject(a) && String(a.name) === name;
+  });
+  if (matches.length === 0) return fail('release has no asset named ' + name);
+  if (matches.length > 1) return fail('release has ' + matches.length + ' assets named ' + name + '; ambiguous');
+
+  const asset = matches[0];
+  const url = assetApiUrl(asset.id);
+  if (!url) return fail('asset ' + name + ' has no usable id: ' + JSON.stringify(asset.id));
+
+  const digest = normalizeDigest(asset.digest);
+  if (digest.malformed) {
+    return fail('asset ' + name + ' declares an uninterpretable digest: ' + JSON.stringify(asset.digest));
+  }
+  if (digest.present) {
+    if (digest.algorithm !== 'sha256') {
+      return fail('asset ' + name + ' digest algorithm is ' + JSON.stringify(digest.algorithm) + ', expected sha256');
+    }
+    if (digest.hex !== sha) {
+      return fail('asset ' + name + ' digest ' + digest.hex + ' does not match the manifest sha256 ' + sha);
+    }
+  }
+
+  return {
+    ok: true,
+    why: null,
+    assetId: Number(asset.id),
+    tag: tag,
+    version: want,
+    name: name,
+    size: typeof asset.size === 'number' ? asset.size : null,
+    digest: digest.present ? 'sha256:' + digest.hex : null,
+    digestDeclared: digest.present
+  };
+}
+
 /* Sanity bounds for installer.sizeBytes. Not a security control — a guard
    against a truncated or nonsense manifest. The payload always carries the
    bundled Node runtime, so a real installer is ~48 MB; anything under 8 MiB is
@@ -412,6 +504,8 @@ module.exports = {
   RELEASES_BASE: RELEASES_BASE,
   DOWNLOAD_BASE: DOWNLOAD_BASE,
   TAG_PREFIX: TAG_PREFIX,
+  ASSET_PREFIX: ASSET_PREFIX,
+  ASSET_SUFFIX: ASSET_SUFFIX,
   MANIFEST_ASSET: MANIFEST_ASSET,
   MANIFEST_URL: MANIFEST_URL,
   ALLOWED_HOSTS: ALLOWED_HOSTS,
@@ -421,6 +515,8 @@ module.exports = {
   TRANSPORT_HOSTS: TRANSPORT_HOSTS,
   assetApiUrl: assetApiUrl,
   selectManifestAsset: selectManifestAsset,
+  selectInstallerAsset: selectInstallerAsset,
+  normalizeDigest: normalizeDigest,
   NOTES_MAX_CHARS: NOTES_MAX_CHARS,
   BUILD_FIELDS: BUILD_FIELDS,
   MIN_PLAUSIBLE_INSTALLER_BYTES: MIN_PLAUSIBLE_INSTALLER_BYTES,
@@ -428,6 +524,7 @@ module.exports = {
   tagFor: tagFor,
   installerAssetName: installerAssetName,
   installerUrl: installerUrl,
+  normalizeSha256: normalizeSha256,
   build: build,
   serialize: serialize,
   validate: validate,

@@ -45,6 +45,19 @@
  *   · This is the only outbound request the product makes on its own behalf,
  *     and it is same-origin guarded like /__shutdown.
  *
+ * POST /__update/start (U3): begin downloading and installing the pending
+ * update. The request body may carry a version confirmation and NOTHING else
+ * (U-D6 item 7): no URL, no hash, no path. The server resolves the manifest from
+ * its own verified cache, checks the confirmation against it, and starts
+ * runtime/update-install.js as a short-lived detached helper, which exits as soon
+ * as the installer is running. This endpoint never downloads anything itself, so
+ * a slow link cannot hold a request open and a crash here cannot leave a
+ * half-download behind.
+ *
+ * GET /__update-status (U3): read-only projection of that helper's state file
+ * (%LOCALAPPDATA%\InternalBeyond\updates\update-install-state.json). U4 renders
+ * it; this server invents nothing about the update's progress.
+ *
  * Path safety (P7 hardening): requests are resolved inside the served root and
  * hidden/denylisted segments (`.git`, `.env`, `logs`, `node_modules`, ...) are
  * refused outright, so a dev checkout served by this process cannot be walked
@@ -76,6 +89,20 @@ try {
 } catch (err) {
   updateCheck = null;
   updateCheckLoadError = 'the update runtime could not be loaded: ' + String((err && err.message) || err);
+}
+
+/*
+ * The install half (U3) is loaded DEFENSIVELY for the same reason: /__update/start
+ * and /__update-status degrade to a named "unavailable" answer, and the app —
+ * which has nothing to do with updating — starts normally regardless.
+ */
+let updateInstall = null;
+let updateInstallLoadError = null;
+try {
+  updateInstall = require('../runtime/update-install.js');
+} catch (err) {
+  updateInstall = null;
+  updateInstallLoadError = 'the update install runtime could not be loaded: ' + String((err && err.message) || err);
 }
 
 /* Served web root == repository root (and == installed app root). This file
@@ -179,9 +206,125 @@ function shutdownOriginAllowed(req) {
   return false;
 }
 
+/* Read a small JSON request body. Bounded: a request that keeps sending is
+   dropped rather than buffered. Always resolves. */
+function readJsonBody(req, maxBytes) {
+  return new Promise(function (resolve) {
+    const chunks = [];
+    let total = 0;
+    let settled = false;
+    const done = function (value) { if (!settled) { settled = true; resolve(value); } };
+    req.on('data', function (chunk) {
+      if (settled) return;
+      total += chunk.length;
+      if (total > maxBytes) {
+        /* Stop accumulating, answer, and keep draining so the caller receives the
+           answer instead of a reset. A sender that never stops is dropped after a
+           bounded grace period (the timer is unref'd: it can never hold the
+           process open). */
+        done({ ok: false, kind: 'body-too-large', why: 'request body over ' + maxBytes + ' bytes' });
+        try { req.resume(); } catch (e) { }
+        const giveUp = setTimeout(function () { try { req.destroy(); } catch (e) { } }, 3000);
+        if (typeof giveUp.unref === 'function') giveUp.unref();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', function () {
+      const raw = Buffer.concat(chunks).toString('utf8').replace(/^\uFEFF/, '').trim();
+      if (!raw) { done({ ok: true, json: {} }); return; }
+      let parsed = null;
+      try { parsed = JSON.parse(raw); } catch (e) {
+        done({ ok: false, kind: 'bad-json', why: 'the request body is not valid JSON' });
+        return;
+      }
+      done({ ok: true, json: parsed });
+    });
+    req.on('error', function (err) {
+      done({ ok: false, kind: 'body-read-failed', why: String((err && err.message) || err) });
+    });
+  });
+}
+
+/*
+ * POST /__update/start — the user's "download and install" confirmation.
+ *
+ * The security shape of this endpoint is one allowlist and one comparison:
+ *
+ *   · the body may contain `version` and nothing else (U-D6 item 7). A body
+ *     carrying url / sha256 / path / file is REFUSED BY NAME rather than
+ *     ignored, so a future UI can never quietly start depending on it.
+ *   · the version must equal the version of the manifest this server itself has
+ *     verified and cached. The browser cannot name what gets installed.
+ *
+ * Everything else — which URL, which hash, where the file goes — is resolved by
+ * runtime/update-install.js from that same verified cache.
+ */
+function respondUpdateStart(req, res, ctx) {
+  const install = ctx.install;
+  const check = ctx.check;
+  const respond = function (status, body) {
+    if (res.writableEnded || res.destroyed) return;
+    res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify(body));
+  };
+  const refuse = function (status, kind, message) {
+    respond(status, { ok: false, error: { kind: kind, message: message } });
+  };
+
+  if (req.method !== 'POST') return refuse(405, 'method-not-allowed', 'POST only');
+  if (!shutdownOriginAllowed(req)) return refuse(403, 'origin-denied', 'the request came from another origin');
+  if (!install || !check) {
+    return refuse(503, 'update-module-unavailable', ctx.installError || 'the update runtime is unavailable');
+  }
+
+  readJsonBody(req, 4096).then(function (body) {
+    if (!body.ok) return refuse(400, body.kind, body.why);
+    const payload = body.json;
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      return refuse(400, 'bad-body', 'the request body must be a JSON object');
+    }
+
+    /* U-D6 item 7: a version confirmation, or an opaque id — nothing that could
+       locate or describe a payload. */
+    const extra = Object.keys(payload).filter(function (k) { return k !== 'version'; });
+    if (extra.length) {
+      return refuse(400, 'browser-supplied-transport-fields',
+        'the browser may not choose what gets installed; unexpected field(s): ' + extra.join(', '));
+    }
+    const version = typeof payload.version === 'string' ? payload.version.trim() : '';
+    if (!version) return refuse(400, 'version-required', 'a version confirmation is required');
+
+    /* The ONLY manifest this server will install from: its own verified cache. */
+    const cached = check.readCache({ now: Date.now() });
+    if (!cached || !cached.hit) {
+      return refuse(409, 'no-verified-manifest',
+        'there is no verified update information to install from; check for updates again');
+    }
+    const latest = String((cached.manifest && cached.manifest.version) || '');
+    if (latest !== version) {
+      return refuse(409, 'version-mismatch',
+        'the verified update is ' + JSON.stringify(latest) + ', not ' + JSON.stringify(version));
+    }
+
+    const state = install.readState({});
+    /* A busy check, not just a state check: the lock also covers the window
+       before the helper has written anything, and the install itself. */
+    if (install.isBusy ? install.isBusy({}) : state.active) {
+      return refuse(409, 'already-in-progress', 'an update download is already running');
+    }
+
+    const started = install.spawnHelper({ version: version });
+    if (!started.ok) return refuse(503, 'start-failed', started.why);
+
+    /* The helper is a separate detached process; this request does not wait for
+       it and does not track it. U4 polls /__update/status. */
+    return respond(202, { ok: true, accepted: true, version: version, state: 'starting' });
+  });
+}
+
 /* Stop accepting connections and exit. `opts.onShutdown` lets tests observe the
-   request without terminating the test process. */
-function performShutdown(server, opts) {
+   request without terminating the test process. */function performShutdown(server, opts) {
   const o = opts || {};
   if (typeof o.onShutdown === 'function') {
     try { o.onShutdown({ port: server.port, identity: server.identity }); } catch (e) { }
@@ -204,6 +347,11 @@ function createWebServer(opts) {
   const host = o.host || '127.0.0.1';
   const port = o.port || optionPort('IB_WEB_PORT', 23120);
   const identity = o.identity || 'InternalBeyond Web';
+  /* Injection seams for tests. Production always uses the modules above; a test
+     may substitute a stub so it can exercise the endpoint contract without a
+     network or a real install. */
+  const check = o.updateCheck || updateCheck;
+  const install = o.updateInstall || updateInstall;
 
   const server = http.createServer(function (req, res) {
     const pathname = String(req.url || '/').split('?')[0];
@@ -288,7 +436,7 @@ function createWebServer(opts) {
           ok: false,
           /* Frozen literal, used only when the module is unavailable and its
              constant therefore cannot be read. Same value, same contract. */
-          status: updateCheck ? updateCheck.STATUS_NO_INFORMATION : 'no-information',
+          status: check ? check.STATUS_NO_INFORMATION : 'no-information',
           updateAvailable: false,
           currentVersion: '',
           latestVersion: '',
@@ -300,18 +448,34 @@ function createWebServer(opts) {
         });
       };
 
-      if (!updateCheck) {
+      if (!check) {
         respondNoInformation('update-module-unavailable', updateCheckLoadError);
         return;
       }
 
-      updateCheck.checkShared({ force: force }).then(function (result) {
-        respond(updateCheck.summarize(result));
+      check.checkShared({ force: force }).then(function (result) {
+        respond(check.summarize(result));
       }, function (err) {
         /* check() never rejects, and this branch exists so a future bug cannot
            leave a Diagnostics request hanging forever. */
         respondNoInformation('internal-error', String((err && err.message) || err));
       });
+      return;
+    }
+    if (pathname === '/__update/start') {
+      respondUpdateStart(req, res, { install: install, check: check, installError: updateInstallLoadError });
+      return;
+    }
+    if (pathname === '/__update/status') {
+      const body = install
+        ? install.summarizeState(install.readState({}))
+        : {
+          ok: false, state: 'unavailable', active: false, version: '', transport: '',
+          bytes: 0, totalBytes: 0, startedAt: '', updatedAt: '', finishedAt: '',
+          error: { kind: 'update-module-unavailable', message: updateInstallLoadError }
+        };
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify(body));
       return;
     }
     const hit = resolveRequest(root, req.url);

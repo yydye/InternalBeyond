@@ -878,3 +878,94 @@ token / 登录 / 额外配置**。DECISIONS 以「U-D1 Revised」独立小节记
 受影响的相邻套件不回归：`test_boot_state.js` 37 ✔、`test_diagnostics.js` 120 ✔、
 `test_launcher.js` 16 ✔、`test_installer_mock.js` 26 ✔（1 跳过）、`test_ib_stop_identity.js` 12 ✔、
 `test_frontend_structure.js` ✔、`test_harness_boundary.js` 42 ✔。
+
+## 2026-09-10 · U3 · 更新安装运行时（U-D6 载荷回退 + 四道校验 + detached 启动安装器）
+
+Zero-Touch Update 第三阶段。U2 让产品**会问**「有没有新版本」；U3 让它**真的装上**。
+整条链按 U-D5 切成两半：**helper 只做「下载 → 校验 → detached 启动安装器 → 立刻退出」**，
+停止与重启全部留给安装器（只有安装器知道文件何时真的可替换）。
+
+### U-D6 · Installer Payload Transport Fallback（用户冻结，独立新增决策）
+
+U-D1 Revised 只管「读清单」。载荷走的是 `github.com`，在同样一些网络上是间歇不可达的，
+所以把同一条规则扩展到 50 MB 级的 exe：primary 用 `manifest.installer.url`；**只有 primary
+连一个完整响应实体都没拿到**（DNS/超时/重置/不可达/TLS/中途断流）才允许 GitHub API asset 备路，
+且只接受 `draft === false`、`prerelease === false`、**tag 与 `manifest.version` 一致**、
+资产名精确等于 `InternalBeyond-Setup-<version>.exe`。备路只是传输替代、不是第二真源。
+HTTP 4xx/5xx · wrong asset · wrong tag · invalid Content-Length（缺失也算）· size mismatch ·
+sha256 mismatch · PE 版本不符 · 任何安全校验失败 —— 一律 hard failure，**不换路、不重试**。
+`asset.digest` 若存在必须等于 `sha256:<manifest.installer.sha256>`，不符即失败；缺失不算失败；
+最终仍必须对本地文件重新计算 SHA-256。写入 `docs/DECISIONS.md` 时作为**独立新增小节**，
+U-D1 / U-D1 Revised 原文一字未动。
+
+### 新增
+
+- **`runtime/update-install.js`（新增，安装运行时 + helper CLI）**：`startInstall()` 只从
+  **自己已验证的缓存**（`update-check.json`，读回重新 `validate()`）解析安装对象，版本不符直接拒绝；
+  载荷下载到 `%LOCALAPPDATA%\InternalBeyond\updates`（**运行期再检查一次绝不在 `{app}` 内**，
+  越界配置直接拒绝而不是照做）；`.part` 流式落盘、边下边算 hash，全部校验通过才 atomic rename；
+  任何失败都删文件；`spawnInstaller()` 用 U-D3 冻结参数数组 + `shell:false` + detached + unref；
+  另有安装状态文件（`update-install-state.json`）与旧载荷清理。**不实现 stop、不实现重启。**
+- **一次只能有一个安装**：状态文件不够——服务端 spawn helper 到 helper 写下第一行状态之间有个
+  窗口，两次点击会变成两个 helper 往同一个 `.part` 写。改用独立锁文件（`update-install.lock`，
+  `O_EXCL` 原子创建），成功后在**安装器的 pid** 名下续存（真正不能重叠的是安装），持有者消失或
+  超时就接管，失败必释放——崩溃不会把功能永久锁死。
+- **四道闸门**（全部在 `.part` 上完成，任一不过即删文件、不换路）：① `Content-Length` 存在、
+  可解析、**恰好等于** `sizeBytes`（在**一个字节落盘之前**就判）；② 实际字节数等于同一个数；
+  ③ 对**本地文件**重新计算的 SHA-256 等于 manifest 声明；④ 安装包 PE 身份
+  （`ProductVersion` 字符串 + 固定 file/product 版本前三段）。
+- **`runtime/pe-version.js`（新增，~230 行）**：有界定位读取（不整读 92 MB 文件）的
+  PE `RT_VERSION` 读取器，同时支持 PE32 与 PE32+（Inno 产出的是 PE32）。抓的是哈希抓不到的
+  那一类问题：**字节与清单一致、但文件根本不是那个版本**。九种具名损坏逐个拒绝，永不抛异常。
+- **`runtime/update-transport.js`（新增，最小抽取，U-D6 item 9）**：U2 的 hop 遍历 + 每一跳主机
+  白名单 + 网络错误分类 + `fallbackAllowed()` 移到这里，正文处理参数化为 **sink**
+  （文本 sink = U2 原语义；文件 sink = U3 落盘 + hash）。**结果是全仓只有一处 `https.request(`**
+  （有测试扫描 `runtime/*.js` 断言这一点），也没有第二份回退判定。新增可选的 stall 期限
+  （按 chunk 重置，U2 不启用，行为不变；另加 `stallTimeoutMs` 只为大载荷存在）。
+  U2 的 51 项原有测试一字不改地继续通过。
+- **`POST /__update/start` + `GET /__update-status`（`services/internal-beyond-server.js`）**：
+  start **只接受 `{version}` 一个字段**——出现 url / sha256 / path / hash / args 等任何字段一律
+  **400 并点名该字段**（U-D6 item 7），服务端只用自己缓存里那份已验证 manifest，版本不符 409；
+  接受后 detached 启动 helper 并立刻 202，**不等结果、不转发任何路径**。status 是安装状态文件的
+  只读投影（永远 200，不含路径与 pid）。安装模块同样 **defensive require**：模块坏了服务器照常启动，
+  两个端点降级为 `update-module-unavailable`。
+- **`installer/InternalBeyond.iss`（安装器侧 relaunch）**：新增 `[Run]` 条目
+  `Check: WantsRelaunch`，只有 `/IBRELAUNCH=1`（U-D3 冻结参数）才启动 IB——静默安装不会显示
+  结束页，没有它 U3 装完就再也起不来了。普通交互安装的 `postinstall skipifsilent` 条目**一字未动**；
+  内置运行时校验失败的安装不自动拉起（刚告诉过用户装坏了，再弹一个起不来的 App 只会更糊涂）。
+- **`runtime/update-manifest.js`**：新增 `selectInstallerAsset()`（载荷版资产选择：tag 必须等于
+  manifest 版本、资产名精确匹配、digest 交叉校验）、`normalizeDigest()`，并补导出
+  `ASSET_PREFIX` / `ASSET_SUFFIX` / `normalizeSha256`。`selectManifestAsset()` 未改动。
+
+### 测试
+
+- `tests/test_update_install.js`（**新增 57 项，不联网、不安装**）：回退门（13 类 hard failure
+  断言"一次都不碰 API"）、四道闸门、载荷绝不进 `{app}`、spawn 契约与状态文件、helper 只信自己的缓存、
+  两个端点的完整拒绝矩阵、共用传输不回归。**载荷传输全部注入**（测试驱动真实 sink）；
+  唯一的真实进程测试只启动 `node.exe`，用来证明 **detached 安装器比 helper 活得久**。
+- `tests/test_pe_version.js`（**新增 13 项**）+ `tests/pe-fixture.js`（合成 PE32/PE32+ 构造器，
+  可按名字损坏）：真实 `runtime/node/node.exe` 2 ms 读出 `24.18.0`，合成镜像覆盖 9 种损坏。
+- `test_update_manifest.js` 38 → 41、`test_installer.js` 46 → 47（新增 U-D5 relaunch 静态检查，
+  并交叉断言 helper 传的参数就是安装器读的参数）、`test_update_check.js` 50 → 51
+  （新增"全仓只有一处 `https.request(`"守卫）。
+
+验证：`test_update_install.js` 57 ✔、`test_pe_version.js` 13 ✔、`test_update_check.js` 51 ✔、
+`test_update_manifest.js` 41 ✔、`test_installer.js` 47 ✔、`test_ib_stop_identity.js` 12 ✔，
+**完整 static + service 回归 52 + 16 全绿（183 s）**。按 P7 测试预算：本期**没有**构建安装包、
+没有安装、没有卸载、浏览器 0 次打开。
+
+| 文件 | 改动 |
+|---|---|
+| `runtime/update-install.js` | **新增**：安装运行时 + helper CLI（缓存解析 / 下载 / 四道校验 / spawn / 状态文件 / 清理） |
+| `runtime/update-transport.js` | **新增**：共用 HTTPS 传输（hop 遍历 + 主机白名单 + 错误分类 + 回退门 + 两种 sink） |
+| `runtime/pe-version.js` | **新增**：PE 版本资源有界读取 + U-D6 版本闸门 |
+| `runtime/update-check.js` | 传输/白名单/错误分类/回退门改为引用共用模块（公开面与行为不变，51 项测试原样通过） |
+| `runtime/update-manifest.js` | 新增 `selectInstallerAsset()` / `normalizeDigest()`；补导出 `ASSET_PREFIX`/`ASSET_SUFFIX`/`normalizeSha256` |
+| `services/internal-beyond-server.js` | 新增 `POST /__update/start` + `GET /__update-status`（含 4 KiB 有界 body 读取与 defensive require） |
+| `installer/InternalBeyond.iss` | 新增 `/IBRELAUNCH=1` 门控的 relaunch `[Run]` 条目 + `RelaunchBlocked`（普通交互安装行为不变，BOM 保留） |
+| `scripts/release-manifest.js` | 白名单新增三个 runtime 模块（少了任何一个，安装后的更新功能都会静默降级） |
+| `tests/test_update_install.js` / `tests/test_pe_version.js` / `tests/pe-fixture.js` | **新增** |
+| `tests/test_update_manifest.js` / `tests/test_installer.js` / `tests/test_update_check.js` / `tests/test-all.js` | 扩充与登记 |
+| `docs/DECISIONS.md` | **新增 U-D6** 独立小节（U-D1 / U-D1 Revised 原文保留） |
+| `docs/ARCHITECTURE.md` | §13 重写为含 U3（真源表 + 安装路径图 + 端点拒绝矩阵 + 四道闸门 + 共用清单 + 不可动摇性质扩到 8 条）；§12 static 组补两条测试 |
+| `docs/RELEASE.md` | 新增 §2.2 载荷回退；§9 测试表补三行；说明 U3 同样需要先发布带清单的 release |

@@ -189,7 +189,7 @@ async function main() {
   });
 
   await check('every redirect hop is checked against the allowlist (static)', () => {
-    const src = fs.readFileSync(path.join(ROOT, 'runtime', 'update-check.js'), 'utf8');
+    const src = fs.readFileSync(path.join(ROOT, 'runtime', 'update-transport.js'), 'utf8');
     assert.ok(/hostAllowed\(next\)/.test(src),
       'the redirect target must be checked, not just the initial URL');
     assert.ok(/redirect-host-not-allowed/.test(src),
@@ -197,6 +197,24 @@ async function main() {
     /* Redirects are followed by hand; an automatic follower would leave the
        allowlist. */
     assert.ok(!/followRedirect/.test(src), 'must not delegate redirect following to the HTTP client');
+  });
+
+  await check('there is exactly ONE transport implementation in the product', () => {
+    /* U-D6 item 9: U3's payload download must reuse this transport rather than
+       grow a second one. So the socket, the hop policy and the error vocabulary
+       may exist in exactly one file. */
+    const files = fs.readdirSync(path.join(ROOT, 'runtime'));
+    const owners = files.filter(function (f) {
+      if (f.slice(-3) !== '.js') return false;
+      const src = fs.readFileSync(path.join(ROOT, 'runtime', f), 'utf8');
+      return /https\.request\(/.test(src);
+    });
+    assert.deepStrictEqual(owners, ['update-transport.js'],
+      'only the shared transport may open an HTTPS request; found: ' + owners.join(', '));
+    const check3 = fs.readFileSync(path.join(ROOT, 'runtime', 'update-check.js'), 'utf8');
+    assert.ok(check3.indexOf("res.on('response'") < 0, 'the check runtime must not walk redirects itself');
+    assert.ok(check3.indexOf('redirect-host-not-allowed') < 0, 'no second hop policy');
+    assert.ok(/require\('\.\/update-transport\.js'\)/.test(check3), 'it must consume the shared transport');
   });
 
   /* ═══ [2] the two routes ══════════════════════════════════════════════ */

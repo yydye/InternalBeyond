@@ -348,6 +348,47 @@ check('installer stops a running instance through IB control surfaces only', () 
   assert.ok(/CloseApplications=no/.test(ISS_SRC), 'must handle close applications ourselves');
 });
 
+check('zero-touch update relaunch is installer-side and parameter-gated (U-D5)', () => {
+  /* The updater helper exits as soon as it has started the installer, so the
+     installer is the only thing that can bring InternalBeyond back after a
+     silent update. It must therefore relaunch when — and only when — the updater
+     asked for it by passing /IBRELAUNCH=1 (U-D3). */
+  const code = ISS_SRC.replace(/^;.*$/gm, '');
+  assert.ok(/filename: "\{sys\}\\wscript\.exe"; Parameters: """\{app\}\\启动 InternalBeyond\.vbs"""; WorkingDir: "\{app\}"; Flags: nowait; Check: WantsRelaunch/i
+    .test(code), '[Run] must carry a parameter-gated relaunch entry');
+  assert.ok(/function WantsRelaunch\(\): Boolean;/.test(code), 'the gate must be a [Code] function');
+  assert.ok(/\{param:IBRELAUNCH\|0\}/.test(code), 'the gate must read the IBRELAUNCH parameter');
+
+  /* Exactly two launch entries: the untouched interactive one and the gated one.
+     The gated entry must NOT be skipifsilent, or a silent update would install
+     and never come back. */
+  const runs = (code.match(/^Filename: "\{sys\}\\wscript\.exe"/gm) || []).length;
+  assert.strictEqual(runs, 2, 'exactly two launch entries, got ' + runs);
+  assert.ok(/Flags: nowait postinstall skipifsilent/.test(code),
+    'the ordinary interactive install must keep the finish-page entry');
+  const gated = code.split('\n').filter(function (l) { return /Check: WantsRelaunch/.test(l); });
+  assert.strictEqual(gated.length, 1, 'exactly one gated entry');
+  assert.strictEqual(/skipifsilent/.test(gated[0]), false,
+    'the update relaunch must survive /VERYSILENT: ' + gated[0]);
+  assert.strictEqual(/postinstall/.test(gated[0]), false,
+    'the relaunch must not be tied to a finish page that a silent install never shows');
+
+  /* A runtime that failed validation is not relaunched: the user was just told
+     the install is broken. */
+  assert.ok(/RelaunchBlocked := Problem;/.test(code), 'a broken runtime must block the relaunch');
+  assert.ok(/if Problem <> '' then\s*\r?\n\s*begin\s*\r?\n\s*RelaunchBlocked := Problem;/.test(code),
+    'the block must be recorded as soon as the runtime is known to be broken');
+
+  /* Cross-module contract: what the helper passes must be what the installer
+     reads. Neither side may spell it out on its own. */
+  const helperArgs = require(path.join(ROOT, 'runtime', 'update-install.js')).INSTALL_ARGS;
+  assert.ok(helperArgs.indexOf('/IBRELAUNCH=1') >= 0,
+    'the updater must pass /IBRELAUNCH=1: ' + helperArgs.join(' '));
+  assert.ok(helperArgs.indexOf('/VERYSILENT') >= 0 && helperArgs.indexOf('/SUPPRESSMSGBOXES') >= 0,
+    'U-D3 fixes the silent install arguments: ' + helperArgs.join(' '));
+  assert.ok(helperArgs.indexOf('/NORESTART') >= 0 && helperArgs.indexOf('/SP-') >= 0);
+});
+
 check('license is shown and no commercial claim is made', () => {
   assert.ok(/^LicenseFile=\.\.\\LICENSE$/m.test(ISS_SRC), 'must show the real project license');
   const license = read(path.join(ROOT, 'LICENSE'));
