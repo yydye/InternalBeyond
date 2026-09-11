@@ -692,6 +692,35 @@ service 组 `test_bridge.js` 在浏览器组满载时闪失一次（`restart.bef
 > `innoextract`）；`-InstallAudit` 按测试预算未跑（构建脚本默认不安装）。
 > 「安装后枚举载荷」仍由 `1.0.3 → 1.0.4` 的真实升级在安装实例上完成。
 
+### 发布后实测（v1.0.4 已上线，真机联网）
+
+`v1.0.4` 已按 §2 顺序发布：先 push `master`（`89bbe1a` → `8780bfa`），再打 tag **`v1.0.4` → `8780bfa`**
+（**显式 HEAD**，不是 `gh` 的默认 `target_commitish`），最后用 `gh release create --verify-tag` 建 release
+（非 draft / 非 prerelease，`Latest`）。三个资产的 digest 与清单逐项交叉核对通过：
+
+| 资产 | 大小 | GitHub `digest` |
+|---|---|---|
+| `InternalBeyond-Setup-1.0.4.exe` | 51,758,446 B | `sha256:4c9dfbde…aa40a8` ✅ **== 清单 `installer.sha256`** |
+| `SHA256SUMS.txt` | 406 B | `sha256:36c70533…c3b9`（与本地文件实测一致） |
+| `update-stable.json` | 3,682 B | `sha256:2f0cdbfb…b25b4`（从 `releases/latest/download/` **在线回读**，与本地 `cmp` 逐字节相同） |
+
+`releases/latest` 经 API 复核为 `v1.0.4`（`draft=false`、`prerelease=false`）。真实客户端路径实测
+（只读：不下载安装包、不安装、缓存写临时文件）：
+
+| 运行版本 | 结果 | 传输 |
+|---|---|---|
+| `1.0.3` | `update-available` → `1.0.4`；`manifest.installer` 的 `sha256` / `sizeBytes` / `productVersion` 与上表一致；`minimumVersion = 1.0.1`；`notes` 1,278 字符；`releasedAt` 字段**不出现**（§4） | `direct` **200，一次成功** |
+| `1.0.4` | `up-to-date`（`latestVersion` = `1.0.4`） | 同左 |
+
+**本次的网络事实（诚实记录）**：与 1.0.3 发布窗口期那次连接重置不同，这次 `github.com` 全程可达——
+primary 直连 200 一次成功，回退门（`fallbackAllowed(result) === (result.outcome === 'network')`）
+**没有被触发**。这正是它该有的姿势，也是 U-D1 Revised 的另一半证据：primary 拿到完整响应实体后
+就不再换路，备路只在「连一个完整响应实体都没拿到」时才会出现。
+
+**未验证的部分（与 1.0.3 相同，必须分开记）**：本次发布只覆盖「检查」这一半。
+**「卡片点击 → 下载 → 静默安装」半程仍未在真实点击下验证。** `1.0.4` 是 1.0.3 之后第一个有真实功能
+变更的版本，正是补这一跳的时机（见 [HANDOVER.md](HANDOVER.md) §4）。
+
 ---
 
 ## 9. 相关测试
