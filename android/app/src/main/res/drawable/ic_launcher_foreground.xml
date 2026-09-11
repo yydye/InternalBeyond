@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A chat bubble with two message lines. Vector, so no density variants. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#7CC4FF"
+        android:pathData="M28,30 h52 v34 h-32 l-16,14 v-14 h-4 z" />
+    <path
+        android:fillColor="#0B0D12"
+        android:pathData="M38,39 h32 v5 h-32 z" />
+    <path
+        android:fillColor="#0B0D12"
+        android:pathData="M38,49 h20 v5 h-20 z" />
+</vector>

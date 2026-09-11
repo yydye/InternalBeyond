@@ -1,0 +1,10 @@
+# Android build outputs and machine-local configuration.
+# local.properties carries this machine's absolute SDK path — never commit it.
+local.properties
+.gradle/
+build/
+app/build/
+*.iml
+.idea/
+.kotlin/
+captures/

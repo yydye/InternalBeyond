@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Release/dev-default posture: cleartext is DENIED unless explicitly listed.
+
+  Android's network security config can list a hostname, a .local suffix or an
+  IP LITERAL — but never an address RANGE. That is a real constraint, because
+  the pairing payload hands the app whatever LAN address the Home Node currently
+  has. Recorded limitation, stated plainly:
+
+    · loopback, the emulator's host alias and mDNS (.local) names are permitted
+      here — these are the cases that can be expressed statically;
+    · an arbitrary RFC1918 address (192.168.x.x, 10.x.x.x) can NOT be listed
+      statically and is therefore NOT permitted by this configuration;
+    · the M1-C deliverable is the DEBUG build, which uses
+      app/src/debug/res/xml/network_security_config.xml — an explicit,
+      debug-scoped trusted-LAN development policy;
+    · a RELEASE build reaching an arbitrary LAN address needs TLS or a hostname,
+      i.e. the deferred transport work (docs/MOBILE_GATEWAY.md §15).
+
+  This file deliberately does not set android:usesCleartextTraffic at all: with a
+  network security config present the attribute is ignored on API 24+, and
+  having two sources for one decision is how a policy quietly stops being true.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <domain-config cleartextTrafficPermitted="true">
+        <!-- The Home Node's default bind (IB_HOME_NODE_HOST=127.0.0.1). -->
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <!-- Android emulator alias for the host machine's loopback. -->
+        <domain includeSubdomains="false">10.0.2.2</domain>
+        <!-- mDNS names, e.g. a Tailscale MagicDNS or .local hostname. -->
+        <domain includeSubdomains="true">local</domain>
+    </domain-config>
+</network-security-config>

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Phase 30: draw into the display-cutout area (default letterboxes landscape
+     on a notched device). Compose's safeDrawing insets keep content clear of the
+     cutout itself; this only decides whether the window may extend into it. -->
+<resources>
+    <style name="Theme.InternalBeyond" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/ib_window_background</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+    </style>
+</resources>

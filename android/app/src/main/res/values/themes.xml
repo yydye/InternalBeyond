@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The system theme only has to cover the window before Compose draws and the
+     system bars. Everything visual lives in Compose (ui/theme/). -->
+<resources>
+    <style name="Theme.InternalBeyond" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/ib_window_background</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+</resources>

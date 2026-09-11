@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Compose owns the real palette (ui/theme/Color.kt). These two exist for
+         the window background before Compose draws, and for the launcher icon. -->
+    <color name="ib_window_background">#FF0B0D12</color>
+    <color name="ib_icon_background">#FF141A24</color>
+</resources>
