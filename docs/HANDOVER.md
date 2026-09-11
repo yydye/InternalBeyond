@@ -23,7 +23,7 @@
 > - [AUTONOMY.md](AUTONOMY.md) —— **自主性**：Proactive/Moments/回复链/主动语音/去重降级；**自主≠随机**、无长时程规划、无内容级 OOC 防火墙。
 > - [OFFLINE.md](OFFLINE.md) —— **离线能力**：有本地模式 ≠ 真降级；基础功能全离线、配套 fail-open、**模型级需手动本机模型（无自动云→本地切换）**。
 >
-> 文档状态截至 **2026-09-09**（P9 仓库整理后）。
+> 文档状态截至 **2026-09-11**（v1.0.4 发行后）。
 
 ## 1. 一句话定位
 
@@ -35,11 +35,12 @@
 
 - **功能面**：主聊天（浏览器直连各家 API）、社交圈（Moments → Social Net：Feed/Profile/好友/讨论串/转发 + AI↔AI 回复链前后台）、AI 日记、记忆系统、工作区、游戏模块、行为观测层。全部模块已拆分完毕并注册 `window.IB` 命名空间。
 - **测试基线全绿**：`node tests/test-all.js --all`（static / service / browser 三组，约 150–165s）。改动后跑这个作为最终验收。
-- **发行形态（P1–P7 已完成）**：内置 Node 24 LTS 运行时（P1）、降级启动 / boot state（P2）、错误产品化 IBERR（P3）、首启设置向导（P4）、系统诊断与自恢复（P5）、零基础图文教程 + 截图管线（P6）、Windows 安装包（P7，产物 `dist\InternalBeyond-Setup-<版本号>.exe`，**当前 1.0.3**，per-user 免 UAC，白名单载荷）。
-- **Zero-Touch Update（U1–U4 已完成，U5 发布中）**：应用内更新已实现——发布侧清单契约（`runtime/update-manifest.js`）、检查运行时（`runtime/update-check.js`：U-D1 Revised 一主一备 + 24h 缓存 + fail-open）、安装运行时（`runtime/update-install.js`：U-D6 载荷回退 + 四道校验 + detached 启动安装器）、诊断页更新卡片（`assets/js/update-card.js`）。**当前在发版本为 1.0.3（U5-5 · 已发布）**；已发布的 `v1.0.0` 早于全部 U 系列，**其用户无法自动升级，必须手动安装一次最新版**（版本语义与发布顺序见 [RELEASE.md](RELEASE.md) §8，用户升级说明见 [release-notes/1.0.3.md](release-notes/1.0.3.md)）。
+- **发行形态（P1–P7 已完成）**：内置 Node 24 LTS 运行时（P1）、降级启动 / boot state（P2）、错误产品化 IBERR（P3）、首启设置向导（P4）、系统诊断与自恢复（P5）、零基础图文教程 + 截图管线（P6）、Windows 安装包（P7，产物 `dist\InternalBeyond-Setup-<版本号>.exe`，**当前 1.0.4**，per-user 免 UAC，白名单载荷）。
+- **Zero-Touch Update（U1–U4 已完成，U5 发布中）**：应用内更新已实现——发布侧清单契约（`runtime/update-manifest.js`）、检查运行时（`runtime/update-check.js`：U-D1 Revised 一主一备 + 24h 缓存 + fail-open）、安装运行时（`runtime/update-install.js`：U-D6 载荷回退 + 四道校验 + detached 启动安装器）、诊断页更新卡片（`assets/js/update-card.js`）。**当前在发版本为 1.0.4（U5-6 · 已发布）**；已发布的 `v1.0.0` 早于全部 U 系列，**其用户无法自动升级，必须手动安装一次最新版**（版本语义与发布顺序见 [RELEASE.md](RELEASE.md) §8，用户升级说明见 [release-notes/1.0.3.md](release-notes/1.0.3.md)）。
   - **U5-2A 已修**：安装版欢迎页画窗背景缺失（`bg-canvas.jpg` 随包发布，`bg-canvas.png` 仍是仓库源图、不入包）。
   - **v1.0.2 的发布契约增量**：清单第一次写 `minimumVersion = 1.0.1`（1.0.1 刻意省略，理由见 RELEASE.md §8）；`releasedAt` 继续省略（构建时刻不是发布时刻，§4）。
   - **v1.0.3 的契约增量：无。** 本版只改前端一个渲染闸门（`glass-ripple.js` 的 `idleNow()`，commit `cbd798f`）——更新链、清单 schema、上传顺序、`minimumVersion`（仍为 `1.0.1`）全部按 1.0.2 原样沿用。
+  - **v1.0.4 的契约增量：无。** 本版是功能 + 修复版本：A1.5 止血（图片来源语义 / API 页间距 / 图片凭据残留，`643954b`）、P11-3 Middle Brain runtime semantics closure（`4107bd5`）、P21 统一思考深度（`75325ae`）、P21.1 DeepSeek `deepseek-flash` 能力校准（`755b666`）。更新链、清单 schema、上传顺序、`minimumVersion`（仍为 `1.0.1`）全部按 1.0.2 原样沿用。用户升级说明见 [release-notes/1.0.4.md](release-notes/1.0.4.md)。
   - **v1.0.3 安装态复核（U5-4 收尾，已完成）**：修复确证进了安装态——安装目录 `assets/js/glass-ripple.js` = 10,687 B / `sha256=1dc0a3f3…8b51`，与 HEAD 及 HTTP 下发字节三者逐字节相同、`currentPage` 0 次；欢迎页 `bg-canvas.jpg` 200 / `bg-canvas.png` 404；安装器停旧版本后自动用 `?ibv=1.0.3` 重启；水纹由用户目视确认恢复。**但这次升级是手动下载安装包双击覆盖安装，不是应用内零触达**：`%LOCALAPPDATA%\InternalBeyond\updates` 不存在、`update-check.json` 停在升级前（内容仍为 1.0.2）、安装器日志显示 `Downloads\InternalBeyond-Setup-1.0.3.exe` 且无 `/SILENT` / `IBRELAUNCH`。检查半程已在真实安装态跑通（`/__update-check?force=1` → `direct` / `1.0.3`，缓存刷新为 1.0.3）；**缺的是「卡片点击 → 下载 → 静默安装」半程**。详见 [RELEASE.md](RELEASE.md) §8。
   - **E2E baseline 是真实已发布资产**：`1.0.1 → 1.0.2` 的 Zero-Touch Update E2E 必须用 GitHub 上已发布的 1.0.1 安装实例，**不得**用本地 `dist/` 重建产物替代。
 - **图片链路（P12 已完成）**：全部图片生成入口（Chat `<ws_gen_image>`、Moments / AI 自主 Moments 配图）统一经 `IB.imageRouter`（`assets/js/image-router-core.js` + `assets/js/image-router.js`）→ Image Scheduler → 现有 `_wsExecImageGen`；GPT Image 2.5 Flare/Sunburst 双模型策略由 Middle Brain 的 `Image Generation`（Fast / Auto / Precision）控制，默认 Auto。并发 global=2 / Flare=2 / Sunburst=1 / 每角色=1，队列上限 8，后台有冷却与降级保护，telemetry 可查（`IB.imageRouter.telemetry()`）。

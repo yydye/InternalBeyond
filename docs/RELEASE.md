@@ -32,6 +32,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-installer.ps1 
   （`minimumVersion` 从这一版起第一次成为真实契约），仍然**不传** `-ReleasedAt`（§4）。
 - **1.0.3**：与 1.0.2 相同——传 `-NotesFile docs\release-notes\1.0.3.md` 与
   `-MinimumVersion 1.0.1`，仍然**不传** `-ReleasedAt`（§4）。本版没有契约增量。
+- **1.0.4**：与 1.0.3 相同——传 `-NotesFile docs\release-notes\1.0.4.md` 与
+  `-MinimumVersion 1.0.1`，仍然**不传** `-ReleasedAt`（§4）。本版同样没有契约增量
+  （功能 + 修复版本：A1.5 止血 / P11-3 / P21 统一思考深度 / P21.1 DeepSeek 校准，
+  见 [CHANGELOG.md](CHANGELOG.md)）。
 
 ---
 

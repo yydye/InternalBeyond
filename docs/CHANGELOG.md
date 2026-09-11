@@ -15,6 +15,77 @@
 
 - 本地 git 基线提交 `e4074cc`（`chore: establish Internal Beyond baseline`）。此后长期有未跟踪文件（`.gitignore`、`active-message-service.js`、`start-active-service.cmd`、`start-vision-service.cmd`、`test_vision.py`、`vision/` 等），直至 2026-08-14 才纳入版本控制。
 
+## 2026-09-11 · v1.0.4 发行
+
+`v1.0.4` 是继 1.0.3 之后的一个功能 + 修复版本，**发布契约零增量**（更新链、清单 schema、
+上传顺序、`minimumVersion` 仍为 `1.0.1`）。用户可见的更新说明见
+[release-notes/1.0.4.md](release-notes/1.0.4.md)，发行实测见 [RELEASE.md](RELEASE.md) §8。
+
+相对已发布的 `v1.0.3`（tag → `666adc0`），本版代码改动只有四项（按提交顺序）：
+
+| 提交 | 内容 | 用户可见性 |
+|---|---|---|
+| `643954b` | A1.5 止血：图片来源语义 / API 页间距 contract / 图片凭据残留 | 可见（图片设置页） |
+| `4107bd5` | P11-3 Middle Brain runtime semantics closure（UI/runtime 态 + local fallback + 来源三态） | 可见（徽标不再假「已启用」） |
+| `75325ae` | P21 统一思考深度（reasoningEffort · capability-driven） | 可见（新增五档「思考深度」） |
+| `755b666` | P21.1 DeepSeek reasoning capability 校准（仅 `deepseek-flash` · model 级） | 选中档位后才生效 |
+
+## 2026-09-11 · P21.1 DeepSeek reasoning capability 校准（仅 deepseek-flash · 模型级）
+
+P21 的能力机制一行未动，只把 DeepSeek 从「未取证」搬进能力表，而且只搬一个 model id
+（`deepseek-flash`）。`REASONING_CAPABILITIES.deepseek` **刻意不存在**——能力按 model 成立，
+不按 provider 宽泛开启；DeepSeek 其余 id（`v4-pro` / `v4-flash` / `…-vision-exp` / `reasoner`）
+继续 abstain。
+
+| 文件 | 说明 |
+|---|---|
+| `assets/js/provider-directory.js` | `DEEPSEEK_REASONING_MODELS = ['deepseek-flash']`；`REASONING_MODEL_POLICIES['deepseek-flash'] = { kind:'effort', values:['low','high','max'], tierMap:{low:'low',medium:'high',high:'high',max:'max'}, wire:{chat:['reasoning_effort']} }` |
+| `assets/js/ib-model-core.js` | **零改动**（文件里甚至不出现 `deepseek` 这个名字，有结构测试守着） |
+
+`tierMap` 是**数据字段而非分支**：官方值域只有 low/high/max（缺 medium）时，通用阶梯的就近降级
+会出现 low 与 high 同距的 tie，用显式映射把「该落哪一档」写回数据表；通用 tie 规则（取更低档）
+与 request builder 一行未动，`tierMap` 取值不在 `values` 内一律视为不支持（abstain）。
+`auto` 仍然一个字段都不发；不主动发送 `thinking.type`；Responses 面未取证 → `format_unsupported`。
+决策依据与撤销方式见 [DECISIONS.md](DECISIONS.md) D19.1。
+
+## 2026-09-11 · P11-3 Middle Brain runtime semantics closure
+
+修正 Runtime Participation Audit 暴露的三处语义问题，不新增 Middle Brain 能力、不改 Judge /
+OOC Guard 默认值、不迁 Group / Tool / Continue。
+
+| 文件 | 说明 |
+|---|---|
+| `assets/js/middle-brain-config.js` | UI/runtime 状态一致性：抽出唯一 runtime 谓词 `_mbRuntimeEnabled(c)` 供 `isMiddleBrainEnabled` 与徽标共用；新增 pristine 快照 `_mbSaved` + runtime 镜像 `_mbRuntime` + `_mbDirty()` / `_mbBadgeState()`；徽标三态 on/off/**unsaved**（unsaved 绝不显示 Enabled）；endpoint / API Key 的 `input` 只刷 dirty、toggle 零写入；保存成功才刷新 runtime；`_mbBindCollapse` 三个绑定互相独立 |
+| `assets/js/communication.js` | local fallback 语义闭合：此前注入分支硬编码 `source === 'astra'`，local 产物永远进不了角色请求（MB 开着却零影响）。新增显式三态契约 `_mbInjectable(res, userMessage)`（astra/local 具名白名单 + payload trim 非空 + `stats.empty !== true` + local 额外要求保留当前消息；禁止把 `source` 判成 truthy）；astra 与 local 一律**替换**原四块（复用 `_ctxStart/_ctxJoined` 锚点，不双份注入）；bypass 保持原样 |
+| `assets/js/middle-brain.js` | trace 来源三态 `astra / local / bypass`（执行缝返回 null 时标记 bypass） |
+| `assets/css/core.css` | `.mb-collapse-badge.is-dirty` 虚线边框 |
+
+测试：新增 `tests/test_middle_brain_semantics.js`（静态 21 项：UI/runtime 状态机 A1–A13 +
+`_mbInjectable` 表驱动 B1–B5 + 默认值守卫 C1–C3）；`tests/test_middle_brain_trace.js` 扩到 38 项
+（+C7 bypass、+E1–E9 local 回落、+F1–F3 provider 中立）；合约同步：seam B3/B4、collapse H6、
+context_convergence_c1 用例 15、frontend_structure（localNoInject → 三态契约 5 条守卫）。
+报告：[history/runtime/P11-3-MIDDLE-BRAIN-SEMANTICS-CLOSURE.md](history/runtime/P11-3-MIDDLE-BRAIN-SEMANTICS-CLOSURE.md)
+
+## 2026-09-10 · A1.5 止血（图片来源语义 / API 页间距 contract / 图片凭据残留）
+
+三项真实回归的最小止血。路由 schema、executor、P4 `apiConfigs` 契约零改动；
+Image API Config 与 Character 的正式解耦登记为 P16 · Image Config Decoupling。
+
+1. **Image Router 去掉「+ 新建」**（Generation / Editing 两个入口）：IB 没有「独立的图片 API 配置」
+   实体——`apiConfigs` 一条记录同时就是角色档案，这个按钮点下去打开的是角色 API 编辑器，属语义误导。
+   文案改「图片 API 来源」，inherit 显示「跟随当前角色」，并说明图片凭据取自该来源的
+   图片服务商 / 图片接口地址 / 图片 API Key；新建来源的唯一入口是「角色库」的 API 编辑器。
+2. **API 页顶级卡片垂直节奏改为结构性 contract**：`#page-api > .glass-card, #page-api > .api-section
+   { margin-bottom:28px }`，修掉系统诊断入口（JS 注入、无 `.api-section`）与 Middle Brain 之间 0px；
+   不用特判 / `nth-child` / 负 margin。
+3. **`addNewApi()` 逐字段清空全部五个图片字段**：此前没有任何地方重置，编辑角色 A 后新建角色 B
+   会静默继承 A 的图片 endpoint 与 Key。
+
+回归守卫：`test_frontend_structure.js`（noCreateEntry / sourceWordingAccurate / statesCredentialOrigin /
+apiPage.topLevelRhythmIsStructural / apiPage.rhythmHasNoSpecialCase / apiEditor.newConfigResetsAllImageFields）、
+`test_image_router_settings_smoke.js`（ui.* + spacing.*）、`test_api_key_mutation_repro.js`（M9–M12）。
+三条修复均已用「临时还原到修复前」证明守卫非空转。
+
 ## 2026-09-11 · P21 统一思考深度（Middle Brain reasoningEffort · capability-driven）
 
 把「思考深度」做成 Middle Brain 的一个 canonical 字段，并在 **provider adapter 边界**按能力表翻译成
