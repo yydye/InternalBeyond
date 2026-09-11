@@ -1,4 +1,4 @@
-/* ====================================================================
+﻿/* ====================================================================
    IB Chat Authority — runtime-neutral authority / mirror / fallback policy
    --------------------------------------------------------------------
    UMD 双载（D10）：Browser <script src="assets/js/chat-authority.js"> → window.IBChatAuthority
