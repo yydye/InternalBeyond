@@ -197,6 +197,45 @@ function mockProvider(script, opts) {
 }
 const chunk = (delta, extra) => 'data: ' + JSON.stringify(Object.assign({ choices: [{ delta: delta }] }, extra || {})) + '\n\n';
 
+/* 该角色的唯一 persona marker：既是"隐藏值不得出站"的证据（thin.6），
+   也是"隐藏值必须进 provider 请求"的证据（thin.9b）。同一个常量守住信任边界两侧 ——
+   只测得出泄漏、测不出送达，正是 M1-C.2a 之所以能潜伏的原因。 */
+const PERSONA_MARKER_A = 'PERSONA-MARKER-A-M1C2A';
+
+/* provider 真正收到的 system 文本（wire-shape 兼容）。
+   与 test_model_core_contract.js:65 / :95 / :106 的取法同一语义：
+     openai    → messages[] 里 role==='system' 的 content 拼合
+     anthropic → 顶层 body.system
+     gemini    → body.system_instruction.parts[].text
+   格式判定委托生产 core 的 IBModelCore.providerFormat，不在此处复制一套 wire 假设。
+   本测试的 provider 都是 'custom' → providerFormat 归为 openai（core 的既有行为）。 */
+function systemTextOf(body, provider) {
+  if (!body || typeof body !== 'object') return '';
+  let fmt;
+  if (provider != null && provider !== '') {
+    try { fmt = require(path.join(ROOT, 'assets', 'js', 'ib-model-core.js')).providerFormat(provider); }
+    catch (_) { fmt = 'openai'; }
+  } else {
+    fmt = body.system_instruction ? 'gemini' : (typeof body.system === 'string' ? 'anthropic' : 'openai');
+  }
+  const textOf = (content) => {
+    if (content == null) return '';
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) return content.map(p => (typeof p === 'string' ? p : (p && p.text) || '')).filter(Boolean).join('\n');
+    if (typeof content === 'object' && typeof content.text === 'string') return content.text;
+    return '';
+  };
+  if (fmt === 'gemini') {
+    const si = body.system_instruction;
+    if (!si) return '';
+    if (Array.isArray(si.parts)) return si.parts.map(p => (p && p.text) || '').filter(Boolean).join('\n');
+    return textOf(si);
+  }
+  if (fmt === 'anthropic' && typeof body.system === 'string') return body.system;
+  const msgs = Array.isArray(body.messages) ? body.messages : [];
+  return msgs.filter(m => m && m.role === 'system').map(m => textOf(m.content)).filter(Boolean).join('\n\n');
+}
+
 function listen(server) {
   return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(server.address().port)));
 }
@@ -267,7 +306,7 @@ function listen(server) {
             endpoint: providerEndpoint,
             apiKey: 'sk-SECRET-should-never-leak',
             imageGenApiKey: 'sk-IMAGEGEN-should-never-leak',
-            systemPrompt: '你是小满，HIDDEN-SYSTEM-PROMPT',
+            systemPrompt: '你是小满，' + PERSONA_MARKER_A,
             temperature: 0.7,
             vision: true,
             streaming: true,
@@ -371,12 +410,13 @@ function listen(server) {
     const leakRegex = /apiKey|api_key|authorization|bearer|"secret"|credential|sk-[A-Za-z0-9]/i;
     check('thin.6 character.list 响应树里没有 secret 形状',
       !leakRegex.test(characters.raw), characters.raw.slice(0, 600));
-    check('thin.6 character.list 不含隐藏 systemPrompt', characters.raw.indexOf('HIDDEN-SYSTEM-PROMPT') < 0, characters.raw.slice(0, 600));
+    /* Phase 27 + M1-C.2a：同一份 persona 值 —— 出站不得出现，入 provider 必须出现。 */
+    check('thin.6 character.list 不含隐藏 systemPrompt', characters.raw.indexOf(PERSONA_MARKER_A) < 0, characters.raw.slice(0, 600));
     check('thin.6 character.list 不含 endpoint', characters.raw.indexOf('127.0.0.1:' + providerPort) < 0, characters.raw.slice(0, 600));
 
     const one = await request(BASE, 'GET', '/mobile/v1/character/friend_test_a', { headers: auth });
     check('thin.6 character.get 单条安全', one.status === 200 && one.body.payload.character.id === 'friend_test_a' &&
-      !leakRegex.test(one.raw) && one.raw.indexOf('HIDDEN-SYSTEM-PROMPT') < 0, one.raw.slice(0, 400));
+      !leakRegex.test(one.raw) && one.raw.indexOf(PERSONA_MARKER_A) < 0, one.raw.slice(0, 400));
 
     const missing = await request(BASE, 'GET', '/mobile/v1/character/nope', { headers: auth });
     check('thin.6 不存在的角色返回 NOT_FOUND', missing.status === 404 && missing.body.error.code === 'NOT_FOUND', missing.body);
@@ -457,6 +497,36 @@ function listen(server) {
     const turnId = startFrame.payload.turnId;
     const assistantId = doneFrame.payload.assistantMessageId;
 
+    /* ── 9b · M1-C.2a · 人格真的送到了 provider 吗 ────────────────────
+       上面整段 E2E 到此只**数过** provider 被调用几次（thin.11 的幂等断言），
+       从没看过它收到什么 —— 于是"角色人格整段丢失、模型裸奔"可以 100% 通过。
+       这里补第二道断言：真实 publish → pair → chat.send 之后，provider 收到的
+       system 必须非空，且含测试角色唯一的 persona marker。 */
+    check('thin.9b chat.send 真的调用了 provider（非零次）', provider.seen.bodies.length >= 1, provider.seen.bodies.length);
+    const sentBody = provider.seen.bodies[0];
+    const sentSystem = systemTextOf(sentBody, 'custom');
+    check('thin.9b provider wire 上的 system 非空（M1-C.2a 修复的人格送达）',
+      sentSystem.length > 0, { len: sentSystem.length });
+    check('thin.9b provider wire 的 system 含该角色的唯一 persona marker',
+      sentSystem.indexOf(PERSONA_MARKER_A) > -1, { len: sentSystem.length, head: sentSystem.slice(0, 40) });
+    check('thin.9b provider wire 的 system 严格等于发布的 spec.systemPrompt',
+      sentSystem === '你是小满，' + PERSONA_MARKER_A, { len: sentSystem.length, head: sentSystem.slice(0, 40) });
+    check('thin.9b 会话历史里的 user 正文仍在（人格与消息各自到位）',
+      (sentBody.messages || []).some(m => m.role === 'user' && m.content === '你好呀'));
+
+    /* ── 9c · 信任边界不变式（与 9b 成对）──────────────────────────────
+       这次修复只允许 persona 沿 Node runtime spec → Node provider request 移动。
+       **同一个值**绝不能出现在任何 Android 可见的响应里 —— 也不得带出 endpoint
+       凭据或 systemPrompt 字段名。9b 证明"送得进去"，9c 证明"漏不出来"，
+       两道合起来才排除"为了让 9b 通过而把人格拉进 DTO"这种最危险的修法。
+       （读流是流式的、没有 raw 缓存，所以对已解析的帧做逐帧检查。） */
+    const streamFramesJson = JSON.stringify(streams.frames);
+    check('thin.9c SSE 流里不含 persona / systemPrompt 字段 / endpoint 凭据',
+      streamFramesJson.indexOf(PERSONA_MARKER_A) < 0 &&
+      !/systemPrompt|system_prompt/i.test(streamFramesJson) &&
+      streamFramesJson.indexOf('sk-SECRET-should-never-leak') < 0 &&
+      streamFramesJson.indexOf('sk-IMAGEGEN-should-never-leak') < 0, streamFramesJson.slice(0, 400));
+
     /* ── 10 · chat DTO：无 runtime-only 字段、无 secret ─────────────── */
     const history = await request(BASE, 'GET', '/mobile/v1/chat/history?characterId=friend_test_a', { headers: auth });
     check('thin.10 history 能读到两条 canonical 消息', history.status === 200 && history.body.payload.count === 2, history.body.payload && history.body.payload.count);
@@ -468,6 +538,11 @@ function listen(server) {
       dtoMessages.every(m => m.reasoning_content === undefined && m.wsSearches === undefined && m.memOps === undefined && m.calNotes === undefined),
       Object.keys(dtoMessages[1]));
     check('thin.10 chat DTO 保留展示用 metadata', !!(dtoMessages[1].metadata && dtoMessages[1].metadata.model_id === 'mock-model'), dtoMessages[1].metadata);
+    check('thin.10 chat.history 不含 persona / systemPrompt 字段 / endpoint 凭据',
+      history.raw.indexOf(PERSONA_MARKER_A) < 0 &&
+      !/systemPrompt|system_prompt/i.test(history.raw) &&
+      history.raw.indexOf('sk-SECRET-should-never-leak') < 0 &&
+      history.raw.indexOf('127.0.0.1:' + providerPort) < 0, history.raw.slice(0, 400));
     check('thin.10 分页锚点与 M1-A 一致（cursor/oldest/hasMore）',
       history.body.payload.cursor && history.body.payload.oldest && history.body.payload.hasMore === false, Object.keys(history.body.payload));
     check('thin.10 chat.history 响应树里没有 secret 形状（含 sk-）',

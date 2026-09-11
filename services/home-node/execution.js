@@ -103,6 +103,10 @@ function createTurnExecutor(deps) {
 
   function buildPrompt(request) {
     const character = request.character || {};
+    /* spec resolution 必须与 executeCharacterTurn() 逐字一致（同为 character.spec || character）。
+       生产调用方（mobile-gateway.js）给的是 { id, spec }：顶层**没有** systemPrompt。
+       此前只读 character.systemPrompt，于是人格被静默丢弃、模型收到空 system。 */
+    const spec = character.spec || character;
     const history = Array.isArray(request.history) ? request.history : [];
     const messages = [];
     for (const item of history) {
@@ -115,7 +119,7 @@ function createTurnExecutor(deps) {
     }
     if (request.userMessage) messages.push({ role: 'user', content: messageContent(request.userMessage) });
     /* 运行时上下文（如果调用方给了）注入到 system 尾部，绝不复述给用户。 */
-    let system = String(character.systemPrompt || '');
+    let system = String(spec.systemPrompt || character.systemPrompt || '');
     const ctx = String(request.runtimeContext || '');
     if (ctx) system += (system ? '\n\n' : '') + ctx;
     return { system: system, messages: messages };

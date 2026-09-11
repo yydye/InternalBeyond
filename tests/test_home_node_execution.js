@@ -14,6 +14,40 @@ const ROOT = path.resolve(__dirname, '..');
 const createStore = require(path.join(ROOT, 'services', 'home-node', 'chat-store.js'));
 const createExecutor = require(path.join(ROOT, 'services', 'home-node', 'execution.js'));
 const createPort = require(path.join(ROOT, 'active', 'node-model-port.js'));
+/* 复用生产 core 的格式判定与 system 取值，**不**为测试复制一套 wire 假设。 */
+const IBModelCore = require(path.join(ROOT, 'assets', 'js', 'ib-model-core.js'));
+
+/* provider 真正收到的 system 文本（wire-shape 兼容）。
+   与 test_model_core_contract.js:65 / :95 / :106 的取法同一语义：
+     openai    → messages[] 里 role==='system' 的 content 拼合
+     anthropic → 顶层 body.system（若被降级进 messages 也能取到）
+     gemini    → body.system_instruction.parts[].text
+   格式判定委托 IBModelCore.providerFormat（'glm'/'custom'/未知一律归 openai），
+   绝不在此处硬编码厂商名。未给 provider 时按 wire 自证（system_instruction /
+   顶层 system 的存在即格式证据），因此该 helper 在三种格式上都能用。 */
+function systemTextOf(body, providerOrSpec) {
+  if (!body || typeof body !== 'object') return '';
+  const explicit = providerOrSpec && typeof providerOrSpec === 'object' ? providerOrSpec.provider : providerOrSpec;
+  const fmt = explicit != null && explicit !== ''
+    ? IBModelCore.providerFormat(explicit)
+    : (body.system_instruction ? 'gemini' : (typeof body.system === 'string' ? 'anthropic' : 'openai'));
+  const textOf = (content) => {
+    if (content == null) return '';
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) return content.map(p => (typeof p === 'string' ? p : (p && p.text) || '')).filter(Boolean).join('\n');
+    if (typeof content === 'object' && typeof content.text === 'string') return content.text;
+    return '';
+  };
+  if (fmt === 'gemini') {
+    const si = body.system_instruction;
+    if (!si) return '';
+    if (Array.isArray(si.parts)) return si.parts.map(p => (p && p.text) || '').filter(Boolean).join('\n');
+    return textOf(si);
+  }
+  if (fmt === 'anthropic' && typeof body.system === 'string') return body.system;
+  const msgs = Array.isArray(body.messages) ? body.messages : [];
+  return msgs.filter(m => m && m.role === 'system').map(m => textOf(m.content)).filter(Boolean).join('\n\n');
+}
 
 let passed = 0, failed = 0;
 function check(name, cond, extra) {
@@ -304,6 +338,63 @@ function userMsg(overrides) {
       events.some(e => e.type === 'error' && e.kind === 'empty-output' && e.retryable === true));
     check('exec.empty 无 assistant 记录',
       store.listMessages({ conversationId: 'dm:char_a' }).messages.filter(m => m.role === 'assistant').length === 0);
+    store.close();
+    mock.server.close();
+  }
+
+  /* ── 9b · M1-C.2a · 生产形状的 systemPrompt 搬运（回归锁）─────────────
+     第 1 区的 `character.systemPrompt` 是**测试自己造的**形状，它把字段放在
+     buildPrompt 恰好要读的那一层，因此永远测不出调用方实际给的形状。
+     这里逐字复刻 mobile-gateway.js 的生产调用：
+         character: { id, spec: { provider, model, endpoint, apiKey, systemPrompt } }
+     顶层**刻意不带** systemPrompt。回归点：人格必须出现在 provider 真正收到的
+     wire 上，且严格等于发布的 spec.systemPrompt。 */
+  {
+    const store = newStore();
+    const mock = mockProvider(openaiChunk({ content: '在的' }) + '\u0000data: [DONE]\n\n');
+    const port = await listen(mock.server);
+    const executor = createExecutor({ store, port: createPort({}) });
+    const PERSONA = 'M1C2A-PERSONA-昔涟 · 你是昔涟，不是任何别的人工智能。';
+    /* exactly the production shape — no top-level systemPrompt */
+    const character = {
+      id: 'char_persona',
+      spec: Object.assign(spec(port), { systemPrompt: PERSONA })
+    };
+    const result = await executor.executeCharacterTurn({
+      requestId: 'req-persona-1',
+      character: character,
+      userMessage: userMsg({ id: 'msg_persona_u', friendId: 'char_persona', content: '在吗，昔涟' }),
+      contextPolicy: 'mobile-gateway-history'
+    }, { timeoutMs: 5000 });
+
+    check('exec.persona 生产形状（顶层无 systemPrompt）回合成功', result.ok === true, result);
+    check('exec.persona 生产形状确实没有顶层 systemPrompt', character.systemPrompt === undefined);
+    check('exec.persona 模型被真实调用一次', mock.seen.bodies.length === 1, mock.seen.bodies.length);
+    /* provider 与格式先自证，再谈 system —— 避免"断言用错 wire 形状"这种自欺 */
+    check('exec.persona provider 解析为 openai 格式', IBModelCore.providerFormat('openai') === 'openai');
+    const wireSystem = systemTextOf(mock.seen.bodies[0]);
+    check('exec.persona provider wire 上的 system 严格等于 spec.systemPrompt', wireSystem === PERSONA,
+      { len: wireSystem.length, head: wireSystem.slice(0, 40) });
+    check('exec.persona 人格不是空串（这正是 M1-C.2a 修复的缺陷）', wireSystem.length > 0);
+    check('exec.persona wire 上不存在空的 system 条目',
+      (mock.seen.bodies[0].messages || []).every(m => !(m.role === 'system' && m.content === '')));
+    store.close();
+    mock.server.close();
+  }
+
+  /* ── 9c · 兼容 fallback：老的顶层 character.systemPrompt 仍然生效 ───── */
+  {
+    const store = newStore();
+    const mock = mockProvider(openaiChunk({ content: 'ok' }) + '\u0000data: [DONE]\n\n');
+    const port = await listen(mock.server);
+    const executor = createExecutor({ store, port: createPort({}) });
+    await executor.executeCharacterTurn({
+      requestId: 'req-legacy-1',
+      character: { id: 'char_legacy', spec: spec(port), systemPrompt: 'LEGACY-TOP-LEVEL-PERSONA' },
+      userMessage: userMsg({ id: 'msg_legacy_u', friendId: 'char_legacy' })
+    }, { timeoutMs: 5000 });
+    check('exec.persona 顶层 systemPrompt 作为兼容 fallback 仍然生效',
+      systemTextOf(mock.seen.bodies[0]) === 'LEGACY-TOP-LEVEL-PERSONA', systemTextOf(mock.seen.bodies[0]).slice(0, 40));
     store.close();
     mock.server.close();
   }
