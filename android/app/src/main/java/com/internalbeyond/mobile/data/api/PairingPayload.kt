@@ -53,7 +53,7 @@ object PairingPayloadParser {
      * Accepts every shape a user can plausibly paste (Phase 7 "manual payload"):
      *
      *  1. the payload object itself — `JSON.stringify(IB.homeNode.pairing.create(...).payload)`,
-     *     which is what docs/MOBILE_GATEWAY.md §14 tells the user to copy;
+     *     which is what the Android app's 开发帮助 tells the user to copy;
      *  2. the whole HTTP envelope — `{v, ok, type:"pairing.session", payload:{...}}`,
      *     which is what you get if you copy one level too high;
      *  3. either of the above wrapped in surrounding text (a chat message, a log line).
@@ -62,21 +62,24 @@ object PairingPayloadParser {
      * and accepted when absent: the server's `POST /pairing/session` payload does
      * not currently carry `v` (only its envelope does), so requiring it here would
      * reject real payloads.
+     *
+     * The [PairingParse.Fail] texts are user-facing copy and were translated in M1-C.1
+     * along with the rest of the interface. Nothing about the validation changed: the
+     * same inputs fail at the same points, for the same reasons, in the same order.
      */
     fun parse(input: String): PairingParse {
         val text = input.trim()
         if (text.isEmpty()) {
             return PairingParse.Fail(
-                "Nothing pasted",
-                "Copy the pairing payload on the desktop and paste it here.",
+                "还没有粘贴内容",
+                "在电脑上复制配对信息，然后粘贴到这里。",
             )
         }
 
         val root = parseJsonLoosely(text)
             ?: return PairingParse.Fail(
-                "That is not a pairing payload",
-                "It does not contain JSON. On the desktop, run: " +
-                    "JSON.stringify((await IB.homeNode.pairing.create({deviceName:'Android'})).payload)",
+                "这段内容不是配对信息",
+                "它看起来不是从电脑上复制过来的那一段。请重新完整复制一次再试。",
             )
 
         // Envelope level (shape 2). Only unwrap when the inner object really is a
@@ -87,29 +90,28 @@ object PairingPayloadParser {
         val version = body.intOrNull("v") ?: root.intOrNull("v")
         if (version != null && version != SUPPORTED_VERSION) {
             return PairingParse.Fail(
-                "That pairing payload is from a different protocol version",
-                "It says v$version and this app speaks v$SUPPORTED_VERSION. " +
-                    "Update whichever side is older.",
+                "这段配对信息来自另一个版本",
+                "它说的是第 $version 版，这台手机说的是第 $SUPPORTED_VERSION 版。" +
+                    "哪一边旧就更新哪一边。",
             )
         }
 
         val pairingId = body.textOrNull("pairingId")
             ?: return PairingParse.Fail(
-                "The payload has no pairing id",
-                "It may have been truncated when it was copied. Copy it again, whole.",
+                "配对信息少了开头",
+                "复制的时候可能漏掉了前面一段。请重新完整复制一次。",
             )
         val secret = body.textOrNull("secret")
             ?: return PairingParse.Fail(
-                "The payload has no pairing secret",
-                "It may have been truncated when it was copied. Copy it again, whole.",
+                "配对信息少了关键的一段",
+                "复制的时候可能漏掉了中间一段。请重新完整复制一次。",
             )
         // The real secret is 32 random bytes as base64url (43 chars). This is a
         // truncation check, not a format lock: a future longer secret still passes.
         if (secret.length < 16) {
             return PairingParse.Fail(
-                "The pairing secret looks truncated",
-                "It is ${secret.length} characters; a complete one is much longer. " +
-                    "Copy the payload again, whole.",
+                "配对信息像是被截断了",
+                "它只有 ${secret.length} 个字符，完整的一长得多。请重新完整复制一次。",
             )
         }
 
@@ -139,18 +141,20 @@ object PairingPayloadParser {
      * What to tell the user when there is no usable address, in the two cases that
      * are genuinely different: a Node that never left its own machine, and a payload
      * that is simply missing the field.
+     *
+     * User-facing copy, translated in M1-C.1. The desktop-side switch
+     * (`IB_HOME_NODE_HOST`) deliberately does NOT appear here any more — it is a term
+     * from the architecture, and the app now keeps such terms behind 开发帮助
+     * (`IbStrings.Dev`). What a person needs at this point is the address box.
      */
     fun missingAddressExplanation(lanReachable: Boolean): Pair<String, String> =
         if (!lanReachable) {
-            "That pairing payload has no network address" to
-                "The desktop's Home Node is listening on its own machine only " +
-                "(127.0.0.1), so a phone cannot reach it. Either start InternalBeyond so the " +
-                "Home Node listens on the network (IB_HOME_NODE_HOST=0.0.0.0) and create a " +
-                "new pairing payload, or type the desktop's address below."
+            "电脑目前只对本机开放" to
+                "电脑上的 InternalBeyond 现在只接受本机的连接，手机访问不到它。" +
+                "可以到「高级设置」里手动填写电脑地址，或者让电脑开放给同一网络之后再生成一段新的。"
         } else {
-            "That pairing payload has no address" to
-                "It carries no host/port under endpoints.mobile. Create a new pairing " +
-                "payload on the desktop, or type the address below."
+            "这段配对信息里没有地址" to
+                "它没有带上电脑的地址。可以重新生成一段，或者到「高级设置」里手动填写。"
         }
 
     /** `endpoints.mobile` first (what the server sends), flat fields as a fallback. */

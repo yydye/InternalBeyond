@@ -12,6 +12,7 @@ import com.internalbeyond.mobile.data.api.StreamEvent
 import com.internalbeyond.mobile.data.api.StreamEventCodec
 import com.internalbeyond.mobile.domain.ProtocolError
 import com.internalbeyond.mobile.support.DtoFixtures
+import com.internalbeyond.mobile.ui.IbStrings
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -87,7 +88,7 @@ class ProtocolParsingTest {
         assertEquals(ProtocolError.LOOPBACK_ONLY, error.code)
 
         val presentation = com.internalbeyond.mobile.domain.ErrorPresenter.present(error)
-        assertTrue(presentation.title.contains("only accepts connections from the desktop"))
+        assertTrue(presentation.title.contains("还没有开放"))
         assertEquals(com.internalbeyond.mobile.domain.ErrorAction.DESKTOP_ACTION, presentation.action)
 
         // ...and an unknown slug still degrades to a Response error rather than a crash.
@@ -239,7 +240,7 @@ class ProtocolParsingTest {
         val future = JSONObject(current.toString()).put("v", 2)
         val failed = PairingPayloadParser.parse(future.toString())
         assertTrue(failed is PairingParse.Fail)
-        assertTrue((failed as PairingParse.Fail).title.contains("different protocol version"))
+        assertTrue((failed as PairingParse.Fail).title.contains("另一个版本"))
     }
 
     @Test
@@ -247,7 +248,7 @@ class ProtocolParsingTest {
         val payload = DtoFixtures.pairingSessionPayload(23118).put("secret", "abc")
         val failed = PairingPayloadParser.parse(payload.toString())
         assertTrue(failed is PairingParse.Fail)
-        assertTrue((failed as PairingParse.Fail).title.contains("truncated"))
+        assertTrue((failed as PairingParse.Fail).title.contains("截断"))
     }
 
     @Test
@@ -266,8 +267,13 @@ class ProtocolParsingTest {
         assertNull((parsed as PairingParse.Ok).payload.endpoint)
 
         val (title, detail) = PairingPayloadParser.missingAddressExplanation(lanReachable = false)
-        assertTrue(title.contains("no network address"))
-        assertTrue(detail.contains("IB_HOME_NODE_HOST"))
+        assertTrue(title.contains("只对本机开放"))
+        // M1-C.1 moved the desktop-side switch out of the sentence a user reads and into
+        // the app's 开发帮助. The requirement is unchanged — the explanation still names
+        // a way out — so this asserts the user-facing escape hatch here, and pins the
+        // technical instruction at the one place it is still allowed to live.
+        assertTrue(detail.contains("高级设置"))
+        assertTrue(IbStrings.Dev.loopbackHelp.contains("IB_HOME_NODE_HOST"))
     }
 
     @Test
@@ -278,7 +284,7 @@ class ProtocolParsingTest {
         assertTrue(parsed is PairingParse.Ok)
         assertNull((parsed as PairingParse.Ok).payload.endpoint)
         val (title, _) = PairingPayloadParser.missingAddressExplanation(lanReachable = true)
-        assertTrue(title.contains("no address"))
+        assertTrue(title.contains("没有地址"))
     }
 
     @Test
@@ -317,12 +323,12 @@ class ProtocolParsingTest {
         val plain = HomeNodeEndpoint("http", "192.168.1.5", 23118)
         assertFalse(
             "a cleartext link must not be described as encrypted",
-            plain.transportLabel.contains("Encrypted connection"),
+            plain.transportLabel.contains("加密连接"),
         )
-        assertTrue(plain.transportLabel.contains("not encrypted"))
+        assertTrue(plain.transportLabel.contains("未加密"))
 
         val tls = HomeNodeEndpoint("https", "node.example", 443)
-        assertTrue(tls.transportLabel.contains("Encrypted connection"))
+        assertTrue(tls.transportLabel.contains("加密连接"))
     }
 
     // ── DTOs ─────────────────────────────────────────────────────────────────

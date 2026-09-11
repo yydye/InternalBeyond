@@ -81,7 +81,7 @@ class ErrorMappingTest {
             retryable = true,
             retryAfterMs = 4000,
         )
-        assertTrue(ErrorPresenter.present(error).detail!!.contains("4s"))
+        assertTrue(ErrorPresenter.present(error).detail!!.contains("4 秒"))
     }
 
     @Test
@@ -91,15 +91,15 @@ class ErrorMappingTest {
         val used = ErrorPresenter.present(server(ProtocolError.PAIRING_USED))
         assertNotEquals(invalid.title, expired.title)
         assertNotEquals(expired.title, used.title)
-        assertTrue(used.detail!!.contains("exactly once"))
+        assertTrue(used.detail!!.contains("只能用一次"))
     }
 
     @Test
     fun `a protocol version mismatch names both sides`() {
         val presentation = ErrorPresenter.present(server(ProtocolError.BAD_VERSION, detail = "2"))
-        assertTrue(presentation.title.contains("protocol version"))
-        assertTrue(presentation.detail!!.contains("v1"))
-        assertTrue(presentation.detail.contains("2"))
+        assertTrue(presentation.title.contains("版本"))
+        assertTrue(presentation.detail!!.contains("第 1 版"))
+        assertTrue(presentation.detail.contains("第 2 版"))
     }
 
     @Test

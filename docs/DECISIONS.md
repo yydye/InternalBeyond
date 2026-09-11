@@ -464,3 +464,48 @@ D20 第 7 条登记的「真机前唯一 blocker」在这里被修掉。修法�
    `loopback-only` 而 loopback 照常；未配置桌面 token 时 LAN 上 5 条桌面路径
    全部 403 `remote-admin-disabled`，同时手机仍能配对成功。
 
+
+## D22. M1-C.1 · 移动端 UI 基础（Mobile UI Foundation）（2026-09-11）
+
+**背景**：M1-C 真机首测发现 Android 端只是工程验证界面 —— Material 3 demo 外观、
+全英文、配对首页直接摆一个 JSON 文本框和 F12 控制台命令。功能正确，但不是产品。
+本阶段**只改 UI/UX**，Home Node 协议、Chat authority、pairing contract、
+cache/sync/recovery 全部未动。
+
+1. **配色不是新调色板，是桌面端暗色的横读**。`IbColors` 取 `assets/css/core.css`
+   的 `--bg-deep`/`--bg-mid`、`rgba(155,180,218,α)` 玻璃族、`--accent`/
+   `--accent-light`、四个 `--status-*`。只做两处偏离：页面底色比 `--bg-deep` 更深一档
+   （玻璃需要有东西可以透），以及新增仅作为「光」存在的蓝紫环境渐变 —— 它永远不是
+   某个字或某个控件的颜色。
+2. **强制深色，禁用 Material You**。取色板跟着壁纸走，正是把产品配色变成
+   「恰好是深色的 Material demo」的原因；IB 自己的配色就是桌面端那一套。
+3. **两个字体族各有分工**：`FontFamily.Serif`（系统自带 Noto Serif CJK，不打包字体）
+   是**角色的声音** —— 配对页的承诺、角色名、气泡里的内容；`FontFamily.Default` 是
+   **应用的声音** —— 按钮、状态、设置、时间戳。零字节成本。
+4. **文案规则结构化，并由测试强制**。`ui/IbStrings.kt` 直接持有的值一律面向用户，
+   不得出现任何开发者词；`IbStrings.Dev` 是唯一允许出现 Home Node / payload / JSON /
+   HTTP / F12 / IB_HOME_NODE_HOST 的地方，且只在折叠的「开发者信息」「开发帮助」里渲染。
+   `IbCopyTest` 用反射遍历两半：用户侧出现一个泄漏词即失败；同时断言开发者侧**仍然**
+   含这些词 —— 否则把词表删掉就能让这个守卫空过。错误文案同规则：
+   `ErrorPresentation` 新增 `technical` 字段承接协议自己的说法，只在「详细信息」展开时显示。
+5. **协议词从主界面彻底移出**。配对首页不再出现 Home Node、地址、JSON、F12；
+   地址与对方身份移入「高级设置」，控制台命令移入「开发帮助」（这是它唯一被允许存在
+   的地方，因为桌面端还没有配对按钮，删掉它会让 app 变得不可用而不只是更朴素）。
+6. **状态行只说真话**。首页的状态点由真实 `ConnectionState` 驱动；空闲时不会出现
+   永远的「正在寻找附近的电脑」—— 这一版没有 discovery，一个假装在搜索的动画就是假功能。
+7. **角色卡不写「在线」**。移动端 DTO 没有 per-character presence，角色也不是设备；
+   名册只显示它真知道的东西（已归档、视觉），可达性由顶部的连接徽标统一表达。
+8. **数据/domain 层的唯一改动是用户可见文案**，逐条列明：`PairingPayload.kt` 的
+   `PairingParse.Fail` 标题/说明与 `missingAddressExplanation`；`SessionRepository.kt`
+   的「地址用不了」与两条凭据提示；`HomeNodeEndpoint.transportLabel`。字符串内容之外
+   零逻辑改动，校验分支、顺序、判定条件全部未变。`HomeNodeClient` 一行未改（它在冻结
+   名单上），代价是它的两条英文 `Local` 消息仍会在极窄路径下出现 —— 已记入已知限制。
+9. **本阶段的验收证据包含一次真机（模拟器）运行**。`android-34` AOSP x86_64 镜像
+   无窗口启动 → 安装 debug APK → 通过 LAN 与真实 Home Node 配对 → 四个页面全部由
+   无障碍树定位真实点击驱动并截图。测试 109/109 绿，`assembleDebug` 通过。
+10. **这次运行发现两个既有缺陷，均未在本阶段修**（见 `docs/ANDROID_THIN_CLIENT.md` §7.9/§7.10）：
+    `mobile-dto.js` 的 `characterDto` 只读 `raw.archived`，而出站会对**已落库的 DTO**
+    再投影一次，导致 `status` 在「发布 → 落库 → 出站再投影」这条链上丢失（`name` 与
+    `capabilities` 都有两级回落，`status` 没有）；以及 `SessionRepository.verify()`
+    在冷启动路径上**从未被调用**，与其自身注释所述的 boot 行为不符，表现为重启后
+    「协议版本」为空。两者都不属于 UI 阶段，且第二个牵涉 data 层行为，故只记录不动手。

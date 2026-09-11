@@ -1,48 +1,38 @@
 package com.internalbeyond.mobile.ui.chat
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontStyle
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -50,17 +40,32 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.internalbeyond.mobile.app.AppGraph
-import com.internalbeyond.mobile.data.repository.ConversationState
 import com.internalbeyond.mobile.domain.ErrorPresenter
 import com.internalbeyond.mobile.domain.model.AttemptState
 import com.internalbeyond.mobile.domain.model.ChatMessage
 import com.internalbeyond.mobile.domain.model.Character
 import com.internalbeyond.mobile.domain.model.SendAttempt
-import com.internalbeyond.mobile.ui.character.EmptyState
-import com.internalbeyond.mobile.ui.common.AttachmentChips
-import com.internalbeyond.mobile.ui.common.StreamingDots
+import com.internalbeyond.mobile.ui.IbStrings
+import com.internalbeyond.mobile.ui.common.IbAvatar
+import com.internalbeyond.mobile.ui.common.IbBackground
+import com.internalbeyond.mobile.ui.common.IbConnectionBadge
+import com.internalbeyond.mobile.ui.common.IbDisclosure
+import com.internalbeyond.mobile.ui.common.IbEmptyState
+import com.internalbeyond.mobile.ui.common.IbErrorCard
+import com.internalbeyond.mobile.ui.common.IbGlow
+import com.internalbeyond.mobile.ui.common.IbMark
+import com.internalbeyond.mobile.ui.common.IbTextField
+import com.internalbeyond.mobile.ui.common.IbTextAction
+import com.internalbeyond.mobile.ui.common.IbThinkingDots
+import com.internalbeyond.mobile.ui.common.IbTopBar
+import com.internalbeyond.mobile.ui.common.connectionBusy
+import com.internalbeyond.mobile.ui.common.connectionColor
+import com.internalbeyond.mobile.ui.common.connectionLabel
 import com.internalbeyond.mobile.ui.common.formatTimestamp
-import com.internalbeyond.mobile.ui.pairing.ErrorCard
+import com.internalbeyond.mobile.ui.theme.IbColors
+import com.internalbeyond.mobile.ui.theme.IbShapes
+import com.internalbeyond.mobile.ui.theme.IbSpacing
+import com.internalbeyond.mobile.ui.theme.IbType
 import kotlinx.coroutines.launch
 
 class ChatViewModel(
@@ -106,10 +111,6 @@ class ChatViewModel(
         viewModelScope.launch { session.resumeOpenAttemptsNow() }
     }
 
-    fun syncNow() {
-        viewModelScope.launch { session.syncNow() }
-    }
-
     fun draft(): String = session.draft()
 
     fun saveDraft(text: String) = session.saveDraft(text)
@@ -124,7 +125,24 @@ class ChatViewModel(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * The conversation.
+ *
+ * M1-C.1 changed nothing about how this screen works — the same session, the same
+ * overlay, the same recovery — and everything about how it reads:
+ *
+ *  · The header is the character: their face, their name in the serif face the product
+ *    uses for people, and one line saying whether the computer is reachable. Not an
+ *    app bar with a title and a back arrow.
+ *  · The two speakers are told apart by weight, not by colour alone: the character
+ *    speaks in serif over glass, the user speaks in the interface face over an
+ *    accent-tinted bubble.
+ *  · Streaming grows a bubble in place, as before; what is new is that a reply with no
+ *    text yet shows three soft dots rather than a bare spinner.
+ *  · Reasoning is folded shut behind 思考过程 instead of an English "Show reasoning",
+ *    and the model id is gone from under every message: it is a fact about a machine,
+ *    and 开发者信息 in Settings is where facts about machines live.
+ */
 @Composable
 fun ChatScreen(
     graph: AppGraph,
@@ -136,6 +154,7 @@ fun ChatScreen(
     ),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val session by graph.session.state.collectAsStateWithLifecycle()
     val character = viewModel.character
     val listState = rememberLazyListState()
 
@@ -149,44 +168,51 @@ fun ChatScreen(
         }
     }
 
-    Scaffold(
-        containerColor = Color.Transparent,
-        topBar = {
-            TopAppBar(
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
+    IbBackground(glow = IbGlow.Quiet) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            IbTopBar(
+                title = character?.name ?: characterId,
+                titleStyle = IbType.name,
+                onBack = onBack,
+                leading = character?.let {
+                    { IbAvatar(character = it, size = 38.dp) }
                 },
-                title = {
-                    Column {
-                        Text(
-                            text = character?.name ?: characterId,
-                            style = MaterialTheme.typography.titleMedium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        ChatStatusLine(state)
-                    }
+                subtitle = {
+                    IbConnectionBadge(
+                        color = connectionColor(session),
+                        label = connectionLabel(session),
+                        busy = connectionBusy(session),
+                    )
                 },
             )
-        },
-    ) { padding ->
-        Column(modifier = Modifier.padding(padding).fillMaxSize()) {
+
             if (state.reconnecting) {
                 ReconnectBanner(onResume = { viewModel.resume() })
             }
-            state.error?.let { ErrorCard(ErrorPresenter.present(it)) }
+
+            state.error?.let { error ->
+                Box(modifier = Modifier.padding(horizontal = IbSpacing.gutter, vertical = IbSpacing.sm)) {
+                    IbErrorCard(ErrorPresenter.present(error))
+                }
+            }
 
             Box(modifier = Modifier.weight(1f)) {
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                        horizontal = 12.dp,
-                        vertical = 8.dp,
+                    // A short conversation sits on the composer rather than floating at
+                    // the top of an empty screen. `Arrangement.Bottom` only applies when
+                    // the content is shorter than the viewport, so scrolling is
+                    // unaffected once there is more than a screenful.
+                    verticalArrangement = Arrangement.spacedBy(
+                        space = IbSpacing.lg,
+                        alignment = Alignment.Bottom,
+                    ),
+                    contentPadding = PaddingValues(
+                        start = IbSpacing.gutter,
+                        end = IbSpacing.gutter,
+                        top = IbSpacing.md,
+                        bottom = IbSpacing.lg,
                     ),
                 ) {
                     if (state.hasOlder) {
@@ -196,14 +222,13 @@ fun ChatScreen(
                                 horizontalArrangement = Arrangement.Center,
                             ) {
                                 if (state.loadingOlder) {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(18.dp),
-                                        strokeWidth = 2.dp,
-                                    )
+                                    IbThinkingDots()
                                 } else {
-                                    TextButton(onClick = { viewModel.loadOlder() }) {
-                                        Text("Load older messages")
-                                    }
+                                    IbTextAction(
+                                        label = IbStrings.chatLoadOlder,
+                                        onClick = { viewModel.loadOlder() },
+                                        color = IbColors.AccentSoft,
+                                    )
                                 }
                             }
                         }
@@ -211,9 +236,9 @@ fun ChatScreen(
 
                     if (state.messages.isEmpty() && state.overlay.isEmpty() && !state.loading) {
                         item(key = "empty") {
-                            EmptyState(
-                                title = "No messages yet",
-                                detail = "Say something to ${character?.name ?: "this character"}.",
+                            IbEmptyState(
+                                title = IbStrings.chatEmptyTitle,
+                                detail = IbStrings.chatEmptyDetail(character?.name ?: characterId),
                             )
                         }
                     }
@@ -251,127 +276,98 @@ fun ChatScreen(
 }
 
 @Composable
-private fun ChatStatusLine(state: ConversationState) {
-    val label = when {
-        state.reconnecting -> "Reconnecting…"
-        state.overlay.any { it.state == AttemptState.RUNNING } -> "Replying…"
-        state.syncing -> "Syncing…"
-        state.messages.isNotEmpty() -> "${state.messages.size} messages"
-        else -> ""
-    }
-    if (label.isEmpty()) return
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        if (state.reconnecting || state.overlay.any { it.state == AttemptState.RUNNING }) {
-            StreamingDots()
-        }
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-}
-
-@Composable
 private fun ReconnectBanner(onResume: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+            .padding(horizontal = IbSpacing.gutter, vertical = IbSpacing.xs)
+            .clip(IbShapes.control)
+            .background(IbColors.Glass)
+            .border(1.dp, IbColors.GlassEdge, IbShapes.control)
+            .padding(horizontal = IbSpacing.lg, vertical = IbSpacing.md),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(IbSpacing.md),
     ) {
-        StreamingDots()
-        Text(
-            text = "Reconnecting… the reply continues on the Home Node",
-            style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.weight(1f),
+        IbThinkingDots()
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = IbStrings.chatReconnecting,
+                style = IbType.bodySmall,
+                color = IbColors.Text,
+            )
+            Text(
+                text = IbStrings.chatReconnectingNote,
+                style = IbType.caption,
+                color = IbColors.TextFaint,
+            )
+        }
+        IbTextAction(
+            label = IbStrings.chatResumeNow,
+            onClick = onResume,
+            color = IbColors.AccentSoft,
         )
-        TextButton(onClick = onResume) { Text("Resume now") }
     }
 }
 
 /**
- * One canonical message. Only the DTO's own fields are rendered — there is nothing
- * here that could show a provider, an endpoint or a prompt, because the DTO does not
- * contain them.
+ * One canonical message.
+ *
+ * Only the DTO's own fields are rendered — there is nothing here that could show a
+ * provider, an endpoint or a prompt, because the DTO does not contain them.
  */
 @Composable
 private fun MessageBubble(message: ChatMessage) {
     val isUser = message.isUser
+
+    if (message.withdrawn) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
+        ) {
+            Text(
+                text = IbStrings.chatWithdrawn,
+                style = IbType.bodySmall,
+                fontStyle = FontStyle.Italic,
+                color = IbColors.TextFaint,
+            )
+        }
+        return
+    }
+
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
     ) {
         Column(
             horizontalAlignment = if (isUser) Alignment.End else Alignment.Start,
-            modifier = Modifier.widthIn(max = 320.dp),
+            modifier = Modifier.widthIn(max = 300.dp),
         ) {
-            if (message.withdrawn) {
-                Text(
-                    text = "(withdrawn)",
-                    style = MaterialTheme.typography.bodySmall,
-                    fontStyle = FontStyle.Italic,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                return@Column
-            }
-            Box(
-                modifier = Modifier
-                    .clip(
-                        RoundedCornerShape(
-                            topStart = 16.dp,
-                            topEnd = 16.dp,
-                            bottomStart = if (isUser) 16.dp else 4.dp,
-                            bottomEnd = if (isUser) 4.dp else 16.dp,
-                        ),
-                    )
-                    .background(
-                        if (isUser) {
-                            MaterialTheme.colorScheme.primaryContainer
-                        } else {
-                            MaterialTheme.colorScheme.surfaceContainerHigh
-                        },
-                    )
-                    .padding(horizontal = 12.dp, vertical = 9.dp),
-            ) {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    if (message.content.isNotEmpty()) {
-                        Text(
-                            text = message.content,
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = if (isUser) {
-                                MaterialTheme.colorScheme.onPrimaryContainer
-                            } else {
-                                MaterialTheme.colorScheme.onSurface
-                            },
-                        )
+            Bubble(
+                fromUser = isUser,
+                content = {
+                    Column(verticalArrangement = Arrangement.spacedBy(IbSpacing.sm)) {
+                        if (message.content.isNotEmpty()) {
+                            Text(
+                                text = message.content,
+                                style = if (isUser) IbType.body else IbType.speech,
+                                color = IbColors.Text,
+                            )
+                        }
+                        AttachmentMarks(message)
+                        if (message.truncated) {
+                            Text(
+                                text = IbStrings.chatTruncated,
+                                style = IbType.caption,
+                                color = IbColors.TextFaint,
+                            )
+                        }
                     }
-                    AttachmentChips(message)
-                    if (message.truncated) {
-                        Text(
-                            text = "truncated",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
+                },
+            )
             val stamp = formatTimestamp(message.timestamp)
-            val model = message.metadata["model_id"] ?: message.metadata["model"]
-            val caption = listOfNotNull(
-                stamp.takeIf { it.isNotEmpty() },
-                model?.takeIf { it.isNotEmpty() && !isUser },
-            ).joinToString(" · ")
-            if (caption.isNotEmpty()) {
-                Text(
-                    text = caption,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+            if (stamp.isNotEmpty()) {
+                Spacer(Modifier.height(IbSpacing.xs))
+                Text(text = stamp, style = IbType.caption, color = IbColors.TextFaint)
             }
         }
     }
@@ -382,54 +378,67 @@ private fun MessageBubble(message: ChatMessage) {
  *
  * States come from [SendAttempt], never from a boolean: a pending bubble and a
  * failed one look different because they ARE different, and a recovering one says
- * "Reconnecting…" rather than "failed" (Phase 16/19).
+ * 正在重新连接 rather than 发送失败 (Phase 16/19).
  */
 @Composable
 private fun AttemptBubbles(attempt: SendAttempt, onRetry: () -> Unit) {
     Column(
         modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(IbSpacing.sm),
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.End,
-        ) {
-            Box(
-                modifier = Modifier
-                    .widthIn(max = 320.dp)
-                    .clip(RoundedCornerShape(16.dp, 16.dp, 16.dp, 4.dp))
-                    .background(MaterialTheme.colorScheme.primaryContainer)
-                    .padding(horizontal = 12.dp, vertical = 9.dp),
-            ) {
-                Text(
-                    text = attempt.content,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                )
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            Bubble(fromUser = true) {
+                Text(text = attempt.content, style = IbType.body, color = IbColors.Text)
             }
         }
 
-        when (attempt.state) {
-            AttemptState.PENDING -> StatusLine("Sending…")
-            AttemptState.RECOVERING -> StatusLine("Reconnecting…")
-            AttemptState.RUNNING -> StatusLine(null)
-            AttemptState.DONE -> Unit
-            AttemptState.FAILED -> Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = attempt.errorCode ?: "failed",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = if (attempt.state == AttemptState.FAILED) Arrangement.End else Arrangement.Start,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            when (attempt.state) {
+                AttemptState.PENDING -> Text(
+                    text = IbStrings.chatSending,
+                    style = IbType.caption,
+                    color = IbColors.TextFaint,
                 )
-                TextButton(onClick = onRetry) { Text("Send again") }
+                AttemptState.RECOVERING -> Text(
+                    text = IbStrings.chatReconnecting,
+                    style = IbType.caption,
+                    color = IbColors.TextFaint,
+                )
+                AttemptState.RUNNING -> Unit
+                AttemptState.DONE -> Unit
+                AttemptState.FAILED -> {
+                    // The protocol code is not shown. It is in 详细信息 on the error
+                    // card, if the session produced one; here the only useful thing is
+                    // that this did not go, and the way to try again.
+                    Text(
+                        text = IbStrings.chatSendFailed,
+                        style = IbType.caption,
+                        color = IbColors.Danger,
+                    )
+                    IbTextAction(
+                        label = IbStrings.chatSendAgain,
+                        onClick = onRetry,
+                        color = IbColors.AccentSoft,
+                    )
+                }
             }
         }
 
         if (attempt.reasoningText.isNotEmpty()) {
-            ReasoningPanel(attempt.reasoningText)
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
+                IbDisclosure(label = IbStrings.chatReasoningShow) {
+                    Text(
+                        text = attempt.reasoningText,
+                        style = IbType.bodySmall,
+                        fontStyle = FontStyle.Italic,
+                        color = IbColors.TextFaint,
+                    )
+                }
+            }
         }
 
         val showAssistant = attempt.partialText.isNotEmpty() ||
@@ -437,20 +446,11 @@ private fun AttemptBubbles(attempt: SendAttempt, onRetry: () -> Unit) {
             attempt.state == AttemptState.PENDING
         if (showAssistant) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
-                Box(
-                    modifier = Modifier
-                        .widthIn(max = 320.dp)
-                        .clip(RoundedCornerShape(16.dp, 16.dp, 4.dp, 16.dp))
-                        .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                        .padding(horizontal = 12.dp, vertical = 9.dp),
-                ) {
+                Bubble(fromUser = false) {
                     if (attempt.partialText.isEmpty()) {
-                        StreamingDots()
+                        IbThinkingDots()
                     } else {
-                        Text(
-                            text = attempt.partialText,
-                            style = MaterialTheme.typography.bodyLarge,
-                        )
+                        Text(text = attempt.partialText, style = IbType.speech, color = IbColors.Text)
                     }
                 }
             }
@@ -459,49 +459,44 @@ private fun AttemptBubbles(attempt: SendAttempt, onRetry: () -> Unit) {
 }
 
 @Composable
-private fun StatusLine(text: String?) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.End,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (text == null) {
-            StreamingDots()
-        } else {
-            Text(
-                text = text,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+private fun Bubble(fromUser: Boolean, content: @Composable () -> Unit) {
+    val shape = IbShapes.bubble(fromUser)
+    Box(
+        modifier = Modifier
+            .widthIn(max = 300.dp)
+            .clip(shape)
+            .background(if (fromUser) IbColors.BubbleOut else IbColors.BubbleIn)
+            .then(
+                if (fromUser) Modifier.border(1.dp, IbColors.BubbleOutEdge, shape) else Modifier,
             )
-        }
+            .padding(horizontal = 14.dp, vertical = 11.dp),
+    ) {
+        content()
     }
 }
 
-/** Reasoning is collapsed by default but never discarded (Phase 17). */
+/** Attachment placeholders (Phase 33): what is there, without pretending it renders. */
 @Composable
-private fun ReasoningPanel(reasoning: String) {
-    var expanded by rememberSaveable { mutableStateOf(false) }
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Text(
-            text = if (expanded) "Hide reasoning" else "Show reasoning",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier
-                .clip(RoundedCornerShape(6.dp))
-                .clickable { expanded = !expanded }
-                .padding(vertical = 4.dp),
-        )
-        if (expanded) {
-            Text(
-                text = reasoning,
-                style = MaterialTheme.typography.bodySmall,
-                fontStyle = FontStyle.Italic,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(MaterialTheme.colorScheme.surfaceContainer)
-                    .padding(10.dp),
+private fun AttachmentMarks(message: ChatMessage) {
+    if (!message.hasAttachments) return
+    Column(verticalArrangement = Arrangement.spacedBy(IbSpacing.xs)) {
+        for (image in message.images) {
+            IbMark(
+                text = buildString {
+                    append(IbStrings.chatImageMark(image.mime))
+                    image.width?.let { w -> image.height?.let { h -> append(" · ${w}×$h") } }
+                },
+            )
+        }
+        for (file in message.files) {
+            IbMark(text = IbStrings.chatFileMark(file.name))
+        }
+        message.voice?.let { voice ->
+            IbMark(
+                text = buildString {
+                    append(IbStrings.chatVoiceMark(voice.durationSeconds))
+                    if (voice.transcript != null) append(" · ${IbStrings.chatVoiceTranscript()}")
+                },
             )
         }
     }
@@ -510,9 +505,14 @@ private fun ReasoningPanel(reasoning: String) {
 /**
  * The composer.
  *
- * No IME inset handling here: the root container already pads by `safeDrawing`,
- * which includes the IME, and the activity is `adjustResize`. Re-applying it would
- * double the gap (Phase 30 — one mechanism, not two).
+ * No IME inset handling here: the root container already pads by `safeDrawing`, which
+ * includes the IME, and the activity is `adjustResize`. Re-applying it would double the
+ * gap (Phase 30 — one mechanism, not two).
+ *
+ * The shape is a pill rather than a box, and the send control is a filled circle, so the
+ * bottom of the screen does not look like a form. There is deliberately no attachment
+ * button: the brief asks for the *place* a future voice/image control would go, and an
+ * inert paperclip would be a promise this build cannot keep.
  */
 @Composable
 private fun Composer(
@@ -523,31 +523,39 @@ private fun Composer(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 10.dp, vertical = 8.dp),
+            .padding(start = IbSpacing.gutter, end = IbSpacing.md, top = IbSpacing.sm, bottom = IbSpacing.md),
         verticalAlignment = Alignment.Bottom,
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        horizontalArrangement = Arrangement.spacedBy(IbSpacing.sm),
     ) {
-        OutlinedTextField(
+        IbTextField(
             value = value,
             onValueChange = onValueChange,
-            placeholder = { Text("Message") },
+            placeholder = IbStrings.chatComposerPlaceholder,
             maxLines = 5,
+            shape = IbShapes.pill,
             modifier = Modifier.weight(1f),
-            shape = RoundedCornerShape(18.dp),
         )
-        IconButton(
-            onClick = onSend,
-            enabled = value.isNotBlank(),
+
+        val ready = value.isNotBlank()
+        Box(
+            modifier = Modifier
+                .size(48.dp)
+                .clip(IbShapes.pill)
+                .background(if (ready) IbColors.AccentFill else IbColors.Glass)
+                .then(
+                    if (ready) Modifier.border(1.dp, IbColors.AccentSoft.copy(alpha = 0.35f), IbShapes.pill)
+                    else Modifier.border(1.dp, IbColors.GlassEdge, IbShapes.pill),
+                ),
+            contentAlignment = Alignment.Center,
         ) {
-            Icon(
-                Icons.AutoMirrored.Filled.Send,
-                contentDescription = "Send",
-                tint = if (value.isNotBlank()) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    MaterialTheme.colorScheme.outline
-                },
-            )
+            IconButton(onClick = onSend, enabled = ready) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.Send,
+                    contentDescription = IbStrings.chatSend,
+                    tint = if (ready) IbColors.Text else IbColors.TextFaint,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
         }
     }
 }

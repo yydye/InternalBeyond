@@ -25,12 +25,17 @@ data class HomeNodeEndpoint(
     /** What the UI shows. Never claims to be secure — Phase 27. */
     val display: String get() = authority
 
-    /** "LAN connection" vs "Local connection": a description, not a trust claim. */
+    /**
+     * "局域网·未加密" / "仅本机" / "加密连接": a description, not a trust claim
+     * (Phase 27). User-facing copy, translated in M1-C.1; it now appears only inside
+     * the app's 开发者信息 disclosure, because "which transport" is a fact about a
+     * machine rather than something a person has to act on.
+     */
     val transportLabel: String
         get() = when {
-            isEncrypted -> "Encrypted connection"
-            isLoopback -> "This device only"
-            else -> "LAN connection · not encrypted"
+            isEncrypted -> "加密连接"
+            isLoopback -> "仅本机"
+            else -> "局域网 · 未加密"
         }
 
     val isEncrypted: Boolean get() = scheme == "https"

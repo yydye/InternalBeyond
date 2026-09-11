@@ -99,9 +99,9 @@ class SessionRepository(
                     node = record.toNodeInfo(),
                     error = ProtocolError.Local(
                         if (credentialStore.hasStoredCredential()) {
-                            "The stored credential could not be decrypted on this device."
+                            "这台手机上保存的连接信息已经打不开了。"
                         } else {
-                            "This device has no stored credential."
+                            "这台手机上已经没有保存的连接信息了。"
                         },
                     ),
                 ),
@@ -175,8 +175,9 @@ class SessionRepository(
             // override exists for — can still be paired with by typing the address.
             val (title, detail) = when {
                 parsed.endpoint == null -> PairingPayloadParser.missingAddressExplanation(parsed.lanReachable)
-                else -> "That address is not usable" to
-                    "Use host, host:port or scheme://host:port — for example 192.168.10.7:23118."
+                else -> "这个地址用不了" to
+                    "可以填 电脑地址、电脑地址:端口，或者 http://电脑地址:端口，" +
+                    "例如 192.168.10.7:23118。"
             }
             val result = PairingResult.Invalid(title, detail)
             setState(ConnectionState.Unpaired)
@@ -214,7 +215,7 @@ class SessionRepository(
             setState(ConnectionState.Unpaired)
             return PairingResult.Failed(
                 ProtocolError.Local(
-                    "The credential could not be stored securely on this device: ${error.message}",
+                    "这台手机没能安全地保存连接信息：${error.message}",
                 ),
             )
         }

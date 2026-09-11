@@ -180,8 +180,9 @@ the desktop … LAN access is not switched on"* with a desktop-action hint, inst
 1. **The Home Node must be started in LAN mode** (`IB_HOME_NODE_HOST=0.0.0.0`) before a phone
    can reach it at all — the default is loopback-only and stays that way. The gate itself is
    fixed (§6); the remaining requirement is an explicit desktop-side opt-in.
-2. **QR scanning is not implemented.** Manual paste is the supported path; a disabled
-   "Scan QR" button was deliberately not added.
+2. **QR scanning is not implemented.** Manual paste is the supported path. Since M1-C.1
+   the button exists as a disabled 扫描二维码 with 即将加入 on it, because the brief for
+   that stage asked for the affordance to be visible; it still does nothing.
 3. **Release builds cannot reach an arbitrary LAN IP.** Android's network security
    config accepts hostnames and IP *literals*, never ranges. The M1-C APK is the
    **debug** variant, whose policy explicitly permits trusted-LAN cleartext; the
@@ -197,13 +198,134 @@ the desktop … LAN access is not switched on"* with a desktop-action hint, inst
 7. **A terminal turn error can leave a duplicate user message** if the failure
    happened after the Home Node stored it, because a real retry needs a new
    requestId. That is a consequence of the frozen protocol, not an oversight.
-8. **No emulator run.** The APK compiles, is signed, and its packaged manifest and
-   network policy were inspected; the app has not been launched on a device or
-   emulator in this environment.
-9. **Cache ordering for same-millisecond messages** falls back to `(timestamp, id)`
-   because `insert_seq` is not part of the mobile DTO. Sync is unaffected (it applies
-   by id).
+8. **The app has now been run, but only on an emulator.** M1-C shipped without ever
+   launching the APK; M1-C.1 changed that — an `android-34` AOSP x86_64 image was
+   booted headless, the debug APK installed, and the app paired against a real Home
+   Node over the LAN and driven through all four screens (§8.5). What is still
+   untested: a physical device, a real touch/keyboard, Android's own IME in anger,
+   screen sizes other than 1080×2400 @420dpi, and process death under memory pressure.
+9. **`character.archived` never reaches the app.** Publishing an entry with
+   `archived: true` results in `status: "active"` on the device. The cause is upstream
+   and outside this stage: `assets/js/mobile-dto.js` `characterDto` reads `raw.archived`
+   only, while the outbound path re-projects the *stored DTO* (which carries
+   `status`, not `archived`) — the same two-level-fallback gap that `name` and
+   `capabilities` are explicitly protected against in that file's own comments. The
+   app's 已归档 mark is therefore correct code that cannot currently fire. Fixing it is
+   a one-line change in that projection, deliberately **not** made here (M1-C.1 is a UI
+   stage, and that file is shared with the Home Node).
+10. **`verify()` never runs on a cold start.** `SessionRepository.verify()` — documented
+    as the step that "confirms or corrects" the optimistic `Connected` restored by
+    `boot()` — is called from the pairing path only. A restored session therefore keeps
+    the stored node facts, and `NodeInfo.protocol` stays `0` until the device is paired
+    again, which is why 开发者信息 shows 协议版本 `—` after a restart. Cosmetic here (any
+    real request still corrects the connection state), but the comment and the code
+    disagree, and that is worth knowing before the next stage builds on either.
+11. **Cache ordering for same-millisecond messages** falls back to `(timestamp, id)`
+    because `insert_seq` is not part of the mobile DTO. Sync is unaffected (it applies
+    by id).
 
 Deferred, explicitly: QR scan · native notifications · proactive background delivery ·
 Voice · Video · Image generation · Moments · Diary · Letters · Memory UI · API/provider
 settings · Tailscale · TLS · FCM.
+
+---
+
+## 8. M1-C.1 · Mobile UI foundation (2026-09-11)
+
+M1-C produced something that worked and looked like a protocol tester: a Material 3
+screen with a JSON textarea on it, an `F12` command, and English everywhere. M1-C.1
+changed only the interface. No protocol, pairing, credential, chat, sync or recovery
+behaviour was touched — the same `HomeNodeClient`, the same requestIds, the same
+`ConversationSession`, the same cache.
+
+### 8.1 What it looks like now
+
+Four screens, one system:
+
+| Screen | What it is |
+|---|---|
+| 配对 | A brand mark, a promise, and two ways to keep it. No address, no console command, no JSON on the surface. |
+| 角色 | One glass panel of rows: 52dp portrait, the name in the product's serif face, one line of who they are. |
+| 聊天 | The character's face and name in the header, serif speech over glass against accent-tinted user bubbles, a pill composer with a filled send control. |
+| 设置 | 当前设备 / 已连接的电脑 / 断开连接 / 关于, then a collapsed 开发者信息 holding everything else. |
+
+### 8.2 The token system
+
+`ui/theme/` holds the whole visual vocabulary, and no screen writes a colour, a radius
+or a type size of its own (`IbColors`, `IbSpacing`, `IbShapes`, `IbTypography`,
+`IbTheme`). `ui/common/` holds the components (`IbPrimaryButton`, `IbSecondaryButton`,
+`IbGlassCard`, `IbGlassPanel`, `IbTextField`, `IbTopBar`, `IbConnectionBadge`,
+`IbEmptyState`, `IbAvatar`, `IbBackground`, `IbBridgeMark`, `IbDisclosure`, `IbDialog`,
+`IbSheet`).
+
+Three decisions are worth recording:
+
+1. **The palette is the desktop's, read across.** `IbColors` is the dark half of
+   `assets/css/core.css` — `--bg-deep`/`--bg-mid`, the `rgba(155,180,218,α)` glass
+   family, `--accent`/`--accent-light`, the four `--status-*` hues — not a new palette.
+   A companion app is the same room as the thing it accompanies. Two deliberate
+   departures: the page ground is one step deeper than `--bg-deep` so glass has
+   something to be translucent against, and the ambient indigo/violet wash exists only
+   as light, never as the colour of a word or a control.
+2. **Dark only, and no Material You.** `IbTheme` ignores the system light setting and
+   the wallpaper palette. Wallpaper-derived colours are exactly what turns a product's
+   palette into "a Material app that happens to be dark".
+3. **Two families, and they mean something.** `FontFamily.Serif` (Noto Serif CJK, which
+   Android ships — nothing is bundled into the APK) is the voice of the characters: the
+   pairing promise, a character's name, the words in a bubble. `FontFamily.Default` is
+   the voice of the app: buttons, status, settings, timestamps. Neither costs a byte.
+
+### 8.3 The copy rule, and the test that enforces it
+
+Requirement: a user must never meet the architecture. So `ui/IbStrings.kt` holds every
+string the app says, split structurally:
+
+* every value directly on `IbStrings` is user-facing and may not contain a developer
+  term;
+* `IbStrings.Dev` is the only place `Home Node`, `payload`, `JSON`, `HTTP`, `F12` and
+  `IB_HOME_NODE_HOST` are allowed, and it is rendered only inside a collapsed
+  disclosure labelled 开发者信息 or 开发帮助.
+
+`IbCopyTest` walks both halves by reflection: it fails on a single leaked term in the
+user-facing half, and it fails if the developer half has been emptied — because a guard
+like this passes vacuously the moment the vocabulary is deleted rather than moved. It
+also checks every `ErrorPresenter` branch, whose titles and bodies were the largest
+single surface of English in the old build, and which now carry the protocol's own
+words in a separate `technical` field shown only under 详细信息.
+
+### 8.4 How a pairing payload is obtained
+
+The desktop has no button for this yet; `IB.homeNode.pairing.create()` is a console
+API. Rather than put an `F12` instruction on the first screen, it now lives in the
+app's 开发帮助 disclosure, collapsed, inside 手动连接 — and the command is there
+verbatim and copyable:
+
+```js
+JSON.stringify((await IB.homeNode.pairing.create({deviceName:'Android'})).payload)
+```
+
+That is the one place in the app allowed to speak developer, and it exists because
+removing the instruction entirely would have made the app unusable rather than merely
+plainer. When the desktop grows a real pairing entry point, this disclosure is what
+should be deleted.
+
+### 8.5 Evidence
+
+* **109/109 unit tests green** (`:app:testDebugUnitTest`), `:app:assembleDebug` builds.
+  Six assertions that pinned English copy moved to the equivalent Chinese wording with
+  the same strength; one (`IB_HOME_NODE_HOST`) moved to where that fact now lives.
+* **A real run, on a real Android system image, against a real Home Node.** An
+  `android-34` AOSP x86_64 image was booted headless, the debug APK installed, and the
+  app paired over the LAN to an `IB_HOME_NODE_HOST=0.0.0.0` Home Node (the M1-C LAN
+  gate), with a four-character roster and a synthetic conversation published into — and
+  read back out of — the canonical store. All four screens were driven with real taps
+  located from the accessibility tree, and captured as PNGs.
+
+  This is also what found the two defects in §7.9 and §7.10: neither is visible in a
+  compile, and both surfaced within minutes of putting the interface on a screen.
+
+* **The screenshots are not committed.** They live at
+  `.dsh-research/m1c1-preview/` alongside this stage's other scratch artifacts — the
+  same convention `MOBILE_HOME_NODE_AUDIT.md` uses for its working notes. Regenerating
+  them means booting an emulator, starting the Home Node in LAN mode, and driving the
+  four screens; the point-in-time images are reference, not a regression harness.
