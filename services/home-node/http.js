@@ -68,15 +68,41 @@ function createHomeNodeHttp(deps) {
       'Cache-Control': 'no-store',
       'X-IB-Protocol': String(PROTOCOL_VERSION)
     };
-    /* CORS：只对显式白名单 Origin 回显；绝不对任意 Origin 回显（Bridge 的
-       Access-Control-Allow-Origin:<requester> 是已记录的既有风险，不在这里复制）。 */
+    applyCors(headers, req);
+    res.writeHead(status, headers);
+    res.end(body);
+  }
+
+  /* ── CORS：为什么必须允许 `Origin: null`（实测结论，不是疏忽）─────────────
+     产品的第一类运行方式是**双击 InternalBeyond.html（file://）**（见
+     communication.js:100-104 与 WEB_PAGE 注释）。在这个 origin 下浏览器发出的
+     跨域请求带的是 `Origin: null`，而任何"只回显白名单 Origin"的写法都会让
+     **桌面自己在 file:// 下完全读不到 Home Node**：请求会到达，但读取响应体时
+     被 CORS 拦掉 —— 表现为 authority 一直停在 'not-probed'，没有任何可见错误。
+     本文件最初的实现正是这样，被 M1-A 浏览器冒烟抓出来。
+
+     因此默认策略是：
+       · 无 Origin（原生请求）→ 不加 CORS 头，也不需要；
+       · `null`（file://）或 loopback Origin → 回显，允许读取；
+       · 其它 Origin → 不回显（浏览器会拦掉读取），除非显式列入白名单；
+       · 一旦配置了 token（IB_HOME_NODE_TOKEN），**null origin 不再被信任**：
+         所有请求都必须带 token，本机 file:// 也一样。
+     与 D1（docs/DECISIONS.md:6-13）已有的风险接受一致：这是本机单用户应用、
+     loopback 绑定；把 Home Node 绑到 LAN 属于 M1-B/M1-C 的范围，本阶段不做。 */
+  function originAllowed(origin) {
+    const value = origin == null ? '' : String(origin);
+    if (!value) return false;                       /* 无 Origin：不需要 CORS 头 */
+    if (allowedOrigins.indexOf(value) >= 0) return true;
+    if (value === 'null') return !token;             /* file:// —— 仅在无 token 时信任 */
+    if (/^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?$/.test(value)) return true;
+    return false;
+  }
+  function applyCors(headers, req) {
     const origin = req && req.headers ? req.headers.origin : null;
-    if (origin && allowedOrigins.indexOf(String(origin)) >= 0) {
+    if (originAllowed(origin)) {
       headers['Access-Control-Allow-Origin'] = String(origin);
       headers['Vary'] = 'Origin';
     }
-    res.writeHead(status, headers);
-    res.end(body);
   }
 
   function ok(res, payload, req) { sendJson(res, 200, Object.assign({ ok: true, protocolVersion: PROTOCOL_VERSION, serverTime: clock() }, payload), req); }
@@ -227,9 +253,10 @@ function createHomeNodeHttp(deps) {
       if (batch.length > MAX_BATCH_ITEMS) { bad(res, 413, 'batch-too-large', { max: MAX_BATCH_ITEMS, got: batch.length }, req); return; }
 
       const requestId = payload.requestId ? String(payload.requestId) : '';
+      const existingPolicy = payload.existingPolicy === 'skip' ? 'skip' : 'overwrite';
       const result = batch.length === 1 && !payload.forceBatch
-        ? store.putMessage(batch[0], { requestId: requestId })
-        : store.putMessages(batch, { requestId: requestId });
+        ? store.putMessage(batch[0], { requestId: requestId, existingPolicy: existingPolicy })
+        : store.putMessages(batch, { requestId: requestId, existingPolicy: existingPolicy });
       if (!result.ok) {
         record('warn', 'put-rejected', { error: result.error, index: result.index, errors: result.errors });
         bad(res, result.error === 'invalid-message' ? 422 : 400, result.error, { index: result.index, errors: result.errors, id: result.id }, req);
@@ -277,6 +304,13 @@ function createHomeNodeHttp(deps) {
     }
 
     if (path === '/verify' && method === 'GET') {
+      if (url.searchParams.get('backup') === '1') {
+        const made = store.backup();
+        if (!made.ok) { bad(res, 500, made.error || 'backup-failed', null, req); return; }
+        record('info', 'backup', { bytes: made.bytes, revision: made.revision });
+        ok(res, { integrity: store.integrityCheck(), meta: store.meta(), backup: { file: require('path').basename(made.file), bytes: made.bytes, revision: made.revision } }, req);
+        return;
+      }
       const integrity = store.integrityCheck();
       ok(res, { integrity: integrity, meta: store.meta() }, req);
       return;
@@ -318,22 +352,32 @@ function createHomeNodeHttp(deps) {
     try { url = new URL(req.url, 'http://127.0.0.1'); }
     catch (_) { bad(res, 400, 'bad-url', null, req); return; }
     const method = String(req.method || 'GET').toUpperCase();
+    if (process.env.IB_HOME_NODE_TRACE === '1') {
+      record('info', 'trace-in', { method: method, path: url.pathname, origin: String(req.headers.origin || ''), pna: String(req.headers['access-control-request-private-network'] || '') });
+    }
 
-    /* 跨域预检：只对白名单 Origin 放行，且只声明本服务真正实现的方法。 */
+    /* 跨域预检：只对允许的 Origin 放行，且只声明本服务真正实现的方法。 */
     if (method === 'OPTIONS') {
       const origin = String(req.headers.origin || '');
-      if (origin && allowedOrigins.indexOf(origin) >= 0) {
-        res.writeHead(204, {
-          'Access-Control-Allow-Origin': origin,
-          'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type, X-IB-Home-Token, Authorization',
-          'Access-Control-Max-Age': '600',
-          Vary: 'Origin'
-        });
-        res.end();
-        return;
+      const headers = { Vary: 'Origin' };
+      if (originAllowed(origin)) {
+        headers['Access-Control-Allow-Origin'] = origin;
+        headers['Access-Control-Allow-Methods'] = 'GET, POST, DELETE, OPTIONS';
+        headers['Access-Control-Allow-Headers'] = 'Content-Type, X-IB-Home-Token, X-IB-Protocol, Authorization';
+        headers['Access-Control-Max-Age'] = '600';
+        /* Private Network Access（PNA）：Chrome 对「从 file:// 或公网 origin 发起、
+           目标为 loopback/私网地址」的请求会先发一个带
+           `Access-Control-Request-Private-Network: true` 的预检，并要求响应显式
+           `Access-Control-Allow-Private-Network: true`，否则**整个请求在到达服务器前
+           就被拦掉**（实测 corsError: PreflightMissingAllowOriginHeader /
+           请求根本没有落到服务端日志里）。
+           本产品第一类运行方式就是双击 InternalBeyond.html（file://）访问本机服务，
+           所以这一项是必需的，不是可选加固。 */
+        if (String(req.headers['access-control-request-private-network'] || '').toLowerCase() === 'true') {
+          headers['Access-Control-Allow-Private-Network'] = 'true';
+        }
       }
-      res.writeHead(204, { Vary: 'Origin' });
+      res.writeHead(204, headers);
       res.end();
       return;
     }

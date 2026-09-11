@@ -37,9 +37,13 @@
     assistant: 'msg_<ms>_<rand>',
     assistantPart: 'msg_<ms>_<rand>_<i>',
     system: 'msg_sys_<ms>_<rand36>',
-    proactive: 'active_<settingId>_<scheduledFor>'
+    proactive: 'active_<settingId>_<scheduledFor>',
+    /* M1-A 新增（本阶段唯一新增形状）：由 requestId 确定性派生的 user 消息 id，
+       只出现在「必须可重试」的路径（Node execution / 未来 Mobile Gateway）。
+       §3 的五种既有形状一个都没有改变。 */
+    requestDerived: 'msg_req_<token>_u'
   };
-  var ID_PATTERN = /^(?:msg_\d+_(?:u|\d+)(?:_\d+)?|msg_sys_\d+_[a-z0-9]{1,6}|active_.+)$/;
+  var ID_PATTERN = /^(?:msg_\d+_(?:u|\d+)(?:_\d+)?|msg_sys_\d+_[a-z0-9]{1,6}|msg_req_[a-z0-9]+_u|active_.+)$/;
 
   /* ── 字段分类（唯一真源；schema 校验与 store 列投影都读这里）──────── */
   /* required：每一次生产写入都必须存在的字段。 */

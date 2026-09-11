@@ -231,9 +231,25 @@ const nextTs = () => ++_tsSeq;
     const mRead = await req('GET', '/migration?source=browser:file', null, AUTH);
     check('http.migrate 标记可读回', mRead.body.state.version === 2 && mRead.body.state.lastTimestamp === 5000, mRead.body);
 
-    /* ── integrity / 安全面 ── */
+    /* ── integrity / 备份 / 安全面 ── */
     const verify = await req('GET', '/verify', null, AUTH);
     check('http.verify integrity_check = ok', verify.body.integrity.ok === true && verify.body.integrity.result === 'ok', verify.body.integrity);
+    const backup = await req('GET', '/verify?backup=1', null, AUTH);
+    check('http.backup 生成在线备份', backup.status === 200 && backup.body.backup && backup.body.backup.bytes > 0, backup.body.backup);
+    check('http.backup 备份文件名落在数据目录且不泄露路径',
+      /^home-node\.bak-.*\.db$/.test(String(backup.body.backup.file)), backup.body.backup && backup.body.backup.file);
+    const backupFile = path.join(DATA_DIR, String(backup.body.backup.file));
+    check('http.backup 备份文件真实存在且非空', fs.existsSync(backupFile) && fs.statSync(backupFile).size > 0);
+    check('http.backup 备份是可读的 SQLite 库（历史可恢复）',
+      (function () {
+        try {
+          const { DatabaseSync } = require('node:sqlite');
+          const copy = new DatabaseSync(backupFile);
+          const row = copy.prepare('SELECT COUNT(*) AS c FROM messages').get();
+          copy.close();
+          return !!row && row.c > 0;
+        } catch (error) { return false; }
+      })());
     const security = await req('GET', '/security', null, AUTH);
     check('http.security 明确声明 loopback-only 与 token 状态',
       security.body.loopbackOnly === true && security.body.tokenRequired === true, security.body);
@@ -267,8 +283,7 @@ const nextTs = () => ++_tsSeq;
     check('http.restart 服务可重启', !!health);
     const AUTH = { 'X-IB-Home-Token': TOKEN };
     const list = await req('GET', '/list?conversationId=dm:char_a', null, AUTH);
-    check('http.restart 重启后历史仍在', list.body.messages.length === 6, list.body.messages.length);
-    check('http.restart revision 未回退', health.revision >= 10, health.revision);
+    check('http.restart 重启后历史仍在', list.body.messages.length === 6, list.body.messages.length);    check('http.restart revision 未回退', health.revision >= 10, health.revision);
     const mig = await req('GET', '/migration?source=browser:file', null, AUTH);
     check('http.restart 迁移标记持久', mig.body.state.version === 2);
     const dup = await req('POST', '/messages', { messages: [msg('msg_b2_u', { role: 'assistant', content: 'r', timestamp: 2004 })], forceBatch: true }, AUTH);
@@ -277,6 +292,39 @@ const nextTs = () => ++_tsSeq;
   } finally {
     try { svc.child.kill(); } catch (_) { /* 已退出 */ }
     await new Promise(r => setTimeout(r, 200));
+  }
+
+  /* ── SQLite 损坏：隔离保留坏文件 + 新库可用（Phase 16 失败语义）── */
+  {
+    const dbPath = path.join(DATA_DIR, 'home-node.db');
+    const listQuarantined = () => fs.readdirSync(DATA_DIR).filter(f => /\.corrupt-.*\.db$/.test(f));
+    const before = listQuarantined().length;
+    /* 破坏 SQLite 文件头（前 16 字节 magic） */
+    const buf = fs.readFileSync(dbPath);
+    buf.write('THIS-IS-NOT-SQLI', 0, 'utf8');
+    fs.writeFileSync(dbPath, buf);
+
+    svc = spawnService();
+    try {
+      const health = await waitForHealth(15000);
+      check('http.corrupt 损坏库不会卡住服务启动', !!health, svc.output().slice(-400));
+      const quarantined = listQuarantined();
+      check('http.corrupt 坏文件被改名保留（不删除）', quarantined.length === before + 1, fs.readdirSync(DATA_DIR));
+      const kept = quarantined[quarantined.length - 1];
+      check('http.corrupt 保留文件里还是原来的字节（未销毁）',
+        !!kept && fs.readFileSync(path.join(DATA_DIR, kept)).slice(0, 16).toString('utf8') === 'THIS-IS-NOT-SQLI',
+        kept ? fs.readFileSync(path.join(DATA_DIR, kept)).slice(0, 16).toString('utf8') : null);
+      const AUTH = { 'X-IB-Home-Token': TOKEN };
+      const after = await req('POST', '/messages', { message: msg('msg_after_corrupt_u', { timestamp: 900000 }) }, AUTH);
+      check('http.corrupt 新库可正常写入', after.status === 200 && after.body.outcome === 'created', after.body);
+      const verify = await req('GET', '/verify', null, AUTH);
+      check('http.corrupt 新库 integrity = ok', verify.body.integrity.ok === true, verify.body.integrity);
+      check('http.corrupt 服务日志明确报出隔离事件',
+        /corrupt-quarantined|corrupt/i.test(svc.output()), svc.output().slice(-400));
+    } finally {
+      try { svc.child.kill(); } catch (_) { /* 已退出 */ }
+      await new Promise(r => setTimeout(r, 200));
+    }
   }
 
   console.log('');

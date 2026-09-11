@@ -12,10 +12,16 @@
  * 子进程输出透传；任一失败最终返回非零退出码；浏览器测试串行执行
  * （避免 Chrome/CDP 相互干扰）；服务测试自带随机端口与临时数据目录。
  *
- * P2-07：入口不再遗漏仓库内的测试脚本。登记条目共 102 条 = 101 个 test_*.js
- * + scripts_check_html.js（HTML 结构检查）；分组：static 39 / service 16 / browser 49。
- * M1-A：新增 static 两条 —— test_lan_bridge_auth_contract.js（R19/§3.14 LAN 鉴权一致性）
- *     + test_chat_core_contract.js（Chat Message Contract）。
+ * P2-07：入口不再遗漏仓库内的测试脚本。登记条目共 108 条 = 107 个 test_*.js
+ * + scripts_check_html.js（HTML 结构检查）；分组：static 41 / service 18 / browser 50。
+ * M1-A：新增 static 四条 —— test_lan_bridge_auth_contract.js（R19/§3.14 LAN 鉴权一致性）、
+ *     test_chat_core_contract.js（Chat Message Contract）、
+ *     test_chat_authority.js（权威/镜像/回退三态策略）、
+ *     test_chat_migration.js（IndexedDB → Home Node 迁移端到端幂等）；
+ *     service 两条 —— test_home_node_http.js（真实 HTTP 集成）、
+ *     test_home_node_service.js（服务进程与 runner 注册契约）；
+ *     browser 一条 —— test_m1a_chat_authority_smoke.js（真实 Home Node 进程 +
+ *     真实 sendChatMessage，证明桌面单聊在切换权威之后仍然工作，且离线时 fail closed）。
  * 仓库当前有 99 个 test_*.js；并行会话在途的 test_context_snapshot.js 尚未登记
  * （不属于 P2/P3/P4/P5 改动面，登记与否由该会话决定）。
  * P4：登记 test_setup_wizard.js（static）+ test_setup_wizard_smoke.js（browser）。
@@ -97,6 +103,15 @@ const GROUPS = [
          conversation identity 派生与逆函数 / message id 形状保真 /
          幂等 requestId→messageId 确定性 / payload 往返不丢未知字段。纯 Node。 */
       ['test_chat_core_contract.js'],
+      /* M1-A（Phase 7/16）：浏览器权威层三态策略 —— 写先到 Home Node 再落镜像 /
+         Home Node 离线时写 fail closed 且读走镜像并标 degraded /
+         镜像写失败仍以 Home Node 为权威并如实报告 / 明确拒绝不当作离线 /
+         mirror·off 模式退回本地且不宣称权威。mock remote + mock local，零网络。 */
+      ['test_chat_authority.js'],
+      /* M1-A（Phase 6）：IndexedDB → Home Node 迁移端到端 —— 空库 / 已有消息 /
+         重复迁移 / 中断续跑 / 混合 thread / images·files·voice payload /
+         migrated marker 版本。用真实 chat-store + 真实 mock HTTP，零浏览器。 */
+      ['test_chat_migration.js'],
       ['test_harness_boundary.js'],
       ['test_credential_vault.js'],
       ['test_error_catalog.js'],
@@ -191,6 +206,9 @@ const GROUPS = [
       ['test_mimo_voiceclone.js'],
       ['test_mimo_voicedesign.js'],
       ['test_active_http.js'],
+      /* M1-A：Home Node canonical chat authority（真实 HTTP + 临时数据目录） */
+      ['test_home_node_http.js'],
+      ['test_home_node_service.js'],
       ['test_active_plans.js'],
       ['test_proactive_interaction.js'],
       ['test_launcher.js'],
@@ -279,7 +297,14 @@ const GROUPS = [
       /* P13：图片编辑浏览器冒烟（<ws_edit_image> → Resolver → Router → multipart /images/edits → A→B→C） */
       ['test_image_edit_smoke.js'],
       /* P15：Image Router 配置层浏览器冒烟（设置 UI → 保存 → 刷新 → 真实请求体用配置的 Key/模型 → 备用通道） */
-      ['test_image_router_settings_smoke.js']
+      ['test_image_router_settings_smoke.js'],
+      /* M1-A：桌面端 canonical chat authority 浏览器冒烟 —— 真实 services/home-node-service.js
+         （随机端口 + 临时数据目录）+ 真实 mock 模型端点 + 真实 sendChatMessage，
+         经 http://127.0.0.1:<port>/InternalBeyond.html 承载（产品的正常启动链）。
+         断言：user/assistant 两条消息都落到 Home Node 的 canonical SQLite、
+         revision 前进、镜像持有同一批 message id、Home Node 停掉后写入 fail closed
+         且镜像不新增。刻意保持最小，不是全量浏览器套件。 */
+      ['test_m1a_chat_authority_smoke.js', '--browser']
     ]
   }
 ];

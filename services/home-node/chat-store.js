@@ -170,6 +170,32 @@ function createChatStore(deps) {
   function open() {
     if (opened) return { ok: true, alreadyOpen: true, file: dbFile, schemaVersion: SCHEMA_VERSION };
     try { fs.mkdirSync(dataDir, { recursive: true }); } catch (_) { /* 目录已存在 */ }
+    /* 启动完整性检查 + 损坏隔离（Phase 16）：
+       打开之前先对**已存在的**库跑一次 quick_check。损坏时不静默继续，也不静默
+       换一个空库假装没事 —— 把坏文件改名保留（home-node.corrupt-<时间戳>.db）、
+       再建新库，并以 error 级别喊出来。这样：
+         · 桌面不会被一个坏文件卡住；
+         · 数据没有被销毁，用户/支持人员可以拿保留文件去恢复；
+         · 行为是**可解释**的，而不是"历史突然没了"。
+       WAL 侧车文件一并改名，否则新库会读到旧 WAL。 */
+    let corruptBackup = null;
+    let probeFailure = null;
+    if (fs.existsSync(dbFile)) {
+      let probe = null;
+      try {
+        probe = new sqlite.DatabaseSync(dbFile);
+        const row = probe.prepare('PRAGMA quick_check').get();
+        const value = row ? (row.quick_check || Object.values(row)[0]) : 'unknown';
+        if (String(value) !== 'ok') probeFailure = new Error('quick_check: ' + String(value));
+      } catch (error) {
+        probeFailure = error;
+      } finally {
+        /* 必须先关掉探针连接：Windows 上打开的文件无法 rename（EBUSY）。
+           损坏隔离就依赖这一步，所以它在 quarantine 之前，且不能被跳过。 */
+        if (probe) { try { probe.close(); } catch (_) { /* 已关闭 */ } }
+      }
+      if (probeFailure) corruptBackup = quarantineCorruptFile(probeFailure);
+    }
     db = new sqlite.DatabaseSync(dbFile);
     db.exec('PRAGMA journal_mode = WAL');
     db.exec('PRAGMA synchronous = FULL');
@@ -195,8 +221,93 @@ function createChatStore(deps) {
     opened = true;
     lastOpenedAt = clock();
     /* 观测：只报路径与容量，绝不打印任何消息正文。 */
-    logger('opened', { file: dbFile, schemaVersion: SCHEMA_VERSION, messages: countMessages(), allMessages: countAllMessages() });
-    return { ok: true, alreadyOpen: false, file: dbFile, schemaVersion: SCHEMA_VERSION };
+    logger('opened', {
+      file: dbFile,
+      schemaVersion: SCHEMA_VERSION,
+      messages: countMessages(),
+      allMessages: countAllMessages(),
+      recoveredFromCorrupt: corruptBackup || undefined
+    });
+    return { ok: true, alreadyOpen: false, file: dbFile, schemaVersion: SCHEMA_VERSION, recoveredFromCorrupt: corruptBackup || null };
+  }
+
+  /* 把损坏的库文件（含 WAL/SHM 侧车）改名保留，返回保留文件的 basename。
+     绝不删除：数据是用户的，能不能救是人的判断，不是程序的判断。 */
+  function quarantineCorruptFile(cause) {
+    const stamp = new Date(intOf(clock())).toISOString().replace(/[:.]/g, '-');
+    const base = dbFile.replace(/\.db$/i, '');
+    const kept = base + '.corrupt-' + stamp + '.db';
+    try {
+      fs.renameSync(dbFile, kept);
+      for (const sidecar of ['-wal', '-shm']) {
+        if (fs.existsSync(dbFile + sidecar)) {
+          try { fs.renameSync(dbFile + sidecar, base + '.corrupt-' + stamp + '.db' + sidecar); } catch (_) { /* 尽力而为 */ }
+        }
+      }
+      logger('corrupt-quarantined', { kept: path.basename(kept), cause: String((cause && cause.message) || cause).slice(0, 200) });
+      return kept;
+    } catch (error) {
+      /* 改名失败是致命情况：不能在一个坏库上继续写。明确报错，交给上层判定。 */
+      const err = new Error('chat store is corrupt and could not be quarantined: ' + String((error && error.message) || error));
+      err.code = 'CORRUPT_CANNOT_QUARANTINE';
+      throw err;
+    }
+  }
+
+  /* 在线备份：先用 node:sqlite 的 backup()，它在本运行时实测会生成 0 字节文件，
+     因此**校验产物**并回退到 `VACUUM INTO`（SQLite 原生、单文件、含 WAL 已提交数据）。
+     两条路径都只读源库、都不改变 canonical 数据。
+     备份文件落在同目录 .bak-<时间戳>.db。 */
+  function backup(targetFile) {
+    if (!opened) return { ok: false, error: 'store-closed' };
+    const stamp = new Date(intOf(clock())).toISOString().replace(/[:.]/g, '-');
+    const target = targetFile || (dbFile.replace(/\.db$/i, '') + '.bak-' + stamp + '.db');
+    const staging = target + '.staging';
+    const attempt = [];
+    let produced = 0;
+    let targetActual = target;
+    /* 两条路径都先写到**全新**的 staging 路径，再改名到最终目标：
+       · 最终目标不存在（时间戳保证唯一）；
+       · staging 也不存在 → 不依赖"能否删除一个被占用的空文件"（Windows 上删不掉）。
+       目标目录与库同卷，rename 不会跨卷。 */
+    try { if (fs.existsSync(staging)) fs.unlinkSync(staging); } catch (_) { /* 交给下方报错 */ }
+    try {
+      sqlite.backup(db, staging);
+      produced = fs.existsSync(staging) ? fs.statSync(staging).size : 0;
+      attempt.push('backup:' + produced);
+    } catch (error) {
+      attempt.push('backup-failed:' + String((error && error.message) || error).slice(0, 80));
+    }
+    if (produced <= 0) {
+      const alt = dbFile.replace(/\.db$/i, '') + '.bak-' + stamp + '-' + Math.random().toString(36).slice(2, 6) + '.db';
+      try {
+        /* VACUUM INTO：SQLite 原生、单文件、含 WAL 已提交数据。
+           路径用单引号转义后内联（路径来自本进程配置，不含用户输入）。 */
+        db.exec("VACUUM INTO '" + String(alt).replace(/'/g, "''") + "'");
+        produced = fs.existsSync(alt) ? fs.statSync(alt).size : 0;
+        attempt.push('vacuum-into:' + produced);
+        /* 实测：Windows 上 backup() 留下的空文件被 sqlite 句柄占用，删不掉也盖不掉，
+           因此回退路径**不试着改名**，而是直接以 alt 为最终产物（返回真实路径）。
+           备份的价值在于"有一个可打开的完整副本"，不在于文件名好看。 */
+        if (produced > 0) {
+          targetActual = alt;
+        } else {
+          try { if (fs.existsSync(alt)) fs.unlinkSync(alt); } catch (_) { /* 空文件 */ }
+        }
+      } catch (error) {
+        attempt.push('vacuum-into-failed:' + String((error && error.message) || error).slice(0, 80));
+        produced = 0;
+      }
+    } else {
+      try { fs.renameSync(staging, target); }
+      catch (error) { attempt.push('rename-failed:' + String((error && error.message) || error).slice(0, 80)); produced = 0; }
+    }
+    if (produced <= 0) {
+      logger('backup-failed', { attempts: attempt.join(' | ') });
+      return { ok: false, error: 'backup-failed', message: attempt.join(' | ') };
+    }
+    logger('backup', { target: path.basename(targetActual), bytes: produced, revision: getRevision() });
+    return { ok: true, file: targetActual, bytes: produced, revision: getRevision(), method: attempt[attempt.length - 1] };
   }
 
   function close() {
@@ -522,10 +633,21 @@ function createChatStore(deps) {
     };
   }
 
-  function writeOne(plan) {
+  /* 迁移专用：existingPolicy 决定「Home Node 里已有同 id 记录时怎么办」。
+       'overwrite'（默认）—— 内容不同则更新（浏览器编辑、撤回、续写都靠它）
+       'skip'             —— 绝不覆盖已有记录，只报告 skipped（一次性迁移用，
+                             满足「不覆盖更新版本较新的 Node 数据」；
+                             代价是迁移期间浏览器侧的离线编辑不会被带入，
+                             因为它们本来就会在切到 Home Node 权威后重新写入）。
+     无论哪种策略，identical 永远先被短路成 skipped（revision 不动）。 */
+  function writeOne(plan, options) {
+    options = options || {};
     const m = plan.canonical.message;
     const threadId = m.threadId ? String(m.threadId) : '';
-    if (plan.identical) return { ok: true, outcome: 'skipped', id: plan.id, revision: plan.existing.revision, conversationId: plan.conversationId };
+    if (plan.identical) return { ok: true, outcome: 'skipped', id: plan.id, revision: plan.existing.revision, conversationId: plan.conversationId, reason: 'identical' };
+    if (plan.existing && options.existingPolicy === 'skip') {
+      return { ok: true, outcome: 'skipped', id: plan.id, revision: plan.existing.revision, conversationId: plan.conversationId, reason: 'exists-on-node' };
+    }
     const revision = intOf(allocateRevision());
     const timestamp = intOf(m.timestamp);
     /* insert_seq：重复写入（同 id 内容变化）保留原序号 —— 序号表达的是"这一行在
@@ -577,7 +699,7 @@ function createChatStore(deps) {
     return withTransaction(() => {
       const plan = evaluateWrite(message);
       if (!plan.ok) return plan;
-      const result = writeOne(plan);
+      const result = writeOne(plan, { existingPolicy: options.existingPolicy });
       if (requestId && options.idempotent !== false) rememberRequest(requestId, 'message', result.id);
       return result;
     });
@@ -607,7 +729,7 @@ function createChatStore(deps) {
         }
         plans.push(plan);
       }
-      const results = plans.map(writeOne);
+      const results = plans.map(plan => writeOne(plan, { existingPolicy: options.existingPolicy }));
       if (requestId && options.idempotent !== false) rememberRequest(requestId, 'batch', JSON.stringify(results));
       const summary = { created: 0, updated: 0, skipped: 0 };
       for (const r of results) summary[r.outcome] = (summary[r.outcome] || 0) + 1;
@@ -702,6 +824,7 @@ function createChatStore(deps) {
     getMigrationState: getMigrationState,
     setMigrationState: setMigrationState,
     integrityCheck: integrityCheck,
+    backup: backup,
     /* 暴露给测试/诊断（只读） */
     file: dbFile,
     schemaVersion: SCHEMA_VERSION,
