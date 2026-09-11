@@ -372,3 +372,47 @@ D19 的机制一行未动，只往数据表里补一条**已取证**的 model �
    其它取值或字段名，症状会是**聊天直接 400**；此时把 `deepseek-flash` 从
    `REASONING_MODEL_POLICIES` 移除（一行数据）即可回到 abstain，无需改任何代码。
 
+
+## D20. M1-C · Android Thin Client（2026-09-11）
+
+M1-A/M1-B 把 canonical chat 与设备身份放在 Home Node（桌面）之后，M1-C 交付了**第一个真
+正的 Android IB**：`android/` 独立 Gradle 工程，产出可安装 APK，在同一 LAN 内完成配对 →
+角色列表 → 读取同一份历史 → 发消息 → 实时流式回复 → 断线恢复。冻结以下决定：
+
+1. **Android 是 thin client，不拥有 IB 世界。** Android 只拥有 UI / 设备凭据 / cache /
+   draft / sync cursor；canonical chat、角色运行配置、provider 凭据、生成、revision、
+   幂等、设备登记表继续全部属于 Home Node。**禁止**任何 provider 直连、第二套
+   IBModelCore / Middle Brain / memory runtime、第二套 canonical chat DB。
+   结构上保证：`data/api/HomeNodeClient.kt` 是全 App 唯一发 HTTP 的地方；APK 只申请
+   `INTERNET` 一个权限。
+2. **技术路线：Kotlin + Jetpack Compose + OkHttp + 平台 SQLite + Android Keystore。**
+   不用 WebView/Capacitor（AI runtime 已在 Home Node，手机不需要浏览器世界，更不需要
+   把 M1-A 刚从客户端移走的 IndexedDB chat 权威再搬回来）；不用 Room/KSP（6 张小表、
+   手写 upsert 与 delete 语义，`SqlDatabase` seam 让真实 SQL 能在 JVM 测试里跑）；不用
+   navigation-compose（4 个页面 + 一条明确的 back ladder，40 行纯 Kotlin 且可单测）；
+   不用已废弃的 security-crypto。**运行时第三方依赖只有 OkHttp 一个**（理由：SSE 需要
+   「连接有超时、读取无超时」+ 可跨线程取消阻塞读取，HttpURLConnection 无法在不改全局
+   状态的前提下表达）。
+3. **device token 只以密文存在。** Keystore（alias `ib.device.credential.v1`，
+   不可导出）+ AES-256-GCM，密文进 SharedPreferences；`deviceId` / endpoint /
+   fingerprint 明文保存是**有意的**（App 必须在能开 Keystore 之前就能显示
+   「Connected to …」与「凭据在本机已不可读，请重新配对」）。解不开的密文**保留**并如实
+   上报，绝不静默当作「从未配对」。
+4. **协议行为按 M1-B 冻结执行**：客户端不自造 canonical message id（乐观消息是
+   `SendAttempt` 记录 + overlay，不是 messages 表里的一行）；requestId 在发请求**之前**
+   落盘，投递重试始终复用同一个；**terminal frame 终止该义务**——终态错误后的「重新发送」
+   是新 requestId；`disconnect ≠ cancellation`（丢流 → RECOVERING，绝不 FAILED →
+   `turns.get` → resume → `sync.changes`）；重复帧丢弃、缺口从 lastSequence 重连；
+   `REPLAY_GAP` 语义是「从 canonical 状态补齐」。UI 只说
+   「LAN connection · not encrypted」，在没有 TLS 之前绝不出现 secure/encrypted。
+5. **cleartext 策略按构建变体分离**：debug（M1-C 交付物）在 network security config 里
+   显式允许 trusted-LAN 明文；release 保持 `cleartextTrafficPermitted=false`，只放行
+   loopback / 模拟器别名 / `.local`。**限制如实登记**：Android 的 domain-config 只接受
+   主机名或 IP 字面量，**不接受地址段**，因此 release 包连任意 RFC1918 地址必须走 TLS 或
+   主机名（属已推迟的传输层工作）。这不影响身份模型——身份是 device token，不是 IP。
+6. **验证方式**：`./gradlew test` 101 项全绿，其中 `HomeNodeIntegrationTest` 真实
+   spawn `services/home-node-service.js` + 真实 SSE mock provider，用**与 APK 同一份**
+   HomeNodeClient / SessionRepository / ConversationSession 走完
+   pair → character.list → chat.history → chat.send → streaming → 断线 → resume →
+   sync.changes → 同 requestId 重试 → presence → revoke。没有 emulator，因此 APK 只做到
+   「编译 + 签名 + 校验包内 manifest/网络策略」，未在设备上启动过。
