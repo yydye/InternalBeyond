@@ -3058,9 +3058,13 @@ i would like the room to be enough.
      顺序固定：chat-core（契约）→ chat-authority（权威/镜像/回退策略）→
      home-node-client（唯一 HTTP 实现）→ home-node-bootstrap（数据层接缝）。
      bootstrap 必须最后加载：它依赖 core.js 暴露的 window.__ibCoreDb。
-     回滚：localStorage['ib_home_node_mode']='mirror' 即恢复纯 IndexedDB 行为。 -->
+     回滚：localStorage['ib_home_node_mode']='mirror' 即恢复纯 IndexedDB 行为。
+     M1-B：mobile-dto.js 必须排在 home-node-bootstrap 之前 —— 角色目录的
+     mobile-safe 投影只有一份实现（assets/js/mobile-dto.js），
+     桌面发布时用它，Mobile Gateway 出站时用同一份，两边结构上不可能漂移。 -->
 <script src="assets/js/chat-core.js"></script>
 <script src="assets/js/chat-authority.js"></script>
+<script src="assets/js/mobile-dto.js"></script>
 <script src="assets/js/home-node-client.js"></script>
 <script src="assets/js/home-node-bootstrap.js"></script>
 <!-- 深渊暗线：只在 Infernal（暗色）模式可瞥见——"你知道这里通向深渊，但你也知道，你随时可以离开。" -->

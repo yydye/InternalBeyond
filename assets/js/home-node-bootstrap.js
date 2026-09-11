@@ -204,6 +204,89 @@ window.dbGetByIndex = function (store, idx, val) {
   return authority.getByFriend(val);
 };
 
+/* ── M1-B：角色目录发布（Desktop → Home Node）────────────────────────
+    **这是 M1-B 唯一的 authority gap，必须说清楚而不是悄悄掩盖：**
+     · chatMessages 的 authority 在 M1-A 已经搬到 Home Node；
+     · apiConfigs（provider 配置 + 角色）**仍然是浏览器持有**，只有浏览器
+       能读到明文 apiKey 与 systemPrompt。
+    因此桌面按"临时目录快照"的模式把角色推给 Home Node：
+       apiConfigs → mobile-dto.characterCatalogEntry()（白名单投影）
+                  → POST /characters/publish
+     Home Node 把 DTO 与 runtime spec 分成两张表：
+       · characters               —— mobile-safe DTO，可以发给任何已认证设备；
+       · character_runtime_specs  —— provider 凭据/端点/系统提示词，**永不**出站。
+     于是"手机能发消息"与"手机永远看不到 apiKey"可以同时成立。
+
+     为什么不是 Strategy B（Home Node 自己成为角色 registry）：那需要把
+     apiConfigs 的 authority 整体搬到 Node，是另一个阶段的工作量，而且会立刻
+     引出"谁能编辑角色"的问题。本阶段只做最小可用且**诚实**的依赖。
+
+     发布是幂等的：Node 侧按 id upsert，未变化的目录重复发布不产生副作用。
+     绝不因为发布失败而阻塞桌面 —— 首页照常打开，只是手机端会看到
+     "该角色在 Home Node 上没有可运行配置"（明确报错，不静默）。 */
+var CATALOG_PUBLISH_MIN_INTERVAL_MS = 5000;
+var catalogPublishedAt = 0;
+var catalogPublishInFlight = null;
+
+function desktopCharacters() {
+  try {
+    /* window.apiConfigs 由 social.js:2445 用 ibSocialLive 注册成**活的 getter**
+       （不是快照），因此这里每次读到的都是当前角色表。 */
+    var configs = window.apiConfigs;
+    if (!Array.isArray(configs)) return [];
+    var dto = window.IBMobileDto;
+    if (!dto || typeof dto.characterCatalog !== 'function') {
+      /* 投影层没加载就不发布 —— 绝不"先把带 apiKey 的原始条目发出去再说"。 */
+      warn('catalog-projection-missing', {});
+      return null;
+    }
+    return dto.characterCatalog(configs, { withSpec: true });
+  } catch (e) {
+    warn('catalog-read-failed', { error: String((e && e.message) || e) });
+    return null;
+  }
+}
+
+function publishCharacters(reason, options) {
+  options = options || {};
+  if (MODE !== 'canonical') return Promise.resolve({ ok: false, error: 'authority-disabled' });
+  var now = Date.now();
+  if (!options.force && now - catalogPublishedAt < CATALOG_PUBLISH_MIN_INTERVAL_MS) {
+    return Promise.resolve({ ok: true, skipped: true });
+  }
+  if (catalogPublishInFlight) return catalogPublishInFlight;
+  var characters = desktopCharacters();
+  if (!characters) return Promise.resolve({ ok: false, error: 'catalog-unavailable' });
+  if (!characters.length) {
+    /* **空目录绝不发布。** Node 侧 publish 是 replace 语义（删掉不再存在的角色），
+       因此"空列表"等于"把 Home Node 上整个角色目录清空"。
+       启动早期 apiConfigs 还没 load 完就会出现空列表，一次空发布足以把已经配好
+       的手机端目录抹掉 —— 实测在浏览器冒烟里就是这样把刚发布的角色弄丢的。
+       没有角色可发布时什么都不做，并如实记一条日志。 */
+    catalogPublishedAt = now;
+    note('catalog-publish-skipped', { reason: reason, why: 'no-characters' });
+    return Promise.resolve({ ok: true, skipped: true, reason: 'no-characters' });
+  }
+  catalogPublishInFlight = remoteDriver.publishCharacters(characters, {}).then(function (result) {
+    catalogPublishInFlight = null;
+    if (result && result.ok) {
+      catalogPublishedAt = Date.now();
+      note('catalog-published', {
+        reason: reason, count: (result.payload && result.payload.count) || characters.length,
+        withSpec: result.payload && result.payload.withSpec
+      });
+    } else {
+      note('catalog-publish-failed', { reason: reason, error: (result && result.error) || 'unknown' });
+    }
+    return result;
+  }, function (error) {
+    catalogPublishInFlight = null;
+    note('catalog-publish-failed', { reason: reason, error: String((error && error.message) || error) });
+    return { ok: false, error: 'catalog-publish-failed' };
+  });
+  return catalogPublishInFlight;
+}
+
 /* ── 启动同步 ────────────────────────────────────────────────────────
    只在 canonical 模式下做。失败绝不阻塞页面：镜像可能稍后由
    visibilitychange / online 事件补齐。 */
@@ -231,7 +314,12 @@ function bootstrap() {
     return;
   }
   note('boot', { base: (typeof window.ibHomeNodeBase === 'function') ? window.ibHomeNodeBase() : '', mode: MODE });
-  syncOnce('boot');
+  /* 先同步聊天镜像，再发布角色目录。
+     顺序刻意如此：目录发布失败不该影响镜像同步，而镜像同步成功说明 Home Node
+     在线，此时发布才有意义（否则只是白跑一次网络请求）。 */
+  syncOnce('boot').then(function () {
+    publishCharacters('boot');
+  });
   /* 页面重新可见 / 网络恢复时补一次同步：不在后台跑定时器，
      因为常驻 interval 会让测试 harness 无法自然退出（MEMORY.md 的测试纪律）。 */
   try {
@@ -264,6 +352,17 @@ var surface = {
   },
   /* 用 Home Node 完整重建镜像。显式调用，绝不自动执行。 */
   rebuildMirror: function (options) { return authority.rebuild(options); },
+  /* M1-B：把当前 apiConfigs 投影成 mobile-safe 角色目录并发布到 Home Node。
+     桌面在角色保存后可以显式调用；启动时也会自动发一次。
+     返回的是 Home Node 的响应（ok/payload）或 {ok:false,error}。 */
+  publishCharacters: function (reason, options) { return publishCharacters(reason || 'manual', options); },
+  /* M1-B：设备与配对（桌面特权面，localhost only）。 */
+  pairing: {
+    create: function (options) { return remoteDriver.pairingSession(options || {}); },
+    list: function () { return remoteDriver.devices(); },
+    revoke: function (deviceId) { return remoteDriver.revokeDevice(deviceId); }
+  },
+  characters: function () { return remoteDriver.characterCatalog(); },
   remote: remoteDriver,
   log: function () { return (NS.homeNodeLog || []).slice(); }
 };

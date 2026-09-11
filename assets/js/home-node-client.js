@@ -142,6 +142,43 @@ function createHomeNodeRemote(deps) {
     },
     security: function () {
       return _request('/security');
+    },
+
+    /* ── M1-B：桌面管理面（配对 / 设备 / 角色目录）─────────────────────
+       这些路径**不是** mobile namespace：它们走 Home Node 既有的 loopback +
+       token 保护，属于"本机特权客户端"的能力。设备 API 在 /mobile/v1/* 下，
+       由 per-device token 保护，桌面不碰它。 */
+
+    /* 创建一次性配对载荷。返回 {pairingId, secret, expiresAt, endpoints, …}，
+       主进程之外不落盘、不进日志。 */
+    pairingSession: function (options) {
+      options = options || {};
+      var payload = {};
+      if (options.deviceName) payload.deviceName = String(options.deviceName);
+      if (options.deviceType) payload.deviceType = String(options.deviceType);
+      return _request('/pairing/session', { method: 'POST', body: payload });
+    },
+    devices: function () {
+      return _request('/devices');
+    },
+    revokeDevice: function (deviceId) {
+      return _request('/device/revoke', { method: 'POST', body: { deviceId: String(deviceId || '') } });
+    },
+    characterCatalog: function () {
+      return _request('/characters');
+    },
+    /* 发布角色目录。调用方（home-node-bootstrap）传入的条目已经过
+       assets/js/mobile-dto.js 的 characterCatalogEntry 投影；
+       Node 侧会**再**用同一份实现收口一次，因此即使这里漏了字段，
+       出站也不可能带上凭据。 */
+    publishCharacters: function (characters, options) {
+      options = options || {};
+      return _request('/characters/publish', {
+        method: 'POST',
+        body: { characters: characters || [], merge: !!options.merge },
+        /* 目录可能含内联头像 base64，给足超时（与迁移同一量级）。 */
+        timeoutMs: options.timeoutMs || MIGRATION_TIMEOUT_MS
+      });
     }
   };
 }

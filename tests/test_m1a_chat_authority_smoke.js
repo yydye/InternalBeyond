@@ -34,7 +34,12 @@ const MOCK_REPLY = '这是 M1-A authority 冒烟回复。';
 let failures = 0;
 const check = (name, condition, detail) => {
   if (condition) console.log('  PASS  ' + name);
-  else { failures++; console.error('  FAIL  ' + name + (detail ? '  -> ' + detail : '')); }
+  else {
+    failures++;
+    /* 对象细节必须序列化：'  -> ' + {} 会打成 "[object Object]"，等于没给信息。 */
+    const shown = (detail && typeof detail === 'object') ? JSON.stringify(detail) : detail;
+    console.error('  FAIL  ' + name + (shown ? '  -> ' + shown : ''));
+  }
 };
 
 function chromePath() {
@@ -192,11 +197,12 @@ function startMockApi() {  return new Promise((resolve) => {
     server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port }));
   });
 }
-function homeNodeRequest(port, pathname, method, body) {
+function homeNodeRequest(port, pathname, method, body, extraHeaders) {
   return new Promise((resolve, reject) => {
     const data = body == null ? null : JSON.stringify(body);
+    const headers = Object.assign({}, data ? { 'Content-Type': 'application/json' } : {}, extraHeaders || {});
     const req = http.request({ host: '127.0.0.1', port, path: pathname, method: method || 'GET',
-      headers: data ? { 'Content-Type': 'application/json' } : {} }, res => {
+      headers: headers }, res => {
       let raw = '';
       res.on('data', c => raw += c);
       res.on('end', () => { try { resolve(JSON.parse(raw || '{}')); } catch (error) { resolve({ raw }); } });
@@ -299,10 +305,57 @@ async function main() {
 
     /* 注入 mock 模型配置并走真实发送链路 */
     const mockEndpoint = 'http://127.0.0.1:' + mock.port + '/v1/chat/completions';
-    await evaluate(cdp, "(function(){ var cfg={ id:'m1a_friend', nickname:'M1AAI', model:'m1a-model', endpoint:'" + mockEndpoint + "', apiKey:'', provider:'custom', relationship:'测试伙伴', systemPrompt:'只回复测试内容。', temperature:1, streaming:false, showThinking:false, promptCache:false, created:Date.now() }; window.__m1a_cfg=cfg; dbPut('apiConfigs', cfg); })()");
+    await evaluate(cdp, "(function(){ var cfg={ id:'m1a_friend', nickname:'M1AAI', model:'m1a-model', endpoint:'" + mockEndpoint + "', apiKey:'sk-m1b-smoke-secret', provider:'custom', relationship:'测试伙伴', systemPrompt:'只回复测试内容。', temperature:1, streaming:false, showThinking:false, promptCache:false, created:Date.now() }; window.__m1a_cfg=cfg; dbPut('apiConfigs', cfg); })()");
     await evaluate(cdp, "loadApiConfigs()");
     await evaluate(cdp, "activeFriendId='m1a_friend'");
     check('chat.configReady', await evaluate(cdp, "apiConfigs.some(function(a){return a.id==='m1a_friend'&&!!a.endpoint})"));
+
+    /* ── M1-B：桌面把 apiConfigs 投影成 mobile-safe 目录并发布到 Home Node ──
+       这是 M1-B 唯一的 authority gap（apiConfigs 仍归浏览器持有）。
+       这里用**真实浏览器 + 真实 Home Node**验证三件事：
+         · 发布确实发生了（桌面启动链会自动发一次，这里显式再发一次以确保确定）；
+         · Home Node 上出现了该角色的 mobile DTO；
+         · 出站目录里没有 apiKey / systemPrompt / endpoint。 */
+    /* 预检必须真的可用：早期实现把 OPTIONS 处理放在 mobile 分支里，
+       /characters/publish 的预检落进管理面返回 404（带 CORS 头但没有
+       Access-Control-Allow-Methods）→ 浏览器判定预检失败 → 整个 POST 变成
+       "Failed to fetch"，而服务端日志只看到一次 OPTIONS。
+       注意**不要**用 fetch(..., {method:'OPTIONS'}) 去断言预检头：那不是预检，
+       响应会被标成 type:'cors' 且头对被脚本读取的响应不可见（实测全部为 null）。
+       能证明预检可用的唯一可靠方式就是"真实的跨域 POST 成功了"。 */
+    const publishProbe = await evaluate(cdp, "(async function(){ try{ var chars=window.IBMobileDto?window.IBMobileDto.characterCatalog(window.apiConfigs||[],{withSpec:true}):[]; var r=await window.IB.homeNode.publishCharacters('smoke',{force:true}); return { len:(window.apiConfigs||[]).length, projected: chars.length, result: JSON.parse(JSON.stringify(r||null)) }; }catch(e){ return { err:String((e&&e.message)||e) }; } })()");
+    check('mobile.publishReachesHomeNodeThroughPreflight',
+      !!(publishProbe && publishProbe.result && publishProbe.result.ok === true && publishProbe.result.payload &&
+         publishProbe.result.payload.count >= 1), publishProbe);
+    const catalog = await homeNodeRequest(homePort, '/characters');
+    const catalogEntries = ((catalog && catalog.payload && catalog.payload.characters) || []);
+    const catalogIds = catalogEntries.map(c => c.id);
+    check('mobile.catalog.published', catalogIds.indexOf('m1a_friend') >= 0, { catalogIds: catalogIds, publishProbe: publishProbe });
+    /* 目录里必须带上可运行配置（forTurn），否则手机能看角色却发不出消息。 */
+    check('mobile.catalog.hasRunnableSpec',
+      catalogEntries.some(c => c.id === 'm1a_friend' && c.forTurn === true), catalogEntries);
+    /* 通过真实 mobile 面读一次：需要一台设备，用管理面签发。 */
+    const pairSession = await homeNodeRequest(homePort, '/pairing/session', 'POST', { deviceName: 'smoke', deviceType: 'android' });
+    const paired = await homeNodeRequest(homePort, '/mobile/v1/pairing/complete', 'POST', {
+      v: 1, payload: {
+        pairingId: pairSession && pairSession.payload && pairSession.payload.pairingId,
+        secret: pairSession && pairSession.payload && pairSession.payload.secret,
+        deviceName: 'smoke', deviceType: 'android'
+      }
+    });
+    const deviceToken = paired && paired.payload && paired.payload.token;
+    check('mobile.pairing.issued', typeof deviceToken === 'string' && deviceToken.length > 20);
+    const mobileChars = await homeNodeRequest(homePort, '/mobile/v1/character/list', 'GET', null, { Authorization: 'Bearer ' + deviceToken });
+    const mobileRaw = JSON.stringify(mobileChars || {});
+    check('mobile.characterList.served', !!((mobileChars && mobileChars.payload && mobileChars.payload.characters) || []).some(c => c.id === 'm1a_friend'), mobileChars && mobileChars.payload);
+    check('mobile.noSecretInCatalog',
+      mobileRaw.indexOf('apiKey') < 0 && mobileRaw.indexOf('systemPrompt') < 0 &&
+      mobileRaw.indexOf('endpoint') < 0 && mobileRaw.indexOf('sk-') < 0 &&
+      mobileRaw.indexOf('sk-m1b-smoke-secret') < 0 &&
+      mobileRaw.indexOf('只回复测试内容') < 0 && mobileRaw.indexOf('127.0.0.1:' + mock.port) < 0, mobileRaw.slice(0, 400));
+    /* 设备 API 未认证必须被拒（真实桌面浏览器进程之外的任何人都不能读）。 */
+    const anon = await homeNodeRequest(homePort, '/mobile/v1/character/list');
+    check('mobile.anonymousRejected', !!(anon && anon.error && anon.error.code === 'AUTH_REQUIRED'), anon);
 
     /* sendChatMessage() 不接受文本参数 —— 它按 currentPage 选输入框
        （communication.js:1615-1618 读 #chat-full-input / #chat-input）。
