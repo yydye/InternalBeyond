@@ -78,6 +78,19 @@ const SERVICES = [
     commandArgs: [path.join(SERVICE_DIR, 'active-message-service.js')],
     matchesHealth: data => data && data.service === 'internal-beyond-active-messages',
     env: {}
+  },
+  {
+    /* M1-A：Home Node —— chatMessages 的 canonical authority。
+       loopback-only，且**不是** Mobile Gateway（无设备身份 / 无配对 / 无 LAN 开关）。
+       它的失败必须是 degraded 而不是 fatal：browser 侧 home-node-client 把
+       "不在线" 判为可回退状态，桌面主 UI 不受影响。 */
+    name: 'HomeNode',
+    port: optionPort('IB_HOME_NODE_PORT', 23118),
+    endpoint: '/health',
+    command: process.execPath,
+    commandArgs: [path.join(SERVICE_DIR, 'home-node-service.js')],
+    matchesHealth: data => data && data.service === 'internal-beyond-home-node',
+    env: {}
   }
 ];
 

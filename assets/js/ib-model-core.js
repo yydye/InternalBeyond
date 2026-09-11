@@ -412,6 +412,243 @@
     return ob;
   }
 
+  /* ── Phase 9 · SSE 流式解析（runtime-neutral，唯一实现）───────────────────
+     目标：Node 侧获得真正的增量生成能力，而 provider 的 wire format 解析**只**存在于
+     本文件（与 buildRequestBody / parseResponse 同一层），绝不散落进 chat service。
+
+     覆盖的 wire format（与 buildRequestBody 的 providerFormat 三分法一致）：
+       · openai   : `data: {choices:[{delta:{content,reasoning_content|reasoning|analysis|thinking}}]}`
+       · anthropic: `event: content_block_delta` + `data: {delta:{type:'text_delta'|'thinking_delta'}}`
+       · gemini   : `data: {candidates:[{content:{parts:[{text,thought}]}}]}`（真实 SSE，无 data: 前缀）
+       · responses: `event: response.output_text.delta` 与 `response.reasoning_summary_text.delta`
+
+     输出事件契约（与 NodeModelPort.run 的 onEvent 同名字段对齐）：
+       {type:'delta', kind:'content'|'reasoning', text, index}
+       {type:'error', kind, message, status?}
+       {type:'error', kind:'provider-stream', message}   ← 服务端在流中回传的错误对象
+
+     容错（硬要求）：
+       · 不完整的行留在缓冲里等下一块，绝不丢半个 JSON；
+       · 单行 JSON 解析失败 → 丢弃该行并记数，**绝不中断整个流**；
+       · 未知事件类型 → 忽略并记数（provider 迭代不会打断生成）；
+       · `[DONE]`、空行、`:` 注释行按 SSE 规范跳过。
+
+     返回 {push(chunk), finish(), accumulate(), stats(), error()}。 */
+  function createStreamParser(format, onEvent) {
+    var fmt = format || 'openai';
+    var buf = '';
+    var seq = 0;
+    var acc = { content: '', reasoning: '', usage: null, truncated: false };
+    var stats = { chunks: 0, events: 0, deltas: 0, malformed: 0, unknown: 0, done: false };
+    var streamError = null;
+    /* anthropic / responses 的块类型是跨行状态（event: 行给出、data: 行消费）。 */
+    var pendingEvent = '';
+
+    function emit(event) {
+      if (typeof onEvent !== 'function') return;
+      try { onEvent(event); } catch (_) { /* consumer 回调异常不得中断解析 */ }
+    }
+    function emitDelta(kind, text) {
+      if (!text) return;
+      if (kind === 'reasoning') acc.reasoning += text; else acc.content += text;
+      stats.deltas++;
+      emit({ type: 'delta', kind: kind, text: text, index: seq++ });
+    }
+    function noteUsage(usage, usageFormat) {
+      if (!usage || typeof usage !== 'object') return;
+      var u = null;
+      if (usageFormat === 'gemini') {
+        u = { input_tokens: usage.promptTokenCount || 0, output_tokens: usage.candidatesTokenCount || 0 };
+        var rtg = reasoningTokensFromUsage(usage, 'gemini');
+        if (rtg != null) u.reasoning_tokens = rtg;
+      } else if (usageFormat === 'anthropic') {
+        /* Anthropic 把 usage **拆成两条事件**：message_start 给 input_tokens，
+           message_delta 只给 output_tokens。因此这里只能写入**真实出现过**的字段 ——
+           若照抄 0 兜底，第二次合并会用 input_tokens:0 覆盖掉第一次的真实值。
+           （openai/gemini 的 usage 是单条完整对象，零兜底不影响正确性。） */
+        u = {};
+        if (usage.input_tokens != null) u.input_tokens = usage.input_tokens || 0;
+        if (usage.output_tokens != null) u.output_tokens = usage.output_tokens || 0;
+        if (usage.cache_read_input_tokens != null) u.cache_read_input_tokens = usage.cache_read_input_tokens || 0;
+        if (usage.cache_creation_input_tokens != null) u.cache_creation_input_tokens = usage.cache_creation_input_tokens || 0;
+        if (!Object.keys(u).length) return;
+      } else if (usageFormat === 'responses') {
+        u = {
+          input_tokens: usage.input_tokens || 0,
+          output_tokens: usage.output_tokens || 0,
+          total_tokens: usage.total_tokens != null ? usage.total_tokens : ((usage.input_tokens || 0) + (usage.output_tokens || 0)),
+          input_tokens_details: usage.input_tokens_details || null,
+          output_tokens_details: usage.output_tokens_details || null
+        };
+        var rtr = reasoningTokensFromUsage(usage, 'responses');
+        if (rtr != null) u.reasoning_tokens = rtr;
+      } else {
+        u = { prompt_tokens: usage.prompt_tokens || 0, completion_tokens: usage.completion_tokens || 0 };
+        var rto = reasoningTokensFromUsage(usage, 'openai');
+        if (rto != null) u.reasoning_tokens = rto;
+      }
+      /* 后到的 usage 覆盖先到的（OpenAI 只在最后一个 chunk 给 usage；
+         Anthropic 的 message_start 与 message_delta 各给一半 → 合并而非覆盖）。 */
+      acc.usage = acc.usage ? Object.assign({}, acc.usage, u) : u;
+    }
+
+    function handleOpenAI(wire) {
+      if (wire && wire.usage) noteUsage(wire.usage, 'openai');
+      if (wire && wire.error) {
+        streamError = String((wire.error && wire.error.message) || wire.error);
+        emit({ type: 'error', kind: 'provider-stream', message: streamError });
+        return;
+      }
+      var choice = (wire && wire.choices && wire.choices[0]) || null;
+      if (!choice) return;
+      var delta = choice.delta || choice.message || null;
+      if (delta) {
+        var reasoning = delta.reasoning_content != null ? delta.reasoning_content
+          : (delta.reasoning != null ? delta.reasoning : (delta.analysis != null ? delta.analysis : delta.thinking));
+        if (typeof reasoning === 'string') {
+          /* openai 系的 reasoning_content 是逐块给的；不支持流式 reasoning 的 format
+             只会给终值 → 此时不 emit delta，只保留在 acc 里（finish 仍返回它）。 */
+          if (streamsReasoning(fmt)) emitDelta('reasoning', reasoning);
+          else if (!acc.reasoning) acc.reasoning = reasoning;
+        }
+        var content = delta.content;
+        if (Array.isArray(content)) content = content.map(function (p) { return (p && (p.text || p.content)) || ''; }).join('');
+        if (typeof content === 'string') emitDelta('content', content);
+      }
+      if (choice.finish_reason === 'length' || choice.finish_reason === 'max_tokens') acc.truncated = true;
+    }
+
+    function handleAnthropic(wire) {
+      var type = (wire && wire.type) || pendingEvent;
+      if (type === 'error') {
+        streamError = String((wire && wire.error && wire.error.message) || 'stream error');
+        emit({ type: 'error', kind: 'provider-stream', message: streamError });
+        return;
+      }
+      if (type === 'message_start' && wire && wire.message && wire.message.usage) noteUsage(wire.message.usage, 'anthropic');
+      if (type === 'message_delta') {
+        if (wire && wire.usage) noteUsage(wire.usage, 'anthropic');
+        if (wire && wire.delta && (wire.delta.stop_reason === 'max_tokens')) acc.truncated = true;
+        return;
+      }
+      if (type === 'content_block_delta' && wire && wire.delta) {
+        var d = wire.delta;
+        if (d.type === 'text_delta' && typeof d.text === 'string') emitDelta('content', d.text);
+        else if (d.type === 'thinking_delta' && typeof d.thinking === 'string') emitDelta('reasoning', d.thinking);
+        else if (typeof d.text === 'string') emitDelta('content', d.text);
+        return;
+      }
+      /* message_stop / content_block_start / content_block_stop / ping：无正文，忽略 */
+    }
+
+    function handleGemini(wire) {
+      if (wire && wire.error) {
+        streamError = String((wire.error && wire.error.message) || wire.error);
+        emit({ type: 'error', kind: 'provider-stream', message: streamError });
+        return;
+      }
+      if (wire && wire.usageMetadata) noteUsage(wire.usageMetadata, 'gemini');
+      var cand = (wire && wire.candidates && wire.candidates[0]) || null;
+      if (!cand) return;
+      var parts = (cand.content && cand.content.parts) || [];
+      for (var i = 0; i < parts.length; i++) {
+        var p = parts[i];
+        if (!p) continue;
+        if (p.thought) emitDelta('reasoning', typeof p.text === 'string' ? p.text : '');
+        else if (typeof p.text === 'string') emitDelta('content', p.text);
+      }
+      if (cand.finishReason === 'MAX_TOKENS' || /max_tokens/i.test(String(cand.finishReason || ''))) acc.truncated = true;
+    }
+
+    function handleResponses(wire) {
+      var type = (wire && wire.type) || pendingEvent;
+      if (type === 'error' || (wire && wire.error)) {
+        streamError = String((wire && wire.error && wire.error.message) || 'stream error');
+        emit({ type: 'error', kind: 'provider-stream', message: streamError });
+        return;
+      }
+      if (type === 'response.output_text.delta' && typeof wire.delta === 'string') { emitDelta('content', wire.delta); return; }
+      if (type === 'response.reasoning_summary_text.delta' && typeof wire.delta === 'string') { emitDelta('reasoning', wire.delta); return; }
+      /* response.completed 携带最终 usage（若 provider 给） */
+      if (type === 'response.completed' && wire.response && wire.response.usage) noteUsage(wire.response.usage, 'responses');
+      if (type === 'response.incomplete') acc.truncated = true;
+    }
+
+    function handleLine(line) {
+      if (!line) return;
+      if (line.charAt(0) === ':') return;                 /* SSE 注释/心跳 */
+      if (line.indexOf('event:') === 0) { pendingEvent = line.slice(6).trim(); return; }
+      if (line.indexOf('data:') === 0) {
+        var data = line.slice(5).trim();
+        if (!data) return;
+        if (data === '[DONE]') { stats.done = true; pendingEvent = ''; return; }
+        var wire = null;
+        try { wire = JSON.parse(data); }
+        catch (e) { stats.malformed++; return; }          /* 容错：丢弃该行，绝不中断 */
+        stats.events++;
+        if (fmt === 'anthropic') handleAnthropic(wire);
+        else if (fmt === 'gemini') handleGemini(wire);
+        else if (fmt === 'responses') handleResponses(wire);
+        else handleOpenAI(wire);
+        pendingEvent = '';
+        return;
+      }
+      /* 裸 JSON 行（Gemini 的真实 SSE 不带 data: 前缀） */
+      var trimmed = line.trim();
+      if (trimmed.charAt(0) === '{' || trimmed.charAt(0) === '[') {
+        var bare = null;
+        try { bare = JSON.parse(trimmed); }
+        catch (e) { stats.malformed++; return; }
+        stats.events++;
+        if (fmt === 'gemini') handleGemini(bare);
+        else if (fmt === 'openai') handleOpenAI(bare);
+        return;
+      }
+      stats.unknown++;
+    }
+
+    function push(chunk) {
+      if (chunk == null) return;
+      stats.chunks++;
+      buf += String(chunk);
+      for (;;) {
+        var nl = buf.indexOf('\n');
+        if (nl < 0) break;
+        var line = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+        if (line.charAt(line.length - 1) === '\r') line = line.slice(0, -1);
+        handleLine(line);
+      }
+    }
+
+    /* finish()：处理最后一行（无尾换行的合法情况）并返回累积结果。
+       与 parseResponse 的返回形状一致，因此调用方可以无差别地处理流式/非流式。 */
+    function finish() {
+      if (buf) { var tail = buf; buf = ''; handleLine(tail.charAt(tail.length - 1) === '\r' ? tail.slice(0, -1) : tail); }
+      if (!acc.truncated) { /* 留待 provider 的 finish_reason 判定 */ }
+      return {
+        content: acc.content,
+        reasoning: acc.reasoning,
+        truncated: acc.truncated,
+        usage: acc.usage,
+        streamError: streamError,
+        stats: stats
+      };
+    }
+
+    return { push: push, finish: finish, stats: function () { return stats; }, error: function () { return streamError; } };
+  }
+
+  /* 该 format 的推理内容是否真的以**增量**形式出现在流里。
+     openai 系（DeepSeek 等）的 reasoning_content 逐块给；anthropic 有 thinking_delta；
+     gemini 有 thought part；responses 有 reasoning_summary_text.delta。
+     唯一没有流式 reasoning 的是「宿主自己声明 format 未知」的裸表兜底情形（format 会
+     落到 'openai'，因此实际恒为 true）——保留这个判定是为了让未来新增 format 时
+     有一个显式的、可测试的位置，而不是默默把终值当增量。 */
+  function streamsReasoning(format) {
+    return format === 'openai' || format === 'anthropic' || format === 'gemini' || format === 'responses';
+  }
+
   /* 解析 provider-specific response → {content, reasoning, truncated, usage}
      spec: {provider, format?} */
   /* P21 · 实际 reasoning tokens 读取（唯一实现）：是"观测值"而不是新计量口径 ——
@@ -645,6 +882,9 @@
     geminiParts: geminiParts,
     buildRequestBody: buildRequestBody,
     parseResponse: parseResponse,
+    /* Phase 9：SSE 流式解析的唯一实现（provider wire format 只在本文件被解释）。
+       返回的 finish() 形状与 parseResponse 一致，调用方对流式/非流式可无差别处理。 */
+    createStreamParser: createStreamParser,
     AstraAdapter: AstraAdapter
   };
 });

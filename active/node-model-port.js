@@ -1,4 +1,4 @@
-/* ====================================================================
+﻿/* ====================================================================
    IB Active · Node ModelPort（Phase 4）
    --------------------------------------------------------------------
    在 Node runtime 建立与 Browser ModelPort 相同的最小 execution contract：
@@ -45,6 +45,40 @@ function createNodeModelPort(deps) {
     const headers = { 'Content-Type': 'application/json' };
     if (spec.apiKey) headers.Authorization = 'Bearer ' + spec.apiKey;
     return { url: endpoint, headers: headers };
+  }
+
+  /* ── Phase 9 · 流式 transport ─────────────────────────────────────────
+     与 _transport 的差别只在「必须让 provider 真的开始流」：
+       · anthropic : body.stream = true（endpoint 不变，SSE 原生）
+       · gemini    : generateContent → streamGenerateContent + alt=sse
+                     （这是浏览器侧 communication.js:3677 的同一变换；
+                      不共用代码是因为那里是浏览器字符串拼接，这里是 URL 对象操作，
+                      但**语义逐字一致**，且都属"provider wire"层，不在 chat service 里）
+       · openai 系 : body.stream = true + stream_options.include_usage
+                     MiMo 明确拒绝 stream_options（communication.js:3702 的同一判定）。
+     fmt 由调用方用 IBMC.providerFormat 传入 —— 本文件不做任何 provider 名判断。 */
+  function _streamTransport(spec, body, fmt) {
+    const transport = _transport(spec);
+    if (!body || typeof body !== 'object') return transport;
+    body.stream = true;
+    if (fmt === 'anthropic') return transport;
+    if (fmt === 'gemini') {
+      let u = null;
+      try { u = new URL(transport.url); } catch (e) { u = null; }
+      if (u) {
+        u.pathname = u.pathname.replace(/generateContent/, 'streamGenerateContent').replace(/:generateContent/, ':streamGenerateContent');
+        u.searchParams.set('alt', 'sse');
+        if (!u.searchParams.has('key') && spec.apiKey) u.searchParams.set('key', spec.apiKey);
+        transport.url = u.toString();
+      } else {
+        transport.url = String(transport.url).replace('generateContent', 'streamGenerateContent') +
+          (String(transport.url).includes('?') ? '&' : '?') + 'alt=sse';
+      }
+      return transport;
+    }
+    const isMimo = (String(spec.provider || '').toLowerCase() === 'mimo') || /xiaomimimo\.com/i.test(String(spec.endpoint || ''));
+    if (!isMimo) body.stream_options = { include_usage: true };
+    return transport;
   }
 
   function _mapError(e) {
@@ -159,7 +193,146 @@ function createNodeModelPort(deps) {
     }
   }
 
-  return { run: run };
+  /* ── Phase 9 · 流式执行入口 ────────────────────────────────────────────
+     runStream(request, { signal, onEvent, timeoutMs })
+       · 与 run() 共用 spec / prompt / maxTokens / temperature / reasoningEffort /
+         tokenParam / MiMo 修正的**同一套** body 构建（IBMC.buildRequestBody），
+         唯一差别是 _streamTransport() 让 provider 真的开始流；
+       · 事件与 run 同名同形，另加增量事件：
+           {type:'delta', kind:'content'|'reasoning', text, index}
+           {type:'done', truncated, reasoning, usage, text}
+           {type:'error', kind, message, status?}
+       · 返回形状与 run() 一致：{text, reasoning, truncated, usage, stats}，
+         因此调用方可以无差别地处理流式/非流式（chat service 只消费这一个形状）。
+       · cancellation：options.signal 与内部 timeout 共用**与 run 完全一致**的分类
+         （timeout → TimeoutError；外部 abort → 原样抛出 AbortError）。
+       · malformed chunk：由 IBMC.createStreamParser 丢弃坏行并计数，绝不中断生成；
+         但 provider 在流中显式回传的错误对象会以 provider-stream 错误浮出。 */
+  async function runStream(request, options) {
+    options = options || {};
+    const onEvent = options.onEvent || function () {};
+    const spec = (request && request.spec) || {};
+    const prompt = (request && request.prompt && Array.isArray(request.prompt.messages))
+      ? request.prompt
+      : { system: spec.systemPrompt || '', messages: (request && request.messages) || [] };
+    const maxTok = (request && request.maxTokens != null) ? request.maxTokens : _defaultMaxTokens;
+    const temperature = (request && request.temperature != null) ? request.temperature : (spec.temperature != null ? spec.temperature : null);
+    const fmt = IBMC.providerFormat(spec.provider);
+
+    const body = IBMC.buildRequestBody(spec, prompt, {
+      jsonMode: !!(request && request.jsonMode),
+      jsonPrefill: request && request.jsonPrefill,
+      maxTokens: maxTok,
+      temperature: temperature,
+      reasoningEffort: (request && request.reasoningEffort) || 'auto',
+      consumer: (request && request.consumer) || ''
+    });
+    const prefillApplied = !!(request && request.jsonMode) && fmt === 'anthropic' && IBMC.modelSupportsAssistantPrefill(spec.model);
+    const prefillSeed = prefillApplied ? ((request && request.jsonPrefill) || '{"action":') : '';
+    if (request && request.tokenParam === 'max_completion_tokens' && body && body.max_tokens != null
+        && String(spec.provider || '').toLowerCase() !== 'anthropic' && String(spec.provider || '').toLowerCase() !== 'gemini') {
+      body.max_completion_tokens = body.max_tokens;
+      delete body.max_tokens;
+    }
+    const mimoHost = (String(spec.provider || '').toLowerCase() === 'mimo') || /xiaomimimo\.com/i.test(String(spec.endpoint || ''));
+    if (mimoHost && body) {
+      if (body.max_tokens != null) { body.max_completion_tokens = body.max_tokens; delete body.max_tokens; }
+      delete body.prompt_cache_key;
+    }
+    if (body && body.response_format && fmt === 'openai') { /* 流式下 response_format 仍合法，保留 */ }
+    const tr = _streamTransport(spec, body, fmt);
+
+    const timeoutMs = (options && options.timeoutMs != null) ? options.timeoutMs : _timeoutMs;
+    const ac = new AbortController();
+    let cancelReason = null;
+    const onExternalAbort = function () { if (cancelReason === null) cancelReason = 'external'; ac.abort(); };
+    if (options.signal) {
+      try {
+        if (options.signal.aborted) onExternalAbort();
+        else options.signal.addEventListener('abort', onExternalAbort, { once: true });
+      } catch (e) { /* signal 桥接失败不影响执行 */ }
+    }
+    const timer = setTimeout(function () { if (cancelReason === null) { cancelReason = 'timeout'; ac.abort(); } }, timeoutMs);
+    if (!_fetch) { clearTimeout(timer); throw new Error('NodeModelPort: no fetch available'); }
+
+    const parser = IBMC.createStreamParser(fmt, onEvent);
+    try {
+      const res = await _fetch(tr.url, {
+        method: 'POST',
+        headers: Object.assign({ Accept: 'text/event-stream' }, tr.headers),
+        body: JSON.stringify(body),
+        signal: ac.signal
+      });
+      if (!res.ok) {
+        const t = await res.text().catch(function () { return ''; });
+        let detail = t;
+        try { const parsed = t ? JSON.parse(t) : null; if (parsed && parsed.error) detail = parsed.error.message || JSON.stringify(parsed.error); } catch (_) { /* 非 JSON body 用原文 */ }
+        const err = new Error(String(res.status) + (detail ? ': ' + String(detail).slice(0, 1200) : ''));
+        err.status = res.status;
+        throw err;
+      }
+      /* 无 body 的响应（少数中转在流式下返回空体）→ 明确报错，不静默返回空串。 */
+      if (!res.body || typeof res.body.getReader !== 'function') {
+        const fallback = await res.text().catch(function () { return ''; });
+        if (fallback) {
+          let wire = null;
+          try { wire = JSON.parse(fallback); } catch (e) { throw new Error('streaming response is not an event stream'); }
+          const parsed = IBMC.parseResponse(wire, spec);
+          onEvent({ type: 'done', truncated: parsed.truncated, reasoning: parsed.reasoning, usage: parsed.usage, text: parsed.content });
+          return { text: parsed.content, reasoning: parsed.reasoning, truncated: parsed.truncated, usage: parsed.usage, stats: { chunks: 0, events: 0, deltas: 0, malformed: 0, unknown: 0, done: true }, prefillApplied: prefillApplied, prefillSeed: prefillSeed, streamed: false };
+        }
+        throw new Error('streaming response has no body');
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      for (;;) {
+        const step = await reader.read();
+        if (step.done) break;
+        parser.push(decoder.decode(step.value, { stream: true }));
+      }
+      parser.push(decoder.decode()); /* flush 多字节残尾 */
+      const out = parser.finish();
+      /* 观测：实际 reasoning tokens 只读回填（与非流式 run 同一口径） */
+      try {
+        const _rt = IBMC.reasoningTokensFromUsage(out.usage, fmt);
+        if (_rt != null) IBMC.noteReasoningTokens(_rt, { consumer: (request && request.consumer) || '', provider: spec.provider, model: spec.model });
+      } catch (_) { /* 观测失败不影响执行 */ }
+      if (out.streamError) {
+        const err = new Error(String(out.streamError).slice(0, 1200));
+        err.kind = 'provider-stream';
+        try { onEvent({ type: 'error', kind: 'provider-stream', message: err.message, status: undefined }); } catch (_) { /* 忽略 */ }
+        throw err;
+      }
+      onEvent({ type: 'done', truncated: out.truncated, reasoning: out.reasoning, usage: out.usage, text: out.content });
+      return {
+        text: out.content,
+        reasoning: out.reasoning,
+        truncated: out.truncated,
+        usage: out.usage,
+        stats: out.stats,
+        prefillApplied: prefillApplied,
+        prefillSeed: prefillSeed,
+        streamed: true
+      };
+    } catch (e) {
+      const isAbort = (e && e.name === 'AbortError') || /abort/i.test(String((e && e.message) || ''));
+      if (isAbort && cancelReason === 'timeout') {
+        const err = new Error('request timed out after ' + timeoutMs + 'ms');
+        err.name = 'TimeoutError';
+        try { onEvent({ type: 'error', kind: 'timeout', message: err.message, status: undefined }); } catch (_) { /* 忽略 */ }
+        throw err;
+      }
+      const m = (isAbort)
+        ? { kind: 'abort', message: String((e && e.message) || 'aborted'), status: undefined }
+        : (e && e.kind ? { kind: e.kind, message: String(e.message || e), status: e.status } : _mapError(e));
+      try { onEvent({ type: 'error', kind: m.kind, message: m.message, status: m.status }); } catch (_) { /* 忽略 */ }
+      throw e;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  return { run: run, runStream: runStream };
 }
 
 module.exports = createNodeModelPort;
