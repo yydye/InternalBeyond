@@ -170,12 +170,16 @@ function createHomeNodeRemote(deps) {
     /* 发布角色目录。调用方（home-node-bootstrap）传入的条目已经过
        assets/js/mobile-dto.js 的 characterCatalogEntry 投影；
        Node 侧会**再**用同一份实现收口一次，因此即使这里漏了字段，
-       出站也不可能带上凭据。 */
+       出站也不可能带上凭据。
+       options.user：P0 用户展示身份（{id,name}），同样已过 userProfileDto
+       白名单投影。缺席时 Node 保持上一次已知值，不清空。 */
     publishCharacters: function (characters, options) {
       options = options || {};
+      var body = { characters: characters || [], merge: !!options.merge };
+      if (options.user) body.user = options.user;
       return _request('/characters/publish', {
         method: 'POST',
-        body: { characters: characters || [], merge: !!options.merge },
+        body: body,
         /* 目录可能含内联头像 base64，给足超时（与迁移同一量级）。 */
         timeoutMs: options.timeoutMs || MIGRATION_TIMEOUT_MS
       });

@@ -247,6 +247,26 @@ function desktopCharacters() {
   }
 }
 
+/* P0 用户展示身份（M1-C.2c-A）。
+   与 site-operations.js:66 的 buildSiteContext 同源：about/main。
+   它决定手机上"她该怎么称呼我"。name 是展示信息，不是凭据。
+   读不到就返回 null —— 绝不发一个空名字，因为那在 Node 侧等于
+   "覆盖成空"，会让手机端在启动竞态里丢掉称呼。 */
+function desktopUserProfile() {
+  try {
+    var dto = window.IBMobileDto;
+    if (!dto || typeof dto.userProfileDto !== 'function') return null;
+    var getter = (typeof dbGet === 'function') ? dbGet('about', 'main') : null;
+    if (!getter || typeof getter.then !== 'function') return null;
+    return getter.then(function (about) {
+      return dto.userProfileDto(about) || null;
+    }, function () { return null; });
+  } catch (e) {
+    warn('user-profile-read-failed', { error: String((e && e.message) || e) });
+    return null;
+  }
+}
+
 function publishCharacters(reason, options) {
   options = options || {};
   if (MODE !== 'canonical') return Promise.resolve({ ok: false, error: 'authority-disabled' });
@@ -267,13 +287,18 @@ function publishCharacters(reason, options) {
     note('catalog-publish-skipped', { reason: reason, why: 'no-characters' });
     return Promise.resolve({ ok: true, skipped: true, reason: 'no-characters' });
   }
-  catalogPublishInFlight = remoteDriver.publishCharacters(characters, {}).then(function (result) {
+  /* 资料读取与目录发布并行；资料失败/缺席不阻塞目录发布。 */
+  var profilePromise = Promise.resolve(desktopUserProfile()).catch(function () { return null; });
+  catalogPublishInFlight = profilePromise.then(function (user) {
+    return remoteDriver.publishCharacters(characters, user ? { user: user } : {});
+  }).then(function (result) {
     catalogPublishInFlight = null;
     if (result && result.ok) {
       catalogPublishedAt = Date.now();
       note('catalog-published', {
         reason: reason, count: (result.payload && result.payload.count) || characters.length,
-        withSpec: result.payload && result.payload.withSpec
+        withSpec: result.payload && result.payload.withSpec,
+        userProfile: !!(result.payload && result.payload.userProfile)
       });
     } else {
       note('catalog-publish-failed', { reason: reason, error: (result && result.error) || 'unknown' });

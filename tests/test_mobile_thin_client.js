@@ -509,8 +509,18 @@ function listen(server) {
       sentSystem.length > 0, { len: sentSystem.length });
     check('thin.9b provider wire 的 system 含该角色的唯一 persona marker',
       sentSystem.indexOf(PERSONA_MARKER_A) > -1, { len: sentSystem.length, head: sentSystem.slice(0, 40) });
-    check('thin.9b provider wire 的 system 严格等于发布的 spec.systemPrompt',
-      sentSystem === '你是小满，' + PERSONA_MARKER_A, { len: sentSystem.length, head: sentSystem.slice(0, 40) });
+    check('thin.9b provider wire 的 system 以发布的 spec.systemPrompt 开头',
+      sentSystem.indexOf('你是小满，' + PERSONA_MARKER_A) === 0, { len: sentSystem.length, head: sentSystem.slice(0, 60) });
+    /* M1-C.2c-A（P0 角色连续性）之后 system 不再**只有** persona：Node 会在尾部
+       追加运行上下文（用户身份/称呼/关系/当前时间）。所以这条断言从"严格相等"
+       改成"persona 是前缀 + 尾部只追加 P0 块"，仍然守住 M1-C.2a 的那个不变式
+       （人格绝不被丢弃/替换），同时不再把"system 必须恰好等于 systemPrompt"
+       这个已经过时的形状当成契约。P0 各事实的完整断言在
+       tests/test_mobile_p0_continuity.js。 */
+    const systemTail = sentSystem.slice(('你是小满，' + PERSONA_MARKER_A).length);
+    check('thin.9b system 尾部只追加 P0 运行上下文（人格前缀未被改写）',
+      systemTail === '' || /^\n\n(当前时间：|【对方的个人资料】|称呼：|你和对方的关系是：)/.test(systemTail),
+      { tail: systemTail.slice(0, 120) });
     check('thin.9b 会话历史里的 user 正文仍在（人格与消息各自到位）',
       (sentBody.messages || []).some(m => m.role === 'user' && m.content === '你好呀'));
 

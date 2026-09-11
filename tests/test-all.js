@@ -219,6 +219,11 @@ const GROUPS = [
          `projected.spec || entry.spec` 回落（raw spec 曾可把 imageGenApiKey
          原样写进 character_runtime_specs）。走真实 publish HTTP 边界 + 落盘断言。 */
       ['test_mobile_publish_spec_boundary.js'],
+      /* M1-C.2c-A：P0 角色连续性 —— 手机上的她是否知道
+         用户是谁 / 怎么称呼 / 什么关系 / 现在几点（persona 与 history 是回归）。
+         真实 publish → pair → chat.send → NodeModelPort → mock provider，
+         断言 provider 真正收到的 system。 */
+      ['test_mobile_p0_continuity.js'],
       /* M1-C 修复（D21）：LAN 门 —— allowRemote 只在"显式非 loopback 绑定 +
          设备鉴权真实就绪"时打开。所有"远端"请求都发往本机**非 loopback 地址**，
          因此源地址也是非 loopback（用 127.0.0.1 永远走不到这条规则）。

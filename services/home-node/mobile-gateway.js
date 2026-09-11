@@ -38,6 +38,9 @@ const crypto = require('crypto');
 
 const CHAT_CORE = require('../../assets/js/chat-core.js');
 const MOBILE_DTO = require('../../assets/js/mobile-dto.js');
+/* P0 角色连续性上下文（M1-C.2c-A）—— 纯函数，四个事实，
+   刻意不引入任何 composer/registry/pipeline 抽象。 */
+const P0_CONTEXT = require('./p0-context.js');
 
 /* 协议版本。**真的会被校验**（Phase 9）—— 不是 Bridge 那种"存在但没人读"的字段。 */
 const PROTOCOL_VERSION = 1;
@@ -185,6 +188,9 @@ function createMobileGateway(deps) {
   const registry = deps.registry;
   const executor = deps.executor || null;
   const clock = deps.clock || (() => Date.now());
+  /* P0 时区语义：默认 Home Node 进程本地时区（与桌面浏览器本地时区一致，
+     单机部署下即"同一个本地时间"）；显式 timeZone 只在 LAN + 时区不一致时用。 */
+  const timeZone = deps.timeZone || null;
   const logger = deps.logger || (() => {});
   const version = String(deps.version || '0.0.0');
   const allowedOrigins = Array.isArray(deps.allowedOrigins) ? deps.allowedOrigins.map(String) : [];
@@ -735,6 +741,15 @@ function createMobileGateway(deps) {
         character: { id: characterId, spec: spec },
         userMessage: userMessage,
         history: history,
+        /* ── P0 角色连续性上下文（M1-C.2c-A）──────────────────────────
+           四个事实在 **Home Node 内部**形成：用户身份/称呼来自发布过来的
+           about/main（store meta），关系来自角色 DTO，当前时间由 Node 自己的
+           时钟在**本轮请求时刻**计算。
+           手机端只提交 characterId + 用户发言 + 常规请求元数据 —— 它既不能
+           上传"现在几点"，也不能构造这段上下文。
+           runtimeContext 由 execution.buildPrompt 追加到 system 尾部，
+           与 systemPrompt 同属私有面，永不进任何 DTO / SSE。 */
+        runtimeContext: buildRuntimeContext(character),
         /* 诚实标注：手机端没有 Middle Brain，上下文是"服务端按角色配置 + 会话历史"
            组织的。绝不假装与桌面同质（M1-A §6.2 的 contextPolicy 契约）。 */
         contextPolicy: 'mobile-gateway-history',
@@ -743,6 +758,22 @@ function createMobileGateway(deps) {
         reasoningEffort: payload.reasoningEffort
       }
     };
+  }
+
+  /* P0 上下文生产者接线：时间在本轮请求时刻取，资料/关系来自 Node 自己的状态。
+     任何一步坏掉都不阻塞回合 —— 缺事实就少注入一行，绝不抛错。 */
+  function buildRuntimeContext(character) {
+    try {
+      const profile = store.getUserProfile ? store.getUserProfile() : null;
+      return P0_CONTEXT.buildContinuityContext({
+        userProfile: profile,
+        relationship: character && character.dto ? character.dto.relationship : '',
+        currentTime: P0_CONTEXT.formatCurrentTime(clock(), timeZone)
+      });
+    } catch (error) {
+      record('warn', 'p0-context-failed', { error: String((error && error.message) || error) });
+      return '';
+    }
   }
 
   function beginTurn(parsed, device) {
@@ -1129,9 +1160,19 @@ function createMobileGateway(deps) {
       }
       const written = registry.putCharacters(clean, { merge: !!body.merge });
       if (!written.ok) return fail(res, written.code || 'INTERNAL', req);
+      /* P0 用户资料：与角色目录同一次发布带上（desktopCharacters 读的是同一份
+         about/main）。空/缺席一律**不动**已有值 —— 启动竞态里 about 还没读出来
+         时，手机端不该突然失去"她该怎么叫我"。 */
+      let profileWritten = false;
+      const publishedProfile = store.setUserProfile ? store.setUserProfile(body.user) : { ok: false, code: 'UNSUPPORTED' };
+      if (publishedProfile && publishedProfile.ok) profileWritten = true;
+      else if (body.user && publishedProfile && publishedProfile.code === 'EMPTY_PROFILE') {
+        record('warn', 'user-profile-empty-name', {});
+      }
       broadcastEvent('cursor.changed', { cursor: store.getRevision(), revision: store.getRevision(), catalogUpdatedAt: registry.characterCatalogUpdatedAt() });
       return sendJson(res, 200, okBody('character.published', null, {
-        count: written.count, withSpec: written.withSpec, catalogUpdatedAt: registry.characterCatalogUpdatedAt()
+        count: written.count, withSpec: written.withSpec, userProfile: profileWritten,
+        catalogUpdatedAt: registry.characterCatalogUpdatedAt()
       }), req);
     }
     return fail(res, 'NOT_FOUND', req, 404);

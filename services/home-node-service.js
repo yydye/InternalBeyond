@@ -185,6 +185,10 @@ function buildHomeNode(options) {
     lanMode: !loopbackBind,
     lanHost: options.lanAddress || lanAddress,
     port: options.listenPort || PORT,
+    /* P0（M1-C.2c-A）：时钟与时区可注入，只为让"当前时间"可被确定性测试。
+       生产默认仍是系统时钟 + 进程本地时区。 */
+    clock: options.clock,
+    timeZone: options.timeZone,
     logger: serviceLog
   });
   const instanceHttp = createHttp({

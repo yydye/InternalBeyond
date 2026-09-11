@@ -798,6 +798,41 @@ function createChatStore(deps) {
     return { ok: true, source: String(source || 'default'), state: next };
   }
 
+  /* ── P0 用户资料（M1-C.2c-A）────────────────────────────────────────
+     桌面把 about/main 的**展示身份**（name）随角色目录一起发布过来，
+     Home Node 用它回答"她该叫我什么"。刻意放在 store 的 meta 表里：
+       · 它是**节点级**事实（这台机器只有一个用户），不是 per-character 的，
+         所以不能进 characters.dto_json（那是 per-character 的 mobile-safe DTO），
+         更不能进 character_runtime_specs（那是 private execution config，
+         本轮明确冻结，不得为 P0 扩字段）；
+       · meta 表已存在（readMeta/writeMeta），因此不需要新 schema、不需要迁移。
+     name 本来就是 public DTO 级别的信息（Desktop 会把它渲染进导航栏），
+     不是 secret —— 但这里仍然只存**白名单**字段，避免发布端将来多带什么
+     就自动落盘什么。 */
+  const USER_PROFILE_KEY = 'p0:user_profile';
+  function getUserProfile() {
+    const raw = readMeta(USER_PROFILE_KEY);
+    if (!raw) return null;
+    let parsed = null;
+    try { parsed = JSON.parse(raw); } catch (_) { return null; }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    const name = String(parsed.name == null ? '' : parsed.name).trim();
+    if (!name) return null;
+    return { id: String(parsed.id == null ? 'main' : parsed.id).trim() || 'main', name: name };
+  }
+  function setUserProfile(profile) {
+    const p = profile && typeof profile === 'object' ? profile : {};
+    const name = String(p.name == null ? '' : p.name).trim();
+    if (!name) {
+      /* 空名字不是"清空资料"的合法表达 —— 那更可能是发布端还没加载出 about。
+         保留上一次已知值，避免手机端在启动竞态里突然失去称呼。 */
+      return { ok: false, code: 'EMPTY_PROFILE' };
+    }
+    const next = { id: String(p.id == null ? 'main' : p.id).trim() || 'main', name: name };
+    writeMeta(USER_PROFILE_KEY, JSON.stringify(next));
+    return { ok: true, profile: next };
+  }
+
   function integrityCheck() {
     if (!opened) return { ok: false, error: 'store-closed' };
     const row = db.prepare('PRAGMA integrity_check').get();
@@ -823,6 +858,8 @@ function createChatStore(deps) {
     countConversations: countConversations,
     getMigrationState: getMigrationState,
     setMigrationState: setMigrationState,
+    getUserProfile: getUserProfile,
+    setUserProfile: setUserProfile,
     integrityCheck: integrityCheck,
     backup: backup,
     /* 暴露给测试/诊断（只读） */

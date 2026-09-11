@@ -178,8 +178,19 @@
     return spec;
   }
 
-  function characterCatalog(rawList, options) {
-    var out = [];
+  /* 用户资料投影（M1-C.2c-A · P0）。
+     桌面的 about/main 是**单用户展示身份**，不是凭据：name 本来就会渲染进
+     导航栏。Node 需要它来回答"她该叫我什么"，所以随角色目录一起发布。
+     与 characterDto 同理，白名单**构造式**输出：输入多出来的键没有机会进入。
+     只取 name（id 固定为 main —— 桌面就是一个单用户模型，不假装多用户）。 */
+  function userProfileDto(raw) {
+    raw = raw || {};
+    var name = str(raw.name, 64).trim();
+    if (!name) return null;
+    return { id: 'main', name: name };
+  }
+
+  function characterCatalog(rawList, options) {    var out = [];
     if (!Array.isArray(rawList)) return out;
     for (var i = 0; i < rawList.length; i++) {
       var entry = characterCatalogEntry(rawList[i], options);
@@ -327,6 +338,7 @@
     characterCapabilities: characterCapabilities,
     characterCatalogEntry: characterCatalogEntry,
     characterCatalog: characterCatalog,
+    userProfileDto: userProfileDto,
     mapSpec: mapSpec,
     messageDto: messageDto,
     messageMetadata: messageMetadata,
