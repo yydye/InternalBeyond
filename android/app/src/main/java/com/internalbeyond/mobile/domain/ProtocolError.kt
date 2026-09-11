@@ -82,6 +82,19 @@ sealed class ProtocolError {
         const val UNSUPPORTED = "UNSUPPORTED"
         const val INTERNAL = "INTERNAL"
 
+        /**
+         * Not from the v1 envelope. The Home Node answers a few requests with the
+         * pre-envelope shape `{"ok":false,"error":"loopback-only"}` — emitted by
+         * `services/home-node/http.js` before routing, so it covers the whole mobile
+         * namespace too. Naming it turns "the answer made no sense" into the actual
+         * reason a phone was refused.
+         *
+         * (Note for future editors: never write a glob like the mobile path with a
+         * trailing star inside a Kotlin block comment — block comments NEST, and the
+         * stray opener silently swallows the rest of the file.)
+         */
+        const val LOOPBACK_ONLY = "LOOPBACK_ONLY"
+
         /* ── Turn-level codes, from the `chat.error` / `stream.error` frames. ── */
         const val PROVIDER_ERROR = "PROVIDER_ERROR"
         const val TIMEOUT = "TIMEOUT"

@@ -188,6 +188,14 @@ object ErrorPresenter {
                 action = ErrorAction.NONE,
             )
 
+            ProtocolError.LOOPBACK_ONLY -> ErrorPresentation(
+                title = "The Home Node only accepts connections from the desktop",
+                detail = "It is running, but it refused this request because LAN access is not " +
+                    "switched on for the Home Node, so no phone can pair with it yet. This is a " +
+                    "desktop-side setting, not something this app can change.",
+                action = ErrorAction.DESKTOP_ACTION,
+            )
+
             ProtocolError.UNSUPPORTED -> ErrorPresentation(
                 title = "The Home Node cannot generate replies right now",
                 detail = "Its execution path is unavailable. Check the desktop's diagnostics.",

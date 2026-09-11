@@ -410,7 +410,8 @@ M1-A/M1-B 把 canonical chat 与设备身份放在 Home Node（桌面）之后�
    loopback / 模拟器别名 / `.local`。**限制如实登记**：Android 的 domain-config 只接受
    主机名或 IP 字面量，**不接受地址段**，因此 release 包连任意 RFC1918 地址必须走 TLS 或
    主机名（属已推迟的传输层工作）。这不影响身份模型——身份是 device token，不是 IP。
-6. **验证方式**：`./gradlew test` 101 项全绿，其中 `HomeNodeIntegrationTest` 真实
+7. **LAN 可达性：M1-C 未改动 Home Node 的 loopback 守卫，如实登记为唯一剩余 blocker。** 实测（真实服务以 `IB_HOME_NODE_HOST=0.0.0.0` 绑定、数据目录隔离、设备登记表已打开、日志有 `lan-bind-enabled`）：LAN 上 `/health`、`/mobile/v1/character/list`、`/mobile/v1/pairing/complete` **全部 403 `{"ok":false,"error":"loopback-only"}`**，只有 loopback 能配对成功。原因：`services/home-node/http.js:435` 的 `if (!isLoopback(req) && !deps.allowRemote)` 在路由**之前**执行（因此覆盖整个 mobile 命名空间），而 `services/home-node-service.js` **从不设置 `allowRemote`** —— 这是 M1-A 的既定保护，M1-B 加 LAN 绑定能力时没有放开它。开关一旦打开，链路已被证明可用：载荷会给出真实 LAN 地址（`lanReachable:true`，无需 override）、配对发凭据、token 生效、凭据不外泄。**本阶段刻意不去翻这个开关**：把 Home Node 暴露到 LAN 属于桌面侧的安**全姿态决定，不属于 Android 客户端阶段，且 M1-B 明确把 LAN 暴露定为 opt-in。App 侧只做了一件事——把 `loopback-only` 映射成明确文案（`LOOPBACK_ONLY` →「Home Node 只接受来自桌面的连接，LAN 访问尚未开启」），而不是让严格 v1 解析器把它报成「意外的响应」。
+8. **验证方式**：`./gradlew test` 103 项全绿，其中 `HomeNodeIntegrationTest` 真实
    spawn `services/home-node-service.js` + 真实 SSE mock provider，用**与 APK 同一份**
    HomeNodeClient / SessionRepository / ConversationSession 走完
    pair → character.list → chat.history → chat.send → streaming → 断线 → resume →

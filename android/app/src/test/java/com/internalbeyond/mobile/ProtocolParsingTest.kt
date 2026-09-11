@@ -77,6 +77,37 @@ class ProtocolParsingTest {
     }
 
     @Test
+    fun `the Home Node's pre-envelope refusals are named, not called unexpected`() {
+        // services/home-node/http.js answers a non-loopback request with this shape,
+        // BEFORE routing — so it applies to /mobile/v1/* and is the exact thing a
+        // phone sees when LAN access is not enabled on the desktop.
+        val refusal = Envelope.payload("""{"ok":false,"error":"loopback-only"}""", 403)
+        assertTrue(refusal is ApiResult.Err)
+        val error = (refusal as ApiResult.Err).error as ProtocolError.Server
+        assertEquals(ProtocolError.LOOPBACK_ONLY, error.code)
+
+        val presentation = com.internalbeyond.mobile.domain.ErrorPresenter.present(error)
+        assertTrue(presentation.title.contains("only accepts connections from the desktop"))
+        assertEquals(com.internalbeyond.mobile.domain.ErrorAction.DESKTOP_ACTION, presentation.action)
+
+        // ...and an unknown slug still degrades to a Response error rather than a crash.
+        val unknown = Envelope.payload("""{"ok":false,"error":"something-new"}""", 400)
+        assertTrue((unknown as ApiResult.Err).error is ProtocolError.Response)
+    }
+
+    @Test
+    fun `a v1 error envelope is never mistaken for a refusal slug`() {
+        // The v1 `error` value is an OBJECT; a naive string read would match it.
+        val parsed = Envelope.payload(
+            Envelope.failure("BUSY", "another turn", retryable = true).toString(),
+            409,
+        )
+        val error = (parsed as ApiResult.Err).error as ProtocolError.Server
+        assertEquals(ProtocolError.BUSY, error.code)
+        assertTrue(error.retryable)
+    }
+
+    @Test
     fun `an empty body with a failure status becomes a bare error`() {
         val error = Envelope.bareError(429, "too many requests")
         assertEquals(ProtocolError.RATE_LIMITED, error.code)

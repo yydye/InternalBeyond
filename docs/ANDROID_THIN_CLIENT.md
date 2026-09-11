@@ -99,13 +99,13 @@ AES-256-GCM(token JSON) → base64(iv ‖ ct) → SharedPreferences "ib_secure"
 ## 5. Evidence
 
 ```
-cd android && ./gradlew test          # 101 tests, all green
+cd android && ./gradlew test          # 103 tests, all green
 cd android && ./gradlew assembleDebug # app/build/outputs/apk/debug/app-debug.apk
 ```
 
 | Suite | Tests | What it proves |
 |---|---|---|
-| `ProtocolParsingTest` | 29 | envelope/version/SSE/DTO/pairing/endpoint parsing, including rejections |
+| `ProtocolParsingTest` | 31 | envelope/version/SSE/DTO/pairing/endpoint parsing, including rejections |
 | `ErrorMappingTest` | 8 | every code maps to a distinct actionable presentation and the right action |
 | `CredentialStorageTest` | 10 | sealing, no plaintext at rest, tamper/lost-key behaviour |
 | `CacheTest` | 17 | real SQLite: upsert, delete + tombstone, cursor, attempts, durability across reopen |
@@ -125,29 +125,82 @@ device's own record unset so a just-paired device reported an empty `deviceId`.
 
 ---
 
-## 6. Known limits (stated, not hidden)
+## 6. The one thing that stops a real phone today
 
-1. **QR scanning is not implemented.** Manual paste is the supported path; a disabled
+**A phone on the LAN cannot reach the Home Node at all — and that is a desktop-side
+gate, not an Android bug.**
+
+Measured, not inferred, with the real service bound to the LAN
+(`IB_HOME_NODE_HOST=0.0.0.0`, temp data dir, device registry open, `lan-bind-enabled`
+logged):
+
+```
+LAN /health                          → 403 {"ok":false,"error":"loopback-only"}
+LAN /mobile/v1/character/list        → 403 {"ok":false,"error":"loopback-only"}
+LAN /mobile/v1/pairing/complete      → 403 {"ok":false,"error":"loopback-only"}
+loopback /mobile/v1/pairing/complete → 200 (a device token is issued)
+```
+
+`services/home-node/http.js:435` refuses every non-loopback request — before routing,
+so it covers the whole mobile namespace — unless `deps.allowRemote` is set:
+
+```js
+if (!isLoopback(req) && !deps.allowRemote) { … 403 'loopback-only' … }
+```
+
+`isLoopback` accepts only `127.0.0.1`, `::1` and `::ffff:127.0.0.1`, and **nothing in
+`services/home-node-service.js` ever sets `allowRemote`** — the seam exists, the switch
+is never thrown. This is an M1-A-era protection ("the Home Node binds loopback") that
+M1-B's LAN-bind work did not relax.
+
+What already works once that gate is opened — verified in the same probe:
+
+* binding to `0.0.0.0` is **permitted** now that the device registry exists (M1-B's
+  refuse-to-start path is not triggered), and the service logs `lan-bind-enabled`;
+* `POST /pairing/session` then reports the **real LAN address** in
+  `endpoints.mobile.host` with `lanReachable:true`, so a phone needs no address
+  override;
+* pairing, the device token and the authenticated mobile surface all work;
+* provider credentials and hidden prompts stay out of the responses, and the device
+  token never reaches the service log.
+
+**This stage did not flip that switch.** Opening the Home Node to the LAN is a
+security-posture decision about the desktop side, it belongs to the Home Node rather
+than to the Android client, and M1-B deliberately made LAN exposure opt-in. It is
+recorded here as the single remaining blocker, with the exact line and the exact
+mechanism, so the next stage can decide it on purpose.
+
+The app now names it too: an `{"ok":false,"error":"loopback-only"}` answer is mapped to
+`ProtocolError.LOOPBACK_ONLY` and presented as *"The Home Node only accepts connections
+from the desktop … LAN access is not switched on"* with a desktop-action hint, instead
+of the vague "unexpected answer" a strict v1 parser would otherwise produce.
+
+---
+
+## 7. Known limits (stated, not hidden)
+
+1. **The LAN gate above** (§6) — the one thing that stops a real phone today.
+2. **QR scanning is not implemented.** Manual paste is the supported path; a disabled
    "Scan QR" button was deliberately not added.
-2. **Release builds cannot reach an arbitrary LAN IP.** Android's network security
+3. **Release builds cannot reach an arbitrary LAN IP.** Android's network security
    config accepts hostnames and IP *literals*, never ranges. The M1-C APK is the
    **debug** variant, whose policy explicitly permits trusted-LAN cleartext; the
    release variant denies cleartext except loopback/emulator/`.local`. Closing this
    needs TLS or a hostname — the deferred transport work.
-3. **`apiConfigs` authority is still the browser** (M1-B §8.5). A character the
+4. **`apiConfigs` authority is still the browser** (M1-B §8.5). A character the
    desktop has never published is unusable from the phone, with a clear `CONFLICT`.
-4. **Attachments are metadata only.** Images, files and voice render as placeholders;
+5. **Attachments are metadata only.** Images, files and voice render as placeholders;
    no upload, camera, file picker or voice input.
-5. **No notifications, no background delivery.** Realtime notification is the
+6. **No notifications, no background delivery.** Realtime notification is the
    `/mobile/v1/events` channel, which this stage does not subscribe to; durable
    recovery is `sync.changes`.
-6. **A terminal turn error can leave a duplicate user message** if the failure
+7. **A terminal turn error can leave a duplicate user message** if the failure
    happened after the Home Node stored it, because a real retry needs a new
    requestId. That is a consequence of the frozen protocol, not an oversight.
-7. **No emulator run.** The APK compiles, is signed, and its packaged manifest and
+8. **No emulator run.** The APK compiles, is signed, and its packaged manifest and
    network policy were inspected; the app has not been launched on a device or
    emulator in this environment.
-8. **Cache ordering for same-millisecond messages** falls back to `(timestamp, id)`
+9. **Cache ordering for same-millisecond messages** falls back to `(timestamp, id)`
    because `insert_seq` is not part of the mobile DTO. Sync is unaffected (it applies
    by id).
 

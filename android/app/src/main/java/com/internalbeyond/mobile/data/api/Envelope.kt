@@ -52,6 +52,12 @@ object Envelope {
 
         val version = root.intOrNull("v")
         if (version != PROTOCOL_VERSION) {
+            // The Home Node also replies to some requests with a PRE-envelope shape
+            // (`{"ok":false,"error":"loopback-only"}`), emitted by
+            // `services/home-node/http.js` before routing — so it applies to
+            // `/mobile/v1/*` as well. Reporting that as "the answer had no version
+            // field" would hide the one fact the user needs.
+            refusalSlug(root, httpStatus)?.let { return ApiResult.Err(it) }
             return ApiResult.Err(
                 ProtocolError.Response(
                     detail = "The Home Node answered with protocol " +
@@ -72,8 +78,33 @@ object Envelope {
         return ApiResult.Err(serverError(root, httpStatus, retryAfterMs))
     }
 
-    /** An error that is not from a v1 envelope (e.g. a 404 from something else). */
-    fun bareError(httpStatus: Int, detail: String): ProtocolError = ProtocolError.Server(
+    /**
+     * The pre-envelope refusal shape: `{"ok":false,"error":"<slug>"}`.
+     *
+     * Guarded on `error` being a STRING: a v1 envelope's `error` is an object, and
+     * `optString` would happily stringify it into a false match.
+     */
+    private fun refusalSlug(root: JSONObject, httpStatus: Int): ProtocolError? {
+        if (root.boolOrNull("ok") != false) return null
+        val slug = root.opt("error") as? String ?: return null
+        val code = when (slug.trim().lowercase()) {
+            "loopback-only" -> ProtocolError.LOOPBACK_ONLY
+            "unauthenticated", "unauthorized" -> ProtocolError.AUTH_REQUIRED
+            "not-found" -> ProtocolError.NOT_FOUND
+            "body-too-large" -> ProtocolError.TOO_LARGE
+            "internal-error" -> ProtocolError.INTERNAL
+            else -> null
+        } ?: return null
+        return ProtocolError.Server(
+            code = code,
+            message = slug,
+            retryable = false,
+            detail = slug,
+            httpStatus = httpStatus,
+        )
+    }
+
+    /** An error that is not from a v1 envelope (e.g. a 404 from something else). */    fun bareError(httpStatus: Int, detail: String): ProtocolError = ProtocolError.Server(
         code = when (httpStatus) {
             401 -> ProtocolError.AUTH_REQUIRED
             403 -> ProtocolError.AUTH_INVALID
