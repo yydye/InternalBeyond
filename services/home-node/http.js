@@ -43,6 +43,7 @@ function createHomeNodeHttp(deps) {
   deps = deps || {};
   const store = deps.store;
   const executor = deps.executor || null;
+  const gateway = deps.gateway || null;
   const clock = deps.clock || (() => Date.now());
   const token = String(deps.token || '');
   const version = String(deps.version || '0.0.0');
@@ -160,6 +161,30 @@ function createHomeNodeHttp(deps) {
   async function route(req, res, url, method) {
     const path = url.pathname.replace(/\/+$/, '') || '/';
 
+    /* ── 委派：Mobile Gateway + 桌面配对/设备管理（M1-B）────────────────
+       这一层刻意**不自己判断**哪些 mobile 路径存在：网关是那份 allowlist 的
+       唯一持有者（services/home-node/mobile-gateway.js 的 handles()）。
+       http.js 只负责"桌面内部 API 的既有保护"（token + loopback），
+       设备鉴权在网关的 /mobile/v1 分支里发生。
+       注意顺序：委派发生在 token 校验**之后**，因此桌面管理面
+       （/pairing/session、/devices、/device/revoke、/characters、
+       /characters/publish）继承 Home Node 既有的 loopback/token 保护；
+       而 /mobile/v1/* 自己的 device token 才是设备的凭据。 */
+    if (gateway && typeof gateway.handles === 'function' && gateway.handles(path)) {
+      if (path.indexOf('/mobile/') === 0) {
+        /* 设备 API：不要求桌面 token（设备有自己的 token），
+           但**仍然**受 loopback/allowRemote 与体积上限约束 —— 那两条在
+           server 层已经处理，这里只是不再套桌面 token。 */
+        return gateway.dispatch(path, req, res, url);
+      }
+      if (!authorized(req, url)) {
+        record('warn', 'unauthorized', { path: path, loopback: isLoopback(req) });
+        bad(res, 401, 'unauthenticated', null, req);
+        return;
+      }
+      return gateway.dispatch(path, req, res, url);
+    }
+
     /* ── 只读探针（不需要 token，但也绝不返回任何世界数据）── */
     if (path === '/health' && method === 'GET') {
       ok(res, {
@@ -180,7 +205,12 @@ function createHomeNodeHttp(deps) {
     }
 
     if (path === '/status' && method === 'GET') {
-      ok(res, { meta: store.meta(), log: logRing.slice(-40), startedAt: startedAt }, req);
+      ok(res, {
+        meta: store.meta(),
+        log: logRing.slice(-40),
+        startedAt: startedAt,
+        mobile: gateway ? gateway.meta() : null
+      }, req);
       return;
     }
     if (path === '/meta' && method === 'GET') {
@@ -193,8 +223,20 @@ function createHomeNodeHttp(deps) {
         loopbackOnly: true,
         tokenRequired: !!token,
         corsAllowlist: allowedOrigins,
-        exposes: ['chat-store', 'character-turn'],
-        doesNotExpose: ['llm-proxy', 'tools', 'payments', 'memory', 'moments', 'diary', 'letters', 'images', 'tts']
+        exposes: ['chat-store', 'character-turn', 'mobile-gateway'],
+        doesNotExpose: ['llm-proxy', 'tools', 'payments', 'memory', 'moments', 'diary', 'letters', 'images', 'tts'],
+        /* M1-B：设备身份 + 移动边界。mobile 面**只有** allowlist 里的 verb。 */
+        deviceAuth: { scheme: 'per-device opaque token', storedAs: 'sha256', constantTimeCompare: true, revoke: 'immediate' },
+        mobile: gateway ? {
+          namespace: '/mobile/v1',
+          protocolVersion: gateway.PROTOCOL_VERSION,
+          transport: 'http+text/event-stream',
+          verbs: ['pairing.complete', 'handshake', 'device.self', 'device.token.rotate', 'device.revoke', 'device.rename',
+            'presence', 'presence.report', 'character.list', 'character.get', 'chat.history', 'chat.send', 'chat.retry',
+            'chat.stream', 'sync.changes'],
+          adminPaths: gateway.ADMIN_PATHS,
+          unreachable: ['/api/llm-proxy', 'submit_payment', 'pay_register_checkout', 'pay_set_config', 'webhook', 'tool catalog', 'bridge resident chat']
+        } : null
       }, req);
       return;
     }
@@ -354,6 +396,14 @@ function createHomeNodeHttp(deps) {
     const method = String(req.method || 'GET').toUpperCase();
     if (process.env.IB_HOME_NODE_TRACE === '1') {
       record('info', 'trace-in', { method: method, path: url.pathname, origin: String(req.headers.origin || ''), pna: String(req.headers['access-control-request-private-network'] || '') });
+    }
+
+    /* 跨域预检：先看是不是 mobile 面 —— mobile 有自己的 Origin 策略
+       （capacitor://localhost / null / loopback），与桌面内部 API 的白名单不同。
+       不先分流的话，移动端客户端的预检会拿到桌面策略的响应（不回显 Origin），
+       浏览器就会拦掉后续请求，而服务端日志里看不出任何异常。 */
+    if (method === 'OPTIONS' && gateway && typeof gateway.handles === 'function' && gateway.handles(url.pathname.replace(/\/+$/, '') || '/')) {
+      return gateway.dispatch(url.pathname.replace(/\/+$/, '') || '/', req, res, url);
     }
 
     /* 跨域预检：只对允许的 Origin 放行，且只声明本服务真正实现的方法。 */

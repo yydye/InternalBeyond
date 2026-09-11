@@ -81,6 +81,9 @@ const GROUPS = [
       ['test_voice_capture.js'],
       ['test_voice_focus.js'],
       ['test_cache_audit.js'],
+      /* M1-B：设备身份 / 配对 / 会话单次使用 / token 哈希存储（领域层，零依赖离线）。
+         不经过 HTTP —— HTTP 语义由 service 组的 test_mobile_gateway_http.js 覆盖。 */
+      ['test_mobile_device_registry.js'],
       /* P11-2A：角色一致性校准 Layer A（确定性契约校准，零依赖离线） */
       ['test_middle_brain_calibration.js'],
       /* P14：Middle Brain 整块折叠（静态 DOM stub 驱动真实 config 层，零依赖离线） */
@@ -209,6 +212,13 @@ const GROUPS = [
       /* M1-A：Home Node canonical chat authority（真实 HTTP + 临时数据目录） */
       ['test_home_node_http.js'],
       ['test_home_node_service.js'],
+      /* M1-B：Mobile Gateway 协议 / 鉴权 / LAN 硬门 / secret-leak 契约
+         （真实服务实例 + 真实进程，临时数据目录 + 随机端口） */
+      ['test_mobile_gateway_http.js'],
+      /* M1-B：未来 Android 视角的端到端验收 —— 一个普通 HTTP/SSE 客户端走完
+         pair → authenticate → character.list → chat.history → chat.send →
+         streaming → reconnect/resume → sync.changes → retry → revoke */
+      ['test_mobile_thin_client.js'],
       ['test_active_plans.js'],
       ['test_proactive_interaction.js'],
       ['test_launcher.js'],

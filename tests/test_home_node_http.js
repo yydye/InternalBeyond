@@ -261,12 +261,27 @@ const nextTs = () => ++_tsSeq;
       !JSON.stringify(status.body.log).includes('edited') && !JSON.stringify(status.body.log).includes(TOKEN));
 
     /* ── 越界路由不存在（M1-A 的前置边界）── */
-    for (const route of ['/api/llm-proxy', '/api/tools', '/api/ai/chat', '/pair', '/devices']) {
+    for (const route of ['/api/llm-proxy', '/api/tools', '/api/ai/chat', '/pair']) {
       const r = await req('GET', route, null, AUTH);
       check('http.boundary ' + route + ' 不存在', r.status === 404 || r.status === 204, r.status);
     }
     check('http.boundary 不接受 Mobile Gateway 风格的 envelope',
       (await req('POST', '/', { v: 1, type: 'chat.send', payload: {} }, AUTH)).status === 404);
+    /* M1-B：/devices 现在是**桌面管理面**的真实端点（设备列表），
+       因此它不再属于"不存在的路由"。这里断言的新不变量更强：
+       它存在，但未认证拿不到，且 DTO 里没有任何凭据。 */
+    const devicesAnon = await req('GET', '/devices');
+    check('http.admin /devices 未认证被拒（401）', devicesAnon.status === 401, devicesAnon.status);
+    const devices = await req('GET', '/devices', null, AUTH);
+    check('http.admin /devices 认证后可读且为空（尚无设备）',
+      devices.status === 200 && devices.body.ok === true && Array.isArray(devices.body.payload.devices) &&
+      devices.body.payload.devices.length === 0, devices.body);
+    check('http.admin /devices 不回显任何凭据',
+      !JSON.stringify(devices.body).match(/token|secret|apiKey/i), devices.body);
+    /* /mobile/v1/* 是设备面：没有设备 token 一律拒绝，且不属于桌面 token 管辖。 */
+    const mobileAnon = await req('GET', '/mobile/v1/character/list', null, AUTH);
+    check('http.boundary /mobile/v1/* 用设备 token 鉴权（桌面 token 不够）',
+      mobileAnon.status === 401 && mobileAnon.body.error.code === 'AUTH_REQUIRED', mobileAnon.body);
 
     /* ── CORS：不对任意 Origin 回显（与 D1 风险接受一致的最小收紧）── */
     const cors = await req('GET', '/health', null, { Origin: 'https://evil.example' });
