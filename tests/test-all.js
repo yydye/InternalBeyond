@@ -215,6 +215,11 @@ const GROUPS = [
       /* M1-B：Mobile Gateway 协议 / 鉴权 / LAN 硬门 / secret-leak 契约
          （真实服务实例 + 真实进程，临时数据目录 + 随机端口） */
       ['test_mobile_gateway_http.js'],
+      /* M1-C 修复（D21）：LAN 门 —— allowRemote 只在"显式非 loopback 绑定 +
+         设备鉴权真实就绪"时打开。所有"远端"请求都发往本机**非 loopback 地址**，
+         因此源地址也是非 loopback（用 127.0.0.1 永远走不到这条规则）。
+         真实服务进程 + 真实故障注入（devices_schema 过新）。 */
+      ['test_home_node_lan_gate.js'],
       /* M1-B：未来 Android 视角的端到端验收 —— 一个普通 HTTP/SSE 客户端走完
          pair → authenticate → character.list → chat.history → chat.send →
          streaming → reconnect/resume → sync.changes → retry → revoke */

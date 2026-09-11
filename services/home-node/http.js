@@ -14,9 +14,16 @@
 
    安全模型（与仓库既有 D1 风险接受保持一致，见 docs/HOME_NODE_CHAT.md §8）：
      · 默认只 listen 127.0.0.1；
-     · 若设置了 home-node token（IB_HOME_NODE_TOKEN 或 config），则**所有**请求都必须携带；
-     · 未设置 token 时按 loopback 单用户模型放行，但**不**回显 CORS 头给任意 Origin ——
-       只允许无 Origin（原生请求 / 同源 fetch）与显式白名单 Origin。
+     · 非 loopback 来源**整片**拒绝，除非装配层证明了"显式非 loopback 绑定
+       且设备鉴权已就绪"（`deps.allowRemote`，见下面的 remoteAllowed()）；
+     · 门开了之后：/mobile/v1/* 只认 device token；其余（桌面面）要求
+       **已配置且匹配**的桌面 token —— 未配置 token 时远端一律 403
+       `remote-admin-disabled`，因为放宽就等于把签发配对凭据与撤销设备的能力
+       交给整个局域网；
+     · 若设置了 home-node token（IB_HOME_NODE_TOKEN 或 config），则**所有**
+       请求都必须携带；
+     · 未设置 token 时按 loopback 单用户模型放行，但**不**回显 CORS 头给任意
+       Origin —— 只允许无 Origin（原生请求 / 同源 fetch）与显式白名单 Origin。
    ==================================================================== */
 'use strict';
 
@@ -51,6 +58,22 @@ function createHomeNodeHttp(deps) {
   const logger = deps.logger || (() => {});
   const startedAt = clock();
   const logRing = [];
+
+  /* ── LAN 门（M1-C blocker：allowRemote）──────────────────────────────
+     `deps.allowRemote` 既可以是布尔，也可以是**函数**。允许函数不是风格
+     问题，而是这条规则本身的要求：
+
+       "是否允许非 loopback 客户端"取决于**设备鉴权此刻是否真的就绪**
+       （设备注册表是否真的打开、鉴权查询是否真的能回答）。而 http 层是在
+       `open()` **之前**被构造出来的 —— 把判定结果在构造时固化成布尔，等于
+       把一个尚未被证实的前提写进安全决策里：装配顺序一变（比如先 listen
+       后 open），门就会在鉴权子系统还没就绪时先开着。
+
+       因此这里每次请求都重新问一次；判定抛异常时**拒绝**（fail-closed）。 */
+  const allowRemoteSource = typeof deps.allowRemote === 'function' ? deps.allowRemote : () => !!deps.allowRemote;
+  function remoteAllowed() {
+    try { return !!allowRemoteSource(); } catch (_) { return false; }
+  }
 
   /* 观测环：只保留**结构化元数据**。任何调用方都不允许往这里塞正文。 */
   function record(level, event, fields) {
@@ -109,6 +132,18 @@ function createHomeNodeHttp(deps) {
   function ok(res, payload, req) { sendJson(res, 200, Object.assign({ ok: true, protocolVersion: PROTOCOL_VERSION, serverTime: clock() }, payload), req); }
   function bad(res, status, error, extra, req) { sendJson(res, status, Object.assign({ ok: false, error: error }, extra || {}), req); }
 
+  function healthPayload() {
+    return {
+      service: 'internal-beyond-home-node',
+      version: version,
+      role: 'canonical-chat-authority',
+      open: store.isOpen(),
+      revision: store.isOpen() ? store.getRevision() : 0,
+      messages: store.isOpen() ? store.countMessages() : 0,
+      schemaVersion: store.schemaVersion
+    };
+  }
+
   /* URL 查询串里的 anchor：纯数字 = 毫秒时间戳；'{...}' = 上一步返回的游标对象；
      其余 = message id（由 store 校验存在性）。 */
   function parseAnchor(raw) {
@@ -158,8 +193,37 @@ function createHomeNodeHttp(deps) {
     return addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
   }
 
-  async function route(req, res, url, method) {
+  async function route(req, res, url, method, remote) {
     const path = url.pathname.replace(/\/+$/, '') || '/';
+
+    /* ── 远端（非 loopback）**非 mobile** 路径：统一凭据规则 ─────────────
+       为什么这条必须存在：`authorized()` 在**未配置 token** 时对一切放行
+       （loopback 单用户模型，见文件头 §安全模型）。这在 loopback 上是对的 ——
+       能连上 loopback 就等价于"坐在本机"。但一旦 allowRemote 打开，同一个函数
+       会让整个**桌面面**（/status、/meta、/health、/pairing/session、/devices、
+       /device/revoke、/characters、/characters/publish）对所有 LAN 客户端匿名
+       可用，其中包括**签发配对凭据**和**撤销设备**这两件事。
+       所以：除非真的配置了桌面 token，否则远端一律碰不到桌面面。
+
+       403 而不是 401：没配 token 意味着"这套凭据不存在"，401 会暗示
+       "带上凭据再来"，而这里不存在任何能奏效的凭据。
+
+       刻意**不覆盖** /mobile/v1/*：那是设备面，凭据是 device token，由网关
+       自己判定。若这条也管 mobile，手机就永远无法在 LAN 上配对 —— 而那正是
+       允许 LAN 的全部意义。 */
+    const isMobilePath = path.indexOf('/mobile/') === 0;
+    if (remote && !isMobilePath) {
+      if (!token) {
+        record('warn', 'rejected-remote-non-mobile', { path: path, reason: 'no-desktop-token-configured' });
+        bad(res, 403, 'remote-admin-disabled', { hint: 'set IB_HOME_NODE_TOKEN to reach desktop paths from the network' }, req);
+        return;
+      }
+      if (!authorized(req, url)) {
+        record('warn', 'unauthorized', { path: path, loopback: false });
+        bad(res, 401, 'unauthenticated', null, req);
+        return;
+      }
+    }
 
     /* ── 委派：Mobile Gateway + 桌面配对/设备管理（M1-B）────────────────
        这一层刻意**不自己判断**哪些 mobile 路径存在：网关是那份 allowlist 的
@@ -171,7 +235,7 @@ function createHomeNodeHttp(deps) {
        /characters/publish）继承 Home Node 既有的 loopback/token 保护；
        而 /mobile/v1/* 自己的 device token 才是设备的凭据。 */
     if (gateway && typeof gateway.handles === 'function' && gateway.handles(path)) {
-      if (path.indexOf('/mobile/') === 0) {
+      if (isMobilePath) {
         /* 设备 API：不要求桌面 token（设备有自己的 token），
            但**仍然**受 loopback/allowRemote 与体积上限约束 —— 那两条在
            server 层已经处理，这里只是不再套桌面 token。 */
@@ -185,22 +249,29 @@ function createHomeNodeHttp(deps) {
       return gateway.dispatch(path, req, res, url);
     }
 
-    /* ── 只读探针（不需要 token，但也绝不返回任何世界数据）── */
-    if (path === '/health' && method === 'GET') {
-      ok(res, {
-        service: 'internal-beyond-home-node',
-        version: version,
-        role: 'canonical-chat-authority',
-        open: store.isOpen(),
-        revision: store.isOpen() ? store.getRevision() : 0,
-        messages: store.isOpen() ? store.countMessages() : 0,
-        schemaVersion: store.schemaVersion
-      }, req);
+    /* ── 只读探针（不需要 token，但也绝不返回任何世界数据）──
+       loopback：不带 token 也回答 —— 桌面 local-services-runner / 诊断页就是
+       这样打它的，既有行为不变。
+       远端：这是**本机诊断探针**，不是给网络用的。它确实会泄漏 revision 与消息
+       条数，而"局域网里任何人都能读到这个世界有多大"不是我们愿意用便利换来的
+       东西；因此远端必须先过上面那条远端规则（未配置桌面 token → 403；
+       配了 token 但没带/带错 → 401）。 */
+    if (path === '/health' && method === 'GET' && !remote) {
+      ok(res, healthPayload(), req);
       return;
     }
+
     if (!authorized(req, url)) {
       record('warn', 'unauthorized', { path: path, loopback: isLoopback(req) });
       bad(res, 401, 'unauthenticated', null, req);
+      return;
+    }
+
+    /* 远端探针：走到这里说明已经出示了**已配置且正确**的桌面 token，
+       因此可以回答（持有桌面 token 的就是桌面自己）。放在凭据规则之后，
+       是为了让它复用同一套判定，而不是自己再写一遍。 */
+    if (path === '/health' && method === 'GET') {
+      ok(res, healthPayload(), req);
       return;
     }
 
@@ -219,8 +290,10 @@ function createHomeNodeHttp(deps) {
     }
     if (path === '/security' && method === 'GET') {
       /* 明确暴露本进程**没有**什么，供诊断与未来的 gateway 决策使用。 */
+      const allowed = remoteAllowed();
       ok(res, {
-        loopbackOnly: true,
+        loopbackOnly: !allowed,
+        allowRemote: allowed,
         tokenRequired: !!token,
         corsAllowlist: allowedOrigins,
         exposes: ['chat-store', 'character-turn', 'mobile-gateway'],
@@ -432,14 +505,23 @@ function createHomeNodeHttp(deps) {
       return;
     }
 
-    if (!isLoopback(req) && !deps.allowRemote) {
-      record('warn', 'rejected-non-loopback', { remote: String((req.socket && req.socket.remoteAddress) || '') });
+    /* ── 非 loopback 来源：整片拒绝，除非调用方证明 LAN 模式已就绪 ──────
+       这一条在路由**之前**执行，因此覆盖 mobile 命名空间在内的每一个路径：
+       "门没开"必须等于"什么都不到达"。`remoteAllowed()` 由装配层提供
+       （services/home-node-service.js），它的定义是"显式非 loopback 绑定
+       且设备鉴权已就绪"，本身 fail-closed。 */
+    const remote = !isLoopback(req);
+    if (remote && !remoteAllowed()) {
+      record('warn', 'rejected-non-loopback', {
+        remote: String((req.socket && req.socket.remoteAddress) || ''),
+        path: url.pathname
+      });
       bad(res, 403, 'loopback-only', null, req);
       return;
     }
 
     Promise.resolve()
-      .then(() => route(req, res, url, method))
+      .then(() => route(req, res, url, method, remote))
       .catch(error => {
         record('error', 'unhandled', { path: url.pathname, error: String((error && error.message) || error).slice(0, 300) });
         if (!res.headersSent) bad(res, 500, 'internal-error', null, req);

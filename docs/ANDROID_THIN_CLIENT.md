@@ -125,14 +125,13 @@ device's own record unset so a just-paired device reported an empty `deviceId`.
 
 ---
 
-## 6. The one thing that stops a real phone today
+## 6. The LAN gate — found here, fixed in the Home Node
 
-**A phone on the LAN cannot reach the Home Node at all — and that is a desktop-side
-gate, not an Android bug.**
+**This stage found the last thing that stopped a real phone; it was fixed separately, on the
+desktop side, in D21.**
 
-Measured, not inferred, with the real service bound to the LAN
-(`IB_HOME_NODE_HOST=0.0.0.0`, temp data dir, device registry open, `lan-bind-enabled`
-logged):
+Measured here first, with the real service bound to the LAN
+(`IB_HOME_NODE_HOST=0.0.0.0`, temp data dir, device registry open, `lan-bind-enabled` logged):
 
 ```
 LAN /health                          → 403 {"ok":false,"error":"loopback-only"}
@@ -141,45 +140,46 @@ LAN /mobile/v1/pairing/complete      → 403 {"ok":false,"error":"loopback-only"
 loopback /mobile/v1/pairing/complete → 200 (a device token is issued)
 ```
 
-`services/home-node/http.js:435` refuses every non-loopback request — before routing,
-so it covers the whole mobile namespace — unless `deps.allowRemote` is set:
+`services/home-node/http.js` refuses every non-loopback request — before routing, so it covers
+the whole mobile namespace — unless `deps.allowRemote` is set, and **nothing in
+`services/home-node-service.js` ever set it**. That was an M1-A-era protection ("the Home Node
+binds loopback") which M1-B's LAN-bind work did not relax.
 
-```js
-if (!isLoopback(req) && !deps.allowRemote) { … 403 'loopback-only' … }
+**Now fixed** (decision D21, `tests/test_home_node_lan_gate.js`, 41 checks). `allowRemote` is
+no longer a switch that can be flipped to `true`: it is a predicate re-evaluated per request —
+*explicit non-loopback bind* **and** `deviceAuthReady(registry)`, the latter proven by a real
+authentication round trip, not by a flag. And opening the gate does not hand over the desktop
+surface: remote non-`/mobile/v1/*` paths require a **configured** Home Node token, so a default
+install (no token) answers `403 remote-admin-disabled` there while the phone path keeps working.
+
+Measured against the built APK's own payload, over a real LAN address:
+
+```
+LAN /mobile/v1/pairing/complete  → 200, device token issued
+LAN /mobile/v1/character/list    → 200, the published character
+LAN /mobile/v1/character/list    → 401 AUTH_REQUIRED     (no token)
+LAN /mobile/v1/character/list    → 401 AUTH_INVALID      (forged token)
+LAN /pairing/session             → 403 remote-admin-disabled  (no desktop token configured)
+LAN /status                      → 403 remote-admin-disabled
+loopback /health                 → 200 (unchanged for the desktop)
 ```
 
-`isLoopback` accepts only `127.0.0.1`, `::1` and `::ffff:127.0.0.1`, and **nothing in
-`services/home-node-service.js` ever sets `allowRemote`** — the seam exists, the switch
-is never thrown. This is an M1-A-era protection ("the Home Node binds loopback") that
-M1-B's LAN-bind work did not relax.
+What this means for the client: the app needs **no** change. It talks `/mobile/v1/*` with a
+device token, which is exactly the surface that opens. The `LOOPBACK_ONLY` mapping below stays
+useful for installs that have *not* opted into LAN mode.
 
-What already works once that gate is opened — verified in the same probe:
-
-* binding to `0.0.0.0` is **permitted** now that the device registry exists (M1-B's
-  refuse-to-start path is not triggered), and the service logs `lan-bind-enabled`;
-* `POST /pairing/session` then reports the **real LAN address** in
-  `endpoints.mobile.host` with `lanReachable:true`, so a phone needs no address
-  override;
-* pairing, the device token and the authenticated mobile surface all work;
-* provider credentials and hidden prompts stay out of the responses, and the device
-  token never reaches the service log.
-
-**This stage did not flip that switch.** Opening the Home Node to the LAN is a
-security-posture decision about the desktop side, it belongs to the Home Node rather
-than to the Android client, and M1-B deliberately made LAN exposure opt-in. It is
-recorded here as the single remaining blocker, with the exact line and the exact
-mechanism, so the next stage can decide it on purpose.
-
-The app now names it too: an `{"ok":false,"error":"loopback-only"}` answer is mapped to
-`ProtocolError.LOOPBACK_ONLY` and presented as *"The Home Node only accepts connections
-from the desktop … LAN access is not switched on"* with a desktop-action hint, instead
-of the vague "unexpected answer" a strict v1 parser would otherwise produce.
+The app names the refusal explicitly: an `{"ok":false,"error":"loopback-only"}` answer is mapped
+to `ProtocolError.LOOPBACK_ONLY` and presented as *"The Home Node only accepts connections from
+the desktop … LAN access is not switched on"* with a desktop-action hint, instead of the vague
+"unexpected answer" a strict v1 parser would otherwise produce.
 
 ---
 
 ## 7. Known limits (stated, not hidden)
 
-1. **The LAN gate above** (§6) — the one thing that stops a real phone today.
+1. **The Home Node must be started in LAN mode** (`IB_HOME_NODE_HOST=0.0.0.0`) before a phone
+   can reach it at all — the default is loopback-only and stays that way. The gate itself is
+   fixed (§6); the remaining requirement is an explicit desktop-side opt-in.
 2. **QR scanning is not implemented.** Manual paste is the supported path; a disabled
    "Scan QR" button was deliberately not added.
 3. **Release builds cannot reach an arbitrary LAN IP.** Android's network security

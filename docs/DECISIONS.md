@@ -410,10 +410,57 @@ M1-A/M1-B 把 canonical chat 与设备身份放在 Home Node（桌面）之后�
    loopback / 模拟器别名 / `.local`。**限制如实登记**：Android 的 domain-config 只接受
    主机名或 IP 字面量，**不接受地址段**，因此 release 包连任意 RFC1918 地址必须走 TLS 或
    主机名（属已推迟的传输层工作）。这不影响身份模型——身份是 device token，不是 IP。
-7. **LAN 可达性：M1-C 未改动 Home Node 的 loopback 守卫，如实登记为唯一剩余 blocker。** 实测（真实服务以 `IB_HOME_NODE_HOST=0.0.0.0` 绑定、数据目录隔离、设备登记表已打开、日志有 `lan-bind-enabled`）：LAN 上 `/health`、`/mobile/v1/character/list`、`/mobile/v1/pairing/complete` **全部 403 `{"ok":false,"error":"loopback-only"}`**，只有 loopback 能配对成功。原因：`services/home-node/http.js:435` 的 `if (!isLoopback(req) && !deps.allowRemote)` 在路由**之前**执行（因此覆盖整个 mobile 命名空间），而 `services/home-node-service.js` **从不设置 `allowRemote`** —— 这是 M1-A 的既定保护，M1-B 加 LAN 绑定能力时没有放开它。开关一旦打开，链路已被证明可用：载荷会给出真实 LAN 地址（`lanReachable:true`，无需 override）、配对发凭据、token 生效、凭据不外泄。**本阶段刻意不去翻这个开关**：把 Home Node 暴露到 LAN 属于桌面侧的安**全姿态决定，不属于 Android 客户端阶段，且 M1-B 明确把 LAN 暴露定为 opt-in。App 侧只做了一件事——把 `loopback-only` 映射成明确文案（`LOOPBACK_ONLY` →「Home Node 只接受来自桌面的连接，LAN 访问尚未开启」），而不是让严格 v1 解析器把它报成「意外的响应」。
+7. **【已被 D21 修订，以下为当时的现场记录，历史保留不得覆盖】LAN 可达性：M1-C 未改动 Home Node 的 loopback 守卫，如实登记为唯一剩余 blocker。** 实测（真实服务以 `IB_HOME_NODE_HOST=0.0.0.0` 绑定、数据目录隔离、设备登记表已打开、日志有 `lan-bind-enabled`）：LAN 上 `/health`、`/mobile/v1/character/list`、`/mobile/v1/pairing/complete` **全部 403 `{"ok":false,"error":"loopback-only"}`**，只有 loopback 能配对成功。原因：`services/home-node/http.js:435` 的 `if (!isLoopback(req) && !deps.allowRemote)` 在路由**之前**执行（因此覆盖整个 mobile 命名空间），而 `services/home-node-service.js` **从不设置 `allowRemote`** —— 这是 M1-A 的既定保护，M1-B 加 LAN 绑定能力时没有放开它。开关一旦打开，链路已被证明可用：载荷会给出真实 LAN 地址（`lanReachable:true`，无需 override）、配对发凭据、token 生效、凭据不外泄。**本阶段刻意不去翻这个开关**：把 Home Node 暴露到 LAN 属于桌面侧的安**全姿态决定，不属于 Android 客户端阶段，且 M1-B 明确把 LAN 暴露定为 opt-in。App 侧只做了一件事——把 `loopback-only` 映射成明确文案（`LOOPBACK_ONLY` →「Home Node 只接受来自桌面的连接，LAN 访问尚未开启」），而不是让严格 v1 解析器把它报成「意外的响应」。
 8. **验证方式**：`./gradlew test` 105 项全绿，其中 `HomeNodeIntegrationTest` 真实
    spawn `services/home-node-service.js` + 真实 SSE mock provider，用**与 APK 同一份**
    HomeNodeClient / SessionRepository / ConversationSession 走完
    pair → character.list → chat.history → chat.send → streaming → 断线 → resume →
    sync.changes → 同 requestId 重试 → presence → revoke。没有 emulator，因此 APK 只做到
    「编译 + 签名 + 校验包内 manifest/网络策略」，未在设备上启动过。
+
+---
+
+## D21. M1-C 修复 · Home Node LAN 门（allowRemote）（2026-09-11）
+
+D20 第 7 条登记的「真机前唯一 blocker」在这里被修掉。修法刻意**不是**把 M1-A 的守卫
+翻成 `true` —— 那等于把整个桌面面交给局域网。冻结以下决定：
+
+1. **`allowRemote` 是一个被验证的谓词，不是一个开关。** 唯一定义：
+   `显式非 loopback 绑定(HOST) && deviceAuthReady(registry)`。
+   两条都必须为真，且后者是**运行时能力**而非配置事实。
+2. **`deviceAuthReady()` 必须走一遍真实鉴权路径**（`services/home-node-service.js`）：
+   拿一个格式合法但不可能存在的 token（`ibd1_probe-…`）问注册表，期望明确的
+   `AUTH_INVALID`。`STORE_CLOSED`（没开）、抛异常（查询坏了）、`ok:true`（陌生 token
+   被判有效）都判为**未就绪**。探针带 `touch:false`，不产生设备状态副作用。
+   —— 这条规则保护的是整个聊天库 + 签发/撤销凭据的能力，值得一次真实探针。
+3. **`http.js` 的 `deps.allowRemote` 接受函数，并且每次请求重新判定。** http 层是在
+   `open()` **之前**构造的，把结果固化成布尔等于把一个尚未证实的前提写进安全决策。
+   判定抛异常时 fail-closed。
+4. **门开了之后，远端仍然碰不到桌面面。** 规则：非 loopback 来源的**非 `/mobile/v1/*`**
+   路径必须有**已配置且匹配**的桌面 token；**未配置 token → 403 `remote-admin-disabled`**
+   （不是 401：不存在任何能奏效的凭据）。为什么必须有这条：`authorized()` 在未配置
+   token 时对一切放行（loopback 单用户模型），而**默认安装就是没有 token** —— 不加这条，
+   打开 allowRemote 就等于让局域网里任何人匿名调用 `/pairing/session`（签发配对凭据）
+   与 `/device/revoke`（撤销设备）。`/mobile/v1/*` 不受这条约束：那是设备面，凭据是
+   device token，由网关自己判定；若它也被约束，手机将永远无法在 LAN 上配对。
+5. **`/health` 从"匿名可达"收紧为"loopback 或已配置的桌面 token"。** 桌面
+   local-services-runner / 诊断页在 loopback 上不带 token 打它，行为不变；但 LAN 上
+   匿名可读到 `revision` / 消息条数，那不是我们愿意用便利换的东西。
+6. **默认不变**：`IB_HOME_NODE_HOST` 不设时仍是 `127.0.0.1`，远端在 socket 层就连不上；
+   设备鉴权打不开时，非 loopback 绑定**仍然拒绝启动**（M1-B 的硬门保留）。新增一层：
+   注册表打开了但探针不通过时**不退出**，而是只服务 loopback 并把原因写进日志 ——
+   一个坏掉的鉴权子系统不该让本机用户连不上自己的 Home Node，而"远端一律拒绝"
+   本身就是安全的失败方向。
+7. **启动日志必须可审计**：`lan-bind-enabled` 带 `allowRemote` 与 `deviceAuthProbe`
+   两个字段，`listening` 带 `remoteClients: refused (loopback bind) |
+   device-token-required | refused (<reason>)`。安全决策不允许只存在于代码里。
+8. **证据（真实进程 + 真实 LAN 源地址）**：`tests/test_home_node_lan_gate.js`，41 项。
+   关键点是所有"远端"请求都发往本机**非 loopback 地址**（于是源地址也非 loopback）——
+   用 127.0.0.1 打请求永远走不到这条规则，测到的只是"门后面的东西没坏"。
+   覆盖：LAN 上 `pairing/complete` → 200 并签发 device token；LAN 上 `character.list`
+   用该 token → 200 且返回已发布角色；未认证 / 伪造 token / 伪造配对载荷仍被拒；
+   撤销对 LAN 立即生效（403 `DEVICE_REVOKED`）；默认姿态下远端连不上；
+   鉴权未就绪（真实故障 `devices_schema` 过新）时 0.0.0.0 实例对远端一律 403
+   `loopback-only` 而 loopback 照常；未配置桌面 token 时 LAN 上 5 条桌面路径
+   全部 403 `remote-admin-disabled`，同时手机仍能配对成功。
+

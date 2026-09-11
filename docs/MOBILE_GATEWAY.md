@@ -463,7 +463,14 @@ startup:
      else               → open failure reported → exit 1
   on success and !LOOPBACK_BIND:
      assert registry.isOpen()     → else refuse and exit 1
-     log 'lan-bind-enabled' {deviceAuth:'required'}
+     probe = deviceAuthReady(registry)      → real authentication round trip, see 10.2
+     log 'lan-bind-enabled' {deviceAuth:'required', allowRemote:probe.ready,
+                             deviceAuthProbe:probe.reason}
+     if !probe.ready → keep serving, but say non-loopback requests will be refused
+  listen:
+     log 'listening' {loopbackOnly, remoteClients:
+                      'refused (loopback bind)' | 'device-token-required'
+                      | 'refused (<probe.reason>)'}
 ```
 
 `isLoopbackHost` accepts `localhost`, `127.0.0.0/8`, `::1` and nothing else — `0.0.0.0`, `::`
@@ -472,18 +479,57 @@ and any hostname are *not* loopback, so they take the strict path.
 Defaults: `IB_HOME_NODE_HOST=127.0.0.1`, `IB_HOME_NODE_PORT=23118`. LAN exposure is opt-in by
 explicitly setting the host.
 
-### 10.1 Authentication on every mobile endpoint
+### 10.1 The remote request gate (`allowRemote`)
 
-| Endpoint | Requirement |
-|---|---|
-| all `/mobile/v1/*` | device token, **except** `pairing/complete` (which carries its own one-time high-entropy secret) and `OPTIONS` preflight (which carries no world data and grants nothing) |
-| all desktop admin paths | Home Node token (if configured) + loopback |
-| `/health` | none — the only unauthenticated read, and it returns no world data |
+Binding is only half of it. A non-loopback request is admitted **only** if the request gate
+can prove that device authentication is live *at that moment*:
+
+```js
+// services/home-node-service.js — the only definition
+allowRemote: () => !loopbackBind && deviceAuthReady(registry).ready
+
+// services/home-node/http.js
+const allowRemoteSource = typeof deps.allowRemote === 'function' ? deps.allowRemote : () => !!deps.allowRemote;
+function remoteAllowed() { try { return !!allowRemoteSource(); } catch (_) { return false; } }
+
+if (remote && !remoteAllowed()) { … 403 'loopback-only' … }        // before routing: covers everything
+```
+
+Three properties are deliberate:
+
+* **the predicate is a function, not a snapshot.** The http layer is constructed *before*
+  `open()` runs, so freezing the answer into a boolean would bake an unproven assumption into
+  a security decision — reorder startup and the door is open while device auth is not ready.
+  It is therefore re-evaluated per request, and **fails closed** if the predicate throws;
+* **`deviceAuthReady()` runs a real authentication round trip** (`services/home-node-service.js`):
+  a well-formed but impossible token (`ibd1_probe-…`) must come back `AUTH_INVALID`.
+  `STORE_CLOSED` (registry not open), a thrown query, or `ok:true` (a stranger's token accepted)
+  all mean *not ready*. `touch:false`, so the probe writes no device state;
+* **no override seam exists.** This is a security predicate; the only legal answer comes from
+  the probe.
+
+### 10.2 Authentication on every mobile endpoint
+
+| Caller | Path | Requirement |
+|---|---|---|
+| remote (non-loopback) | `/mobile/v1/*` | device token, **except** `pairing/complete` (own one-time high-entropy secret) and `OPTIONS` preflight (no world data, grants nothing) |
+| remote (non-loopback) | every other path | **a configured** Home Node token; with no token configured → `403 remote-admin-disabled` |
+| loopback | `/mobile/v1/*` | device token (same rules) |
+| loopback | desktop admin paths | Home Node token if configured |
+| loopback | `/health` | none — the only unauthenticated read, and it returns no world data |
+
+The remote/desktop row is a **necessary condition** of opening the gate, not hardening:
+`authorized()` returns `true` for every request when no token is configured (the loopback
+single-user model), and a default install has no token. Without that row, `allowRemote` would
+hand anonymous LAN clients `/pairing/session` (mint a pairing credential) and `/device/revoke`.
+`403` rather than `401` because there is no credential that could ever work in that state.
+`/mobile/v1/*` is deliberately excluded — the device namespace authenticates with a device
+token, and gating it would make LAN pairing impossible, which is the entire point of LAN mode.
 
 Also enforced: constant-time comparison, immediate revocation, malformed-credential rejection,
 per-key rate limiting, a 24 MiB body cap, and no permanent token in the query string.
 
-### 10.2 Origin policy — why it is *not* the security boundary
+### 10.3 Origin policy — why it is *not* the security boundary
 
 `Origin` decides whether a **browser** may read a response; it never decides who may act.
 
@@ -502,7 +548,7 @@ inside the mobile branch only; `/characters/publish`'s preflight then fell throu
 404, the browser judged the preflight failed, and the whole POST surfaced as "Failed to fetch"
 while the server log showed only a single `OPTIONS`.)
 
-### 10.3 Rate limits (no dependency)
+### 10.4 Rate limits (no dependency)
 
 Token bucket, per key, in-process (`createRateLimiter`).
 
@@ -720,8 +766,11 @@ than an identity redesign:
 
 ## 16. Known limits
 
-1. **No Android client exists.** No Gradle, Kotlin, Compose, Capacitor, WebView shell, APK,
-   camera, microphone, FCM or native notification. This stage delivered the contract only.
+1. **The Android client (M1-C) is a thin client and needs the LAN gate open.** `android/`
+   builds a signed APK that pairs, lists characters, reads the same history, sends and streams
+   (see `docs/ANDROID_THIN_CLIENT.md`). It cannot reach a loopback-bound Home Node, so LAN mode
+   (§10) must be opted into on the desktop. No Capacitor/WebView shell, no camera, no FCM, no
+   native notifications.
 2. **`apiConfigs` authority is still the browser** (§8). This is the one temporary dependency,
    it is explicit, and an unpublished character is unusable from a phone with a clear error.
 3. **Plain HTTP on LAN.** No TLS yet; the LAN opt-in is explicit and the identity layer is
@@ -748,12 +797,14 @@ than an identity redesign:
 |---|---|---|
 | `tests/test_mobile_device_registry.js` | static | 85 checks: issue/verify/rotate/revoke, revoked-immediate, per-device independence, restart persistence, token hashed-not-stored (DB + file grep), pairing single-use/TTL/atomic double-consume, `consumed_by` audit, capability allowlist, DTO/spec separation |
 | `tests/test_mobile_gateway_http.js` | service | 65 checks: version matrix (missing/0/2/3/-1/1.5/'one'/null/true), error envelope shape and non-leakage, body validation and size cap, auth matrix, query-token rejection, CORS matrix incl. capacitor/null/hostile and preflight, 13 dangerous routes 404, secret-leak scan over 8 surfaces, revoke-immediate incl. self-revoke, rotation, two rate-limit families, and two real-process LAN assertions (refuse-to-start without device auth; unauthenticated rejection after LAN bind) |
+| `tests/test_home_node_lan_gate.js` | service | 41 checks: the LAN gate itself, with every "remote" request sent to a **non-loopback** address so the source address is non-loopback too. Asserts LAN `pairing/complete` → 200 + device token, LAN `character.list` → 200 through that token, unauthenticated/forged-pairing rejection, revoke-immediate over LAN, the default posture (remote refused at socket level), auth-not-ready (`devices_schema` too new) ⇒ every remote request `403 loopback-only` while loopback keeps working, and 5 desktop paths + `/health` `403 remote-admin-disabled` when no desktop token is configured while a phone can still pair |
 | `tests/test_mobile_thin_client.js` | service | 86 checks: the whole client journey — pair → authenticate → `character.list` → `chat.history` → `chat.send` → streaming deltas → disconnect mid-generation → reconnect/resume → `sync.changes` → retry → revoke — plus conversation isolation, DTO field checks, sequence monotonicity, and "disconnect does not cancel generation" via a slow mock provider |
 | `tests/test_m1a_chat_authority_smoke.js` | browser | the M1-A desktop smoke extended with M1-B: real browser + real Home Node, real `apiConfigs` → publish → `GET /characters` (with `forTurn:true`), device pairing from the test, `character.list` over the authenticated mobile surface, secret-leak scan, anonymous rejection, and the preflight regression guard |
 
 ```
 node tests/test_mobile_device_registry.js
 node tests/test_mobile_gateway_http.js
+node tests/test_home_node_lan_gate.js
 node tests/test_mobile_thin_client.js
 node tests/test_m1a_chat_authority_smoke.js --browser
 ```
@@ -789,8 +840,15 @@ env:        IB_HOME_NODE_HOST (default 127.0.0.1)   IB_HOME_NODE_PORT (23118)
             IB_HOME_NODE_DATA_DIR                   IB_HOME_NODE_TOKEN (desktop/admin, optional)
             IB_HOME_NODE_ORIGINS                    IB_HOME_NODE_MOBILE_ORIGINS
             IB_HOME_NODE_TRACE=1 (one log line per inbound request: method/path/origin only)
+
+LAN:        IB_HOME_NODE_HOST=0.0.0.0                 → opt-in LAN mode; pairing payload then
+                                                       carries the real LAN address
+            remoteClients in the 'listening' log line: 'refused (loopback bind)'
+                                                       | 'device-token-required' | 'refused (<reason>)'
+            remote non-mobile paths need IB_HOME_NODE_TOKEN; without it they are 403
+            remote-admin-disabled. /mobile/v1/* needs only the device token.
 ```
 
-Deferred, explicitly: QR rendering · Android shell · native notifications · Voice · Video ·
+Deferred, explicitly: QR rendering · native notifications · Voice · Video ·
 Image generation · Moments · Diary · Letters · Memory authority migration · Tailscale/TLS ·
 multi-user accounts.

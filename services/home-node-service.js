@@ -9,9 +9,14 @@
  * UI. See docs/HOME_NODE_CHAT.md for the full authority/mirror/fallback model.
  *
  * 与其它本地服务的边界（刻意如此）：
- *   · 只绑 127.0.0.1（IB_HOME_NODE_HOST 可覆盖，但默认值就是 loopback）；
+ *   · 默认只绑 127.0.0.1（IB_HOME_NODE_HOST 可覆盖）；
  *   · 不 require bridge/routes.js，因此没有 /api/llm-proxy、没有工具表、没有支付；
- *   · 不是 Mobile Gateway —— 没有设备身份、没有配对、没有 LAN 开关。
+ *   · 设备身份与配对在 services/home-node/device-registry.js，
+ *     传输在 services/home-node/mobile-gateway.js —— 本文件只负责装配。
+ *
+ * LAN 姿态（M1-C blocker 修复）：`allowRemote` **不再**是一个可以随手打开的
+ * 布尔开关，而是一条被验证的谓词：显式非 loopback 绑定 **且** 设备鉴权此刻
+ * 真的就绪（见 deviceAuthReady）。默认（HOST=127.0.0.1）永远 loopback-only。
  *
  * 存储：%LOCALAPPDATA%\InternalBeyond\home-node\home-node.db（node:sqlite，零 npm 依赖）。
  */
@@ -101,6 +106,36 @@ function isLoopbackHost(host) {
 }
 const LOOPBACK_BIND = isLoopbackHost(HOST);
 
+/* ── 设备鉴权就绪判定（LAN 门的**唯一**条件）──────────────────────────
+   "设备注册表已打开"是一个配置事实；"LAN 客户端真的能被认证"是一个**运行时
+   能力**。这条规则保护的东西（整个聊天库 + 签发/撤销设备凭据的能力）值得
+   后者被真正验证一次，而不是从前者的布尔值推断出来。
+
+   所以探针不是"看 flag"，而是**走一遍真实鉴权路径**：拿一个格式合法但不可能
+   存在的 token 去问注册表，期望得到一个明确的 AUTH_INVALID。这同时排除掉
+   几种"看起来就绪其实不可用"的状态：
+     · 注册表没开 → STORE_CLOSED（而不是 AUTH_INVALID）；
+     · 查询路径抛错 → 抛出来（而不是静默当成"没匹配到"）；
+     · 鉴权实现坏了、把陌生 token 判成有效 → ok:true（宁可拒绝服务也不放行）。
+
+   探针用 `touch:false`：它只回答"鉴权可用吗"，不产生任何设备状态副作用。 */
+const AUTH_PROBE_TOKEN = 'ibd1_probe-not-a-real-device-token-000000';
+function deviceAuthReady(registry) {
+  if (!registry) return { ready: false, reason: 'no-device-registry' };
+  if (typeof registry.isOpen !== 'function') return { ready: false, reason: 'device-registry-invalid' };
+  if (!registry.isOpen()) return { ready: false, reason: 'device-registry-not-open' };
+  if (typeof registry.verifyDeviceToken !== 'function') return { ready: false, reason: 'device-auth-missing' };
+  let probe = null;
+  try { probe = registry.verifyDeviceToken(AUTH_PROBE_TOKEN, { touch: false }); }
+  catch (error) {
+    return { ready: false, reason: 'auth-probe-threw: ' + String((error && error.message) || error).slice(0, 120) };
+  }
+  if (!probe || probe.ok === true) return { ready: false, reason: 'auth-probe-unexpected-allow' };
+  if (probe.code === 'STORE_CLOSED') return { ready: false, reason: 'device-registry-not-open' };
+  if (probe.code !== 'AUTH_INVALID') return { ready: false, reason: 'auth-probe-code:' + String(probe.code) };
+  return { ready: true, reason: 'device-auth-verified' };
+}
+
 /* ── LAN 主机名（配对载荷用）──────────────────────────────────────────
    只在真的绑到 LAN 时才有意义；绑 loopback 时返回空串，配对载荷会如实
    声明 lanReachable:false，而不是给一个手机永远连不上的地址。 */
@@ -159,6 +194,12 @@ function buildHomeNode(options) {
     token: options.token === undefined ? TOKEN : options.token,
     version: options.version || productVersion(),
     allowedOrigins: options.allowedOrigins || ALLOWED_ORIGINS,
+    /* LAN 门：显式非 loopback 绑定 **且** 设备鉴权此刻真的就绪。
+       刻意传**函数**：http 层在这里被构造时 open() 还没发生（见下面 open()），
+       固化成布尔就等于把"注册表一定会成功打开"这个尚未证实的假设写进安全决策。
+       刻意**不提供**任何覆盖入口：这是一个安全谓词，唯一合法的回答来自
+       deviceAuthReady() 的真实探针。 */
+    allowRemote: () => !loopbackBind && deviceAuthReady(instanceRegistry).ready,
     logger: serviceLog
   });
   /* 打开顺序有语义：chat store 先开（它负责损坏隔离 —— 会给坏库改名），
@@ -221,6 +262,9 @@ const httpLayer = createHttp({
   token: TOKEN,
   version: productVersion(),
   allowedOrigins: ALLOWED_ORIGINS,
+  /* 与 buildHomeNode 同一条谓词（进程级实例）。这里的注册表要等 openAll()
+     才打开，所以更必须是函数而不是布尔。 */
+  allowRemote: () => !LOOPBACK_BIND && deviceAuthReady(registry).ready,
   logger: (level, event, fields) => log(level, event, fields)
 });
 const server = httpLayer.server;
@@ -257,25 +301,39 @@ if (require.main === module) {
   }
 
   /* **硬门**：非 loopback 绑定要求设备鉴权子系统已经就绪。
-     走到这里注册表已经 open 成功（否则上面的 catch 已经退出），
-     但再做一次显式断言 —— 因为这条规则的代价是"静默暴露整个聊天库"，
-     值得在启动日志里留下一条可核对的事实。 */
+     这里有两层，刻意分开：
+       · registry 打不开 → 直接拒绝启动（上面已经退出到这里）；
+       · registry 打开了但鉴权路径回答不了（探针不通过）→ **不退出**：
+         服务只服务 loopback，并把"远端会被拒"的原因写进日志。
+     第二层不退出是刻意的：一个坏掉的鉴权子系统不该让本机用户连不上
+     自己的 Home Node，而"远端一律拒绝"本身就是安全的失败方向。 */
   if (!LOOPBACK_BIND) {
     if (!registry.isOpen()) {
       console.error('Home Node refuses to listen on ' + HOST + ': the device registry is not available, ' +
         'so LAN clients could not be authenticated. Bind 127.0.0.1 or fix the data directory.');
       process.exit(1);
     }
+    const authState = deviceAuthReady(registry);
     log('info', 'lan-bind-enabled', {
-      host: HOST, port: PORT, deviceAuth: 'required', lanAddress: lanAddress() || null
+      host: HOST, port: PORT, deviceAuth: 'required',
+      allowRemote: authState.ready, deviceAuthProbe: authState.reason,
+      lanAddress: lanAddress() || null
     });
+    if (!authState.ready) {
+      console.error('Home Node is listening on ' + HOST + ' but will refuse every non-loopback request (' +
+        authState.reason + '). Only 127.0.0.1 clients are served.');
+    }
   }
 
   server.listen(PORT, HOST, () => {
+    const authState = deviceAuthReady(registry);
+    const remoteOpen = !LOOPBACK_BIND && authState.ready;
     log('info', 'listening', {
       host: HOST, port: PORT, db: store.file, schema: store.schemaVersion,
-      tokenRequired: !!TOKEN, loopbackOnly: LOOPBACK_BIND,
-      mobileGateway: '/mobile/v1', deviceAuth: LOOPBACK_BIND ? 'per-device (LAN disabled)' : 'per-device (LAN enabled)'
+      tokenRequired: !!TOKEN, loopbackOnly: !remoteOpen,
+      /* 如实区分三种状态：只服务本机 / 远端可达但每次都要设备 token / 远端一律拒绝。 */
+      remoteClients: LOOPBACK_BIND ? 'refused (loopback bind)' : (remoteOpen ? 'device-token-required' : 'refused (' + authState.reason + ')'),
+      mobileGateway: '/mobile/v1', deviceAuth: 'per-device'
     });
   });
 
@@ -318,6 +376,8 @@ module.exports = {
   openAll,
   lanAddress,
   isLoopbackHost,
+  deviceAuthReady,
+  AUTH_PROBE_TOKEN,
   HOST,
   PORT,
   DATA_DIR,

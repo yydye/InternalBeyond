@@ -81,7 +81,9 @@ const SERVICES = [
   },
   {
     /* M1-A：Home Node —— chatMessages 的 canonical authority。
-       loopback-only，且**不是** Mobile Gateway（无设备身份 / 无配对 / 无 LAN 开关）。
+       桌面**总是**用默认 HOST 启动它（env: {}），即 127.0.0.1 —— 远端来源一律拒绝。
+       LAN 模式（M1-B 设备身份 / M1-C Android 客户端）只能由用户显式设置
+       IB_HOME_NODE_HOST 打开，且还要求设备鉴权真的就绪（见 D21）。
        它的失败必须是 degraded 而不是 fatal：browser 侧 home-node-client 把
        "不在线" 判为可回退状态，桌面主 UI 不受影响。 */
     name: 'HomeNode',

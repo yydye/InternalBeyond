@@ -337,10 +337,14 @@ const ERROR_CODES = ['AUTH_REQUIRED', 'AUTH_INVALID', 'DEVICE_REVOKED', 'PAIRING
     check('gw.lan /health 如实声明不再是 loopback-only（凭据化探针里说明）',
       !!(health && health.role === 'canonical-chat-authority'), health);
     const lanNoAuth = await request(lanPort, 'GET', '/mobile/v1/character/list');
-    check('gw.lan LAN 上未认证 mobile 请求被拒（AUTH_REQUIRED）',
+    /* 注意来源：request() 固定连 127.0.0.1，所以这两条是**loopback 来源**在
+       LAN 绑定下的行为。真正"源地址非 loopback"的 LAN 证据在
+       tests/test_home_node_lan_gate.js（D21）—— 用 loopback 打请求永远走不到
+       那条远端规则，测不到它。 */
+    check('gw.lan LAN 绑定后，loopback 来源的未认证 mobile 请求仍被拒（AUTH_REQUIRED）',
       lanNoAuth.status === 401 && lanNoAuth.body.error.code === 'AUTH_REQUIRED', lanNoAuth.body);
     const lanPairing = await request(lanPort, 'POST', '/mobile/v1/pairing/complete', { body: { v: 1, payload: { pairingId: 'pair_x', secret: 'y' } } });
-    check('gw.lan LAN 上伪造配对载荷被拒', lanPairing.status === 403, lanPairing.body);
+    check('gw.lan loopback 来源的伪造配对载荷被拒', lanPairing.status === 403, lanPairing.body);
     const lanSession = await request(lanPort, 'POST', '/pairing/session', { headers: { 'X-IB-Home-Token': lanToken }, body: { deviceName: 'L', deviceType: 'android' } });
     check('gw.lan LAN 模式下配对载荷给出真实可达地址并声明 lanReachable',
       lanSession.status === 200 && lanSession.body.payload.lanReachable === true &&
