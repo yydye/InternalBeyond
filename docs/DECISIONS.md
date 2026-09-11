@@ -329,8 +329,9 @@ U-D1 Revised 只覆盖了「**检查**清单」的传输回退。U3 要下载 50
 
 ### 已接受 / 未做
 
-- **DeepSeek / Gemini / 国产 provider 的档位当前不生效**（abstain）。这是刻意的保守取值，
+- **Gemini / 国产 provider 的档位当前不生效**（abstain）。这是刻意的保守取值，
   不是遗漏：取证依据与"还差什么"逐条登记在 `REASONING_PENDING`。
+  （DeepSeek 已按 D19.1 校准。）
 - 未接入 `temperature` 之外的其它采样参数；不改 Moments/Diary 的 maxTokens 预算
   （提高档位会让 reasoning 更吃 token，与 D12 的教训相关，登记为后续项）。
 - Node ModelPort 已接受 canonical `reasoningEffort`（与浏览器同一份翻译），
@@ -344,4 +345,30 @@ HTTPS only · hash 不符**绝不执行** · installer 版本不符**绝不执�
 **更新载荷绝不下载进 `{app}`** · 不得存在使用 bundled `node.exe` 的长命 helper。
 未代码签名的事实必须留在文档中；**SHA-256 只能证明「字节与清单一致」，绝不能描述成
 「验证发布者身份」。**
+
+## D19.1 P21.1 · DeepSeek reasoning capability 校准（2026-09-11）
+
+D19 的机制一行未动，只往数据表里补一条**已取证**的 model 能力：
+
+1. **只登记一个 model id：`deepseek-flash`**（model 级 `REASONING_MODEL_POLICIES`）。
+   `REASONING_CAPABILITIES.deepseek` **不存在** —— 能力绝不按 provider 宽泛开启；
+   DeepSeek 的其它 id（`deepseek-v4-pro` / `deepseek-v4-flash` / `…-vision-exp` / `deepseek-reasoner`）
+   继续 abstain，有测试逐条守着。
+2. **wire 契约**：Chat Completions 面 `reasoning_effort ∈ {low, high, max}`。
+   auto 不发送任何 reasoning / thinking 字段；**不主动发送 `thinking.type`**（保持 provider 原生 thinking 行为）。
+   `wire: { chat: [...] }` 是有意为之：Responses 面未取证 → `format_unsupported`，而不是"忘了写"。
+3. **canonical 映射**：low→`low`；medium→`high`（effective=high + `tier_downgraded`）；
+   high→`high`；max→`max`。
+4. **新增的是数据字段 `tierMap`，不是分支**：官方值域缺 medium 时，通用阶梯就近会出现
+   low/high 同距的 tie，而"该落哪一档"只有 provider 自己知道。tierMap 把这个判断放回数据表，
+   通用规则（tie 取更低档）与 request builder 一行未动；tierMap 取值若不在 `values` 内一律视为
+   不支持 → abstain（防止表里写错值静默发出）。
+   `applyReasoningEffort` / `reasoningWirePlan` 里**没有** `provider === 'deepseek'` 这类判断，
+   `ib-model-core.js` 中甚至不出现 `deepseek` 这个名字（结构测试守着）。
+5. **基线不动**：`auto` 下 deepseek-flash 的 chat / diary 请求体与 MB 关闭时**逐字节相等**
+   （= P21 上线前的真实字节，CDP 断言 E1/E1b）；Speed(service_tier) 与 reasoningTokens
+   观测口径均不变（E11 / E10）。旧配置迁移策略、UI 五档、canonical enum 一律未改。
+6. **取证来源是用户确认的 wire 契约**（不是本仓库查到的官方文档原文）：若 DeepSeek 实际只接受
+   其它取值或字段名，症状会是**聊天直接 400**；此时把 `deepseek-flash` 从
+   `REASONING_MODEL_POLICIES` 移除（一行数据）即可回到 abstain，无需改任何代码。
 

@@ -11,7 +11,11 @@
    C. auto   ：chat / diary 的请求体与「Middle Brain 关闭」时逐字节相等
    D. 映射   ：low/medium/high/max → 真实字段（OpenAI Chat；max 就近降级）；
                Middle Brain 自身 Astra 调用（Responses）同样按档位写 reasoning.effort
-   E. 不污染 ：未取证 provider（deepseek / deepseek-flash）在 max 档下一个字段都不多
+   E. DeepSeek：**模型级**校准（P21.1，仅 deepseek-flash）——
+                auto 与 MB 关闭的请求体逐字节相等；low→low / medium→high / high→high /
+                max→max；永不发送 thinking；未登记 model 继续 abstain；
+                medium 的 telemetry = requested medium / effective high / tier_downgraded；
+                Speed 不受影响、reasoning tokens 观测口径不变
    F. parity ：chat 与 diary 两个 consumer 得到同一份 reasoning 参数
    G. 分离   ：Speed(service_tier) 与 Reasoning Effort 互不写入、互不覆盖
    H. 观测   ：requested → effective → wireParam → 实际 reasoning tokens 可在 trace 对比
@@ -88,6 +92,8 @@ async function main(){
     /* 目录默认的 openai 模型（非推理型）：收到 reasoning_effort 会 400，必须一个字段都不发 */
     const cfgOpenAIDefault="{id:'c3',provider:'openai',model:'gpt-4o-mini',endpoint:'"+EP+"',apiKey:'k',promptCache:false}";
     const cfgDeepSeek="{id:'c2',provider:'deepseek',model:'deepseek-flash',endpoint:'"+EP+"',apiKey:'k',promptCache:false}";
+    /* P21.1：能力是 model 级成立 —— DeepSeek 的其它 model 未取证，必须继续一个字段都不发 */
+    const cfgDeepSeekUnverified="{id:'c4',provider:'deepseek',model:'deepseek-v4-pro',endpoint:'"+EP+"',apiKey:'k',promptCache:false}";
     const mbCfg=(extra)=>"{enabled:true,provider:'astra',endpoint:'"+RSP+"',model:'gpt-6-astra',apiKey:'sk-test',admissionEnabled:false,middleBrainJudgeEnabled:false,"+extra+"}";
     /* 每次调用前清空记录；返回"最后一次真实 wire body"的 JSON 字符串 */
     const run=async(expr)=>await ev(cdp,'(async function(){'+expr+'})()');
@@ -142,16 +148,61 @@ async function main(){
     const selfWire=await runBody("await middleBrainCompressPipeline('p21','用户问：在吗',{memoryCtx:'【记忆】甲'.repeat(300),dialogue:['用户问：在吗']})");
     check('D7.selfCallWireMedium',/"reasoning":\{"effort":"medium"\}/.test(selfWire),selfWire);
 
-    /* ══════════ E. 未取证 provider 不污染 ══════════ */
-    await ev(cdp,"(async function(){await saveMiddleBrainConfig("+mbCfg("reasoningEffort:'max',reasoningEffortV2:true")+")})()");
-    const dsChat=await runBody(chatCall(cfgDeepSeek,'probe-E1'));
-    const dsDiary=await runBody(diaryCall(cfgDeepSeek,'probe-E2'));
-    check('E1.deepseekChatUntouched',!/reasoning|thinking|service_tier/.test(dsChat),dsChat);
-    check('E2.deepseekDiaryUntouched',!/reasoning|thinking|service_tier/.test(dsDiary),dsDiary);
-    check('E3.deepseekModelIdIntact',/"model":"deepseek-flash"/.test(dsChat),dsChat);
+    /* ══════════ E. DeepSeek（P21.1 模型级校准） ══════════ */
+    /* baseline = MB 关闭时的 deepseek-flash 请求体（= P21 上线前的字节）。
+       auto 必须与它逐字节相等；auto 也是 DeepSeek 侧"什么都不发"的硬约束。 */
+    await ev(cdp,"(async function(){await saveMiddleBrainConfig("+mbCfg("enabled:false,reasoningEffort:'max',reasoningEffortV2:true")+")})()");
+    const dsOffChat=await runBody(chatCall(cfgDeepSeek,'probe-E0'));
+    const dsOffDiary=await runBody(diaryCall(cfgDeepSeek,'probe-E0d'));
+    await ev(cdp,"(async function(){await saveMiddleBrainConfig("+mbCfg("reasoningEffort:'auto',reasoningEffortV2:true")+")})()");
+    const dsAutoChat=await runBody(chatCall(cfgDeepSeek,'probe-E0'));
+    const dsAutoDiary=await runBody(diaryCall(cfgDeepSeek,'probe-E0d'));
+    check('E1.deepseekAutoEqualsBaselineChat',dsAutoChat===dsOffChat&&dsAutoChat!=='',dsAutoChat+' vs '+dsOffChat);
+    check('E1b.deepseekAutoEqualsBaselineDiary',dsAutoDiary===dsOffDiary&&dsAutoDiary!=='',dsAutoDiary+' vs '+dsOffDiary);
+    check('E1c.deepseekAutoNoReasoningKeys',!/reasoning|thinking/.test(dsAutoChat)&&!/reasoning|thinking/.test(dsAutoDiary),dsAutoChat);
+
+    /* 同一段 prompt（probe-E0）：除 reasoning_effort 外必须与 baseline 完全一致 */
+    const dsTier=async(tier)=>{await ev(cdp,"(async function(){await saveMiddleBrainConfig("+mbCfg("reasoningEffort:'"+tier+"',reasoningEffortV2:true")+")})()");return await runBody(chatCall(cfgDeepSeek,'probe-E0'))};
+    const dsLow=await dsTier('low'), dsMed=await dsTier('medium'), dsHigh=await dsTier('high'), dsMax=await dsTier('max');
+    check('E2.low',/"reasoning_effort":"low"/.test(dsLow),dsLow);
+    check('E3.mediumMapsToHigh',/"reasoning_effort":"high"/.test(dsMed),dsMed);
+    check('E4.high',/"reasoning_effort":"high"/.test(dsHigh),dsHigh);
+    check('E5.max',/"reasoning_effort":"max"/.test(dsMax),dsMax);
+    check('E6.neverSendsThinking',![dsLow,dsMed,dsHigh,dsMax].some(b=>/thinking/.test(b)),dsMed);
+    /* 每个档位只多这一个字段：模型名 / messages / 其它参数都不动 */
+    check('E7.onlyReasoningEffortAdded',(function(){
+      try{
+        const b=JSON.parse(dsMax), o=JSON.parse(dsOffChat);
+        const keys=x=>Object.keys(x).sort().join(',');
+        const extra=Object.keys(b).filter(k=>!(k in o));
+        delete b.reasoning_effort;
+        return JSON.stringify(b)===JSON.stringify(o)&&keys(o).indexOf('reasoning')<0&&extra.length===1&&extra[0]==='reasoning_effort';
+      }catch(e){return false}
+    })(),dsMax+' | '+dsOffChat);
+    /* diary consumer 同一条链路同结果（不是只改了 chat） */
+    await ev(cdp,"(async function(){await saveMiddleBrainConfig("+mbCfg("reasoningEffort:'medium',reasoningEffortV2:true")+")})()");
+    const dsMedDiary=await runBody(diaryCall(cfgDeepSeek,'probe-E8'));
+    check('E8.diaryParity',(function(){
+      try{
+        const a=JSON.parse(dsMed),b=JSON.parse(dsMedDiary);
+        return a.reasoning_effort==='high'&&b.reasoning_effort==='high'&&!/thinking/.test(dsMedDiary);
+      }catch(e){return false}
+    })(),dsMedDiary);
+    /* 未登记的 DeepSeek model：即便用户选了 max 也一个字段都不发 */
+    const dsUnverified=await runBody(chatCall(cfgDeepSeekUnverified,'probe-E9'));
+    check('E9.unregisteredDeepseekModelUntouched',!/reasoning|thinking|service_tier/.test(dsUnverified)&&/"model":"deepseek-v4-pro"/.test(dsUnverified),dsUnverified);
+    /* telemetry：medium 的降级事实必须能被观测到（requested→effective→wire→tokens） */
+    await ev(cdp,"(async function(){IBModelCore.reasoningTraceReset();await saveMiddleBrainConfig("+mbCfg("reasoningEffort:'medium',reasoningEffortV2:true")+")})()");
+    mock.bodies.length=0;
+    await run(chatCall(cfgDeepSeek,'probe-E10'));
+    check('E10.mediumTelemetry',await ev(cdp,"(function(){var r=IBModelCore.reasoningTrace(5).filter(function(x){return x.consumer==='chat'})[0];return !!r&&r.requestedReasoningEffort==='medium'&&r.effectiveReasoningEffort==='high'&&r.reasoningWireParam==='reasoning_effort'&&r.reasoningFallbackReason==='tier_downgraded'&&r.reasoningTokens===125})()"),await ev(cdp,"JSON.stringify(IBModelCore.reasoningTrace(5))"));
+    /* Speed(service_tier) 与 Effort 分离：DeepSeek 聊天路径不与 service_tier 互相污染 */
+    await ev(cdp,"(async function(){await saveMiddleBrainConfig("+mbCfg("reasoningEffort:'high',reasoningEffortV2:true,speed:'fast'")+")})()");
+    const dsSpeed=await runBody(chatCall(cfgDeepSeek,'probe-E11'));
+    check('E11.speedUnaffected',/"reasoning_effort":"high"/.test(dsSpeed)&&!/service_tier|"speed"/.test(dsSpeed),dsSpeed);
     /* 非推理型 OpenAI 模型（目录默认）：即便用户选了 max 也不得发送 —— 否则每次聊天 400 */
-    const oaDefault=await runBody(chatCall(cfgOpenAIDefault,'probe-E4'));
-    check('E4.openaiNonReasoningModelUntouched',!/reasoning|thinking/.test(oaDefault),oaDefault);
+    const oaDefault=await runBody(chatCall(cfgOpenAIDefault,'probe-E12'));
+    check('E12.openaiNonReasoningModelUntouched',!/reasoning|thinking/.test(oaDefault),oaDefault);
 
     /* ══════════ F. chat / diary parity ══════════ */
     await ev(cdp,"(async function(){await saveMiddleBrainConfig("+mbCfg("reasoningEffort:'high',reasoningEffortV2:true")+")})()");
@@ -179,10 +230,10 @@ async function main(){
     mock.bodies.length=0;
     await run(chatCall(cfgOpenAI,'probe-H1'));
     check('H1.tracePairing',await ev(cdp,"(function(){var r=IBModelCore.reasoningTrace(5).filter(function(x){return x.consumer==='chat'})[0];return !!r&&r.requestedReasoningEffort==='high'&&r.effectiveReasoningEffort==='high'&&r.reasoningWireParam==='reasoning_effort'&&r.reasoningFallbackReason===''&&r.reasoningTokens===125})()"),await ev(cdp,"JSON.stringify(IBModelCore.reasoningTrace(5))"));
-    check('H2.traceDeepseekAbstain',await ev(cdp,"(async function(){IBModelCore.reasoningTraceReset();await saveMiddleBrainConfig("+mbCfg("reasoningEffort:'max',reasoningEffortV2:true")+");return true})()")===true);
+    check('H2.traceUnverifiedAbstain',await ev(cdp,"(async function(){IBModelCore.reasoningTraceReset();await saveMiddleBrainConfig("+mbCfg("reasoningEffort:'max',reasoningEffortV2:true")+");return true})()")===true);
     mock.bodies.length=0;
-    await run(chatCall(cfgDeepSeek,'probe-H2'));
-    check('H2b.deepseekTrace',await ev(cdp,"(function(){var r=IBModelCore.reasoningTrace(5).filter(function(x){return x.consumer==='chat'})[0];return !!r&&r.requestedReasoningEffort==='max'&&r.effectiveReasoningEffort==='auto'&&r.reasoningWireParam===''&&r.reasoningFallbackReason==='unverified_provider'&&r.reasoningTokens===125})()"),await ev(cdp,"JSON.stringify(IBModelCore.reasoningTrace(5))"));
+    await run(chatCall(cfgDeepSeekUnverified,'probe-H2'));
+    check('H2b.unregisteredDeepseekTrace',await ev(cdp,"(function(){var r=IBModelCore.reasoningTrace(5).filter(function(x){return x.consumer==='chat'})[0];return !!r&&r.requestedReasoningEffort==='max'&&r.effectiveReasoningEffort==='auto'&&r.reasoningWireParam===''&&r.reasoningFallbackReason==='unverified_provider'&&r.reasoningTokens===125})()"),await ev(cdp,"JSON.stringify(IBModelCore.reasoningTrace(5))"));
     check('H3.traceNoSecrets',await ev(cdp,"(function(){var json=JSON.stringify(IBModelCore.reasoningTrace(20));return json.indexOf('sk-test')<0&&json.indexOf('Bearer')<0&&json.indexOf('probe-')<0})()"));
     check('H4.selfCallTrace',await ev(cdp,"(async function(){IBModelCore.reasoningTraceReset();await saveMiddleBrainConfig("+mbCfg("reasoningEffort:'high',reasoningEffortV2:true")+");return true})()")===true);
     mock.bodies.length=0;

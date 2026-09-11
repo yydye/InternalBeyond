@@ -81,8 +81,9 @@ const GROUPS = [
          静态 DOM/IndexedDB 桩驱动真实 config 层，零依赖离线） */
       ['test_middle_brain_semantics.js'],
       /* P21：统一思考深度（canonical reasoningEffort）能力表与边界翻译 ——
-         auto 不写字段 / 逐档映射 / 未取证 provider 不污染 body / 降级与 fallback /
-         能力真源唯一性结构守卫 / Speed 与 Effort 分离 / usage 只读提取。
+         auto 不写字段 / 逐档映射 / 未取证 provider·model 不污染 body / 降级与 fallback /
+         能力真源唯一性结构守卫 / Speed 与 Effort 分离 / usage 只读提取 /
+         DeepSeek 校准（P21.1：模型级登记 · medium→high · 无 provider 宽泛开启）。
          纯 Node，零依赖、不联网、不开浏览器。 */
       ['test_reasoning_capability.js'],
       ['test_harness_boundary.js'],
@@ -234,8 +235,10 @@ const GROUPS = [
       /* P11-2A：角色一致性校准（Layer B · 离线 mock 真实执行路径；--live 才接真实端点） */
       ['test_middle_brain_calibration_live.js'],
       /* P21：统一思考深度 · 真实请求链（本地 mock 端点记录最终 wire body）：
-         MB disabled 零注入 / auto 与关闭逐字节相等 / 逐档映射 / DeepSeek 不被污染 /
-         chat×diary parity / Speed 分离 / requested→effective→reasoning tokens 可对比 */
+         MB disabled 零注入 / auto 与关闭逐字节相等 / 逐档映射 /
+         DeepSeek 模型级校准（P21.1：auto 与 baseline 逐字节相等、low/medium/high/max、
+         未登记 model 继续 abstain）/ chat×diary parity / Speed 分离 /
+         requested→effective→reasoning tokens 可对比 */
       ['test_middle_brain_reasoning_effort.js'],
       /* Cache Audit baseline 身份隔离（真实 chat→diary→chat 行为链） */
       ['test_cache_audit_isolation.js'],

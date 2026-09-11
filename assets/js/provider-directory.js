@@ -272,6 +272,11 @@
      ── REASONING_MODEL_POLICIES（key = 官方 model id，逐条取证）──
        只登记「该 model 自身」的能力；Anthropic 官方 dated snapshot（-YYYYMMDD）
        沿用 modelPolicy 的同一套后缀归一，不做任何其它模糊匹配。
+       tierMap（可选）= canonical 档位 → 官方值的**显式**映射，与 values 同层。
+        用途：官方值域不是完整阶梯时（缺某一档），通用就近降级会出现距离相等的 tie，
+        哪一档更贴近官方语义只有 provider 自己知道 → 由数据说清楚，而不是改通用规则、
+        更不是按 provider 名字写分支。未列入 tierMap 的档位仍走通用就近降级；
+        tierMap 的取值必须落在 values 内（越界一律算不支持 → abstain，防止表里写错值静默发出）。
 
      ── REASONING_PENDING（审计元数据，**不参与运行时判定**）──
        已确知存在 reasoning 入口、但字段摆放或取值枚举尚未取证的 provider。
@@ -331,10 +336,32 @@
     };
   });
 
+  /* DeepSeek：官方 `reasoning_effort`（Chat Completions 面）—— **只登记 deepseek-flash 这一个
+     model id**。这里是 model 级登记而不是 provider 级：DeepSeek 的其它 id（v4-pro / vision-exp…）
+     没有同一份承诺，未取证就一律 abstain，绝不用 `provider === 'deepseek'` 或 `deepseek-` 前缀宽泛开启。
+     官方值域只有 low / high / max（没有 medium）：canonical 的 medium 在通用阶梯上与 low、high
+     距离相等（tie），所以用显式 tierMap 定死落到 high —— 这是**数据**，不依赖也不修改通用 tie 规则。
+       auto                 → 不发送任何字段（reasoning_effort / thinking 都不发），保持 provider 原生行为
+       low                  → reasoning_effort = 'low'
+       medium               → reasoning_effort = 'high'（effective=high，fallback=tier_downgraded）
+       high                 → reasoning_effort = 'high'
+       max                  → reasoning_effort = 'max'
+     **不主动发送 thinking.type**：本能力只声明档位字段，provider 原生 thinking 行为保持不变。 */
+  var DEEPSEEK_REASONING_MODELS = ['deepseek-flash'];
+  DEEPSEEK_REASONING_MODELS.forEach(function (id) {
+    REASONING_MODEL_POLICIES[id] = {
+      verified: true, kind: 'effort', provider: 'deepseek',
+      values: ['low', 'high', 'max'],
+      tierMap: { low: 'low', medium: 'high', high: 'high', max: 'max' },
+      wire: { chat: ['reasoning_effort'] },
+      audited: '2026-09-11',
+      evidence: 'DeepSeek wire 契约（用户 P21.1 确认，2026-09-11）：reasoning_effort ∈ low|high|max；auto 不发送任何 reasoning/thinking 字段、不主动发送 thinking.type。文档入口 https://api-docs.deepseek.com/guides/thinking_mode/'
+    };
+  });
+
   /* 未取证 → 一律 abstain（运行时绝不发送）。这里只登记「知道有入口、但字段/取值没取证死」的事实，
      供后续取证时一条条搬进上面的表。 */
   var REASONING_PENDING = {
-    deepseek: { note: '官方文档存在 Thinking Mode 页；字段摆放（thinking.type / reasoning_effort）与取值枚举未取证', evidence: 'https://api-docs.deepseek.com/guides/thinking_mode/' },
     gemini: { note: 'generationConfig.thinkingConfig 存在，但 thinkingLevel（3.x）与 thinkingBudget（2.5）按代次不同，未逐条取证', evidence: 'https://ai.google.dev/api/generate-content' },
     glm: { note: '官方「深度思考」页确认 thinking 开关存在；档位取值未取证', evidence: 'https://docs.bigmodel.cn/cn/guide/capabilities/thinking' },
     qwen: { note: 'enable_thinking / thinking_budget 字段存在；兼容模式下的摆放位置未取证', evidence: 'https://docs.qwencloud.com/developer-guides/text-generation/thinking' },
@@ -373,6 +400,7 @@
       return {
         source: 'model', provider: byModel.provider || prov, model: modelId, kind: byModel.kind,
         values: (byModel.values || []).slice(), budgets: byModel.budgets || null,
+        tierMap: byModel.tierMap || null,
         minBudget: byModel.minBudget != null ? byModel.minBudget : 1024,
         wire: byModel.wire || {}, verified: true,
         evidence: byModel.evidence || '', audited: byModel.audited || ''
@@ -383,6 +411,7 @@
     return {
       source: 'provider', provider: prov, model: modelId, kind: cap.kind,
       values: (cap.values || []).slice(), budgets: cap.budgets || null,
+      tierMap: cap.tierMap || null,
       minBudget: cap.minBudget != null ? cap.minBudget : 1024,
       wire: cap.wire || {}, verified: true,
       evidence: cap.evidence || '', audited: cap.audited || ''
@@ -427,8 +456,13 @@
     var path = (cap.wire && cap.wire[wireKey]) || null;
     if (!path || !path.length) { wirePlan.fallbackReason = 'format_unsupported'; return wirePlan; }
     if (cap.kind === 'effort') {
-      var picked = _reasoningNearest(cap.values || [], requested);
-      if (!picked) { wirePlan.fallbackReason = 'tier_unsupported'; return wirePlan; }
+      /* tierMap（provider 自己声明的显式映射）优先于通用阶梯就近：
+         缺档时的 tie 归属只有 provider 知道（DeepSeek 没有 medium → 落 high）。 */
+      var picked = null;
+      if (cap.tierMap && cap.tierMap[requested] != null) picked = _reasoningStr(cap.tierMap[requested]);
+      if (!picked) picked = _reasoningNearest(cap.values || [], requested);
+      /* 结果必须是该能力声明过的官方值之一：tierMap 写错值 → 当作不支持（绝不静默发出表外参数）。 */
+      if (!picked || (cap.values || []).indexOf(picked) < 0) { wirePlan.fallbackReason = 'tier_unsupported'; return wirePlan; }
       wirePlan.effective = normalizeReasoningTier(picked);
       wirePlan.wirePath = path.slice();
       wirePlan.value = picked;

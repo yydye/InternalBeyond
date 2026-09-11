@@ -294,16 +294,20 @@ Middle Brain 的一个 canonical 字段控制"思考深度"，翻译只发生在
   `REASONING_CAPABILITIES`（provider 级：`astra` 直传 low/medium/high/max）、
   `REASONING_MODEL_POLICIES`（model 级逐条取证：OpenAI 推理型 model 走官方值域
   low/medium/high + Responses `reasoning.effort` / Chat `reasoning_effort`；
-  Anthropic 4.6+/5 系走 thinking 预算表，`1024 ≤ budget_tokens < max_tokens`）、
-  `REASONING_PENDING`（**审计元数据，运行时不用**：deepseek / gemini / glm / qwen / minimax /
+  Anthropic 4.6+/5 系走 thinking 预算表，`1024 ≤ budget_tokens < max_tokens`；
+  **DeepSeek 只登记 `deepseek-flash` 一个 id**（P21.1）：Chat 面 `reasoning_effort`
+  ∈ low/high/max，用数据字段 `tierMap` 定死 medium→high，auto / thinking 一律不发）、
+  `REASONING_PENDING`（**审计元数据，运行时不用**：gemini / glm / qwen / minimax /
   mimo / custom 的"还差什么证据"）。
-  **非推理型 model 一律不发**：OpenAI 的 `reasoning_effort` 对非推理模型会直接 400，
-  因此目录默认的 `gpt-4o-mini` 被明确排除，新 id 必须逐条取证（绝不按 `gpt-5` 之类前缀推测）。
+  **能力必须 model 级成立**：OpenAI 的 `reasoning_effort` 对非推理模型会直接 400，
+  因此目录默认的 `gpt-4o-mini` 被明确排除；DeepSeek 的其它 id（`deepseek-v4-pro` 等）
+  同样 abstain。新 id 必须逐条取证（绝不按 `gpt-5` / `deepseek-` 之类前缀或 provider 名推测）。
 - **唯一翻译器**：`assets/js/ib-model-core.js` 的 `applyReasoningEffort(body, spec, opts)`，
   由 `buildRequestBody`（anthropic / gemini / openai 三支）与
   `AstraAdapter.buildResponsesRequest` 调用；`reasoningWirePlan()` 是纯函数：
   auto → 不写字段；未取证 / format 不支持 → abstain；档位不支持 → **就近降级**
-  （tie 取更低档，绝不向上越档）并记 `tier_downgraded`。
+  （tie 取更低档，绝不向上越档）并记 `tier_downgraded`；能力表给了 `tierMap` 时按显式映射
+  （映射值必须在 `values` 内，否则按不支持 abstain）。
 - **观测（只读·telemetry）**：`IBModelCore.reasoningTrace(n)` 返回最近若干次请求的
   `requestedReasoningEffort` / `effectiveReasoningEffort` / `reasoningWireParam` /
   `reasoningFallbackReason` + `reasoningTokens`（provider 真实回传的 usage：
