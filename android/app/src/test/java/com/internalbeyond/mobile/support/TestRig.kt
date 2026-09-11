@@ -167,6 +167,28 @@ class TestRig(
 
     fun sessionRepository(): SessionRepository = session
 
+    /**
+     * A second repository with EMPTY in-memory state, sharing only what a restarted
+     * process would still have: the encrypted credential and the session record.
+     * This is how "the app comes back up and reconnects to the same Home Node" is
+     * tested without pretending.
+     */
+    fun restartedSessionRepository(): SessionRepository {
+        val freshHolder = SessionHolder()
+        val freshClient = HomeNodeClient(
+            endpointProvider = { freshHolder.endpoint },
+            tokenProvider = { freshHolder.token },
+        )
+        return SessionRepository(
+            client = freshClient,
+            holder = freshHolder,
+            credentialStore = credentials,
+            sessionStore = sessions,
+            streams = streams,
+            presenceReporter = {},
+        )
+    }
+
     /** The real character repository, so cache-first behaviour is tested, not simulated. */
     val characters: CharacterRepository by lazy {
         CharacterRepository(

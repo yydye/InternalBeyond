@@ -134,6 +134,26 @@ class HomeNodeIntegrationTest {
     }
 
     @Test
+    fun a03b_a_restarted_app_reconnects_with_the_stored_credential() = runBlocking {
+        val restarted = rig.restartedSessionRepository()
+
+        // Nothing in memory: the state comes purely from what is on disk (the sealed
+        // credential plus the non-secret session record), with no network involved.
+        val booted = restarted.boot()
+        assertTrue("expected Connected after a restart, got $booted", booted is ConnectionState.Connected)
+        assertEquals(
+            "the same device must come back",
+            pairedDeviceId,
+            (booted as ConnectionState.Connected).node.deviceId,
+        )
+        assertEquals(nodePort, booted.node.endpoint.port)
+
+        // ...and the Home Node still accepts that credential.
+        assertNull(restarted.verify())
+        assertTrue(restarted.state.value is ConnectionState.Connected)
+    }
+
+    @Test
     fun a04_character_list_exposes_display_identity_and_nothing_secret() = runBlocking {
         // Through the repository, so this also proves the cache is filled from the node.
         val error = rig.characters.refresh()
@@ -183,6 +203,40 @@ class HomeNodeIntegrationTest {
         assertEquals("assistant", messages[1].role)
         assertEquals("你好", messages[1].content)
         assertEquals("mock-model", messages[1].metadata["model_id"])
+    }
+
+    @Test
+    fun a05b_history_paginates_with_the_m1a_keyset_anchor() = runBlocking {
+        // Two messages exist in this conversation by now, so a page size of one
+        // exercises the real anchors rather than a single full page.
+        val newest = rig.client.chatHistory(CHARACTER_ID, limit = 1)
+        assertTrue(newest is ApiResult.Ok)
+        val first = (newest as ApiResult.Ok).value
+        assertEquals(1, first.count)
+        assertNotNull("a page must carry its continuation anchor", first.olderAnchor)
+        assertTrue("there is an older message, and the node says so", first.hasOlder)
+
+        val older = rig.client.chatHistory(CHARACTER_ID, limit = 1, cursor = first.olderAnchor)
+        assertTrue(older is ApiResult.Ok)
+        val second = (older as ApiResult.Ok).value
+        assertEquals(1, second.count)
+        assertTrue(
+            "the second page must be a DIFFERENT, older message",
+            second.messages.single().id != first.messages.single().id,
+        )
+        assertTrue(
+            "pages must move backwards in time",
+            second.messages.single().timestamp <= first.messages.single().timestamp,
+        )
+        assertFalse("the oldest message has nothing before it", second.hasOlder)
+        assertEquals(
+            "both pages belong to the same conversation",
+            first.conversationId,
+            second.conversationId,
+        )
+
+        // Reading history is not a write: the store is unchanged.
+        assertEquals(2, historyCount(CHARACTER_ID))
     }
 
     @Test

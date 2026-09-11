@@ -99,7 +99,7 @@ AES-256-GCM(token JSON) → base64(iv ‖ ct) → SharedPreferences "ib_secure"
 ## 5. Evidence
 
 ```
-cd android && ./gradlew test          # 103 tests, all green
+cd android && ./gradlew test          # 105 tests, all green
 cd android && ./gradlew assembleDebug # app/build/outputs/apk/debug/app-debug.apk
 ```
 
@@ -111,7 +111,7 @@ cd android && ./gradlew assembleDebug # app/build/outputs/apk/debug/app-debug.ap
 | `CacheTest` | 17 | real SQLite: upsert, delete + tombstone, cursor, attempts, durability across reopen |
 | `SequenceAndOverlayTest` | 14 | dedupe/gap, overlay visibility, back ladder, log redaction |
 | `ConversationRecoveryTest` | 11 | severed stream, frame gap, unknown turn, restart, revocation |
-| `HomeNodeIntegrationTest` | 12 | **the real Home Node**: pair → list → history → send → stream → disconnect → resume → sync → retry → presence → revoke |
+| `HomeNodeIntegrationTest` | 14 | **the real Home Node**: pair → list → history → send → stream → disconnect → resume → sync → retry → presence → revoke |
 
 `HomeNodeIntegrationTest` spawns `services/home-node-service.js` (temp data dir,
 random port) and a real OpenAI-compatible SSE mock provider, then drives the same
