@@ -1119,7 +1119,13 @@ function createMobileGateway(deps) {
            两种形状都经**同一份** DTO 实现收口，因此即使桌面漏掉某个 secret，
            Node 侧也只接受白名单字段。 */
         const projected = MOBILE_DTO.characterCatalogEntry(entry, { withSpec: true });
-        if (projected) clean.push({ id: projected.id, dto: projected.dto, spec: projected.spec || entry.spec || null });
+        /* runtime spec 的唯一入口是 projected.spec —— 即 mapSpec 的白名单输出。
+           这里**曾经**有一个原始 spec 回落分支，允许调用方自带一个未经投影的
+           任意对象直接落进 character_runtime_specs（OQ-1 已实证 imageGenApiKey
+           可原样穿透）。mapSpec 是唯一 canonical projector，所以写入侧也必须是
+           它，否则"白名单"只是出站方向的保证。
+           回归测试：tests/test_mobile_publish_spec_boundary.js（P1-B / P1-D）。 */
+        if (projected) clean.push({ id: projected.id, dto: projected.dto, spec: projected.spec || null });
       }
       const written = registry.putCharacters(clean, { merge: !!body.merge });
       if (!written.ok) return fail(res, written.code || 'INTERNAL', req);
