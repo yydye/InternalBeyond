@@ -393,6 +393,8 @@ API 匿名限额实测：`x-ratelimit-remaining: 57/60`（60 次/小时/IP）。
 | `v1.0.2` | **第一个由真实自动更新链到达的 release**；E2E 验证 `1.0.1 → 1.0.2` |
 | `v1.0.3` | **第二个由真实自动更新链到达的 release**；修欢迎页水纹（§8「v1.0.3 发布准备」），E2E 验证 `1.0.2 → 1.0.3` |
 
+| `v1.0.4` | **功能 + 修复版本**（1.0.3 之后第一版有真实功能变更的 release）：新增五档「思考深度」（默认 auto = 不改变任何现有请求）、Middle Brain 徽标三态与 local fallback 语义修正、A1.5 图片设置页三项止血。发布契约零增量 |
+
 由此产生四条硬约束：
 
 1. **不构造、不使用任何未发布的「1.0.0 updater seed」。** E2E 的 baseline 必须是 GitHub 上的
@@ -634,6 +636,61 @@ HEAD 逐字节相同（`sha256=1dc0a3f3…8b51`）且**不再出现 `currentPage
 
 **结论**：U5-4 对 Welcome 水纹修复判 **PASS**（修复确证进了安装态，并被目视确认）；
 **零触达安装半程记为独立未结项**，等下一个有真实变更的版本自然做，不为测试单独发版。
+
+---
+
+### v1.0.4 发布准备与构建实测（U5-6 · 功能 + 修复版本）
+
+`v1.0.4` 是继 1.0.3 之后的功能 + 修复版本（A1.5 止血 / P11-3 / P21 统一思考深度 /
+P21.1 DeepSeek 校准，见 [CHANGELOG.md](CHANGELOG.md)）。**本版没有发布契约增量**：
+更新链、清单 schema、上传顺序、`minimumVersion`（仍为 `1.0.1`）全部按 1.0.2 / 1.0.3 原样沿用。
+
+| 项 | 实测 |
+|---|---|
+| 源码状态 | commit **`89bbe1a`**（`release: InternalBeyond 1.0.4`），构建时工作树干净（`git status --short` 为空） |
+| 构建命令 | `build-installer.ps1 -NotesFile docs\release-notes\1.0.4.md -MinimumVersion 1.0.1`（**不传** `-ReleasedAt`） |
+| `InternalBeyond-Setup-1.0.4.exe` | **51,758,446 B**（49.4 MiB）· `sha256=4c9dfbde805ec90c…aa40a8` |
+| 载荷 | 238 文件 · 124,071,663 B（118.3 MiB）· `release-audit` PASS（0 error / 8 条既存联系方式 warn） |
+| PE `ProductVersion` | `1.0.4`（与 `VERSION` 一致；`FileVersion` = `1.0.4.0`） |
+| 清单 | `minimumVersion = 1.0.1` · **无** `releasedAt` · `notes` 1,278 字符，取自 [release-notes/1.0.4.md](release-notes/1.0.4.md) |
+
+**三个独立哈希读出同一个值**：构建脚本 `Get-FileHash`、`certutil -hashfile`、Python `hashlib.sha256`
+→ 全部 `4c9dfbde805ec90c892961d3ea7029eb927bf6f410f15ddba0aabf0fa2aa40a8`；文件长度用
+`Get-Item .Length` 实测；PE 版本由 PowerShell `VersionInfo` 与 `runtime/pe-version.js::readPeVersion`
+**两个独立读取器**读回，都是 `1.0.4`；清单 URL 的资产名与实际产出文件名逐字相同；清单本身再经
+`runtime/update-manifest.js --validate` 自校验通过（0 error / 0 warning）。
+
+**载荷一致性交叉核对（对照物这次是真实安装态）**：构建第 9 步按默认清理了 `dist\staging`，
+因此用 `scripts\release-manifest.js --stage` 在**同一份干净提交**上重新物化 staging，并把它与
+**真实安装的 1.0.3 载荷**（`E:\IB-E2E-1.0.1\InternalBeyond`，只读）逐文件比对：
+
+| 断言 | 结果 |
+|---|---|
+| 载荷文件数 | 238（与 1.0.3 相同：**没有新增、也没有删除任何文件**，`missing = 0`） |
+| 载荷总字节 | 124,071,663（比 1.0.3 的 124,024,430 **多 47,233 B**） |
+| 逐文件字节差之和 | **47,233 B，与总字节差完全相等**；差异只落在 14 个文件上，正是 `v1.0.3..HEAD` 改动的全部代码文件 |
+| staging ↔ 工作树 | 238 个文件里 236 个与工作树**逐字节相同**；另两个是白名单里的重定位项（`docs\TROUBLESHOOTING.md → TROUBLESHOOTING.md`、`installer\tools\ib-stop.js → tools\ib-stop.js`），与各自源文件逐字节相同 |
+
+差异文件（按字节差降序）：`provider-directory.js` +16,582 · `ib-model-core.js` +8,547 ·
+`middle-brain-config.js` +8,328 · `middle-brain.js` +6,195 · `communication.js` +4,343 ·
+`InternalBeyond.html` −2,788 · `middle-brain-astra.js` +1,867 · `image-router-settings.js` +927 ·
+`node-model-port.js` +923 · `api-components.css` +871 · `social.js` +606 ·
+`middle-brain-judge.js` +382 · `core.css` +287 · `middle-brain-integrity.js` +163。
+
+> **连续性证据**：`assets/js/glass-ripple.js` 仍是 10,687 B 且 `sha256=1dc0a3f3…8b51`（1.0.3 的修复
+> 未被触碰），它也**不在**上面 14 个差异文件里 —— 与「本版未改欢迎页水纹」一致。
+
+**测试证据（交付前）**：`node tests/test-all.js --all` → static 56 项全通过 · browser 61 项全通过；
+service 组 `test_bridge.js` 在浏览器组满载时闪失一次（`restart.before` / `restart.resident`），
+定点复跑 `node tests/test_bridge.js` 全 PASS、完整 static/service 复跑
+`node tests/test-all.js --quick` → 56 + 16 全部通过（217.3s）——判定为环境偶发，不是回归
+（该提交不含任何 `.js` 改动）。
+
+> **诚实边界**：上表的载荷数字来自**构建之后重新物化**的 staging（同源、同参数、同白名单）——
+> 与 ISCC 当时编译的那份集合同源，但**不是**同一份被编译的字节。`1.0.4` 同样**没有**从 exe 里
+> 反解文件表（Inno Setup 6 的 `lzma2/max` + SolidCompression 让条目名不可搜，本机也没有
+> `innoextract`）；`-InstallAudit` 按测试预算未跑（构建脚本默认不安装）。
+> 「安装后枚举载荷」仍由 `1.0.3 → 1.0.4` 的真实升级在安装实例上完成。
 
 ---
 
