@@ -107,6 +107,115 @@
     return next;
   }
 
+  /* ── P21 · reasoning capability 读取（唯一真源 = provider-directory.js）────────
+     canonical 档位 auto/low/medium/high/max 的能力事实（字段名、支持值、预算表）只存在于
+     provider-directory.js；本文件只做两件事：向它要一份**纯计划**，然后按计划写 body。
+     宿主只传了裸 PROVIDERS 表（无 P21 函数）时返回 capability_unavailable → 一律 abstain
+     （不发参数），绝不退化成"在 adapter 里猜一家 provider 的字段名"。 */
+  function normalizeReasoningTier(v) {
+    if (CANON && typeof CANON.normalizeReasoningTier === 'function') return CANON.normalizeReasoningTier(v);
+    var s = (v == null ? '' : String(v)).trim().toLowerCase();
+    if (s === 'xhigh') return 'high';
+    return (s === 'low' || s === 'medium' || s === 'high' || s === 'max') ? s : 'auto';
+  }
+  function reasoningCapability(provider, model) {
+    if (CANON && typeof CANON.reasoningCapability === 'function') return CANON.reasoningCapability(provider, model);
+    return null;
+  }
+  function reasoningWirePlan(spec) {
+    spec = spec || {};
+    if (CANON && typeof CANON.reasoningWirePlan === 'function') return CANON.reasoningWirePlan(spec);
+    return { requested: normalizeReasoningTier(spec.effort), effective: 'auto', wirePath: [], value: undefined, fallbackReason: 'capability_unavailable', capability: null };
+  }
+
+  /* ── P21 · reasoning trace（只读观测环 · telemetry）────────────────────────
+     用途：让「requested effort → effective effort → 真实 wire 参数 → 实际 reasoning tokens」
+     可对比（Diagnostics / 测试共用同一份证据）。记录字段名固定为：
+       requestedReasoningEffort / effectiveReasoningEffort / reasoningWireParam /
+       reasoningFallbackReason（+ reasoningTokens 回填位）。
+     硬约束：白名单构造，只含 provider/model/format/consumer + 四个 reasoning 字段 + token 数 +
+     时间；**不含** prompt、消息、请求体、Authorization、apiKey；容量固定、只驻内存、绝不落盘。 */
+  var REASONING_TRACE_MAX = 100;
+  var _reasoningTrace = [];
+  function _reasoningTracePush(rec) {
+    try { _reasoningTrace.push(rec); if (_reasoningTrace.length > REASONING_TRACE_MAX) _reasoningTrace.shift(); } catch (e) { /* ignore */ }
+    return rec;
+  }
+  /* 实际 reasoning tokens 回填：优先挂到最近一条**同一次调用**（consumer/provider/model 匹配）
+     且还没有该字段的计划记录上；匹配不到则单独记一条（只含计量，不含任何请求内容）。
+     并发下不会把 A 请求的 token 记到 B 请求上：不匹配就退化为独立计量记录。 */
+  function noteReasoningTokens(tokens, meta) {
+    var n = Number(tokens);
+    if (!isFinite(n) || n < 0) return null;
+    var count = Math.max(0, Math.floor(n));
+    var m = meta || {};
+    var wantConsumer = (m.consumer == null ? '' : String(m.consumer));
+    var wantProvider = (m.provider == null ? '' : String(m.provider));
+    var wantModel = (m.model == null ? '' : String(m.model));
+    for (var i = _reasoningTrace.length - 1; i >= 0; i--) {
+      var rec = _reasoningTrace[i];
+      if (rec.reasoningTokens != null) continue;
+      if (m.consumer != null && rec.consumer !== wantConsumer) continue;
+      if (m.provider != null && rec.provider !== wantProvider) continue;
+      if (m.model != null && rec.model !== wantModel) continue;
+      rec.reasoningTokens = count;
+      return rec;
+    }
+    return _reasoningTracePush({
+      at: Date.now(), consumer: wantConsumer, provider: wantProvider, model: wantModel, format: '',
+      requestedReasoningEffort: '', effectiveReasoningEffort: '', reasoningWireParam: '',
+      reasoningFallbackReason: '', reasoningTokens: count
+    });
+  }
+  function reasoningTrace(n) {
+    var k = Math.max(1, Math.min(REASONING_TRACE_MAX, Number(n) || 5));
+    return _reasoningTrace.slice(-k);
+  }
+  function reasoningTraceReset() { _reasoningTrace.length = 0; }
+
+  function _setByPath(body, path, value) {
+    var o = body;
+    for (var i = 0; i < path.length - 1; i++) {
+      var k = path[i];
+      if (!o[k] || typeof o[k] !== 'object') o[k] = {};
+      o = o[k];
+    }
+    o[path[path.length - 1]] = value;
+  }
+
+  /* provider adapter / request builder 边界的**唯一**翻译器：
+     canonical reasoningEffort → 该 provider/model/format 的真实 wire 字段。
+     · auto / 未取证 provider / 该 format 不支持 / 档位无法表达 → 一个字段都不写，body 保持原样；
+     · 写字段时只按 provider-directory.js 的官方支持值／预算表，不在本文件里出现任何 provider 名判断。
+     返回 plan（供 telemetry / trace / 测试断言）；永不抛错。 */
+  function applyReasoningEffort(body, spec, options) {
+    options = options || {};
+    if (!body || typeof body !== 'object') return null;
+    var s = spec || {};
+    var wirePlan = reasoningWirePlan({
+      provider: s.provider, model: s.model,
+      format: options.format, effort: options.effort, maxTokens: options.maxTokens
+    });
+    try {
+      if (wirePlan && wirePlan.value !== undefined && wirePlan.wirePath && wirePlan.wirePath.length) _setByPath(body, wirePlan.wirePath, wirePlan.value);
+    } catch (e) { /* 写字段失败绝不影响请求：body 保持已构建的内容 */ }
+    /* telemetry 记录字段名即要求 9 的四要素（+ 实际 reasoning tokens 回填位）：
+       requestedReasoningEffort / effectiveReasoningEffort / reasoningWireParam / reasoningFallbackReason。 */
+    _reasoningTracePush({
+      at: Date.now(),
+      consumer: String(options.consumer || ''),
+      provider: String(s.provider == null ? '' : s.provider),
+      model: String(s.model == null ? '' : s.model),
+      format: String(options.format == null ? '' : options.format),
+      requestedReasoningEffort: wirePlan ? wirePlan.requested : 'auto',
+      effectiveReasoningEffort: wirePlan ? wirePlan.effective : 'auto',
+      reasoningWireParam: (wirePlan && wirePlan.wirePath && wirePlan.wirePath.length) ? wirePlan.wirePath.join('.') : '',
+      reasoningFallbackReason: (wirePlan && wirePlan.fallbackReason) || '',
+      reasoningTokens: null
+    });
+    return wirePlan;
+  }
+
   /* 内容 part 适配（提取自 active/model-client.js adaptMessageParts） */
   function adaptMessageParts(fmt, content) {
     if (typeof content === 'string' || !Array.isArray(content)) return content;
@@ -279,6 +388,8 @@
         }
       }
       if (temperature != null && modelSupportsSamplingParameters(model)) ab.temperature = Number(temperature);
+      /* P21 · reasoning：canonical reasoningEffort → 能力翻译（auto/未取证 → 一个字段都不写） */
+      applyReasoningEffort(ab, spec, { format: 'anthropic', effort: options.reasoningEffort, maxTokens: maxTokens, consumer: options.consumer });
       return ab;
     }
     if (fmt === 'gemini') {
@@ -289,6 +400,7 @@
       };
       if (options.jsonMode) gb.generationConfig.responseMimeType = 'application/json';
       if (temperature != null) gb.generationConfig.temperature = Number(temperature);
+      applyReasoningEffort(gb, spec, { format: 'gemini', effort: options.reasoningEffort, maxTokens: maxTokens, consumer: options.consumer });
       return gb;
     }
     /* openai 系（兼容 custom/其余全部） */
@@ -296,11 +408,30 @@
     var ob = { model: model, messages: baseMessages, max_tokens: maxTokens };
     if (options.jsonMode) ob.response_format = { type: 'json_object' };
     if (temperature != null) ob.temperature = Number(temperature);
+    applyReasoningEffort(ob, spec, { format: 'openai', effort: options.reasoningEffort, maxTokens: maxTokens, consumer: options.consumer });
     return ob;
   }
 
   /* 解析 provider-specific response → {content, reasoning, truncated, usage}
      spec: {provider, format?} */
+  /* P21 · 实际 reasoning tokens 读取（唯一实现）：是"观测值"而不是新计量口径 ——
+     只在 provider 真的回传时返回数字，读不到就返回 null（绝不伪造成 0）。
+     · OpenAI 兼容：usage.completion_tokens_details.reasoning_tokens
+     · Responses  ：usage.output_tokens_details.reasoning_tokens
+     · Gemini     ：usageMetadata.thoughtsTokenCount
+     · Anthropic  ：thinking tokens 已包含在 output_tokens 内，无独立字段 → null */
+  function reasoningTokensFromUsage(usage, format) {
+    if (!usage || typeof usage !== 'object') return null;
+    function num(v) { var n = Number(v); return (isFinite(n) && n >= 0) ? Math.floor(n) : null; }
+    if (format === 'gemini') {
+      return num(usage.thoughtsTokenCount != null ? usage.thoughtsTokenCount : usage.thoughts_token_count);
+    }
+    var details = usage.completion_tokens_details || usage.output_tokens_details || null;
+    if (details && details.reasoning_tokens != null) return num(details.reasoning_tokens);
+    if (usage.reasoning_tokens != null) return num(usage.reasoning_tokens);
+    return null;
+  }
+
   function parseResponse(wire, spec, options) {
     options = options || {};
     var fmt = (spec && (spec.format || providerFormat(spec.provider))) || 'openai';
@@ -321,7 +452,11 @@
       out.content = parts.filter(function (p) { return !p.thought; }).map(function (p) { return p.text || ''; }).join('');
       out.reasoning = parts.filter(function (p) { return p.thought; }).map(function (p) { return p.text || ''; }).join('\n');
       out.truncated = cand.finishReason === 'MAX_TOKENS' || /max_tokens/i.test(String(cand.finishReason || ''));
-      if (wire.usageMetadata) out.usage = { input_tokens: wire.usageMetadata.promptTokenCount || 0, output_tokens: wire.usageMetadata.candidatesTokenCount || 0 };
+      if (wire.usageMetadata) {
+        out.usage = { input_tokens: wire.usageMetadata.promptTokenCount || 0, output_tokens: wire.usageMetadata.candidatesTokenCount || 0 };
+        var _rtg = reasoningTokensFromUsage(wire.usageMetadata, 'gemini');
+        if (_rtg != null) out.usage.reasoning_tokens = _rtg;
+      }
       return out;
     }
     var choice = (wire.choices && wire.choices[0]) || {};
@@ -329,7 +464,11 @@
     out.content = (message.content == null ? '' : message.content);
     out.reasoning = message.reasoning_content || message.reasoning || message.analysis || message.thinking || '';
     out.truncated = choice.finish_reason === 'length' || choice.finish_reason === 'max_tokens';
-    if (wire.usage) out.usage = { prompt_tokens: wire.usage.prompt_tokens || 0, completion_tokens: wire.usage.completion_tokens || 0 };
+    if (wire.usage) {
+      out.usage = { prompt_tokens: wire.usage.prompt_tokens || 0, completion_tokens: wire.usage.completion_tokens || 0 };
+      var _rto = reasoningTokensFromUsage(wire.usage, 'openai');
+      if (_rto != null) out.usage.reasoning_tokens = _rto;
+    }
     return out;
   }
 
@@ -386,8 +525,9 @@
       if (p.messages && p.messages[0] && p.messages[0].role === 'system') {
         /* system 已在 input 保留（兼容），instructions 作为独立域给 Middle Brain */
       }
-      /* reasoning.effort：仅显式指定时设置。缺省不发送（避免误用旧 reasoning_effort）。 */
-      if (options.reasoningEffort != null) body.reasoning = { effort: String(options.reasoningEffort) };
+      /* P21 · reasoning：canonical reasoningEffort → provider 能力翻译（唯一真源 = provider-directory.js）。
+         auto（默认）与未取证 provider 一律**不写任何字段**，body 与上线前逐字节一致。 */
+      applyReasoningEffort(body, spec, { format: 'responses', effort: options.reasoningEffort, maxTokens: maxOut, consumer: options.consumer });
       /* 结构化 JSON 输出：Responses 原生 text.format。若结构化参数可能不兼容，
          由上层 catch 后去掉再重试（fallback 不破坏聊天）。 */
       if (options.jsonMode) body.text = { format: { type: 'json_schema', name: 'middle_brain_result', schema: {
@@ -454,6 +594,8 @@
           input_tokens_details: u.input_tokens_details || null,
           output_tokens_details: u.output_tokens_details || null
         };
+        var _rtr = reasoningTokensFromUsage(u, 'responses');
+        if (_rtr != null) out.usage.reasoning_tokens = _rtr;
       }
       return out;
     },
@@ -490,6 +632,15 @@
     /* P20：Anthropic wire 归一的唯一真源（Browser / Node 共用同一实现） */
     normalizeAnthropicMessages: normalizeAnthropicMessages,
     validateAnthropicRequestBody: validateAnthropicRequestBody,
+    /* P21：reasoning 能力读取 + adapter 边界唯一翻译器 + 只读观测环 */
+    normalizeReasoningTier: normalizeReasoningTier,
+    reasoningCapability: reasoningCapability,
+    reasoningWirePlan: reasoningWirePlan,
+    applyReasoningEffort: applyReasoningEffort,
+    reasoningTrace: reasoningTrace,
+    reasoningTraceReset: reasoningTraceReset,
+    noteReasoningTokens: noteReasoningTokens,
+    reasoningTokensFromUsage: reasoningTokensFromUsage,
     adaptMessageParts: adaptMessageParts,
     geminiParts: geminiParts,
     buildRequestBody: buildRequestBody,

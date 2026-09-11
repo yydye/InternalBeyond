@@ -156,7 +156,8 @@ function loadSandbox(opts) {
 const CFG_INCOMPLETE = { enabled: false, endpoint: '', model: 'gpt-6-astra', apiKey: '' };
 const CFG_COMPLETE = {
   enabled: true, endpoint: 'https://mb.example.com/v1/responses', model: 'gpt-5.6-sol', apiKey: 'sk-collapse',
-  reasoningEffort: 'high', speed: 'fast', imageMode: 'precision'
+  /* P21：只有显式带 reasoningEffortV2 标记的配置才承认其档位（旧配置一次性迁移为 auto） */
+  reasoningEffort: 'high', reasoningEffortV2: true, speed: 'fast', imageMode: 'precision'
 };
 const CFG_ENABLED_BUT_UNFINISHED = { enabled: true, endpoint: '', model: 'gpt-6-astra', apiKey: '' };
 
@@ -291,14 +292,14 @@ async function booted(opts) {
   /* ═══════════════ H. summary 动态生成 ═══════════════ */
   const s10 = await booted({ mbConfig: CFG_COMPLETE });
   const sum0 = summary(s10);
-  check('H1.summaryFields', sum0 === 'gpt-5.6-sol · High · Fast · Precision', sum0);
+  check('H1.summaryFields', sum0 === 'gpt-5.6-sol · 高 · Fast · Precision', sum0);
   s10.MBC.config.mbReasoningPick('low');
   const sum1 = summary(s10);
   s10.MBC.config.mbSpeedPick('standard');
   const sum2 = summary(s10);
   s10.MBC.config.mbModelStep(-1);   /* 当前 gpt-5.6-sol 已在候选列表末尾，向后步进会夹住 */
   const sum3 = summary(s10);
-  check('H2.summaryReasoningDynamic', /· Low ·/.test(sum1) && sum1 !== sum0, sum1);
+  check('H2.summaryReasoningDynamic', /· 低 ·/.test(sum1) && sum1 !== sum0, sum1);
   check('H3.summarySpeedDynamic', /· Standard ·/.test(sum2), sum2);
   check('H4.summaryModelDynamic', sum3.indexOf('gpt-6-astra') === 0, sum3);
   check('H5.summaryImageDynamic', /· Precision$/.test(sum0) && s10.dom.byId.get('mb-image-summary').textContent === 'Precision',

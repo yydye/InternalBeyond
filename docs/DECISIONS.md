@@ -288,6 +288,54 @@ U-D1 Revised 只覆盖了「**检查**清单」的传输回退。U3 要下载 50
    primary + fallback 三段各 8 s 往返（有测试守着这个不等式）。UI 先放弃 =
    把「还在查」显示成「查不了」，正是 U2 刻意避免的假失败。
 
+## D19. 统一思考深度（reasoningEffort）走 capability-driven，不做 provider 硬编码（P21）
+
+### 决策
+
+1. **canonical 字段只有一个**：Middle Brain 配置里的 `reasoningEffort ∈ {auto, low, medium, high, max}`，
+   默认 **auto**。UI 只写这一个字段，消费者只读这一个字段（`IB.middleBrain.middleBrainReasoningEffort()`）。
+2. **auto 的语义 = 不发送任何 reasoning 参数**（保持 provider 原生自动行为）。
+   DeepSeek 的实测证据（普通聊天 `reasoning_tokens=125` / 日记 `1082`，IB 当时**没有**发送任何
+   reasoning 参数）就是这条语义的基线：auto 下请求体必须与上线前**逐字节一致**。
+3. **能力事实只能存在于 `assets/js/provider-directory.js`（P21 的 `REASONING_CAPABILITIES` /
+   `REASONING_MODEL_POLICIES`）**；翻译只能发生在 provider adapter / request builder 边界
+   （`ib-model-core.js` 的 `applyReasoningEffort` → `buildRequestBody` / `AstraAdapter.buildResponsesRequest`）。
+   `communication.js`、UI、Middle Brain 各层**禁止**出现任何一家 provider 的字段名判断（有结构测试守着）。
+4. **只发官方明确支持的参数，且必须 model 级成立**；未取证的 provider（deepseek / gemini / glm / qwen /
+   minimax / mimo / custom / 未知）与未取证的 model 一律 **abstain（一个字段都不发）**，
+   并记录 `reasoningFallbackReason`。典型例子：OpenAI 的 `reasoning_effort` 只对推理型 model 成立，
+   非推理模型（如目录默认的 `gpt-4o-mini`）收到会 400 —— 所以它按 model 逐条登记，
+   绝不因为"provider 是 openai"就照发。
+   取证完成后把条目从 `REASONING_PENDING` 搬进能力表即可 —— 这是纯数据改动，不需要碰 request builder。
+5. **不支持某档位 → 就近降级（tie 取更低档，绝不向上越档）**并记录 `tier_downgraded`；
+   Anthropic 这种没有档位枚举、只有 thinking 预算的 provider 用预算表表达，
+   且必须满足官方约束 `1024 ≤ budget_tokens < max_tokens`（不满足就 abstain，绝不拼非法请求）。
+6. **Speed（service_tier）与 Reasoning Effort 严格分离**：两个字段、两个出口，互不写入。
+7. **旧配置一次性迁移为 auto**：只有显式带 `reasoningEffortV2` 标记的配置才承认其档位；
+   历史值（low/medium/high/xhigh/max）一律按 auto 解析，用户重新选择后才落盘。
+   理由：上线前该字段**只影响 Middle Brain 自己的调用**，上线后会作用于角色聊天/日记等消费者 ——
+   不能让老用户"没做任何操作，聊天的请求体就变了"。历史 `xhigh` 合并进 `high`。
+8. **观测只读**：`IBModelCore.reasoningTrace()` 记录
+   `requestedReasoningEffort / effectiveReasoningEffort / reasoningWireParam / reasoningFallbackReason`
+   + `reasoningTokens`（来自 provider 真实回传的 usage）。白名单构造，不含 prompt / 请求体 / apiKey；
+   不改变 token 记账口径（i/cr/cw/o 不动）。
+
+### 理由
+
+- 不同 provider 的"思考深度"根本不是同一个东西（档位枚举 / 预算 token / 开关），
+  把它塞进 Middle Brain 或 UI 的任何一处分支都会立刻退化成"每加一家 provider 就改三处"。
+- 未取证就发电商参数 = 在生产聊天路径上做实验：一个字段放错，用户看到的是 400 直接把对话打断。
+  「宁可不发」是这个功能唯一安全的默认。
+
+### 已接受 / 未做
+
+- **DeepSeek / Gemini / 国产 provider 的档位当前不生效**（abstain）。这是刻意的保守取值，
+  不是遗漏：取证依据与"还差什么"逐条登记在 `REASONING_PENDING`。
+- 未接入 `temperature` 之外的其它采样参数；不改 Moments/Diary 的 maxTokens 预算
+  （提高档位会让 reasoning 更吃 token，与 D12 的教训相关，登记为后续项）。
+- Node ModelPort 已接受 canonical `reasoningEffort`（与浏览器同一份翻译），
+  但 Node consumer 目前无人提供该值（Middle Brain 配置在浏览器 IndexedDB）。
+
 ### U 系列安全不变量（全阶段冻结）
 
 HTTPS only · hash 不符**绝不执行** · installer 版本不符**绝不执行** · `shell:false` ·

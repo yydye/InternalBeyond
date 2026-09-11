@@ -82,9 +82,10 @@
       };
     } catch (e) { return null; }
   }
-  /* Judge 专用请求体：复用现有 Responses 归一，仅替换 structured-output schema（不重实现 HTTP/鉴权）。 */
+  /* Judge 专用请求体：复用现有 Responses 归一，仅替换 structured-output schema（不重实现 HTTP/鉴权）。
+     P21：consumer 标记只用于 reasoning 观测归因；思考深度仍走 canonical 配置（auto → 不写字段）。 */
   async function _mbBuildJudgeRequest(prompt, options) {
-    var base = await ASTRA.buildMiddleBrainResponsesRequest(null, prompt, { maxTokens: options.maxTokens || 900, jsonMode: true });
+    var base = await ASTRA.buildMiddleBrainResponsesRequest(null, prompt, { maxTokens: options.maxTokens || 900, jsonMode: true, consumer: 'middle_brain.judge' });
     base.body.text = { format: { type: 'json_schema', name: 'context_quality_report', schema: MB_JUDGE_SCHEMA } };
     return base;
   }
@@ -135,6 +136,8 @@
       try { var _a = ASTRA.adapter(); if (_a && typeof _a.parseResponsesResponse === 'function') parsed = _a.parseResponsesResponse(data, null, {}); } catch (e) { parsed = null; }
       if (!parsed) parsed = { content: '', reasoning: '', truncated: false, usage: null };
       if (!parsed.content) return null;
+      /* P21：实际 reasoning tokens 只读回填（观测用；读不到即 null） */
+      try { ASTRA._mbNoteReasoningTokens(parsed.usage, cfg, 'middle_brain.judge'); } catch (e) { /* 观测失败不影响判定 */ }
       var report = _mbParseJudgeJson(parsed.content);
       if (!report) return null;
       var latency = Date.now() - t0;

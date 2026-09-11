@@ -409,9 +409,14 @@ const mbP11IntegrityKeys = ['normalizeMiddleBrainIntegritySensitivity', 'middleB
 /* P12 · Image Router 接入键（追加在末尾）：Middle Brain 只输出图片策略决策，
    执行/并发/队列在 assets/js/image-router*.js；这两个 key 允许被 Router 消费。 */
 const mbP12ImageKeys = ['middleBrainImageMode', 'normalizeMiddleBrainImageMode'];
-const mbP11Keys = ['middleBrainExecute'].concat(mbP11IntegrityKeys).concat(mbP12ImageKeys);
+/* P21 · 统一思考深度（canonical reasoningEffort）读取键（追加在末尾）：
+   消费者（角色聊天 / 日记 / 主动消息…）只经它读 canonical 档位；provider 能力翻译
+   只发生在 provider request builder（IBModelCore.applyReasoningEffort）。 */
+const mbP21ReasoningKeys = ['middleBrainReasoningEffort'];
+const mbP11Keys = ['middleBrainExecute'].concat(mbP11IntegrityKeys).concat(mbP12ImageKeys).concat(mbP21ReasoningKeys);
 mbP11IntegrityKeys.forEach(k => mbPublicExpected.push(k));
 mbP12ImageKeys.forEach(k => mbPublicExpected.push(k));
+mbP21ReasoningKeys.forEach(k => mbPublicExpected.push(k));
 const mbPublicPairs = [...mbText.matchAll(/^\s*\['(\w+)', '(\w+)'\],?$/gm)].map(m => [m[1], m[2]]);
 check('middleBrain.publicApiContract', JSON.stringify(mbPublicPairs.map(p => p[0])) === JSON.stringify(mbPublicExpected),
   'IB.middleBrain 公共 API 内容/顺序变化: ' + mbPublicPairs.map(p => p[0]).join(','));
@@ -945,7 +950,10 @@ for (const [file, text] of [['communication.js', comMainText],
     const line = code.slice(code.lastIndexOf('\n', m.index) + 1, code.indexOf('\n', m.index));
     const okSite = /callApiChat(?:Stream)?\(/.test(before.slice(before.lastIndexOf(';') + 1))
       || /_ibConsumer:\s*consumer,/.test(line)
-      || /_ibCacheAudit\([^)]*opts\._ibConsumer/.test(line);
+      || /_ibCacheAudit\([^)]*opts\._ibConsumer/.test(line)
+      /* P21：reasoning 观测归因同样只读诊断身份 —— 它只进 reasoning trace（内存白名单环），
+         绝不写进 provider 请求体；这两行是 P21 归因缝的唯一入口。 */
+      || /consumer:String\(\(opts&&opts\._ibConsumer\)\|\|''\)/.test(line);
     if (!okSite) bodyBuildLeak.push(file + ':' + code.slice(0, m.index).split('\n').length);
   }
 }

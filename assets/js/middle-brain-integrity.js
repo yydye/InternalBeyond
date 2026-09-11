@@ -325,12 +325,14 @@
       + '只输出 JSON：{"reply":"改写后的完整回复"}';
   }
 
-  /* —— 单次模型调用（复用 astra 层唯一网络边界；失败返回结构化原因） —— */
+  /* —— 单次模型调用（复用 astra 层唯一网络边界；失败返回结构化原因）——
+     P21：consumer 只用于 reasoning 观测归因；思考深度走 canonical 配置（auto → 不写字段）。 */
   async function _ciCall(prompt, schema, schemaName, maxTokens, timeoutMs) {
     try {
       var r = await ASTRA.middleBrainModelCall([{ role: 'user', content: prompt }], {
         maxTokens: maxTokens, jsonMode: true, schema: schema, schemaName: schemaName,
-        timeoutMs: (timeoutMs != null ? Number(timeoutMs) : MB_CI_TIMEOUT_MS)
+        timeoutMs: (timeoutMs != null ? Number(timeoutMs) : MB_CI_TIMEOUT_MS),
+        consumer: 'middle_brain.integrity'
       });
       return r || { ok: false, error: 'error' };
     } catch (e) { return { ok: false, error: 'error' }; }

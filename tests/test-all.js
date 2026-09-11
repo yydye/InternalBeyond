@@ -23,6 +23,10 @@
  *     + test_middle_brain_calibration_live.js（browser，Layer B 默认离线 mock 走真实执行路径；
  *     真实模型校准需手动 --live + IB_CI_CALIBRATION_KEY，不进本强制路径）。
  * P11-FIX：登记 test_cache_audit_isolation.js（browser，Cache Audit baseline 按 runtime consumer 隔离）。
+ * P21：登记 test_reasoning_capability.js（static，canonical reasoningEffort 能力表 / 边界翻译 /
+ *     auto 不改变请求 / 未取证 provider 不污染）
+ *     + test_middle_brain_reasoning_effort.js（browser，真实 wire body：MB disabled 零注入 /
+ *     chat×diary parity / DeepSeek 原生 auto 不受影响 / Speed 与 Effort 分离）。
  * P14：登记 test_middle_brain_collapse.js（static，API 页 Middle Brain 整块折叠：默认态 /
  *     点击与键盘切换 / 状态保持 / 持久化恢复 / 不重复绑定）。
  * P6：登记 test_guide.js（static）+ test_guide_shots.js / test_guide_smoke.js（browser）。
@@ -76,6 +80,11 @@ const GROUPS = [
       /* P11-3：Middle Brain 语义务闭合（UI/runtime 状态机 + local 注入契约纯函数表，
          静态 DOM/IndexedDB 桩驱动真实 config 层，零依赖离线） */
       ['test_middle_brain_semantics.js'],
+      /* P21：统一思考深度（canonical reasoningEffort）能力表与边界翻译 ——
+         auto 不写字段 / 逐档映射 / 未取证 provider 不污染 body / 降级与 fallback /
+         能力真源唯一性结构守卫 / Speed 与 Effort 分离 / usage 只读提取。
+         纯 Node，零依赖、不联网、不开浏览器。 */
+      ['test_reasoning_capability.js'],
       ['test_harness_boundary.js'],
       ['test_credential_vault.js'],
       ['test_error_catalog.js'],
@@ -224,6 +233,10 @@ const GROUPS = [
       ['test_middle_brain_trace.js'],
       /* P11-2A：角色一致性校准（Layer B · 离线 mock 真实执行路径；--live 才接真实端点） */
       ['test_middle_brain_calibration_live.js'],
+      /* P21：统一思考深度 · 真实请求链（本地 mock 端点记录最终 wire body）：
+         MB disabled 零注入 / auto 与关闭逐字节相等 / 逐档映射 / DeepSeek 不被污染 /
+         chat×diary parity / Speed 分离 / requested→effective→reasoning tokens 可对比 */
+      ['test_middle_brain_reasoning_effort.js'],
       /* Cache Audit baseline 身份隔离（真实 chat→diary→chat 行为链） */
       ['test_cache_audit_isolation.js'],
       ['test_moments_phase4_smoke.js'],

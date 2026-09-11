@@ -277,6 +277,44 @@ P12/P13 解决了「谁来路由、怎么编辑」，P15 补上**前端配置入
 **错误文案**：每个 code 都有独立且可执行的中文文案，一律指明「去哪里修」
 （例：`IMAGE_ROUTER_NO_KEY` →「图片 API 缺少 API Key。请前往 设置 → API → Image Router（或该角色的 API 设置）补齐」）。
 
+### 统一思考深度 · reasoningEffort（P21 · capability-driven）
+
+Middle Brain 的一个 canonical 字段控制"思考深度"，翻译只发生在 provider adapter 边界；
+**auto = 一个字段都不发**（provider 原生行为），因此这条链默认不改变任何现有请求
+（DeepSeek 普通聊天 `reasoning_tokens=125` / 日记 `1082` 就是 auto 的基线）。
+
+- **canonical 值**：`auto | low | medium | high | max`（默认 `auto`）。
+  配置读写/归一/UI 在 `assets/js/middle-brain-config.js`；`xhigh` 合并进 `high`；
+  旧配置（无 `reasoningEffortV2` 标记）**一次性解析为 auto**，用户重新选择才落盘
+  ——上线前该字段只影响 Middle Brain 自己的调用，不能让老用户"什么都没做，聊天请求体就变了"。
+- **唯一读取入口**：`IB.middleBrain.middleBrainReasoningEffort()`（MB 未启用 → 恒 `auto`）。
+  角色聊天 / 群聊 / 日记 / 主动消息 / 朋友圈 / 工具轮 / 信件摘要全部只读它一次
+  （`communication.js` 的 `callApiChat*` 收口），**不做任何 provider 判断**。
+- **能力真源（唯一）**：`assets/js/provider-directory.js` 的 P21 三张表 ——
+  `REASONING_CAPABILITIES`（provider 级：`astra` 直传 low/medium/high/max）、
+  `REASONING_MODEL_POLICIES`（model 级逐条取证：OpenAI 推理型 model 走官方值域
+  low/medium/high + Responses `reasoning.effort` / Chat `reasoning_effort`；
+  Anthropic 4.6+/5 系走 thinking 预算表，`1024 ≤ budget_tokens < max_tokens`）、
+  `REASONING_PENDING`（**审计元数据，运行时不用**：deepseek / gemini / glm / qwen / minimax /
+  mimo / custom 的"还差什么证据"）。
+  **非推理型 model 一律不发**：OpenAI 的 `reasoning_effort` 对非推理模型会直接 400，
+  因此目录默认的 `gpt-4o-mini` 被明确排除，新 id 必须逐条取证（绝不按 `gpt-5` 之类前缀推测）。
+- **唯一翻译器**：`assets/js/ib-model-core.js` 的 `applyReasoningEffort(body, spec, opts)`，
+  由 `buildRequestBody`（anthropic / gemini / openai 三支）与
+  `AstraAdapter.buildResponsesRequest` 调用；`reasoningWirePlan()` 是纯函数：
+  auto → 不写字段；未取证 / format 不支持 → abstain；档位不支持 → **就近降级**
+  （tie 取更低档，绝不向上越档）并记 `tier_downgraded`。
+- **观测（只读·telemetry）**：`IBModelCore.reasoningTrace(n)` 返回最近若干次请求的
+  `requestedReasoningEffort` / `effectiveReasoningEffort` / `reasoningWireParam` /
+  `reasoningFallbackReason` + `reasoningTokens`（provider 真实回传的 usage：
+  `completion_tokens_details.reasoning_tokens` / `output_tokens_details.reasoning_tokens` /
+  `thoughtsTokenCount`）。白名单构造：不含 prompt / 请求体 / apiKey；
+  **不参与 token 记账**（i/cr/cw/o 口径不变）。
+- **Speed 与 Effort 严格分离**：`speed: standard|fast` 只映射 `service_tier`（仅 Responses 面），
+  `reasoningEffort` 只映射 reasoning 字段，两者互不写入（有结构测试守着）。
+- **未取证的 provider 一律不发**：宁可不生效，也不在生产聊天路径上实验未取证参数；
+  取证完成后把条目从 `REASONING_PENDING` 搬进能力表即可（纯数据改动，不碰 request builder）。
+
 ### Middle Brain 配置区折叠（API 页 · P14）
 
 API 页整个 Middle Brain 区块（说明 / 启用 / Endpoint / API Key / Astra Cognitive Control / Model / Reasoning /

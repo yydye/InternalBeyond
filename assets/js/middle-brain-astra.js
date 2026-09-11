@@ -70,8 +70,13 @@
     var a = adapter();
     var cfg = spec || (await CFG.getMiddleBrainConfig());
     options = options || {};
-    /* Phase 4：从配置归一推理强度/速度（显式 options 覆盖 > 配置 > 默认）。 */
-    var effort = CFG.normalizeMiddleBrainReasoningEffort(options.reasoningEffort != null ? options.reasoningEffort : cfg.reasoningEffort);
+    /* P21 · 思考深度：显式 options 覆盖 > 配置（MB 未启用 → auto）> 默认 auto。
+       本层只产出 canonical 值；provider 能力翻译只发生在 request builder
+       （IBModelCore.AstraAdapter → applyReasoningEffort），这里没有任何 provider 判断。
+       speed 仍是**独立**字段（服务/延迟策略），与 reasoningEffort 不共用、不互相写入。 */
+    var effort = (options.reasoningEffort != null)
+      ? CFG.normalizeMiddleBrainReasoningEffort(options.reasoningEffort)
+      : await CFG.middleBrainReasoningEffort();
     var speed = CFG.normalizeMiddleBrainSpeed(options.speed != null ? options.speed : cfg.speed);
     var reqOptions = Object.assign({}, options, { reasoningEffort: effort });
     if (a && typeof a.buildResponsesRequest === 'function') {
@@ -97,6 +102,20 @@
     return await parseMiddleBrainResponse(wire, cfg, {});
   }
 
+  /* —— P21 · reasoning 观测回填（只读）———————————————————————————————
+     把 provider 真实回传的 reasoning tokens 挂到"同一次调用"的 reasoning trace 记录上，
+     供 Diagnostics / 测试对比「requested effort → effective effort → 实际 reasoning tokens」。
+     只读 usage，不写任何存储、不改任何返回值；读不到就是 null（绝不伪造成 0）。 */
+  function _mbNoteReasoningTokens(usage, cfg, consumer) {
+    try {
+      var core = root.IBModelCore;
+      if (!core || typeof core.reasoningTokensFromUsage !== 'function' || typeof core.noteReasoningTokens !== 'function') return null;
+      var n = core.reasoningTokensFromUsage(usage, 'responses');
+      if (n == null) return null;
+      return core.noteReasoningTokens(n, { consumer: String(consumer || ''), provider: String((cfg && cfg.provider) || ''), model: String((cfg && cfg.model) || '') });
+    } catch (e) { return null; }
+  }
+
   /* —— 统一模型调用（P11-2）———————————————————————————————————————————
      本层是 Middle Brain 的**唯一网络边界**：任何需要"额外一次模型调用"的层
      （judge / integrity）都必须走这里，不得各自实现 HTTP / 鉴权 / SSE / parser。
@@ -110,7 +129,8 @@
     try {
       if (!(await CFG.middleBrainReady())) return { ok: false, error: 'not_ready' };
       var cfg = await CFG.getMiddleBrainConfig();
-      var req = await buildMiddleBrainResponsesRequest(null, prompt, { maxTokens: opts.maxTokens || 900, jsonMode: opts.jsonMode !== false });
+      var consumer = String(opts.consumer || 'middle_brain');
+      var req = await buildMiddleBrainResponsesRequest(null, prompt, { maxTokens: opts.maxTokens || 900, jsonMode: opts.jsonMode !== false, consumer: consumer });
       if (!req || !req.body) return { ok: false, error: 'request' };
       /* 结构化输出 schema 覆盖：仅 Responses 风格 body 才有 text.format（Chat Completions 回落不加此字段） */
       if (opts.schema && req.body.messages === undefined) {
@@ -141,6 +161,7 @@
       try { var _a = adapter(); if (_a && typeof _a.parseResponsesResponse === 'function') parsed = _a.parseResponsesResponse(data, null, {}); } catch (e) { parsed = null; }
       if (!parsed) parsed = { content: '', reasoning: '', truncated: false, usage: null };
       if (!parsed.content) return { ok: false, error: 'empty' };
+      _mbNoteReasoningTokens(parsed.usage, cfg, consumer);
       return { ok: true, content: String(parsed.content), usage: parsed.usage || null };
     } catch (e) { return { ok: false, error: 'error' }; }
   }
@@ -220,8 +241,9 @@
         + '【上下文】\n' + ctxBlocks.join('\n\n');
       var messages = [{ role: 'user', content: userPrompt }];
       var cfg = await CFG.getMiddleBrainConfig();
-      /* Responses API 请求：优先 buildResponsesRequest；失败回落 Chat Completions（保聊天不破）。 */
-      var req = await buildMiddleBrainResponsesRequest(null, messages, { maxTokens: 1600, jsonMode: true });
+      /* Responses API 请求：优先 buildResponsesRequest；失败回落 Chat Completions（保聊天不破）。
+         P21：思考深度走 canonical 配置（auto/未取证 → request builder 不写任何字段）。 */
+      var req = await buildMiddleBrainResponsesRequest(null, messages, { maxTokens: 1600, jsonMode: true, consumer: 'middle_brain.compression' });
       /* 若用户自定义了 endpoint 且非 responses 路径，仍尊重用户配置（不硬编码覆盖） */
       if (req && cfg.endpoint) req.endpoint = cfg.endpoint;
 
@@ -252,6 +274,7 @@
       } catch (e) { parsed = null; }
       if (!parsed) parsed = { content: '', reasoning: '', truncated: false, usage: null };
       if (!parsed.content) return null;
+      _mbNoteReasoningTokens(parsed.usage, cfg, 'middle_brain.compression');
       var result = _mbParseAstraJson(parsed.content);
       if (!result) return null;
       result = _mbValidateAstraResult(result, organized);
@@ -276,6 +299,8 @@
     parseMiddleBrainResponse: parseMiddleBrainResponse,
     /* 统一模型调用（judge / integrity 共用；唯一网络边界） */
     middleBrainModelCall: middleBrainModelCall,
+    /* P21 · reasoning 观测回填（judge / integrity 复用；只读 usage） */
+    _mbNoteReasoningTokens: _mbNoteReasoningTokens,
     /* Astra 调用 + 结构化解析 */
     middleBrainAstraInvoke: middleBrainAstraInvoke,
     _mbParseAstraJson: _mbParseAstraJson,

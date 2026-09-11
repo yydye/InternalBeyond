@@ -184,6 +184,8 @@ function _ibAnthropicWire(prompt){
 }
 async function callApi(cfg,userMsg){
   const format=_providerFormat(cfg);
+  /* P21：同一条 canonical 思考深度（MB 未启用 → auto），翻译只发生在 request builder */
+  const _p21opts={reasoningEffort:await _mbReasoningEffortForRequest()};
   let url=cfg.endpoint;
   let headers={'Content-Type':'application/json'};
   let body;
@@ -197,12 +199,14 @@ async function callApi(cfg,userMsg){
     const ab={model:cfg.model,max_tokens:4096,messages:_an.messages.map(m=>({role:m.role,content:m.content}))};
     if(_an.system){if(cfg.promptCache!==false){ab.system=[{type:'text',text:_an.system,cache_control:_ccObj(cfg)}]}else{ab.system=_an.system}}
     if(cfg.temperature!=null&&_modelSupportsSampling(cfg))ab.temperature=cfg.temperature;
+    _ibApplyReasoningEffort(ab,'anthropic',cfg,_p21opts,4096);/* P21：canonical 思考深度 → 能力翻译（auto/未取证 → 不写字段） */
     body=JSON.stringify(ab);
   }else if(format==='gemini'){
     url=url.replace('{model}',cfg.model)+'?key='+cfg.apiKey;
     const gb={contents:[{parts:[{text:(cfg.systemPrompt?cfg.systemPrompt+'\n\n':'')+userMsg}]}]};
     gb.generationConfig={maxOutputTokens:4096};
     if(cfg.temperature!=null)gb.generationConfig.temperature=cfg.temperature;
+    _ibApplyReasoningEffort(gb,'gemini',cfg,_p21opts,4096);
     body=JSON.stringify(gb);
   }else{
     if(cfg.apiKey)headers['Authorization']='Bearer '+cfg.apiKey;
@@ -213,6 +217,7 @@ async function callApi(cfg,userMsg){
     const ob={model:cfg.model,messages:msgs};ob[_ibMimo?'max_completion_tokens':(_tokParamGet(cfg)||'max_tokens')]=4096;/* GPT-5 系要求 max_completion_tokens；参数名与聊天通道共用同一份会话记忆 */
     if(cfg.promptCache!==false&&!_ibMimo)ob.prompt_cache_key='ib_'+String(cfg.id||'');/* OpenAI 缓存本自动生效；此 key 只用于提升路由命中率。MiMo 无此字段，发出即 400 */
     if(cfg.temperature!=null)ob.temperature=cfg.temperature;
+    _ibApplyReasoningEffort(ob,'openai',cfg,_p21opts,4096);
     body=JSON.stringify(ob);
   }
   const ac=new AbortController();const tm=setTimeout(()=>ac.abort(),120000);
@@ -236,6 +241,7 @@ async function callApi(cfg,userMsg){
     if(ct.includes('text/html')){throw new Error('API端点返回了网页而非JSON——请检查端点URL是否正确（当前格式: '+format+'）。如使用中转站，请确认API地址填写到完整路径（如 https://xxx.com/v1/chat/completions）')}
     const data=await res.json();
     try{
+      _ibNoteReasoningUsage(format==='anthropic'?(data&&data.usage):(data&&data.usageMetadata),format,cfg,_p21opts);/* P21：实际 reasoning tokens 只读观测 */
       if(format==='anthropic'&&data.usage){_tkRecord(cfg,{i:data.usage.input_tokens||0,cr:data.usage.cache_read_input_tokens||0,cw:data.usage.cache_creation_input_tokens||0,o:data.usage.output_tokens||0})}
       else if(format==='gemini'&&data.usageMetadata){var _gu3=data.usageMetadata,_gc3=_gu3.cachedContentTokenCount||0;_tkRecord(cfg,{i:Math.max(0,(_gu3.promptTokenCount||0)-_gc3),cr:_gc3,cw:0,o:(_gu3.candidatesTokenCount||0)+(_gu3.thoughtsTokenCount||0)})}
       else if(data.usage){var _pu3=data.usage,_pc3=(_pu3.prompt_tokens_details&&_pu3.prompt_tokens_details.cached_tokens)||(_pu3.input_tokens_details&&_pu3.input_tokens_details.cached_tokens)||_pu3.prompt_cache_hit_tokens||0;_tkRecord(cfg,{i:Math.max(0,(_pu3.prompt_tokens||0)-_pc3),cr:_pc3,cw:0,o:_pu3.completion_tokens||0})}/* DeepSeek 用 prompt_cache_hit_tokens 回传命中量，此前只认 OpenAI 字段导致仪表盘恒显 0；input_tokens_details 为 Responses 形状兜底 */
@@ -3428,8 +3434,44 @@ window._extractWithdraw=_extractWithdraw;
 window._chatWithdrawSelf=_chatWithdrawSelf;
 window._applyWithdraw=_applyWithdraw;
 
+/* ════ P21 · 统一思考深度（reasoningEffort）消费缝 ════
+   canonical 值唯一来源 = Middle Brain 配置（IB.middleBrain.middleBrainReasoningEffort）：
+     · Middle Brain 未启用 / 读取失败 → 'auto'（= 一个字段都不发，绝不注入）
+     · 本层**不做任何 provider 判断**：canonical 值只透传；翻译只发生在 provider request
+       builder（IBModelCore.applyReasoningEffort → provider-directory.js 的 P21 能力表）。
+   为什么在这里读：callApiChat* 是浏览器侧所有角色模型调用（角色聊天 / 日记 / 主动消息 /
+   朋友圈 / 工具轮）的唯一收口，读一次即统一，不在每个 consumer 各写一份。
+   与 Speed/service_tier 严格分离：本缝只碰 reasoning，绝不写 service_tier（反之亦然）。 */
+async function _mbReasoningEffortForRequest(){
+  try{
+    var f=(window.IB&&window.IB.middleBrain)||null;
+    if(f&&typeof f.middleBrainReasoningEffort==='function')return String((await f.middleBrainReasoningEffort())||'auto');
+  }catch(e){}
+  return 'auto';
+}
+/* provider request builder 边界唯一翻译入口（薄封装，零 provider 知识）。 */
+function _ibApplyReasoningEffort(bodyObj,format,cfg,opts,maxTok){
+  try{
+    var core=(typeof window!=='undefined')?window.IBModelCore:null;
+    if(!core||typeof core.applyReasoningEffort!=='function')return null;
+    return core.applyReasoningEffort(bodyObj,{provider:(cfg&&cfg.provider)||'',model:(cfg&&cfg.model)||''},
+      {format:format,effort:(opts&&opts.reasoningEffort)||'auto',maxTokens:maxTok,consumer:String((opts&&opts._ibConsumer)||'')});
+  }catch(e){return null}
+}
+/* 实际 reasoning tokens 只读回填（观测用：读不到就是 null，绝不伪造成 0）。
+   不参与 token 记账 —— 记账口径（i/cr/cw/o）保持原样。 */
+function _ibNoteReasoningUsage(usage,format,cfg,opts){
+  try{
+    var core=(typeof window!=='undefined')?window.IBModelCore:null;
+    if(!core||typeof core.reasoningTokensFromUsage!=='function'||typeof core.noteReasoningTokens!=='function')return null;
+    var n=core.reasoningTokensFromUsage(usage,format);
+    if(n==null)return null;
+    return core.noteReasoningTokens(n,{consumer:String((opts&&opts._ibConsumer)||''),provider:(cfg&&cfg.provider)||'',model:(cfg&&cfg.model)||''});
+  }catch(e){return null}
+}
+
 async function callApiChatStream(cfg,messages,opts){
-  opts=opts||{};
+  opts=Object.assign({},opts||{},{reasoningEffort:await _mbReasoningEffortForRequest()});
   var budget=opts.maxTokens||_chatMaxTokens(cfg);
   var maxRounds=opts.autoContinue?(opts.maxContinues!=null?opts.maxContinues:_maxContinuesPref):0;
   var userChunk=opts.onChunk||function(){};
@@ -3499,7 +3541,7 @@ async function callApiChatStream(cfg,messages,opts){
 
 /* 非流式：同样的包装策略 */
 async function callApiChat(cfg,messages,opts){
-  opts=opts||{};
+  opts=Object.assign({},opts||{},{reasoningEffort:await _mbReasoningEffortForRequest()});
   var budget=opts.maxTokens||_chatMaxTokens(cfg);
   var maxRounds=opts.autoContinue?(opts.maxContinues!=null?opts.maxContinues:_maxContinuesPref):0;
   var timeoutMs=opts.timeoutMs||(opts.autoContinue?300000:0);/* 长输出给足等待时间 */
@@ -3629,6 +3671,7 @@ async function _callApiChatStreamOnce(cfg,messages,opts){
       try{if(typeof IBWS!=='undefined')IBWS.attach(b,'anthropic',cfg,opts)}catch(e){}
       if(_an.system){if(cfg.promptCache!==false&&cfg.provider==='anthropic'){b.system=[{type:'text',text:_an.system,cache_control:_ccObj(cfg)}]}else{b.system=_an.system}}if(cfg.temperature!=null&&_modelSupportsSampling(cfg))b.temperature=cfg.temperature;
       if(cfg.promptCache!==false){try{_ibCacheAudit(cfg,b,'anthropic',{consumer:opts._ibConsumer})}catch(e){}}/* 前缀缓存审计（console-only） */
+      _ibApplyReasoningEffort(b,'anthropic',cfg,opts,maxTok);/* P21：canonical 思考深度 → 能力翻译（auto/未取证 → 不写字段） */
       body=JSON.stringify(b);
     }else if(fmt==='gemini'){
       url=cfg.endpoint.replace('{model}',cfg.model).replace('generateContent','streamGenerateContent')+'?key='+cfg.apiKey+'&alt=sse';
@@ -3645,6 +3688,7 @@ async function _callApiChatStreamOnce(cfg,messages,opts){
       if(cfg.temperature!=null)gB.generationConfig.temperature=cfg.temperature;
       try{if(typeof IBWS!=='undefined')IBWS.attach(gB,'gemini',cfg,opts)}catch(e){}
       if(cfg.promptCache!==false){try{_ibCacheAudit(cfg,gB,'gemini',{consumer:opts._ibConsumer})}catch(e){}}/* 前缀缓存审计（console-only） */
+      _ibApplyReasoningEffort(gB,'gemini',cfg,opts,maxTok);
       body=JSON.stringify(gB);
     }else{
       url=cfg.endpoint;
@@ -3676,6 +3720,7 @@ async function _callApiChatStreamOnce(cfg,messages,opts){
           console.log('[IB调试] 请求URL:',_dbgRedactUrl(url),'| Authorization:',cfg.apiKey?('Bearer '+String(cfg.apiKey).slice(0,6)+'***'):'(无)');
         }
       }catch(e){}
+      _ibApplyReasoningEffort(ob,'openai',cfg,opts,maxTok);
       body=JSON.stringify(ob);
     }
     const res=await _ibApiPost(url,hdrs,body,{signal:ac.signal});
@@ -3724,13 +3769,13 @@ async function _callApiChatStreamOnce(cfg,messages,opts){
               else if(j.delta?.type==='text_delta'){_anthropicResponseText(j.delta.text||'')}
             }
           }else if(fmt==='gemini'){
-            if(j.usageMetadata){var _gu=j.usageMetadata,_gc=_gu.cachedContentTokenCount||0;opts._tkU={i:Math.max(0,(_gu.promptTokenCount||0)-_gc),cr:_gc,cw:0,o:(_gu.candidatesTokenCount||0)+(_gu.thoughtsTokenCount||0)}}
+            if(j.usageMetadata){_ibNoteReasoningUsage(j.usageMetadata,'gemini',cfg,opts);var _gu=j.usageMetadata,_gc=_gu.cachedContentTokenCount||0;opts._tkU={i:Math.max(0,(_gu.promptTokenCount||0)-_gc),cr:_gc,cw:0,o:(_gu.candidatesTokenCount||0)+(_gu.thoughtsTokenCount||0)}}
             if(j.candidates&&j.candidates[0]&&j.candidates[0].finishReason)_mSetFinish(opts,j.candidates[0].finishReason);/* 记账加固：用量改为流末统一落账 */
             const _gm=j.candidates?.[0]?.groundingMetadata;if(_gm)_ibwsFeedGrounding(_gm,opts);/* 任务A：搜索元数据多在流尾块 */
             const parts=j.candidates?.[0]?.content?.parts||[];
             for(const p of parts){if(p.thought){thinkingText+=p.text||'';onThink(p.text||'')}else if(p.text){fullText+=p.text;onChunk(p.text)}}
           }else{
-            if(j.usage){var _pu=j.usage,_pc=(_pu.prompt_tokens_details&&_pu.prompt_tokens_details.cached_tokens)||(_pu.input_tokens_details&&_pu.input_tokens_details.cached_tokens)||_pu.prompt_cache_hit_tokens||0;if(cfg.promptCache!==false)try{console.info('[IB缓存诊断] usage 原文: '+JSON.stringify(_pu))}catch(e2){}opts._tkU={i:Math.max(0,(_pu.prompt_tokens||0)-_pc),cr:_pc,cw:0,o:_pu.completion_tokens||0}}/* 记账加固：暂存覆盖（累计式 usage 以末次为准），流末统一落账，防个别中转逐 chunk 带 usage 造成重复记账 *//* DeepSeek 命中字段兼容：prompt_cache_hit_tokens；input_tokens_details 为 Responses 形状回传的兜底 */
+            if(j.usage){_ibNoteReasoningUsage(j.usage,'openai',cfg,opts);var _pu=j.usage,_pc=(_pu.prompt_tokens_details&&_pu.prompt_tokens_details.cached_tokens)||(_pu.input_tokens_details&&_pu.input_tokens_details.cached_tokens)||_pu.prompt_cache_hit_tokens||0;if(cfg.promptCache!==false)try{console.info('[IB缓存诊断] usage 原文: '+JSON.stringify(_pu))}catch(e2){}opts._tkU={i:Math.max(0,(_pu.prompt_tokens||0)-_pc),cr:_pc,cw:0,o:_pu.completion_tokens||0}}/* 记账加固：暂存覆盖（累计式 usage 以末次为准），流末统一落账，防个别中转逐 chunk 带 usage 造成重复记账 *//* DeepSeek 命中字段兼容：prompt_cache_hit_tokens；input_tokens_details 为 Responses 形状回传的兜底 */
             if(j.choices&&j.choices[0]&&j.choices[0].finish_reason)_mSetFinish(opts,j.choices[0].finish_reason);
             const delta=j.choices?.[0]?.delta;
             const _ann=(delta&&delta.annotations)||(j.choices?.[0]?.message&&j.choices[0].message.annotations);if(_ann&&_ann.length)_ibwsFeedAnnotations(_ann,opts);/* 任务A */
@@ -3866,6 +3911,7 @@ async function _callApiChatOnce(cfg,messages,opts){
     if(_an.system){if(cfg.promptCache!==false&&cfg.provider==='anthropic'){body.system=[{type:'text',text:_an.system,cache_control:_ccObj(cfg)}]}else{body.system=_an.system}}
     if(cfg.temperature!=null&&_modelSupportsSampling(cfg))body.temperature=cfg.temperature;
     if(cfg.promptCache!==false){try{_ibCacheAudit(cfg,body,'anthropic',{consumer:opts._ibConsumer})}catch(e){}}/* 前缀缓存审计（console-only） */
+    _ibApplyReasoningEffort(body,'anthropic',cfg,opts,maxTok);/* P21：canonical 思考深度 → 能力翻译（auto/未取证 → 不写字段） */
     const hdrs={'Content-Type':'application/json','x-api-key':cfg.apiKey,
       'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'};
     _ccBeta(hdrs,cfg);
@@ -3920,13 +3966,14 @@ async function _callApiChatOnce(cfg,messages,opts){
     try{if(typeof IBWS!=='undefined')IBWS.attach(gBody,'gemini',cfg,opts)}catch(e){}
     if(cfg.promptCache!==false){try{_ibCacheAudit(cfg,gBody,'gemini',{consumer:opts._ibConsumer})}catch(e){}}/* 前缀缓存审计（console-only） */
     /* Gemini: thinking is handled by system prompt <thinking> tags, not native API */
+    _ibApplyReasoningEffort(gBody,'gemini',cfg,opts,maxTok);
     const ac=new AbortController();const tm=setTimeout(()=>ac.abort(),timeoutMs);
     try{
       const res=await _ibApiPost(ep,{'Content-Type':'application/json'},JSON.stringify(gBody),{signal:ac.signal});
       clearTimeout(tm);
       if(!res.ok){const e=await res.text();throw new Error(res.status+': '+e)}
       const data=await res.json();
-      try{if(data.usageMetadata){var _gu2=data.usageMetadata,_gc2=_gu2.cachedContentTokenCount||0;_tkRecord(cfg,{i:Math.max(0,(_gu2.promptTokenCount||0)-_gc2),cr:_gc2,cw:0,o:(_gu2.candidatesTokenCount||0)+(_gu2.thoughtsTokenCount||0)},opts)}}catch(e){}
+      try{if(data.usageMetadata){_ibNoteReasoningUsage(data.usageMetadata,'gemini',cfg,opts);var _gu2=data.usageMetadata,_gc2=_gu2.cachedContentTokenCount||0;_tkRecord(cfg,{i:Math.max(0,(_gu2.promptTokenCount||0)-_gc2),cr:_gc2,cw:0,o:(_gu2.candidatesTokenCount||0)+(_gu2.thoughtsTokenCount||0)},opts)}}catch(e){}
       const cand=(data.candidates&&data.candidates[0])||{};
       try{if(cand.groundingMetadata){_ibwsFeedGrounding(cand.groundingMetadata,opts);_ibwsFlushSearchMeta(opts)}}catch(e){}/* 任务A */
       if(cand.content&&cand.content.parts){
@@ -3951,6 +3998,7 @@ async function _callApiChatOnce(cfg,messages,opts){
   if(cfg.promptCache!==false&&!_isMimoEndpoint(cfg))oBody.prompt_cache_key='ib_'+String(cfg.id||'');/* OpenAI 缓存本自动生效；此 key 只用于提升路由命中率。MiMo 无此字段且自行缓存，发出去反而 400 */
   if(cfg.promptCache!==false){try{_ibCacheAudit(cfg,oBody,'openai',{consumer:opts._ibConsumer})}catch(e){}}/* 前缀缓存审计（console-only） */
   if(cfg.temperature!=null)oBody.temperature=cfg.temperature;
+  _ibApplyReasoningEffort(oBody,'openai',cfg,opts,maxTok);
   const _hdrN=Object.assign({'Content-Type':'application/json'},cfg.apiKey?{Authorization:'Bearer '+cfg.apiKey}:{});
   const res=await _ibApiPost(cfg.endpoint,_hdrN,JSON.stringify(oBody),{signal:ac.signal});
   clearTimeout(tm);
@@ -3958,7 +4006,7 @@ async function _callApiChatOnce(cfg,messages,opts){
   const _oct=res.headers.get('content-type')||'';
   if(_oct.includes('text/html')){throw new Error('API端点返回了网页而非JSON——请检查端点URL是否正确。如使用中转站，请确认API地址填写到完整路径（如 https://xxx.com/v1/chat/completions）')}
   const data=await res.json();
-  try{if(data.usage){var _pu4=data.usage,_pc4=(_pu4.prompt_tokens_details&&_pu4.prompt_tokens_details.cached_tokens)||(_pu4.input_tokens_details&&_pu4.input_tokens_details.cached_tokens)||_pu4.prompt_cache_hit_tokens||0;if(cfg.promptCache!==false)try{console.info('[IB缓存诊断] usage 原文: '+JSON.stringify(_pu4))}catch(e2){}_tkRecord(cfg,{i:Math.max(0,(_pu4.prompt_tokens||0)-_pc4),cr:_pc4,cw:0,o:_pu4.completion_tokens||0},opts)}}catch(e){}/* 修复：OpenAI 兼容非流式聊天此前完全不记用量；DeepSeek / Responses 形状命中字段一并兼容 */
+  try{if(data.usage){_ibNoteReasoningUsage(data.usage,'openai',cfg,opts);var _pu4=data.usage,_pc4=(_pu4.prompt_tokens_details&&_pu4.prompt_tokens_details.cached_tokens)||(_pu4.input_tokens_details&&_pu4.input_tokens_details.cached_tokens)||_pu4.prompt_cache_hit_tokens||0;if(cfg.promptCache!==false)try{console.info('[IB缓存诊断] usage 原文: '+JSON.stringify(_pu4))}catch(e2){}_tkRecord(cfg,{i:Math.max(0,(_pu4.prompt_tokens||0)-_pc4),cr:_pc4,cw:0,o:_pu4.completion_tokens||0},opts)}}catch(e){}/* 修复：OpenAI 兼容非流式聊天此前完全不记用量；DeepSeek / Responses 形状命中字段一并兼容 */
   if(opts._fcCtx){try{opts._fcCtx._nsCalls=IBFC.extractFromResponse(opts._fcCtx,data)}catch(e){opts._fcCtx._nsCalls=null}}
   const ch=(data.choices&&data.choices[0])||{};
   try{const _annN=ch.message&&ch.message.annotations;if(_annN&&_annN.length){_ibwsFeedAnnotations(_annN,opts);_ibwsFlushSearchMeta(opts)}}catch(e){}/* 任务A */

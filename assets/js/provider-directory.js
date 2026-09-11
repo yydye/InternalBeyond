@@ -243,6 +243,219 @@
   }
 
   /* ══════════════════════════════════════════════════════════════════════
+     P21 · Reasoning capability（**唯一**一份 provider 思考深度能力真源）
+     ----------------------------------------------------------------------
+     问题：Middle Brain 的 canonical `reasoningEffort`（auto/low/medium/high/max）
+     在哪里变成真实 wire 参数？只在 provider adapter / request builder 边界，
+     而**能力事实只允许存在于本文件**（与 endpoint / format / model 同一层）。
+     communication.js / Middle Brain 各层 / UI 一律只传 canonical 值 ——
+     禁止在那些文件里出现任何一家 provider 的字段名判断。
+
+     ── canonical 档位语义 ──
+       auto                 → **永不发送任何字段**（provider 原生自动行为；默认档，
+                              请求体逐字节等于本功能上线前）
+       low/medium/high/max  → 按下面的能力表翻译；无法翻译时 abstain（不发任何字段），
+                              调用方据 plan.fallbackReason 记录原因，绝不猜参数
+
+     ── REASONING_CAPABILITIES（key = provider id）──
+       appliesToAllModels  true  = 该能力对该 provider 下所有 model 成立
+                           false = 只对 REASONING_MODEL_POLICIES 里逐条取证的 id 成立
+       kind    'effort' = 官方档位枚举（values = 官方支持值，取值必须来自 LADDER）
+               'budget' = 官方数值预算（budgets = 档位 → token 数；只用于「没有档位枚举、
+                          只有 thinking 预算」的 provider）
+               toggle / none 类能力不进本表：它们表达不了档位 → 一律 abstain
+       verified false = 未取证 → 运行时 abstain（照实登记，绝不按前缀或正则猜）
+       wire    wire 摆放：{ responses:[...] | chat:[...] | anthropic:[...] | gemini:[...] }
+               值为 body 内的字段路径（数组），由 request builder 按 kind 写入
+       evidence / audited = 取证来源与日期（与 MODEL_AUDIT 同一纪律）
+
+     ── REASONING_MODEL_POLICIES（key = 官方 model id，逐条取证）──
+       只登记「该 model 自身」的能力；Anthropic 官方 dated snapshot（-YYYYMMDD）
+       沿用 modelPolicy 的同一套后缀归一，不做任何其它模糊匹配。
+
+     ── REASONING_PENDING（审计元数据，**不参与运行时判定**）──
+       已确知存在 reasoning 入口、但字段摆放或取值枚举尚未取证的 provider。
+       它们当前一律 abstain；取证完成后把条目搬进 REASONING_CAPABILITIES 即可
+       （搬运是数据改动，不需要碰 request builder）。
+     ====================================================================== */
+
+  /* canonical 档位（顺序即强度阶梯；UI 的 5 档与之一一对应）。 */
+  var REASONING_TIERS = ['auto', 'low', 'medium', 'high', 'max'];
+  /* 官方枚举可能出现而我们没作为档位暴露的值（用于 values 子集的就近降级比较；
+     顺序必须包含全部合法官方值，且 low/medium/high/max 的相对次序与 REASONING_TIERS 一致）。 */
+  var REASONING_LADDER = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+
+  var REASONING_CAPABILITIES = {
+    /* IB 自有 Responses 端点（Middle Brain 的默认 provider）：Phase 4 既有契约 ——
+       reasoning.effort 直传 low/medium/high/max，由 test_middle_brain_advanced.js 锁定。
+       这不是第三方 provider 的官方参数承诺，而是 IB 自己的 wire 契约。 */
+    astra: {
+      verified: true, appliesToAllModels: true, kind: 'effort',
+      values: ['low', 'medium', 'high', 'max'],
+      wire: { responses: ['reasoning', 'effort'] },
+      audited: '2026-09-11',
+      evidence: 'IB 自有 Responses 端点（Phase 4 契约；test_middle_brain_advanced.js 锁定）'
+    },
+  };
+
+  /* OpenAI：Responses 面 `reasoning.effort`、Chat Completions 面 `reasoning_effort`。
+     该参数**只对推理型 model 成立**：非推理模型（例如目录默认的 `gpt-4o-mini`）收到它会直接
+     400，因此按 model 逐条登记（默认 abstain），沿用 MODEL_POLICIES 的同一纪律 ——
+     新增 id 必须逐条取证，绝不按 `gpt-5` 之类前缀推测。
+     官方档位枚举随模型代次增加（minimal / none / xhigh…），因此只声明并发送
+     low/medium/high 这三个长期稳定的值；max 就近降级为 high 并记录原因。 */
+  var OPENAI_REASONING_MODELS = ['gpt-5.6-luna'];
+
+  /* Anthropic：没有档位枚举，只有 extended thinking 的数值预算
+     （thinking:{type:'enabled',budget_tokens:N}）。官方硬约束：≥1024 且 < max_tokens。
+     只登记已确认支持 extended thinking 的 4.6+/5 系 id（与 MODEL_POLICIES 同一份取证）。 */
+  var ANTHROPIC_THINKING_MODELS = ['claude-sonnet-5', 'claude-opus-4-7', 'claude-opus-4-8', 'claude-opus-5', 'claude-sonnet-4-6', 'claude-opus-4-6'];
+  var REASONING_MODEL_POLICIES = {};
+  OPENAI_REASONING_MODELS.forEach(function (id) {
+    REASONING_MODEL_POLICIES[id] = {
+      verified: true, kind: 'effort', provider: 'openai',
+      values: ['low', 'medium', 'high'],
+      wire: { responses: ['reasoning', 'effort'], chat: ['reasoning_effort'] },
+      audited: '2026-09-11',
+      evidence: 'https://developers.openai.com/api/docs/guides/reasoning?api-mode=responses（推理型 model 专属；非推理模型一律不发送）'
+    };
+  });
+  ANTHROPIC_THINKING_MODELS.forEach(function (id) {
+    REASONING_MODEL_POLICIES[id] = {
+      verified: true, kind: 'budget', provider: 'anthropic',
+      budgets: { low: 1024, medium: 4096, high: 16384, max: 32768 },
+      minBudget: 1024,
+      wire: { anthropic: ['thinking'] },
+      audited: '2026-09-11',
+      evidence: 'https://platform.claude.com/docs/en/build-with-claude/extended-thinking'
+    };
+  });
+
+  /* 未取证 → 一律 abstain（运行时绝不发送）。这里只登记「知道有入口、但字段/取值没取证死」的事实，
+     供后续取证时一条条搬进上面的表。 */
+  var REASONING_PENDING = {
+    deepseek: { note: '官方文档存在 Thinking Mode 页；字段摆放（thinking.type / reasoning_effort）与取值枚举未取证', evidence: 'https://api-docs.deepseek.com/guides/thinking_mode/' },
+    gemini: { note: 'generationConfig.thinkingConfig 存在，但 thinkingLevel（3.x）与 thinkingBudget（2.5）按代次不同，未逐条取证', evidence: 'https://ai.google.dev/api/generate-content' },
+    glm: { note: '官方「深度思考」页确认 thinking 开关存在；档位取值未取证', evidence: 'https://docs.bigmodel.cn/cn/guide/capabilities/thinking' },
+    qwen: { note: 'enable_thinking / thinking_budget 字段存在；兼容模式下的摆放位置未取证', evidence: 'https://docs.qwencloud.com/developer-guides/text-generation/thinking' },
+    minimax: { note: 'thinking 参数存在；wire 细节未取证', evidence: 'https://platform.minimaxi.com/docs/api-reference/text-chat-openai' },
+    mimo: { note: 'thinking_type 开关存在（第三方实现交叉印证）；取值域未取证', evidence: 'https://mimo.mi.com/docs/zh-CN/api/chat/responses' },
+    custom: { note: '兼容接入：本目录不为其声明任何能力（capabilitiesKnown=false）', evidence: '' }
+  };
+
+  function _reasoningStr(v) { return (v == null ? '' : String(v)).trim(); }
+
+  /* canonical 档位归一（唯一实现）：非法 / 缺失 → 'auto'。
+     历史档位 'xhigh' 合并进 'high'（新 canonical 集合不再暴露 XHigh）。 */
+  function normalizeReasoningTier(v) {
+    var s = _reasoningStr(v).toLowerCase();
+    if (s === 'xhigh') return 'high';
+    return REASONING_TIERS.indexOf(s) >= 0 ? s : 'auto';
+  }
+
+  /* model id 归一（与 modelPolicy 共用同一套 dated snapshot 规则）。 */
+  function _reasoningModelKey(model) {
+    var id = _reasoningStr(model);
+    if (!id) return '';
+    if (REASONING_MODEL_POLICIES[id]) return id;
+    var base = id.replace(MODEL_DATE_SUFFIX_RE, '');
+    return (base && REASONING_MODEL_POLICIES[base]) ? base : id;
+  }
+
+  /* capability lookup（唯一实现）：model 级逐条取证优先；否则取 provider 级条目，
+     但仅当它显式声明 appliesToAllModels===true。查不到 / 未取证 → null（abstain）。 */
+  function reasoningCapability(provider, model) {
+    var prov = _reasoningStr(provider).toLowerCase();
+    var modelId = _reasoningStr(model);
+    var key = _reasoningModelKey(modelId);
+    var byModel = key ? REASONING_MODEL_POLICIES[key] : null;
+    if (byModel && byModel.verified === true) {
+      return {
+        source: 'model', provider: byModel.provider || prov, model: modelId, kind: byModel.kind,
+        values: (byModel.values || []).slice(), budgets: byModel.budgets || null,
+        minBudget: byModel.minBudget != null ? byModel.minBudget : 1024,
+        wire: byModel.wire || {}, verified: true,
+        evidence: byModel.evidence || '', audited: byModel.audited || ''
+      };
+    }
+    var cap = REASONING_CAPABILITIES[prov] || null;
+    if (!cap || cap.verified !== true || cap.appliesToAllModels !== true) return null;
+    return {
+      source: 'provider', provider: prov, model: modelId, kind: cap.kind,
+      values: (cap.values || []).slice(), budgets: cap.budgets || null,
+      minBudget: cap.minBudget != null ? cap.minBudget : 1024,
+      wire: cap.wire || {}, verified: true,
+      evidence: cap.evidence || '', audited: cap.audited || ''
+    };
+  }
+
+  /* 档位 → 官方支持值的就近映射（tie → 更低档，绝不向上越档）。
+     返回 null = 该能力下没有任何可表达的值。 */
+  function _reasoningNearest(values, tier) {
+    var want = REASONING_LADDER.indexOf(tier);
+    if (want < 0) return null;
+    var best = null, bestDist = Infinity;
+    for (var i = 0; i < values.length; i++) {
+      var at = REASONING_LADDER.indexOf(String(values[i]));
+      if (at < 0) continue;
+      var dist = Math.abs(at - want);
+      if (dist < bestDist || (dist === bestDist && at < REASONING_LADDER.indexOf(best))) { best = String(values[i]); bestDist = dist; }
+    }
+    return best;
+  }
+
+  /* canonical 档位 → 真实 wire 计划（**纯函数**，无副作用）。
+     spec: {provider, model, format, effort, maxTokens}
+     返回（字段全部会被 telemetry 记录，绝不包含 prompt / apiKey / body 内容）：
+       {requested, effective, wirePath, value, fallbackReason, capability}
+       · value === undefined → 不写任何字段（auto / abstain）
+       · fallbackReason: '' | 'auto' | 'unverified_provider' | 'format_unsupported'
+                        | 'tier_unsupported' | 'tier_downgraded' | 'budget_exceeds_max_tokens'
+                        | 'budget_clamped_to_max_tokens'
+     format: 'responses' | 'openai'(= Chat Completions) | 'anthropic' | 'gemini'。
+     provider/model 由调用方从**本次请求的 spec** 传入（不是 Middle Brain 配置）。 */
+  function reasoningWirePlan(spec) {
+    spec = spec || {};
+    var requested = normalizeReasoningTier(spec.effort);
+    var wirePlan = { requested: requested, effective: 'auto', wirePath: [], value: undefined, fallbackReason: '', capability: null };
+    if (requested === 'auto') { wirePlan.fallbackReason = 'auto'; return wirePlan; }
+    var cap = reasoningCapability(spec.provider, spec.model);
+    if (!cap) { wirePlan.fallbackReason = 'unverified_provider'; return wirePlan; }
+    wirePlan.capability = cap;
+    var fmt = _reasoningStr(spec.format) || 'openai';
+    var wireKey = fmt === 'responses' ? 'responses' : (fmt === 'openai' ? 'chat' : fmt);
+    var path = (cap.wire && cap.wire[wireKey]) || null;
+    if (!path || !path.length) { wirePlan.fallbackReason = 'format_unsupported'; return wirePlan; }
+    if (cap.kind === 'effort') {
+      var picked = _reasoningNearest(cap.values || [], requested);
+      if (!picked) { wirePlan.fallbackReason = 'tier_unsupported'; return wirePlan; }
+      wirePlan.effective = normalizeReasoningTier(picked);
+      wirePlan.wirePath = path.slice();
+      wirePlan.value = picked;
+      wirePlan.fallbackReason = picked === requested ? '' : 'tier_downgraded';
+      return wirePlan;
+    }
+    if (cap.kind === 'budget') {
+      var want = cap.budgets ? cap.budgets[requested] : null;
+      if (want == null) { wirePlan.fallbackReason = 'tier_unsupported'; return wirePlan; }
+      var budget = Number(want), clamped = false;
+      var maxTokens = Number(spec.maxTokens);
+      if (isFinite(maxTokens) && maxTokens > 0 && budget >= maxTokens) {
+        budget = Math.floor(maxTokens) - 1;
+        clamped = true;
+        if (budget < cap.minBudget) { wirePlan.fallbackReason = 'budget_exceeds_max_tokens'; return wirePlan; }
+      }
+      wirePlan.effective = requested;
+      wirePlan.wirePath = path.slice();
+      wirePlan.value = { type: 'enabled', budget_tokens: budget };
+      wirePlan.fallbackReason = clamped ? 'budget_clamped_to_max_tokens' : '';
+      return wirePlan;
+    }
+    wirePlan.fallbackReason = 'tier_unsupported';
+    return wirePlan;
+  }
+
+  /* ══════════════════════════════════════════════════════════════════════
      P16 · Provider Onboarding Metadata（**唯一**一份获取/接入元数据）
      ----------------------------------------------------------------------
      定位：这是 onboarding 元数据的 canonical 源，与 PROVIDERS 同层、同文件，
@@ -766,6 +979,15 @@
     modelSupportsSamplingParameters: modelSupportsSamplingParameters,
     modelSupportsAssistantPrefill: modelSupportsAssistantPrefill,
     providerDefaultModel: providerDefaultModel,
-    modelAuditEntry: modelAuditEntry
+    modelAuditEntry: modelAuditEntry,
+    /* P21 reasoning 能力（keyed metadata，与 PROVIDERS 同源同文件）：
+       能力数据 + 唯一归约函数；request builder 只调用 reasoningWirePlan()。 */
+    REASONING_TIERS: REASONING_TIERS,
+    REASONING_CAPABILITIES: REASONING_CAPABILITIES,
+    REASONING_MODEL_POLICIES: REASONING_MODEL_POLICIES,
+    REASONING_PENDING: REASONING_PENDING,
+    normalizeReasoningTier: normalizeReasoningTier,
+    reasoningCapability: reasoningCapability,
+    reasoningWirePlan: reasoningWirePlan
   };
 });

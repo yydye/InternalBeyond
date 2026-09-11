@@ -239,7 +239,11 @@
     ['MB_CI_SCHEMA', 'integrity'],
     ['MB_CI_TIMEOUT_MS', 'integrity'],
     ['middleBrainImageMode', 'config'],
-    ['normalizeMiddleBrainImageMode', 'config']
+    ['normalizeMiddleBrainImageMode', 'config'],
+    /* P21 · 统一思考深度（canonical reasoningEffort）：消费者唯一读取入口。
+       刻意不挂 window 兼容别名（与 middleBrainExecute 同一纪律）：canonical 路径只有
+       IB.middleBrain；provider 能力翻译只发生在 provider request builder。 */
+    ['middleBrainReasoningEffort', 'config']
   ];
   var MB_LAYERS = {
     config: CFG, policy: POL, astra: ASTRA, judge: JUDGE, integrity: INTEG,

@@ -72,7 +72,12 @@ function createNodeModelPort(deps) {
       jsonMode: !!(request && request.jsonMode),
       jsonPrefill: request && request.jsonPrefill,
       maxTokens: maxTok,
-      temperature: temperature
+      temperature: temperature,
+      /* P21 · 统一思考深度：canonical 值由调用方给出（浏览器侧 = Middle Brain 配置；
+         Node 侧当前无 consumer 提供 → 缺省 'auto' = 一个字段都不写，行为与上线前逐字节一致）。
+         翻译只发生在 buildRequestBody 内部（provider 能力表），本文件不做任何 provider 判定。 */
+      reasoningEffort: (request && request.reasoningEffort) || 'auto',
+      consumer: (request && request.consumer) || ''
     });
     /* P19 · 本次请求是否真的用了 legacy assistant prefill（唯一判定 = IBModelCore 的
        model policy），以及真实使用的 seed 文本。供 consumer 决定解析时是否允许
@@ -128,6 +133,11 @@ function createNodeModelPort(deps) {
       let wire;
       try { wire = JSON.parse(rawText); } catch (e) { throw new Error('invalid JSON response'); }
       const parsed = IBMC.parseResponse(wire, spec);
+      /* P21：实际 reasoning tokens 只读回填（观测用；读不到即跳过，不参与任何计量口径） */
+      try {
+        const _rt = IBMC.reasoningTokensFromUsage(parsed.usage, IBMC.providerFormat(spec.provider));
+        if (_rt != null) IBMC.noteReasoningTokens(_rt, { consumer: (request && request.consumer) || '', provider: spec.provider, model: spec.model });
+      } catch (_) { /* 观测失败不影响执行 */ }
       onEvent({ type: 'done', truncated: parsed.truncated, reasoning: parsed.reasoning, usage: parsed.usage });
       return { text: parsed.content, reasoning: parsed.reasoning, truncated: parsed.truncated, usage: parsed.usage, prefillApplied: prefillApplied, prefillSeed: prefillSeed };
     } catch (e) {

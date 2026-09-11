@@ -1,11 +1,14 @@
 /* ====================================================================
    Middle Brain Phase 4 · Astra Advanced Settings · CDP 测试
-   覆盖：默认 reasoningEffort/speed / 全档保存恢复 / 非法回退默认 /
-        老配置无字段 → 默认 / Responses 映射逐档 reasoning.effort /
+   覆盖：默认 reasoningEffort=auto / speed=standard / 全档保存恢复 / 非法回退 auto /
+        老配置（无 v2 迁移标记）一次性迁移为 auto（不发任何 reasoning 参数）/
+        Responses 映射逐档 reasoning.effort（P21：auto 不发；xhigh 合并进 high）/
         speed→service_tier 官方映射（fast 发送、standard 省略）/
         不出现 temperature·top_p·logprobs·reasoning_effort·伪造 speed /
         Compression 与 Judge 均继承当前 reasoning/speed /
         Admission Gate 不变 / Memory / Character Provider 不变。
+   P21 说明：canonical 档位集合 = auto/low/medium/high/max（xhigh 已合并进 high）；
+        「用户选过」以 reasoningEffortV2 标记为准，旧配置一律按 auto 解析。
    只测 Middle Brain；不改生产代码。运行：node test_middle_brain_advanced.js
    ==================================================================== */
 'use strict';
@@ -43,24 +46,28 @@ async function main(){
 
     /* ============ A. 配置：默认 / 保存恢复 / 非法回退 / 老配置 ============ */
     /* ① 默认 reasoningEffort=medium, speed=standard */
-    check('cfg.defaults',await ev(cdp,"(async function(){var c=await getMiddleBrainConfig();return c.reasoningEffort==='medium'&&c.speed==='standard'})()"));
+    check('cfg.defaults',await ev(cdp,"(async function(){var c=await getMiddleBrainConfig();return c.reasoningEffort==='auto'&&c.speed==='standard'})()"));
     /* ② 全档 reasoning 保存恢复 */
-    check('cfg.reasoning.all',await ev(cdp,"(async function(){var ok=true;var a=['low','medium','high','xhigh','max'];for(var i=0;i<a.length;i++){await saveMiddleBrainConfig({reasoningEffort:a[i]});var c=await getMiddleBrainConfig();if(c.reasoningEffort!==a[i])ok=false}return ok})()"));
+    check('cfg.reasoning.all',await ev(cdp,"(async function(){var ok=true;var a=['auto','low','medium','high','max'];for(var i=0;i<a.length;i++){await saveMiddleBrainConfig({reasoningEffort:a[i],reasoningEffortV2:true});var c=await getMiddleBrainConfig();if(c.reasoningEffort!==a[i])ok=false;if((await IB.middleBrain.middleBrainReasoningEffort())!==a[i])ok=false}return ok})()"));
     /* ③ speed 两档保存恢复（顺序 await） */
     check('cfg.speed.all',await ev(cdp,"(async function(){var ok=true;for(var i=0;i<2;i++){var s=['standard','fast'][i];await saveMiddleBrainConfig({speed:s});var c=await getMiddleBrainConfig();if(c.speed!==s)ok=false}return ok})()"));
     /* ④ 非法 reasoning → 请求层回退 medium */
-    check('normalize.reasoning.invalid',await ev(cdp,"(function(){return normalizeMiddleBrainReasoningEffort('banana')==='medium'&&normalizeMiddleBrainReasoningEffort('HIGH')==='high'&&normalizeMiddleBrainReasoningEffort(null)==='medium'})()"));
+    check('normalize.reasoning.invalid',await ev(cdp,"(function(){return normalizeMiddleBrainReasoningEffort('banana')==='auto'&&normalizeMiddleBrainReasoningEffort('HIGH')==='high'&&normalizeMiddleBrainReasoningEffort(null)==='auto'})()"));
+    /* P21：历史 xhigh 合并进 high（canonical 不再暴露 XHigh 档） */
+    check('normalize.reasoning.xhighMerged',await ev(cdp,"(function(){return normalizeMiddleBrainReasoningEffort('xhigh')==='high'})()"));
     /* ⑤ 非法 speed → standard */
     check('normalize.speed.invalid',await ev(cdp,"(function(){return normalizeMiddleBrainSpeed('turbo')==='standard'&&normalizeMiddleBrainSpeed('FAST')==='fast'&&normalizeMiddleBrainSpeed(null)==='standard'})()"));
     /* ⑥ 老配置无字段 → 正常工作（默认 medium/standard 注入请求）。
        用 dbPut 直写一份旧格式（无 reasoningEffort/speed），getMiddleBrainConfig 合并默认 -> medium/standard。 */
-    check('cfg.legacyNoFields',await ev(cdp,"(async function(){await dbPut('apiSettings',{id:'middle_brain',enabled:true,endpoint:'"+ep+"',model:'gpt-6-astra',apiKey:'sk-x'});var c=await getMiddleBrainConfig();var q=await buildMiddleBrainResponsesRequest(null,[{role:'user',content:'x'}],{});return c.reasoningEffort==='medium'&&c.speed==='standard'&&q.body.reasoning && q.body.reasoning.effort==='medium'&&!('service_tier' in q.body)})()"));
+    check('cfg.legacyMigratedToAuto',await ev(cdp,"(async function(){await dbPut('apiSettings',{id:'middle_brain',enabled:true,endpoint:'"+ep+"',model:'gpt-6-astra',apiKey:'sk-x',reasoningEffort:'medium'});var c=await getMiddleBrainConfig();var q=await buildMiddleBrainResponsesRequest(null,[{role:'user',content:'x'}],{});return c.reasoningEffort==='medium'&&c.reasoningEffortV2===undefined&&c.speed==='standard'&&q.body.reasoning===undefined&&!('service_tier' in q.body)&&(await IB.middleBrain.middleBrainReasoningEffort())==='auto'})()"));
 
     /* ============ B. Responses 映射逐档 ============ */
     check('map.low',await ev(cdp,"(async function(){var q=await buildMiddleBrainResponsesRequest(null,[{role:'user',content:'x'}],{reasoningEffort:'low'});return q.body.reasoning.effort==='low'})()"));
     check('map.medium',await ev(cdp,"(async function(){var q=await buildMiddleBrainResponsesRequest(null,[{role:'user',content:'x'}],{reasoningEffort:'medium'});return q.body.reasoning.effort==='medium'})()"));
     check('map.high',await ev(cdp,"(async function(){var q=await buildMiddleBrainResponsesRequest(null,[{role:'user',content:'x'}],{reasoningEffort:'high'});return q.body.reasoning.effort==='high'})()"));
-    check('map.xhigh',await ev(cdp,"(async function(){var q=await buildMiddleBrainResponsesRequest(null,[{role:'user',content:'x'}],{reasoningEffort:'xhigh'});return q.body.reasoning.effort==='xhigh'})()"));
+    check('map.xhighLegacyMerged',await ev(cdp,"(async function(){var q=await buildMiddleBrainResponsesRequest(null,[{role:'user',content:'x'}],{reasoningEffort:'xhigh'});return q.body.reasoning.effort==='high'})()"));
+    /* P21：auto = 不发送任何 reasoning 参数（provider 原生行为） */
+    check('map.autoSilent',await ev(cdp,"(async function(){var q=await buildMiddleBrainResponsesRequest(null,[{role:'user',content:'x'}],{reasoningEffort:'auto'});return q.body.reasoning===undefined})()"));
     check('map.max',await ev(cdp,"(async function(){var q=await buildMiddleBrainResponsesRequest(null,[{role:'user',content:'x'}],{reasoningEffort:'max'});return q.body.reasoning.effort==='max'})()"));
     /* speed 映射 */
     check('map.speed.standard',await ev(cdp,"(async function(){var q=await buildMiddleBrainResponsesRequest(null,[{role:'user',content:'x'}],{speed:'standard'});return !('service_tier' in q.body)&&!('speed' in q.body)})()"));
@@ -72,36 +79,38 @@ async function main(){
 
     /* ============ C. Pipeline：Compression 与 Judge 均继承当前 reasoning/speed ============ */
     /* 恢复 admission + judge 开启，设 high+fast（确认 Judge 也继承速度/强度配置） */
-    await ev(cdp,"(async function(){await saveMiddleBrainConfig({admissionEnabled:true,middleBrainJudgeEnabled:true,reasoningEffort:'high',speed:'fast'});})()");
+    await ev(cdp,"(async function(){await saveMiddleBrainConfig({admissionEnabled:true,middleBrainJudgeEnabled:true,reasoningEffort:'high',reasoningEffortV2:true,speed:'fast'});})()");
     mock.bodies=[]; mock.compCount=0; mock.judgeCount=0;
     let r=await ev(cdp,"(async function(){var res=await middleBrainCompressPipeline('pa','用户问：我该换什么设备',{memoryCtx:'甲'.repeat(9000),dialogue:['用户问：我该换什么设备']});return {src:res.source,j:res.judge?{rel:res.judge.relevance}:null};})()");
     check('pipeline.inheritHighFast',(function(){const all=mock.bodies;return mock.compCount===1&&mock.judgeCount===1&&all.length===2&&all.every(function(b){return b.reasoning&&b.reasoning.effort==='high'&&b.service_tier==='fast'})})(),JSON.stringify({comp:mock.compCount,judge:mock.judgeCount,bodies:mock.bodies.map(function(b){return {e:b.reasoning&&b.reasoning.effort,st:b.service_tier}}) }));
     check('pipeline.judgeSameConfig',r.j&&r.j.rel===0.92&&r.src==='astra',JSON.stringify(r));
-    /* 默认档（standard）不发送 service_tier，压缩与 judge 均无 */
-    await ev(cdp,"(async function(){await saveMiddleBrainConfig({reasoningEffort:'medium',speed:'standard'});})()");
+    /* P21 · auto + standard：压缩与 judge 都必须是「零 reasoning 参数 + 无 service_tier」 */
+    await ev(cdp,"(async function(){await saveMiddleBrainConfig({reasoningEffort:'auto',reasoningEffortV2:true,speed:'standard'});})()");
     mock.bodies=[]; mock.compCount=0; mock.judgeCount=0;
     r=await ev(cdp,"(async function(){var res=await middleBrainCompressPipeline('pb','用户问：我该换什么设备',{memoryCtx:'甲'.repeat(9000),dialogue:['用户问：我该换什么设备']});return {src:res.source};})()");
-    check('pipeline.standardOmitsTier',(function(){const all=mock.bodies;return all.length===2&&all.every(function(b){return !('service_tier' in b)&&b.reasoning&&b.reasoning.effort==='medium'})})(),JSON.stringify({comp:mock.compCount,judge:mock.judgeCount}));
+    check('pipeline.autoStandardOmitsBoth',(function(){const all=mock.bodies;return all.length===2&&all.every(function(b){return !('service_tier' in b)&&b.reasoning===undefined})})(),JSON.stringify({comp:mock.compCount,judge:mock.judgeCount}));
 
     /* ============ D. Regression：Admission Gate / Memory / Character Provider ============ */
     check('regress.admissionGate',await ev(cdp,"(async function(){var g=await middleBrainAdmissionGate('preg','x',{signals:{contextChars:8000,dialogueChars:300,memoryItems:1,understandingItems:1,threadItems:1,momentItems:0,localCompressionRatio:1,conflictSignal:false,multipleThreads:false,nearBudget:true},now:0});return g.useAstra===true&&g.reason==='near_budget'})()"));
     check('regress.zeroWrite',await ev(cdp,"(async function(){var mem=await dbGetAll('memories');var und=await dbGetAll('understandings');var th=await dbGetAll('threads');var mom=await dbGetAll('moments');return (mem||[]).length===0&&(und||[]).length===0&&(th||[]).length===0&&(mom||[]).length===0})()"));
     check('regress.providerUntouched',await ev(cdp,"(async function(){var cfgs=apiConfigs||[];return cfgs.length===0})()"));
     /* ⑤ UI：loadMiddleBrainConfigUI 后 active 状态与配置同步 */
-    await ev(cdp,"(async function(){await saveMiddleBrainConfig({reasoningEffort:'high',speed:'fast'});loadMiddleBrainConfigUI();})()");
-    check('ui.summarySynced',await ev(cdp,"(function(){var s=document.getElementById('mb-adv-summary');return s&&/High · Fast/.test(s.textContent)})()"));
+    await ev(cdp,"(async function(){await saveMiddleBrainConfig({reasoningEffort:'high',reasoningEffortV2:true,speed:'fast'});loadMiddleBrainConfigUI();})()");
+    check('ui.summarySynced',await ev(cdp,"(function(){var s=document.getElementById('mb-adv-summary');return s&&/高 · Fast/.test(s.textContent)})()"));
     /* ⑥ UI（Codex 风格滑动选择）：slider 渲染 / 档位 active / 模型 swiper / 点击与切换 */
-    await ev(cdp,"(async function(){await saveMiddleBrainConfig({enabled:true,endpoint:'"+ep+"',model:'gpt-6-astra',apiKey:'sk-x',admissionEnabled:true,middleBrainJudgeEnabled:true,reasoningEffort:'high',speed:'fast'});loadMiddleBrainConfigUI();})()");
+    await ev(cdp,"(async function(){await saveMiddleBrainConfig({enabled:true,endpoint:'"+ep+"',model:'gpt-6-astra',apiKey:'sk-x',admissionEnabled:true,middleBrainJudgeEnabled:true,reasoningEffort:'high',reasoningEffortV2:true,speed:'fast'});loadMiddleBrainConfigUI();})()");
     check('ui.sliderBuilt',await ev(cdp,"(function(){return !!document.getElementById('mb-adv-reasoning')&&document.querySelectorAll('#mb-adv-reasoning .mb-tick').length===5&&!!document.querySelector('#mb-adv-speed .mb-speed-btn')&&!!document.querySelector('#mb-adv-reasoning .mb-thumb')})()"));
     check('ui.reasoningActiveHigh',await ev(cdp,"(function(){var a=document.querySelector('#mb-adv-reasoning .mb-tick.mb-tick-active');return a&&a.getAttribute('data-value')==='high'})()"));
     check('ui.speedActiveFast',await ev(cdp,"(function(){var b=document.getElementById('mb-speed-btn');var l=document.getElementById('mb-speed-label');return b&&b.classList.contains('mb-speed-on')&&l&&l.textContent==='Fast'})()"));
     check('ui.modelNameCurrent',await ev(cdp,"(function(){var n=document.getElementById('mb-model-name');return n&&n.textContent==='gpt-6-astra'})()"));
     check('ui.modelCellsRendered',await ev(cdp,"(function(){var cells=document.querySelectorAll('.mb-model-cell');return cells.length===2&&Array.prototype.every.call(cells,function(c){return c.textContent==='gpt-6-astra'||c.textContent==='gpt-5.6-sol'})&&!!document.querySelector('.mb-model-arrow')})()"));
-    /* 思考强度 = 拖动滑块（dragOnly）：档位点不可点击跳转、手柄可抓取（拖动手势） */
-    check('ui.reasoningTickNotClickable',await ev(cdp,"(async function(){await saveMiddleBrainConfig({reasoningEffort:'medium',speed:'standard'});loadMiddleBrainConfigUI();document.querySelector('#mb-adv-reasoning .mb-tick[data-value=\"max\"]').click();var c=await getMiddleBrainConfig();return c.reasoningEffort==='medium'})()"));
-    check('ui.reasoningDragMode',await ev(cdp,"(function(){var rt=document.querySelector('#mb-adv-reasoning .mb-thumb');return rt&&rt.classList.contains('mb-thumb-grab')})()"));
-    /* 拖动/切换提交路径 = mbReasoningPick：同步刷新 active 档位 + 当前值标签（持久化已由 cfg.* 异步 await 测试证实） */
-    check('ui.reasoningCommitWiring',await ev(cdp,"(function(){mbReasoningPick('high');var a=document.querySelector('#mb-adv-reasoning .mb-tick.mb-tick-active');var v=document.querySelector('#mb-adv-reasoning .mb-adv-slider-value');return a&&a.getAttribute('data-value')==='high'&&v&&v.textContent==='High'})()"));
+    /* P21 思考强度 = Codex 风格分段/滑动选择器：五档（自动/低/中/高/最大），
+       档位点可点击即选，也支持拖动；点击与拖动的提交路径都 = mbReasoningPick。 */
+    check('ui.reasoningTiers',await ev(cdp,"(function(){var order=Array.prototype.map.call(document.querySelectorAll('#mb-adv-reasoning .mb-tick'),function(t){return t.dataset.value});var text=Array.prototype.map.call(document.querySelectorAll('#mb-adv-reasoning .mb-lbl'),function(l){return l.textContent});return JSON.stringify(order)===JSON.stringify(['auto','low','medium','high','max'])&&text.join('')==='自动低中高最大'})()"));
+    check('ui.reasoningTickClickable',await ev(cdp,"(async function(){await saveMiddleBrainConfig({reasoningEffort:'medium',reasoningEffortV2:true,speed:'standard'});loadMiddleBrainConfigUI();document.querySelector('#mb-adv-reasoning .mb-tick[data-value=\"max\"]').click();var end=Date.now()+3000;for(;;){var c=await getMiddleBrainConfig();if(c.reasoningEffort==='max')return true;if(Date.now()>end)return false;await new Promise(function(r){setTimeout(r,25)})}})()"));
+    check('ui.reasoningSingleThumb',await ev(cdp,"(function(){return document.querySelectorAll('#mb-adv-reasoning .mb-thumb').length===1&&document.querySelectorAll('#mb-adv-reasoning .mb-trk').length===1})()"));
+    /* 切换提交路径 = mbReasoningPick：同步刷新 active 档位 + 当前值标签（持久化已由 cfg.* 异步 await 测试证实） */
+    check('ui.reasoningCommitWiring',await ev(cdp,"(function(){mbReasoningPick('high');var a=document.querySelector('#mb-adv-reasoning .mb-tick.mb-tick-active');var v=document.querySelector('#mb-adv-reasoning .mb-adv-slider-value');return a&&a.getAttribute('data-value')==='high'&&v&&v.textContent==='高'})()"));
     /* Speed = ⚡ 闪电按钮：点击切快速模式（紫色激活态），再点回标准；同步刷新 label/<mb-speed-on> */
     await ev(cdp,"(async function(){await saveMiddleBrainConfig({speed:'standard'});loadMiddleBrainConfigUI();})()");
     check('ui.speedBtnToggle',await ev(cdp,"(function(){var b=document.getElementById('mb-speed-btn');var l=document.getElementById('mb-speed-label');b.click();var on=b.classList.contains('mb-speed-on')&&l.textContent==='Fast';b.click();var off=!b.classList.contains('mb-speed-on')&&l.textContent==='Standard';return on&&off})()"));
@@ -124,7 +133,7 @@ async function main(){
     await ev(cdp,"(async function(){navTo('api');await dbDelete('apiSettings','middle_brain_ui');await loadMiddleBrainConfigUI();})()");
     check('collapse.defaultCollapsed',await ev(cdp,"(function(){var b=document.getElementById('mb-collapse-body'),t=document.getElementById('mb-collapse-toggle');return !!b&&b.classList.contains('is-collapsed')&&t.getAttribute('aria-expanded')==='false'&&getComputedStyle(b).visibility==='hidden'&&b.getBoundingClientRect().height===0})()"));
     /* 摘要必须由当前配置动态生成：model · reasoning · processing · image mode */
-    check('collapse.headerSummary',await ev(cdp,"(async function(){var c=await getMiddleBrainConfig();var R={low:'Low',medium:'Medium',high:'High',xhigh:'XHigh',max:'Max'};var S={standard:'Standard',fast:'Fast'};var I={fast:'Fast',auto:'Auto',precision:'Precision'};var exp=c.model+' · '+R[c.reasoningEffort]+' · '+S[c.speed]+' · '+I[c.imageMode];var s=document.getElementById('mb-collapse-summary');var b=document.getElementById('mb-collapse-badge');return !!s&&s.textContent===exp&&b&&b.textContent===(c.enabled?'Enabled':'Disabled')})()"));
+    check('collapse.headerSummary',await ev(cdp,"(async function(){var c=await getMiddleBrainConfig();var R={auto:'自动',low:'低',medium:'中',high:'高',max:'最大'};var S={standard:'Standard',fast:'Fast'};var I={fast:'Fast',auto:'Auto',precision:'Precision'};var re=await IB.middleBrain.middleBrainReasoningEffort();var exp=c.model+' · '+R[re]+' · '+S[c.speed]+' · '+I[c.imageMode];var s=document.getElementById('mb-collapse-summary');var b=document.getElementById('mb-collapse-badge');return !!s&&s.textContent===exp&&b&&b.textContent===(c.enabled?'Enabled':'Disabled')})()"));
     /* header 始终可见且紧凑（不接近展开态高度） */
     check('collapse.headerCompact',await ev(cdp,"(function(){var t=document.getElementById('mb-collapse-toggle'),b=document.getElementById('mb-collapse-body');var r=t.getBoundingClientRect();return r.height>0&&r.height<120&&getComputedStyle(t).visibility!=='hidden'&&b.getBoundingClientRect().height===0})()"));
     /* 点击展开 → aria-expanded=true、body 可见有高度；再点击收起 */

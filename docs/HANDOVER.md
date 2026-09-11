@@ -150,3 +150,27 @@ node tests/test-all.js --all                 # 最终验收（--quick 约 17s）
 ---
 
 *本文档只描述代码事实与已配置状态，不包含任何密钥原文。历史细节见 [CHANGELOG.md](CHANGELOG.md)。*
+
+## P21 · 统一思考深度（reasoningEffort）· 已完成（2026-09-11）
+
+- **做了什么**：Middle Brain 增加 canonical `reasoningEffort`（`auto/low/medium/high/max`，默认 auto）；
+  能力事实集中在 `assets/js/provider-directory.js`，翻译发生在 `assets/js/ib-model-core.js`
+  的 request builder 边界；UI 用五档分段/滑动选择器（自动/低/中/高/最大，点档位即选），
+  仍在既有折叠区块内，不新增页面。**auto 不发送任何 reasoning 参数**，所以上线不改变现有请求。
+- **当前生效范围**：`astra`（Middle Brain 自身 Responses 调用，直传档位）；`openai` 的**推理型 model**
+  （当前逐条取证登记 `gpt-5.6-luna`，官方值域 low/medium/high，max 就近降级）；
+  Anthropic 走 thinking 预算表（逐条取证的 4.6+/5 系 model id）。
+  **非推理型 model 一律不发** —— OpenAI 的 `reasoning_effort` 对非推理模型会直接 400，
+  所以目录默认的 `gpt-4o-mini` 被明确排除。
+- **当前刻意不生效**：`deepseek`（含实测用的 `deepseek-flash`）/ `gemini` / `glm` / `qwen` /
+  `minimax` / `mimo` / `custom` / 未知 provider —— 未取证就发电商参数会在生产聊天路径上做实验，
+  所以一律 abstain 并记 `reasoningFallbackReason='unverified_provider'`。
+  取证清单与"还差什么"逐条登记在 `provider-directory.js` 的 `REASONING_PENDING`。
+- **观测怎么做**：`IBModelCore.reasoningTrace(10)` 看
+  `requestedReasoningEffort → effectiveReasoningEffort → reasoningWireParam → reasoningFallbackReason
+  → reasoningTokens`；不落盘、不含 prompt / 请求体 / apiKey。
+- **回滚**：把 `reasoningEffort` 改回 `auto`（UI 一键）即恢复"什么都不发"；
+  代码回滚只需还原 `provider-directory.js` 的 P21 表 + `ib-model-core.js` 的 `applyReasoningEffort` 调用点。
+- **遗留（登记未做）**：未取证 provider 的档位；Anthropic 预算与 maxTokens 的联动策略
+  （提高档位会让 reasoning 更吃 token，与 D12 的教训相关）；Node consumer 目前无人提供
+  canonical effort（Node ModelPort 已支持，但 Middle Brain 配置在浏览器侧）。

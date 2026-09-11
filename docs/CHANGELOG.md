@@ -15,6 +15,34 @@
 
 - 本地 git 基线提交 `e4074cc`（`chore: establish Internal Beyond baseline`）。此后长期有未跟踪文件（`.gitignore`、`active-message-service.js`、`start-active-service.cmd`、`start-vision-service.cmd`、`test_vision.py`、`vision/` 等），直至 2026-08-14 才纳入版本控制。
 
+## 2026-09-11 · P21 统一思考深度（Middle Brain reasoningEffort · capability-driven）
+
+把「思考深度」做成 Middle Brain 的一个 canonical 字段，并在 **provider adapter 边界**按能力表翻译成
+真实 wire 参数；**默认 auto = 一个字段都不发**，因此上线本身不改变任何现有请求。
+
+| 文件 | 说明 |
+|---|---|
+| `assets/js/provider-directory.js` | 新增 P21 唯一能力真源：`REASONING_TIERS` / `REASONING_CAPABILITIES`（provider 级：astra 直传）/ `REASONING_MODEL_POLICIES`（model 级逐条取证：OpenAI **推理型** model 的官方值域、Anthropic 4.6+/5 系的 thinking 预算）/ `REASONING_PENDING`（未取证只做审计登记，运行时 abstain）+ `normalizeReasoningTier` / `reasoningCapability` / `reasoningWirePlan` |
+| `assets/js/ib-model-core.js` | adapter 边界唯一翻译器 `applyReasoningEffort(body, spec, opts)`（auto/未取证/该 format 不支持 → 不写任何字段）+ 接入 `buildRequestBody`（anthropic/gemini/openai 三支）与 `AstraAdapter.buildResponsesRequest`；新增只读观测环 `reasoningTrace()`（四要素 + reasoningTokens）；`reasoningTokensFromUsage` 从 `completion_tokens_details` / `output_tokens_details` / `thoughtsMetadata` 只读提取 |
+| `assets/js/middle-brain-config.js` | canonical 档位改 `auto/low/medium/high/max`（默认 `auto`）；`xhigh → high`；旧配置一次性迁移（`reasoningEffortV2` 标记，加载路径零写入）；消费者唯一读取入口 `middleBrainReasoningEffort()`（MB 未启用恒 auto）；Reasoning 卡片改为五档分段/滑动选择器（自动/低/中/高/最大，点档位即选 + 可拖动），沿用既有折叠与视觉语言 |
+| `assets/js/middle-brain-astra.js` | MB 自身调用走同一个 canonical 值（auto 不发）；usage 里的实际 reasoning tokens 只读回填到同一次调用的 trace |
+| `assets/js/middle-brain-judge.js` / `middle-brain-integrity.js` | 只补 consumer 归因标签（`middle_brain.judge` / `middle_brain.integrity`），JSON/判定逻辑零改动 |
+| `assets/js/middle-brain.js` | 门面新增 P21 读取键 `middleBrainReasoningEffort`（刻意不挂 window 别名，与执行缝同一纪律） |
+| `assets/js/communication.js` | 浏览器侧所有角色模型调用（角色聊天/群聊/日记/主动消息/朋友圈/工具轮/信件摘要）统一读一次 canonical 档位并在 6 个 body 组装点各 1 行应用；**零 provider 分支**；3 处 usage 点只读回填 reasoning tokens |
+| `active/node-model-port.js` | Node 执行面与浏览器同一份翻译（`request.reasoningEffort`，缺省 auto 不发） |
+| `InternalBeyond.html` | 静态摘要默认值改「自动 · Standard」；卡片提示改「思考深度 / 处理速度相互独立」 |
+
+测试：新增 `tests/test_reasoning_capability.js`（纯 Node 49 断言：归一 / auto 逐字节不改请求 / 逐档映射 /
+未取证 provider 不污染 body / 降级与 fallback / 能力真源唯一性结构守卫 / Speed 与 Effort 分离 / usage 只读）
+与 `tests/test_middle_brain_reasoning_effort.js`（CDP，本地 mock 端点记录**最终 wire body**：
+MB disabled 零注入 / auto 与关闭逐字节相等 / low·medium·high·max 落盘 / DeepSeek 原生 auto 不受影响 /
+chat×diary parity / requested→effective→reasoning tokens 可对比）；同步更新
+`test_middle_brain_advanced.js` / `test_middle_brain_collapse.js` / `test_frontend_structure.js` /
+`test_middle_brain_integrity.js` / `test_middle_brain_seam.js` 的既定契约基线（默认 auto、五档、门面 48 键）。
+
+未做（刻意）：未取证 provider 不发档位（DeepSeek/Gemini/GLM/Qwen/MiniMax/MiMo 当前恒 auto）、
+不改 maxTokens 预算策略、不引入第二套 provider metadata、不重构 Middle Brain。
+
 ## 2026-08-04 · Bridge 后端诞生（首个交接对话）
 
 为 [InternalBeyond.html](../InternalBeyond.html)（单文件个人 AI 陪伴站）新增并完善**本地一键启动的 Node.js Bridge 后端**，提供表情包、心语墙、健康/定位/天气看板、酷狗点歌、Bark/ntfy 推送、上下文进度条、`/continue` 续写、AI 常驻会话（多模型）、AI 语音气泡（TTS）、多窗口同步等服务端能力，全部通过 WebSocket 工具与 REST 接口接入页面右下角 Bridge 面板。

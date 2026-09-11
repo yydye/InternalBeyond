@@ -76,6 +76,9 @@ const BROWSER_FNS = [
   '_providerFormat', '_modelSupportsSampling', '_ibAnthropicWire',
   '_ccObj', '_ccBeta', '_injectAnthropicMsgCache', '_adaptContentForApi',
   '_mSetThink', '_mSetFinish', '_anthropicWebThinkResponseMode',
+  /* P21：思考深度消费缝（canonical 读取 + provider 边界翻译 + usage 只读回填）；
+     沙箱里 window.IB 缺失 → 读回 'auto' = 与上线前逐字节一致，正是本套件要锁定的行为。 */
+  '_mbReasoningEffortForRequest', '_ibApplyReasoningEffort', '_ibNoteReasoningUsage',
   '_callApiChatOnce', 'callApi'
 ];
 const browserCode = BROWSER_FNS.map(n => carve(commText, n)).join('\n');

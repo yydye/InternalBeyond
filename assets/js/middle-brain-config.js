@@ -32,11 +32,14 @@
        默认关闭（守恒成本）：关闭时 Phase 2 行为完全不变；开启后仅在 Astra 压缩成功后
        额外跑一次 Judge（另一次独立调用）。结果不入角色输入，仅观测 + telemetry。 */
     middleBrainJudgeEnabled: false,
-    /* Phase 4 · Astra 推理强度与处理速度（仅 UI + 配置持久化 + Responses 参数映射）：
-       reasoningEffort: low/medium/high/xhigh/max → reasoning.effort（官方参数）
+    /* Phase 4 · Astra 推理强度与处理速度（仅 UI + 配置持久化 + 能力驱动的 wire 翻译）：
+       reasoningEffort: auto/low/medium/high/max → 由 provider adapter 边界翻译成真实参数
+                        （能力事实唯一真源 = provider-directory.js 的 P21 表）
        speed: standard/fast → fast 时发送 service_tier:"fast"（官方参数，standard=不发送）。
-       非法值一律回退默认，其余 Phase 1/2/3 业务逻辑不变。 */
-    reasoningEffort: 'medium',
+       非法值一律回退默认，其余 Phase 1/2/3 业务逻辑不变。
+       P21：默认改为 auto（= 不发任何 reasoning 参数，保持 provider 原生行为）；
+            旧配置（无 reasoningEffortV2 迁移标记）一次性迁移为 auto，用户重新选择才生效。 */
+    reasoningEffort: 'auto',
     speed: 'standard',
     /* P11-2 · Character Integrity Guard（角色一致性守卫）：
        检测候选回复是否**明显**偏离当前角色，仅在高置信度强 OOC 时做最多一次 targeted rewrite。
@@ -158,11 +161,41 @@
     return !!(c && c.enabled && String(c.endpoint || '').trim() && String(c.model || '').trim() && String(c.apiKey || '').trim());
   }
 
-  var MB_REASONING_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+  /* ── P21 · canonical reasoningEffort（统一「思考深度」）───────────────────────
+     auto / low / medium / high / max；默认 auto。
+     · auto  = **不发任何 reasoning 参数**（provider 原生自动行为；请求体与上线前逐字节一致）
+     · 其余档位由 provider adapter 边界按能力表翻译；无法翻译时不发，绝不猜参数
+     canonical 档位与归一函数的唯一实现仍在 provider-directory.js（P21），
+     本层只做「配置侧」的两件事：持久化 + 旧值迁移。 */
+  var MB_REASONING_EFFORTS = ['auto', 'low', 'medium', 'high', 'max'];
   var MB_SPEEDS = ['standard', 'fast'];
+  function _mbTierLib() { try { return root.PROVIDERS_DIR || null; } catch (e) { return null; } }
+  /* 归一（含历史值合并）：'xhigh' → 'high'；其余非法/缺失 → 'auto'（= 不发参数，最安全）。 */
   function normalizeMiddleBrainReasoningEffort(v) {
+    var lib = _mbTierLib();
+    if (lib && typeof lib.normalizeReasoningTier === 'function') return lib.normalizeReasoningTier(v);
     var s = String(v == null ? '' : v).trim().toLowerCase();
-    return MB_REASONING_EFFORTS.indexOf(s) >= 0 ? s : 'medium';
+    if (s === 'xhigh') return 'high';
+    return MB_REASONING_EFFORTS.indexOf(s) >= 0 ? s : 'auto';
+  }
+  /* 旧配置一次性迁移（P21）：只有显式带 v2 标记的配置才承认其档位，其余（含历史
+     low/medium/high/xhigh/max）一律解析为 auto —— 升级后不会让老用户的下层请求突然改变。
+     标记只在用户**主动选择档位**或点保存时写入，加载路径绝不写存储。 */
+  var MB_REASONING_V2 = 'reasoningEffortV2';
+  function _mbReasoningResolved(c) {
+    var cfg = c || {};
+    if (cfg[MB_REASONING_V2] !== true) return { effort: 'auto', legacy: true };
+    return { effort: normalizeMiddleBrainReasoningEffort(cfg.reasoningEffort), legacy: false };
+  }
+  /* 消费者（角色聊天 / 日记 / 主动消息…）唯一读取入口：返回 canonical 档位。
+     Middle Brain 未启用 → 恒 'auto'（绝不注入参数）。
+     本函数不做任何 provider 判断；翻译只发生在 provider request builder。 */
+  async function middleBrainReasoningEffort() {
+    try {
+      var c = await getMiddleBrainConfig();
+      if (!_mbRuntimeEnabled(c)) return 'auto';
+      return _mbReasoningResolved(c).effort;
+    } catch (e) { return 'auto'; }
   }
   function normalizeMiddleBrainSpeed(v) {
     var s = String(v == null ? '' : v).trim().toLowerCase();
@@ -194,17 +227,19 @@
   /* —— 设置 UI（API Settings 页 · 全局 Middle Brain 卡片） —— */
   function _mbEl(id) { return document.getElementById(id); }
   /* ====================================================================
-     Phase 4 · Middle Brain Advanced Settings UI（Codex 风格滑动选择）
+   Phase 4 · Middle Brain Advanced Settings UI（Codex 风格滑动选择）
      --------------------------------------------------------------------
      只做 UI + 模型配置抽象；不改 Compression / Judge / Admission Gate 核心逻辑。
-     - Reasoning：可拖拽横向 slider（Low→Medium→High→XHigh→Max），拖动/点档位均可。
+     - Reasoning（P21「思考深度」）：横向分段/滑动选择器 自动 ─ 低 ─ 中 ─ 高 ─ 最大；
+       点档位即选（与 Codex 一致），也支持拖动；默认「自动」= 不改变 provider 原生行为。
      - Model：可左右滑动 / 箭头切换 / 点击档位的模型 swiper（非 <select>）。
-     - Speed：两档 slider（Standard/Fast）。
-     - 拖动仅实时预览，释放/点击才提交持久化；点击即写配置（无需 Save）。
+     - Speed：两档 slider（Standard/Fast）—— 与服务/延迟策略相关，与思考深度**严格分离**，
+       两者不共用字段、不互相写入。
      ==================================================================== */
-  var MB_REASONING_ORDER = ['low', 'medium', 'high', 'xhigh', 'max'];
-  var MB_REASONING_LABELS = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'XHigh', max: 'Max' };
-  var MB_REASONING_DESC = { low: '优先速度与成本', medium: '默认平衡', high: '更深入分析', xhigh: '高强度推理', max: '最高推理强度' };
+  /* canonical 档位顺序 = 强度阶梯（与 provider-directory.js P21 的 REASONING_TIERS 同序）。 */
+  var MB_REASONING_ORDER = ['auto', 'low', 'medium', 'high', 'max'];
+  var MB_REASONING_LABELS = { auto: '自动', low: '低', medium: '中', high: '高', max: '最大' };
+  var MB_REASONING_DESC = { auto: '跟随服务商原生行为（不发送思考参数）', low: '优先速度与成本', medium: '默认平衡', high: '更深入分析', max: '最高推理强度' };
   var MB_SPEED_ORDER = ['standard', 'fast'];
   var MB_SPEED_LABELS = { standard: 'Standard', fast: 'Fast' };
   var MB_MODEL_CANDIDATES = ['gpt-6-astra', 'gpt-5.6-sol'];
@@ -215,7 +250,7 @@
   var MB_IMAGE_ORDER = ['fast', 'auto', 'precision'];
   var MB_IMAGE_LABELS = { fast: 'Fast', auto: 'Auto', precision: 'Precision' };
   var MB_IMAGE_DESC = { fast: 'Prefer faster image generation', auto: 'Let Middle Brain choose', precision: 'Prefer highest editing fidelity' };
-  var _mbUi = { enabled: false, reasoning: 'medium', speed: 'standard', model: 'gpt-6-astra', imageMode: 'auto', integrity: { enabled: false, sensitivity: 'conservative', rewrite: false, verify: false } };
+  var _mbUi = { enabled: false, reasoning: 'auto', speed: 'standard', model: 'gpt-6-astra', imageMode: 'auto', integrity: { enabled: false, sensitivity: 'conservative', rewrite: false, verify: false } };
   var _mbReasoningSlider = null, _mbSpeedBtn = null, _mbCiSlider = null, _mbImageSlider = null;
 
   /* ====================================================================
@@ -498,7 +533,8 @@
     var n = document.querySelector('#mb-adv-speed .mb-speed-note'); if (n) n.textContent = on ? '快速模式 · 更低延迟' : '标准处理';
   }
   function _mbInitAdvancedUI() {
-    _mbReasoningSlider = _mbSliderBuild('mb-adv-reasoning', MB_REASONING_ORDER, _mbReadReasoning(), function (v) { mbReasoningPick(v); }, { dragOnly: true });
+    /* P21：思考深度 = 5 档分段选择器（自动/低/中/高/最大）。点档位即选，也支持拖动 */
+    _mbReasoningSlider = _mbSliderBuild('mb-adv-reasoning', MB_REASONING_ORDER, _mbReadReasoning(), function (v) { mbReasoningPick(v); }, { labels: MB_REASONING_LABELS });
     _mbBuildSpeedButton();
     _mbModelBuild();
     _mbCiBuild();
@@ -564,7 +600,8 @@
     _mbCiSlider = _mbSliderBuild('mb-ci-sensitivity', MB_CI_ORDER, _mbUi.integrity.sensitivity, function (v) { mbIntegritySensitivityPick(v); });
     _mbCiPaint();
   }
-  function mbReasoningPick(v) { v = normalizeMiddleBrainReasoningEffort(v); _mbUi.reasoning = v; if (_mbReasoningSlider) _mbReasoningSlider.setValue(v); _mbUpdateSummary(v, _mbReadSpeed()); saveMiddleBrainConfig({ reasoningEffort: v }); }
+  /* P21：用户主动选择档位 → 写 canonical 值 + v2 迁移标记（此后该值才被承认是"用户选过的"）。 */
+  function mbReasoningPick(v) { v = normalizeMiddleBrainReasoningEffort(v); _mbUi.reasoning = v; if (_mbReasoningSlider) _mbReasoningSlider.setValue(v); _mbUpdateSummary(v, _mbReadSpeed()); saveMiddleBrainConfig({ reasoningEffort: v, reasoningEffortV2: true }); }
   function mbSpeedPick(v) { v = normalizeMiddleBrainSpeed(v); _mbUi.speed = v; _mbRenderSpeed(); _mbUpdateSummary(_mbReadReasoning(), v); _mbRenderHeader(); saveMiddleBrainConfig({ speed: v }); }
   function mbModelPick(m) { _mbModelSet(m); }
   function mbModelStep(delta) { var list = _mbModelList(_mbReadModel()); _mbModelSet(list[Math.max(0, Math.min(list.length - 1, _mbModelIdx(_mbReadModel()) + delta))]); }
@@ -576,7 +613,7 @@
     _mbCiReadUi();
     /* P11-3：保存成功是 runtime 态唯一的更新点。pristine 快照与 runtime 镜像一起刷新，
        徽标此刻才允许显示 runtime Enabled（未保存期间一律 unsaved / 旧 runtime 值）。 */
-    return saveMiddleBrainConfig({ enabled: enabled, endpoint: endpoint, model: _mbReadModel(), apiKey: apiKey, reasoningEffort: _mbReadReasoning(), speed: _mbReadSpeed(), characterIntegrityEnabled: _mbUi.integrity.enabled, characterIntegritySensitivity: _mbUi.integrity.sensitivity, characterIntegrityRewrite: _mbUi.integrity.rewrite, characterIntegrityVerify: _mbUi.integrity.verify, imageMode: normalizeMiddleBrainImageMode(_mbUi.imageMode) }).then(function (merged) {
+    return saveMiddleBrainConfig({ enabled: enabled, endpoint: endpoint, model: _mbReadModel(), apiKey: apiKey, reasoningEffort: _mbReadReasoning(), reasoningEffortV2: true, speed: _mbReadSpeed(), characterIntegrityEnabled: _mbUi.integrity.enabled, characterIntegritySensitivity: _mbUi.integrity.sensitivity, characterIntegrityRewrite: _mbUi.integrity.rewrite, characterIntegrityVerify: _mbUi.integrity.verify, imageMode: normalizeMiddleBrainImageMode(_mbUi.imageMode) }).then(function (merged) {
       _mbCaptureSaved(merged || { enabled: enabled, endpoint: endpoint, apiKey: apiKey });
       _mbRenderHeader();
       var st = _mbEl('mb-save-status'); if (st) { st.textContent = '已保存'; setTimeout(function () { if (st.textContent === '已保存') st.textContent = ''; }, 1600); }
@@ -595,7 +632,8 @@
          之后任何 toggle / 输入都只是"未保存改动"，不会改动 _mbSaved / _mbRuntime。 */
       _mbUi.enabled = !!c.enabled;
       _mbCaptureSaved(c);
-      _mbUi.reasoning = normalizeMiddleBrainReasoningEffort(c.reasoningEffort);
+      /* P21：旧配置（无 v2 迁移标记）解析为 auto —— 加载路径不写存储，用户重新选择才落盘。 */
+      _mbUi.reasoning = _mbReasoningResolved(c).effort;
       _mbUi.speed = normalizeMiddleBrainSpeed(c.speed);
       _mbUi.model = String(c.model || '').trim() || 'gpt-6-astra';
       _mbUi.integrity.enabled = c.characterIntegrityEnabled === true;
@@ -625,6 +663,9 @@
     /* Phase 4 · 推理强度 / 速度归一 */
     normalizeMiddleBrainReasoningEffort: normalizeMiddleBrainReasoningEffort,
     normalizeMiddleBrainSpeed: normalizeMiddleBrainSpeed,
+    /* P21 · 统一思考深度（canonical reasoningEffort）：消费者唯一读取入口 */
+    MB_REASONING_EFFORTS: MB_REASONING_EFFORTS,
+    middleBrainReasoningEffort: middleBrainReasoningEffort,
     /* P11-2 · Character Integrity 灵敏度归一 */
     normalizeMiddleBrainIntegritySensitivity: normalizeMiddleBrainIntegritySensitivity,
     /* P12 · Image Router 决策缝（图片策略：fast/auto/precision） */

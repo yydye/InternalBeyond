@@ -105,8 +105,9 @@ const api = http.createServer(async (req, res) => {
     check('A2.noWindowCompatAlias', await evaluate(cdp, `(function(){return typeof window.middleBrainExecute==='undefined'})()`));
     check('A3.keyShape', await evaluate(cdp, `(function(){
       var k=Object.keys(IB.middleBrain);
-      /* 45 = P11-2 之后的门面 key 数；P12 追加 2 个 Image Router 决策键 → 47 */
-      return k.length===47 && k[k.indexOf('middleBrainCompressPipeline')+1]==='middleBrainExecute'
+      /* 45 = P11-2 之后的门面 key 数；P12 追加 2 个 Image Router 决策键 → 47；
+         P21 追加 1 个统一思考深度读取键 → 48 */
+      return k.length===48 && k[k.indexOf('middleBrainCompressPipeline')+1]==='middleBrainExecute'
         && typeof IB.middleBrain.middleBrainFinalizeReply==='function'
         && typeof IB.middleBrain.middleBrainImageMode==='function';
     })()`), await evaluate(cdp, `(function(){return Object.keys(IB.middleBrain).length})()`));
@@ -129,7 +130,7 @@ const api = http.createServer(async (req, res) => {
       window.__seamIdentityBad=bad;window.__seamFacadeOnly=facadeOnly;return bad.length===0;
     })()`), await evaluate(cdp, `(function(){return JSON.stringify(window.__seamIdentityBad||[])})()`));
     check('A8.facadeOnlySetStable', await evaluate(cdp, `(function(){
-      return JSON.stringify((window.__seamFacadeOnly||[]).slice().sort())===JSON.stringify(['MB_ASTRA_TIMEOUT_MS','MB_CI_SCHEMA','MB_CI_TIMEOUT_MS','MB_CTX_DEFAULT_BUDGET','_mbCiGate','_mbCiVisibleText','_mbParseCiJson','middleBrainCharacterIntegrity','middleBrainCharacterIntegrityReset','middleBrainCharacterIntegrityTelemetry','middleBrainExecute','middleBrainFinalizeReply','middleBrainImageMode','normalizeMiddleBrainImageMode','normalizeMiddleBrainIntegritySensitivity']);
+      return JSON.stringify((window.__seamFacadeOnly||[]).slice().sort())===JSON.stringify(['MB_ASTRA_TIMEOUT_MS','MB_CI_SCHEMA','MB_CI_TIMEOUT_MS','MB_CTX_DEFAULT_BUDGET','_mbCiGate','_mbCiVisibleText','_mbParseCiJson','middleBrainCharacterIntegrity','middleBrainCharacterIntegrityReset','middleBrainCharacterIntegrityTelemetry','middleBrainExecute','middleBrainFinalizeReply','middleBrainImageMode','middleBrainReasoningEffort','normalizeMiddleBrainImageMode','normalizeMiddleBrainIntegritySensitivity']);
     })()`), await evaluate(cdp, `(function(){return JSON.stringify(window.__seamFacadeOnly||[])})()`));
 
     /* ── B. 执行语义 ── */
