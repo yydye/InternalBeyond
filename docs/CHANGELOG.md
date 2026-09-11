@@ -15,6 +15,44 @@
 
 - 本地 git 基线提交 `e4074cc`（`chore: establish Internal Beyond baseline`）。此后长期有未跟踪文件（`.gitignore`、`active-message-service.js`、`start-active-service.cmd`、`start-vision-service.cmd`、`test_vision.py`、`vision/` 等），直至 2026-08-14 才纳入版本控制。
 
+## 2026-09-11 · 修掉 v1.0.4 发行漏改：README 的版本声明 + 新增发行声明闸门
+
+`v1.0.4` 的发行提交（`89bbe1a`）改了 `VERSION` 与发行文档，却**漏了 `README.md`**——
+而 `1.0.1` / `1.0.2` / `1.0.3` 三个发行提交都在同一个提交里同步了它。后果不是纯观感问题，
+因为 `README.md` 在载荷白名单里（`scripts/release-manifest.js`）：
+
+- GitHub 落地页写着「当前版本 1.0.3」「下载 `InternalBeyond-Setup-1.0.3.exe`」；
+- **已发布的 `InternalBeyond-Setup-1.0.4.exe` 内部**那份 README 同样写着 1.0.3，
+  并引导 1.0.0 用户去下载 1.0.3。
+
+而 Releases 的 Latest 已经是 1.0.4。**没有任何检查失败**——是人读页面时发现的。
+
+同一次排查还挖出两处独立的过期事实（老账，与本次发行的改动无关）：
+
+| 位置 | 原本声称 | 实测 |
+|---|---|---|
+| `README.md` | `--quick`「约 17 秒」 | **217.0s / 217.2s** 两次（static 123.0s + service 94.0s）。该数字写于 `e1572a6`（2026-08-14），当时 `--quick` 只是「跳过浏览器组」的小套件，此后长大了约 12 倍 |
+| `README.md` + `docs/HANDOVER.md` | DECISIONS.md 覆盖 `D1–D18` | 实际已有 **D19**（P21 reasoningEffort——正是 1.0.4 发布的那个决策）与 D19.1 |
+
+处理：
+
+1. `README.md` 的 6 处版本引用修正为 1.0.4（提交 `7568907`，已推送），并**收敛到只剩一处**
+   需要手改的字面量（开头「当前版本 **x.y.z**」），其余安装包名统一写成
+   `InternalBeyond-Setup-<版本号>.exe` 占位符；英文段与中文段的镜像不一致（一边标题硬编码、
+   一边步骤占位符，且两种语言正好相反）一并统一。
+2. `docs/HANDOVER.md` 的 `D1–D18` → `D1–D19`。
+3. **新增构建期闸门**：`scripts/release-audit.js` 的 `scanReleaseClaims`，在构建第 4 步
+   （载荷审计）比对暂存载荷里 README 声明的当前版本与同一份载荷的 `VERSION`，不一致即让
+   **整个构建失败**；锚点消失（声明被改写或删掉）同样判失败（fail closed）。契约记录见
+   [RELEASE.md](RELEASE.md) §5.1。
+4. 反向自测（不做这一步就等于没加闸门）：把 README 故意写回 1.0.3、再写回 1.0.2 跑**真实构建**，
+   两次都在第 4 步 `[FAIL @ content + secret audit]` 中止（退出码 1，**发生在编译之前**，
+   已发布产物零改动）；恢复后对真实暂存载荷跑同一道闸门为 PASS（退出码 0，238 文件）。
+
+**刻意未处理**：已发布的 `v1.0.4` 资产一个字节都没动。`RELEASE.md` §6 禁止用重新构建的产物
+替代已发布字节，且 `update-stable.json` 已上线——替换 exe 会让已缓存旧清单的客户端必然校验
+失败。修正版 README 随下一次载荷构建自然进包。
+
 ## 2026-09-11 · v1.0.4 发行
 
 `v1.0.4` 是继 1.0.3 之后的一个功能 + 修复版本，**发布契约零增量**（更新链、清单 schema、

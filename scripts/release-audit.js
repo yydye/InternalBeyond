@@ -3,7 +3,7 @@
 /*
  * Internal Beyond · release payload audit (P7)
  *
- * Two gates, both applied to the REAL staged bytes (not to the manifest):
+ * Three gates, all applied to the REAL staged bytes (not to the manifest):
  *
  *   1. content gate  — manifest.auditDirectory() re-checks every staged path
  *                      against the deny rules (.git / logs / browser-data /
@@ -12,6 +12,10 @@
  *                      patterns over text files, plus a raw byte-marker scan
  *                      (ASCII and UTF-16LE) over every file including binaries
  *                      such as the bundled node.exe and the guide screenshots.
+ *   3. release-claim gate — README.md ships inside the payload, so the version it
+ *                      advertises to the user is part of the released artifact;
+ *                      it must name the VERSION actually being built
+ *                      (see scanReleaseClaims below).
  *
  * Exit code 0 = clean, 1 = at least one `error` finding or content violation.
  * `warn` findings are printed and summarised but never fail the build; they are
@@ -157,6 +161,71 @@ function scanMarkers(rel, buf, findings) {
   return findings;
 }
 
+/* ── Release-claim gate ──────────────────────────────────────────────────
+   README.md ships inside the payload (release-manifest.js), so the version it
+   advertises to the user IS part of the released artifact. VERSION is the
+   single release version source, and a README that still names an older
+   release ships a stale claim that users act on.
+
+   That is not hypothetical: the 1.0.4 release commit bumped VERSION and the
+   release docs but not README, so the GitHub landing page AND the README inside
+   the installer both still advertised 1.0.3 and offered to download it while
+   Releases said 1.0.4. Nothing failed; a human reading the page found it.
+
+   The README therefore keeps exactly ONE hand-maintained version literal (the
+   "当前版本 **x.y.z**" line) and spells every installer asset name with a
+   placeholder. This gate pins that literal to VERSION and refuses a
+   re-introduced hard-coded asset name for a different release.
+
+   Both checks fail closed: if the anchor disappears the gate fails instead of
+   silently passing, so rewording the README cannot quietly disable it. */
+
+const README_VERSION_CLAIM = /当前版本\s*\*\*(\d+\.\d+\.\d+)\*\*/;
+const README_ASSET_NAME = /InternalBeyond-Setup-(\d+\.\d+\.\d+)\.exe/g;
+
+function scanReleaseClaims(root, findings) {
+  const out = findings || [];
+  const bad = function (file, line, why, excerpt) {
+    out.push({
+      path: file, rule: 'release-claim', severity: 'error',
+      why: why, line: line || 0, excerpt: excerpt || ''
+    });
+  };
+
+  let readme = null;
+  let version = null;
+  try { readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8'); } catch (e) { readme = null; }
+  try { version = fs.readFileSync(path.join(root, 'VERSION'), 'utf8').trim(); } catch (e) { version = null; }
+
+  if (readme === null) {
+    bad('README.md', 0, '载荷里没有 README.md，发行声明无法核对', 'missing');
+    return out;
+  }
+  if (!version || !/^\d+\.\d+\.\d+$/.test(version)) {
+    bad('VERSION', 0, '载荷里没有可解析的 VERSION，发行声明无法核对', JSON.stringify(version));
+    return out;
+  }
+
+  const claim = README_VERSION_CLAIM.exec(readme);
+  if (!claim) {
+    bad('README.md', 0, '找不到「当前版本 **x.y.z**」声明——闸门锚点消失，需人工确认文案后再放行', 'no anchor');
+  } else if (claim[1] !== version) {
+    bad('README.md', lineOf(readme, claim.index),
+      'README 声明的当前版本与 VERSION 不一致（README=' + claim[1] + ' · VERSION=' + version + '）',
+      claim[0]);
+  }
+
+  README_ASSET_NAME.lastIndex = 0;
+  let m;
+  while ((m = README_ASSET_NAME.exec(readme)) !== null) {
+    if (m[1] !== version) {
+      bad('README.md', lineOf(readme, m.index),
+        'README 硬编码了非当前版本的安装包名（VERSION=' + version + '）', m[0]);
+    }
+  }
+  return out;
+}
+
 /* ── Directory audit ─────────────────────────────────────────────────── */
 
 function scanDirectory(dir, opts) {
@@ -183,6 +252,10 @@ function scanDirectory(dir, opts) {
     scanMarkers(f.path, buf, findings);
     scannedBinary++;
   }
+
+  /* The payload's own README claims — read from the staged bytes, not from the
+     manifest, because that claim ships to the user inside the installer. */
+  scanReleaseClaims(root, findings);
 
   const errors = findings.filter(x => x.severity === 'error');
   const warnings = findings.filter(x => x.severity === 'warn');
@@ -226,6 +299,7 @@ module.exports = {
   BINARY_MARKERS: BINARY_MARKERS,
   scanText: scanText,
   scanMarkers: scanMarkers,
+  scanReleaseClaims: scanReleaseClaims,
   scanDirectory: scanDirectory,
   formatReport: formatReport,
   mask: mask

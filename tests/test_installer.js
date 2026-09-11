@@ -11,7 +11,7 @@
      [5] stop helper: IB-specific matching, never image-name matching
      [6] static server hardening (.git / logs / hidden / traversal) + graceful stop
      [7] runner control plane graceful stop
-     [8] audit rules self-test (planted secrets MUST fail the scan)
+     [8] audit rules self-test (planted secrets / stale release claims MUST fail)
      [9] README install section: one entry point + honest SmartScreen guidance
 
    Run: node test_installer.js */
@@ -513,13 +513,56 @@ check('planted secret / dev path / forbidden file MUST fail the audit', () => {
   assert.ok(report.violations.length >= 4, 'must flag forbidden paths, got ' + report.violations.length);
 });
 
+/* A minimal stand-in for the shipped README: exactly one version claim plus a
+   placeholder asset name — the shape the release-claim gate expects. */
+function claimReadme(version, extra) {
+  return '`Windows 10+` · 当前版本 **' + version + '** · 免管理员权限\n\n' +
+    '下载 `InternalBeyond-Setup-<版本号>.exe`。\n' + (extra || '');
+}
+
 check('a clean directory passes', () => {
   const cleanDir = path.join(tmpBase, 'clean-staging');
   fs.mkdirSync(path.join(cleanDir, 'assets'), { recursive: true });
   fs.writeFileSync(path.join(cleanDir, 'assets', 'app.js'), 'var ok = 1;\n');
   fs.writeFileSync(path.join(cleanDir, 'VERSION'), '1.0.0\n');
+  /* A real payload always ships VERSION and README.md, and the release-claim
+     gate reads both — a fixture without them is not a clean payload. */
+  fs.writeFileSync(path.join(cleanDir, 'README.md'), claimReadme('1.0.0'));
   const report = audit.scanDirectory(cleanDir);
   assert.strictEqual(report.ok, true, 'clean payload must pass: ' + JSON.stringify(report.findings));
+});
+
+/* The 1.0.4 release shipped a README that still advertised 1.0.3 while VERSION
+   said 1.0.4 — on the landing page and inside the installer — and nothing
+   failed. This pins the gate that now catches it before the build finishes. */
+check('release-claim gate pins the README version to VERSION', () => {
+  const dir = path.join(tmpBase, 'claim-staging');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'VERSION'), '1.0.0\n');
+
+  fs.writeFileSync(path.join(dir, 'README.md'), claimReadme('1.0.0'));
+  const good = audit.scanDirectory(dir);
+  assert.strictEqual(good.ok, true, 'a matching README must pass: ' + JSON.stringify(good.findings));
+
+  /* The exact defect this gate exists for. */
+  fs.writeFileSync(path.join(dir, 'README.md'), claimReadme('0.9.9'));
+  const stale = audit.scanDirectory(dir);
+  assert.strictEqual(stale.ok, false, 'a stale README version MUST fail the payload audit');
+  assert.ok(stale.findings.some(f => f.rule === 'release-claim' && f.severity === 'error'),
+    'must report a release-claim error');
+  assert.ok(stale.errors >= 1, 'a stale claim must be an error, never a warning');
+
+  /* Re-hard-coding an installer asset name for a different release. */
+  fs.writeFileSync(path.join(dir, 'README.md'),
+    claimReadme('1.0.0', '下载 `InternalBeyond-Setup-0.9.9.exe`。\n'));
+  assert.strictEqual(audit.scanDirectory(dir).ok, false, 'a foreign hard-coded asset name MUST fail');
+
+  /* Fail closed: losing the anchor must fail, never silently pass. */
+  fs.writeFileSync(path.join(dir, 'README.md'), '本文没有任何版本声明。\n');
+  assert.strictEqual(audit.scanDirectory(dir).ok, false, 'a missing anchor MUST fail closed');
+
+  fs.rmSync(path.join(dir, 'README.md'));
+  assert.strictEqual(audit.scanDirectory(dir).ok, false, 'a payload without README.md MUST fail');
 });
 
 check('documentation naming a prefix is not treated as a secret', () => {

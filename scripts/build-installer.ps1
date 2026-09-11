@@ -11,7 +11,7 @@
     1. preflight        — VERSION / pin / Inno Setup / required sources
     2. runtime gate     — bundled node.exe exists, exact version, SHA-256, runs
     3. staging          — whitelist manifest materialised into dist\staging
-    4. content + secret — release-audit over the staged bytes
+    4. content + secret + release-claim — release-audit over the staged bytes
     5. compile          — ISCC (per-user, no UAC, no console window)
     6. hash             — installer SHA-256 → dist\SHA256SUMS.txt
     7. update manifest  — dist\update-stable.json, assembled from the bytes this
@@ -263,7 +263,7 @@ if (-not $stageResult.ok) { Fail "staging 不完整：$stageJson" }
 Write-Ok ("staged {0} files · {1:N1} MiB → {2}" -f $stageResult.staged, ($stageResult.totalBytes / 1MB), $stageResult.dir)
 
 # ── 4. content + secret audit on the staged bytes ──────────────────────────
-Write-Step '4/9' 'content + secret audit'
+Write-Step '4/9' 'content + secret + release-claim audit'
 $script:stage = 'content + secret audit'
 if ($SkipAudit) {
   Write-Warn '已按 -SkipAudit 跳过（不推荐）'
@@ -272,10 +272,10 @@ if ($SkipAudit) {
   if ($LASTEXITCODE -ne 0) {
     $audit = $auditJson.Trim() | ConvertFrom-Json
     $audit.findings | Where-Object { $_.severity -eq 'error' } | ForEach-Object {
-      Write-Host ("     ✗ [{0}] {1}:{2} — {3}" -f $_.rule, $_.path, $_.line, $_.excerpt) -ForegroundColor Red
+      Write-Host ("     ✗ [{0}] {1}:{2} — {3} · {4}" -f $_.rule, $_.path, $_.line, $_.excerpt, $_.why) -ForegroundColor Red
     }
     $audit.violations | ForEach-Object { Write-Host ("     ✗ {0} — {1}" -f $_.path, $_.why) -ForegroundColor Red }
-    Fail '内容/密钥审计未通过'
+    Fail '内容/密钥/发行声明审计未通过'
   }
   $audit = $auditJson.Trim() | ConvertFrom-Json
   Write-Ok ("audit PASS · {0} files · {1} error / {2} warn" -f $audit.fileCount, $audit.errors, $audit.warnings)
