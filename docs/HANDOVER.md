@@ -9,7 +9,7 @@
 > 4. [HANDOVER.md](HANDOVER.md)（本篇）—— 现状、当前待办、DO/DON'T、常用命令。
 >
 > **按需深入：**
-> - [DECISIONS.md](DECISIONS.md) —— 为什么这么设计，**含"不要随便改"清单**（D1–D18）。
+> - [DECISIONS.md](DECISIONS.md) —— 为什么这么设计，**含"不要随便改"清单**（D1–D19）。
 > - [CHANGELOG.md](CHANGELOG.md) —— 以前发生过什么（逐条演进）。
 > - [TROUBLESHOOTING.md](TROUBLESHOOTING.md) —— 踩过什么坑（ENOENT T31/D16、MiMo 'a' T40 等）。
 > - [P1-ACOUSTIC-REFERENCE.md](P1-ACOUSTIC-REFERENCE.md) —— 声学语气参考：唯一算法核心 `voice.js::_vmToneAnalyze` + `_vmPcmToAudioLike` 适配层 + request-local 注入、绝不持久化。
