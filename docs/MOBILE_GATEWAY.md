@@ -407,6 +407,16 @@ Enforced and asserted:
 * `gw.7` also asserts that the pairing response **is** the one place a credential is returned —
   so the leak regex is not accidentally passing by matching nothing anywhere.
 
+> **The outgoing half of this boundary was once tested and the incoming half was not.** Every
+> assertion above proves `systemPrompt` never reaches the device — and all of them passed while the
+> persona was in fact being **dropped before the provider**, so mobile turns ran with an empty system
+> prompt (M1-C.2a, `d52c1b5`; post-mortem in [TROUBLESHOOTING.md](TROUBLESHOOTING.md) T42). The
+> `systemPrompt` entry above means *"never in a mobile response"*, **not** *"never used"*: it must
+> travel the other way, from `character_runtime_specs` into the Node provider request. Keeping this
+> list tight is correct and must stay — but pair it with an assertion that the persona **arrives**
+> (`tests/test_mobile_thin_client.js` `thin.9b`/`thin.9c`), or a future refactor can satisfy every
+> leak check by simply dropping the field again.
+
 ### 8.5 The honest dependency
 
 Executing a turn on the Home Node requires a spec that only the browser can supply. Therefore

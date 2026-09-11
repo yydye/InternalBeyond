@@ -269,6 +269,21 @@ output   { ok, outcome, turnId, conversationId, userMessageId, assistantMessageI
 * Errors are classified into a closed vocabulary: `abort`, `timeout`, `provider-error`,
   `empty-output`, `busy`, `character-not-ready`, `invalid-message`, `store-write-failed`.
 
+> ⚠ **`character.spec.systemPrompt` is the single source of truth for the persona.**
+> The lifecycle caller (`mobile-gateway.js`) passes `character: { id, spec }` — there is **no**
+> top-level `character.systemPrompt`. `buildPrompt()` must resolve `spec` with the same
+> `character.spec || character` rule as `executeCharacterTurn()`, and it keeps the top-level read
+> only as a compatibility fallback. Reading the top-level field alone silently dropped the whole
+> persona and sent an empty system prompt on the wire (GLM then answered as its pretrained default
+> identity — it claimed to be Claude). Do not "simplify" either read away. Full post-mortem:
+> [TROUBLESHOOTING.md](TROUBLESHOOTING.md) T42; the rule it produced: [DECISIONS.md](DECISIONS.md) D23.
+>
+> The regression tests pin this on the **production input shape** (top-level `systemPrompt`
+> deliberately absent) in `tests/test_home_node_execution.js`, and on the real
+> publish → pair → send → provider-wire E2E in `tests/test_mobile_thin_client.js`. When adding an
+> assertion here, assert on the **wire body the provider actually received** — not on call counts,
+> and not on a hand-built input the function happens to like.
+
 ### 6.1 Provider path and streaming
 
 `executeCharacterTurn` → `NodeModelPort.runStream` (`active/node-model-port.js`) →

@@ -15,6 +15,55 @@
 
 - 本地 git 基线提交 `e4074cc`（`chore: establish Internal Beyond baseline`）。此后长期有未跟踪文件（`.gitignore`、`active-message-service.js`、`start-active-service.cmd`、`start-vision-service.cmd`、`test_vision.py`、`vision/` 等），直至 2026-08-14 才纳入版本控制。
 
+## 2026-09-11 · M1-C.2a · 移动端人格送达修复（`d52c1b5`）：GLM 声称自己是 Claude
+
+物理 Android 真机跑通 `pairing → character.list → chat.send → SSE` 之后，选「昔涟」发
+「在吗，昔涟」，模型回的是——
+
+> 「我是 Claude，由 Anthropic 开发的 AI 助手，昔涟不是我的名字。」
+
+**不是 provider 问题，也不是密钥问题。** 真因是 `services/home-node/execution.js::buildPrompt()`
+读了错误的字段层：它读顶层 `character.systemPrompt`，而生产调用方（`mobile-gateway.js:735`）
+给的是 `character: { id, spec }` —— 人格在 `character.spec.systemPrompt` 里，770 字一个字都没到
+模型。provider 实际收到 `[{role:system, content:''}, {role:user, content:'在吗，昔涟'}]`。
+
+三道既有兜底全部漏掉，因为它们判的都是「`prompt.system` 是不是 *undefined*」，而这里给的是一个
+**已被定义、值为空串**的 `system`：`node-model-port.js:99-101` 与 `ib-model-core.js` 的 `_prompt`
+只在**数组形态**的 prompt 上回落（`buildPrompt` 返回的正是对象），`ib-model-core.js:306` 的
+`spec.systemPrompt` 兜底只在 **anthropic** 分支里 —— 而 `glm` 是 `format: 'openai'`，恰好走那个
+**没有**兜底的分支。
+
+修复是 1 行 spec resolution（与 `executeCharacterTurn()` 同一份判定，顶层读取保留为兼容 fallback）：
+
+```js
+const spec = character.spec || character;
+let system = String(spec.systemPrompt || character.systemPrompt || '');
+```
+
+实测 provider wire 对比：`messages[0].content` 由 `""` 变为 770 字人格，**其余字段逐字段相同**。
+未改 `mobile-gateway.js` / `mobile-dto.js` / `device-registry.js` / `node-model-port.js` /
+`ib-model-core.js` / Android / 协议 / schema 一行；`spec.systemPrompt` 本来就躺在 Node runtime spec
+里并已被传给 port，**没有新数据跨出信任边界**。
+
+**为什么之前 109 个测试全绿**：三层都测了，但每层测的都是「函数想要的输入」，没有一层测
+「调用方实际给的输入」。`test_home_node_execution.js` 自己把 `systemPrompt` 放在顶层（正是
+`buildPrompt` 要读的那层）；`test_mobile_thin_client.js` 的完整 E2E 只用来**数 provider 调用次数**，
+没有一条断言看 system prompt 内容。**「秘密不漏出去」被测穿了，「秘密送得进去」没人测。**
+现已补两侧：生产形状回归（顶层**刻意不带** `systemPrompt`，断言 wire system 严格等于
+`spec.systemPrompt`）+ mobile E2E wire 断言（非空且含该角色唯一 persona marker）+ 成对的信任边界
+不变式（同一 marker / `systemPrompt` 字段名 / endpoint 凭据不得出现在任何 mobile 响应里）。
+回归测试已做**反证**：还原修复前代码，新断言立刻失败（`{"len":0,"head":""}`）。
+
+> **⚠ 方法论教训（比 bug 值钱）**：不要从模型的输出文字反推 provider。第一反应是「Anthropic key
+> 泄漏了」，完全错 —— 实测 `provider = glm` / `model = glm-5.3-flash` /
+> `endpoint = open.bigmodel.cn`，没有任何 Anthropic 端点参与。「我是 Claude」是 `glm-5.3-flash`
+> 在 **0 字 system prompt** 下的**预训练默认身份**：人格丢了，模型退回出厂设定。
+> 好笑到把原始输出拿给 Claude 本尊看，本尊也判断「这背后就是 Claude API」🤣 —— 一个模型在缺少
+> 上下文时的默认自我认知，足以骗过另一个模型的自省判断。
+
+完整复盘见 [TROUBLESHOOTING.md](TROUBLESHOOTING.md) T42；由此固化的规则见
+[DECISIONS.md](DECISIONS.md) D23（身份 / provider 取证只认 runtime spec 与 wire body）。
+
 ## 2026-09-11 · 上游署名被搬离 README 顶部：恢复位置 + 位置闸门
 
 用户报「README.md 里原作者 Sui 的说明被删了」。**核查结论：没有人删过它。** 署名段今天仍在

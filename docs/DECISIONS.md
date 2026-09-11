@@ -509,3 +509,36 @@ cache/sync/recovery 全部未动。
     `capabilities` 都有两级回落，`status` 没有）；以及 `SessionRepository.verify()`
     在冷启动路径上**从未被调用**，与其自身注释所述的 boot 行为不符，表现为重启后
     「协议版本」为空。两者都不属于 UI 阶段，且第二个牵涉 data 层行为，故只记录不动手。
+
+## D23. 身份与 provider 一律从 runtime spec / wire body 取证，**绝不**从模型的输出文字反推（2026-09-11）
+
+**这条规则来自一次真实事故**（完整复盘见 [TROUBLESHOOTING.md](TROUBLESHOOTING.md) T42）。
+
+移动端选「昔涟」发消息，模型回答「我是 Claude，由 Anthropic 开发的 AI 助手」。当时最自然的
+解读是「Anthropic 的 key 泄漏了 / 请求打到了 Claude 上」——**完全错**。实测该角色 runtime spec：
+`provider = glm`、`model = glm-5.3-flash`、`endpoint = open.bigmodel.cn`，**没有任何 Anthropic
+端点或密钥参与**。真因是 `execution.js::buildPrompt()` 读了错误的字段层（顶层
+`character.systemPrompt` 而非 `character.spec.systemPrompt`），770 字人格被丢成空串，于是
+**GLM 在 0 字 system prompt 下退回了自己的预训练默认身份**——而它的默认身份恰好宣称自己是 Claude。
+
+固化为三条：
+
+1. **不从输出文字反推身份 / provider / 模型。** 模型的自我认知是**上下文缺失的症状**，不是
+   provider 的证据。反推不仅可能错，还可能把排查引向**完全相反**的方向（去查一个根本不存在的
+   密钥泄漏，而真正的问题是丢掉的一行字段搬运）。要判定 provider，读 runtime spec、读 wire body、
+   读 endpoint —— 读得到的东西。
+2. **「省了一行」和「泄漏了密钥」可以长得一模一样。** 一个空 system 产生的输出，与「打到了别家
+   API」产生的输出，在肉眼与另一个模型看来都可能无法区分（这个案例里，把原始输出拿给 Claude
+   本尊看，本尊也认为「背后就是 Claude API」）。所以事故归因必须先排除「我们自己丢了什么」，
+   再考虑「外部变了什么」。
+3. **测试只证明了一个方向的边界，就等于没证明边界。** 该 bug 之前，109 个测试全绿：
+   `spec.systemPrompt` 不会到 Android（安全方向，做得很好）、`buildPrompt` 会用
+   `character.systemPrompt`（但输入是**测试自己合成**的）。**「秘密不漏出去」被测穿了，
+   「秘密送得进去」没人测。** 由此确立：涉及信任边界的组件，**两侧都要有断言**，
+   且断言必须跑在**调用方实际给的输入形状**上，而不是函数偏好的形状上。
+
+**边界外的字段（`relationship` / `nickname` / Memory / Middle Brain / `reasoningEffort` /
+`thinkingEnabled`）不在本次修复范围**，属于 Runtime Parity 的后续设计，不混进 root-cause fix。
+（另：`speech_style` **不是**一个被漏掉的字段 —— 全仓库它只作为 `middle-brain-integrity.js`
+的**完整性维度名**出现；桌面的说话风格来自 `systemPrompt` 正文 + `IB.brevity.apply()`。
+不要为它造字段。）

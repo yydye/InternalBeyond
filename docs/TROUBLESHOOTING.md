@@ -8,7 +8,7 @@
 2. **重启应用**：从**开始菜单**或**桌面**重新打开 **InternalBeyond** 即可，本地增强功能会随它一起启动——不需要打开任何命令行窗口，也不需要运行任何脚本。
 3. **看图文教程**：导航栏 **Guide** 最前面的《零基础使用指南》覆盖第一次设置、添加 AI、常见问题与故障处理。
 
-下面的 T1–T41 是**开发者视角**的排查记录，会提到端口、命令行与内部文件名；普通用户不需要阅读。
+下面的 T1–T42 是**开发者视角**的排查记录，会提到端口、命令行与内部文件名；普通用户不需要阅读。
 
 ## 排查入口速查（控制台日志锚点）
 
@@ -243,6 +243,85 @@ active-diary 拆分预检时临时文件用 `.next` 扩展被 Node 24 拒绝。�
 ### T39. PowerShell 字符串拼接坑
 
 `$n:` 需要 `${n}`、单引号转义、JS 模板字符串与 pwsh 反引号冲突——命名空间迁移脚本已沉淀为可复用函数，后续批量脚本直接复用。
+
+---
+
+## F. Runtime Parity（同一份人格，两条 runtime）
+
+### T42. 手机上选「昔涟」，模型回答「我是 Claude，由 Anthropic 开发的 AI 助手」（2026-09-11 修复，M1-C.2a）
+
+**现象。** 物理 Android 真机完成 `pairing → character.list → chat.send → SSE`，一切正常；但选「昔涟」发「在吗，昔涟」，回的是——
+
+> 「我是 Claude，由 Anthropic 开发的 AI 助手，昔涟不是我的名字。」
+
+不是偶发：canonical 历史里已有同型号的裸模型回复。**770 字的「昔涟」角色设定一个字都没到模型。**
+
+**真因。** 只有一行读错了对象：
+
+```js
+// services/home-node/execution.js  buildPrompt()
+let system = String(character.systemPrompt || '');   // ← 读顶层
+```
+
+而生产调用方 `mobile-gateway.js:735` 给的是 `character: { id, spec }` —— **顶层没有 `systemPrompt`**，人格在 `character.spec.systemPrompt`（`mapSpec()` 白名单里，存在 `character_runtime_specs` 表）。于是 `system === ''`，provider 实际收到：
+
+```json
+[{"role":"system","content":""},{"role":"user","content":"在吗，昔涟"}]
+```
+
+**三道安全网全部漏掉**，因为它们判的都是「`prompt.system` 是不是 *undefined*」，而这里给的是一个**已被定义、值为空串**的 `system`：
+
+| 位置 | 兜底条件 | 为什么没触发 |
+|---|---|---|
+| `active/node-model-port.js:99-101` | `spec.systemPrompt \|\| ''` | 只在 `request.prompt.messages` **不是**数组时走；`buildPrompt` 返回的正是 `{system, messages:[…]}` |
+| `assets/js/ib-model-core.js:241-253` `_prompt` | 数组形态才回落 `spec.systemPrompt` | 同上，对象形态直接 `return { system: prompt.system \|\| '' }` |
+| `assets/js/ib-model-core.js:306` | `if (!base) base = _systemText(spec.systemPrompt)` | **真的会触发**，但只在 `format === 'anthropic'` 分支里 |
+
+而 `glm` 在 `provider-directory.js:42` 是 `format: 'openai'` → 走 `ib-model-core.js:406-412`，**恰好是那个没有 `spec.systemPrompt` 兜底的分支**。
+
+**修复。** 统一 spec resolution（与 `executeCharacterTurn():150` 同一份判定），顶层读取保留为兼容 fallback：
+
+```js
+const spec = character.spec || character;
+let system = String(spec.systemPrompt || character.systemPrompt || '');
+```
+
+边界内的东西一个都不用动：`mobile-gateway.js` / `mobile-dto.js` / `device-registry.js` / `node-model-port.js` / `ib-model-core.js` / Android / 协议 / schema 全部未改。**没有新数据跨出信任边界** —— `spec.systemPrompt` 本来就在库里、本来就在 Node 内存里、`execution.js:203` 的 `spec: spec` 本来就把它原样传给了 port。
+
+**为什么 109 个测试全绿。** 三层都测了，但**每层测的都是「函数想要的输入」，没有一层测「调用方实际给的输入」**：
+
+- `tests/test_home_node_execution.js` 自己造了 `character: { id, spec, systemPrompt: 'sys' }`（旧行 99）—— 把字段放在 **`buildPrompt` 恰好要读的那一层**，于是永远测不出调用方形状。那条断言的**名字**（旧行 130「`exec.stream system 来自 character.systemPrompt`」）甚至把这个错误契约写成了预期行为。
+- `tests/test_mobile_thin_client.js` 有完整 E2E（甚至捕获了 provider 收到的 body），但只用它**数调用次数**（幂等断言），**没有一条断言看 system prompt 内容**。唯一涉及 `systemPrompt` 的断言是「不要泄漏给手机」。
+
+一句话：**「秘密不漏出去」被测穿了，「秘密送得进去」没人测。** 现已补上两侧（见 `tests/test_home_node_execution.js` 的生产形状回归 + `tests/test_mobile_thin_client.js` 的 wire 断言，以及成对的信任边界不变式）。
+
+**验证方式。** 修复前后各跑一次真实 `executeCharacterTurn` + 真实 mock provider，抓 provider 真正收到的 body 对比：
+
+| | wire `messages[0]` | system 长度 |
+|---|---|---|
+| BEFORE | `{"role":"system","content":""}` | 0 |
+| AFTER | `{"role":"system","content":"角色核心档案…"}` | 770（生产真实值） |
+
+除 `messages[0].content` 外两次 body **逐字段相同** —— 证明作用域就是人格本身。回归测试**已做反证**：把 `execution.js` 还原成修复前版本，新断言立刻报 `{"len":0,"head":""}` 并失败。
+
+**⚠ 方法论教训（比 bug 本身值钱）：不要从模型的输出文字反推 provider。**
+
+被发现这个 bug 时，第一反应是「Anthropic 的 key 泄漏了 / 打到了 Claude 上」。**完全错。** 实测该角色 runtime spec：
+
+```
+spec.provider = glm → providerFormat = openai
+spec.model    = glm-5.3-flash
+spec.endpoint = https://open.bigmodel.cn/api/paas/v4/chat/completions
+```
+
+**没有任何 Anthropic 端点或密钥参与。** 「我是 Claude」是 `glm-5.3-flash` 在 **0 字 system prompt** 下的**预训练默认身份**：人格丢了，模型就退回出厂设定——而它的出厂设定恰好是「我是个 Claude」。
+
+> **这件事好笑到什么程度：把这段原始输出拿给 Claude 本尊看，本尊的判断也是「这背后就是 Claude API」🤣**
+> ——一个模型在缺少上下文时的默认自我认知，足以骗过另一个模型的自省判断。两个模型一致认为「这是 Claude」，而真相是智谱的 GLM 在裸奔。
+
+所以：**身份、provider、模型的行为差异，一律从 runtime spec / wire body 取证，不从输出文字取证。** 反推得到的结论不仅可能错，还可能指向**完全相反**的排查方向（去查一个根本不存在的密钥泄漏，而真正的问题是被丢弃的一行字段搬运）。
+
+**关联**：[DECISIONS.md](DECISIONS.md) D23（本事故固化的规则）；[HOME_NODE_CHAT.md](HOME_NODE_CHAT.md) §6（execution seam 的 input 契约，`character.spec.systemPrompt` 是**唯一**权威来源）；[MOBILE_GATEWAY.md](MOBILE_GATEWAY.md)（spec 字段清单）。
 
 ---
 
