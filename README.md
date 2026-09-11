@@ -5,6 +5,9 @@
 
 `Windows 10+` · 当前版本 **1.0.4** · 免管理员权限 · 内置运行环境 · [PolyForm Noncommercial 1.0.0](LICENSE)
 
+> **本仓库是 [Sui](https://github.com/Sui-IB) 的 [Internal Beyond](https://github.com/Sui-IB/InternalBeyond) 的非官方二次开发版本**（已与原作者沟通）。原作者署名、原项目地址与许可文件全部保留，改动内容说明见文末「关于本仓库 / About this fork」。
+> This is an **unofficial derivative** of [Sui](https://github.com/Sui-IB)'s Internal Beyond — original project: <https://github.com/Sui-IB/InternalBeyond>.
+
 ---
 
 ## ⬇ 下载 InternalBeyond for Windows

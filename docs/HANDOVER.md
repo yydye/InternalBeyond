@@ -29,7 +29,7 @@
 
 个人本地 AI 陪伴站。**用户入口是 Windows 安装包**：从 GitHub Releases 下载 `InternalBeyond-Setup-<版本号>.exe` 安装后，从开始菜单 / 桌面快捷方式启动（快捷方式 → `启动 InternalBeyond.vbs` → [launch-internal-beyond.js](../runtime/launch-internal-beyond.js)，内置 Node 运行时随包分发，普通用户不需要装 Node、不需要命令行）。页面本体是 [InternalBeyond.html](../InternalBeyond.html)（无构建步骤），配套两个本地零依赖 Node 服务——Bridge 后端 [ib-bridge-service.js](../services/ib-bridge-service.js)（23115：工具/看板/推送/AI 常驻/TTS）与 companion [active-message-service.js](../services/active-message-service.js)（23114：后台主动消息计划、朋友圈调度、AI↔AI 回复链续推），安装版由启动链自动拉起，开发期用 `.cmd` 单独启动。**是个人本地应用，不是 SaaS——不引入 RBAC/鉴权/多用户设计**（[DECISIONS.md](DECISIONS.md) D1）。
 
-> **上游出处**：本仓库是 [Sui-IB/InternalBeyond](https://github.com/Sui-IB/InternalBeyond) 的非官方二次开发版（已与原作者沟通）。对外分发时必须保留原作者署名、原项目地址与许可文件，并在显著位置说明修改内容——README 的「关于本仓库 / About this fork」与「许可与版权 · 衍生版本说明」已按此维护，改动 README 时勿删除这两处。
+> **上游出处**：本仓库是 [Sui-IB/InternalBeyond](https://github.com/Sui-IB/InternalBeyond) 的非官方二次开发版（已与原作者沟通）。对外分发时必须保留原作者署名、原项目地址与许可文件，并在显著位置说明修改内容——README **顶部**（前 25 行内那段署名声明，由 `scripts/release-audit.js` 的发行声明闸门强制）与文末「关于本仓库 / About this fork」、「许可与版权 · 衍生版本说明」已按此维护，改动 README 时勿删除、勿下移。
 
 ## 2. 当前状态
 

@@ -177,11 +177,23 @@ function scanMarkers(rel, buf, findings) {
    placeholder. This gate pins that literal to VERSION and refuses a
    re-introduced hard-coded asset name for a different release.
 
-   Both checks fail closed: if the anchor disappears the gate fails instead of
+   The same payload also carries a licensing obligation: this is an unofficial
+   derivative and the upstream authorship must stay in a prominent place. That
+   obligation used to be guarded only by prose in HANDOVER.md, and prose does not
+   survive a rewrite. bbafba5 put the notice at README line 11 and required it at
+   the TOP; 23c8960 rewrote the README into a download-first document, moved the
+   notice to ~87% of the way down, and relaxed that very sentence to a positionless
+   "README 的「关于本仓库」" in the same commit. So the guard is now machine-checked
+   here instead of trusted to whoever edits next.
+
+   All checks fail closed: if an anchor disappears the gate fails instead of
    silently passing, so rewording the README cannot quietly disable it. */
 
 const README_VERSION_CLAIM = /当前版本\s*\*\*(\d+\.\d+\.\d+)\*\*/;
 const README_ASSET_NAME = /InternalBeyond-Setup-(\d+\.\d+\.\d+)\.exe/g;
+const README_CREDIT = /非官方二次开发版|unofficial derivative/i;
+const README_FORK_SECTION = /^##\s*关于本仓库\s*\/\s*About this fork\s*$/m;
+const README_CREDIT_TOP_LINES = 25;
 
 function scanReleaseClaims(root, findings) {
   const out = findings || [];
@@ -222,6 +234,23 @@ function scanReleaseClaims(root, findings) {
       bad('README.md', lineOf(readme, m.index),
         'README 硬编码了非当前版本的安装包名（VERSION=' + version + '）', m[0]);
     }
+  }
+
+  /* Upstream authorship, in a prominent position. */
+  const head = readme.split(/\r?\n/).slice(0, README_CREDIT_TOP_LINES).join('\n');
+  if (!README_CREDIT.test(head)) {
+    const buried = README_CREDIT.test(readme);
+    bad('README.md', 0,
+      buried
+        ? '上游署名（非官方二次开发版声明）被移出了 README 前 ' + README_CREDIT_TOP_LINES +
+          ' 行——署名是许可义务，必须留在显著位置（原为第 11 行，23c8960 曾移到文末）'
+        : 'README 里找不到上游署名（非官方二次开发版声明）——这是许可义务，不得删除',
+      buried ? 'credit moved below the top' : 'no credit anchor');
+  }
+  if (!README_FORK_SECTION.test(readme)) {
+    bad('README.md', 0,
+      'README 缺少「## 关于本仓库 / About this fork」小节——HANDOVER.md 钉住的署名位置之一消失',
+      'no fork section');
   }
   return out;
 }

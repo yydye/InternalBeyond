@@ -514,10 +514,13 @@ check('planted secret / dev path / forbidden file MUST fail the audit', () => {
 });
 
 /* A minimal stand-in for the shipped README: exactly one version claim plus a
-   placeholder asset name — the shape the release-claim gate expects. */
+   placeholder asset name, the upstream credit kept in the top block, and the
+   pinned fork section — the shape the release-claim gate expects. */
 function claimReadme(version, extra) {
-  return '`Windows 10+` · 当前版本 **' + version + '** · 免管理员权限\n\n' +
-    '下载 `InternalBeyond-Setup-<版本号>.exe`。\n' + (extra || '');
+  return '`Windows 10+` · 当前版本 **' + version + '** · 免管理员权限\n' +
+    '> 本仓库是 Sui 的 Internal Beyond 的非官方二次开发版本。\n\n' +
+    '下载 `InternalBeyond-Setup-<版本号>.exe`。\n\n' +
+    '## 关于本仓库 / About this fork\n\n' + (extra || '');
 }
 
 check('a clean directory passes', () => {
@@ -563,6 +566,40 @@ check('release-claim gate pins the README version to VERSION', () => {
 
   fs.rmSync(path.join(dir, 'README.md'));
   assert.strictEqual(audit.scanDirectory(dir).ok, false, 'a payload without README.md MUST fail');
+});
+
+/* The upstream credit is a licensing obligation (HANDOVER.md pins it). bbafba5
+   put it at README line 11; 23c8960 moved it to ~87% down and relaxed the prose
+   guard in the same commit. This pins the position, not just the wording. */
+check('release-claim gate keeps the upstream credit at the top of the README', () => {
+  const dir = path.join(tmpBase, 'credit-staging');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'VERSION'), '1.0.0\n');
+
+  fs.writeFileSync(path.join(dir, 'README.md'), claimReadme('1.0.0'));
+  const good = audit.scanDirectory(dir);
+  assert.strictEqual(good.ok, true, 'the shipped shape must pass: ' + JSON.stringify(good.findings));
+
+  /* The 23c8960 regression: present, but pushed far below the top block. */
+  const filler = Array.from({ length: 30 }, (_, i) => '功能说明行 ' + i).join('\n');
+  fs.writeFileSync(path.join(dir, 'README.md'),
+    '`Windows 10+` · 当前版本 **1.0.0** · 免管理员权限\n\n' +
+    '下载 `InternalBeyond-Setup-<版本号>.exe`。\n\n' + filler + '\n\n' +
+    '## 关于本仓库 / About this fork\n\n> 本仓库是 Sui 的 Internal Beyond 的非官方二次开发版本。\n');
+  const buried = audit.scanDirectory(dir);
+  assert.strictEqual(buried.ok, false, 'credit buried below the top MUST fail');
+  assert.ok(buried.findings.some(f => f.rule === 'release-claim' && /移出了 README 前/.test(f.why)),
+    'must say the credit was moved out of the top, got ' + JSON.stringify(buried.findings.map(f => f.why)));
+
+  /* Deleted outright, and the pinned fork section with it. */
+  fs.writeFileSync(path.join(dir, 'README.md'),
+    '`Windows 10+` · 当前版本 **1.0.0** · 免管理员权限\n\n' +
+    '下载 `InternalBeyond-Setup-<版本号>.exe`。\n\n' +
+    '## 关于本仓库 / About this fork\n\n> 本项目无需安装即可运行。\n');
+  const gone = audit.scanDirectory(dir);
+  assert.strictEqual(gone.ok, false, 'losing the credit MUST fail');
+  assert.ok(gone.findings.some(f => f.rule === 'release-claim' && /找不到上游署名/.test(f.why)),
+    'must report the missing credit');
 });
 
 check('documentation naming a prefix is not treated as a secret', () => {
