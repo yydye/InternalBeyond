@@ -492,7 +492,7 @@ release 上的三个资产与 `manifest.installer.sha256` 逐项交叉核对通�
 > （本机做过对照：**已发布的 1.0.1 安装包同样两者都搜不到** → 该探测没有判别力，
 > 不能用来证明「文件不在包里」。）本机也没有 `innoextract`。
 > 唯一能直接枚举**安装后**载荷的是 `test_installer_smoke.js --install-audit`，但本机已存在
-> 真实安装的 1.0.1 baseline（`E:\IB-E2E-1.0.1\InternalBeyond`，与之共用同一个 AppId
+> 真实安装的 1.0.1 baseline（`[local path redacted]`，与之共用同一个 AppId
 > `{78B427F6-…}_is1`）：审计安装会以同一 AppId 覆盖、并在卸载时**删掉那条卸载注册表项**，
 > 从而破坏 E2E 的 baseline。因此本阶段**不跑**该审计——安装后的载荷改由紧随其后的
 > `1.0.1 → 1.0.2` E2E 在真实安装实例上直接核对。
@@ -521,7 +521,7 @@ release 上的三个资产与 `manifest.installer.sha256` 逐项交叉核对通�
 被客户端读到——它仍然只做形状校验，**不是安装闸门**。
 
 `v1.0.1` 仍是 `1.0.1 → 1.0.2` E2E 的 baseline：**发布后不要卸载它**（本地真实安装实例
-`E:\IB-E2E-1.0.1\InternalBeyond`）。
+`[local path redacted]`）。
 
 ### v1.0.3 发布准备（U5-5 · 欢迎页水纹修复）
 
@@ -617,7 +617,7 @@ HEAD 逐字节相同（`sha256=1dc0a3f3…8b51`）且**不再出现 `currentPage
 
 ### 安装态复核（U5-4 收尾 · v1.0.3 已安装，真机）
 
-`v1.0.3` 已在真实安装实例 `E:\IB-E2E-1.0.1\InternalBeyond` 上完成复核。**Welcome 水纹修复 4/4 通过**，
+`v1.0.3` 已在真实安装实例 `[local path redacted]` 上完成复核。**Welcome 水纹修复 4/4 通过**，
 但**这次升级走的是「手动下载安装包后双击覆盖安装」，不是应用内零触达路径**——两者必须分开记。
 
 | # | 验收项 | 实测 |
@@ -631,7 +631,7 @@ HEAD 逐字节相同（`sha256=1dc0a3f3…8b51`）且**不再出现 `currentPage
 51,749,877 B · `sha256=3345f461…9434c` == 清单 `installer.sha256`（在用户的 `%USERPROFILE%\Downloads`）。
 
 **这次升级的路径事实（诚实记录）**：安装器日志 `%TEMP%\Setup Log 2026-09-10 #003.txt` 记
-`Original Setup EXE: C:\Users\admin\Downloads\InternalBeyond-Setup-1.0.3.exe`，命令行除 Inno 自身的
+`Original Setup EXE: [local path redacted]`，命令行除 Inno 自身的
 `/SL5="…"` 外**没有任何附加参数**（既无 `/SILENT` 也无 `IBRELAUNCH`）；同日的 19:28（1.0.1）与 20:07（1.0.2）
 两次是同样形态。三条独立佐证：
 
@@ -682,7 +682,7 @@ P21.1 DeepSeek 校准，见 [CHANGELOG.md](CHANGELOG.md)）。**本版没有发�
 
 **载荷一致性交叉核对（对照物这次是真实安装态）**：构建第 9 步按默认清理了 `dist\staging`，
 因此用 `scripts\release-manifest.js --stage` 在**同一份干净提交**上重新物化 staging，并把它与
-**真实安装的 1.0.3 载荷**（`E:\IB-E2E-1.0.1\InternalBeyond`，只读）逐文件比对：
+**真实安装的 1.0.3 载荷**（`[local path redacted]`，只读）逐文件比对：
 
 | 断言 | 结果 |
 |---|---|

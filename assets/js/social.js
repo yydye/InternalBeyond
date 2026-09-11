@@ -451,9 +451,16 @@ async function testCharacterVoice(){
   var sampleText='你好，我是'+(document.getElementById('api-ai-name').value||'AI')+'。';
   var vc={provider:(vp&&vp.value)||'edge',voiceId:_voiceGetId(),rate:parseFloat((document.getElementById('api-voice-rate')&&document.getElementById('api-voice-rate').value)||'1.0'),pitch:(document.getElementById('api-voice-pitch')&&document.getElementById('api-voice-pitch').value)||'+0Hz',model:(vmC&&vmC.value)||'',language:(vlC&&vlC.value)||'',style:(vsC&&vsC.value)||'',voiceType:_vt,voiceData:_vd};
   try{
-    var j=await fetch(ibBridgeBase()+'/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(IB.bridge.ttsPayload(vc,sampleText))}).then(function(r){return r.json()});
+    /* R19/§3.14：TTS 试听必须走 ibBridgeFetch（带 Authorization 头），
+       不能裸 fetch —— LAN 模式下 needsHttpToken() 对所有调用者都为真，
+       裸 fetch 会被 bridge/routes.js:316 的全局闸门 403/401 拒绝。 */
+    var j=await ibBridgeFetch(ibBridgeBase()+'/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(IB.bridge.ttsPayload(vc,sampleText))}).then(function(r){return r.json()});
     if(j&&j.ok){
-      var au=new Audio(ibBridgeBase()+j.url);au.play().catch(function(){});
+      /* R19/§3.14：媒体元素（<audio>/<img>）按构造不可能携带请求头，
+         因此受保护的 Bridge 资产必须 blob 取回后再播；直接 new Audio(base+url)
+         在 LAN 模式下拿不到 token，只会静默失败。 */
+      var _playTestAudio=function(u,revoke){var au=new Audio(u);au.play().catch(function(){});if(revoke)au.addEventListener('ended',function(){try{URL.revokeObjectURL(u)}catch(e){}});};
+      ibBridgeLoadAudio(j.url,function(audioUrl,revoke){_playTestAudio(audioUrl,revoke);},function(){_playTestAudio(ibBridgeBase()+j.url,false);});
       toast('Playing test voice...');
     }else{toast('TTS failed: '+(j&&j.error||'unknown'))}
   }catch(e){toast('Bridge not connected')}

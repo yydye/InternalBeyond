@@ -12,8 +12,10 @@
  * 子进程输出透传；任一失败最终返回非零退出码；浏览器测试串行执行
  * （避免 Chrome/CDP 相互干扰）；服务测试自带随机端口与临时数据目录。
  *
- * P2-07：入口不再遗漏仓库内的测试脚本。登记条目共 100 条 = 99 个 test_*.js
- * + scripts_check_html.js（HTML 结构检查）；分组：static 37 / service 16 / browser 49。
+ * P2-07：入口不再遗漏仓库内的测试脚本。登记条目共 102 条 = 101 个 test_*.js
+ * + scripts_check_html.js（HTML 结构检查）；分组：static 39 / service 16 / browser 49。
+ * M1-A：新增 static 两条 —— test_lan_bridge_auth_contract.js（R19/§3.14 LAN 鉴权一致性）
+ *     + test_chat_core_contract.js（Chat Message Contract）。
  * 仓库当前有 99 个 test_*.js；并行会话在途的 test_context_snapshot.js 尚未登记
  * （不属于 P2/P3/P4/P5 改动面，登记与否由该会话决定）。
  * P4：登记 test_setup_wizard.js（static）+ test_setup_wizard_smoke.js（browser）。
@@ -86,6 +88,15 @@ const GROUPS = [
          DeepSeek 校准（P21.1：模型级登记 · medium→high · 无 provider 宽泛开启）。
          纯 Node，零依赖、不联网、不开浏览器。 */
       ['test_reasoning_capability.js'],
+      /* M1-A（R19/§3.14）：LAN 模式桌面端鉴权一致性契约 ——
+         window.ibBridgeToken 发布 / 无裸 fetch(ibBridgeBase()…) /
+         无 new Audio(ibBridgeBase()…)（媒体元素无法带请求头 → 必须 blob 取回）。
+         纯静态文本分析，不联网、不开服务、不开浏览器。 */
+      ['test_lan_bridge_auth_contract.js'],
+      /* M1-A（Phase 1/3）：Chat Message Contract —— 生产写入形状全覆盖 /
+         conversation identity 派生与逆函数 / message id 形状保真 /
+         幂等 requestId→messageId 确定性 / payload 往返不丢未知字段。纯 Node。 */
+      ['test_chat_core_contract.js'],
       ['test_harness_boundary.js'],
       ['test_credential_vault.js'],
       ['test_error_catalog.js'],

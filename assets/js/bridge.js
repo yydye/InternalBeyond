@@ -69,6 +69,16 @@ function ibBridgeLoadAudio(pathname, done, failed){
     return r.blob();
   }).then(function(blob){ done(URL.createObjectURL(blob),true); }).catch(function(NS){ if(failed)failed(); });
 }
+/* R19/§3.14：token 读取器必须与它的兄弟一样是**全局**的。
+   ibBridgeBase(:13) 与 ibBridgeFetch(:72) 都已发布到 window，但 ibBridgeToken
+   一直留在 IIFE 私有作用域里，而 communication/call.js:17 用
+   `typeof ibBridgeToken==='function'?ibBridgeToken():''` 读取它 ——
+   typeof 对未声明标识符求值为 'undefined'（不抛错），因此**恒返回空串**，
+   语音通话的 WebSocket 升级永远不带 ?token=。默认（loopback）安装不需要 token
+   所以看不出问题；一旦 config.lan=true，LAN_EXPOSED 为真，
+   services/ib-bridge-service.js:1055 会以 401 拒绝升级 —— 桌面自己的语音通话被打断。
+   发布它即修复该链路；本行不改变任何既有的非 LAN 行为。 */
+window.ibBridgeToken=ibBridgeToken;
 window.ibBridgeFetch=ibBridgeFetch;
 
 var _ibToastEl=null;

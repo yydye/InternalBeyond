@@ -423,7 +423,7 @@ chat×diary parity / requested→effective→reasoning tokens 可对比）；同
 - **绑定**：`启动 InternalBeyond.vbs` 本身无法直接设置 Windows 文件图标，故采用 Windows 快捷方式作为最终桌面入口：桌面 **`InternalBeyond.lnk`** → 目标 = `启动 InternalBeyond.vbs`、工作目录 = 项目根、图标 = `IB-icon.ico`。
 - **可复现安装器**：新增 `create-desktop-shortcut.cmd`（幂等，双击运行即在桌面创建/刷新 `InternalBeyond.lnk`；移动项目后重跑重新指向）。纯 ASCII 内容 + CRLF，避免 cmd/GBK 编码问题。
 - **启动逻辑完全不变**：`.lnk` 只是转发到 `启动 InternalBeyond.vbs`（GBK 无 BOM），底层仍复用唯一 `launch-internal-beyond.js`——Bridge/Active 检测复用、23120 Web 检测复用、自动打开 localhost、0 重复服务、失败原生提示、日志，全部不变。
-- **验证**：`create-desktop-shortcut.cmd` 实跑创建 `C:\Users\<user>\Desktop\InternalBeyond.lnk`（Target=`<repo-root>\启动 InternalBeyond.vbs`、Icon=`<repo-root>\IB-icon.ico,0`、WorkingDir=项目根）；双击该 `.lnk` 实际跑通启动链路（Bridge/Active 复用、Web 拉起并健康、0 重复，测试以 `IB_LAUNCH_NO_OPEN=1` 抑制浏览器、测后清理 23120）。`test_harness_boundary.js` / `test_launcher.js` / `test_worklet_localhost.js` 未受影响。
+- **验证**：`create-desktop-shortcut.cmd` 实跑创建 `[local path redacted]<user>\Desktop\InternalBeyond.lnk`（Target=`<repo-root>\启动 InternalBeyond.vbs`、Icon=`<repo-root>\IB-icon.ico,0`、WorkingDir=项目根）；双击该 `.lnk` 实际跑通启动链路（Bridge/Active 复用、Web 拉起并健康、0 重复，测试以 `IB_LAUNCH_NO_OPEN=1` 抑制浏览器、测后清理 23120）。`test_harness_boundary.js` / `test_launcher.js` / `test_worklet_localhost.js` 未受影响。
 
 ## 2026-09-02 · 修复 MiMo 朋友圈图片注入 400「base64 data is not valid」
 
@@ -1470,7 +1470,7 @@ SolidCompression 保存条目名，包里搜不到 `bg-canvas.jpg` / `bg-canvas.
 对照实验，**已发布的 1.0.1 安装包同样两者都搜不到**——说明该探测没有判别力，不能反过来
 用来证明「文件不在包里」；本机也没有 `innoextract`。唯一能直接枚举**安装后**载荷的是
 `test_installer_smoke.js --install-audit`，但本机已有真实安装的 1.0.1 baseline
-（`E:\IB-E2E-1.0.1\InternalBeyond`），它与审计安装**共用同一个 AppId** `{78B427F6-…}_is1`：
+（`[local path redacted]`），它与审计安装**共用同一个 AppId** `{78B427F6-…}_is1`：
 审计安装会以同一 AppId 覆盖、并在卸载时删掉那条卸载注册表项，从而**破坏 E2E 的 baseline**。
 因此本阶段刻意**不跑**该审计，安装后的载荷交给紧随其后的 `1.0.1 → 1.0.2` E2E 在真实安装
 实例上直接核对。
@@ -1518,7 +1518,7 @@ asset size == 清单 `sizeBytes`、asset URL == 清单 `installer.url`），确�
 connect-timeout 8 s，**恰好换路一次**到 `api` 成功——回退门（U-D1 Revised）在真实网络失败上
 第二次被验证。
 
-`v1.0.1` 的真实安装实例（`E:\IB-E2E-1.0.1\InternalBeyond`）**保持不动**，下一步用它执行
+`v1.0.1` 的真实安装实例（`[local path redacted]`）**保持不动**，下一步用它执行
 `1.0.1 → 1.0.2` Zero-Touch Update E2E，并核对欢迎页画窗背景确实来自随包 `bg-canvas.jpg`。
 
 
@@ -1604,7 +1604,7 @@ R0 只做定位、不动代码，根因冻结之后才提交修复。
 
 ### 安装态复核（U5-4 收尾）
 
-`v1.0.3` 已在真实安装实例 `E:\IB-E2E-1.0.1\InternalBeyond` 上复核，**Welcome 水纹修复 4/4 通过**：
+`v1.0.3` 已在真实安装实例 `[local path redacted]` 上复核，**Welcome 水纹修复 4/4 通过**：
 `/health` / `VERSION` / `boot-state.json` / 卸载注册表全部 `1.0.3`（全机仅一项安装）；安装目录
 `assets/js/glass-ripple.js` = **10,687 B** · `sha256=1dc0a3f3…8b51`，与仓库 HEAD 及 HTTP 下发字节
 三者逐字节相同、`currentPage` 0 次；`bg-canvas.jpg` 200 / `bg-canvas.png` 404 / `glass-canvas.js` 200；
@@ -1612,7 +1612,7 @@ R0 只做定位、不动代码，根因冻结之后才提交修复。
 实际运行的安装包与已发布资产同源（51,749,877 B · `sha256=3345f461…9434c` == 清单 `installer.sha256`）。
 
 **但这次升级不是应用内零触达**：安装器日志 `%TEMP%\Setup Log 2026-09-10 #003.txt` 的
-`Original Setup EXE` 是 `C:\Users\admin\Downloads\InternalBeyond-Setup-1.0.3.exe`，命令行除 Inno 自身的
+`Original Setup EXE` 是 `[local path redacted]`，命令行除 Inno 自身的
 `/SL5="…"` 外无任何附加参数（无 `/SILENT`、无 `IBRELAUNCH`）；`%LOCALAPPDATA%\InternalBeyond\updates`
 不存在、无 `update-install-state.json`、`update-check.json` 停在 20:08:51 且内容仍是 1.0.2 清单
 （20:44 之前没有任何一次成功检查；失败从不写缓存）。同日 19:28 / 20:07 两次同为手动覆盖安装。
