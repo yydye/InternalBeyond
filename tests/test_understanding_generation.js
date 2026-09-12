@@ -1,4 +1,4 @@
-﻿/* ====================================================================
+/* ====================================================================
    Understanding + Thread v1 · Commit 3 · Generation
    覆盖：_understandingTick 独立生成的 understanding（mock LLM）→ 不建 semantic /
         _threadRuleTick 规则触发 thread（零 LLM）/
@@ -40,19 +40,27 @@ async function main(){
     const cfgExpr="apiConfigs.find(a=>a.id==='genc')";
     /* 准备两个碎片证据（供 understanding 引用） */
     await ev(cdp,"(async function(){ await dbPut('memories',{id:'g1',createdBy:'genc',createdByName:'GenAI',kind:'episodic',title:'想换电脑',content:'她提到想攒钱买一台新电脑来升级设备',domain:'日常',valence:0.5,arousal:0.4,importance:5,resolved:false,visibility:'public',created:Date.now(),lastActivated:Date.now()}); await dbPut('memories',{id:'g2',createdBy:'genc',createdByName:'GenAI',kind:'episodic',title:'准备换设备',content:'她的旧设备限制创作，计划升级',domain:'日常',valence:0.5,arousal:0.4,importance:5,resolved:false,visibility:'public',created:Date.now(),lastActivated:Date.now()}); })()");
-    /* ① _understandingTick：mock 返回一则稳定理解（user_corroborated，证据 g1,g2） */
+    /* ① M1-C.2m：桌面**不再生成**理解 —— 它只请求派生。
+       本用例跑在 file:// 承载上，权威结构性不可达，因此 tick 必须
+       **什么都不做**（返回 null、不调模型、不写盘、不建 semantic）。
+       模型调用计数由 mock provider 侧统计：这是"浏览器不再是写者"的**运行时**
+       证据，与 test_memory_contract_closure 的 T1.3 静态断言互为交叉验证。 */
+    let mockHits = 0;
+    mock.server.on('request', (req) => { if (String(req.url).includes('/chat/completions')) mockHits++; });
     mock.uPayload='{"shouldUpdate":true,"content":"她对设备瓶颈敏感，升级设备会明显提升创作信心。","basis":"user_corroborated","dimension":"context","evidenceIds":["g1","g2"],"conviction":75}';
     const tickRes=await ev(cdp,"(async function(){ var c=apiConfigs.find(a=>a.id==='genc'); try{ var res=await _understandingTick(c); return {res:res}; }catch(e){ return {err:String(e&&e.message||e)} } })()");
-    check('uGen.created',!!(tickRes&&tickRes.res),JSON.stringify(tickRes));
+    check('uGen.noLocalGeneration',tickRes&&tickRes.res===null&&!tickRes.err,JSON.stringify(tickRes));
     check('uGen.noSemantic',await ev(cdp,"(async function(){ var all=await dbGetAll('memories'); return !all.some(m=>m.kind==='semantic'&&m.createdBy==='genc'); })()"));
-    check('uGen.wroteUnderstanding',await ev(cdp,"(async function(){ var u=await unGetActive('genc'); return !!(u&&u.current.content.indexOf('设备瓶颈')>=0&&u.current.evidenceIds.length===2&&u.current.basis==='user_corroborated'); })()"));
+    check('uGen.wroteNothing',await ev(cdp,"(async function(){ var all=await dbGetAll('understandings'); return !all.some(u=>String(u.characterId||'')==='genc'); })()"));
+    check('uGen.authorityHonestOnFileOrigin',await ev(cdp,"(function(){ var st=window.IB.homeNode.understanding.status(); return st.authorityEffective===false&&st.degraded===true; })()"));
     /* ② _threadRuleTick（零 LLM）：规则命中开创 thread */
     check('thRule.created',await ev(cdp,"(async function(){ var n=await _threadRuleTick("+cfgExpr+"); return n>=1; })()"));
     check('thRule.openThread',await ev(cdp,"(async function(){ var open=await thGetOpen('genc'); return open.length>=1; })()"));
-    /* ③ _understandingTick 再次：内容未变化 → 不重复改写 */
-    const before=await ev(cdp,"(async function(){ var u=await unGetActive('genc'); return u.history.length; })()");
+    /* ③ tick 再跑一次仍然是 no-op（不因为"跑了两轮"而写盘） */
     await ev(cdp,"(async function(){ await _understandingTick("+cfgExpr+"); })()");
-    check('uGen.noRepeatRewrite',await ev(cdp,"(async function(){ var u=await unGetActive('genc'); return u.history.length==="+before+"; })()"));
+    check('uGen.noRepeatRewrite',await ev(cdp,"(async function(){ var all=await dbGetAll('understandings'); return !all.some(u=>String(u.characterId||'')==='genc'); })()"));
+    /* ④ 整段理解派生**一次模型调用都没有发生** */
+    check('uGen.zeroModelCalls',mockHits===0,'mockHits='+mockHits);
     /* ④ semantic 主链不含 understanding/thread 字段（保持原样） */
     mock.uPayload='{"shouldConsolidate":true,"title":"关系的支柱","summary":"共同经历","content":"在未来，这件共同经历会成为我们关系的支柱。","importance":7,"consolidatedFrom":["g1"]}';
     await ev(cdp,"(async function(){ await _activeConsolidate("+cfgExpr+"); })()");

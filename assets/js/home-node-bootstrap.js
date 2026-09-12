@@ -140,6 +140,16 @@ else NS.chatAuthority = authority;
        两者最终都是 Promise，调用点无感。 */
 function isChatStore(store) { return store === 'chatMessages'; }
 function isMemoryStore(store) { return store === 'memories' && !!memoryAuthority; }
+function isUnderstandingStore(store) { return store === 'understandings' && !!understandingAuthority; }
+/* 理解域是否**结构性**由 Home Node 独占：canonical 模式且不是 file:// 承载。
+   与 isUnderstandingStore 刻意不同：那个只说"这个 store 已被接管"，
+   这个说"浏览器不允许再写它"。两者在 file:// / mode=off / mirror 下**必须分开** ——
+   那些承载下权威不可达，本地写是 M1-C.2m 的回滚路径（与迁移之前逐字同行为）；
+   把它们一并拒绝等于"关掉集成之后功能直接坏掉"，那不是回滚，那是移除。 */
+function understandingWriteClosed() {
+  return !!understandingAuthority && typeof understandingAuthority.authorityEffective === 'function'
+    && understandingAuthority.authorityEffective() === true;
+}
 
 var original = {
   put: window.dbPut, get: window.dbGet, getAll: window.dbGetAll,
@@ -184,6 +194,20 @@ window.dbPut = function (store, data) {
       });
     });
   }
+  if (isUnderstandingStore(store) && understandingWriteClosed()) {
+    /* 理解（M1-C.2m）：**没有任何生产路径**会走到这里。
+       这是一条**守卫**，而不是一条写路径 —— 它的存在是为了让"某个调用方
+       又直接往 understandings 里 dbPut 一行"变成一次可见的失败，
+       而不是一次静默的第二写者。所有合法写入都经 understandingAuthority：
+         · 桌面请求派生 → `_understandingTick` → authority.requestDerivation
+         · 用户更正     → authority.recordCorrection
+       静默放行等于把 M1-C.2l 的缺陷（一个角色两份理解）重新打开。 */
+    note('understanding-direct-write-blocked', { id: data && data.id, note: '写入必须经 IB.homeNode.understanding' });
+    var blocked = new Error('understandings 是 Home Node 的 canonical 域；浏览器不得直接写入（fail closed）');
+    blocked.code = 'understanding-write-closed';
+    blocked.authority = 'home-node';
+    return Promise.reject(blocked);
+  }
   if (!isChatStore(store) || MODE !== 'canonical') return original.put(store, data);
   return withRetry(function () {
     return authority.put(data).then(function (result) {
@@ -204,6 +228,14 @@ window.dbDelete = function (store, key) {
       });
     });
   }
+  if (isUnderstandingStore(store) && understandingWriteClosed()) {
+    /* 同理：理解不是可以随手删掉的记录。用户的"我不想让你这样理解我"必须走
+       更正（correction），而删除之后下一轮会重新长出同一句话 —— 正是 M1-C.2l
+       的原始缺陷。这里明确拒绝，绝不静默。 */
+    var refused = new Error('理解不能删除；请记录一次更正（correction）');
+    refused.code = 'understanding-delete-refused';
+    return Promise.reject(refused);
+  }
   if (!isChatStore(store) || MODE !== 'canonical') return original.del(store, key);
   return withRetry(function () {
     return authority.remove(key).then(function (result) {
@@ -216,12 +248,14 @@ window.dbDelete = function (store, key) {
 
 window.dbGet = function (store, key) {
   if (isMemoryStore(store)) return memoryAuthority.get(key);
+  if (isUnderstandingStore(store)) return understandingAuthority.get(key);
   if (!isChatStore(store) || MODE !== 'canonical') return original.get(store, key);
   return authority.get(key);
 };
 
 window.dbGetAll = function (store) {
   if (isMemoryStore(store)) return memoryAuthority.getAll();
+  if (isUnderstandingStore(store)) return understandingAuthority.getAll();
   if (!isChatStore(store) || MODE !== 'canonical') return original.getAll(store);
   return authority.getAll();
 };
@@ -229,11 +263,16 @@ window.dbGetAll = function (store) {
 window.dbGetByIndex = function (store, idx, val) {
   /* memories 在 core.js 里没有索引（召回走全表扫描 + 可见性前置过滤）。
      因此这里不接管：走原路径，保持"索引不存在时按字段过滤"的既有语义。 */
-  if (!isChatStore(store) || MODE !== 'canonical') return original.getByIndex(store, idx, val);
+  if (isChatStore(store) && MODE === 'canonical' && idx === 'byFriend') return authority.getByFriend(val);
+  /* M1-C.2m：`understandings` 只有一个索引 byCharacter，而它的唯一生产读点就是
+     `unGetActive` / `unGetAll` —— 两者都必须先 await ensureReady()，否则页面刚打开时
+     会读到"迁移之前"的本地理解，而权威此时已经是 Home Node。
+     与 memories 的接管差异（刻意的）：memories 走全表扫描因此由 dbGetAll 接管；
+     这里走索引，所以在索引函数上接管。 */
+  if (isUnderstandingStore(store) && idx === 'byCharacter') return understandingAuthority.getAll(val);
   /* 只有 byFriend 这一个索引存在（core.js:4）。其它索引名走原路径，
      保持"索引不存在时按字段过滤"的既有语义不变。 */
-  if (idx !== 'byFriend') return original.getByIndex(store, idx, val);
-  return authority.getByFriend(val);
+  return original.getByIndex(store, idx, val);
 };
 
 /* ── M1-C.2d Wave 2：canonical `memories` ─────────────────────────────
@@ -310,6 +349,154 @@ if (_memoryAuthorityFactory && _memoryRemoteFactory) {
   warn('memory-authority-missing', {
     authority: !!_memoryAuthorityFactory, remote: !!_memoryRemoteFactory,
     note: 'memories 走本地 IndexedDB（Wave 2 之前的路径）'
+  });
+}
+
+/* ── M1-C.2m：canonical `understandings` ──────────────────────────────
+   与 chatMessages / memories 同款三态（authority / mirror / fallback），
+   但写协议不同：理解是**单活文档 + 修订链 + CAS**，因此 authority 层暴露的是
+   `rewrite(characterId, candidate, {expectedRevision})` 而不是 put(record)。
+
+   与记忆的一个**真实差异**（也是本模块存在的全部理由）：
+     记忆的写者一直是浏览器、权威后来才搬走；而理解的写者在 M1-C.2m 里
+     **整个搬到了 Home Node**。因此这里不仅不镜像写，还**禁止**直接 dbPut ——
+     一个还留着本地派生能力的浏览器就是第二个写者，正是要消灭的形状。
+
+   local driver（镜像）：IndexedDB `understandings`。单活由 applyUpserts 结构性
+   维持（权威说哪一条是 active，镜像里其它行就立刻退位），而不是靠"记得去改"。 */
+var _understandingAuthorityFactory = (window.IBUnderstandingAuthority && typeof window.IBUnderstandingAuthority.createUnderstandingAuthority === 'function')
+  ? window.IBUnderstandingAuthority.createUnderstandingAuthority : null;
+var _understandingRemoteFactory = (NS && typeof NS.createUnderstandingRemote === 'function')
+  ? NS.createUnderstandingRemote : ((typeof window.createUnderstandingRemote === 'function') ? window.createUnderstandingRemote : null);
+
+var understandingAuthority = null;
+if (_understandingAuthorityFactory && _understandingRemoteFactory) {
+  var understandingLocalDriver = {
+    get: function (id) {
+      return DB.get('understandings', id).then(function (row) { return row || null; });
+    },
+    getActive: function (characterId) {
+      return DB.getByIndex('understandings', 'byCharacter', characterId).then(function (rows) {
+        var list = (rows || []).filter(function (u) {
+          return u && u.active === true && String(u.characterId || '') === String(characterId);
+        });
+        /* 兼容**迁移前**的本地行（那时没有 active 布尔，只有 status 字符串）。
+           这里只读不写：真正的归一由 applyUpserts / hydrate 完成。 */
+        if (!list.length) {
+          list = (rows || []).filter(function (u) {
+            return u && u.active !== false && String(u.status || 'active') === 'active' && String(u.characterId || '') === String(characterId);
+          });
+        }
+        list.sort(function (a, b) { return ((b.lastUpdatedAt || b.createdAt || 0) - (a.lastUpdatedAt || a.createdAt || 0)); });
+        return list[0] || null;
+      });
+    },
+    getAll: function (characterId) {
+      if (characterId == null) return DB.getAll('understandings').then(function (rows) { return rows || []; });
+      return DB.getByIndex('understandings', 'byCharacter', String(characterId)).then(function (rows) { return rows || []; });
+    },
+    /* 镜像写：只在权威返回之后调用。这里**不接受**任意候选 —— 它只写权威文档。 */
+    put: function (doc) {
+      return writeMirrorDoc(doc);
+    },
+    rewrite: function (characterId, next) {
+      /* 非 canonical 承载（'mirror'/'off'/file://）下的本地写：沿用迁移前的
+         read-modify-write 形状。这条路径**不声称**权威，status() 会如实标注。 */
+      return understandingLocalDriver.getActive(String(characterId)).then(function (existing) {
+        var now = Date.now();
+        var doc = existing || { id: 'un_' + now.toString(36) + '_' + Math.floor(Math.random() * 46656).toString(36), characterId: String(characterId), createdAt: now };
+        var current = {
+          content: String((next && next.content) || '').trim(),
+          conviction: Math.max(0, Math.min(100, Number(next && next.conviction) || 0)),
+          evidenceIds: Array.isArray(next && next.evidenceIds) ? next.evidenceIds.slice(0, 100) : [],
+          basis: String((next && next.basis) || 'ai_guess'),
+          updatedAt: now,
+          updatedBy: String((next && next.updatedBy) || '')
+        };
+        if (!current.content) return { ok: false, outcome: 'invalid', error: 'invalid-content' };
+        doc.active = true;
+        doc.status = 'active';
+        doc.kind = 'understanding';
+        doc.revision = Number(existing && existing.revision ? existing.revision : 0) + 1;
+        doc.dimension = String((next && next.dimension) || 'context');
+        doc.visibility = (next && next.stamp) || { visibility: 'private', visibleTo: [], excludeFrom: [] };
+        doc.current = current;
+        doc.lastUpdatedAt = now;
+        return writeMirrorDoc(doc).then(function () {
+          return { ok: true, outcome: existing ? 'updated' : 'created', id: doc.id, docRevision: doc.revision, document: doc };
+        });
+      });
+    },
+    applyUpserts: function (docs) {
+      return applyUnderstandingUpserts(docs || []);
+    },
+    applyDeletes: function (ids) {
+      var list = (ids || []).map(String);
+      var work = Promise.resolve();
+      for (var i = 0; i < list.length; i++) {
+        work = work.then((function (id) { return function () { return DB.del('understandings', id); }; })(list[i]));
+      }
+      return work;
+    },
+    /* 整表替换：权威是来源。**镜像里的旧影子必须消失** —— 否则用户会在
+       下一轮对话里继续被一份已经被权威删除的理解影响。 */
+    replaceAll: function (docs) {
+      return DB.getAll('understandings').then(function (existing) {
+        var keep = {};
+        (docs || []).forEach(function (d) { if (d && d.id != null) keep[String(d.id)] = true; });
+        var stale = (existing || []).map(function (r) { return r && r.id; }).filter(function (id) { return id != null && !keep[String(id)]; });
+        var work = Promise.resolve();
+        for (var i = 0; i < stale.length; i++) {
+          work = work.then((function (id) { return function () { return DB.del('understandings', id); }; })(stale[i]));
+        }
+        return work.then(function () { return applyUnderstandingUpserts(docs || []); });
+      });
+    }
+  };
+
+  /* 单活不变量的**镜像侧**维持点：权威说哪一条是 active，同一角色的其它行
+     立刻退位（active=false / status='superseded'）。
+     为什么必须在这里做而不能只信权威的 payload：镜像可能还留着迁移之前的旧行，
+     而 unGetActive 是**只读**的 —— 它不会替我们清理。 */
+  function applyUnderstandingUpserts(docs) {
+    var work = Promise.resolve();
+    docs.forEach(function (doc) {
+      if (!doc || doc.id == null) return;
+      work = work.then(function () { return writeMirrorDoc(doc); });
+    });
+    return work;
+  }
+  function writeMirrorDoc(doc) {
+    if (!doc || doc.id == null || !doc.characterId) return Promise.resolve(false);
+    return DB.getByIndex('understandings', 'byCharacter', String(doc.characterId)).then(function (rows) {
+      var work = Promise.resolve();
+      (rows || []).forEach(function (row) {
+        if (!row || String(row.id) === String(doc.id)) return;
+        if (row.active !== true && String(row.status || '') !== 'active') return;
+        row.active = false;
+        row.status = 'superseded';
+        work = work.then(function () { return DB.put('understandings', row); });
+      });
+      return work.then(function () {
+        var stored = Object.assign({}, doc, { active: true, status: 'active' });
+        return DB.put('understandings', stored);
+      });
+    });
+  }
+
+  understandingAuthority = _understandingAuthorityFactory({
+    remote: _understandingRemoteFactory({}),
+    local: understandingLocalDriver,
+    mode: MODE,
+    fileOrigin: FILE_ORIGIN,
+    log: function (event, fields) { note(event, fields); }
+  });
+  if (typeof NS.expose === 'function') NS.expose('understandingAuthority', { instance: understandingAuthority, MODES: understandingAuthority.MODES });
+  else NS.understandingAuthority = understandingAuthority;
+} else {
+  warn('understanding-authority-missing', {
+    authority: !!_understandingAuthorityFactory, remote: !!_understandingRemoteFactory,
+    note: 'understandings 走本地 IndexedDB（M1-C.2m 之前的路径）'
   });
 }
 
@@ -511,6 +698,8 @@ function bootstrap() {
   memorySyncOnce('boot', { full: true }).then(function () {
     return syncOnce('boot');
   }).then(function () {
+    return understandingSyncOnce('boot', { full: true });
+  }).then(function () {
     return publishCharacters('boot');
   }).then(function () {
     publishMemorySettings('boot');
@@ -519,9 +708,9 @@ function bootstrap() {
      因为常驻 interval 会让测试 harness 无法自然退出（MEMORY.md 的测试纪律）。 */
   try {
     document.addEventListener('visibilitychange', function () {
-      if (document.visibilityState === 'visible') { syncOnce('visibility'); memorySyncOnce('visibility'); }
+      if (document.visibilityState === 'visible') { syncOnce('visibility'); memorySyncOnce('visibility'); understandingSyncOnce('visibility'); }
     });
-    window.addEventListener('online', function () { syncOnce('online'); memorySyncOnce('online'); });
+    window.addEventListener('online', function () { syncOnce('online'); memorySyncOnce('online'); understandingSyncOnce('online'); });
   } catch (e) { /* 无 document 的环境（测试）不影响功能 */ }
 }
 
@@ -543,6 +732,26 @@ function memorySyncOnce(reason, options) {
     return { ok: false, error: 'sync-failed' };
   });
   return memorySyncInFlight;
+}
+
+/* 理解镜像同步（幂等）：与 memorySyncOnce 同款，只换 store。
+   boot 用 full:true —— 保证镜像在任何读取之前就是权威的样子（否则页面刚打开时
+   会读到"迁移之前"的本地理解，而权威此时已经是 Home Node）。 */
+var understandingSyncInFlight = null;
+function understandingSyncOnce(reason, options) {
+  if (MODE !== 'canonical' || !understandingAuthority) return Promise.resolve({ ok: true, skipped: true });
+  if (understandingSyncInFlight) return understandingSyncInFlight;
+  understandingSyncInFlight = understandingAuthority.sync(options || {}).then(function (res) {
+    understandingSyncInFlight = null;
+    if (res && res.ok) note('understanding-sync', { reason: reason, cursor: res.cursor, upserts: res.upserts, deletes: res.deletes });
+    else note('understanding-sync-degraded', { reason: reason, error: (res && res.error) || 'unknown' });
+    return res;
+  }, function (error) {
+    understandingSyncInFlight = null;
+    note('understanding-sync-fail', { reason: reason, error: String((error && error.message) || error) });
+    return { ok: false, error: 'sync-failed' };
+  });
+  return understandingSyncInFlight;
 }
 
 /* 把桌面的记忆预算发布给 Home Node。
@@ -653,6 +862,67 @@ var surface = {
           contentLen: opts.contentLen || core.DEFAULT_CONTENT_LEN
         });
       });
+    }
+  },
+  /* ── M1-C.2m：canonical Understanding 的可观测面 ──────────────────────
+     与 memory 同款：权威状态必须显式可读，而不是让人去猜"到底谁说了算"。
+     这里的 `derive` 是**请求**而不是"派生"：真正的派生发生在 Home Node，
+     由它的持久水位决定要不要调模型，并把 {outcome:'ineligible', skipReason}
+     如实回报 —— 因此"桌面开着就烧 token"在结构上不可能发生。 */
+  understanding: {
+    instance: understandingAuthority,
+    available: !!understandingAuthority,
+    authority: understandingAuthority,
+    status: function () {
+      if (!understandingAuthority) {
+        return { store: 'understandings', available: false, authority: 'indexeddb', authorityEffective: false, degraded: true, degradedReason: 'understanding-authority-missing' };
+      }
+      return understandingAuthority.status();
+    },
+    sync: understandingSyncOnce,
+    /* 请求 Home Node 派生一次（是否真的派生由节点水位判定）。 */
+    derive: function (characterId, options) {
+      if (!understandingAuthority) return Promise.resolve({ ok: false, error: 'authority-disabled' });
+      return understandingAuthority.requestDerivation(characterId, options || {}).then(function (res) {
+        note('understanding-derive-request', {
+          characterId: characterId, outcome: res && res.outcome, skipReason: res && res.skipReason
+        });
+        return res;
+      });
+    },
+    /* 用户更正：durable evidence about the understanding itself（§1）。 */
+    correct: function (characterId, input) {
+      if (!understandingAuthority) return Promise.resolve({ ok: false, error: 'authority-disabled' });
+      return understandingAuthority.recordCorrection(characterId, input || {}).then(function (res) {
+        note(res && res.ok ? 'understanding-correction-recorded' : 'understanding-correction-failed', {
+          characterId: characterId, outcome: res && res.outcome, error: res && res.error
+        });
+        return res;
+      });
+    },
+    corrections: function (characterId) {
+      if (!understandingAuthority) return Promise.resolve({ ok: false, error: 'authority-disabled', corrections: [] });
+      return understandingAuthority.listCorrections(characterId);
+    },
+    /* 一次性迁移：浏览器遗留理解 → Home Node canonical store（幂等、可重跑）。
+       绝不自动执行：它会把本地行发布到权威，而"什么时候发布"是用户/运维的决定。 */
+    migrate: function (options) {
+      options = options || {};
+      if (!understandingAuthority) return Promise.resolve({ ok: false, error: 'authority-disabled' });
+      note('understanding-migrate-start', { source: options.source || 'browser-indexeddb:understanding', full: !!options.full });
+      return understandingAuthority.migrate(options).then(function (report) {
+        note(report && report.ok ? 'understanding-migrate-done' : 'understanding-migrate-fail', {
+          created: report && report.created, skipped: report && report.skipped, total: report && report.total,
+          ambiguous: report && report.ambiguous, preserved: report && report.preserved,
+          error: report && report.error, completed: report && report.completed
+        });
+        return report;
+      });
+    },
+    /* 用 Home Node 完整重建镜像。显式调用，绝不自动执行。 */
+    rebuildMirror: function (options) {
+      if (!understandingAuthority) return Promise.resolve({ ok: false, error: 'authority-disabled' });
+      return understandingAuthority.rebuild(options || {});
     }
   }
 };

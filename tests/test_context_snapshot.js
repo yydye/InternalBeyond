@@ -118,6 +118,29 @@ const api = http.createServer(async (req, res) => {
   const homeNodePort = await listen(homeNode.server);
   const homeNodeBase = 'http://127.0.0.1:' + homeNodePort;
 
+  /* ── M1-C.2m：理解（Understanding）的**唯一写者**是 Home Node ────────
+     本用例要在桌面 prompt 里看到"对TA的当前理解"这一段，因此必须在 canonical
+     侧真的存在一份理解。而浏览器**不能再写它**（unWrite 在权威生效时显式拒绝，
+     见 memory.js 的说明）—— 那是本阶段的核心不变量，不是本用例的障碍。
+     因此这里直接经 canonical store 播种（与派生器写的是同一张表、同一份契约），
+     桌面则通过 authority 的镜像读它。 */
+  function seedCanonicalUnderstanding(characterId, content, evidenceIds, revision) {
+    const owner = String(characterId);
+    const next = {
+      content: content,
+      conviction: 80,
+      dimension: 'context',
+      basis: 'user_stated',
+      evidenceIds: evidenceIds || [],
+      stamp: { visibility: 'public', visibleTo: [], excludeFrom: [] }
+    };
+    const store = homeNode.understandingStore;
+    const active = store.getActive(owner);
+    const res = store.rewrite(owner, next, { expectedRevision: active ? active.revision : 0 });
+    assert.ok(res && res.ok, 'canonical understanding seed failed: ' + JSON.stringify(res));
+    return res;
+  }
+
   const debugPort = await freePort();
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-c2-'));
   const chrome = chromePath(); assert.ok(chrome, 'Chrome or Edge required');
@@ -176,17 +199,33 @@ const api = http.createServer(async (req, res) => {
     })()`);
 
     const mkCfg = id => ({ id, provider: 'custom', endpoint: apiBase + '/v1/chat/completions', model: 'c2-model-' + id, apiKey: '', nickname: id, streaming: false, promptCache: false, systemPrompt: 'C2_IDENTITY_' + id, relationship: '伙伴' });
+    /* M1-C.2m：理解为空证据不会被注入（读时存证要求证据集非空）。这条顺序本身
+       就是一个产品事实：**记忆先到 canonical，理解才能在 canonical 侧存在**。
+       因此播种放在下面（记忆落盘之后）。 */
     await evaluate(cdp, `(async()=>{
       for(const c of ${JSON.stringify([mkCfg('c2_role'), mkCfg('c2_group_a')])})await dbPut('apiConfigs',c);
       await loadApiConfigs();
       await saveMiddleBrainConfig({enabled:true,endpoint:${JSON.stringify(apiBase + '/v1/responses')},model:'gpt-6-astra',apiKey:'sk-x',admissionEnabled:false});
       await dbPut('memories',{id:'c2_mem',kind:'episodic',createdBy:'c2_role',visibility:'public',visibleTo:[],excludeFrom:[],title:'C2_MEMORY_TITLE',content:'C2_MEMORY_MARKER',domain:'日常',tags:[],valence:0.5,arousal:0.3,importance:9,resolved:false,activationCount:0,created:Date.now(),lastActivated:0});
       await dbPut('memories',{id:'c2_priv',kind:'episodic',createdBy:'c2_role',visibility:'private',visibleTo:[],excludeFrom:[],title:'C2_PRIVATE_TITLE',content:'C2_PRIVATE_MARKER',domain:'日常',tags:[],valence:0.5,arousal:0.3,importance:9,resolved:false,activationCount:0,created:Date.now(),lastActivated:0});
-      await unWrite('c2_role',{content:'C2_UNDERSTANDING_MARKER',conviction:80,basis:'user_stated',dimension:'context',evidenceIds:[]});
-      await thOpen('c2_role','C2_THREAD_MARKER',[],'ai');
+      /* M1-C.2m：线索必须带**真实且可见**的证据 —— 读时存证要求证据集非空，
+         零证据的线索永远不会被注入（thread 恒 empty）。这不是新规则，
+         但旧用例此前恰好靠"印章 + 空证据"通过了，因此这里把证据补上。 */
+      await thOpen('c2_role','C2_THREAD_MARKER',['c2_mem'],'ai',{visibility:'public',visibleTo:[],excludeFrom:[]});
       await createMoment({roleId:'c2_role',content:'C2_MOMENT_MARKER',source:'manual',visibility:'all'});
       await dbPut('apiSettings',{id:'summarySettings',enabled:false,keepCount:6,welcomeEnabled:false,welcomeInterval:2,musicEnabled:false,summaryApiId:'',summaryWindow:60});
+      /* 把**记忆**的镜像从 canonical 补齐：这些写入发生在页面启动之后，
+         因此不能只依赖 boot 那一次同步 —— 权威侧才是真相，镜像补齐后才断言。 */
+      await window.IB.homeNode.sync('c2-seed', { full: true });
       return true})()`);
+    /* M1-C.2m（顺序有语义，而这个顺序本身就是一个产品事实）：
+       **记忆先到 canonical，理解才能在 canonical 侧存在** —— 读时存证要求证据集
+       非空，因此零证据的理解永远不会被注入（那是 fail closed，不是缺陷）。
+       桌面不再自己写理解（unWrite 在权威生效时显式拒绝），所以这里经 canonical
+       store 播种（与派生器写的是同一张表、同一份契约），再让镜像同步一次。 */
+    seedCanonicalUnderstanding('c2_role', 'C2_UNDERSTANDING_MARKER', ['c2_mem']);
+    homeNode.understandingStore.setWatermark('c2_role', { evidenceFingerprint: 'seeded-by-test', lastDerivedAt: Date.now(), lastOutcome: 'created', lastAccepted: true });
+    await evaluate(cdp, `(async function(){ await window.IB.homeNode.understanding.sync('c2-seed', { full: true }); return true; })()`);
 
     /* ── B. 单聊一轮：一个快照 + 与 prompt 等价 + MB 收到同一对象 ──
        第一轮关闭 MB：原四块**原样注入**，用来验证"快照值 = 本轮注入的块"；
@@ -198,6 +237,7 @@ const api = http.createServer(async (req, res) => {
     const prompt = promptText(lastBody());
 
     await check('B1.单聊一轮只建一个快照', spy.snaps === 1, 'snaps=' + spy.snaps);
+    if(process.env.IB_C2_DEBUG){const dbg=await evaluate(cdp,`(async function(){var all=await dbGetAll('understandings');var u=await unGetActive('c2_role');var st=window.IB.homeNode.understanding.status();return {rows:all.map(r=>({id:r.id,active:r.active,status:r.status,ev:(r.current&&r.current.evidenceIds||[]).length})),active:u&&u.id,status:st};})()`);console.error('DBG',JSON.stringify(dbg));const dbg2=await evaluate(cdp,`(async function(){var c=await getUnderstandingContext('c2_role');return {ctx:c};})()`);console.error('DBG2',JSON.stringify(dbg2));}
     await check('B2.快照覆盖四个 producer 且全部 present', await evaluate(cdp, `(function(){
       var s=window.__c2.snaps[0];var st=IBContextSnapshot.summary(s).states;
       return st.memory==='present'&&st.understanding==='present'&&st.thread==='present'&&st.moments==='present';

@@ -1,4 +1,4 @@
-﻿/* ====================================================================
+/* ====================================================================
    Understanding + Thread v1 · Schema / CRUD / Context / Reconcile · CDP 测试
    覆盖：objectStore 存在 / Understanding unWrite·history(cap)·status /
         Thread thOpen·thClose·thMention / getUnderstandingContext·getThreadContext /
@@ -89,6 +89,24 @@ async function main(){
     await ev(cdp,"(async function(){ await dbPut('threads',{id:'th_x',characterId:'u1',status:'open',question:'测试线索',evidenceIds:['ev_1'],mentionCount:1,createdAt:Date.now(),lastUpdatedAt:Date.now(),kind:'thread'}); await dbDelete('memories','ev_1'); await _reconcileReferences('ev_1'); })()");
     check('reconcile.threadOrphan',await ev(cdp,"(async function(){ var t=await dbGet('threads','th_x'); return t.status==='orphan'; })()"));
     check('reconcile.noCascadeUnderstanding',await ev(cdp,"(async function(){ var all=await dbGetAll('understandings'); return all.length>=1; })()"));
+
+    /* ══════════ ⑩ M1-C.2m · 浏览器不再是理解的写者 ══════════
+       本用例跑在 file:// 上（M1-A 的既有承载），因此 authority 是**未生效**的：
+       这条承载下本地读写是 M1-C.2m 的回滚路径，必须与迁移之前逐字同行为
+       （上面 ②～⑤ 就是那条路径的回归）。
+       本节要证明的是**另一件结构事实**：
+         · authority 模块确实挂上了，且 status() 诚实（不声称权威生效）；
+         · `_understandingTick` 不再自己调模型，而是把派生请求交给 authority；
+         · 桌面侧不存在任何"自己派生并提交"的代码路径（静态断言）。
+       权威**生效**时的路径由 Node 侧的两条测试覆盖
+       （test_home_node_understanding_derivation.js / test_understanding_authority.js）。 */
+    check('m1c2m.authorityMounted',await ev(cdp,"(function(){ var a=window.IB&&window.IB.homeNode&&window.IB.homeNode.understanding; return !!(a&&a.available===true&&a.instance); })()"));
+    check('m1c2m.statusIsHonestOnFileOrigin',await ev(cdp,"(function(){ var st=window.IB.homeNode.understanding.status(); return st.store==='understandings'&&st.authority==='indexeddb'&&st.authorityEffective===false&&st.degraded===true; })()"));
+    check('m1c2m.deriveIsRequestOnly',await ev(cdp,"(async function(){ var r=await window.IB.homeNode.understanding.derive('u1',{}); return !!(r&&r.ok===false); })()"));
+    /* tick 不再有生成器：没有 canonical 承载时它必须什么都不做（而不是本地派生）。 */
+    check('m1c2m.tickDoesNothingWithoutAuthority',await ev(cdp,"(async function(){ var before=(await dbGetAll('understandings')).length; var r=await _understandingTick({id:'u1',systemPrompt:'x',model:'m',endpoint:'http://127.0.0.1:1',apiKey:'k'}); var after=(await dbGetAll('understandings')).length; return r===null&&before===after; })()"));
+    /* 更正入口必须存在（§1：存储/写入契约今天就要能落地，否则要再做一次迁移）。 */
+    check('m1c2m.correctionEntrypoint',await ev(cdp,"(function(){ var a=window.IB.homeNode.understanding; return typeof a.correct==='function'&&typeof a.corrections==='function'&&typeof a.migrate==='function'; })()"));
   } finally { if(cdp)cdp.close(); try{browser.kill()}catch(e){} }
   console.log(failures===0?'\nUnderstanding + Thread v1 domain CDP passed ✔':'\nUnderstanding + Thread v1 domain CDP FAILED ✘');
   process.exit(failures?1:0);

@@ -88,6 +88,24 @@ const api = http.createServer(async (req, res) => {
   homeNode.open();
   const homeNodePort = await listen(homeNode.server);
   const homeNodeBase = 'http://127.0.0.1:' + homeNodePort;
+
+/* M1-C.2m：理解（Understanding）的唯一写者是 Home Node。
+   浏览器**不能**再写它（unWrite 在权威生效时显式拒绝），因此本用例要看到
+   Understanding 块，就必须让 canonical 侧真的存在一份 —— 而且它必须由**真实、
+   可见的记忆**支撑（读时存证要求证据集非空）。这里经 canonical store 播种，
+   与派生器写的是同一张表、同一份契约。 */
+function seedCanonicalUnderstanding(characterId, content, evidenceIds) {
+  const owner = String(characterId);
+  const store = homeNode.understandingStore;
+  const active = store.getActive(owner);
+  const res = store.rewrite(owner, {
+    content: content, conviction: 80, dimension: 'context', basis: 'user_stated',
+    evidenceIds: evidenceIds || [],
+    stamp: { visibility: 'public', visibleTo: [], excludeFrom: [] }
+  }, { expectedRevision: active ? active.revision : 0 });
+  assert.ok(res && res.ok, 'canonical understanding seed failed: ' + JSON.stringify(res));
+  return res;
+}
   const debugPort = await freePort();
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-c1-'));
   const chrome = chromePath(); assert.ok(chrome, 'Chrome or Edge required');
@@ -158,12 +176,19 @@ const api = http.createServer(async (req, res) => {
       await dbPut('memories',{id:'c1_mem',kind:'episodic',createdBy:'c1_role',visibility:'public',visibleTo:[],excludeFrom:[],title:'C1_MEMORY_TITLE',content:'C1_MEMORY_MARKER',domain:'日常',tags:[],valence:0.5,arousal:0.3,importance:9,resolved:false,activationCount:0,created:Date.now(),lastActivated:0});
       await dbPut('memories',{id:'c1_priv',kind:'episodic',createdBy:'c1_role',visibility:'private',visibleTo:[],excludeFrom:[],title:'C1_PRIVATE_TITLE',content:'C1_PRIVATE_MARKER',domain:'日常',tags:[],valence:0.5,arousal:0.3,importance:9,resolved:false,activationCount:0,created:Date.now(),lastActivated:0});
       await dbPut('memories',{id:'c1_other_mem',kind:'episodic',createdBy:'c1_other',visibility:'only',visibleTo:['c1_other'],excludeFrom:[],title:'C1_OTHER_TITLE',content:'C1_OTHER_MARKER',domain:'日常',tags:[],valence:0.5,arousal:0.3,importance:9,resolved:false,activationCount:0,created:Date.now(),lastActivated:0});
-      await unWrite('c1_role',{content:'C1_UNDERSTANDING_MARKER',conviction:80,basis:'user_stated',dimension:'context',evidenceIds:[]});
-      await thOpen('c1_role','C1_THREAD_MARKER',[],'ai');
+      /* M1-C.2m：线索也要真实可见的证据 —— 读时存证要求证据集非空，
+         零证据的线索不会被注入（thread 恒 empty），而那会让本用例的
+         "四个 producer 各有内容"变成假象。 */
+      await thOpen('c1_role','C1_THREAD_MARKER',['c1_mem'],'ai',{visibility:'public',visibleTo:[],excludeFrom:[]});
       await createMoment({roleId:'c1_role',content:'C1_MOMENT_MARKER',source:'manual',visibility:'all'});
       await dbPut('chatSummaries',{id:'sum_c1_role',summary:'C1_SUMMARY_MARKER'});
       await dbPut('apiSettings',{id:'summarySettings',enabled:true,keepCount:6,welcomeEnabled:false,welcomeInterval:2,musicEnabled:false,summaryApiId:'',summaryWindow:60});
       return true})()`);
+    /* M1-C.2m：记忆先到 canonical，理解才能在 canonical 侧存在（证据是读时存证的
+       前提）。播种之后同步一次镜像，否则本用例会在"镜像里还没有理解"的状态下断言 ——
+       那测的是时序，不是 C1 要证明的"每轮只读一次"。 */
+    seedCanonicalUnderstanding('c1_role', 'C1_UNDERSTANDING_MARKER', ['c1_mem']);
+    await evaluate(cdp, `(async function(){ await window.IB.homeNode.understanding.sync('c1-seed', { full: true }); return true; })()`);
     await wrapProducers();
     assert.equal(await evaluate(cdp, `(async function(){return await middleBrainReady()===true})()`), true, 'Middle Brain 必须就绪');
 

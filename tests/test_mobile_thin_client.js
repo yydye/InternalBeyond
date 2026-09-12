@@ -676,6 +676,61 @@ function listen(server) {
     check('thin.14 POST 未知 mobile 路径同样被拒（UNKNOWN_VERB）',
       badPost.status === 404 && badPost.body.error.code === 'UNKNOWN_VERB', badPost.body);
 
+    /* ── 14b · M1-C.2m · 理解（Understanding）的安全边界（§18）─────────
+       理解是**私有认知状态**（含用户更正原文），因此它的暴露面必须与记忆同款，
+       而且要比记忆更严：记忆是"她记得的事实"，理解是"她怎么看你"。
+       三条都要实测，而不是靠读代码：
+         (a) 设备面（/mobile/v1）没有任何 understanding verb → UNKNOWN_VERB/404；
+         (b) 桌面面 /understanding/* 在 mobile 命名空间之外 → 未认证即被挡；
+         (c) 设备凭据**不能**用来读它（用 device token 拿到 404 而不是 200）。 */
+    const undMobileProbes = [
+      ['GET', '/mobile/v1/understanding/list'],
+      ['GET', '/mobile/v1/understanding/records'],
+      ['POST', '/mobile/v1/understanding/derive'],
+      ['GET', '/mobile/v1/understanding/corrections']
+    ];
+    let undMobileBlocked = true;
+    const undMobileAllowed = [];
+    for (const [method, urlPath] of undMobileProbes) {
+      const r = await request(BASE, method, urlPath, { headers: auth, body: method === 'POST' ? {} : undefined });
+      const blocked = r.status === 404 || r.status === 400 || r.status === 405;
+      if (!blocked) { undMobileBlocked = false; undMobileAllowed.push(method + ' ' + urlPath + ' → ' + r.status); }
+    }
+    check('thin.14b 设备面不存在任何 understanding verb（404/UNKNOWN_VERB）', undMobileBlocked, undMobileAllowed);
+
+    /* 桌面面：**不带**桌面 token 时必须是 401（凭据缺失），而不是 200。
+       这条证明它没有落进 /mobile/* 的豁免分支 —— 那正是"局域网可读她怎么看你"
+       这条泄漏的形状。 */
+    const undNoToken = await request(BASE, 'GET', '/understanding/list?characterId=x');
+    check('thin.14b /understanding/* 需要桌面凭据（无 token → 401）', undNoToken.status === 401, undNoToken.status);
+    /* 带**设备**凭据同样不行：设备凭据不是桌面凭据。 */
+    const undDeviceToken = await request(BASE, 'GET', '/understanding/list?characterId=x', { headers: auth });
+    check('thin.14b /understanding/* 不接受设备凭据（仍是 401）', undDeviceToken.status === 401, undDeviceToken.status);
+    /* 带桌面 token + 不存在的角色 → 200 且空（路由存在、语义正确）。
+       "路由存在"与"能力可用"必须分开断言，否则 501 会被误读成"路由没注册"。 */
+    const undAdmin = await request(BASE, 'GET', '/understanding/list?characterId=nope', { headers: adminHeaders });
+    const undAdminBody = undAdmin.body && undAdmin.body.payload ? undAdmin.body.payload : {};
+    check('thin.14b 桌面面存在且只返回该角色的理解（空即空，不报错）',
+      undAdmin.status === 200 && Array.isArray(undAdminBody.records) && undAdminBody.records.length === 0, undAdmin.body);
+    /* 派生触发器可达，且在"角色没有可运行配置"时**如实**回报 ineligible ——
+       而不是假装派生成功、也不是静默什么都不做（成本护栏必须可观测）。 */
+    const undDerive = await request(BASE, 'POST', '/understanding/derive', {
+      headers: adminHeaders, body: { characterId: 'nope' }
+    });
+    const derivPayload = undDerive.body && undDerive.body.payload ? undDerive.body.payload : {};
+    check('thin.14b 派生触发对无配置角色如实回报 ineligible（零成本）',
+      undDerive.status === 200 && derivPayload.outcome === 'ineligible'
+      && ['no-config', 'no-evidence', 'no-evidence-source'].indexOf(derivPayload.skipReason) >= 0,
+      undDerive.body);
+    /* 客户端**不能**提交派生输入（§18）：它只能请求派生。
+       "提交了也不生效"与"根本没人读"是两件事 —— 这里断言的是后者。 */
+    const undInject = await request(BASE, 'POST', '/understanding/derive', {
+      headers: adminHeaders,
+      body: { characterId: 'nope', evidenceIds: ['forged'], stamp: { visibility: 'public' }, force: false }
+    });
+    check('thin.14b 客户端提交的证据/印章不进入派生（只回报 ineligible）',
+      undInject.status === 200 && undInject.body.payload.outcome === 'ineligible', undInject.body);
+
     const security = await request(BASE, 'GET', '/security', { headers: adminHeaders });
     check('thin.14 /security 自述 mobile 暴露面且不是 llm-proxy/工具/支付',
       !!(security.body && security.body.mobile) &&

@@ -984,6 +984,19 @@ var THREAD_SIM_THRESHOLD = 0.5;
 
 function _unNewId(){return 'un_'+Date.now().toString(36)+'_'+Math.floor(Math.random()*46656).toString(36)}
 function _thNewId(){return 'th_'+Date.now().toString(36)+'_'+Math.floor(Math.random()*46656).toString(36)}
+/* M1-C.2m：canonical Understanding 的 authority 适配器（若已挂载）。
+   返回 null 表示"没有 canonical 承载"—— 那时本文件按迁移之前的方式本地读写，
+   而 status() 会明确标注权威未生效。**绝不**在权威失效时悄悄退回本地写：
+   那会让"Home Node 不在线"变成"写进了第二份 canonical"（fail closed 的意义）。 */
+function _understandingAuthority(){
+  try{
+    if(typeof window==='undefined')return null;
+    var ns=window.IB||null;
+    var auth=(ns&&ns.understandingAuthority&&ns.understandingAuthority.instance)||null;
+    if(!auth||typeof auth.rewrite!=='function')return null;
+    return auth;
+  }catch(e){return null}
+}
 
 /* --- Understanding：按角色取当前活文档（取 status==='active' 的最新一条） --- */
 async function unGetActive(characterId){
@@ -1012,8 +1025,35 @@ async function unSave(u){
   await dbPut('understandings',u);
   return u;
 }
-/* --- Understanding：更新活文档（重写 current + 留版本）。existing 存在则追加 history，否则新建 --- */
+/* --- Understanding：更新活文档（重写 current + 留版本）。existing 存在则追加 history，否则新建 ---
+    M1-C.2m：**canonical 承载下（Home Node 权威生效）本函数不再自己写盘** ——
+    它退化为 authority 的适配器，把候选理解交给唯一写者（Home Node 的派生器），
+    并如实回报 conflict（基版本过期）而不是覆盖。
+    为什么必须这样：理解是**单活文档 + 修订链**，两个写者（浏览器 + 节点）
+    会各自基于同一基版本提交，结果是一份被覆盖的演进史或被悄悄重建的第二份
+    文档 —— 那正是 M1-C.2l 判定为缺陷的形状。
+    非 canonical 承载（file://、mode=off/mirror、离线回滚）仍走本地实现，
+    以便"关掉集成后行为与迁移前一致"这条回滚承诺成立。 */
 async function unWrite(characterId,next){
+  const _auth=_understandingAuthority();
+  /* ── M1-C.2m：canonical 承载下本函数**结构性不可用** ──────────────────
+     理解的重写只有唯一写者（Home Node 的派生器），它由**持久水位**触发
+     （见 services/home-node/understanding-derivation.js）。浏览器既没有派生
+     规则也没有证据集，因此"提交一份候选理解"这件事在浏览器上没有合法语义：
+       · 若允许它写镜像 → 本机看起来生效、canonical 完全不知道（本地第二真源）；
+       · 若让它调用 authority.rewrite → 只能拿到 revision-conflict
+         （它无从知道基版本），表现为一条 HTTP 500，把"架构上不存在"
+         伪装成"这次失败了"。
+     因此这里**显式**拒绝并说明正确的路径。调用方（旧调用方 / 测试）拿到
+     null 与一个明确的 reason，而不是一个看起来像瞬时故障的错误。
+
+     file:// 承载与 mode=off/mirror 下权威不可达（也不该可达），此时**逐字**
+     走下面的本地实现：那是本阶段承诺的回滚路径，与迁移之前行为相同，
+     而 status() 会如实标注权威未生效。 */
+  if(_auth&&_auth.authorityEffective===true){
+    try{console.warn('[Understanding] 浏览器不是理解的写者：写请求已被拒绝（唯一写者是 Home Node 的派生器）')}catch(e){}
+    return null;
+  }
   const existing=await unGetActive(characterId);
   const now=Date.now();
   const nextCurrent={
@@ -1043,16 +1083,50 @@ async function unWrite(characterId,next){
   u.visibility=_normalizeVisStamp(next.stamp)||{visibility:'private',visibleTo:[],excludeFrom:[]};
   return await unSave(u);
 }
-/* --- Understanding：标记状态（contested / stale），不删除、保留 history --- */
+/* --- Understanding：标记状态（contested / stale），不删除、保留 history ---
+    M1-C.2m：canonical 承载下本地状态写入被**结构性禁止**（那会让浏览器成为
+    第二写者）。用户"我不想让你这样理解我"的正规路径是 `rejectUnderstanding`
+    → canonical 更正（correction），见下。
+    这条函数保留给非 canonical 承载与既有测试。 */
 async function unSetStatus(id,status,reason){
+  const _auth=_understandingAuthority();
+  /* 判据是"权威是否结构性生效"，而**不是**"此刻能不能连上"：
+       · 生效（canonical 且非 file://）→ 本地改一行镜像等于"本机看起来生效了、
+         另一端完全不知道"，必须拒绝（fail closed 的含义是"做不到就说做不到"）；
+       · 未生效（file:// / off / mirror）→ 本地状态写是**回滚路径**，与迁移之前
+         逐字同行为。 */
+  if(_auth&&_auth.authorityEffective===true){
+    return null;
+  }
   const u=await dbGet('understandings',id);if(!u)return null;
   u.status=status;
   if(reason)u.closedReason=reason;
   u.lastUpdatedAt=Date.now();
   return await unSave(u);
 }
-/* 用户否决一条理解：置 contaminated/contested，保留 history，退出注入 */
-async function rejectUnderstanding(id){
+/* 用户否决一条理解（**canonical 更正**，M1-C.2m §1 冻结的语义）：
+   用户说"你这一点理解错了" = 一条**关于理解本身的持久证据**。
+
+   旧实现把文档置 contested 然后"藏起来"，于是下一次派生找不到 active → 新建一条：
+   同一角色两行，其中一行正是用户否决过的那一句话（M1-C.2l 实测到的缺陷）。
+   新语义：
+     · **不**删文档、**不**清历史、**不**改 status；
+     · 记一条 durable correction（挂在被纠正的那一版上，冻结被否定的原文）；
+     · 之后每一版派生的提示词里都带着它 → 不可能被下一个后台周期悄悄遗忘；
+     · 仍然恰好一份 active 文档。
+
+   兼容性：仍接受 `id`（旧调用方传文档 id），但 canonical 语义按**角色**记录 ——
+   更正约束的是"这个角色的理解"，不是"某一行记录"。 */
+async function rejectUnderstanding(id,reason){
+  const _auth=_understandingAuthority();
+  if(_auth&&_auth.authorityEffective===true){
+    /* 找不到文档时不猜角色：更正必须挂在一份真实存在的理解上
+       （悬空更正会去约束一份它从未见过的文档）。 */
+    const u=await dbGet('understandings',String(id));
+    const characterId=(u&&u.characterId)||String(id);
+    const res=await _auth.recordCorrection(characterId,{text:String(reason||'用户认为这条理解不对'),basis:'user_stated',understandingId:u?String(u.id):undefined});
+    return res&&res.ok?(res.correction||null):null;
+  }
   const u=await dbGet('understandings',id);if(!u)return null;
   return await unSetStatus(id,'contested','user-vetoed');
 }

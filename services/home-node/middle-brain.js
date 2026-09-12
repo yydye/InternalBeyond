@@ -165,8 +165,10 @@ function buildSnapshot(CS, input) {
   /* M1-C.2k：thread 从"本节点根本不存在"变成**已读** —— 它的派生是 canonical
      memory 上的确定性函数（见 thread-retrieval.js），因此 Home Node 与桌面对同一批
      记忆给出同一组线索，不再需要"浏览器写过盘才有"。
-     三态与 memory 同款：consulted 才 present/empty；派生失败或不曾读 → missing。
-     understanding / moments 仍然如实记 missing（它们**确实**不是本节点的来源）。 */
+     M1-C.2m：understanding 同样从 absent 变成**已读** —— 它是本节点自己的
+     canonical 文档（understanding-store.js），由本节点唯一派生。
+     三态与 memory 同款：consulted 才 present/empty；读取失败或不曾读 → missing。
+     moments 仍然如实记 missing（它**确实**不是本节点的来源）。 */
   const thr = input.thread || null;
   const threadField = thr
     ? CS.field('thread-retrieval.derive', String(thr.text || ''), {
@@ -174,16 +176,23 @@ function buildSnapshot(CS, input) {
       gatedBy: thr.consulted === true ? null : (thr.gatedBy || 'home-node.thread-unavailable')
     })
     : absent('thread');
+  const und = input.understanding || null;
+  const understandingField = und
+    ? CS.field('understanding-retrieval.buildUnderstandingBlock', String(und.text || ''), {
+      missing: und.consulted !== true,
+      gatedBy: und.consulted === true ? null : (und.gatedBy || 'home-node.understanding-unavailable')
+    })
+    : absent('understanding');
   return CS.create({
     characterId: String(input.characterId || ''),
     turnId: String(input.turnId || ''),
     fields: {
       memory: memoryField,
-      understanding: absent('understanding'),
+      understanding: understandingField,
       thread: threadField,
       moments: absent('moments')
     },
-    gates: { threadMemoryEnabled: true, homeNodeProducers: ['memory', 'thread'] }
+    gates: { threadMemoryEnabled: true, homeNodeProducers: ['memory', 'thread', 'understanding'] }
   });
 }
 
@@ -305,7 +314,10 @@ function createNodeMiddleBrain(deps) {
     const turn = input || {};
     const memory = turn.memory || {};
     const memoryReadiness = memory.consulted === true ? (String(memory.text || '').trim() ? 'present' : 'empty') : 'missing';
-    const snapshot = buildSnapshot(CS, { characterId: turn.characterId, turnId: turn.turnId, memory: memory, thread: turn.thread || null });
+    const snapshot = buildSnapshot(CS, {
+      characterId: turn.characterId, turnId: turn.turnId, memory: memory,
+      thread: turn.thread || null, understanding: turn.understanding || null
+    });
     /* 交出去的东西逐项显式构造（与桌面的 opts 形状对齐，但**不**照抄它的 producer：
        那四个 producer 在本宿主不存在，如实缺席）。
          · contextSnapshot —— 有快照就交快照；组织层优先读它，且 present/empty 都禁止二次 retrieval
@@ -321,6 +333,12 @@ function createNodeMiddleBrain(deps) {
        retrieval），threadCtx 只是快照不可用时的等价回落。与桌面
        communication.js:1520-1525 同时给 *Ctx 与 contextSnapshot 的形状一致。 */
     if (turn.thread && turn.thread.consulted === true) opts.threadCtx = String(turn.thread.text || '');
+    /* M1-C.2m：understanding 与 thread **逐字同款** —— 快照优先，*Ctx 只作回落。
+       为什么必须给：canonical 组织层（middle-brain-policy.js:74）在
+       `understandingCtx != null` 时才把理解放进 organized.understanding，
+       否则 understanding 分支恒为空 —— 也就是"她对自己的理解完全没参与过
+       这一轮的认知组织"。桌面在 communication.js:1521 同样给了它。 */
+    if (turn.understanding && turn.understanding.consulted === true) opts.understandingCtx = String(turn.understanding.text || '');
     try {
       const result = await facade.middleBrainExecute(String(turn.characterId || ''), String(turn.userMessage || ''), opts);
       const source = String((result && result.source) || '') || 'bypass';

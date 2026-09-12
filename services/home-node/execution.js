@@ -177,7 +177,11 @@ function createTurnExecutor(deps) {
       if (middlewareContext) {
         list.push(String(middlewareContext));
       } else {
+        /* 顺序与桌面逐字一致（communication.js:1476-1479：
+           memory → understanding → thread）：块顺序变了，同一批证据拼出的
+           prompt 就不同，而"两端同一份语义证据"正是本阶段要证明的东西。 */
         if (parts.memoryBlock) list.push(String(parts.memoryBlock));
+        if (parts.understandingBlock) list.push(String(parts.understandingBlock));
         if (parts.threadBlock) list.push(String(parts.threadBlock));
       }
       if (parts.p0Time) list.push(String(parts.p0Time));
@@ -213,6 +217,19 @@ function createTurnExecutor(deps) {
     return {
       text: String(parts.threadBlock || ''),
       consulted: parts.threadConsulted === true
+    };
+  }
+
+  /* M1-C.2m · 同款取出**理解块**（canonical understanding_records，见
+     understanding-retrieval.js）。与 threadPartOf 逐字同形，理由也相同：
+     三个来源各有自己的三态，混用会把"理解没读"记成"记忆为空" ——
+     而两者的诊断含义完全不同。 */
+  function understandingPartOf(request) {
+    const parts = request && request.runtimeContextParts;
+    if (!parts || typeof parts !== 'object') return { text: '', consulted: false };
+    return {
+      text: String(parts.understandingBlock || ''),
+      consulted: parts.understandingConsulted === true
     };
   }
 
@@ -309,6 +326,11 @@ function createTurnExecutor(deps) {
          使 `threadItems` 恒 0，而 `multipleThreads`（threadItems>=2）是 Gate 的
          无视冷却硬触发，于是同一份策略在两端给出不同判定。 */
       thread: threadPartOf(request),
+      /* M1-C.2m：理解证据（与 memory / thread 同一三态纪律）。
+         它让 canonical Middle Brain 在 Home Node 上也能看到 organized.understanding ——
+         此前该字段恒为空（节点根本没有理解来源），于是注入块里**从来不含**
+         "她怎么理解我"，而同一份策略在桌面上是含的：那就是两端认知证据的差异。 */
+      understanding: understandingPartOf(request),
       /* 角色证据与桌面 communication.js 传的是**同一个形状**（cfg = spec）：
          spec.systemPrompt 是 integrity 的 persona 维度唯一来源，缺了它守卫会
          因"证据不可用"而拒绝判定（那是防误杀的设计，不是失败）。 */
