@@ -13,7 +13,7 @@
  * （避免 Chrome/CDP 相互干扰）；服务测试自带随机端口与临时数据目录。
  *
  * P2-07：入口不再遗漏仓库内的测试脚本。登记条目共 108 条 = 107 个 test_*.js
- * + scripts_check_html.js（HTML 结构检查）；分组：static 41 / service 18 / browser 50。
+ * + scripts_check_html.js（HTML 结构检查）；分组：static 41 / service 18 / browser 51。
  * M1-A：新增 static 四条 —— test_lan_bridge_auth_contract.js（R19/§3.14 LAN 鉴权一致性）、
  *     test_chat_core_contract.js（Chat Message Contract）、
  *     test_chat_authority.js（权威/镜像/回退三态策略）、
@@ -365,6 +365,15 @@ const GROUPS = [
       ['test_memory_smoke.js'],
       ['test_active_diary_smoke.js'],
       ['test_moments_smoke.js'],
+      /* M1-C.2n：浏览器侧接线（真实 Chrome + 真实 file:// 承载）——
+         "浏览器里的可见性判定与 Node 判定逐位一致"、"生产函数真的调共享核"、
+         "getMomentsContext 与 Node 渲染逐字相同"，以及最关键的
+         **canonical 承载下任何直接 dbPut/dbDelete('moments') 必须被拒绝**
+         （moments-write-closed / moments-delete-closed）且行仍在。
+         本文件此前因自建 CDP 客户端发送未掩码帧而静默挂死，故未登记；
+         修好掩码后它才有资格进入自动套件 —— 这也把 P6 的"浏览器侧接线"
+         从**结构性证据**升级为**真实浏览器证据**。 */
+      ['test_moments_browser_authority.js'],
       ['test_moments_phase2_smoke.js'],
       ['test_moments_phase3_smoke.js'],
       ['test_moments_user_smoke.js'],
