@@ -72,14 +72,28 @@ class SessionRepository(
     val isConnected: Boolean get() = _state.value is ConnectionState.Connected
 
     /**
-     * Cold start. Three honest outcomes, never a fourth:
+     * Cold start, and the second safety boundary (M1-C.2e).
+     *
+     * This is a **local** normalization, so it works with no network at all. A phone
+     * that is merely offline is still a configured phone and must keep its credentials;
+     * only the absence of usable local session material decides that the device is
+     * unpaired.
      *
      *  * nothing stored → [ConnectionState.Unpaired];
-     *  * a session but no openable credential → [ConnectionState.AuthExpired] (the
-     *    Keystore key is gone, or the blob is damaged) — the app says so instead of
-     *    pretending it was never paired;
-     *  * both present → optimistically [ConnectionState.Connected], then [verify]
-     *    confirms or corrects it.
+     *  * a record with **no credential material at all** → [ConnectionState.Unpaired],
+     *    and the stale record is cleared. This is the state an interrupted pairing
+     *    leaves behind (a record is written only after the node issued a credential,
+     *    so a record without one means the exchange never completed). Treating it as
+     *    configured is what produced an unrecoverable device: the app believed it was
+     *    set up, so the screen it chose was not the pairing screen;
+     *  * a record plus a credential that **exists but cannot be opened** (Keystore key
+     *    gone, blob damaged) → [ConnectionState.AuthExpired], which still names the
+     *    Home Node the user was talking to while routing navigation to pairing;
+     *  * both present and readable → optimistically [ConnectionState.Connected], then
+     *    [verify] confirms or corrects it.
+     *
+     * The rule this enforces, stated once: **a usable session is a usable endpoint plus
+     * usable credential material.** A session record is not a session.
      */
     fun boot(): ConnectionState {
         val record = sessionStore.load()
@@ -91,19 +105,26 @@ class SessionRepository(
         }
         val credential = credentialStore.read()
         if (credential == null) {
-            holder.endpoint = record.endpoint
             holder.token = null
             holder.credential = null
+            if (!credentialStore.hasStoredCredential()) {
+                // A record with no credential is history, not configuration. Clearing it
+                // makes the next boot start from nothing instead of re-deriving the same
+                // half-state, so the device cannot stay stuck in it. The endpoint goes
+                // too: nothing about this device is usable, and leaving an address behind
+                // is what lets a later screen believe it is configured.
+                holder.endpoint = null
+                sessionStore.clear()
+                return setState(ConnectionState.Unpaired)
+            }
+            // The material exists but cannot be opened (Keystore key lost, blob damaged).
+            // The endpoint is kept deliberately: the user is told which computer this
+            // phone used to talk to, on the pairing screen they are sent back to.
+            holder.endpoint = record.endpoint
             return setState(
                 ConnectionState.AuthExpired(
                     node = record.toNodeInfo(),
-                    error = ProtocolError.Local(
-                        if (credentialStore.hasStoredCredential()) {
-                            "这台手机上保存的连接信息已经打不开了。"
-                        } else {
-                            "这台手机上已经没有保存的连接信息了。"
-                        },
-                    ),
+                    error = ProtocolError.Local("这台手机上保存的连接信息已经打不开了。"),
                 ),
             )
         }
@@ -124,7 +145,16 @@ class SessionRepository(
                 message = "This device has no credential.",
                 retryable = false,
             )
-            setState(ConnectionState.AuthExpired(_state.value.nodeOrNull, error))
+            // With no session record there is nothing to be "expired": the device is
+            // simply unpaired, and saying otherwise would hand the UI an identity the
+            // phone no longer has. A record that DOES survive (a revoked device) keeps
+            // the richer AuthExpired state so the user can still be told which computer
+            // it was.
+            if (sessionStore.load() == null) {
+                setState(ConnectionState.Unpaired)
+            } else {
+                setState(ConnectionState.AuthExpired(_state.value.nodeOrNull, error))
+            }
             return error
         }
         return when (val result = client.handshake()) {
@@ -159,11 +189,15 @@ class SessionRepository(
         addressOverride: String? = null,
         deviceName: String = "Android",
     ): PairingResult {
+        // A pairing attempt must never be able to strand the device (M1-C.2e). Two
+        // rules follow from that: a failure puts the session back exactly where it
+        // was, and a session record is never left behind without a credential.
+        val previous = _state.value
         setState(ConnectionState.Pairing(PairingStep.PARSING))
         val parsed = when (val outcome = PairingPayloadParser.parse(rawPayload)) {
             is PairingParse.Fail -> {
                 val result = PairingResult.Invalid(outcome.title, outcome.detail)
-                setState(ConnectionState.Unpaired)
+                setState(previous)
                 return result
             }
             is PairingParse.Ok -> outcome.payload
@@ -180,7 +214,7 @@ class SessionRepository(
                     "例如 192.168.10.7:23118。"
             }
             val result = PairingResult.Invalid(title, detail)
-            setState(ConnectionState.Unpaired)
+            setState(previous)
             return result
         }
 
@@ -188,20 +222,24 @@ class SessionRepository(
         val requestId = IdGen.requestId("req_pair")
         val exchange = client.pairingComplete(parsed, deviceName, DEVICE_TYPE, requestId, endpoint)
         if (exchange is ApiResult.Err) {
-            setState(ConnectionState.Unpaired)
+            setState(previous)
             return PairingResult.Failed(exchange.error)
         }
         val outcome = (exchange as ApiResult.Ok).value
         if (outcome.token.isEmpty()) {
-            setState(ConnectionState.Unpaired)
+            setState(previous)
             return PairingResult.Failed(
                 ProtocolError.Response("The Home Node returned a pairing response with no credential."),
             )
         }
 
-        // Credential first, then the non-secret record: a crash in between leaves
-        // "credential but no session", which boot() treats as Unpaired and the next
-        // pairing overwrites — strictly better than a session with no credential.
+        // Ordering is the invariant: **never a record without a credential.** The
+        // previous record is dropped first because it describes the old credential, and
+        // a stale record is what makes a device look configured when it is not. A crash
+        // anywhere below therefore leaves "a credential but no record", which boot()
+        // reports as Unpaired and which the next pairing overwrites — strictly better
+        // than the reverse.
+        sessionStore.clear()
         val credential = DeviceCredential(
             token = outcome.token,
             deviceId = outcome.device.deviceId,
@@ -212,7 +250,7 @@ class SessionRepository(
         try {
             credentialStore.write(credential)
         } catch (error: Exception) {
-            setState(ConnectionState.Unpaired)
+            setState(previous)
             return PairingResult.Failed(
                 ProtocolError.Local(
                     "这台手机没能安全地保存连接信息：${error.message}",
@@ -237,7 +275,9 @@ class SessionRepository(
         sessionStore.save(node.toRecord(credentialStore))
         setState(ConnectionState.Pairing(PairingStep.VERIFYING))
 
-        // Prove the issued credential actually works before declaring success.
+        // Prove the issued credential actually works before declaring success. If it
+        // does not, the record stays cleared, so the device is honestly unpaired rather
+        // than a "configured" phone whose credential was never confirmed.
         val verifyError = verify()
         if (verifyError != null) return PairingResult.Failed(verifyError)
 
@@ -326,9 +366,15 @@ class SessionRepository(
             deviceName = holder.credential?.deviceName ?: "",
         )
 
+    /**
+     * The device's own identity, derived from what is on this phone rather than from
+     * the in-memory holder. After a cold boot the holder holds only the token, so
+     * reading the stored credential is what keeps `deviceId`/`deviceName` correct
+     * instead of silently empty.
+     */
     private fun currentNodeInfoOrNull(): NodeInfo? {
         val endpoint = holder.endpoint ?: return null
-        val credential = holder.credential
+        val credential = credentialStore.read() ?: holder.credential
         return NodeInfo(
             endpoint = endpoint,
             deviceId = credential?.deviceId ?: "",

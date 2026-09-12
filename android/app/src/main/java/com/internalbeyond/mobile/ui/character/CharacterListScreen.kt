@@ -39,6 +39,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.internalbeyond.mobile.app.AppGraph
+import com.internalbeyond.mobile.domain.ErrorAction
 import com.internalbeyond.mobile.domain.ErrorPresenter
 import com.internalbeyond.mobile.domain.model.Character
 import com.internalbeyond.mobile.domain.model.ConnectionState
@@ -80,6 +81,28 @@ class CharacterListViewModel(private val graph: AppGraph) : ViewModel() {
         viewModelScope.launch {
             graph.sync.run(graph.nodeKey())
             graph.characters.refresh()
+        }
+    }
+
+    /**
+     * M1-C.2e · the explicit way out of a connection that can never recover.
+     *
+     * The session state routes navigation to pairing on its own once the session is
+     * gone, but a device whose credential the computer rejects *permanently* while the
+     * requests keep failing cannot be left with only a 刷新 button: the user would be
+     * trapped behind an invalid credential with no way to ask for a new one.
+     *
+     * This is deliberately the existing user-initiated disconnect rather than a new
+     * "re-pair" mechanism: it revokes the dead credential when the computer can be
+     * reached, always clears it locally, and states honestly in Settings whether the
+     * computer confirmed. One pairing flow, one way to drop a session.
+     *
+     * It does NOT clear the cache. Cached data is deleted only when the user ticks
+     * "同时删除" in Settings, and a connection reset is not a data reset.
+     */
+    fun repair() {
+        viewModelScope.launch {
+            graph.session.disconnect()
         }
     }
 
@@ -149,8 +172,20 @@ fun CharacterListScreen(
             }
 
             state.error?.let { error ->
+                val presentation = ErrorPresenter.present(error)
                 Box(modifier = Modifier.padding(top = IbSpacing.lg, start = IbSpacing.gutter, end = IbSpacing.gutter)) {
-                    IbErrorCard(ErrorPresenter.present(error))
+                    IbErrorCard(
+                        presentation = presentation,
+                        // Only when the presentation names a real move. The card picks
+                        // its own label from the action, so a re-pair failure says
+                        // 重新连接 and a transient one says 再试一次 — with no second
+                        // vocabulary invented here.
+                        onAction = when (presentation.action) {
+                            ErrorAction.RE_PAIR -> viewModel::repair
+                            ErrorAction.RETRY, ErrorAction.RETRY_LATER -> viewModel::refresh
+                            else -> null
+                        },
+                    )
                 }
             }
 

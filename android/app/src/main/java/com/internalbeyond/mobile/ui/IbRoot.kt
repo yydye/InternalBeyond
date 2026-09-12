@@ -15,9 +15,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.internalbeyond.mobile.app.AppGraph
-import com.internalbeyond.mobile.app.BackStack
+import com.internalbeyond.mobile.app.NavModel
 import com.internalbeyond.mobile.app.Route
-import com.internalbeyond.mobile.domain.model.ConnectionState
+import com.internalbeyond.mobile.data.repository.SessionRecovery
 import com.internalbeyond.mobile.ui.character.CharacterListScreen
 import com.internalbeyond.mobile.ui.chat.ChatScreen
 import com.internalbeyond.mobile.ui.pairing.PairingScreen
@@ -79,45 +79,46 @@ fun IbRoot(graph: AppGraph) {
 /**
  * Owns the back stack.
  *
- * It observes the session for exactly one reason: when the credential dies
- * (`AUTH_INVALID` or `DEVICE_REVOKED`) every route below is meaningless, so the app
- * returns to pairing instead of leaving the user on a chat screen that will fail
- * every request (Phase 24). It never *advances* on its own — reaching the character
- * list is always an explicit step, which is what lets the pairing screen show
- * "Connected to …" and a Continue button (Phase 8).
+ * It observes the session for exactly one reason (Phase 24, tightened in M1-C.2e):
+ * whenever the device holds no usable session, every route below is meaningless, so
+ * the app returns to pairing instead of leaving the user on a screen that will fail
+ * every request. It never *advances* on its own — reaching the character list is
+ * always an explicit step, which is what lets the pairing screen show "Connected to …"
+ * and a Continue button (Phase 8).
+ *
+ * The reset condition is [SessionRecovery.needsRepair], NOT a hand-written list of
+ * states. That distinction is the M1-C.2e fix: the previous version reacted only to
+ * `Revoked` and `AuthExpired`, so a user-initiated `disconnect()` — which correctly
+ * reports `Unpaired` — left the back stack sitting on Settings with an empty,
+ * credential-less character list underneath it and no way to reach pairing. The rule
+ * now asks the canonical session truth instead of enumerating it, so a state that
+ * means "no usable session" cannot be forgotten again.
+ *
+ * The rule itself lives in [NavModel] — no Android type in it, so both halves are
+ * asserted directly on the JVM by `NavModelTest`. That is not tidiness for its own
+ * sake: this rule was wrong on a real device and no unit test could reach it, which is
+ * exactly why it stayed wrong.
  */
 class NavViewModel(private val graph: AppGraph) : ViewModel() {
 
-    private val back = BackStack(initialRoute(graph))
-    val stack = back.stack
+    /** The rule and the stack live in [NavModel] so a JVM test can assert both. */
+    private val nav = NavModel(graph.session.state)
+    val stack = nav.stack
 
     init {
         viewModelScope.launch {
-            graph.session.state.collect { state ->
-                when (state) {
-                    is ConnectionState.Revoked, is ConnectionState.AuthExpired -> if (back.current !is Route.Pairing) {
-                        back.reset(Route.Pairing)
-                    }
-
-                    else -> Unit
-                }
-            }
+            graph.session.state.collect(nav::onSessionState)
         }
     }
 
-    fun push(route: Route) = back.push(route)
+    fun push(route: Route) = nav.push(route)
 
-    fun reset(route: Route) = back.reset(route)
+    fun reset(route: Route) = nav.reset(route)
 
     /** True when the stack consumed the event; false lets the platform exit. */
-    fun onBack(): Boolean = back.pop()
+    fun onBack(): Boolean = nav.onBack()
 
     companion object {
-        private fun initialRoute(graph: AppGraph): Route = when (graph.session.state.value) {
-            is ConnectionState.Connected, is ConnectionState.Offline -> Route.Characters
-            else -> Route.Pairing
-        }
-
         fun factory(graph: AppGraph): ViewModelProvider.Factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T = NavViewModel(graph) as T
