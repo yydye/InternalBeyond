@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 
 /* 前端静态回归：编码、拆分资源、入口语义、设计变量与内联样式预算。 */
 const fs = require('fs');
@@ -54,9 +54,26 @@ function localAsset(value, baseDir) {
   return path.resolve(baseDir, decodeURIComponent(clean));
 }
 
+/* M1-C.2i：消费者扫描面必须包含 services/。
+   此前只扫 assets/css、assets/js、game，于是 services/ 下的新消费者**不在视野里** ——
+   那条 singleConsumer 断言并不保护它声称保护的东西。 */
+function jsFilesUnder(dir) {
+  const out = [];
+  if (!fs.existsSync(dir)) return out;
+  (function collect(d) {
+    for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
+      const full = path.join(d, entry.name);
+      if (entry.isDirectory()) collect(full);
+      else if (/\.(?:js|mjs|cjs)$/i.test(entry.name)) out.push(full);
+    }
+  })(dir);
+  return out;
+}
+const sources = frontFiles();
+const payloadSources = sources.slice().concat(jsFilesUnder(path.join(root, 'services')));
+
 console.log('Frontend structure regression');
 
-const sources = frontFiles();
 for (const file of sources) {
   const result = strictUtf8(file);
   const rel = path.relative(root, file);
@@ -327,7 +344,7 @@ check('provider.noDecisionInConsumers', decisionLeaks.length === 0, '这些文�
    本守卫是契约的锁：文件缺失、层间串味、契约未冻结、跨层读越界或读到未声明符号、
    window 兼容符号 / 公共 API 变化、local fallback 开始注入、Gate 落盘、
    Judge 默认开启、或出现新的生产消费者，都会失败。 */
-const mbLayerFiles = ['middle-brain-config.js', 'middle-brain-policy.js', 'middle-brain-astra.js',
+const mbLayerFiles = ['middle-brain-config-core.js', 'middle-brain-config.js', 'middle-brain-policy.js', 'middle-brain-astra.js',
   'middle-brain-judge.js', 'middle-brain-integrity.js', 'middle-brain.js'];
 const mbTexts = {};
 for (const name of mbLayerFiles) {
@@ -660,12 +677,81 @@ check('middleBrain.toggleOnlyDirty', /function _mbDirty\(\)\s*\{[\s\S]*?_mbUi\.e
 check('middleBrain.gateStateMemoryOnly', /var MB_GATE_STATE = \{\}/.test(mbTexts['middle-brain-policy.js'])
   && !/dbPut|dbDelete|sessionStorage|localStorage/.test(mbTexts['middle-brain-policy.js']),
   'Gate 状态被持久化（1A 要求保持纯内存）');
-/* Judge 默认关闭 + 生产调用点仍只有 single-chat 一条。 */
-check('middleBrain.judgeDefaultOff', /middleBrainJudgeEnabled:\s*false/.test(mbTexts['middle-brain-config.js']), 'Judge 默认值被改为开启');
-const mbConsumers = sources.filter(f => f.endsWith('.js') && !mbLayerFiles.includes(path.basename(f)))
-  .filter(f => /middleBrainExecute\s*\(|middleBrainCompressPipeline|middleBrainAstraInvoke|middleBrainAdmissionGate\s*\(|middleBrainFinalizeReply\s*\(/.test(fs.readFileSync(f, 'utf8')))
+/* Judge 默认关闭 + 生产调用点仍只有 single-chat 一条。
+   M1-C.2i：默认值集合搬到了 middle-brain-config-core.js（执行配置语义的唯一实现，
+   UMD 双载），因此这里必须去**新家**里验，而不是继续在一个已经不再持有它的文件里找。
+   同时把 `\s*` 收紧成 `[^\S\n]*`：前者可以跨行匹配，一旦默认值块的**顺序**变化
+   （例如另一项被插到中间）就可能匹配到 "…false,\n    middleBrainJudgeEnabled: true"，
+   让这条守卫在真正被改坏时反而通过。 */
+const mbConfigCoreText = fs.existsSync(path.join(root, 'assets', 'js', 'middle-brain-config-core.js'))
+  ? fs.readFileSync(path.join(root, 'assets', 'js', 'middle-brain-config-core.js'), 'utf8').replace(/^\uFEFF/, '') : '';
+check('middleBrain.judgeDefaultOff', /middleBrainJudgeEnabled:[^\S\n]*false/.test(mbConfigCoreText),
+  'Judge 默认值被改为开启（或默认值不再由 middle-brain-config-core.js 持有）');
+/* ── M1-C.2i · 消费者数量与"没有第二份实现" ──────────────────────────────
+   此前的守卫是 `mbConsumers.length === 1`，但它的扫描面只有 assets/css、assets/js、game
+   —— 也就是说 services/ 下的任何一个新 Middle Brain 消费者**根本不在它的视野里**。
+   那条断言因此并不保护它声称保护的东西：它挡住的是"再写一个前端消费者"，
+   而不是"再写一个 Middle Brain"。M1-C.2i 让 Home Node 合法地成为第二个消费者，
+   所以这里把它换成两条**更强**的断言：
+     ① 消费者恰好两个，且逐个点名（桌面 single-chat + Home Node 执行缝）——
+        多一个、少一个、或换一个文件都会红；
+     ② services/ 里**没有**第二份策略/transport/证据实现：不得出现层契约、
+        不得出现 Middle Brain 公开 API 的编排符号、不得内置第二份 provider 能力表。
+   扫描面必须覆盖 services/，否则第 ② 条和第 ① 条一样是空的。 */
+/* 注意：`mbLayerFiles` 的排除必须**只对 assets/js 的层文件**生效 —— 按 basename 排除
+   会把 services/home-node/middle-brain.js（适配层，恰与 facade 同名）一起排除掉，
+   于是消费者扫描看起来包含 services/ ，实际上那个文件从来没进过判定。
+   这里显式限定目录，避免"同名即同类"这个默认假设。 */
+const mbLayerDir = path.join(root, 'assets', 'js');
+const mbConsumerFiles = payloadSources
+  .filter(f => f.endsWith('.js'))
+  .filter(f => !(path.dirname(f) === mbLayerDir && mbLayerFiles.includes(path.basename(f))))
   .map(f => path.relative(root, f));
-check('middleBrain.singleConsumer', mbConsumers.length === 1 && mbConsumers[0] === path.join('assets', 'js', 'communication.js'), 'Middle Brain 生产消费者数量变化: ' + mbConsumers.join(', '));
+/* 注意：core 文件本身持有 MB_DEFAULTS 与投影函数，因此它属于"层"，不参与消费者判定。
+   把它排除在"点名 API"之外是必须的 —— 否则 core 因为导出 projectExecutionConfig
+   会被误判成消费者。 */
+const mbCoreRel = path.join('assets', 'js', 'middle-brain-config-core.js');
+const mbConsumerHits = mbConsumerFiles.filter(f => f !== mbCoreRel)
+  .filter(f => /middleBrainExecute\s*\(|middleBrainCompressPipeline|middleBrainAstraInvoke|middleBrainAdmissionGate\s*\(|middleBrainFinalizeReply\s*\(/.test(fs.readFileSync(path.join(root, f), 'utf8')));
+const mbExpectedConsumers = [
+  path.join('assets', 'js', 'communication.js'),
+  path.join('services', 'home-node', 'middle-brain.js')
+];
+check('middleBrain.consumersAreExactlyTwoNamed',
+  JSON.stringify(mbConsumerHits.slice().sort()) === JSON.stringify(mbExpectedConsumers.slice().sort()),
+  'Middle Brain 消费者集合变化（期望恰好 [桌面 single-chat, Home Node 执行缝]）: ' + mbConsumerHits.join(', '));
+/* ② services/ 下不得存在第二份实现。判据取"只有 canonical 实现才该有的东西"：
+      · __middleBrainContracts —— 层契约（只有中间层与 facade 认识它）
+      · MB_PUBLIC_API / MB_SYSTEM_PROMPT —— 门面与提示词常量
+      · REASONING_TIERS / reasoningWirePlan —— P21 能力表（唯一真源 = provider-directory.js）
+   适配层 services/home-node/middle-brain.js 只 require + 注入，不该出现其中任何一个。 */
+const mbServicesDir = path.join(root, 'services');
+const mbServiceFiles = (function walk(dir, acc) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) walk(full, acc);
+    else if (/\.(?:js|mjs|cjs)$/i.test(entry.name)) acc.push(full);
+  }
+  return acc;
+})(mbServicesDir, []);
+const mbCopyOffenders = mbServiceFiles.filter(f => {
+  if (path.basename(f) === 'middle-brain.js') return false;   /* 适配层允许 require，不允许实现 */
+  const t = fs.readFileSync(f, 'utf8');
+  return /__middleBrainContracts|MB_PUBLIC_API|MB_SYSTEM_PROMPT|reasoningWirePlan|REASONING_TIERS/.test(t);
+}).map(f => path.relative(root, f));
+check('middleBrain.noSecondImplementationUnderServices', mbCopyOffenders.length === 0,
+  'services/ 下出现第二份 Middle Brain 实现 / provider 能力表: ' + mbCopyOffenders.join(', '));
+/* 适配层自身：只准 require canonical 文件，不准内联策略常量或自己发 provider 请求。 */
+const mbNodeAdapterPath = path.join(root, 'services', 'home-node', 'middle-brain.js');
+const mbNodeAdapterText = fs.existsSync(mbNodeAdapterPath)
+  ? fs.readFileSync(mbNodeAdapterPath, 'utf8') : '';
+check('middleBrain.nodeAdapterReusesCanonicalLayers',
+  mbNodeAdapterText.includes("require(path.join(ASSETS_JS, FILE")
+  || /require\(path\.join\(ASSETS_JS, (?:file|FACADE_FILE|CONFIG_FILE)\)\)/.test(mbNodeAdapterText),
+  'Home Node 适配层未 require canonical 层文件（可能自己实现了策略）');
+check('middleBrain.nodeAdapterNoOwnTransport',
+  !!mbNodeAdapterText && !/\bfetch\s*\(/.test(mbNodeAdapterText) && !/Authorization/.test(mbNodeAdapterText),
+  'Home Node 适配层自己发了网络请求（未经 canonical 的唯一网络边界）');
 
 /* ── P11-1C · canonical production execution seam ──────────────────────
    执行缝 = IB.middleBrain.middleBrainExecute：readiness 判定 + pipeline 两步，
@@ -721,10 +807,10 @@ check('middleBrain.finalizeSeamDefined', !!mbFinalizeSeam
   'middleBrainFinalizeReply 未按"候选 → integrity → 失败回退候选"定义');
 check('middleBrain.finalizeSeamCanonicalOnly', !/window\.middleBrainFinalizeReply\s*=/.test(mbText),
   '生成后执行缝被挂成 window 兼容别名');
-check('middleBrain.integrityDefaultOff', /characterIntegrityEnabled:\s*false/.test(mbTexts['middle-brain-config.js'])
-  && /characterIntegrityRewrite:\s*false/.test(mbTexts['middle-brain-config.js'])
-  && /characterIntegrityVerify:\s*false/.test(mbTexts['middle-brain-config.js']),
-  'Character Integrity 默认值被改为开启');
+check('middleBrain.integrityDefaultOff', /characterIntegrityEnabled:[^\S\n]*false/.test(mbConfigCoreText)
+  && /characterIntegrityRewrite:[^\S\n]*false/.test(mbConfigCoreText)
+  && /characterIntegrityVerify:[^\S\n]*false/.test(mbConfigCoreText),
+  'Character Integrity 默认值被改为开启（或默认值不再由 middle-brain-config-core.js 持有）');
 /* 零开销：未启用必须在任何模型调用/证据组装之前返回原候选（函数体内先于 _ciCall）。 */
 const mbCiFnSeg = mbIntegrityText.slice(mbIntegrityText.indexOf('async function middleBrainCharacterIntegrity'),
   mbIntegrityText.indexOf('layer contract（P11-2）'));
@@ -769,9 +855,14 @@ check('middleBrain.consumerFinalizeFacadeOnly', !!mbFinalizeBlock
   && /middleBrainFinalizeReply\(/.test(mbFinalizeBlock)
   && !/window\.middleBrain\w+\s*=/.test(mbFinalizeBlock),
   '生成后调用点未只经 IB.middleBrain.middleBrainFinalizeReply');
-/* 生产消费者仍然只有一个文件（新增调用点不得引入第二个消费者文件）。 */
-check('middleBrain.singleConsumerAfterP11_2', mbConsumers.length === 1 && mbConsumers[0] === path.join('assets', 'js', 'communication.js'),
-  'P11-2 后 Middle Brain 生产消费者数量变化: ' + mbConsumers.join(', '));
+/* 生产消费者的集合断言在 M1-C.2i 已经收严并**上移**到 middleBrain.consumersAreExactlyTwoNamed
+   （恰好两个具名消费者 + services/ 下没有第二份实现）。
+   这里保留"P11-2 没有偷偷引入第三个消费者"这层意思，但改成建立在同一个**收严过的**
+   集合之上：桌面侧仍然只能由 communication.js 消费，Home Node 侧只允许适配层。 */
+const mbDesktopConsumers = mbConsumerHits.filter(f => !f.startsWith('services' + path.sep));
+check('middleBrain.singleConsumerAfterP11_2', mbDesktopConsumers.length === 1
+  && mbDesktopConsumers[0] === path.join('assets', 'js', 'communication.js'),
+  'P11-2 后桌面侧 Middle Brain 生产消费者数量变化: ' + mbDesktopConsumers.join(', '));
 /* UI：新设置必须挂在既有 Middle Brain 卡片内，且走 canonical config（无第二份配置源）。 */
 check('middleBrain.integrityUiSection', /id="mb-ci-enabled"/.test(html) && /id="mb-ci-rewrite"/.test(html)
   && /id="mb-ci-verify"/.test(html) && /id="mb-ci-sensitivity"/.test(html) && /id="mb-ci-summary"/.test(html),
@@ -850,9 +941,11 @@ check('middleBrain.calibrationNotReferencedByProduction', (() => {
 check('middleBrain.calibrationFilesExist', calFiles.every(f => fs.existsSync(path.join(__dirname, f))),
   calFiles.filter(f => !fs.existsSync(path.join(__dirname, f))).join(', '));
 check('middleBrain.calibrationIsNotConsumer', (() => {
-  /* harness 允许读层契约（测试侧），但不得成为生产消费者：不得出现在 mbConsumers 中 */
-  return mbConsumers.length === 1 && mbConsumers[0] === path.join('assets', 'js', 'communication.js');
-})(), mbConsumers.join(', '));
+  /* harness 允许读层契约（测试侧），但不得成为生产消费者：不得出现在消费者集合中。
+     M1-C.2i：判据建立在收严过的 mbConsumerHits 上（它现在包含 services/，且逐个点名）。 */
+  return JSON.stringify(mbConsumerHits.slice().sort()) === JSON.stringify(mbExpectedConsumers.slice().sort())
+    && !mbConsumerHits.some(f => /calibration/.test(f));
+})(), mbConsumerHits.join(', '));
 check('middleBrain.calibrationCasesSeparated', (() => {
   const t = fs.readFileSync(path.join(__dirname, 'middle-brain-calibration.js'), 'utf8');
   return /EXPECTED_KEYS/.test(t) && /OBSERVED_KEYS/.test(t)

@@ -171,8 +171,15 @@
     var systemPrompt = str(raw.systemPrompt, 200000);
     if (systemPrompt) spec.systemPrompt = systemPrompt;
     if (raw.temperature != null) spec.temperature = num(raw.temperature, 1);
-    var effort = str(raw.reasoningEffort, 16);
-    if (effort) spec.reasoningEffort = effort;
+    /* M1-C.2i：**刻意不再投影 reasoningEffort。**
+       思考深度是**执行策略**，不是角色身份：canonical 语义里它来自全局 Middle Brain
+       配置（assets/js/middle-brain-config-core.js），与"哪个角色"无关。
+       此前这里会把 raw.reasoningEffort 原样带进 character_runtime_specs，
+       等于给了它一条**按角色**进入 Home Node 的旁路 —— 而 Home Node 现在从
+       已发布的执行策略读它（services/home-node/middle-brain.js）。
+       两处都能决定同一件事，就是漂移的开始；所以这条旁路在投影层就被关掉。
+       注意：不是"暂时没人写这个字段所以无害" —— 白名单一旦允许，它就是一个
+       可以被后续代码意外填充的旋钮。 */
     if (raw.thinkingEnabled !== undefined) spec.thinkingEnabled = !!raw.thinkingEnabled;
     if (raw.showThinking !== undefined) spec.showThinking = !!raw.showThinking;
     return spec;

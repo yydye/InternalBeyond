@@ -3003,6 +3003,12 @@ i would like the room to be enough.
 <script src="assets/js/social-network.js"></script>
 <script src="assets/js/role-letters.js"></script>
 <script src="assets/js/ib-model-core.js"></script>
+<!-- M1-C.2i：Middle Brain **执行配置的语义**（默认值 / 归一 / 就绪谓词 /
+     reasoningEffort 解析 / 执行配置投影）的唯一实现，UMD 双载。
+     必须早于 middle-brain-config.js（它 require/读全局取这一份），
+     也早于 home-node-bootstrap.js（它用 projectExecutionConfig 发布策略）。
+     桌面与 Home Node 读的是同一份 —— 不允许出现第二份判定。 -->
+<script src="assets/js/middle-brain-config-core.js"></script>
 <script src="assets/js/middle-brain-config.js"></script>
 <script src="assets/js/middle-brain-policy.js"></script>
 <script src="assets/js/middle-brain-astra.js"></script>

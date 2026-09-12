@@ -1,4 +1,4 @@
-/* ====================================================================
+﻿/* ====================================================================
    P11-2A · Character Integrity Calibration Harness · Layer A（确定性契约校准）
    --------------------------------------------------------------------
    目标：回答"P11-2 这把尺子到底准不准？"，且**不碰生产**。
@@ -65,7 +65,9 @@ function loadProductionSandbox(opts) {
     readLayer('assets/js/middle-brain-integrity.js') + '\n' +
     ';return self.IB.__middleBrainContracts;';
   const factory = new Function('self', 'module', 'document', 'dbGet', 'dbPut', 'require', body);
-  const self = { PROVIDERS_DIR: providerDir };
+  /* M1-C.2i：canonical 执行配置语义（core）与 PROVIDERS_DIR 同一约定 ——
+     浏览器里它由 <script> 挂在 window 上；沙箱里由这里显式提供**同一个模块实例**。 */
+  const self = { PROVIDERS_DIR: providerDir, IBMiddleBrainConfigCore: require(path.join(ROOT, 'assets', 'js', 'middle-brain-config-core.js')) };
   const documentStub = { getElementById: () => null, readyState: 'complete', addEventListener: () => {} };
   const MBC = factory(
     self, undefined, documentStub,

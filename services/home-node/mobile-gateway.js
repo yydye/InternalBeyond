@@ -1,4 +1,4 @@
-/* ====================================================================
+﻿/* ====================================================================
    IB Home Node · Mobile Gateway（versioned, allowlisted, device-authenticated）
    --------------------------------------------------------------------
    这是**世界 API**，不是 Bridge tool API。边界是刻意画出来的：
@@ -45,6 +45,9 @@ const P0_CONTEXT = require('./p0-context.js');
    P0 只渲染身份/关系/时间；记忆由这一层作为**独立来源**提供，
    两者在这里按"稳定前缀"顺序拼接。 */
 const createMemoryRetrieval = require('./memory-retrieval.js');
+/* M1-C.2i：Middle Brain **执行配置**的投影语义（唯一实现，与桌面共用同一份）。
+   只用到它的入站校验与构造式投影，**不含任何判定** —— 判定在 canonical 层。 */
+const MB_CONFIG_CORE = require('../../assets/js/middle-brain-config-core.js');
 
 /* 协议版本。**真的会被校验**（Phase 9）—— 不是 Bridge 那种"存在但没人读"的字段。 */
 const PROTOCOL_VERSION = 1;
@@ -686,6 +689,15 @@ function createMobileGateway(deps) {
     return function stop() { clearInterval(timer); };
   }
 
+  /* 只接受有限数字；其余一律 null（= 让执行器用自己的默认值）。
+     为什么不 `Number(v) || null`：那会把合法的 0 当成"没给"，
+     而温度 0 是合法且有意为之的采样设置。 */
+  function numOrNull(v) {
+    if (v == null || v === '') return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+
   /* ── chat.send ────────────────────────────────────────────────────── */
   function parseSendPayload(body, device) {
     const payload = (body && body.payload) || {};
@@ -786,12 +798,37 @@ function createMobileGateway(deps) {
            runtimeContext 由 execution.buildPrompt 追加到 system 尾部，
            与 systemPrompt 同属私有面，永不进任何 DTO / SSE。 */
         runtimeContext: runtime.runtimeContext,
-        /* 诚实标注：手机端没有 Middle Brain，上下文是"服务端按角色配置 + 会话历史
-           + canonical 记忆"组织的。绝不假装与桌面同质（M1-A §6.2 的 contextPolicy 契约）。 */
+        /* M1-C.2i：canonical 上下文**分块**（与 runtimeContext 是同一次计算的产物，
+           不是第二次读取）。执行缝只该拿到"记忆块"，而不是整段 runtimeContext ——
+           后者还含 P0 身份/关系/时间，那些不是 Middle Brain 的输入，
+           也不该被它的压缩结果吃掉。memoryConsulted 让快照能区分
+           "已读但为空"与"根本没读成功"（C1 契约的两个不同真相）。 */
+        runtimeContextParts: {
+          runtimeContext: runtime.runtimeContext,
+          memoryBlock: runtime.memoryBlock || '',
+          memoryConsulted: runtime.memoryConsulted === true,
+          p0Stable: runtime.p0Stable || '',
+          p0Time: runtime.p0Time || ''
+        },
+        /* 诚实标注：手机端提交的是 **turn intent**（角色 + 发言 + 常规请求元数据），
+           上下文由服务端组织。具体是"服务端历史 + canonical 记忆"还是
+           "canonical Middle Brain 执行缝参与过"，由 execution.js 按本轮**实际发生的事**
+           改成 middle-brain:<source>/... 并写进 canonical 记录。
+           这里给的是"还没有 Middle Brain 结论"时的基线值。 */
         contextPolicy: 'mobile-gateway-history',
-        maxTokens: payload.maxTokens,
-        temperature: payload.temperature,
-        reasoningEffort: payload.reasoningEffort
+        /* M1-C.2i · **执行策略不由客户端决定**。
+           此前这里把 payload.reasoningEffort / maxTokens / temperature 原样透传给
+           执行器 —— 也就是说一个伪造的 Android 请求可以改掉本轮的思考深度、
+           token 上限与采样温度。现在：
+             · reasoningEffort 完全移除（唯一权威 = canonical Middle Brain 配置，
+               由 execution.js 经执行缝读取）；
+             · temperature 只接受**角色自己**的 spec.temperature（与桌面一致：
+               桌面的采样温度来自角色配置，不来自消息）；
+             · maxTokens 只接受角色 spec 上的值，否则用执行器默认；
+           解析阶段就把它们丢掉，而不是在 executor 里再判一次 —— 拒绝的边界
+           只有一处，后续任何调用方都不会"顺手又透传一次"。 */
+        maxTokens: numOrNull(spec.maxTokens),
+        temperature: (spec.temperature != null ? Number(spec.temperature) : null)
       }
     };
   }
@@ -1365,9 +1402,33 @@ function createMobileGateway(deps) {
       else if (body.user && publishedProfile && publishedProfile.code === 'EMPTY_PROFILE') {
         record('warn', 'user-profile-empty-name', {});
       }
+      /* ── M1-C.2i · Middle Brain 执行配置（与角色目录同一次发布）────────────
+         与角色目录同一次 POST：桌面本来就是**一次**发布同时读 apiConfigs 与
+         middle_brain 配置，拆成两个端点会让"目录已更新但策略还没到"成为一个
+         可以观测到的中间态。这里与角色目录同一纪律：
+           · 入站再走一次**构造式**投影（normalizeProjectedExecutionConfig），
+             不信任调用方 —— 即使上层漏了某个 secret，也进不来；
+           · 未知键忽略（而不是抛错），因此重复发布同一份配置是幂等的；
+           · 缺席一律**不动**已有值（与 user profile 同一条规则）：发布失败
+             或旧桌面不带这个字段时，Home Node 不该突然丢掉已有的执行策略。 */
+      let middleBrainWritten = false;
+      let middleBrainKeys = 0;
+      if (body.middleBrain && typeof body.middleBrain === 'object') {
+        const normalized = MB_CONFIG_CORE.normalizeProjectedExecutionConfig(body.middleBrain);
+        if (!normalized.ok) {
+          record('warn', 'middle-brain-config-rejected', { code: normalized.code });
+        } else {
+          const stored = registry.putMiddleBrainExecutionConfig(normalized.config);
+          if (stored && stored.ok) {
+            middleBrainWritten = true;
+            middleBrainKeys = Object.keys(normalized.config).length;
+          }
+        }
+      }
       broadcastEvent('cursor.changed', { cursor: store.getRevision(), revision: store.getRevision(), catalogUpdatedAt: registry.characterCatalogUpdatedAt() });
       return sendJson(res, 200, okBody('character.published', null, {
         count: written.count, withSpec: written.withSpec, userProfile: profileWritten,
+        middleBrain: middleBrainWritten, middleBrainKeys: middleBrainKeys,
         catalogUpdatedAt: registry.characterCatalogUpdatedAt()
       }), req);
     }

@@ -1,4 +1,4 @@
-/* ====================================================================
+﻿/* ====================================================================
    P11-3 · Middle Brain Runtime Semantics Closure · 专项测试（静态、零依赖、无浏览器）
    --------------------------------------------------------------------
    本阶段不改 Middle Brain 能力，只修 Runtime Participation Audit 暴露出的三处语义：
@@ -159,13 +159,23 @@ const MB_WRITES = sbx => writesTo(sbx, 'middle_brain');
   check('B5.seamMarksBypass', /_mbTraceNote\(characterId, 'source', 'bypass'\)/.test(readUtf8('assets/js/middle-brain.js')),
     '执行缝返回 null 时未把 trace 来源标记为 bypass');
 
-  /* ═══════════ C. 默认值不被本阶段改动 ═══════════ */
-  const cfgText = readUtf8('assets/js/middle-brain-config.js');
-  check('C1.judgeStillDefaultOff', /middleBrainJudgeEnabled:\s*false/.test(cfgText), 'Judge 默认值被改动');
-  check('C2.oocGuardStillDefaultOff', /characterIntegrityEnabled:\s*false/.test(cfgText)
-    && /characterIntegrityRewrite:\s*false/.test(cfgText) && /characterIntegrityVerify:\s*false/.test(cfgText),
-    'Character Integrity（OOC Guard）默认值被改动');
-  check('C3.middleBrainStillDefaultOff', /^\s*enabled:\s*false,/m.test(cfgText), 'Middle Brain 默认启用状态被改动');
+  /* ═══════════ C. 默认值不被本阶段改动 ═══════════
+     M1-C.2i：默认值集合搬到了 middle-brain-config-core.js（执行配置语义的唯一实现，
+     UMD 双载），所以这里必须去**新家**里验 —— 继续在已经不再持有它的 config 适配层里
+     搜，会在"默认值真的被改坏"时同样通过（那正是这些守卫要防的事）。
+     `\s*` 收紧成 `[^\S\n]*`：前者可跨行，一旦默认值块顺序变化就可能匹配到相邻项。 */
+  const cfgDefaultsText = readUtf8('assets/js/middle-brain-config-core.js');
+  const cfgText = readUtf8('assets/js/middle-brain-config.js');   /* 适配层：应已不再持有默认值 */
+  check('C1.judgeStillDefaultOff', /middleBrainJudgeEnabled:[^\S\n]*false/.test(cfgDefaultsText)
+    && !/middleBrainJudgeEnabled:[^\S\n]*false/.test(cfgText),
+    'Judge 默认值被改动（或默认值不再由 middle-brain-config-core.js 持有）');
+  check('C2.oocGuardStillDefaultOff', /characterIntegrityEnabled:[^\S\n]*false/.test(cfgDefaultsText)
+    && /characterIntegrityRewrite:[^\S\n]*false/.test(cfgDefaultsText)
+    && /characterIntegrityVerify:[^\S\n]*false/.test(cfgDefaultsText),
+    'Character Integrity（OOC Guard）默认值被改动（或默认值不再由 core 持有）');
+  check('C3.middleBrainStillDefaultOff', /^\s*enabled:\s*false,/m.test(cfgDefaultsText)
+    && !/^\s*enabled:\s*false,/m.test(cfgText),
+    'Middle Brain 默认启用状态被改动（或默认值不再由 core 持有）');
 
   console.log('\n' + (failures ? '✖ ' + failures + ' 项失败' : '✔ 全部通过'));
   if (failures) process.exitCode = 1;

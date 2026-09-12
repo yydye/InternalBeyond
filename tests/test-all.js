@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 
 /* Internal Beyond · 一键全量测试入口（Node 18+，零依赖，跨平台）。
  *
@@ -40,6 +40,14 @@
  *     auto 不改变请求 / 未取证 provider 不污染）
  *     + test_middle_brain_reasoning_effort.js（browser，真实 wire body：MB disabled 零注入 /
  *     chat×diary parity / DeepSeek 原生 auto 不受影响 / Speed 与 Effort 分离）。
+ * M1-C.2i：登记 test_middle_brain_convergence.js（static，执行收敛：同一份发布策略 →
+ *     两端同一语义决策；Home Node 复用既有执行缝；注入契约；伪造请求免疫；凭据不可达；
+ *     失败语义可区分）
+ *     + test_middle_brain_convergence_counterproof.js（static，对照证明：五处单向弱化
+ *     各自让收敛测试变红，且红的是预期断言 —— 证明断言真的有鉴别力）。
+ *     两条都只复制相关文件到临时目录、不触网、不改工作区。
+ *     + test_home_node_middle_brain_assembly.js（service，生产装配 buildHomeNode() + 真实
+ *     回环 provider：证明执行缝在**生产装配**里真的接上了，而不是只有测试自己接线时成立）。
  * P14：登记 test_middle_brain_collapse.js（static，API 页 Middle Brain 整块折叠：默认态 /
  *     点击与键盘切换 / 状态保持 / 持久化恢复 / 不重复绑定）。
  * P6：登记 test_guide.js（static）+ test_guide_shots.js / test_guide_smoke.js（browser）。
@@ -102,6 +110,16 @@ const GROUPS = [
          DeepSeek 校准（P21.1：模型级登记 · medium→high · 无 provider 宽泛开启）。
          纯 Node，零依赖、不联网、不开浏览器。 */
       ['test_reasoning_capability.js'],
+      /* M1-C.2i：Middle Brain 执行收敛 —— 同一份已发布的执行策略在 Desktop 与
+         Home Node 得到同一个 canonical 语义决策；Home Node 进入的是**既有**执行缝
+         （require assets/js 那五层 + facade，不是等价实现）；注入契约、伪造请求免疫、
+         凭据结构性不可达、失败语义可区分、每轮只进一次。纯 Node，零依赖、不联网。 */
+      ['test_middle_brain_convergence.js'],
+      /* M1-C.2i 对照证明：把工作区里相关文件复制到临时目录并**单向弱化**五处
+         （绕开执行缝 / 换思考深度 / 丢掉 integrity 结果 / 让 payload 覆盖策略 /
+         把凭据投影出去），每一处都必须在副本里让收敛测试变红，且红的是预期的那些断言。
+         不触网、不改工作区、结束时清理。 */
+      ['test_middle_brain_convergence_counterproof.js'],
       /* M1-A（R19/§3.14）：LAN 模式桌面端鉴权一致性契约 ——
          window.ibBridgeToken 发布 / 无裸 fetch(ibBridgeBase()…) /
          无 new Audio(ibBridgeBase()…)（媒体元素无法带请求头 → 必须 blob 取回）。
@@ -248,6 +266,13 @@ const GROUPS = [
          canonical chat store）此前存在但未登记，因此从未随全量套件运行。
          它是当前唯一覆盖 Home Node 执行链真实 SSE 往返的测试。 */
       ['test_home_node_execution.js'],
+      /* M1-C.2i：Middle Brain 收敛在**生产装配**上的证明。test_middle_brain_convergence.js
+         自己 createExecutor，因此它证明"执行器接上执行缝之后行为正确"，不证明生产装配
+         真的接上了 —— 本仓库已经因为这类缺口吃过一次亏（canonical memory 只在
+         buildHomeNode 里接好，进程级启动路径漏了）。这一条走 buildHomeNode() + 真实回环
+         provider，把服务端收到的请求体抓下来断言（上下文替换 / 思考深度 wire 字段 /
+         未发布策略时行为不变）。 */
+      ['test_home_node_middle_brain_assembly.js'],
       /* M1-B：Mobile Gateway 协议 / 鉴权 / LAN 硬门 / secret-leak 契约
          （真实服务实例 + 真实进程，临时数据目录 + 随机端口） */
       ['test_mobile_gateway_http.js'],

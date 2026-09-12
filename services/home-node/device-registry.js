@@ -1,4 +1,4 @@
-/* ====================================================================
+﻿/* ====================================================================
    IB Home Node · Device Registry + Pairing
    --------------------------------------------------------------------
    这是 Home Node 的**设备身份**子系统。它和 M1-A 的 chat authority 是
@@ -59,6 +59,9 @@ const KNOWN_CAPABILITIES = ['chat', 'sync', 'notify', 'vision'];
 const DEFAULT_CAPABILITIES = ['chat', 'sync', 'notify'];
 
 const SPACE = ' \t\r\n';
+
+/* M1-C.2i：Middle Brain 执行配置在 meta 表里的键（命名空间前缀与 devices_schema 同风格）。 */
+const MB_CONFIG_META_KEY = 'middle_brain_execution_config';
 
 /* node:sqlite 是 Node 22.5+ 内置模块（shipped runtime 24.18.0 已确认可用）。
    缺失时明确报错，绝不静默换一套存储语义。 */
@@ -677,6 +680,33 @@ function createDeviceRegistry(deps) {
     return intOf(db.prepare(SQL.countCharacters).get().c);
   }
 
+  /* ── Middle Brain 执行配置（M1-C.2i）──────────────────────────────────
+     存的是**执行策略**，不是凭据：桌面发布的投影里根本没有 endpoint / model / apiKey
+     （见 assets/js/middle-brain-config-core.js 的 projectExecutionConfig）。
+     因此它与 character_runtime_specs 归在同一张 meta 表里是安全的 ——
+     投影层是构造式的，未知键没有机会进入，这里也不再做第二次挑字段。
+
+     为什么与角色分表：这是**全局**策略（一台机器一份），不是角色属性。
+     放进 character_runtime_specs 会让它看起来像"每个角色可以有不同的思考深度"，
+     而 canonical 语义是全局的 —— 那就制造了一个看起来能用、实际会漂移的旋钮。 */
+  function putMiddleBrainExecutionConfig(config) {
+    if (!opened) return { ok: false, code: 'STORE_CLOSED' };
+    if (!config || typeof config !== 'object' || Array.isArray(config)) return { ok: false, code: 'BAD_REQUEST' };
+    writeMeta(MB_CONFIG_META_KEY, JSON.stringify(config));
+    return { ok: true, updatedAt: intOf(clock()) };
+  }
+  /* 读不到 / 坏 JSON → null（调用方回落 canonical 默认值 = 未启用）。
+     这里刻意**不**回一个空对象：那会让"没发布过"与"发布过但内容为空"看起来一样。 */
+  function getMiddleBrainExecutionConfig() {
+    if (!opened) return null;
+    const raw = readMeta(MB_CONFIG_META_KEY);
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      return (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : null;
+    } catch (_) { return null; }
+  }
+
   function meta() {
     return {
       ok: true,
@@ -719,6 +749,11 @@ function createDeviceRegistry(deps) {
     getCharacter: getCharacter,
     getCharacterSpec: getCharacterSpec,
     characterCatalogUpdatedAt: characterCatalogUpdatedAt,
+
+    /* M1-C.2i · 全局执行策略（非凭据；见函数头注释） */
+    putMiddleBrainExecutionConfig: putMiddleBrainExecutionConfig,
+    getMiddleBrainExecutionConfig: getMiddleBrainExecutionConfig,
+    MB_CONFIG_META_KEY: MB_CONFIG_META_KEY,
 
     fingerprint: fingerprint,
     file: dbFile,

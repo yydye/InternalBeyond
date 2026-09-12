@@ -172,11 +172,15 @@ function createHomeNodeRemote(deps) {
        Node 侧会**再**用同一份实现收口一次，因此即使这里漏了字段，
        出站也不可能带上凭据。
        options.user：P0 用户展示身份（{id,name}），同样已过 userProfileDto
-       白名单投影。缺席时 Node 保持上一次已知值，不清空。 */
+       白名单投影。缺席时 Node 保持上一次已知值，不清空。
+       options.middleBrain（M1-C.2i）：Middle Brain **执行策略**投影，
+       已过 middle-brain-config-core.projectExecutionConfig 的构造式白名单
+       （其中根本没有 endpoint/model/apiKey）。同样"缺席不清空"。 */
     publishCharacters: function (characters, options) {
       options = options || {};
       var body = { characters: characters || [], merge: !!options.merge };
       if (options.user) body.user = options.user;
+      if (options.middleBrain) body.middleBrain = options.middleBrain;
       return _request('/characters/publish', {
         method: 'POST',
         body: body,

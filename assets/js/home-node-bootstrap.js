@@ -376,6 +376,43 @@ function desktopUserProfile() {
   }
 }
 
+/* M1-C.2i · Middle Brain **执行策略** 投影（Desktop → Home Node）。
+   为什么要发布：Home Node 要进入**同一个** Middle Brain 执行缝，就必须知道
+   "这个用户把 Middle Brain 配成了什么"（是否参与、思考深度、Admission/Judge/
+   Integrity 开关）。这些此前只存在于浏览器 IndexedDB 的 apiSettings['middle_brain']。
+
+   为什么只发布策略、**绝不**发布凭据：
+     投影唯一实现 = middle-brain-config-core.projectExecutionConfig()，它是构造式
+     白名单，输出里根本没有 endpoint / model / apiKey 三个键。
+     Home Node 因此恒"没有 Middle Brain 凭据" —— 它不需要：
+       · 上下文压缩在 Node 侧只能走本地 pipeline（admission 因 apiKey 缺失 → local）；
+       · Astra / Judge / Integrity 的模型调用在 Node 侧结构性不可达。
+     也就是说桌面发布的是**策略**，不是**能力**。这是本阶段的核心边界。
+
+   与角色目录的三处不同（都是刻意的）：
+     ① 读的是 apiSettings['middle_brain'] 这一条**全局**记录，与角色无关；
+     ② 投影失败（core 未加载）时返回 null = "这次不发布"，**绝不**退化成
+        "把原始配置对象发出去再说" —— 那正是一次泄漏的形状；
+     ③ 读不到配置（从未设置过）时也返回 null，不发布默认值：
+        Home Node 侧缺席 = 保持已发布值；发布一份全默认的策略等于**关闭**它。 */
+function desktopMiddleBrainConfig() {
+  try {
+    var core = window.IBMiddleBrainConfigCore;
+    if (!core || typeof core.projectExecutionConfig !== 'function') {
+      note('middle-brain-projection-missing', {});
+      return null;
+    }
+    /* dbGet 是 async 的；发布路径已是 Promise 链，这里返回 Promise 由调用方 await。 */
+    return Promise.resolve(window.dbGet ? dbGet('apiSettings', 'middle_brain') : null).then(function (stored) {
+      if (!stored || typeof stored !== 'object') return null;
+      return core.projectExecutionConfig(stored);
+    }, function () { return null; });
+  } catch (e) {
+    note('middle-brain-read-failed', { error: String((e && e.message) || e) });
+    return null;
+  }
+}
+
 function publishCharacters(reason, options) {
   options = options || {};
   if (MODE !== 'canonical') return Promise.resolve({ ok: false, error: 'authority-disabled' });
@@ -396,10 +433,18 @@ function publishCharacters(reason, options) {
     note('catalog-publish-skipped', { reason: reason, why: 'no-characters' });
     return Promise.resolve({ ok: true, skipped: true, reason: 'no-characters' });
   }
-  /* 资料读取与目录发布并行；资料失败/缺席不阻塞目录发布。 */
+  /* 资料读取与目录发布并行；资料失败/缺席不阻塞目录发布。
+     M1-C.2i：Middle Brain 执行策略与角色目录**同一次** POST —— 拆开会让
+     "目录已更新但策略还没到"成为一个可观测的中间态（同一个角色短暂地
+     在手机上用另一套认知策略）。投影失败仍发布目录，只是不带策略字段。 */
   var profilePromise = Promise.resolve(desktopUserProfile()).catch(function () { return null; });
-  catalogPublishInFlight = profilePromise.then(function (user) {
-    return remoteDriver.publishCharacters(characters, user ? { user: user } : {});
+  var mbPromise = Promise.resolve(desktopMiddleBrainConfig()).catch(function () { return null; });
+  catalogPublishInFlight = Promise.all([profilePromise, mbPromise]).then(function (both) {
+    var user = both[0], mbConfig = both[1];
+    var publishOptions = {};
+    if (user) publishOptions.user = user;
+    if (mbConfig) publishOptions.middleBrain = mbConfig;
+    return remoteDriver.publishCharacters(characters, publishOptions);
   }).then(function (result) {
     catalogPublishInFlight = null;
     if (result && result.ok) {
@@ -407,7 +452,8 @@ function publishCharacters(reason, options) {
       note('catalog-published', {
         reason: reason, count: (result.payload && result.payload.count) || characters.length,
         withSpec: result.payload && result.payload.withSpec,
-        userProfile: !!(result.payload && result.payload.userProfile)
+        userProfile: !!(result.payload && result.payload.userProfile),
+        middleBrain: !!(result.payload && result.payload.middleBrain)
       });
     } else {
       note('catalog-publish-failed', { reason: reason, error: (result && result.error) || 'unknown' });

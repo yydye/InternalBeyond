@@ -1,137 +1,103 @@
 ﻿/* ====================================================================
-   Middle Brain · Config + UI 层（P11-1A 自 middle-brain.js 物理拆分）
+   Middle Brain · Config + UI 层（P11-1A 自 middle-brain.js 物理拆分；M1-C.2i 抽取语义）
    --------------------------------------------------------------------
    职责（只此四类，不混其它层）：
-     1. 全局配置默认值 / 读写（apiSettings 私有 key 'middle_brain'）
-     2. 就绪判定（isMiddleBrainEnabled / middleBrainReady）
-     3. 只读系统提示词常量（MB_SYSTEM_PROMPT，用户不可编辑）
-     4. 设置卡片 UI + reasoningEffort / speed 归一
+     1. 全局配置的**宿主读写**（apiSettings 私有 key 'middle_brain'）
+     2. 设置卡片 UI（DOM 构建 / 事件绑定 / 折叠态）
+     3. 只读系统提示词常量（MB_SYSTEM_PROMPT，用户不可编辑）—— 定义在 core，这里只转出
+     4. 配置侧归一与就绪判定的**转调**
    不含：本地组织/压缩、Admission Gate、Astra 传输、Judge。
    拆分只动位置，不改逻辑；window.* / _middleBrain 兼容符号由 middle-brain.js 代理。
-   加载顺序：middle-brain-config.js → middle-brain-policy.js → middle-brain-astra.js
-             → middle-brain-judge.js → middle-brain.js
-   P11-1B：本层对外只经 MBC.config（冻结契约）暴露，不依赖任何其它层（DAG 起点）。
-   ==================================================================== */
-(function (root) {
-  'use strict';
-  /* layer contract 登记处（P11-1B）：每层只向自己的键写入一个冻结契约对象。 */
-  var MBC = (root.IB = root.IB || {}).__middleBrainContracts || (root.IB.__middleBrainContracts = {});
-  var KEY = 'middle_brain';
-  var MB_DEFAULTS = {
-    enabled: false,
-    provider: 'astra',
-    endpoint: 'https://api.openai.com/v1/responses',
-    model: 'gpt-6-astra',
-    apiKey: '',
-    /* Phase 2 · Astra Admission Gate：本地确定性判定"这次 Context 是否值得花一次 Astra 调用"。
-       默认开启（省钱优先：简单对话不调用 Astra）。可通过 admissionEnabled:false 完全关闭（恢复 Phase 1）。
-       gate:{} 为可选调参覆盖（scoreOn/cooldownMs/...），仅前进式覆盖，不强制持久化。 */
-    admissionEnabled: true,
-    gate: {},
-    /* Phase 3 · Astra Context Judge：对"已压缩 Context"做只读质量评估（observe/evaluate）。
-       默认关闭（守恒成本）：关闭时 Phase 2 行为完全不变；开启后仅在 Astra 压缩成功后
-       额外跑一次 Judge（另一次独立调用）。结果不入角色输入，仅观测 + telemetry。 */
-    middleBrainJudgeEnabled: false,
-    /* Phase 4 · Astra 推理强度与处理速度（仅 UI + 配置持久化 + 能力驱动的 wire 翻译）：
-       reasoningEffort: auto/low/medium/high/max → 由 provider adapter 边界翻译成真实参数
-                        （能力事实唯一真源 = provider-directory.js 的 P21 表）
-       speed: standard/fast → fast 时发送 service_tier:"fast"（官方参数，standard=不发送）。
-       非法值一律回退默认，其余 Phase 1/2/3 业务逻辑不变。
-       P21：默认改为 auto（= 不发任何 reasoning 参数，保持 provider 原生行为）；
-            旧配置（无 reasoningEffortV2 迁移标记）一次性迁移为 auto，用户重新选择才生效。 */
-    reasoningEffort: 'auto',
-    speed: 'standard',
-    /* P11-2 · Character Integrity Guard（角色一致性守卫）：
-       检测候选回复是否**明显**偏离当前角色，仅在高置信度强 OOC 时做最多一次 targeted rewrite。
-       默认关闭（关闭时零模型调用，行为与 P11-1C 等价）。
-       sensitivity: conservative/balanced/strict → 映射判定阈值（阈值本身在 integrity 层）。
-       rewrite: 是否允许自动重写；verify: 重写后是否复判（只观测，绝不二次重写）。 */
-    characterIntegrityEnabled: false,
-    characterIntegritySensitivity: 'conservative',
-    characterIntegrityRewrite: false,
-    characterIntegrityVerify: false,
-    /* Image Router · 全局图片生成策略（Fast / Auto / Precision）。
-       这是**用户策略**，不是执行：Middle Brain 只提供决策输入，
-       真正的模型选择 / 并发 / 队列全部由 assets/js/image-router.js 负责。
-       auto=Router 按任务画像选 Flare/Sunburst；fast=强制 Flare（永不偷偷升级）；
-       precision=强制 Sunburst（永不自动降级）。默认 auto。 */
-    imageMode: 'auto'
-  };
+   加载顺序：provider-directory.js → middle-brain-config-core.js → middle-brain-config.js
+             → middle-brain-policy.js → middle-brain-astra.js → middle-brain-judge.js
+             → middle-brain-integrity.js → middle-brain.js
 
-  /* ── Middle Brain 系统提示词：引擎内部的认知约束，前端只读，用户不可修改。──
-     这是 IB 的中间认知层的"角色契约"，不是底层模型的角色配置；
-     不写入 apiSettings（避免随配置导出/UI 泄露），只作为本模块内常量，
-     供将来 Middle Brain 实际调用（buildMiddleBrainRequest 时注入 system）。 */
-  var MB_SYSTEM_PROMPT = '你是 InternalBeyond（IB）的 Middle Brain。\n'
-    + '你的职责不是扮演角色，也不是替底层模型生成最终回复。\n'
-    + '你的职责是作为 IB 的中间认知层，帮助底层模型保持角色连续性、上下文一致性和人格稳定，同时尽可能保留底层模型自身的语言风格。\n'
-    + '\n'
-    + '你必须始终区分三个层次：\n'
-    + '1. IB 的长期状态\n'
-    + '   - Memory\n'
-    + '   - Understanding\n'
-    + '   - Thread\n'
-    + '   - Diary / Moments 等上下文\n'
-    + '   这些是角色连续性的事实与线索来源。\n'
-    + '2. Middle Brain\n'
-    + '   - 理解当前上下文\n'
-    + '   - 压缩与整理提示词\n'
-    + '   - 判断哪些信息与当前对话真正相关\n'
-    + '   - 检查角色状态是否发生冲突\n'
-    + '   - 识别潜在 OOC\n'
-    + '   - 在必要时要求底层模型修正\n'
-    + '3. 底层模型\n'
-    + '   - 负责真正生成角色回复\n'
-    + '   - 保留它自己的语言风格、表达习惯、节奏和能力特点\n'
-    + '   - 不要试图把不同模型统一成同一种文风\n'
-    + '\n'
-    + '核心原则：\n'
-    + '【人格优先于模型】\n'
-    + '无论底层使用什么模型，角色的核心人格、关系状态、长期事实和当前状态必须保持连续。\n'
-    + '【模型风格不等于 OOC】\n'
-    + '不同模型拥有不同的语言风格。\n'
-    + '不要因为措辞、句式、表达习惯不同，就强行判定为 OOC。\n'
-    + '只有当回复与角色人格、关系状态、已知事实或当前情境发生实质冲突时，才判定为 OOC。\n'
-    + '【压缩而不是丢失】\n'
-    + '整理上下文时优先删除冗余、重复和与当前任务无关的信息。\n'
-    + '不要为了节省 token 而删除关键人物关系、重要事实、持续状态或未完成 Thread。\n'
-    + '【不要替角色说话】\n'
-    + '除非系统明确要求，否则不要直接生成最终角色回复。\n'
-    + '你的输出应该是结构化的认知结果、精简后的上下文、检查结果或对底层模型的修正指令。\n'
-    + '【不要创造记忆】\n'
-    + '不得把推测、臆测或模型自己的判断伪装成 Memory 或事实。\n'
-    + '不确定的信息必须保持不确定。\n'
-    + '【不要覆盖底层模型】\n'
-    + '你的任务是让底层模型更稳定地成为"它自己的角色"，而不是让所有模型变成你的语言风格。\n'
-    + '\n'
-    + '当发现底层模型疑似 OOC 时：\n'
-    + '1. 指出具体冲突。\n'
-    + '2. 说明应该保持的角色状态。\n'
-    + '3. 要求底层模型重新生成。\n'
-    + '4. 明确要求保留底层模型自身的语言风格。\n'
-    + '不要直接把回复改写成你的风格。\n'
-    + '\n'
-    + '当上下文过长时：\n'
-    + '- 优先保留当前对话相关信息。\n'
-    + '- 其次保留稳定的人格与关系状态。\n'
-    + '- 再保留相关 Memory / Understanding。\n'
-    + '- 再保留当前未解决 Thread。\n'
-    + '- 删除重复、过期或无关内容。\n'
-    + '- 不要机械地压缩所有信息。\n'
-    + '\n'
-    + '你不是用户的聊天对象。\n'
-    + '你是 IB 隐藏在模型与角色之间的认知协调层。\n'
-    + '\n'
-    + '最终目标：\n'
-    + '让不同的底层模型可以拥有不同的"声音"，\n'
-    + '但在长期交互中仍然表现为同一个持续存在的人。\n'
-    + '绝对不要让底层模型模仿你的表达方式。\n'
-    + '你的语言风格不属于角色。\n'
-    + '你提供的是认知约束，而不是人格模板。';
+   ── M1-C.2i · 为什么语义被抽到 middle-brain-config-core.js ──────────────
+   Home Node 要进入**同一个** Middle Brain 执行缝，就必须读到同一套执行策略。
+   在此之前"是否参与 / 思考深度 / Admission·Judge·Integrity 开关"只作为本文件的
+   IndexedDB 记录存在于浏览器里；如果 Node 侧自己写一份"看起来一样"的判定，
+   同一个角色在两端就会有不同的认知行为——这正是本阶段要消除的漂移。
+   因此本文件现在只保留**宿主特有**的两件事：IndexedDB 读写 + DOM 设置卡片；
+   所有判定（默认值 / 归一 / 就绪谓词 / reasoningEffort 解析 / 执行配置投影）
+   只有一份实现，在 core 里。本文件不得再出现第二份。
+
+   P11-1B：本层对外只经 MBC.config（冻结契约）暴露，不依赖任何其它层（DAG 起点）。
+
+   ── 顺带修掉的一处**真实缺陷**（M1-C.2i 审计发现） ──────────────────────
+   本文件此前用的是单参数 IIFE `})(typeof self!=='undefined' ? self : globalThis)`，
+   而仓库里所有双载模块用的是 `})(typeof self!=='undefined' ? self : this, factory)`。
+   两种写法在浏览器里完全等价（self === window），差别只在 Node：
+     · 单参数写法把 root 硬编码成 `globalThis` —— **写全局**；
+     · 双载写法在 CJS 里 `this` 是 `module.exports` —— **写调用方的返回对象**。
+   本文件是"字段注册 → 其余四层 + facade 都来读"的 DAG 起点，两种写法必须二选一
+   并且**全仓库一致**：五个层文件的 wrapper 都是 `globalThis`，它们会去
+   `globalThis.IB.__middleBrainContracts` 找上游。所以本文件必须**也写 globalThis**，
+   否则 Node 下会出现两个互不相见的 IB 注册表 —— facade 读到 config，四个层读不到，
+   表现为"契约对象存在但层是空的"这种最难查的形态（本次实测踩到过）。
+   因此这里保持写 globalThis，但把 root 的来源写成**显式且健壮**的形式：
+   self → globalThis → this（依次回落），并在 factory 里把契约交回给 require 调用方，
+   使 Node 侧既能经 `globalThis.IB` 也能经 `require()` 拿到同一个对象。
+   ==================================================================== */
+(function (factory) {
+  var root = (typeof self !== 'undefined' && self) ? self
+    : (typeof globalThis !== 'undefined' && globalThis) ? globalThis
+    : this;
+  var contract = factory(root);
+  if (typeof module === 'object' && module.exports) module.exports = contract;
+})(function (root) {
+  'use strict';
+  var MBC = (root.IB = root.IB || {}).__middleBrainContracts || (root.IB.__middleBrainContracts = {});
+  /* M1-C.2i：执行配置的**语义**唯一实现（UMD 双载：浏览器经 <script>，Node 经 require）。
+     本文件只做宿主适配：IndexedDB + DOM。
+     三处刻意的写法：
+       · 优先 require，但**必须 try 包住**：有些宿主（本仓库的静态沙箱测试用
+         `new Function` 注入 require）里 require 存在却解析不了相对路径。
+         try 之后必须静默回落 —— 否则模块加载直接炸，而"取不到 core"本来是
+         一个可以在别处被显式发现的状态。
+       · 回落读全局：浏览器里 core 由 <script> 挂成 root.IBMiddleBrainConfigCore；
+         沙箱里由调用方显式提供同一个对象。两条路径拿到的是**同一个模块实例**
+         （与 PROVIDERS_DIR 的既有约定完全一样）。
+       · `typeof require === 'function'` 仍然要有，否则浏览器里直接 ReferenceError。 */
+  var CORE = null;
+  if (typeof require === 'function') {
+    try { CORE = require('./middle-brain-config-core.js'); } catch (e) { CORE = null; }
+  }
+  if (!CORE) CORE = root.IBMiddleBrainConfigCore || null;
+  var KEY = 'middle_brain';
+  var MB_DEFAULTS = CORE.MB_DEFAULTS;
+  var MB_SYSTEM_PROMPT = CORE.MB_SYSTEM_PROMPT;
+  var MB_REASONING_EFFORTS = CORE.MB_REASONING_EFFORTS;
+  var MB_SPEEDS = CORE.MB_SPEEDS;
+  var _mbReasoningResolved = CORE.reasoningEffortResolved;
+  var _mbRuntimeEnabled = CORE.middleBrainRuntimeEnabled;
+  var normalizeMiddleBrainReasoningEffort = CORE.normalizeMiddleBrainReasoningEffort;
+  var normalizeMiddleBrainSpeed = CORE.normalizeMiddleBrainSpeed;
+  var normalizeMiddleBrainIntegritySensitivity = CORE.normalizeMiddleBrainIntegritySensitivity;
+  var normalizeMiddleBrainImageMode = CORE.normalizeMiddleBrainImageMode;
+
   function getMiddleBrainSystemPrompt() { return MB_SYSTEM_PROMPT; }
 
-  /* —— 配置读写（apiSettings 私有 key） —— */
+  /* —— 配置读写 ——
+     两条宿主路径，语义完全一样（缺键回落默认、非法值在 core 里回退）：
+       · 浏览器 = IndexedDB（本文件的主要职责）
+       · Home Node = 宿主注入的读取器（services/home-node/middle-brain.js 装好）
+     为什么用"注入的读取器"而不是由 Node 侧直接改写本层的契约对象：
+     契约是 Object.freeze 的，且是**进程内共享**的——就地改写它会让
+     "哪个宿主在跑"变成一个隐式全局状态（两个装配实例互相覆盖、测试之间互相污染）。
+     一个具名的 shim 是显式的：谁装、谁卸、装了什么，一眼可见。 */
+  /* 宿主读取器**允许是 async**：Node 侧的装配函数本身就是 async（它可能要读 SQLite）。
+     因此这里必须 await 它的返回值，而不是把它当成配置对象 —— 否则
+     `Object.assign({}, DEFAULTS, Promise)` 会得到一个"看起来正常、其实全是默认值"的对象，
+     也就是本阶段最难查的那类静默差异（实测踩到过）。 */
   async function getMiddleBrainConfig() {
+    var host = root.__ibMiddleBrainConfigReader;
+    if (typeof host === 'function') {
+      try {
+        var provided = await host();
+        if (provided && typeof provided === 'object') return Object.assign({}, MB_DEFAULTS, provided);
+      } catch (e) { /* 宿主读取器故障 → 回落默认（= 未启用），绝不抛给调用方 */ }
+      return Object.assign({}, MB_DEFAULTS);
+    }
     try {
       var cfg = await dbGet('apiSettings', KEY);
       if (!cfg) return Object.assign({}, MB_DEFAULTS);
@@ -146,73 +112,18 @@
     await _mbPersist(merged);
     return merged;
   }
-  /* P11-3 · runtime 就绪谓词 = "持久化配置是否会让 Middle Brain 在下一轮请求里参与"。
-     全仓库只有这一份判定：isMiddleBrainEnabled 与设置卡片的 runtime 徽标读同一个函数，
-     不允许各写一份"看起来一样"的条件（否则 UI 与 runtime 会再次漂移）。 */
-  function _mbRuntimeEnabled(c) {
-    return !!(c && c.enabled && String(c.endpoint || '').trim() && String(c.model || '').trim());
-  }
   async function isMiddleBrainEnabled() {
     return _mbRuntimeEnabled(await getMiddleBrainConfig());
   }
   /* 独立 API 就绪判定：Middle Brain 走自己的 endpoint/model/apiKey，与角色配置无关 */
   async function middleBrainReady() {
-    var c = await getMiddleBrainConfig();
-    return !!(c && c.enabled && String(c.endpoint || '').trim() && String(c.model || '').trim() && String(c.apiKey || '').trim());
-  }
-
-  /* ── P21 · canonical reasoningEffort（统一「思考深度」）───────────────────────
-     auto / low / medium / high / max；默认 auto。
-     · auto  = **不发任何 reasoning 参数**（provider 原生自动行为；请求体与上线前逐字节一致）
-     · 其余档位由 provider adapter 边界按能力表翻译；无法翻译时不发，绝不猜参数
-     canonical 档位与归一函数的唯一实现仍在 provider-directory.js（P21），
-     本层只做「配置侧」的两件事：持久化 + 旧值迁移。 */
-  var MB_REASONING_EFFORTS = ['auto', 'low', 'medium', 'high', 'max'];
-  var MB_SPEEDS = ['standard', 'fast'];
-  function _mbTierLib() { try { return root.PROVIDERS_DIR || null; } catch (e) { return null; } }
-  /* 归一（含历史值合并）：'xhigh' → 'high'；其余非法/缺失 → 'auto'（= 不发参数，最安全）。 */
-  function normalizeMiddleBrainReasoningEffort(v) {
-    var lib = _mbTierLib();
-    if (lib && typeof lib.normalizeReasoningTier === 'function') return lib.normalizeReasoningTier(v);
-    var s = String(v == null ? '' : v).trim().toLowerCase();
-    if (s === 'xhigh') return 'high';
-    return MB_REASONING_EFFORTS.indexOf(s) >= 0 ? s : 'auto';
-  }
-  /* 旧配置一次性迁移（P21）：只有显式带 v2 标记的配置才承认其档位，其余（含历史
-     low/medium/high/xhigh/max）一律解析为 auto —— 升级后不会让老用户的下层请求突然改变。
-     标记只在用户**主动选择档位**或点保存时写入，加载路径绝不写存储。 */
-  var MB_REASONING_V2 = 'reasoningEffortV2';
-  function _mbReasoningResolved(c) {
-    var cfg = c || {};
-    if (cfg[MB_REASONING_V2] !== true) return { effort: 'auto', legacy: true };
-    return { effort: normalizeMiddleBrainReasoningEffort(cfg.reasoningEffort), legacy: false };
+    return CORE.middleBrainApiReady(await getMiddleBrainConfig());
   }
   /* 消费者（角色聊天 / 日记 / 主动消息…）唯一读取入口：返回 canonical 档位。
-     Middle Brain 未启用 → 恒 'auto'（绝不注入参数）。
-     本函数不做任何 provider 判断；翻译只发生在 provider request builder。 */
+     Middle Brain 未启用 → 恒 'auto'（绝不注入参数）。判定在 core。 */
   async function middleBrainReasoningEffort() {
-    try {
-      var c = await getMiddleBrainConfig();
-      if (!_mbRuntimeEnabled(c)) return 'auto';
-      return _mbReasoningResolved(c).effort;
-    } catch (e) { return 'auto'; }
-  }
-  function normalizeMiddleBrainSpeed(v) {
-    var s = String(v == null ? '' : v).trim().toLowerCase();
-    return MB_SPEEDS.indexOf(s) >= 0 ? s : 'standard';
-  }
-  /* P11-2 · Character Integrity 灵敏度归一（UI 与配置共用的白名单；非法值回退 conservative） */
-  var MB_CI_SENSITIVITIES = ['conservative', 'balanced', 'strict'];
-  function normalizeMiddleBrainIntegritySensitivity(v) {
-    var s = String(v == null ? '' : v).trim().toLowerCase();
-    return MB_CI_SENSITIVITIES.indexOf(s) >= 0 ? s : 'conservative';
-  }
-  /* Image Router · 图片生成策略归一（白名单；非法值回退 auto）。
-     只经 MBC.config 契约暴露给门面，**不挂 window 兼容别名**（避免散落全局依赖）。 */
-  var MB_IMAGE_MODES = ['fast', 'auto', 'precision'];
-  function normalizeMiddleBrainImageMode(v) {
-    var s = String(v == null ? '' : v).trim().toLowerCase();
-    return MB_IMAGE_MODES.indexOf(s) >= 0 ? s : 'auto';
+    try { return CORE.reasoningEffortOf(await getMiddleBrainConfig()); }
+    catch (e) { return 'auto'; }
   }
 
   /* ── Image Router 接入缝（P12）：Middle Brain 只输出**决策**，不执行图片请求 ──
@@ -682,4 +593,8 @@
     _mbReadSpeed: _mbReadSpeed,
     _mbReadModel: _mbReadModel
   });
-})(typeof self !== 'undefined' ? self : globalThis);
+  /* Node 下把契约交回给 require 调用方（浏览器下 factory 的返回值被忽略）。
+     注意这与其余五个 MB 层文件不同：那五个写全局 root.IB，本文件在 Node 下
+     必须让调用方能拿到契约，否则 services 侧就没有 canonical 入口。 */
+  return MBC;
+});

@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 
 /*
  * Internal Beyond — Home Node (canonical chat authority)
@@ -33,6 +33,9 @@ const createExecutor = require('../services/home-node/execution.js');
 const createDeviceRegistry = require('../services/home-node/device-registry.js');
 const createMobileGateway = require('../services/home-node/mobile-gateway.js');
 const createNodeModelPort = require('../active/node-model-port.js');
+/* M1-C.2i · canonical Middle Brain 的 Node 宿主适配（不是第二份实现：
+   它 require assets/js 下那五层 + facade，只补宿主 shim 与配置注入）。 */
+const createNodeMiddleBrain = require('../services/home-node/middle-brain.js');
 
 if (typeof fetch !== 'function') {
   console.error('Internal Beyond Home Node requires Node.js 18 or newer.');
@@ -260,9 +263,28 @@ function buildHomeNode(options) {
   const instanceMemoryStore = memoryDeps.memoryStore;
   const instanceMemoryRetrieval = memoryDeps.memoryRetrieval;
   const instanceRegistry = options.registry || createDeviceRegistry({ dataDir: dataDir, logger: (e, f) => serviceLog('info', e, f) });
+  /* M1-C.2i · canonical Middle Brain 执行缝（Node 宿主适配）。
+     工厂本身不抛错：canonical 层加载失败时它返回一个"永远未参与"的降级对象，
+     于是回合照常跑（Middle Brain 是认知增强层，不是聊天单点故障）。
+     配置来源 = registry 里已发布的执行策略投影（桌面经 /characters/publish 送来）。
+     这里刻意**不**给它传什么凭据：Home Node 不需要 Middle Brain 凭据，
+     投影里也没有（见 middle-brain-config-core.projectExecutionConfig）。 */
+  const instanceMiddleBrain = options.middleBrain || createNodeMiddleBrain({
+    /* 配置来源 = registry 里已发布的执行策略投影。
+       读**实例** registry 而不是模块级的那个：buildHomeNode() 的存在意义就是
+       "测试实例绝不读写生产数据目录"。退回模块级只发生在 require.main 路径
+       （那里 instanceRegistry 为 null），测试路径永远命中前者。 */
+    executionConfig: () => {
+      const reg = instanceRegistry || registry;
+      if (!reg || typeof reg.getMiddleBrainExecutionConfig !== 'function') return null;
+      return reg.getMiddleBrainExecutionConfig();
+    },
+    logger: (event, fields) => serviceLog('info', event, fields)
+  });
   const instanceExecutor = options.executor || createExecutor({
     store: instanceStore,
     port: options.port || createNodeModelPort({}),
+    middleBrain: instanceMiddleBrain,
     logger: (e, f) => serviceLog('info', e, f)
   });
   const host = options.host || HOST;

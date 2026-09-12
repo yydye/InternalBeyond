@@ -1,4 +1,4 @@
-/* ====================================================================
+﻿/* ====================================================================
    IB Home Node · Canonical Memory Retrieval（M1-C.2d Wave 2）
    --------------------------------------------------------------------
    职责：把 Home Node canonical 的 `memories` 变成**一段可直接注入 prompt 的
@@ -141,8 +141,15 @@ function createMemoryRetrieval(deps) {
     const picked = retrieve(characterId, options);
     /* 失败时把 retrieve 的 error 带成 reason：否则调用方只看到 "没有记忆"，
        而真相可能是"存储读不出来" —— 两者对诊断的含义完全不同
-       （前者正常，后者需要修）。刻意不把 reason 覆盖成 null。 */
-    if (!picked.ok || !picked.text) return Object.assign({}, picked, { block: '', reason: picked.reason || picked.error || null });
+       （前者正常，后者需要修）。刻意不把 reason 覆盖成 null。
+       M1-C.2i：ok / count 一并保留 —— 它们是"本轮是否真的读过记忆"的唯一凭据，
+       而 Middle Brain 的 context 快照必须据此区分 empty 与 missing（见 buildRuntimeContext）。 */
+    if (!picked.ok || !picked.text) {
+      return Object.assign({}, picked, {
+        block: '',
+        reason: picked.reason || picked.error || null
+      });
+    }
     const body = picked.text.endsWith('\n') ? picked.text : picked.text + '\n';
     const block = MEMORY_HEADER + '\n' + body + MEMORY_FOOTER;
     return Object.assign({}, picked, { block: block });
@@ -196,6 +203,13 @@ function createMemoryRetrieval(deps) {
       selectedIds: Array.isArray(picked.selectedIds) ? picked.selectedIds : [],
       memoryCount: picked.count || 0,
       memoryReason: picked.reason || null,
+      /* M1-C.2i：三个不同的真相必须分开回给调用方，否则 Middle Brain 的快照只能靠
+         "记忆块是不是空串"猜，而"已读但为空 / 根本没读成功"的语义会一起塌成 empty：
+           consulted=false → 本轮**没有**读过（读取失败 / 没有 store）→ 快照记 missing，
+                             允许消费方自行 retrieval；
+           consulted=true  → 已读（reason='empty' 也算已读）→ present / empty 由文本决定，
+                             **禁止**二次读取（C1 契约）。 */
+      memoryConsulted: !!(picked && picked.ok === true),
       p0Stable: ordered.stable,
       p0Time: ordered.time
     };
