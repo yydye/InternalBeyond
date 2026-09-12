@@ -219,7 +219,7 @@ function createHomeNodeHttp(deps) {
        M1-C.2m：`/understanding/*` 同理，而且是**更私密**的一类内容 ——
        它是角色对用户的私有认知状态（含用户更正原文）。前缀守卫必须与
        /memory/ 逐字同款，否则默认绑 0.0.0.0 的部署会让局域网读到"她怎么看你"。 */
-    const isDesktopOnlyPath = path.indexOf('/memory/') === 0 || path.indexOf('/understanding/') === 0;
+    const isDesktopOnlyPath = path.indexOf('/memory/') === 0 || path.indexOf('/understanding/') === 0 || path.indexOf('/moments/') === 0;
     if (remote && (!isMobilePath || isDesktopOnlyPath)) {
       if (!token) {
         record('warn', 'rejected-remote-non-mobile', { path: path, reason: 'no-desktop-token-configured' });
@@ -335,7 +335,23 @@ function createHomeNodeHttp(deps) {
             '/understanding/correct', '/understanding/corrections', '/understanding/derive',
             '/understanding/migration', '/understanding/migrate']
         },
-        doesNotExpose: ['llm-proxy', 'tools', 'payments', 'moments', 'diary', 'letters', 'images', 'tts'],
+        /* M1-C.2n：动态（Moments）也搬进 Node 了 —— 与 memory / understanding
+           同款：存在 Node、经执行缝注入、**绝不**出现在任何设备面。
+           刻意把 'moments' 从 doesNotExpose 移出来：那句话在 M1-C.2d 对 memory
+           就已经不再为真，留着一个已经不成立的断言比没有断言更危险
+           （它会让人以为"没有动态路径"是被检查过的）。
+           取而代之的是可检查的具体断言：deviceVerbs 为空、
+           desktopPaths 与 ADMIN_PATHS 逐字一致（见 test_moments_authority）。 */
+        momentsPolicy: {
+          stored: true,
+          servedToDevices: false,
+          deviceVerbs: [],
+          injection: 'home-node-execution-only',
+          visibility: 'moments-visibility-core (shared with desktop)',
+          desktopPaths: ['/moments/list', '/moments/changes', '/moments/records', '/moments/record',
+            '/moments/visible', '/moments/migration', '/moments/migrate']
+        },
+        doesNotExpose: ['llm-proxy', 'tools', 'payments', 'diary', 'letters', 'images', 'tts'],
         /* M1-B：设备身份 + 移动边界。mobile 面**只有** allowlist 里的 verb。 */
         deviceAuth: { scheme: 'per-device opaque token', storedAs: 'sha256', constantTimeCompare: true, revoke: 'immediate' },
         mobile: gateway ? {

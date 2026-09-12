@@ -1,4 +1,4 @@
-﻿/* ====================================================================
+/* ====================================================================
    IB Home Node · Canonical Character Turn Execution
    --------------------------------------------------------------------
    这是 Home Node 唯一的「角色回合」执行入口：
@@ -183,6 +183,9 @@ function createTurnExecutor(deps) {
         if (parts.memoryBlock) list.push(String(parts.memoryBlock));
         if (parts.understandingBlock) list.push(String(parts.understandingBlock));
         if (parts.threadBlock) list.push(String(parts.threadBlock));
+        /* M1-C.2n：动态块与桌面同序（communication.js:1475-1479 的
+           memory → understanding → thread → moments）。 */
+        if (parts.momentsBlock) list.push(String(parts.momentsBlock));
       }
       if (parts.p0Time) list.push(String(parts.p0Time));
       if (list.length) return list.join('\n\n');
@@ -230,6 +233,18 @@ function createTurnExecutor(deps) {
     return {
       text: String(parts.understandingBlock || ''),
       consulted: parts.understandingConsulted === true
+    };
+  }
+
+  /* M1-C.2n · 同款取出**动态块**（canonical moment_records，见 moments-retrieval.js）。
+     四个来源各有自己的三态，混用会把"动态没读"记成"记忆为空" ——
+     而两者的诊断含义完全不同。 */
+  function momentsPartOf(request) {
+    const parts = request && request.runtimeContextParts;
+    if (!parts || typeof parts !== 'object') return { text: '', consulted: false };
+    return {
+      text: String(parts.momentsBlock || ''),
+      consulted: parts.momentsConsulted === true
     };
   }
 
@@ -331,6 +346,11 @@ function createTurnExecutor(deps) {
          此前该字段恒为空（节点根本没有理解来源），于是注入块里**从来不含**
          "她怎么理解我"，而同一份策略在桌面上是含的：那就是两端认知证据的差异。 */
       understanding: understandingPartOf(request),
+      /* M1-C.2n：动态证据（与 memory / thread / understanding 同一三态纪律）。
+         它让 canonical Middle Brain 在 Home Node 上也能看到 organized.moments ——
+         此前该字段恒为空（节点根本没有动态来源），于是 Gate 的 momentItems
+         恒 0、注入块里从来没有"她最近发过什么"。 */
+      moments: momentsPartOf(request),
       /* 角色证据与桌面 communication.js 传的是**同一个形状**（cfg = spec）：
          spec.systemPrompt 是 integrity 的 persona 维度唯一来源，缺了它守卫会
          因"证据不可用"而拒绝判定（那是防误杀的设计，不是失败）。 */

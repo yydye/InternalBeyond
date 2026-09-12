@@ -1,4 +1,4 @@
-﻿/* ====================================================================
+/* ====================================================================
    IB Home Node · Middle Brain 宿主适配层（M1-C.2i）
    --------------------------------------------------------------------
    本文件是 Home Node 进入 **canonical Middle Brain 执行缝** 的唯一入口。
@@ -167,8 +167,11 @@ function buildSnapshot(CS, input) {
      记忆给出同一组线索，不再需要"浏览器写过盘才有"。
      M1-C.2m：understanding 同样从 absent 变成**已读** —— 它是本节点自己的
      canonical 文档（understanding-store.js），由本节点唯一派生。
-     三态与 memory 同款：consulted 才 present/empty；读取失败或不曾读 → missing。
-     moments 仍然如实记 missing（它**确实**不是本节点的来源）。 */
+     M1-C.2n：moments 最后一块 absent 也拿掉了 —— 它是本节点自己的 canonical
+     记录（moments-store.js），ACL 与渲染都来自浏览器共用的
+     moments-visibility-core。四类生产者现在在两端同形，快照不再需要用
+     "这个宿主没有这个来源"来解释任何一个字段。
+     三态与 memory 同款：consulted 才 present/empty；读取失败或不曾读 → missing。 */
   const thr = input.thread || null;
   const threadField = thr
     ? CS.field('thread-retrieval.derive', String(thr.text || ''), {
@@ -183,6 +186,13 @@ function buildSnapshot(CS, input) {
       gatedBy: und.consulted === true ? null : (und.gatedBy || 'home-node.understanding-unavailable')
     })
     : absent('understanding');
+  const mom = input.moments || null;
+  const momentsField = mom
+    ? CS.field('moments-retrieval.buildMomentsBlock', String(mom.text || ''), {
+      missing: mom.consulted !== true,
+      gatedBy: mom.consulted === true ? null : (mom.gatedBy || 'home-node.moments-unavailable')
+    })
+    : absent('moments');
   return CS.create({
     characterId: String(input.characterId || ''),
     turnId: String(input.turnId || ''),
@@ -190,9 +200,9 @@ function buildSnapshot(CS, input) {
       memory: memoryField,
       understanding: understandingField,
       thread: threadField,
-      moments: absent('moments')
+      moments: momentsField
     },
-    gates: { threadMemoryEnabled: true, homeNodeProducers: ['memory', 'thread', 'understanding'] }
+    gates: { threadMemoryEnabled: true, homeNodeProducers: ['memory', 'thread', 'understanding', 'moments'] }
   });
 }
 
@@ -316,7 +326,8 @@ function createNodeMiddleBrain(deps) {
     const memoryReadiness = memory.consulted === true ? (String(memory.text || '').trim() ? 'present' : 'empty') : 'missing';
     const snapshot = buildSnapshot(CS, {
       characterId: turn.characterId, turnId: turn.turnId, memory: memory,
-      thread: turn.thread || null, understanding: turn.understanding || null
+      thread: turn.thread || null, understanding: turn.understanding || null,
+      moments: turn.moments || null
     });
     /* 交出去的东西逐项显式构造（与桌面的 opts 形状对齐，但**不**照抄它的 producer：
        那四个 producer 在本宿主不存在，如实缺席）。
@@ -339,6 +350,11 @@ function createNodeMiddleBrain(deps) {
        否则 understanding 分支恒为空 —— 也就是"她对自己的理解完全没参与过
        这一轮的认知组织"。桌面在 communication.js:1521 同样给了它。 */
     if (turn.understanding && turn.understanding.consulted === true) opts.understandingCtx = String(turn.understanding.text || '');
+    /* M1-C.2n：moments 与 thread/understanding **逐字同款** —— 快照优先，*Ctx 只作回落。
+       为什么必须给：canonical 组织层（middle-brain-policy.js:92-97）在
+       `momentsCtx != null` 时才把动态放进 organized.moments，否则 moments 分支恒为空 ——
+       也就是"她最近发过什么完全没参与过这一轮的认知组织"。 */
+    if (turn.moments && turn.moments.consulted === true) opts.momentsCtx = String(turn.moments.text || '');
     try {
       const result = await facade.middleBrainExecute(String(turn.characterId || ''), String(turn.userMessage || ''), opts);
       const source = String((result && result.source) || '') || 'bypass';

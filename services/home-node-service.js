@@ -34,6 +34,10 @@ const createUnderstandingDerivation = require('../services/home-node/understandi
 const createUnderstandingRetrieval = require('../services/home-node/understanding-retrieval.js');
 /* M1-C.2k：线索（open thread）的派生器 —— 与记忆共用 canonical memory store。 */
 const createThreadRetrieval = require('../services/home-node/thread-retrieval.js');
+/* M1-C.2n：canonical Moments 的两个组件（store / 取回）。
+   ACL 与渲染都在浏览器共用的 moments-visibility-core 里，所以这里没有第三个组件。 */
+const createMomentsStore = require('../services/home-node/moments-store.js');
+const createMomentsRetrieval = require('../services/home-node/moments-retrieval.js');
 const createHttp = require('../services/home-node/http.js');
 const createExecutor = require('../services/home-node/execution.js');
 const createDeviceRegistry = require('../services/home-node/device-registry.js');
@@ -281,6 +285,50 @@ function understandingAssembly(options) {
   return { understandingStore: understandingStore, understandingRetrieval: understandingRetrieval, understandingDerivation: understandingDerivation };
 }
 
+/* 缺一不可的硬校验（与 canonicalUnderstandingDeps 同款）：
+   Moments 的 **store / retrieval 必须绑在同一个 store 实例**上。
+   绑到"另一个能开、能查、永远为空"的实例不会抛任何错，只会表现为
+   "她从来不记得最近发过什么" —— 与 M1-C.2i 的 memoryRetrieval 漂移同形。 */
+function canonicalMomentsDeps(moments) {
+  const inst = moments || {};
+  if (!inst.momentsStore) throw new Error('home-node assembly: canonical moments require a momentsStore');
+  if (inst.momentsRetrieval && inst.momentsRetrieval.store && inst.momentsRetrieval.store !== inst.momentsStore) {
+    throw new Error('home-node assembly: momentsRetrieval is bound to a different momentsStore instance');
+  }
+  return inst;
+}
+
+/* ── canonical Moments 装配（**唯一**一处）───────────────────────────
+   M1-C.2n：动态域只有两个组件（store / retrieval），两者必须共享同一个
+   store。与 understandingAssembly 同一个理由：装配只能有一份定义，
+   生产启动路径与 buildHomeNode() 共用它，因此"某个 canonical 域没有接线"
+   不可能只在一侧发生。 */
+function momentsAssembly(options) {
+  options = options || {};
+  const dataDir = options.dataDir || DATA_DIR;
+  const serviceLog = options.logger || ((level, event, fields) => log(level, event, fields));
+  const momentsStore = options.momentsStore ||
+    createMomentsStore({ dataDir: dataDir, clock: options.clock, logger: (e, f) => serviceLog('info', e, f) });
+  /* 角色名字解析：节点侧来自 characters 表（mobile-safe DTO）。
+     桌面用 apiConfigs 的 nickname||model，这里用同一个表达式，
+     因此"同一份 canonical 状态 + 同一份角色目录 → 同一段文本"可以逐字比较。
+     解析失败回落空串，渲染层与桌面做同样的回落（'另一角色'/'我'）。 */
+  const characterNameOf = function (roleId) {
+    try {
+      const row = options.store && typeof options.store.getCharacter === 'function'
+        ? options.store.getCharacter(String(roleId)) : null;
+      const dto = (row && (row.dto || row)) || null;
+      return dto ? String(dto.nickname || dto.model || '') : '';
+    } catch (error) { return ''; }
+  };
+  const momentsRetrieval = options.momentsRetrieval || createMomentsRetrieval({
+    store: momentsStore,
+    logger: serviceLog,
+    characterNameOf: characterNameOf
+  });
+  return { momentsStore: momentsStore, momentsRetrieval: momentsRetrieval };
+}
+
 /* ── 网关装配（**唯一**一处）─────────────────────────────────────────
    与 memoryAssembly 同一个理由：网关的依赖集合只能有一份定义。
    生产启动路径与 buildHomeNode() 都调用它，因此"某个 canonical 域没有接线"
@@ -315,6 +363,15 @@ function gatewayAssembly(options) {
     clock: options.clock,
     logger: options.logger
   }), memory.memoryStore);
+  /* M1-C.2n：动态域（store + 取回）。与记忆/线索/理解同款装配纪律。 */
+  const moments = canonicalMomentsDeps(momentsAssembly({
+    dataDir: options.dataDir,
+    momentsStore: options.momentsStore,
+    momentsRetrieval: options.momentsRetrieval,
+    store: options.store,
+    clock: options.clock,
+    logger: options.logger
+  }));
   return createMobileGateway(Object.assign({
     store: options.store,
     registry: options.registry,
@@ -328,7 +385,7 @@ function gatewayAssembly(options) {
     timeZone: options.timeZone,
     random: options.random,
     logger: options.logger || ((level, event, fields) => log(level, event, fields))
-  }, memory, threads, understanding));
+  }, memory, threads, understanding, moments));
 }
 
 /* ── 组装一个完整的 Home Node 实例（不监听）──────────────────────────
@@ -403,6 +460,16 @@ function buildHomeNode(options) {
   });
   const host = options.host || HOST;
   const loopbackBind = isLoopbackHost(host);
+  /* M1-C.2n：动态域的挂载点。与理解域同款位置与理由（同一 dataDir、
+     同一 store 实例共享给网关，装配守卫在 gatewayAssembly 里强制）。 */
+  const instanceMoments = options.moments || momentsAssembly({
+    dataDir: dataDir,
+    momentsStore: options.momentsStore,
+    momentsRetrieval: options.momentsRetrieval,
+    store: instanceStore,
+    clock: options.clock,
+    logger: serviceLog
+  });
   /* 与进程级启动路径**共用** gatewayAssembly（见其头部说明：两条路径两套装配
      必然漂移，memoryStore 就是这样在 production 上丢过一次）。 */
   const instanceGateway = options.gateway || gatewayAssembly({
@@ -417,6 +484,8 @@ function buildHomeNode(options) {
     understandingStore: instanceUnderstanding.understandingStore,
     understandingRetrieval: instanceUnderstanding.understandingRetrieval,
     understandingDerivation: instanceUnderstanding.understandingDerivation,
+    momentsStore: instanceMoments.momentsStore,
+    momentsRetrieval: instanceMoments.momentsRetrieval,
     /* 派生用同一个 model port（理由见 instanceUnderstanding 的注释）。 */
     modelPort: options.port || createNodeModelPort({}),
     version: options.version,
@@ -452,6 +521,7 @@ function buildHomeNode(options) {
     const openedStore = instanceStore.open();
     instanceMemoryStore.open();
     instanceUnderstanding.understandingStore.open();
+    instanceMoments.momentsStore.open();
     instanceRegistry.open();
     return openedStore;
   }
@@ -472,6 +542,7 @@ function buildHomeNode(options) {
     try { if (instanceUnderstanding.understandingDerivation) instanceUnderstanding.understandingDerivation.stop(); } catch (_) { /* 未启动 */ }
     try { instanceRegistry.close(); } catch (_) { /* 已关闭 */ }
     try { instanceUnderstanding.understandingStore.close(); } catch (_) { /* 已关闭 */ }
+    try { instanceMoments.momentsStore.close(); } catch (_) { /* 已关闭 */ }
     try { instanceMemoryStore.close(); } catch (_) { /* 已关闭 */ }
     try { instanceStore.close(); } catch (_) { /* 已关闭 */ }
   }
@@ -482,6 +553,8 @@ function buildHomeNode(options) {
     understandingStore: instanceUnderstanding.understandingStore,
     understandingRetrieval: instanceUnderstanding.understandingRetrieval,
     understandingDerivation: instanceUnderstanding.understandingDerivation,
+    momentsStore: instanceMoments.momentsStore,
+    momentsRetrieval: instanceMoments.momentsRetrieval,
     registry: instanceRegistry,
     gateway: instanceGateway,
     executor: instanceExecutor,
@@ -520,6 +593,13 @@ const understanding = understandingAssembly({
   modelPort: port,
   logger: (level, event, fields) => log(level, event, fields)
 });
+/* M1-C.2n：进程级启动路径同样必须挂上动态域 —— 与理解域那次教训逐字同形
+   （只接 buildHomeNode 会让网关在 Home Node 上看不到任何动态，而测试全绿）。 */
+const moments = momentsAssembly({
+  dataDir: DATA_DIR,
+  store,
+  logger: (level, event, fields) => log(level, event, fields)
+});
 const gateway = gatewayAssembly({
   store,
   registry,
@@ -529,6 +609,8 @@ const gateway = gatewayAssembly({
   understandingStore: understanding.understandingStore,
   understandingRetrieval: understanding.understandingRetrieval,
   understandingDerivation: understanding.understandingDerivation,
+  momentsStore: moments.momentsStore,
+  momentsRetrieval: moments.momentsRetrieval,
   modelPort: port,
   version: productVersion(),
   mobileOrigins: MOBILE_ORIGINS,

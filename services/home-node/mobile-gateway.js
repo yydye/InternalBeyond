@@ -1,4 +1,4 @@
-﻿/* ====================================================================
+/* ====================================================================
    IB Home Node · Mobile Gateway（versioned, allowlisted, device-authenticated）
    --------------------------------------------------------------------
    这是**世界 API**，不是 Bridge tool API。边界是刻意画出来的：
@@ -50,6 +50,7 @@ const createMemoryRetrieval = require('./memory-retrieval.js');
    只是走另一份共享核心（thread-derivation-core.js，浏览器同款）。 */
 const createThreadRetrieval = require('./thread-retrieval.js');
 const createUnderstandingRetrieval = require('./understanding-retrieval.js');
+const createMomentsRetrieval = require('./moments-retrieval.js');
 /* M1-C.2i：Middle Brain **执行配置**的投影语义（唯一实现，与桌面共用同一份）。
    只用到它的入站校验与构造式投影，**不含任何判定** —— 判定在 canonical 层。 */
 const MB_CONFIG_CORE = require('../../assets/js/middle-brain-config-core.js');
@@ -88,7 +89,13 @@ const ADMIN_PATHS = [
      Android 侧没有任何 understanding verb，也不知道这里存在（§18 安全边界）。 */
   '/understanding/list', '/understanding/changes', '/understanding/records',
   '/understanding/correct', '/understanding/corrections', '/understanding/derive',
-  '/understanding/migration', '/understanding/migrate'
+  '/understanding/migration', '/understanding/migrate',
+  /* M1-C.2n · canonical Moments（同样是**桌面/运行时面**，不是设备面）：
+     动态的存储、编辑、同步与迁移都属于 runtime authority。
+     Android 侧没有任何 moments verb，也没有任何 DTO 字段会带动态正文
+     （§13 安全边界：手机端在 M1-C.2n 里**不**拥有动态能力）。 */
+  '/moments/list', '/moments/changes', '/moments/records', '/moments/record',
+  '/moments/visible', '/moments/migration', '/moments/migrate'
 ];
 /* 单次 memory 批量写上限：记忆是**正文数据**（不是附件），因此远小于聊天批次。
    200 条 × 数 KB 仍在单事务的舒适区，同时保证一次请求不可能把任意大的负载
@@ -256,6 +263,24 @@ function createMobileGateway(deps) {
     logger: logger
   }) : null);
   const understandingDerivation = deps.understandingDerivation || null;
+  /* M1-C.2n：canonical Moments —— 存储与取回**共用同一个 store**。
+     装配纪律与 memory/thread/understanding 同款：绑到"另一个能开、能查、
+     永远为空"的实例不会抛任何错，只会表现为"她从来不记得最近发过什么"。
+     渲染与 ACL 都来自浏览器共用的 moments-visibility-core，因此这里只需要
+     一个能读 canonical 行的 store。角色名字来自 characters 表（mobile-safe DTO），
+     与桌面的 apiConfigs 解析口径一致（见 moments-retrieval.js）。 */
+  const momentsStore = deps.momentsStore || null;
+  const momentsRetrieval = deps.momentsRetrieval || (momentsStore ? createMomentsRetrieval({
+    store: momentsStore,
+    logger: logger,
+    characterNameOf: function (roleId) {
+      try {
+        const row = store && typeof store.getCharacter === 'function' ? store.getCharacter(String(roleId)) : null;
+        const dto = (row && (row.dto || row)) || null;
+        return dto ? String(dto.nickname || dto.model || '') : '';
+      } catch (error) { return ''; }
+    }
+  }) : null);
 
   const RULES = Object.assign({
     pair: { rate: 10 / 60, burst: 10 },          /* 配对：每分钟 10 次 */
@@ -848,6 +873,11 @@ function createMobileGateway(deps) {
              组织层的 understanding 分支随之塌空 —— 而表面上"什么都没报错"。 */
           understandingBlock: (runtime.understanding && runtime.understanding.text) || '',
           understandingConsulted: !!(runtime.understanding && runtime.understanding.consulted === true),
+          /* M1-C.2n：动态块（canonical moment_records 上的可见性判定 + 共享渲染）。
+             逐项透传的理由与前两者同一个：漏传一个字段，快照就会把它记成 missing，
+             组织层的 moments 分支随之塌空 —— 而表面上"什么都没报错"。 */
+          momentsBlock: (runtime.moments && runtime.moments.text) || '',
+          momentsConsulted: !!(runtime.moments && runtime.moments.consulted === true),
           p0Stable: runtime.p0Stable || '',
           p0Time: runtime.p0Time || ''
         },
@@ -922,6 +952,11 @@ function createMobileGateway(deps) {
              canonical 状态给出同一段语义证据"是可以被断言的，
              而不是靠比较模型最后写出的文字。 */
           understanding: understandingRetrieval ? understandingRetrieval.snapshotField(
+            (character && character.id) || ctx.characterId || '', {}) : null,
+          /* M1-C.2n：动态证据（canonical moment_records）。
+             与 memory/thread/understanding 同一次装配、同款三态 ——
+             四类证据现在都来自本节点自己的 canonical 状态。 */
+          moments: momentsRetrieval ? momentsRetrieval.snapshotField(
             (character && character.id) || ctx.characterId || '', {}) : null
         };
       }
@@ -944,6 +979,8 @@ function createMobileGateway(deps) {
         thread: threadRetrieval ? threadRetrieval.snapshotField(
           (character && character.id) || ctx.characterId || '', {}) : null,
         understanding: understandingRetrieval ? understandingRetrieval.snapshotField(
+          (character && character.id) || ctx.characterId || '', {}) : null,
+        moments: momentsRetrieval ? momentsRetrieval.snapshotField(
           (character && character.id) || ctx.characterId || '', {}) : null
       };
     } catch (error) {
@@ -1605,6 +1642,119 @@ function createMobileGateway(deps) {
         source: source, version: marked.state.version, records: marked.state.records
       });
       return sendJson(res, 200, okBody('understanding.migration', null, marked), req);
+    }
+
+    /* ══════════ M1-C.2n · canonical Moments（桌面/运行时面）══════════════
+       与 memory / understanding 同款纪律：这些 verb 只服务桌面镜像同步与
+       Node 自身的上下文注入，**不是**设备面。Android 侧没有任何 moments verb，
+       出站 DTO 也不含动态行（§13）。 */
+    if (action === 'moments/list' && req.method === 'GET') {
+      if (!momentsStore) return fail(res, 'UNSUPPORTED', req, 501);
+      const limit = url && url.searchParams.get('limit');
+      const ownerRoleId = url && url.searchParams.get('ownerRoleId');
+      const page = momentsStore.listRecords({ limit: limit || undefined, ownerRoleId: ownerRoleId || undefined });
+      if (!page.ok) return fail(res, page.error || 'INTERNAL', req);
+      return sendJson(res, 200, okBody('moments.list', null, {
+        count: page.count, revision: page.revision, records: page.records
+      }), req);
+    }
+    if (action === 'moments/changes' && req.method === 'GET') {
+      if (!momentsStore) return fail(res, 'UNSUPPORTED', req, 501);
+      const cursor = url && url.searchParams.get('cursor');
+      const limit = url && url.searchParams.get('limit');
+      const page = momentsStore.changesAfter(cursor == null ? 0 : Number(cursor), { limit: limit || undefined });
+      if (!page.ok) return fail(res, page.error || 'INTERNAL', req, 400);
+      return sendJson(res, 200, okBody('moments.changes', null, page), req);
+    }
+    /* 可见分页：**唯一**给"按主体看动态"用的读口。服务端按共享核判定可见性，
+       因此隐藏行不占页槽、也不影响 hasMore（§10）。device 面不存在这个 verb。 */
+    if (action === 'moments/visible' && req.method === 'GET') {
+      if (!momentsStore) return fail(res, 'UNSUPPORTED', req, 501);
+      const kind = url && url.searchParams.get('principalKind');
+      const id = url && url.searchParams.get('principalId');
+      const page = momentsStore.listVisible(
+        { kind: kind === 'user' ? 'user' : 'role', id: id || '' },
+        {
+          limit: (url && url.searchParams.get('limit')) || undefined,
+          ownerRoleId: (url && url.searchParams.get('ownerRoleId')) || undefined,
+          cursor: (url && url.searchParams.get('cursorCreatedAt'))
+            ? { createdAt: Number(url.searchParams.get('cursorCreatedAt')), id: url.searchParams.get('cursorId') || '' }
+            : null
+        }
+      );
+      if (!page.ok) return fail(res, page.error || 'BAD_REQUEST', req, 400);
+      return sendJson(res, 200, okBody('moments.visible', null, page), req);
+    }
+    if (action === 'moments/record' && req.method === 'POST') {
+      if (!momentsStore) return fail(res, 'UNSUPPORTED', req, 501);
+      let body;
+      try { body = await readBody(req, 4 * 1024 * 1024); }
+      catch (error) { return fail(res, error.code || 'BAD_REQUEST', req, null, null); }
+      const record = (body.record && typeof body.record === 'object') ? body.record : null;
+      if (!record) return fail(res, 'BAD_REQUEST', req, 400, null, { detail: 'record is required' });
+      /* CAS 由客户端显式给出 expectedRev（编辑/删除必须带基版本）。
+         不带时按"无条件覆盖"落盘（迁移分支的既定语义）—— 但那不是本 verb
+         的默认用法：生产写路径一律带基版本，见 moments-authority.js。 */
+      const result = momentsStore.put(record, {
+        requestId: body.requestId ? String(body.requestId) : '',
+        expectedRev: (body.expectedRev == null ? null : Number(body.expectedRev))
+      });
+      if (!result.ok) {
+        record('warn', 'moments-put-rejected', { error: result.error, id: result.id });
+        return fail(res, result.error === 'revision-conflict' ? 'CONFLICT' : 'BAD_REQUEST', req,
+          result.error === 'revision-conflict' ? 409 : 422, null,
+          { id: result.id, expectedRev: result.expectedRev, actualRev: result.actualRev });
+      }
+      /* 观测：只报 outcome / 计数 / revision，**绝不**记录动态正文。 */
+      record('info', 'moments-put', { outcome: result.outcome, id: result.id, revision: result.revision });
+      return sendJson(res, 200, okBody('moments.put', body.requestId || null, {
+        outcome: result.outcome, id: result.id || null, rev: result.rev || null,
+        revision: result.revision, moment: result.moment || null
+      }), req);
+    }
+    if (action === 'moments/records' && req.method === 'POST') {
+      if (!momentsStore) return fail(res, 'UNSUPPORTED', req, 501);
+      let body;
+      try { body = await readBody(req, 8 * 1024 * 1024); }
+      catch (error) { return fail(res, error.code || 'BAD_REQUEST', req, null, null); }
+      const batch = Array.isArray(body.records) ? body.records : null;
+      if (!batch) return fail(res, 'BAD_REQUEST', req, 400, null, { detail: 'records[] is required' });
+      /* 迁移批次：逐条走 writeMigrated —— **永不**覆盖已存在的 canonical 行。
+         因此"迁移与并发写入竞争"的结果是权威侧赢，迁移如实报 skipped（R4）。 */
+      const results = [];
+      for (const item of batch) {
+        results.push(momentsStore.writeMigrated(item, body.requestIdPrefix ? String(body.requestIdPrefix) + ':' + String(item && item.id) : ''));
+      }
+      const created = results.filter(r => r.outcome === 'created').length;
+      const skipped = results.filter(r => r.outcome === 'skipped').length;
+      const invalid = results.filter(r => r.ok === false).length;
+      record('info', 'moments-migrate-batch', { created, skipped, invalid, total: batch.length });
+      return sendJson(res, 200, okBody('moments.migrate', null, {
+        created, skipped, invalid, total: batch.length, revision: momentsStore.getRevision(),
+        rejected: results.filter(r => r.ok === false).map(r => ({ id: r.id, reason: r.reason || r.error }))
+      }), req);
+    }
+    if (action === 'moments/record' && req.method === 'DELETE') {
+      if (!momentsStore) return fail(res, 'UNSUPPORTED', req, 501);
+      const id = url && url.searchParams.get('id');
+      if (!id) return fail(res, 'BAD_REQUEST', req, 400, null, { detail: 'id is required' });
+      const expectedRev = url && url.searchParams.get('expectedRev');
+      const result = momentsStore.remove(id, {
+        requestId: (url && url.searchParams.get('requestId')) || '',
+        expectedRev: expectedRev == null ? null : Number(expectedRev)
+      });
+      if (!result.ok) {
+        return fail(res, result.error === 'revision-conflict' ? 'CONFLICT' : 'BAD_REQUEST', req,
+          result.error === 'revision-conflict' ? 409 : 400, null,
+          { id: result.id, expectedRev: result.expectedRev, actualRev: result.actualRev });
+      }
+      record('info', 'moments-delete', { outcome: result.outcome, id: result.id, revision: result.revision });
+      return sendJson(res, 200, okBody('moments.delete', null, result), req);
+    }
+    if (action === 'moments/migration' && req.method === 'GET') {
+      if (!momentsStore) return fail(res, 'UNSUPPORTED', req, 501);
+      const source = (url && url.searchParams.get('source')) || 'default';
+      return sendJson(res, 200, okBody('moments.migration', null, { state: momentsStore.getMigrationState(source) }), req);
     }
 
     if (action === 'characters/publish' && req.method === 'POST') {

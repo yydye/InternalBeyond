@@ -59,6 +59,14 @@ const COPY_FILES = [
   'services/home-node/understanding-store.js',
   'services/home-node/understanding-derivation.js',
   'services/home-node/understanding-retrieval.js',
+  /* M1-C.2n：动态可见性的共享核心 + canonical 动态域的两个组件。
+     **同一类依赖**（第三次出现）：基线经 home-node-service 的 momentsAssembly
+     → moments-{store,retrieval} → moments-visibility-core 触到它们，
+     缺一个 `require` 就抛 MODULE_NOT_FOUND，表现为基线无摘要变红。
+     M1-C.2m 已经因此红过一次，所以这次一并补上，而不是等它在 CI 上复现。 */
+  'assets/js/moments-visibility-core.js',
+  'services/home-node/moments-store.js',
+  'services/home-node/moments-retrieval.js',
   'assets/js/middle-brain-config-core.js',
   'assets/js/middle-brain-config.js',
   'assets/js/middle-brain-policy.js',

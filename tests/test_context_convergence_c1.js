@@ -106,6 +106,20 @@ function seedCanonicalUnderstanding(characterId, content, evidenceIds) {
   assert.ok(res && res.ok, 'canonical understanding seed failed: ' + JSON.stringify(res));
   return res;
 }
+/* M1-C.2n：动态（Moments）的权威同样在 Home Node，浏览器**不能**再直接落盘
+   （权威生效时 dbPut('moments') 被守卫拒绝）。这里经 canonical store 播种，
+   与浏览器写的是同一条记录契约；随后同步一次镜像再断言。
+   `visibility:'all'` 是必须的：**只有公开档会进入聊天上下文**（她自己的
+   private / user 档不进 prompt —— "可读 ≠ 可当聊天素材"）。 */
+function seedCanonicalMoment(roleId, content, extra) {
+  const res = homeNode.momentsStore.put(Object.assign({
+    id: 'c1_moment_' + Math.random().toString(36).slice(2, 8),
+    authorType: 'role', roleId: String(roleId), content: content,
+    visibility: 'all', source: 'manual', createdAt: Date.now()
+  }, extra || {}));
+  assert.ok(res && res.ok, 'canonical moment seed failed: ' + JSON.stringify(res));
+  return res;
+}
   const debugPort = await freePort();
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-c1-'));
   const chrome = chromePath(); assert.ok(chrome, 'Chrome or Edge required');
@@ -180,15 +194,22 @@ function seedCanonicalUnderstanding(characterId, content, evidenceIds) {
          零证据的线索不会被注入（thread 恒 empty），而那会让本用例的
          "四个 producer 各有内容"变成假象。 */
       await thOpen('c1_role','C1_THREAD_MARKER',['c1_mem'],'ai',{visibility:'public',visibleTo:[],excludeFrom:[]});
-      await createMoment({roleId:'c1_role',content:'C1_MOMENT_MARKER',source:'manual',visibility:'all'});
       await dbPut('chatSummaries',{id:'sum_c1_role',summary:'C1_SUMMARY_MARKER'});
       await dbPut('apiSettings',{id:'summarySettings',enabled:true,keepCount:6,welcomeEnabled:false,welcomeInterval:2,musicEnabled:false,summaryApiId:'',summaryWindow:60});
       return true})()`);
     /* M1-C.2m：记忆先到 canonical，理解才能在 canonical 侧存在（证据是读时存证的
        前提）。播种之后同步一次镜像，否则本用例会在"镜像里还没有理解"的状态下断言 ——
-       那测的是时序，不是 C1 要证明的"每轮只读一次"。 */
+       那测的是时序，不是 C1 要证明的"每轮只读一次"。
+       M1-C.2n：动态同理 —— 权威在 Home Node，浏览器**不能**再直接落盘
+       （权威生效时 dbPut('moments') 被守卫拒绝），因此经 canonical store 播种后
+       单独同步一次动态镜像。 */
     seedCanonicalUnderstanding('c1_role', 'C1_UNDERSTANDING_MARKER', ['c1_mem']);
-    await evaluate(cdp, `(async function(){ await window.IB.homeNode.understanding.sync('c1-seed', { full: true }); return true; })()`);
+    seedCanonicalMoment('c1_role', 'C1_MOMENT_MARKER');
+    await evaluate(cdp, `(async function(){
+      await window.IB.homeNode.understanding.sync('c1-seed', { full: true });
+      await window.IB.homeNode.moments.sync('c1-seed', { full: true });
+      return true;
+    })()`);
     await wrapProducers();
     assert.equal(await evaluate(cdp, `(async function(){return await middleBrainReady()===true})()`), true, 'Middle Brain 必须就绪');
 

@@ -1,4 +1,4 @@
-﻿/* ====================================================================
+/* ====================================================================
    M1-C.2m P5/P8 · Understanding Authority · 有效一致性探针
    --------------------------------------------------------------------
    这一条回答的是 M1-C.2m §17 的问题，而且**只回答它**：
@@ -34,6 +34,11 @@ const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
 const createUnderstandingStore = require(path.join(ROOT, 'services', 'home-node', 'understanding-store.js'));
+/* M1-C.2n：canonical Moments 的两个组件 + 共享可见性核。
+   本探针用它们把 moments 这一维从"推迟"变成可断言的 MATCH。 */
+const createMomentsStore = require(path.join(ROOT, 'services', 'home-node', 'moments-store.js'));
+const createMomentsRetrieval = require(path.join(ROOT, 'services', 'home-node', 'moments-retrieval.js'));
+const MOMENTS_CORE = require(path.join(ROOT, 'assets', 'js', 'moments-visibility-core.js'));
 const createUnderstandingRetrieval = require(path.join(ROOT, 'services', 'home-node', 'understanding-retrieval.js'));
 const createUnderstandingAuthority = require(path.join(ROOT, 'assets', 'js', 'understanding-authority.js')).createUnderstandingAuthority;
 const createMemoryStore = require(path.join(ROOT, 'services', 'home-node', 'memory-store.js'));
@@ -161,18 +166,80 @@ function main() {
     check('authority.mirrorReadReturnsCanonical', !!doc && doc.id === 'un_cyrene_1' && doc.revision === 1, doc && { id: doc.id, revision: doc.revision });
     check('authority.statusHonest', authority.status().authority === 'indexeddb' && authority.status().mode === 'mirror', authority.status());
 
-    /* ══ ⑤ 其余四个维度的差异分类（零未解释项）═══════════════════════ */
+    /* ══ ⑤ moments 从"推迟"升为 MATCH（M1-C.2n）══════════════════════
+       M1-C.2m 时这一维是 EXPECTED_DEFERRED_CONTEXT，理由是"动态仍是浏览器独有"。
+       本阶段把它搬到 canonical（moment_records）+ 共享可见性核心 + 共享渲染，
+       因此现在必须用与 understanding **同样的方式**证明它：
+       同一份 canonical 状态 + 同一个主体 → 两端同一段证据信封（逐字）。
+       这一段直接调用那两个模块；若哪天两端各自长出一份渲染，它会红。 */
+    const momentsStore = createMomentsStore({ dataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'ib-un-mom-')), logger: () => {} });
+    momentsStore.open();
+    const momentsRetrieval = createMomentsRetrieval({
+      store: momentsStore, logger: () => {}, characterNameOf: (id) => (id === ROLE ? '昔涟' : '另一个')
+    });
+    const M_BASE = 1700000000000;
+    momentsStore.put({ id: 'pm_own', roleId: ROLE, content: '今天把窗台擦了。', visibility: 'all', createdAt: M_BASE + 1 });
+    momentsStore.put({ id: 'pm_priv', roleId: ROLE, content: '写给自己的一句话。', visibility: 'private', createdAt: M_BASE + 2 });
+    momentsStore.put({ id: 'pm_other', roleId: 'other', content: '朋友的公开动态。', visibility: 'all', createdAt: M_BASE + 3 });
+    const mOpts = { userName: '用户', otherRolesVisible: true };
+    const nodeFieldMoments = momentsRetrieval.snapshotField(ROLE, mOpts);
+    /* 桌面侧：同一批候选 + 同一个 core。名字解析用与节点同一份目录，
+       因此这里比较的是"证据信封"，而不是"名字配得全不全"。 */
+    const candidates = momentsStore.listVisible({ kind: 'role', id: ROLE }, { limit: 150 }).moments;
+    const desktopMomentsText = MOMENTS_CORE.renderMomentsContext({
+      moments: candidates, principal: { kind: 'role', id: ROLE }, characterId: ROLE,
+      userName: '用户', characterNameOf: (id) => (id === ROLE ? '昔涟' : '另一个'), options: { ownLimit: 4, otherLimit: 3 }
+    });
+    check('parity.moments.consultedBoth', nodeFieldMoments.consulted === true, nodeFieldMoments);
+    check('parity.moments.byteIdentical', nodeFieldMoments.text === desktopMomentsText,
+      { node: nodeFieldMoments.text, desktop: desktopMomentsText });
+    check('parity.moments.publicIn', nodeFieldMoments.text.indexOf('今天把窗台擦了。') >= 0);
+    check('parity.moments.privateOutOfChat', nodeFieldMoments.text.indexOf('写给自己的一句话。') < 0);
+    /* 快照三态：两端都必须是 present（Middle Brain 组织层实际消费的东西）。 */
+    const nodeMomentsSnap = CONTEXT_SNAPSHOT.create({
+      characterId: ROLE, turnId: 't1',
+      fields: {
+        memory: CONTEXT_SNAPSHOT.field('memory-retrieval.buildRuntimeContext', '', { missing: true }),
+        understanding: CONTEXT_SNAPSHOT.field('understanding-retrieval.buildUnderstandingBlock', '', { missing: true }),
+        thread: CONTEXT_SNAPSHOT.field('thread-retrieval.derive', '', { missing: true }),
+        moments: CONTEXT_SNAPSHOT.field('moments-retrieval.buildMomentsBlock', nodeFieldMoments.text, { missing: nodeFieldMoments.consulted !== true })
+      }
+    });
+    const desktopMomentsSnap = CONTEXT_SNAPSHOT.create({
+      characterId: ROLE, turnId: 't1',
+      fields: {
+        memory: CONTEXT_SNAPSHOT.field('memory-retrieval.buildRuntimeContext', '', { missing: true }),
+        understanding: CONTEXT_SNAPSHOT.field('getUnderstandingContext', '', { missing: true }),
+        thread: CONTEXT_SNAPSHOT.field('getThreadContext', '', { missing: true }),
+        moments: CONTEXT_SNAPSHOT.field('getMomentsContext', desktopMomentsText, { missing: false })
+      }
+    });
+    const nodeMomentsState = CONTEXT_SNAPSHOT.summary(nodeMomentsSnap).states.moments;
+    const desktopMomentsState = CONTEXT_SNAPSHOT.summary(desktopMomentsSnap).states.moments;
+    check('parity.moments.snapshotState', nodeMomentsState === 'present' && desktopMomentsState === 'present',
+      { node: nodeMomentsState, desktop: desktopMomentsState });
+    /* 收窄即刻生效：两端**下一次读取**同时停注（无后台修复遍）。 */
+    const rowOther = momentsStore.getRecord('pm_other');
+    momentsStore.put({ id: 'pm_other', roleId: 'other', content: rowOther.content, visibility: 'roles', visibleRoleIds: ['nobody'], createdAt: rowOther.createdAt }, { expectedRev: rowOther.rev });
+    const narrowed = momentsRetrieval.snapshotField(ROLE, mOpts);
+    check('parity.moments.narrowingImmediateBoth', narrowed.consulted === true && narrowed.text.indexOf('朋友的公开动态。') < 0, narrowed);
+    momentsStore.close();
+
+    /* ══ ⑥ 其余维度的差异分类（零未解释项）═══════════════════════════ */
     const classification = {
       memory: 'MATCH',                    /* M1-C.2d Wave 2 已收敛：同一 canonical store + 同一检索核心 */
       threads: 'MATCH',                   /* M1-C.2k 已收敛：canonical memory 上的确定性派生 */
       understanding: 'MATCH',             /* M1-C.2m 收敛（本节 ③） */
-      moments: 'EXPECTED_DEFERRED_CONTEXT',   /* 仍是浏览器独有；§14 明确不在本阶段做 */
+      moments: 'MATCH',                   /* M1-C.2n 收敛（本节 ⑤）：canonical moment_records + 共享 ACL + 共享渲染 */
       dialogue: 'EXPECTED_HOST_DIFFERENCE'    /* M1-C.2l §5 已审计（桌面用原始用户消息，节点用拼好的对话）；§14 明确不修 */
     };
     check('classified.zeroUnexplained',
       Object.keys(classification).every(k => classification[k] !== 'BUG' && classification[k] !== 'UNDETERMINED'),
       classification);
-    check('classified.noFalseFullParity', classification.moments !== 'MATCH' && classification.dialogue !== 'MATCH');
+    /* 仍然**不**声称 FULL Same Evidence：dialogue 一维仍被推迟（§12 明确要求不声称）。 */
+    check('classified.dialogueStillDeferred', classification.dialogue === 'EXPECTED_HOST_DIFFERENCE');
+    check('classified.fourDimensionsMatch',
+      ['memory', 'threads', 'understanding', 'moments'].every(k => classification[k] === 'MATCH'), classification);
 
     /* ══ ⑥ 读时存证：证据被隐藏 → 两端**同时**立刻不可注入 ═══════════ */
     memoryStore.putRecord(Object.assign({}, memoryStore.getRecord('m2'), { visibility: 'private', visibleTo: [] }), {});

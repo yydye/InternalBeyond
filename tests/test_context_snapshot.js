@@ -141,6 +141,27 @@ const api = http.createServer(async (req, res) => {
     return res;
   }
 
+  /* ── M1-C.2n：动态（Moments）的权威也搬到 Home Node 了 ───────────────
+     与理解**同一个教训**：本用例要在桌面的注入块里看到"朋友圈动态"这一段，
+     因此必须在 canonical 侧真的存在一条动态。而浏览器**不能**再直接落盘
+     （权威生效时 `dbPut('moments')` 被守卫拒绝，见 home-node-bootstrap 的
+     `momentsWriteLocked`）—— 那是本阶段的核心不变量，不是本用例的障碍。
+     因此这里直接经 canonical store 播种（与浏览器写的是同一条记录契约），
+     桌面则通过 authority 的镜像读它。
+     注意 `visibility:'all'`：**只有公开档会进入聊天上下文**（她自己的
+     private / user 档不进 prompt —— 那是"可读 ≠ 可当聊天素材"这条策略，
+     见 moments-visibility-core 的 selectContextMoments）。 */
+  function seedCanonicalMoment(roleId, content, extra) {
+    const res = homeNode.momentsStore.put(Object.assign({
+      id: 'c2_moment_' + Math.random().toString(36).slice(2, 8),
+      authorType: 'role', roleId: String(roleId), content: content,
+      visibility: 'all', source: 'manual', createdAt: Date.now()
+    }, extra || {}));
+    assert.ok(res && res.ok, 'canonical moment seed failed: ' + JSON.stringify(res));
+    return res;
+  }
+
+
   const debugPort = await freePort();
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-c2-'));
   const chrome = chromePath(); assert.ok(chrome, 'Chrome or Edge required');
@@ -212,12 +233,18 @@ const api = http.createServer(async (req, res) => {
          零证据的线索永远不会被注入（thread 恒 empty）。这不是新规则，
          但旧用例此前恰好靠"印章 + 空证据"通过了，因此这里把证据补上。 */
       await thOpen('c2_role','C2_THREAD_MARKER',['c2_mem'],'ai',{visibility:'public',visibleTo:[],excludeFrom:[]});
-      await createMoment({roleId:'c2_role',content:'C2_MOMENT_MARKER',source:'manual',visibility:'all'});
       await dbPut('apiSettings',{id:'summarySettings',enabled:false,keepCount:6,welcomeEnabled:false,welcomeInterval:2,musicEnabled:false,summaryApiId:'',summaryWindow:60});
       /* 把**记忆**的镜像从 canonical 补齐：这些写入发生在页面启动之后，
          因此不能只依赖 boot 那一次同步 —— 权威侧才是真相，镜像补齐后才断言。 */
-      await window.IB.homeNode.sync('c2-seed', { full: true });
+      await window.IB.homeNode.memory.sync('c2-seed', { full: true });
+      /* M1-C.2n：动态的权威也在 Home Node，浏览器**不能**再直接落盘
+         （权威生效时 dbPut('moments') 被守卫拒绝）。canonical 侧播种在下面
+         （见 seedCanonicalMoment），随后单独同步一次动态镜像。 */
       return true})()`);
+    seedCanonicalMoment('c2_role', 'C2_MOMENT_MARKER');
+    /* 动态镜像同样补齐一次：canonical 侧刚写下的那条必须出现在镜像里，
+       否则 `getMomentsContext` 读到的还是"搬家之前"的本地状态。 */
+    await evaluate(cdp, `(async function(){ await window.IB.homeNode.moments.sync('c2-seed', { full: true }); return true; })()`);
     /* M1-C.2m（顺序有语义，而这个顺序本身就是一个产品事实）：
        **记忆先到 canonical，理解才能在 canonical 侧存在** —— 读时存证要求证据集
        非空，因此零证据的理解永远不会被注入（那是 fail closed，不是缺陷）。

@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 
 /* Internal Beyond · 一键全量测试入口（Node 18+，零依赖，跨平台）。
  *
@@ -151,6 +151,16 @@ const GROUPS = [
          给出同一组理解证据（理解维度的 Same Evidence），以及零解释差异清单。
          纯 Node：真实共享核心 + 真实 store + 生产 gateway 装配。 */
       ['test_understanding_authority.js'],
+      /* M1-C.2n：Moments ACL 契约（M-ACL-1..10）—— 冻结后的可见性语义、
+        fail-closed、隐藏行不挤占 top-k/分页/预算、子制品不得更宽，
+        以及**结构性**断言的"生产代码里不存在第二份可见性判定"。
+        纯 Node，零浏览器（同一份核心在两个宿主里跑，见 M-ACL-9 的双载断言）。 */
+      ['test_moments_acl_contract.js'],
+      /* M1-C.2n：canonical Moments —— store 写协议（CAS/幂等重放/墓碑/迁移不覆盖/
+        revision 命名空间与其它权威隔离）、可见分页、两端逐字一致（parity）、
+        竞态 R1–R7、反证 C1–C6、以及 Android/设备面的安全边界。
+        纯 Node + 真 SQLite + 临时数据目录。 */
+      ['test_moments_authority.js'],
       /* M1-C.2d Wave 2：canonical memories authority —— 与 chat 同一套三态语义
          （写先到 Home Node 才落镜像 / 离线 fail closed / 明确拒绝 ≠ 离线 /
          镜像写失败仍以 Node 为权威）；记忆可编辑 → 内容变化必须真更新；
