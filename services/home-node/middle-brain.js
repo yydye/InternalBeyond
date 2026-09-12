@@ -122,6 +122,16 @@ function loadCanonicalMiddleBrain() {
     globalThis.IBMiddleBrainConfigCore = require(path.join(ASSETS_JS, 'middle-brain-config-core.js'));
     created.push('config-core');
   }
+  /* M1-C.2p：对话证据的共享核心也要按同样的方式登记成全局别名。
+     为什么需要：integrity 层（assets/js/middle-brain-integrity.js）是浏览器形态的
+     脚本，它经 `root.IBDialogueCore` 读对话核心（浏览器由 <script> 提供）。
+     在 Node 里 dialogue-core 是 UMD，`require` 只赋 module.exports、**不挂 global**，
+     于是不补这个别名时 guard 会如实降级成"无对话证据"（fail-safe，但等于静默失去
+     证据）。这与 window / providers / config-core 是同一类宿主 shim，没有第二套机制。 */
+  if (!globalThis.IBDialogueCore) {
+    globalThis.IBDialogueCore = DIALOGUE;
+    created.push('dialogue-core');
+  }
   /* config 层：先把契约拿到手，再登记进共享契约对象（顺序不能反）。 */
   const configContract = require(path.join(ASSETS_JS, CONFIG_FILE));
   globalThis.IB = globalThis.IB || {};
@@ -392,7 +402,12 @@ function createNodeMiddleBrain(deps) {
   /* ── seam 2 · 生成后 ──────────────────────────────────────────────────
      与桌面 communication.js:2330-2333 同一调用形状：
      交候选回复 + 角色/历史/上下文证据 → 取回最终文本。
-     任何故障 → 原样返回候选（facade 自己保证，本层不再包一层判定）。 */
+     任何故障 → 原样返回候选（facade 自己保证，本层不再包一层判定）。
+
+     M1-C.2p：交出去的 `history` 与生成前那条缝**是同一个变量**（mbCtx.history =
+     request.history，canonical store 的读取结果），并逐字带上当前回合的身份 ——
+     于是 Character Integrity 与 Middle Brain 消费的是同一份 canonical 对话、
+     同一个共享核心、同一条当前回合归属规则。本层不解释、不裁剪、不复制这段历史。 */
   async function finalizeReply(input) {
     const turn = input || {};
     const candidate = String(turn.candidate == null ? '' : turn.candidate);
@@ -405,6 +420,10 @@ function createNodeMiddleBrain(deps) {
         {
           character: turn.character || {},
           history: Array.isArray(turn.history) ? turn.history : [],
+          /* 当前回合的消息身份（canonical 用户行 id，由 requestId 确定性推导）。
+             有身份时"这一轮已经在历史窗口里"按身份识别，不再靠比对文本。 */
+          currentId: (turn.currentMessageId == null || turn.currentMessageId === '')
+            ? null : String(turn.currentMessageId),
           contextSnapshot: turn.snapshot || null,
           voice: turn.voice === true
         }

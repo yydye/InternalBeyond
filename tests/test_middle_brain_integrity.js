@@ -472,6 +472,58 @@ const api = http.createServer(async (req, res) => {
     t = await telemetry();
     check('G7.rewritePerTurnBounded', mock.judge === 3 && mock.rewrite === 3 && t.maxRewritesPerTurn <= 1 && t.rewriteTriggered === 3, JSON.stringify({ j: mock.judge, w: mock.rewrite, max: t.maxRewritesPerTurn }));
 
+    /* ═══════════════ H. M1-C.2p · 对话证据收敛（页面级 + 真实发送链路）═══════
+       Node 侧的 test_ci_dialogue_authority.js 证明语义；这里证明**浏览器真的接上了**：
+       guard 在页面里读到的就是共享核心（脚本顺序 / 全局解析 / 同一份实例），
+       而且它不再看到那个只存在于 provider 请求里的系统注入块。 */
+    const h1 = await evaluate(cdp, `(function(){
+      var DLG=window.IBDialogueCore;
+      if(!DLG || typeof DLG.assemble!=='function' || typeof DLG.lines!=='function') return 'no-core';
+      var hist=[{id:'p1',role:'user',content:'上一句'},{id:'p2',role:'assistant',content:'上一答'},{id:'cur',role:'user',content:'这一句'}];
+      var ev=IB.__middleBrainContracts.integrity._mbCiBuildEvidence('x','这一句',{character:{nickname:'a'},history:hist,currentId:'cur'});
+      var mb=DLG.lines({history:hist,userMessage:'这一句',currentId:null});
+      var ci=ev.dialogue.map(function(r){return (r.role==='assistant'?'\u89d2\u8272\uff1a':'\u7528\u6237\uff1a')+r.text;});
+      if(JSON.stringify(ci)!==JSON.stringify(mb)) return 'MISMATCH:'+JSON.stringify({ci:ci,mb:mb});
+      if(ev.dialogueMeta.source!=='dialogue-core') return 'src:'+ev.dialogueMeta.source;
+      if(ev.dialogue.length!==3 || ev.dialogueMeta.currentSkipped!=='duplicate') return 'meta:'+JSON.stringify(ev.dialogueMeta);
+      return 'ok';
+    })()`);
+    check('H1.pageGuardResolvesSharedCore', h1 === 'ok', String(h1));
+    /* H2 · 真实 sendChatMessage：judge 看到的【最近对话】里不得出现被注入的系统上下文 */
+    mock.charPayload = CANDIDATE;
+    mock.judgePayload = JSON.stringify({ pass: true, score: 0.93, confidence: 0.9, violations: [] });
+    await resetMock();
+    sent = await send('CANON_DIALOGUE_TURN');
+    const jp = String(mock.lastJudgePrompt || '');
+    check('H2.e2eGuardRan', sent && sent.ok && mock.judge === 1 && jp.indexOf('\u3010\u6700\u8fd1\u5bf9\u8bdd\u3011') >= 0,
+      JSON.stringify({ ok: sent && sent.ok, j: mock.judge }));
+    check('H3.e2eNoInjectedContextInDialogue',
+      jp.indexOf('[以下为系统注入的参考上下文') < 0 && jp.indexOf('\u5f53\u524d\u65f6\u95f4\uff1a') < 0
+      && jp.indexOf('\u3010\u957f\u671f\u8bb0\u5fc6\u3011') < 0,
+      jp.slice(Math.max(0, jp.indexOf('\u3010\u6700\u8fd1\u5bf9\u8bdd\u3011')), Math.max(0, jp.indexOf('\u3010\u6700\u8fd1\u5bf9\u8bdd\u3011')) + 260));
+    check('H4.e2eDialogueCarriesRealHistory',
+      jp.indexOf('OOC_TURN_3') >= 0 && jp.indexOf(CANDIDATE) >= 0,
+      jp.slice(Math.max(0, jp.indexOf('\u3010\u6700\u8fd1\u5bf9\u8bdd\u3011')), Math.max(0, jp.indexOf('\u3010\u6700\u8fd1\u5bf9\u8bdd\u3011')) + 260));
+    check('H5.e2eCurrentTurnOnceInsideDialogueBlock', (() => {
+      const a = jp.indexOf('\u3010\u6700\u8fd1\u5bf9\u8bdd\u3011'), b = jp.indexOf('\u3010\u5f53\u524d\u7528\u6237\u6d88\u606f\u3011');
+      if (a < 0 || b <= a) return false;
+      return jp.slice(a, b).split('CANON_DIALOGUE_TURN').length - 1 === 1;
+    })(), jp.slice(Math.max(0, jp.indexOf('\u3010\u6700\u8fd1\u5bf9\u8bdd\u3011')), Math.max(0, jp.indexOf('\u3010\u6700\u8fd1\u5bf9\u8bdd\u3011')) + 260));
+
+    /* H6 · 反证（H3 的鉴别力）：如果调用点又把 provider 请求数组交进来，
+       那段系统注入块必然重新出现在 judge 的【最近对话】里 —— 这里按 pre-fix
+       的形状直接喂一次收口缝，证明 H3 之所以绿靠的是调用点换了输入，
+       而不是断言恒真。 */
+    const h6 = await evaluate(cdp, `(async function(){
+      var hist=[{role:'user',content:'pre-fix 形状的上一句'},{role:'assistant',content:'好的。'},
+        {role:'user',content:'CANON_DIALOGUE_TURN\\n\\n---\\n[以下为系统注入的参考上下文，不属于用户发言]\\n当前时间：2026年。'}];
+      await IB.middleBrain.middleBrainFinalizeReply('ci_role','CANON_DIALOGUE_TURN','CANDIDATE_REPLY_原文',{character:{nickname:'泠',systemPrompt:'冷淡猫娘'},history:hist});
+      return true;
+    })()`);
+    check('H6.counterProofProviderArrayShapeStillLeaks', h6 === true
+      && String(mock.lastJudgePrompt || '').indexOf('[以下为系统注入的参考上下文') >= 0,
+      'pre-fix 形状没有复现泄漏 —— H3 因此没有鉴别力');
+
     console.log('\nCharacter Integrity / OOC Guard (P11-2): ' + failures + ' failed');
     process.exitCode = failures ? 1 : 0;
   } finally {

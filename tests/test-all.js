@@ -164,6 +164,23 @@ const GROUPS = [
          每条 parity 都配反证（合法改动对话证据必须改变结果）。
          纯 Node + 真 SQLite + 真执行器 + 真实共享核心。 */
       ['test_dialogue_authority.js'],
+      /* M1-C.2p：Character Integrity 的对话证据收敛。
+         P0 审计：M1-C.2o 之后 cognition dialogue 只剩一个定义，但
+         middle-brain-integrity.js 仍自带一份 `_ciHistory`（自己的 8 条窗口 /
+         400 字单条上限 / 2400 字预算 / 角色映射 / 排序），而且桌面那个调用点
+         交给它的是 **provider 请求数组**（system 行 + 挂在末条 user 消息上的
+         系统注入块 + transport 变形）—— 也就是"她这一轮被判定得符不符合角色"
+         所依据的对话，与认知层看到的那段**不是同一段**。
+         本阶段把它收敛到共享核心（IBDialogueCore.assemble）：guard 只消费
+         canonical 投影，自己的预算 / 渲染 / 维度可用性全部发生在投影之后。
+         覆盖：结构唯一性（全仓扫描：带引号的行标签与 `_ciHistory` 只允许出现在
+         共享核心与 guard 渲染器里）、T1–T20 对抗用例 × 两个宿主形状、
+         双宿主逐字 parity、当前回合归属 / 去重 / 重放、消费预算边界、
+         before/after 行为保持矩阵（收紧只允许出现在"旧投影把当前回合当成前序
+         对话"这一处，且只可能更保守）、以及**对照证明**（把旧投影装回临时副本，
+         同一批收敛断言必须 RED：实测 102 条变红）。
+         纯 Node + 真执行器装配，零网络、零浏览器。 */
+      ['test_ci_dialogue_authority.js'],
       /* M1-C.2n：Moments ACL 契约（M-ACL-1..10）—— 冻结后的可见性语义、
         fail-closed、隐藏行不挤占 top-k/分页/预算、子制品不得更宽，
         以及**结构性**断言的"生产代码里不存在第二份可见性判定"。

@@ -14,6 +14,9 @@
      - 任何失败（未就绪 / 超时 / HTTP / 非 JSON / 校验不过 / 重写异常）→ 返回原候选
      - 默认关闭：关闭时零模型调用，行为与 P11-1C 等价
    依赖：MBC.config / MBC.policy / MBC.astra（DAG 上游，只读）；对外唯一出口 = MBC.integrity（冻结）。
+   对话证据来源（M1-C.2p）：assets/js/dialogue-core.js（canonical dialogue authority，只读）。
+     本层**不再**持有"哪些消息构成当前对话"的定义 —— 它只消费共享核心的投影；
+     自己的策略（总量预算 / 渲染成【最近对话】段 / 维度可用性）一律发生在投影之后。
    传输不重复实现：所有模型请求走 ASTRA.middleBrainModelCall（astra 层 = 唯一网络边界）。
    ==================================================================== */
 (function (root) {
@@ -100,29 +103,97 @@
   /* —— 证据提取（只读；只用仓库真实存在的数据） —— */
   function _ciStr(v) { return v == null ? '' : String(v); }
   function _ciCap(s, n) { s = _ciStr(s); return s.length > n ? s.slice(0, n) : s; }
-  function _ciTextOf(content) {
-    if (typeof content === 'string') return content;
-    if (Array.isArray(content)) {
-      return content.map(function (p) { return p && typeof p.text === 'string' ? p.text : ''; }).filter(Boolean).join(' ');
-    }
-    return '';
+
+  /* ── 当前对话证据：**共享核心**（assets/js/dialogue-core.js）────────────
+     M1-C.2p：本层此前自带一份 `_ciHistory` —— 它自己决定窗口（最近 8 条）、
+     单条上限（400 字）、总量预算（2400 字）、角色映射、排序与截断，于是
+     "哪些消息构成当前对话"在 Character Integrity 这条路径上**有第二个定义**，
+     而 Middle Brain 已在 M1-C.2o 收敛到 `IBDialogueCore.assemble`。同一份
+     canonical 状态在两条路径上因此可以得到不同的对话证据（含"当前回合到底
+     在不在里面"这种根本差异），而 guard 的判定正是建立在这段证据上。
+     现在的结构（M1-C.2p §1/§10）：
+        canonical dialogue → IBDialogueCore → shared rows
+                                            ├── Middle Brain representation
+                                            └── Character Integrity representation
+     本层只**消费**，不重新定义：selection（角色映射 / 窗口 / 单条上限 / 当前回合
+     归属）全部由共享核心决定；guard 自己的 policy（下面的总量预算、【最近对话】
+     渲染、维度可用性）一律发生在投影**之后**。
+     为什么不在本层再写一份"等价实现"或第二套上限常量：两份实现必然漂移，
+     这正是本阶段要消灭的东西。核心缺席时如实降级为**无对话证据**（fail-safe），
+     绝不重建第二份投影。 */
+  var CI_DIALOGUE_TOTAL_CHARS = 2400;   /* guard 侧消费预算：历史行合计上限 */
+
+  function _ciDialogueCore() {
+    try {
+      var core = root.IBDialogueCore;
+      if (core && typeof core.assemble === 'function') return core;
+    } catch (e) {}
+    return null;
   }
-  /* 最近对话（只取 user/assistant，跳过 system；单条 400 字符、合计 2400 字符上限） */
-  function _ciHistory(history) {
-    var out = [];
-    if (!Array.isArray(history)) return out;
-    for (var i = history.length - 1; i >= 0 && out.length < 8; i--) {
-      var m = history[i]; if (!m || typeof m !== 'object') continue;
-      var role = (m.role === 'assistant') ? 'assistant' : (m.role === 'user' ? 'user' : null);
-      if (!role) continue;
-      var text = _ciTextOf(m.content);
-      if (!text || !text.trim()) continue;
-      out.unshift({ role: role, text: _ciCap(text, 400) });
+  /* 带标签行 → 结构化行。标签取自核心自己导出的常量（USER_LABEL / ROLE_LABEL），
+     这里只是它 labelFor() 的逆运算 —— **不是**第二套角色映射：role 语义仍然只由
+     核心的 roleOf() 决定。 */
+  function _ciRowOfLine(line, core) {
+    var s = _ciStr(line);
+    var user = _ciStr(core.USER_LABEL) || '用户：';
+    var role = _ciStr(core.ROLE_LABEL) || '角色：';
+    if (s.indexOf(user) === 0) return { role: 'user', text: s.slice(user.length) };
+    if (s.indexOf(role) === 0) return { role: 'assistant', text: s.slice(role.length) };
+    return null;
+  }
+  /* 共享核心投影 + guard 消费预算。
+     返回 { dialogue: [{role,text}], meta }；任何异常 → 无对话证据（绝不抛错：
+     证据组装在回合链路上，抛错会变成回合失败）。 */
+  function _ciDialogue(history, userMessage, currentId) {
+    var none = { dialogue: [], meta: { source: 'unavailable', historyCount: 0, priorRows: 0,
+      currentIncluded: false, currentSkipped: null, truncatedHistory: 0, budgetDropped: 0 } };
+    var core = _ciDialogueCore();
+    if (!core) return none;
+    var res = null;
+    try { res = core.assemble({ history: history, userMessage: userMessage, currentId: currentId }); }
+    catch (e) { return none; }
+    if (!res || !Array.isArray(res.lines)) return none;
+
+    var rows = [];
+    for (var i = 0; i < res.lines.length; i++) {
+      var row = _ciRowOfLine(res.lines[i], core);
+      if (row) rows.push(row);
     }
+    var historyCount = Number(res.historyCount);
+    if (!isFinite(historyCount) || historyCount < 0) historyCount = 0;
+    if (historyCount > rows.length) historyCount = rows.length;
+
+    /* ── guard 消费预算（2400 字，数值沿用 _ciHistory 的同一量级）──────────
+       作用域 = **历史行**：当前回合不是历史的一部分，也不是这条预算的分母
+       （旧实现把它算进分母，是因为旧投影把当前回合当成一行普通历史）。
+       丢弃方向从旧的一端开始，且**绝不丢最后一行** —— 当前回合要么是追加的
+       末行、要么是历史前缀的末行，两种归属下都因此结构性存活。 */
+    var head = rows.slice(0, historyCount), tail = rows.slice(historyCount);
     var total = 0;
-    for (var j = 0; j < out.length; j++) total += out[j].text.length;
-    while (out.length > 1 && total > 2400) { total -= out[0].text.length; out.shift(); }
-    return out;
+    for (var j = 0; j < head.length; j++) total += head[j].text.length;
+    var dropped = 0;
+    while (head.length > 1 && total > CI_DIALOGUE_TOTAL_CHARS) {
+      total -= head[0].text.length; head.shift(); dropped++;
+    }
+    var dialogue = head.concat(tail);
+    /* 当前回合的归属（§4）：'已 canonical 在窗口内'（原位，只出现一次）
+       或 '由核心追加为末行' 或 '不存在'（当前消息为空）。 */
+    var currentIncluded = res.currentIncluded === true;
+    var currentSkipped = res.currentSkipped || null;
+    var currentOwned = currentIncluded || currentSkipped === 'duplicate';
+    return {
+      dialogue: dialogue,
+      meta: {
+        source: 'dialogue-core',
+        historyCount: head.length,
+        /* 前序对话行数（不含承载当前回合的那一行）—— 维度可用性只看它 */
+        priorRows: Math.max(0, dialogue.length - (currentOwned ? 1 : 0)),
+        currentIncluded: currentIncluded,
+        currentSkipped: currentSkipped,
+        truncatedHistory: Number(res.truncatedHistory) || 0,
+        budgetDropped: dropped
+      }
+    };
   }
   /* 角色证据：只读消费方已经拿到的角色配置（不发明新 schema、不自行 retrieval） */
   function _mbCiBuildEvidence(characterId, userMessage, opts) {
@@ -134,7 +205,12 @@
       bio: _ciCap(ch.bio || ch.signature, 200),
       systemPrompt: _ciCap(ch.systemPrompt, 1600)
     };
-    var dialogue = _ciHistory(opts.history);
+    /* 对话证据 = 共享核心对 (history, userMessage, currentId) 的投影。
+       `history` 是**canonical 对话行**（该宿主本轮交给模型的同一段），
+       不是 provider 请求数组；`currentId` 是当前回合的消息身份（有则优先按
+       身份识别"这一轮已经在窗口里"，没有才走核心声明的逐字原文回落）。 */
+    var dlg = _ciDialogue(opts.history, userMessage, opts.currentId);
+    var dialogue = dlg.dialogue;
     var ctx = { memory: '', understanding: '', thread: '', moments: '' };
     ['memory', 'understanding', 'thread', 'moments'].forEach(function (name) {
       try {
@@ -143,20 +219,30 @@
       } catch (e) {}
     });
     var hasCtx = !!(ctx.memory || ctx.understanding || ctx.thread || ctx.moments);
+    /* 前序对话是否存在（**不含**承载当前回合的那一行）：这就是旧实现的
+       `dialogue.length > 0` 在 Home Node 上的语义 —— 保留它，而不是把
+       "用户刚说的这一句"当成她自己的说话样本 / 情感连续性证据。 */
+    var hasPriorDialogue = dlg.meta.priorRows > 0;
     return {
       characterId: _ciCap(characterId, 80),
       persona: persona,
       userMessage: _ciCap(userMessage, 600),
       dialogue: dialogue,
+      /* 归属与投影元信息（只读；shape 为新增键，旧键不变）：当前回合在证据里
+         **恰好一次** —— 要么已在窗口内原位（currentSkipped='duplicate'），
+         要么由核心追加为末行（currentIncluded=true）。 */
+      dialogueMeta: dlg.meta,
       context: ctx,
-      /* 证据可用性：缺失的维度**不允许**被判 fail（防误杀） */
+      /* 证据可用性：缺失的维度**不允许**被判 fail（防误杀）。
+         persona / relationship / knowledge_boundary 的判据不变；
+         speech_style / emotional_continuity / behavior 看的是**前序对话**。 */
       available: {
         persona: !!(persona.systemPrompt || persona.nickname || persona.bio),
-        speech_style: !!(persona.systemPrompt || dialogue.length),
+        speech_style: !!(persona.systemPrompt || hasPriorDialogue),
         relationship: !!persona.relationship,
-        emotional_continuity: dialogue.length > 0,
+        emotional_continuity: hasPriorDialogue,
         knowledge_boundary: hasCtx,
-        behavior: !!(persona.systemPrompt || dialogue.length)
+        behavior: !!(persona.systemPrompt || hasPriorDialogue)
       }
     };
   }

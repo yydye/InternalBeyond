@@ -2352,11 +2352,14 @@ async function sendChatMessage(voiceMsg){
       if(!(replyText&&String(replyText).trim())&&!(thinkingText&&String(thinkingText).trim()))throw window.IBERR?window.IBERR.err('empty_output'):new Error('API 返回了空内容');
       /* P11-2 · Middle Brain 生成后收口（唯一新增调用点）：调用方只交候选回复、只取回最终文本，
          不感知其内部判定/修复策略。未启用或任何故障 → 原样返回候选，聊天不受影响。
-         位置在功能标签截取之前：只作用于角色可见文本，工具/记忆指令仍走既有解析。 */
+         位置在功能标签截取之前：只作用于角色可见文本，工具/记忆指令仍走既有解析。
+         M1-C.2p：交出去的 `history` 是**本轮真正交给模型的那段 canonical 对话**
+         （上一行那个 history 变量，不是 provider 请求数组 messages），并附上当前回合
+         的消息身份 —— 与 buildChatContext 交给认知层的对话证据同源、同变量、同一份语义。 */
       try{
         var _mbFS=(window.IB&&window.IB.middleBrain)||null;
         if(_mbFS&&typeof _mbFS.middleBrainFinalizeReply==='function'){
-          var _mbFinS=await _mbFS.middleBrainFinalizeReply(cfg.id,_ctxText||'',replyText,{character:cfg,history:messages,contextSnapshot:_bcc.snapshot,voice:!!_callTurn});
+          var _mbFinS=await _mbFS.middleBrainFinalizeReply(cfg.id,_ctxText||'',replyText,{character:cfg,history:history,currentId:userMsg.id,contextSnapshot:_bcc.snapshot,voice:!!_callTurn});
           if(typeof _mbFinS==='string'&&_mbFinS&&_mbFinS!==replyText)replyText=_mbFinS;
         }
       }catch(_mbFinErrS){console.warn('[MiddleBrain] finalize failed',String(_mbFinErrS&&_mbFinErrS.message||_mbFinErrS).slice(0,120))}
@@ -2431,11 +2434,12 @@ async function sendChatMessage(voiceMsg){
       if(!(replyText&&String(replyText).trim())&&!(thinkingText&&String(thinkingText).trim()))throw window.IBERR?window.IBERR.err('empty_output'):new Error('API 返回了空内容');
       /* P11-2 · Middle Brain 生成后收口（唯一新增调用点）：调用方只交候选回复、只取回最终文本，
          不感知其内部判定/修复策略。未启用或任何故障 → 原样返回候选，聊天不受影响。
-         位置在功能标签截取之前：只作用于角色可见文本，工具/记忆指令仍走既有解析。 */
+         位置在功能标签截取之前：只作用于角色可见文本，工具/记忆指令仍走既有解析。
+         M1-C.2p：与流式路径逐字同款 —— 交 canonical 对话切片 + 当前回合身份。 */
       try{
         var _mbFN=(window.IB&&window.IB.middleBrain)||null;
         if(_mbFN&&typeof _mbFN.middleBrainFinalizeReply==='function'){
-          var _mbFinN=await _mbFN.middleBrainFinalizeReply(cfg.id,_ctxText||'',replyText,{character:cfg,history:messages,contextSnapshot:_bcc.snapshot,voice:!!_callTurn});
+          var _mbFinN=await _mbFN.middleBrainFinalizeReply(cfg.id,_ctxText||'',replyText,{character:cfg,history:history,currentId:userMsg.id,contextSnapshot:_bcc.snapshot,voice:!!_callTurn});
           if(typeof _mbFinN==='string'&&_mbFinN&&_mbFinN!==replyText)replyText=_mbFinN;
         }
       }catch(_mbFinErrN){console.warn('[MiddleBrain] finalize failed',String(_mbFinErrN&&_mbFinErrN.message||_mbFinErrN).slice(0,120))}
