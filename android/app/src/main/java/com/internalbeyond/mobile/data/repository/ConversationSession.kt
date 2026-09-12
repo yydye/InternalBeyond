@@ -32,6 +32,13 @@ data class ConversationState(
     val messages: List<ChatMessage> = emptyList(),
     /** Local sends that still need their own bubble. See [AttemptOverlay]. */
     val overlay: List<SendAttempt> = emptyList(),
+    /**
+     * Reasoning addressed by the canonical assistant message it belongs to, for turns
+     * whose canonical row is already in [messages]. The overlay's copy is only drawn
+     * while that row is missing, so an assistant turn shows its thinking exactly once
+     * (M1-C.2g). A view over `send_attempts`, never a second store.
+     */
+    val reasoning: Map<String, String> = emptyMap(),
     val hasOlder: Boolean = false,
     val loading: Boolean = false,
     val loadingOlder: Boolean = false,
@@ -569,6 +576,7 @@ class ConversationSession(
             conversationId = conversationId,
             messages = messages,
             overlay = AttemptOverlay.visible(attempts, ids),
+            reasoning = AttemptOverlay.reasoningByAssistantId(attempts, ids),
             hasOlder = _hasOlder || messages.size >= HISTORY_PAGE,
             loading = loading,
             loadingOlder = _state.value.loadingOlder,

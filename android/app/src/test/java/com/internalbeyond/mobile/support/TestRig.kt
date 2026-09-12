@@ -59,14 +59,31 @@ object DtoFixtures {
             JSONObject().put("chat", true).put("stream", true).put("vision", false).put("webSearch", false),
         )
 
-    fun assistantMessage(content: String, id: String = "msg_a1"): JSONObject = JSONObject()
-        .put("id", id)
-        .put("role", "assistant")
-        .put("content", content)
-        .put("timestamp", TIMESTAMP + 1000)
-        .put("conversationId", CONVERSATION)
-        .put("metadata", JSONObject().put("model_id", "mock-model"))
-
+    /**
+     * The canonical assistant row as the Home Node's store holds it — including
+     * `reasoning_content`, which the real executor writes (`execution.js:315`) and
+     * which `assets/js/mobile-dto.js:208` deliberately strips before the DTO reaches a
+     * device. Keeping it here is what makes "the canonical row carries its reasoning"
+     * and "the device never receives it" two separately asserted facts instead of one
+     * assumption.
+     */
+    fun assistantMessage(
+        content: String,
+        id: String = "msg_a1",
+        reasoning: String = "",
+        showThinking: String? = null,
+    ): JSONObject {
+        val metadata = JSONObject().put("model_id", "mock-model")
+        if (showThinking != null) metadata.put("showThinking", showThinking)
+        return JSONObject()
+            .put("id", id)
+            .put("role", "assistant")
+            .put("content", content)
+            .put("reasoning_content", reasoning)
+            .put("timestamp", TIMESTAMP + 1000)
+            .put("conversationId", CONVERSATION)
+            .put("metadata", metadata)
+    }
     fun userMessage(content: String, id: String = USER_MESSAGE_ID): JSONObject = JSONObject()
         .put("id", id)
         .put("role", "user")

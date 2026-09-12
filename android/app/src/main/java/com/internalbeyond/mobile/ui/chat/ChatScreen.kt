@@ -250,15 +250,21 @@ fun ChatScreen(
                     }
 
                     items(state.messages, key = { it.id }) { message ->
-                        MessageBubble(message)
+                        MessageBubble(message, reasoning = state.reasoning[message.id])
                     }
 
-                    items(state.overlay, key = { it.localMessageId }) { attempt ->
-                        AttemptBubbles(
-                            attempt = attempt,
-                            canonicalIds = canonicalIds,
-                            onRetry = { viewModel.sendAgain(attempt.requestId) },
-                        )
+                    state.overlay.forEach { attempt ->
+                        if (AttemptOverlay.showsUserBubble(attempt, canonicalIds)) {
+                            item(key = attempt.localMessageId + ":user") { UserAttemptBubble(attempt) }
+                        }
+                        if (showsAssistantTurn(attempt, canonicalIds)) {
+                            item(key = attempt.localMessageId + ":assistant") {
+                                AssistantAttemptTurn(
+                                    attempt = attempt,
+                                    onRetry = { viewModel.sendAgain(attempt.requestId) },
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -321,9 +327,15 @@ private fun ReconnectBanner(onResume: () -> Unit) {
  *
  * Only the DTO's own fields are rendered — there is nothing here that could show a
  * provider, an endpoint or a prompt, because the DTO does not contain them.
+ *
+ * [reasoning] is non-null only for an assistant message whose turn streamed reasoning
+ * that the canonical DTO does not carry (`mobile-dto.js` strips `reasoning_content`).
+ * It is joined by the canonical message id, and it belongs INSIDE this bubble: an
+ * assistant turn is its thinking plus its answer, and neither may be drawn under the
+ * user's message (M1-C.2g).
  */
 @Composable
-private fun MessageBubble(message: ChatMessage) {
+private fun MessageBubble(message: ChatMessage, reasoning: String? = null) {
     val isUser = message.isUser
 
     if (message.withdrawn) {
@@ -349,6 +361,12 @@ private fun MessageBubble(message: ChatMessage) {
             horizontalAlignment = if (isUser) Alignment.End else Alignment.Start,
             modifier = Modifier.widthIn(max = 300.dp),
         ) {
+            val thinking = reasoning?.takeIf {
+                it.isNotEmpty() && AttemptOverlay.showsThinking(message)
+            }
+            if (thinking != null) {
+                ThinkingBlock(thinking)
+            }
             Bubble(
                 fromUser = isUser,
                 content = {
@@ -381,93 +399,108 @@ private fun MessageBubble(message: ChatMessage) {
 }
 
 /**
- * The optimistic part of the UI: a send that has not (yet) got a canonical row.
+ * The user's own optimistic bubble.
  *
- * States come from [SendAttempt], never from a boolean: a pending bubble and a
- * failed one look different because they ARE different, and a recovering one says
- * 正在重新连接 rather than 发送失败 (Phase 16/19).
- *
- * The reply half is drawn only while it is still the ONLY copy of that reply. Once
- * the canonical assistant message is in the list, [AttemptOverlay.showsAssistantBubble]
- * says so and this composable keeps only the user's own bubble — otherwise the same
- * reply would appear twice, since the canonical row arrives with `chat.done` while
- * the user's row waits for a later `sync.changes` (M1-C.2f).
+ * Split out of the assistant half (M1-C.2g) because the two halves of one send
+ * reconcile against different canonical ids at different times: this one waits for
+ * `userMessageId`, the assistant turn below waits for `assistantMessageId`.
  */
 @Composable
-private fun AttemptBubbles(attempt: SendAttempt, canonicalIds: Set<String>, onRetry: () -> Unit) {
+private fun UserAttemptBubble(attempt: SendAttempt) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.End,
+    ) {
+        Bubble(fromUser = true) {
+            Text(text = attempt.content, style = IbType.body, color = IbColors.Text)
+        }
+    }
+}
+
+/** The transient assistant turn, drawn only while its reply is still the only copy. */
+private fun showsAssistantTurn(attempt: SendAttempt, canonicalIds: Set<String>): Boolean =
+    AttemptOverlay.showsAssistantBubble(attempt, canonicalIds) &&
+        (
+            attempt.partialText.isNotEmpty() ||
+                attempt.reasoningText.isNotEmpty() ||
+                attempt.state == AttemptState.RUNNING ||
+                attempt.state == AttemptState.PENDING ||
+                attempt.state == AttemptState.FAILED
+            )
+
+/**
+ * The optimistic assistant turn: thinking above, then the reply, then the failure
+ * control if there is one.
+ *
+ * Order is the invariant. A `send_attempts` row used to be drawn as one column —
+ * user bubble, status, thinking, reply — which put the thinking block beneath the
+ * user's message, where it read as the user's. An assistant turn is anchored to its
+ * own reply: `UserTurn → AssistantTurn{ reasoning, content }`, and a gap in between
+ * (the status line) must not be able to break that pair apart.
+ */
+@Composable
+private fun AssistantAttemptTurn(attempt: SendAttempt, onRetry: () -> Unit) {
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(IbSpacing.sm),
     ) {
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-            Bubble(fromUser = true) {
-                Text(text = attempt.content, style = IbType.body, color = IbColors.Text)
+        // A quiet progress line ABOVE the turn, so the thinking block and the reply
+        // below it stay adjacent: the pair is the assistant turn.
+        val status = when (attempt.state) {
+            AttemptState.PENDING -> IbStrings.chatSending
+            AttemptState.RECOVERING -> IbStrings.chatReconnecting
+            AttemptState.RUNNING, AttemptState.DONE -> ""
+            // The protocol code is not shown. It is in 详细信息 on the error card, if
+            // the session produced one; here the only useful thing is that this did
+            // not go, and the way to try again.
+            AttemptState.FAILED -> IbStrings.chatSendFailed
+        }
+        if (status.isNotEmpty()) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
+                Text(
+                    text = status,
+                    style = IbType.caption,
+                    color = if (attempt.state == AttemptState.FAILED) IbColors.Danger else IbColors.TextFaint,
+                )
             }
         }
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = if (attempt.state == AttemptState.FAILED) Arrangement.End else Arrangement.Start,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            when (attempt.state) {
-                AttemptState.PENDING -> Text(
-                    text = IbStrings.chatSending,
-                    style = IbType.caption,
-                    color = IbColors.TextFaint,
+        if (attempt.state == AttemptState.FAILED) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
+                IbTextAction(
+                    label = IbStrings.chatSendAgain,
+                    onClick = onRetry,
+                    color = IbColors.AccentSoft,
                 )
-                AttemptState.RECOVERING -> Text(
-                    text = IbStrings.chatReconnecting,
-                    style = IbType.caption,
-                    color = IbColors.TextFaint,
-                )
-                AttemptState.RUNNING -> Unit
-                AttemptState.DONE -> Unit
-                AttemptState.FAILED -> {
-                    // The protocol code is not shown. It is in 详细信息 on the error
-                    // card, if the session produced one; here the only useful thing is
-                    // that this did not go, and the way to try again.
-                    Text(
-                        text = IbStrings.chatSendFailed,
-                        style = IbType.caption,
-                        color = IbColors.Danger,
-                    )
-                    IbTextAction(
-                        label = IbStrings.chatSendAgain,
-                        onClick = onRetry,
-                        color = IbColors.AccentSoft,
-                    )
-                }
             }
         }
 
         if (attempt.reasoningText.isNotEmpty()) {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
-                IbDisclosure(label = IbStrings.chatReasoningShow) {
-                    Text(
-                        text = attempt.reasoningText,
-                        style = IbType.bodySmall,
-                        fontStyle = FontStyle.Italic,
-                        color = IbColors.TextFaint,
-                    )
+            ThinkingBlock(attempt.reasoningText)
+        }
+
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
+            Bubble(fromUser = false) {
+                if (attempt.partialText.isEmpty()) {
+                    IbThinkingDots()
+                } else {
+                    Text(text = attempt.partialText, style = IbType.speech, color = IbColors.Text)
                 }
             }
         }
+    }
+}
 
-        val hasReplyToDraw = attempt.partialText.isNotEmpty() ||
-            attempt.state == AttemptState.RUNNING ||
-            attempt.state == AttemptState.PENDING
-        val showAssistant = hasReplyToDraw && AttemptOverlay.showsAssistantBubble(attempt, canonicalIds)
-        if (showAssistant) {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
-                Bubble(fromUser = false) {
-                    if (attempt.partialText.isEmpty()) {
-                        IbThinkingDots()
-                    } else {
-                        Text(text = attempt.partialText, style = IbType.speech, color = IbColors.Text)
-                    }
-                }
-            }
+/** The model's thinking, folded shut. One presentation owner at a time (M1-C.2g). */@Composable
+private fun ThinkingBlock(text: String) {
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
+        IbDisclosure(label = IbStrings.chatReasoningShow) {
+            Text(
+                text = text,
+                style = IbType.bodySmall,
+                fontStyle = FontStyle.Italic,
+                color = IbColors.TextFaint,
+            )
         }
     }
 }
