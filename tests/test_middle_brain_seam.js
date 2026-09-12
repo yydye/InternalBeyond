@@ -1,4 +1,4 @@
-/* ====================================================================
+﻿/* ====================================================================
    P11-1C · Middle Brain Canonical Production Execution Seam · CDP 回归
    --------------------------------------------------------------------
    本阶段只做执行边界收口：production（single-chat）只经
@@ -44,7 +44,22 @@ const api = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') { res.end(); return; }
   let raw = ''; for await (const chunk of req) raw += chunk;
   astraReqs.push({ url: req.url, raw: raw.slice(0, 200) });
-  const payload = JSON.stringify({ keep: ['SEAM_KEEP'], merge: [], drop: [], compressedContext: 'SEAM_MB_COMPRESSED', currentKept: true });
+  /* M1-C.2o：mock 必须**真的**满足 Astra 的当前对话保留契约。
+     校验在 canonical 的 _mbValidateAstraResult（middle-brain-astra.js:206-217）：
+     `organized.dialogue` 非空时，compressedContext 必须含至少一条当前对话行。
+     此前桌面不传 dialogue，这条校验恒为 no-op，所以固定字符串就够用；
+     对话证据收敛后它是真的了 —— 一个不含当前对话的回答会被**正确**拒绝（回落 local），
+     而本文件测的是"注入契约"不是对话，因此 mock 从 prompt 里取出【当前对话】段
+     原样回放（真实 Astra 的义务），并保留 SEAM_MB_COMPRESSED 作为可识别的压缩标记。 */
+  let dialogueSuffix = '';
+  try {
+    const parsed = JSON.parse(raw || '{}');
+    const userMsg = String(((parsed.input || []).find(i => i && i.role === 'user') || {}).content || '');
+    const i = userMsg.lastIndexOf('【当前对话】');
+    if (i >= 0) dialogueSuffix = userMsg.slice(i);
+  } catch (_) { /* 非 JSON：保持固定载荷 */ }
+  const payload = JSON.stringify({ keep: ['SEAM_KEEP'], merge: [], drop: [],
+    compressedContext: 'SEAM_MB_COMPRESSED' + (dialogueSuffix ? '\n' + dialogueSuffix : ''), currentKept: true });
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ output: [{ type: 'message', content: [{ type: 'output_text', text: payload }] }], usage: { input_tokens: 5, output_tokens: 3, total_tokens: 8 } }));
 });
@@ -91,6 +106,18 @@ const api = http.createServer(async (req, res) => {
         if(r&&typeof r.then==='function')return r.then(function(v){window.__seam.last=v;return v});
         window.__seam.last=r;return r;
       };
+      return true})()`);
+    /* M1-C.2o：本测试的 Astra mock 此前回答一个**固定字符串** 'SEAM_MB_COMPRESSED'。
+       它依赖一个当时成立、现在不成立的事实：桌面不传 dialogue，因此 canonical
+       的安全校验 _mbValidateAstraResult（middle-brain-astra.js:206-217）里
+       "compressedContext 必须含至少一条当前对话行"这一条在桌面上恒为 no-op。
+       对话证据收敛后这条校验是真的了，一个不含当前对话的固定回答会被**正确**拒绝
+       （回落 local）—— 也就是 B5 / C4 / D1 会红，而它们测的不是对话，是"注入契约"。
+       因此 mock 改为**忠实**回答：保留调用方交给它的当前对话段（真实 Astra 的义务），
+       同时仍然返回一个可识别的压缩标记 SEAM_MB_COMPRESSED。
+       为此把 dialogue 记到 __seam 上，mock 从那里取。 */
+    await evaluate(cdp, `(function(){
+      window.__seamDialogue=function(){var o=window.__seam.opts[window.__seam.opts.length-1];return (o&&o.dialogue)||[]};
       return true})()`);
 
     /* 种子数据：给 seam_role 一条可见记忆（否则 organize 结果为空 → Astra 层直接返回空结果，

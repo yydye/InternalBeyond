@@ -2968,6 +2968,14 @@ i would like the room to be enough.
 <script src="assets/js/communication/summary.js"></script>
 <script src="assets/js/communication/video-runtime.js"></script>
 <script src="assets/js/error-catalog.js"></script>
+<!-- M1-C.2o：对话证据（哪些话算"当前对话"）的唯一共享实现。
+     P0 审计发现这条语义此前两个宿主各写一份，而且**两份都不一样**：
+     桌面根本不传 dialogue（组织层因此恒得空数组、注入块里没有【当前对话】段），
+     Home Node 传自己那份 400 字 / 8 条的投影 —— 同一个当前回合在两端被喂了
+     不同的对话证据。本文件是唯一实现；Home Node 由
+     services/home-node/middle-brain.js require **同一份**。
+     必须在 communication.js 之前加载（它在本行下一行的调用点被读取）。 -->
+<script src="assets/js/dialogue-core.js"></script>
 <script src="assets/js/communication.js"></script>
 <script src="assets/js/site-operations.js"></script>
 <script src="active/commerce.js"></script>

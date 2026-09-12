@@ -1,4 +1,4 @@
-/* ====================================================================
+﻿/* ====================================================================
    M1-C.2i · 对照证明（counter-proof）
    --------------------------------------------------------------------
    目的：证明 test_middle_brain_convergence.js 的断言**真的有鉴别力**，
@@ -67,6 +67,12 @@ const COPY_FILES = [
   'assets/js/moments-visibility-core.js',
   'services/home-node/moments-store.js',
   'services/home-node/moments-retrieval.js',
+  /* M1-C.2o：对话证据的共享核心。
+     **同一类依赖**（第四次出现）：基线经 home-node-service →
+     services/home-node/middle-brain.js 的 `require(ASSETS_JS/dialogue-core.js)`
+     触到它，缺了就抛 MODULE_NOT_FOUND，表现为基线无摘要变红。
+     M1-C.2m / M1-C.2n 各因此红过一次 —— 这次同样一并补上，不等它复现。 */
+  'assets/js/dialogue-core.js',
   'assets/js/middle-brain-config-core.js',
   'assets/js/middle-brain-config.js',
   'assets/js/middle-brain-policy.js',

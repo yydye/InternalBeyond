@@ -1,4 +1,4 @@
-/* ====================================================================
+﻿/* ====================================================================
    IB Home Node · Canonical Character Turn Execution
    --------------------------------------------------------------------
    这是 Home Node 唯一的「角色回合」执行入口：
@@ -334,6 +334,12 @@ function createTurnExecutor(deps) {
       characterId: String((request.character && request.character.id) || friendId || ''),
       turnId: turnId,
       userMessage: String(userMessage.content || ''),
+      /* M1-C.2o：当前回合的**身份**（不是内容）。canonical 用户行 id 由 requestId
+         确定性推导（chat-core.messageIdFromRequest，网关在 parseSendPayload 里用它
+         构造 userMessage）。把它交给共享 dialogue 核心，是为了让"这一轮已经在历史
+         窗口里"可以被按身份识别 —— 而不是靠比对文本（文本相近的两句话是合法的，
+         按内容去重会把用户真的连发的第二条静默吃掉）。 */
+      currentMessageId: (userMessage && userMessage.id != null) ? String(userMessage.id) : null,
       history: Array.isArray(request.history) ? request.history : [],
       memory: memoryPartOf(request),
       /* M1-C.2k：线索证据（与 memory 同一三态纪律）。它让 canonical Middle Brain

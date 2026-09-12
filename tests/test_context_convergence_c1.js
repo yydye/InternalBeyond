@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 
 /* ====================================================================
    Context Convergence C1 · 单轮 context retrieval 去重回归（P2-03）
@@ -51,9 +51,28 @@ const api = http.createServer(async (req, res) => {
       return;
     }
     const userMsg = (() => { try { return String(((body.input || []).find(i => i && i.role === 'user') || {}).content || ''); } catch (_) { return ''; } })();
+    /* M1-C.2o：本 mock 现在必须**真的**履行 Astra 的当前对话契约，而它此前只履行了一半。
+       ①（本阶段新暴露）当前对话保留：canonical 的安全校验 _mbValidateAstraResult
+         （middle-brain-astra.js:206-217）在 `organized.dialogue` 非空时要求
+         compressedContext 里**至少含一条**当前对话行，否则判不合格 → 回落 local。
+         M1-C.2o 之前桌面**不传** dialogue，于是这条校验在桌面上恒为 no-op ——
+         这个 mock 用 `userMsg.slice(0,120)` 也能过，但那段截断文本里根本没有
+         对话行：它"看起来在工作"，实际从未满足 Astra 的当前对话契约。
+         一句话：**这条校验此前在桌面上是死的，现在活了** —— 而这正是本阶段要的
+         行为（Astra 丢掉了当前对话就必须被拒绝，而不是静默替换掉上下文）。
+         因此 mock 必须把该段保留下来：从 prompt 里取出【当前对话】段原样回放。
+       ② 压缩：真实 Astra 输出的是**压缩后**的上下文，不是把输入原样回显；本 mock
+         因此只保留①要求的那一段，四个证据块（Memory/Understanding/Thread/Moments）
+         不原样回显 —— 它确实是"压缩"，也确实满足契约。
+       （断言仍然独立于实现：原四块的 marker 必须消失，且压缩块必须出现。） */
+    /* 用 lastIndexOf：prompt 里【当前对话】在"要求 2)"那句里也出现过一次，
+       真正要保留的是**末尾那一段**（【上下文】之后）。 */
+    const idxDialogue = userMsg.lastIndexOf('【当前对话】');
+    const dialogueBlock = idxDialogue >= 0 ? userMsg.slice(idxDialogue) : ('【当前对话】' + userMsg.slice(0, 120));
     const payload = JSON.stringify({
       keep: ['C1_MB_KEEP'], merge: [], drop: [],
-      compressedContext: 'C1_MB_COMPRESSED 当前对话：' + userMsg.slice(0, 120), currentKept: true
+      compressedContext: 'C1_MB_COMPRESSED ' + dialogueBlock,
+      currentKept: true
     });
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ output: [{ type: 'message', content: [{ type: 'output_text', text: payload }] }], usage: { input_tokens: 5, output_tokens: 3, total_tokens: 8 } }));
@@ -415,3 +434,5 @@ function seedCanonicalMoment(roleId, content, extra) {
     try { fs.rmSync(profile, { recursive: true, force: true }); } catch (_) {}
   }
 })().catch(e => { console.error(e); process.exitCode = 1; });
+
+

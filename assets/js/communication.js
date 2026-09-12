@@ -1467,6 +1467,24 @@ async function _buildSingleChatContext(cfg,opts){
      Middle Brain 收到的是"已读取结果"：'' 表示已读但无内容（禁止 fallback 再读），
      undefined 才表示调用方没提供（允许它自行 retrieval）。 */
   let _ctxJoined='',_ctxStart=-1,_memCtx='',_uCtx='',_tCtx='',_momCtx='';
+  /* ── M1-C.2o · 当前对话证据（共享核心）─────────────────────────────────
+     P0 审计：本函数此前**不传** dialogue，于是组织层得到 `organized.dialogue = []`，
+     注入块里没有【当前对话】段，而 Home Node 传的是它自己那份投影 ——
+     同一个当前回合在两端被喂了不同的对话证据（实测 dialogueChars 21 vs 83）。
+     现在两端都用同一个核心（assets/js/dialogue-core.js）。
+     输入取 `opts.dialogueHistory`：**本轮真的交给模型的那一段 canonical 历史**
+     （调用方在 communication.js:2121 已按阶梯窗口切好），而不是第三次读取 ——
+     "模型看的对话"与"证据里的对话"必须是同一段，否则本收敛毫无意义。
+     currentId 为 null：浏览器侧的用户行 id 是在 :2063 的 dbPut 里就地生成的
+     （`'msg_'+Date.now()+'_u'`），不经过本函数；共享核心因此走"末行原位重复"
+     那条判据，语义等价（见 dialogue-core.js 规则 ④）。 */
+  let _dlgLines=[];
+  try{
+    var _dlgCore=window.IBDialogueCore;
+    if(_dlgCore&&typeof _dlgCore.lines==='function'){
+      _dlgLines=_dlgCore.lines({history:opts.dialogueHistory||null, userMessage:_ctxText, currentId:null});
+    }
+  }catch(_dlgErr){console.warn('[Dialogue] evidence build failed',String(_dlgErr&&_dlgErr.message||_dlgErr).slice(0,120))}
   const _pushCtxBlock=function(text){if(!text)return;const sep=_tailCtx?'\n\n':'';if(_ctxStart<0)_ctxStart=_tailCtx.length;_tailCtx+=sep+text;_ctxJoined+=sep+text;};
   _tailCtx+='当前时间：'+new Date().toLocaleString('zh-CN',{year:'numeric',month:'long',day:'numeric',weekday:'long',hour:'2-digit',minute:'2-digit'})+'。';
   try{if(ss.musicEnabled&&currentTrackIdx>=0&&!audioEl.paused&&playlist[currentTrackIdx])_tailCtx+='正在听：《'+playlist[currentTrackIdx].name+'》。';}catch(e){}
@@ -1519,6 +1537,11 @@ async function _buildSingleChatContext(cfg,opts){
     if(_threadMemOk&&_mbFacade&&typeof _mbFacade.middleBrainExecute==='function'){
       var _mbRes=await _mbFacade.middleBrainExecute(cfg.id, _ctxText||'', {
         memoryCtx:_memCtx, understandingCtx:_uCtx, threadCtx:_tCtx, momentsCtx:_momCtx,
+        /* M1-C.2o：当前对话证据（共享核心产出，见本函数上方 _dlgLines）。
+           与 Home Node 的 `dialogue: dialogueFrom(history, userMessage, currentMessageId)`
+           **是同一个实现、同一段输入语义** —— 这就是"同一段对话在两个宿主上被投影成
+           同一段证据"那条契约的桌面一侧。 */
+        dialogue:_dlgLines,
         /* C2 step 1：同一个只读快照一并交给 Middle Brain（其 organize 优先读快照，见 middle-brain-policy.js）。
            两者值逐位一致，快照缺失时 MB 回落到 opts.*Ctx → 行为与 C1 完全相同。 */
         contextSnapshot:_ctxSnapshot
@@ -2140,7 +2163,12 @@ async function sendChatMessage(voiceMsg){
       _mbTrace.note(cfg.id,'inputMessages',messages.length);/* MB seam 之前的 messages 条数 */
       _mbTrace.note(cfg.id,'_paramsSeam',_mbParamsFingerprint(cfg,_streamingOk,thinkingOn));
     }
-    const _bcc=await buildChatContext(cfg,{userMessage:_ctxText,ss:ss,summaryText:summaryText,threadId:_targetThread,voice:!!_callTurn,sentFiles:sentFiles});
+    const _bcc=await buildChatContext(cfg,{userMessage:_ctxText,ss:ss,summaryText:summaryText,threadId:_targetThread,voice:!!_callTurn,sentFiles:sentFiles,
+      /* M1-C.2o：把**本轮真正交给模型的那一段 canonical 历史**（上一行的 history，
+         即阶梯窗口切片）交给上下文构建器，作为当前对话证据的来源。它不是"再读一次
+         会话"，而是把同一个 `history` 变量复用 —— 于是"模型看到的对话"与
+         "证据里的对话"是同一段，且与 Home Node 的 canonical 历史同源。 */
+      dialogueHistory:history});
     const sysContent=_bcc.system;
     const _tailCtx=_bcc.tail;
     if(sysContent)messages.unshift({role:'system',content:sysContent});

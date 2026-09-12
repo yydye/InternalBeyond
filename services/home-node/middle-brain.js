@@ -1,4 +1,4 @@
-/* ====================================================================
+﻿/* ====================================================================
    IB Home Node · Middle Brain 宿主适配层（M1-C.2i）
    --------------------------------------------------------------------
    本文件是 Home Node 进入 **canonical Middle Brain 执行缝** 的唯一入口。
@@ -62,13 +62,36 @@ const FACADE_FILE = 'middle-brain.js';
    真正的闸门是 apiKey 恒空。值本身写死成一句话，任何日志/诊断里一眼可辨。 */
 const PUBLISHED_POLICY_SENTINEL = 'published-by-desktop';
 
-/* dialogue 投影上限。
-   桌面把 tail 挂在末条 user 消息上，Home Node 把上下文放在 system 里 —— 这是
-   **已知的宿主差异**，不假装一致。但"哪些话算当前对话"这条语义必须一致，
-   否则 Gate 的两条硬触发（multipleThreads / nearBudget）会在两端给出不同判定。
-   上限取自 integrity 层 _ciHistory 同一量级（短上下文），而不是新发明的数字。 */
-const DIALOGUE_MAX_MESSAGES = 8;
-const DIALOGUE_MAX_CHARS = 400;
+/* dialogue 投影：**共享核心**（assets/js/dialogue-core.js），不再在本文件里
+   保留一份宿主私有实现。
+
+   ── 为什么把原来的 dialogueFrom 删掉（M1-C.2o P0 证据）───────────────
+   本文件此前自带一份 `dialogueFrom`：user/assistant、单条 400 字、整体上限 8 条、
+   当前消息追加在最后。而 Desktop 根本不传 dialogue（communication.js:1519-1525
+   没有该键），于是同一个当前回合在两端得到**不同的**对话证据：
+       Desktop  organized.dialogue = []          dialogueChars = 21
+       HomeNode organized.dialogue = [5 行带标签]  dialogueChars = 83
+   （实测见 .dsh-research/_m1c2o_probe2.js；dialogueChars 是 Gate 加权分的一项，
+   weights.dialogue = 0.15，而 organized.dialogue 会变成注入块的【当前对话】段。）
+   两份实现必然漂移，因此收敛为一份：Desktop 与 Home Node 现在调用同一个
+   `IBDialogueCore.assemble`，本文件只负责**如实提供输入**（本节点的 canonical
+   历史 + 本轮请求的当前消息 + 当前消息的确定性身份）。
+
+   ── 为什么宿主侧不再保留上限常量 ─────────────────────────────────────
+   上限是**语义参数**（它决定"哪些话算当前对话"），不是宿主能力。放在两端
+   各自的文件里，就等于把同一语义参数写了两遍 —— 那正是本阶段要消除的东西。
+   常量现在是 DIALOGUE.HISTORY_MAX_* 的唯一一份。 */
+const DIALOGUE = require(path.join(ASSETS_JS, 'dialogue-core.js'));
+
+/* 兼容出口：旧调用方（含测试）读的是 `dialogueFrom(history, userMessage)`。
+   它现在只是共享核心的一个薄壳 —— 不再有第二份实现，也没有默认上限以外的行为。 */
+function dialogueFrom(history, userMessage, currentId) {
+  return DIALOGUE.lines({
+    history: history,
+    userMessage: userMessage,
+    currentId: currentId == null ? null : String(currentId)
+  });
+}
 
 /* ── 模块级加载（进程内一次）──────────────────────────────────────────
    facade 末尾是 43 条 `window.x = …`，在 Node 里会 ReferenceError。
@@ -120,27 +143,9 @@ function loadCanonicalMiddleBrain() {
   return _cache;
 }
 
-/* 把 history（{role,content} 数组）收成本轮 dialogue 数组。
-   只取 user / assistant，跳过 system；单条截断到 400 字符，最多 8 条。
-   当前用户消息**追加在最后** —— 与桌面把 tail 挂在末条 user 消息上同一语义：
-   组织层把它当"当前对话"，而它与历史对话之间的相对顺序必须与桌面一致。 */
-function dialogueFrom(history, userMessage) {
-  const out = [];
-  if (Array.isArray(history)) {
-    for (const item of history) {
-      if (!item) continue;
-      const role = item.role === 'assistant' ? 'assistant' : (item.role === 'user' ? 'user' : null);
-      if (!role) continue;
-      const text = String(item.content == null ? '' : item.content);
-      if (!text.trim()) continue;
-      out.push((role === 'assistant' ? '角色：' : '用户：') + (text.length > DIALOGUE_MAX_CHARS ? text.slice(0, DIALOGUE_MAX_CHARS) : text));
-    }
-  }
-  if (out.length > DIALOGUE_MAX_MESSAGES) out.splice(0, out.length - DIALOGUE_MAX_MESSAGES);
-  const current = String(userMessage || '');
-  if (current.trim()) out.push('用户：' + (current.length > DIALOGUE_MAX_CHARS ? current.slice(0, DIALOGUE_MAX_CHARS) : current));
-  return out;
-}
+/* 本文件私有的 dialogueFrom（user/assistant、单条 400 字、整体 8 条上限
+   的宿主私有实现）已删除：语义现在只有一份实现，见上方 DIALOGUE 段
+   （assets/js/dialogue-core.js）。保留出口 dialogueFrom 只是共享核心的薄壳。 */
 
 /* 本轮 context 快照：与桌面 _buildSingleChatContext 的 _ctxSnapshot **同一契约**
    （复用 assets/js/context-snapshot.js，不写第二份快照实现）。
@@ -334,9 +339,16 @@ function createNodeMiddleBrain(deps) {
          · contextSnapshot —— 有快照就交快照；组织层优先读它，且 present/empty 都禁止二次 retrieval
          · memoryCtx        —— 仅当 memory **确实读过**时才给。没读成功就给 undefined，
                                让组织层按"未提供"处理，而不是把一个空串当成"读过且为空"
-         · dialogue         —— 本轮对话（历史 + 当前消息），Gate 的复杂度信号要用 */
+         · dialogue         —— 本轮对话（历史 + 当前消息），Gate 的复杂度信号要用。
+                               **共享核心**产出（M1-C.2o）：Desktop 用同一个
+                               `IBDialogueCore.assemble` 对同一段 canonical 对话投影，
+                               因此两端交出的 dialogue 逐字相同。
+                               当前消息的身份也交进去：Home Node 的 canonical 用户行 id
+                               由 requestId 确定性推导（chat-core.messageIdFromRequest），
+                               于是"这一轮已经在历史窗口里"可以被**按身份**识别，
+                               而不是靠比对文本。 */
     const opts = {
-      dialogue: dialogueFrom(turn.history, turn.userMessage),
+      dialogue: dialogueFrom(turn.history, turn.userMessage, turn.currentMessageId),
       contextSnapshot: snapshot || null
     };
     if (memory.consulted === true) opts.memoryCtx = String(memory.text || '');
@@ -439,6 +451,10 @@ function createNodeMiddleBrain(deps) {
 }
 
 module.exports = createNodeMiddleBrain;
-module.exports.DIALOGUE_MAX_MESSAGES = DIALOGUE_MAX_MESSAGES;
+/* 上限不再是本文件的常量：它们是共享核心的语义参数（DIALOGUE.HISTORY_MAX_*）。
+   这里仍以同一名字导出，供旧调用方读 —— 但读到的就是**唯一那一份**，
+   不再是"本文件自己的一份"。 */
+module.exports.DIALOGUE_MAX_MESSAGES = DIALOGUE.HISTORY_MAX_MESSAGES;
+module.exports.DIALOGUE_MAX_CHARS = DIALOGUE.HISTORY_MAX_CHARS;
 module.exports.dialogueFrom = dialogueFrom;
 module.exports.loadCanonicalMiddleBrain = loadCanonicalMiddleBrain;

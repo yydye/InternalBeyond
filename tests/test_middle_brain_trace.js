@@ -1,4 +1,4 @@
-/* ====================================================================
+﻿/* ====================================================================
    Middle Brain Runtime Participation Audit · [MiddleBrain Trace] 最小验证
    --------------------------------------------------------------------
    目的：不是验证既有单测，而是用**一次真实普通单聊请求**回答：
@@ -68,7 +68,25 @@ const api = http.createServer(async (req, res) => {
   }
   if (req.url.indexOf('/responses') >= 0) {
     astraReqs.push(raw.slice(0, 120));
-    const payload = JSON.stringify({ keep: ['TRACE_KEEP'], merge: [], drop: [], compressedContext: MB_MARK, currentKept: true });
+    /* M1-C.2o：mock 必须**真的**满足 Astra 的当前对话保留契约。
+       canonical 的 _mbValidateAstraResult（middle-brain-astra.js:206-217）在
+       `organized.dialogue` 非空时要求 compressedContext 含至少一条当前对话行。
+       此前桌面不传 dialogue，这条校验恒为 no-op；对话证据收敛后它是真的了，
+       一个只含固定标记的回答会被**正确**拒绝（回落 local），于是本文件里
+       "Astra 压缩块到达模型请求"那几条会红 —— 它们测的是 trace 参与度，不是对话。
+       因此 mock 从 prompt 取出【当前对话】段原样回放（真实 Astra 的义务），
+       并保留 MB_MARK 作为可识别的压缩标记。 */
+    let dialogueSuffix = '';
+    try {
+      const parsed = JSON.parse(raw || '{}');
+      const userMsg = String(((parsed.input || []).find(i => i && i.role === 'user') || {}).content || '');
+      const i = userMsg.lastIndexOf('【当前对话】');
+      if (i >= 0) dialogueSuffix = userMsg.slice(i);
+    } catch (_) { /* 非 JSON：保持固定载荷 */ }
+    const payload = JSON.stringify({
+      keep: ['TRACE_KEEP'], merge: [], drop: [],
+      compressedContext: MB_MARK + (dialogueSuffix ? '\n' + dialogueSuffix : ''), currentKept: true
+    });
     res.writeHead(200, headers);
     res.end(JSON.stringify({ output: [{ type: 'message', content: [{ type: 'output_text', text: payload }] }], usage: { input_tokens: 5, output_tokens: 3, total_tokens: 8 } }));
     return;

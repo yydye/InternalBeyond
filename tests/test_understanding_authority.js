@@ -1,10 +1,11 @@
-/* ====================================================================
+﻿/* ====================================================================
    M1-C.2m P5/P8 · Understanding Authority · 有效一致性探针
+   （M1-C.2n 扩展 moments · M1-C.2o 扩展 dialogue —— 这是**全维度**探针）
    --------------------------------------------------------------------
-   这一条回答的是 M1-C.2m §17 的问题，而且**只回答它**：
+   这一条回答的是同一个问题，只是逐阶段扩大被要求的维度：
 
-     对同一份 canonical 状态与同一个可见性主体，
-     Desktop 与 Home Node 的**理解证据信封**是否相等？
+     对同一份 canonical 状态、同一个可见性主体、同一个当前回合，
+     Desktop 与 Home Node 的**证据信封**是否相等？
 
    ── 为什么比较"证据信封"而不是"模型最后写出的文字" ───────────────────
    §10 明确禁止用最终模型散文当证明：同一段证据在不同温度/不同 provider 上
@@ -14,14 +15,14 @@
      · 快照三态与 gatedBy（present / empty / missing 的含义必须相同）
      · 证据 id 集合与可见性判定（同一份存证核心）
 
-   ── 同时钉住的其余四类差异（**必须全部被分类，零未解释项**）────────────
+   ── 五个语义维度的当前状态（**必须全部被分类，零未解释项**）──────────
      memory          MATCH（M1-C.2d 已收敛）
      threads         MATCH（M1-C.2k 已收敛）
-     understanding   MATCH（本阶段收敛）
-     moments         EXPECTED_DEFERRED_CONTEXT（仍是浏览器独有，§14 明确不做）
-     dialogue        EXPECTED_HOST_DIFFERENCE（M1-C.2l §5 已审计，明确不在本阶段修）
-   这台探针**不**声称 FULL Same Evidence —— 只要 moments/dialogue 仍被推迟，
-   就仍然存在已知差异，因此断言的是"已知差异清单完全被解释"，不是"零差异"。
+     understanding   MATCH（M1-C.2m 收敛，本文件 §③）
+     moments         MATCH（M1-C.2n 收敛，本文件 §⑤）
+     dialogue        MATCH（M1-C.2o 收敛，本文件 §⑦）
+   M1-C.2o 之后**不存在**被推迟的维度：本探针现在断言的是"五个维度全部 MATCH"，
+   而不是"已知差异清单完全被解释"。任何一维退回差异都会让它红。
 
    纪律：纯 Node、临时数据目录、零网络、零浏览器。运行：
      node test_understanding_authority.js
@@ -45,6 +46,14 @@ const createMemoryStore = require(path.join(ROOT, 'services', 'home-node', 'memo
 const UNDERSTANDING = require(path.join(ROOT, 'assets', 'js', 'understanding-derivation-core.js'));
 const VISIBILITY_CORE = require(path.join(ROOT, 'assets', 'js', 'memory-visibility-core.js'));
 const CONTEXT_SNAPSHOT = require(path.join(ROOT, 'assets', 'js', 'context-snapshot.js'));
+/* M1-C.2o：dialogue 这一维的 parity 必须在**真实 canonical 组织层**上证明，
+   因此这里经生产同一条加载路径装配 Middle Brain 各层（顺序是硬 DAG：
+   config 先登记进共享契约，policy 才拿得到 CFG —— 绝不自己 require policy）。 */
+const createNodeMiddleBrain = require(path.join(ROOT, 'services', 'home-node', 'middle-brain.js'));
+const MB_CORE = require(path.join(ROOT, 'assets', 'js', 'middle-brain-config-core.js'));
+createNodeMiddleBrain.loadCanonicalMiddleBrain();
+const POLICY = (globalThis.IB && globalThis.IB.__middleBrainContracts && globalThis.IB.__middleBrainContracts.policy) || null;
+if (!POLICY) throw new Error('canonical Middle Brain policy layer unavailable');
 
 let passed = 0, failed = 0;
 function check(name, cond, extra) {
@@ -225,68 +234,111 @@ function main() {
     check('parity.moments.narrowingImmediateBoth', narrowed.consulted === true && narrowed.text.indexOf('朋友的公开动态。') < 0, narrowed);
     momentsStore.close();
 
-    /* ══ ⑥ 其余维度的差异分类（零未解释项）═══════════════════════════ */
-    const classification = {
-      memory: 'MATCH',                    /* M1-C.2d Wave 2 已收敛：同一 canonical store + 同一检索核心 */
-      threads: 'MATCH',                   /* M1-C.2k 已收敛：canonical memory 上的确定性派生 */
-      understanding: 'MATCH',             /* M1-C.2m 收敛（本节 ③） */
-      moments: 'MATCH',                   /* M1-C.2n 收敛（本节 ⑤）：canonical moment_records + 共享 ACL + 共享渲染 */
-      dialogue: 'EXPECTED_HOST_DIFFERENCE'    /* M1-C.2l §5 已审计（桌面用原始用户消息，节点用拼好的对话）；§14 明确不修 */
-    };
-    check('classified.zeroUnexplained',
-      Object.keys(classification).every(k => classification[k] !== 'BUG' && classification[k] !== 'UNDETERMINED'),
-      classification);
-    /* 仍然**不**声称 FULL Same Evidence：dialogue 一维仍被推迟（§12 明确要求不声称）。 */
-    check('classified.dialogueStillDeferred', classification.dialogue === 'EXPECTED_HOST_DIFFERENCE');
-    check('classified.fourDimensionsMatch',
-      ['memory', 'threads', 'understanding', 'moments'].every(k => classification[k] === 'MATCH'), classification);
+    /* ══ ⑦ dialogue 从"已知宿主差异"升为 MATCH（M1-C.2o）══════════════
+       M1-C.2l §5 把这一维记成 EXPECTED_HOST_DIFFERENCE，原因是**两端根本没在
+       比较同一件事**：桌面 `communication.js:1519-1525` 不传 dialogue，
+       组织层因此恒得 `organized.dialogue = []`；Home Node 传的是自己那份
+       400 字 / 8 条的投影。M1-C.2o 把这条语义收敛成唯一实现
+       （assets/js/dialogue-core.js），两端用同一段 canonical 对话做输入。
+       因此现在必须用与 understanding / moments **同样的方式**证明它：
+       同一份 canonical 状态 + 同一个当前回合 → 两端同一段对话证据（逐字）。
+       这一段直接驱动真实 canonical 组织层；若哪天两端各自长出一份投影，它会红。 */
+    const DLG = require(path.join(ROOT, 'assets', 'js', 'dialogue-core.js'));
+    const TURN_ROWS = [
+      { role: 'user', content: '最近工作怎么样？' },
+      { role: 'assistant', content: '还行。' },
+      { role: 'user', content: '要不要升级设备？' },
+      { role: 'assistant', content: '在想了。' }
+    ];
+    const TURN_USER = '我想把那台旧电脑彻底换掉，预算大概一万二。';
+    /* Desktop 侧 opts（communication.js:1519-1525 形状 + 共享核心产出的 dialogue）。 */
+    const dlgDesktop = { dialogue: DLG.lines({ history: TURN_ROWS, userMessage: TURN_USER, currentId: null }) };
+    /* Home Node 侧 opts（services/home-node/middle-brain.js:350 形状）。 */
+    const dlgNode = { dialogue: DLG.lines({ history: TURN_ROWS, userMessage: TURN_USER, currentId: 'msg_req_x_u' }) };
+    return Promise.all([
+      POLICY.middleBrainOrganizeContext(ROLE, TURN_USER, dlgDesktop),
+      POLICY.middleBrainOrganizeContext(ROLE, TURN_USER, dlgNode)
+    ]).then(async function (orgs) {
+      const dOrg = orgs[0], nOrg = orgs[1];
+      check('parity.dialogue.byteIdentical', JSON.stringify(dOrg.dialogue) === JSON.stringify(nOrg.dialogue),
+        { desktop: dOrg.dialogue, node: nOrg.dialogue });
+      check('parity.dialogue.nonEmpty', dOrg.dialogue.length === 5 && nOrg.dialogue.length === 5, dOrg.dialogue.length);
+      check('parity.dialogue.currentTurnLast', dOrg.dialogue[4] === '用户：' + TURN_USER);
+      const dSig = await POLICY._mbAnalyzeSignals(ROLE, TURN_USER, dlgDesktop, MB_CORE.MB_DEFAULTS);
+      const nSig = await POLICY._mbAnalyzeSignals(ROLE, TURN_USER, dlgNode, MB_CORE.MB_DEFAULTS);
+      check('parity.dialogue.gateSignalsIdentical',
+        dSig.dialogueChars === nSig.dialogueChars && dSig.contextChars === nSig.contextChars,
+        { desktop: { d: dSig.dialogueChars, c: dSig.contextChars }, node: { d: nSig.dialogueChars, c: nSig.contextChars } });
+      const dComp = POLICY.middleBrainCompressContext(dOrg, dlgDesktop);
+      const nComp = POLICY.middleBrainCompressContext(nOrg, dlgNode);
+      check('parity.dialogue.compressedIdentical', dComp.compressedContext === nComp.compressedContext,
+        { desktop: dComp.compressedContext, node: nComp.compressedContext });
+      check('parity.dialogue.blockPresent', dComp.compressedContext.indexOf('【当前对话】') >= 0);
+      /* 反证：改动合法对话证据必须改变产物 —— 防止用"恒定空"骗过 parity。 */
+      const alt = { dialogue: dlgDesktop.dialogue.concat(['用户：另一句合法的话。']) };
+      const aOrg = await POLICY.middleBrainOrganizeContext(ROLE, TURN_USER, alt);
+      check('parity.dialogue.counterProof',
+        POLICY.middleBrainCompressContext(aOrg, alt).compressedContext !== dComp.compressedContext,
+        '对话证据被忽略（改动后产物不变）');
 
-    /* ══ ⑥ 读时存证：证据被隐藏 → 两端**同时**立刻不可注入 ═══════════ */
-    memoryStore.putRecord(Object.assign({}, memoryStore.getRecord('m2'), { visibility: 'private', visibleTo: [] }), {});
-    const rows2 = memoryStore.listRecords({}).records;
-    const nodeAfter = retrieval.snapshotField(ROLE, {});
-    const desktopAfter = desktopUnderstandingBlock(store.getActive(ROLE), rows2, ROLE);
-    check('parity.hiddenEvidence.blocksBoth', nodeAfter.text === '' && desktopAfter.text === '', { node: nodeAfter.text, desktop: desktopAfter.text });
-    check('parity.hiddenEvidence.nodeStillConsulted', nodeAfter.consulted === true, nodeAfter);
-    check('parity.hiddenEvidence.desktopReason', desktopAfter.reason === 'evidence-hidden', desktopAfter.reason);
-    /* 文档本身**没有**被改写（读路径不写盘：状态标记是另一件事）。 */
-    const docNow = store.getActive(ROLE);
-    check('parity.readDoesNotMutate', docNow.revision === 1 && docNow.current.evidenceIds.length === 2, docNow.revision);
+      /* ══ ⑧ 其余维度的差异分类（零未解释项）═══════════════════════════ */
+      const classification = {
+        memory: 'MATCH',                    /* M1-C.2d Wave 2 已收敛：同一 canonical store + 同一检索核心 */
+        threads: 'MATCH',                   /* M1-C.2k 已收敛：canonical memory 上的确定性派生 */
+        understanding: 'MATCH',             /* M1-C.2m 收敛（本节 ③） */
+        moments: 'MATCH',                   /* M1-C.2n 收敛（本节 ⑤）：canonical moment_records + 共享 ACL + 共享渲染 */
+        dialogue: 'MATCH'                   /* M1-C.2o 收敛（本节 ⑦）：共享对话核心 + 同一段 canonical 对话输入 */
+      };
+      check('classified.zeroUnexplained',
+        Object.keys(classification).every(k => classification[k] !== 'BUG' && classification[k] !== 'UNDETERMINED'),
+        classification);
+      check('classified.allFiveMatch',
+        ['memory', 'threads', 'understanding', 'moments', 'dialogue'].every(k => classification[k] === 'MATCH'), classification);
+      check('classified.noDimensionLeftDeferred',
+        Object.keys(classification).every(k => classification[k] === 'MATCH'), classification);
 
-    /* ══ ⑦ 恢复可见性 → 两端同时恢复注入（反向对照，证明 ⑥ 不是恒空）══ */
-    memoryStore.putRecord(Object.assign({}, memoryStore.getRecord('m2'), { visibility: 'public', visibleTo: [] }), {});
-    const rows3 = memoryStore.listRecords({}).records;
-    check('parity.restore.reinjectsBoth',
-      retrieval.snapshotField(ROLE, {}).text === desktopUnderstandingBlock(store.getActive(ROLE), rows3, ROLE).text
-      && retrieval.snapshotField(ROLE, {}).text.length > 0);
+      /* ══ ⑨ 读时存证：证据被隐藏 → 两端**同时**立刻不可注入 ═══════════ */
+      memoryStore.putRecord(Object.assign({}, memoryStore.getRecord('m2'), { visibility: 'private', visibleTo: [] }), {});
+      const rows2 = memoryStore.listRecords({}).records;
+      const nodeAfter = retrieval.snapshotField(ROLE, {});
+      const desktopAfter = desktopUnderstandingBlock(store.getActive(ROLE), rows2, ROLE);
+      check('parity.hiddenEvidence.blocksBoth', nodeAfter.text === '' && desktopAfter.text === '', { node: nodeAfter.text, desktop: desktopAfter.text });
+      check('parity.hiddenEvidence.nodeStillConsulted', nodeAfter.consulted === true, nodeAfter);
+      check('parity.hiddenEvidence.desktopReason', desktopAfter.reason === 'evidence-hidden', desktopAfter.reason);
+      /* 文档本身**没有**被改写（读路径不写盘：状态标记是另一件事）。 */
+      const docNow = store.getActive(ROLE);
+      check('parity.readDoesNotMutate', docNow.revision === 1 && docNow.current.evidenceIds.length === 2, docNow.revision);
 
-    /* ══ ⑧ 安全边界：理解不出现在任何设备面（§18）════════════════════ */
-    const gatewaySrc = fs.readFileSync(path.join(ROOT, 'services', 'home-node', 'mobile-gateway.js'), 'utf8');
-    const httpSrc = fs.readFileSync(path.join(ROOT, 'services', 'home-node', 'http.js'), 'utf8');
-    const dtoSrc = fs.readFileSync(path.join(ROOT, 'assets', 'js', 'mobile-dto.js'), 'utf8');
-    const adminList = gatewaySrc.slice(gatewaySrc.indexOf('const ADMIN_PATHS = ['), gatewaySrc.indexOf('];', gatewaySrc.indexOf('const ADMIN_PATHS = [')));
-    check('security.understandingIsDesktopOnly',
-      adminList.indexOf('/understanding/') >= 0 && adminList.indexOf('/memory/') >= 0, adminList.slice(0, 200));
-    /* 设备面（/mobile/v1）里**没有**任何 understanding verb；理解只经
-       ADMIN_PATHS（桌面面）暴露。用两条可检查的结构断言表达，而不是靠关键词。 */
-    const adminBegin = gatewaySrc.indexOf('const ADMIN_PATHS = [');
-    const adminEnd = gatewaySrc.indexOf('];', adminBegin);
-    const adminBlock = gatewaySrc.slice(adminBegin, adminEnd);
-    /* handleAdmin 是管理面（桌面面）的分发器（`return handleAdmin(...)` 两条）。
-       断言：它在**文件末尾**用 return 收束 —— 也就是它覆盖到文件尾，
-       因此"理解路由只在桌面面"这句话是可检查的，而不是一句注释。 */
-    const adminFnStart = gatewaySrc.indexOf('async function handleAdmin(');
-    check('security.noUnderstandingVerbOnDeviceFace',
-      adminFnStart > 0 && gatewaySrc.indexOf('understanding/', adminFnStart) >= 0
-      && gatewaySrc.indexOf('return handleAdmin(action, req, res, url);', adminFnStart) > adminFnStart,
-      'understanding routes live inside handleAdmin, which is reached only via the admin/mobile dispatch');    check('security.httpGuardsPrefix',
-      httpSrc.indexOf("path.indexOf('/understanding/') === 0") >= 0, 'prefix guard present');
-    check('security.dtoHasNoUnderstandingField',
-      !/understanding/i.test(dtoSrc), 'mobile-dto must not carry understanding');
+      /* ══ ⑩ 恢复可见性 → 两端同时恢复注入（反向对照，证明 ⑨ 不是恒空）═ */
+      memoryStore.putRecord(Object.assign({}, memoryStore.getRecord('m2'), { visibility: 'public', visibleTo: [] }), {});
+      const rows3 = memoryStore.listRecords({}).records;
+      check('parity.restore.reinjectsBoth',
+        retrieval.snapshotField(ROLE, {}).text === desktopUnderstandingBlock(store.getActive(ROLE), rows3, ROLE).text
+        && retrieval.snapshotField(ROLE, {}).text.length > 0);
 
-    store.close(); memoryStore.close();
-    console.log('\nUnderstanding authority parity: ' + passed + ' passed, ' + failed + ' failed');
-    process.exit(failed ? 1 : 0);
+      /* ══ ⑪ 安全边界：理解不出现在任何设备面（§18）════════════════════ */
+      const gatewaySrc = fs.readFileSync(path.join(ROOT, 'services', 'home-node', 'mobile-gateway.js'), 'utf8');
+      const httpSrc = fs.readFileSync(path.join(ROOT, 'services', 'home-node', 'http.js'), 'utf8');
+      const dtoSrc = fs.readFileSync(path.join(ROOT, 'assets', 'js', 'mobile-dto.js'), 'utf8');
+      const adminList = gatewaySrc.slice(gatewaySrc.indexOf('const ADMIN_PATHS = ['), gatewaySrc.indexOf('];', gatewaySrc.indexOf('const ADMIN_PATHS = [')));
+      check('security.understandingIsDesktopOnly',
+        adminList.indexOf('/understanding/') >= 0 && adminList.indexOf('/memory/') >= 0, adminList.slice(0, 200));
+      /* 设备面（/mobile/v1）里**没有**任何 understanding verb；理解只经
+         ADMIN_PATHS（桌面面）暴露。用两条可检查的结构断言表达，而不是靠关键词。 */
+      const adminFnStart = gatewaySrc.indexOf('async function handleAdmin(');
+      check('security.noUnderstandingVerbOnDeviceFace',
+        adminFnStart > 0 && gatewaySrc.indexOf('understanding/', adminFnStart) >= 0
+        && gatewaySrc.indexOf('return handleAdmin(action, req, res, url);', adminFnStart) > adminFnStart,
+        'understanding routes live inside handleAdmin, which is reached only via the admin/mobile dispatch');
+      check('security.httpGuardsPrefix',
+        httpSrc.indexOf("path.indexOf('/understanding/') === 0") >= 0, 'prefix guard present');
+      check('security.dtoHasNoUnderstandingField',
+        !/understanding/i.test(dtoSrc), 'mobile-dto must not carry understanding');
+
+      store.close(); memoryStore.close();
+      console.log('\nUnderstanding authority parity: ' + passed + ' passed, ' + failed + ' failed');
+      process.exit(failed ? 1 : 0);
+    });
   }).catch(function (error) {
     console.error('unexpected failure:', (error && error.stack) || error);
     process.exit(1);

@@ -456,12 +456,19 @@ section('安全边界 · Android / 移动端不得看到动态');
     !/['"]\/mobile\/v1\/moments/.test(gwText) && /isDesktopOnlyPath\s*=[^;]*'\/moments\/'/.test(httpText));
   const dtoProjection = fs.readFileSync(path.join(ROOT, 'assets', 'js', 'mobile-dto.js'), 'utf8');
   check('security.mobileDtoProjectsNoMomentFields', !/moment/i.test(dtoProjection));
-  /* desktop-only 清单必须与 /security 的声明逐条一致 —— 两边各写一份就会漂移。 */
+  /* desktop-only 清单必须与 /security 的声明**双向**一致 —— 两边各写一份就会漂移。
+     M1-C.2o 复审（只读复核，未改行为）：原先只断言单向（声明 ⊆ ADMIN）。
+     那足以抓住"声明了一个不存在的 verb"，但抓不住**反方向**：有人往 ADMIN_PATHS
+     加一条 `/moments/xxx` 而忘了更新 /security 声明 —— 那时安全面就少说了一句真话，
+     而这正是本块存在的意义。改为逐条双向相等。 */
   const adminMatch = gwText.match(/const ADMIN_PATHS = \[[\s\S]*?\];/);
   const declared = policyMatch ? (policyMatch[0].match(/'\/moments\/[a-z]+'/g) || []) : [];
+  const adminMoments = adminMatch ? (adminMatch[0].match(/'\/moments\/[a-z]+'/g) || []) : [];
   check('security.momentsAdminPathsMatchDeclaration',
-    !!adminMatch && declared.length > 0 && declared.every(p => adminMatch[0].indexOf(p) >= 0),
-    { declared, inAdmin: !!adminMatch });
+    !!adminMatch && declared.length > 0
+    && declared.every(p => adminMoments.indexOf(p) >= 0)
+    && adminMoments.every(p => declared.indexOf(p) >= 0),
+    { declared: declared, inAdmin: adminMoments });
   check('security.noMomentsContentInMobileReply', !/momentsBlock\s*:/.test(gwText.split('runtimeContextParts')[0].slice(-4000)));
 })();
 

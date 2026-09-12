@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 
 /* Internal Beyond · 一键全量测试入口（Node 18+，零依赖，跨平台）。
  *
@@ -151,6 +151,19 @@ const GROUPS = [
          给出同一组理解证据（理解维度的 Same Evidence），以及零解释差异清单。
          纯 Node：真实共享核心 + 真实 store + 生产 gateway 装配。 */
       ['test_understanding_authority.js'],
+      /* M1-C.2o：对话证据（哪些话算"当前对话"）的 Same Evidence。
+         P0 审计：这条语义此前两个宿主各写一份而且**两份都不一样** ——
+         桌面根本不传 dialogue（组织层恒得空数组、注入块里没有【当前对话】段），
+         Home Node 传自己那份 400 字 / 8 条投影。本阶段收敛成唯一实现
+         （assets/js/dialogue-core.js，浏览器与 Node 双载同一份），两端对
+         **同一段 canonical 对话**投影出同一段证据。
+         覆盖 T1–T15：多轮 / 当前行已 canonical / 同步滞后 / 重试重放 /
+         连发与重新生成 / 连排助理行 / 删除行 / 空历史 / 检索失败 /
+         话题隔离 / 长窗口边界 / 两端字节 parity / 认知边界相等 /
+         provider 序列化不重新引入差异 / Android 不得成为第二个对话权威；
+         每条 parity 都配反证（合法改动对话证据必须改变结果）。
+         纯 Node + 真 SQLite + 真执行器 + 真实共享核心。 */
+      ['test_dialogue_authority.js'],
       /* M1-C.2n：Moments ACL 契约（M-ACL-1..10）—— 冻结后的可见性语义、
         fail-closed、隐藏行不挤占 top-k/分页/预算、子制品不得更宽，
         以及**结构性**断言的"生产代码里不存在第二份可见性判定"。
