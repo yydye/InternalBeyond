@@ -95,12 +95,28 @@ function _rlCandidates(fromRoleId,now,limit){
   out.sort((a,b)=>b.aff-a.aff);
   return out.slice(0,limit||3);
 }
-/* 候选朋友近况签名（给模型参考"最近发生了什么"） */
+/* 候选朋友近况签名（给模型参考"最近发生了什么"）
+   M1-C.2n P0 S30 —— **审计发现的一处真实泄漏**：
+   原实现取 `getRoleMoments(roleId)[0]`（= 该角色**最新一条**动态，已按时间倒序），
+   完全不看可见性，然后把内容前 60 字拼进**另一个角色**的写信 prompt。
+   两个后果叠加：① 受限动态（private / user / 未列名的 roles / 旧数据缺档位）
+   的正文出现在该角色之外的模型请求里；② 因为 [0] 是最新一条，
+   越私密的内容越优先被选中（"隐藏行比可见行更有吸引力"）。
+   修法：先过唯一实现，再取第一条 —— 顺序不能反（§3-C）。 */
 async function _rlFriendSig(roleId){
   try{
     const nm=_momName(_rlCfg(roleId));
-    const moments=typeof window.getRoleMoments==='function'?(await window.getRoleMoments(roleId)):[];
-    const last=(moments&&moments[0]&&moments[0].content)||'';
+    const rows=typeof window.getRoleMoments==='function'?(await window.getRoleMoments(roleId)):[];
+    /* 签名是给**另一个角色**（写信人）看的，因此主体是写信人视角下的"其他角色"。
+       保守取"公开档"：这是本仓库既有的朋友动态可见性（other_role_moments 只带 all），
+       且比角色主体判定更严，不可能放宽任何边界。 */
+    const vis=(typeof _momentsCore==='function')
+      ?_momentsCore().filterVisibleMoments(rows,_momentsPrincipalRole(roleId)).filter(function(m){
+        return _momentsCore().readVisibility(m.visibility)==='all';
+      })
+      :[];/* fail closed：核心不可用 → 不透露任何动态（同时留下告警，避免静默） */
+    if(typeof _momentsCore!=='function')console.warn('[Letters] moments 可见性核心未导出；候选朋友近况不携带动态');
+    const last=(vis&&vis[0]&&vis[0].content)||'';
     /* 用 byTo/byFrom 索引取该角色自己的信件，避免 dbGetAll 全扫 */
     const [sent,recv]=await Promise.all([
       dbGetByIndex(RL_STORE,'byFrom',String(roleId)).catch(()=>[]),

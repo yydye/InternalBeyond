@@ -10,6 +10,11 @@
    - fail-open：任何失败只记录 + 频率/退避后重排，绝不影响主动消息 / 任务调度。 */
 'use strict';
 
+/* M1-C.2n：可见性语义与浏览器侧**共用同一份实现**（不是"镜像一份"）。
+   active/moments.js 此前完全没有可见性判定 —— 而它的回复链会把线程正文喂给
+   其他角色的模型。require 同一份文件让两端不可能漂移。 */
+const MOMENT_VIS = require('../assets/js/moments-visibility-core.js');
+
 function createMomentsDomain(deps) {
   const {
     getState, armedUsers, saveNow, queueSave,
@@ -57,7 +62,11 @@ function createMomentsDomain(deps) {
   const MOMENT_MAX_LATE_MS = 60 * 60000;    /* 错过触发窗口过久（休眠/重启）→ 不补发，按频率重排 */
   const MOMENT_STALE_WINDOW = 10 * 60000;   /* running 崩溃回收阈值（与 plans 一致） */
   const MOMENT_BACKOFF_MS = 30 * 60000;     /* 失败退避 */
-  const MOMENT_VIS = ['all', 'user', 'roles', 'private'];
+  /* M1-C.2n：原来的 `MOMENT_VIS = ['all','user','roles','private']` 数组已删除。
+     它以前被当作"合法档位表"用于 `includes()` 兜底判定（非法 → 'all'，fail open）；
+     现在档位归一由模块级 require 进来的共享核（MOMENT_VIS.readVisibility /
+     writeVisibility）负责，因此这里不再保留第二份枚举 ——
+     两份档位表本身就是"两处可以漂移的语义"。 */
   /* 动机枚举（与浏览器端 assets/js/moments.js 完全一致）：motive 只标注"此刻为什么想发"，不是发布资格门 */
   const MOMENT_MOTIVES = ['share', 'daily_life', 'emotion', 'reflection', 'interaction', 'curiosity', 'social_response', 'none'];
 
@@ -247,7 +256,10 @@ function createMomentsDomain(deps) {
     if (parsed.publish === false) return { publish: false, reason: trimText(parsed.reason, 200), motive: 'none' }; /* none 语义强制：不发布=无动机 */
     if (parsed.publish !== true) return null;
     if (!String(parsed.content || '').trim()) return null;
-    const visibility = MOMENT_VIS.includes(parsed.visibility) ? parsed.visibility : 'all';
+    /* 档位归一交给共享核心（M1-C.2n）：缺失 → 'all'（产品默认）；
+       模型给了**拼错的**档位 → 'invalid'，读侧永不可见（作者除外）。
+       原实现把两者都写成 'all'，等于让模型写错一个词直接变成公开动态。 */
+    const visibility = MOMENT_VIS.writeVisibility(parsed.visibility);
     /* motive 归一（与浏览器端一致）：缺失/非法/与 publish:true 矛盾（none）→ daily_life；只是标注，不是发布资格门 */
     const motive = (MOMENT_MOTIVES.includes(parsed.motive) && parsed.motive !== 'none') ? parsed.motive : 'daily_life';
     /* wantImage/imagePrompt 归一（v4：模型建议配图 + 画面描述；图片由浏览器端 Image Provider 生成；
@@ -570,7 +582,11 @@ function createMomentsDomain(deps) {
       roleId: trimText(raw.roleId, 120),
       authorType: raw.authorType === 'user' ? 'user' : 'role',
       content: trimText(raw.content, 500),
-      visibility: ['all', 'user', 'roles', 'private'].includes(raw.visibility) ? raw.visibility : 'all',
+      /* 与浏览器侧同一份归一：缺失 → 'all'；非法但存在 → 'invalid'（不得兜底成公开）。
+         这个字段此前是**装饰性**的（写了但从不被读），因此更危险：
+         它看起来像"这里已经处理过可见性了"。现在它是真的判定输入
+         （maybeCreateReplyTask 用它决定这条线程能不能派生其他角色的回复）。 */
+      visibility: MOMENT_VIS.writeVisibility(raw.visibility),
       createdAt: trimText(raw.createdAt, 64),
       imagesCount: Math.max(0, Number(raw.imagesCount) || 0),
       images: (Array.isArray(raw.images) ? raw.images : (raw.image ? [raw.image] : [])).slice(0, 3)
@@ -697,6 +713,20 @@ function createMomentsDomain(deps) {
     if (rec.prefs && (rec.prefs.aiComment === false || rec.prefs.enabled === false)) return null; /* 用户关闭 AI 评论或总开关 */
     const thread = rec.thread;
     if (!thread) return null;
+    /* ── 出站边界的**第二道**（M1-C.2n P0 S48）─────────────────────────
+       浏览器在把快照发给本进程之前，已经只放行公开档动态（见
+       assets/js/moments.js `_momentsCompanionSnapshot` 的 `_publicOnly`）。
+       但"上游过滤过了"不是一条可以依赖的性质：本进程自己持久化了这些线程，
+       而且除了浏览器之外没有任何东西保证将来不会出现第二个写入方。
+       因此这里**独立地**再判一次，并且方向一致：只有公开档线程才允许派生
+       "由其他角色发言"的任务。
+       注意判据必须是"公开"，不能写成"对作者可见" —— 作者恒可读自己的动态，
+       那样写等于把这道闸门写成恒真（`isMomentVisibleTo(thread, 作者)` 永远是 true）。
+       为什么这一道是必需的：回复链任务会把 momentContent / 评论正文
+       喂给**别的角色**的模型（下方 executeReplyChainTask → buildReplyPrompt）。
+       原先本函数只判"模型就绪 + 冷却"，于是受限线程的正文会流进无关角色的请求。
+       与浏览器侧共用同一份可见性实现（moments-visibility-core），不新增语义。 */
+    if (MOMENT_VIS.readVisibility(thread.visibility) !== 'all') return null;
     const comments = Array.isArray(thread.comments) ? thread.comments : [];
     const plan = CORE.canSchedule(comments, CORE.chainRound(comments));
     if (!plan.ok) return null;

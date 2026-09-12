@@ -323,7 +323,10 @@ function _momentsUserAvatarSrc(){
 /* ── 数据模型（严格校验 + 截断，防止脏数据落库） ── */
 function _momentsDefaults(p){
   p=p&&typeof p==='object'?p:{};
-  const vis=['all','user','roles','private'].includes(p.visibility)?p.visibility:'all';
+  /* M1-C.2n：档位归一交给共享核心。缺失 → 'all'（产品默认，行为与迁移前一致）；
+     非法但存在（模型拼错档位）→ 'invalid' —— 读侧永不可见（作者除外），
+     不再像原来的 `||'all'` 那样把"拼错的档位"静默当成"公开"。 */
+  const vis=_momentsWriteVisibility(p.visibility);
   const images=Array.isArray(p.images)?p.images.slice(0,9).filter(im=>im&&typeof im==='object'&&String(im.dataUrl||'').length<2.5e6):[];
   const isUser=p.authorType==='user';
   const roleId=isUser?'':String(p.roleId||p.authorId||'');
@@ -346,20 +349,56 @@ function _momentsDefaults(p){
   }
 }
 
-/* ── 可见性（无 RBAC，个人本地应用） ──
-   用户作者：作者本人永远可读自己的动态（含 private/user/roles）；其他主体按 visibility 规则。
-   角色作者：规则与第一阶段一致（all/user 对用户可见；private/roles 不对用户展示内容）。 */
-function _momentsVisibleToUser(m){
-  if(!m)return false;
-  if(_momentIsUserAuthor(m))return true;/* 用户看自己发的所有动态 */
-  return m.visibility==='all'||m.visibility==='user'
+/* ── 可见性（无 RBAC，个人本地应用）──────────────────────────────────────
+   M1-C.2n P3：本域的可见性语义**只有一份实现** ——
+   `assets/js/moments-visibility-core.js`（UMD 双载，浏览器与 Home Node 共用）。
+
+   为什么原来这里有四份谓词而现在没有：审计发现同一个问题在 moments.js /
+   social-network.js / active-diary.js 里被回答了**十一次**，彼此在
+   private / user / 缺失 visibility 三处给出不同答案；而"只要有一处忘了写，
+   它就绕过其余所有处"是真实发生的（社交网络回复页签当时完全不施加谓词）。
+   把判定收敛成唯一函数之后，"漏写一处"从"静默泄漏"变成"类型错误"。
+
+   冻结语义（见 M1-C.2n-MOMENTS-AUTHORITY-PLAN.md §2）：
+     · 作者恒可读自己的动态（含 private / user / invalid）
+     · 用户恒可读自己发的
+     · private → 仅作者；user → 仅用户（与作者）；roles → 名单内的角色（与作者）
+     · all → 所有主体
+     · 缺失 / 未知档位 → 仅作者（fail closed；**不是**公开） */
+/* 解析刻意**惰性**：写成加载期常量（`const CORE = window.IBMomentsVisibilityCore`）看着
+   更干净，但它把"core 必须先于本文件加载"变成一个静默的运行期事实 ——
+   一旦顺序或承载方式变化（file://、脚本注入、缓存、测试夹具），
+   `_momentsCore()` 会永远拿到 null，而所有可见性判定都被各自的 try/catch
+   吞成 false。"全部不可见"看起来像一次严格的安全收窄，实际是功能整体失效，
+   而且没有任何报错。惰性解析让这个失败模式在结构上不可能出现。 */
+function _momentsCore(){
+  const core=(typeof window!=='undefined'&&window.IBMomentsVisibilityCore)
+    ||(typeof self!=='undefined'&&self.IBMomentsVisibilityCore)
+    ||(typeof IBMomentsVisibilityCore!=='undefined'?IBMomentsVisibilityCore:null);
+  if(!core||typeof core.isMomentVisibleTo!=='function'){
+    /* 明确抛错而不是静默返回一个假核心：调用方的 try/catch 会如实 fail closed，
+       而错误类型与消息让"核心没加载"与"这条不可见"在日志里可区分。 */
+    throw new Error('moments-visibility-core 未加载（IBMomentsVisibilityCore 不可用）');
+  }
+  return core
 }
+/* principal 归一：'user' 用户主体（id = 当前用户）；其它字符串 = 角色主体。 */
+function _momentsPrincipalRole(roleId){return{kind:'role',id:String(roleId==null?'':roleId)}}
+function _momentsPrincipalUser(){
+  let uid='';try{uid=_activeUserId()}catch(e){uid=''}
+  return{kind:'user',id:String(uid||'')}
+}
+/* 旧调用点签名（m）→ 用户主体。 */
+function _momentsVisibleToUser(m){
+  return _momentsCore().isMomentVisibleTo(m,_momentsPrincipalUser())
+}
+/* 旧调用点签名（m, roleId）→ 角色主体。 */
 function _momentsVisibleToRole(m,roleId){
-  if(!m)return false;
-  if(!_momentIsUserAuthor(m)&&_momentsAuthorRoleId(m)===String(roleId))return true;/* 作者角色永远可读自己的动态（含 private） */
-  if(m.visibility==='all')return true;
-  if(m.visibility==='roles')return (m.visibleRoleIds||[]).includes(roleId);
-  return false
+  return _momentsCore().isMomentVisibleTo(m,_momentsPrincipalRole(roleId))
+}
+/* 写入侧档位归一：缺失 → 'all'（产品默认）；非法但存在 → 'invalid'（**不**兜底成 public）。 */
+function _momentsWriteVisibility(raw){
+  return _momentsCore().writeVisibility(raw)
 }
 function _momentsCfg(id){return apiConfigs.find(a=>a.id===id)||archivedConfigs.find(a=>a.id===id)||null}
 
@@ -544,12 +583,17 @@ async function _momentsContext(character){
 async function _momentsRecentOwn(roleId,limit){
   return (await getRoleMoments(roleId)).slice(0,limit||5)
 }
-/* 其他角色最近动态（仅公开 all 可见的动态；视 otherRolesVisible 偏好；有界扫描：24h 窗口 + 条数上限） */
+/* 其他角色最近动态（仅"对该角色可见"的动态；视 otherRolesVisible 偏好；有界扫描：24h 窗口 + 条数上限）
+   M1-C.2n P3：改用共享核心判定。原实现写死 `visibility==='all'`，
+   这既漏掉 roles 档（明确点名该角色却读不到）、也把"缺失档位"当成公开候选；
+   更关键的是它在 `.slice(limit)` **之后**才谈可见性 —— 隐藏动态会先吃掉候选窗口，
+   把真正可见的动态挤出上下文（违反 §3-C "先过滤，再 top-k"）。 */
 async function _momentsRecentOthers(roleId,limit){
   try{
     const scanned=await _momentsScanDesc(MOMENT_CTX_SCAN_MAX);
     const dayAgo=new Date(Date.now()-24*3600000).toISOString();
-    return scanned.filter(m=>m&&m.roleId!==roleId&&m.visibility==='all'&&String(m.createdAt||'')>=dayAgo)
+    return _momentsCore().filterVisibleMoments(scanned,_momentsPrincipalRole(roleId))
+      .filter(m=>String(m.roleId||'')!==String(roleId)&&String(m.createdAt||'')>=dayAgo)
       .sort((a,b)=>String(b.createdAt||'').localeCompare(String(a.createdAt||''))).slice(0,limit||8)
   }catch(e){return[]}
 }
@@ -602,7 +646,8 @@ function buildMomentPrompt(args){
     '4. 不要复读写过的内容、主动消息或最近动态；不要重复自己最近使用的开头；允许短句和碎片化表达。',
     '5. 正文 8-120 字，1-2 句，不配 hashtag，不加引用格式，不要使用聊天回复格式，不要称呼读者。',
     '6. 只输出一个 JSON 对象：{"publish":true/false,"content":"正文","visibility":"all"|"user"|"roles"|"private","visibleRoleIds":[],"motive":"share|daily_life|emotion|reflection|interaction|curiosity|social_response|none","wantImage":true/false,"imagePrompt":"想配图时的画面描述（≤120字）","reason":"不发布时说明原因（≤50字）"}',
-    '7. visibility：默认 "all"；仅当内容不适合用户看到（如私人情绪）才用 "user" 或 "private"；指定给某些角色时用 "roles" 并填 visibleRoleIds。',
+    '7. visibility：默认 "all"（所有人都能看到）。**只有想让用户一个人看到**时才用 "user"；**只有写给自己**、不希望任何人（含用户）看到时才用 "private"；想让某几位朋友看到时用 "roles" 并填 visibleRoleIds。',
+    '注：无论选哪一档，你自己都能看到自己发过的内容。',
     '8. 今天没有值得分享的内容时必须 publish:false。宁可不发，也不要凑数；publish:false 是正常输出，不是失败。',
     '9. 是否配图（wantImage）：像真实的人一样判断"这条内容此刻会不会自然想配一张照片"。明确的对象/场景/视觉瞬间（奇怪的猫、小店、月亮、风景、食物、街角、刚买到的东西、做过的某件事）→ 自然适合配图；单纯情绪、一句话感想、内心反思、对某人的想念、很抽象的想法 → 通常不适合配图。',
     '10. wantImage=true 表示"这条内容从内容和情境上自然适合配一张图"，不是要求系统保证出图；判断不适合就 false，不要为了配图而配图，也不是每条都要配。',
@@ -649,7 +694,11 @@ function _momentsParseOutput(raw){
   if(j.publish===false)return{publish:false,reason:String(j.reason||'').slice(0,200),motive:'none'};/* none 语义强制：不发布=无动机 */
   if(j.publish!==true)return null;
   if(!String(j.content||'').trim())return null;
-  const visibility=MOMENT_VIS.includes(j.visibility)?j.visibility:'all';
+  /* M1-C.2n：模型输出的档位也走共享核心的写入侧归一。
+     关键区别：模型**没给** visibility → 'all'（产品默认）；模型给了一个
+     **拼错的**档位（"everyone"）→ 'invalid'，读侧永不可见（作者除外）。
+     原实现把两者都兜底成 'all'，等于让"模型写错一个词"直接变成公开。 */
+  const visibility=_momentsWriteVisibility(j.visibility);
   /* motive 归一：缺失/非法/与 publish:true 矛盾（none）→ daily_life；motive 只是标注，不是发布资格门，不因它拒绝发布 */
   const motive=(MOMENT_MOTIVES.includes(j.motive)&&j.motive!=='none')?j.motive:'daily_life';
   /* wantImage 归一：模型对"是否自然适合配图"的建议；false/缺失都不生成图片（由 _momentsImageGate 再过滤） */
@@ -1428,11 +1477,21 @@ function _momentsRecordLike(roleId,targetRoleId,now){
     st[roleId]=cur;localStorage.setItem(MOMENT_LIKE_STATE_KEY,JSON.stringify(st))
   }catch(e){}
 }
-/* 候选资格：可见性（仅公开 all）/非作者/API 可用/未赞过/每小时上限/冷却/最近是否刚与作者互动 */
+/* 候选资格：可见性（仅公开 all）/非作者/API 可用/未赞过/每小时上限/冷却/最近是否刚与作者互动
+   M1-C.2n：这里刻意**保留**"仅 all 档参与 AI 点赞"这条产品策略 —— 它不是可见性判定，
+   而是"社交动作只发生在完全公开的动态上"。它之所以仍然安全，是因为它比可见性
+   **更严**（all ⊂ 对该角色可见），因此不可能放宽任何边界。
+   但它必须服从可见性这一层：先问"这条对点赞者可见吗"，再问策略。 */
 function _momentsLikeEligible(moment,roleId,now){
   try{
     const prefs=_momentsPrefs();if(!prefs.enabled||!prefs.aiLike)return false;
-    if(!moment||moment.visibility!=='all')return false;/* private/user/roles 不参与 AI 点赞 */
+    if(!_momentsVisibleToRole(moment,roleId))return false;/* 可见性（唯一实现） */
+    /* 注意：这里**不**额外要求 moment.id —— 既定调用点传的是候选形状
+       （tests/test_moments_phase2_smoke.js 的 like.eligible 就传了一个没有 id 的
+       fixture），而"自己发的动态不给自己点赞"这类策略本来也不该依赖 id。
+       可见性核心对畸形行已经 fail-closed（无 id 一律不可见），
+       所以放开这一条不会放宽任何边界。 */
+    if(_momentsCore().readVisibility(moment.visibility)!=='all')return false;/* 产品策略：非公开动态不参与 AI 点赞 */
     if(!_momentIsUserAuthor(moment)&&_momentsAuthorRoleId(moment)===String(roleId))return false;
     if((moment.likes||[]).includes(roleId))return false;
     const cfg=_momentsCfg(roleId);if(!cfg||!_ibApiReady(cfg))return false;
@@ -1555,9 +1614,29 @@ async function _momentsCompanionSnapshot(cfg){
         comments: (Array.isArray(m.comments) ? m.comments : []).slice(-12).map(c => ({ id: String(c.id || ''), authorType: c.authorType === 'role' ? 'role' : 'user', authorId: String(c.authorId || 'user'), content: String(c.content || '').slice(0, 300), replyTo: String(c.replyTo || '').slice(0, 80), createdAt: String(c.createdAt || '') }))
       };
     };
+    /* ── 出站边界（M1-C.2n P0 S21/S48）────────────────────────────────
+       这份快照会经 HTTP PUT 交给 companion 进程，**持久化在它自己的数据文件里**，
+       并且那里的回复链（active/moments.js maybeCreateReplyTask）会把它喂给
+       **其他角色**的模型调用 —— 而 companion 侧当时**没有任何可见性谓词**。
+       本次审计确认的形态是：角色自己发的 private / user / roles 档动态会经
+       recent_threads 流出去，被另一个角色在生成评论时读到。
+
+       修法刻意放在**出站这一侧**（过滤在数据离开浏览器之前完成），而不是
+       "再教 companion 一份 ACL"：本阶段不新增第二处可见性实现，而且
+       "数据走出去时已经是最小集"这条性质与接收方是谁无关。
+
+       判据用最严档（'all'）而不是"对该角色可见"：
+         · other_role_moments / recent_threads 的服务对象是**别的角色**，
+           所以只有公开档可以出站；
+         · 这与既有产品语义一致 —— other_role_moments 一直是 all-only，
+           并被 tests/test_moments_phase3_smoke.js:305 显式锁定；
+         · recent_moments（自己的）保留 private：companion 用它给**作者自己**
+           发动态去重，那是她自己的内容，且她本来就看得见。
+       直白地说：private 的动态，另一个角色永远不会在 prompt 里读到。 */
+    const _publicOnly = m => !!m && _momentsCore().readVisibility(m.visibility) === 'all';
     const threads = [];
-    (ctx.recentMoments || []).forEach(m => { if (m && m.id && threads.length < 5) threads.push(compactThread(m)) });
-    (ctx.otherRoleMoments || []).forEach(m => { if (m && m.id && threads.length < 8) threads.push(compactThread(m)) });
+    (ctx.recentMoments || []).filter(_publicOnly).forEach(m => { if (m && m.id && threads.length < 5) threads.push(compactThread(m)) });
+    (ctx.otherRoleMoments || []).filter(_publicOnly).forEach(m => { if (m && m.id && threads.length < 8) threads.push(compactThread(m)) });
     const prefs = _momentsPrefs();
     const snapEntry = m => {
       const imgs = snapImages(m);
@@ -1571,8 +1650,12 @@ async function _momentsCompanionSnapshot(cfg){
       recent_proactive_messages: ctx.recentProactiveMessages,
       chat_summary: ctx.chatSummary,
       last_interaction_at: ctx.lastInteractionAt,
-      recent_moments: (ctx.recentMoments || []).map(snapEntry),
-      other_role_moments: (ctx.otherRoleMoments || []).map(snapEntry),
+      /* 自己的动态：按**该角色**主体再确认一次可见，而不是"因为来自 getRoleMoments
+         所以假定它可见"。列表函数的返回值不是授权凭证。 */
+      recent_moments: _momentsCore().filterVisibleMoments(ctx.recentMoments, _momentsPrincipalRole(cfg.id)).map(snapEntry),
+      /* other_role_moments 是**别的角色**的模型上下文（发圈 prompt / 评论 / 回复链），
+         因此只允许公开档出站（见上面 _publicOnly 的说明）。 */
+      other_role_moments: (ctx.otherRoleMoments || []).filter(_publicOnly).map(snapEntry),
       prefs: { aiComment: prefs.aiComment !== false, enabled: prefs.enabled !== false },
       recent_threads: threads
     }
@@ -1789,40 +1872,54 @@ async function _momentsTick(){
   }catch(e){console.warn('[Moments] tick failed',String(e&&e.message||e).slice(0,200))}
 }
 
-/* ══════════ 聊天联动：朋友圈进入 AI 上下文（轻量检索，不永久塞入） ══════════ */
+/* ══════════ 聊天联动：朋友圈进入 AI 上下文（轻量检索，不永久塞入） ══════════
+   M1-C.2n P3/P7：候选集**先**经共享可见性核心过滤，**再**排序 / top-k。
+
+   两条**不同**的语义必须分开写清楚，它们的答案确实不一样：
+
+     ① 自己的动态：这里判的是"**要不要让这条进她的聊天上下文**"，
+        比"作者能否读到它"更严 —— 私人日志（private）是她愿意让我看见、
+        却不愿意让它变成聊天素材的东西（tests/test_moments_phase3_smoke.js
+        的 privacy.ctxOwnExcludesPrivate 明确锁定了这一点）。
+        可读性用共享核心判定，聊天可用性再叠一层"非 private"策略。
+     ② 朋友的动态：聊天上下文只带**公开**档。这是既有产品语义
+        （other_role_moments 一直是 all-only），也避免了"她随口引用
+        别人只写给她的内容"。
+
+   原实现把三件事挤在同一个 filter 表达式里（roleId 归属 + 是否 private +
+   "对用户可见"），其中 `_momentsVisibleToUser` 回答的是**用户**主体的问题，
+   却被拿来决定"这条能不能进**角色**的 prompt" —— 两个主体被同一个谓词回答
+   正是本阶段要消灭的形状。现在两处都走同一份可见性实现，策略项显式单列。 */
 async function getMomentsContext(apiId,opts){
   opts=opts||{};
   try{
     const prefs=_momentsPrefs();
     const all=await _momentsScanDesc(MOMENT_CTX_SCAN_MAX)/* 有界：每条聊天消息都走这里，不做全表读取 */;
-    const own=all.filter(m=>m.roleId===apiId&&m.visibility!=='private'&&_momentsVisibleToUser(m))
-      .sort((a,b)=>String(b.createdAt||'').localeCompare(String(a.createdAt||''))).slice(0,4);
-    const others=(prefs.otherRolesVisible
-      ?all.filter(m=>m.roleId!==apiId&&m.visibility==='all')/* user 公开动态同样进入（roleId=''≠apiId）；user private 天然被排除 */
-      :[]).sort((a,b)=>String(b.createdAt||'').localeCompare(String(a.createdAt||''))).slice(0,3);
-    if(!own.length&&!others.length)return '';
-    const lines=[],timeLabel=iso=>{
-      const d=new Date(iso),now=new Date(),pad=n=>String(n).padStart(2,'0');
-      const sameDay=d.toDateString()===now.toDateString();
-      const yest=new Date(now);yest.setDate(now.getDate()-1);
-      const hhmm=pad(d.getHours())+':'+pad(d.getMinutes());
-      if(sameDay)return'今天 '+hhmm;
-      if(d.toDateString()===yest.toDateString())return'昨天 '+hhmm;
-      return(d.getMonth()+1)+'月'+d.getDate()+'日 '+hhmm
-    };
-    for(const m of own){
-      const name=String((function(){const c=_momentsCfg(apiId);return c?(c.nickname||c.model||'我'):'我'})()||'我');
-      lines.push('- （'+timeLabel(m.createdAt)+'）我：'+String(m.content||'').slice(0,120))
-    }
-    for(const m of others){
-      const name=_momentIsUserAuthor(m)?_momentsUserDisplayName():(function(){const c=_momentsCfg(_momentsAuthorRoleId(m));return c?(c.nickname||c.model||''):'另一角色'})();
-      lines.push('- （'+timeLabel(m.createdAt)+'）'+name+'：'+String(m.content||'').slice(0,120))
-    }
-    let ctx='【朋友圈动态（系统参考，勿提及此段）】\n'+lines.join('\n');
-    if(ctx.length>MOMENT_CONTEXT_CHAT_MAX)ctx=ctx.slice(0,MOMENT_CONTEXT_CHAT_MAX);
-    return ctx
+    /* 选择与渲染都在共享核里（M1-C.2n §10）：Home Node 用**同一个函数**
+       渲染同一份 canonical 状态，因此"她被喂了什么"可以逐字比较。
+       本函数只剩三件本机专属的事：取候选（IndexedDB 游标）、解析名字
+       （apiConfigs）、把 prefs 传进去。 */
+    return _momentsCore().renderMomentsContext({
+      moments:all,
+      principal:_momentsPrincipalRole(apiId),
+      characterId:String(apiId||''),
+      userName:(function(){try{const a=window._cachedUserName;return typeof a==='string'&&a.trim()?a.trim():_momentsUserDisplayName()}catch(e){return _momentsUserDisplayName()}})(),
+      characterNameOf:_momentsContextNameOf,
+      options:{ownLimit:4,otherLimit:3,otherRolesVisible:prefs.otherRolesVisible!==false},
+      maxChars:MOMENT_CONTEXT_CHAT_MAX
+    });
   }catch(e){return''}
 }
+/* 名字解析：与迁移前的 `_momentsCfg(id).nickname||model` 逐字一致
+   （`||` 而非 `??`，空字符串也算缺失）。角色已删除时回落'另一角色'/自己回落'我'，
+   与旧实现相同。节点侧传自己的 characters 表查询函数。 */
+function _momentsContextNameOf(roleId){
+  const c=_momentsCfg(String(roleId||''));
+  return c?String(c.nickname||c.model||''):''
+}
+/* 旧的内联渲染（timeLabel / own / others 三段拼装）已删除：
+   它与 Home Node 侧的渲染只要差一个空格，"两端证据相同"就无法被证明。
+   现在只有共享核里的 renderSelected 一份。 */
 
 /* ══════════ UI ══════════ */
 function _momentsTimeLabel(iso){
@@ -1870,12 +1967,18 @@ async function _momentsRenderFeed(opts){
   let list=[];
   try{
     if(filterRole&&scope==='private'){
-      /* 私人日志：仅当用户正查看该角色页面时展示"上锁"占位卡（内容不可见，不可点赞/评论/删除） */
+      /* 私人日志：只看**该角色**的 private 档，且必须对该角色确实可见
+         （作者恒可读自己的，因此名单过滤只用来排除"用户自己的 private 动态"
+         混进角色私人日志视图）。 */
       list=await getRoleMoments(filterRole);
-      list=list.filter(m=>m.visibility==='private')
+      list=_momentsCore().filterVisibleMoments(list,_momentsPrincipalRole(filterRole))
+        .filter(m=>_momentsCore().readVisibility(m.visibility)==='private')
     }else if(filterRole){
+      /* 角色主页：只展示"用户能看到"的档位。原先写死 `visibility!=='private'`，
+         等于把 roles 档（未列名用户）也一并展示给用户 —— 明文禁止。
+         现在用共享核心按**用户主体**判定，因此 roles / private / invalid 都不出现。 */
       list=await getRoleMoments(filterRole);
-      list=list.filter(m=>m.visibility!=='private')/* 私密动态只有角色自己可读，用户 UI 不展示内容 */
+      list=_momentsCore().filterVisibleMoments(list,_momentsPrincipalUser())
     }else list=await getMoments(MOMENT_FEED_FIRST_SCAN);/* 首屏只读最近 MOMENT_FEED_FIRST_SCAN(60) 条，游标即停，不扫 360 */
   }catch(e){
     if(seq!==_momentsRenderSeq)return;/* 已有更新的渲染在进行：旧渲染不再写 DOM */
@@ -1907,8 +2010,13 @@ async function _momentsRenderFeed(opts){
   for(const m of page){
     const isUserPost=_momentIsUserAuthor(m);
     const cfg=isUserPost?null:_momentsCfg(_momentsAuthorRoleId(m));
-    /* 角色私密动态 → 锁占位卡（内容不可见）；用户自己的私密动态 → 正常卡片（作者本人可见） */
-    if(m.visibility==='private'&&!isUserPost){
+    /* 角色私密动态 → 锁占位卡（内容不可见）；用户自己的私密动态 → 正常卡片（作者本人可见）。
+       M1-C.2n：锁卡的判据是"档位是 private 且作者不是用户"。
+       原来还额外要求 `!isUserPost`，于是"旧数据缺 visibility"（读侧 = invalid）会掉进
+       正常卡片分支、把内容渲染出来 —— 缺失 ACL 的唯一泄漏形态。现在按核心的
+       读侧归一判断，invalid/private 都进锁卡分支。 */
+    const _vis=_momentsCore().readVisibility(m.visibility);
+    if((_vis==='private'||_vis==='invalid')&&!isUserPost){
       frag.appendChild(_momentsBuildPrivateCard(m,cfg));
       continue
     }
@@ -2247,6 +2355,18 @@ window._momentsRenderComposeIdentity=_momentsRenderComposeIdentity;
 window._momentIsUserAuthor=_momentIsUserAuthor;
 window._momentsAuthorRoleId=_momentsAuthorRoleId;
 window._momentsUserDisplayName=_momentsUserDisplayName;
+/* ── 可见性互操作点（M1-C.2n）──────────────────────────────────────────
+   其他模块（social-network.js / role-letters.js / active-diary.js）必须经
+   **这组函数**判定动态可见性，而不是各自写谓词，也不是自己去读
+   window.IBMomentsVisibilityCore —— 本文件由 IIFE 包裹，内部符号不在全局，
+   所以"看起来能调用"与"真的能调用"只差一个显式导出。
+   早期版本没有导出 `_momentsCore`，调用方的 `typeof _momentsCore==='function'`
+   守卫于是恒假、恒 fail closed，而**不报任何错** —— 一个静默失效的守卫
+   比一处泄漏更难发现（它把"核心没加载"伪装成"这条不可见"）。 */
+window._momentsCore=_momentsCore;
+window._momentsPrincipalUser=_momentsPrincipalUser;
+window._momentsPrincipalRole=_momentsPrincipalRole;
+window._momentsWriteVisibility=_momentsWriteVisibility;
 window._momentsResetSyncForTest=_momentsResetSyncForTest;
 window._momentsDiagnoseOutput=_momentsDiagnoseOutput;
 window._momentsOpenRole=_momentsOpenRole;

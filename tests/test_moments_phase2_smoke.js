@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 
 /* Moments 第二阶段浏览器冒烟测试（Node 18+，零依赖，需 Chrome / Edge）。
    覆盖：AI 图文 Moment（成功/纯文字/图片失败保留文字/不发布）、图片持久化与读取、
@@ -204,8 +204,15 @@ async function main() {
     const u1 = await evaluate(cdp, "likeMoment('" + m1.moment.id + "')");
     const u2 = await evaluate(cdp, "likeMoment('" + m1.moment.id + "')");
     check('like.userToggle', u1.ok && u1.count === 2 && u2.liked === false && u2.count === 1, JSON.stringify({ u1, u2 }));
-    check('like.eligible', await evaluate(cdp, "(function(){return _momentsLikeEligible({roleId:'p2d',visibility:'all',likes:[]},'p2a')})()"));
-    const vis = await evaluate(cdp, "(function(){return _momentsLikeEligible({roleId:'p2a',visibility:'roles',visibleRoleIds:['p2b'],likes:[]},'p2b')})()");
+    /* M1-C.2n：这两个 fixture 补上 `id`。
+       可见性谓语有一条**基础拒绝**：缺 id 的记录一律不可见（"这次提问是否成立"
+       的判据，不是档位判定）。原 fixture 没有 id，于是 `_momentsLikeEligible`
+       里的可见性前置检查把它挡掉 —— 失败原因与"不可见"无关，
+       而是"这条记录不能被当作一条记录看待"。
+       真实调用点（_momentsApplyLikes）传入的都是已落库的行，一定有 id，
+       因此补 id 让 fixture 与生产形状一致，而不是放宽断言。 */
+    check('like.eligible', await evaluate(cdp, "(function(){return _momentsLikeEligible({id:'mom_like_ok',roleId:'p2d',visibility:'all',likes:[]},'p2a')})()"));
+    const vis = await evaluate(cdp, "(function(){return _momentsLikeEligible({id:'mom_like_roles',roleId:'p2a',visibility:'roles',visibleRoleIds:['p2b'],likes:[]},'p2b')})()");
     check('like.notVisible', vis === false, String(vis));
     /* 上限语义与"可用角色数"绑定：作者角色不能给自己点赞，因此 eligible = 配置角色数 - 1。
        断言按真实不变量写（与角色数量无关）：每次调用最多 max 人、两次不重复点同一角色、

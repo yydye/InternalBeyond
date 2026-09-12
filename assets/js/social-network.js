@@ -240,6 +240,11 @@ async function _netRepostBlock(m){
   try{orig=_netOrigCache[m.repostOf]||await getMoment(m.repostOf)}catch(e){orig=null}
   if(orig)_netOrigCache[m.repostOf]=orig;
   const box=_netEl('div','net-repost');
+  /* M1-C.2n P0 S22：按 id 直读被转发动态，原先没有任何可见性判定 ——
+     一张转发卡片会把受限动态的**全文 + 图片 + 作者**渲染给用户。
+     写入侧已经禁止转发不可见动态（见 _netSubmitRepost），但存量数据里可能
+     已经有这样的转发行，而且渲染路径不能依赖"写入侧保证过"。 */
+  if(orig&&!(await _netMomentsVisible(orig)))orig=null;
   if(!orig){
     box.appendChild(_netEl('div','net-repost-body','（原动态已删除）'));
     return box;
@@ -478,10 +483,28 @@ async function _netProfileTab(tab){
     return;
   }
   if(tab==='replies'){
-    /* 回复页签：扫描全量（有界）收集该主体发表过的评论 */
+    /* 回复页签：扫描全量（有界）收集该主体发表过的评论。
+       M1-C.2n P0 A10 —— **这是审计发现的一处真实泄漏**：
+       原实现只按评论作者筛选，**完全不看动态的可见性**，于是
+       受限动态（角色 private / 未列名的 roles / 旧数据缺档位）下的
+       评论正文、动态作者名与相对时间会出现在用户的回复列表里，
+       而且那一行可点击 → _netOpenThread(moment.id) → 动态全文。
+       它绕过了当时存在的全部五个可见性谓词。
+       修法不是"在这里再写一条规则"，而是：候选集先过**唯一实现**。
+       评论没有独立 ACL（内嵌在 moment 行内），因此其可见性**就是**
+       所属动态的可见性（§3-F 最严胜出）。 */
     let scanned=[];
     try{scanned=await _momentsScanDesc(360)}catch(e){scanned=[]}
     if(seq!==_netPtabSeq)return;/* 过期页签渲染丢弃 */
+    const visCore=(typeof _momentsCore==='function')?_momentsCore():null;
+    if(!visCore){
+      /* 算不出可见性 ≠ 没有可见内容：明确报错而不是渲染一个空列表
+         （空列表会被读成"这个人没发过回复"）。 */
+      body.innerHTML='<div class="net-pf-empty">可见性核心未加载，暂时无法列出回复。</div>';
+      console.warn('[SocialNet] moments 可见性核心未导出；回复页签不展示内容');
+      return;
+    }
+    scanned=visCore.filterVisibleMoments(scanned,isUser?_momentsPrincipalUser():_momentsPrincipalRole(_netRoleId));
     const rows=[];
     scanned.forEach(function(m){
       if(!(m.comments&&m.comments.length))return;
@@ -512,10 +535,32 @@ async function _netProfileTab(tab){
   body.appendChild(frag);
 }
 
-/* ══════════ 讨论串（Thread） ══════════ */
+/* ══════════ 讨论串（Thread）══════════
+   M1-C.2n P0 A11：`_netOpenThread(id)` → `getMoment(id)` 是**按 id 直读**，
+   原先没有任何可见性谓词。按 id 直读是最容易漏的一条路径：列表路径都过滤了，
+   而"从回复列表点进来"或"任何调用方拿到 id"都会绕过列表过滤。
+   因此讨论串的入口与每次重渲染都必须重新过一遍**唯一实现**，
+   而不是"相信调用方已经筛过"。 */
+async function _netMomentsVisible(m){
+  try{
+    if(typeof _momentsCore!=='function'||typeof _momentsPrincipalUser!=='function'){
+      /* "算不出可见性"与"这条不可见"是两种诊断状态，绝不能合并成同一个 false：
+         前者是集成故障（要能查出来），后者是正常的策略结果。
+         放弃展示是 fail closed，但必须留下声音。 */
+      console.warn('[SocialNet] moments 可见性核心未导出；拒绝展示动态内容');
+      return false;
+    }
+    const isUser=!_netRoleId||_netRoleId==='user';
+    return _momentsCore().isMomentVisibleTo(m,isUser?_momentsPrincipalUser():_momentsPrincipalRole(_netRoleId));
+  }catch(e){
+    console.warn('[SocialNet] moments 可见性判定失败：'+String(e&&e.message||e).slice(0,160));
+    return false;
+  }
+}
 async function _netOpenThread(id){
   const m=await getMoment(id);
   if(!m){toast('动态不存在');return}
+  if(!(await _netMomentsVisible(m))){toast('这条动态你没有权限查看');return}
   _netThreadId=id;_netReplyTargetId='';_netReplyTargetName='';
   const ov=document.getElementById('net-thread-overlay');
   if(!ov)return;
@@ -535,7 +580,7 @@ async function _netThreadRender(){
   const title=document.getElementById('net-thread-title');
   if(!post||!tree)return;
   const m=await getMoment(_netThreadId);
-  if(!m){post.innerHTML='';tree.innerHTML='';return}
+  if(!m||!(await _netMomentsVisible(m))){post.innerHTML='';tree.innerHTML='';return}
   if(title)title.textContent='讨论串 · '+(function(){const qa=_netAuthorQuick(m);return qa.name+(_momentIsUserAuthor(m)?'（本人）':'')})();
   post.innerHTML='';
   const author=await _netAuthorOf(m);
@@ -654,6 +699,12 @@ function _netCloseRepost(){
 async function _netSubmitRepost(){
   const orig=await getMoment(_netRepostId);
   if(!orig){toast('原动态不存在');return{ok:false,error:'原动态不存在'}}
+  /* M1-C.2n P0 S28：转发是"把别人的正文再发布一次"。原实现不检查被转发动态的
+     可见性，于是**受限内容可以被转成一条公开动态**（新动态 visibility:'all'），
+     并被 _netRepostBlock 无谓词地渲染出来 —— 作者设定的边界被一步绕开。
+     转发继承来源可见性属于新增语义（本阶段明确不做），因此这里选择更诚实的做法：
+     对当前主体不可见的动态，不能转发。 */
+  if(!(await _netMomentsVisible(orig))){toast('这条动态你没有权限转发');return{ok:false,error:'原动态不可见'}}
   const txt=document.getElementById('net-repost-text');
   const text=txt?(txt.value||'').trim():'';
   const r=await createMoment({authorType:'user',authorId:_activeUserId(),content:text,repostOf:orig.id,source:'manual',visibility:'all'});
@@ -754,6 +805,8 @@ window._momentsOpenRole=function(roleId){
 async function repostMoment(origId,text){
   const orig=await getMoment(origId);
   if(!orig)return{ok:false,error:'原动态不存在'};
+  /* 同 _netSubmitRepost：不可见即不可转发（见该处说明）。 */
+  if(!(await _netMomentsVisible(orig)))return{ok:false,error:'原动态不可见'};
   return createMoment({authorType:'user',authorId:_activeUserId(),content:String(text||'').trim(),repostOf:orig.id,source:'manual',visibility:'all'});
 }
 

@@ -3002,6 +3002,14 @@ i would like the room to be enough.
       require **同一份文件**，因此"她怎么理解我"在两端出自同一条规则。
       必须在 memory.js（准入委托）与 active-diary.js（调度触发器）之前加载。 -->
 <script src="assets/js/understanding-derivation-core.js"></script>
+<!-- M1-C.2n：动态（Moments）可见性的唯一共享实现。
+     P0 审计发现同一个问题在 moments.js / social-network.js / active-diary.js 里
+     被回答了十一次，彼此在 private / user / 缺失 visibility 三处给出不同答案，
+     而其中一处（社交网络回复页签）完全不施加谓词 —— 受限动态的评论正文因此
+     可达用户界面。"多份谓词"的代价不是"两条规则不一致"，而是"漏写一处就绕过全部"。
+     本文件是唯一实现；Home Node 由 services/home-node/moments-*.js require 同一份。
+     必须在 moments.js / social-network.js / active-diary.js 之前加载。 -->
+<script src="assets/js/moments-visibility-core.js"></script>
 <script src="assets/js/memory.js"></script>
 <script src="assets/js/memory/auto-memory.js"></script>
 <script src="assets/js/memory/constellations.js"></script>
@@ -3108,6 +3116,17 @@ i would like the room to be enough.
        → home-node-bootstrap（数据层接缝：接管 understandings 的读；**拒绝**直接写）
      `home-node-bootstrap` 必须最后加载（它读上面两者的全局）。 -->
 <script src="assets/js/understanding-authority.js"></script>
+<!-- M1-C.2n · canonical moments authority。
+     与上面两者同款三态，但写协议是**多条可编辑记录 + 每行自己的 rev**，
+     而且有两个真实写者（用户界面 + 后台 companion），因此除了"读走镜像"，
+     还提供正常写通道，并在权威生效时**拒绝**绕过它的直接 dbPut/dbDelete：
+       moments-visibility-core（ACL，已在上面加载；与 Home Node 共用同一份）
+       → moments-authority（策略：写先到 Home Node，成功后才更新镜像；
+                            冲突不写镜像；本地写只在 mirror/off/file:// 下合法）
+       → home-node-client（唯一 HTTP 实现，含 createMomentsRemote）
+       → home-node-bootstrap（数据层接缝：接管 moments 的读与写守卫）
+     `home-node-bootstrap` 必须最后加载（它读上面两者的全局）。 -->
+<script src="assets/js/moments-authority.js"></script>
 <script src="assets/js/mobile-dto.js"></script>
 <script src="assets/js/home-node-client.js"></script>
 <script src="assets/js/home-node-bootstrap.js"></script>

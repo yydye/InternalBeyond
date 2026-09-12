@@ -726,9 +726,20 @@ async function consolidateCharacterMemory(cfg,opts){
     const _epiTime=m=>Number(m&&(m.created!=null?m.created:(m.lastActivated!=null?m.lastActivated:m.lastConsolidatedAt)))||0;
     const recentEpi=episodics.filter(m=>!(m.lastConsolidatedAt)||(Date.now()-Number(m.lastConsolidatedAt)>86400000))
       .sort((a,b)=>_epiTime(a)-_epiTime(b)).slice(-12);
-    /* 近期 sources：moments / diary / chat summary（同样按真实时间升序取最近若干条） */
+    /* 近期 sources：moments / diary / chat summary（同样按真实时间升序取最近若干条）
+       M1-C.2n P3：moments 也先过共享可见性核心，再取最近 6 条。
+       原实现是 `dbGetAll('moments').filter(m => m.roleId === roleId)` —— **完全没有**
+       可见性谓词；它今天"恰好不泄漏"只是因为另一个函数（getMomentsContext）
+       恰好排除了 others 档。把安全性建立"别处恰好写对了"之上，正是本阶段要消灭的形状。
+       过滤现在发生在 slice **之前**：隐藏的动态不会吃掉候选窗口。 */
     let recentMoments=[],recentDiary=[],summary='';
-    try{const ms=await dbGetAll('moments');recentMoments=ms.filter(m=>String(m.roleId||'')===roleId).sort((a,b)=>_tsOf(a&&a.createdAt)-_tsOf(b&&b.createdAt)).slice(-6)}catch(e){}
+    try{
+      const ms=await dbGetAll('moments');
+      const vis=(typeof _momentsCore==='function')
+        ?_momentsCore().filterVisibleMoments(ms,_momentsPrincipalRole(roleId))
+        :[];/* fail closed：核心不可用 → 不把任何动态送进归纳 */
+      recentMoments=vis.filter(m=>String(m.roleId||'')===String(roleId)).sort((a,b)=>_tsOf(a&&a.createdAt)-_tsOf(b&&b.createdAt)).slice(-6);
+    }catch(e){}
     try{const de=await dbGetAll('diary_entries');recentDiary=de.filter(e=>String(e.characterId||'')===roleId).sort((a,b)=>_tsOf(a&&(a.created!=null?a.created:a.date))-_tsOf(b&&(b.created!=null?b.created:b.date))).slice(-3)}catch(e){}
     try{const s=await dbGet('chatSummaries','sum_'+roleId);summary=(s&&s.summary)||''}catch(e){}
     if(!recentEpi.length&&!recentMoments.length&&!recentDiary.length&&!summary)return null;
