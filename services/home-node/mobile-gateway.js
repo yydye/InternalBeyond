@@ -49,6 +49,7 @@ const createMemoryRetrieval = require('./memory-retrieval.js');
    它**没有**自己的 store —— 与记忆共用 canonical memory_records，
    只是走另一份共享核心（thread-derivation-core.js，浏览器同款）。 */
 const createThreadRetrieval = require('./thread-retrieval.js');
+const createUnderstandingRetrieval = require('./understanding-retrieval.js');
 /* M1-C.2i：Middle Brain **执行配置**的投影语义（唯一实现，与桌面共用同一份）。
    只用到它的入站校验与构造式投影，**不含任何判定** —— 判定在 canonical 层。 */
 const MB_CONFIG_CORE = require('../../assets/js/middle-brain-config-core.js');
@@ -81,7 +82,13 @@ const ADMIN_PATHS = [
      记忆的存储与召回属于 runtime authority，不属于 Android 协议。
      Android 侧没有任何 memory verb，也不知道这里存在。 */
   '/memory/list', '/memory/changes', '/memory/records', '/memory/record',
-  '/memory/activate', '/memory/settings', '/memory/migration', '/memory/migrate'
+  '/memory/activate', '/memory/settings', '/memory/migration', '/memory/migrate',
+  /* M1-C.2m · canonical Understanding（同样是**桌面/运行时面**，不是设备面）：
+     理解的存储、修订链、用户更正与派生触发都属于 runtime authority。
+     Android 侧没有任何 understanding verb，也不知道这里存在（§18 安全边界）。 */
+  '/understanding/list', '/understanding/changes', '/understanding/records',
+  '/understanding/correct', '/understanding/corrections', '/understanding/derive',
+  '/understanding/migration', '/understanding/migrate'
 ];
 /* 单次 memory 批量写上限：记忆是**正文数据**（不是附件），因此远小于聊天批次。
    200 条 × 数 KB 仍在单事务的舒适区，同时保证一次请求不可能把任意大的负载
@@ -238,6 +245,17 @@ function createMobileGateway(deps) {
     store: memoryStore,
     logger: logger
   }) : null);
+  /* M1-C.2m：canonical Understanding —— 存储 / 取回 / 派生三者**共用同一个 store**。
+     与 memory/thread 同款装配纪律：绑定到"另一个能开、能查、永远为空"的实例
+     不会抛错，只会表现为"她对我的理解永远停在很久以前"。因此 store 与
+     retrieval/derivation 之间的一致性由 home-node-service.js 的装配期守卫强制。 */
+  const understandingStore = deps.understandingStore || null;
+  const understandingRetrieval = deps.understandingRetrieval || (understandingStore ? createUnderstandingRetrieval({
+    store: understandingStore,
+    memoryStore: memoryStore,
+    logger: logger
+  }) : null);
+  const understandingDerivation = deps.understandingDerivation || null;
 
   const RULES = Object.assign({
     pair: { rate: 10 / 60, burst: 10 },          /* 配对：每分钟 10 次 */
@@ -824,6 +842,12 @@ function createMobileGateway(deps) {
              把它记成 present/empty，否则必须记 missing（允许自行 retrieval）。 */
           threadBlock: (runtime.thread && runtime.thread.text) || '',
           threadConsulted: !!(runtime.thread && runtime.thread.consulted === true),
+          /* M1-C.2m：理解块（canonical understanding_records 上的读时存证）。
+             逐项透传的理由与 M1-C.2k 的 threadBlock 同一个（见 buildRuntimeContext
+             里那段注释）：漏传一个字段，快照就会把它记成 missing，
+             组织层的 understanding 分支随之塌空 —— 而表面上"什么都没报错"。 */
+          understandingBlock: (runtime.understanding && runtime.understanding.text) || '',
+          understandingConsulted: !!(runtime.understanding && runtime.understanding.consulted === true),
           p0Stable: runtime.p0Stable || '',
           p0Time: runtime.p0Time || ''
         },
@@ -892,6 +916,12 @@ function createMobileGateway(deps) {
           /* M1-C.2k：线索证据与记忆**同一次**装配产出（不是第二次读取）。
              三态与记忆同款：consulted 才 present/empty，派生失败 → missing。 */
           thread: threadRetrieval ? threadRetrieval.snapshotField(
+            (character && character.id) || ctx.characterId || '', {}) : null,
+          /* M1-C.2m：理解证据（canonical understanding_records）。
+             与 memory/thread 同一次装配、同款三态 —— 因此"两端对同一份
+             canonical 状态给出同一段语义证据"是可以被断言的，
+             而不是靠比较模型最后写出的文字。 */
+          understanding: understandingRetrieval ? understandingRetrieval.snapshotField(
             (character && character.id) || ctx.characterId || '', {}) : null
         };
       }
@@ -912,13 +942,15 @@ function createMobileGateway(deps) {
         p0Stable: '',
         p0Time: '',
         thread: threadRetrieval ? threadRetrieval.snapshotField(
+          (character && character.id) || ctx.characterId || '', {}) : null,
+        understanding: understandingRetrieval ? understandingRetrieval.snapshotField(
           (character && character.id) || ctx.characterId || '', {}) : null
       };
     } catch (error) {
       record('warn', 'runtime-context-failed', { error: String((error && error.message) || error) });
       return {
         runtimeContext: '', selectedMemoryIds: [], memoryCount: 0, memoryReason: 'context-failed',
-        memoryBlock: '', memoryConsulted: false, p0Stable: '', p0Time: '', thread: null
+        memoryBlock: '', memoryConsulted: false, p0Stable: '', p0Time: '', thread: null, understanding: null
       };
     }
   }
@@ -1414,6 +1446,165 @@ function createMobileGateway(deps) {
         source: source, version: marked.state.version, lastTimestamp: marked.state.lastTimestamp, records: marked.state.records
       });
       return sendJson(res, 200, okBody('memory.migration', null, marked), req);
+    }
+
+    /* ── Understanding（M1-C.2m）─────────────────────────────────────────
+       与 memory 同款的**桌面面**（runtime authority），不是设备 API：
+       它们在 /mobile/v1 之外，因此由 http.js 的 loopback/token 保护覆盖，
+       手机端永远拿不到。命名按**运行时**而不是按 Android。
+
+       这里刻意**没有**一条 /mobile/v1/understanding/*：Android 是 thin client，
+       它既不知道"她怎么理解我"这份文档存在，也不能提交它。理解只在
+       executeCharacterTurn 的执行缝里被 Home Node 自己注入。 */
+    if (action === 'understanding/list' && req.method === 'GET') {
+      if (!understandingStore) return fail(res, 'UNSUPPORTED', req, 501);
+      const limit = url && url.searchParams.get('limit');
+      const characterId = url && url.searchParams.get('characterId');
+      const page = understandingStore.listRecords({ limit: limit || undefined, characterId: characterId || undefined });
+      if (!page.ok) return fail(res, page.error || 'INTERNAL', req);
+      return sendJson(res, 200, okBody('understanding.list', null, {
+        count: page.count,
+        revision: page.revision,
+        truncated: !!page.truncated,
+        records: page.records
+      }), req);
+    }
+    if (action === 'understanding/changes' && req.method === 'GET') {
+      if (!understandingStore) return fail(res, 'UNSUPPORTED', req, 501);
+      const cursor = url && url.searchParams.get('cursor');
+      const limit = url && url.searchParams.get('limit');
+      const page = understandingStore.changesAfter(cursor == null ? 0 : Number(cursor), { limit: limit || undefined });
+      if (!page.ok) return fail(res, page.error || 'INTERNAL', req, 400);
+      return sendJson(res, 200, okBody('understanding.changes', null, page), req);
+    }
+    if (action === 'understanding/records' && req.method === 'POST') {
+      if (!understandingStore) return fail(res, 'UNSUPPORTED', req, 501);
+      let body;
+      try { body = await readBody(req, maxBodyBytes); }
+      catch (error) { return fail(res, error.code || 'BAD_REQUEST', req, null, null); }
+      const characterId = body.characterId ? String(body.characterId) : '';
+      if (!characterId) return fail(res, 'BAD_REQUEST', req, 400, null, { detail: 'characterId is required' });
+      const candidate = (body.candidate && typeof body.candidate === 'object') ? body.candidate : null;
+      if (!candidate) return fail(res, 'BAD_REQUEST', req, 400, null, { detail: 'candidate is required' });
+      const requestId = body.requestId ? String(body.requestId) : '';
+      /* 迁移路径与派生路径**在这里分开**（两条 store 分支，理由见 store 注释）：
+         迁移没有 expectedRevision 语义，而派生**必须**有 —— 缺了它，
+         两个并发派生就会互相覆盖。因此这里拒绝"迁移时偷懒省略 CAS"
+         这种形状之外的任何歧义：migrate=true 才走迁移。 */
+      const migrating = body.migrate === true;
+      const result = migrating
+        ? understandingStore.rewrite(characterId, candidate, { requestId: requestId, migrate: true })
+        : understandingStore.rewrite(characterId, candidate, {
+          requestId: requestId,
+          expectedRevision: body.expectedRevision == null ? null : Number(body.expectedRevision)
+        });
+      if (!result.ok) {
+        if (result.error === 'revision-conflict') {
+          /* 冲突是**一级结果**（不是错误）：调用方据此重读基版本再决定。
+             因此用 409 而不是 400，并且不在日志里记正文。 */
+          record('info', 'understanding-rewrite-conflict', {
+            characterId: characterId, expectedRevision: result.expectedRevision, actualRevision: result.actualRevision
+          });
+          return sendJson(res, 409, okBody('understanding.rewrite', requestId || null, {
+            ok: false, outcome: 'conflict', error: 'revision-conflict',
+            expectedRevision: result.expectedRevision, actualRevision: result.actualRevision,
+            activeId: result.activeId || null
+          }), req);
+        }
+        return fail(res, 'BAD_REQUEST', req, result.error === 'invalid-content' ? 422 : 400, null, { detail: result.error });
+      }
+      /* 观测：只报 outcome / 版本 / 计数，**绝不**记录理解正文或更正正文。 */
+      record('info', 'understanding-rewrite', {
+        characterId: characterId, outcome: result.outcome, docRevision: result.docRevision,
+        historyLength: result.historyLength, requestId: requestId || null, migrated: migrating
+      });
+      return sendJson(res, 200, okBody('understanding.rewrite', requestId || null, {
+        outcome: result.outcome,
+        id: result.id || null,
+        characterId: characterId,
+        revision: result.revision,
+        docRevision: result.docRevision,
+        previousDocRevision: result.previousDocRevision == null ? null : result.previousDocRevision,
+        historyLength: result.historyLength,
+        unattested: !!result.unattested,
+        migrated: !!result.migrated,
+        document: result.document || null
+      }), req);
+    }
+    if (action === 'understanding/correct' && req.method === 'POST') {
+      if (!understandingStore) return fail(res, 'UNSUPPORTED', req, 501);
+      let body;
+      try { body = await readBody(req, 64 * 1024); }
+      catch (error) { return fail(res, error.code || 'BAD_REQUEST', req, null, null); }
+      const characterId = body.characterId ? String(body.characterId) : '';
+      if (!characterId) return fail(res, 'BAD_REQUEST', req, 400, null, { detail: 'characterId is required' });
+      const result = understandingStore.addCorrection(characterId, {
+        text: body.text, basis: body.basis, revision: body.revision,
+        understandingId: body.understandingId, source: body.source, legacy: body.legacy === true
+      });
+      if (!result.ok) {
+        const status = result.error === 'no-active-document' ? 409 : 400;
+        return fail(res, 'BAD_REQUEST', req, status, null, { detail: result.error });
+      }
+      record('info', 'understanding-correction', { characterId: characterId, outcome: result.outcome, revision: result.correction.revision });
+      return sendJson(res, 200, okBody('understanding.correct', null, {
+        outcome: result.outcome, correction: result.correction
+      }), req);
+    }
+    if (action === 'understanding/corrections' && req.method === 'GET') {
+      if (!understandingStore) return fail(res, 'UNSUPPORTED', req, 501);
+      const characterId = (url && url.searchParams.get('characterId')) || '';
+      if (!characterId) return fail(res, 'BAD_REQUEST', req, 400, null, { detail: 'characterId is required' });
+      const listed = understandingStore.listCorrections(characterId, {});
+      return sendJson(res, 200, okBody('understanding.corrections', null, {
+        characterId: characterId,
+        corrections: listed.corrections || [],
+        constraining: understandingStore.constrainingCorrections(characterId).map(c => c.id)
+      }), req);
+    }
+    if (action === 'understanding/derive' && req.method === 'POST') {
+      if (!understandingStore) return fail(res, 'UNSUPPORTED', req, 501);
+      if (!understandingDerivation) return fail(res, 'UNSUPPORTED', req, 501, null, { detail: 'derivation unavailable' });
+      let body;
+      try { body = await readBody(req, 64 * 1024); }
+      catch (error) { return fail(res, error.code || 'BAD_REQUEST', req, null, null); }
+      const characterId = body.characterId ? String(body.characterId) : '';
+      if (!characterId) return fail(res, 'BAD_REQUEST', req, 400, null, { detail: 'characterId is required' });
+      /* 客户端**不能**提交证据 / 内容 / 印章 / 水位（§18）：它只能"请求派生"。
+         是否需要真的调模型由 Home Node 的持久水位判定，并把结果如实回报。 */
+      let derived;
+      try {
+        derived = await understandingDerivation.derive(characterId, { force: body.force === true });
+      } catch (error) {
+        record('warn', 'understanding-derive-failed', { characterId: characterId, error: String((error && error.message) || error).slice(0, 200) });
+        return fail(res, 'INTERNAL', req, 500, null, { detail: 'derive-failed' });
+      }
+      record('info', 'understanding-derive', {
+        characterId: characterId, outcome: derived.outcome, skipReason: derived.skipReason || null,
+        docRevision: derived.docRevision == null ? null : derived.docRevision
+      });
+      return sendJson(res, 200, okBody('understanding.derive', null, derived), req);
+    }
+    if (action === 'understanding/migration' && req.method === 'GET') {
+      if (!understandingStore) return fail(res, 'UNSUPPORTED', req, 501);
+      const source = (url && url.searchParams.get('source')) || 'default';
+      return sendJson(res, 200, okBody('understanding.migration', null, { state: understandingStore.getMigrationState(source) }), req);
+    }
+    if (action === 'understanding/migrate' && req.method === 'POST') {
+      if (!understandingStore) return fail(res, 'UNSUPPORTED', req, 501);
+      let body;
+      try { body = await readBody(req, 64 * 1024); }
+      catch (error) { return fail(res, error.code || 'BAD_REQUEST', req, null, null); }
+      const source = String(body.source || 'default');
+      const marked = understandingStore.setMigrationState(source, {
+        version: body.version,
+        records: body.records,
+        idSet: body.idSet
+      });
+      record('info', 'understanding-migration-mark', {
+        source: source, version: marked.state.version, records: marked.state.records
+      });
+      return sendJson(res, 200, okBody('understanding.migration', null, marked), req);
     }
 
     if (action === 'characters/publish' && req.method === 'POST') {

@@ -285,4 +285,84 @@ function createMemoryRemote(deps) {
   };
 }
 NS.createMemoryRemote = createMemoryRemote;
+
+/* ── understanding remote driver（understanding-authority 的注入契约）────
+   M1-C.2m。与 memory 的 remote 分开（理由同 memory 与 chat 分开：合并会让
+   "某一边多了一个方法"这种接线错误无法被发现）。
+
+   信封与 `/memory/*` **完全相同**（同一个 mobile-gateway、同一个 okBody），
+   因此复用 `_unwrapMemoryEnvelope`。解包失败会静默把 `res.records` 读成
+   undefined，进而 `replaceAll([])` 清空镜像 —— 那条注释里的教训同样适用。
+
+   端点形状刻意与 memory 对齐（list / changes / records / correct / derive /
+   migration / migrate），只把「写一条记录」换成「提交一份候选理解（带
+   expectedRevision）」，因为理解的写协议本来就是修订链 + CAS。 */
+function createUnderstandingRemote(deps) {
+  deps = deps || {};
+  return {
+    health: function () {
+      return _request('/health', { timeoutMs: deps.healthTimeoutMs || 4000 });
+    },
+    list: function (query) {
+      query = query || {};
+      var qs = [];
+      if (query.characterId) qs.push('characterId=' + encodeURIComponent(query.characterId));
+      if (query.limit) qs.push('limit=' + encodeURIComponent(query.limit));
+      return _request('/understanding/list' + (qs.length ? '?' + qs.join('&') : ''), { timeoutMs: deps.batchTimeoutMs || MIGRATION_TIMEOUT_MS }).then(_unwrapMemoryEnvelope);
+    },
+    changes: function (cursor, options) {
+      options = options || {};
+      return _request('/understanding/changes?cursor=' + encodeURIComponent(Number(cursor) || 0) +
+        (options.limit ? '&limit=' + encodeURIComponent(options.limit) : '')).then(_unwrapMemoryEnvelope);
+    },
+    /* 提交候选理解：expectedRevision 是**必须**的（0 = 期望"还没有理解"）。
+       服务端把基版本过期如实回报为 conflict，绝不覆盖。 */
+    rewrite: function (characterId, next, options) {
+      options = options || {};
+      var payload = {
+        characterId: String(characterId || ''),
+        expectedRevision: options.expectedRevision == null ? null : Number(options.expectedRevision),
+        candidate: next || {}
+      };
+      if (options.requestId) payload.requestId = String(options.requestId);
+      return _request('/understanding/records', { method: 'POST', body: payload, timeoutMs: deps.writeTimeoutMs }).then(_unwrapMemoryEnvelope);
+    },
+    /* 一次性迁移：把浏览器遗留行**原样**送到 canonical（含旧 history）。
+       与常规 rewrite 分开是刻意的 —— 迁移不是"派生了一份新理解"，
+       它没有 expectedRevision 语义，而是"把权威状态搬过来"。 */
+    migrateRecord: function (characterId, candidate) {
+      return _request('/understanding/records', {
+        method: 'POST',
+        body: { characterId: String(characterId || ''), migrate: true, candidate: candidate || {} },
+        timeoutMs: deps.batchTimeoutMs || MIGRATION_TIMEOUT_MS
+      }).then(_unwrapMemoryEnvelope);
+    },
+    /* 更正：用户说"你这一点理解错了"的持久记录。 */
+    correct: function (characterId, input) {
+      return _request('/understanding/correct', {
+        method: 'POST',
+        body: Object.assign({ characterId: String(characterId || '') }, input || {}),
+        timeoutMs: deps.writeTimeoutMs
+      }).then(_unwrapMemoryEnvelope);
+    },
+    corrections: function (characterId) {
+      return _request('/understanding/corrections?characterId=' + encodeURIComponent(String(characterId || ''))).then(_unwrapMemoryEnvelope);
+    },
+    /* 派生触发：桌面**不能**派生，只能请求；服务端按持久水位决定跑不跑，
+       并以 outcome:'ineligible' + skipReason 如实回报"这次没调模型"。 */
+    derive: function (characterId, options) {
+      options = options || {};
+      var payload = { characterId: String(characterId || '') };
+      if (options.force) payload.force = true;
+      return _request('/understanding/derive', { method: 'POST', body: payload, timeoutMs: deps.deriveTimeoutMs || MIGRATION_TIMEOUT_MS }).then(_unwrapMemoryEnvelope);
+    },
+    migrationState: function (source) {
+      return _request('/understanding/migration?source=' + encodeURIComponent(source || 'default')).then(_unwrapMemoryEnvelope);
+    },
+    markMigration: function (source, patch) {
+      return _request('/understanding/migrate', { method: 'POST', body: Object.assign({ source: source || 'default' }, patch || {}), timeoutMs: MIGRATION_TIMEOUT_MS }).then(_unwrapMemoryEnvelope);
+    }
+  };
+}
+NS.createUnderstandingRemote = createUnderstandingRemote;
 })(window.IB || (window.IB = {}));

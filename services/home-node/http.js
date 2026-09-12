@@ -215,8 +215,11 @@ function createHomeNodeHttp(deps) {
     /* `/memory/*` 是**桌面面**（M1-C.2d Wave 2）而不是设备面：它承载 canonical
        记忆正文与召回。因此它必须走与 /status /characters 同一套保护 ——
        远端未配置桌面 token 时 403，而不是匿名可读。
-       把记忆排除在这条规则之外，等于把"她的长期记忆"暴露给整个局域网。 */
-    const isDesktopOnlyPath = path.indexOf('/memory/') === 0;
+       把记忆排除在这条规则之外，等于把"她的长期记忆"暴露给整个局域网。
+       M1-C.2m：`/understanding/*` 同理，而且是**更私密**的一类内容 ——
+       它是角色对用户的私有认知状态（含用户更正原文）。前缀守卫必须与
+       /memory/ 逐字同款，否则默认绑 0.0.0.0 的部署会让局域网读到"她怎么看你"。 */
+    const isDesktopOnlyPath = path.indexOf('/memory/') === 0 || path.indexOf('/understanding/') === 0;
     if (remote && (!isMobilePath || isDesktopOnlyPath)) {
       if (!token) {
         record('warn', 'rejected-remote-non-mobile', { path: path, reason: 'no-desktop-token-configured' });
@@ -318,6 +321,19 @@ function createHomeNodeHttp(deps) {
           injection: 'home-node-execution-only',
           desktopPaths: ['/memory/list', '/memory/changes', '/memory/records', '/memory/record',
             '/memory/activate', '/memory/settings', '/memory/migration', '/memory/migrate']
+        },
+        /* M1-C.2m：理解是**私有认知状态**（含用户更正原文），因此与记忆同款：
+           存在 Node、经执行缝注入、**绝不**出现在任何设备面。这里的断言是
+           可检查的（test_mobile_thin_client / test_understanding_authority）。 */
+        understandingPolicy: {
+          stored: true,
+          servedToDevices: false,
+          deviceVerbs: [],
+          injection: 'home-node-execution-only',
+          derivation: 'home-node-single-writer',
+          desktopPaths: ['/understanding/list', '/understanding/changes', '/understanding/records',
+            '/understanding/correct', '/understanding/corrections', '/understanding/derive',
+            '/understanding/migration', '/understanding/migrate']
         },
         doesNotExpose: ['llm-proxy', 'tools', 'payments', 'moments', 'diary', 'letters', 'images', 'tts'],
         /* M1-B：设备身份 + 移动边界。mobile 面**只有** allowlist 里的 verb。 */

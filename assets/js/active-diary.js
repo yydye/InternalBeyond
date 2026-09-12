@@ -1054,72 +1054,34 @@ async function _consolidationTick(){
     _consolidationWaterline=Date.now()
   }catch(e){console.warn('[Consolidation] tick '+String(e&&e.message||e).slice(0,120))}
 }
-/* ---- Understanding v1：独立轻量生成（不触碰 semantic consolidation 主链） ----
-   独立 LLM 调用，从近期 episodic/moments/diary 提炼一份"当前理解"；
-   产出经 _calibrateMemoryCandidate(operation:'understanding') 准入（basis 判定/人格·心理拒止/evidence≥2）。
-   任何失败/解析异常静默；仅生成，不新建 semantic、不改任何既有 understanding 之外的东西。
-   水位线：每 6 小时至多一次。 */
+/* ---- Understanding（M1-C.2m）：桌面只剩**调度触发器**，不再是写者 ----
+   改了什么（这是本阶段的核心一步，P6(b)）：
+     · 旧实现是：取 canonical 角色的 episodic + moments + diary → 自己调模型 →
+       自己算准入与印章 → `unWrite` 直接写 IndexedDB。于是"只在手机上聊一周"
+       等于理解完全不变（浏览器没开），而两个标签页可以同时写同一份文档。
+     · 现在：桌面只**请求** Home Node 派生一次。是否真的派生由节点的**持久水位**
+       决定（证据指纹 + 最小间隔 + 飞行中 + 配置就绪），节点如实回报
+       `{outcome:'ineligible', skipReason}`。因此"桌面开着就烧 token"在结构上不可能。
+     · 为什么把派生规则（提示词 / 证据准入 / 印章 / 解析）整个删掉而不是留着：
+       留下一条能独立派生并提交的路径，就是一个随时会被重新接上的第二写者。
+       规则本体已在 assets/js/understanding-derivation-core.js（双载，两端同一份）。
+   保留的水位线是**桌面自己的呼叫节流**（6h），它不是语义的一部分 ——
+   真正的节流在节点侧，且跨进程重启有效（旧实现的水位是内存变量，开一次页面即清零）。 */
 var _understandingWaterline=0;
+/* 更正入口**只有一处**：window.IB.homeNode.understanding.correct
+   （home-node-bootstrap.js 注册；语义与失败边界都在 understanding-authority.js）。
+   刻意不在这里再包一个同名函数 —— 两个入口迟早会漂移成两套语义，
+   而"更正"恰恰是那个一旦漂移就会让用户的否定被静默遗忘的地方。 */
 async function _understandingTick(cfg){
   try{
-    if(!cfg||!cfg.id||!cfg.systemPrompt)return null;
-    if(typeof _ibApiReady==='function'&&!_ibApiReady(cfg))return null;
+    if(!cfg||!cfg.id)return null;
     const roleId=String(cfg.id);
-    const all=await dbGetAll('memories');
-    /* M1-C.2d Wave 1 · D-1：派生候选必须走与直接召回相同的可见性边界。
-       此前这里是 `createdBy===roleId || visibleTo∋roleId` —— 它接受
-       private 但由本角色写入的记忆（isMemoryVisibleTo 明确排除），
-       于是"对某角色隐藏的记忆"仍被写进派生 prompt 并回流到该角色的上下文。 */
-    const episodics=_memDerivationCandidates(all,roleId,_memNonSemantic);
-    const recentEpi=episodics.slice(-10);
-    let recentMoments=[],recentDiary=[];
-    try{const ms=await dbGetAll('moments');recentMoments=ms.filter(m=>String(m.roleId||'')===roleId).slice(-6)}catch(e){}
-    try{const de=await dbGetAll('diary_entries');recentDiary=de.filter(e=>String(e.characterId||'')===roleId).slice(-3)}catch(e){}
-    if(!recentEpi.length&&!recentMoments.length&&!recentDiary.length)return null;
-    const charName=cfg.nickname||cfg.model||'AI';
-    const system=String(cfg.systemPrompt||'').slice(0,20000)
-      +'\n\n你正在为角色「'+charName+'」提炼一份【当前理解】(understanding)——反映"这段时间对这段关系的持续认识"。只输出严格 JSON，不输出其他文字。';
-    const prompt=[
-      '【任务】基于近期碎片，提炼你对「'+charName+'」与用户这段关系当前最稳定的一条理解。若没有可扎根的稳定模式就 shouldUpdate:false。',
-      '【角色】'+charName+'；与用户关系：'+(cfg.relationship||'未设')+'。',
-      '【近期碎片】'+(recentEpi.map(m=>'- ['+(m.domain||'记忆')+'] '+((m.title||'')+' '+String(m.content||m.summary||'')).slice(0,200)).join('\n')||'（无）'),
-      '【近期日记】'+(recentDiary.map(e=>'- '+String(e.date||'')+'「'+(e.title||'')+'」: '+String(e.content||'').slice(0,120)).join('\n')||'（无）'),
-      '【近期动态】'+(recentMoments.map(m=>'- '+String(m.content||'').slice(0,120)).join('\n')||'（无）'),
-      '【输出格式】{"shouldUpdate":true/false,"content":"1-3句当前理解","basis":"user_stated|user_corroborated|ai_inference","dimension":"values|habits|identity|relationship|preferences|context","evidenceIds":["源id..."],"conviction":0-100}',
-      '【规则】1. 只有稳定模式才 true。2. 不要对心理健康下推断(只记用户自述)。3. 不要人格定性(不写"她是...型人")。4. basis 必须诚实：用户明确说=user_stated；多方一致=user_corroborated；你自己推测=ai_inference。'
-    ];
-    let raw='';
-    try{raw=await callApiChat(cfg,[{role:'system',content:system},{role:'user',content:prompt.join('\n')}],{_ibConsumer:'understanding',maxTokens:700,timeoutMs:120000,wantMeta:false,jsonMode:true,_noWebSearch:true,disableTools:true})}catch(e){return null}
-    const parsed=(typeof window._activeParsePlanJson==='function')?window._activeParsePlanJson(raw):null;
-    if(!parsed||parsed.shouldUpdate!==true)return null;
-    const content=String(parsed.content||'').trim().slice(0,500);
-    if(!content)return null;
-    /* evidenceIds：只信任真实存在**且对该角色可见**的源 id（模型输出不可信） */
-    const evidenceIds=_memVisibleEvidenceIds(parsed.evidenceIds,all,roleId).slice(0,50);
-    /* 准入：basis/人格·心理/evidence≥2 由 _calibrateMemoryCandidate 本地判定 */
-    const cal=(typeof window._calibrateMemoryCandidate==='function')
-      ?await window._calibrateMemoryCandidate({content:content,confidence:Number(parsed.conviction)||0,reasons:[],basis:String(parsed.basis||'').trim()||'ai_guess',operation:'understanding',targetStore:'understandings',cfg:cfg,evidenceIds:evidenceIds,category:['values','habits','identity','relationship','preferences','context'].includes(parsed.dimension)?parsed.dimension:'context'})
-      :null;
-    if(!cal||cal.rejected)return null;/* Gate 拒绝：不建、不改、不抛 */
-    const dimension=['values','habits','identity','relationship','preferences','context'].includes(parsed.dimension)?parsed.dimension:'context';
-    let existing=null;
-    try{existing=await window.unGetActive(roleId)}catch(e){}
-    /* R1/R6：印章来源 = **本制品新旧两版的证据并集**。
-       只按本次新证据算，会在"先收窄、后重新派生"时把印章放宽回旧范围。
-       无法解析的证据 id 追加一条降级来源（只可能更窄，不可能放宽）。 */
-    const _stampIds=Array.from(new Set(
-      ((existing&&existing.current&&existing.current.evidenceIds)||[]).map(String).concat(evidenceIds.map(String))
-    ));
-    const _stampRows=_stampIds.map(id=>all.find(m=>m&&String(m.id)===id)||{visibility:undefined});
-    const _stamp=_memDerivationStamp(_stampRows,roleId);
-    let resultId=null;
-    if(existing&&existing.current&&existing.current.content&&existing.current.content!==content){
-      /* 仅在内容有实质变化时才改写（留版本史） */
-      if(typeof window.unWrite==='function'){const u=await window.unWrite(roleId,{content:content,conviction:cal.confidence,basis:String(parsed.basis||'').trim()||'ai_guess',dimension:dimension,evidenceIds:evidenceIds,updatedBy:charName,stamp:_stamp});resultId=u&&u.id||null}
-    }else if(!existing&&typeof window.unWrite==='function'){
-      const u=await window.unWrite(roleId,{content:content,conviction:cal.confidence,basis:String(parsed.basis||'').trim()||'ai_guess',dimension:dimension,evidenceIds:evidenceIds,updatedBy:charName,stamp:_stamp});resultId=u&&u.id||null
-    }
-    return resultId||null
+    const auth=(typeof window!=='undefined'&&window.IB&&window.IB.homeNode&&window.IB.homeNode.understanding)||null;
+    if(!auth||typeof auth.derive!=='function')return null;/* 无 canonical 承载 → 不派生（也不本地派生） */
+    const res=await auth.derive(roleId,{});
+    const outcome=res&&res.outcome;
+    if(outcome==='created'||outcome==='updated')return roleId;
+    return null;
   }catch(e){return null}/* 静默旁路 */
 }
 /* ---- Thread v1：规则触发（零额外 LLM），不挤 semantic consolidation ----

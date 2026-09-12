@@ -1,4 +1,4 @@
-﻿/* ====================================================================
+/* ====================================================================
    M1-C.2i · 对照证明（counter-proof）
    --------------------------------------------------------------------
    目的：证明 test_middle_brain_convergence.js 的断言**真的有鉴别力**，
@@ -51,6 +51,14 @@ const COPY_FILES = [
      经 services/home-node-service.js → mobile-gateway → thread-retrieval 触到它，
      因此副本里缺了它基线就跑不起来（表现为 base.copyIsGreen 无摘要地变红）。 */
   'assets/js/thread-derivation-core.js',
+  /* M1-C.2m：理解派生的共享核心 + canonical 理解域的三个组件。
+     同一类依赖：基线经 home-node-service 的 understandingAssembly
+     → understanding-{store,derivation,retrieval} 触到它们，
+     缺一个 `require` 就会抛 MODULE_NOT_FOUND，表现为基线无摘要变红。 */
+  'assets/js/understanding-derivation-core.js',
+  'services/home-node/understanding-store.js',
+  'services/home-node/understanding-derivation.js',
+  'services/home-node/understanding-retrieval.js',
   'assets/js/middle-brain-config-core.js',
   'assets/js/middle-brain-config.js',
   'assets/js/middle-brain-policy.js',

@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 
 /*
  * Internal Beyond — Home Node (canonical chat authority)
@@ -28,6 +28,10 @@ const fs = require('fs');
 const createStore = require('../services/home-node/chat-store.js');
 const createMemoryStore = require('../services/home-node/memory-store.js');
 const createMemoryRetrieval = require('../services/home-node/memory-retrieval.js');
+/* M1-C.2m：canonical Understanding 的三个组件（store / 取回 / 派生）。 */
+const createUnderstandingStore = require('../services/home-node/understanding-store.js');
+const createUnderstandingDerivation = require('../services/home-node/understanding-derivation.js');
+const createUnderstandingRetrieval = require('../services/home-node/understanding-retrieval.js');
 /* M1-C.2k：线索（open thread）的派生器 —— 与记忆共用 canonical memory store。 */
 const createThreadRetrieval = require('../services/home-node/thread-retrieval.js');
 const createHttp = require('../services/home-node/http.js');
@@ -219,6 +223,64 @@ function canonicalThreadDeps(threads, memoryStore) {
   return { threadRetrieval: threads.threadRetrieval };
 }
 
+/* 缺一不可的硬校验（与 canonicalThreadDeps 同款）：
+   理解域的 **store / retrieval / derivation 必须绑在同一个 store 实例**上。
+   这条守卫与本仓库已经吃过一次亏的 memoryRetrieval 漂移完全同形：
+   绑到"另一个能开、能查、永远为空"的实例不会抛任何错，只会表现为
+   "她对我的理解永远停在很久以前" —— 那种 bug 无法从行为反推。 */
+function canonicalUnderstandingDeps(understanding, memoryStore) {
+  const inst = understanding || {};
+  if (!inst.understandingStore) throw new Error('home-node assembly: canonical understanding requires an understandingStore');
+  if (inst.understandingRetrieval && inst.understandingRetrieval.store && inst.understandingRetrieval.store !== inst.understandingStore) {
+    throw new Error('home-node assembly: understandingRetrieval is bound to a different understandingStore instance');
+  }
+  if (inst.understandingDerivation && inst.understandingDerivation.store && inst.understandingDerivation.store !== inst.understandingStore) {
+    throw new Error('home-node assembly: understandingDerivation is bound to a different understandingStore instance');
+  }
+  /* 派生读的是 canonical memory（本阶段唯一的证据源，§5）—— 也必须是真的那一份。 */
+  if (inst.understandingDerivation && inst.understandingDerivation.memoryStore && inst.understandingDerivation.memoryStore !== memoryStore) {
+    throw new Error('home-node assembly: understandingDerivation is bound to a different memoryStore instance');
+  }
+  return inst;
+}
+
+/* ── canonical Understanding 装配（**唯一**一处）─────────────────────
+   M1-C.2m：理解域有三个组件（store / retrieval / derivation），它们必须
+   共享同一个 store；而 derivation 还需要 canonical memory、角色目录与
+   model port。
+   与 memoryAssembly 同一个理由（见其头部说明）：装配只能有一份定义。
+
+   modelPort 可以缺席：缺席时**不**建派生器 —— 也就是"这个宿主只能读理解，
+   不能推进它"。这比"建一个永远失败的派生器"诚实，也让隔离测试不必提供凭据。 */
+function understandingAssembly(options) {
+  options = options || {};
+  const dataDir = options.dataDir || DATA_DIR;
+  const serviceLog = options.logger || ((level, event, fields) => log(level, event, fields));
+  const understandingStore = options.understandingStore ||
+    createUnderstandingStore({ dataDir: dataDir, clock: options.clock, logger: (e, f) => serviceLog('info', e, f) });
+  const understandingRetrieval = options.understandingRetrieval || createUnderstandingRetrieval({
+    store: understandingStore,
+    memoryStore: options.memoryStore || null,
+    logger: serviceLog
+  });
+  /* 派生器：需要 canonical memory + 角色目录 + model port 三者齐备。
+     缺任一项时如实缺席（返回 null），而不是造一个"看起来在跑"的空壳。 */
+  const modelPort = options.modelPort || null;
+  const understandingDerivation = options.understandingDerivation || (
+    (modelPort && options.memoryStore && options.registry)
+      ? createUnderstandingDerivation({
+        store: understandingStore,
+        memoryStore: options.memoryStore,
+        registry: options.registry,
+        modelPort: modelPort,
+        clock: options.clock,
+        logger: (e, f) => serviceLog('info', e, f)
+      })
+      : null
+  );
+  return { understandingStore: understandingStore, understandingRetrieval: understandingRetrieval, understandingDerivation: understandingDerivation };
+}
+
 /* ── 网关装配（**唯一**一处）─────────────────────────────────────────
    与 memoryAssembly 同一个理由：网关的依赖集合只能有一份定义。
    生产启动路径与 buildHomeNode() 都调用它，因此"某个 canonical 域没有接线"
@@ -241,6 +303,18 @@ function gatewayAssembly(options) {
       logger: options.logger
     })
   }, memory.memoryStore);
+  /* M1-C.2m：理解域（store + 取回 + 派生）。三者共享同一个 store。 */
+  const understanding = canonicalUnderstandingDeps(understandingAssembly({
+    dataDir: options.dataDir,
+    understandingStore: options.understandingStore,
+    understandingRetrieval: options.understandingRetrieval,
+    understandingDerivation: options.understandingDerivation,
+    memoryStore: memory.memoryStore,
+    registry: options.registry,
+    modelPort: options.modelPort,
+    clock: options.clock,
+    logger: options.logger
+  }), memory.memoryStore);
   return createMobileGateway(Object.assign({
     store: options.store,
     registry: options.registry,
@@ -254,7 +328,7 @@ function gatewayAssembly(options) {
     timeZone: options.timeZone,
     random: options.random,
     logger: options.logger || ((level, event, fields) => log(level, event, fields))
-  }, memory, threads));
+  }, memory, threads, understanding));
 }
 
 /* ── 组装一个完整的 Home Node 实例（不监听）──────────────────────────
@@ -311,6 +385,22 @@ function buildHomeNode(options) {
     middleBrain: instanceMiddleBrain,
     logger: (e, f) => serviceLog('info', e, f)
   });
+  /* M1-C.2m：理解域的挂载点（网关委派给它的 store / 取回 / 派生）。
+     为什么 modelPort 用**同一个** options.port：派生是"用角色自己的凭据做
+     后台工作"，它必须走与回合执行完全相同的那条 wire 层（IBModelCore 的唯一
+     翻译器）—— 另建一个 port 会让"派生请求"与"聊天请求"在 provider 形状上
+     分叉，而那种分叉只会在某个特定 provider 上才暴露。 */
+  const instanceUnderstanding = options.understanding || understandingAssembly({
+    dataDir: dataDir,
+    understandingStore: options.understandingStore,
+    understandingRetrieval: options.understandingRetrieval,
+    understandingDerivation: options.understandingDerivation,
+    memoryStore: instanceMemoryStore,
+    registry: instanceRegistry,
+    modelPort: options.port || createNodeModelPort({}),
+    clock: options.clock,
+    logger: serviceLog
+  });
   const host = options.host || HOST;
   const loopbackBind = isLoopbackHost(host);
   /* 与进程级启动路径**共用** gatewayAssembly（见其头部说明：两条路径两套装配
@@ -324,6 +414,11 @@ function buildHomeNode(options) {
     executor: instanceExecutor,
     memoryStore: instanceMemoryStore,
     memoryRetrieval: instanceMemoryRetrieval,
+    understandingStore: instanceUnderstanding.understandingStore,
+    understandingRetrieval: instanceUnderstanding.understandingRetrieval,
+    understandingDerivation: instanceUnderstanding.understandingDerivation,
+    /* 派生用同一个 model port（理由见 instanceUnderstanding 的注释）。 */
+    modelPort: options.port || createNodeModelPort({}),
     version: options.version,
     mobileOrigins: options.mobileOrigins,
     loopbackBind: loopbackBind,
@@ -356,6 +451,7 @@ function buildHomeNode(options) {
   function open() {
     const openedStore = instanceStore.open();
     instanceMemoryStore.open();
+    instanceUnderstanding.understandingStore.open();
     instanceRegistry.open();
     return openedStore;
   }
@@ -371,7 +467,11 @@ function buildHomeNode(options) {
     try {
       if (typeof instanceHttp.server.closeAllConnections === 'function') instanceHttp.server.closeAllConnections();
     } catch (_) { /* 尽力而为 */ }
+    /* 理解派生器的调度器必须先停：它会在 tick 里读 store，
+       留下一个仍排队的 timer 去读一个已关闭的库只会把"已关闭"变成噪音错误。 */
+    try { if (instanceUnderstanding.understandingDerivation) instanceUnderstanding.understandingDerivation.stop(); } catch (_) { /* 未启动 */ }
     try { instanceRegistry.close(); } catch (_) { /* 已关闭 */ }
+    try { instanceUnderstanding.understandingStore.close(); } catch (_) { /* 已关闭 */ }
     try { instanceMemoryStore.close(); } catch (_) { /* 已关闭 */ }
     try { instanceStore.close(); } catch (_) { /* 已关闭 */ }
   }
@@ -379,6 +479,9 @@ function buildHomeNode(options) {
     store: instanceStore,
     memoryStore: instanceMemoryStore,
     memoryRetrieval: instanceMemoryRetrieval,
+    understandingStore: instanceUnderstanding.understandingStore,
+    understandingRetrieval: instanceUnderstanding.understandingRetrieval,
+    understandingDerivation: instanceUnderstanding.understandingDerivation,
     registry: instanceRegistry,
     gateway: instanceGateway,
     executor: instanceExecutor,
@@ -407,12 +510,26 @@ const registry = createDeviceRegistry({
   dataDir: DATA_DIR,
   logger: (event, fields) => log('info', event, fields)
 });
+/* M1-C.2m：进程级启动路径同样必须挂上理解域 —— 与 memory 那次教训逐字同形
+   （只接 buildHomeNode 会让 23118 上的 /understanding/* 全 501，而测试全绿）。
+   modelPort 复用进程级 port：派生与回合走同一条 wire 层。 */
+const understanding = understandingAssembly({
+  dataDir: DATA_DIR,
+  memoryStore: memory.memoryStore,
+  registry,
+  modelPort: port,
+  logger: (level, event, fields) => log(level, event, fields)
+});
 const gateway = gatewayAssembly({
   store,
   registry,
   executor,
   memoryStore: memory.memoryStore,
   memoryRetrieval: memory.memoryRetrieval,
+  understandingStore: understanding.understandingStore,
+  understandingRetrieval: understanding.understandingRetrieval,
+  understandingDerivation: understanding.understandingDerivation,
+  modelPort: port,
   version: productVersion(),
   mobileOrigins: MOBILE_ORIGINS,
   loopbackBind: LOOPBACK_BIND,
@@ -436,10 +553,13 @@ const server = httpLayer.server;
 
 /* 让调用方（测试与诊断）能构建一个"已打开 + 已接好网关"的完整实例。
    打开顺序与 buildHomeNode().open() 一致：chat store 先开（它负责损坏隔离，
-   会给坏库改名），memory store 与设备表同库、必须等隔离完成之后再连。 */
+   会给坏库改名），memory store 与设备表同库、必须等隔离完成之后再连。
+   M1-C.2m：理解 store 也在同一批里打开 —— 漏掉它不会抛错，只会让
+   /understanding/* 全部返回 store-closed，而那种症状很容易被读成"路由没注册"。 */
 function openAll() {
   const opened = store.open();
   memory.memoryStore.open();
+  understanding.understandingStore.open();
   registry.open();
   return opened;
 }
@@ -519,6 +639,10 @@ if (require.main === module) {
     /* 先停网关（它会清掉事件泵与订阅者），再关两个数据库连接。
        顺序反过来会让事件泵在一个已关闭的连接上查询。 */
     try { gateway.stop(); } catch (_) { /* 已停止 */ }
+    /* M1-C.2m：理解派生器的调度器要先停（它会在 tick 里读 store），
+       再关理解 store —— 留下一个仍排队的 timer 去读已关闭的库只会产生噪音错误。 */
+    try { if (understanding.understandingDerivation) understanding.understandingDerivation.stop(); } catch (_) { /* 未启动 */ }
+    try { understanding.understandingStore.close(); } catch (_) { /* 已关闭 */ }
     try { registry.close(); } catch (_) { /* 已关闭 */ }
     /* memory store 与 chat store 同库（同一 SQLite 文件），先关它再关 chat，
        与打开顺序相反 —— 反过来会让 memory 的连接留在一个已关闭的库上。 */

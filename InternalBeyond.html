@@ -3100,7 +3100,18 @@ i would like the room to be enough.
      顺序与 chat 刻意保持一致，读错只会**静默早退**（表现成"记忆完全没有
      Home Node 能力"而没有任何可见错误），这是仓库里已经踩过的坑。 -->
 <script src="assets/js/memory-authority.js"></script>
-
+<!-- M1-C.2m · canonical understandings authority。
+     与 memory 同款三态，但写协议是**修订链 + 单活 + CAS**：
+       understanding-derivation-core（规则，已在上面加载）
+       → understanding-authority（策略：桌面只请求派生 + fail closed；镜像读）
+       → home-node-client（唯一 HTTP 实现，含 createUnderstandingRemote）
+       → home-node-bootstrap（数据层接缝：接管 understandings 的读；**拒绝**直接写）
+     `home-node-bootstrap` 必须最后加载（它读上面两者的全局）。 -->
+<script src="assets/js/understanding-authority.js"></script>
+<script src="assets/js/mobile-dto.js"></script>
+<script src="assets/js/home-node-client.js"></script>
+<script src="assets/js/home-node-bootstrap.js"></script>
+<!-- 深渊暗线：只在 Infernal（暗色）模式可瞥见——"你知道这里通向深渊，但你也知道，你随时可以离开。" -->
 <div class="ib-beyond-leave" id="ib-beyond-leave" aria-hidden="true">你知道这里通向深渊，但你也知道，你随时可以离开。</div>
 </body>
 </html>
