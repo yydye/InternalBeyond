@@ -198,7 +198,31 @@ NS.ibHomeNodeConstants = { DEFAULT_BASE: DEFAULT_BASE, DEFAULT_TIMEOUT_MS: DEFAU
      · 两者的方法名不同（putBatch 语义、activate、putSettings）；
      · 合并成一个对象会让"某一边多了一个方法"这种接线错误无法被发现
        （chat-authority 会拿到一个看起来合法但不该存在的 driver）。
-   只做 HTTP + 形状校验，不含任何权威/镜像/回退策略。 */
+   只做 HTTP + 形状校验，不含任何权威/镜像/回退策略。
+
+   ⚠️ 信封（envelope）与 chat 不同 —— 这是**服务端既成事实**，不是客户端选择：
+   `/memory/*` 由 services/home-node/mobile-gateway.js 服务，它用 okBody() 把
+   每个成功响应包成 { v, ok:true, type, requestId, serverTime, payload:{…} }；
+   而 `/list` `/changes` 等桌面聊天面返回**裸对象**。memory-authority 是按
+   裸形状（page.records / res.upserts / res.cursor / res.settings / state.state）
+   写的，因此每次调用都必须先解一层 payload —— 否则 list 会读到 undefined.records
+   并把镜像 replaceAll([]) 清空，changes 会因 res.upserts.length 抛 TypeError。
+   解包是**统一**的（不逐端点特判），失败响应刻意不解包：错误语义必须原样保留。 */
+function _unwrapMemoryEnvelope(res) {
+  /* 失败优先：ok 不为真（含 offline / timeout / invalid-response 本地合成结果，
+     它们没有 payload）时原样返回，调用方继续按 res.ok / res.error 分支。 */
+  if (!res || res.ok !== true) return res;
+  var payload = res.payload;
+  /* payload 缺席（如 /health）或不是普通对象时不动它 —— 保持既有可观测形状。 */
+  if (!payload || typeof payload !== 'object') return res;
+  /* 就地合并：payload 的字段成为顶层字段，信封元数据（ok/status/type/
+     serverTime/protocolVersion/requestId）全部保留。 */
+  for (var key in payload) {
+    if (Object.prototype.hasOwnProperty.call(payload, key)) res[key] = payload[key];
+  }
+  return res;
+}
+
 function createMemoryRemote(deps) {
   deps = deps || {};
   return {
@@ -210,31 +234,31 @@ function createMemoryRemote(deps) {
       var qs = [];
       if (query.ownerId) qs.push('ownerId=' + encodeURIComponent(query.ownerId));
       if (query.limit) qs.push('limit=' + encodeURIComponent(query.limit));
-      return _request('/memory/list' + (qs.length ? '?' + qs.join('&') : ''), { timeoutMs: deps.batchTimeoutMs || MIGRATION_TIMEOUT_MS });
+      return _request('/memory/list' + (qs.length ? '?' + qs.join('&') : ''), { timeoutMs: deps.batchTimeoutMs || MIGRATION_TIMEOUT_MS }).then(_unwrapMemoryEnvelope);
     },
     changes: function (cursor, options) {
       options = options || {};
       return _request('/memory/changes?cursor=' + encodeURIComponent(Number(cursor) || 0) +
-        (options.limit ? '&limit=' + encodeURIComponent(options.limit) : ''));
+        (options.limit ? '&limit=' + encodeURIComponent(options.limit) : '')).then(_unwrapMemoryEnvelope);
     },
     put: function (record, options) {
       options = options || {};
       var payload = { record: record };
       if (options.requestId) payload.requestId = String(options.requestId);
       if (options.existingPolicy) payload.existingPolicy = String(options.existingPolicy);
-      return _request('/memory/records', { method: 'POST', body: payload, timeoutMs: deps.writeTimeoutMs });
+      return _request('/memory/records', { method: 'POST', body: payload, timeoutMs: deps.writeTimeoutMs }).then(_unwrapMemoryEnvelope);
     },
     putBatch: function (records, options) {
       options = options || {};
       var payload = { records: records, forceBatch: true };
       if (options.requestId) payload.requestId = String(options.requestId);
       if (options.existingPolicy) payload.existingPolicy = String(options.existingPolicy);
-      return _request('/memory/records', { method: 'POST', body: payload, timeoutMs: deps.batchTimeoutMs || MIGRATION_TIMEOUT_MS });
+      return _request('/memory/records', { method: 'POST', body: payload, timeoutMs: deps.batchTimeoutMs || MIGRATION_TIMEOUT_MS }).then(_unwrapMemoryEnvelope);
     },
     remove: function (id, options) {
       options = options || {};
       return _request('/memory/record?id=' + encodeURIComponent(id) +
-        (options.requestId ? '&requestId=' + encodeURIComponent(options.requestId) : ''), { method: 'DELETE' });
+        (options.requestId ? '&requestId=' + encodeURIComponent(options.requestId) : ''), { method: 'DELETE' }).then(_unwrapMemoryEnvelope);
     },
     /* 激活强化：**独立**通道。它不推进 canonical revision，因此每轮对话
        都不会让任何镜像游标失效（见 memory-authority.js 的说明）。 */
@@ -243,16 +267,16 @@ function createMemoryRemote(deps) {
       var payload = { ids: ids || [] };
       if (options.at != null) payload.at = Number(options.at);
       if (options.delta != null) payload.delta = Number(options.delta);
-      return _request('/memory/activate', { method: 'POST', body: payload, timeoutMs: deps.writeTimeoutMs });
+      return _request('/memory/activate', { method: 'POST', body: payload, timeoutMs: deps.writeTimeoutMs }).then(_unwrapMemoryEnvelope);
     },
     putSettings: function (settings) {
-      return _request('/memory/settings', { method: 'POST', body: settings || {} });
+      return _request('/memory/settings', { method: 'POST', body: settings || {} }).then(_unwrapMemoryEnvelope);
     },
     migrationState: function (source) {
-      return _request('/memory/migration?source=' + encodeURIComponent(source || 'default'));
+      return _request('/memory/migration?source=' + encodeURIComponent(source || 'default')).then(_unwrapMemoryEnvelope);
     },
     markMigration: function (source, patch) {
-      return _request('/memory/migrate', { method: 'POST', body: Object.assign({ source: source || 'default' }, patch || {}), timeoutMs: MIGRATION_TIMEOUT_MS });
+      return _request('/memory/migrate', { method: 'POST', body: Object.assign({ source: source || 'default' }, patch || {}), timeoutMs: MIGRATION_TIMEOUT_MS }).then(_unwrapMemoryEnvelope);
     }
   };
 }

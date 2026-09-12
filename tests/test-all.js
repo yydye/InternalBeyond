@@ -140,6 +140,13 @@ const GROUPS = [
          **可见性逐字保留**（缺失 visibility 保持缺失）/ 迁移前后召回一致。
          真实 memory-store + 真实 mock HTTP，零浏览器。 */
       ['test_memory_migration.js'],
+      /* M1-C.2d Wave 2 事故修复：memory Home Node **信封**契约 ——
+         `/memory/*` 走 mobile-gateway 的 okBody() 信封（{ok,type,…,payload}），
+         而桌面聊天面是裸对象；createMemoryRemote 曾按裸形状读取，
+         导致 hydrate 读到 undefined.records 后 replaceAll([]) 清空镜像、
+         sync 读 res.upserts.length 抛 TypeError。
+         逐端点断言解包正确 + 失败响应绝不被解包成成功（mock fetch 驱动真实 remote）。 */
+      ['test_home_node_client_envelope.js'],
       ['test_harness_boundary.js'],
       ['test_credential_vault.js'],
       ['test_error_catalog.js'],
