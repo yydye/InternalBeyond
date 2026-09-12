@@ -1,4 +1,4 @@
-/* ====================================================================
+﻿/* ====================================================================
    Understanding + Thread v1 · Schema / CRUD / Context / Reconcile · CDP 测试
    覆盖：objectStore 存在 / Understanding unWrite·history(cap)·status /
         Thread thOpen·thClose·thMention / getUnderstandingContext·getThreadContext /
@@ -35,8 +35,11 @@ async function main(){
     /* ① objectStore 存在（新 DB_VER=23） */
     check('store.understandings',await ev(cdp,"(async function(){ try{ await dbGetAll('understandings'); return true }catch(e){ return false } })()"));
     check('store.threads',await ev(cdp,"(async function(){ try{ await dbGetAll('threads'); return true }catch(e){ return false } })()"));
-    /* 准备两条证据记忆（供 evidenceIds 引用） */
-    await ev(cdp,"(async function(){ await dbPut('memories',{id:'ev_1',createdBy:'u1',title:'记忆1',content:'证据一',kind:'episodic',created:Date.now(),lastActivated:Date.now()}); await dbPut('memories',{id:'ev_2',createdBy:'u1',title:'记忆2',content:'证据二',kind:'episodic',created:Date.now(),lastActivated:Date.now()}); })()");
+    /* 准备两条证据记忆（供 evidenceIds 引用）
+       M1-C.2d Wave 1：每条记忆都必须带 visibility —— 缺 visibility 的行
+       isMemoryVisibleTo 判为不可见，因此既不能成为证据，也不能让制品通过读时存证。
+       visibility:'public' + 印章 public 才是"证据与制品都公开"的正常姿态。 */
+    await ev(cdp,"(async function(){ await dbPut('memories',{id:'ev_1',createdBy:'u1',visibility:'public',title:'记忆1',content:'证据一',kind:'episodic',created:Date.now(),lastActivated:Date.now()}); await dbPut('memories',{id:'ev_2',createdBy:'u1',visibility:'public',title:'记忆2',content:'证据二',kind:'episodic',created:Date.now(),lastActivated:Date.now()}); })()");
     /* ② Understanding unWrite：current + evidenceIds + basis + conviction + status */
     let a=await ev(cdp,"(async function(){ var u=await unWrite('u1',{content:'她把创作当作压力出口',conviction:80,basis:'user_stated',dimension:'context',evidenceIds:['ev_1','ev_2']}); return !!(u&&u.current&&u.current.content.indexOf('压力出口')>=0&&u.current.evidenceIds.length===2&&u.current.basis==='user_stated'&&u.current.conviction===80&&u.status==='active'); })()");
     check('un.writeBasic',a===true);
@@ -64,8 +67,9 @@ async function main(){
     check('th.exactStillReuse',await ev(cdp,"(async function(){ var open=await thGetOpen('tdup3'); return open.length===1&&open[0].evidenceIds.length===2; })()"));
     check('th.mention',await ev(cdp,"(async function(){ var open=await thGetOpen('u1'); var t=open[0]; await thMention(t.id,'ev_2'); var t2=await dbGet('threads',t.id); return t2.mentionCount===3; })()"));
     check('th.close',await ev(cdp,"(async function(){ var open=await thGetOpen('u1'); await thClose(open[0].id,'resolved'); var t=await dbGet('threads',open[0].id); return t.status==='closed'&&t.closedReason==='resolved'&&!!t.closedAt; })()"));
-    /* ⑦ Context 注入（tail）：已 contested 的理解不进上下文；新开一条 active 理解 */
-    await ev(cdp,"(async function(){ await unWrite('u1',{content:'她对设备瓶颈敏感',conviction:75,basis:'ai_inference',dimension:'context',evidenceIds:['ev_1','ev_2']}); })()");
+    /* ⑦ Context 注入（tail）：已 contested 的理解不进上下文；新开一条 active 理解。
+       stamp 由 producer 给出 = strictest(证据) = public（两条证据都是 public）。 */
+    await ev(cdp,"(async function(){ await unWrite('u1',{content:'她对设备瓶颈敏感',conviction:75,basis:'ai_inference',dimension:'context',evidenceIds:['ev_1','ev_2'],stamp:{visibility:'public',visibleTo:[],excludeFrom:[]}}); })()");
     check('ctx.understanding',await ev(cdp,"(async function(){ var c=await getUnderstandingContext('u1'); return c&&c.indexOf('设备瓶颈')>=0&&c.indexOf('置信：75%')>=0; })()"));
     check('ctx.threadClosedNoEmit',await ev(cdp,"(async function(){ var c=await getThreadContext('u1'); return c===''; })()"));
     /* ⑧ getMemoryContext 不被污染（Understanding/Thread 不进 recall 池） */

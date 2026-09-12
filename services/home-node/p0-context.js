@@ -33,6 +33,23 @@
    ── 不往这里加东西 ────────────────────────────────────────────────
    长期 Memory / Understanding / Thread / Moments / summary / diary 一律不接。
    本阶段必须是 NO，且不许为了报告好看偷偷接上。
+
+   ── 决策记录（M1-C.2d Wave 1 · 记录一条**未来**授权，不改变本文件职责）──
+   上面的冻结在本模块内永久有效：p0-context.js 只渲染身份 / 关系 / 时间，
+   **不**成为通用 context composer。
+
+   但该冻结**不等于**"Home Node 永远没有记忆"。两者是不同层的决定：
+
+     · 本文件（p0 continuity context）
+         → 保持 identity / relationship / time only。Memory 仍然排除。
+     · Home Node execution / context 层（execution.js ← mobile-gateway.js 的
+       provider context 组装处）
+         → Wave 2 将在此处新增**独立的 memory source**，而不是把 memory
+           塞进本文件、也不是把本文件扩展成 composer。
+
+   即：授权的是"在别处加一个 memory 来源"，不是"在这里放宽冻结"。
+   Wave 1 本身**不**接线任何 memory；本注释只是把下一波的合法落点写清楚，
+   避免 Wave 2 因为找不到授权而悄悄改这个冻结。
    ==================================================================== */
 
 /* 与 Desktop communication.js:1424 逐字相同的格式选项。

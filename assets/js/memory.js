@@ -5,11 +5,13 @@
 
 let _editingMemId=null;
 
-/* --- 衰减评分 (Ombre Brain 改进版艾宾浩斯) --- */
-function getMemoryScore(mem){
+/* --- 衰减评分 (Ombre Brain 改进版艾宾浩斯) ---
+   now 可注入（M1-C.2d Wave 1 · §7.5）：缺省 Date.now() 保持既有调用方语义不变，
+   注入后同一份记忆在相同 now 下给出相同分数 → 召回可复现、可断言。 */
+function getMemoryScore(mem,now){
   if(mem.pinned)return 999;
-  const now=Date.now();
-  const daysSince=(now-(mem.lastActivated||mem.created))/(1000*60*60*24);
+  const _now=(now==null)?Date.now():Number(now);
+  const daysSince=(_now-(mem.lastActivated||mem.created))/(1000*60*60*24);
   const lambda=mem.resolved?0.12:0.05;/* 已解决的记忆衰减更快 */
   const base=1.0;
   const arousalBoost=0.8;
@@ -21,17 +23,55 @@ function getMemoryScore(mem){
   return Math.round(score*100)/100;
 }
 
-/* --- 可见性过滤 --- */
+/* --- 可见性过滤 ---
+   M1-C.2d Wave 1：语义已收敛到 assets/js/memory-visibility-core.js 的**唯一实现**。
+   此处只做委托，不再持有第二份判断，避免派生侧（Understanding / Thread / 存活性校验）
+   与召回侧对"可见"的定义发生漂移。加载顺序由 InternalBeyond.html 保证（core 在 memory.js 之前）。 */
+function _ibMemVisCore(){
+  return (typeof window!=='undefined'&&window.IBMemoryVisibilityCore)
+    || (typeof IBMemoryVisibilityCore!=='undefined'?IBMemoryVisibilityCore:null);
+}
+/* 共享核心的可信句柄：**只在 R1/R4 所需的全部能力都在**时才返回它。
+   半残的核心（例如只导出了 isMemoryVisibleTo）必须走得和"核心缺失"一样的
+   fail-closed 路径，而不是在调用中途抛出 TypeError。 */
+function _ibMemVisCoreChecked(){
+  const c=_ibMemVisCore();
+  if(c&&typeof c.isMemoryVisibleTo==='function'&&typeof c.evidenceLiveness==='function')return c;
+  return null;
+}
 function isMemoryVisibleTo(mem,apiId,isGroupChat,groupMemEnabled){
-  if(mem.visibility==='private')return false;
-  if(isGroupChat){
-    if(!groupMemEnabled)return false;
-    return mem.visibility==='public';
-  }
-  if(mem.visibility==='public')return true;
-  if(mem.visibility==='only')return (mem.visibleTo||[]).includes(apiId);
-  if(mem.visibility==='except')return !(mem.excludeFrom||[]).includes(apiId);
-  return false;
+  const core=_ibMemVisCore();
+  if(!core||typeof core.isMemoryVisibleTo!=='function')throw new Error('IBMemoryVisibilityCore not loaded');
+  return core.isMemoryVisibleTo(mem,apiId,isGroupChat,groupMemEnabled);
+}
+/* 证据存活性的**唯一**入口：分类（live / hidden / missing）留在共享核心，
+   这里只负责把"核心不可用"折叠成 fail closed 的结果（全 missing + degraded）。 */
+async function _ibEvidenceLiveness(ids,roleId){
+  const list=(Array.isArray(ids)?ids:[]).map(String);
+  const core=_ibMemVisCoreChecked();
+  if(!core)return {live:[],hidden:[],missing:list,degraded:true,reason:'missing',alive:[]};
+  let all;
+  /* fail closed：查询失败 → 无存活证据（旧实现在此处 `return ids`，是 D-2 的 fail-open） */
+  try{all=await dbGetAll('memories')}catch(e){all=null}
+  return core.evidenceLiveness(list,all,roleId);
+}
+/* 派生制品的写时印章（R1）：stamp = strictest(证据)。
+   只依赖共享核心的 deriveVisibility —— 与并整合并（consolidation）用的是同一份
+   rank 表，因此不存在"合并收窄、印章却更宽"的第二套判定。
+   核心不可用 → 落成 private（fail closed：无法证明它不宽，就不声明它宽）。 */
+function _ibDeriveStamp(rows,roleId){
+  const core=_ibMemVisCore();
+  if(!core||typeof core.deriveVisibility!=='function')return {visibility:'private',visibleTo:[],excludeFrom:[]};
+  try{return core.deriveVisibility(rows||[],roleId)}catch(e){return {visibility:'private',visibleTo:[],excludeFrom:[]}}
+}
+/* 印章归一：只接受既有四档词表；缺 visibleTo/excludeFrom 补空数组并封顶 100 项
+   （与 evidenceIds 的封顶一致）。非法输入返回 null → 由调用方落 private。 */
+function _normalizeVisStamp(stamp){
+  if(!stamp||typeof stamp!=='object')return null;
+  const v=stamp.visibility;
+  if(v!=='private'&&v!=='public'&&v!=='only'&&v!=='except')return null;
+  const list=x=>Array.isArray(x)?x.map(String).slice(0,100):[];
+  return {visibility:v,visibleTo:list(stamp.visibleTo),excludeFrom:list(stamp.excludeFrom)};
 }
 
 /* --- 语义相关性：本地关键词匹配（零 token 消耗） --- */
@@ -56,10 +96,41 @@ function _calcRelevance(mem,keywords){
   return 1+ratio*1.5;/* 最高 2.5x 加成 */
 }
 
-/* --- 统一检索函数：所有 API 调用的记忆注入入口 --- */
+/* --- 统一检索函数：所有 API 调用的记忆注入入口 ---
 
+   M1-C.2d Wave 1 · C3：检索被拆成**纯选择**与**激活强化**两个边界。
+     selectMemoryContext(...)   → {context, selectedIds}
+        只读：candidate set → 可见性(ACL/pre-ranking) → relevance → ranking → top-k/budget
+        → 渲染后的 context。不改动任何持久化字段。顺序契约不变（visibility 先于 ranking）。
+     recordMemoryActivation(...) → 副作用
+        只写 activationCount / lastActivated。
+
+   为什么必须分开：激活不是纯记账——activationCount 与 lastActivated 参与
+   getMemoryScore 的 activationFactor 与衰减，即"上轮被选中"会强化"下轮更容易被选中"。
+   把它显式化为选择之后的独立阶段，才能在 Wave 2 迁移权威时让
+   「计算选择」与「持久化强化」分别落在不同信任域，而不是把排名强化写进 revision 流。 */
 async function getMemoryContext(apiId,opts){
+  const picked=await selectMemoryContext(apiId,opts);
+  if(!picked.context)return '';
+  /* 强化阶段：失败绝不能让已经成功的上下文失效（既有语义，保持不变）。
+     注入的 now 既可能是时钟函数（`deps.clock` 约定）也可能是毫秒值，两者都要认；
+     函数**必须**先调用再传下去 —— 把函数本体当成时间戳会写出 activationCount
+     递增、lastActivated 却落成 NaN 的记录（它参与衰减，等于把这条记忆的排名弄坏）。 */
+  const _o=opts||{};
+  const at=(typeof _o.now==='function')?_o.now():(_o.now==null?undefined:_o.now);
+  try{await recordMemoryActivation(picked.selectedIds,at)}catch(e){}
+  return picked.context;
+}
+/* 纯选择阶段：不做持久化副作用；返回 {context, selectedIds}。
+   时钟与随机源**注入**（M1-C.2d Wave 1 · §7.5，沿用既有 `deps.clock` 约定）：
+   衰减、疲劳、探索窗口抽样三者都读时间/随机，若直接从全局读，
+   同一输入在不同时刻/不同次调用会给出不同选择 —— 这在浏览器里只是"行为飘"，
+   在 Wave 2 迁移到 Node 之后就是**无法复现的召回**。注入后
+   selectMemoryContext(apiId,{now,random}) 对相同输入给出相同输出。 */
+async function selectMemoryContext(apiId,opts){
   opts=opts||{};
+  const _now=typeof opts.now==='function'?opts.now:()=>Date.now();
+  const _rand=typeof opts.random==='function'?opts.random:Math.random;
   const memSettings=await getMemorySettings();
   const maxChars=opts.maxChars||memSettings.budget||2000;
   const contentLen=memSettings.contentLen||200;
@@ -69,16 +140,17 @@ async function getMemoryContext(apiId,opts){
   try{
     const all=await dbGetAll('memories');
     const visible=all.filter(m=>isMemoryVisibleTo(m,apiId,isGroup,groupMemEnabled));
-    if(!visible.length)return '';
+    if(!visible.length)return {context:'',selectedIds:[]};
     /* 语义关键词匹配 */
     const keywords=_extractKeywords(userMsg);
+    const now=_now();
     const scored=visible.map(m=>{
-      const base=getMemoryScore(m);
+      const base=getMemoryScore(m,now);
       const relBoost=m.pinned?1:_calcRelevance(m,keywords);
       /* 反垄断：连续高频激活的记忆施加疲劳惩罚 */
       let fatigue=1;
       if(!m.pinned&&m.activationCount>5){
-        const hoursSinceLast=(Date.now()-(m.lastActivated||m.created))/(1000*60*60);
+        const hoursSinceLast=(now-(m.lastActivated||m.created))/(1000*60*60);
         if(hoursSinceLast<2)fatigue=0.7;/* 2 小时内反复激活 → 降权 */
       }
       const _s=base*relBoost*fatigue;
@@ -109,20 +181,30 @@ async function getMemoryContext(apiId,opts){
     /* 探索窗口：从未入选的中低分段随机抽一条 */
     const remaining=scored.filter(m=>!selected.has(m.id)&&!m.pinned);
     if(remaining.length&&exploreBudget>50){
-      const pick=remaining[Math.floor(Math.random()*Math.min(remaining.length,10))];
+      const pick=remaining[Math.floor(_rand()*Math.min(remaining.length,10))];
       const line=_formatMemLine(pick,apiId,contentLen);
       if(chars+line.length<=maxChars){ctx+=line;chars+=line.length;count++;selected.add(pick.id)}
     }
-    if(!count)return '';
-    /* 激活计数：被检索到的记忆增加 activationCount */
-    for(const id of selected){
-      try{
-        const orig=await dbGet('memories',id);
-        if(orig){orig.activationCount=(orig.activationCount||0)+1;orig.lastActivated=Date.now();await dbPut('memories',orig)}
-      }catch(e){}
-    }
-    return ctx;
-  }catch(e){return ''}
+    if(!count)return {context:'',selectedIds:[]};
+    return {context:ctx,selectedIds:Array.from(selected)};
+  }catch(e){return {context:'',selectedIds:[]}}
+}
+/* 强化阶段：只更新 activationCount / lastActivated（不改变本轮已选出的结果）。
+   `at` 注入以便复现；缺省 Date.now()。写入失败**只记账失败**，绝不抛出 ——
+   激活是排名提示，不是事实，不能因为它失败而毁掉用户这一轮对话。 */
+async function recordMemoryActivation(selectedIds,at){
+  if(!Array.isArray(selectedIds)||!selectedIds.length)return 0;
+  /* 非有限值一律回落到 Date.now()：宁可写"现在"，也绝不写 NaN（NaN 会污染衰减）。 */
+  let stamp=Number(at);
+  if(!Number.isFinite(stamp))stamp=Date.now();
+  let n=0;
+  for(const id of selectedIds){
+    try{
+      const orig=await dbGet('memories',id);
+      if(orig){orig.activationCount=(orig.activationCount||0)+1;orig.lastActivated=stamp;await dbPut('memories',orig);n++}
+    }catch(e){}
+  }
+  return n;
 }
 function _formatMemLine(m,apiId,contentLen){
   let authorTag='';
@@ -236,9 +318,23 @@ async function saveMemory(){
       mem.createdBy=old.createdBy||'user';
       mem.createdByName=old.createdByName||'';
       if(old.createdBy&&old.createdBy!=='user')mem.editedByUser=true;
+      /* M1-C.2d Wave 1 · D-3：编辑**不得**静默丢弃固化来源。
+         本函数从表单字段重建整行，而 kind / consolidatedFrom / lastConsolidatedAt
+         都不在表单里 → 旧实现在编辑一条 semantic 记忆时会把它降级成 episodic、
+         清空 provenance，并因 lastConsolidatedAt=null 而重新满足"未固化"条件
+         （被再次归纳，且 _reconcileReferences 再也找不到它的来源）。
+         这里显式继承这些元数据；visibility 三件套仍由表单决定（用户可能确实要改）。 */
+      if(old.kind!=null)mem.kind=old.kind;
+      if(old.source!=null)mem.source=old.source;
+      if(old.sourceId!=null)mem.sourceId=old.sourceId;
+      if(Array.isArray(old.consolidatedFrom))mem.consolidatedFrom=old.consolidatedFrom.slice(0,50);
+      if(old.lastConsolidatedAt!=null)mem.lastConsolidatedAt=Number(old.lastConsolidatedAt);
     }
   }
   await dbPut('memories',mem);
+  /* 编辑可能改变某条证据的可见性 → 引用它的 Understanding/Thread 需要重新校验
+     （与内联编辑器 _memInlineSave 的既有行为一致）。 */
+  if(_editingMemId)try{await _reconcileReferences(_editingMemId)}catch(e){}
   closeMemoryModal();
   renderMemories();
   updateMemDashboard();
@@ -970,6 +1066,12 @@ async function unWrite(characterId,next){
     }
   }
   u.current=nextCurrent;
+  /* M1-C.2d Wave 1 · R1：写时印章 —— 派生制品必须携带"它的可见边界"。
+     印章由 producer 计算（它手上才有全部证据记忆行），且必须来自
+     strictest(prev 证据 ∧ next 证据)，见 active-diary.js 的 _memDerivationStamp。
+     这里只做校验与归一；producer 没给（旧调用方 / 测试替身）时落成 private：
+     无法证明它不宽，就不声明它宽 —— 偏窄只会少注入，不会泄漏。 */
+  u.visibility=_normalizeVisStamp(next.stamp)||{visibility:'private',visibleTo:[],excludeFrom:[]};
   return await unSave(u);
 }
 /* --- Understanding：标记状态（contested / stale），不删除、保留 history --- */
@@ -1002,16 +1104,23 @@ async function thSave(t){
   t.kind='thread';
   if(!t.status)t.status='open';
   if(!Array.isArray(t.evidenceIds))t.evidenceIds=[];
+  /* R1：印章归一。**只在缺失/非法时**落 private —— 已存在的边界由 producer 与
+     _reconcileReferences 负责收窄，thSave 不得凭空改写一条已存在的印章。 */
+  const _st=_normalizeVisStamp(t.visibility);
+  t.visibility=_st||{visibility:'private',visibleTo:[],excludeFrom:[]};
   t.lastUpdatedAt=Date.now();
   if(!t.createdAt)t.createdAt=Date.now();
   await dbPut('threads',t);
   return t;
 }
-/* --- Thread：开 open（重复开同类 question 则复用，evidenceIds 并集） --- */
-async function thOpen(characterId,question,evidenceIds,createdBy){
+/* --- Thread：开 open（重复开同类 question 则复用，evidenceIds 并集） ---
+   stamp（可选）由 producer 给出 = strictest(prev 证据 ∧ next 证据)。给出时一律采用：
+   并集后的最严格范围必然 ≤ 两者各自的范围，因此这里只可能**更窄**，不可能放宽。 */
+async function thOpen(characterId,question,evidenceIds,createdBy,stamp){
   question=String(question||'').trim();
   if(!question||!characterId)return null;
   const ev=Array.isArray(evidenceIds)?evidenceIds:(evidenceIds?[evidenceIds]:[]);
+  const _st=_normalizeVisStamp(stamp);
   const open=await thGetOpen(characterId);
   /* 精确复用：完全相同 question → 复用（既有行为，保留） */
   const existing=open.find(t=>t.question===question);
@@ -1020,6 +1129,7 @@ async function thOpen(characterId,question,evidenceIds,createdBy){
     existing.evidenceIds=merged;
     existing.mentionCount=(existing.mentionCount||0)+1;
     existing.lastUpdatedAt=Date.now();
+    if(_st)existing.visibility=_st;
     return await thSave(existing);
   }
   /* 近重复去重：无完全相等 question 时，找语义相似（≥ THREAD_SIM_THRESHOLD）的 open Thread → 复用，不新建。
@@ -1034,10 +1144,12 @@ async function thOpen(characterId,question,evidenceIds,createdBy){
       near.lastUpdatedAt=Date.now();
       /* 保留更完整的 question 表述：只在原 question 过短时用新 question 兜底，避免频繁改写主线 */
       if(near.question.length<question.length)near.question=question;
+      if(_st)near.visibility=_st;
       return await thSave(near);
     }
   }
-  return await thSave({characterId:characterId,question:question,status:'open',evidenceIds:ev.slice(0,100),mentionCount:1,createdBy:createdBy||'ai',createdAt:Date.now(),lastUpdatedAt:Date.now()});
+  return await thSave({characterId:characterId,question:question,status:'open',evidenceIds:ev.slice(0,100),mentionCount:1,createdBy:createdBy||'ai',createdAt:Date.now(),lastUpdatedAt:Date.now(),
+    visibility:_st||{visibility:'private',visibleTo:[],excludeFrom:[]}});
 }
 /* --- Thread：标记关闭（记录 closure，不删除） --- */
 async function thClose(id,reason){
@@ -1048,21 +1160,46 @@ async function thClose(id,reason){
   t.lastUpdatedAt=Date.now();
   return await thSave(t);
 }
-/* --- Thread：同主题推进（mention） --- */
+/* --- Thread：同主题推进（mention） ---
+   mention 通常**不改变证据集** → 印章保持不动（避免每次提及都重算）；
+   只有真的并入了新证据才收窄印章（R1/R6：只能更窄，绝不放宽）。 */
 async function thMention(id,evidenceId){
   const t=await dbGet('threads',id);if(!t||t.status!=='open')return null;
-  if(evidenceId&&!t.evidenceIds.includes(evidenceId))t.evidenceIds.push(evidenceId);
+  const added=(evidenceId&&!t.evidenceIds.includes(evidenceId))?String(evidenceId):null;
+  if(added){
+    t.evidenceIds.push(added);
+    let rows=[];try{rows=await dbGetAll('memories')}catch(e){rows=[]}
+    const byId=new Map((Array.isArray(rows)?rows:[]).map(m=>[String(m&&m.id),m]));
+    /* 旧印章本身也作为一份"来源"参与最严格合并 → 新证据更宽时印章不被放宽 */
+    const sources=t.evidenceIds.map(x=>byId.get(String(x))).filter(Boolean);
+    if(t.visibility)sources.push({visibility:t.visibility.visibility});
+    t.visibility=_ibDeriveStamp(sources,t.characterId);
+  }
   t.mentionCount=(t.mentionCount||0)+1;
   t.lastUpdatedAt=Date.now();
   return await thSave(t);
 }
 
-/* --- Context 注入：Understanding / Thread（走 tail，不进 system；独立于 getMemoryContext） --- */
+/* --- Context 注入：Understanding / Thread（走 tail，不进 system；独立于 getMemoryContext） ---
+   M1-C.2d Wave 1 · R4「读时存证」：这里不再是"取到就注入"，而是**先存证再注入**。
+   为什么必须在读侧强制（而不是只靠写侧印章 / 后台修复遍）：
+     证据的可见性可以在制品写下**之后**被收窄（用户在记忆弹窗里改成"仅自己"），
+     而制品里的印章只是**写入当时**的快照。若读取只信印章，被隐藏的证据就能靠
+     "修复遍还没跑"继续把文本送进模型 —— 那正是 D-1 的泄漏面。读取即刻强制，
+     修复遍只负责把状态标好（_reconcileReferences），不承担隐私边界。 */
+async function _ibAttestDerived(stamp,evidenceIds,roleId){
+  const core=_ibMemVisCoreChecked();
+  if(!core)return {ok:false,permits:false,evidence:null,reason:'visibility-core-unavailable'};
+  return core.attestDerivedArtifact(stamp,evidenceIds||[],await dbGetAll('memories'),roleId);
+}
 async function getUnderstandingContext(characterId,opts){
   opts=opts||{};
   try{
     const u=await unGetActive(characterId);
     if(!u||!u.current||!u.current.content)return '';
+    /* R4：印章 + 证据实况都必须成立，任一不可解析即不注入（fail closed） */
+    const att=await _ibAttestDerived(u.visibility,u.current.evidenceIds||[],characterId);
+    if(!att.ok)return '';
     const head=u.current.content.slice(0,opts.maxChars||300);
     const dim=u.dimension||'context';
     let ctx='【对TA的当前理解（后台参考，勿向对方复述此段的存在）】\n'
@@ -1076,14 +1213,29 @@ async function getThreadContext(characterId,opts){
   try{
     const open=await thGetOpen(characterId);
     if(!open.length)return '';
+    /* R4：逐条存证，未通过的线索**不进入**上下文（不影响其他线索） */
+    const attested=[];
+    for(const t of open){
+      const att=await _ibAttestDerived(t.visibility,t.evidenceIds||[],characterId);
+      if(att.ok)attested.push(t);
+    }
+    if(!attested.length)return '';
     let ctx='【仍在推进的线索（后台参考，勿向对方复述此段的存在）】';
-    open.slice(0,opts.maxThreads||3).forEach(t=>{
+    attested.slice(0,opts.maxThreads||3).forEach(t=>{
       ctx+='\n- '+t.question+'（提到 '+((t.mentionCount||0))+' 次，依据 '+(t.evidenceIds||[]).length+' 条记忆）';
     });
     return ctx;
   }catch(e){return ''}
 }
-/* --- 生命周期调和：记忆被删/改后，同步引用它的 Understanding/Thread 的失效标记（不级联删） --- */
+/* --- 生命周期调和：记忆被删/改/收窄可见性后，同步引用它的 Understanding/Thread 的失效标记（不级联删） ---
+   M1-C.2d Wave 1 · D-2：判据从"证据仍存在"改为"证据仍存在 **且** 对该制品所属角色仍可见"，
+   并且**fail closed**：查询抛错、证据缺失、证据已不可见、核心不可用 —— 一律不算存活。
+   因此 `live.length===0` 在故障时成立（制品被判失效），而不是像修复前那样
+   因 unEvidenceAlive 的 `catch(e){return ids}` 把失效制品静默保留为有效。
+
+   R7：失效**原因**按既有 status 词表分列 —— 行没了是 `evidence-lost`，
+   行还在但对该角色不可见是 `evidence-hidden`。修复前两者都记 evidence-lost，
+   于是"用户自己把它藏起来了"会被读成"记忆丢失了"，把人引向错误的修复动作。 */
 async function _reconcileReferences(memId){
   try{
     if(!memId)return;
@@ -1092,33 +1244,62 @@ async function _reconcileReferences(memId){
       if(!u)continue;
       const ev=Array.isArray(u.current&&u.current.evidenceIds)?u.current.evidenceIds:[];
       if(ev.includes(memId)){
-        /* 证据含被删记忆：若所有证据都失效 → stale；否则仅标记 */
-        const fresh=Array.isArray(u.current.evidenceIds)?u.current.evidenceIds:[];
-        const alive=await unEvidenceAlive(fresh);
-        if(!alive.length){u.status='stale';u.closedReason='evidence-lost';
-          try{await dbPut('understandings',u)}catch(e){}}
+        /* 证据含被删/被隐藏的记忆：任一证据不再可用 → stale（不级联删，保留 history） */
+        await _ibRestampDerived(u,'understandings');
+        const live=await _ibEvidenceLiveness(ev,u.characterId);
+        if(live.live.length<ev.length){
+          u.status='stale';
+          u.closedReason=(live.missing.length||live.degraded)?'evidence-lost':'evidence-hidden';
+          try{await dbPut('understandings',u)}catch(e){}
+        }
       }
     }
     const ts=await dbGetAll('threads');
     for(const t of ts){
       if(!t)continue;
-      if((t.evidenceIds||[]).includes(memId)){
-        const full=await thEvidenceAlive(t.evidenceIds||[]);
-        if(!full.length){t.status='orphan';t.closedReason='evidence-lost';t.closedAt=Date.now();
-          try{await dbPut('threads',t)}catch(e){}}
+      const evIds=Array.isArray(t.evidenceIds)?t.evidenceIds:[];
+      if(evIds.includes(memId)){
+        await _ibRestampDerived(t,'threads');
+        const live=await _ibEvidenceLiveness(evIds,t.characterId);
+        if(live.live.length<evIds.length){
+          t.status='orphan';
+          t.closedReason=(live.missing.length||live.degraded)?'evidence-lost':'evidence-hidden';
+          t.closedAt=Date.now();
+          try{await dbPut('threads',t)}catch(e){}
+        }
       }
     }
   }catch(e){}
 }
-async function unEvidenceAlive(ids){
-  if(!ids||!ids.length)return[];
+/* R5/R7：调和时把制品的印章收窄到"当前**仍未失效**的证据"的最严格范围。
+   R5「narrow-only」由共享核心的 liveEvidenceIds 保证：已经不可见/已消失的证据
+   不参与 restamp，因此新印章必然 ≤ 旧印章；旧印章也作为一份来源参与合并，
+   于是即便可见证据变宽，印章也不会被放宽。 */
+async function _ibRestampDerived(artifact,store){
   try{
-    const all=await dbGetAll('memories');
-    return ids.filter(id=>all.some(m=>m&&m.id===id));
-  }catch(e){return ids}
+    const core=_ibMemVisCoreChecked();
+    if(!core||!_normalizeVisStamp(artifact.visibility))return null;
+    const ids=(store==='understandings')
+      ? ((artifact.current&&artifact.current.evidenceIds)||[])
+      : (artifact.evidenceIds||[]);
+    const live=await _ibEvidenceLiveness(ids,artifact.characterId);
+    if(!live.live.length)return null;/* 无存活证据 → 交给上面的失效标记处理 */
+    const rows=await dbGetAll('memories');
+    const byId=new Map((Array.isArray(rows)?rows:[]).map(m=>[String(m&&m.id),m]));
+    const sources=live.live.map(id=>byId.get(String(id))).filter(Boolean);
+    sources.push({visibility:artifact.visibility.visibility});
+    artifact.visibility=_ibDeriveStamp(sources,artifact.characterId);
+    /* 顺手加固封顶，避免历史数据里的超长名单被印章继承 */
+    return _normalizeVisStamp(artifact.visibility);
+  }catch(e){return null}
 }
-async function thEvidenceAlive(ids){
-  return await unEvidenceAlive(ids);
+/* roleId 缺省时不附加可见性谓词：既有调用方（只关心"是否还存在"）语义不变。 */
+async function unEvidenceAlive(ids,roleId){
+  if(!ids||!ids.length)return[];
+  return (await _ibEvidenceLiveness(ids,roleId)).live;
+}
+async function thEvidenceAlive(ids,roleId){
+  return await unEvidenceAlive(ids,roleId);
 }
 
 /* 解析 AI 生成记忆时返回的「字段：值」文本。
@@ -1888,6 +2069,9 @@ window.isMemoryVisibleTo=isMemoryVisibleTo;
 window._extractKeywords=_extractKeywords;
 window._calcRelevance=_calcRelevance;
 window.getMemoryContext=getMemoryContext;
+/* M1-C.2d Wave 1 · C3：选择（纯）与强化（副作用）分别可测、可独立调用。 */
+window.selectMemoryContext=selectMemoryContext;
+window.recordMemoryActivation=recordMemoryActivation;
 window._formatMemLine=_formatMemLine;
 window.updMemPreview=updMemPreview;
 window.openMemoryModal=openMemoryModal;
@@ -1974,6 +2158,8 @@ NS.expose('memory', {
   _extractKeywords: _extractKeywords,
   _calcRelevance: _calcRelevance,
   getMemoryContext: getMemoryContext,
+  selectMemoryContext: selectMemoryContext,
+  recordMemoryActivation: recordMemoryActivation,
   _formatMemLine: _formatMemLine,
   updMemPreview: updMemPreview,
   openMemoryModal: openMemoryModal,

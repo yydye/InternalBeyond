@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 
 /* Internal Beyond · 一键全量测试入口（Node 18+，零依赖，跨平台）。
  *
@@ -31,6 +31,11 @@
  *     + test_middle_brain_calibration_live.js（browser，Layer B 默认离线 mock 走真实执行路径；
  *     真实模型校准需手动 --live + IB_CI_CALIBRATION_KEY，不进本强制路径）。
  * P11-FIX：登记 test_cache_audit_isolation.js（browser，Cache Audit baseline 按 runtime consumer 隔离）。
+ * M1-C.2d Wave 1：登记 test_memory_contract_closure.js（static，Memory Contract Closure ——
+ *     隐藏记忆不得经 Understanding / Thread 派生回流；证据收紧或不可查时制品 fail closed；
+ *     编辑保留 consolidation provenance；检索 visibility-before-ranking 且选择/激活分离）；
+ *     并补登记 test_home_node_execution.js（service）—— 该执行缝测试此前存在但
+ *     从未进套件，等于 Home Node 执行链没有回归门。
  * P21：登记 test_reasoning_capability.js（static，canonical reasoningEffort 能力表 / 边界翻译 /
  *     auto 不改变请求 / 未取证 provider 不污染）
  *     + test_middle_brain_reasoning_effort.js（browser，真实 wire body：MB disabled 零注入 /
@@ -115,6 +120,12 @@ const GROUPS = [
          重复迁移 / 中断续跑 / 混合 thread / images·files·voice payload /
          migrated marker 版本。用真实 chat-store + 真实 mock HTTP，零浏览器。 */
       ['test_chat_migration.js'],
+      /* M1-C.2d Wave 1：Memory Contract Closure —— 隐藏记忆不得经任何派生制品
+         （Understanding / Thread）回流进该角色的模型输入；证据可见性收紧 / 不可查
+         时制品不得静默保持有效；编辑 consolidated 记忆保留 provenance；
+         检索保持 visibility-before-ranking，且选择（纯）与激活强化（副作用）分离。
+         抽取真实生产源码片段在 vm 中执行，零浏览器、零网络。 */
+      ['test_memory_contract_closure.js'],
       ['test_harness_boundary.js'],
       ['test_credential_vault.js'],
       ['test_error_catalog.js'],
@@ -212,6 +223,10 @@ const GROUPS = [
       /* M1-A：Home Node canonical chat authority（真实 HTTP + 临时数据目录） */
       ['test_home_node_http.js'],
       ['test_home_node_service.js'],
+      /* M1-C.2d Wave 1：**执行缝**（NodeModelPort.runStream → executeCharacterTurn →
+         canonical chat store）此前存在但未登记，因此从未随全量套件运行。
+         它是当前唯一覆盖 Home Node 执行链真实 SSE 往返的测试。 */
+      ['test_home_node_execution.js'],
       /* M1-B：Mobile Gateway 协议 / 鉴权 / LAN 硬门 / secret-leak 契约
          （真实服务实例 + 真实进程，临时数据目录 + 随机端口） */
       ['test_mobile_gateway_http.js'],

@@ -34,7 +34,7 @@ async function main(){
     await ev(cdp,"window.confirm=function(){return true;}");
     await ev(cdp,"window.__bcc=function(cfg,o){ try{ if(typeof window.buildChatContext==='function')return window.buildChatContext(cfg,o); if(window.IB&&window.IB.chat&&typeof window.IB.chat.buildChatContext==='function')return window.IB.chat.buildChatContext(cfg,o); return null; }catch(e){ return {__err:String(e&&e.message||e)} } }");
     /* preload: 需要一条 semantic 相关记忆用于 repeatCount 判定 */
-    await ev(cdp,"(async function(){ await dbPut('memories',{id:'ev_a',createdBy:'u2',title:'证据A',content:'旧电脑让她焦虑且影响创作流畅',kind:'episodic',created:Date.now(),lastActivated:Date.now()}); await dbPut('memories',{id:'ev_b',createdBy:'u2',title:'证据B',content:'她提到设备瓶颈限制创作',kind:'episodic',created:Date.now(),lastActivated:Date.now()}); })()");
+    await ev(cdp,"(async function(){ await dbPut('memories',{id:'ev_a',createdBy:'u2',visibility:'public',title:'证据A',content:'旧电脑让她焦虑且影响创作流畅',kind:'episodic',created:Date.now(),lastActivated:Date.now()}); await dbPut('memories',{id:'ev_b',createdBy:'u2',visibility:'public',title:'证据B',content:'她提到设备瓶颈限制创作',kind:'episodic',created:Date.now(),lastActivated:Date.now()}); })()");
     /* ① basis 判定 + conviction cap：ai_guess 顶格 40 */
     let r=await ev(cdp,"(async function(){ var cal=await _calibrateMemoryCandidate({content:'她可能对设备敏感',confidence:95,basis:'ai_guess',operation:'understanding',targetStore:'understandings',cfg:{id:'u2'},evidenceIds:['ev_a','ev_b'],category:'context'}); return cal.confidence; })()");
     check('admission.aiGuessCap40',r===40,'got '+r);
@@ -63,12 +63,12 @@ async function main(){
     check('admission.evidenceDistinctCount2',r===true,'got '+JSON.stringify(r));
     /* ⑦ _buildSingleChatContext：Understanding/Thread 进 tail，不进 system */
     await ev(cdp,"(async function(){ await dbPut('apiConfigs',{id:'u2',nickname:'U2',model:'m',systemPrompt:'你的角色。',relationship:'伙伴',created:Date.now()}); await loadApiConfigs(); })()");
-    await ev(cdp,"(async function(){ await unWrite('u2',{content:'她把创作当作压力出口',conviction:80,basis:'user_stated',dimension:'context',evidenceIds:['ev_a','ev_b']}); await thOpen('u2','攒钱买硬盘','ev_a'); })()");
+    await ev(cdp,"(async function(){ await unWrite('u2',{content:'她把创作当作压力出口',conviction:80,basis:'user_stated',dimension:'context',evidenceIds:['ev_a','ev_b'],stamp:{visibility:'public',visibleTo:[],excludeFrom:[]}}); await thOpen('u2','攒钱买硬盘','ev_a','ai',{visibility:'public',visibleTo:[],excludeFrom:[]}); })()");
     check('tail.uAndTInTail',await ev(cdp,"(async function(){ var bc=await window.__bcc(apiConfigs.find(a=>a.id==='u2'),{userMessage:'设备 焦虑'}); var tail=String(bc&&bc.tail||''); return tail.indexOf('压力出口')>=0&&tail.indexOf('攒钱买硬盘')>=0; })()"));
     check('tail.notInSystem',await ev(cdp,"(async function(){ var bc=await window.__bcc(apiConfigs.find(a=>a.id==='u2'),{userMessage:'设备 焦虑'}); var sys=String(bc&&bc.system||''); return sys.indexOf('压力出口')<0&&sys.indexOf('攒钱买硬盘')<0; })()"));
     /* ⑧ 生命周期：全证据失效 → understanding stale / thread orphan；deleteMemory 触发 reconcile */
-    await ev(cdp,"(async function(){ await dbPut('memories',{id:'only_ev',createdBy:'u2',title:'E',content:'x',kind:'episodic',created:Date.now(),lastActivated:Date.now()}); })()");
-    await ev(cdp,"(async function(){ await unWrite('u2',{content:'她只依赖这条证据',conviction:70,basis:'ai_inference',dimension:'context',evidenceIds:['only_ev']}); await thOpen('u2','单源测试','only_ev'); })()");
+    await ev(cdp,"(async function(){ await dbPut('memories',{id:'only_ev',createdBy:'u2',visibility:'public',title:'E',content:'x',kind:'episodic',created:Date.now(),lastActivated:Date.now()}); })()");
+    await ev(cdp,"(async function(){ await unWrite('u2',{content:'她只依赖这条证据',conviction:70,basis:'ai_inference',dimension:'context',evidenceIds:['only_ev'],stamp:{visibility:'public',visibleTo:[],excludeFrom:[]}}); await thOpen('u2','单源测试','only_ev','ai',{visibility:'public',visibleTo:[],excludeFrom:[]}); })()");
     await ev(cdp,"(async function(){ window.__delRes={}; try{ await deleteMemory('only_ev'); }catch(e){ window.__delRes.err=String(e&&e.message||e); } })()");
     check('lifecycle.deleteHooksReconcile',await ev(cdp,"(async function(){ var all=await dbGetAll('understandings'); var stale=all.some(u=>u.status==='stale'&&String((u.current&&u.current.evidenceIds)||[]).indexOf('only_ev')>=0); var ts=await dbGetAll('threads'); var orph=ts.some(t=>t.status==='orphan'&&(t.evidenceIds||[]).indexOf('only_ev')>=0); return stale||orph; })()"));
     /* ⑨ rejectUnderstanding → contested（先建一条全新的 active 理解再否决） */

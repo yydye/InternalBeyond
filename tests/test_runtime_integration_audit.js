@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 
 // Read-only runtime audit regression probes. No production data, external APIs,
 // browsers or scheduler startup. Execute actual source functions, never copies.
@@ -57,8 +57,11 @@ function environment(request) {
   };
   context.window = context;
   vm.createContext(context);
+  /* M1-C.2d Wave 1：memory 可见性语义的唯一实现已提取到 memory-visibility-core.js。
+     memory.js 现在是委托方，因此这里注入**同一份真实实现**，而不是复制一套判断。 */
+  context.IBMemoryVisibilityCore = require(path.join(ROOT, 'assets', 'js', 'memory-visibility-core.js'));
   /* 注入真实的可见性函数，使 memory 相关断言按当前 schema 语义成立（而非依赖缺失时的旁路） */
-  vm.runInContext(fragment('assets/js/memory.js', 'function isMemoryVisibleTo(', '/* --- 语义相关性'), context);
+  vm.runInContext(fragment('assets/js/memory.js', 'function _ibMemVisCore(', '/* --- 语义相关性'), context);
   return { context, table, cfg };
 }
 
@@ -170,7 +173,7 @@ async function check(name, fn) {
     await check('Diary-created memory can be recalled by its character', async () => {
       const { context, cfg } = environment(request);
       vm.runInContext(fragment('assets/js/active-diary/diary.js', 'async function _diaryWriteMemory(character,memoryCandidate){', '/* 日记输出解析')
-        + fragment('assets/js/memory.js', 'function isMemoryVisibleTo(', '/* --- 语义相关性'), context);
+        + fragment('assets/js/memory.js', 'function _ibMemVisCore(', '/* --- 语义相关性'), context);
       const memory = await context._diaryWriteMemory(cfg, { content: 'A stable personal preference', importance: 8 });
       assert.ok(memory, 'diary produced a memory row');
       assert.equal(context.isMemoryVisibleTo(memory, cfg.id, false, false), true, 'new diary memory lacks visibility and is excluded by recall');

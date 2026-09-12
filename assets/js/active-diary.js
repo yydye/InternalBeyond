@@ -713,10 +713,12 @@ async function consolidateCharacterMemory(cfg,opts){
     const roleId=String(cfg.id);
     const all=await dbGetAll('memories');
     /* 可见性边界与普通召回一致（isMemoryVisibleTo）：private / 缺失 visibility 的记忆——
-       即使 createdBy 是角色自己——也不进入归纳，避免受限内容进入模型请求或经归纳泄给其他角色。 */
-    const _vis=m=>{try{if(typeof isMemoryVisibleTo==='function')return isMemoryVisibleTo(m,roleId,false,false);return !!(m&&m.visibility&&m.visibility!=='private')}catch(e){return false}};
-    const visibleSemantic=m=>m&&m.kind==='semantic'&&_vis(m)&&(String(m.createdBy||'')===roleId||(Array.isArray(m.visibleTo)&&m.visibleTo.map(String).includes(roleId)));
-    const episodics=all.filter(m=>m&&m.kind!=='semantic'&&m.kind!=='core'&&_vis(m)&&(String(m.createdBy||'')===roleId||(Array.isArray(m.visibleTo)&&m.visibleTo.map(String).includes(roleId))));
+       即使 createdBy 是角色自己——也不进入归纳，避免受限内容进入模型请求或经归纳泄给其他角色。
+       M1-C.2d Wave 1：判断本身改由 _memDerivationCandidates 提供，与 Understanding / Thread
+       共用同一实现（原先此处是"正确的那一份"，另两处是弱化副本）。 */
+    const visibleSemantic=m=>m&&m.kind==='semantic'
+      &&_memDerivationCandidates([m],roleId).length===1;
+    const episodics=_memDerivationCandidates(all,roleId,_memNonSemantic);
     /* 该角色近期未固化的 episodic 记忆。真实时间顺序：按 created（缺失时 lastActivated/
        lastConsolidatedAt）升序后再取最近 12 条。原实现直接对 dbGetAll('memories') 的返回顺序
        slice(-12)，顺序不确定 → 归纳输入可能不是真实时间顺序。 */
@@ -828,36 +830,60 @@ async function consolidateCharacterMemory(cfg,opts){
     return null
   }catch(e){return null}/* 静默旁路 */
 }
+/* ── 派生候选的规范可见性边界（M1-C.2d Wave 1 · D-1 的单一入口）──────────────
+   consolidation / Understanding / Thread 三个 producer 在把记忆送进派生 LLM 之前，
+   必须且只能经由此函数取候选。它把「candidate set → visibility/ACL」做成唯一入口，
+   使 producer-specific selection（kind / 时间 / 规则命中）不可能绕过可见性。
+
+   此前只有 consolidation 走这条边界，Understanding 与 Thread 用的是更弱的条件
+   （`createdBy===roleId || visibleTo∋roleId`）—— 该条件**接受 private 但由本角色写入**
+   的记忆，而 isMemoryVisibleTo 明确排除它。于是"对某角色隐藏的记忆"仍会进入派生请求，
+   其文本随 Understanding/Thread 制品回到该角色的 prompt。 */
+function _memDerivationCandidates(all,roleId,predicate){
+  var core=(typeof window!=='undefined'&&window.IBMemoryVisibilityCore)||null;
+  if(!core)return[];/* fail closed：可见性语义不可用 → 不产生任何派生候选 */
+  return core.filterDerivationCandidates(all,roleId,predicate);
+}
+/* 该角色近期未固化的 episodic 记忆（consolidation 的输入池）。 */
+function _memNonSemantic(m){return !!m&&m.kind!=='semantic'&&m.kind!=='core'}
+/* 证据 id 的准入：只接受"真实存在 **且** 对该角色仍可见"的记忆。
+   模型返回的 evidenceIds 是**不可信输入** —— 它既可能指向幻觉 id，也可能指向
+   一条对该角色隐藏的记忆。后者会让隐藏记忆的 id 进入派生制品的依据列表
+   （进而出现在该角色的 Understanding/Thread 上下文里）。 */
+function _memVisibleEvidenceIds(ids,all,roleId){
+  var core=(typeof window!=='undefined'&&window.IBMemoryVisibilityCore)||null;
+  if(!core)return[];/* fail closed */
+  return core.liveEvidenceIds(
+    (Array.isArray(ids)?ids:[]).map(String),
+    all,
+    function(m){return core.isMemoryVisibleTo(m,String(roleId),false,false)}
+  );
+}
 /* 多来源合并采用最严格 visibility：派生 memory 的可见范围不得比任何来源更宽。
    private / 缺失 visibility（旧数据、日记）按"不能证明公开"保守处理，绝不放宽成 public。
-   - 全部 public → public
-   - 任一 only → only（visibleTo 取各 only 来源圈定的交集，并保证角色自己能召回）
-   - 任一 except → except（excludeFrom 取各 except 来源的并集，确保不放开任何一项排除）
-   - 任一 private → private */
+   M1-C.2d Wave 1：rank 表 / 交集 / 并集算法已收敛到 memory-visibility-core.js
+   （deriveVisibility），此处只保留既有函数名作为委托入口，不再持有第二份实现。 */
 function _memoryDeriveVisibility(sources,roleId){
-  if(!sources||!sources.length)return{visibility:'public',visibleTo:[],excludeFrom:[]};
-  var rank=4,onlySets=[],exceptSets=[];
-  for(var i=0;i<sources.length;i++){
-    var m=sources[i],v=m&&m.visibility;
-    var r=4;
-    if(v==='private')r=1;
-    else if(v==='only')r=2;
-    else if(v==='except')r=3;
-    else if(v==='public')r=4;
-    else r=2;/* 缺失 visibility（旧数据/日记）：不能证明公开，按 only 级保守 */
-    if(r<rank)rank=r;
-    if(v==='only')onlySets.push((m.visibleTo||[]).map(String));
-    else if(v==='except'){var ex=(m.excludeFrom||[]).map(String);exceptSets=exceptSets.concat(ex)}
-  }
-  if(rank<=1)return{visibility:'private',visibleTo:[],excludeFrom:[]};
-  if(rank===2&&onlySets.length){
-    var inter=onlySets[0].filter(function(x){for(var j=1;j<onlySets.length;j++)if(onlySets[j].indexOf(x)<0)return false;return true});
-    if(inter.indexOf(String(roleId))<0)inter.push(String(roleId));/* 保证角色自己能召回 */
-    return{visibility:'only',visibleTo:inter,excludeFrom:[]};
-  }
-  if(rank===2)return{visibility:'only',visibleTo:[String(roleId)],excludeFrom:[]};
-  if(rank===3)return{visibility:'except',visibleTo:[],excludeFrom:Array.from(new Set(exceptSets))};
-  return{visibility:'public',visibleTo:[],excludeFrom:[]};
+  var core=(typeof window!=='undefined'&&window.IBMemoryVisibilityCore)||null;
+  if(!core)throw new Error('IBMemoryVisibilityCore not loaded');
+  return core.deriveVisibility(sources,roleId);
+}
+/* ── R1：派生制品的写时印章 ──────────────────────────────────────────────
+   制品（Understanding / Thread）必须携带"它的可见边界"，且**不得比证据更宽**。
+
+   两个容易写错、这里必须写对的地方：
+     · 来源集 = **本制品自己可见的证据**，而不是本次新证据。所以调用方把两条的
+       rows 拼起来传进来（prevRows.concat(nextRows)）—— 只按新证据算印章，
+       会在"先收窄、后重新派生"时把印章悄悄放宽回旧范围（R6）。
+     · 证据行无法解析（已删/核心不可用）时，**把该证据当作不可判定**参与降级：
+       追加一条 {visibility:undefined}，deriveVisibility 会按 only 级保守处理，
+       而不是把这条证据直接丢掉 —— 丢掉等于让它不参与最严格合并，等于放宽。
+
+   核心不可用 → {visibility:'private'}（fail closed）。 */
+function _memDerivationStamp(sourceRows,roleId){
+  var rows=(Array.isArray(sourceRows)?sourceRows:[]).filter(Boolean);
+  if(!rows.length)return {visibility:'private',visibleTo:[String(roleId)],excludeFrom:[]};
+  return _memoryDeriveVisibility(rows,roleId);
 }
 /* ══════════ Memory Provenance Repair（P2-05 · 保守修复，dry-run 优先） ══════════
    只处理两类可判定的历史坏记录，且只收窄、绝不放宽任何 visibility：
@@ -1014,7 +1040,11 @@ async function _understandingTick(cfg){
     if(typeof _ibApiReady==='function'&&!_ibApiReady(cfg))return null;
     const roleId=String(cfg.id);
     const all=await dbGetAll('memories');
-    const episodics=all.filter(m=>m&&m.kind!=='semantic'&&m.kind!=='core'&&(String(m.createdBy||'')===roleId||(Array.isArray(m.visibleTo)&&m.visibleTo.map(String).includes(roleId))));
+    /* M1-C.2d Wave 1 · D-1：派生候选必须走与直接召回相同的可见性边界。
+       此前这里是 `createdBy===roleId || visibleTo∋roleId` —— 它接受
+       private 但由本角色写入的记忆（isMemoryVisibleTo 明确排除），
+       于是"对某角色隐藏的记忆"仍被写进派生 prompt 并回流到该角色的上下文。 */
+    const episodics=_memDerivationCandidates(all,roleId,_memNonSemantic);
     const recentEpi=episodics.slice(-10);
     let recentMoments=[],recentDiary=[];
     try{const ms=await dbGetAll('moments');recentMoments=ms.filter(m=>String(m.roleId||'')===roleId).slice(-6)}catch(e){}
@@ -1038,8 +1068,8 @@ async function _understandingTick(cfg){
     if(!parsed||parsed.shouldUpdate!==true)return null;
     const content=String(parsed.content||'').trim().slice(0,500);
     if(!content)return null;
-    /* evidenceIds：只信任真实存在且属于本角色/可见的源 id */
-    const evidenceIds=(Array.isArray(parsed.evidenceIds)?parsed.evidenceIds:[]).map(String).filter(id=>all.some(m=>m&&m.id===id)).slice(0,50);
+    /* evidenceIds：只信任真实存在**且对该角色可见**的源 id（模型输出不可信） */
+    const evidenceIds=_memVisibleEvidenceIds(parsed.evidenceIds,all,roleId).slice(0,50);
     /* 准入：basis/人格·心理/evidence≥2 由 _calibrateMemoryCandidate 本地判定 */
     const cal=(typeof window._calibrateMemoryCandidate==='function')
       ?await window._calibrateMemoryCandidate({content:content,confidence:Number(parsed.conviction)||0,reasons:[],basis:String(parsed.basis||'').trim()||'ai_guess',operation:'understanding',targetStore:'understandings',cfg:cfg,evidenceIds:evidenceIds,category:['values','habits','identity','relationship','preferences','context'].includes(parsed.dimension)?parsed.dimension:'context'})
@@ -1048,12 +1078,20 @@ async function _understandingTick(cfg){
     const dimension=['values','habits','identity','relationship','preferences','context'].includes(parsed.dimension)?parsed.dimension:'context';
     let existing=null;
     try{existing=await window.unGetActive(roleId)}catch(e){}
+    /* R1/R6：印章来源 = **本制品新旧两版的证据并集**。
+       只按本次新证据算，会在"先收窄、后重新派生"时把印章放宽回旧范围。
+       无法解析的证据 id 追加一条降级来源（只可能更窄，不可能放宽）。 */
+    const _stampIds=Array.from(new Set(
+      ((existing&&existing.current&&existing.current.evidenceIds)||[]).map(String).concat(evidenceIds.map(String))
+    ));
+    const _stampRows=_stampIds.map(id=>all.find(m=>m&&String(m.id)===id)||{visibility:undefined});
+    const _stamp=_memDerivationStamp(_stampRows,roleId);
     let resultId=null;
     if(existing&&existing.current&&existing.current.content&&existing.current.content!==content){
       /* 仅在内容有实质变化时才改写（留版本史） */
-      if(typeof window.unWrite==='function'){const u=await window.unWrite(roleId,{content:content,conviction:cal.confidence,basis:String(parsed.basis||'').trim()||'ai_guess',dimension:dimension,evidenceIds:evidenceIds,updatedBy:charName});resultId=u&&u.id||null}
+      if(typeof window.unWrite==='function'){const u=await window.unWrite(roleId,{content:content,conviction:cal.confidence,basis:String(parsed.basis||'').trim()||'ai_guess',dimension:dimension,evidenceIds:evidenceIds,updatedBy:charName,stamp:_stamp});resultId=u&&u.id||null}
     }else if(!existing&&typeof window.unWrite==='function'){
-      const u=await window.unWrite(roleId,{content:content,conviction:cal.confidence,basis:String(parsed.basis||'').trim()||'ai_guess',dimension:dimension,evidenceIds:evidenceIds,updatedBy:charName});resultId=u&&u.id||null
+      const u=await window.unWrite(roleId,{content:content,conviction:cal.confidence,basis:String(parsed.basis||'').trim()||'ai_guess',dimension:dimension,evidenceIds:evidenceIds,updatedBy:charName,stamp:_stamp});resultId=u&&u.id||null
     }
     return resultId||null
   }catch(e){return null}/* 静默旁路 */
@@ -1065,14 +1103,17 @@ async function _threadRuleTick(cfg){
     if(!cfg||!cfg.id)return 0;
     const roleId=String(cfg.id);
     const all=await dbGetAll('memories');
-    const episodics=all.filter(m=>m&&m.kind!=='semantic'&&m.kind!=='core'&&(String(m.createdBy||'')===roleId||(Array.isArray(m.visibleTo)&&m.visibleTo.map(String).includes(roleId)))).slice(-12);
+    /* M1-C.2d Wave 1 · D-1：同 Understanding —— 规则命中不能绕过可见性。 */
+    const episodics=_memDerivationCandidates(all,roleId,_memNonSemantic).slice(-12);
     let created=0;
     for(const m of episodics){
       const text=String((m.title||'')+' '+(m.content||'')+' '+(m.summary||''));
       if(!THREAD_OPEN_RE.test(text))continue;
       /* 用标题做 question 种子（可被 thOpen 复用合并到同一 thread） */
       const q=String(m.title||'').trim()||('关于"'+String(m.content||'').slice(0,20)+'"的进展');
-      const t=await window.thOpen(roleId,q,m.id,'ai');
+      /* R1：Thread 的印章来自它的证据行；这里证据只有 m 自己，thOpen 复用旧 Thread
+         时会与旧印章取最严格（并集 → 只会更窄）。 */
+      const t=await window.thOpen(roleId,q,m.id,'ai',_memDerivationStamp([m],roleId));
       if(t)created++;
     }
     return created
