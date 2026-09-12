@@ -297,7 +297,27 @@ async function capture(opts) {
 
   try {
     browser = await launchBrowser({ width: VIEWPORT.width, height: VIEWPORT.height, keepProfile: !!o.keepProfile });
-    cdp = await browser.open(pageUrl);
+    /* ── M1-C.2d Wave 2：截图管线跑在 mirror 模式 ──────────────────────
+       演示数据（scripts/guide-fixtures.js:214）用 dbPut 写 `memories`。Wave 2
+       之后 canonical 模式下这是一次 fail-closed 的 canonical 写入：Home Node
+       不在线就**必须**失败。截图管线不启动 Home Node（它只起 Bridge/Active 桩），
+       于是夹具会在页面上抛错并把错误记进 appErrors，测试转红 ——
+       那测的是网络可达性，不是截图管线。
+
+       mirror 是既有开关：authority 明确不主张 Home Node 权威，记忆读写退回
+       本地 IndexedDB（与 Wave 2 之前逐字相同）。截图要的是"有演示记忆可看"，
+       与权威在哪一侧无关，因此 mirror 下截图内容完全有效。
+
+       必须在页面加载**之前**注入：home-node-bootstrap.js 在脚本解析阶段就读
+       localStorage['ib_home_node_mode'] 并据此构造 authority，页面加载后再改
+       已经无效（模式在构造时固化）。因此这里先开一个 about:blank 标签、
+       注册注入脚本，再导航到真正的页面 —— 同一个 tab、同一个 session，
+       注册一定生效。 */
+    cdp = await browser.open('about:blank');
+    await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
+      source: `try{localStorage.setItem('ib_home_node_mode','mirror')}catch(e){}`
+    });
+    await cdp.send('Page.navigate', { url: pageUrl });
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: VIEWPORT.width, height: VIEWPORT.height, deviceScaleFactor: VIEWPORT.deviceScaleFactor, mobile: false });
 
     const appErrors = [];

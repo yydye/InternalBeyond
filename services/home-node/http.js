@@ -212,7 +212,12 @@ function createHomeNodeHttp(deps) {
        自己判定。若这条也管 mobile，手机就永远无法在 LAN 上配对 —— 而那正是
        允许 LAN 的全部意义。 */
     const isMobilePath = path.indexOf('/mobile/') === 0;
-    if (remote && !isMobilePath) {
+    /* `/memory/*` 是**桌面面**（M1-C.2d Wave 2）而不是设备面：它承载 canonical
+       记忆正文与召回。因此它必须走与 /status /characters 同一套保护 ——
+       远端未配置桌面 token 时 403，而不是匿名可读。
+       把记忆排除在这条规则之外，等于把"她的长期记忆"暴露给整个局域网。 */
+    const isDesktopOnlyPath = path.indexOf('/memory/') === 0;
+    if (remote && (!isMobilePath || isDesktopOnlyPath)) {
       if (!token) {
         record('warn', 'rejected-remote-non-mobile', { path: path, reason: 'no-desktop-token-configured' });
         bad(res, 403, 'remote-admin-disabled', { hint: 'set IB_HOME_NODE_TOKEN to reach desktop paths from the network' }, req);
@@ -235,7 +240,7 @@ function createHomeNodeHttp(deps) {
        /characters/publish）继承 Home Node 既有的 loopback/token 保护；
        而 /mobile/v1/* 自己的 device token 才是设备的凭据。 */
     if (gateway && typeof gateway.handles === 'function' && gateway.handles(path)) {
-      if (isMobilePath) {
+      if (isMobilePath && !isDesktopOnlyPath) {
         /* 设备 API：不要求桌面 token（设备有自己的 token），
            但**仍然**受 loopback/allowRemote 与体积上限约束 —— 那两条在
            server 层已经处理，这里只是不再套桌面 token。 */
@@ -296,8 +301,25 @@ function createHomeNodeHttp(deps) {
         allowRemote: allowed,
         tokenRequired: !!token,
         corsAllowlist: allowedOrigins,
-        exposes: ['chat-store', 'character-turn', 'mobile-gateway'],
-        doesNotExpose: ['llm-proxy', 'tools', 'payments', 'memory', 'moments', 'diary', 'letters', 'images', 'tts'],
+        exposes: ['chat-store', 'character-turn', 'mobile-gateway', 'memory-store'],
+        /* M1-C.2d Wave 2 的诚实更新：Home Node **现在确实存储** canonical
+           `memories`。原先这里写 'memory' 属于 doesNotExpose —— 那句话曾经为真，
+           现在会误导。精确的新声明是：
+             · memory **不对任何设备提供**（/mobile/v1 没有 memory verb，
+               出站 DTO 也不含记忆行）；
+             · 它只在**本机执行缝**里被读出来注入 provider。
+           因此把它从 doesNotExpose 移出、改为一个可检查的具体断言
+           （tests/test_mobile_thin_client.js 与 tests/test_mobile_memory_continuity.js
+           都验证"设备拿不到记忆"这一条仍然成立）。 */
+        memoryPolicy: {
+          stored: true,
+          servedToDevices: false,
+          deviceVerbs: [],
+          injection: 'home-node-execution-only',
+          desktopPaths: ['/memory/list', '/memory/changes', '/memory/records', '/memory/record',
+            '/memory/activate', '/memory/settings', '/memory/migration', '/memory/migrate']
+        },
+        doesNotExpose: ['llm-proxy', 'tools', 'payments', 'moments', 'diary', 'letters', 'images', 'tts'],
         /* M1-B：设备身份 + 移动边界。mobile 面**只有** allowlist 里的 verb。 */
         deviceAuth: { scheme: 'per-device opaque token', storedAs: 'sha256', constantTimeCompare: true, revoke: 'immediate' },
         mobile: gateway ? {

@@ -1,6 +1,7 @@
 # HOME_NODE_CHAT — canonical chat authority
 
 **Stage:** M1-A · Canonical Chat Authority + Node Execution Seam
+**Addendum:** M1-C.2d Wave 2 · Canonical Memory Authority — see **§15** below.
 **Status:** landed. Companion documents: `docs/CHAT_MESSAGE_CONTRACT.md` (the frozen field
 table) and `MOBILE_HOME_NODE_AUDIT.md` (the M0 audit this stage implements).
 
@@ -537,6 +538,9 @@ gateway does not exist yet and the Home Node does not proxy caller-supplied URLs
 | `tests/test_chat_core_contract.js` | static | every production write shape validates; five id shapes; conversation identity round-trip; validation vocabulary; deterministic `requestId→messageId`; unknown fields preserved |
 | `tests/test_chat_authority.js` | static | authority/mirror/fallback policy: write order, fail-closed offline writes, mirror-failure reporting, rejection vs. offline, `mirror`/`off` modes, migrate idempotency and watermark |
 | `tests/test_chat_migration.js` | static | real store + mock HTTP: empty DB, seeded DB, duplicate migration, interruption/resume, mixed threads, images/files/voice payloads, malformed JSON, marker persistence across restart |
+| `tests/test_memory_authority.js` | static | **§15** memory authority/mirror/fallback policy: write order, fail-closed offline writes, rejection ≠ offline, mirror-failure reporting, `mirror`/`off` modes, **read-modify-write updates**, **activation telemetry excluded from content identity**, **activation never advances revision**, `memory-contract` pure semantics |
+| `tests/test_memory_migration.js` | static | **§15** real memory-store + mock HTTP: empty DB, seeded memories (provenance/consolidation/unknown-field round-trip), duplicate migration, telemetry-drift idempotency, interruption (no watermark) vs. batched truncation (watermark), resumed result identical to uninterrupted, **visibility preserved byte-for-byte**, pre/post recall parity |
+| `tests/test_mobile_memory_continuity.js` | service | **§15** the product-defining path: real canonical memories → Node retrieval → `chat.send` → `executeCharacterTurn` → `NodeModelPort` → mock provider. Asserts the provider *receives* the memory **and** that SSE / `chat.history` / `character.list` / `character.get` do **not** contain it |
 | `tests/test_home_node_execution.js` | service | real SSE mock provider → `runStream` → `executeCharacterTurn` → store: delta order and indices, usage passthrough, canonical double-write, idempotent replay (one model call), `busy`, provider error, abort with/without partial, attachments reaching the request, restart-safe idempotency |
 | `tests/test_home_node_http.js` | service | 73 checks over real HTTP: health identity, token auth, idempotency, batch atomicity, keyset pagination both directions including same-millisecond ties, change-log cursors, delete semantics, repeatable migration marks, backup, corruption quarantine, integrity, hostile-origin CORS, boundary routes 404 |
 | `tests/test_home_node_service.js` | service | module require without listening, injected port/dataDir, bad dataDir fails loudly, runner registration and identity probing, isolation branches, no resident timer |
@@ -564,7 +568,8 @@ Not migrated, not read by Node, and deliberately absent from every M1-A surface:
 | Domain | Where it still lives | Note |
 |---|---|---|
 | **Middle Brain** | browser only, 6 `<script>` modules | §6.2. No Node path exists and none is pretended. |
-| **Memory** | browser `memories`/`autoMemory`/`understandings`/`threads` | Node still receives only a pre-ranked ≤8-row snapshot inside Active task payloads. |
+| **`memories`** | ~~browser~~ → **Home Node** (M1-C.2d Wave 2) | **Migrated — see §15.** No longer deferred. |
+| **`understandings` / `threads` / `autoMemory`** | browser | Wave 3 candidates (§15.9). |
 | **Moments** | browser `moments` (+ Active schedule state) | |
 | **Diary** | browser `diary_entries` | |
 | **Letters** | browser `letters` / `roleLetters` / `roleLetterMemories` | |
@@ -590,4 +595,188 @@ integrity:  GET  /verify      (+ ?backup=1)   boundary      GET /security
 execute:    POST /turn {requestId, character, userMessage, history, …}          (non-streaming envelope)
 browser:    IB.homeNode.status() / .sync() / .probe() / .migrate() / .rebuildMirror() / .log()
 browser:    IB.chatAuthority.instance  — the policy object itself
+memory:     GET  /memory/list?ownerId=&limit=      GET /memory/changes?cursor=&limit=
+            POST /memory/records {record|records[], requestId?, existingPolicy?}
+            DELETE /memory/record?id=&requestId=
+            POST /memory/activate {ids[], at?, delta?}      ← 不推进 revision
+            GET|POST /memory/settings {budget?, contentLen?}
+            GET  /memory/migration?source=   POST /memory/migrate {source,version,lastTimestamp,records,idSet}
+browser:    IB.homeNode.memory.status() / .sync() / .migrate() / .rebuildMirror() / .publishSettings() / .peek()
+browser:    IB.memoryAuthority.instance  — the memory policy object itself
 ```
+
+---
+
+## 15. M1-C.2d Wave 2 — canonical memory authority
+
+`memories` becomes canonical durable state **owned by the Home Node**. This is the first
+vertical slice of memory-authority convergence; the rest of the memory ecosystem
+(`understandings`, `threads`, `chatSummaries`, `autoMemory`, `roleLetterMemories`,
+`diary_entries`, `moments`, `posts`, `calEvents`, `calLedger`, `activities`) is **not**
+migrated and keeps its existing browser authority.
+
+### 15.1 Authority before / after
+
+```
+BEFORE   Browser IndexedDB → memories authority   (Home Node knew nothing about memory)
+
+AFTER    Home Node  → canonical memories (memory_records)
+              ↓
+         Browser IndexedDB memories = mirror / migration source / rollback shadow
+```
+
+There is no longer a "Desktop Memory" versus an "Android Memory" for this store: both
+clients cause turns, but the durable truth lives once.
+
+### 15.2 Reused pattern, not a second architecture
+
+`assets/js/memory-authority.js` is the same three-state policy as
+`assets/js/chat-authority.js` — same `MODES`, same `degradedReason` vocabulary, same
+fail-closed write rule, same migration/watermark shape. It is a sibling, not a
+generalization: no "UniversalAuthorityManager" was invented, because the two stores
+differ in exactly one way that matters (below), and that difference is cheaper to state
+than to abstract.
+
+| | `chatMessages` | `memories` |
+|---|---|---|
+| Record mutability | effectively immutable after creation | **read-modify-write** (user edits, pin, resolve; consolidation rewrites `kind`/provenance) |
+| Migration overwrite policy | `existingPolicy:'skip'` | `skip` for the one-shot migration only; normal writes use `overwrite` |
+| Content identity | payload bytes | payload bytes **minus activation telemetry** (`memory-contract.js`) |
+| Ranking telemetry | none | `activationCount` / `lastActivated`, updated **outside** the revision stream |
+
+That third and fourth row are the whole reason a separate table and a separate revision
+namespace exist.
+
+### 15.3 Storage
+
+One table in the **same** `home-node.db`, with its **own** revision namespace — a memory
+write must not invalidate the chat mirror cursor, and vice versa
+(`memory-store.js`; the same reasoning as `device-registry.js`'s separate schema key):
+
+```
+memory_records(record_id PK, owner_id, class, visibility, visible_to, exclude_from,
+               importance, pinned, activation_count, last_activated_at,
+               created_at, updated_at, revision, created_rev, deleted_at, deleted_rev,
+               payload_json)
+memory_change_log(revision PK, kind, record_id, owner_id, at)
+
+meta['memory_schema']            = "1"
+meta['memory_revision']          = <monotonic>
+meta['memory:settings']          = {budget, contentLen}
+meta['migration:memory:<source>'] = {version, lastTimestamp, records, idSet}
+```
+
+Why these columns: `visibility` / `owner_id` / `class` are promoted so the ACL is
+evaluable **without deserializing the payload** (required by the pre-filter contract);
+`activation_count` / `last_activated_at` are promoted so the per-turn reinforcement is a
+two-column `UPDATE` that touches neither `payload_json` nor `revision`.
+`payload_json` holds **every** field — unknown fields must round-trip, and there is no
+`ALTER TABLE` migration framework in this repo, so a column-per-field design would be a
+trap.
+
+### 15.4 Retrieval — one implementation, two hosts
+
+`assets/js/memory-retrieval-core.js` is a UMD dual-load pure module
+(`require`d by `services/home-node/memory-retrieval.js`, `<script>`ed by the browser).
+It is the **only** implementation of scoring, relevance, ranking, budget and line
+rendering. `assets/js/memory.js` and the Node path both delegate to it — which is why
+`tests/test_mobile_memory_continuity.js` T3.8 can assert that the browser and the Node
+produce the *same selection* for the same input.
+
+Ordering is preserved unchanged and is **not** negotiable:
+
+```
+candidate set → visibility/ACL → relevance → ranking → top-k/budget → rendered context
+```
+
+Hidden memories are removed *before* scoring, so they cannot affect ranking or the top-k
+(`tests/test_memory_migration.js` §6 asserts pre/post-migration recall is byte-identical).
+
+### 15.5 Injection seam
+
+`mobile-gateway.js` composes the runtime context; `p0-context.js` was **not** modified
+(its freeze holds — it still renders only identity/relationship/time). Ordering, chosen so
+the stable prefix stays cacheable:
+
+```
+spec.systemPrompt                  ← most stable
+P0 identity / address / relationship
+【长期记忆】 …                      ← varies per query
+当前时间：…                          ← varies per minute, MUST be last
+```
+
+`runtimeContext` is private by construction: it is appended to `system` and appears in no
+DTO and no SSE frame.
+
+### 15.6 Activation — the boundary that keeps ranking hints out of sync traffic
+
+Selection and reinforcement are separate (Wave 1 · C3). Node-side retrieval selects;
+after the turn settles, `recordActivation` updates `activation_count` /
+`last_activated_at` only. It does **not** bump `revision`, does **not** write
+`memory_change_log`, does **not** touch `updated_at`, and does **not** rewrite
+`payload_json`. One turn therefore cannot invalidate any mirror cursor.
+
+Failure semantics differ on purpose: retrieval failure → empty memory block, turn
+proceeds; activation failure → logged, turn unaffected; visibility unresolvable →
+the record is excluded.
+
+### 15.7 Migration guarantees
+
+| Guarantee | Mechanism |
+|---|---|
+| id / timestamp / visibility / owner / evidence unchanged | sent verbatim; Node never renumbers; **missing `visibility` stays missing** so C1's fail-closed `return false` keeps behaving identically |
+| duplicates | `existingPolicy:'skip'` — content-identical (ignoring telemetry) → `skipped`, revision unmoved |
+| interrupted → resume | on batch failure **no marker is written**; resume is safe because replaying a committed prefix skips |
+| controlled truncation | `maxBatches` writes a watermark (confirmed prefix) |
+| re-run idempotent | safe from scratch; `attemptToken` namespacing keeps reported counts honest |
+| incremental check | the watermark carries an **id set** — `memories` are editable, so a changed old record keeps its `created` and a timestamp watermark alone cannot detect it |
+| never clears IndexedDB | the mirror is the rollback shadow |
+| migration does not repair | `evidenceIds` is never resolved or rewritten |
+
+### 15.8 Rollback
+
+`localStorage['ib_home_node_mode'] = 'mirror'` — the existing M1-A switch, which
+disclaims Home Node authority for **both** stores (one flag, one state machine; a
+per-store mode matrix is deliberately rejected). No data movement is required, because
+the browser stores were never cleared. Memory the Node accepted after the flip stays in
+`memory_records` as a forward-only artifact and is **not** auto-merged back — see §12.4 of
+the migration plan for why auto-merging would recreate the forbidden two-authority state.
+
+### 15.9 Still deferred (Wave 3+ candidates)
+
+`understandings`, `threads`, `chatSummaries`, `autoMemory`, `roleLetterMemories`,
+`diary_entries`, `moments`, `posts`, `calEvents`, `calLedger`, `activities`; moving the
+derivation engine (`consolidateCharacterMemory`, `_understandingTick`,
+`_threadRuleTick`) to Node; the Desktop execution cutover to `executeCharacterTurn`.
+
+> **The derivation engine is no longer a second writer of canonical `memories`.**
+> `consolidateCharacterMemory` writes through `dbPut('memories', …)`
+> (`active-diary.js:747`, `:813`, `:986`) — the same seam the authority now owns — so those
+> writes go Node-first and fail closed like any other. This required **no** change to
+> `active-diary.js`; the takeover at the data-access boundary was sufficient. It remains a
+> *browser-resident* engine (Wave 3 moves it), but it is not an independent authority.
+
+### 15.10 Backlog (recorded, NOT implemented)
+
+**RikkaHub-inspired Home Node productization.** Reference:
+`https://github.com/rikkahub/rikkahub`. RikkaHub exposes its local Web Server as a real
+product feature (configurable port, localhost-only mode, LAN exposure, mDNS,
+authentication, access password, human-readable address explanation, explicit
+start/stop). InternalBeyond currently exposes developer machinery instead
+(`IB_HOME_NODE_HOST`, `0.0.0.0`, port 23118, hand-run PowerShell pairing, manually
+inspected LAN IP, pairing JSON).
+
+Desired future shape: a *Mobile Connection / Home Node* panel with a running indicator,
+one "Allow LAN access" toggle, an **explicit network-interface picker**, a device-auth
+toggle, a paired-device list with per-device Revoke, and "Show pairing QR"; bind address /
+port / mDNS / protocol version / diagnostics demoted to Advanced.
+
+Real-world evidence for the picker: automatic interface selection previously chose
+**Radmin VPN `26.229.206.72`** instead of the desired LAN interface **Ethernet 2
+`192.168.10.100`** — so the product should let the user choose the interface explicitly
+rather than guess one IPv4 address.
+
+**License boundary:** RikkaHub is AGPL-3.0; InternalBeyond is PolyForm Noncommercial
+1.0.0. Study behavior, architecture and UX and derive clean IB patterns
+(reference → understand → clean implementation). Do **not** copy RikkaHub source into IB.
+

@@ -94,9 +94,15 @@ const api = http.createServer(async (req, res) => {
       return true})()`);
 
     /* 种子数据：给 seam_role 一条可见记忆（否则 organize 结果为空 → Astra 层直接返回空结果，
-       不会发起网络请求，无法覆盖 astra 注入路径）。 */
+       不会发起网络请求，无法覆盖 astra 注入路径）。
+
+       M1-C.2d Wave 2：`memories` 写入已走 canonical authority（写先到 Home Node，
+       fail closed）。本用例不启动 Home Node，因此夹具走**未包装的原始驱动**
+       `IB.homeNodeOriginalDb` —— 它正是"直接写本地镜像"的既有接缝。
+       夹具是"预置的本地状态"，不是一次 canonical 写入，不该依赖外部服务。 */
     await evaluate(cdp, `(async function(){
-      await dbPut('memories',{id:'seam_mem',kind:'episodic',createdBy:'seam_role',visibility:'public',visibleTo:[],excludeFrom:[],title:'SEAM_MEMORY_TITLE',content:'SEAM_MEMORY_MARKER',domain:'日常',tags:[],valence:0.5,arousal:0.3,importance:9,resolved:false,activationCount:0,created:Date.now(),lastActivated:0});
+      var ORIG=(window.IB&&window.IB.homeNodeOriginalDb)||{put:dbPut};
+      await ORIG.put('memories',{id:'seam_mem',kind:'episodic',createdBy:'seam_role',visibility:'public',visibleTo:[],excludeFrom:[],title:'SEAM_MEMORY_TITLE',content:'SEAM_MEMORY_MARKER',domain:'日常',tags:[],valence:0.5,arousal:0.3,importance:9,resolved:false,activationCount:0,created:Date.now(),lastActivated:0});
       await dbPut('apiSettings',{id:'summarySettings',enabled:false,keepCount:6,welcomeEnabled:false,welcomeInterval:2,musicEnabled:false,summaryApiId:'',summaryWindow:60});
       return true})()`);
 

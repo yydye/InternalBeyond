@@ -50,6 +50,16 @@
    即：授权的是"在别处加一个 memory 来源"，不是"在这里放宽冻结"。
    Wave 1 本身**不**接线任何 memory；本注释只是把下一波的合法落点写清楚，
    避免 Wave 2 因为找不到授权而悄悄改这个冻结。
+
+   ── Wave 2 落地结果（由 Wave 2 回填；本文件代码**未**因此改动一行）────
+   授权已被使用，落点是 services/home-node/memory-retrieval.js：
+     · 它读 canonical `memories`，用**共享的** assets/js/memory-retrieval-core.js
+       做 visibility → relevance → ranking → budget → 渲染；
+     · 它把结果拼成一段独立的【长期记忆】小节；
+     · 拼接顺序由它决定（**当前时间被移到最末**，保 prompt cache 的最长公共
+       前缀）—— 顺序是执行缝的职责，因此本文件仍然只"产出四行"，
+       没有获得任何 memory 概念，也没有变成 composer。
+   两者都只服务 Home Node 执行路径，都不参与桌面 composer。
    ==================================================================== */
 
 /* 与 Desktop communication.js:1424 逐字相同的格式选项。

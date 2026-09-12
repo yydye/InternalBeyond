@@ -101,6 +101,23 @@ const api = http.createServer(async (req, res) => {
   const apiPort = await listen(api), apiBase = 'http://127.0.0.1:' + apiPort;
   const web = require(path.join(ROOT, 'services', 'internal-beyond-server.js')).createWebServer({ root: ROOT, port: 0 });
   const webPort = await listen(web), webBase = 'http://127.0.0.1:' + webPort;
+
+  /* ── M1-C.2d Wave 2：本用例需要一个**真实**的 Home Node ─────────────
+     `memories` / `chatMessages` 的权威都在 Home Node，且两条写路径都是
+     fail closed 的。本用例会真的发一条消息（chatTurn）并读取四个 producer，
+     因此 Home Node 不在线时它根本无法跑完 —— 那测的是网络可达性，
+     不是上下文快照语义。这里起一个真实实例（buildHomeNode：真实装配，
+     不复制接线），并把它的 origin 加进下面 fetch 守卫的白名单
+     —— 该守卫本来就是为了"只允许受控的本机服务"而写的。 */
+  const memoryDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-c2-hn-'));
+  const HOME_NODE_TOKEN = 'c2-home-node-token';
+  const homeNode = require(path.join(ROOT, 'services', 'home-node-service.js')).buildHomeNode({
+    dataDir: memoryDataDir, token: HOME_NODE_TOKEN, logger: () => {}
+  });
+  homeNode.open();
+  const homeNodePort = await listen(homeNode.server);
+  const homeNodeBase = 'http://127.0.0.1:' + homeNodePort;
+
   const debugPort = await freePort();
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-c2-'));
   const chrome = chromePath(); assert.ok(chrome, 'Chrome or Edge required');
@@ -134,7 +151,8 @@ const api = http.createServer(async (req, res) => {
     await cdp.send('Page.enable'); await cdp.send('Runtime.enable');
     await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
       source: `const _of=window.fetch.bind(window);window.fetch=function(input,opts){const u=new URL(typeof input==='string'?input:input.url,location.href);`
-        + `if(u.origin!==${JSON.stringify(apiBase)}&&u.origin!==${JSON.stringify(webBase)})return Promise.reject(new Error('c2 smoke blocks external service'));return _of(input,opts);};window.confirm=()=>true;`
+        + `if(u.origin!==${JSON.stringify(apiBase)}&&u.origin!==${JSON.stringify(webBase)}&&u.origin!==${JSON.stringify(homeNodeBase)})return Promise.reject(new Error('c2 smoke blocks external service'));return _of(input,opts);};window.confirm=()=>true;`
+        + `try{localStorage.setItem('ib_home_node_http',${JSON.stringify(homeNodeBase)});localStorage.setItem('ib_home_node_token',${JSON.stringify(HOME_NODE_TOKEN)});}catch(e){}`
     });
     await cdp.send('Page.navigate', { url: webBase + '/InternalBeyond.html' });
     assert.ok(await waitFor(cdp, "document.readyState==='complete' && typeof getMemoryContext==='function' && typeof IB.middleBrain.middleBrainExecute==='function' && typeof IBContextSnapshot==='object' && typeof IBContextSnapshot.create==='function'", 20000), 'page + snapshot module + producers mounted');
@@ -268,6 +286,9 @@ const api = http.createServer(async (req, res) => {
     try { browser.kill(); } catch (_) {}
     try { api.close(); } catch (_) {}
     try { web.close(); } catch (_) {}
+    /* Home Node 也显式关闭：它持有 SQLite 连接与监听 socket，
+       不关会让测试进程跑完不退出（既有 teardown 纪律）。 */
+    try { homeNode.close(); } catch (_) {}
     try { fs.rmSync(profile, { recursive: true, force: true }); } catch (_) {}
   }
 })();

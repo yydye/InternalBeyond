@@ -56,6 +56,46 @@ window.__ibCoreDb={
       t.oncomplete=()=>{if(settled)return;settled=true;_ibMirrorDirty=true;_ibFsDirty=true;r()};
       t.onerror=fail;t.onabort=fail;
     });
+  },
+  /* ── M1-C.2d Wave 2 · memories 镜像批量写入 ────────────────────────
+     与 applyChatMirror / replaceChatMirror 逐行同构，只换 store 名。
+     为什么复用同一个接缝对象而不是再开一个：真正需要保证的是"镜像写入
+     只能由 Home Node 同步路径触发"，把两套镜像写入器放在**同一处**，
+     这个边界就只有一处需要审计。
+
+     records 仍以 `id` 为 keyPath（与 chatMessages 一致）：因此这里不需要
+     知道 Node 侧的列名 record_id —— 那是服务端的列，payload 里回传的始终是
+     浏览器 canonical 的 id。 */
+  applyMemoryMirror:async function(upserts,deletes){
+    await ensureDB();
+    return new Promise((r,j)=>{
+      const t=db.transaction('memories','readwrite');const store=t.objectStore('memories');
+      let settled=false;
+      const fail=e=>{if(settled)return;settled=true;j(t.error||(e&&e.target&&e.target.error)||new Error('IndexedDB memories 镜像写入失败'))};
+      try{
+        (upserts||[]).forEach(function(m){if(m&&m.id)store.put(m)});
+        (deletes||[]).forEach(function(id){if(id)store.delete(id)});
+      }catch(e){fail(e);return}
+      t.oncomplete=()=>{if(settled)return;settled=true;_ibMirrorDirty=true;_ibFsDirty=true;r()};
+      t.onerror=fail;t.onabort=fail;
+    });
+  },
+  /* 用 Home Node 的 canonical 全量重建 memories 镜像（先清后写，同一事务）。
+     先清是必须的：Home Node 已删除的记忆若留在镜像里会继续被召回 ——
+     "她记得一件已经被删掉的事"正是本波要消灭的那类不一致。 */
+  replaceMemoryMirror:async function(records){
+    await ensureDB();
+    return new Promise((r,j)=>{
+      const t=db.transaction('memories','readwrite');const store=t.objectStore('memories');
+      let settled=false;
+      const fail=e=>{if(settled)return;settled=true;j(t.error||(e&&e.target&&e.target.error)||new Error('IndexedDB memories 镜像重建失败'))};
+      try{
+        store.clear();
+        (records||[]).forEach(function(m){if(m&&m.id)store.put(m)});
+      }catch(e){fail(e);return}
+      t.oncomplete=()=>{if(settled)return;settled=true;_ibMirrorDirty=true;_ibFsDirty=true;r()};
+      t.onerror=fail;t.onabort=fail;
+    });
   }
 };
 

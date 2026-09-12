@@ -25,6 +25,11 @@ const path = require('node:path');
 const ROOT = path.resolve(__dirname, '..');
 const CORE_PATH = path.join(ROOT, 'assets', 'js', 'memory-visibility-core.js');
 const CORE = require(CORE_PATH);
+/* M1-C.2d Wave 2：召回（打分/排序/top-k/渲染）也收敛成唯一实现。
+   memory.js 只做委托，因此本测试必须装载**真实**核心，而不是桩 —— 否则
+   T6/T7 验证的就不再是生产选择逻辑。 */
+const RETRIEVAL_PATH = path.join(ROOT, 'assets', 'js', 'memory-retrieval-core.js');
+const RETRIEVAL_CORE = require(RETRIEVAL_PATH);
 
 const source = f => fs.readFileSync(path.join(ROOT, f), 'utf8');
 function fragment(file, begin, end) {
@@ -82,6 +87,7 @@ function makeContext(env, extra) {
     console, setTimeout, clearTimeout, Date, Map, Set, Math, JSON, Promise, structuredClone,
     dbGetAll: env.dbGetAll, dbGet: env.dbGet, dbPut: env.dbPut,
     IBMemoryVisibilityCore: CORE,
+    IBMemoryRetrievalCore: RETRIEVAL_CORE,
     getMemorySettings: env.getMemorySettings || (async () => ({ budget: 2000, contentLen: 200 }))
   }, extra || {});
   context.window = context;

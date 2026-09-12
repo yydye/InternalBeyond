@@ -2982,8 +2982,14 @@ i would like the room to be enough.
 <script src="assets/js/workspace/run.js"></script>
 <script src="assets/js/workspace.js"></script>
 <!-- M1-C.2d Wave 1：memory 可见性语义的唯一实现（召回 / 派生 producer / 证据存活性共用）。
-     必须在 memory.js 与 active-diary.js 之前加载。 -->
+     必须在 memory.js 与 active-diary.js 之前加载。
+     Wave 2：memory-retrieval-core（打分/排序/top-k/渲染）与 memory-contract
+     （内容等价判定、遥测字段排除）同样是 Home Node 与浏览器**共用**的实现
+     —— Node 侧由 memory-store.js / memory-retrieval.js require 同一批文件，
+     因此"她记得什么"不可能出现两套。 -->
+<script src="assets/js/memory-contract.js"></script>
 <script src="assets/js/memory-visibility-core.js"></script>
+<script src="assets/js/memory-retrieval-core.js"></script>
 <script src="assets/js/memory.js"></script>
 <script src="assets/js/memory/auto-memory.js"></script>
 <script src="assets/js/memory/constellations.js"></script>
@@ -3067,6 +3073,15 @@ i would like the room to be enough.
      桌面发布时用它，Mobile Gateway 出站时用同一份，两边结构上不可能漂移。 -->
 <script src="assets/js/chat-core.js"></script>
 <script src="assets/js/chat-authority.js"></script>
+<!-- M1-C.2d Wave 2 · canonical memories authority。
+     与 chat 同款三态（authority/mirror/fallback），只换一个 store：
+       memory-contract（契约，已在上面加载）
+       → memory-authority（策略：写先到 Home Node，失败 fail closed）
+       → home-node-client（唯一 HTTP 实现，含 createMemoryRemote）
+       → home-node-bootstrap（数据层接缝，接管 dbGet/dbGetAll/dbPut/dbDelete 的 memories 分支）
+     顺序与 chat 刻意保持一致，读错只会**静默早退**（表现成"记忆完全没有
+     Home Node 能力"而没有任何可见错误），这是仓库里已经踩过的坑。 -->
+<script src="assets/js/memory-authority.js"></script>
 <script src="assets/js/mobile-dto.js"></script>
 <script src="assets/js/home-node-client.js"></script>
 <script src="assets/js/home-node-bootstrap.js"></script>

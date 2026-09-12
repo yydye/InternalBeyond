@@ -41,6 +41,10 @@ const MOBILE_DTO = require('../../assets/js/mobile-dto.js');
 /* P0 角色连续性上下文（M1-C.2c-A）—— 纯函数，四个事实，
    刻意不引入任何 composer/registry/pipeline 抽象。 */
 const P0_CONTEXT = require('./p0-context.js');
+/* M1-C.2d Wave 2：canonical memory 的召回注入（**不是** P0 的扩展）。
+   P0 只渲染身份/关系/时间；记忆由这一层作为**独立来源**提供，
+   两者在这里按"稳定前缀"顺序拼接。 */
+const createMemoryRetrieval = require('./memory-retrieval.js');
 
 /* 协议版本。**真的会被校验**（Phase 9）—— 不是 Bridge 那种"存在但没人读"的字段。 */
 const PROTOCOL_VERSION = 1;
@@ -64,7 +68,18 @@ const LOG_RING = 200;
 
 /* 桌面内部管理路径（**不属于** mobile namespace）。这份清单同时是 http.js 的
    委派依据：不在清单里、也不是 /mobile/* 的路径，网关根本不会看到。 */
-const ADMIN_PATHS = ['/pairing/session', '/devices', '/device/revoke', '/characters', '/characters/publish'];
+const ADMIN_PATHS = [
+  '/pairing/session', '/devices', '/device/revoke', '/characters', '/characters/publish',
+  /* M1-C.2d Wave 2 · canonical memory（桌面/运行时面，**不是**设备面）：
+     记忆的存储与召回属于 runtime authority，不属于 Android 协议。
+     Android 侧没有任何 memory verb，也不知道这里存在。 */
+  '/memory/list', '/memory/changes', '/memory/records', '/memory/record',
+  '/memory/activate', '/memory/settings', '/memory/migration', '/memory/migrate'
+];
+/* 单次 memory 批量写上限：记忆是**正文数据**（不是附件），因此远小于聊天批次。
+   200 条 × 数 KB 仍在单事务的舒适区，同时保证一次请求不可能把任意大的负载
+   塞进 canonical store。 */
+const MEMORY_MAX_BATCH_ITEMS = 200;
 
 /* ── 错误契约（Phase 28）──────────────────────────────────────────────
    一个**封闭**词表。客户端据此分支，禁止匹配文案。
@@ -198,6 +213,16 @@ function createMobileGateway(deps) {
   const limiter = deps.limiter || createRateLimiter({ clock: clock });
   const lanMode = !!deps.lanMode;
   const fingerprint = registry && registry.fingerprint ? registry.fingerprint : 'unknown';
+  /* M1-C.2d Wave 2：canonical memory store（可选）。
+     缺席时 memory 召回返回空块 —— 回合照常进行，绝不因为记忆不可用而失败。 */
+  const memoryStore = deps.memoryStore || null;
+  const memoryRetrieval = deps.memoryRetrieval || (memoryStore ? createMemoryRetrieval({
+    store: memoryStore,
+    clock: clock,
+    logger: logger,
+    /* 随机源注入（测试可 determinize）；生产用 Math.random。 */
+    random: deps.random
+  }) : null);
 
   const RULES = Object.assign({
     pair: { rate: 10 / 60, burst: 10 },          /* 配对：每分钟 10 次 */
@@ -726,6 +751,12 @@ function createMobileGateway(deps) {
       }
     }
 
+    /* 运行上下文（P0 + canonical memory）在本轮请求时刻**组装一次**：
+       召回是纯函数（无副作用），因此可以在这里算好并把结果放进 turnRequest；
+       真正的激活强化在所有分支之后统一执行（见 handleSend），
+       这样流式/非流式、成功/失败只有一处强化点。 */
+    const runtime = buildRuntimeContext(character, { characterId: characterId, userMessage: content });
+
     return {
       ok: true,
       requestId: requestId,
@@ -734,6 +765,8 @@ function createMobileGateway(deps) {
       threadId: threadId,
       conversationId: conversationIdFor(characterId, threadId),
       userMessage: userMessage,
+      /* 供 handleSend 在回合成功之后做激活强化（C3 的 reinforcement 阶段）。 */
+      selectedMemoryIds: runtime.selectedMemoryIds,
       turnRequest: {
         requestId: requestId,
         conversationId: conversationIdFor(characterId, threadId),
@@ -741,17 +774,20 @@ function createMobileGateway(deps) {
         character: { id: characterId, spec: spec },
         userMessage: userMessage,
         history: history,
-        /* ── P0 角色连续性上下文（M1-C.2c-A）──────────────────────────
-           四个事实在 **Home Node 内部**形成：用户身份/称呼来自发布过来的
-           about/main（store meta），关系来自角色 DTO，当前时间由 Node 自己的
-           时钟在**本轮请求时刻**计算。
+        /* ── 运行上下文（P0 + canonical memory）──────────────────────
+           P0（M1-C.2c-A）：四个事实在 **Home Node 内部**形成 —— 用户身份/称呼
+           来自发布过来的 about/main（store meta），关系来自角色 DTO，当前时间
+           由 Node 自己的时钟在**本轮请求时刻**计算。
+           Memory（M1-C.2d Wave 2）：来自 Home Node 自己的 canonical
+           `memories`，经**共享**的 memory-retrieval-core 做
+           visibility → relevance → ranking → budget。
            手机端只提交 characterId + 用户发言 + 常规请求元数据 —— 它既不能
-           上传"现在几点"，也不能构造这段上下文。
+           上传"现在几点"，也不能构造这段上下文，**更不知道记忆是怎么被选出来的**。
            runtimeContext 由 execution.buildPrompt 追加到 system 尾部，
            与 systemPrompt 同属私有面，永不进任何 DTO / SSE。 */
-        runtimeContext: buildRuntimeContext(character),
-        /* 诚实标注：手机端没有 Middle Brain，上下文是"服务端按角色配置 + 会话历史"
-           组织的。绝不假装与桌面同质（M1-A §6.2 的 contextPolicy 契约）。 */
+        runtimeContext: runtime.runtimeContext,
+        /* 诚实标注：手机端没有 Middle Brain，上下文是"服务端按角色配置 + 会话历史
+           + canonical 记忆"组织的。绝不假装与桌面同质（M1-A §6.2 的 contextPolicy 契约）。 */
         contextPolicy: 'mobile-gateway-history',
         maxTokens: payload.maxTokens,
         temperature: payload.temperature,
@@ -760,19 +796,47 @@ function createMobileGateway(deps) {
     };
   }
 
-  /* P0 上下文生产者接线：时间在本轮请求时刻取，资料/关系来自 Node 自己的状态。
-     任何一步坏掉都不阻塞回合 —— 缺事实就少注入一行，绝不抛错。 */
-  function buildRuntimeContext(character) {
+  /* 运行上下文生产者（M1-C.2c-A 的 P0 + M1-C.2d Wave 2 的 canonical memory）。
+     时间在本轮请求时刻取，资料/关系来自 Node 自己的状态，记忆来自 canonical store。
+     任何一步坏掉都不阻塞回合 —— 缺事实就少注入一行，绝不抛错。
+     P0 模块本身**没有**被扩展成 composer：它仍然只渲染四个事实，
+     记忆是这里的**独立来源**（memory-retrieval.js），顺序也由这里决定。
+
+     返回 { runtimeContext, selectedMemoryIds }：召回与强化分离（Wave 1 · C3），
+     选择结果交给调用方在回合**成功之后**持久化。 */
+  function buildRuntimeContext(character, turn) {
+    const ctx = turn || {};
     try {
-      const profile = store.getUserProfile ? store.getUserProfile() : null;
-      return P0_CONTEXT.buildContinuityContext({
-        userProfile: profile,
-        relationship: character && character.dto ? character.dto.relationship : '',
-        currentTime: P0_CONTEXT.formatCurrentTime(clock(), timeZone)
-      });
+      if (memoryRetrieval) {
+        const built = memoryRetrieval.buildRuntimeContext({
+          characterId: (character && character.id) || ctx.characterId || '',
+          userProfile: store.getUserProfile ? store.getUserProfile() : null,
+          relationship: character && character.dto ? character.dto.relationship : '',
+          currentTime: P0_CONTEXT.formatCurrentTime(clock(), timeZone),
+          /* 用户本轮发言决定关键词相关性 —— 与桌面 getMemoryContext(apiId,{userMessage}) 同源。 */
+          userMessage: ctx.userMessage || ''
+        });
+        return {
+          runtimeContext: built.runtimeContext,
+          selectedMemoryIds: Array.isArray(built.selectedIds) ? built.selectedIds.slice() : [],
+          memoryCount: built.memoryCount || 0,
+          memoryReason: built.memoryReason || null
+        };
+      }
+      /* 没有 memory store（旧装配 / 隔离测试）：退回纯 P0，行为与 Wave 1 相同。 */
+      return {
+        runtimeContext: P0_CONTEXT.buildContinuityContext({
+          userProfile: store.getUserProfile ? store.getUserProfile() : null,
+          relationship: character && character.dto ? character.dto.relationship : '',
+          currentTime: P0_CONTEXT.formatCurrentTime(clock(), timeZone)
+        }),
+        selectedMemoryIds: [],
+        memoryCount: 0,
+        memoryReason: 'memory-store-unavailable'
+      };
     } catch (error) {
-      record('warn', 'p0-context-failed', { error: String((error && error.message) || error) });
-      return '';
+      record('warn', 'runtime-context-failed', { error: String((error && error.message) || error) });
+      return { runtimeContext: '', selectedMemoryIds: [], memoryCount: 0, memoryReason: 'context-failed' };
     }
   }
 
@@ -797,7 +861,9 @@ function createMobileGateway(deps) {
       text: '',
       duplicate: false,
       error: null,
-      request: parsed.turnRequest
+      request: parsed.turnRequest,
+      /* 本轮选中的 canonical 记忆 id：选择发生在解析阶段，强化发生在回合结束。 */
+      selectedMemoryIds: Array.isArray(parsed.selectedMemoryIds) ? parsed.selectedMemoryIds.slice() : []
     };
     if (!existing) trackTurn(turn);
     return turn;
@@ -1137,6 +1203,136 @@ function createMobileGateway(deps) {
         characters: rows.map(r => ({ id: r.id, updatedAt: r.updatedAt, forTurn: r.forTurn }))
       }), req);
     }
+    /* ── Memory（M1-C.2d Wave 2）────────────────────────────────────────
+       这些是**桌面面**（runtime authority）的路径，不是设备 API：
+       它们在 /mobile/v1 之外，因此由 Home Node 既有的 loopback / token 保护
+       覆盖（http.js 已经强制），手机端永远拿不到。
+       命名刻意按**运行时**而不是按 Android：同一组 verb 服务桌面镜像同步与
+       Node 自身的召回注入，未来 Desktop 走 executeCharacterTurn 时不需要新协议。
+
+       为什么没有一条 /mobile/v1/memory/*：Android 不需要知道记忆怎么存、
+       怎么召回、召回结果是什么。它只提交 characterId + 发言，
+       continuity 由 Home Node 在执行缝里补上（§11 的硬验收门）。 */
+
+    if (action === 'memory/list' && req.method === 'GET') {
+      if (!memoryStore) return fail(res, 'UNSUPPORTED', req, 501);
+      const limit = url && url.searchParams.get('limit');
+      const ownerId = url && url.searchParams.get('ownerId');
+      const page = memoryStore.listRecords({ limit: limit || undefined, ownerId: ownerId || undefined });
+      if (!page.ok) return fail(res, page.error || 'INTERNAL', req);
+      return sendJson(res, 200, okBody('memory.list', null, {
+        count: page.count,
+        revision: page.revision,
+        truncated: !!page.truncated,
+        records: page.records
+      }), req);
+    }
+    if (action === 'memory/changes' && req.method === 'GET') {
+      if (!memoryStore) return fail(res, 'UNSUPPORTED', req, 501);
+      const cursor = url && url.searchParams.get('cursor');
+      const limit = url && url.searchParams.get('limit');
+      const page = memoryStore.changesAfter(cursor == null ? 0 : Number(cursor), { limit: limit || undefined });
+      if (!page.ok) return fail(res, page.error || 'INTERNAL', req, 400);
+      return sendJson(res, 200, okBody('memory.changes', null, page), req);
+    }
+    if (action === 'memory/records' && req.method === 'POST') {
+      if (!memoryStore) return fail(res, 'UNSUPPORTED', req, 501);
+      let body;
+      try { body = await readBody(req, maxBodyBytes); }
+      catch (error) { return fail(res, error.code || 'BAD_REQUEST', req, null, null); }
+      const batch = Array.isArray(body.records) ? body.records
+        : (body.record ? [body.record] : null);
+      if (!batch) return fail(res, 'BAD_REQUEST', req, 400, null, { detail: 'record or records[] is required' });
+      /* 记忆含正文，因此按**条数**设一个上限，避免一次请求把任意大的负载
+         塞进单事务（记忆正文通常远小于聊天附件）。 */
+      if (batch.length > MEMORY_MAX_BATCH_ITEMS) {
+        return fail(res, 'TOO_LARGE', req, 413, null, { max: MEMORY_MAX_BATCH_ITEMS, got: batch.length });
+      }
+      const requestId = body.requestId ? String(body.requestId) : '';
+      const existingPolicy = body.existingPolicy === 'skip' ? 'skip' : 'overwrite';
+      const result = batch.length === 1 && !body.forceBatch
+        ? memoryStore.putRecord(batch[0], { requestId: requestId, existingPolicy: existingPolicy })
+        : memoryStore.putRecords(batch, { requestId: requestId, existingPolicy: existingPolicy });
+      if (!result.ok) {
+        record('warn', 'memory-put-rejected', { error: result.error, index: result.index, errors: result.errors });
+        return fail(res, 'BAD_REQUEST', req, result.error === 'invalid-record' ? 422 : 400, null,
+          { index: result.index, errors: result.errors, id: result.id });
+      }
+      /* 观测：只报 outcome / 计数 / revision，**绝不**记录记忆正文。 */
+      record('info', 'memory-put', {
+        outcome: result.outcome, count: result.count || 1, revision: result.revision, requestId: requestId || null
+      });
+      return sendJson(res, 200, okBody('memory.put', requestId || null, {
+        outcome: result.outcome,
+        id: result.id || null,
+        revision: result.revision,
+        summary: result.summary || null,
+        results: result.results || null
+      }), req);
+    }
+    if (action === 'memory/record' && req.method === 'DELETE') {
+      if (!memoryStore) return fail(res, 'UNSUPPORTED', req, 501);
+      const id = url && url.searchParams.get('id');
+      if (!id) return fail(res, 'BAD_REQUEST', req, 400, null, { detail: 'id is required' });
+      const result = memoryStore.deleteRecord(id, { requestId: (url.searchParams.get('requestId') || '') });
+      if (!result.ok) return fail(res, result.error || 'INTERNAL', req, 400);
+      record('info', 'memory-delete', { outcome: result.outcome, id: result.id, revision: result.revision });
+      return sendJson(res, 200, okBody('memory.delete', null, {
+        outcome: result.outcome, id: result.id, revision: result.revision, deleted: !!result.deleted
+      }), req);
+    }
+    if (action === 'memory/activate' && req.method === 'POST') {
+      if (!memoryStore) return fail(res, 'UNSUPPORTED', req, 501);
+      let body;
+      try { body = await readBody(req, 256 * 1024); }
+      catch (error) { return fail(res, error.code || 'BAD_REQUEST', req, null, null); }
+      const ids = Array.isArray(body.ids) ? body.ids : [];
+      const result = memoryStore.recordActivation(ids, { at: body.at, delta: body.delta });
+      if (!result.ok) return fail(res, result.error || 'INTERNAL', req);
+      /* revisionTouched 恒为 false，并且**在这里如实回报** —— 调用方与测试
+         可以直接断言"强化没有推动结构版本"，而不必去猜。 */
+      return sendJson(res, 200, okBody('memory.activation', null, {
+        updated: result.updated, at: result.at, revisionTouched: !!result.revisionTouched, revision: result.revision
+      }), req);
+    }
+    if (action === 'memory/settings' && req.method === 'POST') {
+      if (!memoryStore) return fail(res, 'UNSUPPORTED', req, 501);
+      let body;
+      try { body = await readBody(req, 64 * 1024); }
+      catch (error) { return fail(res, error.code || 'BAD_REQUEST', req, null, null); }
+      const saved = memoryStore.setMemorySettings(body);
+      if (!saved.ok) return fail(res, saved.error || 'INTERNAL', req);
+      record('info', 'memory-settings', { budget: saved.settings.budget, contentLen: saved.settings.contentLen });
+      return sendJson(res, 200, okBody('memory.settings', null, { settings: saved.settings }), req);
+    }
+    if (action === 'memory/settings' && req.method === 'GET') {
+      if (!memoryStore) return fail(res, 'UNSUPPORTED', req, 501);
+      const got = memoryStore.getMemorySettings();
+      return sendJson(res, 200, okBody('memory.settings', null, got), req);
+    }
+    if (action === 'memory/migration' && req.method === 'GET') {
+      if (!memoryStore) return fail(res, 'UNSUPPORTED', req, 501);
+      const source = (url && url.searchParams.get('source')) || 'default';
+      return sendJson(res, 200, okBody('memory.migration', null, { state: memoryStore.getMigrationState(source) }), req);
+    }
+    if (action === 'memory/migrate' && req.method === 'POST') {
+      if (!memoryStore) return fail(res, 'UNSUPPORTED', req, 501);
+      let body;
+      try { body = await readBody(req, 64 * 1024); }
+      catch (error) { return fail(res, error.code || 'BAD_REQUEST', req, null, null); }
+      const source = String(body.source || 'default');
+      const marked = memoryStore.setMigrationState(source, {
+        version: body.version,
+        lastTimestamp: body.lastTimestamp,
+        records: body.records,
+        idSet: body.idSet
+      });
+      record('info', 'memory-migration-mark', {
+        source: source, version: marked.state.version, lastTimestamp: marked.state.lastTimestamp, records: marked.state.records
+      });
+      return sendJson(res, 200, okBody('memory.migration', null, marked), req);
+    }
+
     if (action === 'characters/publish' && req.method === 'POST') {
       let body;
       try { body = await readBody(req, 4 * 1024 * 1024); }
@@ -1466,6 +1662,31 @@ function createMobileGateway(deps) {
         /* 回合在响应之后继续跑：客户端断开也不影响它（Phase 18）。 */
         emitTurnStart(turn);
         runTurn(turn).then(function (settled) {
+          /* ── 激活强化（M1-C.2d Wave 2 · C3 的 reinforcement 阶段）────────
+             位置刻意在这里：**回合结束时、且只有这一处**。
+               · 选择（selection）在 parseSendPayload 里已经算完并进了 prompt；
+                 这里只持久化"她这一轮确实想起了这些"。
+               · 走 store.recordActivation 的窄通道：不推进 canonical revision、
+                 不写 change_log、不改 updated_at —— 因此每轮对话都不会让任何
+                 镜像游标失效（排名提示不产生同步流量）。
+               · 失败只记录，绝不抛出、绝不改变回合结果：强化是排名提示，
+                 不是事实，不能因为它失败而让用户这一轮变成失败。 */
+          if (settled.status !== 'error' && turn.selectedMemoryIds && turn.selectedMemoryIds.length) {
+            try {
+              const reinforced = memoryRetrieval
+                ? memoryRetrieval.reinforce(turn.selectedMemoryIds, {})
+                : null;
+              if (reinforced && reinforced.ok) {
+                record('info', 'memory-activation', {
+                  turnId: settled.turnId, conversationId: settled.conversationId,
+                  count: reinforced.updated, revisionTouched: !!reinforced.revisionTouched
+                });
+              }
+            } catch (error) {
+              /* 观测阶段的异常绝不影响已经成功的回合。 */
+              record('warn', 'memory-activation-failed', { turnId: settled.turnId, error: String((error && error.message) || error) });
+            }
+          }
           if (settled.status === 'error') {
             record('warn', 'turn-error', { turnId: settled.turnId, code: settled.error });
           } else {
@@ -1640,7 +1861,6 @@ function createMobileGateway(deps) {
     }
     return handleAdmin(path.replace(/^\//, ''), req, res, url);
   }
-
   /* 网关是否拥有这个路径。http.js 用它决定要不要把请求交过来；
      这份清单是**暴露面allowlist**：不在其中的路径连网关都不会看到。 */
   function handles(path) {
@@ -1675,6 +1895,7 @@ function createMobileGateway(deps) {
     STREAM_EVENTS: STREAM_EVENTS,
     NOTIFY_EVENTS: NOTIFY_EVENTS,
     ADMIN_PATHS: ADMIN_PATHS,
+    MEMORY_MAX_BATCH_ITEMS: MEMORY_MAX_BATCH_ITEMS,
     limiter: limiter,
     /* 测试与诊断用 */
     attachTurnStream: attachTurnStream,

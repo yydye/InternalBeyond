@@ -192,4 +192,69 @@ NS.ibHomeNodeMode = ibHomeNodeMode;
 NS.ibHomeNodeToken = ibHomeNodeToken;
 NS.createHomeNodeRemote = createHomeNodeRemote;
 NS.ibHomeNodeConstants = { DEFAULT_BASE: DEFAULT_BASE, DEFAULT_TIMEOUT_MS: DEFAULT_TIMEOUT_MS, MIGRATION_TIMEOUT_MS: MIGRATION_TIMEOUT_MS };
+
+/* ── memory remote driver（memory-authority 的注入契约）──────────────
+   M1-C.2d Wave 2。刻意与 chat 的 remote driver **分开**：
+     · 两者的方法名不同（putBatch 语义、activate、putSettings）；
+     · 合并成一个对象会让"某一边多了一个方法"这种接线错误无法被发现
+       （chat-authority 会拿到一个看起来合法但不该存在的 driver）。
+   只做 HTTP + 形状校验，不含任何权威/镜像/回退策略。 */
+function createMemoryRemote(deps) {
+  deps = deps || {};
+  return {
+    health: function () {
+      return _request('/health', { timeoutMs: deps.healthTimeoutMs || 4000 });
+    },
+    list: function (query) {
+      query = query || {};
+      var qs = [];
+      if (query.ownerId) qs.push('ownerId=' + encodeURIComponent(query.ownerId));
+      if (query.limit) qs.push('limit=' + encodeURIComponent(query.limit));
+      return _request('/memory/list' + (qs.length ? '?' + qs.join('&') : ''), { timeoutMs: deps.batchTimeoutMs || MIGRATION_TIMEOUT_MS });
+    },
+    changes: function (cursor, options) {
+      options = options || {};
+      return _request('/memory/changes?cursor=' + encodeURIComponent(Number(cursor) || 0) +
+        (options.limit ? '&limit=' + encodeURIComponent(options.limit) : ''));
+    },
+    put: function (record, options) {
+      options = options || {};
+      var payload = { record: record };
+      if (options.requestId) payload.requestId = String(options.requestId);
+      if (options.existingPolicy) payload.existingPolicy = String(options.existingPolicy);
+      return _request('/memory/records', { method: 'POST', body: payload, timeoutMs: deps.writeTimeoutMs });
+    },
+    putBatch: function (records, options) {
+      options = options || {};
+      var payload = { records: records, forceBatch: true };
+      if (options.requestId) payload.requestId = String(options.requestId);
+      if (options.existingPolicy) payload.existingPolicy = String(options.existingPolicy);
+      return _request('/memory/records', { method: 'POST', body: payload, timeoutMs: deps.batchTimeoutMs || MIGRATION_TIMEOUT_MS });
+    },
+    remove: function (id, options) {
+      options = options || {};
+      return _request('/memory/record?id=' + encodeURIComponent(id) +
+        (options.requestId ? '&requestId=' + encodeURIComponent(options.requestId) : ''), { method: 'DELETE' });
+    },
+    /* 激活强化：**独立**通道。它不推进 canonical revision，因此每轮对话
+       都不会让任何镜像游标失效（见 memory-authority.js 的说明）。 */
+    activate: function (ids, options) {
+      options = options || {};
+      var payload = { ids: ids || [] };
+      if (options.at != null) payload.at = Number(options.at);
+      if (options.delta != null) payload.delta = Number(options.delta);
+      return _request('/memory/activate', { method: 'POST', body: payload, timeoutMs: deps.writeTimeoutMs });
+    },
+    putSettings: function (settings) {
+      return _request('/memory/settings', { method: 'POST', body: settings || {} });
+    },
+    migrationState: function (source) {
+      return _request('/memory/migration?source=' + encodeURIComponent(source || 'default'));
+    },
+    markMigration: function (source, patch) {
+      return _request('/memory/migrate', { method: 'POST', body: Object.assign({ source: source || 'default' }, patch || {}), timeoutMs: MIGRATION_TIMEOUT_MS });
+    }
+  };
+}
+NS.createMemoryRemote = createMemoryRemote;
 })(window.IB || (window.IB = {}));

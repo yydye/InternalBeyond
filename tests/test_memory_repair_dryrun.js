@@ -48,10 +48,29 @@ const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', ()
     const tab = await (await fetch('http://127.0.0.1:' + debugPort + '/json/new?about:blank', { method: 'PUT' })).json();
     cdp = await Cdp.connect(tab.webSocketDebuggerUrl);
     await cdp.send('Page.enable'); await cdp.send('Runtime.enable');
+    /* ── M1-C.2d Wave 2：本用例必须跑在 mirror 模式 ────────────────────
+       Wave 2 之后 `memories` 的写入在 canonical 模式下是 fail closed 的
+       （写先到 Home Node，Home Node 不在线即失败，绝不写第二份 canonical）。
+       本用例不启动 Home Node —— 它测的是 repair 与写入侧字段保真，不是记忆
+       权威 —— 于是夹具、_memRepairApply、quickCreateMemory 的每一次写入
+       都会变成"Home Node 不在线"，测试实际上在测网络可达性。
+
+       mirror 是既有开关（M1-A 的回滚/兼容态）：authority **明确声明**不主张
+       Home Node 权威，记忆读写走本地 IndexedDB，与 Wave 2 之前逐字相同。
+       本用例的全部断言（plan 只读 / 只收窄不放宽 / 幂等 / visibleTo 保真）
+       在 mirror 下完全有效，且与"不依赖外部服务"这一既有测试纪律一致。
+       记忆权威本身由 test_memory_authority.js、test_memory_migration.js、
+       test_mobile_memory_continuity.js 覆盖。 */
+    await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
+      source: `try{localStorage.setItem('ib_home_node_mode','mirror')}catch(e){}`
+    });
     await cdp.send('Page.navigate', { url: webBase + '/InternalBeyond.html' });
     assert.ok(await waitFor(cdp, "document.readyState==='complete' && typeof _memRepairPlan==='function' && typeof _memRepairApply==='function' && typeof dbPut==='function'", 20000), 'repair entry mounted');
 
-    /* 清空 memories 后铺入受控样本 */
+    /* 清空 memories 后铺入受控样本。
+       M1-C.2d Wave 2：本用例（与 test_runtime_convergence_phase4.js 同理）
+       跑在 mirror 模式下 —— 见下面 addScriptToEvaluateOnNewDocument 处的说明。
+       夹具因此走与生产相同的本地路径，无需额外接缝。 */
     const seed = await evaluate(cdp, `(async function(){
       for (const m of await dbGetAll('memories')) await dbDelete('memories', m.id);
       const rows = [

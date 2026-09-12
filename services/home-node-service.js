@@ -26,6 +26,8 @@ const os = require('os');
 const fs = require('fs');
 
 const createStore = require('../services/home-node/chat-store.js');
+const createMemoryStore = require('../services/home-node/memory-store.js');
+const createMemoryRetrieval = require('../services/home-node/memory-retrieval.js');
 const createHttp = require('../services/home-node/http.js');
 const createExecutor = require('../services/home-node/execution.js');
 const createDeviceRegistry = require('../services/home-node/device-registry.js');
@@ -168,6 +170,19 @@ function buildHomeNode(options) {
   const dataDir = options.dataDir || DATA_DIR;
   const serviceLog = options.logger || ((level, event, fields) => log(level, event, fields));
   const instanceStore = options.store || createStore({ dataDir: dataDir, logger: (e, f) => serviceLog('info', e, f) });
+  /* M1-C.2d Wave 2：canonical `memories`（与 chatMessages 同一个 SQLite 文件，
+     但拥有**自己的** revision / change_log 命名空间 —— 见 memory-store.js 头部）。
+     刻意晚于 chat store 打开：chat store 负责损坏隔离（会给坏库改名），
+     同一文件上的第二个 opener 不能去 rename 它。 */
+  const instanceMemoryStore = options.memoryStore || createMemoryStore({ dataDir: dataDir, logger: (e, f) => serviceLog('info', e, f) });
+  /* 召回注入器：Node 侧执行缝的记忆来源。共享 memory-retrieval-core 提供
+     可见性/排名/渲染，这里只负责取候选集与注入时钟/随机源。 */
+  const instanceMemoryRetrieval = options.memoryRetrieval || createMemoryRetrieval({
+    store: instanceMemoryStore,
+    clock: options.clock,
+    random: options.random,
+    logger: serviceLog
+  });
   const instanceRegistry = options.registry || createDeviceRegistry({ dataDir: dataDir, logger: (e, f) => serviceLog('info', e, f) });
   const instanceExecutor = options.executor || createExecutor({
     store: instanceStore,
@@ -189,6 +204,11 @@ function buildHomeNode(options) {
        生产默认仍是系统时钟 + 进程本地时区。 */
     clock: options.clock,
     timeZone: options.timeZone,
+    /* M1-C.2d Wave 2：canonical memory。缺席时记忆召回返回空块，
+       回合照常进行（记忆不可用绝不阻塞对话）。 */
+    memoryStore: instanceMemoryStore,
+    memoryRetrieval: instanceMemoryRetrieval,
+    random: options.random,
     logger: serviceLog
   });
   const instanceHttp = createHttp({
@@ -210,6 +230,7 @@ function buildHomeNode(options) {
      设备表与它同库，必须等隔离完成之后再连。 */
   function open() {
     const openedStore = instanceStore.open();
+    instanceMemoryStore.open();
     instanceRegistry.open();
     return openedStore;
   }
@@ -226,10 +247,13 @@ function buildHomeNode(options) {
       if (typeof instanceHttp.server.closeAllConnections === 'function') instanceHttp.server.closeAllConnections();
     } catch (_) { /* 尽力而为 */ }
     try { instanceRegistry.close(); } catch (_) { /* 已关闭 */ }
+    try { instanceMemoryStore.close(); } catch (_) { /* 已关闭 */ }
     try { instanceStore.close(); } catch (_) { /* 已关闭 */ }
   }
   return {
     store: instanceStore,
+    memoryStore: instanceMemoryStore,
+    memoryRetrieval: instanceMemoryRetrieval,
     registry: instanceRegistry,
     gateway: instanceGateway,
     executor: instanceExecutor,

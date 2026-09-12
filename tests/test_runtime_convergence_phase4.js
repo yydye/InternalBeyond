@@ -141,6 +141,23 @@ const api = http.createServer(async (req, res) => {
       source: `const _of=window.fetch.bind(window);window.fetch=function(input,opts){const u=new URL(typeof input==='string'?input:input.url,location.href);`
         + `if(u.origin!==${JSON.stringify(apiBase)}&&u.origin!==${JSON.stringify(webBase)})return Promise.reject(new Error('convergence smoke blocks external service'));return _of(input,opts);};window.confirm=()=>true;`
     });
+    /* ── M1-C.2d Wave 2：本用例必须跑在 mirror 模式 ────────────────────
+       上面这段 fetch 守卫**主动阻断**一切外部 origin，因此本用例在设计上
+       不可能连接 Home Node。而 Wave 2 之后 `memories` 的写入在 canonical
+       模式下是 fail closed 的（写先到 Home Node，失败即失败）——
+       本用例的 consolidation / repair / quickCreateMemory 全都会因
+       "Home Node 不在线"而无法写入，测试于是变成在测网络而不是测语义。
+
+       mirror 模式正是为此存在的既有开关（M1-A 的回滚/兼容态）：authority
+       **明确声明**不主张 Home Node 权威，记忆读写走本地 IndexedDB ——
+       与 Wave 2 之前逐字相同。本用例测的是 diary/consolidation/repair 的
+       runtime 收敛语义，不是记忆权威，因此在 mirror 下断言完全有效，
+       而且和它自己的 fetch 守卫前提一致。
+       记忆权威本身的三态/迁移/连续性由 test_memory_authority.js、
+       test_memory_migration.js、test_mobile_memory_continuity.js 覆盖。 */
+    await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
+      source: `try{localStorage.setItem('ib_home_node_mode','mirror')}catch(e){}`
+    });
     await cdp.send('Page.navigate', { url: webBase + '/InternalBeyond.html' });
     assert.ok(await waitFor(cdp, "document.readyState==='complete' && typeof _diaryTick==='function' && typeof _diaryModelCall==='function' && typeof _activeConsolidationModelCall==='function' && window.IB && IB.runtime && IB.runtime.instance && IB.runtime.telemetry", 20000), 'phase4 seams + runtime mounted');
 

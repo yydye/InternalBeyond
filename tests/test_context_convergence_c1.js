@@ -69,6 +69,25 @@ const api = http.createServer(async (req, res) => {
   const web = require(path.join(ROOT, 'services', 'internal-beyond-server.js')).createWebServer({ root: ROOT, port: 0 });
 
   const webPort = await listen(web), webBase = 'http://127.0.0.1:' + webPort;
+
+  /* ── M1-C.2d Wave 2：本用例需要一个**真实**的 Home Node ─────────────
+     为什么现在需要：`memories` 的权威在 Wave 2 搬到了 Home Node，写路径是
+     fail closed 的。本用例不只把记忆当夹具 —— 它断言"一轮对话里
+     activation 恰好 +1"（见下面 'Memory activation 一轮只 +1'），
+     而那正是一次 canonical 写入。Home Node 不在线时这次写入**必须**失败，
+     用例于是变成在测网络可达性，而不是在测"每轮只激活一次"。
+     
+     因此这里起一个真实实例（buildHomeNode：真实装配，不复制接线），
+     并把它的 origin 加进下面那段 fetch 守卫的白名单 —— 该守卫本来就是为了
+     "只允许受控的本机服务"而写的，Home Node 正是其中一个受控本机服务。 */
+  const memoryDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-c1-hn-'));
+  const HOME_NODE_TOKEN = 'c1-home-node-token';
+  const homeNode = require(path.join(ROOT, 'services', 'home-node-service.js')).buildHomeNode({
+    dataDir: memoryDataDir, token: HOME_NODE_TOKEN, logger: () => {}
+  });
+  homeNode.open();
+  const homeNodePort = await listen(homeNode.server);
+  const homeNodeBase = 'http://127.0.0.1:' + homeNodePort;
   const debugPort = await freePort();
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-c1-'));
   const chrome = chromePath(); assert.ok(chrome, 'Chrome or Edge required');
@@ -123,7 +142,8 @@ const api = http.createServer(async (req, res) => {
     await cdp.send('Page.enable'); await cdp.send('Runtime.enable');
     await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
       source: `const _of=window.fetch.bind(window);window.fetch=function(input,opts){const u=new URL(typeof input==='string'?input:input.url,location.href);`
-        + `if(u.origin!==${JSON.stringify(apiBase)}&&u.origin!==${JSON.stringify(webBase)})return Promise.reject(new Error('c1 smoke blocks external service'));return _of(input,opts);};window.confirm=()=>true;`
+        + `if(u.origin!==${JSON.stringify(apiBase)}&&u.origin!==${JSON.stringify(webBase)}&&u.origin!==${JSON.stringify(homeNodeBase)})return Promise.reject(new Error('c1 smoke blocks external service'));return _of(input,opts);};window.confirm=()=>true;`
+        + `try{localStorage.setItem('ib_home_node_http',${JSON.stringify(homeNodeBase)});localStorage.setItem('ib_home_node_token',${JSON.stringify(HOME_NODE_TOKEN)});}catch(e){}`
     });
     await cdp.send('Page.navigate', { url: webBase + '/InternalBeyond.html' });
     assert.ok(await waitFor(cdp, "document.readyState==='complete' && typeof getMemoryContext==='function' && typeof middleBrainCompressPipeline==='function' && typeof saveMiddleBrainConfig==='function' && typeof loadApiConfigs==='function'", 20000), 'page + producers + MB mounted');
@@ -343,6 +363,9 @@ const api = http.createServer(async (req, res) => {
     browser.kill();
     api.closeAllConnections(); web.closeAllConnections();
     await Promise.all([new Promise(r => api.close(r)), new Promise(r => web.close(r))]);
+    /* Home Node 也要显式关掉：它持有 SQLite 连接与监听 socket，
+       不关会让测试进程跑完不退出（既有 teardown 纪律）。 */
+    try { homeNode.close(); } catch (_) { /* 已关闭 */ }
     try { fs.rmSync(profile, { recursive: true, force: true }); } catch (_) {}
   }
 })().catch(e => { console.error(e); process.exitCode = 1; });

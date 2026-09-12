@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 
 /* Internal Beyond · 一键全量测试入口（Node 18+，零依赖，跨平台）。
  *
@@ -126,6 +126,20 @@ const GROUPS = [
          检索保持 visibility-before-ranking，且选择（纯）与激活强化（副作用）分离。
          抽取真实生产源码片段在 vm 中执行，零浏览器、零网络。 */
       ['test_memory_contract_closure.js'],
+      /* M1-C.2d Wave 2：canonical memories authority —— 与 chat 同一套三态语义
+         （写先到 Home Node 才落镜像 / 离线 fail closed / 明确拒绝 ≠ 离线 /
+         镜像写失败仍以 Node 为权威）；记忆可编辑 → 内容变化必须真更新；
+         激活遥测不参与内容等价判定；激活强化走独立通道不推进 revision；
+         权威状态显式可读（authority / authorityEffective / degraded）。
+         mock remote + mock local，零网络。 */
+      ['test_memory_authority.js'],
+      /* M1-C.2d Wave 2：IndexedDB memories → Home Node 迁移端到端 ——
+         空库 / 已有记忆（provenance·consolidation·未知字段往返）/
+         重复迁移幂等 / 遥测漂移不破坏幂等 / 中断不写水位、
+         受控截断写水位 / 续跑结果与不间断迁移逐条相等 /
+         **可见性逐字保留**（缺失 visibility 保持缺失）/ 迁移前后召回一致。
+         真实 memory-store + 真实 mock HTTP，零浏览器。 */
+      ['test_memory_migration.js'],
       ['test_harness_boundary.js'],
       ['test_credential_vault.js'],
       ['test_error_catalog.js'],
@@ -239,6 +253,15 @@ const GROUPS = [
          真实 publish → pair → chat.send → NodeModelPort → mock provider，
          断言 provider 真正收到的 system。 */
       ['test_mobile_p0_continuity.js'],
+      /* M1-C.2d Wave 2：canonical memory 连续性（产品定义测试）——
+         真实 canonical memories → Node 召回（共享 memory-retrieval-core）→
+         chat.send → executeCharacterTurn → NodeModelPort → mock provider。
+         三条独立证明：provider 收到选中的记忆；**同一个回合**里 SSE /
+         chat.history / character.list / character.get 都不含它；
+         桌面写入的记忆能影响一次**后来**的 Android 回合。
+         外加：隐藏记忆不进 provider 输入、可见性先于排名、
+         激活不推进 memory revision、/mobile/v1/memory/* 一律 404。 */
+      ['test_mobile_memory_continuity.js'],
       /* M1-C 修复（D21）：LAN 门 —— allowRemote 只在"显式非 loopback 绑定 +
          设备鉴权真实就绪"时打开。所有"远端"请求都发往本机**非 loopback 地址**，
          因此源地址也是非 loopback（用 127.0.0.1 永远走不到这条规则）。

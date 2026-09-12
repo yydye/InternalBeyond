@@ -116,10 +116,14 @@ const api = http.createServer(async (req, res) => {
     await cdp.send('Page.navigate', { url: webBase + '/InternalBeyond.html' });
     check('page.ready', await waitFor(cdp, "document.readyState==='complete' && !!(window.IB&&window.IB.middleBrain) && typeof window.sendChatMessage==='function' && !!(window.IB.__mbTrace)", 20000));
 
-    /* 种子数据：一个可召回的 Memory（否则 Astra 无上下文可压缩 → 不会注入）+ 一个 mock 角色 API。 */
+    /* 种子数据：一个可召回的 Memory（否则 Astra 无上下文可压缩 → 不会注入）+ 一个 mock 角色 API。
+       M1-C.2d Wave 2：`memories` 写入已走 canonical authority（fail closed）。
+       本用例不启动 Home Node，夹具因此走未包装的原始驱动 `IB.homeNodeOriginalDb`
+       —— 它正是"直接写本地镜像"的既有接缝；夹具不是一次 canonical 写入。 */
     await evaluate(cdp, `(async function(){
+      var ORIG=(window.IB&&window.IB.homeNodeOriginalDb)||{put:dbPut};
       await dbPut('apiSettings',{id:'summarySettings',enabled:false,keepCount:6,welcomeEnabled:false,welcomeInterval:2,musicEnabled:false,summaryApiId:'',summaryWindow:60});
-      await dbPut('memories',{id:'trace_mem',kind:'episodic',createdBy:'trace_role',visibility:'public',visibleTo:[],excludeFrom:[],title:'TRACE_MEMORY_TITLE',content:'TRACE_MEMORY_MARKER',domain:'日常',tags:[],valence:0.5,arousal:0.3,importance:9,resolved:false,activationCount:0,created:Date.now(),lastActivated:0});
+      await ORIG.put('memories',{id:'trace_mem',kind:'episodic',createdBy:'trace_role',visibility:'public',visibleTo:[],excludeFrom:[],title:'TRACE_MEMORY_TITLE',content:'TRACE_MEMORY_MARKER',domain:'日常',tags:[],valence:0.5,arousal:0.3,importance:9,resolved:false,activationCount:0,created:Date.now(),lastActivated:0});
       await dbPut('apiConfigs',{id:'trace_role',nickname:'TraceAI',model:'trace-model',endpoint:${JSON.stringify(chatEp)},apiKey:'',provider:'custom',relationship:'审计对象',systemPrompt:'你是 trace 测试角色。',temperature:1,streaming:false,showThinking:false,promptCache:false,created:Date.now()});
       await loadApiConfigs();
       activeFriendId='trace_role';

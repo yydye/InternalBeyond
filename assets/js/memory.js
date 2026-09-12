@@ -8,19 +8,22 @@ let _editingMemId=null;
 /* --- 衰减评分 (Ombre Brain 改进版艾宾浩斯) ---
    now 可注入（M1-C.2d Wave 1 · §7.5）：缺省 Date.now() 保持既有调用方语义不变，
    注入后同一份记忆在相同 now 下给出相同分数 → 召回可复现、可断言。 */
+/* M1-C.2d Wave 2：打分本身也收敛到 assets/js/memory-retrieval-core.js 的**唯一实现**。
+   Home Node 必须用同一份打分才能与桌面给出同样的召回；这里只做委托，
+   不再持有第二份权重表（否则改一次权重就会出现两套"她记得什么"）。 */
+function _ibMemRetrievalCore(){
+  return (typeof window!=='undefined'&&window.IBMemoryRetrievalCore)
+    || (typeof IBMemoryRetrievalCore!=='undefined'?IBMemoryRetrievalCore:null);
+}
+function _ibMemRetrievalCoreChecked(){
+  const c=_ibMemRetrievalCore();
+  if(c&&typeof c.buildMemoryContext==='function'&&typeof c.getMemoryScore==='function')return c;
+  return null;
+}
 function getMemoryScore(mem,now){
-  if(mem.pinned)return 999;
-  const _now=(now==null)?Date.now():Number(now);
-  const daysSince=(_now-(mem.lastActivated||mem.created))/(1000*60*60*24);
-  const lambda=mem.resolved?0.12:0.05;/* 已解决的记忆衰减更快 */
-  const base=1.0;
-  const arousalBoost=0.8;
-  const emotionFactor=base+(mem.arousal||0.3)*arousalBoost;
-  const activationCount=Math.max(0,mem.activationCount||0);
-  const activationFactor=1+activationCount/(activationCount+300);/* AI 回忆习惯：长期软饱和。300 次≈1.5倍，600次≈1.67倍，1200次≈1.8倍；永远低于2倍 */
-  const decayFactor=Math.exp(-lambda*daysSince);
-  const score=(mem.importance||5)*activationFactor*decayFactor*emotionFactor;
-  return Math.round(score*100)/100;
+  const core=_ibMemRetrievalCore();
+  if(!core||typeof core.getMemoryScore!=='function')throw new Error('IBMemoryRetrievalCore not loaded');
+  return core.getMemoryScore(mem,now==null?Date.now():now);
 }
 
 /* --- 可见性过滤 ---
@@ -131,62 +134,22 @@ async function selectMemoryContext(apiId,opts){
   opts=opts||{};
   const _now=typeof opts.now==='function'?opts.now:()=>Date.now();
   const _rand=typeof opts.random==='function'?opts.random:Math.random;
-  const memSettings=await getMemorySettings();
-  const maxChars=opts.maxChars||memSettings.budget||2000;
-  const contentLen=memSettings.contentLen||200;
-  const isGroup=opts.isGroup||false;
-  const groupMemEnabled=opts.groupMemEnabled||false;
-  const userMsg=opts.userMessage||'';
+  const core=_ibMemRetrievalCore();
   try{
+    const memSettings=await getMemorySettings();
     const all=await dbGetAll('memories');
-    const visible=all.filter(m=>isMemoryVisibleTo(m,apiId,isGroup,groupMemEnabled));
-    if(!visible.length)return {context:'',selectedIds:[]};
-    /* 语义关键词匹配 */
-    const keywords=_extractKeywords(userMsg);
-    const now=_now();
-    const scored=visible.map(m=>{
-      const base=getMemoryScore(m,now);
-      const relBoost=m.pinned?1:_calcRelevance(m,keywords);
-      /* 反垄断：连续高频激活的记忆施加疲劳惩罚 */
-      let fatigue=1;
-      if(!m.pinned&&m.activationCount>5){
-        const hoursSinceLast=(now-(m.lastActivated||m.created))/(1000*60*60);
-        if(hoursSinceLast<2)fatigue=0.7;/* 2 小时内反复激活 → 降权 */
-      }
-      const _s=base*relBoost*fatigue;
-      return{...m,_score:_s};
-    }).sort((a,b)=>b._score-a._score);
-    /* === 置顶优先 + 主选区 + 探索窗口 === */
-    const EXPLORE_RATIO=0.15;/* 预留 15% 预算给探索 */
-    const mainBudget=Math.floor(maxChars*(1-EXPLORE_RATIO));
-    const exploreBudget=maxChars-mainBudget;
-    let ctx='【记忆（系统参考，勿提及此段）】\n';
-    let chars=ctx.length;
-    let count=0;
-    const selected=new Set();
-    /* 置顶记忆优先注入（保证每次都被 AI 看到） */
-    const pinned=scored.filter(m=>m.pinned);
-    const unpinned=scored.filter(m=>!m.pinned);
-    for(const m of pinned){
-      const line=_formatMemLine(m,apiId,contentLen);
-      if(chars+line.length>mainBudget)break;
-      ctx+=line;chars+=line.length;count++;selected.add(m.id);
-    }
-    /* 主选区：剩余预算按分数从高到低填充非置顶记忆 */
-    for(const m of unpinned){
-      const line=_formatMemLine(m,apiId,contentLen);
-      if(chars+line.length>mainBudget)break;
-      ctx+=line;chars+=line.length;count++;selected.add(m.id);
-    }
-    /* 探索窗口：从未入选的中低分段随机抽一条 */
-    const remaining=scored.filter(m=>!selected.has(m.id)&&!m.pinned);
-    if(remaining.length&&exploreBudget>50){
-      const pick=remaining[Math.floor(_rand()*Math.min(remaining.length,10))];
-      const line=_formatMemLine(pick,apiId,contentLen);
-      if(chars+line.length<=maxChars){ctx+=line;chars+=line.length;count++;selected.add(pick.id)}
-    }
-    if(!count)return {context:'',selectedIds:[]};
-    return {context:ctx,selectedIds:Array.from(selected)};
+    const picked=core.buildMemoryContext(all,{
+      apiId:apiId,
+      now:_now(),
+      random:_rand,
+      userMessage:opts.userMessage||'',
+      isGroup:opts.isGroup||false,
+      groupMemEnabled:opts.groupMemEnabled||false,
+      maxChars:opts.maxChars||memSettings.budget||core.DEFAULT_BUDGET_CHARS,
+      contentLen:memSettings.contentLen||core.DEFAULT_CONTENT_LEN
+    });
+    if(!picked.text)return {context:'',selectedIds:[],reason:picked.reason};
+    return {context:picked.text,selectedIds:picked.selected.map(s=>s.id)};
   }catch(e){return {context:'',selectedIds:[]}}
 }
 /* 强化阶段：只更新 activationCount / lastActivated（不改变本轮已选出的结果）。
@@ -206,7 +169,13 @@ async function recordMemoryActivation(selectedIds,at){
   }
   return n;
 }
+/* 渲染同样委托给共享核心（Wave 2）：召回产出的每一行都必须由**同一份**渲染
+   生成，否则 Node 注入的文本与桌面注入的文本会在格式上漂移 —— 而格式差异
+   会直接改变送到 provider 的 prompt。非核心环境（诊断/旧页面）下走与核心
+   逐字等价的本地实现，绝不静默产出不同形状。 */
 function _formatMemLine(m,apiId,contentLen){
+  const core=_ibMemRetrievalCore();
+  if(core&&typeof core.renderMemoryLine==='function')return core.renderMemoryLine(m,apiId,contentLen);
   let authorTag='';
   if(m.createdBy==='user'||!m.createdBy){authorTag='[用户记录] '}
   else if(m.createdBy===apiId){authorTag=''}
