@@ -333,6 +333,9 @@ const GROUPS = [
       ['test_middle_brain_reasoning_effort.js'],
       /* Cache Audit baseline 身份隔离（真实 chat→diary→chat 行为链） */
       ['test_cache_audit_isolation.js'],
+      /* Phase 1 · 可选上下文按需注入：5 个用例（闲聊不带可选块 / 工作区·日志·生图按需保留 /
+         first_chat diary persona 只出现一次，含真实请求体核对） */
+      ['test_chat_context_lazy_injection.js'],
       ['test_moments_phase4_smoke.js'],
       ['test_runtime_browser_audit.js'],
       ['test_runtime_optin_smoke.js'],

@@ -106,7 +106,8 @@ function buildDiaryPrompt(args){
   const prompt=[
     '【任务】以'+characterName+'的第一人称写一篇私人日记，输出严格 JSON。',
     '【今天日期】'+today.toLocaleString('zh-CN',{year:'numeric',month:'long',day:'numeric',weekday:'long'}),
-    '【角色设定】'+(character.systemPrompt||'（无）').slice(0,800),
+    /* 角色设定已在 system 里给出**完整**原文（见上面 system 的第一段），此处不再重复其一截；
+       语气信息由 system 承担唯一 canonical 来源，本段只承载"本轮任务"所需的事实。 */
     '【角色与用户的关系】'+(character.relationship||'尚未单独设定'),
     '【最近聊天摘要】'+String(ctx.chatSummary||'（暂无）').slice(0,1000),
     '【最近聊天内容】'+chatText,

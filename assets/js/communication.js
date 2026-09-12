@@ -706,6 +706,17 @@ function _ibModelCanSee(cfg){
 }
 /* 视觉能力声明（注入 system）：模型不再自我推断"我不支持/我是文本模型" */
 const _VISION_DECLARE='\n\n【视觉能力】当前模型支持视觉多模态：你可以（也应当）直接查看用户发送的图片、工作区中读取的图片（ws_read_image）以及刚刚生成的图片，并依据看到的图像内容回应。不要自称"看不见图片"或"没有眼睛"。';
+/* 生图说明块的逐轮注入判定（单聊/群聊共用一条真源，避免两处各写一套）：
+   判定逻辑在 assets/js/chat-context-signals.js（结构化信号优先，末端才是极小可解释的意图兜底）。
+   信号模块不可用时返回 true —— 宁可多注入一句说明，也不能让已开启的生图能力失去标签语法。 */
+function _imgGenInstrNeeded(userMessage,sentFiles){
+  try{
+    if(window.IBContextSignals&&typeof window.IBContextSignals.imageGenInstrNeeded==='function'){
+      return !!window.IBContextSignals.imageGenInstrNeeded({userMessage:userMessage,attachments:(sentFiles||null)});
+    }
+  }catch(e){}
+  return true;
+}
 const LOCAL_VISION_ENDPOINT='http://127.0.0.1:8765/vision';
 const _localVisionCache=new Map();
 function _usesLocalDeepSeekVision(cfg){
@@ -1404,13 +1415,49 @@ async function _buildSingleChatContext(cfg,opts){
   let sysContent=cfg.systemPrompt||'';
   if(cfg.nickname)sysContent=(sysContent?sysContent+'\n':'')+'你的身份/昵称是「'+cfg.nickname+'」。';
   if(cfg.relationship)sysContent=(sysContent?sysContent+'\n':'')+'你和对方的关系是：'+cfg.relationship+'。';
-  const siteCtx=await buildSiteContext();
+  /* ── 可选上下文按需化（Phase 1）· 逐轮注入信号 ──
+     信号一律来自结构化事实源（待注入队列 / 附件 / 真实实体名 / ICode 入口状态 /
+     角色能力开关），聚合逻辑在 assets/js/chat-context-signals.js，此处不做词表判定。
+     任一信号缺失时，对应块退回"按需判定"的保守侧，绝不因为信号异常而漏掉必要能力。 */
+  var _signals=null;
+  try{
+    if(window.IBContextSignals&&typeof window.IBContextSignals.workspaceInstrNeeded==='function'){
+      _signals={fileOutput:await window.IBContextSignals.workspaceInstrNeeded({userMessage:_ctxText,history:(opts.history||null),attachments:(opts.sentFiles||null)})};
+    }
+  }catch(_sigErr){console.warn('[ContextSignals] resolve failed',String(_sigErr&&_sigErr.message||_sigErr).slice(0,120))}
+  /* 日志段：用户消息里是否逐字提到某篇真实存在（且未锁定）的日志标题 */
+  if(_signals){
+    _signals.logs=false;
+    try{
+      const _posts=await dbGetAll('posts');
+      if(_ctxText&&String(_ctxText).trim().length>=2){
+        for(const _p of _posts){
+          if(isLockedPost(_p))continue;
+          const _t=String((_p&&_p.title)||'').trim();
+          if(_t.length>=2&&String(_ctxText).indexOf(_t)>=0){_signals.logs=true;break}
+        }
+      }
+    }catch(_pErr){_signals.logs=false}
+    _signals.blogRead=!!_signals.logs;/* Blog 阅读申请只在模型确实看得到日志标题时才有意义 */
+  }
+  const _siteRes=await buildSiteContext(_signals);
+  const siteCtx=(_siteRes==null)?'':String(_siteRes);
   if(siteCtx){sysContent=(sysContent?sysContent+'\n\n':'')+siteCtx}
-  sysContent+=_BLOG_READ_INSTR_BLOCK;/* Blog 阅读申请指令：仅 1对1 注入（群聊不开放）。缓存敏感：本版本上线后各对话首轮重建一次缓存 */
+  if(_siteRes&&_siteRes.blogRead)sysContent+=_BLOG_READ_INSTR_BLOCK;/* Blog 阅读申请指令：仅当本轮确实带上了日志列表时注入（1对1 专用，群聊不开放） */
   let _amInj={sys:'',tail:''};
   if(amEnabled(cfg)){try{_amInj=await amBuildInject(cfg,_ctxText)}catch(e){}}
   if(_amInj.sys)sysContent=(sysContent?sysContent+'\n\n':'')+_amInj.sys;
-  try{if(window.IBCAL){const _calSys=await IBCAL.buildSys(cfg);if(_calSys)sysContent=(sysContent?sysContent+'\n\n':'')+_calSys}}catch(e){}
+  /* 日历：本轮的"日历栏"只构建**一次**。buildTail 带台账副作用（每次渲染「〔未提及〕」标记
+     都会把 shown 计数 +1，满 3 次即转为"已提及"），因此绝不能为了门控再算第二遍——那会让
+     计数走两倍速、改变既有的可见性行为。下面注入 _tailCtx 时复用同一份产物。
+     便笺指令（buildSys）只在"这一栏真的非空"时才注入。 */
+  let _calTailForGate='';
+  try{if(window.IBCAL){_calTailForGate=await IBCAL.buildTail(cfg)||''}}catch(e){}
+  try{
+    if(window.IBCAL&&window.IBContextSignals&&typeof window.IBContextSignals.calendarNoteNeeded==='function'&&window.IBContextSignals.calendarNoteNeeded(_calTailForGate)){
+      const _calSys=await IBCAL.buildSys(cfg);if(_calSys)sysContent=(sysContent?sysContent+'\n\n':'')+_calSys;
+    }
+  }catch(e){}
   let _threadMemOk=true;
   if(_targetThread){const _thr=await (async()=>{try{return await dbGet('chatThreads',_targetThread)}catch(e){return null}})();_threadMemOk=_thr&&_thr.memoryEnabled}
   let _tailCtx='';
@@ -1423,7 +1470,7 @@ async function _buildSingleChatContext(cfg,opts){
   const _pushCtxBlock=function(text){if(!text)return;const sep=_tailCtx?'\n\n':'';if(_ctxStart<0)_ctxStart=_tailCtx.length;_tailCtx+=sep+text;_ctxJoined+=sep+text;};
   _tailCtx+='当前时间：'+new Date().toLocaleString('zh-CN',{year:'numeric',month:'long',day:'numeric',weekday:'long',hour:'2-digit',minute:'2-digit'})+'。';
   try{if(ss.musicEnabled&&currentTrackIdx>=0&&!audioEl.paused&&playlist[currentTrackIdx])_tailCtx+='正在听：《'+playlist[currentTrackIdx].name+'》。';}catch(e){}
-  try{if(window.IBCAL){const _calT=await IBCAL.buildTail(cfg);if(_calT)_tailCtx+='\n\n'+_calT}}catch(e){}
+  try{if(_calTailForGate)_tailCtx+='\n\n'+_calTailForGate}catch(e){}/* 复用上面那一次 buildTail 产物（不再重算，避免台账计数走两倍） */
   if(summaryText)_tailCtx+='\n\n【对话历史备忘（此为后台参考信息，不要向对方复述或提及此段内容的存在）】\n'+summaryText;
   if(_threadMemOk){_memCtx=await getMemoryContext(cfg.id,{userMessage:_ctxText});_pushCtxBlock(_memCtx);}
   /* Understanding + Thread（v1）· 走 tail（末条 user 消息），绝不进 system（保 prompt cache 稳定）。 */
@@ -1499,7 +1546,9 @@ async function _buildSingleChatContext(cfg,opts){
   if(_wsReadCtx)_tailCtx+=(_tailCtx?'\n':'')+_wsReadCtx;
   try{if(_ibModelCanSee(cfg))sysContent+=_VISION_DECLARE}catch(e){}
   try{sysContent+='\n\n【撤回】如果你意识到自己上一条消息说错了话（比如 @ 错了人、说错了事实、语气不对），可以在本条回复里输出 <withdraw/>，系统会撤回你上一条消息并提示"XX撤回了一条消息"。只有确实说错时才用，不要频繁使用。'}catch(e){}
-  if(cfg.imageGen)sysContent+=_IMGGEN_INSTR_BLOCK;/* 图像生成：按好友开关注入（会话内稳定，缓存友好） */
+  /* 图像生成：能力开关仍由 cfg.imageGen 决定；说明只在"本轮可能真的要用标签"时注入
+     （见 chat-context-signals.imageGenInstrNeeded）。门控信号缺失时保守注入，绝不削弱能力。 */
+  if(cfg.imageGen&&_imgGenInstrNeeded(_ctxText,opts.sentFiles))sysContent+=_IMGGEN_INSTR_BLOCK;
   /* 全局短回合策略：仅当用户未明确要求详细时注入；voice 时明显短于 text。
      角色级「简洁回复」（cfg.replyStyle==='concise'）时换成更克制的简洁约束；
      「自然收尾」（cfg.naturalEnding===true）与「简洁回复」相互独立，在末尾追加；
@@ -1527,7 +1576,26 @@ async function _buildGroupChatContext(cfg,opts){
     +'\n2. 绝对不要替其他成员或用户发言、代答、补写他们的台词或动作。即使用户点名了其他成员，也只回答属于你的部分，把他们的部分留给他们自己说。'
     +'\n3. 不要在回复开头加"['+selfName+']"等任何名字前缀，界面会自动标注你的名字。'
     +'\n4. 历史消息中带[名字]前缀的内容是用户或其他成员说的话，仅供你阅读参考。';
-  const siteCtx=await buildSiteContext();
+  /* 群聊：与单聊同一套逐轮门控（工作区指令/日志段），成员各自独立判定；
+     群聊不注入 Blog 阅读申请（既有契约）。 */
+  let _gSiteSignals={profile:true,logs:false,fileOutput:true,blogRead:false};
+  try{
+    if(window.IBContextSignals&&typeof window.IBContextSignals.workspaceInstrNeeded==='function'){
+      _gSiteSignals.fileOutput=await window.IBContextSignals.workspaceInstrNeeded({userMessage:_ctxText,history:opts.history||null,attachments:(opts.sentFiles||null)});
+    }
+  }catch(_gSigErr){console.warn('[ContextSignals] group resolve failed',String(_gSigErr&&_gSigErr.message||_gSigErr).slice(0,120))}
+  try{
+    if(_ctxText&&String(_ctxText).trim().length>=2){
+      const _gPosts=await dbGetAll('posts');
+      for(const _gp of _gPosts){
+        if(isLockedPost(_gp))continue;
+        const _gt=String((_gp&&_gp.title)||'').trim();
+        if(_gt.length>=2&&String(_ctxText).indexOf(_gt)>=0){_gSiteSignals.logs=true;break}
+      }
+    }
+  }catch(_gSiteErr){_gSiteSignals.logs=false}
+  const _gSiteRes=await buildSiteContext(_gSiteSignals);
+  const siteCtx=(_gSiteRes==null)?'':String(_gSiteRes);
   if(siteCtx)sysContent+='\n\n'+siteCtx;
   let _gAmInj={sys:'',tail:''};
   if(amEnabled(cfg)){try{_gAmInj=await amBuildInject(cfg,_ctxText)}catch(e){}}
@@ -1546,7 +1614,7 @@ async function _buildGroupChatContext(cfg,opts){
   if(_gWsInject)_gTailCtx+=(_gTailCtx?'\n':'')+_gWsInject;
   try{if(_ibModelCanSee(cfg))sysContent+=_VISION_DECLARE}catch(e){}
   try{sysContent+='\n\n【撤回】如果你意识到自己上一条消息说错了话（比如 @ 错了人、说错了事实、语气不对），可以在本条回复里输出 <withdraw/>，系统会撤回你上一条消息并提示"XX撤回了一条消息"。只有确实说错时才用，不要频繁使用。'}catch(e){}
-  if(cfg.imageGen)sysContent+=_IMGGEN_INSTR_BLOCK;/* 图像生成：按本成员开关注入 */
+  if(cfg.imageGen&&_imgGenInstrNeeded(_ctxText,opts.sentFiles))sysContent+=_IMGGEN_INSTR_BLOCK;/* 图像生成：按本成员开关注入，同样按轮门控 */
   /* 全局短回合策略（群聊 = text 模式）：仅当用户未明确要求详细时注入。
      本成员开启「简洁回复」（cfg.replyStyle==='concise'）时换成更克制的简洁约束；
      「自然收尾」（cfg.naturalEnding===true）与本成员独立组合，在末尾追加；
@@ -1747,7 +1815,7 @@ async function sendChatMessage(voiceMsg){
         });
         const messages=collapseSameRole(mapped);
         /* FIX②: 上下文构建（Extraction Seam）——system/tail 分区由 buildChatContext 产出 */
-        const _gc=await buildChatContext(cfg,{isGroup:true,selfName:selfName,allNames:allNames,userDesc:userDesc,group:group,gss:gss,gSummaryText:gSummaryText,userMessage:_ctxText,isFirstTurn:_gWsFirstTurn});
+        const _gc=await buildChatContext(cfg,{isGroup:true,selfName:selfName,allNames:allNames,userDesc:userDesc,group:group,gss:gss,gSummaryText:gSummaryText,userMessage:_ctxText,isFirstTurn:_gWsFirstTurn,history:messages,sentFiles:sentFiles});
         const sysContent=_gc.system;
         const _gTailCtx=_gc.tail;
         _gWsFirstTurn=false;/* 首个发言者兜底消费完无主/移出成员条目后置 false */
@@ -2072,7 +2140,7 @@ async function sendChatMessage(voiceMsg){
       _mbTrace.note(cfg.id,'inputMessages',messages.length);/* MB seam 之前的 messages 条数 */
       _mbTrace.note(cfg.id,'_paramsSeam',_mbParamsFingerprint(cfg,_streamingOk,thinkingOn));
     }
-    const _bcc=await buildChatContext(cfg,{userMessage:_ctxText,ss:ss,summaryText:summaryText,threadId:_targetThread,voice:!!_callTurn});
+    const _bcc=await buildChatContext(cfg,{userMessage:_ctxText,ss:ss,summaryText:summaryText,threadId:_targetThread,voice:!!_callTurn,sentFiles:sentFiles});
     const sysContent=_bcc.system;
     const _tailCtx=_bcc.tail;
     if(sysContent)messages.unshift({role:'system',content:sysContent});
@@ -3641,7 +3709,7 @@ async function _callApiChatStreamOnce(cfg,messages,opts){
   /* 不改写用户消息来索取思维链。原生 reasoning delta 走独立侧通道。 */
   let _msgs=messages;
   /* 联网搜索边界：开关开启时在 system 末尾追加一句使用边界，与搜索工具同时出现、同时消失 */
-  try{if(typeof IBWS!=='undefined'&&IBWS.on(cfg)&&!(opts&&opts._noWebSearch)&&!IBWS.blocked(cfg)&&IBWS.SYS_NOTE){_msgs=_msgs.map(m=>m&&m.role==='system'?Object.assign({},m,{content:String(m.content||'')+IBWS.SYS_NOTE}):m)}}catch(e){}
+  try{if(typeof IBWS!=='undefined'&&IBWS.on(cfg)&&!(opts&&opts._noWebSearch)&&!IBWS.blocked(cfg)&&IBWS.SYS_NOTE&&IBWS.searchNoteNeeded(_msgs,cfg)){_msgs=_msgs.map(m=>m&&m.role==='system'?Object.assign({},m,{content:String(m.content||'')+IBWS.SYS_NOTE}):m)}}catch(e){}
   /* 联网搜索·逐轮硬提醒：文件任务时把 TURN_NOTE 附到最后一条 user 消息（仅发送副本，零缓存代价） */
   try{if(typeof IBWS!=='undefined'&&IBWS.steer)_msgs=IBWS.steer(_msgs,cfg,opts)}catch(e){}
   const ac=opts.abortController||new AbortController();const _extAC=!!opts.abortController;if(!_extAC)_streamAbortController=ac;
@@ -3896,7 +3964,7 @@ async function _callApiChatOnce(cfg,messages,opts){
   /* 不要求模型把内部推理写进正文；仅接收 API 的原生 reasoning/thinking block。 */
   let _msgs=messages, _prefillThinking=false;
   /* 联网搜索边界：开关开启时在 system 末尾追加一句使用边界，与搜索工具同时出现、同时消失 */
-  try{if(typeof IBWS!=='undefined'&&IBWS.on(cfg)&&!(opts&&opts._noWebSearch)&&!IBWS.blocked(cfg)&&IBWS.SYS_NOTE){_msgs=_msgs.map(m=>m&&m.role==='system'?Object.assign({},m,{content:String(m.content||'')+IBWS.SYS_NOTE}):m)}}catch(e){}
+  try{if(typeof IBWS!=='undefined'&&IBWS.on(cfg)&&!(opts&&opts._noWebSearch)&&!IBWS.blocked(cfg)&&IBWS.SYS_NOTE&&IBWS.searchNoteNeeded(_msgs,cfg)){_msgs=_msgs.map(m=>m&&m.role==='system'?Object.assign({},m,{content:String(m.content||'')+IBWS.SYS_NOTE}):m)}}catch(e){}
   /* 联网搜索·逐轮硬提醒：文件任务时把 TURN_NOTE 附到最后一条 user 消息（仅发送副本，零缓存代价） */
   try{if(typeof IBWS!=='undefined'&&IBWS.steer)_msgs=IBWS.steer(_msgs,cfg,opts)}catch(e){}
 

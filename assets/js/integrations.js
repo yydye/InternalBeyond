@@ -646,6 +646,19 @@ const IBWS = {
   },
   /* 4xx 且非 401/403 视为"参数不被接受", 触发去搜索重试; 鉴权错不重试 */
   errLooksParam(e){ const t = String(e && e.message || e || ''); return /^4\d\d/.test(t) && !/^40[13]/.test(t); },
+  /* 逐轮门控：SYS_NOTE（"何时可以用搜索"的说明）只在**可能用到搜索信息**的回合注入。
+     注意：这不影响搜索工具本身——工具照旧由 attach() 按 cfg.webSearch 挂载，能力不变。
+     纯寒暄/情绪回合（"你好呀""晚安"）里那句说明与当轮无关，只会白占前缀；
+     而询问类 / 文件类 / 搜索类回合一律照常提醒（含"文件任务禁止搜索"的约束）。
+     判定复用同一事实源：FILE_RE（文件/工作区意图真源）+ 本函数的问句/闲聊判定。 */
+  searchNoteNeeded(msgs,cfg){
+    try{
+      if(typeof window!=='undefined'&&window.IBContextSignals&&typeof window.IBContextSignals.webSearchNoteNeeded==='function'){
+        return !!window.IBContextSignals.webSearchNoteNeeded(this._lastUserText(msgs),cfg);
+      }
+    }catch(e){}
+    return true;/* 信号模块缺失 → 保守：照常注入，绝不因门控故障削弱能力 */
+  },
   /* 发送前把搜索参数并入请求体; opts._noWebSearch 由回落重试置位 */
   attach(body, fmt, cfg, opts){
     try{
