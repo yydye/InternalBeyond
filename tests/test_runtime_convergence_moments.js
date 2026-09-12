@@ -127,6 +127,16 @@ const api = http.createServer(async (req, res) => {
     await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
       source: `const _of=window.fetch.bind(window);window.fetch=function(input,opts){const u=new URL(typeof input==='string'?input:input.url,location.href);`
         + `if(u.origin!==${JSON.stringify(apiBase)}&&u.origin!==${JSON.stringify(webBase)})return Promise.reject(new Error('convergence smoke blocks external service'));return _of(input,opts);};window.confirm=()=>true;`
+        /* M1-C.2n：本用例**没有** Home Node（它测的是浏览器 runtime/telemetry 接缝：
+           `_obsCall` 的归因、格式适配、gate 回退、错误分类），而 M1-C.2n 之后
+           动态的权威在 Home Node，`dbPut('moments')` 在权威生效时会被显式拒绝
+           （fail closed）—— 于是本用例的 9 条断言会因为"写入被拒"而红，
+           而那与它要证明的东西毫无关系。
+           因此这里显式把它切成 mirror 承载：权威不可达，本地写是**合法回滚路径**
+           （与 M1-C.2n 之前逐字同行为）。这是**如实声明承载**，不是绕过检查：
+           需要"权威生效时的行为"的用例有自己的专门套件
+           （test_moments_authority / test_context_snapshot / test_context_convergence_c1）。 */
+        + `try{localStorage.setItem('ib_home_node_mode','mirror');}catch(e){}`
     });
     await cdp.send('Page.navigate', { url: webBase + '/InternalBeyond.html' });
     assert.ok(await waitFor(cdp, "document.readyState==='complete' && typeof _obsCall==='function' && typeof generateRoleMoment==='function' && typeof generateRoleReply==='function' && window.IB && IB.runtime && IB.runtime.instance && IB.runtime.telemetry && typeof loadApiConfigs==='function'", 20000), 'moments seam + runtime + telemetry mounted');
