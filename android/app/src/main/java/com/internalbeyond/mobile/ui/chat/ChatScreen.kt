@@ -144,6 +144,13 @@ class ChatViewModel(
  *  · Reasoning is folded shut behind 思考过程 instead of an English "Show reasoning",
  *    and the model id is gone from under every message: it is a fact about a machine,
  *    and 开发者信息 in Settings is where facts about machines live.
+ *
+ * M1-C.2h moved the ORDER of the list out of this file. It used to draw every canonical
+ * row and then every overlay row, which put a user's own message underneath the reply it
+ * had already produced, whenever that reply became canonical before its question synced
+ * (observed on 单可昕). [ConversationState.render] now hands this screen one merged list
+ * in which each transient half is anchored to the canonical row it belongs to; this
+ * layer draws it in order and never reorders it.
  */
 @Composable
 fun ChatScreen(
@@ -160,15 +167,20 @@ fun ChatScreen(
     val character = viewModel.character
     val listState = rememberLazyListState()
 
-    // The canonical ids currently rendered. An overlay row whose reply is already in
-    // this set must not draw it a second time (M1-C.2f).
-    val canonicalIds = remember(state.messages) { state.messages.mapTo(HashSet()) { it.id } }
-
     var draft by rememberSaveable(characterId) { mutableStateOf(viewModel.draft()) }
 
-    // Keep the newest content visible as it streams in.
-    val itemCount = state.messages.size + state.overlay.size + 1
-    LaunchedEffect(itemCount, state.overlay.map { it.partialText.length }) {
+    // Keep the newest content visible as it streams in. Sized from the merged list the
+    // screen actually draws, plus the one "load older" row that precedes it.
+    val itemCount = state.render.size + 1
+    val streaming = remember(state.render) {
+        state.render.sumOf {
+            when (it) {
+                is AttemptOverlay.RenderItem.AttemptAssistant -> it.attempt.partialText.length
+                else -> 0
+            }
+        }
+    }
+    LaunchedEffect(itemCount, streaming) {
         if (itemCount > 1) {
             runCatching { listState.animateScrollToItem(itemCount - 1) }
         }
@@ -240,7 +252,7 @@ fun ChatScreen(
                         }
                     }
 
-                    if (state.messages.isEmpty() && state.overlay.isEmpty() && !state.loading) {
+                    if (state.render.isEmpty() && !state.loading) {
                         item(key = "empty") {
                             IbEmptyState(
                                 title = IbStrings.chatEmptyTitle,
@@ -249,21 +261,25 @@ fun ChatScreen(
                         }
                     }
 
-                    items(state.messages, key = { it.id }) { message ->
-                        MessageBubble(message, reasoning = state.reasoning[message.id])
-                    }
+                    /**
+                     * One list, already merged. [ConversationState.render] places each
+                     * transient half where it belongs relative to the canonical rows —
+                     * a send's own user bubble is anchored immediately before the reply
+                     * it caused, so a canonical answer can never be drawn above the
+                     * question (M1-C.2h). This layer only turns items into pixels and
+                     * must not reorder them.
+                     */
+                    items(state.render, key = { it.key }) { item ->
+                        when (item) {
+                            is AttemptOverlay.RenderItem.Message ->
+                                MessageBubble(item.message, reasoning = state.reasoning[item.message.id])
 
-                    state.overlay.forEach { attempt ->
-                        if (AttemptOverlay.showsUserBubble(attempt, canonicalIds)) {
-                            item(key = attempt.localMessageId + ":user") { UserAttemptBubble(attempt) }
-                        }
-                        if (showsAssistantTurn(attempt, canonicalIds)) {
-                            item(key = attempt.localMessageId + ":assistant") {
-                                AssistantAttemptTurn(
-                                    attempt = attempt,
-                                    onRetry = { viewModel.sendAgain(attempt.requestId) },
-                                )
-                            }
+                            is AttemptOverlay.RenderItem.AttemptUser -> UserAttemptBubble(item.attempt)
+
+                            is AttemptOverlay.RenderItem.AttemptAssistant -> AssistantAttemptTurn(
+                                attempt = item.attempt,
+                                onRetry = { viewModel.sendAgain(item.attempt.requestId) },
+                            )
                         }
                     }
                 }
@@ -416,17 +432,6 @@ private fun UserAttemptBubble(attempt: SendAttempt) {
         }
     }
 }
-
-/** The transient assistant turn, drawn only while its reply is still the only copy. */
-private fun showsAssistantTurn(attempt: SendAttempt, canonicalIds: Set<String>): Boolean =
-    AttemptOverlay.showsAssistantBubble(attempt, canonicalIds) &&
-        (
-            attempt.partialText.isNotEmpty() ||
-                attempt.reasoningText.isNotEmpty() ||
-                attempt.state == AttemptState.RUNNING ||
-                attempt.state == AttemptState.PENDING ||
-                attempt.state == AttemptState.FAILED
-            )
 
 /**
  * The optimistic assistant turn: thinking above, then the reply, then the failure

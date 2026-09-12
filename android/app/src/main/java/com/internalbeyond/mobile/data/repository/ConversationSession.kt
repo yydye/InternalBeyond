@@ -39,6 +39,13 @@ data class ConversationState(
      * (M1-C.2g). A view over `send_attempts`, never a second store.
      */
     val reasoning: Map<String, String> = emptyMap(),
+    /**
+     * The conversation in the order it is drawn, with each transient half anchored to
+     * the canonical row it belongs to. The UI renders THIS list and does no merging of
+     * its own — the merge is where the user-before-assistant invariant lives, so it is
+     * one pure function with a test rather than layout code (M1-C.2h).
+     */
+    val render: List<AttemptOverlay.RenderItem> = emptyList(),
     val hasOlder: Boolean = false,
     val loading: Boolean = false,
     val loadingOlder: Boolean = false,
@@ -577,6 +584,7 @@ class ConversationSession(
             messages = messages,
             overlay = AttemptOverlay.visible(attempts, ids),
             reasoning = AttemptOverlay.reasoningByAssistantId(attempts, ids),
+            render = AttemptOverlay.render(messages, attempts, ids),
             hasOlder = _hasOlder || messages.size >= HISTORY_PAGE,
             loading = loading,
             loadingOlder = _state.value.loadingOlder,
