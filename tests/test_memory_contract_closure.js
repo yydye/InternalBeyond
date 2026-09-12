@@ -733,6 +733,151 @@ const CFG = { id: 'role-a', nickname: 'A', systemPrompt: '你是 A。', provider
       env2.table('memories').get('r9').lastActivated);
   }
 
+  /* ══════════════ T13 · 证据准入（M1-C.2k）══════════════
+     _memVisibleEvidenceIds 是"模型返回的 evidenceIds"的**唯一准入边界**
+     （active-diary.js：模型输出的 id 不可信，可能指向幻觉 id，也可能指向
+      一条对该角色隐藏的记忆）。它的契约是：**存在 且 对该角色可见**。
+
+     修复前它把**谓词函数**当作 roleId 传给 core.liveEvidenceIds(ids, all, roleId)：
+       String(fn) 非空 → core 判定"有 roleId"，于是用这个字符串去跑自己的
+       isMemoryVisibleTo，结果对**任何角色都不可见**且**与传入的 roleId 无关**：
+         · only:[该角色]      → 被错误拒绝
+         · except:[该角色]    → 被错误接受（该角色本不该看到）
+       也就是说它**看起来**做了可见性过滤，实际上整个 role 维度是失效的。
+
+     下面的矩阵按"哪一格错了"逐条断言，而不是只看总数 —— 否则只剩一格错时
+     仍然全绿。 */
+  section('T13 · 证据准入边界（role 维度）');
+  {
+    const ROLE = 'role-a', OTHER = 'role-b';
+    /* 七类行覆盖 rank 表的每一档 + 一条缺失行 */
+    const rows = [
+      mem('r_pub', { visibility: 'public', createdBy: ROLE }),
+      mem('r_onlyA', { visibility: 'only', visibleTo: [ROLE], createdBy: 'user' }),
+      mem('r_onlyB', { visibility: 'only', visibleTo: [OTHER], createdBy: 'user' }),
+      mem('r_excA', { visibility: 'except', excludeFrom: [ROLE], createdBy: 'user' }),
+      mem('r_excB', { visibility: 'except', excludeFrom: [OTHER], createdBy: 'user' }),
+      mem('r_priv', { visibility: 'private', createdBy: ROLE }),
+      /* 缺失 visibility：必须显式覆盖成 undefined —— mem() 的默认值是 'public'，
+         只写 {createdBy} 并不会让这一行"没有 visibility"（那是本测试自己的坑，
+         不是生产语义）。 */
+      mem('r_novis', { visibility: undefined, createdBy: ROLE })
+    ];
+    const env = makeEnv();
+    for (const r of rows) env.table('memories').set(r.id, r);
+    const ctx = makeContext(env);
+    vm.runInContext(VISIBILITY_DELEGATE + DERIVATION_HELPERS, ctx);
+
+    const got = role => ctx._memVisibleEvidenceIds(rows.map(r => r.id), rows, role).slice().sort();
+    const want = role => CORE.liveEvidenceIds(rows.map(r => r.id), rows, role).slice().sort();
+
+    /* ── 根因：role 维度必须真的生效 ── */
+    check('T13.1 准入结果**随 roleId 变化**（role 参数不得被忽略）',
+      JSON.stringify(got(ROLE)) !== JSON.stringify(got(OTHER)),
+      { a: got(ROLE), b: got(OTHER) });
+    check('T13.2 与共享核心的正确调用逐格一致（role-a）',
+      JSON.stringify(got(ROLE)) === JSON.stringify(want(ROLE)), { got: got(ROLE), want: want(ROLE) });
+    check('T13.3 与共享核心的正确调用逐格一致（role-b）',
+      JSON.stringify(got(OTHER)) === JSON.stringify(want(OTHER)), { got: got(OTHER), want: want(OTHER) });
+
+    /* ── 逐格矩阵（红时能直接指出是哪一格）── */
+    const one = (id, role) => ctx._memVisibleEvidenceIds([id], rows, role).length > 0;
+    check('T13.4 public → 准入', one('r_pub', ROLE) === true);
+    check('T13.5 only:[该角色] → 准入（修复前被错误拒绝）', one('r_onlyA', ROLE) === true);
+    check('T13.6 only:[他角色] → 拒绝', one('r_onlyB', ROLE) === false);
+    check('T13.7 except:[该角色] → 拒绝（修复前被错误接受）', one('r_excA', ROLE) === false);
+    check('T13.8 except:[他角色] → 准入', one('r_excB', ROLE) === true);
+    check('T13.9 private → 拒绝（即使 createdBy 是本角色）', one('r_priv', ROLE) === false);
+    check('T13.10 缺失 visibility → 拒绝（与 roleId 是否为空无关）', one('r_novis', ROLE) === false);    check('T13.11 行不存在 → 拒绝', one('r_ghost', ROLE) === false);
+
+    /* ── 对称性：同一个制品对两个角色必须给出不同结论 ── */
+    check('T13.12 only:[A] 对 A 准入、对 B 拒绝',
+      one('r_onlyA', ROLE) === true && one('r_onlyA', OTHER) === false);
+    check('T13.13 except:[A] 对 A 拒绝、对 B 准入',
+      one('r_excA', ROLE) === false && one('r_excA', OTHER) === true);
+
+    /* ── 空角色：既有的"只判存在性"语义不得被本次修正改变 ──
+       core 的契约（memory-visibility-core.js:122）：
+           "roleId 缺省/空 → 不附加可见性谓词，只判存在性（既有调用方语义不变）"
+       即整条可见性谓词——**包含** private 与缺失 visibility 的基础拒绝——都不施加，
+       凡"行存在"即算存活。这与单条查询的直觉相反，因此必须实测而不是照抄直觉：
+       实测 roleId 为 ''/undefined/null 时一律返回
+           [r_pub, r_onlyA, r_onlyB, r_excA, r_excB, r_priv, r_novis]
+       （private 与缺失 visibility 也在内，因为不施加任何可见性谓词）。
+       本断言的价值：钉住"修准入时不得顺手改掉核心的其它语义"。 */
+    check('T13.14 roleId 为空 → 只判存在性（不施加任何可见性谓词；角色维度整体不参与）',
+      JSON.stringify(ctx._memVisibleEvidenceIds(['r_pub', 'r_onlyA', 'r_onlyB', 'r_excA', 'r_excB', 'r_priv', 'r_novis', 'r_ghost'], rows, ''))
+      === JSON.stringify(['r_pub', 'r_onlyA', 'r_onlyB', 'r_excA', 'r_excB', 'r_priv', 'r_novis']));
+    /* 反向对照：roleId 非空时同一批证据必须**严格更小**——否则角色维度又等于没生效 */
+    check('T13.15 roleId 非空时结果严格窄于 roleId 为空时',
+      ctx._memVisibleEvidenceIds(['r_pub', 'r_onlyA', 'r_onlyB', 'r_excA', 'r_excB', 'r_priv', 'r_novis'], rows, ROLE).length
+      < ctx._memVisibleEvidenceIds(['r_pub', 'r_onlyA', 'r_onlyB', 'r_excA', 'r_excB', 'r_priv', 'r_novis'], rows, '').length);
+  }
+
+  /* ══════════════ T14 · 准入 × 派生 × 存证 端到端（M1-C.2k）══════════════
+     单看准入函数不够：要证明"准入修正"真的改变了制品的可用性，而不是只改了一个
+     中间值。这里走完整链路：模型返回 evidenceIds → 准入 → 写时印章 → 读时存证 →
+     是否注入 prompt。 */
+  section('T14 · 证据准入 → 印章 → 存证');
+  {
+    /* (a) 修复后的准入使制品**可用**：证据全是 only:[本角色] 时，
+           修复前 evidenceIds 为空 → 读时存证因"无证据"而拒绝注入；修复后可用。 */
+    const env = makeEnv();
+    env.table('memories').set('m_visible', mem('m_visible', { visibility: 'only', visibleTo: ['role-a'] }));
+    const ctx = makeContext(env);
+    ctx.dbGetByIndex = async store => [...env.table(store).values()];
+    vm.runInContext(VISIBILITY_DELEGATE + DERIVATION_HELPERS + UNDERSTANDING_TICK + ARTIFACTS, ctx);
+    ctx._activeParsePlanJson = JSON.parse;
+    ctx._calibrateMemoryCandidate = async () => ({ rejected: false, confidence: 70 });
+    ctx._ibApiReady = () => true;
+    ctx.apiConfigs = [CFG];
+    ctx.callApiChat = async () => JSON.stringify({
+      shouldUpdate: true, content: 'EVIDENCE_OK_BODY', basis: 'user_corroborated',
+      dimension: 'relationship', evidenceIds: ['m_visible'], conviction: 70
+    });
+    await ctx._understandingTick(CFG);
+    const storedUn = env.table('understandings').get([...env.table('understandings').keys()][0]);
+    check('T14.1 模型返回的 only:[本角色] 证据被准入并落盘',
+      !!storedUn && JSON.stringify(storedUn.current.evidenceIds) === '["m_visible"]',
+      storedUn && storedUn.current.evidenceIds);
+    check('T14.2 该制品读时可注入（准入修正的实际产品效果）',
+      (await ctx.getUnderstandingContext('role-a')).includes('EVIDENCE_OK_BODY'));
+
+    /* (b) 泄漏边界**仍然**成立：准入放行了隐藏证据时（模拟任何上游退化），
+           读时存证必须独立挡住 —— 防御纵深不依赖准入这一层。 */
+    const env2 = makeEnv();
+    env2.table('memories').set('m_ok', mem('m_ok'));
+    env2.table('memories').set('m_hidden', mem('m_hidden', { visibility: 'only', visibleTo: ['role-b'] }));
+    const ctx2 = makeContext(env2);
+    ctx2.dbGetByIndex = async store => [...env2.table(store).values()];
+    vm.runInContext(VISIBILITY_DELEGATE + ARTIFACTS, ctx2);
+    env2.table('understandings').set('un_leak', {
+      id: 'un_leak', kind: 'understanding', characterId: 'role-a', status: 'active', dimension: 'relationship',
+      createdAt: 1, lastUpdatedAt: 1, visibility: { visibility: 'public', visibleTo: [], excludeFrom: [] },
+      current: { content: 'LEAK_BODY', conviction: 70, basis: 'ai_inference', evidenceIds: ['m_ok', 'm_hidden'], updatedAt: 1, updatedBy: 'A' },
+      history: []
+    });
+    check('T14.3 隐藏证据混入制品时，读时存证独立拒绝（不依赖准入层）',
+      (await ctx2.getUnderstandingContext('role-a')) === '');
+    /* 反向对照：去掉隐藏证据 → 同一个制品立即可注入（证明 T14.3 不是恒空） */
+    env2.table('understandings').get('un_leak').current.evidenceIds = ['m_ok'];
+    check('T14.4 反向对照：移除隐藏证据后同一制品可注入',
+      (await ctx2.getUnderstandingContext('role-a')).includes('LEAK_BODY'));
+
+    /* (c) Thread 同款：准入 + 存证对线索逐条生效 */
+    const env3 = makeEnv();
+    env3.table('memories').set('t_ok', mem('t_ok', { visibility: 'only', visibleTo: ['role-a'] }));
+    const ctx3 = makeContext(env3);
+    ctx3.dbGetByIndex = async store => [...env3.table(store).values()];
+    vm.runInContext(VISIBILITY_DELEGATE + ARTIFACTS, ctx3);
+    env3.table('threads').set('th_1', {
+      id: 'th_1', kind: 'thread', characterId: 'role-a', status: 'open', question: 'THREAD_VISIBLE',
+      evidenceIds: ['t_ok'], mentionCount: 2, createdAt: 1, lastUpdatedAt: 1,
+      visibility: { visibility: 'public', visibleTo: [], excludeFrom: [] }
+    });
+    check('T14.5 only:[本角色] 证据的线索可注入', (await ctx3.getThreadContext('role-a')).includes('THREAD_VISIBLE'));
+  }
+
   console.log('\nMemory contract closure: ' + passed + ' passed, ' + failed + ' failed');
   process.exitCode = failed ? 1 : 0;
 })().catch(e => { console.error(e); process.exitCode = 1; });

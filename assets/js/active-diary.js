@@ -849,14 +849,31 @@ function _memNonSemantic(m){return !!m&&m.kind!=='semantic'&&m.kind!=='core'}
 /* 证据 id 的准入：只接受"真实存在 **且** 对该角色仍可见"的记忆。
    模型返回的 evidenceIds 是**不可信输入** —— 它既可能指向幻觉 id，也可能指向
    一条对该角色隐藏的记忆。后者会让隐藏记忆的 id 进入派生制品的依据列表
-   （进而出现在该角色的 Understanding/Thread 上下文里）。 */
+   （进而出现在该角色的 Understanding/Thread 上下文里）。
+
+   M1-C.2k · 修正（根因 = 参数契约用错，不是 ACL 设计）：
+   修复前这里把**谓词函数**当作 core.liveEvidenceIds 的第三个参数 roleId 传进去：
+
+       core.liveEvidenceIds(ids, all, function(m){ return core.isMemoryVisibleTo(m, roleId, false, false) })
+
+   core 的签名是 liveEvidenceIds(ids, memories, roleId)，它自己就会用 roleId 跑
+   isMemoryVisibleTo。函数被 String() 成一段源码文本，于是：
+     · "有 roleId" 恒为真（非空字符串），谓词分支照常执行；
+     · 实际参与判定的 roleId 变成那段函数源码 —— 对任何记忆都不可见；
+     · 结论：role 维度**整体失效**，且结果与传入的 roleId **完全无关**
+       （同一批证据对任何角色返回同一集合）。两个方向的错都有：
+         only:[该角色]   → 被错误**拒绝**（可见证据丢掉，制品的证据集塌空）
+         except:[该角色] → 被错误**接受**（该角色本不该看到的 id 进入依据列表）
+
+   正确形态只是把 roleId **原样**交给核心 —— 可见性语义只有一份实现，
+   本函数不复制、不叠加第二套判断（与 _memDerivationCandidates 同一纪律）。 */
 function _memVisibleEvidenceIds(ids,all,roleId){
   var core=(typeof window!=='undefined'&&window.IBMemoryVisibilityCore)||null;
   if(!core)return[];/* fail closed */
   return core.liveEvidenceIds(
     (Array.isArray(ids)?ids:[]).map(String),
     all,
-    function(m){return core.isMemoryVisibleTo(m,String(roleId),false,false)}
+    roleId
   );
 }
 /* 多来源合并采用最严格 visibility：派生 memory 的可见范围不得比任何来源更宽。
