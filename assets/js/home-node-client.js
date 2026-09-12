@@ -365,4 +365,88 @@ function createUnderstandingRemote(deps) {
   };
 }
 NS.createUnderstandingRemote = createUnderstandingRemote;
+
+/* ── moments remote driver（moments-authority 的注入契约）───────────────
+   M1-C.2n。与 memory / understanding 的 remote 分开（理由同上：合并会让
+   "某一边多了一个方法"这种接线错误无法被发现）。
+
+   信封与 `/memory/*` 完全相同（同一个 mobile-gateway、同一个 okBody），
+   因此复用 `_unwrapMemoryEnvelope` —— 解包失败会把 `res.records` 读成
+   undefined，而那正是 memory 当初"镜像被清空"的成因。
+
+   写协议与理解**不同**：动态是**可编辑的多条记录**，每行有自己的 rev，
+   因此提交一条动态带 `expectedRev`（0/缺省 = 新建），并且**必须**带
+   `requestId` 才能幂等重放（R7：重试不产生第二条）。 */
+function createMomentsRemote(deps) {
+  deps = deps || {};
+  return {
+    health: function () {
+      return _request('/health', { timeoutMs: deps.healthTimeoutMs || 4000 });
+    },
+    list: function (query) {
+      query = query || {};
+      var qs = [];
+      if (query.ownerRoleId) qs.push('ownerRoleId=' + encodeURIComponent(query.ownerRoleId));
+      if (query.limit) qs.push('limit=' + encodeURIComponent(query.limit));
+      return _request('/moments/list' + (qs.length ? '?' + qs.join('&') : ''), { timeoutMs: deps.batchTimeoutMs || MIGRATION_TIMEOUT_MS }).then(_unwrapMemoryEnvelope);
+    },
+    changes: function (cursor, options) {
+      options = options || {};
+      return _request('/moments/changes?cursor=' + encodeURIComponent(Number(cursor) || 0) +
+        (options.limit ? '&limit=' + encodeURIComponent(options.limit) : '')).then(_unwrapMemoryEnvelope);
+    },
+    /* 按主体分页读：可见性由**服务端**用共享核判定，因此隐藏行不占页槽。
+       客户端不提交"我能看什么"，只提交"我是谁"。 */
+    visible: function (principal, query) {
+      principal = principal || {};
+      query = query || {};
+      var qs = ['principalKind=' + encodeURIComponent(principal.kind === 'user' ? 'user' : 'role')];
+      qs.push('principalId=' + encodeURIComponent(String(principal.id || '')));
+      if (query.ownerRoleId) qs.push('ownerRoleId=' + encodeURIComponent(query.ownerRoleId));
+      if (query.limit) qs.push('limit=' + encodeURIComponent(query.limit));
+      if (query.cursor && query.cursor.createdAt != null) {
+        qs.push('cursorCreatedAt=' + encodeURIComponent(Number(query.cursor.createdAt) || 0));
+        qs.push('cursorId=' + encodeURIComponent(String(query.cursor.id || '')));
+      }
+      return _request('/moments/visible?' + qs.join('&'), { timeoutMs: deps.batchTimeoutMs || MIGRATION_TIMEOUT_MS }).then(_unwrapMemoryEnvelope);
+    },
+    /* 写一条动态（新建或编辑）。expectedRev 是 CAS 的比较对象：
+       新建 = 1 期望（服务端用 rev>0 表示已存在），编辑 = 当前 rev。 */
+    put: function (record, options) {
+      options = options || {};
+      var payload = { record: record };
+      if (options.requestId) payload.requestId = String(options.requestId);
+      if (options.expectedRev != null) payload.expectedRev = Number(options.expectedRev);
+      return _request('/moments/record', { method: 'POST', body: payload, timeoutMs: deps.writeTimeoutMs }).then(_unwrapMemoryEnvelope);
+    },
+    /* 删除：与理解的"拒绝删除"不同 —— 动态**是**用户可以删除的东西，
+       因此这是一个正常的软删除（墓碑 + change_log 的 kind='delete'，
+       镜像据此移除本地行）。仍然带基版本：避免把别人的编辑覆盖掉。 */
+    remove: function (id, options) {
+      options = options || {};
+      var qs = ['id=' + encodeURIComponent(String(id || ''))];
+      if (options.requestId) qs.push('requestId=' + encodeURIComponent(String(options.requestId)));
+      if (options.expectedRev != null) qs.push('expectedRev=' + encodeURIComponent(Number(options.expectedRev)));
+      return _request('/moments/record?' + qs.join('&'), { method: 'DELETE', timeoutMs: deps.writeTimeoutMs }).then(_unwrapMemoryEnvelope);
+    },
+    /* 一次性迁移批次：逐条走 writeMigrated（**永不**覆盖 canonical 已存在的行）。 */
+    migrateBatch: function (records, options) {
+      options = options || {};
+      var payload = { records: records || [] };
+      if (options.prefix) payload.requestIdPrefix = String(options.prefix);
+      return _request('/moments/records', { method: 'POST', body: payload, timeoutMs: deps.batchTimeoutMs || MIGRATION_TIMEOUT_MS }).then(_unwrapMemoryEnvelope);
+    },
+    migrationState: function (source) {
+      return _request('/moments/migration?source=' + encodeURIComponent(source || 'default')).then(_unwrapMemoryEnvelope);
+    },
+    markMigration: function (source, patch) {
+      /* 水位由服务端在批次里自行推进；这一条只用于显式记录"这一轮搬到哪了"。 */
+      return _request('/moments/migration?source=' + encodeURIComponent(source || 'default')).then(_unwrapMemoryEnvelope).then(function (res) {
+        if (res && res.ok) res.marked = patch || {};
+        return res;
+      });
+    }
+  };
+}
+NS.createMomentsRemote = createMomentsRemote;
 })(window.IB || (window.IB = {}));

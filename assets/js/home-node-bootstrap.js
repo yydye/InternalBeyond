@@ -208,6 +208,21 @@ window.dbPut = function (store, data) {
     blocked.authority = 'home-node';
     return Promise.reject(blocked);
   }
+  if (isMomentsStore(store) && momentsWriteClosed()) {
+    /* 动态（M1-C.2n）：与理解**同款守卫**，但理由不完全一样。
+       动态是用户可以正常编辑/删除的东西，所以这里**不是**"禁止写入"，
+       而是"禁止**绕过权威**写入"。合法写法只有一条：
+         · moments.js / social-network.js → IB.homeNode.moments.* → authority.put/remove
+       这条守卫的作用是让"某个调用方又直接 dbPut('moments', row)"变成一次
+       可见的失败，而不是一次静默的第二 canonical 写。
+       静默放行等于把审计发现的那个形状重新打开：
+       同一个域有两份权威，谁都不是真的权威。 */
+    note('moments-direct-write-blocked', { id: data && data.id, note: '写入必须经 IB.homeNode.moments' });
+    var refused = new Error('moments 是 Home Node 的 canonical 域；浏览器不得直接写入（fail closed）');
+    refused.code = 'moments-write-closed';
+    refused.authority = 'home-node';
+    return Promise.reject(refused);
+  }
   if (!isChatStore(store) || MODE !== 'canonical') return original.put(store, data);
   return withRetry(function () {
     return authority.put(data).then(function (result) {
@@ -236,6 +251,15 @@ window.dbDelete = function (store, key) {
     refused.code = 'understanding-delete-refused';
     return Promise.reject(refused);
   }
+  if (isMomentsStore(store) && momentsWriteClosed()) {
+    /* 动态**可以**删除（那是正常产品能力），但必须经权威删除 —— 权威侧写墓碑、
+       change_log 记 kind='delete'，镜像据此移除本地行。绕过权威直接删本地行
+       会让"删除"只发生在这台机器上，另一台（或后台 companion）仍然看得见它。 */
+    var refusedMoment = new Error('moments 是 Home Node 的 canonical 域；删除必须经 IB.homeNode.moments.remove');
+    refusedMoment.code = 'moments-delete-closed';
+    refusedMoment.authority = 'home-node';
+    return Promise.reject(refusedMoment);
+  }
   if (!isChatStore(store) || MODE !== 'canonical') return original.del(store, key);
   return withRetry(function () {
     return authority.remove(key).then(function (result) {
@@ -249,6 +273,10 @@ window.dbDelete = function (store, key) {
 window.dbGet = function (store, key) {
   if (isMemoryStore(store)) return memoryAuthority.get(key);
   if (isUnderstandingStore(store)) return understandingAuthority.get(key);
+  /* M1-C.2n：moments 的读也走权威适配层 —— 它先 ensureReady()（把镜像补齐到
+     权威的样子）再读镜像，因此页面刚打开时不会读到"迁移之前"的本地动态。
+     返回形状与原来一致：Promise<row|null>（decorateRead 的标注只在诊断面用）。 */
+  if (isMomentsStore(store)) return momentsAuthority.get(key).then(function (r) { return r && r.value ? r.value : null; });
   if (!isChatStore(store) || MODE !== 'canonical') return original.get(store, key);
   return authority.get(key);
 };
@@ -256,6 +284,7 @@ window.dbGet = function (store, key) {
 window.dbGetAll = function (store) {
   if (isMemoryStore(store)) return memoryAuthority.getAll();
   if (isUnderstandingStore(store)) return understandingAuthority.getAll();
+  if (isMomentsStore(store)) return momentsAuthority.getAll().then(function (r) { return (r && r.value) || []; });
   if (!isChatStore(store) || MODE !== 'canonical') return original.getAll(store);
   return authority.getAll();
 };
@@ -270,6 +299,10 @@ window.dbGetByIndex = function (store, idx, val) {
      与 memories 的接管差异（刻意的）：memories 走全表扫描因此由 dbGetAll 接管；
      这里走索引，所以在索引函数上接管。 */
   if (isUnderstandingStore(store) && idx === 'byCharacter') return understandingAuthority.getAll(val);
+  /* M1-C.2n：`moments` 的 byRole 索引同样先补齐镜像再读 —— `_momentsQueryByRole`
+     是动态列表的第二个入口（第一个是 dbGetAll），漏掉它就会出现
+     "按角色筛选看旧数据、总列表看新数据"这种最难查的不一致。 */
+  if (isMomentsStore(store) && idx === 'byRole') return momentsAuthority.getByOwner(val).then(function (r) { return (r && r.value) || []; });
   /* 只有 byFriend 这一个索引存在（core.js:4）。其它索引名走原路径，
      保持"索引不存在时按字段过滤"的既有语义不变。 */
   return original.getByIndex(store, idx, val);
@@ -700,6 +733,11 @@ function bootstrap() {
   }).then(function () {
     return understandingSyncOnce('boot', { full: true });
   }).then(function () {
+    /* M1-C.2n：动态镜像也必须在**任何**动态写入或读取之前补齐。
+       与上面两者同一条理由：读之前不补齐，页面刚打开时看到的是
+       "迁移之前"的本地动态，而权威已经是 Home Node。 */
+    return momentsSyncOnce('boot', { full: true });
+  }).then(function () {
     return publishCharacters('boot');
   }).then(function () {
     publishMemorySettings('boot');
@@ -708,9 +746,9 @@ function bootstrap() {
      因为常驻 interval 会让测试 harness 无法自然退出（MEMORY.md 的测试纪律）。 */
   try {
     document.addEventListener('visibilitychange', function () {
-      if (document.visibilityState === 'visible') { syncOnce('visibility'); memorySyncOnce('visibility'); understandingSyncOnce('visibility'); }
+      if (document.visibilityState === 'visible') { syncOnce('visibility'); memorySyncOnce('visibility'); understandingSyncOnce('visibility'); momentsSyncOnce('visibility'); }
     });
-    window.addEventListener('online', function () { syncOnce('online'); memorySyncOnce('online'); understandingSyncOnce('online'); });
+    window.addEventListener('online', function () { syncOnce('online'); memorySyncOnce('online'); understandingSyncOnce('online'); momentsSyncOnce('online'); });
   } catch (e) { /* 无 document 的环境（测试）不影响功能 */ }
 }
 
@@ -734,6 +772,93 @@ function memorySyncOnce(reason, options) {
   return memorySyncInFlight;
 }
 
+/* ── M1-C.2n：canonical Moments 的挂载点 ──────────────────────────────
+   与 memory / understanding **同款**三态与写纪律，但 local driver 不同：
+   moments 有 byRole / byCreated 两个索引，没有 byCharacter/active 那一套。
+
+   与理解的**关键差异**（也是本段存在的理由）：理解的写者在 M1-C.2m 整体搬到了
+   Home Node，浏览器只发"请求派生"；而动态有两个真实写者（用户界面 + 后台
+   companion），因此这里既要提供写通道，也必须在权威生效时**拒绝**绕过它的
+   直接写 —— 一个还能自己落盘的浏览器就是第二个 canonical。 */
+var _momentsAuthorityFactory = (window.IBMomentsAuthority && typeof window.IBMomentsAuthority.createMomentsAuthority === 'function')
+  ? window.IBMomentsAuthority.createMomentsAuthority : null;
+var _momentsRemoteFactory = (NS && typeof NS.createMomentsRemote === 'function')
+  ? NS.createMomentsRemote : ((typeof window.createMomentsRemote === 'function') ? window.createMomentsRemote : null);
+
+var momentsAuthority = null;
+if (_momentsAuthorityFactory && _momentsRemoteFactory) {
+  var momentsLocalDriver = {
+    get: function (id) {
+      return DB.get('moments', id).then(function (row) { return row || null; });
+    },
+    getAll: function () {
+      return DB.getAll('moments').then(function (rows) { return rows || []; });
+    },
+    getByOwner: function (roleId) {
+      return DB.getByIndex('moments', 'byRole', String(roleId)).then(function (rows) { return rows || []; });
+    },
+    put: function (row) {
+      if (!row || row.id == null) return Promise.resolve(false);
+      return DB.put('moments', row).then(function () { return true; });
+    },
+    remove: function (id) {
+      return DB.del('moments', id).then(function () { return true; });
+    },
+    /* 整表替换：权威是来源。**镜像里的旧影子必须消失** —— 否则用户会继续看到
+       一条已经被权威删除的动态。 */
+    replaceAll: function (rows) {
+      return DB.getAll('moments').then(function (existing) {
+        var keep = {};
+        (rows || []).forEach(function (r) { if (r && r.id != null) keep[String(r.id)] = true; });
+        var stale = (existing || []).map(function (r) { return r && r.id; })
+          .filter(function (id) { return id != null && !keep[String(id)]; });
+        var work = Promise.resolve();
+        for (var i = 0; i < stale.length; i++) {
+          work = work.then((function (id) { return function () { return DB.del('moments', id); }; })(stale[i]));
+        }
+        return work.then(function () {
+          var w2 = Promise.resolve();
+          (rows || []).forEach(function (row) {
+            if (!row || row.id == null) return;
+            w2 = w2.then(function () { return DB.put('moments', row); });
+          });
+          return w2;
+        });
+      });
+    },
+    /* 迁移水位：存 meta 表（与 memory/understanding 同款），绝不写进 moments 行。 */
+    markMigrated: function (source, patch) {
+      return DB.put('meta', { key: 'migration:moments:' + String(source || 'default'), value: JSON.stringify(patch || {}) })
+        .then(function () { return { ok: true, source: source, state: patch || {} }; }, function () { return { ok: false, error: 'meta-write-failed' }; });
+    }
+  };
+
+  momentsAuthority = _momentsAuthorityFactory({
+    remote: _momentsRemoteFactory({}),
+    local: momentsLocalDriver,
+    mode: MODE,
+    fileOrigin: FILE_ORIGIN,
+    log: function (event, fields) { note(event, fields); }
+  });
+  if (typeof NS.expose === 'function') NS.expose('momentsAuthority', { instance: momentsAuthority, MODES: momentsAuthority.MODES });
+  else NS.momentsAuthority = momentsAuthority;
+} else {
+  warn('moments-authority-missing', {
+    authority: !!_momentsAuthorityFactory, remote: !!_momentsRemoteFactory,
+    note: 'moments 走本地 IndexedDB（M1-C.2n 之前的路径）'
+  });
+}
+
+/* Moments 域是否**结构性**由 Home Node 独占（与 understandingWriteClosed 同款）。
+   与 isMomentsStore 刻意不同：那个只说"这个 store 已被接管"（读走权威），
+   这个说"浏览器不允许再直接写它"。两者在 file:// / mode=off / mirror 下必须分开 ——
+   那些承载下权威不可达，本地写是回滚路径，一并拒绝等于"关掉集成之后功能直接坏掉"。 */
+function momentsWriteClosed() {
+  return !!momentsAuthority && typeof momentsAuthority.authorityEffective === 'function'
+    && momentsAuthority.authorityEffective() === true;
+}
+function isMomentsStore(store) { return store === 'moments' && !!momentsAuthority; }
+
 /* 理解镜像同步（幂等）：与 memorySyncOnce 同款，只换 store。
    boot 用 full:true —— 保证镜像在任何读取之前就是权威的样子（否则页面刚打开时
    会读到"迁移之前"的本地理解，而权威此时已经是 Home Node）。 */
@@ -752,6 +877,24 @@ function understandingSyncOnce(reason, options) {
     return { ok: false, error: 'sync-failed' };
   });
   return understandingSyncInFlight;
+}
+
+/* 动态镜像同步（幂等）：与上面两者同款，只换 store。 */
+var momentsSyncInFlight = null;
+function momentsSyncOnce(reason, options) {
+  if (MODE !== 'canonical' || !momentsAuthority) return Promise.resolve({ ok: true, skipped: true });
+  if (momentsSyncInFlight) return momentsSyncInFlight;
+  momentsSyncInFlight = momentsAuthority.sync(options || {}).then(function (res) {
+    momentsSyncInFlight = null;
+    if (res && res.ok) note('moments-sync', { reason: reason, cursor: res.cursor, upserts: res.upserts, deletes: res.deletes });
+    else note('moments-sync-degraded', { reason: reason, error: (res && res.error) || 'unknown' });
+    return res;
+  }, function (error) {
+    momentsSyncInFlight = null;
+    note('moments-sync-fail', { reason: reason, error: String((error && error.message) || error) });
+    return { ok: false, error: 'sync-failed' };
+  });
+  return momentsSyncInFlight;
 }
 
 /* 把桌面的记忆预算发布给 Home Node。
@@ -923,6 +1066,63 @@ var surface = {
     rebuildMirror: function (options) {
       if (!understandingAuthority) return Promise.resolve({ ok: false, error: 'authority-disabled' });
       return understandingAuthority.rebuild(options || {});
+    }
+  },
+  /* ── M1-C.2n：canonical Moments 的可观测面 ────────────────────────────
+     与 memory / understanding 同款：权威状态必须显式可读，而不是让人去猜
+     "IndexedDB 还是 Home Node 说了算"。
+     与理解的关键差异：动态**有正常写通道**（用户发帖/编辑/删除、后台 companion
+     回传），因此这里提供 put / remove 而不是 requestDerivation。 */
+  moments: {
+    instance: momentsAuthority,
+    available: !!momentsAuthority,
+    authority: momentsAuthority,
+    status: function () {
+      if (!momentsAuthority) {
+        return { store: 'moments', available: false, authority: 'indexeddb', authorityEffective: false, degraded: true, degradedReason: 'moments-authority-missing' };
+      }
+      return momentsAuthority.status();
+    },
+    sync: momentsSyncOnce,
+    /* 写一条动态：成功之后**才**更新镜像；冲突**不**写镜像（镜像必须保持权威的样子）。 */
+    put: function (record, options) {
+      options = options || {};
+      if (!momentsAuthority) return Promise.resolve({ ok: false, error: 'authority-disabled' });
+      return momentsAuthority.put(record, options).then(function (res) {
+        note(res && res.ok ? 'moments-put' : 'moments-put-rejected', {
+          id: res && res.id, outcome: res && res.outcome, error: res && res.error, revision: res && res.revision
+        });
+        return res;
+      });
+    },
+    remove: function (id, options) {
+      options = options || {};
+      if (!momentsAuthority) return Promise.resolve({ ok: false, error: 'authority-disabled' });
+      return momentsAuthority.remove(id, options).then(function (res) {
+        note(res && res.ok ? 'moments-remove' : 'moments-remove-rejected', {
+          id: id, outcome: res && res.outcome, error: res && res.error
+        });
+        return res;
+      });
+    },
+    /* 一次性迁移：浏览器遗留动态 → Home Node canonical store（幂等、可重跑）。
+       绝不自动执行：它会把本地行发布到权威，而"什么时候发布"是用户/运维的决定。 */
+    migrate: function (options) {
+      options = options || {};
+      if (!momentsAuthority) return Promise.resolve({ ok: false, error: 'authority-disabled' });
+      note('moments-migrate-start', { source: options.source || 'browser-indexeddb:moments' });
+      return momentsAuthority.migrate(options).then(function (report) {
+        note(report && report.ok ? 'moments-migrate-done' : 'moments-migrate-fail', {
+          created: report && report.created, skipped: report && report.skipped,
+          total: report && report.total, rejected: report && report.migrateRejected,
+          error: report && report.error, completed: report && report.completed
+        });
+        return report;
+      });
+    },
+    rebuildMirror: function (options) {
+      if (!momentsAuthority) return Promise.resolve({ ok: false, error: 'authority-disabled' });
+      return momentsAuthority.rebuild(options || {});
     }
   }
 };
