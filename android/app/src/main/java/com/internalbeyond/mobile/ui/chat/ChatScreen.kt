@@ -27,6 +27,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -40,6 +41,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.internalbeyond.mobile.app.AppGraph
+import com.internalbeyond.mobile.domain.AttemptOverlay
 import com.internalbeyond.mobile.domain.ErrorPresenter
 import com.internalbeyond.mobile.domain.model.AttemptState
 import com.internalbeyond.mobile.domain.model.ChatMessage
@@ -158,6 +160,10 @@ fun ChatScreen(
     val character = viewModel.character
     val listState = rememberLazyListState()
 
+    // The canonical ids currently rendered. An overlay row whose reply is already in
+    // this set must not draw it a second time (M1-C.2f).
+    val canonicalIds = remember(state.messages) { state.messages.mapTo(HashSet()) { it.id } }
+
     var draft by rememberSaveable(characterId) { mutableStateOf(viewModel.draft()) }
 
     // Keep the newest content visible as it streams in.
@@ -250,6 +256,7 @@ fun ChatScreen(
                     items(state.overlay, key = { it.localMessageId }) { attempt ->
                         AttemptBubbles(
                             attempt = attempt,
+                            canonicalIds = canonicalIds,
                             onRetry = { viewModel.sendAgain(attempt.requestId) },
                         )
                     }
@@ -379,9 +386,15 @@ private fun MessageBubble(message: ChatMessage) {
  * States come from [SendAttempt], never from a boolean: a pending bubble and a
  * failed one look different because they ARE different, and a recovering one says
  * 正在重新连接 rather than 发送失败 (Phase 16/19).
+ *
+ * The reply half is drawn only while it is still the ONLY copy of that reply. Once
+ * the canonical assistant message is in the list, [AttemptOverlay.showsAssistantBubble]
+ * says so and this composable keeps only the user's own bubble — otherwise the same
+ * reply would appear twice, since the canonical row arrives with `chat.done` while
+ * the user's row waits for a later `sync.changes` (M1-C.2f).
  */
 @Composable
-private fun AttemptBubbles(attempt: SendAttempt, onRetry: () -> Unit) {
+private fun AttemptBubbles(attempt: SendAttempt, canonicalIds: Set<String>, onRetry: () -> Unit) {
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(IbSpacing.sm),
@@ -441,9 +454,10 @@ private fun AttemptBubbles(attempt: SendAttempt, onRetry: () -> Unit) {
             }
         }
 
-        val showAssistant = attempt.partialText.isNotEmpty() ||
+        val hasReplyToDraw = attempt.partialText.isNotEmpty() ||
             attempt.state == AttemptState.RUNNING ||
             attempt.state == AttemptState.PENDING
+        val showAssistant = hasReplyToDraw && AttemptOverlay.showsAssistantBubble(attempt, canonicalIds)
         if (showAssistant) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
                 Bubble(fromUser = false) {
