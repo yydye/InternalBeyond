@@ -158,87 +158,41 @@ function _memoryLyricFlags(text){
   const personReflect=/(我|自己|彼此|我们)。{0,12}(的|那些|此刻|这般|仿佛)/i.test(ev);
   return {lyric:lyric,personReflect:personReflect};
 }
-/* 模型判断 + 本地证据校准：不信任随机分值，以主动表达、历史重复、未来影响与一次性特征共同定标。 */
+/* 模型判断 + 本地证据校准：不信任随机分值，以主动表达、历史重复、未来影响与一次性特征共同定标。
+
+   M1-C.2m：**算法本体已收敛到 assets/js/understanding-derivation-core.js**。
+   为什么必须收敛：理解派生的写者搬到 Home Node 之后，准入（basis 判定 /
+   人格·心理拒止 / evidence≥2 独立来源 / conviction 上限）如果两端各留一份，
+   就会出现"一个写者、两套准入"—— 同一份证据在桌面被拒、在节点被放行。
+   因此这里只剩三件宿主特有的事：
+     ① 注入相似度实现（桌面用 active-diary 的 `_activeTextSimilarity`，与既有行为逐字一致）；
+     ② 注入关键词提取器与"候选条目"来源（桌面读 IndexedDB，节点读 canonical store）；
+     ③ 把核心不可用当作**明确失败**（拒绝），而不是退化成一条没有准入的路径。 */
 async function _calibrateMemoryCandidate(input){
-  const content=String(input.content||''),reasonText=_memoryReasons(input.reasons).join(' ');
-  const evidence=(content+' '+reasonText).toLowerCase();
-  const explicit=/(主动|明确|亲口|直接表达|反复强调|要求记住|偏好|喜欢|习惯|身份|职业|称呼|i prefer|i like|remember that)/i.test(evidence);
-  const future=/(未来|长期|偏好|习惯|身份|职业|称呼|沟通方式|交互|推荐|体验|指令|边界|目标|工作流|workflow|preference|habit|identity)/i.test(evidence);
-  const temporary=/(仅这次|一次性|临时|暂时|今天|今晚|刚刚|玩笑|随口|当前情绪|一时|马上|待会|temporary|just this once|joke)/i.test(evidence);
-  const correction=/(更正|纠正|已经改变|不再|过时|更新为|应改为|错误|撤回|忘记|删除|obsolete|outdated|incorrect)/i.test(evidence);
-  /* Understanding 专属（operation==='understanding'）：人格定性 / 心理类 越界拒止 */
-  const _personality=/(她|他|你|TA|它)?\s*(就是|本质上是|天生是|一直是).{0,10}(型人|的人|性格|人格)|(她|他|你|TA).{0,6}是个.{0,8}(焦虑|抑郁|内向|外向|自恋|偏执|依赖型|回避型)|intrinsically|is by nature/i.test(evidence);
-  const _psych=/(抑郁|抑郁症|焦虑症|双相|人格障碍|自恋型|边缘型|创伤后应激|ptsd|惊恐障碍)/i.test(evidence);
-  const repeats=await _memoryRepeatCount(content,input.targetStore,input.cfg,input.excludeId);
-  /* Understanding 前置否决：证据不足(单源) / 人格定性推断 / 心理类推断（仅 user 陈述放行） */
-  if(input.operation==='understanding'){
-    const basis=_memoryReasons(input.basis)[0]||input.basis||'ai_guess';
-    const evidenceIds=Array.isArray(input.evidenceIds)?input.evidenceIds:(input.evidenceIds?[input.evidenceIds]:[]);
-    /* 心理类：仅 user_stated / user_corroborated 放行；ai_inference / ai_guess 一律拒 */
-    if(_psych&&(basis==='ai_inference'||basis==='ai_guess'))return{confidence:0,reasons:['心理健康类理解仅允许用户自述/旁证，禁止AI推断'],repeatCount:repeats,rejected:'psych-inference'};
-    /* 人格定性：ai_inference 且 repeats<2 → 拒（去定性化） */
-    if(_personality&&basis==='ai_inference'&&repeats<2)return{confidence:0,reasons:['人格定性推断需≥2次独立证据，当前证据不足'],repeatCount:repeats,rejected:'personality-inference'};
-    /* 证据≥2 独立来源校验（非用户自述时强制）：只数语义不同的 evidence，
-       近重复（_activeTextSimilarity≥阈值）计为同一事实 → 不凑数。 */
-    if(basis!=='user_stated'){
-      const distinct=await _distinctEvidenceCount(evidenceIds,input.cfg);
-      if(distinct<2)return{confidence:0,reasons:['理解需≥2条语义独立的记忆支撑（近重复证据不重复计数）'],repeatCount:repeats,rejected:'insufficient-evidence',distinctEvidence:distinct};
-    }
+  const core=(typeof window!=='undefined')?window.IBUnderstandingDerivation:null;
+  if(!core||typeof core.calibrate!=='function'){
+    /* fail closed：准入规则不可用时**不**放行任何候选。放行等于"这条理解没有经过
+       人格/心理/证据校验"，而那种缺失只有在下游 prompt 里才看得出来。 */
+    return{confidence:0,reasons:['准入核心不可用（understanding-derivation-core）'],repeatCount:0,rejected:'admission-core-unavailable'};
   }
-  /* ── 普通记忆 create 硬拒："文学化自我感慨 / 无未来价值的观察性评论" ──
-     understanding 已有同类硬拒止，但 operation==='create'（普通记忆生成）此前只做
-     软扣分（temporary），导致 AI 角色持续写出"珍惜平凡清晨""对躺平重新评估"这类
-     自我感慨式记忆。此处对 AI 生成（targetStore=memories 且非用户手记）增加硬拒：
-     命中文学感慨 / 观察性抒情 且 无 explicit 事实 / 无 future 价值 且 无历史重复
-     → 直接 reject，不进入审批弹窗（不污染记忆库 + 不再消耗用户审批注意力）。
-     绝不误伤用户手动创建的、以及带明确事实/偏好/身份/目标/重复出现的信息。 */
-  /* 文学化自我感慨 / 自我观察 判定（供 create 硬拒 + 存量审计共用）。
-     返回 {lyric, personReflect}，供调用方结合 explicit/future/repeats/temporary 决策。 */
-  if(input.operation==='create'&&input.targetStore==='memories'&&!(input.createdByUser)){
-    const _fl=_memoryLyricFlags(evidence);
-    const _selfFulfilling=!explicit&&!future&&repeats<1;
-    if(_fl.lyric&&_selfFulfilling&&!temporary){
-      return{confidence:0,reasons:['这条记忆属于文学化自我感慨/观察性抒情，缺乏可作为长期事实的明确用户表达、未来价值或重复证据，已拒绝写入'],repeatCount:repeats,rejected:'lyrical-musing'};
-    }
-    if(_fl.personReflect&&_selfFulfilling){
-      return{confidence:0,reasons:['这条记忆更像角色的自我观察而非关于用户的长期事实，已拒绝写入'],repeatCount:repeats,rejected:'self-reflective'};
-    }
+  /* 证据独立性判定需要**记忆行本身**（它按语义相近分组去重），因此这里读一次
+     记忆集合并原样交给核心 —— 核心不自己取数据（它是纯函数，Node 侧传入的是
+     canonical store 的候选集）。读库失败时如实传空数组：那会让"非用户自述"的
+     候选因证据不足被拒（fail closed），而不是靠猜放行。 */
+  var _memRows=null;
+  if(input&&input.operation==='understanding'){
+    try{_memRows=await dbGetAll('memories')}catch(e){_memRows=[]}
   }
-  let heuristic=35;
-  if(explicit)heuristic+=30;
-  heuristic+=Math.min(24,repeats*8);
-  if(future)heuristic+=18;
-  if(input.category==='user_instructions'||input.category==='long_term_background')heuristic+=8;
-  if(input.priority==='always')heuristic+=7;
-  if(temporary)heuristic-=25;
-  if(input.operation==='update')heuristic+=correction?14:-3;
-  if(input.operation==='delete')heuristic+=correction?18:-12;
-  if(!explicit&&!future&&!repeats)heuristic-=8;
-  heuristic=_memoryScore(heuristic,50);
-  const model=_memoryScore(input.confidence,null);
-  const confidence=model==null?heuristic:Math.round(model*.55+heuristic*.45);
-  const reasons=_memoryReasons(input.reasons);
-  function addReason(s){if(reasons.length<3&&!reasons.includes(s))reasons.push(s)}
-  if(explicit)addReason('用户主动或明确表达了这项信息');
-  if(repeats)addReason('相关信息在历史记忆中重复出现 '+repeats+' 次');
-  if(future)addReason('这会影响未来的互动或个性化回应');
-  if(temporary)addReason('内容可能只适用于当前情境，可靠度已下调');
-  if(input.operation==='update'&&correction)addReason('现有记忆可能已经过时，需要校正');
-  if(input.operation==='delete'&&correction)addReason('现有记忆可能已失效或被明确撤回');
-  if(!reasons.length)addReason(input.operation==='delete'?'AI 认为现有记忆可能不再适用':'AI 认为这项信息具有后续参考价值');
-  /* Understanding：conviction 按 basis 上限封顶（user_stated 全高；ai推断/猜测逐级降） */
-  let _conv=confidence;
-  let _unDistinct=null;/* 仅 understanding：记录语义不同的证据条数（诊断/测试用，放行时为实际值） */
-  if(input.operation==='understanding'){
-    const basis=_memoryReasons(input.basis)[0]||input.basis||'ai_guess';
-    const cap=basis==='user_stated'?100:(basis==='user_corroborated'?85:(basis==='ai_inference'?65:40));
-    _conv=Math.min(_conv,cap);
-    /* 复用已计算或补算一次 distinctEvidence（放行路径供测试/审计观测） */
-    if(input.distinctEvidence!=null)_unDistinct=Number(input.distinctEvidence);
-    else if(Array.isArray(input.evidenceIds)){try{_unDistinct=await _distinctEvidenceCount(input.evidenceIds,input.cfg)}catch(e){_unDistinct=input.evidenceIds.length}}
-  }
-  return{confidence:_memoryScore(_conv,heuristic),reasons:reasons.slice(0,3),repeatCount:repeats,distinctEvidence:_unDistinct};
+  return await core.calibrate(Object.assign({},input||{},{memories:_memRows}),{
+    sim:(typeof window._activeTextSimilarity==='function')?window._activeTextSimilarity:null,
+    extractKeywords:_extractKeywords,
+    lookupEntries:async function(targetStore,cfg){
+      if(targetStore==='autoMemory')return await amGetEntries(cfg&&cfg.id);
+      return _memRows||await dbGetAll('memories');
+    }
+  });
 }
+
 /* ── Memory Approval：所有 AI 发起的长期记忆变更先成为内存候选 ──
    pending 不写入 IndexedDB；刷新页面即自然丢弃。队列保证同一轮最多 3 个操作逐个确认。 */
 var _memoryApprovalQueue=[],_memoryApprovalActive=null;

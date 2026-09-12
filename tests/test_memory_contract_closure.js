@@ -43,6 +43,10 @@ function fragment(file, begin, end) {
 }
 const ACTIVE = 'assets/js/active-diary.js';
 const MEMORY = 'assets/js/memory.js';
+/* M1-C.2m：理解派生的**唯一共享实现**（浏览器与 Home Node require 同一份文件）。
+   T1 的证据边界断言现在打在这里 —— 因为浏览器侧的生成器已被删除（P6(b)），
+   而'隐藏记忆不得进入派生'这条不变量并没有随之消失，只是换了守它的地方。 */
+const UNDERSTANDING_DERIVATION = require(path.join(ROOT, 'assets', 'js', 'understanding-derivation-core.js'));
 
 /* ── 真实源码片段（每个都以唯一函数/变量名为边界） ───────────────────────── */
 /* active-diary.js：D-1 的规范边界 + 两个被测 producer */
@@ -120,64 +124,76 @@ const CFG = { id: 'role-a', nickname: 'A', systemPrompt: '你是 A。', provider
 
 (async () => {
 
-  /* ══════════════ T1 · 隐藏记忆不能进入 Understanding 派生请求 ══════════════ */
-  section('T1 · Understanding producer 不含隐藏记忆');
+  /* ══════════════ T1 · 理解派生的证据边界（M1-C.2m 重写）══════════════
+     M1-C.2m 之前：浏览器自己派生（取候选 → 调模型 → 准入 → unWrite）。因此这一节
+     原来断言的是"送到模型的是什么"。
+     M1-C.2m 之后：浏览器的生产半边被**删除**，唯一写者是 Home Node，而它用的提示词与
+     证据准入来自 assets/js/understanding-derivation-core.js（两端同一份文件）。
+     因此本节断言三件事，各自都在不变量真正成立的那一层上：
+       (a) 桌面 `_understandingTick` 不再调用任何模型（结构性：浏览器的模型调用没了）；
+       (b) 共享核心构造的提示词里**没有**隐藏记忆、**有**可见记忆（反向对照）；
+       (c) 共享核心的证据准入丢弃模型谎报的隐藏证据 id。 */
+  section('T1 · 理解派生的证据边界');
   {
     const env = makeEnv();
-    /* 可见记忆 A；隐藏记忆 X —— createdBy 也是本角色（这正是旧判据放行的那一类） */
     env.table('memories').set('mem_A', mem('mem_A', { content: 'VISIBLE_A_MARKER', importance: 3, created: 1000 }));
     env.table('memories').set('mem_X', mem('mem_X', {
       content: 'HIDDEN_X_MARKER', importance: 10, created: 9999,
       visibility: 'only', visibleTo: ['role-b'] /* 明确不含 role-a */
     }));
+
+    /* ── (a) 桌面只剩调度触发器：不再有模型调用 ── */
     let sent = '';
     const ctx = makeContext(env);
     vm.runInContext(DERIVATION_HELPERS + UNDERSTANDING_TICK, ctx);
     ctx.callApiChat = async (cfg, messages) => { sent = JSON.stringify(messages); return '{"shouldUpdate":false}'; };
-    ctx._activeParsePlanJson = JSON.parse;
-    ctx._calibrateMemoryCandidate = async () => ({ rejected: true }); /* 只关心"送到模型的是什么" */
     ctx._ibApiReady = () => true;
-    ctx.unGetActive = async () => null;
-    ctx.unWrite = async () => ({ id: 'un_1' });
     ctx.apiConfigs = [CFG];
-    await ctx._understandingTick(CFG);
+    /* 没有 canonical 承载（本用例的 window 上没有 IB.homeNode）→ tick 必须**什么都不做**，
+       而**不是**退回本地派生。退回本地派生就是第二个写者。 */
+    const tickResult = await ctx._understandingTick(CFG);
+    check('T1.1 桌面 tick 不再调用模型（浏览器侧生成器已删除）', sent.length === 0, sent.slice(0, 200));
+    check('T1.2 无 canonical 承载时 tick 不做任何本地派生', tickResult === null, tickResult);
+    /* 结构性对照：active-diary.js 里不再有取候选/算印章/写理解的证据。 */
+    const activeSrc = source(ACTIVE);
+    const understandingSection = activeSrc.slice(
+      activeSrc.indexOf('var _understandingWaterline='),
+      activeSrc.indexOf('/* ---- Thread v1')
+    );
+    check('T1.3 桌面生成器不含 callApiChat / unWrite / 印章计算',
+      !/callApiChat|unWrite|_memDerivationStamp|_memVisibleEvidenceIds/.test(understandingSection),
+      understandingSection.slice(0, 300));
 
-    check('T1.1 派生请求确实发生（否则断言无意义）', sent.length > 0);
-    check('T1.2 可见记忆进入派生请求', sent.includes('VISIBLE_A_MARKER'), sent.slice(0, 400));
-    check('T1.3 隐藏记忆的文本**没有**进入派生请求', !sent.includes('HIDDEN_X_MARKER'), sent.slice(0, 400));
-
-    /* 反向对照：把 X 改成可见后，它必须出现 —— 证明 T1.3 不是"恒不出现"的假绿 */
-    env.table('memories').set('mem_X', mem('mem_X', { content: 'HIDDEN_X_MARKER', importance: 10, created: 9999 }));
-    const ctx2 = makeContext(env);
-    vm.runInContext(DERIVATION_HELPERS + UNDERSTANDING_TICK, ctx2);
-    let sent2 = '';
-    ctx2.callApiChat = async (cfg, messages) => { sent2 = JSON.stringify(messages); return '{"shouldUpdate":false}' };
-    ctx2._activeParsePlanJson = JSON.parse;
-    ctx2._calibrateMemoryCandidate = async () => ({ rejected: true });
-    ctx2._ibApiReady = () => true;
-    ctx2.unGetActive = async () => null;
-    ctx2.unWrite = async () => ({ id: 'un_1' });
-    ctx2.apiConfigs = [CFG];
-    await ctx2._understandingTick(CFG);
-    check('T1.4 对照：同一条记忆变可见后确实进入请求', sent2.includes('HIDDEN_X_MARKER'), sent2.slice(0, 400));
-
-    /* evidenceIds 准入：模型谎报一条隐藏记忆为证据 → 必须被丢弃 */
-    env.table('memories').set('mem_X', mem('mem_X', { content: 'HIDDEN_X_MARKER', visibility: 'only', visibleTo: ['role-b'] }));
-    const ctx3 = makeContext(env);
-    vm.runInContext(DERIVATION_HELPERS + UNDERSTANDING_TICK, ctx3);
-    let written = null;
-    ctx3.callApiChat = async () => JSON.stringify({
-      shouldUpdate: true, content: '一条理解', basis: 'ai_inference', dimension: 'context',
-      conviction: 70, evidenceIds: ['mem_A', 'mem_X']
+    /* ── (b) 共享核心的提示词边界（唯一写者用的就是这一份）── */
+    const ROLE = 'role-a';   /* = CFG.id；与后面 T13 的同名常量互不影响（各在自己的块里） */
+    const rows = [...env.table('memories').values()];
+    const visible = CORE.filterDerivationCandidates(rows, ROLE, m => !!m && m.kind !== 'semantic' && m.kind !== 'core');
+    const promptVisible = UNDERSTANDING_DERIVATION.buildPrompt({
+      charName: 'A', relationship: '伙伴', systemPrompt: '你是角色。',
+      fragments: UNDERSTANDING_DERIVATION.fragmentsOf(visible, { window: 10 })
     });
-    ctx3._activeParsePlanJson = JSON.parse;
-    ctx3._calibrateMemoryCandidate = async () => ({ rejected: false, confidence: 70 });
-    ctx3._ibApiReady = () => true;
-    ctx3.unGetActive = async () => null;
-    ctx3.unWrite = async (roleId, next) => { written = next; return { id: 'un_1' } };
-    ctx3.apiConfigs = [CFG];
-    await ctx3._understandingTick(CFG);
-    check('T1.5 evidenceIds 只保留可见证据（mem_A）', !!written && JSON.stringify(written.evidenceIds) === '["mem_A"]', written && written.evidenceIds);
+    const joined = promptVisible.system + '\n' + promptVisible.user;
+    check('T1.4 可见记忆进入派生提示词', joined.includes('VISIBLE_A_MARKER'), joined.slice(0, 400));
+    check('T1.5 隐藏记忆的文本**没有**进入派生提示词', !joined.includes('HIDDEN_X_MARKER'), joined.slice(0, 400));
+
+    /* 反向对照：把 X 改成可见后它必须出现 —— 证明 T1.5 不是"恒不出现"的假绿 */
+    env.table('memories').set('mem_X', mem('mem_X', { content: 'HIDDEN_X_MARKER', importance: 10, created: 9999 }));
+    const rows2 = [...env.table('memories').values()];
+    const visible2 = CORE.filterDerivationCandidates(rows2, ROLE, m => !!m && m.kind !== 'semantic' && m.kind !== 'core');
+    const prompt2 = UNDERSTANDING_DERIVATION.buildPrompt({
+      charName: 'A', relationship: '伙伴', systemPrompt: '你是角色。',
+      fragments: UNDERSTANDING_DERIVATION.fragmentsOf(visible2, { window: 10 })
+    });
+    check('T1.6 对照：同一条记忆变可见后确实进入提示词', (prompt2.system + prompt2.user).includes('HIDDEN_X_MARKER'));
+
+    /* ── (c) 证据准入：模型谎报一条隐藏记忆为证据 → 必须被丢弃 ── */
+    env.table('memories').set('mem_X', mem('mem_X', { content: 'HIDDEN_X_MARKER', visibility: 'only', visibleTo: ['role-b'] }));
+    const rows3 = [...env.table('memories').values()];
+    const admitted = UNDERSTANDING_DERIVATION.visibleEvidenceIds(['mem_A', 'mem_X'], rows3, ROLE, CORE);
+    check('T1.7 evidenceIds 只保留可见证据（mem_A）', JSON.stringify(admitted) === '["mem_A"]', admitted);
+    /* 反向对照：同一批 id 在"核心不可用"时必须塌空（fail closed）。 */
+    check('T1.8 可见性核心不可用时证据集塌空（fail closed）',
+      JSON.stringify(UNDERSTANDING_DERIVATION.visibleEvidenceIds(['mem_A', 'mem_X'], rows3, ROLE, null)) === '[]');
   }
 
   /* ══════════════ T2 · 隐藏记忆不能开 Thread ══════════════ */
@@ -827,26 +843,27 @@ const CFG = { id: 'role-a', nickname: 'A', systemPrompt: '你是 A。', provider
   {
     /* (a) 修复后的准入使制品**可用**：证据全是 only:[本角色] 时，
            修复前 evidenceIds 为空 → 读时存证因"无证据"而拒绝注入；修复后可用。 */
+    /* M1-C.2m：准入 + 落盘现在由 Home Node 的派生器完成（见
+       tests/test_home_node_understanding_derivation.js 的完整链路断言）。
+       这里保留**读侧**的那一半：only:[本角色] 证据的制品必须可注入 ——
+       它同时是'准入是否宽松到能让制品可用'的独立见证。 */
     const env = makeEnv();
     env.table('memories').set('m_visible', mem('m_visible', { visibility: 'only', visibleTo: ['role-a'] }));
     const ctx = makeContext(env);
     ctx.dbGetByIndex = async store => [...env.table(store).values()];
-    vm.runInContext(VISIBILITY_DELEGATE + DERIVATION_HELPERS + UNDERSTANDING_TICK + ARTIFACTS, ctx);
-    ctx._activeParsePlanJson = JSON.parse;
-    ctx._calibrateMemoryCandidate = async () => ({ rejected: false, confidence: 70 });
-    ctx._ibApiReady = () => true;
-    ctx.apiConfigs = [CFG];
-    ctx.callApiChat = async () => JSON.stringify({
-      shouldUpdate: true, content: 'EVIDENCE_OK_BODY', basis: 'user_corroborated',
-      dimension: 'relationship', evidenceIds: ['m_visible'], conviction: 70
+    vm.runInContext(VISIBILITY_DELEGATE + ARTIFACTS, ctx);
+    env.table('understandings').set('un_ok', {
+      id: 'un_ok', kind: 'understanding', characterId: 'role-a', status: 'active', dimension: 'relationship',
+      createdAt: 1, lastUpdatedAt: 1, visibility: { visibility: 'only', visibleTo: ['role-a'], excludeFrom: [] },
+      current: { content: 'EVIDENCE_OK_BODY', conviction: 70, basis: 'user_corroborated', evidenceIds: ['m_visible'], updatedAt: 1, updatedBy: 'A' },
+      history: []
     });
-    await ctx._understandingTick(CFG);
-    const storedUn = env.table('understandings').get([...env.table('understandings').keys()][0]);
-    check('T14.1 模型返回的 only:[本角色] 证据被准入并落盘',
-      !!storedUn && JSON.stringify(storedUn.current.evidenceIds) === '["m_visible"]',
-      storedUn && storedUn.current.evidenceIds);
-    check('T14.2 该制品读时可注入（准入修正的实际产品效果）',
+    check('T14.1 only:[本角色] 证据的制品可注入（准入修正的实际产品效果）',
       (await ctx.getUnderstandingContext('role-a')).includes('EVIDENCE_OK_BODY'));
+    /* 该证据 id 换成不可解析的 id → 立即不可注入（同一制品的反向对照）。 */
+    env.table('understandings').get('un_ok').current.evidenceIds = ['m_gone'];
+    check('T14.2 证据不可解析时同一制品立刻不可注入',
+      (await ctx.getUnderstandingContext('role-a')) === '');
 
     /* (b) 泄漏边界**仍然**成立：准入放行了隐藏证据时（模拟任何上游退化），
            读时存证必须独立挡住 —— 防御纵深不依赖准入这一层。 */

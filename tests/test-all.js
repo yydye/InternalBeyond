@@ -144,6 +144,13 @@ const GROUPS = [
          检索保持 visibility-before-ranking，且选择（纯）与激活强化（副作用）分离。
          抽取真实生产源码片段在 vm 中执行，零浏览器、零网络。 */
       ['test_memory_contract_closure.js'],
+      /* M1-C.2m：canonical Understanding —— 存储/修订链/CAS/单活不变量/更正契约
+         （纯 Node + 真 SQLite + 临时数据目录，零网络、零浏览器）。 */
+      ['test_understanding_contract_closure.js'],
+      /* M1-C.2m：理解域的执行收敛 —— 同一份 canonical 状态在 Desktop 与 Home Node
+         给出同一组理解证据（理解维度的 Same Evidence），以及零解释差异清单。
+         纯 Node：真实共享核心 + 真实 store + 生产 gateway 装配。 */
+      ['test_understanding_authority.js'],
       /* M1-C.2d Wave 2：canonical memories authority —— 与 chat 同一套三态语义
          （写先到 Home Node 才落镜像 / 离线 fail closed / 明确拒绝 ≠ 离线 /
          镜像写失败仍以 Node 为权威）；记忆可编辑 → 内容变化必须真更新；

@@ -2996,6 +2996,12 @@ i would like the room to be enough.
      因此"她还惦记着什么"在两端出自同一条规则，而不是"浏览器写过盘才有"。
      必须在 active-diary.js（桌面写入侧）之前加载。 -->
 <script src="assets/js/thread-derivation-core.js"></script>
+<!-- M1-C.2m：理解（Understanding）派生的唯一共享实现 —— 准入数值 / 证据独立性 /
+      提示词构造 / 证据准入 / 写时印章 / 模型输出解析 / 上下文渲染。
+      Home Node 由 services/home-node/understanding-{derivation,retrieval}.js
+      require **同一份文件**，因此"她怎么理解我"在两端出自同一条规则。
+      必须在 memory.js（准入委托）与 active-diary.js（调度触发器）之前加载。 -->
+<script src="assets/js/understanding-derivation-core.js"></script>
 <script src="assets/js/memory.js"></script>
 <script src="assets/js/memory/auto-memory.js"></script>
 <script src="assets/js/memory/constellations.js"></script>
@@ -3094,10 +3100,7 @@ i would like the room to be enough.
      顺序与 chat 刻意保持一致，读错只会**静默早退**（表现成"记忆完全没有
      Home Node 能力"而没有任何可见错误），这是仓库里已经踩过的坑。 -->
 <script src="assets/js/memory-authority.js"></script>
-<script src="assets/js/mobile-dto.js"></script>
-<script src="assets/js/home-node-client.js"></script>
-<script src="assets/js/home-node-bootstrap.js"></script>
-<!-- 深渊暗线：只在 Infernal（暗色）模式可瞥见——"你知道这里通向深渊，但你也知道，你随时可以离开。" -->
+
 <div class="ib-beyond-leave" id="ib-beyond-leave" aria-hidden="true">你知道这里通向深渊，但你也知道，你随时可以离开。</div>
 </body>
 </html>
