@@ -47,6 +47,10 @@ const COPY_FILES = [
   'assets/js/memory-contract.js',
   'assets/js/memory-retrieval-core.js',
   'assets/js/memory-visibility-core.js',
+  /* M1-C.2k：线索派生的唯一实现（浏览器与 Home Node 共用）。收敛测试的基线会
+     经 services/home-node-service.js → mobile-gateway → thread-retrieval 触到它，
+     因此副本里缺了它基线就跑不起来（表现为 base.copyIsGreen 无摘要地变红）。 */
+  'assets/js/thread-derivation-core.js',
   'assets/js/middle-brain-config-core.js',
   'assets/js/middle-brain-config.js',
   'assets/js/middle-brain-policy.js',
@@ -64,6 +68,8 @@ const COPY_FILES = [
   'services/home-node/execution.js',
   'services/home-node/http.js',
   'services/home-node/memory-retrieval.js',
+  /* M1-C.2k：线索派生器（与记忆共用 canonical memory store）。 */
+  'services/home-node/thread-retrieval.js',
   'services/home-node/memory-store.js',
   'services/home-node/middle-brain.js',
   'services/home-node/mobile-gateway.js',

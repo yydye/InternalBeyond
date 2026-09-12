@@ -162,16 +162,28 @@ function buildSnapshot(CS, input) {
     missing: true,
     gatedBy: 'producer-not-canonical-on-home-node'
   });
+  /* M1-C.2k：thread 从"本节点根本不存在"变成**已读** —— 它的派生是 canonical
+     memory 上的确定性函数（见 thread-retrieval.js），因此 Home Node 与桌面对同一批
+     记忆给出同一组线索，不再需要"浏览器写过盘才有"。
+     三态与 memory 同款：consulted 才 present/empty；派生失败或不曾读 → missing。
+     understanding / moments 仍然如实记 missing（它们**确实**不是本节点的来源）。 */
+  const thr = input.thread || null;
+  const threadField = thr
+    ? CS.field('thread-retrieval.derive', String(thr.text || ''), {
+      missing: thr.consulted !== true,
+      gatedBy: thr.consulted === true ? null : (thr.gatedBy || 'home-node.thread-unavailable')
+    })
+    : absent('thread');
   return CS.create({
     characterId: String(input.characterId || ''),
     turnId: String(input.turnId || ''),
     fields: {
       memory: memoryField,
       understanding: absent('understanding'),
-      thread: absent('thread'),
+      thread: threadField,
       moments: absent('moments')
     },
-    gates: { threadMemoryEnabled: true, homeNodeProducers: ['memory'] }
+    gates: { threadMemoryEnabled: true, homeNodeProducers: ['memory', 'thread'] }
   });
 }
 
@@ -293,7 +305,7 @@ function createNodeMiddleBrain(deps) {
     const turn = input || {};
     const memory = turn.memory || {};
     const memoryReadiness = memory.consulted === true ? (String(memory.text || '').trim() ? 'present' : 'empty') : 'missing';
-    const snapshot = buildSnapshot(CS, { characterId: turn.characterId, turnId: turn.turnId, memory: memory });
+    const snapshot = buildSnapshot(CS, { characterId: turn.characterId, turnId: turn.turnId, memory: memory, thread: turn.thread || null });
     /* 交出去的东西逐项显式构造（与桌面的 opts 形状对齐，但**不**照抄它的 producer：
        那四个 producer 在本宿主不存在，如实缺席）。
          · contextSnapshot —— 有快照就交快照；组织层优先读它，且 present/empty 都禁止二次 retrieval
@@ -305,6 +317,10 @@ function createNodeMiddleBrain(deps) {
       contextSnapshot: snapshot || null
     };
     if (memory.consulted === true) opts.memoryCtx = String(memory.text || '');
+    /* M1-C.2k：thread 与快照同时给 —— 组织层优先读快照（present/empty 都禁止二次
+       retrieval），threadCtx 只是快照不可用时的等价回落。与桌面
+       communication.js:1520-1525 同时给 *Ctx 与 contextSnapshot 的形状一致。 */
+    if (turn.thread && turn.thread.consulted === true) opts.threadCtx = String(turn.thread.text || '');
     try {
       const result = await facade.middleBrainExecute(String(turn.characterId || ''), String(turn.userMessage || ''), opts);
       const source = String((result && result.source) || '') || 'bypass';

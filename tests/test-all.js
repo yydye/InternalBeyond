@@ -294,6 +294,22 @@ const GROUPS = [
          外加：隐藏记忆不进 provider 输入、可见性先于排名、
          激活不推进 memory revision、/mobile/v1/memory/* 一律 404。 */
       ['test_mobile_memory_continuity.js'],
+      /* M1-C.2k：canonical **线索**（open thread）连续性 —— 线索此前只有浏览器
+         6 小时心跳能产出，Home Node 读不到，于是同一份 canonical Middle Brain
+         在两端拿到不同证据（organized.threads 1 vs 0；threadItems 3 vs 0），
+         而 multipleThreads（threadItems>=2）是 Gate 的**无视冷却硬触发**，
+         两端因此给出不同判定。本文件用 production-shape E2E 证明：
+         派生已收敛成唯一实现（thread-derivation-core.js，浏览器与 Node 同一份），
+         Home Node 按需从 canonical memory 派生 → provider system 真的含线索块、
+         隐藏线索与不命中规则的记忆都不成为线索、快照三态可区分、
+         Android 协议仍不暴露任何线索（/mobile/v1/thread/list 404）。
+         不建 Home Node 的 threads 表：线索是 canonical memory 上的确定性函数。 */
+      ['test_mobile_thread_continuity.js'],
+      /* M1-C.2k 对照证明：单向拆掉共享线索派生的三个面，分别复现
+         "Home Node 无线索 → threadItems/multipleThreads/判定全部退回"、
+         "跳过可见性 → 隐藏线索进入证据"、"两端各写一套规则 → 证据集漂移"。
+         只改内存替身，不改生产代码。 */
+      ['test_mobile_thread_counterproof.js'],
       /* canonical memory **生产装配** parity（那次 404/501 事故的回归）——
          真实 spawn 生产入口，证明 /memory/list、/memory/settings、
          /memory/changes 在**进程级装配**下也进得了 handler（404 no-route =

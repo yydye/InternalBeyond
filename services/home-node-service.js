@@ -28,6 +28,8 @@ const fs = require('fs');
 const createStore = require('../services/home-node/chat-store.js');
 const createMemoryStore = require('../services/home-node/memory-store.js');
 const createMemoryRetrieval = require('../services/home-node/memory-retrieval.js');
+/* M1-C.2k：线索（open thread）的派生器 —— 与记忆共用 canonical memory store。 */
+const createThreadRetrieval = require('../services/home-node/thread-retrieval.js');
 const createHttp = require('../services/home-node/http.js');
 const createExecutor = require('../services/home-node/execution.js');
 const createDeviceRegistry = require('../services/home-node/device-registry.js');
@@ -203,6 +205,19 @@ function canonicalMemoryDeps(memory) {
   }
   return { memoryStore: memory.memoryStore, memoryRetrieval: memory.memoryRetrieval };
 }
+/* 缺一不可的硬校验（与 canonicalMemoryDeps 同款）：
+   线索派生器必须存在，且必须绑定**同一个** canonical memory store。
+   绑到另一个能开、能查、永远返回空的实例上不会报任何错 ——
+   只会表现为"她忽然什么都不惦记了"，那种 bug 无法从行为反推。
+   M1-C.2k：线索没有自己的表，它与记忆共用 canonical store，
+   因此这里的守卫就是"两边真的是同一个 store 实例"。 */
+function canonicalThreadDeps(threads, memoryStore) {
+  if (!threads.threadRetrieval) throw new Error('home-node assembly: canonical threads require a threadRetrieval');
+  if (threads.threadRetrieval.store && threads.threadRetrieval.store !== memoryStore) {
+    throw new Error('home-node assembly: threadRetrieval is bound to a different memoryStore instance');
+  }
+  return { threadRetrieval: threads.threadRetrieval };
+}
 
 /* ── 网关装配（**唯一**一处）─────────────────────────────────────────
    与 memoryAssembly 同一个理由：网关的依赖集合只能有一份定义。
@@ -217,6 +232,15 @@ function gatewayAssembly(options) {
     random: options.random,
     logger: options.logger
   }));
+  /* M1-C.2k：线索派生器与记忆**共用同一个 canonical store**。
+     它没有自己的表 —— 线索是 canonical memory 上的确定性函数，
+     因此装配期唯一要保证的就是"两边真的是同一个 store 实例"。 */
+  const threads = canonicalThreadDeps({
+    threadRetrieval: options.threadRetrieval || createThreadRetrieval({
+      store: memory.memoryStore,
+      logger: options.logger
+    })
+  }, memory.memoryStore);
   return createMobileGateway(Object.assign({
     store: options.store,
     registry: options.registry,
@@ -230,7 +254,7 @@ function gatewayAssembly(options) {
     timeZone: options.timeZone,
     random: options.random,
     logger: options.logger || ((level, event, fields) => log(level, event, fields))
-  }, memory));
+  }, memory, threads));
 }
 
 /* ── 组装一个完整的 Home Node 实例（不监听）──────────────────────────

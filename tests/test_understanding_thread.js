@@ -55,23 +55,34 @@ async function main(){
     check('un.setStatusStale',await ev(cdp,"(async function(){ var all=await dbGetAll('understandings'); var u=all[0]; return u.status==='contested'&&u.closedReason==='user-vetoed'; })()"));
     /* ⑥ Thread thOpen / thClose / thMention */
     check('th.open',await ev(cdp,"(async function(){ var t=await thOpen('u1','攒钱买硬盘','ev_1'); return !!(t&&t.status==='open'&&t.question==='攒钱买硬盘'&&t.evidenceIds.includes('ev_1')); })()"));
-    check('th.reuseSameQuestion',await ev(cdp,"(async function(){ var t=await thOpen('u1','攒钱买硬盘','ev_2'); var open=await thGetOpen('u1'); return open.length===1&&open[0].evidenceIds.length===2&&open[0].mentionCount===2; })()"));
+    /* M1-C.2k：断言不再依赖 mentionCount —— 它是"被后台心跳观测了几次"的计数器
+       （规则每轮命中同一批记忆就 +1，与证据/显著性无关），已从语义中移除。
+       复用与证据并集（本用例真正要钉的行为）保持原样。 */
+    check('th.reuseSameQuestion',await ev(cdp,"(async function(){ var t=await thOpen('u1','攒钱买硬盘','ev_2'); var open=await thGetOpen('u1'); return open.length===1&&open[0].evidenceIds.length===2; })()"));
     /* ③b 近重复去重：同一事项的近字面表述（score≥0.5）→ 只有一个 open Thread（复用） */
     await ev(cdp,"(async function(){ await thOpen('tdup','攒钱买硬盘','ev_1'); })()");
-    check('th.nearDupMerged',await ev(cdp,"(async function(){ var t=await thOpen('tdup','攒钱买一个硬盘','ev_2'); var open=await thGetOpen('tdup'); return open.length===1&&open[0].evidenceIds.length===2&&open[0].mentionCount>=2; })()"));
+    check('th.nearDupMerged',await ev(cdp,"(async function(){ var t=await thOpen('tdup','攒钱买一个硬盘','ev_2'); var open=await thGetOpen('tdup'); return open.length===1&&open[0].evidenceIds.length===2; })()"));
     /* ③c 不同事项但标题相似度不足（score<0.5）→ 仍创建两个 Thread */
     await ev(cdp,"(async function(){ await thOpen('tdup2','她想学画画','ev_1'); })()");
     check('th.nearDupSeparate',await ev(cdp,"(async function(){ var t=await thOpen('tdup2','她去体检了','ev_2'); var open=await thGetOpen('tdup2'); return open.length===2; })()"));
     /* ③d 完全相同的 question 仍复用（保留既有行为） */
     await ev(cdp,"(async function(){ await thOpen('tdup3','买硬盘','ev_1'); await thOpen('tdup3','买硬盘','ev_2'); })()");
     check('th.exactStillReuse',await ev(cdp,"(async function(){ var open=await thGetOpen('tdup3'); return open.length===1&&open[0].evidenceIds.length===2; })()"));
-    check('th.mention',await ev(cdp,"(async function(){ var open=await thGetOpen('u1'); var t=open[0]; await thMention(t.id,'ev_2'); var t2=await dbGet('threads',t.id); return t2.mentionCount===3; })()"));
+    /* M1-C.2k：thMention 仍须合并证据，但不再自增观测计数。
+       它的证据并集行为保留；mentionCount 不得因"提及"而变（本函数在生产中无调用方）。 */
+    check('th.mention',await ev(cdp,"(async function(){ var open=await thGetOpen('u1'); var t=open[0]; var before=Number(t.mentionCount||0); await thMention(t.id,'ev_2'); var t2=await dbGet('threads',t.id); return t2.evidenceIds.indexOf('ev_2')>=0&&Number(t2.mentionCount||0)===before; })()"));
     check('th.close',await ev(cdp,"(async function(){ var open=await thGetOpen('u1'); await thClose(open[0].id,'resolved'); var t=await dbGet('threads',open[0].id); return t.status==='closed'&&t.closedReason==='resolved'&&!!t.closedAt; })()"));
     /* ⑦ Context 注入（tail）：已 contested 的理解不进上下文；新开一条 active 理解。
        stamp 由 producer 给出 = strictest(证据) = public（两条证据都是 public）。 */
     await ev(cdp,"(async function(){ await unWrite('u1',{content:'她对设备瓶颈敏感',conviction:75,basis:'ai_inference',dimension:'context',evidenceIds:['ev_1','ev_2'],stamp:{visibility:'public',visibleTo:[],excludeFrom:[]}}); })()");
     check('ctx.understanding',await ev(cdp,"(async function(){ var c=await getUnderstandingContext('u1'); return c&&c.indexOf('设备瓶颈')>=0&&c.indexOf('置信：75%')>=0; })()"));
     check('ctx.threadClosedNoEmit',await ev(cdp,"(async function(){ var c=await getThreadContext('u1'); return c===''; })()"));
+    /* M1-C.2k：注入文本渲染的是**证据条数**，而不是观测次数。
+       （"提到 N 次"随宿主跑了多久而变，两端不可能一致；证据集才是真实支撑量。）
+       自建一条 staged 线索而不是复用上面的：它的印章显式给出，因此本用例既不依赖
+       thOpen 的默认印章，也不依赖另一条用例的副作用。放在 threadClosedNoEmit
+       之后（那条要求 u1 当时没有 open 线索），断言完即删除，不使用例互相污染。 */
+    check('ctx.threadRendersEvidenceCount',await ev(cdp,"(async function(){ await dbPut('threads',{id:'th_render',characterId:'u1',kind:'thread',status:'open',question:'渲染用例线索',evidenceIds:['ev_1'],mentionCount:40,createdAt:Date.now(),lastUpdatedAt:Date.now(),visibility:{visibility:'public',visibleTo:[],excludeFrom:[]}}); var c=await getThreadContext('u1'); var ok=c.indexOf('依据 1 条记忆')>=0&&c.indexOf('提到')<0&&c.indexOf('40')<0; await dbDelete('threads','th_render'); return ok&&(await getThreadContext('u1'))===''; })()"));
     /* ⑧ getMemoryContext 不被污染（Understanding/Thread 不进 recall 池） */
     check('recall.isolated',await ev(cdp,"(async function(){ var c=await getMemoryContext('u1',{userMessage:'设备 焦虑 创作'}); return String(c).indexOf('设备瓶颈')<0&&String(c).indexOf('压力出口')<0; })()"));
     /* ⑨ _reconcileReferences：删 ev_1 → 理解 evidence 不全失效则不删；再删 ev_2 → stale，thread 已关不受影响 */

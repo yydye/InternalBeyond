@@ -160,18 +160,26 @@ function createTurnExecutor(deps) {
     } catch (error) { return false; }
   }
 
-  /* 把 Middle Brain 的压缩上下文拼进 canonical 上下文：**替换**记忆块，保留 P0。
+  /* 把 Middle Brain 的压缩上下文拼进 canonical 上下文：**替换**证据块，保留 P0。
      为什么按"块"替换而不是整段替换：canonical 上下文的形状是
-         P0(身份/称呼/关系) + 记忆块 + 当前时间
+         P0(身份/称呼/关系) + 证据块(记忆, 线索) + 当前时间
      （见 memory-retrieval.js 的顺序契约）。P0 与时间不是 Middle Brain 的输入，
-     它们也不该被它的输出吃掉 —— 桌面同样是"只替换那四个 producer 的块"。
-     parts 逐块显式给，缺块就跳过：不靠字符串搜索定位（碰巧同形会替换错位置）。 */
+     它们也不该被它的输出吃掉 —— 桌面同样是"只替换那些 producer 的块"。
+     parts 逐块显式给，缺块就跳过：不靠字符串搜索定位（碰巧同形会替换错位置）。
+
+     M1-C.2k：线索块的处理与记忆块**同款**（中间件产出则被它吸收，未产出则放回原位）。
+     为什么不把线索单独再拼一次：那会在中间件已经产出时把同一份证据注入两遍 ——
+     桌面是"四个块一起被处理结果替换"，Home Node 必须保持同一条不重复纪律。 */
   function composeRuntimeContext(parts, middlewareContext) {
     const list = [];
     if (parts) {
       if (parts.p0Stable) list.push(String(parts.p0Stable));
-      if (middlewareContext) list.push(String(middlewareContext));
-      else if (parts.memoryBlock) list.push(String(parts.memoryBlock));
+      if (middlewareContext) {
+        list.push(String(middlewareContext));
+      } else {
+        if (parts.memoryBlock) list.push(String(parts.memoryBlock));
+        if (parts.threadBlock) list.push(String(parts.threadBlock));
+      }
       if (parts.p0Time) list.push(String(parts.p0Time));
       if (list.length) return list.join('\n\n');
     }
@@ -191,6 +199,20 @@ function createTurnExecutor(deps) {
     return {
       text: String(parts.memoryBlock || ''),
       consulted: parts.memoryConsulted === true
+    };
+  }
+
+  /* M1-C.2k · 同款取出**线索块**（canonical memory 上的确定性派生，见
+     thread-retrieval.js）。为什么不复用 memoryPartOf：两者是三态契约的同形但
+     **不同来源**，混用会把"线索没读"记成"记忆为空"。与 memoryPartOf 一样，
+     取不到分块信息时如实返回 consulted:false（missing），组织层据此保留自己的
+     retrieval 语义，**不会**误判成"读过且为空"。 */
+  function threadPartOf(request) {
+    const parts = request && request.runtimeContextParts;
+    if (!parts || typeof parts !== 'object') return { text: '', consulted: false };
+    return {
+      text: String(parts.threadBlock || ''),
+      consulted: parts.threadConsulted === true
     };
   }
 
@@ -282,6 +304,11 @@ function createTurnExecutor(deps) {
       userMessage: String(userMessage.content || ''),
       history: Array.isArray(request.history) ? request.history : [],
       memory: memoryPartOf(request),
+      /* M1-C.2k：线索证据（与 memory 同一三态纪律）。它让 canonical Middle Brain
+         在 Home Node 上也能看到 `organized.threads` —— 此前该字段恒为空，
+         使 `threadItems` 恒 0，而 `multipleThreads`（threadItems>=2）是 Gate 的
+         无视冷却硬触发，于是同一份策略在两端给出不同判定。 */
+      thread: threadPartOf(request),
       /* 角色证据与桌面 communication.js 传的是**同一个形状**（cfg = spec）：
          spec.systemPrompt 是 integrity 的 persona 维度唯一来源，缺了它守卫会
          因"证据不可用"而拒绝判定（那是防误杀的设计，不是失败）。 */

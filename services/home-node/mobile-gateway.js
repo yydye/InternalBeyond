@@ -45,6 +45,10 @@ const P0_CONTEXT = require('./p0-context.js');
    P0 只渲染身份/关系/时间；记忆由这一层作为**独立来源**提供，
    两者在这里按"稳定前缀"顺序拼接。 */
 const createMemoryRetrieval = require('./memory-retrieval.js');
+/* M1-C.2k：线索（open thread）同样是 canonical memory 上的确定性派生。
+   它**没有**自己的 store —— 与记忆共用 canonical memory_records，
+   只是走另一份共享核心（thread-derivation-core.js，浏览器同款）。 */
+const createThreadRetrieval = require('./thread-retrieval.js');
 /* M1-C.2i：Middle Brain **执行配置**的投影语义（唯一实现，与桌面共用同一份）。
    只用到它的入站校验与构造式投影，**不含任何判定** —— 判定在 canonical 层。 */
 const MB_CONFIG_CORE = require('../../assets/js/middle-brain-config-core.js');
@@ -225,6 +229,14 @@ function createMobileGateway(deps) {
     logger: logger,
     /* 随机源注入（测试可 determinize）；生产用 Math.random。 */
     random: deps.random
+  }) : null);
+  /* 线索派生与记忆**共用同一个 canonical store**（没有第二份状态）。
+     为什么绑同一个 store：若这里误绑到另一个能开、能查、永远返回空的实例，
+     不会抛任何错，只会表现为"她突然不惦记任何事了"—— 那种 bug 无法从行为反推，
+     必须在装配期拦（见 home-node-service.js 的 canonicalThreadDeps）。 */
+  const threadRetrieval = deps.threadRetrieval || (memoryStore ? createThreadRetrieval({
+    store: memoryStore,
+    logger: logger
   }) : null);
 
   const RULES = Object.assign({
@@ -807,6 +819,11 @@ function createMobileGateway(deps) {
           runtimeContext: runtime.runtimeContext,
           memoryBlock: runtime.memoryBlock || '',
           memoryConsulted: runtime.memoryConsulted === true,
+          /* M1-C.2k：线索块（canonical memory 上的确定性派生）。
+             与 memoryBlock 同款三态 —— 只有 consulted 为 true 才允许组织层
+             把它记成 present/empty，否则必须记 missing（允许自行 retrieval）。 */
+          threadBlock: (runtime.thread && runtime.thread.text) || '',
+          threadConsulted: !!(runtime.thread && runtime.thread.consulted === true),
           p0Stable: runtime.p0Stable || '',
           p0Time: runtime.p0Time || ''
         },
@@ -857,10 +874,30 @@ function createMobileGateway(deps) {
           runtimeContext: built.runtimeContext,
           selectedMemoryIds: Array.isArray(built.selectedIds) ? built.selectedIds.slice() : [],
           memoryCount: built.memoryCount || 0,
-          memoryReason: built.memoryReason || null
+          memoryReason: built.memoryReason || null,
+          /* ── M1-C.2k · 分块字段必须**逐项透传** ──────────────────────────
+             这些字段一直由 memory-retrieval.buildRuntimeContext 产出，但这里此前
+             只转了 runtimeContext / selectedMemoryIds / count / reason，
+             于是下游 `runtimeContextParts.memoryBlock || ''` 恒为 ''、
+             `memoryConsulted === true` 恒为 false。后果不是"少一点上下文"：
+             Middle Brain 的快照会把 memory 记成 **missing**（"本轮没读过"），
+             组织层的 memory 分支因此塌空，`organized.memory` 为空 ——
+             也就是说 Home Node 的 Middle Brain 实际上**从未拿到过记忆证据**，
+             而记忆块只是被整体拼在 runtimeContext 里而已。
+             这里如实透传，三态（present/empty/missing）才真的成立。 */
+          memoryBlock: built.memoryBlock || '',
+          memoryConsulted: built.memoryConsulted === true,
+          p0Stable: built.p0Stable || '',
+          p0Time: built.p0Time || '',
+          /* M1-C.2k：线索证据与记忆**同一次**装配产出（不是第二次读取）。
+             三态与记忆同款：consulted 才 present/empty，派生失败 → missing。 */
+          thread: threadRetrieval ? threadRetrieval.snapshotField(
+            (character && character.id) || ctx.characterId || '', {}) : null
         };
       }
-      /* 没有 memory store（旧装配 / 隔离测试）：退回纯 P0，行为与 Wave 1 相同。 */
+      /* 没有 memory store（旧装配 / 隔离测试）：退回纯 P0，行为与 Wave 1 相同。
+         memoryConsulted 如实为 false（没读过），而不是"读过且为空"——
+         这决定 Middle Brain 的快照记 missing 还是 empty。 */
       return {
         runtimeContext: P0_CONTEXT.buildContinuityContext({
           userProfile: store.getUserProfile ? store.getUserProfile() : null,
@@ -869,11 +906,20 @@ function createMobileGateway(deps) {
         }),
         selectedMemoryIds: [],
         memoryCount: 0,
-        memoryReason: 'memory-store-unavailable'
+        memoryReason: 'memory-store-unavailable',
+        memoryBlock: '',
+        memoryConsulted: false,
+        p0Stable: '',
+        p0Time: '',
+        thread: threadRetrieval ? threadRetrieval.snapshotField(
+          (character && character.id) || ctx.characterId || '', {}) : null
       };
     } catch (error) {
       record('warn', 'runtime-context-failed', { error: String((error && error.message) || error) });
-      return { runtimeContext: '', selectedMemoryIds: [], memoryCount: 0, memoryReason: 'context-failed' };
+      return {
+        runtimeContext: '', selectedMemoryIds: [], memoryCount: 0, memoryReason: 'context-failed',
+        memoryBlock: '', memoryConsulted: false, p0Stable: '', p0Time: '', thread: null
+      };
     }
   }
 

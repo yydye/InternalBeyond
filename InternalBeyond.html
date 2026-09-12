@@ -2991,6 +2991,11 @@ i would like the room to be enough.
 <script src="assets/js/memory-contract.js"></script>
 <script src="assets/js/memory-visibility-core.js"></script>
 <script src="assets/js/memory-retrieval-core.js"></script>
+<!-- M1-C.2k：线索（open thread）派生的唯一确定性实现（规则 / 去重阈值 / 合并语义）。
+     Home Node 由 services/home-node/thread-retrieval.js require **同一份文件**，
+     因此"她还惦记着什么"在两端出自同一条规则，而不是"浏览器写过盘才有"。
+     必须在 active-diary.js（桌面写入侧）之前加载。 -->
+<script src="assets/js/thread-derivation-core.js"></script>
 <script src="assets/js/memory.js"></script>
 <script src="assets/js/memory/auto-memory.js"></script>
 <script src="assets/js/memory/constellations.js"></script>

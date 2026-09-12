@@ -876,6 +876,15 @@ function _memVisibleEvidenceIds(ids,all,roleId){
     roleId
   );
 }
+/* 线索派生的共享核心（M1-C.2k）。规则/去重/合并语义只有这一份实现，
+   桌面与 Home Node 各自按需调用它 —— 因此本文件不再持有第二套规则。
+   核心不可用 → 返回一个"永不命中"的替身：不产出任何线索，绝不退化成放行
+   （与 _memDerivationCandidates 的 fail-closed 同一纪律）。 */
+function _threadDeriveCore(){
+  var core=(typeof window!=='undefined'&&window.IBThreadDerivation)||null;
+  if(core&&typeof core.deriveOpenThreads==='function')return core;
+  return {deriveOpenThreads:function(){return[]}};
+}
 /* 多来源合并采用最严格 visibility：派生 memory 的可见范围不得比任何来源更宽。
    private / 缺失 visibility（旧数据、日记）按"不能证明公开"保守处理，绝不放宽成 public。
    M1-C.2d Wave 1：rank 表 / 交集 / 并集算法已收敛到 memory-visibility-core.js
@@ -1113,24 +1122,28 @@ async function _understandingTick(cfg){
     return resultId||null
   }catch(e){return null}/* 静默旁路 */
 }
-/* ---- Thread v1：规则触发（零额外 LLM），不挤 semantic consolidation ---- */
-var THREAD_OPEN_RE=/(攒钱|攒|买|想换|计划|准备|还没|待办|未完成|打算|考虑|想学|在准备|等.*(回复|结果|消息)|project|prepare|plan|save up|save for|buy|upgrade)/i;
+/* ---- Thread v1：规则触发（零额外 LLM），不挤 semantic consolidation ----
+   M1-C.2k：规则本身已收敛到 thread-derivation-core.js（唯一实现，双载）。
+   本处只做两件宿主特有的事：
+     ① 取**已按可见性过滤**的候选集（M1-C.2d Wave 1 · D-1 的规范边界）；
+     ② 把派生结果落盘（thOpen，带写时印章）。
+   规则、去重阈值、合并语义一律来自共享核心 —— 桌面与 Home Node 用的是同一份，
+   因此两端对同一批 canonical 记忆给出同一组线索。 */
 async function _threadRuleTick(cfg){
   try{
     if(!cfg||!cfg.id)return 0;
     const roleId=String(cfg.id);
     const all=await dbGetAll('memories');
-    /* M1-C.2d Wave 1 · D-1：同 Understanding —— 规则命中不能绕过可见性。 */
+    /* M1-C.2d Wave 1 · D-1：规则命中不能绕过可见性。 */
     const episodics=_memDerivationCandidates(all,roleId,_memNonSemantic).slice(-12);
+    const derived=_threadDeriveCore().deriveOpenThreads(episodics);
     let created=0;
-    for(const m of episodics){
-      const text=String((m.title||'')+' '+(m.content||'')+' '+(m.summary||''));
-      if(!THREAD_OPEN_RE.test(text))continue;
-      /* 用标题做 question 种子（可被 thOpen 复用合并到同一 thread） */
-      const q=String(m.title||'').trim()||('关于"'+String(m.content||'').slice(0,20)+'"的进展');
-      /* R1：Thread 的印章来自它的证据行；这里证据只有 m 自己，thOpen 复用旧 Thread
-         时会与旧印章取最严格（并集 → 只会更窄）。 */
-      const t=await window.thOpen(roleId,q,m.id,'ai',_memDerivationStamp([m],roleId));
+    for(const d of derived){
+      /* R1：Thread 的印章来自它的证据行。证据**逐条**在派生时收集（同一 question
+         的近重复记忆会并入同一条线索的证据集），因此印章覆盖了全部真实依据；
+         thOpen 复用旧 Thread 时会与旧印章取最严格（并集 → 只会更窄）。 */
+      const rows=d.evidenceIds.map(id=>all.find(m=>m&&String(m.id)===String(id))||{visibility:undefined});
+      const t=await window.thOpen(roleId,d.question,d.evidenceIds,'ai',_memDerivationStamp(rows,roleId));
       if(t)created++;
     }
     return created

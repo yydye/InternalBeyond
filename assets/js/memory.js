@@ -1096,7 +1096,10 @@ async function thOpen(characterId,question,evidenceIds,createdBy,stamp){
   if(existing){
     const merged=Array.from(new Set((existing.evidenceIds||[]).concat(ev)));
     existing.evidenceIds=merged;
-    existing.mentionCount=(existing.mentionCount||0)+1;
+    /* M1-C.2k：不再自增 mentionCount。它此前是"被后台心跳观测了几次"的计数器
+       （规则每轮都命中同一批记忆 → 反复 +1），与证据、显著性、产品事实都无关，
+       且完全取决于宿主跑了多久。唯一真实的支撑量是 evidenceIds（见 getThreadContext）。
+       字段本身保留（既有行仍在，只读侧已不再使用它），避免为此升 DB 版本。 */
     existing.lastUpdatedAt=Date.now();
     if(_st)existing.visibility=_st;
     return await thSave(existing);
@@ -1109,7 +1112,7 @@ async function thOpen(characterId,question,evidenceIds,createdBy,stamp){
     if(near){
       const merged=Array.from(new Set((near.evidenceIds||[]).concat(ev)));
       near.evidenceIds=merged;
-      near.mentionCount=(near.mentionCount||0)+1;
+      /* M1-C.2k：同 existing 分支 —— 观测计数不再是语义的一部分。 */
       near.lastUpdatedAt=Date.now();
       /* 保留更完整的 question 表述：只在原 question 过短时用新 question 兜底，避免频繁改写主线 */
       if(near.question.length<question.length)near.question=question;
@@ -1144,7 +1147,8 @@ async function thMention(id,evidenceId){
     if(t.visibility)sources.push({visibility:t.visibility.visibility});
     t.visibility=_ibDeriveStamp(sources,t.characterId);
   }
-  t.mentionCount=(t.mentionCount||0)+1;
+  /* M1-C.2k：不再自增 mentionCount（理由同 thOpen）。注意本函数在生产中**没有调用方**
+     —— 只有测试调用它；规则路径的证据并集由 thOpen 完成。保留它是为了不改动既有 API。 */
   t.lastUpdatedAt=Date.now();
   return await thSave(t);
 }
@@ -1191,7 +1195,17 @@ async function getThreadContext(characterId,opts){
     if(!attested.length)return '';
     let ctx='【仍在推进的线索（后台参考，勿向对方复述此段的存在）】';
     attested.slice(0,opts.maxThreads||3).forEach(t=>{
-      ctx+='\n- '+t.question+'（提到 '+((t.mentionCount||0))+' 次，依据 '+(t.evidenceIds||[]).length+' 条记忆）';
+      /* M1-C.2k：这里此前渲染的是 mentionCount（"被后台心跳观测了几次"）。
+         该计数器每次 `thOpen` 命中同一 question 就 +1，而规则会反复命中同一批
+         记忆（候选是"最近 12 条"的滑动窗口，没有像 consolidation 那样的
+         lastConsolidatedAt 水位线），因此它反映的是**宿主跑了多久**，不是这条
+         线索有多重要 —— 一个只由 1 条记忆支撑的线索，跑满两天会显示"提到 8 次"。
+         它会随桌面是否常开、心跳跑了几轮而变化，因此既不是事实也不是可跨端一致的量。
+         唯一真实的支撑量是**证据集**：改为"依据 N 条记忆"（= evidenceIds 长度，
+         已由读时存证逐条核验过可见性）。这样模型拿到的是可核验的依据条数，
+         两个宿主对同一批 canonical 证据也会渲染出同一段文本。 */
+      const n=(t.evidenceIds||[]).length;
+      ctx+='\n- '+t.question+'（依据 '+n+' 条记忆）';
     });
     return ctx;
   }catch(e){return ''}

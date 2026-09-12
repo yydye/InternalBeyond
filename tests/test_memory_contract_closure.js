@@ -30,6 +30,8 @@ const CORE = require(CORE_PATH);
    T6/T7 验证的就不再是生产选择逻辑。 */
 const RETRIEVAL_PATH = path.join(ROOT, 'assets', 'js', 'memory-retrieval-core.js');
 const RETRIEVAL_CORE = require(RETRIEVAL_PATH);
+/* M1-C.2k：线索派生的唯一实现（浏览器与 Home Node 共用同一份）。 */
+const THREAD_DERIVATION = require(path.join(ROOT, 'assets', 'js', 'thread-derivation-core.js'));
 
 const source = f => fs.readFileSync(path.join(ROOT, f), 'utf8');
 function fragment(file, begin, end) {
@@ -45,7 +47,9 @@ const MEMORY = 'assets/js/memory.js';
 /* ── 真实源码片段（每个都以唯一函数/变量名为边界） ───────────────────────── */
 /* active-diary.js：D-1 的规范边界 + 两个被测 producer */
 const DERIVATION_HELPERS = fragment(ACTIVE, 'function _memDerivationCandidates(', '/* ══════════ Memory Provenance Repair');
-const THREAD_TICK = fragment(ACTIVE, 'var THREAD_OPEN_RE=', '/* Understanding + Thread v1 调度');
+/* M1-C.2k：`THREAD_OPEN_RE` 已移入 thread-derivation-core.js，因此边界改为
+   该 producer 自己的注释块起点（内容边界仍是函数，不是行号）。 */
+const THREAD_TICK = fragment(ACTIVE, '/* ---- Thread v1：规则触发', '/* Understanding + Thread v1 调度');
 /* _understandingTick 依赖 `_memNonSemantic` / `_memVisibleEvidenceIds`，
    二者都在 DERIVATION_HELPERS 内 —— 同源，不复制。 */
 const UNDERSTANDING_TICK = fragment(ACTIVE, 'var _understandingWaterline=', '/* ---- Thread v1');
@@ -186,9 +190,10 @@ const CFG = { id: 'role-a', nickname: 'A', systemPrompt: '你是 A。', provider
       title: '准备换手机', content: '打算攒钱换手机', visibility: 'private'
     }));
     const opened = [];
-    const ctx = makeContext(env);
+    const ctx = makeContext(env, { IBThreadDerivation: THREAD_DERIVATION });
     vm.runInContext(DERIVATION_HELPERS + THREAD_TICK, ctx);
-    ctx.thOpen = async (roleId, question, evidenceId, createdBy) => { opened.push(question); return { id: 'th_' + opened.length } };
+    /* M1-C.2k：证据改为**数组**（派生时同一 question 的近重复记忆并入同一条线索）。 */
+    ctx.thOpen = async (roleId, question, evidenceIds, createdBy) => { opened.push(question); return { id: 'th_' + opened.length } };
     const created = await ctx._threadRuleTick(CFG);
     check('T2.1 只为可见记忆开 Thread', created === 1 && opened.length === 1, { created, opened });
     check('T2.2 开出的 Thread 来自可见记忆', opened[0] === '计划买相机', opened);
@@ -876,6 +881,123 @@ const CFG = { id: 'role-a', nickname: 'A', systemPrompt: '你是 A。', provider
       visibility: { visibility: 'public', visibleTo: [], excludeFrom: [] }
     });
     check('T14.5 only:[本角色] 证据的线索可注入', (await ctx3.getThreadContext('role-a')).includes('THREAD_VISIBLE'));
+  }
+
+  /* ══════════════ T15 · 线索派生的唯一实现（M1-C.2k）══════════════
+     `threads` 此前只有浏览器能产出（6 小时心跳按规则写盘），Home Node 读不到，
+     于是同一个 canonical Middle Brain 在两端拿到不同的 `organized.threads`。
+     T15 钉住"派生是确定性的、且是唯一一份实现"，T16 钉住"叙述计数不再进入语义"，
+     T17 用对照证明"去掉共享核心，两端证据重新分叉"。 */
+  section('T15 · 线索派生核心（唯一实现 / 确定性）');
+  {
+    const THREAD_CORE = require(path.join(ROOT, 'assets', 'js', 'thread-derivation-core.js'));
+
+    /* (a) 双载形状：Node require 得到的契约必须完整（Home Node 靠它，不靠浏览器）。 */
+    check('T15.1 可被 Node require 且契约完整（UMD 双载）',
+      typeof THREAD_CORE.deriveOpenThreads === 'function'
+      && typeof THREAD_CORE.textSimilarity === 'function'
+      && typeof THREAD_CORE.threadSeedFor === 'function'
+      && THREAD_CORE.THREAD_OPEN_RE instanceof RegExp);
+
+    /* (b) 规则命中/不命中 —— 规则是**提取**来的，不是重新设计的，因此逐例钉住语义。 */
+    check('T15.2 命中：攒钱', THREAD_CORE.threadSeedFor({ id: 'x', title: '准备攒钱买相机' }) !== null);
+    check('T15.3 命中：还没/待办', THREAD_CORE.threadSeedFor({ id: 'x', title: '还没交报告' }) !== null);
+    check('T15.4 命中：英文 plan', THREAD_CORE.threadSeedFor({ id: 'x', content: 'we plan to move' }) !== null);
+    check('T15.5 不命中：普通陈述', THREAD_CORE.threadSeedFor({ id: 'x', title: '今天吃了面', content: '味道不错' }) === null);
+    check('T15.6 不命中：空内容', THREAD_CORE.threadSeedFor({ id: 'x', title: '', content: '' }) === null);
+    check('T15.7 question 用标题', THREAD_CORE.threadSeedFor({ id: 'x', title: '准备换工作' }).indexOf('准备换工作') === 0);
+    check('T15.8 标题为空时用内容兜底（不得产出空 question）',
+      (() => { const q = THREAD_CORE.threadSeedFor({ id: 'x', title: '  ', content: '打算去学吉他' }); return !!q && q.length > 0; })());
+
+    /* (c) 确定性 + 无副作用：同一输入两次调用给出相同结果，且不改动输入。 */
+    const cands = [
+      mem('c1', { title: '准备换工作', created: 1 }),
+      mem('c2', { title: '今天吃了面', created: 2 }),
+      mem('c3', { title: '想攒钱买相机', created: 3 })
+    ];
+    const snapshotBefore = JSON.stringify(cands);
+    const r1 = THREAD_CORE.deriveOpenThreads(cands);
+    const r2 = THREAD_CORE.deriveOpenThreads(cands);
+    check('T15.9 同一输入 → 同一输出（确定性）', JSON.stringify(r1) === JSON.stringify(r2), r1);
+    check('T15.10 纯函数：不改动输入候选集', JSON.stringify(cands) === snapshotBefore);
+    check('T15.11 只产出命中的线索（未命中的记忆不产生线索）', r1.length === 2, r1.map(t => t.question));
+
+    /* (d) 合并语义：完全相同 → 复用；近重复 → 复用；不相似 → 分开。
+           这与 memory.js 的 thOpen（5% 阈值字符 bigram Jaccard）必须一致。 */
+    const exact = THREAD_CORE.deriveOpenThreads([
+      mem('d1', { title: '准备换工作' }), mem('d2', { title: '准备换工作' })
+    ]);
+    check('T15.12 question 完全相同 → 合并为一条且证据取并集',
+      exact.length === 1 && JSON.stringify(exact[0].evidenceIds) === '["d1","d2"]', exact);
+    const near = THREAD_CORE.deriveOpenThreads([
+      mem('e1', { title: '想攒钱买一个硬盘' }), mem('e2', { title: '想攒钱买一个硬盘呀' })
+    ]);
+    check('T15.13 近重复 → 合并为一条', near.length === 1, near.map(t => t.question));
+    const apart = THREAD_CORE.deriveOpenThreads([
+      mem('f1', { title: '准备换工作' }), mem('f2', { title: '打算去体检' })
+    ]);
+    check('T15.14 不相似 → 保持两条独立线索', apart.length === 2, apart.map(t => t.question));
+
+    /* (e) 证据集稳定化：与候选顺序无关（否则同一集合会渲染出不同文本）。 */
+    const a1 = THREAD_CORE.deriveOpenThreads([mem('g2', { title: '准备换工作' }), mem('g1', { title: '准备换工作' })]);
+    const a2 = THREAD_CORE.deriveOpenThreads([mem('g1', { title: '准备换工作' }), mem('g2', { title: '准备换工作' })]);
+    check('T15.15 证据集与候选顺序无关（稳定化）',
+      JSON.stringify(a1[0].evidenceIds) === JSON.stringify(a2[0].evidenceIds), { a1, a2 });
+    check('T15.16 evidenceCount 与 evidenceIds 长度一致',
+      a1[0].evidenceCount === a1[0].evidenceIds.length);
+
+    /* (f) 上限有界（不得因候选集很大而无界产出）。 */
+    const many = [];
+    for (let i = 0; i < 40; i++) many.push(mem('m' + i, { title: '计划第' + i + '件事' }));
+    check('T15.17 产出有上界（MAX_DERIVED_THREADS）',
+      THREAD_CORE.deriveOpenThreads(many).length <= THREAD_CORE.MAX_DERIVED_THREADS);
+
+    /* (g) 唯一实现：active-diary.js 不再持有第二份规则/相似度实现。 */
+    const actSrc = source(ACTIVE);
+    check('T15.18 active-diary.js 不再持有第二条 THREAD_OPEN_RE 字面量',
+      !/var THREAD_OPEN_RE\s*=/.test(actSrc));
+    check('T15.19 active-diary.js 经共享核心派生线索',
+      /_threadDeriveCore\(\)\.deriveOpenThreads\(/.test(actSrc));
+    const html = source('InternalBeyond.html');
+    const atThreadCore = html.indexOf('assets/js/thread-derivation-core.js');
+    const atDiary = html.indexOf('assets/js/active-diary.js');
+    check('T15.20 InternalBeyond.html 在 active-diary.js 之前加载线索核心',
+      atThreadCore >= 0 && atDiary > atThreadCore, { atThreadCore, atDiary });
+  }
+
+  /* ══════════════ T16 · 线索叙述不再包含观测计数（M1-C.2k）══════════════ */
+  section('T16 · 叙述计数不进入语义');
+  {
+    const MEM = source(MEMORY);
+    /* 旧渲染行的**唯一**特征串（由它拼接出"提到 N 次，依据 M 条记忆"）。
+       用特征串而不是 /mentionCount/ 判：解释"为什么不再用它"的注释本身就会提到
+       这个词，文本扫描会自伤；而这条特征串只可能出现在被删掉的那行里。 */
+    check('T16.1 旧的"提到 N 次，依据 M 条记忆"渲染形已消失',
+      MEM.indexOf("' 次，依据 '") < 0 && MEM.indexOf("'（提到 '") < 0);
+    check('T16.2 getThreadContext 渲染证据条数', /依据 '\s*\+?\s*n\s*\+?\s*' 条记忆/.test(MEM) || /依据 '\+n\+' 条记忆/.test(MEM));
+    /* 写入侧：不再有"观测即自增"。 */
+    check('T16.3 thOpen 不再自增 mentionCount',
+      !/mentionCount=\(existing\.mentionCount\|\|0\)\+1/.test(MEM)
+      && !/mentionCount=\(near\.mentionCount\|\|0\)\+1/.test(MEM));
+    check('T16.4 thMention 不再自增 mentionCount', !/t\.mentionCount=\(t\.mentionCount\|\|0\)\+1/.test(MEM));
+
+    /* 端到端：一个 mentionCount 很大、但只有 1 条证据的线索，
+       渲染文本必须**不**出现观测次数，且依据条数与证据一致。 */
+    const env = makeEnv();
+    env.table('memories').set('solo', mem('solo'));
+    env.table('threads').set('th_solo', {
+      id: 'th_solo', kind: 'thread', characterId: 'role-a', status: 'open', question: '准备换工作',
+      evidenceIds: ['solo'], mentionCount: 40, createdAt: 1, lastUpdatedAt: 1,
+      visibility: { visibility: 'public', visibleTo: [], excludeFrom: [] }
+    });
+    const ctx = makeContext(env);
+    ctx.dbGetByIndex = async store => [...env.table(store).values()];
+    vm.runInContext(VISIBILITY_DELEGATE + ARTIFACTS, ctx);
+    const text = await ctx.getThreadContext('role-a');
+    check('T16.5 渲染不含"提到 N 次"', text.indexOf('提到') < 0, text);
+    check('T16.6 渲染含"依据 1 条记忆"（与证据集一致，而非与观测次数一致）',
+      text.indexOf('依据 1 条记忆') >= 0, text);
+    check('T16.7 mentionCount=40 不出现在注入文本里', text.indexOf('40') < 0, text);
   }
 
   console.log('\nMemory contract closure: ' + passed + ' passed, ' + failed + ' failed');
