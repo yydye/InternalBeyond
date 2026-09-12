@@ -262,6 +262,15 @@ const GROUPS = [
          外加：隐藏记忆不进 provider 输入、可见性先于排名、
          激活不推进 memory revision、/mobile/v1/memory/* 一律 404。 */
       ['test_mobile_memory_continuity.js'],
+      /* canonical memory **生产装配** parity（那次 404/501 事故的回归）——
+         真实 spawn 生产入口，证明 /memory/list、/memory/settings、
+         /memory/changes 在**进程级装配**下也进得了 handler（404 no-route =
+         路由没进进程；501 UNSUPPORTED = 路由进了但 memoryStore 没接线），
+         外加"生产装配与 buildHomeNode 装配的 canonical memory 依赖不得再次漂移"。
+         为什么不合并进 test_mobile_memory_continuity：那个文件断言的是
+         **产品语义**（召回是否进入 provider），全程用 buildHomeNode 隔离实例；
+         而这次事故的根因只有"真实进程装配"能覆盖。 */
+      ['test_home_node_production_memory_assembly.js'],
       /* M1-C 修复（D21）：LAN 门 —— allowRemote 只在"显式非 loopback 绑定 +
          设备鉴权真实就绪"时打开。所有"远端"请求都发往本机**非 loopback 地址**，
          因此源地址也是非 loopback（用 127.0.0.1 永远走不到这条规则）。

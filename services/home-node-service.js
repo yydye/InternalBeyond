@@ -155,6 +155,81 @@ function lanAddress() {
   return '';
 }
 
+/* ── canonical memory 装配（**唯一**一处）────────────────────────────
+   M1-C.2d Wave 2 的 `memories` 是**第二个 canonical 域**：它的 store 与召回器
+   必须真的被交给网关，否则 /memory/* 的每一条 handler 都会走 `if (!memoryStore)`
+   分支返回 501 UNSUPPORTED —— 路由存在、能力不可用。这种失败很容易被误读成
+   "路由没注册"，因为两者在浏览器侧都表现为记忆镜像补不上。
+
+   为什么必须是一个共享函数（而不是在两处各写一遍）：本仓库真实发生过一次
+   drift —— `buildHomeNode()`（测试路径）传了 memoryStore/memoryRetrieval，
+   而进程级 `createMobileGateway({...})`（生产启动路径）没有传。测试因此
+   全绿，而 23118 上 /memory/* 不可用。**同一个域的两套装配必然漂移**，
+   所以这里只保留一套，两条路径都从这里取。
+
+   ⚠️ 顺序有语义：**先把 store 解析成最终实例，再用它构造召回器**。
+   召回器如果绑的是"解析之前的那个值"，那么调用方一旦省略 memoryStore
+   （buildHomeNode 的默认用法就是这样），它就会绑到一个**临时创建的第二份
+   store** 上 —— 那个库能开、能查、永远返回空记录，症状是"她突然什么都不记得"。
+   这条曾经被真正踩到（test_mobile_memory_continuity 的召回用例整组变空）。 */
+function memoryAssembly(options) {
+  options = options || {};
+  const dataDir = options.dataDir || DATA_DIR;
+  const serviceLog = options.logger || ((level, event, fields) => log(level, event, fields));
+  const memoryStore = options.memoryStore ||
+    createMemoryStore({ dataDir: dataDir, logger: (e, f) => serviceLog('info', e, f) });
+  return {
+    memoryStore: memoryStore,
+    memoryRetrieval: options.memoryRetrieval || createMemoryRetrieval({
+      store: memoryStore,
+      clock: options.clock,
+      random: options.random,
+      logger: serviceLog
+    })
+  };
+}
+/* 缺一不可的硬校验：memoryRetrieval 没有 store 会静默召回空块
+   （"她忽然不记得了"这种最难查的症状），因此宁可在这里明确失败。 */
+function canonicalMemoryDeps(memory) {
+  if (!memory || !memory.memoryStore) throw new Error('home-node assembly: canonical memory requires a memoryStore');
+  if (!memory.memoryRetrieval) throw new Error('home-node assembly: canonical memory requires a memoryRetrieval');
+  /* 反向守卫（实证过的坑）：召回器绑定的 store 必须就是这一个。
+     绑到"另一个能开、能查、永远空"的实例上不会报任何错 —— 只会表现为失忆。 */
+  if (memory.memoryRetrieval.store && memory.memoryRetrieval.store !== memory.memoryStore) {
+    throw new Error('home-node assembly: memoryRetrieval is bound to a different memoryStore instance');
+  }
+  return { memoryStore: memory.memoryStore, memoryRetrieval: memory.memoryRetrieval };
+}
+
+/* ── 网关装配（**唯一**一处）─────────────────────────────────────────
+   与 memoryAssembly 同一个理由：网关的依赖集合只能有一份定义。
+   生产启动路径与 buildHomeNode() 都调用它，因此"某个 canonical 域没有接线"
+   不可能只在一侧发生。 */
+function gatewayAssembly(options) {
+  const memory = canonicalMemoryDeps(memoryAssembly({
+    dataDir: options.dataDir,
+    memoryStore: options.memoryStore,
+    memoryRetrieval: options.memoryRetrieval,
+    clock: options.clock,
+    random: options.random,
+    logger: options.logger
+  }));
+  return createMobileGateway(Object.assign({
+    store: options.store,
+    registry: options.registry,
+    executor: options.executor,
+    version: options.version || productVersion(),
+    allowedOrigins: options.mobileOrigins || MOBILE_ORIGINS,
+    lanMode: !options.loopbackBind,
+    lanHost: options.lanAddress || lanAddress,
+    port: options.listenPort || PORT,
+    clock: options.clock,
+    timeZone: options.timeZone,
+    random: options.random,
+    logger: options.logger || ((level, event, fields) => log(level, event, fields))
+  }, memory));
+}
+
 /* ── 组装一个完整的 Home Node 实例（不监听）──────────────────────────
    这是**唯一**一处把 chat store / 设备注册表 / executor / gateway / HTTP
    接起来的代码。服务入口用它（然后 listen），每个 HTTP 测试进程也用它
@@ -174,15 +249,16 @@ function buildHomeNode(options) {
      但拥有**自己的** revision / change_log 命名空间 —— 见 memory-store.js 头部）。
      刻意晚于 chat store 打开：chat store 负责损坏隔离（会给坏库改名），
      同一文件上的第二个 opener 不能去 rename 它。 */
-  const instanceMemoryStore = options.memoryStore || createMemoryStore({ dataDir: dataDir, logger: (e, f) => serviceLog('info', e, f) });
-  /* 召回注入器：Node 侧执行缝的记忆来源。共享 memory-retrieval-core 提供
-     可见性/排名/渲染，这里只负责取候选集与注入时钟/随机源。 */
-  const instanceMemoryRetrieval = options.memoryRetrieval || createMemoryRetrieval({
-    store: instanceMemoryStore,
+  const memoryDeps = canonicalMemoryDeps(memoryAssembly({
+    dataDir: dataDir,
+    memoryStore: options.memoryStore,
+    memoryRetrieval: options.memoryRetrieval,
     clock: options.clock,
     random: options.random,
     logger: serviceLog
-  });
+  }));
+  const instanceMemoryStore = memoryDeps.memoryStore;
+  const instanceMemoryRetrieval = memoryDeps.memoryRetrieval;
   const instanceRegistry = options.registry || createDeviceRegistry({ dataDir: dataDir, logger: (e, f) => serviceLog('info', e, f) });
   const instanceExecutor = options.executor || createExecutor({
     store: instanceStore,
@@ -191,23 +267,26 @@ function buildHomeNode(options) {
   });
   const host = options.host || HOST;
   const loopbackBind = isLoopbackHost(host);
-  const instanceGateway = options.gateway || createMobileGateway({
+  /* 与进程级启动路径**共用** gatewayAssembly（见其头部说明：两条路径两套装配
+     必然漂移，memoryStore 就是这样在 production 上丢过一次）。 */
+  const instanceGateway = options.gateway || gatewayAssembly({
+    /* dataDir 必须传下去：网关内部（经 memoryAssembly）可能自己建 memory store，
+       不传就会兜到生产 DATA_DIR —— 一个"测试实例读写生产记忆库"的静默越界。 */
+    dataDir: dataDir,
     store: instanceStore,
     registry: instanceRegistry,
     executor: instanceExecutor,
-    version: options.version || productVersion(),
-    allowedOrigins: options.mobileOrigins || MOBILE_ORIGINS,
-    lanMode: !loopbackBind,
-    lanHost: options.lanAddress || lanAddress,
-    port: options.listenPort || PORT,
+    memoryStore: instanceMemoryStore,
+    memoryRetrieval: instanceMemoryRetrieval,
+    version: options.version,
+    mobileOrigins: options.mobileOrigins,
+    loopbackBind: loopbackBind,
+    lanAddress: options.lanAddress,
+    listenPort: options.listenPort,
     /* P0（M1-C.2c-A）：时钟与时区可注入，只为让"当前时间"可被确定性测试。
        生产默认仍是系统时钟 + 进程本地时区。 */
     clock: options.clock,
     timeZone: options.timeZone,
-    /* M1-C.2d Wave 2：canonical memory。缺席时记忆召回返回空块，
-       回合照常进行（记忆不可用绝不阻塞对话）。 */
-    memoryStore: instanceMemoryStore,
-    memoryRetrieval: instanceMemoryRetrieval,
     random: options.random,
     logger: serviceLog
   });
@@ -267,20 +346,32 @@ function buildHomeNode(options) {
 
 /* ── 设备注册表 + Mobile Gateway ─────────────────────────────────────
    进程级实例：非 require.main 时被测试复用（见 tests/test_home_node_service.js
-   与 tests/test_mobile_gateway_http.js —— 后者用 buildHomeNode 自己建隔离实例）。 */
+   与 tests/test_mobile_gateway_http.js —— 后者用 buildHomeNode 自己建隔离实例）。
+
+   **这里是生产启动路径**（runtime/local-services-runner.js 直接跑本文件，
+   不走 buildHomeNode）。canonical memory 的 store / 召回器必须在这里也真的
+   接到网关上 —— 曾经漏掉，导致 23118 上 /memory/* 全部 `if (!memoryStore)`
+   → 501，而测试因为只覆盖 buildHomeNode 而全绿。现在两条路径共用
+   memoryAssembly()/gatewayAssembly()，缺席会在装配期直接抛错。 */
+const memory = memoryAssembly({
+  dataDir: DATA_DIR,
+  logger: (level, event, fields) => log(level, event, fields)
+});
 const registry = createDeviceRegistry({
   dataDir: DATA_DIR,
   logger: (event, fields) => log('info', event, fields)
 });
-const gateway = createMobileGateway({
+const gateway = gatewayAssembly({
   store,
   registry,
   executor,
+  memoryStore: memory.memoryStore,
+  memoryRetrieval: memory.memoryRetrieval,
   version: productVersion(),
-  allowedOrigins: MOBILE_ORIGINS,
-  lanMode: !LOOPBACK_BIND,
-  lanHost: lanAddress,
-  port: PORT,
+  mobileOrigins: MOBILE_ORIGINS,
+  loopbackBind: LOOPBACK_BIND,
+  lanAddress: lanAddress,
+  listenPort: PORT,
   logger: (level, event, fields) => log(level, event, fields)
 });
 const httpLayer = createHttp({
@@ -297,9 +388,12 @@ const httpLayer = createHttp({
 });
 const server = httpLayer.server;
 
-/* 让调用方（测试与诊断）能构建一个"已打开 + 已接好网关"的完整实例。 */
+/* 让调用方（测试与诊断）能构建一个"已打开 + 已接好网关"的完整实例。
+   打开顺序与 buildHomeNode().open() 一致：chat store 先开（它负责损坏隔离，
+   会给坏库改名），memory store 与设备表同库、必须等隔离完成之后再连。 */
 function openAll() {
   const opened = store.open();
+  memory.memoryStore.open();
   registry.open();
   return opened;
 }
@@ -380,6 +474,9 @@ if (require.main === module) {
        顺序反过来会让事件泵在一个已关闭的连接上查询。 */
     try { gateway.stop(); } catch (_) { /* 已停止 */ }
     try { registry.close(); } catch (_) { /* 已关闭 */ }
+    /* memory store 与 chat store 同库（同一 SQLite 文件），先关它再关 chat，
+       与打开顺序相反 —— 反过来会让 memory 的连接留在一个已关闭的库上。 */
+    try { memory.memoryStore.close(); } catch (_) { /* 已关闭 */ }
     try { store.close(); } catch (_) { /* 已关闭 */ }
     setTimeout(() => process.exit(0), 20);
   }
@@ -400,7 +497,14 @@ module.exports = {
   executor,
   server,
   httpLayer,
+  /* M1-C.2d Wave 2：**进程级**（= 生产启动路径）的 canonical memory 实例。
+     导出它是为了让"production assembly 与 buildHomeNode assembly 不得再次漂移"
+     可以被真实断言，而不是靠读代码（见 tests/test_home_node_production_memory_assembly.js）。 */
+  memoryStore: memory.memoryStore,
+  memoryRetrieval: memory.memoryRetrieval,
   buildHomeNode,
+  memoryAssembly,
+  canonicalMemoryDeps,
   openAll,
   lanAddress,
   isLoopbackHost,

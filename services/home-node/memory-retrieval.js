@@ -217,6 +217,11 @@ function createMemoryRetrieval(deps) {
   }
 
   return {
+    /* 绑定的 canonical store：**刻意暴露**，只为让装配层能断言"召回器与网关
+       看到的是同一个 store"。绑到另一个能开、能查、永远返回空的实例上不会
+       抛任何错，只会表现为"她突然什么都不记得"—— 那种 bug 无法从行为反推，
+       必须在装配期拦（见 services/home-node-service.js 的 canonicalMemoryDeps）。 */
+    store: deps.store || null,
     retrieve: retrieve,
     reinforce: reinforce,
     buildMemoryBlock: buildMemoryBlock,
