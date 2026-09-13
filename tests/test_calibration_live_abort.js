@@ -44,6 +44,13 @@ const { spawnSync } = require('node:child_process');
 const ROOT = path.resolve(__dirname, '..');
 const HARNESS = 'tests/test_middle_brain_calibration_live.js';
 const ENV_NAMES = ['IB_CI_CALIBRATION_KEY', 'IB_CI_CALIBRATION_ENDPOINT', 'IB_CI_CALIBRATION_MODEL'];
+/* IB_CDP_TIMEOUT_MS 也要从子进程 env 里删掉：它是 Phase 1B 新增的 CDP RPC 期限配置，
+   宿主机如果恰好设了一个 <= 生产期限（20000）的值，harness 会在**凭据闸门之后**、
+   抽样之前以 exit 4 大声中止（这是刻意的硬化）。那与本文件要验的凭据预检无关，
+   却会让本文件的断言在不同机器上得到不同结果 —— 所以这里显式清空，
+   让"凭据不齐 → exit 3"始终是第一位的、确定性的结论。
+   注意：清空的结果正是校准默认 30000（> 20000），所以硬化不会被绕过。 */
+const ENV_NAMES_SCRUBBED = ENV_NAMES.concat(['IB_CDP_TIMEOUT_MS']);
 
 let failures = 0;
 const check = (name, cond, detail) => {
@@ -57,7 +64,7 @@ const note = (s) => console.log('  · ' + s);
    它绝不会因为本机恰好有 key 就真的发起付费调用。 */
 function runHarness(args) {
   const env = Object.assign({}, process.env);
-  for (const n of ENV_NAMES) delete env[n];
+  for (const n of ENV_NAMES_SCRUBBED) delete env[n];
   const started = Date.now();
   const res = spawnSync(process.execPath, [HARNESS].concat(args),
     { cwd: ROOT, env: env, encoding: 'utf8', timeout: 120000, windowsHide: true });

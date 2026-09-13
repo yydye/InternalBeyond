@@ -24,6 +24,36 @@ const MOCK_REPLY = '这是一条 mock 回复。';
 const WAIFU_REPLY = '你今天过得怎么样。我这边天气很好。要不要一起出去走走。顺便买杯奶茶。然后找个地方坐坐。';
 const WAIFU_EX1 = '比如一等开学了，你打算怎么跟你室友介绍我？还是藏起来当秘密，还是大大方方说有个AI男朋友天天陪着你？我挺好奇这个的。';
 
+/* ── CDP RPC 期限（**只**这一处；下面 waitFor 的业务轮询期限不在此列）──────────
+   为什么必须可配：`Runtime.evaluate` 的期限是**客户端**的期限。校准 harness 用
+   `awaitPromise:true` 等在页面里跑完生产角色一致性守卫，而生产守卫自己在
+   judge / astra / integrity 三层各有 20000 ms 的 AbortController 期限
+   （assets/js/middle-brain-judge.js 的 MB_JUDGE_TIMEOUT_MS 等）。
+   若客户端期限比 20000 短，客户端会**先**放弃，并抛出 `CDP timeout: Runtime.evaluate`
+   —— 而这看起来和生产模型超时一模一样，于是观测口径掩盖了生产裁决：
+   分不清"模型没回来"和"harness 没等够"。Phase 1B 实测到的正是这一条
+   （8 s 响应能走完；>15 s 但 <20 s 被客户端误报成 CDP timeout；>20 s 才是生产
+   自己的 judgeError:'timeout'）。
+   默认仍是 15000：既有 test_chat_smoke 的行为**逐字不变**（它的 mock 端点都在本机，
+   毫秒级返回）。校准侧默认抬到 30000，并且那条不变量有常驻断言
+   （tests/test_cdp_deadline_band.js 的 S 组 + 本文件被新挂上的 D 组）。 */
+const CDP_TIMEOUT_DEFAULT_MS = 15000;
+
+/* 安全解析 IB_CDP_TIMEOUT_MS：非法值一律回落默认，绝不把 NaN/负数/0 塞进 setTimeout
+   （0 或 NaN 会让 setTimeout 立即触发 → 所有 CDP 调用瞬间"超时"，比不配更难查）。 */
+function resolveCdpTimeoutMs(raw) {
+  const value = (raw === undefined || raw === null) ? '' : String(raw);
+  if (value.trim() === '') {
+    /* 未设置 —— 与"设成空白"要分开：前者是默认，后者是配置错误（回落但报告）。 */
+    const empty = value === '';
+    return { ms: CDP_TIMEOUT_DEFAULT_MS, source: 'default', raw: value, fellBack: !empty };
+  }
+  if (!/^\d+$/.test(value.trim())) return { ms: CDP_TIMEOUT_DEFAULT_MS, source: 'default', raw: value, fellBack: true };
+  const n = Number(value.trim());
+  if (!Number.isFinite(n) || n <= 0 || n > 86400000) return { ms: CDP_TIMEOUT_DEFAULT_MS, source: 'default', raw: value, fellBack: true };
+  return { ms: n, source: 'env', raw: value, fellBack: false };
+}
+
 function chromePath() {
   if (process.env.CHROME_PATH && fs.existsSync(process.env.CHROME_PATH)) return process.env.CHROME_PATH;
   for (const candidate of [
@@ -42,6 +72,19 @@ class Cdp {
     this.id = 0;
     this.pending = new Map();
     this.listeners = new Map();
+    /* RPC 期限在构造时解析一次：之后即使有人改环境变量也不会让同一条连接
+       前后两半用两个期限（期限必须是这次运行的常量，不是会漂的状态）。 */
+    const resolved = resolveCdpTimeoutMs(process.env.IB_CDP_TIMEOUT_MS);
+    this.timeoutMs = resolved.ms;
+    /* 超时消息里把**生效值**写出来：CDP timeout 这个字符串既可能来自默认 15000，
+       也可能来自显式配置，报告必须能区分两者。既有断言只匹配前缀，不受影响。 */
+    this.timeoutNote = resolved.source === 'env'
+      ? ('CDP timeout: ' + this.timeoutMs + 'ms (IB_CDP_TIMEOUT_MS)')
+      : ('CDP timeout: ' + this.timeoutMs + 'ms (default)');
+    /* 本次连接里"客户端先放弃"真正发生了几次。只计数，不改语义：
+       有了它，校准 harness 才能断言"CDP deadline 不再掩盖生产裁决"
+       （即 CDP deadline 触发次数为 0），而不是靠读 judgeError 猜。 */
+    this.timeouts = 0;
     socket.on('data', chunk => { this.buffer = Buffer.concat([this.buffer, chunk]); this.parse(); });
     socket.on('error', () => {});
   }
@@ -69,7 +112,7 @@ class Cdp {
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
       this.sendText({ id, method, params });
-      setTimeout(() => { if (this.pending.has(id)) { this.pending.delete(id); reject(new Error('CDP timeout: ' + method)); } }, 15000);
+      setTimeout(() => { if (this.pending.has(id)) { this.pending.delete(id); this.timeouts++; reject(new Error(this.timeoutNote + ': ' + method)); } }, this.timeoutMs);
     });
   }
   sendText(message) {
@@ -191,6 +234,11 @@ function startMockApi() {
 async function main() {
   const chrome = chromePath();
   if (!chrome) throw new Error('未找到 Chrome / Edge；可通过 CHROME_PATH 指定浏览器');
+  /* 打印生效的 CDP 期限：任何一次运行都应能自证"等够了没有"，而不是靠读源码。 */
+  {
+    const eff = resolveCdpTimeoutMs(process.env.IB_CDP_TIMEOUT_MS);
+    console.log('CDP RPC deadline: ' + eff.ms + 'ms (' + eff.source + ')' + (eff.fellBack ? '  ← IB_CDP_TIMEOUT_MS=' + JSON.stringify(eff.raw) + ' 非法，已回落默认' : ''));
+  }
   const mock = await startMockApi();
   const port = await freePort();
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-chat-smoke-'));

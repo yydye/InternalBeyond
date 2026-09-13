@@ -46,6 +46,13 @@
  *     test_calibration_live_abort.js（static，静态顺序不变量 + 运行期真跑 --live
  *     且清空凭据，断言 exit 3 / stdout 一字不出 / 无 JS 栈 / 零浏览器）。
  *     live pilot 本体未执行：本机无合法凭据。
+ * Astra Readiness Phase 1B（第二个前置修正）：**观测口径的期限阶梯**。共享 CDP 客户端
+ *     把 Runtime.evaluate 的期限硬编码成 15000 ms，而校准要用它等在页面里跑完生产守卫
+ *     （judge/astra/integrity 各 20000 ms）——客户端先于生产放弃，把生产裁决掩盖成
+ *     `CDP timeout: Runtime.evaluate`。已让该期限可配（IB_CDP_TIMEOUT_MS，默认仍是
+ *     15000，其他 harness 行为逐字不变），校准侧默认 30000 并在 <= 20000 时大声中止；
+ *     登记 test_cdp_deadline_band.js（static，解析口径 + 结构不变量 + 同一个 17 s
+ *     合成延迟在两个期限下结果相反的离线行为证据）。
  * P11-FIX：登记 test_cache_audit_isolation.js（browser，Cache Audit baseline 按 runtime consumer 隔离）。
  * M1-C.2d Wave 1：登记 test_memory_contract_closure.js（static，Memory Contract Closure ——
  *     隐藏记忆不得经 Understanding / Thread 派生回流；证据收紧或不可查时制品 fail closed；
@@ -134,6 +141,17 @@ const GROUPS = [
          子进程在模块求值期即中止：零网络、零浏览器、零真实 API 调用，
          且在"合法持有凭据"的机器上同样确定性走中止分支。 */
       ['test_calibration_live_abort.js'],
+      /* Astra Readiness Phase 1B：**校准的 CDP RPC 期限必须长于生产模型期限**。
+         实测缺陷：共享 CDP 客户端（test_chat_smoke.js 的 Cdp.send）把
+         Runtime.evaluate 的期限硬编码成 15000 ms，而校准 harness 正是用它等在页面里
+         跑完**生产**角色一致性守卫（judge/astra/integrity 三层各 20000 ms）。
+         客户端先放弃 → `CDP timeout: Runtime.evaluate`，与"模型没回来"无法区分，
+         观测口径掩盖了生产裁决。对照实验：8 s → 走完；>15 s 且 <20 s → 假 CDP timeout；
+         >20 s → 生产自己的 judgeError:'timeout'。
+         本测试 = 解析口径（非法值安全回落 15000）+ 结构不变量（校准默认 30000 > 生产
+         20000，且生产字面量从生产源码里读）+ 行为证据（**同一个** 17 s 合成延迟，
+         默认客户端超时、校准客户端成功）。全程离线、零浏览器、零真实 API 调用。 */
+      ['test_cdp_deadline_band.js'],
       /* P14：Middle Brain 整块折叠（静态 DOM stub 驱动真实 config 层，零依赖离线） */
       ['test_middle_brain_collapse.js'],
       /* P11-3：Middle Brain 语义务闭合（UI/runtime 状态机 + local 注入契约纯函数表，

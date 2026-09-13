@@ -221,11 +221,77 @@ if (!PLAN.ok) {
   process.exit(2);
 }
 
+/* ── Astra Readiness Phase 1B · CDP RPC 期限必须**长于**生产模型期限 ──────────
+   为什么：本 harness 用 `Runtime.evaluate{awaitPromise:true}` 等在页面里跑完生产守卫，
+   而页面里的生产守卫自己在 judge / astra / integrity 三层各挂了 20000 ms 的
+   AbortController 期限。共享 CDP 客户端的期限若比它短，客户端就会**先**放弃，
+   抛出 `CDP timeout: Runtime.evaluate` —— 与"模型没回来"看起来一模一样，
+   于是观测口径掩盖了生产裁决。Phase 1B 的对照实验把这一点钉死了：
+       8 s 响应        → 全链路走完（judgeError:null）
+       >15 s 且 <20 s  → **假 CDP timeout**（客户端先放弃；生产还没说话）
+       >20 s           → 生产自己的 judgeError:'timeout'（另一种可区分的失败）
+   所以校准侧默认把 CDP 期限抬到 30000（> 20000），并保留显式覆盖能力；
+   但**不允许**把它压到 <= 20000 —— 那等于把这条缺陷重新装回去，且是静默的。
+   默认值只在调用方没给 IB_CDP_TIMEOUT_MS 时写入（显式覆盖永远优先）。
+
+   ⚠ 位置纪律（不是风格问题）：这一整块必须放在**共享客户端被抽出来之后**。
+     resolveCdpTimeoutMs / CDP_TIMEOUT_DEFAULT_MS 都来自下面那次 new Function 抽取，
+     而 `const` 有 TDZ —— 放在抽取之前它会在模块求值期直接 ReferenceError，
+     整个 harness（含两次离线 mock 回归）一行都跑不了。本文件此前已经因为同一类
+     错误（LIVE_MODE 声明晚于首次引用）吃过一次亏，所以这里明确写下顺序：
+     先抽取 → 再解析期限 → 再起浏览器。
+     （`--live` 缺凭据的预检在抽取之前就 exit 3，所以那种错误不会被凭据回归测到，
+      只有真的跑一遍 harness 才暴露 —— 第一次改动就是踩在这上面。） */
+const CDP_DEADLINE_DEFAULT_MS = 30000;
+const PRODUCTION_MODEL_TIMEOUT_MS = (() => {
+  /* 生产期限的真源是 assets/js/middle-brain-judge.js 的 MB_JUDGE_TIMEOUT_MS。
+     这里是结构断言，读的是**生产源码文本**（只读，零改动），不是复制一份常量：
+     复制一份就等于把"两处必须一致"变成"两处碰巧一致"。 */
+  const src = fs.readFileSync(path.join(ROOT, 'assets', 'js', 'middle-brain-judge.js'), 'utf8');
+  const m = src.match(/var\s+MB_JUDGE_TIMEOUT_MS\s*=\s*(\d+)\s*;/);
+  if (!m) {
+    console.error('中止（exit 4）：assets/js/middle-brain-judge.js 里找不到 MB_JUDGE_TIMEOUT_MS 的字面量声明。');
+    console.error('CDP 期限与生产期限的先后关系是本次校准的观测前提，读不到就不能假装它成立。');
+    process.exit(4);
+  }
+  return Number(m[1]);
+})();
+function resolveCalCdpDeadline() {
+  if (process.env.IB_CDP_TIMEOUT_MS === undefined || process.env.IB_CDP_TIMEOUT_MS === '') {
+    process.env.IB_CDP_TIMEOUT_MS = String(CDP_DEADLINE_DEFAULT_MS);
+  }
+  const resolved = resolveCdpTimeoutMs(process.env.IB_CDP_TIMEOUT_MS);
+  if (!(resolved.ms > PRODUCTION_MODEL_TIMEOUT_MS)) {
+    console.error('中止（exit 4）：CDP RPC 期限 ' + resolved.ms + 'ms 不大于生产模型期限 '
+      + PRODUCTION_MODEL_TIMEOUT_MS + 'ms。');
+    console.error('这样客户端会先于生产守卫的 AbortController 放弃，把生产裁决掩盖成 CDP timeout，');
+    console.error('校准观测就失去意义（分不清"模型没回来"和"harness 没等够"）。');
+    console.error('IB_CDP_TIMEOUT_MS=' + JSON.stringify(resolved.raw)
+      + (resolved.fellBack ? '（非法值，已回落默认 ' + CDP_TIMEOUT_DEFAULT_MS + 'ms）' : '')
+      + '，需要 > ' + PRODUCTION_MODEL_TIMEOUT_MS + '。');
+    process.exit(4);
+  }
+  return resolved;
+}
+
 const harness = fs.readFileSync(path.join(__dirname, 'test_chat_smoke.js'), 'utf8');
 const boundary = harness.indexOf('async function main() {');
 assert.ok(boundary > 0, 'existing CDP harness boundary changed');
-const { chromePath, Cdp, evaluate, waitFor, freePort } = new Function('require', '__dirname',
-  harness.slice(0, boundary) + '\nreturn {chromePath,Cdp,evaluate,waitFor,freePort};')(require, ROOT);
+const { chromePath, Cdp, evaluate, waitFor, freePort,
+  resolveCdpTimeoutMs, CDP_TIMEOUT_DEFAULT_MS } = new Function('require', '__dirname',
+  harness.slice(0, boundary) + '\nreturn {chromePath,Cdp,evaluate,waitFor,freePort,resolveCdpTimeoutMs,CDP_TIMEOUT_DEFAULT_MS};')(require, ROOT);
+
+/* 抽取完成之后才解析期限（TDZ 纪律：resolveCdpTimeoutMs / CDP_TIMEOUT_DEFAULT_MS
+   都来自上面那一行；把这段放在它之前会在模块求值期直接 ReferenceError）。 */
+const CAL_CDP_DEADLINE = resolveCalCdpDeadline();
+console.log('CDP RPC deadline: ' + CAL_CDP_DEADLINE.ms + 'ms (' + CAL_CDP_DEADLINE.source
+  + ', > production model timeout ' + PRODUCTION_MODEL_TIMEOUT_MS + 'ms)' + (CAL_CDP_DEADLINE.fellBack ? '  ← IB_CDP_TIMEOUT_MS 非法，已回落默认' : ''));
+/* 预备断言：默认值与生产期限的关系必须是"默认就成立"，不能靠环境变量碰巧成立。 */
+check('D0.saneCdpDeadlineDefault', CDP_DEADLINE_DEFAULT_MS > PRODUCTION_MODEL_TIMEOUT_MS
+  && CDP_DEADLINE_DEFAULT_MS >= 15000 && CDP_DEADLINE_DEFAULT_MS <= 60000,
+  'default=' + CDP_DEADLINE_DEFAULT_MS + ' production=' + PRODUCTION_MODEL_TIMEOUT_MS);
+check('D0b.legacyDefaultPreservedForOtherHarnesses', CDP_TIMEOUT_DEFAULT_MS === 15000,
+  'CDP_TIMEOUT_DEFAULT_MS=' + CDP_TIMEOUT_DEFAULT_MS + '（其他 CDP harness 的既有行为必须逐字不变）');
 
 const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', () => { server.unref(); resolve(server.address().port); }));
 const CORS = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS', 'Access-Control-Allow-Headers': '*' };
@@ -619,6 +685,14 @@ const mockApi = http.createServer(async (req, res) => {
     await cdp.send('Page.navigate', { url: webBase + '/InternalBeyond.html' });
     assert.ok(await waitFor(cdp, "document.readyState==='complete' && !!(window.IB&&window.IB.middleBrain) && typeof IB.middleBrain.middleBrainCharacterIntegrity==='function'", 25000), 'page + integrity layer mounted');
 
+    /* ── 观测口径自证：真实连接上的 CDP 期限必须**长于**生产期限 ──────────
+       D0 断言的是默认常量，这里断言的是**这条连接实际生效的值**：
+       resolveCdpTimeoutMs 在 Cdp 构造时解析，两条路径不同，必须都验。
+       否则"常量对、连接错"（例如有人绕过 env 直接 new Cdp）会被漏掉。 */
+    check('D1.cdpDeadlineExceedsProductionModelTimeout',
+      cdp.timeoutMs > PRODUCTION_MODEL_TIMEOUT_MS && cdp.timeoutMs === CAL_CDP_DEADLINE.ms,
+      'cdp.timeoutMs=' + cdp.timeoutMs + ' env=' + CAL_CDP_DEADLINE.ms + ' production=' + PRODUCTION_MODEL_TIMEOUT_MS);
+
     /* detect-only 是默认：--rewrite / --verify 才打开（只写进一次性临时 profile）。
        这里写的不是生产配置：本页面的 profile 是 os.tmpdir() 下的 mkdtemp 目录。 */
     await setMb({ enabled: true, endpoint, model, apiKey, reasoningEffort: 'medium', speed: 'standard',
@@ -908,6 +982,19 @@ const mockApi = http.createServer(async (req, res) => {
     console.log('       fetch hosts contacted: ' + JSON.stringify(finalObs.fetchHosts));
     console.log('       auth header present on calibration calls: ' + (records.length ? String(records.some(r => r.execution.authPresent === true)) : 'n/a (layerA)'));
 
+    check('D2.cdpDeadlineNeverFiredDuringCalibration', cdp.timeouts === 0,
+      'CDP RPC timeout fired ' + cdp.timeouts + ' time(s) at ' + cdp.timeoutMs + 'ms — '
+      + '客户端先放弃了，生产裁决被掩盖（Phase 1B 的症状）');
+    /* 两种语料都断言：生产看到的 judgeError 里**不得**出现 CDP timeout。
+       注意判据取的是生产守卫自己的返回（out.judgeError），不是 harness 的 fixture 记录 ——
+       否则这条断言会退化成"校验我们自己写死的期望值"。 */
+    check('D2b.productionJudgementNeverMaskedByHarnessDeadline',
+      READINESS_MODE
+        ? records.every(r => !/^CDP timeout/.test(String(r.judge.error || '')))
+        : runRows.every(r => !/^CDP timeout/.test(String((r.out && r.out.judgeError) || ''))),
+      JSON.stringify((READINESS_MODE
+        ? records.filter(r => /^CDP timeout/.test(String(r.judge.error || ''))).map(r => [r.id, r.judge.error])
+        : runRows.filter(r => /^CDP timeout/.test(String((r.out && r.out.judgeError) || ''))).map(r => r.id))));
     check('T1.explicitCallLimitEnforced', PLAN.ok && actualCalls.total <= PLAN.budget,
       'actual=' + actualCalls.total + ' budget=' + PLAN.budget);
     check('T2.noRetryAndBoundedAttempts',
