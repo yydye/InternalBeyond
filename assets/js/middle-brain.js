@@ -54,7 +54,15 @@
          blockedReason           被拦下的稳定原因（未拦下恒为 null）—— "任何被 Middle Brain
                                  拦截的行为必须留下 trace" 这句话的落点就在这里：
                                  拦截写 blockedReason，放行写 null，绝不省略该字段。 */
-    'groupId', 'participants', 'memoryScope', 'policyDecision', 'blockedReason'];
+    'groupId', 'participants', 'memoryScope', 'policyDecision', 'blockedReason',
+    /* P11-2I · 收口之外路径的边界标记（1 个，**追加在末尾**；既有 28 个的顺序与语义一律未动）。
+       存在的理由是一条审计事实：博客留言与角色来信两条路径从模型回复里解析写入
+       指令并执行，却从不经过裁定 —— 因此它们此前**没有任何 trace**，
+       在所有观测面上不可见。本字段让它们如实自称"不在裁定管线内"
+       （值来自 integrity 层 MB_CI_OUTSIDE_ADJUDICATION），
+       于是"哪条路径在没有裁定的情况下产生了副作用"成为一条可查询的事实。
+       null = 本回合没有走那条路径（单聊/群聊保持 null，绝不伪造成 outside_adjudication）。 */
+    'sideEffectPolicy'];
   function _mbTraceOn() {
     try {
       if (root.__IB_MB_TRACE === false) return false;
@@ -81,7 +89,9 @@
       inputMessages: null, outputMessages: null,
       systemChanged: null, requestParamsChanged: null, executor: null, model: null, source: null, messagesChanged: null,
       /* P11-2F：群聊字段默认值。单聊回合保持 null / []，绝不因为新增字段而伪造群聊语义。 */
-      groupId: null, participants: [], memoryScope: null, policyDecision: null, blockedReason: null };
+      groupId: null, participants: [], memoryScope: null, policyDecision: null, blockedReason: null,
+      /* P11-2I：收口之外路径的边界标记默认 null = "本回合走的不是那条路径"。 */
+      sideEffectPolicy: null };
     try { _MB_TRACE[rec.character] = rec; } catch (e) {}
     return rec;
   }
@@ -99,7 +109,8 @@
          （null 打 null，绝不退化成 false —— 一个恒为 false 的 blockedReason 无法回答
          "这一轮到底拦没拦、拦的原因是什么"）；participants 与 sideEffectCategories 同形按逗号连接。 */
       else if (k === 'participants') lines.push(k + ': ' + (Array.isArray(v) ? v.join(',') : (v == null ? 'null' : String(v))));
-      else if (k === 'groupId' || k === 'memoryScope' || k === 'policyDecision' || k === 'blockedReason')
+      else if (k === 'groupId' || k === 'memoryScope' || k === 'policyDecision' || k === 'blockedReason'
+        || k === 'sideEffectPolicy')
         lines.push(k + ': ' + (v == null ? 'null' : String(v)));
       else if (k === 'sideEffectCategories') lines.push(k + ': ' + (Array.isArray(v) ? v.join(',') : (v == null ? 'null' : String(v))));
       else lines.push(k + ': ' + (v === true ? 'true' : 'false'));

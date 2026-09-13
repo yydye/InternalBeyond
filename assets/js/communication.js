@@ -32,6 +32,9 @@ async function requestBlogComment(postId){
   loadingDiv.innerHTML='<span class="letter-loading-spinner"></span>'+esc(cfg.nickname||'AI')+' 正在阅读并撰写留言…';
   container.insertBefore(loadingDiv,container.firstChild);
 
+  /* P11-2I：本条路径的边界 trace 收尾闭包（不在裁定管线内，但会产生模型派生写入）。
+     在 try 之前声明、在 catch 里兜底收尾 —— 见下方两处调用。 */
+  let _bhFinish=function(){};
   try{
     let context='';
     if(cfg.relationship)context+='你和对方的关系是：'+cfg.relationship+'。\n';
@@ -70,7 +73,15 @@ async function requestBlogComment(postId){
 
     let _cm={clean:String(response||''),ops:[]};
     try{_cm=_parseMemOps(String(response||''))}catch(e){}
-    if(_cm.ops.length&&amEnabled(cfg)&&!cfg.amRecordOnly){try{await _execMemOps(_cm.ops,cfg,cfg.nickname||cfg.model||'AI')}catch(e){}}
+    if(_cm.ops.length&&amEnabled(cfg)&&!cfg.amRecordOnly){
+      /* P11-2I：这条路径不在裁定管线内（无 verdict），但它产生了模型派生的记忆
+         写入。此前它在所有观测面上不可见 —— 现在记一条具名 trace，让"哪条路径
+         在没有裁定的情况下写了记忆"成为可观测事实，而不是需要读代码才知道的事。 */
+      _bhFinish=_mbBoundaryTrace('blog_comment',cfg,_cm.ops.length,'memory');
+      let _bdone=0;
+      try{_bdone=(await _execMemOps(_cm.ops,cfg,cfg.nickname||cfg.model||'AI')||[]).length}catch(e){}
+      _bhFinish('completed',_bdone);
+    }
     if(!_cm.clean||!_cm.clean.trim()){toast('AI 返回了空内容，未生成留言；请稍后重试');}
     else{
       const comment={id:'comment_'+Date.now(),postId:postId,from:cfg.nickname||cfg.model,content:_cm.clean,friendId:cfg.id,created:Date.now()};
@@ -78,8 +89,12 @@ async function requestBlogComment(postId){
       loadBlogComments(postId);
       toast('收到 '+(cfg.nickname||'AI')+' 的留言！');
     }
+    _bhFinish('completed');
   }catch(e){
     const le=document.getElementById('blog-comment-loading');if(le)le.remove();
+    /* P11-2I：异常路径同样收尾 —— 一次"开了记录却没进 ring"的 trace 等于没有 trace。
+       中断原因只记**稳定枚举**，绝不记异常正文（那可能带 URL / key / 正文片段）。 */
+    _bhFinish('aborted');
     let msg='请求失败';
     if(e.message){
       if(e.message.includes('Failed to fetch'))msg='无法连接到API服务器';
@@ -3351,6 +3366,72 @@ function _mbSideEffectsOk(category,count){
   if(!_f||typeof _f.middleBrainSideEffectAllowed!=='function')return true;
   return _f.middleBrainSideEffectAllowed(_mbVerdict,category,count)===true;
 }
+/* ── P11-2I · 收口之外的模型派生副作用：**记录**，不假装判定 ─────────────────
+   背景（P0 审计结论，不是新增能力）：博客留言与角色来信两条路径从模型回复里
+   解析 `<mem_*>` 并直接 `_execMemOps` 落库，既没有 verdict 也没有任何 trace ——
+   它们此前在所有观测面上都是**不可见的**。
+
+   为什么这里**不**调用 `_mbSideEffectGate`：`_mbVerdict` 的语义是"**本轮单聊
+   回合**收口产出的裁定状态"，它的唯一复位点是 sendMessage 的回合开头。留言与
+   来信不在任何单聊回合里，读到的是**上一次**回合的残留值（或并发回合中正在
+   跑的值）。把它送进闸门会得到一个"看起来经过判定"的结论，而那个结论在语义上
+   是错的 —— 它可能因为一条无关的 UNDECIDED 回复而误拦一次正常留言，也可能因为
+   null 而静默放行。**用一个语义错误的闸门冒充边界，比没有闸门更糟**，
+   因为它在观测面上无法与真实判定区分。
+
+   所以本函数只做一件事：把"这条路径产生了模型派生的记忆写入、且它不在
+   裁定管线内"如实记进**既有**的 trace 记录（与单聊/群聊同一套 `__mbTrace`，
+   零新设施）。consumer 具名（blog_comment / role_letter），
+   sideEffectPolicy='outside_adjudication'，blockedReason=null，
+   sideEffectsSuppressed 保持 null（绝不写成 true —— 这里没有发生抑制）。
+   字段与判定语义来自 integrity 层的 MB_CI_OUTSIDE_ADJUDICATION，本处不复制字面量。
+
+   收尾纪律：本函数**返回一个收尾闭包**而不是句柄对象 —— 这样记录一定进 ring
+   （`finish` 是唯一推进 ring 的点），调用方不可能"忘了 finish"或"用错 key"。
+   闭包只接受**结构化**的收尾参数（executor / outputMessages / count），
+   绝不接受异常正文 —— 那可能带 URL / key / 正文片段。 */
+function _mbOutsideAdjudication(){
+  try{
+    var _f=(window.IB&&window.IB.middleBrain)||null;
+    var v=_f&&_f.MB_CI_OUTSIDE_ADJUDICATION;
+    /* 降级字面量与 integrity 层的枚举值逐字相同（由测试断言两者一致），
+       这里**不是**第二份规则，只是"门面不在时不抛"的保守下界。 */
+    return v?String(v):'outside_adjudication';
+  }catch(e){return 'outside_adjudication'}
+}
+function _mbBoundaryTrace(consumer,cfg,count,category){
+  try{
+    var t=(window.IB&&window.IB.__mbTrace)||null;
+    if(!t||typeof t.begin!=='function'||typeof t.finish!=='function')return function(){};
+    var key=String((cfg&&cfg.id)||'');
+    if(!key)return function(){};
+    t.begin(String(consumer||''),key);
+    /* 只记事实：本路径不在裁定管线内、没有 verdict、没有发生抑制。
+       类别与条数由调用方给出（它已经解析过 ops），本层不推断。 */
+    var cats=(category==null?[]:[String(category)]);
+    t.note(key,'sideEffectPolicy',_mbOutsideAdjudication());
+    t.note(key,'integrityVerdict',null);
+    t.note(key,'integrityReason',null);
+    t.note(key,'blockedReason',null);
+    t.note(key,'sideEffectCategories',cats);
+    t.note(key,'inputMessages',null);
+    var done=false;
+    return function(kind,executed){
+      if(done)return;done=true;
+      try{
+        var extra={executor:String(kind==null?'completed':kind)};
+        if(Number.isFinite(Number(executed)))extra.outputMessages=Number(executed);
+        t.finish(key,extra);
+      }catch(e){}
+    };
+  }catch(e){return function(){}}
+}
+/* 唯一入口（与 `IB.__mbTrace` / `IB.middleBrain` 同一纪律：只读命名空间，不复制实现）。
+   兄弟模块（communication/letters.js 在自己的 IIFE 里）取用这一处 —— 于是
+   "收口之外路径必须留 trace"这条纪律只有一个实现，不会因为第二个消费方而分叉。 */
+try{
+  if(window.IB){window.IB.__mbBoundaryTrace=_mbBoundaryTrace;window.IB.__mbOutsideAdjudication=_mbOutsideAdjudication}
+}catch(e){}
 
 /* ── P11-2F · 群聊记忆写入边界（适配层；判定一律委托给 integrity 层）──────────
    `_mbGroupMemPolicy` 是群聊路径的**唯一判定入口**。它只做三件事：

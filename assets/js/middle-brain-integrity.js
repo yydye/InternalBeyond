@@ -637,6 +637,19 @@
     if (d.allow === false) _mbCiSuppress(category, count);
     return d.allow === true;
   }
+  /* ── P11-2I · "不在裁定管线内"的唯一判据（稳定枚举）────────────────────
+     P0 审计的结果是一条**事实**，不是一条新政策：存在若干路径，它们从模型回复里
+     解析出真正的写入指令并执行，却从来不经过任何裁定 —— 因此它们既没有 verdict，
+     也没有任何观测记录，在所有 trace 面上都是不可见的。
+
+     本枚举让那句事实**可被断言**：这些路径必须在 trace 里自称
+     `outside_adjudication`，于是"哪条路径在没有裁定的情况下产生了副作用"
+     成为一条查询，而不是一句注释。
+
+     刻意**不**把它们的值纳入 MB_CI_SIDE_EFFECT_SITES：那张表登记的是"闸门位置"
+     （4 个决策点），而这里登记的是"没有闸门的位置" —— 两者是互补的两个集合，
+     混在一张表里会让"有没有闸门"再也无法从表本身读出来。 */
+  var MB_CI_OUTSIDE_ADJUDICATION = 'outside_adjudication';
 
   /* ── P11-2F · 群聊记忆写入政策（**纯分类器**，无 IO、无状态、无副作用）──────
      背景（先读 P11-2C 的既有边界，本阶段**没有**改变它）：
@@ -864,6 +877,9 @@
     MB_GROUP_MEMORY_SCOPE: MB_GROUP_MEMORY_SCOPE,
     MB_GROUP_MEMORY_WRITABLE_SCOPE: MB_GROUP_MEMORY_WRITABLE_SCOPE,
     MB_GROUP_MEMORY_DENY: MB_GROUP_MEMORY_DENY,
+    /* P11-2I：不在裁定管线内的模型派生副作用路径的稳定标记（观测面用语，
+       不是第五个裁定态 —— 裁定状态仍只由 _mbCiOutcome 产生） */
+    MB_CI_OUTSIDE_ADJUDICATION: MB_CI_OUTSIDE_ADJUDICATION,
     /* P11-2D：抑制类别词表 + 抑制记录读取（只读快照；写入只由闸门内部完成） */
     MB_CI_SUPPRESSION_CATEGORIES: _MB_CI_SUPPRESSION_CATEGORIES,
     middleBrainSideEffectSuppression: middleBrainSideEffectSuppression,

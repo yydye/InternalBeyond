@@ -358,7 +358,10 @@ section('4 · Runtime trace 字段');
 {
   const MB = rd('middle-brain.js');
   const hasArrayBranch = /k === 'participants'\) lines\.push\(k \+ ': ' \+ \(Array\.isArray\(v\) \? v\.join\(','\)/.test(MB);
-  const hasTextBranch = /k === 'groupId' \|\| k === 'memoryScope' \|\| k === 'policyDecision' \|\| k === 'blockedReason'\)/.test(MB);
+  /* P11-2I：这一行新增了 sideEffectPolicy（同族文本字段，同样必须打印实际值 ——
+     一个恒为 null/'' 的边界标记无法回答"这条路径有没有经过裁定"）。
+     断言的**性质**不变（这一族走"实际值"分支），只把新成员纳入同一判据。 */
+  const hasTextBranch = /k === 'groupId' \|\| k === 'memoryScope' \|\| k === 'policyDecision' \|\| k === 'blockedReason'[\s\S]{0,80}?k === 'sideEffectPolicy'\)/.test(MB);
   check('T5.traceTextPrintsActualValuesForNewFields', hasArrayBranch && hasTextBranch);
 }
 /* 断言渲染行为本身（不是文本匹配）：装模块、造记录、看输出行。 */

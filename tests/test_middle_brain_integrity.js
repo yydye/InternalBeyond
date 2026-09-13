@@ -722,8 +722,10 @@ const api = http.createServer(async (req, res) => {
       JSON.stringify(tr2));
     /* 28 = P11-2D 的 23 个 + P11-2F 追加的 5 个群聊字段
        （groupId / participants / memoryScope / policyDecision / blockedReason），
-       追加在末尾，既有 23 个的顺序与语义未动（由 test_p11_2f 的 T1/T2/T3 锁定）。 */
-    check('I19.traceFieldsDeclared', tr2.keys === 28 && tr2.verdictKeyDeclared === true, String(tr2.keys));
+       追加在末尾，既有 23 个的顺序与语义未动（由 test_p11_2f 的 T1/T2/T3 锁定）。
+       P11-2I：28 → 29 —— 再追加 sideEffectPolicy（收口之外路径的边界标记），
+       仍是末尾追加。 */
+    check('I19.traceFieldsDeclared', tr2.keys === 29 && tr2.verdictKeyDeclared === true, String(tr2.keys));
 
     /* I20 · 无额外模型调用 / 无重试 / timeout 常量未变（本阶段硬约束）。
        timeout 用 400ms 触发，但生产常量必须仍是 20000 且判定逻辑与它无关；

@@ -164,6 +164,15 @@ async function populateLetterAiSelect(){
 
 var _lastLetterRequestTime=0;
 var _letterRequestBusy=false;/* Letters：防止快速连点在配置刷新完成前并发发出两次请求 */
+/* P11-2I · 边界 trace 门面（唯一实现在 communication.js 的 IB.__mbBoundaryTrace）。
+   本文件**不**复制判定逻辑：拿不到门面就返回 no-op，行为与改动前逐字一致 ——
+   观测设施缺席绝不允许改变写入行为（观测不是策略）。 */
+function ibBoundaryTrace(consumer,cfg,count,category){
+  try{
+    var f=(window.IB&&typeof window.IB.__mbBoundaryTrace==='function')?window.IB.__mbBoundaryTrace:null;
+    return f?f(consumer,cfg,count,category):function(){};
+  }catch(e){return function(){}}
+}
 async function requestLetterFromSelected(){
   /* 成功收到一封信后冷却 3 分钟；失败或空回复不进入冷却，避免一次故障后看起来“怎么都发不出去” */
   const now=Date.now();const cooldown=180000;
@@ -175,6 +184,8 @@ async function requestLetterFromSelected(){
 
   _letterRequestBusy=true;
   let btn=null,oldText='';
+  /* P11-2I：本条路径的边界 trace 收尾闭包（不在裁定管线内，但会产生模型派生写入）。 */
+  let _lmFinish=function(){};
   try{
     await loadApiConfigs();/* 确保API配置为最新 */
     const cfg=apiConfigs.find(a=>a.id===id);
@@ -274,7 +285,18 @@ async function requestLetterFromSelected(){
 
     let _lm={clean:String(response||''),ops:[]};
     try{_lm=_parseMemOps(String(response||''))}catch(e){}
-    if(_lm.ops.length&&amEnabled(cfg)&&!cfg.amRecordOnly){try{await _execMemOps(_lm.ops,cfg,_letterSender)}catch(e){}}
+    if(_lm.ops.length&&amEnabled(cfg)&&!cfg.amRecordOnly){
+      /* P11-2I：与博客留言同一类路径 —— 从模型回复里解析出真正的写入指令并执行，
+         却**不经过任何裁定**（没有 verdict），因此此前也没有任何 trace。
+         现在记一条具名 trace（consumer='role_letter'，sideEffectPolicy 自称
+         outside_adjudication），让这条路径在观测面上存在。
+         收尾闭包由 communication.js 提供（唯一实现，见 IB.__mbBoundaryTrace），
+         本文件不复制那份逻辑；门面缺席时得到的是 no-op，绝不因此改变写入行为。 */
+      _lmFinish=ibBoundaryTrace('role_letter',cfg,_lm.ops.length,'memory');
+      let _lmdone=0;
+      try{_lmdone=(await _execMemOps(_lm.ops,cfg,_letterSender)||[]).length}catch(e){}
+      _lmFinish('completed',_lmdone);
+    }
     if(!_lm.clean||!_lm.clean.trim()){
       toast('AI 返回了空内容，未生成信件；请稍后重试');
       return;
@@ -299,6 +321,10 @@ async function requestLetterFromSelected(){
     const le=document.getElementById('letter-loading');if(le)le.remove();
     if(btn){btn.disabled=false;btn.textContent=oldText||'✉ 接收信件'}
     _letterRequestBusy=false;
+    /* P11-2I：收尾放在 finally —— 这条路径有**三条**出口（成功 / 空回复提前 return /
+       异常），任何一条漏掉都会让记录永远不进 ring，等于没有 trace。
+       收尾参数只有稳定枚举，不含异常正文、正文片段或路径。 */
+    _lmFinish('completed');
   }
 }
 

@@ -275,8 +275,22 @@ check('T7b.groupChatRoutesMemoryThroughItsOwnPolicyNotTheGate',
   && countOcc(COM_TEXT, 'await _wsArchiveFileBlocks(_gws.files,selfName)') === 1,
   'group chat memory path lost its policy routing, or an unrelated path moved');
 check('T7b2.groupChatHasNoGate', !/_gws[\s\S]{0,600}_mbSideEffectsOk/.test(COM_TEXT));
-check('T7b3.blogCommentUntouched',
-  countOcc(COM_TEXT, 'if(_cm.ops.length&&amEnabled(cfg)&&!cfg.amRecordOnly){try{await _execMemOps(_cm.ops,cfg,') === 1);
+/* P11-2I 修订：`T7b3.blogCommentUntouched` 原先断言博客留言调用点是
+   `if(_cm.ops.length&&amEnabled(cfg)&&!cfg.amRecordOnly){try{await _execMemOps(_cm.ops,cfg,` 的
+   未加闸门形态 —— 即"这条路径没有被 P11-2I 之前的任何边界覆盖"这一**事实**。
+   审计把它查实为一个闭环缺口（模型派生写入，既无 verdict 也无任何 trace），
+   因此那条断言描述的正是被修掉的东西。现在改为断言**修好之后**应当成立的性质：
+     · 仍然**不**把 `_mbVerdict` 送进闸门（那个 verdict 属于单聊回合，
+       在这条路径上读到的只是残留值 —— 用语义错误的闸门冒充边界比没有闸门更糟）；
+     · 但它必须留下一条具名 trace，自称不在裁定管线内。
+   这不是放宽：判据从"逐字未动"换成了两条更强、更具体的性质。 */
+check('T7b3.blogCommentKeepsItsOwnBoundaryInsteadOfBorrowingAChatVerdict',
+  countOcc(COM_TEXT, '_mbBoundaryTrace(\'blog_comment\',cfg,_cm.ops.length,\'memory\')') === 1
+  && countOcc(COM_TEXT, 'if(_cm.ops.length&&amEnabled(cfg)&&!cfg.amRecordOnly){try{await _execMemOps(_cm.ops,cfg,') === 0,
+  'blog comment must be traced and must not borrow a single-chat verdict');
+check('T7b4.blogCommentNeverReadsTheChatVerdict',
+  !/_mbBoundaryTrace\('blog_comment'[\s\S]{0,200}_mbVerdict/.test(COM_TEXT),
+  'the chat-turn verdict must not be routed into a non-adjudicated path');
 check('T7c.groupChatNeverSeesVerdict',
   !/isGroup[\s\S]{0,400}_mbVerdict\s*=/.test(COM_TEXT),
   'group chat path assigns a verdict it never produces');

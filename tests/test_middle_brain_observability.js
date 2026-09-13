@@ -670,12 +670,14 @@ check('T14h.bypassedWithJudgeNotAttemptedExpressible',
 
 /* —— 字段声明 + 渲染（此前的渲染缺陷：文本字段被兜底成 false）——
    28 = P11-2D 的 23 个 + P11-2F 追加的 5 个群聊字段；追加在末尾，
-   既有 23 个的顺序与语义未动（test_p11_2f 的 T1/T2/T3 锁定顺序）。 */
+   既有 23 个的顺序与语义未动（test_p11_2f 的 T1/T2/T3 锁定顺序）。
+   P11-2I：28 → 29 —— 追加 sideEffectPolicy（收口之外路径的边界标记）。
+   同样是**末尾追加**，既有 28 个的顺序与语义一律未动。 */
 check('T14i.traceFieldsDeclared',
-  trace.fields.length === 28
+  trace.fields.length === 29
   && ['judgeAttempted', 'integrityRewritten', 'sideEffectsSuppressed', 'sideEffectCategories']
     .every(k => trace.fields.indexOf(k) >= 0)
-  && ['groupId', 'participants', 'memoryScope', 'policyDecision', 'blockedReason']
+  && ['groupId', 'participants', 'memoryScope', 'policyDecision', 'blockedReason', 'sideEffectPolicy']
     .every(k => trace.fields.indexOf(k) >= 0),
   JSON.stringify(trace.fields));
 t = await new Promise(async resolve => {
