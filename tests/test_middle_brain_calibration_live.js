@@ -44,9 +44,23 @@
       （本文件在 mock 模式下也进 test-all 的 browser 组），所以"校准不写生产状态"
       不是靠人相信，而是每次跑都验一遍。
 
-   ⚠ 唯一被允许的写入是 `saveMiddleBrainConfig`，而且只写进**一次性临时浏览器
-     profile**（os.tmpdir() 下的 mkdtemp 目录，跑完即删）。它不是生产配置：
-     生产配置在用户真实浏览器的 profile 里，本 harness 从不打开那个 profile。
+   ⚠ 写入的真实边界（Phase 1B.1 起按实测改写，之前的说法不准确）：
+     本 harness 打开的浏览器 profile 永远是**一次性临时目录**
+     （os.tmpdir() 下的 mkdtemp，跑完即删），生产配置在用户真实浏览器的
+     profile 里，本 harness 从不打开那个 profile —— 所以任何写入都不可能落到
+     真实用户状态上。
+     但"除临时 profile 的 middle_brain 配置外不写任何 store"这句是**错的**：
+     校准页面自己会在启动期做维护性写入（实测在一次性 profile 的 localStorage 里，
+     例如 role-letters 的一次性旧数据清理标记、core 的开站 8s 紧急镜像两连写）。
+     它们与校准无因果关系，但确实发生。因此：
+       · 观测窗口先做**启动期沉降**：闸门是"开站镜像已完成"的**可观测事实**
+         （window._ibMirrorLastTs > 0）加上一段安静期，把这类维护写入排除在
+         窗口之外，并在报告里逐条打印（key + 调用者 + 是否改值）；
+       · 窗口内的 `durableWrites === 0` 仍是**未放宽**的硬断言（T3–T8 一个字没改）；
+       · 被排除的写入必须可归因（T0b/T0c），且**没有一条来自校准路径**（T0）——
+         判据是"调用者是不是校准路径"，不是给某些 key 开白名单。
+     ⚠ 校准路径自身（middle-brain-* / dialogue-core）在整个过程中都不得产生任何
+       持久化写入。这条是 T3–T8 与 T0 的共同实质。
    ══════════════════════════════════════════════════════════════════════
    ==================================================================== */
 'use strict';
@@ -504,20 +518,61 @@ const mockApi = http.createServer(async (req, res) => {
       try { window.WebSocket.CONNECTING = 0; window.WebSocket.OPEN = 1; window.WebSocket.CLOSING = 2; window.WebSocket.CLOSED = 3; } catch(e){}
     }
     /* ⑤ 平台层持久化绊线（原型级） */
+    /* 调用者归属：只取**仓库内的**前几帧 assets/js/xxx.js:line。
+       为什么必须记这个：Phase 1B.1 实测发现，只记计数的绊线一旦变红就**不可归因** ——
+       报告只能说"有 3 次 durable 写入"，说不出是谁写的、写的哪个 key，
+       于是既无法判断它是不是校准造成的，也无法判断它有没有碰到真实用户状态。
+       记前 3 帧而不是 1 帧：像 core.js 的 dbPut 这种通用传输助手，最内层帧只是助手本身，
+       语义所有者要再往上一帧才看得到。
+       去掉 host:port 是为了让输出在不同运行之间稳定可比。 */
+    function framesOf(){
+      var out = [];
+      try {
+        var lines = String(new Error().stack || '').split('\\n');
+        for (var i = 0; i < lines.length && out.length < 3; i++) {
+          var m = lines[i].match(/assets\\/js\\/([^\\/\\s:]+):(\\d+):(\\d+)/);
+          if (m) out.push(m[1] + ':' + m[2]);
+        }
+      } catch(e){ out.push('(stack-error)'); }
+      return out.length ? out : ['(no-assets-frame)'];
+    }
     function patch(proto, method, key){
       try {
-        if (!proto || typeof proto[method] !== 'function') { O.platform[key] = {present:false, calls:0, stores:{}}; return; }
+        if (!proto || typeof proto[method] !== 'function') { O.platform[key] = {present:false, calls:0, stores:{}, detail:[]}; return; }
         var orig = proto[method];
-        O.platform[key] = {present:true, calls:0, stores:{}};
+        O.platform[key] = {present:true, calls:0, stores:{}, detail:[]};
+        var isStorage = (key.indexOf('storage') === 0);
+        var hasKeyArg = (method === 'setItem' || method === 'removeItem' || method === 'delete');
         proto[method] = function(){
           var cell = O.platform[key]; cell.calls++;
           try {
             var n = (this && this.name) || (this === window.localStorage ? 'localStorage' : (this === window.sessionStorage ? 'sessionStorage' : '(unknown)'));
             cell.stores[n] = (cell.stores[n] || 0) + 1;
+            /* 明细只留前 64 条：够归因，且不让异常页面把观测器撑爆。
+               完整性由 T0c 断言（calls ≤ 64 时 detail 必须逐条对上）。 */
+            if (cell.detail.length < 64) {
+              var frames = framesOf();
+              var rec = {seq: cell.calls, store: n, caller: frames[0], callers: frames};
+              if (hasKeyArg) {
+                try {
+                  var a0 = arguments[0];
+                  rec.key = (a0 && typeof a0 === 'object' && a0.id != null) ? ('id:' + String(a0.id)) : (a0 == null ? null : String(a0).slice(0, 60));
+                } catch(e){ rec.key = null; }
+              } else { rec.key = null; }   /* clear() 类没有 key 参数 */
+              if (isStorage && method === 'setItem') {
+                var k = String(arguments[0]);
+                var before = null; try { before = this.getItem(k); } catch(e){}
+                rec.key = k;
+                rec.valueLength = String(arguments[1] == null ? '' : arguments[1]).length;
+                rec.existedBefore = before !== null;
+                rec.changed = before === null ? true : (String(before) !== String(arguments[1]));
+              }
+              cell.detail.push(rec);
+            }
           } catch(e){}
           return orig.apply(this, arguments);
         };
-      } catch(e){ O.platform[key] = {present:false, calls:0, stores:{}, error:String(e && e.message || e).slice(0,80)}; }
+      } catch(e){ O.platform[key] = {present:false, calls:0, stores:{}, detail:[], error:String(e && e.message || e).slice(0,80)}; }
     }
     patch(window.IDBObjectStore && window.IDBObjectStore.prototype, 'put', 'idbPut');
     patch(window.IDBObjectStore && window.IDBObjectStore.prototype, 'add', 'idbAdd');
@@ -606,10 +661,80 @@ const mockApi = http.createServer(async (req, res) => {
   const resetObserver = () => evaluate(cdp, `(function(){
     var O = window.__ASTRA_OBS; if (!O) return false;
     O.transport.length = 0; O.fetchHosts.length = 0; O.denied.length = 0; O.wsAttempts.length = 0;
-    Object.keys(O.platform).forEach(function(k){ O.platform[k].calls = 0; O.platform[k].stores = {}; });
+    Object.keys(O.platform).forEach(function(k){ O.platform[k].calls = 0; O.platform[k].stores = {}; O.platform[k].detail = []; });
     Object.keys(O.tripwires).forEach(function(k){ O.tripwires[k].calls = 0; });
     return true;
   })()`);
+
+  /* ── Phase 1B.1 · 启动期写入沉降（窗口卫生）────────────────────────────
+     为什么需要：把窗口起点放在"页面刚 mount"之后，会把**页面自身的启动期维护
+     写入**一起算进校准窗口，于是 T3–T8 全红 —— 但那 3 次写入与校准毫无因果关系
+     （Phase 1B.1 归因：role-letters.js 的一次性旧数据清理标记 + core.js 开站 8s
+     的紧急镜像两连写，全部发生在一次性临时 profile 里）。
+
+     修法**不是**给 key 开白名单（那会把"有写入"这件事藏起来），而是让窗口
+     真的从"页面启动维护已经排空"之后开始。判据必须**基于可观测的完成事实**，
+     不能靠"安静了几秒"去猜 —— 实测教训：3 秒安静期**抓不到还没到点的定时器**，
+     core.js:1205 的 `setTimeout(_ibMirrorNow, 8000)` 会在窗口开了 2 秒之后才写，
+     于是又把 T3–T8 染红（本轮第一版实现就踩了这个坑）。所以真正的闸门是：
+       · **镜像一次写已完成的直接证据**：core.js 用 `ibCoreLive('_ibMirrorLastTs',…)`
+         把该变量定义成 window 上的活取器，它在 `_ibMirrorNow` 末尾（两次 setItem
+         之后）才被赋值 → `> 0` 就是"开站底片已经拍完"的铁证；
+       · 再看平台绊线的 durable 调用数连续 QUIET 毫秒不变（兜住其它启动期写入）；
+       · 兜底：若该访问器不存在（页面被改过），则退回最小等待 MIN_MS 并**在报告里
+         明说是兜底规则**，绝不静默按"安静"就开窗。
+     这样 T3–T8 的 `durableWrites === 0` 一个字都不用改，仍然是硬断言：
+     窗口内任何一次持久化写入（不管是谁写的）依旧会让它们全红，只是现在红得可归因。
+     被排除的写入逐条打印（key + 调用者），并断言它们**从不是校准路径**写的。 */
+  const SETTLE_QUIET_MS = (() => {
+    const a = process.argv.find(x => x.startsWith('--settle-quiet-ms='));
+    const n = a ? Number(a.slice('--settle-quiet-ms='.length)) : 3000;
+    return Number.isFinite(n) && n >= 0 ? n : 3000;
+  })();
+  const SETTLE_MAX_MS = (() => {
+    const a = process.argv.find(x => x.startsWith('--settle-max-ms='));
+    const n = a ? Number(a.slice('--settle-max-ms='.length)) : 30000;
+    return Number.isFinite(n) && n > 0 ? n : 30000;
+  })();
+  /* 兜底最小等待的证据来源：core.js 的开站镜像 `setTimeout(..., 8000)`。 */
+  const SETTLE_MIN_FALLBACK_MS = (() => {
+    const a = process.argv.find(x => x.startsWith('--settle-min-ms='));
+    const n = a ? Number(a.slice('--settle-min-ms='.length)) : 9000;
+    return Number.isFinite(n) && n >= 0 ? n : 9000;
+  })();
+  const DURABLE_KEYS = ['idbPut', 'idbAdd', 'idbDelete', 'idbClear', 'storageSet', 'storageRemove', 'storageClear'];
+  const durableCount = (o) => DURABLE_KEYS.reduce((a, n) => a + ((o.platform[n] && o.platform[n].calls) || 0), 0);
+  const durableDetailOf = (o) => DURABLE_KEYS.reduce((acc, n) => {
+    const cell = o.platform[n]; if (!cell) return acc;
+    (cell.detail || []).forEach(d => acc.push({ method: n, store: d.store, key: d.key, valueLength: d.valueLength,
+      existedBefore: d.existedBefore, changed: d.changed, caller: d.caller }));
+    return acc;
+  }, []);
+  const startupGate = () => evaluate(cdp, `(function(){
+    var out = {mirrorAccessor:false, mirrorLastTs:null};
+    try { if (typeof window._ibMirrorLastTs === 'number') { out.mirrorAccessor = true; out.mirrorLastTs = window._ibMirrorLastTs; } } catch(e){}
+    return out;
+  })()`);
+  async function settleStartupWrites() {
+    const t0 = Date.now();
+    let last = -1, quietSince = t0, lastChange = null;
+    while (Date.now() - t0 < SETTLE_MAX_MS) {
+      const n = durableCount(await readObserver());
+      if (n !== last) { last = n; quietSince = Date.now(); lastChange = Date.now(); }
+      const gate = await startupGate();
+      const mirrorDone = gate.mirrorAccessor
+        ? (gate.mirrorLastTs > 0)
+        : (Date.now() - t0 >= SETTLE_MIN_FALLBACK_MS);
+      if ((Date.now() - quietSince) >= SETTLE_QUIET_MS && mirrorDone) {
+        return { ok: true, waitedMs: Date.now() - t0, quietMs: Date.now() - quietSince, durable: n,
+          rule: gate.mirrorAccessor ? 'mirror-one-shot-completed' : 'min-wait-fallback',
+          mirrorAccessor: gate.mirrorAccessor, mirrorLastTs: gate.mirrorLastTs,
+          lastChangeMs: lastChange ? lastChange - t0 : null };
+      }
+      await new Promise(r => setTimeout(r, 400));
+    }
+    return { ok: false, waitedMs: Date.now() - t0, durable: last, timedOut: true };
+  }
 
   /* ── Astra Readiness 语料的页面侧调用（与 layerA 的差别只有三点，都是契约要求）──
      ① 有 currentId：本轮消息的 canonical 身份（M1-C.2p 的 currentId 参数）
@@ -722,6 +847,47 @@ const mockApi = http.createServer(async (req, res) => {
         m[n] = { calls: initObs.platform[n] ? initObs.platform[n].calls : null, stores: initObs.platform[n] ? initObs.platform[n].stores : null }; return m;
       }, {})));
     console.log('       ws attempts before the window: ' + JSON.stringify(initObs.wsAttempts));
+    /* Phase 1B.1：等页面自身的启动期维护写入排空，再开窗。
+       这一步是"窗口里到底该算什么"的定义，不是加速/减速开关。 */
+    const settle = await settleStartupWrites();
+    const preWindowObs = await readObserver();
+    const excludedWrites = durableDetailOf(preWindowObs);
+    console.log('\n  [§12] startup settle: waited ' + settle.waitedMs + 'ms'
+      + ' (rule=' + (settle.rule || 'TIMEOUT') + ', quiet ' + (settle.quietMs != null ? settle.quietMs : 'n/a') + 'ms, durable calls at open=' + settle.durable
+      + ', mirror one-shot completed=' + settle.mirrorAccessor + ')'
+      + (settle.timedOut ? '  ← 超时开窗（页面启动期仍在写；下面窗口内的写入会因此变红）' : ''));
+    check('T0d.settleGateIsEvidenceBased', settle.ok === true && settle.rule === 'mirror-one-shot-completed',
+      JSON.stringify(settle) + ' —— 开窗闸门必须是"开站镜像已完成的直接证据"，退回最小等待只能算兜底');
+    console.log('       writes EXCLUDED from the calibration window (page startup maintenance): '
+      + JSON.stringify(excludedWrites));
+    /* 被排除的启动期写入必须满足两条**内容性**不变量（不是给 key 开白名单）：
+       ① 没有任何一条来自校准路径 —— 校准路径（middle-brain-* / dialogue-core）在
+          整个过程中都不得产生持久化写入，启动期也不例外；
+       ② 每条都归因完整：带 key 参数的 API 必须记到 key，且必须有仓库内调用帧。
+       注意 ① 不声称"启动期没有 DB 写入"：全新临时 profile 里页面**本来就要**建自己的库
+       （实测 core.js 的 seed/init 会写 apiSettings(indexedDB 的 middle_brain 配置)、
+       about、categories）。那种写入是页面初始化，不是校准副作用，也不在真实用户 profile 里。
+       用"是不是校准路径"来判，比用"是不是某个 key"来判更难被绕过。 */
+    const CAL_PATH_RE = /^(middle-brain|dialogue-core)/;
+    check('T0.startupWritesExcludeCalibrationPath',
+      excludedWrites.every(d => !CAL_PATH_RE.test(String(d.caller)) && !CAL_PATH_RE.test(String((d.callers || [])[1] || ''))),
+      JSON.stringify(excludedWrites.filter(d => CAL_PATH_RE.test(String(d.caller)) || CAL_PATH_RE.test(String((d.callers || [])[1] || '')))));
+    check('T0b.everyExcludedWriteIsAttributed',
+      excludedWrites.every(d => d.caller && d.caller !== '(no-assets-frame)' && d.caller !== '(stack-error)'
+        && (d.key != null || !/setItem|removeItem|delete$/.test(d.method))),
+      JSON.stringify(excludedWrites.filter(d => !d.caller || d.caller === '(no-assets-frame)'
+        || (d.key == null && /setItem|removeItem|delete$/.test(d.method)))));
+    /* 归因必须**完整**：只要某方法总调用数 ≤ 64，明细条数就必须逐条对上。
+       否则"没有记到"会被误读成"没有发生" —— 这正是本轮要消除的那类歧义。 */
+    check('T0c.durableAttributionIsComplete',
+      DURABLE_KEYS.every(n => {
+        const cell = preWindowObs.platform[n]; if (!cell || !cell.present) return true;
+        return (cell.detail || []).length === Math.min(cell.calls, 64);
+      }),
+      JSON.stringify(DURABLE_KEYS.map(n => {
+        const cell = preWindowObs.platform[n] || {};
+        return { m: n, calls: cell.calls || 0, detail: (cell.detail || []).length, err: (cell.detail || []).length !== Math.min(cell.calls || 0, 64) };
+      }).filter(x => x.err)));
     await resetObserver();   /* 窗口从这里开始 */
 
     const observations = [];   /* 每条 = 真实执行路径上的 Judge 观测（Layer A 断言用） */
@@ -969,6 +1135,11 @@ const mockApi = http.createServer(async (req, res) => {
     const pfStores = (n) => (finalObs.platform[n] && finalObs.platform[n].stores) || {};
     const durableWrites = ['idbPut', 'idbAdd', 'idbDelete', 'idbClear', 'storageSet', 'storageRemove', 'storageClear']
       .reduce((a, n) => a + (pf(n) || 0), 0);
+    /* 窗口内的持久化写入必须**可归因**：key + 调用者 + 是否改值。
+       否则一次红只能得到"durable=3"这种不可行动的信息（Phase 1B.1 的教训）。 */
+    const inWindowDurable = durableDetailOf(finalObs);
+    const durableWhy = 'durable=' + durableWrites
+      + (inWindowDurable.length ? '  [' + inWindowDurable.map(d => d.method + ' ' + JSON.stringify(d.key) + ' @ ' + d.caller).join(' | ') + ']' : '');
     const semanticBy = (kind) => Object.keys(finalObs.tripwires)
       .filter(n => finalObs.tripwires[n].kind === kind)
       .reduce((a, n) => a + finalObs.tripwires[n].calls, 0);
@@ -977,6 +1148,7 @@ const mockApi = http.createServer(async (req, res) => {
     console.log('       planned calls=' + PLAN.plannedCalls + '  actual: judge=' + actualCalls.judge
       + ' rewrite=' + actualCalls.rewrite + ' verify=' + actualCalls.verify + ' total=' + actualCalls.total);
     console.log('       platform tripwires: ' + JSON.stringify(Object.keys(finalObs.platform).reduce((m, n) => { m[n] = { calls: pf(n), stores: pfStores(n) }; return m; }, {})));
+    if (inWindowDurable.length) console.log('       durable writes INSIDE the window (must be empty): ' + JSON.stringify(inWindowDurable));
     console.log('       semantic tripwires (non-zero only): '
       + JSON.stringify(Object.keys(finalObs.tripwires).filter(n => finalObs.tripwires[n].calls > 0).reduce((m, n) => { m[n] = finalObs.tripwires[n].calls; return m; }, {})));
     console.log('       fetch hosts contacted: ' + JSON.stringify(finalObs.fetchHosts));
@@ -1002,15 +1174,15 @@ const mockApi = http.createServer(async (req, res) => {
       && (READINESS_MODE ? records.every(r => r.execution.retry === 0) : true),
       'actual=' + actualCalls.total + ' planned(worst case)=' + PLAN.plannedCalls);
     check('T3.noChatWrites', durableWrites === 0 && semanticBy('chat') === 0,
-      'durable=' + durableWrites + ' chat=' + semanticBy('chat'));
+      durableWhy + ' chat=' + semanticBy('chat'));
     check('T4.noMemoryWrites', durableWrites === 0 && semanticBy('memory') === 0,
-      'durable=' + durableWrites + ' memory=' + semanticBy('memory'));
+      durableWhy + ' memory=' + semanticBy('memory'));
     check('T5.noUnderstandingWrites', durableWrites === 0 && pfStores('idbPut').understanding == null && pfStores('idbDelete').understanding == null,
-      JSON.stringify(pfStores('idbPut')));
-    check('T6.noThreadWrites', durableWrites === 0 && semanticBy('thread') === 0, 'thread=' + semanticBy('thread'));
-    check('T7.noMomentWrites', durableWrites === 0 && semanticBy('moment') === 0, 'moment=' + semanticBy('moment'));
+      durableWhy + ' ' + JSON.stringify(pfStores('idbPut')));
+    check('T6.noThreadWrites', durableWrites === 0 && semanticBy('thread') === 0, durableWhy + ' thread=' + semanticBy('thread'));
+    check('T7.noMomentWrites', durableWrites === 0 && semanticBy('moment') === 0, durableWhy + ' moment=' + semanticBy('moment'));
     check('T8.noMiddleBrainConfigMutationDuringCalibration', durableWrites === 0 && tw('saveMiddleBrainConfig') === 0,
-      'durable=' + durableWrites + ' saveMiddleBrainConfig=' + tw('saveMiddleBrainConfig'));
+      durableWhy + ' saveMiddleBrainConfig=' + tw('saveMiddleBrainConfig'));
     check('T9.noGateStateMutation', semanticBy('gate_state') === 0, 'gate_state=' + semanticBy('gate_state'));
     check('T10.noProductionProviderConfigWrite', semanticBy('provider_config') === 0, 'provider_config=' + semanticBy('provider_config'));
     check('T11.configWritesConfinedToIsolatedTempProfile', (() => {
