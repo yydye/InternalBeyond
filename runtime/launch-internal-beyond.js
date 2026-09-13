@@ -12,11 +12,11 @@
  *      (never a second copy when already healthy).
  *   3. Bounded-polls readiness. Optional services that do not come up are
  *      recorded as DEGRADED — they never prevent the main UI from opening.
- *   4. Detects / reuses / starts the static web server on 127.0.0.1:23120.
- *      The static layer is the ONLY fatal dependency: without it there is no UI.
+ *   4. Detects / reuses / starts the static web server on 127.0.0.1 (port from
+ *      the component registry: IB_WEB_PORT, default 23120).
  *   5. Writes a machine-readable launch record (boot-state.json) so diagnostics
  *      can report what was normal, what was degraded, and why.
- *   6. Opens http://127.0.0.1:23120/InternalBeyond.html.
+ *   6. Opens the main UI document on that port.
  *   7. Fatal only when the main UI genuinely cannot be served — and then it
  *      never opens a broken URL.
  *
@@ -63,11 +63,11 @@ const SERVICES_TIMEOUT_MS = Number(process.env.IB_LAUNCH_SERVICES_TIMEOUT_MS) ||
 const WEB_TIMEOUT_MS = Number(process.env.IB_LAUNCH_WEB_TIMEOUT_MS) || 15000;
 const POLL_MS = 800;
 
-function optionPort(name, fallback) {
-  const raw = process.env[name];
-  const n = Number(raw);
-  return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : fallback;
-}
+/* Port resolution used to live here as its own `optionPort()`. It now lives in
+   the component registry (registry.portOf), so the launcher, the runner and the
+   server cannot disagree about which environment variable and which default a
+   port comes from. `registry.portOfEnv` is exported for the parts of the product
+   that name a port without naming a component. */
 
 function ensureLogDir() {
   try { fs.mkdirSync(LOG_DIR, { recursive: true }); } catch (e) { }
@@ -681,7 +681,6 @@ module.exports = {
   HOME_NODE_PORT: HOME_NODE_PORT,
   RESTART_PORT: RESTART_PORT,
   VISION_PORT: VISION_PORT,
-  optionPort: optionPort,
   nodeRuntimeInfo: nodeRuntimeInfo,
   httpGetJson: httpGetJson,
   webHealthy: webHealthy,
