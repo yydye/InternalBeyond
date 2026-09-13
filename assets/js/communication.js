@@ -1707,6 +1707,8 @@ async function sendChatMessage(voiceMsg){
      以及收口本身故障时）→ 下游闸门 fail-open，行为与改动前逐字一致。
      只有单聊两条路径在收口后把它改成 integrity 层产出的 verdict。 */
   _mbVerdict=null;
+  /* P11-2D · 同一个复位点复位抑制计数：否则上一回合残留的条数会让"本轮有指令"变成假命题。 */
+  _mbSideEffectCounts={};
   /* Get input from either mini or full chat */
   const miniInput=document.getElementById('chat-input');
   const fullInput=document.getElementById('chat-full-input');
@@ -2369,8 +2371,9 @@ async function sendChatMessage(voiceMsg){
           _mbVerdict=(_mbFinal&&_mbFinal.outcome&&_mbFinal.outcome.verdict)||null;
         }
       }catch(_mbFinErrS){console.warn('[MiddleBrain] finalize failed',String(_mbFinErrS&&_mbFinErrS.message||_mbFinErrS).slice(0,120))}
-      /* Middle Brain Trace · dev 观测：回合末尾一次性打印本轮逐层 participation（只读、不落盘） */
-      if(_mbTrace)_mbTrace.finish(cfg.id,{});
+      /* Middle Brain Trace · dev 观测：本轮的打印点**下移到所有副作用之后**（P11-2D）——
+         抑制发生在解析回复之后，若仍在此处收口，trace 永远不可能包含"本轮拦下了什么"。
+         打印内容、字段白名单、只读性质与落盘行为全部不变，只改打印时机。 */
       if(_showThinking&&thinkingText){_ensureStreamThinking(streamRefs,_liveThinkEls);_finishStreamThinking(_liveThinkEls,thinkingText)}
       /* AUTO MEMORY：截取并执行 mem_* 指令（先于 ws 解析与收尾渲染，防止标签原文入库/上屏）
          P11-2C：执行与否由**显式裁定状态**决定（唯一决策点 MBC.integrity.middleBrainSideEffectAllowed）。
@@ -2378,27 +2381,29 @@ async function sendChatMessage(voiceMsg){
       var _memR=[];
       replyText=await _applyWithdraw(cfg,replyText,_targetFriend,cfg.nickname||cfg.model||'AI');
       {const _mp=_parseMemOps(replyText);
-       if(_mp.ops.length){replyText=_mp.clean;if(amEnabled(cfg)&&_mbSideEffectsOk())_memR=await _execMemOps(_mp.ops,cfg,cfg.nickname||cfg.model||'AI')}}      /* CALENDAR：截取 <cal_note> 便笺并入库（重复/越权丢弃出警示卡）；正文出现临近事项标题时在台账打「已提及」勾 */
+       if(_mp.ops.length){replyText=_mp.clean;_mbSideEffectCounts[_MB_SEC.mem]=_mp.ops.length;if(amEnabled(cfg)&&_mbSideEffectGate(_MB_SEC.mem))_memR=await _execMemOps(_mp.ops,cfg,cfg.nickname||cfg.model||'AI')}}      /* CALENDAR：截取 <cal_note> 便笺并入库（重复/越权丢弃出警示卡）；正文出现临近事项标题时在台账打「已提及」勾 */
       var _calR=[];
-      try{if(window.IBCAL&&_mbSideEffectsOk()){const _cp=await IBCAL.processReply(replyText,cfg);replyText=_cp.clean;_calR=_cp.results||[]}}catch(e){}
+      try{if(window.IBCAL){_mbSideEffectCounts[_MB_SEC.cal]=1;if(_mbSideEffectGate(_MB_SEC.cal)){const _cp=await IBCAL.processReply(replyText,cfg);replyText=_cp.clean;_calR=_cp.results||[]}}}catch(e){}
       /* Blog 阅读申请：截取 blog_read 标签并生成申请卡（标签不入库、不上屏） */
       var _brCards=[];
       {const _bp=_parseBlogReadOps(replyText);
-       if(_bp.ops.length){replyText=_bp.clean;try{if(_mbSideEffectsOk())_brCards=await _execBlogReadOps(_bp.ops)}catch(e){}}}
+       if(_bp.ops.length){replyText=_bp.clean;try{if(_mbSideEffectsOk(_MB_SEC.blog,_bp.ops.length))_brCards=await _execBlogReadOps(_bp.ops)}catch(e){}}}
       /* 以完整回复为准重建气泡：文本 + 操作卡 + 下载卡按原始顺序分段渲染，卡片状态对齐真实执行结果 */
       var _wsParsed=_parseWsOps(replyText);
       var _wsResults=[];
-      if(_wsParsed.ops.length&&_mbSideEffectsOk())_wsResults=await _execWsOps(_wsParsed.ops,cfg.nickname||cfg.model||'AI',cfg,{source:'chat',friendId:_targetFriend,threadId:_targetThread||'',userMessageId:userMsg.id});
-      if(_wsParsed.files&&_wsParsed.files.length){try{if(_mbSideEffectsOk())await _wsArchiveFileBlocks(_wsParsed.files,cfg.nickname||cfg.model||'AI')}catch(e){}}
+      if(_wsParsed.ops.length&&_mbSideEffectGate(_mbSecWsCats(_wsParsed.ops)))_wsResults=await _execWsOps(_wsParsed.ops,cfg.nickname||cfg.model||'AI',cfg,{source:'chat',friendId:_targetFriend,threadId:_targetThread||'',userMessageId:userMsg.id});
+      if(_wsParsed.files&&_wsParsed.files.length){try{if(_mbSideEffectGate([_MB_SEC.file]))await _wsArchiveFileBlocks(_wsParsed.files,cfg.nickname||cfg.model||'AI')}catch(e){}}
       var _wsPhantom=_wsCheckPhantom(_wsParsed.cleanText,_wsParsed.ops.length);
       streamRefs.forEach(ref=>{_wsFinalizeBubble(ref,replyText,_wsResults)});
       /* 工具回合续（v6）：执行了工具 → 结果自动回喂再生成一轮（用户无需再说一句；失败静默不影响已渲染内容）
          P11-2C：续轮本身不再回头问 Judge（那会新增模型调用，越界），因此它沿用**本回合**
          已记录的裁定状态：本回合 UNDECIDED 时，续轮解析出的工具指令同样不执行。
          状态来源是同一个显式值，续轮不做任何独立推断。 */
-      if((_wsParsed.ops.length||_wsParsed.files.length)&&_mbSideEffectsOk()){
+      if((_wsParsed.ops.length||_wsParsed.files.length)&&_mbSideEffectGate(_mbSecWsCats(_wsParsed.ops).concat(_wsParsed.files.length?[_MB_SEC.file]:[]))){
         try{await _wsToolContinue(cfg,{messages:messages,lastReply:replyText,friendId:_targetFriend,chatKey:_targetFriend,senderName:cfg.nickname||cfg.model||'AI',round:1,threadId:_targetThread})}catch(e){}
       }
+      /* 本回合 trace 收口（打印点已在副作用之后，故抑制记录此刻已是终值） */
+      _mbSecTraceFinish(_mbTrace,cfg.id,_mbVerdict);
       if(_srchLog.length||_memR.length)streamRefs.forEach(ref=>{_amAppendExtraCards(ref.isTextNode?ref.div:ref.txt,_srchLog,_memR)});
       if(_wsPendingReads.length)streamRefs.forEach(ref=>{(ref.isTextNode?ref.div:ref.txt).appendChild(_buildWsReadHint())});
       if(_brCards.length)streamRefs.forEach(ref=>{_brCards.forEach(function(c){(ref.isTextNode?ref.div:ref.txt).appendChild(_brBuildCard(c))})});
@@ -2455,30 +2460,31 @@ async function sendChatMessage(voiceMsg){
           _mbVerdict=(_mbFinal&&_mbFinal.outcome&&_mbFinal.outcome.verdict)||null;
         }
       }catch(_mbFinErrN){console.warn('[MiddleBrain] finalize failed',String(_mbFinErrN&&_mbFinErrN.message||_mbFinErrN).slice(0,120))}
-      /* Middle Brain Trace · dev 观测：回合末尾一次性打印本轮逐层 participation（只读、不落盘） */
-      if(_mbTrace)_mbTrace.finish(cfg.id,{});
+      /* Middle Brain Trace · 打印点与非流式逐字同款：下移到副作用之后（P11-2D）。 */
       /* 非流式路径：先截取 mem_* 指令，再按顺序执行工作区操作
          P11-2C：与流式路径同款 —— 执行与否只看显式裁定状态，不看文本。 */
       var _memRNs=[];
       replyText=await _applyWithdraw(cfg,replyText,_targetFriend,cfg.nickname||cfg.model||'AI');
       {const _mpn=_parseMemOps(replyText);
-       if(_mpn.ops.length){replyText=_mpn.clean;if(amEnabled(cfg)&&_mbSideEffectsOk())_memRNs=await _execMemOps(_mpn.ops,cfg,cfg.nickname||cfg.model||'AI')}}
+       if(_mpn.ops.length){replyText=_mpn.clean;_mbSideEffectCounts[_MB_SEC.mem]=_mpn.ops.length;if(amEnabled(cfg)&&_mbSideEffectGate(_MB_SEC.mem))_memRNs=await _execMemOps(_mpn.ops,cfg,cfg.nickname||cfg.model||'AI')}}
       /* CALENDAR：非流式同样截取 <cal_note> 并入库、扫描提及 */
       var _calRNs=[];
-      try{if(window.IBCAL&&_mbSideEffectsOk()){const _cpn=await IBCAL.processReply(replyText,cfg);replyText=_cpn.clean;_calRNs=_cpn.results||[]}}catch(e){}
+      try{if(window.IBCAL){_mbSideEffectCounts[_MB_SEC.cal]=1;if(_mbSideEffectGate(_MB_SEC.cal)){const _cpn=await IBCAL.processReply(replyText,cfg);replyText=_cpn.clean;_calRNs=_cpn.results||[]}}}catch(e){}
       /* Blog 阅读申请：截取 blog_read 标签并生成申请卡（标签不入库、不上屏） */
       var _brCardsNs=[];
       {const _bpn=_parseBlogReadOps(replyText);
-       if(_bpn.ops.length){replyText=_bpn.clean;try{if(_mbSideEffectsOk())_brCardsNs=await _execBlogReadOps(_bpn.ops)}catch(e){}}}
+       if(_bpn.ops.length){replyText=_bpn.clean;try{if(_mbSideEffectGate([_MB_SEC.blog]))_brCardsNs=await _execBlogReadOps(_bpn.ops)}catch(e){}}}
       var _wsNs=_parseWsOps(replyText);
       var _wsRNs=[];
-      if(_wsNs.ops.length&&_mbSideEffectsOk())_wsRNs=await _execWsOps(_wsNs.ops,cfg.nickname||cfg.model||'AI',cfg,{source:'chat',friendId:_targetFriend,threadId:_targetThread||'',userMessageId:userMsg.id});
-      if(_wsNs.files&&_wsNs.files.length){try{if(_mbSideEffectsOk())await _wsArchiveFileBlocks(_wsNs.files,cfg.nickname||cfg.model||'AI')}catch(e){}}
+      if(_wsNs.ops.length&&_mbSideEffectGate(_mbSecWsCats(_wsNs.ops)))_wsRNs=await _execWsOps(_wsNs.ops,cfg.nickname||cfg.model||'AI',cfg,{source:'chat',friendId:_targetFriend,threadId:_targetThread||'',userMessageId:userMsg.id});
+      if(_wsNs.files&&_wsNs.files.length){try{if(_mbSideEffectGate([_MB_SEC.file]))await _wsArchiveFileBlocks(_wsNs.files,cfg.nickname||cfg.model||'AI')}catch(e){}}
       var _wsNsPhantom=_wsCheckPhantom(_wsNs.cleanText,_wsNs.ops.length);
       /* 工具回合续（v6）：非流式主对话同样自动回喂再生成一轮（P11-2C：同款沿用本回合裁定状态） */
-      if((_wsNs.ops.length||_wsNs.files.length)&&_mbSideEffectsOk()){
+      if((_wsNs.ops.length||_wsNs.files.length)&&_mbSideEffectGate(_mbSecWsCats(_wsNs.ops).concat(_wsNs.files.length?[_MB_SEC.file]:[]))){
         try{await _wsToolContinue(cfg,{messages:messages,lastReply:replyText,friendId:_targetFriend,chatKey:_targetFriend,senderName:cfg.nickname||cfg.model||'AI',round:1,threadId:_targetThread})}catch(e){}
       }
+      /* 本回合 trace 收口（与非流式逐字同款） */
+      _mbSecTraceFinish(_mbTrace,cfg.id,_mbVerdict);
       const aiMsg={id:'msg_'+Date.now()+'_'+Math.floor(Math.random()*100000),role:'assistant',content:replyText,reasoning_content:thinkingText||'',metadata:{model:cfg.provider||cfg.model||'',model_id:cfg.model||'',config_id:cfg.id,showThinking:_resolveShowThinking(cfg)},friendId:_targetFriend,timestamp:Date.now()};/* 编号方式与群聊统一：随机后缀防同毫秒碰撞 */
       if(_srchLogN.length)aiMsg.wsSearches=_srchLogN;/* 任务A */
       if(_memRNs.length)aiMsg.memOps=_memRNs.map(r=>({ok:r.ok,status:r.status||'',label:r.label,detail:r.detail}));
@@ -3163,13 +3169,81 @@ var _WS_TOOL_CONT_MAX=2;/* 一次用户回合内工具后自动续轮上限（�
    它只把状态送去决策点并把结论带回来。门面不可用（未装配）时同样 fail-open：
    那时没有任何状态可传，等价于改动前的行为。 */
 var _mbVerdict=null;
-function _mbSideEffectsOk(){
-  /* 唯一读取入口 = 门面（与 middleBrainExecute 同一纪律）：不碰内部层契约符号 */
+/* 本回合解析出的模型派生副作用指令**条数**（P11-2D 可观测性）。
+   这是"这一轮究竟有没有要被执行的指令"这一事实的**唯一持有者** —— 由解析过 ops 的
+   位置写入，闸门只读取、不推断（闸门不看文本，所以它无从知道有没有指令）。
+   关键语义：UNDECIDED 但 count 全为 0 ⇒ 根本没有发生抑制，绝不记 suppression=true。 */
+var _mbSideEffectCounts={};
+/* 类别名常量（与 integrity 层 MB_CI_SUPPRESSION_CATEGORIES 的值一一对应；
+   这里只是把字面量收敛到一处，避免 6 个字符串在 12 个调用点上散落笔误）。 */
+var _MB_SEC={mem:'memory',cal:'calendar',blog:'blog_read',ws:'workspace',file:'file_archive',tool:'tool_continue'};
+/* P11-2D · 抑制记录的**唯一消费点**：把"确有条目 + 被拦下"转成记一条去标识化记录。
+   只传类别与条数；路径 / 正文 / 搜索词 / 工具参数一律不进入本函数。
+   形态说明：
+     · `_mbSideEffectGateCats([...], n)` —— 类别由调用方按真实 op 类型算出（ws_ops 横跨多类时逐个）；
+     · `_mbSideEffectGate(_MB_SEC.x)`    —— 单类别，条数取自本回合计数表；
+     · `_mbSideEffectsOk()`              —— 没有条目可报的守卫（工具续轮），零记录。
+   三条路径都不会因为"状态是 UNDECIDED"而记抑制：没有确有条目就没有记录。 */
+function _mbSideEffectGateCats(cats,n){
+  if(!(Number(n)>0))return _mbSideEffectsOk(null,0);
+  var ok=true;
+  for(var i=0;i<(cats||[]).length;i++){if(_mbSideEffectsOk(cats[i],n)===false)ok=false}
+  return ok;
+}
+function _mbSideEffectGate(cat){
+  var n=Number(_mbSideEffectCounts[cat])||0;
+  if(n<=0)return _mbSideEffectsOk(null,0);
+  return _mbSideEffectGateCats([cat],n);
+}
+/* ws_ops 单个入口承载多类动作（文件 / 图片 / 搜索 / 工具执行），按 op.type 归类。
+   未知 type **不给兜底类别**：宁可少记一个类别，也不把一个我们不认识的指令
+   归进最像的那一类（不猜类别 —— 与闸门"不推断"同一原则）。 */
+function _mbSecWsCat(op){
+  var t=String((op&&op.type)||'').toLowerCase();
+  if(t==='run')return _MB_SEC.tool;                                 /* 会再触发一次模型请求的那一类 */
+  if(t==='create'||t==='edit'||t==='read'||t==='read_image'
+    ||t==='gen_image'||t==='edit_image')return _MB_SEC.ws;          /* 文件 / 图片读写 */
+  return null;
+}
+/* ws_ops 一束指令可能横跨多个类别（如 read + run）：逐个归类并去重。 */
+function _mbSecWsCats(ops){
+  var out=[];
+  (ops||[]).forEach(function(op){
+    var c=_mbSecWsCat(op);
+    if(c&&out.indexOf(c)<0)out.push(c);
+  });
+  return out;
+}
+function _mbSideEffectsOk(category,count){
+  /* 唯一读取入口 = 门面（与 middleBrainExecute 同一纪律）：不碰内部层契约符号。
+     调用形状固定为 `门面(本轮状态, 类别, 条数)`：状态永远是 _mbVerdict（本回合收口产物），
+     后两个只是**元数据**，判定语义完全在 integrity 层 —— 适配层不解释 verdict 的含义。 */
   var _f=(window.IB&&window.IB.middleBrain)||null;
   if(!_f||typeof _f.middleBrainSideEffectAllowed!=='function')return true;
-  return _f.middleBrainSideEffectAllowed(_mbVerdict)===true;
+  return _f.middleBrainSideEffectAllowed(_mbVerdict,category,count)===true;
 }
 
+/* 抑制记录的唯一读取入口：经门面（不碰内部层契约）。
+   两个守卫都是**如实性**守卫，不是判定：
+     · verdict 已复位 ⇒ 本函数还没被任何副作用调用过 ⇒ 抑制记录属于上一回合 ⇒ 不读（留 null）；
+     · 门面不可用 ⇒ 不编造结论，两个字段留 null / []，表示"观测不到"。
+   返回 null 一律意味着"这一轮没有可报告的信息"，绝不等于"没有抑制"。 */
+function _mbSecTrace(verdict){
+  if(!verdict)return null;
+  try{
+    var _f=(window.IB&&window.IB.middleBrain)||null;
+    if(!_f||typeof _f.middleBrainSideEffectSuppression!=='function')return null;
+    var s=_f.middleBrainSideEffectSuppression()||{};
+    return {s:!((s.count||0)>0),c:Array.isArray(s.categories)?s.categories:[]};
+  }catch(e){return null}
+}
+function _mbSecTraceFinish(trace,characterId,verdict){
+  if(!trace)return;
+  var t=_mbSecTrace(verdict);
+  trace.note(characterId,'sideEffectsSuppressed',t?t.s:null);
+  trace.note(characterId,'sideEffectCategories',t?t.c:[]);
+  trace.finish(characterId,{});
+}
 async function _wsToolContinue(cfg,o){
   try{
     if(!cfg||!o)return null;

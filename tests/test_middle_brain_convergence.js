@@ -1,4 +1,4 @@
-﻿/* ====================================================================
+/* ====================================================================
    M1-C.2i · Middle Brain Execution Convergence — 收敛与对照证明
    --------------------------------------------------------------------
    要证明的命题（不是"函数被调用了"，而是"两个宿主确实在用同一个认知层"）：
@@ -154,7 +154,7 @@ async function main() {
   })(), mbNode.diagnostics());
   check('node.facadeIsCanonical', (() => {
     const d = mbNode.diagnostics();
-    return d.facadeKeys === 49;   /* 与桌面同一个 facade 的公共 API 数（P11-2C 追加副作用政策键） */
+    return d.facadeKeys === 51;   /* 与桌面同一个 facade 的公共 API 数（P11-2C 追加副作用政策键 + P11-2D 追加 2 个只读可观测键） */
   })(), mbNode.diagnostics());
 
   /* 桌面侧：同一份配置 → canonical 层的两个语义决策 */

@@ -36,8 +36,14 @@
        · 被观测层没有参与时一律打印 false，绝不省略该行。
      关闭方式：window.__IB_MB_TRACE = false，或 localStorage['ib_mb_trace'] = '0'。 */
   var _MB_TRACE_MAX = 20, _MB_TRACE_RING = [], _MB_TRACE = {};
+  /* 字段顺序 = 打印顺序，由 test_middle_brain_integrity.I19 锁定。
+     P11-2D 追加 4 个可观测字段，全部是**元数据**（布尔 / 枚举 / 类别名），
+     不含正文、路径、提示词、密钥 —— 与本层既有的白名单同一纪律：
+       judgeAttempted / integrityRewritten        —— 每次 judge 尝试、以及改写是否真的生效
+       sideEffectsSuppressed / sideEffectCategories —— 本轮是否抑制、抑制了哪几类 */
   var _MB_TRACE_FIELDS = ['consumer', 'character', 'enabled', 'executeEntered', 'configApplied', 'policyApplied',
-    'astraApplied', 'judgeApplied', 'oocGuardApplied', 'integrityVerdict', 'integrityReason', 'inputMessages',
+    'astraApplied', 'judgeApplied', 'oocGuardApplied', 'integrityVerdict', 'integrityReason',
+    'judgeAttempted', 'integrityRewritten', 'sideEffectsSuppressed', 'sideEffectCategories', 'inputMessages',
     'outputMessages', 'systemChanged', 'requestParamsChanged', 'executor', 'model', 'source', 'messagesChanged'];
   function _mbTraceOn() {
     try {
@@ -61,6 +67,7 @@
     var rec = { consumer: String(consumer || 'chat'), character: String(characterId == null ? '' : characterId), at: Date.now(),
       enabled: null, executeEntered: false, configApplied: false, policyApplied: false, astraApplied: false,
       judgeApplied: false, oocGuardApplied: false, integrityVerdict: null, integrityReason: null,
+      judgeAttempted: null, integrityRewritten: null, sideEffectsSuppressed: null, sideEffectCategories: [],
       inputMessages: null, outputMessages: null,
       systemChanged: null, requestParamsChanged: null, executor: null, model: null, source: null, messagesChanged: null };
     try { _MB_TRACE[rec.character] = rec; } catch (e) {}
@@ -72,6 +79,11 @@
       var k = _MB_TRACE_FIELDS[i], v = rec[k];
       if (k === 'inputMessages' || k === 'outputMessages') lines.push(k + ': ' + (v == null ? 'null' : String(v)));
       else if (k === 'executor' || k === 'model' || k === 'source' || k === 'character' || k === 'consumer') lines.push(k + ': ' + (v == null ? '' : String(v)));
+      /* P11-2D：文本化字段必须打印**实际值** —— 此前整族退化成分支兜底的 false，
+         一个 verdict 恒为 false 的 trace 无法回答"这一轮到底判成什么"。
+         类别数组按无歧义分隔打印；空数组打印空串。 */
+      else if (k === 'integrityVerdict' || k === 'integrityReason') lines.push(k + ': ' + (v == null ? 'null' : String(v)));
+      else if (k === 'sideEffectCategories') lines.push(k + ': ' + (Array.isArray(v) ? v.join(',') : (v == null ? 'null' : String(v))));
       else lines.push(k + ': ' + (v === true ? 'true' : 'false'));
     }
     return lines.join('\n');
@@ -197,6 +209,16 @@
       _mbTraceNote(characterId, 'oocGuardApplied', !!(outcome && outcome.ran));
       _mbTraceNote(characterId, 'integrityVerdict', (outcome && outcome.verdict) || 'BYPASSED');
       _mbTraceNote(characterId, 'integrityReason', (outcome && outcome.reason) || null);
+      /* P11-2D · 把"判过没有 / 改写过没有 / 拦下了什么"三个独立维度分别落进 trace：
+           judgeAttempted    = ran（Judge 真的被尝试过），与 verdict 是两个事实；
+           integrityRewritten= 本层解析出的改写**确实生效**（outcome.rewritten）；
+           sideEffects*      = 下游闸门本回合的抑制记录（由 integrity 层唯一写入点提供）。
+         抑制发生在读回复之后，故这两个字段在**回合收口时**（communication.js finish 之前）
+         再补一次 —— 本处先清零，避免读到上一回合的残留。 */
+      _mbTraceNote(characterId, 'judgeAttempted', outcome ? outcome.ran === true : null);
+      _mbTraceNote(characterId, 'integrityRewritten', outcome ? outcome.rewritten === true : null);
+      _mbTraceNote(characterId, 'sideEffectsSuppressed', null);
+      _mbTraceNote(characterId, 'sideEffectCategories', []);
       if (outcome && typeof outcome.reply === 'string' && outcome.reply) text = outcome.reply;
     } catch (e) {}
     return { reply: text, outcome: outcome };
@@ -261,7 +283,15 @@
     /* P11-2C · 下游副作用政策（唯一读取入口）。消费者（Chat 回合的 side-effect 执行闸门）
        只能经门面取用，不得直接读内部层契约 —— 与 middleBrainExecute 同一纪律：
        负责判定的是 integrity 层，门面只做转发，消费方不解释 verdict 的含义。 */
-    ['middleBrainSideEffectAllowed', 'integrity']
+    ['middleBrainSideEffectAllowed', 'integrity'],
+    /* P11-2D · Integrity Observability（只读读取入口）。
+       刻意仍**不**挂 window 兼容别名：可观测性读取属于新的开发者诊断面，
+       不应新增散落全局依赖（与 middleBrainExecute / middleBrainSideEffectAllowed 同一纪律）。
+       只追加 2 个 key，既有 key 的内容与顺序一律未动：
+         · middleBrainSideEffectSuppression —— 抑制记录读取（本轮类别与条数 + 会话累计）；
+         · MB_CI_SUPPRESSION_CATEGORIES   —— 抑制类别词表（值 = 稳定枚举）。 */
+    ['middleBrainSideEffectSuppression', 'integrity'],
+    ['MB_CI_SUPPRESSION_CATEGORIES', 'integrity']
   ];
   var MB_LAYERS = {
     config: CFG, policy: POL, astra: ASTRA, judge: JUDGE, integrity: INTEG,

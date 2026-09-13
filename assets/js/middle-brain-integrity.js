@@ -95,6 +95,22 @@
     BLOG_READ: 'blog_read',        /* <blog_read> → _execBlogReadOps：把日志正文排队注入下一轮 */
     WS_OPS: 'ws_ops'               /* <ws_*> → _execWsOps 等：文件/图片/搜索/工具执行 */
   });
+  /* P11-2D · 抑制类别词表（**去标识化**：只描述副作用是哪一类，绝不描述它的内容）——
+     与上表的关系是"闸门轴 × 类别轴"：MB_CI_SIDE_EFFECT_SITES 是**闸门位置**（4 个决策点），
+     本表是**类别**（6 个），二者多对一。刻意不改 SITES 的值或粒度（那是 P11-2C 的冻结契约）。
+     workspace/file_archive 是同一 `_execWsOps` / `_wsArchiveFileBlocks` 入口内、
+     按产出物区分的两档；"文件内容 / 路径 / 搜索结果"这三类本阶段**不单独登记**：
+     它们由 `_execWsOps` 一并执行，无法在闸门处可靠区分，宁可不精确也不虚报类别。 */
+  var _MB_CI_SUPPRESSION_CATEGORIES = Object.freeze({
+    MEMORY: 'memory',               /* _execMemOps —— Auto Memory 写入 */
+    CALENDAR: 'calendar',           /* IBCAL.processReply —— 日历便笺 / 台账勾选 */
+    BLOG_READ: 'blog_read',         /* _execBlogReadOps —— 日志正文排队注入下一轮 */
+    WORKSPACE: 'workspace',         /* _execWsOps —— 文件 / 图片 / 搜索 / 工具指令 */
+    FILE_ARCHIVE: 'file_archive',   /* _wsArchiveFileBlocks —— ```file: 块归档入库 */
+    TOOL_CONTINUE: 'tool_continue'  /* _wsToolContinue —— 工具后续轮（会再发一次模型请求） */
+  });
+  var _MB_CI_SUPPRESSION_VALUES = Object.freeze(Object.keys(_MB_CI_SUPPRESSION_CATEGORIES)
+    .map(function (k) { return _MB_CI_SUPPRESSION_CATEGORIES[k]; }));
   var _mbCiTelemetry = {
     checked: 0,          /* 进入 Guard（enabled）的次数 */
     skipped: {},         /* skipReason → 次数 */
@@ -105,6 +121,11 @@
     verifyRuns: 0, verifyPass: 0, verifyFail: 0, verifyError: 0,
     judgeLatencyMs: 0, rewriteLatencyMs: 0,
     maxRewritesPerTurn: 0,
+    /* P11-2D · 副作用抑制（**仅元数据**）——
+       turn：最近一次被抑制的回合（categories 去重、无顺序语义）；null = 本回合没有发生抑制。
+       计数：**只统计真正被闸门拦下的类别**，绝不用 verdict === UNDECIDED 代替。
+       "UNDECIDED 但回复里根本没有指令" ⇒ 不产生任何记录（这是本阶段的关键语义）。 */
+    sideEffectsSuppressed: 0, suppressedCategories: {}, turn: null, turnVerdict: null,
     last: null
   };
   function middleBrainCharacterIntegrityTelemetry() { return _mbCiTelemetry; }
@@ -116,7 +137,59 @@
     _mbCiTelemetry.rewriteTriggered = 0; _mbCiTelemetry.rewriteOk = 0; _mbCiTelemetry.rewriteError = 0; _mbCiTelemetry.rewriteSkipped = 0;
     _mbCiTelemetry.verifyRuns = 0; _mbCiTelemetry.verifyPass = 0; _mbCiTelemetry.verifyFail = 0; _mbCiTelemetry.verifyError = 0;
     _mbCiTelemetry.judgeLatencyMs = 0; _mbCiTelemetry.rewriteLatencyMs = 0; _mbCiTelemetry.maxRewritesPerTurn = 0;
+    _mbCiTelemetry.sideEffectsSuppressed = 0; _mbCiTelemetry.suppressedCategories = {};
+    _mbCiTelemetry.turn = null; _mbCiTelemetry.turnVerdict = null;
     _mbCiTelemetry.last = null;
+  }
+  /* —— P11-2D · 副作用抑制记录（**唯一写入点**）────────────────────────────
+     调用契约（向下游提供"实际被拦下"这一事实，而不是"本轮处于某个状态"）：
+       · 只在判定结论为 allow === false **且**该副作用指令确实存在时被调用；
+       · count 必须 > 0。**没有任何条目的询问（含调用点交出的空类别集合）一律不记录** ——
+         "状态是 UNDECIDED"本身不是抑制，本函数也不接受它作为记录理由。
+       · category 必须属于 MB_CI_SUPPRESSION_CATEGORIES，否则**一个字都不记**，
+         连总计数也不加：本模块的职责是如实报告"哪一类被拦下"，
+         报不出来的东西就不该出现在计数里（宁可少记，也不虚报一个说不清的类别）。
+       · 只记类别与条数；不记文件名 / 路径 / 记忆正文 / 日历文本 / 日志内容 /
+         搜索词 / 工具参数 / 回复正文。本函数的入参里根本没有可承载这些内容的字段。 */
+  function _mbCiSuppress(category, count) {
+    var cat = _ciStr(category).trim().toLowerCase();
+    var n = Number(count);
+    if (!(n > 0)) return;                                        /* 无条目 ⇒ 不是抑制 */
+    if (_MB_CI_SUPPRESSION_VALUES.indexOf(cat) < 0) return;      /* 说不清类别 ⇒ 不记 */
+    _mbCiTelemetry.sideEffectsSuppressed++;
+    var turn = _mbCiTelemetry.turn;
+    if (!turn) turn = _mbCiTelemetry.turn = { categories: [], count: 0 };
+    turn.count += n;
+    if (turn.categories.indexOf(cat) < 0) turn.categories.push(cat);
+    _mbCiTelemetry.suppressedCategories[cat] = (_mbCiTelemetry.suppressedCategories[cat] || 0) + 1;
+  }
+  /* 回合边界：抑制记录是"本轮"的，绝不能跨轮残留 —— 否则一个 PASS 回合会读到
+     上一轮 UNDECIDED 留下的记录，于是 trace 会声称"本轮抑制了 X"。
+
+     判定依据是**显式裁定状态的取值变化**，而不是"第几次询问"：
+       · 生产里 `_mbVerdict` 每个回合在收口时赋值一次，同回合内所有副作用点读到的
+         是**同一个值**（含 null）。因此"取到了一个与上次不同的 verdict"唯一地
+         标志着一个新回合，与它被询问多少次无关。
+       · 这一点是关键：一个回合可能询问很多次（memory / calendar / blog / workspace /
+         file / tool…）。若把"第一次询问"当成回合边界，第二次询问就会把本轮刚记下的
+         类别一起清空 —— 多类抑制只剩最后一个。实现时实测踩到，T11 抓到。
+       · 比较用 `String(v)`：本函数只处理字符串四态与 null，无对象语义。
+     Reset() 仍会清空它（会话级），两者职责不同。 */
+  function _mbCiTurnIdentity(v) {
+    if (_mbCiTelemetry.turnVerdict !== v) {
+      _mbCiTelemetry.turnVerdict = v;
+      _mbCiTelemetry.turn = null;   /* 新回合：清掉上一轮的抑制记录 */
+    }
+  }
+  /* 读取本轮抑制记录（供回合 trace 复制一次；**不清空**，清空只由上面的复位点负责）。 */
+  function middleBrainSideEffectSuppression() {
+    var t = _mbCiTelemetry.turn;
+    return {
+      categories: t ? t.categories.slice() : [],
+      count: t ? t.count : 0,
+      total: _mbCiTelemetry.sideEffectsSuppressed,
+      byCategory: Object.assign({}, _mbCiTelemetry.suppressedCategories)
+    };
   }
   function _ciSkip(reason) {
     _mbCiTelemetry.skipped[reason] = (_mbCiTelemetry.skipped[reason] || 0) + 1;
@@ -544,6 +617,7 @@
                             绝不允许把未知伪装成某个已知态。 */
   function _mbCiSideEffectPolicy(verdict) {
     var v = _ciStr(verdict).trim().toUpperCase();
+    _mbCiTurnIdentity(v);
     if (!v) return { allow: true, verdict: null, reason: 'no_state' };
     if (v === MB_CI_VERDICT.PASS) return { allow: true, verdict: v, reason: 'pass' };
     if (v === MB_CI_VERDICT.OOC) return { allow: true, verdict: v, reason: 'ooc' };
@@ -552,7 +626,17 @@
     /* 未知字符串不属于四态 —— 绝不当作 PASS。按 fail-open 处理，但如实标出来。 */
     return { allow: true, verdict: null, reason: 'unknown_verdict' };
   }
-  function middleBrainSideEffectAllowed(verdict) { return _mbCiSideEffectPolicy(verdict).allow === true; }
+  /* P11-2D · 闸门 + 抑制记录（唯一读取入口）。
+     `category` / `count` 由**调用方**在"该副作用指令确实存在、原本将要执行"的位置提供 ——
+     闸门自身不解析文本，也不判断有没有指令（那正是它禁止做的事）：
+     把这一事实交给已经解析过 ops 的调用方，是"不推断"原则的延续。
+     不传 category（P11-2C 的既有调用方）时行为与当时逐字一致：只回答 allow，不记录。
+     verdict 为 null（拿不到状态）时同样不记录 —— fail-open 不是"抑制"。 */
+  function middleBrainSideEffectAllowed(verdict, category, count) {
+    var d = _mbCiSideEffectPolicy(verdict);
+    if (d.allow === false) _mbCiSuppress(category, count);
+    return d.allow === true;
+  }
 
   /* ====================================================================
      主入口：Character Integrity Guard
@@ -689,6 +773,9 @@
     middleBrainSideEffectAllowed: middleBrainSideEffectAllowed,
     _mbCiSideEffectPolicy: _mbCiSideEffectPolicy,
     MB_CI_SIDE_EFFECT_SITES: MB_CI_SIDE_EFFECT_SITES,
+    /* P11-2D：抑制类别词表 + 抑制记录读取（只读快照；写入只由闸门内部完成） */
+    MB_CI_SUPPRESSION_CATEGORIES: _MB_CI_SUPPRESSION_CATEGORIES,
+    middleBrainSideEffectSuppression: middleBrainSideEffectSuppression,
     _mbCiOutcome: _mbCiOutcome,
     _mbParseCiJson: _mbParseCiJson,
     _mbParseCiRewriteJson: _mbParseCiRewriteJson,

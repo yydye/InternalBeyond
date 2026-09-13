@@ -1,4 +1,4 @@
-﻿/* ====================================================================
+/* ====================================================================
    P11-2 · Middle Brain Character Integrity / OOC Guard · CDP 回归
    --------------------------------------------------------------------
    本阶段唯一新增能力：检测候选回复是否**明显**偏离当前角色，仅在高置信度强 OOC 时
@@ -136,15 +136,18 @@ const api = http.createServer(async (req, res) => {
       return !!C && Object.isFrozen(C.integrity) && typeof C.integrity.middleBrainCharacterIntegrity==='function'
         && typeof C.integrity._mbCiGate==='function' && typeof C.integrity.MB_CI_SCHEMA==='object';
     })()`));
-    check('A2.publicKeys49', await evaluate(cdp, `(function(){
+    check('A2.publicKeys51', await evaluate(cdp, `(function(){
       /* P11-2 之后 45 个门面 key；P12 追加 Image Router 决策键（middleBrainImageMode /
          normalizeMiddleBrainImageMode）→ 47；P21 追加统一思考深度读取键
          （middleBrainReasoningEffort）→ 48；P11-2C 追加下游副作用政策读取键
-         （middleBrainSideEffectAllowed）→ 49。数量变化必须是有意的契约扩展。 */
+         （middleBrainSideEffectAllowed）→ 49；P11-2D 追加 2 个只读可观测键
+         （middleBrainSideEffectSuppression / MB_CI_SUPPRESSION_CATEGORIES）→ 51。
+         数量变化必须是有意的契约扩展。 */
       var k=Object.keys(IB.middleBrain);
-      return k.length===49 && k.indexOf('middleBrainFinalizeReply')>=0 && k.indexOf('middleBrainCharacterIntegrity')>=0
+      return k.length===51 && k.indexOf('middleBrainFinalizeReply')>=0 && k.indexOf('middleBrainCharacterIntegrity')>=0
         && k.indexOf('_mbParseCiJson')>=0 && k.indexOf('MB_CI_SCHEMA')>=0
-        && k.indexOf('middleBrainImageMode')>=0 && k.indexOf('middleBrainSideEffectAllowed')>=0;
+        && k.indexOf('middleBrainImageMode')>=0 && k.indexOf('middleBrainSideEffectAllowed')>=0
+        && k.indexOf('middleBrainSideEffectSuppression')>=0 && k.indexOf('MB_CI_SUPPRESSION_CATEGORIES')>=0;
     })()`), await evaluate(cdp, `(function(){return Object.keys(IB.middleBrain).length})()`));
     check('A3.noWindowAliasForNewKeys', await evaluate(cdp, `(function(){
       return typeof window.middleBrainFinalizeReply==='undefined' && typeof window.middleBrainCharacterIntegrity==='undefined'
@@ -712,7 +715,7 @@ const api = http.createServer(async (req, res) => {
     const tr2 = await traceOf(evidenceOpts);
     check('I18.tracePassIsAdjudicated', tr2.guardEntered === true && tr2.verdict === 'PASS' && tr2.reason === null,
       JSON.stringify(tr2));
-    check('I19.traceFieldsDeclared', tr2.keys === 19 && tr2.verdictKeyDeclared === true, String(tr2.keys));
+    check('I19.traceFieldsDeclared', tr2.keys === 23 && tr2.verdictKeyDeclared === true, String(tr2.keys));
 
     /* I20 · 无额外模型调用 / 无重试 / timeout 常量未变（本阶段硬约束）。
        timeout 用 400ms 触发，但生产常量必须仍是 20000 且判定逻辑与它无关；

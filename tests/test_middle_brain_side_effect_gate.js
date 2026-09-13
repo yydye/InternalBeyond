@@ -168,7 +168,10 @@ check('T12f.gateIsPureDecision', (() => {
   const calls = (body.match(/[A-Za-z_$][\w$]*\s*\(/g) || [])
     .map(s => s.replace(/\s+/g, ''))
     .filter(s => !/^(if|for|while|switch|return|function|catch)\($/.test(s));
-  return calls.join(',') === '_mbCiSideEffectPolicy(,_ciStr(,trim(,toUpperCase(';
+  /* P11-2D：允许出现的调用只多了一个 `_mbCiTurnIdentity` —— 它是"本回合的抑制记录
+     以显式取值的**变化**为界复位"这一条观测语义，只写 telemetry 字段、不参与判定
+     （它接收的就是本函数已经算出的 v，返回值被忽略）。 */
+  return calls.join(',') === '_mbCiSideEffectPolicy(,_ciStr(,trim(,toUpperCase(,_mbCiTurnIdentity(';
 })(), 'gate body reaches beyond a pure decision table');
 /* 闸门只做一次判定：不出现嵌套 policy / 自我递归 */
 check('T12g.gateAppliedExactlyOnce',
@@ -194,9 +197,26 @@ const WIRING = [
   ['T5cn.fileBlocksGatedNonStream', "_wsArchiveFileBlocks(_wsNs.files,", 1],
   ['T5d.toolContinueGatedBothPaths', "await _wsToolContinue(cfg,{messages:messages,lastReply:replyText", 2]
 ];
+/* P11-2D · 闸门读取形态现在有**三种等价形状**（全部都是"条件里的闸门"）：
+     _mbSideEffectsOk(cat,n)        —— 直接把"哪一类、几条"带过去
+     _mbSideEffectGate(_MB_SEC.x)   —— 单类别，条数取本回合计数表
+     _mbSideEffectGate(_mbSecWsCats(ops)[…]) —— ws_ops 横跨多类时逐个归类
+   条数与类别是 P11-2D 新增的**元数据入参**，不改变判定语义（判定仍在 integrity 层）。
+   GATE_RE 把三种形状统一认成"一次闸门读取"，其余断言（同一行含执行器、两路对称、
+   无未加闸门的执行器）全部保持原样、逐字不放宽。 */
+const GATE_RE = /_mbSideEffectsOk\(|_mbSideEffectGate\(/;
+/* P11-2D 新增的两个薄转发函数**自身**不是"接线点"（它们只在条件里转交结论）；
+   先把它们的函数体摘掉，再数真正的 12 个调用点 —— 这样"每条闸门行都必须带执行器"
+   这条断言不会被包装层稀释。 */
+const COM_CALLSITES = COM_TEXT
+  .replace(/function _mbSideEffectGateCats\([\s\S]*?\n\}/, '')
+  .replace(/function _mbSideEffectGate\([\s\S]*?\n\}/, '');
+const isGateLine = l => GATE_RE.test(l)
+  && !/^\s*function _mbSideEffect/.test(l)
+  && /(^|[^_])if\(|&&_mbSideEffect/.test(l);
 check('C1.gateUsedTwelveTimesAtCallSites',
-  countOcc(COM_TEXT, '_mbSideEffectsOk()') === 13,
-  'gate references = ' + countOcc(COM_TEXT, '_mbSideEffectsOk()') + ' (expect 13 = 1 definition + 12 call sites)');
+  COM_CALLSITES.split('\n').filter(isGateLine).length === 12,
+  'gate call sites = ' + COM_CALLSITES.split('\n').filter(isGateLine).length + ' (expect 12)');
 WIRING.forEach(([name, needle, want]) => {
   const n = countOcc(COM_TEXT, needle);
   check(name, n === want, 'occurrences of `' + needle + '` = ' + n + ' (expect ' + want + ')');
@@ -205,18 +225,17 @@ WIRING.forEach(([name, needle, want]) => {
 /* 每条受保护链路：闸门必须与该调用出现在**同一行**（即条件的一部分），
    而不是"附近某处调了一下闸门"这种装饰性接线。
    先排除闸门自身的函数定义行，只留下真正的 12 个调用点。 */
-const gateLines = COM_TEXT.split('\n')
-  .filter(l => l.includes('_mbSideEffectsOk()') && !/^\s*function _mbSideEffectsOk/.test(l));
+const gateLines = COM_CALLSITES.split('\n').filter(isGateLine);
 const EXEC_RE = /_execMemOps\(|IBCAL\.processReply\(|_execBlogReadOps\(|_execWsOps\(|_wsArchiveFileBlocks\(|_wsToolContinue\(/;
 /* 工具回合续的闸门守的是一个块（`if(…&&gate){`），执行体在下一行 —— 显式承认这种形态，
    而不是放宽成"附近有执行器就行"。 */
-const MULTILINE_GUARD_RE = /^\s*if\(\(_ws(?:Parsed|Ns)\.ops\.length\|\|_ws(?:Parsed|Ns)\.files\.length\)&&_mbSideEffectsOk\(\)\)\{\s*$/;
-const gateLineIdx = COM_TEXT.split('\n')
-  .map((l, i) => (l.includes('_mbSideEffectsOk()') && !/^\s*function _mbSideEffectsOk/.test(l)) ? i : -1)
+const MULTILINE_GUARD_RE = /^\s*if\(\(_ws(?:Parsed|Ns)\.ops\.length\|\|_ws(?:Parsed|Ns)\.files\.length\)&&_mbSideEffectGate\(/;
+const allLines = COM_CALLSITES.split('\n');
+const gateLineIdx = allLines
+  .map((l, i) => isGateLine(l) ? i : -1)
   .filter(i => i >= 0);
-const allLines = COM_TEXT.split('\n');
 check('C2.everyGateLineIsACondition', gateLines.length === 12
-  && gateLines.every(l => /if\(|&&_mbSideEffectsOk\(\)/.test(l)),
+  && gateLines.every(l => /if\(|&&_mbSideEffect/.test(l)),
   gateLines.length + ' gate call lines, not all conditional');
 const badGateLines = gateLineIdx.filter(i =>
   !(EXEC_RE.test(allLines[i])
@@ -262,12 +281,26 @@ check('C6.twoVerdictWrites',
   countOcc(COM_TEXT, "outcome.verdict)||null;") === 2,
   'verdict write count = ' + countOcc(COM_TEXT, 'outcome.verdict)||null;'));
 check('C7.helperIsPureAdapter', (() => {
-  const m = COM_TEXT.match(/function _mbSideEffectsOk\(\)\{[\s\S]*?\n\}/);
-  if (!m) return false;
-  /* 适配层不得自行判断：只能经门面转交决策点，且不得触碰内部层契约符号 */
-  return /middleBrainSideEffectAllowed\(_mbVerdict\)/.test(m[0])
-    && !/__middleBrainContracts/.test(m[0])
-    && !/\breply\b|_parse|includes\(|indexOf\(|judgeError/.test(m[0]);
+  /* P11-2D：取用入口 _mbSideEffectsOk 现在额外接受"哪一类、几条"两个**元数据**入参；
+     门面调用仍是**唯一**一处，且第一个实参仍是本回合状态 _mbVerdict。
+     纪律不变：只能经门面转交决策点，不得触碰内部层契约符号，不得自行判断。 */
+  const a = COM_TEXT.match(/function _mbSideEffectsOk\(category,count\)\{[\s\S]*?\n\}/);
+  if (!a) return false;
+  const body = a[0];
+  /* 逐个扫描调用名并断言**实参的第一个标识符**一律是 _mbVerdict
+     （不用跨引号的正则去啃整张参数表：`typeof _f.x!=='function'` 会被误吞）。 */
+  const NAME = 'middleBrainSideEffectAllowed(';
+  const firstArgs = [];
+  for (let i = body.indexOf(NAME); i >= 0; i = body.indexOf(NAME, i + 1)) {
+    /* 跳过可用性探测：`typeof _f.middleBrainSideEffectAllowed!=='function'` 不是一次调用 */
+    if (/typeof\s*$/.test(body.slice(0, i))) continue;
+    firstArgs.push((body.slice(i + NAME.length).match(/^\s*([A-Za-z_$][\w$]*)/) || [])[1] || '');
+  }
+  return firstArgs.length === 1
+    && firstArgs[0] === '_mbVerdict'
+    && /typeof _f\.middleBrainSideEffectAllowed!=='function'/.test(body)
+    && !/__middleBrainContracts/.test(body)
+    && !/\breply\b|_parse|includes\(|indexOf\(|judgeError/.test(body);
 })(), 'desktop gate adapter contains its own policy logic or reads internal contracts');
 check('C8.helperFailOpenWhenUnavailable',
   /if\(!_f\|\|typeof _f\.middleBrainSideEffectAllowed!=='function'\)return true;/.test(COM_TEXT),

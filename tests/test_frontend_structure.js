@@ -433,11 +433,15 @@ const mbP21ReasoningKeys = ['middleBrainReasoningEffort'];
 /* P11-2C · 下游副作用闸门：门面新增唯一读取入口（integrity 层所有、门面转发），
    消费者据此判定"本轮允许不允许执行模型生成的副作用"。 */
 const mbP11cSideEffectKeys = ['middleBrainSideEffectAllowed'];
-const mbP11Keys = ['middleBrainExecute'].concat(mbP11IntegrityKeys).concat(mbP12ImageKeys).concat(mbP21ReasoningKeys).concat(mbP11cSideEffectKeys);
+/* P11-2D · Integrity Observability：门面追加两个**只读**诊断读取键（integrity 层所有、门面转发），
+   刻意不挂 window 兼容别名 —— 可观测性读取不应新增散落全局依赖。 */
+const mbP11dObservabilityKeys = ['middleBrainSideEffectSuppression', 'MB_CI_SUPPRESSION_CATEGORIES'];
+const mbP11Keys = ['middleBrainExecute'].concat(mbP11IntegrityKeys).concat(mbP12ImageKeys).concat(mbP21ReasoningKeys).concat(mbP11cSideEffectKeys).concat(mbP11dObservabilityKeys);
 mbP11IntegrityKeys.forEach(k => mbPublicExpected.push(k));
 mbP12ImageKeys.forEach(k => mbPublicExpected.push(k));
 mbP21ReasoningKeys.forEach(k => mbPublicExpected.push(k));
 mbP11cSideEffectKeys.forEach(k => mbPublicExpected.push(k));
+mbP11dObservabilityKeys.forEach(k => mbPublicExpected.push(k));
 const mbPublicPairs = [...mbText.matchAll(/^\s*\['(\w+)', '(\w+)'\],?$/gm)].map(m => [m[1], m[2]]);
 check('middleBrain.publicApiContract', JSON.stringify(mbPublicPairs.map(p => p[0])) === JSON.stringify(mbPublicExpected),
   'IB.middleBrain 公共 API 内容/顺序变化: ' + mbPublicPairs.map(p => p[0]).join(','));
