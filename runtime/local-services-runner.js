@@ -22,6 +22,10 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn, execFile } = require('child_process');
+/* P11-3B：组件模型与端口/身份探针的单一事实源。这个 runner 只负责"怎么启动"
+   （命令、参数、日志、进程句柄）；"有哪些组件、在哪个端口、什么算健康、哪些参与
+   重启"一律由 registry 决定，不再在这里手写一份。 */
+const registry = require('./component-registry.js');
 
 /* Repository root == installed app root. This file lives in runtime/, so the
    root is one level up: the service scripts live in services/, the Windows
@@ -60,58 +64,83 @@ function optionPort(name, fallback) {
   return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : fallback;
 }
 
-const SERVICES = [
-  {
-    name: 'Bridge',
-    port: optionPort('IB_BRIDGE_PORT', 23115),
-    endpoint: '/health',
+/* ── Service definitions, derived from the component registry ──
+ *
+ * The registry owns id / display name / port / health path / identity predicate
+ * / required semantics. What remains HERE is exactly the part a registry cannot
+ * know: which command to run, and how to run it. Ports are derived at process
+ * start, so a port override (IB_*_PORT) affects the runner, the launcher and the
+ * server identically.
+ *
+ * `process.execPath` stays the launch mechanism (P2 discipline): the services
+ * must run on the exact same Node as the runner, bundled or not. */
+const SERVICE_LAUNCH = {
+  bridge: {
     command: process.execPath,
     commandArgs: [path.join(SERVICE_DIR, 'ib-bridge-service.js')],
-    matchesHealth: data => data && data.server === 'IB Bridge',
     env: {}
   },
-  {
-    name: 'Active',
-    port: optionPort('IB_ACTIVE_PORT', 23114),
-    endpoint: '/health',
+  active: {
     command: process.execPath,
     commandArgs: [path.join(SERVICE_DIR, 'active-message-service.js')],
-    matchesHealth: data => data && data.service === 'internal-beyond-active-messages',
     env: {}
   },
-  {
-    /* M1-A：Home Node —— chatMessages 的 canonical authority。
-       桌面**总是**用默认 HOST 启动它（env: {}），即 127.0.0.1 —— 远端来源一律拒绝。
-       LAN 模式（M1-B 设备身份 / M1-C Android 客户端）只能由用户显式设置
-       IB_HOME_NODE_HOST 打开，且还要求设备鉴权真的就绪（见 D21）。
-       它的失败必须是 degraded 而不是 fatal：browser 侧 home-node-client 把
-       "不在线" 判为可回退状态，桌面主 UI 不受影响。 */
-    name: 'HomeNode',
-    port: optionPort('IB_HOME_NODE_PORT', 23118),
-    endpoint: '/health',
+  /* M1-A：Home Node —— chatMessages 的 canonical authority。
+     桌面**总是**用默认 HOST 启动它（env: {}），即 127.0.0.1 —— 远端来源一律拒绝。
+     LAN 模式（M1-B 设备身份 / M1-C Android 客户端）只能由用户显式设置
+     IB_HOME_NODE_HOST 打开，且还要求设备鉴权真的就绪（见 D21）。
+     它的失败必须是 degraded 而不是 fatal：browser 侧 home-node-client 把
+     "不在线" 判为可回退状态，桌面主 UI 不受影响。 */
+  homeNode: {
     command: process.execPath,
     commandArgs: [path.join(SERVICE_DIR, 'home-node-service.js')],
-    matchesHealth: data => data && data.service === 'internal-beyond-home-node',
     env: {}
-  }
-];
-
-if (includeVision) {
-  SERVICES.push({
-    name: 'Vision',
-    port: optionPort('IB_VISION_PORT', 8765),
-    endpoint: '/health',
+  },
+  vision: {
     command: process.platform === 'win32' ? process.env.ComSpec || 'cmd.exe' : 'sh',
     commandArgs: process.platform === 'win32'
       ? ['/d', '/c', path.join(WINDOWS_DIR, 'start-vision-service.cmd')]
       : ['-lc', 'echo "Vision helper is currently provided by start-vision-service.cmd on Windows."; exit 1'],
-    matchesHealth: data => data && data.service === 'internal-beyond-vision',
     env: {}
-  });
+  }
+};
+
+function buildServiceSpec(component) {
+  const launch = SERVICE_LAUNCH[component.id] || {};
+  return {
+    name: component.name,
+    componentId: component.id,
+    label: component.label,
+    port: registry.portOf(component.id),
+    endpoint: component.healthPath,
+    command: launch.command,
+    commandArgs: launch.commandArgs || [],
+    matchesHealth: component.matchesHealth,
+    env: launch.env || {}
+  };
 }
 
+/* Vision is opt-in: it is only registered (and therefore only ever started,
+   probed or stopped) when --vision is passed. Every other managed component is
+   always registered. */
+function servicesForRun() {
+  const list = registry.managed().filter(c => c.id !== 'vision' || includeVision);
+  return list.map(buildServiceSpec);
+}
+
+const SERVICES = servicesForRun();
+
+/* The restart control plane's targets come from the registry, not from a second
+   hand-written list. P11-3B fixed a real drift here: this used to be
+   `name === 'Bridge' || name === 'Active'`, so Home Node was never restarted by
+   the control plane that claims to restart the local services. */
+const RESTART_TARGET_IDS = registry.restartTargets().map(c => c.id);
+
 function requestJson(port, endpoint, timeoutMs) {
+  const startedAt = Date.now();
   return new Promise(resolve => {
+    let settled = false;
+    const done = value => { if (settled) return; settled = true; resolve(value); };
     const req = http.get({ host: '127.0.0.1', port, path: endpoint, timeout: timeoutMs || 1800 }, res => {
       let raw = '';
       res.setEncoding('utf8');
@@ -119,30 +148,50 @@ function requestJson(port, endpoint, timeoutMs) {
       res.on('end', () => {
         let data = null;
         try { data = JSON.parse(raw); } catch (e) { /* not JSON */ }
-        resolve({
+        done({
           responding: true,
+          timedOut: false,
           healthy: res.statusCode >= 200 && res.statusCode < 300 && !!(data && data.ok),
           status: res.statusCode,
-          data
+          data,
+          startedAt: startedAt,
+          tookMs: Date.now() - startedAt
         });
       });
     });
-    req.on('timeout', () => { req.destroy(); resolve({ responding: false, healthy: false, status: 0, data: null }); });
-    req.on('error', () => resolve({ responding: false, healthy: false, status: 0, data: null }));
+    req.on('timeout', () => {
+      req.destroy();
+      done({ responding: false, timedOut: true, healthy: false, status: 0, data: null, startedAt: startedAt, tookMs: Date.now() - startedAt });
+    });
+    req.on('error', () => done({ responding: false, timedOut: false, healthy: false, status: 0, data: null, startedAt: startedAt, tookMs: Date.now() - startedAt }));
   });
 }
 
 async function serviceStatus(service) {
   const health = await requestJson(service.port, service.endpoint);
   const identityMatches = health.healthy && (!service.matchesHealth || service.matchesHealth(health.data));
+  /* Runner-side process tracking (P11-3B): what this runner itself did.
+     `owned` means "started by this process", not "healthy" — a runner-owned
+     child can have exited and a foreign instance can be perfectly healthy. */
+  const entry = currentChild[service.name] || null;
   return {
     name: service.name,
+    componentId: service.componentId || null,
+    label: service.label || service.name,
     port: service.port,
     online: identityMatches,
     conflict: health.responding && !identityMatches,
     status: health.status,
     version: health.data && (health.data.version || health.data.serviceVersion) || '',
-    details: health.data || null
+    details: health.data || null,
+    responding: health.responding === true,
+    timedOut: health.timedOut === true,
+    tookMs: health.tookMs,
+    respondedAt: health.startedAt,
+    owned: !!(entry && !entry.exited),
+    pid: entry && entry.pid ? entry.pid : null,
+    exits: entry ? entry.exits : 0,
+    startedAt: entry ? entry.startedAt : null
   };
 }
 
@@ -150,17 +199,36 @@ async function allStatus() {
   return Promise.all(SERVICES.map(serviceStatus));
 }
 
-function printStatus(rows) {
+/* `rows` is the legacy service table (unchanged shape, plus the P11-3B process
+   fields). `components` is the registry-wide aggregate and the machine-readable
+   truth for other tools: launcher, diagnostics and tests. */
+function printStatus(rows, components) {
+  const agg = components && components.aggregated ? components.aggregated : null;
   if (jsonOnly) {
-    process.stdout.write(JSON.stringify({ ok: true, services: rows }, null, 2) + '\n');
+    process.stdout.write(JSON.stringify(Object.assign({
+      ok: true,
+      services: rows
+    }, components || {}), null, 2) + '\n');
     return;
   }
   console.log('\nInternal Beyond local services');
   rows.forEach(row => {
     const state = row.online ? 'online' : (row.conflict ? 'conflict' : 'offline');
     const extra = row.online && row.version ? ' · v' + row.version : '';
-    console.log('  ' + row.name.padEnd(7) + state.padEnd(8) + '127.0.0.1:' + row.port + extra);
+    console.log('  ' + row.name.padEnd(9) + state.padEnd(8) + '127.0.0.1:' + row.port + extra);
   });
+  if (agg) {
+    console.log('\n  components (' + agg.updatedAt + ') · ' + agg.overall);
+    for (const c of agg.components) {
+      const detail = c.state === 'healthy' ? '' :
+        (c.reason && c.reason.category ? ' · ' + c.reason.category : '');
+      console.log('    ' + String(c.id).padEnd(9) + String(c.state).padEnd(12) +
+        (c.affectsOverall ? '' : '(informational)') + detail);
+    }
+    console.log('  running: ' + (agg.running.join(',') || 'none') +
+      ' · stopped: ' + (agg.stopped.join(',') || 'none') +
+      ' · affected: ' + (agg.affected.join(',') || 'none'));
+  }
   console.log('  Logs: ' + LOG_DIR + '\n');
 }
 
@@ -267,6 +335,126 @@ async function stopService(service) {
   appendRestartLog('stopping ' + service.name + ' (port ' + service.port + ')');
 }
 
+/* ── Health aggregation (P11-3B · observation only) ──
+ *
+ * One live view over the registry: which components run, which are stopped,
+ * which are in an error/conflict state, which are not enabled here, when this
+ * view was built, and whether the runner itself owns a process for each one.
+ *
+ * Nothing in this section acts on a component. There is no automatic restart,
+ * no retry loop and no recovery behaviour anywhere in P11-3B — a stopped
+ * component is REPORTED as stopped and that is the whole behaviour.
+ *
+ * Two evidence sources are joined and both are reported, because they can
+ * legitimately disagree:
+ *   · the probe   → is it answering, and is it really ours
+ *   · the runner  → did THIS process start a child for it, and is that child alive
+ *
+ * `--probe-web` additionally includes the static layer (23120), which this
+ * runner does not manage but every component model must describe. It is off by
+ * default so a plain `--status` never touches a port nobody asked about.
+ */
+function findServiceSpec(componentId) {
+  return SERVICES.find(s => s.componentId === componentId) || null;
+}
+
+function probeErrorReport(component, message, port) {
+  return registry.componentReport(component, {
+    port: port,
+    state: registry.STATE.UNKNOWN,
+    reason: { category: registry.REASON.PROBE_FAILED, message: message },
+    probed: true,
+    reachable: false,
+    identityOk: false
+  });
+}
+
+async function componentHealth(component, rows, opts) {
+  const o = opts || {};
+  const port = registry.portOf(component.id);
+  const service = findServiceSpec(component.id);
+  if (service) {
+    const row = (rows || []).find(r => r && r.name === component.name);
+    if (!row) {
+      return probeErrorReport(component, component.name + ' has no probe row in this run', port);
+    }
+    const classified = registry.classifyProbe(component, {
+      responding: row.responding,
+      timedOut: row.timedOut,
+      status: row.status,
+      data: row.details,
+      identityOk: row.online === true
+    }, {});
+    const note = row.owned
+      ? (row.exits > 0
+        ? 'started by this runner; ' + row.exits + ' exit event(s) observed (P11-3B does not restart it)'
+        : 'started by this runner')
+      : (row.online ? 'reused: already running and not started by this runner' : null);
+    return registry.componentReport(component, {
+      port: port,
+      state: classified.state,
+      reason: classified.reason,
+      probed: true,
+      reachable: row.responding,
+      identityOk: row.online === true,
+      timedOut: row.timedOut,
+      statusCode: row.status,
+      tookMs: row.tookMs,
+      respondedAt: row.respondedAt,
+      probedAt: row.respondedAt,
+      startedAt: row.startedAt,
+      pid: row.pid,
+      version: row.version,
+      details: row.details,
+      note: note
+    });
+  }
+  /* A managed component that this run did not register (Vision without
+     --vision). Reporting it as "not enabled" is the honest answer; reporting it
+     as offline would be a lie about a component the user never asked for. */
+  if (component.managedByRunner) {
+    return registry.notEnabled(component, component.label + ' is opt-in and was not enabled for this run');
+  }
+  /* The static layer is managed by the launcher, and probing it means opening a
+     socket to a port nobody asked about. It is strictly opt-in (--probe-web /
+     probeWeb:true); otherwise it is reported as unobserved, which is the honest
+     answer for a component this view has not looked at. */
+  if (component.id === 'static' && o.probeWeb !== true) {
+    return registry.componentReport(component, {
+      port: port,
+      state: registry.STATE.UNKNOWN,
+      probed: false,
+      reachable: false,
+      identityOk: false,
+      note: 'the static layer is managed by the launcher; pass --probe-web to include its live state'
+    });
+  }
+  return registry.probeComponent(component, { port: port, host: '127.0.0.1' });
+}
+
+async function liveHealth(opts) {
+  const o = opts || {};
+  const rows = Array.isArray(o.rows) ? o.rows : await allStatus();
+  const components = [];
+  for (const component of registry.COMPONENTS) {
+    /* eslint-disable no-await-in-loop -- bounded sequential probe: six local
+       HTTP probes at most, and parallelism here would only make a degraded
+       port answer slower to diagnose. */
+    components.push(await componentHealth(component, rows, o));
+  }
+  const aggregated = registry.aggregate(components, { now: o.now });
+  aggregated.checkedAt = aggregated.updatedAt;
+  return {
+    ok: true,
+    service: RESTART_SERVER_NAME,
+    serviceState: shutdownState.requested ? 'shutting-down' : restartState.state,
+    restartTargets: RESTART_TARGET_IDS.slice(),
+    warning: 'observation only: this view never restarts, retries or recovers anything',
+    services: rows,
+    components: components,
+    aggregated: aggregated
+  };
+}
 /* ── Restart state machine (idle → restarting → ready | failed) ── */
 const restartState = { state: 'idle', lastError: '', startedAt: 0 };
 /* P7: a graceful stop requested through the control plane (installer upgrade /
@@ -284,7 +472,7 @@ async function runRestart() {
   restartState.lastError = '';
   appendRestartLog('restart requested');
   try {
-    const targets = SERVICES.filter(s => s.name === 'Bridge' || s.name === 'Active');
+    const targets = SERVICES.filter(s => RESTART_TARGET_IDS.indexOf(s.componentId) >= 0);
     /* stop → confirm old processes exit → release ports → start → health → ready */
     for (const service of targets) await stopService(service);
     for (const service of targets) await waitPortFree(service.port, 10000);
@@ -376,6 +564,18 @@ function startRestartServer() {
       }, origin);
       return;
     }
+    /* P11-3B · read-only component health. Served by the RUNNING process, so it
+       reports what that process actually started (pid/owned/exit count), which a
+       detached `--json` invocation structurally cannot: a second runner knows the
+       ports answer but not who started them. Observation only — no action. */
+    if (req.method === 'GET' && url.pathname === '/components') {
+      liveHealth({}).then(function (view) {
+        sendJsonRes(res, 200, view, origin);
+      }).catch(function (e) {
+        sendJsonRes(res, 500, { ok: false, error: 'health-view-failed', message: redact(String(e && e.message || e)).slice(0, 300) }, origin);
+      });
+      return;
+    }
     if (req.method === 'POST' && url.pathname === '/shutdown') {
       if (!restartOriginAllowed(req)) { sendJsonRes(res, 403, { ok: false, error: 'origin-denied' }, origin); return; }
       if (shutdownState.requested) { sendJsonRes(res, 202, { ok: true, state: 'shutting-down' }, origin); return; }
@@ -418,7 +618,17 @@ function spawnService(service) {
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true
   });
-  const entry = { service, child, exited: false };
+  /* Process tracking (P11-3B): this runner records WHAT IT STARTED. It is
+     observation data only — nothing here decides to restart anything. */
+  const entry = {
+    service,
+    componentId: service.componentId || null,
+    child,
+    pid: child.pid || null,
+    startedAt: Date.now(),
+    exits: 0,
+    exited: false
+  };
   children.push(entry);
   currentChild[service.name] = entry;
   child.stdout.on('data', chunk => appendLog(service, 'out', chunk));
@@ -426,6 +636,9 @@ function spawnService(service) {
   child.on('error', error => appendLog(service, 'err', 'spawn failed: ' + error.message + '\n'));
   child.on('exit', (code, signal) => {
     entry.exited = true;
+    entry.exitedAt = Date.now();
+    entry.exitCode = code;
+    entry.exits += 1;
     appendLog(service, 'runner', 'stopped (code=' + code + ', signal=' + (signal || '') + ')\n');
   });
   appendLog(service, 'runner', 'started pid=' + child.pid + '\n');
@@ -461,10 +674,11 @@ async function startServices() {
     launched.push(service);
   }
   for (const service of launched) {
-    const healthy = await waitUntilHealthy(service, service.name === 'Vision' ? 120000 : 15000);
+    const healthy = await waitUntilHealthy(service, service.componentId === 'vision' ? 120000 : 15000);
     console.log('[runner] ' + service.name + (healthy ? ' is ready.' : ' did not become healthy yet; inspect its log.'));
   }
-  printStatus(await allStatus());
+  const rows = await allStatus();
+  printStatus(rows, await liveHealth({ rows: rows, probeWeb: args.has('--probe-web') }));
 }
 
 function stopChildren() {
@@ -481,7 +695,10 @@ function installInteractiveControls() {
   process.stdin.resume();
   process.stdin.on('data', async data => {
     const key = String(data || '').trim().toLowerCase();
-    if (key === 's' || key === 'status') printStatus(await allStatus());
+    if (key === 's' || key === 'status') {
+      const rows = await allStatus();
+      printStatus(rows, await liveHealth({ rows: rows, probeWeb: args.has('--probe-web') }));
+    }
     if (key === 'q' || key === 'quit' || key === 'exit') shutdown(0);
   });
 }
@@ -497,7 +714,10 @@ function shutdown(code) {
 
 async function main() {
   if (statusOnly) {
-    printStatus(await allStatus());
+    const rows = await allStatus();
+    /* --status / --json always answers the component question, because that is
+       what every other tool now consumes. */
+    printStatus(rows, await liveHealth({ rows: rows, probeWeb: args.has('--probe-web') }));
     return;
   }
   await startServices();

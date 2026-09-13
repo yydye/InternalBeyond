@@ -30,6 +30,10 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+/* P11-3B：组件轴（有哪些组件、顺序、vocabulary）改为来自组件注册表。这个文件
+   仍然是启动记录的唯一权威，只负责"怎么表述这次启动"；"组件是什么"不再在这里
+   手写第二份。 */
+const registry = require('./component-registry.js');
 
 /* ── Contract identity ── */
 
@@ -66,8 +70,46 @@ const REASON = {
   WRITE_FAILED: 'write-failed'
 };
 
-/* Component order is part of the contract: stable ordering → stable diffs/UI. */
-const COMPONENT_ORDER = ['static', 'bridge', 'active', 'restart', 'vision'];
+/* Component ids and their order are part of the contract: stable ordering →
+   stable diffs/UI. Both now come from the single component registry (P11-3B),
+   which also added `homeNode` between the services it belongs with. The boot
+   record can no longer be structurally incapable of describing a component the
+   runner manages — that is exactly how Home Node stayed invisible. */
+const COMPONENT_ORDER = registry.componentOrder();
+
+/* Seeded component records for the launcher: every observed component, in
+   contract order, in its "not probed yet" state. The launcher no longer keeps a
+   second hand-written copy of this list — that copy is how Home Node came to be
+   absent from every boot record. */
+function initialComponentRecords() {
+  const out = {};
+  for (const c of registry.observed()) {
+    out[c.id] = {
+      required: c.required === true,
+      affectsOverall: c.affectsOverall === true,
+      probed: false,
+      healthy: false,
+      state: c.id === 'vision' ? REASON.NOT_ENABLED : REASON.UNKNOWN,
+      port: registry.portOf(c.id)
+    };
+    if (c.id === 'vision') {
+      /* Vision is opt-in; the launcher never starts it. It is recorded as
+         not-enabled rather than offline so a working launch is not described as
+         a launch with a broken component. */
+      out[c.id].reason = {
+        category: REASON.NOT_ENABLED,
+        message: 'Vision is an optional extra and is not started by the launcher'
+      };
+    }
+  }
+  return out;
+}
+
+/* Components the record's "required" rule can be derived from — exactly one
+   (`static`): without it there is no UI to serve. */
+function requiredComponentIds() {
+  return registry.observed().filter(c => c.required).map(c => c.id);
+}
 
 const DEFAULT_STALE_MS = 12 * 60 * 60 * 1000; /* a launch record is "current" for 12h */
 const CLOCK_SKEW_MS = 5 * 60 * 1000;
@@ -157,7 +199,19 @@ function reasonOf(raw, state) {
   };
 }
 
-function normalizeComponent(raw, absent) {
+/*
+ * `affectsOverall` is a REGISTRY property, not a caller's opinion (P11-3B). A
+ * component the registry marks informational can never be recorded as
+ * overall-affecting, no matter what a caller passes — otherwise the launch
+ * verdict would depend on which producer wrote the record. A component the
+ * registry does not know keeps the historical default (affects the verdict
+ * unless the caller explicitly says otherwise).
+ */
+function componentDef(id) {
+  return registry.byId(id) || null;
+}
+
+function normalizeComponent(id, raw, absent) {
   if (absent) {
     /* A component the caller did not report is simply not part of this launch's
        classification — it must never manufacture a degraded reason. */
@@ -171,17 +225,18 @@ function normalizeComponent(raw, absent) {
     };
   }
   const r = raw || {};
+  const def = componentDef(id);
   const healthy = r.healthy === true;
   const state = (typeof r.state === 'string' && r.state) ? r.state : (healthy ? 'healthy' : REASON.UNKNOWN);
   const out = {
-    required: r.required === true,
-    affectsOverall: r.affectsOverall !== false,
+    required: def ? def.required === true : r.required === true,
+    affectsOverall: def ? def.affectsOverall === true : r.affectsOverall !== false,
     probed: r.probed !== false,
     healthy: healthy,
     state: state,
     reason: healthy ? null : reasonOf(r.reason != null ? r.reason : r.message, state)
   };
-  const detail = ['port', 'host', 'url', 'identity', 'version', 'reused', 'controlState'];
+  const detail = ['port', 'host', 'url', 'identity', 'identityRequiresOk', 'version', 'reused', 'controlState'];
   for (const key of detail) {
     if (r[key] === undefined || r[key] === null) continue;
     out[key] = typeof r[key] === 'string' ? r[key].slice(0, MAX_STRING) : r[key];
@@ -204,17 +259,25 @@ function buildBootState(input) {
   const components = {};
   for (const name of COMPONENT_ORDER) {
     const raw = (i.components || {})[name];
-    components[name] = normalizeComponent(raw, raw === undefined);
+    components[name] = normalizeComponent(name, raw, raw === undefined);
   }
 
   let fatal = null;
   if (i.fatal) fatal = reasonOf(i.fatal, REASON.LAUNCHER_ERROR);
-  if (!fatal && i.phase !== 'starting' && components.static.required && !components.static.healthy) {
-    /* Defensive: a required static layer that is not healthy can never be 'normal'. */
-    fatal = {
-      category: (components.static.reason && components.static.reason.category) || REASON.STATIC_UNAVAILABLE,
-      message: (components.static.reason && components.static.reason.message) || 'static layer unavailable'
-    };
+  const requiredIds = requiredComponentIds();
+  if (!fatal && i.phase !== 'starting') {
+    for (const id of requiredIds) {
+      const c = components[id];
+      if (!c || c.healthy) continue;
+      /* Defensive: a required layer that is not healthy can never be 'normal'.
+         Same rule as before the registry, now applied to every required
+         component instead of only to `static` by name. */
+      fatal = {
+        category: (c.reason && c.reason.category) || REASON.STATIC_UNAVAILABLE,
+        message: (c.reason && c.reason.message) || (id + ' unavailable')
+      };
+      break;
+    }
   }
 
   const degradedReasons = [];
@@ -451,6 +514,8 @@ module.exports = {
   OVERALL: OVERALL,
   REASON: REASON,
   COMPONENT_ORDER: COMPONENT_ORDER,
+  initialComponentRecords: initialComponentRecords,
+  requiredComponentIds: requiredComponentIds,
   DEFAULT_STALE_MS: DEFAULT_STALE_MS,
   stateDir: stateDir,
   stateFile: stateFile,

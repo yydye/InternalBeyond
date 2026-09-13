@@ -31,23 +31,27 @@ const path = require('path');
 const { spawn, execFile } = require('child_process');
 const bootState = require('./boot-state.js');
 const productVersion = require('./product-version.js');
+/* P11-3B：端口、身份探针与组件轴来自组件注册表 —— 启动器不再自己维护第二份
+   组件清单（那份清单里从来没有 Home Node，所以启动记录结构性地无法描述它）。 */
+const registry = require('./component-registry.js');
 
 /* Repository root == installed app root. This file lives in runtime/, so the
    root is one level up; the runner is a sibling, the static server lives in
    services/, and runtime/node + logs stay directly under the root. */
 const ROOT = path.resolve(__dirname, '..');
 const HOST = '127.0.0.1';
-const WEB_PORT = optionPort('IB_WEB_PORT', 23120);
+const WEB_PORT = registry.portOf('static');
 const WEB_URL = 'http://' + HOST + ':' + WEB_PORT + '/InternalBeyond.html';
-const WEB_IDENTITY = 'InternalBeyond Web';
+const WEB_IDENTITY = registry.byId('static').identity.server;
 const RUNNER = path.join(__dirname, 'local-services-runner.js');
 const WEB_SERVER = path.join(ROOT, 'services', 'internal-beyond-server.js');
 
-const BRIDGE_PORT = optionPort('IB_BRIDGE_PORT', 23115);
-const ACTIVE_PORT = optionPort('IB_ACTIVE_PORT', 23114);
-const RESTART_PORT = optionPort('IB_RESTART_PORT', 23116);
-const RESTART_IDENTITY = 'InternalBeyond Restart';
-const VISION_PORT = optionPort('IB_VISION_PORT', 8765);
+const BRIDGE_PORT = registry.portOf('bridge');
+const ACTIVE_PORT = registry.portOf('active');
+const HOME_NODE_PORT = registry.portOf('homeNode');
+const RESTART_PORT = registry.portOf('restart');
+const RESTART_IDENTITY = registry.byId('restart').identity.service;
+const VISION_PORT = registry.portOf('vision');
 const NODE_REQUIRED_MAJOR = 18;
 
 /* Launcher log goes to the project's logs\launcher.log (requirement). Service
@@ -197,10 +201,23 @@ function probeServices() {
   });
 }
 
+/* "The services manager has done its job" is defined by the registry, not by a
+   hand-written pair of names: every component marked healthyRequiredForServices
+   must be online. Home Node is deliberately NOT one of them — the desktop UI
+   works without it, so its absence must not make the launcher wait, and must not
+   make it start a second runner while the existing one is doing fine. */
 function servicesHealthy(rows) {
-  const bridge = (rows || []).find(r => r && r.name === 'Bridge');
-  const active = (rows || []).find(r => r && r.name === 'Active');
-  return !!(bridge && bridge.online && active && active.online);
+  const required = registry.requiredForServices();
+  if (!required.length) return false;
+  return required.every(c => {
+    const row = (rows || []).find(r => r && r.name === c.name);
+    return !!(row && row.online);
+  });
+}
+
+/* Registry rows, as the runner reports them, keyed by component id. */
+function rowForComponent(rows, component) {
+  return (rows || []).find(r => r && (r.componentId === component.id || r.name === component.name)) || null;
 }
 
 /* A services manager counts only when its command line names THIS install root.
@@ -299,12 +316,15 @@ function openBrowser(url, opts) {
 
 /* ── Optional components (never fatal) ── */
 
-function serviceComponent(name, row, opts) {
+/* Build one boot-record component from a runner status row. The port and the
+   "what counts as healthy" predicate come from the registry; this function only
+   decides how to WORD a failure, using boot-state's frozen reason vocabulary. */
+function serviceComponent(component, row, opts) {
   const o = opts || {};
   const port = o.port;
   const spec = {
-    required: false,
-    affectsOverall: true,
+    required: component.required === true,
+    affectsOverall: component.affectsOverall === true,
     probed: true,
     healthy: false,
     state: bootState.REASON.UNKNOWN,
@@ -314,7 +334,7 @@ function serviceComponent(name, row, opts) {
     spec.state = bootState.REASON.UNKNOWN;
     spec.reason = {
       category: bootState.REASON.PROBE_FAILED,
-      message: name + ' status could not be read from the local services runner'
+      message: component.name + ' status could not be read from the local services runner'
     };
     return spec;
   }
@@ -328,27 +348,28 @@ function serviceComponent(name, row, opts) {
     spec.state = 'conflict';
     spec.reason = {
       category: bootState.REASON.CONFLICT,
-      message: 'port ' + port + ' answered but is not ' + name
+      message: 'port ' + port + ' answered but is not ' + component.label + ' (' + component.name + ')'
     };
     return spec;
   }
   spec.state = 'offline';
   spec.reason = o.waitedMs
-    ? { category: bootState.REASON.TIMEOUT, message: name + ' did not answer /health within ' + o.waitedMs + 'ms' }
-    : { category: bootState.REASON.OFFLINE, message: name + ' is not answering /health on port ' + port };
+    ? { category: bootState.REASON.TIMEOUT, message: component.name + ' did not answer ' + component.healthPath + ' within ' + o.waitedMs + 'ms' }
+    : { category: bootState.REASON.OFFLINE, message: component.name + ' is not answering ' + component.healthPath + ' on port ' + port };
   return spec;
 }
 
 async function probeRestartPlane() {
+  const restartComponent = registry.byId('restart');
   const spec = {
-    required: false,
-    affectsOverall: false, /* informational: the UI restart button is optional */
+    required: restartComponent.required === true,
+    affectsOverall: restartComponent.affectsOverall === true,
     probed: true,
     healthy: false,
     state: bootState.REASON.UNKNOWN,
     port: RESTART_PORT
   };
-  const h = await httpGetJson(RESTART_PORT, '/status', 1200);
+  const h = await httpGetJson(RESTART_PORT, restartComponent.healthPath, 1200);
   if (h.responding && h.data && h.data.service === RESTART_IDENTITY) {
     spec.healthy = true;
     spec.state = 'healthy';
@@ -357,17 +378,18 @@ async function probeRestartPlane() {
   }
   if (h.responding) {
     spec.state = 'conflict';
-    spec.reason = { category: bootState.REASON.CONFLICT, message: 'port ' + RESTART_PORT + ' answered but is not the Internal Beyond restart control plane' };
+    spec.reason = { category: bootState.REASON.CONFLICT, message: 'port ' + RESTART_PORT + ' answered but is not ' + restartComponent.label };
     return spec;
   }
   spec.state = 'offline';
-  spec.reason = { category: bootState.REASON.OFFLINE, message: 'restart control plane is not running on port ' + RESTART_PORT };
+  spec.reason = { category: bootState.REASON.OFFLINE, message: restartComponent.label + ' is not running on port ' + RESTART_PORT };
   return spec;
 }
 
 /*
- * Attempts to bring Bridge + Active up, then reports their REAL state.
- * Returns { bridge, active, restart, manager, warnings }.
+ * Attempts to bring the registry's managed services up, then reports their REAL
+ * state — including Home Node, which the launcher had no way to report before
+ * P11-3B. Returns { components, manager, warnings }.
  * This function never throws and never fails the launch.
  */
 async function ensureServices(opts) {
@@ -404,17 +426,42 @@ async function ensureServices(opts) {
     warnings.push({ code: finalProbe.error.category, message: finalProbe.error.message });
   }
   const rows = finalProbe.rows;
-  const rowFor = name => rows.find(r => r && r.name === name) || null;
 
-  const bridge = serviceComponent('Bridge', rowFor('Bridge'), { port: BRIDGE_PORT, waitedMs: waitedMs });
-  const active = serviceComponent('Active', rowFor('Active'), { port: ACTIVE_PORT, waitedMs: waitedMs });
-  if (!manager.wasRunning && !manager.started && (bridge.state === 'offline' || active.state === 'offline')) {
+  /* One component per registry entry the runner manages (plus the restart plane,
+     which lives inside the runner process). A component the run did not register
+     at all — Vision without --vision — is reported as not-enabled, never as an
+     outage of something the user never asked for. */
+  const components = {};
+  const managedRows = [];
+  for (const component of registry.managed()) {
+    const row = rowForComponent(rows, component);
+    if (!row) {
+      if (component.id === 'vision') {
+        components[component.id] = {
+          required: false,
+          affectsOverall: component.affectsOverall === true,
+          probed: false,
+          healthy: false,
+          state: bootState.REASON.NOT_ENABLED,
+          port: registry.portOf(component.id),
+          reason: { category: bootState.REASON.NOT_ENABLED, message: 'Vision is an optional extra and is not started by the launcher' }
+        };
+      } else {
+        components[component.id] = serviceComponent(component, null, { port: registry.portOf(component.id) });
+      }
+      continue;
+    }
+    components[component.id] = serviceComponent(component, row, { port: component.defaultPort, waitedMs: waitedMs });
+    managedRows.push(row);
+  }
+
+  if (!manager.wasRunning && !manager.started && managedRows.every(r => r.online !== true)) {
     manager.state = 'down';
   }
 
-  const restart = await probeRestartPlane();
+  components.restart = await probeRestartPlane();
 
-  return { bridge: bridge, active: active, restart: restart, manager: manager, warnings: warnings, waitedMs: waitedMs };
+  return { components: components, manager: manager, warnings: warnings, waitedMs: waitedMs };
 }
 
 /* ── Static layer (the ONLY fatal dependency) ── */
@@ -520,21 +567,17 @@ async function main(opts) {
   const startedAt = Date.now();
   const bootId = bootState.newBootId(startedAt);
   const warnings = [];
-  const components = {
-    static: { required: true, affectsOverall: true, probed: false, healthy: false, state: bootState.REASON.UNKNOWN, host: HOST, port: WEB_PORT, url: WEB_URL, identity: WEB_IDENTITY },
-    bridge: { required: false, affectsOverall: true, probed: false, healthy: false, state: bootState.REASON.UNKNOWN, port: BRIDGE_PORT },
-    active: { required: false, affectsOverall: true, probed: false, healthy: false, state: bootState.REASON.UNKNOWN, port: ACTIVE_PORT },
-    restart: { required: false, affectsOverall: false, probed: false, healthy: false, state: bootState.REASON.UNKNOWN, port: RESTART_PORT },
-    vision: {
-      required: false,
-      affectsOverall: false,
-      probed: false,
-      healthy: false,
-      state: bootState.REASON.NOT_ENABLED,
-      port: VISION_PORT,
-      reason: { category: bootState.REASON.NOT_ENABLED, message: 'Vision is an optional extra and is not started by the launcher' }
-    }
-  };
+  /* The component axis comes from the registry (P11-3B). The static layer keeps
+     its launcher-specific detail (host/url/identity) on top. */
+  const components = bootState.initialComponentRecords();
+  components.static = Object.assign(components.static, {
+    required: true,
+    affectsOverall: true,
+    host: HOST,
+    port: WEB_PORT,
+    url: WEB_URL,
+    identity: WEB_IDENTITY
+  });
   const ctx = { startedAt: startedAt, components: components, warnings: warnings, serviceManager: null };
 
   const write = (phase, extra) => {
@@ -547,14 +590,13 @@ async function main(opts) {
   write('starting');
 
   try {
-    /* 1. Optional local services — degraded on failure, never fatal. */
+    /* 1. Local services — degraded on failure, never fatal. Every registry
+          component the runner manages is recorded, including Home Node. */
     const services = await ensureServices(o);
-    components.bridge = services.bridge;
-    components.active = services.active;
-    components.restart = services.restart;
+    for (const id of Object.keys(services.components)) components[id] = services.components[id];
     for (const w of services.warnings) if (!warnings.some(x => x.code === w.code)) warnings.push(w);
     ctx.serviceManager = services.manager;
-    say('Services state: Bridge=' + components.bridge.state + ', Active=' + components.active.state +
+    say('Services state: ' + registry.managed().map(c => c.name + '=' + (components[c.id] ? components[c.id].state : 'unknown')).join(', ') +
       ', manager=' + services.manager.state + '.');
 
     /* 2. Static layer — the only thing that can be fatal. */
@@ -636,6 +678,7 @@ module.exports = {
   LOG_FILE: LOG_FILE,
   BRIDGE_PORT: BRIDGE_PORT,
   ACTIVE_PORT: ACTIVE_PORT,
+  HOME_NODE_PORT: HOME_NODE_PORT,
   RESTART_PORT: RESTART_PORT,
   VISION_PORT: VISION_PORT,
   optionPort: optionPort,

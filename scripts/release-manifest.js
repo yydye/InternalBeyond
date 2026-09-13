@@ -52,11 +52,17 @@ const ENTRIES = [
   { from: 'runtime/update-install.js', why: '更新安装运行时（下载 → size/sha256/PE 校验 → detached 启动安装器 → 立即退出；/__update/start 与 /__update/status 使用）' },
   { from: 'runtime/pe-version.js', why: '安装包 PE 版本资源读取（ProductVersion/FileVersion 校验，防止「字节对但版本错」）' },
   { from: 'runtime/boot-state.js', why: '启动记录（P2 诊断唯一来源）' },
+  { from: 'runtime/component-registry.js', why: '组件注册表唯一事实源（端口 / 身份探针 / 组件轴；boot-state 与 runner 都 require 它，缺失会让启动链直接崩）' },
   { from: 'runtime/launch-internal-beyond.js', why: '正式静默启动链（快捷方式最终执行）' },
-  { from: 'runtime/local-services-runner.js', why: '本地服务管理进程（Bridge / Active + 重启与停止控制面）' },
+  { from: 'runtime/local-services-runner.js', why: '本地服务管理进程（Bridge / Active / Home Node + 重启与停止控制面）' },
   { from: 'services/internal-beyond-server.js', why: '本地静态页面服务（AudioWorklet 必需）' },
   { from: 'services/ib-bridge-service.js', why: 'Bridge 后端' },
   { from: 'services/active-message-service.js', why: 'Active 后台主动消息服务' },
+  /* P11-3B 收口既有缺口：runner 一直把 Home Node 当作已注册服务启动，但它从未
+     入过发行包 —— 安装后的产品里那一步必然 spawn 一个不存在的脚本。注册表把
+     Home Node 变成注册表里的正式组件之后，这个缺口必须在同一步补上。 */
+  { from: 'services/home-node-service.js', why: 'Home Node 聊天权威服务（canonical chatMessages）' },
+  { from: 'services/home-node', dir: true, why: 'Home Node 模块（chat store / memory / understanding / moments / 设备注册表 / mobile 网关 / HTTP）' },
   { from: 'bridge', dir: true, why: 'Bridge 模块' },
   { from: 'active', dir: true, why: 'Active 模块' },
   { from: '启动 InternalBeyond.vbs', why: '唯一用户启动入口的实现（快捷方式目标，用户只看到名字 InternalBeyond）' },
