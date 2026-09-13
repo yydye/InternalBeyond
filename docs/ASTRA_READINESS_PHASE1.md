@@ -431,3 +431,204 @@ ratio 0.45 / 无冲突 / 无多线索 / 未接近预算`，加权分 **0.5821**�
 `--rewrite --verify` 以及是否放大到完整语料。
 
 在此之前，**不要**开始任何调参或启用动作。
+
+---
+
+# Astra Readiness Phase 1B · Live Judge Pilot（结果：UNKNOWN）
+
+## 15.1 结论（先说最要紧的两件事）
+
+**① Judge readiness = UNKNOWN。** 没有任何真实 judge 调用被执行过，因此
+judge 的真实质量依旧**没有被测量**（"没有测量"，不是"测量不合格"）。唯一的
+阻断项是**合法凭据缺失**（§15.3）。
+
+**② 但 §14 推荐的那条命令当时根本跑不起来。** 本阶段在尝试执行 Phase 1 自己
+写下的"最小下一步"时，实测到一个**真实的 harness 缺陷**：传 `--live` 一律
+抛 `ReferenceError`，**凭据预检（exit 3）永远不可达**。也就是说 §2 与 §14 声称的
+"显式 `--live` 而凭据不齐时大声中止、绝不静默降级成 mock"这条安全性质，
+**在运行期从来没有成立过** —— 它只写在源码文本里。已修（§15.2）。
+
+## 15.2 实测到的缺陷（本阶段的实际产出）
+
+**症状**
+
+```
+$ node tests/test_middle_brain_calibration_live.js --corpus=readiness --live --max-cases=5 --repeat=2
+ReferenceError: Cannot access 'LIVE_MODE' before initialization
+    at Object.<anonymous> (.../test_middle_brain_calibration_live.js:105:14)
+[exit=1]
+```
+
+**根因**：`LIVE_MODE` 被声明在**首次引用之后**（引用在 L105，`const` 声明在 L110）。
+`if (LIVE && !LIVE_MODE && ...)` 里 `LIVE` 为真时 `&&` **不会短路**，于是求值
+`!LIVE_MODE` 命中 TDZ（暂时性死区）。
+
+**后果（比"报错不好看"严重）**：
+
+- L114–L123 的**凭据预检分支永远不可达** → `exit 3` 这条闸门从未生效；
+- 也就是说"绝不静默降级成 mock"这条性质**从未在运行期被验证过**；
+- 由于该崩溃**与凭据是否存在无关**，**即使在一台合法持有凭据的机器上，
+  Phase 1B / 1C 的 live pilot 也无法执行**。
+
+**为什么没有任何测试抓到它**：离线跑的 `LIVE === false`，那一行被**短路掉了**，
+所以**任何离线回归都测不到它**。而"clean abort"此前只是被**静态读源码**断言的 ——
+读源码当然读不出运行期的 TDZ。
+
+**修法（只改 harness，语义零变化）**：把 `const LIVE_MODE = ...` 连同注释移到
+第一次引用之前。生产代码（`assets/` `services/` `InternalBeyond.html`）**零改动**。
+
+**回归护栏（新增，防止同类缺陷再无人发现）**：`tests/test_calibration_live_abort.js`
+把这条性质变成**两种形态**的常驻断言 —— A 形态静态（剥注释后断言"声明先于首次
+引用"的顺序不变量）、B 形态运行期（真的用 `--live` 拉起 harness，断言 exit code
+恰为 3、stdout **一字不出**、stderr 含具名缺失项且**无 JS 栈**、且零浏览器）。
+
+**顺带发现的一处脆弱性（已修）**：Phase 1 的静态断言 `K2.liveRunNotForcedByRegression`
+是"对 `test-all.js` 的**原始文本**扫 `--live`"，于是**一条提到 `--live` 的注释**就能
+让它误报。已按该文件自己的既有约定（结构化扫描前先剥注释）修正为**只看登记项**，
+并用**负控制**证明它仍然能抓到真实的 `--live` 登记（临时登记 → 断言确实 FAIL → 撤回）。
+
+## 15.3 凭据预检（§1 的 A–O）
+
+| 项 | 值 |
+|---|---|
+| A. git HEAD | `b108f27` |
+| B. git status | 仅 `?? .dsh-research/`、`?? MOBILE_HOME_NODE_AUDIT.md`（未跟踪研究产物，既有惯例） |
+| C. 校准 endpoint 出处 | **不存在**（`IB_CI_CALIBRATION_ENDPOINT` 缺失；无任何回落路径） |
+| D. 校准 model | **未指定**（`IB_CI_CALIBRATION_MODEL` 缺失；本阶段不擅自指定模型） |
+| E. `IB_CI_CALIBRATION_KEY` | **ABSENT** |
+| F. `IB_CI_CALIBRATION_ENDPOINT` | **ABSENT** |
+| G. `IB_CI_CALIBRATION_MODEL` | **ABSENT** |
+| H. 选定 fixture | `AR-AQ-01`, `AR-BR-01`, `AR-CS-01`, `AR-O-01`, `AR-E-01`（§15.4） |
+| I. repeat | 2 |
+| J. 最坏付费调用数 | **10**（5 × 2 × 1 judge） |
+| K. rewrite | **false** |
+| L. verify | **false** |
+| M. call budget | 10（机械上限，实际 judge 调用不得超过 10） |
+| N. 期望网络白名单 | 仅 ① 校准端点主机 ② 页面自身（`file://`）+ 本机 mock 端口；**其余一律合成 403 / abort 并记入 denied** |
+| O. 期望持久化写入 | **ZERO** |
+
+**凭据只报 present / absent，绝不打印值、片段、Authorization 头。**
+逐条确认**没有**做：读生产桌面凭据 / 从 `apiSettings` 复制 key / 向 Home Node 索要凭据 /
+发明第三条凭据路径 / 静默改用 mock / 用仓库里的 `.env.example` 充当凭据
+（那两份是 `.dsh-research/reference-spike/` 下第三方示例，与本校准无关）。
+
+## 15.4 预登记的 5 条样本集（§3，**在观测之前**登记）
+
+| # | fixture | 覆盖目的 | expectation | 期望 OOC | 期望维度 | rewriteExpected |
+|---|---|---|---|---|---|---|
+| 1 | `AR-AQ-01` | 明确通过 | judgement | `false` | `[]` | `false` |
+| 2 | `AR-BR-01` | 明确人格 OOC | judgement | `true` | `[persona]` | `true` |
+| 3 | `AR-CS-01` | 细微风格漂移 | judgement | `true` | `[speech_style]` | `false` |
+| 4 | `AR-O-01` | **证据不足**（无历史 → 任何维度都不得被判为 OOC） | contract | `null`（结构上不可判） | `[]` | `null` |
+| 5 | `AR-E-01` | 情感连续性（**唯一**可判维度，必须用证据而非关键词） | judgement | `true` | `[emotional_continuity]` | `true` |
+
+判据型（judgement）样本 = **4** 条（#1 期望非 OOC → TN 靶；#2/#3/#5 期望 OOC → TP 靶），
+契约型（contract）= **1** 条。按 §10，TP/TN/FP/FN **只对 judgement 样本计算**；
+`AR-O-01` 的 `agreement` 恒为 `null`，只判"契约是否被违反"。
+
+这 5 条**全部是 Phase 1 已有的确定性语料**，没有为了让模型好看而新造样本。
+
+## 15.5 为此新增的 harness 入口：`--ids=`（为什么必须加）
+
+harness 原本只能按**类别轮转**抽样。轮转的前 5 条是 `A,B,C,D,E`
+（实测：`AR-AQ-01, AR-BR-01, AR-CS-01, AR-D-01, AR-E-01`）——**里面没有"证据不足"
+那一条**。而"选哪 5 条"本身就是实验设计的一部分，不应该由轮转顺序决定。
+因此新增 `--ids=ID,ID,...`：**按给定顺序精确取样**；未知 id / 重复 id /
+被 `--max-cases` 截断**一律 exit 2 大声中止**，绝不静默降级成轮转
+（静默降级会让"预登记的样本集"和"实际跑的样本集"悄悄不一致）。
+不给 `--ids=` 时行为与之前**逐字相同**（已实测默认仍为 `A,B,C,D,E`）。
+
+## 15.6 安全包络复验（§2，全部通过）
+
+| 断言 | 结果 |
+|---|---|
+| T1 explicitCallLimitEnforced | PASS |
+| T2 noRetryAndBoundedAttempts | PASS |
+| T3 noChatWrites | PASS |
+| T4 noMemoryWrites | PASS |
+| T5 noUnderstandingWrites | PASS |
+| T6 noThreadWrites | PASS |
+| T7 noMomentWrites | PASS |
+| T8 noMiddleBrainConfigMutationDuringCalibration | PASS |
+| T9 noGateStateMutation | PASS |
+| T10 noProductionProviderConfigWrite | PASS |
+| T11 configWritesConfinedToIsolatedTempProfile | PASS |
+| T11b / T11c 凭据永不进制品 / 报告 | PASS |
+| T12 deterministicFixtureIds | PASS |
+| T13 expectedAndObservedSeparated | PASS |
+| T14 providerErrorsRecordedHonestly | PASS |
+| T15 / T15b / T15c 只联系允许的主机 / 无 XHR 写 | PASS |
+| Full same evidence（§2 的 T16 要求） | PASS —— **但 harness 里并没有一条叫 `T16` 的断言**（实测：全仓库除了 `test_ci_dialogue_authority.js` 里另一处无关的 "T16–T18" 标注之外，没有 T16 检查）。该要求是按 §16 的方式满足的：① `Z1.noProductionFileChanged`（生产 diff 逐次断言为空）+ ② 重新跑既有的独立契约套件（见 §15.8），而不是靠一条名字叫 T16 的断言。 |
+| S0 observerInstalledAtDocumentStart | **PASS（document-start 早于应用脚本）** |
+| S0c networkGuardRejectedOutOfScopeRequests | PASS |
+
+**Phase 1 的关键发现仍然被挡住**（逐次回归都会执行）：
+
+```
+DENIED out-of-scope requests:
+  GET  127.0.0.1:23118/memory/list          GET  127.0.0.1:23118/understanding/list
+  GET  127.0.0.1:23118/list                 GET  127.0.0.1:23118/moments/list
+  GET  127.0.0.1:23115/health               GET  127.0.0.1:23115/api/context
+  POST 127.0.0.1:23118/memory/settings   ← ★ 写请求，仍然被拒（零字节发出）
+platform tripwires: idbPut/idbAdd/idbDelete/idbClear/storageSet/storageRemove/storageClear = 0
+semantic tripwires (non-zero only): {}
+```
+
+**durable writes = 0**，写入白名单（`apiSettings` / 聊天 / Memory / Threads /
+Understanding / Moments / Middle Brain 生产配置 / gate 持久状态 / Home Node 存储）
+**全部零写入**。
+
+## 15.7 本阶段**没有**做的事（纪律）
+
+生产代码 **0 行**改动；Astra **未启用**；Character Integrity **未启用**；
+**未**跑 rewrite；**未**跑 verify；**未**调阈值；**未**动 `dlgCharsLow/High`；
+**未**动 `multipleThreads`；**未**动 `MB_GATE_STATE` / cooldown / hysteresis；
+**未**动维度权重；**未**动 judge prompt；**未**为生产改 provider/model；
+**未**动凭据架构或 Home Node 凭据边界；**未**动 canonical evidence / IBDialogueCore /
+Memory / Threads / Understanding / Moments / Android / Tauri / Skill Runtime / UI。
+
+Phase 1 的三条既有设计发现（`dlgChars` 600/3500 语义错位、`multipleThreads` 触发过宽、
+`MB_GATE_STATE` 宿主本地分叉）**只被提及，未被修改**。
+
+`git diff --name-only HEAD~1 HEAD -- assets services InternalBeyond.html` **为空**。
+
+## 15.8 测试与回归（§16）
+
+| 套件 | 结果 |
+|---|---|
+| `tests/test_calibration_live_abort.js`（**新增**，A/B/C 共 20 条） | **0 failed** |
+| `tests/test_astra_readiness_observe.js`（只读观测，含修好的 `K2`） | **0 failed** |
+| `test_middle_brain_calibration_live.js --corpus=readiness --rewrite --verify --max-cases=6 --budget=24` | **0 failed**（T1–T15c 全 PASS） |
+| `test_middle_brain_calibration_live.js --ids=<5 条预登记> `（离线 mock） | 0 failed（planned 5 / actual judge=5, rewrite=0, verify=0） |
+| Full same evidence · dialogue authority | 77 passed, 0 failed |
+| Full same evidence · CI dialogue authority（M1-C.2p） | 58 passed, 0 failed |
+| Full same evidence · memory authority / contract closure | 79 / 153 passed, 0 failed |
+| Full same evidence · understanding authority / contract closure | 36 / 68 passed, 0 failed |
+| Full same evidence · moments authority / ACL contract | 78 / 66 passed, 0 failed |
+| Middle Brain convergence / counter-proof | 53 / 11 passed, 0 failed |
+| Middle Brain semantics / seam | 0 failed · 0 failed |
+| `node tests/test-all.js --quick`（static + service） | **static 75 项 · service 29 项 · 全部通过 · 227.9s**（static 由 74 → 75，新增的正是本阶段的 abort 回归） |
+
+`--ids=` 的三个 fail-loud 路径与"默认抽样未变"都已被实测证明：
+未知 id → exit 2、重复 id → exit 2、被 `--max-cases` 截断 → exit 2；
+不给 `--ids=` 时默认抽样仍是 `AR-AQ-01, AR-BR-01, AR-CS-01, AR-D-01, AR-E-01`（逐字未变）。
+
+## 15.9 下一步（**不自动开始**）
+
+**Judge readiness = UNKNOWN**，阻断项精确到环境变量：`IB_CI_CALIBRATION_KEY` +
+`IB_CI_CALIBRATION_ENDPOINT` 必须由**合法持有凭据的执行环境**提供。
+
+解除阻断后的**同一条**最小命令（现在它真的能跑了，且会在凭据不齐时 exit 3）：
+
+```
+node tests/test_middle_brain_calibration_live.js --corpus=readiness --ids=AR-AQ-01,AR-BR-01,AR-CS-01,AR-O-01,AR-E-01 --live --repeat=2
+```
+
+（5 × 2 × 1 = **10** 次真实 judge 调用；不带 `--rewrite` / `--verify`。
+先确认打印出的 planned calls，再执行。）
+
+跑完只看五件事：凭据可用 / schema 可解析 / usage 可测 / 延迟被记录 /
+**tripwire 与 denied 清单显示没有任何状态被写**。确认之后才决定是否进入
+Phase 1C（rewrite + verify）。
+
+在此之前**不要**调参，**不要**启用 Astra。

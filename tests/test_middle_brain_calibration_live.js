@@ -80,12 +80,33 @@ const READINESS_MODE = CORPUS_NAME === 'readiness';
 const CORPUS = READINESS_MODE ? READINESS.CASES : DATA.CASES;
 const PROVENANCE = READINESS_MODE ? 'readiness' : 'layerA';
 
+/* Phase 1B · 显式抽样。不给 --ids= 时行为与本阶段之前**逐字相同**（按类别轮转）。
+   给了就必须精确、按给定顺序取这些 fixture：因为"选哪 5 条"本身就是实验设计的
+   一部分（要覆盖 明确通过 / 明确人格 OOC / 风格漂移 / 证据不足 / 情感连续性），
+   不应该由轮转顺序替我决定 —— 轮转拿到的前 5 条是 A,B,C,D,E，**里面没有**
+   证据不足那一条。未知或重复 id 一律**大声中止**（exit 2），绝不静默降级成轮转：
+   否则"预登记的样本集"和"实际跑的样本集"会悄悄不一致，而这正是 Phase 1
+   花力气消除的那一类错误。 */
+const IDS_ARG = (() => {
+  const a = process.argv.find(x => x.startsWith('--ids='));
+  if (!a) return null;
+  const ids = a.slice('--ids='.length).split(',').map(s => s.trim()).filter(Boolean);
+  return ids.length ? ids : null;
+})();
+
 const LIVE = process.argv.includes('--live');
 const MAX_CASES = (() => {
   const a = process.argv.find(x => x.startsWith('--max-cases='));
-  const n = a ? Number(a.slice('--max-cases='.length)) : 24;
-  return Number.isFinite(n) && n > 0 ? Math.min(n, CORPUS.length) : 24;
+  const def = IDS_ARG ? IDS_ARG.length : 24;
+  const n = a ? Number(a.slice('--max-cases='.length)) : def;
+  return Number.isFinite(n) && n > 0 ? Math.min(n, CORPUS.length) : def;
 })();
+/* 显式样本集不允许被 --max-cases 悄悄截断：截断等于偷偷改掉本轮实验的样本。 */
+if (IDS_ARG && IDS_ARG.length > MAX_CASES) {
+  console.error('中止（exit 2）：--ids= 给了 ' + IDS_ARG.length + ' 条，但 --max-cases=' + MAX_CASES
+    + ' 会截断其中 ' + (IDS_ARG.length - MAX_CASES) + ' 条。显式样本集必须整份跑或整份不跑。');
+  process.exit(2);
+}
 const REPEAT = (() => {
   const a = process.argv.find(x => x.startsWith('--repeat='));
   const n = a ? Number(a.slice('--repeat='.length)) : 1;
@@ -102,12 +123,16 @@ const OBSERVE_VERIFY = process.argv.includes('--verify');
 const ENV_KEY = process.env.IB_CI_CALIBRATION_KEY || '';
 const ENV_ENDPOINT = process.env.IB_CI_CALIBRATION_ENDPOINT || '';
 const ENV_MODEL = process.env.IB_CI_CALIBRATION_MODEL || '';
+/* 真实端点只在"显式 --live + 凭据 + 端点"三者齐备时启用。
+   ★ 声明位置是有语义的：下面的 `!LIVE_MODE` 在 LIVE 为真时**不会短路**，因此这一行
+     必须出现在第一次引用之前。Phase 1B 实测到的真实缺陷就是它曾经声明在引用之后 ——
+     结果是 `--live` 一律抛 TDZ ReferenceError，凭据预检（exit 3）永远不可达。
+     不变量由 tests/test_calibration_live_abort.js 常驻断言（静态顺序 + 运行期 exit 3）。 */
+const LIVE_MODE = LIVE && !!ENV_KEY && !!ENV_ENDPOINT;
 if (LIVE && !LIVE_MODE && process.argv.includes('--allow-mock-fallback')) {
   console.log('Layer B · --live 的凭据不齐（' + (!ENV_KEY ? 'IB_CI_CALIBRATION_KEY ' : '') + (!ENV_ENDPOINT ? 'IB_CI_CALIBRATION_ENDPOINT' : '')
     + '）；按 --allow-mock-fallback 显式要求，本次以离线 mock 运行（报告里 provenance=mock）。');
 }
-/* 真实端点只在"显式 --live + 凭据 + 端点"三者齐备时启用 */
-const LIVE_MODE = LIVE && !!ENV_KEY && !!ENV_ENDPOINT;
 /* Astra Readiness Phase 1 起：显式 --live 但凭据不齐时**大声中止**，不再静默降级成
    离线 mock。理由：静默降级会让人把 mock 数据当成真实模型观测 —— 而这一阶段
    存在的唯一理由就是区分这两者。想跑离线就明确不写 --live。 */
@@ -125,6 +150,24 @@ if (LIVE && !LIVE_MODE && !process.argv.includes('--allow-mock-fallback')) {
 /* 用例选择：按类别均匀抽样，保证覆盖 FP / OOC / KB / boundary / dimension / transport
    （readiness 语料的 category = 该样本的首个观测类别，于是抽样按 A–U 铺开）。 */
 function selectCases() {
+  /* Phase 1B · 显式样本集：按 --ids= 给定顺序精确取出；未知/重复一律中止。 */
+  if (IDS_ARG) {
+    const byId = new Map(CORPUS.map(c => [c.id, c]));
+    const picked = [], missing = [], dupes = [], seen = new Set();
+    for (const id of IDS_ARG) {
+      if (seen.has(id)) { dupes.push(id); continue; }
+      seen.add(id);
+      const c = byId.get(id);
+      if (c) picked.push(c); else missing.push(id);
+    }
+    if (missing.length || dupes.length) {
+      console.error('中止（exit 2）：--ids= 里有' + (missing.length ? '未知 fixture [' + missing.join(', ') + ']' : '')
+        + (missing.length && dupes.length ? '，以及' : '') + (dupes.length ? '重复 fixture [' + dupes.join(', ') + ']' : '') + '。');
+      console.error('可用 id 见 tests/astra-readiness-corpus.js；不允许静默降级成轮转抽样。');
+      process.exit(2);
+    }
+    return picked;
+  }
   const buckets = {};
   for (const c of CORPUS) { (buckets[c.category] = buckets[c.category] || []).push(c); }
   const cats = Object.keys(buckets).sort();

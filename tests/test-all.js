@@ -38,6 +38,14 @@
  *       （browser，同一 harness 的有界离线观测跑：A–U 语料 + 三段执行 + §12 安全包络）。
  *     真实模型观测仍不在强制路径里，而且**当前没有合法凭据**（见
  *     docs/ASTRA_READINESS_PHASE1.md 的 §2）。
+ * Astra Readiness Phase 1B（live judge pilot 的**前置修正**）：Phase 1 声称的
+ *     "显式 --live 而凭据不齐时 exit 3 中止"在运行期**从来没有成立过** ——
+ *     LIVE_MODE 声明在首次引用之后，LIVE 为真时不短路，必抛 TDZ ReferenceError，
+ *     凭据闸门永远不可达（离线跑因 LIVE===false 短路，所以任何离线回归都测不到）。
+ *     已修 harness（仅调整声明顺序，语义零变化），并登记
+ *     test_calibration_live_abort.js（static，静态顺序不变量 + 运行期真跑 --live
+ *     且清空凭据，断言 exit 3 / stdout 一字不出 / 无 JS 栈 / 零浏览器）。
+ *     live pilot 本体未执行：本机无合法凭据。
  * P11-FIX：登记 test_cache_audit_isolation.js（browser，Cache Audit baseline 按 runtime consumer 隔离）。
  * M1-C.2d Wave 1：登记 test_memory_contract_closure.js（static，Memory Contract Closure ——
  *     隐藏记忆不得经 Understanding / Thread 派生回流；证据收紧或不可查时制品 fail closed；
@@ -117,6 +125,15 @@ const GROUPS = [
            ④ 本阶段零生产改动（git diff 逐条断言）
          纯 Node、零网络、零浏览器。 */
       ['test_astra_readiness_observe.js'],
+      /* Astra Readiness Phase 1B：`--live` 凭据预检（clean abort）回归。
+         它存在的理由是 Phase 1B 实测到的真实 harness 缺陷：LIVE_MODE 曾被声明在
+         首次引用**之后**，`LIVE` 为真时不短路 → 传 --live 必抛 TDZ ReferenceError，
+         于是 exit 3 凭据闸门**永远不可达**（"绝不静默降级成 mock"这条性质此前
+         从未在运行期成立过，离线跑因 LIVE===false 短路而永远测不到它）。
+         本测试 = 静态顺序不变量 + 运行期真跑一次 --live（凭据被显式清空）。
+         子进程在模块求值期即中止：零网络、零浏览器、零真实 API 调用，
+         且在"合法持有凭据"的机器上同样确定性走中止分支。 */
+      ['test_calibration_live_abort.js'],
       /* P14：Middle Brain 整块折叠（静态 DOM stub 驱动真实 config 层，零依赖离线） */
       ['test_middle_brain_collapse.js'],
       /* P11-3：Middle Brain 语义务闭合（UI/runtime 状态机 + local 注入契约纯函数表，

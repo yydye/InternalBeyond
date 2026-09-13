@@ -508,8 +508,12 @@ function bucketOf(chars) {
     const json = JSON.stringify(rec);
     return !/apiKey|api_key|Authorization|Bearer|token[^s]/i.test(json.replace(/"costBasis"[^,]*/g, ''));
   })(), '观测记录的字段集合里不得有承载凭据的槽位');
-  check('K2.liveRunNotForcedByRegression', !/--live/.test(readRel('tests/test-all.js').split('\n').filter(l => /calibration_live/.test(l)).join(' ')),
-    'test-all 只登记默认（离线 mock）模式');
+  /* 判据是"**登记**里不得出现 --live"，不是"文件文本里不得出现 --live"：
+     注释里提到 --live（例如解释 Phase 1B 的凭据预检回归）不是登记。所以这里先
+     按本文件既有的约定剥注释再扫 —— 否则一条新注释就能让这条断言误报，
+     这正是 Phase 1B 实测遇到的情况。 */
+  check('K2.liveRunNotForcedByRegression', !/--live/.test(stripComments(readRel('tests/test-all.js')).split('\n').filter(l => /calibration_live/.test(l)).join(' ')),
+    'test-all 只登记默认（离线 mock）模式（剥注释后仍不得出现 --live 登记）');
 
   /* ═══════════ 9 · 观测阶段自身的安全性（§11/§12 的静态那一半）═══════════ */
   /* 9a · CI 证据构建绝不 retrieval：guard 只消费调用方交进来的东西。
