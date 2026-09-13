@@ -2976,6 +2976,13 @@ i would like the room to be enough.
      services/home-node/middle-brain.js require **同一份**。
      必须在 communication.js 之前加载（它在本行下一行的调用点被读取）。 -->
 <script src="assets/js/dialogue-core.js"></script>
+<!-- P11-2H：用户可控 metadata 进入 prompt 的唯一消毒实现（群名 / 成员名 /
+     用户描述 / 关系）。必须在 communication.js 之前加载 —— 桌面群聊规则块
+     是它的第一个消费者。它只做**结构边界**（换行/控制/不可见字符），
+     不改写值：定界符与同形字只登记不改动，见文件头逐条说明。
+     放在这里而不是与其它 *-core.js 同组：那组在 memory.js 一带（约 3000 行），
+     而 communication.js 在 2979 行 —— 放那里会**晚于**消费者加载。 -->
+<script src="assets/js/prompt-boundary-core.js"></script>
 <script src="assets/js/communication.js"></script>
 <script src="assets/js/site-operations.js"></script>
 <script src="active/commerce.js"></script>

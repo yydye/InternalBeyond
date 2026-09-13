@@ -1359,6 +1359,62 @@ function _clearUnread(){}
 function _updateUnreadUI(){}
 
 /* ── 群聊修复辅助函数（groupchat-fix v1） ── */
+/* P11-2H · Group Prompt Input Boundary ────────────────────────────────────
+   用户可控 metadata 进入 prompt 的唯一消毒入口。
+
+   为什么需要它：群聊规则块把 group.name / selfName / 成员名 / 用户描述
+   直接插进 system，而 system 靠换行承载结构 —— 值里出现一个换行，它就从
+   "名字"变成"规则列表的一行"，与真实规则行文本上不可区分。审计确认这 5 处
+   插值此前没有任何消毒，全仓也没有可复用的 prompt 面消毒实现
+   （既有 esc() 全部是 HTML 转义）。
+
+   本函数**不实现任何消毒规则**：规则本体在 prompt-boundary-core.js
+   （与浏览器共用同一份，Node 测试直接 require 同一文件），这里只做两件事：
+     ① 归一化调用形状（缺参数 / 非字符串 / 缺 core 都得到字符串）
+     ② 只有真的改动了才记一条诊断（正常名字零噪声：changed=false 不记录）
+
+   缺 core 时**不静默放行**：退回一个本地的保守兜底，只剥换行与控制字符。
+   这与 P11-2F/P11-2G 的 fail-closed 纪律一致 —— 消毒能力不可用时，
+   退化到"至少不产生新行"，而不是退化到"原样插入"。 */
+function _pbCore(){
+  try{
+    var c=window.IBPromptBoundaryCore;
+    return (c&&typeof c.sanitizePromptInput==='function')?c:null;
+  }catch(e){return null}
+}
+function _pbFallback(v){
+  /* 兜底只做一件事：把换行/回车/TAB/其它 C0-C1 控制字符与不可见格式字符换成空格，
+     再折叠首尾空白。**不**截断、不归类、不报告 —— 它不是第二套规则实现，
+     它是"core 不在时的最小安全下界"。 */
+  return String(v==null?'':v)
+    .replace(/[\u0000-\u001F\u007F-\u009F\u00AD\u061C\u180E\u200B-\u200F\u2028\u2029\u202A-\u202E\u2060-\u2064\u2066-\u206F\uFEFF]/g,' ')
+    .replace(/ {2,}/g,' ').replace(/^ +| +$/g,'');
+}
+/* 消毒一个值。tag 是**稳定类别名**（不是值），只用于诊断。 */
+function _pbSanitize(v,tag){
+  const core=_pbCore();
+  if(!core){
+    const out=_pbFallback(v);
+    if(out!==String(v==null?'':v))console.warn('[PromptBoundary] sanitizer core unavailable, conservative fallback used ('+String(tag||'value')+')');
+    return out;
+  }
+  const r=core.sanitizePromptInput(v);
+  if(r&&r.changed)console.info('[PromptBoundary] sanitized '+String(tag||'value')+' ('+r.reason+')');
+  return (r&&typeof r.value==='string')?r.value:'';
+}
+/* 列表消毒：去空、去重、保持顺序。成员名清单用。 */
+function _pbSanitizeNames(list,tag){
+  const arr=Array.isArray(list)?list:[];
+  const core=_pbCore();
+  if(core&&typeof core.sanitizeNameList==='function'){
+    const r=core.sanitizeNameList(arr);
+    if(r&&r.changed)console.info('[PromptBoundary] sanitized '+String(tag||'names')+' list');
+    return r&&Array.isArray(r.names)?r.names:[];
+  }
+  const out=[];const seen=Object.create(null);
+  for(const v of arr){const s=_pbFallback(v);if(!s||seen[s])continue;seen[s]=true;out.push(s)}
+  return out;
+}
 function _escRe(s){return String(s).replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}
 /* 清洗群聊回复：
    1) 若回复里出现行首"[自己名字]"段落标记，抽取属于自己的那一段（到下一个成员标记为止）
@@ -1583,19 +1639,34 @@ async function _buildSingleChatContext(cfg,opts){
 }
 async function _buildGroupChatContext(cfg,opts){
   opts=opts||{};
-  var selfName=opts.selfName||'';
-  var allNames=opts.allNames||[];
-  var userDesc=opts.userDesc||'';
+  /* ── P11-2H · 唯一的消毒点，在**任何**值进入 prompt 之前 ────────────
+     为什么放在这里而不是上游派生处：`opts.selfName` / `opts.allNames` 由
+     调用方从角色 DTO 派生（cfg.nickname||cfg.model），归一到此处做一次，
+     规则只有一个入口。放在上游会让"派生处消毒了、别处没有"重新变成可能。
+     代价是同一份消毒对同一批名字多跑一次（纯函数、O(n)），接受。 */
+  var selfName=_pbSanitize(opts.selfName||'',    'group.selfName')||'AI';
+  var allNames=_pbSanitizeNames(opts.allNames||[], 'group.allNames');
+  var userDesc=_pbSanitize(opts.userDesc||'',    'group.userDesc');
   var group=opts.group||{};
   var gss=opts.gss||{enabled:false};
   var gSummaryText=opts.gSummaryText||null;
   var _ctxText=opts.userMessage||'';
   var isFirstTurn=!!opts.isFirstTurn;
   let sysContent=cfg.systemPrompt||'';
-  if(cfg.relationship)sysContent=(sysContent?sysContent+'\n':'')+'你和对方的关系是：'+cfg.relationship+'。';
+  /* relationship 同属用户可控角色 metadata，且与群名同一类风险（成段自由文本）。
+     空值不注入 —— 与既有 `if(cfg.relationship)` 门控一致，不新增"空关系"行。 */
+  const _rel=_pbSanitize(cfg.relationship||'','group.relationship');
+  if(_rel)sysContent=(sysContent?sysContent+'\n':'')+'你和对方的关系是：'+_rel+'。';
   const otherNames=allNames.filter(n=>n!==selfName);
+  /* 群名可能是空（既有数据模型允许 name:''）。空值注入会让规则块出现
+     `你是群聊""中的成员` —— 语义上是"没有名字"，形状上却不完整。
+     用一个明确的占位而不是空串：占位本身也是受控常量。
+     selfName 用同一个纪律，但占位取代码库里**既有**的 `||'AI'` 约定
+     （见 social.js 的成员标签、_mbGroupTraceContext 的调用方），
+     而不是新造一个词 —— 空引号对 `以""的身份发言` 会让规则失去可指称的对象。 */
+  const _gName=_pbSanitize(group.name||'','group.name')||'（未命名群聊）';
   sysContent=(sysContent?sysContent+'\n\n':'')
-    +'【群聊规则】你是群聊"'+group.name+'"中的成员"'+selfName+'"。'
+    +'【群聊规则】你是群聊"'+_gName+'"中的成员"'+selfName+'"。'
     +(otherNames.length?('群里还有其他AI成员：'+otherNames.join('、')+'，以及'+userDesc+'。'):('群里还有'+userDesc+'。'))
     +'\n1. 你只能以"'+selfName+'"的身份发言，每次只输出你自己要说的一段话。'
     +'\n2. 绝对不要替其他成员或用户发言、代答、补写他们的台词或动作。即使用户点名了其他成员，也只回答属于你的部分，把他们的部分留给他们自己说。'

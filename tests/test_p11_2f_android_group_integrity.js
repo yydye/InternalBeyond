@@ -535,13 +535,24 @@ section('5 · Group Identity Boundary');
 /* §1 点名的 5 个维度必须各自有**既有**的 canonical 来源 ——
    本阶段不新增第二套角色表（P4 契约：apiConfigs 是唯一事实源）。 */
 {
-  const ctxFn = COM.match(/async function _buildGroupChatContext\(cfg,opts\)\{[\s\S]*?\n\}/);
-  const src = ctxFn ? ctxFn[0] : '';
+  /* P11-2H 修正（本段原先的红是**假红**，原因是提取方式而不是行为）：
+     这里原来用 `COM.match(/async function _buildGroupChatContext\(cfg,opts\)\{[\s\S]*?\n\}/)`
+     —— 惰性匹配到**第一个** `\n}`，而函数体内部（for / if / try 块）出现
+     `\n  }` 的位置远早于函数真正的收尾，因此 `src` 一直只是函数的一小段前缀。
+     I2 之所以一直绿，是因为 `if(cfg.relationship)` 恰好落在前缀里；
+     一旦那行被改写（P11-2H 把它改成经过消毒的 `_rel`），前缀匹配随之失败，
+     于是报了一条"persona 或 relationship 不再来自 cfg"——而真实情况恰恰相反。
+     改用**大括号配平**提取完整函数（与 P11-2H 的 extractBalancedFn 同一纪律，
+     见 test_p11_2h_group_prompt_boundary.js），让这一段的判据覆盖整个函数体。 */
+  const ctxFn = extractBalancedFn(COM, 'async function _buildGroupChatContext(cfg,opts){');
+  const src = ctxFn || '';
   check('I1.groupContextBuilderIsExtractable', src.length > 0);
-  /* persona ← cfg.systemPrompt；relationship ← cfg.relationship */
+  /* persona ← cfg.systemPrompt；relationship ← cfg.relationship
+     （P11-2H 起 relationship 先经 canonical 消毒再插值，来源未变）。 */
   check('I2.personaAndRelationshipComeFromTheCharacterConfig',
     /let sysContent=cfg\.systemPrompt\|\|''/.test(src)
-    && /if\(cfg\.relationship\)sysContent=/.test(src));
+    && /_rel=_pbSanitize\(cfg\.relationship\|\|'','group\.relationship'\)/.test(src)
+    && /if\(_rel\)sysContent=/.test(src));
   /* speech_style ← IB.brevity（按本成员 cfg 独立组合） */
   check('I3.speechStyleIsPerMemberAndNotSharedState',
     /IB\.brevity\.apply\(sysContent,\{mode:'text'[\s\S]{0,220}?concise:!!\(cfg&&cfg\.replyStyle==='concise'\)/.test(src));
@@ -561,10 +572,18 @@ section('5 · Group Identity Boundary');
 /* 群名字段直接进 system prompt —— 换行/控制字符可以伪造"群聊规则"后续行。
    本阶段把它钉成一个可断言的事实（是否消毒是后续决策，不在本阶段改）。 */
 {
-  const ctxFn = COM.match(/async function _buildGroupChatContext\(cfg,opts\)\{[\s\S]*?\n\}/)[0];
+  /* 同 I1 的提取方式（配平），理由见上。 */
+  const ctxFn = extractBalancedFn(COM, 'async function _buildGroupChatContext(cfg,opts){') || '';
   const usesRawGroupName = /'【群聊规则】你是群聊"'\+group\.name\+'"中的成员"'\+selfName\+'"。'/.test(ctxFn);
-  check('I5.groupNameEntersTheSystemPromptVerbatim_recordedNotSilentlyAssumed',
-    usesRawGroupName, 'group.name is interpolated without newline stripping');
+  /* P11-2H 已实现这条边界（见 tests/test_p11_2h_group_prompt_boundary.js），
+     因此本断言从"记录未消毒"改为"记录已消毒" —— 语义相反，但**不是放宽**：
+     它现在检查的是同一处插值必须经过 canonical 消毒。
+     保留 $ctxFn 的提取是为了让"群名到底怎么进去"这件事仍然在这份文件里可见。 */
+  const sanitisesGroupName = /_gName=_pbSanitize\(group\.name\|\|'','group\.name'\)/.test(ctxFn)
+    && ctxFn.indexOf("你是群聊\"'+_gName+'\"中的成员") >= 0;
+  check('I5.groupNameEntersTheSystemPromptThroughTheCanonicalSanitizer',
+    usesRawGroupName === false && sanitisesGroupName && ctxFn.length > 0,
+    JSON.stringify({ raw: usesRawGroupName, san: sanitisesGroupName, n: ctxFn.length }));
   /* 但成员名与群名不得进入 trace（trace 是元数据面）。 */
   check('I5b.traceNeverCarriesGroupOrMemberNames',
     /trace\.note\(key,'participants',_mbGroupParticipants\(cfgs\)\)/.test(COM)
