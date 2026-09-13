@@ -72,9 +72,22 @@
     additionalProperties: false
   };
 
+  /* ── 系统裁定状态（P11-2B）────────────────────────────────────────────
+     **系统**裁定状态，不是模型输出状态：Judge schema 的 pass:boolean 保持不变。
+     四态中前两态只能来自一个**合法解析成功**的 Judge report；第三态 = 系统尝试
+     过但**没有拿到合法 verdict**；第四态 = 系统**有意不尝试**（不是失败）。
+     已确认事实：null 绝不能被 coercion 成 false / []；timeout 绝不能被建模成 OOC。 */
+  var MB_CI_VERDICT = {
+    PASS: 'PASS',               /* Judge 合法 report 且 report.pass === true */
+    OOC: 'OOC',                 /* Judge 合法 report 且 report.pass === false（含被 gate 拦下的） */
+    UNDECIDED: 'UNDECIDED',     /* 尝试过 Judge，但 timeout / 传输失败 / malformed / 证据组装异常 */
+    BYPASSED: 'BYPASSED'        /* 有意不调用 Judge：未启用 / 语音面 / 无可见文本 / Astra 未就绪 */
+  };
   var _mbCiTelemetry = {
     checked: 0,          /* 进入 Guard（enabled）的次数 */
     skipped: {},         /* skipReason → 次数 */
+    verdicts: {},        /* 系统裁定状态 → 次数（PASS / OOC / UNDECIDED / BYPASSED） */
+    judgeUndecided: 0,   /* 「尝试过但没有 verdict」的次数（口径比 judgeError 宽：含 malformed / guard_error） */
     judgeRuns: 0, judgePass: 0, judgeFail: 0, judgeError: 0, judgeMalformed: 0,
     rewriteTriggered: 0, rewriteOk: 0, rewriteError: 0, rewriteSkipped: 0,
     verifyRuns: 0, verifyPass: 0, verifyFail: 0, verifyError: 0,
@@ -85,6 +98,7 @@
   function middleBrainCharacterIntegrityTelemetry() { return _mbCiTelemetry; }
   function middleBrainCharacterIntegrityReset() {
     _mbCiTelemetry.checked = 0; _mbCiTelemetry.skipped = {};
+    _mbCiTelemetry.verdicts = {}; _mbCiTelemetry.judgeUndecided = 0;
     _mbCiTelemetry.judgeRuns = 0; _mbCiTelemetry.judgePass = 0; _mbCiTelemetry.judgeFail = 0;
     _mbCiTelemetry.judgeError = 0; _mbCiTelemetry.judgeMalformed = 0;
     _mbCiTelemetry.rewriteTriggered = 0; _mbCiTelemetry.rewriteOk = 0; _mbCiTelemetry.rewriteError = 0; _mbCiTelemetry.rewriteSkipped = 0;
@@ -98,6 +112,14 @@
   }
   function _ciLast(patch) {
     _mbCiTelemetry.last = Object.assign({}, _mbCiTelemetry.last || {}, patch, { ts: Date.now() });
+  }
+  /* 裁定状态计数（唯一出口）：verdicts 分布 + judgeUndecided（有独立含义：
+     与 judgeError 的差别是它把 malformed / guard_error 也算进"没拿到 verdict"）。 */
+  function _ciVerdict(oc) {
+    var v = (oc && oc.verdict) || MB_CI_VERDICT.BYPASSED;
+    _mbCiTelemetry.verdicts[v] = (_mbCiTelemetry.verdicts[v] || 0) + 1;
+    if (v === MB_CI_VERDICT.UNDECIDED) _mbCiTelemetry.judgeUndecided++;
+    return oc;
   }
 
   /* —— 证据提取（只读；只用仓库真实存在的数据） —— */
@@ -435,26 +457,84 @@
     return { ok: true, reply: r };
   }
 
+  /* —— 系统裁定状态组装（P11-2B；纯函数，可确定性单测）—————————————
+     输入 = 内部已有的区别信息（ran / report / gate / rewrite / judgeError），输出 =
+     一个显式的、下游可读的裁定状态。它**不是**第二个判定：不引入新的阈值/概率，
+     只把"系统到底有没有拿到 verdict"这件事从隐式约定（judgeError != null）变成显式值。
+
+     关键不变式（对应 P11-2B 的契约要求）：
+       · PASS / OOC 只能来自合法 parsed Judge report（report.pass === true / false）；
+       · timeout / 传输失败 / malformed / 证据组装异常 → UNDECIDED，reason 保留原因；
+       · 有意不调用 Judge → BYPASSED（与 UNDECIDED 是不同事实，不得互相吞并）；
+       · pass 只在有真实 verdict 时是 boolean，否则一律 null（绝不 coercion 成 false）；
+       · 无 verdict 时 report / violations / maxSeverity 一律 null，绝不变成 [] / 0。 */
+  function _mbCiOutcome(out) {
+    out = out || {};
+    var reply = typeof out.reply === 'string' ? out.reply : '';
+    var report = out.report || null;
+    var real = !!report && typeof report.pass === 'boolean';
+    var verdict, reason, pass;
+    if (real) {
+      verdict = report.pass === true ? MB_CI_VERDICT.PASS : MB_CI_VERDICT.OOC;
+      /* reason：真实 verdict 下它不承担「有没有判定」的职责（那是 verdict / pass 的职责），
+         只承载 gate 给出的**决策理由** —— 于是 OOC 的几种结局（已改写 / 被拦下 /
+         无报告 / 已用过）都能由 reason + rewritten 读出，而不是从文本变化去猜。 */
+      reason = report.pass === true ? null : ((out.gate && out.gate.reason) || null);
+      pass = report.pass === true;
+    } else if (out.judgeError) {
+      verdict = MB_CI_VERDICT.UNDECIDED; reason = _ciStr(out.judgeError) || 'judge_error'; pass = null;
+    } else if (out.ran === true) {
+      /* ran=true 且无 report 且无 judgeError → 只可能是 malformed */
+      verdict = MB_CI_VERDICT.UNDECIDED; reason = 'malformed'; pass = null;
+    } else {
+      verdict = MB_CI_VERDICT.BYPASSED; reason = _ciStr(out.skipReason) || 'bypassed'; pass = null;
+    }
+    return {
+      reply: reply,                  /* 本层解析出的最终文本（失败 = 原候选，与旧行为逐字一致） */
+      verdict: verdict,
+      reason: reason,
+      pass: pass,                    /* 无 verdict → null（绝不是 false） */
+      ran: out.ran === true,
+      gate: out.gate || null,
+      rewritten: !!(out.rewrite && typeof out.rewrite.reply === 'string'),
+      report: report,
+      violations: real && Array.isArray(report.violations) ? report.violations : null,
+      maxSeverity: real && report.maxSeverity != null ? report.maxSeverity : null,
+      judgeError: out.judgeError || null,
+      verify: out.verify || null,
+      evidence: out.evidence || null
+    };
+  }
+  /* 每轮收口：内部 out → 显式裁定状态（同时计数）。integrity 层唯一出口处使用。 */
+  function middleBrainIntegrityOutcome(out) { return _ciVerdict(_mbCiOutcome(out)); }
+
   /* ====================================================================
      主入口：Character Integrity Guard
-     返回 {reply, ran, report, gate, rewrite, verify, judgeError}
-     reply 永远是可用的字符串（失败 = 原候选）。
+     返回 {reply, ran, report, gate, rewrite, verify, judgeError, skipReason}
+       · reply 永远是可用的字符串（失败 = 原候选）；
+       · skipReason 只在**有意不调用 Judge**时写入（BYPASSED 的机器可读原因）；
+       · 是否真的拿到 verdict 由 _mbCiOutcome 显式表达，调用方不再需要凭
+         judgeError != null / reply === candidate 去推断（P11-2B）。
      ==================================================================== */
   async function middleBrainCharacterIntegrity(characterId, userMessage, candidate, opts) {
     opts = opts || {};
     var out = { reply: candidate, ran: false, report: null, gate: null, rewrite: null, verify: null, judgeError: null, evidence: null };
+    /* _ciSkip 与 skipReason 同时写：前者是既有 telemetry 契约，后者是显式状态来源 */
+    function skip(reason) { out.skipReason = reason; _ciSkip(reason); }
     try {
-      if (typeof candidate !== 'string' || !candidate.trim()) { _ciSkip('empty_candidate'); return out; }
+      if (typeof candidate !== 'string' || !candidate.trim()) { skip('empty_candidate'); return middleBrainIntegrityOutcome(out); }
       var cfg = await CFG.getMiddleBrainConfig();
       /* ① 默认关闭：零模型调用（Guard OFF 与 P11-1C 等价） */
-      if (!(cfg && cfg.characterIntegrityEnabled === true)) { _ciSkip('disabled'); return out; }
+      if (!(cfg && cfg.characterIntegrityEnabled === true)) {
+        skip('disabled'); return middleBrainIntegrityOutcome(out);
+      }
       _mbCiTelemetry.checked++;
       /* ② 范围：本阶段只接 single-chat 文本轮；voice 轮不接（改写会与已播报的语音失配） */
-      if (opts.voice === true) { _ciSkip('voice_surface'); return out; }
+      if (opts.voice === true) { skip('voice_surface'); return middleBrainIntegrityOutcome(out); }
       /* ③ 无 Astra 就绪 → 不发起任何请求（增强层不得成为聊天单点故障） */
-      if (!(await CFG.middleBrainReady())) { _ciSkip('astra_not_ready'); return out; }
+      if (!(await CFG.middleBrainReady())) { skip('astra_not_ready'); return middleBrainIntegrityOutcome(out); }
       var visible = _mbCiVisibleText(candidate);
-      if (!visible) { _ciSkip('no_visible_text'); return out; }
+      if (!visible) { skip('no_visible_text'); return middleBrainIntegrityOutcome(out); }
       var controlTags = _mbCiHasControlTags(candidate);
       var evidence = _mbCiBuildEvidence(characterId, userMessage, opts);
       out.evidence = evidence;
@@ -467,21 +547,21 @@
       _mbCiTelemetry.judgeRuns++; _mbCiTelemetry.judgeLatencyMs += jlat;
       if (!jr.ok) {
         _mbCiTelemetry.judgeError++; out.judgeError = jr.error;
-        _ciSkip('judge_' + jr.error); _ciLast({ judgeRan: true, judgeResult: 'error', judgeError: jr.error, judgeLatencyMs: jlat });
-        return out;
+        skip('judge_' + jr.error); _ciLast({ judgeRan: true, judgeResult: 'error', judgeError: jr.error, judgeLatencyMs: jlat });
+        return middleBrainIntegrityOutcome(out);
       }
       var report = _mbParseCiJson(jr.content);
       if (!report) {
         _mbCiTelemetry.judgeMalformed++;
-        _ciSkip('judge_malformed'); _ciLast({ judgeRan: true, judgeResult: 'malformed', judgeLatencyMs: jlat });
-        return out;
+        skip('judge_malformed'); _ciLast({ judgeRan: true, judgeResult: 'malformed', judgeLatencyMs: jlat });
+        return middleBrainIntegrityOutcome(out);
       }
       out.report = report;
       var th = _mbCiThresholds(cfg);
       if (report.pass === true && report.score > th.failBelow) {
         _mbCiTelemetry.judgePass++;
         _ciLast({ judgeRan: true, judgeResult: 'pass', score: report.score, confidence: report.confidence, maxSeverity: report.maxSeverity, judgeLatencyMs: jlat, rewriteTriggered: false });
-        return out;
+        return middleBrainIntegrityOutcome(out);
       }
       _mbCiTelemetry.judgeFail++;
 
@@ -493,7 +573,7 @@
         maxSeverity: report.maxSeverity, dimensions: report.dimensions, judgeLatencyMs: jlat,
         gateReason: gate.reason, rewriteTriggered: false
       });
-      if (!gate.rewrite) { _mbCiTelemetry.rewriteSkipped++; _ciSkip('gate_' + gate.reason); return out; }
+      if (!gate.rewrite) { _mbCiTelemetry.rewriteSkipped++; skip('gate_' + gate.reason); return middleBrainIntegrityOutcome(out); }
 
       /* ⑥ Targeted rewrite：每条候选最多一次（无循环、无二次 judge→rewrite） */
       _mbCiTelemetry.rewriteTriggered++;
@@ -504,20 +584,20 @@
       _mbCiTelemetry.rewriteLatencyMs += rlat;
       if (!rr.ok) {
         _mbCiTelemetry.rewriteError++;
-        _ciSkip('rewrite_' + rr.error); _ciLast({ rewriteTriggered: true, rewriteOk: false, rewriteError: rr.error, rewriteLatencyMs: rlat });
-        return out;
+        skip('rewrite_' + rr.error); _ciLast({ rewriteTriggered: true, rewriteOk: false, rewriteError: rr.error, rewriteLatencyMs: rlat });
+        return middleBrainIntegrityOutcome(out);
       }
       var raw = _mbParseCiRewriteJson(rr.content);
       if (raw == null) {
         _mbCiTelemetry.rewriteError++;
-        _ciSkip('rewrite_malformed'); _ciLast({ rewriteTriggered: true, rewriteOk: false, rewriteError: 'malformed', rewriteLatencyMs: rlat });
-        return out;
+        skip('rewrite_malformed'); _ciLast({ rewriteTriggered: true, rewriteOk: false, rewriteError: 'malformed', rewriteLatencyMs: rlat });
+        return middleBrainIntegrityOutcome(out);
       }
       var san = _mbCiSanitizeRewrite(raw, candidate);
       if (!san.ok) {
         _mbCiTelemetry.rewriteError++;
-        _ciSkip('rewrite_' + san.reason); _ciLast({ rewriteTriggered: true, rewriteOk: false, rewriteError: san.reason, rewriteLatencyMs: rlat });
-        return out;
+        skip('rewrite_' + san.reason); _ciLast({ rewriteTriggered: true, rewriteOk: false, rewriteError: san.reason, rewriteLatencyMs: rlat });
+        return middleBrainIntegrityOutcome(out);
       }
       out.reply = san.reply;
       out.rewrite = { reply: san.reply, latencyMs: rlat };
@@ -539,12 +619,15 @@
         }
         _ciLast({ verify: out.verify || null });
       }
-      return out;
+      return middleBrainIntegrityOutcome(out);
     } catch (e) {
       /* 任何未预期异常 → 原候选（绝不因 Guard 失败而丢回复）；只记短错误串，不记上下文内容 */
-      _ciSkip('guard_error');
+      skip('guard_error');
+      /* 未预期异常 = 基础设施失败，不是"有意不判"：显式归入 UNDECIDED，
+         绝不允许它退化成看起来正常的 BYPASSED / PASS（P11-2B）。 */
+      out.judgeError = 'guard_error';
       _ciLast({ guardError: _ciCap(String(e && e.message || e), 160) });
-      return out;
+      return middleBrainIntegrityOutcome(out);
     }
   }
 
@@ -553,6 +636,10 @@
     middleBrainCharacterIntegrity: middleBrainCharacterIntegrity,
     middleBrainCharacterIntegrityTelemetry: middleBrainCharacterIntegrityTelemetry,
     middleBrainCharacterIntegrityReset: middleBrainCharacterIntegrityReset,
+    /* P11-2B：系统裁定状态契约（只读；下游按值判定，不再靠文本是否变化推断） */
+    middleBrainIntegrityOutcome: middleBrainIntegrityOutcome,
+    MB_CI_VERDICT: MB_CI_VERDICT,
+    _mbCiOutcome: _mbCiOutcome,
     _mbParseCiJson: _mbParseCiJson,
     _mbParseCiRewriteJson: _mbParseCiRewriteJson,
     _mbCiGate: _mbCiGate,

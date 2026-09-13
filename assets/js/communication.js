@@ -2359,8 +2359,8 @@ async function sendChatMessage(voiceMsg){
       try{
         var _mbFS=(window.IB&&window.IB.middleBrain)||null;
         if(_mbFS&&typeof _mbFS.middleBrainFinalizeReply==='function'){
-          var _mbFinS=await _mbFS.middleBrainFinalizeReply(cfg.id,_ctxText||'',replyText,{character:cfg,history:history,currentId:userMsg.id,contextSnapshot:_bcc.snapshot,voice:!!_callTurn});
-          if(typeof _mbFinS==='string'&&_mbFinS&&_mbFinS!==replyText)replyText=_mbFinS;
+          var _mbFinal=await _mbFS.middleBrainFinalizeReply(cfg.id,_ctxText||'',replyText,{character:cfg,history:history,currentId:userMsg.id,contextSnapshot:_bcc.snapshot,voice:!!_callTurn});
+          if(_mbFinal&&typeof _mbFinal.reply==='string'&&_mbFinal.reply&&_mbFinal.reply!==replyText)replyText=_mbFinal.reply;
         }
       }catch(_mbFinErrS){console.warn('[MiddleBrain] finalize failed',String(_mbFinErrS&&_mbFinErrS.message||_mbFinErrS).slice(0,120))}
       /* Middle Brain Trace · dev 观测：回合末尾一次性打印本轮逐层 participation（只读、不落盘） */
@@ -2439,8 +2439,8 @@ async function sendChatMessage(voiceMsg){
       try{
         var _mbFN=(window.IB&&window.IB.middleBrain)||null;
         if(_mbFN&&typeof _mbFN.middleBrainFinalizeReply==='function'){
-          var _mbFinN=await _mbFN.middleBrainFinalizeReply(cfg.id,_ctxText||'',replyText,{character:cfg,history:history,currentId:userMsg.id,contextSnapshot:_bcc.snapshot,voice:!!_callTurn});
-          if(typeof _mbFinN==='string'&&_mbFinN&&_mbFinN!==replyText)replyText=_mbFinN;
+          var _mbFinal=await _mbFN.middleBrainFinalizeReply(cfg.id,_ctxText||'',replyText,{character:cfg,history:history,currentId:userMsg.id,contextSnapshot:_bcc.snapshot,voice:!!_callTurn});
+          if(_mbFinal&&typeof _mbFinal.reply==='string'&&_mbFinal.reply&&_mbFinal.reply!==replyText)replyText=_mbFinal.reply;
         }
       }catch(_mbFinErrN){console.warn('[MiddleBrain] finalize failed',String(_mbFinErrN&&_mbFinErrN.message||_mbFinErrN).slice(0,120))}
       /* Middle Brain Trace · dev 观测：回合末尾一次性打印本轮逐层 participation（只读、不落盘） */

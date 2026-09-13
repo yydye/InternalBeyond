@@ -433,6 +433,11 @@ function createTurnExecutor(deps) {
           if (finalized && typeof finalized.reply === 'string' && finalized.reply) {
             finalText = finalized.reply;
             if (finalized.rewritten === true) mbPolicy += '/integrity-rewritten';
+            /* P11-2B · 最小 provenance：只标记**异常态**（尝试过但没有拿到 verdict）。
+               BYPASSED 不标 —— 那是每一轮"未启用/未就绪"的常态，给它加标记会让
+               "本轮实际发生了什么"的语义变浑浊（M1-C.2i 的诚实性不变量）。
+               也不改变任何 downstream 行为（下游策略属 P11-2C，本阶段不碰）。 */
+            if (finalized.verdict === 'UNDECIDED') mbPolicy += '/integrity-undecided';
           }
         }
       } catch (error) {

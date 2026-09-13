@@ -255,7 +255,12 @@ function createNodeMiddleBrain(deps) {
       isEnabled: function () { return Promise.resolve(false); },
       reasoningEffort: function () { return Promise.resolve('auto'); },
       organizeContext: function () { return Promise.resolve({ applied: false, source: 'bypass', reason: 'adapter-unavailable' }); },
-      finalizeReply: function (candidate) { return Promise.resolve({ reply: candidate, ran: false }); },
+      /* P11-2B：适配层不可用时也保持同一形状 —— verdict:none 表示"本请求根本没
+         产生任何裁定状态"（不是 UNDECIDED、更不是 PASS）。文本仍逐字透传候选。 */
+      finalizeReply: function (input) {
+        var t = (input && typeof input === 'object') ? input.candidate : input;
+        return Promise.resolve({ reply: typeof t === 'string' ? t : '', ran: false, rewritten: false, verdict: 'none', reason: 'adapter-unavailable' });
+      },
       describePolicy: function () { return 'middle-brain:unavailable'; }
     };
   }
@@ -274,7 +279,12 @@ function createNodeMiddleBrain(deps) {
       isEnabled: function () { return Promise.resolve(false); },
       reasoningEffort: function () { return Promise.resolve('auto'); },
       organizeContext: function () { return Promise.resolve({ applied: false, source: 'bypass', reason: reason }); },
-      finalizeReply: function (candidate) { return Promise.resolve({ reply: candidate, ran: false }); },
+      /* P11-2B：适配层不可用时也保持同一形状 —— verdict:none 表示"本请求根本没
+         产生任何裁定状态"（不是 UNDECIDED、更不是 PASS）。文本仍逐字透传候选。 */
+      finalizeReply: function (input) {
+        var t = (input && typeof input === 'object') ? input.candidate : input;
+        return Promise.resolve({ reply: typeof t === 'string' ? t : '', ran: false, rewritten: false, verdict: 'none', reason: 'adapter-unavailable' });
+      },
       describePolicy: function () { return 'middle-brain:unavailable'; }
     };
   }
@@ -411,9 +421,10 @@ function createNodeMiddleBrain(deps) {
   async function finalizeReply(input) {
     const turn = input || {};
     const candidate = String(turn.candidate == null ? '' : turn.candidate);
-    if (!candidate) return { reply: candidate, ran: false };
+    /* P11-2B：没有候选文本 = 没有可裁定对象 → 不产生裁定状态（不是 BYPASSED 的一种）。 */
+    if (!candidate) return { reply: candidate, ran: false, rewritten: false, verdict: null, reason: null };
     try {
-      const reply = await facade.middleBrainFinalizeReply(
+      const result = await facade.middleBrainFinalizeReply(
         String(turn.characterId || ''),
         String(turn.userMessage || ''),
         candidate,
@@ -428,11 +439,22 @@ function createNodeMiddleBrain(deps) {
           voice: turn.voice === true
         }
       );
-      const changed = typeof reply === 'string' && !!reply && reply !== candidate;
-      return { reply: typeof reply === 'string' && reply ? reply : candidate, ran: true, rewritten: changed };
+      /* P11-2B：门面回 {reply, outcome}；outcome.reply 与 reply 都是同一条解析出的文本。
+         outcome 只作**状态**来源：verdict 由 integrity 层判定，本层不解释、不重算。 */
+      const outcome = (result && typeof result === 'object' && result.outcome && typeof result.outcome === 'object')
+        ? result.outcome : null;
+      const reply = (result && typeof result === 'object') ? result.reply : result;
+      return {
+        reply: typeof reply === 'string' && reply ? reply : candidate,
+        ran: true,
+        rewritten: !!(outcome && outcome.rewritten === true),
+        verdict: (outcome && outcome.verdict) || null,
+        reason: (outcome && outcome.reason) || null
+      };
     } catch (error) {
       logger('middle-brain-finalize-failed', { error: String((error && error.message) || error).slice(0, 300) });
-      return { reply: candidate, ran: false };
+      /* 适配层自身异常 = 没有拿到任何状态 → UNDECIDED（绝不伪装成 PASS）。 */
+      return { reply: candidate, ran: false, rewritten: false, verdict: 'UNDECIDED', reason: 'adapter_error' };
     }
   }
 

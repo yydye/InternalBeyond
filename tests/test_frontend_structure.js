@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 
 /* 前端静态回归：编码、拆分资源、入口语义、设计变量与内联样式预算。 */
 const fs = require('fs');
@@ -803,8 +803,12 @@ const mbFinalizeSeam = mbText.match(/async function middleBrainFinalizeReply\([\
 check('middleBrain.finalizeSeamDefined', !!mbFinalizeSeam
   && /typeof candidate !== 'string'/.test(mbFinalizeSeam[0])
   && /INTEG\.middleBrainCharacterIntegrity\(/.test(mbFinalizeSeam[0])
-  && /return candidate;/.test(mbFinalizeSeam[0]),
-  'middleBrainFinalizeReply 未按"候选 → integrity → 失败回退候选"定义');
+  /* P11-2B：缝不再只回字符串 —— 必须同时交出文本适配器与显式裁定状态；
+     非法输入仍必须原样回退候选（Guard 绝不是聊天单点故障）。 */
+  && /return \{ reply: candidate, outcome: null \};/.test(mbFinalizeSeam[0])
+  && /return \{ reply: text, outcome: outcome \};/.test(mbFinalizeSeam[0])
+  && /integrityVerdict/.test(mbFinalizeSeam[0]),
+  'middleBrainFinalizeReply 未按"候选 → integrity → 显式裁定状态 / 非法输入回退候选"定义');
 check('middleBrain.finalizeSeamCanonicalOnly', !/window\.middleBrainFinalizeReply\s*=/.test(mbText),
   '生成后执行缝被挂成 window 兼容别名');
 check('middleBrain.integrityDefaultOff', /characterIntegrityEnabled:[^\S\n]*false/.test(mbConfigCoreText)
@@ -814,7 +818,7 @@ check('middleBrain.integrityDefaultOff', /characterIntegrityEnabled:[^\S\n]*fals
 /* 零开销：未启用必须在任何模型调用/证据组装之前返回原候选（函数体内先于 _ciCall）。 */
 const mbCiFnSeg = mbIntegrityText.slice(mbIntegrityText.indexOf('async function middleBrainCharacterIntegrity'),
   mbIntegrityText.indexOf('layer contract（P11-2）'));
-check('middleBrain.integrityZeroOverheadWhenOff', /if \(!\(cfg && cfg\.characterIntegrityEnabled === true\)\) \{ _ciSkip\('disabled'\); return out; \}/.test(mbCiFnSeg)
+check('middleBrain.integrityZeroOverheadWhenOff', /if \(!\(cfg && cfg\.characterIntegrityEnabled === true\)\) \{[\s\S]{0,80}skip\('disabled'\)/.test(mbCiFnSeg)
   && mbCiFnSeg.indexOf("_ciSkip('disabled')") < mbCiFnSeg.indexOf('_ciCall(')
   && mbCiFnSeg.indexOf("_ciSkip('disabled')") < mbCiFnSeg.indexOf('_mbCiBuildEvidence('),
   'Guard OFF 未在模型调用/证据组装之前短路');

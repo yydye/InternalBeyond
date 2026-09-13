@@ -101,10 +101,17 @@ const api = http.createServer(async (req, res) => {
 
   const setMb = cfg => evaluate(cdp, `(async function(){await saveMiddleBrainConfig(${JSON.stringify(cfg)});return true})()`);
   const resetMock = () => { mock.judge = 0; mock.rewrite = 0; mock.compress = 0; mock.char = 0; mock.lastJudgePrompt = ''; mock.lastRewritePrompt = ''; mock.judgeFailAfterFirst = false; };
-  /* 直接调用生成后执行缝（等价于 production 调用点） */
-  const finalize = (candidate, opts) => evaluate(cdp, `(async function(){
+  /* 直接调用生成后执行缝（等价于 production 调用点）。
+     P11-2B：门面回 {reply, outcome}。`finalize()` 只取文本适配器（= 桌面/Home Node
+     消费方真正拿到的那个字符串），所以本文件既有的文本断言逐字保持有效；
+     `finalizeOutcome()` 取完整裁定状态，供新增的 verdict 断言使用。 */
+  const finalizeOutcome = (candidate, opts) => evaluate(cdp, `(async function(){
     return await IB.middleBrain.middleBrainFinalizeReply('ci_role','CI_USER_MESSAGE',${JSON.stringify(candidate)},${JSON.stringify(opts || {})});
   })()`);
+  const finalize = async (candidate, opts) => {
+    const r = await finalizeOutcome(candidate, opts);
+    return (r && typeof r === 'object') ? r.reply : r;
+  };
   const telemetry = () => evaluate(cdp, `(function(){return IB.middleBrain.middleBrainCharacterIntegrityTelemetry()})()`);
   const resetTel = () => evaluate(cdp, `(function(){IB.middleBrain.middleBrainCharacterIntegrityReset();return true})()`);
   const evidenceOpts = { character: { nickname: '泠', relationship: '熟悉的伙伴', systemPrompt: '你是冷淡、话少、偶尔毒舌的猫娘「泠」。' }, history: [{ role: 'user', content: '今天好累' }, { role: 'assistant', content: '嗯。' }] };
@@ -189,7 +196,8 @@ const api = http.createServer(async (req, res) => {
     /* 空候选 / 非字符串：直接原样返回，不进入 Guard */
     await resetMock(); await resetTel();
     check('B9.emptyCandidate', await finalize('', evidenceOpts) === '' && mock.judge === 0);
-    check('B10.nonStringCandidate', await evaluate(cdp, `(async function(){return (await IB.middleBrain.middleBrainFinalizeReply('ci_role','m',null,{}))===null})()`) && mock.judge === 0);
+    /* P11-2B：门面回 {reply, outcome} —— 非法 candidate 仍必须逐字回退，且不产生裁定状态。 */
+    check('B10.nonStringCandidate', await evaluate(cdp, `(async function(){var r=await IB.middleBrain.middleBrainFinalizeReply('ci_role','m',null,{});return !!(r&&r.reply===null&&r.outcome===null)})()`) && mock.judge === 0);
 
     /* ═══════════════ C. 确定性解析 ═══════════════ */
     check('C1.parseNormal', await evaluate(cdp, `(function(){
@@ -379,7 +387,7 @@ const api = http.createServer(async (req, res) => {
     await resetMock(); await resetTel();
     r = await evaluate(cdp, `(async function(){
       var bad={};Object.defineProperty(bad,'nickname',{get:function(){throw new Error('boom')}});
-      try{return await IB.middleBrain.middleBrainFinalizeReply('ci_role','m','SAFE_CANDIDATE',{character:bad,history:null})}
+      try{var r=await IB.middleBrain.middleBrainFinalizeReply('ci_role','m','SAFE_CANDIDATE',{character:bad,history:null});return r&&r.reply}
       catch(e){return 'THREW:'+e.message}
     })()`);
     check('E31.internalErrorSafe', r === 'SAFE_CANDIDATE', String(r));
@@ -395,7 +403,7 @@ const api = http.createServer(async (req, res) => {
         thread:CS.field('getThreadContext',''),
         moments:CS.field('getMomentsContext','')
       },gates:{threadMemoryEnabled:true}});
-      return await IB.middleBrain.middleBrainFinalizeReply('ci_role','m','CANDIDATE_REPLY_原文',{character:{nickname:'泠',systemPrompt:'冷淡猫娘'},history:[],contextSnapshot:snap});
+      var r=await IB.middleBrain.middleBrainFinalizeReply('ci_role','m','CANDIDATE_REPLY_原文',{character:{nickname:'泠',systemPrompt:'冷淡猫娘'},history:[],contextSnapshot:snap});return r&&r.reply;
     })()`);
     check('E32.snapshotEvidenceInPrompt', r === CANDIDATE && /MEMORY_EVIDENCE_她讨厌被人叫姐姐/.test(mock.lastJudgePrompt), JSON.stringify({r, prompt: (mock.lastJudgePrompt||'').slice(0,120), snap: await evaluate(cdp, "(function(){var CS=window.IBContextSnapshot;var s=CS.create({characterId:'x',turnId:'t',fields:{memory:CS.field('getMemoryContext','MEM')},gates:{}});return {hasCS:!!CS, state:CS.state(s,'memory'), value:CS.value(s,'memory')}})()")}).slice(0,600));
     check('E33.evidenceAvailability', await evaluate(cdp, `(function(){
@@ -523,6 +531,195 @@ const api = http.createServer(async (req, res) => {
     check('H6.counterProofProviderArrayShapeStillLeaks', h6 === true
       && String(mock.lastJudgePrompt || '').indexOf('[以下为系统注入的参考上下文') >= 0,
       'pre-fix 形状没有复现泄漏 —— H3 因此没有鉴别力');
+
+    /* ═══════════════ I. P11-2B · 系统裁定状态契约 ═══════════════
+       本阶段唯一要证明的事：IB 在 contract 层能明确表达并传播
+       Judge PASS / Judge OOC / Judge attempted-but-UNDECIDED / 有意不调用，
+       且门面不再把状态压平成 bare string。
+       全部断言用 mock 模型（离线、确定性），real provider calls = 0。 */
+    const VERDICT = await evaluate(cdp, `(function(){return IB.__middleBrainContracts.integrity.MB_CI_VERDICT})()`);
+    const vOf = r => (r && r.outcome && r.outcome.verdict) || null;
+    const reasonOf = r => (r && r.outcome && r.outcome.reason) || null;
+    check('I0.verdictEnumFrozen', VERDICT && VERDICT.PASS === 'PASS' && VERDICT.OOC === 'OOC'
+      && VERDICT.UNDECIDED === 'UNDECIDED' && VERDICT.BYPASSED === 'BYPASSED'
+      && Object.keys(VERDICT).length === 4, JSON.stringify(VERDICT));
+
+    /* I1 · PASS：合法 report 且 pass===true → verdict=PASS；reason 必须为 null；
+       pass 必须是 boolean true；report 必须保留（真实 verdict 的证据不被丢弃）。 */
+    mock.judgePayload = JSON.stringify({ pass: true, score: 0.93, confidence: 0.9, violations: [] });
+    await resetMock(); await resetTel();
+    let o = await finalizeOutcome(CANDIDATE, evidenceOpts);
+    check('I1.passVerdict', vOf(o) === 'PASS' && o.outcome.pass === true && o.outcome.reason === null
+      && o.outcome.ran === true && o.outcome.rewritten === false
+      && !!o.outcome.report && o.outcome.report.pass === true && o.reply === CANDIDATE,
+      JSON.stringify({ v: vOf(o), pass: o.outcome && o.outcome.pass, reason: reasonOf(o) }));
+
+    /* I2 · OOC：合法 report 且 pass===false → verdict=OOC；pass===false 是
+       Judge **真的**作了判定，必须与 UNDECIDED 的 pass===null 可区分。 */
+    mock.judgePayload = STRONG_OOC; mock.rewritePayload = JSON.stringify({ reply: REWRITTEN });
+    await resetMock(); await resetTel();
+    o = await finalizeOutcome(CANDIDATE, evidenceOpts);
+    check('I2.oocVerdict', vOf(o) === 'OOC' && o.outcome.pass === false && o.reply === REWRITTEN
+      && o.outcome.rewritten === true && o.outcome.reason === 'strong_ooc',
+      JSON.stringify({ v: vOf(o), pass: o.outcome && o.outcome.pass, r: o.reply }));
+
+    /* I3 · gate 拦下的 OOC：verdict 仍是 OOC（真实判定），但文本未变。
+       「文本没变」与「判定状态」是**两个独立维度** —— 这正是旧契约靠
+       reply===candidate 推断时丢掉的东西。 */
+    mock.judgePayload = SLIGHT;
+    await resetMock(); await resetTel();
+    o = await finalizeOutcome(CANDIDATE, evidenceOpts);
+    check('I3.gateBlockedOocKeepsVerdict', vOf(o) === 'OOC' && o.outcome.pass === false && o.outcome.rewritten === false
+      && o.reply === CANDIDATE && !!o.outcome.gate && typeof o.outcome.gate.reason === 'string'
+      && o.outcome.reason === o.outcome.gate.reason,
+      JSON.stringify({ v: vOf(o), gate: o.outcome && o.outcome.gate && o.outcome.gate.reason }));
+
+    /* I4 · timeout → UNDECIDED，reason=timeout。绝不 PASS / 绝不 OOC，
+       且 pass 必须是 null（不是 false —— null 不得被 coercion 成布尔值）。 */
+    mock.judgeMode = 'slow';
+    await resetMock(); await resetTel();
+    const t0 = Date.now();
+    o = await finalizeOutcome(CANDIDATE, Object.assign({ judgeTimeoutMs: 400 }, evidenceOpts));
+    const tmoMs = Date.now() - t0;
+    mock.judgeMode = 'ok';
+    check('I4.timeoutUndecided', vOf(o) === 'UNDECIDED' && reasonOf(o) === 'timeout'
+      && o.outcome.pass === null && o.outcome.report === null && o.outcome.gate === null
+      && o.outcome.violations === null && o.outcome.maxSeverity === null,
+      JSON.stringify({ v: vOf(o), reason: reasonOf(o), pass: o.outcome && o.outcome.pass }));
+    check('I5.timeoutIsNeitherPassNorOoc', vOf(o) !== 'PASS' && vOf(o) !== 'OOC' && o.outcome.pass !== false, JSON.stringify(o.outcome));
+    check('I6.timeoutReplyStillCandidate', o.reply === CANDIDATE && mock.judge === 1 && mock.rewrite === 0,
+      JSON.stringify({ r: o.reply, j: mock.judge, w: mock.rewrite, ms: tmoMs }));
+
+    /* I7 · HTTP / 传输失败 → UNDECIDED，reason 保留传输层给出的原因（不是 PASS，
+       也不与 timeout 混为一谈）。 */
+    mock.judgeMode = 'fail';
+    await resetMock(); await resetTel();
+    o = await finalizeOutcome(CANDIDATE, evidenceOpts);
+    check('I7.providerErrorUndecided', vOf(o) === 'UNDECIDED' && reasonOf(o) === 'http'
+      && o.outcome.pass === null && o.outcome.report === null && o.reply === CANDIDATE && mock.judge === 1,
+      JSON.stringify({ v: vOf(o), reason: reasonOf(o), j: mock.judge }));
+    mock.judgeMode = 'ok';
+
+    /* I8 · malformed → UNDECIDED，reason=malformed，绝不变成 PASS 或 OOC。 */
+    mock.judgePayload = '这不是 JSON';
+    await resetMock(); await resetTel();
+    o = await finalizeOutcome(CANDIDATE, evidenceOpts);
+    check('I8.malformedUndecided', vOf(o) === 'UNDECIDED' && reasonOf(o) === 'malformed' && o.outcome.pass === null
+      && o.outcome.report === null && o.reply === CANDIDATE,
+      JSON.stringify({ v: vOf(o), reason: reasonOf(o) }));
+
+    /* I9 · 有意不调用 Judge（disabled）→ BYPASSED，**不是** UNDECIDED。
+       「尝试过但没拿到 verdict」与「有意不尝试」是两个不同事实，不得互相吞并。
+       同时证明 telemetry 不把它们记进 judgeUndecided。 */
+    await setMb({ enabled: true, endpoint: ep, model: 'gpt-6-astra', apiKey: 'sk-x', characterIntegrityEnabled: false, characterIntegrityRewrite: false });
+    await resetMock(); await resetTel();
+    o = await finalizeOutcome(CANDIDATE, evidenceOpts);
+    let tt = await telemetry();
+    check('I9.bypassedIsNotUndecided', vOf(o) === 'BYPASSED' && reasonOf(o) === 'disabled' && o.outcome.pass === null
+      && o.outcome.ran === false && tt.judgeUndecided === 0 && tt.judgeRuns === 0
+      && tt.verdicts.BYPASSED === 1 && tt.verdicts.UNDECIDED === undefined,
+      JSON.stringify({ v: vOf(o), tel: { u: tt.judgeUndecided, v: tt.verdicts } }));
+
+    /* I10 · 未就绪（有开关、无 Astra）→ BYPASSED，reason 是机器可读的 astra_not_ready。 */
+    await setMb({ characterIntegrityEnabled: true, characterIntegrityRewrite: true, apiKey: '' });
+    await resetMock(); await resetTel();
+    o = await finalizeOutcome(CANDIDATE, evidenceOpts);
+    check('I10.notReadyBypassed', vOf(o) === 'BYPASSED' && reasonOf(o) === 'astra_not_ready' && o.outcome.pass === null && mock.judge === 0,
+      JSON.stringify({ v: vOf(o), reason: reasonOf(o), j: mock.judge }));
+
+    /* I11 · 语音面 → BYPASSED（有意不判：改写会与已播报的语音失配）。 */
+    await setMb({ characterIntegrityEnabled: true, characterIntegrityRewrite: true, apiKey: 'sk-x' });
+    await resetMock(); await resetTel();
+    o = await finalizeOutcome(CANDIDATE, Object.assign({ voice: true }, evidenceOpts));
+    check('I11.voiceSurfaceBypassed', vOf(o) === 'BYPASSED' && reasonOf(o) === 'voice_surface' && o.reply === CANDIDATE && mock.judge === 0,
+      JSON.stringify({ v: vOf(o), reason: reasonOf(o), j: mock.judge }));
+
+    /* I12 · 空候选 / 非法候选：门面按旧契约原样回退，且**不产生**裁定状态
+       （没有可裁定对象 ≠ 判过、也 ≠ 有意跳过），也绝不抛异常。 */
+    o = await finalizeOutcome('', evidenceOpts);
+    check('I12.emptyCandidateNoOutcome', o && o.reply === '' && o.outcome === null && mock.judge === 0, JSON.stringify({ r: o }));
+    check('I13.nonStringCandidateSafe', await evaluate(cdp, `(async function(){
+      var r = await IB.middleBrain.middleBrainFinalizeReply('ci_role','m',null,{});
+      return r && r.reply === null && r.outcome === null;
+    })()`) && mock.judge === 0);
+
+    /* I14 · verify 段只观测：它的结果不得改变 verdict，也不得触发第二次改写。 */
+    mock.judgePayload = STRONG_OOC; mock.rewritePayload = JSON.stringify({ reply: REWRITTEN });
+    await setMb({ characterIntegrityEnabled: true, characterIntegrityRewrite: true, characterIntegrityVerify: true });
+    await resetMock();
+    await evaluate(cdp, `(async function(){ window.__ciVerify = await IB.middleBrain.middleBrainFinalizeReply('ci_role','CI_USER_MESSAGE',${JSON.stringify(CANDIDATE)},${JSON.stringify(evidenceOpts)}); return true })()`);
+    const rv = await evaluate(cdp, `(function(){return window.__ciVerify})()`);
+    check('I14.verifyDoesNotChangeVerdict', vOf(rv) === 'OOC' && rv.reply === REWRITTEN && rv.outcome.rewritten === true
+      && mock.rewrite === 1 && rv.outcome.verify && rv.outcome.verify.ok === true,
+      JSON.stringify({ v: vOf(rv), verify: rv.outcome && rv.outcome.verify, w: mock.rewrite }));
+    await setMb({ characterIntegrityVerify: false });
+
+    /* I15 · 门面**不再**压平（本阶段的核心断言）：同一个 candidate 在 PASS 与
+       UNDECIDED 两种情况下 reply 逐字相同，但 verdict 不同 —— 这正是
+       "禁止用 reply===candidate 推断裁定状态"的可执行证明。 */
+    mock.judgePayload = JSON.stringify({ pass: true, score: 0.93, confidence: 0.9, violations: [] });
+    await resetMock(); await resetTel();
+    const passOut = await finalizeOutcome(CANDIDATE, evidenceOpts);
+    mock.judgeMode = 'slow';
+    await resetMock(); await resetTel();
+    const tmoOut = await finalizeOutcome(CANDIDATE, Object.assign({ judgeTimeoutMs: 400 }, evidenceOpts));
+    mock.judgeMode = 'ok';
+    check('I15.identicalTextDistinctVerdict',
+      passOut.reply === CANDIDATE && tmoOut.reply === CANDIDATE
+      && passOut.reply === tmoOut.reply
+      && vOf(passOut) === 'PASS' && vOf(tmoOut) === 'UNDECIDED'
+      && passOut.outcome.pass === true && tmoOut.outcome.pass === null,
+      JSON.stringify({ p: vOf(passOut), t: vOf(tmoOut) }));
+
+    /* I16 · verdicts 分布是"每轮恰好计一次"，且 judgeUndecided 把 malformed 也算进来
+       （这正是它与 judgeError 的差别：judgeError 不含 malformed）。 */
+    await resetMock(); await resetTel();
+    mock.judgePayload = JSON.stringify({ pass: true, score: 0.93, confidence: 0.9, violations: [] });
+    await finalizeOutcome(CANDIDATE, evidenceOpts);
+    mock.judgePayload = '不是 JSON';
+    await finalizeOutcome(CANDIDATE, evidenceOpts);
+    mock.judgeMode = 'slow';
+    await finalizeOutcome(CANDIDATE, Object.assign({ judgeTimeoutMs: 400 }, evidenceOpts));
+    mock.judgeMode = 'ok';
+    tt = await telemetry();
+    check('I16.verdictTelemetryDistribution',
+      tt.verdicts.PASS === 1 && tt.verdicts.UNDECIDED === 2 && tt.judgeUndecided === 2
+      && tt.verdicts.OOC === undefined && tt.judgeMalformed === 1 && tt.judgeError === 1
+      && (tt.verdicts.BYPASSED || 0) === 0,
+      JSON.stringify(tt.verdicts) + ' undecided=' + tt.judgeUndecided);
+
+    /* I17 · trace 语义（P11-2B Phase 4）：timeout **不得**被写成"已裁定"。
+       oocGuardApplied 保持既有语义（guard 是否进入），但 integrityVerdict 必须
+       如实给出 UNDECIDED，两者机器可区分。 */
+    const traceOf = async (opts) => evaluate(cdp, `(async function(){
+      var T=IB.__mbTrace;
+      T.begin('ci_trace','ci_trace_role');
+      var r=await IB.middleBrain.middleBrainFinalizeReply('ci_trace_role','CI_USER_MESSAGE',${JSON.stringify(CANDIDATE)},${JSON.stringify(opts)});
+      var rec=T.finish('ci_trace_role',{});
+      return { verdict: rec.integrityVerdict, reason: rec.integrityReason, guardEntered: rec.oocGuardApplied,
+        keys: T.fields.length, verdictKeyDeclared: T.fields.indexOf('integrityVerdict')>=0 && T.fields.indexOf('integrityReason')>=0 };
+    })()`);
+    mock.judgeMode = 'slow';
+    await resetMock();
+    const tr = await traceOf(Object.assign({ judgeTimeoutMs: 400 }, evidenceOpts));
+    mock.judgeMode = 'ok';
+    check('I17.traceTimeoutNotAdjudicated',
+      tr.guardEntered === true && tr.verdict === 'UNDECIDED' && tr.reason === 'timeout',
+      JSON.stringify(tr));
+    mock.judgePayload = JSON.stringify({ pass: true, score: 0.93, confidence: 0.9, violations: [] });
+    await resetMock();
+    const tr2 = await traceOf(evidenceOpts);
+    check('I18.tracePassIsAdjudicated', tr2.guardEntered === true && tr2.verdict === 'PASS' && tr2.reason === null,
+      JSON.stringify(tr2));
+    check('I19.traceFieldsDeclared', tr2.keys === 19 && tr2.verdictKeyDeclared === true, String(tr2.keys));
+
+    /* I20 · 无额外模型调用 / 无重试 / timeout 常量未变（本阶段硬约束）。
+       timeout 用 400ms 触发，但生产常量必须仍是 20000 且判定逻辑与它无关；
+       本轮只应产生 2 次 judge 调用（I17 与 I18 各一次）、零次改写。 */
+    check('I20.noExtraCallsNoRetryNoTimeoutChange', await evaluate(cdp, `(function(){
+      var C=IB.__middleBrainContracts.integrity;
+      return C.MB_CI_TIMEOUT_MS===20000;
+    })()`) && mock.judge === 1 && mock.rewrite === 0, JSON.stringify({ j: mock.judge, w: mock.rewrite }));
 
     console.log('\nCharacter Integrity / OOC Guard (P11-2): ' + failures + ' failed');
     process.exitCode = failures ? 1 : 0;

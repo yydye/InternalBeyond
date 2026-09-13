@@ -37,8 +37,8 @@
      关闭方式：window.__IB_MB_TRACE = false，或 localStorage['ib_mb_trace'] = '0'。 */
   var _MB_TRACE_MAX = 20, _MB_TRACE_RING = [], _MB_TRACE = {};
   var _MB_TRACE_FIELDS = ['consumer', 'character', 'enabled', 'executeEntered', 'configApplied', 'policyApplied',
-    'astraApplied', 'judgeApplied', 'oocGuardApplied', 'inputMessages', 'outputMessages', 'systemChanged',
-    'requestParamsChanged', 'executor', 'model', 'source', 'messagesChanged'];
+    'astraApplied', 'judgeApplied', 'oocGuardApplied', 'integrityVerdict', 'integrityReason', 'inputMessages',
+    'outputMessages', 'systemChanged', 'requestParamsChanged', 'executor', 'model', 'source', 'messagesChanged'];
   function _mbTraceOn() {
     try {
       if (root.__IB_MB_TRACE === false) return false;
@@ -60,7 +60,8 @@
     if (!_mbTraceOn()) return null;
     var rec = { consumer: String(consumer || 'chat'), character: String(characterId == null ? '' : characterId), at: Date.now(),
       enabled: null, executeEntered: false, configApplied: false, policyApplied: false, astraApplied: false,
-      judgeApplied: false, oocGuardApplied: false, inputMessages: null, outputMessages: null,
+      judgeApplied: false, oocGuardApplied: false, integrityVerdict: null, integrityReason: null,
+      inputMessages: null, outputMessages: null,
       systemChanged: null, requestParamsChanged: null, executor: null, model: null, source: null, messagesChanged: null };
     try { _MB_TRACE[rec.character] = rec; } catch (e) {}
     return rec;
@@ -176,16 +177,29 @@
      语义：交候选回复 → 取回最终文本；调用方不感知内部任何判定/重写策略。
      硬保证：
        ① 未启用 / 任何故障 / 返回非法值 → 原样返回候选（Guard 绝不是聊天单点故障）；
-       ② 只返回字符串，永不返回 null/undefined/空串；
-       ③ 内部每条候选最多一次重写（由 integrity 层保证，本缝不参与编排）。 */
+       ② reply 字段永远是可用字符串，永不 null/undefined/空串；
+       ③ 内部每条候选最多一次重写（由 integrity 层保证，本缝不参与编排）。
+
+     P11-2B · 状态契约：本缝**不再**把裁定状态压平成 bare string。
+     返回 {reply, outcome}：
+       · reply   —— 文本适配器（等价于旧返回值；字符串型调用方零改动）；
+       · outcome —— 显式系统裁定状态（verdict PASS/OOC/UNDECIDED/BYPASSED。
+                    见 MBC.integrity.MB_CI_VERDICT），来源 = integrity 层唯一出口。
+     文本是否变化与裁定状态是两个独立维度：调用方**不得**再用
+     `reply === candidate` 反推"这一轮到底判过没有"。 */
   async function middleBrainFinalizeReply(characterId, userMessage, candidate, opts) {
-    if (typeof candidate !== 'string' || !candidate) return candidate;
+    if (typeof candidate !== 'string' || !candidate) return { reply: candidate, outcome: null };
+    var outcome = null, text = candidate;
     try {
       var r = await INTEG.middleBrainCharacterIntegrity(characterId, userMessage, candidate, opts || {});
-      _mbTraceNote(characterId, 'oocGuardApplied', !!(r && r.ran));   /* 观测：一致性守卫本轮是否真的执行 */
-      if (r && typeof r.reply === 'string' && r.reply) return r.reply;
+      outcome = r || null;
+      /* 观测：guard 是否**进入**（ran），与"是否真的拿到 verdict"分开记（P11-2B Phase 4） */
+      _mbTraceNote(characterId, 'oocGuardApplied', !!(outcome && outcome.ran));
+      _mbTraceNote(characterId, 'integrityVerdict', (outcome && outcome.verdict) || 'BYPASSED');
+      _mbTraceNote(characterId, 'integrityReason', (outcome && outcome.reason) || null);
+      if (outcome && typeof outcome.reply === 'string' && outcome.reply) text = outcome.reply;
     } catch (e) {}
-    return candidate;
+    return { reply: text, outcome: outcome };
   }
 
   /* ── 公共 API 组装表（P11-1B）────────────────────────────────────────

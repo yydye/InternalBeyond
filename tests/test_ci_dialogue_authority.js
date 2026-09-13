@@ -1,4 +1,4 @@
-﻿/* ====================================================================
+/* ====================================================================
    M1-C.2p · Character Integrity Dialogue Convergence
    --------------------------------------------------------------------
    这一条回答且只回答 M1-C.2p 的那一个问题：
@@ -557,11 +557,17 @@ function main() {
     INTEG.middleBrainCharacterIntegrityReset();
     const off = await FACADE.middleBrainFinalizeReply(FRIEND, USER, CANDIDATE, { character: CHARACTER, history: WITH_CURRENT });
     const offTel = INTEG.middleBrainCharacterIntegrityTelemetry();
-    check('J1.ciDisabledReturnsCandidateZeroEvidence', off === CANDIDATE && offTel.checked === 0 && (offTel.skipped.disabled || 0) === 1, offTel.skipped);
+    /* P11-2B：门面现在回 {reply, outcome} —— 文本仍是旧契约（逐字候选），
+       裁定状态由 outcome 显式表达，不再靠"文本没变"推断。 */
+    check('J1.ciDisabledReturnsCandidateZeroEvidence',
+      off && off.reply === CANDIDATE && off.outcome && off.outcome.verdict === 'BYPASSED' && off.outcome.reason === 'disabled'
+      && off.outcome.pass === null && offTel.checked === 0 && (offTel.skipped.disabled || 0) === 1, offTel.skipped);
     globalThis.__ibMiddleBrainConfigReader = () => ({ enabled: false, characterIntegrityEnabled: false });
     INTEG.middleBrainCharacterIntegrityReset();
     const off2 = await FACADE.middleBrainFinalizeReply(FRIEND, USER, CANDIDATE, { character: CHARACTER, history: WITH_CURRENT });
-    check('J2.ciDisabledIndependentOfMbSwitch', off2 === CANDIDATE && INTEG.middleBrainCharacterIntegrityTelemetry().checked === 0);
+    check('J2.ciDisabledIndependentOfMbSwitch',
+      off2 && off2.reply === CANDIDATE && off2.outcome && off2.outcome.verdict === 'BYPASSED'
+      && INTEG.middleBrainCharacterIntegrityTelemetry().checked === 0);
     const bypass = await FACADE.middleBrainExecute(FRIEND, USER, { dialogue: DIALOGUE.lines({ history: WITH_CURRENT, userMessage: USER, currentId: null }) });
     const evNoMb = ciEvidence('desktop', { history: WITH_CURRENT, userMessage: USER, currentId: 'cur' });
     check('J3.mbDisabledStillYieldsFullCanonicalEvidence',
@@ -570,7 +576,9 @@ function main() {
     globalThis.__ibMiddleBrainConfigReader = () => ({ enabled: true, characterIntegrityEnabled: true, characterIntegrityRewrite: true, apiKey: '' });
     INTEG.middleBrainCharacterIntegrityReset();
     const notReady = await FACADE.middleBrainFinalizeReply(FRIEND, USER, CANDIDATE, { character: CHARACTER, history: WITH_CURRENT });
-    check('J4.ciEnabledButAstraNotReadyNoCall', notReady === CANDIDATE
+    check('J4.ciEnabledButAstraNotReadyNoCall', notReady && notReady.reply === CANDIDATE
+      && notReady.outcome && notReady.outcome.verdict === 'BYPASSED' && notReady.outcome.reason === 'astra_not_ready'
+      && notReady.outcome.pass === null
       && (INTEG.middleBrainCharacterIntegrityTelemetry().skipped.astra_not_ready || 0) === 1);
     check('J5.evidenceIsConfigIndependent',
       JSON.stringify(ciEvidence('desktop', { history: WITH_CURRENT, userMessage: USER, currentId: 'cur' }).dialogue)
