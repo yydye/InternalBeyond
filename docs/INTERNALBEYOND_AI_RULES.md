@@ -167,3 +167,80 @@ InternalBeyond 是一个长期演化的个人项目。
 能发现问题，但不要擅自改变问题之外的东西。
 
 **你负责把用户想做的事情做好，而不是替用户决定这个项目应该变成什么。**
+
+---
+
+## 11. 回归执行约束
+
+禁止同时运行 baseline 与 candidate 的全量 regression sweep。
+
+必须：
+
+1. candidate full sweep 单独运行；
+2. 等待其完全结束并释放 browser / Node / Home Node 子进程；
+3. baseline full sweep 再单独运行；
+4. baseline 与 candidate 出现差异时，只允许对差异 suite 做逐项 A/B 复跑。
+
+禁止：
+
+- 两个 worktree 同时 full sweep
+- 无上限 suite 并发
+- 同时启动多个 CDP / browser regression
+- 为了加速测试而提高并发度
+
+优先保证测试结果的可解释性，而不是 wall-clock speed。
+
+如果测试框架支持并发限制：
+
+- heavy / browser / runtime suite 并发固定为 1
+- 纯 Node / offline suite 才允许有限并发
+
+---
+
+## 12. 资源清理
+
+一次 full sweep 完成后，在启动下一次 sweep 前：
+
+- 确认该 sweep 启动的 browser / CDP 子进程已经退出
+- 确认临时 Node / runtime worker 已释放
+- 不得误杀用户正在使用的 DSH Desktop、IB、浏览器或其他无关进程
+- Home Node 若属于测试 fixture，按测试契约正常关闭；若是用户正在运行的实例，不得为了清场擅自终止
+
+---
+
+## 13. 零生产改动审计例外
+
+如果某阶段满足：
+
+- `assets/` 零改动
+- `services/` 零改动
+- 其他生产 / runtime 文件零改动
+- 只新增或修改 tests / docs / audit artifact
+
+则不得机械执行 baseline + candidate 双 full sweep。
+
+应先根据变更面选择专项 regression。
+
+只有存在证据表明测试 / 文档改动可能影响测试发现、runner、fixture 或生产构建时，才升级到 full sweep。
+
+---
+
+## 14. 失败分类
+
+不得仅凭「full sweep 非零」判定为产品回归。
+
+对于差异失败：
+
+1. 单独复跑失败 suite
+2. 必要时做 baseline / candidate 串行 A/B
+3. 区分：
+
+   - deterministic regression
+   - environment failure
+   - resource exhaustion
+   - HTTP / provider limit
+   - Home Node offline
+   - browser / CDP timeout
+   - flaky test
+
+禁止用并发资源耗尽产生的失败作为产品回归证据。
