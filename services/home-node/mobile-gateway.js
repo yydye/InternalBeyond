@@ -1370,22 +1370,95 @@ function createMobileGateway(deps) {
       if (!memoryStore) return fail(res, 'UNSUPPORTED', req, 501);
       const limit = url && url.searchParams.get('limit');
       const ownerId = url && url.searchParams.get('ownerId');
-      const page = memoryStore.listRecords({ limit: limit || undefined, ownerId: ownerId || undefined });
+      /* ── P11-2G · 按读主体读（fail closed）─────────────────────────────
+         缺省行为**逐字不变**：不传 viewer 时返回完整镜像（桌面 memory-authority
+         的 hydrate/召回依赖完整候选集，见 memory-authority.js 的 replaceAll）。
+         一旦传了 viewer，就走**唯一**的 canonical 读谓词：
+           · 未经授权的记录**不进入响应**（不是 content 置空、不是打标记、
+             更不是"交给客户端自己过滤"）
+           · 过滤发生在 **serialization 之前**；分页顺序是
+             可读视图 → 分页 → 序列化（listVisible 负责前三步的顺序）
+           · viewer 非法 / core 不可用 → 空页 + 稳定 reason（绝不"返回全部"）
+         传 viewer 的调用方必须能证明自己是谁；本 verb 不提供任何"按设备身份
+         冒充角色身份"的路径（设备面拿不到这个 verb，见 ADMIN_PATHS）。 */
+      const viewer = url && url.searchParams.get('viewer');
+      let page;
+      if (viewer) {
+        page = memoryStore.listVisible({ limit: limit || undefined, ownerId: ownerId || undefined, viewer: viewer });
+      } else {
+        page = memoryStore.listRecords({ limit: limit || undefined, ownerId: ownerId || undefined });
+      }
       if (!page.ok) return fail(res, page.error || 'INTERNAL', req);
+      if (page.reason) {
+        /* 观测：只记录主体、稳定原因、分类计数 —— **绝不**记录记忆正文、
+           条目 id 或 visibleTo 原值（viewer 是角色标识，不是敏感正文）。 */
+        record('warn', 'memory-list-denied', {
+          viewer: String(viewer || ''), reason: page.reason,
+          refused: (page.refused || []).length, scanned: page.scanned || 0
+        });
+      }
       return sendJson(res, 200, okBody('memory.list', null, {
         count: page.count,
         revision: page.revision,
         truncated: !!page.truncated,
-        records: page.records
+        records: page.records,
+        /* P11-2G · 读主体与拒绝分类。不传 viewer 时 viewer=null / access=null ——
+           "这次读取没有读主体"因此是**可观测的事实**，而不是需要猜的东西。 */
+        viewer: viewer || null,
+        access: viewer ? {
+          refused: (page.refused || []).length,
+          byReason: page.refusedByReason || {},
+          scanned: page.scanned || 0,
+          pages: page.pages || 0,
+          reachedScanLimit: !!page.reachedScanLimit,
+          reason: page.reason || null
+        } : null
       }), req);
     }
     if (action === 'memory/changes' && req.method === 'GET') {
       if (!memoryStore) return fail(res, 'UNSUPPORTED', req, 501);
       const cursor = url && url.searchParams.get('cursor');
       const limit = url && url.searchParams.get('limit');
-      const page = memoryStore.changesAfter(cursor == null ? 0 : Number(cursor), { limit: limit || undefined });
-      if (!page.ok) return fail(res, page.error || 'INTERNAL', req, 400);
-      return sendJson(res, 200, okBody('memory.changes', null, page), req);
+      /* ── P11-2G · 变更流的读主体投影与**撤销语义** ────────────────────
+         缺省行为**逐字不变**（不传 viewer → 完整变更流，桌面镜像同步依赖它）。
+
+         传了 viewer 时，每条变更按唯一 canonical 谓词投影成两种事件之一：
+           upsert（对该主体可读） / delete（该主体不得再持有它）
+         第二条是**撤销**：某条记忆曾经对该主体可读、之后被收窄，必须有一条
+         delete 让客户端删掉本地副本 —— "以后不再发送"会让旧正文永久留在本地。
+         delete 用的是**既有**条目形状（recordId / ownerId / revision，客户端
+         早就实现并测试过），reason 只用于诊断，不参与路由。 */
+      const viewer = url && url.searchParams.get('viewer');
+      const ownerId = url && url.searchParams.get('ownerId');
+      const at = cursor == null ? 0 : Number(cursor);
+      const page = viewer
+        ? memoryStore.changesVisibleAfter(at, { limit: limit || undefined, viewer: viewer, ownerId: ownerId || undefined })
+        : memoryStore.changesAfter(at, { limit: limit || undefined });
+      if (!page.ok) {
+        /* 无法判定可见性（core 不可用 / 主体非法）→ **失败**，不是"返回完整
+           变更流"：后者会把受限记忆交给一个我们无法证明其身份的读主体。 */
+        record('warn', 'memory-changes-denied', { viewer: String(viewer || ''), reason: page.error || 'unknown' });
+        return fail(res, viewer ? 'FORBIDDEN' : (page.error || 'INTERNAL'), req, viewer ? 403 : 400, null, { reason: page.error || null });
+      }
+      if ((page.revoked || []).length) {
+        /* 观测：只记录**计数**与可见性**分类**，不含正文、不含 visibleTo 原值。 */
+        record('info', 'memory-changes-revoked', {
+          viewer: String(viewer), revoked: page.revoked.length,
+          byReason: page.revokedByReason || {},
+          byCategory: page.revoked.reduce((acc, r) => {
+            const k = r.category || 'unknown';
+            acc[k] = (acc[k] || 0) + 1;
+            return acc;
+          }, {})
+        });
+      }
+      if (!viewer) return sendJson(res, 200, okBody('memory.changes', null, page), req);
+      return sendJson(res, 200, okBody('memory.changes', null, {
+        cursor: page.cursor, serverTime: page.serverTime, revision: page.revision,
+        upserts: page.upserts, deletes: page.deletes, hasMore: page.hasMore,
+        viewer: page.viewer,
+        access: { revoked: (page.revoked || []).length, byReason: page.revokedByReason || {} }
+      }), req);
     }
     if (action === 'memory/records' && req.method === 'POST') {
       if (!memoryStore) return fail(res, 'UNSUPPORTED', req, 501);

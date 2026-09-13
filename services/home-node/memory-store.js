@@ -41,6 +41,11 @@ const path = require('path');
 const fs = require('fs');
 
 const MEMORY_CONTRACT = require('../../assets/js/memory-contract.js');
+/* P11-2G：唯一的可见性 core（与 moments-store 注入 MOMENT_VIS 同款纪律）。
+   **默认**就是这一份 —— 而不是"缺省 null，等装配层记得传"：后者会让
+   "按主体读"在装配漏传时静默返回空页（fail closed 但不可发现）。
+   测试仍可注入替代实现（deps.visibilityCore）。 */
+const MEMORY_VIS = require('../../assets/js/memory-visibility-core.js');
 
 const MEMORY_SCHEMA_VERSION = 1;
 const RECORDS_TABLE = 'memory_records';
@@ -68,6 +73,16 @@ function createMemoryStore(deps) {
   const clock = deps.clock || (() => Date.now());
   const logger = deps.logger || (() => {});
   const sqlite = deps.sqlite || loadSqlite();
+  /* P11-2G：可见性 core 由**装配层注入**（与 moments-store 同一纪律）。
+     本模块仍然不做任何 ACL 判断 —— 它只把 core 当作一个纯谓词来调用，
+     因此 home-node 侧"可见性语义"仍然只有一份实现（assets/js 的那一份）。
+     缺省不 require：store 单独使用时不得静默引入第二套语义。 */
+  /* 显式传入的 null 必须**真的**关掉 core（否则"core 不可用 → fail closed"
+     这条路径根本测不到，也就会在装配真的漏接时静默退化成另一种行为）。
+     因此按"属性是否存在"判断，而不是用 `||` 兜底。 */
+  const visibilityCore = Object.prototype.hasOwnProperty.call(deps, 'visibilityCore')
+    ? deps.visibilityCore
+    : MEMORY_VIS;
 
   let db = null;
   let opened = false;
@@ -136,6 +151,12 @@ function createMemoryStore(deps) {
     selectRecord: 'SELECT * FROM ' + RECORDS_TABLE + ' WHERE record_id=?',
     selectLive: 'SELECT * FROM ' + RECORDS_TABLE + ' WHERE deleted_at IS NULL ORDER BY created_at ASC, record_id ASC LIMIT ?',
     selectLiveByOwner: 'SELECT * FROM ' + RECORDS_TABLE + ' WHERE deleted_at IS NULL AND owner_id=? ORDER BY created_at ASC, record_id ASC LIMIT ?',
+    /* P11-2G 可见分页的候选扫描：用 rowid 作游标（稳定、单调、不受 created_at
+       相同值影响），因此"继续扫描下一页"不会重复读同一行，也不会跳过行。
+       行序与 selectLive 刻意不同（那里按 created_at 排序是为了召回稳定）——
+       这里只需要一个**不重不漏**的遍历序。 */
+    selectLivePage: 'SELECT rowid AS seq, * FROM ' + RECORDS_TABLE + ' WHERE deleted_at IS NULL AND rowid>? ORDER BY rowid ASC LIMIT ?',
+    selectLiveByOwnerPage: 'SELECT rowid AS seq, * FROM ' + RECORDS_TABLE + ' WHERE deleted_at IS NULL AND owner_id=? AND rowid>? ORDER BY rowid ASC LIMIT ?',
     insertChange: 'INSERT INTO ' + CHANGE_LOG_TABLE + ' (revision, kind, record_id, owner_id, at) VALUES (?, ?, ?, ?, ?)',
     selectChanges: 'SELECT revision, kind, record_id, owner_id, at FROM ' + CHANGE_LOG_TABLE + ' WHERE revision > ? ORDER BY revision ASC LIMIT ?',
     maxChangeRevision: 'SELECT MAX(revision) AS m FROM ' + CHANGE_LOG_TABLE,
@@ -526,6 +547,195 @@ function createMemoryStore(deps) {
     return { ok: true, records: records, count: records.length, revision: getRevision(), truncated: rows.length >= limit };
   }
 
+  /* ── 可见分页（P11-2G · 移动记忆读边界）──────────────────────────────
+     契约（与 moments-store.listVisible 同款，理由逐条相同）：
+       · 返回的每一条都对 principal 可读（判定来自共享 core，**唯一**实现）
+       · limit 有上限，但"取够 limit 条可读行"才算一页：被拒绝的行**不占页槽**
+       · hasMore 表示"游标之后**还有可读行**"，而不是"原始扫描没到头"
+       · 被拒绝的行不参与任何入选决策：过滤发生在候选序列的产出侧之前
+
+     实现上刻意**不做 SQL 侧 ACL**（一条 SQL 谓词 + 一份 core 谓词就是两处
+     可以漂移的语义）：这里用 core 过滤 + 按需继续扫描下一页候选，以有界
+     扫描次数（MAX_SCAN_PAGES）作为性能闸门，并把 reachedScanLimit 如实报出来
+     （绝不假装"没有更多"）。
+
+     与 listRecords 的关系：**既有** listRecords 完全不变（桌面镜像完整性依赖它：
+     召回要在完整候选集上排名）。本方法只服务"按主体读"这一条新路径。
+
+     本模块仍**不做** ACL 判断：core 由 deps 注入（与 moments-store 同一纪律），
+     因此"可见性语义"在 home-node 侧仍然只有一份实现。 */
+  const MAX_SCAN_PAGES = 20;
+  function listVisible(query) {
+    query = query || {};
+    if (!isOpen()) return { ok: false, error: 'store-closed', records: [] };
+    const visa = visibilityCore;
+    /* 两处独立判据，而不是"一个守门 + 后面假设它成立"：单点守卫一旦被去掉
+       （或将来被改错），后面的 visa.normalizeViewer 会抛 TypeError —— 那是崩溃
+       而不是 fail closed。这里让 core 缺席**必然**走到 no-principal 分支，于是
+       "没有 core"与"没有主体"给出同一个确定的空页（不返回任何记录）。
+       （变异 M12 正是靠这一点被钉住：去掉守卫仍不返回任何记录。） */
+    if (!visa || typeof visa.canReadMemory !== 'function') {
+      /* core 不可用 → 无法判定 → **不返回任何行**（fail closed），不是"返回全部"。 */
+      return { ok: true, records: [], count: 0, truncated: false, reason: 'core-unavailable', revision: getRevision() };
+    }
+    const principal = visa && typeof visa.normalizeViewer === 'function' ? visa.normalizeViewer(query.viewer) : null;
+    if (!principal) {
+      /* 缺主体 / 主体非法 → 没有可读内容。**不是**"返回全部"（fail closed）。 */
+      return { ok: true, records: [], count: 0, truncated: false, reason: 'no-principal', revision: getRevision() };
+    }
+    const rawLimit = query.limit == null ? 100000 : Number(query.limit);
+    const limit = isFinite(rawLimit) && rawLimit > 0 ? Math.min(Math.trunc(rawLimit), 1000000) : 100000;
+    const scanSize = Math.min(1000000, Math.max(limit * 2, 200));
+    const ownerId = query.ownerId == null ? null : String(query.ownerId);
+    const byReason = {};
+    const refused = [];
+    const seen = {};
+    const picked = [];
+    let scanned = 0, pages = 0, cursor = 0, reachedScanLimit = false;
+    while (picked.length < limit && pages < MAX_SCAN_PAGES) {
+      const rows = ownerId
+        ? db.prepare(SQL.selectLiveByOwnerPage).all(ownerId, MEMORY_CONTRACT.intOf(cursor), MEMORY_CONTRACT.intOf(scanSize))
+        : db.prepare(SQL.selectLivePage).all(MEMORY_CONTRACT.intOf(cursor), MEMORY_CONTRACT.intOf(scanSize));
+      pages += 1;
+      if (!rows.length) break;
+      for (const row of rows) {
+        /* 游标**每次**推进，包括被拒绝的行 —— 否则一次拒绝会让扫描原地打转，
+           同一批被拒绝的行被反复读，页面永远填不满。 */
+        cursor = MEMORY_CONTRACT.intOf(row.seq);
+        scanned += 1;
+        const record = rowToRecord(row);
+        if (picked.length >= limit) {
+          /* 已达 limit：只把"游标之后是否还有可读行"这件事记下来（见下方 hasMore）。 */
+          const d = visa.canReadMemory(record, principal);
+          if (d.ok) { reachedScanLimit = true; break; }
+          continue;
+        }
+        const decision = visa.canReadMemory(record, principal);
+        if (decision.ok) { picked.push(record); continue; }
+        byReason[decision.reason] = (byReason[decision.reason] || 0) + 1;
+        if (!Object.prototype.hasOwnProperty.call(seen, String(record.id))) {
+          seen[String(record.id)] = 1;
+          refused.push({ recordId: String(record.id), reason: decision.reason, category: decision.category });
+        }
+      }
+      if (rows.length < scanSize) break;   /* 原始候选已到头 */
+    }
+    const full = picked.length >= limit;
+    /* hasMore 的判据是"扫描窗口内**是否还有可读行**"。比"原始扫描没到头"更保守：
+       宁可在 denied 堆叠时少报一次 hasMore（客户端下次 sync 会补齐），也不谎报"还有更多"。 */
+    let hasMore = reachedScanLimit;
+    if (full && !hasMore) {
+      const probe = listVisibleProbe(visa, principal, cursor, ownerId, scanSize);
+      hasMore = probe;
+    }
+    return {
+      ok: true,
+      records: picked,
+      count: picked.length,
+      truncated: full && hasMore,
+      revision: getRevision(),
+      /* 观测：**只**含拒绝的 id / 稳定原因 / 计数，绝不含记忆正文或 visibleTo 原值。 */
+      refused: refused,
+      refusedByReason: byReason,
+      scanned: scanned,
+      pages: pages,
+      reachedScanLimit: reachedScanLimit,
+      reason: null
+    };
+  }
+  /* 单页探测：游标之后是否还有**可读**行。与主循环共用同一谓词与同一扫描纪律，
+     因此不会出现"主循环说没有、探测器说有"的两套判据。 */
+  function listVisibleProbe(visa, principal, cursor, ownerId, scanSize) {
+    let at = cursor, pages = 0;
+    while (pages < MAX_SCAN_PAGES) {
+      const rows = ownerId
+        ? db.prepare(SQL.selectLiveByOwnerPage).all(ownerId, MEMORY_CONTRACT.intOf(at), MEMORY_CONTRACT.intOf(scanSize))
+        : db.prepare(SQL.selectLivePage).all(MEMORY_CONTRACT.intOf(at), MEMORY_CONTRACT.intOf(scanSize));
+      pages += 1;
+      if (!rows.length) return false;
+      for (const row of rows) {
+        at = MEMORY_CONTRACT.intOf(row.seq);
+        const decision = visa.canReadMemory(rowToRecord(row), principal);
+        if (decision.ok) return true;
+      }
+      if (rows.length < scanSize) return false;
+    }
+    return false;
+  }
+
+  /* ── 变更流的**读主体投影**（P11-2G · 撤销语义）──────────────────────
+     为什么必须有这一步：客户端本地镜像是**累加**的 —— 它只会因为收到一条
+     delete 才删除本地副本。如果某条记忆对某主体曾经可读、之后被收窄成
+     private / only[别人] / 缺 visibility，而服务端只是"以后不再发它"，
+     那么旧正文会**永久**留在客户端本地。
+
+     因此这里的判定是三条，而不是两条：
+       · 行已不存在 / 已软删          → delete（物理真相）
+       · 行存在且对主体可读            → upsert
+       · 行存在但对主体**不再可读**    → delete + reason='visibility-revoked'
+
+     复用**既有** delete 条目形状（recordId / ownerId / revision）：客户端早就
+     实现并测试了"收到 delete 就删本地行"，撤销因此不需要任何客户端改动。
+
+     关键：本函数的**游标推进与 upsert 入选规则与 changesAfter 逐行相同**
+     （同一张 change_log 行集、同一个 next=row.revision、同样"行不存在就不发
+     upsert"）。差别只有一条 —— 对主体不可读的行**发 delete 而不是不发**。
+     之所以不复用 changesAfter 再二次加工：那样会丢掉"这一行在 change_log 里
+     是哪一 revision"这个事实，于是撤销事件会缺少权威 revision，客户端无法
+     据此推进游标。 */
+  function changesVisibleAfter(cursor, options) {
+    options = options || {};
+    if (!isOpen()) return { ok: false, error: 'store-closed' };
+    const visa = visibilityCore;
+    if (!visa || typeof visa.changeVisibilityOf !== 'function') {
+      return { ok: false, error: 'core-unavailable' };
+    }
+    const principal = visibilityCore && typeof visibilityCore.normalizeViewer === 'function'
+      ? visibilityCore.normalizeViewer(options.viewer) : null;
+    if (!principal) return { ok: false, error: 'no-principal' };
+    const from = Number(cursor);
+    if (!isFinite(from) || from < 0) return { ok: false, error: 'bad-cursor' };
+    const rawLimit = options.limit == null ? 500 : Number(options.limit);
+    const limit = isFinite(rawLimit) && rawLimit > 0 ? Math.min(Math.trunc(rawLimit), 10000) : 500;
+    const ownerScope = options.ownerId == null || options.ownerId === '' ? null : String(options.ownerId);
+    const rows = db.prepare(SQL.selectChanges).all(MEMORY_CONTRACT.intOf(from), MEMORY_CONTRACT.intOf(limit + 1));
+    const hasMore = rows.length > limit;
+    const page = hasMore ? rows.slice(0, limit) : rows;
+    const upserts = [], deletes = [], revoked = [];
+    const byReason = {};
+    let next = MEMORY_CONTRACT.intOf(from);
+    for (const row of page) {
+      next = MEMORY_CONTRACT.intOf(row.revision);
+      if (row.kind === 'delete') {
+        /* 物理删除：与 changesAfter 逐字同款（客户端必须删本地副本）。 */
+        deletes.push({ recordId: row.record_id, ownerId: row.owner_id, revision: row.revision, reason: 'deleted' });
+        continue;
+      }
+      /* ownerId 是**分区收窄**（owner_id 列 = 记录的 createdBy），不是权限：
+         它与 listVisible 的 ownerId 语义逐字一致。绝不用它放行任何行。 */
+      if (ownerScope && String(row.owner_id || '') !== ownerScope) continue;
+      const stored = db.prepare(SQL.selectRecord).get(row.record_id);
+      const live = stored && stored.deleted_at == null ? rowToRecord(stored) : null;
+      /* 与 changesAfter 逐行相同：行已不存在就不发 upsert（delete 分支已在上面
+         覆盖了真正的软删；那种"change_log 有 upsert 但行已不在"的漂移由下面
+         的 no-record 分支补成一条 delete，从而本地不会留下永久孤儿）。 */
+      const verdict = visa.changeVisibilityOf(live, principal);
+      if (verdict.event === 'upsert') {
+        upserts.push({ record: live, revision: row.revision });
+        continue;
+      }
+      const reason = verdict.reason === 'no-record' ? 'deleted' : verdict.reason;
+      deletes.push({ recordId: row.record_id, ownerId: row.owner_id, revision: row.revision, reason: reason });
+      if (reason === 'visibility-revoked') revoked.push({ recordId: String(row.record_id), category: verdict.category || null });
+      byReason[reason] = (byReason[reason] || 0) + 1;
+    }
+    return {
+      ok: true, cursor: next, serverTime: clock(), revision: getRevision(),
+      upserts: upserts, deletes: deletes, hasMore: hasMore,
+      viewer: String(principal), revoked: revoked, revokedByReason: byReason
+    };
+  }
+
   function changesAfter(cursor, options) {
     options = options || {};
     if (!isOpen()) return { ok: false, error: 'store-closed' };
@@ -683,6 +893,8 @@ function createMemoryStore(deps) {
     /* 读 */
     getRecord: getRecord,
     listRecords: listRecords,
+    listVisible: listVisible,
+    changesVisibleAfter: changesVisibleAfter,
     listRecordIds: listRecordIds,
     changesAfter: changesAfter,
     /* 迁移 / 配置 */
