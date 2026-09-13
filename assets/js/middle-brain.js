@@ -257,7 +257,11 @@
     /* P21 · 统一思考深度（canonical reasoningEffort）：消费者唯一读取入口。
        刻意不挂 window 兼容别名（与 middleBrainExecute 同一纪律）：canonical 路径只有
        IB.middleBrain；provider 能力翻译只发生在 provider request builder。 */
-    ['middleBrainReasoningEffort', 'config']
+    ['middleBrainReasoningEffort', 'config'],
+    /* P11-2C · 下游副作用政策（唯一读取入口）。消费者（Chat 回合的 side-effect 执行闸门）
+       只能经门面取用，不得直接读内部层契约 —— 与 middleBrainExecute 同一纪律：
+       负责判定的是 integrity 层，门面只做转发，消费方不解释 verdict 的含义。 */
+    ['middleBrainSideEffectAllowed', 'integrity']
   ];
   var MB_LAYERS = {
     config: CFG, policy: POL, astra: ASTRA, judge: JUDGE, integrity: INTEG,

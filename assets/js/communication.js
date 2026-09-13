@@ -1702,6 +1702,11 @@ async function sendChatMessage(voiceMsg){
   const _targetFriend=_callTurn?String(_callTurn.roleId||''):activeFriendId;
   const _targetThread=_callTurn?(String(_callTurn.conversationId||'').indexOf('thread:')===0?String(_callTurn.conversationId).slice(7):null):activeThreadId;
   if(_chatSendingFor.has(_targetFriend))return;
+  /* P11-2C · 本轮副作用政策来源：本回合唯一复位点。
+     null = 拿不到状态（群聊/博客留言/角色来信等不经 Middle Brain 收口的路径都停在这里，
+     以及收口本身故障时）→ 下游闸门 fail-open，行为与改动前逐字一致。
+     只有单聊两条路径在收口后把它改成 integrity 层产出的 verdict。 */
+  _mbVerdict=null;
   /* Get input from either mini or full chat */
   const miniInput=document.getElementById('chat-input');
   const fullInput=document.getElementById('chat-full-input');
@@ -2361,31 +2366,37 @@ async function sendChatMessage(voiceMsg){
         if(_mbFS&&typeof _mbFS.middleBrainFinalizeReply==='function'){
           var _mbFinal=await _mbFS.middleBrainFinalizeReply(cfg.id,_ctxText||'',replyText,{character:cfg,history:history,currentId:userMsg.id,contextSnapshot:_bcc.snapshot,voice:!!_callTurn});
           if(_mbFinal&&typeof _mbFinal.reply==='string'&&_mbFinal.reply&&_mbFinal.reply!==replyText)replyText=_mbFinal.reply;
+          _mbVerdict=(_mbFinal&&_mbFinal.outcome&&_mbFinal.outcome.verdict)||null;
         }
       }catch(_mbFinErrS){console.warn('[MiddleBrain] finalize failed',String(_mbFinErrS&&_mbFinErrS.message||_mbFinErrS).slice(0,120))}
       /* Middle Brain Trace · dev 观测：回合末尾一次性打印本轮逐层 participation（只读、不落盘） */
       if(_mbTrace)_mbTrace.finish(cfg.id,{});
       if(_showThinking&&thinkingText){_ensureStreamThinking(streamRefs,_liveThinkEls);_finishStreamThinking(_liveThinkEls,thinkingText)}
-      /* AUTO MEMORY：截取并执行 mem_* 指令（先于 ws 解析与收尾渲染，防止标签原文入库/上屏） */
+      /* AUTO MEMORY：截取并执行 mem_* 指令（先于 ws 解析与收尾渲染，防止标签原文入库/上屏）
+         P11-2C：执行与否由**显式裁定状态**决定（唯一决策点 MBC.integrity.middleBrainSideEffectAllowed）。
+         UNDECIDED → 指令照样从正文截掉（标签绝不上屏/入库），但**不执行**。 */
       var _memR=[];
       replyText=await _applyWithdraw(cfg,replyText,_targetFriend,cfg.nickname||cfg.model||'AI');
       {const _mp=_parseMemOps(replyText);
-       if(_mp.ops.length){replyText=_mp.clean;if(amEnabled(cfg))_memR=await _execMemOps(_mp.ops,cfg,cfg.nickname||cfg.model||'AI')}}      /* CALENDAR：截取 <cal_note> 便笺并入库（重复/越权丢弃出警示卡）；正文出现临近事项标题时在台账打「已提及」勾 */
+       if(_mp.ops.length){replyText=_mp.clean;if(amEnabled(cfg)&&_mbSideEffectsOk())_memR=await _execMemOps(_mp.ops,cfg,cfg.nickname||cfg.model||'AI')}}      /* CALENDAR：截取 <cal_note> 便笺并入库（重复/越权丢弃出警示卡）；正文出现临近事项标题时在台账打「已提及」勾 */
       var _calR=[];
-      try{if(window.IBCAL){const _cp=await IBCAL.processReply(replyText,cfg);replyText=_cp.clean;_calR=_cp.results||[]}}catch(e){}
+      try{if(window.IBCAL&&_mbSideEffectsOk()){const _cp=await IBCAL.processReply(replyText,cfg);replyText=_cp.clean;_calR=_cp.results||[]}}catch(e){}
       /* Blog 阅读申请：截取 blog_read 标签并生成申请卡（标签不入库、不上屏） */
       var _brCards=[];
       {const _bp=_parseBlogReadOps(replyText);
-       if(_bp.ops.length){replyText=_bp.clean;try{_brCards=await _execBlogReadOps(_bp.ops)}catch(e){}}}
+       if(_bp.ops.length){replyText=_bp.clean;try{if(_mbSideEffectsOk())_brCards=await _execBlogReadOps(_bp.ops)}catch(e){}}}
       /* 以完整回复为准重建气泡：文本 + 操作卡 + 下载卡按原始顺序分段渲染，卡片状态对齐真实执行结果 */
       var _wsParsed=_parseWsOps(replyText);
       var _wsResults=[];
-      if(_wsParsed.ops.length)_wsResults=await _execWsOps(_wsParsed.ops,cfg.nickname||cfg.model||'AI',cfg,{source:'chat',friendId:_targetFriend,threadId:_targetThread||'',userMessageId:userMsg.id});
-      if(_wsParsed.files&&_wsParsed.files.length){try{await _wsArchiveFileBlocks(_wsParsed.files,cfg.nickname||cfg.model||'AI')}catch(e){}}
+      if(_wsParsed.ops.length&&_mbSideEffectsOk())_wsResults=await _execWsOps(_wsParsed.ops,cfg.nickname||cfg.model||'AI',cfg,{source:'chat',friendId:_targetFriend,threadId:_targetThread||'',userMessageId:userMsg.id});
+      if(_wsParsed.files&&_wsParsed.files.length){try{if(_mbSideEffectsOk())await _wsArchiveFileBlocks(_wsParsed.files,cfg.nickname||cfg.model||'AI')}catch(e){}}
       var _wsPhantom=_wsCheckPhantom(_wsParsed.cleanText,_wsParsed.ops.length);
       streamRefs.forEach(ref=>{_wsFinalizeBubble(ref,replyText,_wsResults)});
-      /* 工具回合续（v6）：执行了工具 → 结果自动回喂再生成一轮（用户无需再说一句；失败静默不影响已渲染内容） */
-      if(_wsParsed.ops.length||_wsParsed.files.length){
+      /* 工具回合续（v6）：执行了工具 → 结果自动回喂再生成一轮（用户无需再说一句；失败静默不影响已渲染内容）
+         P11-2C：续轮本身不再回头问 Judge（那会新增模型调用，越界），因此它沿用**本回合**
+         已记录的裁定状态：本回合 UNDECIDED 时，续轮解析出的工具指令同样不执行。
+         状态来源是同一个显式值，续轮不做任何独立推断。 */
+      if((_wsParsed.ops.length||_wsParsed.files.length)&&_mbSideEffectsOk()){
         try{await _wsToolContinue(cfg,{messages:messages,lastReply:replyText,friendId:_targetFriend,chatKey:_targetFriend,senderName:cfg.nickname||cfg.model||'AI',round:1,threadId:_targetThread})}catch(e){}
       }
       if(_srchLog.length||_memR.length)streamRefs.forEach(ref=>{_amAppendExtraCards(ref.isTextNode?ref.div:ref.txt,_srchLog,_memR)});
@@ -2441,29 +2452,31 @@ async function sendChatMessage(voiceMsg){
         if(_mbFN&&typeof _mbFN.middleBrainFinalizeReply==='function'){
           var _mbFinal=await _mbFN.middleBrainFinalizeReply(cfg.id,_ctxText||'',replyText,{character:cfg,history:history,currentId:userMsg.id,contextSnapshot:_bcc.snapshot,voice:!!_callTurn});
           if(_mbFinal&&typeof _mbFinal.reply==='string'&&_mbFinal.reply&&_mbFinal.reply!==replyText)replyText=_mbFinal.reply;
+          _mbVerdict=(_mbFinal&&_mbFinal.outcome&&_mbFinal.outcome.verdict)||null;
         }
       }catch(_mbFinErrN){console.warn('[MiddleBrain] finalize failed',String(_mbFinErrN&&_mbFinErrN.message||_mbFinErrN).slice(0,120))}
       /* Middle Brain Trace · dev 观测：回合末尾一次性打印本轮逐层 participation（只读、不落盘） */
       if(_mbTrace)_mbTrace.finish(cfg.id,{});
-      /* 非流式路径：先截取 mem_* 指令，再按顺序执行工作区操作 */
+      /* 非流式路径：先截取 mem_* 指令，再按顺序执行工作区操作
+         P11-2C：与流式路径同款 —— 执行与否只看显式裁定状态，不看文本。 */
       var _memRNs=[];
       replyText=await _applyWithdraw(cfg,replyText,_targetFriend,cfg.nickname||cfg.model||'AI');
       {const _mpn=_parseMemOps(replyText);
-       if(_mpn.ops.length){replyText=_mpn.clean;if(amEnabled(cfg))_memRNs=await _execMemOps(_mpn.ops,cfg,cfg.nickname||cfg.model||'AI')}}
+       if(_mpn.ops.length){replyText=_mpn.clean;if(amEnabled(cfg)&&_mbSideEffectsOk())_memRNs=await _execMemOps(_mpn.ops,cfg,cfg.nickname||cfg.model||'AI')}}
       /* CALENDAR：非流式同样截取 <cal_note> 并入库、扫描提及 */
       var _calRNs=[];
-      try{if(window.IBCAL){const _cpn=await IBCAL.processReply(replyText,cfg);replyText=_cpn.clean;_calRNs=_cpn.results||[]}}catch(e){}
+      try{if(window.IBCAL&&_mbSideEffectsOk()){const _cpn=await IBCAL.processReply(replyText,cfg);replyText=_cpn.clean;_calRNs=_cpn.results||[]}}catch(e){}
       /* Blog 阅读申请：截取 blog_read 标签并生成申请卡（标签不入库、不上屏） */
       var _brCardsNs=[];
       {const _bpn=_parseBlogReadOps(replyText);
-       if(_bpn.ops.length){replyText=_bpn.clean;try{_brCardsNs=await _execBlogReadOps(_bpn.ops)}catch(e){}}}
+       if(_bpn.ops.length){replyText=_bpn.clean;try{if(_mbSideEffectsOk())_brCardsNs=await _execBlogReadOps(_bpn.ops)}catch(e){}}}
       var _wsNs=_parseWsOps(replyText);
       var _wsRNs=[];
-      if(_wsNs.ops.length)_wsRNs=await _execWsOps(_wsNs.ops,cfg.nickname||cfg.model||'AI',cfg,{source:'chat',friendId:_targetFriend,threadId:_targetThread||'',userMessageId:userMsg.id});
-      if(_wsNs.files&&_wsNs.files.length){try{await _wsArchiveFileBlocks(_wsNs.files,cfg.nickname||cfg.model||'AI')}catch(e){}}
+      if(_wsNs.ops.length&&_mbSideEffectsOk())_wsRNs=await _execWsOps(_wsNs.ops,cfg.nickname||cfg.model||'AI',cfg,{source:'chat',friendId:_targetFriend,threadId:_targetThread||'',userMessageId:userMsg.id});
+      if(_wsNs.files&&_wsNs.files.length){try{if(_mbSideEffectsOk())await _wsArchiveFileBlocks(_wsNs.files,cfg.nickname||cfg.model||'AI')}catch(e){}}
       var _wsNsPhantom=_wsCheckPhantom(_wsNs.cleanText,_wsNs.ops.length);
-      /* 工具回合续（v6）：非流式主对话同样自动回喂再生成一轮 */
-      if(_wsNs.ops.length||_wsNs.files.length){
+      /* 工具回合续（v6）：非流式主对话同样自动回喂再生成一轮（P11-2C：同款沿用本回合裁定状态） */
+      if((_wsNs.ops.length||_wsNs.files.length)&&_mbSideEffectsOk()){
         try{await _wsToolContinue(cfg,{messages:messages,lastReply:replyText,friendId:_targetFriend,chatKey:_targetFriend,senderName:cfg.nickname||cfg.model||'AI',round:1,threadId:_targetThread})}catch(e){}
       }
       const aiMsg={id:'msg_'+Date.now()+'_'+Math.floor(Math.random()*100000),role:'assistant',content:replyText,reasoning_content:thinkingText||'',metadata:{model:cfg.provider||cfg.model||'',model_id:cfg.model||'',config_id:cfg.id,showThinking:_resolveShowThinking(cfg)},friendId:_targetFriend,timestamp:Date.now()};/* 编号方式与群聊统一：随机后缀防同毫秒碰撞 */
@@ -3143,6 +3156,20 @@ const _WS_CONT_PROMPT='[系统指令] 你上一条回复因输出长度上限被
    ④ 续轮里再输出工具则继续执行+续轮（受轮数上限保护，死循环不可能）。
    任何失败静默：工具结果仍在队列中，用户下一条消息照常注入（零回退风险）。 */
 var _WS_TOOL_CONT_MAX=2;/* 一次用户回合内工具后自动续轮上限（不含用户消息本身触发的首轮） */
+/* P11-2C · 副作用闸门（桌面 Chat 回合内**唯一**的政策读取点）──────────────
+   输入是**显式裁定状态**（本轮 Middle Brain 收口产出的 verdict，或 null = 拿不到状态），
+   决策本身完全由 integrity 层持有，经**门面**转发（middleBrainSideEffectAllowed）。
+   本适配层不判断、不加条件、不看 reply、不看文本是否变化、不看有无错误码 ——
+   它只把状态送去决策点并把结论带回来。门面不可用（未装配）时同样 fail-open：
+   那时没有任何状态可传，等价于改动前的行为。 */
+var _mbVerdict=null;
+function _mbSideEffectsOk(){
+  /* 唯一读取入口 = 门面（与 middleBrainExecute 同一纪律）：不碰内部层契约符号 */
+  var _f=(window.IB&&window.IB.middleBrain)||null;
+  if(!_f||typeof _f.middleBrainSideEffectAllowed!=='function')return true;
+  return _f.middleBrainSideEffectAllowed(_mbVerdict)===true;
+}
+
 async function _wsToolContinue(cfg,o){
   try{
     if(!cfg||!o)return null;

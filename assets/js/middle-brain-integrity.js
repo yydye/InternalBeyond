@@ -76,13 +76,25 @@
      **系统**裁定状态，不是模型输出状态：Judge schema 的 pass:boolean 保持不变。
      四态中前两态只能来自一个**合法解析成功**的 Judge report；第三态 = 系统尝试
      过但**没有拿到合法 verdict**；第四态 = 系统**有意不尝试**（不是失败）。
-     已确认事实：null 绝不能被 coercion 成 false / []；timeout 绝不能被建模成 OOC。 */
-  var MB_CI_VERDICT = {
+     已确认事实：null 绝不能被 coercion 成 false / []；timeout 绝不能被建模成 OOC。
+     P11-2C：本枚举是下游副作用闸门的**输入词汇表**，必须真正不可改写 ——
+     原文只写了"冻结"而对象本身没被 Object.freeze（P11-2C 测试发现并修）。 */
+  var MB_CI_VERDICT = Object.freeze({
     PASS: 'PASS',               /* Judge 合法 report 且 report.pass === true */
     OOC: 'OOC',                 /* Judge 合法 report 且 report.pass === false（含被 gate 拦下的） */
     UNDECIDED: 'UNDECIDED',     /* 尝试过 Judge，但 timeout / 传输失败 / malformed / 证据组装异常 */
     BYPASSED: 'BYPASSED'        /* 有意不调用 Judge：未启用 / 语音面 / 无可见文本 / Astra 未就绪 */
-  };
+  });
+  /* P11-2C · 受闸门保护的副作用入口（**声明式清单**：给下游一个明确输入，
+     而不是让每个执行器自己猜"这条回复可不可信"）。
+     清单只登记**桌面 Chat 回合里、由模型回复解析出的副作用**；不含群聊/博客留言/
+     角色来信等不经过 Middle Brain 收口的路径（它们拿不到 verdict，属存量行为）。 */
+  var MB_CI_SIDE_EFFECT_SITES = Object.freeze({
+    MEM_OPS: 'mem_ops',            /* <mem_*> → _execMemOps：Auto Memory 写入 */
+    CALENDAR: 'calendar',          /* <cal_note> → IBCAL.processReply：日历便笺入库 + 台账勾选 */
+    BLOG_READ: 'blog_read',        /* <blog_read> → _execBlogReadOps：把日志正文排队注入下一轮 */
+    WS_OPS: 'ws_ops'               /* <ws_*> → _execWsOps 等：文件/图片/搜索/工具执行 */
+  });
   var _mbCiTelemetry = {
     checked: 0,          /* 进入 Guard（enabled）的次数 */
     skipped: {},         /* skipReason → 次数 */
@@ -508,6 +520,40 @@
   /* 每轮收口：内部 out → 显式裁定状态（同时计数）。integrity 层唯一出口处使用。 */
   function middleBrainIntegrityOutcome(out) { return _ciVerdict(_mbCiOutcome(out)); }
 
+  /* ── P11-2C · 副作用闸门（下游安全边界）────────────────────────────────
+     问题：一个**没有 verdict** 的回复，能不能触发副作用？
+
+     这是四态契约的下游政策，不是第五个状态：裁定状态仍只由 _mbCiOutcome 产生。
+     本函数唯一的职责是把「本轮裁定状态」翻译成「本轮允许不允许执行模型生成的副作用」。
+
+     输入是**显式裁定状态**。闸门不读 reply、不看 candidate 是否相同、不看是否存在
+     judgeError、不做字符串判断 —— 这些反推方式全部被禁止（它们正是 P11-2B 消灭的
+     不确定性）。调用方必须把 verdict 交进来，不交就得不到保护。
+
+     决策表（四态全覆盖，只有 UNDECIDED 被拦）：
+       PASS       allow  —— 已判定没有越界，保持既有全部行为
+       OOC        allow  —— 保持既有行为（改写已在 integrity 层发生；此处不做二次判定）
+       UNDECIDED  block  —— 尝试过但没拿到 verdict：回复可以展示，但**不得执行**
+                            由它解析出的副作用指令
+       BYPASSED   allow  —— 有意不调用（未启用/语音面/无可见文本/未就绪）= 存量行为，
+                            本阶段明确保持，不改
+       null/unknown allow —— **仅在拿不到任何状态时**（Middle Brain 未启用 / 未装配 /
+                            适配层不可达）。这是显式的 fail-open，理由有二：
+                            一、它就是改动前的事实（未启用时副作用一直照常执行）；
+                            二、闸门是安全边界，但"不知道"不等于"已知不安全"。
+                            绝不允许把未知伪装成某个已知态。 */
+  function _mbCiSideEffectPolicy(verdict) {
+    var v = _ciStr(verdict).trim().toUpperCase();
+    if (!v) return { allow: true, verdict: null, reason: 'no_state' };
+    if (v === MB_CI_VERDICT.PASS) return { allow: true, verdict: v, reason: 'pass' };
+    if (v === MB_CI_VERDICT.OOC) return { allow: true, verdict: v, reason: 'ooc' };
+    if (v === MB_CI_VERDICT.BYPASSED) return { allow: true, verdict: v, reason: 'bypassed' };
+    if (v === MB_CI_VERDICT.UNDECIDED) return { allow: false, verdict: v, reason: 'unadjudicated' };
+    /* 未知字符串不属于四态 —— 绝不当作 PASS。按 fail-open 处理，但如实标出来。 */
+    return { allow: true, verdict: null, reason: 'unknown_verdict' };
+  }
+  function middleBrainSideEffectAllowed(verdict) { return _mbCiSideEffectPolicy(verdict).allow === true; }
+
   /* ====================================================================
      主入口：Character Integrity Guard
      返回 {reply, ran, report, gate, rewrite, verify, judgeError, skipReason}
@@ -639,6 +685,10 @@
     /* P11-2B：系统裁定状态契约（只读；下游按值判定，不再靠文本是否变化推断） */
     middleBrainIntegrityOutcome: middleBrainIntegrityOutcome,
     MB_CI_VERDICT: MB_CI_VERDICT,
+    /* P11-2C：下游副作用政策（唯一决策点；调用方按值判定，禁止自行推断可信度） */
+    middleBrainSideEffectAllowed: middleBrainSideEffectAllowed,
+    _mbCiSideEffectPolicy: _mbCiSideEffectPolicy,
+    MB_CI_SIDE_EFFECT_SITES: MB_CI_SIDE_EFFECT_SITES,
     _mbCiOutcome: _mbCiOutcome,
     _mbParseCiJson: _mbParseCiJson,
     _mbParseCiRewriteJson: _mbParseCiRewriteJson,

@@ -154,7 +154,7 @@ async function main() {
   })(), mbNode.diagnostics());
   check('node.facadeIsCanonical', (() => {
     const d = mbNode.diagnostics();
-    return d.facadeKeys === 48;   /* 与桌面同一个 facade 的公共 API 数 */
+    return d.facadeKeys === 49;   /* 与桌面同一个 facade 的公共 API 数（P11-2C 追加副作用政策键） */
   })(), mbNode.diagnostics());
 
   /* 桌面侧：同一份配置 → canonical 层的两个语义决策 */
