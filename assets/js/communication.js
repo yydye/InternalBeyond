@@ -447,6 +447,7 @@ function _buildMsgEl(m,isFullscreen,isGroupCont){
     if(m.images&&m.images.length)m.images.forEach(function(img){var el=document.createElement('img');el.className='chat-bubble-img';el.loading='lazy';el.decoding='async';el.src=img.dataUrl;el.alt=img.name||'image';el.onclick=function(){_viewImageFull(img.dataUrl,img)};div.appendChild(el)});
     if(m.wsSearches||m.memOps)_amAppendExtraCards(div,m.wsSearches||[],m.memOps||[]);
     if(m.calNotes&&window.IBCAL)try{m.calNotes.forEach(function(r){div.appendChild(IBCAL.noteCard(r))})}catch(e){}
+    _mbAppendNoticeCard(div,m);/* P11-2E · 历史重载：提示随消息持久化，回看同样看得见 */
     if(m.id){div.appendChild(_msgFavBtn(m));const db=document.createElement('button');db.className='chat-msg-del';db.textContent='✕';db.title='删除此消息';db.onclick=function(ev){ev.stopPropagation();deleteSingleMsg(m.id,div,frag)};div.appendChild(db)}
   }else{
     /* Classic panel uses the same per-model showThinking decision as fullscreen. */
@@ -470,6 +471,7 @@ function _buildMsgEl(m,isFullscreen,isGroupCont){
     if(m.images&&m.images.length)m.images.forEach(function(img){var el=document.createElement('img');el.className='chat-bubble-img';el.loading='lazy';el.decoding='async';el.src=img.dataUrl;el.alt=img.name||'image';el.style.maxWidth='180px';el.onclick=function(){_viewImageFull(img.dataUrl,img)};div.appendChild(el)});
     if(m.wsSearches||m.memOps)_amAppendExtraCards(div,m.wsSearches||[],m.memOps||[]);
     if(m.calNotes&&window.IBCAL)try{m.calNotes.forEach(function(r){div.appendChild(IBCAL.noteCard(r))})}catch(e){}
+    _mbAppendNoticeCard(div,m);/* P11-2E · 小窗历史：与全屏同款 */
     if(m.id){div.appendChild(_msgFavBtn(m));const db=document.createElement('button');db.className='chat-msg-del';db.textContent='✕';db.title='删除此消息';db.onclick=function(ev){ev.stopPropagation();deleteSingleMsg(m.id,div,frag)};div.appendChild(db)}
   }
   frag.appendChild(div);
@@ -2399,7 +2401,12 @@ async function sendChatMessage(voiceMsg){
          P11-2C：续轮本身不再回头问 Judge（那会新增模型调用，越界），因此它沿用**本回合**
          已记录的裁定状态：本回合 UNDECIDED 时，续轮解析出的工具指令同样不执行。
          状态来源是同一个显式值，续轮不做任何独立推断。 */
-      if((_wsParsed.ops.length||_wsParsed.files.length)&&_mbSideEffectGate(_mbSecWsCats(_wsParsed.ops).concat(_wsParsed.files.length?[_MB_SEC.file]:[]))){
+      /* P11-2E · 补上条数（P11-2D 缺口）：`_mbSideEffectGateCats(cats,n)` 的条数由
+         **调用方**提供，而本调用点此前没传 —— 于是 `_mbSecWsCats(ops)` 里的
+         `tool_continue` 永远落进 `!(_mbSideEffectCounts[cat] > 0)` 分支：闸门照样
+         正确拦截（allow=false），但**一个字都不记**，抑制记录因而声称"这一轮没拦下
+         任何东西"。补上条数后记录才如实。**只补元数据，判定语义与拦截行为一字未改。** */
+      if((_wsParsed.ops.length||_wsParsed.files.length)&&_mbSideEffectGate(_mbSecWsCats(_wsParsed.ops).concat(_wsParsed.files.length?[_MB_SEC.file]:[]),_mbSecWsCount(_wsParsed.ops,_wsParsed.files.length))){
         try{await _wsToolContinue(cfg,{messages:messages,lastReply:replyText,friendId:_targetFriend,chatKey:_targetFriend,senderName:cfg.nickname||cfg.model||'AI',round:1,threadId:_targetThread})}catch(e){}
       }
       /* 本回合 trace 收口（打印点已在副作用之后，故抑制记录此刻已是终值） */
@@ -2409,6 +2416,9 @@ async function sendChatMessage(voiceMsg){
       if(_brCards.length)streamRefs.forEach(ref=>{_brCards.forEach(function(c){(ref.isTextNode?ref.div:ref.txt).appendChild(_brBuildCard(c))})});
       if(_calR.length&&window.IBCAL)streamRefs.forEach(ref=>{_calR.forEach(function(r){(ref.isTextNode?ref.div:ref.txt).appendChild(IBCAL.noteCard(r))})});
       if(_wsPhantom)streamRefs.forEach(ref=>{(ref.isTextNode?ref.div:ref.txt).appendChild(_buildWsPhantomHint(_wsPhantom))});
+      /* P11-2E · 内联提示卡：接在既有卡片之后、气泡之内 —— 不改 assistant 原文、
+         不覆盖内容、不做模态/浮层。放在最后是为了让它始终读得到（不被打断）。 */
+      streamRefs.forEach(ref=>{_mbAppendNoticeCard((ref.isTextNode?ref.div:ref.txt),aiMsg)});
       const aiMsg={id:'msg_'+Date.now()+'_'+Math.floor(Math.random()*100000),role:'assistant',content:replyText,reasoning_content:thinkingText||'',metadata:{model:cfg.provider||cfg.model||'',model_id:cfg.model||'',config_id:cfg.id,showThinking:_resolveShowThinking(cfg)},friendId:_targetFriend,timestamp:Date.now()};/* 编号方式与群聊统一：随机后缀防同毫秒碰撞 */
       if(_srchLog.length)aiMsg.wsSearches=_srchLog;
       if(_memR.length)aiMsg.memOps=_memR.map(r=>({ok:r.ok,status:r.status||'',label:r.label,detail:r.detail}));
@@ -2416,6 +2426,11 @@ async function sendChatMessage(voiceMsg){
       {const _giImgs=_wsCollectGenImages(_wsResults);if(_giImgs.length)aiMsg.images=_giImgs;}/* 生成的图片随消息持久化，历史重载可见 */
       if(_targetThread)aiMsg.threadId=_targetThread;
       if(_callRes.truncated)aiMsg.truncated=true;/* 任务6：自动续写轮数用尽仍截断 */
+      /* P11-2E · 用户可见提示（唯一落库点，流式）——
+         位置必须在**所有副作用结束之后**：抑制记录是本回合累计的，早于最后一道
+         闸门读取会漏掉后面的类别。读的是 integrity 层已经产出的记录，不重新判定、
+         不额外询问闸门。无抑制 ⇒ 不写键（历史消息无键的渲染路径因此与改动前逐字一致）。 */
+      {const _n=_mbIntegrityNoticeFor(_mbVerdict);if(_n)aiMsg.metadata.integrityNotice=_n;}
       await dbPut('chatMessages',aiMsg);
       _ibAppBroadcast('message',{id:aiMsg.id,role:'assistant',content:aiMsg.content,senderName:cfg.nickname||cfg.model||'AI',friendId:_targetFriend,threadId:_targetThread});
       _ibAppBroadcast('turn',{state:'end',friendId:_targetFriend,threadId:_targetThread});
@@ -2479,8 +2494,9 @@ async function sendChatMessage(voiceMsg){
       if(_wsNs.ops.length&&_mbSideEffectGate(_mbSecWsCats(_wsNs.ops)))_wsRNs=await _execWsOps(_wsNs.ops,cfg.nickname||cfg.model||'AI',cfg,{source:'chat',friendId:_targetFriend,threadId:_targetThread||'',userMessageId:userMsg.id});
       if(_wsNs.files&&_wsNs.files.length){try{if(_mbSideEffectGate([_MB_SEC.file]))await _wsArchiveFileBlocks(_wsNs.files,cfg.nickname||cfg.model||'AI')}catch(e){}}
       var _wsNsPhantom=_wsCheckPhantom(_wsNs.cleanText,_wsNs.ops.length);
-      /* 工具回合续（v6）：非流式主对话同样自动回喂再生成一轮（P11-2C：同款沿用本回合裁定状态） */
-      if((_wsNs.ops.length||_wsNs.files.length)&&_mbSideEffectGate(_mbSecWsCats(_wsNs.ops).concat(_wsNs.files.length?[_MB_SEC.file]:[]))){
+      /* 工具回合续（v6）：非流式主对话同样自动回喂再生成一轮（P11-2C：同款沿用本回合裁定状态）
+         P11-2E：与流式路径同款补上条数（见上方流式路径的说明）。 */
+      if((_wsNs.ops.length||_wsNs.files.length)&&_mbSideEffectGate(_mbSecWsCats(_wsNs.ops).concat(_wsNs.files.length?[_MB_SEC.file]:[]),_mbSecWsCount(_wsNs.ops,_wsNs.files.length))){
         try{await _wsToolContinue(cfg,{messages:messages,lastReply:replyText,friendId:_targetFriend,chatKey:_targetFriend,senderName:cfg.nickname||cfg.model||'AI',round:1,threadId:_targetThread})}catch(e){}
       }
       /* 本回合 trace 收口（与非流式逐字同款） */
@@ -2492,6 +2508,8 @@ async function sendChatMessage(voiceMsg){
       {const _giImgsN=_wsCollectGenImages(_wsRNs);if(_giImgsN.length)aiMsg.images=_giImgsN;}/* 生成的图片随消息持久化 */
       if(_targetThread)aiMsg.threadId=_targetThread;
       if(_callResN.truncated)aiMsg.truncated=true;/* 任务6：自动续写轮数用尽仍截断 */
+      /* P11-2E · 用户可见提示（唯一落库点，非流式）——与流式路径逐字同款同形。 */
+      {const _nNs=_mbIntegrityNoticeFor(_mbVerdict);if(_nNs)aiMsg.metadata.integrityNotice=_nNs;}
       /* waifu 消息呈现（MessagePresentation）：非流式纯文本长回复 → 按自然停顿拆多条，逐条上屏（像真人一条条发）。
          仅当 waifu 开、且回复为"纯文本、无功能标签"时介入；plan 决定 single/multi，绝不触碰模型执行/continuation。 */
       const _waifuPlan=(cfg.waifu===true&&!_wsNs.ops.length&&_wsNs.files.length===0&&_memRNs.length===0&&_calRNs.length===0&&_brCardsNs.length===0&&!_wsNsPhantom&&!_srchLogN.length&&!_callResN.truncated&&window.MessagePresentation&&window.MessagePresentation.plan)?window.MessagePresentation.plan(replyText,{waifu:true,streaming:false}):null;
@@ -2519,6 +2537,8 @@ async function sendChatMessage(voiceMsg){
         if(_brCardsNs.length)document.querySelectorAll('.chat-msg[data-msg-id="'+aiMsg.id+'"]').forEach(function(el){_brCardsNs.forEach(function(c){el.appendChild(_brBuildCard(c))})});
         if(_calRNs.length&&window.IBCAL)document.querySelectorAll('.chat-msg[data-msg-id="'+aiMsg.id+'"]').forEach(function(el){_calRNs.forEach(function(r){el.appendChild(IBCAL.noteCard(r))})});
         if(_wsNsPhantom)document.querySelectorAll('.chat-msg[data-msg-id="'+aiMsg.id+'"]').forEach(function(el){el.appendChild(_buildWsPhantomHint(_wsNsPhantom))});
+        /* P11-2E · 内联提示卡（非流式）：与流式路径同款同形 */
+        document.querySelectorAll('.chat-msg[data-msg-id="'+aiMsg.id+'"]').forEach(function(el){_mbAppendNoticeCard(el,aiMsg)});
         if(aiMsg.truncated)document.querySelectorAll('#chat-full-messages .chat-msg[data-msg-id="'+aiMsg.id+'"] .r-text').forEach(function(t){t.appendChild(_buildContinuePill(aiMsg.id))});/* 任务6 */
       }
       else _markUnread(_targetFriend);
@@ -3214,6 +3234,16 @@ function _mbSecWsCats(ops){
   });
   return out;
 }
+/* 与 `_mbSecWsCats` 配套的条数：一束指令里**确实存在**的条目数（ops + file 块）。
+   闸门只把它当元数据用（`_mbCiSuppress` 要求 count > 0 才记录），它不参与任何判定 ——
+   判定只由 verdict 决定。至少为 1：调用方既然问了，就说明这一轮**确有**条目
+   （这正是"没有条目就不记录"那条纪律的对偶面）。
+   P11-2E 补：本函数是为了修掉 P11-2D 的一个缺口 —— 多类别的工具续轮调用点此前
+   没传条数，于是 `tool_continue` 这个"会再发一次模型请求"的类别**永远不会被记录**。 */
+function _mbSecWsCount(ops,fileCount){
+  var n=(Array.isArray(ops)?ops.length:0)+(Number(fileCount)>0?Number(fileCount):0);
+  return n>0?n:1;
+}
 function _mbSideEffectsOk(category,count){
   /* 唯一读取入口 = 门面（与 middleBrainExecute 同一纪律）：不碰内部层契约符号。
      调用形状固定为 `门面(本轮状态, 类别, 条数)`：状态永远是 _mbVerdict（本回合收口产物），
@@ -3243,6 +3273,108 @@ function _mbSecTraceFinish(trace,characterId,verdict){
   trace.note(characterId,'sideEffectsSuppressed',t?t.s:null);
   trace.note(characterId,'sideEffectCategories',t?t.c:[]);
   trace.finish(characterId,{});
+}
+
+/* ── P11-2E · 用户可见的完整性提示（唯一派生点与唯一渲染点）──────────────
+   解决的问题：UNDECIDED 回合里回复**正常显示**，但由它解析出的自动动作被拦下。
+   此前开发者可见（trace / telemetry，P11-2D）、**用户完全不可见** —— 用户只会
+   看到回复缺了一件事，然后自己猜。
+
+   与 P11-2C/2D 的边界完全一致，不重新判定任何东西：
+     · 只在**真实发生抑制**时出现。判据是 integrity 层唯一写入点产出的记录
+       （count > 0），**不是** verdict === UNDECIDED —— 后者只是"没拿到结论"，
+       没有任何条目时它不是抑制（P11-2D 的核心语义）。
+     · verdict 必须仍是 UNDECIDED：抑制只可能由该状态产生；若记录非空而状态不是
+       UNDECIDED，那就是不一致，此时**不显示**（绝不把矛盾包装成一句安慰话）。
+     · 不新增任何模型调用、不改闸门、不改 verdict 词表、不恢复被拦下的动作。
+
+   措辞纪律（用户不需要知道内部审查）：
+     · 不出现 Judge / Astra / integrity / UNDECIDED / confidence / score /
+       severity / dimension 中的任何一词 —— 内部审查的存在对用户不是信息；
+     · 用户真正需要知道的三件事：① 回复本身是好的；② 有个自动动作没做；
+       ③ 再说一次可以重做。三者都不需要暴露"为什么被拦"的机制。
+     · 措辞说的是"这次没能确认执行条件"（事实），而不是"我判断你不安全"
+       （把一次技术性未决说成对其内容的否定判断，是给用户的错误归因）。
+   渲染形态：沿用既有的 `.ws-op-card.warn` 内联卡（与 `_buildWsPhantomHint`
+   "AI 声称已创建但实际未执行"同一形态与同一语义档位），**不用 toast** —— toast
+   会消失，而用户需要在历史里看得见"这件事当时没做"。 */
+
+/* 反馈契约（冻结）：metadata.integrityNotice = {type, categories}。
+   只存类型与类别名，**不存 payload**：没有正文 / 路径 / 记忆内容 / 工具参数 /
+   搜索词的承载字段。字符串一律取自下方词表，绝不从模型输出里拼接。 */
+var MB_INTEGRITY_NOTICE_TYPE='side_effect_blocked';
+/* 与 integrity 层 MB_CI_SUPPRESSION_CATEGORIES 的 6 个值一一对应（字面量收敛到一处）。
+   这里保存的是**全部**真实发生的类别。 */
+var _MB_NOTICE_CATS=['memory','calendar','blog_read','workspace','file_archive','tool_continue'];
+/* 其中**用户可感知**的那几类才有对应说法。memory / calendar 本就是静默动作
+   （写进了记忆、记了便笺，用户平时也看不到），"没做"对用户不构成一个可核对的缺口；
+   把它们说成"没执行"只会制造困惑。类别本身仍如实保存在 metadata 里 ——
+   这与 P11-2D"说不清就别报"是同一条纪律：展示层只说它真能说清的那部分。 */
+var MB_NOTICE_USER_VISIBLE_CATS=['workspace','file_archive'];
+var _MB_NOTICE_TEXT_SPECIFIC='回复已完成，但本次涉及文件/工作区的自动操作没有执行——暂时无法确认执行条件。需要的话，你再说一次我就重做。';
+var _MB_NOTICE_TEXT_GENERIC='回复已完成，但本次有一项自动操作没有执行——暂时无法确认执行条件。需要的话，你再说一次我就重做。';
+
+/* —— 唯一派生点：verdict + 本回合抑制记录 ⇒ 该消息要不要带提示 ——
+   返回 null = 不带提示（metadata 里连键都不会出现）。
+   verdict 词表仍是 integrity 层的 `MB_CI_VERDICT`（门面下的内部层契约），
+   这里只**取值**，不复制枚举、不新建第二套状态机。 */
+function _mbIntegrityNoticeFor(verdict){
+  if(verdict!=='UNDECIDED')return null;
+  try{
+    var _f=(window.IB&&window.IB.middleBrain)||null;
+    if(!_f||typeof _f.middleBrainSideEffectSuppression!=='function')return null;
+    var s=_f.middleBrainSideEffectSuppression()||{};
+    /* 唯一判据：真实记录到了抑制条数。没有条目 ⇒ 没有提示。 */
+    if(!(Number(s.count)>0))return null;
+    var cats=[];
+    (Array.isArray(s.categories)?s.categories:[]).forEach(function(c){
+      var v=String(c||'').toLowerCase();
+      if(_MB_NOTICE_CATS.indexOf(v)>=0&&cats.indexOf(v)<0)cats.push(v);
+    });
+    /* 类别一个都没认出来：宁可什么都不说，也不编一个说不清的提示（同 P11-2D）。 */
+    if(!cats.length)return null;
+    return {type:MB_INTEGRITY_NOTICE_TYPE,categories:cats};
+  }catch(e){return null}
+}
+/* —— 唯一解析点：消息 → 提示形态。历史消息没有该 metadata ⇒ 返回 null，
+   渲染路径与本次改动之前**逐字一致**（T10）。 */
+function _mbNoticeFromMessage(m){
+  try{
+    var n=m&&m.metadata&&m.metadata.integrityNotice;
+    if(!n||typeof n!=='object'||Array.isArray(n))return null;
+    if(String(n.type)!==MB_INTEGRITY_NOTICE_TYPE)return null;
+    var cats=[];
+    (Array.isArray(n.categories)?n.categories:[]).forEach(function(c){
+      var v=String(c||'').toLowerCase();
+      if(_MB_NOTICE_CATS.indexOf(v)>=0&&cats.indexOf(v)<0)cats.push(v);
+    });
+    if(!cats.length)return null;
+    return {type:MB_INTEGRITY_NOTICE_TYPE,categories:cats};
+  }catch(e){return null}
+}
+/* —— 唯一渲染点：内联提示卡。只吃上面解析出来的 {type, categories}，
+   卡片文本是固定词表产物 —— 任何模型输出/文件路径/记忆正文都进不来。
+   刻意不挂任何按钮：被拦下的动作**不会**因此被重放（P11-2C 的边界）。 */
+function _buildIntegrityNoticeCard(notice){
+  try{
+    var c=document.createElement('div');
+    c.className='ws-op-card warn ib-integrity-notice';
+    c.dataset.noticeType=String(notice&&notice.type||'');
+    var specific=(notice&&Array.isArray(notice.categories)?notice.categories:[])
+      .some(function(x){return MB_NOTICE_USER_VISIBLE_CATS.indexOf(x)>=0});
+    var txt=specific?_MB_NOTICE_TEXT_SPECIFIC:_MB_NOTICE_TEXT_GENERIC;
+    var ic=(typeof WS_ICON!=='undefined'&&WS_ICON&&WS_ICON.warn)?WS_ICON.warn:'';
+    c.innerHTML=ic+'<span class="ws-op-text">'+esc(txt)+'</span>';
+    return c;
+  }catch(e){return null}
+}
+/* 渲染入口：无提示 ⇒ 不 append 任何节点（不打断聊天、不覆盖回复）。 */
+function _mbAppendNoticeCard(host,m){
+  var n=_mbNoticeFromMessage(m);
+  if(!n||!host)return null;
+  var c=_buildIntegrityNoticeCard(n);
+  if(c)host.appendChild(c);
+  return c;
 }
 async function _wsToolContinue(cfg,o){
   try{
