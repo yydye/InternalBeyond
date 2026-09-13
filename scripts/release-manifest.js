@@ -53,6 +53,7 @@ const ENTRIES = [
   { from: 'runtime/pe-version.js', why: '安装包 PE 版本资源读取（ProductVersion/FileVersion 校验，防止「字节对但版本错」）' },
   { from: 'runtime/boot-state.js', why: '启动记录（P2 诊断唯一来源）' },
   { from: 'runtime/component-registry.js', why: '组件注册表唯一事实源（端口 / 身份探针 / 组件轴；boot-state 与 runner 都 require 它，缺失会让启动链直接崩）' },
+  { from: 'runtime/component-supervisor.js', why: '有界崩溃恢复策略引擎（重启预算 / 退避 / 失败锁死；runner 启动期 require 它，缺失同样会让启动链直接崩）' },
   { from: 'runtime/launch-internal-beyond.js', why: '正式静默启动链（快捷方式最终执行）' },
   { from: 'runtime/local-services-runner.js', why: '本地服务管理进程（Bridge / Active / Home Node + 重启与停止控制面）' },
   { from: 'services/internal-beyond-server.js', why: '本地静态页面服务（AudioWorklet 必需）' },

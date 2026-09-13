@@ -406,8 +406,12 @@ async function suiteB() {
     const rowNames = r.json.services.map(s => s.name).sort();
     assert.deepStrictEqual(rowNames, managedNames, 'SERVICES and the registry disagree about which services exist');
 
-    assert.ok(r.json.warning && /observation only/.test(r.json.warning),
-      'the live view must state that it never acts on what it observes');
+    /* P11-3C 之后这条视图不再自称"纯观测"（runner 现在确实会做有界恢复），所以这里
+       断言的是它必须如实声明自己的边界，而不是钉死某句文案。 */
+    assert.ok(r.json.warning && /bounded/.test(r.json.warning),
+      'the live view must state that its recovery is bounded: ' + r.json.warning);
+    assert.ok(/never (starts|stops|restarts|retries|recovers)/.test(r.json.warning),
+      'the live view must state what it does not do: ' + r.json.warning);
   });
 
   await check('B6 聚合视图如实回答：谁在跑、谁停了、谁异常、什么时候看的', async () => {
@@ -459,8 +463,15 @@ async function suiteB() {
     /* P11-3B 是"只观察"：进程追踪只记录，不做任何决定 */
     assert.ok(/owned: !!\(entry && !entry\.exited\)/.test(src), 'ownership must come from the runner\'s own child handle');
     assert.ok(/exits: entry \? entry\.exits : 0/.test(src), 'exit count must be tracked');
-    assert.ok(!/restartOn(?:Exit|Failure|Crash)|autoRestart|maxRestarts|crashRecovery|\bbackoff\b/i.test(src),
+    /* P11-3B 的原话是"不得引入重启/退避/恢复**机制**"。P11-3C 之后 runner 里确实有
+       恢复，所以这里断言的是"机制不在这里"：预算、退避与锁死全部由
+       runtime/component-supervisor.js 决定，runner 只执行。这条断言因此仍然有意义
+       —— 它现在守的是"runner 不得自己长出第二套重试逻辑"，而不是"不许出现 backoff
+       这个词"（字段名与注释不是机制，一个正则分不清这两者是正则的问题）。 */
+    assert.ok(!/restartOn(?:Exit|Failure|Crash)|autoRestart|maxRestarts|crashRecovery|while\s*\(\s*true\s*\)[\s\S]{0,120}restart/i.test(src),
       'P11-3B must not introduce a restart/backoff/recovery mechanism');
+    assert.ok(/component-supervisor\.js/.test(src),
+      'P11-3C 的恢复必须来自 supervisor 模块，不能内联在 runner 里');
 
     /* 真实证据：外部先占住 Bridge 端口，runner 必须把它报成 online 但 owned:false */
     const bridgePort = await freePort();
@@ -550,7 +561,7 @@ async function suiteC() {
       }
 
       const v = await liveView();
-      assert.ok(/observation only/.test(v.json.warning || ''));
+      assert.ok(/bounded/.test(v.json.warning || ''), 'the live view must declare its recovery bound');
       assert.deepStrictEqual(v.json.restartTargets.slice().sort(), ['active', 'bridge', 'homeNode']);
       /* 控制面自己（restart）就在这个进程里，所以它必然是 healthy —— 而且它不是
          重启目标（否则会杀掉正在执行重启的进程）。 */

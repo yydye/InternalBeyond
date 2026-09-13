@@ -26,6 +26,48 @@ const { spawn, execFile } = require('child_process');
    （命令、参数、日志、进程句柄）；"有哪些组件、在哪个端口、什么算健康、哪些参与
    重启"一律由 registry 决定，不再在这里手写一份。 */
 const registry = require('./component-registry.js');
+/* P11-3C：有界崩溃恢复。supervisor 是纯策略引擎（无 fs / 无进程 / 无 HTTP），
+   它只决定"该不该再试一次、隔多久、是不是已经锁死"；真正 spawn / kill / probe
+   仍然只发生在本文件里。因此恢复行为不需要靠真进程才能测，而有界性可以在没有
+   任何子进程的情况下被穷尽验证。 */
+const supervisorModule = require('./component-supervisor.js');
+
+/* 恢复策略（P11-3C）。有界由四道独立的闸门保证，任何一道都足以阻止无限重启：
+     maxAttempts     滑动窗口内允许的重启次数（有限值，supervisor 会强制夹紧）
+     windowMs        计数窗口：一个跑得久的组件不会因为"历史上崩过很多次"被锁死
+     base/capBackoff 指数退避，避免持续故障变成满 CPU 热循环
+     lockout         预算耗尽 → failed，本进程内**不再**自动重试，只有真实健康证据能解除
+   健康驱动的恢复额外要求连续 healthFailStreak 次探测失败：一次慢探测不能重启一个
+   正在正常工作的服务。 */
+const RECOVERY_POLICY = {
+  maxAttempts: 5,
+  windowMs: 10 * 60 * 1000,
+  baseBackoffMs: 1000,
+  maxBackoffMs: 60 * 1000,
+  healthFailStreak: 2
+};
+
+/* Advanced override, for an operator who wants a TIGHTER bound and for tests that
+   cannot wait minutes for a budget to exhaust. It is an env var because there is
+   no settings file for the runner, and it is safe to expose because the value can
+   only be clamped: the supervisor refuses a non-finite attempt count, caps
+   maxAttempts at HARD_MAX_ATTEMPTS and caps its own window. There is no value of
+   this variable that produces unbounded recovery. */
+function recoveryPolicyFromEnv(value, base) {
+  const t = String(value == null ? '' : value).trim();
+  if (!t) return base;
+  let given = null;
+  try { given = JSON.parse(t); } catch (e) { given = null; }
+  if (!given || typeof given !== 'object' || Array.isArray(given)) return base;
+  /* Only known keys are read; an unknown key is ignored rather than forwarded. */
+  const merged = Object.assign({}, base);
+  for (const key of Object.keys(base)) {
+    if (given[key] !== undefined) merged[key] = given[key];
+  }
+  return merged;
+}
+
+const RECOVERY_POLICY_ACTIVE = recoveryPolicyFromEnv(process.env.IB_RECOVERY_POLICY, RECOVERY_POLICY);
 
 /* Repository root == installed app root. This file lives in runtime/, so the
    root is one level up: the service scripts live in services/, the Windows
@@ -46,6 +88,20 @@ const children = [];
 /* Tracks the current live child per service name (restart uses the newest
    entry, not the first spawned, so repeated restarts stop the right one). */
 const currentChild = {};
+/* ── Supervisor wiring (P11-3C) ──
+ * One supervisor for this run. Registration is per managed service; eligibility to
+ * be recovered is NOT granted here — every event carries `restartable` straight
+ * from the registry, which is the only authorization for starting a process. */
+const supervisor = new supervisorModule.Supervisor({ policy: RECOVERY_POLICY_ACTIVE });
+let recoveryDisabled = false;
+/* Hoisted to the top on purpose: runRestart()'s finally block consults it, and a
+   `let` declared further down would be in its temporal dead zone if a restart
+   ever ran before that line. */
+let shuttingDown = false;
+/* Components currently being stopped on purpose. The health poll checks this so a
+   probe landing mid-stop cannot be read as a failure and start a recovery for a
+   component the runner is deliberately taking down. */
+const stopping = new Set();
 
 /* ── Silent backend restart (back-end lifecycle management) ──
  * A localhost-only control surface that restarts the Bridge (23115) and
@@ -116,6 +172,11 @@ function buildServiceSpec(component) {
     command: launch.command,
     commandArgs: launch.commandArgs || [],
     matchesHealth: component.matchesHealth,
+    /* Recovery authorization travels WITH the spec, taken from the registry at
+       construction time (P11-3C). Re-derived here rather than re-declared: there
+       is no second list of "which components may be restarted". */
+    restartable: component.restartable === true,
+    managedByRunner: component.managedByRunner === true,
     env: launch.env || {}
   };
 }
@@ -128,7 +189,13 @@ function servicesForRun() {
   return list.map(buildServiceSpec);
 }
 
-const SERVICES = servicesForRun();
+const SERVICES = servicesForRun().map(function (spec) {
+  /* A managed component that is NOT restartable (Vision today) is still
+     registered with the supervisor so its state is reported honestly; it simply
+     never receives an attempt, because every event carries restartable:false. */
+  supervisor.register(spec.componentId, spec.label || spec.name);
+  return spec;
+});
 
 /* The restart control plane's targets come from the registry, not from a second
    hand-written list. P11-3B fixed a real drift here: this used to be
@@ -222,8 +289,16 @@ function printStatus(rows, components) {
     for (const c of agg.components) {
       const detail = c.state === 'healthy' ? '' :
         (c.reason && c.reason.category ? ' · ' + c.reason.category : '');
+      /* Recovery axis (P11-3C): what the runner is doing about this component,
+         which is a different question from what the probe observed. Shown only
+         when this process owns the supervisor (a detached --json has none). */
+      const rec = c.recoveryState
+        ? ' · recover:' + c.recoveryState +
+          (c.restartCount ? '×' + c.restartCount : '') +
+          (c.recoveryLockedOut ? ' (locked out)' : '')
+        : '';
       console.log('    ' + String(c.id).padEnd(9) + String(c.state).padEnd(12) +
-        (c.affectsOverall ? '' : '(informational)') + detail);
+        (c.affectsOverall ? '' : '(informational)') + detail + rec);
     }
     console.log('  running: ' + (agg.running.join(',') || 'none') +
       ' · stopped: ' + (agg.stopped.join(',') || 'none') +
@@ -320,8 +395,16 @@ function waitPortFree(port, timeoutMs) {
 }
 
 async function stopService(service) {
-  /* 1. Runner-owned child (clean stop via child handle). */
+  /* 0. This stop is INTENTIONAL (P11-3C). Recording the intent before killing is
+        what lets the exit handler tell a deliberate stop apart from a crash —
+        without it, every shutdown and every control-plane restart would look like
+        a crash and would be "recovered" into a process nobody asked for. The
+        supervisor is told too, so the state is `stopped` rather than `recovering`. */
   const entry = currentChild[service.name];
+  stopping.add(service.componentId);
+  if (entry) entry.stopIntent = 'intentional';
+  supervisor.handle(service.componentId, supervisorModule.EVENT.STOP, { at: Date.now() });
+  /* 1. Runner-owned child (clean stop via child handle). */
   if (entry && !entry.exited && entry.child && !entry.child.killed) {
     try { entry.child.kill('SIGTERM'); } catch (e) { /* best effort */ }
   }
@@ -332,18 +415,21 @@ async function stopService(service) {
   for (const pid of pids) {
     if (await processMatchesService(pid, service)) await killPid(pid);
   }
-  appendRestartLog('stopping ' + service.name + ' (port ' + service.port + ')');
+  stopping.delete(service.componentId);
+  appendRestartLog('stopping ' + service.name + ' intentionally (port ' + service.port + ')');
 }
 
-/* ── Health aggregation (P11-3B · observation only) ──
+/* ── Health aggregation (P11-3B · live view) ──
  *
  * One live view over the registry: which components run, which are stopped,
  * which are in an error/conflict state, which are not enabled here, when this
  * view was built, and whether the runner itself owns a process for each one.
  *
- * Nothing in this section acts on a component. There is no automatic restart,
- * no retry loop and no recovery behaviour anywhere in P11-3B — a stopped
- * component is REPORTED as stopped and that is the whole behaviour.
+ * This section is still pure observation: it starts nothing, stops nothing and
+ * retries nothing. P11-3C's bounded recovery lives below (recoverService), not
+ * here — the view REPORTS what that does, and the supervisor is told about probe
+ * outcomes, but building a health view never causes an action. That separation is
+ * what makes /components safe to call from a diagnostics page.
  *
  * Two evidence sources are joined and both are reported, because they can
  * legitimately disagree:
@@ -387,7 +473,7 @@ async function componentHealth(component, rows, opts) {
     }, {});
     const note = row.owned
       ? (row.exits > 0
-        ? 'started by this runner; ' + row.exits + ' exit event(s) observed (P11-3B does not restart it)'
+        ? 'started by this runner; ' + row.exits + ' exit event(s) observed, recovery state above'
         : 'started by this runner')
       : (row.online ? 'reused: already running and not started by this runner' : null);
     return registry.componentReport(component, {
@@ -444,19 +530,55 @@ async function liveHealth(opts) {
   }
   const aggregated = registry.aggregate(components, { now: o.now });
   aggregated.checkedAt = aggregated.updatedAt;
+  /* Recovery state is answered ONLY by the process that owns the supervisor. A
+     detached `--json` invocation has no recovery state at all, so it reports the
+     four contract fields as null rather than claiming every component is
+     `stopped` — absence of knowledge must not be dressed up as knowledge. */
+  if (o.withRecovery !== false) {
+    for (const component of components) supervisor.decorate(component);
+  } else {
+    for (const component of components) {
+      component.recoveryState = null;
+      component.restartCount = null;
+      component.lastRestartAt = null;
+      component.lastFailureReason = null;
+    }
+  }
   return {
     ok: true,
     service: RESTART_SERVER_NAME,
     serviceState: shutdownState.requested ? 'shutting-down' : restartState.state,
     restartTargets: RESTART_TARGET_IDS.slice(),
-    warning: 'observation only: this view never restarts, retries or recovers anything',
+    /* The P11-3B wording ("nothing here ever recovers anything") stopped being
+       true in P11-3C, and a status view that lies about its own capabilities is
+       worse than one that is merely terse. The bound is stated instead. */
+    warning: 'recovery is bounded: restarts are budgeted, backed off and locked out; this view never starts or stops anything itself',
+    recovery: {
+      schema: supervisorModule.SCHEMA,
+      version: supervisorModule.VERSION,
+      policy: supervisor.policySnapshot(),
+      /* Reported per component only when this process owns the supervisor. */
+      observed: o.withRecovery !== false,
+      states: componentRecoverySummary(components)
+    },
     services: rows,
     components: components,
     aggregated: aggregated
   };
 }
+
+/* Counts by recovery state, so a caller can answer "is anything recovering or
+   locked out right now" without walking the component list. */
+function componentRecoverySummary(components) {
+  const summary = { healthy: 0, starting: 0, stopped: 0, recovering: 0, failed: 0 };
+  for (const c of components || []) {
+    const state = c.recoveryState;
+    if (state && Object.prototype.hasOwnProperty.call(summary, state)) summary[state] += 1;
+  }
+  return summary;
+}
 /* ── Restart state machine (idle → restarting → ready | failed) ── */
-const restartState = { state: 'idle', lastError: '', startedAt: 0 };
+const restartState = { state: 'idle', lastError: '', startedAt: 0, restartCount: 0, lastRestartAt: null };
 /* P7: a graceful stop requested through the control plane (installer upgrade /
    uninstall). Kept separate from the restart state so a stop can never be
    mistaken for an in-flight restart. */
@@ -466,11 +588,26 @@ function restartRunning() {
   return restartState.state === 'restarting';
 }
 
+/* P11-3C: an operator restart cycle is the control plane's; the supervisor's own
+   bounded recovery runs through recoverService() below and reports through the
+   health view instead. Keeping them apart is why a recovery attempt can never be
+   reported as a failed USER restart. */
+
 async function runRestart() {
   restartState.state = 'restarting';
   restartState.startedAt = Date.now();
   restartState.lastError = '';
   appendRestartLog('restart requested');
+  /* P11-3C: a control-plane restart takes every target down ON PURPOSE. Pending
+     automatic recoveries are dropped for the cycle (a scheduled attempt that
+     fired mid-restart would spawn a second process for a port the cycle is
+     already bringing up), and the exits it causes are marked intentional below,
+     so none of them is mistaken for a crash. Recovery resumes when the cycle
+     ends — it is suspended, never disabled for the life of the process. */
+  const resumeRecovery = recoveryDisabled === false;
+  recoveryDisabled = true;
+  recoveryGeneration += 1;
+  cancelRecoveryTimers();
   try {
     const targets = SERVICES.filter(s => RESTART_TARGET_IDS.indexOf(s.componentId) >= 0);
     /* stop → confirm old processes exit → release ports → start → health → ready */
@@ -486,12 +623,21 @@ async function runRestart() {
       if (!healthy) throw new Error(service.name + ' did not become healthy');
       appendRestartLog(service.name + ' ready');
     }
+    /* An operator restart is real recovery evidence: clear stale failure state,
+       but do NOT wipe the bounded attempt budget — a manual restart that keeps
+       failing must still hit the same wall as an automatic one. */
+    targets.forEach(function (service) { supervisor.noteOperatorRestart(service.componentId); });
+    for (const service of launched) supervisor.noteHealthy(service.componentId);
     restartState.state = 'ready';
+    restartState.restartCount += 1;
+    restartState.lastRestartAt = Date.now();
     appendRestartLog('restart complete');
   } catch (e) {
     restartState.state = 'failed';
     restartState.lastError = redact(String(e && e.message || e)).slice(0, 300);
     appendRestartLog('restart failed: ' + restartState.lastError);
+  } finally {
+    if (resumeRecovery && !shuttingDown) recoveryDisabled = false;
   }
 }
 
@@ -504,6 +650,11 @@ async function runRestart() {
  */
 async function runShutdown() {
   appendRestartLog('shutdown requested');
+  /* P11-3C: stop recovering FIRST. A graceful shutdown kills every child on
+     purpose, and without this the exit handler would read each of those deaths as
+     a crash and start restarting services the installer is trying to replace. */
+  recoveryDisabled = true;
+  cancelRecoveryTimers();
   try {
     for (const service of SERVICES) await stopService(service);
     for (const service of SERVICES) await waitPortFree(service.port, 10000);
@@ -512,6 +663,15 @@ async function runShutdown() {
   }
   appendRestartLog('shutdown complete');
   shutdown(0);
+}
+
+/* Drop every pending recovery attempt. Used by shutdown and by the control
+   plane's restart, both of which take components down on purpose. */
+function cancelRecoveryTimers() {
+  Object.keys(recoveryTimers).forEach(function (id) {
+    clearTimeout(recoveryTimers[id]);
+    delete recoveryTimers[id];
+  });
 }
 
 /* ── Restart control server (localhost-only; Origin guard) ── */function restartOriginAllowed(req) {
@@ -576,6 +736,25 @@ function startRestartServer() {
       });
       return;
     }
+    /* P11-3C · the supervisor's own record: per-component recovery state, the
+       attempt timestamps inside the budget window, and the lockout history. Read
+       only. This is why a component is `failed` rather than a guess from counters:
+       "5 attempts inside 10 minutes" is only explicable if the attempts themselves
+       are visible. No secrets: component ids, timestamps and reason strings that
+       were already redacted on the way in. */
+    if (req.method === 'GET' && url.pathname === '/recovery') {
+      sendJsonRes(res, 200, {
+        ok: true,
+        service: RESTART_SERVER_NAME,
+        schema: supervisorModule.SCHEMA,
+        version: supervisorModule.VERSION,
+        policy: supervisor.policySnapshot(),
+        bounded: true,
+        components: supervisor.snapshot(),
+        history: supervisor.history()
+      }, origin);
+      return;
+    }
     if (req.method === 'POST' && url.pathname === '/shutdown') {
       if (!restartOriginAllowed(req)) { sendJsonRes(res, 403, { ok: false, error: 'origin-denied' }, origin); return; }
       if (shutdownState.requested) { sendJsonRes(res, 202, { ok: true, state: 'shutting-down' }, origin); return; }
@@ -589,6 +768,16 @@ function startRestartServer() {
     if (req.method === 'POST' && url.pathname === '/restart') {
       if (!restartOriginAllowed(req)) { sendJsonRes(res, 403, { ok: false, error: 'origin-denied' }, origin); return; }
       if (restartRunning()) { sendJsonRes(res, 409, { ok: false, state: 'restarting', error: 'restart-in-progress' }, origin); return; }
+      /* The control plane answers BEFORE the initial start finishes (so /shutdown
+         stays reachable when a component cannot start), which means a restart can
+         arrive while that first pass is still spawning children. Refusing it for
+         that brief window is the honest answer — that pass IS a restart of
+         everything — but it must be brief: once every child has been spawned, the
+         pass is only waiting for them, and an operator restart can safely take
+         over (it stops what it started and starts again). Refusing for the whole
+         startup would make the button fail during exactly the situation it exists
+         to fix. */
+      if (!spawnPhaseComplete) { sendJsonRes(res, 409, { ok: false, state: 'starting', error: 'startup-in-progress' }, origin); return; }
       /* Fire-and-forget: the mutex is held for the whole run; UI polls /status. */
       runRestart();
       sendJsonRes(res, 202, { ok: true, state: 'restarting' }, origin);
@@ -618,8 +807,9 @@ function spawnService(service) {
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true
   });
-  /* Process tracking (P11-3B): this runner records WHAT IT STARTED. It is
-     observation data only — nothing here decides to restart anything. */
+  /* Process tracking (P11-3B): this runner records WHAT IT STARTED. P11-3C adds
+     the recovery signal on top of the same events — the supervisor is told about
+     an exit, and decides; nothing in this function decides anything by itself. */
   const entry = {
     service,
     componentId: service.componentId || null,
@@ -627,19 +817,42 @@ function spawnService(service) {
     pid: child.pid || null,
     startedAt: Date.now(),
     exits: 0,
-    exited: false
+    exited: false,
+    /* Set before a deliberate kill so the exit handler can tell a stop from a
+       crash. Absent means "nobody asked for this". */
+    stopIntent: null,
+    /* One failure signal per child life: a spawn error and an exit can both
+       arrive for the same dead child, and counting both would spend two budget
+       slots on one failure. */
+    failureReported: false
   };
   children.push(entry);
   currentChild[service.name] = entry;
   child.stdout.on('data', chunk => appendLog(service, 'out', chunk));
   child.stderr.on('data', chunk => appendLog(service, 'err', chunk));
-  child.on('error', error => appendLog(service, 'err', 'spawn failed: ' + error.message + '\n'));
+  child.on('error', error => {
+    appendLog(service, 'err', 'spawn failed: ' + error.message + '\n');
+    entry.failureReported = true;
+    onServiceFailure(service, {
+      spawnFailed: true,
+      reason: 'spawn failed: ' + (error && error.code ? error.code : 'unknown-error'),
+      code: null,
+      signal: null
+    });
+  });
   child.on('exit', (code, signal) => {
     entry.exited = true;
     entry.exitedAt = Date.now();
     entry.exitCode = code;
     entry.exits += 1;
-    appendLog(service, 'runner', 'stopped (code=' + code + ', signal=' + (signal || '') + ')\n');
+    const intentional = entry.stopIntent === 'intentional';
+    appendLog(service, 'runner', (intentional ? 'stopped intentionally' : 'exited unexpectedly') +
+      ' (code=' + code + ', signal=' + (signal || '') + ')\n');
+    /* An exit we asked for is not a failure, and must never be recovered — that
+       is how a control-plane restart would otherwise resurrect a service the
+       operator just took down. */
+    if (intentional || entry.failureReported) return;
+    onServiceFailure(service, { spawnFailed: false, code: code, signal: signal });
   });
   appendLog(service, 'runner', 'started pid=' + child.pid + '\n');
   return entry;
@@ -653,6 +866,191 @@ async function waitUntilHealthy(service, timeoutMs) {
     await new Promise(resolve => setTimeout(resolve, 300));
   }
   return false;
+}
+
+/* ── Bounded crash recovery (P11-3C) ──────────────────────────────────────
+ *
+ * The runner is the only thing that can act here: the supervisor decides, this
+ * section executes. Three signals can start a recovery, and all three converge
+ * on ONE function so they cannot acquire different limits:
+ *
+ *   · process_exit   the child this runner started died without being asked to
+ *   · spawn_failed   the OS refused to create the process at all
+ *   · health_fail     the child is alive but its own /health stopped answering
+ *
+ * Everything is bounded: the supervisor's sliding-window budget, its exponential
+ * backoff and its lockout. Once the budget is spent the component is `failed`
+ * and this process will not try again — the health view says so, and that is the
+ * whole behaviour. Nothing here ever retries in a loop of its own.
+ *
+ * Recovery is deliberately limited to components this runner STARTED. A healthy
+ * service running outside this runner is not ours to restart, and a port held by
+ * a foreign process is a conflict to report, not a crash to recover from.
+ */
+const recoveryTimers = {};
+/* Bumped every time a control-plane restart cycle takes over. A recovery attempt
+   that is already in flight (stopped the old process, spawned a new one, waiting
+   for health) cannot be called back by clearTimeout — it has to notice that the
+   world moved on and abandon its attempt instead of reporting a success for a
+   process the restart cycle is about to kill (P11-3C). */
+let recoveryGeneration = 0;
+/* False until the first start pass has spawned everything it is going to spawn.
+   The control plane answers during that pass, so it needs to know when spawning is
+   over — after that point the pass is only waiting, and an operator restart may
+   take over. */
+let spawnPhaseComplete = false;
+
+function onServiceFailure(service, detail) {
+  if (recoveryDisabled) return;
+  const decision = supervisor.handle(service.componentId, supervisorModule.EVENT.PROCESS_EXIT, {
+    restartable: service.restartable,
+    spawnFailed: detail.spawnFailed === true,
+    code: detail.code,
+    signal: detail.signal,
+    reason: detail.reason,
+    at: Date.now()
+  });
+  appendRestartLog(service.name + ' failure → ' + decision.action + ' (' + String(decision.reason || '').slice(0, 160) + ')');
+  if (decision.action === 'retry') scheduleRecovery(service);
+}
+
+function scheduleRecovery(service) {
+  if (recoveryDisabled) return;
+  const view = supervisor.describe(service.componentId);
+  if (!view) return;
+  /* One pending attempt per component. A second crash signal must not queue a
+     second recovery on top of the one already waiting. */
+  if (recoveryTimers[service.componentId]) return;
+  const delay = Math.max(0, Number(view.nextAttemptAt || 0) - Date.now());
+  recoveryTimers[service.componentId] = setTimeout(function () {
+    delete recoveryTimers[service.componentId];
+    recoverService(service).catch(function (e) {
+      appendRestartLog(service.name + ' recovery error: ' + redact(String(e && e.message || e)).slice(0, 200));
+    });
+  }, delay);
+  if (delay > 0) appendRestartLog(service.name + ' recovery scheduled in ' + delay + 'ms');
+}
+
+async function recoverService(service) {
+  if (recoveryDisabled || stopping.has(service.componentId)) return;
+  /* The control plane may be mid-restart. Its own cycle will bring this
+     component up; competing with it would mean two processes for one port. */
+  if (restartRunning()) {
+    appendRestartLog(service.name + ' recovery deferred: a restart cycle is in progress');
+    scheduleRecovery(service);
+    return;
+  }
+  /* The budget is checked by the supervisor, not here: this is the only place a
+     recovery attempt can be authorized. */
+  const authorization = supervisor.authorizeAttempt(service.componentId);
+  if (!authorization.allowed) {
+    supervisor.handle(service.componentId, supervisorModule.EVENT.BUDGET_EXHAUSTED, {
+      reason: service.name + ': no recovery attempt authorized (' + authorization.reason + ')'
+    });
+    appendRestartLog(service.name + ' recovery refused: ' + authorization.reason);
+    return;
+  }
+
+  const entry = currentChild[service.name];
+  if (entry && !entry.exited && entry.child && !entry.child.killed) {
+    /* Alive but unhealthy: take it down through the verified stop path (which
+       also marks the exit intentional, so this stop is not itself recovered). */
+    appendRestartLog(service.name + ' alive but unhealthy; stopping it before restart');
+    await stopService(service);
+    await waitPortFree(service.port, 8000);
+  }
+
+  /* Burn the budget slot here — immediately before the real attempt — so a
+     decision that never became a process cannot consume the budget. The attempt
+     number is read BEFORE noteAttempt, so the FIRST attempt logs "1/3" rather than
+     "0/3"/"2/3"; a log that off-by-ones its own budget is a log nobody can use to
+     explain a lockout. */
+  const attemptNumber = supervisor.describe(service.componentId).attemptsInWindow + 1;
+  supervisor.noteAttempt(service.componentId);
+  appendRestartLog(service.name + ' recovery attempt ' + attemptNumber + '/' +
+    RECOVERY_POLICY_ACTIVE.maxAttempts);
+  const generation = recoveryGeneration;
+  const newEntry = spawnService(service);
+  const healthy = await waitUntilHealthy(service, service.componentId === 'vision' ? 120000 : 20000);
+
+  /* A control-plane restart began while this attempt was waiting. That cycle owns
+     the component now: this attempt must record NOTHING (a success would count a
+     restart the supervisor never made, and a failure would spend a budget slot on
+     a process the operator deliberately replaced). */
+  if (generation !== recoveryGeneration || recoveryDisabled || shuttingDown) {
+    appendRestartLog(service.name + ' recovery attempt abandoned: a control-plane restart took over');
+    return;
+  }
+
+  if (healthy) {
+    const decision = supervisor.handle(service.componentId, supervisorModule.EVENT.RESTART_SUCCESS, {
+      restartable: service.restartable,
+      trigger: supervisor.describe(service.componentId).lastTrigger || supervisorModule.TRIGGER.PROCESS_EXIT,
+      at: Date.now()
+    });
+    appendRestartLog(service.name + ' recovered (pid=' + newEntry.pid + ', ' + decision.action + ')');
+    return;
+  }
+
+  const death = currentChild[service.name];
+  const decision = supervisor.handle(service.componentId, supervisorModule.EVENT.RESTART_FAILED, {
+    restartable: service.restartable,
+    reason: service.name + ' did not become healthy after recovery attempt ' + attemptNumber + '/' +
+      RECOVERY_POLICY_ACTIVE.maxAttempts +
+      (death && death.exited ? ' (process exited, code=' + death.exitCode + ')' : ' (process alive, port silent)'),
+    at: Date.now()
+  });
+  appendRestartLog(service.name + ' recovery attempt failed → ' + decision.action +
+    (decision.inMs ? ' in ' + decision.inMs + 'ms' : '') +
+    ' (' + String(decision.reason || '').slice(0, 160) + ')');
+  if (decision.action === 'retry') scheduleRecovery(service);
+}
+
+/* ── Health-driven recovery ───────────────────────────────────────────────
+ *
+ * A child can be alive with a dead port (a wedged event loop, a failed bind, a
+ * half-initialised server). No exit event ever fires, so without this poll that
+ * component would sit there forever reported unhealthy and never recovered.
+ *
+ * Two guards keep the poll from acting on noise: it only ever probes components
+ * THIS runner started and is not currently stopping, and the supervisor requires
+ * two consecutive failed probes before it will treat it as a failure. */
+async function healthWatchOnce() {
+  if (recoveryDisabled) return;
+  for (const service of SERVICES) {
+    /* eslint-disable no-await-in-loop -- bounded: one probe per runner-owned
+       component, and serial probing keeps a degraded port cheap to diagnose. */
+    if (stopping.has(service.componentId)) continue;
+    if (restartRunning()) continue;
+    const entry = currentChild[service.name];
+    if (!entry || entry.exited) continue;
+    const row = await serviceStatus(service);
+    if (row.online) {
+      supervisor.noteHealthy(service.componentId);
+      continue;
+    }
+    const decision = supervisor.handle(service.componentId, supervisorModule.EVENT.HEALTH_FAIL, {
+      restartable: service.restartable,
+      reason: service.name + ' is running (pid=' + (row.pid || '?') + ') but its health endpoint is not answering',
+      at: Date.now()
+    });
+    if (decision.action === 'retry') {
+      appendRestartLog(service.name + ' health failure → recover');
+      scheduleRecovery(service);
+    }
+  }
+}
+
+function startHealthWatch() {
+  /* Deliberately slow and unref'd: this is recovery, not monitoring. It also
+     never keeps the process alive on its own. */
+  const timer = setInterval(function () {
+    healthWatchOnce().catch(function (e) {
+      appendRestartLog('health watch error: ' + redact(String(e && e.message || e)).slice(0, 200));
+    });
+  }, 6000);
+  timer.unref();
+  return timer;
 }
 
 async function startServices() {
@@ -673,17 +1071,36 @@ async function startServices() {
     spawnService(service);
     launched.push(service);
   }
+  /* Every child this pass is going to spawn now exists. From here the pass only
+     WAITS, so an operator restart may take over (see the /restart handler). */
+  spawnPhaseComplete = true;
   for (const service of launched) {
     const healthy = await waitUntilHealthy(service, service.componentId === 'vision' ? 120000 : 15000);
+    /* The supervisor's own state must match reality at boot: a service that came
+       up healthy is `healthy`, and a service that did not is a failure the
+       bounded policy gets to act on (which is how a component whose first start
+       lost a race with its port ends up recovered instead of sitting dead). */
+    if (healthy) supervisor.noteHealthy(service.componentId);
     console.log('[runner] ' + service.name + (healthy ? ' is ready.' : ' did not become healthy yet; inspect its log.'));
   }
+  /* Components that were already running and belong to somebody else are
+     registered as healthy observers — this runner never restarts them. */
   const rows = await allStatus();
+  rows.forEach(function (row) {
+    const spec = SERVICES.find(s => s.name === row.name);
+    if (spec && row.online && !row.owned) supervisor.noteHealthy(spec.componentId);
+  });
   printStatus(rows, await liveHealth({ rows: rows, probeWeb: args.has('--probe-web') }));
+  startHealthWatch();
 }
 
 function stopChildren() {
   children.forEach(entry => {
     if (entry.exited || !entry.child || entry.child.killed) return;
+    /* Marked intentional for the same reason as stopService: a shutdown must not
+       look like a crash to the supervisor (P11-3C). */
+    entry.stopIntent = 'intentional';
+    if (entry.componentId) supervisor.handle(entry.componentId, supervisorModule.EVENT.STOP, { at: Date.now() });
     try { entry.child.kill('SIGTERM'); } catch (e) { /* best effort */ }
   });
 }
@@ -703,10 +1120,12 @@ function installInteractiveControls() {
   });
 }
 
-let shuttingDown = false;
 function shutdown(code) {
   if (shuttingDown) return;
   shuttingDown = true;
+  /* P11-3C: this process is ending, so nothing may be recovered any more. */
+  recoveryDisabled = true;
+  cancelRecoveryTimers();
   console.log('\n[runner] Stopping services started by this runner…');
   stopChildren();
   setTimeout(() => process.exit(code), 1200).unref();
@@ -716,12 +1135,21 @@ async function main() {
   if (statusOnly) {
     const rows = await allStatus();
     /* --status / --json always answers the component question, because that is
-       what every other tool now consumes. */
-    printStatus(rows, await liveHealth({ rows: rows, probeWeb: args.has('--probe-web') }));
+       what every other tool now consumes. It answers the RECOVERY question as
+       null: this invocation is not the process that owns the supervisor, so it
+       has no recovery state to report (P11-3C). */
+    printStatus(rows, await liveHealth({ rows: rows, probeWeb: args.has('--probe-web'), withRecovery: false }));
     return;
   }
-  await startServices();
+  /* The control plane comes up BEFORE the services (P11-3C). It used to start
+     only after every service reported healthy, which meant a single component
+     that could never become healthy left the runner with no /status, no
+     /components, no /restart and — the one that actually hurts — no /shutdown:
+     an install could not be upgraded or uninstalled because the runner would not
+     answer. The health view is honest during startup (components are `starting`),
+     and the supervisor needs no service to be up in order to report. */
   startRestartServer();
+  await startServices();
   installInteractiveControls();
 }
 
