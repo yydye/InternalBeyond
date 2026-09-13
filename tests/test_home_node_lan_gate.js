@@ -21,6 +21,11 @@
      D · LAN 绑定 + **未配置**桌面 token（默认安装的真实形态）→ 桌面面在 LAN 上
          整片 403（否则等于把签发配对凭据和撤销设备的能力送给整个局域网），
          而 /mobile/v1/* 仍然只认 device token —— 手机因此仍能配对成功。
+         P11-3A 收紧：**本机 loopback 上，凭据铸造面也不再默认放行**。
+         原先这里断言"loopback 无 token 照常创建配对会话"—— 那条断言描述的
+         正是被修的缺陷本身（本机任意进程都能铸造 device token）。现在改为：
+         无 token 时 loopback 上同样 403 desktop-token-required；配了 token 之后
+         整条配对链（create → complete → 设备面可用）仍然完整可用。
    ==================================================================== */
 const fs = require('fs');
 const os = require('os');
@@ -416,25 +421,104 @@ function logLines(out, pattern) {
         dPublish.status === 403 && dPublish.body.error === 'remote-admin-disabled',
         { status: dPublish.status, body: dPublish.body });
 
-      /* 手机路径不受影响：配对会话由桌面在 loopback 上创建（默认安装无需 token）。 */
-      const session = await request('127.0.0.1', dPort, 'POST', '/pairing/session', { body: { deviceName: 'Phone', deviceType: 'android' } });
-      const payload = session.body && session.body.payload;
-      check('D3 loopback 上（无桌面 token）照常创建配对会话', session.status === 200 && !!payload, session.body);
-      const dComplete = await request(REMOTE, dPort, 'POST', '/mobile/v1/pairing/complete', {
-        body: { v: 1, payload: { pairingId: payload.pairingId, secret: payload.secret, deviceName: 'Phone', deviceType: 'android' } }
-      });
-      const dToken = dComplete.body && dComplete.body.payload && dComplete.body.payload.token;
-      check('D3 未配置桌面 token 的安装，手机仍能从 LAN 完成配对',
-        dComplete.status === 200 && !!dToken, { status: dComplete.status, body: dComplete.body });
-      const dList = await request(REMOTE, dPort, 'GET', '/mobile/v1/character/list', { headers: { Authorization: 'Bearer ' + dToken } });
-      check('D3 未配置桌面 token 的安装，手机仍能从 LAN 读角色目录',
-        dList.status === 200 && dList.body.ok === true, { status: dList.status, body: dList.body });
+      /* P11-3A：**本机 loopback 上也不再有豁免**。这一条是本测试里唯一
+         能证明"凭据铸造面不靠 loopback 私密性"的断言；把它删掉，整份文件就
+         只剩远端规则，而远端规则早在 P11-3A 之前就已经存在了。 */
+      const dPairNoToken = await request('127.0.0.1', dPort, 'POST', '/pairing/session', { body: { deviceName: 'Phone', deviceType: 'android' } });
+      check('D3 loopback 上未配置 token 时**不得**创建配对会话（否则本机任意进程都能铸造 device token）',
+        dPairNoToken.status === 403 && dPairNoToken.body.error === 'desktop-token-required',
+        { status: dPairNoToken.status, body: dPairNoToken.body });
+      const dDevicesNoToken = await request('127.0.0.1', dPort, 'GET', '/devices');
+      check('D3 loopback 上未配置 token 时不得列设备 / 撤销设备',
+        dDevicesNoToken.status === 403 && dDevicesNoToken.body.error === 'desktop-token-required',
+        { status: dDevicesNoToken.status, body: dDevicesNoToken.body });
+      const dRevokeNoToken = await request('127.0.0.1', dPort, 'POST', '/device/revoke', { body: { deviceId: 'x' } });
+      check('D3 loopback 上未配置 token 时不得撤销设备',
+        dRevokeNoToken.status === 403 && dRevokeNoToken.body.error === 'desktop-token-required',
+        { status: dRevokeNoToken.status, body: dRevokeNoToken.body });
+      /* 读取类路径**有意保持** loopback 匿名可用（既有 D1 风险接受，P11-3A 不动它）。
+         断言它是为了把"我们接受了什么"钉在测试里，而不是让它随时间漂移。 */
+      const dStatusLoopback = await request('127.0.0.1', dPort, 'GET', '/status');
+      check('D3（如实记录残留暴露）loopback 读取类路径在未配置 token 时仍匿名可用 —— 这是被有意接受的既有风险，不是本阶段的修复目标',
+        dStatusLoopback.status === 200 && dStatusLoopback.body.ok === true,
+        { status: dStatusLoopback.status });
+      /* 目录**发布**是凭据以外的第二类特权：它决定手机能看见哪些角色。 */
+      const dPublishLoopback = await request('127.0.0.1', dPort, 'POST', '/characters/publish', { body: { characters: [{ id: 'x', name: 'x' }] } });
+      check('D3 loopback 上未配置 token 时不得发布角色目录（它决定手机能看见谁）',
+        dPublishLoopback.status === 403 && dPublishLoopback.body.error === 'desktop-token-required',
+        { status: dPublishLoopback.status, body: dPublishLoopback.body });
+      const dSecurityD = await request('127.0.0.1', dPort, 'GET', '/security');
+      check('D3 /security 如实报告凭据铸造面已关闭、且列出仍匿名可读的路径',
+        dSecurityD.body && dSecurityD.body.credentialMintingPaths &&
+        dSecurityD.body.credentialMintingPaths.enabled === false &&
+        Array.isArray(dSecurityD.body.loopbackReadableWithoutToken),
+        dSecurityD.body && dSecurityD.body.credentialMintingPaths);
     } catch (error) {
       failed++;
       console.error('FAIL D 段异常终止 — ' + String((error && error.stack) || error));
     } finally {
       await stopService(dSvc);
       dropDir(dDir);
+    }
+  }
+
+  /* ══ E · P11-3A 的正向面：配了桌面 token 之后整条配对链仍然完整 ══════
+     这一段的唯一目的是证明"修安全"没有"修坏功能"：create → complete →
+     设备面可用，全部在**未绑定 LAN**（默认 loopback 绑定）的安装形态下完成。
+     D 段证明门关着，E 段证明钥匙能开门 —— 缺任何一段，这次改动都不成立。 */
+  {
+    const eDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-langate-token-'));
+    const ePort = await freePort();
+    const EADMIN = 'p11-3a-desktop-token';
+    const eSvc = spawnService({
+      IB_HOME_NODE_PORT: String(ePort),
+      IB_HOME_NODE_DATA_DIR: eDir,
+      IB_HOME_NODE_TOKEN: EADMIN
+    });
+    const eAuth = { 'X-IB-Home-Token': EADMIN };
+    try {
+      const health = await waitForHealth(ePort, 15000);
+      check('E1 配了桌面 token 的安装照常启动', !!(health && health.ok === true), eSvc.out.slice(-300));
+
+      const session = await request('127.0.0.1', ePort, 'POST', '/pairing/session', { headers: eAuth, body: { deviceName: 'Phone', deviceType: 'android' } });
+      const payload = session.body && session.body.payload;
+      check('E2 带正确 token → loopback 上创建配对会话成功（P11-3A 之前的行为逐字保留）',
+        session.status === 200 && !!payload && !!payload.pairingId, { status: session.status, body: session.body });
+
+      const complete = await request('127.0.0.1', ePort, 'POST', '/mobile/v1/pairing/complete', {
+        body: { v: 1, payload: { pairingId: payload.pairingId, secret: payload.secret, deviceName: 'Phone', deviceType: 'android' } }
+      });
+      const token = complete.body && complete.body.payload && complete.body.payload.token;
+      check('E3 配对完成并签发 device token（Android 配对流程完整保留）',
+        complete.status === 200 && !!token, { status: complete.status, body: complete.body });
+
+      const handshake = await request('127.0.0.1', ePort, 'GET', '/mobile/v1/handshake', { headers: { Authorization: 'Bearer ' + token } });
+      check('E4 签发的 device token 可用（设备面没被这次收紧波及）',
+        handshake.status === 200 && handshake.body.ok === true, { status: handshake.status });
+
+      const devices = await request('127.0.0.1', ePort, 'GET', '/devices', { headers: eAuth });
+      const list = devices.body && devices.body.payload && devices.body.payload.devices;
+      check('E5 带正确 token → 能列出刚配对的设备',
+        devices.status === 200 && Array.isArray(list) && list.length === 1, { status: devices.status, body: devices.body });
+
+      /* 反向：**错误**的 token 不得开启凭据铸造面（本阶段的核心不变式）。 */
+      const wrong = await request('127.0.0.1', ePort, 'POST', '/pairing/session', { headers: { 'X-IB-Home-Token': 'not-the-token' }, body: { deviceName: 'X' } });
+      check('E6 错误的桌面 token → 401（不是"有 token 就放行"）',
+        wrong.status === 401 && wrong.body.error === 'unauthenticated', { status: wrong.status, body: wrong.body });
+      const wrongRevoke = await request('127.0.0.1', ePort, 'POST', '/device/revoke', { headers: { 'X-IB-Home-Token': 'not-the-token' }, body: { deviceId: 'x' } });
+      check('E6 错误的桌面 token 同样不得撤销设备',
+        wrongRevoke.status === 401, { status: wrongRevoke.status });
+      /* 无 token 也不得开启 —— 与 D3 同款，但这里 store 是好的、token 是配的，
+         所以它证明的是"缺失凭据"而不是"系统坏了"。 */
+      const none = await request('127.0.0.1', ePort, 'POST', '/pairing/session', { body: { deviceName: 'X' } });
+      check('E6 不带桌面 token → 401（凭据已配置时没有豁免路径）',
+        none.status === 401, { status: none.status, body: none.body });
+    } catch (error) {
+      failed++;
+      console.error('FAIL E 段异常终止 — ' + String((error && error.stack) || error));
+    } finally {
+      await stopService(eSvc);
+      dropDir(eDir);
     }
   }
 

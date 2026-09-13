@@ -703,6 +703,10 @@ if (require.main === module) {
       tokenRequired: !!TOKEN, loopbackOnly: !remoteOpen,
       /* 如实区分三种状态：只服务本机 / 远端可达但每次都要设备 token / 远端一律拒绝。 */
       remoteClients: LOOPBACK_BIND ? 'refused (loopback bind)' : (remoteOpen ? 'device-token-required' : 'refused (' + authState.reason + ')'),
+      /* P11-3A：凭据铸造面（配对 / 设备 / 目录发布）在未配置桌面 token 时是关的。
+         把这件事写进启动日志，是为了让"为什么配对用不了"有一个可查的答案，
+         而不是让用户对着一个 403 猜。 */
+      credentialMinting: TOKEN ? 'enabled (desktop token configured)' : 'disabled (set IB_HOME_NODE_TOKEN to enable pairing)',
       mobileGateway: '/mobile/v1', deviceAuth: 'per-device'
     });
   });

@@ -22,8 +22,13 @@
        交给整个局域网；
      · 若设置了 home-node token（IB_HOME_NODE_TOKEN 或 config），则**所有**
        请求都必须携带；
-     · 未设置 token 时按 loopback 单用户模型放行，但**不**回显 CORS 头给任意
-       Origin —— 只允许无 Origin（原生请求 / 同源 fetch）与显式白名单 Origin。
+     · **凭据铸造面在 loopback 上也不再默认放行**（P11-3A）：`/pairing/session`、
+       `/mobile/v1/pairing/complete`、`/devices`、`/device/revoke`、
+       `/characters/publish`、`/characters` 这些"签发或撤销凭据 / 改设备可见目录"
+       的路径，在未配置桌面 token 时一律 403 `desktop-token-required`。
+       未配置 token 时按 loopback 单用户模型放行只适用于**读取类**路径，但**不**
+       回显 CORS 头给任意 Origin —— 只允许无 Origin（原生请求 / 同源 fetch）
+       与显式白名单 Origin。
    ==================================================================== */
 'use strict';
 
@@ -177,8 +182,39 @@ function createHomeNodeHttp(deps) {
     });
   }
 
+  /* ── 凭据铸造面（P11-3A）────────────────────────────────────────────
+     这些路径**签发或撤销凭据**，或改变设备的可见目录。它们与"读自己的数据"
+     不是同一类风险：读泄露一次；铸造出来的 device token 在撤销之前一直有效，
+     而且能走完整条设备面。
+
+     为什么它们不能再靠 loopback 私密性保护：`isLoopback()` 证明的是
+     "请求来自本机网络栈"，而不是"来自桌面产品"。本机上任何用户态进程 ——
+     脚本、扩展、另一个应用 —— 都能连上 loopback，因此"未配置 token 就放行"
+     等于把签发配对凭据的能力交给本机每一个进程。实测（.dsh-research/
+     p11-3a-probe.js）：无 Origin 的本地进程 POST /pairing/session 拿到 secret，
+     再 POST /mobile/v1/pairing/complete 即拿到 device token。
+
+     因此本面要求**已配置的桌面 token**。未配置时不是"放行"，也不是
+     "401 请带凭据再来"（不存在任何能奏效的凭据），而是 403 + 一条可执行的
+     指路：设置 IB_HOME_NODE_TOKEN。这与远端那条 `remote-admin-disabled`
+     的写法同源 —— 缺凭据就明说缺什么，而不是给一个永远失败的入口。 */
+  const CREDENTIAL_MINTING_PATHS = [
+    '/pairing/session', '/devices', '/device/revoke', '/characters/publish'
+  ];
+  function isCredentialMintingPath(path) {
+    if (CREDENTIAL_MINTING_PATHS.indexOf(path) >= 0) return true;
+    /* 设备面里**唯一**不需要 device token 的端点：它的凭据就是 pairing secret，
+       所以它本身就是凭据铸造端点，必须与 /pairing/session 同门。 */
+    return path === '/mobile/v1/pairing/complete';
+  }
+  function credentialMintingBlocked(path) {
+    if (token) return false;
+    return isCredentialMintingPath(path);
+  }
+
   /* token 只在「配置了 token」时才强制 —— 默认安装（loopback 单用户）保持零门槛，
-     与 D1 的风险接受范围一致；一旦用户显式设置 token，则没有豁免路径。 */
+     与 D1 的风险接受范围一致；一旦用户显式设置 token，则没有豁免路径。
+     P11-3A 收紧了上面那一段"零门槛"的适用范围：凭据铸造面不再包含在内。 */
   function authorized(req, url) {
     if (!token) return true;
     const headerToken = req.headers['x-ib-home-token'] || '';
@@ -231,6 +267,20 @@ function createHomeNodeHttp(deps) {
         bad(res, 401, 'unauthenticated', null, req);
         return;
       }
+    }
+
+    /* ── 凭据铸造面（P11-3A）：loopback 上也不再默认放行 ──────────────────
+       放在这里而不是 `authorized()` 里，是因为它们要用**不同的状态码与理由**：
+       `authorized()` 的 401 语义是"带上凭据再来"，而这里在未配置 token 时
+       根本不存在能奏效的凭据 —— 给 401 会让调用方以为补一个头就能过。
+       顺序也刻意在远端规则**之后**：远端未配置 token 时已经 403
+       `remote-admin-disabled`，那条理由更先成立、也更准确。 */
+    if (credentialMintingBlocked(path)) {
+      record('warn', 'rejected-credential-minting', { path: path, remote: !!remote, reason: 'no-desktop-token-configured' });
+      bad(res, 403, 'desktop-token-required', {
+        hint: 'set IB_HOME_NODE_TOKEN to enable pairing and device management'
+      }, req);
+      return;
     }
 
     /* ── 委派：Mobile Gateway + 桌面配对/设备管理（M1-B）────────────────
@@ -303,6 +353,23 @@ function createHomeNodeHttp(deps) {
         loopbackOnly: !allowed,
         allowRemote: allowed,
         tokenRequired: !!token,
+        /* ── P11-3A：诚实地把"残余暴露"也说出来 ─────────────────────────
+           改这条之前这里只报告 tokenRequired，读者很容易得出"没配 token 就
+           什么都没保护、配了就全保护"的二分结论，而真实形状是三类：
+             · credentialMintingPaths：**永远**要求桌面 token（未配置即 403）；
+             · loopbackReadablePaths：loopback 上未配置 token 时仍可匿名读
+               （既有 D1 风险接受，P11-3A 有意不动它，留待 P12）；
+             · 远端：未配置 token 时整片 403。
+           把第三类写成可检查的字段，是为了让"我们到底接受了什么风险"能被
+           断言与审计，而不是继续藏在注释里。 */
+        credentialMintingPaths: {
+          requiresDesktopToken: true,
+          enabled: !!token,
+          paths: CREDENTIAL_MINTING_PATHS.concat(['/mobile/v1/pairing/complete']),
+          whenTokenMissing: '403 desktop-token-required'
+        },
+        loopbackReadableWithoutToken: ['/status', '/meta', '/security', '/list', '/changes',
+          '/message', '/messages', '/verify', '/migration', '/migrate', '/characters'],
         corsAllowlist: allowedOrigins,
         exposes: ['chat-store', 'character-turn', 'mobile-gateway', 'memory-store'],
         /* M1-C.2d Wave 2 的诚实更新：Home Node **现在确实存储** canonical
