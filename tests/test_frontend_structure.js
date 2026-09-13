@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 
 /* 前端静态回归：编码、拆分资源、入口语义、设计变量与内联样式预算。 */
 const fs = require('fs');
@@ -436,12 +436,18 @@ const mbP11cSideEffectKeys = ['middleBrainSideEffectAllowed'];
 /* P11-2D · Integrity Observability：门面追加两个**只读**诊断读取键（integrity 层所有、门面转发），
    刻意不挂 window 兼容别名 —— 可观测性读取不应新增散落全局依赖。 */
 const mbP11dObservabilityKeys = ['middleBrainSideEffectSuppression', 'MB_CI_SUPPRESSION_CATEGORIES'];
-const mbP11Keys = ['middleBrainExecute'].concat(mbP11IntegrityKeys).concat(mbP12ImageKeys).concat(mbP21ReasoningKeys).concat(mbP11cSideEffectKeys).concat(mbP11dObservabilityKeys);
+/* P11-2F · 群聊记忆边界：门面追加的**只读判定**键（integrity 层所有、门面转发）。
+   群聊拿不到裁定状态，因此这里导出的是纯分类器与三张冻结枚举表，而不是又一个闸门；
+   同样**不挂** window 兼容别名 —— 群聊路径不得把政策实现复制到自己那一侧。 */
+const mbP11fGroupKeys = ['middleBrainGroupMemoryPolicy', 'middleBrainGroupMemoryPolicyAvailable',
+  'MB_GROUP_MEMORY_SCOPE', 'MB_GROUP_MEMORY_WRITABLE_SCOPE', 'MB_GROUP_MEMORY_DENY'];
+const mbP11Keys = ['middleBrainExecute'].concat(mbP11IntegrityKeys).concat(mbP12ImageKeys).concat(mbP21ReasoningKeys).concat(mbP11cSideEffectKeys).concat(mbP11dObservabilityKeys).concat(mbP11fGroupKeys);
 mbP11IntegrityKeys.forEach(k => mbPublicExpected.push(k));
 mbP12ImageKeys.forEach(k => mbPublicExpected.push(k));
 mbP21ReasoningKeys.forEach(k => mbPublicExpected.push(k));
 mbP11cSideEffectKeys.forEach(k => mbPublicExpected.push(k));
 mbP11dObservabilityKeys.forEach(k => mbPublicExpected.push(k));
+mbP11fGroupKeys.forEach(k => mbPublicExpected.push(k));
 const mbPublicPairs = [...mbText.matchAll(/^\s*\['(\w+)', '(\w+)'\],?$/gm)].map(m => [m[1], m[2]]);
 check('middleBrain.publicApiContract', JSON.stringify(mbPublicPairs.map(p => p[0])) === JSON.stringify(mbPublicExpected),
   'IB.middleBrain 公共 API 内容/顺序变化: ' + mbPublicPairs.map(p => p[0]).join(','));

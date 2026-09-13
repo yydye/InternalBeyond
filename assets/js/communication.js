@@ -1815,6 +1815,13 @@ async function sendChatMessage(voiceMsg){
     let _gWsFirstTurn=true;
     for(const cfg of speakingCfgs){/* 静默模式：静默成员本轮不参与 */
       const selfName=cfg.nickname||cfg.model;
+      /* P11-2F · 群聊运行时可观测：**每个发言成员各自一条 trace 记录**，
+         与单聊一致地在回合开始处 begin（键 = 该成员的角色 id）。
+         注意顺序：`_mbTraceNote` 在"没有 begin 过的记录"上是静默 no-op，
+         因此这些字段必须在 begin **之后**写；写在循环之前会整片丢失。
+         判定结果字段（policyDecision / blockedReason）由记忆指令消费点补写。 */
+      _mbTrace.begin('group',cfg.id);
+      _mbGroupTraceContext(_targetFriend,cfg.id,memberCfgs,selfName);
       const _gvNative=_vmAudioNative(cfg)&&(_vtSg.direct!==false);/* 本成员能否直接听音频原声 */
       const _gStreamOk=cfg.streaming!==undefined?!!cfg.streaming:!!(PROVIDERS[cfg.provider]&&PROVIDERS[cfg.provider].streaming);
       /* 非流式：typing指示器 */
@@ -1988,11 +1995,31 @@ async function sendChatMessage(voiceMsg){
         groupThinking=gParts.reasoning_content;
         let cleanReply=sanitizeGroupReply(gParts.content,selfName,allNames);
         let reply=cleanReply;
-        /* AUTO MEMORY（群聊）：截取并执行本成员的 mem_* 指令，操作者标注为发言成员 */
+        /* AUTO MEMORY（群聊）：截取并执行本成员的 mem_* 指令，操作者标注为发言成员。
+           P11-2F · 记忆边界：写入目标域必须经 integrity 层的群聊政策判定才可落地。
+           判据（scope × kind × 角色域）全部在政策本体里，这里只负责交参数与执行；
+           被拒的指令**不执行**，并留下一条 trace（blockedReason）。
+           注：群聊不经过 Character Integrity，故 _mbVerdict 恒为 null；
+           这**不改变**既有执行行为，只是把"这一轮没有裁定可问"如实标成 unverified。 */
         var _gMemR=[];
         reply=await _applyWithdraw(cfg,reply,_targetFriend,selfName);
         {const _gmp=_parseMemOps(reply);
-         if(_gmp.ops.length){reply=_gmp.clean;if(amEnabled(cfg))_gMemR=await _execMemOps(_gmp.ops,cfg,selfName)}}
+         if(_gmp.ops.length){
+           reply=_gmp.clean;
+           /* scopeOf 由**被判定操作自己的 kind** 决定（当前三个 kind 全是角色私有记忆写入）；
+              政策本体同时校验 cfg.id 是不是 group_* —— 群 id 冒充角色域时一律拒，
+              否则全部成员的私有记忆会塌缩进同一个 friendId。 */
+           const _gScopeOf=function(_op){return _mbSecGroupScope()};
+           const _gAllowed=[],_gBlocked=[];
+           _gmp.ops.forEach(function(_op,i){
+             const _d=_mbGroupMemPolicy(_gScopeOf(_op),(_op&&_op.kind)||'',cfg&&cfg.id);
+             if(_d.allowed===true)_gAllowed.push({op:_op,at:i});
+             else _gBlocked.push(_d);
+           });
+           if(_gAllowed.length&&amEnabled(cfg))_gMemR=await _execMemOps(_gAllowed.map(x=>x.op),cfg,selfName);
+           /* 拦截留下 trace：逐条原因，但绝不记正文 / id / 昵称 */
+           _gBlocked.forEach(function(_d){_mbGroupTraceBlock(cfg.id,_d)});
+         }}
         /* 群聊同样支持工作区：按顺序执行操作，操作者标注为发言成员 */
         var _gws=_parseWsOps(reply),_gwsR=[];
         if(_gws.ops.length){try{_gwsR=await _execWsOps(_gws.ops,selfName,cfg,{source:'chat',friendId:_targetFriend,senderName:selfName,threadId:_targetThread||''})}catch(e){}}
@@ -2036,6 +2063,7 @@ async function sendChatMessage(voiceMsg){
           }
         }
         if(activeFriendId!==_targetFriend)_markUnread(_targetFriend);
+        _mbGroupTraceFinish(cfg.id,_mbVerdict);
       }catch(err){
         if(_gTypTimer)clearInterval(_gTypTimer);
         if(typingEl&&typingEl.parentNode)typingEl.remove();
@@ -3251,6 +3279,78 @@ function _mbSideEffectsOk(category,count){
   var _f=(window.IB&&window.IB.middleBrain)||null;
   if(!_f||typeof _f.middleBrainSideEffectAllowed!=='function')return true;
   return _f.middleBrainSideEffectAllowed(_mbVerdict,category,count)===true;
+}
+
+/* ── P11-2F · 群聊记忆写入边界（适配层；判定一律委托给 integrity 层）──────────
+   `_mbGroupMemPolicy` 是群聊路径的**唯一判定入口**。它只做三件事：
+     ① 取门面（不碰内部层契约符号）；
+     ② 把群聊的记忆目标域如实交给 integrity 层的纯分类器；
+     ③ 政策本体不可用时 **fail closed**（与 `_calibrateMemoryCandidate` 的
+        "准入核心不可用即拒绝"同一纪律）。
+   刻意**不**在这里复制 scope 枚举或 kind 词表：那会是第二份政策实现。
+   返回 {allowed,policyDecision,blockedReason,scope}；政策不可用时 scope/memoryScope
+   一律留 null，表示"观测不到"，绝不编造一个看起来很正常的域。 */
+function _mbGroupMemPolicy(scope,kind,characterId){
+  var _f=(window.IB&&window.IB.middleBrain)||null;
+  if(!_f||typeof _f.middleBrainGroupMemoryPolicy!=='function'){
+    return {allowed:false,policyDecision:'deny',blockedReason:'policy_unavailable',scope:null};
+  }
+  return _f.middleBrainGroupMemoryPolicy(_mbVerdict,scope,kind,characterId);
+}
+/* 群聊记忆目标域：发言成员的**私有**长期记忆（autoMemory，按角色 id 存储）。
+   这个词表值来自 integrity 层（MB_GROUP_MEMORY_SCOPE），此处不写字面量。 */
+function _mbSecGroupScope(){
+  var _f=(window.IB&&window.IB.middleBrain)||null;
+  var s=_f&&_f.MB_GROUP_MEMORY_SCOPE;
+  return (s&&s.PRIVATE_ROLE)||null;
+}
+/* 群聊成员 id 列表（去重、稳定排序）—— 只放 id，不放昵称：trace 是元数据面。 */
+function _mbGroupParticipants(cfgs){
+  var out=[];
+  (cfgs||[]).forEach(function(c){
+    var id=c&&c.id?String(c.id):'';
+    if(id&&out.indexOf(id)<0)out.push(id);
+  });
+  return out.sort();
+}
+/* 群聊每个发言成员的回合结束时收尾该成员的 trace 记录。
+   群聊**没有**抑制记录可报（不经过副作用闸门），因此 sideEffectsSuppressed 保持
+   该成员记录的初始值 —— 绝不写成 true，也绝不假装这里发生了抑制。
+   与单聊一致：finish 是唯一把记录推进 ring 并打印的点，每个成员各调一次。 */
+function _mbGroupTraceFinish(traceKey,verdict){
+  try{
+    var trace=(window.IB&&window.IB.__mbTrace)||null;
+    if(!trace)return;
+    trace.finish(String(traceKey==null?'':traceKey),{});
+  }catch(e){}
+}
+
+/* 群聊回合一开就写入 §4 的 context 字段（groupId / participants / memoryScope）。
+   判定结果字段（policyDecision / blockedReason）由 `_mbGroupMemPolicy` 的消费点补写 ——
+   没有记忆指令时它们保持 null，表示"本回合没有任何记忆写入被判定"，绝不预先写成 allow。 */
+function _mbGroupTraceContext(groupId,traceKey,cfgs){
+  try{
+    var trace=(window.IB&&window.IB.__mbTrace)||null;
+    if(!trace)return;
+    var key=String(traceKey==null?(groupId||''):traceKey);
+    trace.note(key,'groupId',groupId==null?null:String(groupId));
+    trace.note(key,'participants',_mbGroupParticipants(cfgs));
+    trace.note(key,'memoryScope',_mbSecGroupScope());
+    trace.note(key,'policyDecision',null);
+    trace.note(key,'blockedReason',null);
+  }catch(e){}
+}
+/* 被拦下的记忆指令 → 一条 trace（"任何被 Middle Brain 拦截的行为必须留下 trace"）。
+   只记稳定原因与目标域；**不记**记忆正文、条目 id 或角色昵称。 */
+function _mbGroupTraceBlock(traceKey,decision){
+  try{
+    var trace=(window.IB&&window.IB.__mbTrace)||null;
+    if(!trace)return;
+    var key=String(traceKey==null?'':traceKey);
+    trace.note(key,'memoryScope',decision&&decision.scope!=null?decision.scope:null);
+    trace.note(key,'policyDecision',(decision&&decision.policyDecision)||'deny');
+    trace.note(key,'blockedReason',(decision&&decision.blockedReason)||'out_of_scope');
+  }catch(e){}
 }
 
 /* 抑制记录的唯一读取入口：经门面（不碰内部层契约）。

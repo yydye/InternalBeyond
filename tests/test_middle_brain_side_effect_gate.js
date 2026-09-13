@@ -1,4 +1,4 @@
-/* ====================================================================
+﻿/* ====================================================================
    P11-2C-1 · UNDECIDED 副作用闸门 · 离线确定性回归
    --------------------------------------------------------------------
    本文件回答且只回答一个问题：
@@ -260,12 +260,20 @@ check('C4.noUngatedExecutorInChatTurn', (() => {
   return bad.every(s => countOcc(COM_TEXT, s) === 0);
 })(), 'an ungated executor call survived the gate');
 
-/* T7b · 非 Middle Brain 路径必须原样（群聊 / 博客留言 / 角色来信） */
-check('T7b.groupChatUntouched',
-  countOcc(COM_TEXT, 'if(amEnabled(cfg))_gMemR=await _execMemOps(_gmp.ops,cfg,selfName)') === 1
+/* T7b · 非 Middle Brain 路径必须原样（群聊 / 博客留言 / 角色来信）
+   P11-2F 修订：群聊的 mem_* 现在要经**群聊记忆写入政策**（`_mbGroupMemPolicy`）
+   才可落地（角色私有记忆域；group_ 前缀 id 一律拒），因此"群聊调用点逐字未改"
+   这条断言不再成立 —— 它描述的是"没有路由"，而 P11-2F 引入的正是路由。
+   本阶段**没有改变**的性质是这三条，改后仍逐条断言：
+     · 群聊不经过副作用闸门（仍拿不到 verdict，`_mbSideEffectsOk` 不参与）；
+     · 群聊的记忆写入不再存在**无政策**的调用形态；
+     · 工作区 / 归档路径与博客留言路径逐字未动。 */
+check('T7b.groupChatRoutesMemoryThroughItsOwnPolicyNotTheGate',
+  countOcc(COM_TEXT, 'if(amEnabled(cfg))_gMemR=await _execMemOps(_gmp.ops,cfg,selfName)') === 0
+  && countOcc(COM_TEXT, '_execMemOps(_gAllowed.map(x=>x.op),cfg,selfName)') === 1
   && countOcc(COM_TEXT, '_gwsR=await _execWsOps(_gws.ops,selfName,cfg,') === 1
   && countOcc(COM_TEXT, 'await _wsArchiveFileBlocks(_gws.files,selfName)') === 1,
-  'group chat path was modified');
+  'group chat memory path lost its policy routing, or an unrelated path moved');
 check('T7b2.groupChatHasNoGate', !/_gws[\s\S]{0,600}_mbSideEffectsOk/.test(COM_TEXT));
 check('T7b3.blogCommentUntouched',
   countOcc(COM_TEXT, 'if(_cm.ops.length&&amEnabled(cfg)&&!cfg.amRecordOnly){try{await _execMemOps(_cm.ops,cfg,') === 1);

@@ -1,4 +1,4 @@
-/* ====================================================================
+﻿/* ====================================================================
    P11-2D · Integrity Observability · 离线确定性回归
    --------------------------------------------------------------------
    本文件回答且只回答一个问题：
@@ -668,10 +668,14 @@ check('T14h.bypassedWithJudgeNotAttemptedExpressible',
   t.rec.integrityVerdict === 'BYPASSED' && t.rec.judgeAttempted === false,
   JSON.stringify(t.rec));
 
-/* —— 字段声明 + 渲染（此前的渲染缺陷：文本字段被兜底成 false）—— */
+/* —— 字段声明 + 渲染（此前的渲染缺陷：文本字段被兜底成 false）——
+   28 = P11-2D 的 23 个 + P11-2F 追加的 5 个群聊字段；追加在末尾，
+   既有 23 个的顺序与语义未动（test_p11_2f 的 T1/T2/T3 锁定顺序）。 */
 check('T14i.traceFieldsDeclared',
-  trace.fields.length === 23
+  trace.fields.length === 28
   && ['judgeAttempted', 'integrityRewritten', 'sideEffectsSuppressed', 'sideEffectCategories']
+    .every(k => trace.fields.indexOf(k) >= 0)
+  && ['groupId', 'participants', 'memoryScope', 'policyDecision', 'blockedReason']
     .every(k => trace.fields.indexOf(k) >= 0),
   JSON.stringify(trace.fields));
 t = await new Promise(async resolve => {

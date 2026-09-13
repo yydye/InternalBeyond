@@ -638,6 +638,91 @@
     return d.allow === true;
   }
 
+  /* ── P11-2F · 群聊记忆写入政策（**纯分类器**，无 IO、无状态、无副作用）──────
+     背景（先读 P11-2C 的既有边界，本阶段**没有**改变它）：
+       MB_CI_SIDE_EFFECT_SITES 只登记单聊回合解析出的副作用；群聊/博客留言等
+       路径**拿不到 verdict**，属存量行为。因此群聊的 mem_* 既不经过裁定，
+       也不经过闸门 —— 但"没有闸门"不等于"没有政策"。
+
+     存储事实（本政策据此成立，不是推测）：
+       `_execMemOps(ops, cfg, authorName)` 的每一条写入都落
+       `{friendId: cfg.id}`（autoMemory store），而群聊逐成员发言时 cfg 恒为
+       **该发言成员自己的角色配置**。于是"角色 A 的私有记忆"与"角色 B 的私有
+       记忆"在存储层就是两个 friendId，不存在能被 <mem_*> 表达的跨角色寻址：
+       协议词汇表只有 create/update/delete 三种 kind，且 update/delete 的 id
+       还要过 `ex.friendId !== cfg.id` 校验（见 auto-memory.js `_execMemOps`）。
+       共享群记忆另走 `chatSummaries`（按 groupId 存储），与 autoMemory 不重叠。
+
+     本函数的职责**只是把上面这段事实变成可执行、可断言的判据**，让"哪天有人
+     把群对象当 cfg 传进来"这种退化在测试里立刻变红，而不是靠注释维持。
+
+     四种 scope（**纯枚举，绝不是身份** —— 群聊没有、也不该有身份令牌）：
+       session         本轮会话上下文，不落长期记忆 → 拒
+       private_role    发言成员自己的私有长期记忆（唯一可写目标）
+       group_shared    共享群记忆（本阶段不存在群侧写入路径 → 拒，如实报出）
+       hidden_system   系统内部记忆 → 拒（不存在调用方，纯前瞻）
+
+     判定顺序刻意如此：**先认 scope 合法性，再看裁定状态**。scope 非法时无论
+     有没有 verdict 都必须拒 —— 一个"已判定"的越界写入仍然是越界写入。 */
+  var MB_GROUP_MEMORY_SCOPE = Object.freeze({
+    SESSION: 'session',
+    PRIVATE_ROLE: 'private_role',
+    GROUP_SHARED: 'group_shared',
+    HIDDEN_SYSTEM: 'hidden_system'
+  });
+  /* 群聊唯一允许的写入目标。 */
+  var MB_GROUP_MEMORY_WRITABLE_SCOPE = MB_GROUP_MEMORY_SCOPE.PRIVATE_ROLE;
+  /* 群聊记忆写入的拒止原因（稳定枚举；永远不携带正文 / id / 路径）。 */
+  var MB_GROUP_MEMORY_DENY = Object.freeze({
+    OUT_OF_SCOPE: 'out_of_scope',        /* scope 不是 private_role */
+    UNKNOWN_KIND: 'unknown_kind',        /* 不是 create/update/delete 之一 */
+    NO_CHARACTER: 'no_character',        /* 拿不到发言角色的私有记忆域 */
+    GROUP_AS_CHARACTER: 'group_as_character', /* cfg.id 是 group_* —— 会把私有记忆
+                                                 塌缩成群共享桶（本函数存在的首要理由） */
+    UNAVAILABLE: 'policy_unavailable'    /* 政策本体不可用（调用方缺失） */
+  });
+  /* `kind` 允许值 —— 与 auto-memory.js `_parseMemOps` 的正则捕获组**逐字同源**。
+     刻意在本地重声明而不 import：integrity 层不依赖 UI 层的解析实现，两者由
+     test_p11_2f 的 K1 断言锁成同一集合。 */
+  var _MB_GROUP_MEM_OPS = Object.freeze(['create', 'update', 'delete']);
+  function _mbGroupMemScopeOf(scope) {
+    var s = _ciStr(scope).trim();
+    return s;
+  }
+  /* 判定：模型提出的群聊记忆变更可否落地。
+     返回 { allowed, policyDecision, blockedReason, scope, category }
+       policyDecision: 'allow' | 'deny' | 'unverified'
+         allow      —— scope 合法 + 本回合裁定为 PASS/OOC/BYPASSED（或无 verdict 可问）
+         deny       —— scope 非法 / kind 未知 / 无角色域（**逐字给出 blockedReason**）
+         unverified —— scope 合法，但本回合裁定为 UNDECIDED（"尝试过但没拿到裁定"）
+     注意 unverified 时 allowed 仍为 true：**本阶段不改变群聊既有执行行为**
+     （群聊本来就不经过裁定），只把这一事实如实标出来，供下游与测试消费。
+     是否真的拦截由调用方决定，且调用方必须把 allowed=false 当作拦截。 */
+  function middleBrainGroupMemoryPolicy(verdict, scope, kind, characterId) {
+    var s = _mbGroupMemScopeOf(scope);
+    var k = _ciStr(kind).trim().toLowerCase();
+    var cid = _ciStr(characterId).trim();
+    function deny(reason) {
+      return { allowed: false, policyDecision: 'deny', blockedReason: reason, scope: s, category: null };
+    }
+    if (s !== MB_GROUP_MEMORY_SCOPE.PRIVATE_ROLE) return deny(MB_GROUP_MEMORY_DENY.OUT_OF_SCOPE);
+    if (_MB_GROUP_MEM_OPS.indexOf(k) < 0) return deny(MB_GROUP_MEMORY_DENY.UNKNOWN_KIND);
+    if (!cid) return deny(MB_GROUP_MEMORY_DENY.NO_CHARACTER);
+    /* 群 id 冒充角色域 → 所有成员的私有记忆会写进同一个 friendId。
+       头部与 assets/js/chat-core.js `isGroupFriendId` 同一判据（group_ 前缀）。 */
+    if (cid.indexOf('group_') === 0) return deny(MB_GROUP_MEMORY_DENY.GROUP_AS_CHARACTER);
+    var d = _mbCiSideEffectPolicy(verdict);
+    return {
+      allowed: true,
+      policyDecision: d.allow === false ? 'unverified' : 'allow',
+      blockedReason: null,
+      scope: s,
+      category: d.allow === false ? 'unadjudicated' : d.reason
+    };
+  }
+  /* 政策本体的可用性自述（调用方 fail-closed 用；本身不做判定）。 */
+  function middleBrainGroupMemoryPolicyAvailable() { return true; }
+
   /* ====================================================================
      主入口：Character Integrity Guard
      返回 {reply, ran, report, gate, rewrite, verify, judgeError, skipReason}
@@ -773,6 +858,12 @@
     middleBrainSideEffectAllowed: middleBrainSideEffectAllowed,
     _mbCiSideEffectPolicy: _mbCiSideEffectPolicy,
     MB_CI_SIDE_EFFECT_SITES: MB_CI_SIDE_EFFECT_SITES,
+    /* P11-2F：群聊记忆写入政策（纯分类器）+ 冻结枚举；群聊路径的唯一判据来源 */
+    middleBrainGroupMemoryPolicy: middleBrainGroupMemoryPolicy,
+    middleBrainGroupMemoryPolicyAvailable: middleBrainGroupMemoryPolicyAvailable,
+    MB_GROUP_MEMORY_SCOPE: MB_GROUP_MEMORY_SCOPE,
+    MB_GROUP_MEMORY_WRITABLE_SCOPE: MB_GROUP_MEMORY_WRITABLE_SCOPE,
+    MB_GROUP_MEMORY_DENY: MB_GROUP_MEMORY_DENY,
     /* P11-2D：抑制类别词表 + 抑制记录读取（只读快照；写入只由闸门内部完成） */
     MB_CI_SUPPRESSION_CATEGORIES: _MB_CI_SUPPRESSION_CATEGORIES,
     middleBrainSideEffectSuppression: middleBrainSideEffectSuppression,

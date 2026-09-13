@@ -1,4 +1,4 @@
-/* ====================================================================
+﻿/* ====================================================================
    P11-2E · User-facing Integrity Transparency · 离线确定性回归
    --------------------------------------------------------------------
    本文件回答且只回答一个问题：
@@ -853,11 +853,12 @@ mainAsync().then(() => {
   /* Judge prompt / schema / 阈值 / 敏感度：文本层面未动 */
   check('E5.judgePromptUnchanged',
     countOcc(CI, 'Character Integrity Judge') === 1 && countOcc(CI, 'Character Integrity Rewriter') === 1);
-  /* 本阶段只允许改动 communication.js 的功能；facade 公共 API 键表未动（仍 51） */
+  /* facade 公共 API 键表：P11-2E 自身未动它（P11-2F 追加 5 个群聊记忆边界键 → 56）。
+     本阶段（P11-2E）的断言是"**本阶段**没有为 UI 关注点长门面键"，由 E7 单独表达。 */
   const keys = COM.match(/var MB_PUBLIC_API/);
   const API_KEYS = (MB.match(/var MB_PUBLIC_API = \[([\s\S]*?)\n  \];/) || [])[1] || '';
   const nKeys = (API_KEYS.match(/^\s*\['/gm) || []).length;
-  check('E6.facadeApiKeyCountUnchanged', nKeys === 51, String(nKeys));
+  check('E6.facadeApiKeyCountUnchanged', nKeys === 56, String(nKeys));
   check('E7.noNewFacadeKeyForTheNotice',
     MB.indexOf('integrityNotice') < 0, 'facade must not grow a key for a UI-only concern');
 }

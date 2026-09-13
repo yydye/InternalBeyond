@@ -1,4 +1,4 @@
-/* ====================================================================
+﻿/* ====================================================================
    P11-1C · Middle Brain Canonical Production Execution Seam · CDP 回归
    --------------------------------------------------------------------
    本阶段只做执行边界收口：production（single-chat）只经
@@ -141,8 +141,9 @@ const api = http.createServer(async (req, res) => {
       /* 45 = P11-2 之后的门面 key 数；P12 追加 2 个 Image Router 决策键 → 47；
          P21 追加 1 个统一思考深度读取键 → 48；
          P11-2C 追加 1 个下游副作用政策读取键 → 49；
-         P11-2D 追加 2 个 integrity 可观测读取键 → 51 */
-      return k.length===51 && k[k.indexOf('middleBrainCompressPipeline')+1]==='middleBrainExecute'
+         P11-2D 追加 2 个 integrity 可观测读取键 → 51；
+         P11-2F 追加 5 个群聊记忆边界键 → 56 */
+      return k.length===56 && k[k.indexOf('middleBrainCompressPipeline')+1]==='middleBrainExecute'
         && typeof IB.middleBrain.middleBrainFinalizeReply==='function'
         && typeof IB.middleBrain.middleBrainImageMode==='function';
     })()`), await evaluate(cdp, `(function(){return Object.keys(IB.middleBrain).length})()`));
@@ -164,8 +165,11 @@ const api = http.createServer(async (req, res) => {
       });
       window.__seamIdentityBad=bad;window.__seamFacadeOnly=facadeOnly;return bad.length===0;
     })()`), await evaluate(cdp, `(function(){return JSON.stringify(window.__seamIdentityBad||[])})()`));
+    /* P11-2F 追加 5 个群聊记忆边界键（同样只经门面、无 window 兼容别名），
+       因此它们也必须出现在 facade-only 名单里 —— 这里同时锁住
+       "群聊政策不得退化成一个新的散落全局依赖"。 */
     check('A8.facadeOnlySetStable', await evaluate(cdp, `(function(){
-      return JSON.stringify((window.__seamFacadeOnly||[]).slice().sort())===JSON.stringify(['MB_ASTRA_TIMEOUT_MS','MB_CI_SCHEMA','MB_CI_SUPPRESSION_CATEGORIES','MB_CI_TIMEOUT_MS','MB_CTX_DEFAULT_BUDGET','_mbCiGate','_mbCiVisibleText','_mbParseCiJson','middleBrainCharacterIntegrity','middleBrainCharacterIntegrityReset','middleBrainCharacterIntegrityTelemetry','middleBrainExecute','middleBrainFinalizeReply','middleBrainImageMode','middleBrainReasoningEffort','middleBrainSideEffectAllowed','middleBrainSideEffectSuppression','normalizeMiddleBrainImageMode','normalizeMiddleBrainIntegritySensitivity']);
+      return JSON.stringify((window.__seamFacadeOnly||[]).slice().sort())===JSON.stringify(['MB_ASTRA_TIMEOUT_MS','MB_CI_SCHEMA','MB_CI_SUPPRESSION_CATEGORIES','MB_CI_TIMEOUT_MS','MB_CTX_DEFAULT_BUDGET','MB_GROUP_MEMORY_DENY','MB_GROUP_MEMORY_SCOPE','MB_GROUP_MEMORY_WRITABLE_SCOPE','_mbCiGate','_mbCiVisibleText','_mbParseCiJson','middleBrainCharacterIntegrity','middleBrainCharacterIntegrityReset','middleBrainCharacterIntegrityTelemetry','middleBrainExecute','middleBrainFinalizeReply','middleBrainGroupMemoryPolicy','middleBrainGroupMemoryPolicyAvailable','middleBrainImageMode','middleBrainReasoningEffort','middleBrainSideEffectAllowed','middleBrainSideEffectSuppression','normalizeMiddleBrainImageMode','normalizeMiddleBrainIntegritySensitivity']);
     })()`), await evaluate(cdp, `(function(){return JSON.stringify(window.__seamFacadeOnly||[])})()`));
 
     /* ── B. 执行语义 ── */

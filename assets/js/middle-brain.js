@@ -44,7 +44,17 @@
   var _MB_TRACE_FIELDS = ['consumer', 'character', 'enabled', 'executeEntered', 'configApplied', 'policyApplied',
     'astraApplied', 'judgeApplied', 'oocGuardApplied', 'integrityVerdict', 'integrityReason',
     'judgeAttempted', 'integrityRewritten', 'sideEffectsSuppressed', 'sideEffectCategories', 'inputMessages',
-    'outputMessages', 'systemChanged', 'requestParamsChanged', 'executor', 'model', 'source', 'messagesChanged'];
+    'outputMessages', 'systemChanged', 'requestParamsChanged', 'executor', 'model', 'source', 'messagesChanged',
+    /* P11-2F · 群聊运行时可观测字段（5 个，**追加在末尾**，既有 23 个的顺序与语义一律未动）。
+       全部是元数据（id 列表 / 枚举 / 稳定原因串），不含正文、私聊内容、记忆内容或路径：
+         groupId                 本次群聊回合的会话键（group_<ms>）
+         participants            本回合参与发言的成员**角色 id** 列表（不是昵称，不泄露人设）
+         memoryScope             本回合记忆写入被判定的目标域（见 MB_GROUP_MEMORY_SCOPE）
+         policyDecision          'allow' | 'deny' | 'unverified'
+         blockedReason           被拦下的稳定原因（未拦下恒为 null）—— "任何被 Middle Brain
+                                 拦截的行为必须留下 trace" 这句话的落点就在这里：
+                                 拦截写 blockedReason，放行写 null，绝不省略该字段。 */
+    'groupId', 'participants', 'memoryScope', 'policyDecision', 'blockedReason'];
   function _mbTraceOn() {
     try {
       if (root.__IB_MB_TRACE === false) return false;
@@ -69,7 +79,9 @@
       judgeApplied: false, oocGuardApplied: false, integrityVerdict: null, integrityReason: null,
       judgeAttempted: null, integrityRewritten: null, sideEffectsSuppressed: null, sideEffectCategories: [],
       inputMessages: null, outputMessages: null,
-      systemChanged: null, requestParamsChanged: null, executor: null, model: null, source: null, messagesChanged: null };
+      systemChanged: null, requestParamsChanged: null, executor: null, model: null, source: null, messagesChanged: null,
+      /* P11-2F：群聊字段默认值。单聊回合保持 null / []，绝不因为新增字段而伪造群聊语义。 */
+      groupId: null, participants: [], memoryScope: null, policyDecision: null, blockedReason: null };
     try { _MB_TRACE[rec.character] = rec; } catch (e) {}
     return rec;
   }
@@ -83,6 +95,12 @@
          一个 verdict 恒为 false 的 trace 无法回答"这一轮到底判成什么"。
          类别数组按无歧义分隔打印；空数组打印空串。 */
       else if (k === 'integrityVerdict' || k === 'integrityReason') lines.push(k + ': ' + (v == null ? 'null' : String(v)));
+      /* P11-2F：群聊字段。groupId / memoryScope / policyDecision / blockedReason 打印**实际值**
+         （null 打 null，绝不退化成 false —— 一个恒为 false 的 blockedReason 无法回答
+         "这一轮到底拦没拦、拦的原因是什么"）；participants 与 sideEffectCategories 同形按逗号连接。 */
+      else if (k === 'participants') lines.push(k + ': ' + (Array.isArray(v) ? v.join(',') : (v == null ? 'null' : String(v))));
+      else if (k === 'groupId' || k === 'memoryScope' || k === 'policyDecision' || k === 'blockedReason')
+        lines.push(k + ': ' + (v == null ? 'null' : String(v)));
       else if (k === 'sideEffectCategories') lines.push(k + ': ' + (Array.isArray(v) ? v.join(',') : (v == null ? 'null' : String(v))));
       else lines.push(k + ': ' + (v === true ? 'true' : 'false'));
     }
@@ -291,7 +309,18 @@
          · middleBrainSideEffectSuppression —— 抑制记录读取（本轮类别与条数 + 会话累计）；
          · MB_CI_SUPPRESSION_CATEGORIES   —— 抑制类别词表（值 = 稳定枚举）。 */
     ['middleBrainSideEffectSuppression', 'integrity'],
-    ['MB_CI_SUPPRESSION_CATEGORIES', 'integrity']
+    ['MB_CI_SUPPRESSION_CATEGORIES', 'integrity'],
+    /* P11-2F · 群聊记忆边界（只读判定入口）。与上面两条同一纪律：只经门面取用，
+       不新增 window 兼容别名 —— 群聊路径不得把政策实现复制到自己那一侧。
+       群聊**没有**裁定状态可交，因此这里导出的是纯分类器：
+         · middleBrainGroupMemoryPolicy(verdict, scope, kind, characterId)
+         · MB_GROUP_MEMORY_SCOPE / MB_GROUP_MEMORY_WRITABLE_SCOPE / MB_GROUP_MEMORY_DENY
+     只追加 key，既有 key 的内容与顺序一律未动。 */
+    ['middleBrainGroupMemoryPolicy', 'integrity'],
+    ['middleBrainGroupMemoryPolicyAvailable', 'integrity'],
+    ['MB_GROUP_MEMORY_SCOPE', 'integrity'],
+    ['MB_GROUP_MEMORY_WRITABLE_SCOPE', 'integrity'],
+    ['MB_GROUP_MEMORY_DENY', 'integrity']
   ];
   var MB_LAYERS = {
     config: CFG, policy: POL, astra: ASTRA, judge: JUDGE, integrity: INTEG,
