@@ -555,6 +555,121 @@ function bucketOf(chars) {
       && s.comparison.ambiguous[0].reason === 'no_judge_decision(timeout)';
   })(), 'timeout 必须记成 errors=1 / timeouts=1 / decided=0 / FN candidates=none，ambiguous 原因必须是 no_judge_decision(timeout)');
 
+  /* ═══════════ 9d · 无判定不得参与稳定性比较（Phase 1B.7 Phase 0 实测回归）═══════════
+     背景：Round 6 的 AR-F-01 出现 completed(timeout) 混合形状，summary.stability
+     把 timeout 记录的 dimensions=null 用 `|| []` 归一成空维度集，于是
+     `[knowledge_boundary,persona]` vs `[]` → dimensionStable=false →
+     记成"维度判定不稳定"。这是把未知当已知：timeout 是**没有判定**，不是
+     "Judge 给了空维度集"。同 compare() 已修的那一类缺陷同源，只是换了函数。
+     规则：只有 verdict-bearing（pass 为布尔）的观测参与
+     verdict / dimension / severity 稳定性；无 verdict 的观测必须
+     excludedFromDimensionStability，且不得被算成 unstable。 */
+  const stabRec = (pass, dims, sev, score, dispo, err) => {
+    const rec = OBS.emptyObservation(CORPUS.CASES.find(c => c.id === 'AR-F-01'), 'test');
+    rec.judge = Object.assign(rec.judge, {
+      ran: true, pass: pass, dimensions: dims, maxSeverity: sev, score: score,
+      malformed: false, error: (err || null)
+    });
+    rec.disposition = dispo || (pass === true ? 'pass' : 'blocked');
+    OBS.compare(rec);
+    return rec;
+  };
+  const timeoutRec = () => stabRec(null, null, null, null, 'judge_error:timeout', 'timeout');
+
+  /* S1 · real [] + timeout null：本轮实测的确切形状。
+     若 null 被归一成 []，两组集合相同 → 会误判为 stable；若 null 被当成"另一个集合"
+     就会误判为 unstable。两种错误都要被挡住：正确结果是**只比较 1 条 verdict-bearing
+     观测 → 观测数不足 → UNKNOWN**，既不是 stable 也不是 unstable。 */
+  check('S1.realEmptyDimensionsPlusTimeoutIsUnknownNotUnstable', (() => {
+    const s = OBS.summarize([stabRec(false, [], 1, 0.05, 'blocked'), timeoutRec()]);
+    return s.stability.unstable === 0 && s.stability.unstableIds.length === 0
+      && s.stability.stable === 0
+      && s.stability.insufficient === 1 && s.stability.insufficientIds[0] === 'AR-F-01'
+      && s.stability.excludedNoVerdict === 1
+      && s.stability.details[0].excludedFromDimensionStability === 1
+      && s.stability.details[0].dimensionStable === null
+      && s.stability.details[0].severityStable === null
+      && s.stability.details[0].verdictStable === null
+      && s.stability.details[0].reason === 'insufficient_verdict_bearing_observations(1/2)';
+  })(), '真 [] + timeout(null) 不得产生 unstable，也不得升级成 stable；必须是 UNKNOWN 且 excludedFromDimensionStability=1');
+
+  /* S2 · real [knowledge_boundary] + timeout null：本轮 AR-F-01 的真实维度形状。
+     修复前实测：dims=[[knowledge_boundary],[]] → dimensionStable=false（把 timeout
+     记成维度 miss）。修复后 timeout 完全退出比较。 */
+  check('S2.realKnowledgeBoundaryPlusTimeoutIsUnknownNotDimensionChange', (() => {
+    const s = OBS.summarize([stabRec(false, ['knowledge_boundary'], 1, 1.0, 'blocked'), timeoutRec()]);
+    const d = s.stability.details[0];
+    return s.stability.unstable === 0 && s.stability.stable === 0
+      && s.stability.insufficient === 1
+      && d.dimensionStable === null
+      && d.dimensions === undefined          /* timeout 不得贡献任何维度集，尤其不得是 [] */
+      && JSON.stringify(d).indexOf('[]') < 0 /* 任何位置都不得出现 [] 冒充 timeout 的观测 */
+      && d.passes[1] === null;               /* null 必须保持 null，不得变成 false */
+  })(), 'timeout 记录不得贡献任何维度字符串，pass 必须保持 null（不得归一成 false）');
+
+  /* S3 · two real [] observations：两条都有 verdict 且维度集相同 → 必须参与并判 stable */
+  check('S3.twoRealEmptyDimensionSetsAreStable', (() => {
+    const s = OBS.summarize([stabRec(false, [], 1, 0.05, 'blocked'), stabRec(false, [], 1, 0.05, 'blocked')]);
+    return s.stability.stable === 1 && s.stability.unstable === 0
+      && s.stability.insufficient === 0 && s.stability.excludedNoVerdict === 0;
+  })(), '两条真 [] 观测都必须参与比较，并判为 stable（真空的维度集是合法观测）');
+
+  /* S4 · two real identical dimension sets：两条都有 verdict 且完全一致 → stable（顺序无关） */
+  check('S4.twoRealIdenticalDimensionSetsAreStable', (() => {
+    const s = OBS.summarize([
+      stabRec(false, ['knowledge_boundary', 'persona'], 1, 1.0, 'blocked'),
+      stabRec(false, ['persona', 'knowledge_boundary'], 1, 1.0, 'blocked')
+    ]);
+    return s.stability.stable === 1 && s.stability.unstable === 0
+      && s.stability.insufficient === 0;
+  })(), '同一维度集（顺序无关）必须判 stable');
+
+  /* S5 · 真差异必须仍然被抓到：真 [knowledge_boundary] vs 真 [persona] → unstable。
+     这一条防止上面的修复把稳定性检查整体削弱成"永远 stable"。 */
+  check('S5.realDimensionDifferenceStillDetected', (() => {
+    const s = OBS.summarize([
+      stabRec(false, ['knowledge_boundary'], 1, 1.0, 'blocked'),
+      stabRec(false, ['persona'], 0.9, 0.9, 'blocked')
+    ]);
+    return s.stability.unstable === 1 && s.stability.stable === 0
+      && s.stability.details[0].dimensionStable === false
+      && s.stability.details[0].verdicts === 2
+      && s.stability.details[0].excludedFromDimensionStability === 0;
+  })(), '真实的维度判定差异必须仍被判为 unstable —— 修复不得削弱稳定性检测');
+
+  /* S6 · 全部为无 verdict：不得出现 stable=0/unstable=0 的静默假象，必须是 insufficient 且全排除 */
+  check('S6.allNoVerdictYieldsUnknownNotStable', (() => {
+    const s = OBS.summarize([timeoutRec(), timeoutRec()]);
+    return s.stability.stable === 0 && s.stability.unstable === 0
+      && s.stability.insufficient === 1 && s.stability.excludedNoVerdict === 2
+      && s.stability.details[0].verdicts === 0
+      && s.stability.details[0].reason === 'insufficient_verdict_bearing_observations(0/2)';
+  })(), '全部 timeout 时不得被算成 stable，也不得算成 unstable；必须是 UNKNOWN');
+
+  /* S7 · hasVerdict 是 compare/summarize 共用的唯一判据（防两处判据再次漂移） */
+  check('S7.hasVerdictIsTheSharedSingleCriterion', (() => {
+    const cases = [
+      { j: { ran: true, pass: true }, want: true },
+      { j: { ran: true, pass: false }, want: true },
+      { j: { ran: true, pass: null }, want: false },
+      { j: { ran: false, pass: true }, want: false },
+      { j: { ran: true, pass: undefined }, want: false }
+    ];
+    const ok = cases.every(c => OBS.hasVerdict({ judge: c.j }) === c.want);
+    const t = timeoutRec(), p = stabRec(false, [], 1, 1, 'blocked');
+    return ok && OBS.hasVerdict(t) === false && OBS.hasVerdict(p) === true
+      && p.comparison.ambiguous === false && t.comparison.ambiguous === true;
+  })(), 'compare() 与 summarize() 必须共用同一个 hasVerdict 判据，且 ran=false 即使 pass 有值也不算 verdict');
+
+  /* S8 · 报告渲染必须把"被排除的尝试数"打出来，不能只打 dimsStable */
+  check('S8.reportSurfacesExcludedAttempts', (() => {
+    const out = OBS.renderReport(OBS.summarize([stabRec(false, ['knowledge_boundary'], 1, 1, 'blocked'), timeoutRec()]));
+    return /excluded-no-verdict-attempts=1/.test(out)
+      && /excludedFromDimensionStability=1/.test(out)
+      && /insufficient-verdicts=1/.test(out)
+      && /reason=insufficient_verdict_bearing_observations\(1\/2\)/.test(out);
+  })(), '报告必须显式暴露被排除的尝试数与 UNKNOWN 原因，不能只用 stable/unstable 计数掩盖');
+
   /* ═══════════ 9 · 观测阶段自身的安全性（§11/§12 的静态那一半）═══════════ */
   /* 9a · CI 证据构建绝不 retrieval：guard 只消费调用方交进来的东西。
      这一条是 P0 审计的关键：如果 guard 会自己去读 Memory/Store，那么"用合成

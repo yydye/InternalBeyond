@@ -214,6 +214,14 @@ function addUsage(a, b) {
   return { inputTokens: s(a.inputTokens, b.inputTokens), outputTokens: s(a.outputTokens, b.outputTokens), totalTokens: s(a.totalTokens, b.totalTokens), cachedTokens: s(a.cachedTokens, b.cachedTokens) };
 }
 
+/* "这次运行到底有没有拿到 verdict"的唯一判据：judge.pass 是布尔值。
+   ran===true 只说明**发起过**调用（timeout 时也是 true），不能当判据。
+   同一判据必须被 compare() 和 summarize() 共用 —— 否则汇总里会出现
+   "同一条记录既是 no_judge_decision、又参与稳定性比较"的自相矛盾。 */
+function hasVerdict(rec) {
+  return !!rec && rec.judge && rec.judge.ran === true && typeof rec.judge.pass === 'boolean';
+}
+
 /* ── 5 · 比较：期望 vs 观测（judgement 类才判对错）───────────────────── */
 function compare(rec) {
   const c = rec.comparison, e = rec.expectation, j = rec.judge;
@@ -224,7 +232,7 @@ function compare(rec) {
        于是 agreement=false → falseNegativeCandidate=true，直接进 FP/FN candidate
        清单，和同一份 summary 里 fn=0 / errors=1 自相矛盾。timeout 不是"Judge 判错了"，
        它是**没有判定**，绝不能进 FP/FN。 */
-    if (j.ran !== true || typeof j.pass !== 'boolean') {
+    if (!hasVerdict(rec)) {
       c.agreement = null;
       c.falsePositiveCandidate = false;
       c.falseNegativeCandidate = false;
@@ -368,25 +376,67 @@ function summarize(records, ctx) {
     contractViolations: rows.filter(r => r.comparison.contractViolation).map(r => ({ id: r.fixtureId, violation: r.comparison.contractViolation }))
   };
 
-  /* 可重复性（§5）：同一 fixture 多次运行是否给出同一个判定 */
+  /* 可重复性（§5）：同一 fixture 多次运行是否给出同一个判定。
+     ── 只有 verdict-bearing observations 参与比较（Phase 1B.7 Phase 0 修正）──
+     历史缺陷：这里曾对**全部**尝试做 `r.judge.dimensions || []`，于是 timeout 记录的
+     dimensions=null 被归一成 []，再被解释成"Judge 真的给出了空维度集"。结果是
+     `[knowledge_boundary,persona]` vs `[]` → dimensionStable=false → 把一条
+     "没有判定"的尝试记成"维度判定不稳定"。这不是 Judge 的行为差异，是把未知当成
+     已知的 instrumentation 缺陷，和 compare() 刚修掉的那一类完全同源。
+     规则：pass 非布尔（timeout / provider_error / malformed / judge not run）
+     的记录 **excluded**，既不进 verdict/dimension/severity 稳定性，也不计为不稳定。
+     null 永不升级成 []，也永不升级成 false。 */
   const byId = {};
   for (const r of rows) (byId[r.fixtureId] = byId[r.fixtureId] || []).push(r);
-  const stability = { fixtures: 0, singleRun: 0, stable: 0, unstable: 0, unstableIds: [], details: [] };
+  const stability = {
+    fixtures: 0, singleRun: 0, stable: 0, unstable: 0, unstableIds: [], details: [],
+    /* 新增：本次汇总里被判为"无 verdict"的尝试总数（跨全部 fixture）。
+       有它才能把"没有被比较的尝试"和"被比较且一致"区分开。 */
+    excludedNoVerdict: 0,
+    /* 新增：verdict-bearing 观测不足 2 条的 fixture —— UNKNOWN，不是 stable 也不是 unstable */
+    insufficient: 0, insufficientIds: []
+  };
   for (const id of Object.keys(byId)) {
     const list = byId[id];
     stability.fixtures++;
     if (list.length < 2) { stability.singleRun++; continue; }
-    const passes = list.map(r => r.judge.pass);
-    const dims = list.map(r => JSON.stringify((r.judge.dimensions || []).slice().sort()));
-    const dispo = list.map(r => r.disposition);
-    const passStable = passes.every(p => p === passes[0]);
+    const attempts = list.length;
+    const judged = list.filter(hasVerdict);                  /* verdict-bearing only */
+    const excludedNoVerdict = attempts - judged.length;
+    stability.excludedNoVerdict += excludedNoVerdict;
+    if (judged.length < 2) {
+      /* 不足 2 条 verdict-bearing 观测 → 无法比较可重复性。既不算 stable，
+         也不算 unstable：这是 UNKNOWN，必须显式记录，不能静默吞掉。 */
+      stability.insufficient++;
+      stability.insufficientIds.push(id);
+      stability.details.push({
+        id: id, attempts: attempts, verdicts: judged.length,
+        excludedFromDimensionStability: excludedNoVerdict,
+        passes: list.map(r => (hasVerdict(r) ? r.judge.pass : null)),
+        dimensionStable: null, verdictStable: null, severityStable: null, dispositionStable: null,
+        reason: 'insufficient_verdict_bearing_observations(' + judged.length + '/' + attempts + ')'
+      });
+      continue;
+    }
+    const passes = judged.map(r => r.judge.pass);
+    const dims = judged.map(r => JSON.stringify((r.judge.dimensions || []).slice().sort()));
+    /* severity 只有拿到 verdict 才可比；null（未观测）不得参与 */
+    const sevs = judged.map(r => JSON.stringify([r.judge.maxSeverity == null ? null : r.judge.maxSeverity, r.judge.score == null ? null : r.judge.score]));
+    const dispo = judged.map(r => r.disposition);
+    const verdictStable = passes.every(p => p === passes[0]);
     const dimStable = dims.every(d => d === dims[0]);
+    const sevStable = sevs.every(s => s === sevs[0]);
     const dispoStable = dispo.every(d => d === dispo[0]);
-    if (passStable && dimStable && dispoStable) stability.stable++;
+    if (verdictStable && dimStable && sevStable && dispoStable) stability.stable++;
     else {
       stability.unstable++;
       stability.unstableIds.push(id);
-      stability.details.push({ id: id, attempts: list.length, passes: passes, dimensions: dims, dispositions: dispo, passStable: passStable, dimensionStable: dimStable, dispositionStable: dispoStable });
+      stability.details.push({
+        id: id, attempts: attempts, verdicts: judged.length,
+        excludedFromDimensionStability: excludedNoVerdict,
+        passes: passes, dimensions: dims, severities: sevs, dispositions: dispo,
+        verdictStable: verdictStable, dimensionStable: dimStable, severityStable: sevStable, dispositionStable: dispoStable
+      });
     }
   }
 
@@ -496,8 +546,14 @@ function renderReport(s) {
   } else line('  contract violations: none');
   line('');
   line('REPEATABILITY');
-  line('  fixtures=' + s.stability.fixtures + '  single-run=' + s.stability.singleRun + '  stable=' + s.stability.stable + '  unstable=' + s.stability.unstable);
-  for (const d of s.stability.details) line('    ' + d.id + ' passes=' + JSON.stringify(d.passes) + ' dimsStable=' + d.dimensionStable + ' dispoStable=' + d.dispositionStable);
+  line('  fixtures=' + s.stability.fixtures + '  single-run=' + s.stability.singleRun + '  stable=' + s.stability.stable + '  unstable=' + s.stability.unstable
+    + '  insufficient-verdicts=' + s.stability.insufficient
+    + '  excluded-no-verdict-attempts=' + s.stability.excludedNoVerdict);
+  for (const d of s.stability.details) line('    ' + d.id + ' verdicts=' + d.verdicts + '/' + d.attempts
+    + ' passes=' + JSON.stringify(d.passes) + ' dimsStable=' + d.dimensionStable
+    + ' sevStable=' + d.severityStable + ' dispoStable=' + d.dispositionStable
+    + ' excludedFromDimensionStability=' + d.excludedFromDimensionStability
+    + (d.reason ? ' reason=' + d.reason : ''));
   line('');
   line('ERRORS / RETRIES / TIMEOUTS');
   line('  retries=' + s.retries + '  timeouts=' + s.timeouts);
@@ -509,5 +565,5 @@ module.exports = {
   MAX_PLANNED_CALLS, MAX_REPEAT,
   planCalls, redact, leaksSecret, authPresence,
   percentiles, ratio,
-  emptyObservation, usageOf, addUsage, compare, summarize, renderReport
+  emptyObservation, usageOf, addUsage, hasVerdict, compare, summarize, renderReport
 };
