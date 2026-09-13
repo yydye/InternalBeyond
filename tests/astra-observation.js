@@ -218,11 +218,18 @@ function addUsage(a, b) {
 function compare(rec) {
   const c = rec.comparison, e = rec.expectation, j = rec.judge;
   if (e.kind === 'judgement') {
-    if (j.ran !== true || (j.pass == null && rec.judge.malformed !== true && !rec.judge.error)) {
-      /* 观测没有给出判定（调用失败 / 畸形 / 未就绪）→ agreement 未知，不得算对或错 */
+    /* 判据是"有没有得到 verdict"，不是"跑没跑"：只有 pass 是布尔值才算真的有观察结果。
+       历史教训（Phase 1B.5 实测）：production deadline 触发时 judge.ran===true、
+       pass===null、error==='timeout'，旧判据把这种**无判定**的记录当成观测成功，
+       于是 agreement=false → falseNegativeCandidate=true，直接进 FP/FN candidate
+       清单，和同一份 summary 里 fn=0 / errors=1 自相矛盾。timeout 不是"Judge 判错了"，
+       它是**没有判定**，绝不能进 FP/FN。 */
+    if (j.ran !== true || typeof j.pass !== 'boolean') {
       c.agreement = null;
+      c.falsePositiveCandidate = false;
+      c.falseNegativeCandidate = false;
       c.ambiguous = true;
-      c.ambiguousReason = 'no_judge_decision(' + (rec.judge.error || (rec.judge.malformed ? 'malformed' : 'norun')) + ')';
+      c.ambiguousReason = 'no_judge_decision(' + ((j.error || (j.malformed ? 'malformed' : 'norun')) || 'default') + ')';
       return c;
     }
     const observedOoc = j.pass === false;

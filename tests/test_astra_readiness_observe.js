@@ -515,6 +515,46 @@ function bucketOf(chars) {
   check('K2.liveRunNotForcedByRegression', !/--live/.test(stripComments(readRel('tests/test-all.js')).split('\n').filter(l => /calibration_live/.test(l)).join(' ')),
     'test-all 只登记默认（离线 mock）模式（剥注释后仍不得出现 --live 登记）');
 
+  /* ═══════════ 9c · 无判定 ≠ 判错（Phase 1B.5 实测回归）═══════════
+     背景：AR-F-01 第二次真实观测时 production deadline（20000ms）触发，
+     记录形状是 judge.ran=true / pass=null / error='timeout'。旧 compare() 把这种
+     "没有判定"当成观测成功，于是 agreement=false → falseNegativeCandidate=true，
+     同一条记录既进 FN candidates 清单、又同时被统计成 errors=1/fn=0 —— 自相矛盾。
+     规则（用户 Phase 1B.6 明确）：只要 Judge 没产出 verdict（pass 非布尔 /
+     provider error / timeout / malformed），agreement 必须是 null，
+     FP/FN candidate 必须是 false，归入 error/ambiguous/undecided。 */
+  const noVerdictCases = [
+    { name: 'timeout', judge: { ran: true, pass: null, malformed: false, error: 'timeout' } },
+    { name: 'provider_error', judge: { ran: true, pass: null, malformed: false, error: 'provider_http_500' } },
+    { name: 'malformed', judge: { ran: true, pass: null, malformed: true, error: null } },
+    { name: 'norun', judge: { ran: false, pass: null, malformed: false, error: null } },
+    { name: 'pass_missing', judge: { ran: true, pass: undefined, malformed: false, error: null } }
+  ];
+  check('K6.noVerdictNeverBecomesFpFnCandidate', noVerdictCases.every(x => {
+    const rec = OBS.emptyObservation(CORPUS.CASES.find(c => c.id === 'AR-F-01'), 'test');
+    rec.judge = Object.assign(rec.judge, x.judge);
+    OBS.compare(rec);
+    return rec.comparison.agreement === null
+      && rec.comparison.falsePositiveCandidate === false
+      && rec.comparison.falseNegativeCandidate === false
+      && rec.comparison.ambiguous === true;
+  }), JSON.stringify(noVerdictCases.map(x => {
+    const rec = OBS.emptyObservation(CORPUS.CASES.find(c => c.id === 'AR-F-01'), 'test');
+    rec.judge = Object.assign(rec.judge, x.judge);
+    return { case: x.name, cmp: OBS.compare(rec) };
+  })));
+  check('K7.noVerdictIsErrorNotDecisionInSummary', (() => {
+    const rec = OBS.emptyObservation(CORPUS.CASES.find(c => c.id === 'AR-F-01'), 'test');
+    rec.judge = Object.assign(rec.judge, { ran: true, pass: null, malformed: false, error: 'timeout' });
+    rec.execution.timeout = true;
+    OBS.compare(rec);
+    const s = OBS.summarize([rec]);
+    return s.judge.decided === 0 && s.judge.fn === 0 && s.judge.errors === 1 && s.timeouts === 1
+      && s.comparison.fnCandidates.length === 0 && s.comparison.fpCandidates.length === 0
+      && s.comparison.ambiguous.length === 1
+      && s.comparison.ambiguous[0].reason === 'no_judge_decision(timeout)';
+  })(), 'timeout 必须记成 errors=1 / timeouts=1 / decided=0 / FN candidates=none，ambiguous 原因必须是 no_judge_decision(timeout)');
+
   /* ═══════════ 9 · 观测阶段自身的安全性（§11/§12 的静态那一半）═══════════ */
   /* 9a · CI 证据构建绝不 retrieval：guard 只消费调用方交进来的东西。
      这一条是 P0 审计的关键：如果 guard 会自己去读 Memory/Store，那么"用合成
