@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 
 /* Internal Beyond · 一键全量测试入口（Node 18+，零依赖，跨平台）。
  *
@@ -30,6 +30,14 @@
  * P11-2A：登记 test_middle_brain_calibration.js（static，校准框架 Layer A · 确定性契约校准）
  *     + test_middle_brain_calibration_live.js（browser，Layer B 默认离线 mock 走真实执行路径；
  *     真实模型校准需手动 --live + IB_CI_CALIBRATION_KEY，不进本强制路径）。
+ * Astra Readiness Phase 1（观测阶段，零调参）：登记
+ *     test_astra_readiness_observe.js（static，真实生产装配上的只读观测：
+ *       dialogueChars 分布与 600/3500 分档、multipleThreads 触发分布、MB_GATE_STATE
+ *       归属与宿主分叉的确定性反例、本阶段零生产改动的 git diff 断言）
+ *     + test_middle_brain_calibration_live.js --corpus=readiness --rewrite --verify
+ *       （browser，同一 harness 的有界离线观测跑：A–U 语料 + 三段执行 + §12 安全包络）。
+ *     真实模型观测仍不在强制路径里，而且**当前没有合法凭据**（见
+ *     docs/ASTRA_READINESS_PHASE1.md 的 §2）。
  * P11-FIX：登记 test_cache_audit_isolation.js（browser，Cache Audit baseline 按 runtime consumer 隔离）。
  * M1-C.2d Wave 1：登记 test_memory_contract_closure.js（static，Memory Contract Closure ——
  *     隐藏记忆不得经 Understanding / Thread 派生回流；证据收紧或不可查时制品 fail closed；
@@ -99,6 +107,16 @@ const GROUPS = [
       ['test_mobile_device_registry.js'],
       /* P11-2A：角色一致性校准 Layer A（确定性契约校准，零依赖离线） */
       ['test_middle_brain_calibration.js'],
+      /* Astra Readiness Phase 1：只读观测（不调参、不启用）。
+         跑在**真实生产装配**上（Home Node 的 canonical loader：
+         config/policy/astra/judge/integrity + facade 就是生产那一份）：
+           ① 语料 dialogueChars 分布 + 600/3500 分档（只测量，不改阈值）
+           ② multipleThreads 的触发分布、触发原因、是否"理解块两行就足以激活"
+           ③ MB_GATE_STATE 的归属 / 生命周期 / 持久化 / 宿主分叉，
+              并给出**确定性反例**（同一份证据 + 不同宿主本地状态 → 不同判定）
+           ④ 本阶段零生产改动（git diff 逐条断言）
+         纯 Node、零网络、零浏览器。 */
+      ['test_astra_readiness_observe.js'],
       /* P14：Middle Brain 整块折叠（静态 DOM stub 驱动真实 config 层，零依赖离线） */
       ['test_middle_brain_collapse.js'],
       /* P11-3：Middle Brain 语义务闭合（UI/runtime 状态机 + local 注入契约纯函数表，
@@ -438,6 +456,12 @@ const GROUPS = [
       ['test_middle_brain_trace.js'],
       /* P11-2A：角色一致性校准（Layer B · 离线 mock 真实执行路径；--live 才接真实端点） */
       ['test_middle_brain_calibration_live.js'],
+      /* Astra Readiness Phase 1 · 有界离线观测跑（与上一行同一个 harness，只是换了
+         语料与阶段）：A–U 观测语料 + judge/rewrite/verify 三段全跑 + §12 安全包络
+         （预算先声明、平台层写绊线、document-start 网络白名单守卫）。
+         为什么必须登记：这些断言只有真的跑一遍才算证据，而离线跑不花一分钱。
+         规模刻意压到 6 条样本（最坏 18 次本机 mock 调用）。 */
+      ['test_middle_brain_calibration_live.js', '--corpus=readiness', '--rewrite', '--verify', '--max-cases=6', '--budget=24'],
       /* P21：统一思考深度 · 真实请求链（本地 mock 端点记录最终 wire body）：
          MB disabled 零注入 / auto 与关闭逐字节相等 / 逐档映射 /
          DeepSeek 模型级校准（P21.1：auto 与 baseline 逐字节相等、low/medium/high/max、
