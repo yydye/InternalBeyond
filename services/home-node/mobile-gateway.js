@@ -1382,9 +1382,25 @@ function createMobileGateway(deps) {
          传 viewer 的调用方必须能证明自己是谁；本 verb 不提供任何"按设备身份
          冒充角色身份"的路径（设备面拿不到这个 verb，见 ADMIN_PATHS）。 */
       const viewer = url && url.searchParams.get('viewer');
+      /* ── P11-3X-A · 「参数在但值为空」不是「没传参数」─────────────────────
+         上面那段缺省语义只适用于**这个参数根本不存在**。而 `viewer ? … : …`
+         把「`?viewer=`」也归进了缺省分支，于是"显式给了一个不可判定的读主体"
+         反而拿到**管理员完整镜像**（含 private）。实测（.dsh-research/
+         p11-3x-a-viewer-probe.js，修复前）：
+           `/memory/list?viewer=`    → 200 count=3 viewer=null access=null（含 m_priv）
+           `/memory/list?viewer=%20` → 200 count=0 access.reason='no-principal'
+         空串与空白串给出**相反**的答案，而 canonical 的 normalizeViewer 对两者
+         都返回 null —— 也就是说这条 fail-open 不是语义，是网关误用了 truthiness。
+         一个把未定义变量插进 URL 的客户端（`?viewer=${x}`）会静默拿到全部记忆。
+
+         修法是区分"存在性"与"取值"，**不动** canonical ACL：
+         canonical 谓词早就把空主体判成 no-principal（空页 + 稳定 reason），
+         这里只是不再绕过它。不带参数的调用方（桌面 hydrate / 镜像同步）逐字不变。 */
+      const viewerPresent = !!(url && url.searchParams && typeof url.searchParams.has === 'function' && url.searchParams.has('viewer'));
+      const viewerValue = viewerPresent ? String(viewer == null ? '' : viewer) : null;
       let page;
-      if (viewer) {
-        page = memoryStore.listVisible({ limit: limit || undefined, ownerId: ownerId || undefined, viewer: viewer });
+      if (viewerPresent) {
+        page = memoryStore.listVisible({ limit: limit || undefined, ownerId: ownerId || undefined, viewer: viewerValue });
       } else {
         page = memoryStore.listRecords({ limit: limit || undefined, ownerId: ownerId || undefined });
       }
@@ -1393,7 +1409,7 @@ function createMobileGateway(deps) {
         /* 观测：只记录主体、稳定原因、分类计数 —— **绝不**记录记忆正文、
            条目 id 或 visibleTo 原值（viewer 是角色标识，不是敏感正文）。 */
         record('warn', 'memory-list-denied', {
-          viewer: String(viewer || ''), reason: page.reason,
+          viewer: String(viewerValue || ''), reason: page.reason,
           refused: (page.refused || []).length, scanned: page.scanned || 0
         });
       }
@@ -1404,8 +1420,8 @@ function createMobileGateway(deps) {
         records: page.records,
         /* P11-2G · 读主体与拒绝分类。不传 viewer 时 viewer=null / access=null ——
            "这次读取没有读主体"因此是**可观测的事实**，而不是需要猜的东西。 */
-        viewer: viewer || null,
-        access: viewer ? {
+        viewer: viewerPresent ? viewerValue : null,
+        access: viewerPresent ? {
           refused: (page.refused || []).length,
           byReason: page.refusedByReason || {},
           scanned: page.scanned || 0,
@@ -1431,19 +1447,24 @@ function createMobileGateway(deps) {
       const viewer = url && url.searchParams.get('viewer');
       const ownerId = url && url.searchParams.get('ownerId');
       const at = cursor == null ? 0 : Number(cursor);
-      const page = viewer
-        ? memoryStore.changesVisibleAfter(at, { limit: limit || undefined, viewer: viewer, ownerId: ownerId || undefined })
+      /* P11-3X-A：与 memory/list 逐字同款的"存在性 vs 取值"区分。`?viewer=` 以前
+         落进缺省分支 → 返回**含 private 的完整变更流**；现在它是一个不可判定的
+         读主体，走 canonical 的 no-principal → 403 FORBIDDEN（fail closed）。 */
+      const viewerPresent = !!(url && url.searchParams && typeof url.searchParams.has === 'function' && url.searchParams.has('viewer'));
+      const viewerValue = viewerPresent ? String(viewer == null ? '' : viewer) : '';
+      const page = viewerPresent
+        ? memoryStore.changesVisibleAfter(at, { limit: limit || undefined, viewer: viewerValue, ownerId: ownerId || undefined })
         : memoryStore.changesAfter(at, { limit: limit || undefined });
       if (!page.ok) {
         /* 无法判定可见性（core 不可用 / 主体非法）→ **失败**，不是"返回完整
            变更流"：后者会把受限记忆交给一个我们无法证明其身份的读主体。 */
-        record('warn', 'memory-changes-denied', { viewer: String(viewer || ''), reason: page.error || 'unknown' });
-        return fail(res, viewer ? 'FORBIDDEN' : (page.error || 'INTERNAL'), req, viewer ? 403 : 400, null, { reason: page.error || null });
+        record('warn', 'memory-changes-denied', { viewer: String(viewerValue || ''), reason: page.error || 'unknown' });
+        return fail(res, viewerPresent ? 'FORBIDDEN' : (page.error || 'INTERNAL'), req, viewerPresent ? 403 : 400, null, { reason: page.error || null });
       }
       if ((page.revoked || []).length) {
         /* 观测：只记录**计数**与可见性**分类**，不含正文、不含 visibleTo 原值。 */
         record('info', 'memory-changes-revoked', {
-          viewer: String(viewer), revoked: page.revoked.length,
+          viewer: String(viewerValue), revoked: page.revoked.length,
           byReason: page.revokedByReason || {},
           byCategory: page.revoked.reduce((acc, r) => {
             const k = r.category || 'unknown';
@@ -1452,7 +1473,7 @@ function createMobileGateway(deps) {
           }, {})
         });
       }
-      if (!viewer) return sendJson(res, 200, okBody('memory.changes', null, page), req);
+      if (!viewerPresent) return sendJson(res, 200, okBody('memory.changes', null, page), req);
       return sendJson(res, 200, okBody('memory.changes', null, {
         cursor: page.cursor, serverTime: page.serverTime, revision: page.revision,
         upserts: page.upserts, deletes: page.deletes, hasMore: page.hasMore,

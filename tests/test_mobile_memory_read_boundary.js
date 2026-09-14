@@ -35,6 +35,9 @@ const MEMORY_CONTRACT = require(path.join(ROOT, 'assets', 'js', 'memory-contract
 const NOW = 1789000000000;
 const ALICE = 'friend_alice';
 const BOB = 'friend_bob';
+/* P11-3X-A：设备面那一段需要**已配置的桌面 token**（P11-3A 的凭据铸造闸门）。
+   它只作用于为该段单独构建的实例，不影响上面所有"未配置 token"的断言。 */
+const DESKTOP_TOKEN = 'p11-2g-desktop-token';
 const DEVICE = 'device-abcdef';
 
 let passed = 0, failed = 0;
@@ -447,27 +450,48 @@ function seedStore(dir) {
 
     /* F · Android 仍然没有 memory verb（回归：本阶段没有打开设备面）
        必须带**合法设备凭据**再断言 404：不带凭据的 401 证明不了"没有这个 verb"
-       （它只证明"没认证"）。配对流程与 test_mobile_memory_continuity.js 逐字同款。 */
-    const sPair = await request(port, 'POST', '/pairing/session', {
-      headers: svc.token ? { 'X-IB-Home-Token': svc.token } : {},
-      body: { deviceName: 'P11-2G Phone', deviceType: 'android' }
-    });
-    const cPair = await request(port, 'POST', '/mobile/v1/pairing/complete', {
-      body: { v: 1, payload: { pairingId: sPair.body.payload.pairingId, secret: sPair.body.payload.secret, deviceName: 'P11-2G Phone', deviceType: 'android' } }
-    });
-    const devAuth = { Authorization: 'Bearer ' + cPair.body.payload.token };
-    check('T5.16a 设备配对成功（否则下面的 404 断言证明不了任何事）',
-      cPair.status === 200 && typeof cPair.body.payload.token === 'string', cPair.body);
-    const mobileList = await request(port, 'GET', '/mobile/v1/memory/list', { headers: devAuth });
-    const mobileChanges = await request(port, 'GET', '/mobile/v1/memory/changes', { headers: devAuth });
-    check('T5.16 [F] **/mobile/v1/memory/list 仍然 404**（本阶段没有给设备面开任何读口）',
-      mobileList.status === 404, mobileList.status);
-    check('T5.17 [F] **/mobile/v1/memory/changes 仍然 404**', mobileChanges.status === 404, mobileChanges.status);
-    check('T5.17b [F] 未配对设备同样拿不到（401，而不是先路由再拒绝）',
-      (await request(port, 'GET', '/mobile/v1/memory/list')).status === 401);
-    check('T5.17c [F] 设备面响应体里没有 memory 记录正文',
-      mobileList.raw.indexOf('BODY-') < 0 && mobileChanges.raw.indexOf('BODY-') < 0,
-      mobileList.raw.slice(0, 200));
+       （它只证明"没认证"）。
+
+       ── P11-3X-A 修正（本段此前是**红的**，且与本阶段的改动无关）──────────
+       本文件写于 P11-3A 之前，旧的写法是 `headers: svc.token ? {'X-IB-Home-Token': svc.token} : {}`
+       —— 但 buildHomeNode() 的返回值里从来没有 `token` 字段，所以它**恒**不带凭据；
+       P11-3A 把 `/pairing/session` 收成"未配置桌面 token → 403 desktop-token-required"
+       之后，这里就必然拿到 403，随后 `sPair.body.payload.pairingId` 抛 TypeError，
+       整份套件在 T5.16 处中断（前面几十项其实全绿）。
+       修法是**只改这一段**：为设备面单独建一个**显式带桌面 token** 的实例
+       （buildHomeNode 早就支持 options.token），从而同时保住"设备面 404"的断言强度
+       与上面所有"未配置 token"的断言语义。生产代码零改动。 */
+    const authDir = mk('http-auth');
+    const authSvc = SERVICE.buildHomeNode({ dataDir: authDir, token: DESKTOP_TOKEN, logger: () => {} });
+    const authPort = await listen(authSvc.server);
+    authSvc.open();
+    try {
+      const sPair = await request(authPort, 'POST', '/pairing/session', {
+        headers: { 'X-IB-Home-Token': DESKTOP_TOKEN },
+        body: { deviceName: 'P11-2G Phone', deviceType: 'android' }
+      });
+      check('T5.16q 配了对才有资格断言 404：桌面 token 在场时 /pairing/session 正常签发',
+        sPair.status === 200 && sPair.body.payload && typeof sPair.body.payload.pairingId === 'string',
+        { status: sPair.status, body: sPair.body });
+      const cPair = await request(authPort, 'POST', '/mobile/v1/pairing/complete', {
+        body: { v: 1, payload: { pairingId: sPair.body.payload.pairingId, secret: sPair.body.payload.secret, deviceName: 'P11-2G Phone', deviceType: 'android' } }
+      });
+      const devAuth = { Authorization: 'Bearer ' + cPair.body.payload.token };
+      check('T5.16a 设备配对成功（否则下面的 404 断言证明不了任何事）',
+        cPair.status === 200 && typeof cPair.body.payload.token === 'string', cPair.body);
+      const mobileList = await request(authPort, 'GET', '/mobile/v1/memory/list', { headers: devAuth });
+      const mobileChanges = await request(authPort, 'GET', '/mobile/v1/memory/changes', { headers: devAuth });
+      check('T5.16 [F] **/mobile/v1/memory/list 仍然 404**（本阶段没有给设备面开任何读口）',
+        mobileList.status === 404, mobileList.status);
+      check('T5.17 [F] **/mobile/v1/memory/changes 仍然 404**', mobileChanges.status === 404, mobileChanges.status);
+      check('T5.17b [F] 未配对设备同样拿不到（401，而不是先路由再拒绝）',
+        (await request(authPort, 'GET', '/mobile/v1/memory/list')).status === 401);
+      check('T5.17c [F] 设备面响应体里没有 memory 记录正文',
+        mobileList.raw.indexOf('BODY-') < 0 && mobileChanges.raw.indexOf('BODY-') < 0,
+        mobileList.raw.slice(0, 200));
+    } finally {
+      authSvc.close();
+    }
     const sec = await request(port, 'GET', '/security');
     check('T5.18 [F] /security 仍如实声明"存储但不服务设备"（deviceVerbs 为空）',
       sec.status === 200 && sec.body.memoryPolicy && sec.body.memoryPolicy.stored === true &&

@@ -262,6 +262,39 @@ function createRoutes(ctx) {
     const pathname = url.pathname;
     const q = parseQuery(url);
     res._reqOrigin = corsOrigin(req);
+
+    /* ── Origin 授权（P11-3X-A）──────────────────────────────────────────
+       `corsOrigin()` 回答的是「这个浏览器**能不能读**我们的响应」，它对
+       「没有 Origin」与「Origin 不被允许」都返回 null。这两件事**不是**同一个
+       决定，而旧实现把后者也当成了可执行：
+
+         · 被拒绝的 Origin 只是**拿不到** ACAO 头，请求本身照样落到路由上；
+         · 于是所有 POST 端点（心语/推送/常驻会话/llm-proxy/tts…）都能被一个
+           能到达 loopback 的页面驱动。浏览器侧唯一的拦阻是 PNA 预检——而本服务
+           从不回 `Access-Control-Allow-Private-Network`，所以"拦阻"只存在于
+           强制 PNA 的浏览器里；D1（docs/DECISIONS.md:13）点名的 Firefox / 旧
+           Safari 上，一个 `Content-Type: text/plain` 的**简单请求**（无预检）
+           就能写入状态，而 readBody() 解析 JSON 与 Content-Type 无关。
+         · `/api/llm-proxy` 因此可以成为一个**盲 SSRF**：请求照发，响应读不到。
+
+       本仓库的三个同类本地服务**早就是这个语义**，不是新模型：
+         · active/http.js        → 403 { error: 'Origin is not allowed' }
+         · local-services-runner → 403 { error: 'origin-denied' }（/restart、/shutdown）
+         · internal-beyond-server→ 403 { error: 'origin-denied' }（/__shutdown、
+                                    /__update-check、/__update/start）
+       Home Node 的 mobile-gateway 更进一步：Origin 只当"能不能读"的兼容开关，
+       身份永远由 device token 决定。这里把 Bridge 对齐到同一条**既有**策略：
+       「命名的、不在白名单里的 Origin」= 直接拒绝，而不是"照做但让你读不到"。
+
+       刻意**不动**的两半（都属于 D1 已接受的风险，改它们需要 token 模型）：
+         · `Origin: null` / 无 Origin —— 产品的 file:// 运行方式与原生调用方，
+           无法与沙箱 iframe 区分，必须继续放行；
+         · loopback 上未配置 token 时的匿名读 —— P11-3A 有意保留，留待 P12。 */
+    if (String(req.headers.origin || '').trim() && !res._reqOrigin) {
+      sendJsonRes(res, 403, { ok: false, error: 'Origin is not allowed' });
+      return;
+    }
+
     if (!rateCheck(req)) { sendJsonRes(res, 429, { ok: false, error: '请求过于频繁，请稍后再试' }); return; }
     if (req.method === 'OPTIONS') {
       const headers = {
@@ -283,6 +316,30 @@ function createRoutes(ctx) {
       });
       return;
     }
+    /* Diagnostics is deliberately authenticated whenever a token is required:
+       it reveals data volume and enabled integration metadata. */
+    if (req.method === 'GET' && pathname === '/api/diagnostics') {
+      if (!httpAuthorized(req, q)) { authRequiredResponse(res); return; }
+      sendJsonRes(res, 200, diagnosticsSnapshot());
+      return;
+    }
+
+    /* Health is intentionally unauthenticated to allow a launcher to detect an
+       existing service. Everything else has a token boundary in LAN mode — and
+       that "everything else" now really is everything:
+       P11-3X-A 把 `/status` 移到这条线**后面**。它以前和 `/health` 一样在这条线
+       之前，于是 LAN 模式（token 必填）下 `/status` 仍然匿名可读，而它暴露的正是
+       `/api/diagnostics` 被特意保护起来的同一类信息：数据量（whispers / health /
+       letters / sessions / contextFriends / resident）与已启用的集成
+       （bark / ntfy / tts / mimoTts / voiceAsr / proactive）以及音乐源。
+       实测（.dsh-research/p11-3x-a-probe.js，LAN_EXPOSED=true 且已自动生成 token）：
+       `/api/diagnostics` 401、`/api/whispers` 401、`/api/config` 401，而
+       `/status` 200 —— 与这份文件自己的注释相矛盾。
+       调用方不需要改：桌面页一律经 ibBridgeFetch 发送 `Authorization: Bearer`，
+       启动器的组件健康探针读的是 `/health`（component-registry 的 matchesHealth），
+       都不碰 `/status`。 */
+    if (!httpAuthorized(req, q)) { authRequiredResponse(res); return; }
+
     if (req.method === 'GET' && pathname === '/status') {
       sendJsonRes(res, 200, {
         ok: true, server: SERVER_NAME, version: VERSION, connections: wsSockets.size,
@@ -302,18 +359,6 @@ function createRoutes(ctx) {
       });
       return;
     }
-
-    /* Diagnostics is deliberately authenticated whenever a token is required:
-       it reveals data volume and enabled integration metadata. */
-    if (req.method === 'GET' && pathname === '/api/diagnostics') {
-      if (!httpAuthorized(req, q)) { authRequiredResponse(res); return; }
-      sendJsonRes(res, 200, diagnosticsSnapshot());
-      return;
-    }
-
-    /* Health is intentionally unauthenticated to allow a launcher to detect an
-       existing service. Everything else has a token boundary in LAN mode. */
-    if (!httpAuthorized(req, q)) { authRequiredResponse(res); return; }
 
     /* 通用 LLM 代理（file:// Origin:null 页面经本地 Bridge 跨域获取） */
     if (pathname === '/api/llm-proxy' && req.method === 'POST') {

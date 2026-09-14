@@ -232,6 +232,37 @@ function createHomeNodeHttp(deps) {
   async function route(req, res, url, method, remote) {
     const path = url.pathname.replace(/\/+$/, '') || '/';
 
+    /* ── Origin 授权（P11-3X-A）：命名的外来 Origin 一律拒绝 ─────────────
+       `originAllowed()` 的语义是"**能不能读**我们的响应"：它只决定要不要回 ACAO
+       头。而请求的**副作用**与 CORS 无关 —— CORS 从不阻止请求被执行。于是本文件
+       声明的策略（"未配置 token 时按 loopback 单用户模型放行只适用于**读取类**
+       路径，但**不**回显 CORS 头给任意 Origin"）在**写**这一半上只是注释：
+       一个 `Origin: http://evil.example` 的页面发出 `Content-Type: text/plain`
+       的**简单请求**（不触发预检），readBody() 照样 JSON.parse，写就落地了。
+       实测（.dsh-research/p11-3x-a-probe.js G3，修复前）：
+         POST /migrate（Origin: http://evil.example, text/plain）
+         → 200，且 GET /migration?source=csrf-canary 的版本由 0 变成 4242。
+       响应读不到（没有 ACAO），所以这是一条**盲写**：攻击者不需要读到任何东西。
+
+       本仓库的同类本地服务早就是这个语义，不是新模型：
+         · active/http.js                    → 403 { error: 'Origin is not allowed' }
+         · runtime/local-services-runner.js  → 403 { error: 'origin-denied' }
+         · services/internal-beyond-server.js→ 403 { error: 'origin-denied' }
+       这里把 Home Node 的**桌面面**对齐到同一条既有策略。
+
+       刻意只覆盖桌面面，且**不碰 `Origin: null`**：
+         · `/mobile/v1/*` 是设备面，身份是 device token，Origin 在那里只是
+           "能不能读"的兼容开关（网关自己判定，且它连 capacitor:// 都要放行）；
+           把桌面策略套上去会让手机永远无法在 LAN 上配对；
+         · `Origin: null`（file://）与无 Origin（原生调用方）继续沿用既有的
+           P11-3A 规则（配置 token 后不再信任 null），本行不改那件事。 */
+    const rawOrigin = String(req.headers.origin || '').trim();
+    if (rawOrigin && rawOrigin !== 'null' && path.indexOf('/mobile/') !== 0 && !originAllowed(rawOrigin)) {
+      record('warn', 'rejected-origin', { path: path, origin: rawOrigin, loopback: isLoopback(req) });
+      bad(res, 403, 'origin-denied', { hint: 'a browser page on a foreign origin may not reach the Home Node' }, req);
+      return;
+    }
+
     /* ── 远端（非 loopback）**非 mobile** 路径：统一凭据规则 ─────────────
        为什么这条必须存在：`authorized()` 在**未配置 token** 时对一切放行
        （loopback 单用户模型，见文件头 §安全模型）。这在 loopback 上是对的 ——
