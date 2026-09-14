@@ -221,7 +221,31 @@
   function boot() {
     settle();
     attach();
-    if (!_attached) { var t = setInterval(function () { attach(); if (_attached) { settle(); clearInterval(t); } }, 400); }
+    if (!_attached) {
+      /* ── P11-3X-C · 有界退避（bounded backoff），不是"取消等待" ──────────
+         实测依据：页面加载后 22 秒的空闲窗口里，按创建点归因的存活轮询只有三个
+         （calendar 200ms / basement 400ms / game_room 500ms），它们合计占掉
+         213 次唤醒中的 210 次。calendar 那个自带 `if(n>300)clearInterval(t)`
+         上限，这两个没有 —— 于是整场会话一直以 150 次/分钟（400ms）与
+         120 次/分钟（500ms）的代价，只为等一个**可能永远不出现的对象**：
+         vp() 读的是游戏模块的 G.viewport，用户不打开 Room 就恒为 null。
+         等待本身是对的（标记必须在视口出现后注入），错的只是"用一个固定高频
+         轮询去等一个可能永不发生的事件"。
+         修法沿用仓库既有约定（calendar.js 的 `if(n>300)clearInterval(t)`）：
+         前 25 次保持 400ms（≈10 秒内响应，与改动前完全一致），之后退到 3000ms
+         稳态继续检查。收敛性**没有**被牺牲 —— 视口再晚出现也仍然会被注入，
+         只是之后的探测间隔从 400ms 变成 3000ms（标记是彩蛋交互点，这个延迟
+         不可感知）；空闲唤醒从 150/分钟 降到 ≈20/分钟。 */
+      var n = 0, t = setInterval(function () {
+        n++;
+        attach();
+        if (_attached) { settle(); clearInterval(t); return; }
+        if (n === 25) {
+          clearInterval(t);
+          t = setInterval(function () { attach(); if (_attached) { settle(); clearInterval(t); } }, 3000);
+        }
+      }, 400);
+    }
     document.addEventListener('keydown', onKey);
   }
 

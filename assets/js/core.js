@@ -11,6 +11,17 @@ async function dbGetAll(s){await ensureDB();return new Promise((r,j)=>{const t=d
 async function dbGet(s,k){await ensureDB();return new Promise((r,j)=>{const t=db.transaction(s,'readonly');const q=t.objectStore(s).get(k);q.onsuccess=()=>r(q.result);q.onerror=()=>j(q.error)})}
 async function dbDelete(s,k){await ensureDB();return new Promise((r,j)=>{const t=db.transaction(s,'readwrite');t.objectStore(s).delete(k);t.oncomplete=()=>{_ibMirrorDirty=true;_ibFsDirty=true;r()};t.onerror=()=>j(t.error)})}
 async function dbGetByIndex(s,idx,val){await ensureDB();return new Promise((r,j)=>{const t=db.transaction(s,'readonly');const store=t.objectStore(s);if(!store.indexNames.contains(idx)){/* fallback if index missing */const fields={byFriend:'friendId',byCharacter:'character_id',bySetting:'setting_id',byProject:'projectId',byTo:'toRoleId',byFrom:'fromRoleId'},field=fields[idx]||idx;const q=store.getAll();q.onsuccess=()=>r(q.result.filter(i=>i[field]===val));q.onerror=()=>j(q.error);return}const q=store.index(idx).getAll(val);q.onsuccess=()=>r(q.result);q.onerror=()=>j(q.error)})}
+/* P11-3X-C · 读-改-写单事务原语（read-modify-write in ONE transaction）。
+   为什么需要它：`for(...){ await dbGet(id); ...; await dbPut(rec) }` 这种形状
+   每个 id 要开**两个**事务（一个 readonly 读 + 一个 readwrite 写），是实测到的
+   N+1 来源之一 —— 一次聊天回合里 memory 激活就有 65 读 + 65 写 = 130 个事务。
+   这里把"读当前值 + 写回新值"放进同一个 readwrite 事务：
+     · 仍然**逐条**处理 → 单条失败不影响其它条（调用方的错误隔离语义不变）；
+     · 读取发生在写事务内部 → 比"先读后写"**更新**，不会引入陈旧写；
+     · 每条记录 1 个事务而不是 2 个 → 事务数减半。
+   mutator 返回 falsy 表示"不改写"（记录不存在或调用方决定跳过），此时不写。
+   未改动任何 store、索引或 schema。 */
+async function dbUpdate(s,k,mutator){await ensureDB();return new Promise((resolve,reject)=>{let settled=false;const done=v=>{if(settled)return;settled=true;resolve(v)},fail=e=>{if(settled)return;settled=true;reject(e)};let t;try{t=db.transaction(s,'readwrite')}catch(e){fail(e);return}const store=t.objectStore(s);let changed=false;try{const q=store.get(k);q.onsuccess=()=>{const cur=q.result;if(cur==null)return;let next;try{next=mutator(cur)}catch(e){return}if(!next)return;try{store.put(next);changed=true}catch(e){}};q.onerror=()=>fail(q.error)}catch(e){fail(e);return}t.oncomplete=()=>{_ibMirrorDirty=true;_ibFsDirty=true;done(changed)};t.onerror=()=>fail(t.error);t.onabort=()=>fail(t.error||new Error('IndexedDB 事务被中止'))})}
 /* M1-A · Home Node canonical authority 的浏览器接缝（唯一改动点）。
    ------------------------------------------------------------------
    把「未包装的原函数 + 镜像批量写入器」发布到一个**明确命名的接缝对象**上，
@@ -25,7 +36,7 @@ async function dbGetByIndex(s,idx,val){await ensureDB();return new Promise((r,j)
    绝不在这里做策略决定：模式判断、权威选择、失败语义全部属于
    assets/js/chat-authority.js（可在 Node 中测试），本对象只暴露能力。 */
 window.__ibCoreDb={
-  put:dbPut,get:dbGet,getAll:dbGetAll,getByIndex:dbGetByIndex,del:dbDelete,
+  put:dbPut,get:dbGet,getAll:dbGetAll,getByIndex:dbGetByIndex,del:dbDelete,update:dbUpdate,
   ensureDB:ensureDB,
   /* 镜像批量写入：同一事务内写多条 + 删多条。只给 Home Node 同步使用。 */
   applyChatMirror:async function(upserts,deletes){
@@ -1221,6 +1232,7 @@ window.dbGetAll=dbGetAll;
 window.dbGet=dbGet;
 window.dbDelete=dbDelete;
 window.dbGetByIndex=dbGetByIndex;
+window.dbUpdate=dbUpdate;
 window.getDefaultPromptForTheme=getDefaultPromptForTheme;
 window.clearDefaultPrompt=clearDefaultPrompt;
 window.syncDefaultPromptToTheme=syncDefaultPromptToTheme;

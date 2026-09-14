@@ -687,15 +687,32 @@ function bootstrap(){
   setupResize();
 
   /* Show mini icon after site enters */
-  const checkSplash=setInterval(()=>{
-    const splash=document.getElementById('splash');
-    if(splash && splash.classList.contains('hidden')){
-      clearInterval(checkSplash);
-      setTimeout(()=>{
-        document.getElementById('game-mini').classList.add('visible');
-      },5200);
-    }
-  },500);
+  /* ── P11-3X-C · 有界退避（bounded backoff），不是"取消等待" ──────────────
+     实测依据：页面加载后 22 秒的空闲窗口里，这个 500ms 轮询是当时**仍存活且未被
+     清除**的轮询之一（创建点 = game_room.js 的 checkSplash，44 次唤醒 =
+     120 次/分钟），而它唯一的工作是判断 #splash 是否已带 hidden。
+     入场流程若没走完（用户没进站点、或 splash 结构变化），它会整场会话轮询下去。
+     前 20 次保持 500ms（≈10 秒内响应，与改动前完全一致），之后退到 3000ms 稳态。
+     "入场后 5200ms 再亮小图标"的时序**逐字未改**。 */
+  let _spFast = null, _spSlow = null;
+  function _splashArrived() {
+    const splash = document.getElementById('splash');
+    return !!(splash && splash.classList.contains('hidden'));
+  }
+  function _onSplashHidden() {
+    if (!_splashArrived()) return;
+    if (_spFast) { clearInterval(_spFast); _spFast = null; }
+    if (_spSlow) { clearInterval(_spSlow); _spSlow = null; }
+    setTimeout(() => {
+      document.getElementById('game-mini').classList.add('visible');
+    }, 5200);
+  }
+  _spFast = setInterval(_onSplashHidden, 500);
+  setTimeout(function () {
+    if (!_spFast) return;                    /* 已经等到 → 不再降频 */
+    clearInterval(_spFast); _spFast = null;
+    _spSlow = setInterval(_onSplashHidden, 3000);
+  }, 10000);
 }
 
 /* Make G accessible for debugging and AI setup panel */

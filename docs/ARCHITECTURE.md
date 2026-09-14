@@ -145,6 +145,67 @@ InternalBeyond/  # 仓库根目录（根只放入口 / 许可 / 版本 / 元数�
 - 无障碍：导航链接补齐 `href`/键盘行为/`aria-current`；Bridge 为 non-modal dialog 语义、焦点回收、页签方向键、`inert`/`aria-hidden`；Skip Link 与 reduced-motion。
 - 性能：页面后台时暂停雨效、音频可视化、Bridge 轮询与 Calendar 高频读数；移除重复 Cloudflare beacon。
 
+### 上下文预算 · 宿主回合唯一预算（P11-3X-C）
+
+**不变量：ONE HOST AI TURN → ONE CONTEXT BUDGET。** 唯一事实源是
+[assets/js/context-budget-core.js](../assets/js/context-budget-core.js)（纯函数、零 DOM、可在 Node 里直接做契约测试）：
+
+| 概念 | 值 / 位置 | 说明 |
+|---|---|---|
+| 唯一估算器 | `IBContextBudgetCore.estimateTokens` | CJK ≈ 1 token/字、其余 ≈ 0.33 token/字符。**conservative estimator，不是 provider tokenizer**。`communication.js` 的 `_cacheTok` 只是它的委托薄壳（`test_p11_3x_c_context_budget.js` 的 `core.onlyOneEstimatorImplementation` 守住"全仓只有一份算法本体"） |
+| 应用级天花板 | `APP_CEILING_TOKENS = 64000` | **应用级**决定，不是模型能力表。provider 专属 context window 留作扩展点（`plan()/planParts()` 接受 `ceiling`/`reserve` 参数，接上 provider-directory capability 时只换传入值） |
+| 预留输出 | `reserve = _chatMaxTokens(cfg)`，clamp 到 [1024, 16384] | |
+| 输入预算 | `inputBudget = ceiling − reserve` | 所有输入块**共享**这一个数 |
+| 不可丢 | `system`（persona/关系/站点/工具块）/ `current`（当前用户消息）/ `tools`（原生工具定义） | 本模块对它们**只计量、永不裁剪**；`LADDER` 里不可能出现它们 |
+| 可压缩（让位顺序） | `history → memory → moments → thread → activity → understanding` | 每级有 `MIN_FRACTION` 下限（"压缩"不会退化成"整块消失"） |
+
+落地方式（关键设计决定）：**不新增任何截断器**。宿主回合在 producer 运行**之前**，
+用各级 producer **自己的既有上限**（worst case）算出本回合额度，再把 `keepFraction`
+作用到那些既有参数上（`maxChars` / `maxThreads`）—— 因此：
+
+- 天花板之下每一级的 `keepFraction` 恒为 1，producer 拿到的是与改动前**逐字相同**的调用；
+- 本模块只拥有**总量**，per-block 预算仍归各 producer；
+- 不可丢的块在超预算时也**不被静默改写**：`irreducible === true`（不可丢部分已超预算，
+  或梯子已到下限仍压不进去）时**不做任何裁剪**，只如实上报 —— 那属于产品决策
+  （缩 persona / 减工具 / 换模型），不是这一层能替用户做的。
+
+观测面：`window.IBContextBudget.history()/last()`（只含计数与状态，绝不含正文）与
+`IB.chat.contextBudgetHistory`；真实超预算时打印一行 `[IB Context Budget] …`。
+每次启动的两次构建（单聊 / 群聊宿主回合）各记一条，`buildChatContext` 的返回值里带
+`budget`。测试用的一次性接缝 `window.__ibContextCeiling`（不落 localStorage、不进任何
+用户设置）用于在真实宿主回合上验证超预算分支。
+
+### 回合作用域内的读复用（turn-scoped reads）
+
+同一宿主回合内**不重复读同一批行**，且**不引入任何跨回合/长期缓存**：
+
+- `posts`：`_buildSingleChatContext` / `_buildGroupChatContext` 判定 `logs` 信号时读一次，
+  把这份结果经 `buildSiteContext(signals, {posts})` 传给站点上下文（原先一回合读两遍全表）。
+- `memories`：`_ibAttestDerived(stamp, evidenceIds, roleId, preloaded)` 接受调用方已读的那一批；
+  `getThreadContext` 因此从"每条线索各读一次全表"变成"一次读、所有线索共用一个一致快照"。
+- `favorites`：`has()/list()/count()/removeBySource()` 走 `_favReadAll()` 的**单飞**读取
+  （同一时刻在飞的那次读取由所有同时发问的调用方共享，Promise settle 即丢弃共享）。
+  这不是缓存：不存在任何时间窗口内的陈旧读，本地写入还会显式结束共享。
+  `favorites` 的 keyPath 是随机 `id`、`sourceId` 上没有索引，因此按键查需要 schema 变更
+  （本阶段禁止）——单飞是"不加索引也能去掉读放大"的最小手段。
+- 记忆激活（`recordMemoryActivation`）：`window.dbUpdate(store, key, mutator)` 把
+  "读当前值 + 写回新值"放进**同一个** readwrite 事务；仍逐条处理（单条失败不影响其它条），
+  读取发生在写事务内部（因此只会更**新**，不会引入陈旧写）。
+
+### 引导轮询的空闲生命周期（idle lifecycle）
+
+**约定：等待一个 DOM 条件的引导轮询必须有界。** 它等的是"某个元素/对象出现"，
+而那个条件可能永远不成立（用户不打开对应页面）。
+
+- 先例（既有）：`calendar.js` 等 `#fab-dock.visible` 的 200 ms 轮询自带 `if(n>300)clearInterval(t)`。
+- P11-3X-C 补齐同类：`basement.js` 等 `G.viewport`（400 ms）、`game/game_room.js` 等 `#splash.hidden`（500 ms）
+  原先**没有任何上限**，用户不打开 Room / 入场流程没走完就会整场会话空转。
+  两者改为"前 10 秒保持原频率（响应性与改动前一致）→ 之后退到 3000 ms 稳态继续检查"：
+  收敛性没有被牺牲（条件再晚成立也仍会被注入），空闲唤醒从 150/min + 120/min 降到 40/min 合计。
+- 引导轮询**不加** `document.hidden` 守卫：它的完成条件是 DOM 状态而非用户可见状态，
+  页面隐藏时 DOM 仍会被脚本构建；加了守卫反而会永久错过条件。
+
+
 ### Image Router（统一图片策略层 · P12）
 
 **唯一图片请求入口**，位于所有 producer 与现有 executor 之间。它只做「策略 + 资源控制」，

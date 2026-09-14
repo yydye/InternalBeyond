@@ -258,6 +258,18 @@ const IBMCP = {
 /* ---------- 2. IBFC: 原生函数调用双轨 (Anthropic / OpenAI 原生, 其余回落 XML) ---------- */
 const IBFC = {
   on(){ try{ return localStorage.getItem('ib_fcMode') !== 'off'; }catch(e){ return true; } },
+  /* P11-3X-C · 只读定义访问器（零副作用）。
+     宿主回合的上下文预算必须量到"本回合真正会发出去的那份工具定义"，
+     而那份定义正是 `prepare()` 内部调用的 `_buildTools()` 产物。为了让预算
+     量与发送量是**同一份来源**（而不是各算一份），这里把 `_buildTools()` 的
+     纯读取入口公开出来。它只读 localStorage 配置与 IBMCP/IBNET 的当前工具表，
+     不写任何状态、不注册任何东西、不改 `_last`（与 prepare 不同）。 */
+  toolDefinitions(){
+    try{
+      if(typeof this.on==='function' && !this.on()) return { anthropic: [], openai: [], nameMap: {}, list: [] };
+      return this._buildTools();
+    }catch(e){ return { anthropic: [], openai: [], nameMap: {}, list: [] }; }
+  },
   setOn(v){ try{ localStorage.setItem('ib_fcMode', v ? 'auto' : 'off'); }catch(e){} },
   maxRounds(){ const n = parseInt((typeof localStorage !== 'undefined' && localStorage.getItem('ib_fcRounds')) || '4', 10); return (n >= 1 && n <= 99) ? n : 4; },
   /* 逐服务器轮上限(存于 ib_mcp_cfg 内 servers[].maxRounds): 该服务器未设置时为默认值 5, 与外部工具轮上限无关 */

@@ -98,20 +98,25 @@
   async function buildActivityContext(rec,opts){
     opts=opts||{};
     if(!rec)return'';
+    /* P11-3X-C · 两个切片上限仍是生产习惯值（2000 / 600），只有宿主回合的输入
+       预算要求收紧时才使用调用方给的更小值（只缩不放：cap 越小，两段都跟着缩）。 */
+    var _cap=Number(opts.maxChars);
+    var pageCap=2000,recapCap=600;
+    if(isFinite(_cap)&&_cap>0&&_cap<2600){pageCap=Math.max(200,Math.min(2000,Math.round(_cap*0.77)));recapCap=Math.max(60,Math.min(600,Math.round(_cap*0.23)))}
     var type=rec.type,lines=[];
     lines.push('———— 以下是系统随消息附上的陪伴活动状态，不是对方说的话 ————');
     if(type==='coread'){
       var prog=rec.progress||{},cur=(prog.page||1),total=(prog.total||1);
       var chapter=prog.chapter||'';
       lines.push('【共读】你们正在一起读《'+(rec.title||'')+'》· 第 '+(cur>total?total:cur)+' / '+total+' 页 · 进度 '+Math.round((prog.pct||0))+'%'+(chapter?(' · '+chapter):''));
-      if(prog.pageText){lines.push('［对方此刻读到的这一页］\n'+String(prog.pageText).slice(0,2000))}
-      if(prog.recap){lines.push('［前文梗概］\n'+String(prog.recap).slice(0,600))}
+      if(prog.pageText){lines.push('［对方此刻读到的这一页］\n'+String(prog.pageText).slice(0,pageCap))}
+      if(prog.recap){lines.push('［前文梗概］\n'+String(prog.recap).slice(0,recapCap))}
       lines.push('［说明］以上就是这一轮 TA 读到的全部，后面的页你还没读到，不猜测、不预告，围绕当前页谈。');
     }else if(type==='cinema'){
       var prog2=rec.progress||{},sec=prog2.sec||0;
       lines.push('【观影室】你们正在一起看《'+(rec.title||'')+'》· 进度 '+_fmt(sec)+(prog2.dur?(' / '+_fmt(prog2.dur)):''));
       if(prog2.subs&&prog2.subs.length){lines.push('［播放点之前最近的字幕］\n'+prog2.subs.slice(0,6).map(function(c){return'['+_fmt(c[0])+'] '+String(c[2]).replace(/\n/g,' ')}).join('\n'))}
-      if(prog2.recap){lines.push('［前情梗概（到 '+_fmt(prog2.upTo||0)+'）］\n'+String(prog2.recap).slice(0,600))}
+      if(prog2.recap){lines.push('［前情梗概（到 '+_fmt(prog2.upTo||0)+'）］\n'+String(prog2.recap).slice(0,recapCap))}
       lines.push('［说明］以上是这一轮你知道的全部：只到播放点为止，后面的剧情你不知道，不预告、不猜。');
     }
     lines.push('［系统留白］若你觉得现在不适合继续，可以自然停顿，不必硬聊。');

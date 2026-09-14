@@ -1906,7 +1906,9 @@ async function getMomentsContext(apiId,opts){
       userName:(function(){try{const a=window._cachedUserName;return typeof a==='string'&&a.trim()?a.trim():_momentsUserDisplayName()}catch(e){return _momentsUserDisplayName()}})(),
       characterNameOf:_momentsContextNameOf,
       options:{ownLimit:4,otherLimit:3,otherRolesVisible:prefs.otherRolesVisible!==false},
-      maxChars:MOMENT_CONTEXT_CHAT_MAX
+      /* P11-3X-C · 上限仍由生产习惯值决定（MOMENT_CONTEXT_CHAT_MAX），
+         只有宿主回合的输入预算要求收紧时才使用调用方给的更小值（只缩不放）。 */
+      maxChars:(Number(opts.maxChars)>0?Math.min(Number(opts.maxChars),MOMENT_CONTEXT_CHAT_MAX):MOMENT_CONTEXT_CHAT_MAX)
     });
   }catch(e){return''}
 }

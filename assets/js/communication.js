@@ -1499,10 +1499,18 @@ async function _buildSingleChatContext(cfg,opts){
     }
   }catch(_sigErr){console.warn('[ContextSignals] resolve failed',String(_sigErr&&_sigErr.message||_sigErr).slice(0,120))}
   /* 日志段：用户消息里是否逐字提到某篇真实存在（且未锁定）的日志标题 */
+  /* P11-3X-C：posts 是**一次全表读取**（实测 300 篇 ≈ 144KB 反序列化）。
+     修复前这一轮要读两次：这里读一次判 `logs` 信号，buildSiteContext 内部
+     再读一次取标题+摘要。现在把这一份**同一次读取的结果**传给 buildSiteContext
+     复用（`opts.posts`），两侧看到的本就是同一批行，行为无差、读放大减半。
+     信号模块缺失（_signals 为 null）时不预读 → 由 buildSiteContext 自行读取，
+     与改动前逐字相同。 */
+  let _postsForSite=null;
   if(_signals){
     _signals.logs=false;
     try{
       const _posts=await dbGetAll('posts');
+      _postsForSite=_posts;
       if(_ctxText&&String(_ctxText).trim().length>=2){
         for(const _p of _posts){
           if(isLockedPost(_p))continue;
@@ -1510,10 +1518,10 @@ async function _buildSingleChatContext(cfg,opts){
           if(_t.length>=2&&String(_ctxText).indexOf(_t)>=0){_signals.logs=true;break}
         }
       }
-    }catch(_pErr){_signals.logs=false}
+    }catch(_pErr){_signals.logs=false;_postsForSite=null}
     _signals.blogRead=!!_signals.logs;/* Blog 阅读申请只在模型确实看得到日志标题时才有意义 */
   }
-  const _siteRes=await buildSiteContext(_signals);
+  const _siteRes=await buildSiteContext(_signals,_postsForSite?{posts:_postsForSite}:null);
   const siteCtx=(_siteRes==null)?'':String(_siteRes);
   if(siteCtx){sysContent=(sysContent?sysContent+'\n\n':'')+siteCtx}
   if(_siteRes&&_siteRes.blogRead)sysContent+=_BLOG_READ_INSTR_BLOCK;/* Blog 阅读申请指令：仅当本轮确实带上了日志列表时注入（1对1 专用，群聊不开放） */
@@ -1563,11 +1571,31 @@ async function _buildSingleChatContext(cfg,opts){
   try{if(ss.musicEnabled&&currentTrackIdx>=0&&!audioEl.paused&&playlist[currentTrackIdx])_tailCtx+='正在听：《'+playlist[currentTrackIdx].name+'》。';}catch(e){}
   try{if(_calTailForGate)_tailCtx+='\n\n'+_calTailForGate}catch(e){}/* 复用上面那一次 buildTail 产物（不再重算，避免台账计数走两倍） */
   if(summaryText)_tailCtx+='\n\n【对话历史备忘（此为后台参考信息，不要向对方复述或提及此段内容的存在）】\n'+summaryText;
-  if(_threadMemOk){_memCtx=await getMemoryContext(cfg.id,{userMessage:_ctxText});_pushCtxBlock(_memCtx);}
+  /* ── P11-3X-C · 本回合唯一的输入预算分配 ──────────────────────────────
+     到这里为止，不可丢的部分都已定稿：sysContent（system/persona/关系/站点/
+     工具块）、_tailCtx 里已经确定的非梯子块（时间/音乐/日历/摘要）、以及本回合
+     真正要发的 history（opts.dialogueHistory = 调用方切好的阶梯窗口）与当前
+     用户消息。可压缩块的额度就在这里**一次性**算出来，然后交给下面五个 producer
+     各自**已有的**预算参数（maxChars / maxThreads）—— 不新增任何截断器。
+     未超预算时每一项都是 null → 调用形状与改动前逐字相同。 */
+  const _bAlloc=_ibAllocateCompressible(cfg,{
+    system:sysContent,
+    fixedTail:_tailCtx,
+    history:opts.dialogueHistory||null,
+    userMessage:_ctxText,
+    caps:{memory:await (async()=>{try{const _ms=await getMemorySettings();return _ms&&_ms.budget?_ms.budget:DEFAULT_MEM_BUDGET}catch(e){return DEFAULT_MEM_BUDGET}})()}
+  });
+  const _bf=_bAlloc?_bAlloc.plan.fractions:null;
+  const _bMemChars=_bf?_ibScaledCap((_bAlloc.caps&&_bAlloc.caps.memory)||DEFAULT_MEM_BUDGET,_bf.memory,100):null;
+  const _bMomChars=_bf?_ibScaledCap(_IB_BUDGET_CAP_TOKENS.moments,_bf.moments,120):null;
+  const _bUndChars=_bf?_ibScaledCap(_IB_BUDGET_CAP_TOKENS.understanding,_bf.understanding,60):null;
+  const _bThreads=_bf?_ibScaledCap(3,_bf.thread,1):null;
+  const _bActChars=_bf?_ibScaledCap(_IB_BUDGET_CAP_TOKENS.activity,_bf.activity,300):null;
+  if(_threadMemOk){_memCtx=await getMemoryContext(cfg.id,_bMemChars?{userMessage:_ctxText,maxChars:_bMemChars}:{userMessage:_ctxText});_pushCtxBlock(_memCtx);}
   /* Understanding + Thread（v1）· 走 tail（末条 user 消息），绝不进 system（保 prompt cache 稳定）。 */
-  try{if(_threadMemOk&&typeof getUnderstandingContext==='function'){_uCtx=await getUnderstandingContext(cfg.id);_pushCtxBlock(_uCtx);}}catch(_uErr){console.warn('[Understanding] ctx failed',String(_uErr&&_uErr.message||_uErr).slice(0,120))}
-  try{if(_threadMemOk&&typeof getThreadContext==='function'){_tCtx=await getThreadContext(cfg.id);_pushCtxBlock(_tCtx);}}catch(_tErr){console.warn('[Thread] ctx failed',String(_tErr&&_tErr.message||_tErr).slice(0,120))}
-  try{if(_threadMemOk&&typeof getMomentsContext==='function'){_momCtx=await getMomentsContext(cfg.id,{userMessage:_ctxText});_pushCtxBlock(_momCtx);}}catch(_momErr){console.warn('[Moments] chat context failed',String(_momErr&&_momErr.message||_momErr).slice(0,120))}
+  try{if(_threadMemOk&&typeof getUnderstandingContext==='function'){_uCtx=await getUnderstandingContext(cfg.id,_bUndChars?{maxChars:_bUndChars}:undefined);_pushCtxBlock(_uCtx);}}catch(_uErr){console.warn('[Understanding] ctx failed',String(_uErr&&_uErr.message||_uErr).slice(0,120))}
+  try{if(_threadMemOk&&typeof getThreadContext==='function'){_tCtx=await getThreadContext(cfg.id,_bThreads?{maxThreads:_bThreads}:undefined);_pushCtxBlock(_tCtx);}}catch(_tErr){console.warn('[Thread] ctx failed',String(_tErr&&_tErr.message||_tErr).slice(0,120))}
+  try{if(_threadMemOk&&typeof getMomentsContext==='function'){_momCtx=await getMomentsContext(cfg.id,_bMomChars?{userMessage:_ctxText,maxChars:_bMomChars}:{userMessage:_ctxText});_pushCtxBlock(_momCtx);}}catch(_momErr){console.warn('[Moments] chat context failed',String(_momErr&&_momErr.message||_momErr).slice(0,120))}
   if(_amInj.tail)_tailCtx+=(_tailCtx?'\n\n':'')+_amInj.tail;
   /* ── C2 step 1 · canonical Context 快照（只读）──
      把本轮已读取的四个 producer 结果收成一个只读快照（producer / value / empty-vs-missing /
@@ -1636,7 +1664,7 @@ async function _buildSingleChatContext(cfg,opts){
       _mbTrSink.note(cfg.id,'messagesChanged',_mbInjected);
     }
   }catch(_mbErr){console.warn('[MiddleBrain] ctx failed',String(_mbErr&&_mbErr.message||_mbErr).slice(0,120))}
-  try{if(_threadMemOk&&typeof getActivityContext==='function'){const _actCtx=await getActivityContext(cfg.id,{userMessage:_ctxText,threadId:_targetThread});
+  try{if(_threadMemOk&&typeof getActivityContext==='function'){const _actCtx=await getActivityContext(cfg.id,{userMessage:_ctxText,threadId:_targetThread,maxChars:_bActChars||undefined});
   if(_actCtx)_tailCtx+=(_tailCtx?'\n\n':'')+_actCtx;}}catch(_actErr){console.warn('[Activity] chat context failed',String(_actErr&&_actErr.message||_actErr).slice(0,120))}
   const _wsReadCtx=_getWsReadInjection()+_getWsOpFeedbackInjection()+_getWsRunOutputInjection()+_getIbToolResultInjection()+_getBlogReadInjection();
   if(_wsReadCtx)_tailCtx+=(_tailCtx?'\n':'')+_wsReadCtx;
@@ -1650,7 +1678,33 @@ async function _buildSingleChatContext(cfg,opts){
      「自然收尾」（cfg.naturalEnding===true）与「简洁回复」相互独立，在末尾追加；
      「保持对话连贯」（cfg.conversationContinuity===true）同样相互独立，可自由组合。 */
   try{if(window.IB&&IB.brevity){const _bd=!!opts.voice;sysContent=IB.brevity.apply(sysContent,{mode:_bd?'voice':'text',detailed:IB.brevity.isDetailedRequest(_ctxText),concise:!!(cfg&&cfg.replyStyle==='concise'),naturalEnding:!!(cfg&&cfg.naturalEnding),conversationContinuity:!!(cfg&&cfg.conversationContinuity)});}}catch(e){}
-  return {system:sysContent, tail:_tailCtx, snapshot:_ctxSnapshot};
+  /* ── P11-3X-C · 本回合的实测量测（唯一一次），供如实上报与测试取证 ──
+     量的是**真正要发出去的东西**：最终 sysContent + 调用方切好的 history +
+     末条用户消息（用户自己那句 + 注入的 tail）。total 是估算 token，
+     over/irreducible 取自决定本次额度的那个 plan（worst case 判定）。 */
+  let _bFinal=null;
+  try{
+    if(_bAlloc){
+      const _core=_bAlloc.core;
+      const _hist=opts.dialogueHistory||[];
+      let _histTok=0;for(const _hm of _hist)_histTok+=_core.estimateTokens(_core.contentText(_hm&&_hm.content));
+      const _act=_core.measure([{role:'system',content:sysContent},{role:'user',content:String(_ctxText||'')+_CTX_TAIL_SEP+_tailCtx}],
+        {injectedTokens:_core.estimateTokens(_CTX_TAIL_SEP+_tailCtx)});
+      _bFinal={
+        ceiling:_bAlloc.plan.ceiling,reserve:_bAlloc.plan.reserve,inputBudget:_bAlloc.plan.inputBudget,
+        inputTokens:_act.inputTokens+_histTok,
+        parts:{system:_act.parts.system,current:_act.parts.current,injected:_act.parts.injected,
+               history:_histTok,tools:_bAlloc.plan.summary.parts.tools},
+        plannedOver:!!_bAlloc.plan.over, irreducible:!!_bAlloc.plan.irreducible,
+        over:(_act.inputTokens+_histTok)>_bAlloc.plan.inputBudget,
+        ladder:_bAlloc.plan.summary.ladder
+      };
+      _ibBudgetRecord(Object.assign({at:Date.now(),kind:opts.isGroup?'group':'chat',characterId:String((cfg&&cfg.id)||'')},_bFinal));
+      /* 只在**真实**超预算时报警（计划的 worst case 判定只用于分配，不当作事实） */
+      if(_bFinal.over)_ibBudgetLog(opts.isGroup?'group':'chat',_bAlloc,'actual~'+_bFinal.inputTokens+' tok');
+    }
+  }catch(_bErr){console.warn('[ContextBudget] measure failed',String(_bErr&&_bErr.message||_bErr).slice(0,120))}
+  return {system:sysContent, tail:_tailCtx, snapshot:_ctxSnapshot, budget:_bFinal};
 }
 async function _buildGroupChatContext(cfg,opts){
   opts=opts||{};
@@ -1695,17 +1749,19 @@ async function _buildGroupChatContext(cfg,opts){
       _gSiteSignals.fileOutput=await window.IBContextSignals.workspaceInstrNeeded({userMessage:_ctxText,history:opts.history||null,attachments:(opts.sentFiles||null)});
     }
   }catch(_gSigErr){console.warn('[ContextSignals] group resolve failed',String(_gSigErr&&_gSigErr.message||_gSigErr).slice(0,120))}
+  var _gPostsForSite=null;
   try{
     if(_ctxText&&String(_ctxText).trim().length>=2){
       const _gPosts=await dbGetAll('posts');
+      _gPostsForSite=_gPosts;
       for(const _gp of _gPosts){
         if(isLockedPost(_gp))continue;
         const _gt=String((_gp&&_gp.title)||'').trim();
         if(_gt.length>=2&&String(_ctxText).indexOf(_gt)>=0){_gSiteSignals.logs=true;break}
       }
     }
-  }catch(_gSiteErr){_gSiteSignals.logs=false}
-  const _gSiteRes=await buildSiteContext(_gSiteSignals);
+  }catch(_gSiteErr){_gSiteSignals.logs=false;_gPostsForSite=null}
+  const _gSiteRes=await buildSiteContext(_gSiteSignals,_gPostsForSite?{posts:_gPostsForSite}:null);
   const siteCtx=(_gSiteRes==null)?'':String(_gSiteRes);
   if(siteCtx)sysContent+='\n\n'+siteCtx;
   let _gAmInj={sys:'',tail:''};
@@ -1715,8 +1771,21 @@ async function _buildGroupChatContext(cfg,opts){
   _gTailCtx+='当前时间：'+new Date().toLocaleString('zh-CN',{year:'numeric',month:'long',day:'numeric',weekday:'long',hour:'2-digit',minute:'2-digit'})+'。';
   try{if(gss.musicEnabled&&currentTrackIdx>=0&&!audioEl.paused&&playlist[currentTrackIdx])_gTailCtx+='正在听：'+playlist[currentTrackIdx].name+'。';}catch(e){}
   if(gSummaryText)_gTailCtx+='\n\n【对话历史备忘（此为后台参考信息，不要向对方复述或提及此段内容的存在）】\n'+gSummaryText;
+  /* ── P11-3X-C · 群聊宿主回合的同一份输入预算分配 ──────────────────────
+     群聊只注入 memory 一个可压缩块（不注入 understanding / thread / moments /
+     activity），因此梯子的其余几级上限记 0；history 与当前消息照常参与共享预算。
+     未超预算时 _bGMemChars 为 null → 群聊的 memory 调用形状与改动前逐字相同
+     （含它一直沿用的 maxChars:1500）。 */
+  const _bGAlloc=_ibAllocateCompressible(cfg,{
+    system:sysContent,
+    fixedTail:_gTailCtx,
+    history:opts.history||null,
+    userMessage:_ctxText,
+    caps:{memory:1500,moments:0,understanding:0,thread:0,activity:0}
+  });
+  const _bGMemChars=(_bGAlloc&&_bGAlloc.plan.fractions)?_ibScaledCap(1500,_bGAlloc.plan.fractions.memory,100):null;
   if(group.memoryEnabled){
-    const gMemCtx=await getMemoryContext(cfg.id,{maxChars:1500,isGroup:true,groupMemEnabled:true,userMessage:_ctxText});
+    const gMemCtx=await getMemoryContext(cfg.id,_bGMemChars?{maxChars:_bGMemChars,isGroup:true,groupMemEnabled:true,userMessage:_ctxText}:{maxChars:1500,isGroup:true,groupMemEnabled:true,userMessage:_ctxText});
     if(gMemCtx)_gTailCtx+=(_gTailCtx?'\n\n':'')+gMemCtx;
   }
   if(_gAmInj.tail)_gTailCtx+=(_gTailCtx?'\n\n':'')+_gAmInj.tail;
@@ -1731,7 +1800,28 @@ async function _buildGroupChatContext(cfg,opts){
      「自然收尾」（cfg.naturalEnding===true）与本成员独立组合，在末尾追加；
      「保持对话连贯」（cfg.conversationContinuity===true）同样按本成员独立组合。 */
   try{if(window.IB&&IB.brevity){sysContent=IB.brevity.apply(sysContent,{mode:'text',detailed:IB.brevity.isDetailedRequest(_ctxText),concise:!!(cfg&&cfg.replyStyle==='concise'),naturalEnding:!!(cfg&&cfg.naturalEnding),conversationContinuity:!!(cfg&&cfg.conversationContinuity)});}}catch(e){}
-  return {system:sysContent, tail:_gTailCtx};
+  let _bGFinal=null;
+  try{
+    if(_bGAlloc){
+      const _core=_bGAlloc.core;
+      const _hist=opts.history||[];
+      let _histTok=0;for(const _hm of _hist)_histTok+=_core.estimateTokens(_core.contentText(_hm&&_hm.content));
+      const _act=_core.measure([{role:'system',content:sysContent},{role:'user',content:String(_ctxText||'')+_CTX_TAIL_SEP+_gTailCtx}],
+        {injectedTokens:_core.estimateTokens(_CTX_TAIL_SEP+_gTailCtx)});
+      _bGFinal={
+        ceiling:_bGAlloc.plan.ceiling,reserve:_bGAlloc.plan.reserve,inputBudget:_bGAlloc.plan.inputBudget,
+        inputTokens:_act.inputTokens+_histTok,
+        parts:{system:_act.parts.system,current:_act.parts.current,injected:_act.parts.injected,
+               history:_histTok,tools:_bGAlloc.plan.summary.parts.tools},
+        plannedOver:!!_bGAlloc.plan.over, irreducible:!!_bGAlloc.plan.irreducible,
+        over:(_act.inputTokens+_histTok)>_bGAlloc.plan.inputBudget,
+        ladder:_bGAlloc.plan.summary.ladder
+      };
+      _ibBudgetRecord(Object.assign({at:Date.now(),kind:'group',characterId:String((cfg&&cfg.id)||'')},_bGFinal));
+      if(_bGFinal.over)_ibBudgetLog('group',_bGAlloc,'actual~'+_bGFinal.inputTokens+' tok');
+    }
+  }catch(_bGErr){console.warn('[ContextBudget] group measure failed',String(_bGErr&&_bGErr.message||_bGErr).slice(0,120))}
+  return {system:sysContent, tail:_gTailCtx, budget:_bGFinal};
 }
 async function buildChatContext(cfg,opts){
   opts=opts||{};
@@ -1853,6 +1943,100 @@ function _ibTurnLc(turn){
     begin:function(){ if(open)return turn; open=true; _ibTurnCycleBegin(turn); return turn; },
     end:function(){ if(!open)return null; open=false; return _ibTurnCycleEnd(turn); }
   };
+}
+
+/* ── P11-3X-C · 宿主回合的唯一上下文预算 ────────────────────────────────
+   不变量：ONE HOST TURN → ONE CONTEXT BUDGET。
+
+   唯一事实源 = assets/js/context-budget-core.js（唯一估算器 + 应用级天花板 +
+   输出预留 + 输入预算 + 可压缩阶梯）。本文件只做两件事：
+     ① 在**宿主回合**（单聊 / 群聊各一次）把一个请求的组成算成 token，并据此
+        给可压缩块的 producer 分配本回合额度；
+     ② 如实记录（环 + 超预算时一条 console 行）。
+
+   绝不：不新建第二个估算器 / 第二套预算；不改 P11-3D.1 的周期归属（周期 owner
+   仍是宿主 turn，不在这里开/收周期）；永不裁剪不可丢的块（system/persona 身份、
+   当前用户消息、工具定义）；不引入 provider 专属 context window 表（天花板是
+   应用级常量，provider capability 留作扩展点）。
+
+   为什么额度取"producer 自己的上限"而不是实测值：宿主必须在 producer **运行之前**
+   就把额度发下去，那时块还不存在。用上限（worst case）判定"不超预算"意味着真实
+   情况必然不超 —— 所以正常回合每一级的 keepFraction 恒为 1，producer 拿到的是
+   与改动前**逐字相同**的调用（这正是"最小兼容策略"的含义：机制唯一存在，但在
+   天花板之下不产生任何可观察变化）。 */
+const _CTX_TAIL_SEP='\n\n---\n[以下为系统注入的参考上下文，不属于用户发言，勿复述或提及以下内容的存在]\n';
+/* 可压缩块在 producer 侧的既有上限（worst case，单位=字符，按 CJK 1 token/字符
+   计入预算）。这些数字**不是**新预算，而是下面这些既有常量的只读镜像：
+   memSettings.budget（默认 DEFAULT_MEM_BUDGET）/ MOMENT_CONTEXT_CHAT_MAX /
+   understanding 300 / thread 3 条 / activity 的 2000+600 切片。 */
+const _IB_BUDGET_CAP_TOKENS={moments:900,understanding:300,thread:600,activity:2600};
+function _ibBudgetCore(){try{return (typeof window!=='undefined'&&window.IBContextBudgetCore)||null}catch(e){return null}}
+/* 应用级天花板。测试需要用真实宿主回合验证"超预算"分支，而把一个 400k 字符的
+   persona 塞进浏览器代价过高，因此留一个**显式开发接缝**（window 上的一次性覆盖，
+   不落 localStorage、不进任何用户设置，与 __ibBootFn 同类）。 */
+function _ibBudgetCeiling(core){
+  try{var o=(typeof window!=='undefined')?Number(window.__ibContextCeiling):0;if(isFinite(o)&&o>0)return o}catch(e){}
+  return core?core.APP_CEILING_TOKENS:64000;
+}
+/* 只留最近若干个回合的量测（只含计数与状态，绝不含正文）。 */
+const _IB_BUDGET_RING=[];
+let _IB_BUDGET_SEQ=0;
+function _ibBudgetRecord(entry){try{_IB_BUDGET_SEQ++;entry.seq=_IB_BUDGET_SEQ;_IB_BUDGET_RING.push(entry);if(_IB_BUDGET_RING.length>24)_IB_BUDGET_RING.shift()}catch(e){}}
+function _ibBudgetHistory(){return _IB_BUDGET_RING.slice()}
+/* 本回合 provider 侧工具定义的 token 量（FC 未激活 / 该厂商不支持 → 0）。
+   量的是 `_callApiChatStreamOnce` 真正会注入 body.tools 的那一份定义
+   （同一个 IBFC 构建源），不是另算一份。 */
+function _ibToolsTokens(cfg){
+  try{
+    if(typeof IBFC==='undefined'||typeof IBFC.on!=='function'||!IBFC.on())return 0;
+    if(typeof IBFC.toolDefinitions!=='function')return 0;
+    const fmt=_providerFormat(cfg);
+    if(fmt!=='anthropic'&&fmt!=='openai')return 0;
+    const t=IBFC.toolDefinitions();
+    const arr=(t&&t.openai&&t.openai.length)?t.openai:((t&&t.anthropic)||null);
+    const core=_ibBudgetCore();
+    return core?core.estimateTokens(core.toolsText(arr)):0;
+  }catch(e){return 0}
+}
+/* 本回合的额度分配。返回 null 表示"核心不可用 → 一切照旧"（fail-open 到改动前）。 */
+function _ibAllocateCompressible(cfg,parts){
+  const core=_ibBudgetCore();
+  if(!core)return null;
+  try{
+    parts=parts||{};
+    const caps=Object.assign({},_IB_BUDGET_CAP_TOKENS,parts.caps||{});
+    const plan=core.planParts({
+      ceiling:_ibBudgetCeiling(core),
+      reserve:(typeof _chatMaxTokens==='function')?_chatMaxTokens(cfg):undefined,
+      systemTokens:core.estimateTokens(parts.system||''),
+      historyTokens:(parts.history||[]).reduce(function(a,m){return a+core.estimateTokens(core.contentText(m&&m.content))},0),
+      currentTokens:core.estimateTokens(parts.userMessage||''),
+      injectedOtherTokens:core.estimateTokens(parts.fixedTail||''),
+      toolsTokens:_ibToolsTokens(cfg),
+      memoryTokens:caps.memory,
+      momentsTokens:caps.moments,
+      threadTokens:caps.thread,
+      activityTokens:caps.activity,
+      understandingTokens:caps.understanding
+    });
+    return {core:core,plan:plan,caps:caps};
+  }catch(e){return null}
+}
+/* 把 keepFraction 作用到 producer 的既有上限上（只缩不放）。
+   f===1 → 原样返回 null，调用方保持改动前的调用形状。 */
+function _ibScaledCap(capChars,f,minChars){
+  const f0=Number(f);
+  if(!(f0<1))return null;
+  const v=Math.floor(Number(capChars)*f0);
+  return Math.max(minChars||0,v);
+}
+function _ibBudgetLog(kind,alloc,extra){
+  try{
+    const p=alloc&&alloc.plan;if(!p||!p.over)return;
+    console.info('[IB Context Budget] '+kind+' | in~'+p.inputTokens+' tok / budget '+p.inputBudget
+      +' (ceil '+p.ceiling+' - out '+p.reserve+') | '+(p.irreducible?'IRREDUCIBLE（只剩产品决策：persona/工具/换模型）':('ladder '+JSON.stringify(p.summary.ladder)))
+      +(extra?(' | '+extra):''));
+  }catch(e){}
 }
 
 async function sendChatMessage(voiceMsg){
@@ -2029,8 +2213,8 @@ async function sendChatMessage(voiceMsg){
         if(_gTailCtx){/* 群聊尾部挂载：优先找用户本人的消息（无 senderName 且 role=user），找不到才回退到最后一条 user；
            带图消息（content 数组）用 _appendMsgText 追加，绝不 String() 化（图片 part 需要保留） */
           let _gtDone=false;
-          for(let _gt=messages.length-1;_gt>=0;_gt--){if(messages[_gt].role==='user'&&!messages[_gt]._groupSender){_appendMsgText(messages[_gt],'\n\n---\n[以下为系统注入的参考上下文，不属于用户发言，勿复述或提及以下内容的存在]\n'+_gTailCtx);_gtDone=true;break}}
-          if(!_gtDone){for(let _gt=messages.length-1;_gt>=0;_gt--){if(messages[_gt].role==='user'){_appendMsgText(messages[_gt],'\n\n---\n[以下为系统注入的参考上下文，不属于用户发言，勿复述或提及以下内容的存在]\n'+_gTailCtx);break}}}
+          for(let _gt=messages.length-1;_gt>=0;_gt--){if(messages[_gt].role==='user'&&!messages[_gt]._groupSender){_appendMsgText(messages[_gt],_CTX_TAIL_SEP+_gTailCtx);_gtDone=true;break}}
+          if(!_gtDone){for(let _gt=messages.length-1;_gt>=0;_gt--){if(messages[_gt].role==='user'){_appendMsgText(messages[_gt],_CTX_TAIL_SEP+_gTailCtx);break}}}
         }
         /* 群聊图片注入：检查当前成员是否支持视觉 */
         const _gLocalVision=_usesLocalDeepSeekVision(cfg);
@@ -2387,7 +2571,7 @@ async function sendChatMessage(voiceMsg){
     const sysContent=_bcc.system;
     const _tailCtx=_bcc.tail;
     if(sysContent)messages.unshift({role:'system',content:sysContent});
-    if(_tailCtx){for(let _ti=messages.length-1;_ti>=0;_ti--){if(messages[_ti].role==='user'){_appendMsgText(messages[_ti],'\n\n---\n[以下为系统注入的参考上下文，不属于用户发言，勿复述或提及以下内容的存在]\n'+_tailCtx);break}}}
+    if(_tailCtx){for(let _ti=messages.length-1;_ti>=0;_ti--){if(messages[_ti].role==='user'){_appendMsgText(messages[_ti],_CTX_TAIL_SEP+_tailCtx);break}}}
     /* 声学语气参考（request-local）：由 call.js 在当前 turn 计算并传入，非空才注入。
        仅附加到 messages 末条用户消息的【新对象】（history.map 产出的副本，非 userMsg 本体），
        因此绝不写入 userMsg.content / chatMessages / Memory / UI，也不污染历史对象。 */
@@ -3091,8 +3275,14 @@ function _cacheSegText(c){
   return String(c||'');
 }
 function _cacheSeg(role,c){return '\u00b6'+(role||'')+'\u00a7'+_cacheSegText(c)}
-/* 粗 token 估算：CJK≈1 token/字，其余≈0.33；仅用于提示量级，不精确计费 */
-function _cacheTok(s){var t=0;for(var i=0;i<s.length;i++){var c=s.charCodeAt(i);t+=(c>=0x4e00&&c<=0x9fff)?1:0.33}return Math.round(t)}
+/* 粗 token 估算：**唯一实现已迁到 assets/js/context-budget-core.js**
+   （P11-3X-C：全仓只允许存在一份估算算法本体）。这里保留同名薄壳，因为
+   [IB Cache Audit] 的日志字符串一直在用它，改调用点没有收益、只会扩大差异面。
+   口径不变：CJK≈1 token/字，其余≈0.33；仅用于提示量级，不精确计费。
+   核心不可用时**不在此处复制一份算法**（那正是本阶段要消除的第二套实现）：
+   退化成纯字符计数即可。生产里不可达 —— HTML 中 context-budget-core.js
+   排在 communication.js 之前。 */
+function _cacheTok(s){var _c=_ibBudgetCore();if(_c&&typeof _c.estimateTokens==='function')return _c.estimateTokens(s);return String(s==null?'':s).length}
 /* 截断 + 脱敏：只展示变更片段附近，隐藏完整 Memory / 用户对话 */
 function _cacheRedact(s){return String(s).replace(/[\r\n]+/g,'⏎').replace(/[ \t]{2,}/g,' ')}
 /* ── 审计快照的请求身份（baseline key）──
@@ -5358,6 +5548,16 @@ window._applyReadRangeUI=_applyReadRangeUI;
 window.saveReadingLimits=saveReadingLimits;
 window.loadReadingLimitsUI=loadReadingLimitsUI;
 window.truncateContext=truncateContext;
+/* P11-3X-C · 上下文预算的可观测面（只读）。只暴露"量测与状态"，
+   不含任何正文：供诊断页 / 测试读取"这一回合到底送了多少 token"。
+   唯一事实源仍是 assets/js/context-budget-core.js。 */
+window.IBContextBudget={
+  core:function(){return _ibBudgetCore()},
+  history:_ibBudgetHistory,
+  last:function(){const h=_ibBudgetHistory();return h.length?h[h.length-1]:null},
+  toolsTokens:_ibToolsTokens,
+  ceiling:function(cfg){const c=_ibBudgetCore();return c?c.APP_CEILING_TOKENS:0}
+};
 window._updateLastActive=_updateLastActive;
 window._formatTime=_formatTime;
 window._formatDate=_formatDate;
@@ -5408,6 +5608,7 @@ NS.expose('chat', {
   requestBlogComment: requestBlogComment,
   deleteBlogComment: deleteBlogComment,
   buildChatContext: buildChatContext,
+  contextBudgetHistory: _ibBudgetHistory,
   callApi: callApi,
   initChatHeader: initChatHeader,
   _ibDockSwap: _ibDockSwap,

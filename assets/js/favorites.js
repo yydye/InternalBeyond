@@ -32,6 +32,31 @@
     return src;
   }
 
+  /* ── P11-3X-C · 单飞读取（single-flight），不是缓存 ──────────────────────
+     为什么必须做：`favorites` 的 keyPath 是随机 id，`sourceId` 上**没有索引**，
+     而 has() 的语义是"这条消息收藏了吗"。既不能按键查（需要 schema 变更，本阶段
+     明确禁止），也不能新增第二套索引，于是它一直是 dbGetAll 全表扫描。
+     而它在**每渲染一条聊天气泡时被调用一次**：实测一次聊天面板打开 =
+     50 次 favorites 事务；单次代价随收藏量线性增长
+     （0 条 0.15ms / 500 条 4.02ms / 2000 条 21.22ms → 2000 条时仅"画出星号"
+     就要约 1 秒的串行 IndexedDB 时间）。
+
+     这里**不是**引入缓存：同一时刻已经在飞的那一次读取，其结果被同时发问的
+     调用方共享；Promise settle 的瞬间就丢弃共享，因此不存在任何时间窗口内的
+     陈旧读。任何本地写入（add / remove）也会先结束共享（虽然不是必须的，
+     因为共享只活在未 settle 期间，但显式写出来避免将来有人误以为它是缓存）。
+     跨回合、跨标签页的陈旧性因此不可能出现：下一次读必然是新的一次扫描。 */
+  var _favReadP=null;
+  function _favReadAll(){
+    if(typeof dbGetAll!=='function')return Promise.resolve([]);
+    if(_favReadP)return _favReadP;
+    var p=dbGetAll(FAV_STORE);
+    _favReadP=Promise.resolve(p).then(function(r){_favReadP=null;return r},
+                                    function(e){_favReadP=null;throw e});
+    return _favReadP;
+  }
+  function _favDropShared(){_favReadP=null}
+
   /* ---- 统一 API ---- */
   async function add(item){
     if(!item||!item.sourceId)return null;
@@ -42,35 +67,37 @@
       title:item.title||'',body:String(item.body||'').slice(0,6000),
       meta:item.meta||{},createdAt:now(),updatedAt:now()
     };
+    _favDropShared();
     try{await dbPut(FAV_STORE,rec)}catch(e){return null}
     if(typeof currentPage!=='undefined'&&currentPage==='favorites'&&typeof _favRenderWall==='function'){try{_favRenderWall()}catch(e){}}
     return rec;
   }
   async function remove(id){
     if(!id)return false;
+    _favDropShared();
     try{await dbDelete(FAV_STORE,id)}catch(e){return false}
     if(typeof currentPage!=='undefined'&&currentPage==='favorites'&&typeof _favRenderWall==='function'){try{_favRenderWall()}catch(e){}}
     return true;
   }
   async function removeBySource(type,sourceId){
     if(typeof dbGetAll!=='function')return 0;
-    var all=await dbGetAll(FAV_STORE);var n=0;
+    var all=await _favReadAll();var n=0;
     for(var f of all){if(f&&f.sourceId===String(sourceId)&&(!type||f.type===type)){if(await remove(f.id))n++}}
     return n;
   }
   async function has(sourceId){
     if(typeof dbGetAll!=='function')return false;
-    var all=await dbGetAll(FAV_STORE);return all.some(function(f){return f&&f.sourceId===String(sourceId)});
+    var all=await _favReadAll();return all.some(function(f){return f&&f.sourceId===String(sourceId)});
   }
   async function list(opts){
     opts=opts||{};
-    var all=await dbGetAll(FAV_STORE);
+    var all=(await _favReadAll()).slice();
     if(opts.type)all=all.filter(function(f){return f.type===opts.type});
     if(opts.roleId)all=all.filter(function(f){return f.roleId===opts.roleId});
     all.sort(function(a,b){return (b.updatedAt||0)-(a.updatedAt||0)});
     return all;
   }
-  async function count(){var all=await dbGetAll(FAV_STORE);return all.length}
+  async function count(){var all=await _favReadAll();return all.length}
 
   /* ---- 渲染：收藏墙（page-favorites） ---- */
   function _favEsc(s){if(!s)return'';var d=document.createElement('div');d.textContent=String(s);return d.innerHTML}

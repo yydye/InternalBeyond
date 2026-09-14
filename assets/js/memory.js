@@ -161,10 +161,26 @@ async function recordMemoryActivation(selectedIds,at){
   let stamp=Number(at);
   if(!Number.isFinite(stamp))stamp=Date.now();
   let n=0;
+  /* P11-3X-C：读-改-写放进**同一个** readwrite 事务（window.dbUpdate）。
+     实测此前每个被选中的记忆要开两个事务（readonly 读 + readwrite 写）：
+     一次聊天回合 65 读 + 65 写 = 130 个事务。改后是 65 个。
+     **一致性与隔离语义都没有放宽**：仍然是逐条处理（单条失败不影响其它条）、
+     仍然在写事务内部读当前值（因此不会用陈旧快照覆盖并发写入），
+     失败仍然只是"这次记账没记上"，绝不抛出。
+     核心不可用（诊断/旧页面）时回落到原来的两步实现。 */
+  const _upd=(typeof window!=='undefined'&&typeof window.dbUpdate==='function')?window.dbUpdate:null;
   for(const id of selectedIds){
     try{
-      const orig=await dbGet('memories',id);
-      if(orig){orig.activationCount=(orig.activationCount||0)+1;orig.lastActivated=stamp;await dbPut('memories',orig);n++}
+      if(_upd){
+        const ok=await _upd('memories',id,function(cur){
+          if(!cur)return null;
+          cur.activationCount=(cur.activationCount||0)+1;cur.lastActivated=stamp;return cur;
+        });
+        if(ok)n++;
+      }else{
+        const orig=await dbGet('memories',id);
+        if(orig){orig.activationCount=(orig.activationCount||0)+1;orig.lastActivated=stamp;await dbPut('memories',orig);n++}
+      }
     }catch(e){}
   }
   return n;
@@ -1234,10 +1250,18 @@ async function thMention(id,evidenceId){
      而制品里的印章只是**写入当时**的快照。若读取只信印章，被隐藏的证据就能靠
      "修复遍还没跑"继续把文本送进模型 —— 那正是 D-1 的泄漏面。读取即刻强制，
      修复遍只负责把状态标好（_reconcileReferences），不承担隐私边界。 */
-async function _ibAttestDerived(stamp,evidenceIds,roleId){
+/* P11-3X-C · `preloaded` 允许调用方在同一处复用**同一次** memories 读取。
+   为什么这不是"放宽存证"：存证判据、可见性规则、fail-closed 语义一字未改，
+   变的只是"这批行从哪一次查询来"。同一函数调用内连续 N 次全表读取，读到的
+   本来就是同一批行；合并成一次只会让 N 个制品面对**同一个一致快照**
+   （比"每个制品各读一次、时间点各不相同"更可复现），并且消除了实测的
+   O(线索数) 全表扫描（40 条线索 = 41 次 memories 全表读、552ms）。
+   未传 preloaded 时行为与改动前逐字相同。 */
+async function _ibAttestDerived(stamp,evidenceIds,roleId,preloaded){
   const core=_ibMemVisCoreChecked();
   if(!core)return {ok:false,permits:false,evidence:null,reason:'visibility-core-unavailable'};
-  return core.attestDerivedArtifact(stamp,evidenceIds||[],await dbGetAll('memories'),roleId);
+  const rows=Array.isArray(preloaded)?preloaded:await dbGetAll('memories');
+  return core.attestDerivedArtifact(stamp,evidenceIds||[],rows,roleId);
 }
 async function getUnderstandingContext(characterId,opts){
   opts=opts||{};
@@ -1260,10 +1284,15 @@ async function getThreadContext(characterId,opts){
   try{
     const open=await thGetOpen(characterId);
     if(!open.length)return '';
-    /* R4：逐条存证，未通过的线索**不进入**上下文（不影响其他线索） */
+    /* R4：逐条存证，未通过的线索**不进入**上下文（不影响其他线索）。
+       P11-3X-C：实测这里此前是 N+1 —— 每条线索各触发一次 memories 全表读取
+       （1 条→2 次 54ms / 10 条→11 次 150ms / 40 条→41 次 552ms，2000 条记忆）。
+       存证规则本身没变，只是把"这一批"的行读一次给所有线索共用：
+       同一批制品因此面对同一个一致快照。 */
     const attested=[];
+    const _rows=await dbGetAll('memories');
     for(const t of open){
-      const att=await _ibAttestDerived(t.visibility,t.evidenceIds||[],characterId);
+      const att=await _ibAttestDerived(t.visibility,t.evidenceIds||[],characterId,_rows);
       if(att.ok)attested.push(t);
     }
     if(!attested.length)return '';

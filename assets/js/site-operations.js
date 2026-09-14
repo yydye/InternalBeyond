@@ -70,11 +70,17 @@ const _IMGGEN_INSTR_BLOCK='\n\n【图像生成】本对话已开启图像生成�
    · _siteSignals：buildSiteContext 的分段开关（profile / logs / fileOutput / blogRead）。
    · 缺省（群聊旧调用点、未提供信号）时退回"全部注入"，行为与本次改动前一致。 */
 function _siteDefaultSignals(){return{profile:true,logs:true,fileOutput:true,blogRead:true};}
-async function buildSiteContext(signals){
+/* P11-3X-C · 第二个参数是可选预读结果（`{posts:[...]}`）。
+   为什么允许它存在：post 列表是**一次全表读取**（实测 300 篇 ≈ 144KB），而宿主
+   回合在判定 `logs` 信号时已经读过同一批行，于是同一回合读了两遍。传入这一份
+   时直接复用；不传时行为与改动前逐字相同（自读）。它只影响"这批行从哪一次查询
+   来"，不影响任何选择/渲染/截断逻辑。 */
+async function buildSiteContext(signals,opts){
   try{
+    opts=opts||{};
     const sig=Object.assign(_siteDefaultSignals(),signals||{});
     const about=await dbGet('about','main');
-    const posts=await dbGetAll('posts');
+    const posts=(opts&&Array.isArray(opts.posts))?opts.posts:await dbGetAll('posts');
     let lim;try{lim=await getReadingLimits()}catch(e){lim={postsLimit:5}}
     const recentPosts=posts.filter(p=>!isLockedPost(p)).sort((a,b)=>b.created-a.created).slice(0,lim.postsLimit);/* readingLimits.postsLimit 语义不变 */
     /* 缓存优化：时间戳移至末条用户消息注入（_tailCtx），此处只保留会话内稳定的内容 */
