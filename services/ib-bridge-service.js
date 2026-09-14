@@ -1013,6 +1013,14 @@ function ensureProactive() {
 /* ------------------------------------------------------------------ */
 
 const server = http.createServer((req, res) => {
+  /* P11-3H · 合作停止面：必须在**本组件自己的 dispatch 里**、在路由解析之前判定。
+     修复过程中实测过另一种写法（在 server 上再挂一个 'request' listener）：
+     Node 会同步地把 'request' 依次交给每个 listener，后注册的那个一定在前一个
+     已经应答之后才跑，于是 /__shutdown 拿到的是 404 而不是 202。 */
+  const stopDecision = bridgeStopDispatch(req, res, function (status, error) {
+    sendJsonRes(res, status, { ok: false, error: error }, acaOrigin(req));
+  });
+  if (stopDecision) return;
   handleHttp(req, res).catch(e => {
     try { sendJsonRes(res, 500, { ok: false, error: String(e && e.message || e) }); } catch (e2) { /* 忽略 */ }
   });
@@ -1097,6 +1105,60 @@ server.listen(PORT, BIND_HOST, () => {
   ensureProactive();
 });
 
+/* P11-3H · 合作停止面（唯一契约见 runtime/service-control.js）。
+   修复前这个进程只挂 SIGINT：ib-stop 发的是 SIGTERM，而在 Windows 上
+   两者都不会被投递（TerminateProcess）。于是主动消息定时器不会清、常驻会话
+   的 tick 不会停、WebSocket 连接不会被关闭、最后一次持久化不会显式落盘 ——
+   而"Bridge 是不是干净地停下来了"没有任何可回答的证据。
+   现在停止是一次**消息**：POST /__shutdown → 停定时器 → 关 WS → 关 HTTP →
+   有界退出。信号路径保留（POSIX 上仍然有效），两条路径共用同一个
+   bridgeTeardown()，所以不存在"修好了 HTTP 那条、信号那条漂走了"的可能。 */
+const serviceControl = require('../runtime/service-control.js');
+let bridgeStopping = false;
+async function bridgeTeardown(reason) {
+  if (bridgeStopping) return { ok: true, alreadyStopped: true, steps: [], errors: [] };
+  bridgeStopping = true;
+  console.log('\n[IB Bridge] 正在退出… (' + String(reason || 'signal') + ')');
+  const result = await serviceControl.runStop('bridge', {
+    entering: () => { /* bridgeStopping 已置位 */ },
+    stopTimers: () => {
+      if (proactiveTimer) { clearInterval(proactiveTimer); proactiveTimer = null; }
+    },
+    closeHandles: () => {
+      /* WebSocket 先关：一个仍然打开的 WS 会让 server.close() 的回调永远不触发，
+         于是"等 HTTP 关完"变成"等到 drain 超时"。 */
+      try {
+        if (wsSockets && typeof wsSockets.forEach === 'function') {
+          wsSockets.forEach(function (c) { try { c.close(1001, 'bridge stopping'); } catch (_) { /* 已关闭 */ } });
+        }
+      } catch (_) { /* 已关闭 */ }
+      /* 关监听器，并在宽限之后关闭仍然开着的连接：调用方自己的 keep-alive 连接
+         也算"开着的连接"，只调 server.close() 会让这个已经被停掉的进程一直活到
+         fallback kill（本阶段在真实 Bridge 上实测过）。 */
+      serviceControl.closeListenerBounded(server, { graceMs: 250 });
+    },
+    closeStores: () => {
+      /* Bridge 的持久化是同步原子写（bridge/persistence.js），没有连接需要关闭；
+         这里明确执行一次"把推送历史写回去"，而不是留空让人以为漏了。 */
+      try { savePushes(); } catch (_) { /* 尽力而为 */ }
+    },
+    report: () => { console.log('[IB Bridge] 已停止'); }
+  });
+  /* 拆除结果必须留在日志里：哪几步真的跑了、哪一步抛了，是"合作停止"这件事
+     唯一可事后核对的东西（与 Home Node 的 steps/errors 同款）。 */
+  console.log('[IB Bridge] teardown steps=' + JSON.stringify(result.steps) +
+    (result.errors && result.errors.length ? (' errors=' + JSON.stringify(result.errors)) : ''));
+  return result;
+}
+const bridgeStopDispatch = serviceControl.createStopDispatch({
+  service: 'IB Bridge',
+  stop: () => bridgeTeardown('http'),
+  /* The dispatch owns the ending: teardown, then bounded close, then exit. */
+  server: server,
+  exit: code => process.exit(code),
+  onAccepted: info => console.log('[IB Bridge] stop requested over http (pid ' + info.pid + ')')
+});
+
 server.on('error', e => {
   if (e && e.code === 'EADDRINUSE') {
     console.error('[IB Bridge] 端口 ' + PORT + ' 已被占用。可设置环境变量 IB_BRIDGE_PORT 换端口。');
@@ -1106,9 +1168,5 @@ server.on('error', e => {
   process.exit(1);
 });
 
-process.on('SIGINT', () => {
-  console.log('\n[IB Bridge] 正在退出…');
-  if (proactiveTimer) clearInterval(proactiveTimer);
-  try { server.close(); } catch (e) { /* 忽略 */ }
-  process.exit(0);
-});
+process.on('SIGINT', () => { bridgeTeardown('SIGINT').then(() => process.exit(0)); });
+process.on('SIGTERM', () => { bridgeTeardown('SIGTERM').then(() => process.exit(0)); });

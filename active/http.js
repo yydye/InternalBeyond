@@ -64,7 +64,10 @@ function createHttp(ctx) {
     publicPlan, sanitizeAiPlan, buildTaskReplacement, recordUserId,
     trimText, deepClone, finiteTimestamp,
     sanitizeMomentSchedule, publicMomentSchedule, proactiveTrace,
-    credentialVault
+    credentialVault,
+    /* P11-3H：合作停止面的判定钩子（runtime/service-control.js 的
+       createStopDispatch()）。缺省时整个停止分支不存在。 */
+    stopDispatch
   } = ctx;
 
   /* 凭证剥离：业务 snapshot 持久化绝不写入完整 apiKey（凭证只走 /credentials → vault） */
@@ -143,6 +146,18 @@ function createHttp(ctx) {
 
   const server = http.createServer(async (request, response) => {
     try {
+      /* P11-3H · 合作停止面：在**所有**路由与 CORS 之前判定。
+         停止请求是本地运行时/安装器发出的，准入由注入的 stopDispatch 自己决定；
+         让它走下面的 Origin 检查会让一次合法停止依赖 CORS 语义（那是"能不能读响应"
+         的规则，从来不是"能不能产生副作用"的规则）。
+         `fail` 用本组件自己的响应形状，所以拒绝路径的文案与其它 403 一致。
+         不注入时（分解装配、其它调用方）这一分支整体不存在。 */
+      if (typeof stopDispatch === 'function') {
+        const stopDecision = stopDispatch(request, response, (status, error) => {
+          json(response, status, { error: error });
+        });
+        if (stopDecision) return;
+      }
       if (!applyCors(request, response)) {
         json(response, 403, { error: 'Origin is not allowed' });
         return;

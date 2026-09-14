@@ -261,7 +261,35 @@ const evaluatePlan = scheduler.evaluatePlan;
 const executePlan = scheduler.executePlan;
 const schedulerTick = scheduler.schedulerTick;
 const startScheduler = scheduler.startScheduler;
-const shutdown = scheduler.shutdown;
+const stopSchedulerTimers = scheduler.stopTimers;
+
+/* ------------------------------------------------------------------ */
+/* P11-3H · 合作停止面（唯一契约见 runtime/service-control.js）          */
+/* ------------------------------------------------------------------ */
+
+/* 修复前：这个进程只能被信号终止，而 Windows 上 child.kill('SIGTERM') 是
+   TerminateProcess —— 调度器不会 flush、状态文件不会落盘、`process.on('exit')`
+   的观测写回也不会运行。现在停止是一次**消息**：POST /__shutdown →
+   停调度器 tick 与定时器 → 落盘 → 关 HTTP → 有界退出。
+
+   判定钩子必须在 http 工厂之前创建（工厂立刻要拿到它）。判定本身必须在
+   **本组件自己的 dispatch 里**做（active/http.js 的路由链内），不能在 server 上
+   再挂一个 'request' listener：Node 同步派发 listener，后注册的那个一定在前一个
+   已经应答之后才跑，于是停止请求会拿到 404（本阶段在真实 Bridge 上实测过）。 */
+const serviceControl = require('../runtime/service-control.js');
+let activeStopping = false;
+const activeStopDispatch = serviceControl.createStopDispatch({
+  service: 'internal-beyond-active-messages',
+  stop: () => activeTeardown('http'),
+  /* The dispatch owns the ENDING, uniformly for every component: run the
+     teardown, then close the listener bounded, then exit. Before this the
+     companion's teardown closed nothing, so the process stayed alive holding
+     its port until the caller's fallback kill — a stop that "worked" and still
+     needed a kill. */
+  server: () => server,
+  exit: code => process.exit(code),
+  onAccepted: info => console.log('[Active] stop requested over http (pid ' + info.pid + ')')
+});
 
 /* ------------------------------------------------------------------ */
 /* HTTP 层（已提取到 active/http.js 工厂；server 实例随工厂返回）       */
@@ -271,6 +299,8 @@ const createHttp = require('../active/http');
 const httpLayer = createHttp({
   HOST, PORT,
   maxBody: MAX_BODY,
+  /* P11-3H：停止面的判定钩子（见上）。 */
+  stopDispatch: activeStopDispatch,
   getState: () => state,
   armedUsers,
   saveNow,
@@ -288,6 +318,19 @@ const json = httpLayer.json;
 const readBody = httpLayer.readBody;
 const publicTask = httpLayer.publicTask;
 
+/* 停止动作：与信号路径共用同一份（见下方 require.main 块）。 */
+async function activeTeardown(reason) {
+  if (activeStopping) return { ok: true, alreadyStopped: true, steps: [], errors: [] };
+  activeStopping = true;
+  const result = await serviceControl.runStop('active', {
+    entering: () => { /* activeStopping 已置位；重复停止是 no-op */ },
+    stopWork: () => { try { stopSchedulerTimers(); } catch (_) { /* 未启动 */ } },
+    stopTimers: () => { try { if (socialObserver) socialObserver.flush(); } catch (_) { /* 观测不得阻断停止 */ } },
+    closeStores: () => { saveNow(); },
+    report: () => { console.log('[Active] stopped cooperatively'); }
+  });
+  return result;
+}
 
 /* require.main guard: the module can be imported by tests without starting the server. */
 if (require.main === module) {
@@ -304,8 +347,11 @@ if (require.main === module) {
     console.log('');
   });
   startScheduler();
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+  /* P11-3H：信号路径与 HTTP 停止面走**同一份**拆除动作。POSIX 上信号有效，
+     Windows 上不会到达 —— 因此 HTTP 那条才是生产上真正会跑的路径。 */
+  const onSignal = reason => { activeTeardown(reason).then(() => process.exit(0), () => process.exit(0)); };
+  process.on('SIGINT', () => onSignal('SIGINT'));
+  process.on('SIGTERM', () => onSignal('SIGTERM'));
   /* 兜底：单个请求的意外异常不得杀死调度进程（记录后继续运行） */
   process.on('uncaughtException', error => {
     console.error('[Active] Uncaught exception (service continues):', error && error.stack || error);

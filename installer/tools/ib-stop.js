@@ -1,7 +1,7 @@
 'use strict';
 
 /*
- * Internal Beyond · installer stop + upgrade helpers (P7)
+ * Internal Beyond · installer stop + upgrade helpers (P7, P11-3H)
  *
  * Two modes, both called by the Windows installer/uninstaller:
  *
@@ -16,6 +16,25 @@
  *       Exit 0 = replaceable, 1 = still locked. Used before an in-place
  *       upgrade replaces the bundled runtime.
  *
+ * ── P11-3H: whose component list is this? ─────────────────────────────────
+ *
+ * Until P11-3H this file held its OWN service table (web / runner / bridge /
+ * active). The runtime had a component registry with six components in it, and
+ * the two lists had drifted: measured pre-fix, `serviceTable()` did not contain
+ * Home Node at all, so the installer's stop chain could not stop the canonical
+ * chat authority — it survived the whole upgrade path.
+ *
+ * The table is gone. The stop targets are now DERIVED from
+ * `runtime/component-registry.js`, read out of the install root this helper was
+ * given (`<root>\runtime\component-registry.js`), and the stop itself is
+ * performed by `runtime/component-lifecycle.js` — the same state machine the
+ * runner uses. This file keeps only what is genuinely installer-side:
+ *
+ *   · the root binding (a stop may only be aimed at the root it was given);
+ *   · the ownership rule that decides whether a proven-ours process is
+ *     *this* root's process;
+ *   · the CLI and the report.
+ *
  * Ownership (root binding):
  *   A process is stopped only when at least one of these proves it belongs to
  *   the given install root:
@@ -28,42 +47,138 @@
  *   ownership. Image names are never used as evidence, so no global node.exe
  *   cleanup is possible.
  *
- * Stop order for an owned instance: graceful endpoints → bounded wait →
- * verified fallback kill (ownership re-checked per PID).
+ * Stop order for an owned instance: cooperative endpoint (POST /__shutdown on
+ * the component's own loopback port) → bounded wait → verified fallback kill
+ * (ownership re-checked per PID, immediately before the kill). A fallback kill
+ * is reported as `fallback` and is NOT reported as a graceful stop.
+ *
+ * Exit code: 0 = every owned target is stopped (or was already not running).
+ * Anything else means at least one owned target could not be stopped, and the
+ * installer must not proceed. A foreign process on a product port is reported
+ * as a conflict and does NOT make this helper fail — it is not ours to stop.
  *
  * Env overrides match the rest of InternalBeyond: IB_WEB_PORT / IB_RESTART_PORT /
- * IB_BRIDGE_PORT / IB_ACTIVE_PORT.
+ * IB_BRIDGE_PORT / IB_ACTIVE_PORT / IB_HOME_NODE_PORT.
  */
 
 const fs = require('fs');
 const http = require('http');
+const path = require('path');
 const { execFile } = require('child_process');
 
 const HOST = '127.0.0.1';
 
 /* Every script name that can only belong to InternalBeyond. A command line must
-   contain one of these to be considered an InternalBeyond process at all. */
+   contain one of these to be considered an InternalBeyond process at all.
+   `home-node-service.js` is added by P11-3H: without it, a Home Node process
+   found on its port could not even be NAMED as InternalBeyond, so the fallback
+   path had to call it foreign. The list decides only whether a process is
+   InternalBeyond; whether it is THIS root's InternalBeyond is decided by
+   classifyTarget below. */
 const IB_SCRIPTS = [
   'internal-beyond-server.js',
   'launch-internal-beyond.js',
   'local-services-runner.js',
   'ib-bridge-service.js',
   'active-message-service.js',
+  'home-node-service.js',
   'ib-stop.js'
 ];
 
-/* Ports owned by InternalBeyond. `kind` drives which stop path applies. */
-function serviceTable() {
-  const port = function (name, fallback) {
-    const n = Number(process.env[name]);
-    return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : fallback;
+/* ── Where the registry and the lifecycle live ─────────────────────────────
+ *
+ * This helper ships as `<root>\tools\ib-stop.js` and is ALSO extracted to a
+ * temp directory by the installer and run from there with `--root <root>`. So
+ * "next to me" is not good enough: the modules are resolved inside the install
+ * root we were pointed at, which is also the only root we are allowed to touch.
+ *
+ * Two candidates, in order: the root itself (the shipped layout), then two
+ * levels up (running from a repository checkout, where the helper is at
+ * `installer/tools/`). The first candidate that yields a loadable registry
+ * wins; nothing else is ever imported. */
+function resolveRootModules(root, allowCheckoutFallback) {
+  const base = String(root || '');
+  const candidates = [];
+  if (base) candidates.push(base);
+  /* The checkout fallback exists only because this helper also runs from the
+     repository (`installer/tools/`), where the root it was pointed at and the
+     root the modules live in are the same tree reached two ways. A caller that
+     wants to reason about a root in isolation passes `false`. */
+  if (allowCheckoutFallback !== false) candidates.push(path.resolve(__dirname, '..', '..'));
+  for (const dir of candidates) {
+    if (!dir) continue;
+    const reg = path.join(dir, 'runtime', 'component-registry.js');
+    const life = path.join(dir, 'runtime', 'component-lifecycle.js');
+    try {
+      if (!fs.existsSync(reg) || !fs.existsSync(life)) continue;
+      return {
+        registry: require(reg),
+        lifecycle: require(life),
+        from: reg
+      };
+    } catch (e) {
+      /* A root with a broken registry is a root we must not stop blindly. */
+      return { registry: null, lifecycle: null, from: reg, error: String((e && e.message) || e) };
+    }
+  }
+  return { registry: null, lifecycle: null, from: null };
+}
+
+/* ── Stop targets ──────────────────────────────────────────────────────────
+ *
+ * Derived. The registry owns ids, ports, ports-from-env, health paths, identity
+ * predicates and the stop path; this file owns none of them.
+ *
+ * The ONLY case that does not go through the registry is an install root too
+ * old to have one — the helper runs BEFORE the upgrade replaces those files, so
+ * the very first upgrade of a pre-P11-3H install meets a root without
+ * `runtime/component-registry.js`. For that one case the bounded route table
+ * held by runtime/component-lifecycle.js is used (ids + port env names, pinned
+ * to the registry's own entries by tests/test_p11_3h_lifecycle_gate.js A5), and
+ * the report says so in `registrySource`.
+ *
+ * The lifecycle module cannot carry a `require` of the registry for this to
+ * work — and it does not: the registry is required lazily, inside
+ * `targets()`/`portOf()`, so the module loads even where there is no registry
+ * to load. That is what makes a single fallback table possible instead of one
+ * copy here and another there. */
+
+/* The derived target set, plus where it came from. */
+function stopTargets(root, env, allowCheckoutFallback) {
+  const source = env || process.env;
+  const mods = resolveRootModules(root, allowCheckoutFallback);
+  if (mods.lifecycle && typeof mods.lifecycle.targets === 'function') {
+    return { targets: mods.lifecycle.targets(source), source: 'registry', from: mods.from, error: null, mods: mods };
+  }
+  /* The registry is unreadable. `require`ing the lifecycle module is still what
+     supplies the bounded fallback table — it is the same module, just the one
+     export that does not need a registry. */
+  let fallback = null;
+  try { fallback = require(path.join(path.dirname(__filename), '..', '..', 'runtime', 'component-lifecycle.js')); }
+  catch (e) { fallback = null; }
+  if (!fallback || typeof fallback.legacyTargets !== 'function') {
+    return { targets: [], source: 'unavailable', from: mods.from, error: mods.error || 'component-lifecycle.js could not be loaded', mods: mods };
+  }
+  return {
+    targets: fallback.legacyTargets(source),
+    source: 'legacy-routes',
+    from: mods.from,
+    error: mods.error || null,
+    mods: mods
   };
-  return [
-    { name: 'web', port: port('IB_WEB_PORT', 23120), health: '/health', identity: function (d) { return !!(d && d.server === 'InternalBeyond Web'); }, stop: '/__shutdown' },
-    { name: 'runner', port: port('IB_RESTART_PORT', 23116), health: '/status', identity: function (d) { return !!(d && d.service === 'InternalBeyond Restart'); }, stop: '/shutdown' },
-    { name: 'bridge', port: port('IB_BRIDGE_PORT', 23115), health: '/health', identity: function (d) { return !!(d && d.server === 'IB Bridge'); }, stop: null },
-    { name: 'active', port: port('IB_ACTIVE_PORT', 23114), health: '/health', identity: function (d) { return !!(d && d.service === 'internal-beyond-active-messages'); }, stop: null }
-  ];
+}
+
+/* Kept as an exported convenience for the installer contract tests and for a
+   caller that only wants to know "which components and which ports does the
+   product have". Derived from the registry the same way `stop()` derives its
+   targets, so it cannot become the second table this phase removed.
+   `name` is the component id and `stop` is the declared stop path. */
+function serviceTable(root) {
+  const from = root || path.resolve(__dirname, '..', '..');
+  return stopTargets(from, process.env).targets
+    .map(function (t) {
+      return { name: t.id, port: t.port, health: t.healthPath, identity: t.matchesHealth, stop: t.stopPath };
+    });
 }
 
 function request(options) {
@@ -181,6 +296,12 @@ function classifyTarget(evidence, root) {
   return { verdict: 'unknown', proof: [], internalBeyond: true, reason: 'unproven-owner' };
 }
 
+/* The ownership proof the lifecycle state machine asks for, in one place: the
+   command line of a pid is this root's process only when it names the root. */
+function ownsCommandLine(cmdline, root) {
+  return commandLineMatchesRoot(cmdline, root);
+}
+
 /* ── Windows process helpers (fixed commands, no user input) ── */
 
 function pidsForPort(port) {
@@ -282,6 +403,23 @@ async function waitForUnlock(file, timeoutMs) {
 
 /* ── Main ── */
 
+/*
+ * The report keeps the pre-P11-3H field names (an installer that only reads
+ * exit code, and the P7 identity suite, both keep working) and adds the state
+ * machine underneath them:
+ *
+ *   ok          true when every OWNED target is stopped or was not running
+ *   detected    targets whose identity answered on their port
+ *   own         targets with a proven owner
+ *   foreign     targets that are verifiably somebody else's → never stopped
+ *   unknown     targets whose owner could not be proven → never stopped
+ *   graceful    targets that stopped through the cooperative surface
+ *   fallback    targets that needed a verified fallback kill (NOT graceful)
+ *   remaining   targets that are still up
+ *   conflicts   a foreign/unknown process occupying one of our ports
+ *   fallbackKills  how many kills this stop needed, overall: the single number
+ *                  that answers "was this a graceful stop?" (0 = yes)
+ */
 async function stop(options) {
   const o = options || {};
   const timeoutMs = Number(o.timeoutMs) > 0 ? Number(o.timeoutMs) : 12000;
@@ -289,8 +427,10 @@ async function stop(options) {
   const root = String(o.root || '');
   const report = {
     ok: true, root: root, dryRun: dryRun,
+    registrySource: null,
     detected: [], own: [], foreign: [], unknown: [],
-    graceful: [], fallback: [], skipped: [], remaining: [], errors: []
+    graceful: [], fallback: [], skipped: [], remaining: [], errors: [],
+    conflicts: [], components: []
   };
 
   /* Root binding is not optional: without it we cannot tell our own instance
@@ -301,86 +441,98 @@ async function stop(options) {
     return report;
   }
 
-  const services = serviceTable();
+  const resolved = stopTargets(root, o.env);
+  report.registrySource = resolved.source;
+  const targets = resolved.targets;
+  if (resolved.error) {
+    /* A root with a registry that cannot be LOADED is a decision for the
+       operator: we do not know which components exist, so we do not guess. */
+    report.ok = false;
+    report.errors.push('registry-load-failed: ' + String(resolved.error).slice(0, 200));
+    return report;
+  }
+  const lifecycle = resolved.mods && resolved.mods.lifecycle
+    ? resolved.mods.lifecycle
+    /* Without the lifecycle module there is no state machine to run, and
+       improvising one here is exactly what this phase removes. The helper
+       reports that it cannot stop safely rather than killing on a guess. */
+    : null;
 
   /* 1. Which product services answer on their ports (identity, not port alone). */
-  for (const svc of services) {
-    const r = await request({ port: svc.port, path: svc.health, timeoutMs: 1200 });
-    const ours = !!(r.reachable && r.json && svc.identity(r.json));
-    svc.ours = ours;
-    svc.reachable = r.reachable;
-    if (ours) report.detected.push(svc.name + ':' + svc.port);
-    else if (r.reachable) report.skipped.push(svc.name + ':unidentified');
+  for (const target of targets) {
+    const r = await request({ port: target.port, path: target.healthPath, timeoutMs: 1200 });
+    const ours = !!(r.reachable && r.json && typeof target.matchesHealth === 'function' && target.matchesHealth(r.json));
+    target.ours = ours;
+    target.reachable = r.reachable === true;
+    if (ours) report.detected.push(target.id + ':' + target.port);
+    else if (r.reachable) report.skipped.push(target.id + ':unidentified');
   }
-  if (!report.detected.length) {
-    report.ok = true;
+
+  if (!lifecycle) {
+    report.ok = false;
+    report.errors.push('lifecycle-unavailable: ' + String(resolved.from || '(not found)') +
+      ' — refusing to stop anything without the shared stop state machine');
     return report;
   }
 
-  /* 2. Ownership: only a proven root match may be stopped. */
-  const owned = new Set();
-  for (const svc of services) {
-    if (!svc.ours) continue;
-    const pids = await pidsForPort(svc.port);
-    const bsRoot = svc.name === 'web' ? await bootStateRoot(svc.port) : '';
-    let sawOwn = false;
-    if (!pids.length) {
-      const verdict = classifyTarget({ bootStateRoot: bsRoot }, root);
-      if (verdict.verdict === 'own') { sawOwn = true; report.own.push(svc.name + ':(boot-state)'); }
-      else report.unknown.push(svc.name + ':no-pid-evidence');
-    }
-    for (const pid of pids) {
-      const ev = await processEvidence(pid);
-      ev.bootStateRoot = bsRoot;
-      const verdict = classifyTarget(ev, root);
-      const label = svc.name + ':pid' + pid + (verdict.proof.length ? '(' + verdict.proof.join('+') + ')' : '');
-      if (verdict.verdict === 'own') { sawOwn = true; report.own.push(label); }
-      else if (verdict.verdict === 'foreign') report.foreign.push(label + ':' + verdict.reason);
-      else report.unknown.push(label + ':' + verdict.reason);
-    }
-    if (sawOwn) owned.add(svc.name);
-  }
+  /* 2. Dry run: classification only, no request, no kill. */
   if (dryRun) {
+    for (const target of targets) {
+      if (!target.ours) continue;
+      const r = await lifecycle.stopComponent(target, {
+        root: root, ownsCommandLine: ownsCommandLine, discoverOnly: true, probeMs: 1200
+      });
+      report.components.push(r);
+      if (r.state === 'FOREIGN') report.foreign.push(r.id + ':' + (r.reason || 'foreign'));
+      else if (r.state === 'UNKNOWN_OWNER') report.unknown.push(r.id + ':' + (r.reason || 'unknown-owner'));
+      else report.own.push(r.id + ':' + (r.proof || 'unproven'));
+    }
     report.ok = true;
     return report;
   }
 
-  /* 3. Graceful stop through the existing control surfaces — owned only. */
-  for (const svc of services) {
-    if (!owned.has(svc.name) || !svc.stop) continue;
-    const r = await request({ port: svc.port, path: svc.stop, method: 'POST', timeoutMs: 2500 });
-    if (r.reachable && (r.status === 202 || r.status === 200)) report.graceful.push(svc.name);
-    else report.errors.push(svc.name + ':graceful-unavailable(' + (r.status || r.error || 'no-response') + ')');
-  }
+  /* 3–6. The shared state machine does discover → verify → cooperative →
+     bounded wait → verified fallback → bounded wait → final verify. */
+  const summary = await lifecycle.stopAll({
+    targets: targets,
+    timeoutMs: timeoutMs,
+    root: root,
+    ownsCommandLine: ownsCommandLine,
+    env: o.env
+  });
 
-  /* 4. Bounded wait for release, then a re-verified fallback kill. */
-  const ownedServices = services.filter(function (s) { return owned.has(s.name); });
-  const perPort = Math.max(2500, Math.floor(timeoutMs / Math.max(1, ownedServices.length)));
-  for (const svc of ownedServices) {
-    if (await waitPortFree(svc.port, perPort)) continue;
-    const pids = await pidsForPort(svc.port);
-    let killed = false;
-    for (const pid of pids) {
-      const ev = await processEvidence(pid);
-      ev.bootStateRoot = svc.name === 'web' ? await bootStateRoot(svc.port) : '';
-      const verdict = classifyTarget(ev, root);
-      if (verdict.verdict !== 'own') {
-        report.skipped.push(svc.name + ':pid' + pid + ':' + verdict.verdict);
-        continue;
-      }
-      const ok = await killPid(pid);
-      report.fallback.push(svc.name + ':pid' + pid + '(' + verdict.proof.join('+') + ')');
-      if (ok) killed = true;
+  for (const r of summary.components) {
+    report.components.push(r);
+    const label = r.id + ':pid' + (r.pid || '?') + (r.proof ? '(' + r.proof + ')' : '');
+    if (r.state === 'FOREIGN') { report.foreign.push(label + ':foreign'); continue; }
+    if (r.state === 'UNKNOWN_OWNER') { report.unknown.push(label + ':' + (r.reason || 'unproven-owner')); continue; }
+    if (r.proof === 'runner-child' || r.proof === 'command-line') report.own.push(label);
+    if (r.state === 'STOPPED' && r.accepted) report.graceful.push(r.id);
+    if (r.state === 'STOPPED' && !r.accepted) report.skipped.push(r.id + ':stopped-on-its-own');
+    if (r.state === 'NOT_RUNNING') report.skipped.push(r.id + ':not-running');
+    if (r.state === 'FALLBACK_KILL') report.fallback.push(r.id + ':pid' + (r.pid || '?'));
+    if (r.state === 'COOPERATIVE_TIMEOUT' || r.state === 'FAILED') {
+      report.errors.push(r.id + ':' + r.state + (r.reason ? ('(' + r.reason + ')') : ''));
     }
-    if (!killed) report.errors.push(svc.name + ':could-not-stop');
   }
 
-  /* 5. Final state: only OUR ports count as remaining. A foreign instance on a
-        product port is reported, never treated as our failure. */
-  for (const svc of ownedServices) {
-    if (await portBound(svc.port)) report.remaining.push(svc.name + ':' + svc.port);
+  report.byState = summary.byState;
+  report.tookMs = summary.tookMs;
+  report.conflicts = summary.conflicts;
+  /* How many fallback kills this stop needed, overall. It is the single number
+     that answers "was this a graceful stop?" — a non-zero value means at least
+     one component had to be killed, which is a bounded ending but NOT the
+     cooperative one. */
+  report.fallbackKills = summary.fallbackKills;
+  /* Only OUR ports count as remaining. A foreign instance on a product port is
+     reported in `conflicts`, never treated as our failure — and never as
+     "InternalBeyond was stopped", which is why it is not silently dropped. */
+  for (const r of summary.components) {
+    if (r.state !== 'STOPPED' && r.state !== 'NOT_RUNNING' && r.state !== 'FOREIGN') {
+      report.remaining.push(r.id + ':' + r.port);
+    }
   }
-  report.ok = report.remaining.length === 0;
+  report.ok = summary.ok;
   return report;
 }
 
@@ -388,12 +540,19 @@ async function stop(options) {
 module.exports = {
   IB_SCRIPTS: IB_SCRIPTS,
   serviceTable: serviceTable,
+  stopTargets: stopTargets,
+  resolveRootModules: resolveRootModules,
+  ownsCommandLine: ownsCommandLine,
   commandLineIsInternalBeyond: commandLineIsInternalBeyond,
   commandLineMatchesRoot: commandLineMatchesRoot,
   pathMatchesRoot: pathMatchesRoot,
   ibScriptAbsolutePaths: ibScriptAbsolutePaths,
   classifyTarget: classifyTarget,
   processEvidence: processEvidence,
+  bootStateRoot: bootStateRoot,
+  pidsForPort: pidsForPort,
+  portBound: portBound,
+  waitPortFree: waitPortFree,
   waitForUnlock: waitForUnlock,
   stop: stop
 };
@@ -432,6 +591,7 @@ if (require.main === module) {
     if (opts.json) process.stdout.write(JSON.stringify(report) + '\n');
     else {
       process.stdout.write('[ib-stop] root=' + (report.root || '(none)') +
+        ' targets=' + (report.registrySource || '?') +
         ' detected=' + (report.detected.join(',') || 'none') +
         ' own=' + (report.own.join(',') || 'none') +
         ' graceful=' + (report.graceful.join(',') || 'none') +
@@ -439,6 +599,10 @@ if (require.main === module) {
         ' foreign=' + (report.foreign.join(',') || 'none') +
         ' unknown=' + (report.unknown.join(',') || 'none') +
         ' remaining=' + (report.remaining.join(',') || 'none') + '\n');
+      if (report.conflicts.length) {
+        process.stdout.write('[ib-stop] conflicts: ' +
+          report.conflicts.map(function (c) { return c.id + ':' + c.port + ':' + c.state; }).join('; ') + '\n');
+      }
       if (report.errors.length) process.stdout.write('[ib-stop] notes: ' + report.errors.join('; ') + '\n');
     }
     process.exitCode = report.ok ? 0 : 1;

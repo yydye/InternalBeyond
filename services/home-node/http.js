@@ -36,6 +36,8 @@ const http = require('http');
 const crypto = require('crypto');
 
 const CHAT_CORE = require('../../assets/js/chat-core.js');
+/* P11-3H：停止面的路径常量（唯一来源，不在这里再写一遍字面量）。 */
+const serviceControl = require('../../runtime/service-control.js');
 
 const PROTOCOL_VERSION = 1;
 const MAX_BODY_BYTES = 64 * 1024 * 1024;       /* 单条消息可能内联 base64 图片（IMG_MAX_BYTES=20MiB × 压缩前） */
@@ -63,6 +65,14 @@ function createHomeNodeHttp(deps) {
   const logger = deps.logger || (() => {});
   const startedAt = clock();
   const logRing = [];
+
+  /* P11-3H · 合作停止面。装配层传一个**取值器**（route 需要用到装配层作用域里的
+     teardown，而本层在它之前被构造出来）；不传、传 null 或取值器返回 null 时，
+     全部停止相关行为不存在（修复前的语义）。 */
+  const stopRouteSource = typeof deps.stopRoute === 'function' ? deps.stopRoute : () => null;
+  function stopRouteNow() {
+    try { return stopRouteSource() || null; } catch (_) { return null; }
+  }
 
   /* ── LAN 门（M1-C blocker：allowRemote）──────────────────────────────
      `deps.allowRemote` 既可以是布尔，也可以是**函数**。允许函数不是风格
@@ -421,6 +431,25 @@ function createHomeNodeHttp(deps) {
 
   async function route(req, res, url, method, remote) {
     const path = url.pathname.replace(/\/+$/, '') || '/';
+
+    /* ── P11-3H · 合作停止面（本地停止请求，不是世界数据路径）─────────────
+       必须在**所有**凭据/来源规则之前处理，理由很具体：Home Node 可以被显式绑到
+       LAN（IB_HOME_NODE_HOST），而未配置桌面 token 时远端**一切**桌面路径都是
+       403 `remote-admin-disabled`。停止请求来自本机（runtime/local-services-runner.js
+       或 installer 的 tools/ib-stop.js），准入判定由注入的 stopRoute 自己做；
+       如果让它走桌面凭据链，一次合法的本机停止会在 LAN 绑定下被 403 ——
+       installer 于是只能退回 kill，而"合作停止"在那种部署里静默失效。
+
+       这一层不自己实现判定：`deps.stopRoute` 就是 runtime/service-control.js 的
+       `createStopRoute()`，唯一的准入规则与唯一的拆除梯子都在那里。
+       **不注入 stopRoute 时本分支整体不存在**，行为与修复前逐字一致。 */
+    if (path === serviceControl.STOP_PATH) {
+      const stopRoute = stopRouteNow();
+      if (stopRoute) {
+        const handled = await stopRoute(req, res);
+        if (handled) return;
+      }
+    }
 
     /* ── Origin 授权（P11-3X-A）：命名的外来 Origin 一律拒绝 ─────────────
        `originAllowed()` 的语义是"**能不能读**我们的响应"：它只决定要不要回 ACAO

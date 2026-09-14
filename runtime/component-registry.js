@@ -234,7 +234,10 @@ const COMPONENTS = [
     affectsOverall: true,
     healthyRequiredForServices: true,
     restartable: true,
-    controllable: false,
+    controllable: true,
+    /* P11-3H：合作停止面。声明在这里（而不是在 installer 的另一张表里），
+       所以「哪些组件可被停止」与「它们是谁 / 在哪个端口」出自同一条登记。 */
+    stopPath: '/__shutdown',
     matchesHealth: data => !!(data && data.server === 'IB Bridge')
   },
   {
@@ -254,7 +257,9 @@ const COMPONENTS = [
     affectsOverall: true,
     healthyRequiredForServices: true,
     restartable: true,
-    controllable: false,
+    controllable: true,
+    /* P11-3H：合作停止面（同上；Active 的调度器与状态文件在停止时必须先落盘）。 */
+    stopPath: '/__shutdown',
     matchesHealth: data => !!(data && data.service === 'internal-beyond-active-messages')
   },
   {
@@ -283,7 +288,12 @@ const COMPONENTS = [
     affectsOverall: false,
     healthyRequiredForServices: false,
     restartable: true,
-    controllable: false,
+    controllable: true,
+    /* P11-3H：Home Node 的合作停止面。这一行是"installer 停止链是否知道 Home Node"
+       这个问题的答案：修复前它**没有**任何一处声明，于是 installer 的 stop helper
+       里那张手写表根本没有 Home Node 这个组件（P11-3H Phase 1 实测：
+       ib-stop.serviceTable() = web/runner/bridge/active，23118 不在其中）。 */
+    stopPath: '/__shutdown',
     matchesHealth: data => !!(data && data.service === 'internal-beyond-home-node'),
     /* P11-3X-B：身份对只是第一问。Home Node 的 `/health` 现在还回答第二问 ——
        "我能不能干我的活"（`serving` / `failure`）。把它的裁决原样读出来即可；
@@ -384,6 +394,27 @@ function observed() { return COMPONENTS.filter(c => c.observedByLauncher); }
 function restartTargets() { return COMPONENTS.filter(c => c.restartable); }
 function requiredForServices() { return COMPONENTS.filter(c => c.healthyRequiredForServices); }
 function serviceFiles() { return COMPONENTS.map(c => c.serviceFile).filter(Boolean); }
+
+/* ── Lifecycle targets (P11-3H) ────────────────────────────────────────────
+ *
+ * The components that expose a cooperative stop surface, i.e. the set the
+ * lifecycle is required to be able to stop. Derived from ONE declaration —
+ * `stopPath` — that sits next to the port and the identity predicate it belongs
+ * with, so it cannot drift away from them.
+ *
+ * This replaces the hand-written stop table in installer/tools/ib-stop.js,
+ * which listed four Services that were not even the registry's components and
+ * omitted Home Node entirely. A component added here with a `stopPath` is
+ * automatically a stop target for the installer, the updater's stop chain and
+ * the runner; a component added WITHOUT one is automatically not, which is a
+ * decision the author has to make explicitly instead of forgetting to update a
+ * second list.
+ *
+ * `restartTargets()` above answers a different question (may the supervisor
+ * start it again); the two sets are related but not the same, and neither is
+ * derived from the other. */
+function lifecycleTargets() { return COMPONENTS.filter(c => typeof c.stopPath === 'string' && c.stopPath); }
+function lifecycleTargetIds() { return lifecycleTargets().map(c => c.id); }
 
 /* boot-state COMPONENT_ORDER: the frozen ids, in registry order. */
 function componentOrder() { return IDS.slice(); }
@@ -689,6 +720,8 @@ module.exports = {
   managed: managed,
   observed: observed,
   restartTargets: restartTargets,
+  lifecycleTargets: lifecycleTargets,
+  lifecycleTargetIds: lifecycleTargetIds,
   requiredForServices: requiredForServices,
   serviceFiles: serviceFiles,
   componentOrder: componentOrder,

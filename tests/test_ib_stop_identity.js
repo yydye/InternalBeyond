@@ -140,12 +140,18 @@ function killFixture(pid) {
 function readLog(file) {
   try { return fs.readFileSync(file, 'utf8'); } catch (e) { return ''; }
 }
-/* Point the helper's service table at four free ports; the fixture only owns
-   the web one, the rest stay silent so nothing else is ever probed. */
+/* Point the helper's service table at five free ports; the fixture only owns
+   the web one, the rest stay silent so nothing else is ever probed.
+   P11-3H: `IB_HOME_NODE_PORT` joined this list because Home Node became a stop
+   target (it was missing from the helper's own table entirely, which is the
+   defect that phase closed). Without this override the helper would probe the
+   real 23118 — and a developer instance or a peer test could legitimately be
+   listening there, which would make this suite stop something it does not own. */
 async function isolatePorts() {
   const ports = {
     IB_WEB_PORT: await freePort(), IB_RESTART_PORT: await freePort(),
-    IB_BRIDGE_PORT: await freePort(), IB_ACTIVE_PORT: await freePort()
+    IB_BRIDGE_PORT: await freePort(), IB_ACTIVE_PORT: await freePort(),
+    IB_HOME_NODE_PORT: await freePort()
   };
   const saved = {};
   for (const k of Object.keys(ports)) { saved[k] = process.env[k]; process.env[k] = String(ports[k]); }

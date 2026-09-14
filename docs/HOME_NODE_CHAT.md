@@ -451,6 +451,7 @@ shapes are untouched.
 | store closed / schema too new | explicit error (`store-closed` / `SCHEMA_TOO_NEW`), never a silent rebuild |
 | malformed `payload_json` | read returns a readable placeholder with `__malformedPayload:true` plus the schema-required columns; it never throws and never returns a half-object |
 | Home Node absent at page load | page loads normally; `authority.hydrated` stays false and `degradedReason` is set |
+| the process is stopped (installer / runner / operator) | P11-3H: it is asked to stop over `POST /__shutdown` and closes its canonical stores in a fixed order; it is NOT signalled. Measured pre-fix: on Windows `child.kill('SIGTERM')` is `TerminateProcess`, the `SIGTERM` handler never runs, and the graceful close never happens (the WAL still recovers the data, which is a different fact). See docs/ARCHITECTURE.md §14. |
 
 ---
 
@@ -603,6 +604,14 @@ memory:     GET  /memory/list?ownerId=&limit=      GET /memory/changes?cursor=&l
             GET  /memory/migration?source=   POST /memory/migrate {source,version,lastTimestamp,records,idSet}
 browser:    IB.homeNode.memory.status() / .sync() / .migrate() / .rebuildMirror() / .publishSettings() / .peek()
 browser:    IB.memoryAuthority.instance  — the memory policy object itself
+stop:       POST /__shutdown   → 202 {ok, stopping, service, pid}
+            (P11-3H: the cooperative stop surface. On Windows the service's
+             SIGTERM handler NEVER runs — `child.kill('SIGTERM')` is
+             TerminateProcess — so this endpoint is the only path that actually
+             reaches the teardown: gateway.stop → derivation.stop →
+             understandingStore → momentsStore → registry → memoryStore → chat
+             store. Admission rule and teardown ladder: runtime/service-control.js.
+             Foreign Origin → 403 origin-denied; a repeated stop → 202 already:true.)
 ```
 
 ---

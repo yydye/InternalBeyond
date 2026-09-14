@@ -31,6 +31,11 @@ const registry = require('./component-registry.js');
    仍然只发生在本文件里。因此恢复行为不需要靠真进程才能测，而有界性可以在没有
    任何子进程的情况下被穷尽验证。 */
 const supervisorModule = require('./component-supervisor.js');
+/* P11-3H：停止状态机（唯一）。谁算组件、在哪个端口、什么算它的身份都由 registry
+   决定；"怎么停止"由 component-lifecycle 决定 —— 本文件与 installer 的
+   tools/ib-stop.js 都用它，因此不存在第二套停止语义。停止顺序是
+   cooperative request → 有界等待 → 身份重验证后的 fallback kill → 有界等待。 */
+const lifecycle = require('./component-lifecycle.js');
 
 /* 恢复策略（P11-3C）。有界由四道独立的闸门保证，任何一道都足以阻止无限重启：
      maxAttempts     滑动窗口内允许的重启次数（有限值，supervisor 会强制夹紧）
@@ -176,6 +181,18 @@ function buildServiceSpec(component) {
     command: launch.command,
     commandArgs: launch.commandArgs || [],
     matchesHealth: component.matchesHealth,
+    /* P11-3H：停止目标逐字来自 registry（端口 / 健康路径 / 身份谓词 / 停止路径）。
+       runner 与 installer 用同一份描述停止同一个组件，所以"runner 停得了但 installer
+       停不了"这种漂移在结构上不再可能。 */
+    lifecycleTarget: {
+      id: component.id,
+      name: component.name,
+      label: component.label,
+      port: registry.portOf(component.id),
+      healthPath: component.healthPath,
+      stopPath: component.stopPath || null,
+      matchesHealth: component.matchesHealth
+    },
     /* Recovery authorization travels WITH the spec, taken from the registry at
        construction time (P11-3C). Re-derived here rather than re-declared: there
        is no second list of "which components may be restarted". */
@@ -520,7 +537,8 @@ function waitPortFree(port, timeoutMs) {
   });
 }
 
-async function stopService(service) {
+async function stopService(service, opts) {
+  const o = opts || {};
   /* 0. This stop is INTENTIONAL (P11-3C). Recording the intent before killing is
         what lets the exit handler tell a deliberate stop apart from a crash —
         without it, every shutdown and every control-plane restart would look like
@@ -530,19 +548,50 @@ async function stopService(service) {
   stopping.add(service.componentId);
   if (entry) entry.stopIntent = 'intentional';
   supervisor.handle(service.componentId, supervisorModule.EVENT.STOP, { at: Date.now() });
-  /* 1. Runner-owned child (clean stop via child handle). */
-  if (entry && !entry.exited && entry.child && !entry.child.killed) {
-    try { entry.child.kill('SIGTERM'); } catch (e) { /* best effort */ }
+  /* 1. Cooperative stop FIRST (P11-3H).
+        Until P11-3H this step was `entry.child.kill('SIGTERM')`, which on Windows
+        is TerminateProcess: the child's own stop handler never runs, so its
+        canonical stores are never closed and "did this component stop cleanly?"
+        cannot be answered (measured: real Home Node gone in 0ms with a 440 KB
+        WAL still on disk and no `{"event":"shutdown"}` line).
+        Now the child is asked to stop over its own loopback port — the channel
+        that already exists — and the kill is a bounded, identity-re-verified
+        fallback performed by the shared state machine in
+        runtime/component-lifecycle.js. The same state machine is what the
+        installer's tools/ib-stop.js runs, so there is one stop contract.
+        A child this runner spawned is proven-ours by construction (`provenOwn`),
+        so no command-line heuristic is needed here. */
+  let outcome = null;
+  try {
+    outcome = await lifecycle.stopComponent(service.lifecycleTarget, Object.assign({}, o, {
+      /* `provenOwn` says "this runner started this component"; the command-line
+         predicate is passed too, because the fallback kill still has to
+         re-establish what it is about to kill — a port can change hands while a
+         stop is in flight, and a kill on a stale pid is the failure mode the
+         whole identity rule exists to prevent. This is the runner's own existing
+         predicate (runtime/local-services-runner.js `commandMatchesScript`), not
+         a second heuristic. */
+      provenOwn: true,
+      ownsCommandLine: (cmdline, root) => commandMatchesScript(cmdline, service.commandArgs[0]),
+      root: ROOT
+    }));
+  } catch (e) {
+    appendRestartLog(service.name + ' cooperative stop failed: ' + redact(String(e && e.message || e)).slice(0, 200));
   }
   /* 2. Any remaining process bound to the port that matches our service script
         (covers services started outside this runner). Only ever kills verified
         Internal Beyond service processes — never an arbitrary process. */
-  const pids = await pidsForPort(service.port);
-  for (const pid of pids) {
-    if (await processMatchesService(pid, service)) await killPid(pid);
+  if (!outcome || !outcome.verified || outcome.verified.portFree !== true) {
+    const pids = await pidsForPort(service.port);
+    for (const pid of pids) {
+      if (await processMatchesService(pid, service)) await killPid(pid);
+    }
   }
   stopping.delete(service.componentId);
-  appendRestartLog('stopping ' + service.name + ' intentionally (port ' + service.port + ')');
+  appendRestartLog('stopping ' + service.name + ' intentionally (port ' + service.port + ')' +
+    (outcome ? (' → ' + outcome.state + (outcome.accepted ? ' (cooperative)' : '') +
+      (outcome.fallbackKills ? ' fallback-kills=' + outcome.fallbackKills : '')) : ' (no lifecycle outcome)'));
+  return outcome;
 }
 
 /* ── Health aggregation (P11-3B · live view) ──
@@ -717,6 +766,12 @@ const restartState = { state: 'idle', lastError: '', startedAt: 0, restartCount:
    uninstall). Kept separate from the restart state so a stop can never be
    mistaken for an in-flight restart. */
 const shutdownState = { requested: false };
+/* P11-3H: what the last bounded stop cycle actually did, per component. Read
+   only, in-memory, and never a secret: component ids, the state machine's own
+   state names, pids the OS gave us, and reason strings that were already
+   redacted on the way in. It exists so "the runner said it was stopping" can be
+   checked against "here is what stopped", instead of inferred from a log. */
+const lastShutdown = { at: null, requestedAt: null, budgetMs: null, components: [], complete: null };
 
 function restartRunning() {
   return restartState.state === 'restarting';
@@ -781,6 +836,13 @@ async function runRestart() {
  * stopService() only ever terminates a process whose command line contains both
  * this project directory and the service script, so an unrelated node.exe on
  * the machine is never touched. Bounded waits; then this runner exits.
+ *
+ * P11-3H: "the exact same verified stop path" is now literally true — both
+ * paths call stopService(), whose first step is a cooperative stop request
+ * (POST /__shutdown on the component's own port) with a bounded, re-verified
+ * kill as the fallback. Before this, the first step was `child.kill('SIGTERM')`,
+ * which on Windows is TerminateProcess: the components were killed, not stopped,
+ * and none of their stores were closed.
  */
 async function runShutdown() {
   appendRestartLog('shutdown requested');
@@ -789,13 +851,49 @@ async function runShutdown() {
      a crash and start restarting services the installer is trying to replace. */
   recoveryDisabled = true;
   cancelRecoveryTimers();
+  const outcomes = [];
+  /* One shared budget for the whole stop, divided across the components, so a
+     single component that refuses to stop cannot spend every other component's
+     time — and so the installer's own helper budget cannot be overrun. */
+  const budgetMs = Number(process.env.IB_SHUTDOWN_BUDGET_MS) > 0
+    ? Number(process.env.IB_SHUTDOWN_BUDGET_MS) : 12000;
+  const deadline = Date.now() + budgetMs;
+  lastShutdown.requestedAt = Date.now();
+  lastShutdown.budgetMs = budgetMs;
   try {
-    for (const service of SERVICES) await stopService(service);
+    for (let i = 0; i < SERVICES.length; i += 1) {
+      const service = SERVICES[i];
+      const remaining = Math.max(0, deadline - Date.now());
+      /* The same per-target budget the installer helper uses, so a component
+         cannot get one amount of cooperative time from the runner and another
+         from the installer. The floor is raised here because the runner owns
+         this cycle and knows how many components it has; the TOTAL is still the
+         budget above. */
+      const budget = lifecycle.targetBudget(remaining, SERVICES.length - i, { perTargetFloorMs: 1500, discoveryMs: 1000 });
+      const outcome = await stopService(service, {
+        deadline: Math.min(deadline, Date.now() + budget.deadlineMs),
+        cooperativeMs: budget.cooperativeMs,
+        fallbackMs: budget.fallbackMs
+      });
+      if (outcome) outcomes.push({ id: service.componentId, state: outcome.state, accepted: outcome.accepted });
+    }
     for (const service of SERVICES) await waitPortFree(service.port, 10000);
+    const notStopped = outcomes.filter(o => o.state !== 'STOPPED' && o.state !== 'NOT_RUNNING');
+    lastShutdown.components = outcomes;
+    lastShutdown.complete = notStopped.length === 0;
+    lastShutdown.at = Date.now();
+    if (notStopped.length) {
+      appendRestartLog('shutdown incomplete: ' +
+        notStopped.map(o => o.id + '=' + o.state).join(', '));
+    }
   } catch (e) {
-    appendRestartLog('shutdown error: ' + redact(String(e && e.message || e)).slice(0, 300));
+    lastShutdown.at = Date.now();
+    lastShutdown.complete = false;
+    lastShutdown.error = redact(String(e && e.message || e)).slice(0, 300);
+    appendRestartLog('shutdown error: ' + lastShutdown.error);
   }
-  appendRestartLog('shutdown complete');
+  appendRestartLog('shutdown complete' + (outcomes.length ? ' (' +
+    outcomes.map(o => o.id + '=' + o.state).join(', ') + ')' : ''));
   shutdown(0);
 }
 
@@ -940,8 +1038,35 @@ function startRestartServer() {
       }, origin);
       return;
     }
-    if (req.method === 'POST' && url.pathname === '/shutdown') {
-      if (!restartOriginAllowed(req)) { sendJsonRes(res, 403, { ok: false, error: 'origin-denied' }, origin); return; }
+    /* P11-3H · the lifecycle view: which components are stop targets (derived
+       from the registry, not listed here), and what the last bounded stop cycle
+       actually did to each of them. Read only, no action — the same discipline
+       /components and /recovery already follow. */
+    if (req.method === 'GET' && url.pathname === '/lifecycle') {
+      sendJsonRes(res, 200, {
+        ok: true,
+        service: RESTART_SERVER_NAME,
+        schema: 'internalbeyond.component-lifecycle',
+        version: 1,
+        targets: SERVICES.map(s => ({
+          id: s.componentId,
+          port: s.port,
+          healthPath: s.endpoint,
+          stopPath: s.lifecycleTarget ? s.lifecycleTarget.stopPath : null
+        })),
+        contract: {
+          order: ['discover', 'verify-identity', 'cooperative-request', 'bounded-wait',
+            'verify-pid-and-port', 'fallback-kill-if-identity-still-matches', 'bounded-wait', 'final-verify'],
+          cooperative: 'POST ' + (SERVICES[0] && SERVICES[0].lifecycleTarget ? SERVICES[0].lifecycleTarget.stopPath : '/__shutdown'),
+          fallback: 'verified kill only after a cooperative timeout or refusal',
+          budgetMs: Number(process.env.IB_SHUTDOWN_BUDGET_MS) > 0 ? Number(process.env.IB_SHUTDOWN_BUDGET_MS) : 8000
+        },
+        lastShutdown: lastShutdown,
+        shutdown: { requested: shutdownState.requested }
+      }, origin);
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/shutdown') {      if (!restartOriginAllowed(req)) { sendJsonRes(res, 403, { ok: false, error: 'origin-denied' }, origin); return; }
       if (shutdownState.requested) { sendJsonRes(res, 202, { ok: true, state: 'shutting-down' }, origin); return; }
       if (restartRunning()) { sendJsonRes(res, 409, { ok: false, state: 'restarting', error: 'restart-in-progress' }, origin); return; }
       shutdownState.requested = true;
@@ -1403,14 +1528,15 @@ async function startServices() {
   startHealthWatch();
 }
 
-function stopChildren() {
+/* P11-3H: the last-resort path. Used only when the bounded cooperative pass
+   could not run to completion (its own budget expired, or the runner is being
+   terminated by a signal it cannot spend time on) — a kill here is the
+   documented fallback, never the mechanism. */function forceStopChildren() {
   children.forEach(entry => {
-    if (entry.exited || !entry.child || entry.child.killed) return;
-    /* Marked intentional for the same reason as stopService: a shutdown must not
-       look like a crash to the supervisor (P11-3C). */
+    if (entry.exited) return;
+    try { if (entry.componentId) supervisor.handle(entry.componentId, supervisorModule.EVENT.STOP, { at: Date.now() }); } catch (e) { /* 已终态 */ }
     entry.stopIntent = 'intentional';
-    if (entry.componentId) supervisor.handle(entry.componentId, supervisorModule.EVENT.STOP, { at: Date.now() });
-    try { entry.child.kill('SIGTERM'); } catch (e) { /* best effort */ }
+    try { lifecycle.killPid(entry.pid); } catch (e) { /* already gone */ }
   });
 }
 
@@ -1429,6 +1555,18 @@ function installInteractiveControls() {
   });
 }
 
+/* The runner's own end-of-life path.
+ *
+ * P11-3H: it used to be `stopChildren()` + a fixed 1200ms timeout, where
+ * `stopChildren()` was `child.kill('SIGTERM')` — i.e. on Windows, every child was
+ * TerminateProcess-ed and the runner then waited a fixed amount of time for
+ * something that had already happened. Now the children are asked to stop, with
+ * one small shared budget, and only what did not stop is killed. The fixed wait
+ * is kept as the last resort, not as the mechanism.
+ *
+ * `shuttingDown` is set synchronously so a second signal, the interactive 'q', or
+ * a control-plane /shutdown arriving during the cooperative pass all collapse
+ * into this one path. */
 function shutdown(code) {
   if (shuttingDown) return;
   shuttingDown = true;
@@ -1436,8 +1574,48 @@ function shutdown(code) {
   recoveryDisabled = true;
   cancelRecoveryTimers();
   console.log('\n[runner] Stopping services started by this runner…');
-  stopChildren();
-  setTimeout(() => process.exit(code), 1200).unref();
+  const budgetMs = Number(process.env.IB_SHUTDOWN_BUDGET_MS) > 0
+    ? Number(process.env.IB_SHUTDOWN_BUDGET_MS) : 4000;
+  const deadline = Date.now() + budgetMs;
+  const live = SERVICES.filter(s => {
+    const entry = currentChild[s.name];
+    return entry && !entry.exited;
+  });
+  const done = async () => {
+    /* Anything still alive after the bounded pass gets the documented fallback. */
+    const stillUp = SERVICES.filter(s => {
+      const entry = currentChild[s.name];
+      return entry && !entry.exited;
+    });
+    if (stillUp.length) {
+      appendRestartLog('runner shutdown fallback: killing ' +
+        stillUp.map(s => s.name + ':pid' + (currentChild[s.name].pid || '?')).join(', '));
+      forceStopChildren();
+    }
+    setTimeout(() => process.exit(code), 300).unref();
+  };
+  if (!lifecycle || !live.length || lastShutdown.at) {
+    /* Either there is nothing left to stop, or the bounded cycle above already
+       ran and recorded what it did. Reporting that cycle and exiting is the
+       whole job here — starting a second pass would only report "not running"
+       over the verdict the first pass produced. */
+    done();
+    return;
+  }
+  (async () => {
+    for (let i = 0; i < live.length; i += 1) {
+      const service = live[i];
+      const remaining = Math.max(0, deadline - Date.now());
+      const budget = lifecycle.targetBudget(remaining, live.length - i, { perTargetFloorMs: 1500, discoveryMs: 1200 });
+      try {
+        await stopService(service, {
+          deadline: Math.min(deadline, Date.now() + budget.deadlineMs),
+          cooperativeMs: budget.cooperativeMs,
+          fallbackMs: budget.fallbackMs
+        });
+      } catch (e) { /* 停止失败由下面的 stillUp 兜底 */ }
+    }
+  })().then(done).catch(done);
 }
 
 async function main() {

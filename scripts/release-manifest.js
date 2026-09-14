@@ -72,7 +72,9 @@ const ENTRIES = [
   { from: 'bridge', dir: true, why: 'Bridge 模块' },
   { from: 'active', dir: true, why: 'Active 模块' },
   { from: '启动 InternalBeyond.vbs', why: '唯一用户启动入口的实现（快捷方式目标，用户只看到名字 InternalBeyond）' },
-  { from: 'installer/tools/ib-stop.js', to: 'tools/ib-stop.js', why: '升级/卸载前优雅停止自身实例的助手' },
+  { from: 'installer/tools/ib-stop.js', to: 'tools/ib-stop.js', why: '升级/卸载前优雅停止自身实例的助手（P11-3H：需要 runtime/component-registry.js 与 runtime/component-lifecycle.js，它从 --root 里解析它们）' },
+  { from: 'runtime/service-control.js', why: '合作停止面（/__shutdown 的唯一准入规则与拆除梯子；四个服务都 require 它，缺失会让启动链直接崩）' },
+  { from: 'runtime/component-lifecycle.js', why: '组件停止状态机（唯一停止契约；runner 与 installer 的 ib-stop 都用它，缺失同样会让启动链直接崩）' },
 
   /* Bundled Node runtime (P1) */
   { from: 'runtime/node/node.exe', why: '内置 Node 运行时（用户无需安装 Node.js）' },

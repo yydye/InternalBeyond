@@ -70,6 +70,8 @@ const path = require('path');
 const os = require('os');
 const bootState = require('../runtime/boot-state.js');
 const productVersion = require('../runtime/product-version.js');
+/* P11-3H：停止面判定（唯一实现；Bridge / Active / Home Node 用的是同一份）。 */
+const serviceControl = require('../runtime/service-control.js');
 
 /*
  * The update runtime is loaded DEFENSIVELY, and this is load-bearing.
@@ -334,6 +336,9 @@ function respondUpdateStart(req, res, ctx) {
   setTimeout(function () {
     try {
       server.close(exit);
+      /* P11-3H：调用方自己的 keep-alive 连接也算"开着的连接"，只调 server.close()
+         会让这个已经被停掉的进程一直活到 fallback kill。宽限之后关闭它们。 */
+      serviceControl.closeListenerBounded(server, { graceMs: 150 });
       /* Bounded: a lingering keep-alive connection must never keep the old
          build alive while the installer replaces files. */
       setTimeout(exit, 2000).unref();
@@ -353,6 +358,16 @@ function createWebServer(opts) {
   const check = o.updateCheck || updateCheck;
   const install = o.updateInstall || updateInstall;
 
+  /* P11-3H · 停止面的判定（唯一实现在 runtime/service-control.js）。
+     `exposeBody:false`：本文件的 /__shutdown 从 P7 起就回答
+     `{ ok:true, server, shuttingDown:true }`，那是被 installer 契约与
+     tests/test_installer.js 钉住的形状；判定由共享模块给，载荷仍由本文件给。 */
+  const stopDispatch = serviceControl.createStopDispatch({
+    service: identity,
+    exposeBody: false,
+    onAccepted: info => { try { console.log('[web] stop requested (pid ' + info.pid + ', port ' + port + ')'); } catch (e) { } }
+  });
+
   const server = http.createServer(function (req, res) {
     const pathname = String(req.url || '/').split('?')[0];
     if (pathname === '/health' || pathname === '/__health') {
@@ -363,20 +378,26 @@ function createWebServer(opts) {
       return;
     }
     if (pathname === '/__shutdown') {
-      if (req.method !== 'POST') {
-        res.writeHead(405, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
-        res.end(JSON.stringify({ ok: false, error: 'method-not-allowed' }));
+      /* P11-3H：同一个停止判定来自 runtime/service-control.js（与 Bridge /
+         Active / Home Node 逐字同一份），而不是本文件自己再写一遍方法与来源
+         检查 —— 四个组件里三份实现正是这一阶段要收口的东西。
+         返回值：true = 已接受（202 已发出）；'origin-denied' / 'method-not-allowed'
+         = 停止面拒绝，拒绝文案仍由本文件按既有形状发出（P7 契约与既有测试断言
+         依赖这两个错误名与状态码，不停用它们）。 */
+      const decision = stopDispatch(req, res);
+      if (decision === true) {
+        /* P7 契约（被 installer 与 tests/test_installer.js 钉住）：202 + 这个载荷。 */
+        res.writeHead(202, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: true, server: identity, shuttingDown: true }));
+        performShutdown(server, o);
         return;
       }
-      if (!shutdownOriginAllowed(req)) {
-        res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
-        res.end(JSON.stringify({ ok: false, error: 'origin-denied' }));
+      if (decision) {
+        res.writeHead(decision === 'method-not-allowed' ? 405 : 403,
+          { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: decision }));
         return;
       }
-      res.writeHead(202, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
-      res.end(JSON.stringify({ ok: true, server: identity, shuttingDown: true }));
-      performShutdown(server, o);
-      return;
     }
     if (pathname === '/__boot-state') {
       /* Read-only launch record. Never fatal when absent: present=false is an

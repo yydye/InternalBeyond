@@ -47,6 +47,8 @@ const createNodeModelPort = require('../active/node-model-port.js');
    它在 runtime/ 下，与 runtime/local-services-runner.js 那份是同一模块 ——
    "库为什么打不开"的类别不该在服务里被重新猜一遍。 */
 const dbFailure = require('../runtime/db-failure.js');
+/* P11-3H：合作停止面（唯一契约见 runtime/service-control.js）。 */
+const serviceControl = require('../runtime/service-control.js');
 /* M1-C.2i · canonical Middle Brain 的 Node 宿主适配（不是第二份实现：
    它 require assets/js 下那五层 + facade，只补宿主 shim 与配置注入）。 */
 const createNodeMiddleBrain = require('../services/home-node/middle-brain.js');
@@ -703,6 +705,14 @@ const httpLayer = createHttp({
   token: TOKEN,
   version: productVersion(),
   allowedOrigins: ALLOWED_ORIGINS,
+  /* P11-3H · 合作停止面。装在 http 层**内部**（而不是在 server 上再挂一个
+     request listener）：http 层才是这条请求的最后一站，挂在外面会让两层都尝试
+     应答同一个 `/__shutdown` —— 实测症状是日志里出现
+     `unhandled … Cannot write headers after they are sent to the client`。
+     这里只传一个**取值器**：route 在下面的 `installHomeNodeStopRoute()` 里创建，
+     而它需要已经在同一个作用域里的 teardown()。http 层拿不到取值器（或它返回
+     null）时，这个分支整体不存在 —— 修复前的语义逐字保留。 */
+  stopRoute: () => homeNodeStop.route,
   /* P11-3E：与 buildHomeNode 逐字同款 —— 分类器 + canonical store 清单。
      "两条路径两套装配必然漂移"是这个文件里已经写过两次的教训（memory 一次、
      understanding 一次），所以这里连参数形状都不另写。 */
@@ -720,6 +730,41 @@ const httpLayer = createHttp({
   logger: (level, event, fields) => log(level, event, fields)
 });
 const server = httpLayer.server;
+
+/* ── P11-3H · the cooperative stop surface ────────────────────────────────
+ *
+ * The stop route has to be created AFTER `server` exists (its teardown closes
+ * that server) and its `stop` action has to be the SAME teardown the signal
+ * path uses. So the route is a module-level box that the http layer reads
+ * through a getter, and `installHomeNodeStopRoute()` fills it in — called from
+ * the production start path below, and callable by a test that builds its own
+ * instance without turning it into a process.
+ *
+ * The path is `/__shutdown`: the same one the static server has exposed since
+ * P7, and the same one declared for every component in
+ * runtime/component-registry.js. Nothing new is invented here.
+ */
+const homeNodeStop = { route: null, teardown: null };
+
+function installHomeNodeStopRoute(teardownFn, opts) {
+  const o = opts || {};
+  if (homeNodeStop.route) return homeNodeStop.route;
+  homeNodeStop.teardown = teardownFn;
+  /* P11-3H：这里的判定来自 runtime/service-control.js 的 createStopDispatch()，
+     由 http 层在**它自己的 dispatch 里**、在凭据/来源规则之前调用
+     （services/home-node/http.js 的 route()）。不在这里做任何来源或方法判定：
+     那是共享模块的唯一职责，抄一份到这里就会变成第二个实现。 */
+  homeNodeStop.route = serviceControl.createStopDispatch({
+    service: 'internal-beyond-home-node',
+    stop: () => teardownFn('http'),
+    onAccepted: info => log('info', 'stop-requested', { via: 'http', pid: info.pid }),
+    onStopped: result => log('info', 'stop-complete', {
+      steps: (result && result.steps) || null,
+      errors: (result && result.errors && result.errors.length) ? result.errors : null
+    })
+  });
+  return homeNodeStop.route;
+}
 
 /* 让调用方（测试与诊断）能构建一个"已打开 + 已接好网关"的完整实例。
    打开顺序与 buildHomeNode().open() 一致：chat store 先开（它负责损坏隔离，
@@ -812,28 +857,61 @@ if (require.main === module) {
   });
 
   let shuttingDown = false;
-  function shutdown(reason) {
-    if (shuttingDown) return;
+
+  /* ── P11-3H · the one teardown ladder ──────────────────────────────────
+     修复前这段代码只挂在 SIGINT/SIGTERM 上，而 Windows 上这两个信号**永远不会
+     被投递**：`child.kill('SIGTERM')` 就是 TerminateProcess。实测（P11-3H Phase 1，
+     真实本文件 + 私有端口 + 私有数据目录）：
+
+       process.kill(pid, 'SIGTERM') → 进程 0ms 内消失
+       数据目录                      → home-node.db-wal 仍有 440 KB
+       stdout                        → 没有 {"event":"shutdown"} 这一行
+
+     端口会被释放、WAL 会在下次开库时恢复，所以数据没有丢 —— 但
+     gateway.stop / derivation.stop / 各 store 的 close 一次都没跑，"这个组件
+     是不是干净地停下来的"变得无法回答。
+
+     现在这段拆除动作同时挂在**两条**路径上，而且是同一份代码：
+       · HTTP：POST /__shutdown（runtime/service-control.js）—— 在 Windows 上
+         这是唯一真正会到达的路径；
+       · 信号：SIGINT/SIGTERM —— POSIX 上仍然有效，保持不变。
+     两条路径都返回 steps/errors，因此"哪一步真的跑了"是可断言的，而不是靠日志猜。
+
+     顺序是有负载的，逐条保留原注释的理由：先停网关（它会清掉事件泵与订阅者），
+     再关两个数据库连接；理解派生器的调度器要先停，再关理解 store；
+     memory store 与 chat store 同库，先关 memory 再关 chat，与打开顺序相反。 */
+  async function teardown(reason) {
+    if (shuttingDown) return { ok: true, alreadyStopped: true, steps: [], errors: [] };
     shuttingDown = true;
     log('info', 'shutdown', { reason: String(reason || 'signal'), revision: store.getRevision() });
-    try { server.close(); } catch (_) { /* 已关闭 */ }
-    /* 先停网关（它会清掉事件泵与订阅者），再关两个数据库连接。
-       顺序反过来会让事件泵在一个已关闭的连接上查询。 */
-    try { gateway.stop(); } catch (_) { /* 已停止 */ }
-    /* M1-C.2m：理解派生器的调度器要先停（它会在 tick 里读 store），
-       再关理解 store —— 留下一个仍排队的 timer 去读已关闭的库只会产生噪音错误。 */
-    try { if (understanding.understandingDerivation) understanding.understandingDerivation.stop(); } catch (_) { /* 未启动 */ }
-    try { understanding.understandingStore.close(); } catch (_) { /* 已关闭 */ }
-    /* P11-3E：Moments store 必须在这里也被关掉。漏掉它不会抛错，
-       只会让"数据落盘了没有"变成一个只能靠重启去猜的问题 ——
-       而 openAll() 漏掉打开它正是本阶段要关闭的那个缺口，两个方向都要闭合。 */
-    try { moments.momentsStore.close(); } catch (_) { /* 已关闭 */ }
-    try { registry.close(); } catch (_) { /* 已关闭 */ }
-    /* memory store 与 chat store 同库（同一 SQLite 文件），先关它再关 chat，
-       与打开顺序相反 —— 反过来会让 memory 的连接留在一个已关闭的库上。 */
-    try { memory.memoryStore.close(); } catch (_) { /* 已关闭 */ }
-    try { store.close(); } catch (_) { /* 已关闭 */ }
-    setTimeout(() => process.exit(0), 20);
+    const result = await serviceControl.runStop('homeNode', {
+      entering: () => { /* shuttingDown 已置位；重复停止是 no-op */ },
+      stopWork: () => {
+        try { server.close(); } catch (_) { /* 已关闭 */ }
+        try { gateway.stop(); } catch (_) { /* 已停止 */ }
+      },
+      stopTimers: () => {
+        try { if (understanding.understandingDerivation) understanding.understandingDerivation.stop(); } catch (_) { /* 未启动 */ }
+      },
+      closeStores: () => {
+        try { understanding.understandingStore.close(); } catch (_) { /* 已关闭 */ }
+        try { moments.momentsStore.close(); } catch (_) { /* 已关闭 */ }
+        try { registry.close(); } catch (_) { /* 已关闭 */ }
+        try { memory.memoryStore.close(); } catch (_) { /* 已关闭 */ }
+        try { store.close(); } catch (_) { /* 已关闭 */ }
+      },
+      report: () => {
+        /* 每关闭一个 canonical store 都会自己写一行 `closed`，
+           因此这里只记录"拆除完成"这一事实本身。 */
+        log('info', 'stopped', { reason: String(reason || 'signal') });
+      }
+    });
+    return result;
+  }
+  /* 信号路径：拆完自己退出（行为与修复前逐字一致，只是拆除本身被抽出来复用）。 */
+  function shutdown(reason) {
+    teardown(reason).then(() => { setTimeout(() => process.exit(0), 20); })
+      .catch(() => { setTimeout(() => process.exit(0), 20); });
   }
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
@@ -843,6 +921,12 @@ if (require.main === module) {
   process.on('unhandledRejection', reason => {
     log('error', 'unhandled-rejection', { error: String((reason && reason.stack) || reason).slice(0, 800) });
   });
+
+  /* HTTP 停止面：与信号路径共用 teardown()，退出由停止面统一负责。
+     它被装在 http 层**内部**（见上方 stopRoute 的注释），因此这个请求只会被
+     应答一次 —— 提前 return 的那条 req 由 http 层的路由链处理，重复应答在
+     实测里表现为 "Cannot write headers after they are sent to the client"。 */
+  installHomeNodeStopRoute(teardown);
 }
 
 module.exports = {
@@ -871,6 +955,8 @@ module.exports = {
   memoryAssembly,
   canonicalMemoryDeps,
   openAll,
+  installHomeNodeStopRoute,
+  homeNodeStop,
   lanAddress,
   isLoopbackHost,
   deviceAuthReady,

@@ -674,9 +674,21 @@ function createScheduler(ctx) {
     }, startDelayMs);
   }
 
+  /* P11-3H：把"停定时器"从 shutdown() 里分出来。
+     shutdown() 是**信号**路径：它自己 closeServer + process.exit，只有
+     SIGINT/SIGTERM 能走到它，而在 Windows 上这两个信号永远不会被投递
+     （child.kill('SIGTERM') 就是 TerminateProcess）——所以生产上的停止路径
+     其实从来没有执行过它。HTTP 停止面（runtime/service-control.js）需要的是
+     同一段拆除动作，**但不要它自己退出**：退出由停止面统一负责，否则一个
+     handler 先 exit 就会把后面的 closeStores 步骤全部跳过。
+     这里只做拆分，不改语义：shutdown() 的行为逐字不变。 */
+  function stopTimers() {
+    if (schedulerStartTimer) { clearTimeout(schedulerStartTimer); schedulerStartTimer = null; }
+    if (schedulerInterval) { clearInterval(schedulerInterval); schedulerInterval = null; }
+  }
+
   function shutdown() {
-    if (schedulerStartTimer) clearTimeout(schedulerStartTimer);
-    if (schedulerInterval) clearInterval(schedulerInterval);
+    stopTimers();
     try { saveNow(); } catch (_) {}
     closeServer(() => process.exit(0));
     setTimeout(() => process.exit(0), 1200).unref();
@@ -684,7 +696,7 @@ function createScheduler(ctx) {
 
   return {
     adaptiveSkipReason, executeTask, buildPlanEvalPrompt, updatePlan, planEvent,
-    evaluatePlan, executePlan, schedulerTick, startScheduler, shutdown
+    evaluatePlan, executePlan, schedulerTick, startScheduler, stopTimers, shutdown
   };
 }
 

@@ -1227,3 +1227,143 @@ stale/server/unknown），内部 `kind` 与 `message` 只留在 `IBUpdateCard.st
 **测试**：`tests/test_update_card.js`（纯 Node：最小 DOM shim + 注入 fetch，八状态 / 纯文本
 notes / 一次性标记 / 断开不误报 / POST 体只有 `version` / 文案禁术语 / 相邻回归子进程）与
 `tests/test_update_card_smoke.js`（真实浏览器 + 真实静态服务 + 真实状态文件；不下载、不安装）。
+
+---
+
+## 14. 组件生命周期：一个注册表 → 一个停止契约（P11-3H）
+
+```
+ONE RUNTIME COMPONENT REGISTRY
+   runtime/component-registry.js        ← 唯一的组件事实源
+        │
+        │  lifecycleTargets()  = 声明了 stopPath 的组件
+        ▼
+ONE LIFECYCLE TARGET SET
+   runtime/component-lifecycle.js       ← 唯一的停止状态机
+        ├── ib-stop.js（安装器 / 卸载 / 升级）
+        └── local-services-runner.js（运行时 runner 的停止与重启）
+
+COOPERATIVE SHUTDOWN  →  BOUNDED HARD FALLBACK
+   POST /__shutdown → 拆分梯子 → 关监听器 → 退出 0
+        │（有界等待之后仍未走）
+        ▼
+   身份重验证 → 有界 kill → 有界等待 → 最终裁决
+```
+
+### 14.1 为什么需要「一个」注册表
+
+`installer/tools/ib-stop.js` 曾经持有**自己的一张停止表**（web / runner / bridge / active）。
+运行时有一个登记了六个组件的注册表。两张表已经漂移了，而且方向最坏：**Home Node 不在停止表里**，
+所以安装器的停止链根本停不掉 canonical chat authority —— 实测（P11-3H Phase 1，私有端口）
+`ib-stop.serviceTable()` 描述四个端口，其中没有 23118。
+
+现在停止目标**由注册表派生**：一个组件是停止目标，当且仅当它声明了 `stopPath`。
+"它能不能被停"与"它是谁、在哪个端口、身份谓词是什么"因此出自同一行登记，无法再分开漂移。
+新增一个组件时，`tests/test_p11_3h_lifecycle_gate.js` A3 会强制作者对"它是不是停止目标"
+做一个显式决定，而不是忘掉第二张表。
+
+`runtime/component-lifecycle.js` 的 `LEGACY_ROUTES` 是**唯一**的例外，且只对一个情形存在：
+升级一个**太老、没有注册表**的安装根（helper 在文件被替换之前运行，所以第一次升级必然遇到它）。
+它只表达 id + 端口环境变量名，并且 A5 把每一条都钉在注册表的同名条目上。
+
+### 14.2 Windows 上「信号」不是停止
+
+实测（P11-3H Phase 1，真实 `services/home-node-service.js` + 私有端口 + 私有数据目录）：
+
+| 动作 | 结果 |
+|---|---|
+| `process.kill(pid, 'SIGTERM')` | 进程 **0ms 内消失** |
+| 组件自己的 `{"event":"shutdown"}` 日志 | **没有**（handler 从未运行） |
+| 数据目录 | `home-node.db-wal` 仍有 440 KB |
+| 数据 | **没有丢**（下次开库时 WAL 恢复） |
+| 端口 | 释放 |
+
+也就是说：停止路径能停进程、能释放端口、WAL 能恢复，但**不是 gracefully**：`gateway.stop`、
+各 canonical store 的 `close`、派生器调度器的停止**一次都没跑**，而"这个组件是不是干净地停下来的"
+变成了一个无法回答的问题。
+
+因此停止必须是一次**消息**，不是一次信号。它走组件自己的 loopback 端口 —— runner、
+安装器与每个服务之间**本来就存在**的那条通道 —— 并且**不新增第二个控制服务、不新增端口**。
+
+### 14.3 停止面（唯一契约）
+
+```
+POST /__shutdown        →  202 { ok, stopping, phase:'stopping', service, pid }
+GET  /__shutdown        →  405 method-not-allowed
+外来 Origin             →  403 origin-denied
+第二次 POST             →  202 { already: true }
+```
+
+- 路径、准入规则与拆除梯子的**唯一实现**是 `runtime/service-control.js`；四个组件都用它。
+- 判定发生在**组件自己的 dispatch 里**、在凭据/来源规则之前。实测过另一种写法
+  （在 server 上再挂一个 `'request'` listener）：Node 同步派发 listener，后注册的那个
+  一定在前一个已经应答之后才跑，于是 `/__shutdown` 拿到的是 **404**，然后落到 fallback kill。
+- 拒绝由组件按**自己既有的错误形状**发出（Home Node 的 `bad(res, 403, 'origin-denied')`、
+  companion 的 `json(res, 405, …)`），所以契约收敛没有改变任何一个服务的错误面。
+- 这不是身份边界，也不假装是：它挡的是**另一个来源的浏览器页面**，与服务自身 loopback 绑定
+  共同构成既有姿态（与 static server 自 P7 起的 `/__shutdown` 同一条规则）。
+  P11-3A 的"凭据铸造面需要已配置桌面 token"不受影响 —— 停止进程不铸造任何东西。
+
+### 14.4 拆除梯子（顺序是有负载的）
+
+```
+1 entering      组件知道自己在停（幂等）
+2 stopWork      停止接受新工作（drain / abort in-flight）
+3 closeHandles  HTTP / WebSocket / sockets / 子进程
+4 stopTimers    interval / timer / watcher / scheduler
+5 closeStores   canonical SQLite store
+6 report        记录"已停止"
+```
+
+每一步都独立 try：**早一步抛异常绝不能跳过后面关库的步骤**。每一步可选，`steps` 数组如实
+报告哪些真的跑了（Home Node 会把它写进日志：`stop-complete {steps:[…]}`）。
+
+**刻意不在梯子里**：不做 WAL checkpoint、不改 PRAGMA、不用 sleep 猜数据已经落盘、不改持久化模式。
+实测：`db.close()` 已经是一次干净的 SQLite close，WAL 在下次开库时折回，数据能往返
+（P11-3H Phase 6）。加 checkpoint 是为"看起来优雅"发明不存在的工作。
+
+### 14.5 停止状态机
+
+| 状态 | 含义 | 会 kill 吗 |
+|---|---|---|
+| `NOT_RUNNING` | 没人应答 **且**端口可绑定 | 否 |
+| `FOREIGN` | 端口被占，且可证明不是我们 | 否（也绝不发停止请求） |
+| `UNKNOWN_OWNER` | InternalBeyond 应答，但所有权无法证明 | 否 |
+| `COOPERATIVE_TIMEOUT` | 停止请求被接受，但有界等待内没走 | **是**（身份重验证之后） |
+| `STOPPED` | 进程消失 **且**端口释放 | 否 |
+| `FALLBACK_KILL` | 走了有界 fallback，进程与端口都已确认 | 是（1 次，已记录） |
+| `FAILED` | 我们拥有的目标没能停下 | 可能 |
+
+顺序固定：
+
+```
+discover → verify identity → cooperative request → wait bounded
+  → verify pid + port → fallback kill ONLY if identity still matches
+  → wait bounded → final verify → aggregate
+```
+
+- **`STOPPED` 要求两个事实**：进程消失 **且** 端口释放。只看端口会漏掉"进程还活着但不再监听"，
+  只看 pid 会漏掉"进程死了但 socket 被别人继承"。
+- **`FOREIGN` 与 `UNKNOWN_OWNER` 是调用方的成功**（on our port is a conflict，从不被算成
+  "成功停止了 InternalBeyond"），只有 `COOPERATIVE_TIMEOUT` / `FALLBACK_KILL` / `FAILED` 让
+  `ok:false`。
+- **身份在任何 kill 之前重读**：等待可能长到 pid 被回收，pid 本身永远不是证据。
+
+### 14.6 有界性
+
+- 每一次停止调用都有**绝对 deadline**；`stopAll` 用**一个共享预算**按剩余组件分摊，
+  所以 N 个卡死的组件不会花掉 N 份时间（安装器 helper 自己的预算是 15s）。
+- 正常路径的硬 kill 次数是 **0**。实测（P11-3H Phase 1/5）：四个真实组件全部
+  `STOPPED accepted=true fallbackKills=0`。
+- 一个接受停止但永不退出的组件：`COOPERATIVE_TIMEOUT` → 1 次有界 fallback → 确认退出。
+- 一个**拒绝**停止的组件：不是超时（没有可超时的等待），直接走同一条已验证的 fallback。
+
+### 14.7 诊断
+
+- `GET /lifecycle`（runner 控制面，只读）：停止目标集合（派生自注册表）、契约本身的顺序与
+  预算、以及**上一次停止循环逐组件的裁决**。
+- `ib-stop --json`：`ok / detected / own / foreign / unknown / graceful / fallback /
+  remaining / conflicts / byState / fallbackKills / components[]`。退出码 0 = 所有**属于我们的**
+  目标都已停止（或本来就没在跑）；非 0 = 至少一个自有目标没能停下，调用方不得继续。
+- 报告里没有正文、payload、凭据或路径秘密：只有组件 id、状态名、OS 给出的 pid 与已脱敏的理由。
+
