@@ -499,6 +499,33 @@ real spawned service in `tests/test_p11_3e_moments_canonical_closure.js`:
   role — it is reported as `serving:false` with a failure category, never as a 200 empty
   list and never as a silent absence.
 
+**P11-3F — `/moments/list` is a mirror-seed read, so it must declare its own completeness.**
+This endpoint is the ONLY read the browser uses to rebuild the Moments mirror, and that
+rebuild is destructive (whole-store replacement). It therefore has to be *decidable*: the
+client may only commit when the server says the page is complete.
+
+```
+/moments/list?limit=N   (desktop mirror seed; the device plane has no moments verb at all)
+  payload: { count, revision, truncated, records }
+                        ^^^^^^^^^  P11-3F: explicit completeness declaration.
+                                   Same field name and meaning as /memory/list, which has
+                                   reported it since Wave 2; moments had silently omitted it.
+  store side (moments-store.listRecords):
+    * rows AND revision are read inside ONE read transaction (BEGIN … COMMIT), so the pair
+      is a single snapshot. Reading them separately let the revision be NEWER than the row
+      set; a client advancing its cursor to that revision would never receive the row that
+      landed in between — a mirror permanently short one entry, with every flag green.
+    * truncated = (rows.length >= limit): the limit was raised from PAGE_MAX to
+      MIRROR_SEED_MAX because a mirror that is silently capped is not a mirror.
+```
+
+A truncated page is **not** a snapshot: the client refuses it (`incomplete-snapshot`) and
+leaves the existing mirror untouched rather than replacing it with page one. A page that
+omits `truncated` is refused too (`invalid-response`) — a missing field is not evidence of
+completeness. Failure semantics on this route are unchanged from P11-3E
+(503 `store-closed` / 500 `db-*`); the client forwards those codes verbatim and does not
+keep a second copy of the server's vocabulary.
+
 `isLoopbackHost` accepts `localhost`, `127.0.0.0/8`, `::1` and nothing else — `0.0.0.0`, `::`
 and any hostname are *not* loopback, so they take the strict path.
 

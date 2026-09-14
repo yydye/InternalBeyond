@@ -261,6 +261,65 @@ spawn 生产入口、真实重启 ×3、真实 SIGTERM）与
 `tests/test_p11_3e_moments_mutations.js`（11/11 CAUGHT，变异在私有副本树内）。
 
 
+### canonical remote state 与本地镜像的安全边界（P11-3F）
+
+P11-3E 说清了"谁是权威"；P11-3F 说清**权威的话在什么条件下才允许改变本地数据**。
+
+**不变量：ONE CANONICAL REMOTE STATE → ONE LOCAL MIRROR。**
+
+| 是不是同一件事 | 说明 |
+|---|---|
+| **ONE AUTHORITY ≠ LOCAL MIRROR** | 权威是 Home Node 的 canonical moments store；浏览器 IndexedDB 的 `moments` 只是镜像 —— 它**可以**被权威整表替换，但它**永远不能**反向成为事实源（那会造出第二个权威）。 |
+| **remote unavailable ≠ authoritative empty** | `[]` 是**数据**，不是错误兜底。503 / 超时 / 连接被拒 / 坏信封 / 缺字段 / 被截断的页，**都不是**"远端说没有"。 |
+| **authoritative empty ≠ 危险** | 远端**明确成功且声明完整**的空快照，**必须**能够合法清空镜像。禁止的是"没有证据的清空"，不是"清空"。 |
+
+因此**破坏性整表替换的授权条件**只有一条，且四条判据缺一不可（全部看服务端
+**明说**的字段，绝不靠推断）：
+
+```
+① ok === true            传输层没有把它合成为失败
+② Array.isArray(records) 字段存在且是数组（不是 undefined / null）
+③ truncated === false    服务端**显式声明**这一页是完整的
+④ typeof revision === number && isFinite(revision)
+        ↓
+validated complete snapshot → 原子镜像替换（一个 IndexedDB 事务）
+```
+
+任何一条不成立 → **不碰镜像**、`hydrated` 不许变真、`cursor` / `mirrorRevision`
+不许前进，只如实记 `degradedReason` / `lastError`。
+
+**为什么 `truncated` 必须是硬判据**：`/moments/list` 是镜像播种的**唯一**读口，
+它有上限。P11-3F 修复前，服务端把 `limit` 夹在 `PAGE_MAX=200` 上且**不报告**
+截断（`/memory/list` 早就在报 `truncated`，moments 漏了），于是"远端只说了一半"
+与"远端说完了"在客户端是**同一个形状** —— 一次完全成功的 200 响应把镜像从 250 条
+替换成 200 条，`cursor` 还推进到 250，剩下 50 条永远不会再通过增量补上。
+
+**镜像替换必须原子**：commit 走 `core.js` 的 `replaceMomentsMirror`（与
+`replaceMemoryMirror` / `replaceChatMirror` 同一形状）—— clear + put 排在**同一个
+readwrite 事务**里；排队时同步抛错（如结构化克隆失败）必须**显式 abort**，否则
+IndexedDB 会把已排队的 clear/put 照常提交，留下"清空后写进去一半"的第三种状态
+（真实 Chrome 实测）。
+
+**两条并发不变量**（都在 `moments-authority.js` 内，没有第二套状态机）：
+
+- **串行化**：所有会改镜像的路径（hydrate 提交 / 增量 / put / remove）排在同一条
+  promise 链上，"检查代次"与"真正落盘"之间因此没有窗口；
+- **代次 + 水位**：`hydrateGen` 保证旧的 hydrate 不能覆盖更新的 hydrate；
+  `mirrorRevision`（已落盘到镜像的最高权威版本）保证晚提交的**旧快照**不能把镜像
+  拖回更早的状态 —— 这是 hydrate 与增量 `changes` 竞争时的唯一判据。
+
+反证与证据：`tests/test_p11_3f_moments_hydration_safety.js`（120 项，A–L + 登记节，
+含真实 spawn、真实 HTTP、真实 IndexedDB 原子性、真实超时）与
+`tests/test_p11_3f_hydration_mutations.js`（11/11 CAUGHT）。
+
+**登记但未修**（各自独立的事实，不属本阶段范围）：memory / understanding / chat
+各自持有**独立的** hydrate 实现（`page.records || []` 同款兜底仍然存在，
+memory 甚至已经知道 `truncated` 却只拿它记 `hasFullHistory`）；`migrate()` 的
+资源是浏览器镜像，而 boot 的首次 hydrate 会先于任何 migrate 执行 —— 未迁移的
+遗留动态会在权威为空时被整表替换清掉（**H4 要求如此**，正确修法是让 migrate 与
+首个 hydrate 定序，属 migration / upgrade 范围）。
+
+
 ### Image Router（统一图片策略层 · P12）
 
 **唯一图片请求入口**，位于所有 producer 与现有 executor 之间。它只做「策略 + 资源控制」，

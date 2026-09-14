@@ -805,26 +805,14 @@ if (_momentsAuthorityFactory && _momentsRemoteFactory) {
       return DB.del('moments', id).then(function () { return true; });
     },
     /* 整表替换：权威是来源。**镜像里的旧影子必须消失** —— 否则用户会继续看到
-       一条已经被权威删除的动态。 */
+       一条已经被权威删除的动态。
+
+       P11-3F：这里改成 core.js 的 `replaceMomentsMirror`（clear + put 在**同一个**
+       IndexedDB 事务里）。原先的"getAll 算 stale → 逐条 del → 逐条 put"是一串
+       独立事务，中途失败会留下半旧半新的镜像 —— 与 memory / chatMessages 早在
+       Wave 2 就用上的原语不一致，而一致性正是本阶段要的东西。 */
     replaceAll: function (rows) {
-      return DB.getAll('moments').then(function (existing) {
-        var keep = {};
-        (rows || []).forEach(function (r) { if (r && r.id != null) keep[String(r.id)] = true; });
-        var stale = (existing || []).map(function (r) { return r && r.id; })
-          .filter(function (id) { return id != null && !keep[String(id)]; });
-        var work = Promise.resolve();
-        for (var i = 0; i < stale.length; i++) {
-          work = work.then((function (id) { return function () { return DB.del('moments', id); }; })(stale[i]));
-        }
-        return work.then(function () {
-          var w2 = Promise.resolve();
-          (rows || []).forEach(function (row) {
-            if (!row || row.id == null) return;
-            w2 = w2.then(function () { return DB.put('moments', row); });
-          });
-          return w2;
-        });
-      });
+      return DB.replaceMomentsMirror(rows || []);
     },
     /* 迁移水位：存 meta 表（与 memory/understanding 同款），绝不写进 moments 行。 */
     markMigrated: function (source, patch) {

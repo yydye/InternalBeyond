@@ -76,6 +76,13 @@ function _request(pathname, options) {
       var parsed = null;
       try { parsed = raw ? JSON.parse(raw) : {}; } catch (e) { parsed = null; }
       if (parsed == null) return { ok: false, error: 'invalid-response', status: res.status, protocolVersion: 1 };
+      /* 合法 JSON 但**不是对象**（`"text"` / `42` / `[1,2]`）也是坏信封。
+         P11-3F 之前这里会继续往下走并在字符串上赋属性 → TypeError 从一个
+         成功解析的响应里抛出来，调用方只看到"传输失败"。形状不对就该在
+         这里、以既有词表里的 `invalid-response` 结束 —— 而不是变成一个异常。 */
+      if (typeof parsed !== 'object' || Array.isArray(parsed)) {
+        return { ok: false, error: 'invalid-response', status: res.status, protocolVersion: 1 };
+      }
       if (!res.ok && parsed.ok !== false) parsed.ok = false;
       parsed.status = res.status;
       if (parsed.protocolVersion == null) parsed.protocolVersion = 1;

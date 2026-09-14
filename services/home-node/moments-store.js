@@ -260,8 +260,10 @@ function createMomentsStore(deps) {
     return row ? row.value : null;
   }
   function writeMeta(key, value) { sqliteExec(SQL.upsertMeta, [key, String(value)]); }
-  function withTransaction(fn) {
-    db.exec('BEGIN IMMEDIATE');
+  /* mode='read' → DEFERRED（只读快照，不与写者抢写锁）；缺省 IMMEDIATE（写事务）。
+     需要读模式的是镜像播种：它要在**同一个快照**里同时读到行集与版本号。 */
+  function withTransaction(fn, mode) {
+    db.exec(mode === 'read' ? 'BEGIN' : 'BEGIN IMMEDIATE');
     try {
       const out = fn();
       db.exec('COMMIT');
@@ -583,13 +585,37 @@ function createMomentsStore(deps) {
     return { records: rows.map(rowToMoment), scanned: rows.length };
   }
 
+  /* ── 镜像播种读口（listRecords）────────────────────────────────────
+     生产上唯一的调用方是网关的 `/moments/list`；浏览器侧拿它做**破坏性**
+     整表替换镜像，因此它的输出必须是"可判定的权威快照"，而不是"大概看看"。
+     P11-3F 在此收紧两件事（都不改 schema、不新建协议）：
+
+     ① **行集与版本号必须出自同一个读事务**。原先"先 SELECT 行、再另读
+        moments_revision / change_log"是两次独立读：中间落进一次写入时，返回的
+        revision 会比行集**更新**，客户端据此推进游标 —— 那条新行动态就再也
+        不会通过增量补上（镜像永久缺一行，且所有标志都是绿的）。
+     ② 增加 `truncated`（与 `memory-store.listRecords` 逐字同款）：`limit` 有上限，
+        取满上限时**如实报告**"这一页可能是截断的"。截断的页
+        **不允许**被当作完整快照 —— 那正是"远端少说了一半"变成"镜像少了一半"的路径。 */
+  const MIRROR_SEED_MAX = 100000;
   function listRecords(options) {
     options = options || {};
-    if (!isOpen()) return { ok: false, error: 'store-closed', records: [] };
-    const limit = Math.max(1, Math.min(PAGE_MAX, intOf(options.limit) || 200));
+    if (!isOpen()) return { ok: false, error: 'store-closed', records: [], truncated: false };
+    const rawLimit = options.limit == null ? 200 : Number(options.limit);
+    const limit = isFinite(rawLimit) && rawLimit > 0
+      ? Math.min(Math.trunc(rawLimit), MIRROR_SEED_MAX)
+      : 200;
     const owner = strOf(options.ownerRoleId, OWNER_MAX);
-    const rows = owner ? sqliteAll(SQL.selectByOwner, [owner, limit]) : sqliteAll(SQL.selectLive, [limit]);
-    return { ok: true, records: rows.map(rowToMoment), count: rows.length, revision: getRevision() };
+    let rows = [];
+    let revision = 0;
+    withTransaction(() => {
+      rows = owner ? sqliteAll(SQL.selectByOwner, [owner, limit]) : sqliteAll(SQL.selectLive, [limit]);
+      revision = getRevision();
+    }, 'read');
+    return {
+      ok: true, records: rows.map(rowToMoment), count: rows.length,
+      revision: revision, truncated: rows.length >= limit
+    };
   }
 
   /* ── 可见分页（§10 的核心）──────────────────────────────────────────

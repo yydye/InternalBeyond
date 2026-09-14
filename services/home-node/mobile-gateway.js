@@ -1825,7 +1825,11 @@ function createMobileGateway(deps) {
         return fail(res, page.error || 'INTERNAL', req, 400);
       }
       return sendJson(res, 200, okBody('moments.list', null, {
-        count: page.count, revision: page.revision, records: page.records
+        /* `truncated` 是 P11-3F 加的**完整性声明**：客户端只有在它显式为 false 时
+           才允许把这份记录集当成"完整的权威快照"去整表重建镜像。缺了它，
+           "远端只说了一半"与"远端说了没有"在客户端是同一个形状。
+           字段名与语义复用 memory（/memory/list 早就是这么报的），不新造词。 */
+        count: page.count, revision: page.revision, truncated: !!page.truncated, records: page.records
       }), req);
     }
     if (action === 'moments/changes' && req.method === 'GET') {

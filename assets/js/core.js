@@ -35,6 +35,16 @@ async function dbUpdate(s,k,mutator){await ensureDB();return new Promise((resolv
 
    绝不在这里做策略决定：模式判断、权威选择、失败语义全部属于
    assets/js/chat-authority.js（可在 Node 中测试），本对象只暴露能力。 */
+/* ── 镜像写入器的**同步抛错路径必须显式 abort**（P11-3F · 真实浏览器实测）──
+   这五个写入器原先的 catch 是 `catch(e){fail(e);return}` —— 只把 promise 置为
+   rejected，**没有**中止事务。于是一条 `store.put()` 在排队时同步抛
+   （最典型的是结构化克隆失败 DataCloneError）之后，IndexedDB 会把**已经排队**
+   的 clear / 前面的 put 照常提交：实测（真实 Chrome，file:// 页面，
+   P11-3F 的 I9）`clear() + put(a) + put(不可克隆)` 提交后镜像里只剩 `a` ——
+   既不是旧镜像、也不是新镜像，而是"清空后写进去一半"的第三种状态。
+
+   事务级错误（onerror / onabort）本来就会自己回滚，所以只有这一条路径缺 abort。
+   修法只有一行：catch 里先 `t.abort()` 再 fail。成功路径**逐字不变**。 */
 window.__ibCoreDb={
   put:dbPut,get:dbGet,getAll:dbGetAll,getByIndex:dbGetByIndex,del:dbDelete,update:dbUpdate,
   ensureDB:ensureDB,
@@ -48,7 +58,7 @@ window.__ibCoreDb={
       try{
         (upserts||[]).forEach(function(m){if(m&&m.id)store.put(m)});
         (deletes||[]).forEach(function(id){if(id)store.delete(id)});
-      }catch(e){fail(e);return}
+      }catch(e){try{t.abort()}catch(_){}fail(e);return}
       t.oncomplete=()=>{if(settled)return;settled=true;_ibMirrorDirty=true;_ibFsDirty=true;r()};
       t.onerror=fail;t.onabort=fail;
     });
@@ -63,7 +73,7 @@ window.__ibCoreDb={
       try{
         store.clear();
         (messages||[]).forEach(function(m){if(m&&m.id)store.put(m)});
-      }catch(e){fail(e);return}
+      }catch(e){try{t.abort()}catch(_){}fail(e);return}
       t.oncomplete=()=>{if(settled)return;settled=true;_ibMirrorDirty=true;_ibFsDirty=true;r()};
       t.onerror=fail;t.onabort=fail;
     });
@@ -86,7 +96,7 @@ window.__ibCoreDb={
       try{
         (upserts||[]).forEach(function(m){if(m&&m.id)store.put(m)});
         (deletes||[]).forEach(function(id){if(id)store.delete(id)});
-      }catch(e){fail(e);return}
+      }catch(e){try{t.abort()}catch(_){}fail(e);return}
       t.oncomplete=()=>{if(settled)return;settled=true;_ibMirrorDirty=true;_ibFsDirty=true;r()};
       t.onerror=fail;t.onabort=fail;
     });
@@ -103,7 +113,33 @@ window.__ibCoreDb={
       try{
         store.clear();
         (records||[]).forEach(function(m){if(m&&m.id)store.put(m)});
-      }catch(e){fail(e);return}
+      }catch(e){try{t.abort()}catch(_){}fail(e);return}
+      t.oncomplete=()=>{if(settled)return;settled=true;_ibMirrorDirty=true;_ibFsDirty=true;r()};
+      t.onerror=fail;t.onabort=fail;
+    });
+  },
+  /* ── P11-3F · moments 镜像的整表重建（先清后写，**同一事务**）────────
+     为什么必须存在：moments 的镜像在此之前是"先 getAll 算出 stale、再逐条
+     dbDelete、最后逐条 dbPut"——那是**一串独立事务**，中途任何一次失败都会
+     留下半旧半新的镜像（甚至清空之后的空库）。P11-3F 的不变量是
+     "要么旧镜像完整保留、要么新镜像完整提交"，因此这里复用
+     replaceMemoryMirror / replaceChatMirror 已经验证过的形状：
+     clear + put 排进同一个 readwrite 事务，任何一条排队时抛错就 abort，
+     IndexedDB 自己会把整次替换回滚。
+
+     刻意**不**做成通用的 replaceMirror(store, rows)：本文件既有约定就是
+     "每个 store 一对写入器，全部放在同一个接缝对象上"，通用化会让
+     chat / memories 这两条已经稳定的路径跟着动 —— 那不是本阶段的范围。 */
+  replaceMomentsMirror:async function(records){
+    await ensureDB();
+    return new Promise((r,j)=>{
+      const t=db.transaction('moments','readwrite');const store=t.objectStore('moments');
+      let settled=false;
+      const fail=e=>{if(settled)return;settled=true;j(t.error||(e&&e.target&&e.target.error)||new Error('IndexedDB moments 镜像重建失败'))};
+      try{
+        store.clear();
+        (records||[]).forEach(function(m){if(m&&m.id)store.put(m)});
+      }catch(e){try{t.abort()}catch(_){}fail(e);return}
       t.oncomplete=()=>{if(settled)return;settled=true;_ibMirrorDirty=true;_ibFsDirty=true;r()};
       t.onerror=fail;t.onabort=fail;
     });
