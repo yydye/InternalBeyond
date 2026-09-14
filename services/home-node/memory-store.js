@@ -41,6 +41,9 @@ const path = require('path');
 const fs = require('fs');
 
 const MEMORY_CONTRACT = require('../../assets/js/memory-contract.js');
+/* P11-3X-B：唯一的数据库失败分类来源。本层不隔离（chat store 负责），
+   但失败必须带类别抛出去，否则上层只能看到一句裸驱动错误。 */
+const dbFailure = require('../../runtime/db-failure.js');
 /* P11-2G：唯一的可见性 core（与 moments-store 注入 MOMENT_VIS 同款纪律）。
    **默认**就是这一份 —— 而不是"缺省 null，等装配层记得传"：后者会让
    "按主体读"在装配漏传时静默返回空页（fail closed 但不可发现）。
@@ -178,26 +181,36 @@ function createMemoryStore(deps) {
     try { fs.mkdirSync(dataDir, { recursive: true }); } catch (_) { /* 目录已存在 */ }
     /* 数据库文件由 chat-store 负责损坏隔离（同一个文件、同一个 open 顺序）。
        本模块只做"schema 太新就拒绝打开"，绝不重复 quarantine 逻辑 ——
-       两个模块各自 rename 同一个坏文件会互相踩。 */
-    db = new sqlite.DatabaseSync(dbFile);
-    db.exec('PRAGMA journal_mode = WAL');
-    db.exec('PRAGMA synchronous = FULL');
-    db.exec('PRAGMA busy_timeout = 5000');
-    db.exec('PRAGMA foreign_keys = ON');
-    db.exec(SQL.createRecords);
-    db.exec(SQL.createByOwner);
-    db.exec(SQL.createByRevision);
-    db.exec(SQL.createChangeLog);
-    db.exec(SQL.createMeta);
-    db.exec(SQL.createIdempotency);
-    const stored = readMeta('memory_schema');
-    if (stored == null) writeMeta('memory_schema', String(MEMORY_SCHEMA_VERSION));
-    else if (Number(stored) > MEMORY_SCHEMA_VERSION) {
-      const err = new Error('memory store schema is newer than this build (' + stored + ' > ' + MEMORY_SCHEMA_VERSION + ')');
-      err.code = 'SCHEMA_TOO_NEW';
-      try { db.close(); } catch (_) { /* 已关闭 */ }
+       两个模块各自 rename 同一个坏文件会互相踩。
+
+       P11-3X-B：这里同样不隔离，并且失败必须**分类**。memory store 与 chat store
+       是同一个文件上的两条连接，所以"只读/权限/磁盘满"在这条连接上第一次被看见
+       是很正常的；过去它以裸驱动错误抛出，上层只能拿到一句 "attempt to write a
+       readonly database"，既没有类别也不可判定。 */
+    try {
+      db = new sqlite.DatabaseSync(dbFile);
+      db.exec('PRAGMA journal_mode = WAL');
+      db.exec('PRAGMA synchronous = FULL');
+      db.exec('PRAGMA busy_timeout = 5000');
+      db.exec('PRAGMA foreign_keys = ON');
+      db.exec(SQL.createRecords);
+      db.exec(SQL.createByOwner);
+      db.exec(SQL.createByRevision);
+      db.exec(SQL.createChangeLog);
+      db.exec(SQL.createMeta);
+      db.exec(SQL.createIdempotency);
+      const stored = readMeta('memory_schema');
+      if (stored == null) writeMeta('memory_schema', String(MEMORY_SCHEMA_VERSION));
+      else if (Number(stored) > MEMORY_SCHEMA_VERSION) {
+        const err = new Error('memory store schema is newer than this build (' + stored + ' > ' + MEMORY_SCHEMA_VERSION + ')');
+        err.code = 'SCHEMA_TOO_NEW';
+        throw err;
+      }
+    } catch (error) {
+      try { if (db) db.close(); } catch (_) { /* 已关闭 */ }
       db = null;
-      throw err;
+      opened = false;
+      throw dbFailure.toError(error);
     }
     opened = true;
     lastOpenedAt = clock();

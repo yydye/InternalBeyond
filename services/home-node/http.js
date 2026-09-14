@@ -137,16 +137,101 @@ function createHomeNodeHttp(deps) {
   function ok(res, payload, req) { sendJson(res, 200, Object.assign({ ok: true, protocolVersion: PROTOCOL_VERSION, serverTime: clock() }, payload), req); }
   function bad(res, status, error, extra, req) { sendJson(res, status, Object.assign({ ok: false, error: error }, extra || {}), req); }
 
+  /* ── A store that cannot serve is not a bad request (P11-3X-B) ──────────
+   *
+   * `store-closed` and the database failure classes used to answer 400 through the
+   * generic "the store said no" path. 400 means "your request was malformed" and
+   * sends the caller to fix a payload that was in fact fine — while the device face
+   * already answered 503 for the very same condition, so the two faces of one
+   * service disagreed about one fact. Only the class changes: every other error
+   * keeps the status its call site already chose. */
+  const UNAVAILABLE_STORE_ERRORS = [
+    'store-closed', 'db-readonly', 'db-permission-denied', 'db-busy',
+    'db-locked', 'db-disk-full', 'db-open-failed', 'db-unavailable'
+  ];
+  function storeError(res, error, extra, req, fallbackStatus) {
+    if (UNAVAILABLE_STORE_ERRORS.indexOf(String(error)) >= 0) { bad(res, 503, error, extra, req); return; }
+    bad(res, Number(fallbackStatus) || 400, error, extra, req);
+  }
+
+  /* ── canonical health contract (P11-3X-B) ────────────────────────────────
+   *
+   * What `/health` is allowed to mean. The four answers the component model and
+   * the diagnostics page need are NOT four fields invented here — they are the
+   * four outcomes the probe layer already distinguishes, and this payload's job is
+   * to make each of them derivable without asking a second question:
+   *
+   *   service reachable   ← the HTTP response itself (`reachable`/`offline`/
+   *                          `timeout` in the probe report; a closed store never
+   *                          pretends the process is gone)
+   *   store open          ← `open`  (the declared role's canonical store)
+   *   degraded            ← `ok:false` + `serving:false` + `failure.category`
+   *   unavailable         ← no answer at all: the probe never reaches this code
+   *
+   * Before this, `ok` was unconditionally true, so a Home Node whose canonical
+   * store was closed answered `{ok:true, open:false}` and every consumer that only
+   * looks at `ok` (the runner's probe, the component registry, the boot record)
+   * called it `healthy`. Measured, before the fix: /health → 200 `{ok:true,
+   * open:false}` and registry.probeComponent → `{state:'healthy', healthy:true}`.
+   * A process that cannot serve a single chat request was reported as a working
+   * component, and the supervisor's only evidence of health said so too — which is
+   * also why it could never recover one.
+   *
+   * `role` is what makes `serving` decidable without a store inventory: the
+   * declared role names the canonical store it is a promise about
+   * (`canonical-chat-authority` → the chat store). Stores that belong to other
+   * P11 phases are not silently folded in here: reporting a Phase 3E store as a
+   * Phase 3X-B health failure would turn a known, tracked gap into a permanent
+   * false alarm and a recovery loop.
+   *
+   * HTTP 200 with `ok:false` is deliberate. The transport succeeded — the caller
+   * really did reach the process — and that is information the component report
+   * needs (`reachable:true` next to `state:'error'`). Collapsing it into a 503
+   * would erase the difference between "not there" and "there but broken", which
+   * is the exact distinction this phase exists to protect. `identityRequiresOk`
+   * stays false for this component, so a name-only identity check (ib-stop, the
+   * installer's stop chain) still recognises the process and can still stop it. */
+  function healthFailure() {
+    if (!store.isOpen()) {
+      return {
+        category: 'store-closed',
+        message: 'the canonical chat store is not open, so this node cannot serve its role'
+      };
+    }
+    return null;
+  }
+
   function healthPayload() {
+    const open = store.isOpen();
+    const failure = healthFailure();
     return {
       service: 'internal-beyond-home-node',
       version: version,
       role: 'canonical-chat-authority',
-      open: store.isOpen(),
-      revision: store.isOpen() ? store.getRevision() : 0,
-      messages: store.isOpen() ? store.countMessages() : 0,
-      schemaVersion: store.schemaVersion
+      /* `open` is kept exactly as it was: it is the store's own answer and the
+         desktop's diagnostics already read it. */
+      open: open,
+      /* `serving` is the role-level verdict. Adding it (rather than overloading
+         `open`) keeps "the chat store is open" and "this node can do its job"
+         separable — today they are the same question, and the day they are not is
+         the day a health check silently becomes a lie. */
+      serving: !failure,
+      revision: open ? store.getRevision() : 0,
+      messages: open ? store.countMessages() : 0,
+      schemaVersion: store.schemaVersion,
+      failure: failure
     };
+  }
+
+  /* One sender for /health, so the two call sites (loopback probe and the
+     token-authenticated remote probe) cannot drift into different verdicts. */
+  function sendHealth(res, req) {
+    const payload = healthPayload();
+    sendJson(res, 200, Object.assign({
+      ok: payload.serving !== false,
+      protocolVersion: PROTOCOL_VERSION,
+      serverTime: clock()
+    }, payload), req);
   }
 
   /* URL 查询串里的 anchor：纯数字 = 毫秒时间戳；'{...}' = 上一步返回的游标对象；
@@ -346,7 +431,7 @@ function createHomeNodeHttp(deps) {
        东西；因此远端必须先过上面那条远端规则（未配置桌面 token → 403；
        配了 token 但没带/带错 → 401）。 */
     if (path === '/health' && method === 'GET' && !remote) {
-      ok(res, healthPayload(), req);
+      sendHealth(res, req);
       return;
     }
 
@@ -360,13 +445,18 @@ function createHomeNodeHttp(deps) {
        因此可以回答（持有桌面 token 的就是桌面自己）。放在凭据规则之后，
        是为了让它复用同一套判定，而不是自己再写一遍。 */
     if (path === '/health' && method === 'GET') {
-      ok(res, healthPayload(), req);
+      sendHealth(res, req);
       return;
     }
 
     if (path === '/status' && method === 'GET') {
+      /* P11-3X-B：/health 的裁决必须在这里也能看到。/status 是桌面诊断真正读的
+         地方（它比 /health 详细），如果只有 /health 诚实、/status 不提，用户就
+         会看到"服务在线、日志正常、但什么都写不进去"。 */
       ok(res, {
         meta: store.meta(),
+        serving: !healthFailure(),
+        failure: healthFailure(),
         log: logRing.slice(-40),
         startedAt: startedAt,
         mobile: gateway ? gateway.meta() : null
@@ -492,14 +582,14 @@ function createHomeNodeHttp(deps) {
       if (before != null) query.before = parseAnchor(before);
       if (after != null) query.after = parseAnchor(after);
       const result = store.listMessages(query);
-      if (!result.ok) { bad(res, 400, result.error, null, req); return; }
+      if (!result.ok) { storeError(res, result.error, null, req, 400); return; }
       ok(res, result, req);
       return;
     }
     if (path === '/changes' && method === 'GET') {
       const cursor = url.searchParams.get('cursor');
       const result = store.changesAfter(cursor == null ? 0 : Number(cursor), { limit: url.searchParams.get('limit') || undefined });
-      if (!result.ok) { bad(res, 400, result.error, null, req); return; }
+      if (!result.ok) { storeError(res, result.error, null, req, 400); return; }
       ok(res, result, req);
       return;
     }
@@ -526,7 +616,8 @@ function createHomeNodeHttp(deps) {
         : store.putMessages(batch, { requestId: requestId, existingPolicy: existingPolicy });
       if (!result.ok) {
         record('warn', 'put-rejected', { error: result.error, index: result.index, errors: result.errors });
-        bad(res, result.error === 'invalid-message' ? 422 : 400, result.error, { index: result.index, errors: result.errors, id: result.id }, req);
+        storeError(res, result.error, { index: result.index, errors: result.errors, id: result.id }, req,
+          result.error === 'invalid-message' ? 422 : 400);
         return;
       }
       record('info', 'put', {
@@ -549,7 +640,7 @@ function createHomeNodeHttp(deps) {
       const id = url.searchParams.get('id');
       if (!id) { bad(res, 400, 'missing-id', null, req); return; }
       const result = store.deleteMessage(id, { requestId: url.searchParams.get('requestId') || '' });
-      if (!result.ok) { bad(res, 400, result.error, null, req); return; }
+      if (!result.ok) { storeError(res, result.error, null, req, 400); return; }
       record('info', 'delete', { outcome: result.outcome, id: result.id, revision: result.revision });
       ok(res, { outcome: result.outcome, id: result.id, revision: result.revision, deleted: !!result.deleted }, req);
       return;
@@ -675,9 +766,22 @@ function createHomeNodeHttp(deps) {
     Promise.resolve()
       .then(() => route(req, res, url, method, remote))
       .catch(error => {
-        record('error', 'unhandled', { path: url.pathname, error: String((error && error.message) || error).slice(0, 300) });
-        if (!res.headersSent) bad(res, 500, 'internal-error', null, req);
-        else { try { res.end(); } catch (_) { /* 已断开 */ } }
+        /* P11-3X-B：数据库失败要带**类别**回答，而不是一句 internal-error。
+           调用方（桌面镜像同步、手机网关、诊断页）靠这个类别决定是重试、报告
+           还是走兼容回退；把它压成 500 就等于让每一个消费者各自去猜。
+           类别是闭集里的稳定 id，**不含**驱动原文、SQL、路径或任何数据，因此可以
+           安全地出现在响应体里。环境类（只读/权限/忙/满/打不开）是可重试的 503；
+           损坏与 schema 过新是终态，回答 500。 */
+        const reason = error && error.dbReason;
+        record('error', 'unhandled', { path: url.pathname, dbReason: reason || null, error: String((error && error.message) || error).slice(0, 300) });
+        if (!res.headersSent) {
+          if (reason) {
+            const terminal = reason === 'db-corrupt' || reason === 'db-schema-too-new' || reason === 'db-unavailable';
+            bad(res, terminal ? 500 : 503, reason, null, req);
+          } else {
+            bad(res, 500, 'internal-error', null, req);
+          }
+        } else { try { res.end(); } catch (_) { /* 已断开 */ } }
       });
   });
 

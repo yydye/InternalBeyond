@@ -48,7 +48,11 @@ const OVERALL = {
   FATAL: 'fatal'
 };
 
-/* Stable reason categories. P5 may render these; never rename, only add. */
+/* Stable reason categories. P5 may render these; never rename, only add.
+   P11-3X-B appended the database failure classes and `store-closed`. They come from
+   the ONE classifier (runtime/db-failure.js) via the component registry, not from a
+   second copy: a class the registry can emit but the boot record cannot name is how
+   a root cause gets replaced by a generic verdict on its way to the operator. */
 const REASON = {
   NONE: 'none',
   OFFLINE: 'offline',
@@ -67,7 +71,19 @@ const REASON = {
   PERMISSION_DENIED: 'permission-denied',
   PATH_UNAVAILABLE: 'path-unavailable',
   DISK_FULL: 'disk-full',
-  WRITE_FAILED: 'write-failed'
+  WRITE_FAILED: 'write-failed',
+  /* Reachable, identity confirmed, declared role not being served. */
+  STORE_CLOSED: 'store-closed',
+  /* Database failure classes (runtime/db-failure.js is the single source). */
+  DB_READONLY: 'db-readonly',
+  DB_PERMISSION_DENIED: 'db-permission-denied',
+  DB_BUSY: 'db-busy',
+  DB_LOCKED: 'db-locked',
+  DB_DISK_FULL: 'db-disk-full',
+  DB_CORRUPT: 'db-corrupt',
+  DB_SCHEMA_TOO_NEW: 'db-schema-too-new',
+  DB_OPEN_FAILED: 'db-open-failed',
+  DB_UNAVAILABLE: 'db-unavailable'
 };
 
 /* Component ids and their order are part of the contract: stable ordering →

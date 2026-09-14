@@ -1,4 +1,4 @@
-﻿/* ====================================================================
+/* ====================================================================
    IB Home Node · Device Registry + Pairing
    --------------------------------------------------------------------
    这是 Home Node 的**设备身份**子系统。它和 M1-A 的 chat authority 是
@@ -36,6 +36,9 @@
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+/* P11-3X-B：唯一的数据库失败分类来源。本层的 open() 失败会让 LAN 绑定被拒绝，
+   因此那条拒绝必须能说出真正的类别（只读 / 权限 / 磁盘满 / 损坏 ……）。 */
+const dbFailure = require('../../runtime/db-failure.js');
 
 const SCHEMA_VERSION = 1;
 const DEFAULT_DB_FILENAME = 'home-node.db';
@@ -242,27 +245,36 @@ function createDeviceRegistry(deps) {
     if (!sqlite) sqlite = loadSqlite();
     /* 本层**不**做 quick_check / 损坏隔离：那个职责属于 chat store（它先开、
        先隔离）。这里如果也做一遍，两个连接就会对"谁负责改名"产生竞态。
-       本层的契约是：只有在调用方已经处理完损坏隔离之后才 open()。 */
-    db = new sqlite.DatabaseSync(dbFile);
-    db.exec('PRAGMA journal_mode = WAL');
-    db.exec('PRAGMA synchronous = FULL');
-    db.exec('PRAGMA busy_timeout = 5000');
-    db.exec('PRAGMA foreign_keys = ON');
-    db.exec(SQL.createDevices);
-    db.exec(SQL.createPairing);
-    db.exec(SQL.createEvents);
-    db.exec(SQL.createEventIndex);
-    db.exec(SQL.createCharacters);
-    db.exec(SQL.createCharacterSecrets);
-    db.exec(SQL.createMeta);
-    const stored = readMeta('devices_schema');
-    if (stored == null) writeMeta('devices_schema', String(SCHEMA_VERSION));
-    else if (Number(stored) > SCHEMA_VERSION) {
-      const err = new Error('device registry schema is newer than this build (' + stored + ' > ' + SCHEMA_VERSION + ')');
-      err.code = 'SCHEMA_TOO_NEW';
-      try { db.close(); } catch (_) { /* 已关闭 */ }
+       本层的契约是：只有在调用方已经处理完损坏隔离之后才 open()。
+
+       P11-3X-B：失败必须分类（见 runtime/db-failure.js）。设备表与 chat store
+       是同一个文件上的两条连接，"只读/权限/磁盘满"在这里第一次被发现同样正常，
+       而这条失败恰恰会让 LAN 绑定被拒绝 —— 那条拒绝必须能说出真正的类别。 */
+    try {
+      db = new sqlite.DatabaseSync(dbFile);
+      db.exec('PRAGMA journal_mode = WAL');
+      db.exec('PRAGMA synchronous = FULL');
+      db.exec('PRAGMA busy_timeout = 5000');
+      db.exec('PRAGMA foreign_keys = ON');
+      db.exec(SQL.createDevices);
+      db.exec(SQL.createPairing);
+      db.exec(SQL.createEvents);
+      db.exec(SQL.createEventIndex);
+      db.exec(SQL.createCharacters);
+      db.exec(SQL.createCharacterSecrets);
+      db.exec(SQL.createMeta);
+      const stored = readMeta('devices_schema');
+      if (stored == null) writeMeta('devices_schema', String(SCHEMA_VERSION));
+      else if (Number(stored) > SCHEMA_VERSION) {
+        const err = new Error('device registry schema is newer than this build (' + stored + ' > ' + SCHEMA_VERSION + ')');
+        err.code = 'SCHEMA_TOO_NEW';
+        throw err;
+      }
+    } catch (error) {
+      try { if (db) db.close(); } catch (_) { /* 已关闭 */ }
       db = null;
-      throw err;
+      opened = false;
+      throw dbFailure.toError(error);
     }
     opened = true;
     lastOpenedAt = clock();

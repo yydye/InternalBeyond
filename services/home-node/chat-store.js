@@ -30,6 +30,10 @@ const path = require('path');
 const fs = require('fs');
 
 const CHAT_CORE = require('../../assets/js/chat-core.js');
+/* P11-3X-B：数据库失败的**唯一**分类来源，以及"只有完整性结论才能授权隔离"这条
+   闸门。见 runtime/db-failure.js 顶部：READONLY / 权限 / busy / 磁盘满 / 打不开
+   都**不是**损坏，把它们当损坏会搬走一个完好的库。 */
+const dbFailure = require('../../runtime/db-failure.js');
 
 const SCHEMA_VERSION = CHAT_CORE.SCHEMA_VERSION; /* 1 */
 const MESSAGES_TABLE = CHAT_CORE.MESSAGE_STORE;  /* 'messages' */
@@ -177,16 +181,45 @@ function createChatStore(deps) {
          · 桌面不会被一个坏文件卡住；
          · 数据没有被销毁，用户/支持人员可以拿保留文件去恢复；
          · 行为是**可解释**的，而不是"历史突然没了"。
-       WAL 侧车文件一并改名，否则新库会读到旧 WAL。 */
+       WAL 侧车文件一并改名，否则新库会读到旧 WAL。
+
+       ── P11-3X-B：隔离只允许由**完整性结论**授权 ──────────────────────────
+       上面那段话成立的前提是"探针失败 == 库坏了"。这个前提曾经是假的，而代价
+       是真实的：探测连接的任何失败（数据库只读、目录不可写、权限不足、磁盘满、
+       侧车路径被挡住、被别人独占）都会走到改名隔离，于是一个**完好**的库被当作
+       坏库搬走、程序拿一个空库继续跑，还报告 `open: true` + healthy —— 数据在
+       一片绿灯里消失。修复在 runtime/db-failure.js：只有
+         · quick_check 明确给出非 'ok' 的结论，或
+         · 驱动明确说这个文件的字节不是数据库（SQLITE_NOTADB / CORRUPT）
+       才可以隔离；其余一律不动磁盘、按自己的类别抛错。 */
     let corruptBackup = null;
     let probeFailure = null;
+    let integrityFailure = null;
     if (fs.existsSync(dbFile)) {
+      /* ── P11-3X-B：可写性预检（在探针之前）─────────────────────────────
+         "只读"这件事必须在 open() 里就被发现，否则会得到一个最坏的状态：
+         连接开得起来、`isOpen()===true`、探针说 healthy，而**每一条写入**都失败。
+         实测（attrib +R / ACL deny W）：SQLite 会静默退化成只读连接，
+         `PRAGMA journal_mode = WAL` / `CREATE TABLE IF NOT EXISTS` / `BEGIN IMMEDIATE`
+         **全部成功**（前两者是幂等空操作，第三个只抢锁不落盘），只有真正
+         INSERT/UPDATE 才抛 SQLITE_READONLY —— 也就是说，光靠打开连接根本问不出
+         这个问题。以读写方式打开文件一次是最省事且权威的问法：
+           · 可读但不可写  = 只读数据库（SQLite_READONLY 的定义）
+           · 连读也不行    = 权限被拒
+         先于探针执行还有一个作用：**隔离只可能由完整性结论授权**，而权限类失败
+         在此之前就已经被拦下，不可能再走到任何改名路径。 */
+      const preflight = writabilityFailure(dbFile);
+      if (preflight) throw dbFailure.toError(preflight);
       let probe = null;
       try {
         probe = new sqlite.DatabaseSync(dbFile);
         const row = probe.prepare('PRAGMA quick_check').get();
         const value = row ? (row.quick_check || Object.values(row)[0]) : 'unknown';
-        if (String(value) !== 'ok') probeFailure = new Error('quick_check: ' + String(value));
+        /* `quick_check` 的结论是一个**值**，不是一个异常：'ok' 才代表结构完好，
+           其它值本身就是第一个被找到的问题。 */
+        if (!dbFailure.integrityVerdictOk(value)) {
+          integrityFailure = new Error('quick_check: ' + String(value));
+        }
       } catch (error) {
         probeFailure = error;
       } finally {
@@ -194,29 +227,42 @@ function createChatStore(deps) {
            损坏隔离就依赖这一步，所以它在 quarantine 之前，且不能被跳过。 */
         if (probe) { try { probe.close(); } catch (_) { /* 已关闭 */ } }
       }
-      if (probeFailure) corruptBackup = quarantineCorruptFile(probeFailure);
+      if (integrityFailure || dbFailure.allowsQuarantine(probeFailure)) {
+        corruptBackup = quarantineCorruptFile(integrityFailure || probeFailure);
+      } else if (probeFailure) {
+        /* 环境问题，不是数据问题。库原地不动，按类别抛错交给上层。 */
+        throw dbFailure.toError(probeFailure);
+      }
     }
-    db = new sqlite.DatabaseSync(dbFile);
-    db.exec('PRAGMA journal_mode = WAL');
-    db.exec('PRAGMA synchronous = FULL');
-    db.exec('PRAGMA busy_timeout = 5000');
-    db.exec('PRAGMA foreign_keys = ON');
-    db.exec(SQL.createMessages);
-    db.exec(SQL.createByConversation);
-    db.exec(SQL.createByFriend);
-    db.exec(SQL.createByRevision);
-    db.exec(SQL.createChangeLog);
-    db.exec(SQL.createIdempotency);
-    db.exec(SQL.createMeta);
-    const stored = readMeta('schema_version');
-    if (stored == null) writeMeta('schema_version', String(SCHEMA_VERSION));
-    else if (Number(stored) > SCHEMA_VERSION) {
-      /* 未来版本写的库：拒绝启动，绝不降级写入（会丢列）。 */
-      const err = new Error('chat store schema is newer than this build (' + stored + ' > ' + SCHEMA_VERSION + ')');
-      err.code = 'SCHEMA_TOO_NEW';
-      try { db.close(); } catch (_) {}
+    try {
+      db = new sqlite.DatabaseSync(dbFile);
+      db.exec('PRAGMA journal_mode = WAL');
+      db.exec('PRAGMA synchronous = FULL');
+      db.exec('PRAGMA busy_timeout = 5000');
+      db.exec('PRAGMA foreign_keys = ON');
+      db.exec(SQL.createMessages);
+      db.exec(SQL.createByConversation);
+      db.exec(SQL.createByFriend);
+      db.exec(SQL.createByRevision);
+      db.exec(SQL.createChangeLog);
+      db.exec(SQL.createIdempotency);
+      db.exec(SQL.createMeta);
+      const stored = readMeta('schema_version');
+      if (stored == null) writeMeta('schema_version', String(SCHEMA_VERSION));
+      else if (Number(stored) > SCHEMA_VERSION) {
+        /* 未来版本写的库：拒绝启动，绝不降级写入（会丢列）。 */
+        const err = new Error('chat store schema is newer than this build (' + stored + ' > ' + SCHEMA_VERSION + ')');
+        err.code = 'SCHEMA_TOO_NEW';
+        throw err;
+      }
+    } catch (error) {
+      /* 真实打开阶段的失败同样要分类，而且**再也不能**升级成隔离：走到这里
+         说明 quick_check 已经说过文件完好。只读属性、目录权限、磁盘满、被
+         busy 挡住都是这一类 —— 报出来，不动它。 */
+      try { if (db) db.close(); } catch (_) { /* 已关闭 */ }
       db = null;
-      throw err;
+      opened = false;
+      throw dbFailure.toError(error);
     }
     opened = true;
     lastOpenedAt = clock();
@@ -229,6 +275,42 @@ function createChatStore(deps) {
       recoveredFromCorrupt: corruptBackup || undefined
     });
     return { ok: true, alreadyOpen: false, file: dbFile, schemaVersion: SCHEMA_VERSION, recoveredFromCorrupt: corruptBackup || null };
+  }
+
+  /* 可写性预检：返回一个"带类别的失败"或 null。绝不修改任何东西 —— 只是把文件
+     以读写方式打开一次再关掉。文件不存在时返回 null：那种情况由创建它的 open
+     路径负责报错（新装用户不该被这个预检拦住）。 */
+  function writabilityFailure(file) {
+    try {
+      const handle = fs.openSync(file, 'r+');
+      fs.closeSync(handle);
+      return null;
+    } catch (error) {
+      const classified = dbFailure.classify(error);
+      const errno = String((error && error.code) || 'unknown');
+      /* 明确的 errno（忙 / 磁盘满 / 只读卷）优先，它们比"读写失败"更具体。 */
+      const specific = classified.reason === dbFailure.REASON.BUSY
+        || classified.reason === dbFailure.REASON.DISK_FULL
+        || classified.reason === dbFailure.REASON.READONLY;
+      let reason = classified.reason;
+      if (!specific) {
+        /* EPERM/EACCES 是有歧义的：Windows 的只读属性与"目录 ACL 拒绝写入"给出的是
+           同一个 errno。用"还能不能读"把它拆开 —— 能读不能写，就是只读数据库。 */
+        let readable = false;
+        try { const handle = fs.openSync(file, 'r'); fs.closeSync(handle); readable = true; }
+        catch (_) { readable = false; }
+        reason = readable ? dbFailure.REASON.READONLY : dbFailure.REASON.PERMISSION_DENIED;
+      }
+      error.dbReason = reason;
+      /* 消息里**不带路径**：它会一路走进 /components 的 lastFailureReason。类别
+         才是这里要传出去的东西，路径属于日志。 */
+      error.message = reason === dbFailure.REASON.READONLY
+        ? 'the database file is read-only for this process (' + errno + ')'
+        : (reason === dbFailure.REASON.PERMISSION_DENIED
+          ? 'the database file is not readable by this process (' + errno + ')'
+          : 'the database file cannot be opened for writing (' + errno + ')');
+      return error;
+    }
   }
 
   /* 把损坏的库文件（含 WAL/SHM 侧车）改名保留，返回保留文件的 basename。
@@ -247,9 +329,14 @@ function createChatStore(deps) {
       logger('corrupt-quarantined', { kept: path.basename(kept), cause: String((cause && cause.message) || cause).slice(0, 200) });
       return kept;
     } catch (error) {
-      /* 改名失败是致命情况：不能在一个坏库上继续写。明确报错，交给上层判定。 */
+      /* 改名失败是致命情况：不能在一个坏库上继续写。明确报错，交给上层判定。
+         P11-3X-B：这个错误的**类别**仍然是损坏 —— 完整性结论已经下过了，失败的
+         只是"把它搬开"这一步（典型原因是目录权限）。若让分类器只看文本，EPERM
+         会被读成 db-permission-denied，用户就会以为"库没坏、只是权限问题"，
+         而真相是"库坏了、而且我们没能把它移开"。所以类别显式钉死在这里。 */
       const err = new Error('chat store is corrupt and could not be quarantined: ' + String((error && error.message) || error));
       err.code = 'CORRUPT_CANNOT_QUARANTINE';
+      err.dbReason = dbFailure.REASON.CORRUPT;
       throw err;
     }
   }
@@ -352,7 +439,10 @@ function createChatStore(deps) {
       return out;
     } catch (error) {
       try { db.exec('ROLLBACK'); } catch (_) { /* rollback 失败时保留原始错误 */ }
-      throw error;
+      /* P11-3X-B：写入期的数据库失败要带类别传出去（磁盘满、权限中途变化、
+         被别人 BUSY 挡住……）。只给真正的数据库错误贴类别 —— 事务体里的编程
+         错误若被伪装成 db-open-failed，会把排查引向磁盘。 */
+      throw dbFailure.isDatabaseError(error) ? dbFailure.toError(error) : error;
     }
   }
   function allocateRevision() {

@@ -442,8 +442,17 @@ class Supervisor {
       rec.lastFailureReason = sanitize(isExit
         ? (p.spawnFailed
           ? (rec.label + ' failed to start: ' + (p.reason || 'spawn failed'))
+          /* P11-3X-B: an unexpected exit keeps its historical wording and gains the
+             child's own cause when the runner could recover one ("— db-readonly: …").
+             This is reason TEXT only: the budget, the backoff and the lockout are
+             untouched, so a database failure does not acquire a different recovery
+             policy — it just stops being reported as `process-exit`.
+             Measured before this: a Home Node crash-looping on a read-only database
+             ended as "exited unexpectedly (code=1, signal=n/a)", and the only place
+             that said why was the child's own log file. */
           : (rec.label + ' exited unexpectedly (code=' + (rec.lastExitCode === null ? 'n/a' : rec.lastExitCode) +
-            ', signal=' + (rec.lastExitSignal || 'n/a') + ')'))
+            ', signal=' + (rec.lastExitSignal || 'n/a') + ')' +
+            (p.reason ? ' — ' + String(p.reason) : '')))
         : (p.reason || (rec.label + ' stopped answering its health endpoint')), 200);
       rec.lastFailureAt = at;
       rec.failedReason = rec.lastFailureReason;
@@ -453,8 +462,14 @@ class Supervisor {
       }
       const authorization = this.authorizeAttempt(id, at);
       if (!authorization.allowed) {
+        /* P11-3X-B: verdict FIRST, cause after. This string becomes `failedReason`
+           and is truncated at 200 characters, and putting the (now much more
+           informative) cause first is what pushed the verdict itself off the end —
+           measured: "…— restart bud". Terminal state must lead with why it stopped
+           trying; the last failure is context. (lastFailureReason keeps the cause and
+           is not built from this string.) */
         return this._lockOut(rec, at,
-          rec.lastFailureReason + ' — restart budget exhausted (' + authorization.reason + ')',
+          'restart budget exhausted for ' + rec.label + ' (' + authorization.reason + '); last failure: ' + rec.lastFailureReason,
           wasState, EVENT.BUDGET_EXHAUSTED);
       }
       /* The first crash retries immediately (the process is already gone and the
@@ -483,7 +498,16 @@ class Supervisor {
     rec.nextAttemptAt = null;
     rec.backoffMs = 0;
     rec.failedReason = sanitize(reason, 200);
-    rec.lastFailureReason = rec.failedReason;
+    /* P11-3X-B: the lockout reason explains the LOCKOUT, not the failure. Overwriting
+       lastFailureReason with it is how the root cause of a terminal failure got
+       destroyed: a component that crash-looped on a read-only database ended as
+       `lastFailureReason: "restart budget exhausted"` with `db-readonly` nowhere in
+       the terminal state, even though the recovery log had said it correctly.
+       The two questions are different and both are now answered:
+         · lastFailureReason  — why it failed (the specific cause, if we have one)
+         · failedReason       — why this process stopped trying (the budget/lockout)
+       When there is no earlier cause the lockout reason is still the best answer. */
+    if (!rec.lastFailureReason) rec.lastFailureReason = rec.failedReason;
     rec.lastFailureAt = at;
     if (rec.state !== RECOVERY_STATE.FAILED) {
       rec.state = RECOVERY_STATE.FAILED;

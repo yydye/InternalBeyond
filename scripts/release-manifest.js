@@ -54,6 +54,11 @@ const ENTRIES = [
   { from: 'runtime/boot-state.js', why: '启动记录（P2 诊断唯一来源）' },
   { from: 'runtime/component-registry.js', why: '组件注册表唯一事实源（端口 / 身份探针 / 组件轴；boot-state 与 runner 都 require 它，缺失会让启动链直接崩）' },
   { from: 'runtime/component-supervisor.js', why: '有界崩溃恢复策略引擎（重启预算 / 退避 / 失败锁死；runner 启动期 require 它，缺失同样会让启动链直接崩）' },
+  /* P11-3X-B：数据库失败的唯一分类来源。chat / memory / device 三个 store 与
+     component-registry 都在启动期 require 它 —— 缺了它，Home Node 会以一个
+     谁也读不出来的 require 错误起不来。manifest 是**逐文件白名单**（不是 glob），
+     所以新增运行时模块必须在这里登记，否则开发机全绿、安装后必崩。 */
+  { from: 'runtime/db-failure.js', why: '数据库失败分类器（只读 / 权限 / 忙 / 磁盘满 / 损坏 / schema 过新 / 打不开；store 与组件模型共用的唯一分类源）' },
   { from: 'runtime/launch-internal-beyond.js', why: '正式静默启动链（快捷方式最终执行）' },
   { from: 'runtime/local-services-runner.js', why: '本地服务管理进程（Bridge / Active / Home Node + 重启与停止控制面）' },
   { from: 'services/internal-beyond-server.js', why: '本地静态页面服务（AudioWorklet 必需）' },

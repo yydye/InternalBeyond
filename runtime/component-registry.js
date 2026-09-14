@@ -49,7 +49,25 @@
  * categories are boot-state's REASON values, mirrored here by value so this
  * module stays dependency-free; tests/test_p11_3b_component_registry.js asserts
  * these are exactly boot-state.REASON's own set — drift fails the suite rather
- * than being discovered by a user. */
+ * than being discovered by a user.
+ *
+ * P11-3X-B adds two things to that closed set, and neither is a second taxonomy:
+ *
+ *   · `store-closed` — the component answered and named itself, but said it cannot
+ *     serve the role it declares. Reachable-but-not-serving is a different fact
+ *     from unreachable, and it used to be reported as `healthy`;
+ *   · the `db-*` family — the database failure classes from the ONE classifier
+ *     (runtime/db-failure.js).
+ *
+ * The `db-*` values are MIRRORED BY VALUE rather than required from the classifier,
+ * and that is not laziness: `require`ing it here would break a real invariant this
+ * module is held to — "the registry is a pure model with no dependencies at load
+ * time" (tests/test_p11_3b_component_registry.js G1, which is what caught the first
+ * attempt to derive them). Drift is guarded by assertion instead of by construction:
+ * tests/test_p11_3b_component_registry.js A5 pins registry ⊆ boot-state, and
+ * tests/test_p11_3x_b_runtime_db_reliability.js C8 pins the classifier's whole set
+ * into BOTH — so a class the classifier can emit but the model cannot name fails the
+ * suite rather than reaching an operator as "process-exit". */
 
 const STATE = {
   UNKNOWN: 'unknown',
@@ -71,7 +89,21 @@ const REASON = {
   TIMEOUT: 'timeout',
   PROBE_FAILED: 'probe-failed',
   UNKNOWN: 'unknown',
-  NOT_ENABLED: 'not-enabled'
+  NOT_ENABLED: 'not-enabled',
+  /* Identity confirmed, transport healthy, role not being served. */
+  STORE_CLOSED: 'store-closed',
+  /* Database failure classes. Mirrored by value from runtime/db-failure.js — see the
+     vocabulary comment above for why this is not a `require`, and for the two tests
+     that fail the moment these drift from the classifier. */
+  DB_READONLY: 'db-readonly',
+  DB_PERMISSION_DENIED: 'db-permission-denied',
+  DB_BUSY: 'db-busy',
+  DB_LOCKED: 'db-locked',
+  DB_DISK_FULL: 'db-disk-full',
+  DB_CORRUPT: 'db-corrupt',
+  DB_SCHEMA_TOO_NEW: 'db-schema-too-new',
+  DB_OPEN_FAILED: 'db-open-failed',
+  DB_UNAVAILABLE: 'db-unavailable'
 };
 
 /* ── Port derivation ───────────────────────────────────────────────────────
@@ -121,6 +153,39 @@ function identityMatches(component, data) {
 
 function identityOk(data) {
   return !!(data && data.ok === true);
+}
+
+/* ── Reachable ≠ able to serve (P11-3X-B) ─────────────────────────────────
+ *
+ * The identity predicate answers "is this JSON about me?" and must keep doing
+ * only that: a port that answers something else is a conflict, never an error,
+ * and folding capability into identity would make those two indistinguishable.
+ * So there is a second, separate question, asked only after identity passes:
+ * "given that this is really you, are you able to do your job?"
+ *
+ * `servingHealth` is a declarative hook on the component, exactly like
+ * `matchesHealth`. It returns null when the component is serving, or a
+ * `{ category, message }` when it is reachable but cannot serve. The category is
+ * validated against the frozen vocabulary: a component may name its own failure
+ * class (that is the point — Home Node knows `store-closed`), but it cannot
+ * invent one outside the closed set, which would put a class into the health view
+ * that nothing else can render or act on.
+ *
+ * Only the identity check remains name-only (`identityRequiresOk` stays false for
+ * homeNode on purpose): the installer's stop chain has to be able to recognise the
+ * process in order to stop it, and a stop chain that loses the process because its
+ * store is broken is a worse failure than the one it is trying to fix. */
+const KNOWN_REASONS = Object.keys(REASON).map(k => REASON[k]);
+
+function servingFailure(component, data) {
+  if (!component.servingHealth || typeof component.servingHealth !== 'function') return null;
+  const verdict = component.servingHealth(data);
+  if (!verdict) return null;
+  const known = typeof verdict.category === 'string' && KNOWN_REASONS.indexOf(verdict.category) >= 0;
+  return {
+    category: known ? verdict.category : REASON.STORE_CLOSED,
+    message: String(verdict.message || (component.label + ' is reachable but cannot serve its role')).slice(0, 300)
+  };
 }
 
 const COMPONENTS = [
@@ -219,7 +284,21 @@ const COMPONENTS = [
     healthyRequiredForServices: false,
     restartable: true,
     controllable: false,
-    matchesHealth: data => !!(data && data.service === 'internal-beyond-home-node')
+    matchesHealth: data => !!(data && data.service === 'internal-beyond-home-node'),
+    /* P11-3X-B：身份对只是第一问。Home Node 的 `/health` 现在还回答第二问 ——
+       "我能不能干我的活"（`serving` / `failure`）。把它的裁决原样读出来即可；
+       这一层不重新推断，因为只有它自己知道自己的 store 是什么状态。
+       实测修复前：库已关闭时它回答 `{ok:true, open:false}`，于是这里把它判成
+       healthy —— 一个连一条聊天都写不进去的进程被报成健康组件。 */
+    servingHealth: data => {
+      if (!data || data.serving !== false) return null;
+      const failure = data.failure || null;
+      return {
+        category: (failure && failure.category) || REASON.STORE_CLOSED,
+        message: (failure && failure.message) ||
+          'Home Node answered but reports it cannot serve its canonical role'
+      };
+    }
   },
   {
     /* The restart control plane lives inside the runner process itself; it has
@@ -310,13 +389,25 @@ function componentOrder() { return IDS.slice(); }
  * can never be "conflict" in one and "offline" in the other.
  *
  * probe = { responding, timedOut, status, data }
- * opts  = { waitedMs, probeError }
+ * opts  = { waitedMs, probeError, port, timeoutMs }
+ *
+ * `port`/`timeoutMs` exist so the reason text names the port that was actually
+ * probed and the timeout that actually elapsed. Before P11-3X-B the message always
+ * said `c.defaultPort` and, when the caller passed no timeout, "within 0ms" —
+ * measured in the runner's own view, which reported a real failure on port 12212 as
+ * "did not answer /health on port 23115 within 0ms". A diagnosis that names the
+ * wrong port is worse than no diagnosis: it sends the operator to a port that is
+ * not the problem.
  */
 function classifyProbe(component, probe, opts) {
   const c = component;
   const p = probe || {};
   const o = opts || {};
   const waited = Number(o.waitedMs) > 0 ? Number(o.waitedMs) : 0;
+  const port = Number.isInteger(o.port) && o.port > 0 ? o.port
+    : (Number.isInteger(p.port) && p.port > 0 ? p.port : c.defaultPort);
+  const budget = Number(o.timeoutMs) > 0 ? Number(o.timeoutMs)
+    : (Number(p.timeoutMs) > 0 ? Number(p.timeoutMs) : waited);
 
   if (o.probeError) {
     return {
@@ -329,19 +420,26 @@ function classifyProbe(component, probe, opts) {
       state: STATE.OFFLINE,
       reason: {
         category: REASON.TIMEOUT,
-        message: c.name + ' did not answer ' + c.healthPath + ' on port ' + c.defaultPort +
-          ' within ' + (p.timeoutMs || waited || 0) + 'ms'
+        message: c.name + ' did not answer ' + c.healthPath + ' on port ' + port +
+          (budget > 0 ? ' within ' + budget + 'ms' : '')
       }
     };
   }
   if (p.responding === true) {
     const identityOkNow = p.identityOk !== undefined ? p.identityOk === true : identityMatches(c, p.data);
-    if (identityOkNow) return { state: STATE.HEALTHY, reason: null };
+    if (identityOkNow) {
+      /* Identity confirmed. The only question left is whether the component can do
+         its job; a "no" here is `error` (it is ours, and it is broken), never
+         `conflict` (which means the port belongs to somebody else). */
+      const notServing = servingFailure(c, p.data);
+      if (notServing) return { state: STATE.ERROR, reason: notServing };
+      return { state: STATE.HEALTHY, reason: null };
+    }
     return {
       state: STATE.CONFLICT,
       reason: {
         category: REASON.CONFLICT,
-        message: 'port answered ' + c.healthPath + ' but is not ' + c.label + ' (' + c.name + ')'
+        message: 'port ' + port + ' answered ' + c.healthPath + ' but is not ' + c.label + ' (' + c.name + ')'
       }
     };
   }
@@ -349,7 +447,7 @@ function classifyProbe(component, probe, opts) {
     state: STATE.OFFLINE,
     reason: {
       category: REASON.OFFLINE,
-      message: c.name + ' is not answering ' + c.healthPath + ' on port ' + c.defaultPort
+      message: c.name + ' is not answering ' + c.healthPath + ' on port ' + port
     }
   };
 }
@@ -399,6 +497,14 @@ function componentReport(component, report) {
   if (r.startedAt !== undefined && r.startedAt !== null) out.startedAt = Number(r.startedAt);
   if (r.details !== undefined && r.details !== null) out.details = r.details;
   if (r.note !== undefined && r.note !== null) out.note = String(r.note).slice(0, 300);
+  /* P11-3X-B · port ownership class. Reported only when a caller actually
+     classified an occupant — `null` means "this view did not ask", which is not
+     the same as "free", and inventing one would be the same class of lie this
+     phase exists to remove. `pids` are numbers the OS gave us for a local port;
+     they are never a path, a command line or a credential. */
+  if (r.portOwner !== undefined && r.portOwner !== null) out.portOwner = String(r.portOwner).slice(0, 40);
+  if (Array.isArray(r.portOwnerPids)) out.portOwnerPids = r.portOwnerPids.map(n => Number(n)).filter(n => Number.isInteger(n) && n > 0).slice(0, 8);
+  if (r.portOwnerReason !== undefined && r.portOwnerReason !== null) out.portOwnerReason = String(r.portOwnerReason).slice(0, 120);
   return out;
 }
 
@@ -451,7 +557,7 @@ function probeComponent(component, opts) {
       data: probe.data,
       identityOk: identityOkNow,
       timeoutMs: probe.timeoutMs
-    }, {});
+    }, { port: port, timeoutMs: timeoutMs });
     return componentReport(component, {
       port: port,
       state: classified.state,
@@ -518,12 +624,19 @@ function aggregate(reports, opts) {
   const affected = list.filter(r => r.affectsOverall === true && r.probed !== false && !r.healthy);
 
   const healthy = list.filter(r => r.healthy === true).length;
+  /* P11-3X-B：`notUp` = 明确没在正常工作的组件（停了，或者被探到处于 conflict/error）。
+     `errored` 与 `stopped` 在这里必须同等对待，否则会出现下面这种自相矛盾的裁决：
+     "运行中: bridge,active · 异常: homeNode · overall: healthy" —— 一个已经在
+     `errored` 列表里的组件同时出现在一张说整体健康的表上。`affectsOverall` 管的是
+     "它不在会不会挡住产品"（Home Node 不在不该让桌面启动变 degraded，这是 P11-3B
+     刻意的决定，这里不动它）；而"它在而且坏了"是更弱的问题，答案只能是 partial。 */
+  const notUp = stopped.length + errored.length;
   let overall;
   if (!list.length) overall = 'unknown';
   else if (affected.length) overall = 'degraded';
-  else if (healthy === 0 && stopped.length === 0) overall = 'unknown';
+  else if (healthy === 0 && notUp === 0) overall = 'unknown';
   else if (healthy === 0) overall = 'stopped';
-  else if (stopped.length) overall = 'partial';
+  else if (notUp) overall = 'partial';
   else overall = 'healthy';
   return {
     schema: 'internalbeyond.component-health',

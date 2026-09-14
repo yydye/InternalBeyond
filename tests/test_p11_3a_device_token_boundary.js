@@ -264,6 +264,33 @@ const READ_PATHS = [
     for (const rel of ['services', 'assets', 'active']) {
       fs.cpSync(path.join(ROOT, rel), path.join(fakeRoot, rel), { recursive: true });
     }
+    /* P11-3X-B：服务侧现在也 require runtime/ 下的模块（数据库失败分类器）。
+       这里**不**整体复制 runtime/ —— 它里面还有内置 Node 运行时（约 100 MB）。
+       改为从副本里扫出对 runtime/ 的依赖再逐文件复制：写死文件名的话，下次多一个
+       运行时依赖，这个副本又会以 "MODULE_NOT_FOUND" 的方式失效，而 D1 只会把它
+       报成"变异副本跑不起来"，看起来像测试本身的问题而不是真的缺依赖。 */
+    const runtimeDeps = new Set();
+    const scanDeps = dir => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) { scanDeps(full); continue; }
+        if (!/\.js$/.test(entry.name)) continue;
+        const src = fs.readFileSync(full, 'utf8');
+        const re = /require\(\s*['"](?:\.\.\/)+runtime\/([^'"]+)['"]\s*\)/g;
+        let m;
+        while ((m = re.exec(src)) !== null) runtimeDeps.add(m[1]);
+      }
+    };
+    for (const rel of ['services', 'active', 'assets']) scanDeps(path.join(fakeRoot, rel));
+    for (const rel of runtimeDeps) {
+      const from = path.join(ROOT, 'runtime', rel);
+      const to = path.join(fakeRoot, 'runtime', rel);
+      fs.mkdirSync(path.dirname(to), { recursive: true });
+      fs.cpSync(from, to, { recursive: true });
+    }
+    check('D0b 变异副本补齐了服务侧对 runtime/ 的全部依赖（否则 D1 的失败会是假证据）',
+      runtimeDeps.size > 0 && [...runtimeDeps].every(r => fs.existsSync(path.join(fakeRoot, 'runtime', r))),
+      [...runtimeDeps]);
     fs.writeFileSync(target, original.replace(needle, "    return false;"), 'utf8');
 
     const mutDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-p113a-mutdata-'));

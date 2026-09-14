@@ -111,6 +111,10 @@ const stopping = new Set();
 const RESTART_HOST = '127.0.0.1';
 const RESTART_PORT = optionPort('IB_RESTART_PORT', 23116);
 const RESTART_SERVER_NAME = 'InternalBeyond Restart';
+/* P11-3X-B: ports this run refused to start into, keyed by component id. Reported
+   on the component row so "offline" can carry the reason it is offline. Reset by a
+   control-plane restart, which re-runs the same preflight. */
+const portConflicts = {};
 
 fs.mkdirSync(LOG_DIR, { recursive: true });
 
@@ -297,8 +301,12 @@ function printStatus(rows, components) {
           (c.restartCount ? '×' + c.restartCount : '') +
           (c.recoveryLockedOut ? ' (locked out)' : '')
         : '';
+      /* P11-3X-B: if this run refused to start into an occupied port, say who holds
+         it. Otherwise the line reads "offline" and an operator has to guess between
+         "it crashed" and "something else owns the port". */
+      const owner = c.portOwner ? ' · port-owner:' + c.portOwner + (c.portOwnerPids ? '(' + c.portOwnerPids.join(',') + ')' : '') : '';
       console.log('    ' + String(c.id).padEnd(9) + String(c.state).padEnd(12) +
-        (c.affectsOverall ? '' : '(informational)') + detail + rec);
+        (c.affectsOverall ? '' : '(informational)') + detail + owner + rec);
     }
     console.log('  running: ' + (agg.running.join(',') || 'none') +
       ' · stopped: ' + (agg.stopped.join(',') || 'none') +
@@ -356,12 +364,109 @@ function processCommandline(pid) {
     });
   });
 }
+/* Is this command line an Internal Beyond instance of `scriptFile`?
+ *
+ * Two independent confirmations, as before: the expected script name must appear,
+ * AND the invocation must be rooted in this repository/installation. P11-3X-B adds
+ * the second *form* of "rooted here": this runner spawns children with absolute
+ * paths, but a developer, a test or the installer may launch the very same file as
+ * `node runtime/local-services-runner.js` — and a command line never contains a
+ * working directory, so the absolute-path test alone called our OWN second runner
+ * "foreign". Measured: runner B against runner A's control port was reported as
+ * `control-plane-foreign`.
+ *
+ * The relative form therefore also has to show the script's own parent segment
+ * (`runtime/`, `services/`) next to its name. Both forms still require an
+ * IB-specific script name, so this is a heuristic about our own files — it was
+ * never a security boundary, because a command line is controlled by whoever
+ * started the process. */
+function commandMatchesScript(commandLine, scriptFile) {
+  const cl = String(commandLine || '');
+  const full = String(scriptFile || '');
+  if (!cl || !full) return false;
+  const script = path.basename(full);
+  if (!script || cl.indexOf(script) < 0) return false;
+  if (cl.indexOf(path.basename(ROOT)) >= 0) return true;
+  const parent = path.basename(path.dirname(full));
+  if (!parent) return false;
+  const quote = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  /* The pair `parent/script` must appear as a whole path fragment: preceded by a
+     separator, a space, a quote or the start of the command line (a command line
+     never contains a working directory, so `node runtime/x.js` starts the argument
+     with the parent segment), and followed by a space, a quote or the end. */
+  return new RegExp('(^|[\\s"\'\\\\/])' + quote(parent) + '[\\\\/]' + quote(script) + '([\\s"\']|$)').test(cl);
+}
+
 function processMatchesService(pid, service) {
   return new Promise(resolve => {
-    processCommandline(pid).then(cl => {
-      const script = path.basename(service.commandArgs[0] || '');
-      resolve(!!cl && cl.indexOf(path.basename(ROOT)) >= 0 && cl.indexOf(script) >= 0);
-    });
+    processCommandline(pid).then(cl => resolve(commandMatchesScript(cl, service.commandArgs[0])));
+  });
+}
+
+/* ── Port ownership (P11-3X-B) ────────────────────────────────────────────
+ *
+ * Who holds a port, asked BEFORE anything is spawned. This is not a second
+ * ownership ruleset: it is the same two existing predicates the stop path has used
+ * since P11-3B — the OS's listener list (`pidsForPort`) plus "is that process one
+ * of ours" (`processCommandline` against this repo and the expected script). What
+ * P11-3X-B adds is asking the question *early* and giving the answer a name, so an
+ * occupied port is a diagnosis instead of a random child that dies with
+ * EADDRINUSE three lines later.
+ *
+ * Five outcomes, and the two that must never be conflated are FOREIGN and UNKNOWN:
+ *
+ *   free              nothing is listening
+ *   self              this runner's own live child already holds it
+ *   owned-component   a VERIFIED Internal Beyond process holds it (our repo path
+ *                     and the expected script name both appear in its command line)
+ *   foreign           a process is listening and is verifiably not ours
+ *   unknown           a process is listening and we could not read its command line
+ *
+ * UNKNOWN is deliberately not folded into FOREIGN. "I could not identify it" is
+ * not evidence that it is somebody else's, and the only action this classification
+ * ever authorizes is a kill — so an unreadable command line must fail safe. It
+ * does: neither FOREIGN nor UNKNOWN is ever killed. */
+const PORT_OWNER = {
+  FREE: 'free',
+  SELF: 'self',
+  OWNED_COMPONENT: 'owned-component',
+  FOREIGN: 'foreign',
+  UNKNOWN: 'unknown'
+};
+
+async function classifyPortOwner(port, scriptFile) {
+  const pids = await pidsForPort(port);
+  if (!pids.length) return { owner: PORT_OWNER.FREE, pids: [] };
+  const ours = [];
+  const others = [];
+  for (const pid of pids) {
+    const commandLine = await processCommandline(pid);
+    if (!commandLine) {
+      /* An unreadable command line is `unknown`, never `foreign`: we have no
+         evidence either way, and the fail-safe direction is not to act. */
+      return {
+        owner: PORT_OWNER.UNKNOWN, pids: pids,
+        reason: 'a process holds the port but its command line could not be read'
+      };
+    }
+    if (commandMatchesScript(commandLine, scriptFile)) ours.push(pid);
+    else others.push(pid);
+  }
+  if (ours.length && !others.length) return { owner: PORT_OWNER.OWNED_COMPONENT, pids: ours };
+  /* A mixed set is reported as foreign: refusing is the safe answer, and one
+     verified stranger on the port means the port is not uncontested. */
+  return {
+    owner: PORT_OWNER.FOREIGN, pids: others.concat(ours),
+    reason: 'the port is held by a process that is not an Internal Beyond ' + path.basename(String(scriptFile || 'service'))
+  };
+}
+
+/* The restart control plane's own identity, probed exactly like a component:
+   identity is the JSON that names it, not "something answered". */
+function probeControlPlane(port) {
+  return requestJson(port, '/status', 1200).then(function (health) {
+    const identity = !!(health.data && health.data.service === RESTART_SERVER_NAME);
+    return { responding: health.responding === true, identity: identity, status: health.status, data: health.data };
   });
 }
 function killPid(pid) {
@@ -372,6 +477,27 @@ function killPid(pid) {
       try { process.kill(Number(pid), 'SIGKILL'); } catch (e) { }
       resolve();
     }
+  });
+}
+
+/* Can this process bind the port right now? This is the cheap, authoritative
+   "is it free" question — Node's own kernel answer, no shelling out. It is asked
+   BEFORE the expensive ownership classification, because the common case is a free
+   port and paying two PowerShell calls per launch for it would be a tax on every
+   startup. A listening socket closed before accepting a connection leaves no
+   TIME_WAIT, so probing is free of side effects; and because the port can still be
+   taken in the window between this answer and the real bind, every caller keeps a
+   bind-error path. */
+function portBindable(port, host) {
+  const bindHost = host || RESTART_HOST;
+  return new Promise(resolve => {
+    const probe = net.createServer();
+    let settled = false;
+    const done = value => { if (settled) return; settled = true; resolve(value); };
+    probe.once('error', () => { try { probe.close(); } catch (e) { /* 未监听 */ } done(false); });
+    try {
+      probe.listen(port, bindHost, () => { probe.close(() => done(true)); });
+    } catch (e) { done(false); }
   });
 }
 
@@ -470,12 +596,17 @@ async function componentHealth(component, rows, opts) {
       status: row.status,
       data: row.details,
       identityOk: row.online === true
-    }, {});
+    }, { port: port, timeoutMs: row.tookMs });
     const note = row.owned
       ? (row.exits > 0
         ? 'started by this runner; ' + row.exits + ' exit event(s) observed, recovery state above'
         : 'started by this runner')
       : (row.online ? 'reused: already running and not started by this runner' : null);
+    /* P11-3X-B: if this run refused to start into an occupied port, the class of the
+       occupant travels with the report. It is a SEPARATE field, not folded into
+       `note`: `note` already carries "who started this" and overwriting it would
+       destroy that answer to gain this one. */
+    const conflict = portConflicts[component.id] || null;
     return registry.componentReport(component, {
       port: port,
       state: classified.state,
@@ -492,7 +623,10 @@ async function componentHealth(component, rows, opts) {
       pid: row.pid,
       version: row.version,
       details: row.details,
-      note: note
+      note: note,
+      portOwner: conflict ? conflict.owner : null,
+      portOwnerPids: conflict ? conflict.pids : null,
+      portOwnerReason: conflict ? conflict.reason : null
     });
   }
   /* A managed component that this run did not register (Vision without
@@ -706,6 +840,57 @@ function sendJsonRes(res, status, obj, allowedOrigin) {
   res.end(JSON.stringify(obj));
 }
 
+/* ── Control-plane preflight (P11-3X-B) ───────────────────────────────────
+ *
+ * The control plane must come up BEFORE the services (P11-3C, and that stays), but
+ * it must also come up *or not at all*. Before this, `server.listen()`'s failure was
+ * written to a log file and the run continued: measured, a runner whose control port
+ * was held by a foreign listener went on to spawn and manage Bridge, Active and Home
+ * Node while its own /status, /restart and /shutdown were unreachable — a runner with
+ * live children and no way to stop them. The same run also printed an ordinary
+ * component table, so an operator reading stdout saw a working start. (The only
+ * trace was restart.log: "restart control server error: listen EADDRINUSE".)
+ *
+ * So the question "who holds the control port?" is now asked before anything is
+ * spawned, and every answer other than `free` is a refusal with a reason:
+ *
+ *   free                         → bind and continue (the normal case)
+ *   own, answering, right name   → another runner already owns it. This process
+ *                                  must not become a second supervisor: it would
+ *                                  have no control plane and would fight the first
+ *                                  one over every component.
+ *   own, not answering           → a stale runner still holds the port. Refusing is
+ *                                  the defined policy: killing it would kill the
+ *                                  children it owns, and "which runner is real" is
+ *                                  the operator's decision, not this process's.
+ *   foreign / unknown            → refuse. Nothing is ever killed here.
+ */
+async function ensureControlPlane() {
+  if (await portBindable(RESTART_PORT, RESTART_HOST)) {
+    return startRestartServer();
+  }
+  const owner = await classifyPortOwner(RESTART_PORT, path.join(__dirname, 'local-services-runner.js'));
+  if (owner.owner === PORT_OWNER.OWNED_COMPONENT) {
+    const probe = await probeControlPlane(RESTART_PORT);
+    if (probe.responding && probe.identity) {
+      return {
+        ok: false, reason: 'control-plane-already-running', owner: owner.owner,
+        detail: 'another Internal Beyond runner already owns ' + RESTART_HOST + ':' + RESTART_PORT
+      };
+    }
+    return {
+      ok: false, reason: 'control-plane-own-stale', owner: owner.owner,
+      detail: 'a runner process holds ' + RESTART_HOST + ':' + RESTART_PORT + ' but does not answer /status'
+    };
+  }
+  return {
+    ok: false,
+    reason: owner.owner === PORT_OWNER.UNKNOWN ? 'control-plane-unknown-owner' : 'control-plane-foreign',
+    owner: owner.owner,
+    detail: owner.reason || ('port ' + RESTART_HOST + ':' + RESTART_PORT + ' is held by another process')
+  };
+}
+
 function startRestartServer() {
   const server = http.createServer((req, res) => {
     let url;
@@ -786,8 +971,24 @@ function startRestartServer() {
     sendJsonRes(res, 404, { ok: false, error: 'not-found' }, origin);
   });
   server.on('error', e => { appendRestartLog('restart control server error: ' + redact(String(e && e.message || e))); });
-  server.listen(RESTART_PORT, RESTART_HOST, () => {
-    appendRestartLog('restart control server listening on ' + RESTART_HOST + ':' + RESTART_PORT);
+  /* P11-3X-B: the bind's outcome is the answer to "am I the service runner?".
+     Resolving it instead of logging-and-continuing is what closes the hole where a
+     runner with a dead control plane still spawned children. The preflight already
+     answered "the port is free", so a failure here is a lost race — reported as a
+     failure, not swallowed. */
+  return new Promise(resolve => {
+    let settled = false;
+    server.once('error', error => {
+      if (settled) return;
+      settled = true;
+      resolve({ ok: false, reason: 'control-plane-bind-failed', owner: null, detail: String((error && error.message) || error) });
+    });
+    server.listen(RESTART_PORT, RESTART_HOST, () => {
+      if (settled) return;
+      settled = true;
+      appendRestartLog('restart control server listening on ' + RESTART_HOST + ':' + RESTART_PORT);
+      resolve({ ok: true, reason: null, owner: 'self', detail: RESTART_HOST + ':' + RESTART_PORT });
+    });
   });
 }
 
@@ -798,6 +999,65 @@ function appendLog(service, stream, chunk) {
   const prefix = '[' + timestamp() + '] [' + stream + '] ';
   try { fs.appendFileSync(path.join(LOG_DIR, service.name.toLowerCase() + '.log'), prefix + text); } catch (e) { /* logging must never take down services */ }
   if (!jsonOnly) process.stdout.write('[' + service.name + '] ' + text);
+}
+
+/* ── Root cause of a child death (P11-3X-B) ───────────────────────────────
+ *
+ * A child that exits tells this runner two things: a code, and everything it wrote
+ * to stderr. The code alone is why the supervisor used to end up with
+ * "exited unexpectedly (code=1, signal=n/a)" for every possible cause — a read-only
+ * database, a squatted port, a schema from the future all looked identical from the
+ * outside, and the only place that said which one it was was the child's own log
+ * file. Measured before this change: a Bridge crash-log held "端口 12212 已被占用"
+ * while the component report said "restart budget exhausted" and nothing else.
+ *
+ * So the tail is kept (bounded, per child) and read once, at exit. SQLite failures
+ * are recognised by the one classifier, which also reads the `[db-readonly]` style
+ * tag the stores print, so the class survives even when the prose around it changes.
+ * A line that classifies as nothing keeps its own words, truncated and redacted.
+ * Nothing here changes what the supervisor DOES — only what it can say. */
+const CHILD_TAIL_BYTES = 4000;
+
+function tailOf(entry) {
+  return entry && entry.stderrTail ? entry.stderrTail : '';
+}
+
+function appendTail(entry, chunk) {
+  if (!entry) return;
+  const text = String(chunk || '');
+  if (!text) return;
+  entry.stderrTail = (entry.stderrTail + text).slice(-CHILD_TAIL_BYTES);
+}
+
+/* The most informative line of a dead child's stderr: the last non-empty line that
+   is not the runner's own bookkeeping ("started pid=…" / "exited unexpectedly …"),
+   so the cause is preferred over the report of the cause. */
+function lastCauseLine(text) {
+  const lines = String(text || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (/^\[?[\dT:.\-Z ]*\]?\s*\[runner\]/.test(lines[i])) continue;
+    if (/^started pid=/.test(lines[i])) continue;
+    return lines[i];
+  }
+  return '';
+}
+
+/* The `reason` handed to the supervisor for an unexpected exit. Prefixed with the
+   class so a 200-character truncation can never eat it (see component-supervisor). */
+function exitCause(service, entry) {
+  const tail = tailOf(entry);
+  if (!tail) return '';
+  const line = lastCauseLine(tail);
+  const isDb = require('./db-failure.js');
+  const classified = isDb.classifyText(tail);
+  if (classified) {
+    /* Keep the child's own sentence next to the class: the class is what a consumer
+       acts on, the sentence is what a human reads. */
+    const detail = line ? line.replace(/^\[[^\]]*\]\s*\[(?:err|out)\]\s*/, '').slice(0, 140) : '';
+    return classified + (detail ? ': ' + detail : '');
+  }
+  if (!line) return '';
+  return redact(line).slice(0, 140);
 }
 
 function spawnService(service) {
@@ -824,12 +1084,17 @@ function spawnService(service) {
     /* One failure signal per child life: a spawn error and an exit can both
        arrive for the same dead child, and counting both would spend two budget
        slots on one failure. */
-    failureReported: false
+    failureReported: false,
+    /* P11-3X-B: bounded stderr tail, read once at exit to recover WHY it died.
+       Only stderr — stdout is the service's normal chatter and would drown the
+       cause. 4000 bytes is enough for a startup failure block and small enough that
+       a chatty service cannot grow memory without bound. */
+    stderrTail: ''
   };
   children.push(entry);
   currentChild[service.name] = entry;
   child.stdout.on('data', chunk => appendLog(service, 'out', chunk));
-  child.stderr.on('data', chunk => appendLog(service, 'err', chunk));
+  child.stderr.on('data', chunk => { appendTail(entry, chunk); appendLog(service, 'err', chunk); });
   child.on('error', error => {
     appendLog(service, 'err', 'spawn failed: ' + error.message + '\n');
     entry.failureReported = true;
@@ -846,13 +1111,17 @@ function spawnService(service) {
     entry.exitCode = code;
     entry.exits += 1;
     const intentional = entry.stopIntent === 'intentional';
+    /* P11-3X-B: what the child last said. Computed before the intentional check so
+       an operator stop also leaves a cause in the log (a graceful stop should not
+       look like a mystery). */
+    const cause = exitCause(service, entry);
     appendLog(service, 'runner', (intentional ? 'stopped intentionally' : 'exited unexpectedly') +
-      ' (code=' + code + ', signal=' + (signal || '') + ')\n');
+      ' (code=' + code + ', signal=' + (signal || '') + ')' + (cause ? ' — ' + cause : '') + '\n');
     /* An exit we asked for is not a failure, and must never be recovered — that
        is how a control-plane restart would otherwise resurrect a service the
        operator just took down. */
     if (intentional || entry.failureReported) return;
-    onServiceFailure(service, { spawnFailed: false, code: code, signal: signal });
+    onServiceFailure(service, { spawnFailed: false, code: code, signal: signal, reason: cause });
   });
   appendLog(service, 'runner', 'started pid=' + child.pid + '\n');
   return entry;
@@ -993,11 +1262,18 @@ async function recoverService(service) {
   }
 
   const death = currentChild[service.name];
+  /* P11-3X-B: the recovery-attempt narration is the LAST thing that lands in the
+     terminal state, so a generic sentence here would bury the root cause even after
+     the exit handler had recovered it. The child that just failed to come up still
+     has its stderr tail, so its own cause travels too; the class is placed before it
+     so a 200-character truncation can never eat the part a consumer acts on. */
+  const deathCause = death ? exitCause(service, death) : '';
   const decision = supervisor.handle(service.componentId, supervisorModule.EVENT.RESTART_FAILED, {
     restartable: service.restartable,
     reason: service.name + ' did not become healthy after recovery attempt ' + attemptNumber + '/' +
       RECOVERY_POLICY_ACTIVE.maxAttempts +
-      (death && death.exited ? ' (process exited, code=' + death.exitCode + ')' : ' (process alive, port silent)'),
+      (death && death.exited ? ' (process exited, code=' + death.exitCode + ')' : ' (process alive, port silent)') +
+      (deathCause ? ' — ' + deathCause : ''),
     at: Date.now()
   });
   appendRestartLog(service.name + ' recovery attempt failed → ' + decision.action +
@@ -1067,6 +1343,39 @@ async function startServices() {
       console.error('[runner] Port ' + service.port + ' answered /health but is not ' + service.name +
         '; refusing to treat it as healthy or start a competing process.');
       continue;
+    }
+    /* ── P11-3X-B：启动前的端口归属预检 ─────────────────────────────────
+       "没人回答 /health"有三种完全不同的原因，而它们过去全都被当成"没起来"：
+         · 端口空着                      → 正常启动；
+         · 端口被我们自己的僵尸实例占着  → 明确策略：走已验证的 stop 路径收掉它，
+                                            然后启动（stopService 只会杀被证实的
+                                            Internal Beyond 进程）；
+         · 端口被别人占着 / 身份读不出来 → **拒绝启动**，如实报类别。
+       过去第二种和第三种都会 spawn，然后 child 以 EADDRINUSE 退出、被 3C 恢复
+       五次、最后锁死，而对外理由只有 "exited unexpectedly (code=1)" —— 实测一个
+       静默占端口的监听者就是这样把 Bridge 变成 failed 的，真正的"端口已被占用"
+       只出现在 child 的 stderr 里。不擅自 kill 任何非本方进程。 */
+    if (!(await portBindable(service.port, '127.0.0.1'))) {
+      const holder = await classifyPortOwner(service.port, service.commandArgs[0]);
+      if (holder.owner === PORT_OWNER.OWNED_COMPONENT) {
+        console.error('[runner] Port ' + service.port + ' is held by a stale ' + service.name +
+          ' instance (pid ' + holder.pids.join(',') + ') that is not answering; stopping it before starting a fresh one.');
+        appendRestartLog(service.name + ': stale own instance on port ' + service.port +
+          ' (pid ' + holder.pids.join(',') + ') → verified stop, then start');
+        await stopService(service);
+        await waitPortFree(service.port, 8000);
+      } else {
+        const reason = holder.owner === PORT_OWNER.UNKNOWN ? 'port-owner-unknown' : 'port-owned-by-foreign-process';
+        console.error('[runner] Port ' + service.port + ' is not free (' + holder.owner + '): ' +
+          (holder.reason || 'held by another process') + ' — refusing to start a competing ' + service.name +
+          '. Nothing was killed; free the port or set the component port override.');
+        appendRestartLog(service.name + ' not started: ' + reason + ' on port ' + service.port +
+          ' (owner=' + holder.owner + ', pids=' + holder.pids.join(',') + ')');
+        /* Recorded on the component so /components and the diagnostics page can say
+           WHY it is not running instead of showing a bare `offline`. */
+        portConflicts[service.componentId] = { owner: holder.owner, reason: reason, pids: holder.pids, port: service.port };
+        continue;
+      }
     }
     spawnService(service);
     launched.push(service);
@@ -1147,8 +1456,32 @@ async function main() {
      /components, no /restart and — the one that actually hurts — no /shutdown:
      an install could not be upgraded or uninstalled because the runner would not
      answer. The health view is honest during startup (components are `starting`),
-     and the supervisor needs no service to be up in order to report. */
-  startRestartServer();
+     and the supervisor needs no service to be up in order to report.
+
+     P11-3X-B adds the other half of that rule: it must come up, or this process
+     must not run. A runner without a control plane cannot be asked to stop, cannot
+     be asked to restart, and competes with any real runner over every component —
+     so `ensureControlPlane()` runs FIRST and its refusal ends the process before a
+     single child is spawned. It does not kill anything, and it does not retry: a
+     port that belongs to somebody else is a decision for the operator. */
+  const control = await ensureControlPlane();
+  if (!control.ok) {
+    console.error('[runner] Refusing to start: ' + control.reason + ' — ' + control.detail);
+    console.error('[runner] No service was started and no process was killed. ' +
+      'Free ' + RESTART_HOST + ':' + RESTART_PORT + ' (or set IB_RESTART_PORT) and try again.');
+    appendRestartLog('refusing to start: ' + control.reason + ' (' + control.detail + ')');
+    /* Deliberately NOT shutdown(): that path exists to stop children, and there are
+       none yet. It also ends with an UNREF'd timer, which in a process that holds no
+       handles at all (the control server never bound) would let the event loop drain
+       and exit 0 — a refusal that reports success. So: set the code, hold the loop
+       with a ref'd timer long enough for the writes to flush, and exit non-zero. A
+       launcher that treats exit 0 as "the runner is up" must not be told otherwise. */
+    recoveryDisabled = true;
+    shuttingDown = true;
+    process.exitCode = 1;
+    setTimeout(() => process.exit(1), 1500);
+    return;
+  }
   await startServices();
   installInteractiveControls();
 }
@@ -1160,7 +1493,27 @@ process.on('uncaughtException', error => {
   shutdown(1);
 });
 
-main().catch(error => {
-  console.error('[runner] Failed:', error && error.stack || error);
-  shutdown(1);
-});
+/* P11-3X-B: the port-ownership and root-cause decisions are the承重 parts of this
+   phase, and a decision that can only be observed by starting a whole runner is a
+   decision nobody can falsify. So they are exported for direct assertion (and for
+   the mutation suite, which must prove each one is load-bearing). Requiring this
+   module has no side effect on the world: `main()` only runs when it is the entry
+   point. The mutable per-run state (children, the supervisor, portConflicts) stays
+   private — what is exported is exactly the pure/半-pure predicates. */
+module.exports = {
+  PORT_OWNER: PORT_OWNER,
+  classifyPortOwner: classifyPortOwner,
+  commandMatchesScript: commandMatchesScript,
+  portBindable: portBindable,
+  probeControlPlane: probeControlPlane,
+  lastCauseLine: lastCauseLine,
+  exitCause: exitCause,
+  SERVICE_FILES: SERVICES.reduce(function (acc, s) { acc[s.componentId] = s.commandArgs[0] || null; return acc; }, {})
+};
+
+if (require.main === module) {
+  main().catch(error => {
+    console.error('[runner] Failed:', error && error.stack || error);
+    shutdown(1);
+  });
+}
