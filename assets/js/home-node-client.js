@@ -402,6 +402,22 @@ function createMomentsRemote(deps) {
       return _request('/moments/changes?cursor=' + encodeURIComponent(Number(cursor) || 0) +
         (options.limit ? '&limit=' + encodeURIComponent(options.limit) : '')).then(_unwrapMemoryEnvelope);
     },
+    /* P11-3G · 投递确认（ACK）。它是**唯一**一个消费者→权威的投递控制面，
+       证明的东西只有一个：consumer 对 revision ≤ watermark 的每个 event
+       都已经得出持久结论。它不是"我读到了"，也不是"我试过了"。
+       失败**不抛**：ACK 送不到只会让回收变保守（保留更多日志），
+       而不会让任何事件被跳过 —— 因此调用方不需要为它做重试编排。 */
+    ack: function (watermark, options) {
+      options = options || {};
+      var payload = { consumer: String(options.consumer || ''), watermark: Number(watermark) || 0 };
+      if (options.requestId) payload.requestId = String(options.requestId);
+      return _request('/moments/ack', { method: 'POST', body: payload, timeoutMs: deps.ackTimeoutMs }).then(
+        _unwrapMemoryEnvelope,
+        function (error) {
+          return { ok: false, offline: true, error: 'ack-unreachable', detail: String((error && error.message) || error) };
+        }
+      );
+    },
     /* 按主体分页读：可见性由**服务端**用共享核判定，因此隐藏行不占页槽。
        客户端不提交"我能看什么"，只提交"我是谁"。 */
     visible: function (principal, query) {

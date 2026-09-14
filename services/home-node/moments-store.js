@@ -46,6 +46,18 @@ const MOMENTS_SCHEMA_VERSION = 1;
 const RECORDS_TABLE = 'moment_records';
 const CHANGE_LOG_TABLE = 'moment_change_log';
 
+/* ── P11-3G · change-log 投递（delivery）与回收（retention）的常量 ─────────
+   三个数字都是**上界**，不是"建议值"：
+     · CONSUMER_MAX       一个 consumer id 的字节上界（它同时是 meta 键的一部分）
+     · CHANGE_LOG_MAX     触发回收的日志水位（O(1) 的 MAX-MIN 跨度判断，不做 COUNT）
+     · CHANGE_LOG_PRUNE   单次回收的行数上界（有界工作，不因为库大就卡住一次写入）
+   刻意**不**新建表、不升 schema：投递水位是 store 自己拥有的元数据，
+   与迁移水位 `migration:moments:*` 是同一类东西，因此落在同一个 meta 平面。 */
+const DELIVERY_CONSUMER_MAX = 64;
+const DELIVERY_KEY_PREFIX = 'delivery_watermark:moments:';
+const CHANGE_LOG_MAX = 20000;
+const CHANGE_LOG_PRUNE_BATCH = 5000;
+
 const IDEMPOTENCY_MAX = 1000;
 const DEFAULT_DB_FILENAME = 'home-node.db';
 const ID_MAX = 128;
@@ -136,6 +148,14 @@ function createMomentsStore(deps) {
   const logger = deps.logger || (() => {});
   const core = deps.core || MOMENT_VIS;
   const sqlite = deps.sqlite || loadSqlite();
+  /* 回收阈值与批量同样是**注入接缝**（与 clock / dataDir / sqlite 同一类）：
+     生产一律走常量，测试可以在小库上把真实的触发路径走一遍 ——
+     否则"回收有没有按契约发生"就只能靠造两万条日志来问，那既慢又测不到边界。
+     缺省值就是生产值，没有任何一条生产路径会传别的。 */
+  const changeLogMax = Number.isFinite(Number(deps.changeLogMax)) && Number(deps.changeLogMax) > 0
+    ? Math.trunc(Number(deps.changeLogMax)) : CHANGE_LOG_MAX;
+  const changeLogPruneBatch = Number.isFinite(Number(deps.changeLogPruneBatch)) && Number(deps.changeLogPruneBatch) > 0
+    ? Math.trunc(Number(deps.changeLogPruneBatch)) : CHANGE_LOG_PRUNE_BATCH;
 
   let db = null;
   let opened = false;
@@ -205,6 +225,13 @@ function createMomentsStore(deps) {
     insertChange: 'INSERT INTO ' + CHANGE_LOG_TABLE + ' (revision, kind, record_id, at) VALUES (?, ?, ?, ?)',
     selectChanges: 'SELECT revision, kind, record_id, at FROM ' + CHANGE_LOG_TABLE + ' WHERE revision > ? ORDER BY revision ASC LIMIT ?',
     maxChangeRevision: 'SELECT MAX(revision) AS m FROM ' + CHANGE_LOG_TABLE,
+    changeLogRange: 'SELECT MIN(revision) AS lo, MAX(revision) AS hi FROM ' + CHANGE_LOG_TABLE,
+    countChangeLog: 'SELECT COUNT(*) AS c FROM ' + CHANGE_LOG_TABLE,
+    /* 前缀回收：只删**已确认投递**的那一段，且有界。 */
+    deleteChangesUpTo:
+      'DELETE FROM ' + CHANGE_LOG_TABLE + ' WHERE revision IN (' +
+      'SELECT revision FROM ' + CHANGE_LOG_TABLE + ' WHERE revision <= ? ORDER BY revision ASC LIMIT ?)',
+    selectDeliveryKeys: 'SELECT key, value FROM meta WHERE key LIKE ?',
     selectMeta: 'SELECT value FROM meta WHERE key=?',
     upsertMeta: 'INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
     selectIdempotency: 'SELECT key, kind, message_id FROM idempotency WHERE key=?',
@@ -692,25 +719,190 @@ function createMomentsStore(deps) {
     return listVisible(principal, Object.assign({}, options || {}, { ownerRoleId: owner }));
   }
 
+  /* ── 增量投递读口（changesAfter）────────────────────────────────────
+     这是 change_log 的**唯一**读口，也是"事件"这个词在本域的全部含义。
+
+     ⚠ 它投递的**不是事件载荷**，而是"脏标记"：每条日志行只带
+     `revision / kind / record_id`，行内容在读出时**重新取当前状态**。
+     因此：
+       · 一次重放不会投递过期内容，只会投递"该记录现在是什么"；
+       · 记录已被软删除时，那条 upsert 日志会被**如实降级成 delete**
+         （`getRecord` 对墓碑返回 null）；
+       · 于是"按 id put / 按 id delete"这条应用语义天然幂等，
+         重复投递不需要去重表。
+
+     P11-3G 在此收紧两件事（都不改 schema、不新建协议）：
+
+     ① **行集与游标出自同一个读事务**。原先"先 SELECT 日志行、再逐条
+        `getRecord`"是一串独立读：中间落进一次写入时，同一页可能出现
+        "日志行说 revision=5、内容却已经是 revision=9"的混合快照。
+        它不会丢数据（重放会收敛），但会让"这一页对应哪一版"无法审计。
+     ② 增加 `retainedFrom` —— 日志里**仍然存在的最小 revision**。
+        因为 revision 在日志里是**稠密**的（每次 allocateRevision 都在
+        同一个事务里恰好写一行日志），且回收只删前缀，所以消费者可以据此
+        判定"我未确认的那一段有没有被回收掉"：
+             retainedFrom > cursor + 1  → 有事件已被回收 → 必须回退到快照重建
+        （P11-3F 的 hydrate 就是那个恢复权威，这里不新造恢复机制。） */
   function changesAfter(cursor, options) {
     options = options || {};
     if (!isOpen()) return { ok: false, error: 'store-closed' };
     const from = intOf(cursor);
     if (from < 0) return { ok: false, error: 'bad-cursor' };
     const limit = Math.max(1, Math.min(1000, intOf(options.limit) || 500));
-    const rows = sqliteAll(SQL.selectChanges, [from, limit + 1]);
-    const hasMore = rows.length > limit;
-    const use = hasMore ? rows.slice(0, limit) : rows;
-    const upserts = [], deletes = [];
-    let next = from;
-    for (const row of use) {
-      next = Math.max(next, Number(row.revision) || 0);
-      if (row.kind === 'delete') { deletes.push({ id: row.record_id, revision: Number(row.revision) || 0 }); continue; }
-      const moment = getRecord(row.record_id);
-      if (moment) upserts.push(moment);
-      else deletes.push({ id: row.record_id, revision: Number(row.revision) || 0 });
+    let payload = null;
+    withTransaction(() => {
+      const rows = sqliteAll(SQL.selectChanges, [from, limit + 1]);
+      const hasMore = rows.length > limit;
+      const use = hasMore ? rows.slice(0, limit) : rows;
+      const upserts = [], deletes = [];
+      let next = from;
+      for (const row of use) {
+        next = Math.max(next, Number(row.revision) || 0);
+        if (row.kind === 'delete') { deletes.push({ id: row.record_id, revision: Number(row.revision) || 0 }); continue; }
+        const moment = getRecord(row.record_id);
+        if (moment) upserts.push(moment);
+        else deletes.push({ id: row.record_id, revision: Number(row.revision) || 0 });
+      }
+      payload = {
+        ok: true, cursor: next, serverTime: clock(), revision: getRevision(),
+        upserts: upserts, deletes: deletes, hasMore: hasMore,
+        retainedFrom: minChangeRevision()
+      };
+    }, 'read');
+    return payload;
+  }
+
+  /* ── P11-3G · 投递水位（delivery watermark）───────────────────────────
+     一次 ACK 证明的是**一件事**，而且是这一件：
+
+         "consumer 对 revision ≤ W 的每一个 event 都已经得出**持久结论**"
+
+     它**不**证明：HTTP 200、事件被读过、事件被尝试过。
+     因此 `record` 侧只需要 W 一个数 —— 每个 event 的 PENDING / APPLIED /
+     RETRYABLE / TERMINAL 是**消费者自己**的状态，服务端不需要知道，
+     也刻意不去猜。服务端要 W 只有一个用途：**决定哪些日志行可以被回收**。
+
+     W 的性质：
+       · 单调 —— 永远取 max(已存, 本次)，任何一次失败处理都不可能让它倒退；
+       · 有界 —— 夹在 [0, getRevision()]；消费者声称的未来版本一律夹回当前版本
+         （否则一次客户端 bug 就能让回收吃掉还没投递的事件）；
+       · 单一消费者时代的一条诚实约定 —— 回收用**全体已注册水位的 min**，
+         因此多一个消费者只会让回收变保守，不会让谁丢数据；
+         从未 ACK 过的消费者在契约里的含义是"它必须从快照开始"，不是"它会收到日志"。 */
+  function deliveryKeyOf(consumer) {
+    const id = strOf(consumer, DELIVERY_CONSUMER_MAX);
+    /* 键名规则收窄到安全字符集：consumer id 会变成 meta 键，
+       不允许它携带 `%`、空白或路径样式的内容去影响别的键。 */
+    if (!/^[A-Za-z0-9._:-]+$/.test(id)) return '';
+    return DELIVERY_KEY_PREFIX + id;
+  }
+  function listDelivery() {
+    const rows = sqliteAll(SQL.selectDeliveryKeys, [DELIVERY_KEY_PREFIX + '%']) || [];
+    const out = [];
+    for (const row of rows) {
+      out.push({
+        consumer: String(row.key).slice(DELIVERY_KEY_PREFIX.length),
+        watermark: intOf(row.value)
+      });
     }
-    return { ok: true, cursor: next, serverTime: clock(), revision: getRevision(), upserts: upserts, deletes: deletes, hasMore: hasMore };
+    return out;
+  }
+  function noteDelivery(consumer, watermark) {
+    if (!isOpen()) return { ok: false, error: 'store-closed' };
+    const key = deliveryKeyOf(consumer);
+    if (!key) return { ok: false, error: 'invalid-consumer' };
+    const raw = Number(watermark);
+    if (!isFinite(raw)) return { ok: false, error: 'invalid-watermark' };
+    const revision = getRevision();
+    const claimed = Math.max(0, Math.trunc(raw));
+    const clamped = Math.min(claimed, revision);
+    let out = null;
+    try {
+      out = withTransaction(() => {
+        const previous = intOf(readMeta(key));
+        const next = Math.max(previous, clamped);
+        writeMeta(key, String(next));
+        return { previous: previous, watermark: next };
+      });
+    } catch (error) {
+      return { ok: false, error: String((error && error.message) || error) };
+    }
+    /* 回收只在**水位真的前进**时尝试 —— 重复 ACK 不做任何工作。 */
+    const retention = out.watermark > out.previous ? maybePrune() : { ok: true, pruned: 0, reason: 'watermark-unchanged' };
+    return {
+      ok: true, consumer: strOf(consumer, DELIVERY_CONSUMER_MAX),
+      watermark: out.watermark, previous: out.previous,
+      claimed: claimed, clamped: claimed !== clamped, revision: revision,
+      retention: retention
+    };
+  }
+  function getDeliveryState(consumer) {
+    if (!isOpen()) return { ok: false, error: 'store-closed' };
+    const all = listDelivery();
+    let mine = null;
+    const key = consumer == null ? '' : deliveryKeyOf(consumer);
+    if (key) {
+      for (const row of all) if (DELIVERY_KEY_PREFIX + row.consumer === key) mine = row;
+    }
+    return {
+      ok: true, consumers: all, watermark: mine ? mine.watermark : null,
+      minWatermark: all.length ? Math.min.apply(null, all.map(r => r.watermark)) : null,
+      log: changeLogStats(), revision: getRevision()
+    };
+  }
+  function minChangeRevision() {
+    const row = sqliteGet(SQL.changeLogRange);
+    return row && row.lo != null ? Number(row.lo) : null;
+  }
+  function changeLogStats() {
+    const row = sqliteGet(SQL.changeLogRange) || {};
+    const count = sqliteGet(SQL.countChangeLog) || {};
+    return {
+      rows: Number(count.c) || 0,
+      min: row.lo == null ? null : Number(row.lo),
+      max: row.hi == null ? null : Number(row.hi)
+    };
+  }
+  /* ── 回收（retention）────────────────────────────────────────────────
+     一个 change event 什么时候可以被安全删除？只有一个判据：
+
+         它的 revision ≤ **全体已注册消费者的最小投递水位**
+
+     不是 age > N days，也不是 revision < currentRevision —— 两者都会删掉
+     "消费者还没得出持久结论"的事件，而那样的删除在客户端表现为
+     **镜像永久少一条且所有标志都是绿的**。
+
+     没有消费者 ACK 过 → **一行都不删**（fail-safe）。日志因此可以增长，
+     这是诚实的代价：在不知道消费者走到哪里之前，删任何一行都是猜测。
+     触发点刻意挂在 ACK 上而不是写入上：新容量**只可能**由消费者前进带来。 */
+  function pruneChangeLog(options) {
+    options = options || {};
+    if (!isOpen()) return { ok: false, error: 'store-closed' };
+    const consumers = listDelivery();
+    if (!consumers.length) return { ok: true, pruned: 0, reason: 'no-consumer-watermark', upTo: null };
+    const safe = Math.min.apply(null, consumers.map(r => r.watermark));
+    if (!(safe > 0)) return { ok: true, pruned: 0, reason: 'watermark-zero', upTo: safe };
+    const batch = Math.max(1, Math.min(changeLogPruneBatch, intOf(options.batch) || changeLogPruneBatch));
+    let pruned = 0;
+    try {
+      pruned = withTransaction(() => {
+        const res = sqliteExec(SQL.deleteChangesUpTo, [safe, batch]);
+        return Number(res && res.changes) || 0;
+      });
+    } catch (error) {
+      return { ok: false, error: String((error && error.message) || error), pruned: 0, upTo: safe };
+    }
+    if (pruned > 0) logger('moments-change-log-pruned', { pruned: pruned, upTo: safe, consumers: consumers.length });
+    return { ok: true, pruned: pruned, upTo: safe, reason: pruned ? 'pruned' : 'nothing-to-prune', log: changeLogStats() };
+  }
+  /* 回收的**触发判据**必须便宜：用 MAX-MIN 跨度（两个 O(1) 的索引查找），
+     而不是每次写入都 COUNT(*) 扫一遍日志。 */
+  function maybePrune() {
+    const stats = changeLogStats();
+    if (stats.min == null) return { ok: true, pruned: 0, reason: 'log-empty' };
+    const span = stats.max - stats.min + 1;
+    if (span <= changeLogMax) return { ok: true, pruned: 0, reason: 'below-threshold', span: span };
+    return pruneChangeLog({});
   }
 
   /* ── 迁移水位（幂等 / 可续跑）────────────────────────────────────── */
@@ -760,6 +952,12 @@ function createMomentsStore(deps) {
     listVisibleByOwner: listVisibleByOwner,
     changesAfter: changesAfter,
 
+    /* P11-3G · 投递与回收 */
+    noteDelivery: noteDelivery,
+    getDeliveryState: getDeliveryState,
+    pruneChangeLog: pruneChangeLog,
+    changeLogStats: changeLogStats,
+
     getRevision: getRevision,
     revisionIsolation: revisionIsolation,
 
@@ -781,3 +979,6 @@ module.exports = createMomentsStore;
 module.exports.MOMENTS_SCHEMA_VERSION = MOMENTS_SCHEMA_VERSION;
 module.exports.RECORDS_TABLE = RECORDS_TABLE;
 module.exports.CHANGE_LOG_TABLE = CHANGE_LOG_TABLE;
+module.exports.CHANGE_LOG_MAX = CHANGE_LOG_MAX;
+module.exports.CHANGE_LOG_PRUNE_BATCH = CHANGE_LOG_PRUNE_BATCH;
+module.exports.DELIVERY_KEY_PREFIX = DELIVERY_KEY_PREFIX;

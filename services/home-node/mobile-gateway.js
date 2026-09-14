@@ -107,6 +107,7 @@ const ADMIN_PATHS = [
      Android 侧没有任何 moments verb，也没有任何 DTO 字段会带动态正文
      （§13 安全边界：手机端在 M1-C.2n 里**不**拥有动态能力）。 */
   '/moments/list', '/moments/changes', '/moments/records', '/moments/record',
+  '/moments/ack',
   '/moments/visible', '/moments/migration', '/moments/migrate'
 ];
 /* 单次 memory 批量写上限：记忆是**正文数据**（不是附件），因此远小于聊天批次。
@@ -1841,7 +1842,40 @@ function createMobileGateway(deps) {
         if (isStoreLevelError(page.error)) return failStore(res, momentStoreFailure(page.error), req);
         return fail(res, page.error || 'INTERNAL', req, 400);
       }
+      /* `retainedFrom` 随页同行（P11-3G）：它是日志里**仍然存在**的最小 revision。
+         消费者据此判定"未确认的那一段是否已被回收"，并在是的时候回退到
+         `/moments/list` 的完整快照重建 —— change-log 是**有界增量传输**，
+         不是永久历史，也不是第二 authority。 */
       return sendJson(res, 200, okBody('moments.changes', null, page), req);
+    }
+    /* P11-3G · 投递确认（ACK）。**唯一**一个消费者→权威的投递控制面。
+       它证明的东西只有一个：consumer 对 revision ≤ watermark 的每个 event
+       都已经得出**持久结论**（applied 或 terminal）。它**不**证明 HTTP 200、
+       不证明事件被读过、不证明事件被尝试过 —— 那三件事都不是结论。
+       服务端拿它做且只做一件事：决定 change_log 里哪些行可以被回收。
+       幂等且单调：重复 ACK 不做事，回退的 ACK 被取 max 吃掉。 */
+    if (action === 'moments/ack' && req.method === 'POST') {
+      if (!momentsStore) return fail(res, 'UNSUPPORTED', req, 501);
+      let ackBody;
+      try { ackBody = await readBody(req, 64 * 1024); }
+      catch (error) { return fail(res, error.code || 'BAD_REQUEST', req, null, null); }
+      const acked = momentsStore.noteDelivery(ackBody && ackBody.consumer, ackBody && ackBody.watermark);
+      if (!acked.ok) {
+        if (isStoreLevelError(acked.error)) return failStore(res, momentStoreFailure(acked.error), req);
+        return fail(res, 'BAD_REQUEST', req, 400, null, { detail: acked.error });
+      }
+      /* 观测：只报水位/回收量/是否被夹住，**绝不**记录动态正文或 token。 */
+      record('info', 'moments-ack', {
+        consumer: acked.consumer, watermark: acked.watermark,
+        pruned: (acked.retention && acked.retention.pruned) || 0
+      });
+      return sendJson(res, 200, okBody('moments.ack', (ackBody && ackBody.requestId) || null, {
+        consumer: acked.consumer, watermark: acked.watermark, previous: acked.previous,
+        clamped: acked.clamped, revision: acked.revision,
+        retainedFrom: momentsStore.changeLogStats().min,
+        pruned: (acked.retention && acked.retention.pruned) || 0,
+        retention: acked.retention ? acked.retention.reason : null
+      }), req);
     }
     /* 可见分页：**唯一**给"按主体看动态"用的读口。服务端按共享核判定可见性，
        因此隐藏行不占页槽、也不影响 hasMore（§10）。device 面不存在这个 verb。 */

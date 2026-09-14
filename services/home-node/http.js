@@ -647,7 +647,10 @@ function createHomeNodeHttp(deps) {
            就已经不再为真，留着一个已经不成立的断言比没有断言更危险
            （它会让人以为"没有动态路径"是被检查过的）。
            取而代之的是可检查的具体断言：deviceVerbs 为空、
-           desktopPaths 与 ADMIN_PATHS 逐字一致（见 test_moments_authority）。 */
+           desktopPaths 与 ADMIN_PATHS 逐字一致（见 test_moments_authority）。
+           P11-3G 加了 `/moments/ack`：它是**投递确认**（consumer → 权威），
+           证明的是"consumer 对 revision ≤ watermark 的每个 event 都已得出持久结论"，
+           服务端只拿它决定 change_log 哪些行可以回收。它同样只存在于桌面/运行时面。 */
         momentsPolicy: {
           stored: true,
           servedToDevices: false,
@@ -655,7 +658,7 @@ function createHomeNodeHttp(deps) {
           injection: 'home-node-execution-only',
           visibility: 'moments-visibility-core (shared with desktop)',
           desktopPaths: ['/moments/list', '/moments/changes', '/moments/records', '/moments/record',
-            '/moments/visible', '/moments/migration', '/moments/migrate']
+            '/moments/ack', '/moments/visible', '/moments/migration', '/moments/migrate']
         },
         doesNotExpose: ['llm-proxy', 'tools', 'payments', 'diary', 'letters', 'images', 'tts'],
         /* M1-B：设备身份 + 移动边界。mobile 面**只有** allowlist 里的 verb。 */

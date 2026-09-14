@@ -818,6 +818,23 @@ if (_momentsAuthorityFactory && _momentsRemoteFactory) {
     markMigrated: function (source, patch) {
       return DB.put('meta', { key: 'migration:moments:' + String(source || 'default'), value: JSON.stringify(patch || {}) })
         .then(function () { return { ok: true, source: source, state: patch || {} }; }, function () { return { ok: false, error: 'meta-write-failed' }; });
+    },
+    /* ── P11-3G · 投递状态（delivery state）──────────────────────────────
+       同一张 meta 表、同一个 store：存的是**投递记账**（ACK 水位 / attempts /
+       终态），不是动态内容。因此它**不是**第二套 Moments authority ——
+       权威仍然只有 Home Node 一份，镜像仍然只是镜像。
+
+       键由 moments-authority 决定并作为参数传进来（键的格式只在一处定义）。
+       读不出来时返回 null 而不是抛：调用方据此如实标注"投递状态不可持久"，
+       而**不是**把"读不到"当成"没有欠账"。 */
+    deliveryState: function (key) {
+      return DB.get('meta', String(key)).then(function (row) {
+        if (!row || typeof row.value !== 'string' || !row.value) return null;
+        try { return JSON.parse(row.value); } catch (error) { return null; }
+      });
+    },
+    saveDeliveryState: function (key, state) {
+      return DB.put('meta', { key: String(key), value: JSON.stringify(state || {}) }).then(function () { return true; });
     }
   };
 

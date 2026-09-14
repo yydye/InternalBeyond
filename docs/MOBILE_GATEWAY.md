@@ -529,6 +529,65 @@ keep a second copy of the server's vocabulary.
 `isLoopbackHost` accepts `localhost`, `127.0.0.0/8`, `::1` and nothing else — `0.0.0.0`, `::`
 and any hostname are *not* loopback, so they take the strict path.
 
+**P11-3G — the change log is a bounded incremental transport, and delivery is confirmed
+explicitly.** Two shapes changed; neither is a new authority.
+
+```
+/moments/changes?cursor=R&limit=N
+  payload: { cursor, revision, serverTime, upserts, deletes, hasMore, retainedFrom }
+                                                                       ^^^^^^^^^^^^
+                                                          P11-3G: smallest revision still
+                                                          present in the change log
+                                                          (null = the log is empty).
+
+  store side (moments-store.changesAfter):
+    * the log rows AND the current content of every row they name are now read inside ONE
+      read transaction. They were read as a sequence before, so one page could mix
+      "log row says revision 5" with "content is already revision 9" — not a loss (replay
+      converges) but "which version does this page correspond to" was unauditable.
+    * `changesAfter` delivers **dirty marks, not event payloads**: each log row carries only
+      revision/kind/record_id and the row's *current* state is re-read. That is why replay is
+      idempotent by construction (put-by-id / delete-by-id) and why an upsert whose record has
+      since been soft-deleted is reported as a delete.
+
+/moments/ack   POST { consumer, watermark }      (desktop/runtime plane; no device verb)
+  payload: { consumer, watermark, previous, clamped, revision, retainedFrom, pruned, retention }
+```
+
+`retainedFrom` must be **declared**. A page that omits it is refused (`invalid-response`,
+detail `retained-from-missing`) and neither the mirror nor the cursor moves — identical
+discipline to `truncated`: a missing field is not evidence that nothing was pruned. Because
+revisions are dense in the log and retention only ever removes a prefix, the client can decide
+from this one number whether the stretch it has not confirmed was reclaimed
+(`retainedFrom > cursor + 1`) and, when it was, rebuild from `/moments/list` instead.
+
+**What ACK proves — and only this:**
+
+```
+ACK(W)  =  the consumer has reached a DURABLE OUTCOME (applied or terminal)
+           for every change event at revision <= W
+```
+
+It does **not** prove HTTP 200, that the event was read, or that it was attempted. The
+authority needs `W` for exactly one purpose: deciding which change-log rows may be reclaimed.
+The watermark is monotonic (`max(previous, claimed)`), clamped to `[0, getRevision()]` so a
+client bug cannot authorise retention past the current revision, and re-ACKing the same
+watermark is a no-op (`retention: 'watermark-unchanged'`).
+
+**Retention contract.** A change-log row may be deleted only when
+`revision <= MIN(watermark)` over all *registered* consumers. Not age, not
+`revision < currentRevision` — both would delete events a consumer has not yet concluded,
+which the client experiences as a mirror permanently short one entry with every flag green.
+With no registered watermark, **nothing is deleted** (fail-safe): the log may grow, and that
+is the honest cost of not knowing how far the consumer has got. The trigger hangs off the ACK
+rather than off writes (new capacity can only come from consumer progress) and is O(1)
+(MAX-MIN span), with a bounded batch per prune.
+
+Multi-consumer is **not** pretended: the boundary is the minimum over registered consumers, so
+an extra consumer only makes retention more conservative. A consumer that never ACKs is
+contractually a consumer that must start from a canonical snapshot — not one that will receive
+history from the log.
+
 Defaults: `IB_HOME_NODE_HOST=127.0.0.1`, `IB_HOME_NODE_PORT=23118`. LAN exposure is opt-in by
 explicitly setting the host.
 

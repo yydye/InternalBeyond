@@ -320,6 +320,61 @@ memory 甚至已经知道 `truncated` 却只拿它记 `hasFullHistory`）；`mig
 首个 hydrate 定序，属 migration / upgrade 范围）。
 
 
+### change-log 的投递边界与回收契约（P11-3G）
+
+P11-3F 说清了"镜像什么时候可以整体被换掉"；P11-3G 说清**增量那一条路**：
+
+**不变量：CANONICAL SNAPSHOT = 恢复权威；CHANGE LOG = 有界增量传输。**
+change log **不是**第二 authority，**不是**永久历史，也**不是**审计日志 ——
+它的唯一职责是"告诉镜像哪些行脏了"。
+
+| 是不是同一件事 | 说明 |
+|---|---|
+| **快照 ≠ 增量** | `/moments/list` 是**恢复**权威（任何不一致都由它收口）；`/moments/changes` 只是有界增量传输。因此日志可以被回收，而"回收后如何恢复"的答案永远是快照，不是"让日志永久保存"。 |
+| **ACK ≠ APPLIED ≠ FAILED** | `ACK(W)` 只证明"consumer 对 revision ≤ W 的每个 event 都已得出**持久结论**"。它**不**证明 HTTP 200、不证明读过、不证明尝试过。四个状态（PENDING / APPLIED / RETRYABLE_FAILURE / TERMINAL_FAILURE）刻意不压成一个 boolean。 |
+| **脏标记 ≠ 事件载荷** | 日志行只有 `revision / kind / record_id`，行内容在读出时**重新取当前状态**。于是重放天然幂等（按 id put / 按 id delete），不需要去重表；一条 upsert 的日志在记录已被软删除时会**如实降级成 delete**。 |
+
+**有界投递（一句一个性质）**：
+
+- 一页 event 在**第一个失败**处停下（不逐个烧掉后面的事件：一次镜像级故障把整窗
+  event 全部烧成终态，是比队头阻塞更糟的失败）；
+- 失败**只记在它自己的 revision 上**，attempts 持久、有上界、退避永不为 0；
+- attempts 用尽 → **显式终态** → `cursor` **越过**它 → 本页继续；
+- 终态随即用**快照**把镜像补回来（复用 P11-3F 的 hydrate，契约一字未改）——
+  这是"终态不等于丢数据"的全部依据；
+- 结构上不可能应用的 event（缺 id / 未知 kind）**一次也不重试**：同样的字节重试
+  一万次也是同样的结果；
+- `cursor` 只沿**持久结论的连续前缀**前进，且**只在一个 event 得出持久结论之后**才
+  前进 —— 因此"先 ack 再 apply"这个唯一会真正丢数据的顺序在本层不可能出现。
+  镜像写入先、状态写入后：状态落后于镜像只意味着重放一次（幂等）。
+
+**为什么这是队头阻塞的收口**：修复前 `applyChanges` 把所有 upserts 串成一条 promise
+链、第一个失败即整页拒绝，而 `cursor` 只在整页成功时前进。真实复现：窗口第一条永久
+失败时，每轮 sync **只尝试那一条**（put=1 / putFail=1），`cursor` 恒定不动，服务端每轮
+发回同一个 `limit=100` 窗口且 `hasMore=true` —— 窗口后段**永久不可达**。现在收口由
+"上界 → 终态 → 越过"三步完成，代价是健康事件最多等 `maxAttempts` 轮，而且是**有界**的。
+
+**回收契约**：一行 change event 只有在 `revision <= 全体已注册消费者的最小投递水位`
+时才可删除。不是 `age > N days`，也不是 `revision < currentRevision` —— 两者都会删掉
+"消费者还没得出持久结论"的事件。没有水位 → **一行都不删**（fail-safe）。触发挂在 ACK
+上（新容量只可能来自消费者前进），判据是 O(1) 的 MAX-MIN 跨度，批量有上界。
+
+**多 consumer 不被假装支持**：边界取已注册水位的 **min**，因此多一个消费者只会让回收
+更保守。从未 ACK 过的消费者在契约里的含义是"它必须从快照开始"。一个推论是可证的：
+**一个 ACK 过的消费者不可能看到回收造成的空档**（`retainedFrom ≤ cursor + 1` 恒成立）。
+空档判据因此是 defense in depth —— 它守的是"确认记账丢失/回滚、或将来晚到的消费者"，
+`tests/test_p11_3g_change_delivery_closure.js` 的 L 节直接驱动它（并如实标注这一点）。
+
+反证与证据：`tests/test_p11_3g_change_delivery_closure.js`（127 项，A–R 十九节，含真实
+spawn、真实 HTTP、真实 AbortController、真实失败分类）与
+`tests/test_p11_3g_delivery_mutations.js`（14/14 CAUGHT，M1–M14）。
+
+**登记但未修**：`active/http.js` 的 `GET /events` 有**同形状的第二处**窗口 ——
+它按 `!event.acknowledged` 过滤、按 `sent_at` 升序、`limit` 上限 100，而那里既没有
+attempts 计数、也没有终态、也没有回收。它属于 companion/active 事件面（不是 change-log
+投递），有自己的 ack 语义与移动端契约，因此本阶段只登记不修（见 roadmap 债务清单）。
+
+
 ### Image Router（统一图片策略层 · P12）
 
 **唯一图片请求入口**，位于所有 producer 与现有 executor 之间。它只做「策略 + 资源控制」，

@@ -837,7 +837,12 @@ function unwrappedChanges(cursor, revision, upserts, deletes) {
       if (pathname.indexOf('/moments/list') === 0) {
         return { status: 200, body: okBody('moments.list', { count: 1, revision: 7, truncated: false, records: [momentOf(1)] }) };
       }
-      return { status: 200, body: okBody('moments.changes', { cursor: 7, revision: 7, upserts: [], deletes: [], hasMore: false }) };
+      /* P11-3G 把 `retainedFrom` 加进了 `/moments/changes` 的响应契约
+         （日志里仍然存在的最小 revision；null = 日志为空）。
+         这个**脚本替身**必须跟着契约走，否则它测的是旧协议。
+         P11-3F 的断言本身（cursor / mirrorRevision / degraded 的一致性）
+         一个字都没有改。 */
+      return { status: 200, body: okBody('moments.changes', { cursor: 7, revision: 7, upserts: [], deletes: [], hasMore: false, retainedFrom: null }) };
     });
     const mirror = makeMirror([]);
     const auth = createAuthority(IB.createMomentsRemote({}), mirror);
