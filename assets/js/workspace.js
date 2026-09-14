@@ -474,7 +474,9 @@ async function _execWsOps(ops,authorName,cfg,ictx){
       var _mkR=await _wsExecMakeOp(_mkKind,op,authorName);
       results.push(Object.assign({type:op.type,projId:_wsActiveProject},_mkR,{path:_mkR.path||op.path}));
     }else if(op.type==='tool'){
-      results.push(await _ibExecToolOp(op,authorName));
+      /* P11-3D.1：把本 turn 的 guard 显式传给执行点 —— XML 工具与原生 FC
+         共用同一个 turn 预算（不传 guard 时行为与改动前逐字一致）。 */
+      results.push(await _ibExecToolOp(op,authorName,ictx));
     }else if(op.type==='run'){
       if(op.malformed){results.push({type:'run',entry:op.entry||'',ok:false,reason:op.truncated?'输出被截断，脚本不完整':'指令格式不完整'});continue}
       if(op.truncated&&op.code){results.push({type:'run',entry:op.entry||'',ok:false,reason:'输出被截断，脚本不完整，未运行；请完整重发'});continue}

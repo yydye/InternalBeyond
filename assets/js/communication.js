@@ -1780,6 +1780,81 @@ function _mbParamsFingerprint(cfg,streaming,thinking){
     });
   }catch(e){return'{"err":1}'}
 }
+/* ── P11-3D.1 · 宿主 AI 回合的作用域（真正的 cycle owner）───────────────
+   不变量（本阶段冻结）：
+
+       ONE HOST AI TURN = ONE TOOL EXECUTION CYCLE = ONE TOTAL BUDGET
+
+   为什么周期不能开在 callApiChat* 内部（P11-3D 的旧模型，已废弃）：
+     · XML 工具批次（_execWsOps）与工具续轮（_wsToolContinue）发生在
+       callApiChatStream **返回之后**，那一刻周期已经被它的 finally 收掉了 → 这条
+       通道从头到尾**没有周期可问**，于是 tool-count / duplicate / retry /
+       elapsed 四类预算对 XML 全部失效，执行也不入账；
+     · XML 续轮内部又调 callApiChat，于是它**自己另开一个周期** —— 一个 turn
+       变成两个预算（也会重置轮次计数）。
+   旧模型"一次 callApi 调用 = 一个周期"因此不成立：它把"函数调用"当成了"回合"。
+
+   所有权模型（逐字对应 Phase 1 的 ownership 表）：
+     · outer host turn  → _ibTurnScope() 建 turn，ownsCycle=true，唯一 begin/end 者；
+     · nested model call→ 继承同一个 turn（把 turn.guard 绑到自己的 FC ctx），不 begin/end；
+     · XML continuation → 继承同一个 turn（随 ictx/opts 显式传递），不 begin/end；
+     · background turn  → 自己的 turn（自建 scope），与前台**不同实例**，互不干涉。
+   禁止用"当前唯一活动周期"反推归属：归属只来自这里显式传下去的 turn 对象。 */
+const _IB_TURN_MARK='__ibTurnScope';
+function _ibTurnScope(label){
+  return {
+    [_IB_TURN_MARK]:true,
+    label:String(label||'turn'),
+    ownsCycle:true,
+    guard:null,
+    _guardCycle:false,
+    active:false,
+    round:0,
+    ledger:{},nameMap:{},calls:[],tools:null,_acc:null
+  };
+}
+/* 取本回合的作用域（只认带标记的对象，绝不把任意 opts 当真） */
+function _ibTurnOf(o){
+  var t=o&&o._ibTurn;
+  return (t&&t[_IB_TURN_MARK]===true)?t:null;
+}
+/* 本回合的工具执行周期实例。
+   宿主 turn 的周期在"工具块真的激活了这个回合"时开启（callApiChat* 的 _toolCycleBegin）。
+   纯 XML 回合（模型没走原生 FC，只在正文里写 <ws_tool>）此前**没有任何周期**，
+   那条通道于是完全不受裁定。这里给它补上**同一个** turn 的周期：
+   仍然只有一个周期、一份预算，owner 仍是这个 turn（不是 XML 这一批操作）。 */
+function _ibTurnGuard(turn){
+  try{
+    if(!turn)return null;
+    if(turn.guard&&typeof turn.guard.active==='function'&&turn.guard.active())return turn.guard;
+    if(typeof IBFC!=='undefined'&&typeof IBFC.cycleBegin==='function')return IBFC.cycleBegin(turn,null,turn);
+  }catch(e){}
+  return null;
+}
+/* 宿主侧周期开关：只有 turn 的 owner 调用，且只在 turn 首尾各一次。
+   cycleEnd 幂等（turn.guard 清空后不再有周期可收），因此"重复收尾"无害。 */
+function _ibTurnCycleBegin(turn){
+  try{
+    if(!turn||typeof IBFC==='undefined'||typeof IBFC.cycleBegin!=='function')return null;
+    return IBFC.cycleBegin(turn,null,turn);
+  }catch(e){return null}
+}
+function _ibTurnCycleEnd(turn){
+  try{
+    if(!turn||typeof IBFC==='undefined'||typeof IBFC.cycleEnd!=='function')return null;
+    return IBFC.cycleEnd(turn);
+  }catch(e){return null}
+}
+/* 回合的作用域与生命周期：begin 一次、end 一次（任何出口都走 end）。 */
+function _ibTurnLc(turn){
+  var open=false;
+  return {
+    turn:function(){ return turn; },
+    begin:function(){ if(open)return turn; open=true; _ibTurnCycleBegin(turn); return turn; },
+    end:function(){ if(!open)return null; open=false; return _ibTurnCycleEnd(turn); }
+  };
+}
+
 async function sendChatMessage(voiceMsg){
   /* voiceMsg：由语音模块 _vmFinish 传入的 {dataUrl,mime,duration,transcript}；按钮点击/回车调用时为空 */
   const _voice=(voiceMsg&&voiceMsg.dataUrl)?voiceMsg:null;
@@ -1901,6 +1976,12 @@ async function sendChatMessage(voiceMsg){
     let _gWsFirstTurn=true;
     for(const cfg of speakingCfgs){/* 静默模式：静默成员本轮不参与 */
       const selfName=cfg.nickname||cfg.model;
+      /* P11-3D.1：群聊里**每个发言成员各自一个宿主回合** → 各自一个工具执行周期
+         （成员之间不共享额度；这与"一次发言 = 一个 turn"的语义一致）。 */
+      const _mbTurnLc=_ibTurnLc(_ibTurnScope('group'));
+      const _mbTurn=_mbTurnLc.turn();
+      _mbTurnLc.begin();
+      try{
       /* P11-2F · 群聊运行时可观测：**每个发言成员各自一条 trace 记录**，
          与单聊一致地在回合开始处 begin（键 = 该成员的角色 id）。
          注意顺序：`_mbTraceNote` 在"没有 begin 过的记录"上是静默 no-op，
@@ -2045,7 +2126,7 @@ async function sendChatMessage(voiceMsg){
           const _gMemLive=_mkMemLiveFilter(function(ch){_gWsFilter.push(ch)},function(build){return _gWsFilter.card(build)});
           const _gFlush=(ch)=>{_gMemLive.push(ch)};
           try{
-          rawReply=await callApiChatStream(cfg,messages,{_ibConsumer:'group',wantThinking:thinkingOn,autoContinue:true,chatKey:_targetFriend,result:_gCallRes,searchLog:_gSrchLog,onSearch:_gOnSearch,
+          rawReply=await callApiChatStream(cfg,messages,{_ibTurn:_mbTurn,_ibConsumer:'group',wantThinking:thinkingOn,autoContinue:true,chatKey:_targetFriend,result:_gCallRes,searchLog:_gSrchLog,onSearch:_gOnSearch,
             onThink:function(tk){_gThinkF(tk)},
             onChunk:function(chunk){
               if(_gSState===2){_gFlush(chunk);return}
@@ -2059,7 +2140,7 @@ async function sendChatMessage(voiceMsg){
               }
               if(_gSState===1){_gSThinkBuf+=chunk;_gSBuf='';_gThinkF(chunk);const ct=_gSThinkBuf.match(/<\/think(?:ing)?>/i);if(ct){const _gAfter=_gSThinkBuf.slice(ct.index+ct[0].length);_gSThinkBuf=_gSThinkBuf.slice(0,ct.index);_gSState=2;if(_gShowThinking)_finishStreamThinking(_gLiveThink,_gSThinkBuf);if(_gAfter&&_gAfter.trim())_gFlush(_gAfter.trim())}}
             }});
-          }catch(_streamErr){if(!rawReply)rawReply=await callApiChat(cfg,messages,{_ibConsumer:'group',wantThinking:thinkingOn,autoContinue:true,chatKey:_targetFriend,result:_gCallRes,searchLog:_gSrchLog});groupThinking=_gCallRes.reasoning_content||''}
+          }catch(_streamErr){if(!rawReply)rawReply=await callApiChat(cfg,messages,{_ibTurn:_mbTurn,_ibConsumer:'group',wantThinking:thinkingOn,autoContinue:true,chatKey:_targetFriend,result:_gCallRes,searchLog:_gSrchLog});groupThinking=_gCallRes.reasoning_content||''}
           _showStreamingUI(false);
           _gMemLive.finish();
           _gWsFilter.finish();
@@ -2070,7 +2151,7 @@ async function sendChatMessage(voiceMsg){
           if(_gShowThinking&&groupThinking){_ensureStreamThinking(gStreamRefs,_gLiveThink);_finishStreamThinking(_gLiveThink,groupThinking)}
         }else{
           /* 群聊非流式 */
-          rawReply=await callApiChat(cfg,messages,{_ibConsumer:'group',wantThinking:thinkingOn,autoContinue:true,chatKey:_targetFriend,result:_gCallRes,searchLog:_gSrchLog});
+          rawReply=await callApiChat(cfg,messages,{_ibTurn:_mbTurn,_ibConsumer:'group',wantThinking:thinkingOn,autoContinue:true,chatKey:_targetFriend,result:_gCallRes,searchLog:_gSrchLog});
           groupThinking=_gCallRes.reasoning_content||'';
           clearInterval(_gTypTimer);
           const _gElapsed=Math.round((Date.now()-_gTypStart)/1000);
@@ -2108,11 +2189,12 @@ async function sendChatMessage(voiceMsg){
          }}
         /* 群聊同样支持工作区：按顺序执行操作，操作者标注为发言成员 */
         var _gws=_parseWsOps(reply),_gwsR=[];
-        if(_gws.ops.length){try{_gwsR=await _execWsOps(_gws.ops,selfName,cfg,{source:'chat',friendId:_targetFriend,senderName:selfName,threadId:_targetThread||''})}catch(e){}}
+        if(_gws.ops.length){try{_gwsR=await _execWsOps(_gws.ops,selfName,cfg,{source:'chat',friendId:_targetFriend,senderName:selfName,threadId:_targetThread||'',_ibTurn:_mbTurn,guard:_ibTurnGuard(_mbTurn)})}catch(e){}}
         if(_gws.files&&_gws.files.length){try{await _wsArchiveFileBlocks(_gws.files,selfName)}catch(e){}}
-        /* 工具回合续（v6）：本成员执行了工具 → 结果自动回喂再生成一轮，用户无需再说一句 */
+        /* 工具回合续（v6）：本成员执行了工具 → 结果自动回喂再生成一轮，用户无需再说一句。
+           P11-3D.1：续轮继承**本成员这个宿主回合**的 turn（同一周期、同一预算）。 */
         if(_gws.ops.length||_gws.files.length){
-          try{await _wsToolContinue(cfg,{messages:messages,lastReply:reply,friendId:_targetFriend,chatKey:_targetFriend,senderName:selfName,round:1,threadId:_targetThread})}catch(e){}
+          try{await _wsToolContinue(cfg,{messages:messages,lastReply:reply,friendId:_targetFriend,chatKey:_targetFriend,senderName:selfName,round:1,threadId:_targetThread,_ibTurn:_mbTurn,guard:_ibTurnGuard(_mbTurn)})}catch(e){}
         }
         var _gwsPhantom=_wsCheckPhantom(_gws.cleanText,_gws.ops.length,selfName);
         const aiMsg={id:'msg_'+Date.now()+'_'+Math.floor(Math.random()*100000),role:'assistant',content:reply,reasoning_content:groupThinking||'',metadata:{model:cfg.provider||cfg.model||'',model_id:cfg.model||'',config_id:cfg.id,showThinking:_resolveShowThinking(cfg)},friendId:_targetFriend,senderName:selfName,timestamp:Date.now()};
@@ -2164,6 +2246,10 @@ async function sendChatMessage(voiceMsg){
           else toast(_ibFT);
           appendChatBubble('ai',_ibFT,selfName);
         }
+      }
+      }finally{
+        /* P11-3D.1：该成员的宿主回合结束 —— 周期的**唯一**收尾点（含失败路径）。 */
+        _mbTurnLc.end();
       }
     }
     }finally{
@@ -2234,6 +2320,12 @@ async function sendChatMessage(voiceMsg){
   let _sendResult={ok:false,error:'no_reply',userMessageId:userMsg.id};
   let _sealTs=0;/* 封档线时间戳：同 ss 提升至 try 外供延迟摘要闭包引用 */
   let streamRefs=[];/* 流式气泡引用提升到 try 外：失败路径需要清理未写入内容的空气泡 */
+  /* P11-3D.1 · 单聊的宿主 AI 回合从这里开始、到下面 finally 结束。
+     周期归属的唯一事实源就是这个 turn 对象：它随 opts._ibTurn 显式传给模型调用，
+     随 ictx._ibTurn 显式传给 XML 工具批次与续轮 —— 没有任何全局"当前回合"可猜。 */
+  const _turnLc=_ibTurnLc(_ibTurnScope('chat'));
+  const _turn=_turnLc.turn();
+  _turnLc.begin();
   try{
     const lim=await getReadingLimits();
     _sealTs=await getChatSealTimestamp(_targetFriend);
@@ -2424,7 +2516,7 @@ async function sendChatMessage(voiceMsg){
         _mbTrace.note(cfg.id,'outputMessages',messages.length);
         _mbTrace.note(cfg.id,'_paramsSend',_mbParamsFingerprint(cfg,_streamingOk,thinkingOn));
       }
-      let rawReply=await callApiChatStream(cfg,messages,{_ibConsumer:'chat',wantThinking:thinkingOn,autoContinue:true,chatKey:_targetFriend,result:_callRes,searchLog:_srchLog,onSearch:_onSearch,
+      let rawReply=await callApiChatStream(cfg,messages,{_ibTurn:_turn,_ibConsumer:'chat',wantThinking:thinkingOn,autoContinue:true,chatKey:_targetFriend,result:_callRes,searchLog:_srchLog,onSearch:_onSearch,
         onThink:function(tk){_thinkFlush(tk)},
         onChunk:function(chunk){
         if(_sState===2){_sFlush(chunk);return}
@@ -2507,7 +2599,7 @@ async function sendChatMessage(voiceMsg){
       /* 以完整回复为准重建气泡：文本 + 操作卡 + 下载卡按原始顺序分段渲染，卡片状态对齐真实执行结果 */
       var _wsParsed=_parseWsOps(replyText);
       var _wsResults=[];
-      if(_wsParsed.ops.length&&_mbSideEffectGate(_mbSecWsCats(_wsParsed.ops)))_wsResults=await _execWsOps(_wsParsed.ops,cfg.nickname||cfg.model||'AI',cfg,{source:'chat',friendId:_targetFriend,threadId:_targetThread||'',userMessageId:userMsg.id});
+      if(_wsParsed.ops.length&&_mbSideEffectGate(_mbSecWsCats(_wsParsed.ops)))_wsResults=await _execWsOps(_wsParsed.ops,cfg.nickname||cfg.model||'AI',cfg,{source:'chat',friendId:_targetFriend,threadId:_targetThread||'',userMessageId:userMsg.id,_ibTurn:_turn,guard:_ibTurnGuard(_turn)});
       if(_wsParsed.files&&_wsParsed.files.length){try{if(_mbSideEffectGate([_MB_SEC.file]))await _wsArchiveFileBlocks(_wsParsed.files,cfg.nickname||cfg.model||'AI')}catch(e){}}
       var _wsPhantom=_wsCheckPhantom(_wsParsed.cleanText,_wsParsed.ops.length);
       streamRefs.forEach(ref=>{_wsFinalizeBubble(ref,replyText,_wsResults)});
@@ -2521,7 +2613,7 @@ async function sendChatMessage(voiceMsg){
          正确拦截（allow=false），但**一个字都不记**，抑制记录因而声称"这一轮没拦下
          任何东西"。补上条数后记录才如实。**只补元数据，判定语义与拦截行为一字未改。** */
       if((_wsParsed.ops.length||_wsParsed.files.length)&&_mbSideEffectGate(_mbSecWsCats(_wsParsed.ops).concat(_wsParsed.files.length?[_MB_SEC.file]:[]),_mbSecWsCount(_wsParsed.ops,_wsParsed.files.length))){
-        try{await _wsToolContinue(cfg,{messages:messages,lastReply:replyText,friendId:_targetFriend,chatKey:_targetFriend,senderName:cfg.nickname||cfg.model||'AI',round:1,threadId:_targetThread})}catch(e){}
+        try{await _wsToolContinue(cfg,{messages:messages,lastReply:replyText,friendId:_targetFriend,chatKey:_targetFriend,senderName:cfg.nickname||cfg.model||'AI',round:1,threadId:_targetThread,_ibTurn:_turn,guard:_ibTurnGuard(_turn)})}catch(e){}
       }
       /* 本回合 trace 收口（打印点已在副作用之后，故抑制记录此刻已是终值） */
       _mbSecTraceFinish(_mbTrace,cfg.id,_mbVerdict);
@@ -2531,8 +2623,14 @@ async function sendChatMessage(voiceMsg){
       if(_calR.length&&window.IBCAL)streamRefs.forEach(ref=>{_calR.forEach(function(r){(ref.isTextNode?ref.div:ref.txt).appendChild(IBCAL.noteCard(r))})});
       if(_wsPhantom)streamRefs.forEach(ref=>{(ref.isTextNode?ref.div:ref.txt).appendChild(_buildWsPhantomHint(_wsPhantom))});
       /* P11-2E · 内联提示卡：接在既有卡片之后、气泡之内 —— 不改 assistant 原文、
-         不覆盖内容、不做模态/浮层。放在最后是为了让它始终读得到（不被打断）。 */
-      streamRefs.forEach(ref=>{_mbAppendNoticeCard((ref.isTextNode?ref.div:ref.txt),aiMsg)});
+         不覆盖内容、不做模态/浮层。放在最后是为了让它始终读得到（不被打断）。
+         P11-3D.1 修复：这一段此前写在 `const aiMsg` **之前**，而它读的正是 `aiMsg`
+         （_mbAppendNoticeCard(card, msg) 需要 msg.metadata.integrityNotice）——
+         于是每一次**流式**单聊回合都在这里抛 TDZ 异常（Cannot access 'aiMsg'
+         before initialization）：消息不落库、`_sendResult.ok=false`、用户看到的
+         是一条"请求失败"。它被 catch 吞掉，所以既不影响 provider 调用、也不影响
+         上面已完成的工具执行，只让整个回合在收尾时失败 —— 这正是"宿主回合还没
+         结束就已经失败"，P11-3D.1 的周期所有权因此必须和它一起修。 */
       const aiMsg={id:'msg_'+Date.now()+'_'+Math.floor(Math.random()*100000),role:'assistant',content:replyText,reasoning_content:thinkingText||'',metadata:{model:cfg.provider||cfg.model||'',model_id:cfg.model||'',config_id:cfg.id,showThinking:_resolveShowThinking(cfg)},friendId:_targetFriend,timestamp:Date.now()};/* 编号方式与群聊统一：随机后缀防同毫秒碰撞 */
       if(_srchLog.length)aiMsg.wsSearches=_srchLog;
       if(_memR.length)aiMsg.memOps=_memR.map(r=>({ok:r.ok,status:r.status||'',label:r.label,detail:r.detail}));
@@ -2549,6 +2647,8 @@ async function sendChatMessage(voiceMsg){
       _ibAppBroadcast('message',{id:aiMsg.id,role:'assistant',content:aiMsg.content,senderName:cfg.nickname||cfg.model||'AI',friendId:_targetFriend,threadId:_targetThread});
       _ibAppBroadcast('turn',{state:'end',friendId:_targetFriend,threadId:_targetThread});
       _sendResult={ok:true,replyText:replyText,messageId:aiMsg.id,userMessageId:userMsg.id,voiceStreamed:!!_voiceTurnSink};
+      /* 内联提示卡：此刻 aiMsg 已经存在且已落库，读的是它的 metadata.integrityNotice。 */
+      streamRefs.forEach(ref=>{_mbAppendNoticeCard((ref.isTextNode?ref.div:ref.txt),aiMsg)});
       streamRefs.forEach(ref=>{
         if(aiMsg.id){ref.div.dataset.msgId=aiMsg.id;ref.div.appendChild(_msgFavBtn(aiMsg));const db=document.createElement('button');db.className='chat-msg-del';db.textContent='✕';db.title='删除此消息';db.onclick=function(ev){ev.stopPropagation();deleteSingleMsg(aiMsg.id,ref.div)};ref.div.appendChild(db);
           if(typeof _chatSelectMode!=='undefined'&&_chatSelectMode&&ref.full&&!ref.div.querySelector('.chat-sel-circle')){const sc=document.createElement('div');sc.className='chat-sel-circle';sc.onclick=function(ev){ev.stopPropagation();_toggleMsgSel(aiMsg.id,sc)};ref.div.appendChild(sc)}/* BUGFIX: Select 模式中流式完成的消息补圈 */}
@@ -2567,7 +2667,7 @@ async function sendChatMessage(voiceMsg){
         _mbTrace.note(cfg.id,'outputMessages',messages.length);
         _mbTrace.note(cfg.id,'_paramsSend',_mbParamsFingerprint(cfg,_streamingOk,thinkingOn));
       }
-      let rawReply=await callApiChat(cfg,messages,{_ibConsumer:'chat',wantThinking:thinkingOn,autoContinue:true,chatKey:_targetFriend,result:_callResN,searchLog:_srchLogN});
+      let rawReply=await callApiChat(cfg,messages,{_ibTurn:_turn,_ibConsumer:'chat',wantThinking:thinkingOn,autoContinue:true,chatKey:_targetFriend,result:_callResN,searchLog:_srchLogN});
       clearInterval(_typTimer);
       const _elapsed=Math.round((Date.now()-_typStart)/1000);
       const te=document.getElementById('chat-typing-'+_targetFriend);
@@ -2605,13 +2705,13 @@ async function sendChatMessage(voiceMsg){
        if(_bpn.ops.length){replyText=_bpn.clean;try{if(_mbSideEffectGate([_MB_SEC.blog]))_brCardsNs=await _execBlogReadOps(_bpn.ops)}catch(e){}}}
       var _wsNs=_parseWsOps(replyText);
       var _wsRNs=[];
-      if(_wsNs.ops.length&&_mbSideEffectGate(_mbSecWsCats(_wsNs.ops)))_wsRNs=await _execWsOps(_wsNs.ops,cfg.nickname||cfg.model||'AI',cfg,{source:'chat',friendId:_targetFriend,threadId:_targetThread||'',userMessageId:userMsg.id});
+      if(_wsNs.ops.length&&_mbSideEffectGate(_mbSecWsCats(_wsNs.ops)))_wsRNs=await _execWsOps(_wsNs.ops,cfg.nickname||cfg.model||'AI',cfg,{source:'chat',friendId:_targetFriend,threadId:_targetThread||'',userMessageId:userMsg.id,_ibTurn:_turn,guard:_ibTurnGuard(_turn)});
       if(_wsNs.files&&_wsNs.files.length){try{if(_mbSideEffectGate([_MB_SEC.file]))await _wsArchiveFileBlocks(_wsNs.files,cfg.nickname||cfg.model||'AI')}catch(e){}}
       var _wsNsPhantom=_wsCheckPhantom(_wsNs.cleanText,_wsNs.ops.length);
       /* 工具回合续（v6）：非流式主对话同样自动回喂再生成一轮（P11-2C：同款沿用本回合裁定状态）
          P11-2E：与流式路径同款补上条数（见上方流式路径的说明）。 */
       if((_wsNs.ops.length||_wsNs.files.length)&&_mbSideEffectGate(_mbSecWsCats(_wsNs.ops).concat(_wsNs.files.length?[_MB_SEC.file]:[]),_mbSecWsCount(_wsNs.ops,_wsNs.files.length))){
-        try{await _wsToolContinue(cfg,{messages:messages,lastReply:replyText,friendId:_targetFriend,chatKey:_targetFriend,senderName:cfg.nickname||cfg.model||'AI',round:1,threadId:_targetThread})}catch(e){}
+        try{await _wsToolContinue(cfg,{messages:messages,lastReply:replyText,friendId:_targetFriend,chatKey:_targetFriend,senderName:cfg.nickname||cfg.model||'AI',round:1,threadId:_targetThread,_ibTurn:_turn,guard:_ibTurnGuard(_turn)})}catch(e){}
       }
       /* 本回合 trace 收口（与非流式逐字同款） */
       _mbSecTraceFinish(_mbTrace,cfg.id,_mbVerdict);
@@ -2682,6 +2782,9 @@ async function sendChatMessage(voiceMsg){
     }
     _sendResult={ok:false,error:String(err&&err.message||err),userMessageId:userMsg.id};
   }
+  /* P11-3D.1：宿主回合结束 —— 周期的**唯一**收尾点（正常与异常出口共用）。
+     幂等：什么都没开过就是空操作；已经收过就不再收第二次。 */
+  _turnLc.end();
   _chatSendingFor.delete(_targetFriend);
   if(sendBtn)sendBtn.disabled=false;
   autoResizeInput(input);
@@ -3633,27 +3736,37 @@ async function _wsToolContinue(cfg,o){
     if(!cfg||!o)return null;
     var round=Math.max(0,Number(o.round)||0);
     if(round>_WS_TOOL_CONT_MAX)return null;
-    /* ── P11-3D：XML 工具续轮是**同一个**单回合预算的另一条入口 ────────
-       这里的旧上限（_WS_TOOL_CONT_MAX）就是"总续轮预算"，因此它直接
-       收敛为 canonical 轮预算的下界来源；工具计数/重复/时间由同一个
-       guard 裁定。不新建第二套轮次上限，两条通道（原生 FC / XML）共用
-       一份预算口径。round===1 是"本轮第一次续"，此时建 cycle。 */
-    var _ownCycle=(round<=1);   /* 只有最外层那次建/收 cycle：递归续轮共享同一个周期 */
-    var _tg=(_ownCycle&&typeof IBFC!=='undefined'&&typeof IBFC.cycleBegin==='function')?IBFC.cycleBegin(null,{maxRounds:_WS_TOOL_CONT_MAX+1}):null;
-    var _cont=Object.assign({},o,{messages:(o.messages||[]).slice(),round:round});
+    /* ── P11-3D.1：XML 续轮是**同一个宿主回合**的另一条入口 ──────────────
+       P11-3D 时期这里是 `IBFC.cycleBegin(null,…)`（恒 null）+ 自己 cycleEnd，
+       于是续轮内部另开了一个周期：一个 turn 两个预算，且轮次计数被重置。
+       现在续轮**只继承**宿主回合的 turn（o._ibTurn）：
+         · 有 turn → 不 begin、不 end，用它那一个周期与那一份预算；
+         · 没有 turn（旧调用面/独立脚本）→ 退化成"本次调用自己就是一个宿主回合"
+           （ownsCycle 只属于这个新建的 turn），保持单周期语义。
+       旧的 _WS_TOOL_CONT_MAX 仍是这条通道的硬上界（未放宽），
+       canonical 轮预算由同一个 guard 裁定 —— 不新建第二套轮次上限。 */
+    var _turn=_ibTurnOf(o);
+    var _lc=null;
+    if(!_turn){ _lc=_ibTurnLc(_ibTurnScope('xml-continue')); _turn=_lc.turn(); _lc.begin(); }
+    var _cont=Object.assign({},o,{messages:(o.messages||[]).slice(),round:round,_ibTurn:_turn,guard:_turn.guard});
     try{
-      return await _wsToolContinueInner(cfg,_cont,_tg);
+      return await _wsToolContinueInner(cfg,_cont);
     }finally{
-      if(_ownCycle){try{IBFC.cycleEnd()}catch(e){}}
+      if(_lc)_lc.end();
     }
   }catch(e){
     console.warn('[WsToolContinue] failed (tool results stay queued for next user message):',String(e&&e.message||e).slice(0,160));
     return null;
   }
 }
-async function _wsToolContinueInner(cfg,o,_tg){
+async function _wsToolContinueInner(cfg,o){
   try{
     var round=Math.max(0,Number(o.round)||0);
+    /* 本回合的作用域（宿主 turn）。周期实例**只能**来自它 ——
+       拿不到就没有周期可用，XML 工具于是被 no-active-cycle 拒绝执行（fail closed），
+       而不是回落"当前活动实例"把执行记进别人的额度。 */
+    var _turn=_ibTurnOf(o);
+    var _g=(_turn&&_turn.guard&&typeof _turn.guard.active==='function'&&_turn.guard.active())?_turn.guard:null;
     /* ① 消费本回合执行的工具反馈（消费式：后续用户消息不再重复注入） */
     var feed='';
     try{
@@ -3685,26 +3798,17 @@ async function _wsToolContinueInner(cfg,o,_tg){
       +'\n若结果满足要求，用一句自然的话向用户收尾即可；若有需要修正或继续的操作，请继续输出相应指令。';
     var userMsg={role:'user',content:imgParts.length?[{type:'text',text:userText}].concat(imgParts):userText};
     msgs.push(userMsg);
-    var r=await callApiChat(cfg,msgs,{_ibConsumer:'chat',maxTokens:Math.max(1024,o.maxTokens||2048),timeoutMs:90000,wantMeta:false,autoContinue:true});/* 工具续轮：同一 Chat 请求流 */
+    var r=await callApiChat(cfg,msgs,{_ibConsumer:'chat',maxTokens:Math.max(1024,o.maxTokens||2048),timeoutMs:90000,wantMeta:false,autoContinue:true,_ibTurn:_turn});/* 工具续轮：同一 Chat 请求流（同一宿主回合 → 同一周期/同一预算） */
     if(!r||!String(r).trim())return null;
     /* ④ 续轮回复里的工具继续执行（常见于链式操作：生成→继续调整）
-       P11-3D：同一回合的预算同样约束这条通道 —— 熔断后不再执行任何工具，
-       只保留已经产生的结果（不静默 break：原因写进 guard 的稳定 reason）。 */
+       P11-3D.1：授权与结算**只有一处**（_ibExecToolOp 的 authorize→execute→settle），
+       这里不再做第二遍 beforeCall —— 两处授权会让一次调用吃掉两份工具额度
+       （重复/计数口径立刻失真：真实执行 1 次、账本 +2）。 */
     var parsed=_assistantResponseParts(r,'');
     var contText=parsed.content;
     var _cOp=_parseWsOps(contText),_cResults=[];
     var _cExec=_cOp.ops;
-    if(_tg&&_cExec&&_cExec.length){
-      var _allow=[];
-      for(var _oi=0;_oi<_cExec.length;_oi++){
-        var _op=_cExec[_oi],_od=null;
-        try{_od=(_op&&_op.type==='tool')?IBFC._syncGuardPolicy().beforeCall(_op.name,_op.args,{sName:_op.name,kind:'xml-tool'}):{allowed:true}}catch(e){_od={allowed:true}}
-        if(_od&&_od.allowed)_allow.push(_op);
-        else if(typeof IBFC._trip==='function')IBFC._trip((_od&&_od.reason)||'tool-budget-exhausted',null,function(t){try{console.warn(t)}catch(e){}});
-      }
-      if(_allow.length!==_cExec.length)_cExec=_allow;
-    }
-    try{_cResults=await _execWsOps(_cExec,o.senderName||(cfg.nickname||cfg.model||'AI'),cfg,{source:'chat',friendId:o.friendId||'',threadId:o.threadId||'',senderName:o.senderName||''})}catch(e){}
+    try{_cResults=await _execWsOps(_cExec,o.senderName||(cfg.nickname||cfg.model||'AI'),cfg,{source:'chat',friendId:o.friendId||'',threadId:o.threadId||'',senderName:o.senderName||'',_ibTurn:_turn,guard:_g})}catch(e){}
     if(_cOp.files&&_cOp.files.length){try{await _wsArchiveFileBlocks(_cOp.files,o.senderName||(cfg.nickname||cfg.model||'AI'))}catch(e){}}
     /* ⑤ 渲染为同角色续接气泡（含操作卡），与主流程同款 */
     var _cId='msg_'+Date.now()+'_'+Math.floor(Math.random()*100000);
@@ -3723,10 +3827,12 @@ async function _wsToolContinueInner(cfg,o,_tg){
         db.onclick=function(ev){ev.stopPropagation();deleteSingleMsg(_cId,el)};el.appendChild(db);
       });
     }else{try{_markUnread(o.friendId)}catch(e){}}
-    /* ⑥ 续轮若再产生工具反馈 → 继续（轮预算由 guard 统一裁定，旧字面量只作下界） */
+    /* ⑥ 续轮若再产生工具反馈 → 继续（轮预算由 guard 统一裁定，旧字面量只作下界）
+       P11-3D.1：递归续轮**继承同一个 turn**（同一个周期、同一份预算）——
+       无论递归多少层，本 turn 的 cycle 数始终为 1，maxRounds 也不被重置。 */
     var _ctripped=false;
-    try{_ctripped=!!(_tg&&_tg.tripped())}catch(e){}
-    if(_ctripped){try{if(typeof IBFC._trip==='function')IBFC._trip(_tg.tripInfo().reason,null,function(t){try{console.warn(t)}catch(e){}})}catch(e){}}
+    try{_ctripped=!!(_g&&_g.tripped())}catch(e){}
+    if(_ctripped){try{if(typeof IBFC._trip==='function')IBFC._trip(_g.tripInfo().reason,null,function(t){try{console.warn(t)}catch(e){}})}catch(e){}}
     if(round<_WS_TOOL_CONT_MAX&&!_ctripped){
       try{await _wsToolContinue(cfg,Object.assign({},o,{messages:msgs,lastReply:contText,round:round+1}))}catch(e){}
     }
@@ -4093,34 +4199,54 @@ function _ibNoteReasoningUsage(usage,format,cfg,opts){
   }catch(e){return null}
 }
 
-/* ── P11-3D：单回合工具执行周期（宿主侧唯一入口）─────────────────────
-   一个AI回合 = 一个 guard cycle。周期在**工具块被激活时**开启，在回合的
-   每个出口关闭。额度不在这里产生 —— 这里只负责生命周期与"停止"动作。 */
-/* 回合开始前调用（**必须**在 try 之外：它是安全调用，不得被任何异常跳过）。 */
-function _toolCycleBegin(fcCtx){
+/* ── P11-3D.1：单回合工具执行周期（宿主侧唯一入口）─────────────────────
+   一个宿主 AI 回合 = 一个 guard cycle。owner 是 turn（上面 _ibTurnScope 建的那个），
+   不是这里的调用者：模型调用入口只是"周期被激活的判定点"。
+   P11-3D 时期 begin/end 都挂在 callApiChat* 上，于是周期在 callApiChatStream
+   返回时就被收掉，而 XML 批次与续轮都发生在那一刻之后 —— 见文件顶部的不变量说明。 */
+/* 工具块真的激活这个回合时调用（**必须**在 try 之外：它是安全调用，不得被任何异常跳过）。 */
+function _toolCycleBegin(fcCtx,turn){
   try{
     if(typeof IBFC==='undefined' || typeof IBFC.cycleBegin!=='function')return
-    /* 无论本次请求是否激活 FC 都调用：未激活时 guard 只做"本回合重置"
-       （清掉上一回合的熔断原因与快照）并**不**开启周期。 */
-    IBFC.cycleBegin(fcCtx);
+    /* 只有 turn 的 owner 有资格开周期；继承者（nested call / XML 续轮）在这里
+       只是把 turn 上已有的实例绑到自己的 ctx 上，cycleBegin 内部按 ownsCycle 区分。
+       FC 未激活（fcCtx 为空/非活动）时不开周期 —— 纯文本回合不占任何额度。 */
+    IBFC.cycleBegin(fcCtx,null,turn);
   }catch(e){}
 }
-function _toolCycleEnd(fcCtx){
+/* 收尾：只有宿主回合自己拥有周期，因此只有它带 _lc 时才收。
+   幂等由 _ibTurnLc 保证（end 一次），且 cycleEnd 自身对"没有周期"返回 null。 */
+function _toolCycleEnd(fcCtx,turnB){
   try{
-    if(typeof IBFC==='undefined' || typeof IBFC.cycleEnd!=='function')return
-    /* 无条件收尾，且不依赖 fcCtx 是否还在：周期实例与"是否还有周期"都由
-       ctx 上记着的 guard 自己回答。这样"FC 端点回落"这类把 _fcCtx 置空的
-       出口也不会留下悬挂周期。 */
-    IBFC.cycleEnd(fcCtx);
+    if(!turnB)return
+    if(turnB.lc)turnB.lc.end();          /* 隐式回合（没有宿主）→ 本调用自己就是 owner */
   }catch(e){}
 }
 /* provider 调用前的轮预算询问（第 2 轮起）。拒绝 = 熔断 → 停止 provider 循环。
    emit 必须传**本回合的输出流**：熔断原因要出现在用户与诊断都能看到的那条通道上，
-   用 console.warn 顶替它会让"原因只存在于控制台"（本次开发真实踩到过）。 */
+   用 console.warn 顶替它会让"原因只存在于控制台"（本次开发真实踩到过）。
+   P11-3D.1：额度取自**本回合自己的实例**（ctx._ibTurn.guard）—— 全局指针在并发
+   回合里可能指向别人的周期，拿它询问会把本次 provider 调用记进别人的额度。 */
+/* 本回合的 guard 实例：口径与 IBFC.runRound 完全一致 ——
+   ① 本回合 turn 上记着的那个（唯一事实源）；② 该 ctx 已经绑上的那个；③ 全局指针
+   （只在前两者都拿不到时兜底，例如非 FC 调用面上的诊断读取）。
+   **绝不**用"当前活动的周期"反推归属。 */
+function _ibGuardOfCtx(fcCtx){
+  try{
+    var t=fcCtx&&fcCtx._ibTurn;
+    /* 有本回合：只认它自己的实例。本回合还没开周期 → null（= 不介入），
+       绝不回落到全局指针 —— 那会把本次询问记进**别人**的周期。 */
+    if(t)return (t.guard&&typeof t.guard.beforeCall==='function')?t.guard:null;
+    var bound=fcCtx&&fcCtx._guard;
+    if(bound&&typeof bound.beforeCall==='function')return bound;
+    if(typeof IBFC!=='undefined'&&typeof IBFC._syncGuardPolicy==='function')return IBFC._syncGuardPolicy();
+  }catch(e){}
+  return null;
+}
 function _roundBudgetAllows(fcCtx,emit){
   try{
-    if(!fcCtx || !fcCtx.active || typeof IBFC==='undefined' || typeof IBFC._syncGuardPolicy!=='function')return true
-    const g=IBFC._syncGuardPolicy();
+    if(!fcCtx || !fcCtx.active)return true
+    const g=_ibGuardOfCtx(fcCtx);
     if(!g)return true
     const d=g.beforeCall('__round__',null,{kind:'round'});
     if(d&&d.allowed)return true
@@ -4131,12 +4257,38 @@ function _roundBudgetAllows(fcCtx,emit){
 /* FC 端点回落/参数回落重试（round--/continue）：不得绕过总预算，也不得无限重试 */
 function _fcRetryAllowed(fcCtx){
   try{
-    if(!fcCtx || !fcCtx.active || typeof IBFC==='undefined' || typeof IBFC._syncGuardPolicy!=='function')return true
-    const g=IBFC._syncGuardPolicy();
+    if(!fcCtx || !fcCtx.active)return true
+    const g=_ibGuardOfCtx(fcCtx);
     if(!g)return true
     const d=g.beforeCall('__retry__',{round:fcCtx.round||0},{kind:'retry'});
     return !!(d&&d.allowed)
   }catch(e){return true}
+}
+
+/* ── P11-3D.1 · 模型调用入口的周期接线 ────────────────────────────────
+   模型调用**不是**周期 owner：宿主回合才是。这里只做两件事：
+     ① 有宿主回合（opts._ibTurn）→ 把该 turn 记到 FC ctx 上（ctx._ibTurn），
+        于是这个 ctx 的活跃性与周期归属都指向同一个 turn；**不开周期、不收周期**；
+     ② 没有宿主回合（诊断/设置向导/摘要等直接调用者）→ 本调用**自己就是那个回合**：
+        自建一个 turn 并在本函数 finally 里收尾（等价于单调用回合），
+        这样"没有宿主回合时工具照样被预算约束"，而不是回到无人裁定的旧态。
+   两种情形都只有一个周期、一份预算 —— 这正是不变量在非宿主调用面上的落地。 */
+function _ibModelCallTurn(opts){
+  var t=_ibTurnOf(opts);
+  if(t)return {turn:t,lc:null};
+  /* 隐式回合的标签是**静态**的：刻意不去读 opts._ibConsumer —— 审计身份键只允许
+     出现在 callApiChat* 的 opts 与 runtime 桥接里（tests/test_frontend_structure.js
+     的 cacheAudit.metadataNeverInProviderBody 守的就是这条线：诊断身份不得渗进
+     请求构造路径）。turn 标签只是本地读数的名字，不需要那个身份。 */
+  var lc=_ibTurnLc(_ibTurnScope('model-call'));
+  lc.begin();
+  return {turn:lc.turn(),lc:lc};
+}
+function _ibBindTurn(fcCtx,turn){
+  if(!fcCtx||!turn)return fcCtx;
+  fcCtx._ibTurn=turn;
+  if(turn.guard)fcCtx._guard=turn.guard;
+  return fcCtx;
 }
 
 async function callApiChatStream(cfg,messages,opts){
@@ -4148,11 +4300,12 @@ async function callApiChatStream(cfg,messages,opts){
   var st=_newCallState(opts);/* 并发隔离：本次调用的独立状态（思考/结束原因/停止/可中止句柄），按 chatKey 注册供停止按钮定位 */
   /* FC：原生函数调用（anthropic/openai 走 tools 参数；无工具块/开关关/其他厂商 → 不激活，回落 XML 通道） */
   var _fcCtx=null;
-  try{if(!opts.disableTools&&typeof IBFC!=='undefined'){var _fcv=IBFC.prepare(messages,_providerFormat(cfg),{vision:_usesNativeDeepSeekVision(cfg)||(cfg.vision!==undefined?!!cfg.vision:true)});if(_fcv&&_fcv.active){_fcCtx=_fcv;msgs=_fcCtx.messages}}}catch(e){_fcCtx=null}
-  /* P11-3D：本回合的工具执行周期从**函数入口**开始（激活 FC 时建周期，
-     未激活时只重置上一回合的熔断原因与快照）。放在 try 之外是有意的：
-     周期重置不得被任何异常跳过。 */
-  _toolCycleBegin(_fcCtx);
+  var _turnB=_ibModelCallTurn(opts);
+  try{if(!opts.disableTools&&typeof IBFC!=='undefined'){var _fcv=IBFC.prepare(messages,_providerFormat(cfg),{vision:_usesNativeDeepSeekVision(cfg)||(cfg.vision!==undefined?!!cfg.vision:true)});if(_fcv&&_fcv.active){_fcCtx=_ibBindTurn(_fcv,_turnB.turn);msgs=_fcCtx.messages}}}catch(e){_fcCtx=null}
+  /* P11-3D.1：周期**不在这里开**。工具块真的激活这个回合时，cycleBegin 由
+     _toolCycleBegin 调一次，owner 是宿主回合（或上面那个隐式回合）。
+     放在 try 之外是有意的：周期归零不得被任何异常跳过。 */
+  _toolCycleBegin(_fcCtx,_turnB.turn);
   try{/* 并发隔离：任何退出路径都在函数尾 finally 注销本对话的调用状态 */
   for(var round=0;;round++){
     /* P11-3D：第 2 轮起的每次 provider 调用都要先过总轮预算 —— 这是
@@ -4212,7 +4365,7 @@ async function callApiChatStream(cfg,messages,opts){
   _lastApiReasoning=thinkAcc;
   if(opts.result){opts.result.reasoning_content=thinkAcc;opts.result.truncated=_finishIsTrunc(st.finish)}
   return full;
-  }finally{_endCallState(st);_toolCycleEnd(_fcCtx)}
+  }finally{_endCallState(st);_toolCycleEnd(_fcCtx,_turnB)}
 }
 
 /* 非流式：同样的包装策略 */
@@ -4225,9 +4378,10 @@ async function callApiChat(cfg,messages,opts){
   var st=_newCallState(null);/* 并发隔离：仅用于按调用隔离思考/结束原因；非流式没有停止入口，不注册停止路由（与原行为一致） */
   /* FC：原生函数调用（与流式同一套；无工具块/开关关/其他厂商 → 不激活） */
   var _fcCtx=null;
-  try{if(!opts.disableTools&&typeof IBFC!=='undefined'){var _fcv=IBFC.prepare(messages,_providerFormat(cfg),{vision:_usesNativeDeepSeekVision(cfg)||(cfg.vision!==undefined?!!cfg.vision:true)});if(_fcv&&_fcv.active){_fcCtx=_fcv;msgs=_fcCtx.messages}}}catch(e){_fcCtx=null}
-  /* P11-3D：同上（非流式路径）—— 周期重置在 try 之外。 */
-  _toolCycleBegin(_fcCtx);
+  var _turnB=_ibModelCallTurn(opts);
+  try{if(!opts.disableTools&&typeof IBFC!=='undefined'){var _fcv=IBFC.prepare(messages,_providerFormat(cfg),{vision:_usesNativeDeepSeekVision(cfg)||(cfg.vision!==undefined?!!cfg.vision:true)});if(_fcv&&_fcv.active){_fcCtx=_ibBindTurn(_fcv,_turnB.turn);msgs=_fcCtx.messages}}}catch(e){_fcCtx=null}
+  /* P11-3D.1：同上（非流式路径）—— 周期归零在 try 之外。 */
+  _toolCycleBegin(_fcCtx,_turnB.turn);
   try{/* 并发隔离：任何退出路径都在函数尾 finally 注销状态 */
   for(var round=0;;round++){
     /* P11-3D：第 2 轮起的每次 provider 调用都要先过总轮预算（`continue` 到不了这里之前） */
@@ -4280,7 +4434,7 @@ async function callApiChat(cfg,messages,opts){
   _lastApiReasoning=thinkAcc;
   if(opts.result){opts.result.reasoning_content=thinkAcc;opts.result.truncated=lastTrunc}
   return opts.wantMeta?{text:full,truncated:lastTrunc}:full;
-  }finally{_endCallState(st);_toolCycleEnd(_fcCtx)}
+  }finally{_endCallState(st);_toolCycleEnd(_fcCtx,_turnB)}
 }
 
 /* ── 任务A：Gemini/OpenAI 联网搜索可视化 ──

@@ -99,7 +99,17 @@ async function buildSiteContext(signals){
     if(sig.fileOutput)_push(_FILE_OUTPUT_INSTR_BLOCK);
     /* 工作区指令单独拼接，不参与截断 */
     const wsBlock=sig.fileOutput?_WS_INSTR_BLOCK:'';
-    /* 外部工具指令：本地 Webhook（启用且有配置时）与 MCP 服务器工具（IBMCP，独立开关）合并注入 */
+    /* 外部工具指令：本地 Webhook（启用且有配置时）与 MCP 服务器工具（IBMCP，独立开关）合并注入。
+       P11-3D.1：这一段**不能**再和 wsBlock 一起参与截断 ——
+       `truncateContext(ctx, Math.max(2000, 8000 - wsBlock.length))` 的意图是"给工作区指令
+       预留位置"，但当 wsBlock 自身超过 8000 字符时那个下限 2000 会让 ctx 被截到 2000，
+       随后 wsBlock 被**逐字接在后面**，于是 ctx 那 2000 字符比 wsBlock 还早结束 ——
+       结果是尾部的【外部工具】块被整块截掉：模型看不到任何工具定义，原生 FC 因此
+       **永远不激活**（工具开关看起来是开的，实际一个工具都调不到）。
+       本次开发真实踩到：真实宿主回合里 provider 收到的 tools 参数恒为空。
+       修法：工具块单独抽出、在截断**之后**追加 —— 它是一条能力声明，
+       与工作区内联说明同级，不该被 ctx 的长度挤掉。 */
+    let _toolsBlock='';
     try{
       const tcfg=await getIbTools();
       var _mcpPB='';try{if(typeof IBMCP!=='undefined')_mcpPB=IBMCP.promptBlock()}catch(e){}
@@ -107,17 +117,17 @@ async function buildSiteContext(signals){
       const _locOn=tcfg.enabled&&(tcfg.tools||[]).length;
       if(_locOn||_mcpPB||_bridgePB){
         var _cfNeed=(_locOn&&tcfg.confirm)||(_mcpPB&&IBMCP.cfg().confirm!==false)||(_bridgePB&&IBNET.cfg().confirmTools!==false);
-        wsBlock+='\n\n【外部工具】用户配置了以下可调用的外部工具。需要执行用户接入的外部操作时输出：\n<ws_tool name="工具名" args=\'{"参数":"值"}\'/>\n规则：name 必须与下方列表完全一致（mcp. 开头的是 MCP 服务器工具，用同一个标签调用）；args 是单行 JSON（无参数时省略整个 args 属性；参数较长时也可写成 <ws_tool name="工具名">{JSON}</ws_tool> 的形式）；只能调用列表内的工具，不要虚构工具名；调用结果会在之后的消息注入给你'+(_cfNeed?'；用户开启了调用前确认——提交后请等待结果回传，不要重复提交同一调用':'')+'。\n可用工具：';
-        if(_locOn)tcfg.tools.forEach(function(t){wsBlock+='\n- '+t.name+(t.desc?'：'+t.desc:'')+(t.params?'（参数：'+t.params+'）':'（无参数）')});
-        if(_mcpPB)wsBlock+='\n'+_mcpPB;
-        if(_bridgePB)wsBlock+='\n'+_bridgePB;
+        _toolsBlock+='\n\n【外部工具】用户配置了以下可调用的外部工具。需要执行用户接入的外部操作时输出：\n<ws_tool name="工具名" args=\'{"参数":"值"}\'/>\n规则：name 必须与下方列表完全一致（mcp. 开头的是 MCP 服务器工具，用同一个标签调用）；args 是单行 JSON（无参数时省略整个 args 属性；参数较长时也可写成 <ws_tool name="工具名">{JSON}</ws_tool> 的形式）；只能调用列表内的工具，不要虚构工具名；调用结果会在之后的消息注入给你'+(_cfNeed?'；用户开启了调用前确认——提交后请等待结果回传，不要重复提交同一调用':'')+'。\n可用工具：';
+        if(_locOn)tcfg.tools.forEach(function(t){_toolsBlock+='\n- '+t.name+(t.desc?'：'+t.desc:'')+(t.params?'（参数：'+t.params+'）':'（无参数）')});
+        if(_mcpPB)_toolsBlock+='\n'+_mcpPB;
+        if(_bridgePB)_toolsBlock+='\n'+_bridgePB;
       }
     }catch(e){}
     /* 返回值向后兼容：**仍是一个字符串**（既有的 window.IB.ops.buildSiteContext 调用方
        与 `if(siteCtx)` 判定继续按原样工作）。逐轮门控需要的两个附加事实挂在同一个字符串上：
        必须用 String 包装对象才挂得住属性（原始字符串被自动装箱后属性即丢失），
        而包装对象在拼接 / 真值判定 / String() 变换下与原始字符串行为一致。 */
-    let _text=truncateContext(ctx,Math.max(2000,8000-wsBlock.length))+wsBlock;
+    let _text=truncateContext(ctx,Math.max(2000,8000-wsBlock.length))+wsBlock+_toolsBlock;
     try{
       _text=new String(_text);
       _text.blogRead=!!sig.blogRead;
@@ -273,8 +283,54 @@ async function _ibToolFetch(tool,args){
 function _ibQueueToolResult(author,name,ok,detail){
   _ibToolPendingResults.push({actor:author,images:[],text:'- 工具「'+name+'」：'+(ok?'成功':'失败')+(detail?' · '+String(detail).slice(0,700):'')});
 }
+/* ── P11-3D.1 · XML 工具执行接上 canonical guard ──────────────────────
+   XML 通道（<ws_tool>）与原生 FC 通道此前**共用同一个 turn 周期，但只有 FC
+   被预算裁定**：_execWsOps → _ibExecToolOp 直接执行，从不询问 guard，于是
+   tool-count / duplicate / retry / elapsed 四类预算在这条路上完全不生效，
+   且执行也不入账（观测面显示 toolCalls=0 而工具真的跑了）。
+   这里让 XML 执行走**同一套** beforeCall/settleCall —— 不新建预算、不新建
+   guard、不给 XML 单独配额。
+   口径：只有调用方**显式传入 guard** 时才介入（ictx.guard）。没有 guard 的
+   调用面（如回滚路径、独立测试）行为逐字不变。 */
+function _ibGuardOf(ictx){
+  var g=ictx&&ictx.guard;
+  return (g&&typeof g.beforeCall==='function')?g:null;
+}
+/* 与 FC 的 runRound 同款：授权 → 执行 → 结算。返回非 null 表示"未执行/已替换结果"。 */
+function _ibGuardAllow(g,op){
+  var d=null;
+  try{ d=g.beforeCall(op&&op.name,op&&op.args,{sName:op&&op.name,kind:'xml-tool'}); }catch(e){ d=null; }
+  if(d&&d.allowed)return null;
+  var reason=(d&&d.reason)||'tool-budget-exhausted';
+  var blocked={type:'tool',name:(op&&op.name)||'',ok:false,guardBlocked:true,guardReason:reason,
+    reason:'工具执行已熔断（'+reason+'）',args:String((op&&op.args)||'')};
+  _ibToolPendingResults.push({actor:'',images:[],text:'- 工具「'+((op&&op.name)||'')+'」：未执行 · 已熔断（'+reason+'）'});
+  return blocked;
+}
+function _ibGuardSettle(g,op,r){
+  try{
+    var ok=!!(r&&r.ok===true)||!!(r&&r.pendingConfirm===true);
+    g.settleCall(op&&op.name,op&&op.args,{ok:ok,reason:(r&&r.reason)||'',guardTimedOut:false});
+  }catch(e){}
+}
 /* 执行一次 ws_tool 操作，返回结果对象（渲染层据此出卡片） */
-async function _ibExecToolOp(op,author){
+async function _ibExecToolOp(op,author,ictx){
+  var _g=_ibGuardOf(ictx);
+  /* ② P11-3D.1 · fc="1" 的卡片**不是一次新的调用**：它是原生 FC 通道执行完之后
+     由宿主序列化出来的渲染标签（_ibExecToolOpInner 会按台账回查填卡，不执行任何东西）。
+     如果这里也走一遍授权，一次真实的工具执行就会在账本里记成两次
+     （toolCalls=2 而真实执行 1 次），去重/重试判定随之全部失真 —— 本次开发真实踩到过。
+     口径因此与"执行"对齐：**只有真的要去执行时才裁定**。 */
+  var _replay=!!(op&&op.fc);
+  if(_g&&!_replay){ var _deny=_ibGuardAllow(_g,op); if(_deny)return _deny; }
+  var _r=await _ibExecToolOpInner(op,author);
+  /* ③ 执行后结算：工具没执行（fc 回查/预检失败）就不结算；
+     pendingConfirm 与成功一样算"本次调用已了结"，避免被误判成失败重试。 */
+  var _settleable=!!(_r&&(_r.fed===true||_r.pendingConfirm===true));
+  if(_g&&_settleable&&!_replay)_ibGuardSettle(_g,op,_r);
+  return _r;
+}
+async function _ibExecToolOpInner(op,author){
   /* FC 原生通道已执行（fc="1"）：从台账取结果填卡，不再执行、不再排队注入 */
   if(op.fc&&typeof IBFC!=='undefined'){
     var _led=IBFC.ledgerGetByOp(op);

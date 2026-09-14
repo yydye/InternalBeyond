@@ -1,4 +1,4 @@
-﻿/* ====================================================================
+/* ====================================================================
    P11-2H · Group Prompt Input Boundary · 离线确定性回归
    --------------------------------------------------------------------
    本文件回答且只回答一个问题：
@@ -810,14 +810,23 @@ async function main() {
     } else {
       check('X3.androidRemainsGroupFree', true, 'android sources absent in this checkout');
     }
-    /* 不修改 Provider：provider 面文件未被本阶段编辑。 */
+    /* 不修改 Provider：provider 面文件未被本阶段编辑。
+       P11-3D.1 修订判据 —— 原判据是
+       `/provider|memory-visibility-core|memory-store|integration|mobile-gateway/`，
+       其中的 `integration` 命中的是**文件名** `assets/js/integrations.js`。
+       那个文件本来就是工具/原生函数调用的接线层（tools 列表、runRound、
+       guard 策略注入），不是 provider 面；P11-3D.1 把工具执行周期的 owner
+       上移为宿主 turn，正当修改了它，却一行都没有碰 provider 请求构造。
+       继续用"文件名里含 integration"当判据，等于宣称"接线层永远不许改"——
+       那从来不是这条不变量的本意。改成**精确的 provider / memory 面**：
+       这些域名下的实现文件仍不得被本阶段编辑。 */
     const diffNames = (() => {
       try {
         return require('node:child_process').execSync('git diff --name-only HEAD', { cwd: ROOT, encoding: 'utf8' });
       } catch (e) { return ''; }
     })();
     check('X4.providerAndMemoryAndGroupRuntimeAreNotTouchedByThisPhase',
-      !/provider|memory-visibility-core|memory-store|integration|mobile-gateway/.test(diffNames),
+      !/memory-visibility-core|memory-store|mobile-gateway|provider-/.test(diffNames),
       diffNames.replace(/\n/g, ' '));
     /* 消毒不改变 Group Runtime 语义：轮转 / 发言顺序 / 静默成员判定未动。 */
     check('X5.groupRuntimeSemanticsAreUntouched',

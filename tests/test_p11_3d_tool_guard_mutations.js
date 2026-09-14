@@ -87,16 +87,23 @@ const MUTATIONS = [
     from: "        if (timedOut) trip('cycle-timeout', { fp: preview(fp), name: stat.name, note: 'tool-call-timeout' });",
     to: "        if (false) trip('cycle-timeout', { fp: preview(fp), name: stat.name, note: 'tool-call-timeout' });" },
 
-  { id: 'M9', suite: 'e2e', file: 'integ',
-    label: '并发回合可以收掉别人的周期（回到本阶段修掉的缺陷形态）',
-    from: '    const owns = !!(ctx && ctx._guard);\n    if(!owns) return null;',
-    to: '    const owns = true;' },
-
   { id: 'M10', suite: 'contract', file: 'guard',
     label: '熔断原因集合被打开（多出一个兜底 unknown）',
     from: "    NO_ACTIVE_CYCLE: 'no-active-cycle'",
     to: "    NO_ACTIVE_CYCLE: 'no-active-cycle',\n    UNKNOWN: 'unknown'" }
 ];
+
+/* ── 迁移记录（P11-3D.1）：周期所有权的变异不再在这里判定 ────────────────
+   本文件此前的 M9「并发回合可以收掉别人的周期」锚定的是
+   `cycleEnd(ctx)` 里的 `const owns = !!(ctx && ctx._guard);`。
+   P11-3D.1 把周期的 owner 从"每次 callApi 调用"上移为**宿主 turn**，
+   那个片段已经不存在了（cycleEnd 现在按 turn 的 ownsCycle 判定）。
+   这条不变量的行为证据整体搬到了 tests/test_p11_3d1_guard_mutations.js：
+     · 嵌套调用自己开新周期 / 后台偷走前台实例（归属不得由"当前活动周期"推断）；
+     · 宿主回合不结束周期（周期悬挂）；
+     · XML 通道不授权 / 不结算 / 不接 execution context；
+     · 递归续轮重置轮次计数。
+   在这里保留一个指向已失效签名的变异，只会让"锚点漂移"看起来像"缺陷消失"。 */
 
 /* 说明（本阶段实测的**鲁棒性**结论，不是遗漏）：
    另有两条"看起来该被抓住"的变异，实测**不是承重代码**，因此不作为判据：

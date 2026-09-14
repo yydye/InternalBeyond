@@ -457,14 +457,34 @@ section('G · 调用面结构不变量（真实源码，不是复制品）');
     countOcc(COM_SRC, '&&_fcRetryAllowed(_fcCtx)') === 4,
     countOcc(COM_SRC, '&&_fcRetryAllowed(_fcCtx)'));
 
-  /* G14：周期生命周期：有开始就必须有结束。 */
-  check('G14 回合周期在 finally 中关闭（异常路径也不留悬挂周期）',
-    countOcc(COM_SRC, '_endCallState(st);_toolCycleEnd(_fcCtx)}') === 2,
-    countOcc(COM_SRC, '_endCallState(st);_toolCycleEnd(_fcCtx)}'));
-  check('G15 周期开始于工具块激活之后（未激活的请求不占额度）',
-    COM_SRC.indexOf('_toolCycleBegin(_fcCtx)') > COM_SRC.indexOf("if(_fcv&&_fcv.active){_fcCtx=_fcv;msgs=_fcCtx.messages}"));
-  check('G16 XML 工具续轮共用同一预算（不再有第二套总轮次上限）',
-    /var _ownCycle=\(round<=1\);/.test(COM_SRC) && /IBFC\.cycleBegin\(null,\{maxRounds:_WS_TOOL_CONT_MAX\+1\}\)/.test(COM_SRC));
+  /* G14–G16：P11-3D.1 的周期所有权（ONE HOST AI TURN = ONE CYCLE = ONE BUDGET）。
+     旧判据（"callApiChat* 的 finally 关周期"、"续轮自己 cycleBegin(null)"）
+     钉住的正是**被废弃的**旧模型：一次 callApi 调用 = 一个周期。它不成立，因为
+     XML 批次与续轮位于 callApi 返回之后，而递归 callApi 会重新开一个周期。
+     因此这里改成断言新的所有权结构 —— 判据同样落在真实源码上。 */
+  /* 周期**实例**的分配只允许出现在 IBFC（integrations.js）与 _toolCycleBegin /
+     _ibTurnGuard 里；两个模型调用入口的函数体里不得出现任何 cycleBegin/cycleEnd 调用。 */
+  const modelEntryFns = stripComments(COM_SRC.slice(
+    COM_SRC.indexOf('async function callApiChatStream(cfg,messages,opts){'),
+    COM_SRC.indexOf('/* ── 任务A：Gemini')));
+  const turnBeginCount = countOcc(stripComments(COM_SRC), '_toolCycleBegin(_fcCtx,_turnB.turn)');
+  const chatBeginCount = countOcc(stripComments(COM_SRC), 'IBFC.cycleBegin(');
+  check('G14 回合周期由宿主 turn 的 finally 关闭（两个模型调用入口各有一条隐式回合收尾）',
+    countOcc(stripComments(COM_SRC), '_endCallState(st);_toolCycleEnd(_fcCtx,_turnB)}') === 2,
+    countOcc(stripComments(COM_SRC), '_endCallState(st);_toolCycleEnd(_fcCtx,_turnB)}'));
+  check('G15 周期开启点只有一个（工具块激活之后），且模型调用面不再自行 cycleBegin',
+    turnBeginCount === 2 && modelEntryFns.length > 0 &&
+    COM_SRC.indexOf('_toolCycleBegin(_fcCtx,_turnB.turn)') > COM_SRC.indexOf('if(_fcv&&_fcv.active){_fcCtx=_ibBindTurn(_fcv,_turnB.turn)') &&
+    /* 两个模型调用入口的函数体里**不得**出现 cycleBegin/cycleEnd 调用 ——
+       这正是旧模型（"一次 callApi 调用 = 一个周期"）的来源。 */
+    modelEntryFns.indexOf('cycleBegin') < 0 && modelEntryFns.indexOf('cycleEnd') < 0,
+    { turnBeginCount, chatBeginCount,
+      inModelEntry: modelEntryFns.indexOf('cycleBegin') });
+  check('G16 XML 续轮继承宿主 turn 的同一周期（不再有第二套总轮次上限、不新建第二个周期）',
+    /var _turn=_ibTurnOf\(o\);/.test(stripComments(COM_SRC)) &&
+    !/cycleBegin\(null/.test(stripComments(COM_SRC)) &&
+    /_ibTurn:_turn,guard:_g\}/.test(stripComments(COM_SRC)) &&
+    /callApiChat\(cfg,msgs,\{[^}]*_ibTurn:_turn\}/.test(stripComments(COM_SRC)));
   check('G17 诊断面只输出稳定 reason + 结构化计数（不含工具参数）',
     (() => {
       const at = IBFC_SRC.indexOf('_trip(reason, ctx, emit){');

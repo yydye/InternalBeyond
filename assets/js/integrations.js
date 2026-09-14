@@ -314,6 +314,13 @@ const IBFC = {
     let ms = NaN;
     try{ ms = parseInt(localStorage.getItem('ib_fcToolTimeoutMs') || '', 10); }catch(e){}
     if(ms >= 1000 && ms <= 900000) p.toolCallTimeoutMs = ms;
+    /* 单回合工具执行总次数上限：与上面同一种性质（运行期边界，非产品设置）。
+       存在的理由很具体：没有它，"一次 XML 执行是否真的入账"这件事就只能靠
+       默认的 16 次去撞，测试不得不跑十几轮真实 provider 调用才能证明边界。
+       同样是**可选覆盖**，非法值一律回落到 guard 自己的默认值（不在这里夹紧）。 */
+    let tc = NaN;
+    try{ tc = parseInt(localStorage.getItem('ib_fcMaxToolCalls') || '', 10); }catch(e){}
+    if(tc >= 1 && tc <= 256) p.maxToolCalls = tc;
     return p;
   },
   _guard(){
@@ -340,30 +347,64 @@ const IBFC = {
     }
     return this._guard();
   },
+  /* ── P11-3D.1 · 周期实例的**唯一分配点** ──────────────────────────────
+     周期是"一个宿主 turn 一份独立资源"，不是"一个全局共享实例"：
+     并发的前台/后台 turn 必须各有自己的计数、指纹与熔断状态，
+     否则后台 turn 的 endCycle 会把前台正在跑的周期收掉，或者后台的
+     工具计数累进前台的额度里。
+
+     因此每个**开周期**的 turn 都拿到一个**刚创建**的 guard 实例
+     （策略在创建时从宿主读一次 → 可见设置仍是唯一事实源），
+     `_tdGuard` 退化为"最近一次分配的那个"这一观测指针（诊断/trace 用），
+     不再充当"当前回合的实例"这一所有权来源。
+     继承既有周期的嵌套调用（ownsCycle=false）不创建实例，直接用 turn 上记着的那一个。 */
+  _newGuard(){
+    const G = (typeof IBToolGuard !== 'undefined') ? IBToolGuard
+            : (typeof require === 'function' ? (() => { try{ return require('./tool-execution-guard.js'); }catch(e){ return null; } })() : null);
+    if(!G) return null;
+    const g = G.createGuard({ policy: this.guardPolicy() });
+    this._tdPolicyJson = JSON.stringify(this.guardPolicy());
+    this._tdGuard = g;
+    return g;
+  },
   /* 回合内工具周期：开始。
      无论本次请求是否激活 FC 都会被调用（见 communication.js 的 _toolCycleBegin）：
      未激活时什么都不做（返回 null），**不**开启周期、也不重置熔断原因 ——
      重置只发生在"真的开启了一个周期"时，否则一个后台纯文本回合就会把
      前台回合刚记下的熔断原因抹掉（本次开发真实踩到过）。 */
-  cycleBegin(ctx, meta){
-    const g = this._syncGuardPolicy();
-    if(!ctx || !ctx.active || !g) return null;
-    /* 周期是**独占**资源：同一时刻只能有一个工具执行周期。
-       若已有周期在飞（例如后台主动消息/群聊正在跑工具），后来者不抢 ——
-       但**仍然拿到一个"属于自己"的实例**（可能就在飞的那个）。
-       为什么仍要给实例：这个回合的每次工具执行都必须经过某个 guard 裁定，
-       而"没有周期"本身就是一个裁定（reason=no-active-cycle → 拒绝执行）。
-       若这里返回 null，宿主会回落到全局实例，于是这个回合的工具调用
-       会被记进**别人的**周期计数里（本次开发真实踩到）。 */
-    if(typeof g.active === 'function' && g.active()){
-      ctx._guard = g;
-      ctx._guardCycle = false;
-      return g;
+  cycleBegin(ctx, meta, turn){
+    if(!ctx || !ctx.active) return null;
+    /* ── 周期归属：由 turn 显式携带，绝不从"当前唯一活动周期的实例"反推 ──
+       turn 就是宿主那一整个 AI 回合的作用域对象（见 communication.js 的
+       _ibTurnScope）。只有 ownsCycle===true 的那个 turn 才有资格开周期；
+       嵌套的模型调用、XML 续轮、递归 callApiChat 继承同一个 turn，
+       它们只把 turn 上那个实例绑到自己的 ctx 上，不开新周期、不结束周期。 */
+    if(!turn || turn.ownsCycle !== true){
+      const inherited = turn ? turn.guard : null;
+      if(inherited && typeof inherited.active === 'function' && inherited.active()){
+        ctx._guard = inherited;
+        ctx._guardCycle = false;
+        return inherited;
+      }
+      /* 没有本回合的周期可用 → 不介入。工具执行点因此拿到 no-active-cycle
+         而**拒绝执行**（fail closed），而不是记进别人的周期里。 */
+      return null;
     }
+    /* 已有周期在飞（继承进来的，或上一次没有正常收尾）→ 不开第二个周期：
+       "一个 turn 一个周期"是承重不变量，重复 begin 不得造出第二个预算。 */
+    const live = turn.guard;
+    if(live && typeof live.active === 'function' && live.active()){
+      ctx._guard = live;
+      ctx._guardCycle = false;
+      return live;
+    }
+    const g = this._newGuard();
+    if(!g) return null;
     this._tdReason = '';
     g.startCycle(Object.assign({ authorized: true }, meta || {}));
+    turn.guard = g;
     ctx._guardCycle = true;
-    /* 周期实例随 ctx 走：同一个回合里，无论中途发生什么，结算与熔断都必须
+    /* 周期实例随本回合走：同一个回合里，无论中途发生什么，结算与熔断都必须
        落在开启周期的那个实例上。 */
     ctx._guard = g;
     return g;
@@ -374,12 +415,20 @@ const IBFC = {
      也不能把前台正在跑工具的那个周期收掉 —— 这正是本次开发真实踩到的
      并发缺陷：共享 guard 被无关回合提前 endCycle，前台回合于是"工具真的
      执行了，计数与熔断却什么都没发生"。 */
-  cycleEnd(ctx){
-    const owns = !!(ctx && ctx._guard);
-    if(!owns) return null;
-    const g = ctx._guard;
-    ctx._guard = null;
-    ctx._guardCycle = false;
+  /* 回合内工具周期：结束（返回快照，供 trace/诊断读取；不写 storage）。
+     **唯一出口是宿主 turn 自己**（ownsCycle=true 的那个 turn）：
+     一个未激活 FC 的并发回合（后台主动消息、群聊、摘要调用……）既不应该、
+     也不能把前台正在跑工具的那个周期收掉 —— 这正是本次开发真实踩到的
+     并发缺陷：共享 guard 被无关回合提前 endCycle，前台回合于是"工具真的
+     执行了，计数与熔断却什么都没发生"。
+     P11-3D.1 之后这条防护是**双层的**：每个 turn 有自己的实例，
+     因此"收了别人的周期"在结构上就不可能，ownsCycle 检查是第二道。 */
+  cycleEnd(turn){
+    if(!turn || turn.ownsCycle !== true) return null;
+    const g = turn.guard;
+    turn.guard = null;
+    turn._guardCycle = false;
+    if(!g) return null;
     if(typeof g.active !== 'function' || !g.active()) return null;
     /* 先留一份 trace：周期结束后 guard 的 trace 会随状态一起清掉，
        而"这一次回合到底发生了什么"恰恰是观测面要回答的问题。 */
@@ -389,11 +438,14 @@ const IBFC = {
     return snap;
   },
   /* 熔断原因（稳定字符串，空串 = 本回合未熔断）。
-     口径优先级：① 活动周期以 guard 当前的 trip 为准（它就是本回合的真相）；
+     口径优先级：① 本回合的 turn（ctx._ibTurn）上那个实例以它的 trip 为准
+     —— 它才是本回合的真相（P11-3D.1 之后每个 turn 有自己的实例，
+     全局 `_tdGuard` 只是"最近分配的那个"，并发下可能属于别的回合）；
      ② 周期已结束时以上一个快照的结论为准（快照随回合产生，不会被别的回合污染）；
      ③ 都没有才回落 `_tdReason` —— 它是全局字段，后台并发回合可能把它重置。 */
-  breakerReason(){
-    const g = this._tdGuard;
+  breakerReason(ctx){
+    const turnGuard = (ctx && ctx._ibTurn && ctx._ibTurn.guard) ? ctx._ibTurn.guard : null;
+    const g = turnGuard || this._tdGuard;
     if(g){
       try{ if(typeof g.active === 'function' && g.active()) return g.tripInfo() ? g.tripInfo().reason : ''; }catch(e){}
     }
@@ -405,8 +457,10 @@ const IBFC = {
     this._tdReason = reason;
     if(ctx) ctx.breakerReason = reason;
     /* 诊断面：只带稳定 reason 与结构化计数，**不带工具参数、不带凭据**。
-       文案面：复用既有卡片通道 —— 不伪造一条"模型正常回复"。 */
-    const snap = this._tdGuard ? this._tdGuard.snapshot() : null;
+       文案面：复用既有卡片通道 —— 不伪造一条"模型正常回复"。
+       计数取本回合自己的实例（ctx 上的），而不是全局指针。 */
+    const _g = (ctx && ctx._ibTurn && ctx._ibTurn.guard) ? ctx._ibTurn.guard : this._tdGuard;
+    const snap = _g ? _g.snapshot() : null;
     const meta = snap ? (' rounds=' + snap.rounds + '/' + snap.maxRounds
       + ' tools=' + snap.toolCalls + '/' + snap.maxToolCalls
       + ' retries=' + snap.retries + ' duplicates=' + snap.duplicates
@@ -613,13 +667,16 @@ const IBFC = {
     if(!ctx || !ctx.active) return { done: true };
     calls = calls || this.takeCalls(ctx);
     if(!calls.length) return { done: true };
-    /* 本回合的 guard 周期：优先用 **ctx 上记着的那个实例**（开启周期的实例），
-       其次才是全局当前实例，最后才就地补一个。用 ctx 的实例是有意的：
-       全局字段可能在中途被替换，而"这次回合的额度记在哪"必须是确定的。 */
+    /* 本回合的 guard 周期：**只认本回合 turn 上记着的那个实例**。
+       P11-3D.1：内存里的 period 归属由 turn 显式携带，不再用"全局当前实例"
+       推断 —— 全局实例在并发回合里可能属于别人，用它就等于把本次执行
+       记进别的回合的额度（本次开发真实踩到过）。
+       拿不到本回合的实例时，只有"宿主没给 turn"这一种情况会就地补一个周期，
+       且此时这次调用自己就是该 turn 的 owner（等价于隐式宿主回合）。 */
     let g = null;
-    if(ctx._guard && typeof ctx._guard.active === 'function' && ctx._guard.active()) g = ctx._guard;
-    else if(this._tdGuard && typeof this._tdGuard.active === 'function' && this._tdGuard.active()) g = this._tdGuard;
-    else g = this.cycleBegin(ctx);
+    if(ctx._ibTurn && ctx._ibTurn.guard && typeof ctx._ibTurn.guard.active === 'function' && ctx._ibTurn.guard.active()) g = ctx._ibTurn.guard;
+    else if(ctx._guard && typeof ctx._guard.active === 'function' && ctx._guard.active()) g = ctx._guard;
+    else g = this.cycleBegin(ctx, null, ctx._ibTurn);
 
     // 任一调用需确认 → 序列化为普通标签(无 fc), 交给原有 pendingConfirm 流程, 本轮结束
     if(calls.some(c => this.needsConfirm(c))){
@@ -687,7 +744,7 @@ const IBFC = {
     if(g && g.tripped()){
       const t = g.tripInfo();
       this._trip(t.reason, ctx, emit);
-      ctx._guardCycle = false;   /* 周期的实际收尾在宿主的 finally 里（唯一出口） */
+      ctx._guardCycle = false;   /* 周期的实际收尾在宿主 turn 的 finally 里（唯一出口，P11-3D.1） */
       return { done: true, breaker: t };
     }
 
