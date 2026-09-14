@@ -5042,7 +5042,10 @@ async function _callApiChatOnce(cfg,messages,opts){
 
 async function clearChatHistory(){
   if(!confirm('确定要清空所有聊天记录吗？'))return;
-  const msgs=await dbGetAll('chatMessages');
+  /* 角色私信（roledm_*）不属于"用户与角色的聊天记录"，因此**不**被这个动作清空：
+     它有自己明确的"清空聊天记录 / 删除这段私聊"入口（角色私信页）。
+     否则用户在 Chat 页点一次清空，就会连带删掉两个角色之间的私人历史。 */
+  const msgs=(await dbGetAll('chatMessages')).filter(m=>!ibIsRoleDmFriendId(m&&m.friendId));
   for(const m of msgs){await dbDelete('chatMessages',m.id)}
   /* Also clear all threads */
   try{const threads=await dbGetAll('chatThreads');for(const t of threads)await dbDelete('chatThreads',t.id)}catch(e){}
@@ -5065,7 +5068,7 @@ async function toggleExportSection(){
   /* Close delete section if open */
   const delSec=document.getElementById('delete-section');if(delSec&&delSec.classList.contains('open')){delSec.classList.remove('open');const db=document.getElementById('delete-toggle-btn');if(db)db.textContent='删除聊天记录 ▾'}
   if(sec.classList.contains('open')){sec.classList.remove('open');if(btn)btn.textContent='导出聊天记录 ▾';return}
-  const msgs=await dbGetAll('chatMessages');
+  const msgs=(await dbGetAll('chatMessages')).filter(m=>!ibIsRoleDmFriendId(m&&m.friendId));
   if(!msgs.length){toast('没有聊天记录可导出');return}
   const grouped={};msgs.forEach(m=>{const fid=m.friendId||'unknown';if(!grouped[fid])grouped[fid]={count:0,latest:0};grouped[fid].count++;if(m.timestamp>grouped[fid].latest)grouped[fid].latest=m.timestamp});
   const groups=await loadGroups();const listEl=document.getElementById('export-chat-list');
@@ -5088,7 +5091,7 @@ async function toggleDeleteSection(){
   /* Close export section if open */
   const expSec=document.getElementById('export-section');if(expSec&&expSec.classList.contains('open')){expSec.classList.remove('open');const eb=document.getElementById('export-toggle-btn');if(eb)eb.textContent='导出聊天记录 ▾'}
   if(sec.classList.contains('open')){sec.classList.remove('open');if(btn)btn.textContent='删除聊天记录 ▾';return}
-  const msgs=await dbGetAll('chatMessages');
+  const msgs=(await dbGetAll('chatMessages')).filter(m=>!ibIsRoleDmFriendId(m&&m.friendId));
   if(!msgs.length){toast('没有聊天记录可删除');return}
   const grouped={};msgs.forEach(m=>{const fid=m.friendId||'unknown';if(!grouped[fid])grouped[fid]={count:0,latest:0};grouped[fid].count++;if(m.timestamp>grouped[fid].latest)grouped[fid].latest=m.timestamp});
   const groups=await loadGroups();const listEl=document.getElementById('delete-chat-list');
@@ -5161,9 +5164,21 @@ async function confirmExport(){
   toast('已导出 '+selected.length+' 个对话');
 }
 
+/* ════════ 角色私信（Role DM）与用户聊天的边界判据 ════════
+   唯一真源是 assets/js/chat-core.js 的 isRoleDmFriendId（前缀 roledm_，
+   与 assets/js/role-dm-core.js 的 ROLE_DM_FRIEND_PREFIX 同值）。
+   本函数的唯一职责是"在不解包 payload 的前提下排除角色私信记录"，
+   供全表扫描点使用（清空 / 导出 / 删除 / 计数 / 存储计量 / 日历）。
+   核心不可用时返回 false（= 不排除）—— 与前缀判据的默认行为一致，
+   绝不因为观测核心缺失而把**用户自己的**聊天记录误判成角色私信。 */
+function ibIsRoleDmFriendId(friendId){
+  try{var c=window.IBChatCore;if(c&&typeof c.isRoleDmFriendId==='function')return !!c.isRoleDmFriendId(friendId)}catch(e){}
+  return String(friendId==null?'':friendId).indexOf('roledm_')===0;
+}
+
 async function updateChatCount(){
   try{
-    const msgs=await dbGetAll('chatMessages');
+    const msgs=(await dbGetAll('chatMessages')).filter(m=>!ibIsRoleDmFriendId(m&&m.friendId));
     const el=document.getElementById('chat-count');
     if(el)el.textContent='共 '+msgs.length+' 条消息';
     updateChatStorageInfo();
@@ -5228,7 +5243,7 @@ async function loadMemorySettingsUI(){
 }
 function _fmtB(b){if(b<1024)return b+' B';if(b<1048576)return(b/1024).toFixed(1)+' KB';return(b/1048576).toFixed(2)+' MB'}
 async function updateMemStorageInfo(){try{const all=await dbGetAll('memories');let t=0;all.forEach(m=>{try{t+=new Blob([JSON.stringify(m)]).size}catch(e){t+=JSON.stringify(m).length*2}});const el=document.getElementById('mem-storage-size');if(el)el.textContent=_fmtB(t);const bar=document.getElementById('mem-storage-bar');if(bar){const p=Math.min(100,t/5242880*100);bar.style.width=p.toFixed(1)+'%'}const c=document.getElementById('mem-storage-count');if(c)c.textContent=all.length+' 条记忆'}catch(e){}}
-async function updateChatStorageInfo(){try{const all=await dbGetAll('chatMessages');let t=0,imgCount=0;all.forEach(m=>{try{t+=new Blob([JSON.stringify(m)]).size}catch(e){t+=JSON.stringify(m).length*2};if(m.images&&m.images.length)imgCount+=m.images.length});const el=document.getElementById('chat-storage-size');if(el)el.textContent=_fmtB(t);const bar=document.getElementById('chat-storage-bar');if(bar){const p=Math.min(100,t/10485760*100);bar.style.width=p.toFixed(1)+'%'}const c=document.getElementById('chat-storage-count');if(c)c.textContent=all.length+' 条消息'+(imgCount?' · '+imgCount+' 张图片':'')}catch(e){}}
+async function updateChatStorageInfo(){try{const all=(await dbGetAll('chatMessages')).filter(m=>!ibIsRoleDmFriendId(m&&m.friendId));let t=0,imgCount=0;all.forEach(m=>{try{t+=new Blob([JSON.stringify(m)]).size}catch(e){t+=JSON.stringify(m).length*2};if(m.images&&m.images.length)imgCount+=m.images.length});const el=document.getElementById('chat-storage-size');if(el)el.textContent=_fmtB(t);const bar=document.getElementById('chat-storage-bar');if(bar){const p=Math.min(100,t/10485760*100);bar.style.width=p.toFixed(1)+'%'}const c=document.getElementById('chat-storage-count');if(c)c.textContent=all.length+' 条消息'+(imgCount?' · '+imgCount+' 张图片':'')}catch(e){}}
 async function updateDangerStorageInfo(){
   const stores=[
     {name:'chatMessages',label:'聊天记录'},

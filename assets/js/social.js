@@ -1361,6 +1361,10 @@ async function _archiveApiConfig(id){
 }
 async function _hardDeleteApiConfig(id){
   if(typeof _activePrepareCharacterBackgroundChange==='function'&&!(await _activePrepareCharacterBackgroundChange(id,'彻底删除角色')))return false;
+  /* 角色私信（Role DM）：删除角色时**不静默删掉**它与别的角色的历史 ——
+     相关 thread 进入 archived（历史保留、不再能启动新一轮），指向它的
+     directional 关系记录与其轮次账本一并清理。删除失败不阻塞角色删除本身。 */
+  try{if(window.IB&&IB.roleDm&&typeof IB.roleDm.onCharacterDeleted==='function')await IB.roleDm.onCharacterDeleted(id)}catch(e){console.warn('Role DM cleanup failed',e)}
   try{await _detachCharacterFromGroups(id)}catch(e){console.error('Group reference cleanup failed',e);toast('删除失败：无法清理群聊成员引用');return false}
   try{await dbDelete('apiConfigs',id)}catch(e){console.warn('IndexedDB API delete failed',e);toast('删除失败：角色配置未能从数据库移除');return false}
   _apiFallbackRemove(id);
@@ -2197,10 +2201,12 @@ async function selectArchThread(friendId,threadId){
 /* ===== CHAT CALENDAR ===== */
 var _calYear=new Date().getFullYear(),_calMonth=new Date().getMonth(),_calChatDays={},_calEarliest=null;
 const _CAL_MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-async function _getCalRange(){try{const all=await dbGetAll('chatMessages');if(!all.length)return null;let min=Infinity;all.forEach(m=>{if(m.timestamp&&m.timestamp<min)min=m.timestamp});return min<Infinity?new Date(min):null}catch(e){return null}}
+async function _getCalRange(){try{const all=(await dbGetAll('chatMessages')).filter(m=>!ibIsRoleDmFriendId(m&&m.friendId));if(!all.length)return null;let min=Infinity;all.forEach(m=>{if(m.timestamp&&m.timestamp<min)min=m.timestamp});return min<Infinity?new Date(min):null}catch(e){return null}}
 async function buildCalData(year,month){
   const start=new Date(year,month,1).getTime(),end=new Date(year,month+1,0,23,59,59,999).getTime();
-  try{const all=await dbGetAll('chatMessages');const groups=await loadGroups();const dm={};
+  /* 角色私信不进入"聊天日历"：日历统计的是用户本人的会话，而角色私信
+     没有 user participant（且它的 friendId 不是 apiConfigs.id，会显示成 '?'）。 */
+  try{const all=(await dbGetAll('chatMessages')).filter(m=>!ibIsRoleDmFriendId(m&&m.friendId));const groups=await loadGroups();const dm={};
   const archSet=new Set((archivedConfigs||[]).map(x=>x.id));/* 归档模式仅统计归档好友；常规模式排除归档好友 */
   all.forEach(m=>{if(!m.timestamp||m.timestamp<start||m.timestamp>end)return;const fid=m.friendId||'?';if(_chatArchMode){if(!archSet.has(fid))return}else{if(archSet.has(fid))return}const d=new Date(m.timestamp);const dk=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');if(!dm[dk])dm[dk]={};if(!dm[dk][fid])dm[dk][fid]={c:0,n:''};dm[dk][fid].c++;if(!dm[dk][fid].n){if(fid.startsWith('group_')){const g=groups.find(gr=>gr.id===fid);dm[dk][fid].n='👥'+(g?g.name:fid)}else{const cfg=apiConfigs.find(a=>a.id===fid)||archivedConfigs.find(a=>a.id===fid);dm[dk][fid].n=cfg?(cfg.nickname||cfg.model):'?'}}});
   const r={};for(const[dk,f]of Object.entries(dm))r[dk]=Object.entries(f).map(([fid,i])=>({fid,n:i.n,c:i.c}));_calChatDays=r}catch(e){_calChatDays={}}

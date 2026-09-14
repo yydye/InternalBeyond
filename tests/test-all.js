@@ -288,6 +288,8 @@ const GROUPS = [
       ['test_proactive_trace.js'],
       ['test_proactive_phase2.js'],
       ['test_role_letters.js'],
+      ['test_role_dm.js'],
+      ['test_role_dm_smoke.js'],
       ['test_video_runtime.js'],
       ['test_voice_pcm_adapter.js'],
       ['test_voice_reconnect.js'],

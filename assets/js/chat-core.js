@@ -74,12 +74,31 @@
      分隔符选 '|' 而不是 ':'：生产环境所有 id 形状（§3）都不含 '|'，
      而 ':' 在自定义 relay / 未来 id 中无法保证不出现。 */
   var GROUP_PREFIX = 'group_';
+  /* 角色私信（Role DM / ICDM）的 friendId 前缀。
+     为什么必须在**契约层**声明而不是留在功能模块里：`friendId` 同时是
+     会话键、byFriend 索引值、apiConfigs 选择器与活动选择器，而仓库里有若干
+     读取点会全表扫描 chatMessages（清空/导出/删除/存储计量/日历/紧急镜像）。
+     那些读取点必须能在**不解包 payload** 的前提下安全排除角色私信记录，
+     因此需要一个与 chat-core 同级的、零依赖的判据（见 isRoleDmFriendId）。
+     前缀保证与 apiConfigs.id、group_* 不相交：`roledm_` 既不等于任何角色 id
+     （角色 id 由 api-onboarding/social 生成），也不以 `group_` 开头。
+     唯一真源仍是 assets/js/role-dm-core.js 的 ROLE_DM_FRIEND_PREFIX；
+     此处按值镜像一次，漂移由测试断言（两份必须相等）而不是 require 来防。 */
+  var ROLE_DM_PREFIX = 'roledm_';
   var CONV_SEP = '|';
   var DM_PREFIX = 'dm:';
   var GROUP_KEY_PREFIX = 'group:';
 
   function isGroupFriendId(friendId) {
     return String(friendId == null ? '' : friendId).indexOf(GROUP_PREFIX) === 0;
+  }
+
+  /* 角色私信（角色↔角色，用户不是 participant）。
+     conversationOf 把 `roledm_*` 归入 'dm' 分支是**刻意的**：它不是群聊，
+     既有二分（group_ / 非 group_）因此不需要被改动，conversationId 仍然
+     只是一个派生值（`dm:roledm_<token>`），绝不回写进消息记录。 */
+  function isRoleDmFriendId(friendId) {
+    return String(friendId == null ? '' : friendId).indexOf(ROLE_DM_PREFIX) === 0;
   }
 
   function conversationIdOf(friendId, threadId) {
@@ -232,6 +251,7 @@
     DEFAULT_MIGRATION_BATCH: DEFAULT_MIGRATION_BATCH,
     MAX_MIGRATION_BATCH: MAX_MIGRATION_BATCH,
     GROUP_PREFIX: GROUP_PREFIX,
+    ROLE_DM_PREFIX: ROLE_DM_PREFIX,
     CONV_SEP: CONV_SEP,
     ROLES: ROLES,
     REQUIRED_FIELDS: REQUIRED_FIELDS,
@@ -240,6 +260,7 @@
     KNOWN_FIELDS: KNOWN_FIELDS,
     ID_SHAPES: ID_SHAPES,
     isGroupFriendId: isGroupFriendId,
+    isRoleDmFriendId: isRoleDmFriendId,
     conversationIdOf: conversationIdOf,
     parseConversationId: parseConversationId,
     conversationIdOfMessage: conversationIdOfMessage,

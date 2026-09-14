@@ -1,4 +1,4 @@
-﻿/* ====================================================================
+/* ====================================================================
    P11-2 · Middle Brain Character Integrity / OOC Guard · CDP 回归
    --------------------------------------------------------------------
    本阶段唯一新增能力：检测候选回复是否**明显**偏离当前角色，仅在高置信度强 OOC 时
@@ -172,8 +172,16 @@ const api = http.createServer(async (req, res) => {
     check('A7.consumerNoInternalConcepts', hookBlocks.every(b => !/ooc|integrity|violation|rewrite|threshold|judge|sensitivity|MB_CI|__middleBrainContracts/i.test(b)));
     check('A8.consumerFacadeOnly', hookBlocks.every(b => /window\.IB&&window\.IB\.middleBrain/.test(b) && /middleBrainFinalizeReply\(/.test(b)));
     check('A9.noGroupWiring', !/isGroup[\s\S]{0,400}middleBrainFinalizeReply/.test(comText) && !/_buildGroupChatContext[\s\S]{0,2000}middleBrainFinalizeReply/.test(comText));
-    check('A10.noOtherConsumer', !fs.readdirSync(path.join(ROOT, 'assets', 'js')).filter(f => f.endsWith('.js'))
-      .filter(f => !/^middle-brain/.test(f) && f !== 'communication.js').some(f => /middleBrainFinalizeReply\s*\(/.test(fs.readFileSync(path.join(ROOT, 'assets', 'js', f), 'utf8'))));
+    /* P11-3I（角色私信）：白名单从 [communication.js] 扩为
+       [communication.js, role-dm.js]。这不是放宽 —— 断言仍然是"集合相等"：
+       assets/js 下**只有**这两个具名消费者可以调用生成后收口，任何未登记的
+       第三个消费者仍会失败；middle-brain* 层文件仍然被排除在外。
+       Role DM 必须接线（它的每一轮发言都要过 persona guard），因此它是
+       **有意具名登记**的第二个消费者，而不是被悄悄放行的一个。 */
+    const A10_CONSUMERS = ['communication.js', 'role-dm.js'];
+    check('A10.onlyNamedConsumers', fs.readdirSync(path.join(ROOT, 'assets', 'js')).filter(f => f.endsWith('.js'))
+      .filter(f => !/^middle-brain/.test(f) && A10_CONSUMERS.indexOf(f) < 0)
+      .every(f => !/middleBrainFinalizeReply\s*\(/.test(fs.readFileSync(path.join(ROOT, 'assets', 'js', f), 'utf8'))));
 
     /* ═══════════════ B. Guard OFF ═══════════════ */
     await setMb({ enabled: true, endpoint: ep, model: 'gpt-6-astra', apiKey: 'sk-x', characterIntegrityEnabled: false, characterIntegrityRewrite: false });

@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 
 /* 前端静态回归：编码、拆分资源、入口语义、设计变量与内联样式预算。 */
 const fs = require('fs');
@@ -727,13 +727,21 @@ const mbConsumerFiles = payloadSources
 const mbCoreRel = path.join('assets', 'js', 'middle-brain-config-core.js');
 const mbConsumerHits = mbConsumerFiles.filter(f => f !== mbCoreRel)
   .filter(f => /middleBrainExecute\s*\(|middleBrainCompressPipeline|middleBrainAstraInvoke|middleBrainAdmissionGate\s*\(|middleBrainFinalizeReply\s*\(/.test(fs.readFileSync(path.join(root, f), 'utf8')));
+/* P11-3I（角色私信）：集合从"恰好两个"扩为"恰好三个具名消费者"。
+   这不是放宽，而是**如实登记**一次有意的契约扩展：Role DM（角色 ↔ 角色私聊）
+   是新的非用户面向 AI 消费者，它的每一轮发言都必须经过 persona guard /
+   speech style / relationship / knowledge 边界（用户明确要求），因此它必须
+   经 canonical facade 消费 —— 而不是像群聊那样刻意不接线（群聊不接线有它自己的
+   P11-2F 理由与断言）。判据本身一条都没有削弱：仍然是"集合相等"（多一个、
+   少一个都失败）、仍然是具名文件白名单、services/ 下仍然不得出现第二份实现。 */
 const mbExpectedConsumers = [
   path.join('assets', 'js', 'communication.js'),
+  path.join('assets', 'js', 'role-dm.js'),
   path.join('services', 'home-node', 'middle-brain.js')
 ];
-check('middleBrain.consumersAreExactlyTwoNamed',
+check('middleBrain.consumersAreExactlyThreeNamed',
   JSON.stringify(mbConsumerHits.slice().sort()) === JSON.stringify(mbExpectedConsumers.slice().sort()),
-  'Middle Brain 消费者集合变化（期望恰好 [桌面 single-chat, Home Node 执行缝]）: ' + mbConsumerHits.join(', '));
+  'Middle Brain 消费者集合变化（期望恰好 [桌面 single-chat, 桌面 角色私信, Home Node 执行缝]）: ' + mbConsumerHits.join(', '));
 /* ② services/ 下不得存在第二份实现。判据取"只有 canonical 实现才该有的东西"：
       · __middleBrainContracts —— 层契约（只有中间层与 facade 认识它）
       · MB_PUBLIC_API / MB_SYSTEM_PROMPT —— 门面与提示词常量
@@ -873,14 +881,21 @@ check('middleBrain.consumerFinalizeFacadeOnly', !!mbFinalizeBlock
   && /middleBrainFinalizeReply\(/.test(mbFinalizeBlock)
   && !/window\.middleBrain\w+\s*=/.test(mbFinalizeBlock),
   '生成后调用点未只经 IB.middleBrain.middleBrainFinalizeReply');
-/* 生产消费者的集合断言在 M1-C.2i 已经收严并**上移**到 middleBrain.consumersAreExactlyTwoNamed
-   （恰好两个具名消费者 + services/ 下没有第二份实现）。
+/* 生产消费者的集合断言在 M1-C.2i 已经收严并**上移**到 middleBrain.consumersAreExactlyThreeNamed
+   （恰好三个具名消费者 + services/ 下没有第二份实现）。
    这里保留"P11-2 没有偷偷引入第三个消费者"这层意思，但改成建立在同一个**收严过的**
-   集合之上：桌面侧仍然只能由 communication.js 消费，Home Node 侧只允许适配层。 */
+   集合之上：桌面侧只允许两个**明确具名**的消费者（单聊 communication.js 与
+   角色私信 role-dm.js），Home Node 侧只允许适配层。
+   P11-3I：集合从 1 个桌面消费者变为 2 个（新增角色私信）——这同样不是放宽，
+   而是把新增的具名消费者钉进白名单：任何**未登记**的第四个消费者仍会失败。 */
 const mbDesktopConsumers = mbConsumerHits.filter(f => !f.startsWith('services' + path.sep));
-check('middleBrain.singleConsumerAfterP11_2', mbDesktopConsumers.length === 1
-  && mbDesktopConsumers[0] === path.join('assets', 'js', 'communication.js'),
-  'P11-2 后桌面侧 Middle Brain 生产消费者数量变化: ' + mbDesktopConsumers.join(', '));
+const mbDesktopAllowed = [
+  path.join('assets', 'js', 'communication.js'),
+  path.join('assets', 'js', 'role-dm.js')
+];
+check('middleBrain.desktopConsumersAreTheTwoNamedOnes',
+  JSON.stringify(mbDesktopConsumers.slice().sort()) === JSON.stringify(mbDesktopAllowed.slice().sort()),
+  'P11-2/P11-3I 后桌面侧 Middle Brain 生产消费者集合变化: ' + mbDesktopConsumers.join(', '));
 /* UI：新设置必须挂在既有 Middle Brain 卡片内，且走 canonical config（无第二份配置源）。 */
 check('middleBrain.integrityUiSection', /id="mb-ci-enabled"/.test(html) && /id="mb-ci-rewrite"/.test(html)
   && /id="mb-ci-verify"/.test(html) && /id="mb-ci-sensitivity"/.test(html) && /id="mb-ci-summary"/.test(html),

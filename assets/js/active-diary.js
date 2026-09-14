@@ -1038,10 +1038,13 @@ async function _activeUserRecentlyActive(withinMs){
     /* 结果缓存 30s：减少每 tick 读库 */
     if(_activeUserActiveCacheAt&&Date.now()-_activeUserActiveCacheAt<30000&&_activeUserActiveCache!=null)return _activeUserActiveCache;
     const cutoff=Date.now()-(withinMs||3600000);
+    /* 角色私信（roledm_*）不参与"用户是否活跃"：那段会话里没有 user participant，
+       两个角色互相聊天不等于用户在说话。把它算进来会让空闲门控永远放行，
+       于是记忆固化在用户根本不在的时候被唤醒（正是本函数要防的事）。 */
     const all=await dbGetAll('chatMessages');
     let active=false;
     for(const m of all||[]){
-      if(m&&m.role==='user'&&(m.timestamp||m.created||0)>cutoff){active=true;break}
+      if(m&&m.role==='user'&&!ibIsRoleDmFriendId(m.friendId)&&(m.timestamp||m.created||0)>cutoff){active=true;break}
     }
     _activeUserActiveCache=active;_activeUserActiveCacheAt=Date.now();
     return active;

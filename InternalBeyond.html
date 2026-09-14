@@ -135,6 +135,7 @@
     <li><a href="#chat" data-page="chat">Chat</a></li>
     <li><a href="#moments" data-page="moments">Moments</a></li>
     <li><a href="#letters" data-page="letters">Letters</a></li>
+<li><a href="#roledm" data-page="roledm">角色私信</a></li>
     <li><a href="#memory" data-page="memory">Memory</a></li>
     <li><a href="#diary" data-page="diary">Diary</a></li>
     <li><a href="#active" data-page="active">Active</a></li>
@@ -347,6 +348,56 @@
       <div class="empty-state"><span>✉</span>Letters lost...</div>
     </div>
     <div id="letters-no-match" class="empty-state" style="display:none"><span>✉</span>No letter with that postal code.</div>
+  </div>
+
+  <div class="page" id="page-roledm">
+    <div class="module-intro" style="max-width:1140px">
+      <div class="module-intro-top"><h2>角色私信</h2>
+      <span class="module-intro-sub"><span class="mi-sub-int">Between characters</span><span class="mi-sub-inf">Private threads</span></span></div>
+      <div class="module-intro-rule"></div>
+      <div class="module-intro-desc">这里是角色与角色之间的私人对话 —— 两个角色各自用自己的模型、自己的记忆、自己的口吻说话，你不在其中，只是看着。<br>用户可以随时让她们聊一会儿，也可以停止。这里不是朋友圈，也不是群聊，更不是你的聊天窗口。</div>
+    </div>
+
+    <div id="roledm-view-list">
+      <div class="blog-header">
+        <div><div class="blog-stats" id="roledm-stats">角色之间的私信</div></div>
+        <div class="blog-actions roledm-head-actions">
+          <button type="button" class="btn btn-primary" onclick="roleDmOpenCreate()">+ 新建角色私信</button>
+        </div>
+      </div>
+      <div id="roledm-list">
+        <div class="empty-state"><span>✉</span>还没有角色之间的私聊 — 点「+ 新建角色私信」开始。</div>
+      </div>
+    </div>
+
+    <div id="roledm-view-detail" style="display:none">
+      <div class="roledm-detail-bar">
+        <button type="button" class="btn" onclick="roleDmBack()">← 角色私信</button>
+        <div class="roledm-detail-head" id="roledm-detail-head"></div>
+      </div>
+      <div class="glass-card roledm-detail-body" id="roledm-detail-body"></div>
+      <div class="roledm-detail-controls" id="roledm-detail-controls"></div>
+      <div class="roledm-detail-note" id="roledm-detail-note"></div>
+    </div>
+
+    <div id="roledm-create-overlay">
+      <div class="glass-card roledm-create-box">
+        <div class="roledm-create-title">新建角色私信</div>
+        <div class="roledm-create-row">
+          <span class="roledm-name">角色 A</span>
+          <select id="roledm-create-a"><option value="">选择角色…</option></select>
+        </div>
+        <div class="roledm-create-row">
+          <span class="roledm-name">角色 B</span>
+          <select id="roledm-create-b"><option value="">选择角色…</option></select>
+        </div>
+        <div class="roledm-create-msg" id="roledm-create-msg"></div>
+        <div class="roledm-create-actions">
+          <button type="button" class="btn" onclick="roleDmCloseCreate()">取消</button>
+          <button type="button" class="btn btn-primary" onclick="roleDmConfirmCreate()">建立</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div class="page" id="page-memory">
@@ -3053,6 +3104,17 @@ i would like the room to be enough.
 <script src="assets/js/middle-brain-judge.js"></script>
 <script src="assets/js/middle-brain-integrity.js"></script>
 <script src="assets/js/middle-brain.js"></script>
+<!-- 角色私信（角色 ↔ 角色一对一私聊）。
+     契约层 role-dm-core.js 是纯函数（UMD，Node 侧测试直接 require），位置无关；
+     运行时层 role-dm.js 有两个**真实的加载期依赖**，因此必须放在它们之后：
+       · communication.js（callApiChat* 执行器 + _ibTurnScope 宿主）—— 3041 行；
+       · middle-brain.js（生成后收口 middleBrainFinalizeReply + 生成前组织
+         middleBrainExecute 的 canonical facade）—— 紧邻上方这一行。
+     UI 层 role-dm-ui.js 只做显示与交互（自己运行时注入 role-dm.css，
+     不占用 HTML 的样式表预算），放最后。 -->
+<script src="assets/js/role-dm-core.js"></script>
+<script src="assets/js/role-dm.js"></script>
+<script src="assets/js/role-dm-ui.js"></script>
 <script src="assets/js/image-models-core.js"></script>
 <script src="assets/js/image-router-core.js"></script>
 <script src="assets/js/image-router-config.js"></script>

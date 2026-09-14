@@ -30,7 +30,9 @@ async function resetAllData(){
 
 async function clearChatImages(){
   if(!confirm('⚠ 确定要清除所有聊天记录中的图片？\n\n文字消息会保留，仅删除图片数据。'))return;
-  const all=await dbGetAll('chatMessages');let count=0;
+  /* 只清用户自己会话里的图片；角色私信的消息同样在其中（它的图片属于那段私聊，
+     由角色私信页自己的删除入口处理），因此显式排除而不是顺带清掉。 */
+  const all=(await dbGetAll('chatMessages')).filter(m=>!ibIsRoleDmFriendId(m&&m.friendId));let count=0;
   for(const m of all){if(m.images&&m.images.length){delete m.images;await dbPut('chatMessages',m);count++}}
   toast('已清除 '+count+' 条消息中的图片');updateChatStorageInfo();updateDangerStorageInfo();
 }

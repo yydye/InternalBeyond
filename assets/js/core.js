@@ -412,6 +412,7 @@ function navTo(page){
   if(page==='api'){loadApiSettingsUI();}
   if(page==='diy'){renderIbToolsList();try{if(typeof IBDIY!=='undefined')IBDIY.mount()}catch(e){}}
   if(page==='letters'){initDemoLetter().then(function(){loadLetters()});populateLetterAiSelect()}
+  if(page==='roledm'){try{if(window.IB&&IB.roleDmUI&&typeof IB.roleDmUI.render==='function')IB.roleDmUI.render()}catch(e){}}
   if(page==='memory'){populateMemApiFilter().then(renderMemories);updateMemDashboard();if(_amArchMode){_amArchMode=false;_amIdx=0;_amExpandPersona=false;_amArchToggleUI()}renderAutoMemShowcase()}
   if(page==='active'){loadActiveMessagePage()}
   if(page==='diary'){loadDiaryPage()}
@@ -1033,8 +1034,7 @@ function _ibMirrorPack(all,budget){
     if(used+j.length>budget){out.truncated[st]=arr.length;continue}
     out.stores[st]=arr;used+=j.length;
   }
-  var msgs=(all.chatMessages||[]).map(function(m){var c=Object.assign({},m);delete c.upstreamRaw;delete c.thinkingSources;return c}).sort(function(a,b){return(a.timestamp||0)-(b.timestamp||0)});
-  var takeM=[];
+  var msgs=(all.chatMessages||[]).map(function(m){var c=Object.assign({},m);delete c.upstreamRaw;delete c.thinkingSources;return c}).sort(function(a,b){return(a.timestamp||0)-(b.timestamp||0)});  var takeM=[];
   for(var k=msgs.length-1;k>=0;k--){
     var mj=JSON.stringify(msgs[k]);
     if(used+mj.length>budget)break;
