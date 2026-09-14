@@ -154,6 +154,111 @@ function createHomeNodeHttp(deps) {
     bad(res, Number(fallbackStatus) || 400, error, extra, req);
   }
 
+  /* ── Canonical store inventory + ONE failure vocabulary (P11-3E) ─────────
+   *
+   * P11-3X-B made `/health` able to say "reachable, but not serving". It answered
+   * that question for exactly one store, because at the time exactly one store was
+   * opened by every path that serves. P11-3E closed the gap that made a second one
+   * unsafe to mention: Home Node's production start path now opens the canonical
+   * Moments store, so a closed one is a real, tracked failure instead of a known
+   * assembly gap. Folding it into the verdict is therefore a truthful report, not a
+   * permanent false alarm.
+   *
+   * The taxonomy is deliberately NOT new and NOT restated here as a second list:
+   *   · `store-closed` is the value runtime/component-registry.js and
+   *     runtime/boot-state.js already carry (REASON.STORE_CLOSED);
+   *   · every other category is a reason id produced by the ONE classifier,
+   *     runtime/db-failure.js — the module is injected, never re-implemented.
+   * A category this file cannot name keeps its own class rather than being dressed
+   * up: `classify` only answers for database failures, so a programming bug is not
+   * allowed to become `db-open-failed` (see db-failure.isDatabaseError). */
+  const TERMINAL_STORE_CATEGORIES = ['db-corrupt', 'db-schema-too-new', 'db-unavailable'];
+
+  /* The canonical stores this process is a promise about. `role` matters: health is
+     a verdict about a declared role, and `/health` publishes exactly one such role.
+     A second store is folded in only as evidence ABOUT that role — which is what
+     P11-3E settled: the Moments store is part of what serving this node means. */
+  const DEFAULT_STORES = [{ store: store, name: 'chat', role: 'canonical-chat-authority' }];
+
+  const classifyFailure = typeof deps.classifyFailure === 'function' ? deps.classifyFailure : null;
+
+  /* Report every canonical store that cannot serve right now, in declaration order.
+     `probe` is what makes "failed to open" reportable after the fact: a store that
+     threw during open() has no `isOpen()` to consult, so the assembly layer hands a
+     function that answers "how did it fail, the last time it was asked to open". */
+  function storeFailures() {
+    const inventory = Array.isArray(deps.stores) && deps.stores.length ? deps.stores : DEFAULT_STORES;
+    const failures = [];
+    for (const entry of inventory) {
+      if (!entry || !entry.store || !entry.name) continue;
+      const probe = typeof entry.probe === 'function' ? entry.probe : null;
+      if (entry.store.isOpen()) continue;
+      const classified = probe ? probe() : null;
+      const category = (classified && classified.category) || 'store-closed';
+      const message = (classified && classified.message) ||
+        ('the canonical ' + entry.name + ' store is not open, so this node cannot serve its role');
+      failures.push({
+        store: String(entry.name),
+        role: String(entry.role || ''),
+        category: String(category),
+        message: String(message)
+      });
+    }
+    return failures;
+  }
+
+  /* One closed store may be reported to two different surfaces — `/health`, and a
+     canonical route that has to answer an HTTP status. Both must classify it the
+     same way, so the resolution lives here, once, instead of being re-decided at
+     each call site. The terminal classes are exactly the ones the generic
+     unhandled-error path already treats as terminal: a corrupt database or one
+     written by a newer build will not be fixed by retrying, while a locked, busy,
+     read-only or full one might be. */
+  function resolveStoreFailure(failure) {
+    const category = String((failure && failure.category) || 'store-closed');
+    const terminal = TERMINAL_STORE_CATEGORIES.indexOf(category) >= 0;
+    return {
+      category: category,
+      status: terminal ? 500 : 503,
+      code: String((failure && failure.code) || category),
+      store: String((failure && failure.store) || ''),
+      message: String((failure && failure.message) || 'the requested store cannot serve right now')
+    };
+  }
+
+  /* ── Failure reporter for the OTHER canonical stores (P11-3E) ────────────
+   *
+   * `store.isOpen()` can only report a store that was successfully constructed and
+   * then closed. It cannot report one whose `open()` threw: that store has never
+   * been open, and the exception is the only evidence there is. This factory turns
+   * the two cases into one honest answer by asking the classifier about the LAST
+   * attempt — which is why the assembly layer keeps the thrown error instead of
+   * swallowing it.
+   *
+   * The class is decided by `classifyFailure` (runtime/db-failure.js) and only for
+   * genuine database failures: a bug that happened to be thrown while opening a
+   * store keeps its own identity and is reported as `store-closed` rather than
+   * being dressed up as a disk problem. That is db-failure's own documented rule
+   * (`isDatabaseError`), reused rather than restated. */
+  function createStoreFailureProbe(spec) {
+    return module.exports.createStoreFailureProbe(spec, {
+      classifyFailure: classifyFailure,
+      isDatabaseError: typeof deps.isDatabaseError === 'function' ? deps.isDatabaseError : null
+    });
+  }
+
+  function healthFailure() {
+    const failures = storeFailures();
+    if (!failures.length) return null;
+    const chat = failures.filter(f => f.role === 'canonical-chat-authority');
+    const named = chat.length ? chat[0] : failures[0];
+    return {
+      category: named.category,
+      message: named.message,
+      stores: failures
+    };
+  }
+
   /* ── canonical health contract (P11-3X-B) ────────────────────────────────
    *
    * What `/health` is allowed to mean. The four answers the component model and
@@ -179,10 +284,13 @@ function createHomeNodeHttp(deps) {
    *
    * `role` is what makes `serving` decidable without a store inventory: the
    * declared role names the canonical store it is a promise about
-   * (`canonical-chat-authority` → the chat store). Stores that belong to other
-   * P11 phases are not silently folded in here: reporting a Phase 3E store as a
-   * Phase 3X-B health failure would turn a known, tracked gap into a permanent
-   * false alarm and a recovery loop.
+   * (`canonical-chat-authority` → the chat store). P11-3X-B deliberately stopped
+   * there, because at the time the Moments store was not opened by the production
+   * start path at all — folding a KNOWN assembly gap into health would have turned
+   * a tracked defect into a permanent false alarm and a recovery loop. P11-3E
+   * closed that gap FIRST (see services/home-node-service.js `openAll`/`shutdown`)
+   * and only then folded the Moments store in. The order is the point: readiness
+   * may only be reported once it is actually true.
    *
    * HTTP 200 with `ok:false` is deliberate. The transport succeeded — the caller
    * really did reach the process — and that is information the component report
@@ -191,31 +299,28 @@ function createHomeNodeHttp(deps) {
    * is the exact distinction this phase exists to protect. `identityRequiresOk`
    * stays false for this component, so a name-only identity check (ib-stop, the
    * installer's stop chain) still recognises the process and can still stop it. */
-  function healthFailure() {
-    if (!store.isOpen()) {
-      return {
-        category: 'store-closed',
-        message: 'the canonical chat store is not open, so this node cannot serve its role'
-      };
-    }
-    return null;
-  }
-
   function healthPayload() {
-    const open = store.isOpen();
+    const failures = storeFailures();
     const failure = healthFailure();
+    /* `open` keeps meaning exactly what it always meant: the **declared role's**
+       own canonical store, chat. `stores` below reports the rest without
+       overloading a field the desktop diagnostics already read. */
+    const open = store.isOpen();
     return {
       service: 'internal-beyond-home-node',
       version: version,
       role: 'canonical-chat-authority',
-      /* `open` is kept exactly as it was: it is the store's own answer and the
-         desktop's diagnostics already read it. */
       open: open,
       /* `serving` is the role-level verdict. Adding it (rather than overloading
          `open`) keeps "the chat store is open" and "this node can do its job"
          separable — today they are the same question, and the day they are not is
          the day a health check silently becomes a lie. */
       serving: !failure,
+      /* Every canonical store this process is a promise about, with its own
+         verdict. `/health` publishes one role, so `failure` names the declared
+         role's store; this list is how a consumer can tell WHICH domain is down
+         without a second request or a guess. */
+      stores: failures.map(f => ({ store: f.store, open: false, category: f.category })),
       revision: open ? store.getRevision() : 0,
       messages: open ? store.countMessages() : 0,
       schemaVersion: store.schemaVersion,
@@ -409,6 +514,14 @@ function createHomeNodeHttp(deps) {
        /characters/publish）继承 Home Node 既有的 loopback/token 保护；
        而 /mobile/v1/* 自己的 device token 才是设备的凭据。 */
     if (gateway && typeof gateway.handles === 'function' && gateway.handles(path)) {
+      /* P11-3E：canonical store 失败的分类与状态码由**本文件唯一决定**（见
+         UNAVAILABLE_STORE_ERRORS / TERMINAL_STORE_CATEGORIES），网关只是借用它。
+         把这一条做成注入而不是让网关自己再写一份，是因为"同一个事实在服务面上
+         有两个答案"正是 P11-3X-B 修掉的那个缺陷 —— 桌面路由回答 503、设备面
+         回答 400。注入发生在走通这条委派之前，所以网关的任何一条路由都能用到同一份。 */
+      if (typeof gateway.useStoreFailureResolver === 'function') {
+        try { gateway.useStoreFailureResolver(resolveStoreFailure); } catch (_) { /* 网关不可注入时保持原语义 */ }
+      }
       if (isMobilePath && !isDesktopOnlyPath) {
         /* 设备 API：不要求桌面 token（设备有自己的 token），
            但**仍然**受 loopback/allowRemote 与体积上限约束 —— 那两条在
@@ -453,10 +566,15 @@ function createHomeNodeHttp(deps) {
       /* P11-3X-B：/health 的裁决必须在这里也能看到。/status 是桌面诊断真正读的
          地方（它比 /health 详细），如果只有 /health 诚实、/status 不提，用户就
          会看到"服务在线、日志正常、但什么都写不进去"。 */
+      const statusFailure = healthFailure();
+      const statusStores = storeFailures();
       ok(res, {
         meta: store.meta(),
-        serving: !healthFailure(),
-        failure: healthFailure(),
+        serving: !statusFailure,
+        failure: statusFailure,
+        /* P11-3E：逐域的诚实状态。"哪个域不能服务"是可观测事实，
+           不该让读者从 failure 的单个 message 里推断。 */
+        stores: statusStores.map(f => ({ store: f.store, open: false, category: f.category })),
         log: logRing.slice(-40),
         startedAt: startedAt,
         mobile: gateway ? gateway.meta() : null
@@ -791,9 +909,62 @@ function createHomeNodeHttp(deps) {
     try { socket.destroy(); } catch (_) { /* 已销毁 */ }
   });
 
-  return { server: server, record: record, logRing: logRing, PROTOCOL_VERSION: PROTOCOL_VERSION };
+  return {
+    server: server,
+    record: record,
+    logRing: logRing,
+    PROTOCOL_VERSION: PROTOCOL_VERSION,
+    /* P11-3E：装配层用它把"这一层唯一一份 canonical store 失败分类"接到网关，
+       以及让"同一份失败词表"可以被真实子进程断言，而不是靠读代码比对。 */
+    resolveStoreFailure: resolveStoreFailure,
+    createStoreFailureProbe: createStoreFailureProbe,
+    storeFailures: storeFailures,
+    healthFailure: healthFailure
+  };
 }
 
 module.exports = createHomeNodeHttp;
 module.exports.PROTOCOL_VERSION = PROTOCOL_VERSION;
 module.exports.MAX_BODY_BYTES = MAX_BODY_BYTES;
+
+/* ── The ONE implementation of "why can't this canonical store serve"? ────
+ *
+ * Module-level (not a closure inside the HTTP factory) because TWO layers need the
+ * same answer and only one of them owns an HTTP server:
+ *
+ *   · http.js itself, for `/health` / `/status` / status codes;
+ *   · the assembly layer, which is the only place that knows how a store's `open()`
+ *     actually failed.
+ *
+ * The alternative — letting the service keep its own copy of this classification —
+ * is exactly the "same fact, two answers" defect P11-3E exists to remove. The
+ * classifier is still INJECTED (`classifyFailure` / `isDatabaseError` come from
+ * runtime/db-failure.js, the single source) rather than required here, so this
+ * module keeps its zero-dependency load surface.
+ *
+ * A category this function cannot name stays `store-closed`: a programming bug
+ * thrown while opening a store must not be dressed up as a disk problem. */
+function createStoreFailureProbe(spec, deps) {
+  const config = spec || {};
+  const helpers = deps || {};
+  if (!config.store || !config.name) return null;
+  const name = String(config.name);
+  const role = String(config.role || '');
+  const isDbError = typeof helpers.isDatabaseError === 'function' ? helpers.isDatabaseError : null;
+  const classifyFailure = typeof helpers.classifyFailure === 'function' ? helpers.classifyFailure : null;
+  return function probe() {
+    if (typeof config.store.isOpen === 'function' && config.store.isOpen()) return null;
+    const error = typeof config.lastError === 'function' ? config.lastError() : null;
+    let category = 'store-closed';
+    let message = 'the canonical ' + name + ' store is not open, so this node cannot serve its role';
+    if (error && isDbError && isDbError(error) && classifyFailure) {
+      const classified = classifyFailure(error);
+      if (classified && classified.reason) {
+        category = classified.reason;
+        message = 'the canonical ' + name + ' store could not be opened (' + category + ')';
+      }
+    }
+    return { store: name, role: role, category: category, message: message };
+  };
+}
+module.exports.createStoreFailureProbe = createStoreFailureProbe;

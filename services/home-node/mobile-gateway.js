@@ -75,6 +75,18 @@ const EVENT_PAGE_LIMIT = 200;
 
 const LOG_RING = 200;
 
+/* ── 一个 store 方法回答的、**属于 store 层**的失败码（P11-3E）─────────
+   这是一份显式的闭集，不是"看起来像错误就用它"：`revision-conflict` 是请求层的
+   CAS 事实，`unattributable` / `empty-content` 是 schema 级拒收 —— 那些必须继续
+   是 409/422。词表与注入的分类器**不是**同一件东西：这里只回答"这是不是 store
+   层的失败"，`category` 与状态码仍然由 http.js 那一份唯一实现决定
+   （resolveStoreFailure + runtime/db-failure.js）。 */
+const STORE_LEVEL_ERRORS = [
+  'store-closed', 'store-unavailable', 'store-write-failed',
+  'db-readonly', 'db-permission-denied', 'db-busy', 'db-locked',
+  'db-disk-full', 'db-corrupt', 'db-schema-too-new', 'db-open-failed', 'db-unavailable'
+];
+
 /* 桌面内部管理路径（**不属于** mobile namespace）。这份清单同时是 http.js 的
    委派依据：不在清单里、也不是 /mobile/* 的路径，网关根本不会看到。 */
 const ADMIN_PATHS = [
@@ -411,6 +423,56 @@ function createMobileGateway(deps) {
     }
     sendJson(res, status == null ? statusFor(code, 400) : status, body, req, headers);
     return body;
+  }
+
+  /* ── canonical store 不能服务 ≠ 请求有问题（P11-3E）─────────────────────
+     P11-3X-B 让 **桌面路由** 学会区分这两件事（services/home-node/http.js 的
+     storeError）。但 canonical Moments 的读路由走的是本网关，于是同一个事实在
+     一个服务里出现了两个答案：`/moments/list` 回答 503，而 `/moments/changes`
+     与 `/moments/visible` 回答 **400**。400 的语义是"你的请求格式不对"，它会把
+     调用方送去修一个本来完全正确的负载 —— 而真实原因是库没开。
+
+     分类**只有一份**：http.js 是唯一实现，装配层把它注入进来（见
+     home-node-service.js 的 resolveStoreFailure 传递）。这里刻意不 require
+     runtime/db-failure.js，也不自带一份 db-* 清单 —— 两份词表就是下一个漂移点。
+     注入缺席时行为退回改动之前：不能分类就不改状态码，绝不猜。 */
+  let resolveStoreFailure = null;
+  let momentsStoreFailureProbe = null;
+  function useStoreFailureResolver(fn) {
+    if (typeof fn === 'function') resolveStoreFailure = fn;
+  }
+  function useMomentsStoreFailureProbe(fn) {
+    if (typeof fn === 'function') momentsStoreFailureProbe = fn;
+  }
+  function isStoreLevelError(error) {
+    return STORE_LEVEL_ERRORS.indexOf(String(error)) >= 0;
+  }
+  /* 把某个 store 的失败报告翻译成一次响应。`report` 由本文件的
+     momentStoreFailure() 组装（或由装配层提供），因此这里不重复判定"为什么"。 */
+  function failStore(res, report, req, extra) {
+    const resolved = resolveStoreFailure ? resolveStoreFailure(report) : null;
+    if (!resolved) return fail(res, 'INTERNAL', req, 503, null, extra);
+    return fail(res, resolved.code, req, resolved.status, null,
+      Object.assign({ store: resolved.store || undefined, category: resolved.category }, extra || {}));
+  }
+  /* canonical Moments store 现在不能服务时的报告。`observed` 是 store 自己回答的
+     错误码。类别（category）刻意**不在这里**决定：探针给出的类别优先（它知道
+     "打不开，因为 X"），store 自己给出的具体码次之，都没有才是 `store-closed`。
+     于是"库打不开、因为 schema 比本版本新"（终态 500）与"库被关掉了"
+     （可重试 503）在响应里是**可区分**的，而不是同一句笼统的失败。 */
+  function momentStoreFailure(observed) {
+    const code = String(observed || 'store-closed');
+    if (momentsStoreFailureProbe) {
+      const probed = momentsStoreFailureProbe();
+      if (probed) {
+        const probedIsDbClass = String(probed.category || '').indexOf('db-') === 0;
+        return Object.assign({}, probed, {
+          code: probedIsDbClass ? probed.category : code,
+          category: probed.category
+        });
+      }
+    }
+    return { store: 'moments', role: '', category: code, code: code };
   }
 
   function readBody(req, limit) {
@@ -1741,13 +1803,27 @@ function createMobileGateway(deps) {
     /* ══════════ M1-C.2n · canonical Moments（桌面/运行时面）══════════════
        与 memory / understanding 同款纪律：这些 verb 只服务桌面镜像同步与
        Node 自身的上下文注入，**不是**设备面。Android 侧没有任何 moments verb，
-       出站 DTO 也不含动态行（§13）。 */
+       出站 DTO 也不含动态行（§13）。
+
+       P11-3E · 这一节里的 `record` 一律是**写日志的函数**（定义见本文件
+       `function record(level, event, fields)`）。它曾经被一个同名局部变量遮蔽：
+       `const record = body.record`，于是 `record('info', 'moments-put', …)` 在
+       真正写入成功之后抛 `record is not a function`，被 http.js 的兜底捕获成
+       裸 500 `{"ok":false,"error":"internal-error"}` —— 一条**已经提交**的动态
+       被报成失败，写路径 100% 不可用。之所以一直没被发现，是因为仓库里没有任何
+       测试打过 POST /moments/record（tests/test_moments_authority.js 直接
+       `createMomentsStore()`，绕过了网关与生产装配）。局部变量因此改名 moment。 */
     if (action === 'moments/list' && req.method === 'GET') {
       if (!momentsStore) return fail(res, 'UNSUPPORTED', req, 501);
       const limit = url && url.searchParams.get('limit');
       const ownerRoleId = url && url.searchParams.get('ownerRoleId');
       const page = momentsStore.listRecords({ limit: limit || undefined, ownerRoleId: ownerRoleId || undefined });
-      if (!page.ok) return fail(res, page.error || 'INTERNAL', req);
+      if (!page.ok) {
+        /* store 层的失败（未开 / 打不开 / 驱动类）→ 503 或终态 500 带类别；
+           其余才是请求层的问题。 */
+        if (isStoreLevelError(page.error)) return failStore(res, momentStoreFailure(page.error), req);
+        return fail(res, page.error || 'INTERNAL', req, 400);
+      }
       return sendJson(res, 200, okBody('moments.list', null, {
         count: page.count, revision: page.revision, records: page.records
       }), req);
@@ -1757,7 +1833,10 @@ function createMobileGateway(deps) {
       const cursor = url && url.searchParams.get('cursor');
       const limit = url && url.searchParams.get('limit');
       const page = momentsStore.changesAfter(cursor == null ? 0 : Number(cursor), { limit: limit || undefined });
-      if (!page.ok) return fail(res, page.error || 'INTERNAL', req, 400);
+      if (!page.ok) {
+        if (isStoreLevelError(page.error)) return failStore(res, momentStoreFailure(page.error), req);
+        return fail(res, page.error || 'INTERNAL', req, 400);
+      }
       return sendJson(res, 200, okBody('moments.changes', null, page), req);
     }
     /* 可见分页：**唯一**给"按主体看动态"用的读口。服务端按共享核判定可见性，
@@ -1776,7 +1855,12 @@ function createMobileGateway(deps) {
             : null
         }
       );
-      if (!page.ok) return fail(res, page.error || 'BAD_REQUEST', req, 400);
+      /* 库没开 → 503 `store-closed`；请求本身不合法（坏游标等）→ 仍然 400。
+         两者在 store 返回的 error 上是可区分的，所以这里按类判，不再一律 400。 */
+      if (!page.ok) {
+        if (isStoreLevelError(page.error)) return failStore(res, momentStoreFailure(page.error), req);
+        return fail(res, page.error || 'BAD_REQUEST', req, 400);
+      }
       return sendJson(res, 200, okBody('moments.visible', null, page), req);
     }
     if (action === 'moments/record' && req.method === 'POST') {
@@ -1784,20 +1868,32 @@ function createMobileGateway(deps) {
       let body;
       try { body = await readBody(req, 4 * 1024 * 1024); }
       catch (error) { return fail(res, error.code || 'BAD_REQUEST', req, null, null); }
-      const record = (body.record && typeof body.record === 'object') ? body.record : null;
-      if (!record) return fail(res, 'BAD_REQUEST', req, 400, null, { detail: 'record is required' });
+      /* 名字刻意不叫 `record`：那个标识符是本文件的日志函数（见本节头部说明）。 */
+      const moment = (body.record && typeof body.record === 'object') ? body.record : null;
+      if (!moment) return fail(res, 'BAD_REQUEST', req, 400, null, { detail: 'record is required' });
       /* CAS 由客户端显式给出 expectedRev（编辑/删除必须带基版本）。
          不带时按"无条件覆盖"落盘（迁移分支的既定语义）—— 但那不是本 verb
          的默认用法：生产写路径一律带基版本，见 moments-authority.js。 */
-      const result = momentsStore.put(record, {
+      const result = momentsStore.put(moment, {
         requestId: body.requestId ? String(body.requestId) : '',
         expectedRev: (body.expectedRev == null ? null : Number(body.expectedRev))
       });
       if (!result.ok) {
         record('warn', 'moments-put-rejected', { error: result.error, id: result.id });
-        return fail(res, result.error === 'revision-conflict' ? 'CONFLICT' : 'BAD_REQUEST', req,
-          result.error === 'revision-conflict' ? 409 : 422, null,
-          { id: result.id, expectedRev: result.expectedRev, actualRev: result.actualRev });
+        /* 三分类，按"谁的事实"分：
+             · revision-conflict → 409（请求层的 CAS 事实，调用方唯一能修的东西）；
+             · store 层失败（闭集 STORE_LEVEL_ERRORS）→ 503/500 带类别；
+             · 其余 schema 级拒收（unattributable / empty-content）→ 422。
+           刻意不用"看起来像错误就报 store 失败"：那会把一条格式错误的动态
+           报成数据库故障，把操作员送到磁盘上去找一个代码 bug。 */
+        if (result.error === 'revision-conflict') {
+          return fail(res, 'CONFLICT', req, 409, null,
+            { id: result.id, expectedRev: result.expectedRev, actualRev: result.actualRev });
+        }
+        if (isStoreLevelError(result.error)) {
+          return failStore(res, momentStoreFailure(result.error), req, { id: result.id || null });
+        }
+        return fail(res, 'BAD_REQUEST', req, 422, null, { id: result.id, detail: result.error });
       }
       /* 观测：只报 outcome / 计数 / revision，**绝不**记录动态正文。 */
       record('info', 'moments-put', { outcome: result.outcome, id: result.id, revision: result.revision });
@@ -1822,6 +1918,14 @@ function createMobileGateway(deps) {
       const created = results.filter(r => r.outcome === 'created').length;
       const skipped = results.filter(r => r.outcome === 'skipped').length;
       const invalid = results.filter(r => r.ok === false).length;
+      /* 库没开时**整批**都会是 store-closed。返回 200 + {created:0,invalid:N}
+         会让调用方以为"这批数据被权威审阅过、只是不合格"——那是把基础设施
+         故障洗成业务结果。用同一个闭集判"这是不是 store 层的失败"。 */
+      const storeLevel = results.filter(r => r.ok === false && isStoreLevelError(r.error)).length;
+      if (storeLevel > 0) {
+        record('warn', 'moments-migrate-store-failure', { storeLevel: storeLevel, total: batch.length });
+        return failStore(res, momentStoreFailure(), req, { total: batch.length, storeLevel: storeLevel });
+      }
       record('info', 'moments-migrate-batch', { created, skipped, invalid, total: batch.length });
       return sendJson(res, 200, okBody('moments.migrate', null, {
         created, skipped, invalid, total: batch.length, revision: momentsStore.getRevision(),
@@ -1838,9 +1942,17 @@ function createMobileGateway(deps) {
         expectedRev: expectedRev == null ? null : Number(expectedRev)
       });
       if (!result.ok) {
-        return fail(res, result.error === 'revision-conflict' ? 'CONFLICT' : 'BAD_REQUEST', req,
-          result.error === 'revision-conflict' ? 409 : 400, null,
-          { id: result.id, expectedRev: result.expectedRev, actualRev: result.actualRev });
+        if (result.error === 'revision-conflict') {
+          return fail(res, 'CONFLICT', req, 409, null,
+            { id: result.id, expectedRev: result.expectedRev, actualRev: result.actualRev });
+        }
+        if (isStoreLevelError(result.error)) {
+          return failStore(res, momentStoreFailure(result.error), req, { id: result.id || null });
+        }
+        /* 无法识别的拒绝：能证明是请求侧的（id 非法）才回 400，其余一律按
+           基础设施失败如实上报，绝不用 400 掩盖一个我们没分类的故障。 */
+        if (result.error === 'invalid-id') return fail(res, 'BAD_REQUEST', req, 400, null, { id: result.id || null });
+        return failStore(res, momentStoreFailure('store-unavailable'), req, { id: result.id || null, detail: result.error });
       }
       record('info', 'moments-delete', { outcome: result.outcome, id: result.id, revision: result.revision });
       return sendJson(res, 200, okBody('moments.delete', null, result), req);
@@ -1848,7 +1960,12 @@ function createMobileGateway(deps) {
     if (action === 'moments/migration' && req.method === 'GET') {
       if (!momentsStore) return fail(res, 'UNSUPPORTED', req, 501);
       const source = (url && url.searchParams.get('source')) || 'default';
-      return sendJson(res, 200, okBody('moments.migration', null, { state: momentsStore.getMigrationState(source) }), req);
+      const state = momentsStore.getMigrationState(source);
+      /* 库没开时 store 回答 `{ok:false, error:'store-closed', state:null}`。
+         曾经这里无论如何都回 200 —— 于是"我读不到迁移水位"和"迁移水位是空的"
+         在线上是同一个响应。诚实的那一半是状态码：不能服务就是不能服务。 */
+      if (!state.ok) return failStore(res, momentStoreFailure(state.error), req, { source: source });
+      return sendJson(res, 200, okBody('moments.migration', null, { state: state }), req);
     }
 
     if (action === 'characters/publish' && req.method === 'POST') {
@@ -2445,7 +2562,12 @@ function createMobileGateway(deps) {
     getTurnByRequest: getTurnByRequest,
     presenceSnapshot: presenceSnapshot,
     subscribeCount: function () { return subscribers.size; },
-    stop: function () { stopEventPump(); }
+    stop: function () { stopEventPump(); },
+    /* P11-3E：装配层注入的唯一一份 store 失败分类器，以及 canonical Moments
+       store 的失败探针。两者都是**注入**而不是本模块自己实现 —— 见上方
+       "canonical store 不能服务 ≠ 请求有问题" 那段。 */
+    useStoreFailureResolver: useStoreFailureResolver,
+    useMomentsStoreFailureProbe: useMomentsStoreFailureProbe
   };
 }
 
@@ -2454,3 +2576,4 @@ module.exports.PROTOCOL_VERSION = PROTOCOL_VERSION;
 module.exports.MOBILE_MAX_BODY_BYTES = MOBILE_MAX_BODY_BYTES;
 module.exports.ERROR_STATUS = ERROR_STATUS;
 module.exports.createRateLimiter = createRateLimiter;
+module.exports.STORE_LEVEL_ERRORS = STORE_LEVEL_ERRORS;

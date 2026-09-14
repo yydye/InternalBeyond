@@ -206,6 +206,61 @@ InternalBeyond/  # 仓库根目录（根只放入口 / 许可 / 版本 / 元数�
   页面隐藏时 DOM 仍会被脚本构建；加了守卫反而会永久错过条件。
 
 
+### canonical Moments 归属与 Home Node 生命周期（P11-3E）
+
+**不变量：ONE MOMENTS AUTHORITY = Home Node 的 canonical moments store。**
+
+| 面 | 是什么 | 位置 |
+|---|---|---|
+| **权威** | Home Node 的 `moments-store.js`（`home-node.db`，与 chat / memory / understanding 同一个库、**自己的** `moments_revision` 命名空间与 `change_log`） | `services/home-node/moments-store.js` |
+| 客户端 | `moments-authority.js`（`canonical` / `mirror` / `off` 三态 + hydrate / changes 增量） | `assets/js/moments-authority.js` |
+| 镜像 | 浏览器 IndexedDB 的 `moments` store（`dbGet`/`dbGetAll`/`dbGetByIndex('byRole')` 已被接管，先 `ensureReady()` 补齐镜像再读） | `assets/js/home-node-bootstrap.js` |
+| 设备面 | **没有**任何 moments verb（`deviceVerbs: []`；`/mobile/v1` 与 `/mobile/` 下都不存在） | `services/home-node/mobile-gateway.js` |
+
+**生命周期必须闭环，且两条装配路径共用同一套定义**（生产启动路径 vs
+`buildHomeNode()`）：
+
+```
+construct → open → ready → serve → close
+  openAll()（生产）              shutdown()（生产停止路径）
+  buildHomeNode().open()         buildHomeNode().close()
+          └── 唯一打开入口 openMomentStore(store, probe)
+```
+
+同一个缺口在 Home Node 上出现过**三次**（先是 chat，再是 memory，然后是
+understanding；P11-3E 发现 moments 是第四次，且症状最隐蔽 —— store 装配好了、
+网关接线了，只有 `openAll()` 没打开它，而所有 Moments 测试都直接
+`createMomentsStore()` 绕过启动路径，于是全绿）。因此这里有三条硬约定：
+
+- **canonical store 只有一个打开入口**（`openMomentStore`）：它把开库事故记进探针，
+  于是"打不开"可被事后如实上报，而不是变成一句笼统的 `store-closed`；
+- **生产与测试装配不得各写一份 store 清单**：`createHttp` 的 `stores[]` 在两条路径
+  上逐字同款，`resolveStoreFailure` 只有一份实现（`http.js`），由装配层注入网关；
+- **派生域失败不得夺走声明角色**：moments 打不开时 chat 照常服务，失败以
+  `serving:false` + 类别上报，**绝不**退化成 200 空列表。
+
+**失败分类只有一套词表**（不新增第二套）：`store-closed` 取自
+`runtime/component-registry.js` / `runtime/boot-state.js` 的既有 `REASON`；
+`db-*` 全部来自唯一分类器 `runtime/db-failure.js`（且只对真正的数据库失败生效 ——
+见其 `isDatabaseError`）。状态码规则：
+
+| 情况 | `/health`、`/status` | `/moments/*` |
+|---|---|---|
+| store 已关闭（可恢复） | 200 + `serving:false` + `category:'store-closed'` | 503 `store-closed` |
+| 库打不开（终态：corrupt / schema 过新 / driver 不可用） | 200 + `serving:false` + 该类别 | **500** 该类别 |
+| 请求本身不合法（缺字段 / 空内容 / 不可归属 / 坏 id） | — | 400 / 422（与基础设施失败**可区分**） |
+| CAS 基版本过期 | — | 409 `revision-conflict` |
+
+`/health` 的 `open` 字段**仍然只声明 chat store**（既有消费者读它），新增的
+`stores[]` 才是"逐域诚实状态"。`serving` 是角色级裁决，因此现在覆盖全部 canonical
+store —— 这一步**只能在 production assembly 正确之后做**（P11-3X-B 当时刻意不纳入，
+正是为了不把已知装配缺口变成永久误报与恢复环）。
+
+反证与证据：`tests/test_p11_3e_moments_canonical_closure.js`（103 项，含真实
+spawn 生产入口、真实重启 ×3、真实 SIGTERM）与
+`tests/test_p11_3e_moments_mutations.js`（11/11 CAUGHT，变异在私有副本树内）。
+
+
 ### Image Router（统一图片策略层 · P12）
 
 **唯一图片请求入口**，位于所有 producer 与现有 executor 之间。它只做「策略 + 资源控制」，

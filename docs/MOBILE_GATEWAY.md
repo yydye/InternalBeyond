@@ -465,7 +465,8 @@ HOST = IB_HOME_NODE_HOST || '127.0.0.1'
 LOOPBACK_BIND = isLoopbackHost(HOST)
 
 startup:
-  openAll()                       → chat store, then device registry
+  openAll()                       → chat store, memory store, understanding store,
+                                    **moments store**, then device registry
   on failure:
      if !LOOPBACK_BIND  → "refuses to listen on <HOST>: its device registry could not be
                             opened, so LAN clients could not be authenticated.
@@ -482,6 +483,21 @@ startup:
                       'refused (loopback bind)' | 'device-token-required'
                       | 'refused (<probe.reason>)'}
 ```
+
+**P11-3E — one canonical lifecycle per store.** `openAll()` (the production start path) and
+`buildHomeNode().open()` (the shared assembly every HTTP test uses) must open and close the
+**same** set of canonical stores; `shutdown()` and `buildHomeNode().close()` must close them.
+This has now been missed three times (chat-at-first, then `memory`, then `understanding`, and
+P11-3E found `moments`): a store that is assembled and wired but never opened answers
+`store-closed` on every read route, and — because the Moments tests construct the store
+directly — the whole suite stayed green. Two rules follow, and both are asserted against a
+real spawned service in `tests/test_p11_3e_moments_canonical_closure.js`:
+
+* a canonical store is opened through exactly one helper (`openMomentStore`), so "the open
+  failed" is remembered and can be reported instead of being swallowed;
+* a DERIVED domain that fails to open must not stop the node from serving its declared
+  role — it is reported as `serving:false` with a failure category, never as a 200 empty
+  list and never as a silent absence.
 
 `isLoopbackHost` accepts `localhost`, `127.0.0.0/8`, `::1` and nothing else — `0.0.0.0`, `::`
 and any hostname are *not* loopback, so they take the strict path.

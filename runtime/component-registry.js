@@ -289,7 +289,13 @@ const COMPONENTS = [
        "我能不能干我的活"（`serving` / `failure`）。把它的裁决原样读出来即可；
        这一层不重新推断，因为只有它自己知道自己的 store 是什么状态。
        实测修复前：库已关闭时它回答 `{ok:true, open:false}`，于是这里把它判成
-       healthy —— 一个连一条聊天都写不进去的进程被报成健康组件。 */
+       healthy —— 一个连一条聊天都写不进去的进程被报成健康组件。
+
+       P11-3E：`serving` 现在覆盖的不只是 chat store。Home Node 的生产启动路径
+       补上了 canonical Moments store 的 open/close 之后，一个"能聊天但看不到
+       任何动态"的节点才第一次**可能**被如实报出来。类别仍然原样取自 `/health`
+       的 failure（那份词表是 boot-state.REASON 与 db-failure 分类器的共同闭集），
+       这里不新增任何分类。 */
     servingHealth: data => {
       if (!data || data.serving !== false) return null;
       const failure = data.failure || null;

@@ -43,6 +43,10 @@ const createExecutor = require('../services/home-node/execution.js');
 const createDeviceRegistry = require('../services/home-node/device-registry.js');
 const createMobileGateway = require('../services/home-node/mobile-gateway.js');
 const createNodeModelPort = require('../active/node-model-port.js');
+/* P11-3E：canonical store 失败分类器（**唯一**一份，见 runtime/db-failure.js）。
+   它在 runtime/ 下，与 runtime/local-services-runner.js 那份是同一模块 ——
+   "库为什么打不开"的类别不该在服务里被重新猜一遍。 */
+const dbFailure = require('../runtime/db-failure.js');
 /* M1-C.2i · canonical Middle Brain 的 Node 宿主适配（不是第二份实现：
    它 require assets/js 下那五层 + facade，只补宿主 shim 与配置注入）。 */
 const createNodeMiddleBrain = require('../services/home-node/middle-brain.js');
@@ -329,6 +333,42 @@ function momentsAssembly(options) {
   return { momentsStore: momentsStore, momentsRetrieval: momentsRetrieval };
 }
 
+/* ── canonical Moments store 的失败探针（**唯一**一处）────────────────
+   P11-3E：store 成功打开之后又被关掉，`isOpen()` 自己就能回答；而
+   "open() 抛了"这一半只有扔出来的那个错误记得。两条路径因此都只能走这里，
+   否则同一件事会有两个答案（"库没开"与"库打不开"）。
+
+   这里只负责"记住最后那次开库事故"；**类别**由 http.js 那一份唯一实现决定
+   （module.exports.createStoreFailureProbe + runtime/db-failure.js 的分类器）——
+   在服务里再写一遍"为什么打不开"就是同一句话的第二个回答。 */
+function createMomentStoreFailureProbe(store) {
+  const state = { lastOpenError: null };
+  const probe = createHttp.createStoreFailureProbe({
+    store: store,
+    name: 'moments',
+    role: 'canonical-moments-authority',
+    lastError: () => state.lastOpenError
+  }, {
+    classifyFailure: dbFailure.classify,
+    isDatabaseError: dbFailure.isDatabaseError
+  });
+  /* 开库事故记在这里：openMomentStore 是唯一写入点。 */
+  probe.noteOpenError = function (error) { state.lastOpenError = error; };
+  return probe;
+}
+
+/* 打开一个 canonical Moments store，并把事故记进探针（供事后如实上报）。
+   **不把异常扔给调用方**：调用方需要继续把剩下的 store 开完，并在 /health 上
+   如实报告这一域不可服务 —— 一个起不来的派生域不该让整台节点连聊天都不服务。 */
+function openMomentStore(store, probe) {
+  try {
+    return { ok: true, result: store.open() };
+  } catch (error) {
+    if (probe && typeof probe.noteOpenError === 'function') probe.noteOpenError(error);
+    return { ok: false, error: error };
+  }
+}
+
 /* ── 网关装配（**唯一**一处）─────────────────────────────────────────
    与 memoryAssembly 同一个理由：网关的依赖集合只能有一份定义。
    生产启动路径与 buildHomeNode() 都调用它，因此"某个 canonical 域没有接线"
@@ -372,7 +412,7 @@ function gatewayAssembly(options) {
     clock: options.clock,
     logger: options.logger
   }));
-  return createMobileGateway(Object.assign({
+  const gateway = createMobileGateway(Object.assign({
     store: options.store,
     registry: options.registry,
     executor: options.executor,
@@ -386,6 +426,14 @@ function gatewayAssembly(options) {
     random: options.random,
     logger: options.logger || ((level, event, fields) => log(level, event, fields))
   }, memory, threads, understanding, moments));
+  /* P11-3E：canonical Moments store 的失败报告由**装配层**提供 —— 它知道这个
+     store 是"打不开"还是"被关掉了"。网关只负责把报告翻译成一次响应（503 +
+     类别），分类器由 http.js 在委派时注入。缺探针时 /moments/* 退回改动之前的
+     行为：不做半套接线。 */
+  if (options.momentStoreFailure && typeof gateway.useMomentsStoreFailureProbe === 'function') {
+    gateway.useMomentsStoreFailureProbe(options.momentStoreFailure);
+  }
+  return gateway;
 }
 
 /* ── 组装一个完整的 Home Node 实例（不监听）──────────────────────────
@@ -461,7 +509,10 @@ function buildHomeNode(options) {
   const host = options.host || HOST;
   const loopbackBind = isLoopbackHost(host);
   /* M1-C.2n：动态域的挂载点。与理解域同款位置与理由（同一 dataDir、
-     同一 store 实例共享给网关，装配守卫在 gatewayAssembly 里强制）。 */
+     同一 store 实例共享给网关，装配守卫在 gatewayAssembly 里强制）。
+     P11-3E：探针实例在**任何**用到它的地方之前建立 —— 它同时喂网关
+     （/moments/* 的失败报告）与 http 层（/health 的裁决与状态码），
+     而这两处共用同一份"最后那次开库事故"的记忆。 */
   const instanceMoments = options.moments || momentsAssembly({
     dataDir: dataDir,
     momentsStore: options.momentsStore,
@@ -470,6 +521,7 @@ function buildHomeNode(options) {
     clock: options.clock,
     logger: serviceLog
   });
+  const instanceMomentProbe = createMomentStoreFailureProbe(instanceMoments.momentsStore);
   /* 与进程级启动路径**共用** gatewayAssembly（见其头部说明：两条路径两套装配
      必然漂移，memoryStore 就是这样在 production 上丢过一次）。 */
   const instanceGateway = options.gateway || gatewayAssembly({
@@ -486,6 +538,7 @@ function buildHomeNode(options) {
     understandingDerivation: instanceUnderstanding.understandingDerivation,
     momentsStore: instanceMoments.momentsStore,
     momentsRetrieval: instanceMoments.momentsRetrieval,
+    momentStoreFailure: instanceMomentProbe,
     /* 派生用同一个 model port（理由见 instanceUnderstanding 的注释）。 */
     modelPort: options.port || createNodeModelPort({}),
     version: options.version,
@@ -507,6 +560,23 @@ function buildHomeNode(options) {
     token: options.token === undefined ? TOKEN : options.token,
     version: options.version || productVersion(),
     allowedOrigins: options.allowedOrigins || ALLOWED_ORIGINS,
+    /* P11-3E：canonical store 的失败分类只有一份（http.js 的 resolveStoreFailure），
+       这里把分类器与"最后一次开库是怎么失败的"探针一起交上去 ——
+       于是 /moments/* 在库不能服务时回答 503 + 类别，而不是 400。 */
+    classifyFailure: dbFailure.classify,
+    isDatabaseError: dbFailure.isDatabaseError,
+    momentStore: instanceMoments.momentsStore,
+    momentStoreFailure: instanceMomentProbe,
+    /* P11-3E · canonical store 清单：健康与"能不能服务"是同一个问题，
+       所以这里列出本进程承诺的全部 canonical store，而不是只有 chat。
+       声明角色（chat）在最前，`failure` 取第一个命中它的。 */
+    stores: [
+      { store: instanceStore, name: 'chat', role: 'canonical-chat-authority' },
+      {
+        store: instanceMoments.momentsStore, name: 'moments', role: 'canonical-moments-authority',
+        probe: instanceMomentProbe
+      }
+    ],
     /* LAN 门：显式非 loopback 绑定 **且** 设备鉴权此刻真的就绪。
        刻意传**函数**：http 层在这里被构造时 open() 还没发生（见下面 open()），
        固化成布尔就等于把"注册表一定会成功打开"这个尚未证实的假设写进安全决策。
@@ -516,12 +586,14 @@ function buildHomeNode(options) {
     logger: serviceLog
   });
   /* 打开顺序有语义：chat store 先开（它负责损坏隔离 —— 会给坏库改名），
-     设备表与它同库，必须等隔离完成之后再连。 */
+     设备表与它同库，必须等隔离完成之后再连。
+     P11-3E：Moments 走 openMomentStore —— 开库事故要留给探针（`/health` 与
+     `/moments/*` 靠它如实上报），而不是让整台节点连聊天都不服务。 */
   function open() {
     const openedStore = instanceStore.open();
     instanceMemoryStore.open();
     instanceUnderstanding.understandingStore.open();
-    instanceMoments.momentsStore.open();
+    openMomentStore(instanceMoments.momentsStore, instanceMomentProbe);
     instanceRegistry.open();
     return openedStore;
   }
@@ -600,6 +672,10 @@ const moments = momentsAssembly({
   store,
   logger: (level, event, fields) => log(level, event, fields)
 });
+/* P11-3E：进程级 Moments 探针。openAll() 写它、/health 与 /moments/* 读它。
+   这是**唯一**一处持有"最后那次开库事故"的地方（与 buildHomeNode 各自持有一个
+   实例，但两边的分类器是同一份代码 —— 那是分类的唯一来源）。 */
+const momentStoreFailureProbe = createMomentStoreFailureProbe(moments.momentsStore);
 const gateway = gatewayAssembly({
   store,
   registry,
@@ -611,6 +687,7 @@ const gateway = gatewayAssembly({
   understandingDerivation: understanding.understandingDerivation,
   momentsStore: moments.momentsStore,
   momentsRetrieval: moments.momentsRetrieval,
+  momentStoreFailure: momentStoreFailureProbe,
   modelPort: port,
   version: productVersion(),
   mobileOrigins: MOBILE_ORIGINS,
@@ -626,6 +703,17 @@ const httpLayer = createHttp({
   token: TOKEN,
   version: productVersion(),
   allowedOrigins: ALLOWED_ORIGINS,
+  /* P11-3E：与 buildHomeNode 逐字同款 —— 分类器 + canonical store 清单。
+     "两条路径两套装配必然漂移"是这个文件里已经写过两次的教训（memory 一次、
+     understanding 一次），所以这里连参数形状都不另写。 */
+  classifyFailure: dbFailure.classify,
+  isDatabaseError: dbFailure.isDatabaseError,
+  momentStore: moments.momentsStore,
+  momentStoreFailure: momentStoreFailureProbe,
+  stores: [
+    { store, name: 'chat', role: 'canonical-chat-authority' },
+    { store: moments.momentsStore, name: 'moments', role: 'canonical-moments-authority', probe: momentStoreFailureProbe }
+  ],
   /* 与 buildHomeNode 同一条谓词（进程级实例）。这里的注册表要等 openAll()
      才打开，所以更必须是函数而不是布尔。 */
   allowRemote: () => !LOOPBACK_BIND && deviceAuthReady(registry).ready,
@@ -637,11 +725,18 @@ const server = httpLayer.server;
    打开顺序与 buildHomeNode().open() 一致：chat store 先开（它负责损坏隔离，
    会给坏库改名），memory store 与设备表同库、必须等隔离完成之后再连。
    M1-C.2m：理解 store 也在同一批里打开 —— 漏掉它不会抛错，只会让
-   /understanding/* 全部返回 store-closed，而那种症状很容易被读成"路由没注册"。 */
+   /understanding/* 全部返回 store-closed，而那种症状很容易被读成"路由没注册"。
+
+   P11-3E：Moments store 是**第三次**出现同一个缺口，而且这次它的症状最隐蔽 ——
+   P11-3X-B / 3X-C 实测：production 的 openAll() 从来没打开过它，于是 23118 上
+   `/moments/list` 回 503、`/moments/record` POST 抛 500，而所有 Moments 测试
+   都直接 `createMomentsStore()`（绕过启动路径）因此全绿。这里补上它，并用
+   tests/test_p11_3e_moments_canonical_closure.js 对**真实子进程**下断言。 */
 function openAll() {
   const opened = store.open();
   memory.memoryStore.open();
   understanding.understandingStore.open();
+  openMomentStore(moments.momentsStore, momentStoreFailureProbe);
   registry.open();
   return opened;
 }
@@ -729,6 +824,10 @@ if (require.main === module) {
        再关理解 store —— 留下一个仍排队的 timer 去读已关闭的库只会产生噪音错误。 */
     try { if (understanding.understandingDerivation) understanding.understandingDerivation.stop(); } catch (_) { /* 未启动 */ }
     try { understanding.understandingStore.close(); } catch (_) { /* 已关闭 */ }
+    /* P11-3E：Moments store 必须在这里也被关掉。漏掉它不会抛错，
+       只会让"数据落盘了没有"变成一个只能靠重启去猜的问题 ——
+       而 openAll() 漏掉打开它正是本阶段要关闭的那个缺口，两个方向都要闭合。 */
+    try { moments.momentsStore.close(); } catch (_) { /* 已关闭 */ }
     try { registry.close(); } catch (_) { /* 已关闭 */ }
     /* memory store 与 chat store 同库（同一 SQLite 文件），先关它再关 chat，
        与打开顺序相反 —— 反过来会让 memory 的连接留在一个已关闭的库上。 */
@@ -758,6 +857,16 @@ module.exports = {
      可以被真实断言，而不是靠读代码（见 tests/test_home_node_production_memory_assembly.js）。 */
   memoryStore: memory.memoryStore,
   memoryRetrieval: memory.memoryRetrieval,
+  /* P11-3E：**进程级**（= 生产启动路径）的 canonical Moments 实例，理由与上面
+     memory 那两行逐字相同。这一域已经**两次**被同一个缺口咬到（memory 一次、
+     understanding 一次），而这一次的形态最隐蔽：store 装配好了、网关接线了，
+     只是 openAll() 没打开它 —— 于是所有直接 createMomentsStore() 的测试全绿。
+     把它们导出来，"生产侧到底有没有一个可用的 Moments authority"就成了一句话
+     可以断言的事实（见 tests/test_p11_3e_moments_canonical_closure.js A/B/C）。 */
+  momentsStore: moments.momentsStore,
+  momentsRetrieval: moments.momentsRetrieval,
+  momentsAssembly,
+  canonicalMomentsDeps,
   buildHomeNode,
   memoryAssembly,
   canonicalMemoryDeps,
