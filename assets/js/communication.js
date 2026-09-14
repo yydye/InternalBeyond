@@ -3633,6 +3633,27 @@ async function _wsToolContinue(cfg,o){
     if(!cfg||!o)return null;
     var round=Math.max(0,Number(o.round)||0);
     if(round>_WS_TOOL_CONT_MAX)return null;
+    /* ── P11-3D：XML 工具续轮是**同一个**单回合预算的另一条入口 ────────
+       这里的旧上限（_WS_TOOL_CONT_MAX）就是"总续轮预算"，因此它直接
+       收敛为 canonical 轮预算的下界来源；工具计数/重复/时间由同一个
+       guard 裁定。不新建第二套轮次上限，两条通道（原生 FC / XML）共用
+       一份预算口径。round===1 是"本轮第一次续"，此时建 cycle。 */
+    var _ownCycle=(round<=1);   /* 只有最外层那次建/收 cycle：递归续轮共享同一个周期 */
+    var _tg=(_ownCycle&&typeof IBFC!=='undefined'&&typeof IBFC.cycleBegin==='function')?IBFC.cycleBegin(null,{maxRounds:_WS_TOOL_CONT_MAX+1}):null;
+    var _cont=Object.assign({},o,{messages:(o.messages||[]).slice(),round:round});
+    try{
+      return await _wsToolContinueInner(cfg,_cont,_tg);
+    }finally{
+      if(_ownCycle){try{IBFC.cycleEnd()}catch(e){}}
+    }
+  }catch(e){
+    console.warn('[WsToolContinue] failed (tool results stay queued for next user message):',String(e&&e.message||e).slice(0,160));
+    return null;
+  }
+}
+async function _wsToolContinueInner(cfg,o,_tg){
+  try{
+    var round=Math.max(0,Number(o.round)||0);
     /* ① 消费本回合执行的工具反馈（消费式：后续用户消息不再重复注入） */
     var feed='';
     try{
@@ -3656,8 +3677,7 @@ async function _wsToolContinue(cfg,o){
         }
       }
     }catch(e){}
-    if(!feed&&!imgParts.length&&!imgNote)return null;/* 无任何工具反馈可续 → 保持原有行为 */
-    /* ③ 构造续轮消息：历史 + 上一条 assistant + 工具结果 user（图片附在 user 消息上） */
+    if(!feed&&!imgParts.length&&!imgNote)return null;/* 无任何工具反馈可续 → 保持原有行为 */    /* ③ 构造续轮消息：历史 + 上一条 assistant + 工具结果 user（图片附在 user 消息上） */
     var msgs=(o.messages||[]).slice();
     msgs.push({role:'assistant',content:String(o.lastReply||'')});
     var userText='【工具执行结果】你上一步发出的操作已经执行完成，结果如下（据此继续/收尾；不要重复执行已完成的动作）：'
@@ -3667,11 +3687,24 @@ async function _wsToolContinue(cfg,o){
     msgs.push(userMsg);
     var r=await callApiChat(cfg,msgs,{_ibConsumer:'chat',maxTokens:Math.max(1024,o.maxTokens||2048),timeoutMs:90000,wantMeta:false,autoContinue:true});/* 工具续轮：同一 Chat 请求流 */
     if(!r||!String(r).trim())return null;
-    /* ④ 续轮回复里的工具继续执行（常见于链式操作：生成→继续调整） */
+    /* ④ 续轮回复里的工具继续执行（常见于链式操作：生成→继续调整）
+       P11-3D：同一回合的预算同样约束这条通道 —— 熔断后不再执行任何工具，
+       只保留已经产生的结果（不静默 break：原因写进 guard 的稳定 reason）。 */
     var parsed=_assistantResponseParts(r,'');
     var contText=parsed.content;
     var _cOp=_parseWsOps(contText),_cResults=[];
-    try{_cResults=await _execWsOps(_cOp.ops,o.senderName||(cfg.nickname||cfg.model||'AI'),cfg,{source:'chat',friendId:o.friendId||'',threadId:o.threadId||'',senderName:o.senderName||''})}catch(e){}
+    var _cExec=_cOp.ops;
+    if(_tg&&_cExec&&_cExec.length){
+      var _allow=[];
+      for(var _oi=0;_oi<_cExec.length;_oi++){
+        var _op=_cExec[_oi],_od=null;
+        try{_od=(_op&&_op.type==='tool')?IBFC._syncGuardPolicy().beforeCall(_op.name,_op.args,{sName:_op.name,kind:'xml-tool'}):{allowed:true}}catch(e){_od={allowed:true}}
+        if(_od&&_od.allowed)_allow.push(_op);
+        else if(typeof IBFC._trip==='function')IBFC._trip((_od&&_od.reason)||'tool-budget-exhausted',null,function(t){try{console.warn(t)}catch(e){}});
+      }
+      if(_allow.length!==_cExec.length)_cExec=_allow;
+    }
+    try{_cResults=await _execWsOps(_cExec,o.senderName||(cfg.nickname||cfg.model||'AI'),cfg,{source:'chat',friendId:o.friendId||'',threadId:o.threadId||'',senderName:o.senderName||''})}catch(e){}
     if(_cOp.files&&_cOp.files.length){try{await _wsArchiveFileBlocks(_cOp.files,o.senderName||(cfg.nickname||cfg.model||'AI'))}catch(e){}}
     /* ⑤ 渲染为同角色续接气泡（含操作卡），与主流程同款 */
     var _cId='msg_'+Date.now()+'_'+Math.floor(Math.random()*100000);
@@ -3690,8 +3723,13 @@ async function _wsToolContinue(cfg,o){
         db.onclick=function(ev){ev.stopPropagation();deleteSingleMsg(_cId,el)};el.appendChild(db);
       });
     }else{try{_markUnread(o.friendId)}catch(e){}}
-    /* ⑥ 续轮若再产生工具反馈 → 继续（轮数上限保护） */
-    try{await _wsToolContinue(cfg,Object.assign({},o,{messages:msgs,lastReply:contText,round:round+1}))}catch(e){}
+    /* ⑥ 续轮若再产生工具反馈 → 继续（轮预算由 guard 统一裁定，旧字面量只作下界） */
+    var _ctripped=false;
+    try{_ctripped=!!(_tg&&_tg.tripped())}catch(e){}
+    if(_ctripped){try{if(typeof IBFC._trip==='function')IBFC._trip(_tg.tripInfo().reason,null,function(t){try{console.warn(t)}catch(e){}})}catch(e){}}
+    if(round<_WS_TOOL_CONT_MAX&&!_ctripped){
+      try{await _wsToolContinue(cfg,Object.assign({},o,{messages:msgs,lastReply:contText,round:round+1}))}catch(e){}
+    }
     return{text:contText,round:round+1};
   }catch(e){
     console.warn('[WsToolContinue] failed (tool results stay queued for next user message):',String(e&&e.message||e).slice(0,160));
@@ -4055,6 +4093,52 @@ function _ibNoteReasoningUsage(usage,format,cfg,opts){
   }catch(e){return null}
 }
 
+/* ── P11-3D：单回合工具执行周期（宿主侧唯一入口）─────────────────────
+   一个AI回合 = 一个 guard cycle。周期在**工具块被激活时**开启，在回合的
+   每个出口关闭。额度不在这里产生 —— 这里只负责生命周期与"停止"动作。 */
+/* 回合开始前调用（**必须**在 try 之外：它是安全调用，不得被任何异常跳过）。 */
+function _toolCycleBegin(fcCtx){
+  try{
+    if(typeof IBFC==='undefined' || typeof IBFC.cycleBegin!=='function')return
+    /* 无论本次请求是否激活 FC 都调用：未激活时 guard 只做"本回合重置"
+       （清掉上一回合的熔断原因与快照）并**不**开启周期。 */
+    IBFC.cycleBegin(fcCtx);
+  }catch(e){}
+}
+function _toolCycleEnd(fcCtx){
+  try{
+    if(typeof IBFC==='undefined' || typeof IBFC.cycleEnd!=='function')return
+    /* 无条件收尾，且不依赖 fcCtx 是否还在：周期实例与"是否还有周期"都由
+       ctx 上记着的 guard 自己回答。这样"FC 端点回落"这类把 _fcCtx 置空的
+       出口也不会留下悬挂周期。 */
+    IBFC.cycleEnd(fcCtx);
+  }catch(e){}
+}
+/* provider 调用前的轮预算询问（第 2 轮起）。拒绝 = 熔断 → 停止 provider 循环。
+   emit 必须传**本回合的输出流**：熔断原因要出现在用户与诊断都能看到的那条通道上，
+   用 console.warn 顶替它会让"原因只存在于控制台"（本次开发真实踩到过）。 */
+function _roundBudgetAllows(fcCtx,emit){
+  try{
+    if(!fcCtx || !fcCtx.active || typeof IBFC==='undefined' || typeof IBFC._syncGuardPolicy!=='function')return true
+    const g=IBFC._syncGuardPolicy();
+    if(!g)return true
+    const d=g.beforeCall('__round__',null,{kind:'round'});
+    if(d&&d.allowed)return true
+    if(typeof IBFC._trip==='function')IBFC._trip(d&&d.reason||'round-budget-exhausted',fcCtx,emit)
+    return false
+  }catch(e){return true}
+}
+/* FC 端点回落/参数回落重试（round--/continue）：不得绕过总预算，也不得无限重试 */
+function _fcRetryAllowed(fcCtx){
+  try{
+    if(!fcCtx || !fcCtx.active || typeof IBFC==='undefined' || typeof IBFC._syncGuardPolicy!=='function')return true
+    const g=IBFC._syncGuardPolicy();
+    if(!g)return true
+    const d=g.beforeCall('__retry__',{round:fcCtx.round||0},{kind:'retry'});
+    return !!(d&&d.allowed)
+  }catch(e){return true}
+}
+
 async function callApiChatStream(cfg,messages,opts){
   opts=Object.assign({},opts||{},{reasoningEffort:await _mbReasoningEffortForRequest()});
   var budget=opts.maxTokens||_chatMaxTokens(cfg);
@@ -4065,8 +4149,15 @@ async function callApiChatStream(cfg,messages,opts){
   /* FC：原生函数调用（anthropic/openai 走 tools 参数；无工具块/开关关/其他厂商 → 不激活，回落 XML 通道） */
   var _fcCtx=null;
   try{if(!opts.disableTools&&typeof IBFC!=='undefined'){var _fcv=IBFC.prepare(messages,_providerFormat(cfg),{vision:_usesNativeDeepSeekVision(cfg)||(cfg.vision!==undefined?!!cfg.vision:true)});if(_fcv&&_fcv.active){_fcCtx=_fcv;msgs=_fcCtx.messages}}}catch(e){_fcCtx=null}
+  /* P11-3D：本回合的工具执行周期从**函数入口**开始（激活 FC 时建周期，
+     未激活时只重置上一回合的熔断原因与快照）。放在 try 之外是有意的：
+     周期重置不得被任何异常跳过。 */
+  _toolCycleBegin(_fcCtx);
   try{/* 并发隔离：任何退出路径都在函数尾 finally 注销本对话的调用状态 */
   for(var round=0;;round++){
+    /* P11-3D：第 2 轮起的每次 provider 调用都要先过总轮预算 —— 这是
+       `continue` 无法绕过的位置（它在循环体最前，先于任何续跑路径）。 */
+    if(round>0&&!(_roundBudgetAllows(_fcCtx,userChunk)))break;
     var hold='',holding=round>0;/* 续写轮先缓冲开头，做接缝去重后再上屏 */
     var o=Object.assign({},opts,{maxTokens:budget});
     o._st=st;/* 并发隔离：单次调用把思考/结束原因写进本调用的状态对象 */
@@ -4090,9 +4181,9 @@ async function callApiChatStream(cfg,messages,opts){
       /* 联网搜索：端点不认搜索参数(4xx 且非鉴权错) → 去掉搜索原样重试一次 */
       if(!opts._noWebSearch&&round===0&&!full&&typeof IBWS!=='undefined'&&IBWS.on(cfg)&&!IBWS.blocked(cfg)&&IBWS.errLooksParam(e)){opts._noWebSearch=true;IBWS.markUnsupported(cfg,e);round--;continue}
       /* ① 新款 OpenAI 系模型要求 max_completion_tokens：换参数名原额重试（不降额） */
-      if(!tokenParam&&round===0&&_errWantsCompletionParam(e)){tokenParam='max_completion_tokens';_tokParamRemember(cfg);round--;continue}
+      if(!tokenParam&&round===0&&_errWantsCompletionParam(e)&&_fcRetryAllowed(_fcCtx)){tokenParam='max_completion_tokens';_tokParamRemember(cfg);round--;continue}
       /* ② 输出上限超过该模型/中转允许值：优先用报错里给的建议值一步到位，否则减半（下限1024），最多3次 */
-      if(round===0&&tokRetries<3&&budget>1024&&_errLooksMaxTok(e)){
+      if(round===0&&tokRetries<3&&budget>1024&&_errLooksMaxTok(e)&&_fcRetryAllowed(_fcCtx)){
         tokRetries++;
         var _sug=_extractSuggestedMaxTok(e);
         budget=(_sug&&_sug<budget)?_sug:Math.max(1024,Math.floor(budget/2));
@@ -4121,7 +4212,7 @@ async function callApiChatStream(cfg,messages,opts){
   _lastApiReasoning=thinkAcc;
   if(opts.result){opts.result.reasoning_content=thinkAcc;opts.result.truncated=_finishIsTrunc(st.finish)}
   return full;
-  }finally{_endCallState(st)}
+  }finally{_endCallState(st);_toolCycleEnd(_fcCtx)}
 }
 
 /* 非流式：同样的包装策略 */
@@ -4135,8 +4226,12 @@ async function callApiChat(cfg,messages,opts){
   /* FC：原生函数调用（与流式同一套；无工具块/开关关/其他厂商 → 不激活） */
   var _fcCtx=null;
   try{if(!opts.disableTools&&typeof IBFC!=='undefined'){var _fcv=IBFC.prepare(messages,_providerFormat(cfg),{vision:_usesNativeDeepSeekVision(cfg)||(cfg.vision!==undefined?!!cfg.vision:true)});if(_fcv&&_fcv.active){_fcCtx=_fcv;msgs=_fcCtx.messages}}}catch(e){_fcCtx=null}
+  /* P11-3D：同上（非流式路径）—— 周期重置在 try 之外。 */
+  _toolCycleBegin(_fcCtx);
   try{/* 并发隔离：任何退出路径都在函数尾 finally 注销状态 */
   for(var round=0;;round++){
+    /* P11-3D：第 2 轮起的每次 provider 调用都要先过总轮预算（`continue` 到不了这里之前） */
+    if(round>0&&!(_roundBudgetAllows(_fcCtx,function(t){full+=t;})))break;
     var o=Object.assign({},opts,{maxTokens:budget,wantMeta:true});
     o._st=st;/* 并发隔离：单次调用把思考/结束原因写进本调用的状态对象 */
     if(tokenParam)o.tokenParam=tokenParam;
@@ -4155,9 +4250,9 @@ async function callApiChat(cfg,messages,opts){
       /* 联网搜索：端点不认搜索参数(4xx 且非鉴权错) → 去掉搜索原样重试一次 */
       if(!opts._noWebSearch&&round===0&&!full&&typeof IBWS!=='undefined'&&IBWS.on(cfg)&&!IBWS.blocked(cfg)&&IBWS.errLooksParam(e)){opts._noWebSearch=true;IBWS.markUnsupported(cfg,e);round--;continue}
       /* ① 新款 OpenAI 系模型要求 max_completion_tokens：换参数名原额重试（不降额） */
-      if(!tokenParam&&round===0&&_errWantsCompletionParam(e)){tokenParam='max_completion_tokens';_tokParamRemember(cfg);round--;continue}
+      if(!tokenParam&&round===0&&_errWantsCompletionParam(e)&&_fcRetryAllowed(_fcCtx)){tokenParam='max_completion_tokens';_tokParamRemember(cfg);round--;continue}
       /* ② 输出上限超过该模型/中转允许值：优先用报错建议值一步到位，否则减半（下限1024），最多3次 */
-      if(round===0&&tokRetries<3&&budget>1024&&_errLooksMaxTok(e)){
+      if(round===0&&tokRetries<3&&budget>1024&&_errLooksMaxTok(e)&&_fcRetryAllowed(_fcCtx)){
         tokRetries++;
         var _sug=_extractSuggestedMaxTok(e);
         budget=(_sug&&_sug<budget)?_sug:Math.max(1024,Math.floor(budget/2));
@@ -4185,7 +4280,7 @@ async function callApiChat(cfg,messages,opts){
   _lastApiReasoning=thinkAcc;
   if(opts.result){opts.result.reasoning_content=thinkAcc;opts.result.truncated=lastTrunc}
   return opts.wantMeta?{text:full,truncated:lastTrunc}:full;
-  }finally{_endCallState(st)}
+  }finally{_endCallState(st);_toolCycleEnd(_fcCtx)}
 }
 
 /* ── 任务A：Gemini/OpenAI 联网搜索可视化 ──

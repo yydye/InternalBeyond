@@ -2983,6 +2983,9 @@ i would like the room to be enough.
      放在这里而不是与其它 *-core.js 同组：那组在 memory.js 一带（约 3000 行），
      而 communication.js 在 2979 行 —— 放那里会**晚于**消费者加载。 -->
 <script src="assets/js/prompt-boundary-core.js"></script>
+<!-- P11-3D：单回合工具执行总预算/去重/熔断的**唯一**实现（纯状态、零 DOM、零 storage；
+     额度由 IBFC.guardPolicy 注入）。必须在 communication.js（第一个调用方）之前加载。 -->
+<script src="assets/js/tool-execution-guard.js"></script>
 <script src="assets/js/communication.js"></script>
 <script src="assets/js/site-operations.js"></script>
 <script src="active/commerce.js"></script>

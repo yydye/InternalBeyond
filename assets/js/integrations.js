@@ -299,8 +299,158 @@ const IBFC = {
    * messages: 即将发送的消息数组(会被浅拷贝, 不动宿主原数组)
    * flavor  : 'anthropic' | 'openai' | 其他(不激活)
    * 返回 ctx; ctx.active=false 时一切照旧 */
+  /* ── P11-3D：单回合工具执行总预算 ────────────────────────────────
+     额度**不在这里**（本文件不产生状态），这里只做两件事：
+       ① 把宿主既有的额度读出来 → 交给 tool-execution-guard.js 夹紧；
+       ② 把 ctx 的生命周期与 guard 的 cycle 生命周期绑在一起。
+     读的是**同一个** localStorage key（ib_fcRounds），不是第二套配额。
+     旧的逐服务器 MCP 上限（servers[].maxRounds）保持其局部语义不变。 */
+  guardPolicy(){
+    const p = {};
+    const rounds = this.maxRounds();      /* 唯一读取点仍是 maxRounds()，不复制一份配额读法 */
+    if(rounds >= 1 && rounds <= 99) p.maxRounds = rounds;   /* 用户可见的轮次上限 = canonical 轮预算 */
+    /* 单次工具等待上限：沿用既有设置键的读法（非法值回落 guard 的默认 60s，不新增 UI）。
+       它属于"运行期边界"而不是产品设置，因此只作为可选覆盖存在。 */
+    let ms = NaN;
+    try{ ms = parseInt(localStorage.getItem('ib_fcToolTimeoutMs') || '', 10); }catch(e){}
+    if(ms >= 1000 && ms <= 900000) p.toolCallTimeoutMs = ms;
+    return p;
+  },
+  _guard(){
+    const G = (typeof IBToolGuard !== 'undefined') ? IBToolGuard
+            : (typeof require === 'function' ? (() => { try{ return require('./tool-execution-guard.js'); }catch(e){ return null; } })() : null);
+    if(!G) return null;
+    if(!this._tdGuard) this._tdGuard = G.createGuard({ policy: this.guardPolicy() });
+    return this._tdGuard;
+  },
+  /* 用户改过「外部工具轮数」→ 按新设置重建 guard，让可见设置始终是唯一事实源
+     （guard 的策略在创建时冻结，否则设置项会变成"改了不生效"的假开关）。
+     绝不重建**活动周期**中的 guard：周期里的计数、指纹去重与熔断状态都住在实例里，
+     中途换实例会让"已经执行的调用"记在旧实例上、而结算与熔断读的是新实例，
+     结果是一个永远不熔断、且观测面显示 rounds=0 的回合（本次开发真实踩到过）。 */
+  _syncGuardPolicy(){
+    const g = this._guard();
+    const active = !!(g && typeof g.active === 'function' && g.active());
+    if(active) return g;
+    const want = JSON.stringify(this.guardPolicy());
+    if(this._tdPolicyJson !== want){
+      if(g) this.cycleEnd();          /* 理论上不会走到：非活动周期没有残留状态，调用是无害的 */
+      this._tdPolicyJson = want;
+      this._tdGuard = null;
+    }
+    return this._guard();
+  },
+  /* 回合内工具周期：开始。
+     无论本次请求是否激活 FC 都会被调用（见 communication.js 的 _toolCycleBegin）：
+     未激活时什么都不做（返回 null），**不**开启周期、也不重置熔断原因 ——
+     重置只发生在"真的开启了一个周期"时，否则一个后台纯文本回合就会把
+     前台回合刚记下的熔断原因抹掉（本次开发真实踩到过）。 */
+  cycleBegin(ctx, meta){
+    const g = this._syncGuardPolicy();
+    if(!ctx || !ctx.active || !g) return null;
+    /* 周期是**独占**资源：同一时刻只能有一个工具执行周期。
+       若已有周期在飞（例如后台主动消息/群聊正在跑工具），后来者不抢 ——
+       但**仍然拿到一个"属于自己"的实例**（可能就在飞的那个）。
+       为什么仍要给实例：这个回合的每次工具执行都必须经过某个 guard 裁定，
+       而"没有周期"本身就是一个裁定（reason=no-active-cycle → 拒绝执行）。
+       若这里返回 null，宿主会回落到全局实例，于是这个回合的工具调用
+       会被记进**别人的**周期计数里（本次开发真实踩到）。 */
+    if(typeof g.active === 'function' && g.active()){
+      ctx._guard = g;
+      ctx._guardCycle = false;
+      return g;
+    }
+    this._tdReason = '';
+    g.startCycle(Object.assign({ authorized: true }, meta || {}));
+    ctx._guardCycle = true;
+    /* 周期实例随 ctx 走：同一个回合里，无论中途发生什么，结算与熔断都必须
+       落在开启周期的那个实例上。 */
+    ctx._guard = g;
+    return g;
+  },
+  /* 回合内工具周期：结束（返回快照，供 trace/诊断读取；不写 storage）。
+     **只结束自己拥有的周期**（ctx._guard）：
+     一个未激活 FC 的并发回合（后台主动消息、群聊、摘要调用……）不应该、
+     也不能把前台正在跑工具的那个周期收掉 —— 这正是本次开发真实踩到的
+     并发缺陷：共享 guard 被无关回合提前 endCycle，前台回合于是"工具真的
+     执行了，计数与熔断却什么都没发生"。 */
+  cycleEnd(ctx){
+    const owns = !!(ctx && ctx._guard);
+    if(!owns) return null;
+    const g = ctx._guard;
+    ctx._guard = null;
+    ctx._guardCycle = false;
+    if(typeof g.active !== 'function' || !g.active()) return null;
+    /* 先留一份 trace：周期结束后 guard 的 trace 会随状态一起清掉，
+       而"这一次回合到底发生了什么"恰恰是观测面要回答的问题。 */
+    try{ this._tdTrace = g.trace(); }catch(e){}
+    const snap = g.endCycle();
+    if(snap) this._tdLast = snap;
+    return snap;
+  },
+  /* 熔断原因（稳定字符串，空串 = 本回合未熔断）。
+     口径优先级：① 活动周期以 guard 当前的 trip 为准（它就是本回合的真相）；
+     ② 周期已结束时以上一个快照的结论为准（快照随回合产生，不会被别的回合污染）；
+     ③ 都没有才回落 `_tdReason` —— 它是全局字段，后台并发回合可能把它重置。 */
+  breakerReason(){
+    const g = this._tdGuard;
+    if(g){
+      try{ if(typeof g.active === 'function' && g.active()) return g.tripInfo() ? g.tripInfo().reason : ''; }catch(e){}
+    }
+    if(this._tdLast && typeof this._tdLast.breakerReason === 'string') return this._tdLast.breakerReason;
+    return this._tdReason || '';
+  },
+  _trip(reason, ctx, emit){
+    if(!reason) return;
+    this._tdReason = reason;
+    if(ctx) ctx.breakerReason = reason;
+    /* 诊断面：只带稳定 reason 与结构化计数，**不带工具参数、不带凭据**。
+       文案面：复用既有卡片通道 —— 不伪造一条"模型正常回复"。 */
+    const snap = this._tdGuard ? this._tdGuard.snapshot() : null;
+    const meta = snap ? (' rounds=' + snap.rounds + '/' + snap.maxRounds
+      + ' tools=' + snap.toolCalls + '/' + snap.maxToolCalls
+      + ' retries=' + snap.retries + ' duplicates=' + snap.duplicates
+      + ' elapsed=' + snap.elapsedSec + 's') : '';
+    try{ if(emit) emit('\n[工具执行已熔断 · ' + reason + meta + ']'); }catch(e){}
+    try{
+      if(typeof console !== 'undefined' && console.warn){
+        console.warn('[tools] execution breaker: ' + reason + meta);
+      }
+    }catch(e){}
+  },
+  /* 结果 → 结构化 verdict（执行**后**、入账**前**判定，不留旁路） */
+  verdictOf(r){
+    if(!r || r.ok !== true) return 'failed';
+    if(r.pendingConfirm) return 'pending-confirm';
+    return 'ok';
+  },
+  /* ── 单次工具调用的**软截止** ────────────────────────────────────
+     只停止等待，不中断已发出的请求：工具的网络调用、副作用与返回形状
+     完全不变（本阶段不改工具业务语义）。超时是一条独立的熔断原因，
+     不消耗重试额度 —— 重试救不回一个不返回的工具。 */
+  async callWithDeadline(fn, timeoutMs){
+    const ms = Number(timeoutMs) || 0;
+    if(!(ms > 0)) return fn();
+    let timer = null;
+    try{
+      return await new Promise((resolve, reject) => {
+        timer = setTimeout(() => {
+          timer = null;
+          resolve({ ok: false, reason: '工具调用超时（' + Math.round(ms / 1000) + '秒），已停止等待', response: '', guardTimedOut: true });
+        }, ms);
+        if(timer && typeof timer.unref === 'function') timer.unref();   /* Node 侧：不因这个计时器留住进程 */
+        Promise.resolve()
+          .then(fn)
+          .then(r => { if(timer){ clearTimeout(timer); timer = null; resolve(r); } },
+                e => { if(timer){ clearTimeout(timer); timer = null; } reject(e); });
+      });
+    }finally{
+      if(timer) clearTimeout(timer);   /* 任何出口都不留下未释放的计时器 */
+    }
+  },
+
   prepare(messages, flavor, options){
-    const ctx = { active: false, flavor, messages, round: 0, ledger: {}, nameMap: {}, calls: [], tools: null, _acc: null, vision: !!(options && options.vision) };
+    const ctx = { active: false, flavor, messages, round: 0, ledger: {}, nameMap: {}, calls: [], tools: null, _acc: null, _guardCycle: false, vision: !!(options && options.vision) };
     try{
       if(!this.on()) return ctx;
       if(flavor !== 'anthropic' && flavor !== 'openai') return ctx;
@@ -451,11 +601,25 @@ const IBFC = {
   /* ---- 每轮 Once 结束后调用(接线处 ~8 行胶水):
    *   const r = await IBFC.runRound(ctx, pieceText, emit);
    *   if(!r.done){ continue; }  // 继续下一轮 API 调用, ctx.messages 已更新
-   * emit(txt): 把序列化标签追加进输出流(走原 chunk 通道, 卡片系统自然接管) */
+   * emit(txt): 把序列化标签追加进输出流(走原 chunk 通道, 卡片系统自然接管)
+   *
+   * P11-3D：这里是**唯一**执行工具的地方，因此预算/去重/熔断也只在这里裁定。
+   *   执行前：beforeCall（额度 + 重复分类）→ 拒绝即不执行（decision 随调用回给宿主）
+   *   执行后：verdict → afterCall（成功/失败/重试计数）
+   *   返回前：beforeRound（provider→tool→provider 是否还有额度）
+   * 熔断时返回 done:true + breaker，调用链据此**停止 provider 循环**，
+   * 不静默 break、不伪造模型回复、不无限等待。 */
   async runRound(ctx, pieceText, emit, calls){
     if(!ctx || !ctx.active) return { done: true };
     calls = calls || this.takeCalls(ctx);
     if(!calls.length) return { done: true };
+    /* 本回合的 guard 周期：优先用 **ctx 上记着的那个实例**（开启周期的实例），
+       其次才是全局当前实例，最后才就地补一个。用 ctx 的实例是有意的：
+       全局字段可能在中途被替换，而"这次回合的额度记在哪"必须是确定的。 */
+    let g = null;
+    if(ctx._guard && typeof ctx._guard.active === 'function' && ctx._guard.active()) g = ctx._guard;
+    else if(this._tdGuard && typeof this._tdGuard.active === 'function' && this._tdGuard.active()) g = this._tdGuard;
+    else g = this.cycleBegin(ctx);
 
     // 任一调用需确认 → 序列化为普通标签(无 fc), 交给原有 pendingConfirm 流程, 本轮结束
     if(calls.some(c => this.needsConfirm(c))){
@@ -463,18 +627,53 @@ const IBFC = {
       return { done: true, pendingConfirm: true };
     }
 
+    /* ── 执行前裁定：额度 / 重复分类。被拒的调用**不进入执行** ── */
+    const decisions = calls.map(c => {
+      if(!g) return { allowed: true, kind: 'unguarded' };
+      return g.beforeCall(c.name, c.args, { sName: c.sName });
+    });
+    if(g){
+      const bad = decisions.find(d => !d.allowed);
+      if(bad){
+        const lines = calls.map((c, i) => '  · ' + c.name + ' [' + (decisions[i].allowed ? decisions[i].kind : 'blocked:' + decisions[i].reason) + ']');
+        emit('\n[工具调用被拒绝 · ' + bad.reason + ']\n' + lines.join('\n'));
+      }
+    }
+
     // 全部立即执行
     const results = [];
-    for(const c of calls){
+    for(let i = 0; i < calls.length; i++){
+      const c = calls[i];
+      let d = decisions[i];
+      /* 熔断可能在**本批中途**发生（前一个调用超时/重试耗尽）：
+         此处重新读取一次，确保"熔断后不再执行额外工具"是承重的，
+         而不是靠"整批已经授权过"这个巧合。 */
+      if(d.allowed && g && g.tripped()) d = { allowed: false, reason: g.tripInfo().reason };
       let r;
+      if(!d.allowed){
+        r = { ok: false, reason: '工具执行已熔断（' + d.reason + '）', response: '', guardBlocked: true, guardReason: d.reason };
+        results.push(r);
+        try{ emit('\n' + this.serialize(c, true)); }catch(e){}
+        continue;
+      }
       try{
-        if(c.name.indexOf('mcp.') === 0) r = await IBMCP.execOp(c.name, c.args);
-        else if(typeof this.execLocalTool === 'function') r = await this.execLocalTool(c.name, c.args);
+        const _deadline = (g && g.policy) ? g.policy().toolCallTimeoutMs : 0;
+        if(c.name.indexOf('mcp.') === 0) r = await this.callWithDeadline(() => IBMCP.execOp(c.name, c.args), _deadline);
+        else if(typeof this.execLocalTool === 'function') r = await this.callWithDeadline(() => this.execLocalTool(c.name, c.args), _deadline);
         else r = { ok: false, reason: '本地工具执行器未接线', response: '' };
       }catch(e){
         r = { ok: false, reason: String(e && e.message || e), response: '' };
       }
       r = r || { ok: false, reason: '空结果', response: '' };
+      /* 结算：verdict 判定 + 计数 + 熔断，**同一步**完成（见 guard.settleCall）。
+         执行后、入账前结算，台账里存的永远是"这一次真的发生了什么"。 */
+      if(g){
+        let v = { verdict: r.ok === true ? 'ok' : 'failed' };
+        try{ v = g.settleCall(c.name, c.args, r); }catch(e){}
+        r.guardVerdict = v.verdict;
+      }else{
+        r.guardVerdict = this.verdictOf(r);
+      }
       ctx.ledger[this.ledgerKey(c.name, c.args)] = r;
       results.push(r);
       emit('\n' + this.serialize(c, true));   // fc="1": finalize 只渲染卡片, 不再执行/不再排队注入
@@ -483,15 +682,29 @@ const IBFC = {
     // 把 assistant(tool_use) + 结果 接回对话, 供下一轮
     ctx.messages = ctx.messages.concat(this.buildTurns(ctx, pieceText, calls, results));
     ctx.round++;
-    /* 轮数分账: 外部工具(webhook)与 MCP 各自独立计数; MCP 再按服务器别名细分, 支持逐服务器轮上限 */
-    const isMcp = c => String(c.name || '').indexOf('mcp.') === 0;
-    if(calls.some(c => !isMcp(c))){
-      ctx.roundLocal = (ctx.roundLocal || 0) + 1;
-      if(ctx.roundLocal >= this.maxRounds()){
-        emit('\n[已达外部工具调用轮数上限 ' + this.maxRounds() + ', 如需继续请回复"继续"]');
-        return { done: true, hitCap: true };
-      }
+
+    /* ── 熔断：本回合不再继续 provider 循环 ── */
+    if(g && g.tripped()){
+      const t = g.tripInfo();
+      this._trip(t.reason, ctx, emit);
+      ctx._guardCycle = false;   /* 周期的实际收尾在宿主的 finally 里（唯一出口） */
+      return { done: true, breaker: t };
     }
+
+    /* ── 轮预算：provider→tool→provider 每走一次都要消耗，且这是**唯一**的
+         总轮次闸门。逐服务器 MCP 上限保持其局部语义（见下），两者不互相顶替。 */
+    if(g){
+      const rd = g.beforeRound();
+      if(!rd.allowed){
+        this._trip(rd.reason, ctx, emit);
+        ctx._guardCycle = false;
+        return { done: true, breaker: g.tripInfo() };
+      }
+      g.afterRound();
+    }
+
+    /* 逐服务器轮上限（局部限制，语义不变）：仅约束"同一 MCP 服务器"的轮数 */
+    const isMcp = c => String(c.name || '').indexOf('mcp.') === 0;
     const mcpAliases = {};
     calls.filter(isMcp).forEach(c => {
       let a = '';
