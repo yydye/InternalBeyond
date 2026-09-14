@@ -356,7 +356,14 @@
   /* 有界的关系更新步（**纯函数**，无 IO）。
      输入 = 本次 run 的观测事实；输出 = 各维度的**增量**（不是最终值）。
      绝不做"每说一句话就永久改人格"：单次 run 对任一维度的改动被
-     RELATION_DELTA_CAP 硬顶封住，且增量按维度白名单过滤。 */
+     RELATION_DELTA_CAP 硬顶封住，且增量按维度白名单过滤。
+
+     中性 = 零变化（P-audit 修正）。此前 trust/affinity 只要"语气差不为负"
+     就固定上涨，于是**任何**一次普通寒暄都在涨信任 —— 而语气分类本身是词表
+     命中计数，"类别""麻烦"这类词还会把中性句判成正/负。现在明确：
+       · familiarity 只由"确实聊过几轮"驱动（可观察事实，不可伪造）；
+       · trust / affinity 只由**净正语气**驱动；净 ≤ 0（中性或负）一律 0，
+         绝不用"没检测到负面"当成"正面"。 */
   function relationDelta(observation) {
     var o = observation || {};
     var turns = Math.max(0, Number(o.turns) || 0);
@@ -366,11 +373,13 @@
     var out = {};
     if (turns <= 0) { RELATION_DIMS.forEach(function (d) { out[d] = 0; }); return out; }
     /* 熟悉度：只与"聊过"这件事有关，与语气无关 —— 单向累积，永不下滑。 */
-    out.familiarity = capDelta(0.004 * turns + 0.002 * Math.max(0, pos - neg));
-    /* 信任 / 好感：由正负语气差驱动，可正可负。发起方的主动更值钱一点
-       （主动联系是关系强度的证据），回应的语气则决定方向。 */
-    var politeness = (pos - neg) / Math.max(1, turns);
-    var drive = politeness * 0.02 + (initiatorId !== responderId ? 0.002 : 0);
+    out.familiarity = capDelta(0.004 * turns);
+    /* 净正才驱动信任/好感。发起方的主动更值钱一点（主动联系是关系强度的证据）。 */
+    var drive = 0;
+    if (pos > neg) {
+      var politeness = (pos - neg) / Math.max(1, turns);
+      drive = politeness * 0.02 + (initiatorId !== responderId ? 0.002 : 0);
+    }
     out.trust = capDelta(drive);
     out.affinity = capDelta(drive * 0.8);
     return out;

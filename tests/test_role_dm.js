@@ -423,6 +423,29 @@ reset();
     C.applyRelationDelta(C.buildRelationRecord('x', 'y'), { trust: 99 }).trust <= 1);
 }
 
+/* ══════ 14-i · 中性闲聊 = 零关系变化（审计修正）══════
+   审计实测：修正前**任何**一次普通寒暄都在涨 trust/affinity —— 判据只是
+   "语气差不为负"，而语气分类是词表命中计数（"类别""麻烦"这类词还会误判）。
+   关系现在区分 neutral / positive：中性必须 delta ≈ 0，只有净正语气才动信任。 */
+{
+  const both = { initiatorId: 'a', responderId: 'b' };
+  const neutral = C.relationDelta(Object.assign({ turns: 2, positive: 0, negative: 0 }, both));
+  check('14i. 中性闲聊：trust 与 affinity 恰好为 0（不再"聊了就涨"）',
+    neutral.trust === 0 && neutral.affinity === 0, neutral);
+  check('14j. 中性闲聊：familiarity 仍按"确实聊过"增长（可观察事实）',
+    neutral.familiarity > 0 && neutral.familiarity <= C.RELATION_DELTA_CAP, neutral.familiarity);
+  check('14k. familiarity 不再被语气计数放大',
+    C.relationDelta(Object.assign({ turns: 2, positive: 9, negative: 0 }, both)).familiarity === neutral.familiarity);
+  const pos = C.relationDelta(Object.assign({ turns: 2, positive: 2, negative: 0 }, both));
+  check('14l. 净正语气才驱动信任上涨（且不超过 cap）',
+    pos.trust > 0 && pos.trust <= C.RELATION_DELTA_CAP && pos.affinity > 0, pos);
+  const neg = C.relationDelta(Object.assign({ turns: 2, positive: 1, negative: 4 }, both));
+  check('14m. 净负不涨信任（中性/负向一律不为正）',
+    neg.trust <= 0 && neg.affinity <= 0, neg);
+  check('14n. 一次 2 轮中性 run 的任一维度变化 ≤ RELATION_DELTA_CAP',
+    Object.values(neutral).every(v => Math.abs(v) <= C.RELATION_DELTA_CAP + 1e-9));
+}
+
 /* ══════ 15 · Memory consolidation boundary ══════ */
 reset();
 {
