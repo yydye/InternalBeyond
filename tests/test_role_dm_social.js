@@ -948,6 +948,39 @@ reset();
   const okTrace = runTraces.pop();
   check('41·setup2 成功发起的那条 trace 轮数是真的（run 结果字段名 turns）',
     !!okTrace && okTrace.turns === 2, okTrace && okTrace.turns);
+  /* 这条钉的是**核心 invariant**，不是"多一个字段"：
+     自主 A → B 时，实际第一条**落库**消息的发送者必须是 A（发起人）。
+     它能抓住的 bug 有两种，都必须红：
+       ① run() 不返回 firstSpeakerId（那种"字段恒为 '' 却全绿"的缺陷）；
+       ② chooseFirstSpeaker 被 manual 的"接上一个人"规则抢走（thread 里
+          lastTurnRoleId 是 B 时本该是 A 先说，见下面的 41·setup4）。
+     注意它**不是**在断言 initiatorId == firstSpeakerId 这条等式本身成立 ——
+     等式在这里成立是因为 autonomous 的 forceInitiator 契约，而不是因为
+     trace 抄了发起人：trace 读的是 run 的 produced[0]（见 role-dm.js）。 */
+  check('41·setup3 成功发起的 trace 记录了**实际**第一个说话的人（= 发起人 A）',
+    !!okTrace && okTrace.firstSpeakerId === 'friend_aaa', okTrace && okTrace.firstSpeakerId);
+
+  /* ── existing-thread autonomous（§9）──────────────────────────────
+     一段**已经存在**的 A↔B thread，且最后一条消息是 A 发的。manual 的
+     "接上一个人"规则会因此选 B 先说；autonomous 必须仍然由 A 先说 ——
+     否则"她主动联系 TA"被偷换成"她去回应 TA"。
+     直接改 thread 记录（不更新 lastMessageAt）来构造这个状态：
+     ageThread 已经把 lastMessageAt / lastRunAt 推到 10 天前，这里只动
+     lastTurnRoleId，于是冷却与"很久没联系"的信号都不受影响。 */
+  {
+    const fid = C.roleDmFriendId('friend_aaa', 'friend_bbb');
+    const v = JSON.parse(LS['ib_role_dm_threads_v1']);
+    v.items[fid].lastTurnRoleId = 'friend_aaa';
+    LS['ib_role_dm_threads_v1'] = JSON.stringify(v);
+    RS._dropCrossRunState();          /* 清掉上一段 run 留下的 pair 冷却 */
+    const at2 = armForInitiation('friend_aaa', 'friend_bbb');
+    CALLS.length = 0; TRACES.length = 0; RS._trace(0);
+    const t2 = await RS.tick({ now: at2, force: true });
+    check('41·setup4 已有 thread（上一条是 A 说的）时仍然发起了', t2.initiated === 1, t2);
+    const ok2 = RS._trace(50).filter(t => t.decision === 'initiate').pop();
+    check('41·setup5 已有 thread 时 autonomous 仍是发起人先说（不被"接上一个人"抢走）',
+      !!ok2 && ok2.firstSpeakerId === 'friend_aaa', ok2 && ok2.firstSpeakerId);
+  }
   RS.computeIntent('friend_ccc', { now: armAt });   /* 也产生一条 no-action */
   const dump = JSON.stringify(RS._trace(50));
   check('41a. trace 里有记录', RS._trace(50).length >= 1, RS._trace(50).length);
@@ -959,7 +992,7 @@ reset();
   for (const t of RS._trace(50)) Object.keys(t).forEach(k => fields.add(k));
   const allowed = new Set(['consumer', 'characterId', 'evaluatedAt', 'candidateCount', 'decision',
     'reasonCode', 'scoreBucket', 'peerId', 'blockedBy', 'quota', 'threshold', 'runId', 'turns',
-    'stopReason', 'at', 'seq']);
+    'stopReason', 'firstSpeakerId', 'at', 'seq']);
   const extra = [...fields].filter(f => !allowed.has(f));
   check('41f. trace 字段是白名单（没有自由 meta 通道）', extra.length === 0, extra);
   check('41g. score 以分桶出现而不是原值',
@@ -985,6 +1018,164 @@ reset();
   check('41m. 该 trace 不含 score / affinity / quota 这类工程数据',
     !!initiatorTrace && !Object.keys(initiatorTrace).some(k => /score|affinity|quota|threshold|candidate/i.test(k)),
     initiatorTrace && Object.keys(initiatorTrace));
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   41m · firstSpeakerId：run 结果与 trace 说的是**实际**事实
+   ------------------------------------------------------------------
+   两个字段可以**相等**，但绝不能是同一个字段：
+     · initiatorId     = 这次 run 由谁**请求**发起（tryInitiate 传进去的）
+     · firstSpeakerId  = 第一条**真的落库**的消息由谁发出
+   它们只在"发起人真的把第一条说成了"时相等 —— 而这恰恰是 autonomous
+   的契约（forceInitiator）。本块把边界钉死：
+     ① 发起人第一轮就失败 → turns=0 且 firstSpeakerId=''
+        （绝不写 A：A 一个字都没说出来）；
+     ② 发起人成功、对方失败 → turns=1 且 firstSpeakerId=A（部分成功）；
+     ③ 契约面：run 结果只暴露一个 canonical 字段，没有第二个别名。
+   ══════════════════════════════════════════════════════════════════ */
+console.log('\n── 41m · firstSpeakerId 的边界 ──');
+{
+  /* ── ③ 契约面：字段名与"没有别名" ── */
+  reset();
+  await makeAcquainted('friend_aaa', 'friend_bbb', { turns: 2 });
+  setRelation('friend_aaa', 'friend_bbb', { familiarity: 0.85, affinity: 0.85, trust: 0.8, dmCount: 6 });
+  armForInitiation('friend_aaa', 'friend_bbb');
+  RS.setGlobalEnabled(true);
+  RS.setCharacterPrefs('friend_aaa', { enabled: true, initiative: 0.9 });
+  CALLS.length = 0;
+  const okRun = await RD.startAutonomous('friend_aaa', 'friend_bbb', { initiatorId: 'friend_aaa', turns: 2, force: true });
+  check('41m-1. run 结果暴露 firstSpeakerId，且等于第一条落库消息的发送者',
+    okRun.ok === true && okRun.firstSpeakerId === 'friend_aaa', [okRun.ok, okRun.firstSpeakerId, Object.keys(okRun)]);
+  /* 一个事实只留一个 canonical 字段：initiatorId 是**入参**语义（请求由谁发起），
+     不允许再在结果里造一个同义字段，否则两个字段会各自漂移（turns/turnsDone
+     就是这么坏掉的）。 */
+  check('41m-2. 结果里没有第二个 first speaker 别名（initiatorId / requestedBy 等）',
+    Object.prototype.hasOwnProperty.call(okRun, 'initiatorId') === false &&
+    Object.prototype.hasOwnProperty.call(okRun, 'requestedFirstSpeakerId') === false &&
+    Object.prototype.hasOwnProperty.call(okRun, 'intendedInitiatorId') === false,
+    Object.keys(okRun));
+  /* 实际第一条消息的发送者必须与 run 自己报的一致（不靠 trace 转述）。 */
+  const fidM = C.roleDmFriendId('friend_aaa', 'friend_bbb');
+  const firstMsg = msgsOf(fidM)[0];
+  check('41m-3. firstSpeakerId 与日志里第一条消息的 senderId 逐字一致',
+    !!firstMsg && String((firstMsg.metadata || {}).senderId) === okRun.firstSpeakerId,
+    [firstMsg && firstMsg.metadata && firstMsg.metadata.senderId, okRun.firstSpeakerId]);
+
+  /* ── ① 发起人第一轮就失败 → 没有任何成功消息 → '' ── */
+  reset();
+  await makeAcquainted('friend_aaa', 'friend_bbb', { turns: 2 });
+  setRelation('friend_aaa', 'friend_bbb', { familiarity: 0.85, affinity: 0.85, trust: 0.8, dmCount: 6 });
+  armForInitiation('friend_aaa', 'friend_bbb');
+  RS.setCharacterPrefs('friend_aaa', { enabled: true, initiative: 0.9 });
+  failFor = 'friend_aaa';
+  const firstFail = await RD.startAutonomous('friend_aaa', 'friend_bbb', { initiatorId: 'friend_aaa', turns: 2, force: true });
+  failFor = null;
+  check('41m-4. 发起人第一轮失败：turns=0 且 firstSpeakerId 为空（A 一个字都没说出来）',
+    firstFail.ok === false && firstFail.turns === 0 && firstFail.firstSpeakerId === '',
+    [firstFail.ok, firstFail.turns, firstFail.firstSpeakerId]);
+
+  /* ── ② 部分成功：A 说成第一条，B 随后失败 → firstSpeakerId = A ── */
+  reset();
+  await makeAcquainted('friend_aaa', 'friend_bbb', { turns: 2 });
+  setRelation('friend_aaa', 'friend_bbb', { familiarity: 0.85, affinity: 0.85, trust: 0.8, dmCount: 6 });
+  armForInitiation('friend_aaa', 'friend_bbb');
+  RS.setCharacterPrefs('friend_aaa', { enabled: true, initiative: 0.9 });
+  replyFor = (cfg) => {
+    if (String(cfg.id) === 'friend_bbb') throw new Error('peer provider exploded');
+    return '我先说一句真话。' + Math.random().toString(36).slice(2, 8);
+  };
+  const partial = await RD.startAutonomous('friend_aaa', 'friend_bbb', { initiatorId: 'friend_aaa', turns: 2, force: true });
+  replyFor = null;
+  check('41m-5. 部分成功：A 说成第一条后 B 失败 → turns=1，firstSpeakerId 仍是 A',
+    partial.ok === true && partial.turns === 1 && partial.stopReason === 'provider-failed' &&
+    partial.firstSpeakerId === 'friend_aaa',
+    [partial.ok, partial.turns, partial.stopReason, partial.firstSpeakerId]);
+  check('41m-6. 部分成功的 run 里确实只落了一条消息，且发送者是 A',
+    (function () {
+      const ms = msgsOf(C.roleDmFriendId('friend_aaa', 'friend_bbb')).filter(m => /我先说一句真话/.test(String(m.content)));
+      return ms.length === 1 && String((ms[0].metadata || {}).senderId) === 'friend_aaa';
+    })());
+
+  /* ── 走**真实**自主路径：部分失败的那条 trace 也必须如实带出 A ── */
+  reset();
+  await makeAcquainted('friend_aaa', 'friend_bbb', { turns: 2 });
+  setRelation('friend_aaa', 'friend_bbb', { familiarity: 0.95, affinity: 0.95, trust: 0.9, dmCount: 8 });
+  const at3 = armForInitiation('friend_aaa', 'friend_bbb');
+  ageThread('friend_aaa', 'friend_bbb', 10 * 86400000);
+  RS.setCharacterPrefs('friend_aaa', { enabled: true, initiative: 1.0 });
+  CALLS.length = 0; TRACES.length = 0; RS._trace(0);
+  replyFor = (cfg) => {
+    if (String(cfg.id) === 'friend_bbb') throw new Error('peer provider exploded');
+    return '主动来找你说句话。' + Math.random().toString(36).slice(2, 8);
+  };
+  const t3 = await RS.tick({ now: at3, force: true });
+  replyFor = null;
+  check('41m-7. 这次 tick 确实发起了一次（否则下面的 trace 断言没有意义）', t3.initiated === 1, t3);
+  const partialTrace = RS._trace(50).filter(t => t.decision === 'initiate').pop();
+  /* 这一条是 41·setup3 的**反面**：那次是完整成功(turns=2)，这次是部分
+     失败(turns=1)。两条都落在同一个字段上，因此"只在全成功时才填"这种
+     半吊子实现会被它抓住。 */
+  check('41m-8. 部分失败的那条 trace 仍然如实记录 turns=1 与 firstSpeakerId=A',
+    !!partialTrace && partialTrace.turns === 1 && partialTrace.firstSpeakerId === 'friend_aaa',
+    partialTrace && [partialTrace.turns, partialTrace.firstSpeakerId]);
+
+  /* ── 失败且无消息的那条 trace：firstSpeakerId 必须是 ''，不是 A ── */
+  reset();
+  await makeAcquainted('friend_aaa', 'friend_bbb', { turns: 2 });
+  setRelation('friend_aaa', 'friend_bbb', { familiarity: 0.95, affinity: 0.95, trust: 0.9, dmCount: 8 });
+  const at4 = armForInitiation('friend_aaa', 'friend_bbb');
+  ageThread('friend_aaa', 'friend_bbb', 10 * 86400000);
+  RS.setCharacterPrefs('friend_aaa', { enabled: true, initiative: 1.0 });
+  CALLS.length = 0; TRACES.length = 0; RS._trace(0);
+  failFor = 'friend_aaa';
+  const t4 = await RS.tick({ now: at4, force: true });
+  failFor = null;
+  /* 只按**事实**选这条 trace（停止原因是 provider-failed），不按
+     firstSpeakerId 选 —— 拿被断言的值去筛选样本会让断言变成循环论证。 */
+  const deadTrace = RS._trace(50).filter(t => t.stopReason === 'provider-failed').pop();
+  check('41m-9. 一条消息都没有的失败 trace：turns=0 且 firstSpeakerId 为空',
+    !!deadTrace && deadTrace.turns === 0 && deadTrace.firstSpeakerId === '',
+    deadTrace && [deadTrace.turns, deadTrace.firstSpeakerId]);
+
+  /* ── ④ 一个**诚实的边界**：intent 与 actual 在当前生产代码里分不开 ──
+     本来这里想构造"意图 A、实际 B"的分叉来把两种修法分开。审计后确认
+     那个状态在现有 run() 里**不可达**，因此把它删掉了（留着一个测不到
+     东西的断言会让人以为它保护了什么）：
+       run() 循环的每一个出口都是 break（见 role-dm.js：abort / gate /
+       roleDailyCap / turnRes 失败 / low-info-stall / duplicate-stall /
+       bad-message / 落库失败），而**只有**落库成功那一支才会 turnsDone++
+      + speakerId=peerId。于是"某轮失败"必然立刻结束整个 run，
+      **不存在**"发起人那一轮没成、对方接着说成"的成功 run。
+     结合 autonomous 的 forceInitiator，结论是：
+       autonomous 成功 run 里 initiator === 实际 first speaker 是**恒真**的。
+     所以抄 initiatorId 的实现也能通过本块所有这些断言 —— 这是结构性事实，
+     不是测试漏了。两种修法的差别因此不在当前取值上，而在**authority**上：
+     本实现读 produced[0]（实际发生过的事件），它在任何未来改动下都不会说谎；
+     抄 initiatorId 则是把记录的诚实性押在 forceInitiator 契约永远不被破坏上。
+     下面 41m-12 用**源码形态**把 authority 钉住（本仓库已有同类先例：
+     43c 就是断言 observeRun 只出现在 role-dm.js 里）。 */
+  const socialSrcNow = fs.readFileSync(path.join(ROOT, 'assets', 'js', 'role-dm-social.js'), 'utf8');
+  check('41m-12. trace 的 firstSpeakerId 取自 run 结果，而不是发起意图（authority 方向）',
+    socialSrcNow.indexOf('firstSpeakerId: str((result && result.firstSpeakerId)') >= 0 &&
+    socialSrcNow.indexOf('firstSpeakerId: str(decision.characterId') < 0 &&
+    socialSrcNow.indexOf('firstSpeakerId: str(res.initiatorId') < 0);
+
+  /* ── ⑤ manual 不被误伤：run 结果的 firstSpeakerId 对 manual 同样如实 ──
+     契约不能因为 autonomous 需要"发起人先说"就把 manual 也钉成某个固定角色。
+     这里不假设 manual 先说谁，而是把 run 自称的值与**日志里那一条**对齐。
+     注意 turns 会被 normalizeTurnBudget 夹到 minTurns（manual 是 2），
+     所以 `turns: 1` 实际是一次 2 轮 run —— 断言因此不写死轮数。 */
+  reset();
+  const manualR1 = await RD.start('friend_aaa', 'friend_bbb', { turns: 1, force: true });
+  check('41m-13. manual run 结果的 firstSpeakerId 与日志里第一条消息的发送者一致',
+    (function () {
+      const ms = msgsOf(C.roleDmFriendId('friend_aaa', 'friend_bbb')).filter(m => String((m.metadata || {}).runId || '') === String(manualR1.runId || ''));
+      return manualR1.ok === true && ms.length > 0 &&
+        String((ms[0].metadata || {}).senderId) === manualR1.firstSpeakerId;
+    })(), [manualR1.ok, manualR1.firstSpeakerId]);
+  check('41m-14. manual 的 firstSpeakerId 是参与者之一（不是空、也不是外人）',
+    manualR1.firstSpeakerId === 'friend_aaa' || manualR1.firstSpeakerId === 'friend_bbb',
+    manualR1.firstSpeakerId);
 }
 
 /* ══════════════════════════════════════════════════════════════════

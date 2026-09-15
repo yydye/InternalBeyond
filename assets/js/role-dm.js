@@ -1129,6 +1129,18 @@
       thread: thread,
       turns: turnsDone,
       stopReason: stopReason,
+      /* **实际**第一个说成话的人 —— 不是"计划由谁发起"。
+         canonical truth 就是 produced[0]：它只在 appendMessage 成功**之后**
+         才 append（同一条消息一旦落库，它的 senderId 就是既定事实；低信息 /
+         重复内容在落库**之前**就被丢弃、不进 produced，因此不会被误记）。
+         于是没有人需要去**猜**这件事：不读 thread.lastTurnRoleId（它同时被
+         manual 与 autonomous 改写，读它等于用状态猜历史），也不复用
+         initiatorId（那是"请求由谁发起"，provider 在第一轮就失败时它照样有值，
+         而那时一个人都没说出话 —— 两者只有在 autonomous 真的说成了话时
+         才恰好相等，那正是本字段要如实区分的差别）。
+         没有任何成功消息时是 ''（失败出口一律如此：那些出口在 produced
+         还是空的时候就越过了这条 return）。 */
+      firstSpeakerId: produced.length ? String(produced[0].roleId) : '',
       messages: produced.map(function (p) { return p.messageId; }),
       lastMessageId: last ? last.messageId : null,
       relation: relationResult,

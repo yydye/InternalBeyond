@@ -596,7 +596,12 @@
            → 每条 trace 的轮数恒为 0，而且没有任何断言会红：一个恒为常量
            的观测字段，比缺这个字段更坏。 */
         turns: Number(failedRec.turns) || 0,
-        stopReason: str(failedRec.stopReason || reason)
+        stopReason: str(failedRec.stopReason || reason),
+        /* 失败**不**等于"没人说过话"：A 说成第一条、B 随后 provider 失败时
+           这一行仍然有真实的 firstSpeakerId。所以这里同样从 run 结果取，
+           而不是想当然地写 '' —— ''只该表示"一条成功消息都没有"，
+           那正是 turns === 0 的那一类失败（例如发起人第一轮就失败）。 */
+        firstSpeakerId: str(failedRec.firstSpeakerId || '')
       });
     }
     return audit(decision, now, {
@@ -629,6 +634,15 @@
       runId: str((result && result.runId) || ''),
       turns: Number((result && result.turns) || 0),
       stopReason: str((result && result.stopReason) || ''),
+      /* **实际**第一个说成话的人（取自 run 结果的同名字段，见 role-dm.js 的
+         produced[0]）—— 不是"这次由谁发起"。请求发起人一直是
+         decision.characterId，本字段回答的是另一个问题：
+         第一条**真的落库**的消息是谁发的。
+         曾经这里写着 res.firstSpeakerId，而 run() 根本不返回这个字段 →
+         每条 trace 恒为 ''。它与 turnsDone 是同一类缺陷，但比它更隐蔽：
+         该字段连白名单都不在（本函数是**闭合**记录，不是展开 result），
+         于是那个 '' 连一个断言都碰不到。 */
+      firstSpeakerId: str((result && result.firstSpeakerId) || ''),
       at: Number(now) || nowMs()
     };
     return tracePush(rec);
