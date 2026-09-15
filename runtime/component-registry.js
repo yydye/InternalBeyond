@@ -337,7 +337,20 @@ const COMPONENTS = [
     affectsOverall: false,
     healthyRequiredForServices: false,
     restartable: false,
-    controllable: false,
+    controllable: true,
+    /* P11-3H closure (1.0.5): the runner's control plane IS a stop target, and
+       it has to be the FIRST one. Its shutdown stops crash recovery before it
+       touches anything else, so it is the only thing that can take its children
+       down without the supervisor resurrecting them. Declaring the surface here
+       — next to the port and the identity predicate — is what lets the
+       installer's helper stop the manager instead of picking off its leaves.
+
+       `/shutdown` is the runner's OWN endpoint (runtime/local-services-runner.js
+       serves it), which is why it is not serviceControl.STOP_PATH: the four
+       product services share one cooperative surface, and the manager has its
+       own. tests/test_p11_3h_lifecycle_gate.js A8 reads BOTH sides and fails if
+       this declaration and the path the runner actually serves ever disagree. */
+    stopPath: '/shutdown',
     matchesHealth: data => !!(data && data.service === 'InternalBeyond Restart')
   },
   {
@@ -412,8 +425,26 @@ function serviceFiles() { return COMPONENTS.map(c => c.serviceFile).filter(Boole
  *
  * `restartTargets()` above answers a different question (may the supervisor
  * start it again); the two sets are related but not the same, and neither is
- * derived from the other. */
-function lifecycleTargets() { return COMPONENTS.filter(c => typeof c.stopPath === 'string' && c.stopPath); }
+ * derived from the other.
+ *
+ * ORDER IS PART OF THE CONTRACT: a manager is stopped before the components it
+ * manages. The runner's own shutdown stops crash recovery FIRST and only then
+ * tears its children down cooperatively; stop a managed component while the
+ * runner is still alive and the supervisor simply starts it again. That is not
+ * a theory — it was measured on a real installed instance during the 1.0.5
+ * release build: the leaf-by-leaf pass produced FALLBACK_KILL on Bridge,
+ * stopAll() counts that as a failure, the installer aborted with exit 7, and
+ * the components were back on their ports afterwards.
+ *
+ * `managedByRunner: true` already marks the managed half, so the order is
+ * derived from that declaration rather than listed a second time: everything
+ * NOT managed by the runner first (in declaration order), then everything that
+ * is. With today's registry that is static, restart, bridge, active, homeNode. */
+function lifecycleTargets() {
+  const targets = COMPONENTS.filter(c => typeof c.stopPath === 'string' && c.stopPath);
+  return targets.filter(c => c.managedByRunner !== true)
+    .concat(targets.filter(c => c.managedByRunner === true));
+}
 function lifecycleTargetIds() { return lifecycleTargets().map(c => c.id); }
 
 /* boot-state COMPONENT_ORDER: the frozen ids, in registry order. */

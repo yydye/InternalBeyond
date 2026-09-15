@@ -254,11 +254,18 @@ check('build script keeps the UTF-8 BOM PowerShell 5.1 needs', () => {
   /* PowerShell 5.1 decodes a BOM-less file as ANSI, which turns the Chinese
      [FAIL]/Write-Ok messages into mojibake and can break string literals
      outright. The edit tool strips BOMs (docs/TROUBLESHOOTING.md T10), and a
-     stripped BOM makes the whole build fail to parse. */
-  const raw = fs.readFileSync(path.join(ROOT, 'scripts', 'build-installer.ps1'));
-  assert.strictEqual(raw[0], 0xEF, 'build-installer.ps1 must start with a UTF-8 BOM');
-  assert.strictEqual(raw[1], 0xBB, 'build-installer.ps1 must start with a UTF-8 BOM');
-  assert.strictEqual(raw[2], 0xBF, 'build-installer.ps1 must start with a UTF-8 BOM');
+     stripped BOM makes the whole build fail to parse.
+     The installer script has carried one since the first release for the same
+     reason — every user-facing message in it is Chinese — so it is asserted on
+     both files rather than on the one that happened to break first. Repair with
+     scripts/restore-utf8-bom.ps1. */
+  for (const rel of [['scripts', 'build-installer.ps1'], ['installer', 'InternalBeyond.iss']]) {
+    const raw = fs.readFileSync(path.join(ROOT, rel[0], rel[1]));
+    const label = rel.join('/');
+    assert.strictEqual(raw[0], 0xEF, label + ' must start with a UTF-8 BOM');
+    assert.strictEqual(raw[1], 0xBB, label + ' must start with a UTF-8 BOM');
+    assert.strictEqual(raw[2], 0xBF, label + ' must start with a UTF-8 BOM');
+  }
 });
 
 check('build produces the manifest from the bytes it just produced', () => {
@@ -341,8 +348,29 @@ check('installer stops a running instance through IB control surfaces only', () 
   assert.ok(!/\/IM\s+node\.exe/i.test(ISS_SRC), 'must never kill by image name');
   const helper = read(path.join(ROOT, 'installer', 'tools', 'ib-stop.js'));
   assert.ok(!/taskkill\.exe',\s*\['\/IM'/.test(helper), 'helper must not kill by image name');
-  assert.ok(/\/shutdown/.test(helper) && /__shutdown/.test(helper), 'helper must try the graceful endpoints first');
-  assert.ok(helper.indexOf('/shutdown') < helper.indexOf('pidsForPort'), 'graceful stop must precede the fallback');
+  /* The graceful endpoints are DERIVED since P11-3H: the helper deliberately no
+     longer keeps a service table of its own (the registry owns ids, ports, the
+     health path AND the stop path — `stopPath`), so the literals moved with the
+     declaration. The contract being checked has not changed — the cooperative
+     surface is written before any fallback kill — so it is asserted where it now
+     lives: the endpoints in the registry/lifecycle, and the ORDER inside the one
+     shared state machine both the helper and the runner run. */
+  const registrySrc = read(path.join(ROOT, 'runtime', 'component-registry.js'));
+  const lifecycleSrc = read(path.join(ROOT, 'runtime', 'component-lifecycle.js'));
+  assert.ok(/__shutdown/.test(lifecycleSrc), 'the shared stop endpoint must be declared by the lifecycle');
+  assert.ok(/stopPath: '\/shutdown'/.test(registrySrc), 'the runner\'s own endpoint must be declared by the registry');
+  assert.ok(/lifecycle\.stopAll\(/.test(helper),
+    'the installer helper must stop through the shared cooperative state machine');
+  /* Scoped to stopComponent: the definition of the kill helper naturally sits
+     earlier in the file than the state machine that calls it, so the only
+     meaningful ordering is the one INSIDE the stop itself. */
+  const stopFn = lifecycleSrc.slice(lifecycleSrc.indexOf('async function stopComponent'));
+  assert.ok(stopFn.length > 0, 'the shared state machine must expose stopComponent');
+  assert.ok(stopFn.indexOf("method: 'POST'") >= 0 && stopFn.indexOf('await killPid(') >= 0 &&
+    stopFn.indexOf("method: 'POST'") < stopFn.indexOf('await killPid('),
+    'graceful stop must precede the fallback kill inside the state machine');
+  assert.ok(stopFn.indexOf('shouldFallback') >= 0,
+    'and the fallback must be gated on the cooperative phase having been given its chance');
   assert.ok(/commandLineIsInternalBeyond/.test(helper), 'fallback must verify the command line');
   assert.ok(/RestartApplications=no/.test(ISS_SRC), 'must not let Restart Manager show internal process names');
   assert.ok(/CloseApplications=no/.test(ISS_SRC), 'must handle close applications ourselves');

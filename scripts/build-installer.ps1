@@ -262,6 +262,41 @@ $stageResult = $stageJson.Trim() | ConvertFrom-Json
 if (-not $stageResult.ok) { Fail "staging 不完整：$stageJson" }
 Write-Ok ("staged {0} files · {1:N1} MiB → {2}" -f $stageResult.staged, ($stageResult.totalBytes / 1MB), $stageResult.dir)
 
+# The install root carries its OWN payload manifest (upgrade §7). It is written
+# from the bytes staging just produced — never hand-maintained — and it is what
+# makes obsolete-payload cleanup a diff of two declarations instead of a scan of
+# a directory that also holds the user's files. Its own name is listed among the
+# files it declares: the manifest is payload too, and a manifest that omitted
+# itself would have the next upgrade delete it.
+$payloadManifest = Join-Path $staging 'ib-payload-manifest.json'
+$payloadFiles = @($stageResult.files)
+# A manifest that does not describe the WHOLE payload is worse than none: the next
+# upgrade deletes (previous payload - this list), so an under-stated list would
+# delete the files that very install had just put in place. The list comes from the
+# whitelist staging just resolved; any disagreement with the count it reported is a
+# hard failure, not a warning. (Measured: an earlier version of this step read a
+# CLI field that did not exist yet and silently wrote a 2-entry manifest.)
+if ($payloadFiles.Count -ne $stageResult.staged) {
+  Fail "staging 报告 $($stageResult.staged) 个文件，但白名单返回 $($payloadFiles.Count) 条 —— 拒绝生成载荷清单"
+}
+$payloadFiles += 'ib-payload-manifest.json'
+$payloadManifestObject = [ordered]@{
+  schema    = 'internalbeyond.payload-manifest'
+  version   = 1
+  product   = $version
+  generated = 'scripts/build-installer.ps1'
+  note      = 'Every file this release installs, root-relative, forward slashes. An upgrade deletes exactly (previous manifest - this manifest) and nothing else.'
+  count     = $payloadFiles.Count
+  files     = @($payloadFiles | Sort-Object)
+}
+# UTF-8 WITHOUT BOM: JSON.parse cannot read a BOM, and the installer's helper is
+# the only reader. ConvertTo-Json escapes non-ASCII, so the Chinese entry names
+# stay correct either way.
+$manifestJson = $payloadManifestObject | ConvertTo-Json -Depth 4
+[System.IO.File]::WriteAllText($payloadManifest, $manifestJson + "`n", (New-Object System.Text.UTF8Encoding($false)))
+if (-not (Test-Path -LiteralPath $payloadManifest)) { Fail "无法生成 $payloadManifest" }
+Write-Ok ("payload manifest · {0} files → {1}" -f $payloadFiles.Count, 'ib-payload-manifest.json')
+
 # ── 4. content + secret audit on the staged bytes ──────────────────────────
 Write-Step '4/9' 'content + secret + release-claim audit'
 $script:stage = 'content + secret audit'

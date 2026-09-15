@@ -110,7 +110,13 @@ async function main() {
       for (const id of registry.lifecycleTargetIds()) {
         const c = registry.byId(id);
         assert.ok(c, 'target ' + id + ' is not a registry component');
-        assert.strictEqual(c.stopPath, registry.byId(id).stopPath);
+        assert.ok(typeof c.stopPath === 'string' && c.stopPath.length > 0,
+          'target ' + id + ' must declare a stop surface of its own');
+        /* The four product services share ONE value. The runner's control plane
+           is the manager: it serves its own endpoint, and A8 checks that
+           declaration against the source that serves it rather than pretending
+           the product has a single stop path it does not have. */
+        if (id === 'restart') continue;
         assert.ok(/^\/__shutdown$/.test(c.stopPath),
           'the stop path is one value, declared once: ' + id + ' \u2192 ' + c.stopPath);
       }
@@ -119,8 +125,8 @@ async function main() {
     check('A3 a managed component without a stop surface is NOT silently stoppable', () => {
       const managed = registry.managed().map(c => c.id);
       const targets = registry.lifecycleTargetIds();
-      for (const id of targets) assert.ok(managed.indexOf(id) >= 0 || id === 'static',
-        'a lifecycle target must be a managed component (or the static layer): ' + id);
+      for (const id of targets) assert.ok(managed.indexOf(id) >= 0 || id === 'static' || id === 'restart',
+        'a lifecycle target must be a managed component, the static layer, or the manager itself: ' + id);
       for (const id of managed) {
         const c = registry.byId(id);
         const declared = typeof c.stopPath === 'string' && c.stopPath.length > 0;
@@ -191,6 +197,25 @@ async function main() {
         assert.strictEqual(t.stopPath, c.stopPath, 'legacy target stop path for ' + t.id);
         assert.strictEqual(typeof t.matchesHealth, 'function', 'legacy target ' + t.id + ' must still be identifiable');
       }
+      /* The route the 1.0.5 closure added is the one an upgrade depends on: if
+         the legacy runner predicate disagreed with the registry's, the runner
+         would never be discovered and the manager-first stop would silently do
+         nothing — the exact shape of failure that produced exit 7 in the first
+         place. Pin it by value on both sides. */
+      const legacyRunner = built.find(t => t.id === 'restart');
+      assert.ok(legacyRunner, 'the legacy table must be able to name the runner');
+      assert.strictEqual(legacyRunner.matchesHealth({ service: 'InternalBeyond Restart' }), true,
+        'the legacy runner predicate must recognise the runner');
+      assert.strictEqual(legacyRunner.matchesHealth({ service: 'not-the-runner' }), false,
+        'the legacy runner predicate must not recognise anything else');
+      assert.strictEqual(registry.byId('restart').matchesHealth({ service: 'InternalBeyond Restart' }), true,
+        'the registry runner predicate must recognise the runner');
+      /* And the fallback has to apply the same ORDER rule as the registry: this
+         is the path a pre-P11-3H root actually takes, so the manager-first stop
+         is the only thing standing between that upgrade and a resurrected
+         component set. */
+      assert.deepStrictEqual(built.map(t => t.id), registry.lifecycleTargetIds(),
+        'the legacy fallback must name the same targets, in the same order, as the registry');
       /* And the helper must not hold a second copy of it. */
       const helper = fs.readFileSync(path.join(ROOT, 'installer', 'tools', 'ib-stop.js'), 'utf8');
       assert.strictEqual(/const LEGACY_ROUTES = Object\.freeze/.test(helper), false,
@@ -222,13 +247,46 @@ async function main() {
       assert.strictEqual(home.port, port, 'the derived port must honour IB_HOME_NODE_PORT');
     });
 
-    check('A8 the stop path is declared as a value, not spelled twice', () => {
+    check('A8 every stop surface is declared once, and matches the process that serves it', () => {
+      /* The product's own services share ONE cooperative surface... */
       assert.strictEqual(serviceControl.STOP_PATH, '/__shutdown');
       assert.strictEqual(lifecycle.STOP_PATH, serviceControl.STOP_PATH);
       for (const c of registry.lifecycleTargets()) {
+        if (c.id === 'restart') continue;   /* the manager declares its own; checked below */
         assert.strictEqual(c.stopPath, serviceControl.STOP_PATH,
           'component ' + c.id + ' declares a different stop path than the one the contract defines');
       }
+      /* ...and the runner's control plane is the one target whose stop surface is
+         its own endpoint. Its declaration is checked against the SOURCE that
+         serves it, so neither side can drift alone; a shared constant would only
+         have moved the second spelling into a third file. */
+      const manager = registry.byId('restart');
+      assert.ok(manager && typeof manager.stopPath === 'string' && manager.stopPath,
+        'the runner must declare its stop surface: it is the target that stops crash recovery first');
+      const runnerSrc = fs.readFileSync(path.join(ROOT, 'runtime', 'local-services-runner.js'), 'utf8');
+      assert.ok(new RegExp("url\\.pathname === '" + manager.stopPath + "'").test(runnerSrc),
+        'the runner must actually serve the stop path the registry declares for it: ' + manager.stopPath);
+    });
+
+    check('A8b a manager is stopped before the components it manages', () => {
+      /* Measured, not assumed (1.0.5 release build, real installed instance):
+         stopping the four leaves while the runner is still alive makes the
+         supervisor start bridge/active/homeNode again, Bridge's stop lands as
+         FALLBACK_KILL, stopAll() counts that as a failure, and the installer
+         aborts with exit 7 while the components are back on their ports. The
+         runner's own shutdown stops recovery first, so it has to go first. */
+      const ids = registry.lifecycleTargetIds();
+      const manager = ids.indexOf('restart');
+      assert.ok(manager >= 0, 'the runner must be a stop target (order: ' + ids.join(',') + ')');
+      for (const c of registry.lifecycleTargets()) {
+        if (c.managedByRunner !== true) continue;
+        const at = ids.indexOf(c.id);
+        assert.ok(at > manager,
+          'managed component ' + c.id + ' must be stopped AFTER the runner that manages it (order: ' + ids.join(',') + ')');
+      }
+      /* And the lifecycle must not re-derive an order of its own. */
+      assert.deepStrictEqual(lifecycle.targetIds({}), ids,
+        'the lifecycle target order must be the registry\'s order');
     });
   }
 
@@ -306,7 +364,12 @@ async function main() {
       assert.strictEqual(r.state, 'STOPPED', JSON.stringify(r));
       assert.strictEqual(r.accepted, true, 'it must have been a COOPERATIVE stop');
       assert.strictEqual(r.fallbackKills, 0, 'the normal path must not kill anything');
-      assert.deepStrictEqual(r.verified, { pidGone: true, portFree: true });
+      /* `verified` carries the facts the verdict was made from, and since the
+         1.0.4 upgrade defect it carries three of them rather than two: "the port
+         does not answer" and "no live process holds the port" are different
+         facts, and only the second one is what STOPPED means. */
+      assert.deepStrictEqual(r.verified, { pidGone: true, portFree: true, portAnswering: false, liveOwners: 0 });
+      assert.strictEqual(r.portResidue, false, 'a clean cooperative stop leaves no socket residue');
       assert.ok(markerText(fx).indexOf('cooperative') >= 0, 'the component ran its own stop handler: ' + JSON.stringify(markerText(fx)));
       H.forget(fx.pid);
     });
@@ -430,7 +493,7 @@ async function main() {
       assert.strictEqual(r.accepted, true);
       assert.strictEqual(r.fallbackKills, 0, 'and it must NOT have been killed');
       assert.ok(r.cooperativeMs >= 200, 'the wait must have actually waited: ' + r.cooperativeMs + 'ms');
-      assert.deepStrictEqual(r.verified, { pidGone: true, portFree: true });
+      assert.deepStrictEqual(r.verified, { pidGone: true, portFree: true, portAnswering: false, liveOwners: 0 });
       H.forget(fx.pid);
     });
 
@@ -454,6 +517,62 @@ async function main() {
       assert.ok(harness.alive(fx.pid), 'it must still be running');
       assert.strictEqual(r.state, 'FOREIGN',
         'and the verdict must say the port is no longer ours, got ' + r.state);
+      H.forget(fx.pid);
+    });
+
+    await acheck('C10 a socket that outlives its owner is a STOPPED component, not a FAILED one', async () => {
+      /* The defect that made every 1.0.4 install un-upgradable, pinned as a
+         decision rule here and proven on a real instance by the upgrade E2E.
+         Measured on the real machine: the runner accepted the cooperative stop
+         and exited, `pidAlive()` was false, and the OS STILL listed the dead pid
+         as the listener on 23116 — a fresh connect even completed. The old code
+         read that as "still running", tried to re-read a command line from a
+         process that no longer existed, and ended FAILED, which aborted the
+         install while nothing was running at all.
+         The shape below is the same one: the port keeps answering as our target
+         while every process the OS names as a listener is dead. The listener
+         list is injected through the same `execFile` seam the rest of this
+         section uses — the file is not simulating a dead pid, it is being told
+         what the OS says, which is the only thing it can be told. */
+      const port = await harness.freePort();
+      const fx = harness.startFixture(H, { name: 'c10', port: port, shape: 'bridge', behavior: 'hang' });
+      defer(() => harness.forceKill(fx.pid));
+      assert.ok(await harness.waitFor(async () => (await harness.get(port, '/health')).status === 200, 15000));
+
+      /* A pid that is certainly dead: a process started only to be waited on. */
+      const { spawnSync } = require('child_process');
+      const deadPid = Number(String(spawnSync(harness.NODE, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' }).stdout).trim());
+      assert.ok(Number.isInteger(deadPid) && deadPid > 0 && !harness.alive(deadPid), 'the fixture pid must be dead');
+
+      const calls = [];
+      const execFile = (file, args, opts, cb) => {
+        const line = String(file) + ' ' + (args || []).join(' ');
+        calls.push(line);
+        if (/Get-NetTCPConnection/.test(line)) { cb(null, String(deadPid), ''); return; }
+        /* Anything else — including taskkill — is a bug: a component that is not
+           running must not be killed. */
+        cb(new Error('unexpected command: ' + line), '', '');
+      };
+      const r = await lifecycle.stopComponent(harness.targetFor('bridge', port), {
+        provenOwn: true, execFile: execFile, cooperativeMs: 900, fallbackMs: 2000, deadline: Date.now() + 8000
+      });
+      assert.strictEqual(r.state, 'STOPPED',
+        'a dead owner is a stopped component: ' + JSON.stringify({ state: r.state, reason: r.reason, verified: r.verified }));
+      assert.strictEqual(r.portResidue, true, 'and the report must say the socket is a residue: ' + JSON.stringify(r));
+      assert.strictEqual(r.fallbackKills, 0, 'nothing may be killed — there is no process to kill');
+      assert.strictEqual(r.accepted, true, 'this was still a cooperative stop');
+      assert.ok(String(r.note || '').indexOf(String(deadPid)) >= 0,
+        'and the note must name the dead owner: ' + JSON.stringify(r.note));
+      assert.strictEqual(calls.filter(c => /taskkill/i.test(c)).length, 0,
+        'no kill may be attempted: ' + JSON.stringify(calls));
+      /* The dangerous direction, as a predicate: a LIVE holder is never a residue,
+         and an unreadable listener list is evidence of nothing. */
+      assert.strictEqual(lifecycle.residueOnly({ read: true, holders: [process.pid], live: [process.pid], deadOnly: false }), false,
+        'a live listener must never authorize a STOPPED verdict');
+      assert.strictEqual(lifecycle.residueOnly({ read: false, holders: [], live: [], deadOnly: false }), false,
+        'an unreadable listener list must never authorize a STOPPED verdict');
+      assert.strictEqual(lifecycle.residueOnly({ read: true, holders: [deadPid], live: [], deadOnly: true }), true);
+      assert.strictEqual(lifecycle.residueOnly(null), false);
       H.forget(fx.pid);
     });
 
@@ -751,6 +870,20 @@ async function main() {
       const hn = await harness.get(ports.homeNode, '/health');
       assert.strictEqual(hn.status, 200, 'Home Node health must converge');
       assert.strictEqual(hn.json.serving, true, 'and it must report itself able to serve: ' + JSON.stringify(hn.json));
+      /* Release this section's own processes NOW rather than at teardown. They
+         are real product components running out of ROOT, and the installer's
+         upgrade gate is root-scoped on purpose: an install must not begin while
+         ANY process executes out of the directory whose files it replaces. A
+         later check that asserts "the root is clear after a stop" can only mean
+         anything if the sections before it actually let go of what they started —
+         otherwise it passes because somebody else's processes are still around,
+         which is a false green in the one place a false green is expensive. */
+      for (const id of Object.keys(second)) {
+        harness.forceKill(second[id].pid);
+        H.forget(second[id].pid);
+      }
+      assert.ok(await harness.waitFor(() => Object.keys(second).every(id => !harness.alive(second[id].pid)), 8000),
+        'this section must not leave processes running out of ROOT');
     });
   }
 
@@ -847,6 +980,17 @@ async function main() {
           'WAL recovery still preserves the data — that is NOT the same fact as a graceful shutdown');
         assert.ok(store.getMessage('p11-3h-f2'), 'and the row is readable');
       } finally { store.close(); }
+      /* Release the process in EVERY branch, not only the one that killed it.
+         When the stop above ends FAILED the service is still running, and a real
+         product component alive out of ROOT makes every later root-scoped claim
+         in this suite untrue — including the installer's own upgrade gate, which
+         is required to refuse an upgrade while anything runs out of the directory
+         it is about to replace. Waiting for teardown to clean this up is how a
+         section can quietly decide the answer to a later section's question. */
+      harness.forceKill(svc.pid);
+      H.forget(svc.pid);
+      assert.ok(await harness.waitFor(() => !harness.alive(svc.pid), 8000),
+        'this section must not leave a Home Node running out of ROOT');
     });
 
     check('F3 no durability setting was changed to make any of this work', () => {
@@ -1128,15 +1272,33 @@ async function main() {
       const installer = fs.readFileSync(path.join(ROOT, 'installer', 'InternalBeyond.iss'), 'utf8');
       assert.ok(/if Code <> 0 then/.test(installer),
         'the installer must read the stop helper\'s exit code');
-      assert.ok(/function PrepareToInstall\(var NeedsRestart: Boolean\): String;[\s\S]{0,400}Result := StopInternalBeyond\(\);/m.test(installer),
+      assert.ok(/function PrepareToInstall\(var NeedsRestart: Boolean\): String;[\s\S]{0,1200}Result := StopInternalBeyond\(\);/m.test(installer),
         'and a non-empty result from the stop must be what PrepareToInstall returns');
       /* Exit-code contract, stated where it is produced: non-zero means at least
-         one owned target could not be stopped. */
+         one owned process is still running out of this root. Since the 1.0.4
+         upgrade defect that is TWO conditions, and both must appear in the
+         expression — the per-component verdicts AND the root-scoped residual
+         sweep. `ok` may not be derived from component states alone, because a
+         process the registry does not name is exactly what an upgrade must not
+         trip over; and it may not be derived from "nothing is on the port",
+         because a port is not a process. */
       const helper = fs.readFileSync(path.join(ROOT, 'installer', 'tools', 'ib-stop.js'), 'utf8');
       assert.ok(/process\.exitCode = report\.ok \? 0 : 1;/.test(helper),
         'ib-stop must exit non-zero when it could not stop an owned target');
-      assert.ok(/report\.ok = summary\.ok;/.test(helper),
-        'and `ok` must come from the stop state machine, not from "nothing is on the port"');
+      assert.ok(/report\.ok = summary\.ok && report\.residual\.length === 0;/.test(helper),
+        'and `ok` must be the state machine AND the root-scoped residual sweep, not one of them');
+      assert.ok(/report\.residual = await residualProcesses\(root\);/.test(helper),
+        'the residual sweep must be measured on the root, after the stop');
+      /* The sweep's identity rule is proof-based, not resemblance-based. */
+      assert.ok(/function isResidualProcess\(evidence, root\)/.test(helper),
+        'the residual classification must be a named, testable predicate');
+      assert.ok(/ibScriptAbsolutePaths\(cmdline\)\.some/.test(helper),
+        'a command line identifies a leftover only through the script paths it actually names');
+      assert.ok(/OWNED_LAYOUT_DIRS\.indexOf\(firstSegmentUnderRoot\(p, root\)\)/.test(helper),
+        'and only when that script lives in one of this root\'s own payload directories');
+      /* And "graceful" stays a separate, reportable fact. */
+      assert.ok(/report\.gracefulStop = summary\.fallbackKills === 0/.test(helper),
+        'gracefulness must be reported separately from "safe to proceed"');
     });
 
     await acheck('I3 a component that really cannot be stopped makes the helper report failure', async () => {
@@ -1187,6 +1349,199 @@ async function main() {
         'and it must not be a hard requirement of uninstalling a machine where it is absent');
       assert.strictEqual(/^\[UninstallDelete\]/m.test(installer), false,
         'uninstall must still never delete user data');
+    });
+
+    check('I5 the residual rule is proof-based, so it cannot abort an upgrade over a stranger', () => {
+      /* The gate asks "is anything still running out of this root", and the only
+         wrong answer that matters is a FALSE POSITIVE: a gate that fails an
+         upgrade because an unrelated program mentioned the install path is worse
+         than no gate. Measured while writing it: a root that unrelated programs
+         were launched from matched nine processes (a venv python, a shell, six
+         editor workers) on "the path appears in the command line" alone. */
+      const root = 'C:\\some\\install\\root';
+      const rt = 'C:\\some\\install\\root\\runtime\\node\\node.exe';
+      assert.strictEqual(ibStop.isResidualProcess({ pid: 4242, executablePath: rt, commandLine: rt + ' ' + root + '\\services\\ib-bridge-service.js' }, root), true,
+        'a process running this root\'s own bundled runtime is a leftover');
+      assert.strictEqual(ibStop.isResidualProcess({ pid: 4242, executablePath: 'C:\\other\\node.exe', commandLine: 'node.exe ' + root + '\\runtime\\local-services-runner.js' }, root), true,
+        'and so is one that names both the root and one of our scripts');
+      assert.strictEqual(ibStop.isResidualProcess({ pid: 4242, executablePath: 'C:\\python\\python.exe', commandLine: 'python.exe --root ' + root + '\\venv' }, root), false,
+        'merely mentioning the root is NOT evidence of belonging to it');
+      assert.strictEqual(ibStop.isResidualProcess({ pid: 4242, executablePath: 'C:\\other\\node.exe', commandLine: 'node.exe C:\\elsewhere\\services\\ib-bridge-service.js' }, root), false,
+        'our script name in ANOTHER root is another installation, not this one');
+      assert.strictEqual(ibStop.isResidualProcess({ pid: process.pid, executablePath: rt, commandLine: rt + ' ' + root + '\\tools\\ib-stop.js' }, root), false,
+        'this helper must never report itself');
+      assert.strictEqual(ibStop.isResidualProcess({ pid: 4242, executablePath: 'C:\\other\\node.exe', commandLine: 'node.exe ' + root + '\\tools\\ib-stop.js --root ' + root }, root), false,
+        'nor another copy of the helper, whose own command line always names the root');
+      assert.strictEqual(ibStop.isResidualProcess({ pid: 0, executablePath: rt, commandLine: rt }, root), false,
+        'an unreadable pid is not a process');
+      /* The false positive this rule was written twice to avoid, measured on a
+         real suite run: a SECOND installation nested under the root being asked
+         about contains that root as a substring while belonging to somebody
+         else. "<root>\\services\\…" is ours; "<root>\\tests\\…\\installB\\…" is
+         not, and only the first path segment can tell them apart. */
+      const nested = 'C:\\some\\install\\root\\tests\\.tmp\\ib-3h-gate-x\\installB\\ib-bridge-service.js';
+      assert.strictEqual(ibStop.isResidualProcess({ pid: 4242, executablePath: 'C:\\other\\node.exe', commandLine: 'node.exe ' + nested }, root), false,
+        'an installation nested under the root is a DIFFERENT installation, not a leftover of this one');
+      assert.strictEqual(ibStop.firstSegmentUnderRoot(nested, root), 'tests');
+      assert.strictEqual(ibStop.firstSegmentUnderRoot(root + '\\services\\ib-bridge-service.js', root), 'services');
+      assert.strictEqual(ibStop.firstSegmentUnderRoot('C:\\elsewhere\\services\\ib-bridge-service.js', root), '');
+      /* The gate is wired into the exit code, not merely reported. */
+      assert.ok(/report\.ok = summary\.ok && report\.residual\.length === 0;/.test(
+        fs.readFileSync(path.join(ROOT, 'installer', 'tools', 'ib-stop.js'), 'utf8')),
+        'the residual sweep must be able to fail the stop');
+    });
+
+    check('I6 obsolete payload is pruned by manifest diff, and ONLY owned paths are ever pruned', () => {
+      /* An upgrade replaces files by name, so a file the previous version shipped
+         and this one does not would otherwise stay forever. The rule is a diff of
+         two payload manifests — two lists the product itself declared it owns —
+         and this check exists to prove the negative, which is the part that
+         matters: a file the product never claimed is never touched, whatever it
+         is called and wherever it sits inside the install root. */
+      const root = fs.mkdtempSync(path.join(H.tmp, 'i6-root-'));
+      const prevDir = fs.mkdtempSync(path.join(H.tmp, 'i6-prev-'));
+      const mk = (rel, body) => {
+        const full = path.join(root, rel.split('/').join(path.sep));
+        fs.mkdirSync(path.dirname(full), { recursive: true });
+        fs.writeFileSync(full, body === undefined ? rel : body);
+        return full;
+      };
+      const keep = mk('services/keep.js');
+      const obsolete = mk('services/obsolete.js');
+      const legacy = mk('runtime/legacy-helper.js');
+      /* Not in EITHER manifest: the user's own file inside the install root. */
+      const userFile = mk('my-notes.txt', 'do not delete me');
+      const userDirFile = mk('my-plugins/custom.js', 'nor me');
+      /* The manifest is payload too, and is never its own obsolete entry. */
+      const newManifest = mk('ib-payload-manifest.json', JSON.stringify({
+        schema: 'internalbeyond.payload-manifest', version: 1,
+        files: ['services/keep.js', 'ib-payload-manifest.json']
+      }));
+      const prevManifest = path.join(prevDir, 'ib-payload-manifest.json');
+      fs.writeFileSync(prevManifest, JSON.stringify({
+        schema: 'internalbeyond.payload-manifest', version: 1,
+        files: ['services/keep.js', 'services/obsolete.js', 'runtime/legacy-helper.js',
+          'ib-payload-manifest.json', 'my-notes.txt'.replace('my-notes', 'not-user') /* never existed */]
+      }));
+
+      const report = ibStop.pruneStale({ root: root, manifest: newManifest, previous: prevManifest });
+      assert.strictEqual(report.ok, true, JSON.stringify(report));
+      assert.deepStrictEqual(report.pruned.slice().sort(), ['runtime/legacy-helper.js', 'services/obsolete.js'],
+        'exactly the files the previous payload owned and this one does not: ' + JSON.stringify(report));
+      assert.strictEqual(fs.existsSync(obsolete), false, 'the obsolete owned file must be gone');
+      assert.strictEqual(fs.existsSync(legacy), false, 'and so must the obsolete owned runtime file');
+      assert.strictEqual(fs.existsSync(keep), true, 'a file both versions own must stay');
+      assert.strictEqual(fs.existsSync(userFile), true, 'a file NO manifest ever claimed must never be touched');
+      assert.strictEqual(fs.readFileSync(userFile, 'utf8'), 'do not delete me');
+      assert.strictEqual(fs.existsSync(userDirFile), true, 'and neither must anything in the user\'s own directory');
+      assert.strictEqual(fs.existsSync(newManifest), true, 'the manifest itself is payload, never an obsolete entry');
+      assert.strictEqual(fs.existsSync(path.join(root, 'services')), true, 'directories are never removed');
+
+      /* An install that predates the manifest — every 1.0.4 and older, which is
+         exactly the upgrade this release is about — deletes NOTHING and says so. */
+      const legacyRoot = fs.mkdtempSync(path.join(H.tmp, 'i6-legacy-'));
+      fs.writeFileSync(path.join(legacyRoot, 'whatever.js'), 'x');
+      const noPrev = ibStop.pruneStale({ root: legacyRoot, manifest: newManifest, previous: path.join(prevDir, 'absent.json') });
+      assert.strictEqual(noPrev.ok, true);
+      assert.strictEqual(noPrev.reason, 'no-previous-manifest');
+      assert.deepStrictEqual(noPrev.pruned, []);
+      assert.strictEqual(fs.existsSync(path.join(legacyRoot, 'whatever.js')), true);
+
+      /* A manifest that would reach outside the root is refused outright rather
+         than filtered: a list we cannot trust is not a list to act on. */
+      const escapeRoot = fs.mkdtempSync(path.join(H.tmp, 'i6-escape-'));
+      const outside = path.join(H.tmp, 'i6-outside.js');
+      fs.writeFileSync(outside, 'not payload');
+      const badPrev = path.join(prevDir, 'bad.json');
+      fs.writeFileSync(badPrev, JSON.stringify({ schema: 'x', version: 1, files: ['../i6-outside.js'] }));
+      const bad = ibStop.pruneStale({ root: escapeRoot, manifest: newManifest, previous: badPrev });
+      assert.strictEqual(bad.ok, false, 'an unsafe manifest must be refused: ' + JSON.stringify(bad));
+      assert.deepStrictEqual(bad.pruned, []);
+      assert.strictEqual(fs.existsSync(outside), true, 'and nothing outside the root may be touched');
+
+      /* The path rule itself, stated directly. */
+      assert.ok(ibStop.normalizeRelPath('../../etc/passwd') === '', 'traversal must be refused, not collapsed');
+      assert.strictEqual(ibStop.normalizeRelPath('/abs/path.js'), '');
+      assert.strictEqual(ibStop.normalizeRelPath('C:\\Windows\\x.js'), '');
+      assert.strictEqual(ibStop.normalizeRelPath('services\\sub\\../x.js'), '',
+        'ANY `..` segment is refused outright: a manifest never legitimately needs one');
+      assert.strictEqual(ibStop.normalizeRelPath('services\\sub//a.js'), 'services/sub/a.js');
+      assert.strictEqual(ibStop.resolveInsideRoot('C:\\root', '../outside.js'), '');
+      assert.notStrictEqual(ibStop.resolveInsideRoot('C:\\root', 'services/a.js'), '');
+
+      /* And the installer must actually call it, at the one moment that is safe. */
+      const installer = fs.readFileSync(path.join(ROOT, 'installer', 'InternalBeyond.iss'), 'utf8');
+      assert.ok(/PrepareToInstall[\s\S]{0,900}?FileCopy\(PreviousManifest/.test(installer),
+        'the installed version\'s manifest must be captured before the payload is replaced');
+      assert.ok(/\{#PayloadManifest\}/.test(installer), 'the manifest name must come from one define');
+      assert.ok(/CurStepChanged[\s\S]{0,1200}?PruneStalePayload\(\);/.test(installer),
+        'pruning must happen only after the new payload is in place');
+      assert.ok(/--prune-stale/.test(installer) && /--previous/.test(installer),
+        'and it must be driven by both manifests');
+      const build = fs.readFileSync(path.join(ROOT, 'scripts', 'build-installer.ps1'), 'utf8');
+      assert.ok(/ib-payload-manifest\.json/.test(build),
+        'the build must generate the manifest it ships');
+      assert.ok(/if \(\$payloadFiles\.Count -ne \$stageResult\.staged\)[\s\S]{0,220}?Fail/.test(build),
+        'and it must FAIL rather than ship a manifest that does not describe the whole payload ' +
+        '(an under-stated list deletes the files the next upgrade just installed)');
+    });
+
+    await acheck('I7 the upgrade gate fails closed when a process from the root survives the stop', async () => {
+      /* Section 3 of the upgrade contract: files may only be replaced once
+         NOTHING is running out of the root. That is a stronger claim than "every
+         component reached a stopped state", and it has to be measured rather
+         than inferred — a component the registry does not name, or one whose
+         port moved, would never make `stopAll()` fail while still holding the
+         very runtime file an upgrade replaces.
+         Here a real product component runs out of ROOT on a port the stop is not
+         looking at, so the state machine has nothing to stop and cannot be what
+         fails: only the root-scoped sweep can catch it. */
+      const port = await harness.freePort();
+      const svc = H.start('services/ib-bridge-service.js', {
+        logName: 'i7-bridge.log',
+        env: { IB_BRIDGE_PORT: String(port) }
+      });
+      defer(() => harness.forceKill(svc.pid));
+      assert.ok(await harness.waitFor(async () => (await harness.get(port, '/health')).status === 200, 30000),
+        'the stray component must come up');
+      /* Point the stop's own bridge target elsewhere: the component is real, in
+         the root, and invisible to the stop. */
+      const report = await ibStop.stop({
+        root: ROOT, timeoutMs: 8000,
+        env: {
+          IB_WEB_PORT: String(await harness.freePort()),
+          IB_RESTART_PORT: String(await harness.freePort()),
+          IB_BRIDGE_PORT: String(await harness.freePort()),
+          IB_ACTIVE_PORT: String(await harness.freePort()),
+          IB_HOME_NODE_PORT: String(await harness.freePort())
+        }
+      });
+      assert.strictEqual(report.ok, false,
+        'a stop that leaves a process running out of the root must not report success: ' + JSON.stringify(report.errors));
+      assert.ok(report.residual.length >= 1, 'the sweep must name it: ' + JSON.stringify(report.residual));
+      assert.ok(report.residual.some(p => p.pid === svc.pid),
+        'and the process it names must be the one that survived: ' + JSON.stringify({ residual: report.residual, pid: svc.pid }));
+      assert.ok(report.errors.join('|').indexOf('residual-processes') >= 0,
+        'the failure must be reported as residual processes, not as a component state: ' + JSON.stringify(report.errors));
+      /* Fail closed, not fail destructive: the survivor is still running. */
+      assert.ok(harness.alive(svc.pid), 'the gate must not have killed anything');
+      harness.forceKill(svc.pid);
+      H.forget(svc.pid);
+      assert.ok(await harness.waitFor(() => !harness.alive(svc.pid), 8000));
+      /* And once it is gone, the same stop succeeds — the gate is about the
+         fact, not about giving up. */
+      const clean = await ibStop.stop({
+        root: ROOT, timeoutMs: 8000,
+        env: {
+          IB_WEB_PORT: String(await harness.freePort()),
+          IB_RESTART_PORT: String(await harness.freePort()),
+          IB_BRIDGE_PORT: String(await harness.freePort()),
+          IB_ACTIVE_PORT: String(await harness.freePort()),
+          IB_HOME_NODE_PORT: String(await harness.freePort())
+        }
+      });
+      assert.strictEqual(clean.ok, true, 'an empty root must stop cleanly: ' + JSON.stringify(clean.errors));
+      assert.deepStrictEqual(clean.residual, []);
     });
   }
 

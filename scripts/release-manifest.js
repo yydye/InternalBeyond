@@ -298,9 +298,14 @@ if (require.main === module) {
   const get = function (name) { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] : ''; };
   if (argv.indexOf('--stage') >= 0) {
     const result = stage(get('--stage'), { clean: argv.indexOf('--no-clean') < 0, allowAnyDir: argv.indexOf('--allow-any-dir') >= 0 });
+    /* `files` is part of the CLI contract, not just of the in-process return:
+       the build generates the install root's own payload manifest
+       (ib-payload-manifest.json) from this list, and a caller that had to
+       re-derive it by walking the staging directory would be building the record
+       of what we own from a directory scan instead of from the whitelist. */
     process.stdout.write(JSON.stringify({
       ok: result.ok, dir: result.dir, staged: result.staged, totalBytes: result.totalBytes,
-      missing: result.missing, denied: result.denied, error: result.error || null
+      files: result.files, missing: result.missing, denied: result.denied, error: result.error || null
     }) + '\n');
     process.exitCode = result.ok ? 0 : 1;
   } else {

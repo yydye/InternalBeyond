@@ -22,10 +22,23 @@
  *   FOREIGN              something holds the port and it is verifiably not ours
  *   UNKNOWN_OWNER        something holds the port and we could not prove what it is
  *   COOPERATIVE_STOPPING a stop request was accepted; waiting (bounded) for it
- *   STOPPED              the process is gone AND the port is free
+ *   STOPPED              the process is gone AND no LIVE process holds the port
  *   COOPERATIVE_TIMEOUT  the accept happened but the process (or the port) did not go
  *   FALLBACK_KILL        identity was re-verified and the process was killed
  *   FAILED               a target we own could not be stopped
+ *
+ * STOPPED says "no live process holds the port", not "the port does not answer",
+ * and the difference is not academic — it is the defect that made 1.0.4 installs
+ * un-upgradable. Windows keeps a listening socket visible, still naming its
+ * now-exited owner, for a moment after that owner dies; a fresh TCP connect can
+ * even complete against it. Measured on a real 1.0.4 -> 1.0.5 upgrade (2026-09-15):
+ * the runner accepted the cooperative stop and exited, `pidAlive()` was false, and
+ * `Get-NetTCPConnection -State Listen` STILL returned pid 22436 on port 23116. The
+ * old verdict read that as "still running", fell through to the fallback, failed to
+ * re-read a command line from a dead pid, and ended FAILED — so `stopAll().ok` was
+ * false, the helper exited 1, and the installer aborted with "please close
+ * InternalBeyond manually" while nothing was running at all. See `listenerLiveness`
+ * for the fact that replaces "the port answered".
  *
  * FOREIGN and UNKNOWN_OWNER are terminal *successes* from the caller's point of
  * view: they are never stopped, and a foreign process on one of our ports is
@@ -60,8 +73,10 @@ const STOP_PATH = serviceControl.STOP_PATH;
  * `runtime/local-services-runner.js` owns that path. */
 function targets(env) {
   const source = env || process.env;
-  return registry.COMPONENTS
-    .filter(c => typeof c.stopPath === 'string' && c.stopPath)
+  /* Derived through the registry's own accessor, not by filtering COMPONENTS
+     here: the accessor owns the manager-before-managed ORDER (see its comment),
+     and a second derivation is a second place for that order to be wrong. */
+  return registry.lifecycleTargets()
     .map(c => ({
       id: c.id,
       name: c.name,
@@ -102,10 +117,18 @@ function targetIds(env) {
  * tests/test_p11_3h_lifecycle_gate.js pins every entry against the registry, so
  * it cannot silently become a second service table. */
 const LEGACY_ROUTES = Object.freeze([
-  Object.freeze({ id: 'static', portEnv: 'IB_WEB_PORT' }),
-  Object.freeze({ id: 'bridge', portEnv: 'IB_BRIDGE_PORT' }),
-  Object.freeze({ id: 'active', portEnv: 'IB_ACTIVE_PORT' }),
-  Object.freeze({ id: 'homeNode', portEnv: 'IB_HOME_NODE_PORT' })
+  /* Same order rule as the registry's accessor: the manager comes before the
+     components it manages. On a pre-P11-3H root this is what makes the upgrade
+     work at all — the runner is stopped first, and its own shutdown takes
+     bridge/active/homeNode with it. Those old services never implemented the
+     shared `/__shutdown` surface (v1.0.4 shipped it only in
+     services/internal-beyond-server.js), so stopping them individually could
+     only ever end in a fallback kill. */
+  Object.freeze({ id: 'static', portEnv: 'IB_WEB_PORT', healthPath: '/health', stopPath: '/__shutdown' }),
+  Object.freeze({ id: 'restart', portEnv: 'IB_RESTART_PORT', healthPath: '/status', stopPath: '/shutdown' }),
+  Object.freeze({ id: 'bridge', portEnv: 'IB_BRIDGE_PORT', healthPath: '/health', stopPath: '/__shutdown' }),
+  Object.freeze({ id: 'active', portEnv: 'IB_ACTIVE_PORT', healthPath: '/health', stopPath: '/__shutdown' }),
+  Object.freeze({ id: 'homeNode', portEnv: 'IB_HOME_NODE_PORT', healthPath: '/health', stopPath: '/__shutdown' })
 ]);
 
 /* The ports the fallback uses when the registry is not readable. They are NOT a
@@ -114,6 +137,7 @@ const LEGACY_ROUTES = Object.freeze([
    can still be upgraded at all. */
 const LEGACY_DEFAULTS = Object.freeze({
   static: 23120,
+  restart: 23116,
   bridge: 23115,
   active: 23114,
   homeNode: 23118
@@ -125,6 +149,7 @@ function legacyIdentity(id) {
   return function (data) {
     if (!data) return false;
     if (id === 'static') return data.server === 'InternalBeyond Web';
+    if (id === 'restart') return data.service === 'InternalBeyond Restart';
     if (id === 'bridge') return data.server === 'IB Bridge';
     if (id === 'active') return data.service === 'internal-beyond-active-messages';
     if (id === 'homeNode') return data.service === 'internal-beyond-home-node';
@@ -144,8 +169,11 @@ function legacyTargets(env) {
       port: Number.isInteger(n) && n >= 1 && n <= 65535 ? n : LEGACY_DEFAULTS[route.id],
       portEnv: route.portEnv,
       defaultPort: LEGACY_DEFAULTS[route.id],
-      healthPath: '/health',
-      stopPath: '/__shutdown',
+      /* Per-route, because the runner's health path and stop path are not the
+         services'. Pinned equal to the registry's own values by A5, so this
+         cannot drift into a second set of facts. */
+      healthPath: route.healthPath,
+      stopPath: route.stopPath,
       matchesHealth: legacyIdentity(route.id)
     };
   });
@@ -283,6 +311,45 @@ function pidAlive(pid) {
   try { process.kill(n, 0); return true; } catch (e) { return e && e.code === 'EPERM'; }
 }
 
+/* ── Who holds the port, and is any of them still alive? ──────────────────
+ *
+ * The ONE question that separates "this component is still running" from "this
+ * component exited and left a socket behind". `portAnswering()` alone cannot
+ * answer it: a listening socket outlives its owner by a moment on Windows, and
+ * during that moment it still accepts connects AND is still listed by
+ * `Get-NetTCPConnection` under the dead pid. Reading the listener list without
+ * asking whether those pids are alive is how a successful stop was reported as a
+ * failure (see the STOPPED note at the top of this file).
+ *
+ * Three outcomes, and the caller must treat them differently:
+ *   read=false              the listener list could not be read. An EMPTY list is
+ *                           NOT "nothing holds it" while the port is answering —
+ *                           it is a missing fact, and this module never guesses
+ *                           from a missing fact.
+ *   read=true, live>0       a live process holds it → the component really is up.
+ *   read=true, live=0       every process the OS names as a listener is gone →
+ *                           only a residue is left, and a dead pid holds nothing.
+ */
+async function listenerLiveness(port, runner) {
+  const holders = await pidsForPort(port, runner);
+  const live = holders.filter(pidAlive);
+  return {
+    read: holders.length > 0,
+    holders: holders,
+    live: live,
+    /* Positive evidence of a residue: the OS named somebody, and none of them is
+       alive. Distinct from `!read`, which is evidence of nothing. */
+    deadOnly: holders.length > 0 && live.length === 0
+  };
+}
+
+/* May this port's answering be ignored? Only on positive evidence: the OS named
+   at least one listener and every one of them is dead. An unreadable listener
+   list never authorizes a STOPPED verdict. */
+function residueOnly(liveness) {
+  return !!(liveness && liveness.deadOnly === true);
+}
+
 /* A verified hard kill. `/T` takes the process's own children with it — which
    is what "no orphan child" means for a component that spawns helpers — and `/F`
    is required because the cooperative path already had its bounded chance. */
@@ -405,6 +472,11 @@ async function stopComponent(target, opts) {
     fallbackKills: 0,
     kills: [],
     proof: null,
+    /* True when the verdict came from a socket that outlived its owner rather
+       than from the port going quiet. It is reported, never hidden: it is the
+       difference between "stopped and the port is free" and "stopped, and the OS
+       is still tearing the socket down". */
+    portResidue: false,
     verified: { pidGone: null, portFree: null },
     stoppedAt: null
   };
@@ -515,15 +587,39 @@ async function stopComponent(target, opts) {
   }
   if (o.discoverOnly === true) return result;
 
-  /* 4 · bounded wait for the cooperative phase: the cheap two facts, no shell. */
+  /* 4 · bounded wait for the cooperative phase. The cheap probe first; the
+     listener list only if the cheap probe says the port is still answering,
+     because reading it spawns PowerShell and this is the common path. */
   if (result.accepted) {
     const coopDeadline = Math.min(deadline, cooperativeRequestSentAt + (o.cooperativeMs || 6000));
     const released = await waitPortReleasedAndSilent(target, coopDeadline, o.stepMs);
     result.cooperativeMs = Date.now() - cooperativeRequestSentAt;
-    if (released && (!pid || !pidAlive(pid))) {
+    /* The verdict needs both facts, and until now only one of them was allowed
+       to be the interesting one. `released` is "nothing answers any more";
+       `residue` is "something still answers, but every process the OS names as a
+       listener is dead". Either one, together with "the pid we identified is
+       gone", is a stopped component. A port that still answers under a LIVE pid
+       satisfies neither and keeps falling through to the fallback, which is
+       where the supervisor-restarted case belongs. */
+    const pidGone = pid ? !pidAlive(pid) : null;
+    const liveness = (!released && pidGone !== false)
+      ? await listenerLiveness(target.port, o.execFile)
+      : null;
+    const residue = residueOnly(liveness);
+    if ((released || residue) && (!pid || !pidAlive(pid))) {
       result.state = 'STOPPED';
       result.stoppedAt = Date.now();
-      result.verified = { pidGone: pid ? true : null, portFree: true };
+      result.portResidue = residue;
+      if (residue) {
+        result.note = 'the process exited; port ' + target.port + ' still answers from a listening socket whose ' +
+          'owner (' + liveness.holders.join(', ') + ') is no longer alive, so the component is stopped';
+      }
+      result.verified = {
+        pidGone: pid ? true : null,
+        portFree: released,
+        portAnswering: !released,
+        liveOwners: residue ? 0 : (liveness ? liveness.live.length : 0)
+      };
       return result;
     }
     /* A port that went quiet while the process we identified is STILL ALIVE is
@@ -535,7 +631,12 @@ async function stopComponent(target, opts) {
       ? 'port ' + target.port + ' went quiet but pid ' + pid + ' is still alive after ' + result.cooperativeMs + 'ms'
       : 'the component accepted the stop but port ' + target.port + ' was still answering ' + target.healthPath +
         ' as ' + target.label + ' after ' + result.cooperativeMs + 'ms';
-    result.verified = { pidGone: pid ? pidAlive(pid) : false, portFree: released };
+    result.verified = {
+      pidGone: pid ? !pidAlive(pid) : null,
+      portFree: released,
+      portAnswering: !released,
+      liveOwners: liveness ? liveness.live.length : 0
+    };
   }
 
   /* 5 · fallback kill, re-verified. Identity is re-read HERE, immediately
@@ -562,6 +663,22 @@ async function stopComponent(target, opts) {
       ? 'the component stopped on its own after the cooperative deadline'
       : 'the port changed hands during the stop and is no longer ' + target.label;
     result.verified = { pidGone: pid ? !pidAlive(pid) : true, portFree: goneNow };
+    return result;
+  }
+  /* It is still answering as our target. Before treating that as "there is
+     something here to kill", ask whether anybody is ALIVE behind it: a dead pid
+     holds no socket, so a listener list in which every entry is dead is a
+     residue, not a component. Killing it is impossible anyway — there is no
+     process — and the old code's attempt to re-read a command line from it is
+     what produced FAILED for a stop that had already succeeded. */
+  const liveHolders = before.filter(pidAlive);
+  if (before.length > 0 && liveHolders.length === 0) {
+    result.state = 'STOPPED';
+    result.stoppedAt = Date.now();
+    result.portResidue = true;
+    result.note = 'the process exited; port ' + target.port + ' still answers from a listening socket whose owner (' +
+      before.join(', ') + ') is no longer alive, so the component is stopped';
+    result.verified = { pidGone: pid ? !pidAlive(pid) : true, portFree: false, portAnswering: true, liveOwners: 0 };
     return result;
   }
   /* The pid we are about to kill must be the pid that the port reports NOW. */
@@ -749,6 +866,8 @@ module.exports = {
   targetIds: targetIds,
   identifies: identifies,
   shouldFallback: shouldFallback,
+  listenerLiveness: listenerLiveness,
+  residueOnly: residueOnly,
   targetBudget: targetBudget,
   stopComponent: stopComponent,
   stopAll: stopAll,
