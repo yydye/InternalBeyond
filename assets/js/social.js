@@ -851,6 +851,9 @@ function _normApiHandle(v){
 }
 function addNewApi(){
   editingApiId='friend_'+Date.now()+'_'+Math.random().toString(36).slice(2,8);
+  /* 新建角色尚未落盘 ⇒ _dscOwner() 返回空 ⇒ 私密事实小节显示"保存后可用"并禁用。
+     这不是保守：见 _dscOwner 上方第 ② 条。 */
+  _dscSync();
   _pendingApiAvatar=null;
   _pendingApiBanner=null;
   var _hb=document.getElementById('api-handle');if(_hb)_hb.value='';
@@ -1062,6 +1065,8 @@ function editApi(id){
   if(!cfg)return;
   editingApiId=id;
   document.getElementById('api-editor-title').textContent='编辑API';
+  /* 私密事实小节按当前 writer context 刷新（owner = 正在编辑的这个角色）。 */
+  _dscSync();
   document.getElementById('api-editor').style.display='block';
   var _dw1=document.getElementById('api-daywrap');if(_dw1)_dw1.style.display='';
   var _db1=document.getElementById('api-daybox');if(_db1)_db1.style.display='none';
@@ -1321,7 +1326,172 @@ async function saveCurrentApi(btn){
   }
 }
 
-function cancelApiEdit(){document.getElementById('api-editor').style.display='none'}
+function cancelApiEdit(){document.getElementById('api-editor').style.display='none';_dscCloseEditor()}
+
+/* ══════════ 私密事实（Phase 4B-1.2）：人类显式创作 UI ══════════════════════
+   这是**第一条**能真正产出 canonical disclosure fact 的生产写入路径。
+   它有三条刻意的纪律，全部靠结构而不是靠自觉：
+
+   ① **owner 来自 writer context，不来自表单。**
+      提交时传的是 `{ownerCharacterId: editingApiId}` —— 即"你正在编辑谁"，
+      而表单里根本**没有** owner 输入框。表单只提供正文与等级。
+      source / authority 由 seam 固定为 character_authoring / human_authoring，
+      UI 无从参与（用户输入里出现它们会被整条拒绝）。
+
+   ② **新建的草稿不能写。**
+      addNewApi()（853 行）在角色落盘**之前**就预分配了 id，所以"正在新建"
+      也满足 id 非空。若那时允许写入，用户一取消新建就会在库里留下一条
+      owner 指向从未存在过的角色的事实 —— 永远不会再被任何 UI 读到，
+      却把用户刚写下的秘密留在磁盘上。故要求角色先在 apiConfigs 里存在。
+
+   ③ **等级下拉里没有 PUBLIC，也没有任何"谁能看到"。**
+      公开权威是 publicProfile（冻结）；trust / 授权矩阵属 4B-2。
+      这一节只回答"这条事实有多敏感"，不回答"该不该告诉谁"。
+
+   依赖解析一律**惰性**：social.js（3040 行）早于 disclosure-store.js
+   （<script> 在 3153 行之后）加载，因此任何加载期求值都会拿到 undefined。 */
+let _dscBound=false,_dscEditId=null,_dscFacts=[];
+
+function _dscStore(){try{return (typeof window!=='undefined'&&window.IBDisclosureStore)||null}catch(e){return null}}
+function _dscEl(id){return document.getElementById(id)}
+function _dscMsg(t){const e=_dscEl('api-dsc-error');if(e)e.textContent=t||''}
+function _dscShow(el,show){if(el)el.classList[show?'remove':'add']('ib-dsc-hidden')}
+function _dscBadgeClass(level){return 'is-'+String(level||'').toLowerCase()}
+function _dscOwner(){
+  const id=editingApiId||'';
+  if(!id)return '';
+  try{return apiConfigs.some(function(a){return a&&a.id===id})?id:''}catch(e){return ''}
+}
+/* seam 的拒因 → 用户能看懂的一句话。**不翻译成含糊的"保存失败"**：
+   "你填的内容不能当披露事实"和"你不该在这里创建 PUBLIC"是两件事。 */
+function _dscErr(reason){
+  const r=String(reason||'');
+  const map={
+    'public-not-creatable-by-explicit-writer':'PUBLIC 不能在这里创建：公开资料请用上面的「公开资料」小节。',
+    'bad-authoring-level':'请选择披露等级。',
+    'missing-text':'请填写事实内容。',
+    'text-denylisted':'这段内容不能作为披露事实保存（它属于身份 / 公开资料 / 系统凭据 / 共同经历）。',
+    'caller-supplied-metadata':'内部错误：表单不得提交 owner / source / authority。',
+    'immutable-field':'归属、写者权威与来源不可修改。',
+    'owner-mismatch':'这条事实不属于当前正在编辑的角色。',
+    'not-found':'这条事实已不存在。',
+    'nothing-to-update':'没有需要保存的改动。',
+    'disclosure-core-unavailable':'披露契约未加载（assets/js/disclosure-core.js）。',
+    'authoring-core-unavailable':'披露写作契约未加载（assets/js/disclosure-authoring-core.js）。',
+    'store-unavailable':'本地数据库不可用。',
+    'persist-failed':'写入本地数据库失败。',
+    'read-failed':'读取本地数据库失败。',
+    'delete-failed':'删除失败。'
+  };
+  return map[r]||('保存失败：'+r);
+}
+
+async function _dscSync(){
+  const block=_dscEl('api-dsc-block');if(!block)return;
+  _dscBind();
+  const list=_dscEl('api-dsc-list'),add=_dscEl('api-dsc-add');
+  const owner=_dscOwner();
+  if(!owner){
+    _dscFacts=[];_dscEditId=null;_dscMsg('');
+    _dscShow(add,false);_dscShow(_dscEl('api-dsc-editor'),false);
+    if(list)list.innerHTML='<div class="api-dsc-empty">保存这个角色之后，就可以为它记录私密事实。</div>';
+    return;
+  }
+  _dscShow(add,true);
+  const st=_dscStore();
+  if(!st){
+    _dscFacts=[];
+    if(list)list.innerHTML='<div class="api-dsc-empty">披露模块尚未加载。</div>';
+    return;
+  }
+  const r=await st.listFacts(owner);
+  if(!r||!r.ok){
+    _dscFacts=[];
+    if(list)list.innerHTML='<div class="api-dsc-empty">'+_tkEsc(_dscErr(r&&r.reason))+'</div>';
+    return;
+  }
+  _dscFacts=r.facts||[];
+  if(!list)return;
+  if(!_dscFacts.length){list.innerHTML='<div class="api-dsc-empty">还没有记录任何私密事实。</div>';return}
+  list.innerHTML=_dscFacts.map(function(f){
+    const id=_tkEsc(f.factId);
+    return '<div class="api-dsc-card">'
+      +'<div class="api-dsc-text">'+_tkEsc(f.text)+'</div>'
+      +'<div class="api-dsc-badge '+_dscBadgeClass(f.level)+'">'+_tkEsc(f.level)+'</div>'
+      +'<div class="api-dsc-actions">'
+      +'<button type="button" data-dsc-act="edit" data-dsc-id="'+id+'">编辑</button>'
+      +'<button type="button" data-dsc-act="del" data-dsc-id="'+id+'">删除</button>'
+      +'</div></div>';
+  }).join('');
+}
+
+function _dscBind(){
+  if(_dscBound)return;
+  const block=_dscEl('api-dsc-block');if(!block)return;
+  _dscBound=true;
+  const list=_dscEl('api-dsc-list');
+  if(list)list.addEventListener('click',function(ev){
+    const b=(ev.target&&ev.target.closest)?ev.target.closest('button[data-dsc-act]'):null;
+    if(!b)return;
+    const id=b.getAttribute('data-dsc-id')||'';
+    if(b.getAttribute('data-dsc-act')==='edit')_dscOpenEditor(id);
+    else if(b.getAttribute('data-dsc-act')==='del')_dscDelete(id);
+  });
+  const add=_dscEl('api-dsc-add');if(add)add.addEventListener('click',function(){_dscOpenEditor(null)});
+  const save=_dscEl('api-dsc-save');if(save)save.addEventListener('click',function(){_dscSave(save)});
+  const cancel=_dscEl('api-dsc-cancel');if(cancel)cancel.addEventListener('click',function(){_dscCloseEditor()});
+}
+
+function _dscOpenEditor(factId){
+  _dscEditId=factId||null;_dscMsg('');
+  const f=_dscEditId?_dscFacts.filter(function(x){return x.factId===_dscEditId})[0]:null;
+  const t=_dscEl('api-dsc-text'),l=_dscEl('api-dsc-level');
+  if(t)t.value=f?f.text:'';
+  if(l)l.value=(f&&f.level)||'PERSONAL';
+  _dscShow(_dscEl('api-dsc-editor'),true);
+  if(t&&t.focus)t.focus();
+}
+function _dscCloseEditor(){
+  _dscEditId=null;_dscMsg('');
+  _dscShow(_dscEl('api-dsc-editor'),false);
+  const t=_dscEl('api-dsc-text');if(t)t.value='';
+}
+
+async function _dscSave(btn){
+  const st=_dscStore();if(!st)return;
+  const owner=_dscOwner();
+  if(!owner){_dscMsg(_dscErr('no-writer-owner'));return}
+  const t=_dscEl('api-dsc-text'),l=_dscEl('api-dsc-level');
+  const text=t?t.value:'';
+  const level=(l&&l.value)||'PERSONAL';
+  const wasEdit=!!_dscEditId;
+  const old=btn?btn.textContent:'';if(btn){btn.disabled=true;btn.textContent='保存中…'}
+  try{
+    /* 只提交 text / level。owner 是 **writer context**，source / authority
+       由 seam 固定 —— 这里传不出第三种东西。 */
+    const r=wasEdit
+      ?await st.updateFact({ownerCharacterId:owner},_dscEditId,{text:text,level:level})
+      :await st.createFact({ownerCharacterId:owner},{text:text,level:level});
+    if(!r||!r.ok){_dscMsg(_dscErr(r&&r.reason));return}
+    _dscCloseEditor();
+    await _dscSync();
+    toast(wasEdit?'私密事实已更新':'私密事实已保存');
+  }catch(e){_dscMsg('保存失败：'+String((e&&e.message)||e))}
+  finally{if(btn){btn.disabled=false;btn.textContent=old}}
+}
+
+async function _dscDelete(factId){
+  const st=_dscStore();if(!st)return;
+  const owner=_dscOwner();
+  if(!owner){_dscMsg(_dscErr('no-writer-owner'));return}
+  if(!confirm('删除这条私密事实？此操作不可恢复。'))return;
+  try{
+    const r=await st.deleteFact({ownerCharacterId:owner},factId);
+    if(!r||!r.ok){_dscMsg(_dscErr(r&&r.reason));return}
+    await _dscSync();
+    toast('已删除');
+  }catch(e){_dscMsg('删除失败：'+String((e&&e.message)||e))}
+}
 
 /* ── Archived（归档区）：删除对话框（归档 / 彻底删除）、归档、恢复与归档视图 ── */
 var _ARCH_CLOCK_SVG='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><polyline points="12 7.2 12 12 15.3 13.9"/></svg>';

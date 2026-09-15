@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 
 /* Internal Beyond · 一键全量测试入口（Node 18+，零依赖，跨平台）。
  *
@@ -296,6 +296,17 @@ const GROUPS = [
          prompt 组装三层独立（对方是谁 / 我怎么看你 / 聊过什么）、
          prompt-injection 消毒与反例、唯一真源与非 IO 断言、DB_VER 未变。 */
       ['test_public_profile.js'],
+      /* Role DM Phase 4B-1.2：人类显式披露写入路径（Disclosure Authoring Seam）。
+         纯 Node、零浏览器、零真实模型调用：契约层是纯函数；持久化层用内存 mock 的
+         IndexedDB 适配器；最关键的"模型看不到它"三条则跑**真实生产路径**——
+         真实的 role-dm.js _composeSide（逐字节不变）、真实的
+         memories → buildMemoryContext 读取链（正文一字不出现在上下文里）、
+         真实的 run/turn（模型调用次数不变）。
+         覆盖 create/update/delete/分区/roundtrip、owner 绑 writer context、
+         caller 无法伪造 owner/source/authority、PUBLIC 被拒、A/B 隔离，
+         以及 5 组 mutation（owner 取 peer / caller 传 authority / 允许 PUBLIC /
+         秘密进 composeSide / 秘密复制进 memories）各自的变红证明。 */
+      ['test_disclosure_authoring.js'],
       ['test_role_dm_smoke.js'],
       ['test_video_runtime.js'],
       ['test_voice_pcm_adapter.js'],
@@ -472,6 +483,15 @@ const GROUPS = [
       ['test_socialnet_smoke.js'],
       ['test_socialnet_chain_smoke.js'],
       ['test_activity_smoke.js'],
+      /* Role DM Phase 4B-1.2：披露事实写入路径的**真实浏览器**证据。
+         Node 侧的 test_disclosure_authoring.js 用内存 mock 顶替 IndexedDB，
+         因此它证明不了"v24 的 onupgradeneeded 真的建出了 disclosureFacts"
+         "它的 keyPath 真的是 factId""页面里真实的 getMemoryContext 读不到它"。
+         本文件在真实 Chrome + 真实 file:// 页面上跑真实 IndexedDB：
+         store 与 keyPath、真实 create/list/update/delete、A/B 分区、
+         四条拒绝路径、memories 零写入、真实 getMemoryContext 盲区、
+         UI 小节只暴露三档。临时 profile，不触碰真实用户数据。 */
+      ['test_disclosure_store_smoke.js'],
       ['test_media_adapter_smoke.js'],
       ['test_ui_regression.js'],
       ['test_dual_window.js'],

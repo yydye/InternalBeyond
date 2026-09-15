@@ -1509,6 +1509,40 @@
         <input type="password" id="api-imagegen-apikey" placeholder="图片 API Key（可选；留空=复用文字 Key）" class="img-svc-field">
       </div>
       </div>
+      <!-- 私密事实（Phase 4B-1.2）：**人类显式创作**一条角色私有事实的唯一入口。
+           它刻意不是 publicProfile、不是 System Prompt、也不是 Memory 的
+           可见性选择器 —— 那三个 authority 已经被冻结（见 docs/DECISIONS.md
+           D29/D30），把披露事实塞进去等于制造第二份权威。
+           等级下拉里**没有 PUBLIC**：公开权威是 publicProfile，在这里创建
+           PUBLIC 会造出第二份公开资料权威。理由与拒因见
+           assets/js/disclosure-authoring-core.js §2/§3。 -->
+      <div class="api-ed-block" id="api-dsc-block">
+        <div class="api-ed-btitle">私密事实</div>
+        <div class="api-dsc-note">记录<b>这个角色自己的</b>非公开事实，以及它有多敏感。只保存在本机数据库里；角色在对话中<b>还看不到</b>它们（披露授权尚未实现）。</div>
+        <div class="api-dsc-list" id="api-dsc-list"></div>
+        <div class="api-dsc-foot">
+          <button type="button" class="btn" id="api-dsc-add">+ 新建私密事实</button>
+        </div>
+        <div class="api-dsc-editor ib-dsc-hidden" id="api-dsc-editor">
+          <div class="api-dsc-row">
+            <label for="api-dsc-text">事实内容（≤500 字）</label>
+            <textarea id="api-dsc-text" rows="3" maxlength="500" placeholder="例如：很怕打雷；从不主动提起那段经历…"></textarea>
+          </div>
+          <div class="api-dsc-row">
+            <label for="api-dsc-level">披露等级</label>
+            <select id="api-dsc-level">
+              <option value="PERSONAL">PERSONAL · 亲近的人可以了解</option>
+              <option value="PRIVATE">PRIVATE · 只告诉极少数人</option>
+              <option value="SECRET">SECRET · 不打算告诉任何人</option>
+            </select>
+          </div>
+          <div class="api-dsc-error" id="api-dsc-error"></div>
+          <div class="api-dsc-foot">
+            <button type="button" class="btn" id="api-dsc-save">保存</button>
+            <button type="button" class="btn" id="api-dsc-cancel">取消</button>
+          </div>
+        </div>
+      </div>
       <div class="api-ed-block"><div class="api-ed-btitle">功能设置</div>
       <div class="api-form-group u-mt-1">
         <label class="form-check-row"><input type="checkbox" id="api-waifu-toggle" class="u-native-check"> waifu 模式 <span class="field-note-inline">（长回复拆成多条短消息，一条条发，像真人；流式模型保持逐字打字）</span></label>
@@ -3151,6 +3185,23 @@ i would like the room to be enough.
      调度接缝不在这里：它复用 active-diary.js 的 _activeTick（见该文件的
      _roleDmSocialTick 调用点），因此**没有第二套后台 timer**。 -->
 <script src="assets/js/public-profile-core.js"></script>
+<!-- 披露事实（Phase 4B-1.2）：**写入**路径的三层。
+     加载顺序是真实依赖，不是风格偏好：
+       · disclosure-core.js —— 分类契约（纯函数 UMD）。它此前刻意不加载
+         （4B-1/4B-1.1 只定义类型，没有任何生产 writer）；本轮出现了第一条
+         人类显式写入路径，因此它必须在这里。
+       · disclosure-authoring-core.js —— 写者权威与可变面契约（纯函数 UMD），
+         工厂期就 require/读取 disclosure-core 的全局，故必须在其后。
+       · disclosure-store.js —— canonical 持久化（window.IBDisclosureStore）。
+         只在**调用时**解析前两层，因此它自己位置宽松；放在这里是为了让
+         "披露写入"三个文件在 HTML 里相邻可读。
+     ⚠ 这三层是**写入**路径。Role DM / Memory / diary / moments / letters /
+     understanding / Middle Brain **没有**任何一处引用它们 ——
+     读取路径不存在（4B-2 才做授权）。social.js（3040 行）早于本处加载，
+     所以角色编辑器里的接线一律在**事件处理时**惰性解析 window.IBDisclosureStore。 -->
+<script src="assets/js/disclosure-core.js"></script>
+<script src="assets/js/disclosure-authoring-core.js"></script>
+<script src="assets/js/disclosure-store.js"></script>
 <script src="assets/js/role-dm-core.js"></script>
 <script src="assets/js/role-dm.js"></script>
 <script src="assets/js/role-dm-social-core.js"></script>

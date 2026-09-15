@@ -812,7 +812,7 @@ Bark（iOS）与 ntfy（Android/OPPO）都支持；`recordPush` 同时记录两�
 
 ## 6. AI 社交系统（Moments / Social Net）
 
-### 数据模型（IndexedDB store `moments`，DB_VER 23）
+### 数据模型（IndexedDB store `moments`，DB_VER 24）
 
 Moment 字段：`id/roleId/authorType('user'|'role')/authorId/content/images[]/visibility(all|user|roles|private)/visibleRoleIds/likes[](string[])/comments[]/source(manual|proactive)/createdAt(ISO)/repostOf/repostText`；Comment：`id/authorType(user|role)/authorId/content/replyTo?/createdAt`。
 
@@ -890,11 +890,43 @@ Moment 字段：`id/roleId/authorType('user'|'role')/authorId/content/images[]/v
 
 ## 10. 数据存储全景
 
-### IndexedDB（DB_VER 23）
+### IndexedDB（DB_VER 24）
 
-stores 包括：聊天消息（经 dbPut）、`apiConfigs`、`memories`、`blogAnnotations`、`active_message_plans`（v17 起）、`diary_entries`（v17 起）、`moments`（v18，keyPath `id`，索引 `byRole(roleId)`/`byCreated(createdAt)`）、`roleLetters`/`roleLetterMemories`（v19/v20）、`activities` / `favorites`（v21 起，见 §11.1）、`understandings` / `threads`（v23 起，认识层与线索层）。导出/导入：`_ibBuildExportData` 含全部 store（顶层 version 9）、`importAll` 按 keyPath 回灌天然去重。`openDB` 带 `onblocked` 监听（提示关闭旧标签页）。
+stores 包括：聊天消息（经 dbPut）、`apiConfigs`、`memories`、`blogAnnotations`、`active_message_plans`（v17 起）、`diary_entries`（v17 起）、`moments`（v18，keyPath `id`，索引 `byRole(roleId)`/`byCreated(createdAt)`）、`roleLetters`/`roleLetterMemories`（v19/v20）、`activities` / `favorites`（v21 起，见 §11.1）、`understandings` / `threads`（v23 起，认识层与线索层）、`disclosureFacts`（v24 起，见 §10.1）。
 
-### localStorage 键（部分）
+导出/导入：`_ibBuildExportData` 含**除 `disclosureFacts` 外的**全部 store（顶层 version 9），`importAll` 按 keyPath 回灌天然去重。**`disclosureFacts` 是一个刻意的例外**——它装的是角色私有的秘密正文，而导出 JSON / localStorage 镜像 / 文件夹同步全部是**明文**，因此三者都不含它（见 §10.1 与 [DECISIONS.md](DECISIONS.md) D30）。`openDB` 带 `onblocked` 监听（提示关闭旧标签页）。
+
+### 10.1 披露事实（`disclosureFacts`，v24）
+
+回答的是「**这个角色自己**有什么非公开事实，它有多敏感」——一个在 4B-1.2 之前
+**无法被表达**的类型（详见 [ROLE_DM.md](ROLE_DM.md) 的 Phase 4B-1 / 4B-1.1 / 4B-1.2 三节）。
+三层，顺序即依赖：
+
+| 层 | 文件 | 职责 |
+|---|---|---|
+| 分类契约 | `assets/js/disclosure-core.js` | canonical 记录的**形状**：4 档 level + `UNDETERMINED`、9 个 source、3 个 authority、归一化、封闭记录 |
+| 写作契约 | `assets/js/disclosure-authoring-core.js` | 人类显式写者：owner 只从 writer context 取、source/authority 固定、PUBLIC 被拒、update 的不可变面 |
+| 持久化 | `assets/js/disclosure-store.js` | `window.IBDisclosureStore`：create / list / update / delete，唯一 canonical store |
+
+**为什么是独立 store 而不是 `memories`**：`visibility` 是 **ACL**（哪些消费方可以读），
+`level` 是 **sensitivity**（内容本身多敏感）——两者正交，塞进同一张表就是让
+十几个 `dbGetAll('memories')` 调用方自己去分辨。更硬的一条：
+`quickCreateMemory`（`memory.js:954`）的默认是 `visibility: data.visibility || 'public'`，
+用它造披露事实会让一条 SECRET 立刻变成可被召回、可被 consolidation 送进模型的公开记忆。
+仓库对"角色私有长期记忆"早有同款判断（`role-letters.js:26` 的 `roleLetterMemories`：
+"绝不写入共享 memories，避免污染 Memory 面板/export/backup"）。完整审计见 D30。
+
+存储形态：keyPath **`factId`**（不是通用的 `id`——canonical 记录里没有 `id` 字段，
+为迁就 keyPath 复制一份会让身份有两个真源）；**没有 `byOwner` 索引**，
+按 owner 分区由 `authoring-core.partitionForOwner` 完成（分区语义写在契约里，
+不写在索引声明里）。
+
+**写入路径存在，读取路径不存在**：`window.IBDisclosureStore` 的唯一引用方是角色编辑器 UI
+（`social.js` 的「私密事实」小节）。`composeSide` / `getMemoryContext` / diary / moments /
+letters / understanding / Middle Brain **没有任何一处**引用它 —— 授权（哪些事实在
+A→B 时可见）是 Phase 4B-2，**未实现**。
+
+#### localStorage 键（部分）
 
 `ib_chat_sync`（多窗口同步）、`ib_bridge_fab_pos`、`ib_social_follows_v1`（关注）、`ib_moments_reply_chain_v1`、`ib_moments_comment_log_v1`、`ib_moments_commentq_v1`（>48h 裁剪）、`ib_social_obs_v1.enabled`。
 
@@ -906,7 +938,7 @@ stores 包括：聊天消息（经 dbPut）、`apiConfigs`、`memories`、`blogA
 
 > 本组目标是让 InternalBeyond 从「聊天 + 朋友圈 + 通话」进一步变成共享同一套角色/记忆/活动状态/持久化的 **AI Companion World**：Chat / Moments / Call / Coread / Cinema / Favorites / Apps 共用同一套角色、记忆与活动基础设施。全部为 UI 与数据层新增，**不改动** Harness 四文件、ModelPort 等既有边界。
 
-### 11.1 IndexedDB（DB_VER 23）
+### 11.1 IndexedDB（本章的 store 引入于 DB_VER 21；当前 DB_VER 24）
 
 在既有 28 个 store 之上**增量**新增两个 store（keyPath `id`）：
 

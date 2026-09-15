@@ -268,29 +268,116 @@ consolidation / publicProfile / Moments / Letters 全部写入路径，file:line
 **`source` 与 `authority` 不是同一个维度** —— 一个描述**通道**，一个描述**责任**。
 把它们重载进同一个字段，就等于让"内容经过了哪条管道"悄悄变成"谁授权了它"。
 
+## Disclosure Authoring Seam（Phase 4B-1.2）
+
+回答的是**下一个**问题：4B-1 定义了形状、4B-1.1 定义了资格，但两者都是纯函数上的契约 ——
+**没有任何代码产出过一条 disclosure fact**（D29 的 "PRODUCTION DISCLOSURE WRITER = 0"）。
+本轮补上第一条真正存在的写入路径：
+
+```
+角色编辑页 → 私密事实 → 新建 → 正文 + 披露等级 → 保存
+                  ↓
+        canonical disclosure fact（本机数据库）
+                  ↓
+        ✗ 模型看不到（授权 = Phase 4B-2，未实现）
+```
+
+### 存储权威：**独立 objectStore `disclosureFacts`**（DB_VER 23 → 24）
+
+候选逐个审过（`memories` / 独立 store / `apiConfigs` 内嵌 / Home Node / 其它既有
+character-owned store），结论与理由见 [DECISIONS.md](DECISIONS.md) D30。三条决定性的：
+
+1. `memories` 的 `visibility` 是 **ACL**，`disclosure.level` 是 **sensitivity**。
+   两者正交；放同一张表等于让每个 `dbGetAll('memories')` 的调用方自己分辨。
+2. `quickCreateMemory`（`memory.js:954`）的 canonical 默认是
+   `visibility: data.visibility || 'public'` —— 用它造披露事实会让 SECRET **立刻**
+   变成可召回、可送进模型归纳的公开记忆。安全性建立在一个必须**恰好缺失**的字段上。
+3. 独立 store **天然不进**明文面：导出（`_ibBuildExportData` `core.js:986`）、
+   localStorage 镜像（`_ibMirrorPack` `core.js:1029`）、文件夹同步
+   （`_ibFsSyncNow` `core.js:1121`）全部按**显式 store 名单**工作，
+   新 store 不在名单里。**代价是这一轮的创作不进备份**（如实记在 Deferred）。
+
+`keyPath` 是 `factId`（不是通用的 `id`）；没有 `byOwner` 索引 —— 按 owner 分区
+由契约的 `partitionForOwner` 完成，分区语义只有一个出错的地方。
+
+### 写者权威在 seam 层怎么固定
+
+输入被**结构性拆成两个参数**，这不是风格问题：
+
+| 参数 | 谁提供 | 内容 |
+|---|---|---|
+| `writerContext` | UI 从"你正在编辑哪个角色"派生，用户看不见也改不了 | **只读** `ownerCharacterId` / `authoredBy` 两个键，其余键代码里没有读取点 |
+| `userInput` | 表单 | 只允许 `level` / `text` / `subjectCharacterId` |
+
+| 项 | 契约 |
+|---|---|
+| owner | **只**来自 `writerContext`；缺失/畸形 ⇒ 拒绝。从不看当前说话人 / peer / `visibleTo` / `createdBy` / nickname |
+| source / authority | 由 seam 固定为 `character_authoring` / `human_authoring`；**调用方传了即整体拒绝**（`caller-supplied-metadata`），不是静默忽略 |
+| 可创作档位 | **`PERSONAL` / `PRIVATE` / `SECRET`**，恰好等于 `GATED_LEVELS`。**PUBLIC 被拒绝而不是降级** —— 公开权威是 `public-profile-core` 的构造式白名单，在这里再产出一条就是第二份公开资料权威 |
+| 保留键 | `ownerCharacterId` / `source` / `authority` / `authoredBy` / `factId` / `id` / `updatedAt` / `createdBy` / `createdByName` / `isDisclosureFact` |
+| 硬名单 | persona / publicProfile / 凭据 / 共享 thread 字段在**写入路径上**再查一次（`denylistHits`）—— 否则它们会因为"没被复制进 canonical 输入"而被静默丢弃，调用方会以为自己提交了一个 persona 派生事实 |
+| update 可变面 | 只有 `text` / `level` / `subjectCharacterId` |
+| update 不可变面 | `factId` / `ownerCharacterId` / `authority` / `source` / `authoredBy` / `updatedAt`，出现即拒绝。**改归属不是编辑**，是"删掉 A 的一条、再为 B 建一条"两件事 |
+| delete | 只有 owner 能删；物理删除，无 tombstone；不旁写 Memory / persona / publicProfile / relationship |
+| A / B 隔离 | `listFacts(A)` 只返回 A 的；分区不按 `createdBy` / `subjectCharacterId` / `visibleTo` / 当前 peer |
+
+**「还没有保存的草稿不能写」**：`addNewApi()`（`social.js:853`）在角色落盘**之前**
+就预分配了 id，所以"正在新建"也满足 id 非空。如果那时允许写入，用户一取消新建，
+库里就会留下一条 owner 指向从未存在过的角色的事实 —— 永远不会再被任何 UI 读到，
+却把用户刚写下的秘密留在了磁盘上。因此 seam 要求 owner 先在 `apiConfigs` 里存在。
+
+### 本轮的冻结条件：**读不到**
+
+创建一条 `SECRET`（例如「害怕雷声」）之后，`composeSide(A→B)` 的输出**逐字节不变**，
+`getMemoryContext` 的输出**逐字节不变**，`run/turn` 的模型调用次数不变，
+秘密正文不出现在任何送往 provider 的 messages 里。证据：
+`tests/test_disclosure_authoring.js` 的 U / V / W / X 组跑的是**真实**的 `role-dm.js`
+与**真实**的 `memories → buildMemoryContext` 读取链，而不是替身
+（替身会让"看不到"变成恒真）；MU 组反过来证明：**一旦把同一条秘密复制进
+`memories`，同样的断言立刻变红**。
+
+**等级今天只是分类**：`PERSONAL` / `PRIVATE` / `SECRET` 在 Phase 4B-2 之前
+**没有一档**是模型可见的 —— 全部是 NO。这是 hard boundary 的必要前提。
+
 ## Deferred
 
 - **Relationship Consequences**：**Phase 4A（familiarity → 开场）已落地**；
   **Phase 4B-1（披露分级数据契约）已落地**（`assets/js/disclosure-core.js`，纯数据
   contract：分类 + provenance + 归一化；**不做授权、不接 Role DM**，见 D28）；
   **Phase 4B-1.1（writer authority）已落地**（同上 core：新增 `authority` /
-  `authoredBy` 两维 + 通道交叉校验；**仍然零生产 writer、零消费者**，见 D29）；
+  `authoredBy` 两维 + 通道交叉校验，见 D29）；
+  **Phase 4B-1.2（人类显式写入路径）已落地**（`disclosure-authoring-core.js` +
+  `disclosure-store.js` + 角色编辑器的「私密事实」小节 + 独立 store
+  `disclosureFacts`，DB_VER 23→24；**写入路径存在、读取路径仍不存在**，见 D30）；
   仍缺 **Phase 4B-2（authorization / filtering）** 与 **Phase 4C（affinity / 语气）**，
   设计候选见 Phase 4 审计文档与下节，**未实现**。
 - **Disclosure authorization**：`disclosure-core.js` 里**刻意不存在**
   `authorize()` / `filter()` / `canDisclose()` —— 授权的输入（`speakerId` / `peerId` /
   有向关系）和输出（哪些事实能进模型上下文）都还没有实现，且 **`trust` 完全未接入**。
+  **今天没有任何一档是模型可见的**（`PERSONAL` / `PRIVATE` / `SECRET` 全部 = 看不到）。
 - **Disclosure candidate 流程（模型候选 → 人类确认）**：`human_confirmation` 的**语义**
   已在契约里，但 candidate 的产生、展示与确认**全部未实现**，也没有任何模型调用被接入。
-- **Disclosure fact 的写入入口**：仓库里**没有任何**一个动作明确表示"用户正在创建
-  一条披露事实"（character 编辑器写的是 `systemPrompt`/`publicProfile`，Memory 编辑器
-  写的是 ACL）。因此本轮不接 writer —— 不是遗漏，是**证据不足**。
+- **`human_confirmation` 的 UI**：**未实现**。人类确认是一条**独立权威值**（与
+  `human_authoring` 语义可区分：后者意味着不存在被否定的 candidate 来源），
+  因此它需要一个自己的入口，不能复用「私密事实」小节 —— 否则两种权威在数据上
+  又变成同一个东西。
+- **disclosure fact 的备份 / 导出 / 换机迁移**：**未实现，且是有意的**。
+  `disclosureFacts` 刻意不在 `_ibBuildExportData` 名单里，因为导出 JSON /
+  localStorage 镜像 / 文件夹同步都是**明文**，而"一条秘密该不该进明文备份"
+  是它自己的契约（需要用户开关与自己的脱敏规则），不能顺手决定。
+  **代价如实说明：这一轮用户创作的私密事实不进备份，换机或恢复备份会丢。**
+- **角色删除时的披露事实级联**：**未实现**。删角色**不会**删掉它名下的
+  `disclosureFacts` 行 —— 那些行会因为 owner 不复存在而永久不可读（任何 UI 都
+  读不到它，模型侧也读不到），但它们**仍留在磁盘上**。这需要一次级联契约
+  （而不是在 `deleteApiConfig` 里顺手加一句），故本轮不做，如实记在这里。
 - **M3 enforcement**：soft repetition 仍只观测；rewrite / retry / drop / stop / guidance 全部未开。
 - **Cross-run Duplicate S2**：跨 run 的重复判定尚未闭合。
 - **尚未闭合的 RCI attribution**：`moments` / `role_letters` / `active.proactive` /
   `memory_consolidation` / `chat` group 分支 / `understanding` / `blog_comment`。
-- **无 decay / 无 romance / jealousy / conflict simulation / 无 social graph / 无 DB migration**：
+- **无 decay / 无 romance / jealousy / conflict simulation / 无 social graph**：
   全部**未实现**，且不属于本文档的承诺范围。任何一项都需要单独决策。
+  （注：**DB migration 本轮已发生一次** —— v23 → v24 增加 `disclosureFacts`，
+  见 D30；这是仓库自己的经济审计 R6 已经预告并授权的路径。）
 
 ---
 

@@ -158,3 +158,34 @@ body.theme-infernal .mi-sub-inf{display:inline}
 .api-pp-label{display:block;font-size:0.82rem;color:var(--text-muted);margin:10px 0 5px;letter-spacing:0.02em}
 .api-pp-hint{margin:8px 0 10px}
 .api-public-profile input{font-size:0.88rem;padding:9px 13px}
+
+/* ── 私密事实（角色私有的 PERSONAL / PRIVATE / SECRET 自我事实）────────
+   Phase 4B-1.2 的人类显式创作面。刻意**极简**：一张卡片只显示正文摘要、
+   等级、编辑、删除 —— 不显示 trust 阈值 / "谁能看到" / peer 选择器 /
+   关系分 / 授权矩阵，那些属于 4B-2 或更后面，提前画出来就是在承诺
+   一个还不存在的判定。
+   样式放在这里（而不是新开一张样式表）沿用公开资料折叠块的先例：
+   它们都是同一个角色编辑器里新增的小节，样式表数量与加载顺序预算不变。 */
+.ib-dsc-hidden{display:none !important}
+.api-dsc-note{font-size:.72rem;color:var(--content-muted);line-height:1.7;margin:2px 0 10px}
+.api-dsc-list{display:flex;flex-direction:column;gap:8px;margin-bottom:10px}
+.api-dsc-empty{font-size:.78rem;color:var(--content-muted);opacity:.85;padding:10px 2px}
+.api-dsc-card{display:flex;align-items:flex-start;gap:10px;padding:9px 11px;border:1px solid var(--border-soft);border-radius:10px;background:var(--surface-card)}
+.api-dsc-text{flex:1 1 auto;min-width:0;font-size:.84rem;line-height:1.6;color:var(--content-primary);word-break:break-word;white-space:pre-wrap;max-height:4.8em;overflow:hidden}
+.api-dsc-badge{flex:0 0 auto;font-size:.68rem;letter-spacing:.06em;padding:2px 8px;border-radius:999px;border:1px solid var(--border-soft);color:var(--text-muted);white-space:nowrap}
+.api-dsc-badge.is-personal{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 40%,transparent)}
+.api-dsc-badge.is-private{color:#e0a35c;border-color:rgba(224,163,92,.4)}
+.api-dsc-badge.is-secret{color:#e57373;border-color:rgba(220,100,100,.4)}
+.api-dsc-actions{flex:0 0 auto;display:flex;gap:6px;align-items:center}
+.api-dsc-actions button{font-size:.74rem;padding:3px 9px;border-radius:8px;border:1px solid var(--border-soft);background:transparent;color:var(--text-muted);cursor:pointer;transition:color .2s,border-color .2s}
+.api-dsc-actions button:hover{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 45%,transparent)}
+.api-dsc-editor{margin-top:10px;padding:12px;border:1px dashed var(--border-soft);border-radius:10px}
+.api-dsc-editor label{display:block;font-size:.8rem;color:var(--silver);margin:0 0 6px;letter-spacing:.03em}
+.api-dsc-editor textarea,.api-dsc-editor select{width:100%;background:rgba(175,195,228,.06);border:1px solid var(--glass-border);border-radius:10px;padding:10px 13px;color:var(--text-primary);font-size:.88rem;font-family:'Noto Sans SC',sans-serif;outline:none}
+.api-dsc-editor textarea{resize:vertical}
+.api-dsc-row{margin-bottom:10px}
+.api-dsc-row:last-of-type{margin-bottom:0}
+.api-dsc-error{font-size:.74rem;color:#e57373;margin-top:8px;min-height:1em}
+.api-dsc-foot{display:flex;gap:8px;margin-top:10px}
+.api-dsc-foot .btn{font-size:.8rem;padding:6px 14px}
+@media (max-width:560px){.api-dsc-card{flex-wrap:wrap}}

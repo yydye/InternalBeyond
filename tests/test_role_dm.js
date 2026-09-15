@@ -1062,8 +1062,18 @@ reset();
   const idxRaw = JSON.parse(localStorage.getItem('ib_role_dm_threads_v1'));
   check('AB40. 确实写进 canonical 的 threads 索引 key（没有新建 store、没有第二份真源）',
     !!idxRaw.items[fid] && !!idxRaw.items[fid].threadMemorandum);
-  check('AB41. DB_VER 未因这个可选字段而改变',
-    /DB_VER\s*=\s*23/.test(fs.readFileSync(path.join(ROOT, 'assets/js/core.js'), 'utf8')));
+  check('AB41. 备忘只是既有 thread 记录上的**可选字段**：本阶段没有为它升版 / 建表',
+    (function () {
+      const core = fs.readFileSync(path.join(ROOT, 'assets/js/core.js'), 'utf8');
+      const v = Number((/DB_VER\s*=\s*(\d+)/.exec(core) || [])[1]);
+      /* Phase 4B-1.2 让 DB_VER 前进到 24（+ disclosureFacts，属另一个阶段），
+         因此这里不再写死 23。本阶段要断言的实质是：备忘**不需要自己的 store**
+         —— AB40 已证明它落在 canonical threads 索引里，AB42 证明没有
+         role_dm 专属 store。这里补上"版本只增不减"与"core.js 里不存在任何
+         为备忘而生的表名"。 */
+      return Number.isInteger(v) && v >= 23
+        && core.indexOf('roleDmMemorandum') < 0 && core.indexOf('role_dm_') < 0;
+    })());
   check('AB42. 没有新增任何 object store（备忘在既有 thread 记录上）',
     !/createObjectStore\('role_dm/.test(fs.readFileSync(path.join(ROOT, 'assets/js/core.js'), 'utf8')));
 

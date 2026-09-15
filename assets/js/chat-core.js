@@ -19,7 +19,7 @@
   /* ── 存储位置（canonical 名称的唯一真源）────────────────────────────── */
   var STORE_NAME = 'chatMessages';
   var DB_NAME = 'InternalBeyondDB';
-  var DB_VER = 23;                 /* 与 assets/js/core.js:3 同步；本阶段**不**升版 */
+  var DB_VER = 24;                 /* 与 assets/js/core.js:3 同步（v24 = disclosureFacts，与 chatMessages 无关） */
   var MESSAGE_STORE = 'messages';  /* canonical SQLite 表名 */
   var SCHEMA_VERSION = 1;          /* canonical SQLite schema 版本（迁移用） */
 

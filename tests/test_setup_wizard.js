@@ -74,7 +74,15 @@ check('复用 addNewApi + saveCurrentApi', /window\.addNewApi/.test(jsSrc) && /w
 check('不直接写 apiConfigs 存储', !/dbPut\s*\(\s*['"]apiConfigs['"]/.test(jsSrc));
 check('不绕过编辑器直接调用 _persistApiConfig', jsSrc.indexOf('_persistApiConfig') === -1);
 check('不新增角色相关 store', !/objectStore|createObjectStore/.test(jsSrc));
-check('不升 DB_VER（core.js 仍为 23）', /DB_VER=23/.test(fs.readFileSync(path.join(ROOT, 'assets', 'js', 'core.js'), 'utf8')));
+check('不升 DB_VER（向导状态只写 apiSettings 的私有 key，不建 store）',
+  /* Phase 4B-1.2 让 DB_VER 前进到 24（disclosureFacts，属另一个阶段）。
+     本阶段真正的承诺是"向导没有自己的 store、没有自己的保存链"，
+     由上一行（不新增角色相关 store）与下一行（只用 apiSettings 两个私有 key）
+     证明；这里只保留"版本只增不减"。 */
+  (function () {
+    const v = Number((/DB_VER=(\d+)/.exec(fs.readFileSync(path.join(ROOT, 'assets', 'js', 'core.js'), 'utf8')) || [])[1]);
+    return Number.isInteger(v) && v >= 23;
+  })());
 check('向导状态只用 apiSettings 两个私有 key', /DONE_KEY\s*=\s*'ibSetupV1Done'/.test(jsSrc) && /DRAFT_KEY\s*=\s*'ibSetupV1Draft'/.test(jsSrc));
 check('不使用 localStorage / sessionStorage', jsSrc.indexOf('localStorage') === -1 && jsSrc.indexOf('sessionStorage') === -1);
 

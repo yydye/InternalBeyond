@@ -1,4 +1,4 @@
-﻿/* ====================================================================
+/* ====================================================================
    test_disclosure_core.js — Phase 4B-1 · Disclosure Classification Contract
    --------------------------------------------------------------------
    零 IO / 零模型调用。只测 assets/js/disclosure-core.js 的纯函数契约，
@@ -274,10 +274,22 @@ group('J. 结构性边界（零 IO、不读 trust、不接 Role DM）');
     && !/out\.trust = capDelta\(-/.test(rdc));
   check('J8. composeSide 未新增私有事实注入点',
     (rd.match(/peerPrivateFacts|disclosureFacts|privateFacts/g) || []).length === 0);
-  check('J9. html 未加载 disclosure-core.js（尚未接线）',
+  check('J9. HTML 加载**写入**路径三层，而 Role DM 全链路仍不引用（读取路径不存在）',
     (() => {
+      /* ⚠ 本断言在 Phase 4B-1.2 被**有意改写**。4B-1 / 4B-1.1 冻结的是
+         "没有任何生产 writer"，所以当时写的是"html 不加载 core"。
+         4B-1.2 的目的恰恰是造出第一个人类显式写者，那条断言的前提因此
+         已经改变。它原本想保护的性质是"Role DM 读不到"，而那一条由 J5
+         （角色私信链路不含 disclosure 字样）与 J8（composeSide 无注入点）
+         独立钉住，两者的代码**一个字都没改**。
+         这里改成断言新状态：写入三层已加载且顺序正确，读取侧角色仍为零引用。 */
       const html = fs.readdirSync(ROOT).filter(f => /\.html$/i.test(f)).map(f => readSrc(f)).join('\n');
-      return html.indexOf('disclosure-core.js') < 0;
+      const tag = (n) => '<script src="assets/js/' + n + '"></script>';
+      return html.indexOf(tag('disclosure-core.js')) >= 0
+        && html.indexOf(tag('disclosure-authoring-core.js')) >= 0
+        && html.indexOf(tag('disclosure-store.js')) >= 0
+        && html.indexOf(tag('disclosure-core.js')) < html.indexOf('<script src="assets/js/role-dm.js">')
+        && [rd, rdc, socialC, social].every(s => !/IBDisclosureCore/.test(s));
     })());
   check('J10. role-dm-social-core 的 SIGNAL_WEIGHTS 未被改动（autonomous scoring 未动）',
     /trust: 0\.10/.test(socialC) && /RELATION_NEUTRAL = 0\.5/.test(socialC));
@@ -487,14 +499,40 @@ group('N. 结构性 + mutation sensitivity（4B-1.1）');
       const d = readSrc('assets/js/disclosure-core.js').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
       return !/\bfetch\s*\(/.test(d) && !/indexedDB/i.test(d) && !/localStorage/.test(d) && !/setTimeout|setInterval/.test(d);
     })());
-  check('N3. 没有生产 writer 接入：全部 assets/js 里只有 core 自己提到 IBDisclosureCore',
-    require('fs').readdirSync(path.join(ROOT, 'assets', 'js')).filter(f => /\.js$/.test(f))
-      .filter(f => f !== 'disclosure-core.js')
-      .every(f => readSrc(path.join('assets', 'js', f)).indexOf('IBDisclosureCore') < 0));
-  check('N4. HTML 仍未加载 disclosure-core.js（没有 UI seam 可接，故不接）',
-    (() => {
+  check('N3. 引用 IBDisclosureCore 的文件**恰好**是白名单三个，且模型侧消费链一个都没有',
+    (function () {
+      /* ⚠ 本断言在 Phase 4B-1.2 被**有意改写**。4B-1.1 的原话是
+         "没有生产 writer 接入：只有 core 自己提到 IBDisclosureCore" ——
+         那在第 4B-1.2 造出第一个显式写者之后不再成立。
+         改写方向是**加强**而不是放宽：
+           ① 白名单是封闭的（多一个文件就红，所以"顺手接个消费者"会被拦住）；
+           ② 反向断言模型上下文链**零引用** —— 这比"没有写者"更贴近
+              本轮真正要保护的性质：写入路径存在，读取路径不存在。 */
+      const WRITERS = ['disclosure-core.js', 'disclosure-authoring-core.js', 'disclosure-store.js'];
+      const files = fs.readdirSync(path.join(ROOT, 'assets', 'js')).filter(f => /\.js$/.test(f));
+      const refs = files.filter(f => readSrc(path.join('assets', 'js', f)).indexOf('IBDisclosureCore') >= 0);
+      const consumers = ['memory.js', 'active-diary.js', 'moments.js', 'communication.js', 'role-letters.js',
+        'role-dm.js', 'role-dm-core.js', 'role-dm-social.js', 'role-dm-social-core.js', 'role-dm-ui.js',
+        'middle-brain.js', 'agent-runtime.js', 'understanding-authority.js'];
+      return refs.length === WRITERS.length && refs.every(f => WRITERS.indexOf(f) >= 0)
+        && consumers.every(f => readSrc(path.join('assets', 'js', f)).indexOf('IBDisclosureCore') < 0);
+    })());
+  check('N4. 加载顺序：disclosure-core → authoring-core → store（上一层在工厂期就被读取）',
+    (function () {
+      /* ⚠ 本断言同样被有意改写：它此前是"HTML 仍未加载 disclosure-core.js"。
+         现在要保护的是**顺序** —— authoring-core 的 UMD 工厂期就执行
+         `factory(root.IBDisclosureCore)`，store 则是在调用时才解析。
+         顺序错了在浏览器里就是静默 undefined（本仓库反复记录过的坑），
+         所以这条必须由 HTML 的真实顺序来钉。 */
+      /* 按**完整 script 标签**定位，不按裸文件名：HTML 里的说明注释也会提到
+         这些文件名，裸匹配会让"注释在标签之前"被误读成"标签在标签之前"。
+         这条断言本身就被这个坑绊过一次。 */
       const html = fs.readdirSync(ROOT).filter(f => /\.html$/i.test(f)).map(f => readSrc(f)).join('\n');
-      return html.indexOf('disclosure-core.js') < 0;
+      const tag = (n) => '<script src="assets/js/' + n + '"></script>';
+      const i0 = html.indexOf(tag('disclosure-core.js'));
+      const i1 = html.indexOf(tag('disclosure-authoring-core.js'));
+      const i2 = html.indexOf(tag('disclosure-store.js'));
+      return i0 > 0 && i0 < i1 && i1 < i2;
     })());
 
   /* ── MUT-A：authority 上限变异 —— derived 也能 SECRET ── */

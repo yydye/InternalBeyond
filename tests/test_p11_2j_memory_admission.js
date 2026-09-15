@@ -910,9 +910,35 @@ check('B2.noTauriAdded', ALL_PROD.indexOf('@tauri-apps') < 0);
 check('B3.memoryStoreSchemaUnchanged',
   /const MEMORY_SCHEMA_VERSION = 1;/.test(STORE),
   'memory schema version must stay 1');
+/* v23 的 store 基线（本阶段结束时的既成事实）。
+   B4 的实质承诺是"记忆准入**没有新增 store**"，而不是"DB_VER 永远等于 23"：
+   Phase 4B-1.2 为披露事实（disclosureFacts）合法前进到 24，那是另一个阶段的事。
+   写死 23 只会在每次合法升版时误报，而且它证明不了"没有新 store"——
+   一个把 23 改成 24 却顺手加了三张表的提交同样能让它……不，事实上它会让它变红，
+   但红的原因是版本号而不是那三张表；诊断信息因此会指向错误的地方。
+   与 test_activity_smoke.js:64-66 同款 —— 那条教训本仓库已经写下来过一次：
+   "版本断言按引入该 store 的版本，而不是把当前 DB_VER 写死"。 */
+const V23_STORES = ['posts', 'categories', 'about', 'music', 'apiSettings', 'chatMessages', 'letters',
+  'apiConfigs', 'groups', 'blogComments', 'memories', 'chatThreads', 'chatSummaries', 'uploadedFiles',
+  'blogAnnotations', 'projects', 'projectFiles', 'autoMemory', 'calEvents', 'calNotes', 'calLedger',
+  'active_message_settings', 'active_message_history', 'active_message_plans', 'diary_entries', 'moments',
+  'roleLetters', 'roleLetterMemories', 'activities', 'favorites', 'understandings', 'threads'];
+/* 允许出现、且**只**允许出现的后续阶段新增表。每加一个都必须在这里登记 ——
+   于是"某天有人默默加了一张表"依然会让这条断言变红。 */
+const LATER_STAGE_STORES = ['disclosureFacts'];
 check('B4.noNewObjectStore',
-  /DB_VER=23/.test(CORE),
-  'IndexedDB version must stay 23 (no new store)');
+  (function () {
+    const ver = Number((/DB_VER=(\d+)/.exec(CORE) || [])[1]);
+    const body = (/\[([^\]]*?)\]\.forEach\(s=>/.exec(CORE) || [])[1] || '';
+    const names = (body.match(/'([^']+)'/g) || []).map(function (s) { return s.slice(1, -1); });
+    if (!names.length || !Number.isInteger(ver) || ver < 23) return false;
+    /* ① 既有 store 一个都不许消失。 */
+    if (!V23_STORES.every(function (n) { return names.indexOf(n) >= 0; })) return false;
+    /* ② 多出来的只能是被登记过的后续阶段新增表。 */
+    return names.filter(function (n) { return V23_STORES.indexOf(n) < 0; })
+      .every(function (n) { return LATER_STAGE_STORES.indexOf(n) >= 0; });
+  })(),
+  'the memory-admission stage must add no store (later stages may legitimately bump DB_VER, but only if registered here)');
 check('B5.noSecondCalibrationImplementation',
   countOcc(ALL_PROD, 'async function _calibrateMemoryCandidate(') === 1,
   'exactly one calibration implementation must exist');

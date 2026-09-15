@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 
 /* ====================================================================
    Peer Awareness Phase 1 · 角色公开认知层（Public Character Profile）
@@ -451,8 +451,15 @@ console.log('\n══ E · 接线（唯一真源 / 无第二份实现 / 无 DB �
 
 /* ── 18. 无 DB 迁移 ─────────────────────────────────────────────── */
 {
-  check('18a. DB_VER 未变（仍是 23；公开资料只是既有 apiConfigs 行上的可选嵌套字段）',
-    /DB_VER=23/.test(SRC_CORE_JS), (SRC_CORE_JS.match(/DB_VER=\d+/) || [])[0]);
+  check('18a. publicProfile 是既有 apiConfigs 行上的可选嵌套字段（**不是**新 store ⇒ 本阶段零 schema 迁移）',
+    /* Phase 4B-1.2 让 DB_VER 前进到 24（disclosureFacts，属另一个阶段）。
+       写死 23 会在每次合法升版时误报，而且它并不是本阶段要保护的性质 ——
+       本阶段真正的承诺是"公开资料没有自己的 store"。18b / 18c 证明清单与
+       索引都没变，这里补上"版本只增不减"与"没有 publicProfile 表"。 */
+    (function () {
+      const v = Number((/DB_VER=(\d+)/.exec(SRC_CORE_JS) || [])[1]);
+      return Number.isInteger(v) && v >= 23 && !/createObjectStore\(\s*['"]publicProfile/.test(SRC_CORE_JS);
+    })(), (SRC_CORE_JS.match(/DB_VER=\d+/) || [])[0]);
   check('18b. 没有新增 objectStore / index（openDB 的 store 清单未因本阶段变化）',
     SRC_CORE_JS.includes("'understandings','threads'") && !SRC_CORE_JS.includes('publicProfiles'));
   check('18c. publicProfile 不是 apiConfigs 的键路径依赖（无需索引）',

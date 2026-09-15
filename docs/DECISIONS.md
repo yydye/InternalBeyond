@@ -866,3 +866,181 @@ D29 只修正 D28 的**依据**：等级上限从"来源"移到"写者权威"，
 来源不等于权威。`disclosure-core.js` 里 `maxLevelForSource` 已被
 `maxLevelForAuthority` 取代，并由 `authorityForSource` 作为**迁移适配器**
 保留 4B-1 的调用形状语义。
+
+## D30. 披露事实需要一条**显式人类创作路径**（Phase 4B-1.2，2026-09-15）
+
+### 背景
+
+D28 定义了 canonical 记录的形状，D29 定义了"谁有资格"，但两者都是**纯函数上的契约**：
+`normalizeDisclosureFact({...})` 谁来调都行，而当时**没有任何生产代码调用它**。
+D29 如实写下了那个缺口：
+
+```
+PRODUCTION DISCLOSURE WRITER = 0
+  ⇒ 契约能描述一条秘密，但造不出一个秘密
+```
+
+本轮补上第一条真正存在的写入路径。三个问题必须先回答：**存在哪里**、**谁在写**、
+**写完谁能读到**。
+
+### 存储权威审计（逐个候选，结论来自 file:line 而不是偏好）
+
+| 候选 | schema ownership | owner 语义 | 生命周期 / 同步 | 与 Memory ACL 的关系 | persona / publicProfile 污染 | 9 字段 canonical | DB 版本 |
+|---|---|---|---|---|---|---|---|
+| **A. `memories`** | `memory.js:954 quickCreateMemory`（唯一 canonical 构造器，5 个调用点） | 需外部传入；表本身**没有** owner 分区 | 进 `_ibBuildExportData`（`core.js:986`）/ `_ibMirrorPack` pri 名单（`core.js:1029`）/ 文件夹同步（`core.js:1121`）——**全部明文** | **正面冲突**：`visibility` 是 ACL、`level` 是 sensitivity，13 处 `dbGetAll('memories')` 的调用方必须自己分辨 | 中（Memory 面板 / 召回池） | 可以，但要靠"恰好没有 `visibility` 字段"才不被召回（`memory-visibility-core.js:42` fail closed） | 不需要 |
+| **B. 独立 `disclosureFacts`** | 本阶段新建 | 按 `ownerCharacterId` 分区，写入时由 seam 固定 | **不在**导出 / 镜像 / 同步名单里 ⇒ 不落明文；代价是不进备份 | **零关系**（另一张表、另一个维度） | 无 | 原生就是这 9 个字段 | **需要 23→24** |
+| **C. `apiConfigs` 内嵌** | `social.js` 角色记录（`publicProfile` 走的就是这条路，`test_public_profile.js:454`） | 结构性最强（行 = 角色） | **在**导出 / 镜像 / 同步名单里 ⇒ SECRET 正文进三份明文 | 零关系 | **高**：秘密与 `publicProfile`（公开权威）成为同一行的兄弟字段 | 可以 | 不需要 |
+| **D. Home Node canonical store** | `services/home-node/*-store.js`（chat / memory / moments / understanding） | 需新建服务端表 + 迁移 + mobile gateway | 真实多端 | 需重做一遍 ACL 边界 | 无 | 可以 | 服务端 schema |
+| **E. 其它 character-owned store** | `roleLetterMemories`（v20）/ `understandings` / `threads` / `moments` / `diary_entries` | 各不相同 | `understandings` / `threads` / `moments` / `diary_entries` **都已被模型上下文构建器读取**（`getUnderstandingContext` / `getThreadContext` / `getMomentsContext` / consolidation 的 `recentDiary`） | 重载语义 | 重载语义 | 可以 | 不需要 |
+
+三个决定性的事实：
+
+1. **`quickCreateMemory` 的默认是 `visibility: data.visibility || 'public'`**（`memory.js:971`）。
+   用它造披露事实，一条 SECRET 会**立刻**变成可被召回、可被 consolidation
+   送进模型的公开记忆（consolidation 的候选集是 `_memDerivationCandidates` →
+   `isMemoryVisibleTo` → `public` 通过）。今天 `memories` 之所以"恰好安全"，
+   是因为 canonical disclosure 记录**不带** `visibility` 字段而走 fail closed 分支 ——
+   把安全性建立在一个**必须恰好缺失**的字段上，不是安全。
+2. **仓库对"角色私有的长期记忆"已经做过同一个决定**：`role-letters.js:26`
+   ```js
+   const RL_MEM_STORE='roleLetterMemories'; /* 角色私信长期记忆命名空间（按 characterId
+      owner 隔离，见 core.js v20）。绝不写入共享 memories，避免污染 Memory
+      面板/export/backup */
+   ```
+   披露事实比私信记忆更敏感，没有理由反而放宽。
+3. **仓库自己的文档预告过这条升版路径**。已入库的先例是 `role-dm.js:78-83`
+   （"本仓库的既有决策是'数据模型向后兼容优先，**不轻易**升 DB_VER'，而新增 store
+   会强制升版并牵动多处硬编码断言（`tests/test_chat_core_contract.js` 等）"）
+   与 `test_activity_smoke.js:64-66`（"版本断言按**引入该 store 的版本**，
+   而不是把当前 DB_VER 写死：DB_VER 已随 v22/v23 前进，写死 21 只会在每次升版时
+   误报，且不能证明 store 存在"）。两者合起来给出的规则是：**不轻易升版，
+   但当一个 store 确实必须新建时，升版是合法路径，代价是逐处核对硬编码**。
+   另有一份**在途、尚未入库**的经济审计（`docs/P22-0-ECONOMY-AUDIT.md` R6，
+   属另一个会话的工作，本提交不纳入）把这条写成显式建议：
+   "接受一次**显式的、有记录的** DB_VER 23→24 升级，并在 P22-12 逐处核对硬编码"。
+   本轮走的就是这条路径，并做了它要求的"逐处核对"（见 §验证）。
+
+**为什么 `role-dm.js:71-83` 的 localStorage 逃生口在这里不可用**：那条先例的
+**理由**是"索引是可从 chatMessages 重建的**派生数据**，因此放在 localStorage 里
+既不越权也不丢真相"。披露事实**不是派生数据** —— 它**就是**真相本身。先例的理由
+不成立，先例就不能借用。
+
+### 决策
+
+1. **`DISCLOSURE STORAGE AUTHORITY = InternalBeyondDB 的独立 objectStore
+   `disclosureFacts`**，DB_VER 23 → 24。keyPath 是 **`factId`**（canonical 记录里
+   没有 `id` 字段，为迁就通用 keyPath 而复制一份 `id: factId` 会让身份有两个真源）。
+   **不加 `byOwner` 索引**：按 owner 分区由契约的 `partitionForOwner` 完成 ——
+   分区语义写在一个地方（契约里），而不是同时写在索引声明与调用点。
+2. **写入路径 = 人类显式动作，且只有它**。UI 是角色编辑页的「私密事实」小节：
+   `新建 → 正文 + 披露等级 → 保存`。等级下拉**没有 PUBLIC**。
+3. **owner 只能来自 writer context**。seam 的签名把输入拆成
+   `writerContext`（UI 从"你正在编辑哪个角色"派生，**只读** `ownerCharacterId` /
+   `authoredBy`，其余键在代码里没有读取点）与 `userInput`（表单，只允许
+   `level` / `text` / `subjectCharacterId`）。
+4. **caller 不得传 `ownerCharacterId` / `source` / `authority` / `authoredBy` /
+   `factId` / `id` / `updatedAt` / `createdBy` / `createdByName` /
+   `isDisclosureFact`** —— 出现任何一个即**整体拒绝**（`caller-supplied-metadata`），
+   不是静默忽略。理由与 `denylistHits` 同款：静默丢弃会让调用方以为自己成功
+   提交了一份带自定义权威的记录。
+5. **`source` / `authority` 由 seam 固定**为 `character_authoring` / `human_authoring`。
+   让表单传 `authority` 等于把 D29 的整个权威维度退化成用户自填字段 ——
+   而 D29 的全部价值就是它**不是**自填的。
+6. **PUBLIC 从这条路径被拒绝，而不是被降级**（拒因
+   `public-not-creatable-by-explicit-writer`）。公开权威是 `public-profile-core.js`
+   的构造式白名单（`public-profile-core.js:42-43`），在本契约里再产出一条 PUBLIC
+   就是**第二份公开资料权威**。
+   注意区分两件事，它们不矛盾：disclosure-core **类型层**允许 PUBLIC 记录
+   （那是边界语义，例如"公开可说的观察"，`isClassified('PUBLIC') === true`），
+   而本模块的**写作层**禁止用户创建它。前者回答"记录是什么形状"，
+   后者回答"这条路径有资格造什么"。
+7. **可创作档位恰好等于 `GATED_LEVELS`**（PERSONAL / PRIVATE / SECRET）。
+   于是"能不能从这条路径造出来"与"要不要经过 4B-2 授权"在同一份数据上对齐：
+   本路径产出的**每一条**事实将来都必须过授权。
+8. **update 的可变面只有 `text` / `level` / `subjectCharacterId`**；
+   `factId` / `ownerCharacterId` / `authority` / `source` / `authoredBy` /
+   `updatedAt` 不可变，出现即拒绝。**改归属不是编辑，是"删掉 A 的一条、再为 B
+   建一条"两件事** —— 允许 owner mutation 就等于允许把秘密静默转移给另一个角色。
+   `level` 可变是刻意的：SECRET → PRIVATE 是用户在降低敏感度，属正常编辑。
+9. **delete 是物理删除**，无 tombstone、无影子副本；不旁写 Memory / persona /
+   publicProfile / relationship。仓库里没有任何 mirror/sync 消费方读这个 store，
+   所以"删除后还能被谁读到"今天没有主语 —— 将来接入同步时，墓碑语义应当在
+   **那一次**按既有 canonical 规则决定，而不是现在提前发明一套。
+10. **`disclosureFacts` 刻意不进导出 / 镜像 / 文件夹同步**。三者都是明文，
+    而"一条秘密该不该进明文备份"是它自己的契约（需要用户开关与自己的脱敏规则）。
+    **代价如实记录**：这一轮的用户创作不进备份。
+11. **未保存的角色草稿不能写**。`addNewApi()`（`social.js:853`）在落盘**之前**就
+    预分配 id，所以"正在新建"也满足 id 非空；若那时允许写入，用户取消新建就会
+    留下一条 owner 指向从未存在过的角色的事实 —— 不可读，但秘密仍在磁盘上。
+    因此要求 owner 先在 `apiConfigs` 里存在。
+12. **硬名单（persona / publicProfile / 凭据 / 共享 thread）必须在写入路径上
+    再查一次**。seam 只把 owner/level/text/source/authority/subject 组装进 canonical
+    输入，因此 `userInput` 里被 `disclosure-core` §5 禁掉的字段**根本不会被复制过去**，
+    `denylistHits` 也就永远看不到它们 —— 结果是"表单里塞了 `systemPrompt` 仍然创建成功"，
+    字段被静默丢掉。这正是 §5 自己警告过的形状。该缺口由测试 P3 抓出。
+
+### 非目标（本轮明确不做）
+
+- **不做授权、不做过滤**：没有 `authorize()` / `filter()` / `canDisclose()`。
+- **不把 disclosure fact 注入 Role DM prompt**。
+- **不让模型自动抽取披露事实**、**不实现 candidate 生成**、**不实现
+  `human_confirmation` UI**。
+- **不读 trust、不改 trust writer、不改 relationship 数值、不做 decay**。
+- **不碰 autonomous scoring / scheduler / M3 / RCI-2 / installer / VERSION / dist**。
+- **不做角色删除时的披露事实级联**（见 Deferred）。
+
+### 验证
+
+`tests/test_disclosure_authoring.js`（**104 绿 / 0 红**），三段不同性质的证据：
+
+- 契约层（A–H / P）：三档创建、owner 绑 writer context、caller 无法伪造
+  owner/source/authority（11 个保留键逐个试）、PUBLIC 被拒、畸形输入 fail closed、
+  核心缺失时每一个 `plan*` 都拒绝（用 `vm` 沙箱把 `require('./disclosure-core.js')`
+  换成 `null`，而不是删掉 `window` 上的键 —— 后者对已绑定的工厂期依赖毫无影响，
+  是一个**假的** fail-closed 测试）。
+- 持久化层（I–O / Q）：create / update / delete / roundtrip / 幂等 / A-B 分区。
+- **真实生产路径**（R–X / U–V）：真实的 `role-dm.js` `_composeSide` 在创建 SECRET
+  前后**逐字节相同**；真实的 `memories → buildMemoryContext` 读取链输出逐字节相同且
+  不含秘密正文；真实 `run/turn` 的**模型调用次数不变**，送往 provider 的 messages
+  逐条不含秘密。**另有 5 组变异**（owner 取 peer / caller 传 authority / 允许 PUBLIC /
+  秘密进 composeSide / 秘密复制进 memories）各自的变红证明 —— 特别是 MUT-D：
+  一旦把同一条秘密复制进 `memories`，U/W 的断言**立刻变红**。
+
+`DB_VER` 升版牵动的硬编码已逐处核对（先例给出的要求：`role-dm.js:78-83` +
+`test_activity_smoke.js:64-66`）：
+`chat-core.js:22`（同步常量）、以及 5 个测试里的版本断言
+（`test_chat_core_contract` / `test_public_profile` / `test_setup_wizard` /
+`test_role_dm` AB41 / `test_p11_2j` B4）。这些断言原本写死 `23`，
+而它们的**实质承诺**是各自阶段"没有为我的功能新增 store" —— 写死数字既会在每次
+合法升版时误报，又**证明不了**那件事。因此逐个改写为实质形式
+（版本只增不减 + 没有我这个功能的表 / 索引；`test_p11_2j` 改为
+"v23 基线表一个不少 + 多出来的只能是登记过的后续阶段新增表"），
+与仓库自己已经写下过的教训同款（`test_activity_smoke.js:64-66`：
+"版本断言按**引入该 store 的版本**，而不是把当前 DB_VER 写死"）。
+`test_chat_core_contract` 那条改成直接断言 `chat-core.js` 与 `core.js` 报
+**同一个版本号** —— 这才是 `chat-core.js:22` 注释声称的契约，比原来的数字更强。
+
+`tests/test_disclosure_core.js` 的三条断言被**有意改写**（J9 / N3 / N4）：
+它们原本写的是"HTML 未加载 disclosure-core.js（尚未接线）""没有生产 writer 接入"。
+4B-1.2 的目的恰恰是改变这两件事，所以前提已经改变。改写方向是**加强**：
+N3 从"只有 core 自己提到它"改成"引用者**恰好**是白名单三个文件，且模型上下文链
+**零引用**"；J9 / N4 改成"写入三层已按序加载，而 Role DM 全链路仍不引用"。
+4B-1 真正的冻结面（J5 角色私信链路不含 disclosure 字样、J8 `composeSide` 无注入点、
+N1/N2 核心零 IO 且不读 trust/relationship/Memory）**一个字都没改**。
+
+行为零变化复核：`test_role_dm.js` / `test_role_dm_social.js` /
+`test_public_profile.js` / `test_frontend_structure.js` / `test_setup_wizard.js` /
+`test_chat_core_contract.js` / `test_p11_2j_memory_admission.js` /
+`test_understanding_thread.js` / `test_memory_contract_closure.js` 全绿。
+
+### 与 D28 / D29 的关系
+
+D28（分类是显式数据权威、不从 persona / trust 推断、legacy 不自动成为秘密）与
+D29（通道 ≠ 权威、`derived` 上限 PUBLIC、owner 必须来自 writer context）
+**结论全部保持不变**，`disclosure-core.js` 在本轮**一个字节都没有改**。
+D30 只新增**写入路径**：它把 D29 里那个"预留但不存在"的 `human_authoring`
+第一次接到一个真实动作上，并且不给它任何读取能力。
+
+**最终原则**：先建立一个**真正存在的秘密**，再讨论这个秘密应该告诉谁。
+反过来先造一套精密的 trust gate，然后发现门后面什么都没有 —— 那正是 4B-0
+审计证明过的状态。
