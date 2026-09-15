@@ -377,7 +377,24 @@ const GROUPS = [
       /* U5-2A：欢迎页画窗背景 payload 闭合（PNG 源留在仓库、压缩副本入包、
          探测顺序冻结、真实静态服务 200、安装态 PNG 缺失时 JPG 回退 200、
          真实 staging 不含 PNG）。纯 Node：不联网、不开浏览器、不安装、不构建。 */
-      ['test_welcome_canvas_payload.js']
+      ['test_welcome_canvas_payload.js'],
+      /* P22-1：Agent Economy 领域契约（虚拟经济与真实货币/provider 余额的
+         硬边界）。两组刻意分开 —— "契约说了什么"与"生产代码有没有照做"
+         是两个不同的问题，混在一起会让失败信息无法区分。
+           ① domain contract：币种白名单/拒绝、BigInt 金额表示、
+              Wallet 三态（COLD/DEGRADED != 零余额）、交易状态机与终态不可回退、
+              复式记账平衡、商品 effect 白名单（无任意代码/记忆/关系/provider 充值）、
+              预算输入白名单（raw prompt / persona / maxBudget 一律拒绝）、
+              报价过期、封闭 reason code、事实事件 envelope、依赖矩阵。
+           ② boundary：Economy 生产文件的**依赖闭包**不得触及真实支付
+              （pay-gate / alipay-provider / payment-provider / payment-auth /
+              shopping-execution / credential-vault）、不得触凭据表
+              character_runtime_specs、不得 require Memory/Relationship/
+              Middle Brain/Provider Router；正反两条方向都要成立；
+              并且这些文件真的进得了发行包（release manifest 逐文件白名单）。
+         纯 Node：不联网、不开浏览器、不启动服务、不写盘。 */
+      ['test_p22_1_economy_domain_contract.js'],
+      ['test_p22_1_economy_boundary.js']
     ]
   },
   {
