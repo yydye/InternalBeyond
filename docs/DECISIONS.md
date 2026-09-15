@@ -698,3 +698,52 @@ trace 键白名单与请求体不含身份键。
 `tests/test_role_dm.js`（**390 绿 / 0 红**，新增 AF/A–D/DIR/E/F/H/I/J/K/M/MUT 共 36 项，0 次真实模型调用），
 `tests/test_role_dm_social.js` **216 绿 / 0 红**。关键反例均为实测：方向对调 stance 消失（MUT-A）、
 familiar 档强制关闭后 guidance 变空（MUT-B）。
+
+## D28. 披露分级是**显式数据权威**，不从 persona 或 trust 推断（Phase 4B-1，2026-09-15）
+
+### 背景
+Phase 4B-0 只读审计（无代码改动）证明：`trust` 正常运行可达范围 = `[0.5, 1.0]`、
+单向棘轮、无 decay；其 writer 读的是**本侧自己说的话**的 `toneCounts`，不是对方行为；
+且当时**不存在**任何 disclosure / secretLevel / sensitivity / privateFact 数据模型。
+因此"`trust < X` → 少透露"在生产中**永不触发**，且即使触发也只是软提示。
+结论：需要先有**披露分级本身**，才能谈授权（classification first, authorization later）。
+
+### 决策
+1. **`publicProfile` = public by construction**（`public-profile-core.js` 构造式白名单）。
+   它**不是**可被 gate 的私密事实；`disclosure-core.js` **不得**成为它的第二权威。
+2. **persona / `systemPrompt` = 运行时身份权威**，**不是** disclosure 数据库。
+   按关系裁剪 persona 等于改变角色身份，是语义错误，不是隐私保护。
+3. **shared thread（memorandum / history）= 双方共同真相**，**不属于** self-secret gate。
+4. **披露事实必须显式进入 classification contract**：
+   `ownerCharacterId` 必须显式给出（不从 `createdBy` / `visibleTo` / `subject` 推断，
+   缺失即整条拒绝）；`level` 必须精确命中封闭枚举 `PUBLIC|PERSONAL|PRIVATE|SECRET`。
+5. **inferred / generated fact 不自动获得 private/secret authority**：
+   仅 authored 来源（`character_authoring` / `user_authoring` / `user_correction`）
+   可持 SECRET；其余一切来源（`memory_extraction` / `role_dm_conversation` / `diary` /
+   `consolidation` / `generated_inference` / `unknown`）在归一化阶段**强制降为 PUBLIC**。
+   这条由 `maxLevelForSource` 在**类型层**保证，下游不需要再检查。
+6. **`trust` 暂时不是 authorization authority**，且本轮**完全未接入**
+   （core 不读 trust / 不读关系；导出表里不存在 `authorize()` / `filter()` /
+   `canDisclose()` —— "未实现"应当是**找不到函数**，而不是"有个函数永远返回 true"）。
+7. **HARD boundary 必须发生在 prompt construction 之前**：
+   未授权内容**从不进入**模型上下文；"模型看到内容 + 一句别透露"是
+   **SOFT BEHAVIORAL GUIDANCE**，两者在文档里不得混称（承 D26 / 4B-0 术语契约）。
+8. **legacy 缺 `level` ⇒ `UNDETERMINED`**（不进入披露子系统），
+   **不是**默认 PRIVATE / SECRET —— 那会把每条没有元数据的旧记录都变成秘密，
+   是 fail-**open** 到荒诞；也**不是**默认 PUBLIC。
+9. **零 migration**：新字段是可选字段；旧记录不被读取、不被改写、不被分类。
+   不因"看起来合理"给任何现有 Memory / persona 批量标 secret。
+
+### 非目标（本轮）
+不实现 authorization / filtering / trust gate / negative trust / decay；
+不接 Role DM（`composeSide` / `buildRoleDmContext` 一行未动）；
+不接 autonomous scoring / scheduler / M3 / Middle Brain / installer；
+不调用真实 AI API；不用模型给现有数据分类；不新增第二套 publicProfile 权威。
+
+### 验证
+`tests/test_disclosure_core.js`（**111 绿 / 0 红**，0 次真实模型调用）：
+enum closure / normalization（null·畸形·超长·控制字符）/ owner direction /
+PUBLIC 不同于第二权威 / identity 边界 / shared-thread 边界 / legacy 默认 /
+provenance 降级 / 序列化 / 结构性零 IO / mutation sensitivity（5 组真实变异，
+含「undefined→PUBLIC」与「owner A→B」，均已实测能捕获）。
+行为零变化由 `tests/test_role_dm.js`（**390 绿**）与 `tests/test_frontend_structure.js`（PASS）复核。

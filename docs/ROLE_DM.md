@@ -192,11 +192,55 @@ optional autonomous social intent（role-dm-social-core.evaluateSocialIntent
 - **trace 禁止** prompt / 正文 / API key / endpoint 等敏感内容；身份三键只驻内存、
   **绝不**进入 provider 请求体（D26）。
 
+## Disclosure Classification（Phase 4B-1）
+
+`assets/js/disclosure-core.js` 是「角色自我事实的披露等级」的**唯一**实现
+（UMD 双载、零 IO、零模型调用、不读 trust / 不读关系 / 不读 persona / 不读 Memory）。
+它建立的是**数据类型**，不是行为：**今天没有任何 prompt 读它**。
+
+| 项 | 契约 |
+|---|---|
+| 四档（封闭枚举） | `PUBLIC` / `PERSONAL` / `PRIVATE` / `SECRET`，精确匹配，不做大小写/近似修正 |
+| 第五个值 | `UNDETERMINED` = **未参与披露契约**（**不是**第五档敏感度；无 rank ⇒ 不可能被当成最低档放行） |
+| record 形状 | 七个字段：`factId` / `ownerCharacterId` / `level` / `text` / `source` / `subjectCharacterId` / `updatedAt` |
+| owner | **必须显式给出**，不从 `createdBy` / `visibleTo` / `subject` 推断；缺失 ⇒ 整条 `null` |
+| provenance 上限 | **authored**（`character_authoring` / `user_authoring` / `user_correction`）→ 可持 SECRET；**其余一切**（`memory_extraction` / `role_dm_conversation` / `diary` / `consolidation` / `generated_inference` / `unknown`）→ **强制降为 PUBLIC** |
+| legacy | 缺 / 非法 `level` ⇒ `UNDETERMINED` ⇒ `isDisclosureFact() === false`（**不进入**披露子系统；**不是**默认 PRIVATE，也**不是**默认 SECRET） |
+
+**四条边界**（由代码结构保证，不是注释纪律）：
+
+1. **`publicProfile` = PUBLIC BY CONSTRUCTION**（`public-profile-core.js` 的构造式白名单）。
+   本契约**不是**它的公开权威：带 `publicIntro`/`occupation`/`traits`/`interests` 的
+   `PUBLIC` 事实会被 `publicProfileWouldDoubleOwn` 直接**拒绝** —— 不制造第二份公开权威。
+2. **`systemPrompt` = 身份权威，不是事实数据库**。带 `systemPrompt` / `persona` /
+   `domain:'SELF_IDENTITY'` 的输入被**整体拒绝**（不是"删掉该字段再继续"）。
+3. **`SHARED THREAD HISTORY != PRIVATE SELF DISCLOSURE`**。`memorandum` /
+   `threadMemorandum` / thread history 是 A 与 B **共同**的经历，不是 A 的秘密；
+   带这些键或 `domain:'SHARED_THREAD'` 的输入同样被拒绝。
+4. **`USER_PRIVATE` / `SYSTEM_PRIVATE` 未获得任何新的 peer 可见路径**。
+   `apiKey` / `endpoint` / `authorization` / `cookie` 等键进 `DENY_FIELDS`；
+   本契约不读也不写任何生成这些数据的 store。
+
+**方向性**（语义声明，**本轮不实现授权**）：未来唯一合法的读取形状是
+`speaker = A, peer = B → A-owned facts + relationGet(A, B)`；
+**排除** B-owned facts、`max(A→B, B→A)`、平均值。`ownedBy(fact, speakerId)` 与
+`disclosureScope(speakerId, peerId, facts)` 只做归属整形，不返回"可否披露"。
+
+**HARD vs SOFT（术语纪律，见 D26 / Phase 4B-0 审计）**：
+`HARD DISCLOSURE BOUNDARY = 未授权内容从不进入模型上下文`；
+`SOFT GUIDANCE = 模型看到内容，只是被要求别提`。本契约实现的是**前者的数据前提**，
+**不是**前者本身 —— 前者需要 Phase 4B-2 的 authorization 阶段。
+
 ## Deferred
 
 - **Relationship Consequences**：**Phase 4A（familiarity → 开场）已落地**；
-  仍缺 **Phase 4B（trust / disclosure）** 与 **Phase 4C（affinity / 语气）**，
-  设计候选见 Phase 4 审计文档，**未实现**。
+  **Phase 4B-1（披露分级数据契约）已落地**（`assets/js/disclosure-core.js`，纯数据
+  contract：分类 + provenance + 归一化；**不做授权、不接 Role DM**，见 D28）；
+  仍缺 **Phase 4B-2（authorization / filtering）** 与 **Phase 4C（affinity / 语气）**，
+  设计候选见 Phase 4 审计文档与下节，**未实现**。
+- **Disclosure authorization**：`disclosure-core.js` 里**刻意不存在**
+  `authorize()` / `filter()` / `canDisclose()` —— 授权的输入（`speakerId` / `peerId` /
+  有向关系）和输出（哪些事实能进模型上下文）都还没有实现，且 **`trust` 完全未接入**。
 - **M3 enforcement**：soft repetition 仍只观测；rewrite / retry / drop / stop / guidance 全部未开。
 - **Cross-run Duplicate S2**：跨 run 的重复判定尚未闭合。
 - **尚未闭合的 RCI attribution**：`moments` / `role_letters` / `active.proactive` /
