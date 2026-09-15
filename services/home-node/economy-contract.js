@@ -335,6 +335,13 @@
      没有 "OTHER"/"UNKNOWN" 兜底值 —— 兜底值会让静默拒绝重新变得可能。 */
   var DENY_REASON = Object.freeze({
     INSUFFICIENT_BALANCE: 'INSUFFICIENT_BALANCE',
+    /* ── INSUFFICIENT_BALANCE ≠ INSUFFICIENT_AVAILABLE_BALANCE（P22-3）────
+       两者必须分开，否则"我还有 100"与"我还有 30"在 reason code 上无法
+       区分：前者是账本不够，后者是账本够但其中 70 已被**预留**占用。
+       P22-3 的核心不变量正是第二条（reserved ≤ ledger），因此它需要
+       一个自己的代码；把预留不足写成 INSUFFICIENT_BALANCE 会让
+       "为什么买不成"这句话在审计里变成一句不准确的话。 */
+    INSUFFICIENT_AVAILABLE_BALANCE: 'INSUFFICIENT_AVAILABLE_BALANCE',
     PER_TX_LIMIT: 'PER_TX_LIMIT',
     DAILY_LIMIT: 'DAILY_LIMIT',
     WEEKLY_LIMIT: 'WEEKLY_LIMIT',
@@ -414,6 +421,20 @@
     TRANSACTION: 'econ_tx_',
     LEDGER_ENTRY: 'econ_entry_',
     RESERVATION: 'econ_res_',
+    /* ── ECONOMY OPERATION（P22-3）────────────────────────────────────────
+       为什么需要**第 13 种** id 种类，而不是复用已有的两种：
+         · TRANSACTION（econ_tx_）是**已经发生的 accounting fact** 的身份
+           —— P22-2 已经把它用掉了（economy_transactions 的主键），而且它
+           一旦写下就 append-only。一次"可能成功、可能失败、可能过期"的
+           操作**不是**一个已发生的经济事实，用 econ_tx_ 表示它就必须让
+           一个已提交的 transaction 状态不断变化 —— 那正是 P22-3 §1
+           明确禁止的事。
+         · RESERVATION（econ_res_）是**资金锁定**的身份，它的状态词表是
+           RESERVATION_STATE（无 FAILED）。而操作本身还有一个"不可继续"
+           的结局，那是 TX_STATE.FAILED 的位置。
+       于是 operation 拿到自己的前缀：一个 #1 的眼就能看出这是"一次操作"
+       而不是"一笔事实"或"一次锁定"。这是**加法**，不是对旧 id 的重新解释。 */
+    OPERATION: 'econ_op_',
     BUDGET_POLICY: 'econ_policy_',
     PRODUCT: 'econ_product_',
     INVENTORY_ENTRY: 'econ_inv_',
@@ -913,6 +934,160 @@
        available = cached − reserved   （WALLET_STATE != READY 时为 null） */
   var RESERVATION_AFFECTS = 'availableBalanceMinor = cachedBalanceMinor - reservedBalanceMinor (READY only)';
 
+  /* ── Reservation 状态机（P22-3）───────────────────────────────────────
+     为什么它不是 TX_TRANSITIONS 的复制品：两张词表的**终态集合不同**。
+     reservation 没有 FAILED —— 一笔预留的资源后果只有两种：被用掉
+     （COMMITTED）或被还回去（RELEASED 主动 / EXPIRED 超时）。
+     把 FAILED 塞进 RESERVATION_STATE 会造出"钱还回去了，但该叫 RELEASED
+     还是 FAILED"的歧义；因此失败记在 **operation** 上（§8 的 TX_STATE.FAILED），
+     资源后果照实记在 reservation 上（RELEASED + releaseReason）。
+     这不是两套状态机，而是同一台机器的两个侧面 —— 映射见下面的
+     RESERVATION_STATE_OF_OPERATION / OPERATION_STATE_OF_RESERVATION，
+     两者互为逆（在共同值域上，见 P22-1 domain contract 的往返断言）。 */
+  var RESERVATION_TRANSITIONS = Object.freeze({
+    ACTIVE: Object.freeze([RESERVATION_STATE.COMMITTED, RESERVATION_STATE.RELEASED, RESERVATION_STATE.EXPIRED]),
+    COMMITTED: Object.freeze([]),
+    RELEASED: Object.freeze([]),
+    EXPIRED: Object.freeze([])
+  });
+
+  var RESERVATION_TERMINAL_STATES = Object.freeze(
+    RESERVATION_STATES.filter(function (s) { return RESERVATION_TRANSITIONS[s].length === 0; })
+  );
+
+  function isReservationState(value) {
+    return value != null && RESERVATION_STATES.indexOf(String(value)) >= 0;
+  }
+
+  function canTransitionReservation(from, to) {
+    var f = String(from == null ? '' : from);
+    var t = String(to == null ? '' : to);
+    if (RESERVATION_STATES.indexOf(f) < 0 || RESERVATION_STATES.indexOf(t) < 0) {
+      return { ok: false, allowed: false, errors: ['reservation-status-not-in-closed-set'] };
+    }
+    var allowed = RESERVATION_TRANSITIONS[f].indexOf(t) >= 0;
+    return {
+      ok: true,
+      allowed: allowed,
+      errors: allowed ? [] : ['transition-not-allowed'],
+      from: f,
+      to: t
+    };
+  }
+
+  /* 终态不可回退 —— 与 assertTransactionTransition 同款，理由也同款：
+     COMMITTED 之后要退钱只能记一笔**补偿 transaction**，不能改历史。 */
+  function assertReservationTransition(from, to) {
+    var r = canTransitionReservation(from, to);
+    if (!r.ok) return { ok: false, errors: r.errors };
+    if (!r.allowed) {
+      return {
+        ok: false,
+        errors: ['transition-not-allowed'],
+        detail: (RESERVATION_TERMINAL_STATES.indexOf(r.from) >= 0)
+          ? 'terminal-reservation-cannot-transition-must-compensate-with-a-new-transaction'
+          : 'transition-not-in-allowed-set'
+      };
+    }
+    return { ok: true, errors: [] };
+  }
+
+  /* ── operation ↔ reservation 的**唯一**映射 ───────────────────────────
+     写成数据而不是散落在运行时的 if：两份封闭词表之间的关系本身是一个
+     契约事实，必须可枚举、可断言、可被测试穷举。
+     刻意**不是**双射：CREATED 还没有预留（没有资源后果），FAILED 的操作
+     其资源后果是"被还回去"（reservation 记 RELEASED + releaseReason）。
+     把 FAILED 映到某个 reservation 状态是做不到的，而"做不到"这件事
+     必须写在数据里（null），不能靠读代码发现它恰好没人写。 */
+  var RESERVATION_STATE_OF_OPERATION = Object.freeze({
+    CREATED: null,
+    RESERVED: RESERVATION_STATE.ACTIVE,
+    COMMITTED: RESERVATION_STATE.COMMITTED,
+    RELEASED: RESERVATION_STATE.RELEASED,
+    EXPIRED: RESERVATION_STATE.EXPIRED,
+    FAILED: null
+  });
+
+  var OPERATION_STATE_OF_RESERVATION = Object.freeze({
+    ACTIVE: TX_STATE.RESERVED,
+    COMMITTED: TX_STATE.COMMITTED,
+    RELEASED: TX_STATE.RELEASED,
+    EXPIRED: TX_STATE.EXPIRED
+  });
+
+  /* ── Economy Operation（P22-3）────────────────────────────────────────
+     operation 是**生命周期**：CREATED → RESERVED → {COMMITTED, RELEASED,
+     EXPIRED, FAILED}（= §8 的 TX_TRANSITIONS，一个字都没新造）。
+     reservation 是**资金锁定**。两者 1:1 于今天，但刻意分成两个实体：
+     未来 P22-4/5 会把 policy / quote / product 挂在 operation 上，而
+     一次锁定永远只该回答"锁了多少钱、锁给谁、什么时候到期"。
+     把两者合成一张表，就必须让 RESERVATION_STATE 容纳 FAILED，或者
+     让 TX_STATE 容纳 ACTIVE —— 两个方向都是对冻结词表的破坏。 */
+  function validateOperation(input) {
+    var o = input || {};
+    var errors = [];
+    if (!isEconomyId('OPERATION', o.operationId)) errors.push('operation-id-not-canonical');
+    if (!isEconomyId('WALLET', o.walletId)) errors.push('wallet-id-not-canonical');
+    var cur = validateCurrency(o.currency);
+    if (!cur.ok) errors.push.apply(errors, cur.errors);
+    var amt = normalizeAmountMinor(o.amountMinor);
+    if (!amt.ok) errors.push.apply(errors, amt.errors);
+    var key = normalizeIdempotencyKey(o.idempotencyKey);
+    if (!key.ok) errors.push.apply(errors, key.errors);
+    if (!isTransactionState(o.status)) errors.push('operation-status-not-in-closed-set');
+    if (o.expiresAt != null && !Number.isFinite(Number(o.expiresAt))) {
+      errors.push('operation-expires-at-not-a-number');
+    }
+    if (o.reservationId != null && !isEconomyId('RESERVATION', o.reservationId)) {
+      errors.push('reservation-id-not-canonical');
+    }
+    if (o.transactionId != null && !isEconomyId('TRANSACTION', o.transactionId)) {
+      errors.push('transaction-id-not-canonical');
+    }
+    if (o.reasonCode != null && !isDenyReasonCode(o.reasonCode)) {
+      errors.push('operation-reason-code-not-in-closed-set');
+    }
+    if (errors.length) return { ok: false, operation: null, errors: errors };
+    return { ok: true, errors: [], operation: o };
+  }
+
+  /* ── idempotency **作用域**（P22-3 §18）───────────────────────────────
+     一个模糊的 key 空间会让 reserve 与 commit 共用同一个 key 时被判成
+     "同一个业务请求"（于是 commit 会被当成 reserve 的重放而返回预留结果）。
+     因此每个 mutation 属于且只属于一个 scope，持久化的身份是
+     (scope, idempotencyKey) 而不是裸 key。
+     注意这**不**替换 §5 的 idempotencyKey 语义（那里冻结的是 key 的形状
+     与"key ≠ transactionId"）；scope 是 key 的**归属域**，不是第二种 key。 */
+  var OPERATION_SCOPE = Object.freeze({
+    RESERVE: 'RESERVE',
+    COMMIT: 'COMMIT',
+    RELEASE: 'RELEASE',
+    EXPIRE: 'EXPIRE',
+    FAIL: 'FAIL'
+  });
+
+  var OPERATION_SCOPES = Object.freeze(Object.keys(OPERATION_SCOPE));
+  var OPERATION_SCOPE_INDEX = (function () {
+    var map = Object.create(null);
+    for (var i = 0; i < OPERATION_SCOPES.length; i++) map[OPERATION_SCOPES[i]] = true;
+    return map;
+  })();
+
+  function isOperationScope(value) {
+    return value != null && OPERATION_SCOPE_INDEX[String(value)] === true;
+  }
+
+  /* 持久化身份的 canonical 形态。**不是**另一个随机的拼法：它由这两段
+     组成，任何一侧变化都会得到一个不同的身份，且分隔符不在 key 的
+     合法字符集里是不成立的 —— 因此这里用 ':'（key 里合法，但 key 自身
+     不可能包含 scope 前缀的语义歧义，因为比较的是完整的二元组）。 */
+  function scopedIdempotencyIdentity(scope, key) {
+    if (!isOperationScope(scope)) return { ok: false, identity: null, errors: ['operation-scope-not-in-closed-set'] };
+    var k = normalizeIdempotencyKey(key);
+    if (!k.ok) return { ok: false, identity: null, errors: k.errors };
+    return { ok: true, identity: String(scope) + ':' + k.key, scope: String(scope), key: k.key, errors: [] };
+  }
+
   function validateReservation(input) {
     var o = input || {};
     var errors = [];
@@ -1405,6 +1580,19 @@
     RESERVATION_CREATED: 'RESERVATION_CREATED',
     RESERVATION_RELEASED: 'RESERVATION_RELEASED',
     RESERVATION_EXPIRED: 'RESERVATION_EXPIRED',
+    /* ── P22-3 追加的三个（加法）────────────────────────────────────────
+       RESERVATION_COMMITTED —— 预留被用掉。P22-1 只有 PURCHASE_COMMITTED，
+       但 P22-3 里被提交的是**预留**，而"哪一次预留成交了"必须可回答；
+       且 purchase 属于 P22-5 的商品语义，现在就用它会把两件事合并。
+       RESERVATION_REBUILT  —— reserved 缓存从 active reservations 重建，
+       与 P22-2 的 BALANCE_REBUILT 同款：缓存漂移不许静默消失。
+       OPERATION_FAILED     —— 操作进入生命周期后不可继续。它与
+       RESERVATION_RELEASED **不同**：后者是主动放弃，前者是"试过了、
+       没能成立"，而两者的资源后果相同（钱还回去）。合并它们会让
+       "为什么这笔没成"在审计里丢掉。 */
+    RESERVATION_COMMITTED: 'RESERVATION_COMMITTED',
+    RESERVATION_REBUILT: 'RESERVATION_REBUILT',
+    OPERATION_FAILED: 'OPERATION_FAILED',
     PURCHASE_COMMITTED: 'PURCHASE_COMMITTED',
     PURCHASE_DENIED: 'PURCHASE_DENIED',
     ITEM_GIFTED: 'ITEM_GIFTED',
@@ -1778,6 +1966,18 @@
     RESERVATION_STATE: RESERVATION_STATE,
     RESERVATION_STATES: RESERVATION_STATES,
     RESERVATION_AFFECTS: RESERVATION_AFFECTS,
+    RESERVATION_TRANSITIONS: RESERVATION_TRANSITIONS,
+    RESERVATION_TERMINAL_STATES: RESERVATION_TERMINAL_STATES,
+    isReservationState: isReservationState,
+    canTransitionReservation: canTransitionReservation,
+    assertReservationTransition: assertReservationTransition,
+    RESERVATION_STATE_OF_OPERATION: RESERVATION_STATE_OF_OPERATION,
+    OPERATION_STATE_OF_RESERVATION: OPERATION_STATE_OF_RESERVATION,
+    validateOperation: validateOperation,
+    OPERATION_SCOPE: OPERATION_SCOPE,
+    OPERATION_SCOPES: OPERATION_SCOPES,
+    isOperationScope: isOperationScope,
+    scopedIdempotencyIdentity: scopedIdempotencyIdentity,
     validateReservation: validateReservation,
     /* §13 */
     BUDGET_INPUT_KEYS: BUDGET_INPUT_KEYS,

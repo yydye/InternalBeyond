@@ -417,7 +417,30 @@ const GROUPS = [
           （memory / understanding / moments），因此 ② 里那条真实子进程
           断言是本阶段最重要的机器证据。 */
       ['test_p22_2_economy_store.js'],
-      ['test_p22_2_economy_runtime.js']
+      ['test_p22_2_economy_runtime.js'],
+      /* P22-3：Agent Economy 的 **reservation 与 operation 生命周期**
+         （先锁资源、后执行、成功 commit / 失败 release / 超时 expire）。
+         两组仍然刻意分开：
+           ① reservation（canonical store 层）：operation 生命周期用
+              P22-1 §8 的 TX_STATES，reservation 用 §12 的 RESERVATION_STATE
+              （两张冻结词表各自是唯一真源，靠契约里的映射连接）；
+              reservedBalance 的 canonical truth 是 **active reservation
+              行**、缓存是派生量（破坏缓存 → 从行重建 → 留 RESERVATION_REBUILT
+              审计）；available = ledgerBalance − Σactive，只在 READY 下存在，
+              其余一律 null（fail closed）；reserve / commit / release /
+              expire / fail 各自恰好一个 SQLite 事务，18 个故障点逐个注入
+              证明"不存在 Ledger 已扣款而 Reservation 仍 RESERVED"；
+              终态不可回退（commit 之后不能 release）；幂等按 scope 分离
+              （同一个 key 在 reserve 与 commit 下是两件事）；schema 1 → 2
+              的补表迁移不动既有账本一个字节。
+           ② runtime：这一域在**生产进程里**可读（新增
+              GET /economy/reservations · /economy/reservation），六个写方法
+              一个都不在 HTTP 上（每条路径 POST → 405），以及**多进程**
+              竞争：4 个真实子进程在同一墙钟时刻同时 reserve，断言
+              Σactive ≤ ledger 且"恰好 2 个成功"。这一组当场抓到并修好了
+              一个真实缺陷：缺省 id 生成器在多进程同毫秒下会撞车。 */
+      ['test_p22_3_economy_reservation.js'],
+      ['test_p22_3_economy_runtime.js']
     ]
   },
   {

@@ -473,15 +473,28 @@ section('G · rebuildWalletBalance（缓存不是事实源）');
   const corruptions = [999999n, 0n, 1n];
   for (const bad of corruptions) {
     const c = store.corruptCachedBalanceForTest(w.walletId, bad);
+    const view = store.serializeWallet(store.getWallet({ walletId: w.walletId }).wallet, {});
     check('G2 缓存被改坏为 ' + bad.toString() + '（模拟外部工具 / 崩溃后的漂移）',
-      c.ok === true && balanceString(store, w.walletId) === bad.toString(),
-      balanceString(store, w.walletId));
+      c.ok === true && view.cachedBalanceMinor === bad.toString() && view.cachedBalanceDrifted === true,
+      { corruptedTo: c.corruptedTo, view: view });
+    /* ── P22-3 把这条断言**加强**了，而不是放松 ───────────────────────
+       P22-2 时这里写的是 `balanceString(...) === bad`：读路径的 available
+       直接来自缓存，因此缓存被改坏 ⇒ available 跟着坏。
+       P22-3 §7 明确要求 available = ledgerBalance − activeReservedBalance
+       （两个输入都是 canonical），于是同一个场景现在必须得到**相反**的
+       答案：数字不动，而"缓存与事实不符"作为漂移标记单独可见。
+       被换掉的是一条"错误可见"的断言，换上的是"错误不可能影响资金判定"。
+       缓存本身仍在 G3/G4 被 rebuild 修好并留下 BALANCE_REBUILT 审计。 */
+    check('G2b 缓存被改坏之后 available **仍然**是 ledger 的值（一个坏缓存不能决定能不能花钱）',
+      balanceString(store, w.walletId) === '750', balanceString(store, w.walletId));
     const rebuilt = store.rebuildWalletBalance(w.walletId);
     check('G3 rebuild 把余额恢复成 ledger 的值 ' + before.balanceMinor + '（而非缓存的值）',
       rebuilt.ok === true && rebuilt.cachedBalanceMinor === 750n && rebuilt.drifted === true && rebuilt.repaired === true,
       rebuilt.ok ? rebuilt.cachedBalanceMinor.toString() : rebuilt.errors);
-    check('G4 rebuild 之后读出来的 available 也等于 ledger 的值',
-      balanceString(store, w.walletId) === '750', balanceString(store, w.walletId));
+    check('G4 rebuild 之后读出来的 available 也等于 ledger 的值，且漂移标记消失',
+      balanceString(store, w.walletId) === '750' &&
+      store.serializeWallet(store.getWallet({ walletId: w.walletId }).wallet, {}).cachedBalanceDrifted === false,
+      store.serializeWallet(store.getWallet({ walletId: w.walletId }).wallet, {}));
   }
 
   check('G5 缓存漂移被修复时留下一条 BALANCE_REBUILT change log（漂移不会静默消失）',
@@ -1136,33 +1149,123 @@ section('O · Runtime 依赖纪律（静态：本条与 boundary 测试互补）
   check('O7 唯一改缓存的语句是"赋成从 ledger 算出来的值"，而不是"在旧值上加"',
     /SET cached_balance_minor=\?, reserved_balance_minor=\?/.test(src) &&
     (src.match(/SET cached_balance_minor/g) || []).length === 1,
-    (src.match(/SET cached_balance_minor/g) || []).length);  check('O8 该语句只出现在一个私有函数里（调用点唯一），且只被 commit 路径调用',
+    (src.match(/SET cached_balance_minor/g) || []).length);  /* ── P22-3 修正了一处**名字比断言大**的地方 ─────────────────────────
+     原断言叫"该语句只出现在一个私有函数里（调用点唯一），且只被 commit
+     路径调用"，但它实际只检查了 `>= 1` 次出现与"没有导出"。P22-3 确实
+     从 reserveFunds / commitReservation 的路径上写过缓存列（setWalletBalance
+     一次，setWalletReserved 三次），因此那句名字现在是**假的**。
+     这里换成两句各自成立的话：语句存在，且**没有任何公开 API 直接暴露
+     它**（缓存列不可能被外部当成 setter 用）。 */
+  check('O8 两条缓存写语句都只出现在私有函数里 —— 它们没有被任何公开 API 暴露出去',
     (src.match(/SQL\.setWalletBalance/g) || []).length >= 1 &&
-    !/exports\.setWalletBalance/.test(src));
+    (src.match(/SQL\.setWalletReserved/g) || []).length >= 1 &&
+    !/exports\.setWalletBalance/.test(src) && !/exports\.setWalletReserved/.test(src) &&
+    !/setWalletBalance:\s*setWalletBalance/.test(src) &&
+    !/setWalletReserved:\s*setWalletReserved/.test(src));
+  /* P22-3 §22：reserved 缓存**只能**被整体赋值成"从 active reservations
+     求和得到的值"。因此"在旧值上加/减"的形态必须一个都不存在 —— 不是
+     "我们记得别那么写"，而是"那种 SQL 根本没被写出来"。 */
+  check('O8b 不存在"在旧 reserved 上加/减"的写法：唯一写它的语句是整体赋值',
+    /SET reserved_balance_minor=\?, revision=\?, updated_at=\? WHERE wallet_id=\?/.test(src) &&
+    !/reserved_balance_minor\s*[+\-]=/.test(src) &&
+    !/reserved_balance_minor\s*=\s*reserved_balance_minor\s*[+\-]/.test(src) &&
+    !/reserved_balance_minor\s*\+\s*\?/.test(src) &&
+    !/reserved_balance_minor\s*-\s*\?/.test(src));
   /* append-only：交易与 entry 一旦写下就不再被 UPDATE / DELETE。
      这条不是在数 SQL 字符串，而是在证明**那两条语句根本不存在** ——
-     状态机（P22-3）将来要做的状态推进必须走新的列/新的方法，
-     不能偷偷在这里加一条 UPDATE。 */
-  /* 这条不是在数 SQL 字符串的写法，而是在证明**那两条语句根本不存在** ——
-     状态机（P22-3）将来要做的状态推进必须走新的列/新的方法，
-     不能偷偷在这里加一条 UPDATE。
-     `ON CONFLICT(...) DO UPDATE SET ...` 是 upsert 的语法，不是对某张表的
-     UPDATE，因此用负向后顾把它排除掉 —— 否则这条断言会因为一个**正确的**
-     upsert 而失败，而那正是"检查自己变成噪音"的开始。 */
-  const mutatingStatements = (src.match(/(?<!CONFLICT )(?:UPDATE|DELETE\s+FROM)\s+(?:\+\s*)?[A-Za-z_][A-Za-z0-9_]*(?=[\s'"]?\+)/g) || [])
-    .concat((src.match(/(?:UPDATE|DELETE\s+FROM)\s+(?:\+\s*)?(?:WALLETS_TABLE|META_TABLE|TRANSACTIONS_TABLE|ENTRIES_TABLE|CHANGE_LOG_TABLE|ACCOUNTS_TABLE)/g) || []))
-    .map(s => s.replace(/\s+/g, ' '));
-  const mutatedTables = Array.from(new Set(mutatingStatements.map(s => {
-    const m = /(?:UPDATE|DELETE FROM) (?:\+ )?([A-Za-z_][A-Za-z0-9_]*)/.exec(s);
-    return m ? m[1] : s;
-  })));
-  check('O9 被 UPDATE / DELETE 的表**只有** wallets 与 meta（派生缓存与 revision 水位），'
-    + 'transactions / entries / change_log 都是 append-only',
-    mutatedTables.every(t => t === 'WALLETS_TABLE' || t === 'META_TABLE'),
+     状态机（P22-3）的状态推进必须走新的列/新的方法，不能偷偷在这里加
+     一条 UPDATE。
+
+     ── P22-3 修好了一个**假绿**（这条断言此前什么都没检查）──────────
+     旧版扫描器的两个正则都期望表名**紧跟**在 UPDATE 后面：
+       /(?<!CONFLICT )(?:UPDATE|DELETE\s+FROM)\s+(?:\+\s*)?[A-Za-z_]\w*(?=[\s'"]?\+)/
+     而本文件的 SQL 一律写成 `'UPDATE ' + WALLETS_TABLE + ' ...'` ——
+     表名前面隔着一个引号与一个空格，于是两个正则**都匹配不到任何东西**，
+     mutatedTables 恒为 `[]`，而 `[].every(...)` 恒为 true。
+     实测（P22-3 开发期）：`node -e` 跑这两个正则，两个结果都是 `[]`。
+     也就是说 P22-2 的 O9/O9b 在"保护空气"。
+     修法是两件事，缺一不可：
+       ① 让扫描器认得 `'UPDATE ' + TABLE_CONST` 这种真实形状；
+       ② 加一条**非空断言**（O9-pre）：如果扫描器又变瞎，测试立刻失败，
+          而不是安静地通过。一条静态检查若不知道自己抓到了什么，
+          它就不是检查，是一句注释。 */
+  const MUTATION_RE = /(?:UPDATE|DELETE\s+FROM)\s*['"]?\s*\+\s*([A-Za-z_][A-Za-z0-9_]*)/g;
+  const mutatingStatements = [];
+  const mutatedTables = [];
+  let mm;
+  while ((mm = MUTATION_RE.exec(src))) {
+    const table = mm[1];
+    mutatingStatements.push(mm[0].replace(/\s+/g, ' '));
+    if (mutatedTables.indexOf(table) < 0) mutatedTables.push(table);
+  }
+  /* ON CONFLICT(...) DO UPDATE SET 是 upsert 的语法，不是对某张表的
+     UPDATE。它在同一个 INSERT 语句里，因此**不**出现在 MUTATION_RE 的
+     结果里（表名不在 UPDATE 之后）—— 这一点本身也是被断言的。 */
+  check('O9-pre （输入存在）扫描器真的抓到了那些 mutation 语句 —— 否则 O9/O9b 是在保护空气',
+    mutatingStatements.length >= 3 &&
+    mutatedTables.indexOf('WALLETS_TABLE') >= 0 &&
+    mutatedTables.indexOf('IDEMPOTENCY_TABLE') >= 0 &&
+    mutatedTables.indexOf('OPERATIONS_TABLE') >= 0 &&
+    mutatedTables.indexOf('RESERVATIONS_TABLE') >= 0,
+    { statements: mutatingStatements, tables: mutatedTables });
+  /* meta 的水位不是靠 UPDATE 改的，而是靠 upsert（一条 INSERT）。
+     它必须**单独**被断言，否则 MUTABLE_TABLES 里的 META_TABLE 会在
+     "扫描器根本看不到它"的情况下显得像是被允许的。 */
+  check('O9-pre2 meta 水位走的是 upsert（ON CONFLICT ... DO UPDATE SET），而不是一条独立的 UPDATE',
+    /INSERT INTO ' \+ META_TABLE \+ ' \(key, value\) VALUES \(\?, \?\) ON CONFLICT\(key\) DO UPDATE SET value=excluded\.value/.test(src) &&
+    mutatedTables.indexOf('META_TABLE') < 0,
     mutatedTables);
+
+  /* 允许被改的表：派生缓存（wallets）、revision 水位（meta）、
+     P22-3 的两个**生命周期**表（operations / reservations，
+     只允许改状态与链接列，见 O9c），以及两张按 TTL 清理的幂等表。
+     ACCOUNTS 与三个 ledger 事实表**不**在允许集合里。 */
+  const MUTABLE_TABLES = ['WALLETS_TABLE', 'META_TABLE', 'IDEMPOTENCY_TABLE',
+    'OPERATIONS_TABLE', 'RESERVATIONS_TABLE', 'OPERATION_IDEMPOTENCY_TABLE'];
+  check('O9 被 UPDATE / DELETE 的表只可能是"派生缓存 / 水位 / 生命周期行 / 幂等表"这四类，'
+    + 'ACCOUNTS 与三个 ledger 事实表都不在内',
+    mutatedTables.every(t => MUTABLE_TABLES.indexOf(t) >= 0), mutatedTables);
   check('O9b 三个 append-only 表（transactions / entries / change_log）不出现在任何 UPDATE / DELETE 里',
     mutatingStatements.every(s => !/(TRANSACTIONS_TABLE|ENTRIES_TABLE|CHANGE_LOG_TABLE)/.test(s)),
     mutatingStatements);
+
+  /* ── O9c · 生命周期行里**经济内容**不可变（P22-3 的落点）────────────
+     允许 UPDATE reservations 的 status 与链接列，**不等于**允许改它锁了
+     多少钱、锁给谁。因此这里把两条 UPDATE 的 SET 子句逐列读出来断言：
+     能赋的列是一个精确集合，而经济内容列一次都不出现。
+     这一条比"grep 一个词"强：它检查的是**语句的语义**（SET 了哪些列）。 */
+  const statementWindow = (name) => {
+    const at = src.indexOf(name + ':');
+    if (at < 0) return null;
+    const rest = src.slice(at);
+    /* 语句体可能跨行（缩进 6 空格），下一条 SQL 字段是 4 空格 + 字母。 */
+    const boundary = rest.search(/\n {4}[A-Za-z]/);
+    return boundary < 0 ? rest : rest.slice(0, boundary);
+  };
+  const setColumnsOf = (name) => {
+    const window = statementWindow(name);
+    if (!window) return null;
+    const m = /SET ([^']*?) WHERE/.exec(window);
+    if (!m) return null;
+    return m[1].split(',').map(s => s.trim().split('=')[0].trim()).sort();
+  };
+  const opSetColumns = setColumnsOf('setOperationStatus');
+  const resSetColumns = setColumnsOf('setReservationStatus');
+  const ECONOMIC_CONTENT_COLUMNS = ['wallet_id', 'currency', 'amount_minor', 'operation_id', 'idempotency_key', 'fingerprint', 'created_at'];
+  check('O9c economy_operations 的 UPDATE 只能赋生命周期列（status / reservation_id / transaction_id / reason_code / revision / updated_at）',
+    opSetColumns != null &&
+    opSetColumns.join(',') === 'reason_code,reservation_id,revision,status,transaction_id,updated_at' &&
+    ECONOMIC_CONTENT_COLUMNS.every(c => opSetColumns.indexOf(c) < 0),
+    opSetColumns);
+  check('O9d economy_reservations 的 UPDATE 只能赋生命周期列（status / transaction_id / release_reason / revision / updated_at）',
+    resSetColumns != null &&
+    resSetColumns.join(',') === 'release_reason,revision,status,transaction_id,updated_at' &&
+    ECONOMIC_CONTENT_COLUMNS.every(c => resSetColumns.indexOf(c) < 0),
+    resSetColumns);
+  check('O9e 两条生命周期 UPDATE 都带 `AND status=?`（终态不可回退是一条**并发安全**的 SQL 约束，不是一句注释）',
+    /WHERE operation_id=\? AND status=\?/.test(statementWindow('setOperationStatus') || '') &&
+    /WHERE reservation_id=\? AND status=\?/.test(statementWindow('setReservationStatus') || ''),
+    [statementWindow('setOperationStatus'), statementWindow('setReservationStatus')]);
   check('O11 故障注入只在 deps.faults 上，且没有任何 HTTP 层能写它（本文件不 require http）',
     /const faults = deps\.faults \|\| null/.test(src) && requires.indexOf('node:http') < 0);
   check('O12 test-only 的破坏辅助被**显式命名**为 ForTest（读代码时不会被误当成产品 API）',

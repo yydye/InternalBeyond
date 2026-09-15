@@ -711,15 +711,28 @@ function createHomeNodeHttp(deps) {
           stored: true,
           canonical: 'sqlite-ledger-entries',
           derived: 'wallet-cached-balance-cache',
+          /* P22-3：reserved 这一面同样是"canonical 行 + 派生缓存"，
+             而且它决定了 available —— 因此它的两个来源也写在这里。 */
+          reservedCanonical: 'sqlite-active-reservations',
+          reservedDerived: 'wallet-reserved-balance-cache',
+          availableFormula: 'ledgerBalanceMinor - activeReservedBalanceMinor (READY only, otherwise null)',
           servedToDevices: false,
           deviceVerbs: [],
           httpVerbs: ['GET'],
           writesExposed: [],
+          /* P22-3 新增了六个会改状态的方法（reserve / commit / release /
+             expire / fail / sweep），而它们在路由表上依然**一个都不存在**。
+             这条字段就是为了让"没有"可以被断言，而不是被相信。 */
+          reservationWritesExposed: [],
           mintingExposed: false,
+          expirationIsNotATimer: true,
           desktopPaths: ['/economy/health', '/economy/wallet', '/economy/ledger',
-            '/economy/transaction', '/economy/changes'],
+            '/economy/transaction', '/economy/changes',
+            '/economy/reservations', '/economy/reservation'],
           unreachable: ['/economy/topup', '/economy/purchase', '/economy/payment',
-            '/economy/provider', '/economy/mint', '/economy/burn', '/economy/transfer']
+            '/economy/provider', '/economy/mint', '/economy/burn', '/economy/transfer',
+            '/economy/reserve', '/economy/commit', '/economy/release', '/economy/expire',
+            '/economy/fail', '/economy/sweep']
         },
         doesNotExpose: ['llm-proxy', 'tools', 'payments', 'diary', 'letters', 'images', 'tts'],
         /* M1-B：设备身份 + 移动边界。mobile 面**只有** allowlist 里的 verb。 */
@@ -838,6 +851,48 @@ function createHomeNodeHttp(deps) {
       if (!economy) { bad(res, 501, 'economy-not-assembled', null, req); return; }
       const changes = economy.listChanges(url.searchParams.get('cursor') || 0, url.searchParams.get('limit') || undefined);
       ok(res, { changes: changes, revision: economy.getRevision() }, req);
+      return;
+    }
+    /* ── P22-3 · reservation 的两条**只读**路由 ─────────────────────────
+       为什么这一阶段加了"预留"却仍然一个字都不给写：
+       预留的语义是"先锁住资源、之后要么成交要么还回去"，而**谁有权
+       决定成交**（预算策略 / 用户审批 / 动作结果）属于 P22-4 与 P22-8。
+       在那些层存在之前把 reserve / commit / release 挂到 HTTP 上，
+       等于让任何一个能发请求的人替 Agent 决定花钱 —— 那正是 P22 §6
+       要避免的"LLM 说想要就通过"。因此这里只开"看"：
+         GET /economy/reservations   列出（可按 walletId / ownerId / status 过滤）
+         GET /economy/reservation    单笔（按 reservationId 或 operationId）
+       金额一律十进制字符串（与 /wallet 同款），并且**不带 idempotencyKey**
+       —— 请求标识没有必要被广播。 */
+    if (path === '/economy/reservations' && method === 'GET') {
+      if (!economy) { bad(res, 501, 'economy-not-assembled', null, req); return; }
+      const result = economy.listReservations({
+        walletId: url.searchParams.get('walletId') || undefined,
+        ownerId: url.searchParams.get('ownerId') || undefined,
+        status: url.searchParams.get('status') || undefined,
+        limit: url.searchParams.get('limit') || undefined
+      });
+      if (!result.ok) { bad(res, 400, result.errors[0] || 'reservation-read-failed', null, req); return; }
+      ok(res, {
+        reservations: result.reservations.map(r => economy.serializeReservation(r)),
+        scope: result.scope,
+        /* 这个计数是"此刻有几笔钱被锁住"的直接答案，也是
+           "active reservations 不超过 ledger" 那条不变量的观测入口。 */
+        activeReservations: result.reservations.filter(r => r.state === 'ACTIVE').length
+      }, req);
+      return;
+    }
+    if (path === '/economy/reservation' && method === 'GET') {
+      if (!economy) { bad(res, 501, 'economy-not-assembled', null, req); return; }
+      const reservationId = url.searchParams.get('reservationId');
+      const operationId = url.searchParams.get('operationId');
+      if (!reservationId && !operationId) { bad(res, 400, 'missing-reservation-or-operation', null, req); return; }
+      const result = economy.getReservation({
+        reservationId: reservationId || undefined,
+        operationId: operationId || undefined
+      });
+      if (!result.ok) { bad(res, 404, result.errors[0] || 'reservation-not-found', null, req); return; }
+      ok(res, { reservation: economy.serializeReservation(result.reservation) }, req);
       return;
     }
     /* 其余 /economy/* 一律 404 —— 尤其 POST 到上面任何一条路径。

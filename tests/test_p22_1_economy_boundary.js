@@ -312,8 +312,14 @@ check('B4.4 /economy/* 只在 http.js 里被**读**服务：http 层拿不到任
        ③ /security 声明里 writesExposed 为空、mintingExposed 为 false。 */
     const economyBlocks = src.match(/path === '\/economy\/[^']*' && method === '[A-Z]+'/g) || [];
     const nonGet = economyBlocks.filter(b => !/&& method === 'GET'$/.test(b));
+    /* P22-3 把这份"不许被 http 层调用"的名单扩到它自己的六个 mutation
+       方法上。名单必须跟着能力长：只列 P22-2 的那几个，等于给新加的
+       写能力留了一扇没有锁的门。 */
     const writeCalls = ['mintForSystem', 'burnForSystem', 'commitLedgerTransaction',
-      'openWallet', 'transferBetweenWallets', 'corruptCachedBalanceForTest']
+      'openWallet', 'transferBetweenWallets', 'corruptCachedBalanceForTest',
+      'reserveFunds', 'commitReservation', 'releaseReservation', 'expireReservation',
+      'failReservation', 'expireDueReservations', 'rebuildReservedBalance',
+      'reconcileReservations', 'corruptReservedCacheForTest']
       .filter(name => stripCommentsAndStrings(src).indexOf(name) >= 0);
     return nonGet.length === 0 && writeCalls.length === 0 &&
       /writesExposed: \[\]/.test(src) && /mintingExposed: false/.test(src);
@@ -322,7 +328,10 @@ check('B4.4 /economy/* 只在 http.js 里被**读**服务：http 层拿不到任
     nonGet: (read('services/home-node/http.js').match(/path === '\/economy\/[^']*' && method === '[A-Z]+'/g) || [])
       .filter(b => !/&& method === 'GET'$/.test(b)),
     writeCalls: ['mintForSystem', 'burnForSystem', 'commitLedgerTransaction', 'openWallet',
-      'transferBetweenWallets', 'corruptCachedBalanceForTest']
+      'transferBetweenWallets', 'corruptCachedBalanceForTest',
+      'reserveFunds', 'commitReservation', 'releaseReservation', 'expireReservation',
+      'failReservation', 'expireDueReservations', 'rebuildReservedBalance',
+      'reconcileReservations', 'corruptReservedCacheForTest']
       .filter(name => stripCommentsAndStrings(read('services/home-node/http.js')).indexOf(name) >= 0)
   });
 
@@ -604,6 +613,121 @@ check('B11.8 （输入存在）store 真的 require 了契约与 db-failure 分�
     const reqs = scanRequires(STORE_SRC);
     return reqs.indexOf('./economy-contract.js') >= 0 && reqs.indexOf('../../runtime/db-failure.js') >= 0;
   })(), scanRequires(STORE_SRC));
+
+/* ══════════════════════════════════════════════════════════════════
+   B12 · P22-3 runtime：reservation 面不存在"直接改锁定量"或"经 HTTP 写"
+   ══════════════════════════════════════════════════════════════════ */
+
+/* 这一组存在的理由和 B11 一模一样，只是对象换成了 reserved：
+   P22-3 给了 Economy 六个会改状态的方法（reserve / commit / release /
+   expire / fail / sweep），于是"顺手加一个 setReservedBalance()"
+   或者"顺手把 reserve 挂到一条 POST 上"都会变成最省事的写法，
+   而它们各自会废掉一条本阶段最重要的性质：
+     · 直接改 reserved ⇒ "锁定量只能来自 active reservations" 失效；
+     · HTTP 可写 ⇒ 任何一个能发请求的人都能替 Agent 决定花钱。
+   因此这里对**每一个** Economy 生产文件断言这些形态都不存在。
+
+   ── P22-3 **没有**新增生产文件 ──────────────────────────────────────
+   reservation 活在 economy-store.js 里（同一个事务、同一个 db 句柄、
+   同一套 withTransaction）。这不是为了省一个文件：把 Reservation 拆成
+   独立模块就必须把 db / withTransaction / allocateRevision / appendChange
+   / computeLedgerBalance / commitLedgerTransactionInTx 这些私有件暴露出去，
+   而那会把 P22 §10 要求的"ledger 与 reservation 同一个 atomic boundary"
+   从结构保证降级成跨模块约定。B2.1 会继续断言清单与磁盘一致。 */
+section('B12 · P22-3 runtime（reserved 只能来自 active reservations；写能力不上 HTTP）');
+
+const RESERVED_MUTATION_SHAPES = [
+  ['setReservedBalance', /\bsetReservedBalance\b/],
+  ['updateReservedBalance', /\bupdateReservedBalance\b/],
+  ['incrementReserved', /\bincrementReserved\w*/],
+  ['decrementReserved', /\bdecrementReserved\w*/],
+  ['addReserved', /\baddReserved\w*/],
+  ['reserved += / -=', /reserved\w*\s*(?:\+=|-=|\+\+|--)/i],
+  ['SQL 自增：reserved_balance_minor = reserved_balance_minor + ?', /reserved_balance_minor\s*=\s*reserved_balance_minor\s*[+\-]/i]
+];
+RESERVED_MUTATION_SHAPES.forEach(([label, re]) => {
+  check('B12.1 Economy 生产文件里不存在 ' + label + '（锁定量只能来自 active reservations 的求和）',
+    PRODUCTION_FILES.every(rel => !re.test(stripCommentsAndStrings(read(rel)))),
+    PRODUCTION_FILES.filter(rel => re.test(stripCommentsAndStrings(read(rel)))));
+});
+
+check('B12.2 唯一写 reserved_balance_minor 的语句是整体赋值（不是增量），且求和入口存在',
+  /SET reserved_balance_minor=\?, revision=\?, updated_at=\? WHERE wallet_id=\?/.test(STORE_SRC) &&
+  /SET reserved_balance_minor=reserved_balance_minor/.test(STORE_SRC) === false &&
+  /sumActiveReserved/.test(STORE_SRC) &&
+  /status=\\'ACTIVE\\'/.test(STORE_SRC),
+  {
+    assignments: (STORE_SRC.match(/SET reserved_balance_minor=[^']*/g) || []),
+    hasActiveSum: /sumActiveReserved/.test(STORE_SRC)
+  });
+
+/* ── 写能力不上 HTTP：这是本阶段最需要被机器守住的一条 ─────────────── */
+const RESERVATION_MUTATION_METHODS = ['reserveFunds', 'commitReservation', 'releaseReservation',
+  'expireReservation', 'failReservation', 'expireDueReservations',
+  'rebuildReservedBalance', 'reconcileReservations', 'corruptReservedCacheForTest'];
+check('B12.3 http.js 里**没有**任何 P22-3 的 mutation 方法名（写能力在路由表上不存在）',
+  RESERVATION_MUTATION_METHODS.every(name =>
+    stripCommentsAndStrings(read('services/home-node/http.js')).indexOf(name) < 0),
+  RESERVATION_MUTATION_METHODS.filter(name =>
+    stripCommentsAndStrings(read('services/home-node/http.js')).indexOf(name) >= 0));
+check('B12.4 http.js 里出现的 reservation 读取面恰是那三个只读方法（多一个都要解释）',
+  (() => {
+    const code = stripCommentsAndStrings(read('services/home-node/http.js'));
+    const used = ['listReservations', 'getReservation', 'serializeReservation']
+      .filter(name => code.indexOf(name) >= 0);
+    return used.length === 3;
+  })());
+check('B12.5 reservation 的两条新路由也都是 GET（不给自己开一个写动词的口子）',
+  (() => {
+    const src = read('services/home-node/http.js');
+    const blocks = src.match(/path === '\/economy\/(?:reservation|reservations)' && method === '[A-Z]+'/g) || [];
+    return blocks.length === 2 && blocks.every(b => /&& method === 'GET'$/.test(b));
+  })(),
+  read('services/home-node/http.js').match(/path === '\/economy\/reservation[s]?' && method === '[A-Z]+'/g));
+
+/* ── append-only 仍然只是 ledger 那三张表的事 ─────────────────────── */
+check('B12.6 Economy 生产文件里没有任何一条 UPDATE / DELETE 指向 ledger 的三个事实表',
+  (() => {
+    const src = read('services/home-node/economy-store.js');
+    const hits = (src.match(/(?:UPDATE|DELETE\s+FROM)\s*['"]?\s*\+\s*(TRANSACTIONS_TABLE|ENTRIES_TABLE|CHANGE_LOG_TABLE|ACCOUNTS_TABLE)/g) || []);
+    return hits.length === 0;
+  })());
+check('B12.7 生命周期行的 UPDATE 只赋状态与链接列（经济内容列一次都不出现在 SET 里）',
+  (() => {
+    const src = read('services/home-node/economy-store.js');
+    const windowOf = (name) => {
+      const at = src.indexOf(name + ':');
+      if (at < 0) return '';
+      const rest = src.slice(at);
+      const b = rest.search(/\n {4}[A-Za-z]/);
+      return b < 0 ? rest : rest.slice(0, b);
+    };
+    const cols = (name) => {
+      const m = /SET ([^']*?) WHERE/.exec(windowOf(name));
+      return m ? m[1].split(',').map(s => s.trim().split('=')[0].trim()) : null;
+    };
+    const op = cols('setOperationStatus');
+    const res = cols('setReservationStatus');
+    const forbidden = ['wallet_id', 'currency', 'amount_minor', 'operation_id', 'idempotency_key', 'created_at'];
+    return op != null && res != null &&
+      forbidden.every(c => op.indexOf(c) < 0 && res.indexOf(c) < 0);
+  })());
+
+/* ── 过期不是定时器（§14）──────────────────────────────────────────── */
+check('B12.8 到期判定不依赖任何定时器：生产文件里没有 setTimeout / setInterval',
+  PRODUCTION_FILES.every(rel => !/\bset(?:Timeout|Interval)\b/.test(stripCommentsAndStrings(read(rel)))),
+  PRODUCTION_FILES.filter(rel => /\bset(?:Timeout|Interval)\b/.test(stripCommentsAndStrings(read(rel)))));
+check('B12.9 到期扫描接受**显式** now（真相是 expires_at <= now 这条比较，不是某个调度）',
+  /function expireDueReservations\(input\)/.test(STORE_SRC) &&
+  /o\.now != null \? Number\(o\.now\) : clock\(\)/.test(STORE_SRC) &&
+  /expires_at IS NOT NULL AND expires_at <= \?/.test(STORE_SRC));
+
+/* ── 输入存在：上面每一条都必须有真实的被检查对象 ─────────────────── */
+check('B12.10 （输入存在）六个 mutation 方法与 reserved 求和入口确实在 store 的公开面上',
+  ['reserveFunds', 'commitReservation', 'releaseReservation', 'expireReservation',
+    'failReservation', 'expireDueReservations'].every(name =>
+    new RegExp('\\n    ' + name + ': ' + name + ',').test(STORE_SRC)) &&
+  /\bsumActiveReserved\b/.test(STORE_SRC));
 
 /* ══════════════════════════════════════════════════════════════════
    B10 · 反向断言：契约里**必须**存在的"否认"数据

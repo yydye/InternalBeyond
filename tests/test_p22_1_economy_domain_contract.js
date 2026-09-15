@@ -461,6 +461,110 @@ check('D9.6 非法 currency 的 reservation 被拒绝',
   })));
 
 /* ══════════════════════════════════════════════════════════════════
+   D-OPERATION · P22-3 的加法面（operation 生命周期 + reservation 状态机）
+   ══════════════════════════════════════════════════════════════════ */
+section('D-OPERATION · operation 生命周期与 reservation 状态机（P22-3 加法面）');
+
+/* 这一段锁的是一件具体的事：P22-3 新增的每一个名字都必须是**加法**，
+   而两张冻结词表（TX_STATE / RESERVATION_STATE）一个成员都没变。 */
+check('D13.1 （加法性）TX_STATE 与 RESERVATION_STATE 的成员一个都没增删',
+  C.TX_STATES.slice().sort().join(',') === 'COMMITTED,CREATED,EXPIRED,FAILED,RELEASED,RESERVED' &&
+  C.RESERVATION_STATES.slice().sort().join(',') === 'ACTIVE,COMMITTED,EXPIRED,RELEASED',
+  { tx: C.TX_STATES, reservation: C.RESERVATION_STATES });
+check('D13.2 reservation 状态机：ACTIVE → {COMMITTED,RELEASED,EXPIRED}，三个终态都没有出边',
+  C.RESERVATION_TRANSITIONS.ACTIVE.slice().sort().join(',') === 'COMMITTED,EXPIRED,RELEASED' &&
+  C.RESERVATION_TRANSITIONS.COMMITTED.length === 0 &&
+  C.RESERVATION_TRANSITIONS.RELEASED.length === 0 &&
+  C.RESERVATION_TRANSITIONS.EXPIRED.length === 0);
+check('D13.3 RESERVATION_TERMINAL_STATES 恰为 {COMMITTED,RELEASED,EXPIRED}（**没有** FAILED）',
+  C.RESERVATION_TERMINAL_STATES.slice().sort().join(',') === 'COMMITTED,EXPIRED,RELEASED',
+  C.RESERVATION_TERMINAL_STATES);
+check('D13.4 ACTIVE → ACTIVE 被拒绝（同一状态不是一次迁移）',
+  C.canTransitionReservation('ACTIVE', 'ACTIVE').allowed === false &&
+  C.canTransitionReservation('ACTIVE', 'COMMITTED').allowed === true);
+check('D13.5 终态回退被拒绝，且理由是"必须用补偿交易"',
+  (() => {
+    const r = C.assertReservationTransition('COMMITTED', 'RELEASED');
+    return r.ok === false && r.errors.indexOf('transition-not-allowed') >= 0 &&
+      String(r.detail).indexOf('compensate') >= 0;
+  })());
+check('D13.6 未登记状态 fail closed（不是"未知即允许"）',
+  C.canTransitionReservation('NOPE', 'ACTIVE').ok === false &&
+  C.canTransitionReservation('NOPE', 'ACTIVE').allowed !== true &&
+  C.canTransitionReservation('ACTIVE', 'FAILED').allowed === false);
+
+/* operation ↔ reservation 的映射必须是**数据**，而且必须如实承认它不是双射。 */
+check('D13.7 RESERVATION_STATE_OF_OPERATION 覆盖全部六个 TX_STATE（一个不少）',
+  C.TX_STATES.every(s => Object.prototype.hasOwnProperty.call(C.RESERVATION_STATE_OF_OPERATION, s)) &&
+  Object.keys(C.RESERVATION_STATE_OF_OPERATION).length === C.TX_STATES.length);
+check('D13.8 CREATED 与 FAILED 映射到 null —— 它们刻意没有属于自己的 reservation 状态',
+  C.RESERVATION_STATE_OF_OPERATION.CREATED === null &&
+  C.RESERVATION_STATE_OF_OPERATION.FAILED === null);
+check('D13.9 两个映射在共同值域上互为逆（RESERVED↔ACTIVE 是唯一的"改名"）',
+  ['RESERVED', 'COMMITTED', 'RELEASED', 'EXPIRED'].every(op => {
+    const res = C.RESERVATION_STATE_OF_OPERATION[op];
+    return res != null && C.OPERATION_STATE_OF_RESERVATION[res] === op;
+  }) &&
+  C.OPERATION_STATE_OF_RESERVATION.ACTIVE === 'RESERVED' &&
+  C.OPERATION_STATE_OF_RESERVATION.COMMITTED === 'COMMITTED');
+check('D13.10 OPERATION_STATE_OF_RESERVATION 是**全**映射（reservation 的四个状态都有归属）',
+  C.RESERVATION_STATES.every(s => C.TX_STATES.indexOf(C.OPERATION_STATE_OF_RESERVATION[s]) >= 0));
+
+/* validateOperation：与 validateReservation 同款的纯形状校验。 */
+check('D13.11 合法 operation 被接受',
+  okResult(C.validateOperation({
+    operationId: 'econ_op_' + 'o1', walletId: 'econ_wallet_' + 'w1', currency: 'IB_CREDIT',
+    amountMinor: 500, idempotencyKey: 'req-1', status: 'RESERVED', expiresAt: 1000
+  })));
+check('D13.12 operation 的 status 只能是 TX_STATE（ACTIVE **不是** operation 的状态）',
+  !okResult(C.validateOperation({
+    operationId: 'econ_op_' + 'o1', walletId: 'econ_wallet_' + 'w1', currency: 'IB_CREDIT',
+    amountMinor: 1, idempotencyKey: 'k', status: 'ACTIVE'
+  })));
+check('D13.13 operation 缺 idempotencyKey / 用真实货币 / 形状不对的 id 都被拒绝',
+  !okResult(C.validateOperation({ operationId: 'econ_op_o1', walletId: 'econ_wallet_w1', currency: 'IB_CREDIT', amountMinor: 1, status: 'RESERVED' })) &&
+  !okResult(C.validateOperation({ operationId: 'econ_op_o1', walletId: 'econ_wallet_w1', currency: 'CNY', amountMinor: 1, idempotencyKey: 'k', status: 'RESERVED' })) &&
+  !okResult(C.validateOperation({ operationId: 'econ_tx_o1', walletId: 'econ_wallet_w1', currency: 'IB_CREDIT', amountMinor: 1, idempotencyKey: 'k', status: 'RESERVED' })));
+check('D13.14 operation 的 reservationId / transactionId 若给了就必须是 canonical 形状',
+  okResult(C.validateOperation({
+    operationId: 'econ_op_o1', walletId: 'econ_wallet_w1', currency: 'IB_CREDIT', amountMinor: 1,
+    idempotencyKey: 'k', status: 'COMMITTED',
+    reservationId: 'econ_res_r1', transactionId: 'econ_tx_t1'
+  })) &&
+  !okResult(C.validateOperation({
+    operationId: 'econ_op_o1', walletId: 'econ_wallet_w1', currency: 'IB_CREDIT', amountMinor: 1,
+    idempotencyKey: 'k', status: 'COMMITTED', transactionId: 'pay_123'
+  })));
+
+/* idempotency scope：预留与提交不能共用一个模糊键空间（§18）。 */
+check('D13.15 OPERATION_SCOPE 是封闭五元集合 {RESERVE,COMMIT,RELEASE,EXPIRE,FAIL}',
+  C.OPERATION_SCOPES.slice().sort().join(',') === 'COMMIT,EXPIRE,FAIL,RELEASE,RESERVE' &&
+  C.isOperationScope('RESERVE') === true && C.isOperationScope('reserve') === false &&
+  C.isOperationScope('TOPUP') === false);
+check('D13.16 scopedIdempotencyIdentity 让同一个 key 在两个 scope 下是**两个**身份',
+  C.scopedIdempotencyIdentity('RESERVE', 'X').identity !== C.scopedIdempotencyIdentity('COMMIT', 'X').identity &&
+  C.scopedIdempotencyIdentity('RESERVE', 'X').identity === 'RESERVE:X' &&
+  C.scopedIdempotencyIdentity('RESERVE', 'X').identity === C.scopedIdempotencyIdentity('RESERVE', 'X').identity);
+check('D13.17 数字与字符串 key 归一成同一个身份（类型边界上幂等性不失效）',
+  C.scopedIdempotencyIdentity('COMMIT', 12345).identity === C.scopedIdempotencyIdentity('COMMIT', '12345').identity);
+check('D13.18 非法 scope / 非法 key 被拒绝',
+  !okResult(C.scopedIdempotencyIdentity('NOPE', 'X')) &&
+  !okResult(C.scopedIdempotencyIdentity('RESERVE', 'has space')));
+
+/* 拒绝原因：available 不足必须与 balance 不足分开。 */
+check('D13.19 INSUFFICIENT_AVAILABLE_BALANCE 已登记，且与 INSUFFICIENT_BALANCE 是两个不同的代码',
+  C.DENY_REASONS.indexOf('INSUFFICIENT_AVAILABLE_BALANCE') >= 0 &&
+  C.isDenyReasonCode('INSUFFICIENT_AVAILABLE_BALANCE') &&
+  C.DENY_REASON.INSUFFICIENT_AVAILABLE_BALANCE !== C.DENY_REASON.INSUFFICIENT_BALANCE);
+check('D13.20 P22-3 的四个 reservation 事件都在封闭事件集合里（含新增的两个）',
+  ['RESERVATION_CREATED', 'RESERVATION_COMMITTED', 'RESERVATION_RELEASED',
+    'RESERVATION_EXPIRED', 'RESERVATION_REBUILT', 'OPERATION_FAILED'].every(t => C.isEconomyEventType(t)));
+check('D13.21 P22-1 原有的十四个事件一个都没丢（加事件不等于换词表）',
+  ['WALLET_OPENED', 'TRANSACTION_CREATED', 'PURCHASE_COMMITTED', 'PURCHASE_DENIED',
+    'ITEM_GIFTED', 'ITEM_CONSUMED', 'COMPUTE_CREDIT_GRANTED', 'COMPUTE_CREDIT_CONSUMED',
+    'EXCHANGE_COMMITTED', 'MINT_COMMITTED', 'BURN_COMMITTED'].every(t => C.isEconomyEventType(t)));
+
+/* ══════════════════════════════════════════════════════════════════
    D-IDEMPOTENCY · idempotencyKey != transactionId（P22 §7）
    ══════════════════════════════════════════════════════════════════ */
 section('D-IDEMPOTENCY · 幂等键与交易 id 是两件事');
@@ -479,8 +583,23 @@ check('D10.5 特征串允许（uuid / 时间戳串 / 点分）',
   okResult(C.normalizeIdempotencyKey('a1b2-c3d4_e5.f6:g7+h8')));
 
 /* id 形状：前缀、语法、种类 */
-check('D11.1 十二种 id 种类各有唯一前缀',
-  C.ID_KINDS.length === 12 && new Set(C.ID_KINDS.map(k => C.ID_PREFIX[k])).size === 12, C.ID_KINDS);
+/* ── P22-3 把这一条从 12 改成 13（**纯加法**，不是放宽）───────────────
+   加的是 ID_PREFIX.OPERATION = 'econ_op_'：P22-3 需要"一次操作"的身份，
+   而 econ_tx_（已发生的经济事实，append-only）与 econ_res_（资金锁定，
+   词表里没有 FAILED）都无法表示"可能成功、可能失败、可能过期"的操作。
+   断言本身的**含义一个字都没改**：种类数、前缀唯一、互不为前缀、
+   都以 econ_ 开头。因此这里只是把那个计数跟着契约走。
+   为什么仍然要写死数字：`length === 13` 会在"有人悄悄加了第 14 种
+   id"时失败 —— 那正是一次需要被看见的契约变更。 */
+check('D11.1 十三种 id 种类各有唯一前缀（P22-3 加了 OPERATION）',
+  C.ID_KINDS.length === 13 && new Set(C.ID_KINDS.map(k => C.ID_PREFIX[k])).size === 13, C.ID_KINDS);
+check('D11.1b OPERATION 是 econ_op_，且它是**新增**的而不是复用了 transaction / reservation',
+  C.ID_PREFIX.OPERATION === 'econ_op_' &&
+  C.ID_PREFIX.OPERATION !== C.ID_PREFIX.TRANSACTION &&
+  C.ID_PREFIX.OPERATION !== C.ID_PREFIX.RESERVATION &&
+  C.formatEconomyId('OPERATION', 'o1').id === 'econ_op_o1' &&
+  C.isEconomyId('OPERATION', 'econ_tx_x') === false &&
+  C.isEconomyId('TRANSACTION', 'econ_op_o1') === false);
 check('D11.2 所有前缀都以 econ_ 开头（看 id 第一眼就知道属于虚拟经济）',
   C.ID_KINDS.every(k => C.ID_PREFIX[k].indexOf('econ_') === 0), C.ID_KINDS.map(k => C.ID_PREFIX[k]));
 check('D11.3 前缀互不为彼此的前缀（econ_tx_ 不会误吞 econ_tx_extra_）',
