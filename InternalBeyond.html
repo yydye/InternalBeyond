@@ -365,6 +365,13 @@
           <button type="button" class="btn btn-primary" onclick="roleDmOpenCreate()">+ 新建角色私信</button>
         </div>
       </div>
+      <!-- 自主发起设置（Phase 3）。默认**全部关闭**：这里不替任何用户做决定，
+           也不因为升级而变 true。所有渲染与写入都在 role-dm-ui.js 里，
+           本块只提供容器与 id（与既有模块同款：HTML 不承载行为）。 -->
+      <details class="glass-card roledm-auto" id="roledm-auto">
+        <summary>主动角色私信<span class="roledm-auto-state" id="roledm-auto-state">未开启</span></summary>
+        <div class="roledm-auto-body" id="roledm-auto-body"></div>
+      </details>
       <div id="roledm-list">
         <div class="empty-state"><span>✉</span>还没有角色之间的私聊 — 点「+ 新建角色私信」开始。</div>
       </div>
@@ -3131,11 +3138,24 @@ i would like the room to be enough.
        · public-profile-core.js（「对方的公开资料」唯一投影层 —— role-dm.js 在
          composeSide 里调 buildPeerView，缺了它对方就只以名字出现）。
      UI 层 role-dm-ui.js 只做显示与交互（自己运行时注入 role-dm.css，
-     不占用 HTML 的样式表预算），放最后。 -->
+     不占用 HTML 的样式表预算），放最后。
+     Phase 3（autonomous social intent）新增两层，同样按依赖顺序：
+       · role-dm-social-core.js —— 纯决策层（UMD，Node 侧直接 require）；
+         它**不依赖** role-dm.js，因此位置只受"在 social.js 之前"约束；
+       · role-dm-social.js —— 执行层：读存储 → 调 core 判定 → 调
+         IB.roleDm.startAutonomous。顺序是 role-dm.js → role-dm-ui.js →
+         role-dm-social.js，三条都是**真实**依赖，不是风格偏好：
+           - 晚于 role-dm.js：用 setAutonomousBudgetChecker 注入自主预算；
+           - 晚于 role-dm-ui.js：包装 NS.roleDmEmit 以记录"用户刚在互动"
+             （该符号由 UI 层定义，早加载会拿到 undefined 并静默失效）。
+     调度接缝不在这里：它复用 active-diary.js 的 _activeTick（见该文件的
+     _roleDmSocialTick 调用点），因此**没有第二套后台 timer**。 -->
 <script src="assets/js/public-profile-core.js"></script>
 <script src="assets/js/role-dm-core.js"></script>
 <script src="assets/js/role-dm.js"></script>
+<script src="assets/js/role-dm-social-core.js"></script>
 <script src="assets/js/role-dm-ui.js"></script>
+<script src="assets/js/role-dm-social.js"></script>
 <script src="assets/js/image-models-core.js"></script>
 <script src="assets/js/image-router-core.js"></script>
 <script src="assets/js/image-router-config.js"></script>

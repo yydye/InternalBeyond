@@ -200,7 +200,11 @@ const SETUP = `(function(){
     var hist = (messages || []).filter(function(m){ return m && m.role !== 'system'; })
       .map(function(m){ return m.role + '|' + String(m.content == null ? '' : m.content).slice(0, 80); });
     window.__dm.calls.push({ id:String(cfg.id), provider:String(cfg.provider), model:String(cfg.model), consumer:String(opts&&opts._ibConsumer||''), system:String(messages&&messages[0]&&messages[0].content||''), hist:hist });
-    return Promise.resolve('这是' + (cfg.nickname||cfg.id) + '说的第 ' + window.__dm.calls.length + ' 句话。');
+    /* 与生产 callApiChat 同款形状：wantMeta ⇒ {text,truncated}。
+       role-dm 用 truncated 把"输出上限被思考吃光"与"provider 故障"分开，
+       替身只回字符串的话，这条生产行为在真实页面里就永远测不到。 */
+    var out = '这是' + (cfg.nickname||cfg.id) + '说的第 ' + window.__dm.calls.length + ' 句话。';
+    return Promise.resolve((opts && opts.wantMeta) ? { text: out, truncated: false } : out);
   };
   return true;
 })()`;

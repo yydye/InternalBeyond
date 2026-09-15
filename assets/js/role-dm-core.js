@@ -230,6 +230,11 @@
       state: 'active',            /* active | archived */
       messageCount: 0,
       lastTurnRoleId: '',
+      /* 最近一次 run 是**谁主动发起**的（'' = 没有 / 手动发起）。
+         存在的理由只有一个：让"她主动找我"这件事在 run 结束后依然可解释
+         （UI 与冷启动后的诊断都需要它）。它**不**参与谁先说的判定 ——
+         那个判定只认调用方显式传入的 initiatorId（见 chooseFirstSpeaker）。 */
+      lastInitiatedBy: '',
       lastRunAt: 0,
       runCount: 0,
       stoppedReason: '',
@@ -259,6 +264,7 @@
     out.state = (rec.state === 'archived' ? 'archived' : 'active');
     out.messageCount = Number(rec.messageCount) || 0;
     out.lastTurnRoleId = str(rec.lastTurnRoleId);
+    out.lastInitiatedBy = str(rec.lastInitiatedBy);
     out.lastRunAt = Number(rec.lastRunAt) || 0;
     out.runCount = Number(rec.runCount) || 0;
     out.stoppedReason = str(rec.stoppedReason);
@@ -567,6 +573,34 @@
     return LOW_INFO_FALLBACK.test(t);
   }
 
+  /* ══════════ 7a. autonomous initiation signal（行为背景，不是指令）═══════
+     自主发起时给模型的那**一句话**，是"她为什么现在想起这个人"的
+     **低权威**表述。它**不是**"系统要求你主动找 TA 聊天" —— 那会把一次
+     社会行为降级成一次任务执行，模型会开始解释、汇报、或演一个"被指派"的角色。
+
+     ── 为什么这里是一个闭集映射，而不是把 trace 里的字符串透传 ──────────
+     上游的 signal 来自 role-dm-social-core 的 reasonCode 词表。如果这里直接
+     拼接原始字符串，那么将来任何人在上游加一个 code，就自动获得了一条
+     进入 prompt 的通道 —— 这正是"工程数据泄漏进人格"最常见的形成方式。
+     因此本函数**按 code 翻译**，未知 code 一律返回 ''（那就只保留
+     "你主动联系了对方"这句最弱的行为背景，不编造理由）。
+
+     ── 它为什么不可注入 ────────────────────────────────────────────────
+     返回值只可能是下面这张表里的常量之一，输入是 code 而不是自由文本，
+     所以不存在"用户可以构造一段话来改写这句 prompt"的路径。
+     消毒仍由调用方在进入 prompt 前统一执行（canonical prompt boundary）。 */
+  var INITIATION_SIGNAL_TEXT = {
+    'existing-thread': '你想接着之前和 TA 的话题再说两句。',
+    'long-time-no-contact': '你有一阵子没和 TA 说话了，忽然想起 TA。',
+    'relationship-maintenance': '你有点想知道 TA 最近怎么样。'
+  };
+  function initiationSignalText(code) {
+    var key = str(code).trim();
+    if (!key) return '';
+    return Object.prototype.hasOwnProperty.call(INITIATION_SIGNAL_TEXT, key) ? INITIATION_SIGNAL_TEXT[key] : '';
+  }
+  function initiationSignalCodes() { return Object.keys(INITIATION_SIGNAL_TEXT); }
+
   /* ══════════ 7b. thread memorandum（跨 run 的共同历史）═══════════════
      这一层的**唯一**输入是「这条 A↔B 私聊里双方已经互相说过的话」。
      因此它绝不读：A/B 的 systemPrompt、apiKey、customInstruction、
@@ -815,6 +849,23 @@
     if (isNonEmptyString(s.topic)) {
       rules.push('6. 这次是带着一个话题开始聊的：「' + str(s.topic).slice(0, 200) + '」。它可以作为开场或方向，但不必生硬地反复回到它。');
     }
+    /* ── 自主发起（autonomous initiation）────────────────────────────────
+       只有 s.initiation 存在时才出现这一段 —— 手动 run（用户点「让她们聊一会儿」）
+       逐字不变，绝不出现"你主动联系了对方"这种与事实不符的背景。
+
+       两条纪律：
+       ① **低权威**。它描述的是"你此刻的处境"，不是"系统给你的任务"。
+          绝不出现"系统要求 / 任务 / 定时器 / 调度"这类词（第 5 条规则已经
+          禁止模型提及内部机制，这里进一步保证它连素材都拿不到）。
+       ② **不解释**。明确告诉模型不需要说明自己为什么来 —— 否则一旦有了
+          reasonCode，模型会把它当成"需要向对方交代的事由"念出来。 */
+    if (s.initiation && typeof s.initiation === 'object') {
+      var initLines = ['你主动联系了 ' + peerName + '。'];
+      var initText = initiationSignalText(s.initiation.signalCode);
+      if (initText) initLines.push(initText);
+      initLines.push('像平常一样自然开始就好，不需要解释你为什么来找 TA。');
+      rules.push('7. ' + initLines.join(''));
+    }
     /* ── 层①「对方是谁」：只给"允许公开"的信息 ──────────────────────
        绝不注入对方的 systemPrompt / apiKey / 记忆 / 对用户的关系。
        结构化 peerProfile（public-profile-core 的产物）优先；peerIntro 是
@@ -904,15 +955,37 @@
   /* ══════════ 9. 谁先说 ═══════════════
      规则（确定性）：本次 run 的发起方先说；恢复一段已存在的 thread 时，
      由**上一条消息的收信人**先说（自然的接力，不会自己回自己）。 */
-  function chooseFirstSpeaker(thread, initiatorId) {
+  /* ── 谁先说 ───────────────────────────────────────────────────────────
+     两种语义，**必须**区分，否则会出现"她主动发起、但第一条是对方说的"：
+
+       · manual / 续聊（默认）：接上一个人，交替发言。initiatorId 只在
+         这段 thread 还没有 lastTurnRoleId 时生效。
+       · autonomous（opts.forceInitiator === true）：**发起人必须第一个说**。
+         自主发起这件事本身就是"她想找 TA"，让被联系的一方先开口等于
+         把发起变成了回应 —— 那是另一种行为，不是同一个能力。
+
+     这个 opts 是**显式**的，而不是"猜 trigger"：本函数是纯函数，
+     没有 trigger 可猜；调用方（role-dm.js 的 run）在 autonomous 路径上
+     唯一的额外义务就是把 initiatorId 传进来并置位这个开关。
+
+     返回 '' 表示"谁都不该说"（没有有效参与者）。调用方必须把它当失败处理，
+     绝不允许退回 p[0] 之外的任何猜测。 */
+  function chooseFirstSpeaker(thread, initiatorId, opts) {
     var rec = normalizeThreadRecord(thread || {}) || thread || {};
     var p = Array.isArray(rec.participantIds) ? rec.participantIds.map(str) : [];
+    var init = str(initiatorId);
+    var o = (opts && typeof opts === 'object') ? opts : {};
+    if (o.forceInitiator === true) {
+      /* 发起人不在参与者里 ⇒ **返回空**，不静默退化成"让别人先说"。
+         一个错误的 initiatorId 必须是一次可见的失败，而不是一次
+         看起来正常、实际违背契约的 run。 */
+      return (init && p.indexOf(init) >= 0) ? init : '';
+    }
     var lastTurn = str(rec.lastTurnRoleId);
     if (lastTurn && p.length === 2) {
       var next = (p[0] === lastTurn) ? p[1] : p[0];
       if (next) return next;
     }
-    var init = str(initiatorId);
     if (init && p.indexOf(init) >= 0) return init;
     return p[0] || '';
   }
@@ -1020,6 +1093,9 @@
     diceSimilarity: diceSimilarity,
     lowInfoMatch: lowInfoMatch,
     chooseFirstSpeaker: chooseFirstSpeaker,
+    /* autonomous 行为背景（闭集映射；见 §7a）。 */
+    initiationSignalText: initiationSignalText,
+    initiationSignalCodes: initiationSignalCodes,
     /* thread memorandum（层④）——纯函数，唯一的真源 */
     normalizeMemorandum: normalizeMemorandum,
     memorandumOfThread: memorandumOfThread,

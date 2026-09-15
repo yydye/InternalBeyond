@@ -542,3 +542,38 @@ cache/sync/recovery 全部未动。
 （另：`speech_style` **不是**一个被漏掉的字段 —— 全仓库它只作为 `middle-brain-integrity.js`
 的**完整性维度名**出现；桌面的说话风格来自 `systemPrompt` 正文 + `IB.brevity.apply()`。
 不要为它造字段。）
+
+## D24. 角色私信每轮"一个字都没说成"：先分辨**预算**与**故障**，再谈重试（2026-09-15）
+
+**同一个坑的第二次**（第一次见 D12）：
+`role-dm.js` 的每一轮发言曾经固定 `maxTokens: ctx.maxTokens || 700`。真实模型探针
+（真实 key、真实 provider、临时浏览器 profile，注入的配置只进页面内存）测到的
+**provider 原始回包**是：
+
+```
+finish_reason = "length"   content 长度 = 0   reasoning_content = 1098 字符   completion_tokens = 701
+```
+
+也就是 700 个输出 token **全部**花在思考上，正文一个字都没开始。而旧代码把"正文为空"
+归成 `provider-failed`，用户看到的是「有一方没能回应（模型请求失败）」——于是去查一个
+**根本没坏**的 API key（同一对角色、同一个模型 id、同一把 key，从 Node 侧直连 provider
+是 HTTP 200）。**短正文 ≠ 小预算。**
+
+- **每轮预算 700 → `TURN_MAX_TOKENS = 2048`。** `max_tokens` 是**上限**而不是计费：
+  给宽不会让一次发言更贵，只会让本来能说完的话不被砍断。角色私信的成本护栏不在这里，
+  在**轮数 / 日额 / 冷却**（`roleTurnTimes`、`dailyLimit`、`pairCooldown`）——这三条一条都没动。
+- **发言改为 `wantMeta: true`**，因此能拿到执行器的 `truncated`。没有它就**无法区分**
+  "输出上限被思考吃光"与"provider/网络/鉴权失败"，而这两件事该给用户的建议完全相反。
+- **正文为空时只重试一次**（含 `finish_reason=length` 的截断，以及实测到的第二种形态：
+  `finish_reason≠length` 但 content 为空——思考写完了、正文没落地），重试预算
+  `TURN_MAX_TOKENS_RETRY = 4096`；两次都空才停下。**绝不重试到成功。**
+- **停止原因仍是既有闭集成员 `provider-failed`**（不趁修一个缺陷去扩展用户可见词表），
+  但 `error` 如实区分 `output-truncated` / `empty-output`（运维含义完全不同），
+  且空正文**不再触发**「密钥缺失」那条用户报错——模型回过话、只是没吐出正文，
+  那不是配置问题。
+- **"截断但有正文"（半句话）不重试**：重试只针对"一个字都没有"，不为半句话多烧一次调用。
+
+验证据此分两层：`tests/test_role_dm.js` 的 AE1–AE10 钉住预算、形状契约、重试的**有界性**
+与两种成因的区分（执行器替身必须与生产**同形状**返回 `{text,truncated}`，否则测的是替身）；
+真实模型端到端探针则给出 `firstSpeaker / sameThread / locksReleased / shortTurns / turnBudget`
+全 PASS，自主发起只花 2 次调用（≤4），且**只读意图评估 0 次调用**。

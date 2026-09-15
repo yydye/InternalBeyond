@@ -44,6 +44,10 @@
     });
   }
   function rd() { try { return NS.roleDm || null; } catch (e) { return null; } }
+  /* 自主社交层（Phase 3）。**可能不存在** —— 它是可选能力，本文件必须在
+     它缺席时完整可用（手动角色私信不依赖自主调度）。
+     注意本文件绝不 import 它：UI 只是它的一个消费者。 */
+  function soc() { try { return NS.roleDmSocial || null; } catch (e) { return null; } }
 
   function timeLabel(ts) {
     var t = Number(ts) || 0;
@@ -77,6 +81,15 @@
       if (t.state === 'archived') badges.push('<span class="roledm-badge archived">已归档</span>');
       var missing = t.participants.filter(function (p) { return p.missing; });
       if (missing.length) badges.push('<span class="roledm-badge warn">' + esc(missing.map(function (p) { return p.name; }).join('、')) + ' 已删除</span>');
+      /* 「谁主动发起的」：来自 thread 上的 lastInitiatedBy（角色 id）。
+         这是 autonomous 唯一的**事后**可见证据，且它是既成事实而不是推测
+         —— 没有它，用户看到一次自主私聊时无法分辨那是不是自己点过。 */
+      var initiator = String(t.lastInitiatedBy || '');
+      if (initiator) {
+        var iniName = '';
+        for (var pi = 0; pi < t.participants.length; pi++) if (String(t.participants[pi].id) === initiator) iniName = t.participants[pi].name;
+        if (iniName) badges.push('<span class="roledm-badge auto">' + esc(iniName) + ' 主动发起</span>');
+      }
       return '<div class="roledm-item glass-card" data-thread="' + esc(t.threadId) + '">'
         + '<div class="roledm-item-top">'
         + '<span class="roledm-pair">' + avatarA + '<span class="roledm-name">' + esc(t.participants[0].name) + '</span>'
@@ -283,6 +296,113 @@
     renderList();
   }
 
+  /* ── 自主发起设置（Phase 3）───────────────────────────────────────
+     设计原则：**默认全关**，而且"关"必须是一眼可见的（summary 上带状态字），
+     不允许出现"看起来开着其实没开"的模糊状态。
+
+     两个开关是**AND**关系，UI 必须如实呈现这一点 —— 只开总开关时，
+     角色行仍然是关闭态，行尾状态字会说"未开启"，而不是假装它在工作。 */
+  function initiativeLabel(v) {
+    var n = Number(v) || 0;
+    if (n < 0.2) return '很安静';
+    if (n < 0.45) return '偏安静';
+    if (n < 0.7) return '一般';
+    if (n < 0.9) return '偏活跃';
+    return '很活跃';
+  }
+  function renderAuto() {
+    var host = el('roledm-auto-body');
+    var stateEl = el('roledm-auto-state');
+    if (!host) return;
+    var api = rd(), s = soc();
+    if (!api) { host.innerHTML = '<div class="roledm-note">角色私信模块未就绪。</div>'; return; }
+    if (!s) {
+      /* 能力缺席时如实说明，不隐藏这一块（隐藏会让用户以为功能被移除，
+         而实际是脚本没加载）。 */
+      host.innerHTML = '<div class="roledm-note warn">自主调度模块未加载，主动角色私信当前不可用。手动「让她们聊一会儿」不受影响。</div>';
+      if (stateEl) stateEl.textContent = '不可用';
+      return;
+    }
+    var g = s.prefs().global;
+    var on = g.enabled === true;
+    if (stateEl) stateEl.textContent = on ? '总开关已打开' : '未开启';
+    var chars = api.listCharacters();
+    var rows = chars.map(function (ch) {
+      var p = s.characterPrefs(ch.id);
+      var ready = ch.ready !== false;
+      return '<div class="roledm-auto-row" data-char="' + esc(ch.id) + '">'
+        + '<label class="roledm-auto-name"><input type="checkbox" data-role="enabled"' + (p.enabled ? ' checked' : '') + (ready ? '' : ' disabled') + '> '
+        + esc(ch.name) + (ready ? '' : '<span class="roledm-muted">（模型配置不完整）</span>') + '</label>'
+        + '<div class="roledm-auto-ctl">'
+        + '<span class="roledm-auto-lab">主动程度</span>'
+        + '<input type="range" min="0" max="1" step="0.05" value="' + esc(String(p.initiative)) + '" data-role="initiative">'
+        + '<span class="roledm-auto-val" data-role="initiative-label">' + esc(initiativeLabel(p.initiative)) + '</span>'
+        + '</div>'
+        + '<div class="roledm-auto-ctl">'
+        + '<span class="roledm-auto-lab">每日上限</span>'
+        + '<input type="number" min="1" max="20" step="1" value="' + esc(String(p.dailyLimit)) + '" data-role="dailyLimit">'
+        + '<label class="roledm-auto-sub"><input type="checkbox" data-role="allowStrangers"' + (p.allowStrangers ? ' checked' : '') + '> 允许主动联系还不熟悉的角色</label>'
+        + '</div>'
+        + '</div>';
+    }).join('');
+    host.innerHTML = '<div class="roledm-auto-master">'
+      + '<label><input type="checkbox" id="roledm-auto-global"' + (on ? ' checked' : '') + '> 允许角色主动联系其他角色（总开关）</label>'
+      + '<div class="roledm-muted">关掉后立刻不再产生新的主动私聊；正在进行的会自然聊完。默认关闭。</div>'
+      + '</div>'
+      + (rows || '<div class="roledm-note">还没有可用的角色。</div>')
+      + '<div class="roledm-note">主动私聊是低频的：大多数时候角色不会联系任何人。它只会在有明确社会理由（聊过、久未联系、关系够近）时才发生，并且受每日上限与冷却限制。'
+      + '角色自己找谁聊天**不会**改变她们对彼此的关系 —— 只有真正聊过之后才会。</div>';
+    bindAutoControls();
+  }
+  function bindAutoControls() {
+    var s = soc();
+    if (!s) return;
+    var gEl = el('roledm-auto-global');
+    if (gEl) {
+      gEl.addEventListener('change', function () {
+        s.setGlobalEnabled(!!gEl.checked);
+        renderAuto();
+      });
+    }
+    var host = el('roledm-auto-body');
+    if (!host) return;
+    var rows = host.querySelectorAll('.roledm-auto-row');
+    for (var i = 0; i < rows.length; i++) {
+      (function (row) {
+        var cid = String(row.getAttribute('data-char') || '');
+        if (!cid) return;
+        var pairs = [
+          ['enabled', 'change'],
+          ['initiative', 'input'],
+          ['dailyLimit', 'change'],
+          ['allowStrangers', 'change']
+        ];
+        for (var k = 0; k < pairs.length; k++) {
+          var input = row.querySelector('[data-role="' + pairs[k][0] + '"]');
+          if (!input) continue;
+          (function (inp, role, evName) {
+            inp.addEventListener(evName, function () {
+              var patch = {};
+              if (role === 'enabled') patch.enabled = !!inp.checked;
+              else if (role === 'allowStrangers') patch.allowStrangers = !!inp.checked;
+              else if (role === 'initiative') patch.initiative = Number(inp.value);
+              else if (role === 'dailyLimit') patch.dailyLimit = parseInt(inp.value, 10);
+              var next = s.setCharacterPrefs(cid, patch);
+              /* 滑块的**值文字**必须跟着动，但不重绘整块 ——
+                 重绘会在拖动过程中把 range 的焦点丢掉。 */
+              if (role === 'initiative') {
+                var lab = row.querySelector('[data-role="initiative-label"]');
+                if (lab) lab.textContent = initiativeLabel(next.initiative);
+              } else {
+                renderAuto();
+              }
+            });
+          })(input, pairs[k][0], pairs[k][1]);
+        }
+      })(rows[i]);
+    }
+  }
+
   /* ── 样式表（运行时注入，不占用 HTML 的样式表预算）──
      与 assets/js/diagnostics.js:175-183 同一做法：功能模块自己的 CSS 由模块注入，
      HTML 只保留既有那批 <link>（见 tests/test_setup_wizard.js 的
@@ -307,6 +427,7 @@
     if (!api) return;
     injectStyles();
     renderList();
+    renderAuto();
     if (activeThreadId) renderDetail();
   }
   /* 轻量事件：runtime 在 run 的每个回合与结束时各发一次，本层只重绘。
@@ -324,6 +445,7 @@
     render: render,
     renderList: renderList,
     renderDetail: renderDetail,
+    renderAuto: renderAuto,
     openThread: openThread,
     backToList: backToList,
     openCreate: openCreate,

@@ -24,6 +24,12 @@ const ROOT = path.resolve(__dirname, '..');
 const SRC_CORE = fs.readFileSync(path.join(ROOT, 'assets/js/role-dm-core.js'), 'utf8');
 const SRC_PP = fs.readFileSync(path.join(ROOT, 'assets/js/public-profile-core.js'), 'utf8');
 const SRC_RT = fs.readFileSync(path.join(ROOT, 'assets/js/role-dm.js'), 'utf8');
+/* Phase 3：自主社交意图。两个文件与 HTML 的加载顺序**逐字同序**
+   （core → ui → social），因为 social.js 有两个加载期依赖：
+   调 role-dm.js 的 setAutonomousBudgetChecker、包装 role-dm-ui.js 的
+   NS.roleDmEmit。顺序换了这里就会先绿后红，那正是我们要测的东西之一。 */
+const SRC_SOCIAL_CORE = fs.readFileSync(path.join(ROOT, 'assets/js/role-dm-social-core.js'), 'utf8');
+const SRC_SOCIAL = fs.readFileSync(path.join(ROOT, 'assets/js/role-dm-social.js'), 'utf8');
 const CHAT_CORE = require(path.join(ROOT, 'assets/js/chat-core.js'));
 const RC_CORE = require(path.join(ROOT, 'assets/js/reply-chain-core.js'));
 const PBCORE = require(path.join(ROOT, 'assets/js/prompt-boundary-core.js'));
@@ -63,15 +69,40 @@ const apiConfigs = [
 ];
 let archivedConfigs = [];
 
-/* 假执行器：记录每次调用，供断言"谁的模型被调用了"。 */
+/* 假执行器：记录每次调用，供断言"谁的模型被调用了"。
+   返回**形状必须与生产 callApiChat 逐字同款**：`opts.wantMeta` ⇒ {text,truncated}，
+   否则裸字符串。role-dm 现在按"要元信息"的方式调用（它必须能区分
+   "被输出上限截断"与"provider 故障"），替身若只会回字符串，测到的就是
+   替身的行为而不是生产的行为 —— 这种假绿本文件已经踩过一次。 */
 const CALLS = [];
 let failFor = null;           /* 指定 cfg.id → 该角色调用抛错 */
 let replyFor = null;          /* (cfg) => string */
+/* 模拟"思考型号把输出上限全部吃掉"：provider 回 finish_reason=length、content 为空。
+   { id, times, text } = 对 id 的前 times 次调用回 truncated（text 为空串 ⇒ 一个字都没说；
+   非空 ⇒ 说了半句被砍断）。生产在 wantMeta 下把 finish_reason==='length' 翻成
+   truncated，因此这里两个形状都要照生产给。 */
+let truncateFor = null;
+/* 第二种形态：provider 回了 finish_reason≠length、但正文为空（思考写完了、
+   正文没落地）。同一条 prompt 下一分钟往往又能说成 —— 实测形态，必须与
+   "被上限截断"分开对待，但同样只给一次重试。 */
+let emptyFor = null;
 global.callApiChat = async function (cfg, messages, opts) {
   CALLS.push({ id: String(cfg && cfg.id), provider: String(cfg && cfg.provider), model: String(cfg && cfg.model), messages, opts });
   if (failFor && String(cfg.id) === String(failFor)) throw new Error('provider exploded');
-  if (replyFor) return replyFor(cfg, messages, opts);
-  return '这是' + (cfg.nickname || cfg.id) + '说的话。' + (CALLS.length);
+  if (truncateFor && String(cfg.id) === String(truncateFor.id) && truncateFor.times > 0) {
+    truncateFor.times--;
+    const t = String(truncateFor.text || '');
+    return (opts && opts.wantMeta) ? { text: t, truncated: true } : t;
+  }
+  if (emptyFor && String(cfg.id) === String(emptyFor.id) && emptyFor.times > 0) {
+    emptyFor.times--;
+    return (opts && opts.wantMeta) ? { text: '', truncated: false } : '';
+  }
+  /* `await` 是必需的：本文件有测试用 async 的 replyFor（用 gate 卡住第一个 run
+     来验证并发锁）。不 await 就会把 Promise 当正文包进 {text}，于是
+     "锁"这类时序断言测的就不是生产行为了。 */
+  const out = replyFor ? await replyFor(cfg, messages, opts) : ('这是' + (cfg.nickname || cfg.id) + '说的话。' + (CALLS.length));
+  return (opts && opts.wantMeta) ? { text: String(out == null ? '' : out), truncated: false } : out;
 };
 
 global.window = {
@@ -127,23 +158,36 @@ global.window.IB = {
   }
 };
 
-/* 载入模块（IIFE：公开认知核心 → role-dm 契约 → role-dm 运行时，
-   顺序与 InternalBeyond.html 的 <script> 顺序**逐字同序** —— 顺序错了在浏览器里
-   就是"对方只剩一个名字"，而单测若自己换顺序就永远测不到那个缺陷）。 */
+/* 载入模块（IIFE：公开认知核心 → role-dm 契约 → role-dm 运行时 → 社交核心 →
+   社交运行时，顺序与 InternalBeyond.html 的 <script> 顺序**逐字同序** —— 顺序错了
+   在浏览器里就是"对方只剩一个名字"或"自主调度静默失效"，而单测若自己换顺序
+   就永远测不到那些缺陷）。 */
 (0, eval)(SRC_PP);
 global.window.IBPublicProfileCore = global.IBPublicProfileCore;
 (0, eval)(SRC_CORE);
 global.window.IBRoleDmCore = global.IBRoleDmCore;
 (0, eval)(SRC_RT);
+(0, eval)(SRC_SOCIAL_CORE);
+/* Phase 3 社交核心的 UMD 落点与 role-dm-core.js **完全同款**（挂到 global；
+   在这些测试进程里 `window` 就是 globalThis）。运行时层刻意只从 window
+   取核心（与 role-dm.js 取 IBRoleDmCore 同一纪律），因此必须显式摆上去 ——
+   写成 `globalThis.IBRoleDmSocialCore` 会拿到 undefined，于是运行时静默
+   降级成 core-unavailable，而 canAutonomousRun 会返回一个**看起来合理**的
+   拒绝理由（"autonomous-disabled"）。这类假绿正是本仓库反复记录过的坑。 */
+global.window.IBRoleDmSocialCore = global.IBRoleDmSocialCore;
+(0, eval)(SRC_SOCIAL);
 const C = global.IBRoleDmCore;
 const PP = global.IBPublicProfileCore;
 const RD = global.window.IB.roleDm;
+const SC = global.IBRoleDmSocialCore;
+const RS = global.window.IB.roleDmSocial;
 
 const reset = () => {
   for (const k of Object.keys(DB)) delete DB[k];
   for (const k of Object.keys(LS)) delete LS[k];
   CALLS.length = 0; TRACES.length = 0;
-  failFor = null; replyFor = null;
+  failFor = null; replyFor = null; truncateFor = null; emptyFor = null;
+  if (RS && typeof RS._resetAll === 'function') RS._resetAll();
 };
 const msgsOf = (fid) => Object.values(DB.chatMessages || {}).filter(m => m.friendId === fid).sort((a, b) => a.timestamp - b.timestamp);
 
@@ -594,9 +638,16 @@ reset();
   check('X1. autonomous 默认关闭（本轮不放开全自动调度）',
     offAuto.ok === false && offAuto.reason === 'autonomous-disabled', offAuto.reason);
   RD.setPrefs({ autonomous: true });
-  check('X2. 显式打开后 canAutonomousRun 才可能通过',
-    RD.canAutonomousRun('friend_aaa', 'friend_bbb').ok === true);
+  /* Phase 3 收紧了这一条：总开关打开**不再足够**。
+     §35 的第 3/4 条要求两条独立闸门（global AND character），因此
+     "仅 global ON" 必须是拒绝 —— 这比原来"仅 global ON 即可"更严，
+     不是放宽。角色级开关的完整矩阵见 test_role_dm_social.js。 */
+  const onlyGlobal = RD.canAutonomousRun('friend_aaa', 'friend_bbb');
+  check('X2. 仅打开总开关不再足够（角色级 opt-in 是第二道闸门）',
+    onlyGlobal.ok === false && onlyGlobal.reason === 'autonomous-disabled', onlyGlobal.reason);
   RD.setPrefs({ autonomous: false });
+  check('X2b. 关闭总开关后仍然拒绝（kill switch 优先）',
+    RD.canAutonomousRun('friend_aaa', 'friend_bbb').ok === false);
 
   replyFor = (cfg) => '删除语义测试。' + Math.random().toString(36).slice(2, 8);
   const f1 = C.roleDmFriendId('friend_aaa', 'friend_bbb');
@@ -1157,6 +1208,83 @@ reset();
     new Set(traced.map(t => t.character)).size === 2,
     traced.map(t => t.character + ':' + t.memorandumCoveredMessages));
   check('AC9. 备忘正文没有落进任何 trace / 日志字符串', !JSON.stringify(TRACES).includes('共同经历'));
+}
+
+/* ══════ AE · 输出预算：思考型号把上限吃光 ≠ provider 故障 ══════
+   真实模型探针实测（2026-09-15，真实 key、真实 provider）：deepseek-v4-flash-vision-exp
+   在角色私信那种大 prompt（人格 + 站点上下文 + memory + understanding + 历史）下，
+   provider 的**原始回包**是 finish_reason=length、content 长度 0、reasoning 1098 字符、
+   completion_tokens 701 —— 也就是旧上限 700 全部花在思考上、正文一个字都没开始。
+   旧代码把"正文为空"归成 provider-failed，用户看到"模型请求失败"，
+   于是去查一个根本没坏的 key。这一节把**预算事实**与**provider 故障**钉开。 */
+reset();
+{
+  const AE_TEXTS = [
+    '我把那盏旧的星轨灯修好了，灯罩上还有你上次刻的那道痕，我一直没舍得磨掉。',
+    '那道痕留着吧，它比我们两个都活得久，也算是个见证。'
+  ];
+  let aeSeq = 0;
+  replyFor = () => AE_TEXTS[(aeSeq++) % AE_TEXTS.length];
+  const r1 = await RD.start('friend_aaa', 'friend_bbb', { turns: 2, force: true });
+  check('AE1. 正常回复仍然是"一轮一次调用"（预算变宽没有引入额外调用）',
+    CALLS.length === 2 && r1.turns === 2, { calls: CALLS.length, turns: r1.turns });
+  check('AE2. 每一次发言都按「要元信息」的方式调用（形状契约：没有它就分不清截断与故障）',
+    CALLS.every(c => c.opts && c.opts.wantMeta === true), CALLS.map(c => !!(c.opts && c.opts.wantMeta)));
+  check('AE3. 首轮预算不再是 700（思考型号要放得下 reasoning + 正文）',
+    CALLS.every(c => Number(c.opts.maxTokens) === 2048), CALLS.map(c => c.opts.maxTokens));
+
+  /* 截断 + 正文为空 → 用更大的预算重试**一次**，并且真的把这一轮救回来。 */
+  reset();
+  let ae2 = 0;
+  replyFor = () => AE_TEXTS[(ae2++) % AE_TEXTS.length];
+  truncateFor = { id: 'friend_aaa', times: 1 };
+  const r2 = await RD.start('friend_aaa', 'friend_bbb', { turns: 2, force: true });
+  check('AE4. 截断且正文为空 ⇒ 同一个角色用更大预算重试一次（2048 → 4096 → 对方 2048）',
+    CALLS.length === 3 &&
+    CALLS[0].id === 'friend_aaa' && Number(CALLS[0].opts.maxTokens) === 2048 &&
+    CALLS[1].id === 'friend_aaa' && Number(CALLS[1].opts.maxTokens) === 4096 &&
+    CALLS[2].id === 'friend_bbb' && Number(CALLS[2].opts.maxTokens) === 2048,
+    CALLS.map(c => c.id + ':' + c.opts.maxTokens));
+  check('AE5. 重试成功后这一轮照常落库（不是"安全停止"，也没有被记成故障）',
+    r2.turns === 2 && r2.error === null && r2.reason === null, { turns: r2.turns, reason: r2.reason, error: r2.error });
+
+  /* 两次都被截断 → 有界停止（只重试一次），且原因如实区分。 */
+  reset();
+  truncateFor = { id: 'friend_aaa', times: 5 };
+  const r3 = await RD.start('friend_aaa', 'friend_bbb', { turns: 2, force: true });
+  check('AE6. 连续截断只重试一次（有界，绝不无限重试到成功）', CALLS.length === 2, CALLS.length);
+  check('AE7. 仍安全停在 provider-failed（既有闭集词表），但 error 如实记为 output-truncated',
+    r3.turns === 0 && r3.reason === 'provider-failed' && r3.error === 'output-truncated',
+    { turns: r3.turns, reason: r3.reason, error: r3.error });
+
+  /* 截断但**有**正文（半句话被砍断）：不重试 —— 重试只针对"一个字都没有"。 */
+  reset();
+  truncateFor = { id: 'friend_aaa', times: 5, text: '我把那盏旧的星轨灯修好了，灯罩上还' };
+  let ae3 = 0;
+  replyFor = () => AE_TEXTS[(ae3++) % AE_TEXTS.length];
+  const r4 = await RD.start('friend_aaa', 'friend_bbb', { turns: 2, force: true });
+  check('AE8. 截断但有正文时不重试、正文照常落库（不为半句话额外烧一次调用）',
+    CALLS.length === 2 && r4.turns === 2 && CALLS[0].id === 'friend_aaa' && CALLS[1].id === 'friend_bbb',
+    { calls: CALLS.length, turns: r4.turns });
+
+  /* 第二种形态：finish_reason≠length 但正文为空（实测："思考写完了、正文没落地"，
+     同一条 prompt 下一分钟又能说成）。它同样只给一次重试，但失败时与"截断"
+     区分开记录 —— 两者的运维含义完全不同。 */
+  reset();
+  emptyFor = { id: 'friend_aaa', times: 1 };
+  let ae4 = 0;
+  replyFor = () => AE_TEXTS[(ae4++) % AE_TEXTS.length];
+  const r5 = await RD.start('friend_aaa', 'friend_bbb', { turns: 2, force: true });
+  check('AE9. 空正文（未截断）同样只重试一次，且真的救回来',
+    CALLS.length === 3 && Number(CALLS[1].opts.maxTokens) === 4096 && r5.turns === 2 && r5.error === null,
+    { calls: CALLS.length, budgets: CALLS.map(c => c.opts.maxTokens), turns: r5.turns });
+
+  reset();
+  emptyFor = { id: 'friend_aaa', times: 5 };
+  const r6 = await RD.start('friend_aaa', 'friend_bbb', { turns: 2, force: true });
+  check('AE10. 连续空正文 → 只重试一次，error 记为 empty-output（与 output-truncated 区分）',
+    CALLS.length === 2 && r6.turns === 0 && r6.reason === 'provider-failed' && r6.error === 'empty-output',
+    { calls: CALLS.length, turns: r6.turns, reason: r6.reason, error: r6.error });
 }
 
 /* ══════ AD · autonomous 仍然关闭 ══════ */

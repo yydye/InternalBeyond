@@ -1220,6 +1220,7 @@ async function _activeTick(){
     await _diaryTick();/* 日记（fail-open） */
     await _momentsTick();/* 朋友圈（fail-open） */
     try{if(typeof window._roleLettersTick==='function')await window._roleLettersTick()}catch(e){console.warn('[RoleLetters] tick '+String(e&&e.message||e).slice(0,120))}/* 角色互相写信（fail-open） */
+    try{if(typeof window._roleDmSocialTick==='function')await window._roleDmSocialTick()}catch(e){console.warn('[RoleDM·Social] tick '+String(e&&e.message||e).slice(0,120))}/* 角色自主发起角色私信（fail-open；内部自带频率 gate 与总开关） */
     try{await _consolidationTick()}catch(e){console.warn('[Consolidation] tick '+String(e&&e.message||e).slice(0,120))}/* 记忆固化（fail-open） */
     try{await _understandingAndThreadTick()}catch(e){console.warn('[Understanding+Thread] tick '+String(e&&e.message||e).slice(0,120))}/* Understanding+Thread（fail-open） */
   }catch(e){console.warn('[Active Messages] scheduler tick failed',e)}

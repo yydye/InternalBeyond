@@ -52,6 +52,22 @@
   var MEMORY_CHAR_CAP = 900;
   var UNDERSTANDING_CHAR_CAP = 300;
 
+  /* ── 每一轮的输出上限（不是"省钱旋钮"）─────────────────────────────
+     max_tokens 是**上限**而不是计费：给得宽不会让一次发言更贵，只会让本来
+     说得完的话不被砍断。旧值 700 的真实后果在 2026-09-15 的真实模型探针里
+     被测出来了：思考型号（deepseek-v4-flash-vision-exp）在角色私信那种
+     「人格 + 站点上下文 + memory + understanding + 历史」的大 prompt 下，
+     700 个输出 token **全部**花在 reasoning 上（provider 原始回包：
+     finish_reason=length、content 长度 0、reasoning 1098 字符、completion 701），
+     正文一个字都没开始 —— 而旧代码把"正文为空"归成 provider-failed，
+     用户看到"模型请求失败"，于是去查一个根本没坏的 key。
+     成本护栏不在这里，在**轮数 / 日额 / 冷却**（roleTurnTimes / dailyLimit /
+     pairCooldown），那三条一条都没动。 */
+  var TURN_MAX_TOKENS = 2048;
+  /* 被截断且正文为空时的一次有界重试上限（**只重试一次**）：
+     它挡的是"预算还是不够"，而不是把失败重试到成功。 */
+  var TURN_MAX_TOKENS_RETRY = 4096;
+
   /* ── 持久化命名空间 ────────────────────────────────────────────────
      消息历史在 canonical chatMessages（Home Node 权威 / IndexedDB 镜像）。
      下面两个 key 只存**索引与有界状态**，不存正文：
@@ -501,6 +517,9 @@
       topic: sanitizeInput(opts.topic || '').slice(0, 200),
       nowLabel: new Date().toLocaleString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long', hour: '2-digit', minute: '2-digit' }),
       threadContext: opts.threadContext || '',
+      /* 自主发起（低权威行为背景）。调用方（runTurn）已经保证：只有
+         trigger==='autonomous' 且当前发言者就是发起人时才非空。 */
+      initiation: opts.initiationSignal ? { signalCode: opts.initiationSignal.signalCode } : null,
       /* 层④：跨 run 的共同历史（无向，A 与 B 同一份）。null = 还没有备忘，
          此时 prompt 里**不出现**这一块（不是出现一个空的块）。 */
       threadMemorandum: memoForPrompt,
@@ -639,6 +658,11 @@
       trace.note(speakerId, 'speaker', speakerId);
       trace.note(speakerId, 'peer', peerId);
       trace.note(speakerId, 'trigger', String(ctx.trigger || 'manual'));
+      /* 自主发起的社会理由（reasonCode 闭集）——**只记 code**，
+         绝不记 score / affinity / quota / scheduler 之类的工程数据。 */
+      if (ctx.signal && ctx.signal.reasonCode) {
+        trace.note(speakerId, 'initiationSignal', String(ctx.signal.reasonCode).slice(0, 40));
+      }
       trace.note(speakerId, 'turn', Number(ctx.turnIndex) || 0);
       trace.note(speakerId, 'model', String(speaker.model || ''));
       trace.note(speakerId, 'executor', 'callApiChat');
@@ -649,7 +673,12 @@
       userName: ctx.userName,
       userPresent: ctx.userPresent,
       threadContext: ctx.threadContext,
-      lastPeerText: lastPeer
+      lastPeerText: lastPeer,
+      /* 自主发起的行为背景。**只**透传闭集里的 code；任何其它字段
+         （score / peerId / quota / signals 数组）都到不了这里。 */
+      initiationSignal: (ctx.trigger === 'autonomous' && ctx.signal && ctx.signal.reasonCode)
+        ? { signalCode: String(ctx.signal.reasonCode) }
+        : null
     });
 
     /* 宿主回合：ONE HOST AI TURN = ONE TOOL EXECUTION CYCLE = ONE TOTAL BUDGET。
@@ -678,26 +707,50 @@
       trace.note(speakerId, 'memorandumCoveredMessages', Number(built.memorandumInfo.coveredMessages) || 0);
     }
     var raw = '';
+    /* 执行器回的是什么形状：wantMeta 下是 {text,truncated}。truncated 是
+       provider 的 finish_reason 翻译过来的**事实**，不是估计值。 */
+    var asked = { text: '', truncated: false, budgets: [] };
     try {
       if (typeof callApiChat !== 'function') {
         if (trace) { try { trace.finish(speakerId, {}); } catch (e) { } }
         return { ok: false, reason: 'executor-unavailable' };
       }
       var res = {};
-      raw = await callApiChat(speaker, built.messages, {
-        _ibConsumer: 'role_dm',
-        _ibTurn: turn || undefined,
-        /* 私聊是纯对话：不给工具、不联网、不自动续轮。
-           这既是产品边界（角色之间聊天不该去改用户的工作区），
-           也去掉了一整类副作用与 runaway 面。 */
-        disableTools: true,
-        _noWebSearch: true,
-        autoContinue: false,
-        wantThinking: false,
-        maxTokens: ctx.maxTokens || 700,
-        timeoutMs: 90000,
-        result: res
-      });
+      /* 预算梯子只有两级，且第二级只在"被截断且正文为空"时才会被追加。
+         为什么要元信息（wantMeta）：callApiChat 在正文为空时**不抛错**，
+         只把 finish_reason=length 记进元信息。不要它，就分不清两件完全不同
+         的事：provider/网络/鉴权失败（该去查 API 配置）与输出上限被思考吃光
+         （该给更多预算）—— 而后者正是本仓库真实探针测到的那个失败。 */
+      var budgets = [Number(ctx.maxTokens) || TURN_MAX_TOKENS];
+      for (var bi = 0; bi < budgets.length; bi++) {
+        var r = await callApiChat(speaker, built.messages, {
+          _ibConsumer: 'role_dm',
+          _ibTurn: turn || undefined,
+          /* 私聊是纯对话：不给工具、不联网、不自动续轮。
+             这既是产品边界（角色之间聊天不该去改用户的工作区），
+             也去掉了一整类副作用与 runaway 面。 */
+          disableTools: true,
+          _noWebSearch: true,
+          autoContinue: false,
+          wantThinking: false,
+          wantMeta: true,
+          maxTokens: budgets[bi],
+          timeoutMs: 90000,
+          result: res
+        });
+        asked.budgets.push(budgets[bi]);
+        asked.text = String((r && r.text) == null ? '' : r.text);
+        asked.truncated = !!(r && r.truncated === true);
+        if (asked.text.trim()) break;
+        /* 正文为空（无论是否被截断）⇒ 这一轮一个字都没说成，给**一次**更大的
+           预算重试。实测有两种形态，都必须覆盖：
+             · finish_reason=length —— 思考把输出上限吃光（已确证的原始回包）；
+             · finish_reason≠length 但 content 为空 —— 思考写完了、正文没落地，
+               同一条 prompt 下一分钟又能说成（瞬时形态）。
+           只重试一次；两次都空就说成"没说成"，绝不重试到成功。
+           已经比第二级宽（ctx 显式给了更大预算）时不再追加，避免重复同一预算。 */
+        if (bi === 0 && budgets[0] < TURN_MAX_TOKENS_RETRY) budgets.push(TURN_MAX_TOKENS_RETRY);
+      }
       built._res = res;
     } catch (err) {
       if (trace) { try { trace.finish(speakerId, {}); } catch (e) { } }
@@ -706,10 +759,17 @@
       try { if (lc) lc.end(); } catch (e) { }
     }
 
+    raw = asked.text;
     var text = String(raw == null ? '' : raw);
     if (!text.trim()) {
       if (trace) { try { trace.finish(speakerId, {}); } catch (e) { } }
-      return { ok: false, reason: c.REASON.providerFailed, error: 'empty-output' };
+      /* 细节如实记录：'output-truncated'（**预算**事实：思考把输出上限吃光了）
+         与 'empty-output'（服务商真的回了空）是两件事，诊断靠它区分。
+         停止原因仍然用既有的 provider-failed 闭集成员 —— 不趁修一个缺陷
+         去扩展用户可见的词表。
+         emptyOutput 是给调用方的**分类标记**：模型确实回过话、只是没吐出正文，
+         它不属于"配置/鉴权失效"，因此不该触发那条"密钥缺失"的用户报错。 */
+      return { ok: false, reason: c.REASON.providerFailed, error: asked.truncated ? 'output-truncated' : 'empty-output', emptyOutput: true };
     }
     /* 私聊记忆候选：先摘掉标签，**绝不**让标签进入正文 / 持久化 / 渲染。 */
     var memo = null;
@@ -723,7 +783,7 @@
     /* 兜底：模型可能只输出标签不写正文 → 说明这一轮没有实质内容。 */
     if (!text.trim()) {
       if (trace) { try { trace.finish(speakerId, {}); } catch (e) { } }
-      return { ok: false, reason: c.REASON.providerFailed, error: 'empty-output' };
+      return { ok: false, reason: c.REASON.providerFailed, error: 'empty-output', emptyOutput: true };
     }
     /* Middle Brain 生成后收口 —— 与单聊同一个唯一调用点、同一份裁定词表。
        consumer=role_dm 不豁免 persona guard / speech style / knowledge 边界。 */
@@ -762,16 +822,45 @@
   }
 
   /* ══════════ 一次完整 run：A → B → A → B … ═══════════════
-     opts: { aId, bId, turns, topic, trigger, initiatorId, signal } */
+     opts: { aId, bId, turns, topic, trigger, initiatorId, force,
+             signal (abort signal), initiationSignal (自主发起的社会理由) }
+     两个 signal 刻意不同名：`opts.signal` 是本域既有的**中止信号**
+     （{aborted:true} 语义），而自主发起的理由与"要不要停下来"是两件事。
+     它们曾经共用一个字段名，结果是"reasonCode"被当成 abort signal 读 —— 
+     一个既不会报错、又永远不会生效的静默接线错误（测试里表现为
+     trace 里没有 initiationSignal，而 prompt 里也没有那段行为背景）。 */
   async function run(opts) {
     opts = opts || {};
     var c = core();
     if (!c) return { ok: false, reason: 'core-unavailable' };
     var trigger = (opts.trigger === 'autonomous') ? 'autonomous' : 'manual';
-    /* 本轮不放开全自动调度：autonomous 必须显式开偏好，且只有在
-       canonical trigger API 被 Active Companion / Diary 调用时才可能进入。 */
-    if (trigger === 'autonomous' && prefs().autonomous !== true) {
-      return { ok: false, reason: 'autonomous-disabled' };
+    /* autonomous 的三道闸门（Phase 3）：
+       ① **总开关**（localStorage prefs.autonomous）—— 立即停止产生新的
+          autonomous run 的 kill switch。它由设置面板写入，默认 false。
+       ② **发起人必须有值**。没有 initiatorId 的 autonomous run 是无主的：
+          它无法保证"发起人第一个说"，也就无法与 manual 续聊区分。
+          缺这个参数是**调用方的错误**，必须可见地失败，而不是退回
+          "谁都行" —— 那正是"她主动发起、对方先说"的来源。
+       ③ **canAutonomousRun 再问一次**（角色级 opt-in + 额度 + 冷却 + 退避）。
+          为什么必须在这里、而不是只在调用方：本函数是 canonical 公开 API，
+          而 §23 的 kill switch 要求"关掉后不再产生新的 run"。调用方
+          （role-dm-social.js）在判定与发起之间有 await —— 期间用户可能
+          已经关掉了设置。只在调用方检查，等于关掉之后仍会漏出去一次。
+          opts.skipAutonomousGate 只给**测试**用：它让守卫本身可以被单独
+          验证，而不是在生产路径上留一条绕过它的路。 */
+    if (trigger === 'autonomous') {
+      if (prefs().autonomous !== true) return { ok: false, reason: 'autonomous-disabled' };
+      if (!String(opts.initiatorId || '').trim()) return { ok: false, reason: 'autonomous-no-initiator' };
+      if (opts.skipAutonomousGate !== true) {
+        var autoGate = canAutonomousRun(opts.aId, opts.bId, nowMs());
+        if (!autoGate || autoGate.ok !== true) {
+          return {
+            ok: false,
+            reason: autoGate ? autoGate.reason : 'autonomous-not-permitted',
+            blockedBy: (autoGate && autoGate.blockedBy) || null
+          };
+        }
+      }
     }
     var resolved = await resolveThread(opts.aId, opts.bId, { topic: opts.topic });
     if (!resolved.ok) return resolved;
@@ -844,13 +933,23 @@
 
     /* 记录 lastRunAt：立刻落盘，于是并发/重复点击在**这一层**就被冷却挡住，
        而不是等 run 结束（否则连点会同时穿过守卫 1-3）。 */
+    var initiatorId = String(opts.initiatorId || '').trim();
     thread.lastRunAt = startedAt;
     thread.runCount = (Number(thread.runCount) || 0) + 1;
     thread.stoppedReason = '';
+    thread.lastInitiatedBy = (trigger === 'autonomous') ? initiatorId : '';
     if (runTopic) thread.topic = runTopic;
     threadSave(thread);
 
-    var speakerId = c.chooseFirstSpeaker(thread, opts.initiatorId || parts[0]);
+    /* 谁先说。autonomous 走 forceInitiator（发起人必须第一个说，见
+       role-dm-core 的 chooseFirstSpeaker）；manual 保持既有"接上一个人"。
+       返回空字符串只可能是"发起人不在参与者里" —— 那是一次**真实的失败**，
+       必须带着原因退出，绝不能退化成"那就让另一个人先说"。 */
+    var speakerId = c.chooseFirstSpeaker(thread, initiatorId || parts[0], { forceInitiator: trigger === 'autonomous' });
+    if (!speakerId) {
+      releaseLocks(friendId, held, sending);
+      return { ok: false, reason: 'initiator-not-participant', detail: initiatorId, thread: thread };
+    }
     try {
       for (var t = 0; t < maxTurns; t++) {
         /* ── 守卫 4：abort / 轮数 / 空转熔断 ── */
@@ -867,6 +966,10 @@
           peerId: peerId,
           topic: runTopic,
           trigger: trigger,
+          /* 自主发起的**社会理由**（闭集 code，不是自由文本）。
+             只在真正由本角色发起的那一轮进入 prompt —— 对方的回应不该
+             继承"我主动来找你"这个背景。 */
+          signal: (trigger === 'autonomous' && speakerId === initiatorId) ? (opts.initiationSignal || null) : null,
           turnIndex: t,
           userName: userName,
           historyLimit: HISTORY_LIMIT
@@ -876,14 +979,23 @@
           /* 任何失败都**安全停止**：已完成的消息保留、锁释放、原因落盘。
              绝不自动无限 retry，也绝不 fallback 到另一个角色的模型。 */
           stopReason = turnRes.reason;
+          /* 这一轮的**真实**原因带进 run 结果：run() 的 error 字段本来就是
+             "为什么没聊起来"的答案，不带上来，'output-truncated' 与
+             'empty-output' 的区分就没有人看得见。 */
+          if (turnRes.error) runError = String(turnRes.error).slice(0, 200);
           if (turnRes.reason === c.REASON.providerFailed || turnRes.reason === c.REASON.notReady) {
             providerFailed = true;
-            /* 角色配置失效：清楚报错（既有用户错误模型），并停止本 run。 */
-            try {
-              var cfgX = cfgOf(speakerId);
-              var canShow = (window.IBERR && typeof window.IBERR.show === 'function' && typeof window.IBERR.model === 'function');
-              if (canShow) window.IBERR.show(window.IBERR.model('auth', { reason: 'missing-key', cfg: cfgX, stage: 'role_dm' }));
-            } catch (e) { }
+            /* 角色配置失效：清楚报错（既有用户错误模型），并停止本 run。
+               但**只**在确实是配置/鉴权这一类故障时报它 —— 模型真的回过话、
+               只是没吐出正文（turnRes.emptyOutput）不是配置问题，
+               把它也说成"密钥缺失"会把用户引去改一个没坏的配置。 */
+            if (turnRes.emptyOutput !== true) {
+              try {
+                var cfgX = cfgOf(speakerId);
+                var canShow = (window.IBERR && typeof window.IBERR.show === 'function' && typeof window.IBERR.model === 'function');
+                if (canShow) window.IBERR.show(window.IBERR.model('auth', { reason: 'missing-key', cfg: cfgX, stage: 'role_dm' }));
+              } catch (e) { }
+            }
           }
           if (turnRes.reason === c.REASON.missingCharacter) providerFailed = true;
           break;
@@ -1271,27 +1383,73 @@
     return { ok: true, threads: touched, relations: clearedRelations };
   }
 
-  /* ══════════ canonical trigger API（供 Active Companion / Diary 以后调用）═══
-     这是本轮**唯一**给自动调度预留的接缝。scheduler 只调用它，
+  /* ══════════ canonical trigger API（Active Companion 的调度消费者调用）═══
+     这是本域**唯一**给自动调度预留的接缝。scheduler 只调用它，
      绝不碰 DOM（UI 层的渲染由 roleDmEmit 事件驱动）。 */
+  /* 自主预算的判定实现由 Social 层注入（role-dm-social.js）。
+     **为什么是注入而不是 require**：role-dm.js 是本域的执行层，先于
+     Social 层加载；如果它直接依赖 Social 层，那么"执行域能不能起来"
+     就取决于"社交层有没有起来"。注入让依赖方向是单向的：
+       Social（决定要不要找谁）→ Role DM（真正聊）
+     而 Role DM 只提供接口，不知道谁在调它。
+     未注入时 canAutonomousRun 仍然完整可用（它自己那几条闸门照常生效），
+     只是没有自主额度这一层 —— 而 autonomous 的**总开关**在 run() 里，
+     所以"没有注入"绝不等于"可以偷偷跑"。 */
+  var _autoBudgetCheck = null;
+  function setAutonomousBudgetChecker(fn) {
+    _autoBudgetCheck = (typeof fn === 'function') ? fn : null;
+    return true;
+  }
   function canAutonomousRun(aId, bId, now) {
     var c = core();
     if (!c) return { ok: false, reason: 'core-unavailable' };
+    /* ① 全局 kill switch。 */
     if (prefs().autonomous !== true) return { ok: false, reason: 'autonomous-disabled' };
+    /* ② 角色级 opt-in（缺字段 ⇒ 关闭，绝不因升级而变 true）+ 自主额度。 */
+    if (_autoBudgetCheck) {
+      var gate = null;
+      try { gate = _autoBudgetCheck(String(aId), String(bId), Number(now) || nowMs()); } catch (e) { gate = null; }
+      if (gate && gate.ok === false) return { ok: false, reason: gate.reason || 'autonomous-not-permitted', blockedBy: gate.blockedBy || null };
+    }
+    /* ③ thread 状态与 pair 冷却（既有语义，未改动）。 */
     var resolved = threadGet(c.roleDmFriendId(aId, bId));
     if (resolved) {
       var cd = c.pairCooldownRemaining(resolved.lastRunAt, Number(now) || nowMs());
       if (cd > 0) return { ok: false, reason: c.REASON.pairCooldown, remainingMs: cd };
       if (resolved.state === 'archived') return { ok: false, reason: 'thread-archived' };
     }
+    /* ④ 该角色的**共享**轮次额度（manual 与 autonomous 共用）——
+       这一条是成本护栏，不是自主预算。 */
     if (!c.roleTurnRoomOk(roleTurnTimes(aId), now)) return { ok: false, reason: c.REASON.roleDailyCap };
     return { ok: true };
   }
   function start(aId, bId, options) {
+    /* 手动 run 同时也是"用户此刻在跟角色互动"的证据：自主调度据此避让。 */
+    noteUserActivity(nowMs());
     return run(Object.assign({ aId: aId, bId: bId, trigger: 'manual' }, options || {}));
   }
   function startAutonomous(aId, bId, options) {
-    return run(Object.assign({ aId: aId, bId: bId, trigger: 'autonomous' }, options || {}));
+    var o = options || {};
+    /* 发起人**必须**由调用方显式给出。
+       刻意不提供 aId 之类的默认值：一个静默的默认值会让"忘了传发起人"这个
+       调用方错误变成一次看起来正常的 run，而它的第一条发言者是谁取决于
+       参数顺序 —— 那正是 §20 要禁止的模糊性。
+       唯一可接受的默认**只**发生在没有 options 对象的简写调用上
+       （startAutonomous(a, b)：a 是唯一能表达"谁主动"的位置）；
+       一旦调用方给了 options，"我以为它会默认用 aId"就不再是理由。 */
+    var hasOptions = (options && typeof options === 'object');
+    return run(Object.assign({ aId: aId, bId: bId, trigger: 'autonomous' }, hasOptions ? options : {}, {
+      initiatorId: hasOptions ? String(o.initiatorId || '') : String(aId || '')
+    }));
+  }
+  /* 手动 run 也记一次"用户最近活动"：自主调度据此避让
+     （用户刚跟某个角色聊完，不该立刻由另一个角色自主发起来打扰）。 */
+  function noteUserActivity(at) {
+    try {
+      if (NS.roleDmSocial && typeof NS.roleDmSocial.noteUserActivity === 'function') {
+        NS.roleDmSocial.noteUserActivity(at);
+      }
+    } catch (e) { }
   }
 
   /* ══════════ 对外只读视图（UI / 测试共用）═══════════════ */
@@ -1319,6 +1477,9 @@
         messageCount: msgs.length,
         lastPreview: last ? String(last.content || '').slice(0, 60) : '',
         lastSpeakerId: String(md.senderId || ''),
+        /* 谁主动发起的（'' = 手动 / 从未）。UI 用它显示"XX 主动发起"。
+           只暴露角色 id，不暴露任何工程数据。 */
+        lastInitiatedBy: String(t.lastInitiatedBy || ''),
         running: !!_runningThreads[t.threadId],
         ready: !!(aCfg && bCfg && apiReady(aCfg) && apiReady(bCfg) && t.state === 'active')
       });
@@ -1390,6 +1551,8 @@
     start: start,
     startAutonomous: startAutonomous,
     canAutonomousRun: canAutonomousRun,
+    setAutonomousBudgetChecker: setAutonomousBudgetChecker,
+    noteUserActivity: noteUserActivity,
     run: run,
     /* 维护 */
     clearThread: clearThread,
