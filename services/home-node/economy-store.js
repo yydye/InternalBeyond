@@ -91,8 +91,20 @@ const dbFailure = require('../../runtime/db-failure.js');
       · 一个 P22-4 的 build 打开 P22-3 的库 → 受支持的老版本路径，
         DDL 补上两张表，水位抬到 3，**既有 ledger / reservation 行一个
         字节都不动**。
-    2 → 3 同样是空的 MIGRATIONS 条目：没有既有列需要改写，只有新表。 */
-const ECONOMY_SCHEMA_VERSION = 3;
+    2 → 3 同样是空的 MIGRATIONS 条目：没有既有列需要改写，只有新表。
+
+   ── P22-5：3 → 4 ────────────────────────────────────────────────────
+     同一条纪律的第四次应用。P22-5 让这个库多出三张表（货架 / 商品 /
+     库存），于是：
+       · 一个 P22-4 的 build 打开 P22-5 的库 → **拒绝**（SCHEMA_TOO_NEW）。
+         如果它不拒绝，它就会看到一个"什么都没得卖"的经济 —— 而那是一份
+         **错误的**目录：任何基于"这件商品不存在"的判断都会在错误的
+         前提上成立。
+       · 一个 P22-5 的 build 打开 P22-4 的库 → 受支持的老版本路径，
+         DDL 补上三张表，水位抬到 4，**既有 ledger / reservation /
+         policy / quote 行一个字节都不动**（focused 测试的 N 组逐条断言）。
+     3 → 4 仍然是空的 MIGRATIONS 条目：没有既有列需要改写，只有新表。 */
+const ECONOMY_SCHEMA_VERSION = 4;
 const DEFAULT_DB_FILENAME = 'home-node.db';
 
 const META_TABLE = 'economy_meta';
@@ -117,6 +129,18 @@ const OPERATION_IDEMPOTENCY_TABLE = 'economy_operation_idempotency';
    因此它们是自己的两张表，而不是往 ledger 或 operation 里塞列。 */
 const BUDGET_POLICIES_TABLE = 'economy_budget_policies';
 const QUOTES_TABLE = 'economy_quotes';
+/* ── P22-5 ────────────────────────────────────────────────────────────
+   三张表而不是一张，理由与 P22-3/P22-4 同源，而且这里更硬：
+     · economy_stores    —— 组织方式（哪个货架）。
+     · economy_products  —— 价格与交付形态。
+     · economy_inventory —— 已经发生的**拥有事实**。
+   P22-5 §1 把这条写成了六条不等式（Product ≠ Quote，Product ≠ Inventory，
+   Inventory ≠ Wallet …），而把它们塞进一张表的直接后果是：一次改价会
+   同时写到一个"拥有关系"旁边，于是"这件商品我是什么时候有的"与
+   "它现在多少钱"变成同一行的两个字段 —— 前者是历史，后者是现在。 */
+const STORES_TABLE = 'economy_stores';
+const PRODUCTS_TABLE = 'economy_products';
+const INVENTORY_TABLE = 'economy_inventory';
 
 /* meta 的键。**独立命名空间**：全部带 economy_ 前缀，且存在
    economy_meta 表里（不是共用的 meta 表），因此任何其它 store 都不可能
@@ -133,6 +157,13 @@ const IDEMPOTENCY_MAX = 2000;
    因此 canonical 金额永远装得下。这里仍然显式断言一次：
    "装得下"必须是查出来的，不是想出来的。 */
 const MAX_AMOUNT_MINOR = 9007199254740991;
+
+/* ── P22-5 · 库存数量的上界 ───────────────────────────────────────────
+   与金额同源：canonical 表示必须 ⊆ JS 能精确表示的。库存数量的 canonical
+   形态刻意是**安全整数**而不是 BigInt —— 它是一次计数，不是一笔钱；而
+   用 BigInt 表示"我拥有几个"会让 2^53 个物品这种不可能的状态变得可表示。
+   上界仍然是一条被**查出来**的规则：增长后的数量必须仍然安全，否则拒绝。 */
+const MAX_INVENTORY_QUANTITY = 9007199254740991;
 
 /* ── P22-3 · 资金被还回去的**原因**（封闭集合）────────────────────────
    为什么它不在 P22-1 契约里：它不是一个跨模块载荷的形状规则，而是本
@@ -736,6 +767,189 @@ function createEconomyStore(deps) {
        fail closed，因此它是一条被查询出来的前提，而不是一个假设。 */
     countWalletAccounts:
       'SELECT COUNT(*) AS c FROM ' + ACCOUNTS_TABLE + ' WHERE wallet_id=? AND currency=? AND kind=\'WALLET\'',
+
+    /* ══ P22-5 · 货架（组织方式，不是价格事实）══════════════════════════
+       §2 逐条点了名：不要把 priceMinor / currency / stock / owned /
+       providerBalance 塞进 Store。因此这张表的列**恰好**是
+       id + 呈现 + 状态 + 排序 + 记账元数据，一条经济事实都没有。
+       sort_order 是展示顺序，它不参与任何判定 —— 因此它没有索引意义，
+       也不允许出现"按 sort_order 决定能不能买"的写法。 */
+    createStores:
+      'CREATE TABLE IF NOT EXISTS ' + STORES_TABLE + ' (' +
+      ' store_id TEXT PRIMARY KEY,' +
+      ' name TEXT NOT NULL,' +
+      ' description TEXT,' +
+      ' status TEXT NOT NULL,' +
+      ' sort_order INTEGER NOT NULL DEFAULT 0,' +
+      ' idempotency_key TEXT NOT NULL,' +
+      ' fingerprint TEXT NOT NULL,' +
+      ' revision INTEGER NOT NULL,' +
+      ' created_at INTEGER NOT NULL,' +
+      ' updated_at INTEGER NOT NULL' +
+      ')',
+    createStoresByStatus: 'CREATE INDEX IF NOT EXISTS idx_econ_stores_status ON ' + STORES_TABLE + ' (status, sort_order, store_id)',
+    insertStore:
+      'INSERT INTO ' + STORES_TABLE + ' (store_id, name, description, status, sort_order, idempotency_key, fingerprint, revision, created_at, updated_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    selectStore: 'SELECT * FROM ' + STORES_TABLE + ' WHERE store_id=?',
+    selectStores: 'SELECT * FROM ' + STORES_TABLE + ' ORDER BY sort_order ASC, created_at ASC, store_id ASC LIMIT ?',
+    selectStoresByStatus: 'SELECT * FROM ' + STORES_TABLE + ' WHERE status=? ORDER BY sort_order ASC, created_at ASC, store_id ASC LIMIT ?',
+    selectStoresAll: 'SELECT * FROM ' + STORES_TABLE + ' ORDER BY created_at ASC, store_id ASC',
+    countStores: 'SELECT COUNT(*) AS c FROM ' + STORES_TABLE,
+    countStoresByStatus: 'SELECT COUNT(*) AS c FROM ' + STORES_TABLE + ' WHERE status=?',
+    /* ── 货架的**唯一**写语句 ────────────────────────────────────────────
+       SET 里没有 store_id（身份）与 created_at（出生时刻）。
+       刻意**没有**任何 DELETE 语句：§23 要求"不得物理删除经济历史"，
+       而下架由 status 表达。本文件里根本没有一条 DELETE FROM
+       economy_stores —— 这不是纪律，是"那条语句不存在"。 */
+    updateStore:
+      'UPDATE ' + STORES_TABLE + ' SET name=?, description=?, status=?, sort_order=?, idempotency_key=?, fingerprint=?, revision=?, updated_at=? WHERE store_id=?',
+
+    /* ══ P22-5 · 商品（价格与交付形态）══════════════════════════════════
+       金额列叫 unit_price_minor 而不是 price：§3 禁止没有单位的金额字段，
+       而 unit_price_minor + currency 两者一起才是价格。（§4 的检查把它与
+       真实人民币域的字形彻底分开。）
+
+       CHECK (unit_price_minor >= 0) / CHECK (grant_quantity >= 0) 是**结构
+       约束**而不是注释：一个负价格是一次反向流动，它不应该只被 JS 层的
+       一个 if 挡着。免费商品是合法的（0 是被允许的值，见契约 §22），
+       因此这里用的是 >= 而不是 >。
+
+       fulfillment 与 asset_kind 是**派生列**（由 kind 决定），但它们被写
+       下来而不是每次推导：理由是 §27 —— "买完发生什么"必须与商品一起
+       冻结，这样将来某个商品 kind 的映射变了，历史行仍然说着当时的话。
+       asset_kind 允许 NULL：SERVICE_EXECUTION 的商品没有任何库存形态。 */
+    createProducts:
+      'CREATE TABLE IF NOT EXISTS ' + PRODUCTS_TABLE + ' (' +
+      ' product_id TEXT PRIMARY KEY,' +
+      ' store_id TEXT NOT NULL,' +
+      ' product_kind TEXT NOT NULL,' +
+      ' fulfillment TEXT NOT NULL,' +
+      ' name TEXT NOT NULL,' +
+      ' description TEXT,' +
+      ' currency TEXT NOT NULL,' +
+      ' unit_price_minor INTEGER NOT NULL CHECK (unit_price_minor >= 0),' +
+      ' unit_name TEXT NOT NULL,' +
+      ' grant_quantity INTEGER NOT NULL DEFAULT 0 CHECK (grant_quantity >= 0),' +
+      ' asset_kind TEXT,' +
+      ' status TEXT NOT NULL,' +
+      ' idempotency_key TEXT NOT NULL,' +
+      ' fingerprint TEXT NOT NULL,' +
+      ' revision INTEGER NOT NULL,' +
+      ' created_at INTEGER NOT NULL,' +
+      ' updated_at INTEGER NOT NULL' +
+      ')',
+    createProductsByStore: 'CREATE INDEX IF NOT EXISTS idx_econ_products_store ON ' + PRODUCTS_TABLE + ' (store_id, status, product_id)',
+    createProductsByStatus: 'CREATE INDEX IF NOT EXISTS idx_econ_products_status ON ' + PRODUCTS_TABLE + ' (status, product_id)',
+    createProductsByKind: 'CREATE INDEX IF NOT EXISTS idx_econ_products_kind ON ' + PRODUCTS_TABLE + ' (product_kind, status)',
+    insertProduct:
+      'INSERT INTO ' + PRODUCTS_TABLE + ' (product_id, store_id, product_kind, fulfillment, name, description, currency, unit_price_minor, unit_name, grant_quantity, asset_kind, status, idempotency_key, fingerprint, revision, created_at, updated_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    selectProduct: 'SELECT * FROM ' + PRODUCTS_TABLE + ' WHERE product_id=?',
+    selectProducts: 'SELECT * FROM ' + PRODUCTS_TABLE + ' ORDER BY created_at ASC, product_id ASC LIMIT ?',
+    /* ── 目录读取的**唯一**查询（§29 的最小过滤）────────────────────────
+       四个过滤条件全部在 SQL 里，而不是"取一页再在 JS 里筛"。
+       后者看起来等价，其实是**错的**：LIMIT 在过滤**之前**生效，于是
+       `listProducts({storeId: X, status: 'ACTIVE', limit: 50})` 会在
+       "X 的前 50 件商品"里挑出 ACTIVE 的几件 —— 而 X 明明有 200 件在卖。
+       那种少返回不会报错，只会让调用方以为"就这么多"。
+       `(? IS NULL OR col = ?)` 的写法让四个条件是同一个语句里的四组开关，
+       于是"用哪条 SQL"不再是一个需要判断的问题（判断错了就是这个 bug）。 */
+    selectProductsFiltered:
+      'SELECT * FROM ' + PRODUCTS_TABLE + ' WHERE' +
+      ' (? IS NULL OR store_id = ?)' +
+      ' AND (? IS NULL OR status = ?)' +
+      ' AND (? IS NULL OR product_kind = ?)' +
+      ' AND (? IS NULL OR currency = ?)' +
+      ' ORDER BY created_at ASC, product_id ASC LIMIT ?',
+    selectProductsAll: 'SELECT * FROM ' + PRODUCTS_TABLE + ' ORDER BY created_at ASC, product_id ASC',
+    countProducts: 'SELECT COUNT(*) AS c FROM ' + PRODUCTS_TABLE,
+    countProductsByStatus: 'SELECT COUNT(*) AS c FROM ' + PRODUCTS_TABLE + ' WHERE status=?',
+    /* ── 商品的**两条**写语句，各自只碰自己那一半（§8/§20/§9）───────────
+       updateProduct 的 SET 里**没有** product_id / store_id /
+       product_kind / fulfillment / asset_kind / created_at —— 前五个是
+       "这件商品本体是什么"（改它们等于换了一件商品，正确形态是新建一个
+       product，而不是改这个 id 的语义），最后一个是出生时刻。
+       它也**没有** status：状态推进走下面那条带守卫的语句。
+
+       于是一条很强的、可静态断言的性质成立了：
+         · 改价格的语句里没有状态列；
+         · 改状态的语句里没有价格列。
+       "改价不得顺带改变上架状态"因此不是纪律，而是两条语句各自都做不到。 */
+    updateProduct:
+      'UPDATE ' + PRODUCTS_TABLE + ' SET name=?, description=?, currency=?, unit_price_minor=?, unit_name=?, grant_quantity=?, idempotency_key=?, fingerprint=?, revision=?, updated_at=? WHERE product_id=?',
+    /* ── 商品状态推进（§9）───────────────────────────────────────────────
+       只动状态列；`AND status=?` 同时承担乐观并发与**终态保护**
+       （一个 RETIRED 的商品不可能再被 disable 或重新上架：changes=0
+       ⇒ 调用点拒绝，而"RETIRED 是终态"因此在 SQL 层就成立）。 */
+    setProductStatus:
+      'UPDATE ' + PRODUCTS_TABLE + ' SET status=?, idempotency_key=?, fingerprint=?, revision=?, updated_at=? WHERE product_id=? AND status=?',
+
+    /* ══ P22-5 · 库存（已发生的拥有事实）════════════════════════════════
+       canonical 键是 UNIQUE (owner_id, product_id)：一个 owner 对一件商品
+       **恰好一行**。§51 要求的"不能按 productId 全局扣库存"因此是结构性的
+       —— 每一行都带着它的 owner，而所有写语句都以行 id（或 owner+product）
+       为条件，没有任何一条按 product_id 单独更新。
+
+       CHECK (quantity >= 0) 是**结构**保证：§16 要求"两个并发 consume
+       不可能把数量扣成负数"，而即使事务纪律被将来某次重构破坏，这条
+       CHECK 也会让那次写入**失败**而不是静默产生一个负库存。
+
+       quantity = 0 的行**保留**（§23：优先 quantity = 0，保留行和审计）。
+       因此本文件里没有 DELETE FROM economy_inventory。
+
+       刻意**没有**的列：inventory_cached_quantity（§17：不要为了和 Wallet
+       对称而人为造一个缓存再写 rebuild）、owned/stock/count 这类与 product
+       重复的列、以及任何 serial/instanceId（唯一物品在本阶段不可表示，
+       契约用 INVENTORY_UNIQUE_ITEMS_MODELLED = false 逐字否认）。 */
+    createInventory:
+      'CREATE TABLE IF NOT EXISTS ' + INVENTORY_TABLE + ' (' +
+      ' inventory_entry_id TEXT PRIMARY KEY,' +
+      ' owner_id TEXT NOT NULL,' +
+      ' owner_type TEXT NOT NULL,' +
+      ' product_id TEXT NOT NULL,' +
+      ' asset_kind TEXT NOT NULL,' +
+      ' quantity INTEGER NOT NULL CHECK (quantity >= 0),' +
+      ' idempotency_key TEXT NOT NULL,' +
+      ' fingerprint TEXT NOT NULL,' +
+      ' revision INTEGER NOT NULL,' +
+      ' created_at INTEGER NOT NULL,' +
+      ' updated_at INTEGER NOT NULL,' +
+      ' UNIQUE (owner_id, product_id)' +
+      ')',
+    createInventoryByOwner: 'CREATE INDEX IF NOT EXISTS idx_econ_inventory_owner ON ' + INVENTORY_TABLE + ' (owner_id, asset_kind, product_id)',
+    createInventoryByProduct: 'CREATE INDEX IF NOT EXISTS idx_econ_inventory_product ON ' + INVENTORY_TABLE + ' (product_id)',
+    insertInventory:
+      'INSERT INTO ' + INVENTORY_TABLE + ' (inventory_entry_id, owner_id, owner_type, product_id, asset_kind, quantity, idempotency_key, fingerprint, revision, created_at, updated_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    selectInventoryEntry: 'SELECT * FROM ' + INVENTORY_TABLE + ' WHERE inventory_entry_id=?',
+    selectInventoryByOwnerProduct: 'SELECT * FROM ' + INVENTORY_TABLE + ' WHERE owner_id=? AND product_id=?',
+    /* 与 selectProductsFiltered 同款：三个过滤条件全部在 SQL 里，
+       LIMIT 在过滤**之后**生效。附加的一条：owner 或 product 至少给一个，
+       那个规则在 JS 里判（它是一条**业务**规则，不是一条查询形状）。 */
+    selectInventoryFiltered:
+      'SELECT * FROM ' + INVENTORY_TABLE + ' WHERE' +
+      ' (? IS NULL OR owner_id = ?)' +
+      ' AND (? IS NULL OR product_id = ?)' +
+      ' AND (? IS NULL OR asset_kind = ?)' +
+      ' ORDER BY asset_kind ASC, product_id ASC LIMIT ?',
+    selectInventoryAll: 'SELECT * FROM ' + INVENTORY_TABLE + ' ORDER BY created_at ASC, inventory_entry_id ASC',
+    countInventory: 'SELECT COUNT(*) AS c FROM ' + INVENTORY_TABLE,
+    countInventoryByAssetKind: 'SELECT COUNT(*) AS c FROM ' + INVENTORY_TABLE + ' WHERE asset_kind=?',
+    sumInventoryQuantity: 'SELECT COALESCE(SUM(quantity), 0) AS total FROM ' + INVENTORY_TABLE,
+    /* ── 库存的两条写语句，各自带一条**算术守卫** ────────────────────────
+       grow  ：`quantity + ? <= <上界>` —— 溢出被 SQL 拒绝，而不是让
+               JS 静默地把一个不精确的数写进去。
+       shrink：`quantity >= ?` —— 这一条是**第二道**防线（第一道是
+               BEGIN IMMEDIATE 里的 canonical 读 + 校验，第三道是表上的
+               CHECK）。三道同时存在是有意的：§16 要求的"不可能为负"
+               不该只依赖某一个机制的正确性。
+       两条语句的 SET 都**只**碰 quantity 与记账元数据 —— owner / product /
+       asset_kind / created_at 一次都不出现。 */
+    growInventory:
+      'UPDATE ' + INVENTORY_TABLE + ' SET quantity = quantity + ?, idempotency_key=?, fingerprint=?, revision=?, updated_at=? WHERE inventory_entry_id=? AND quantity + ? <= ?',
+    shrinkInventory:
+      'UPDATE ' + INVENTORY_TABLE + ' SET quantity = quantity - ?, idempotency_key=?, fingerprint=?, revision=?, updated_at=? WHERE inventory_entry_id=? AND quantity >= ?',
   };
 
   /* ══════════════════════════════════════════════════════════════════
@@ -807,6 +1021,19 @@ function createEconomyStore(deps) {
       db.exec(SQL.createQuotesByProduct);
       db.exec(SQL.createQuotesByExpiry);
       db.exec(SQL.createQuotesByPredecessor);
+      /* P22-5 的三张表（schema 3 → 4）。同样只有新表，没有既有列改写。
+         注意它们的 DDL 排在 migrateSchema() **之后** —— 那条纪律在
+         P22-3 就被提到最前面（见上面的说明），P22-5 只是继续遵守它：
+         一个 SCHEMA_TOO_NEW 的库上不能悄悄多出这三张空表。 */
+      db.exec(SQL.createStores);
+      db.exec(SQL.createStoresByStatus);
+      db.exec(SQL.createProducts);
+      db.exec(SQL.createProductsByStore);
+      db.exec(SQL.createProductsByStatus);
+      db.exec(SQL.createProductsByKind);
+      db.exec(SQL.createInventory);
+      db.exec(SQL.createInventoryByOwner);
+      db.exec(SQL.createInventoryByProduct);
     } catch (error) {
       try { if (db) db.close(); } catch (_) { /* 已关闭 */ }
       db = null;
@@ -880,7 +1107,11 @@ function createEconomyStore(deps) {
        于是"这一步没有数据迁移"这件事本身也被断言了 —— 而且现在是被
        **两代**迁移各自断言一次（P22-3 的 M 组、P22-4 的 N 组）。
        2 → 3（P22-4）只**多**了两张表（budget policies / quotes），
-       同样没有任何既有列或既有数据需要改写。 */
+       同样没有任何既有列或既有数据需要改写。
+        3 → 4（P22-5）只**多**了三张表（stores / products / inventory），
+       同样没有任何既有列或既有数据需要改写 —— 尤其是 quotes 表：
+       P22-5 给它加了**零**列，因为 P22-4 已经把"什么 / 多少钱 / 到什么
+       时候"那几列冻结齐了，再加一列只会制造第二个价格来源。 */
   ];
 
   function migrateSchema() {
@@ -4812,7 +5043,21 @@ function createEconomyStore(deps) {
     if (!C.isQuoteKind(kind)) {
       return denial(C.DENY_REASON.EFFECT_NOT_ALLOWED, ['quote-kind-not-in-closed-set'], { allowed: C.QUOTE_KINDS });
     }
-    const productId = C.formatEconomyId('PRODUCT', String(o.productId == null ? '' : o.productId)).id;
+    /* ── productId 的两种形态（P22-5 修好的一个真实缺陷）────────────────
+       P22-4 这里写的是 formatEconomyId('PRODUCT', o.productId)，也就是把
+       入参当成**后缀**。对 'widget' 那种写法没问题；但如果调用方给的是
+       一个**已经是 canonical 的** id（P22-5 的 createProductQuote 必须给
+       全 id，因为它从 products 行读出来的就是全 id），结果会是
+       `econ_product_econ_product_x` —— 一个指向不存在商品的 id。
+
+       那不是"两种风格"，那是一个**悬空引用**：报价会被写下来，而它的
+       provenance 永远查不到。因此这里把规范化改成"已经是 canonical 就
+       原样使用，否则才补前缀"。
+       这是**加法**：任何以裸后缀传入的调用（P22-4 的全部测试与用法）得到
+       逐字相同的结果；唯一被改变的是那种以前必然产生死引用的输入。 */
+    const productId = C.isEconomyId('PRODUCT', o.productId)
+      ? String(o.productId)
+      : C.formatEconomyId('PRODUCT', String(o.productId == null ? '' : o.productId)).id;
     if (!C.isEconomyId('PRODUCT', productId)) {
       return { ok: false, denied: false, reasonCode: null, errors: ['product-id-not-canonical'] };
     }
@@ -4840,9 +5085,29 @@ function createEconomyStore(deps) {
       return { ok: false, denied: false, reasonCode: null, errors: ['owner-not-found'] };
     }
     /* 商品是否存在由**注入的谓词**回答（与 owner 同款，P22-2 §16）。
-       未注入时不做校验 —— 商品目录是 P22-5 的所有物，P22-4 不发明产品表。 */
+       未注入时不做校验 —— 注入缝是 P22-4 的公开面，**语义一个字不改**。
+       P22-5 补上的是另一半：目录**真的存在**时（本 store 自己拥有它），
+       这条 primitive 必须尊重它的状态。 */
     if (typeof deps.productExists === 'function' && deps.productExists(productId) !== true) {
       return denial(C.DENY_REASON.PRODUCT_DISABLED, ['product-not-found'], { productId: productId });
+    }
+    /* ── P22-5：raw primitive 现在**认识**真实的目录 ─────────────────────
+       行为只在一个方向上加严，而且只在"目录里真的有这个 productId"时：
+       一件被 disable / retire 的商品，或者它所在货架被关掉之后，不能
+       再通过 raw createQuote 生成新报价。
+
+       为什么这条加强不破坏 P22-4：那个阶段的库里**没有** products 表，
+       因而这条查询永远返回 undefined —— P22-4 的全部断言继续逐字成立
+       （它们的 productId 都是随手起的 econ_product_*）。真正被改写的只有
+       "目录里确实有这件商品、而它已经不再卖"这一种新情况，而它在
+       P22-5 之前根本不可表示。
+       注意这里**刻意不**改用 PRODUCT_NOT_FOUND：raw primitive 报的是
+       PRODUCT_DISABLED（P22-4 冻结的行为），product-backed 路径才用
+       新的 PRODUCT_NOT_FOUND。 */
+    const catalogRow = db.prepare(SQL.selectProduct).get(productId);
+    if (catalogRow) {
+      const availability = productAvailabilityForQuote(productId);
+      if (!availability.ok) return availability.denial;
     }
 
     /* 报价必须挂在一个**真实存在**的钱包上：一份"买不起也存不进"的报价
@@ -5011,6 +5276,17 @@ function createEconomyStore(deps) {
     if (!o.quoteId) return { ok: false, quote: null, errors: ['quote-id-required'] };
     const row = db.prepare(SQL.selectQuote).get(String(o.quoteId));
     if (!row) return { ok: false, quote: null, errors: ['quote-not-found'] };
+    /* ── P22-5 §22：来历是**可选的**额外信息，不是报价的一部分 ──────────
+       只有显式要求时才去读 products 表。这条设计本身就在说那句话：
+       报价的可解释性**不依赖**商品行是否存在（若依赖，这里就必须无条件
+       查询，并在查不到时让整条读失败）。 */
+    if (o.withProvenance === true) {
+      return {
+        ok: true,
+        quote: rowToQuote(row, { now: o.now }),
+        productProvenance: productProvenanceOf(String(row.product_id))
+      };
+    }
     return { ok: true, quote: rowToQuote(row, { now: o.now }) };
   }
 
@@ -5156,6 +5432,20 @@ function createEconomyStore(deps) {
   function countQuotesByState(state) {
     return Number((db.prepare(SQL.countQuotesByState).get(String(state)) || {}).c || 0);
   }
+  /* P22-5 的四个计数。它们与上面同款：只被 health() 与测试读，从不参与
+     任何判定 —— "现在有几件商品"绝不该成为"能不能买"的一个输入。 */
+  function countStores() { return Number((db.prepare(SQL.countStores).get() || {}).c || 0); }
+  function countStoresByStatus(status) {
+    return Number((db.prepare(SQL.countStoresByStatus).get(String(status)) || {}).c || 0);
+  }
+  function countProducts() { return Number((db.prepare(SQL.countProducts).get() || {}).c || 0); }
+  function countProductsByStatus(status) {
+    return Number((db.prepare(SQL.countProductsByStatus).get(String(status)) || {}).c || 0);
+  }
+  function countInventory() { return Number((db.prepare(SQL.countInventory).get() || {}).c || 0); }
+  function totalInventoryQuantity() {
+    return Number((db.prepare(SQL.sumInventoryQuantity).get() || {}).total || 0);
+  }
 
   /* ── evaluateQuote（§18）：一次**读**，产出四样东西 ─────────────────
        quote            —— 那份价格命题（可能已经过期，如实报告）
@@ -5239,6 +5529,1016 @@ function createEconomyStore(deps) {
   }
 
   /* ══════════════════════════════════════════════════════════════════
+     P22-5 · 货架（Store）/ 商品（Product）/ 库存（Inventory）
+     ══════════════════════════════════════════════════════════════════ */
+
+  /* 这一节回答三个问题，并且**只**回答这三个：
+       「有哪些货架 / 有哪些商品？」   —— 读，不判定
+       「一份商品是什么？」            —— kind / fulfillment / 价格 + 单位
+       「谁拥有什么？」                —— canonical 库存行
+     它不回答「Agent 应该买什么」（Decision），也不执行「买」（future
+     Purchase）。P22-5 §46 把这条写得很直白：本阶段只回答
+     "有哪些商品 / 商品是什么 / 当前报价是什么 / 角色拥有什么"。
+
+     ── 一个刻意的结构决定：库存**没有**派生缓存 ─────────────────────────
+     P22-2/P22-3 的 wallets 表有两列派生缓存（cached_balance_minor /
+     reserved_balance_minor），因此那两代都配了 rebuild + 开库对账。
+     P22-5 **不**复制那个形状（§17 明确要求先判断需不需要）：
+     canonical 库存**就是** economy_inventory 的那一行，没有第二个数。
+     于是"重建"这个问题根本不存在 —— 而"为了对称而造一个缓存再写重建"
+     会凭空引入一类新的漂移 bug（缓存与行不一致），换来的是零收益。
+     health() 里那两句 inventoryCanonical / inventoryDerived 就是这件事的
+     可断言形式。 */
+
+  /* ── 行 ↔ DTO ───────────────────────────────────────────────────────
+     金额进出 SQLite 一律经 toSqlAmount / fromSqlAmount（P22-2 §8）；
+     数量（grantQuantity / quantity）刻意是**安全整数**：它们是一次计数，
+     不是一笔钱（§35 允许"沿用现有边界"，而数量的天然边界就是安全整数）。 */
+
+  function rowToStore(row) {
+    return {
+      storeId: String(row.store_id),
+      name: String(row.name),
+      description: row.description == null ? null : String(row.description),
+      status: String(row.status),
+      sortOrder: Number(row.sort_order),
+      revision: Number(row.revision),
+      createdAt: Number(row.created_at),
+      updatedAt: Number(row.updated_at),
+      idempotencyKey: String(row.idempotency_key)
+    };
+  }
+
+  function rowToProduct(row) {
+    return {
+      productId: String(row.product_id),
+      storeId: String(row.store_id),
+      kind: String(row.product_kind),
+      fulfillment: String(row.fulfillment),
+      name: String(row.name),
+      description: row.description == null ? null : String(row.description),
+      currency: String(row.currency),
+      unitPriceMinor: fromSqlAmount(row.unit_price_minor, 'product-unit-price'),
+      unitName: String(row.unit_name),
+      grantQuantity: Number(row.grant_quantity),
+      assetKind: row.asset_kind == null ? null : String(row.asset_kind),
+      status: String(row.status),
+      revision: Number(row.revision),
+      createdAt: Number(row.created_at),
+      updatedAt: Number(row.updated_at),
+      idempotencyKey: String(row.idempotency_key)
+    };
+  }
+
+  /* 库存行的 DTO。productPresent 是**provenance**，不是有效性
+     （§22：Product 行是 provenance，报价/库存自己的经济内容才是事实）。
+     一个商品被 RETIRED 之后，用户手里的东西仍然在，而这一行仍然说得清
+     "这是什么" —— 因为 asset_kind 与 quantity 都写在这一行上。 */
+  function rowToInventoryEntry(row, productRow) {
+    return {
+      inventoryEntryId: String(row.inventory_entry_id),
+      ownerId: String(row.owner_id),
+      ownerType: String(row.owner_type),
+      productId: String(row.product_id),
+      assetKind: String(row.asset_kind),
+      quantity: Number(row.quantity),
+      revision: Number(row.revision),
+      createdAt: Number(row.created_at),
+      updatedAt: Number(row.updated_at),
+      idempotencyKey: String(row.idempotency_key),
+      productPresent: !!productRow
+    };
+  }
+
+  /* ── 对外 JSON 形态 ──────────────────────────────────────────────────
+     三个 serialize* 都逐字写下该层**不是**什么。这些字段不是修辞：
+     §2 / §12 / §41 都要求"没有的东西"可被断言，而最容易被误读的三件事
+     恰好是"货架里有价格"、"商品里有拥有关系"、"库存里有余额"。 */
+  function serializeStore(view) {
+    return {
+      domain: C.DOMAIN,
+      storeId: view.storeId,
+      name: view.name,
+      description: view.description,
+      status: view.status,
+      sortOrder: view.sortOrder,
+      revision: view.revision,
+      createdAt: view.createdAt,
+      updatedAt: view.updatedAt,
+      /* 货架**不**拥有价格事实，也**不**拥有拥有关系（§2）。 */
+      holdsPrices: false,
+      holdsOwnership: false,
+      holdsInventory: false
+    };
+  }
+
+  function serializeProduct(view) {
+    return {
+      domain: C.DOMAIN,
+      productId: view.productId,
+      storeId: view.storeId,
+      kind: view.kind,
+      fulfillment: view.fulfillment,
+      name: view.name,
+      description: view.description,
+      currency: view.currency,
+      unitPriceMinor: C.serializeAmountMinor(view.unitPriceMinor),
+      unitName: view.unitName,
+      grantQuantity: view.grantQuantity,
+      assetKind: view.assetKind,
+      status: view.status,
+      revision: view.revision,
+      createdAt: view.createdAt,
+      updatedAt: view.updatedAt,
+      /* 价格与关系无关（§41），而拥有关系不属于商品（§10/§24）。 */
+      pricingIsRelationshipFree: C.PRICING_IS_RELATIONSHIP_FREE,
+      holdsOwnership: false,
+      grantsInventory: String(view.fulfillment) !== C.FULFILLMENT.SERVICE_EXECUTION,
+      hasDiscount: false,
+      hasRecommendation: false
+    };
+  }
+
+  function serializeInventoryEntry(view) {
+    return {
+      domain: C.DOMAIN,
+      inventoryEntryId: view.inventoryEntryId,
+      ownerId: view.ownerId,
+      ownerType: view.ownerType,
+      productId: view.productId,
+      assetKind: view.assetKind,
+      quantity: view.quantity,
+      revision: view.revision,
+      createdAt: view.createdAt,
+      updatedAt: view.updatedAt,
+      productPresent: view.productPresent,
+      /* 库存 ≠ 钱包（§12）：它不是余额、不参与 available、不按币种聚合。 */
+      isABalance: false,
+      contributesToAvailableBalance: false,
+      countsAsPaymentCurrency: false
+    };
+  }
+
+  /* ── 幂等身份（§19/§15）──────────────────────────────────────────────
+     三条指纹各自只覆盖"这次请求是什么"：**不含**任何生成的 id
+     （storeId / productId / inventoryEntryId 都可能由调用方显式给出，
+     但它们是执行结果的身份，不是请求的身份），也不含时间戳。 */
+  function storeFingerprint(payload) {
+    return fingerprintOf(stableStringify({ scope: C.OPERATION_SCOPE.STORE, request: payload }));
+  }
+
+  function productFingerprint(payload) {
+    return fingerprintOf(stableStringify({ scope: C.OPERATION_SCOPE.PRODUCT, request: payload }));
+  }
+
+  function inventoryFingerprint(scope, payload) {
+    return fingerprintOf(stableStringify({ scope: String(scope), request: payload }));
+  }
+
+  function normalizeLimit(value, fallback, max) {
+    return Math.max(1, Math.min(max || 500, Number(value) || fallback || 100));
+  }
+
+  /* ── productAvailabilityForQuote（§9 / §33 的落点）────────────────────
+     一份报价只可能在**一件正在卖的商品**上生成。这条规则有两个半边：
+       · product.status 必须是 ACTIVE；
+       · 它所属的 store 也必须是 ACTIVE —— 否则"把货架关掉"这个动作
+         没有任何后果，而 DISABLED 就退化成一个装饰性的字段。
+     返回的是一个**拒绝形状**（而不是抛错），因为它同时被 createQuote
+     （事务之外）与 createProductQuote 使用，而两者都在写任何东西之前。 */
+  function productAvailabilityForQuote(productId) {
+    const row = db.prepare(SQL.selectProduct).get(String(productId));
+    if (!row) {
+      return {
+        ok: false,
+        denial: denial(C.DENY_REASON.PRODUCT_NOT_FOUND, ['product-not-found'], { productId: String(productId) })
+      };
+    }
+    const product = rowToProduct(row);
+    if (product.status !== C.PRODUCT_STATUS.ACTIVE) {
+      /* 注意这里是 PRODUCT_DISABLED 而不是一个新代码：DISABLED 与 RETIRED
+         对调用方的含义相同（"这件商品现在买不了"），差别在 detail 里 ——
+         而 detail 里的那个词正是审计需要的（§9：两者在事件里分开，
+         在拒绝里合并是刻意的：调用方的正确反应完全一样）。 */
+      return {
+        ok: false,
+        denial: denial(C.DENY_REASON.PRODUCT_DISABLED, ['product-status-is-not-active'],
+          { productId: product.productId, productStatus: product.status })
+      };
+    }
+    const storeRow = db.prepare(SQL.selectStore).get(product.storeId);
+    if (!storeRow) {
+      return {
+        ok: false,
+        denial: denial(C.DENY_REASON.STORE_NOT_FOUND, ['store-not-found'],
+          { productId: product.productId, storeId: product.storeId })
+      };
+    }
+    const store = rowToStore(storeRow);
+    if (store.status !== C.STORE_STATUS.ACTIVE) {
+      return {
+        ok: false,
+        denial: denial(C.DENY_REASON.PRODUCT_DISABLED, ['store-status-is-not-active'],
+          { productId: product.productId, storeId: store.storeId, storeStatus: store.status })
+      };
+    }
+    return { ok: true, product: product, store: store, denial: null };
+  }
+
+  /* ── 读：货架 ────────────────────────────────────────────────────────
+     listStores 刻意**不**接受任何"给谁看"的参数（§40）：没有 ownerId、
+     没有 relationshipId、没有推荐输入。货架顺序是 sortOrder，一个只被
+     人改的整数，而不是一个被算出来的分数。 */
+  function getStore(input) {
+    requireOpen();
+    const o = typeof input === 'string' ? { storeId: input } : (input || {});
+    if (!o.storeId) return { ok: false, store: null, errors: ['store-id-required'] };
+    const row = db.prepare(SQL.selectStore).get(String(o.storeId));
+    if (!row) return { ok: false, store: null, errors: ['store-not-found'] };
+    return { ok: true, store: rowToStore(row) };
+  }
+
+  function listStores(options) {
+    requireOpen();
+    const o = options || {};
+    const limit = normalizeLimit(o.limit, 100, 500);
+    const rows = o.status != null
+      ? db.prepare(SQL.selectStoresByStatus).all(String(o.status), limit)
+      : db.prepare(SQL.selectStores).all(limit);
+    return { ok: true, stores: rows.map(rowToStore) };
+  }
+
+  /* ── 读：商品 ────────────────────────────────────────────────────────
+     过滤条件是 storeId / status / kind / currency / limit（§29 的最小集），
+     全部落在**一条** SQL 里。刻意没有全文搜索、没有排序学习、没有"相关性"，
+     也没有"取一页再筛" —— 后者会因为 LIMIT 先于过滤生效而**少返回**。 */
+  function getProduct(input) {
+    requireOpen();
+    const o = typeof input === 'string' ? { productId: input } : (input || {});
+    if (!o.productId) return { ok: false, product: null, errors: ['product-id-required'] };
+    const row = db.prepare(SQL.selectProduct).get(String(o.productId));
+    if (!row) return { ok: false, product: null, errors: ['product-not-found'] };
+    return { ok: true, product: rowToProduct(row) };
+  }
+
+  function listProducts(options) {
+    requireOpen();
+    const o = options || {};
+    const limit = normalizeLimit(o.limit, 100, 500);
+    const storeId = o.storeId == null ? null : String(o.storeId);
+    const status = o.status == null ? null : String(o.status);
+    const kind = o.kind == null ? null : String(o.kind);
+    const currency = o.currency == null ? null : String(o.currency);
+    const rows = db.prepare(SQL.selectProductsFiltered).all(
+      storeId, storeId, status, status, kind, kind, currency, currency, limit
+    );
+    return { ok: true, products: rows.map(rowToProduct) };
+  }
+
+  /* ── 读：库存 ────────────────────────────────────────────────────────
+     唯一的 canonical 读入口。inventoryQuantity 是 §30 点名要的那个查询，
+     而它回答 0 的两种含义刻意分开：present=false 表示"从来没有过这一行"，
+     quantity=0 表示"曾经有过、现在用光了"（§23：行保留）。 */
+  function getInventoryEntry(input) {
+    requireOpen();
+    const o = typeof input === 'string' ? { inventoryEntryId: input } : (input || {});
+    let row = null;
+    if (o.inventoryEntryId != null) {
+      row = db.prepare(SQL.selectInventoryEntry).get(String(o.inventoryEntryId));
+    } else if (o.ownerId != null && o.productId != null) {
+      row = db.prepare(SQL.selectInventoryByOwnerProduct).get(String(o.ownerId), String(o.productId));
+    } else {
+      return { ok: false, entry: null, errors: ['inventory-entry-id-or-owner-and-product-required'] };
+    }
+    if (!row) return { ok: false, entry: null, errors: ['inventory-entry-not-found'] };
+    const productRow = db.prepare(SQL.selectProduct).get(String(row.product_id));
+    return { ok: true, entry: rowToInventoryEntry(row, productRow) };
+  }
+
+  function listInventory(options) {
+    requireOpen();
+    const o = options || {};
+    const limit = normalizeLimit(o.limit, 100, 500);
+    const ownerId = o.ownerId == null ? null : String(o.ownerId);
+    const productId = o.productId == null ? null : String(o.productId);
+    const assetKind = o.assetKind == null ? null : String(o.assetKind);
+    /* §51：ownerId 是**必须**的过滤条件之一。没有 owner 的"列库存"是一次
+       全局查询，而它正是"按 productId 全局扣库存"这类错误的温床 ——
+       因此这里拒绝，而不是返回一个跨 owner 的大列表。 */
+    if (ownerId == null && productId == null) {
+      return { ok: false, entries: [], errors: ['inventory-listing-requires-an-owner-or-a-product'] };
+    }
+    const rows = db.prepare(SQL.selectInventoryFiltered).all(
+      ownerId, ownerId, productId, productId, assetKind, assetKind, limit
+    );
+    /* 列表形态不解引用商品（那会变成一次 N+1 查询）：因此 productPresent
+       在这里一律是 false。它的意思是"这次读取没有顺带查商品"，
+       而不是"商品不存在" —— 单条读（getInventoryEntry）会给真值。 */
+    return { ok: true, entries: rows.map(r => rowToInventoryEntry(r, null)) };
+  }
+
+  function inventoryQuantity(ownerId, productId) {
+    requireOpen();
+    const row = db.prepare(SQL.selectInventoryByOwnerProduct).get(String(ownerId), String(productId));
+    if (!row) {
+      return {
+        ok: true, present: false, ownerId: String(ownerId), productId: String(productId),
+        quantity: 0, assetKind: null, inventoryEntryId: null
+      };
+    }
+    return {
+      ok: true, present: true, ownerId: String(row.owner_id), productId: String(row.product_id),
+      quantity: Number(row.quantity), assetKind: String(row.asset_kind),
+      inventoryEntryId: String(row.inventory_entry_id)
+    };
+  }
+
+  /* ── putStore：货架的创建与修改 ──────────────────────────────────────
+     为什么 create 与 update 合成一个入口：与 putBudgetPolicy 同款 ——
+     它们是**同一个**幂等 scope 下的同一类请求，而两个入口会让"同一个 key
+     既 create 又 update"变成一个必须被解释的边界情况。
+     `ifRevision` 是可选的乐观并发：货架名与顺序是需要人改的东西，
+     "两个人同时改、后者静默覆盖前者"是这里最该避免的失败。 */
+  function putStore(input) {
+    requireOpen();
+    const o = input || {};
+    /* 契约的 validateStore 收的是**原始**输入（含未知键），因此
+       "多传了一个字段"在这里就会被拒绝 —— 而不是被静默忽略。 */
+    const shape = C.validateStore(o);
+    if (!shape.ok) return denial(C.DENY_REASON.CATALOG_INPUT_NOT_STRUCTURED, shape.errors);
+    const key = C.normalizeIdempotencyKey(o.idempotencyKey);
+    if (!key.ok) return { ok: false, denied: false, reasonCode: null, errors: key.errors };
+
+    const name = String(o.name).trim();
+    const description = o.description == null ? null : String(o.description);
+    const status = o.status == null ? C.STORE_STATUS.ACTIVE : String(o.status);
+    const sortOrder = o.sortOrder == null ? 0 : Number(o.sortOrder);
+    const storeId = o.storeId != null ? String(o.storeId) : nextId('STORE');
+    if (!C.isEconomyId('STORE', storeId)) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['store-id-not-canonical'] };
+    }
+
+    const fingerprint = storeFingerprint({
+      name: name, description: description, status: status, sortOrder: sortOrder
+    });
+    const seen = operationIdempotencyLookup(C.OPERATION_SCOPE.STORE, key.key, fingerprint);
+    if (seen.found && seen.conflict) return operationIdempotencyConflict(C.OPERATION_SCOPE.STORE, key.key, seen);
+    if (seen.found) return { ok: true, replayed: true, idempotencyKey: key.key, result: seen.result };
+
+    const existingRow = db.prepare(SQL.selectStore).get(storeId);
+    const existing = existingRow ? rowToStore(existingRow) : null;
+    if (existing && o.ifRevision != null && Number(o.ifRevision) !== existing.revision) {
+      return {
+        ok: false, denied: false, reasonCode: null,
+        errors: ['store-revision-mismatch'],
+        expectedRevision: Number(o.ifRevision), actualRevision: existing.revision, storeId: storeId
+      };
+    }
+
+    const at = clock();
+    const created = !existing;
+    let committed = null;
+    try {
+      withTransaction(() => {
+        /* 事务内重读：BEGIN IMMEDIATE 之后写锁已经拿到，因此这一段看到的
+           货架行不可能被另一个 writer 改动。 */
+        const currentRow = db.prepare(SQL.selectStore).get(storeId);
+        if (!currentRow && !created) throw refuse(null, ['store-disappeared-inside-the-transaction']);
+        if (currentRow && created) throw refuse(null, ['store-was-created-concurrently']);
+        if (currentRow && o.ifRevision != null && Number(currentRow.revision) !== Number(o.ifRevision)) {
+          throw refuse(null, ['store-revision-mismatch'],
+            { expectedRevision: Number(o.ifRevision), actualRevision: Number(currentRow.revision) });
+        }
+        const revision = allocateRevision();
+        if (created) {
+          db.prepare(SQL.insertStore).run(
+            storeId, name, description, status, Number(sortOrder),
+            key.key, fingerprint, Number(revision), Number(at), Number(at)
+          );
+          faultPoint('after-store-insert');
+        } else {
+          db.prepare(SQL.updateStore).run(
+            name, description, status, Number(sortOrder),
+            key.key, fingerprint, Number(revision), Number(at), storeId
+          );
+          faultPoint('after-store-update');
+        }
+        const row = db.prepare(SQL.selectStore).get(storeId);
+        if (!row) throw refuse(null, ['store-row-missing-after-write']);
+        const view = rowToStore(row);
+        const eventKind = created ? C.EVENT_TYPE.STORE_CREATED : C.EVENT_TYPE.STORE_UPDATED;
+        const result = {
+          domain: C.DOMAIN,
+          storeId: String(storeId),
+          created: created,
+          eventKind: String(eventKind),
+          previousStatus: existing ? existing.status : null,
+          store: serializeStore(view),
+          revision: Number(revision),
+          at: Number(at),
+          idempotencyKey: key.key,
+          /* 逐字写明：改货架**不是**经济运动，也不是"改价"（§2）。 */
+          ledgerMutation: false,
+          priceMutation: false,
+          ownershipMutation: false
+        };
+        appendChange({
+          revision: Number(revision), kind: String(eventKind),
+          entityId: String(storeId), transactionId: null, walletId: null, at: Number(at),
+          payload: {
+            domain: C.DOMAIN,
+            storeId: String(storeId),
+            name: name,
+            status: status,
+            sortOrder: Number(sortOrder),
+            previousStatus: existing ? existing.status : null,
+            ledgerMutation: false,
+            priceMutation: false,
+            ownershipMutation: false
+          }
+        });
+        faultPoint('before-store-change-log');
+        writeOperationIdempotency(C.OPERATION_SCOPE.STORE, key.key, fingerprint, {
+          operationId: null, reservationId: null, transactionId: null
+        }, result, revision, at);
+        faultPoint('before-store-commit');
+        committed = result;
+      });
+    } catch (error) {
+      const refusal = translateRefusal(error);
+      if (!refusal) throw error;
+      return refusal;
+    }
+
+    pruneOperationIdempotency(at);
+    logger('economy-store-written', {
+      storeId: committed.storeId, created: created, status: status, revision: committed.revision
+    });
+    return { ok: true, replayed: false, idempotencyKey: key.key, result: committed };
+  }
+
+  /* ── putProduct：商品的创建、改价、改状态 ────────────────────────────
+     一条必须说清楚的语义（§8）：**更新商品不会重写过去**。
+       · 历史 Quote 不变 —— 因为报价的金额/币种/数量/种类都在它自己的列
+         上，而本函数一个字节都不碰 quotes 表；
+       · 历史 Inventory 不变 —— 同上（也不碰 inventory 表）；
+       · 历史 Ledger 不变 —— 本函数没有一次 commitLedgerTransactionInTx。
+     这三句话的结构性证据是同一件事：本函数体的写语句集合里只有
+     insertProduct / updateProduct / setProductStatus / appendChange /
+     writeOperationIdempotency。 */
+  function putProduct(input) {
+    requireOpen();
+    const o = input || {};
+    const shape = C.validateProduct(o);
+    if (!shape.ok) return denial(C.DENY_REASON.CATALOG_INPUT_NOT_STRUCTURED, shape.errors);
+    const key = C.normalizeIdempotencyKey(o.idempotencyKey);
+    if (!key.ok) return { ok: false, denied: false, reasonCode: null, errors: key.errors };
+
+    const kind = String(o.kind);
+    const fulfillment = C.fulfillmentOfProductKind(kind);
+    const assetKind = C.assetKindOfProductKind(kind);
+    const name = String(o.name).trim();
+    const description = o.description == null ? null : String(o.description);
+    const currency = C.validateCurrency(o.currency).currency;
+    const price = C.normalizeAmountMinor(o.unitPriceMinor);
+    if (!price.ok) return denial(C.DENY_REASON.CATALOG_INPUT_NOT_STRUCTURED, price.errors);
+    const unitName = o.unitName == null ? C.unitNameOfProductKind(kind) : String(o.unitName);
+    const grantQuantity = o.grantQuantity == null ? 0 : Number(o.grantQuantity);
+    const status = o.status == null ? C.PRODUCT_STATUS.ACTIVE : String(o.status);
+    const storeId = String(o.storeId);
+    const productId = o.productId != null ? String(o.productId) : nextId('PRODUCT');
+    if (!C.isEconomyId('PRODUCT', productId)) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['product-id-not-canonical'] };
+    }
+
+    const fingerprint = productFingerprint({
+      storeId: storeId, kind: kind, name: name, description: description,
+      currency: currency, unitPriceMinor: C.serializeAmountMinor(price.amountMinor),
+      unitName: String(unitName), grantQuantity: grantQuantity, status: status
+    });
+    const seen = operationIdempotencyLookup(C.OPERATION_SCOPE.PRODUCT, key.key, fingerprint);
+    if (seen.found && seen.conflict) return operationIdempotencyConflict(C.OPERATION_SCOPE.PRODUCT, key.key, seen);
+    if (seen.found) return { ok: true, replayed: true, idempotencyKey: key.key, result: seen.result };
+
+    const existingRow = db.prepare(SQL.selectProduct).get(productId);
+    const existing = existingRow ? rowToProduct(existingRow) : null;
+    if (existing && o.ifRevision != null && Number(o.ifRevision) !== existing.revision) {
+      return {
+        ok: false, denied: false, reasonCode: null,
+        errors: ['product-revision-mismatch'],
+        expectedRevision: Number(o.ifRevision), actualRevision: existing.revision, productId: productId
+      };
+    }
+    /* ── "商品本体"不可变（§20）────────────────────────────────────────
+       改 kind / fulfillment / storeId 不是"改一件商品"，而是换了一件商品：
+       交付形态变了、或者它搬到了另一个货架上，而历史报价里的
+       settlementType 仍然说着当时的话。允许它们在同一个 productId 下变化
+       会让那个 id 的两个时刻说出不同的话。正确形态是新建一个 product。 */
+    if (existing) {
+      if (existing.kind !== kind) {
+        return denial(C.DENY_REASON.CATALOG_INPUT_NOT_STRUCTURED,
+          ['product-kind-is-immutable-a-different-kind-is-a-different-product'],
+          { productId: productId, currentKind: existing.kind, requestedKind: kind });
+      }
+      if (existing.storeId !== storeId) {
+        return denial(C.DENY_REASON.CATALOG_INPUT_NOT_STRUCTURED,
+          ['product-store-is-immutable-relisting-is-a-new-product'],
+          { productId: productId, currentStoreId: existing.storeId, requestedStoreId: storeId });
+      }
+    }
+    /* ── 状态推进必须走状态机（§9）─────────────────────────────────────
+       RETIRED 是终态，因此"退役后重新上架"在这里被拒绝，而不是让它变成
+       一条 payload 上写着 RETIRED→ACTIVE 的 change log。 */
+    const statusChanged = !existing || existing.status !== status;
+    if (existing && statusChanged) {
+      const transition = C.assertProductStatusTransition(existing.status, status);
+      if (!transition.ok) {
+        return denial(C.DENY_REASON.TRANSITION_NOT_ALLOWED, transition.errors,
+          { from: existing.status, to: status, detail: transition.detail || null, productId: productId });
+      }
+    }
+
+    const at = clock();
+    const created = !existing;
+    let committed = null;
+    try {
+      withTransaction(() => {
+        const currentRow = db.prepare(SQL.selectProduct).get(productId);
+        if (!currentRow && !created) throw refuse(null, ['product-disappeared-inside-the-transaction']);
+        if (currentRow && created) throw refuse(null, ['product-was-created-concurrently']);
+        if (currentRow && o.ifRevision != null && Number(currentRow.revision) !== Number(o.ifRevision)) {
+          throw refuse(null, ['product-revision-mismatch'],
+            { expectedRevision: Number(o.ifRevision), actualRevision: Number(currentRow.revision) });
+        }
+        /* 货架必须在**事务内**存在：否则一个并发的 store 删除
+           （本阶段没有这条路径，但将来可能有）会留下一个悬空引用。 */
+        const storeRow = db.prepare(SQL.selectStore).get(storeId);
+        if (!storeRow) {
+          throw refuse(C.DENY_REASON.STORE_NOT_FOUND, ['store-not-found'], { storeId: storeId });
+        }
+        const revision = allocateRevision();
+        if (created) {
+          db.prepare(SQL.insertProduct).run(
+            productId, storeId, kind, String(fulfillment), name, description, currency,
+            toSqlAmount(price.amountMinor, 'product-unit-price'), String(unitName), Number(grantQuantity),
+            assetKind == null ? null : String(assetKind), status,
+            key.key, fingerprint, Number(revision), Number(at), Number(at)
+          );
+          faultPoint('after-product-insert');
+        } else {
+          /* 两条语句，各管一半：内容（含价格）与状态（含终态守卫）。
+             金额列只出现在第一条里，状态列只出现在第二条里 —— 因此
+             "改价顺带改状态"在语句层面做不到。 */
+          db.prepare(SQL.updateProduct).run(
+            name, description, currency, toSqlAmount(price.amountMinor, 'product-unit-price'),
+            String(unitName), Number(grantQuantity),
+            key.key, fingerprint, Number(revision), Number(at), productId
+          );
+          faultPoint('after-product-update');
+          if (statusChanged) {
+            const guarded = db.prepare(SQL.setProductStatus).run(
+              status, key.key, fingerprint, Number(revision), Number(at), productId, String(currentRow.status)
+            );
+            if (Number(guarded.changes) !== 1) {
+              throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['product-status-transition-was-not-applied'],
+                { productId: productId, from: String(currentRow.status), to: status });
+            }
+            faultPoint('after-product-status-transition');
+          }
+        }
+        const row = db.prepare(SQL.selectProduct).get(productId);
+        if (!row) throw refuse(null, ['product-row-missing-after-write']);
+        const view = rowToProduct(row);
+        /* ── 事件类型是**四选一**，而且顺序必须这样写 ────────────────────
+           开发期抓到的真实缺陷：第一版写的是
+             created ? PRODUCT_CREATED
+                     : (statusChanged ? (status === RETIRED ? RETIRED : DISABLED)
+                                      : UPDATED)
+           然后在下面补了一句"状态回到 ACTIVE 时归回 UPDATED"。那两句组合
+           起来让**新建**一个 ACTIVE 商品也报成 PRODUCT_UPDATED —— 因为
+           `statusChanged` 的定义是 `!existing || existing.status !== status`，
+           对一次创建来说它是 true，而 status 恰好是 ACTIVE。
+           症状很隐蔽：商品建对了、状态对了、payload 里 previousStatus 也
+           是 null，只有 kind 这一个字段在说谎，而"有几件商品被创建过"
+           这个审计问题因此答不出来。
+           修法是把**创建**放在最前面，让后面三个分支只处理"已存在的商品
+           的状态推进"：
+             created                        → PRODUCT_CREATED
+             !statusChanged                 → PRODUCT_UPDATED（改价/改名）
+             status === RETIRED             → PRODUCT_RETIRED（终态）
+             status === DISABLED            → PRODUCT_DISABLED
+             status === ACTIVE（重新上架）  → PRODUCT_UPDATED
+           payload 里始终带着 previousStatus 与 status 两个字段，
+           因此"从上架到停用"与"从停用到上架"在审计里永远可分。 */
+        const eventKind = created
+          ? C.EVENT_TYPE.PRODUCT_CREATED
+          : (!statusChanged
+            ? C.EVENT_TYPE.PRODUCT_UPDATED
+            : (status === C.PRODUCT_STATUS.RETIRED
+              ? C.EVENT_TYPE.PRODUCT_RETIRED
+              : (status === C.PRODUCT_STATUS.DISABLED
+                ? C.EVENT_TYPE.PRODUCT_DISABLED
+                : C.EVENT_TYPE.PRODUCT_UPDATED)));
+        const namedKind = eventKind;
+        const result = {
+          domain: C.DOMAIN,
+          productId: String(productId),
+          created: created,
+          statusChanged: statusChanged,
+          previousStatus: existing ? existing.status : null,
+          eventKind: String(namedKind),
+          product: serializeProduct(view),
+          previousUnitPriceMinor: existing ? C.serializeAmountMinor(existing.unitPriceMinor) : null,
+          revision: Number(revision),
+          at: Number(at),
+          idempotencyKey: key.key,
+          /* ── §8：更新商品**不**重写过去。这三句是可断言的自述，
+             而它们的证据是"本函数没有碰 quotes / inventory / ledger"。 */
+          rewriteOfHistoricalQuotes: false,
+          rewriteOfHistoricalInventory: false,
+          ledgerMutation: false
+        };
+        appendChange({
+          revision: Number(revision), kind: String(namedKind),
+          entityId: String(productId), transactionId: null, walletId: null, at: Number(at),
+          payload: {
+            domain: C.DOMAIN,
+            productId: String(productId),
+            storeId: storeId,
+            kind: kind,
+            fulfillment: String(fulfillment),
+            currency: currency,
+            unitPriceMinor: C.serializeAmountMinor(price.amountMinor),
+            previousUnitPriceMinor: existing ? C.serializeAmountMinor(existing.unitPriceMinor) : null,
+            grantQuantity: Number(grantQuantity),
+            status: status,
+            previousStatus: existing ? existing.status : null,
+            rewriteOfHistoricalQuotes: false,
+            ledgerMutation: false
+          }
+        });
+        faultPoint('before-product-change-log');
+        writeOperationIdempotency(C.OPERATION_SCOPE.PRODUCT, key.key, fingerprint, {
+          operationId: null, reservationId: null, transactionId: null
+        }, result, revision, at);
+        faultPoint('before-product-commit');
+        committed = result;
+      });
+    } catch (error) {
+      const refusal = translateRefusal(error);
+      if (!refusal) throw error;
+      return refusal;
+    }
+
+    pruneOperationIdempotency(at);
+    logger('economy-product-written', {
+      productId: committed.productId, storeId: storeId, kind: kind, created: created,
+      status: status, revision: committed.revision
+    });
+    return { ok: true, replayed: false, idempotencyKey: key.key, result: committed };
+  }
+
+  /* ── createProductQuote（§6/§7/§21）──────────────────────────────────
+     这是 P22-5 的**canonical 报价路径**：价格、币种、数量、种类全部从
+     Product 的 canonical 行派生，调用方**没有地方**传一个金额进来。
+     这一点是结构性的：本函数只把五个**派生出来的**值交给 createQuote，
+     而 o.amountMinor / o.currency / o.quantity / o.kind 即使被传进来也
+     不会被读到 —— 它们不在参数列表里。
+
+     P22-4 的 raw createQuote **保留不动**（§21：不要为了"接口统一"破坏
+     P22-4）。两者的分工写在名字里：一个从商品生成报价，一个是冻结的
+     底层 primitive。 */
+
+  /* ── provenance（§22）───────────────────────────────────────────────
+     参数是**请求的 productId**，而不是一行。这个签名本身就在表达那句
+     语义：provenance 回答的是"这个 id 现在指向什么"，而"什么都没有"
+     是一个**完整的**答案（present:false），不是一次失败。
+     如果它收一行，调用方就必须先决定"查不到时怎么办" —— 而那个决定
+     正是 §22 要求被明确下来的那一个。 */
+  function productProvenanceOf(productId) {
+    const id = productId == null ? null : String(productId);
+    const row = id == null ? null : db.prepare(SQL.selectProduct).get(id);
+    if (!row) {
+      return {
+        productId: id,
+        present: false,
+        relation: C.QUOTE_PRODUCT_RELATION.PROVENANCE_ONLY,
+        name: null,
+        storeId: null,
+        storePresent: false,
+        storeStatus: null,
+        status: null,
+        fulfillment: null,
+        revision: null,
+        /* 逐字：报价的**经济事实**不在这里，它在报价自己的列上。 */
+        quoteEconomicContentDependsOnThisRow: false
+      };
+    }
+    const storeRow = db.prepare(SQL.selectStore).get(String(row.store_id));
+    return {
+      productId: String(row.product_id),
+      present: true,
+      relation: C.QUOTE_PRODUCT_RELATION.PROVENANCE_ONLY,
+      name: String(row.name),
+      storeId: String(row.store_id),
+      storePresent: !!storeRow,
+      storeStatus: storeRow ? String(storeRow.status) : null,
+      status: String(row.status),
+      fulfillment: String(row.fulfillment),
+      revision: Number(row.revision),
+      quoteEconomicContentDependsOnThisRow: false
+    };
+  }
+
+  function createProductQuote(input) {
+    requireOpen();
+    const o = input || {};
+    const productId = o.productId == null ? null : String(o.productId);
+    if (!C.isEconomyId('PRODUCT', productId)) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['product-id-not-canonical'] };
+    }
+    /* 幂等闸门必须在**任何派生之前**：同一个 key 换个商品重放时，
+       正确回答是冲突，而不是"那个商品的报价"。 */
+    const key = C.normalizeIdempotencyKey(o.idempotencyKey);
+    if (!key.ok) return { ok: false, denied: false, reasonCode: null, errors: key.errors };
+
+    const units = o.units == null ? 1 : Number(o.units);
+
+    const available = productAvailabilityForQuote(productId);
+    if (!available.ok) return available.denial;
+    const product = available.product;
+
+    const derivedQuantity = C.productQuoteQuantity(product, units);
+    if (!derivedQuantity.ok) return denial(C.DENY_REASON.CATALOG_INPUT_NOT_STRUCTURED, derivedQuantity.errors);
+    const derivedAmount = C.productQuoteAmountMinor(product, units);
+    if (!derivedAmount.ok) return denial(C.DENY_REASON.CATALOG_INPUT_NOT_STRUCTURED, derivedAmount.errors);
+
+    const hasRecipient = o.recipientId != null && String(o.recipientId).trim() !== '';
+    const derivedKind = C.productQuoteKindFor(product.fulfillment, hasRecipient);
+    if (!derivedKind.ok) return denial(C.DENY_REASON.EFFECT_NOT_ALLOWED, derivedKind.errors);
+
+    const out = createQuote({
+      buyerId: o.buyerId != null ? o.buyerId : o.ownerId,
+      recipientId: o.recipientId,
+      currency: product.currency,
+      amountMinor: derivedAmount.amountMinor,
+      quantity: derivedQuantity.quantity,
+      kind: derivedKind.kind,
+      productId: product.productId,
+      expiresAt: o.expiresAt,
+      predecessorQuoteId: o.predecessorQuoteId,
+      quoteId: o.quoteId,
+      idempotencyKey: o.idempotencyKey
+    });
+    if (out.ok !== true) return out;
+
+    const provenance = productProvenanceOf(product.productId);
+    const result = Object.assign({}, out.result, {
+      productBacked: true,
+      derivedFrom: 'sqlite-products',
+      /* 这份报价**派生自**哪些 canonical 值。写下来是为了让"价格是从哪
+         来的"在审计里可读，而不是让下游再推导一次。 */
+      derived: {
+        currency: product.currency,
+        unitPriceMinor: C.serializeAmountMinor(product.unitPriceMinor),
+        units: units,
+        quantity: derivedQuantity.quantity,
+        kind: derivedKind.kind,
+        settlementType: C.settlementTypeOfQuoteKind(derivedKind.kind),
+        unitName: product.unitName,
+        grantQuantity: product.grantQuantity
+      },
+      productProvenance: provenance
+    });
+    return Object.assign({}, out, { result: result });
+  }
+
+  /* ── mutateInventory：grant 与 consume 的**同一个**实现 ──────────────
+     一个函数两个方向而不是两个函数：两者的差别**只有**符号、守卫与
+     scope —— 三样都是参数。分成两份拷贝会让"并发安全"这条性质必须被
+     证明两次，而其中一次的证明通常会被漏掉。
+
+     ── §13：这是**底层 primitive**，不是 Purchase ────────────────────
+     它不动钱（没有一次 ledger 写入）、不动钱包缓存、不创建 operation /
+     reservation，也不消费任何报价。因此它的结果里逐字写着
+     ledgerMutation: false / walletMutation: false / isAPurchase: false。
+     未来的 Purchase 会在**同一个事务**里做 ledger + inventory 两件事，
+     而那时它调用的是本函数（或者它同一层的实现），不是"再 grant 一次"。
+
+     ── §16：并发安全的三道防线 ────────────────────────────────────────
+       ① BEGIN IMMEDIATE —— 写锁在**读 canonical 数量之前**拿到，
+          因此"读到的数"与"写回的数"之间不可能插入另一个 writer；
+       ② 带算术守卫的 UPDATE（grow: `quantity + ? <= 上界`，
+          shrink: `quantity >= ?`）—— 结果为 0 行即拒绝；
+       ③ 表上的 CHECK (quantity >= 0) —— 即使前两道都被将来的重构破坏，
+          负数量也进不了库。
+     三道同时存在是有意的：§16 要求的是"结构性保证"，而"结构性"在这里
+     意味着**不依赖任何单点**。 */
+  function mutateInventory(mode, input) {
+    requireOpen();
+    const grant = String(mode) === 'grant';
+    const scope = grant ? C.OPERATION_SCOPE.INVENTORY_GRANT : C.OPERATION_SCOPE.INVENTORY_CONSUME;
+    const o = input || {};
+    const owner = partyInput(o.ownerId != null ? o.ownerId : o.characterId);
+    if (!owner.ok) return { ok: false, denied: false, reasonCode: null, errors: owner.errors };
+    if (owner.party.type === C.PARTY_TYPE.SYSTEM) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['system-party-cannot-hold-inventory'] };
+    }
+    const ownerId = String(owner.party.id);
+    const productId = o.productId == null ? null : String(o.productId);
+    if (!C.isEconomyId('PRODUCT', productId)) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['product-id-not-canonical'] };
+    }
+    const quantity = Number(o.quantity);
+    if (!Number.isSafeInteger(quantity) || quantity < 1) {
+      return denial(C.DENY_REASON.INVENTORY_INPUT_NOT_STRUCTURED,
+        ['inventory-quantity-must-be-a-positive-safe-integer']);
+    }
+    /* 唯一物品在本阶段**不可表示**：契约用一个封闭集合 + 一条显式否认
+       表达它，而这里把"有人试图按实例发放"变成一个明确的失败。 */
+    if (o.instanceId != null || o.serial != null || o.uniqueItemId != null) {
+      return denial(C.DENY_REASON.INVENTORY_INPUT_NOT_STRUCTURED,
+        ['unique-item-instances-are-not-modelled-in-this-schema']);
+    }
+    const key = C.normalizeIdempotencyKey(o.idempotencyKey);
+    if (!key.ok) return { ok: false, denied: false, reasonCode: null, errors: key.errors };
+
+    const fingerprint = inventoryFingerprint(scope, {
+      ownerId: ownerId, ownerType: String(owner.party.type), productId: productId, quantity: quantity
+    });
+    /* 幂等闸门在任何写之前 —— 重放零成本、零副作用（P22-2 §14）。 */
+    const seen = operationIdempotencyLookup(scope, key.key, fingerprint);
+    if (seen.found && seen.conflict) return operationIdempotencyConflict(scope, key.key, seen);
+    if (seen.found) return { ok: true, replayed: true, idempotencyKey: key.key, result: seen.result };
+
+    const productRow = db.prepare(SQL.selectProduct).get(productId);
+    if (!productRow) {
+      return denial(C.DENY_REASON.PRODUCT_NOT_FOUND, ['product-not-found'], { productId: productId });
+    }
+    const product = rowToProduct(productRow);
+    if (product.assetKind == null) {
+      /* SERVICE 商品不产生库存（§27/§54）。"给一次服务发库存"是一次
+         建模错误，而它必须失败得明确，而不是悄悄写下一行数量。 */
+      return denial(C.DENY_REASON.EFFECT_NOT_ALLOWED,
+        ['this-product-fulfillment-does-not-produce-inventory'],
+        { productId: productId, fulfillment: product.fulfillment });
+    }
+    let requestedEntryId = null;
+    if (o.inventoryEntryId != null) {
+      requestedEntryId = String(o.inventoryEntryId);
+      if (!C.isEconomyId('INVENTORY_ENTRY', requestedEntryId)) {
+        return { ok: false, denied: false, reasonCode: null, errors: ['inventory-entry-id-not-canonical'] };
+      }
+    }
+
+    const at = clock();
+    let committed = null;
+    try {
+      withTransaction(() => {
+        const revision = allocateRevision();
+        /* ── canonical 读：数量**只**从这一行来 ─────────────────────── */
+        const existingRow = db.prepare(SQL.selectInventoryByOwnerProduct).get(ownerId, productId);
+        let entryId;
+        if (grant) {
+          if (!existingRow) {
+            entryId = requestedEntryId == null ? nextId('INVENTORY_ENTRY') : requestedEntryId;
+            if (!C.isEconomyId('INVENTORY_ENTRY', entryId)) {
+              throw refuse(null, ['inventory-entry-id-not-canonical']);
+            }
+            db.prepare(SQL.insertInventory).run(
+              String(entryId), ownerId, String(owner.party.type), productId, String(product.assetKind),
+              Number(quantity), key.key, fingerprint, Number(revision), Number(at), Number(at)
+            );
+            faultPoint('after-inventory-insert');
+          } else {
+            entryId = String(existingRow.inventory_entry_id);
+            const before = Number(existingRow.quantity);
+            /* JS 侧的溢出预判（给出可读的拒绝），SQL 侧的守卫是第二道。 */
+            if (!Number.isSafeInteger(before + quantity) || before + quantity > MAX_INVENTORY_QUANTITY) {
+              throw refuse(C.DENY_REASON.INVENTORY_INPUT_NOT_STRUCTURED,
+                ['inventory-quantity-would-exceed-the-safe-integer-range'],
+                { ownerId: ownerId, productId: productId, current: before, requested: quantity });
+            }
+            const grown = db.prepare(SQL.growInventory).run(
+              Number(quantity), key.key, fingerprint, Number(revision), Number(at),
+              String(entryId), Number(quantity), Number(MAX_INVENTORY_QUANTITY)
+            );
+            if (Number(grown.changes) !== 1) {
+              throw refuse(C.DENY_REASON.INVENTORY_INPUT_NOT_STRUCTURED,
+                ['inventory-quantity-growth-was-not-applied'],
+                { ownerId: ownerId, productId: productId, current: before, requested: quantity });
+            }
+            faultPoint('after-inventory-write');
+          }
+        } else {
+          /* ── 不足的两种形态，同一个 reason code，不同的 detail ──────
+             "从来没有过这一行"与"有过但现在不够"对调用方是同一件事
+             （拿不出这么多），因此共用一个代码；而 available / requested
+             两个数把差别说清楚（§50："consume 8 → DENY，quantity 仍为 7"）。 */
+          if (!existingRow) {
+            throw refuse(C.DENY_REASON.INSUFFICIENT_INVENTORY, ['inventory-entry-not-found'],
+              { ownerId: ownerId, productId: productId, available: 0, requested: quantity });
+          }
+          entryId = String(existingRow.inventory_entry_id);
+          const before = Number(existingRow.quantity);
+          if (before < quantity) {
+            throw refuse(C.DENY_REASON.INSUFFICIENT_INVENTORY, ['inventory-quantity-is-insufficient'],
+              { ownerId: ownerId, productId: productId, available: before, requested: quantity });
+          }
+          const shrunk = db.prepare(SQL.shrinkInventory).run(
+            Number(quantity), key.key, fingerprint, Number(revision), Number(at),
+            String(entryId), Number(quantity)
+          );
+          if (Number(shrunk.changes) !== 1) {
+            throw refuse(C.DENY_REASON.INSUFFICIENT_INVENTORY, ['inventory-decrement-was-not-applied'],
+              { ownerId: ownerId, productId: productId, available: before, requested: quantity });
+          }
+          faultPoint('after-inventory-write');
+        }
+        const row = db.prepare(SQL.selectInventoryEntry).get(String(entryId));
+        if (!row) throw refuse(null, ['inventory-row-missing-after-write']);
+        /* ── 一次**读回**的自检：写进去的数量必须等于我们算出来的那个数。
+           它不是防御性编程，而是把"quantity 是这个账户唯一的真相"变成
+           一条每次都被检查的性质（缓存不存在，因此这里读的就是它）。 */
+        const after = Number(row.quantity);
+        const expected = grant
+          ? (existingRow ? Number(existingRow.quantity) + quantity : quantity)
+          : Number(existingRow.quantity) - quantity;
+        if (after !== expected || after < 0) {
+          throw refuse(C.DENY_REASON.INVENTORY_INPUT_NOT_STRUCTURED,
+            ['inventory-quantity-does-not-match-the-expected-result'],
+            { ownerId: ownerId, productId: productId, before: existingRow ? Number(existingRow.quantity) : 0, expected: expected, actual: after });
+        }
+        const view = rowToInventoryEntry(row, productRow);
+        const eventKind = grant ? C.EVENT_TYPE.INVENTORY_GRANTED : C.EVENT_TYPE.INVENTORY_CONSUMED;
+        const result = {
+          domain: C.DOMAIN,
+          inventoryEntryId: String(entryId),
+          ownerId: ownerId,
+          ownerType: String(owner.party.type),
+          productId: productId,
+          assetKind: String(product.assetKind),
+          quantity: after,
+          previousQuantity: existingRow ? Number(existingRow.quantity) : 0,
+          delta: grant ? Number(quantity) : -Number(quantity),
+          grantedQuantity: grant ? Number(quantity) : 0,
+          consumedQuantity: grant ? 0 : Number(quantity),
+          eventKind: String(eventKind),
+          revision: Number(revision),
+          at: Number(at),
+          idempotencyKey: key.key,
+          entry: serializeInventoryEntry(view),
+          /* ── §13/§14：三句逐字的自述 ────────────────────────────────
+             primitive 不动钱、不动钱包；它不是一次购买。 */
+          ledgerMutation: false,
+          walletMutation: false,
+          isAPurchase: false,
+          notAPurchase: (grant ? 'grantInventory' : 'consumeInventory') +
+            ' is an inventory primitive; a purchase is quote + reservation + ledger + inventory in ONE transaction (a later phase)'
+        };
+        appendChange({
+          revision: Number(revision), kind: String(eventKind),
+          entityId: String(entryId), transactionId: null, walletId: null, at: Number(at),
+          payload: {
+            domain: C.DOMAIN,
+            inventoryEntryId: String(entryId),
+            ownerId: ownerId,
+            ownerType: String(owner.party.type),
+            productId: productId,
+            assetKind: String(product.assetKind),
+            quantity: after,
+            previousQuantity: existingRow ? Number(existingRow.quantity) : 0,
+            delta: grant ? Number(quantity) : -Number(quantity),
+            ledgerMutation: false,
+            walletMutation: false,
+            isAPurchase: false
+          }
+        });
+        faultPoint('before-inventory-change-log');
+        writeOperationIdempotency(scope, key.key, fingerprint, {
+          operationId: null, reservationId: null, transactionId: null
+        }, result, revision, at);
+        faultPoint('before-inventory-commit');
+        committed = result;
+      });
+    } catch (error) {
+      const refusal = translateRefusal(error);
+      if (!refusal) throw error;
+      return refusal;
+    }
+
+    pruneOperationIdempotency(at);
+    logger('economy-inventory-mutated', {
+      mode: grant ? 'grant' : 'consume', ownerId: ownerId, productId: productId,
+      quantity: committed.quantity, revision: committed.revision
+    });
+    return { ok: true, replayed: false, idempotencyKey: key.key, result: committed };
+  }
+
+  function grantInventory(input) { return mutateInventory('grant', input); }
+  function consumeInventory(input) { return mutateInventory('consume', input); }
+
+  /* ══════════════════════════════════════════════════════════════════
      P22-4 · 评估完整性（§17 fail closed 的落点）
      ══════════════════════════════════════════════════════════════════ */
 
@@ -5305,10 +6605,106 @@ function createEconomyStore(deps) {
     return problems;
   }
 
+  /* ── P22-5：目录与库存的结构完整性 ───────────────────────────────────
+     与 policyProblemsOf / quoteProblemsOf 同款：逐行回答"这一行本身是不是
+     一句说得通的话"。四个新函数各自对应一层，因为它们的**失败后果不同**：
+       · storeProblemsOf      —— 组织方式坏了（没有任何经济后果，但目录乱了）
+       · productProblemsOf    —— 商品坏了（价格/交付形态不可信 ⇒ 不可报价）
+       · inventoryProblemsOf  —— 拥有的东西坏了（**这是经济事实**，最严重）
+       · quoteProvenanceProblemsOf —— 报价的**来历**断了（§22：报价本身仍然
+         说得清，断掉的是目录那一面 —— 因此它与 quoteProblemsOf 分开报） */
+  function storeProblemsOf(row) {
+    const problems = [];
+    const id = String(row.store_id);
+    if (!C.isEconomyId('STORE', id)) { problems.push(id + ':store-id-not-canonical'); return problems; }
+    if (String(row.name).trim() === '') { problems.push(id + ':store-name-empty'); return problems; }
+    if (!C.isStoreStatus(String(row.status))) { problems.push(id + ':store-status-not-in-closed-set'); return problems; }
+    if (!Number.isSafeInteger(Number(row.sort_order))) { problems.push(id + ':sort-order-not-a-safe-integer'); return problems; }
+    return problems;
+  }
+
+  /* 商品行是否结构上可信。三条要点：
+       · 交付形态与资产形态必须与 **kind** 一致 —— 它们是派生列，不一致
+         意味着有人改过其中一列，而"买完给什么"因此有了两个答案；
+       · 单位名必须对 compute 两类恰是 computeUnit（否则"卖 token"这句话
+         会在盘面上重新变得可能）；
+       · grantQuantity 必须非负，且服务商品必须是 0。 */
+  function productProblemsOf(row) {
+    const problems = [];
+    const id = String(row.product_id);
+    if (!C.isEconomyId('PRODUCT', id)) { problems.push(id + ':product-id-not-canonical'); return problems; }
+    if (!C.isEconomyId('STORE', row.store_id)) { problems.push(id + ':store-id-not-canonical'); return problems; }
+    if (!C.isProductKind(String(row.product_kind))) { problems.push(id + ':product-kind-not-in-closed-set'); return problems; }
+    const kind = String(row.product_kind);
+    const expectedFulfillment = C.fulfillmentOfProductKind(kind);
+    if (String(row.fulfillment) !== String(expectedFulfillment)) {
+      problems.push(id + ':fulfillment-does-not-match-the-product-kind'); return problems;
+    }
+    const expectedAsset = C.assetKindOfProductKind(kind);
+    const actualAsset = row.asset_kind == null ? null : String(row.asset_kind);
+    if (actualAsset !== (expectedAsset == null ? null : String(expectedAsset))) {
+      problems.push(id + ':asset-kind-does-not-match-the-product-kind'); return problems;
+    }
+    if (!C.isProductStatus(String(row.status))) { problems.push(id + ':product-status-not-in-closed-set'); return problems; }
+    if (!C.CURRENCIES.some(c => c === String(row.currency))) { problems.push(id + ':currency-not-registered'); return problems; }
+    try { fromSqlAmount(row.unit_price_minor, 'product-unit-price'); }
+    catch (error) { problems.push(id + ':unit-price-not-canonical'); return problems; }
+    const grant = Number(row.grant_quantity);
+    if (!Number.isSafeInteger(grant) || grant < 0) { problems.push(id + ':grant-quantity-not-a-non-negative-safe-integer'); return problems; }
+    if (expectedFulfillment === C.FULFILLMENT.SERVICE_EXECUTION && grant !== 0) {
+      problems.push(id + ':a-service-product-must-not-grant-inventory-quantity'); return problems;
+    }
+    if (expectedFulfillment !== C.FULFILLMENT.SERVICE_EXECUTION && grant < 1) {
+      problems.push(id + ':a-delivering-product-must-grant-a-positive-quantity'); return problems;
+    }
+    const unitName = String(row.unit_name);
+    if (!/^[A-Za-z][A-Za-z0-9]{0,31}$/.test(unitName) || C.isForbiddenComputeAlias(unitName)) {
+      problems.push(id + ':unit-name-is-not-canonical'); return problems;
+    }
+    if (expectedFulfillment === C.FULFILLMENT.COMPUTE_GRANT && unitName !== C.COMPUTE_UNIT_NAME) {
+      problems.push(id + ':a-compute-product-must-use-the-frozen-compute-unit-name'); return problems;
+    }
+    return problems;
+  }
+
+  /* 库存行是**经济事实**，因此它的问题列表比目录两条更长：数量、owner、
+     asset_kind 与商品的一致性，逐条查。 */
+  function inventoryProblemsOf(row) {
+    const problems = [];
+    const id = String(row.inventory_entry_id);
+    if (!C.isEconomyId('INVENTORY_ENTRY', id)) { problems.push(id + ':inventory-entry-id-not-canonical'); return problems; }
+    if (String(row.owner_id).trim() === '') { problems.push(id + ':owner-id-empty'); return problems; }
+    if (String(row.owner_type) === C.PARTY_TYPE.SYSTEM) { problems.push(id + ':system-cannot-hold-inventory'); return problems; }
+    if (!C.isEconomyId('PRODUCT', row.product_id)) { problems.push(id + ':product-id-not-canonical'); return problems; }
+    if (C.ASSET_KINDS.indexOf(String(row.asset_kind)) < 0) { problems.push(id + ':asset-kind-not-in-closed-set'); return problems; }
+    const qty = Number(row.quantity);
+    /* 这一条是 CHECK 约束的**读侧**对应物：一个负数不只是在库里不该存在，
+       它在读出来之后也必须被认成"这一面不可信"而不是"欠我 3 个"。 */
+    if (!Number.isSafeInteger(qty) || qty < 0) { problems.push(id + ':quantity-not-a-non-negative-safe-integer'); return problems; }
+    const productRow = db.prepare(SQL.selectProduct).get(String(row.product_id));
+    if (productRow && String(productRow.asset_kind) !== String(row.asset_kind)) {
+      problems.push(id + ':asset-kind-differs-from-its-product'); return problems;
+    }
+    return problems;
+  }
+
+  /* 报价的来历。§22 选的语义是"Product 行是 provenance，不是有效性依赖"，
+     因此这里报的是**悬挂引用**，而不是"这份报价坏了"。两句同时成立：
+     报价照常可读、可评估；而目录这一面确实断了一根线。 */
+  function quoteProvenanceProblemsOf(row) {
+    const id = String(row.quote_id);
+    if (!db.prepare(SQL.selectProduct).get(String(row.product_id))) {
+      return [id + ':product-provenance-missing-the-quote-is-still-explainable'];
+    }
+    return [];
+  }
+
   /* 整个 Economy 的**结构**是否可信。P22-3 逐钱包查引用链；P22-4 在这里
      加上"规则这一面"（政策行）与"命题这一面"（报价行）的全表扫描。
-     规模是 O(政策数 + 报价数)，两者都是人为创建的小表 —— 与
-     reservations 不同，它们不随经济活动线性增长。 */
+     P22-5 再加三层：货架 / 商品 / 库存 + 报价的来历。
+     规模是 O(货架数 + 商品数 + 库存行数 + 报价数)。库存行**会**随经济
+     活动增长，但它一个 owner 一件商品恰好一行，因此上界是
+     (owner 数 × 商品数) —— 与订单数无关。 */
   function economyIntegrityCheck() {
     const problems = [];
     for (const row of db.prepare(SQL.selectBudgetPolicies).all(100000)) {
@@ -5316,6 +6712,16 @@ function createEconomyStore(deps) {
     }
     for (const row of db.prepare(SQL.selectQuotesAll).all()) {
       problems.push.apply(problems, quoteProblemsOf(row));
+      problems.push.apply(problems, quoteProvenanceProblemsOf(row));
+    }
+    for (const row of db.prepare(SQL.selectStoresAll).all()) {
+      problems.push.apply(problems, storeProblemsOf(row));
+    }
+    for (const row of db.prepare(SQL.selectProductsAll).all()) {
+      problems.push.apply(problems, productProblemsOf(row));
+    }
+    for (const row of db.prepare(SQL.selectInventoryAll).all()) {
+      problems.push.apply(problems, inventoryProblemsOf(row));
     }
     return problems;
   }
@@ -5356,7 +6762,9 @@ function createEconomyStore(deps) {
     const open = isOpen();
     let counts = {
       wallets: 0, transactions: 0, entries: 0, changes: 0, operations: 0, reservations: 0,
-      activeReservations: 0, budgetPolicies: 0, activeBudgetPolicies: 0, quotes: 0, openQuotes: 0
+      activeReservations: 0, budgetPolicies: 0, activeBudgetPolicies: 0, quotes: 0, openQuotes: 0,
+      stores: 0, activeStores: 0, products: 0, activeProducts: 0,
+      inventoryEntries: 0, inventoryTotalQuantity: 0
     };
     let revision = 0;
     let schema = ECONOMY_SCHEMA_VERSION;
@@ -5375,7 +6783,16 @@ function createEconomyStore(deps) {
           budgetPolicies: countBudgetPolicies(),
           activeBudgetPolicies: countBudgetPoliciesByStatus(C.POLICY_STATUS.ACTIVE),
           quotes: countQuotes(),
-          openQuotes: countQuotesByState(C.QUOTE_STATE.OPEN)
+          openQuotes: countQuotesByState(C.QUOTE_STATE.OPEN),
+          /* P22-5：目录与库存的规模。inventoryTotalQuantity 是"这个世界
+             一共持有多少件东西"的一个横截面 —— 它同样只是观测，不是判定：
+             没有任何规则读它（§40：货架不读关系，也不读总量来做推荐）。 */
+          stores: countStores(),
+          activeStores: countStoresByStatus(C.STORE_STATUS.ACTIVE),
+          products: countProducts(),
+          activeProducts: countProductsByStatus(C.PRODUCT_STATUS.ACTIVE),
+          inventoryEntries: countInventory(),
+          inventoryTotalQuantity: totalInventoryQuantity()
         };
         revision = getRevision();
         schema = Number(readMeta(META_SCHEMA) || ECONOMY_SCHEMA_VERSION);
@@ -5408,7 +6825,12 @@ function createEconomyStore(deps) {
          P22-4 追加 policy-writes / quote-writes：同样是"新增了会改状态
          的方法，而它们一个都不在 HTTP 上"。 */
       doesNotExpose: ['payments', 'credentials', 'provider-billing', 'topup', 'real-money',
-        'reservation-writes', 'policy-writes', 'quote-writes'],
+        'reservation-writes', 'policy-writes', 'quote-writes',
+        /* P22-5 又新增了五个会改状态的方法（putStore / putProduct /
+           grantInventory / consumeInventory / createProductQuote）—— 名单
+           必须跟着能力长，否则新能力会落在断言之外，而"没被断言"在实践
+           中与"被允许"很难区分。 */
+        'store-writes', 'product-writes', 'inventory-writes', 'purchase'],
       canonical: 'sqlite-ledger-entries',
       derived: 'wallet-cached-balance',
       /* reserved 这一面把 canonical 与 derived 各写一遍，因为它们是
@@ -5434,7 +6856,29 @@ function createEconomyStore(deps) {
       budgetEvaluationIsNotASpendPermit: true,
       quoteCanonical: 'sqlite-quotes',
       quoteStateVocabulary: 'QUOTE_STATE (P22-1 §14)',
-      quoteLocksNothing: true
+      quoteLocksNothing: true,
+      /* ── P22-5：目录与库存的 canonical 来源，以及四句边界自述 ──────────
+         inventoryDerived: 'none' 是这一节最要紧的一句（§17）：库存**没有**
+         派生缓存，因此没有 rebuild，也没有开库对账 —— canonical 就是那一行。
+         productPricingIsRelationshipFree / storeHasNoRecommendations 是
+         §40/§41 的可断言形式：定价与关系无关、货架不是推荐系统。
+         aGrantIsNotAPurchase 是 §13 的可断言形式：库存原语不动钱。 */
+      storeCanonical: 'sqlite-stores',
+      storeHoldsPrices: false,
+      storeHoldsOwnership: false,
+      storeHasNoRecommendations: true,
+      productCanonical: 'sqlite-products',
+      productPricingIsRelationshipFree: C.PRICING_IS_RELATIONSHIP_FREE,
+      productSnapshotsAreFrozenInQuotes: true,
+      inventoryCanonical: 'sqlite-inventory-rows',
+      inventoryDerived: 'none',
+      /* 这句话与 P22-2/P22-3 的 rebuild 是**两种**答案，因此它必须被写出
+         来：不是因为"忘了写 rebuild"，而是因为这里根本没有缓存可重建。 */
+      inventoryHasNoDerivedCacheToRebuild: true,
+      inventoryIsNotABalance: true,
+      inventoryUniqueItemsModelled: C.INVENTORY_UNIQUE_ITEMS_MODELLED,
+      aGrantIsNotAPurchase: true,
+      purchaseIsNotImplementedInThisPhase: true
     };
   }
 
@@ -5523,7 +6967,8 @@ function createEconomyStore(deps) {
       TRANSACTIONS: TRANSACTIONS_TABLE, ENTRIES: ENTRIES_TABLE,
       OPERATIONS: OPERATIONS_TABLE, RESERVATIONS: RESERVATIONS_TABLE,
       OPERATION_IDEMPOTENCY: OPERATION_IDEMPOTENCY_TABLE,
-      BUDGET_POLICIES: BUDGET_POLICIES_TABLE, QUOTES: QUOTES_TABLE
+      BUDGET_POLICIES: BUDGET_POLICIES_TABLE, QUOTES: QUOTES_TABLE,
+      STORES: STORES_TABLE, PRODUCTS: PRODUCTS_TABLE, INVENTORY: INVENTORY_TABLE
     }),
     META_KEYS: Object.freeze({
       SCHEMA: META_SCHEMA, REVISION: META_REVISION,
@@ -5608,6 +7053,32 @@ function createEconomyStore(deps) {
        因此它与 get/list 同级，可以被 HTTP 只读面使用。 */
     evaluateQuote: evaluateQuote,
 
+    /* ── P22-5：货架 / 商品 / 库存 ──────────────────────────────────────
+       写的一半（putStore / putProduct / grantInventory / consumeInventory /
+       createProductQuote）与 P22-3/P22-4 的 mutation 同级：只对同进程
+       调用方开放，**不在任何 HTTP 路由上**（boundary B15 逐名断言）。
+       读的一半（get/list/serialize）可以被 HTTP 只读面使用。 */
+    putStore: putStore,
+    putProduct: putProduct,
+    getStore: getStore,
+    listStores: listStores,
+    getProduct: getProduct,
+    listProducts: listProducts,
+    serializeStore: serializeStore,
+    serializeProduct: serializeProduct,
+    /* createProductQuote 是**唯一** canonical 的报价生成路径：它从商品
+       派生价格/币种/数量/种类。P22-4 的 createQuote 保留为冻结的底层
+       primitive（§21），两者的分工写在名字里。 */
+    createProductQuote: createProductQuote,
+    /* 库存原语。**不是** Purchase（§13）：它不动钱、不动钱包。 */
+    grantInventory: grantInventory,
+    consumeInventory: consumeInventory,
+    getInventoryEntry: getInventoryEntry,
+    listInventory: listInventory,
+    inventoryQuantity: inventoryQuantity,
+    serializeInventoryEntry: serializeInventoryEntry,
+    productProvenanceOf: productProvenanceOf,
+
     /* 观测 */
     health: health,
     isDegraded: isDegraded,
@@ -5633,6 +7104,10 @@ function createEconomyStore(deps) {
       reservationProblemsOf: reservationProblemsOf,
       policyProblemsOf: policyProblemsOf,
       quoteProblemsOf: quoteProblemsOf,
+      storeProblemsOf: storeProblemsOf,
+      productProblemsOf: productProblemsOf,
+      inventoryProblemsOf: inventoryProblemsOf,
+      quoteProvenanceProblemsOf: quoteProvenanceProblemsOf,
       economyIntegrityCheck: economyIntegrityCheck,
       spendingWindowBounds: spendingWindowBounds,
       SQL: SQL
@@ -5649,8 +7124,10 @@ module.exports.tables = Object.freeze({
   TRANSACTIONS: TRANSACTIONS_TABLE, ENTRIES: ENTRIES_TABLE,
   OPERATIONS: OPERATIONS_TABLE, RESERVATIONS: RESERVATIONS_TABLE,
   OPERATION_IDEMPOTENCY: OPERATION_IDEMPOTENCY_TABLE,
-  BUDGET_POLICIES: BUDGET_POLICIES_TABLE, QUOTES: QUOTES_TABLE
+  BUDGET_POLICIES: BUDGET_POLICIES_TABLE, QUOTES: QUOTES_TABLE,
+  STORES: STORES_TABLE, PRODUCTS: PRODUCTS_TABLE, INVENTORY: INVENTORY_TABLE
 });
 module.exports.releaseReason = RELEASE_REASON;
+module.exports.maxInventoryQuantity = MAX_INVENTORY_QUANTITY;
 module.exports.fnv1a64Hex = fnv1a64Hex;
 module.exports.stableStringify = stableStringify;

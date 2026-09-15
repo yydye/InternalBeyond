@@ -730,6 +730,15 @@ function createHomeNodeHttp(deps) {
              断言之外，而"没被断言"在实践中与"被允许"很难区分。 */
           budgetWritesExposed: [],
           quoteWritesExposed: [],
+          /* P22-5 又新增了五个会改状态的方法（putStore / putProduct /
+             grantInventory / consumeInventory / createProductQuote）——
+             名单必须跟着能力长。purchaseExposed 是**显式**的 false：
+             购买在本阶段不存在，而"不存在"必须是一个可断言的字段，
+             而不是"路由表里碰巧没写"。 */
+          storeWritesExposed: [],
+          productWritesExposed: [],
+          inventoryWritesExposed: [],
+          purchaseExposed: false,
           mintingExposed: false,
           expirationIsNotATimer: true,
           /* P22-4 的三条自述：预算评估是**快照**、不是许可（§19）；
@@ -738,21 +747,42 @@ function createHomeNodeHttp(deps) {
           budgetEvaluationReservesFunds: false,
           quoteLocksFunds: false,
           budgetTimezone: 'UTC',
+          /* P22-5 的四条自述：库存不是余额（§12）；货架没有价格也没有
+             拥有关系（§2）；目录不做推荐、不做个性化定价（§40/§41）。 */
+          inventoryCanonical: 'sqlite-inventory-rows',
+          inventoryIsABalance: false,
+          storeHoldsPrices: false,
+          storeHoldsOwnership: false,
+          productPricingIsRelationshipFree: true,
+          catalogIsPersonalized: false,
           desktopPaths: ['/economy/health', '/economy/wallet', '/economy/ledger',
             '/economy/transaction', '/economy/changes',
             '/economy/reservations', '/economy/reservation',
             '/economy/policies', '/economy/policy', '/economy/budget',
-            '/economy/quotes', '/economy/quote'],
+            '/economy/quotes', '/economy/quote',
+            /* P22-5：三对只读路由。它们出现在这里，而对应的**写**路径
+               出现在下面的 unreachable 里 —— 两张表必须同时更新，
+               否则"声明"会落后于"真实路由"。 */
+            '/economy/stores', '/economy/store',
+            '/economy/products', '/economy/product',
+            '/economy/inventory', '/economy/inventory-entry'],
           /* P22-4：/economy/budget 与 /economy/quote **有**只读路由，
              因此它们不出现在 unreachable 里；而不存在的写路径
              （policy/quote 的 POST·PUT·DELETE、approve、evaluate 的写形态）
-             逐条列出来。 */
+             逐条列出来。
+             P22-5 从这份名单里**移走**三条（/economy/store、/economy/product、
+             /economy/inventory）—— 它们现在真的有只读路由了。一条声明
+             若比真实路由更保守，那么它就不再是在描述这个系统；因此移走
+             它们不是放松，而是让这张表继续为真。 */
           unreachable: ['/economy/topup', '/economy/purchase', '/economy/payment',
             '/economy/provider', '/economy/mint', '/economy/burn', '/economy/transfer',
             '/economy/reserve', '/economy/commit', '/economy/release', '/economy/expire',
             '/economy/fail', '/economy/sweep',
-            '/economy/approve', '/economy/approval', '/economy/inventory',
-            '/economy/product', '/economy/store', '/economy/exchange']
+            '/economy/approve', '/economy/approval',
+            '/economy/inventory/grant', '/economy/inventory/consume',
+            '/economy/store/create', '/economy/store/update',
+            '/economy/product/create', '/economy/product/update',
+            '/economy/exchange']
         },
         doesNotExpose: ['llm-proxy', 'tools', 'payments', 'diary', 'letters', 'images', 'tts'],
         /* M1-B：设备身份 + 移动边界。mobile 面**只有** allowlist 里的 verb。 */
@@ -1021,9 +1051,129 @@ function createHomeNodeHttp(deps) {
         }, req);
         return;
       }
-      const result = economy.getQuote({ quoteId: quoteId });
+      const result = economy.getQuote({
+        quoteId: quoteId,
+        /* provenance=1 会**额外**读一次 products 表，把"这份报价的商品行
+           现在是什么样"附上。它默认关闭，因为 §22 选定的语义是
+           "Product 是 provenance，不是报价有效性的依赖" —— 若它无条件
+           发生，"报价可读"就会悄悄依赖"商品行还在"。 */
+        withProvenance: url.searchParams.get('provenance') === '1'
+      });
       if (!result.ok) { bad(res, 404, result.errors[0] || 'quote-not-found', null, req); return; }
-      ok(res, { quote: economy.serializeQuote(result.quote) }, req);
+      ok(res, {
+        quote: economy.serializeQuote(result.quote),
+        productProvenance: result.productProvenance || null
+      }, req);
+      return;
+    }
+    /* ── P22-5 · 目录与库存（**同样只读**）──────────────────────────────
+       这三对路由回答的问题逐条是 §46 说的那四个（有哪些商品 / 商品是什么 /
+       当前报价是什么 / 角色拥有什么），一个都不多：
+
+         GET /economy/stores          列出货架（可按 status 过滤）
+         GET /economy/store           单个货架（storeId）
+         GET /economy/products        列出商品（storeId / status / kind / currency）
+         GET /economy/product         单个商品（productId）
+         GET /economy/inventory       列出库存（ownerId 或 productId 之一必填）
+         GET /economy/inventory-entry 单条库存（inventoryEntryId 或 ownerId+productId）
+
+       **没有** POST /economy/product、POST /economy/store、
+       POST /economy/inventory/grant、POST /economy/inventory/consume、
+       POST /economy/purchase —— 它们落在下面那个兜底分支上，一律 405。
+       这一层拿不到 putStore / putProduct / grantInventory /
+       consumeInventory / createProductQuote 这五个方法名（boundary B15
+       逐个点名断言），因此"通过 HTTP 改目录或发库存"在**路由表**上不存在，
+       而不是靠一个 if 挡着。 */
+    if (path === '/economy/stores' && method === 'GET') {
+      if (!economy) { bad(res, 501, 'economy-not-assembled', null, req); return; }
+      const result = economy.listStores({
+        status: url.searchParams.get('status') || undefined,
+        limit: url.searchParams.get('limit') || undefined
+      });
+      if (!result.ok) { bad(res, 400, result.errors[0] || 'store-read-failed', null, req); return; }
+      ok(res, {
+        stores: result.stores.map(s => economy.serializeStore(s)),
+        /* 货架里没有价格，也没有拥有关系（§2）。 */
+        holdsPrices: false,
+        holdsOwnership: false
+      }, req);
+      return;
+    }
+    if (path === '/economy/store' && method === 'GET') {
+      if (!economy) { bad(res, 501, 'economy-not-assembled', null, req); return; }
+      const storeId = url.searchParams.get('storeId');
+      if (!storeId) { bad(res, 400, 'missing-store-id', null, req); return; }
+      const result = economy.getStore({ storeId: storeId });
+      if (!result.ok) { bad(res, 404, result.errors[0] || 'store-not-found', null, req); return; }
+      ok(res, { store: economy.serializeStore(result.store) }, req);
+      return;
+    }
+    if (path === '/economy/products' && method === 'GET') {
+      if (!economy) { bad(res, 501, 'economy-not-assembled', null, req); return; }
+      const result = economy.listProducts({
+        storeId: url.searchParams.get('storeId') || undefined,
+        status: url.searchParams.get('status') || undefined,
+        kind: url.searchParams.get('kind') || undefined,
+        currency: url.searchParams.get('currency') || undefined,
+        limit: url.searchParams.get('limit') || undefined
+      });
+      if (!result.ok) { bad(res, 400, result.errors[0] || 'product-read-failed', null, req); return; }
+      ok(res, {
+        products: result.products.map(p => economy.serializeProduct(p)),
+        /* 目录是 canonical 的，不是推荐系统（§40）：这一层不认识"给谁看"。 */
+        personalized: false,
+        hasRecommendations: false,
+        hasDiscounts: false
+      }, req);
+      return;
+    }
+    if (path === '/economy/product' && method === 'GET') {
+      if (!economy) { bad(res, 501, 'economy-not-assembled', null, req); return; }
+      const productId = url.searchParams.get('productId');
+      if (!productId) { bad(res, 400, 'missing-product-id', null, req); return; }
+      const result = economy.getProduct({ productId: productId });
+      if (!result.ok) { bad(res, 404, result.errors[0] || 'product-not-found', null, req); return; }
+      ok(res, {
+        product: economy.serializeProduct(result.product),
+        /* 价格与关系无关（§41）；商品里没有拥有关系（§10）。 */
+        pricingIsRelationshipFree: true,
+        holdsOwnership: false
+      }, req);
+      return;
+    }
+    if (path === '/economy/inventory' && method === 'GET') {
+      if (!economy) { bad(res, 501, 'economy-not-assembled', null, req); return; }
+      const result = economy.listInventory({
+        ownerId: url.searchParams.get('ownerId') || undefined,
+        productId: url.searchParams.get('productId') || undefined,
+        assetKind: url.searchParams.get('assetKind') || undefined,
+        limit: url.searchParams.get('limit') || undefined
+      });
+      if (!result.ok) { bad(res, 400, result.errors[0] || 'inventory-read-failed', null, req); return; }
+      ok(res, {
+        entries: result.entries.map(e => economy.serializeInventoryEntry(e)),
+        /* 库存不是余额、不参与 available、不按币种聚合（§12）。 */
+        isABalance: false,
+        contributesToAvailableBalance: false,
+        locksFunds: false
+      }, req);
+      return;
+    }
+    if (path === '/economy/inventory-entry' && method === 'GET') {
+      if (!economy) { bad(res, 501, 'economy-not-assembled', null, req); return; }
+      const inventoryEntryId = url.searchParams.get('inventoryEntryId');
+      const ownerId = url.searchParams.get('ownerId');
+      const productId = url.searchParams.get('productId');
+      if (!inventoryEntryId && !(ownerId && productId)) {
+        bad(res, 400, 'missing-inventory-entry-id-or-owner-and-product', null, req); return;
+      }
+      const result = economy.getInventoryEntry({
+        inventoryEntryId: inventoryEntryId || undefined,
+        ownerId: ownerId || undefined,
+        productId: productId || undefined
+      });
+      if (!result.ok) { bad(res, 404, result.errors[0] || 'inventory-entry-not-found', null, req); return; }
+      ok(res, { entry: economy.serializeInventoryEntry(result.entry) }, req);
       return;
     }
     /* 其余 /economy/* 一律 404 —— 尤其 POST 到上面任何一条路径。

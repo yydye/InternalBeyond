@@ -315,14 +315,19 @@ check('B4.4 /economy/* 只在 http.js 里被**读**服务：http 层拿不到任
     /* P22-3 把这份"不许被 http 层调用"的名单扩到它自己的六个 mutation
        方法上。名单必须跟着能力长：只列 P22-2 的那几个，等于给新加的
        写能力留了一扇没有锁的门。
-       P22-4 再扩到它的六个（政策与报价），理由逐字相同。 */
+       P22-4 再扩到它的六个（政策与报价），理由逐字相同。
+       P22-5 再扩到它的五个（货架 / 商品 / 库存原语 / product-backed 报价）——
+       注意 createProductQuote 也在名单里：它是**唯一** canonical 的报价
+       生成路径，而"谁能要求系统为哪个 buyer 生成报价"仍然属于未来的
+       权限层（P22-5 §33），因此它更不能出现在 HTTP 上。 */
     const writeCalls = ['mintForSystem', 'burnForSystem', 'commitLedgerTransaction',
       'openWallet', 'transferBetweenWallets', 'corruptCachedBalanceForTest',
       'reserveFunds', 'commitReservation', 'releaseReservation', 'expireReservation',
       'failReservation', 'expireDueReservations', 'rebuildReservedBalance',
       'reconcileReservations', 'corruptReservedCacheForTest',
       'putBudgetPolicy', 'expirePolicy', 'expireDuePolicies',
-      'createQuote', 'expireQuote', 'expireDueQuotes']
+      'createQuote', 'expireQuote', 'expireDueQuotes',
+      'putStore', 'putProduct', 'grantInventory', 'consumeInventory', 'createProductQuote']
       .filter(name => stripCommentsAndStrings(src).indexOf(name) >= 0);
     return nonGet.length === 0 && writeCalls.length === 0 &&
       /writesExposed: \[\]/.test(src) && /mintingExposed: false/.test(src);
@@ -336,7 +341,8 @@ check('B4.4 /economy/* 只在 http.js 里被**读**服务：http 层拿不到任
       'failReservation', 'expireDueReservations', 'rebuildReservedBalance',
       'reconcileReservations', 'corruptReservedCacheForTest',
       'putBudgetPolicy', 'expirePolicy', 'expireDuePolicies',
-      'createQuote', 'expireQuote', 'expireDueQuotes']
+      'createQuote', 'expireQuote', 'expireDueQuotes',
+      'putStore', 'putProduct', 'grantInventory', 'consumeInventory', 'createProductQuote']
       .filter(name => stripCommentsAndStrings(read('services/home-node/http.js')).indexOf(name) >= 0)
   });
 
@@ -933,6 +939,171 @@ check('B13.18 （输入存在）P22-4 的每个方法与契约件确实存在',
     'evaluateQuote', 'spendingWindows'].every(name => new RegExp('\\n    ' + name + ': ' + name + ',').test(STORE_SRC)) &&
   typeof C.evaluateBudget === 'function' && typeof C.policyIsEffectiveAt === 'function' &&
   Array.isArray(C.BUDGET_SPENDING_TYPES) && C.BUDGET_SPENDING_TYPES.length >= 1);
+
+/* ══════════════════════════════════════════════════════════════════
+   B15 · P22-5：目录与库存这一层的静态边界
+         （生产文件仍然最小 · 依赖闭包没有变宽 · 没有"删除历史" ·
+           没有 provider / 支付 / 关系 / 推荐 · 写能力仍然不上 HTTP）
+   ══════════════════════════════════════════════════════════════════ */
+section('B15 · P22-5 store / product / inventory（依赖闭包、不可删除、写不上 HTTP）');
+
+/* ── B15.1–B15.2：生产文件清单 ─────────────────────────────────────────
+   P22-5 §1 明确要求"不要为了少几张表把这些概念合并"，而它的另一半是
+   "也不要为了新概念多开几个文件"。三张表（stores / products / inventory）
+   全部落在**同一个** economy-store.js 里，因为它们的写路径必须与
+   change log / revision / idempotency 处在**同一个**事务边界里 ——
+   抽出去就把那个保证降级成跨模块约定。 */
+check('B15.1 P22-5 没有新增生产文件（Economy 仍然只有契约 + store 两个文件）',
+  PRODUCTION_FILES.length === 2 &&
+  PRODUCTION_FILES.indexOf('services/home-node/economy-contract.js') >= 0 &&
+  PRODUCTION_FILES.indexOf('services/home-node/economy-store.js') >= 0,
+  PRODUCTION_FILES);
+check('B15.2 依赖闭包没有变宽：require 目标仍然只有那三个（P22-5 一个新依赖都没加）',
+  allRequires.length === 3 &&
+  allRequires.map(r => r.value).sort().join(',') ===
+    'node:sqlite,runtime/db-failure.js,services/home-node/economy-contract.js',
+  allRequires.map(r => r.value));
+check('B15.2b 三个 require 里没有任何一个是"能碰钱 / 凭据 / 网络"的模块',
+  allRequires.every(r => !/crypto|net|http|child_process|fs\.promises|commerce|payment|provider|credential/i.test(r.value)),
+  allRequires.map(r => r.value));
+
+/* ── B15.3：契约的新数据仍然是**输入**，不是注释 ───────────────────── */
+check('B15.3 契约里真的存在 P22-5 的三张否认清单（否则下面的静态检查在保护空气）',
+  C.FORBIDDEN_PRODUCT_FIELDS.length >= 20 &&
+  C.FORBIDDEN_PRODUCT_FIELDS.indexOf('providerApiKey') >= 0 &&
+  C.FORBIDDEN_PRODUCT_FIELDS.indexOf('providerBalance') >= 0 &&
+  C.FORBIDDEN_PRODUCT_FIELDS.indexOf('providerTopup') >= 0 &&
+  C.FORBIDDEN_PRODUCT_FIELDS.indexOf('checkoutUrl') >= 0 &&
+  C.FORBIDDEN_PRODUCT_FIELDS.indexOf('paymentIntent') >= 0 &&
+  C.FORBIDDEN_PRODUCT_FIELDS.indexOf('realMoney') >= 0 &&
+  C.FORBIDDEN_PRODUCT_FIELDS.indexOf('cny') >= 0 &&
+  C.FORBIDDEN_PRODUCT_FIELDS.indexOf('usd') >= 0 &&
+  C.FORBIDDEN_PRODUCT_FIELDS.indexOf('discount') >= 0 &&
+  C.FORBIDDEN_PRODUCT_FIELDS.indexOf('featured') >= 0 &&
+  C.FORBIDDEN_PRODUCT_FIELDS.indexOf('recommended') >= 0 &&
+  C.FORBIDDEN_PRODUCT_FIELDS.indexOf('trust') >= 0 &&
+  C.PRODUCT_INPUT_KEYS.length >= 12 && C.STORE_INPUT_KEYS.length >= 6 &&
+  C.isForbiddenProductFieldName('providerBalance') === true &&
+  C.isForbiddenProductFieldName('unitPriceMinor') === false);
+
+/* ── B15.4：P22-5 生产代码里没有 provider / 支付 / 关系 / 推荐 ─────── */
+check('B15.4 Economy 生产代码里没有 provider 充值 / 支付 / 结账这类**动词**（作为代码）',
+  PRODUCTION_FILES.every(rel => {
+    const code = stripCommentsAndStrings(read(rel));
+    return !/\btopUpProvider\b/.test(code) && !/\bpurchaseProviderCredits\b/.test(code) &&
+      !/\bupdateProviderBalance\b/.test(code) && !/\bproviderBillingMutation\b/.test(code) &&
+      !/\bcheckoutUrl\b/.test(code) && !/\bpaymentIntent\b/.test(code) &&
+      !/\bsubmitPayment\b/.test(code) && !/\bcommitSpend\b/.test(code);
+  }),
+  PRODUCTION_FILES.filter(rel => /providerBillingMutation|checkoutUrl|paymentIntent|submitPayment/
+    .test(stripCommentsAndStrings(read(rel)))));
+check('B15.5 商品 / 库存这一层里没有"推荐"与"折扣"的实现痕迹（§40 / §41）',
+  PRODUCTION_FILES.every(rel => {
+    const code = stripCommentsAndStrings(read(rel));
+    /* 只扫**实现**形态：字段读写在 P22-5 的 serialize* 里逐字写着
+       hasDiscount:false / hasRecommendation:false（那是**否认数据**），
+       而这里要挡的是"真的去算一个折扣"或"真的去排一个推荐名次"。 */
+    return !/\bcalculateDiscount\b/.test(code) && !/\bapplyDiscount\b/.test(code) &&
+      !/\brecommendationScore\b/.test(code) && !/\bpersonalizedPrice\b/.test(code) &&
+      !/\brelevanceScore\b/.test(code);
+  }));
+check('B15.6 目录与库存这一层里没有任何"关系维度"的输入（trust / affection 不在商品或库存的字段里）',
+  C.PRODUCT_INPUT_KEYS.every(k => !/trust|affection|affinity|familiarity|relationship|memory/i.test(k)) &&
+  C.STORE_INPUT_KEYS.every(k => !/trust|affection|affinity|familiarity|relationship|memory/i.test(k)) &&
+  C.INVENTORY_CANONICAL_KEY.every(k => !/trust|affection|relationship/i.test(k)));
+
+/* ── B15.7：没有"删除经济历史"的语句（§23）──────────────────────────
+   这一条必须**先剥注释**：store 里有一句解释性注释逐字写着
+   "没有 DELETE FROM economy_inventory"，而整文件 grep 会把它判成一次
+   真实的删除 —— 修法就会变成"把解释删掉"，那是最坏的一种修法
+   （boundary B3 的 scanRequires 踩过同一个坑，修的是扫描器）。 */
+check('B15.7 生产代码里没有 DELETE FROM stores / products / inventory（§23：只允许状态转换）',
+  (() => {
+    const code = stripCommentsAndStrings(read('services/home-node/economy-store.js'));
+    const targets = (code.match(/DELETE\s+FROM\s*([A-Za-z_][A-Za-z0-9_]*)/g) || [])
+      .map(s => s.replace(/DELETE\s+FROM\s*/, ''));
+    return targets.every(t => t === 'IDEMPOTENCY_TABLE' || t === 'OPERATION_IDEMPOTENCY_TABLE') &&
+      !/economy_(?:stores|products|inventory)\b/.test(code.replace(/DELETE\s+FROM\s*IDEMPOTENCY_TABLE[^\n]*/g, ''));
+  })(),
+  (stripCommentsAndStrings(read('services/home-node/economy-store.js')).match(/DELETE\s+FROM\s*[A-Za-z_][A-Za-z0-9_]*/g) || []));
+check('B15.7b 反向：那两张被允许 DELETE 的表确实是幂等表（TTL 清理），不是经济事实表',
+  /pruneIdempotency/.test(read('services/home-node/economy-store.js')) &&
+  /pruneOperationIdempotency/.test(read('services/home-node/economy-store.js')));
+
+/* ── B15.8：库存的"不可能为负"有两层**结构**来源 ─────────────────── */
+check('B15.8 库存表带 CHECK (quantity >= 0)，且 shrink 语句带 `quantity >= ?` 守卫',
+  /CHECK \(quantity >= 0\)/.test(read('services/home-node/economy-store.js')) &&
+  /SET quantity = quantity - \?, .*? WHERE inventory_entry_id=\? AND quantity >= \?/
+    .test(read('services/home-node/economy-store.js')));
+check('B15.8b Grant / product 表的金额与数量也各有一条 CHECK（三个数都不是"只靠 JS 挡着"）',
+  /CHECK \(unit_price_minor >= 0\)/.test(read('services/home-node/economy-store.js')) &&
+  /CHECK \(grant_quantity >= 0\)/.test(read('services/home-node/economy-store.js')));
+
+/* ── B15.9：P22-5 的五个写方法一个都不在 HTTP 上 ─────────────────── */
+const CATALOG_MUTATION_METHODS = ['putStore', 'putProduct', 'grantInventory',
+  'consumeInventory', 'createProductQuote'];
+check('B15.9 http.js 里没有 P22-5 的任何 mutation 方法名（写能力在路由表上不存在）',
+  CATALOG_MUTATION_METHODS.every(name =>
+    stripCommentsAndStrings(read('services/home-node/http.js')).indexOf(name) < 0),
+  CATALOG_MUTATION_METHODS.filter(name =>
+    stripCommentsAndStrings(read('services/home-node/http.js')).indexOf(name) >= 0));
+check('B15.10 P22-5 的六条新路由全是 GET，且都在 economyPolicy 的 desktopPaths 里被声明',
+  (() => {
+    const src = read('services/home-node/http.js');
+    const blocks = src.match(/path === '\/economy\/(?:stores?|products?|inventory(?:-entry)?)' && method === '[A-Z]+'/g) || [];
+    const at = src.indexOf('economyPolicy: {');
+    const declared = at < 0 ? '' : (src.slice(at).match(/desktopPaths: \[[\s\S]*?\]/) || [''])[0];
+    return blocks.length === 6 && blocks.every(b => /&& method === 'GET'$/.test(b)) &&
+      ['/economy/stores', '/economy/store', '/economy/products', '/economy/product',
+        '/economy/inventory', '/economy/inventory-entry']
+        .every(p => declared.indexOf("'" + p + "'") >= 0);
+  })(),
+  (read('services/home-node/http.js').match(/path === '\/economy\/(?:stores?|products?|inventory(?:-entry)?)' && method === '[A-Z]+'/g) || []));
+check('B15.11 /security 的 economyPolicy 把 P22-5 的"没有"写成可断言字段',
+  (() => {
+    const src = read('services/home-node/http.js');
+    return /storeWritesExposed: \[\]/.test(src) && /productWritesExposed: \[\]/.test(src) &&
+      /inventoryWritesExposed: \[\]/.test(src) && /purchaseExposed: false/.test(src) &&
+      /inventoryIsABalance: false/.test(src) && /storeHoldsPrices: false/.test(src) &&
+      /storeHoldsOwnership: false/.test(src) &&
+      /productPricingIsRelationshipFree: true/.test(src) &&
+      /catalogIsPersonalized: false/.test(src);
+  })());
+check('B15.12 unreachable 里列着"目录与库存的写形态"，而三条真实只读路径**不在**里面',
+  (() => {
+    const src = read('services/home-node/http.js');
+    const at = src.indexOf('economyPolicy: {');
+    const declared = at < 0 ? '' : (src.slice(at).match(/unreachable: \[[\s\S]*?\]/) || [''])[0];
+    return ['/economy/inventory/grant', '/economy/inventory/consume', '/economy/store/create',
+      '/economy/store/update', '/economy/product/create', '/economy/product/update']
+      .every(p => declared.indexOf("'" + p + "'") >= 0) &&
+      ['/economy/inventory', '/economy/store', '/economy/product']
+        .every(p => declared.indexOf("'" + p + "'") < 0);
+  })());
+
+/* ── B15.13：P22-5 的能力与契约件确实存在（输入存在断言）──────────── */
+check('B15.13 （输入存在）P22-5 的方法与契约件都真的存在',
+  CATALOG_MUTATION_METHODS.every(name => new RegExp('\\n    ' + name + ': ' + name + ',').test(STORE_SRC)) &&
+  ['getStore', 'listStores', 'getProduct', 'listProducts', 'serializeStore', 'serializeProduct',
+    'getInventoryEntry', 'listInventory', 'inventoryQuantity', 'serializeInventoryEntry',
+    'productProvenanceOf'].every(name => new RegExp('\\n    ' + name + ': ' + name + ',').test(STORE_SRC)) &&
+  typeof C.validateProduct === 'function' && typeof C.validateStore === 'function' &&
+  typeof C.productQuoteAmountMinor === 'function' && typeof C.assertProductStatusTransition === 'function' &&
+  C.PRODUCT_KINDS.length === 5 && C.FULFILLMENTS.length === 3);
+check('B15.14 P22-5 没有引入定时器：目录与库存都**没有**任何基于时间的自动变化（§39）',
+  PRODUCTION_FILES.every(rel => !/\bset(?:Timeout|Interval)\b/.test(stripCommentsAndStrings(read(rel)))));
+check('B15.15 库存这一层没有派生缓存：不存在 inventory_cached_quantity / rebuildInventory',
+  (() => {
+    /* 同样必须先剥注释：DDL 旁边那句"刻意**没有**的列：
+       inventory_cached_quantity"是一句**否认**，不是一次声明。 */
+    const code = stripCommentsAndStrings(STORE_SRC);
+    return code.indexOf('inventory_cached_quantity') < 0 &&
+      code.indexOf('cache_inventory') < 0 &&
+      !/\brebuildInventory\b/.test(code);
+  })() &&
+  /inventoryDerived: 'none'/.test(STORE_SRC),
+  { hits: ['inventory_cached_quantity', 'cache_inventory', 'rebuildInventory']
+    .filter(n => stripCommentsAndStrings(STORE_SRC).indexOf(n) >= 0) });
 
 /* ══════════════════════════════════════════════════════════════════
    B10 · 反向断言：契约里**必须**存在的"否认"数据

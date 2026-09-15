@@ -477,7 +477,48 @@ const GROUPS = [
               报价逐字读回、revision 不动。 */
       ['test_p22_4_economy_budget.js'],
       ['test_p22_4_economy_quote.js'],
-      ['test_p22_4_economy_runtime.js']
+      ['test_p22_4_economy_runtime.js'],
+      /* P22-5：Agent Economy 的**货架 / 商品目录 / 库存**层 ——
+         "有什么可以买""一份商品是什么""谁拥有什么"，并且把 P22-4 的
+         报价第一次接到**真实商品**上。三组刻意分开：
+           ① catalog：Store 只是组织方式（没有价格、没有拥有关系），
+              Product 是"可报价的商品定义"（kind → fulfillment / assetKind
+              派生、单价必须带单位、免费商品是**显式**合法值而"忘了写价格"
+              是另一种失败），创建 product-backed 报价时调用方**没有地方**
+              传金额（amountMinor/currency/quantity/kind 全部从商品行派生）；
+              以及本阶段最要紧的一条：**改价不重写历史** —— 商品 100 → 120
+              之后旧报价逐字节不变、新报价是 120（"改价的语句里没有状态列、
+              改状态的语句里没有价格列"由静态扫 SET 列钉住）；disable /
+              retire 只让**新**报价被拒，历史报价与已有库存一个字都不动；
+              创建报价的世界指纹前后逐字相同（含"真的 reserve 时指纹确实
+              会变"的对照组）；九个故障点逐个注入；schema 3 → 4 补三张表且
+              拒绝更新的库时**一张表都不补**；Gift / API_QUOTA / SERVICE
+              三个 fixture 证明 schema 没被写死成"只能表达 RPG 物品"。
+           ② inventory：**canonical 就是那一行，没有派生缓存**（因此没有
+              rebuild、也没有开库对账 —— §17 要求先判断需不需要），grant
+              10→10 / 5→15、consume 8→7 / 再 8 被拒且数量仍是 7、同 key
+              重放不变、同 key 不同数量是冲突、GRANT 与 CONSUME 是**两个**
+              scope（同一 key 在两者下不是同一件事）；多 owner 隔离（A 消耗
+              不动 B，且 listInventory 拒绝"全局列库存"）；11 种非法数量
+              逐个拒绝且零痕迹；两个独立连接的并发恰好一个成功、20 轮双向
+              竞争最终恰好为 0 且**永不为负**（CHECK + 守卫 + BEGIN IMMEDIATE
+              三道防线）；库存 ≠ 钱包两个方向都证（grant 不动余额、铸币不动
+              库存）；商品 retire 之后库存仍在、quantity=0 的行保留、静态
+              断言生产代码里没有 DELETE FROM stores/products/inventory。
+           ③ runtime：**生产进程里到底有没有它**。六条新只读路由
+              （GET /economy/stores · /store · /products · /product ·
+              /inventory · /inventory-entry）走真实 server；十条路径 × 三种
+              写动词 = 30 次写尝试全部 405 且目录/库存/报价/账本逐字未变；
+              /security 的 economyPolicy 把 P22-5 的"没有"写成可检查字段；
+              配了桌面 token 时六条新路由一律 401；以及**真实 spawn
+              services/home-node-service.js**：生产进程读到的货架/商品/库存
+              与播种时逐字相同，生产进程上的 POST 同样是 405；最后是
+              P22-3 那条纪律换到库存上：**四个真实子进程**在同一墙钟时刻
+              同时 consume 8（库存 20），断言恰好 2 个成功、最终数量恰好 4
+              且每个 worker 自己读到的数都 ≥ 0。 */
+      ['test_p22_5_economy_catalog.js'],
+      ['test_p22_5_economy_inventory.js'],
+      ['test_p22_5_economy_runtime.js']
     ]
   },
   {

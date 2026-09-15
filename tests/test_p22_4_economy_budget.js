@@ -1381,9 +1381,17 @@ section('K · schema 2 → 3：补表 + 抬水位，既有账本一个字节不�
   const opened = upgraded.open();
   const migratedEmpty = upgraded.health().counts.budgetPolicies === 0 &&
     upgraded.health().counts.quotes === 0;
-  check('K1 打开 P22-3 代的库：水位抬到 3，两张新表被补上且**是空的**（补表不等于补数据）',
-    opened.ok === true && Number(opened.schemaVersion) === 3 &&
-    Number(upgraded.health().schemaVersion) === 3 && migratedEmpty);
+  /* ── P22-5：这里断言的是"水位被抬到**本 build 声明的**版本"──────────
+     原来写死 3，那是 P22-4 当时的当前版本号。写死会让**下一次**抬水位
+     的人被迫改一条与 P22-4 无关的断言（而那种改动不携带任何信息：
+     只要把 3 改成 4 就能让它变绿）。
+     这条断言真正要问的是"旧库被抬到了当前水位，而新表是空的" ——
+     前者与具体数字无关，后者才是补表纪律。因此改成与
+     store.SCHEMA_VERSION 比较：它仍然是一句关于**行为**的话。 */
+  check('K1 打开 P22-3 代的库：水位抬到本 build 声明的版本，两张新表被补上且**是空的**（补表不等于补数据）',
+    opened.ok === true && Number(opened.schemaVersion) === Number(upgraded.SCHEMA_VERSION) &&
+    Number(upgraded.health().schemaVersion) === Number(upgraded.SCHEMA_VERSION) && migratedEmpty,
+    { opened: opened.schemaVersion, expected: upgraded.SCHEMA_VERSION });
   check('K1b 既有账本与预留一字节都没动：revision / 余额 / 拓扑 / change log 逐条相同',
     upgraded.getRevision() === before.revision &&
     upgraded.ledgerBalanceOf(w.walletId).balanceMinor === before.ledger &&

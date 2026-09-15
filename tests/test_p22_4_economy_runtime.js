@@ -337,11 +337,25 @@ async function httpGroup() {
       ep.budgetEvaluationReservesFunds === false && ep.quoteLocksFunds === false &&
       ep.budgetTimezone === 'UTC',
       ep);
-    check('B18 /security 把新的只读路径写进 desktopPaths，并把 approve / inventory / store / exchange 列为 unreachable',
+    /* ── P22-5：三条路径从 unreachable **移走**了 ──────────────────────
+       /economy/inventory · /economy/store · /economy/product 在 P22-5 变成
+       了真实的只读路由，因此它们不该再出现在 unreachable 里。
+       一条"这里没有这条路"的声明若比真实路由更保守，它就不再是在描述
+       这个系统；而一条不再为真的声明比没有声明更危险（它会让人以为
+       已经检查过了）。
+       被替换进来的是**写形态**的路径：/economy/inventory/grant ·
+       /economy/inventory/consume · /economy/store/create ·
+       /economy/store/update · /economy/product/create ·
+       /economy/product/update —— 它们才是这一阶段真正不存在的东西。 */
+    check('B18 /security 把新的只读路径写进 desktopPaths，并把 approve / exchange / 目录与库存的写形态列为 unreachable',
       !!ep && ['/economy/policies', '/economy/policy', '/economy/budget', '/economy/quotes', '/economy/quote']
         .every(p => ep.desktopPaths.indexOf(p) >= 0) &&
-      ['/economy/approve', '/economy/inventory', '/economy/store', '/economy/exchange']
-        .every(p => ep.unreachable.indexOf(p) >= 0),
+      ['/economy/approve', '/economy/exchange', '/economy/inventory/grant', '/economy/inventory/consume',
+        '/economy/store/create', '/economy/product/create']
+        .every(p => ep.unreachable.indexOf(p) >= 0) &&
+      /* 反向：已经存在的那三条**不得**再被说成不可达。 */
+      ['/economy/inventory', '/economy/store', '/economy/product']
+        .every(p => ep.unreachable.indexOf(p) < 0),
       ep && ep.unreachable);
     check('B19 写路径仍然列在 unreachable 里（/economy/reserve · commit · release · expire · fail · sweep）',
       !!ep && ['/economy/reserve', '/economy/commit', '/economy/release', '/economy/expire', '/economy/fail', '/economy/sweep']

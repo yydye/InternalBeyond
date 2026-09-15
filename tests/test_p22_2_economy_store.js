@@ -1222,10 +1222,24 @@ section('O · Runtime 依赖纪律（静态：本条与 boundary 测试互补）
      以及 P22-4 的**规则表**与**命题表**（budget_policies / quotes ——
      它们改的是规则与报价的状态，不是任何一笔已发生的经济事实；
      quotes 的金额/币种/买家不可变由 P22-4 测试逐列断言）。
-     ACCOUNTS 与三个 ledger 事实表**不**在允许集合里。 */
+     ACCOUNTS 与三个 ledger 事实表**不**在允许集合里。
+
+     ── P22-5 再扩三张（同样的理由，第三次）────────────────────────────
+     stores / products / inventory 各自有一条 UPDATE：
+       · stores     —— 改的是组织方式（名字 / 顺序 / 状态），不是价格事实；
+       · products   —— 改的是**商品现在**的价格与状态。它改不到任何一笔
+                       已经发生的经济事实：报价的金额在报价自己的列上，
+                       而 P22-5 的 focused 测试逐条断言"改价之后历史报价
+                       与历史库存逐字节不变"；
+       · inventory  —— 只改 quantity 与记账元数据（owner / product /
+                       asset_kind / created_at 一次都不出现，P22-5 测试
+                       的静态断言逐列检查）。
+     三个 ledger 事实表与 ACCOUNTS 仍然**不**在允许集合里，O9b 继续逐字
+     断言这一点。 */
   const MUTABLE_TABLES = ['WALLETS_TABLE', 'META_TABLE', 'IDEMPOTENCY_TABLE',
     'OPERATIONS_TABLE', 'RESERVATIONS_TABLE', 'OPERATION_IDEMPOTENCY_TABLE',
-    'BUDGET_POLICIES_TABLE', 'QUOTES_TABLE'];
+    'BUDGET_POLICIES_TABLE', 'QUOTES_TABLE',
+    'STORES_TABLE', 'PRODUCTS_TABLE', 'INVENTORY_TABLE'];
   check('O9 被 UPDATE / DELETE 的表只可能是"派生缓存 / 水位 / 生命周期行 / 幂等表"这四类，'
     + 'ACCOUNTS 与三个 ledger 事实表都不在内',
     mutatedTables.every(t => MUTABLE_TABLES.indexOf(t) >= 0), mutatedTables);

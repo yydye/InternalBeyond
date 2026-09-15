@@ -539,9 +539,13 @@ check('D13.14 operation 的 reservationId / transactionId 若给了就必须是 
 /* idempotency scope：预留与提交不能共用一个模糊键空间（§18）。
    P22-4 把"七个 scope"写进断言：scope 是**封闭集合**，新增一个就必须
    同时改这里 —— 这正是它该有的阻力。P22-4 加的两个（QUOTE / POLICY）
-   锁的不是钱，但它们必须与 reserve/commit 一样是**互不混淆**的身份。 */
-check('D13.15 OPERATION_SCOPE 是封闭七元集合 {RESERVE,COMMIT,RELEASE,EXPIRE,FAIL,QUOTE,POLICY}',
-  C.OPERATION_SCOPES.slice().sort().join(',') === 'COMMIT,EXPIRE,FAIL,POLICY,QUOTE,RELEASE,RESERVE' &&
+   锁的不是钱，但它们必须与 reserve/commit 一样是**互不混淆**的身份。
+   P22-5 又加了四个（STORE / PRODUCT / INVENTORY_GRANT /
+   INVENTORY_CONSUME）—— 阻力照旧生效：这一行是**手动**改的，而不是
+   被一个 `.length >= 7` 悄悄放过去的。 */
+check('D13.15 OPERATION_SCOPE 是封闭十一元集合（P22-1 的五个 + QUOTE/POLICY + P22-5 的四个）',
+  C.OPERATION_SCOPES.slice().sort().join(',') ===
+    'COMMIT,EXPIRE,FAIL,INVENTORY_CONSUME,INVENTORY_GRANT,POLICY,PRODUCT,QUOTE,RELEASE,RESERVE,STORE' &&
   C.isOperationScope('RESERVE') === true && C.isOperationScope('reserve') === false &&
   C.isOperationScope('QUOTE') === true && C.isOperationScope('POLICY') === true &&
   C.isOperationScope('TOPUP') === false);
@@ -595,8 +599,8 @@ check('D10.5 特征串允许（uuid / 时间戳串 / 点分）',
    都以 econ_ 开头。因此这里只是把那个计数跟着契约走。
    为什么仍然要写死数字：`length === 13` 会在"有人悄悄加了第 14 种
    id"时失败 —— 那正是一次需要被看见的契约变更。 */
-check('D11.1 十三种 id 种类各有唯一前缀（P22-3 加了 OPERATION）',
-  C.ID_KINDS.length === 13 && new Set(C.ID_KINDS.map(k => C.ID_PREFIX[k])).size === 13, C.ID_KINDS);
+check('D11.1 十四种 id 种类各有唯一前缀（P22-3 加 OPERATION，P22-5 加 STORE）',
+  C.ID_KINDS.length === 14 && new Set(C.ID_KINDS.map(k => C.ID_PREFIX[k])).size === 14, C.ID_KINDS);
 check('D11.1b OPERATION 是 econ_op_，且它是**新增**的而不是复用了 transaction / reservation',
   C.ID_PREFIX.OPERATION === 'econ_op_' &&
   C.ID_PREFIX.OPERATION !== C.ID_PREFIX.TRANSACTION &&
@@ -1209,7 +1213,11 @@ check('D14.2 P22-1 的三十一个 reason code 一个都没丢（35 = 31 + P22-3
     'ACCOUNT_NOT_ALLOWED', 'AUTONOMY_NOT_PERMITTED', 'INSUFFICIENT_COMPUTE_CREDIT',
     'EXCHANGE_RATE_UNKNOWN', 'EXCHANGE_ROUNDS_TO_ZERO', 'EXCHANGE_CROSS_DOMAIN_FORBIDDEN',
     'POLICY_INPUT_NOT_STRUCTURED', 'INSUFFICIENT_AVAILABLE_BALANCE'].every(r => C.isDenyReasonCode(r)) &&
-  C.DENY_REASONS.length === 35, C.DENY_REASONS.length);
+  /* 40 = P22-1 的 31 + P22-3 的 1 + P22-4 的 4 + P22-5 的 5
+     （INVENTORY / PRODUCT_NOT_FOUND / STORE_NOT_FOUND /
+       CATALOG_INPUT_NOT_STRUCTURED / INVENTORY_INPUT_NOT_STRUCTURED）。
+     写死数字是刻意的：加一个代码必须有人手动改这一行。 */
+  C.DENY_REASONS.length === 40, C.DENY_REASONS.length);
 check('D14.3 P22-4 新增的四个 reason code 各自可判定，且没有引入兜底值',
   ['POLICY_NOT_FOUND', 'POLICY_TERM_EXPIRED', 'AMOUNT_EXCEEDS_PER_TRANSACTION',
     'AMOUNT_EXCEEDS_APPROVAL_THRESHOLD'].every(r => C.isDenyReasonCode(r)) &&
@@ -1356,16 +1364,25 @@ check('D14.25 契约的输入白名单仍然是 Budget 的唯一入口（maxBudg
   C.FORBIDDEN_POLICY_INPUT_KEYS.indexOf('llmOutput') >= 0);
 check('D14.26 P22-3 的 OPERATION_SCOPE 五元集合是**子集**（加 scope 不是换 scope）',
   ['RESERVE', 'COMMIT', 'RELEASE', 'EXPIRE', 'FAIL'].every(s => C.OPERATION_SCOPES.indexOf(s) >= 0) &&
-  C.OPERATION_SCOPES.length === 7);
+  ['QUOTE', 'POLICY'].every(s => C.OPERATION_SCOPES.indexOf(s) >= 0) &&
+  C.OPERATION_SCOPES.length === 11);
 check('D14.27 P22-4 的八个新事件全部登记，且 P22-1 的十一个事件一个都没丢',
   ['BUDGET_POLICY_CREATED', 'BUDGET_POLICY_UPDATED', 'BUDGET_POLICY_DISABLED', 'BUDGET_POLICY_EXPIRED',
     'QUOTE_CREATED', 'QUOTE_EXPIRED', 'QUOTE_CONSUMED', 'QUOTE_CANCELLED'].every(t => C.isEconomyEventType(t)) &&
   ['WALLET_OPENED', 'TRANSACTION_CREATED', 'PURCHASE_COMMITTED', 'PURCHASE_DENIED',
     'ITEM_GIFTED', 'ITEM_CONSUMED', 'COMPUTE_CREDIT_GRANTED', 'COMPUTE_CREDIT_CONSUMED',
     'EXCHANGE_COMMITTED', 'MINT_COMMITTED', 'BURN_COMMITTED'].every(t => C.isEconomyEventType(t)));
-check('D14.28 十三种 id 种类未变，BUDGET_POLICY / QUOTE 的前缀在 P22-1 就已冻结',
-  C.ID_KINDS.length === 13 &&
+check('D14.28 十四种 id 种类（P22-5 加 STORE），BUDGET_POLICY / QUOTE / PRODUCT / INVENTORY_ENTRY 的前缀在 P22-1 就已冻结',
+  C.ID_KINDS.length === 14 &&
+  C.ID_PREFIX.STORE === 'econ_store_' &&
   C.ID_PREFIX.BUDGET_POLICY === 'econ_policy_' && C.ID_PREFIX.QUOTE === 'econ_quote_' &&
+  /* P22-5 第一次真的写下一行 product / inventory，而它们的**形状**在
+     P22-1 就被冻结了 —— 实现时不需要发明任何新的 id 形状。 */
+  C.ID_PREFIX.PRODUCT === 'econ_product_' && C.ID_PREFIX.INVENTORY_ENTRY === 'econ_inv_' &&
+  C.isEconomyId('STORE', 'econ_store_s1') === true &&
+  C.isEconomyId('STORE', 'econ_policy_x1') === false &&
+  C.isEconomyId('PRODUCT', 'econ_product_p1') === true &&
+  C.isEconomyId('INVENTORY_ENTRY', 'econ_inv_i1') === true &&
   C.isEconomyId('BUDGET_POLICY', 'econ_policy_x1') === true &&
   C.isEconomyId('QUOTE', 'econ_quote_q1') === true &&
   C.isEconomyId('QUOTE', 'econ_policy_x1') === false);
@@ -1386,6 +1403,200 @@ check('D14.31 评估结果里**没有**任何叫 authorization 的字段（不�
     walk(C.budgetDecision(C.BUDGET_DECISION.DENY, 'DAILY_LIMIT', { errors: ['x'] }), 0);
     return keys.every(k => !/authorization/i.test(k)) && keys.indexOf('snapshot') >= 0;
   })());
+
+/* ══════════════════════════════════════════════════════════════════
+   D-ADDITIVE-P22-5 · P22-5 的加法（逐项）
+   ══════════════════════════════════════════════════════════════════ */
+/* P22-5 往契约里加了东西，而"加了什么"必须是一条**可执行**的清单：
+   每一项都在下面被点名，因此"某个字段其实是 P22-5 顺手改的旧语义"
+   会在这里失败，而不是在下一次读代码时被发现。 */
+section('D-ADDITIVE-P22-5 · 目录 / 库存的封闭词表与纯函数');
+
+check('D22.1 ID_PREFIX.STORE = econ_store_，且它与既有的十四种互不相同',
+  C.ID_PREFIX.STORE === 'econ_store_' &&
+  C.ID_KINDS.filter(k => C.ID_PREFIX[k] === 'econ_store_').length === 1);
+check('D22.2 STORE_STATUS 是封闭二元集合（刻意不复用 POLICY_STATUS）',
+  C.STORE_STATUSES.length === 2 && C.isStoreStatus('ACTIVE') === true &&
+  C.isStoreStatus('RETIRED') === false && C.isStoreStatus('active') === false);
+check('D22.3 PRODUCT_STATUS 是封闭三元集合，RETIRED 是**唯一**终态',
+  C.PRODUCT_STATUSES.slice().sort().join(',') === 'ACTIVE,DISABLED,RETIRED' &&
+  C.PRODUCT_TERMINAL_STATUSES.length === 1 && C.PRODUCT_TERMINAL_STATUSES[0] === 'RETIRED');
+check('D22.4 商品状态机：ACTIVE↔DISABLED 往返，RETIRED 回不来（"退役后重新上架"被拒绝）',
+  C.canTransitionProductStatus('ACTIVE', 'DISABLED').allowed === true &&
+  C.canTransitionProductStatus('DISABLED', 'ACTIVE').allowed === true &&
+  C.canTransitionProductStatus('ACTIVE', 'RETIRED').allowed === true &&
+  C.canTransitionProductStatus('DISABLED', 'RETIRED').allowed === true &&
+  C.canTransitionProductStatus('RETIRED', 'ACTIVE').allowed === false &&
+  C.canTransitionProductStatus('RETIRED', 'DISABLED').allowed === false &&
+  C.assertProductStatusTransition('RETIRED', 'ACTIVE').detail ===
+    'a-retired-product-is-terminal-and-must-not-be-relisted');
+check('D22.5 商品状态机的"未登记状态"也失败（不是只有非法转移才失败）',
+  C.canTransitionProductStatus('ACTIVE', 'ON_SALE').ok === false &&
+  C.canTransitionProductStatus('ON_SALE', 'ACTIVE').ok === false);
+check('D22.6 PRODUCT_KIND 的五个成员各自映射到 **P22-1 已冻结**的语义（没有新造经济概念）',
+  C.PRODUCT_KINDS.slice().sort().join(',') === 'API_QUOTA,COMPUTE_CREDIT,CONSUMABLE,DIGITAL_ITEM,SERVICE' &&
+  C.fulfillmentOfProductKind('DIGITAL_ITEM') === C.FULFILLMENT.INVENTORY_GRANT &&
+  C.fulfillmentOfProductKind('CONSUMABLE') === C.FULFILLMENT.INVENTORY_GRANT &&
+  C.fulfillmentOfProductKind('API_QUOTA') === C.FULFILLMENT.COMPUTE_GRANT &&
+  C.fulfillmentOfProductKind('COMPUTE_CREDIT') === C.FULFILLMENT.COMPUTE_GRANT &&
+  C.fulfillmentOfProductKind('SERVICE') === C.FULFILLMENT.SERVICE_EXECUTION &&
+  C.fulfillmentOfProductKind('RPG_SWORD') === null);
+check('D22.7 交付形态的三个成员都**至少**被一个 kind 用到（SERVICE_EXECUTION 不是死分支）',
+  C.FULFILLMENTS.slice().sort().join(',') === 'COMPUTE_GRANT,INVENTORY_GRANT,SERVICE_EXECUTION' &&
+  C.FULFILLMENTS.every(f => C.PRODUCT_KINDS.some(k => C.fulfillmentOfProductKind(k) === f)));
+check('D22.8 SERVICE 商品**没有** assetKind（交付形态是执行，不是持有）',
+  C.assetKindOfProductKind('SERVICE') === null &&
+  C.ASSET_KIND_OF_PRODUCT_KIND.SERVICE === null &&
+  C.assetKindOfProductKind('API_QUOTA') === C.ASSET_KIND.COMPUTE &&
+  C.assetKindOfProductKind('DIGITAL_ITEM') === C.ASSET_KIND.ITEM &&
+  C.ASSET_KINDS.length === 2);
+check('D22.9 唯一物品在本阶段**不可表示**（一条显式否认，而不是"忘了"）',
+  C.INVENTORY_UNIQUE_ITEMS_MODELLED === false &&
+  C.ASSET_KINDS.indexOf('UNIQUE_ITEM') < 0 &&
+  C.ASSET_KINDS.indexOf('INSTANCE') < 0);
+check('D22.10 库存的 canonical 键是 (ownerId, productId) —— 一张**数据**表，不是注释',
+  C.INVENTORY_CANONICAL_KEY.length === 2 &&
+  C.INVENTORY_CANONICAL_KEY.indexOf('ownerId') >= 0 &&
+  C.INVENTORY_CANONICAL_KEY.indexOf('productId') >= 0 &&
+  Object.isFrozen(C.INVENTORY_CANONICAL_KEY));
+check('D22.11 compute 两类商品的单位名必须恰是 §16 冻结的 computeUnit',
+  C.unitNameOfProductKind('API_QUOTA') === C.COMPUTE_UNIT_NAME &&
+  C.unitNameOfProductKind('COMPUTE_CREDIT') === C.COMPUTE_UNIT_NAME &&
+  C.COMPUTE_UNIT_NAME === 'computeUnit');
+check('D22.12 validateProduct：compute 商品用 tokens / usd 这类别名做单位会被拒绝',
+  !okResult(C.validateProduct({
+    storeId: 'econ_store_s1', kind: 'API_QUOTA', name: 'x', currency: 'IB_CREDIT',
+    unitPriceMinor: 1, grantQuantity: 1, unitName: 'tokens'
+  })) &&
+  !okResult(C.validateProduct({
+    storeId: 'econ_store_s1', kind: 'API_QUOTA', name: 'x', currency: 'IB_CREDIT',
+    unitPriceMinor: 1, grantQuantity: 1, unitName: 'providerBalance'
+  })) &&
+  okResult(C.validateProduct({
+    storeId: 'econ_store_s1', kind: 'API_QUOTA', name: 'x', currency: 'IB_CREDIT',
+    unitPriceMinor: 1, grantQuantity: 1
+  })));
+check('D22.13 validateProduct：unitPriceMinor = 0 是**显式合法值**，缺失才是错误（truthiness 陷阱不在代码里）',
+  okResult(C.validateProduct({
+    storeId: 'econ_store_s1', kind: 'DIGITAL_ITEM', name: 'free', currency: 'IB_CREDIT',
+    unitPriceMinor: 0, grantQuantity: 1
+  })) &&
+  C.validateProduct({
+    storeId: 'econ_store_s1', kind: 'DIGITAL_ITEM', name: 'x', currency: 'IB_CREDIT', grantQuantity: 1
+  }).errors.indexOf('product-unit-price-minor-required') >= 0 &&
+  C.validateProduct({
+    storeId: 'econ_store_s1', kind: 'DIGITAL_ITEM', name: 'x', currency: 'IB_CREDIT',
+    unitPriceMinor: -1, grantQuantity: 1
+  }).errors.indexOf('amount-minor-negative') >= 0);
+check('D22.14 validateProduct：SERVICE 的 grantQuantity 必须是 0（"多写一个 5"会被拒绝）',
+  okResult(C.validateProduct({
+    storeId: 'econ_store_s1', kind: 'SERVICE', name: 'svc', currency: 'IB_CREDIT',
+    unitPriceMinor: 100, grantQuantity: 0
+  })) &&
+  C.validateProduct({
+    storeId: 'econ_store_s1', kind: 'SERVICE', name: 'svc', currency: 'IB_CREDIT',
+    unitPriceMinor: 100, grantQuantity: 5
+  }).errors.indexOf('a-service-product-must-not-grant-inventory-quantity') >= 0 &&
+  C.validateProduct({
+    storeId: 'econ_store_s1', kind: 'DIGITAL_ITEM', name: 'x', currency: 'IB_CREDIT',
+    unitPriceMinor: 100, grantQuantity: 0
+  }).errors.indexOf('product-grant-quantity-must-be-positive') >= 0);
+check('D22.15 validateProduct：交付形态是**派生**的 —— 声明一个与 kind 不符的 fulfillment 会被拒绝',
+  C.validateProduct({
+    storeId: 'econ_store_s1', kind: 'SERVICE', name: 'svc', currency: 'IB_CREDIT',
+    unitPriceMinor: 100, grantQuantity: 0, fulfillment: 'INVENTORY_GRANT'
+  }).errors.indexOf('product-fulfillment-does-not-match-the-product-kind') >= 0);
+check('D22.16 FORBIDDEN_PRODUCT_FIELDS：provider / 真实货币 / 折扣 / 推荐 / 关系 逐个点名，且都是**数据**',
+  ['providerApiKey', 'providerBalance', 'providerTopup', 'checkoutUrl', 'paymentIntent',
+    'realMoney', 'cny', 'usd', 'discount', 'coupon', 'featured', 'recommended',
+    'trust', 'affection', 'relationshipId', 'prompt', 'llmOutput', 'price', 'cost', 'budget']
+    .every(f => C.isForbiddenProductFieldName(f) === true) &&
+  C.isForbiddenProductFieldName('unitPriceMinor') === false);
+check('D22.17 validateProduct 的键白名单：传 price / discount / trust 一律拒绝（不是静默忽略）',
+  C.validateProduct({
+    storeId: 'econ_store_s1', kind: 'DIGITAL_ITEM', name: 'x', currency: 'IB_CREDIT',
+    unitPriceMinor: 1, grantQuantity: 1, price: 1
+  }).errors.indexOf('product-input-key-is-forbidden:price') >= 0 &&
+  C.validateProduct({
+    storeId: 'econ_store_s1', kind: 'DIGITAL_ITEM', name: 'x', currency: 'IB_CREDIT',
+    unitPriceMinor: 1, grantQuantity: 1, discount: 0.8
+  }).errors.indexOf('product-input-key-is-forbidden:discount') >= 0 &&
+  C.validateProduct({
+    storeId: 'econ_store_s1', kind: 'DIGITAL_ITEM', name: 'x', currency: 'IB_CREDIT',
+    unitPriceMinor: 1, grantQuantity: 1, trust: 0.9
+  }).errors.indexOf('product-input-key-is-forbidden:trust') >= 0 &&
+  C.validateProduct({
+    storeId: 'econ_store_s1', kind: 'DIGITAL_ITEM', name: 'x', currency: 'IB_CREDIT',
+    unitPriceMinor: 1, grantQuantity: 1, whatever: 1
+  }).errors.indexOf('product-input-key-not-whitelisted:whatever') >= 0);
+check('D22.18 PRICING_IS_RELATIONSHIP_FREE 是一条可断言的常量（§41 的机器可读形式）',
+  C.PRICING_IS_RELATIONSHIP_FREE === true &&
+  typeof C.PRICING_IS_RELATIONSHIP_FREE === 'boolean');
+check('D22.19 productQuoteKindFor：compute 额度报价是 COMPUTE_GRANT，其余由"有没有受赠人"决定',
+  C.productQuoteKindFor(C.FULFILLMENT.COMPUTE_GRANT, false).kind === C.QUOTE_KIND.COMPUTE_GRANT &&
+  C.productQuoteKindFor(C.FULFILLMENT.COMPUTE_GRANT, true).kind === C.QUOTE_KIND.COMPUTE_GRANT &&
+  C.productQuoteKindFor(C.FULFILLMENT.INVENTORY_GRANT, false).kind === C.QUOTE_KIND.PURCHASE &&
+  C.productQuoteKindFor(C.FULFILLMENT.INVENTORY_GRANT, true).kind === C.QUOTE_KIND.GIFT &&
+  C.productQuoteKindFor(C.FULFILLMENT.SERVICE_EXECUTION, false).kind === C.QUOTE_KIND.PURCHASE &&
+  C.productQuoteKindFor('NOT_A_FULFILLMENT', false).ok === false);
+check('D22.20 productQuoteQuantity：API_QUOTA ×1000 的报价数量是 1000（送达量，不是份数）',
+  C.productQuoteQuantity({ kind: 'API_QUOTA', grantQuantity: 1000 }, 1).quantity === 1000 &&
+  C.productQuoteQuantity({ kind: 'API_QUOTA', grantQuantity: 1000 }, 3).quantity === 3000 &&
+  C.productQuoteQuantity({ kind: 'DIGITAL_ITEM', grantQuantity: 1 }, 5).quantity === 5 &&
+  /* 服务商品：grantQuantity 必须是 0，而 §14 要求报价数量 ≥ 1，
+     因此它的数量只能表达"执行几次" —— 那是它唯一有意义的数量。 */
+  C.productQuoteQuantity({ kind: 'SERVICE', grantQuantity: 0 }, 2).quantity === 2 &&
+  C.productQuoteQuantity({ kind: 'API_QUOTA', grantQuantity: 1000 }, 0).ok === false);
+check('D22.21 productQuoteAmountMinor：金额是 BigInt，溢出**拒绝**而不是静默变形',
+  C.productQuoteAmountMinor({ unitPriceMinor: 400 }, 1).amountMinor === 400n &&
+  C.productQuoteAmountMinor({ unitPriceMinor: 100 }, 3).amountMinor === 300n &&
+  C.productQuoteAmountMinor({ unitPriceMinor: 0 }, 1).amountMinor === 0n &&
+  C.productQuoteAmountMinor({ unitPriceMinor: C.MAX_AMOUNT_MINOR }, 2).ok === false &&
+  C.productQuoteAmountMinor({ unitPriceMinor: 1 }, 2 ** 53).ok === false);
+check('D22.22 QUOTE_PRODUCT_RELATION：报价与商品的关系是**显式二选一**，而 P22-5 选了 PROVENANCE_ONLY',
+  C.QUOTE_PRODUCT_RELATION.PROVENANCE_ONLY === 'PROVENANCE_ONLY' &&
+  C.QUOTE_PRODUCT_RELATION.DEPENDENCY === 'DEPENDENCY' &&
+  C.PRODUCT_IS_PROVENANCE_FOR_QUOTES === true);
+check('D22.23 P22-5 的八个新事件全部登记，且 P22-4 的十九个事件一个都没丢',
+  ['STORE_CREATED', 'STORE_UPDATED', 'PRODUCT_CREATED', 'PRODUCT_UPDATED',
+    'PRODUCT_DISABLED', 'PRODUCT_RETIRED', 'INVENTORY_GRANTED', 'INVENTORY_CONSUMED']
+    .every(t => C.isEconomyEventType(t)) &&
+  ['BUDGET_POLICY_CREATED', 'QUOTE_CREATED', 'QUOTE_EXPIRED', 'QUOTE_CONSUMED',
+    'WALLET_OPENED', 'TRANSACTION_CREATED', 'PURCHASE_COMMITTED', 'MINT_COMMITTED']
+    .every(t => C.isEconomyEventType(t)) &&
+  C.isEconomyEventType('STORE_DELETED') === false &&
+  /* §23：不存在"删除历史"的事件类型 —— 下架由状态表达。 */
+  C.isEconomyEventType('PRODUCT_DELETED') === false &&
+  C.isEconomyEventType('INVENTORY_DELETED') === false);
+check('D22.24 P22-5 的五个新 reason code 各自可判定，且仍然没有兜底值',
+  ['INSUFFICIENT_INVENTORY', 'PRODUCT_NOT_FOUND', 'STORE_NOT_FOUND',
+    'CATALOG_INPUT_NOT_STRUCTURED', 'INVENTORY_INPUT_NOT_STRUCTURED']
+    .every(r => C.isDenyReasonCode(r)) &&
+  C.DENY_REASONS.indexOf('OTHER') < 0 && C.DENY_REASONS.indexOf('UNKNOWN') < 0 &&
+  C.DENY_REASONS.indexOf('NOT_FOUND') < 0);
+/* ── D22.25 / D22.26：这两条在**本文件**里刻意只做对象级断言 ───────────
+   "契约源码里没有时钟 / 随机 / require / DELETE FROM" 是**静态**性质，
+   而本文件不读文件（它只 require 契约本身，与 P22-1 的原始设计一致：
+   纯运行时契约测试）。那两条静态断言放在 boundary 文件里，由 B22 组
+   在**真实源码**上执行 —— 那里本来就有剥注释与字符串的扫描器。
+   放两份会让"哪一份是真的"变成一个需要回答的问题。 */
+check('D22.25 契约的导出面仍然是**冻结**的，且 P22-5 的新函数全是纯函数（不改入参、不返回引用）',
+  Object.isFrozen(C) &&
+  (() => {
+    const input = Object.freeze({ kind: 'API_QUOTA', grantQuantity: 1000, unitPriceMinor: 400 });
+    const q = C.productQuoteQuantity(input, 2);
+    const a = C.productQuoteAmountMinor(input, 2);
+    /* 入参是 frozen 的：一个会就地改写的实现会在这里抛 TypeError。 */
+    return q.quantity === 2000 && a.amountMinor === 800n &&
+      q.quantity !== input.grantQuantity && a.amountMinor !== input.unitPriceMinor;
+  })());
+check('D22.26 契约里没有"删除历史"的状态：store/product/inventory 的生命周期只由状态表达',
+  C.PRODUCT_STATUS_TRANSITIONS.RETIRED.length === 0 &&
+  C.STORE_STATUSES.indexOf('DELETED') < 0 &&
+  C.PRODUCT_STATUSES.indexOf('DELETED') < 0 &&
+  C.EVENT_TYPES.indexOf('STORE_DELETED') < 0 &&
+  C.EVENT_TYPES.indexOf('PRODUCT_DELETED') < 0 &&
+  C.EVENT_TYPES.indexOf('INVENTORY_DELETED') < 0);
 
 /* ══════════════════════════════════════════════════════════════════
    汇总

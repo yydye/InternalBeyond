@@ -400,7 +400,33 @@
     POLICY_NOT_FOUND: 'POLICY_NOT_FOUND',
     POLICY_TERM_EXPIRED: 'POLICY_TERM_EXPIRED',
     AMOUNT_EXCEEDS_PER_TRANSACTION: 'AMOUNT_EXCEEDS_PER_TRANSACTION',
-    AMOUNT_EXCEEDS_APPROVAL_THRESHOLD: 'AMOUNT_EXCEEDS_APPROVAL_THRESHOLD'
+    AMOUNT_EXCEEDS_APPROVAL_THRESHOLD: 'AMOUNT_EXCEEDS_APPROVAL_THRESHOLD',
+    /* ── P22-5 追加的三个（加法）──────────────────────────────────────────
+       INVENTORY 不是 BALANCE（P22-5 §12）。"我还剩 3 个"与"我还有 300
+       元"是两种完全不同的不足，而它们的正确反应也不同（前者是"别用
+       了"，后者是"去挣"）。因此它必须有自己的代码，而不是借用
+       INSUFFICIENT_BALANCE。这条与 P22-3 分出
+       INSUFFICIENT_AVAILABLE_BALANCE 的理由逐字同源。
+
+       PRODUCT_NOT_FOUND / STORE_NOT_FOUND —— P22-4 的 createQuote 把
+       "商品不存在"也写成 PRODUCT_DISABLED（那时没有目录，无法区分）。
+       P22-5 第一次真的能区分了，于是"这件商品不存在"与"它存在但不能卖"
+       各有一个代码：前者的正确反应是"你的 id 错了"，后者是"换一件商品"。
+       P22-4 的 raw primitive 行为**不被改写**（它仍然报
+       PRODUCT_DISABLED），只有 product-backed 路径用这两个新代码。 */
+    INSUFFICIENT_INVENTORY: 'INSUFFICIENT_INVENTORY',
+    PRODUCT_NOT_FOUND: 'PRODUCT_NOT_FOUND',
+    STORE_NOT_FOUND: 'STORE_NOT_FOUND',
+    /* ── 两个"输入形状"代码 ─────────────────────────────────────────────
+       P22-4 有一个 POLICY_INPUT_NOT_STRUCTURED，它说的是**政策**的输入。
+       目录（货架 / 商品）与库存原语各自也需要一个，而且刻意**不**复用
+       政策那一个：审计里"有人把政策写坏了"与"有人把商品写坏了"是两个
+       不同的运维问题，共用代码会让它们无法区分。
+       为什么不是更泛的 INPUT_NOT_STRUCTURED：一个泛化的兜底名字正是
+       §4 明确禁止的兜底值（"没有 OTHER/UNKNOWN 兜底"）。这两个名字各自
+       指向一个具体的域。 */
+    CATALOG_INPUT_NOT_STRUCTURED: 'CATALOG_INPUT_NOT_STRUCTURED',
+    INVENTORY_INPUT_NOT_STRUCTURED: 'INVENTORY_INPUT_NOT_STRUCTURED'
   });
 
   var DENY_REASONS = Object.freeze(Object.keys(DENY_REASON));
@@ -466,6 +492,12 @@
        而不是"一笔事实"或"一次锁定"。这是**加法**，不是对旧 id 的重新解释。 */
     OPERATION: 'econ_op_',
     BUDGET_POLICY: 'econ_policy_',
+    /* ── P22-5 追加的一种（加法）─────────────────────────────────────────
+       STORE（econ_store_）是"货架"的身份。product 与 inventory 的前缀
+       P22-1 就已经冻结在这里了 —— 那时候它们还没有表，只有形状；P22-5
+       才第一次真的写下一行。这正是"先冻结形状、后实现"要得到的效果：
+       实现时不需要发明任何新的 id 形状。 */
+    STORE: 'econ_store_',
     PRODUCT: 'econ_product_',
     INVENTORY_ENTRY: 'econ_inv_',
     QUOTE: 'econ_quote_',
@@ -1101,7 +1133,23 @@
        RESERVE 与 COMMIT 下是两件事"这条已经冻结的纪律，对
        "同一个 key 在 QUOTE 与 POLICY 下也是两件事"逐字成立。 */
     QUOTE: 'QUOTE',
-    POLICY: 'POLICY'
+    POLICY: 'POLICY',
+    /* ── P22-5 追加的四个（加法）──────────────────────────────────────────
+       STORE / PRODUCT 是"配置数据"的两次写入；INVENTORY_GRANT /
+       INVENTORY_CONSUME 是库存原语的两次写入。
+       为什么配置数据也要幂等：一次 store/product 写入同样会消耗一个
+       revision、写一条 change log、并在崩溃后留下**部分**状态 —— 它
+       与一次 reserve 面对的是同一个重试问题（"这次请求做过没有"）。
+       把它们排除在幂等之外，等于让"配置数据"成为唯一一种崩溃后必须靠
+       人工判断的写。
+       INVENTORY_GRANT 与 INVENTORY_CONSUME 刻意是**两个** scope，而不是
+       一个 INVENTORY：同一个 key 分别用于一次 grant 与一次 consume 是
+       两件不同的事，把两者压成一个 scope 会让"我那次发放到底成没成"
+       收到一个关于消耗的答案。 */
+    STORE: 'STORE',
+    PRODUCT: 'PRODUCT',
+    INVENTORY_GRANT: 'INVENTORY_GRANT',
+    INVENTORY_CONSUME: 'INVENTORY_CONSUME'
   });
 
   var OPERATION_SCOPES = Object.freeze(Object.keys(OPERATION_SCOPE));
@@ -2401,7 +2449,30 @@
     COMPUTE_CREDIT_CONSUMED: 'COMPUTE_CREDIT_CONSUMED',
     EXCHANGE_COMMITTED: 'EXCHANGE_COMMITTED',
     MINT_COMMITTED: 'MINT_COMMITTED',
-    BURN_COMMITTED: 'BURN_COMMITTED'
+    BURN_COMMITTED: 'BURN_COMMITTED',
+    /* ── P22-5 追加的八个（加法）─────────────────────────────────────────
+       目录面四个：货架创建 / 货架修改 / 商品创建 / 商品修改。
+       商品生命周期两个终局：DISABLED / RETIRED（它们各自一条事件，理由与
+       P22-4 的"改价必须有自己的事件"逐字相同 —— "这件商品为什么买不了"
+       的答案必须能读出**是被停用还是已经退役**，而合并成一条
+       PRODUCT_UPDATED 会让这个区别消失在 payload 里）。
+       库存面两个：GRANTED / CONSUMED。
+       全部写 `ledgerMutation: false` —— 目录与库存 primitive 都不动钱
+       （P22-5 §14）。真正的 Purchase 会在**同一个事务**里同时写
+       ledger 与 inventory，但那不是本阶段。
+
+       注意 PRODUCT_DISABLED / PRODUCT_RETIRED 与既有的**拒绝码**
+       PRODUCT_DISABLED 同名但不是同一个东西：一个是事件类型（发生了什么），
+       一个是拒绝原因（为什么没成）。同名是有意的：它们描述的是同一件事
+       的两个视角。 */
+    STORE_CREATED: 'STORE_CREATED',
+    STORE_UPDATED: 'STORE_UPDATED',
+    PRODUCT_CREATED: 'PRODUCT_CREATED',
+    PRODUCT_UPDATED: 'PRODUCT_UPDATED',
+    PRODUCT_DISABLED: 'PRODUCT_DISABLED',
+    PRODUCT_RETIRED: 'PRODUCT_RETIRED',
+    INVENTORY_GRANTED: 'INVENTORY_GRANTED',
+    INVENTORY_CONSUMED: 'INVENTORY_CONSUMED'
   });
 
   var EVENT_TYPES = Object.freeze(Object.keys(EVENT_TYPE));
@@ -2676,6 +2747,525 @@
   }
 
   /* ══════════════════════════════════════════════════════════════════
+     §22 · Store / Product / Inventory Contract（P22-5）
+     ══════════════════════════════════════════════════════════════════ */
+
+  /* 这一节回答三个新问题：
+
+       「有哪些商品？」（Store + Product）
+       「一份商品到底是什么？」（kind / fulfillment / unitPriceMinor）
+       「谁拥有什么？」（Inventory）
+
+     它**不**回答「Agent 应该买什么」（那是 Decision），也不执行
+     「买」（那是 future Purchase）。§15 早就把这条线画好了：
+     "Product 里不允许出现任意 JS / function / code；商品 effect 是
+     **数据**，由 Economy 解释，不由商品自己执行。" 本节沿用那条纪律。
+
+     ── 为什么必须把 Store / Product / Inventory 分成三个概念 ────────────
+     它们各自的**变化频率**与**所有者**完全不同：
+       · Store    —— 组织方式（哪个货架）。改它不该动价格。
+       · Product  —— 价格与交付形态。改它**不得**重写历史报价。
+       · Inventory—— 已发生的拥有事实。改它不该动价格，也不该动余额。
+     合并其中任意两个都会立刻产生一个"改一个字段同时改变两件事"的操作，
+     而那种操作在审计里无法解释。P22-5 §1 把这条写成了六条不等式。
+
+     ── 本节的加法（逐项）────────────────────────────────────────────────
+       · ID_PREFIX.STORE          —— 新的一种 id 形状（econ_store_）
+       · OPERATION_SCOPE ×4       —— STORE / PRODUCT / INVENTORY_GRANT /
+                                     INVENTORY_CONSUME
+       · EVENT_TYPE ×8            —— 见 §18
+       · DENY_REASON ×3           —— PRODUCT_NOT_FOUND / STORE_NOT_FOUND /
+                                     INSUFFICIENT_INVENTORY
+       · 本节自己的五个封闭词表  —— STORE_STATUS / PRODUCT_STATUS /
+                                     PRODUCT_KIND / FULFILLMENT / ASSET_KIND
+     没有任何既有字面值被修改或删除。 */
+
+  /* ── Store 的状态 ────────────────────────────────────────────────────
+     刻意**不复用** POLICY_STATUS：两者今天恰好都有 ACTIVE / DISABLED，
+     但它们回答的问题不同（"这条规则生效吗" vs "这个货架开着吗"），而
+     共用一套词表意味着将来给其中一个加成员会**静默地**改写另一个的语义。
+     两个字母相同的封闭集合不是重复，是两个不同的域在说同一句短话。 */
+  var STORE_STATUS = Object.freeze({
+    ACTIVE: 'ACTIVE',
+    DISABLED: 'DISABLED'
+  });
+
+  var STORE_STATUSES = Object.freeze(Object.keys(STORE_STATUS));
+  var STORE_STATUS_INDEX = (function () {
+    var map = Object.create(null);
+    for (var i = 0; i < STORE_STATUSES.length; i++) map[STORE_STATUSES[i]] = true;
+    return map;
+  })();
+
+  function isStoreStatus(value) {
+    return value != null && STORE_STATUS_INDEX[String(value)] === true;
+  }
+
+  /* ── Product 的状态（P22-5 §9）───────────────────────────────────────
+     RETIRED 与 DISABLED 刻意分开：
+       · DISABLED —— 暂时不卖了。可以再打开（这是 ACTIVE 的往返边）。
+       · RETIRED  —— 这件商品的**生命结束了**，永不再卖。终态。
+     两者的共同后果只有一个：**不能创建新报价**。它们**不**修改任何一份
+     已存在的报价 —— 报价的有效性只由它自己的 state 与 expiresAt 决定
+     （§14 冻结的那两列），否则一次 Product mutation 就会偷偷重写历史
+     报价，而"当时是多少钱"这个问题将不再有答案。 */
+  var PRODUCT_STATUS = Object.freeze({
+    ACTIVE: 'ACTIVE',
+    DISABLED: 'DISABLED',
+    RETIRED: 'RETIRED'
+  });
+
+  var PRODUCT_STATUSES = Object.freeze(Object.keys(PRODUCT_STATUS));
+  var PRODUCT_STATUS_INDEX = (function () {
+    var map = Object.create(null);
+    for (var i = 0; i < PRODUCT_STATUSES.length; i++) map[PRODUCT_STATUSES[i]] = true;
+    return map;
+  })();
+
+  function isProductStatus(value) {
+    return value != null && PRODUCT_STATUS_INDEX[String(value)] === true;
+  }
+
+  var PRODUCT_STATUS_TRANSITIONS = Object.freeze({
+    ACTIVE: Object.freeze([PRODUCT_STATUS.DISABLED, PRODUCT_STATUS.RETIRED]),
+    DISABLED: Object.freeze([PRODUCT_STATUS.ACTIVE, PRODUCT_STATUS.RETIRED]),
+    /* RETIRED 是终态。一个"退役后又上架"的商品不是同一件商品，
+       而允许它回来会让"这件商品已经结束"这句话变得不可信。 */
+    RETIRED: Object.freeze([])
+  });
+
+  var PRODUCT_TERMINAL_STATUSES = Object.freeze(
+    PRODUCT_STATUSES.filter(function (s) { return PRODUCT_STATUS_TRANSITIONS[s].length === 0; })
+  );
+
+  function canTransitionProductStatus(from, to) {
+    var f = String(from == null ? '' : from);
+    var t = String(to == null ? '' : to);
+    if (!PRODUCT_STATUS_INDEX[f] || !PRODUCT_STATUS_INDEX[t]) {
+      return { ok: false, allowed: false, errors: ['product-status-not-in-closed-set'] };
+    }
+    var allowed = PRODUCT_STATUS_TRANSITIONS[f].indexOf(t) >= 0;
+    return { ok: true, allowed: allowed, errors: allowed ? [] : ['product-status-transition-not-allowed'], from: f, to: t };
+  }
+
+  function assertProductStatusTransition(from, to) {
+    var r = canTransitionProductStatus(from, to);
+    if (!r.ok) return { ok: false, errors: r.errors };
+    if (!r.allowed) {
+      return {
+        ok: false,
+        errors: ['product-status-transition-not-allowed'],
+        detail: (PRODUCT_TERMINAL_STATUSES.indexOf(r.from) >= 0)
+          ? 'a-retired-product-is-terminal-and-must-not-be-relisted'
+          : 'product-status-transition-not-in-allowed-set'
+      };
+    }
+    return { ok: true, errors: [] };
+  }
+
+  /* ── Product kind（P22-5 §4/§28）─────────────────────────────────────
+     五个成员，而且**每一个都映射到 §15 已经冻结的语义**：kind 只决定
+     "交付什么形态"，不新造任何 ledger / transaction / currency 词汇。
+     这正是 §4 要求的"先审计已冻结的词表，再决定要不要新增枚举"的结果：
+     五个名字里没有一个是新的经济概念，它们只是把 §15 的 EFFECT_TYPE 与
+     §16 的 compute tier 组织成"货架上的分类"。 */
+  var PRODUCT_KIND = Object.freeze({
+    DIGITAL_ITEM: 'DIGITAL_ITEM',
+    CONSUMABLE: 'CONSUMABLE',
+    API_QUOTA: 'API_QUOTA',
+    COMPUTE_CREDIT: 'COMPUTE_CREDIT',
+    SERVICE: 'SERVICE'
+  });
+
+  var PRODUCT_KINDS = Object.freeze(Object.keys(PRODUCT_KIND));
+  var PRODUCT_KIND_INDEX = (function () {
+    var map = Object.create(null);
+    for (var i = 0; i < PRODUCT_KINDS.length; i++) map[PRODUCT_KINDS[i]] = true;
+    return map;
+  })();
+
+  function isProductKind(value) {
+    return value != null && PRODUCT_KIND_INDEX[String(value)] === true;
+  }
+
+  /* ── 交付形态（settlement strategy）──────────────────────────────────
+     P22-5 §27 的要求：**不要**把模型设计成"每个商品购买后都必须增加
+     inventory"。SERVICE 商品就是那个反例 —— 它购买后发生的是一次
+     服务执行，没有永久库存。因此把"买完发生什么"提升为一个显式的、
+     封闭的、创建时冻结的字段，而不是让下游按 kind 猜。 */
+  var FULFILLMENT = Object.freeze({
+    INVENTORY_GRANT: 'INVENTORY_GRANT',
+    COMPUTE_GRANT: 'COMPUTE_GRANT',
+    SERVICE_EXECUTION: 'SERVICE_EXECUTION'
+  });
+
+  var FULFILLMENTS = Object.freeze(Object.keys(FULFILLMENT));
+  var FULFILLMENT_INDEX = (function () {
+    var map = Object.create(null);
+    for (var i = 0; i < FULFILLMENTS.length; i++) map[FULFILLMENTS[i]] = true;
+    return map;
+  })();
+
+  function isFulfillment(value) {
+    return value != null && FULFILLMENT_INDEX[String(value)] === true;
+  }
+
+  /* kind → 交付形态。这是一张**数据**表（与 §14 的 QUOTE_SETTLEMENT_TYPE
+     同款），不是散落的条件分支：把它写成数据，下面的载入期自检才能证明
+     每个 kind 都有一个答案，而不是"碰巧代码里覆盖到了"。 */
+  var FULFILLMENT_OF_PRODUCT_KIND = Object.freeze({
+    DIGITAL_ITEM: FULFILLMENT.INVENTORY_GRANT,
+    CONSUMABLE: FULFILLMENT.INVENTORY_GRANT,
+    API_QUOTA: FULFILLMENT.COMPUTE_GRANT,
+    COMPUTE_CREDIT: FULFILLMENT.COMPUTE_GRANT,
+    SERVICE: FULFILLMENT.SERVICE_EXECUTION
+  });
+
+  function fulfillmentOfProductKind(kind) {
+    if (!isProductKind(kind)) return null;
+    return FULFILLMENT_OF_PRODUCT_KIND[String(kind)];
+  }
+
+  /* ── Inventory 的资产形态 ────────────────────────────────────────────
+     只有两个成员，而且**刻意没有** UNIQUE_ITEM：
+     P22-5 §10 说"如果资产必须区分可堆叠/唯一物品：设计明确；不要提前做
+     复杂 RPG inventory"。答案是：本阶段的 canonical key 是
+     (ownerId, productId) 且数量是一个非负整数，因此**唯一物品不可表示**。
+     这不是"忘了"，而是一条被写下来的边界 —— 它由一个封闭集合 + 一条
+     显式的否认（UNIQUE_ITEMS_NOT_MODELLED）共同表达，并有测试钉住。
+     SERVICE 的 assetKind 是 **null**：交付形态是执行，不是持有。 */
+  var ASSET_KIND = Object.freeze({
+    ITEM: 'ITEM',
+    COMPUTE: 'COMPUTE'
+  });
+
+  var ASSET_KINDS = Object.freeze(Object.keys(ASSET_KIND));
+
+  var ASSET_KIND_OF_PRODUCT_KIND = Object.freeze({
+    DIGITAL_ITEM: ASSET_KIND.ITEM,
+    CONSUMABLE: ASSET_KIND.ITEM,
+    API_QUOTA: ASSET_KIND.COMPUTE,
+    COMPUTE_CREDIT: ASSET_KIND.COMPUTE,
+    SERVICE: null
+  });
+
+  function assetKindOfProductKind(kind) {
+    if (!isProductKind(kind)) return null;
+    return ASSET_KIND_OF_PRODUCT_KIND[String(kind)];
+  }
+
+  /* 库存的 canonical 键。**数据**，不是注释 —— 测试与 store 都读它，
+     于是"按 (owner, product) 唯一"这件事只有一处定义。 */
+  var INVENTORY_CANONICAL_KEY = Object.freeze(['ownerId', 'productId']);
+
+  /* 库存数量永远不可表示唯一物品。这是一条**可断言的否认**。 */
+  var INVENTORY_UNIQUE_ITEMS_MODELLED = false;
+
+  /* ── 单位名（unitName）────────────────────────────────────────────────
+     金额必须有单位（§3：禁止 price / budget / money / cost 这类没有单位
+     的字段）。unitName 是**计量单位**的名字，不是货币。它的缺省值由 kind
+     决定，而对 compute 两类它必须是 §16 冻结的 computeUnit —— 于是
+     "这家店卖的是 provider token"这句话在字形上就不可能成立
+     （isForbiddenComputeAlias 逐字否认 tokens / usd / providerBalance）。 */
+  var PRODUCT_UNIT_NAME = Object.freeze({
+    DIGITAL_ITEM: 'item',
+    CONSUMABLE: 'item',
+    API_QUOTA: COMPUTE_UNIT_NAME,
+    COMPUTE_CREDIT: COMPUTE_UNIT_NAME,
+    SERVICE: 'service'
+  });
+
+  function unitNameOfProductKind(kind) {
+    if (!isProductKind(kind)) return null;
+    return PRODUCT_UNIT_NAME[String(kind)];
+  }
+
+  /* ── Product 的字段白名单 ────────────────────────────────────────────
+     §3 明确禁止"没有单位的金额字段"。这里把那条纪律变成一张**精确**名单：
+     store 收到的键必须全部在名单里，多一个就拒绝。它同时挡住两类东西：
+       · 真实购物域的键（maxBudget / paymentIntent / checkoutUrl …）；
+       · 任何"看起来像价格但没有单位"的键（price / cost / money）。
+     与 P22-4 的 BUDGET_INPUT_KEYS 同款：让越界的输入**没有地方可以放**。 */
+  var PRODUCT_INPUT_KEYS = Object.freeze([
+    'productId', 'storeId', 'kind', 'fulfillment', 'name', 'description',
+    'currency', 'unitPriceMinor', 'unitName', 'grantQuantity', 'status',
+    'ifRevision', 'idempotencyKey'
+  ]);
+
+  var STORE_INPUT_KEYS = Object.freeze([
+    'storeId', 'name', 'description', 'status', 'sortOrder', 'ifRevision', 'idempotencyKey'
+  ]);
+
+  /* 逐个点名否认的商品字段名。它们全部是"影响 Economy 之外的世界"或
+     "让价格依赖于关系/推荐"的企图：
+       · provider*  —— P22 的硬边界（§5/§43）；
+       · real* / cny / usd / fiat —— 真实货币（§42）；
+       · discount / promo / coupon / featured / recommended —— 个性化定价与
+         推荐（§40/§41）。未来若真需要折扣，必须设计独立的
+         Discount/Promotion contract，而不是偷偷塞进 Product getter。 */
+  var FORBIDDEN_PRODUCT_FIELDS = Object.freeze([
+    'price', 'cost', 'money', 'budget', 'amount', 'value', 'stock', 'owned', 'onHand',
+    'inventoryCount', 'providerApiKey', 'providerAccount', 'providerBalance', 'providerTopup',
+    'providerQuota', 'checkoutUrl', 'paymentIntent', 'paymentLink', 'realMoney', 'realPrice',
+    'cny', 'usd', 'fiatAmount', 'discount', 'discountRate', 'promo', 'promotion', 'coupon',
+    'featured', 'recommended', 'recommendation', 'personalized', 'trust', 'affection',
+    'affinity', 'familiarity', 'relationshipId', 'memoryRef', 'prompt', 'llmOutput'
+  ]);
+
+  var FORBIDDEN_PRODUCT_FIELD_INDEX = (function () {
+    var map = Object.create(null);
+    for (var i = 0; i < FORBIDDEN_PRODUCT_FIELDS.length; i++) map[FORBIDDEN_PRODUCT_FIELDS[i]] = true;
+    return map;
+  })();
+
+  function isForbiddenProductFieldName(value) {
+    if (value == null) return false;
+    var raw = String(value).trim();
+    if (!raw) return false;
+    if (FORBIDDEN_PRODUCT_FIELD_INDEX[raw]) return true;
+    return !!FORBIDDEN_PRODUCT_FIELD_INDEX[raw.replace(/[^A-Za-z0-9]/g, '')];
+  }
+
+  /* 定价与关系无关，是一条**可断言的自述**（§41）。同一个 Product 的
+     canonical unitPriceMinor 不得依赖任何关系/记忆/推荐输入；下面这张
+     清单是"哪些输入会让定价变成个性化"的封闭答案，而 validateProduct
+     因为白名单而**根本没有地方**接收它们。 */
+  var PRICING_IS_RELATIONSHIP_FREE = true;
+
+  /* name / description 的长度上界。存在理由与 §19 的 correlationRef 同款：
+     一个无上界的文本字段是一条把任意正文塞进经济记录的通道，而
+     "商品名里带着一整段 prompt"在审计里与"商品名"无法区分。 */
+  var PRODUCT_NAME_MAX = 120;
+  var PRODUCT_DESCRIPTION_MAX = 500;
+  var STORE_NAME_MAX = 120;
+  var STORE_DESCRIPTION_MAX = 500;
+  var UNIT_NAME_RE = /^[A-Za-z][A-Za-z0-9]{0,31}$/;
+  /* sortOrder 的界：它只影响展示顺序，取一个足够大又不会溢出的范围。 */
+  var SORT_ORDER_MAX = 1000000;
+
+  function validateStore(input) {
+    var o = input || {};
+    var errors = [];
+    if (o.storeId != null && !isEconomyId('STORE', o.storeId)) errors.push('store-id-not-canonical');
+    var name = o.name == null ? '' : String(o.name).trim();
+    if (!name) errors.push('store-name-required');
+    else if (name.length > STORE_NAME_MAX) errors.push('store-name-too-long');
+    if (o.description != null && String(o.description).length > STORE_DESCRIPTION_MAX) {
+      errors.push('store-description-too-long');
+    }
+    if (o.status != null && !isStoreStatus(o.status)) errors.push('store-status-not-in-closed-set');
+    if (o.sortOrder != null) {
+      if (!Number.isSafeInteger(Number(o.sortOrder)) || Math.abs(Number(o.sortOrder)) > SORT_ORDER_MAX) {
+        errors.push('store-sort-order-not-a-bounded-safe-integer');
+      }
+    }
+    var keys = Object.keys(o);
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      if (STORE_INPUT_KEYS.indexOf(k) >= 0) continue;
+      if (isForbiddenProductFieldName(k)) { errors.push('store-input-key-is-forbidden:' + k); continue; }
+      errors.push('store-input-key-not-whitelisted:' + k);
+    }
+    if (errors.length) return { ok: false, store: null, errors: errors };
+    return { ok: true, errors: [], store: o };
+  }
+
+  /* Product 的**结构化**校验。要点逐条：
+       · unitPriceMinor 必填、可以是 **0**（免费商品是合法产品，见 §34：
+         "0 必须是显式合法值"）—— 因此这里用的是 `o.unitPriceMinor == null`
+         而不是 `!o.unitPriceMinor`；用后者会让 "免费" 与 "忘了写价格"
+         变成同一种失败；
+       · grantQuantity 的取值由交付形态**约束**，不是自由数字：
+         INVENTORY_GRANT / COMPUTE_GRANT 必须 ≥ 1（"花 400 得到 1000 个
+         computeUnit"里的 1000 就是它），SERVICE_EXECUTION 必须 = 0
+         （服务不产生库存，§54）；
+       · unitName 缺省由 kind 决定，且对 compute 两类必须恰是 computeUnit。 */
+  function validateProduct(input) {
+    var o = input || {};
+    var errors = [];
+    if (o.productId != null && !isEconomyId('PRODUCT', o.productId)) errors.push('product-id-not-canonical');
+    if (!isEconomyId('STORE', o.storeId)) errors.push('store-id-not-canonical');
+    if (!isProductKind(o.kind)) errors.push('product-kind-not-in-closed-set');
+
+    var kind = isProductKind(o.kind) ? String(o.kind) : null;
+    var expectedFulfillment = kind == null ? null : FULFILLMENT_OF_PRODUCT_KIND[kind];
+    if (expectedFulfillment == null) errors.push('product-kind-has-no-fulfillment');
+    if (o.fulfillment != null && String(o.fulfillment) !== String(expectedFulfillment)) {
+      /* 交付形态是**派生**的：它不是一个可以被调用方声明的偏好，否则
+         "这件商品买完给库存还是给算力"会有两个答案。 */
+      errors.push('product-fulfillment-does-not-match-the-product-kind');
+    }
+
+    var name = o.name == null ? '' : String(o.name).trim();
+    if (!name) errors.push('product-name-required');
+    else if (name.length > PRODUCT_NAME_MAX) errors.push('product-name-too-long');
+    if (o.description != null && String(o.description).length > PRODUCT_DESCRIPTION_MAX) {
+      errors.push('product-description-too-long');
+    }
+
+    var cur = validateCurrency(o.currency);
+    if (!cur.ok) errors.push.apply(errors, cur.errors);
+
+    if (o.unitPriceMinor == null) {
+      errors.push('product-unit-price-minor-required');
+    } else {
+      /* normalizeAmountMinor 已经同时保证了三件事：非负、整数、不溢出
+         （它自己拒绝 'amount-minor-negative' / 'amount-minor-overflow'）。
+         这里**刻意不再写一遍** —— 两条独立的规则会让"负价格被谁拒绝的"
+         有两个可能答案，而重复的那一条永远不会被执行到。 */
+      var amt = normalizeAmountMinor(o.unitPriceMinor);
+      if (!amt.ok) errors.push.apply(errors, amt.errors);
+    }
+
+    var qty = o.grantQuantity == null ? null : Number(o.grantQuantity);
+    if (qty != null && !Number.isSafeInteger(qty)) {
+      errors.push('product-grant-quantity-not-a-safe-integer');
+    } else if (expectedFulfillment === FULFILLMENT.SERVICE_EXECUTION) {
+      /* 服务商品不交付库存。**不是**"允许它是 0"，而是"它必须是 0"：
+         一个 SERVICE 带着 grantQuantity = 5 意味着某个下游会去加库存，
+         而那正是 §54 要让 schema 拒绝的建模错误。 */
+      if (qty == null) errors.push('product-grant-quantity-required-even-when-it-is-zero');
+      else if (qty !== 0) errors.push('a-service-product-must-not-grant-inventory-quantity');
+    } else if (expectedFulfillment != null) {
+      if (qty == null) errors.push('product-grant-quantity-required');
+      else if (qty < 1) errors.push('product-grant-quantity-must-be-positive');
+    }
+
+    var unitName = o.unitName == null ? (kind == null ? null : PRODUCT_UNIT_NAME[kind]) : String(o.unitName);
+    if (unitName == null || !UNIT_NAME_RE.test(String(unitName))) {
+      errors.push('product-unit-name-not-canonical');
+    } else if (isForbiddenComputeAlias(unitName)) {
+      /* 'tokens' / 'usd' / 'providerBalance' 这类词在这一层就被拒绝。 */
+      errors.push('product-unit-name-is-a-forbidden-compute-alias');
+    } else if (expectedFulfillment === FULFILLMENT.COMPUTE_GRANT && String(unitName) !== COMPUTE_UNIT_NAME) {
+      errors.push('a-compute-product-must-use-the-frozen-compute-unit-name');
+    }
+
+    if (o.status != null && !isProductStatus(o.status)) errors.push('product-status-not-in-closed-set');
+
+    var keys = Object.keys(o);
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      if (PRODUCT_INPUT_KEYS.indexOf(k) >= 0) continue;
+      if (isForbiddenProductFieldName(k)) { errors.push('product-input-key-is-forbidden:' + k); continue; }
+      errors.push('product-input-key-not-whitelisted:' + k);
+    }
+    if (errors.length) return { ok: false, product: null, errors: errors };
+    return { ok: true, errors: [], product: o, fulfillment: expectedFulfillment, assetKind: ASSET_KIND_OF_PRODUCT_KIND[kind] };
+  }
+
+  /* ── Product → Quote 的派生（P22-5 §6）───────────────────────────────
+     "不要允许调用者同时传 productId = A 与 amountMinor = arbitrary B，
+     然后相信调用者。Product 是报价生成时的价格来源。"
+     因此这三条纯函数就是报价生成的**全部**价格逻辑，而且它们只读 Product：
+     没有时钟、没有 store、没有随机、没有任何关系/记忆输入。 */
+  function productQuoteKindFor(fulfillment, hasRecipient) {
+    if (!isFulfillment(fulfillment)) return { ok: false, kind: null, errors: ['fulfillment-not-in-closed-set'] };
+    var f = String(fulfillment);
+    /* compute 额度报价的结算形态在 §14 就冻结成 COMPUTE_GRANT（= 额度被
+       授予）。它不是一个"买给自己还是买给别人"的问题，因此 recipient
+       在这里没有位置 —— 调用方给了 recipient 会被 §14 的规则拒绝
+       （recipient 要求 GIFT，而这里不是 GIFT）。 */
+    if (f === FULFILLMENT.COMPUTE_GRANT) {
+      return { ok: true, kind: QUOTE_KIND.COMPUTE_GRANT, errors: [] };
+    }
+    return { ok: true, kind: hasRecipient ? QUOTE_KIND.GIFT : QUOTE_KIND.PURCHASE, errors: [] };
+  }
+
+  /* 报价数量 = 这次买几份 × 一份交付多少。
+     ── 为什么 SERVICE 要取 max(grantQuantity, 1)
+     §14 要求 quote.quantity ≥ 1（"一份不描述任何数量的报价不是报价"），
+     而服务商品的 grantQuantity 由上面的校验**必须**是 0。于是服务商品的
+     quantity 只能表达"这份服务执行几次" —— 那正是它唯一有意义的数量。
+     对交付型商品，quantity 是**送达量**（units × grantQuantity），
+     于是 API_QUOTA ×1000 的报价上写着 1000 computeUnit。 */
+  function productQuoteQuantity(product, units) {
+    var p = product || {};
+    var form = fulfillmentOfProductKind(p.kind);
+    if (form == null) return { ok: false, quantity: null, errors: ['product-kind-not-in-closed-set'] };
+    var u = Number(units == null ? 1 : units);
+    if (!Number.isSafeInteger(u) || u < 1) return { ok: false, quantity: null, errors: ['units-must-be-a-positive-safe-integer'] };
+    var grant = Number(p.grantQuantity == null ? 0 : p.grantQuantity);
+    if (!Number.isSafeInteger(grant) || grant < 0) {
+      return { ok: false, quantity: null, errors: ['product-grant-quantity-not-a-non-negative-safe-integer'] };
+    }
+    var perUnit = grant >= 1 ? grant : 1;
+    var quantity = u * perUnit;
+    if (!Number.isSafeInteger(quantity) || quantity < 1) {
+      return { ok: false, quantity: null, errors: ['product-quote-quantity-exceeds-the-safe-integer-range'] };
+    }
+    return { ok: true, quantity: quantity, errors: [], deliveredPerUnit: perUnit };
+  }
+
+  /* 报价金额 = 单价 × 份数。canonical 表示是 BigInt（§3），上界是
+     MAX_AMOUNT_MINOR；溢出**拒绝**，不静默变形。 */
+  function productQuoteAmountMinor(product, units) {
+    var p = product || {};
+    var amt = normalizeAmountMinor(p.unitPriceMinor);
+    if (!amt.ok) return { ok: false, amountMinor: null, errors: amt.errors };
+    var u = Number(units == null ? 1 : units);
+    if (!Number.isSafeInteger(u) || u < 1) {
+      return { ok: false, amountMinor: null, errors: ['units-must-be-a-positive-safe-integer'] };
+    }
+    var total = amt.amountMinor * BigInt(u);
+    if (total > BigInt(MAX_AMOUNT_MINOR)) {
+      return { ok: false, amountMinor: null, errors: ['product-quote-amount-exceeds-the-canonical-maximum'] };
+    }
+    return { ok: true, amountMinor: total, errors: [] };
+  }
+
+  /* ── Quote 与 Product 的关系（P22-5 §22）─────────────────────────────
+     二选一，这里明确选第二个：**Product 行是 provenance，不是报价当前
+     有效性的依赖**。
+
+     为什么：报价的全部经济内容（币种 / 金额 / 数量 / 种类 / 结算形态 /
+     买家 / 受赠人 / 到期）都已经在**报价自己的列**里，因此即使 Product
+     行消失了，历史报价仍然是一句完整的话（"谁、在什么时候、以什么价格、
+     买什么、到期时间"）。反过来选"报价依赖 Product 存在"会让一次货架
+     清理把历史价格命题变成不可解释的东西 —— 而它是不可重建的。
+
+     代价必须同时说清楚：Product 缺失/损坏**仍然是一次完整性失败**，
+     只是它失败在"目录这一面"，不在"报价这一面"。因此：
+       · getQuote 照常返回完整报价，并附 productProvenance.present = false；
+       · economyIntegrityCheck 把它报成一条 problem。
+     两句话同时成立，而不是含糊地二选一。 */
+  var QUOTE_PRODUCT_RELATION = Object.freeze({
+    PROVENANCE_ONLY: 'PROVENANCE_ONLY',
+    DEPENDENCY: 'DEPENDENCY'
+  });
+
+  var PRODUCT_IS_PROVENANCE_FOR_QUOTES = true;
+
+  /* ── 载入期自检（与 §14 同款）────────────────────────────────────────
+     一个封闭映射表如果在实现里漏了一项，症状是"某个 kind 的商品永远
+     无法报价"，而那种失败会在很久以后才被发现。因此这里在**载入期**
+     就把三条性质查一遍：
+       ① 每个 kind 都有交付形态；
+       ② 每个 kind 都有单位名；
+       ③ 交付形态必须是封闭集合的成员（拼错即抛）。
+     自检失败 ⇒ 契约载入即抛错，而不是带着一个洞继续跑。 */
+  (function selfCheck() {
+    for (var i = 0; i < PRODUCT_KINDS.length; i++) {
+      var kind = PRODUCT_KINDS[i];
+      if (!isFulfillment(FULFILLMENT_OF_PRODUCT_KIND[kind])) {
+        throw new Error('economy-contract: product kind without a fulfillment: ' + kind);
+      }
+      if (PRODUCT_UNIT_NAME[kind] == null) {
+        throw new Error('economy-contract: product kind without a unit name: ' + kind);
+      }
+      if (!Object.prototype.hasOwnProperty.call(ASSET_KIND_OF_PRODUCT_KIND, kind)) {
+        throw new Error('economy-contract: product kind without an asset-kind mapping: ' + kind);
+      }
+    }
+    /* 交付形态的**每一类**都必须至少有一个 kind 映射到它 —— 否则
+       "SERVICE_EXECUTION 这一支从来没被走过"这件事不会被任何人发现。 */
+    for (var f = 0; f < FULFILLMENTS.length; f++) {
+      var hit = PRODUCT_KINDS.filter(function (k) { return FULFILLMENT_OF_PRODUCT_KIND[k] === FULFILLMENTS[f]; });
+      if (!hit.length) throw new Error('economy-contract: fulfillment without any product kind: ' + FULFILLMENTS[f]);
+    }
+  })();
+
+  /* ══════════════════════════════════════════════════════════════════
      导出
      ══════════════════════════════════════════════════════════════════ */
 
@@ -2877,6 +3467,49 @@
     BOUNDARY_ALLOWED_MODULE_PREFIXES: BOUNDARY_ALLOWED_MODULE_PREFIXES,
     /* §21 */
     REAL_COMMERCE_COLLIDING_KEYS: REAL_COMMERCE_COLLIDING_KEYS,
-    isRealCommerceKey: isRealCommerceKey
+    isRealCommerceKey: isRealCommerceKey,
+    /* §22（P22-5）：Store / Product / Inventory */
+    STORE_STATUS: STORE_STATUS,
+    STORE_STATUSES: STORE_STATUSES,
+    isStoreStatus: isStoreStatus,
+    PRODUCT_STATUS: PRODUCT_STATUS,
+    PRODUCT_STATUSES: PRODUCT_STATUSES,
+    PRODUCT_STATUS_TRANSITIONS: PRODUCT_STATUS_TRANSITIONS,
+    PRODUCT_TERMINAL_STATUSES: PRODUCT_TERMINAL_STATUSES,
+    isProductStatus: isProductStatus,
+    canTransitionProductStatus: canTransitionProductStatus,
+    assertProductStatusTransition: assertProductStatusTransition,
+    PRODUCT_KIND: PRODUCT_KIND,
+    PRODUCT_KINDS: PRODUCT_KINDS,
+    isProductKind: isProductKind,
+    FULFILLMENT: FULFILLMENT,
+    FULFILLMENTS: FULFILLMENTS,
+    isFulfillment: isFulfillment,
+    FULFILLMENT_OF_PRODUCT_KIND: FULFILLMENT_OF_PRODUCT_KIND,
+    fulfillmentOfProductKind: fulfillmentOfProductKind,
+    ASSET_KIND: ASSET_KIND,
+    ASSET_KINDS: ASSET_KINDS,
+    ASSET_KIND_OF_PRODUCT_KIND: ASSET_KIND_OF_PRODUCT_KIND,
+    assetKindOfProductKind: assetKindOfProductKind,
+    INVENTORY_CANONICAL_KEY: INVENTORY_CANONICAL_KEY,
+    INVENTORY_UNIQUE_ITEMS_MODELLED: INVENTORY_UNIQUE_ITEMS_MODELLED,
+    PRODUCT_UNIT_NAME: PRODUCT_UNIT_NAME,
+    unitNameOfProductKind: unitNameOfProductKind,
+    PRODUCT_INPUT_KEYS: PRODUCT_INPUT_KEYS,
+    STORE_INPUT_KEYS: STORE_INPUT_KEYS,
+    FORBIDDEN_PRODUCT_FIELDS: FORBIDDEN_PRODUCT_FIELDS,
+    isForbiddenProductFieldName: isForbiddenProductFieldName,
+    PRICING_IS_RELATIONSHIP_FREE: PRICING_IS_RELATIONSHIP_FREE,
+    PRODUCT_NAME_MAX: PRODUCT_NAME_MAX,
+    PRODUCT_DESCRIPTION_MAX: PRODUCT_DESCRIPTION_MAX,
+    STORE_NAME_MAX: STORE_NAME_MAX,
+    STORE_DESCRIPTION_MAX: STORE_DESCRIPTION_MAX,
+    validateStore: validateStore,
+    validateProduct: validateProduct,
+    productQuoteKindFor: productQuoteKindFor,
+    productQuoteQuantity: productQuoteQuantity,
+    productQuoteAmountMinor: productQuoteAmountMinor,
+    QUOTE_PRODUCT_RELATION: QUOTE_PRODUCT_RELATION,
+    PRODUCT_IS_PROVENANCE_FOR_QUOTES: PRODUCT_IS_PROVENANCE_FOR_QUOTES
   });
 });
