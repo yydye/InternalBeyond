@@ -288,8 +288,13 @@
     }
     var rec = c.buildThreadRecord(parts[0], parts[1], { now: nowMs(), topic: opts.topic });
     if (!rec) return { ok: false, reason: c.REASON.missingCharacter };
-    /* 先把已有历史接上：thread 可能经由导入/其它设备产生过消息（索引是派生的）。 */
-    var hist = await loadMessages(friendId, 1);
+    /* 先把已有历史接上：thread 可能经由导入/其它设备产生过消息（索引是派生的）。
+       limit 必须是 **0（不限）** 而不是 1：loadMessages 的 limit 是"只取最后 N 条"，
+       传 1 会让 messageCount 恒被写成 1（真实条数 5 也写成 1，已实测）。
+       thread 记录的 messageCount 是**计数**，因此这里必须读全量；
+       顺带 lastMessageAt / lastTurnRoleId 仍取自最后一条，语义不变。
+       （rebuildThreadIndex 一直是对的 —— 这条自愈路径漏了同一件事。） */
+    var hist = await loadMessages(friendId, 0);
     if (hist.length) {
       rec.messageCount = hist.length;
       rec.lastMessageAt = Number(hist[hist.length - 1].timestamp) || 0;
