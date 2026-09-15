@@ -71,6 +71,74 @@
   /* 空转熔断：连续 N 轮被判为重复/低信息即停止整个 run。 */
   var STALL_LIMIT = 2;
 
+  /* ── M3 软复读（soft repetition）：**对话质量**信号，不是安全阀 ──────────
+     下面这组常量与上面的 DUPLICATE_SIMILARITY 回答的**不是同一个问题**，
+     因此刻意不复用那个数、也**绝不**去改那个数：
+
+       · DUPLICATE_SIMILARITY（0.8，整条消息的 bigram Dice）—— runaway safety。
+         它要抓的是"两个角色把同一句话对轰"，所以阈值必须高到近乎逐字相同
+         才命中；命中即丢消息、连续 STALL_LIMIT 次即熔断整个 run。
+       · 本节常量 —— conversation quality。它要抓的是另一件事：
+         消息**形式上**是新的，但语义空间大部分只是在复述对方
+         （"就像你说的，最近空间站确实安静得有点奇怪"）。
+
+     为什么必须是另一套信号，而不是"把 0.8 调低"：
+     真实模型体验审计中，这类软复读样本的最大 bigram Dice ≈ 0.346。
+     把去重阈值降到它附近，等于让**正常承接**（共享一个专有名词、
+     接住对方刚说的话题）也开始命中 runaway 熔断 —— 代价是一整段对话被误杀。
+     Dice 天生看不见这个问题：复述方的话更长、外面还包着一层"就像你说的"，
+     单侧重合被分母摊薄。真正该问的是"她这句话里还剩多少自己的东西"
+     （见 noveltyRatio），那是 Dice 之外的第二个量。
+
+     阈值取值依据（见 §软复读 fixtures / 审计报告，不是"感觉 0.45 差不多"）：
+     正样本（mirror 原型与真实形态）与负样本（正当承接 / 专有名词 / 口癖）
+     之间留有一条很宽的空带，取值落在空带**保守的一侧**：宁可漏一次，
+     也不误杀——precision > aggressiveness。 */
+  var SOFT_REPEAT = {
+    /* 逐字连续重合达到这么多**字符**才算进 echoRatio 的分子（观察口径）。
+       为什么必须有这一条：2–3 字的偶然重合是普通共享词汇
+       （"R-17"、"空间站"、口癖"哎呀"），把它们算进来，
+       "共享专有名词"就变成了一条自动复读判定。 */
+    MIN_SHARED_SPAN: 4,
+    /* **判定**口径：只有存在一段 ≥6 字的逐字连续重合，才承认"她引用了
+       对方的话"，而不是"她们在聊同一个话题（共用术语/专有名词）"。
+       4 与 6 是两件事，刻意分开：4 决定"观察时算不算重合"，
+       6 决定"这算不算引用"。真实 fixtures 给出的分离带非常干净 ——
+       4–5 字的领域词（"生命科学部" / "低温变色" / "空间站"）全都落在
+       6 字以下，而真正的复述段落是 7 / 10 / 13 字；取 6 落在空带里。
+       少了这一条，"生命科学部那边的低温变色还没有新进展" 这种
+       短回复 + 两个共享术语会被误判成 mirror（实测 echoRatio 0.56）。 */
+    MIN_COPY_SPAN: 6,
+    /* 被对方原话覆盖的**绝对字符数**下限。只靠比例不够：一句 12 字里
+       正好有一个 6 字术语也能凑出 50% 的比例，但绝对量根本不够格。 */
+    MIN_ECHO_CHARS: 8,
+    /* 去掉承接前缀之后，"逐字来自对方"的比例达到多少算 mirror。 */
+    MIRROR_ECHO_RATIO: 0.55,
+    /* 承接前缀之后的**新增内容**字符上限：超过它说明她确实补了新东西
+       （新行动 / 新细节 / 反问），那就不算空附和。 */
+    BOILERPLATE_MAX_RESIDUAL: 8,
+    /* 连续第几次出现"同意式开头"才算软复读。1 表示单独出现一次不算 ——
+       §3C 的核心：单次附和是正常对话，连续附和才是回声室。 */
+    BOILERPLATE_STREAK_MIN: 2,
+    /* streak 的公开上限（0/1/2）。连续性只保留判定所需的最小状态：
+       知道"是否 ≥ 2"就够，因此**不**保存完整重复正文、也不做 token cache。 */
+    STREAK_CAP: 2
+  };
+  /* 承接 / 附和前缀：**小、明确、可解释**的闭集，不是一份中文词表。
+     它只是 signal，不是 verdict —— 单独出现一次不算软复读（§3C），
+     而且它自己也**永远不足以**判定：还需要"前缀之后几乎没有新增内容"。
+
+     刻意**不含**的东西，以及为什么：
+       · "我觉得" —— 那只是表达自己的观点，不是附和对方。收进来会把
+         大量正常发言变成"同意式开头"（fixtures 里 A 侧的发言就是反例）。
+       · "哎呀 / 嗯 / 呵 / 原来如此" 这类语气词与 persona 口癖 ——
+         同一个角色反复用同一个短开头是**风格**，不是复读（§8）。
+         它们既不在这个闭集里，也过不了 MIN_SHARED_SPAN 那道门。 */
+  var AGREEMENT_PREFIXES = [
+    '我也是这么想的', '听起来确实', '真是太好了', '就像你说的',
+    '我也觉得', '你说得对', '确实如此', '确实', '也是'
+  ];
+
   /* 「对方是谁」这一整块在 system 里的字符预算。
      注意它与 public-profile-core.js 的 LIMITS **不是同一件事**，刻意不合并：
        · public-profile-core.LIMITS —— **数据**能有多长（字段级契约，
@@ -572,6 +640,153 @@
     } catch (e) { /* 共享核心不可用 → 用冻结副本 */ }
     return LOW_INFO_FALLBACK.test(t);
   }
+
+  /* ══════════ 6b. M3 软复读分析（纯函数：零 IO / 零模型调用 / 零副作用）═══
+     它回答的问题是：**这一条回复里，有多少是"她自己的东西"？**
+     而不是"这两条有多像" —— 后者（Dice）在两个角色长度不同、
+     且一方包着"就像你说的"时会被摊薄到看不见（真实样本 0.346）。
+
+     判定的四类事实（§3）在返回值里各自可分辨：
+       · 硬重复（整条近乎逐字相同）→ 弃权，reason='hard-duplicate'：
+         那是既有 runaway guard 的领地，M3 不接管、也不争同一个判定权。
+       · 低信息短句（"哈哈"/"嗯"）→ 弃权，reason='low-info'：
+         那是既有 low-info guard 的领地（F8）。
+       · mirror → softRepeat / kind='mirror'：去掉承接前缀后，
+         她这段话里大部分**逐字**来自对方（F2）。
+       · boilerplate → softRepeat / kind='boilerplate'：连续第 N 次
+         用同意式开头，而且前缀之后几乎没有新增内容（F4）。
+
+     输入（全部由调用方给，本函数**不读任何存储**）：
+       current        这一轮**已经生成**的正文
+       peerPrevious   对方上一句（模型这一轮实际看到的那一条；可空）
+       recentReplies  本次 run 里最近的若干条已落库发言（新的在后）
+     输出：全部是标量 + 闭集字符串，**不含任何正文片段**（§19）。 */
+  function analyzeSoftRepetition(current, peerPrevious, recentReplies) {
+    var cur = str(current).trim();
+    var out = {
+      softRepeat: false,
+      kind: '',              /* '' | 'mirror' | 'boilerplate' */
+      score: 0,              /* 驱动本次判定的那个分数（无判定 = 0） */
+      echoRatio: 0,          /* 去掉承接前缀后，逐字来自对方的比例 */
+      echoChars: 0,          /* 上述比例的分子（绝对字符数） */
+      copySpan: 0,           /* 最长的一段逐字重合（字符数） */
+      boilerplateRatio: 0,   /* 承接前缀占整句的比例 */
+      noveltyRatio: 1,       /* 整句里既不是对方原话、也不是承接前缀的比例 */
+      boilerplate: false,    /* 只是 signal：这一句是否以同意式前缀开头 */
+      agreementStreak: 0,    /* 0/1/2（2 = 连续 ≥2 次） */
+      reason: ''
+    };
+    var kc = textKey(cur);
+    if (!kc) { out.reason = 'empty'; return out; }
+    /* 低信息短句的 authority 属于既有 low-info guard：M3 在这里**弃权**。 */
+    if (lowInfoMatch(cur)) { out.reason = 'low-info'; return out; }
+
+    var kp = textKey(peerPrevious);
+    var prefix = agreementPrefixOf(kc);
+    /* 承接前缀本身不参与"她自己的话"的计算：先摘掉，再问她剩下的话
+       有多少逐字来自对方。摘掉而不是当成纯新增，是因为"就像你说的"
+       这种wrapper 恰恰是镜像行为的包装，不该被算成她的贡献。 */
+    var body = prefix ? kc.slice(prefix.length) : kc;
+    var echo = sharedSpanCoverage(body, kp, SOFT_REPEAT.MIN_SHARED_SPAN);
+    out.echoChars = echo.covered;
+    out.echoRatio = echo.ratio;
+    out.copySpan = echo.longest;
+    out.boilerplate = !!prefix;
+    out.boilerplateRatio = prefix && kc.length ? prefix.length / kc.length : 0;
+    out.noveltyRatio = kc.length
+      ? clampRatio(1 - (echo.covered + prefix.length) / kc.length)
+      : 1;
+    /* 连续性的最小状态：只看最近一条的开头。知道"是否 ≥2"就够，
+       因此不保存完整重复正文，也不持久化（run-local，见 §12）。 */
+    if (prefix) {
+      var streak = 1;
+      var win = Array.isArray(recentReplies) ? recentReplies : [];
+      for (var i = win.length - 1; i >= 0; i--) {
+        if (!agreementPrefixOf(textKey(win[i]))) break;
+        streak++;
+        if (streak >= SOFT_REPEAT.STREAK_CAP) break;
+      }
+      out.agreementStreak = streak > SOFT_REPEAT.STREAK_CAP ? SOFT_REPEAT.STREAK_CAP : streak;
+    }
+
+    /* 硬重复不属于"软"复读：整条与对方近乎逐字相同，是 runaway guard 的
+       判定对象（阈值 DUPLICATE_SIMILARITY）。这里**弃权**而不是抢判定权，
+       但观测值照常算出来 —— 弃权不该让"这条到底有多像"变成 0。 */
+    if (kp && diceSimilarity(cur, peerPrevious) >= DUPLICATE_SIMILARITY) {
+      out.reason = 'hard-duplicate';
+      return out;
+    }
+    /* mirror：去掉承接前缀后，她这段话里既有**一段真正的引用**
+       （≥MIN_COPY_SPAN 的逐字重合），又几乎全是这段引用。
+       两个门都要过：只看比例会被短回复 + 共享术语蒙混（见常量注释），
+       只看引文长度则会冤枉"引一句再补十句新话"的正常承接。 */
+    if (kp && echo.longest >= SOFT_REPEAT.MIN_COPY_SPAN &&
+        echo.covered >= SOFT_REPEAT.MIN_ECHO_CHARS &&
+        echo.ratio >= SOFT_REPEAT.MIRROR_ECHO_RATIO) {
+      out.softRepeat = true;
+      out.kind = 'mirror';
+      out.score = round2(echo.ratio);
+      out.reason = 'mirror';
+      return out;
+    }
+    /* boilerplate：三个条件**缺一不可** ——
+         ① 以同意式前缀开头（signal）；
+         ② 连续第 ≥2 次（单次是正常对话）；
+         ③ 前缀之后几乎没有新增内容（有新行动/新细节就不算，F3）。 */
+    if (prefix && out.agreementStreak >= SOFT_REPEAT.BOILERPLATE_STREAK_MIN &&
+        body.length <= SOFT_REPEAT.BOILERPLATE_MAX_RESIDUAL) {
+      out.softRepeat = true;
+      out.kind = 'boilerplate';
+      out.score = round2(out.boilerplateRatio);
+      out.reason = 'boilerplate';
+      return out;
+    }
+    out.reason = 'ok';
+    return out;
+  }
+  /* 以承接/附和前缀开头时返回**最长**的那个匹配（"确实如此" 优先于
+     "确实"），否则返回 ''。 */
+  function agreementPrefixOf(keyText) {
+    var k = str(keyText);
+    if (!k) return '';
+    var best = '';
+    for (var i = 0; i < AGREEMENT_PREFIXES.length; i++) {
+      var p = AGREEMENT_PREFIXES[i];
+      if (p.length > best.length && k.indexOf(p) === 0) best = p;
+    }
+    return best;
+  }
+  /* 逐字连续重合覆盖：curKey 中有多少**字符**来自 prevKey 里一段长度
+     ≥ minSpan 的连续原文。返回 {covered, ratio, longest}。
+     低于 minSpan 的重合一概不计 —— 那条线正是"共享词汇"与"复述整句"
+     的分界（见 SOFT_REPEAT.MIN_SHARED_SPAN）。 */
+  function sharedSpanCoverage(curKey, prevKey, minSpan) {
+    var out = { covered: 0, ratio: 0, longest: 0 };
+    var a = str(curKey), b = str(prevKey);
+    var span = Number(minSpan) > 1 ? Number(minSpan) : 2;
+    if (a.length < 2 || b.length < 2) return out;
+    var set = {};
+    for (var i = 0; i < b.length - 1; i++) set[b.slice(i, i + 2)] = 1;
+    var run = 0;
+    for (var j = 0; j < a.length - 1; j++) {
+      if (set[a.slice(j, j + 2)]) {
+        run++;
+        /* 连续 run 个 bigram ⇒ 逐字重合 run+1 个字符；跨越门槛时一次性计入，
+           之后每多一个 bigram 再 +1。 */
+        if (run + 1 === span) out.covered += span;
+        else if (run + 1 > span) out.covered += 1;
+        if (run + 1 > out.longest) out.longest = run + 1;
+      } else { run = 0; }
+    }
+    out.ratio = out.covered / a.length;
+    return out;
+  }
+  function clampRatio(v) {
+    var n = Number(v);
+    if (!isFinite(n)) return 0;
+    return n < 0 ? 0 : (n > 1 ? 1 : n);
+  }
+  function round2(v) { return Math.round(clampRatio(v) * 100) / 100; }
 
   /* ══════════ 7a. autonomous initiation signal（行为背景，不是指令）═══════
      自主发起时给模型的那**一句话**，是"她为什么现在想起这个人"的
@@ -1102,6 +1317,10 @@
     isDuplicateTurn: isDuplicateTurn,
     diceSimilarity: diceSimilarity,
     lowInfoMatch: lowInfoMatch,
+    /* M3 软复读（conversation quality；不是 runaway safety —— 见常量区注释） */
+    SOFT_REPEAT: SOFT_REPEAT,
+    AGREEMENT_PREFIXES: AGREEMENT_PREFIXES,
+    analyzeSoftRepetition: analyzeSoftRepetition,
     chooseFirstSpeaker: chooseFirstSpeaker,
     /* autonomous 行为背景（闭集映射；见 §7a）。 */
     initiationSignalText: initiationSignalText,

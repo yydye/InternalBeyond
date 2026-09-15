@@ -1438,6 +1438,314 @@ reset();
   RD.setPrefs({ autonomous: false });
 }
 
+/* ══════ AG · M3 软复读（conversation quality）· 只观测，不拦截 ══════
+   背景（真实模型体验审计）：Role DM 的硬重复守卫用 bigram Dice ≥ 0.8，
+   而真实软复读样本的最大 Dice ≈ 0.346 —— 那条守卫**从来没有触发过**，
+   因为它的口径（整条近乎逐字相同）与问题（形式上新的句子、内容却在复述对方）
+   根本不是一件事。这一节钉三件事：
+
+     ① 判定本身：mirror / boilerplate 各自由哪些信号支持，
+        以及每一个阈值**为什么是那个数**（每个门都有一个只由它拦下的样本）；
+     ② authority 边界：hard duplicate 与 low-info 仍由既有守卫负责，
+        M3 弃权、不抢判定权、也不与它们争；
+     ③ 成本与隐私：M3 造成的额外模型调用 = 0；
+        观测字段里没有正文，也不进入 Memory / Relationship / Memorandum。
+
+   fixtures F1–F8 与 §6 的 novelty 对照全部是**纯函数**用例（零 IO、零模型调用），
+   和用户需求里给的那几组样本逐字对应；后半段才把它接到真实 run() 上。 */
+reset();
+{
+  const SR = C.SOFT_REPEAT;
+  const sr = (cur, prev, recent) => C.analyzeSoftRepetition(cur, prev, recent || []);
+
+  /* ── F1 硬重复：整条逐字相同 ── */
+  const f1 = sr('今天风很舒服。', '今天风很舒服。');
+  check('AG1. F1 硬重复 → M3 弃权（reason=hard-duplicate），不抢既有守卫的判定权',
+    f1.softRepeat === false && f1.kind === '' && f1.reason === 'hard-duplicate', f1);
+
+  /* ── F2 mirror：M3 的核心样本 ── */
+  const F2_A = '最近空间站安静得有点奇怪。';
+  const F2_B = '就像你说的，最近空间站确实安静得有点奇怪。';
+  const f2 = sr(F2_B, F2_A);
+  check('AG2. F2 mirror：复述对方原话 → softRepeat=true / kind=mirror',
+    f2.softRepeat === true && f2.kind === 'mirror' && f2.reason === 'mirror', f2);
+  check('AG2b. mirror 的低 novelty 是可读的（不是只给一个布尔）',
+    f2.noveltyRatio <= 0.25 && f2.echoChars >= SR.MIN_ECHO_CHARS && f2.copySpan >= SR.MIN_COPY_SPAN,
+    { nov: f2.noveltyRatio, echo: f2.echoChars, span: f2.copySpan });
+  /* 同一条样本对**既有守卫**是全绿的 —— 这正是 M3 存在的理由，不是断言巧合。 */
+  check('AG2c. 这条样本既有 runaway guard 与 low-info guard 都看不见（Dice 远低于 0.8）',
+    C.isDuplicateTurn(F2_B, [F2_A]).duplicate === false &&
+    C.lowInfoMatch(F2_B) === false &&
+    C.diceSimilarity(F2_B, F2_A) < C.DUPLICATE_SIMILARITY,
+    { dice: C.diceSimilarity(F2_B, F2_A), threshold: C.DUPLICATE_SIMILARITY });
+  /* 没有承接前缀的 mirror 同样要能看见（前缀只是 signal，不是前提）。 */
+  const f2b = sr('最近空间站的确安静得有点奇怪，我昨天也在观察。', F2_A);
+  check('AG2d. 没有"就像你说的"这类前缀时，纯复述同样判成 mirror',
+    f2b.softRepeat === true && f2b.kind === 'mirror' && f2b.boilerplate === false, f2b);
+
+  /* ── F3 单独一次附和 + 新行动 → PASS ── */
+  const f3 = sr('我也觉得，不过我想先把数据备份下来。', '我觉得这件事可以再等等。', ['我觉得这件事可以再等等。']);
+  check('AG3. F3 单次附和之后补了新行动 → 不判软复读',
+    f3.softRepeat === false && f3.kind === '', f3);
+  check('AG3b. 但"同意式前缀"这个 signal 仍然被如实记下来（signal ≠ verdict）',
+    f3.boilerplate === true && f3.agreementStreak === 1 && f3.boilerplateRatio > 0, f3);
+
+  /* ── F4 连续附和（新增内容很少）→ streak ── */
+  const f4Pre = '我觉得这批实验样本应该先冷冻保存，温度记录也要一起保留。';
+  const f4a = sr('我也觉得。', f4Pre, [f4Pre]);
+  const f4b = sr('你说得对。', '我也觉得。', [f4Pre, '我也觉得。']);
+  const f4c = sr('确实如此。', '你说得对。', [f4Pre, '我也觉得。', '你说得对。']);
+  check('AG4. F4 第一次出现"我也觉得"是正常对话（§3C：单次不算）',
+    f4a.softRepeat === false && f4a.agreementStreak === 1, f4a);
+  check('AG4b. F4 连续第二次 → softRepeat=true / kind=boilerplate',
+    f4b.softRepeat === true && f4b.kind === 'boilerplate' && f4b.agreementStreak >= 2, f4b);
+  check('AG4c. F4 连续第三次同样是 boilerplate（streak 封顶在 2，不保存更长历史）',
+    f4c.softRepeat === true && f4c.kind === 'boilerplate' && f4c.agreementStreak === SR.STREAK_CAP, f4c);
+  check('AG4d. F4 的"新增内容"确实是空的：novelty=0（整句都是承接词）',
+    f4b.noveltyRatio === 0 && f4b.echoChars === 0, { nov: f4b.noveltyRatio, echo: f4b.echoChars });
+
+  /* ── F5 正当回调：重复了 R-17，但带来了明显新信息 → PASS ── */
+  const f5 = sr('R-17？我昨天也看到过这个编号，但记录里的时间不一样。', '那个实验编号是 R-17。');
+  check('AG5. F5 正当回调（引用一个短编号 + 新信息）→ 不判软复读',
+    f5.softRepeat === false && f5.copySpan < SR.MIN_COPY_SPAN, f5);
+
+  /* ── F6 persona 口癖：反复用同一个短开头，但每轮后文都不同 → PASS ── */
+  const f6 = sr('哎呀～那就难怪了，我还以为是传感器坏了呢。',
+    '记录仪跳数我复核过，是电源波动导致的。',
+    ['记录仪跳数我复核过，是电源波动导致的。', '哎呀～你这么说，人家倒想起另一件事：上次那台记录仪也跳过数。']);
+  check('AG6. F6 persona 口癖（"哎呀～"重复）→ 不判软复读',
+    f6.softRepeat === false && f6.kind === '', f6);
+  check('AG6b. 口癖不在承接词闭集里 —— 风格不是复读',
+    C.AGREEMENT_PREFIXES.indexOf('哎呀') < 0 && C.AGREEMENT_PREFIXES.indexOf('嗯') < 0 &&
+    C.AGREEMENT_PREFIXES.indexOf('原来如此') < 0, C.AGREEMENT_PREFIXES);
+
+  /* ── F7 共享专有名词：不该自动造成 softRepeat ── */
+  const f7 = sr('生命科学部那份 R-17 记录我看过，低温变色在升温后没有恢复。',
+    '空间站的生命科学部最近在做 R-17 的低温变色复现。');
+  check('AG7. F7 共享专有名词（阮·梅/空间站/R-17/生命科学）→ 不判软复读',
+    f7.softRepeat === false && f7.echoChars > 0 && f7.noveltyRatio > 0.5, f7);
+
+  /* ── F8 短回复：authority 属于既有 low-info guard ── */
+  /* 这一组刻意覆盖两种形态。原因是一次真实发现：既有低信息词表是**整串**匹配
+     （/^(…)$/），因此带句号的 "嗯。" / "好的。" 今天**不被它识别**。
+     那是既有守卫的口径问题，不属于 M3（M3 不改它、也不替它兜底）；
+     这一节只钉住"两边的 authority 边界在哪"。 */
+  const lowInfoRecognized = ['哈哈', '好的', '嗯', '确实'];
+  const lowInfoPunctuated = ['好的。', '嗯。'];
+  check('AG8. F8 短回复 → M3 一律弃权或判 false，绝不把空信息短句算成软复读（不与低信息守卫争 authority）',
+    [sr('嗯。', '你昨天说的那件事我想了很久。'), sr('好。', '明天九点在观测舱碰面吧。'),
+      sr('是。', '那份记录你已经核对过了吗？')].every(r => r.softRepeat === false && r.kind === ''),
+    lowInfoPunctuated.map(t => [t, sr(t, '你昨天说的那件事我想了很久。').reason]));
+  check('AG8c. 词表命中的短句 → 明确弃权（reason=low-info），判定权留给既有守卫',
+    lowInfoRecognized.every(t => {
+      const r = sr(t, '你昨天说的那件事我想了很久。');
+      return r.softRepeat === false && r.reason === 'low-info';
+    }),
+    lowInfoRecognized.map(t => t + ':' + sr(t, '你昨天说的那件事我想了很久。').reason));
+  check('AG8d. "确实"同时属于低信息词表与承接词闭集 → 弃权（低信息守卫优先，M3 不抢）',
+    C.lowInfoMatch('确实') === true && C.AGREEMENT_PREFIXES.indexOf('确实') >= 0 &&
+    sr('确实', '我觉得这件事可以再等等。').reason === 'low-info');
+  check('AG8e. 既有词表是整串匹配（带标点的 "好的。" 今天不被它识别）—— M3 只如实记录，不替它兜底',
+    C.lowInfoMatch('好的') === true && C.lowInfoMatch('好的。') === false &&
+    sr('好的。', '我觉得这件事可以再等等。').softRepeat === false);
+  check('AG8b. 空正文同样弃权（reason=empty），绝不产生 NaN 分数',
+    (() => { const r = sr('   ', '随便一句。'); return r.reason === 'empty' && r.noveltyRatio === 1 && r.score === 0; })());
+
+  /* ── §6 novelty 比 similarity 更重要：同样是共享关键词，结局相反 ── */
+  const nA = '我最近在研究一种会在低温下改变颜色的晶体。';
+  const nLow = sr('我也觉得这种会在低温下改变颜色的晶体很有意思。', nA);
+  const nHigh = sr('低温变色让我想到另一种现象：如果它在升温后不能恢复，可能不是普通热致变色，而是结构发生了不可逆转变。', nA);
+  check('AG9. §6 低 novelty 样本（共享关键词 + 只做确认）→ mirror',
+    nLow.softRepeat === true && nLow.kind === 'mirror' && nLow.noveltyRatio < 0.3, nLow);
+  check('AG9b. §6 高 novelty 样本（同样的"低温/变色"关键词 + 全新推论）→ 不判软复读',
+    nHigh.softRepeat === false && nHigh.noveltyRatio > 0.9, nHigh);
+
+  /* ── 阈值不是拍脑袋：每一个门都有一个**只由它**拦下的样本 ── */
+  const gSpan = sr('生命科学部那边的低温变色还没有新进展。', '生命科学部的低温变色实验有进展吗？');
+  check('AG10a. 只靠 echoRatio 会误杀"短回复 + 两个共享术语" → 由 MIN_COPY_SPAN 把住',
+    gSpan.softRepeat === false && gSpan.echoRatio >= SR.MIRROR_ECHO_RATIO && gSpan.copySpan < SR.MIN_COPY_SPAN,
+    { ratio: gSpan.echoRatio, span: gSpan.copySpan, need: SR.MIN_COPY_SPAN });
+  const gRatio = sr('第三次跳数的时候我在现场，当时读到的是电压瞬降，而不是记录仪本身的问题。',
+    '那台记录仪第三次跳数的时候，备用电源还没切过去。');
+  check('AG10b. 只靠 copySpan 会误杀"引一句再补十句新话" → 由 MIRROR_ECHO_RATIO 把住',
+    gRatio.softRepeat === false && gRatio.copySpan >= SR.MIN_COPY_SPAN && gRatio.echoRatio < SR.MIRROR_ECHO_RATIO,
+    { span: gRatio.copySpan, ratio: gRatio.echoRatio, need: SR.MIRROR_ECHO_RATIO });
+  const gResidual = sr('确实如此，不过我还是想先把温度记录导出来对一遍。', '你说得对。', ['我也觉得。', '你说得对。']);
+  check('AG10c. 只靠 streak 会误杀"附和 + 新行动" → 由 BOILERPLATE_MAX_RESIDUAL 把住',
+    gResidual.softRepeat === false && gResidual.agreementStreak >= SR.BOILERPLATE_STREAK_MIN &&
+    (C.diceSimilarity ? true : true) && gResidual.reason === 'ok',
+    { streak: gResidual.agreementStreak, nov: gResidual.noveltyRatio });
+  /* 阈值落在正负样本之间的**空带**里：正样本最小 copySpan > 负样本最大 copySpan。 */
+  const posSpans = [f2.copySpan, f2b.copySpan, nLow.copySpan].concat([10]);
+  const negSpans = [f3.copySpan, f5.copySpan, f6.copySpan, f7.copySpan, gSpan.copySpan];
+  check('AG10d. 阈值落在空带里（正样本最小 ' + Math.min.apply(null, posSpans) + ' > 6 > 负样本最大 ' + Math.max.apply(null, negSpans) + '）',
+    Math.min.apply(null, posSpans) >= SR.MIN_COPY_SPAN && Math.max.apply(null, negSpans) < SR.MIN_COPY_SPAN,
+    { pos: posSpans, neg: negSpans, threshold: SR.MIN_COPY_SPAN });
+  check('AG10e. 单人 6–7 字的术语引不出 mirror（绝对量门也活着）',
+    (() => { const r = sr('低温变色实验的数据我看过了。', '关于低温变色实验的记录还在整理。'); return r.softRepeat === false && r.echoChars < SR.MIN_ECHO_CHARS; })());
+  check('AG10f. AUTHORITY：硬重复阈值与熔断上限**没有被 M3 改动**',
+    C.DUPLICATE_SIMILARITY === 0.8 && C.STALL_LIMIT === 2, [C.DUPLICATE_SIMILARITY, C.STALL_LIMIT]);
+  check('AG10g. 承接词闭集是"小、明确、可解释"的（≤12 条，不是中文词表）',
+    C.AGREEMENT_PREFIXES.length > 0 && C.AGREEMENT_PREFIXES.length <= 12 &&
+    C.AGREEMENT_PREFIXES.every(p => typeof p === 'string' && p.length >= 2 && p.length <= 8), C.AGREEMENT_PREFIXES);
+  check('AG10h. "我觉得"不是承接词（表达自己的观点 ≠ 附和对方）',
+    C.AGREEMENT_PREFIXES.indexOf('我觉得') < 0, C.AGREEMENT_PREFIXES);
+  /* 纯函数的输出里不含输入的任何一个片段（隐私在**数据形状**上成立）。 */
+  check('AG10i. 判定结果里没有正文：不含输入文本的任何片段',
+    JSON.stringify(f2).indexOf('空间站') < 0 && JSON.stringify(f4b).indexOf('我也觉得') < 0 &&
+    JSON.stringify(f2).indexOf('就像你说的') < 0, JSON.stringify(f2).slice(0, 120));
+}
+
+/* ══════ AH · M3 接进真实 run()：成本、authority、隐私 ══════ */
+reset();
+{
+  const SR = C.SOFT_REPEAT;
+  /* mirror 原型：B 把 A 刚说的话包一层承接前缀复述回来。
+     A 刻意写得比 B 长得多，好让 Dice 停在 0.8 之下 —— 这条样本
+     **只有 M3 看得见**（AH1b 直接断言这件事，而不是假设它）。 */
+  const MIRROR_A = '最近空间站安静得有点奇怪，我观测到的背景噪声比上个月低了两成，你先别急着下结论，也许只是仪器校准偏移造成的读数误差，我们再等等看。';
+  const MIRROR_B = '就像你说的，最近空间站安静得有点奇怪，我观测到的背景噪声比上个月低了两成。';
+  const fid = C.roleDmFriendId('friend_aaa', 'friend_bbb');
+
+  /* ── AH1 两轮 run：mirror 被观测到，且**一次额外调用都没有** ── */
+  replyFor = (cfg) => (cfg.id === 'friend_aaa' ? MIRROR_A : MIRROR_B);
+  const am = await RD.start('friend_aaa', 'friend_bbb', { turns: 2, force: true });
+  check('AH1. mirror 那一轮照常落库（M3 不丢消息、不重写、不重试）',
+    am.ok === true && am.turns === 2 && msgsOf(fid).length === 2, { ok: am.ok, turns: am.turns, rows: msgsOf(fid).length });
+  check('AH1b. 这条样本既有 runaway guard 看不见（Dice < 0.8）—— M3 是唯一能看见它的机制',
+    C.isDuplicateTurn(MIRROR_B, [MIRROR_A]).duplicate === false &&
+    C.diceSimilarity(MIRROR_B, MIRROR_A) < C.DUPLICATE_SIMILARITY,
+    { dice: C.diceSimilarity(MIRROR_B, MIRROR_A) });
+  check('AH2. 2 轮 run 的模型调用**恰好** 2 次（M3 造成的额外调用 = 0）',
+    CALLS.length === 2 && CALLS[0].id === 'friend_aaa' && CALLS[1].id === 'friend_bbb', CALLS.map(c => c.id));
+  check('AH3. quality 观测到 1 个 mirror，analyzed 与落库轮数逐字相等',
+    am.quality.analyzed === am.turns && am.quality.softRepeatTurns === 1 && am.quality.mirrorTurns === 1 &&
+    am.quality.boilerplateTurns === 0, am.quality);
+  check('AH3b. 观测字段是闭合白名单，且全部是数字（没有自由 meta 通道、没有正文）',
+    Object.keys(am.quality).sort().join(',') === 'analyzed,boilerplateTurns,maxAgreementStreak,mirrorTurns,softRepeatTurns' &&
+    Object.keys(am.quality).every(k => typeof am.quality[k] === 'number'),
+    Object.keys(am.quality));
+  check('AH3c. run 结果里没有消息正文（M3 的观测不外带内容）',
+    JSON.stringify(am).indexOf('安静得有点奇怪') < 0 && JSON.stringify(am).indexOf('背景噪声') < 0,
+    JSON.stringify(am.quality));
+  check('AH4. 命中的那一轮**没有**额外调用：调用数 === 轮数（M3 不是 D24 那种重试）',
+    am.quality.softRepeatTurns > 0 && CALLS.length === am.turns, { calls: CALLS.length, turns: am.turns });
+  check('AH5. M3 没有往下一轮 prompt 里注入任何纠偏指令（本轮 = OBSERVATION ONLY）',
+    [0, 1].every(i => {
+      const s = JSON.stringify(CALLS[i].messages);
+      return ['复读', 'softRepeat', 'mirror', 'boilerplate', 'agreementStreak', 'noveltyRatio', '不要复述对方']
+        .every(k => s.indexOf(k) < 0);
+    }),
+    JSON.stringify(CALLS[1].messages).slice(0, 160));
+  check('AH6. persona / relationship 没有被 M3 触碰',
+    apiConfigs[0].systemPrompt === '你是昔涟，安静而固执。' && apiConfigs[0].relationship === '挚友' &&
+    apiConfigs[1].systemPrompt === '你是初音未来，活泼直接。', apiConfigs[0]);
+  check('AH7. 软复读不写 Memory（M3 quality 不是角色世界里的事实）',
+    am.memory && am.memory.written === 0 && Object.keys(DB.memories || {}).length === 0, am.memory);
+  check('AH8. Phase 3 冻结契约原封不动（turns / firstSpeakerId 语义不变）',
+    am.turns === 2 && am.firstSpeakerId === 'friend_aaa', [am.turns, am.firstSpeakerId]);
+
+  /* ── AH9 四轮 run：boilerplate streak 被观测到，调用数仍然 === 轮数 ── */
+  reset();
+  const BT = ['我觉得这批实验样本应该先冷冻保存，温度记录也要一起保留。', '我也觉得。', '你说得对。', '确实如此。'];
+  let btI = 0;
+  replyFor = () => BT[btI++];
+  const bs = await RD.start('friend_aaa', 'friend_bbb', { turns: 4, force: true });
+  check('AH9. 4 轮 run 的模型调用恰好 4 次（M3 没有任何额外调用）',
+    CALLS.length === 4 && bs.turns === 4, { calls: CALLS.length, turns: bs.turns });
+  check('AH10. 连续附和被观测成 boilerplate：2 轮命中，第一轮（单次出现）不算',
+    bs.quality.analyzed === 4 && bs.quality.boilerplateTurns === 2 && bs.quality.mirrorTurns === 0 &&
+    bs.quality.softRepeatTurns === 2, bs.quality);
+  check('AH10b. 最长连续附和 = 2（streak 封顶：只留判定所需的最小状态）',
+    bs.quality.maxAgreementStreak === SR.STREAK_CAP, bs.quality.maxAgreementStreak);
+  check('AH10c. 四条附和式消息全部照常落库（观测不改写、不丢弃）',
+    msgsOf(fid).length === 4, msgsOf(fid).length);
+
+  /* ── AH11 混合样本：一次 D24 输出重试 + 一次 mirror ──
+     调用数 = 轮数 + 1，而那个 +1 必须能**归因**到 D24 的输出重试
+     （同一个人、同一轮、预算 2048 → 4096），不能是 M3 偷偷多要的一次。 */
+  reset();
+  const D24_A = MIRROR_A;
+  replyFor = (cfg) => (cfg.id === 'friend_aaa' ? D24_A : MIRROR_B);
+  truncateFor = { id: 'friend_aaa', times: 1 };
+  const mix = await RD.start('friend_aaa', 'friend_bbb', { turns: 2, force: true });
+  check('AH11. D24 输出重试 + M3 mirror 同时出现时：调用数 = 轮数 + 1（那 1 次是 D24 的）',
+    CALLS.length === 3 && mix.turns === 2 && mix.quality.mirrorTurns === 1,
+    { calls: CALLS.length, turns: mix.turns, q: mix.quality });
+  check('AH12. 那个 +1 可归因：同一个人、同一轮的 2048 → 4096（不是 M3 的第二次调用）',
+    CALLS[0].id === 'friend_aaa' && Number(CALLS[0].opts.maxTokens) === 2048 &&
+    CALLS[1].id === 'friend_aaa' && Number(CALLS[1].opts.maxTokens) === 4096 &&
+    CALLS[2].id === 'friend_bbb' && Number(CALLS[2].opts.maxTokens) === 2048,
+    CALLS.map(c => c.id + ':' + c.opts.maxTokens));
+  truncateFor = null;
+
+  /* ── AH13 hard duplicate 的 authority 没有被 M3 接管 ──
+     双方都逐字重复：既有守卫丢消息并熔断，M3 **看不到**这些轮
+     （它在守卫之后），因此既不会把它们记成软复读，也不会改变停止原因。
+     注意 run 的循环上限是 maxTurns 次**迭代**：被丢弃的轮同样吃掉一次
+     迭代，因此要走到 stall=2 必须给足 3 轮。 */
+  reset();
+  const HD = '今天风很舒服，适合把观测舱的窗子擦一遍。';
+  replyFor = () => HD;
+  const hd = await RD.start('friend_aaa', 'friend_bbb', { turns: 3, force: true });
+  check('AH13. 硬重复仍然停在既有熔断原因（duplicate-stall），turn 数不受 M3 影响',
+    hd.stopReason === C.REASON.duplicateStall && hd.turns === 1,
+    { stopReason: hd.stopReason, turns: hd.turns, calls: CALLS.length });
+  check('AH14. 被丢弃的重复轮 M3 根本没有看到：analyzed = 落库轮数，softRepeat = 0',
+    hd.quality.analyzed === hd.turns && hd.quality.analyzed === 1 && hd.quality.softRepeatTurns === 0, hd.quality);
+
+  /* ── AH15 low-info 的 authority 没有被 M3 接管 ── */
+  reset();
+  replyFor = () => '哈哈';
+  const li = await RD.start('friend_aaa', 'friend_bbb', { turns: 3, force: true });
+  check('AH15. 低信息短句仍然停在既有 low-info-stall，且一条都没落库',
+    li.stopReason === 'low-info-stall' && li.turns === 0 && msgsOf(fid).length === 0,
+    { stopReason: li.stopReason, turns: li.turns });
+  check('AH16. M3 对低信息轮全部弃权：analyzed = 0（既不接管也不重复计数）',
+    li.quality.analyzed === 0 && li.quality.softRepeatTurns === 0, li.quality);
+
+  /* ── AH17 结构保证：M3 的观测块**只能看，不能改** ── */
+  const rtSrc = fs.readFileSync(path.join(ROOT, 'assets/js/role-dm.js'), 'utf8');
+  const sqCode = (() => {
+    const i = rtSrc.indexOf('analyzeSoftRepetition(turnRes.text');
+    if (i < 0) return '';
+    const s = rtSrc.lastIndexOf('/* ── M3 软复读观测', i);
+    const e = rtSrc.indexOf('var msg = c.buildRoleDmMessage(', i);
+    if (e < 0) return '';
+    return rtSrc.slice(s >= 0 ? s : i, e).replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  })();
+  /* 只看观测块**自己那一层**的语句（缩进 8）：嵌套回调里的 return 不算控制流。 */
+  const sqTop = sqCode.split('\n').filter(l => /^\s{8}\S/.test(l)).map(l => l.trim());
+  check('AH17. M3 观测块里没有控制流、没有写入口（观测改变不了这次 run 的结果）',
+    sqTop.length > 0 && sqTop.length <= 30 &&
+    !sqTop.some(l => /^(break|continue|return)\b/.test(l)) &&
+    sqCode.indexOf('break') < 0 && sqCode.indexOf('continue') < 0 &&
+    ['stopReason', 'appendMessage', 'quickCreateMemory', 'relationGet', 'applyRelationDelta',
+      'systemPrompt', 'buildRoleDmContext', 'memo'].every(k => sqCode.indexOf(k) < 0),
+    sqTop.slice(0, 8));
+  const fnBody = (name) => {
+    const i = rtSrc.indexOf('function ' + name + '(');
+    if (i < 0) return null;
+    const e = rtSrc.indexOf('\n  }', i);
+    return rtSrc.slice(i, e > i ? e : i + 3000);
+  };
+  check('AH18. quality 不进入 Memory / Relationship / Memorandum 任何一条管线',
+    ['emitMemories', 'observeRun', 'updateMemorandum'].every(n => {
+      const b = fnBody(n);
+      return !!b && b.indexOf('quality') < 0 && b.indexOf('softRepeat') < 0;
+    }),
+    ['emitMemories', 'observeRun', 'updateMemorandum'].map(n => { const b = fnBody(n); return b ? b.length : -1; }));
+  check('AH19. quality 只作为 run 结果返回一次（没有第二个消费者偷偷读它）',
+    (rtSrc.match(/quality: quality/g) || []).length === 1 &&
+    (rtSrc.match(/analyzeSoftRepetition\(/g) || []).length === 1,
+    [(rtSrc.match(/quality: quality/g) || []).length, (rtSrc.match(/analyzeSoftRepetition\(/g) || []).length]);
+  check('AH20. runtime 里没有第二套相似度算法：role-dm.js 不自己调 dice/textKey/共享片段',
+    typeof C.analyzeSoftRepetition === 'function' && typeof SR === 'object' &&
+    rtSrc.indexOf('diceSimilarity(') < 0 && rtSrc.indexOf('textKey(') < 0 &&
+    rtSrc.indexOf('sharedSpanCoverage(') < 0 && rtSrc.indexOf('agreementPrefixOf(') < 0,
+    { dice: rtSrc.indexOf('diceSimilarity('), textKey: rtSrc.indexOf('textKey(') });
+}
+
 console.log('\n' + (failed === 0 ? 'ALL GREEN' : 'FAILURES') + ' — passed=' + passed + ' failed=' + failed);
 process.exitCode = failed === 0 ? 0 : 1;
 })();

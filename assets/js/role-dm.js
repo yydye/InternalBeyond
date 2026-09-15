@@ -831,6 +831,14 @@
       text: text,
       memo: memo,
       stripped: stripped,
+      /* 这一轮模型**实际看到**的上一条对方消息（组装 prompt 时已经从
+         history 里取出来的那一条，正是 lastPeer）。
+         为什么要在返回值里带出来：M3 软复读要回答"她是不是在复述对方刚说的话"，
+         而"对方刚说的话"的 canonical 定义就是**这一条** —— 不是 thread 里的
+         上一条消息（那可能是她自己说的），也不是本 run 里的上一条
+         （跨 run 续聊时它并不存在）。让调用方自己去猜，就等于把这个定义
+         写第二遍，而那正是"同一件事有两个真源"的起点。 */
+      peerText: String(lastPeer || ''),
       provider: String(speaker.provider || ''),
       model: String(speaker.model || ''),
       speakerName: nameOf(speaker)
@@ -940,6 +948,11 @@
        只用 produced（=已落库）来判重是不够的：第一次重复被丢弃后，第二次的
        比较基准里仍然没有它，于是"同内容对轰"会先漏过一次才熔断。 */
     var seenTexts = [];
+    /* M3 软复读观测（bounded、无正文、run-local）。
+       它是**对话质量遥测**，不是安全阀，也不是角色世界里的任何事实：
+       不进 Memory、不动 Relationship、不写 thread memorandum、不改 prompt。
+       形状刻意只有 5 个计数 —— 没有正文、没有共享片段、没有匹配到的句子。 */
+    var quality = { analyzed: 0, softRepeatTurns: 0, mirrorTurns: 0, boilerplateTurns: 0, maxAgreementStreak: 0 };
     var providerFailed = false;
     var runError = '';
     var stopReason = null;
@@ -1050,6 +1063,36 @@
         stallCount = 0;
         seenTexts.push(String(turnRes.text));
 
+        /* ── M3 软复读观测（**只观测，不拦截**）──
+           为什么放在两个守卫**之后**：这条信号描述的是"这段对话实际说出口的
+           质量"。被 low-info / duplicate 丢弃的那些轮根本没有进入对话，
+           也就不在 M3 的口径里 —— 它们各有自己的 authority（low-info guard /
+           runaway guard），M3 既不接管也不与它们争。
+           为什么输入全部取自本 run 已有的东西：
+             · peerText 是这一轮**真的看到**的上一条对方消息（runTurn 里已经
+               从 history 取过，只是以前没有带出来）；
+             · recentReplies 是**已经落库**的最近两条 —— produced 本来就在，
+               M3 不新增任何正文缓存，run 结束即随 run 一起消失，不落盘。
+           为什么不改变控制流：M3 判定的是"要不要在下一次**本来就会发生**的
+           调用里改口风"，而不是"要不要丢掉这条消息"。这里既不 break 也不
+           continue、不碰 stopReason、不重试、不重写 —— 一次 run 的模型调用
+           次数因此与 M3 之前**逐字相同**（见测试 AH2 / AH4 / AH9 / AH11）。 */
+        try {
+          var sq = c.analyzeSoftRepetition(turnRes.text, turnRes.peerText || '',
+            produced.slice(-2).map(function (p) { return String(p.content); }));
+          if (sq) {
+            quality.analyzed++;
+            if (sq.softRepeat === true) {
+              quality.softRepeatTurns++;
+              if (sq.kind === 'mirror') quality.mirrorTurns++;
+              else if (sq.kind === 'boilerplate') quality.boilerplateTurns++;
+            }
+            if ((Number(sq.agreementStreak) || 0) > quality.maxAgreementStreak) {
+              quality.maxAgreementStreak = Number(sq.agreementStreak) || 0;
+            }
+          }
+        } catch (e) { /* 观测失败绝不改变一次 run 的结果 */ }
+
         var msg = c.buildRoleDmMessage({
           friendId: friendId,
           senderId: speakerId,
@@ -1141,6 +1184,11 @@
          没有任何成功消息时是 ''（失败出口一律如此：那些出口在 produced
          还是空的时候就越过了这条 return）。 */
       firstSpeakerId: produced.length ? String(produced[0].roleId) : '',
+      /* M3 对话质量观测（§9）：本次 run 有几轮是"软复读"、属于哪一类、
+         最长的连续附和次数。**只有计数**：正文、共享片段、匹配到的句子
+         一概不留（§19）。analyzed 恒等于 turns —— 每一轮落库的发言都过了
+         同一个纯函数；不等就说明有轮次漏掉了观测。 */
+      quality: quality,
       messages: produced.map(function (p) { return p.messageId; }),
       lastMessageId: last ? last.messageId : null,
       relation: relationResult,
