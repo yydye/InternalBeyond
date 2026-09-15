@@ -618,3 +618,32 @@ key / endpoint / 网络，三个都没坏。**内部已经能识别的事实，�
 stopReason / trace reasonCode 如实、退避照旧、账目不计）；`test_role_dm_smoke.js`
 41 绿（**真实页面**上跑"请求成功但无正文"，断言渲染出的中文与非误导性，
 且没有弹出错误卡片）；`test_frontend_structure.js` 全 PASS。
+
+## D26. Provider 调用记账按 consumer 归属，不按 provider/model（RCI-1，2026-09-15）
+
+### 决策
+**同一 provider + 同一 model 不能证明属于同一个 consumer。** 模型调用的归属事实一律取
+`IBModelCore.reasoningTrace` 的三元身份：`consumer` / `characterId` / `threadId`。
+provider/model 只说明「走了哪条通道」。
+
+### 理由
+M3 Phase 3 的 24 次真实调用曾被按「isolated Role DM probe」记账，实际是 role_dm 19 +
+diary planner 5：两者共用**同一个** provider/model（同一个注入配置），「按模型统计」于是
+把并发的日记调用算成了私信调用。RCI-0 分类为 ISOLATION HARNESS DEFECT + OBSERVABILITY
+DEFECT（不是产品 runtime bug）。
+
+### 契约（`reasoningTrace` 记录）
+- `consumer`：谁发起的。canonical `callApiChat*` 与 legacy `callApi` **都必须**声明；
+  未声明（未知调用方）保留 `''`，不改成抛错 —— 观测闭包不得变成 runtime 校验。
+- `characterId`：真实执行上下文里的角色 id（apiConfigs.id / Role DM 的 speakerId）。
+  拿不到就写 `''`：**不猜、不从 prompt 解析、不从 model/provider 反推角色**。
+- `threadId`：该次调用的会话/线程 id（Role DM 的 `thread.threadId`）。没有独立 runId
+  就不为 trace 新建持久化 id。
+- 三者只是 metadata：白名单键、只驻内存，绝不进入 provider 请求体。
+- 每次真实 provider attempt 一条记录；重试产生多条**同身份**记录，不新增 attempt 计数器，
+  也不新建第二套 request lifecycle。
+
+### 验证
+`tests/test_rci1_call_identity.js`（39 项，0 次真实模型调用）：legacy 六个调用点全部具名、
+Role DM 双角色身份不串、预算重试身份不漂移、并发 diary/role_dm 同 provider/model 仍可区分、
+trace 键白名单与请求体不含身份键。

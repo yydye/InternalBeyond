@@ -148,7 +148,8 @@ async function _annoSend(){
   prompt+='简短精炼（50-150字），使用日志正文所使用的语言。直接写批注内容，不需要称呼或署名。';
 
   try{
-    const response=await callApi(cfg,prompt);
+    /* RCI-1：调用身份（legacy callApi 接缝同样要能说出"是谁发的"）。 */
+    const response=await callApi(cfg,prompt,{_ibConsumer:'annotations'});
     const le=document.getElementById('anno-loading-tmp');if(le)le.remove();
     if(response){
       const anno={id:'anno_'+Date.now(),postId:_annoPostId,selectedText:selText,paraIdx:paraIdx,

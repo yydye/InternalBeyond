@@ -729,6 +729,13 @@
       for (var bi = 0; bi < budgets.length; bi++) {
         var r = await callApiChat(speaker, built.messages, {
           _ibConsumer: 'role_dm',
+          /* RCI-1：调用身份 = 本回合**实际发言角色**与它所在的私聊 thread。
+             两者都取自本回合的真实执行上下文（speakerId 是本回合的发言方 id，
+             threadId 是本次 run 的会话 id）；没有独立 runId，也不为一个 trace
+             新建持久化 id —— threadId 已经能把这次会话与别的会话分开。
+             只进 reasoning trace，不进入 provider 请求体。 */
+          _ibCharacterId: speakerId,
+          _ibThreadId: String((ctx.thread && ctx.thread.threadId) || ''),
           _ibTurn: turn || undefined,
           /* 私聊是纯对话：不给工具、不联网、不自动续轮。
              这既是产品边界（角色之间聊天不该去改用户的工作区），

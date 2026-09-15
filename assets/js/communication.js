@@ -68,7 +68,8 @@ async function requestBlogComment(postId){
     context+='请使用该日志正文所使用的语言进行回复，风格自然，就像一个读者在博客下面留言一样。';
     context+='长度适中（200-400字）。不要与已有留言重复。直接写留言内容，不需要称呼或署名。';
 
-    const response=await callApi(cfg,(_amC.sys?_amC.sys+'\n\n':'')+context);
+    /* RCI-1：legacy callApi 接缝的调用身份 —— 与同一路径已登记的 MB 边界 trace 同名（'blog_comment'）。 */
+    const response=await callApi(cfg,(_amC.sys?_amC.sys+'\n\n':'')+context,{_ibConsumer:'blog_comment'});
     const le=document.getElementById('blog-comment-loading');if(le)le.remove();
 
     let _cm={clean:String(response||''),ops:[]};
@@ -197,10 +198,14 @@ function _ibAnthropicWire(prompt){
   }
   return core.normalizeAnthropicMessages(prompt);
 }
-async function callApi(cfg,userMsg){
+async function callApi(cfg,userMsg,opts){
   const format=_providerFormat(cfg);
-  /* P21：同一条 canonical 思考深度（MB 未启用 → auto），翻译只发生在 request builder */
-  const _p21opts={reasoningEffort:await _mbReasoningEffortForRequest()};
+  /* P21：同一条 canonical 思考深度（MB 未启用 → auto），翻译只发生在 request builder。
+     RCI-1：本接缝与 callApiChat* 对称地接受调用方声明的**诊断身份**（opts._ibConsumer /
+     _ibCharacterId / _ibThreadId）—— 它们只被 reasoning trace 读取，绝不进入 provider 请求体。
+     不传 opts 的老调用方行为逐位不变（身份为空字符串，绝不抛错）。 */
+  opts=opts||{};
+  const _p21opts=Object.assign({},opts,{reasoningEffort:await _mbReasoningEffortForRequest()});
   let url=cfg.endpoint;
   let headers={'Content-Type':'application/json'};
   let body;
@@ -2700,7 +2705,7 @@ async function sendChatMessage(voiceMsg){
         _mbTrace.note(cfg.id,'outputMessages',messages.length);
         _mbTrace.note(cfg.id,'_paramsSend',_mbParamsFingerprint(cfg,_streamingOk,thinkingOn));
       }
-      let rawReply=await callApiChatStream(cfg,messages,{_ibTurn:_turn,_ibConsumer:'chat',wantThinking:thinkingOn,autoContinue:true,chatKey:_targetFriend,result:_callRes,searchLog:_srchLog,onSearch:_onSearch,
+      let rawReply=await callApiChatStream(cfg,messages,{_ibTurn:_turn,_ibConsumer:'chat',_ibCharacterId:cfg.id,wantThinking:thinkingOn,autoContinue:true,chatKey:_targetFriend,result:_callRes,searchLog:_srchLog,onSearch:_onSearch,
         onThink:function(tk){_thinkFlush(tk)},
         onChunk:function(chunk){
         if(_sState===2){_sFlush(chunk);return}
@@ -2851,7 +2856,7 @@ async function sendChatMessage(voiceMsg){
         _mbTrace.note(cfg.id,'outputMessages',messages.length);
         _mbTrace.note(cfg.id,'_paramsSend',_mbParamsFingerprint(cfg,_streamingOk,thinkingOn));
       }
-      let rawReply=await callApiChat(cfg,messages,{_ibTurn:_turn,_ibConsumer:'chat',wantThinking:thinkingOn,autoContinue:true,chatKey:_targetFriend,result:_callResN,searchLog:_srchLogN});
+      let rawReply=await callApiChat(cfg,messages,{_ibTurn:_turn,_ibConsumer:'chat',_ibCharacterId:cfg.id,wantThinking:thinkingOn,autoContinue:true,chatKey:_targetFriend,result:_callResN,searchLog:_srchLogN});
       clearInterval(_typTimer);
       const _elapsed=Math.round((Date.now()-_typStart)/1000);
       const te=document.getElementById('chat-typing-'+_targetFriend);
@@ -4374,7 +4379,8 @@ function _ibApplyReasoningEffort(bodyObj,format,cfg,opts,maxTok){
     var core=(typeof window!=='undefined')?window.IBModelCore:null;
     if(!core||typeof core.applyReasoningEffort!=='function')return null;
     return core.applyReasoningEffort(bodyObj,{provider:(cfg&&cfg.provider)||'',model:(cfg&&cfg.model)||''},
-      {format:format,effort:(opts&&opts.reasoningEffort)||'auto',maxTokens:maxTok,consumer:String((opts&&opts._ibConsumer)||'')});
+      {format:format,effort:(opts&&opts.reasoningEffort)||'auto',maxTokens:maxTok,consumer:String((opts&&opts._ibConsumer)||''),
+       characterId:String((opts&&opts._ibCharacterId)||''),threadId:String((opts&&opts._ibThreadId)||'')});
   }catch(e){return null}
 }
 /* 实际 reasoning tokens 只读回填（观测用：读不到就是 null，绝不伪造成 0）。
@@ -4385,7 +4391,8 @@ function _ibNoteReasoningUsage(usage,format,cfg,opts){
     if(!core||typeof core.reasoningTokensFromUsage!=='function'||typeof core.noteReasoningTokens!=='function')return null;
     var n=core.reasoningTokensFromUsage(usage,format);
     if(n==null)return null;
-    return core.noteReasoningTokens(n,{consumer:String((opts&&opts._ibConsumer)||''),provider:(cfg&&cfg.provider)||'',model:(cfg&&cfg.model)||''});
+    return core.noteReasoningTokens(n,{consumer:String((opts&&opts._ibConsumer)||''),provider:(cfg&&cfg.provider)||'',model:(cfg&&cfg.model)||'',
+      characterId:String((opts&&opts._ibCharacterId)||''),threadId:String((opts&&opts._ibThreadId)||'')});
   }catch(e){return null}
 }
 

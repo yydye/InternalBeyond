@@ -103,7 +103,8 @@ async function generateSummary(cfg,prevSummary,newMessages,charLimit,names){
     +'【新对话】\n'+newMessages.map(m=>(m.role==='user'?uN:(m.senderName||aN))+'：'+getTextContent(m)).join('\n')+'\n\n直接输出摘要。';
   try{
     const cleanCfg=Object.assign({},cfg,{systemPrompt:''});
-    const result=await callApi(cleanCfg,prompt);
+    /* RCI-1：调用身份（legacy callApi 接缝同样要能说出"是谁发的"）。 */
+    const result=await callApi(cleanCfg,prompt,{_ibConsumer:'summary'});
     if(!result){toast('摘要生成失败：未收到有效回复');return null}
     let text=result.trim();
     if(text.length>SUMMARY_CHAR_LIMIT+100)text=text.slice(0,SUMMARY_CHAR_LIMIT)+'…';

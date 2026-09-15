@@ -224,7 +224,10 @@ const bodyFor = (spec, opts) => IBMC.buildRequestBody(spec, prompt, Object.assig
   check('H7.traceHasNoSecrets', (() => {
     const tr = IBMC.reasoningTrace(5);
     const keys = Object.keys(tr[0] || {});
-    return keys.every(k => ['at', 'consumer', 'provider', 'model', 'format', 'requestedReasoningEffort', 'effectiveReasoningEffort', 'reasoningWireParam', 'reasoningFallbackReason', 'reasoningTokens'].includes(k));
+    /* RCI-1：调用身份 characterId / threadId 是 trace 契约的一部分
+       （"谁为什么发出这次调用"）——白名单**显式**登记，不是放宽：
+       任何未登记的键仍然失败。 */
+    return keys.every(k => ['at', 'consumer', 'characterId', 'threadId', 'provider', 'model', 'format', 'requestedReasoningEffort', 'effectiveReasoningEffort', 'reasoningWireParam', 'reasoningFallbackReason', 'reasoningTokens'].includes(k));
   })());
 
   /* ══════════ I. Node ModelPort parity ══════════ */

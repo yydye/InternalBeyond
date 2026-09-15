@@ -281,7 +281,7 @@ async function requestLetterFromSelected(){
 
     /* fix: 先截断正文、再拼接请求块（同 9453 行 wsBlock 的做法），防止上下文过长时写信指令整段被砍；AM 的 sys/tail 计入预算 */
     const _amLen=(_amL.sys?_amL.sys.length+2:0)+(_amL.tail?_amL.tail.length+2:0);
-    const response=await callApi(cfg,(_amL.sys?_amL.sys+'\n\n':'')+truncateContext(context,Math.max(2000,8000-reqBlock.length-_amLen))+(_amL.tail?'\n\n'+_amL.tail:'')+reqBlock);
+    const response=await callApi(cfg,(_amL.sys?_amL.sys+'\n\n':'')+truncateContext(context,Math.max(2000,8000-reqBlock.length-_amLen))+(_amL.tail?'\n\n'+_amL.tail:'')+reqBlock,{_ibConsumer:'letters'});/* RCI-1：调用身份（legacy callApi 接缝同样要能说出"是谁发的"） */
 
     let _lm={clean:String(response||''),ops:[]};
     try{_lm=_parseMemOps(String(response||''))}catch(e){}

@@ -867,7 +867,7 @@ async function writeOneLineToMemory(memId){
   context+='\n\n以下是你们之间的一条记忆：\n标题：'+(mem.title||'')+'\n概括：'+(mem.summary||'')+'\n内容：'+(mem.content||'');
   context+='\n\n请你以自己的身份，为这条记忆对用户写一句话——可以是感想、追记、回应、或一句想对TA说的话。只写一句话，不要标题，不要引号，不要解释，直接写那句话。简短、真挚、有温度。';
   try{
-    const resp=await callApi(cfg,context);
+    const resp=await callApi(cfg,context,{_ibConsumer:'memory'});/* RCI-1：调用身份（与记忆写入路径同一 consumer） */
     if(!resp){toast('未收到有效回复');return}
     mem.oneLine=resp.replace(/^["'"'\u201C\u201D]|["'"'\u201C\u201D]$/g,'').trim();
     mem.lastActivated=Date.now();
@@ -1506,7 +1506,9 @@ async function _generateMemoryCore(cfg,prompt,opts){
         });
       }finally{_memStreamAbortController=null}
     }else{
-      resp=await callApi(cfg,prompt);
+      /* RCI-1：非流式 legacy 分支必须与上面的流式分支声明**同一个** consumer，
+         否则同一条记忆写入路径在 trace 里会分裂成"有名"和"匿名"两种调用。 */
+      resp=await callApi(cfg,prompt,{_ibConsumer:'memory'});
     }
     if(!resp){toast('未收到有效回复');return}
     /* 解析结构化候选；旧字段式回复仍可降级解析。 */

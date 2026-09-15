@@ -134,7 +134,13 @@
        requestedReasoningEffort / effectiveReasoningEffort / reasoningWireParam /
        reasoningFallbackReason（+ reasoningTokens 回填位）。
      硬约束：白名单构造，只含 provider/model/format/consumer + 四个 reasoning 字段 + token 数 +
-     时间；**不含** prompt、消息、请求体、Authorization、apiKey；容量固定、只驻内存、绝不落盘。 */
+     时间；**不含** prompt、消息、请求体、Authorization、apiKey；容量固定、只驻内存、绝不落盘。
+     RCI-1：除 provider/model/format/consumer 外，再记**调用身份** characterId / threadId
+     （「谁为什么发出这次调用」）。provider/model 只说明"走了哪条通道"：
+     **同 provider + 同 model 绝不能用来推断属于同一个 consumer** —— 并发的日记与角色私信
+     可以共用同一个 provider/model，只有 consumer/characterId/threadId 能把它们分开。
+     身份一律由调用方在自己的执行上下文里传入（拿不到就写 ''），
+     绝不从 prompt 解析、绝不从 model/provider 反推角色。 */
   var REASONING_TRACE_MAX = 100;
   var _reasoningTrace = [];
   function _reasoningTracePush(rec) {
@@ -152,17 +158,25 @@
     var wantConsumer = (m.consumer == null ? '' : String(m.consumer));
     var wantProvider = (m.provider == null ? '' : String(m.provider));
     var wantModel = (m.model == null ? '' : String(m.model));
+    /* RCI-1：调用身份参与配对 —— 并发下同 provider/model 的两个 consumer（或同 consumer 的
+       两个角色）各自拿回自己的 token 数，不会把 A 角色的用量挂到 B 的记录上。
+       未提供身份键时行为与 RCI-1 之前逐位一致（不新增匹配条件）。 */
+    var wantCharacter = (m.characterId == null ? '' : String(m.characterId));
+    var wantThread = (m.threadId == null ? '' : String(m.threadId));
     for (var i = _reasoningTrace.length - 1; i >= 0; i--) {
       var rec = _reasoningTrace[i];
       if (rec.reasoningTokens != null) continue;
       if (m.consumer != null && rec.consumer !== wantConsumer) continue;
       if (m.provider != null && rec.provider !== wantProvider) continue;
       if (m.model != null && rec.model !== wantModel) continue;
+      if (m.characterId != null && rec.characterId !== wantCharacter) continue;
+      if (m.threadId != null && rec.threadId !== wantThread) continue;
       rec.reasoningTokens = count;
       return rec;
     }
     return _reasoningTracePush({
-      at: Date.now(), consumer: wantConsumer, provider: wantProvider, model: wantModel, format: '',
+      at: Date.now(), consumer: wantConsumer, characterId: wantCharacter, threadId: wantThread,
+      provider: wantProvider, model: wantModel, format: '',
       requestedReasoningEffort: '', effectiveReasoningEffort: '', reasoningWireParam: '',
       reasoningFallbackReason: '', reasoningTokens: count
     });
@@ -204,6 +218,10 @@
     _reasoningTracePush({
       at: Date.now(),
       consumer: String(options.consumer || ''),
+      /* RCI-1：调用身份（谁发出的这次调用）。两个都不是 wire 字段，只进这条内存记录；
+         调用方没传 → ''（不猜、不从 prompt 解析、不从 model/provider 反推角色）。 */
+      characterId: String(options.characterId || ''),
+      threadId: String(options.threadId || ''),
       provider: String(s.provider == null ? '' : s.provider),
       model: String(s.model == null ? '' : s.model),
       format: String(options.format == null ? '' : options.format),

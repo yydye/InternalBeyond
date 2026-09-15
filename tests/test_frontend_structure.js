@@ -1060,8 +1060,8 @@ check('cacheAudit.runtimeConsumerBridge',
   /const consumer = String\(\(request && request\.consumer\) \|\| ''\)\.trim\(\)\.slice\(0, 40\);/.test(runtimeText)
   && /_ibConsumer: consumer,/.test(runtimeText),
   'runtime request.consumer 未桥接到执行器 _ibConsumer');
-/* 审计身份键不得进入 provider 请求体构造：在代码中，_ibConsumer 只能作为 callApiChat* 的 opts 键，
-   或在 runtime 桥接里由 request.consumer 派生。 */
+/* 审计身份键不得进入 provider 请求体构造：在代码中，_ibConsumer 只能作为 callApiChat* /
+   （RCI-1 起）legacy callApi 的 opts 键，或在 runtime 桥接里由 request.consumer 派生。 */
 const bodyBuildLeak = [];
 for (const [file, text] of [['communication.js', comMainText],
   ['agent-runtime.js', runtimeText],
@@ -1074,7 +1074,9 @@ for (const [file, text] of [['communication.js', comMainText],
   while ((m = re.exec(code))) {
     const before = code.slice(Math.max(0, m.index - 700), m.index);
     const line = code.slice(code.lastIndexOf('\n', m.index) + 1, code.indexOf('\n', m.index));
-    const okSite = /callApiChat(?:Stream)?\(/.test(before.slice(before.lastIndexOf(';') + 1))
+    /* RCI-1：legacy callApi 接缝与 callApiChat* 对称 —— 它同样只接受调用方声明的身份，
+       身份同样只被 reasoning trace 读取（绝不进入 provider 请求体）。 */
+    const okSite = /callApiChat(?:Stream)?\(|\bcallApi\(/.test(before.slice(before.lastIndexOf(';') + 1))
       || /_ibConsumer:\s*consumer,/.test(line)
       || /_ibCacheAudit\([^)]*opts\._ibConsumer/.test(line)
       /* P21：reasoning 观测归因同样只读诊断身份 —— 它只进 reasoning trace（内存白名单环），
