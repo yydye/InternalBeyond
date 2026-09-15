@@ -172,9 +172,14 @@ section('A · 装配形状');
       'failReservation', 'expireDueReservations'].every(name => src.indexOf(name) < 0),
     ['reserveFunds', 'commitReservation', 'releaseReservation', 'expireReservation',
       'failReservation', 'expireDueReservations'].filter(name => src.indexOf(name) >= 0));
-  check('A3 生产 store 的 schema 版本是 2（与运行时声明一致，不是第二套水位）',
-    Number(SERVICE.economyStore.SCHEMA_VERSION) === 2 &&
-    Number(require(path.join(ROOT, 'services', 'home-node', 'economy-store.js')).SCHEMA_VERSION) === 2);
+  /* P22-4 把水位抬到 3，因此这条断言的是"运行时声明的水位 == store 声明的
+     水位"，而不是一个写死的 2。它要问的是"有没有第二套水位"，
+     而那件事与具体数字无关；"P22-3 自己抬到 2"由 M 组守着。 */
+  check('A3 生产 store 的 schema 版本与运行时声明一致，且是 P22-3 之后的代（不是第二套水位）',
+    Number(SERVICE.economyStore.SCHEMA_VERSION) ===
+      Number(require(path.join(ROOT, 'services', 'home-node', 'economy-store.js')).SCHEMA_VERSION) &&
+    Number(SERVICE.economyStore.SCHEMA_VERSION) >= 2,
+    { service: SERVICE.economyStore.SCHEMA_VERSION });
   check('A4 生产 store 上真的有 P22-3 的六个方法（能力存在，只是没有暴露到 HTTP）',
     ['reserveFunds', 'commitReservation', 'releaseReservation', 'expireReservation',
       'failReservation', 'expireDueReservations'].every(name => typeof SERVICE.economyStore[name] === 'function'));
@@ -329,9 +334,10 @@ async function childProcessGroup() {
 
   try {
     const health = await request(prod.port, 'GET', '/economy/health');
-    check('C2 真实生产进程的 schema 是 2，且 reserved 的两面都被自述',
-      health.status === 200 && Number(health.body.economy.schemaVersion) === 2 &&
-      health.body.economy.expectedSchemaVersion === 2 &&
+    check('C2 真实生产进程的 schema 与本 build 声明的一致，且 reserved 的两面都被自述',
+      health.status === 200 && Number(health.body.economy.schemaVersion) ===
+        Number(health.body.economy.expectedSchemaVersion) &&
+      Number(health.body.economy.schemaVersion) >= 2 &&
       health.body.economy.reservedCanonical === 'sqlite-active-reservations' &&
       health.body.economy.reservationStateVocabulary.indexOf('RESERVATION_STATE') >= 0 &&
       health.body.economy.operationStateVocabulary.indexOf('TX_STATE') >= 0,
@@ -363,6 +369,7 @@ async function childProcessGroup() {
 
     /* ── D · 重启同一个库：RESERVED 与 COMMITTED 都原样 ─────────────── */
     const direct = SERVICE.economyAssembly({ dataDir: dir, logger: () => { } }).economyStore;
+    const expectedSchema = Number(direct.SCHEMA_VERSION);
     direct.open();
     const wUser = direct.openWallet({ owner: { type: 'user', id: 'user' }, currency: 'IB_CREDIT' });
     check('D1 直接打开同一个库（生产进程已停机，不存在抢库）', wUser.ok === true, wUser.errors || '');
@@ -395,7 +402,7 @@ async function childProcessGroup() {
     try {
       const health2 = await request(prod2.port, 'GET', '/economy/health');
       check('D4 重启后 schema / revision 从原值继续，且 counts 与写入时一致',
-        Number(health2.body.economy.schemaVersion) === 2 &&
+        Number(health2.body.economy.schemaVersion) === expectedSchema &&
         Number(health2.body.economy.revision) === revisionBefore &&
         health2.body.economy.counts.reservations === 2 &&
         health2.body.economy.counts.activeReservations === 1 &&

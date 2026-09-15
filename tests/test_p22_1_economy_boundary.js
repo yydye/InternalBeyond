@@ -314,12 +314,15 @@ check('B4.4 /economy/* 只在 http.js 里被**读**服务：http 层拿不到任
     const nonGet = economyBlocks.filter(b => !/&& method === 'GET'$/.test(b));
     /* P22-3 把这份"不许被 http 层调用"的名单扩到它自己的六个 mutation
        方法上。名单必须跟着能力长：只列 P22-2 的那几个，等于给新加的
-       写能力留了一扇没有锁的门。 */
+       写能力留了一扇没有锁的门。
+       P22-4 再扩到它的六个（政策与报价），理由逐字相同。 */
     const writeCalls = ['mintForSystem', 'burnForSystem', 'commitLedgerTransaction',
       'openWallet', 'transferBetweenWallets', 'corruptCachedBalanceForTest',
       'reserveFunds', 'commitReservation', 'releaseReservation', 'expireReservation',
       'failReservation', 'expireDueReservations', 'rebuildReservedBalance',
-      'reconcileReservations', 'corruptReservedCacheForTest']
+      'reconcileReservations', 'corruptReservedCacheForTest',
+      'putBudgetPolicy', 'expirePolicy', 'expireDuePolicies',
+      'createQuote', 'expireQuote', 'expireDueQuotes']
       .filter(name => stripCommentsAndStrings(src).indexOf(name) >= 0);
     return nonGet.length === 0 && writeCalls.length === 0 &&
       /writesExposed: \[\]/.test(src) && /mintingExposed: false/.test(src);
@@ -331,7 +334,9 @@ check('B4.4 /economy/* 只在 http.js 里被**读**服务：http 层拿不到任
       'transferBetweenWallets', 'corruptCachedBalanceForTest',
       'reserveFunds', 'commitReservation', 'releaseReservation', 'expireReservation',
       'failReservation', 'expireDueReservations', 'rebuildReservedBalance',
-      'reconcileReservations', 'corruptReservedCacheForTest']
+      'reconcileReservations', 'corruptReservedCacheForTest',
+      'putBudgetPolicy', 'expirePolicy', 'expireDuePolicies',
+      'createQuote', 'expireQuote', 'expireDueQuotes']
       .filter(name => stripCommentsAndStrings(read('services/home-node/http.js')).indexOf(name) >= 0)
   });
 
@@ -728,6 +733,206 @@ check('B12.10 （输入存在）六个 mutation 方法与 reserved 求和入口�
     'failReservation', 'expireDueReservations'].every(name =>
     new RegExp('\\n    ' + name + ': ' + name + ',').test(STORE_SRC)) &&
   /\bsumActiveReserved\b/.test(STORE_SRC));
+
+/* ══════════════════════════════════════════════════════════════════
+   B13 · P22-4：预算规则与报价（真实人民币 maxBudget 的硬隔离 +
+         评估纯读 + 写能力仍然不上 HTTP）
+   ══════════════════════════════════════════════════════════════════ */
+section('B13 · P22-4 budget / quote（maxBudget 隔离、评估纯读、写不上 HTTP）');
+
+/* ── 三个分析辅助件（本节专用；它们是**测试**的一部分，被检查的对象是
+   生产文件）───────────────────────────────────────────────────────────
+   为什么需要一个"取函数体"的辅助：本阶段最重要的性质是**否定式**的
+   —— "评估这一段代码里没有写路径"。用整文件 grep 做不到这一点（文件里
+   当然有写路径，只是不在那几个函数里），因此这里先按函数边界切出正文，
+   再在正文里找。切法刻意简单：从 `function name(` 起，到下一个**顶格**
+   `  function ` / `  const ` 结尾 —— 那两个缩进正是本文件里"下一段"的
+   形状。切不出来就返回 null，并让断言失败（宁可失败，也不要静默地
+   在一个空字符串上做出"里面没有写路径"的结论）。 */
+function functionBody(src, name) {
+  const marker = 'function ' + name + '(';
+  const at = src.indexOf(marker);
+  if (at < 0) return null;
+  const rest = src.slice(at);
+  const boundary = rest.slice(marker.length).search(/\n {2}(?:function |const |let |return )/);
+  return boundary < 0 ? rest : rest.slice(0, marker.length + boundary);
+}
+function statementWindowOf(src, name) {
+  const at = src.indexOf(name + ':');
+  if (at < 0) return null;
+  const rest = src.slice(at);
+  const boundary = rest.search(/\n {4}[A-Za-z]/);
+  return boundary < 0 ? rest : rest.slice(0, boundary);
+}
+function okInput(result) { return !!(result && result.ok === true); }
+
+/* STORE_SRC 在本文件前面已经定义（B11/B12 用它扫 SQL 形状），这里复用
+   同一个常量 —— 两处各自 read 一次会让"被检查的文件"在原则上可以是两个
+   不同的快照，而本文件里所有断言都假定只有一份。 */
+
+/* ── B13.1：Economy 生产代码不得引用真实购物域的 maxBudget ─────────────
+   这不是"再强调一次 B8"，而是那个风险在 P22-4 变得**具体**之后的一次
+   重新断言：P22-4 引入了真正的预算限额字段，而最容易发生的错误就是把
+   两套预算接起来（`maxPerDayMinor = task.maxBudget * 100`）。
+   因此这里扫的是**依赖面**（require 目标）与**代码文本**（剥掉注释与
+   字符串）两层。 */
+check('B13.1 Economy 生产文件里**没有** maxBudget / dailyBudget / priceCNY 这类真实货币预算键（作为代码）',
+  PRODUCTION_FILES.every(rel => {
+    const code = stripCommentsAndStrings(read(rel));
+    return !/\bmaxBudget\b/.test(code) && !/\bdailyBudget\b/.test(code) &&
+      !/\bpriceCNY\b/.test(code) && !/\brealBudget\b/.test(code);
+  }),
+  PRODUCTION_FILES.filter(rel => /\b(?:maxBudget|dailyBudget|priceCNY|realBudget)\b/.test(stripCommentsAndStrings(read(rel)))));
+check('B13.2 Economy 生产文件里**没有** require 到真实购物 / 支付 / 凭据域',
+  allRequires.every(r => !/commerce|pay-gate|alipay|payment|credential-vault|shopping/.test(r.value)),
+  allRequires.filter(r => /commerce|pay-gate|alipay|payment|credential-vault|shopping/.test(r.value)));
+check('B13.3 契约的冲突键清单里确实有 maxBudget，且 Budget 输入拒绝它（否则 B13.1 在保护空气）',
+  C.isRealCommerceKey('maxBudget') === true &&
+  C.REAL_COMMERCE_COLLIDING_KEYS.indexOf('maxBudget') >= 0 &&
+  !okInput(C.normalizeBudgetInput({ ownerId: 'cfg_a', maxBudget: 1000 })));
+/* 反向：Economy 的预算字段名与真实人民币预算**字形不同族**。 */
+check('B13.4 P22-4 的每一个政策限额字段都带 Minor 后缀（任何裸 budget/price/amount 都没有位置）',
+  C.POLICY_LIMIT_TABLE.every(r => /Minor$/.test(r.name) && /_minor$/.test(r.field)) &&
+  C.POLICY_LIMIT_NAMES.every(n => C.BUDGET_LIMIT_KEYS.indexOf(n) >= 0) &&
+  STORE_SRC.indexOf('max_budget') < 0 && STORE_SRC.indexOf('budget_minor') < 0);
+
+/* ── B13.5：评估是纯读（结构性断言，而不是"我们记得别写"）─────────── */
+check('B13.5 预算评估那一段代码里没有**任何**写路径（reserve / ledger / 缓存 / 状态推进）',
+  (() => {
+    const fn = functionBody(STORE_SRC, 'budgetEvaluationFromSnapshot');
+    if (fn == null) return false;
+    return ['commitLedgerTransactionInTx', 'applyReservedCache', 'setWalletBalance', 'setWalletReserved',
+      'insertOperation', 'insertReservation', 'allocateRevision', 'appendChange', 'insertQuote',
+      'setQuoteState', 'upsertBudgetPolicy', 'insertBudgetPolicy'].every(name => fn.indexOf(name) < 0);
+  })(),
+  { body: functionBody(STORE_SRC, 'budgetEvaluationFromSnapshot') });
+check('B13.6 组装快照（buildBudgetSnapshot）同样是纯读',
+  (() => {
+    const fn = functionBody(STORE_SRC, 'buildBudgetSnapshot');
+    if (fn == null) return false;
+    return ['commitLedgerTransactionInTx', 'applyReservedCache', 'setWalletBalance', 'setWalletReserved',
+      'allocateRevision', 'appendChange'].every(name => fn.indexOf(name) < 0);
+  })());
+check('B13.7 evaluateQuote 只读：它不 reserve、不消费报价、不改状态',
+  (() => {
+    const fn = functionBody(STORE_SRC, 'evaluateQuote');
+    if (fn == null) return false;
+    return ['commitLedgerTransactionInTx', 'applyReservedCache', 'setWalletBalance', 'setWalletReserved',
+      'reserveFunds', 'commitReservation', 'setQuoteState', 'allocateRevision', 'appendChange']
+      .every(name => fn.indexOf(name) < 0) &&
+      fn.indexOf('reserved: false') >= 0 && fn.indexOf('consumed: false') >= 0;
+  })());
+
+/* ── B13.8：报价的金额与币种不可变 —— 静态扫 UPDATE 的 SET 列 ────────── */
+check('B13.8 唯一写 quotes 的 UPDATE 只赋状态与版本列，金额 / 币种 / 买家 / 商品一次都不出现',
+  (() => {
+    const window = statementWindowOf(STORE_SRC, 'setQuoteState');
+    const m = window == null ? null : /SET ([^']*?) WHERE/.exec(window);
+    if (!m) return false;
+    const cols = m[1].split(',').map(s => s.trim().split('=')[0].trim());
+    const forbidden = ['amount_minor', 'currency', 'buyer_id', 'buyer_type', 'product_id',
+      'quantity', 'quote_kind', 'service_role', 'expires_at', 'created_at', 'recipient_id'];
+    return forbidden.every(c => cols.indexOf(c) < 0) &&
+      cols.indexOf('state') >= 0 && cols.indexOf('revision') >= 0 && cols.indexOf('updated_at') >= 0;
+  })(),
+  statementWindowOf(STORE_SRC, 'setQuoteState'));
+check('B13.9 报价状态推进带并发守卫（`AND state=?`）—— 终态不可回退是 SQL 约束，不是纪律',
+  /SET state=\?, revision=\?, updated_at=\? WHERE quote_id=\? AND state=\?/.test(STORE_SRC));
+check('B13.10 报价的到期判定是**比较**（state=OPEN AND expires_at <= now），不是定时器',
+  /WHERE state=\? AND expires_at <= \?/.test(STORE_SRC) &&
+  /function expireDueQuotes\(input\)/.test(STORE_SRC) &&
+  PRODUCTION_FILES.every(rel => !/\bset(?:Timeout|Interval)\b/.test(stripCommentsAndStrings(read(rel)))));
+
+/* ── B13.11：P22-4 的六个写方法一个都不在 HTTP 上 ─────────────────── */
+const POLICY_QUOTE_MUTATION_METHODS = ['putBudgetPolicy', 'expirePolicy', 'expireDuePolicies',
+  'createQuote', 'expireQuote', 'expireDueQuotes'];
+check('B13.11 http.js 里没有 P22-4 的任何 mutation 方法名（写能力在路由表上不存在）',
+  POLICY_QUOTE_MUTATION_METHODS.every(name =>
+    stripCommentsAndStrings(read('services/home-node/http.js')).indexOf(name) < 0),
+  POLICY_QUOTE_MUTATION_METHODS.filter(name =>
+    stripCommentsAndStrings(read('services/home-node/http.js')).indexOf(name) >= 0));
+check('B13.12 http.js 里出现的政策 / 报价读取面恰是那几个只读方法（多一个都要解释）',
+  (() => {
+    const code = stripCommentsAndStrings(read('services/home-node/http.js'));
+    const writeish = ['createQuote', 'expireQuote', 'expireDueQuotes', 'putBudgetPolicy',
+      'expirePolicy', 'expireDuePolicies'].filter(n => code.indexOf(n) >= 0);
+    const readish = ['listBudgetPolicies', 'getBudgetPolicy', 'serializeBudgetPolicy',
+      'listQuotes', 'getQuote', 'serializeQuote', 'evaluateQuote', 'evaluateBudgetFor',
+      'serializeBudgetSnapshot'].filter(n => code.indexOf(n) >= 0);
+    return writeish.length === 0 && readish.length === 9;
+  })());
+check('B13.13 P22-4 的五条新路由全是 GET，且都在 economyPolicy 的 desktopPaths 里被声明',
+  (() => {
+    const src = read('services/home-node/http.js');
+    const blocks = src.match(/path === '\/economy\/(?:polic(?:y|ies)|quotes?|budget)' && method === '[A-Z]+'/g) || [];
+    /* desktopPaths 在 /security 里出现了四次（memory / understanding /
+       moments / economy），因此必须从 economyPolicy 那一段里取，而不是
+       取第一处 —— 取第一处会让这条断言实际上在检查 memory 的路径表。 */
+    const at = src.indexOf('economyPolicy: {');
+    const declared = at < 0 ? '' : (src.slice(at).match(/desktopPaths: \[[\s\S]*?\]/) || [''])[0];
+    return blocks.length === 5 && blocks.every(b => /&& method === 'GET'$/.test(b)) &&
+      ['/economy/policies', '/economy/policy', '/economy/budget', '/economy/quotes', '/economy/quote']
+        .every(p => declared.indexOf("'" + p + "'") >= 0);
+  })(),
+  (read('services/home-node/http.js').match(/path === '\/economy\/(?:polic(?:y|ies)|quotes?|budget)' && method === '[A-Z]+'/g) || []));
+check('B13.14 /security 的 economyPolicy 把 P22-4 的"没有"写成可断言字段',
+  (() => {
+    const src = read('services/home-node/http.js');
+    return /budgetWritesExposed: \[\]/.test(src) && /quoteWritesExposed: \[\]/.test(src) &&
+      /budgetEvaluationIsASnapshotOnly: true/.test(src) &&
+      /budgetEvaluationReservesFunds: false/.test(src) &&
+      /quoteLocksFunds: false/.test(src) &&
+      /budgetTimezone: 'UTC'/.test(src);
+  })());
+
+/* ── B13.15：评估的输入面里没有正文的位置 ──────────────────────────── */
+check('B13.15 评估上下文的构造只使用契约白名单里的键（prompt / relationship 无处可放）',
+  (() => {
+    const fn = functionBody(STORE_SRC, 'budgetContextFromSnapshot');
+    if (fn == null) return false;
+    const assigned = (fn.match(/^\s{4,}([a-zA-Z][A-Za-z0-9_]*)\s*:/gm) || [])
+      .map(s => s.trim().replace(/:$/, ''));
+    const allowed = C.BUDGET_INPUT_KEYS.concat(['usage', 'limits']);
+    return assigned.length > 0 && assigned.every(k => allowed.indexOf(k) >= 0);
+  })(),
+  { body: functionBody(STORE_SRC, 'budgetContextFromSnapshot') });
+check('B13.16 Economy 生产代码里不出现 trust / affection / affinity 的累加形态（B7.6 在 P22-4 继续成立）',
+  PRODUCTION_FILES.every(rel => !/(?:affection|trust|familiarity|affinity)\s*(?:\+=|-=|\+\+|--)/i
+    .test(stripCommentsAndStrings(read(rel)))));
+check('B13.17 报价表的列**恰好**是"什么/多少钱/到什么时候"那几列，没有任何隐蔽库存列',
+  (() => {
+    const window = statementWindowOf(STORE_SRC, 'createQuotes');
+    if (window == null) return false;
+    /* 状态推进语句里只允许出现生命周期列，因此下面这张"允许的列"清单
+       是一份**精确**名单：多一列就失败。它同时挡住 inventory_count /
+       owned_items / provider_quota_balance 这类把报价变成隐蔽库存的
+       字段，以及任何凭据或真实支付字段（§28/§24）。
+       剥的只有**注释**，不剥字符串字面量 —— 列名本身就在字符串里，
+       而 stripCommentsAndStrings 会把它们一起抹掉（那样这条断言会在
+       一个空数组上"通过"）。 */
+    const code = window
+      .replace(/\/\*[\s\S]*?\*\//g, ' ')
+      .replace(/\/\/[^\n]*/g, ' ');
+    const cols = Array.from(code.matchAll(/' ([a-z_]+) (?:TEXT|INTEGER)/g)).map(m => m[1]);
+    const allowedColumns = ['quote_id', 'product_id', 'buyer_id', 'buyer_type', 'recipient_id',
+      'recipient_type', 'currency', 'amount_minor', 'quantity', 'quote_kind', 'service_role',
+      'state', 'expires_at', 'predecessor_quote_id', 'idempotency_key', 'fingerprint',
+      'revision', 'created_at', 'updated_at'];
+    const extra = cols.filter(c => allowedColumns.indexOf(c) < 0);
+    const absent = allowedColumns.filter(c => cols.indexOf(c) < 0);
+    return cols.length === allowedColumns.length && extra.length === 0 && absent.length === 0 &&
+      !/inventory|owned_item|provider_quota|quota_balance|api_key|payment_link|secret|real_currency/i.test(code);
+  })(),
+  statementWindowOf(STORE_SRC, 'createQuotes'));
+
+/* ── B13.18：输入存在（否则上面每一条都在保护空气）────────────────── */
+check('B13.18 （输入存在）P22-4 的每个方法与契约件确实存在',
+  POLICY_QUOTE_MUTATION_METHODS.every(name => new RegExp('\\n    ' + name + ': ' + name + ',').test(STORE_SRC)) &&
+  ['listBudgetPolicies', 'getBudgetPolicy', 'serializeBudgetPolicy', 'evaluateBudgetFor',
+    'buildBudgetSnapshot', 'serializeBudgetSnapshot', 'listQuotes', 'getQuote', 'serializeQuote',
+    'evaluateQuote', 'spendingWindows'].every(name => new RegExp('\\n    ' + name + ': ' + name + ',').test(STORE_SRC)) &&
+  typeof C.evaluateBudget === 'function' && typeof C.policyIsEffectiveAt === 'function' &&
+  Array.isArray(C.BUDGET_SPENDING_TYPES) && C.BUDGET_SPENDING_TYPES.length >= 1);
 
 /* ══════════════════════════════════════════════════════════════════
    B10 · 反向断言：契约里**必须**存在的"否认"数据

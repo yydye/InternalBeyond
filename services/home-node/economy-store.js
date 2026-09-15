@@ -79,8 +79,20 @@ const dbFailure = require('../../runtime/db-failure.js');
        DDL 补上新表，水位抬到 2，**既有 ledger 行一个字节都不动**
        （tests/test_p22_3_economy_reservation.js 的 M 组逐条断言）。
    1 → 2 的 MIGRATIONS 条目为空，因为没有任何既有列或既有数据需要改写；
-   空数组是**刻意**的，它让"没有数据迁移"这件事本身可被断言。 */
-const ECONOMY_SCHEMA_VERSION = 2;
+   空数组是**刻意**的，它让"没有数据迁移"这件事本身可被断言。
+
+   ── P22-4：2 → 3 ────────────────────────────────────────────────────
+    同一条纪律的第三次应用。P22-4 让这个库多出两张表（预算政策与报价），
+    于是：
+      · 一个 P22-3 的 build 打开 P22-4 的库 → **拒绝**（SCHEMA_TOO_NEW）。
+        如果它不拒绝，它就会看到一个"没有政策、没有报价"的经济 —— 而
+        那是一个**错误的**世界：它会认为任何消费都没有规则约束。
+        这正是"读得到账本但不认识规则"最危险的形态，比打不开严重得多。
+      · 一个 P22-4 的 build 打开 P22-3 的库 → 受支持的老版本路径，
+        DDL 补上两张表，水位抬到 3，**既有 ledger / reservation 行一个
+        字节都不动**。
+    2 → 3 同样是空的 MIGRATIONS 条目：没有既有列需要改写，只有新表。 */
+const ECONOMY_SCHEMA_VERSION = 3;
 const DEFAULT_DB_FILENAME = 'home-node.db';
 
 const META_TABLE = 'economy_meta';
@@ -101,6 +113,10 @@ const ENTRIES_TABLE = 'economy_ledger_entries';
 const OPERATIONS_TABLE = 'economy_operations';
 const RESERVATIONS_TABLE = 'economy_reservations';
 const OPERATION_IDEMPOTENCY_TABLE = 'economy_operation_idempotency';
+/* P22-4：预算政策与报价。两者都是**规则 / 命题**，不是经济事实，
+   因此它们是自己的两张表，而不是往 ledger 或 operation 里塞列。 */
+const BUDGET_POLICIES_TABLE = 'economy_budget_policies';
+const QUOTES_TABLE = 'economy_quotes';
 
 /* meta 的键。**独立命名空间**：全部带 economy_ 前缀，且存在
    economy_meta 表里（不是共用的 meta 表），因此任何其它 store 都不可能
@@ -533,11 +549,193 @@ function createEconomyStore(deps) {
     createOperationIdempotencyByAt: 'CREATE INDEX IF NOT EXISTS idx_econ_opidem_at ON ' + OPERATION_IDEMPOTENCY_TABLE + ' (at)',
     selectOperationIdempotency: 'SELECT * FROM ' + OPERATION_IDEMPOTENCY_TABLE + ' WHERE scope=? AND idempotency_key=?',
     insertOperationIdempotency:
-      'INSERT INTO ' + OPERATION_IDEMPOTENCY_TABLE + ' (scope, idempotency_key, fingerprint, operation_id, reservation_id, transaction_id, result_json, revision, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO ' + OPERATION_IDEMPOTENCY_TABLE + ' (scope, idempotency_key, fingerprint, operation_id, reservation_id, transaction_id, result_json, revision, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)' +
+      /* P22-4：见 writeOperationIdempotency 的说明 —— 幂等记录是**第一次**
+         执行的证据，后来的重试没有权力覆盖它，也不该因此崩溃。 */
+      ' ON CONFLICT(scope, idempotency_key) DO NOTHING',
     pruneOperationIdempotency: 'DELETE FROM ' + OPERATION_IDEMPOTENCY_TABLE + ' WHERE at < ?',
     countOperationIdempotency: 'SELECT COUNT(*) AS c FROM ' + OPERATION_IDEMPOTENCY_TABLE,
     oldestOperationIdempotency: 'SELECT scope, idempotency_key FROM ' + OPERATION_IDEMPOTENCY_TABLE + ' ORDER BY at ASC LIMIT ?',
-    deleteOperationIdempotency: 'DELETE FROM ' + OPERATION_IDEMPOTENCY_TABLE + ' WHERE scope=? AND idempotency_key=?'
+    deleteOperationIdempotency: 'DELETE FROM ' + OPERATION_IDEMPOTENCY_TABLE + ' WHERE scope=? AND idempotency_key=?',
+
+    /* ══ P22-4 · 预算政策（规则，不是经济事实）══════════════════════════
+       UNIQUE(owner_id) 而不是 UNIQUE(owner_id, currency)：**一个 owner 恰好
+       一条政策**，而政策自身说它作用在哪个币种上。若按二元组唯一，一个
+       owner 就能同时拥有"IB_CREDIT 的政策"和"COMPUTE 的政策"，而评估
+       时必须先选一条 —— 那是一次没有正确答案的选择（两条都"对"）。
+       把 scope 变成政策的属性之后，"有没有规则"这个问题只有一个是非答案。
+
+       五个限额列全部带 _minor 后缀（§4）。term_ends_at 允许 NULL
+       （= 没有期限）；hard_stop 与 status 分开，因为"被显式停用"与
+       "期限走完了"是两件在审计里必须可分的事。
+
+       刻意**没有**的列：provider / apiKey / paymentIntent / relationship /
+       memory / realCurrency。政策只描述"允不允许花多少"。 */
+    createBudgetPolicies:
+      'CREATE TABLE IF NOT EXISTS ' + BUDGET_POLICIES_TABLE + ' (' +
+      ' policy_id TEXT PRIMARY KEY,' +
+      ' owner_id TEXT NOT NULL,' +
+      ' owner_type TEXT NOT NULL,' +
+      ' currency TEXT NOT NULL,' +
+      ' status TEXT NOT NULL,' +
+      ' max_per_tx_minor INTEGER,' +
+      ' max_per_day_minor INTEGER,' +
+      ' max_per_week_minor INTEGER,' +
+      ' max_per_month_minor INTEGER,' +
+      ' approval_above_minor INTEGER,' +
+      ' cooldown_ms INTEGER,' +
+      ' autonomy_level TEXT,' +
+      ' term_ends_at INTEGER,' +
+      ' hard_stop INTEGER NOT NULL DEFAULT 0,' +
+      ' hard_stopped_at INTEGER,' +
+      ' idempotency_key TEXT NOT NULL,' +
+      ' fingerprint TEXT NOT NULL,' +
+      ' revision INTEGER NOT NULL,' +
+      ' created_at INTEGER NOT NULL,' +
+      ' updated_at INTEGER NOT NULL,' +
+      ' UNIQUE (owner_id)' +
+      ')',
+    createBudgetPoliciesByStatus: 'CREATE INDEX IF NOT EXISTS idx_econ_policy_status ON ' + BUDGET_POLICIES_TABLE + ' (status, owner_id)',
+    createBudgetPoliciesByTerm: 'CREATE INDEX IF NOT EXISTS idx_econ_policy_term ON ' + BUDGET_POLICIES_TABLE + ' (status, term_ends_at)',
+    insertBudgetPolicy:
+      'INSERT INTO ' + BUDGET_POLICIES_TABLE + ' (policy_id, owner_id, owner_type, currency, status, max_per_tx_minor, max_per_day_minor, max_per_week_minor, max_per_month_minor, approval_above_minor, cooldown_ms, autonomy_level, term_ends_at, hard_stop, hard_stopped_at, idempotency_key, fingerprint, revision, created_at, updated_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    selectBudgetPolicy: 'SELECT * FROM ' + BUDGET_POLICIES_TABLE + ' WHERE policy_id=?',
+    selectBudgetPolicyByOwner: 'SELECT * FROM ' + BUDGET_POLICIES_TABLE + ' WHERE owner_id=?',
+    selectBudgetPolicies: 'SELECT * FROM ' + BUDGET_POLICIES_TABLE + ' ORDER BY created_at ASC, policy_id ASC LIMIT ?',
+    selectBudgetPoliciesByStatus: 'SELECT * FROM ' + BUDGET_POLICIES_TABLE + ' WHERE status=? ORDER BY created_at ASC, policy_id ASC LIMIT ?',
+    /* 到期扫描的入口：与 reservation / quote 同一条形状 —— 真相是一条
+       WHERE（status='ACTIVE' AND term_ends_at <= now），不是某个调度。 */
+    selectPoliciesDue:
+      'SELECT * FROM ' + BUDGET_POLICIES_TABLE + ' WHERE hard_stop=0 AND status=? AND term_ends_at IS NOT NULL AND term_ends_at <= ? ORDER BY term_ends_at ASC, policy_id ASC LIMIT ?',
+    countBudgetPolicies: 'SELECT COUNT(*) AS c FROM ' + BUDGET_POLICIES_TABLE,
+    countBudgetPoliciesByStatus: 'SELECT COUNT(*) AS c FROM ' + BUDGET_POLICIES_TABLE + ' WHERE status=?',
+    /* ── 政策的**唯一**写语句 ────────────────────────────────────────────
+       它同时承担 create 与 update 两种语义（update = upsert），因此
+       SET 里可以出现经济内容列 —— 这是本文件里唯一一条允许改规则内容的
+       UPDATE，而它改的是**规则**，不是任何一笔已经发生的经济事实。
+       仍然有 `AND status=?` 形式的并发信息吗？没有，而且这是刻意的：
+       政策的期望状态是一个**乐观并发问题**，解法在 store 层（见
+       putBudgetPolicy 的 `ifRevision` 参数），而不是再写一条 SQL。
+       真正不可变的是 policy_id / owner_id / created_at。 */
+    upsertBudgetPolicy:
+      'UPDATE ' + BUDGET_POLICIES_TABLE + ' SET currency=?, status=?, max_per_tx_minor=?, max_per_day_minor=?, max_per_week_minor=?, max_per_month_minor=?, approval_above_minor=?, cooldown_ms=?, autonomy_level=?, term_ends_at=?, hard_stop=?, hard_stopped_at=?, idempotency_key=?, fingerprint=?, revision=?, updated_at=? WHERE policy_id=?',
+    /* 停用只动两列：状态与停用时刻。限额一个字都不改 —— 停用不是
+       "把额度改成 0"，那会让重新启用时需要把五个数字再猜一遍。 */
+    setPolicyStatus:
+      'UPDATE ' + BUDGET_POLICIES_TABLE + ' SET status=?, hard_stop=?, hard_stopped_at=?, revision=?, updated_at=? WHERE policy_id=? AND status=?',
+
+    /* ══ P22-4 · 报价（价格命题，不是资源锁定）══════════════════════════
+       service_role TEXT NOT NULL —— 结算形态在**创建时**就派生并写下来，
+       而不是在结算时重新推导。理由与"报价存在的意义"同源：将来真正
+       执行时读到的必须是与报价一起冻结的那个答案。
+
+       UNIQUE(predecessor_quote_id)：一份报价只可能被"重新报价"一次。
+       这不是业务规则，而是一条**结构性**事实：链是用来回答"这个价格
+       是从哪来的"，而一个分叉的链回答不了。
+
+       刻意**没有**的列：inventory_count / owned_items /
+       provider_quota_balance / api_key / payment_link（§28：报价不得
+       变成隐蔽库存，也不得携带凭据或真实支付信息）。 */
+    createQuotes:
+      'CREATE TABLE IF NOT EXISTS ' + QUOTES_TABLE + ' (' +
+      ' quote_id TEXT PRIMARY KEY,' +
+      ' product_id TEXT NOT NULL,' +
+      ' buyer_id TEXT NOT NULL,' +
+      ' buyer_type TEXT NOT NULL,' +
+      ' recipient_id TEXT,' +
+      ' recipient_type TEXT,' +
+      ' currency TEXT NOT NULL,' +
+      ' amount_minor INTEGER NOT NULL,' +
+      ' quantity INTEGER NOT NULL,' +
+      ' quote_kind TEXT NOT NULL,' +
+      ' service_role TEXT NOT NULL,' +
+      ' state TEXT NOT NULL,' +
+      ' expires_at INTEGER NOT NULL,' +
+      ' predecessor_quote_id TEXT,' +
+      ' idempotency_key TEXT NOT NULL,' +
+      ' fingerprint TEXT NOT NULL,' +
+      ' revision INTEGER NOT NULL,' +
+      ' created_at INTEGER NOT NULL,' +
+      ' updated_at INTEGER NOT NULL' +
+      ')',
+    createQuotesByBuyer: 'CREATE INDEX IF NOT EXISTS idx_econ_quotes_buyer ON ' + QUOTES_TABLE + ' (buyer_id, state, created_at)',
+    createQuotesByProduct: 'CREATE INDEX IF NOT EXISTS idx_econ_quotes_product ON ' + QUOTES_TABLE + ' (product_id)',
+    createQuotesByExpiry: 'CREATE INDEX IF NOT EXISTS idx_econ_quotes_expiry ON ' + QUOTES_TABLE + ' (state, expires_at)',
+    createQuotesByPredecessor: 'CREATE UNIQUE INDEX IF NOT EXISTS idx_econ_quotes_predecessor ON ' + QUOTES_TABLE + ' (predecessor_quote_id)',
+    insertQuote:
+      'INSERT INTO ' + QUOTES_TABLE + ' (quote_id, product_id, buyer_id, buyer_type, recipient_id, recipient_type, currency, amount_minor, quantity, quote_kind, service_role, state, expires_at, predecessor_quote_id, idempotency_key, fingerprint, revision, created_at, updated_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    selectQuote: 'SELECT * FROM ' + QUOTES_TABLE + ' WHERE quote_id=?',
+    selectQuoteByPredecessor: 'SELECT * FROM ' + QUOTES_TABLE + ' WHERE predecessor_quote_id=?',
+    selectQuotes: 'SELECT * FROM ' + QUOTES_TABLE + ' ORDER BY created_at ASC, quote_id ASC LIMIT ?',
+    selectQuotesByBuyer: 'SELECT * FROM ' + QUOTES_TABLE + ' WHERE buyer_id=? ORDER BY created_at ASC, quote_id ASC LIMIT ?',
+    selectQuotesByBuyerAndState: 'SELECT * FROM ' + QUOTES_TABLE + ' WHERE buyer_id=? AND state=? ORDER BY created_at ASC, quote_id ASC LIMIT ?',
+    selectQuotesByState: 'SELECT * FROM ' + QUOTES_TABLE + ' WHERE state=? ORDER BY created_at ASC, quote_id ASC LIMIT ?',
+    selectQuotesAll: 'SELECT * FROM ' + QUOTES_TABLE + ' ORDER BY created_at ASC, quote_id ASC',
+    /* 报价与政策共用一条到期形状：status='OPEN' AND expires_at <= now。 */
+    selectDueQuotes:
+      'SELECT * FROM ' + QUOTES_TABLE + ' WHERE state=? AND expires_at <= ? ORDER BY expires_at ASC, quote_id ASC LIMIT ?',
+    countQuotes: 'SELECT COUNT(*) AS c FROM ' + QUOTES_TABLE,
+    countQuotesByState: 'SELECT COUNT(*) AS c FROM ' + QUOTES_TABLE + ' WHERE state=?',
+    /* ── 报价的**唯一**状态推进语句（§9：金额与币种不可变）──────────────
+       SET 里**没有** amount_minor / currency / buyer_id / product_id /
+       quantity / quote_kind / service_role / expires_at / created_at。
+       于是 P22-4 §9 的 immutable 不是一句纪律，而是"那些列根本没有
+       出现在任何 UPDATE 的 SET 里"。
+
+       `AND state=?` 在这里承担两件事：
+         ① 乐观并发（两个 expire 只有一个 changes=1）；
+         ② **终态不可回退** —— 一个已经 CONSUMED 的报价不可能再被
+            expire（changes=0 ⇒ 调用点拒绝）。 */
+    setQuoteState:
+      'UPDATE ' + QUOTES_TABLE + ' SET state=?, revision=?, updated_at=? WHERE quote_id=? AND state=?',
+
+    /* ── P22-4 · 消费窗口的 canonical 求和入口（§14）─────────────────────
+       一次查询取回"这个钱包在最早窗口之后的每一笔**消费**"，由 JS 按
+       UTC 边界分桶。分桶之所以放在 JS 而不是三条 SQL 里：三个窗口的边界
+       来自契约的三个纯函数，把它们翻译成三条 WHERE 会让"窗口是什么"
+       有两个定义（一条在契约、一条在 SQL），而两者会漂移。
+
+       三处刻意：
+       ① 金额只从 `e.amount_minor` 读 —— transactions 表没有金额列（P22-2 §6）。
+       ② 方向只从 `e.direction` 读，**绝不**用 `e.amount_minor < 0` 猜：
+          canonical amount 是无符号的（P22-1 §8），靠符号判断会永远得到 0，
+          而只喂正数的测试会是绿的。
+       ③ "哪些 type 算消费"是**参数**（契约的 BUDGET_SPENDING_TYPES），
+          不是在 SQL 里再写一遍 IN 列表。
+
+       ── 为什么是 `direction = 'CREDIT'` 而不是 DEBIT（这一条是算出来的）
+         WALLET 账户的 balance = Σ(DEBIT) − Σ(CREDIT)   （P22-2 §8.2）
+       因此"钱从这个钱包出去"记成一条 **CREDIT**（余额减少），而增发
+       （MINT）记成一条 DEBIT。也就是说：在这份账本里"花掉"与"增加"的
+       方向**正好与直觉相反**。一个按"负数金额"或"DEBIT = 支出"写的实现
+       会永远得到 0，并且看起来完全正常 —— 这正是 §14 要求按**冻结的
+       transaction type** 判断、而不是按符号或方向直觉判断的原因。
+       （实测：这条查询最初写成 DEBIT，于是所有消费窗口恒为 0，
+       而除了"窗口应该是 120"之外的每一条断言都还是绿的。）
+
+       还有一道**结构性**前提：一个钱包在它自己的币种上恰好有一个
+       WALLET 账户。JS 侧用 countWalletAccounts 数一遍 —— 0 个意味着
+       引用链断了，≥2 个意味着余额被劈成两半，那时任何求和都是错的。 */
+    selectSpendingRows:
+      'SELECT e.ledger_entry_id, e.transaction_id, e.account_id, e.direction, e.amount_minor, ' +
+      '       e.currency AS entry_currency, e.created_at AS at, ' +
+      '       t.tx_type, t.state AS tx_state, ' +
+      '       a.kind AS account_kind, a.wallet_id AS account_wallet_id, a.currency AS account_currency ' +
+      'FROM ' + ENTRIES_TABLE + ' e ' +
+      'JOIN ' + TRANSACTIONS_TABLE + ' t ON t.transaction_id = e.transaction_id ' +
+      'LEFT JOIN ' + ACCOUNTS_TABLE + ' a ON a.account_id = e.account_id ' +
+      'WHERE e.account_id = ? ' +
+      '  AND e.currency = ? ' +
+      '  AND e.direction = \'CREDIT\' ' +
+      '  AND e.created_at >= ? ' +
+      'ORDER BY e.created_at ASC, e.ledger_entry_id ASC',
+    /* 钱包的 WALLET 账户必须**恰好一个**：0 个意味着引用链断了，
+       ≥2 个意味着余额被劈成两半而两边各自的账都平。两种情况都必须
+       fail closed，因此它是一条被查询出来的前提，而不是一个假设。 */
+    countWalletAccounts:
+      'SELECT COUNT(*) AS c FROM ' + ACCOUNTS_TABLE + ' WHERE wallet_id=? AND currency=? AND kind=\'WALLET\'',
   };
 
   /* ══════════════════════════════════════════════════════════════════
@@ -600,6 +798,15 @@ function createEconomyStore(deps) {
       db.exec(SQL.createOperationIdempotency);
       db.exec(SQL.createOperationIdempotencyByOp);
       db.exec(SQL.createOperationIdempotencyByAt);
+      /* P22-4 的两张表（schema 2 → 3）。同样只有新表，没有既有列改写。 */
+      db.exec(SQL.createBudgetPolicies);
+      db.exec(SQL.createBudgetPoliciesByStatus);
+      db.exec(SQL.createBudgetPoliciesByTerm);
+      db.exec(SQL.createQuotes);
+      db.exec(SQL.createQuotesByBuyer);
+      db.exec(SQL.createQuotesByProduct);
+      db.exec(SQL.createQuotesByExpiry);
+      db.exec(SQL.createQuotesByPredecessor);
     } catch (error) {
       try { if (db) db.close(); } catch (_) { /* 已关闭 */ }
       db = null;
@@ -670,7 +877,10 @@ function createEconomyStore(deps) {
            需要改写（DDL 用 CREATE TABLE IF NOT EXISTS 补表即可）。
        框架存在而内容为空是有意的：框架本身要有测试（P22-2 store 测试的
        L 组），否则第一次真的需要迁移时才发现它从来没跑过。
-       于是"这一步没有数据迁移"这件事本身也被断言了。 */
+       于是"这一步没有数据迁移"这件事本身也被断言了 —— 而且现在是被
+       **两代**迁移各自断言一次（P22-3 的 M 组、P22-4 的 N 组）。
+       2 → 3（P22-4）只**多**了两张表（budget policies / quotes），
+       同样没有任何既有列或既有数据需要改写。 */
   ];
 
   function migrateSchema() {
@@ -2359,6 +2569,18 @@ function createEconomyStore(deps) {
     };
   }
 
+  /* 写一条幂等记录。**为什么不是裸 INSERT**：P22-4 加上了两种"目标行
+     可以被重建"的 mutation —— 政策（自然键是 owner_id）与报价
+     （自然键是 quote_id，且可以由调用方显式指定，就像 reserve 可以指定
+     reservationId）。那意味着"同一个 key 在清理窗口之后重试"可能撞上
+     一条已经存在的幂等行。裸 INSERT 会在那种情况下抛出一个 UNIQUE 约束
+     异常 —— 那是**崩溃**，不是拒绝，而且它把一次无害的重试变成了 500。
+
+     ON CONFLICT DO NOTHING 让"保留先到的那一条"成为一条确定的规则：
+     幂等记录是**第一次**执行的证据，后来的重试没有权力覆盖它。
+     这不放松任何东西 —— 真正需要的重放路径早就在这个函数**之前**
+     由 operationIdempotencyLookup 返回了（`replayed: true`），
+     而指纹不同则在那之前被判为 IDEMPOTENCY_CONFLICT。 */
   function writeOperationIdempotency(scope, key, fingerprint, ids, result, revision, at) {
     db.prepare(SQL.insertOperationIdempotency).run(
       String(scope), String(key), String(fingerprint),
@@ -2525,6 +2747,47 @@ function createEconomyStore(deps) {
             availableBalanceMinor: C.serializeAmountMinor(available),
             requestedAmountMinor: C.serializeAmountMinor(amt.amountMinor)
           });
+        }
+
+        /* ── P22-4 §31：预算检查的**未来**落点，就在这个事务里面 ────────
+           为什么必须在这里：§19 冻结的语义是"ALLOW at T1 不保证 ALLOW
+           at T2"，因此任何"先前评估过、现在直接花"的做法都存在
+           TOCTOU。真正执行的那一次必须在**同一个锁里**重新组装快照并
+           重新评估 —— 那样"检查预算"与"锁住钱"之间不存在窗口。
+
+           为什么缺省**不**强制（`enforceBudget` 未给时不检查）：这条
+           reservation 路径是 P22-3 的冻结面，而"没有政策 ⇒ 拒绝一切"
+           会改变 P22-3 已经冻结的行为（那些测试里没有政策，它们校验的是
+           余额与锁定量）。因此强制是一个**显式**开关，由将来的 purchase
+           流程（P22-5）打开；本阶段提供的是这个可以原子调用的接缝，
+           而不是替 P22-5 决定它的语义。
+
+           注意它**不是**在事务外评估然后传进来："组装 + 判定"都在这里
+           发生，因此调用方没有机会把一个过期的 ALLOW 塞进来。 */
+        if (o.enforceBudget === true) {
+          const budgetPolicy = policyForOwner(String(wallet.owner_id));
+          const budget = evaluateBudgetFor({
+            ownerId: String(wallet.owner_id), currency: cur.currency, amountMinor: amt.amountMinor, now: at
+          });
+          if (budget.ok !== true || !budget.decision) {
+            throw refuse(C.DENY_REASON.POLICY_INPUT_NOT_STRUCTURED, ['budget-evaluation-failed'], { systemFailure: true });
+          }
+          if (budget.decision.allowed !== true) {
+            /* 两种 outcome 都走这条拒绝：DENY 是"规则不允许"，
+               REQUIRE_APPROVAL 是"需要用户点头"—— 而 reserve 是**执行**，
+               执行的前置条件是一个 ALLOW，不是一个待批准。把
+               REQUIRE_APPROVAL 当成可以继续会让"审批"这一层消失。 */
+            throw refuse(budget.decision.reasonCode, ['budget-does-not-allow-this-spend'], {
+              outcome: budget.decision.outcome,
+              priority: budget.decision.priority,
+              policyId: budgetPolicy ? budgetPolicy.policyId : null,
+              spentTodayMinor: budget.decision.spentTodayMinor,
+              spentThisWeekMinor: budget.decision.spentThisWeekMinor,
+              spentThisMonthMinor: budget.decision.spentThisMonthMinor,
+              availableBalanceMinor: budget.decision.availableBalanceMinor,
+              systemFailure: budget.decision.systemFailure === true
+            });
+          }
         }
 
         const revision = allocateRevision();
@@ -3503,6 +3766,1560 @@ function createEconomyStore(deps) {
     return Number((db.prepare(SQL.countReservationsByStatus).get(String(status)) || {}).c || 0);
   }
 
+  /* ══════════════════════════════════════════════════════════════════
+     P22-4 · 预算政策（规则）+ 报价（价格命题）+ 确定性评估
+     一条必须先说清楚的边界（P22-4 §1）：
+
+        Wallet      回答"有没有这么多钱？"        ← P22-2/P22-3
+        Budget      回答"规则允不允许花？"        ← 本节的**读**一半
+        Approval    回答"需不需要用户批准？"      ← 本节只**分类**，不执行
+        Decision    回答"Agent 想不想买？"        ← 不属于 Economy
+        Action      回答"是否真的执行？"          ← 不属于 Economy
+
+     Budget **不是**第二个 Wallet：它的输入里既有 wallet 事实，也有规则，
+     而它产出的东西只有三个词（ALLOW / DENY / REQUIRE_APPROVAL）。
+     它**没有**能力让钱动 —— 本节一个 ledger 写入、一个 reservation 写入
+     都没有，而且这件事是结构性的：本节的每一个函数都不调用
+     commitLedgerTransactionInTx / applyReservedCache / setWalletBalance。
+     ══════════════════════════════════════════════════════════════════ */
+
+  /* ── 政策行 ↔ DTO ───────────────────────────────────────────────────
+     五个限额列按契约的 POLICY_LIMIT_TABLE **生成**，因此"哪一列对应哪个
+     冻结的 limit 键"只有一处定义。approval_above_minor 与 cooldown_ms
+     单独处理：前者对应 approvalThresholdMinor，后者是**时长**——
+     把它们混进同一张金额表会让 90000ms 变成一个金额。 */
+  function policyLimitsFromRow(row) {
+    const out = {};
+    for (const entry of C.POLICY_LIMIT_TABLE) {
+      const raw = row[entry.field];
+      if (raw == null) continue;
+      out[entry.name] = fromSqlAmount(raw, 'policy-limit-' + entry.name);
+    }
+    if (row.approval_above_minor != null) {
+      out.approvalThresholdMinor = fromSqlAmount(row.approval_above_minor, 'policy-approval-threshold');
+    }
+    if (row.cooldown_ms != null) out[C.COOLDOWN_KEY] = Number(row.cooldown_ms);
+    return out;
+  }
+
+  function rowToBudgetPolicy(row) {
+    const termEndsAt = row.term_ends_at == null ? null : Number(row.term_ends_at);
+    return {
+      domain: C.DOMAIN,
+      namespace: C.NAMESPACES.BUDGET,
+      policyId: String(row.policy_id),
+      ownerId: Object.freeze({ type: String(row.owner_type), id: String(row.owner_id) }),
+      currency: String(row.currency),
+      status: String(row.status),
+      limits: policyLimitsFromRow(row),
+      termEndsAt: termEndsAt,
+      /* "到期了没有"与"是不是被停用了"是两个问题，因此是两个字段。
+         到期是**比较**出来的（同一个 now 永远同一个答案），不是任何
+         调度写下来的。 */
+      expiredByTerm: termEndsAt != null && Number.isFinite(termEndsAt) && termEndsAt <= clock(),
+      hardStop: Number(row.hard_stop) === 1,
+      hardStoppedAt: row.hard_stopped_at == null ? null : Number(row.hard_stopped_at),
+      autonomyLevel: row.autonomy_level == null ? null : String(row.autonomy_level),
+      revision: Number(row.revision),
+      createdAt: Number(row.created_at),
+      updatedAt: Number(row.updated_at)
+    };
+  }
+
+  /* 政策的**生效性判定只有一处**。契约的 policyIsEffectiveAt 是纯函数，
+     这里只负责把行翻译成它认识的形状并补上运行时才知道的硬停用事实。
+     任何未知状态 ⇒ 不生效（fail closed，§17）。 */
+  function policyEffectiveness(policy, now) {
+    if (!policy) return { ok: true, effective: false, reason: 'POLICY_NOT_FOUND', errors: [] };
+    if (!C.isPolicyStatus(policy.status)) {
+      return { ok: false, effective: false, reason: 'POLICY_NOT_FOUND', errors: ['policy-status-not-in-closed-set'] };
+    }
+    if (policy.hardStop === true || String(policy.status) !== C.POLICY_STATUS.ACTIVE) {
+      return { ok: true, effective: false, reason: 'POLICY_NOT_FOUND', errors: [] };
+    }
+    return C.policyIsEffectiveAt({ status: policy.status, termEndsAt: policy.termEndsAt }, now);
+  }
+
+  /* ── 消费窗口的 canonical 求和（§12/§13/§14）─────────────────────────
+     三个数全部来自 **committed ledger 事实**，一次查询取回窗口内的每一笔
+     消费，再按 UTC 窗口边界分桶。没有任何一个数来自缓存、UI 计数器、
+     localStorage 或"记忆"。
+
+     判决权的三处细节，每一处都是刻意的：
+
+     ① **金额只从 entry 读。** transactions 表**没有**金额列（P22-2 §6：
+        交易上再存一份金额就是第二个事实源）。因此求和的对象是
+        economy_ledger_entries，而 transactions 只提供 tx_type 与 state。
+
+     ② **方向只从 direction 列读，绝不用 `amount < 0` 猜。** ledger 的
+        canonical amount 是**无符号**的（P22-1 §8），所以"负数金额"在
+        数据里根本不存在 —— 靠它判断消费的代码在真实数据上永远得到 0，
+        而只喂正数的测试会是绿的。谓词是 `direction='DEBIT'`。
+
+     ③ **"哪些 type 算消费"来自契约的封闭表**（BUDGET_SPENDING_TYPES），
+        不是这里现写的 IN 列表。新增一个 transaction type 却忘了分类会
+        在契约载入期失败，而不是在这里静默地少算一笔。
+
+     LEFT JOIN 而不是 INNER：账户行缺失时 WHERE 的每个条件都为 false，
+     于是那一笔**不计入**求和 —— 而"读不到就是没花"是一种危险的沉默。
+     因此这里额外做一次结构检查（account 行必须存在、kind 必须是
+     WALLET、wallet_id 必须指回本钱包、币种必须一致），任何一条不成立
+     就让整个快照失败（fail closed），而不是给出一个偏小的窗口值。 */
+  function spendingWindowBounds(now) {
+    const dayStart = C.utcDayStart(now);
+    const weekStart = C.utcWeekStart(now);
+    const monthStart = C.utcMonthStart(now);
+    if (dayStart == null || weekStart == null || monthStart == null) return null;
+    return {
+      day: dayStart, week: weekStart, month: monthStart,
+      /* 三个窗口里最早的那个 —— 一次查询就够了，而且顺序是确定的。 */
+      earliest: Math.min(dayStart, weekStart, monthStart),
+      now: Number(now)
+    };
+  }
+
+  function spendingRowsSince(walletRow, sinceAt) {
+    return db.prepare(SQL.selectSpendingRows).all(
+      String(walletRow.account_id), String(walletRow.currency), Number(sinceAt)
+    );
+  }
+
+  function sumSpendingInWindow(rows, walletRow, windowStart) {
+    let total = 0n;
+    let count = 0;
+    for (const row of rows) {
+      if (Number(row.at) < Number(windowStart)) continue;
+      /* 结构完整性：账户行必须存在且确实是**这个**钱包的 WALLET 账户，
+         币种必须一致。不成立就抛 —— 一个"读不到所以是 0"的窗口值会让
+         一次超预算的消费看起来合规。 */
+      if (row.account_id == null) throw refuse(null, ['spending-entry-account-row-missing']);
+      if (String(row.account_kind) !== C.ACCOUNT_KIND.WALLET) throw refuse(null, ['spending-entry-account-is-not-a-wallet']);
+      if (String(row.account_wallet_id == null ? '' : row.account_wallet_id) !== String(walletRow.wallet_id)) {
+        throw refuse(null, ['spending-entry-account-belongs-to-another-wallet']);
+      }
+      if (String(row.account_currency) !== String(walletRow.currency)) throw refuse(null, ['spending-entry-currency-differs-from-wallet']);
+      if (String(row.account_id) !== String(walletRow.account_id)) throw refuse(null, ['spending-entry-account-id-differs-from-the-wallet-row']);
+      if (String(row.entry_currency) !== String(walletRow.currency)) throw refuse(null, ['spending-entry-currency-differs-from-wallet']);
+      if (row.tx_state !== C.TX_STATE.COMMITTED) continue;    /* 只统计已提交的事实 */
+      if (row.tx_type == null || !C.isSpendingTransactionType(row.tx_type)) continue;
+      total += fromSqlAmount(row.amount_minor, 'spending-entry-amount');
+      count += 1;
+    }
+    return { total: total, count: count };
+  }
+
+  /* 一个 owner 在某个币种上"已经花了多少"。返回的三个数就是评估上下文的
+     usage，因此它们**必须**是 canonical —— 这里没有第二个来源。 */
+  function spendingWindows(input) {
+    const o = input || {};
+    const now = o.now != null ? Number(o.now) : clock();
+    if (!Number.isSafeInteger(now) || now < 0) {
+      return { ok: false, errors: ['now-must-be-a-non-negative-safe-integer'] };
+    }
+    const owner = partyInput(o.ownerId);
+    if (!owner.ok) return { ok: false, errors: owner.errors };
+    const cur = C.validateCurrency(o.currency);
+    if (!cur.ok) return { ok: false, errors: cur.errors };
+    const walletRow = db.prepare(SQL.selectWalletByOwner).get(String(owner.party.id), cur.currency);
+    if (!walletRow) return { ok: false, errors: ['wallet-not-found'], ownerId: String(owner.party.id), currency: cur.currency };
+    /* 结构前提：这个钱包在它自己的币种上恰好一个 WALLET 账户。
+       0 个 ⇒ 引用链断了；≥2 个 ⇒ 余额被劈成两半。两者都让"花了多少"
+       无法被诚实地回答，因此 fail closed，而不是给出一个偏小的数。 */
+    const accountCount = Number((db.prepare(SQL.countWalletAccounts).get(
+      String(walletRow.wallet_id), cur.currency) || {}).c || 0);
+    if (accountCount !== 1) {
+      return {
+        ok: false, errors: ['wallet-must-have-exactly-one-ledger-account-in-its-currency'],
+        walletId: String(walletRow.wallet_id), walletAccounts: accountCount
+      };
+    }
+    const bounds = spendingWindowBounds(now);
+    if (!bounds) return { ok: false, errors: ['now-is-not-a-representable-instant'] };
+    const rows = spendingRowsSince(walletRow, bounds.earliest);
+    const day = sumSpendingInWindow(rows, walletRow, bounds.day);
+    const week = sumSpendingInWindow(rows, walletRow, bounds.week);
+    const month = sumSpendingInWindow(rows, walletRow, bounds.month);
+    return {
+      ok: true,
+      ownerId: String(owner.party.id),
+      ownerType: String(owner.party.type),
+      currency: cur.currency,
+      walletId: String(walletRow.wallet_id),
+      spentTodayMinor: day.total,
+      spentThisWeekMinor: week.total,
+      spentThisMonthMinor: month.total,
+      countedTransactions: month.count,
+      windows: {
+        timezone: C.BUDGET_TIMEZONE,
+        dayStartsAt: bounds.day,
+        weekStartsAt: bounds.week,
+        monthStartsAt: bounds.month,
+        evaluatedAt: now
+      },
+      /* 被统计的 transaction type 一并回带：审计该看得到"这个数是怎么
+         数出来的"，而不是只能相信它。 */
+      spendingTypes: C.BUDGET_SPENDING_TYPES
+    };
+  }
+
+  /* ── 快照（§12）──────────────────────────────────────────────────────
+     一次评估需要的**全部**输入，全部 canonical，全部由一个显式的 now
+     决定：
+
+       walletState / availableBalanceMinor   ← walletAvailability（P22-3）
+       spentToday/Week/Month                  ← committed ledger 事实
+       limits                                 ← 政策行（规则）
+
+     刻意把"组装"与"判定"分开：判定是契约里的纯函数 evaluateBudget，
+     组装在这里。于是后者可以在未来任何一个事务**内部**被重新调用
+     （§31），而前者读到的仍然是同一套 canonical 事实。 */
+  function buildBudgetSnapshot(input) {
+    const o = input || {};
+    const now = o.now != null ? Number(o.now) : clock();
+    if (!Number.isSafeInteger(now) || now < 0) {
+      return { ok: false, snapshot: null, errors: ['now-must-be-a-non-negative-safe-integer'] };
+    }
+    const owner = partyInput(o.ownerId);
+    if (!owner.ok) return { ok: false, snapshot: null, errors: owner.errors };
+    const ownerId = String(owner.party.id);
+    const cur = C.validateCurrency(o.currency);
+    if (!cur.ok) return { ok: false, snapshot: null, errors: cur.errors };
+
+    const policy = policyForOwner(ownerId);
+    if (policy && String(policy.currency) !== cur.currency) {
+      return {
+        ok: false, snapshot: null, scopeMismatch: true,
+        errors: ['budget-policy-currency-does-not-match'],
+        policyId: policy.policyId, policyCurrency: policy.currency, currency: cur.currency
+      };
+    }
+
+    const walletRow = db.prepare(SQL.selectWalletByOwner).get(ownerId, cur.currency);
+    if (!walletRow) return { ok: false, snapshot: null, errors: ['wallet-not-found'], ownerId: ownerId, currency: cur.currency };
+
+    const st = walletStateOfRow(walletRow);
+    const availability = st.state === C.WALLET_STATE.READY ? walletAvailability(walletRow) : null;
+    const availabilityOk = !!(availability && availability.ok === true);
+    /* 不可信 ⇒ available 是 **null**，绝不是 0 —— 把"我不知道"回答成
+       "没有钱"正是 P22-0 R5 的根因，只是换了一个入口（§17）。 */
+    const available = availabilityOk ? availability.ledgerMinor - availability.reservedMinor : null;
+
+    const amount = C.normalizeAmountMinor(o.amountMinor);
+    if (!amount.ok) return { ok: false, snapshot: null, errors: amount.errors };
+
+    /* ── 余额不可信时**仍然**返回一个快照，而不是 null ──────────────────
+       这是一个刻意的选择，而且它把 §17 的两个要求同时满足：
+         · 快照里每个"我们不知道"的数都是 **null**（不是 0）；
+         · 决策是 DENY + WALLET_NOT_READY + systemFailure —— **系统故障**，
+           不是"余额不足"。
+       如果这里返回 snapshot:null，调用方只能看到一个"组装失败"，于是
+       "wallet 的引用链断了"与"now 不是安全整数"会给出同一个回答，
+       而那正是 §17 要求区分开的两件事。
+       （开发期实测抓到了这一点：最初在这里提前返回，于是引用链一断就从
+       WALLET_NOT_READY 退化成 POLICY_INPUT_NOT_STRUCTURED —— 一个把
+       系统故障说成"输入不对"的答案。**而且那次还省掉了后面的窗口读取**，
+       于是连"窗口也是未知的"都没被表达出来。） */
+    if (!availabilityOk) {
+      return {
+        ok: true,
+        errors: [],
+        walletUnavailable: true,
+        snapshot: Object.freeze({
+          domain: C.DOMAIN,
+          ownerId: Object.freeze({ type: owner.party.type, id: ownerId }),
+          currency: cur.currency,
+          walletId: String(walletRow.wallet_id),
+          walletState: st.state,
+          walletStateReason: st.reason || null,
+          ledgerBalanceMinor: null,
+          reservedBalanceMinor: null,
+          availableBalanceMinor: null,
+          walletIntegrity: (availability && availability.problems) || ['wallet-state-does-not-allow-spend'],
+          spentTodayMinor: null,
+          spentThisWeekMinor: null,
+          spentThisMonthMinor: null,
+          windows: null,
+          countedTransactions: null,
+          policyId: policy ? policy.policyId : null,
+          policyStatus: policy ? policy.status : null,
+          policyTermEndsAt: policy ? policy.termEndsAt : null,
+          policyLimits: policy ? policy.limits : {},
+          amountMinor: amount.amountMinor,
+          now: now,
+          timezone: C.BUDGET_TIMEZONE
+        })
+      };
+    }
+
+    const windows = spendingWindows({ ownerId: ownerId, currency: cur.currency, now: now });
+    if (!windows.ok) {
+      return {
+        ok: true,
+        errors: [],
+        walletUnavailable: true,
+        snapshot: Object.freeze({
+          domain: C.DOMAIN,
+          ownerId: Object.freeze({ type: owner.party.type, id: ownerId }),
+          currency: cur.currency,
+          walletId: String(walletRow.wallet_id),
+          walletState: st.state,
+          walletStateReason: st.reason || null,
+          ledgerBalanceMinor: availability.ledgerMinor,
+          reservedBalanceMinor: availability.reservedMinor,
+          availableBalanceMinor: available,
+          walletIntegrity: windows.errors,
+          spentTodayMinor: null,
+          spentThisWeekMinor: null,
+          spentThisMonthMinor: null,
+          windows: null,
+          countedTransactions: null,
+          policyId: policy ? policy.policyId : null,
+          policyStatus: policy ? policy.status : null,
+          policyTermEndsAt: policy ? policy.termEndsAt : null,
+          policyLimits: policy ? policy.limits : {},
+          amountMinor: amount.amountMinor,
+          now: now,
+          timezone: C.BUDGET_TIMEZONE
+        })
+      };
+    }
+
+    const policyLimits = policy ? policy.limits : {};
+    return {
+      ok: true,
+      errors: [],
+      snapshot: Object.freeze({
+        domain: C.DOMAIN,
+        ownerId: Object.freeze({ type: owner.party.type, id: ownerId }),
+        currency: cur.currency,
+        walletId: String(walletRow.wallet_id),
+        walletState: st.state,
+        walletStateReason: st.reason || null,
+        ledgerBalanceMinor: availability.ledgerMinor,
+        reservedBalanceMinor: availability.reservedMinor,
+        availableBalanceMinor: available,
+        walletIntegrity: [],
+        spentTodayMinor: windows.spentTodayMinor,
+        spentThisWeekMinor: windows.spentThisWeekMinor,
+        spentThisMonthMinor: windows.spentThisMonthMinor,
+        windows: windows.windows,
+        countedTransactions: windows.countedTransactions,
+        policyId: policy ? policy.policyId : null,
+        policyStatus: policy ? policy.status : null,
+        policyTermEndsAt: policy ? policy.termEndsAt : null,
+        policyLimits: policyLimits,
+        amountMinor: amount.amountMinor,
+        now: now,
+        timezone: C.BUDGET_TIMEZONE
+      })
+    };
+  }
+
+  /* ── 评估上下文的**唯一**构造点 ──────────────────────────────────────
+     它产出的对象的所有键都来自 P22-1 §13 的 BUDGET_INPUT_KEYS 白名单
+     （ownerId / currency / amountMinor / usage / limits / walletState /
+     timestamp）。于是 evaluateBudget 的输入里**没有地方**可以放
+     prompt / persona / relationship / llmOutput —— 契约的
+     normalizeBudgetInput 会拒绝任何多出来的键，而这里连一个都没有。
+     这不是"记得别传正文"，而是"没有那个字段"。 */
+  function budgetContextFromSnapshot(snapshot) {
+    /* 三个窗口累计在 canonical 层是 BigInt，但**评估上下文是一个数据
+       对象**，而契约的 normalizeBudgetInput 明确要求 usage / limits 的
+       值是标量（number / string / boolean）。因此这里显式走
+       serializeAmountMinor 转成十进制字符串 —— 与 HTTP 面是同一套表示。
+       刻意不写 `Number(v)`：那会在超过安全整数时静默丢精度，而这里的
+       三个数正是"已经花了多少"，丢精度就是在伪造一次合规。 */
+    const usage = {};
+    for (const key of C.BUDGET_USAGE_WINDOW_KEYS) usage[key] = C.serializeAmountMinor(snapshot[key]);
+    const limits = { availableBalanceMinor: C.serializeAmountMinor(snapshot.availableBalanceMinor) };
+    for (const k of Object.keys(snapshot.policyLimits)) {
+      limits[k] = k === C.COOLDOWN_KEY
+        ? Number(snapshot.policyLimits[k])
+        : C.serializeAmountMinor(snapshot.policyLimits[k]);
+    }
+    return {
+      ownerId: snapshot.ownerId,
+      currency: snapshot.currency,
+      amountMinor: C.serializeAmountMinor(snapshot.amountMinor),
+      walletState: snapshot.walletState,
+      timestamp: snapshot.now,
+      usage: usage,
+      limits: limits
+    };
+  }
+
+  function budgetEvaluationFromSnapshot(snapshot, policy) {
+    if (snapshot.walletState !== C.WALLET_STATE.READY) {
+      /* canonical 不可信 ⇒ 在**任何**规则判断之前就拒绝，而且带
+         systemFailure:true。系统故障与业务拒绝必须可区分（§17）。 */
+      return Object.assign(C.budgetDecision(C.BUDGET_DECISION.DENY, C.DENY_REASON.WALLET_NOT_READY, {
+        errors: ['wallet-state-does-not-allow-spend'],
+        priority: C.BUDGET_EVALUATION_PRIORITY[1],
+        walletState: snapshot.walletState,
+        walletStateReason: snapshot.walletStateReason,
+        systemFailure: true
+      }), { policyId: snapshot.policyId, currency: snapshot.currency });
+    }
+    /* READY 但**读不到**任何一项必需事实 —— 引用链断了、窗口求和失败、
+       available 是未知。三种成因都是**系统故障**，因此它们共用这一条
+       出口，而且都带 systemFailure:true 与具体的 integrity 列表。
+       走到这里的路径里 availableBalanceMinor 必然是 null（快照只在
+       availabilityOk 时才会填它），因此这一条同时覆盖了"unknown ≠ 0"。 */
+    if (snapshot.availableBalanceMinor == null || snapshot.spentTodayMinor == null) {
+      return Object.assign(C.budgetDecision(C.BUDGET_DECISION.DENY, C.DENY_REASON.WALLET_NOT_READY, {
+        errors: ['wallet-availability-is-not-established'],
+        priority: C.BUDGET_EVALUATION_PRIORITY[1],
+        walletState: snapshot.walletState,
+        integrity: snapshot.walletIntegrity,
+        systemFailure: true
+      }), { policyId: snapshot.policyId, currency: snapshot.currency });
+    }
+    const evaluated = C.evaluateBudget(policy, budgetContextFromSnapshot(snapshot));
+    return Object.assign(evaluated, {
+      policyId: snapshot.policyId,
+      currency: snapshot.currency,
+      /* 逐字说明：这是一次评估，产出的东西不是可执行的许可。
+         见契约里 budgetDecision 的 snapshot 块。 */
+      snapshotRef: {
+        policyId: snapshot.policyId,
+        walletId: snapshot.walletId,
+        evaluatedAt: snapshot.now
+      }
+    });
+  }
+
+  /* ── evaluateBudgetFor（§18）：读，而且**只是**读 ─────────────────────
+     整个函数体里没有任何 BEGIN / INSERT / UPDATE / DELETE。这一点由
+     §11 与 §38 的断言逐字守住（"评估不会 reserve、不会动 ledger"）。
+     这正是 §18 强调的那件事：**"评估报价"不能偷偷变成"接受报价"**。 */
+  function evaluateBudgetFor(input) {
+    requireOpen();
+    const o = input || {};
+    const scope = partyInput(o.ownerId);
+    if (!scope.ok) return { ok: false, errors: scope.errors };
+    const ownerId = String(scope.party.id);
+    const cur = C.validateCurrency(o.currency);
+    if (!cur.ok) return { ok: false, errors: cur.errors };
+
+    const built = buildBudgetSnapshot({
+      ownerId: ownerId, currency: cur.currency, amountMinor: o.amountMinor, now: o.now
+    });
+    if (!built.ok) {
+      /* 快照组不起来有两种成因，必须分开：
+         ① 作用域不匹配 / 金额非法 / 钱包不存在 —— 这是一次**业务**
+            拒绝，给出具名 reasonCode；
+         ② 读失败（完整性检查不过、now 无法表示）—— 这是**系统**故障。 */
+      const policy = policyForOwner(ownerId);
+      if (built.scopeMismatch) {
+        return {
+          ok: true,
+          decision: Object.assign(C.budgetDecision(C.BUDGET_DECISION.DENY, C.DENY_REASON.INVALID_CURRENCY, {
+            errors: built.errors, priority: C.BUDGET_EVALUATION_PRIORITY[2],
+            policyCurrency: built.policyCurrency, contextCurrency: built.currency
+          }), { policyId: built.policyId, currency: built.currency }),
+          snapshot: null
+        };
+      }
+      if (built.errors.indexOf('wallet-not-found') >= 0) {
+        /* 钱包不存在是**业务**结论，不是 systemFailure：一个还没有钱包的
+           owner 不是"库坏了"，而是"这个作用域上还没有可用的余额事实"。
+           两者的运维含义完全相反，因此它们必须是两个回答。 */
+        return {
+          ok: true,
+          decision: Object.assign(C.budgetDecision(C.BUDGET_DECISION.DENY, C.DENY_REASON.WALLET_NOT_READY, {
+            errors: ['no-wallet-in-this-scope'], priority: C.BUDGET_EVALUATION_PRIORITY[1],
+            systemFailure: false
+          }), { policyId: policy ? policy.policyId : null, currency: cur.currency }),
+          snapshot: null
+        };
+      }
+      return {
+        ok: true,
+        decision: Object.assign(C.budgetDecision(C.BUDGET_DECISION.DENY, C.DENY_REASON.POLICY_INPUT_NOT_STRUCTURED, {
+          errors: built.errors, priority: C.BUDGET_EVALUATION_PRIORITY[0], systemFailure: true
+        }), { policyId: policy ? policy.policyId : null, currency: cur.currency }),
+        snapshot: null
+      };
+    }
+    const policy = built.snapshot.policyId == null ? null : policyForOwner(ownerId);
+    return {
+      ok: true,
+      decision: budgetEvaluationFromSnapshot(built.snapshot, policy),
+      snapshot: built.snapshot,
+      /* 明写这一句，让调用方在**读**结果的时候就看到它。字段名刻意
+         避开 Authorization 这个词：本文件的凭据边界逐字断言
+         "Economy 不读 Authorization / Bearer"（boundary B6.3），
+         而给那条安全断言开一个例外正是它最容易失效的方式。 */
+      evaluatedOnly: true,
+      notASpendPermit: 'ALLOW is a snapshot evaluation, not a spendable permission; re-evaluate inside the transaction that reserves',
+      reserved: false
+    };
+  }
+
+  /* 快照的对外形态：金额一律十进制字符串。
+     `snapshot` 可能是 null（当**连快照都组装不起来**时 —— 例如 now 不是
+     安全整数）。那是"我们没有东西可报告"，而不是"数字是 0"：因此这里
+     返回 null，而调用点必须显式处理它。 */
+  function serializeBudgetSnapshot(snapshot) {
+    if (!snapshot) return null;
+    return {
+      domain: snapshot.domain,
+      ownerId: snapshot.ownerId,
+      currency: snapshot.currency,
+      walletId: snapshot.walletId,
+      walletState: snapshot.walletState,
+      walletStateReason: snapshot.walletStateReason,
+      ledgerBalanceMinor: C.serializeAmountMinor(snapshot.ledgerBalanceMinor),
+      reservedBalanceMinor: C.serializeAmountMinor(snapshot.reservedBalanceMinor),
+      availableBalanceMinor: C.serializeAmountMinor(snapshot.availableBalanceMinor),
+      spentTodayMinor: C.serializeAmountMinor(snapshot.spentTodayMinor),
+      spentThisWeekMinor: C.serializeAmountMinor(snapshot.spentThisWeekMinor),
+      spentThisMonthMinor: C.serializeAmountMinor(snapshot.spentThisMonthMinor),
+      windows: snapshot.windows,
+      countedTransactions: snapshot.countedTransactions,
+      policyId: snapshot.policyId,
+      policyStatus: snapshot.policyStatus,
+      policyTermEndsAt: snapshot.policyTermEndsAt,
+      amountMinor: C.serializeAmountMinor(snapshot.amountMinor),
+      now: snapshot.now,
+      timezone: snapshot.timezone
+    };
+  }
+
+  /* ══════════════════════════════════════════════════════════════════
+     P22-4 · 预算政策的持久化（§20/§21/§22）
+     ══════════════════════════════════════════════════════════════════ */
+
+  function policyForOwner(ownerId) {
+    const row = db.prepare(SQL.selectBudgetPolicyByOwner).get(String(ownerId));
+    return row ? rowToBudgetPolicy(row) : null;
+  }
+
+  /* 政策的确定性身份：覆盖"这条规则是什么"，不含 policyId 与时间戳
+     （两者都是执行时才知道的）。 */
+  function policyFingerprint(payload) {
+    return fingerprintOf(stableStringify({ scope: C.OPERATION_SCOPE.POLICY, request: payload }));
+  }
+
+  function policyLimitsSql(limits) {
+    const byField = {};
+    for (const entry of C.POLICY_LIMIT_TABLE) {
+      const v = limits[entry.name];
+      byField[entry.field] = v == null ? null : toSqlAmount(v, 'policy-' + entry.name);
+    }
+    const approval = limits.approvalThresholdMinor;
+    byField.approval_above_minor = approval == null ? null : toSqlAmount(approval, 'policy-approval-threshold');
+    byField.cooldown_ms = limits[C.COOLDOWN_KEY] == null ? null : Number(limits[C.COOLDOWN_KEY]);
+    return byField;
+  }
+
+  /* ── putBudgetPolicy：create + update + disable，一个入口 ────────────
+     为什么合成一个：它们是**同一个**幂等作用域（POLICY）下的同一类请求，
+     而三个入口会让"同一个 key 既 create 又 disable"变成一个必须被解释
+     的边界情况。用 `disable: true` 表达停用则是一个封闭的、可断言的开关。
+
+     为什么"拒绝"整体回滚：与 reserve 同款（P22-3 §17）—— "这次改动没被
+     接受"不是"一次改动失败了"，造一条 persisted 记录会把拒绝伪装成历史。
+
+     `ifRevision` 是可选的乐观并发：给了一个不对的 revision 就拒绝，且
+     拒绝时**不消耗** revision。政策是需要人类改的东西，"两个人同时改、
+     后者静默覆盖前者"正是这里最该避免的失败。 */
+  function putBudgetPolicy(input) {
+    requireOpen();
+    const o = input || {};
+    const owner = partyInput(o.ownerId);
+    if (!owner.ok) return { ok: false, denied: false, reasonCode: null, errors: owner.errors };
+    if (owner.party.type === C.PARTY_TYPE.SYSTEM) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['system-party-cannot-own-a-budget-policy'] };
+    }
+    const ownerId = String(owner.party.id);
+    const cur = C.validateCurrency(o.currency);
+    if (!cur.ok) return denial(C.DENY_REASON.INVALID_CURRENCY, cur.errors);
+    const limits = C.normalizePolicyLimits(o.limits);
+    if (!limits.ok) return denial(C.DENY_REASON.POLICY_INPUT_NOT_STRUCTURED, limits.errors);
+    const key = C.normalizeIdempotencyKey(o.idempotencyKey);
+    if (!key.ok) return { ok: false, denied: false, reasonCode: null, errors: key.errors };
+
+    let termEndsAt = null;
+    if (o.termEndsAt != null) {
+      const end = Number(o.termEndsAt);
+      if (!Number.isSafeInteger(end) || end < 0) {
+        return denial(C.DENY_REASON.POLICY_INPUT_NOT_STRUCTURED, ['policy-term-ends-at-must-be-a-non-negative-safe-integer']);
+      }
+      termEndsAt = end;
+    }
+    let autonomyLevel = null;
+    if (o.autonomyLevel != null) {
+      const al = String(o.autonomyLevel);
+      if (C.AUTONOMY_LEVELS.indexOf(al) < 0) {
+        return denial(C.DENY_REASON.POLICY_INPUT_NOT_STRUCTURED, ['policy-autonomy-level-not-in-closed-set']);
+      }
+      autonomyLevel = al;
+    }
+    if (typeof deps.ownerExists === 'function' && deps.ownerExists(owner.party) !== true) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['owner-not-found'] };
+    }
+
+    const now = clock();
+    const existingRow = db.prepare(SQL.selectBudgetPolicyByOwner).get(ownerId);
+    const existing = existingRow ? rowToBudgetPolicy(existingRow) : null;
+    const disable = o.disable === true;
+    /* 停用**只**改状态：限额一个字都不动（见 setPolicyStatus 的说明），
+       因此重放/重新启用时不需要把五个数字猜回来。 */
+    const effectiveLimits = disable && existing ? existing.limits : limits.limits;
+    const effectiveStatus = disable ? C.POLICY_STATUS.DISABLED : C.POLICY_STATUS.ACTIVE;
+    const effectiveTerm = disable && existing ? existing.termEndsAt : termEndsAt;
+    const effectiveAutonomy = disable && existing ? existing.autonomyLevel : autonomyLevel;
+
+    const fingerprint = policyFingerprint({
+      ownerId: ownerId, ownerType: String(owner.party.type), currency: cur.currency,
+      status: effectiveStatus,
+      limits: Object.keys(effectiveLimits).sort().map(k => k + '=' + C.serializeAmountMinor(effectiveLimits[k]) + (typeof effectiveLimits[k] === 'number' ? '' : '')).join(','),
+      cooldownMs: effectiveLimits[C.COOLDOWN_KEY] == null ? null : Number(effectiveLimits[C.COOLDOWN_KEY]),
+      termEndsAt: effectiveTerm, autonomyLevel: effectiveAutonomy
+    });
+    const seen = operationIdempotencyLookup(C.OPERATION_SCOPE.POLICY, key.key, fingerprint);
+    if (seen.found && seen.conflict) return operationIdempotencyConflict(C.OPERATION_SCOPE.POLICY, key.key, seen);
+    if (seen.found) return { ok: true, replayed: true, idempotencyKey: key.key, result: seen.result };
+
+    if (existing && o.ifRevision != null && Number(o.ifRevision) !== existing.revision) {
+      return {
+        ok: false, denied: false, reasonCode: null,
+        errors: ['budget-policy-revision-mismatch'],
+        expectedRevision: Number(o.ifRevision), actualRevision: existing.revision, policyId: existing.policyId
+      };
+    }
+
+    const policyId = existing ? existing.policyId : (o.policyId != null ? o.policyId : nextId('BUDGET_POLICY'));
+    if (!C.isEconomyId('BUDGET_POLICY', policyId)) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['budget-policy-id-not-canonical'] };
+    }
+    const shape = C.validateBudgetPolicy({
+      policyId: String(policyId), ownerId: owner.party, currency: cur.currency,
+      status: effectiveStatus, limits: effectiveLimits, termEndsAt: effectiveTerm,
+      autonomyLevel: effectiveAutonomy
+    });
+    if (!shape.ok) return denial(C.DENY_REASON.POLICY_INPUT_NOT_STRUCTURED, shape.errors);
+
+    const at = now;
+    const created = !existing;
+    let committed = null;
+    try {
+      withTransaction(() => {
+        /* 事务内重读：BEGIN IMMEDIATE 之后写锁已经拿到，因此这一段看到的
+           政策行不可能被另一个 writer 改动 —— "检查 revision"与"写新
+           revision"发生在同一个锁里。 */
+        const currentRow = db.prepare(SQL.selectBudgetPolicyByOwner).get(ownerId);
+        if (!currentRow && !created) throw refuse(null, ['budget-policy-disappeared-inside-the-transaction']);
+        if (currentRow && created) throw refuse(null, ['budget-policy-was-created-concurrently']);
+        if (currentRow && o.ifRevision != null) {
+          const actual = Number(currentRow.revision);
+          if (actual !== Number(o.ifRevision)) {
+            throw refuse(null, ['budget-policy-revision-mismatch'], { expectedRevision: Number(o.ifRevision), actualRevision: actual });
+          }
+        }
+        const revision = allocateRevision();
+        const cols = policyLimitsSql(effectiveLimits);
+
+        if (created) {
+          db.prepare(SQL.insertBudgetPolicy).run(
+            String(policyId), ownerId, String(owner.party.type), cur.currency, effectiveStatus,
+            cols.max_per_tx_minor, cols.max_per_day_minor, cols.max_per_week_minor, cols.max_per_month_minor,
+            cols.approval_above_minor, cols.cooldown_ms, effectiveAutonomy,
+            effectiveTerm == null ? null : Number(effectiveTerm), 0, null,
+            key.key, fingerprint, Number(revision), Number(at), Number(at)
+          );
+          faultPoint('after-policy-insert');
+        } else {
+          db.prepare(SQL.upsertBudgetPolicy).run(
+            cur.currency, effectiveStatus,
+            cols.max_per_tx_minor, cols.max_per_day_minor, cols.max_per_week_minor, cols.max_per_month_minor,
+            cols.approval_above_minor, cols.cooldown_ms, effectiveAutonomy,
+            effectiveTerm == null ? null : Number(effectiveTerm),
+            /* ── 重新启用必须**清掉**硬停用标记（P22-4 开发期抓到的一个真实缺陷）
+               第一版的写法是"停用时写 1，否则保留原值"，于是流程
+               "停用 → 重新启用"之后行上仍然是 hard_stop=1，而
+               policyEffectiveness 看到 hardStop 就判不生效 —— **政策永远
+               回不来了**，而 status 列明明写着 ACTIVE。
+               那是一种特别难发现的坏：两个字段各自都自洽（status=ACTIVE
+               是对的、hardStop 曾经也是对的），只有把它们放在一起看才
+               矛盾；而 policyEffectiveness 读的是 hardStop。
+               修法是把这一个开关绑定到**本次写入的意图**上：disable 为真
+               就置 1 并记时刻，为假就置 0 并清空时刻。于是
+               "status 与 hardStop 必须一致"不再是一条纪律，而是同一个
+               布尔值的两种表达。 */
+            disable ? 1 : 0, disable ? Number(at) : null,
+            key.key, fingerprint, Number(revision), Number(at), String(policyId)
+          );
+          faultPoint('after-policy-update');
+        }
+
+        const row = db.prepare(SQL.selectBudgetPolicy).get(String(policyId));
+        if (!row) throw refuse(null, ['budget-policy-row-missing-after-write']);
+        const view = rowToBudgetPolicy(row);
+        const eventKind = created ? C.EVENT_TYPE.BUDGET_POLICY_CREATED
+          : (disable ? C.EVENT_TYPE.BUDGET_POLICY_DISABLED : C.EVENT_TYPE.BUDGET_POLICY_UPDATED);
+        const result = {
+          domain: C.DOMAIN,
+          policyId: String(policyId),
+          created: created,
+          eventKind: String(eventKind),
+          previousStatus: existing ? existing.status : null,
+          previousLimits: existing ? serializePolicyLimits(existing.limits) : null,
+          policy: serializeBudgetPolicy(view),
+          revision: Number(revision),
+          at: Number(at),
+          idempotencyKey: key.key,
+          /* 逐字写明：改规则**不是**经济运动。审计里"政策变了"与
+             "账本动了"必须一眼可分。 */
+          ledgerMutation: false
+        };
+        appendChange({
+          revision: Number(revision), kind: String(eventKind),
+          entityId: String(policyId), transactionId: null, walletId: null, at: Number(at),
+          payload: {
+            domain: C.DOMAIN,
+            policyId: String(policyId),
+            ownerId: ownerId,
+            ownerType: String(owner.party.type),
+            currency: cur.currency,
+            status: effectiveStatus,
+            hardStop: disable,
+            previousStatus: existing ? existing.status : null,
+            limits: serializePolicyLimits(effectiveLimits),
+            termEndsAt: effectiveTerm == null ? null : Number(effectiveTerm),
+            autonomyLevel: effectiveAutonomy,
+            /* 逐字：这条 change 没有产生任何 ledger 事实。 */
+            ledgerMutation: false
+          }
+        });
+        faultPoint('before-policy-change-log');
+
+        writeOperationIdempotency(C.OPERATION_SCOPE.POLICY, key.key, fingerprint, {
+          operationId: null, reservationId: null, transactionId: null
+        }, result, revision, at);
+        faultPoint('before-policy-commit');
+        committed = result;
+      });
+    } catch (error) {
+      const refusal = translateRefusal(error);
+      if (!refusal) throw error;
+      return refusal;
+    }
+
+    pruneOperationIdempotency(at);
+    logger('economy-budget-policy-written', {
+      policyId: committed.policyId, ownerId: ownerId, currency: cur.currency,
+      status: effectiveStatus, created: created, revision: committed.revision
+    });
+    return { ok: true, replayed: false, idempotencyKey: key.key, result: committed };
+  }
+
+  function serializePolicyLimits(limits) {
+    const out = {};
+    for (const k of Object.keys(limits)) {
+      out[k] = k === C.COOLDOWN_KEY ? Number(limits[k]) : C.serializeAmountMinor(limits[k]);
+    }
+    return out;
+  }
+
+  function serializeBudgetPolicy(view) {
+    return {
+      domain: view.domain,
+      namespace: view.namespace,
+      policyId: view.policyId,
+      ownerId: view.ownerId,
+      currency: view.currency,
+      status: view.status,
+      limits: serializePolicyLimits(view.limits),
+      termEndsAt: view.termEndsAt,
+      expiredByTerm: view.expiredByTerm === true,
+      hardStop: view.hardStop === true,
+      hardStoppedAt: view.hardStoppedAt,
+      autonomyLevel: view.autonomyLevel,
+      revision: view.revision,
+      createdAt: view.createdAt,
+      updatedAt: view.updatedAt
+    };
+  }
+
+  function getBudgetPolicy(input) {
+    requireOpen();
+    const o = typeof input === 'string' ? { ownerId: input } : (input || {});
+    let row = null;
+    if (o.policyId) row = db.prepare(SQL.selectBudgetPolicy).get(String(o.policyId));
+    else if (o.ownerId) row = db.prepare(SQL.selectBudgetPolicyByOwner).get(String(o.ownerId));
+    if (!row) return { ok: false, policy: null, errors: ['budget-policy-not-found'] };
+    return { ok: true, policy: rowToBudgetPolicy(row) };
+  }
+
+  function listBudgetPolicies(options) {
+    options = options || {};
+    requireOpen();
+    const limit = Math.max(1, Math.min(500, Number(options.limit) || 100));
+    let rows;
+    if (options.status != null) {
+      if (!C.isPolicyStatus(options.status)) {
+        return { ok: false, policies: null, errors: ['policy-status-not-in-closed-set'] };
+      }
+      rows = db.prepare(SQL.selectBudgetPoliciesByStatus).all(String(options.status), limit);
+    } else {
+      rows = db.prepare(SQL.selectBudgetPolicies).all(limit);
+    }
+    if (options.ownerId) rows = rows.filter(r => String(r.owner_id) === String(options.ownerId));
+    return { ok: true, policies: rows.map(rowToBudgetPolicy) };
+  }
+
+  /* ── expireDuePolicies（§10 同一条纪律用到政策上）────────────────────
+     显式 now、确定性、幂等、分批、每笔一个自己的事务、**没有定时器**。
+
+     与 reservation / quote 的关键差别：政策到期的资源后果是**零**——
+     没有钱要还、没有预留要放、没有报价要作废。因此这里的 mutation 只写
+     一行状态并留一条审计。 */
+  function expirePolicy(input) {
+    requireOpen();
+    const o = input || {};
+    const now = o.now != null ? Number(o.now) : clock();
+    if (!Number.isSafeInteger(now) || now < 0) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['now-must-be-a-non-negative-safe-integer'] };
+    }
+    const policyId = o.policyId;
+    if (!C.isEconomyId('BUDGET_POLICY', policyId)) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['budget-policy-id-not-canonical'] };
+    }
+    const key = C.normalizeIdempotencyKey(o.idempotencyKey != null ? o.idempotencyKey : ('econ.sweep.policy+' + String(policyId)));
+    if (!key.ok) return { ok: false, denied: false, reasonCode: null, errors: key.errors };
+
+    const row = db.prepare(SQL.selectBudgetPolicy).get(String(policyId));
+    if (!row) return { ok: false, denied: false, reasonCode: null, errors: ['budget-policy-not-found'] };
+    const fingerprint = policyFingerprint({ policyId: String(policyId), termExpiry: true });
+    const seen = operationIdempotencyLookup(C.OPERATION_SCOPE.POLICY, key.key, fingerprint);
+    if (seen.found && seen.conflict) return operationIdempotencyConflict(C.OPERATION_SCOPE.POLICY, key.key, seen);
+    if (seen.found) return { ok: true, replayed: true, idempotencyKey: key.key, result: seen.result };
+
+    if (String(row.status) !== C.POLICY_STATUS.ACTIVE) {
+      return denial(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['budget-policy-is-already-terminal'],
+        { policyStatus: String(row.status) });
+    }
+    if (row.term_ends_at == null) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['budget-policy-has-no-term-ends-at'] };
+    }
+    if (Number(row.term_ends_at) > now) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['budget-policy-term-not-yet-due'], termEndsAt: Number(row.term_ends_at), now: now };
+    }
+
+    let committed = null;
+    try {
+      withTransaction(() => {
+        const current = db.prepare(SQL.selectBudgetPolicy).get(String(policyId));
+        if (!current) throw refuse(null, ['budget-policy-not-found']);
+        if (String(current.status) !== C.POLICY_STATUS.ACTIVE) {
+          throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['budget-policy-is-already-terminal']);
+        }
+        if (current.term_ends_at == null || Number(current.term_ends_at) > now) {
+          throw refuse(null, ['budget-policy-term-not-yet-due']);
+        }
+        const revision = allocateRevision();
+        faultPoint('after-policy-expire-validated');
+        const moved = db.prepare(SQL.setPolicyStatus).run(
+          C.POLICY_STATUS.DISABLED, Number(current.hard_stop), current.hard_stopped_at,
+          Number(revision), Number(now), String(policyId), C.POLICY_STATUS.ACTIVE
+        );
+        if (Number(moved.changes) !== 1) {
+          throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['budget-policy-transition-affected-no-row']);
+        }
+        faultPoint('after-policy-expired');
+        const result = {
+          domain: C.DOMAIN,
+          policyId: String(policyId),
+          status: C.POLICY_STATUS.DISABLED,
+          reason: C.POLICY_TERM.EXPIRED,
+          termEndsAt: Number(current.term_ends_at),
+          revision: Number(revision),
+          at: Number(now),
+          ledgerMutation: false
+        };
+        appendChange({
+          revision: Number(revision), kind: C.EVENT_TYPE.BUDGET_POLICY_EXPIRED,
+          entityId: String(policyId), transactionId: null, walletId: null, at: Number(now),
+          payload: {
+            domain: C.DOMAIN, policyId: String(policyId), ownerId: String(current.owner_id),
+            currency: String(current.currency), termEndsAt: Number(current.term_ends_at),
+            ledgerMutation: false
+          }
+        });
+        faultPoint('before-policy-expire-change-log');
+        writeOperationIdempotency(C.OPERATION_SCOPE.POLICY, key.key, fingerprint, {
+          operationId: null, reservationId: null, transactionId: null
+        }, result, revision, now);
+        faultPoint('before-policy-expire-commit');
+        committed = result;
+      });
+    } catch (error) {
+      const refusal = translateRefusal(error);
+      if (!refusal) throw error;
+      return refusal;
+    }
+    pruneOperationIdempotency(now);
+    logger('economy-budget-policy-expired', { policyId: committed.policyId, revision: committed.revision });
+    return { ok: true, replayed: false, idempotencyKey: key.key, result: committed };
+  }
+
+  function expireDuePolicies(input) {
+    requireOpen();
+    const o = input || {};
+    const now = o.now != null ? Number(o.now) : clock();
+    if (!Number.isSafeInteger(now) || now < 0) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['now-must-be-a-non-negative-safe-integer'] };
+    }
+    const limit = Math.max(1, Math.min(1000, Number(o.limit) || 100));
+    const due = db.prepare(SQL.selectPoliciesDue).all(C.POLICY_STATUS.ACTIVE, Number(now), limit);
+    const expired = [];
+    const skipped = [];
+    const failed = [];
+    for (const row of due) {
+      const policyId = String(row.policy_id);
+      const out = expirePolicy({ policyId: policyId, now: now });
+      if (out.ok === true && out.replayed === true) skipped.push({ policyId: policyId, reason: 'already-expired-by-an-earlier-sweep' });
+      else if (out.ok === true) expired.push(out.result);
+      else if (out.reasonCode === C.DENY_REASON.TRANSITION_NOT_ALLOWED) skipped.push({ policyId: policyId, reason: 'already-terminal' });
+      else failed.push({ policyId: policyId, errors: out.errors, reasonCode: out.reasonCode || null });
+    }
+    return { ok: true, now: now, limit: limit, scanned: due.length, expired: expired, skipped: skipped, failed: failed, usedTimers: false };
+  }
+
+  function countBudgetPolicies() { return Number((db.prepare(SQL.countBudgetPolicies).get() || {}).c || 0); }
+  function countBudgetPoliciesByStatus(status) {
+    return Number((db.prepare(SQL.countBudgetPoliciesByStatus).get(String(status)) || {}).c || 0);
+  }
+
+  /* ══════════════════════════════════════════════════════════════════
+     P22-4 · 报价（§6/§7/§8/§9/§10/§11）
+     ══════════════════════════════════════════════════════════════════ */
+
+  function rowToQuote(row, options) {
+    const o = options || {};
+    const expiresAt = Number(row.expires_at);
+    const state = String(row.state);
+    /* "到期了没有"是一个**比较**（P22-3 §14 的纪律搬到报价上）。比较的
+       右边默认是**这个 store 的时钟**，但可以被显式覆盖 ——
+       evaluateQuote 接受一个显式的 now，而那份快照里的每个判断都必须
+       用**同一个** now。否则会出现一个自相矛盾的答案：预算窗口是按显式
+       now 算的，而"报价过没过期"是按环境时钟算的（开发期实测踩到：
+       evaluateQuote({now: T+120s}) 返回 ALLOW，而报价早已过期）。 */
+    const referenceNow = o.now != null ? Number(o.now) : clock();
+    const expiredByTime = Number.isFinite(expiresAt) && expiresAt <= referenceNow;
+    return {
+      domain: C.DOMAIN,
+      namespace: C.NAMESPACES.QUOTE,
+      quoteId: String(row.quote_id),
+      productId: String(row.product_id),
+      buyerId: Object.freeze({ type: String(row.buyer_type), id: String(row.buyer_id) }),
+      recipientId: row.recipient_id == null ? null : Object.freeze({
+        type: String(row.recipient_type == null ? '' : row.recipient_type), id: String(row.recipient_id)
+      }),
+      currency: String(row.currency),
+      amountMinor: fromSqlAmount(row.amount_minor, 'quote-amount'),
+      quantity: Number(row.quantity),
+      kind: String(row.quote_kind),
+      settlementType: String(row.service_role),
+      state: state,
+      terminal: C.QUOTE_TERMINAL_STATES.indexOf(state) >= 0,
+      expiresAt: expiresAt,
+      expiredByTime: expiredByTime,
+      consumptionRequiredNow: expiredByTime && state === C.QUOTE_STATE.OPEN,
+      predecessorQuoteId: row.predecessor_quote_id == null ? null : String(row.predecessor_quote_id),
+      idempotencyKey: String(row.idempotency_key),
+      revision: Number(row.revision),
+      createdAt: Number(row.created_at),
+      updatedAt: Number(row.updated_at)
+    };
+  }
+
+  /* 对外形态。`settlementType` 是**派生并冻结**的结算 transaction type，
+     与"将来怎么结算"同义；`kind` 是报价的种类。两者都在这里，因为
+     把"价格命题"与"它的结算形态"分开看是这份设计的要点。 */
+  function serializeQuote(view) {
+    return {
+      domain: view.domain,
+      namespace: view.namespace,
+      quoteId: view.quoteId,
+      productId: view.productId,
+      buyerId: view.buyerId,
+      recipientId: view.recipientId,
+      currency: view.currency,
+      amountMinor: C.serializeAmountMinor(view.amountMinor),
+      quantity: view.quantity,
+      kind: view.kind,
+      settlementType: view.settlementType,
+      state: view.state,
+      terminal: view.terminal === true,
+      expiresAt: view.expiresAt,
+      expiredByTime: view.expiredByTime === true,
+      predecessorQuoteId: view.predecessorQuoteId,
+      revision: view.revision,
+      createdAt: view.createdAt,
+      updatedAt: view.updatedAt
+    };
+  }
+
+  function quoteFingerprint(payload) {
+    return fingerprintOf(stableStringify({ scope: C.OPERATION_SCOPE.QUOTE, request: payload }));
+  }
+
+  /* ── createQuote（§6/§7/§11）─────────────────────────────────────────
+     一份报价**只描述**：什么、多少钱、到什么时候。它不锁任何资源。
+
+     结构性证据（而不是注释）：本函数体里没有一次 applyReservedCache、
+     没有一次 ledger 写入、没有一次钱包缓存写入。测试的 S 组在创建报价
+     前后逐项比对 ledger 求和、reserved 求和、available 与 revision
+     （只有报价自己的 revision 会动，因为"创建了一份报价"是一条审计事实）。
+
+     报价**不做**的事，逐条：
+       · 不 reserve（§7：Quote ≠ Reservation）；
+       · 不改 wallet / reserved 缓存；
+       · 不写 ledger transaction；
+       · 不碰 provider（§24）。
+
+     为什么 expiresAt 必填且必须是**绝对**毫秒时间戳：与 reservation 同款
+     （P22-3 §14）。相对时长会让"这次请求是什么"依赖读时钟的那一刻，于是
+     同一请求的两次重放会算出两个 expiresAt，指纹随之不同 —— 幂等性在最
+     需要它的重试路径上失效。 */
+  function createQuote(input) {
+    requireOpen();
+    const o = input || {};
+    const buyer = partyInput(o.buyerId != null ? o.buyerId : o.ownerId);
+    if (!buyer.ok) return { ok: false, denied: false, reasonCode: null, errors: buyer.errors };
+    if (buyer.party.type === C.PARTY_TYPE.SYSTEM) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['system-party-cannot-buy'] };
+    }
+    const cur = C.validateCurrency(o.currency);
+    if (!cur.ok) return denial(C.DENY_REASON.INVALID_CURRENCY, cur.errors);
+    const amt = C.normalizeAmountMinor(o.amountMinor);
+    if (!amt.ok) return denial(C.DENY_REASON.INVALID_AMOUNT, amt.errors);
+    /* 0 元报价没有价格内容，却会占一行、消耗一个 revision，并让
+       "有几份报价"这个计数失去意义。与 reserve 拒绝 0 金额同款。 */
+    if (amt.amountMinor === 0n) {
+      return denial(C.DENY_REASON.INVALID_AMOUNT, ['quote-amount-must-be-positive']);
+    }
+    const qty = o.quantity == null ? 1 : Number(o.quantity);
+    if (!Number.isSafeInteger(qty) || qty < 1) {
+      return denial(C.DENY_REASON.INVALID_AMOUNT, ['quote-quantity-must-be-positive-safe-integer']);
+    }
+    const exp = normalizeExpiresAt(o.expiresAt);
+    if (!exp.ok) return { ok: false, denied: false, reasonCode: null, errors: exp.errors };
+    const kind = o.kind == null ? C.QUOTE_KIND.PURCHASE : String(o.kind);
+    if (!C.isQuoteKind(kind)) {
+      return denial(C.DENY_REASON.EFFECT_NOT_ALLOWED, ['quote-kind-not-in-closed-set'], { allowed: C.QUOTE_KINDS });
+    }
+    const productId = C.formatEconomyId('PRODUCT', String(o.productId == null ? '' : o.productId)).id;
+    if (!C.isEconomyId('PRODUCT', productId)) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['product-id-not-canonical'] };
+    }
+    const key = C.normalizeIdempotencyKey(o.idempotencyKey);
+    if (!key.ok) return { ok: false, denied: false, reasonCode: null, errors: key.errors };
+
+    let recipient = null;
+    if (o.recipientId != null && String(o.recipientId).trim() !== '') {
+      const r = partyInput(o.recipientId);
+      if (!r.ok) return denial(C.DENY_REASON.PARTY_NOT_ALLOWED, r.errors);
+      recipient = r.party;
+    }
+    /* 买给别人的报价只有一种形态是自洽的：GIFT。
+       一份 PURCHASE 报价带着 recipientId 意味着"我要买给自己、但记在
+       别人头上"，而那在结算时会同时写两个意思。 */
+    if (recipient && kind !== C.QUOTE_KIND.GIFT) {
+      return denial(C.DENY_REASON.PARTY_NOT_ALLOWED, ['a-recipient-requires-the-gift-quote-kind'], { kind: kind });
+    }
+    if (kind === C.QUOTE_KIND.GIFT && !recipient) {
+      return denial(C.DENY_REASON.PARTY_NOT_ALLOWED, ['the-gift-quote-kind-requires-a-recipient']);
+    }
+
+    const buyerId = String(buyer.party.id);
+    if (typeof deps.ownerExists === 'function' && deps.ownerExists(buyer.party) !== true) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['owner-not-found'] };
+    }
+    /* 商品是否存在由**注入的谓词**回答（与 owner 同款，P22-2 §16）。
+       未注入时不做校验 —— 商品目录是 P22-5 的所有物，P22-4 不发明产品表。 */
+    if (typeof deps.productExists === 'function' && deps.productExists(productId) !== true) {
+      return denial(C.DENY_REASON.PRODUCT_DISABLED, ['product-not-found'], { productId: productId });
+    }
+
+    /* 报价必须挂在一个**真实存在**的钱包上：一份"买不起也存不进"的报价
+       是一张空头支票。这一步是读，不改任何东西。
+       ── 为什么它排在幂等闸门**之后** ─────────────────────────────────
+       "这个请求做过没有"是第一个问题，而"它现在能不能做"是第二个。
+       顺序反了会产生一个自相矛盾的答案：同一个 key 换个买家（或换个
+       币种）重放时，第二次会因为"那个买家没有钱包"被拒 —— 而调用方问的
+       是"我那次请求到底成没成"，正确回答是 IDEMPOTENCY_CONFLICT。
+       （开发期实测踩到：H 组的"同 key 不同买家/币种"两条拿到的是
+       wallet-not-found 而不是冲突。） */
+    const settlementType = C.settlementTypeOfQuoteKind(kind);
+    const predecessor = o.predecessorQuoteId == null ? null : String(o.predecessorQuoteId);
+    if (predecessor != null && !C.isEconomyId('QUOTE', predecessor)) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['predecessor-quote-id-not-canonical'] };
+    }
+    const now = clock();
+    const fingerprint = quoteFingerprint({
+      productId: productId,
+      buyerId: buyerId,
+      buyerType: String(buyer.party.type),
+      recipientId: recipient ? recipient.id : null,
+      currency: cur.currency,
+      amountMinor: C.serializeAmountMinor(amt.amountMinor),
+      quantity: qty,
+      kind: kind,
+      expiresAt: exp.expiresAt
+      /* 刻意**不含** quoteId（§11）与 predecessorQuoteId：前者是执行时
+         才知道的，后者是"这份报价替代了哪一份"的元信息，不改变
+         "这次请求是什么"。 */
+    });
+    const seen = operationIdempotencyLookup(C.OPERATION_SCOPE.QUOTE, key.key, fingerprint);
+    if (seen.found && seen.conflict) return operationIdempotencyConflict(C.OPERATION_SCOPE.QUOTE, key.key, seen);
+    if (seen.found) return { ok: true, replayed: true, idempotencyKey: key.key, result: seen.result };
+
+    /* 报价必须挂在一个**真实存在**的钱包上 —— 排在幂等闸门**之后**，
+       理由见上面那段说明。 */
+    const walletRow = db.prepare(SQL.selectWalletByOwner).get(buyerId, cur.currency);
+    if (!walletRow) return { ok: false, denied: false, reasonCode: null, errors: ['wallet-not-found'] };
+
+    if (exp.expiresAt <= now) {
+      return denial(C.DENY_REASON.QUOTE_EXPIRED,
+        ['quote-expires-at-is-not-in-the-future'], { expiresAt: exp.expiresAt, now: now });
+    }
+
+    const quoteId = o.quoteId != null ? o.quoteId : nextId('QUOTE');
+    if (!C.isEconomyId('QUOTE', quoteId)) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['quote-id-not-canonical'] };
+    }
+    const shape = C.validateQuote({
+      quoteId: String(quoteId), productId: productId, buyerId: buyerId, recipientId: recipient ? recipient.id : null,
+      currency: cur.currency, amountMinor: amt.amountMinor, quantity: qty, kind: kind,
+      expiresAt: exp.expiresAt, state: C.QUOTE_STATE.OPEN, createdAt: now
+    }, now);
+    if (!shape.ok) return denial(C.DENY_REASON.QUOTE_MISMATCH, shape.errors);
+    /* ── 链上的唯一性：一份被替代的报价只能有一条后继 ─────────────────
+       predecessor_quote_id 上有一条 UNIQUE 索引，因此第二次插入会撞约束。
+       这里**先显式查一次**，理由是一条 SQLite 约束错误不是业务语言：
+       调用方拿到 ERR_SQLITE_ERROR 之后不知道该说什么，而"这份报价已经
+       有过一次重新报价"是一句可以被上层处理的话。索引仍然在（并发下
+       它才是权威，见下面 insertQuote 的 try/catch）。 */
+    if (predecessor != null) {
+      const successor = db.prepare(SQL.selectQuoteByPredecessor).get(String(predecessor));
+      if (successor) {
+        return denial(C.DENY_REASON.DUPLICATE_REQUEST, ['this-quote-already-has-a-successor'], {
+          predecessorQuoteId: String(predecessor),
+          successorQuoteId: String(successor.quote_id)
+        });
+      }
+    }
+
+    const at = now;
+    let committed = null;
+    try {
+      withTransaction(() => {
+        const revision = allocateRevision();
+        db.prepare(SQL.insertQuote).run(
+          String(quoteId), productId, buyerId, String(buyer.party.type),
+          recipient ? recipient.id : null, recipient ? recipient.type : null,
+          cur.currency, toSqlAmount(amt.amountMinor, 'quote-amount'), Number(qty),
+          kind, String(settlementType), C.QUOTE_STATE.OPEN, Number(exp.expiresAt),
+          predecessor, key.key, fingerprint, Number(revision), Number(at), Number(at)
+        );
+        faultPoint('after-quote-insert');
+
+        const row = db.prepare(SQL.selectQuote).get(String(quoteId));
+        if (!row) throw refuse(null, ['quote-row-missing-after-write']);
+        const view = rowToQuote(row);
+        const result = {
+          domain: C.DOMAIN,
+          quoteId: String(quoteId),
+          productId: productId,
+          buyerId: buyerId,
+          recipientId: recipient ? recipient.id : null,
+          currency: cur.currency,
+          amountMinor: C.serializeAmountMinor(amt.amountMinor),
+          quantity: Number(qty),
+          kind: kind,
+          settlementType: String(settlementType),
+          state: C.QUOTE_STATE.OPEN,
+          expiresAt: Number(exp.expiresAt),
+          revision: Number(revision),
+          at: Number(at),
+          idempotencyKey: key.key,
+          quote: serializeQuote(view),
+          /* 逐字写明：一份报价没有锁住任何东西。 */
+          reservedFunds: false,
+          ledgerMutation: false
+        };
+        appendChange({
+          revision: Number(revision), kind: C.EVENT_TYPE.QUOTE_CREATED,
+          entityId: String(quoteId), transactionId: null, walletId: String(walletRow.wallet_id), at: Number(at),
+          payload: {
+            domain: C.DOMAIN,
+            quoteId: String(quoteId),
+            productId: productId,
+            buyerId: buyerId,
+            currency: cur.currency,
+            amountMinor: C.serializeAmountMinor(amt.amountMinor),
+            quantity: Number(qty),
+            kind: kind,
+            settlementType: String(settlementType),
+            state: C.QUOTE_STATE.OPEN,
+            expiresAt: Number(exp.expiresAt),
+            predecessorQuoteId: predecessor,
+            reservedFunds: false,
+            ledgerMutation: false
+          }
+        });
+        faultPoint('before-quote-change-log');
+        writeOperationIdempotency(C.OPERATION_SCOPE.QUOTE, key.key, fingerprint, {
+          operationId: null, reservationId: null, transactionId: null
+        }, result, revision, at);
+        faultPoint('before-quote-commit');
+        committed = result;
+      });
+    } catch (error) {
+      const refusal = translateRefusal(error);
+      /* ── 并发下的兜底：另一个连接可能在我们查过之后插入了后继 ─────────
+         UNIQUE 索引才是权威，而这里把那个约束错误翻译成**同一句**拒绝 ——
+         于是无论先后，调用方看到的都是同一种失败（而不是一半人拿到
+         DUPLICATE_REQUEST、另一半人拿到一次 SQLite 崩溃）。 */
+      if (!refusal) {
+        if (predecessor != null && /UNIQUE constraint failed/.test(String(error && error.message)) &&
+          String(error.message).indexOf('predecessor_quote_id') >= 0) {
+          return denial(C.DENY_REASON.DUPLICATE_REQUEST, ['this-quote-already-has-a-successor'], {
+            predecessorQuoteId: String(predecessor)
+          });
+        }
+        throw error;
+      }
+      return refusal;
+    }
+
+    pruneOperationIdempotency(at);
+    logger('economy-quote-created', {
+      quoteId: committed.quoteId, buyerId: buyerId, currency: cur.currency,
+      kind: committed.kind, revision: committed.revision
+    });
+    return { ok: true, replayed: false, idempotencyKey: key.key, result: committed };
+  }
+
+  function getQuote(input) {
+    requireOpen();
+    const o = typeof input === 'string' ? { quoteId: input } : (input || {});
+    if (!o.quoteId) return { ok: false, quote: null, errors: ['quote-id-required'] };
+    const row = db.prepare(SQL.selectQuote).get(String(o.quoteId));
+    if (!row) return { ok: false, quote: null, errors: ['quote-not-found'] };
+    return { ok: true, quote: rowToQuote(row, { now: o.now }) };
+  }
+
+  function listQuotes(options) {
+    options = options || {};
+    requireOpen();
+    const limit = Math.max(1, Math.min(500, Number(options.limit) || 100));
+    const state = options.state == null ? null : String(options.state);
+    if (state != null && !C.isQuoteState(state)) {
+      return { ok: false, quotes: null, errors: ['quote-state-not-in-closed-set'] };
+    }
+    let rows;
+    if (options.buyerId && state) rows = db.prepare(SQL.selectQuotesByBuyerAndState).all(String(options.buyerId), state, limit);
+    else if (options.buyerId) rows = db.prepare(SQL.selectQuotesByBuyer).all(String(options.buyerId), limit);
+    else if (state) rows = db.prepare(SQL.selectQuotesByState).all(state, limit);
+    else rows = db.prepare(SQL.selectQuotes).all(limit);
+    return { ok: true, quotes: rows.map(r => rowToQuote(r, { now: options.now })) };
+  }
+
+  /* ── expireQuote / expireDueQuotes（§10）─────────────────────────────
+     与 reservation 的到期**逐条同构**：显式 now、确定性、幂等、分批、
+     每份一个自己的事务、没有定时器、不碰终态。
+
+     资源后果是零：过期一份报价**不**释放任何东西（因为它从来没有锁住
+     任何东西）。因此这里既不写 ledger，也不动 reserved 缓存 ——
+     这一点在测试里是逐字断言的（过期前后 ledger 求和、reserved 求和、
+     available 全部不变）。 */
+  function expireQuote(input) {
+    requireOpen();
+    const o = input || {};
+    const now = o.now != null ? Number(o.now) : clock();
+    if (!Number.isSafeInteger(now) || now < 0) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['now-must-be-a-non-negative-safe-integer'] };
+    }
+    const quoteId = o.quoteId;
+    if (!C.isEconomyId('QUOTE', quoteId)) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['quote-id-not-canonical'] };
+    }
+    const key = C.normalizeIdempotencyKey(o.idempotencyKey != null ? o.idempotencyKey : ('econ.sweep.quote+' + String(quoteId)));
+    if (!key.ok) return { ok: false, denied: false, reasonCode: null, errors: key.errors };
+
+    const row = db.prepare(SQL.selectQuote).get(String(quoteId));
+    if (!row) return { ok: false, denied: false, reasonCode: null, errors: ['quote-not-found'] };
+    /* 幂等闸门排在状态检查之前 —— 与 P22-3 §19 同一条纪律：一个已经成功
+       过的到期请求，它的重放必须返回当初那个结果，而不是"声明已终态"。 */
+    const fingerprint = quoteFingerprint({ quoteId: String(quoteId), expiration: true });
+    const seen = operationIdempotencyLookup(C.OPERATION_SCOPE.QUOTE, key.key, fingerprint);
+    if (seen.found && seen.conflict) return operationIdempotencyConflict(C.OPERATION_SCOPE.QUOTE, key.key, seen);
+    if (seen.found) return { ok: true, replayed: true, idempotencyKey: key.key, result: seen.result };
+
+    if (String(row.state) !== C.QUOTE_STATE.OPEN) {
+      return denial(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['quote-is-already-terminal'],
+        { quoteState: String(row.state) });
+    }
+    if (Number(row.expires_at) > now) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['quote-not-yet-due'], expiresAt: Number(row.expires_at), now: now };
+    }
+
+    let committed = null;
+    try {
+      withTransaction(() => {
+        const current = db.prepare(SQL.selectQuote).get(String(quoteId));
+        if (!current) throw refuse(null, ['quote-not-found']);
+        /* 状态机被**执行**一次，而不是直接写终值：OPEN → EXPIRED 必须
+           是允许的转移，而 CONSUMED → EXPIRED 必须不是。 */
+        const gate = C.assertQuoteTransition(String(current.state), C.QUOTE_STATE.EXPIRED);
+        if (!gate.ok) throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, gate.errors, { detail: gate.detail || null });
+        if (Number(current.expires_at) > now) throw refuse(null, ['quote-not-yet-due']);
+        const revision = allocateRevision();
+        faultPoint('after-quote-expire-validated');
+        /* `AND state=?`（setQuoteState 的最后一个参数）让"终态不可回退"
+           成为一条并发安全的 SQL 约束：第二次推进 changes=0 ⇒ 拒绝。 */
+        const moved = db.prepare(SQL.setQuoteState).run(
+          C.QUOTE_STATE.EXPIRED, Number(revision), Number(now), String(quoteId), C.QUOTE_STATE.OPEN
+        );
+        if (Number(moved.changes) !== 1) {
+          throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['quote-transition-affected-no-row']);
+        }
+        faultPoint('after-quote-expired');
+        const result = {
+          domain: C.DOMAIN,
+          quoteId: String(quoteId),
+          state: C.QUOTE_STATE.EXPIRED,
+          expiresAt: Number(current.expires_at),
+          revision: Number(revision),
+          at: Number(now),
+          reservedFunds: false,
+          ledgerMutation: false
+        };
+        appendChange({
+          revision: Number(revision), kind: C.EVENT_TYPE.QUOTE_EXPIRED,
+          entityId: String(quoteId), transactionId: null, walletId: null, at: Number(now),
+          payload: {
+            domain: C.DOMAIN, quoteId: String(quoteId), productId: String(current.product_id),
+            buyerId: String(current.buyer_id), currency: String(current.currency),
+            amountMinor: C.serializeAmountMinor(fromSqlAmount(current.amount_minor, 'quote-amount')),
+            expiresAt: Number(current.expires_at),
+            reservedFunds: false,
+            ledgerMutation: false
+          }
+        });
+        faultPoint('before-quote-expire-change-log');
+        writeOperationIdempotency(C.OPERATION_SCOPE.QUOTE, key.key, fingerprint, {
+          operationId: null, reservationId: null, transactionId: null
+        }, result, revision, now);
+        faultPoint('before-quote-expire-commit');
+        committed = result;
+      });
+    } catch (error) {
+      const refusal = translateRefusal(error);
+      if (!refusal) throw error;
+      return refusal;
+    }
+    pruneOperationIdempotency(now);
+    logger('economy-quote-expired', { quoteId: committed.quoteId, revision: committed.revision });
+    return { ok: true, replayed: false, idempotencyKey: key.key, result: committed };
+  }
+
+  function expireDueQuotes(input) {
+    requireOpen();
+    const o = input || {};
+    const now = o.now != null ? Number(o.now) : clock();
+    if (!Number.isSafeInteger(now) || now < 0) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['now-must-be-a-non-negative-safe-integer'] };
+    }
+    const limit = Math.max(1, Math.min(1000, Number(o.limit) || 100));
+    const due = db.prepare(SQL.selectDueQuotes).all(C.QUOTE_STATE.OPEN, Number(now), limit);
+    const expired = [];
+    const skipped = [];
+    const failed = [];
+    for (const row of due) {
+      const quoteId = String(row.quote_id);
+      const out = expireQuote({ quoteId: quoteId, now: now });
+      if (out.ok === true && out.replayed === true) skipped.push({ quoteId: quoteId, reason: 'already-expired-by-an-earlier-sweep' });
+      else if (out.ok === true) expired.push(out.result);
+      else if (out.reasonCode === C.DENY_REASON.TRANSITION_NOT_ALLOWED) skipped.push({ quoteId: quoteId, reason: 'already-terminal' });
+      else failed.push({ quoteId: quoteId, errors: out.errors, reasonCode: out.reasonCode || null });
+    }
+    return { ok: true, now: now, limit: limit, scanned: due.length, expired: expired, skipped: skipped, failed: failed, usedTimers: false };
+  }
+
+  function countQuotes() { return Number((db.prepare(SQL.countQuotes).get() || {}).c || 0); }
+  function countQuotesByState(state) {
+    return Number((db.prepare(SQL.countQuotesByState).get(String(state)) || {}).c || 0);
+  }
+
+  /* ── evaluateQuote（§18）：一次**读**，产出四样东西 ─────────────────
+       quote            —— 那份价格命题（可能已经过期，如实报告）
+       walletSnapshot   —— canonical 的钱包事实
+       budgetSnapshot   —— canonical 的窗口累计
+       decision         —— 三态 + 稳定 reasonCode
+
+     刻意**不**做任何写：它不 reserve、不消费报价、不改状态。这正是
+     §18 点名的那件事：**"评估报价"不能偷偷变成"接受报价"**。
+     因此返回对象里带着 `evaluatedOnly: true`，而它旁边没有任何
+     "consumed" / "reserved" 字段 —— 不是忘了加，是这一层没有那个概念。 */
+  function evaluateQuote(input) {
+    requireOpen();
+    const o = input || {};
+    const quoteId = o.quoteId;
+    if (!C.isEconomyId('QUOTE', quoteId)) {
+      return { ok: false, errors: ['quote-id-not-canonical'] };
+    }
+    const now = o.now != null ? Number(o.now) : clock();
+    if (!Number.isSafeInteger(now) || now < 0) {
+      return { ok: false, errors: ['now-must-be-a-non-negative-safe-integer'] };
+    }
+    const row = db.prepare(SQL.selectQuote).get(String(quoteId));
+    if (!row) return { ok: false, errors: ['quote-not-found'] };
+    const quote = rowToQuote(row, { now: now });
+
+    const built = buildBudgetSnapshot({
+      ownerId: quote.buyerId.id, currency: quote.currency, amountMinor: quote.amountMinor, now: now
+    });
+
+    const decisionBase = built.ok
+      ? budgetEvaluationFromSnapshot(built.snapshot, built.snapshot.policyId == null ? null : policyForOwner(quote.buyerId.id))
+      : Object.assign(C.budgetDecision(C.BUDGET_DECISION.DENY, C.DENY_REASON.POLICY_INPUT_NOT_STRUCTURED, {
+        errors: built.errors, priority: C.BUDGET_EVALUATION_PRIORITY[0], systemFailure: true
+      }), { policyId: null, currency: quote.currency });
+
+    /* 报价这一面的两条硬规则，排在预算结论**之前或之上**取决于它们是
+       关于"这份报价还能不能用"的，而预算结论是关于"这笔钱能不能花"的。
+       两者都可能说不，因此这里把它们**合成**成一个结论，并保留各自的
+       reasonCode：`quoteCode`（报价侧）与 `decision.reasonCode`（预算侧）。
+       规则是：报价侧说不 ⇒ 整个结论是 DENY（一份不能用的报价没有任何
+       预算讨论的余地）。 */
+    let decision = decisionBase;
+    let quoteCode = null;
+    if (quote.state !== C.QUOTE_STATE.OPEN) {
+      quoteCode = quote.state === C.QUOTE_STATE.EXPIRED ? C.DENY_REASON.QUOTE_EXPIRED : C.DENY_REASON.QUOTE_MISMATCH;
+    } else if (quote.expiredByTime) {
+      quoteCode = C.DENY_REASON.QUOTE_EXPIRED;
+    }
+    if (quoteCode != null) {
+      decision = Object.assign(C.budgetDecision(C.BUDGET_DECISION.DENY, quoteCode, {
+        errors: ['the-quote-cannot-be-consumed-in-its-current-state'],
+        priority: C.BUDGET_EVALUATION_PRIORITY[0],
+        quoteState: quote.state,
+        expiredByTime: quote.expiredByTime,
+        budgetReasonCode: decisionBase.reasonCode
+      }), { policyId: decisionBase.policyId, currency: quote.currency });
+    }
+
+    return {
+      ok: true,
+      quote: serializeQuote(quote),
+      walletSnapshot: built.ok ? {
+        walletId: built.snapshot.walletId,
+        walletState: built.snapshot.walletState,
+        ledgerBalanceMinor: C.serializeAmountMinor(built.snapshot.ledgerBalanceMinor),
+        reservedBalanceMinor: C.serializeAmountMinor(built.snapshot.reservedBalanceMinor),
+        availableBalanceMinor: C.serializeAmountMinor(built.snapshot.availableBalanceMinor)
+      } : null,
+      budgetSnapshot: built.ok ? serializeBudgetSnapshot(built.snapshot) : null,
+      decision: decision,
+      reasonCode: decision.reasonCode,
+      quoteReasonCode: quoteCode,
+      budgetReasonCode: decisionBase.reasonCode,
+      /* 三个"没有做"的逐字声明。 */
+      evaluatedOnly: true,
+      reserved: false,
+      consumed: false,
+      notASpendPermit: 'ALLOW is a snapshot evaluation, not a spendable permission; nothing has been reserved and the quote has not been consumed'
+    };
+  }
+
+  /* ══════════════════════════════════════════════════════════════════
+     P22-4 · 评估完整性（§17 fail closed 的落点）
+     ══════════════════════════════════════════════════════════════════ */
+
+  /* 政策行是否**结构上**可信。任何一条不成立即"规则这一面不可信"，而
+     不可信必须 fail closed（DENY），不能假装"没有规则所以随便花"。 */
+  function policyProblemsOf(row) {
+    const problems = [];
+    const id = String(row.policy_id);
+    if (!C.isEconomyId('BUDGET_POLICY', id)) { problems.push(id + ':policy-id-not-canonical'); return problems; }
+    if (String(row.owner_id).trim() === '') { problems.push(id + ':owner-id-empty'); return problems; }
+    if (String(row.owner_type) === C.PARTY_TYPE.SYSTEM) { problems.push(id + ':system-cannot-own-a-policy'); return problems; }
+    if (!C.CURRENCIES.some(c => c === String(row.currency))) { problems.push(id + ':currency-not-registered'); return problems; }
+    if (!C.isPolicyStatus(String(row.status))) { problems.push(id + ':status-not-in-closed-set'); return problems; }
+    for (const entry of C.POLICY_LIMIT_TABLE) {
+      const raw = row[entry.field];
+      if (raw == null) continue;
+      try { fromSqlAmount(raw, 'policy-limit-' + entry.name); }
+      catch (error) { problems.push(id + ':limit-not-canonical:' + entry.name); return problems; }
+    }
+    if (row.approval_above_minor != null) {
+      try { fromSqlAmount(row.approval_above_minor, 'policy-approval-threshold'); }
+      catch (error) { problems.push(id + ':approval-threshold-not-canonical'); return problems; }
+    }
+    if (row.term_ends_at != null && !Number.isSafeInteger(Number(row.term_ends_at))) {
+      problems.push(id + ':term-ends-at-not-a-safe-integer'); return problems;
+    }
+    return problems;
+  }
+
+  /* 报价行是否结构上可信。三条要点：
+       · 结算形态必须与**种类**一致 —— 它是派生列，不一致意味着有人改过
+         其中一列，而"将来怎么结算"因此有了两个答案；
+       · 未终态的报价不可能有 successor；
+       · 金额与数量必须是 canonical 量。 */
+  function quoteProblemsOf(row) {
+    const problems = [];
+    const id = String(row.quote_id);
+    if (!C.isEconomyId('QUOTE', id)) { problems.push(id + ':quote-id-not-canonical'); return problems; }
+    if (!C.isEconomyId('PRODUCT', row.product_id)) { problems.push(id + ':product-id-not-canonical'); return problems; }
+    if (!C.isQuoteKind(String(row.quote_kind))) { problems.push(id + ':quote-kind-not-in-closed-set'); return problems; }
+    const expected = C.settlementTypeOfQuoteKind(row.quote_kind);
+    if (String(row.service_role) !== String(expected)) {
+      problems.push(id + ':settlement-type-does-not-match-the-quote-kind'); return problems;
+    }
+    if (!C.isQuoteState(String(row.state))) { problems.push(id + ':quote-state-not-in-closed-set'); return problems; }
+    if (!C.CURRENCIES.some(c => c === String(row.currency))) { problems.push(id + ':currency-not-registered'); return problems; }
+    try { fromSqlAmount(row.amount_minor, 'quote-amount'); }
+    catch (error) { problems.push(id + ':amount-not-canonical'); return problems; }
+    if (!Number.isSafeInteger(Number(row.quantity)) || Number(row.quantity) < 1) {
+      problems.push(id + ':quantity-not-a-positive-safe-integer'); return problems;
+    }
+    if (!Number.isSafeInteger(Number(row.expires_at)) || Number(row.expires_at) < 0) {
+      problems.push(id + ':expires-at-not-a-non-negative-safe-integer'); return problems;
+    }
+    if (String(row.quote_kind) === C.QUOTE_KIND.GIFT && row.recipient_id == null) {
+      problems.push(id + ':gift-quote-without-a-recipient'); return problems;
+    }
+    if (String(row.quote_kind) !== C.QUOTE_KIND.GIFT && row.recipient_id != null) {
+      problems.push(id + ':recipient-on-a-non-gift-quote'); return problems;
+    }
+    if (row.predecessor_quote_id != null && !C.isEconomyId('QUOTE', row.predecessor_quote_id)) {
+      problems.push(id + ':predecessor-quote-id-not-canonical'); return problems;
+    }
+    return problems;
+  }
+
+  /* 整个 Economy 的**结构**是否可信。P22-3 逐钱包查引用链；P22-4 在这里
+     加上"规则这一面"（政策行）与"命题这一面"（报价行）的全表扫描。
+     规模是 O(政策数 + 报价数)，两者都是人为创建的小表 —— 与
+     reservations 不同，它们不随经济活动线性增长。 */
+  function economyIntegrityCheck() {
+    const problems = [];
+    for (const row of db.prepare(SQL.selectBudgetPolicies).all(100000)) {
+      problems.push.apply(problems, policyProblemsOf(row));
+    }
+    for (const row of db.prepare(SQL.selectQuotesAll).all()) {
+      problems.push.apply(problems, quoteProblemsOf(row));
+    }
+    return problems;
+  }
+
   /* test-only：把 reserved 缓存改坏，用来证明"它能从 active reservations
      重建"。与 corruptCachedBalanceForTest 同款，同样不在 HTTP 面上。 */
   function corruptReservedCacheForTest(walletId, value) {
@@ -3537,7 +5354,10 @@ function createEconomyStore(deps) {
 
   function health() {
     const open = isOpen();
-    let counts = { wallets: 0, transactions: 0, entries: 0, changes: 0, operations: 0, reservations: 0, activeReservations: 0 };
+    let counts = {
+      wallets: 0, transactions: 0, entries: 0, changes: 0, operations: 0, reservations: 0,
+      activeReservations: 0, budgetPolicies: 0, activeBudgetPolicies: 0, quotes: 0, openQuotes: 0
+    };
     let revision = 0;
     let schema = ECONOMY_SCHEMA_VERSION;
     if (open) {
@@ -3548,7 +5368,14 @@ function createEconomyStore(deps) {
           /* P22-3：counting 是观测，不是判断。把"现在有几笔钱被锁着"
              变成一个可断言的字段，比让运维去猜有用得多。 */
           operations: countOperations(), reservations: countReservations(),
-          activeReservations: countReservationsByStatus(C.RESERVATION_STATE.ACTIVE)
+          activeReservations: countReservationsByStatus(C.RESERVATION_STATE.ACTIVE),
+          /* P22-4：规则与命题各有几个。同样只是观测 —— 尤其
+             activeBudgetPolicies：它是"有几个 owner 真的受规则约束"，
+             而 0 绝不等于"大家都没规则"，后者只能在评估时被回答。 */
+          budgetPolicies: countBudgetPolicies(),
+          activeBudgetPolicies: countBudgetPoliciesByStatus(C.POLICY_STATUS.ACTIVE),
+          quotes: countQuotes(),
+          openQuotes: countQuotesByState(C.QUOTE_STATE.OPEN)
         };
         revision = getRevision();
         schema = Number(readMeta(META_SCHEMA) || ECONOMY_SCHEMA_VERSION);
@@ -3577,8 +5404,11 @@ function createEconomyStore(deps) {
          doesNotExpose 同一传统 —— 让"没有"成为一个可以被断言的字段，
          而不是一句注释。P22-3 追加 reservation-writes：这一阶段新增了
          六个**会改状态**的方法（reserve/commit/release/expire/fail/
-         sweep），而它们一个都不在 HTTP 面上 —— 这句话必须可断言。 */
-      doesNotExpose: ['payments', 'credentials', 'provider-billing', 'topup', 'real-money', 'reservation-writes'],
+         sweep），而它们一个都不在 HTTP 面上 —— 这句话必须可断言。
+         P22-4 追加 policy-writes / quote-writes：同样是"新增了会改状态
+         的方法，而它们一个都不在 HTTP 上"。 */
+      doesNotExpose: ['payments', 'credentials', 'provider-billing', 'topup', 'real-money',
+        'reservation-writes', 'policy-writes', 'quote-writes'],
       canonical: 'sqlite-ledger-entries',
       derived: 'wallet-cached-balance',
       /* reserved 这一面把 canonical 与 derived 各写一遍，因为它们是
@@ -3587,7 +5417,24 @@ function createEconomyStore(deps) {
       reservedDerived: 'wallet-reserved-balance-cache',
       reservationStateVocabulary: 'RESERVATION_STATE (P22-1 §12)',
       operationStateVocabulary: 'TX_STATE (P22-1 §8)',
-      expirationIsNotATimer: true
+      expirationIsNotATimer: true,
+      /* ── P22-4：规则与命题的 canonical 来源，以及两条**边界自述** ────
+         budgetWindowsCanonical：三个窗口累计从 committed ledger 事实算
+         （不是缓存、不是 UI 计数器、不是任何"记忆"）。
+         budgetSpendingTypes：哪些 transaction type 算消费 —— 由契约的
+         封闭表给出，而不是靠"金额是不是负数"猜。
+         budgetEvaluationIsNotAnAuthorization：本层产出的 ALLOW 是一次
+         **快照评估**，不是可以拿去执行的许可。把它写成一个可断言字段，
+         是因为这一条最容易被下游误当成凭证。 */
+      budgetCanonical: 'sqlite-budget-policies + committed-ledger-facts',
+      budgetDerived: 'none',
+      budgetWindowsCanonical: 'UTC day/week/month buckets over committed ledger debits',
+      budgetTimezone: C.BUDGET_TIMEZONE,
+      budgetSpendingTypes: C.BUDGET_SPENDING_TYPES.slice(),
+      budgetEvaluationIsNotASpendPermit: true,
+      quoteCanonical: 'sqlite-quotes',
+      quoteStateVocabulary: 'QUOTE_STATE (P22-1 §14)',
+      quoteLocksNothing: true
     };
   }
 
@@ -3675,7 +5522,8 @@ function createEconomyStore(deps) {
       ACCOUNTS: ACCOUNTS_TABLE, WALLETS: WALLETS_TABLE,
       TRANSACTIONS: TRANSACTIONS_TABLE, ENTRIES: ENTRIES_TABLE,
       OPERATIONS: OPERATIONS_TABLE, RESERVATIONS: RESERVATIONS_TABLE,
-      OPERATION_IDEMPOTENCY: OPERATION_IDEMPOTENCY_TABLE
+      OPERATION_IDEMPOTENCY: OPERATION_IDEMPOTENCY_TABLE,
+      BUDGET_POLICIES: BUDGET_POLICIES_TABLE, QUOTES: QUOTES_TABLE
     }),
     META_KEYS: Object.freeze({
       SCHEMA: META_SCHEMA, REVISION: META_REVISION,
@@ -3733,6 +5581,33 @@ function createEconomyStore(deps) {
     serializeReservation: serializeReservation,
     serializeOperation: serializeOperation,
 
+    /* ── P22-4：预算政策 ────────────────────────────────────────────────
+       写的一半与 P22-3 的六个 mutation 同级：只对同进程调用方开放，
+       不在任何 HTTP 路由上。读的一半（get/list/serialize）可以被
+       HTTP 只读面使用。 */
+    putBudgetPolicy: putBudgetPolicy,
+    expirePolicy: expirePolicy,
+    expireDuePolicies: expireDuePolicies,
+    getBudgetPolicy: getBudgetPolicy,
+    listBudgetPolicies: listBudgetPolicies,
+    serializeBudgetPolicy: serializeBudgetPolicy,
+    /* 纯读：组装 canonical 快照并交给契约的确定性评估器。 */
+    buildBudgetSnapshot: buildBudgetSnapshot,
+    spendingWindows: spendingWindows,
+    evaluateBudgetFor: evaluateBudgetFor,
+    serializeBudgetSnapshot: serializeBudgetSnapshot,
+
+    /* ── P22-4：报价（价格命题，不是资源锁定）────────────────────────── */
+    createQuote: createQuote,
+    expireQuote: expireQuote,
+    expireDueQuotes: expireDueQuotes,
+    getQuote: getQuote,
+    listQuotes: listQuotes,
+    serializeQuote: serializeQuote,
+    /* evaluateQuote **只读**：它不 reserve、不消费报价、不改状态（§18）。
+       因此它与 get/list 同级，可以被 HTTP 只读面使用。 */
+    evaluateQuote: evaluateQuote,
+
     /* 观测 */
     health: health,
     isDegraded: isDegraded,
@@ -3752,7 +5627,14 @@ function createEconomyStore(deps) {
       deriveEntryId: deriveEntryId,
       deriveCommitTransactionId: deriveCommitTransactionId,
       operationFingerprint: operationFingerprint,
+      policyFingerprint: policyFingerprint,
+      quoteFingerprint: quoteFingerprint,
       walletStructuralProblems: walletStructuralProblems,
+      reservationProblemsOf: reservationProblemsOf,
+      policyProblemsOf: policyProblemsOf,
+      quoteProblemsOf: quoteProblemsOf,
+      economyIntegrityCheck: economyIntegrityCheck,
+      spendingWindowBounds: spendingWindowBounds,
       SQL: SQL
     })
   };
@@ -3766,7 +5648,8 @@ module.exports.tables = Object.freeze({
   ACCOUNTS: ACCOUNTS_TABLE, WALLETS: WALLETS_TABLE,
   TRANSACTIONS: TRANSACTIONS_TABLE, ENTRIES: ENTRIES_TABLE,
   OPERATIONS: OPERATIONS_TABLE, RESERVATIONS: RESERVATIONS_TABLE,
-  OPERATION_IDEMPOTENCY: OPERATION_IDEMPOTENCY_TABLE
+  OPERATION_IDEMPOTENCY: OPERATION_IDEMPOTENCY_TABLE,
+  BUDGET_POLICIES: BUDGET_POLICIES_TABLE, QUOTES: QUOTES_TABLE
 });
 module.exports.releaseReason = RELEASE_REASON;
 module.exports.fnv1a64Hex = fnv1a64Hex;

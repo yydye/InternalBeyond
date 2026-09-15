@@ -440,7 +440,44 @@ const GROUPS = [
               Σactive ≤ ledger 且"恰好 2 个成功"。这一组当场抓到并修好了
               一个真实缺陷：缺省 id 生成器在多进程同毫秒下会撞车。 */
       ['test_p22_3_economy_reservation.js'],
-      ['test_p22_3_economy_runtime.js']
+      ['test_p22_3_economy_runtime.js'],
+      /* P22-4：Agent Economy 的**预算规则**与**报价**层 ——
+         "这项经济行为在当前规则下是否允许"以及"如果执行要锁定多少"，
+         但仍然**不真正执行购买**。三组刻意分开：
+           ① budget：确定性评估器本身。它是**纯函数**
+              evaluateBudget(policy, context) → ALLOW / DENY /
+              REQUIRE_APPROVAL；同输入同输出（跑一千次逐字节相同、键序
+              无关、深拷贝无关、换掉 Date.now/Math.random 也无关）；
+              输入键受 P22-1 §13 白名单约束，因此 prompt / persona /
+              relationship / LLM 输出**没有地方可以放**；评估顺序被冻结成
+              11 步，于是同一输入只可能得到一个 reasonCode；窗口累计
+              spentToday/Week/Month **只从 committed ledger facts** 算
+              （UTC 日/周一起/月边界，跑过 23:59→00:00、周界、月界、
+              重启），reserve 之后 release/expire/fail 都不会永久吃掉
+              预算；fail closed：引用链断了/缓存坏掉一律 available=null +
+              DENY + systemFailure，绝不返回 0、绝不伪装成"余额不足"；
+              政策变更与评估都**不是**经济运动（ledgerMutation:false）；
+              八个故障点逐个注入证明不留部分政策；schema 2 → 3 补表。
+           ② quote：**价格命题 ≠ 资源锁定**。连开三份总额超过可用余额的
+              报价之后账本/预留/available 逐字未变（并有一个"真的
+              reserve 时指纹确实会变"的对照组，证明前一条不是假绿）；
+              评估一份报价**不消费、不锁定**（两千次评估之后世界不变）；
+              金额/币种/买家不可变（静态扫 UPDATE 的 SET 列 + 运行时
+              篡改派生列会被完整性检查抓住）；终态不可回退；到期是一个
+              比较而不是定时器；七条 API_QUOTA / COMPUTE_CREDIT 兼容性
+              断言证明模型今天就能表达"买算力额度"而 provider 一个字节
+              都没碰。
+           ③ runtime：**生产进程里到底有没有它**。五条新只读路由
+              （GET /economy/policies · /policy · /budget · /quotes ·
+              /quote?evaluate=1）走真实 server；十条路径 × 三种写动词 =
+              30 次写尝试全部 405 且世界逐字未变；/security 的
+              economyPolicy 把 P22-4 的"没有"写成可检查字段；以及**真实
+              spawn services/home-node-service.js**：进程起来 → 新路由
+              200（不是 501）→ 干净停机 → 同一库再起一个进程 → 政策与
+              报价逐字读回、revision 不动。 */
+      ['test_p22_4_economy_budget.js'],
+      ['test_p22_4_economy_quote.js'],
+      ['test_p22_4_economy_runtime.js']
     ]
   },
   {

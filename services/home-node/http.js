@@ -724,15 +724,35 @@ function createHomeNodeHttp(deps) {
              expire / fail / sweep），而它们在路由表上依然**一个都不存在**。
              这条字段就是为了让"没有"可以被断言，而不是被相信。 */
           reservationWritesExposed: [],
+          /* P22-4 又新增了六个会改状态的方法（putBudgetPolicy /
+             expirePolicy / expireDuePolicies / createQuote / expireQuote /
+             expireDueQuotes）—— 名单必须跟着能力长，否则新能力会落在
+             断言之外，而"没被断言"在实践中与"被允许"很难区分。 */
+          budgetWritesExposed: [],
+          quoteWritesExposed: [],
           mintingExposed: false,
           expirationIsNotATimer: true,
+          /* P22-4 的三条自述：预算评估是**快照**、不是许可（§19）；
+             它不锁任何钱；报价与预留是两件事（§7）。 */
+          budgetEvaluationIsASnapshotOnly: true,
+          budgetEvaluationReservesFunds: false,
+          quoteLocksFunds: false,
+          budgetTimezone: 'UTC',
           desktopPaths: ['/economy/health', '/economy/wallet', '/economy/ledger',
             '/economy/transaction', '/economy/changes',
-            '/economy/reservations', '/economy/reservation'],
+            '/economy/reservations', '/economy/reservation',
+            '/economy/policies', '/economy/policy', '/economy/budget',
+            '/economy/quotes', '/economy/quote'],
+          /* P22-4：/economy/budget 与 /economy/quote **有**只读路由，
+             因此它们不出现在 unreachable 里；而不存在的写路径
+             （policy/quote 的 POST·PUT·DELETE、approve、evaluate 的写形态）
+             逐条列出来。 */
           unreachable: ['/economy/topup', '/economy/purchase', '/economy/payment',
             '/economy/provider', '/economy/mint', '/economy/burn', '/economy/transfer',
             '/economy/reserve', '/economy/commit', '/economy/release', '/economy/expire',
-            '/economy/fail', '/economy/sweep']
+            '/economy/fail', '/economy/sweep',
+            '/economy/approve', '/economy/approval', '/economy/inventory',
+            '/economy/product', '/economy/store', '/economy/exchange']
         },
         doesNotExpose: ['llm-proxy', 'tools', 'payments', 'diary', 'letters', 'images', 'tts'],
         /* M1-B：设备身份 + 移动边界。mobile 面**只有** allowlist 里的 verb。 */
@@ -893,6 +913,117 @@ function createHomeNodeHttp(deps) {
       });
       if (!result.ok) { bad(res, 404, result.errors[0] || 'reservation-not-found', null, req); return; }
       ok(res, { reservation: economy.serializeReservation(result.reservation) }, req);
+      return;
+    }
+
+    /* ── P22-4 · 预算政策（**只读**）与报价（**只读**）────────────────
+       本阶段新增两类东西：**规则**（预算政策）与**价格命题**（报价）。
+       两者都有会改状态的 store 方法（putBudgetPolicy / expirePolicy /
+       expireDuePolicies / createQuote / expireQuote / expireDueQuotes），
+       而它们在路由表上**一个都不存在**。理由与 P22-3 逐字相同、并且更强：
+         · 改预算规则是**权限**问题（"谁有权替一个角色决定它一天能花
+           多少"），而本仓库还没有任何权限模型；在没有它之前开放一个
+           POST，等于让任何一个能发请求的人改所有人的花钱规则；
+         · 创建报价是**定价**问题（"这个价格是谁定的"），而定价属于
+           P22-5 的商品目录。
+       因此这里只开"看"：
+         GET /economy/policies     列出预算政策
+         GET /economy/policy       单条（policyId 或 ownerId）
+         GET /economy/quotes       列出一份报价集合
+         GET /economy/quote        单份（quoteId）
+         GET /economy/budget       对给定 ownerId/currency/amountMinor 做一次
+                                   **快照评估**（纯读；不 reserve、不消费）
+       报价的读取面刻意**不含** idempotencyKey（与 reservation 同款）。 */
+    if (path === '/economy/policies' && method === 'GET') {
+      if (!economy) { bad(res, 501, 'economy-not-assembled', null, req); return; }
+      const result = economy.listBudgetPolicies({
+        ownerId: url.searchParams.get('ownerId') || undefined,
+        status: url.searchParams.get('status') || undefined,
+        limit: url.searchParams.get('limit') || undefined
+      });
+      if (!result.ok) { bad(res, 400, result.errors[0] || 'policy-read-failed', null, req); return; }
+      ok(res, {
+        policies: result.policies.map(p => economy.serializeBudgetPolicy(p)),
+        /* 一句可被机器读到的声明：预算评估不是许可。 */
+        evaluationIsNotASpendPermit: true
+      }, req);
+      return;
+    }
+    if (path === '/economy/policy' && method === 'GET') {
+      if (!economy) { bad(res, 501, 'economy-not-assembled', null, req); return; }
+      const policyId = url.searchParams.get('policyId');
+      const ownerId = url.searchParams.get('ownerId');
+      if (!policyId && !ownerId) { bad(res, 400, 'missing-policy-or-owner', null, req); return; }
+      const result = economy.getBudgetPolicy({ policyId: policyId || undefined, ownerId: ownerId || undefined });
+      if (!result.ok) { bad(res, 404, result.errors[0] || 'budget-policy-not-found', null, req); return; }
+      ok(res, { policy: economy.serializeBudgetPolicy(result.policy) }, req);
+      return;
+    }
+    if (path === '/economy/budget' && method === 'GET') {
+      if (!economy) { bad(res, 501, 'economy-not-assembled', null, req); return; }
+      const ownerId = url.searchParams.get('ownerId');
+      const currency = url.searchParams.get('currency') || 'IB_CREDIT';
+      const amountMinor = url.searchParams.get('amountMinor');
+      if (!ownerId || amountMinor == null) { bad(res, 400, 'missing-owner-or-amount', null, req); return; }
+      const result = economy.evaluateBudgetFor({
+        ownerId: ownerId, currency: currency, amountMinor: amountMinor,
+        now: url.searchParams.get('now') || undefined
+      });
+      if (!result.ok) { bad(res, 400, result.errors[0] || 'budget-evaluation-failed', null, req); return; }
+      /* 决策本身是 200：DENY 是一个**结论**，不是一次 HTTP 失败。
+         真正的读错误（库没开、id 不合法）在上面那条 400 里。 */
+      ok(res, {
+        decision: result.decision,
+        snapshot: economy.serializeBudgetSnapshot(result.snapshot),
+        evaluatedOnly: result.evaluatedOnly === true,
+        notASpendPermit: result.notASpendPermit,
+        /* 这一层从不 reserve：显式写出来，免得下游把 ALLOW 读成"钱已锁"。 */
+        reserved: false
+      }, req);
+      return;
+    }
+    if (path === '/economy/quotes' && method === 'GET') {
+      if (!economy) { bad(res, 501, 'economy-not-assembled', null, req); return; }
+      const buyerId = url.searchParams.get('buyerId') || url.searchParams.get('ownerId') || undefined;
+      const state = url.searchParams.get('state') || undefined;
+      const result = economy.listQuotes({
+        buyerId: buyerId, state: state, limit: url.searchParams.get('limit') || undefined
+      });
+      if (!result.ok) { bad(res, 400, result.errors[0] || 'quote-read-failed', null, req); return; }
+      ok(res, {
+        quotes: result.quotes.map(q => economy.serializeQuote(q)),
+        /* 报价不锁任何东西 —— 这句话是可断言的，不是修辞。 */
+        locksFunds: false
+      }, req);
+      return;
+    }
+    if (path === '/economy/quote' && method === 'GET') {
+      if (!economy) { bad(res, 501, 'economy-not-assembled', null, req); return; }
+      const quoteId = url.searchParams.get('quoteId');
+      if (!quoteId) { bad(res, 400, 'missing-quote-id', null, req); return; }
+      /* evaluate=1 会**额外**做一次预算评估，但仍然什么都不改：
+         "评估一份报价"与"接受一份报价"是两件事（§18）。 */
+      if (url.searchParams.get('evaluate') === '1') {
+        const evaluated = economy.evaluateQuote({
+          quoteId: quoteId, now: url.searchParams.get('now') || undefined
+        });
+        if (!evaluated.ok) { bad(res, 404, evaluated.errors[0] || 'quote-not-found', null, req); return; }
+        ok(res, {
+          quote: evaluated.quote,
+          walletSnapshot: evaluated.walletSnapshot,
+          budgetSnapshot: evaluated.budgetSnapshot,
+          decision: evaluated.decision,
+          reasonCode: evaluated.reasonCode,
+          evaluatedOnly: evaluated.evaluatedOnly === true,
+          reserved: false,
+          consumed: false,
+          notASpendPermit: evaluated.notASpendPermit
+        }, req);
+        return;
+      }
+      const result = economy.getQuote({ quoteId: quoteId });
+      if (!result.ok) { bad(res, 404, result.errors[0] || 'quote-not-found', null, req); return; }
+      ok(res, { quote: economy.serializeQuote(result.quote) }, req);
       return;
     }
     /* 其余 /economy/* 一律 404 —— 尤其 POST 到上面任何一条路径。

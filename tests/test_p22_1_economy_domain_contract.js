@@ -536,10 +536,14 @@ check('D13.14 operation 的 reservationId / transactionId 若给了就必须是 
     idempotencyKey: 'k', status: 'COMMITTED', transactionId: 'pay_123'
   })));
 
-/* idempotency scope：预留与提交不能共用一个模糊键空间（§18）。 */
-check('D13.15 OPERATION_SCOPE 是封闭五元集合 {RESERVE,COMMIT,RELEASE,EXPIRE,FAIL}',
-  C.OPERATION_SCOPES.slice().sort().join(',') === 'COMMIT,EXPIRE,FAIL,RELEASE,RESERVE' &&
+/* idempotency scope：预留与提交不能共用一个模糊键空间（§18）。
+   P22-4 把"七个 scope"写进断言：scope 是**封闭集合**，新增一个就必须
+   同时改这里 —— 这正是它该有的阻力。P22-4 加的两个（QUOTE / POLICY）
+   锁的不是钱，但它们必须与 reserve/commit 一样是**互不混淆**的身份。 */
+check('D13.15 OPERATION_SCOPE 是封闭七元集合 {RESERVE,COMMIT,RELEASE,EXPIRE,FAIL,QUOTE,POLICY}',
+  C.OPERATION_SCOPES.slice().sort().join(',') === 'COMMIT,EXPIRE,FAIL,POLICY,QUOTE,RELEASE,RESERVE' &&
   C.isOperationScope('RESERVE') === true && C.isOperationScope('reserve') === false &&
+  C.isOperationScope('QUOTE') === true && C.isOperationScope('POLICY') === true &&
   C.isOperationScope('TOPUP') === false);
 check('D13.16 scopedIdempotencyIdentity 让同一个 key 在两个 scope 下是**两个**身份',
   C.scopedIdempotencyIdentity('RESERVE', 'X').identity !== C.scopedIdempotencyIdentity('COMMIT', 'X').identity &&
@@ -1178,6 +1182,209 @@ check('D21.5 Provider → Economy 的唯一方向是只读遥测（反向写路�
     return fwd.length === 1 && fwd[0].to === 'Economy' && fwd[0].rule === 'READ_ONLY_TELEMETRY' &&
       !C.DEPENDENCY_MATRIX.some(r => r.from === 'Economy' && r.to === 'ProviderBilling' &&
         r.rule !== 'FORBIDDEN');
+  })());
+
+/* ══════════════════════════════════════════════════════════════════
+   D-ADDITIVE-P22-4 · P22-4 对契约的**全部**改动（逐项点名）
+
+   这一组存在的理由：P22-4 是一层新的规则系统，而"加一层规则"最容易
+   滑向"顺手把契约改得更方便"。因此它列出的每一类改动都必须是
+   **加法**，并且下面同时断言 P22-1 冻结的字面值**一个字都没变**。
+   ══════════════════════════════════════════════════════════════════ */
+section('D-ADDITIVE-P22-4 · P22-4 的加法面（冻结字面值逐一复核）');
+
+check('D14.1 P22-1 冻结的六种币种、六个状态、八个 transaction type 逐字未变',
+  C.CURRENCIES.slice().sort().join(',') === 'ACTIVITY_POINT,COMPUTE_PREMIUM,COMPUTE_STANDARD,IB_CREDIT,IMAGE_CREDIT,VOICE_CREDIT' &&
+  C.TX_STATES.join(',') === 'CREATED,RESERVED,COMMITTED,RELEASED,EXPIRED,FAILED' &&
+  C.TX_TYPES.join(',') === 'PURCHASE,GIFT,EXCHANGE,MINT,BURN,COMPUTE_GRANT,COMPUTE_CONSUME,REFUND' &&
+  C.RESERVATION_STATES.join(',') === 'ACTIVE,COMMITTED,RELEASED,EXPIRED' &&
+  C.QUOTE_STATES.join(',') === 'OPEN,CONSUMED,EXPIRED' &&
+  C.WALLET_STATES.slice().sort().join(',') === 'COLD,DEGRADED,READY');
+check('D14.2 P22-1 的三十一个 reason code 一个都没丢（35 = 31 + P22-3 一个 + P22-4 三个新增）',
+  ['INSUFFICIENT_BALANCE', 'PER_TX_LIMIT', 'DAILY_LIMIT', 'WEEKLY_LIMIT', 'MONTHLY_LIMIT',
+    'CATEGORY_LIMIT', 'RECIPIENT_LIMIT', 'AUTONOMY_LIMIT', 'COOLDOWN_ACTIVE', 'EMERGENCY_RESERVE',
+    'WALLET_NOT_READY', 'PRODUCT_DISABLED', 'PRODUCT_OUT_OF_STOCK', 'INVALID_CURRENCY',
+    'INVALID_AMOUNT', 'QUOTE_EXPIRED', 'QUOTE_MISMATCH', 'RESERVATION_EXPIRED', 'DUPLICATE_REQUEST',
+    'TRANSITION_NOT_ALLOWED', 'LEDGER_UNBALANCED', 'EFFECT_NOT_ALLOWED', 'PARTY_NOT_ALLOWED',
+    'ACCOUNT_NOT_ALLOWED', 'AUTONOMY_NOT_PERMITTED', 'INSUFFICIENT_COMPUTE_CREDIT',
+    'EXCHANGE_RATE_UNKNOWN', 'EXCHANGE_ROUNDS_TO_ZERO', 'EXCHANGE_CROSS_DOMAIN_FORBIDDEN',
+    'POLICY_INPUT_NOT_STRUCTURED', 'INSUFFICIENT_AVAILABLE_BALANCE'].every(r => C.isDenyReasonCode(r)) &&
+  C.DENY_REASONS.length === 35, C.DENY_REASONS.length);
+check('D14.3 P22-4 新增的四个 reason code 各自可判定，且没有引入兜底值',
+  ['POLICY_NOT_FOUND', 'POLICY_TERM_EXPIRED', 'AMOUNT_EXCEEDS_PER_TRANSACTION',
+    'AMOUNT_EXCEEDS_APPROVAL_THRESHOLD'].every(r => C.isDenyReasonCode(r)) &&
+  C.DENY_REASONS.indexOf('OTHER') < 0 && C.DENY_REASONS.indexOf('POLICY_DISABLED') < 0 &&
+  C.isDenyReasonCode('policy_not_found') === false);
+check('D14.4 QUOTE_STATE 的三个字面值未变，但转移表被补上（OPEN 是唯一非终态）',
+  C.QUOTE_TRANSITIONS.OPEN.join(',') === 'CONSUMED,EXPIRED' &&
+  C.QUOTE_TRANSITIONS.CONSUMED.length === 0 && C.QUOTE_TRANSITIONS.EXPIRED.length === 0 &&
+  C.QUOTE_TERMINAL_STATES.slice().sort().join(',') === 'CONSUMED,EXPIRED' &&
+  C.isQuoteState('OPEN') && C.isQuoteState('open') === false);
+check('D14.5 报价终态不可回退：CONSUMED / EXPIRED 到任何状态都不允许',
+  C.QUOTE_STATES.every(to => C.canTransitionQuote('CONSUMED', to).allowed === false &&
+    C.canTransitionQuote('EXPIRED', to).allowed === false) &&
+  C.canTransitionQuote('OPEN', 'CONSUMED').allowed === true &&
+  C.canTransitionQuote('OPEN', 'EXPIRED').allowed === true &&
+  C.canTransitionQuote('OPEN', 'OPEN').allowed === false);
+check('D14.6 assertQuoteTransition 区分"终态回退"与"非法转移"（失败信息可读）',
+  C.assertQuoteTransition('CONSUMED', 'OPEN').detail.indexOf('terminal-quote-cannot-transition') === 0 &&
+  C.assertQuoteTransition('OPEN', 'OPEN').detail === 'transition-not-in-allowed-set' &&
+  C.assertQuoteTransition('NOPE', 'OPEN').errors.indexOf('quote-state-not-in-closed-set') >= 0);
+check('D14.7 quote kind 是封闭三元集合，且 PURCHASE 是缺省（P22-1 只冻结了这一种）',
+  C.QUOTE_KINDS.slice().sort().join(',') === 'COMPUTE_GRANT,GIFT,PURCHASE' &&
+  C.isQuoteKind('API_QUOTA') === false && C.isQuoteKind('api_quota') === false &&
+  C.isQuoteKind(null) === false);
+check('D14.8 每种 quote kind 的结算 transaction type 都是冻结词表的成员',
+  C.QUOTE_KINDS.every(k => C.TX_TYPES.indexOf(C.settlementTypeOfQuoteKind(k)) >= 0) &&
+  C.settlementTypeOfQuoteKind('COMPUTE_GRANT') === 'COMPUTE_GRANT' &&
+  C.settlementTypeOfQuoteKind('API_QUOTA') === null);
+check('D14.9 validateQuote 对未登记的 kind 说不（自由字符串会让结算形态无法回答）',
+  !okResult(C.validateQuote({
+    quoteId: 'econ_quote_q1', productId: 'econ_product_p1', currency: 'IB_CREDIT',
+    amountMinor: 100, quantity: 1, expiresAt: 9e15, state: 'OPEN', kind: 'API_QUOTA'
+  })) && okResult(C.validateQuote({
+    quoteId: 'econ_quote_q1', productId: 'econ_product_p1', currency: 'IB_CREDIT',
+    amountMinor: 100, quantity: 1, expiresAt: 9e15, state: 'OPEN', kind: 'PURCHASE'
+  })) && okResult(C.validateQuote({
+    quoteId: 'econ_quote_q1', productId: 'econ_product_p1', currency: 'IB_CREDIT',
+    amountMinor: 100, quantity: 1, expiresAt: 9e15, state: 'OPEN'
+  })));
+check('D14.10 quote 的三个结算形态都落在 P22-3 允许的对手方之内（treasury / market）',
+  /* PURCHASE / GIFT 走 system:market，COMPUTE_GRANT 走 system:treasury；
+     两者都在 COMMIT_COUNTERPARTIES 里，而 mint / burn 一个都不在。 */
+  ['PURCHASE', 'GIFT', 'COMPUTE_GRANT'].every(k =>
+    C.SYSTEM_ACCOUNTS.indexOf(C.settlementTypeOfQuoteKind(k) === 'COMPUTE_GRANT'
+      ? C.SYSTEM_ACCOUNT.TREASURY : C.SYSTEM_ACCOUNT.MARKET) >= 0));
+check('D14.11 消费类别表与冻结的 TX_TYPES **恰好**同键（新增 type 却忘了分类会在载入期失败）',
+  Object.keys(C.BUDGET_SPEND_CLASS).sort().join(',') === C.TX_TYPES.slice().sort().join(',') &&
+  C.BUDGET_SPENDING_TYPES.join(',') === 'PURCHASE,GIFT,COMPUTE_CONSUME' &&
+  C.BUDGET_NEUTRAL_TYPES.slice().sort().join(',') === 'BURN,COMPUTE_GRANT,EXCHANGE,MINT,REFUND');
+check('D14.12 未登记的 transaction type 的消费类别是 null（不是"默认算消费/不算消费"）',
+  C.spendClassOfTransactionType('PURCHASE') === 'SPEND' &&
+  C.spendClassOfTransactionType('EXCHANGE') === 'NEUTRAL' &&
+  C.spendClassOfTransactionType('TOPUP_PROVIDER') === null &&
+  C.spendClassOfTransactionType(null) === null &&
+  C.isSpendingTransactionType('purchase') === false);
+check('D14.13 兑换与算力授予被明确划为 NEUTRAL：它们不花这个 owner 的预算',
+  C.isSpendingTransactionType('EXCHANGE') === false &&
+  C.isSpendingTransactionType('COMPUTE_GRANT') === false &&
+  C.isSpendingTransactionType('REFUND') === false &&
+  C.isSpendingTransactionType('PURCHASE') === true);
+check('D14.14 窗口边界是 UTC 纯函数：日 / 周（周一起）/ 月，三个都可穷举',
+  C.BUDGET_TIMEZONE === 'UTC' &&
+  C.utcDayStart(Date.UTC(2024, 0, 1, 23, 59, 59, 999)) === Date.UTC(2024, 0, 1) &&
+  C.utcWeekStart(Date.UTC(2024, 0, 1, 12)) === Date.UTC(2024, 0, 1) &&
+  C.utcWeekStart(Date.UTC(2023, 11, 31, 12)) === Date.UTC(2023, 11, 25) &&
+  C.utcMonthStart(Date.UTC(2024, 1, 29, 23, 59)) === Date.UTC(2024, 1, 1) &&
+  C.utcMonthStart(Date.UTC(2024, 0, 1)) === Date.UTC(2024, 0, 1));
+check('D14.15 三个窗口的起点对**任意** now 都落在自己窗口之内（边界处不跳窗）',
+  (() => {
+    const samples = [Date.UTC(2024, 0, 1), Date.UTC(2024, 0, 1) - 1, Date.UTC(2024, 2, 1) - 1,
+      Date.UTC(2025, 0, 1) - 1, Date.UTC(2024, 1, 29, 12), Date.UTC(1999, 11, 31, 23, 59, 59, 999)];
+    return samples.every(t =>
+      C.utcDayStart(t) <= t && t - C.utcDayStart(t) < C.MS_PER_DAY &&
+      C.utcWeekStart(t) <= t && t - C.utcWeekStart(t) < 7 * C.MS_PER_DAY &&
+      C.utcMonthStart(t) <= t &&
+      new Date(C.utcWeekStart(t)).getUTCDay() === 1 &&
+      new Date(C.utcMonthStart(t)).getUTCDate() === 1);
+  })());
+check('D14.16 budgetWindowStart 对未登记窗口返回 null（不是"默认按日算"）',
+  C.budgetWindowStart('DAY', 0) === 0 && C.budgetWindowStart('WEEK', 0) === -3 * C.MS_PER_DAY &&
+  C.budgetWindowStart('MONTH', 0) === 0 && C.budgetWindowStart('FORTNIGHT', 0) === null &&
+  C.budgetWindowStart(null, 0) === null);
+check('D14.17 评估顺序被冻结成 11 步，且结果里带回 priority（优先级可被机器断言）',
+  C.BUDGET_EVALUATION_PRIORITY.length === 11 &&
+  C.BUDGET_EVALUATION_PRIORITY[0] === 'policy-effective' &&
+  C.BUDGET_EVALUATION_PRIORITY[10] === 'allow' &&
+  C.BUDGET_EVALUATION_PRIORITY.indexOf('daily') < C.BUDGET_EVALUATION_PRIORITY.indexOf('weekly') &&
+  C.BUDGET_EVALUATION_PRIORITY.indexOf('weekly') < C.BUDGET_EVALUATION_PRIORITY.indexOf('monthly'));
+check('D14.18 三个窗口规则各自绑定冻结的 limit 键与 usage 键（顺序即优先级）',
+  C.BUDGET_WINDOW_RULES.map(r => r.limit).join(',') === 'dailyMinor,weeklyMinor,monthlyMinor' &&
+  C.BUDGET_WINDOW_RULES.map(r => r.usage).join(',') === 'spentTodayMinor,spentThisWeekMinor,spentThisMonthMinor' &&
+  C.BUDGET_WINDOW_RULES.every(r => C.BUDGET_LIMIT_KEYS.indexOf(r.limit) >= 0) &&
+  C.BUDGET_WINDOW_RULES.every(r => C.isDenyReasonCode(r.reason)));
+check('D14.19 政策限额表的字段名全部带 Minor 后缀（与真实人民币的 maxBudget 不同族）',
+  C.POLICY_LIMIT_TABLE.every(r => /Minor$/.test(r.name) && /_minor$/.test(r.field)) &&
+  C.POLICY_LIMIT_NAMES.every(n => C.BUDGET_LIMIT_KEYS.indexOf(n) >= 0) &&
+  C.POLICY_LIMIT_NAMES.indexOf('perTransactionMinor') === 0);
+check('D14.20 policy status 是二元词表，未知状态一律不生效（fail closed）',
+  C.POLICY_STATUSES.slice().sort().join(',') === 'ACTIVE,DISABLED' &&
+  C.isPolicyStatus('ACTIVE') && C.isPolicyStatus('active') === false &&
+  C.policyIsEffectiveAt({ status: 'ACTIVE', termEndsAt: null }, 100).effective === true &&
+  C.policyIsEffectiveAt({ status: 'DISABLED', termEndsAt: null }, 100).effective === false &&
+  C.policyIsEffectiveAt({ status: 'PAUSED', termEndsAt: null }, 100).ok === false);
+check('D14.21 政策期限用**比较**判定（政策到期不需要任何定时器）',
+  C.policyIsEffectiveAt({ status: 'ACTIVE', termEndsAt: 1000 }, 999).effective === true &&
+  C.policyIsEffectiveAt({ status: 'ACTIVE', termEndsAt: 1000 }, 1000).effective === false &&
+  C.policyIsEffectiveAt({ status: 'ACTIVE', termEndsAt: 1000 }, 1001).reason === 'POLICY_TERM_EXPIRED' &&
+  C.policyIsEffectiveAt({ status: 'DISABLED', termEndsAt: 1 }, 999).reason === 'POLICY_NOT_FOUND');
+check('D14.22 三态决策是封闭集合，且 ALLOW 是唯一 allowed 的那一个',
+  C.BUDGET_DECISIONS.slice().sort().join(',') === 'ALLOW,DENY,REQUIRE_APPROVAL' &&
+  C.BUDGET_DECISION.ALLOW === 'ALLOW' && C.BUDGET_DECISION.DENY === 'DENY' &&
+  C.BUDGET_DECISION.REQUIRE_APPROVAL === 'REQUIRE_APPROVAL');
+check('D14.23 每一份评估结果都写着 snapshot.authority==="none"（ALLOW 不是可执行的许可）',
+  (() => {
+    const d = C.budgetDecision(C.BUDGET_DECISION.ALLOW, C.BUDGET_ALLOWED_REASON, { evaluatedAt: 123 });
+    return d.snapshot.kind === 'evaluation' && d.snapshot.authority === 'none' &&
+      d.snapshot.at === 123 && Object.isFrozen(d.snapshot) &&
+      d.allowed === true && d.requiresApproval === false && d.denied === false &&
+      d.domain === C.DOMAIN && d.namespace === C.NAMESPACES.BUDGET;
+  })());
+check('D14.24 evaluateBudget 是纯函数：同输入同输出，且不读时钟 / 随机 / 全局状态',
+  (() => {
+    const policy = C.validateBudgetPolicy({
+      policyId: 'econ_policy_p1', ownerId: 'cfg_a', currency: 'IB_CREDIT', status: 'ACTIVE',
+      termEndsAt: null,
+      limits: { perTransactionMinor: 300, dailyMinor: 500, weeklyMinor: 1000, monthlyMinor: 2000, approvalThresholdMinor: 200 }
+    });
+    const ctx = {
+      ownerId: 'cfg_a', currency: 'IB_CREDIT', amountMinor: 100,
+      walletState: 'READY', timestamp: Date.UTC(2024, 0, 1, 12),
+      usage: { spentTodayMinor: 0, spentThisWeekMinor: 0, spentThisMonthMinor: 0 },
+      limits: { availableBalanceMinor: 1000 }
+    };
+    const a = JSON.stringify(C.evaluateBudget(policy.policy, ctx));
+    const b = JSON.stringify(C.evaluateBudget(policy.policy, ctx));
+    const c = JSON.stringify(C.evaluateBudget(policy.policy, JSON.parse(JSON.stringify(ctx))));
+    return a === b && b === c && C.evaluateBudget(policy.policy, ctx).outcome === 'ALLOW';
+  })());
+check('D14.25 契约的输入白名单仍然是 Budget 的唯一入口（maxBudget / prompt 在类型上无处可放）',
+  !okResult(C.normalizeBudgetInput({ ownerId: 'cfg_a', maxBudget: 100 })) &&
+  !okResult(C.normalizeBudgetInput({ ownerId: 'cfg_a', prompt: 'please buy it' })) &&
+  !okResult(C.normalizeBudgetInput({ ownerId: 'cfg_a', relationship: { trust: 0.9 } })) &&
+  C.FORBIDDEN_POLICY_INPUT_KEYS.indexOf('prompt') >= 0 &&
+  C.FORBIDDEN_POLICY_INPUT_KEYS.indexOf('llmOutput') >= 0);
+check('D14.26 P22-3 的 OPERATION_SCOPE 五元集合是**子集**（加 scope 不是换 scope）',
+  ['RESERVE', 'COMMIT', 'RELEASE', 'EXPIRE', 'FAIL'].every(s => C.OPERATION_SCOPES.indexOf(s) >= 0) &&
+  C.OPERATION_SCOPES.length === 7);
+check('D14.27 P22-4 的八个新事件全部登记，且 P22-1 的十一个事件一个都没丢',
+  ['BUDGET_POLICY_CREATED', 'BUDGET_POLICY_UPDATED', 'BUDGET_POLICY_DISABLED', 'BUDGET_POLICY_EXPIRED',
+    'QUOTE_CREATED', 'QUOTE_EXPIRED', 'QUOTE_CONSUMED', 'QUOTE_CANCELLED'].every(t => C.isEconomyEventType(t)) &&
+  ['WALLET_OPENED', 'TRANSACTION_CREATED', 'PURCHASE_COMMITTED', 'PURCHASE_DENIED',
+    'ITEM_GIFTED', 'ITEM_CONSUMED', 'COMPUTE_CREDIT_GRANTED', 'COMPUTE_CREDIT_CONSUMED',
+    'EXCHANGE_COMMITTED', 'MINT_COMMITTED', 'BURN_COMMITTED'].every(t => C.isEconomyEventType(t)));
+check('D14.28 十三种 id 种类未变，BUDGET_POLICY / QUOTE 的前缀在 P22-1 就已冻结',
+  C.ID_KINDS.length === 13 &&
+  C.ID_PREFIX.BUDGET_POLICY === 'econ_policy_' && C.ID_PREFIX.QUOTE === 'econ_quote_' &&
+  C.isEconomyId('BUDGET_POLICY', 'econ_policy_x1') === true &&
+  C.isEconomyId('QUOTE', 'econ_quote_q1') === true &&
+  C.isEconomyId('QUOTE', 'econ_policy_x1') === false);
+check('D14.29 政策 / 报价命名空间在 P22-1 就已存在，P22-4 没有新造子域',
+  C.NAMESPACES.BUDGET === 'ib.economy.budget' && C.NAMESPACES.QUOTE === 'ib.economy.quote' &&
+  C.NAMESPACES.STORE === 'ib.economy.store');
+check('D14.30 依赖矩阵未被 P22-4 改动：Economy 的出边仍然一条"允许写"都没有',
+  C.DEPENDENCY_MATRIX.filter(r => r.from === 'Economy').length === 8 &&
+  C.DEPENDENCY_MATRIX.filter(r => r.from === 'Economy')
+    .every(r => r.rule !== 'WRITE' && r.rule !== 'ALLOWED'));
+check('D14.31 评估结果里**没有**任何叫 authorization 的字段（不与凭据边界在文本上撞车）',
+  (() => {
+    const keys = [];
+    const walk = (o, depth) => {
+      if (!o || typeof o !== 'object' || depth > 3) return;
+      for (const k of Object.keys(o)) { keys.push(k); walk(o[k], depth + 1); }
+    };
+    walk(C.budgetDecision(C.BUDGET_DECISION.DENY, 'DAILY_LIMIT', { errors: ['x'] }), 0);
+    return keys.every(k => !/authorization/i.test(k)) && keys.indexOf('snapshot') >= 0;
   })());
 
 /* ══════════════════════════════════════════════════════════════════

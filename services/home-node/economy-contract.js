@@ -370,7 +370,37 @@
     EXCHANGE_RATE_UNKNOWN: 'EXCHANGE_RATE_UNKNOWN',
     EXCHANGE_ROUNDS_TO_ZERO: 'EXCHANGE_ROUNDS_TO_ZERO',
     EXCHANGE_CROSS_DOMAIN_FORBIDDEN: 'EXCHANGE_CROSS_DOMAIN_FORBIDDEN',
-    POLICY_INPUT_NOT_STRUCTURED: 'POLICY_INPUT_NOT_STRUCTURED'
+    POLICY_INPUT_NOT_STRUCTURED: 'POLICY_INPUT_NOT_STRUCTURED',
+    /* ── P22-4 追加的四个（加法）──────────────────────────────────────────
+       为什么这四个不能复用已有的代码：
+
+       POLICY_NOT_FOUND —— 既有的 PRODUCT_DISABLED / QUOTE_MISMATCH 说的是
+       "某个商品 / 某份报价不对"，而这里缺的是**规则本身**：这个 owner 在
+       这个币种上根本没有启用的预算政策。"没有规则"与"规则说不"必须能分开，
+       否则运维看到一千条 DENIED 时无法回答"是大家都超预算了，还是策略
+       根本没配"。ownerId / currency 不匹配、政策被禁用、政策未创建、
+       政策期限已结束 —— 四种情况共用这一个代码，因为它们对调用方的
+       含义完全相同：**这个作用域上没有生效的规则**。
+
+       POLICY_TERM_EXPIRED —— 与上面刻意分开：政策**存在**、也曾经生效，
+       只是它的期限走完了。合并会让"政策到期"看起来像"政策没配"，而前者
+       是一个应该在时间线上可见的事件。
+
+       AMOUNT_EXCEEDS_PER_TRANSACTION —— PER_TX_LIMIT 的具名化。为什么
+       要两分：PER_TX_LIMIT 表达的是"这次金额超出了单笔上限"，而
+       DAILY/WEEKLY/MONTHLY_LIMIT 表达的是"累积额度不够了"。前者的
+       正确反应是"拆单或换商品"，后者的正确反应是"等窗口滚动"。把两者
+       压成同一个代码会让上层的反应变成猜。
+
+       AMOUNT_EXCEEDS_APPROVAL_THRESHOLD —— 这一条**不**出现在任何
+       DENY 路径上：它是 REQUIRE_APPROVAL 的 reasonCode。放进这个封闭
+       集合是因为 makeApproval() 要求 reasonCode ∈ DENY_REASON（那里冻结
+       的规则是"reason code 是封闭集合"，而不是"只有拒绝才有 reason"）。
+       名字如实地写着"超过了审批线"，而不是"被拒绝了"。 */
+    POLICY_NOT_FOUND: 'POLICY_NOT_FOUND',
+    POLICY_TERM_EXPIRED: 'POLICY_TERM_EXPIRED',
+    AMOUNT_EXCEEDS_PER_TRANSACTION: 'AMOUNT_EXCEEDS_PER_TRANSACTION',
+    AMOUNT_EXCEEDS_APPROVAL_THRESHOLD: 'AMOUNT_EXCEEDS_APPROVAL_THRESHOLD'
   });
 
   var DENY_REASONS = Object.freeze(Object.keys(DENY_REASON));
@@ -1063,7 +1093,15 @@
     COMMIT: 'COMMIT',
     RELEASE: 'RELEASE',
     EXPIRE: 'EXPIRE',
-    FAIL: 'FAIL'
+    FAIL: 'FAIL',
+    /* ── P22-4 追加的两个（加法）──────────────────────────────────────────
+       QUOTE / POLICY 与上面五个共用同一张幂等表与同一套 (scope, key) 语义，
+       但它们锁的不是钱：createQuote 锁的是一次报价，putBudgetPolicy 锁的是
+       一次规则变更。放进同一个 scope 空间是刻意的 —— "同一个 key 在
+       RESERVE 与 COMMIT 下是两件事"这条已经冻结的纪律，对
+       "同一个 key 在 QUOTE 与 POLICY 下也是两件事"逐字成立。 */
+    QUOTE: 'QUOTE',
+    POLICY: 'POLICY'
   });
 
   var OPERATION_SCOPES = Object.freeze(Object.keys(OPERATION_SCOPE));
@@ -1333,19 +1371,126 @@
   });
 
   var QUOTE_STATES = Object.freeze(Object.keys(QUOTE_STATE));
+  var QUOTE_STATE_INDEX = (function () {
+    var map = Object.create(null);
+    for (var i = 0; i < QUOTE_STATES.length; i++) map[QUOTE_STATES[i]] = true;
+    return map;
+  })();
+
+  /* ── Quote 状态机（P22-4）──────────────────────────────────────────────
+     P22-1 §14 冻结了三个状态与"必须消费 quote"这条纪律，但**没有**写下
+     转移表。P22-4 需要它，因为"已消费的报价不能回到 OPEN"必须是一条
+     被**执行**的规则，而不是一句注释。于是这里补上转移表 —— 这是加法：
+     QUOTE_STATE / QUOTE_STATES 的字面值一个字都没动。
+
+     OPEN 是唯一的非终态：一份报价要么被用掉、要么过期，两者都不可逆。
+     刻意**没有** CANCELLED：P22-4 §8 提到过它，但契约里没有这个字，而
+     "作废一份还没被接受的报价"完全可以由**过期**表达（把 expiresAt 设到
+     过去是调用方的决定，不是一个新的状态）。加一个契约里没有的状态是
+     破坏性变更，不是实现它。 */
+  var QUOTE_TRANSITIONS = Object.freeze({
+    OPEN: Object.freeze([QUOTE_STATE.CONSUMED, QUOTE_STATE.EXPIRED]),
+    CONSUMED: Object.freeze([]),
+    EXPIRED: Object.freeze([])
+  });
+
+  var QUOTE_TERMINAL_STATES = Object.freeze(
+    QUOTE_STATES.filter(function (s) { return QUOTE_TRANSITIONS[s].length === 0; })
+  );
+
+  function isQuoteState(value) {
+    return value != null && QUOTE_STATE_INDEX[String(value)] === true;
+  }
+
+  function canTransitionQuote(from, to) {
+    var f = String(from == null ? '' : from);
+    var t = String(to == null ? '' : to);
+    if (!QUOTE_STATE_INDEX[f] || !QUOTE_STATE_INDEX[t]) {
+      return { ok: false, allowed: false, errors: ['quote-state-not-in-closed-set'] };
+    }
+    var allowed = QUOTE_TRANSITIONS[f].indexOf(t) >= 0;
+    return { ok: true, allowed: allowed, errors: allowed ? [] : ['transition-not-allowed'], from: f, to: t };
+  }
+
+  function assertQuoteTransition(from, to) {
+    var r = canTransitionQuote(from, to);
+    if (!r.ok) return { ok: false, errors: r.errors };
+    if (!r.allowed) {
+      return {
+        ok: false,
+        errors: ['transition-not-allowed'],
+        detail: (QUOTE_TERMINAL_STATES.indexOf(r.from) >= 0)
+          ? 'terminal-quote-cannot-transition-must-create-a-new-quote'
+          : 'transition-not-in-allowed-set'
+      };
+    }
+    return { ok: true, errors: [] };
+  }
+
+  /* ── Quote 的种类（P22-4 §29）──────────────────────────────────────────
+     为什么需要它：P22-1 §14 的 quote 形状把"买什么"表达成 productId +
+     currency + quantity。这对普通商品够了，但 P22 §19 要求模型**未来**
+     能表达 API_QUOTA / COMPUTE_CREDIT 这类"买算力额度"的报价，而它与
+     "买一件商品"在结算形态上不是一回事：
+        · PURCHASE     —— 钱从钱包流向 system:market（P22-3 §10 允许的
+                          两个对手方之一）；
+        · GIFT         —— 同上，但 recipientId 有值（买给谁）；
+        · COMPUTE_GRANT —— 额度从 system:treasury 流向钱包（不花钱买，
+                          而是被授予）；API_QUOTA 报价的结算形态就是它。
+     因此 kind 必须存在，且必须是**封闭集合**：一个自由字符串会让
+     "这份报价将来该怎么结算"变成一次运行时猜测。
+     注意 kind 不携带任何金额语义 —— 金额仍然只有 amountMinor 一个来源。 */
+  var QUOTE_KIND = Object.freeze({
+    PURCHASE: 'PURCHASE',
+    GIFT: 'GIFT',
+    COMPUTE_GRANT: 'COMPUTE_GRANT'
+  });
+
+  var QUOTE_KINDS = Object.freeze(Object.keys(QUOTE_KIND));
+  var QUOTE_KIND_INDEX = (function () {
+    var map = Object.create(null);
+    for (var q = 0; q < QUOTE_KINDS.length; q++) map[QUOTE_KINDS[q]] = true;
+    return map;
+  })();
+
+  function isQuoteKind(value) {
+    return value != null && QUOTE_KIND_INDEX[String(value)] === true;
+  }
+
+  /* kind → 结算时的 ledger transaction type。这是一张**数据**表，不是
+     散落的条件分支；它的每个值都必须是冻结的 TX_TYPE 成员（下面有一条
+     自检，任何拼错都会在契约载入期就失败）。
+     为什么 API_QUOTA 落在这里：一份 API 额度报价的结算就是"额度被授予"，
+     而冻结词表里表达它的正是 COMPUTE_GRANT —— 不需要新造 transaction
+     type，也不需要碰 provider（P22-4 §24：Economy→Provider 写路径仍然
+     结构性不存在）。 */
+  var QUOTE_SETTLEMENT_TYPE = Object.freeze({
+    PURCHASE: 'PURCHASE',
+    GIFT: 'GIFT',
+    COMPUTE_GRANT: 'COMPUTE_GRANT'
+  });
+
+  function settlementTypeOfQuoteKind(kind) {
+    if (!isQuoteKind(kind)) return null;
+    return QUOTE_SETTLEMENT_TYPE[String(kind)];
+  }
 
   function validateQuote(input, now) {
     var o = input || {};
     var errors = [];
     if (!isEconomyId('QUOTE', o.quoteId)) errors.push('quote-id-not-canonical');
     if (!isEconomyId('PRODUCT', o.productId)) errors.push('product-id-not-canonical');
+    /* kind 是**可选**的加法：缺省是 PURCHASE（P22-1 冻结的那一种）。
+       给了就必须在封闭集合里 —— 一个未登记的种类会让"将来怎么结算"
+       无法回答。 */
+    if (o.kind != null && !isQuoteKind(o.kind)) errors.push('quote-kind-not-in-closed-set');
     var cur = validateCurrency(o.currency);
     if (!cur.ok) errors.push.apply(errors, cur.errors);
     var amt = normalizeAmountMinor(o.amountMinor);
     if (!amt.ok) errors.push.apply(errors, amt.errors);
     if (!Number.isSafeInteger(o.quantity) || o.quantity < 1) errors.push('quote-quantity-must-be-positive-safe-integer');
     if (!Number.isFinite(Number(o.expiresAt))) errors.push('quote-expires-at-not-a-number');
-    if (QUOTE_STATES.indexOf(String(o.state)) < 0) errors.push('quote-state-not-in-closed-set');
+    if (!isQuoteState(o.state)) errors.push('quote-state-not-in-closed-set');
     if (o.rateVersion != null && !isEconomyId('EXCHANGE_RATE', o.rateVersion)) {
       errors.push('exchange-rate-id-not-canonical');
     }
@@ -1355,6 +1500,640 @@
     if (errors.length) return { ok: false, quote: null, errors: errors };
     return { ok: true, errors: [], quote: o };
   }
+
+  /* ══════════════════════════════════════════════════════════════════
+     §14b · Budget Evaluation Contract（P22-4）
+
+     这一节回答的核心问题：
+
+         「这项经济行为在当前预算规则下**是否允许**？」
+
+     而**不是**：
+
+         「Agent 想不想买？」（Decision 的事）
+         「钱够不够？」（Wallet 的事，虽然它是本评估的一项输入）
+         「要不要用户批准？」（Approval 的事 —— 本层只**分类**，不执行）
+         「是否真的执行？」（Action 的事）
+
+     五个问题的边界必须清楚，因为把它们混起来的最常见后果是：
+     LLM 说"我很想买"→ 某个 if 分支把它读成"预算允许"。
+     本节的实现方式不是"记得别读正文"，而是让**那段文字没有地方可以放**。
+     ══════════════════════════════════════════════════════════════════ */
+
+  /* ── 什么算"花掉了"────────────────────────────────────────────────────
+     P22-4 §14 明确禁止用 `amount < 0` 去猜。理由是可以验证的：ledger 的
+     canonical amount 是**无符号**的（§10），方向在 direction 列上，因此
+     "金额是负数"这件事在数据里根本不存在 —— 靠它判断消费的代码会在
+     真实数据上永远得到 0，而测试如果也只喂正数就会是绿的。
+     因此这里把"哪些 transaction 是消费"写成一张**数据**表，逐 type 回答。
+
+     三种取值，刻意互不相同：
+       'SPEND'   钱从这个 owner 的账上真的出去了，计入窗口累计。
+       'NEUTRAL' 钱动了，但不是消费（增发 / 销毁 / 补偿退款 / 与系统账户
+                 的额度授予），不计入任何窗口。
+       null      这个 type **不在冻结词表里** ⇒ 调用方必须 fail closed。
+
+     为什么 EXCHANGE 是 NEUTRAL 而不是 SPEND：兑换是**同一 owner 内部**
+     的币种搬移（P22-6 的语义），本阶段的政策按 (owner, currency) 作用域，
+     而兑换在源币种上的 debit 与目标币种上的 credit 属于两个不同的政策。
+     把它记成"消费"会让一次换钱永久吃掉某个币种的日额度 —— 那是一条
+     没人要求过的规则。而 API 额度授予（COMPUTE_GRANT）同理：额度是
+     **被授予**的，它不花这个 owner 的预算。
+
+     这张表是**封闭**的：BUDGET_SPEND_CLASSES 的键必须与 TX_TYPES 逐字
+     相等，下面有一条载入期自检。于是"新增一个 transaction type 却忘了
+     说它算不算消费"会在契约载入时就失败，而不是在某个窗口的求和里
+     静默地少算一笔。 */
+  var BUDGET_SPEND_CLASS = Object.freeze({
+    PURCHASE: 'SPEND',
+    GIFT: 'SPEND',
+    COMPUTE_CONSUME: 'SPEND',
+    EXCHANGE: 'NEUTRAL',
+    COMPUTE_GRANT: 'NEUTRAL',
+    REFUND: 'NEUTRAL',
+    MINT: 'NEUTRAL',
+    BURN: 'NEUTRAL'
+  });
+
+  /* 窗口累计只统计这些 type。顺序固定，便于审计与测试逐条断言。 */
+  var BUDGET_SPENDING_TYPES = Object.freeze(
+    TX_TYPES.filter(function (t) { return BUDGET_SPEND_CLASS[t] === 'SPEND'; })
+  );
+
+  var BUDGET_NEUTRAL_TYPES = Object.freeze(
+    TX_TYPES.filter(function (t) { return BUDGET_SPEND_CLASS[t] === 'NEUTRAL'; })
+  );
+
+  function spendClassOfTransactionType(type) {
+    var t = type == null ? '' : String(type);
+    if (TX_TYPES.indexOf(t) < 0) return null;
+    return BUDGET_SPEND_CLASS[t];
+  }
+
+  function isSpendingTransactionType(type) {
+    return spendClassOfTransactionType(type) === 'SPEND';
+  }
+
+  /* ── 消费窗口：UTC，显式，无 locale ───────────────────────────────────
+     P22-4 §13 要求边界明确、不得隐式使用系统 locale。因此：
+       day    = floor(now / 86400000) * 86400000            （UTC 日）
+       week   = 该 UTC 日所属的**周一** 00:00Z               （ISO 周起点）
+       month  = 该 UTC 月的 1 日 00:00Z
+     日与周是**纯算术**（UTC 没有夏令时，因此不存在"某一天有 23 小时"
+     这种事）。月必须读日历（月份长度不一），但读的是 `Date.UTC(...)` 的
+     纯数值结果，**不读**时区、不读 locale、不读环境变量。
+     三个函数都是纯的：同一个 now 永远得到同一个边界。 */
+  var MS_PER_DAY = 86400000;
+
+  function utcDayStart(now) {
+    var n = Number(now);
+    if (!Number.isFinite(n)) return null;
+    var day = Math.floor(n / MS_PER_DAY);
+    if (!Number.isSafeInteger(day)) return null;
+    return day * MS_PER_DAY;
+  }
+
+  function utcWeekStart(now) {
+    var day = utcDayStart(now);
+    if (day === null) return null;
+    /* 1970-01-01 是**周四**。周起点定在周一 ⇒ 对齐时刻是 1969-12-29
+       （= -3 天）。用常数而不是 `getUTCDay()`，是为了让这条规则在
+       代码里就是一个可读的算式，而不是一次库调用。 */
+    var MONDAY_ALIGNED_EPOCH = -3 * MS_PER_DAY;
+    return MONDAY_ALIGNED_EPOCH + Math.floor((day - MONDAY_ALIGNED_EPOCH) / (7 * MS_PER_DAY)) * (7 * MS_PER_DAY);
+  }
+
+  /* 月边界必须读日历（月份长度不一），但读的是**纯整数日期算法**：
+       · 先把毫秒化成"距 1970-01-01 的天数"，
+       · 再用 Howard Hinnant 的 civil-from-days 换算成 (y, m, d)，
+       · 然后取该月 1 日 00:00Z。
+     刻意**不用** `new Date(...)` / `getUTCMonth()`：契约的载入期纪律是
+     "零时钟、零 locale、零平台日历"（boundary B1.5 逐字断言），而上面
+     这个算法对任意有限的 now 都返回同一个整数 —— 它不依赖时区数据库、
+     夏令时规则或运行时的区域设置。UTC 没有夏令时，因此"某个月有几天"
+     是纯粹的历法事实。 */
+  function daysFromCivilDaysSinceEpoch(dayNumber) {
+    /* dayNumber 是"距 1970-01-01 的天数"，可能为负（1970 之前）。 */
+    var z = dayNumber + 719468;
+    var era = Math.floor(z / 146097);
+    var doe = z - era * 146097;                                        /* [0, 146096] */
+    var yoe = Math.floor((doe - Math.floor(doe / 1460) + Math.floor(doe / 36524) - Math.floor(doe / 146096)) / 365);
+    var y = yoe + era * 400;
+    var doy = doe - (365 * yoe + Math.floor(yoe / 4) - Math.floor(yoe / 100));
+    var mp = Math.floor((5 * doy + 2) / 153);
+    var d = doy - Math.floor((153 * mp + 2) / 5) + 1;
+    var m = mp + (mp < 10 ? 3 : -9);
+    return { year: y + (m <= 2 ? 1 : 0), month: m, day: d };
+  }
+
+  function utcMonthStart(now) {
+    var n = Number(now);
+    if (!Number.isFinite(n)) return null;
+    if (!Number.isSafeInteger(Math.floor(n))) return null;
+    var dayNumber = Math.floor(n / MS_PER_DAY);
+    var civil = daysFromCivilDaysSinceEpoch(dayNumber);
+    /* 该月的第 0 天（= 上个月最后一天）也能被同一算法表达，于是这里
+       用"把天数倒回本月 1 日"来得到月起点，而不是再写一遍年月换算。 */
+    var back = civil.day - 1;
+    if (back !== 0 && !Number.isSafeInteger(dayNumber - back)) return null;
+    return (dayNumber - back) * MS_PER_DAY;
+  }
+
+  var BUDGET_WINDOW = Object.freeze({ DAY: 'DAY', WEEK: 'WEEK', MONTH: 'MONTH' });
+  var BUDGET_WINDOWS = Object.freeze(Object.keys(BUDGET_WINDOW));
+  var BUDGET_TIMEZONE = 'UTC';
+
+  var WINDOW_START_OF = Object.freeze({
+    DAY: utcDayStart,
+    WEEK: utcWeekStart,
+    MONTH: utcMonthStart
+  });
+
+  function budgetWindowStart(window, now) {
+    var fn = WINDOW_START_OF[String(window == null ? '' : window)];
+    if (!fn) return null;
+    return fn(now);
+  }
+
+  /* ── 政策词表（P22-4 §3，全部是**加法**）────────────────────────────
+     P22-1 §13 冻结了 budget **输入**（BUDGET_INPUT_KEYS / BUDGET_LIMIT_KEYS）
+     与 AUTONOMY_LEVEL，但刻意没有冻结"政策记录长什么样"—— 那时还没有
+     持久化。P22-4 需要它，于是这里补上，且单位全部显式带 `Minor` 后缀
+     （§4：Economy 不得出现裸的 budget / price / amount）。
+
+     status 用二元词表而不是 enabled 布尔：布尔值在数据里无法表达第三个
+     状态（"暂停"与"从未启用"是两件事），而 policy 的读取面必须是
+     可枚举的。 */
+  var POLICY_STATUS = Object.freeze({
+    ACTIVE: 'ACTIVE',
+    DISABLED: 'DISABLED'
+  });
+
+  var POLICY_STATUSES = Object.freeze(Object.keys(POLICY_STATUS));
+
+  /* 期限终止的原因。与 status 分开：政策"结束"可以是到点了，也可以是
+     被显式停用，而这两者在审计里是不同的事件（§21）。 */
+  var POLICY_TERM = Object.freeze({
+    NONE: 'NONE',
+    EXPIRED: 'EXPIRED',
+    DISABLED: 'DISABLED'
+  });
+
+  var POLICY_TERMS = Object.freeze(Object.keys(POLICY_TERM));
+
+  /* 只有这些 status 允许出现在政策读取面上。一个未登记的状态意味着
+     "这条政策是不是生效的"无法回答 ⇒ 必须 fail closed（§17）。 */
+  function isPolicyStatus(value) {
+    return value != null && POLICY_STATUSES.indexOf(String(value)) >= 0;
+  }
+
+  /* 政策是否在**这个** now 上生效。纯函数：同一个 (policy, now) 永远
+     得到同一个答案，因此"政策到期了没有"不需要任何定时器，与
+     reservation / quote 的到期判定是同一条纪律（§10/§13）。 */
+  function policyIsEffectiveAt(policy, now) {
+    /* policy == null 是"这个作用域上没有规则"—— 一个真实、可回答的情形
+       （调用方查了，没查到）。它与"规则本身形状不对"是两件事，因此这里
+       返回 ok:true + effective:false + POLICY_NOT_FOUND，而不是结构化失败。
+       把两者混起来会让运维无法区分"这个 owner 根本没配预算"与"预算这
+       一面坏了"，而那正是 §17 要求分开的两个答案。 */
+    if (policy == null) {
+      return { ok: true, effective: false, reason: 'POLICY_NOT_FOUND', errors: [] };
+    }
+    if (typeof policy !== 'object' || Array.isArray(policy)) {
+      return { ok: false, effective: false, reason: 'POLICY_NOT_FOUND', errors: ['policy-must-be-an-object'] };
+    }
+    if (!isPolicyStatus(policy.status)) return { ok: false, effective: false, reason: 'POLICY_NOT_FOUND', errors: ['policy-status-not-in-closed-set'] };
+    if (String(policy.status) !== POLICY_STATUS.ACTIVE) {
+      return { ok: true, effective: false, reason: 'POLICY_NOT_FOUND', errors: [] };
+    }
+    if (policy.termEndsAt != null) {
+      var end = Number(policy.termEndsAt);
+      if (!Number.isFinite(end) || !Number.isSafeInteger(end) || end < 0) {
+        return { ok: false, effective: false, reason: 'POLICY_NOT_FOUND', errors: ['policy-term-ends-at-not-a-non-negative-safe-integer'] };
+      }
+      if (!Number.isFinite(Number(now))) {
+        return { ok: false, effective: false, reason: 'POLICY_NOT_FOUND', errors: ['policy-term-comparison-needs-a-finite-now'] };
+      }
+      if (end <= Number(now)) {
+        return { ok: true, effective: false, reason: 'POLICY_TERM_EXPIRED', errors: [] };
+      }
+    }
+    return { ok: true, effective: true, reason: null, errors: [] };
+  }
+
+  /* ── 政策的 limits（与 §13 的 BUDGET_LIMIT_KEYS 同一套词）─────────────
+     一张**可枚举**的表：name = 冻结的 limit 键，field = 持久化列，
+     reason = 违规时的 DENY_REASON，window = 它对照哪个消费窗口（null 表示
+     它不是窗口累计类）。
+     把这张表写出来的理由与 §7 的转移表相同：一张数据表可以被穷举断言，
+     而散落的 if 只能被读。 */
+  var POLICY_LIMIT_TABLE = Object.freeze([
+    Object.freeze({ name: 'perTransactionMinor', field: 'max_per_tx_minor', reason: 'AMOUNT_EXCEEDS_PER_TRANSACTION', window: null }),
+    Object.freeze({ name: 'dailyMinor', field: 'max_per_day_minor', reason: 'DAILY_LIMIT', window: 'DAY' }),
+    Object.freeze({ name: 'weeklyMinor', field: 'max_per_week_minor', reason: 'WEEKLY_LIMIT', window: 'WEEK' }),
+    Object.freeze({ name: 'monthlyMinor', field: 'max_per_month_minor', reason: 'MONTHLY_LIMIT', window: 'MONTH' })
+  ]);
+
+  var POLICY_LIMIT_NAMES = Object.freeze(POLICY_LIMIT_TABLE.map(function (r) { return r.name; }));
+
+  /* 窗口累计规则：**顺序即优先级**（P22-4 §15 的 7/8/9 三条）。
+     顺序写死在数组里，因此"同一输入只可能得到一个 reasonCode"这件事
+     是可穷举验证的，而不是"取决于对象键的枚举顺序"。 */
+  var BUDGET_WINDOW_RULES = Object.freeze([
+    Object.freeze({ limit: 'dailyMinor', usage: 'spentTodayMinor', reason: 'DAILY_LIMIT', window: 'DAY' }),
+    Object.freeze({ limit: 'weeklyMinor', usage: 'spentThisWeekMinor', reason: 'WEEKLY_LIMIT', window: 'WEEK' }),
+    Object.freeze({ limit: 'monthlyMinor', usage: 'spentThisMonthMinor', reason: 'MONTHLY_LIMIT', window: 'MONTH' })
+  ]);
+
+  var BUDGET_USAGE_WINDOW_KEYS = Object.freeze(BUDGET_WINDOW_RULES.map(function (r) { return r.usage; }));
+
+  var BUDGET_DECISION = Object.freeze({
+    ALLOW: 'ALLOW',
+    DENY: 'DENY',
+    REQUIRE_APPROVAL: 'REQUIRE_APPROVAL'
+  });
+
+  var BUDGET_DECISIONS = Object.freeze(Object.keys(BUDGET_DECISION));
+
+  /* 评估顺序是**编号的常量**，不是注释：结果里会带回 `priority`，
+     于是"为什么是这个 reasonCode 而不是另一个"可以从输出直接读出来，
+     测试也能逐条断言优先级（§30：同一输入只能得到一个 reasonCode）。 */
+  var BUDGET_EVALUATION_PRIORITY = Object.freeze([
+    'policy-effective',          /* 1  规则在这个作用域与这个时刻存在且生效 */
+    'wallet-ready',              /* 2  canonical 余额是否可信（不是"够不够"）*/
+    'policy-scope',              /* 3  ownerId / currency 是否就是政策的作用域 */
+    'amount-valid',              /* 4  金额是否是 canonical 量（> 0）*/
+    'available-balance',         /* 5  wallet affordability：available >= amount */
+    'per-transaction',           /* 6  单笔上限 */
+    'daily',                     /* 7  日额度 */
+    'weekly',                    /* 8  周额度 */
+    'monthly',                   /* 9  月额度 */
+    'approval-threshold',        /* 10 超过审批线 ⇒ REQUIRE_APPROVAL（不是 DENY）*/
+    'allow'                      /* 11 */
+  ]);
+
+  /* 结果形状。三个 outcome 各自**恒有**一个 reasonCode：
+     ALLOW → 'BUDGET_ALLOWED'、REQUIRE_APPROVAL → AMOUNT_EXCEEDS_APPROVAL_THRESHOLD、
+     DENY → 封闭集合里的一个具名原因（绝不自由文本）。
+     快照语义写在 `snapshot` 块里（见下面的 budgetDecision）。 */
+  var BUDGET_ALLOWED_REASON = 'BUDGET_ALLOWED';
+
+  function budgetDecision(outcome, reasonCode, extra) {
+    return Object.assign({
+      domain: DOMAIN,
+      namespace: NAMESPACES.BUDGET,
+      outcome: String(outcome),
+      allowed: String(outcome) === BUDGET_DECISION.ALLOW,
+      requiresApproval: String(outcome) === BUDGET_DECISION.REQUIRE_APPROVAL,
+      denied: String(outcome) === BUDGET_DECISION.DENY,
+      reasonCode: reasonCode == null ? null : String(reasonCode),
+      /* 快照语义写成一个**嵌套的、可断言的声明块**，而不是一个裸布尔。
+         两个理由：
+           ① 它要回答的问题有三个侧面 —— 这是什么（快照）、它不是
+              什么（不是一张可以拿去执行的许可）、它是关于哪个时刻的 ——
+              而一个 boolean 只能回答第一个；
+           ② 一个叫 `authorization` 的顶层字段会与本文件的凭据边界
+              （boundary B6.3：Economy 不读 HTTP 的 Authorization 头）
+              在文本上撞车。撞车的后果不是编译错误，而是那条安全断言
+              不得不为一个**正确的**新字段开一个例外 —— 而给安全断言
+              开例外正是它最容易失效的方式。因此这里换一个词，让那条
+              断言继续逐字成立。 */
+      snapshot: Object.freeze({
+        kind: 'evaluation',
+        authority: 'none',
+        at: extra && extra.evaluatedAt != null ? Number(extra.evaluatedAt) : null
+      }),
+      timezone: BUDGET_TIMEZONE
+    }, extra || {});
+  }
+
+  /* ── limits 归一（暴露出来是为了让 store 与测试用**同一个**规则）───── */
+  function normalizePolicyLimits(raw) {
+    if (raw == null) return { ok: true, limits: Object.freeze({}), errors: [] };
+    if (typeof raw !== 'object' || Array.isArray(raw)) {
+      return { ok: false, limits: null, errors: ['policy-limits-must-be-a-structured-object'] };
+    }
+    var errors = [];
+    var out = {};
+    var keys = Object.keys(raw);
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      if (raw[k] == null) continue;                       /* 未设置 = 该档不启用 */
+      if (k === COOLDOWN_KEY) {
+        /* 与 §13 的 normalizeBudgetInput 逐字同款：cooldown 是**时长**，
+           不是金额，因此不走 normalizeAmountMinor。 */
+        var cd = raw[k];
+        if (typeof cd !== 'number' || !Number.isSafeInteger(cd) || cd < 0) {
+          errors.push('policy-cooldown-must-be-non-negative-safe-integer');
+          continue;
+        }
+        out[k] = cd;
+        continue;
+      }
+      if (BUDGET_LIMIT_KEYS.indexOf(k) < 0) {
+        errors.push('policy-limit-key-not-in-closed-set');
+        continue;
+      }
+      var amt = normalizeAmountMinor(raw[k]);
+      if (!amt.ok) { errors.push('policy-limit-value-must-be-an-amount-minor'); continue; }
+      out[k] = amt.amountMinor;
+    }
+    if (errors.length) return { ok: false, limits: null, errors: errors };
+    return { ok: true, limits: Object.freeze(out), errors: [] };
+  }
+
+  function validateBudgetPolicy(input) {
+    var o = input || {};
+    var errors = [];
+    if (!isEconomyId('BUDGET_POLICY', o.policyId)) errors.push('budget-policy-id-not-canonical');
+    var owner = promotePartyRef(o.ownerId);
+    if (!owner) errors.push('policy-owner-invalid');
+    else if (owner.type === PARTY_TYPE.SYSTEM) errors.push('system-party-cannot-own-a-budget-policy');
+    var cur = validateCurrency(o.currency);
+    if (!cur.ok) errors.push.apply(errors, cur.errors);
+    var limits = normalizePolicyLimits(o.limits);
+    if (!limits.ok) errors.push.apply(errors, limits.errors);
+    if (o.status != null && !isPolicyStatus(o.status)) errors.push('policy-status-not-in-closed-set');
+    if (o.termEndsAt != null) {
+      var end = Number(o.termEndsAt);
+      if (!Number.isSafeInteger(end) || end < 0) errors.push('policy-term-ends-at-must-be-a-non-negative-safe-integer');
+    }
+    if (o.autonomyLevel != null && AUTONOMY_LEVELS.indexOf(String(o.autonomyLevel)) < 0) {
+      errors.push('policy-autonomy-level-not-in-closed-set');
+    }
+    if (errors.length) return { ok: false, policy: null, errors: errors };
+    return {
+      ok: true,
+      errors: [],
+      policy: Object.assign({}, o, {
+        ownerId: Object.freeze({ type: owner.type, id: owner.id }),
+        currency: cur.currency,
+        limits: limits.limits
+      })
+    };
+  }
+
+  /* ── 确定性评估器（P22-4 §2/§15/§16/§17）─────────────────────────────
+     签名刻意是一对 (policy, context) —— 两个**数据**参数，没有 store、
+     没有时钟、没有随机、没有任何 I/O。于是：
+
+       same policy + same context  ⇒  same result
+
+     是**结构性**成立，而不是"我们小心地没有引入不确定性"。这一点可以被
+     真的证伪：把同一个调用跑一千次、把键的顺序打乱、把对象深拷贝 ——
+     结果必须逐字节相同（P22-4 测试的 B 组）。
+
+     context 的键**必须**来自 §13 的白名单（normalizeBudgetInput 是唯一
+     入口），因此 prompt / persona / relationship / llmOutput 这类键
+     在这里是**无处可放**的：它们会被判成 policy-input-key-not-whitelisted
+     或 policy-input-carries-non-deterministic-text。 */
+  function evaluateBudget(policy, context) {
+    var reason = BUDGET_ALLOWED_REASON;
+
+    /* ── 1 规则存在且生效（在**事务之前**就做完，因为它不依赖任何事实） */
+    var effective = policyIsEffectiveAt(policy, context && context.timestamp);
+    if (!effective.ok) {
+      return budgetDecision(BUDGET_DECISION.DENY, DENY_REASON.POLICY_INPUT_NOT_STRUCTURED, {
+        errors: effective.errors, priority: BUDGET_EVALUATION_PRIORITY[0], systemFailure: false
+      });
+    }
+    if (!effective.effective) {
+      return budgetDecision(BUDGET_DECISION.DENY, effective.reason, {
+        errors: ['no-effective-budget-policy-in-this-scope'],
+        priority: BUDGET_EVALUATION_PRIORITY[0],
+        policyStatus: policy ? String(policy.status) : null,
+        policyTermEndsAt: (policy && policy.termEndsAt != null) ? Number(policy.termEndsAt) : null
+      });
+    }
+
+    /* context 必须先是结构化确定性数据 —— 在任何其它判断之前。 */
+    var norm = normalizeBudgetInput(context);
+    if (!norm.ok) {
+      return budgetDecision(BUDGET_DECISION.DENY, DENY_REASON.POLICY_INPUT_NOT_STRUCTURED, {
+        errors: norm.errors, priority: BUDGET_EVALUATION_PRIORITY[0]
+      });
+    }
+    var ctx = norm.input;
+    var limits = normalizePolicyLimits(policy.limits);
+    if (!limits.ok) {
+      return budgetDecision(BUDGET_DECISION.DENY, DENY_REASON.POLICY_INPUT_NOT_STRUCTURED, {
+        errors: limits.errors, priority: BUDGET_EVALUATION_PRIORITY[0]
+      });
+    }
+    /* availableBalanceMinor 不是政策的**限额**，而是 wallet 的事实。
+       把它放进 limits 是 §13 冻结的形状（BUDGET_LIMIT_KEYS 里有它），
+       因为评估器只允许从一个地方读"钱有多少"。 */
+    var caps = Object.assign({}, limits.limits);
+    if (caps.availableBalanceMinor == null && ctx.limits && ctx.limits.availableBalanceMinor != null) {
+      caps.availableBalanceMinor = ctx.limits.availableBalanceMinor;
+    }
+    /* 三个窗口累计值必须**都在**且都是 canonical 量。缺一个就意味着
+       "某个额度用掉了多少"未知，而未知不能被当成 0 —— 那会让一次评估
+       在一个不完整的快照上得出 ALLOW，正是 §17 要挡的形状。 */
+    var usage = {};
+    for (var w = 0; w < BUDGET_USAGE_WINDOW_KEYS.length; w++) {
+      var usageKey = BUDGET_USAGE_WINDOW_KEYS[w];
+      if (ctx.usage == null || ctx.usage[usageKey] == null) {
+        return budgetDecision(BUDGET_DECISION.DENY, DENY_REASON.POLICY_INPUT_NOT_STRUCTURED, {
+          errors: ['budget-context-must-carry-' + usageKey],
+          priority: BUDGET_EVALUATION_PRIORITY[0]
+        });
+      }
+      var usageAmt = normalizeAmountMinor(ctx.usage[usageKey]);
+      if (!usageAmt.ok) {
+        return budgetDecision(BUDGET_DECISION.DENY, DENY_REASON.POLICY_INPUT_NOT_STRUCTURED, {
+          errors: ['budget-context-usage-value-is-not-canonical:' + usageKey],
+          priority: BUDGET_EVALUATION_PRIORITY[0]
+        });
+      }
+      usage[usageKey] = usageAmt.amountMinor;
+    }
+
+    /* ── 2 canonical 余额是否可信。注意这一条问的不是"够不够"，而是
+          "我们知不知道有多少" —— COLD / DEGRADED 的诚实回答是"不知道"，
+          而"不知道"必须 fail closed。 */
+    if (ctx.walletState == null || ctx.walletState !== WALLET_STATE.READY) {
+      return budgetDecision(BUDGET_DECISION.DENY, DENY_REASON.WALLET_NOT_READY, {
+        errors: ['wallet-state-does-not-allow-spend'],
+        priority: BUDGET_EVALUATION_PRIORITY[1],
+        walletState: ctx.walletState == null ? null : String(ctx.walletState),
+        /* 这条拒绝的成因在**系统侧**（数据库关了 / 引用链断了），
+           不在业务侧。系统故障与业务拒绝必须可区分（§17）。 */
+        systemFailure: true
+      });
+    }
+
+    /* ── 3 作用域：owner 与 currency 必须就是这条政策的作用域。
+          刻意**不**做任何汇率换算：政策按 (owner, currency) 冻结，
+          把 100 COMPUTE_PREMIUM 拿去比对 IB_CREDIT 的额度需要一条汇率，
+          而汇率属于 P22-6。 */
+    if (!partyRefEquals(ctx.ownerId, policy.ownerId)) {
+      return budgetDecision(BUDGET_DECISION.DENY, DENY_REASON.POLICY_NOT_FOUND, {
+        errors: ['budget-policy-owner-does-not-match-the-evaluated-owner'],
+        priority: BUDGET_EVALUATION_PRIORITY[2]
+      });
+    }
+    if (String(ctx.currency) !== String(policy.currency)) {
+      return budgetDecision(BUDGET_DECISION.DENY, DENY_REASON.INVALID_CURRENCY, {
+        errors: ['budget-policy-currency-does-not-match-the-evaluated-currency'],
+        priority: BUDGET_EVALUATION_PRIORITY[2],
+        policyCurrency: String(policy.currency),
+        contextCurrency: String(ctx.currency)
+      });
+    }
+
+    /* ── 4 金额。0 金额在契约里是合法的（§3 下界就是 0），但在预算评估里
+          它既不该被允许也不该被拒绝 —— 它根本没有经济内容。判成
+          INVALID_AMOUNT 与 reserve 拒绝 0 金额是同一条纪律。
+          `== null`（而不是 `=== 0n`）也覆盖"没给金额"：一个缺席的值与一个
+          写着 0 的值在这里是同一件事（没有经济内容），而把它们分别判成
+          "结构错误"与"金额非法"会让同一个业务问题有两个代码。 */
+    if (ctx.amountMinor == null || ctx.amountMinor === 0n) {
+      return budgetDecision(BUDGET_DECISION.DENY, DENY_REASON.INVALID_AMOUNT, {
+        errors: ['budget-evaluation-amount-must-be-positive'],
+        priority: BUDGET_EVALUATION_PRIORITY[3]
+      });
+    }
+    var amount = ctx.amountMinor;
+
+    /* ── 5 wallet affordability。available 必须**存在**：COLD/DEGRADED 时
+          它是 null，而"未知"绝不能被兜成 0（那会把系统故障伪装成
+          "余额不足"，正是 §17 点名禁止的形状）。 */
+    if (caps.availableBalanceMinor == null) {
+      return budgetDecision(BUDGET_DECISION.DENY, DENY_REASON.WALLET_NOT_READY, {
+        errors: ['budget-context-carries-no-available-balance'],
+        priority: BUDGET_EVALUATION_PRIORITY[4],
+        systemFailure: true
+      });
+    }
+    var availableAmt = normalizeAmountMinor(caps.availableBalanceMinor);
+    if (!availableAmt.ok) {
+      return budgetDecision(BUDGET_DECISION.DENY, DENY_REASON.POLICY_INPUT_NOT_STRUCTURED, {
+        errors: ['budget-context-available-balance-is-not-canonical'], priority: BUDGET_EVALUATION_PRIORITY[4]
+      });
+    }
+    if (availableAmt.amountMinor < amount) {
+      return budgetDecision(BUDGET_DECISION.DENY, DENY_REASON.INSUFFICIENT_AVAILABLE_BALANCE, {
+        errors: ['insufficient-available-balance'],
+        priority: BUDGET_EVALUATION_PRIORITY[4],
+        walletState: String(ctx.walletState),
+        availableBalanceMinor: serializeAmountMinor(availableAmt.amountMinor),
+        amountMinor: serializeAmountMinor(amount),
+        currency: String(ctx.currency)
+      });
+    }
+
+    /* ── 6 单笔上限 */
+    var perTx = caps.perTransactionMinor == null ? null : normalizeAmountMinor(caps.perTransactionMinor);
+    if (perTx && perTx.ok && perTx.amountMinor < amount) {
+      return budgetDecision(BUDGET_DECISION.DENY, DENY_REASON.AMOUNT_EXCEEDS_PER_TRANSACTION, {
+        errors: ['amount-exceeds-the-per-transaction-limit'],
+        priority: BUDGET_EVALUATION_PRIORITY[5],
+        limitKey: 'perTransactionMinor',
+        limitMinor: serializeAmountMinor(perTx.amountMinor),
+        amountMinor: serializeAmountMinor(amount)
+      });
+    }
+
+    /* ── 7/8/9 窗口累计。顺序由 BUDGET_WINDOW_RULES 固定。
+          `spent + amount > cap`（而不是 >=）：额度是"最多能花这么多"，
+          恰好花完是允许的。 */
+    for (var r = 0; r < BUDGET_WINDOW_RULES.length; r++) {
+      var rule = BUDGET_WINDOW_RULES[r];
+      var cap = caps[rule.limit];
+      if (cap == null) continue;
+      var capAmt = normalizeAmountMinor(cap);
+      if (!capAmt.ok) continue;                       /* 已在 policy 校验阶段拒绝过 */
+      var spentAmt = usage[rule.usage];
+      if (spentAmt + amount > capAmt.amountMinor) {
+        return budgetDecision(BUDGET_DECISION.DENY, DENY_REASON[rule.reason], {
+          errors: ['the-' + rule.window.toLowerCase() + '-budget-would-be-exceeded'],
+          priority: BUDGET_EVALUATION_PRIORITY[5 + r + 1],
+          window: rule.window,
+          windowStartsAt: budgetWindowStart(rule.window, ctx.timestamp),
+          limitKey: rule.limit,
+          limitMinor: serializeAmountMinor(capAmt.amountMinor),
+          spentMinor: serializeAmountMinor(spentAmt),
+          amountMinor: serializeAmountMinor(amount),
+          remainingMinor: serializeAmountMinor(capAmt.amountMinor - spentAmt)
+        });
+      }
+    }
+
+    /* ── 10 审批线。到这里为止所有硬规则都通过了，因此"超过审批线"
+          是 REQUIRE_APPROVAL 而**不是** DENY（§16）：它表达的是
+          "这件事可以做，但需要用户点头"，而本层只负责分类，
+          不创建 Approval、不执行 workflow。 */
+    var threshold = caps.approvalThresholdMinor == null ? null : normalizeAmountMinor(caps.approvalThresholdMinor);
+    if (threshold && threshold.ok && amount > threshold.amountMinor) {
+      return budgetDecision(BUDGET_DECISION.REQUIRE_APPROVAL, DENY_REASON.AMOUNT_EXCEEDS_APPROVAL_THRESHOLD, {
+        priority: BUDGET_EVALUATION_PRIORITY[9],
+        approvalThresholdMinor: serializeAmountMinor(threshold.amountMinor),
+        amountMinor: serializeAmountMinor(amount)
+      });
+    }
+
+    reason = BUDGET_ALLOWED_REASON;
+    return budgetDecision(BUDGET_DECISION.ALLOW, reason, {
+      priority: BUDGET_EVALUATION_PRIORITY[10],
+      amountMinor: serializeAmountMinor(amount),
+      currency: String(ctx.currency),
+      /* 把快照的三个窗口值一并回带：调用方与审计都该看得到"这个决定是
+         在什么数字上做出的"，而不是只看到一个 ALLOW。 */
+      spentTodayMinor: serializeAmountMinor(usage.spentTodayMinor),
+      spentThisWeekMinor: serializeAmountMinor(usage.spentThisWeekMinor),
+      spentThisMonthMinor: serializeAmountMinor(usage.spentThisMonthMinor),
+      availableBalanceMinor: serializeAmountMinor(availableAmt.amountMinor),
+      evaluatedAt: ctx.timestamp == null ? null : Number(ctx.timestamp)
+    });
+  }
+
+  /* party ref 相等：必须是 (type, id) 的**双**相等。只比 id 会让
+     {type:'user', id:'user'} 与一个名叫 "user" 的**角色**被判成同一个
+     owner —— 那正是 §6.1 用 promotePartyRef 挡掉的混淆。 */
+  function partyRefEquals(a, b) {
+    var x = promotePartyRef(a);
+    var y = promotePartyRef(b);
+    if (!x || !y) return false;
+    return x.type === y.type && x.id === y.id;
+  }
+
+  /* ── 载入期自检：上面每一张"数据表"都必须与冻结词表逐字一致 ─────────
+     这一段的失败方式是**立刻抛错**，而不是返回一个错误对象 —— 它是
+     模块自身的一致性，不是一个可以被调用方处理的情况。 */
+  (function selfCheckBudgetTables() {
+    var missing = TX_TYPES.filter(function (t) { return !Object.prototype.hasOwnProperty.call(BUDGET_SPEND_CLASS, t); });
+    var extra = Object.keys(BUDGET_SPEND_CLASS).filter(function (t) { return TX_TYPES.indexOf(t) < 0; });
+    if (missing.length || extra.length) {
+      throw new Error('P22-4 budget spend-class table must cover TX_TYPES exactly; missing=[' + missing.join(',') + '] extra=[' + extra.join(',') + ']');
+    }
+    var unknownSettlement = Object.keys(QUOTE_SETTLEMENT_TYPE).filter(function (k) {
+      return QUOTE_KINDS.indexOf(k) < 0 || TX_TYPES.indexOf(QUOTE_SETTLEMENT_TYPE[k]) < 0;
+    });
+    if (unknownSettlement.length) {
+      throw new Error('P22-4 quote settlement types must be TYPES of QUOTE_KINDS and members of TX_TYPE: [' + unknownSettlement.join(',') + ']');
+    }
+    if (BUDGET_WINDOW_RULES.length !== BUDGET_WINDOWS.length) {
+      throw new Error('P22-4 budget window rules must cover every budget window exactly once');
+    }
+    var limitNamesOk = POLICY_LIMIT_NAMES.every(function (n) { return BUDGET_LIMIT_KEYS.indexOf(n) >= 0; });
+    if (!limitNamesOk) {
+      throw new Error('P22-4 policy limit table must only name keys frozen in BUDGET_LIMIT_KEYS');
+    }
+    var decisionReasons = [BUDGET_ALLOWED_REASON].concat(DENY_REASONS);
+    /* 评估器可能返回的每一个 reasonCode 都必须落在这个并集里。 */
+    var used = [DENY_REASON.POLICY_INPUT_NOT_STRUCTURED, DENY_REASON.POLICY_NOT_FOUND, DENY_REASON.POLICY_TERM_EXPIRED,
+      DENY_REASON.WALLET_NOT_READY, DENY_REASON.INVALID_CURRENCY, DENY_REASON.INVALID_AMOUNT,
+      DENY_REASON.INSUFFICIENT_AVAILABLE_BALANCE, DENY_REASON.AMOUNT_EXCEEDS_PER_TRANSACTION,
+      DENY_REASON.DAILY_LIMIT, DENY_REASON.WEEKLY_LIMIT, DENY_REASON.MONTHLY_LIMIT,
+      DENY_REASON.AMOUNT_EXCEEDS_APPROVAL_THRESHOLD, BUDGET_ALLOWED_REASON];
+    var badReasons = used.filter(function (c) {
+      return c !== BUDGET_ALLOWED_REASON && decisionReasons.indexOf(c) < 0;
+    });
+    if (badReasons.length) {
+      throw new Error('P22-4 budget evaluator returns reason codes outside the closed set: [' + badReasons.join(',') + ']');
+    }
+  })();
 
   /* ══════════════════════════════════════════════════════════════════
      §15 · Product Effect Contract（白名单，无代码）
@@ -1593,6 +2372,27 @@
     RESERVATION_COMMITTED: 'RESERVATION_COMMITTED',
     RESERVATION_REBUILT: 'RESERVATION_REBUILT',
     OPERATION_FAILED: 'OPERATION_FAILED',
+    /* ── P22-4 追加的八个（加法）────────────────────────────────────────
+       政策面四个：创建 / 修改 / 停用 / 到期限。
+       报价面四个：创建 / 过期 / 被消费 / 被作废。
+
+       为什么"修改政策"必须有自己的一条事件，而不复用 CREATED：政策是
+       规则，而规则的**变化**是审计里最需要被回答的问题之一
+       （"这笔为什么被拒？因为有人在上周二把日额度从 500 改成了 100"）。
+       合并它们会让 policy 的历史变成一串无法分辨的 same-kind 事件。
+
+       为什么 QUOTE_CONSUMED / QUOTE_CANCELLED 现在就登记（P22-4 只写
+       QUOTE_CREATED / QUOTE_EXPIRED）：它们是 quote 状态机的另外两个
+       终态，而"词表先于写入方冻结"是 P22-1 §18 的既有做法 —— 集合是
+       封闭的，因此少登记一个的代价是未来某个阶段被迫改契约。 */
+    BUDGET_POLICY_CREATED: 'BUDGET_POLICY_CREATED',
+    BUDGET_POLICY_UPDATED: 'BUDGET_POLICY_UPDATED',
+    BUDGET_POLICY_DISABLED: 'BUDGET_POLICY_DISABLED',
+    BUDGET_POLICY_EXPIRED: 'BUDGET_POLICY_EXPIRED',
+    QUOTE_CREATED: 'QUOTE_CREATED',
+    QUOTE_EXPIRED: 'QUOTE_EXPIRED',
+    QUOTE_CONSUMED: 'QUOTE_CONSUMED',
+    QUOTE_CANCELLED: 'QUOTE_CANCELLED',
     PURCHASE_COMMITTED: 'PURCHASE_COMMITTED',
     PURCHASE_DENIED: 'PURCHASE_DENIED',
     ITEM_GIFTED: 'ITEM_GIFTED',
@@ -1990,7 +2790,51 @@
     /* §14 */
     QUOTE_STATE: QUOTE_STATE,
     QUOTE_STATES: QUOTE_STATES,
+    QUOTE_STATE_INDEX: QUOTE_STATE_INDEX,
+    QUOTE_TRANSITIONS: QUOTE_TRANSITIONS,
+    QUOTE_TERMINAL_STATES: QUOTE_TERMINAL_STATES,
+    isQuoteState: isQuoteState,
+    canTransitionQuote: canTransitionQuote,
+    assertQuoteTransition: assertQuoteTransition,
+    QUOTE_KIND: QUOTE_KIND,
+    QUOTE_KINDS: QUOTE_KINDS,
+    isQuoteKind: isQuoteKind,
+    QUOTE_SETTLEMENT_TYPE: QUOTE_SETTLEMENT_TYPE,
+    settlementTypeOfQuoteKind: settlementTypeOfQuoteKind,
     validateQuote: validateQuote,
+    /* §14b（P22-4）：确定性预算评估 */
+    BUDGET_SPEND_CLASS: BUDGET_SPEND_CLASS,
+    BUDGET_SPENDING_TYPES: BUDGET_SPENDING_TYPES,
+    BUDGET_NEUTRAL_TYPES: BUDGET_NEUTRAL_TYPES,
+    spendClassOfTransactionType: spendClassOfTransactionType,
+    isSpendingTransactionType: isSpendingTransactionType,
+    BUDGET_WINDOW: BUDGET_WINDOW,
+    BUDGET_WINDOWS: BUDGET_WINDOWS,
+    BUDGET_TIMEZONE: BUDGET_TIMEZONE,
+    MS_PER_DAY: MS_PER_DAY,
+    utcDayStart: utcDayStart,
+    utcWeekStart: utcWeekStart,
+    utcMonthStart: utcMonthStart,
+    budgetWindowStart: budgetWindowStart,
+    POLICY_STATUS: POLICY_STATUS,
+    POLICY_STATUSES: POLICY_STATUSES,
+    POLICY_TERM: POLICY_TERM,
+    POLICY_TERMS: POLICY_TERMS,
+    isPolicyStatus: isPolicyStatus,
+    policyIsEffectiveAt: policyIsEffectiveAt,
+    POLICY_LIMIT_TABLE: POLICY_LIMIT_TABLE,
+    POLICY_LIMIT_NAMES: POLICY_LIMIT_NAMES,
+    BUDGET_WINDOW_RULES: BUDGET_WINDOW_RULES,
+    BUDGET_USAGE_WINDOW_KEYS: BUDGET_USAGE_WINDOW_KEYS,
+    BUDGET_DECISION: BUDGET_DECISION,
+    BUDGET_DECISIONS: BUDGET_DECISIONS,
+    BUDGET_ALLOWED_REASON: BUDGET_ALLOWED_REASON,
+    BUDGET_EVALUATION_PRIORITY: BUDGET_EVALUATION_PRIORITY,
+    normalizePolicyLimits: normalizePolicyLimits,
+    validateBudgetPolicy: validateBudgetPolicy,
+    partyRefEquals: partyRefEquals,
+    evaluateBudget: evaluateBudget,
+    budgetDecision: budgetDecision,
     /* §15 */
     EFFECT_TYPE: EFFECT_TYPE,
     EFFECT_TYPES: EFFECT_TYPES,

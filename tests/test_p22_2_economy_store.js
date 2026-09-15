@@ -1218,10 +1218,14 @@ section('O · Runtime 依赖纪律（静态：本条与 boundary 测试互补）
 
   /* 允许被改的表：派生缓存（wallets）、revision 水位（meta）、
      P22-3 的两个**生命周期**表（operations / reservations，
-     只允许改状态与链接列，见 O9c），以及两张按 TTL 清理的幂等表。
+     只允许改状态与链接列，见 O9c），两张按 TTL 清理的幂等表，
+     以及 P22-4 的**规则表**与**命题表**（budget_policies / quotes ——
+     它们改的是规则与报价的状态，不是任何一笔已发生的经济事实；
+     quotes 的金额/币种/买家不可变由 P22-4 测试逐列断言）。
      ACCOUNTS 与三个 ledger 事实表**不**在允许集合里。 */
   const MUTABLE_TABLES = ['WALLETS_TABLE', 'META_TABLE', 'IDEMPOTENCY_TABLE',
-    'OPERATIONS_TABLE', 'RESERVATIONS_TABLE', 'OPERATION_IDEMPOTENCY_TABLE'];
+    'OPERATIONS_TABLE', 'RESERVATIONS_TABLE', 'OPERATION_IDEMPOTENCY_TABLE',
+    'BUDGET_POLICIES_TABLE', 'QUOTES_TABLE'];
   check('O9 被 UPDATE / DELETE 的表只可能是"派生缓存 / 水位 / 生命周期行 / 幂等表"这四类，'
     + 'ACCOUNTS 与三个 ledger 事实表都不在内',
     mutatedTables.every(t => MUTABLE_TABLES.indexOf(t) >= 0), mutatedTables);

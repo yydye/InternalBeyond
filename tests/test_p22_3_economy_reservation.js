@@ -133,9 +133,15 @@ section('A · Store lifecycle / schema 2（新表、新水位、新计数）');
   const dir = tmpDir('lifecycle');
   const store = makeStore({ dataDir: dir });
   const opened = store.open();
-  check('A1 open() 报告 schema 2（P22-3 抬水位：这个库多出三张表）',
-    opened.ok === true && Number(opened.schemaVersion) === 2 &&
-    Number(store.SCHEMA_VERSION) === 2 && Number(store.health().schemaVersion) === 2,
+  /* P22-4 把水位抬到了 3（它多了 budget_policies / quotes 两张表），
+     因此这一条断言的是"报告的水位 == 本 build 声明的水位"，而不是一个
+     写死的 2 —— 写死会让**下一次**抬水位的人被迫改一条与 P22-3 无关的
+     断言，而那条断言本来要问的是"水位有没有被一致地报告"。
+     "P22-3 自己抬到 2"这件事由 M 组（1 → 2 的迁移路径）继续守着。 */
+  check('A1 open() 报告 schema == 本 build 声明的水位（P22-3 抬到 2，P22-4 抬到 3）',
+    opened.ok === true && Number(opened.schemaVersion) === Number(store.SCHEMA_VERSION) &&
+    Number(store.health().schemaVersion) === Number(store.SCHEMA_VERSION) &&
+    Number(store.SCHEMA_VERSION) >= 2,
     { opened: opened.schemaVersion, health: store.health().schemaVersion, declared: store.SCHEMA_VERSION });
   check('A2 三张新表被登记（operations / reservations / 操作级幂等），且命名空间仍是 economy_ 前缀',
     store.TABLES.OPERATIONS === 'economy_operations' &&
@@ -1207,10 +1213,16 @@ section('M · schema 1 → 2（旧库补表、水位抬升、账本一字节不�
 
   const upgraded = makeStore({ dataDir: dir });
   const openResult = upgraded.open();
-  check('M2 打开旧库：水位抬到 2，三张表被补上（迁移是"补表 + 抬水位"，不是重建）',
-    openResult.ok === true && Number(openResult.schemaVersion) === 2 &&
-    Number(upgraded.health().schemaVersion) === 2 &&
-    Number(upgraded.health().expectedSchemaVersion) === 2,
+  /* 这份库的水位被手工设成 1（= P22-2 的代），文件里已经有一笔真实的
+     MINT。打开它必须走**受支持的老版本**路径：补表 + 抬水位到当前代，
+     既有 ledger 行一个字节都不动。
+     一条刻意的措辞修正：P22-3 当时写的是"水位抬到 2"。P22-4 抬到 3 之后，
+     那句写死的 2 会让这条断言在下一次抬水位时失败 —— 而它要问的是
+     "老库能不能被打开并抬到**当前**水位"，不是某一个具体数字。 */
+  check('M2 打开旧库：水位抬到当前代，缺的表被补上（迁移是"补表 + 抬水位"，不是重建）',
+    openResult.ok === true && Number(openResult.schemaVersion) === Number(upgraded.SCHEMA_VERSION) &&
+    Number(upgraded.health().schemaVersion) === Number(upgraded.SCHEMA_VERSION) &&
+    Number(upgraded.health().expectedSchemaVersion) === Number(upgraded.SCHEMA_VERSION),
     { schema: upgraded.health().schemaVersion, declared: upgraded.SCHEMA_VERSION });
   check('M3 既有账本**一字节都没动**：行数、revision、余额、拓扑、change log 逐条相同',
     upgraded.health().counts.wallets === before.counts.wallets &&
@@ -1273,27 +1285,45 @@ section('M · schema 1 → 2（旧库补表、水位抬升、账本一字节不�
     amputated.health().counts.transactions === 1);
   amputated.close();
 
-  /* ── M8/M9 · 更新的 schema 必须在**任何 DDL 之前**被拒绝 ─────────── */
-  const dir2 = tmpDir('migrate-future');
+  /* ── M8/M9 · 更新的 schema 必须在**任何 DDL 之前**被拒绝 ───────────
+     库刻意造成"**P22-2 代**"（只有 economy_meta、水位 1）—— 那是这份
+     P22-3 测试能诚实构造的最老一代库，也是它真正关心的对象：一个
+     P22-2 的 build 打开 P22-3/4 的库会被拒绝，而反向路径（打开旧库、
+     补表、抬水位）必须成功。
+
+     这一组**没有**沿用"先建全表再 DROP 掉几张"的写法：那样造出来的库
+     里，被 DROP 的表在抬水位之后仍然会被重新补上，于是"DDL 发生在水位
+     检查之前还是之后"这件事根本测不出来（实测：那条断言会一直是绿的）。
+
+     水位写成 `SCHEMA_VERSION + 1`（而不是写死某个数字）：这条断言问的
+     是"比本 build 新一代的库会不会被拒绝"，那个数字必须跟着水位走。 */
+  const TOO_NEW_DIR = tmpDir('migrate-future');
+  const dir2 = TOO_NEW_DIR;
   const seed2 = makeStore({ dataDir: dir2 });
-  seed2.open();
-  walletWith(seed2, 123n);
-  seed2.close();
+  const TOO_NEW = Number(seed2.SCHEMA_VERSION) + 1;
+  {
+    seed2.open();
+    walletWith(seed2, 123n);
+    seed2.close();
+  }
+  /* 把它退回成 P22-2 代：删掉 P22-3 与 P22-4 的全部表，水位写成本代 +1。
+     于是打开它必须**先**撞上水位检查。 */
   const raw2 = new DatabaseSync(path.join(dir2, 'home-node.db'));
-  raw2.exec('DROP TABLE ' + seed2.TABLES.OPERATIONS);
-  raw2.exec('DROP TABLE ' + seed2.TABLES.RESERVATIONS);
-  raw2.exec('DROP TABLE ' + seed2.TABLES.OPERATION_IDEMPOTENCY);
-  raw2.prepare('UPDATE ' + seed2.TABLES.META + ' SET value=? WHERE key=?').run('3', seed2.META_KEYS.SCHEMA);
+  for (const t of [seed2.TABLES.OPERATIONS, seed2.TABLES.RESERVATIONS, seed2.TABLES.OPERATION_IDEMPOTENCY,
+    seed2.TABLES.BUDGET_POLICIES, seed2.TABLES.QUOTES]) {
+    raw2.exec('DROP TABLE IF EXISTS ' + t);
+  }
+  raw2.prepare('UPDATE ' + seed2.TABLES.META + ' SET value=? WHERE key=?').run(String(TOO_NEW), seed2.META_KEYS.SCHEMA);
   raw2.close();
 
   const future = makeStore({ dataDir: dir2 });
   let threw = null;
   try { future.open(); } catch (error) { threw = error; }
-  check('M8 比本 build 新的 schema（3 > 2）被拒绝，且报错类别是 db-schema-too-new',
+  check('M8 比本 build 新一代的 schema（' + TOO_NEW + ' > ' + seed2.SCHEMA_VERSION + '）被拒绝，且报错类别是 db-schema-too-new',
     threw !== null && threw.code === 'SCHEMA_TOO_NEW' &&
     String(threw.message).indexOf('[db-schema-too-new]') >= 0,
-    { message: threw && threw.message, code: threw && threw.code });
-  check('M9 拒绝是**只读**的：水位检查排在任何 DDL 之前，所以连 economy_reservations 都没被创建',
+    { message: threw && threw.message, code: threw && threw.code, tooNew: TOO_NEW });
+  check('M9 拒绝是**只读**的：水位检查排在任何 DDL 之前，所以那四张表一张都没被创建',
     (() => {
       const raw4 = new DatabaseSync(path.join(dir2, 'home-node.db'));
       const names = raw4.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(r => String(r.name));
@@ -1302,7 +1332,9 @@ section('M · schema 1 → 2（旧库补表、水位抬升、账本一字节不�
       raw4.close();
       return names.indexOf('economy_reservations') < 0 &&
         names.indexOf('economy_operations') < 0 &&
-        String(watermark.value) === '3' && Number(wallets.c) === 1;
+        names.indexOf('economy_budget_policies') < 0 &&
+        names.indexOf('economy_quotes') < 0 &&
+        String(watermark.value) === String(TOO_NEW) && Number(wallets.c) === 1;
     })());
   check('M10 拒绝之后 isOpen() 为假、state 是 DEGRADED（不是 COLD，也不是"正在加载"）',
     future.isOpen() === false && future.health().state === C.WALLET_STATE.DEGRADED);
