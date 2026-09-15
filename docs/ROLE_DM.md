@@ -29,9 +29,13 @@
 - **S1 低信息归一化闭合**：低信息短句在匹配前归一（`cadd7ed`），authority 属既有 low-info guard。
 - **M3 软复读 = 纯观测**（`role-dm.js:1073-1086`；`role-dm-core.js:659-696`）。
 - **RCI 身份可观测**：`consumer` / `characterId` / `threadId`（D26），Role DM 与 Diary 角色归因已闭合。
+- **familiarity → 开场行为后果（Phase 4A）**：`role-dm-core.js` 的
+  `buildFamiliarityGuidance(familiarity)` 把熟悉度投影成一句**相处方式**指导
+  （【相处方式】），三档复用既有词表阈值（0.2 / 0.7），并**在结构上**只吃 familiarity
+  这一个数 —— 因此它**永远不能**授权"我们具体经历过什么"。manual 与 autonomous 共用同一 seam。
 
-**Deferred**（见文末 §Deferred）：Relationship Consequences、M3 enforcement、Cross-run Duplicate S2、
-尚未闭合的 consumer 归因。
+**Deferred**（见文末 §Deferred）：Phase 4B（trust / disclosure）、Phase 4C（affinity / 语气）、
+M3 enforcement、Cross-run Duplicate S2、尚未闭合的 consumer 归因。
 
 ## Architecture
 
@@ -103,10 +107,26 @@ optional autonomous social intent（role-dm-social-core.evaluateSocialIntent
 - **`familiarity` 可以由实际交谈增加**（可观察事实，不可伪造）。
 - **单次 run 的改动被 `RELATION_DELTA_CAP = 0.03` 硬顶**，各维度独立、方向独立
   （`role-dm-core.js:185,521-526`；`role-dm.js:1216-1217`）。
-- **当前是否真正影响行为**：只到"两处下游"——③ 里的一句话（`describeRelation`，只讲
-  `trust` / `familiarity`，**不讲 `affinity`**）与自主发起的评分信号（`familiarity` 权重最大 0.36）。
-  **未**控制 disclosure，**未**控制语气，**未**控制 initiative 的硬路由。
-  完整取证见 [ROLE_DM_RELATIONSHIP_PHASE4_AUDIT.md](ROLE_DM_RELATIONSHIP_PHASE4_AUDIT.md)。
+- **当前真正影响行为的只有三处**：
+  ① ③ 层里的一句话（`describeRelation`，只讲 `trust` / `familiarity`，**不讲 `affinity`**；
+  `dmCount = 0` 时整句不注入）；
+  ② 自主发起的评分信号（`familiarity` 权重最大 0.36）；
+  ③ **Phase 4A：`familiarity` 的开场行为投影**（【相处方式】，见下）。
+- **Phase 4A 的边界（authority 分离，且是结构性的）**：
+
+  | authority | 授权什么 | 不授权什么 |
+  |---|---|---|
+  | `familiarity`（stance） | 「我们有多熟」→ 开场要不要像初次见面 | **绝不**授权具体共同经历 |
+  | history / thread memorandum | 「我们具体经历过什么」（事实） | 不改变关系强度 |
+  | publicProfile | 「TA 是谁」 | 不携带关系 |
+  | self persona | 「我是谁」 | 不被关系改写 |
+
+  `buildFamiliarityGuidance` 的**唯一输入**是 familiarity 数值，因此它拿不到备忘/历史/
+  公开资料/persona —— 这条边界是**函数签名**保证的，不是注释纪律；测试 AF1 直接钉住元数。
+- **仍然没有的**：`familiarity` **未**控制 disclosure（不决定"能说什么私事"）、
+  **未**控制语气，**未**成为 initiative 的硬路由；`affinity` 仍对模型不可见。
+  Phase 4B / 4C 见 §Deferred。
+- 完整取证见 [ROLE_DM_RELATIONSHIP_PHASE4_AUDIT.md](ROLE_DM_RELATIONSHIP_PHASE4_AUDIT.md)。
 - **无 decay**：三个维度都不是衰减型；`trust` / `affinity` / `familiarity` 是**单向棘轮**
   （净 ≤ 0 记 0，不记负）。
 
@@ -174,8 +194,9 @@ optional autonomous social intent（role-dm-social-core.evaluateSocialIntent
 
 ## Deferred
 
-- **Relationship Consequences**：关系三维目前只有"两处下游"（③ 的一句话 + 自主评分），
-  未控制 disclosure / 语气 / 开场熟悉度。设计候选见 Phase 4 审计文档，**未实现**。
+- **Relationship Consequences**：**Phase 4A（familiarity → 开场）已落地**；
+  仍缺 **Phase 4B（trust / disclosure）** 与 **Phase 4C（affinity / 语气）**，
+  设计候选见 Phase 4 审计文档，**未实现**。
 - **M3 enforcement**：soft repetition 仍只观测；rewrite / retry / drop / stop / guidance 全部未开。
 - **Cross-run Duplicate S2**：跨 run 的重复判定尚未闭合。
 - **尚未闭合的 RCI attribution**：`moments` / `role_letters` / `active.proactive` /

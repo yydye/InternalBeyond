@@ -663,3 +663,38 @@ trace 键白名单与请求体不含身份键。
 > 验证：`tests/test_rci1_1_diary_identity.js`（40 项，0 次真实模型调用）。
 > 尚未声明身份的 consumer（`moments` / `role_letters` / `active.proactive` /
 > `memory_consolidation` 等）仍为 `''`，**不得**记为已完成 —— 见 [ROLE_DM.md](ROLE_DM.md) §Observability。
+
+## D27. familiarity 只授权"相处方式"，绝不授权"我们经历过什么"（Phase 4A，2026-09-15）
+
+### 决策
+角色私信的 `familiarity` **第一次**获得行为后果：`role-dm-core.js` 的
+`buildFamiliarityGuidance(familiarity)` 把它投影成 system 里的一句话【相处方式】
+（不必重新自我介绍 / 省掉陌生式客套）。**同时**确立 authority 分离：
+
+| authority | 授权 |
+|---|---|
+| `familiarity` | 我们有多熟 → 开场方式 |
+| history / thread memorandum | 我们**具体**经历过什么（事实） |
+| publicProfile | TA 是谁 |
+| self persona | 我是谁 |
+
+四者不得互写。**familiarity 绝不授权编造具体共同经历** —— 高熟悉度只能让模型
+"不必像初次见面"，不能让它说出"还记得我们上周一起去空间站吗"，除非那件事确实
+存在于最近对话或 thread memorandum。
+
+### 实现纪律
+- 投影函数**只接受一个参数**（familiarity 数值）。它拿不到 history / memorandum /
+  publicProfile / persona / 对用户的关系 —— 边界由**函数签名**保证，不是注释纪律。
+- 阈值**复用既有词表**（0.2 = `RELATION_DEFAULT.familiarity`；0.7 = `describeRelation`
+  的「非常熟」），**不新建第二套阈值**，也不新增第四档（0.7 档已由既有词表证明存在）。
+- 基线以下 → **空串**：不注入任何熟人指导，因此不会凭空制造熟人关系。
+- 输出是**行为指导**而非 persona、不含固定台词、**不含任何数值**；不改 publicProfile、
+  不改 relationship 数值、不改 memorandum、不新增模型调用。
+- `cfg.relationship`（角色↔用户）**绝不**参与：Phase 4A 只读 Role DM 的**有向**关系记录。
+- 三个"关系后果"候选里只做这一个：**trust/disclosure 与 affinity/语气 留作 4B/4C**
+  （尤其：**不**因为发现 `trust` 在当前实现里恒 ≥ 0.5 就顺手让它能下降，那是独立语义决策）。
+
+### 验证
+`tests/test_role_dm.js`（**390 绿 / 0 红**，新增 AF/A–D/DIR/E/F/H/I/J/K/M/MUT 共 36 项，0 次真实模型调用），
+`tests/test_role_dm_social.js` **216 绿 / 0 红**。关键反例均为实测：方向对调 stance 消失（MUT-A）、
+familiar 档强制关闭后 guidance 变空（MUT-B）。

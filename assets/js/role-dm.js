@@ -493,6 +493,7 @@
     var peerView = (pc && typeof pc.buildPeerView === 'function')
       ? pc.buildPeerView(peer || {}, { sanitize: sanitizeInput, name: peer ? nameOf(peer) : '' })
       : { name: peer ? nameOf(peer) : '', publicIntro: '', occupation: '', traits: [], interests: [], source: 'name-only' };
+    var _rel = relationGet(speakerId, peerId);
     var spec = {
       selfName: sanitizeName(nameOf(speaker)) || 'AI',
       selfSystemPrompt: String((speaker && speaker.systemPrompt) || ''),
@@ -501,8 +502,12 @@
       selfRelationshipToUser: sanitizeInput(String((speaker && speaker.relationship) || '')),
       peerName: sanitizeName(nameOf(peer)) || '（角色已删除）',
       peerMissing: !peer,
-      /* 你对 TA 的看法：来自**有向**关系记录，不是对方的 relationship 字段。 */
-      peerRelationship: describeRelation(relationGet(speakerId, peerId)),
+      /* 你对 TA 的看法：来自**有向**关系记录，不是对方的 relationship 字段。
+         Phase 4A：同一条有向记录另外派生一份**行为投影**（只吃 familiarity
+         这一个数）。绝不使用 cfg.relationship / 用户 Memory / 用户昵称 ——
+         那些是"角色↔用户"，不是"A↔B"。 */
+      peerRelationship: describeRelation(_rel),
+      peerFamiliarity: _rel ? Number(_rel.familiarity) : undefined,
       peerNote: '',
       /* 对方是谁：**只**允许公开的资料（层①）。 */
       peerProfile: {

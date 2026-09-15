@@ -183,6 +183,10 @@
   var RELATION_MAX = 1;
   /* 单次 run 对任一维度的**最大**改动量（bounded update）。 */
   var RELATION_DELTA_CAP = 0.03;
+  /* "还不算认识"的权威基线。**派生自 RELATION_DEFAULT**，不写第二个字面量
+     （role-dm-social-core 的 FAMILIARITY_BASELINE 与它同值，且那里是自主评分
+     的冻结区，本轮不动）。 */
+  var FAMILIARITY_BASELINE = RELATION_DEFAULT.familiarity;
   /* 观测环形缓冲上限（每条记录只留最近 N 条事实，绝不留正文）。 */
   var OBSERVATION_KEEP = 12;
 
@@ -524,6 +528,47 @@
     if (n < -RELATION_DELTA_CAP) return -RELATION_DELTA_CAP;
     return n;
   }
+  /* ══════════ 6c. familiarity → 开场行为投影（Phase 4A，纯函数）═══════════
+     **authority 边界是结构性的，不是注释纪律**：本函数唯一的输入是
+     familiarity 这一个数。它拿不到 thread history、thread memorandum、
+     publicProfile、persona、对用户的关系 —— 因此它**在结构上不可能**授权
+     "我们具体经历过什么"：
+
+         familiarity        = relationship stance（我们有多熟）
+         history/memorandum = factual shared-event authority（我们具体经历过什么）
+         publicProfile      = peer identity authority（TA 是谁）
+         self persona       = self identity authority（我是谁）
+
+     三档，阈值**全部复用既有词表**（不新增第二套阈值体系）：
+       ① ≤ FAMILIARITY_BASELINE（= RELATION_DEFAULT.familiarity = 0.2，也是
+          role-dm-social-core 的 FAMILIARITY_BASELINE）→ 空串。
+          尚未认识 → **不注入任何熟人指导**，也就不会凭空制造熟人关系。
+       ② 0.2 < f < 0.7（describeRelation 的「有些熟悉 / 挺熟」区间）
+       ③ ≥ 0.7（describeRelation 的「非常熟」阈值）
+
+     输出是**行为指导**（怎么说），不是 persona、不是事实、**不含任何数值**，
+     也不含固定台词 —— 界面上没有任何一句"你必须说……"。 */
+  var FAMILIARITY_VERY_FAMILIAR = 0.7;
+  function familiarityStance(familiarity) {
+    var f = Number(familiarity);
+    if (!isFinite(f)) return '';                 /* 没有关系记录 → 与 baseline 同档 */
+    if (f <= FAMILIARITY_BASELINE) return '';
+    return f >= FAMILIARITY_VERY_FAMILIAR ? 'very-familiar' : 'familiar';
+  }
+  function buildFamiliarityGuidance(familiarity) {
+    var stance = familiarityStance(familiarity);
+    if (stance === 'familiar') {
+      return '【相处方式】你和 TA 已经认识，不必像第一次见面那样重新自我介绍，可以自然地直接进入话题。'
+        + '不要凭空提起具体共同经历（例如"上次""还是老样子"）—— '
+        + '只有最近对话或私信备忘里确实写着的，才可以当作共同经历来提。';
+    }
+    if (stance === 'very-familiar') {
+      return '【相处方式】你和 TA 很熟。可以省掉陌生式的客套与试探，用熟人之间自然的方式开场；'
+        + '也可以引用最近对话或私信备忘里确实存在的共同经历 —— 但不得编造那里没有的往事。';
+    }
+    return '';
+  }
+
   function applyRelationDelta(record, delta) {
     var rec = normalizeRelationRecord(record);
     if (!rec) return null;
@@ -1023,6 +1068,7 @@
      spec：{
        selfName, selfSystemPrompt, selfRelationshipToUser,      ← Self
        peerName, peerMissing, peerRelationship, peerNote,       ← Peer（只给允许公开的信息）
+       peerFamiliarity,                                         ← 层③ 的行为投影输入（Phase 4A）
        peerProfile, peerIntro, userPresent, userName,           ← User（默认不出现）
        threadMemorandum,                                        ← Shared Past（跨 run）
        history:[{senderId,content,fromPeer,fromUser}],          ← 只含本 thread
@@ -1119,6 +1165,11 @@
     if (isNonEmptyString(s.peerRelationship)) {
       relationBlock = '【你怎么看 TA】' + str(s.peerRelationship).slice(0, 300);
     }
+    /* ── 层③ 派生的**行为投影**（Phase 4A）──────────────────────────────
+       它紧邻层③但**自成一块**，且与 ④⑤ 严格分离：stance 由 familiarity 决定，
+       具体共同经历只由 ④（memorandum）/⑤（recent history）授权。
+       因此这里只放"怎么说"，绝不放"发生过什么"。 */
+    var stanceBlock = buildFamiliarityGuidance(s.peerFamiliarity);
 
     var peerBlock = '';
     for (var pi = 0; pi < peerLines.length; pi++) {
@@ -1129,6 +1180,7 @@
     }
     system = (system ? system + '\n\n' : '') + rules.join('\n') + '\n\n' + peerBlock;
     if (relationBlock) system += '\n\n' + relationBlock;
+    if (stanceBlock) system += '\n\n' + stanceBlock;
     var tail = [];
     if (isNonEmptyString(s.nowLabel)) tail.push('当前时间：' + str(s.nowLabel) + '。');
     /* 用户信息**只在真的相关时**进入 —— 调用方负责判定（s.userPresent），
@@ -1288,6 +1340,10 @@
     RELATION_DIMS: RELATION_DIMS,
     RELATION_DEFAULT: RELATION_DEFAULT,
     RELATION_DELTA_CAP: RELATION_DELTA_CAP,
+    FAMILIARITY_BASELINE: FAMILIARITY_BASELINE,
+    FAMILIARITY_VERY_FAMILIAR: FAMILIARITY_VERY_FAMILIAR,
+    familiarityStance: familiarityStance,
+    buildFamiliarityGuidance: buildFamiliarityGuidance,
     OBSERVATION_KEEP: OBSERVATION_KEEP,
     MEMORY_MIN_TURNS: MEMORY_MIN_TURNS,
     MEMORY_MIN_IMPORTANCE: MEMORY_MIN_IMPORTANCE,

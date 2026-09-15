@@ -1,4 +1,4 @@
-﻿/* 角色私信（Role DM / ICDM）· 契约 + 运行时 · 自动化测试。
+/* 角色私信（Role DM / ICDM）· 契约 + 运行时 · 自动化测试。
    运行：node tests/test_role_dm.js
 
    覆盖（对应用户需求的 18 条验收）：
@@ -1911,6 +1911,217 @@ reset();
   check('S2e. 该 run 停在 max-turns（没有因为"以好的开头"被拦）',
     r2.stopReason === C.REASON.maxTurns, r2.stopReason);
   check('S2f. 2 轮 = 2 次调用（对照组的成本同样不变）', CALLS.length === 2, CALLS.length);
+}
+
+/* ══════ AF · Phase 4A · familiarity → 开场行为投影 ══════
+   目标：证明 familiarity **第一次**真正影响"角色怎么开口"，
+   同时证明它**没有**获得"我们具体经历过什么"的 authority。 */
+{
+  const GU = '【相处方式】';
+  const stanceOf = (built) => {
+    const s = String((built && built.system) || '');
+    const i = s.indexOf(GU);
+    if (i < 0) return '';
+    const j = s.indexOf('\n\n', i);            /* 只取这一段：后面还有输出格式块 */
+    return s.slice(i, j < 0 ? undefined : j).trim();
+  };
+  const joinedOf = (b) => b.messages.map(m => String(m.content)).join('\n');
+  const memoIndexOf = (b) => joinedOf(b).indexOf('【你们之前的共同经历');
+  const seedRel = (fa, fb, fam) => {
+    const items = {};
+    const r = C.buildRelationRecord(fa, fb, { now: 1 });
+    r.familiarity = fam;
+    r.dmCount = fam > C.FAMILIARITY_BASELINE ? 3 : 0;
+    items[C.relationKey(fa, fb)] = r;
+    localStorage.setItem('ib_role_dm_relations_v1', JSON.stringify({ v: 1, items, updatedAt: 1 }));
+    return r;
+  };
+  const cfgA = () => apiConfigs.find(c => c.id === 'friend_aaa');
+  const cfgB = () => apiConfigs.find(c => c.id === 'friend_bbb');
+
+  /* ── 纯函数面：唯一输入就是 familiarity ── */
+  check('AF1. 投影函数只接受**一个**参数（结构上拿不到 history/memorandum/publicProfile/persona）',
+    C.buildFamiliarityGuidance.length === 1, C.buildFamiliarityGuidance.length);
+  check('AF2. baseline（0.2）→ 空串（不制造熟人关系）',
+    C.buildFamiliarityGuidance(C.FAMILIARITY_BASELINE) === '');
+  check('AF3. 低于 / 缺少关系记录（NaN、undefined、null）→ 空串',
+    C.buildFamiliarityGuidance(0.1) === '' && C.buildFamiliarityGuidance(undefined) === '' &&
+    C.buildFamiliarityGuidance(null) === '');
+  check('AF4. 0.2 < f < 0.7 → familiar 档；f ≥ 0.7 → very-familiar 档（阈值复用既有词表）',
+    C.familiarityStance(0.3) === 'familiar' && C.familiarityStance(0.69) === 'familiar' &&
+    C.familiarityStance(0.7) === 'very-familiar' && C.familiarityStance(1) === 'very-familiar');
+  check('AF5. baseline 派生自 RELATION_DEFAULT.familiarity（不是第二个字面量）',
+    C.FAMILIARITY_BASELINE === C.RELATION_DEFAULT.familiarity);
+
+  /* ── CASE A：new + 空历史 + 空备忘 → 无熟人 guidance ── */
+  reset();
+  seedRel('friend_aaa', 'friend_bbb', C.FAMILIARITY_BASELINE);
+  const caseA = await RD._composeSide('friend_aaa', 'friend_bbb', null, { history: [] });
+  check('A-A. familiarity=baseline、history/memorandum 皆空 → system 里没有【相处方式】',
+    caseA.system.indexOf(GU) < 0);
+  check('A-B. 同一情形下也没有任何"熟人"字样（不凭空制造熟人）',
+    caseA.system.indexOf('已经认识') < 0 && caseA.system.indexOf('很熟') < 0);
+
+  /* ── CASE B：clearly familiar + 空历史 + 空备忘 → stance 出现，且禁止编造 ── */
+  reset();
+  seedRel('friend_aaa', 'friend_bbb', 0.85);
+  const caseB = await RD._composeSide('friend_aaa', 'friend_bbb', null, { history: [] });
+  const guB = stanceOf(caseB);
+  check('B-A. familiarity=0.85、history/memorandum 皆空 → 出现【相处方式】',
+    guB.indexOf(GU) === 0, guB.slice(0, 40));
+  check('B-B. 它是"熟人 stance"（不必重新自我介绍 / 不必客套），不是固定台词',
+    guB.indexOf('很熟') >= 0 && guB.indexOf('客套') >= 0 && guB.indexOf('不必像第一次见面') < 0);
+  check('B-C. 同时**明确禁止虚构**具体共同经历（truth boundary 在 stance 里）',
+    guB.indexOf('不得编造') >= 0);
+
+  /* ── CASE C：familiar + memorandum present ── */
+  reset();
+  const tF = (await RD.resolveThread('friend_aaa', 'friend_bbb')).thread;
+  for (let i = 0; i < 24; i++) {
+    const sender = i % 2 === 0 ? 'friend_aaa' : 'friend_bbb';
+    await global.dbPut('chatMessages', C.buildRoleDmMessage({
+      senderId: sender, recipientId: sender === 'friend_aaa' ? 'friend_bbb' : 'friend_aaa',
+      senderName: sender === 'friend_aaa' ? '甲' : '乙',
+      content: '共同经历第' + i + '件事', timestamp: 1700000000000 + i * 1000
+    }));
+  }
+  await RD._updateMemorandum(tF);
+  const memoText = String((tF.threadMemorandum || {}).text || '');
+  seedRel('friend_aaa', 'friend_bbb', 0.5);
+  const caseC = await RD._composeSide('friend_aaa', 'friend_bbb', tF, { history: [] });
+  const guC = stanceOf(caseC);
+  seedRel('friend_aaa', 'friend_bbb', 0.2);
+  const caseC0 = await RD._composeSide('friend_aaa', 'friend_bbb', tF, { history: [] });
+  check('C-A. familiar 档与 memorandum 可以同时出现（两层各自成块）',
+    guC.indexOf(GU) === 0 && memoIndexOf(caseC) >= 0);
+  check('C-B. familiar 档下 guidance 与 memorandum 各自成块（不合并、不互写）',
+    guC.indexOf(GU) === 0 && guC.indexOf('【你们之前的共同经历') < 0);
+  reset();
+  seedRel('friend_aaa', 'friend_bbb', 0.5);
+  const cWith = await RD._composeSide('friend_aaa', 'friend_bbb', tF, { history: [] });
+  seedRel('friend_aaa', 'friend_bbb', 0.5);
+  const cWithout = await RD._composeSide('friend_aaa', 'friend_bbb', null, { history: [] });
+  check('C-C. 同一 familiarity：有备忘 / 无备忘 → 【相处方式】逐字节相同（不复制备忘）',
+    stanceOf(cWith) === stanceOf(cWithout) && stanceOf(cWith).indexOf(GU) === 0);
+  check('C-D. guidance **不复制** memorandum 正文（备忘仍是事实 authority）',
+    memoText.length > 0 && stanceOf(cWith).indexOf(memoText.slice(0, 20)) < 0);
+
+  /* ── CASE D：low familiarity + memorandum present → 不得升级为亲密 ── */
+  reset();
+  seedRel('friend_aaa', 'friend_bbb', 0.2);
+  const caseD = await RD._composeSide('friend_aaa', 'friend_bbb', tF, { history: [] });
+  check('D-A. familiarity=baseline 但有 memorandum → 仍**没有** stance guidance（不擅自升级）',
+    caseD.system.indexOf(GU) < 0 && memoIndexOf(caseD) >= 0);
+  check('D-B. 该情形下没有"很熟 / 已经认识"这类关系断言',
+    caseD.system.indexOf('很熟') < 0 && caseD.system.indexOf('已经认识') < 0);
+
+  /* ── 方向性：A→B 与 B→A 独立（不取平均、不取 max）── */
+  reset();
+  const items = {};
+  const hi = C.buildRelationRecord('friend_aaa', 'friend_bbb', { now: 1 });
+  hi.familiarity = 0.9; hi.dmCount = 5;
+  const lo = C.buildRelationRecord('friend_bbb', 'friend_aaa', { now: 1 });
+  lo.familiarity = 0.1; lo.dmCount = 5;          /* dmCount 相同：排除"用 dmCount 替代"的可能 */
+  items[C.relationKey('friend_aaa', 'friend_bbb')] = hi;
+  items[C.relationKey('friend_bbb', 'friend_aaa')] = lo;
+  localStorage.setItem('ib_role_dm_relations_v1', JSON.stringify({ v: 1, items, updatedAt: 1 }));
+  const dirA = await RD._composeSide('friend_aaa', 'friend_bbb', null, { history: [] });
+  const dirB = await RD._composeSide('friend_bbb', 'friend_aaa', null, { history: [] });
+  check('DIR-A. A→B=0.9 有 stance，B→A=0.1 **没有** stance（有向，不取平均/max）',
+    stanceOf(dirA).indexOf(GU) === 0 && stanceOf(dirB) === '');
+  check('DIR-B. 反向时 dmCount 相同 → 证明 stance 不是从 dmCount 派生的',
+    stanceOf(dirA).indexOf(GU) === 0 && stanceOf(dirB) === '');
+  check('DIR-C. 两侧 system 不同（A 与 B 看到的不是同一份 prompt）', dirA.system !== dirB.system);
+
+  /* ── 与 publicProfile / persona / 用户关系 / 数值 的边界 ── */
+  reset();
+  seedRel('friend_aaa', 'friend_bbb', 0.85);
+  const base = await RD._composeSide('friend_aaa', 'friend_bbb', null, { history: [] });
+  const baseGu = stanceOf(base);
+  const personaA = cfgA().systemPrompt;
+  const savedPP = cfgB().publicProfile, savedRel = cfgA().relationship;
+  cfgB().publicProfile = { publicIntro: '公开简介X', occupation: '观测员' };
+  const withPP = await RD._composeSide('friend_aaa', 'friend_bbb', null, { history: [] });
+  check('E-A. publicProfile 改变时 stance 逐字节不变（两者不同 authority）',
+    stanceOf(withPP) === baseGu && withPP.system.indexOf('公开简介X') >= 0);
+  check('F-A. persona 仍在 system 里，且 stance 不改写 persona（含原人格文本）',
+    withPP.system.indexOf(personaA) >= 0 && String(withPP.system).indexOf('【相处方式】') > 0);
+  cfgA().relationship = '恋人';
+  const withUserRel = await RD._composeSide('friend_aaa', 'friend_bbb', null, { history: [] });
+  check('L-A. cfg.relationship（角色↔用户）改变 → peer stance **逐字节相同**（绝不挪用用户关系）',
+    stanceOf(withUserRel) === baseGu &&
+    withUserRel.system.indexOf('你和用户的关系是：恋人') >= 0);
+  if (savedPP === undefined) delete cfgB().publicProfile; else cfgB().publicProfile = savedPP;
+  if (savedRel === undefined) delete cfgA().relationship; else cfgA().relationship = savedRel;
+
+  check('M-A. guidance 里没有任何数字（模型看到语义投影，不是调参数值）',
+    !/[0-9]/.test(baseGu), { gu: baseGu, digits: (baseGu.match(/[0-9]/g) || []) });
+  check('M-B. guidance 里不含 trust / affinity 数值文本，也不含 familiarity 这个词',
+    baseGu.indexOf('familiarity') < 0 && baseGu.indexOf('affinity') < 0 &&
+    baseGu.indexOf('0.85') < 0);
+
+  /* ── 无副作用：不改关系数值 / 不写 Memory / 不增加模型调用 ── */
+  const relBefore = localStorage.getItem('ib_role_dm_relations_v1');
+  const memBefore = Object.keys(DB.memories || {}).length;
+  CALLS.length = 0;
+  await RD._composeSide('friend_aaa', 'friend_bbb', null, { history: [] });
+  check('H-A. composeSide 不修改 relationship 存储（逐字节不变）',
+    localStorage.getItem('ib_role_dm_relations_v1') === relBefore);
+  check('I-A. composeSide 不写任何 private Memory', Object.keys(DB.memories || {}).length === memBefore);
+  check('J-A. composeSide 不产生任何模型调用', CALLS.length === 0, CALLS.length);
+
+  /* ── manual 与 autonomous 共用同一个 consequence seam ── */
+  const SRC_RT_AF = fs.readFileSync(path.join(ROOT, 'assets/js/role-dm.js'), 'utf8');
+  check('K-A. composeSide 只有一个调用点（runTurn），manual/autonomous 共用它',
+    (SRC_RT_AF.match(/composeSide\(/g) || []).length === 2,
+    (SRC_RT_AF.match(/composeSide\(/g) || []).length);
+  reset();
+  seedRel('friend_aaa', 'friend_bbb', 0.85);
+  replyFor = () => '今天观测舱的窗子该擦了。';
+  const mRun = await RD.start('friend_aaa', 'friend_bbb', { turns: 1, force: true });
+  check('K-B. **manual** 真实 run 的最终 prompt 里带着同一条 stance（不是只测纯函数）',
+    mRun.ok === true && String(CALLS[0].messages[0].content).indexOf(GU) >= 0);
+  /* Phase 4A 的成本主张：**同一 run 下 familiarity 高低不改变调用次数**。
+     注意 turns:1 会被既有 normalizeTurnBudget 抬到 minTurns（与本轮无关的
+     既有夹取），因此这里断言的是"夹取后的次数"以及"高低 familiarity 逐字相同"，
+     而不是写死 1。 */
+  const limited = C.normalizeTurnBudget('manual', 1);
+  check('K-C. turns:1 被既有 minTurns 夹取（既有行为，非 Phase 4A 引入）',
+    limited === 2 && CALLS.length === limited, { limited, calls: CALLS.length });
+  reset();
+  seedRel('friend_aaa', 'friend_bbb', C.FAMILIARITY_BASELINE);
+  replyFor = () => '今天观测舱的窗子该擦了。';
+  const lowRun = await RD.start('friend_aaa', 'friend_bbb', { turns: 1, force: true });
+  check('K-C2. 高低 familiarity 的调用次数完全一致 → Phase 4A 的新增调用 = 0',
+    CALLS.length === limited && lowRun.ok === true, { calls: CALLS.length, limited });
+  reset();
+  seedRel('friend_aaa', 'friend_bbb', 0.85);
+  const autoSide = await RD._composeSide('friend_aaa', 'friend_bbb', null,
+    { history: [], trigger: 'autonomous', initiation: { signalCode: 'relationship-maintenance' } });
+  check('K-D. autonomous 触发走同一投影：stance 与 manual 逐字节相同（override 不参与）',
+    stanceOf(autoSide) === baseGu && stanceOf(autoSide).indexOf(GU) === 0);
+  reset();
+  seedRel('friend_aaa', 'friend_bbb', 0.2);
+  const autoLow = await RD._composeSide('friend_aaa', 'friend_bbb', null,
+    { history: [], trigger: 'autonomous', initiation: { signalCode: 'relationship-maintenance' } });
+  check('K-E. autonomous 也遵守 baseline：低 familiarity 时**同样**没有 stance',
+    autoLow.system.indexOf(GU) < 0);
+
+  /* ── 敏感性 / 变异体 ──
+     ① 方向敏感性：把两侧**对调**再问一次，stance 必须跟着翻过去
+        （等价于"实现里把 A→B 写成 B→A"，DIR-A 会立刻变红）。
+     ② 变异体：把 familiar 档**强制关掉**，关键断言必须变红。 */
+  const swapped = await RD._composeSide('friend_bbb', 'friend_aaa', null, { history: [] });
+  check('MUT-A. 方向对调后 stance 消失 → DIR-A 对方向敏感（写反即红）',
+    stanceOf(swapped) === '' && lo.familiarity < C.FAMILIARITY_BASELINE);
+  const _savedCore = global.IBRoleDmCore;
+  (0, eval)(SRC_CORE.replace("if (stance === 'familiar') {", 'if (false) {'));
+  const mutated = global.IBRoleDmCore;
+  check('MUT-B. 变异体（familiar 档强制关闭）→ 0.5 的 guidance 变空（B-A/C-C/K-D 会红）',
+    mutated.buildFamiliarityGuidance(0.5) === '' && C.buildFamiliarityGuidance(0.5) !== '');
+  global.IBRoleDmCore = _savedCore;
+  check('MUT-C. 还原后原函数行为不变（变异体没有污染后续断言）',
+    global.IBRoleDmCore === C && C.buildFamiliarityGuidance(0.5) !== '');
 }
 
 console.log('\n' + (failed === 0 ? 'ALL GREEN' : 'FAILURES') + ' — passed=' + passed + ' failed=' + failed);
