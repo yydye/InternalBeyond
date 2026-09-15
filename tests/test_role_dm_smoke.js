@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 
 /*
  * 角色私信（Role DM）· 最小浏览器 smoke（headless Chrome / Edge, CDP）。
@@ -146,12 +146,27 @@ function check(name, ok, detail) {
 
 /* 页面内一次性装配：隔离的假存储 + 假执行器 + 两个角色。 */
 const SETUP = `(function(){
-  window.__dm = { msgs:{}, calls:[], lsmirror:{} };
+  var CFG_A = { id:'friend_aaa', nickname:'昔涟', provider:'anthropic', model:'claude-x',
+    endpoint:'https://example.invalid/a', apiKey:'k1', systemPrompt:'你是昔涟，安静而固执。', relationship:'挚友' };
+  var CFG_B = { id:'friend_bbb', nickname:'初音未来', provider:'qwen', model:'qwen-plus',
+    endpoint:'https://example.invalid/b', apiKey:'k2', systemPrompt:'你是初音未来，活泼直接。', relationship:'搭档' };
+  window.__dm = { msgs:{}, calls:[], lsmirror:{}, cfgs:{ friend_aaa:CFG_A, friend_bbb:CFG_B } };
   window.apiConfigs.length = 0;
-  window.apiConfigs.push({ id:'friend_aaa', nickname:'昔涟', provider:'anthropic', model:'claude-x',
-    endpoint:'https://example.invalid/a', apiKey:'k1', systemPrompt:'你是昔涟，安静而固执。', relationship:'挚友' });
-  window.apiConfigs.push({ id:'friend_bbb', nickname:'初音未来', provider:'qwen', model:'qwen-plus',
-    endpoint:'https://example.invalid/b', apiKey:'k2', systemPrompt:'你是初音未来，活泼直接。', relationship:'搭档' });
+  window.apiConfigs.push(CFG_A, CFG_B);
+  /* ── 假存储必须**装着**这两个角色（否则「隔离环境」是自相矛盾的）──────────
+     这里曾经只往内存数组里 push，而 dbGetAll('apiConfigs') 恒返回空数组。
+     两者的差别在"应用自己什么时候重读一次配置"时才显形：social.js 的
+     loadApiConfigs() 第一行就是 all = await dbGetAll('apiConfigs')，然后
+     apiConfigs = all.filter(a => !a.archived)（social.js:741 / 760）。
+     在隔离 profile 里 IndexedDB 是空的 → 任何一次晚到的重读（social.js:777
+     renderApiList、1513、2174，或 active-diary/memory/calendar/communication
+     的 init 路径）都会把注入的两个角色**抹成空数组**，run 随即以
+     missing-character 停在 cfgOf('friend_aaa')。docs/TROUBLESHOOTING.md:167
+     把这个坑写得很清楚（"直接 apiConfigs.push() 的测试配置会被冲掉"），
+     正确做法是让假存储与注入一致，而不是让应用别重读。
+
+     实测：这个竞态在 HEAD（18ab94d）上同样偶发（3 次里 1 次红），
+     与本阶段改动无关；它伪装成「Role DM 坏了」。 */
   window._ibApiReady = function(){ return true; };
   window._ibApiHasCredential = function(){ return true; };
   /* 语义导入：本 smoke 不允许写任何真实存储（Home Node 权威 / IndexedDB 都不碰）。 */
@@ -162,6 +177,7 @@ const SETUP = `(function(){
   window.dbDelete = function(){ return Promise.resolve(); };
   window.dbGetAll = function(store){
     if (store === 'chatMessages') return Promise.resolve(Object.keys(window.__dm.msgs).map(function(k){return window.__dm.msgs[k]}));
+    if (store === 'apiConfigs') return Promise.resolve(Object.keys(window.__dm.cfgs).map(function(k){return window.__dm.cfgs[k]}));
     if (store === 'about') return Promise.resolve([{ id:'main', name:'用户' }]);
     return Promise.resolve([]);
   };
@@ -171,7 +187,10 @@ const SETUP = `(function(){
     }
     return Promise.resolve([]);
   };
-  window.dbGet = function(store, id){ return Promise.resolve(store==='about'?{id:'about',name:'用户'}:null); };
+  window.dbGet = function(store, id){
+    if (store === 'apiConfigs') return Promise.resolve(window.__dm.cfgs[id] || null);
+    return Promise.resolve(store==='about'?{id:'about',name:'用户'}:null);
+  };
   /* 假执行器：记录每次调用收到的 cfg 与 messages（"两边各调自己的模型"因此可断言）。 */
   window.quickCreateMemory = function(){ return Promise.resolve(null); };
   window.callApiChat = function(cfg, messages, opts){
