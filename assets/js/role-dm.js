@@ -152,6 +152,36 @@
     return sanitizeInput(v).slice(0, 60);
   }
 
+  /* ── 层④（跨 run 的共同历史）进入 prompt 的**唯一** canonical 边界 ──────
+     备忘的正文来自模型自己说过的话，也就是"用户可间接影响的文本"。
+     换行在本函数里由**结构**提供（我拼的 '\n'），内容永远不能自己带一个
+     换行进来 —— 一份能插入独立行的备忘，就能在
+     「不属于任何人的发言」的那条参考帧里伪造出一条新指令。
+     逐行过 sanitizeInput（唯一实现），不做第二套正则。 */
+  function memorandumForPrompt(raw) {
+    var c = core();
+    if (!c || typeof c.normalizeMemorandum !== 'function') return null;
+    var memo = c.normalizeMemorandum(raw);
+    if (!memo) return null;
+    var src = memo.text.split('\n');
+    var out = [];
+    for (var i = 0; i < src.length; i++) {
+      /* maxLength 200 > MEMORANDUM_LINE_MAX(160)：消毒不该在这里悄悄截断，
+         截断是 core 的职责（它有唯一的行上限）。 */
+      var line = sanitizeInput(src[i], { maxLength: 200 });
+      if (line) out.push(line);
+    }
+    if (!out.length) return null;
+    return {
+      schemaVersion: memo.schemaVersion,
+      text: out.join('\n'),
+      coveredUntilMessageId: memo.coveredUntilMessageId,
+      coveredUntilAt: memo.coveredUntilAt,
+      updatedAt: memo.updatedAt,
+      sourceMessageCount: memo.sourceMessageCount
+    };
+  }
+
   /* ══════════ 索引：threads ═══════════════ */
   function threadsAll() {
     var v = readJSON(KEY_THREADS, null);
@@ -433,6 +463,14 @@
     var speaker = cfgOf(speakerId);
     var peer = cfgOf(peerId);
     var history = opts.history || [];
+    /* ── 层④（我们以前聊过什么）的真源是 **thread 记录** ────────────────
+       挂在一对角色上而不是任一角色上，因此 A 与 B **必然**读到同一份
+       （memorandum(A,B) === memorandum(B,A)）；有向的是层③ relationship，
+       不是这一层。调用方可用 opts.threadMemorandum 显式覆盖（测试用），
+       但默认从 thread 上读 —— 否则"共同历史"会变成一个由每个调用点
+       各自决定的量，那正是这一层最容易退化的方式。 */
+    var memoRaw = (opts.threadMemorandum !== undefined) ? opts.threadMemorandum : (thread ? thread.threadMemorandum : null);
+    var memoForPrompt = memorandumForPrompt(memoRaw);
     /* 对方的公开认知层（唯一投影点）。核心缺失时退回"只有名字"——
        绝不因为依赖缺失就把 persona 塞进去。 */
     var pc = profileCore();
@@ -463,6 +501,9 @@
       topic: sanitizeInput(opts.topic || '').slice(0, 200),
       nowLabel: new Date().toLocaleString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long', hour: '2-digit', minute: '2-digit' }),
       threadContext: opts.threadContext || '',
+      /* 层④：跨 run 的共同历史（无向，A 与 B 同一份）。null = 还没有备忘，
+         此时 prompt 里**不出现**这一块（不是出现一个空的块）。 */
+      threadMemorandum: memoForPrompt,
       history: history.map(function (m) {
         var md = m.metadata || {};
         var sid = String(md.senderId || '');
@@ -538,6 +579,15 @@
        只作观测：它回答"这次她到底知不知道对方是什么样的人"，
        而这个问题的答案在真实 run 之后无法从消息正文反推。 */
     built.peerProfileSource = peerView.source;
+    /* 本侧"我们以前聊过什么"的实测事实（层④）。只记**形状**：
+       有没有、多少字符、覆盖了多少条消息 —— **绝不记备忘正文**。
+       与 peerProfileSource 同理：run 之后无法从消息正文反推"她当时
+       到底知不知道你们的共同历史"。 */
+    built.memorandumInfo = {
+      present: !!memoForPrompt,
+      chars: memoForPrompt ? memoForPrompt.text.length : 0,
+      coveredMessages: memoForPrompt ? Number(memoForPrompt.sourceMessageCount) || 0 : 0
+    };
     /* 输出契约：一句话正文 + 可选的、有界的私聊记忆候选。
        记忆候选**不是** <mem_create> 标签（那是给前台聊天、且带用户审批弹窗的
        协议）；它只作为本 run 的一次候选，由本域在 run 结束后统一决定是否落成
@@ -620,6 +670,13 @@
     /* 对方公开认知的来源（profile / legacy / name-only）—— 值本身不含任何
        角色内容，只说明"这一侧有没有拿到公开资料"。 */
     if (trace) trace.note(speakerId, 'peerProfileSource', String(built.peerProfileSource || 'name-only'));
+    /* 层④ 的实测事实。只记形状与计数，**不记正文**（§16）。
+       A 侧与 B 侧这两个值必须相同 —— 它们读的是同一份 thread 备忘。 */
+    if (trace && built.memorandumInfo) {
+      trace.note(speakerId, 'memorandumPresent', !!built.memorandumInfo.present);
+      trace.note(speakerId, 'memorandumChars', Number(built.memorandumInfo.chars) || 0);
+      trace.note(speakerId, 'memorandumCoveredMessages', Number(built.memorandumInfo.coveredMessages) || 0);
+    }
     var raw = '';
     try {
       if (typeof callApiChat !== 'function') {
@@ -915,6 +972,13 @@
     var memoryResult = null;
     try { memoryResult = await emitMemories(thread, produced, trigger); } catch (e) { }
 
+    /* ── 层④：跨 run 共同历史的滚动更新 ──
+       放在这两个观测之后：它读的是**已经落库**的消息，因此必须等本 run 的
+       消息全部写完。失败绝不吞掉整个 run 的结果（已经聊过的内容照常返回），
+       但也绝不假装更新过 —— memorandumResult 如实为 null。 */
+    var memorandumResult = null;
+    try { memorandumResult = await updateMemorandum(thread); } catch (e) { memorandumResult = null; }
+
     thread.stoppedReason = stopReason;
     thread.updatedAt = nowMs();
     threadSave(thread);
@@ -922,7 +986,7 @@
     var last = produced.length ? produced[produced.length - 1] : null;
     try {
       if (typeof NS.roleDmEmit === 'function') {
-        NS.roleDmEmit('run', { threadId: friendId, turns: turnsDone, stopReason: stopReason, runId: runId });
+        NS.roleDmEmit('run', { threadId: friendId, turns: turnsDone, stopReason: stopReason, runId: runId, memorandum: memorandumResult });
       }
     } catch (e) { }
 
@@ -936,6 +1000,7 @@
       lastMessageId: last ? last.messageId : null,
       relation: relationResult,
       memory: memoryResult,
+      memorandum: memorandumResult,
       error: runError || null,
       reason: turnsDone > 0 ? null : (stopReason || 'no-turn')
     };
@@ -996,6 +1061,59 @@
     return { fromId: fromId, toId: toId, before: before, after: { trust: rel.trust, familiarity: rel.familiarity, affinity: rel.affinity }, delta: delta };
   }
   function threadIdOfSafe(a, b) { var c = core(); return c ? c.roleDmFriendId(a, b) : ''; }
+
+  /* ══════════ 层④ 的滚动更新（每个 run 结束时判定一次）═══════════════
+     硬要求：**绝不**每个 run 固定多调一次模型。本函数只做三件事：
+       ① 读全量 thread 消息（真相始终是消息行本身，索引只是派生）
+       ② 交给 core 的纯函数决定"这次该不该折叠"（阈值 + watermark）
+       ③ 该折叠才写回 thread 记录（沿用同一个 threadSave）
+     生成器是**确定性抽取**（core.memorandumFoldLines），因此
+     "普通短 run 的额外 summary 调用数"恒为 0 —— 这不是"暂时还没做"，
+     而是本阶段的生成方式本身不需要模型调用。
+
+     返回的形状就是 §16 要求的可观测性字段（不含备忘正文）。 */
+  async function updateMemorandum(thread) {
+    var c = core();
+    if (!c || !thread || typeof c.foldMemorandum !== 'function') {
+      return {
+        present: false, chars: 0, coveredMessages: 0, updated: false,
+        reason: 'core-unavailable', folded: 0, producer: 'deterministic', summaryCalls: 0
+      };
+    }
+    var messages = await loadMessages(thread.threadId, 0);
+    var res = c.foldMemorandum({
+      memo: thread.threadMemorandum,
+      messages: messages,
+      /* 最近窗口**必须**和 runTurn 用的是同一个数 —— 否则备忘会开始
+         覆盖模型本来就能读到的原文，"不重复"这个保证就没了。 */
+      recentLimit: HISTORY_LIMIT,
+      nameOf: function (id, m) {
+        var sn = m ? sanitizeName(String(m.senderName || '')) : '';
+        if (sn) return sn;
+        return nameOf(cfgOf(id));
+      },
+      now: nowMs()
+    });
+    if (res.changed && res.memo) {
+      thread.threadMemorandum = res.memo;
+      thread.updatedAt = nowMs();
+      threadSave(thread);
+    }
+    var memo = res.memo || null;
+    return {
+      present: !!memo,
+      chars: memo ? String(memo.text || '').length : 0,
+      coveredMessages: memo ? Number(memo.sourceMessageCount) || 0 : 0,
+      updated: !!res.changed,
+      reason: String(res.reason || ''),
+      folded: Number(res.folded) || 0,
+      producer: 'deterministic',
+      /* 确定性生成 → 恒 0。写死 0 是一个**可断言的事实**（测试断言
+         "一个 run 的模型调用次数 === 轮数"），不是占位符：将来若引入
+         模型摘要（方案 C），这里必须换成真实计数，那条断言会立刻变红。 */
+      summaryCalls: 0
+    };
+  }
 
   /* ══════════ 记忆边界 ═══════════════
      硬要求：**禁止**每条 Role DM → 双方长期记忆。
@@ -1074,12 +1192,20 @@
   /* ══════════ 删除 / 清空语义 ═══════════════
      两个动作**语义明确、互不假装**：
        clearThread(friendId) —— 清空聊天记录：删掉该 thread 的**消息**，
+                                以及由它们派生的 thread memorandum（层④），
                                 保留 thread 身份与 directional 关系状态。
-       deleteThread(friendId) —— 删除整个私聊：消息 + thread 索引记录一起删。
+       deleteThread(friendId) —— 删除整个私聊：消息 + 备忘 + thread 索引记录一起删。
      **两者都不级联删除已固化的长期记忆**：本仓库没有 provenance-safe 的
      记忆级联删除（记忆的 provenance 只到 thread 粒度，且 consolidation 已把
      episodic 归纳成 semantic，来源可能已被合并/改写）。UI 必须如实说明，
-     绝不提供"删除私聊 = 忘记一切"的假按钮。 */
+     绝不提供"删除私聊 = 忘记一切"的假按钮。
+
+     注意"派生物"与"已固化记忆"的区别，这正是两条不同规则的来源：
+       · thread memorandum 是这条私聊 raw history 的**派生物**（它的输入只有
+         这条 thread 的消息）→ 清空原文就必须一起清掉，否则会出现
+         "记录清空了、但两个人还记得"的残留；
+       · 角色 private Memory 是**已经独立固化**的长期记忆（收件人是单个角色，
+         生命周期与这条 thread 无关）→ 不级联删除，也不假装能删。 */
   async function clearThread(friendId) {
     var c = core();
     var fid = String(friendId);
@@ -1094,10 +1220,16 @@
       rec.messageCount = 0;
       rec.lastMessageAt = 0;
       rec.lastTurnRoleId = '';
+      /* 层④ 的备忘是 raw history 的**派生物**，因此必须与它同生共死：
+         留着它等于"清空了聊天记录，但两个角色仍然记得聊过什么" ——
+         那不是清空，那是一个用户无法察觉的残留。
+         （刻意用 delete 而不是写 null：没有备忘的 thread 记录与加这一层
+           之前逐字节相同，导入/导出与既有断言都不受影响。） */
+      delete rec.threadMemorandum;
       rec.updatedAt = nowMs();
       threadSave(rec);
     }
-    return { ok: failed === 0, removed: n, failed: failed, memoryUntouched: true };
+    return { ok: failed === 0, removed: n, failed: failed, memorandumCleared: !failed, memoryUntouched: true };
   }
   async function deleteThread(friendId) {
     var fid = String(friendId);
@@ -1106,7 +1238,7 @@
     threadsSave(list);
     /* 关系状态**刻意保留**：关系不是这段聊天记录的属性，它是两个角色之间的
        事实；删掉聊天不会让"你们彼此怎么看对方"归零。UI 入口另行提供。 */
-    return { ok: res.ok, removedMessages: res.removed, failed: res.failed, relationKept: true, memoryUntouched: true };
+    return { ok: res.ok, removedMessages: res.removed, failed: res.failed, memorandumCleared: res.memorandumCleared, relationKept: true, memoryUntouched: true };
   }
   /* 角色被删除时的 thread 处理：参与者缺失 → thread 进入 archived（历史保留、
      不可再启动 run），并如实标注哪一侧缺失。绝不静默删除用户的历史。 */
@@ -1270,6 +1402,13 @@
     _threadsAll: threadsAll,
     _loadMessages: loadMessages,
     _composeSide: composeSide,
+    /* 层④（跨 run 共同历史）：投影边界 + 滚动更新 + 只读读取。 */
+    _memorandumForPrompt: memorandumForPrompt,
+    _updateMemorandum: updateMemorandum,
+    _threadMemorandum: function (friendId) {
+      var rec = threadGet(String(friendId));
+      return (rec && rec.threadMemorandum) ? rec.threadMemorandum : null;
+    },
     _keys: { threads: KEY_THREADS, relations: KEY_RELATIONS, ledger: KEY_LEDGER, prefs: KEY_PREFS, indexVersion: INDEX_VERSION }
   };
   NS.expose('roleDm', NS.roleDm);

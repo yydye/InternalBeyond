@@ -194,7 +194,12 @@ const SETUP = `(function(){
   /* 假执行器：记录每次调用收到的 cfg 与 messages（"两边各调自己的模型"因此可断言）。 */
   window.quickCreateMemory = function(){ return Promise.resolve(null); };
   window.callApiChat = function(cfg, messages, opts){
-    window.__dm.calls.push({ id:String(cfg.id), provider:String(cfg.provider), model:String(cfg.model), consumer:String(opts&&opts._ibConsumer||''), system:String(messages&&messages[0]&&messages[0].content||'') });
+    /* hist：本条 prompt 里"真正是对话"的那些行（不含 system）。
+       用来在真实页面里断言**跨 run 的最近上下文**确实进了第二次 run ——
+       这是 Node 单测（mock 全局）证明不了的那一半。 */
+    var hist = (messages || []).filter(function(m){ return m && m.role !== 'system'; })
+      .map(function(m){ return m.role + '|' + String(m.content == null ? '' : m.content).slice(0, 80); });
+    window.__dm.calls.push({ id:String(cfg.id), provider:String(cfg.provider), model:String(cfg.model), consumer:String(opts&&opts._ibConsumer||''), system:String(messages&&messages[0]&&messages[0].content||''), hist:hist });
     return Promise.resolve('这是' + (cfg.nickname||cfg.id) + '说的第 ' + window.__dm.calls.length + ' 句话。');
   };
   return true;
@@ -340,9 +345,70 @@ const SETUP = `(function(){
     check('   破坏性动作独立成按钮（清空聊天记录 / 删除这段私聊）',
       detailRes && detailRes.hasClear && detailRes.hasDelete);
 
-    /* 7) 全程没有未捕获异常 */
+    /* 7) 跨 run 的最近上下文 + 层④ 的 thread memorandum（真实页面链路）─────
+       第一条断言专门回答 Phase 1 报告里那个 "new run → history = 0" 的说法：
+       在**真实页面**上再跑一次 run，它的第一条 prompt 必须已经带着上一次
+       run 说过的话。第二条验证层④：攒够窗口外的旧消息后，备忘产生、A 与 B
+       读到**同一份**、且它不进 system 的规则区、也不带来任何额外模型调用。 */
+    const crossRes = await ev(cdp, `(async function(){
+      var A = window.IB.roleDm, C = window.IBRoleDmCore;
+      var before = window.__dm.calls.length;
+      /* 冷却用 force 绕过：这里要测的是跨 run 读取，不是冷却。 */
+      var r2 = await A.start('friend_aaa','friend_bbb',{ turns: 2, force: true });
+      var newCalls = window.__dm.calls.slice(before);
+      var first = newCalls[0] || { hist: [] };
+      var joined = (first.hist || []).join(' \\u0001 ');
+      return { ok: r2.ok, turns: r2.turns, n: newCalls.length,
+               sawOwn: joined.indexOf('这是昔涟说的第 1 句话。') >= 0,
+               sawPeer: joined.indexOf('这是初音未来说的第 2 句话。') >= 0,
+               histRows: (first.hist || []).length };
+    })()`);
+    check('7) 第二次 run 的第一条 prompt 带着上一次 run 说过的话（跨 run 最近上下文）',
+      crossRes && crossRes.sawOwn === true, JSON.stringify(crossRes));
+    check('   对方说过的话也在（以「名字」对你说 的形式）', crossRes && crossRes.sawPeer === true);
+    check('   两次 run 共 4 条消息，各 2 轮', crossRes && crossRes.n === 2 && crossRes.turns === 2, JSON.stringify(crossRes));
+
+    const memoRes = await ev(cdp, `(async function(){
+      var A = window.IB.roleDm, C = window.IBRoleDmCore;
+      var fid = C.roleDmFriendId('friend_aaa','friend_bbb');
+      var t = await A.resolveThread('friend_aaa','friend_bbb');
+      /* 直接用 canonical 构造器把"更早的历史"落进假存储（不经过模型）。 */
+      var base = 1700000000000;
+      for (var i = 0; i < 24; i++) {
+        var sender = i % 2 === 0 ? 'friend_aaa' : 'friend_bbb';
+        var m = C.buildRoleDmMessage({ senderId: sender, recipientId: (sender === 'friend_aaa' ? 'friend_bbb' : 'friend_aaa'),
+          senderName: (sender === 'friend_aaa' ? '昔涟' : '初音未来'), content: '共同历史第' + i + '条', timestamp: base + i * 1000 });
+        window.__dm.msgs[m.id] = m;
+      }
+      var callsBefore = window.__dm.calls.length;
+      var up = await A._updateMemorandum(t.thread);
+      var sa = await A._composeSide('friend_aaa','friend_bbb', t.thread, { history: [] });
+      var sb = await A._composeSide('friend_bbb','friend_aaa', t.thread, { history: [] });
+      var pick = function(b){
+        var s = b.messages.map(function(m){ return String(m.content); }).join('\\n');
+        var i = s.indexOf('【你们之前的共同经历');
+        return i < 0 ? '' : s.slice(i, i + 600);
+      };
+      return { updated: up.updated, reason: up.reason, covered: up.coveredMessages, summaryCalls: up.summaryCalls,
+               extraCalls: window.__dm.calls.length - callsBefore,
+               memoA: pick(sa), memoB: pick(sb),
+               inSystem: sa.system.indexOf('【你们之前的共同经历') >= 0,
+               hasOld: pick(sa).indexOf('共同历史第0条') >= 0,
+               leaksRecent: pick(sa).indexOf('共同历史第23条') >= 0 };
+    })()`);
+    check('8) 攒够窗口外的旧消息后产生 thread memorandum（fold）',
+      memoRes && memoRes.updated === true && memoRes.reason === 'fold', JSON.stringify(memoRes && memoRes.reason));
+    check('   备忘覆盖了窗口外的旧消息，且**不含**最近窗口的原文',
+      memoRes && memoRes.hasOld === true && memoRes.leaksRecent === false, JSON.stringify(memoRes && { hasOld: memoRes.hasOld, leaksRecent: memoRes.leaksRecent }));
+    check('   A 与 B 读到的共同经历块**逐字相同**（同一份，无方向性）',
+      memoRes && memoRes.memoA !== '' && memoRes.memoA === memoRes.memoB, JSON.stringify(memoRes && { a: memoRes.memoA.length, b: memoRes.memoB.length }));
+    check('   备忘不进 system 的规则区（authority 更低）', memoRes && memoRes.inSystem === false);
+    check('   备忘不带来任何额外模型调用（producer=deterministic）',
+      memoRes && memoRes.extraCalls === 0 && memoRes.summaryCalls === 0, JSON.stringify(memoRes && { extra: memoRes.extraCalls, s: memoRes.summaryCalls }));
+
+    /* 9) 全程没有未捕获异常 */
     await new Promise(r => setTimeout(r, 600));
-    check('7) 全程无未捕获页面异常', pageErrors.length === 0, pageErrors.join(' | '));
+    check('9) 全程无未捕获页面异常', pageErrors.length === 0, pageErrors.join(' | '));
   } finally {
     if (cdp) cdp.close();
     try { browser.kill(); } catch (e) { }

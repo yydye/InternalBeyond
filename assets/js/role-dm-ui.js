@@ -234,7 +234,7 @@
   async function onClear() {
     var api = rd();
     if (!api || !activeThreadId) return;
-    if (!confirm('清空这段私聊的聊天记录？\n\n两个角色之间的这段对话内容会被删除，但「他们对彼此的看法」以及已经沉淀到长期记忆里的事不会被一起删掉 —— 本版本不做也无法做记忆级联删除。')) return;
+    if (!confirm('清空这段私聊的聊天记录？\n\n两个角色之间的这段对话内容，以及由这段对话形成的「共同经历备忘」都会被删除。但「他们对彼此的看法」以及已经沉淀到长期记忆里的事不会被一起删掉 —— 本版本不做也无法做记忆级联删除。')) return;
     await api.clearThread(activeThreadId);
     await renderDetail();
     renderList();
@@ -243,7 +243,7 @@
   async function onDelete() {
     var api = rd();
     if (!api || !activeThreadId) return;
-    if (!confirm('删除整段私聊？\n\n聊天记录与这段私聊本身都会被删除；两个角色对彼此的关系状态会保留（关系不是聊天记录的附属品）。已经沉淀到长期记忆里的事同样不会被删除。')) return;
+    if (!confirm('删除整段私聊？\n\n聊天记录、由这段对话形成的「共同经历备忘」，以及这段私聊本身都会被删除；两个角色对彼此的关系状态会保留（关系不是聊天记录的附属品）。已经沉淀到长期记忆里的事同样不会被删除。')) return;
     await api.deleteThread(activeThreadId);
     backToList();
   }
