@@ -202,7 +202,13 @@ const SETUP = `(function(){
     window.__dm.calls.push({ id:String(cfg.id), provider:String(cfg.provider), model:String(cfg.model), consumer:String(opts&&opts._ibConsumer||''), system:String(messages&&messages[0]&&messages[0].content||''), hist:hist });
     /* 与生产 callApiChat 同款形状：wantMeta ⇒ {text,truncated}。
        role-dm 用 truncated 把"输出上限被思考吃光"与"provider 故障"分开，
-       替身只回字符串的话，这条生产行为在真实页面里就永远测不到。 */
+       替身只回字符串的话，这条生产行为在真实页面里就永远测不到。
+       __dm.outputFail = 'truncated' | 'empty' ⇒ 模拟"请求成功但没有正文"
+       （Phase 3.1 的输出类失败，两种形态各一个）。 */
+    if (window.__dm.outputFail) {
+      var _of = window.__dm.outputFail;
+      return Promise.resolve((opts && opts.wantMeta) ? { text: '', truncated: _of === 'truncated' } : '');
+    }
     var out = '这是' + (cfg.nickname||cfg.id) + '说的第 ' + window.__dm.calls.length + ' 句话。';
     return Promise.resolve((opts && opts.wantMeta) ? { text: out, truncated: false } : out);
   };
@@ -348,6 +354,56 @@ const SETUP = `(function(){
       detailRes && detailRes.hasStart && detailRes.hasStop && detailRes.hasTopic && detailRes.hasInput === false, JSON.stringify(detailRes));
     check('   破坏性动作独立成按钮（清空聊天记录 / 删除这段私聊）',
       detailRes && detailRes.hasClear && detailRes.hasDelete);
+
+    /* 6b) 输出类失败的用户文案（Phase 3.1）：**在真实页面上**跑一次
+       "请求成功但没有正文"，然后看用户到底看到了什么。
+       这一条是本轮的收口 —— 内部能识别的事实必须与用户看到的状态一致：
+       模型没写出正文，就**不能**说成"模型请求失败 / 去检查密钥"。
+       两种形态（被截断 / 未截断的空正文）各跑一次。 */
+    const failT = await ev(cdp, `(async function(){
+      var A = window.IB.roleDm;
+      var tid = (await A.listThreads())[0].threadId, before = window.__dm.calls.length;
+      window.__dm.outputFail = 'truncated';
+      var res = await A.start('friend_aaa','friend_bbb',{ turns:2, force:true });
+      window.__dm.outputFail = null;
+      var detail = await A.threadDetail(tid);
+      window.IB.roleDmUI.openThread(tid);
+      await new Promise(function(r){ setTimeout(r, 300); });
+      var note = document.getElementById('roledm-detail-note');
+      return { stopReason: res && res.stopReason, err: res && res.error, turns: res && res.turns,
+               persisted: detail.stopReason, text: note ? note.textContent : '',
+               calls: window.__dm.calls.length - before,
+               errCards: document.querySelectorAll('#ib-err-stack .ib-err-card').length };
+    })()`);
+    check('6b) 真实页面：请求成功但无正文 → stopReason=output-truncated（不是 provider-failed）',
+      failT && failT.stopReason === 'output-truncated' && failT.turns === 0 &&
+      failT.stopReason !== 'provider-failed', JSON.stringify(failT));
+    check('   这一刻只重试一次：真实页面里的调用数是 2（2048 → 4096 → 停）',
+      failT && failT.calls === 2, failT && failT.calls);
+    check('   停止原因持久化在 thread 上（重开详情仍读得到）',
+      failT && failT.persisted === 'output-truncated', failT && failT.persisted);
+    check('   用户看到的文案说的是"没来得及写出正文"，并且**不含**密钥 / API Key / 网络 / 请求失败',
+      failT && /没来得及写出正文/.test(failT.text) &&
+      !/密钥|API Key|apiKey|网络|请求失败|不可用/.test(failT.text), failT && failT.text);
+    check('   真实页面里也没有弹出"检查密钥"错误卡片', failT && failT.errCards === 0, failT && failT.errCards);
+
+    const failE = await ev(cdp, `(async function(){
+      var A = window.IB.roleDm;
+      var tid = (await A.listThreads())[0].threadId, before = window.__dm.calls.length;
+      window.__dm.outputFail = 'empty';
+      var res = await A.start('friend_aaa','friend_bbb',{ turns:2, force:true });
+      window.__dm.outputFail = null;
+      window.IB.roleDmUI.openThread(tid);
+      await new Promise(function(r){ setTimeout(r, 300); });
+      var note = document.getElementById('roledm-detail-note');
+      return { stopReason: res && res.stopReason, turns: res && res.turns, text: note ? note.textContent : '',
+               calls: window.__dm.calls.length - before };
+    })()`);
+    check('6b-2) 未截断的空正文 → empty-output（与截断分开，同样不是 provider-failed）',
+      failE && failE.stopReason === 'empty-output' && failE.stopReason !== 'provider-failed', JSON.stringify(failE));
+    check('   同样只花掉 2 次调用，文案同样不指向密钥 / 网络',
+      failE && failE.calls === 2 && /没有给出正文/.test(failE.text) &&
+      !/密钥|API Key|apiKey|网络|请求失败|不可用/.test(failE.text), JSON.stringify(failE));
 
     /* 7) 跨 run 的最近上下文 + 层④ 的 thread memorandum（真实页面链路）─────
        第一条断言专门回答 Phase 1 报告里那个 "new run → history = 0" 的说法：

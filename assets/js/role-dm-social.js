@@ -534,7 +534,8 @@
        两个半真的失败必须被排除：
          · 被守卫拒绝（上面两处 early return）—— 什么都没发生，不记账；
          · 发起于守卫之后但**一轮都没说成**（stopReason=provider-failed /
-           duplicate-stall / bad-message）—— 账面上"她主动聊过一次"是假的。
+           output-truncated / empty-output / duplicate-stall / bad-message）
+           —— 账面上"她主动聊过一次"是假的。
        为什么这不会变成烧 API 的循环：真正花掉调用的那种失败会被
        ④ 的失败退避挡住（该角色 ≥4h 不再被评估），而不是靠额度。
        顺带一个真实后果：额度因此与"用户能看到的那次主动私聊"逐条对应，
@@ -553,11 +554,24 @@
     if (failed) {
       var reason = str((res && res.reason) || 'unknown');
       var providerFailedCode = 'provider-failed';
+      /* 输出类失败（Phase 3.1）：run 发起了、**请求也成功了**，只是没拿到
+         可用正文。它们与 providerFailed 同属"发出去之后没成"这一类，
+         因此在 trace 里也各自是一个**真实**的 code（词表见 social-core）。 */
+      var outputFailCodes = ['output-truncated', 'empty-output'];
       try {
         var dmCore = window.IBRoleDmCore;
-        if (dmCore && dmCore.REASON && dmCore.REASON.providerFailed) providerFailedCode = String(dmCore.REASON.providerFailed);
+        if (dmCore && dmCore.REASON) {
+          if (dmCore.REASON.providerFailed) providerFailedCode = String(dmCore.REASON.providerFailed);
+          if (dmCore.REASON.outputTruncated) outputFailCodes[0] = String(dmCore.REASON.outputTruncated);
+          if (dmCore.REASON.emptyOutput) outputFailCodes[1] = String(dmCore.REASON.emptyOutput);
+        }
       } catch (e) { }
-      if (reason === providerFailedCode || reason === 'provider-failed' || reason === 'run-threw') {
+      var isOutputFail = outputFailCodes.indexOf(reason) >= 0;
+      /* 退避的对象是"**真的花掉了调用**的失败"。输出类失败同样花掉了调用
+         （一级预算 + 一次有界重试），而且它的成因（思考把输出上限吃满）
+         不会因为马上再试一次就消失 —— 不退避等于给自主调度留了一条
+         隐性 token runaway 的路，而那正是 Phase 3 §6 要挡住的东西。 */
+      if (reason === providerFailedCode || reason === 'provider-failed' || reason === 'run-threw' || isOutputFail) {
         recordFailure(initiatorId, now);
       }
       var failedRec = res || {};
@@ -567,10 +581,15 @@
            blockedBy = **为什么这次没成**（守卫 reason 或 run 的停止原因，
              例如 pair-cooldown）—— 诊断字段，值域开放；
            reasonCode = **这次判定的性质**（一个 REASON 词表里的 code）。
-           把 run 的停止原因写进 reasonCode 会让"reasonCode 落在有限词表内"
-           这条契约失效 —— 而那条契约正是以后做统计的依据。 */
+           把任意的停止原因写进 reasonCode 会让"reasonCode 落在有限词表内"
+           这条契约失效 —— 而那条契约正是以后做统计的依据。因此输出类失败
+           不是"把开放值域塞进来"，而是先成为**词表成员**
+           （social-core REASON 的 output-truncated / empty-output，与
+           role-dm-core 逐字同码）之后才被用在这里：一次事实只有一个名字。 */
         blockedBy: reason,
-        reasonCode: (c && c.REASON && c.REASON.providerFailed) ? c.REASON.providerFailed : 'provider-failed',
+        reasonCode: isOutputFail
+          ? reason
+          : ((c && c.REASON && c.REASON.providerFailed) ? c.REASON.providerFailed : 'provider-failed'),
         runId: str(failedRec.runId || ''),
         turns: Number(failedRec.turnsDone) || 0,
         stopReason: str(failedRec.stopReason || reason)

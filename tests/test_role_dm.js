@@ -1246,15 +1246,17 @@ reset();
     CALLS[2].id === 'friend_bbb' && Number(CALLS[2].opts.maxTokens) === 2048,
     CALLS.map(c => c.id + ':' + c.opts.maxTokens));
   check('AE5. 重试成功后这一轮照常落库（不是"安全停止"，也没有被记成故障）',
-    r2.turns === 2 && r2.error === null && r2.reason === null, { turns: r2.turns, reason: r2.reason, error: r2.error });
+    r2.turns === 2 && r2.error === null && r2.reason === null &&
+    r2.stopReason !== C.REASON.outputTruncated && r2.stopReason !== C.REASON.providerFailed,
+    { turns: r2.turns, reason: r2.reason, error: r2.error, stopReason: r2.stopReason });
 
   /* 两次都被截断 → 有界停止（只重试一次），且原因如实区分。 */
   reset();
   truncateFor = { id: 'friend_aaa', times: 5 };
   const r3 = await RD.start('friend_aaa', 'friend_bbb', { turns: 2, force: true });
   check('AE6. 连续截断只重试一次（有界，绝不无限重试到成功）', CALLS.length === 2, CALLS.length);
-  check('AE7. 仍安全停在 provider-failed（既有闭集词表），但 error 如实记为 output-truncated',
-    r3.turns === 0 && r3.reason === 'provider-failed' && r3.error === 'output-truncated',
+  check('AE7. 连续截断 → 停在 output-truncated（**不是** provider-failed：请求成功了）',
+    r3.turns === 0 && r3.reason === C.REASON.outputTruncated && r3.error === C.REASON.outputTruncated,
     { turns: r3.turns, reason: r3.reason, error: r3.error });
 
   /* 截断但**有**正文（半句话被砍断）：不重试 —— 重试只针对"一个字都没有"。 */
@@ -1282,8 +1284,8 @@ reset();
   reset();
   emptyFor = { id: 'friend_aaa', times: 5 };
   const r6 = await RD.start('friend_aaa', 'friend_bbb', { turns: 2, force: true });
-  check('AE10. 连续空正文 → 只重试一次，error 记为 empty-output（与 output-truncated 区分）',
-    CALLS.length === 2 && r6.turns === 0 && r6.reason === 'provider-failed' && r6.error === 'empty-output',
+  check('AE10. 连续空正文（未截断）→ 只重试一次，停在 empty-output（与 output-truncated 分开）',
+    CALLS.length === 2 && r6.turns === 0 && r6.reason === C.REASON.emptyOutput && r6.error === C.REASON.emptyOutput,
     { calls: CALLS.length, turns: r6.turns, reason: r6.reason, error: r6.error });
 }
 
@@ -1293,6 +1295,147 @@ reset();
     RD.prefs().autonomous === false, RD.prefs());
   const r = await RD.startAutonomous('friend_aaa', 'friend_bbb', {});
   check('AD2. startAutonomous → autonomous-disabled', r.reason === 'autonomous-disabled', r);
+}
+
+/* ══════ AF · Output Failure Semantics Closure（Phase 3.1）══════
+   一个事实：**请求成功**，模型只是没生成可用正文。
+   一份契约：它必须有**自己**的停止原因，而不是被说成 provider 故障 ——
+   后者会把用户引去查 key / endpoint / 网络，三个都没坏的东西。
+   本节把契约、运行时分类、用户文案、持久化四层钉在一起。 */
+{
+  /* ── 契约：canonical 词表里的成员，且与 provider-failed 互不相同 ── */
+  check('AF1. output-truncated / empty-output 是 canonical 停止原因（role-dm-core REASON）',
+    C.REASON.outputTruncated === 'output-truncated' && C.REASON.emptyOutput === 'empty-output',
+    [C.REASON.outputTruncated, C.REASON.emptyOutput]);
+  check('AF2. 两者与 provider-failed 是**不同**的码（同一个码不可能既成功又失败）',
+    C.REASON.outputTruncated !== C.REASON.providerFailed &&
+    C.REASON.emptyOutput !== C.REASON.providerFailed &&
+    C.REASON.outputTruncated !== C.REASON.emptyOutput);
+  check('AF3. 旧码 provider-failed 仍然合法（旧 thread / 旧 trace 不做 migration）',
+    C.REASON.providerFailed === 'provider-failed');
+
+  /* ── 运行时：真 provider 抛错 → provider-failed（分类没有被新码吃掉）── */
+  reset();
+  failFor = 'friend_aaa';
+  const af1 = await RD.start('friend_aaa', 'friend_bbb', { turns: 2, force: true });
+  check('AF4. 真 provider 抛错 → 仍然是 provider-failed，绝不误报成输出类失败',
+    af1.turns === 0 && af1.reason === C.REASON.providerFailed &&
+    af1.reason !== C.REASON.outputTruncated && af1.reason !== C.REASON.emptyOutput,
+    { turns: af1.turns, reason: af1.reason });
+  failFor = null;
+
+  /* ── 运行时：截断 + 空正文 → 一次重试 → 仍空 → output-truncated ── */
+  reset();
+  truncateFor = { id: 'friend_aaa', times: 9 };
+  const af2 = await RD.start('friend_aaa', 'friend_bbb', { turns: 2, force: true });
+  check('AF5. 截断+空正文：重试恰好一次（calls<=2，绝不隐性 token runaway）',
+    CALLS.length === 2, CALLS.length);
+  check('AF6. 两次都空 → stoppedReason=output-truncated（run 的 reason / error 与之一致）',
+    af2.turns === 0 && af2.stopReason === C.REASON.outputTruncated &&
+    af2.reason === C.REASON.outputTruncated && af2.error === C.REASON.outputTruncated,
+    { stopReason: af2.stopReason, reason: af2.reason, error: af2.error });
+
+  /* ── 持久化：thread 记录如实保存，旧数据继续可读（未知 reason 走既有 fallback）── */
+  const afTid = C.roleDmFriendId('friend_aaa', 'friend_bbb');
+  check('AF7. thread 记录持久化 output-truncated（threadDetail 也能读到）',
+    RD._threadsAll().find(t => t.threadId === afTid).stoppedReason === C.REASON.outputTruncated &&
+    (await RD.threadDetail(afTid)).stopReason === C.REASON.outputTruncated);
+  check('AF8. 未知 reason 不炸：normalizeThreadRecord 原样保留（没有迁移、没有白名单收窄）',
+    C.normalizeThreadRecord({ participantIds: ['friend_aaa', 'friend_bbb'], stoppedReason: 'some-future-code' })
+      .stoppedReason === 'some-future-code');
+
+  /* ── 用户文案：两个新码有自己的中文，且**不含**任何错误指向 ── */
+  const UI_SRC = fs.readFileSync(path.join(ROOT, 'assets/js/role-dm-ui.js'), 'utf8');
+  const stopTextBlock = /var RUN_STOP_TEXT = \{([\s\S]*?)\n  \};/.exec(UI_SRC);
+  const RUN_STOP_TEXT = stopTextBlock ? (0, eval)('({' + stopTextBlock[1] + '})') : {};
+  const FORBIDDEN = ['密钥', 'API Key', 'apiKey', 'api key', '网络', '请求失败', '不可用', 'endpoint', 'Endpoint'];
+  const textOf = (code) => String(RUN_STOP_TEXT[code] || '');
+  check('AF9. UI 为 output-truncated 渲染了中文文案', textOf(C.REASON.outputTruncated).length > 10,
+    textOf(C.REASON.outputTruncated));
+  check('AF10. UI 为 empty-output 渲染了中文文案', textOf(C.REASON.emptyOutput).length > 10,
+    textOf(C.REASON.emptyOutput));
+  check('AF11. 两条文案都不含"密钥 / API Key / 网络 / 请求失败 / 模型不可用"',
+    [C.REASON.outputTruncated, C.REASON.emptyOutput]
+      .every(code => FORBIDDEN.every(w => textOf(code).indexOf(w) === -1)),
+    FORBIDDEN.filter(w => textOf(C.REASON.outputTruncated).indexOf(w) >= 0 || textOf(C.REASON.emptyOutput).indexOf(w) >= 0));
+  check('AF12. 旧的 provider-failed 文案仍在（旧 thread 继续正常显示）',
+    textOf(C.REASON.providerFailed).length > 0 && textOf('thread-busy').length > 0);
+  check('AF13. 未知 reason 在 UI 里安全 fallback（查不到就没有那一条 note，绝不抛错）',
+    RUN_STOP_TEXT['some-future-code'] === undefined &&
+    Object.prototype.hasOwnProperty.call(RUN_STOP_TEXT, C.REASON.outputTruncated));
+
+  /* ── 用户错误卡片：输出类失败**绝不**弹"检查密钥" ──
+     装一个真的 IBERR 间谍：它同时证明两件事 ——
+       · 输出类失败时一次都没被调用（0 张"密钥缺失"卡片）；
+       · 真 provider 故障时确实会被调用（说明这个间谍测的是生产路径，不是空转）。 */
+  const SHOWN = [];
+  global.window.IBERR = {
+    show: (m) => { SHOWN.push(m); return m; },
+    model: (category, opts) => ({ category: category, opts: opts })
+  };
+  reset();
+  truncateFor = { id: 'friend_aaa', times: 9 };
+  await RD.start('friend_aaa', 'friend_bbb', { turns: 2, force: true });
+  reset();
+  emptyFor = { id: 'friend_aaa', times: 9 };
+  await RD.start('friend_aaa', 'friend_bbb', { turns: 2, force: true });
+  check('AF14. 输出类失败（截断 / 空正文）全程 0 张"检查密钥"卡片', SHOWN.length === 0,
+    SHOWN.map(m => m.category + ':' + JSON.stringify(m.opts)));
+  reset();
+  failFor = 'friend_aaa';
+  await RD.start('friend_aaa', 'friend_bbb', { turns: 2, force: true });
+  check('AF15. 真鉴权/配置故障仍然报（间谍有效：它确实抓到了那张卡片）',
+    SHOWN.length === 1 && SHOWN[0].category === 'auth' && SHOWN[0].opts.reason === 'missing-key',
+    SHOWN.map(m => m.category + ':' + (m.opts && m.opts.reason)));
+  failFor = null;
+  delete global.window.IBERR;
+
+  /* ── manual / autonomous 同一种 provider 返回 → 同一个停止原因 ──
+     两条路径共用 runTurn，但**对外暴露**的字段不同（manual 直接用 run 结果，
+     autonomous 还要过一层审计记录）。这里用同一种假 provider 形状把两者对齐。
+     注意 reset() 会清掉 localStorage —— 偏好要在**每次**清场之后再打开。 */
+  reset();
+  RD.setPrefs({ autonomous: true });
+  truncateFor = { id: 'friend_aaa', times: 9 };
+  const afManualT = await RD.start('friend_aaa', 'friend_bbb', { turns: 2, force: true });
+  const afManualTCalls = CALLS.length;
+  reset();
+  RD.setPrefs({ autonomous: true });
+  truncateFor = { id: 'friend_aaa', times: 9 };
+  const afAutoT = await RD.startAutonomous('friend_aaa', 'friend_bbb',
+    { initiatorId: 'friend_aaa', turns: 2, force: true, skipAutonomousGate: true });
+  const afAutoTCalls = CALLS.length;
+  check('AF16. 截断：manual 与 autonomous 得到同一个停止原因（拒绝"manual 说故障、autonomous 说预算"）',
+    afManualT.stopReason === C.REASON.outputTruncated && afAutoT.stopReason === C.REASON.outputTruncated &&
+    afManualT.stopReason === afAutoT.stopReason,
+    { manual: afManualT.stopReason, autonomous: afAutoT.stopReason });
+
+  reset();
+  RD.setPrefs({ autonomous: true });
+  emptyFor = { id: 'friend_aaa', times: 9 };
+  const afManualE = await RD.start('friend_aaa', 'friend_bbb', { turns: 2, force: true });
+  const afManualECalls = CALLS.length;
+  reset();
+  RD.setPrefs({ autonomous: true });
+  emptyFor = { id: 'friend_aaa', times: 9 };
+  const afAutoE = await RD.startAutonomous('friend_aaa', 'friend_bbb',
+    { initiatorId: 'friend_aaa', turns: 2, force: true, skipAutonomousGate: true });
+  const afAutoECalls = CALLS.length;
+  check('AF17. 空正文：manual 与 autonomous 同样是同一个停止原因',
+    afManualE.stopReason === C.REASON.emptyOutput && afAutoE.stopReason === C.REASON.emptyOutput &&
+    afManualE.stopReason === afAutoE.stopReason,
+    { manual: afManualE.stopReason, autonomous: afAutoE.stopReason });
+
+  /* 预算与重试策略**本轮冻结**：provider 连续空了 9 次，每次 run 的调用数
+     仍然恰好是 2（一级预算 + 恰好一次重试），manual 与 autonomous 一样 ——
+     没有第三级预算，也就没有隐性 token runaway。 */
+  check('AF18. 重试上限仍是 1：四条路径的调用数都恰好是 2（2048 → 4096 → 停）',
+    afManualTCalls === 2 && afAutoTCalls === 2 && afManualECalls === 2 && afAutoECalls === 2,
+    { manualTruncated: afManualTCalls, autoTruncated: afAutoTCalls, manualEmpty: afManualECalls, autoEmpty: afAutoECalls });
+  check('AF19. 预算阶梯没有变（第二次调用是 4096，且没有第三次）',
+    CALLS.length === 2 && Number(CALLS[0].opts.maxTokens) === 2048 && Number(CALLS[1].opts.maxTokens) === 4096,
+    CALLS.map(c => c.opts.maxTokens));
+  RD.setPrefs({ autonomous: false });
 }
 
 console.log('\n' + (failed === 0 ? 'ALL GREEN' : 'FAILURES') + ' — passed=' + passed + ' failed=' + failed);

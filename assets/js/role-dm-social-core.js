@@ -102,7 +102,14 @@
     noIntent: 'no-intent',
     /* run 已经发起、但那一轮本身失败了。它是**判定之后**的结果，
        因此属于同一份稳定词表 —— trace 的 reasonCode 只有这一个来源。 */
-    providerFailed: 'provider-failed'
+    providerFailed: 'provider-failed',
+    /* 同上的**输出类**失败（Phase 3.1）：run 发起了、请求也成功了，
+       只是没拿到可用正文。与 providerFailed 分开，是因为 trace 的
+       reasonCode 必须是**事实**：把"模型没写出正文"记成 provider 故障，
+       读 trace 的人就会去查一个没坏的 key。
+       两个成员与 role-dm-core 的 REASON 逐字同码（同一事实只有一个名字）。 */
+    outputTruncated: 'output-truncated',
+    emptyOutput: 'empty-output'
   };
   /* 阻塞原因的优先级：决定 reasonCode 用哪一条。
      顺序表达的是"用户最先该知道的原因" —— 总开关关掉永远排第一。 */

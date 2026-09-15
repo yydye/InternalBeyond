@@ -571,9 +571,50 @@ finish_reason = "length"   content 长度 = 0   reasoning_content = 1098 字符 
   但 `error` 如实区分 `output-truncated` / `empty-output`（运维含义完全不同），
   且空正文**不再触发**「密钥缺失」那条用户报错——模型回过话、只是没吐出正文，
   那不是配置问题。
+  ⚠️ **这一条已被 D25 取代**：`error` 里的区分是对的，但把它留在 `provider-failed`
+  仍然让**用户**看到"模型请求失败"。D25 把这两个码提升为正式的停止原因。
 - **"截断但有正文"（半句话）不重试**：重试只针对"一个字都没有"，不为半句话多烧一次调用。
 
 验证据此分两层：`tests/test_role_dm.js` 的 AE1–AE10 钉住预算、形状契约、重试的**有界性**
 与两种成因的区分（执行器替身必须与生产**同形状**返回 `{text,truncated}`，否则测的是替身）；
 真实模型端到端探针则给出 `firstSpeaker / sameThread / locksReleased / shortTurns / turnBudget`
 全 PASS，自主发起只花 2 次调用（≤4），且**只读意图评估 0 次调用**。
+
+## D25. 请求成功但没有正文 ≠ provider 故障：输出类失败成为正式停止原因（2026-09-15）
+
+**D24 留了一个语义尾巴。** 它把 `output-truncated` / `empty-output` 放进了 `error`
+（给运维看），但**停止原因**仍然是 `provider-failed`，于是**用户**看到的还是
+「有一方没能回应（模型请求失败）」——明明 provider 成功了。用户据此去查的
+key / endpoint / 网络，三个都没坏。**内部已经能识别的事实，用户看到的状态必须与之一致。**
+
+契约面（先审计后修改，不新增第二套词表）：
+
+| 层 | 位置 | 本轮 |
+|---|---|---|
+| canonical 词表 | `role-dm-core.js` 的 `REASON` | +2：`outputTruncated: 'output-truncated'`、`emptyOutput: 'empty-output'` |
+| 运行时写入 | `role-dm.js` `runTurn()` | 只有"**有界预算 + 恰好一次重试**之后仍无正文"才成立；按 `truncated` 证据分码 |
+| 用户文案 | `role-dm-ui.js` 的 `RUN_STOP_TEXT` | +2 条；**不含**密钥 / API Key / 网络 / 请求失败 |
+| 自主判定词表 | `role-dm-social-core.js` 的 `REASON` | +2（与 core 逐字同码），于是 trace 的 `reasonCode` 说的也是事实 |
+| 自主退避 | `role-dm-social.js` | 输出类失败**照样退避**（它真的花掉了 2 次调用） |
+| 持久化 | `thread.stoppedReason` | 如实保存新码；旧 `provider-failed` 继续合法，**无迁移** |
+| trace | 自主审计记录 | 无需改字段：`stopReason` / `blockedBy` / `reasonCode` 自动变准确 |
+
+- **两种成因分开**（`truncated===true` → `output-truncated`；请求成功、无截断证据 →
+  `empty-output`）。为什么不合成一个 `no-usable-output`：两者给用户的**建议不同**
+  （前者该调思考档位 / 输出上限，后者只需稍后重试），而 `error` 里本来就有这条区分 ——
+  这不是新造概念，是把既有的区分提升到用户可见层。
+- **MB trace 的字段白名单没有动**（`middle-brain.js` 的 `_MB_TRACE_FIELDS` 是一份
+  带追加纪律的冻结契约）。停止原因已经在 run 结果、thread 记录、自主审计 trace
+  三处如实记录，不需要再占一个字段。
+- **预算与重试策略冻结未动**：`2048 → (空) → 4096 × 恰好一次 → (仍空) → 停`。
+  理由见 D24 §6 的同一条：自主私信不能因为推理模型没正文而进入隐性 token runaway。
+- **"截断但有正文"仍然 0 次重试**：不为半句话多烧一次调用。
+
+验证：0 次真实模型调用（成因已在 D24 用真实回包证过）。`test_role_dm.js` 269 绿
+（AE7/AE10 按新码更新，新增 AF1–AF19：契约、真故障仍归 `provider-failed`、
+持久化、旧码兼容、未知码安全 fallback、UI 文案与禁用词、**"检查密钥"卡片 0 张**
+（同一间谍在真故障时确实抓到了卡片，证明它测的是生产路径）、manual/autonomous 同码、
+重试上限 2 次调用）；`test_role_dm_social.js` 197 绿（新增 27b：自主路径的
+stopReason / trace reasonCode 如实、退避照旧、账目不计）；`test_role_dm_smoke.js`
+41 绿（**真实页面**上跑"请求成功但无正文"，断言渲染出的中文与非误导性，
+且没有弹出错误卡片）；`test_frontend_structure.js` 全 PASS。

@@ -127,9 +127,22 @@ global.window = {
 const CALLS = [];
 let failFor = null;
 let replyFor = null;
+/* 输出类失败的两种形态（Phase 3.1）：provider **成功**，只是没有正文。
+   { id, times } = 对 id 的前 times 次调用回 truncated=false 的空正文；
+   truncated 形状用 truncateFor（finish_reason=length 翻译过来的事实）。 */
+let emptyFor = null;
+let truncateFor = null;
 global.callApiChat = async function (cfg, messages, opts) {
   CALLS.push({ id: String(cfg && cfg.id), provider: String(cfg && cfg.provider), model: String(cfg && cfg.model), messages, opts });
   if (failFor && String(cfg.id) === String(failFor)) throw new Error('provider exploded');
+  if (truncateFor && String(cfg.id) === String(truncateFor.id) && truncateFor.times > 0) {
+    truncateFor.times--;
+    return (opts && opts.wantMeta) ? { text: String(truncateFor.text || ''), truncated: true } : String(truncateFor.text || '');
+  }
+  if (emptyFor && String(cfg.id) === String(emptyFor.id) && emptyFor.times > 0) {
+    emptyFor.times--;
+    return (opts && opts.wantMeta) ? { text: '', truncated: false } : '';
+  }
   const out = replyFor ? await replyFor(cfg, messages, opts) : ('这是' + (cfg.nickname || cfg.id) + '说的话。' + (CALLS.length));
   return (opts && opts.wantMeta) ? { text: String(out == null ? '' : out), truncated: false } : out;
 };
@@ -156,7 +169,7 @@ function reset() {
   for (const k of Object.keys(DB)) delete DB[k];
   for (const k of Object.keys(LS)) delete LS[k];
   CALLS.length = 0; TRACES.length = 0;
-  failFor = null; replyFor = null;
+  failFor = null; replyFor = null; emptyFor = null; truncateFor = null;
   SLEEP = { sleepStart: '', sleepEnd: '' };
   global._chatSendingFor.clear();
   archivedConfigs.length = 0;
@@ -611,6 +624,75 @@ reset();
   check('29b. 退避有上界（不会无限增长）', RS._recordFailure('friend_aaa', bt + 3000).backoffMs <= SC.BUDGET.failureBackoffMaxMs);
   check('29c. 退避期内预算拒绝',
     RS.autonomousBudgetCheck('friend_aaa', 'friend_bbb', bt + 4000).blockedBy === 'backoff');
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   27b · 输出类失败（Phase 3.1）：请求**成功**，只是没有正文
+   ------------------------------------------------------------------
+   同一件事在自主路径上必须与手动路径同名同义。这里钉三件事：
+     ① run 的停止原因是 output-truncated / empty-output，不是 provider-failed；
+     ② 审计 trace 的 reasonCode / stopReason 说的是**事实**（且仍是词表成员）；
+     ③ 它照样退避 —— 它真的花掉了两次调用，不退避就是隐性 token runaway 的口子。
+   ══════════════════════════════════════════════════════════════════ */
+{
+  check('27b-1. 社交核心词表里有这两个码，且与 role-dm-core 逐字同码（一个事实一个名字）',
+    SC.REASON.outputTruncated === C.REASON.outputTruncated &&
+    SC.REASON.emptyOutput === C.REASON.emptyOutput &&
+    SC.REASON.outputTruncated === 'output-truncated' && SC.REASON.emptyOutput === 'empty-output');
+
+  reset();
+  await makeAcquainted('friend_aaa', 'friend_bbb', { turns: 2 });
+  setRelation('friend_aaa', 'friend_bbb', { familiarity: 0.95, affinity: 0.95, trust: 0.9, dmCount: 8 });
+  const armT = armForInitiation('friend_aaa', 'friend_bbb');
+  ageThread('friend_aaa', 'friend_bbb', 10 * 86400000);
+  RS.setCharacterPrefs('friend_aaa', { enabled: true, initiative: 1.0 });
+  truncateFor = { id: 'friend_aaa', times: 9 };
+  CALLS.length = 0; TRACES.length = 0; RS._trace(0);
+  /* 走**真实**的自主路径（tick），不是直接 RD.startAutonomous ——
+     审计 trace 与失败退避都长在社交层的发起流程里，绕过它就等于
+     在测一个生产不会走的分支（这类假绿本仓库记录过多次）。 */
+  const startedT = await RS.tick({ now: armT, force: true });
+  /* 失败的 run 不计入 initiated（"她主动聊过一次"在账面上必须是真的），
+     但 attempt 确实发生过 —— 断言用 attempted 而不是 initiated。 */
+  check('27b-2. tick 确实尝试发起了一次（否则下面测不到东西）',
+    startedT.attempted === 1 && startedT.initiated === 0 &&
+    startedT.decisions[0] && startedT.decisions[0].blockedBy === C.REASON.outputTruncated, startedT);
+  check('27b-3. 截断+空正文 → 停在与事实一致的码上（不是 provider-failed）',
+    startedT.decisions[0].blockedBy === C.REASON.outputTruncated &&
+    startedT.decisions[0].blockedBy !== C.REASON.providerFailed, startedT.decisions[0]);
+  check('27b-4. 每次 run 只花掉 2 次调用（一级预算 + 一次重试，没有第三级）',
+    CALLS.length === 2 && CALLS.every(c => c.id === 'friend_aaa'), CALLS.map(c => c.id + ':' + c.opts.maxTokens));
+  const traceT = RS._trace(5).filter(t => t.decision === 'no-action').pop();
+  check('27b-5. trace 的 reasonCode 说的是事实（output-truncated ∈ 有限词表）',
+    !!traceT && traceT.reasonCode === C.REASON.outputTruncated &&
+    Object.values(SC.REASON).indexOf(traceT.reasonCode) >= 0, traceT);
+  check('27b-6. trace 的 stopReason / blockedBy 同样如实（不再是 provider-failed）',
+    !!traceT && traceT.stopReason === C.REASON.outputTruncated && traceT.blockedBy === C.REASON.outputTruncated, traceT);
+  check('27b-7. trace 里没有 reasoning / 正文 / prompt / 密钥泄漏',
+    !/reasoning|reasoning_content|sk-|apiKey|安静而固执/.test(JSON.stringify(RS._trace(5))));
+  const backoffT = RS.autonomousBudgetCheck('friend_aaa', 'friend_bbb', armT + 1000);
+  check('27b-8. 输出类失败同样触发失败退避（它真的花了调用）',
+    backoffT.blockedBy === 'backoff', backoffT);
+
+  /* 未截断的空正文走同一个机制，但留下**不同**的码（诊断含义不同）。 */
+  reset();
+  await makeAcquainted('friend_aaa', 'friend_bbb', { turns: 2 });
+  setRelation('friend_aaa', 'friend_bbb', { familiarity: 0.95, affinity: 0.95, trust: 0.9, dmCount: 8 });
+  const armE = armForInitiation('friend_aaa', 'friend_bbb');
+  ageThread('friend_aaa', 'friend_bbb', 10 * 86400000);
+  RS.setCharacterPrefs('friend_aaa', { enabled: true, initiative: 1.0 });
+  emptyFor = { id: 'friend_aaa', times: 9 };
+  CALLS.length = 0; TRACES.length = 0; RS._trace(0);
+  const startedE = await RS.tick({ now: armE, force: true });
+  check('27b-9. 未截断的空正文 → empty-output（与 output-truncated 分开，且不是 provider-failed）',
+    startedE.attempted === 1 && startedE.decisions[0] &&
+    startedE.decisions[0].blockedBy === C.REASON.emptyOutput &&
+    startedE.decisions[0].blockedBy !== C.REASON.providerFailed,
+    startedE.decisions[0]);
+  const traceE = RS._trace(5).filter(t => t.decision === 'no-action').pop();
+  check('27b-10. 对应的 trace reasonCode 也是 empty-output', !!traceE && traceE.reasonCode === C.REASON.emptyOutput, traceE);
+  check('27b-11. 空的 run 不进"主动聊过一次"的账（账面上她没聊成）',
+    RS._state().globalUsedToday.length === 0, RS._state().globalUsedToday);
 }
 
 /* ══════════════════════════════════════════════════════════════════

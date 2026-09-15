@@ -1023,6 +1023,16 @@
     aborted: 'aborted',
     maxTurns: 'max-turns',
     providerFailed: 'provider-failed',
+    /* 输出类失败（Phase 3.1）：**请求本身是成功的**，只是这一轮没拿到可用正文。
+       它们与 provider-failed 是两件不同的事实，用户该做的事也相反 ——
+       provider-failed 才可能指向 key / endpoint / 网络；输出类失败指向
+       "模型没有生成正文"（稍后重试，或调整该角色模型的思考/输出设置）。
+       两个成员都只在**有界预算 + 一次重试之后仍无正文**时才成立（见 role-dm.js
+       runTurn），绝不退化成"任何空回复"。
+         output-truncated  有可靠元信息证据表明输出被上限截断（finish_reason=length）
+         empty-output      请求成功、无截断证据，但正文仍为空 */
+    outputTruncated: 'output-truncated',
+    emptyOutput: 'empty-output',
     duplicateStall: 'duplicate-stall',
     persistFailed: 'persist-failed',
     completed: 'run-complete'

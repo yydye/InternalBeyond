@@ -634,7 +634,11 @@
   }
 
   /* ══════════ 一轮发言（**一次真实模型调用**）═══════════════
-     返回值：{ok, text, memo, provider, model, speakerName, reason} */
+     返回值：{ok, text, memo, provider, model, speakerName, reason}
+     失败时的 reason 只取三种事实之一（**请求成功 ≠ provider 失败**）：
+       · missingCharacter / provider-not-ready  —— 配置层面，根本没发出去；
+       · provider-failed                          —— 请求真的失败了（抛错/HTTP/鉴权）；
+       · output-truncated / empty-output          —— 请求成功，但没有可用正文。 */
   async function runTurn(ctx) {
     var c = core();
     var speakerId = String(ctx.speakerId);
@@ -763,13 +767,22 @@
     var text = String(raw == null ? '' : raw);
     if (!text.trim()) {
       if (trace) { try { trace.finish(speakerId, {}); } catch (e) { } }
-      /* 细节如实记录：'output-truncated'（**预算**事实：思考把输出上限吃光了）
-         与 'empty-output'（服务商真的回了空）是两件事，诊断靠它区分。
-         停止原因仍然用既有的 provider-failed 闭集成员 —— 不趁修一个缺陷
-         去扩展用户可见的词表。
-         emptyOutput 是给调用方的**分类标记**：模型确实回过话、只是没吐出正文，
-         它不属于"配置/鉴权失效"，因此不该触发那条"密钥缺失"的用户报错。 */
-      return { ok: false, reason: c.REASON.providerFailed, error: asked.truncated ? 'output-truncated' : 'empty-output', emptyOutput: true };
+      /* 这里有界预算与那一次重试都已经走完，仍然一个字都没有 —— 于是**现在**
+         才能给停止原因，且必须按**证据**分类（Phase 3.1 Output Failure Semantics）：
+           · truncated=true（provider 的 finish_reason=length 翻过来的事实）
+             → output-truncated：输出上限（被思考）吃光了；
+           · truncated=false → empty-output：请求成功、服务商回了空正文。
+         两者都**不再**落进 provider-failed。provider 并没有失败：把它说成
+         "模型请求失败"会把用户引去查 key / endpoint / 网络 —— 三个都没坏的东西。
+         error 与停止原因同码（一个事实只写一次），emptyOutput 仍保留为
+         "模型回过话、只是没吐出正文"的分类标记（run() 用它守住那条
+         "密钥缺失"的用户报错不会在这些路径上出现）。 */
+      return {
+        ok: false,
+        reason: asked.truncated ? c.REASON.outputTruncated : c.REASON.emptyOutput,
+        error: asked.truncated ? c.REASON.outputTruncated : c.REASON.emptyOutput,
+        emptyOutput: true
+      };
     }
     /* 私聊记忆候选：先摘掉标签，**绝不**让标签进入正文 / 持久化 / 渲染。 */
     var memo = null;
@@ -780,10 +793,11 @@
       var mc = String(mm[2] || '').trim().slice(0, 200);
       if (mc) memo = { content: mc, importance: imp ? parseInt(imp[1], 10) : 6 };
     }
-    /* 兜底：模型可能只输出标签不写正文 → 说明这一轮没有实质内容。 */
+    /* 兜底：模型可能只输出标签不写正文 → 说明这一轮没有实质内容。
+       这同样不是 provider 故障（它回过话），归 empty-output。 */
     if (!text.trim()) {
       if (trace) { try { trace.finish(speakerId, {}); } catch (e) { } }
-      return { ok: false, reason: c.REASON.providerFailed, error: 'empty-output', emptyOutput: true };
+      return { ok: false, reason: c.REASON.emptyOutput, error: c.REASON.emptyOutput, emptyOutput: true };
     }
     /* Middle Brain 生成后收口 —— 与单聊同一个唯一调用点、同一份裁定词表。
        consumer=role_dm 不豁免 persona guard / speech style / knowledge 边界。 */
@@ -808,7 +822,9 @@
     });
     text = text.replace(/```[a-z]*file:[^\n]*\n[\s\S]*?```/gi, '').trim();
     text = text.trim();
-    if (!text) return { ok: false, reason: c.REASON.providerFailed, error: 'empty-output' };
+    /* 我们自己把标签剥干净之后没剩正文：模型确实给了东西，只是没有可用正文。
+       与"provider 失败"无关（同 empty-output 一类），因此**绝不**报密钥。 */
+    if (!text) return { ok: false, reason: c.REASON.emptyOutput, error: c.REASON.emptyOutput, emptyOutput: true };
 
     return {
       ok: true,
@@ -977,12 +993,17 @@
 
         if (!turnRes.ok) {
           /* 任何失败都**安全停止**：已完成的消息保留、锁释放、原因落盘。
-             绝不自动无限 retry，也绝不 fallback 到另一个角色的模型。 */
+             绝不自动无限 retry（输出类失败的那一次重试已经在 runTurn 里
+             有界地用完），也绝不 fallback 到另一个角色的模型。 */
           stopReason = turnRes.reason;
           /* 这一轮的**真实**原因带进 run 结果：run() 的 error 字段本来就是
              "为什么没聊起来"的答案，不带上来，'output-truncated' 与
              'empty-output' 的区分就没有人看得见。 */
           if (turnRes.error) runError = String(turnRes.error).slice(0, 200);
+          /* 只有**真的** provider / 配置故障才走这一支。输出类失败
+             （output-truncated / empty-output）**不在这里**：模型回过话，
+             问题不在 key，因此既不置 providerFailed、也不弹"检查密钥"卡片 ——
+             它们已经在上一行如实落进 stopReason，由 UI 按自己的文案解释。 */
           if (turnRes.reason === c.REASON.providerFailed || turnRes.reason === c.REASON.notReady) {
             providerFailed = true;
             /* 角色配置失效：清楚报错（既有用户错误模型），并停止本 run。
