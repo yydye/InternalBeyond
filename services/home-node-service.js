@@ -42,6 +42,10 @@ const createHttp = require('../services/home-node/http.js');
 const createExecutor = require('../services/home-node/execution.js');
 const createDeviceRegistry = require('../services/home-node/device-registry.js');
 const createMobileGateway = require('../services/home-node/mobile-gateway.js');
+/* P22-2：Agent Economy 的第一块 canonical runtime（SQLite Ledger + 派生
+   Wallet 余额）。**唯一** require 点是这里 —— Economy 自己不 require
+   本文件、不 require 网关、不 require 设备注册表，方向是单向的。 */
+const createEconomyStore = require('../services/home-node/economy-store.js');
 const createNodeModelPort = require('../active/node-model-port.js');
 /* P11-3E：canonical store 失败分类器（**唯一**一份，见 runtime/db-failure.js）。
    它在 runtime/ 下，与 runtime/local-services-runner.js 那份是同一模块 ——
@@ -335,6 +339,53 @@ function momentsAssembly(options) {
   return { momentsStore: momentsStore, momentsRetrieval: momentsRetrieval };
 }
 
+/* ── canonical Economy 装配（**唯一**一处 · P22-2）────────────────────
+   与 memoryAssembly / momentsAssembly 同一个理由，而且这一次尤其必要：
+   P11-3X-B（memory）、M1-C.2m（understanding）、P11-3E（moments）已经
+   **三次**出现同一个缺口 —— store 装配好了、网关接线了，只是
+   production 的 openAll() 没打开它，于是所有直接 createXStore() 的测试
+   全绿，而真实进程上那一整域不可服务。Economy 因此从第一天起就把
+   "创建"与"打开"放在同一份装配定义里，两条启动路径共用它。
+
+   ── 为什么 ownerExists 用**注入**而不是 require ──────────────────────
+   wallet 的 owner 只允许引用 `characters.id`（P22 §25）。角色的 canonical
+   owner 是 device-registry（它同时持有 character_runtime_specs，也就是
+   角色凭据面）。Economy 因此**不 require** 它，而是在这里把一个
+   "这个角色 id 存在吗"的谓词注入进去 —— 于是：
+     · Economy 的依赖闭包里没有凭据面（boundary B3/B7 逐字断言这件事）；
+     · "角色不存在就必须失败"仍然是真的（不自动凭空创建角色）。
+   注册表**尚未**打开时谓词回答 false（fail closed），而不是抛错：
+   一个未就绪的注册表不该让整个装配炸掉，而"查不到就说存在"才是最坏的。 */
+function economyAssembly(options) {
+  options = options || {};
+  const dataDir = options.dataDir || DATA_DIR;
+  const serviceLog = options.logger || ((level, event, fields) => log(level, event, fields));
+  const registry = options.registry || null;
+  const ownerExists = typeof options.ownerExists === 'function' ? options.ownerExists : function (party) {
+    if (!party || party.type !== 'character') return true;
+    try {
+      if (!registry || typeof registry.getCharacter !== 'function') return false;
+      if (typeof registry.isOpen === 'function' && !registry.isOpen()) return false;
+      return !!registry.getCharacter(String(party.id));
+    } catch (error) { return false; }
+  };
+  const economyStore = options.economyStore || createEconomyStore({
+    dataDir: dataDir,
+    clock: options.clock,
+    logger: (e, f) => serviceLog('info', e, f),
+    ownerExists: ownerExists,
+    /* 系统铸币/销毁的授权。**只有**内部路径能调用 store 的
+       mintForSystem / burnForSystem；它们是 store 的方法，不在任何 HTTP
+       路由上（http.js 的 /economy/* 全是 GET）。这个谓词是第二道：
+       测试显式关掉它，就能证明"即使有人把某个入口接到铸币上，
+       铸币权也不会自动跟着来"。 */
+    systemAuthority: typeof options.systemAuthority === 'function'
+      ? options.systemAuthority
+      : () => options.systemMintingEnabled !== false
+  });
+  return { economyStore: economyStore };
+}
+
 /* ── canonical Moments store 的失败探针（**唯一**一处）────────────────
    P11-3E：store 成功打开之后又被关掉，`isOpen()` 自己就能回答；而
    "open() 抛了"这一半只有扔出来的那个错误记得。两条路径因此都只能走这里，
@@ -524,6 +575,20 @@ function buildHomeNode(options) {
     logger: serviceLog
   });
   const instanceMomentProbe = createMomentStoreFailureProbe(instanceMoments.momentsStore);
+  /* P22-2 · Economy 的挂载点。位置在 registry 之后、http 之前：
+     ownerExists 谓词要读 registry，而 http 层要拿到这个 store。
+     与 moments 同款纪律 —— 同一个 dataDir、同一个实例，两条启动路径
+     共用 economyAssembly。 */
+  const instanceEconomy = options.economy || economyAssembly({
+    dataDir: dataDir,
+    registry: instanceRegistry,
+    economyStore: options.economyStore,
+    ownerExists: options.ownerExists,
+    systemAuthority: options.systemAuthority,
+    systemMintingEnabled: options.systemMintingEnabled,
+    clock: options.clock,
+    logger: serviceLog
+  });
   /* 与进程级启动路径**共用** gatewayAssembly（见其头部说明：两条路径两套装配
      必然漂移，memoryStore 就是这样在 production 上丢过一次）。 */
   const instanceGateway = options.gateway || gatewayAssembly({
@@ -569,6 +634,10 @@ function buildHomeNode(options) {
     isDatabaseError: dbFailure.isDatabaseError,
     momentStore: instanceMoments.momentsStore,
     momentStoreFailure: instanceMomentProbe,
+    /* P22-2 · Economy 的只读观测面。**只**给 store，不给任何写入口：
+       http.js 的 /economy/* 全是 GET（见那边的注释），铸币与提交交易的
+       入口都留在 store 内部 API 上。 */
+    economyStore: instanceEconomy.economyStore,
     /* P11-3E · canonical store 清单：健康与"能不能服务"是同一个问题，
        所以这里列出本进程承诺的全部 canonical store，而不是只有 chat。
        声明角色（chat）在最前，`failure` 取第一个命中它的。 */
@@ -597,6 +666,11 @@ function buildHomeNode(options) {
     instanceUnderstanding.understandingStore.open();
     openMomentStore(instanceMoments.momentsStore, instanceMomentProbe);
     instanceRegistry.open();
+    /* P22-2：Economy 在最后打开。**顺序是有意的**：ownerExists 谓词
+       要读 registry，因此注册表必须先就绪；而 Economy 自己不参与
+       损坏隔离（quarantine 由 chat store 负责），所以它在隔离完成之后
+       连接同一个文件是安全的。 */
+    instanceEconomy.economyStore.open();
     return openedStore;
   }
   function close() {
@@ -617,6 +691,7 @@ function buildHomeNode(options) {
     try { instanceRegistry.close(); } catch (_) { /* 已关闭 */ }
     try { instanceUnderstanding.understandingStore.close(); } catch (_) { /* 已关闭 */ }
     try { instanceMoments.momentsStore.close(); } catch (_) { /* 已关闭 */ }
+    try { instanceEconomy.economyStore.close(); } catch (_) { /* 已关闭 */ }
     try { instanceMemoryStore.close(); } catch (_) { /* 已关闭 */ }
     try { instanceStore.close(); } catch (_) { /* 已关闭 */ }
   }
@@ -629,6 +704,9 @@ function buildHomeNode(options) {
     understandingDerivation: instanceUnderstanding.understandingDerivation,
     momentsStore: instanceMoments.momentsStore,
     momentsRetrieval: instanceMoments.momentsRetrieval,
+    /* P22-2：Economy 的实例，导出给"两条装配路径不得再次漂移"这类断言
+       （与 memoryStore / momentsStore 被导出的理由逐字相同）。 */
+    economyStore: instanceEconomy.economyStore,
     registry: instanceRegistry,
     gateway: instanceGateway,
     executor: instanceExecutor,
@@ -672,6 +750,15 @@ const understanding = understandingAssembly({
 const moments = momentsAssembly({
   dataDir: DATA_DIR,
   store,
+  logger: (level, event, fields) => log(level, event, fields)
+});
+/* P22-2：进程级启动路径同样必须挂上 Economy —— 与 memory / understanding /
+   moments 那三次教训逐字同形（只接 buildHomeNode 会让真实进程上的
+   /economy/* 全部不可服务，而所有直接 createEconomyStore() 的测试全绿）。
+   ownerExists 复用进程级 registry：角色的 canonical owner 只有它一个。 */
+const economy = economyAssembly({
+  dataDir: DATA_DIR,
+  registry,
   logger: (level, event, fields) => log(level, event, fields)
 });
 /* P11-3E：进程级 Moments 探针。openAll() 写它、/health 与 /moments/* 读它。
@@ -720,6 +807,14 @@ const httpLayer = createHttp({
   isDatabaseError: dbFailure.isDatabaseError,
   momentStore: moments.momentsStore,
   momentStoreFailure: momentStoreFailureProbe,
+  /* P22-2：**这一行就是真实子进程测试抓到的那个缺口。**
+     openAll() 打开 Economy store 只证明"账本可用"；而 http 层要服务
+     /economy/* 还必须**拿到这个实例**。实测（tests/test_p22_2_economy_runtime.js
+     D2，修复前）：子进程日志里明明有 economy-opened，而
+     GET /economy/health 回的是 501 economy-not-assembled ——
+     两个事实同时为真，正是 P11-3E 那个缺口的第四次形态。
+     单元测试与直接 store 测试全绿，缺的只是这一行接线。 */
+  economyStore: economy.economyStore,
   stores: [
     { store, name: 'chat', role: 'canonical-chat-authority' },
     { store: moments.momentsStore, name: 'moments', role: 'canonical-moments-authority', probe: momentStoreFailureProbe }
@@ -783,6 +878,10 @@ function openAll() {
   understanding.understandingStore.open();
   openMomentStore(moments.momentsStore, momentStoreFailureProbe);
   registry.open();
+  /* P22-2：Economy store 必须在这里被**真的打开**。它会抛错（schema 过新 /
+     库不可写），而那时 require.main 的 catch 会如实退出 —— 一个打不开的
+     canonical 账本不该被静默降级成"余额 0"。 */
+  economy.economyStore.open();
   return opened;
 }
 
@@ -896,6 +995,7 @@ if (require.main === module) {
       closeStores: () => {
         try { understanding.understandingStore.close(); } catch (_) { /* 已关闭 */ }
         try { moments.momentsStore.close(); } catch (_) { /* 已关闭 */ }
+        try { economy.economyStore.close(); } catch (_) { /* 已关闭 */ }
         try { registry.close(); } catch (_) { /* 已关闭 */ }
         try { memory.memoryStore.close(); } catch (_) { /* 已关闭 */ }
         try { store.close(); } catch (_) { /* 已关闭 */ }
@@ -951,6 +1051,14 @@ module.exports = {
   momentsRetrieval: moments.momentsRetrieval,
   momentsAssembly,
   canonicalMomentsDeps,
+  /* P22-2：**进程级**（= 生产启动路径）的 canonical Economy 实例。
+     导出理由与上面 memory/moments 那几行逐字相同 —— 这一域已经被同一个
+     缺口咬过**三次**（memory / understanding / moments 都出现过"装配好了
+     但 openAll() 没打开它"），因此"生产侧到底有没有一个打开的 Economy
+     authority"必须是一句可以直接断言的事实，而不是靠读代码。
+     见 tests/test_p22_2_economy_runtime.js 的 C/D 组。 */
+  economyStore: economy.economyStore,
+  economyAssembly,
   buildHomeNode,
   memoryAssembly,
   canonicalMemoryDeps,

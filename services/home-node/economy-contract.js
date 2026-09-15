@@ -1643,9 +1643,24 @@
 
   /* Economy 生产代码**允许**依赖的模块（白名单，正向断言）。
      正向 + 反向两条断言必须同时存在：只有反向的话，"Economy 悄悄
-     require 了一个新模块"不会被发现。 */
+     require 了一个新模块"不会被发现。
+
+     ── P22-2：为什么在这里多了一条**精确文件**条目 ────────────────────
+     'runtime/db-failure.js' 是仓库里**唯一**一处数据库失败分类器
+     （memory-store.js:46 与 http.js:193 都以同样的理由用它）。P22-2 的
+     store 在 open() 失败时也必须给出**同一个** category，否则"为什么
+     打不开"会有两个答案，而 http.js 的 resolveStoreFailure 只认那一个。
+
+     因此这是一次**刻意的、加法的**放宽，而不是把边界改松：
+       · 加的是**精确路径**（不是 'runtime/' 前缀）—— 于是它覆盖一个文件，
+         不是一整个目录；
+       · 钉住的是"失败分类只有一份"这条既有纪律，不是在引入新依赖面；
+       · 它仍然是一条白名单条目，因此 B3 的正向断言继续成立。
+     真正被禁的那些东西（凭据 / 真实支付 / provider / Memory / Relationship）
+     一个都没有靠近这条白名单。 */
   var BOUNDARY_ALLOWED_MODULE_PREFIXES = Object.freeze([
-    'node:', 'services/home-node/economy-', './economy-', './economy/', '../economy/'
+    'node:', 'services/home-node/economy-', './economy-', './economy/', '../economy/',
+    'runtime/db-failure.js'
   ]);
 
   /* ══════════════════════════════════════════════════════════════════

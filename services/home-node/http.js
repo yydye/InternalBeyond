@@ -56,6 +56,13 @@ function constantTimeEqual(a, b) {
 function createHomeNodeHttp(deps) {
   deps = deps || {};
   const store = deps.store;
+  /* P22-2 · Economy 的**只读**句柄。若装配层没传，`/economy/*` 回答
+     501 economy-not-assembled —— 而不是静默地 404。两者的区别很重要：
+     前者是"这一域没有接线"（一个可修的装配缺口），后者会被读成
+     "这个路径不存在"（设计如此）。P11-3E 的教训正是"装配缺口伪装成
+     正常行为"。本层**不**从 store 取得任何写能力：mint / burn /
+     commitLedgerTransaction 一律不可达。 */
+  const economy = deps.economyStore || null;
   const executor = deps.executor || null;
   const gateway = deps.gateway || null;
   const clock = deps.clock || (() => Date.now());
@@ -505,7 +512,7 @@ function createHomeNodeHttp(deps) {
        M1-C.2m：`/understanding/*` 同理，而且是**更私密**的一类内容 ——
        它是角色对用户的私有认知状态（含用户更正原文）。前缀守卫必须与
        /memory/ 逐字同款，否则默认绑 0.0.0.0 的部署会让局域网读到"她怎么看你"。 */
-    const isDesktopOnlyPath = path.indexOf('/memory/') === 0 || path.indexOf('/understanding/') === 0 || path.indexOf('/moments/') === 0;
+    const isDesktopOnlyPath = path.indexOf('/memory/') === 0 || path.indexOf('/understanding/') === 0 || path.indexOf('/moments/') === 0 || path.indexOf('/economy/') === 0;
     if (remote && (!isMobilePath || isDesktopOnlyPath)) {
       if (!token) {
         record('warn', 'rejected-remote-non-mobile', { path: path, reason: 'no-desktop-token-configured' });
@@ -689,6 +696,31 @@ function createHomeNodeHttp(deps) {
           desktopPaths: ['/moments/list', '/moments/changes', '/moments/records', '/moments/record',
             '/moments/ack', '/moments/visible', '/moments/migration', '/moments/migrate']
         },
+        /* P22-2：Agent Economy 进入 Node —— 与 memory / understanding /
+           moments 同款，而且这一域的 doesNotExpose 比它们**更**重要：
+           一个叫 "economy" 的东西最容易被误读成"这里能充值 / 能付款"。
+           因此这里的声明是逐条的、可检查的：
+             · 没有 POST /economy/*（本文件的 /economy/* 全是 GET）；
+             · 没有 topup / purchase / payment / provider 任何入口；
+             · provider 计费与凭据**不在** exposes 里，也不在 doesNotExpose
+               的"未来可能会加"意义上 —— 它们由依赖闭包保证（boundary B3：
+               Economy 的可达依赖里没有任何一个能碰 provider 或凭据）。
+           铸币（mintForSystem）与提交交易（commitLedgerTransaction）是
+           **store 的内部 API**，不在这一层上 —— 这是刻意的：HTTP 面只读。 */
+        economyPolicy: {
+          stored: true,
+          canonical: 'sqlite-ledger-entries',
+          derived: 'wallet-cached-balance-cache',
+          servedToDevices: false,
+          deviceVerbs: [],
+          httpVerbs: ['GET'],
+          writesExposed: [],
+          mintingExposed: false,
+          desktopPaths: ['/economy/health', '/economy/wallet', '/economy/ledger',
+            '/economy/transaction', '/economy/changes'],
+          unreachable: ['/economy/topup', '/economy/purchase', '/economy/payment',
+            '/economy/provider', '/economy/mint', '/economy/burn', '/economy/transfer']
+        },
         doesNotExpose: ['llm-proxy', 'tools', 'payments', 'diary', 'letters', 'images', 'tts'],
         /* M1-B：设备身份 + 移动边界。mobile 面**只有** allowlist 里的 verb。 */
         deviceAuth: { scheme: 'per-device opaque token', storedAs: 'sha256', constantTimeCompare: true, revoke: 'immediate' },
@@ -703,6 +735,118 @@ function createHomeNodeHttp(deps) {
           unreachable: ['/api/llm-proxy', 'submit_payment', 'pay_register_checkout', 'pay_set_config', 'webhook', 'tool catalog', 'bridge resident chat']
         } : null
       }, req);
+      return;
+    }
+
+    /* ── P22-2 · Agent Economy（**只读**观测面）──────────────────────────
+       本阶段刻意只加"看"的路由。逐条说明为什么：
+
+         · **没有** POST /economy/*。铸造（mintForSystem）、销毁
+           （burnForSystem）、提交交易（commitLedgerTransaction）都是 store
+           的内部 API，只对同进程调用方开放 —— 因此"通过 HTTP 凭空造钱"
+           这条路在**路由表**上就不存在，而不是靠一个 if 挡着。
+         · **没有** /economy/topup · /purchase · /payment · /provider。
+           本文件的 doesNotExpose 一直写着 'payments'，而一个叫 economy 的
+           命名空间最容易让人以为"这里能充值"，所以这条不只是省略：
+           /security 的 economyPolicy.unreachable 把它写成了**可断言的字段**。
+         · 读到的余额来自 `store.health()` / `getWallet()`，而状态是**三态**：
+           COLD / DEGRADED 时 availableBalanceMinor 是 null，绝不是 0。
+           这条在 HTTP 层不需要任何特判 —— store 自己就那么回答，而这一层
+           若把 null 兜成 0 就会把 R5 重新引进来，因此这里原样透传。
+
+       授权模型刻意与 /memory/ · /moments/ 逐字相同（见上面的
+       isDesktopOnlyPath）：远端未配置桌面 token → 403；配了 token → 401/放行。
+       **不给 /economy/* 任何 loopback 豁免例外**：它承载的是这个世界的
+       经济事实，与记忆同级。 */
+    if (path === '/economy/health' && method === 'GET') {
+      if (!economy) { bad(res, 501, 'economy-not-assembled', null, req); return; }
+      ok(res, { economy: economy.health() }, req);
+      return;
+    }
+    if (path === '/economy/wallet' && method === 'GET') {
+      if (!economy) { bad(res, 501, 'economy-not-assembled', null, req); return; }
+      const ownerId = url.searchParams.get('ownerId');
+      const walletId = url.searchParams.get('walletId');
+      const currency = url.searchParams.get('currency') || undefined;
+      if (!ownerId && !walletId) { bad(res, 400, 'missing-wallet-or-owner', null, req); return; }
+      let result;
+      try {
+        result = economy.getWallet({
+          walletId: walletId || undefined,
+          ownerId: ownerId || undefined,
+          currency: currency,
+          /* `rebuild=1` 会**从 ledger 重算**再回答，并在缓存漂移时修好它。
+             默认不重算（读路径要便宜），但这条参数让"余额可被完整重建"
+             变成一个可以被真实请求验证的性质。 */
+          rebuild: url.searchParams.get('rebuild') === '1'
+        });
+      } catch (error) {
+        storeError(res, error.code || 'economy-read-failed', { reason: String(error && error.message) }, req, 400);
+        return;
+      }
+      if (!result.ok) { bad(res, 404, result.errors[0] || 'wallet-not-found', null, req); return; }
+      ok(res, { wallet: economy.serializeWallet(result.wallet, { rebuild: result.rebuilt }) }, req);
+      return;
+    }
+    if (path === '/economy/wallets' && method === 'GET') {
+      if (!economy) { bad(res, 501, 'economy-not-assembled', null, req); return; }
+      const wallets = economy.listWallets({
+        ownerId: url.searchParams.get('ownerId') || undefined,
+        limit: url.searchParams.get('limit') || undefined
+      });
+      ok(res, { wallets: wallets.map(w => economy.serializeWallet(w, {})) }, req);
+      return;
+    }
+    if (path === '/economy/ledger' && method === 'GET') {
+      if (!economy) { bad(res, 501, 'economy-not-assembled', null, req); return; }
+      const transactionId = url.searchParams.get('transactionId');
+      const accountId = url.searchParams.get('accountId');
+      if (!transactionId && !accountId) { bad(res, 400, 'missing-transaction-or-account', null, req); return; }
+      const result = economy.listLedgerEntries({
+        transactionId: transactionId || undefined,
+        accountId: accountId || undefined,
+        currency: url.searchParams.get('currency') || undefined,
+        limit: url.searchParams.get('limit') || undefined
+      });
+      if (!result.ok) { bad(res, 400, result.errors[0] || 'ledger-read-failed', null, req); return; }
+      ok(res, {
+        entries: result.entries.map(e => Object.assign({}, e, {
+          amountMinor: economy.contract.serializeAmountMinor(e.amountMinor)
+        })),
+        topology: result.topology,
+        /* scope 让 topology 的含义没有歧义：账户维度天然是单边的
+           （另一侧记在对手方账户上），那里 balanced=false 不代表账本坏了。
+           一笔交易的两端是否平衡，看 /economy/transaction 返回的那几笔 entry。 */
+        scope: result.scope
+      }, req);
+      return;
+    }
+    if (path === '/economy/transaction' && method === 'GET') {
+      if (!economy) { bad(res, 501, 'economy-not-assembled', null, req); return; }
+      const transactionId = url.searchParams.get('transactionId');
+      if (!transactionId) { bad(res, 400, 'missing-transaction', null, req); return; }
+      const result = economy.getTransaction(transactionId);
+      if (!result.ok) { bad(res, 404, result.errors[0] || 'transaction-not-found', null, req); return; }
+      const serialize = economy.contract.serializeAmountMinor;
+      ok(res, {
+        transaction: result.transaction,
+        entries: result.entries.map(e => Object.assign({}, e, { amountMinor: serialize(e.amountMinor) }))
+      }, req);
+      return;
+    }
+    if (path === '/economy/changes' && method === 'GET') {
+      if (!economy) { bad(res, 501, 'economy-not-assembled', null, req); return; }
+      const changes = economy.listChanges(url.searchParams.get('cursor') || 0, url.searchParams.get('limit') || undefined);
+      ok(res, { changes: changes, revision: economy.getRevision() }, req);
+      return;
+    }
+    /* 其余 /economy/* 一律 404 —— 尤其 POST 到上面任何一条路径。
+       显式放在这里而不是靠"没匹配上就落到通用 404"，是为了让
+       "写入口不存在"这件事有一个**有意为之**的分支。 */
+    if (path.indexOf('/economy/') === 0) {
+      record('warn', 'economy-unsupported', { path: path, method: method, loopback: isLoopback(req) });
+      bad(res, method === 'GET' ? 404 : 405, method === 'GET' ? 'unknown-economy-path' : 'economy-is-read-only',
+        method === 'GET' ? null : { hint: 'the economy HTTP surface exposes reads only' }, req);
       return;
     }
 

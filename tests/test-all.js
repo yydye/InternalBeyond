@@ -394,7 +394,30 @@ const GROUPS = [
               并且这些文件真的进得了发行包（release manifest 逐文件白名单）。
          纯 Node：不联网、不开浏览器、不启动服务、不写盘。 */
       ['test_p22_1_economy_domain_contract.js'],
-      ['test_p22_1_economy_boundary.js']
+      ['test_p22_1_economy_boundary.js'],
+      /* P22-2：Agent Economy 的**第一块 canonical runtime**
+         （SQLite Ledger + 从 ledger 派生的 Wallet 余额）。
+         两组刻意分开：
+           ① store：账本本身对不对 —— lifecycle / 独立 schema 与 revision
+              命名空间 / Wallet 三态（COLD/DEGRADED ≠ 0 余额）/ 复式记账
+              逐币种平衡 / BigInt↔十进制字符串↔SQLite INTEGER 三层表示与
+              MAX_SAFE_INTEGER 边界 / 幂等（重放、冲突、txId≠key、跨重启）/
+              **故障注入**下的原子回滚（0 残留行、0 幻影余额、revision 不断）/
+              close→open 持久性 / schema 新版本拒绝打开 / rebuild 从 ledger
+              恢复被改坏的缓存。
+           ② runtime：**生产进程里到底有没有它** —— 两条装配路径
+              （buildHomeNode 与生产 openAll）都真的 open，HTTP 只读面
+              （/economy/health · /wallet · /ledger · /transaction · /changes），
+              写路径 405 且不存在，/security 的 economyPolicy 可检查，
+              以及**真实 spawn services/home-node-service.js**：进程起来 →
+              /economy/health 200 + READY → 干净停机 → 同一库重启 →
+              账本与 revision 原样 → 同一 idempotencyKey 跨进程重放
+              不造成第二次 mutation。
+          这一域在仓库里已经被"装配好了但 openAll() 没打开它"咬过三次
+          （memory / understanding / moments），因此 ② 里那条真实子进程
+          断言是本阶段最重要的机器证据。 */
+      ['test_p22_2_economy_store.js'],
+      ['test_p22_2_economy_runtime.js']
     ]
   },
   {

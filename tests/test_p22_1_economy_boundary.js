@@ -50,12 +50,17 @@ function check(name, cond, extra) {
 function section(title) { console.log('\n── ' + title); }
 function read(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/^\uFEFF/, ''); }
 
-/* ── 生产文件清单（P22-1 只有契约一个）─────────────────────────────────
+/* ── 生产文件清单 ──────────────────────────────────────────────────────
    清单是**声明**，不是发现：新增 Economy 生产文件时必须手写在这里，
    否则 B2 会失败。这条纪律与 runtime/component-registry.js 的
-   "注册表必须显式列全" 同源，也与 release-manifest 的逐文件白名单同源。 */
+   "注册表必须显式列全" 同源，也与 release-manifest 的逐文件白名单同源。
+
+   P22-2 加入 economy-store.js（canonical Ledger + Wallet runtime）。
+   它**没有**添加任何新的生产模块 —— 本阶段刻意只加一个文件，
+   因为"多一个 manager/service/repository"正是 P22 §1 明确不要的东西。 */
 const PRODUCTION_FILES = [
-  'services/home-node/economy-contract.js'
+  'services/home-node/economy-contract.js',
+  'services/home-node/economy-store.js'
 ];
 
 /* 目录前缀与文件名模式：用来发现"清单漏登记"的文件。
@@ -96,13 +101,32 @@ function stripCommentsAndStrings(src) {
     .replace(/`(?:\\.|[^\\`])*`/g, ' `` ');
 }
 
-/* 扫出 require(...) 的目标（相对模块说明符）。 */
+/* 扫出 require(...) 的目标（相对模块说明符）。
+   **先剥注释**：否则一句解释性的注释（"本文件不 require('crypto')"）
+   就会被当成一条真实依赖 —— 这类假阳性最坏的后果是让人为了让它变绿
+   而删掉解释，而解释恰恰是这个仓库最重要的东西。
+   （P22-2 实测踩到：economy-store.js 里解释"为什么不用 crypto"的注释
+   被 B3.7 判成 require('crypto')。修的是**扫描器**，不是那句话。） */
 function scanRequires(src) {
   const out = [];
+  const raw = String(src);
   const re = /require\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
   let m;
-  while ((m = re.exec(src))) out.push(m[1]);
-  return out;
+  while ((m = re.exec(raw))) {
+    const head = raw.slice(0, m.index);
+    /* 落在 // 之后（同一行）⇒ 是行注释里的文本。 */
+    const lineStart = head.lastIndexOf('\n') + 1;
+    if (head.slice(lineStart).indexOf('//') >= 0) continue;
+    /* 落在未被闭合的块注释里 ⇒ 同上。 */
+    if (head.lastIndexOf('/*') > head.lastIndexOf('*/')) continue;
+    out.push(m[1]);
+  }
+  const bare = out.filter(s => !/^\.{1,2}\//.test(s) && !/^node:/.test(s));
+  /* 再补一次检查：裸说明符若是从**字符串字面量**里被误抓的
+     （例如说明文档里的 'node:fs'），stripCommentsAndStrings 会把它抹掉。
+     两遍必须一致，不一致说明这条说明符出现在注释/字符串里，不算依赖。 */
+  const stripped = stripCommentsAndStrings(raw);
+  return out.filter(s => stripped.indexOf("'" + s + "'") >= 0 || stripped.indexOf('"' + s + '"') >= 0 || bare.indexOf(s) < 0);
 }
 
 /* 把说明符归一成"相对仓库根的路径"，用于与白名单比较。
@@ -237,15 +261,70 @@ check('B4.1 真实支付/购物模块**不** require Economy 的任何文件（�
   REVERSE_SCAN_FILES.filter(rel => fs.existsSync(path.join(ROOT, rel)) &&
     scanRequires(read(rel)).some(spec => normalizeSpecifier(rel, spec).value.indexOf('economy') >= 0)));
 
-check('B4.2 启动链（runtime/ 与 services/ 的入口模块）不 require Economy（P22-1 无运行时接线）',
-  ['services/home-node-service.js', 'services/ib-bridge-service.js', 'runtime/local-services-runner.js',
-    'services/home-node/http.js', 'services/home-node/execution.js']
-    .every(rel => scanRequires(read(rel)).every(spec =>
-      normalizeSpecifier(rel, spec).value.indexOf('economy') < 0)),
-  ['services/home-node-service.js', 'services/ib-bridge-service.js', 'runtime/local-services-runner.js',
-    'services/home-node/http.js', 'services/home-node/execution.js']
-    .filter(rel => scanRequires(read(rel)).some(spec =>
-      normalizeSpecifier(rel, spec).value.indexOf('economy') >= 0)));
+check('B4.2 启动链**只** require Economy 的 canonical store —— 而且**只有** home-node-service.js '
+  + '（P22-2 接线；其余入口一个都不能碰它）',
+  (() => {
+    const startupFiles = ['services/home-node-service.js', 'services/ib-bridge-service.js',
+      'runtime/local-services-runner.js', 'services/home-node/http.js', 'services/home-node/execution.js'];
+    const offenders = [];
+    startupFiles.forEach(rel => {
+      const hits = scanRequires(read(rel)).filter(spec =>
+        normalizeSpecifier(rel, spec).value.indexOf('economy') >= 0);
+      if (!hits.length) return;
+      /* P22-2 的接线**恰好**是一处：装配层 require economy-store.js。
+         允许清单写成精确集合，而不是"含有 economy 就行"。 */
+      if (rel !== 'services/home-node-service.js') { offenders.push(rel + ' -> ' + hits.join(',')); return; }
+      const allowed = ['../services/home-node/economy-store.js'];
+      hits.forEach(h => { if (allowed.indexOf(h) < 0) offenders.push(rel + ' -> ' + h); });
+    });
+    return offenders.length === 0;
+  })(),
+  (() => {
+    const offenders = [];
+    const startupFiles = ['services/home-node-service.js', 'services/ib-bridge-service.js',
+      'runtime/local-services-runner.js', 'services/home-node/http.js', 'services/home-node/execution.js'];
+    startupFiles.forEach(rel => {
+      const hits = scanRequires(read(rel)).filter(spec =>
+        normalizeSpecifier(rel, spec).value.indexOf('economy') >= 0);
+      if (!hits.length) return;
+      if (rel !== 'services/home-node-service.js') { offenders.push(rel + ' -> ' + hits.join(',')); return; }
+      hits.forEach(h => { if (h !== '../services/home-node/economy-store.js') offenders.push(rel + ' -> ' + h); });
+    });
+    return offenders;
+  })());
+
+check('B4.3 Economy 的运行时模块**不** require 启动链（依赖方向是单向的：装配层 → store，绝不反向）',
+  (() => {
+    const storeRequires = scanRequires(read('services/home-node/economy-store.js'));
+    return storeRequires.every(spec => {
+      const n = normalizeSpecifier('services/home-node/economy-store.js', spec);
+      return n.value.indexOf('home-node-service') < 0 && n.value.indexOf('http.js') < 0 &&
+        n.value.indexOf('execution.js') < 0 && n.value.indexOf('mobile-gateway') < 0 &&
+        n.value.indexOf('device-registry') < 0;
+    });
+  })(),
+  scanRequires(read('services/home-node/economy-store.js')));
+
+check('B4.4 /economy/* 只在 http.js 里被**读**服务：http 层拿不到任何写能力',
+  (() => {
+    const src = read('services/home-node/http.js');
+    /* 三层否认：① 路由全是 GET；② 从不调用 store 的写方法；
+       ③ /security 声明里 writesExposed 为空、mintingExposed 为 false。 */
+    const economyBlocks = src.match(/path === '\/economy\/[^']*' && method === '[A-Z]+'/g) || [];
+    const nonGet = economyBlocks.filter(b => !/&& method === 'GET'$/.test(b));
+    const writeCalls = ['mintForSystem', 'burnForSystem', 'commitLedgerTransaction',
+      'openWallet', 'transferBetweenWallets', 'corruptCachedBalanceForTest']
+      .filter(name => stripCommentsAndStrings(src).indexOf(name) >= 0);
+    return nonGet.length === 0 && writeCalls.length === 0 &&
+      /writesExposed: \[\]/.test(src) && /mintingExposed: false/.test(src);
+  })(),
+  {
+    nonGet: (read('services/home-node/http.js').match(/path === '\/economy\/[^']*' && method === '[A-Z]+'/g) || [])
+      .filter(b => !/&& method === 'GET'$/.test(b)),
+    writeCalls: ['mintForSystem', 'burnForSystem', 'commitLedgerTransaction', 'openWallet',
+      'transferBetweenWallets', 'corruptCachedBalanceForTest']
+      .filter(name => stripCommentsAndStrings(read('services/home-node/http.js')).indexOf(name) >= 0)
+  });
 
 /* ══════════════════════════════════════════════════════════════════
    B5 · 真实支付的写动词：Economy 代码里不得出现
@@ -462,6 +541,69 @@ check('B9.3 manifest 的目录规则已经覆盖 services/home-node（含未来 
   })());
 check('B9.4 契约文件**不被**安装包排除规则拦掉（denied 为空）',
   resolved.denied.length === 0, resolved.denied);
+
+/* ══════════════════════════════════════════════════════════════════
+   B11 · P22-2 runtime：不存在"直接改余额"的路径
+   ══════════════════════════════════════════════════════════════════ */
+section('B11 · P22-2 runtime（余额只能来自 committed ledger entries）');
+
+/* 这一组的存在理由很具体：一旦 Economy 有了 store，"顺手加一个
+   setBalance()" 就会变成最省事的写法，而它同时会废掉
+   "canonical = ledger" 这条全部设计的基础。
+   因此这里对**每一个** Economy 生产文件断言四种形态都不存在。 */
+const BALANCE_MUTATION_SHAPES = [
+  ['setBalance', /\bsetBalance\b/],
+  ['incrementBalance', /\bincrementBalance\b/],
+  ['decrementBalance', /\bdecrementBalance\b/],
+  ['addBalance', /\baddBalance\b/],
+  ['adjustBalance', /\badjustBalance\b/],
+  ['creditBalance', /\bcreditBalance\b/],
+  ['debitBalance', /\bdebitBalance\b/],
+  ['balance += / -=', /balance\w*\s*(?:\+=|-=|\+\+|--)/i],
+  ['SQL 自增：balance = balance + ?', /cached_balance_minor\s*=\s*cached_balance_minor\s*[+\-]/i]
+];
+BALANCE_MUTATION_SHAPES.forEach(([label, re]) => {
+  check('B11.1 Economy 生产文件里不存在 ' + label + '（余额变化只能来自 committed ledger entries）',
+    PRODUCTION_FILES.every(rel => !re.test(stripCommentsAndStrings(read(rel)))),
+    PRODUCTION_FILES.filter(rel => re.test(stripCommentsAndStrings(read(rel)))));
+});
+
+/* 唯一改缓存的语句必须是"赋成从 ledger 算出来的值"。 */
+const STORE_SRC = read('services/home-node/economy-store.js');
+const balanceWrites = (STORE_SRC.match(/SET cached_balance_minor=[^']*/g) || []);
+check('B11.2 只有一条 SQL 语句会写 cached_balance_minor，且它是整体赋值（不是增量）',
+  balanceWrites.length === 1 &&
+  balanceWrites[0].indexOf('cached_balance_minor=cached_balance_minor') < 0 &&
+  /SET cached_balance_minor=\?, reserved_balance_minor=\?, state=\?, revision=\?, updated_at=\?/.test(balanceWrites[0]),
+  balanceWrites);
+
+check('B11.3 runtime 用**同一个**契约做校验（不是各写一份金额/币种/方向规则）',
+  /deps\.contract\s*\|\|\s*require\('\.\/economy-contract\.js'\)/.test(STORE_SRC) &&
+  /C\.(checkLedgerBalance|makeLedgerEntry|normalizeAmountMinor|validateCurrency|accountKindOf)\(/.test(STORE_SRC));
+
+check('B11.4 runtime 不复用 chat / memory 的 revision 与 change_log 命名空间',
+  /economy_meta/.test(STORE_SRC) && /economy_change_log/.test(STORE_SRC) &&
+  /economy_idempotency/.test(STORE_SRC) &&
+  !/['"]memory_revision['"]/.test(STORE_SRC) &&
+  !/CREATE TABLE IF NOT EXISTS change_log/.test(STORE_SRC));
+
+check('B11.5 故障注入只在 deps.faults 上（没有能被 HTTP 触达的 debug 开关）',
+  /const faults = deps\.faults \|\| null/.test(STORE_SRC) &&
+  scanRequires(STORE_SRC).indexOf('node:http') < 0);
+
+check('B11.6 铸币 / 销毁要求显式 systemInitiated，并受注入的授权谓词约束',
+  /systemInitiated !== true/.test(STORE_SRC) && /systemAuthority/.test(STORE_SRC) &&
+  /system-mint|system:burn/.test(STORE_SRC));
+
+/* 反向断言：这些检查的**输入**必须存在，否则上面的每一条都在保护空气。 */
+check('B11.7 （输入存在）生产文件清单里确实包含 P22-2 的 runtime，且它是真实文件',
+  PRODUCTION_FILES.indexOf('services/home-node/economy-store.js') >= 0 &&
+  fs.existsSync(path.join(ROOT, 'services/home-node/economy-store.js')));
+check('B11.8 （输入存在）store 真的 require 了契约与 db-failure 分类器 —— 否则 B11.3 是假绿',
+  (() => {
+    const reqs = scanRequires(STORE_SRC);
+    return reqs.indexOf('./economy-contract.js') >= 0 && reqs.indexOf('../../runtime/db-failure.js') >= 0;
+  })(), scanRequires(STORE_SRC));
 
 /* ══════════════════════════════════════════════════════════════════
    B10 · 反向断言：契约里**必须**存在的"否认"数据
