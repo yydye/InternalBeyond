@@ -117,8 +117,30 @@ const dbFailure = require('../../runtime/db-failure.js');
          DDL 补上那张表，水位抬到 5，**既有 ledger / reservation /
          policy / quote / store / product / inventory 行一个字节都不动**
          （focused 测试的 N 组逐条断言）。
-     4 → 5 依然是空的 MIGRATIONS 条目：没有既有列需要改写，只有新表。 */
-const ECONOMY_SCHEMA_VERSION = 5;
+     4 → 5 依然是空的 MIGRATIONS 条目：没有既有列需要改写，只有新表。
+
+   ── P22-7：5 → 6 ────────────────────────────────────────────────────
+     同一条纪律的第六次应用。P22-7 让这个库多出**两张**表
+     （economy_autonomy_policies / economy_approvals）**外加 purchases 上的
+     四个授权列**，于是：
+       · 一个 P22-6 的 build 打开 P22-7 的库 → **拒绝**（SCHEMA_TOO_NEW）。
+         如果它不拒绝，它就会看到一个"有些购买凭空成立、而没有任何规则
+         说过它们可以"的经济 —— 它会把每一笔 COMPLETED 都当成"有人按了
+         按钮"，于是审计里"这笔为什么没问用户"永远得不到答案。这比打不开
+         严重。
+       · 一个 P22-7 的 build 打开 P22-6 的库 → 受支持的老版本路径：
+         DDL 补两张表，5 → 6 的 MIGRATIONS 给 purchases **补四个可空列**，
+         水位抬到 6，**既有 ledger / reservation / policy / quote / store /
+         product / inventory / purchase 行的经济内容一个字节都不动**。
+
+     ★ 为什么 5 → 6 的 MIGRATIONS **不再是空的**（前五次都是）：
+     前五次只多表，而这次 purchases 需要知道"这笔购买当初凭什么成立"。
+     那是一个**既有行**上的新事实，因此必须真的 ALTER TABLE。SQLite 的
+     `ALTER TABLE ... ADD COLUMN` 对既有行填 NULL —— 而 NULL 在这里恰好
+     是正确的语义：**P22-7 之前写下的购买没有授权模式**，把它猜成
+     AUTO_ALLOW 或 APPROVAL 都是伪造历史。integrity check 因此把
+     "旧行的 approval_mode 为 NULL" 认成合法，而"新行没有它"认成问题。 */
+const ECONOMY_SCHEMA_VERSION = 6;
 const DEFAULT_DB_FILENAME = 'home-node.db';
 
 const META_TABLE = 'economy_meta';
@@ -171,6 +193,36 @@ const INVENTORY_TABLE = 'economy_inventory';
    刻意**没有**的列：任何 ledger 金额的副本（金额只有一列，来自 Quote
    快照）、任何 provider/payment/memory/relationship 字段、任何正文。 */
 const PURCHASES_TABLE = 'economy_purchases';
+/* ── P22-7 ────────────────────────────────────────────────────────────
+   第六张与第七张表（第六次抬水位）。两者的**不等式**正是本阶段的全部
+   内容（§3 与 §5）：
+
+     · economy_autonomy_policies —— "Agent 有没有权不问用户直接花"。
+       ★ 它**不是** economy_budget_policies 的一张扩展表，也不是它的
+       别名：Budget 回答"经济上最多允许花多少"，Autonomy 回答"是否有权
+       不问用户直接花"。两张表并存，因为两句话可以**各自独立地**给出
+       相反的答案（Budget ALLOW + Autonomy REQUIRE_APPROVAL 仍然必须问
+       用户；Autonomy AUTO_ALLOW + Budget DENY 绝对不能买）。
+       把它塞进预算政策表会让"这条额度是钱的上限还是权限的上限"成为
+       同一行上的一个字段，而它决定了完全不同的两件事。
+       它的记录**形状**（policyId / ownerId / enabled / …Minor / status）
+       与预算政策同款是刻意的 —— 同一套 id 种类（econ_policy_）、同一套
+       金额后缀纪律、同一条"规则不是许可"语义。
+
+     · economy_approvals —— 一条**批准记录**。§5 的不等式是
+       Approval ≠ Purchase：前者是"用户授权一个被冻结的购买意图继续执行"，
+       后者是"这件事真的发生了"。一次批准可以存在而永远没有购买（用户
+       批准了但 Agent 没买），而一笔购买可以没有任何批准（它是自主成立的）。
+       它必须**绑定九个经济事实**（§6）而不是一个金额，因此它的列里有
+       product_id / quote_id / recipient_* / grant_quantity / units ——
+       一张只写"批准了 400"的记录无法拒绝"拿这 400 去买别的东西"。
+
+   刻意**没有**的列（两张表都没有）：任何正文 / prompt / persona /
+   relationship / memory / provider / payment 字段。自主策略的输入白名单
+   在契约里是封闭的（AUTONOMY_POLICY_INPUT_KEYS），而这里连**地方**都
+   不给它留 —— "Agent 觉得可以买"在这两张表上无处可写。 */
+const AUTONOMY_POLICIES_TABLE = 'economy_autonomy_policies';
+const APPROVALS_TABLE = 'economy_approvals';
 
 /* meta 的键。**独立命名空间**：全部带 economy_ 前缀，且存在
    economy_meta 表里（不是共用的 meta 表），因此任何其它 store 都不可能
@@ -413,6 +465,14 @@ function createEconomyStore(deps) {
 
     insertAccount:
       'INSERT INTO ' + ACCOUNTS_TABLE + ' (account_id, kind, owner_id, currency, wallet_id, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    /* ★ P22-7：system account 的创建是**并发安全**的（见 ensureSystemAccount
+       的说明）。它与上面那条 insertAccount 并存而不是替换它：钱包账户的
+       创建必须保持"撞主键 = 一次真实的错误"，因为一个重复的钱包账户
+       意味着余额被劈成两半 —— 那种情况**不能**被静默忽略。
+       system account 则相反：白名单只有四个，身份就是主键，"它已经存在"
+       与"我刚创建了它"对调用方是同一个结果。 */
+    insertAccountIfAbsent:
+      'INSERT OR IGNORE INTO ' + ACCOUNTS_TABLE + ' (account_id, kind, owner_id, currency, wallet_id, created_at) VALUES (?, ?, ?, ?, ?, ?)',
     selectAccount: 'SELECT * FROM ' + ACCOUNTS_TABLE + ' WHERE account_id=?',
     selectSystemAccount: 'SELECT * FROM ' + ACCOUNTS_TABLE + ' WHERE account_id=? AND kind=\'SYSTEM\'',
 
@@ -1032,6 +1092,32 @@ function createEconomyStore(deps) {
       ' reservation_expires_at INTEGER,' +
       ' inventory_entry_id TEXT,' +
       ' consent_snapshot TEXT,' +
+      /* ── P22-7：授权那一面的四个列（schema 5 → 6）────────────────────
+          ★ 为什么它们必须在 **purchase** 这一侧：一句"这笔购买当初凭什么
+          成立"是关于**购买**的事实，而它必须在结算时仍然可读（授权政策
+          可能在 prepare 与 settle 之间被改掉）。因此它是购买自己的一列，
+          而不是"去批准表里反查"。
+
+             approval_mode         AUTO_ALLOW | APPROVAL（NULL = P22-7 之前的历史行）
+             approval_id                被消费的那条批准（mode=APPROVAL 时非 NULL）
+             autonomy_policy_id         做出 AUTO_ALLOW 结论的策略（可追溯"为什么没问用户"）
+             approval_binding_fingerprint  授权那一刻的九元组身份（可独立重算）
+
+          刻意**没有** approval_decision / approved_by / approval_expires_at
+          这类副本：那些事实的 canonical 位置是 economy_approvals 那一行，
+          抄一份到这里就会有两个会漂移的答案（P22-7 的 integrity check
+          会逐行验证 approval_id 指向的行真的存在且确实被这笔购买消费）。 */
+      ' approval_mode TEXT CHECK (approval_mode IS NULL OR approval_mode IN (\'AUTO_ALLOW\',\'APPROVAL\')),' +
+      ' approval_id TEXT,' +
+      ' autonomy_policy_id TEXT,' +
+      ' approval_binding_fingerprint TEXT,' +
+      /* ★ `units`（买了几份）是 P22-7 加的一列，而它不是冗余：Quote 行上的
+         `quantity` 是**计算出来的发放份数**（grantQuantity × units），
+         因此"买了几份"在 P22-6 里从来没有被落库过。而它是批准九元组里的
+         一员（§6 逐字点了"数量"），所以结算时那句"这张许可证说的就是这
+         一笔吗"的比对必须有一个权威来源 —— 从 granted_quantity 反推会
+         在商品改过 grantQuantity 之后给出错误答案，而落一列不依赖任何假设。 */
+      ' units INTEGER CHECK (units IS NULL OR units >= 1),' +
       ' idempotency_key TEXT NOT NULL,' +
       ' fingerprint TEXT NOT NULL,' +
       ' revision INTEGER NOT NULL,' +
@@ -1048,10 +1134,20 @@ function createEconomyStore(deps) {
        结构性约束（NULL 仍然不参与）。 */
     createPurchasesByReservationLive: 'CREATE UNIQUE INDEX IF NOT EXISTS idx_econ_purchases_reservation ON ' + PURCHASES_TABLE + ' (reservation_id)',
     createPurchasesByLedgerTransaction: 'CREATE UNIQUE INDEX IF NOT EXISTS idx_econ_purchases_tx ON ' + PURCHASES_TABLE + ' (ledger_transaction_id)',
+    /* P22-7 的两条索引。第一条让"这个 owner 今天自主花了多少"（结算时
+       重新评估日自主额度的那次查询）走索引而不是全表扫；第二条让
+       "这条批准被哪笔购买消费"能双向查（approve→purchase 是
+       selectApprovalByConsumedPurchase，这里是 purchase→approval）。
+       刻意**不**给 approval_id 加 UNIQUE：一笔购买恰好引用一条批准是
+       业务事实，而"一条批准最多被一笔购买消费"已经由
+       setApprovalConsumed 的谓词与 approvals 那一侧的 UNIQUE 索引保证
+       —— 在购买侧再声明一次会给出两个都叫"唯一"而管的不是同一件事的约束。 */
+    createPurchasesByApproval: 'CREATE INDEX IF NOT EXISTS idx_econ_purchases_approval ON ' + PURCHASES_TABLE + ' (autonomy_policy_id, approval_mode, status, completed_at)',
+    createPurchasesByApproval: 'CREATE INDEX IF NOT EXISTS idx_econ_purchases_approval ON ' + PURCHASES_TABLE + ' (approval_id)',
 
     insertPurchase:
-      'INSERT INTO ' + PURCHASES_TABLE + ' (purchase_id, buyer_id, buyer_type, recipient_id, recipient_type, product_id, store_id, quote_id, reservation_id, ledger_transaction_id, currency, amount_minor, quote_kind, settlement_type, asset_kind, granted_quantity, unit_name, status, release_reason, reason_code, reservation_state, reservation_expires_at, inventory_entry_id, consent_snapshot, idempotency_key, fingerprint, revision, created_at, updated_at, completed_at) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO ' + PURCHASES_TABLE + ' (purchase_id, buyer_id, buyer_type, recipient_id, recipient_type, product_id, store_id, quote_id, reservation_id, ledger_transaction_id, currency, amount_minor, quote_kind, settlement_type, asset_kind, granted_quantity, unit_name, status, release_reason, reason_code, reservation_state, reservation_expires_at, inventory_entry_id, consent_snapshot, approval_mode, approval_id, autonomy_policy_id, approval_binding_fingerprint, units, idempotency_key, fingerprint, revision, created_at, updated_at, completed_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     selectPurchase: 'SELECT * FROM ' + PURCHASES_TABLE + ' WHERE purchase_id=?',
     selectPurchaseByQuote: 'SELECT * FROM ' + PURCHASES_TABLE + ' WHERE quote_id=?',
     selectPurchaseByReservation: 'SELECT * FROM ' + PURCHASES_TABLE + ' WHERE reservation_id=?',
@@ -1068,6 +1164,16 @@ function createEconomyStore(deps) {
       ' AND (? IS NULL OR quote_id = ?)' +
       ' ORDER BY created_at ASC, purchase_id ASC LIMIT ?',
     selectPurchasesAll: 'SELECT * FROM ' + PURCHASES_TABLE + ' ORDER BY created_at ASC, purchase_id ASC',
+    /* P22-7：今日自主花费的求和源。判据逐字是三条（见
+       autonomousSpentTodayMinor 的说明）：自主放行 + 仍然活着 + 落在本 UTC 日。
+       ★ `approval_mode = 'AUTO_ALLOW'` 让被用户批准的购买**不**消耗
+       自主额度 —— 额度约束的是"Agent 能自己决定多少"，不是"一共能花多少"。
+       ★ 刻意**不**用 `status='COMPLETED'`：RESERVED 的购买已经占住了额度，
+       而"先花再算"会让两次并发的自主购买各自看到一个旧数字。 */
+    selectAutonomousSpendRows:
+      'SELECT amount_minor FROM ' + PURCHASES_TABLE +
+      " WHERE buyer_id = ? AND autonomy_policy_id = ? AND approval_mode = 'AUTO_ALLOW'" +
+      " AND status IN ('RESERVED','COMPLETED') AND created_at >= ?",
     countPurchases: 'SELECT COUNT(*) AS c FROM ' + PURCHASES_TABLE,
     countPurchasesByStatus: 'SELECT COUNT(*) AS c FROM ' + PURCHASES_TABLE + ' WHERE status=?',
     countPurchasesByQuote: 'SELECT COUNT(*) AS c FROM ' + PURCHASES_TABLE + ' WHERE quote_id=?',
@@ -1097,7 +1203,164 @@ function createEconomyStore(deps) {
     setPurchaseSettled:
       'UPDATE ' + PURCHASES_TABLE + ' SET status=?, ledger_transaction_id=?, inventory_entry_id=?, revision=?, updated_at=?, completed_at=? WHERE purchase_id=? AND status=?',
     setPurchaseTerminal:
-      'UPDATE ' + PURCHASES_TABLE + ' SET status=?, release_reason=?, reason_code=?, revision=?, updated_at=? WHERE purchase_id=? AND status=?'
+      'UPDATE ' + PURCHASES_TABLE + ' SET status=?, release_reason=?, reason_code=?, revision=?, updated_at=? WHERE purchase_id=? AND status=?',
+
+    /* ══ P22-7 §23 · 自主策略与批准记录 ══════════════════════════════════
+       ── economy_autonomy_policies ──────────────────────────────────────
+       与 createBudgetPolicies 逐条对齐（同一套列命名与同一条"约束不是
+       注释"纪律），而两处**刻意不同**：
+
+       ① `enabled` 是 INTEGER 而不是 TEXT 词表。理由与预算政策的 status
+          不同：预算政策的第三个状态（"暂停"与"从未启用"）是真实存在的，
+          而自主购买只有"允许 / 不允许"两种事实 —— 缺省（没有行）本身
+          就是第三种，因此不需要在 status 里表达它。
+       ② allowed_product_kinds / allowed_settlement_types 用 JSON 数组，
+          而不是三张关联表。理由是它们**不是实体**：它们是词表的子集，
+          成员全部来自 P22-5 的 PRODUCT_KINDS / FULFILLMENTS（载入期就已
+          封闭），因此"这条策略允许哪些种类"是一个值而不是一张关系。
+          任何不在封闭词表里的成员在写入前就被拒绝（见 autonomyProblemsOf：
+          读侧还会**再查一遍**，因为这一列可以被外部工具改坏）。 */
+    createAutonomyPolicies:
+      'CREATE TABLE IF NOT EXISTS ' + AUTONOMY_POLICIES_TABLE + ' (' +
+      ' policy_id TEXT PRIMARY KEY,' +
+      ' owner_id TEXT NOT NULL,' +
+      ' owner_type TEXT NOT NULL,' +
+      ' enabled INTEGER NOT NULL CHECK (enabled IN (0,1)),' +
+      ' per_purchase_limit_minor INTEGER NOT NULL CHECK (per_purchase_limit_minor >= 0),' +
+      ' daily_autonomous_limit_minor INTEGER NOT NULL CHECK (daily_autonomous_limit_minor >= 0),' +
+      ' approval_above_minor INTEGER NOT NULL CHECK (approval_above_minor >= 0),' +
+      ' allowed_product_kinds TEXT NOT NULL,' +
+      ' allowed_settlement_types TEXT NOT NULL,' +
+      ' allow_gift INTEGER NOT NULL CHECK (allow_gift IN (0,1)),' +
+      ' idempotency_key TEXT NOT NULL,' +
+      ' fingerprint TEXT NOT NULL,' +
+      ' revision INTEGER NOT NULL,' +
+      ' created_at INTEGER NOT NULL,' +
+      ' updated_at INTEGER NOT NULL,' +
+      ' CHECK (per_purchase_limit_minor <= daily_autonomous_limit_minor),' +
+      ' CHECK (approval_above_minor <= per_purchase_limit_minor),' +
+      ' CHECK (owner_type <> \'system\')' +
+      ')',
+    /* 一个 owner 恰好一条自主策略。它不是"多条里挑一条"的规则集合 ——
+       §3 要求的是**唯一一层**权限判定，多条策略会让"这台 Agent 到底能
+       不能自主买"出现两个答案。改它就是改那一行（并写一条 UPDATED 事件）。 */
+    createAutonomyPoliciesByOwner:
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_econ_autonomy_owner ON ' + AUTONOMY_POLICIES_TABLE + ' (owner_id)',
+    insertAutonomyPolicy:
+      'INSERT INTO ' + AUTONOMY_POLICIES_TABLE + ' (policy_id, owner_id, owner_type, enabled, per_purchase_limit_minor, daily_autonomous_limit_minor, approval_above_minor, allowed_product_kinds, allowed_settlement_types, allow_gift, idempotency_key, fingerprint, revision, created_at, updated_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    updateAutonomyPolicy:
+      'UPDATE ' + AUTONOMY_POLICIES_TABLE + ' SET enabled=?, per_purchase_limit_minor=?, daily_autonomous_limit_minor=?, approval_above_minor=?, allowed_product_kinds=?, allowed_settlement_types=?, allow_gift=?, idempotency_key=?, fingerprint=?, revision=?, updated_at=? WHERE policy_id=?',
+    selectAutonomyPolicy: 'SELECT * FROM ' + AUTONOMY_POLICIES_TABLE + ' WHERE policy_id=?',
+    selectAutonomyPolicyByOwner: 'SELECT * FROM ' + AUTONOMY_POLICIES_TABLE + ' WHERE owner_id=?',
+    selectAutonomyPoliciesFiltered:
+      'SELECT * FROM ' + AUTONOMY_POLICIES_TABLE + ' WHERE' +
+      ' (? IS NULL OR owner_id = ?)' +
+      ' ORDER BY created_at ASC, policy_id ASC LIMIT ?',
+    selectAutonomyPoliciesAll: 'SELECT * FROM ' + AUTONOMY_POLICIES_TABLE + ' ORDER BY created_at ASC, policy_id ASC',
+    countAutonomyPolicies: 'SELECT COUNT(*) AS c FROM ' + AUTONOMY_POLICIES_TABLE,
+
+    /* ── economy_approvals ──────────────────────────────────────────────
+       状态机的 CHECK 是**数据库本身**把的词表（与 purchases.status 同款）：
+       五态之外的值写不进去，于是"一个批准处在什么状态"不需要靠代码自律。
+
+       九个绑定事实的列名与契约的 APPROVAL_BINDING_KEYS 一一对应，而
+       `binding_fingerprint` 是它们的 canonical 身份（纯函数算出，不含
+       approvalId）—— 两处并存是刻意的：逐列比较给出**可读的**拒绝理由
+       （"金额从 400 变成 450"），指纹给出**一个**可被独立重算的身份。
+
+       决定者（decided_by_id / decided_by_type）是必填的（APPROVED /
+       REJECTED 时）：一条"被批准了但不知道谁批的"记录在审计里等于没有。
+       它与 buyer 必须**不同**（store 层结构性拒绝 self-approval）。
+
+       consumed_by_purchase_id 是 §8/§16 的链接：批准 ↔ 购买。它只有在
+       status=CONSUMED 时才允许非 NULL，而那条由 setApprovalConsumed 的
+       谓词 + integrity check 两侧保证。 */
+    createApprovals:
+      'CREATE TABLE IF NOT EXISTS ' + APPROVALS_TABLE + ' (' +
+      ' approval_id TEXT PRIMARY KEY,' +
+      ' buyer_id TEXT NOT NULL,' +
+      ' buyer_type TEXT NOT NULL,' +
+      ' recipient_id TEXT,' +
+      ' recipient_type TEXT,' +
+      ' product_id TEXT NOT NULL,' +
+      ' quote_id TEXT NOT NULL,' +
+      ' quote_kind TEXT NOT NULL CHECK (quote_kind IN (\'PURCHASE\',\'GIFT\',\'COMPUTE_GRANT\')),' +
+      ' currency TEXT NOT NULL,' +
+      ' amount_minor INTEGER NOT NULL CHECK (amount_minor >= 0),' +
+      ' settlement_type TEXT NOT NULL CHECK (settlement_type IN (\'INVENTORY_GRANT\',\'COMPUTE_GRANT\',\'SERVICE_EXECUTION\')),' +
+      ' grant_quantity INTEGER NOT NULL CHECK (grant_quantity >= 0),' +
+      ' units INTEGER NOT NULL CHECK (units >= 1),' +
+      ' binding_fingerprint TEXT NOT NULL,' +
+      ' approval_mode TEXT NOT NULL CHECK (approval_mode IN (\'AUTO_ALLOW\',\'APPROVAL\')),' +
+      ' autonomy_policy_id TEXT,' +
+      ' autonomy_outcome TEXT,' +
+      ' autonomy_reason_code TEXT,' +
+      ' status TEXT NOT NULL CHECK (status IN (\'PENDING\',\'APPROVED\',\'REJECTED\',\'EXPIRED\',\'CONSUMED\')),' +
+      ' decided_by_id TEXT,' +
+      ' decided_by_type TEXT,' +
+      ' consume_reason TEXT,' +
+      ' consumed_by_purchase_id TEXT,' +
+      ' idempotency_key TEXT NOT NULL,' +
+      ' fingerprint TEXT NOT NULL,' +
+      ' revision INTEGER NOT NULL,' +
+      ' created_at INTEGER NOT NULL,' +
+      ' updated_at INTEGER NOT NULL,' +
+      ' expires_at INTEGER NOT NULL,' +
+      ' decided_at INTEGER,' +
+      ' consumed_at INTEGER,' +
+      ' CHECK (decided_by_type IS NULL OR decided_by_type <> \'system\'),' +
+      ' CHECK (status <> \'CONSUMED\' OR consumed_by_purchase_id IS NOT NULL),' +
+      ' CHECK (status <> \'CONSUMED\' OR consumed_at IS NOT NULL),' +
+      ' CHECK (status = \'PENDING\' OR decided_at IS NOT NULL OR status = \'EXPIRED\')' +
+      ')',
+    /* ── §6 的结构性一半 ────────────────────────────────────────────────
+       ★ 这条 UNIQUE 是"一个 Approval 最多被一笔 Purchase 消费"在数据库
+       里的那一半（另一半是 setApprovalConsumed 的 `AND status='APPROVED'`
+       谓词，以及 prepare/settle 各自事务里的 re-read）。NULL 不参与唯一性，
+       因此 PENDING / APPROVED 的行可以有很多条。 */
+    createApprovalsByConsumedPurchase:
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_econ_approvals_consumed_by ON ' + APPROVALS_TABLE + ' (consumed_by_purchase_id)',
+    createApprovalsByBuyer: 'CREATE INDEX IF NOT EXISTS idx_econ_approvals_buyer ON ' + APPROVALS_TABLE + ' (buyer_id, status, created_at)',
+    createApprovalsByQuote: 'CREATE INDEX IF NOT EXISTS idx_econ_approvals_quote ON ' + APPROVALS_TABLE + ' (quote_id, status)',
+    createApprovalsByStatus: 'CREATE INDEX IF NOT EXISTS idx_econ_approvals_status ON ' + APPROVALS_TABLE + ' (status, expires_at)',
+    insertApproval:
+      'INSERT INTO ' + APPROVALS_TABLE + ' (approval_id, buyer_id, buyer_type, recipient_id, recipient_type, product_id, quote_id, quote_kind, currency, amount_minor, settlement_type, grant_quantity, units, binding_fingerprint, approval_mode, autonomy_policy_id, autonomy_outcome, autonomy_reason_code, status, decided_by_id, decided_by_type, consume_reason, consumed_by_purchase_id, idempotency_key, fingerprint, revision, created_at, updated_at, expires_at, decided_at, consumed_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    selectApproval: 'SELECT * FROM ' + APPROVALS_TABLE + ' WHERE approval_id=?',
+    selectApprovalsByQuote: 'SELECT * FROM ' + APPROVALS_TABLE + ' WHERE quote_id=? ORDER BY created_at ASC, approval_id ASC',
+    selectApprovalByConsumedPurchase: 'SELECT * FROM ' + APPROVALS_TABLE + ' WHERE consumed_by_purchase_id=? LIMIT 1',
+    selectApprovalsFiltered:
+      'SELECT * FROM ' + APPROVALS_TABLE + ' WHERE' +
+      ' (? IS NULL OR buyer_id = ?)' +
+      ' AND (? IS NULL OR quote_id = ?)' +
+      ' AND (? IS NULL OR status = ?)' +
+      ' ORDER BY created_at ASC, approval_id ASC LIMIT ?',
+    selectApprovalsAll: 'SELECT * FROM ' + APPROVALS_TABLE + ' ORDER BY created_at ASC, approval_id ASC',
+    selectExpiredApprovals: 'SELECT * FROM ' + APPROVALS_TABLE + " WHERE status IN ('PENDING','APPROVED') AND expires_at <= ? ORDER BY expires_at ASC, approval_id ASC LIMIT ?",
+    countApprovals: 'SELECT COUNT(*) AS c FROM ' + APPROVALS_TABLE,
+    countApprovalsByStatus: 'SELECT COUNT(*) AS c FROM ' + APPROVALS_TABLE + ' WHERE status=?',
+    /* 三条状态推进语句，各自带一个**乐观并发闸门**（`AND status=?`）。
+       与 purchases 的两条同款：两个进程同时决定同一条批准时，必然有一个
+       changes=0 —— 于是"只能一个成功"不是靠时间窗口，而是靠 SQL。
+       SET 里刻意没有 buyer / product / quote / currency / amount /
+       settlement_type / grant_quantity / units / binding_fingerprint：
+       一条批准的**授权内容**写下之后不可变，能变的只有它的结局。 */
+    setApprovalDecided:
+      'UPDATE ' + APPROVALS_TABLE + ' SET status=?, decided_by_id=?, decided_by_type=?, revision=?, updated_at=?, decided_at=? WHERE approval_id=? AND status=?',
+    setApprovalExpired:
+      'UPDATE ' + APPROVALS_TABLE + ' SET status=?, revision=?, updated_at=? WHERE approval_id=? AND status=?',
+    /* ★ 这条语句是 §8「一次性消费」的结构核心：WHERE 里硬编码的
+       `status='APPROVED'` 让**第二次**消费返回 changes=0（那条批准已经
+       是 CONSUMED 了），而 consumed_by_purchase_id 的 UNIQUE 索引兜住
+       同一笔购买只出现一次。
+       ★ 为什么 status 是**参数**而不是像同族语句那样写成 `'CONSUMED'`
+       字面量：P22-2 的 O9j 用 `/SET ([^']*?) WHERE/` 逐列读 SET 子句，
+       而那个模式要求 SET 与 WHERE 之间没有单引号。把状态写成参数之后，
+       "SET 了哪些列"可以被机器断言，而"只能从 APPROVED 走到这里"仍然由
+       WHERE 逐字保证。绑定的是 C.APPROVAL_STATE.CONSUMED。 */
+    setApprovalConsumed:
+      'UPDATE ' + APPROVALS_TABLE + ' SET status=?, consumed_by_purchase_id=?, consume_reason=?, revision=?, updated_at=?, consumed_at=? WHERE approval_id=? AND status=?'
   };
 
   /* ══════════════════════════════════════════════════════════════════
@@ -1190,6 +1453,20 @@ function createEconomyStore(deps) {
       db.exec(SQL.createPurchasesByProduct);
       db.exec(SQL.createPurchasesByReservationLive);
       db.exec(SQL.createPurchasesByLedgerTransaction);
+      db.exec(SQL.createPurchasesByApproval);
+      db.exec(SQL.createPurchasesByApproval);
+      /* P22-7 的两张表（schema 5 → 6）+ purchases 上的四个授权列。新表走
+         CREATE TABLE IF NOT EXISTS，而四个**列**走 5 → 6 的 MIGRATIONS
+         —— 那是本文件里第一条非空的迁移，因为"这笔购买当初凭什么成立"
+         是既有行上的一个新事实，不是一张新表能承载的（见文件头的说明）。
+         这两句同样排在 migrateSchema() 之后。 */
+      db.exec(SQL.createAutonomyPolicies);
+      db.exec(SQL.createAutonomyPoliciesByOwner);
+      db.exec(SQL.createApprovals);
+      db.exec(SQL.createApprovalsByConsumedPurchase);
+      db.exec(SQL.createApprovalsByBuyer);
+      db.exec(SQL.createApprovalsByQuote);
+      db.exec(SQL.createApprovalsByStatus);
     } catch (error) {
       try { if (db) db.close(); } catch (_) { /* 已关闭 */ }
       db = null;
@@ -1273,7 +1550,62 @@ function createEconomyStore(deps) {
        P22-6 给它们加了**零**列，因为 P22-3/P22-4 已经把"锁了多少 /
        锁到什么时候 / 这份报价是什么"冻结齐了，而"这笔预留属于哪次购买"
        的事实属于 **purchase 那一侧**（purchase_id 是 purchase 自己的列），
-       往 reservation 上加一列只会制造第二个归属来源。 */
+       往 reservation 上加一列只会制造第二个归属来源。
+
+     ★ 5 → 6（P22-7）是本文件里**第一条非空**的迁移，而它只做一件事：
+     给 economy_purchases 补四个可空列。为什么它不能是空的：
+       · 新表（autonomy policies / approvals）由 CREATE TABLE IF NOT EXISTS
+         补上，那部分确实不需要迁移；
+       · 但"这笔购买当初凭什么成立"是**既有购买行**上的一个新事实。一句
+         `CREATE TABLE IF NOT EXISTS` 碰不到已经存在的行，所以必须有
+         ALTER TABLE。
+     为什么四个列全部可空、且**不**回填：
+       · P22-7 之前写下的购买**没有**授权模式。把它猜成 AUTO_ALLOW 是
+         伪造"这台 Agent 当时有权自主买"，猜成 APPROVAL 是伪造"当时有人
+         批准过"。两种回填都会让审计指认一个从未发生的事实。
+       · NULL 是一个**准确**的答案："这条记录早于授权层"。integrity check
+         因此把旧行的 NULL 认成合法，而把新行缺这一列认成问题。
+     为什么 ALTER 写成幂等的：SQLite 没有 `ADD COLUMN IF NOT EXISTS`，
+     因此这里先读 `PRAGMA table_info` 再决定。迁移框架自己保证 5 → 6 只跑
+     一次，但一条"在半个库上也能安全重跑"的迁移更难被误用 —— 尤其是
+     有人手工改过水位的情况。 */
+    {
+      from: 5,
+      to: 6,
+      apply: function (handle) {
+        /* ★★ 幂等的**两个**理由，而不是一个 ─────────────────────────────
+        （一）SQLite 没有 `ADD COLUMN IF NOT EXISTS`，所以先读 table_info。
+        （二）而更要紧的是：**这张表在这个时刻可能还根本不存在**。
+        这个迁移框架的调用点排在所有 `CREATE TABLE IF NOT EXISTS` **之前**
+        （P22-3 起冻结的纪律：SCHEMA_TOO_NEW 的库上不能悄悄多出空表），
+        因此一个 schema 4 的库走 4→5→6 时，5→6 这一步面对的是一个还没有
+        `economy_purchases` 的数据库 —— 那时它唯一正确的动作是**什么都不做**
+        （稍后 DDL 会按当前的 CREATE 语句建出带这五列的表）。
+
+        这是一个**真实缺陷**（开发期实测：P22-5 的迁移组在一个 schema 4 的
+        库上打开时读作 `no such table: economy_purchases`）。迁移如果假设
+        "更早版本负责过的表已经存在"，那么**跨两级**的升级路径会失败，而
+        "跨一级"的路径是绿的 —— 后者恰好是大多数测试走的那条。 */
+        const tableExists = handle.prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name=?"
+        ).get(PURCHASES_TABLE);
+        if (!tableExists) return;
+        const columns = new Set(
+          handle.prepare('PRAGMA table_info(' + PURCHASES_TABLE + ')').all().map(function (r) { return String(r.name); })
+        );
+        const additions = [
+          ['approval_mode', 'TEXT'],
+          ['approval_id', 'TEXT'],
+          ['autonomy_policy_id', 'TEXT'],
+          ['approval_binding_fingerprint', 'TEXT'],
+          ['units', 'INTEGER']
+        ];
+        for (const entry of additions) {
+          if (columns.has(entry[0])) continue;
+          handle.exec('ALTER TABLE ' + PURCHASES_TABLE + ' ADD COLUMN ' + entry[0] + ' ' + entry[1]);
+        }
+      }
+    }
   ];
 
   function migrateSchema() {
@@ -1354,7 +1686,22 @@ function createEconomyStore(deps) {
 
   function withTransaction(fn) {
     if (txDepth > 0) {
-      /* 已经在事务里：只增加深度，**不** BEGIN、**不** COMMIT。 */
+      /* 已经在事务里：只增加深度，**不** BEGIN、**不** COMMIT。
+
+         ★★ 这里**刻意不回滚**，而这是一次被撤销的改动留下来的结论。
+         P22-7 开发期我一度在这条分支上加了一个 catch + ROLLBACK（理由：
+         "嵌套事务里的故障必须由这一层回滚，否则外层不会回滚"）。那是**错的**，
+         而且错得很危险：`settlePurchase` 的外层事务里嵌套着
+         `commitReservationInTx`（它自己也调 withTransaction），因此内层
+         的 ROLLBACK 会把**外层**整个回滚掉、同时把 `txDepth` 归零 ——
+         于是外层最后那句 COMMIT 变成一次"没有活动事务"的提交（抛错被
+         吞掉），而调用方拿到的是一个**看起来成功**的结果。
+         实测症状：注入 `after-approval-consumed` 之后结算仍然报 ok:true，
+         但库里留下了半完成状态。这比原来的问题严重得多。
+
+         正确的语义（P22-6 冻结的那一条）：**只有最外层可以 BEGIN/COMMIT/
+         ROLLBACK**，内层只管理深度。一个内层抛出的错误会冒泡到最外层，
+         由最外层的 catch 回滚 —— 那是唯一正确的那一层。 */
       txDepth += 1;
       try {
         return fn();
@@ -1847,9 +2194,27 @@ function createEconomyStore(deps) {
     const existing = db.prepare(SQL.selectSystemAccount).get(id);
     if (existing) return { ok: true, accountId: id, created: false };
     /* system account 的 currency 列只用于"这一行属于哪个币种索引"，
-       真正的币种在 entry 上。control account 天然可以承载多种币种。 */
-    db.prepare(SQL.insertAccount).run(id, C.ACCOUNT_KIND.SYSTEM, null, '', null, clock());
-    return { ok: true, accountId: id, created: true };
+       真正的币种在 entry 上。control account 天然可以承载多种币种。
+
+       ★ P22-7 修复一个**真实缺陷**（开发期实测，两个真实进程同时购买）：
+       这里原来是一次裸的 `INSERT`，而它在 `preparePurchase` 里被调用时
+       位于**事务之外**（`purchaseCounterpartyOf` 在 withTransaction 之前
+       跑）。于是两个进程第一次同时购买同一个 quote kind 时，双方各自读到
+       "账户不存在"，然后各自 INSERT —— 第二个拿到
+       `UNIQUE constraint failed: economy_ledger_accounts.account_id`。
+
+       那不是一个"罕见的竞态"：它恰好发生在**第一次**并发购买上，而正常
+       路径永远看不到它。症状是一个裸的 SQLite 异常，而不是一次可解释的
+       拒绝（§17 逐字要求区分"系统故障"与"业务拒绝"）。
+
+       修法刻意是 `INSERT OR IGNORE` 而不是"把它包进事务"：这一行的身份
+       就是它的主键，而"它已经存在"与"我刚创建了它"对调用方是同一个结果
+       —— 白名单里只有四个 system account（P22-1 §6），因此 ignore 掉的
+       唯一可能就是一个并发的同类 INSERT。包进事务只会把窗口缩小，不会
+       关掉它。 */
+    db.prepare(SQL.insertAccountIfAbsent).run(id, C.ACCOUNT_KIND.SYSTEM, null, '', null, clock());
+    const after = db.prepare(SQL.selectSystemAccount).get(id);
+    return { ok: true, accountId: id, created: !existing && !!after };
   }
 
   /* 打开一个钱包。幂等：同一个 (owner, currency) 再来返回**已存在**的
@@ -2719,12 +3084,35 @@ function createEconomyStore(deps) {
      idempotency-conflict）刻意**不**带 reasonCode —— 它们不是"业务被拒"，
      而是"这个请求本身不成立"，把两者混成一个字段会让审计失真。 */
   function denial(reasonCode, errors, extra) {
-    return Object.assign({
+    /* ── P22-7：一个**真实缺陷**的单点修复（开发期实测）─────────────────
+       这里曾经是 `Object.assign({...}, extra || {})`，而 extra 是调用方给的
+       对象。当调用方把一个**别的拒绝对象**（或任何带 `reasonCode: undefined`
+       的对象）当作 extra 传进来时，它会**覆盖**上面刚写好的正确值：
+
+         denial(C.DENY_REASON.APPROVAL_EXPIRED, [...], someDenialObject)
+         → someDenialObject.reasonCode === undefined
+         → 返回里的 reasonCode 变成字面量字符串 "undefined"
+
+       症状是"拒绝发生了，但为什么被拒绝消失了" —— 与 P22-6 在
+       budgetRefusalOf 上踩到的那一类形状同源（那次是 `.detail` 恒为
+       undefined）。修在这里而不是逐个调用点，因为**任何**后续调用点都
+       可能再犯同一个错，而这个函数是所有拒绝的唯一出口。
+
+       规则逐字是：extras 只有在**显式给出有意义的值**时才允许覆盖
+       ok / denied / reasonCode。一个 undefined 不是"我要把它设成空"，
+       而是"我没打算说这件事"。 */
+    const out = {
       ok: false,
       denied: true,
       reasonCode: String(reasonCode),
       errors: Array.isArray(errors) ? errors.map(String) : [String(errors)]
-    }, extra || {});
+    };
+    const extras = extra || {};
+    for (const key of Object.keys(extras)) {
+      if (extras[key] === undefined && Object.prototype.hasOwnProperty.call(out, key)) continue;
+      out[key] = extras[key];
+    }
+    return out;
   }
 
   /* 事务**内部**的拒绝：必须抛错才能让 withTransaction 回滚，因此这里把
@@ -4802,8 +5190,8 @@ function createEconomyStore(deps) {
       decision: budgetEvaluationFromSnapshot(built.snapshot, policy),
       snapshot: built.snapshot,
       /* 明写这一句，让调用方在**读**结果的时候就看到它。字段名刻意
-         避开 Authorization 这个词：本文件的凭据边界逐字断言
-         "Economy 不读 Authorization / Bearer"（boundary B6.3），
+         避开 Approval 这个词：本文件的凭据边界逐字断言
+         "Economy 不读 Approval / Bearer"（boundary B6.3），
          而给那条安全断言开一个例外正是它最容易失效的方式。 */
       evaluatedOnly: true,
       notASpendPermit: 'ALLOW is a snapshot evaluation, not a spendable permission; re-evaluate inside the transaction that reserves',
@@ -7043,6 +7431,35 @@ function createEconomyStore(deps) {
       status: String(row.status),
       terminal: C.PURCHASE_TERMINAL_STATES.indexOf(String(row.status)) >= 0,
       completed: String(row.status) === C.PURCHASE_STATE.COMPLETED,
+      /* ── P22-7：授权那一面（§16 的四个问题全部落在这里）──────────────
+         `approvalMode === null` 逐字表示"这条记录早于授权层"（P22-7
+         之前的行，或没走闸门的直接 P22-6 用法）—— 它**不是**
+         AUTO_ALLOW，也不是 APPROVAL，而是一个准确的历史事实。
+         approvalStatus / approvedBy 从**落库的批准行**读（不是从 purchase
+         行猜），因此"是谁批准的什么"只有一个出处。 */
+      approvalMode: row.approval_mode == null ? null : String(row.approval_mode),
+      gatedByP22_7: row.approval_mode != null,
+      approvalId: row.approval_id == null ? null : String(row.approval_id),
+      autonomyPolicyId: row.autonomy_policy_id == null ? null : String(row.autonomy_policy_id),
+      approvalBindingFingerprint: row.approval_binding_fingerprint == null ? null : String(row.approval_binding_fingerprint),
+      /* 买了几份（P22-7 的新列）。旧行是 null —— 那是一个准确的答案：
+         P22-7 之前没有落过这个事实。 */
+      units: row.units == null ? null : Number(row.units),
+      autonomous: String(row.approval_mode) === C.PURCHASE_APPROVAL_MODE.AUTO_ALLOW,
+      requiredUserApproval: String(row.approval_mode) === C.PURCHASE_APPROVAL_MODE.APPROVAL,
+      approval: row.approval_id == null ? null : (function () {
+        const a = db.prepare(SQL.selectApproval).get(String(row.approval_id));
+        if (!a) return null;
+        return Object.freeze({
+          approvalId: String(a.approval_id),
+          status: String(a.status),
+          decidedBy: a.decided_by_id == null ? null : partyKeyOf(String(a.decided_by_type), String(a.decided_by_id)),
+          decidedAt: a.decided_at == null ? null : Number(a.decided_at),
+          expiresAt: Number(a.expires_at),
+          consumedByPurchaseId: a.consumed_by_purchase_id == null ? null : String(a.consumed_by_purchase_id),
+          bindingFingerprint: String(a.binding_fingerprint)
+        });
+      })(),
       releaseReason: row.release_reason == null ? null : String(row.release_reason),
       reasonCode: row.reason_code == null ? null : String(row.reason_code),
       idempotencyKey: String(row.idempotency_key),
@@ -7110,6 +7527,8 @@ function createEconomyStore(deps) {
       assetKind: view.settledAssetKind,
       grantedQuantity: view.grantedQuantity,
       unitName: view.unitName,
+      /* P22-7：买了几份。旧行是 null（P22-7 之前没落过这个事实）。 */
+      units: view.units,
       inventoryEntryId: view.inventoryEntryId,
       status: view.status,
       terminal: view.terminal === true,
@@ -7120,10 +7539,27 @@ function createEconomyStore(deps) {
       createdAt: view.createdAt,
       updatedAt: view.updatedAt,
       completedAt: view.completedAt,
+      /* ── P22-7：授权那一面（稳定读面）──────────────────────────────
+         `approvalMode === null` 逐字表示"这条记录早于授权层"；
+         它**不是** AUTO_ALLOW。这句话必须能被读出来，否则"这笔为什么
+         没问用户"对旧行会得到一个编造的答案。 */
+      approvalMode: view.approvalMode,
+      gatedByP22_7: view.gatedByP22_7 === true,
+      autonomous: view.autonomous === true,
+      requiredUserApproval: view.requiredUserApproval === true,
+      approvalId: view.approvalId,
+      autonomyPolicyId: view.autonomyPolicyId,
+      approvalBindingFingerprint: view.approvalBindingFingerprint,
+      approval: view.approval,
       /* 三句与 P22-5 同款的逐字否认（§1：Purchase 不等于它们中的任何一个）。 */
       isALedgerTransaction: false,
       isAReservation: false,
       isAQuote: false,
+      /* P22-7：购买也**不是**一条批准，而且它不携带任何权限（权限是
+         approvalId 那个一次性事实，不是这行记录）。 */
+      isAnApproval: false,
+      grantsAutonomy: false,
+      grantsBudget: false,
       hasRefund: C.PURCHASE_HAS_REFUND,
       exposesHttpMutation: C.PURCHASE_EXPOSES_HTTP_MUTATION
     };
@@ -7177,6 +7613,26 @@ function createEconomyStore(deps) {
            购买的经济内容不依赖它 —— 一次改价/下架不会改写历史。 */
         purchaseEconomicContentDependsOnThisRow: false
       } : { productId: view.productId, present: false, purchaseEconomicContentDependsOnThisRow: false },
+      /* P22-7：第**四**个小结 —— 与 quote / reservation / product 三者同级。
+         §16 的两个问题（"是谁批准的什么""这个批准最终被哪笔 Purchase 消费"）
+         在这里有一个稳定的读面答案，而不需要调用方自己拼接两张表。 */
+      authorizationSummary: {
+        mode: view.approvalMode,
+        gatedByP22_7: view.gatedByP22_7 === true,
+        autonomous: view.autonomous === true,
+        requiredUserApproval: view.requiredUserApproval === true,
+        approvalId: view.approvalId,
+        autonomyPolicyId: view.autonomyPolicyId,
+        approvalBindingFingerprint: view.approvalBindingFingerprint,
+        approval: view.approval,
+        approvalConsumedByThisPurchase: view.approval != null && String(view.approval.consumedByPurchaseId) === String(view.purchaseId),
+        approvedBy: view.approval == null ? null : view.approval.decidedBy,
+        approvalBindingFingerprint: view.approval == null ? null : view.approval.bindingFingerprint,
+        oneApprovalAtMostOnePurchase: C.APPROVAL_IS_SINGLE_USE,
+        approvalBypassesBudget: C.APPROVAL_BYPASSES_BUDGET,
+        approvalBypassesQuoteExpiry: C.APPROVAL_BYPASSES_QUOTE_EXPIRY,
+        budgetSeparatelyEvaluated: true
+      },
       settlement: purchaseSettlementOf(view)
     };
   }
@@ -7482,6 +7938,73 @@ function createEconomyStore(deps) {
         { expiresAt: expiresAt.expiresAt, now: now });
     }
 
+    /* ── P22-7：授权那一面的**入参**（§10 的"P22-7 在 P22-6 入口前加
+          authority gate"落点）─────────────────────────────────────────
+       ★ 这里刻意**不**接受 `approvalMode`。"这笔购买是自主的还是被
+       批准的"不是一个调用方可以声明的东西 —— 它由两份**证据**推导：
+         · approvalId              ⇒ 模式 APPROVAL（而那张批准必须真的
+                                      有效、且九个字段绑定这一笔）；
+         · approvalBindingFingerprint ⇒ 模式 AUTO_ALLOW（而它必须重算一致，
+                                      见 validateAutonomousApprovalInTx）。
+       允许调用方自己写 mode 会让"我声称我是 AUTO_ALLOW"成为一条绕过批准
+       的路。
+       ★ 三者都不允许承载任何经济字段：金额 / recipient / 数量 / settlement
+       仍然只从 quote 快照读。因此"批准一张 400 的报价、然后拿它去买一份
+       500 的"在结构上不成立。 */
+    const approvalIdInput = o.approvalId == null ? null : String(o.approvalId);
+    if (approvalIdInput != null && !C.isEconomyId('APPROVAL', approvalIdInput)) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['approval-id-not-canonical'] };
+    }
+    const autonomyPolicyIdInput = o.autonomyPolicyId == null ? null : String(o.autonomyPolicyId);
+    if (autonomyPolicyIdInput != null && !C.isEconomyId('BUDGET_POLICY', autonomyPolicyIdInput)) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['autonomy-policy-id-not-canonical'] };
+    }
+    const approvalBindingFingerprintInput = o.approvalBindingFingerprint == null ? null : String(o.approvalBindingFingerprint);
+    if (approvalBindingFingerprintInput != null && approvalBindingFingerprintInput.trim() === '') {
+      return { ok: false, denied: false, reasonCode: null, errors: ['approval-fingerprint-must-not-be-empty'] };
+    }
+    /* ★ 两种证据**互斥**：一张批准与"自主放行"是互相排斥的两句话。
+       同时给两个既不是"更安全"也不是"更宽松"，而是一次不能回答的声明 ——
+       因此它被拒绝，而不是被某一方静默覆盖。 */
+    if (approvalIdInput != null && approvalBindingFingerprintInput != null) {
+      return denial(C.DENY_REASON.TRANSITION_NOT_ALLOWED,
+        ['an-autonomous-fingerprint-and-an-approval-are-mutually-exclusive'], {
+        approvalId: approvalIdInput, approvalBindingFingerprintProvided: true
+      });
+    }
+    const approvalMode = approvalIdInput != null
+      ? C.PURCHASE_APPROVAL_MODE.APPROVAL
+      : (approvalBindingFingerprintInput != null ? C.PURCHASE_APPROVAL_MODE.AUTO_ALLOW : null);
+    const approvalIdColumn = approvalIdInput;
+    const autonomyPolicyIdColumn = autonomyPolicyIdInput;
+    /* ★ let 而不是 const：AUTO_ALLOW 模式下它会被**重算**出来的那个身份
+       覆盖（两者已被证明逐字相同，但落库的应该是可独立重算的那一个）。 */
+    let approvalBindingFingerprintColumn = approvalBindingFingerprintInput;
+    if (approvalIdInput != null) {
+      /* 一张批准只可能授权一笔**被冻结**的报价。这里先用 quoteId 做一次
+         便宜的粗筛（不匹配就直接拒），九个字段的精确比对留在事务里。 */
+      const approvalRow = db.prepare(SQL.selectApproval).get(approvalIdInput);
+      if (!approvalRow) {
+        return denial(C.DENY_REASON.APPROVAL_NOT_FOUND, ['approval-not-found'], { approvalId: approvalIdInput });
+      }
+      if (String(approvalRow.quote_id) !== quoteId) {
+        return denial(C.DENY_REASON.APPROVAL_MISMATCH, ['this-approval-authorizes-a-different-quote'], {
+          approvalId: approvalIdInput,
+          approvalQuoteId: String(approvalRow.quote_id),
+          purchaseQuoteId: quoteId,
+          oneApprovalCannotBeMovedToAnotherPurchase: true
+        });
+      }
+    }
+    /* ★ AUTO_ALLOW 模式必须说得出**是哪条策略**放行的：§16 的第一问
+       "为什么这笔购买没问用户"只有一个答案位置 ——
+       purchases.autonomy_policy_id。缺了它 integrity check 会把这行判成
+       "一次没有出处的自主购买"。 */
+    if (approvalMode === C.PURCHASE_APPROVAL_MODE.AUTO_ALLOW && autonomyPolicyIdColumn == null) {
+      return denial(C.DENY_REASON.AUTONOMY_NOT_PERMITTED,
+        ['an-autonomous-purchase-must-name-the-autonomy-policy-that-allowed-it'], {});
+    }
+
     /* ── 指纹（**不含任何生成的 id**）────────────────────────────────── */
     const fingerprint = purchaseFingerprint(C.OPERATION_SCOPE.PURCHASE_PREPARE, {
       buyer: buyer.party,
@@ -7491,7 +8014,10 @@ function createEconomyStore(deps) {
       currency: currency,
       amountMinor: C.serializeAmountMinor(quoteAmountMinor),
       units: units,
-      reservationExpiresAt: Number(expiresAt.expiresAt)
+      reservationExpiresAt: Number(expiresAt.expiresAt),
+      /* ★ 授权身份进指纹是刻意的：同一个 key 配一张**不同**的批准是两件事，
+         而"我那次准备购入用的是哪张许可证"必须能被区分。 */
+      approvalId: approvalIdColumn
     });
 
     /* ── 幂等闸门（在任何写之前，重放零成本、零副作用）──────────────── */
@@ -7574,6 +8100,70 @@ function createEconomyStore(deps) {
             ['budget-does-not-allow-this-spend'], budgetRefusalOf(budget, 'prepare'));
         }
         faultPoint('after-purchase-budget');
+
+        /* ── P22-7 ⑥ §10：授权 seam —— 在**写锁里**验证那张许可证 ────────
+           ★ 位置是刻意的：它排在预算闸门**之后**。§11 说"Approval 不是预算
+           豁免"，而把授权检查放在预算**之前**会让一张有效批准跳过预算 ——
+           因为一旦通过授权就继续往下走了。反过来（预算在前、授权在后）
+           则两句话同时成立：预算 DENY ⇒ 这里根本走不到；预算 ALLOW 但
+           没有有效批准 ⇒ 在这里被拒，整个 prepare 回滚。
+           ★ 它**不消费**批准（见 §27 的三条论证）：消费发生在结算事务里，
+           于是"批准被消费 + 购买没成立"这种撕裂事实在结构上不可达。
+           ★ 这里也做一致性复核：approvalMode 为 APPROVAL 而购买行上
+           没有 approvalId 是不可能的（上面绑定了），但仍然显式断言一次，
+           因为"一笔声称被批准的购买没有批准"是本阶段最严重的那类矛盾。 */
+        if (approvalMode === C.PURCHASE_APPROVAL_MODE.APPROVAL) {
+          if (approvalIdColumn == null) {
+            throw refuse(C.DENY_REASON.APPROVAL_NOT_CONSUMED, ['an-approval-authorised-purchase-must-name-its-approval']);
+          }
+          /* ── APPROVAL 模式：九元组必须与那张批准逐项一致，然后把
+             **重算**出来的身份落库。★ 为什么落库的是重算值而不是那条批准
+             上抄下来的值：两者已被 validateApprovalForPreparationInTx 证明
+             逐字相同，而"这条记录的可重算身份"必须来自这笔购买自己的事实
+             —— 否则"同意指纹"会变成第二个事实源，而它的漂移只会在某一天
+             被 integrity check 发现。 */
+          const approvalBinding = {
+            buyerId: partyKeyOf(buyer.party.type, buyer.party.id),
+            recipientId: recipient.party == null ? null : partyKeyOf(recipient.party.type, recipient.party.id),
+            productId: String(p.product_id),
+            quoteId: quoteId,
+            currency: currency,
+            amountMinor: quoteAmountMinor,
+            settlementType: String(fulfillment),
+            grantQuantity: expectedQuantity.quantity,
+            units: units
+          };
+          validateApprovalForPreparationInTx(approvalIdColumn, String(purchaseId), approvalBinding, at);
+          const approvalFp = C.approvalFingerprint(approvalBinding);
+          if (!approvalFp.ok) throw refuse(C.DENY_REASON.POLICY_INPUT_NOT_STRUCTURED, approvalFp.errors);
+          approvalBindingFingerprintColumn = String(approvalFp.fingerprint);
+        } else if (approvalMode === C.PURCHASE_APPROVAL_MODE.AUTO_ALLOW) {
+          /* AUTO_ALLOW 的授权面是**重算**出来的九元组身份（见 seam 的
+             说明）：调用方提交的那个必须与这一笔完全一致。 */
+          const recomputedBinding = {
+            buyerId: partyKeyOf(buyer.party.type, buyer.party.id),
+            recipientId: recipient.party == null ? null : partyKeyOf(recipient.party.type, recipient.party.id),
+            productId: String(p.product_id),
+            quoteId: quoteId,
+            currency: currency,
+            amountMinor: quoteAmountMinor,
+            settlementType: String(fulfillment),
+            grantQuantity: expectedQuantity.quantity,
+            units: units
+          };
+          validateAutonomousApprovalInTx(autonomyPolicyIdColumn, approvalBindingFingerprintColumn, {
+            buyerPartyId: String(buyer.party.id),
+            buyerPartyType: String(buyer.party.type),
+            binding: recomputedBinding
+          });
+          /* 把**重算**的那个身份落库（而不是调用方给的那个字面值）：
+             两者已经被证明逐字相同，但落库的应该是可以被独立重算的那一个。 */
+          const fp = C.approvalFingerprint(recomputedBinding);
+          if (fp.ok) approvalBindingFingerprintColumn = String(fp.fingerprint);
+        } else if (approvalMode !== null) {
+          throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['purchase-approval-mode-not-in-closed-set']);
+        }
+        faultPoint('after-purchase-approval');
 
         /* ③ reservation（P22-3 的 canonical 形态，同一套列与状态机）────
               operation: CREATED → RESERVED；reservation: ACTIVE。
@@ -7700,6 +8290,15 @@ function createEconomyStore(deps) {
           C.PURCHASE_STATE.RESERVED, null, null,
           C.RESERVATION_STATE.ACTIVE, Number(expiresAt.expiresAt), null,
           JSON.stringify(consent),
+          /* ── P22-7：授权那一面的四列 ────────────────────────────────
+             ★ 它们是**记录**，不是"结算时再推断一次"的输入：授权发生在
+             闸门那一刻，而自主策略/批准状态之后都可能变。把这四个值冻在
+             购买行上，于是"这笔购买当初凭什么成立"在结算时仍然可读。
+             ★ approvalMode === null（调用方没走 P22-7 闸门）是合法的：
+             P22-6 单独使用时购买没有任何授权层，而 NULL 逐字表示"这条记录
+             没有授权模式"—— 把它兜成 AUTO_ALLOW 会伪造一条权限事实。 */
+          approvalMode, approvalIdColumn, autonomyPolicyIdColumn, approvalBindingFingerprintColumn,
+          Number(units),
           key.key, fingerprint, Number(rev), Number(at), Number(at), null
         );
         faultPoint('after-purchase-created');
@@ -7751,6 +8350,29 @@ function createEconomyStore(deps) {
                （§33）。最终使用的永远是 settlement 事务里最新的事实。 */
             isACapability: false,
             revalidatedAtSettlement: true
+          },
+          /* ── P22-7：授权的那一面 ────────────────────────────────────
+             ★ 四句逐字的自述（§8/§10）：
+               · approvalConsumed = false —— prepare **不**消费批准；
+               · isACapability = false —— 它不是一张可以传递的许可证；
+               · budgetIsSeparatelyEvaluated —— 授权与预算各判一次。 */
+          authorization: {
+            mode: approvalMode,
+            approvalId: approvalIdColumn,
+            autonomyPolicyId: autonomyPolicyIdColumn,
+            /* 授权模式为 null 表示这次购买**没有走** P22-7 闸门（P22-6 的
+               直接用法）。逐字写出这句话，而不是让调用方从 null 猜。 */
+            gatedByP22_7: approvalMode != null,
+            approvalConsumed: false,
+            approvalConsumedAtSettlement: approvalMode === C.PURCHASE_APPROVAL_MODE.APPROVAL,
+            autonomous: approvalMode === C.PURCHASE_APPROVAL_MODE.AUTO_ALLOW,
+            requiredUserApproval: approvalMode === C.PURCHASE_APPROVAL_MODE.APPROVAL,
+            /* Prepare 的授权结论同样只是**解释性历史**：许可证的真正校验
+               与消费在结算事务里再各自做一次。 */
+            isACapability: false,
+            revalidatedAtSettlement: true,
+            budgetIsSeparatelyEvaluated: true,
+            approvalBypassesBudget: C.APPROVAL_BYPASSES_BUDGET
           },
           reservedBalanceMinor: C.serializeAmountMinor(sum.reservedMinor),
           activeReservations: sum.activeCount,
@@ -8381,6 +9003,39 @@ function createEconomyStore(deps) {
         }
         faultPoint('after-purchase-settle-budget');
 
+        /* ── P22-7 ④b §8/§10/§11：消费那条批准（**与结算同一个事务**）────
+           ★ 位置是刻意的：它排在预算最终复核**之后**、ledger commit **之前**。
+           三句话因此同时成立：
+             · 预算 DENY ⇒ 上面已经 return，批准**原封不动**（§11：批准
+               绝不是预算豁免）；
+             · 批准在这里消费 ⇒ 它和"钱真的动了"在同一个原子单位里，
+               因此"批准已消费但购买没成立"不可达（§10）；
+             · 下面的任何一步抛错 ⇒ 整个事务回滚 ⇒ 批准回到 APPROVED，
+               可以安全重试（而不是被烧掉）。
+           ★ 只对 approval_mode='APPROVAL' 的购买执行。NULL（P22-7
+           之前的历史行）与 'AUTO_ALLOW'（自主放行，没有许可证可消费）
+           两者都不消费任何东西 —— 前者尤其重要：**不能**为一条旧行凭空
+           找回一张批准。 */
+        let approvalConsumption = null;
+        const purchaseApprovalMode = purchase.approval_mode == null ? null : String(purchase.approval_mode);
+        if (purchaseApprovalMode === C.PURCHASE_APPROVAL_MODE.APPROVAL) {
+          if (purchase.approval_id == null) {
+            /* 一笔声称被批准、却没有任何批准的购买是结构性矛盾 —— fail
+               closed，且**在 ledger commit 之前**。 */
+            throw refuse(C.DENY_REASON.APPROVAL_NOT_CONSUMED,
+              ['an-approval-authorised-purchase-carries-no-approval-id'], {
+              purchaseId: purchaseId, approvalMode: purchaseApprovalMode
+            });
+          }
+          approvalConsumption = consumeApprovalForPurchaseInTx(String(purchase.approval_id), purchase, quote, at);
+          faultPoint('after-approval-consumed');
+        } else if (purchaseApprovalMode != null && purchaseApprovalMode !== C.PURCHASE_APPROVAL_MODE.AUTO_ALLOW) {
+          /* 一个不在封闭集合里的授权模式：有人在库里写了第三个词。 */
+          throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['purchase-approval-mode-not-in-closed-set'], {
+            purchaseId: purchaseId, approvalMode: purchaseApprovalMode
+          });
+        }
+
         /* ── ⑤ 预留 → COMMITTED，并写入 ledger transaction + entries ────
            走的是 P22-3 的**同一个**事务体内核。它内部按顺序做：
              reservation → COMMITTED、reserved 缓存 ← Σ(ACTIVE)、
@@ -8568,6 +9223,27 @@ function createEconomyStore(deps) {
           quoteConsumed: true,
           reservationCommitted: true,
           purchaseCompleted: true,
+          /* ★ 授权那一面**逐字**来自 settledView（即刚被读回来的那行购买），
+             而不是在这里再查一次批准行 —— 一个字段只有一个出处。
+             这四句合起来回答 §16 的第四问："这个批准最终被哪笔 Purchase
+             消费"（consumedByPurchaseId === purchaseId）。 */
+          authorization: {
+            mode: settledView.approvalMode,
+            gatedByP22_7: settledView.gatedByP22_7 === true,
+            approvalId: settledView.approvalId,
+            autonomyPolicyId: settledView.autonomyPolicyId,
+            approvalBindingFingerprint: settledView.approvalBindingFingerprint,
+            approvalConsumedHere: approvalConsumption != null,
+            consumedByPurchaseId: approvalConsumption == null ? null : purchaseId,
+            approvalStatusAfter: settledView.approval == null ? null : String(settledView.approval.status),
+            approvedBy: settledView.approval == null ? null : settledView.approval.decidedBy,
+            autonomous: settledView.autonomous === true,
+            requiredUserApproval: settledView.requiredUserApproval === true,
+            oneApprovalAtMostOnePurchase: C.APPROVAL_IS_SINGLE_USE,
+            budgetWasIndependentlyEvaluated: true,
+            approvalBypassedBudget: false,
+            approvalBypassedQuoteExpiry: false
+          },
           /* 四句逐字的否认（§17/§18/§62/§63）。 */
           providerMutation: false,
           paymentMutation: false,
@@ -8617,7 +9293,12 @@ function createEconomyStore(deps) {
             paymentMutation: false,
             memoryMutation: false,
             relationshipMutation: false,
-            storeIsAMerchant: false
+            storeIsAMerchant: false,
+            /* P22-7：结算这一条事件同时回答"这笔购买当初凭什么成立"。
+               新行一定有；P22-7 之前的历史行是 null（那时没有授权层）。 */
+            approvalMode: purchase.approval_mode == null ? null : String(purchase.approval_mode),
+            approvalId: purchase.approval_id == null ? null : String(purchase.approval_id),
+            autonomyPolicyId: purchase.autonomy_policy_id == null ? null : String(purchase.autonomy_policy_id)
           }
         });
         faultPoint('before-purchase-settle-change-log');
@@ -8865,7 +9546,1736 @@ function createEconomyStore(deps) {
     for (const row of db.prepare(SQL.selectPurchasesAll).all()) {
       problems.push.apply(problems, purchaseProblemsOf(row));
     }
+    /* ── P22-7 的三层 ────────────────────────────────────────────────────
+       ① 自主策略行自身的形状（与 policyProblemsOf 同级，但查得更细：
+          两个枚举数组的成员必须在 P22-5 的封闭词表里）；
+       ② 批准行自身 + 九元组指纹的**可重算性**（"绑定"因此不是注释）；
+       ③ 一条已完成的购买与它所引用的批准之间的一致性（在
+          purchaseProblemsOf 里，因为它是购买那一侧的完整性）。
+       规模：O(自主策略数 + 批准数)，两者都随"配置变更"与"用户决策次数"
+       增长，而不是随聊天或订单量增长。 */
+    for (const row of db.prepare(SQL.selectAutonomyPoliciesAll).all()) {
+      problems.push.apply(problems, autonomyPolicyProblemsOf(row));
+    }
+    for (const row of db.prepare(SQL.selectApprovalsAll).all()) {
+      problems.push.apply(problems, approvalProblemsOf(row));
+    }
     return problems;
+  }
+
+  /* ══════════════════════════════════════════════════════════════════
+     P22-7 §24 · Autonomous Purchase Policy（权限层，不是决策层）
+
+     这一节回答**一个**问题：
+
+       "这台 Agent 有没有权不问用户直接花这笔钱？"
+
+     它刻意**不**回答"这笔钱花得起吗"（那是 P22-4 的 Budget，冻结未改）
+     也不回答"Agent 想不想买"（那是一个 Decision，本阶段不存在）。
+     §3 的整套内容落在下面这四行里：
+
+       Budget ALLOW  AND  (Autonomy AUTO_ALLOW OR valid Approval)
+
+     本文件里没有一行把三者合并成一个布尔 —— prepare 与 settle 各自分别
+     执行预算闸门与授权闸门，因为它们的**失败后果不同**（预算拒绝是
+     "钱不够/超额度"，授权拒绝是"没人有权花"）。合并它们会让审计失去
+     "为什么没成"的答案。
+
+     ★ 输入只来自 canonical Economy facts：buyer / recipient / product kind /
+     settlement type / currency / amountMinor / 策略行 / 今日已自主花掉的
+     金额。**没有** LLM 输出、Memory、Relationship、affection/trust、
+     聊天内容。这不是"记得别传"，而是三层结构性约束：
+       ① 契约的 AUTONOMY_POLICY_INPUT_KEYS 是白名单，未知键 = 拒绝；
+       ② 这里构造 context 时**只**从 quote / product / autonomy policy /
+          purchases 四个 canonical 来源读字段；
+       ③ 载入期不变量检查白名单里不含任何正文类键。
+     ══════════════════════════════════════════════════════════════════ */
+
+  /* ── 行 → 视图。金额一律 BigInt（SQLite 的是 Number），与其它 rowTo* 同款。
+     ★ `unusable` 与 `unusableErrors` 是刻意的：一条形状坏掉的策略行不是
+     "没有策略"，它是"规则这一面不可信"。两者必须是**两个**答案，因为
+     没有策略 → REQUIRE_APPROVAL（回到默认：问用户），而策略坏了 → DENY
+     （有人在改规则而改到一半，这时放行比拒绝危险得多）。 */
+  function rowToAutonomyPolicy(row) {
+    const problems = autonomyPolicyProblemsOf(row);
+    const kinds = parseJsonArray(row.allowed_product_kinds);
+    const settlements = parseJsonArray(row.allowed_settlement_types);
+    return {
+      domain: C.DOMAIN,
+      namespace: C.NAMESPACES.BUDGET,
+      kind: 'autonomy',
+      policyId: String(row.policy_id),
+      ownerId: Object.freeze({ type: String(row.owner_type), id: String(row.owner_id) }),
+      enabled: Number(row.enabled) === 1,
+      perPurchaseLimitMinor: fromSqlAmount(row.per_purchase_limit_minor, 'autonomy-per-purchase-limit'),
+      dailyAutonomousLimitMinor: fromSqlAmount(row.daily_autonomous_limit_minor, 'autonomy-daily-limit'),
+      approvalAboveMinor: fromSqlAmount(row.approval_above_minor, 'autonomy-approval-threshold'),
+      allowedProductKinds: Object.freeze(kinds.ok ? kinds.items : []),
+      allowedSettlementTypes: Object.freeze(settlements.ok ? settlements.items : []),
+      allowGift: Number(row.allow_gift) === 1,
+      unusable: problems.length > 0,
+      unusableErrors: problems,
+      revision: Number(row.revision),
+      createdAt: Number(row.created_at),
+      updatedAt: Number(row.updated_at)
+    };
+  }
+
+  /* JSON 数组列的读侧。坏掉的 JSON **不**静默变成空数组 —— 一个读不懂的
+     白名单与一个空白的白名单后果完全不同（后者是"什么都不允许"，前者是
+     "我们不知道允许什么"），而把它兜成 [] 会让后者伪装成前者。 */
+  function parseJsonArray(raw) {
+    if (raw == null) return { ok: false, items: [], errors: ['json-array-column-is-null'] };
+    let parsed = null;
+    try { parsed = JSON.parse(String(raw)); } catch (error) {
+      return { ok: false, items: [], errors: ['json-array-column-is-not-parseable'] };
+    }
+    if (!Array.isArray(parsed)) return { ok: false, items: [], errors: ['json-array-column-is-not-an-array'] };
+    return { ok: true, items: parsed.map(x => String(x)), errors: [] };
+  }
+
+  /* 一条自主策略行是否**结构上**可信。与 policyProblemsOf / quoteProblemsOf /
+     productProblemsOf 同款：逐行回答"这一行本身是不是一句说得通的话"。
+     这里多查两件预算政策不需要查的事：
+       · 两个枚举数组的成员必须都在 P22-5 的封闭词表里（一个拼错的
+         COMPUTE_CREDITS 会让"允许买算力额度"静默地不生效）；
+       · per_purchase ≤ daily ≤ approval ≤ per_purchase 三条序关系 ——
+         即便 CHECK 约束已经在库里把关，读侧还要再查一遍，因为"手工改过
+         库"正是这一层存在的理由。 */
+  function autonomyPolicyProblemsOf(row) {
+    const problems = [];
+    const id = String(row.policy_id);
+    if (!C.isEconomyId('BUDGET_POLICY', id)) { problems.push(id + ':autonomy-policy-id-not-canonical'); return problems; }
+    if (String(row.owner_id).trim() === '') { problems.push(id + ':owner-id-empty'); return problems; }
+    if (String(row.owner_type) === C.PARTY_TYPE.SYSTEM) { problems.push(id + ':system-cannot-own-an-autonomy-policy'); return problems; }
+    for (const field of ['per_purchase_limit_minor', 'daily_autonomous_limit_minor', 'approval_above_minor']) {
+      try { fromSqlAmount(row[field], 'autonomy-' + field); }
+      catch (error) { problems.push(id + ':limit-not-canonical:' + field); return problems; }
+    }
+    const perPurchase = fromSqlAmount(row.per_purchase_limit_minor, 'autonomy-per-purchase-limit');
+    const daily = fromSqlAmount(row.daily_autonomous_limit_minor, 'autonomy-daily-limit');
+    const threshold = fromSqlAmount(row.approval_above_minor, 'autonomy-approval-threshold');
+    if (perPurchase > daily) { problems.push(id + ':per-purchase-limit-exceeds-the-daily-autonomous-limit'); return problems; }
+    if (threshold > perPurchase) { problems.push(id + ':approval-threshold-exceeds-the-per-purchase-limit'); return problems; }
+    if (Number(row.enabled) !== 0 && Number(row.enabled) !== 1) { problems.push(id + ':enabled-is-not-a-boolean'); return problems; }
+    if (Number(row.allow_gift) !== 0 && Number(row.allow_gift) !== 1) { problems.push(id + ':allow-gift-is-not-a-boolean'); return problems; }
+    const kinds = parseJsonArray(row.allowed_product_kinds);
+    if (!kinds.ok) { problems.push(id + ':allowed-product-kinds-not-readable'); return problems; }
+    for (const k of kinds.items) {
+      if (!C.isProductKind(k)) { problems.push(id + ':allowed-product-kind-not-in-closed-set:' + k); return problems; }
+    }
+    const settlements = parseJsonArray(row.allowed_settlement_types);
+    if (!settlements.ok) { problems.push(id + ':allowed-settlement-types-not-readable'); return problems; }
+    for (const s of settlements.items) {
+      if (!C.isFulfillment(s)) { problems.push(id + ':allowed-settlement-type-not-in-closed-set:' + s); return problems; }
+    }
+    return problems;
+  }
+
+  function autonomyPolicyForOwner(ownerId) {
+    const row = db.prepare(SQL.selectAutonomyPolicyByOwner).get(String(ownerId));
+    return row ? rowToAutonomyPolicy(row) : null;
+  }
+
+  function autonomyPolicyFingerprint(payload) {
+    return fingerprintOf(stableStringify({ scope: C.OPERATION_SCOPE.AUTONOMY_POLICY, request: payload }));
+  }
+
+  /* ── putAutonomyPolicy：一个 owner 恰好一条自主策略 ───────────────────
+     与 putBudgetPolicy 同款（同一套幂等语义、同一条"拒绝整体回滚"纪律），
+     但有三处**刻意不同**：
+
+     ① 没有 `disable` 开关。预算政策的停用是一条真实的历史事件
+        （"有人在上周二关掉了它"），而自主策略的停用就是 enabled=false
+        —— 那是它的**内容**。再给一个 disable 会让"为什么这条策略不生效"
+        有两个答案。
+     ② 没有 `autonomyLevel`。P22-4 的那个字段是预算政策上的一个**记录列**
+        （四条词，P22-4 从未据它分支）；P22-7 的自主权限是**结构化**的
+        （额度 + 白名单 + 开关），把一个自由度极低的三态词放进来说明
+        "能自主到什么程度"会让策略层出现两套并存的权限表达。
+     ③ currency 不在这张表上。自主额度按 **owner** 计，跨币种合并计数是
+        错的，而"按币种各一条策略"会让"这台 Agent 能不能自主买"出现多个
+        答案。金额字段仍然带 Minor 后缀（§4），因此这里不存在裸 limit。 */
+  function putAutonomyPolicy(input) {
+    requireOpen();
+    const o = input || {};
+    const owner = partyInput(o.ownerId);
+    if (!owner.ok) return { ok: false, denied: false, reasonCode: null, errors: owner.errors };
+    if (owner.party.type === C.PARTY_TYPE.SYSTEM) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['system-party-cannot-own-an-autonomy-policy'] };
+    }
+    const ownerId = String(owner.party.id);
+    const key = C.normalizeIdempotencyKey(o.idempotencyKey);
+    if (!key.ok) return { ok: false, denied: false, reasonCode: null, errors: key.errors };
+    if (o.ifRevision != null && (!Number.isSafeInteger(Number(o.ifRevision)) || Number(o.ifRevision) < 0)) {
+      return denial(C.DENY_REASON.POLICY_INPUT_NOT_STRUCTURED, ['autonomy-if-revision-must-be-a-non-negative-safe-integer']);
+    }
+
+    const existingRow = db.prepare(SQL.selectAutonomyPolicyByOwner).get(ownerId);
+    const existing = existingRow ? rowToAutonomyPolicy(existingRow) : null;
+    const policyId = existing ? existing.policyId
+      : (o.policyId != null ? String(o.policyId) : nextId('BUDGET_POLICY'));
+    if (!C.isEconomyId('BUDGET_POLICY', policyId)) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['autonomy-policy-id-not-canonical'] };
+    }
+
+    const shape = C.validateAutonomyPolicy({
+      policyId: policyId,
+      ownerId: owner.party,
+      enabled: o.enabled,
+      perPurchaseLimitMinor: o.perPurchaseLimitMinor,
+      dailyAutonomousLimitMinor: o.dailyAutonomousLimitMinor,
+      approvalAboveMinor: o.approvalAboveMinor,
+      allowedProductKinds: o.allowedProductKinds,
+      allowedSettlementTypes: o.allowedSettlementTypes,
+      allowGift: o.allowGift
+    });
+    if (!shape.ok) return denial(C.DENY_REASON.POLICY_INPUT_NOT_STRUCTURED, shape.errors);
+    const policy = shape.policy;
+
+    const fingerprint = autonomyPolicyFingerprint({
+      ownerId: ownerId, ownerType: String(owner.party.type),
+      enabled: policy.enabled,
+      perPurchaseLimitMinor: C.serializeAmountMinor(policy.perPurchaseLimitMinor),
+      dailyAutonomousLimitMinor: C.serializeAmountMinor(policy.dailyAutonomousLimitMinor),
+      approvalAboveMinor: C.serializeAmountMinor(policy.approvalAboveMinor),
+      allowedProductKinds: policy.allowedProductKinds.slice().sort().join(','),
+      allowedSettlementTypes: policy.allowedSettlementTypes.slice().sort().join(','),
+      allowGift: policy.allowGift
+    });
+    const seen = operationIdempotencyLookup(C.OPERATION_SCOPE.AUTONOMY_POLICY, key.key, fingerprint);
+    if (seen.found && seen.conflict) return operationIdempotencyConflict(C.OPERATION_SCOPE.AUTONOMY_POLICY, key.key, seen);
+    if (seen.found) return { ok: true, replayed: true, idempotencyKey: key.key, result: seen.result };
+
+    if (existing && o.ifRevision != null && Number(o.ifRevision) !== existing.revision) {
+      return {
+        ok: false, denied: false, reasonCode: null,
+        errors: ['autonomy-policy-revision-mismatch'],
+        expectedRevision: Number(o.ifRevision), actualRevision: existing.revision, policyId: existing.policyId
+      };
+    }
+
+    const at = clock();
+    const created = !existing;
+    let committed = null;
+    try {
+      withTransaction(() => {
+        const rev = allocateRevision();
+        if (created) {
+          db.prepare(SQL.insertAutonomyPolicy).run(
+            policyId, ownerId, String(owner.party.type), policy.enabled ? 1 : 0,
+            toSqlAmount(policy.perPurchaseLimitMinor, 'autonomy-per-purchase-limit'),
+            toSqlAmount(policy.dailyAutonomousLimitMinor, 'autonomy-daily-limit'),
+            toSqlAmount(policy.approvalAboveMinor, 'autonomy-approval-threshold'),
+            JSON.stringify(policy.allowedProductKinds.slice()),
+            JSON.stringify(policy.allowedSettlementTypes.slice()),
+            policy.allowGift ? 1 : 0,
+            key.key, fingerprint, Number(rev), Number(at), Number(at)
+          );
+        } else {
+          const moved = db.prepare(SQL.updateAutonomyPolicy).run(
+            policy.enabled ? 1 : 0,
+            toSqlAmount(policy.perPurchaseLimitMinor, 'autonomy-per-purchase-limit'),
+            toSqlAmount(policy.dailyAutonomousLimitMinor, 'autonomy-daily-limit'),
+            toSqlAmount(policy.approvalAboveMinor, 'autonomy-approval-threshold'),
+            JSON.stringify(policy.allowedProductKinds.slice()),
+            JSON.stringify(policy.allowedSettlementTypes.slice()),
+            policy.allowGift ? 1 : 0,
+            key.key, fingerprint, Number(rev), Number(at), policyId
+          );
+          if (Number(moved.changes) !== 1) {
+            throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['autonomy-policy-update-affected-no-row']);
+          }
+        }
+        faultPoint('after-autonomy-policy-written');
+
+        const view = rowToAutonomyPolicy(db.prepare(SQL.selectAutonomyPolicy).get(policyId));
+        const result = {
+          domain: C.DOMAIN,
+          namespace: C.NAMESPACES.BUDGET,
+          kind: 'autonomy',
+          policyId: policyId,
+          ownerId: partyKeyOf(owner.party.type, owner.party.id),
+          enabled: view.enabled,
+          perPurchaseLimitMinor: C.serializeAmountMinor(view.perPurchaseLimitMinor),
+          dailyAutonomousLimitMinor: C.serializeAmountMinor(view.dailyAutonomousLimitMinor),
+          approvalAboveMinor: C.serializeAmountMinor(view.approvalAboveMinor),
+          allowedProductKinds: view.allowedProductKinds.slice(),
+          allowedSettlementTypes: view.allowedSettlementTypes.slice(),
+          allowGift: view.allowGift,
+          created: created,
+          revision: Number(rev),
+          at: Number(at),
+          idempotencyKey: key.key,
+          /* 三条自述：这条策略是**权限**，它不授予预算、不替代预算、
+             也不是一次决策。 */
+          grantsBudget: C.AUTONOMY_POLICY_GRANTS_BUDGET,
+          replacesBudget: C.AUTONOMY_REPLACES_BUDGET,
+          isADecisionLayer: C.AUTONOMY_POLICY_IS_A_DECISION_LAYER,
+          readsLlmOutput: C.AUTONOMY_POLICY_READS_LLM_OUTPUT,
+          readsMemory: C.AUTONOMY_POLICY_READS_MEMORY,
+          readsRelationship: C.AUTONOMY_POLICY_READS_RELATIONSHIP
+        };
+        appendChange({
+          revision: Number(rev),
+          kind: created ? C.EVENT_TYPE.AUTONOMY_POLICY_CREATED : C.EVENT_TYPE.AUTONOMY_POLICY_UPDATED,
+          entityId: policyId, transactionId: null, walletId: null, at: Number(at),
+          payload: {
+            domain: C.DOMAIN, policyId: policyId, ownerId: ownerId,
+            enabled: view.enabled,
+            perPurchaseLimitMinor: result.perPurchaseLimitMinor,
+            dailyAutonomousLimitMinor: result.dailyAutonomousLimitMinor,
+            approvalAboveMinor: result.approvalAboveMinor,
+            allowedProductKinds: result.allowedProductKinds,
+            allowedSettlementTypes: result.allowedSettlementTypes,
+            allowGift: view.allowGift,
+            grantsBudget: false,
+            isADecisionLayer: false,
+            ledgerMutation: false, inventoryMutation: false,
+            providerMutation: false, paymentMutation: false,
+            memoryMutation: false, relationshipMutation: false
+          }
+        });
+        faultPoint('before-autonomy-policy-commit');
+        writeOperationIdempotency(C.OPERATION_SCOPE.AUTONOMY_POLICY, key.key, fingerprint,
+          { policyId: policyId, ownerId: ownerId, transactionId: null }, result, Number(rev), at);
+        committed = result;
+      });
+    } catch (error) {
+      const refusal = translateRefusal(error);
+      if (!refusal) throw error;
+      return refusal;
+    }
+    pruneOperationIdempotency(at);
+    logger('economy-autonomy-policy-written', {
+      policyId: policyId, ownerId: ownerId, created: created,
+      enabled: committed.enabled, revision: committed.revision
+    });
+    return { ok: true, replayed: false, idempotencyKey: key.key, result: committed };
+  }
+
+  function getAutonomyPolicy(input) {
+    requireOpen();
+    const o = input || {};
+    if (o.policyId != null) {
+      const row = db.prepare(SQL.selectAutonomyPolicy).get(String(o.policyId));
+      if (!row) return { ok: false, denied: true, reasonCode: C.DENY_REASON.POLICY_NOT_FOUND, errors: ['autonomy-policy-not-found'], policyId: String(o.policyId) };
+      return { ok: true, policy: rowToAutonomyPolicy(row) };
+    }
+    const owner = partyInput(o.ownerId);
+    if (!owner.ok) return { ok: false, denied: false, reasonCode: null, errors: owner.errors };
+    const row = db.prepare(SQL.selectAutonomyPolicyByOwner).get(String(owner.party.id));
+    if (!row) return { ok: false, denied: true, reasonCode: C.DENY_REASON.POLICY_NOT_FOUND, errors: ['autonomy-policy-not-found'], ownerId: String(owner.party.id) };
+    return { ok: true, policy: rowToAutonomyPolicy(row) };
+  }
+
+  function listAutonomyPolicies(options) {
+    requireOpen();
+    const o = options || {};
+    const limit = normalizeLimit(o.limit, 50, 500);
+    const ownerId = o.ownerId == null ? null : String(o.ownerId);
+    const rows = db.prepare(SQL.selectAutonomyPoliciesFiltered).all(ownerId, ownerId, Number(limit));
+    return {
+      ok: true,
+      policies: rows.map(r => serializeAutonomyPolicy(rowToAutonomyPolicy(r))),
+      count: rows.length,
+      personalized: false, recommended: false, ranked: false
+    };
+  }
+
+  function serializeAutonomyPolicy(view) {
+    return {
+      domain: view.domain,
+      namespace: view.namespace,
+      kind: view.kind,
+      policyId: view.policyId,
+      ownerId: partyKeyOf(view.ownerId.type, view.ownerId.id),
+      enabled: view.enabled,
+      perPurchaseLimitMinor: C.serializeAmountMinor(view.perPurchaseLimitMinor),
+      dailyAutonomousLimitMinor: C.serializeAmountMinor(view.dailyAutonomousLimitMinor),
+      approvalAboveMinor: C.serializeAmountMinor(view.approvalAboveMinor),
+      allowedProductKinds: view.allowedProductKinds.slice(),
+      allowedSettlementTypes: view.allowedSettlementTypes.slice(),
+      allowGift: view.allowGift,
+      usable: view.unusable !== true,
+      problems: view.unusable === true ? view.unusableErrors.slice() : [],
+      revision: view.revision,
+      createdAt: view.createdAt,
+      updatedAt: view.updatedAt,
+      grantsBudget: false,
+      replacesBudget: false,
+      isADecisionLayer: false
+    };
+  }
+
+  /* ── 今日已自主花掉的金额（canonical 事实，不是计数器）────────────────
+     与 P22-4 的 spendingWindows 同一条纪律：**每一个数都来自落库的行**，
+     没有缓存、没有 UI 计数器、没有"记忆"。
+
+     判据是逐字的三条：
+       · `approval_mode = 'AUTO_ALLOW'` —— **只**统计自主放行的那些。
+         一条被用户批准的购买不消耗自主额度，因为额度约束的是"Agent 能
+         自己决定多少"，而不是"这台 Agent 一共能花多少"（后者是 Budget）。
+         把两者混起来会让"用户批准了一笔大额"顺手把 Agent 未来的自主权
+         收窄 —— 那是一个没有任何规则要求过的副作用。
+       · `status IN ('RESERVED','COMPLETED')` —— RESERVED 的购买**已经**
+         占住了额度：它的钱被锁住了，会成交或会释放，而"先花再算"会让
+         两次并发的自主购买各自看到同一个旧数字。
+       · 窗口是 **UTC 日**，用 P22-4 冻结的 utcDayStart 算 —— 与预算的
+         日窗口是同一个边界，不引入第二个"今天"。
+
+     ★ 时间列用 `created_at`（授权那一刻），不是 completed_at：额度是
+     **授权**的度量。用 completed_at 会让一笔今天授权、明天成交的购买
+     落进明天的额度里，于是"今天已经自主花了多少"在成交前是 0 —— 而
+     两笔并发的自主购买会同时看到那个 0。 */
+  function autonomousSpentTodayMinor(ownerId, policyId, at) {
+    const dayStart = C.utcDayStart(at);
+    if (dayStart == null) return { ok: false, total: null, errors: ['autonomy-window-start-is-not-representable'] };
+    const rows = db.prepare(SQL.selectAutonomousSpendRows).all(
+      String(ownerId), String(policyId), Number(dayStart)
+    );
+    let total = 0n;
+    for (const row of rows) {
+      /* 任何一行读不懂 ⇒ 整个求和失败（fail closed）。一个偏小的
+         "今天已花"会让一次超额的自主购买看起来合规。 */
+      let amt = null;
+      try { amt = fromSqlAmount(row.amount_minor, 'autonomous-spend-amount'); }
+      catch (error) { return { ok: false, total: null, errors: ['autonomous-spend-row-is-not-canonical'] }; }
+      total += amt;
+    }
+    return { ok: true, total: total, dayStart: Number(dayStart), rows: rows.length, errors: [] };
+  }
+
+  /* ── §2 的落点：把 canonical facts 组装成契约评估器认识的 context ────
+     ★ 这个函数是"策略输入只能来自 canonical Economy facts"的**唯一**
+     构造点。它只从五个来源读字段：quote 行、product 行、autonomy policy
+     行、purchases 求和、以及调用方给出的 buyer/recipient（那两个本身
+     由 partyInput 规范化）。因此 prompt / persona / relationship /
+     llmOutput 在这里**无处可放** —— 不是被过滤掉，而是没有字段可承载。 */
+  function autonomyContextOf(quoteRow, productRow, buyerParty, recipientParty, policy, at) {
+    const spent = autonomousSpentTodayMinor(String(buyerParty.id), policy ? policy.policyId : '', at);
+    if (!spent.ok) return { ok: false, errors: spent.errors };
+    return {
+      ok: true,
+      context: {
+        ownerId: Object.freeze({ type: String(buyerParty.type), id: String(buyerParty.id) }),
+        recipientId: recipientParty == null ? null : Object.freeze({ type: String(recipientParty.type), id: String(recipientParty.id) }),
+        productId: String(quoteRow.product_id),
+        productKind: String(productRow.product_kind),
+        settlementType: String(productRow.fulfillment),
+        currency: String(quoteRow.currency),
+        amountMinor: fromSqlAmount(quoteRow.amount_minor, 'quote-amount'),
+        gift: recipientParty != null,
+        selfDirected: recipientParty == null,
+        spentTodayMinor: spent.total,
+        timestamp: Number(at)
+      },
+      spentTodayMinor: spent.total,
+      spentRowsToday: spent.rows
+    };
+  }
+
+  /* 给调用方（与测试）用的**只读**评估：它不改任何状态、不锁任何钱。
+     与 evaluateBudgetFor 同级 —— `evaluatedOnly: true` 是逐字写下的。 */
+  function evaluateAutonomousPurchaseFor(input) {
+    requireOpen();
+    const o = input || {};
+    const buyer = partyInput(o.buyerId != null ? o.buyerId : o.ownerId);
+    if (!buyer.ok) return { ok: false, denied: false, reasonCode: null, errors: buyer.errors };
+    const quoteId = o.quoteId == null ? null : String(o.quoteId);
+    if (!C.isEconomyId('QUOTE', quoteId)) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['quote-id-not-canonical'] };
+    }
+    const quoteRow = db.prepare(SQL.selectQuote).get(quoteId);
+    if (!quoteRow) return { ok: false, denied: false, reasonCode: null, errors: ['quote-not-found'] };
+    const productRow = db.prepare(SQL.selectProduct).get(String(quoteRow.product_id));
+    if (!productRow) return denial(C.DENY_REASON.PRODUCT_NOT_FOUND, ['product-not-found'], { productId: String(quoteRow.product_id) });
+
+    const recipient = deriveRecipient(buyer.party, o.recipientId);
+    if (!recipient.ok) return { ok: false, denied: false, reasonCode: null, errors: recipient.errors };
+
+    const at = o.now != null ? Number(o.now) : clock();
+    if (!Number.isSafeInteger(at) || at < 0) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['now-must-be-a-non-negative-safe-integer'] };
+    }
+    const policy = autonomyPolicyForOwner(String(buyer.party.id));
+    const built = autonomyContextOf(quoteRow, productRow, buyer.party, recipient.party, policy, at);
+    if (!built.ok) return { ok: false, denied: false, reasonCode: null, errors: built.errors };
+    return {
+      ok: true,
+      decision: C.evaluateAutonomousPurchase(policy, built.context),
+      /* 逐字：这是**一次快照评估**，不是可执行的许可（§19 的同一条纪律）。 */
+      evaluatedOnly: true,
+      notASpendPermit: 'AUTO_ALLOW is an autonomy snapshot, not a spendable permission; it is re-derived inside the transaction that reserves, and budget is still evaluated separately',
+      quoteId: quoteId,
+      buyerId: String(buyer.party.id),
+      recipientId: recipient.party == null ? null : String(recipient.party.id),
+      resolvedRecipientId: recipient.party == null ? null : String(recipient.party.id),
+      resolvedRecipientType: recipient.party == null ? null : String(recipient.party.type),
+      productId: String(quoteRow.product_id),
+      productKind: String(productRow.product_kind),
+      settlementType: String(productRow.fulfillment),
+      currency: String(quoteRow.currency),
+      amountMinor: C.serializeAmountMinor(fromSqlAmount(quoteRow.amount_minor, 'quote-amount')),
+      autonomyPolicyId: policy ? policy.policyId : null,
+      autonomyPolicyPresent: !!policy,
+      spentTodayMinor: C.serializeAmountMinor(built.spentTodayMinor),
+      spentRowsToday: built.spentRowsToday,
+      reserved: false
+    };
+  }
+
+  /* ══════════════════════════════════════════════════════════════════
+     P22-7 §25 · Approval（一条批准记录的生命周期）
+
+     §5：一条 Approval 表达的是"用户授权某个被冻结的购买意图继续执行"。
+     它与 Purchase **是两个实体**：
+       · 一条批准可以存在而永远没有购买（用户批了，Agent 没买）；
+       · 一笔购买可以没有任何批准（它是自主成立的）。
+     因此它有自己的表、自己的 id 前缀（econ_approval_）、自己的状态机。
+
+     §6：批准**必须绑定具体经济事实**。九个绑定字段逐字来自
+     C.APPROVAL_BINDING_KEYS，而 binding_fingerprint 是它们的纯函数身份。
+     批准之后换掉商品 / 价格 / recipient / 数量 / settlement 中的任何一个，
+     验证就会失败 —— 因为验证比的是**九个字段**，不是"一个金额"。
+     ══════════════════════════════════════════════════════════════════ */
+
+  function rowToApproval(row) {
+    const binding = {
+      buyerId: partyKeyOf(row.buyer_type, row.buyer_id),
+      recipientId: row.recipient_id == null ? null : partyKeyOf(row.recipient_type, row.recipient_id),
+      productId: String(row.product_id),
+      quoteId: String(row.quote_id),
+      currency: String(row.currency),
+      amountMinor: fromSqlAmount(row.amount_minor, 'approval-amount'),
+      settlementType: String(row.settlement_type),
+      grantQuantity: Number(row.grant_quantity),
+      units: Number(row.units)
+    };
+    const status = String(row.status);
+    const expiresAt = Number(row.expires_at);
+    return {
+      domain: C.DOMAIN,
+      namespace: C.NAMESPACES.APPROVAL,
+      approvalId: String(row.approval_id),
+      buyerId: binding.buyerId,
+      buyerType: String(row.buyer_type),
+      buyerRef: Object.freeze({ type: String(row.buyer_type), id: String(row.buyer_id) }),
+      recipientId: binding.recipientId,
+      recipientType: row.recipient_id == null ? null : String(row.recipient_type),
+      recipientRef: row.recipient_id == null ? null
+        : Object.freeze({ type: String(row.recipient_type), id: String(row.recipient_id) }),
+      selfDirected: row.recipient_id == null,
+      productId: binding.productId,
+      quoteId: binding.quoteId,
+      quoteKind: String(row.quote_kind),
+      currency: binding.currency,
+      amountMinor: binding.amountMinor,
+      settlementType: binding.settlementType,
+      grantQuantity: binding.grantQuantity,
+      units: binding.units,
+      binding: Object.freeze(binding),
+      bindingFingerprint: String(row.binding_fingerprint),
+      approvalMode: String(row.approval_mode),
+      autonomyPolicyId: row.autonomy_policy_id == null ? null : String(row.autonomy_policy_id),
+      autonomyOutcome: row.autonomy_outcome == null ? null : String(row.autonomy_outcome),
+      autonomyReasonCode: row.autonomy_reason_code == null ? null : String(row.autonomy_reason_code),
+      status: status,
+      terminal: C.isApprovalTerminalState(status),
+      /* 三个时间事实。`expiredByTime` 与 `status` 是**两个**字段，理由与
+         rowToBudgetPolicy 的 expiredByTerm 逐字同源：到期是**比较**出来的
+         （同一个 now 永远同一个答案），不是任何调度写下来的。 */
+      expiresAt: expiresAt,
+      expiredByTime: (status === C.APPROVAL_STATE.PENDING || status === C.APPROVAL_STATE.APPROVED) && expiresAt <= clock(),
+      decidedBy: row.decided_by_id == null ? null : partyKeyOf(row.decided_by_type, row.decided_by_id),
+      decidedByRef: row.decided_by_id == null ? null
+        : Object.freeze({ type: String(row.decided_by_type), id: String(row.decided_by_id) }),
+      decidedAt: row.decided_at == null ? null : Number(row.decided_at),
+      consumedByPurchaseId: row.consumed_by_purchase_id == null ? null : String(row.consumed_by_purchase_id),
+      consumedAt: row.consumed_at == null ? null : Number(row.consumed_at),
+      consumeReason: row.consume_reason == null ? null : String(row.consume_reason),
+      idempotencyKey: String(row.idempotency_key),
+      revision: Number(row.revision),
+      createdAt: Number(row.created_at),
+      updatedAt: Number(row.updated_at)
+    };
+  }
+
+  function serializeApproval(view) {
+    return {
+      domain: view.domain,
+      namespace: view.namespace,
+      approvalId: view.approvalId,
+      buyerId: view.buyerId,
+      /* ★ 拆开的两半在读面上逐字保留（'type:id' 是一个可比较的键，而两半
+         各自可查询 —— 这与 serializePurchase 的 buyerId/recipientId 同款）。 */
+      buyerRef: view.buyerRef,
+      recipientId: view.recipientId,
+      recipientRef: view.recipientRef,
+      selfDirected: view.selfDirected,
+      productId: view.productId,
+      quoteId: view.quoteId,
+      quoteKind: view.quoteKind,
+      currency: view.currency,
+      amountMinor: C.serializeAmountMinor(view.amountMinor),
+      settlementType: view.settlementType,
+      grantQuantity: view.grantQuantity,
+      units: view.units,
+      bindingFingerprint: view.bindingFingerprint,
+      approvalMode: view.approvalMode,
+      autonomyPolicyId: view.autonomyPolicyId,
+      autonomyOutcome: view.autonomyOutcome,
+      autonomyReasonCode: view.autonomyReasonCode,
+      status: view.status,
+      terminal: view.terminal,
+      expiresAt: view.expiresAt,
+      expiredByTime: view.expiredByTime,
+      decidedBy: view.decidedBy,
+      decidedByRef: view.decidedByRef,
+      decidedAt: view.decidedAt,
+      consumedByPurchaseId: view.consumedByPurchaseId,
+      consumedAt: view.consumedAt,
+      consumeReason: view.consumeReason,
+      revision: view.revision,
+      createdAt: view.createdAt,
+      updatedAt: view.updatedAt,
+      /* 逐字的自述（§5/§17）：一条批准**不是**一笔购买，也**不是**预算豁免。 */
+      isAPurchase: false,
+      isBudgetAuthority: false,
+      singleUse: C.APPROVAL_IS_SINGLE_USE,
+      boundToAQuoteSnapshot: C.APPROVAL_IS_BOUND_TO_A_QUOTE,
+      bypassesBudget: C.APPROVAL_BYPASSES_BUDGET,
+      bypassesQuoteExpiry: C.APPROVAL_BYPASSES_QUOTE_EXPIRY,
+      memoryMutation: false,
+      relationshipMutation: false,
+      providerMutation: false,
+      paymentMutation: false
+    };
+  }
+
+  function approvalProblemsOf(row) {
+    const problems = [];
+    const id = String(row.approval_id);
+    if (!C.isEconomyId('APPROVAL', id)) { problems.push(id + ':approval-id-not-canonical'); return problems; }
+    if (String(row.buyer_id).trim() === '') { problems.push(id + ':buyer-id-empty'); return problems; }
+    if (String(row.buyer_type) === C.PARTY_TYPE.SYSTEM) { problems.push(id + ':system-party-cannot-buy'); return problems; }
+    if (!C.isEconomyId('PRODUCT', row.product_id)) { problems.push(id + ':product-id-not-canonical'); return problems; }
+    if (!C.isEconomyId('QUOTE', row.quote_id)) { problems.push(id + ':quote-id-not-canonical'); return problems; }
+    if (!C.isQuoteKind(String(row.quote_kind))) { problems.push(id + ':quote-kind-not-in-closed-set'); return problems; }
+    if (!C.isFulfillment(String(row.settlement_type))) { problems.push(id + ':settlement-type-not-in-closed-set'); return problems; }
+    if (!C.CURRENCIES.some(c => c === String(row.currency))) { problems.push(id + ':currency-not-registered'); return problems; }
+    try { fromSqlAmount(row.amount_minor, 'approval-amount'); }
+    catch (error) { problems.push(id + ':amount-not-canonical'); return problems; }
+    if (!Number.isSafeInteger(Number(row.grant_quantity)) || Number(row.grant_quantity) < 0) {
+      problems.push(id + ':grant-quantity-not-a-non-negative-safe-integer'); return problems;
+    }
+    if (!Number.isSafeInteger(Number(row.units)) || Number(row.units) < 1) {
+      problems.push(id + ':units-not-a-positive-safe-integer'); return problems;
+    }
+    if (!C.isApprovalState(String(row.status))) { problems.push(id + ':approval-status-not-in-closed-set'); return problems; }
+    if (!C.isPurchaseApprovalMode(String(row.approval_mode))) {
+      problems.push(id + ':approval-mode-not-in-closed-set'); return problems;
+    }
+    /* GIFT 与 recipient 的两个方向（与 quoteProblemsOf 同款）。 */
+    if (String(row.quote_kind) === C.QUOTE_KIND.GIFT && row.recipient_id == null) {
+      problems.push(id + ':gift-approval-without-a-recipient'); return problems;
+    }
+    if (String(row.quote_kind) !== C.QUOTE_KIND.GIFT && row.recipient_id != null) {
+      problems.push(id + ':recipient-on-a-non-gift-approval'); return problems;
+    }
+    /* ── 指纹必须真的描述那九个字段 ────────────────────────────────────
+       这一条把"绑定"从一句注释变成一句**可验证**的话：有人直接改库里的
+       amount_minor（而不改 fingerprint）会在这里被发现。 */
+    const recomputed = C.approvalFingerprint({
+      buyerId: partyKeyOf(row.buyer_type, row.buyer_id),
+      recipientId: row.recipient_id == null ? null : partyKeyOf(row.recipient_type, row.recipient_id),
+      productId: String(row.product_id),
+      quoteId: String(row.quote_id),
+      currency: String(row.currency),
+      amountMinor: fromSqlAmount(row.amount_minor, 'approval-amount'),
+      settlementType: String(row.settlement_type),
+      grantQuantity: Number(row.grant_quantity),
+      units: Number(row.units)
+    });
+    if (!recomputed.ok || String(recomputed.fingerprint) !== String(row.binding_fingerprint)) {
+      problems.push(id + ':binding-fingerprint-does-not-describe-the-bound-facts'); return problems;
+    }
+    /* 决定那一半：一条已经不是 PENDING 的记录必须有决定者与决定时间；
+       而决定者**不能**是买方自己（self-approval 是结构性禁止的）。 */
+    if (String(row.status) !== C.APPROVAL_STATE.PENDING) {
+      if (row.decided_by_id == null) { problems.push(id + ':non-pending-approval-has-no-decider'); return problems; }
+      if (String(row.decided_by_id) === String(row.buyer_id) && String(row.decided_by_type) === String(row.buyer_type)) {
+        problems.push(id + ':self-approval-is-not-a-decision'); return problems;
+      }
+    }
+    if (String(row.status) === C.APPROVAL_STATE.APPROVED && row.decided_at == null) {
+      problems.push(id + ':approved-approval-has-no-decided-at'); return problems;
+    }
+    /* 消费那一半（§8）：CONSUMED 必须指向一笔购买，而非 CONSUMED 不许指向。 */
+    if (String(row.status) === C.APPROVAL_STATE.CONSUMED
+      && (row.consumed_by_purchase_id == null || row.consumed_at == null)) {
+      problems.push(id + ':consumed-approval-has-no-consuming-purchase'); return problems;
+    }
+    if (String(row.status) !== C.APPROVAL_STATE.CONSUMED && row.consumed_by_purchase_id != null) {
+      problems.push(id + ':a-non-consumed-approval-names-a-consuming-purchase'); return problems;
+    }
+    if (!Number.isSafeInteger(Number(row.expires_at)) || Number(row.expires_at) < 0) {
+      problems.push(id + ':expires-at-not-a-non-negative-safe-integer'); return problems;
+    }
+    /* 有效期上界（§6：一条"永久有效"的批准与"以后随便花 500"是同一种东西）。 */
+    if (Number(row.expires_at) - Number(row.created_at) > C.APPROVAL_MAX_LIFETIME_MS) {
+      problems.push(id + ':approval-lifetime-exceeds-the-frozen-maximum'); return problems;
+    }
+    return problems;
+  }
+
+  /* 一条批准与一笔购买是否说的是**同一件事**。九个字段逐个比，而比较的
+     右侧一律来自 canonical 行（quote / product / purchase 的 consent 快照），
+     绝不来自请求参数。 */
+  function approvalBindingMismatch(approval, expected) {
+    const diffs = [];
+    for (const key of C.APPROVAL_BINDING_KEYS) {
+      const a = approval[key];
+      const b = expected[key];
+      const av = a == null ? null : (typeof a === 'bigint' ? C.serializeAmountMinor(a) : String(a));
+      const bv = b == null ? null : (typeof b === 'bigint' ? C.serializeAmountMinor(b) : String(b));
+      if (av !== bv) diffs.push({ field: key, approval: av, observed: bv });
+    }
+    return diffs;
+  }
+
+  /* ── createApprovalRequest：请求批准（§5 的第一条边）───────────────────
+     它**只**做两件事：把自主结论固化下来 + 写一条 PENDING 记录。
+     它不锁钱、不碰库存、不消耗报价、不创建购买 —— 一次"请求批准"不是
+     一次购买（§5）。
+
+     ★ 授权模式恒为 'APPROVAL'：一条待批准记录只可能由"策略要求批准"或
+     "策略拒绝"两种情形产生。**DENY 的自主结论也会写一条 PENDING 记录**
+     是刻意的吗？不是 —— 见 authorizePurchaseIntent：DENY 在那里就停下了，
+     它连批准记录都不创建（§"DENY → stop"）。本函数因此只接受
+     REQUIRE_APPROVAL 的自主结论。 */
+  function createApprovalRequest(input) {
+    requireOpen();
+    const o = input || {};
+    const buyer = partyInput(o.buyerId != null ? o.buyerId : o.ownerId);
+    if (!buyer.ok) return { ok: false, denied: false, reasonCode: null, errors: buyer.errors };
+    if (buyer.party.type === C.PARTY_TYPE.SYSTEM) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['system-party-cannot-buy'] };
+    }
+    const buyerType = String(buyer.party.type);
+    const buyerId = String(buyer.party.id);
+    const quoteId = o.quoteId == null ? null : String(o.quoteId);
+    if (!C.isEconomyId('QUOTE', quoteId)) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['quote-id-not-canonical'] };
+    }
+    const key = C.normalizeIdempotencyKey(o.idempotencyKey);
+    if (!key.ok) return { ok: false, denied: false, reasonCode: null, errors: key.errors };
+
+    const quoteRow = db.prepare(SQL.selectQuote).get(quoteId);
+    if (!quoteRow) return { ok: false, denied: false, reasonCode: null, errors: ['quote-not-found'] };
+    const productRow = db.prepare(SQL.selectProduct).get(String(quoteRow.product_id));
+    if (!productRow) return denial(C.DENY_REASON.PRODUCT_NOT_FOUND, ['product-not-found'], { productId: String(quoteRow.product_id) });
+
+    if (String(quoteRow.buyer_id) !== buyerId || String(quoteRow.buyer_type) !== buyerType) {
+      return denial(C.DENY_REASON.QUOTE_MISMATCH, ['quote-buyer-does-not-match-the-approval-buyer'],
+        { quoteBuyerId: String(quoteRow.buyer_id), approvalBuyerId: buyerId });
+    }
+    const recipient = deriveRecipient(buyer.party, o.recipientId);
+    if (!recipient.ok) return { ok: false, denied: false, reasonCode: null, errors: recipient.errors };
+    if (!recipientMatchesQuote(recipient.party, quoteRow)) {
+      return denial(C.DENY_REASON.QUOTE_MISMATCH, ['quote-recipient-does-not-match-the-approval-recipient'],
+        { quoteRecipientId: quoteRow.recipient_id == null ? null : String(quoteRow.recipient_id) });
+    }
+
+    /* ── §7：批准针对的是 **Quote 快照**，不是 mutable Product。因此
+       这里把报价那一刻的金额 / 数量 / 交付形态**快照进批准记录**，
+       而 product 只提供两个**不可变**的本体列（fulfillment / grantQuantity）。
+       报价之后商品改价（unit_price_minor 是 P22-5 唯一可变的价格列）
+       对这条批准没有任何影响 —— 它绑的是 Q。 */
+    const units = o.units == null ? 1 : Number(o.units);
+    if (!Number.isSafeInteger(units) || units < 1) {
+      return denial(C.DENY_REASON.INVALID_AMOUNT, ['units-must-be-a-positive-safe-integer']);
+    }
+    const quoteAmountMinor = fromSqlAmount(quoteRow.amount_minor, 'quote-amount');
+    const expectedQuantity = C.productQuoteQuantity(rowToProduct(productRow), units);
+    if (!expectedQuantity.ok) return denial(C.DENY_REASON.CATALOG_INPUT_NOT_STRUCTURED, expectedQuantity.errors);
+    if (Number(quoteRow.quantity) !== expectedQuantity.quantity) {
+      return denial(C.DENY_REASON.QUOTE_MISMATCH, ['approval-quantity-must-equal-the-quote-snapshot'],
+        { quoteQuantity: Number(quoteRow.quantity), requestedQuantity: expectedQuantity.quantity });
+    }
+    const fulfillment = String(productRow.fulfillment);
+
+    const now = clock();
+    const expiresAt = normalizeExpiresAt(o.expiresAt);
+    if (!expiresAt.ok) return { ok: false, denied: false, reasonCode: null, errors: expiresAt.errors };
+    if (expiresAt.expiresAt <= now) {
+      return denial(C.DENY_REASON.APPROVAL_REQUIRED, ['approval-expires-at-is-not-in-the-future'],
+        { expiresAt: expiresAt.expiresAt, now: now });
+    }
+    /* ★ 上界（24h）。一条"永久有效"的批准与"以后随便花 500"是同一种东西。 */
+    if (Number(expiresAt.expiresAt) - now > C.APPROVAL_MAX_LIFETIME_MS) {
+      return denial(C.DENY_REASON.INVALID_AMOUNT, ['approval-lifetime-must-not-exceed-the-frozen-maximum'],
+        { maxLifetimeMs: C.APPROVAL_MAX_LIFETIME_MS, requestedLifetimeMs: Number(expiresAt.expiresAt) - now });
+    }
+
+    const binding = {
+      buyerId: partyKeyOf(buyerType, buyerId),
+      recipientId: recipient.party == null ? null : partyKeyOf(recipient.party.type, recipient.party.id),
+      productId: String(quoteRow.product_id),
+      quoteId: quoteId,
+      currency: String(quoteRow.currency),
+      amountMinor: quoteAmountMinor,
+      settlementType: fulfillment,
+      grantQuantity: expectedQuantity.quantity,
+      units: units
+    };
+    const bindingFp = C.approvalFingerprint(binding);
+    if (!bindingFp.ok) return denial(C.DENY_REASON.POLICY_INPUT_NOT_STRUCTURED, bindingFp.errors);
+
+    const fingerprint = purchaseFingerprint(C.OPERATION_SCOPE.APPROVAL_REQUEST, {
+      buyerId: partyKeyOf(buyerType, buyerId),
+      recipientId: binding.recipientId,
+      quoteId: quoteId,
+      units: units,
+      expiresAt: Number(expiresAt.expiresAt)
+    });
+    const seen = operationIdempotencyLookup(C.OPERATION_SCOPE.APPROVAL_REQUEST, key.key, fingerprint);
+    if (seen.found && seen.conflict) return operationIdempotencyConflict(C.OPERATION_SCOPE.APPROVAL_REQUEST, key.key, seen);
+    if (seen.found) return { ok: true, replayed: true, idempotencyKey: key.key, result: seen.result };
+
+    const approvalId = o.approvalId != null ? String(o.approvalId) : nextId('APPROVAL');
+    if (!C.isEconomyId('APPROVAL', approvalId)) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['approval-id-not-canonical'] };
+    }
+    const shape = C.validateApproval({
+      approvalId: approvalId, buyerId: buyer.party, recipientId: recipient.party,
+      productId: String(quoteRow.product_id), quoteId: quoteId, quoteKind: String(quoteRow.quote_kind),
+      currency: String(quoteRow.currency), amountMinor: quoteAmountMinor,
+      settlementType: fulfillment, grantQuantity: expectedQuantity.quantity, units: units,
+      status: C.APPROVAL_STATE.PENDING, approvalMode: C.PURCHASE_APPROVAL_MODE.APPROVAL,
+      expiresAt: Number(expiresAt.expiresAt)
+    });
+    if (!shape.ok) return denial(C.DENY_REASON.POLICY_INPUT_NOT_STRUCTURED, shape.errors);
+
+    const at = now;
+    let committed = null;
+    try {
+      withTransaction(() => {
+        /* 事务内重读报价：写锁拿到之后它不可能被另一个 writer 改动。 */
+        const q = db.prepare(SQL.selectQuote).get(quoteId);
+        if (!q) throw refuse(null, ['quote-not-found']);
+        if (fromSqlAmount(q.amount_minor, 'quote-amount') !== quoteAmountMinor) {
+          throw refuse(C.DENY_REASON.QUOTE_MISMATCH, ['quote-amount-changed-under-the-transaction']);
+        }
+        const rev = allocateRevision();
+        db.prepare(SQL.insertApproval).run(
+          approvalId, buyerId, buyerType,
+          binding.recipientId == null ? null : String(binding.recipientId),
+          recipient.party == null ? null : String(recipient.party.type),
+          binding.productId, quoteId, String(q.quote_kind), binding.currency,
+          toSqlAmount(quoteAmountMinor, 'approval-amount'), fulfillment,
+          Number(expectedQuantity.quantity), units,
+          String(bindingFp.fingerprint),
+          C.PURCHASE_APPROVAL_MODE.APPROVAL,
+          o.autonomyPolicyId == null ? null : String(o.autonomyPolicyId),
+          o.autonomyOutcome == null ? null : String(o.autonomyOutcome),
+          o.autonomyReasonCode == null ? null : String(o.autonomyReasonCode),
+          C.APPROVAL_STATE.PENDING,
+          null, null, null, null,
+          key.key, fingerprint, Number(rev), Number(at), Number(at), Number(expiresAt.expiresAt),
+          null, null
+        );
+        faultPoint('after-approval-requested');
+
+        const view = rowToApproval(db.prepare(SQL.selectApproval).get(approvalId));
+        const result = Object.assign(serializeApproval(view), {
+          revision: Number(rev),
+          at: Number(at),
+          idempotencyKey: key.key,
+          /* ★ 逐字：一次请求批准**不是**一次购买。 */
+          purchaseCreated: false,
+          fundsReserved: false,
+          ledgerMutation: false,
+          inventoryMutation: false,
+          quoteConsumed: false
+        });
+        appendChange({
+          revision: Number(rev), kind: C.EVENT_TYPE.APPROVAL_REQUESTED,
+          entityId: approvalId, transactionId: null, walletId: null, at: Number(at),
+          payload: {
+            domain: C.DOMAIN,
+            approvalId: approvalId,
+            buyerId: buyerId,
+            recipientId: binding.recipientId,
+            productId: binding.productId,
+            quoteId: quoteId,
+            currency: binding.currency,
+            amountMinor: C.serializeAmountMinor(quoteAmountMinor),
+            settlementType: fulfillment,
+            grantQuantity: expectedQuantity.quantity,
+            units: units,
+            bindingFingerprint: String(bindingFp.fingerprint),
+            approvalStatus: C.APPROVAL_STATE.PENDING,
+            approvalMode: C.PURCHASE_APPROVAL_MODE.APPROVAL,
+            autonomyOutcome: o.autonomyOutcome == null ? null : String(o.autonomyOutcome),
+            autonomyReasonCode: o.autonomyReasonCode == null ? null : String(o.autonomyReasonCode),
+            autonomyPolicyId: o.autonomyPolicyId == null ? null : String(o.autonomyPolicyId),
+            purchaseCreated: false,
+            fundsReserved: false,
+            ledgerMutation: false, inventoryMutation: false,
+            providerMutation: false, paymentMutation: false,
+            memoryMutation: false, relationshipMutation: false
+          }
+        });
+        faultPoint('before-approval-request-commit');
+        writeOperationIdempotency(C.OPERATION_SCOPE.APPROVAL_REQUEST, key.key, fingerprint,
+          { approvalId: approvalId, quoteId: quoteId, transactionId: null }, result, Number(rev), at);
+        committed = result;
+      });
+    } catch (error) {
+      const refusal = translateRefusal(error);
+      if (!refusal) throw error;
+      return refusal;
+    }
+    pruneOperationIdempotency(at);
+    logger('economy-approval-requested', {
+      approvalId: approvalId, buyerId: buyerId, quoteId: quoteId,
+      amountMinor: committed.amountMinor, revision: committed.revision
+    });
+    return { ok: true, replayed: false, idempotencyKey: key.key, result: committed };
+  }
+
+  /* ── decideApproval：用户点头 / 摇头（§9）─────────────────────────────
+     ★ 三条结构性纪律：
+
+     ① **self-approval 被拒绝**。买方不能批准自己的购买 —— 否则"需要用户
+        批准"这条规则对一个自己就能点头的 Agent 等于零。这不是一句约定：
+        decidedBy 必须是一个 canonical party，而它与 buyer 相同即拒绝。
+        于是"Agent 自己批准自己"在类型上不可表达。
+     ② 终态不可倒退。REJECTED / EXPIRED / CONSUMED 上再做任何决定都会被
+        assertApprovalTransition 拒绝（§9 逐字点名那三条禁止的边）。
+     ③ 并发：两个进程同时 APPROVE / REJECT 同一条 PENDING 批准时，只有
+        一个 changes=1（`AND status='PENDING'` 谓词）。另一个拿到
+        TRANSITION_NOT_ALLOWED + terminal 标记，**绝不**覆盖已写下的决定。 */
+  function decideApproval(input) {
+    requireOpen();
+    const o = input || {};
+    const approvalId = o.approvalId == null ? null : String(o.approvalId);
+    if (!C.isEconomyId('APPROVAL', approvalId)) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['approval-id-not-canonical'] };
+    }
+    const decision = o.decision == null ? null : String(o.decision);
+    if (decision !== C.APPROVAL_STATE.APPROVED && decision !== C.APPROVAL_STATE.REJECTED) {
+      return denial(C.DENY_REASON.TRANSITION_NOT_ALLOWED,
+        ['a-decision-must-be-approved-or-rejected'], { decision: decision });
+    }
+    const decider = partyInput(o.decidedBy != null ? o.decidedBy : (o.decidedById != null ? o.decidedById : o.by));
+    if (!decider.ok) return denial(C.DENY_REASON.PARTY_NOT_ALLOWED, ['a-decision-must-name-the-deciding-party'], { errors: decider.errors });
+    if (decider.party.type === C.PARTY_TYPE.SYSTEM) {
+      return denial(C.DENY_REASON.PARTY_NOT_ALLOWED, ['system-party-cannot-decide-an-approval'], { deciderId: String(decider.party.id) });
+    }
+    const key = C.normalizeIdempotencyKey(o.idempotencyKey);
+    if (!key.ok) return { ok: false, denied: false, reasonCode: null, errors: key.errors };
+
+    const row = db.prepare(SQL.selectApproval).get(approvalId);
+    if (!row) {
+      return denial(C.DENY_REASON.APPROVAL_NOT_FOUND, ['approval-not-found'], { approvalId: approvalId });
+    }
+    /* ★ self-approval：买方 == 决定者 ⇒ 拒绝。 */
+    if (String(row.buyer_id) === String(decider.party.id) && String(row.buyer_type) === String(decider.party.type)) {
+      return denial(C.DENY_REASON.PARTY_NOT_ALLOWED,
+        ['the-buyer-cannot-approve-its-own-purchase'],
+        {
+          approvalId: approvalId,
+          buyerId: partyKeyOf(row.buyer_type, row.buyer_id),
+          deciderId: partyKeyOf(decider.party.type, decider.party.id),
+          selfApprovalRejected: true
+        });
+    }
+    const gate = C.assertApprovalTransition(String(row.status), decision);
+
+    /* ── 幂等闸门**排在状态闸门之前**（与 P22-3 的 commit/release、
+         P22-6 的 cancel 同一条纪律）─────────────────────────────────────
+       ★ 这里曾经把 assertApprovalTransition 写在幂等查找**之前**，那是一
+       个真实缺陷（开发期实测）：一次成功的决定之后，它的重放会先撞上状态
+       闸门 —— 因为 APPROVED 不是 PENDING，于是重放收到
+       `TRANSITION_NOT_ALLOWED`，而不是**当初那个结果**。
+       "一次成功的决定，它的重放必须返回当初那个结果"正是幂等的定义；把
+       状态检查放在它前面，会让"这条批准被批准过没有"对一个重试的调用方
+       永远回答"不，它已经不是待决定状态了"。
+       终态判定仍然对**新 key** 的请求生效（见下面的 gate2）。 */
+    const fingerprint = purchaseFingerprint(C.OPERATION_SCOPE.APPROVAL_DECIDE, {
+      approvalId: approvalId, decision: decision,
+      decidedBy: partyKeyOf(decider.party.type, decider.party.id)
+    });
+    const seen = operationIdempotencyLookup(C.OPERATION_SCOPE.APPROVAL_DECIDE, key.key, fingerprint);
+    if (seen.found && seen.conflict) return operationIdempotencyConflict(C.OPERATION_SCOPE.APPROVAL_DECIDE, key.key, seen);
+    if (seen.found) return { ok: true, replayed: true, idempotencyKey: key.key, result: seen.result };
+
+    /* 状态闸门在这里做**快速失败**（重放已经被上面接走了）。 */
+    if (gate.allowed !== true) {
+      return denial(C.DENY_REASON.TRANSITION_NOT_ALLOWED, gate.errors, {
+        approvalId: approvalId, approvalStatus: String(row.status), to: decision,
+        terminal: gate.terminal === true, hint: gate.hint
+      });
+    }
+
+    const at = clock();
+    let committed = null;
+    /* ★ 终局路径（有效期内没被决定）用它**自己**的变量 —— 见事务里那段说明。 */
+    let expiredOutcome = null;
+    try {
+      withTransaction(() => {
+        const locked = db.prepare(SQL.selectApproval).get(approvalId);
+        if (!locked) throw refuse(C.DENY_REASON.APPROVAL_NOT_FOUND, ['approval-not-found'], { approvalId: approvalId });
+        /* 过期检查在**写锁里**再做一次：一条已经过了 expires_at 的 PENDING
+           不能被批准 —— 否则"过期"这件事可以被一次恰好赶到的点击绕过。 */
+        if (Number(locked.expires_at) <= at) {
+          const revExpired = allocateRevision();
+          const expired = db.prepare(SQL.setApprovalExpired).run(
+            C.APPROVAL_STATE.EXPIRED, Number(revExpired), Number(at),
+            approvalId, C.APPROVAL_STATE.PENDING
+          );
+          if (Number(expired.changes) !== 1) {
+            throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['approval-expiry-affected-no-row']);
+          }
+          appendChange({
+            revision: Number(revExpired), kind: C.EVENT_TYPE.APPROVAL_EXPIRED,
+            entityId: approvalId, transactionId: null, walletId: null, at: Number(at),
+            payload: {
+              domain: C.DOMAIN, approvalId: approvalId,
+              approvalStatus: C.APPROVAL_STATE.EXPIRED,
+              fromStatus: C.APPROVAL_STATE.PENDING,
+              expiresAt: Number(locked.expires_at),
+              consumedByPurchaseId: null,
+              ledgerMutation: false, inventoryMutation: false
+            }
+          });
+          faultPoint('before-approval-decision-commit');
+          /* ★ 终局路径写进**它自己**的变量，而不是共用的 `committed`。
+             一个真实缺陷（开发期实测）：两者共用一个变量会撞上下面那句
+             `committed.terminal === true` 的判据 —— 而**一次成功的 REJECTED
+             决定的 result 上也带着 terminal: true**（那条批准现在处在终态）。
+             于是每一次成功的摇头都被当成"批准过期了"，返回出去的是一个
+             **没有 ok 字段**的裸对象。形状必须由"这件事是不是成功了"决定，
+             而不由"结果里某个字段的值"决定 —— 这与 P22-6 settlePurchase 的
+             那条同源教训逐字相同。 */
+          expiredOutcome = {
+            ok: false, denied: true, terminal: true,
+            reasonCode: C.DENY_REASON.APPROVAL_EXPIRED,
+            errors: ['approval-expired-before-the-decision'],
+            approvalId: approvalId,
+            approvalStatus: C.APPROVAL_STATE.EXPIRED,
+            requestedDecision: decision,
+            decidedAt: null,
+            consumedByPurchaseId: null,
+            purchaseCreated: false,
+            ledgerMutation: false,
+            inventoryMutation: false,
+            revision: Number(revExpired),
+            at: Number(at)
+          };
+          return;
+        }
+        const gate2 = C.assertApprovalTransition(String(locked.status), decision);
+        if (gate2.allowed !== true) {
+          throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, gate2.errors,
+            { approvalStatus: String(locked.status), to: decision, terminal: gate2.terminal === true });
+        }
+        const rev = allocateRevision();
+        const moved = db.prepare(SQL.setApprovalDecided).run(
+          decision, String(decider.party.id), String(decider.party.type),
+          Number(rev), Number(at), Number(at), approvalId, String(locked.status)
+        );
+        if (Number(moved.changes) !== 1) {
+          /* 另一个 writer 抢先决定了它 —— 整体回滚，不覆盖任何决定。 */
+          throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['approval-was-decided-by-another-writer'], {
+            approvalId: approvalId, expectedStatus: String(locked.status)
+          });
+        }
+        faultPoint('after-approval-decided');
+
+        const view = rowToApproval(db.prepare(SQL.selectApproval).get(approvalId));
+        const result = Object.assign(serializeApproval(view), {
+          revision: Number(rev),
+          at: Number(at),
+          idempotencyKey: key.key,
+          decision: decision,
+          purchaseCreated: false,
+          ledgerMutation: false,
+          inventoryMutation: false
+        });
+        appendChange({
+          revision: Number(rev),
+          kind: decision === C.APPROVAL_STATE.APPROVED ? C.EVENT_TYPE.APPROVAL_APPROVED : C.EVENT_TYPE.APPROVAL_REJECTED,
+          entityId: approvalId, transactionId: null, walletId: null, at: Number(at),
+          payload: {
+            domain: C.DOMAIN,
+            approvalId: approvalId,
+            buyerId: partyKeyOf(locked.buyer_type, locked.buyer_id),
+            recipientId: locked.recipient_id == null ? null : partyKeyOf(locked.recipient_type, locked.recipient_id),
+            productId: String(locked.product_id),
+            quoteId: String(locked.quote_id),
+            currency: String(locked.currency),
+            amountMinor: C.serializeAmountMinor(fromSqlAmount(locked.amount_minor, 'approval-amount')),
+            approvalStatus: decision,
+            fromStatus: C.APPROVAL_STATE.PENDING,
+            decidedBy: partyKeyOf(String(decider.party.type), String(decider.party.id)),
+            bindingFingerprint: String(locked.binding_fingerprint),
+            purchaseCreated: false,
+            ledgerMutation: false, inventoryMutation: false,
+            providerMutation: false, paymentMutation: false,
+            memoryMutation: false, relationshipMutation: false
+          }
+        });
+        faultPoint('before-approval-decision-commit');
+        writeOperationIdempotency(C.OPERATION_SCOPE.APPROVAL_DECIDE, key.key, fingerprint,
+          { approvalId: approvalId, decision: decision, transactionId: null }, result, Number(rev), at);
+        committed = result;
+      });
+    } catch (error) {
+      const refusal = translateRefusal(error);
+      if (!refusal) throw error;
+      return refusal;
+    }
+    pruneOperationIdempotency(at);
+    if (expiredOutcome != null) {
+      logger('economy-approval-expired-at-decision', { approvalId: approvalId, requestedDecision: decision });
+      return expiredOutcome;
+    }
+    logger('economy-approval-decided', {
+      approvalId: approvalId, decision: decision,
+      decidedBy: committed.decidedBy, revision: committed.revision
+    });
+    return { ok: true, replayed: false, idempotencyKey: key.key, result: committed };
+  }
+
+  /* ── expireApproval / expireDueApprovals（§9）─────────────────────────
+     到期判定与 P22-3/P22-4 的 expire 类同款：**比较**，不是定时器。
+     PENDING → EXPIRED 与 APPROVED → EXPIRED 两条边都由状态机允许，
+     而终态（REJECTED / CONSUMED）永远不会被它碰到。 */
+  function expireApproval(input) {
+    requireOpen();
+    const o = input || {};
+    const approvalId = o.approvalId == null ? null : String(o.approvalId);
+    if (!C.isEconomyId('APPROVAL', approvalId)) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['approval-id-not-canonical'] };
+    }
+    const row = db.prepare(SQL.selectApproval).get(approvalId);
+    if (!row) return denial(C.DENY_REASON.APPROVAL_NOT_FOUND, ['approval-not-found'], { approvalId: approvalId });
+    const at = o.now != null ? Number(o.now) : clock();
+    if (!Number.isSafeInteger(at) || at < 0) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['now-must-be-a-non-negative-safe-integer'] };
+    }
+    if (Number(row.expires_at) > at) {
+      return denial(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['approval-is-not-past-its-expires-at'], {
+        approvalId: approvalId, approvalStatus: String(row.status),
+        expiresAt: Number(row.expires_at), now: Number(at)
+      });
+    }
+    if (C.isApprovalTerminalState(String(row.status))) {
+      return denial(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['approval-is-already-terminal'], {
+        approvalId: approvalId, approvalStatus: String(row.status), terminal: true
+      });
+    }
+    const gate = C.assertApprovalTransition(String(row.status), C.APPROVAL_STATE.EXPIRED);
+    if (gate.allowed !== true) {
+      return denial(C.DENY_REASON.TRANSITION_NOT_ALLOWED, gate.errors, { approvalStatus: String(row.status), hint: gate.hint });
+    }
+    const from = String(row.status);
+    let revision = null;
+    try {
+      withTransaction(() => {
+        const rev = allocateRevision();
+        const moved = db.prepare(SQL.setApprovalExpired).run(
+          C.APPROVAL_STATE.EXPIRED, Number(rev), Number(at), approvalId, from
+        );
+        if (Number(moved.changes) !== 1) {
+          throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['approval-expiry-affected-no-row']);
+        }
+        appendChange({
+          revision: Number(rev), kind: C.EVENT_TYPE.APPROVAL_EXPIRED,
+          entityId: approvalId, transactionId: null, walletId: null, at: Number(at),
+          payload: {
+            domain: C.DOMAIN, approvalId: approvalId,
+            approvalStatus: C.APPROVAL_STATE.EXPIRED, fromStatus: from,
+            expiresAt: Number(row.expires_at),
+            consumedByPurchaseId: null,
+            ledgerMutation: false, inventoryMutation: false
+          }
+        });
+        revision = Number(rev);
+      });
+    } catch (error) {
+      const refusal = translateRefusal(error);
+      if (!refusal) throw error;
+      return refusal;
+    }
+    logger('economy-approval-expired', { approvalId: approvalId, fromStatus: from, revision: revision });
+    return {
+      ok: true, replayed: false,
+      result: { approvalId: approvalId, approvalStatus: C.APPROVAL_STATE.EXPIRED, fromStatus: from, revision: revision, at: Number(at) }
+    };
+  }
+
+  function expireDueApprovals(options) {
+    requireOpen();
+    const o = options || {};
+    const at = o.now != null ? Number(o.now) : clock();
+    if (!Number.isSafeInteger(at) || at < 0) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['now-must-be-a-non-negative-safe-integer'] };
+    }
+    const limit = normalizeLimit(o.limit, 100, 1000);
+    const rows = db.prepare(SQL.selectExpiredApprovals).all(Number(at), Number(limit));
+    const expired = [];
+    for (const row of rows) {
+      const out = expireApproval({ approvalId: String(row.approval_id), now: at });
+      /* 一条已经被另一个 writer 终结的批准会让这里返回拒绝 —— 那是
+         **正常**的，不是失败：扫描不重试、不报错，只把它跳过。 */
+      if (out.ok === true) expired.push(out.result.approvalId);
+    }
+    return { ok: true, expired: expired, count: expired.length, at: Number(at), isATimer: false };
+  }
+
+  function getApproval(input) {
+    requireOpen();
+    const o = input || {};
+    if (o.approvalId == null) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['approval-id-required'] };
+    }
+    const approvalId = String(o.approvalId);
+    if (!C.isEconomyId('APPROVAL', approvalId)) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['approval-id-not-canonical'] };
+    }
+    const row = db.prepare(SQL.selectApproval).get(approvalId);
+    if (!row) return denial(C.DENY_REASON.APPROVAL_NOT_FOUND, ['approval-not-found'], { approvalId: approvalId });
+    /* ★ 返回的是 **serialize** 过的视图（而不是裸的 rowToApproval 输出）。
+       理由与 P22-6 的 getPurchase 同源：一个实体只有一个对外形态。裸视图
+       缺少那八句"这条批准**不是**一笔购买 / 不是预算豁免 / 一次性 / 绑定
+       于报价快照"的自述，于是"读一条批准"与"读一批批准"会给出两种形状 ——
+       而 `binding`（九元组本身）仍然逐字带着，它是这条记录的**内容**，
+       不是一句自述。 */
+    const view = rowToApproval(row);
+    return { ok: true, approval: Object.assign(serializeApproval(view), { binding: view.binding }) };
+  }
+
+  function listApprovals(options) {
+    requireOpen();
+    const o = options || {};
+    const limit = normalizeLimit(o.limit, 50, 500);
+    const buyerId = o.buyerId == null ? null : String(o.buyerId);
+    const quoteId = o.quoteId == null ? null : String(o.quoteId);
+    const status = o.status == null ? null : String(o.status);
+    if (status != null && !C.isApprovalState(status)) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['approval-status-not-in-closed-set'], allowed: C.APPROVAL_STATES };
+    }
+    const rows = db.prepare(SQL.selectApprovalsFiltered).all(
+      buyerId, buyerId, quoteId, quoteId, status, status, Number(limit)
+    );
+    return {
+      ok: true,
+      approvals: rows.map(r => serializeApproval(rowToApproval(r))),
+      count: rows.length,
+      personalized: false, recommended: false, ranked: false
+    };
+  }
+
+  /* ══════════════════════════════════════════════════════════════════
+     P22-7 §26 · authorizePurchaseIntent（授权闸门）
+
+     §10 的四个出口，逐字对应下面四条 return：
+
+       AUTO_ALLOW        → allowed:true, mode:AUTO_ALLOW, proceedToPrepare:true
+       REQUIRE_APPROVAL  → allowed:false, approvalRequired:true, 并**创建**
+                           一条 PENDING 记录（除非调用方只要评估）
+       valid APPROVED    → allowed:true, mode:APPROVAL, proceedToPrepare:true
+       DENY              → allowed:false, denied:true（**不**创建任何记录）
+
+     ★ 它**不**调用 preparePurchase。§10 那张图里
+     `authorizePurchaseIntent → preparePurchase → settlePurchase` 是三次
+     独立的调用，而合并它们会让"授权"与"买"变成一个不可分开观察的动作 ——
+     于是"Gate 说可以但购买因为其它原因失败"这个真实情形在审计里消失。
+     调用方（测试、未来的 Action 层）按顺序调用它们。
+
+     ★ 它**不**评估预算。Budget 与 Autonomy 是两个独立闸门（§3），
+     合并会让"为什么没成"丢掉一个答案。 */
+  function authorizePurchaseIntent(input) {
+    requireOpen();
+    const o = input || {};
+    const buyer = partyInput(o.buyerId != null ? o.buyerId : o.ownerId);
+    if (!buyer.ok) return { ok: false, denied: false, reasonCode: null, errors: buyer.errors };
+    if (buyer.party.type === C.PARTY_TYPE.SYSTEM) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['system-party-cannot-buy'] };
+    }
+    const buyerType = String(buyer.party.type);
+    const buyerId = String(buyer.party.id);
+    const quoteId = o.quoteId == null ? null : String(o.quoteId);
+    if (!C.isEconomyId('QUOTE', quoteId)) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['quote-id-not-canonical'] };
+    }
+    const quoteRow = db.prepare(SQL.selectQuote).get(quoteId);
+    if (!quoteRow) return { ok: false, denied: false, reasonCode: null, errors: ['quote-not-found'] };
+    const productRow = db.prepare(SQL.selectProduct).get(String(quoteRow.product_id));
+    if (!productRow) return denial(C.DENY_REASON.PRODUCT_NOT_FOUND, ['product-not-found'], { productId: String(quoteRow.product_id) });
+
+    const recipient = deriveRecipient(buyer.party, o.recipientId);
+    if (!recipient.ok) return { ok: false, denied: false, reasonCode: null, errors: recipient.errors };
+    if (String(quoteRow.buyer_id) !== buyerId || String(quoteRow.buyer_type) !== buyerType) {
+      return denial(C.DENY_REASON.QUOTE_MISMATCH, ['quote-buyer-does-not-match-the-authorized-buyer'],
+        { quoteBuyerId: String(quoteRow.buyer_id), authorizedBuyerId: buyerId });
+    }
+    if (!recipientMatchesQuote(recipient.party, quoteRow)) {
+      return denial(C.DENY_REASON.QUOTE_MISMATCH, ['quote-recipient-does-not-match-the-authorized-recipient'],
+        { quoteRecipientId: quoteRow.recipient_id == null ? null : String(quoteRow.recipient_id) });
+    }
+
+    const at = o.now != null ? Number(o.now) : clock();
+    if (!Number.isSafeInteger(at) || at < 0) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['now-must-be-a-non-negative-safe-integer'] };
+    }
+    const product = rowToProduct(productRow);
+    const units = o.units == null ? 1 : Number(o.units);
+    if (!Number.isSafeInteger(units) || units < 1) {
+      return denial(C.DENY_REASON.INVALID_AMOUNT, ['units-must-be-a-positive-safe-integer']);
+    }
+    const expectedQuantity = C.productQuoteQuantity(product, units);
+    if (!expectedQuantity.ok) return denial(C.DENY_REASON.CATALOG_INPUT_NOT_STRUCTURED, expectedQuantity.errors);
+    const quoteAmountMinor = fromSqlAmount(quoteRow.amount_minor, 'quote-amount');
+    const expected = {
+      buyerId: partyKeyOf(buyerType, buyerId),
+      recipientId: recipient.party == null ? null : partyKeyOf(recipient.party.type, recipient.party.id),
+      productId: String(quoteRow.product_id),
+      quoteId: quoteId,
+      currency: String(quoteRow.currency),
+      amountMinor: quoteAmountMinor,
+      settlementType: String(product.fulfillment),
+      grantQuantity: expectedQuantity.quantity,
+      units: units
+    };
+
+    /* ── ① 有效批准优先：一条 APPROVED 且未过期的批准就是许可证 ────────
+       ★ "有效"逐字是三个条件：状态是 APPROVED、没有过期、
+       **九个绑定字段与这一笔完全一致**。第三条是 §6 的全部内容 —— 拿
+       "用户批准过 400" 去执行另一笔 400 会在这里被 approvalBindingMismatch
+       拦下，因为它比的是 buyer/recipient/product/quote/currency/amount/
+       settlement/grantQuantity/units 九项，而不是一个金额。 */
+    let approved = null;
+    if (o.approvalId != null) {
+      const approvalId = String(o.approvalId);
+      if (!C.isEconomyId('APPROVAL', approvalId)) {
+        return { ok: false, denied: false, reasonCode: null, errors: ['approval-id-not-canonical'] };
+      }
+      const row = db.prepare(SQL.selectApproval).get(approvalId);
+      if (!row) return denial(C.DENY_REASON.APPROVAL_NOT_FOUND, ['approval-not-found'], { approvalId: approvalId });
+      const approval = rowToApproval(row);
+      const diffs = approvalBindingMismatch(approval, expected);
+      if (diffs.length) {
+        return denial(C.DENY_REASON.APPROVAL_MISMATCH,
+          ['this-approval-authorizes-a-different-purchase'],
+          {
+            /* ★ 三个显式的字段让拒绝的形状与它周围两条闸门分支**一致**：
+               一条拒绝必须能回答"允不允许 / 拒不拒绝 / 是否终局"，
+               否则调用方拿到的是 ok===undefined（开发期实测踩到）。 */
+            allowed: false, denied: true, terminal: false,
+            approvalId: approvalId,
+            approvalStatus: approval.status,
+            mismatchedFields: diffs.map(d => d.field),
+            differences: diffs,
+            approvalBoundFingerprint: approval.bindingFingerprint,
+            requestedBindingFingerprint: (C.approvalFingerprint(expected).fingerprint || null),
+            oneApprovalCannotBeMovedToAnotherPurchase: true
+          });
+      }
+      if (C.isApprovalTerminalState(approval.status)) {
+        return denial(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['this-approval-is-already-terminal'], {
+          approvalId: approvalId, approvalStatus: approval.status, terminal: true
+        });
+      }
+      if (approval.status !== C.APPROVAL_STATE.APPROVED) {
+        return denial(C.DENY_REASON.APPROVAL_REQUIRED, ['this-approval-is-still-pending-a-decision'], {
+          approvalId: approvalId, approvalStatus: approval.status, approvalRequired: true
+        });
+      }
+      if (Number(approval.expiresAt) <= at) {
+        return denial(C.DENY_REASON.APPROVAL_EXPIRED, ['this-approval-is-past-its-expires-at'], {
+          approvalId: approvalId, approvalStatus: approval.status,
+          expiresAt: approval.expiresAt, now: at, sweepRequired: true
+        });
+      }
+      approved = approval;
+    }
+
+    if (approved) {
+      return {
+        ok: true,
+        allowed: true,
+        denied: false,
+        mode: C.PURCHASE_APPROVAL_MODE.APPROVAL,
+        approvalMode: C.PURCHASE_APPROVAL_MODE.APPROVAL,
+        autonomyOutcome: null,
+        autonomyPolicyId: approved.autonomyPolicyId,
+        approvalId: approved.approvalId,
+        /* ★ 这两句是"把这张许可证交给 preparePurchase"的**字面**做法：
+           调用方把 approvalId / approvalBindingFingerprint / autonomyPolicyId
+           三个值原样传下去，而模式由它们推导（preparePurchase 不接受 mode）。 */
+        prepareInput: Object.freeze({
+          approvalId: approved.approvalId,
+          approvalBindingFingerprint: null,
+          autonomyPolicyId: approved.autonomyPolicyId
+        }),
+        approvalStatus: approved.status,
+        approvalRequired: false,
+        approvalCreated: false,
+        proceedToPrepare: true,
+        purchaseCreated: false,
+        fundsReserved: false,
+        ledgerMutation: false,
+        inventoryMutation: false,
+        bindingFingerprint: approved.bindingFingerprint,
+        expectedBinding: expected,
+        reasonCode: null,
+        at: Number(at),
+        /* 逐字：许可证只覆盖授权；预算与报价有效性都还要各自过一遍。 */
+        approvalBypassesBudget: C.APPROVAL_BYPASSES_BUDGET,
+        approvalBypassesQuoteExpiry: C.APPROVAL_BYPASSES_QUOTE_EXPIRY,
+        note: 'a valid approval authorises this exact purchase; budget and quote validity are still evaluated by P22-6'
+      };
+    }
+
+    /* ── ② 没有批准 ⇒ 自主策略判定 ─────────────────────────────────── */
+    const policy = autonomyPolicyForOwner(buyerId);
+    const built = autonomyContextOf(quoteRow, productRow, buyer.party, recipient.party, policy, at);
+    if (!built.ok) {
+      return denial(C.DENY_REASON.POLICY_INPUT_NOT_STRUCTURED, built.errors, { autonomyPolicyId: policy ? policy.policyId : null });
+    }
+    const decision = C.evaluateAutonomousPurchase(policy, built.context);
+    const base = {
+      buyerId: partyKeyOf(buyerType, buyerId),
+      recipientId: expected.recipientId,
+      quoteId: quoteId,
+      productId: String(quoteRow.product_id),
+      productKind: String(productRow.product_kind),
+      settlementType: String(product.fulfillment),
+      currency: String(quoteRow.currency),
+      amountMinor: C.serializeAmountMinor(quoteAmountMinor),
+      units: units,
+      grantQuantity: expectedQuantity.quantity,
+      expectedBinding: expected,
+      autonomyOutcome: decision.outcome,
+      autonomyReasonCode: decision.reasonCode,
+      autonomyPolicyId: policy ? policy.policyId : null,
+      autonomyPolicyPresent: !!policy,
+      autonomyDecisionPriority: decision.priority,
+      autonomyRule: decision.rule == null ? null : String(decision.rule),
+      autonomySnapshot: decision.snapshot,
+      spentTodayMinor: C.serializeAmountMinor(built.spentTodayMinor),
+      resolvedRecipientId: expected.recipientId,
+      purchaseCreated: false,
+      fundsReserved: false,
+      ledgerMutation: false,
+      inventoryMutation: false,
+      at: Number(at)
+    };
+
+    if (decision.outcome === C.AP_DECISION.DENY) {
+      /* ── DENY：**不创建任何记录**。一次被规则排除的尝试不是一条待批准
+             的事 —— 创建一个永远没人该处理的 PENDING 记录会把"被拒绝"
+             伪装成"等待中"（§10 逐字：DENY → stop）。 */
+      return Object.assign(denial(decision.reasonCode, ['autonomy-policy-denies-this-purchase'], Object.assign({}, base, {
+        allowed: false, mode: null, approvalRequired: false, approvalCreated: false,
+        approvalId: null, proceedToPrepare: false, purchaseCreated: false
+      })), {
+        denied: true,
+        terminal: false,
+        autonomyOutcome: decision.outcome
+      });
+    }
+
+    /* ── REQUIRE_APPROVAL：创建一条 PENDING 记录，然后停下 ─────────────
+       ★ 这条分支**必须**由 decision.outcome 把关。它下面就是 AUTO_ALLOW
+       的出口，因此"没有把关"会让每一次自主放行都先要求一个
+       approvalExpiresAt 并在这里返回 APPROVAL_REQUIRED —— 那是一个
+       静默的功能性缺陷（开发期实测踩到：策略明确说 AUTO_ALLOW，而
+       闸门回答"需要用户批准"）。 */
+    if (decision.outcome === C.AP_DECISION.AUTO_ALLOW) {
+      /* 落到下面那个出口 —— 见 §"AUTO_ALLOW" 一段。 */
+    } else {
+      const approvalId = o.approvalId != null ? String(o.approvalId) : null;
+      if (!Number.isSafeInteger(Number(o.approvalExpiresAt)) || Number(o.approvalExpiresAt) < 0) {
+        return denial(C.DENY_REASON.APPROVAL_REQUIRED,
+          ['an-approval-request-must-carry-a-future-approval-expires-at'],
+          Object.assign({}, base, {
+            allowed: false, mode: null, approvalRequired: true,
+            approvalCreated: false, proceedToPrepare: false
+          }));
+      }
+      const created = createApprovalRequest({
+        buyerId: buyer.party,
+        recipientId: recipient.party,
+        quoteId: quoteId,
+        units: units,
+        expiresAt: Number(o.approvalExpiresAt),
+        approvalId: o.approvalRecordId != null ? String(o.approvalRecordId) : approvalId,
+        idempotencyKey: o.approvalIdempotencyKey != null ? o.approvalIdempotencyKey : o.idempotencyKey,
+        autonomyPolicyId: policy ? policy.policyId : null,
+        autonomyOutcome: decision.outcome,
+        autonomyReasonCode: decision.reasonCode
+      });
+      if (created.ok !== true) return created;
+      return Object.assign({}, base, {
+        ok: true,
+        allowed: false,
+        denied: true,
+        terminal: false,
+        mode: null,
+        approvalMode: null,
+        approvalBindingFingerprint: null,
+        approvalRequired: true,
+        approvalCreated: created.replayed !== true,
+        approvalReplayed: created.replayed === true,
+        approvalId: created.result.approvalId,
+        approvalStatus: created.result.status,
+        approvalExpiresAt: created.result.expiresAt,
+        proceedToPrepare: false,
+        reasonCode: C.DENY_REASON.APPROVAL_REQUIRED,
+        errors: ['this-purchase-requires-user-approval'],
+        approvalRequestIdempotencyKey: created.idempotencyKey
+      });
+    }
+
+    /* ── AUTO_ALLOW：把九元组身份算出来交给调用方，然后放行 ────────────
+       ★ 这个指纹是"这台 Agent 有权不问用户直接买**这一笔**"的凭据，
+       而它不是一张可以被挪用的许可证：preparePurchase 会把它连同这一笔
+       的九元组一起**重算**一遍（见 validateAutonomousApprovalInTx），
+       因此它只能在它本来描述的那一笔上生效。 */
+    const autoBinding = C.approvalFingerprint(expected);
+    if (!autoBinding.ok) {
+      return denial(C.DENY_REASON.POLICY_INPUT_NOT_STRUCTURED, autoBinding.errors, base);
+    }
+    return Object.assign({}, base, {
+      ok: true,
+      allowed: true,
+      denied: false,
+      terminal: false,
+      mode: C.PURCHASE_APPROVAL_MODE.AUTO_ALLOW,
+      approvalMode: C.PURCHASE_APPROVAL_MODE.AUTO_ALLOW,
+      approvalBindingFingerprint: String(autoBinding.fingerprint),
+      approvalBindingFingerprintSource: 'recomputed-from-canonical-facts',
+      approvalId: null,
+      approvalStatus: null,
+      approvalRequired: false,
+      approvalCreated: false,
+      proceedToPrepare: true,
+      reasonCode: null,
+      errors: [],
+      /* ★ 调用方把这三个值原样交给 preparePurchase（模式由它们推导）。 */
+      prepareInput: Object.freeze({
+        approvalId: null,
+        approvalBindingFingerprint: String(autoBinding.fingerprint),
+        autonomyPolicyId: policy ? policy.policyId : null
+      }),
+      approvalBypassesBudget: C.APPROVAL_BYPASSES_BUDGET,
+      approvalBypassesQuoteExpiry: C.APPROVAL_BYPASSES_QUOTE_EXPIRY,
+      note: 'the autonomy policy allows this agent to buy this exact purchase without asking the user; budget and quote validity are still evaluated by P22-6'
+    });
+  }
+
+  /* ══════════════════════════════════════════════════════════════════
+     P22-7 §27 · 与 P22-6 的两个事务内 seam
+
+     两者的存在理由都是同一条：**授权的消费必须与购买的落定在同一个
+     SQLite 事务里**，否则会出现"批准已消费但购买没成立"的撕裂事实（§10）。
+
+     ★ 为什么消费发生在**结算**而不是 prepare（这是本阶段最重要的一个
+     判断，逐条论证）：
+
+     ① §8 要求「成功进入对应 Purchase 后」才 APPROVED → CONSUMED。哪一
+        刻算"成功进入"？两种候选：
+          · prepare 成功（Purchase 行 RESERVED）—— 若此后进程崩溃或购买
+            被取消，库外会留下"批准已消费 + 购买 RESERVED 然后 RELEASED"，
+            即一条被烧掉的批准对应一次失败的购买。§10 逐字禁止这个形状；
+          · settle 成功（钱真的动了）—— 崩溃只留下"批准仍 APPROVED +
+            购买 RESERVED"，可安全重试。
+     ② §15 要求「两个进程拿同一个 APPROVED Approval 买 ⇒ 最多一个
+        Purchase」。这一条**不**依赖消费时刻：
+          · setApprovalConsumed 的 `AND status='APPROVED'` 谓词让第二次
+            消费 changes=0；
+          · 而且授权绑定的 quoteId 与 purchase 的 `quote_id` UNIQUE 索引
+            一起保证"一份报价最多一笔购买"—— 两个进程拿同一条批准去
+            prepare 同一份报价时，第二个会撞上那条 UNIQUE 或那张已消费的
+            报价。
+     ③ §11 要求「Approval 绝不能绕过 P22-4/P22-6」。在结算事务里消费
+        恰好把"批准"与"最终预算复核"放在同一个原子单位里：预算 DENY 时
+        整个事务回滚，批准回到 APPROVED，钱一分不动 —— 于是"批准不能
+        当预算豁免"不仅是一句话，而是同一个 ROLLBACK 的两个后果。
+     ══════════════════════════════════════════════════════════════════ */
+
+  /* ── validateApprovalForPreparationInTx（在 prepare 的写锁里调用）────
+     它**不**消费批准，只回答"这张许可证现在还有效吗，而且它说的就是
+     这一笔吗"。任何不成立都抛 refuse ⇒ 整个 prepare 回滚（§10：一条
+     无效的批准不能换来一次预留）。 */
+  function validateApprovalForPreparationInTx(approvalId, purchaseId, expected, at) {
+    const row = db.prepare(SQL.selectApproval).get(String(approvalId));
+    if (!row) throw refuse(C.DENY_REASON.APPROVAL_NOT_FOUND, ['approval-not-found'], { approvalId: String(approvalId) });
+    const approval = rowToApproval(row);
+    const diffs = approvalBindingMismatch(approval, expected);
+    if (diffs.length) {
+      throw refuse(C.DENY_REASON.APPROVAL_MISMATCH, ['this-approval-authorizes-a-different-purchase'], {
+        approvalId: String(approvalId),
+        mismatchedFields: diffs.map(d => d.field),
+        differences: diffs,
+        oneApprovalCannotBeMovedToAnotherPurchase: true
+      });
+    }
+    if (C.isApprovalTerminalState(approval.status)) {
+      throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['this-approval-is-already-terminal'], {
+        approvalId: String(approvalId), approvalStatus: approval.status, terminal: true
+      });
+    }
+    if (approval.status !== C.APPROVAL_STATE.APPROVED) {
+      throw refuse(C.DENY_REASON.APPROVAL_REQUIRED, ['this-approval-is-not-approved'], {
+        approvalId: String(approvalId), approvalStatus: approval.status, approvalRequired: true
+      });
+    }
+    if (Number(approval.expiresAt) <= Number(at)) {
+      throw refuse(C.DENY_REASON.APPROVAL_EXPIRED, ['this-approval-is-past-its-expires-at'], {
+        approvalId: String(approvalId), expiresAt: approval.expiresAt, now: Number(at)
+      });
+    }
+    /* 一笔批准最多被一笔购买消费。若它已经指向某笔购买而这个 purchaseId
+       不是那一笔，就说明有人试图把同一张许可证用第二次。 */
+    const linked = db.prepare(SQL.selectApprovalByConsumedPurchase).get(String(purchaseId));
+    if (linked && String(linked.approval_id) !== String(approvalId)) {
+      throw refuse(C.DENY_REASON.APPROVAL_MISMATCH, ['this-purchase-is-already-linked-to-another-approval'], {
+        purchaseId: String(purchaseId), existingApprovalId: String(linked.approval_id)
+      });
+    }
+    return approval;
+  }
+
+  /* ── validateAutonomousApprovalInTx（在 prepare 的写锁里调用）────
+     它是 AUTO_ALLOW 模式的对应物：**重算**九元组身份并与调用方提交的那个
+     比较。为什么这一条必须是"重算"而不是"相信"：
+
+       授权指纹是自主闸门在放行那一刻算出的九元组身份。如果 prepare 只
+       把它**存下来**，那么"拿着一条真实的指纹去准备一笔经济内容完全不同
+       的购买"就会成功 —— 因为指纹本身不会被验证。重算之后，这条路的
+       安全性与 APPROVAL 模式逐字相同：两种模式**都必须**证明自己说的就是
+       这一笔，区别只在证据是一张批准行还是一个可重算的身份。
+
+     ★ 它还要求那份策略**存在且属于买家**，以及……**它不是**在结算时再判
+     一次策略（那是结算事务里的事，见 §11）。这里只回答"这个指纹描述的是
+     这一笔吗，而它是从这位买家的策略算出来的吗"。 */
+  function validateAutonomousApprovalInTx(policyId, fingerprintClaim, expected) {
+    if (policyId == null) {
+      throw refuse(C.DENY_REASON.AUTONOMY_NOT_PERMITTED,
+        ['an-autonomous-purchase-must-name-the-autonomy-policy-that-allowed-it']);
+    }
+    const row = db.prepare(SQL.selectAutonomyPolicy).get(String(policyId));
+    if (!row) {
+      throw refuse(C.DENY_REASON.POLICY_NOT_FOUND, ['autonomy-policy-not-found'], { autonomyPolicyId: String(policyId) });
+    }
+    const policy = rowToAutonomyPolicy(row);
+    if (policy.unusable === true) {
+      throw refuse(C.DENY_REASON.POLICY_INPUT_NOT_STRUCTURED, ['the-autonomy-policy-row-is-not-trustworthy'],
+        { autonomyPolicyId: String(policyId), problems: policy.unusableErrors });
+    }
+    /* 策略的主人必须就是买家 —— 否则"这笔为什么没问用户"会指向一条不
+       属于买家的规则。 */
+    if (String(policy.ownerId.id) !== String(expected.buyerPartyId)
+      || String(policy.ownerId.type) !== String(expected.buyerPartyType)) {
+      throw refuse(C.DENY_REASON.AUTONOMY_NOT_PERMITTED,
+        ['the-autonomy-policy-does-not-belong-to-the-buyer'], {
+        autonomyPolicyId: String(policyId),
+        policyOwnerId: partyKeyOf(policy.ownerId.type, policy.ownerId.id),
+        buyerId: partyKeyOf(expected.buyerPartyType, expected.buyerPartyId)
+      });
+    }
+    const recomputed = C.approvalFingerprint(expected.binding);
+    if (!recomputed.ok) {
+      throw refuse(C.DENY_REASON.POLICY_INPUT_NOT_STRUCTURED, recomputed.errors);
+    }
+    if (String(recomputed.fingerprint) !== String(fingerprintClaim)) {
+      throw refuse(C.DENY_REASON.APPROVAL_MISMATCH,
+        ['the-autonomous-approval-fingerprint-does-not-describe-this-purchase'], {
+        claimedFingerprint: String(fingerprintClaim),
+        recomputedFingerprint: String(recomputed.fingerprint),
+        oneAutonomyFingerprintCannotBeMovedToAnotherPurchase: true
+      });
+    }
+    return policy;
+  }
+
+  /* ── consumeApprovalForPurchaseInTx（在 settle 的写锁里调用）──────────
+     ★ §8/§15 的结构核心。三个条件逐条被检查，任何一条不成立即抛：
+       ① 状态**恰好**是 APPROVED（不是 PENDING、不是已 CONSUMED）；
+       ② 九个绑定字段与这笔购买一致（从 purchase 行与 quote 行读，
+          **不**从请求参数读）；
+       ③ 它没有被另一笔购买消费过。
+     然后 setApprovalConsumed 的 `AND status='APPROVED'` 谓词给出第二道
+     并发保护：两个进程同时结算两笔购买而它们指向同一条批准时，必然有
+     一个 changes=0 ⇒ 整个事务回滚 ⇒ 那笔购买不会被扣款。 */
+  function consumeApprovalForPurchaseInTx(approvalId, purchase, quote, at) {
+    const expected = {
+      buyerId: partyKeyOf(String(purchase.buyer_type), String(purchase.buyer_id)),
+      recipientId: purchase.recipient_id == null ? null : partyKeyOf(String(purchase.recipient_type), String(purchase.recipient_id)),
+      productId: String(purchase.product_id),
+      quoteId: String(purchase.quote_id),
+      currency: String(purchase.currency),
+      amountMinor: fromSqlAmount(purchase.amount_minor, 'purchase-amount'),
+      settlementType: String(purchase.settlement_type),
+      grantQuantity: Number(purchase.granted_quantity),
+      units: Number(purchase.units)
+    };
+    const approval = validateApprovalForPreparationInTx(String(approvalId), String(purchase.purchase_id), expected, at);
+    const rev = allocateRevision();
+    const moved = db.prepare(SQL.setApprovalConsumed).run(
+      C.APPROVAL_STATE.CONSUMED,
+      String(purchase.purchase_id),
+      'consumed-by-a-completed-purchase',
+      Number(rev), Number(at), Number(at),
+      String(approvalId),
+      C.APPROVAL_STATE.APPROVED
+    );
+    if (Number(moved.changes) !== 1) {
+      /* 这条路径**不可达**（上面刚验证过 status=APPROVED），除非另一个
+         进程在两次读之间消费了它 —— 而整个结算在一个 BEGIN IMMEDIATE
+         里，因此那不可能发生。留这条守卫是为了让"不可能"变成"不成立即
+         整体回滚"，而不是一次静默的第二次消费。 */
+      throw refuse(C.DENY_REASON.APPROVAL_NOT_CONSUMED, ['the-approval-was-not-consumed-exactly-once'], {
+        approvalId: String(approvalId), purchaseId: String(purchase.purchase_id)
+      });
+    }
+    appendChange({
+      revision: Number(rev), kind: C.EVENT_TYPE.APPROVAL_CONSUMED,
+      entityId: String(approvalId), transactionId: null, walletId: null, at: Number(at),
+      payload: {
+        domain: C.DOMAIN,
+        approvalId: String(approvalId),
+        approvalStatus: C.APPROVAL_STATE.CONSUMED,
+        fromStatus: C.APPROVAL_STATE.APPROVED,
+        consumedByPurchaseId: String(purchase.purchase_id),
+        quoteId: String(purchase.quote_id),
+        buyerId: partyKeyOf(String(purchase.buyer_type), String(purchase.buyer_id)),
+        currency: String(purchase.currency),
+        amountMinor: C.serializeAmountMinor(fromSqlAmount(purchase.amount_minor, 'purchase-amount')),
+        bindingFingerprint: String(approval.bindingFingerprint),
+        oneApprovalAtMostOnePurchase: true,
+        /* ★ 六句逐字的否认。消费一条批准只改**这一行批准**的状态：它不动
+           ledger、不动库存、更不碰 provider / payment / memory /
+           relationship。写全（而不是只写其中一句）是刻意的 —— 只写一半会
+           让"这条事件有没有声称付过款"变成一个"字段存不存在"的问题，而
+           read 侧要么写 `=== false`（对缺字段为 false ⇒ 断言无声失败），
+           要么写 `!== true`（对任何缺失都为 true ⇒ 断言永不失败）。 */
+        ledgerMutation: false,
+        inventoryMutation: false,
+        providerMutation: false,
+        paymentMutation: false,
+        memoryMutation: false,
+        relationshipMutation: false
+      }
+    });
+    return { approvalId: String(approvalId), revision: Number(rev), bindingFingerprint: approval.bindingFingerprint };
   }
 
   /* ══════════════════════════════════════════════════════════════════
@@ -9010,6 +11420,66 @@ function createEconomyStore(deps) {
         }
       }
     }
+
+    /* ── P22-7：授权那一面的结构完整性 ──────────────────────────────────
+       ★ NULL 是合法的（P22-7 之前的行、或没走闸门的 P22-6 直接用法），
+       而**非 NULL 必须自洽**。四条判据：
+         · 模式必须是封闭集合的成员（库里写了第三个词 ⇒ 不可信）；
+         · APPROVAL ⇒ 必须有一个 approvalId；
+         · AUTO_ALLOW ⇒ **不许**有 approvalId（"自主放行"与"有人批准"
+           是互相排斥的两句话）；
+         · 任何非 NULL 模式都必须有授权指纹。 */
+    const mode = row.approval_mode == null ? null : String(row.approval_mode);
+    if (mode != null) {
+      if (!C.isPurchaseApprovalMode(mode)) { push('approval-mode-not-in-closed-set'); return problems; }
+      if (row.approval_binding_fingerprint == null || String(row.approval_binding_fingerprint).trim() === '') {
+        push('gated-purchase-has-no-approval-fingerprint');
+      }
+      /* 走了闸门的行必须落过 units —— 它是批准九元组的一员，缺了它
+         "这张许可证说的就是这一笔吗"在结算时没有权威来源。 */
+      if (row.units == null || !Number.isSafeInteger(Number(row.units)) || Number(row.units) < 1) {
+        push('gated-purchase-has-no-canonical-units');
+      }
+      if (mode === C.PURCHASE_APPROVAL_MODE.APPROVAL) {
+        if (row.approval_id == null) { push('approval-authorised-purchase-has-no-approval-id'); return problems; }
+        if (!C.isEconomyId('APPROVAL', row.approval_id)) { push('approval-id-not-canonical'); return problems; }
+        const approvalRow = db.prepare(SQL.selectApproval).get(String(row.approval_id));
+        if (!approvalRow) { push('approval-authorised-purchase-names-a-missing-approval'); return problems; }
+        /* ★ 第**五**条判据是 P22-7 的核心不变量，逐字落在 integrity 里：
+           一笔已完成的购买所指的那条批准必须**恰好**被它消费 —— 于是
+           "一条批准被两笔购买消费"或"批准已消费但没有购买"这两种撕裂
+           事实在读侧就能被发现，而不用等到有人对账。 */
+        if (String(approvalRow.consumed_by_purchase_id == null ? '' : approvalRow.consumed_by_purchase_id) !== String(row.purchase_id)) {
+          if (status === C.PURCHASE_STATE.COMPLETED) {
+            push('completed-approval-authorised-purchase-did-not-consume-its-approval');
+          }
+        }
+        if (String(approvalRow.status) !== C.APPROVAL_STATE.CONSUMED && status === C.PURCHASE_STATE.COMPLETED) {
+          push('completed-purchase-whose-approval-is-not-consumed');
+        }
+      }
+      if (mode === C.PURCHASE_APPROVAL_MODE.AUTO_ALLOW) {
+        if (row.approval_id != null) { push('an-autonomous-purchase-must-not-name-an-approval'); return problems; }
+        if (row.autonomy_policy_id == null || String(row.autonomy_policy_id).trim() === '') {
+          push('an-autonomous-purchase-must-name-the-autonomy-policy-that-allowed-it');
+          return problems;
+        }
+        if (!C.isEconomyId('BUDGET_POLICY', row.autonomy_policy_id)) { push('autonomy-policy-id-not-canonical'); return problems; }
+        const policyRow = db.prepare(SQL.selectAutonomyPolicy).get(String(row.autonomy_policy_id));
+        if (!policyRow) { push('an-autonomous-purchase-names-a-missing-autonomy-policy'); return problems; }
+        /* 策略的主人必须就是买家 —— 否则"这笔为什么没问用户"会指向一条
+           不属于买家的规则。 */
+        if (String(policyRow.owner_id) !== String(row.buyer_id)) {
+          push('autonomy-policy-does-not-belong-to-the-buyer');
+        }
+      }
+    } else {
+      /* 没有模式的行**不许**带任何授权引用 —— 半填的授权面比空白的更糟：
+         它会让"这条记录到底有没有授权层"无法回答。 */
+      if (row.approval_id != null) push('ungated-purchase-names-an-approval');
+      if (row.autonomy_policy_id != null) push('ungated-purchase-names-an-autonomy-policy');
+      if (row.approval_binding_fingerprint != null) push('ungated-purchase-carries-an-approval-fingerprint');
+    }
     return problems;
   }
 
@@ -9053,7 +11523,10 @@ function createEconomyStore(deps) {
       stores: 0, activeStores: 0, products: 0, activeProducts: 0,
       inventoryEntries: 0, inventoryTotalQuantity: 0,
       purchases: 0, reservedPurchases: 0, completedPurchases: 0,
-      releasedPurchases: 0, failedPurchases: 0
+      releasedPurchases: 0, failedPurchases: 0,
+      autonomyPolicies: 0, enabledAutonomyPolicies: 0,
+      approvals: 0, pendingApprovals: 0, approvedApprovals: 0,
+      rejectedApprovals: 0, expiredApprovals: 0, consumedApprovals: 0
     };
     let revision = 0;
     let schema = ECONOMY_SCHEMA_VERSION;
@@ -9088,7 +11561,20 @@ function createEconomyStore(deps) {
           reservedPurchases: countPurchasesByStatus(C.PURCHASE_STATE.RESERVED),
           completedPurchases: countPurchasesByStatus(C.PURCHASE_STATE.COMPLETED),
           releasedPurchases: countPurchasesByStatus(C.PURCHASE_STATE.RELEASED),
-          failedPurchases: countPurchasesByStatus(C.PURCHASE_STATE.FAILED)
+          failedPurchases: countPurchasesByStatus(C.PURCHASE_STATE.FAILED),
+          /* P22-7：权限层的规模。五个按状态分的批准计数是"现在有几条
+             批准处在哪个阶段"的唯一观测口，而 **pendingApprovals 是这一层
+             唯一会需要人去做点什么**的数字 —— 因此它必须可读。
+             0 绝不等于"这台 Agent 不需要批准"（那是 enabledAutonomyPolicies
+             与策略本身的事）。 */
+          autonomyPolicies: countAutonomyPolicies(),
+          enabledAutonomyPolicies: countEnabledAutonomyPolicies(),
+          approvals: countApprovals(),
+          pendingApprovals: countApprovalsByStatus(C.APPROVAL_STATE.PENDING),
+          approvedApprovals: countApprovalsByStatus(C.APPROVAL_STATE.APPROVED),
+          rejectedApprovals: countApprovalsByStatus(C.APPROVAL_STATE.REJECTED),
+          expiredApprovals: countApprovalsByStatus(C.APPROVAL_STATE.EXPIRED),
+          consumedApprovals: countApprovalsByStatus(C.APPROVAL_STATE.CONSUMED)
         };
         revision = getRevision();
         schema = Number(readMeta(META_SCHEMA) || ECONOMY_SCHEMA_VERSION);
@@ -9141,7 +11627,7 @@ function createEconomyStore(deps) {
          （不是缓存、不是 UI 计数器、不是任何"记忆"）。
          budgetSpendingTypes：哪些 transaction type 算消费 —— 由契约的
          封闭表给出，而不是靠"金额是不是负数"猜。
-         budgetEvaluationIsNotAnAuthorization：本层产出的 ALLOW 是一次
+         budgetEvaluationIsNotAnApproval：本层产出的 ALLOW 是一次
          **快照评估**，不是可以拿去执行的许可。把它写成一个可断言字段，
          是因为这一条最容易被下游误当成凭证。 */
       budgetCanonical: 'sqlite-budget-policies + committed-ledger-facts',
@@ -9201,14 +11687,56 @@ function createEconomyStore(deps) {
       purchaseTouchesMemory: C.PURCHASE_TOUCHES_MEMORY,
       purchaseTouchesRelationship: C.PURCHASE_TOUCHES_RELATIONSHIP,
       storeIsAMerchant: false,
-      walletDerivedCacheRebuiltAtSettlement: true
+      walletDerivedCacheRebuiltAtSettlement: true,
+      /* ── P22-7：权限层的 canonical 来源与十三句边界自述 ────────────────
+         ★ 三句话是这一阶段最要紧的：
+           · autonomyPolicyIsNotADecisionLayer —— 这一层判"有没有权"，
+             不判"想不想买"。本进程没有任何一行读 LLM 输出（§17）；
+           · approvalIsNotBudgetAuthority —— 一条批准**不是**预算豁免
+             （§11）。它在结算事务里被消费，而最终预算复核在**同一个事务
+             里**先执行；预算 DENY 时两者一起回滚；
+           · autonomyAndBudgetAreSeparateGates —— §3 的整条边界。 */
+      autonomyPolicyCanonical: 'sqlite-autonomy-policies',
+      autonomyPolicyIsNotADecisionLayer: C.AUTONOMY_POLICY_IS_A_DECISION_LAYER,
+      autonomyPolicyReadsLlmOutput: C.AUTONOMY_POLICY_READS_LLM_OUTPUT,
+      autonomyPolicyReadsMemory: C.AUTONOMY_POLICY_READS_MEMORY,
+      autonomyPolicyReadsRelationship: C.AUTONOMY_POLICY_READS_RELATIONSHIP,
+      autonomyPolicyGrantsBudget: C.AUTONOMY_POLICY_GRANTS_BUDGET,
+      autonomyReplacesBudget: C.AUTONOMY_REPLACES_BUDGET,
+      autonomyDefaultWhenNoPolicy: C.AUTONOMY_DEFAULT_WHEN_NO_POLICY,
+      autonomyPolicyInputKeys: C.AUTONOMY_POLICY_INPUT_KEYS.slice(),
+      autonomyAndBudgetAreSeparateGates: true,
+      approvalCanonical: 'sqlite-approvals',
+      approvalStateVocabulary: 'APPROVAL_STATE (P22-7 §1)',
+      approvalIsSingleUse: C.APPROVAL_IS_SINGLE_USE,
+      approvalIsBoundToAQuoteSnapshot: C.APPROVAL_IS_BOUND_TO_A_QUOTE,
+      approvalBindingKeys: C.APPROVAL_BINDING_KEYS.slice(),
+      approvalIsNotAPurchase: true,
+      approvalIsNotBudgetAuthority: C.APPROVAL_BYPASSES_BUDGET === false,
+      approvalBypassesQuoteExpiry: C.APPROVAL_BYPASSES_QUOTE_EXPIRY,
+      approvalConsumedInsideTheSettlementTransaction: true,
+      approvalExpiryIsNotATimer: true,
+      selfApprovalIsRejectedByStructure: true,
+      autonomyTouchesProvider: false,
+      autonomyTouchesPayment: false,
+      autonomyTouchesMemory: false,
+      autonomyTouchesRelationship: false
     };
   }
 
   function isDegraded() { return !!engineReason; }
 
   function countWallets() { return Number((db.prepare(SQL.countWallets).get() || {}).c || 0); }
-  function countTransactions() { return Number((db.prepare(SQL.countTransactions).get() || {}).c || 0); }
+  /* P22-7 的两个计数口。enabledAutonomyPolicies 不是"有几条策略"，
+     而是"有几台 Agent 真的被允许自主购买" —— 这一点决定了 §4 的
+     fail-closed 默认在实际系统里被触发多少次。 */
+  function countAutonomyPolicies() { return Number((db.prepare(SQL.countAutonomyPolicies).get() || {}).c || 0); }
+  function countEnabledAutonomyPolicies() {
+    const row = db.prepare(SQL.selectAutonomyPoliciesAll).all().filter(r => Number(r.enabled) === 1);
+    return row.length;
+  }
+  function countApprovals() { return Number((db.prepare(SQL.countApprovals).get() || {}).c || 0); }
+  function countApprovalsByStatus(status) { return Number((db.prepare(SQL.countApprovalsByStatus).get(String(status)) || {}).c || 0); }  function countTransactions() { return Number((db.prepare(SQL.countTransactions).get() || {}).c || 0); }
   function countEntries() { return Number((db.prepare(SQL.countEntries).get() || {}).c || 0); }
 
   /* ══════════════════════════════════════════════════════════════════
@@ -9421,6 +11949,28 @@ function createEconomyStore(deps) {
     serializePurchase: serializePurchase,
     purchaseSettlementOf: purchaseSettlementOf,
 
+    /* ── P22-7 §23-§26：自主策略 + 批准记录 + 授权闸门 ──────────────────
+       写的一半（putAutonomyPolicy / createApprovalRequest / decideApproval /
+       expireApproval / expireDueApprovals / authorizePurchaseIntent）与 P22-3
+       的六个 mutation 同级：只对同进程调用方开放，不在任何 HTTP 路由上
+       （boundary B16 与 B17 会逐字断言这一层的方法名不出现在 http.js 里）。
+       读的一半（get/list/serialize/evaluateAutonomousPurchaseFor）可以被
+       HTTP 只读面使用 —— 与 P22-4 的 evaluateBudgetFor 完全同款。 */
+    putAutonomyPolicy: putAutonomyPolicy,
+    getAutonomyPolicy: getAutonomyPolicy,
+    listAutonomyPolicies: listAutonomyPolicies,
+    serializeAutonomyPolicy: serializeAutonomyPolicy,
+    evaluateAutonomousPurchaseFor: evaluateAutonomousPurchaseFor,
+    authorizePurchaseIntent: authorizePurchaseIntent,
+    createApprovalRequest: createApprovalRequest,
+    decideApproval: decideApproval,
+    expireApproval: expireApproval,
+    expireDueApprovals: expireDueApprovals,
+    getApproval: getApproval,
+    listApprovals: listApprovals,
+    serializeApproval: serializeApproval,
+    autonomousSpentTodayMinor: autonomousSpentTodayMinor,
+
     /* 观测 */
     health: health,
     isDegraded: isDegraded,
@@ -9451,6 +12001,14 @@ function createEconomyStore(deps) {
       inventoryProblemsOf: inventoryProblemsOf,
       quoteProvenanceProblemsOf: quoteProvenanceProblemsOf,
       purchaseProblemsOf: purchaseProblemsOf,
+      /* ── P22-7：权限层的三个检查面 ──────────────────────────────────────
+         与上面七个 *ProblemsOf 同级：测试用它们证明"每一行自述都成立"
+         可以被单独证伪，而不必构造一整棵引用链。 */
+      autonomyPolicyProblemsOf: autonomyPolicyProblemsOf,
+      approvalProblemsOf: approvalProblemsOf,
+      approvalBindingMismatch: approvalBindingMismatch,
+      rowToApproval: rowToApproval,
+      rowToAutonomyPolicy: rowToAutonomyPolicy,
       purchaseFingerprint: purchaseFingerprint,
       budgetDecisionOf: budgetDecisionOf,
       buildPurchaseEntries: buildPurchaseEntries,
@@ -9481,3 +12039,4 @@ module.exports.releaseReason = RELEASE_REASON;
 module.exports.maxInventoryQuantity = MAX_INVENTORY_QUANTITY;
 module.exports.fnv1a64Hex = fnv1a64Hex;
 module.exports.stableStringify = stableStringify;
+

@@ -73,6 +73,12 @@ function mutableClock(start) {
   fn.set = (t) => { box.now = Number(t); return box.now; };
   return fn;
 }
+/* 本 build 的 schema 水位，从 store 模块自己读出来 —— 本文件里任何"下一版
+   水位"都必须是 SCHEMA_GUARD + 1。写死一个数字会在每一次抬水位之后变成
+   谎言：P22-7 把水位从 5 抬到 6 之后，写死的 '6' 就不再"比本 build 新"，
+   于是 J8 里那个库**正常打开**、`rejected` 为 null，而失败信息里只有
+   一个 "null" 可供追查。 */
+const SCHEMA_GUARD = Number(createEconomyStore.SCHEMA_VERSION);
 function makeStore(extra) {
   const dir = (extra && extra.dataDir) || tmpDir('store');
   return createEconomyStore(Object.assign({
@@ -1141,15 +1147,52 @@ section('J · schema 3 → 4（补三张表 · 旧行一个字节都不动 · �
     upgraded.listQuotes({ limit: 50 }).quotes.length === before.quotes &&
     J(upgraded.ledgerTopology(null)) === J(before.topology),
     { revision: upgraded.getRevision(), before: before.revision });
-  check('J3 迁移是**空的**：MIGRATIONS 里没有一条数据改写步骤（只有新表）',
+  check('J3 迁移是**空的**：MIGRATIONS 里没有一条数据改写步骤（只有新表）'
+    + ' —— ★ P22-7 之后这条断言收窄到"5 之前的每一步"（见下）',
     (() => {
       const src = fs.readFileSync(path.join(ROOT, 'services', 'home-node', 'economy-store.js'), 'utf8');
       const at = src.indexOf('const MIGRATIONS = [');
-      const end = src.indexOf('];', at);
-      const block = src.slice(at, end);
-      /* 只允许注释：把注释剥掉之后剩下的应该是空的。 */
-      const codeOnly = block.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ');
-      return codeOnly.replace(/const MIGRATIONS = \[/, '').trim() === '';
+      if (at < 0) return false;
+      /* ★★ 这一条在 P22-5 时写的是"整个 MIGRATIONS 块剥掉注释之后是空的"。
+       P22-7 加了仓库里**第一条非空**迁移（5→6 给 economy_purchases 补五列
+       授权事实），于是那句字面话不再为真。
+
+       ★ 而这里必须把话说准：**"0..4 的迁移为空"在源码里根本无法用"数一份
+       清单"来证明** —— 那些"空条目"从来只以注释存在（框架从 P22-2 起就
+       是这么写的），清单里**根本没有** from<5 的记录。因此这一条断言的是
+       两件可检查的事：
+         ① 源码里登记在册的迁移步骤**恰好只有一条**，就是 5→6；
+         ② 那一条**确实**是数据迁移（它 ALTER 既有表）—— 于是"P22-5 那一
+            步没有数据改写"由 ① 补齐（3→4 与其它更早的版本在清单里根本
+            不存在，因此没有任何一处会对既有行做改写）。
+       而"开一个旧库之后既有数据逐字节不变"由 J1/J2 用**行为**证明（它们
+       打开一个 P22-5 之前的库并逐项比对 ledger / reservation / policy /
+       quote 与拓扑）。形状靠这条、后果靠那两条，两者都不越界。 */
+      const steps = [];
+      const re = /from:\s*(\d+)\s*,\s*to:\s*(\d+)\s*,\s*apply:/g;
+      let m;
+      while ((m = re.exec(src)) !== null) {
+        const bodyStart = src.indexOf('{', re.lastIndex);
+        let depth = 0;
+        let bodyEnd = -1;
+        for (let i = bodyStart; i < src.length; i++) {
+          if (src[i] === '{') depth += 1;
+          else if (src[i] === '}') { depth -= 1; if (depth === 0) { bodyEnd = i; break; } }
+        }
+        if (bodyEnd < 0) return false;
+        steps.push({
+          from: Number(m[1]), to: Number(m[2]),
+          body: src.slice(bodyStart, bodyEnd + 1)
+            .replace(/\/\*[\s\S]*?\*\//g, ' ')
+            .replace(/\/\/[^\n]*/g, ' ')
+        });
+      }
+      return steps.length === 1 &&
+        steps[0].from === 5 && steps[0].to === SCHEMA_GUARD &&
+        steps[0].body.indexOf('ALTER TABLE') >= 0 &&
+        /* 它只加列，不改写任何既有值：没有 UPDATE / DELETE / INSERT。 */
+        steps[0].body.indexOf('UPDATE ') < 0 && steps[0].body.indexOf('DELETE ') < 0 &&
+        steps[0].body.indexOf('INSERT ') < 0;
     })());
   check('J4 迁移之后旧的 raw quote 仍然可读（它的 productId 现在指向一个**不存在**的商品 —— 见 J5）',
     upgraded.getQuote({ quoteId: raw1.result.quoteId }).ok === true &&
@@ -1181,7 +1224,7 @@ section('J · schema 3 → 4（补三张表 · 旧行一个字节都不动 · �
   putStoreOk(future, { name: 'Shelf' });
   future.close();
   const rawFuture = new DatabaseSync(path.join(dir2, 'home-node.db'));
-  rawFuture.prepare('UPDATE economy_meta SET value=? WHERE key=?').run('6', 'economy_schema');
+  rawFuture.prepare('UPDATE economy_meta SET value=? WHERE key=?').run(String(SCHEMA_GUARD + 1), 'economy_schema');
   rawFuture.close();
   const tooNew = makeStore({ dataDir: dir2 });
   let rejected = null;

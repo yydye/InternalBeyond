@@ -428,11 +428,41 @@ check('B6.1b 这些词在 Economy **代码**（剥掉注释与字符串后）里
   }));
 check('B6.2 Economy 不引用 device-registry（它是 characters / character_runtime_specs 的 owner）',
   allRequires.every(r => r.value.indexOf('device-registry') < 0));
-check('B6.3 Economy 不读 bearer / Authorization 头',
-  PRODUCTION_FILES.every(rel => {
+/* B6.3 的"反例存在"证明：这些正是它要挡的读法，而 http.js 逐字使用其中
+   至少一种 —— 于是那条断言不是一句空话（它真的能命中）。 */
+const PRIVATE_HEADER_PROOF = [
+  /req\.headers\s*\.\s*authorization/i,
+  /req\.headers\s*\[\s*['"]authorization['"]\s*\]/i,
+  /\bBearer\s/
+];
+check('B6.3 Economy 不读 bearer / Authorization 头', (() => {
+  /* ★ 这一条断言的是**读凭据头**这件事，而不是那个词本身。
+     P22-7 之前这里写的是 `!/authorization/i.test(code)`，而那时它是等价的：
+     Economy 里没有任何别的东西叫 authorization。P22-7 引入了
+     `authorization` 这一层（购买行上的授权模式、读面的 authorizationSummary），
+     于是"出现这个词"与"读一个凭据头"不再是一回事 —— 继续用词禁会让
+     一条真正的安全断言变成对**命名**的禁令，而那会逼出为了绕过断言而
+     起的名字（那是断言失效最常见的方式）。
+     因此这里逐条点名**真正的**读法：请求头对象上的 authorization / bearer、
+     以及任何 `Bearer ` 方案前缀。Economy 一个都不许有。 */
+  const headerReads = [
+    /req\.headers\s*\.\s*authorization/i,
+    /req\.headers\s*\[\s*['"]authorization['"]\s*\]/i,
+    /headers\s*\.\s*authorization/i,
+    /\bBearer\s/,
+    /(?:get|read)Header\s*\(\s*['"]authorization['"]/i
+  ];
+  const offenders = PRODUCTION_FILES.filter(rel => {
     const code = stripCommentsAndStrings(read(rel));
-    return !/authorization/i.test(code) && code.indexOf('Bearer') < 0;
-  }));
+    return headerReads.some(re => re.test(code));
+  });
+  /* 而"这些文件里确实存在一个请求头对象"这一面由 http.js 满足（它读
+     Authorization 是**它的**职责）—— 因此这一条不是空洞的：
+     它的反例是被点名的那几种写法。 */
+  const httpCode = stripCommentsAndStrings(read('services/home-node/http.js'));
+  return offenders.length === 0 &&
+    PRIVATE_HEADER_PROOF.some(re => re.test(httpCode));
+})());
 check('B6.4 Economy 的 ownerId 只能引用 characters.id —— 契约把角色 party id 直接当 id 形状',
   C.PARTY_TYPES.indexOf('character') >= 0 &&
   Object.prototype.hasOwnProperty.call(C.PARTY_TYPE, 'CHARACTER') &&

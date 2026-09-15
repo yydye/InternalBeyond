@@ -82,6 +82,14 @@
        否则读面只能借用 QUOTE 或 RESERVATION 的命名空间，
        那会让"这是报价还是购买"在第一眼就含糊。 */
     PURCHASE: 'ib.economy.purchase',
+    /* P22-7：与 PURCHASE 同一条理由的第三次应用。"一条批准记录属于哪个
+       域"必须有一个名字 —— 借用 PURCHASE 的命名空间会让 §5 那句
+       "Approval ≠ Purchase"在读面上第一眼就含糊。 */
+    APPROVAL: 'ib.economy.approval',
+    /* 自主策略复用 BUDGET 的命名空间是**刻意**的：它与预算政策共用同一种
+       记录形状与同一条"规则不是许可"语义（§3）。它需要自己的**事件**名
+       （AUTONOMY_POLICY_*），但不需要第二个命名空间 —— 加一个只会在
+       "这条规则属于哪一层"上制造第二种答案。 */
     EVENT: 'ib.economy.event',
     AUDIT: 'ib.economy.audit'
   });
@@ -451,7 +459,55 @@
        "这一刻还做不到"必须可分 —— 与 P22-5 分出 PRODUCT_NOT_FOUND 的
        理由逐字同源。 */
     PURCHASE_REQUIRES_APPROVAL: 'PURCHASE_REQUIRES_APPROVAL',
-    PURCHASE_NOT_SUPPORTED: 'PURCHASE_NOT_SUPPORTED'
+    PURCHASE_NOT_SUPPORTED: 'PURCHASE_NOT_SUPPORTED',
+    /* ── P22-7 追加的四个（加法）──────────────────────────────────────────
+       P22-1 §4 冻结的 APPROVAL 词表（AUTO_APPROVED / USER_APPROVAL_REQUIRED /
+       DENIED）是**一次购买结局的三种词**；P22-7 需要的是"一个批准记录处在
+       哪个状态"（APPROVAL_STATE，五个词）与"这次授权判定为什么是这个
+       结局"（下面四个代码）。两件事分属两层，因此刻意**不**把新状态塞进
+       APPROVAL —— 那会让"这笔购买被自动批准了"与"这条批准记录已被消费"
+       共用同一个词。
+
+       ★ AUTONOMY_NOT_PERMITTED 与 AUTONOMY_LIMIT 这两个代码 P22-1 就已经
+       冻结在**上面**（§22 的自主额度语义），因此本阶段新增的是四个而不是
+       六个。P22-7 是它们第一次真的有写入方：
+         · AUTONOMY_LIMIT         —— 触碰了 perPurchaseLimitMinor /
+                                     dailyAutonomousLimitMinor 这两条**额度**；
+         · AUTONOMY_NOT_PERMITTED —— 这件商品 / 这次结算形态不在自主范围内，
+                                     或者这台 Agent 根本没有开启自主购买。
+
+       APPROVAL_REQUIRED 与 PURCHASE_REQUIRES_APPROVAL 的差别是**阶段**：
+       后者是 P22-6 结算时预算翻转的产物（"流程被放弃"），前者是 P22-7
+       授权闸门的产物（"停下来，去创建一条待批准记录"）。合并它们会让
+       "这笔为什么没成"在两个完全不同的时刻给出同一个答案。
+
+       APPROVAL_NOT_FOUND   —— 那条批准记录不存在。刻意不复用
+       POLICY_NOT_FOUND：purchase / quote / policy 都有各自的 not-found
+       代码，而一条**记录**的缺席与一条**规则**的缺席在运维上是两件事。
+       APPROVAL_MISMATCH    —— 批准绑定的是另一个 Quote / 金额 / recipient /
+       数量 / 结算形态。这是 §6 的核心拒绝：一张批准不能被挪给另一笔购买。
+       APPROVAL_NOT_CONSUMED —— 结算时授权模式声称"这笔购买是被某条批准
+       授权的"，而那条批准并没有被消费过。它是 P22-6 与 P22-7 两块事实
+       之间的一致性检查，不是任何业务规则。 */
+    APPROVAL_REQUIRED: 'APPROVAL_REQUIRED',
+    APPROVAL_NOT_FOUND: 'APPROVAL_NOT_FOUND',
+    APPROVAL_MISMATCH: 'APPROVAL_MISMATCH',
+    APPROVAL_NOT_CONSUMED: 'APPROVAL_NOT_CONSUMED',
+    /* ★ APPROVAL_EXPIRED 是第五个，而它的缺席曾经是一个**真实缺陷**
+       （开发期实测）：store 层在三条路径上写 `C.DENY_REASON.APPROVAL_EXPIRED`，
+       而这个成员**不在**这个封闭集合里 —— 于是 `String(undefined)` 让返回
+       里的 reasonCode 变成字面量字符串 "undefined"。症状与前两次同源
+       （P22-6 的 `policyRow.policy_id`、budgetRefusalOf 的 `.detail`）：
+       拒绝发生了，但**为什么**被拒绝消失了。
+       为什么它不能复用别的代码：
+         · PURCHASE_REQUIRES_APPROVAL —— "需要有人点头"；
+         · TRANSITION_NOT_ALLOWED  —— "这条批准已经不是待决定状态了"；
+         · APPROVAL_MISMATCH        —— "这条批准说的是另一件事"。
+       而这里是第四句话："这条批准**已经过期**，请重新申请一条"。它与
+       QUOTE_EXPIRED / RESERVATION_EXPIRED 是同一种事实（时间到了），
+       而"时间到了"在审计里必须能与"规则说不"分开。
+       ★ 封闭集合因此从 46 变成 47。 */
+    APPROVAL_EXPIRED: 'APPROVAL_EXPIRED'
   });
 
   var DENY_REASONS = Object.freeze(Object.keys(DENY_REASON));
@@ -528,6 +584,18 @@
     QUOTE: 'econ_quote_',
     EXCHANGE_RATE: 'econ_rate_',
     PURCHASE_INTENT: 'econ_intent_',
+    /* ── P22-7 追加的一种（加法）─────────────────────────────────────────
+       APPROVAL（econ_approval_）是"一条批准记录"的身份。为什么它不能复用
+       已有的两种 id：
+         · PURCHASE_INTENT（econ_intent_）是**一次打算买什么**的身份 ——
+           它由 P22-6 用掉了（economy_purchases 的主键），而一条批准记录
+           与它所授权的那笔购买是**两个**实体（§5：Approval ≠ Purchase）。
+           共用一个前缀会让"这条 id 指向批准还是购买"永远需要看第二个字段；
+         · BUDGET_POLICY（econ_policy_）是**规则**的身份。一条批准记录不是
+           规则：规则可以被反复求值，而一条批准恰好被消费一次（§8）。
+       因此批准拿到自己的前缀，这也让它与自主政策（复用 BUDGET_POLICY /
+       econ_policy_ 的同一种记录形状，见 §3）在字形上就不会被混淆。 */
+    APPROVAL: 'econ_approval_',
     EVENT: 'econ_evt_'
   });
 
@@ -1188,7 +1256,25 @@
            服务（P22-5 的库存、P22-3 自己的测试），一个字不改。
        scope 增加是加法：既有的 11 个 (scope, key) 身份逐字不变。 */
     PURCHASE_PREPARE: 'PURCHASE_PREPARE',
-    PURCHASE_SETTLE: 'PURCHASE_SETTLE'
+    PURCHASE_SETTLE: 'PURCHASE_SETTLE',
+    /* ── P22-7 追加的四个（加法）──────────────────────────────────────────
+       为什么一条**批准**需要三个 scope 而不是一个 APPROVAL：
+         · APPROVAL_REQUEST —— 一次"请求批准"。重试同一个 key 必须返回
+           同一条批准记录，而不是创建第二条（"我那次请求批准成没成"）；
+         · APPROVAL_DECIDE  —— 一次**决定**。它与 request 是两件事：请求
+           由 Agent 发起，决定只可能来自**第三方**（买方不能批准自己的购买，
+           这条由 store 层结构性拒绝），而两者的重试语义不同（一次决定成功
+           后不可能再被"重放成另一个决定"）；
+         · APPROVAL_CONSUME —— 一次"把批准用掉"。它是**授权转变**的一部分，
+           因此它与 PURCHASE_PREPARE 在同一个事务里，但它的 (scope, key)
+           身份必须独立：同一个 key 在"准备购买"与"消费批准"下是两件事。
+       AUTONOMY_POLICY 与 POLICY 的分开同源：一次预算规则变更与一次自主
+       规则变更是两件事，而它们的重试问题各自独立。
+       ★ scope 增加是加法：既有的 13 个 (scope, key) 身份逐字不变。 */
+    APPROVAL_REQUEST: 'APPROVAL_REQUEST',
+    APPROVAL_DECIDE: 'APPROVAL_DECIDE',
+    APPROVAL_CONSUME: 'APPROVAL_CONSUME',
+    AUTONOMY_POLICY: 'AUTONOMY_POLICY'
   });
 
   var OPERATION_SCOPES = Object.freeze(Object.keys(OPERATION_SCOPE));
@@ -1879,8 +1965,8 @@
            ① 它要回答的问题有三个侧面 —— 这是什么（快照）、它不是
               什么（不是一张可以拿去执行的许可）、它是关于哪个时刻的 ——
               而一个 boolean 只能回答第一个；
-           ② 一个叫 `authorization` 的顶层字段会与本文件的凭据边界
-              （boundary B6.3：Economy 不读 HTTP 的 Authorization 头）
+           ② 一个叫 `approval` 的顶层字段会与本文件的凭据边界
+              （boundary B6.3：Economy 不读 HTTP 的 Approval 头）
               在文本上撞车。撞车的后果不是编译错误，而是那条安全断言
               不得不为一个**正确的**新字段开一个例外 —— 而给安全断言
               开例外正是它最容易失效的方式。因此这里换一个词，让那条
@@ -2507,6 +2593,35 @@
     PURCHASE_COMPLETED: 'PURCHASE_COMPLETED',
     PURCHASE_RELEASED: 'PURCHASE_RELEASED',
     PURCHASE_FAILED: 'PURCHASE_FAILED',
+    /* ── P22-7 追加的十个（加法）──────────────────────────────────────────
+       §16 要求"仅凭 canonical Economy 事实"回答四个问题，而这十个事件
+       恰好是那四个问题的证据：
+
+         "为什么这笔购买没问用户？"
+           → AUTONOMY_PURCHASE_AUTO_ALLOWED（带 autonomyDecision 与 policyId）
+         "为什么这笔要求批准？"
+           → APPROVAL_REQUESTED（带 autonomyOutcome 与它命中的那条规则）
+             必要时再加 AUTONOMY_PURCHASE_REQUIRES_APPROVAL（授权闸门停下）
+         "是谁批准的什么？"
+           → APPROVAL_APPROVED / APPROVAL_REJECTED（带 approvalSnapshot）
+         "这个批准最终被哪笔 Purchase 消费？"
+           → APPROVAL_CONSUMED（带 consumedByPurchaseId）+
+             PURCHASE_AUTHORIZED（带 approvalId 与 purchaseId 的链接）
+
+       为什么政策两个事件不叫 BUDGET_POLICY_*：自主政策复用同一种**记录
+       形状**，但它是一条独立的规则（§3），而"有人把自主额度从 500 改成
+       100"必须在审计里能与"有人改了预算额度"分开 —— 这正是 P22-4 分出
+       CREATED / UPDATED 的同一条理由用在另一层上。 */
+    AUTONOMY_POLICY_CREATED: 'AUTONOMY_POLICY_CREATED',
+    AUTONOMY_POLICY_UPDATED: 'AUTONOMY_POLICY_UPDATED',
+    APPROVAL_REQUESTED: 'APPROVAL_REQUESTED',
+    APPROVAL_APPROVED: 'APPROVAL_APPROVED',
+    APPROVAL_REJECTED: 'APPROVAL_REJECTED',
+    APPROVAL_EXPIRED: 'APPROVAL_EXPIRED',
+    APPROVAL_CONSUMED: 'APPROVAL_CONSUMED',
+    PURCHASE_AUTHORIZED: 'PURCHASE_AUTHORIZED',
+    AUTONOMY_PURCHASE_AUTO_ALLOWED: 'AUTONOMY_PURCHASE_AUTO_ALLOWED',
+    AUTONOMY_PURCHASE_REQUIRES_APPROVAL: 'AUTONOMY_PURCHASE_REQUIRES_APPROVAL',
     ITEM_GIFTED: 'ITEM_GIFTED',
     ITEM_CONSUMED: 'ITEM_CONSUMED',
     COMPUTE_CREDIT_GRANTED: 'COMPUTE_CREDIT_GRANTED',
@@ -3477,7 +3592,26 @@
      Quote 快照读。 */
   var PURCHASE_INPUT_KEYS = Object.freeze([
     'purchaseId', 'buyerId', 'recipientId', 'quoteId',
-    'expiresAt', 'units', 'ifRevision', 'idempotencyKey'
+    'expiresAt', 'units', 'ifRevision', 'idempotencyKey',
+    /* ── P22-7 追加的三个（加法）─────────────────────────────────────────
+       ★ 为什么恰好是这三个、而不是一个 `approvalMode`：
+       授权模式**不是**调用方可以声明的东西 —— 它由"有没有一张有效批准"
+       唯一决定。允许调用方自己写 mode 会让"我声称我是 AUTO_ALLOW"成为
+       一条绕过批准的路。
+       因此这里接受的是**两份证据**，而模式由它们推导：
+         · approvalId              —— 一张批准的 id。有它 ⇒ 模式是 APPROVAL，
+                                      而这张批准必须真的有效、且绑定这一笔。
+         · approvalBindingFingerprint —— 自主闸门在 AUTO_ALLOW 那一刻算出的
+                                      九元组身份。有它（且没有 approvalId）
+                                      ⇒ 模式是 AUTO_ALLOW，而它必须**重算
+                                      一致**（见 store 的
+                                      validateAutonomousApprovalInTx）。
+         · autonomyPolicyId        —— 那份策略的 id。可追溯"为什么没问用户"。
+       两个都没有 ⇒ 模式是 NULL，也就是"这次购买没有走 P22-7 闸门"。
+       这三个都不能承载任何经济内容（金额 / 数量 / recipient / settlement
+       仍然只从 Quote 快照读），因此 PURCHASE_FORBIDDEN_FIELDS 里**没有**
+       它们，而 §6 那条"批准不能被挪给另一笔购买"由九元组比对保证。 */
+    'approvalId', 'approvalBindingFingerprint', 'autonomyPolicyId'
   ]);
 
   var PURCHASE_SETTLE_INPUT_KEYS = Object.freeze([
@@ -3608,6 +3742,761 @@
     return { ok: true, accountId: SYSTEM_ACCOUNT.MARKET, errors: [] };
   }
 
+  /* ══════════════════════════════════════════════════════════════════
+     P22-7 §1 · APPROVAL_STATE —— 一条批准记录的状态机
+     ══════════════════════════════════════════════════════════════════
+
+     一条 Approval 表达的是**一句话**：
+
+       "用户授权这个被冻结的购买意图继续执行。"
+
+     它与 Purchase 是**两个**实体（§5），因此它有自己的状态机：
+
+       PENDING ──▶ APPROVED ──▶ CONSUMED
+          │  │         │
+          │  │         └────▶ EXPIRED      （批准了但一直没被用掉）
+          │  └────▶ REJECTED                （用户说不）
+          └───────▶ EXPIRED                （用户一直没回答）
+
+     四条终态（REJECTED / EXPIRED / CONSUMED）的出边**全部为空**，因此
+     "REJECTED → APPROVED"、"EXPIRED → APPROVED"、"CONSUMED → APPROVED"
+     三句话在结构上不成立 —— 需要重新批准时创建一条**新的** Approval
+     （这正是"批准是一次性事实，不是可复活的状态"的落点）。
+
+     ★ 为什么 APPROVED 不是终态：一个还没被用掉的批准可以在有效期过后
+     失去效力（APPROVED → EXPIRED）。把它设成终态会让"一份批准永远不会
+     过期"成为结构性的结论，而 §9 明确要求它可过期。 */
+  var APPROVAL_STATE = Object.freeze({
+    PENDING: 'PENDING',
+    APPROVED: 'APPROVED',
+    REJECTED: 'REJECTED',
+    EXPIRED: 'EXPIRED',
+    CONSUMED: 'CONSUMED'
+  });
+
+  var APPROVAL_STATES = Object.freeze(Object.keys(APPROVAL_STATE));
+
+  var APPROVAL_TRANSITIONS = Object.freeze({
+    PENDING: Object.freeze([APPROVAL_STATE.APPROVED, APPROVAL_STATE.REJECTED, APPROVAL_STATE.EXPIRED]),
+    APPROVED: Object.freeze([APPROVAL_STATE.CONSUMED, APPROVAL_STATE.EXPIRED]),
+    REJECTED: Object.freeze([]),
+    EXPIRED: Object.freeze([]),
+    CONSUMED: Object.freeze([])
+  });
+
+  var APPROVAL_TERMINAL_STATES = Object.freeze(
+    APPROVAL_STATES.filter(function (s) { return APPROVAL_TRANSITIONS[s].length === 0; })
+  );
+
+  var APPROVAL_INITIAL_STATE = APPROVAL_STATE.PENDING;
+
+  var APPROVAL_STATE_INDEX = (function () {
+    var map = Object.create(null);
+    for (var i = 0; i < APPROVAL_STATES.length; i++) map[APPROVAL_STATES[i]] = true;
+    return map;
+  })();
+
+  function isApprovalState(value) {
+    return value != null && APPROVAL_STATE_INDEX[String(value)] === true;
+  }
+
+  function isApprovalTerminalState(value) {
+    return APPROVAL_TERMINAL_STATES.indexOf(String(value)) >= 0;
+  }
+
+  function canTransitionApproval(from, to) {
+    var f = String(from == null ? '' : from);
+    var t = String(to == null ? '' : to);
+    if (!APPROVAL_STATE_INDEX[f] || !APPROVAL_STATE_INDEX[t]) {
+      return { allowed: false, from: f, to: t, errors: ['approval-state-not-in-closed-set'] };
+    }
+    if (APPROVAL_TRANSITIONS[f].indexOf(t) >= 0) return { allowed: true, from: f, to: t, errors: [] };
+    /* 终态回退与"非法转移"是两句不同的话：前者是"这件事已经定局，不要再
+       试了"，后者是"你没有从这里走到那里"。审计里它们必须可分，而
+       `terminal` 让调用方一眼看出该不该重试 —— 与 P22-3/P22-6 的
+       assertPurchaseTransition 逐字同源。 */
+    return {
+      allowed: false, from: f, to: t,
+      terminal: APPROVAL_TRANSITIONS[f].length === 0,
+      errors: ['transition-not-allowed']
+    };
+  }
+
+  function assertApprovalTransition(from, to) {
+    var r = canTransitionApproval(from, to);
+    if (r.allowed) return r;
+    if (r.errors.indexOf('approval-state-not-in-closed-set') >= 0) {
+      return Object.assign({}, r, { hint: 'both approval states must come from APPROVAL_STATE' });
+    }
+    if (r.terminal) {
+      return Object.assign({}, r, {
+        hint: 'an approval in a terminal state cannot move again; request a new approval instead of reviving this one'
+      });
+    }
+    return Object.assign({}, r, {
+      hint: 'a pending approval can only be approved, rejected or expired; an approved approval can only be consumed or expired'
+    });
+  }
+
+  /* ══════════════════════════════════════════════════════════════════
+     P22-7 §2 · AUTONOMOUS PURCHASE POLICY（确定性纯策略）
+     ══════════════════════════════════════════════════════════════════
+
+     ★ §3 的边界，逐字写进类型里：这不是 Budget 的改造，而是**另一层**。
+       Budget        = 经济上最多允许花多少        （P22-4，冻结）
+       Autonomy      = Agent 是否有权不问用户直接花 （P22-7）
+
+     两者相乘，而不是互相替代：
+
+       Budget ALLOW  AND  (Autonomy AUTO_ALLOW OR a valid APPROVAL)
+
+     于是下面两句话都成立，而且各自有一条测试：
+       Budget: ALLOW 400 · Autonomy: REQUIRE_APPROVAL  →  仍然必须问用户
+       Autonomy: AUTO_ALLOW · Budget: DENY             →  绝对不能买
+
+     AP_DECISION 是这一层的三个词。它与 BUDGET_DECISION **共享**两个词
+     （DENY 与 REQUIRE_APPROVAL 在两层上的含义逐字一样），但"允许"那个
+     词刻意不同族：
+
+       Budget   ALLOW        = 这笔钱在经济上花得起
+       Autonomy AUTO_ALLOW   = 这台 Agent 有权不问用户直接花
+
+     若两层都叫 ALLOW，"这笔为什么买成了"在审计里就会有两个同名的答案。
+     这一条是**载入期不变量**，不是注释。 */
+  var AP_DECISION = Object.freeze({
+    AUTO_ALLOW: 'AUTO_ALLOW',
+    REQUIRE_APPROVAL: 'REQUIRE_APPROVAL',
+    DENY: 'DENY'
+  });
+
+  var AP_DECISIONS = Object.freeze(Object.keys(AP_DECISION));
+
+  /* 评估顺序被冻结成 10 步，与 P22-4 的 BUDGET_EVALUATION_PRIORITY 同款：
+     结果里带回 priority，于是"先被哪一条拦下"可以被机器断言，而不必
+     从 rule 的文案里猜。
+
+     ★ 这一条顺序是**算过的**，而它的关键判断在最后两位：
+       · 三条 DENY 判据里，"作用域 / 结算形态"与"单笔上限"排在审批线
+         **之前** —— 一件被规则排除的商品、或一笔越过了单笔上限的钱，
+         永远得到 DENY，而不会看起来像一件"等人点头"的事（那时候没有人
+         该去点头：规则已经说不，用户点头也没有意义）；
+       · **日自主额度刻意排在审批线之后**。理由是一个真实的选择：一笔在
+         单笔上限之内、但会撞穿日额度的钱，应该得到 REQUIRE_APPROVAL
+         （"这件事需要人点头"），而不是直接 DENY。额度是**能力**线，
+         审批线是**许可**线 —— 能问就先问，因为用户点头之后仍有别的
+         规则（预算、单笔上限）继续约束它。
+       两条一起构成"日额度是自主放行的最终兜底"：它只在"规则允许 + 金额
+       在单笔上限内 + 不需要问人"之后才被检查。 */
+  var AP_EVALUATION_PRIORITY = Object.freeze([
+    'policy-present-and-effective',
+    'input-structured',
+    'scope-matches',
+    'autonomy-enabled',
+    'currency-matches',
+    'product-kind-allowed',
+    'settlement-type-supported',
+    'autonomy-max-per-purchase',
+    'autonomy-purchase-approval-threshold',
+    'autonomy-daily-limit'
+  ]);
+
+  /* §4 的白名单。**任何**未列出的键都被拒绝，包括 prompt / persona /
+     relationship / llmOutput —— 与 P22-4 的 BUDGET_INPUT_KEYS 同一条纪律：
+     策略输入里"无处可放"比"记得别传"强得多。 */
+  var AUTONOMY_POLICY_INPUT_KEYS = Object.freeze([
+    'ownerId',
+    'buyerId',
+    'recipientId',
+    'productId',
+    'productKind',
+    'settlementType',
+    'currency',
+    'amountMinor',
+    'gift',
+    'selfDirected',
+    'spentTodayMinor',
+    'timestamp'
+  ]);
+
+  /* §4 的策略记录键。金额字段**全部**带 Minor 后缀（§4：不得出现裸的
+     budget / limit），而 `enabled` 只有这一个布尔 —— 它是"这台 Agent
+     有没有被允许自主购买"的那个开关，缺省 false。 */
+  var AUTONOMY_POLICY_KEYS = Object.freeze([
+    'policyId',
+    'ownerId',
+    'enabled',
+    'perPurchaseLimitMinor',
+    'dailyAutonomousLimitMinor',
+    'approvalAboveMinor',
+    'allowedProductKinds',
+    'allowedSettlementTypes',
+    'allowGift'
+  ]);
+
+  /* §6 的绑定元组。一张批准**必须**绑定这九个经济事实（或其 canonical
+     fingerprint）：
+       buyer / recipient / productId / quoteId / currency / amountMinor /
+       settlementType / grantQuantity / units
+     批准之后换掉其中任何一个，批准即失效 —— 因为"用户批准过 400"这句话
+     从不蕴含"用户批准了另一次 400"。 */
+  var APPROVAL_BINDING_KEYS = Object.freeze([
+    'buyerId', 'recipientId', 'productId', 'quoteId',
+    'currency', 'amountMinor', 'settlementType', 'grantQuantity', 'units'
+  ]);
+
+  /* 一次批准的有效期上界。一条"永久有效"的批准与"以后随便花 500"是同一种
+     东西，而 §6 明确禁止后者。上界是 24 小时：它比任何一次真实购买需要
+     的决策时间长得多，又不至于让一条批准在下个月还能被用掉。 */
+  var APPROVAL_MAX_LIFETIME_MS = 24 * 60 * 60 * 1000;
+
+  /* 授权模式。它被**冻结在 Purchase 行上**，因此结算时"这笔购买当初凭
+     什么成立"不需要重新推断（见 store 的 approval_mode 列）。 */
+  var PURCHASE_APPROVAL_MODE = Object.freeze({
+    AUTO_ALLOW: 'AUTO_ALLOW',
+    APPROVAL: 'APPROVAL'
+  });
+
+  var PURCHASE_APPROVAL_MODES = Object.freeze(Object.keys(PURCHASE_APPROVAL_MODE));
+
+  function isPurchaseApprovalMode(value) {
+    return value != null && PURCHASE_APPROVAL_MODES.indexOf(String(value)) >= 0;
+  }
+
+  /* §2/§3 的八句自述。它们是**可断言**的字段，而不是文档里的句子 ——
+     "自主不是决策"必须是这个系统自己说出来的话。 */
+  var AUTONOMY_POLICY_IS_A_DECISION_LAYER = false;
+  var AUTONOMY_POLICY_READS_LLM_OUTPUT = false;
+  var AUTONOMY_POLICY_READS_MEMORY = false;
+  var AUTONOMY_POLICY_READS_RELATIONSHIP = false;
+  var AUTONOMY_POLICY_GRANTS_BUDGET = false;
+  var AUTONOMY_REPLACES_BUDGET = false;
+  var APPROVAL_BYPASSES_BUDGET = false;
+  var APPROVAL_BYPASSES_QUOTE_EXPIRY = false;
+  var APPROVAL_IS_SINGLE_USE = true;
+  var APPROVAL_IS_BOUND_TO_A_QUOTE = true;
+  var AUTONOMY_DEFAULT_WHEN_NO_POLICY = AP_DECISION.REQUIRE_APPROVAL;
+
+  var AUTONOMY_POLICY_FORBIDDEN_INPUT_KEYS = Object.freeze([
+    'prompt', 'system', 'systemPrompt', 'persona', 'personality', 'mood',
+    'relationship', 'relationshipId', 'affection', 'trust', 'affinity',
+    'memory', 'memoryRef', 'memories',
+    'message', 'messages',
+    'content', 'text', 'reply', 'llmOutput', 'modelOutput', 'completion',
+    'rawOutput', 'reasoning', 'thoughts', 'narration', 'desire', 'plea',
+    'argument', 'feelsLikeBuying', 'agentDecided', 'importance', 'urgency',
+    'walletBalance', 'availableBalanceMinor', 'maxBudget', 'budget'
+  ]);
+
+  var AUTONOMY_FORBIDDEN_INDEX = (function () {
+    var map = Object.create(null);
+    for (var j = 0; j < AUTONOMY_POLICY_FORBIDDEN_INPUT_KEYS.length; j++) {
+      map[AUTONOMY_POLICY_FORBIDDEN_INPUT_KEYS[j]] = true;
+    }
+    return map;
+  })();
+
+  var AUTONOMY_INPUT_INDEX = (function () {
+    var map = Object.create(null);
+    for (var k = 0; k < AUTONOMY_POLICY_INPUT_KEYS.length; k++) {
+      map[AUTONOMY_POLICY_INPUT_KEYS[k]] = true;
+    }
+    return map;
+  })();
+
+  /* 自主策略允许出现的商品种类。**就是** P22-5 冻结的 PRODUCT_KINDS，
+     刻意不再造一套同义词：一件商品的自主范围与它的目录语义必须是同一个
+     词表，否则"自主允许买 COMPUTE_CREDIT 但目录里叫 COMPUTE_GRANT"会
+     变成一个静默的空集。 */
+  function normalizeAutonomyPolicyInput(input) {
+    if (input == null || typeof input !== 'object' || Array.isArray(input)) {
+      return { ok: false, input: null, errors: ['autonomy-input-must-be-a-structured-object'] };
+    }
+    var errors = [];
+    var keys = Object.keys(input);
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      if (!AUTONOMY_INPUT_INDEX[k]) {
+        errors.push(AUTONOMY_FORBIDDEN_INDEX[k]
+          ? 'autonomy-input-carries-non-deterministic-text'
+          : 'autonomy-input-key-not-whitelisted');
+      }
+    }
+    var out = {};
+    var scope = promotePartyRef(input.ownerId != null ? input.ownerId : input.buyerId);
+    if (input.ownerId != null || input.buyerId != null) {
+      if (!scope) errors.push('autonomy-owner-invalid');
+      else out.ownerId = Object.freeze({ type: scope.type, id: scope.id });
+    }
+    if (input.recipientId != null) {
+      var rec = promotePartyRef(input.recipientId);
+      if (!rec) errors.push('autonomy-recipient-invalid');
+      else out.recipientId = Object.freeze({ type: rec.type, id: rec.id });
+    }
+    if (input.productId != null) {
+      if (!isEconomyId('PRODUCT', input.productId)) errors.push('autonomy-product-id-not-canonical');
+      else out.productId = String(input.productId);
+    }
+    if (input.productKind != null) {
+      if (!isProductKind(input.productKind)) errors.push('autonomy-product-kind-not-in-closed-set');
+      else out.productKind = String(input.productKind);
+    }
+    if (input.settlementType != null) {
+      if (!isFulfillment(input.settlementType)) errors.push('autonomy-settlement-type-not-in-closed-set');
+      else out.settlementType = String(input.settlementType);
+    }
+    if (input.currency != null) {
+      var cur = validateCurrency(input.currency);
+      if (!cur.ok) errors.push.apply(errors, cur.errors);
+      else out.currency = cur.currency;
+    }
+    if (input.amountMinor != null) {
+      var amt = normalizeAmountMinor(input.amountMinor);
+      if (!amt.ok) errors.push.apply(errors, amt.errors);
+      else out.amountMinor = amt.amountMinor;
+    }
+    if (input.spentTodayMinor != null) {
+      var spent = normalizeAmountMinor(input.spentTodayMinor);
+      if (!spent.ok) errors.push.apply(errors, spent.errors);
+      else out.spentTodayMinor = spent.amountMinor;
+    }
+    if (input.gift != null) {
+      if (typeof input.gift !== 'boolean') errors.push('autonomy-gift-must-be-a-boolean');
+      else out.gift = input.gift;
+    }
+    if (input.selfDirected != null) {
+      if (typeof input.selfDirected !== 'boolean') errors.push('autonomy-self-directed-must-be-a-boolean');
+      else out.selfDirected = input.selfDirected;
+    }
+    if (input.timestamp != null) {
+      var ts = Number(input.timestamp);
+      if (!Number.isSafeInteger(ts) || ts < 0) errors.push('autonomy-timestamp-must-be-non-negative-safe-integer');
+      else out.timestamp = ts;
+    }
+    if (errors.length) return { ok: false, input: null, errors: errors };
+    return { ok: true, input: Object.freeze(out), errors: [] };
+  }
+
+  /* ── 策略记录的形状校验（纯函数）────────────────────────────────────
+     ★ §4 的 fail closed 在这里的落点有两层，都必须成立：
+       ① 没有策略      → REQUIRE_APPROVAL（**不是** AUTO_ALLOW）
+       ② 策略存在但形状不可信 → DENY（不是"既然读不懂就随便吧"）
+     ② 比 ① 更严格是对的：一台**配过**自主策略的 Agent 如果那条策略坏了，
+     那说明有人正在改规则而改到一半 —— 这时放行比拒绝危险得多。 */
+  function validateAutonomyPolicy(input) {
+    var o = input || {};
+    var errors = [];
+    var policyId = o.policyId == null ? null : String(o.policyId);
+    if (!isEconomyId('BUDGET_POLICY', policyId)) errors.push('autonomy-policy-id-not-canonical');
+    var owner = promotePartyRef(o.ownerId);
+    if (!owner) errors.push('autonomy-policy-owner-invalid');
+    else if (String(owner.type) === PARTY_TYPE.SYSTEM) errors.push('system-cannot-own-an-autonomy-policy');
+    /* ★ 一个**未知**的 owner 类型也必须被拒。`promotePartyRef` 接受三种
+       party type（character / user / system），而上面只挡了 system ——
+       那意味着一个拼错的类型会在 promotePartyRef 里就失败（好），但一个
+       未来新增的类型会静默地成为合法的策略主人。这一条把它钉住：
+       §3 的权限层只对"一个具体的人 / 一个具体的角色"成立。 */
+    else if (PARTY_TYPES.indexOf(String(owner.type)) < 0) errors.push('autonomy-policy-owner-type-not-in-closed-set');
+    if (typeof o.enabled !== 'boolean') errors.push('autonomy-policy-enabled-must-be-a-boolean');
+
+    /* ★ 两条额度**必须**存在。一个"enabled 但没有上限"的自主策略等于
+       "以后随便花"，而 §6 逐字禁止那句话。这里刻意不用 0 当缺省：0 是
+       "一分钱都不许自主花"，与"没写"是两个不同的结论，而其中的差别决定
+       了这台 Agent 是"只能问用户"还是"可以被配置成只能问用户"。 */
+    var perPurchase = o.perPurchaseLimitMinor == null ? null : normalizeAmountMinor(o.perPurchaseLimitMinor);
+    if (perPurchase == null) errors.push('autonomy-policy-requires-per-purchase-limit-minor');
+    else if (!perPurchase.ok) errors.push.apply(errors, perPurchase.errors);
+    var daily = o.dailyAutonomousLimitMinor == null ? null : normalizeAmountMinor(o.dailyAutonomousLimitMinor);
+    if (daily == null) errors.push('autonomy-policy-requires-daily-autonomous-limit-minor');
+    else if (!daily.ok) errors.push.apply(errors, daily.errors);
+    if (perPurchase && perPurchase.ok && daily && daily.ok && perPurchase.amountMinor > daily.amountMinor) {
+      errors.push('autonomy-per-purchase-limit-must-not-exceed-the-daily-autonomous-limit');
+    }
+
+    /* ── approvalAboveMinor：可选的**许可线**。它存在的理由是一个真实
+       情形：一笔 150 的购买完全在额度之内（perPurchase 500 / daily 1000），
+       但用户仍然希望"超过 100 就问我"。若把它设得**高于** per-purchase
+       上限，那条线永远不会被触发 —— 一条永远不生效的规则比没有规则更糟，
+       因为它看起来像一条保证。因此这里拒绝它，而不是静默忽略。
+       缺省值逐字是 perPurchaseLimitMinor：**整段自主额度都需要批准**，
+       这比"缺省就完全不需要批准"安全得多（§4 fail closed）。 */
+    var threshold = null;
+    if (o.approvalAboveMinor != null) {
+      var thr = normalizeAmountMinor(o.approvalAboveMinor);
+      if (!thr.ok) errors.push.apply(errors, thr.errors);
+      else threshold = thr.amountMinor;
+    }
+    if (threshold != null && perPurchase && perPurchase.ok && threshold > perPurchase.amountMinor) {
+      errors.push('autonomy-approval-threshold-must-not-exceed-the-per-purchase-limit');
+    }
+
+    var kinds = o.allowedProductKinds;
+    if (kinds != null) {
+      if (!Array.isArray(kinds) || kinds.length === 0) errors.push('autonomy-allowed-product-kinds-must-be-a-non-empty-array');
+      else {
+        for (var i = 0; i < kinds.length; i++) {
+          if (!isProductKind(kinds[i])) errors.push('autonomy-allowed-product-kind-not-in-closed-set');
+        }
+      }
+    }
+    var settlements = o.allowedSettlementTypes;
+    if (settlements != null) {
+      if (!Array.isArray(settlements) || settlements.length === 0) errors.push('autonomy-allowed-settlement-types-must-be-a-non-empty-array');
+      else {
+        for (var j = 0; j < settlements.length; j++) {
+          if (!isFulfillment(settlements[j])) errors.push('autonomy-allowed-settlement-type-not-in-closed-set');
+        }
+      }
+    }
+    if (o.allowGift != null && typeof o.allowGift !== 'boolean') {
+      errors.push('autonomy-allow-gift-must-be-a-boolean');
+    }
+
+    if (errors.length) return { ok: false, policy: null, errors: errors };
+    return {
+      ok: true,
+      errors: [],
+      policy: Object.freeze({
+        domain: DOMAIN,
+        namespace: NAMESPACES.BUDGET,
+        kind: 'autonomy',
+        policyId: policyId,
+        ownerId: Object.freeze({ type: owner.type, id: owner.id }),
+        enabled: o.enabled === true,
+        perPurchaseLimitMinor: perPurchase.amountMinor,
+        dailyAutonomousLimitMinor: daily.amountMinor,
+        approvalAboveMinor: threshold == null ? perPurchase.amountMinor : threshold,
+        /* 缺省是**空集**，不是"全允许"：一份没写 allowedProductKinds 的策略
+           不自主买任何东西。fail closed 在字段级也成立。 */
+        allowedProductKinds: Object.freeze(kinds == null ? [] : kinds.map(function (x) { return String(x); })),
+        allowedSettlementTypes: Object.freeze(settlements == null ? [] : settlements.map(function (x) { return String(x); })),
+        allowGift: o.allowGift === true
+      })
+    };
+  }
+
+  /* ── §2 的确定性评估器 ───────────────────────────────────────────────
+     签名是一对 (policy, context) —— 两个**数据**参数。没有 store、没有
+     时钟、没有随机、没有任何 I/O，因此
+
+       same policy + same context  ⇒  same decision
+
+     是结构性成立的（P22-7 的 autonomous 测试组会真的证伪它：跑一千次、
+     打乱键序、深拷贝，结果必须逐字节相同）。
+
+     policy == null 是**一个真实且可回答的情形**：这台 Agent 没有自主策略。
+     它返回 REQUIRE_APPROVAL（§4 的默认 fail closed），而不是 DENY ——
+     "没配"不等于"禁止"，它等于"回到默认，也就是问用户"。 */
+  function evaluateAutonomousPurchase(policy, context) {
+    var reasons = [];
+    var prio = function (i) { return AP_EVALUATION_PRIORITY[i]; };
+    var deny = function (code, i, extra) {
+      return apDecision(AP_DECISION.DENY, code, Object.assign({
+        priority: prio(i), priorityRule: prio(i), errors: [], reasons: reasons,
+        /* ★ 三句自述在**三种结论上都出现**（不只是 AUTO_ALLOW）：一个 DENY
+           同样只回答"有没有权"，同样不是预算判断，同样什么也不授予。
+           只把它们写在成功路径上会让"这条结论是什么"变成一个"字段存不
+           存在"的问题 —— 而 read 侧要么写 `=== false`（对缺字段为 false
+           ⇒ 断言无声失败），要么写 `!== true`（对任何缺失都为 true ⇒
+           断言永不失败）。两种写法都不会失败得**有意义**。 */
+        answers: 'may-this-agent-spend-without-asking-the-user',
+        notABudgetDecision: true,
+        grantsBudget: AUTONOMY_POLICY_GRANTS_BUDGET
+      }, extra || {}));
+    };
+    var needApproval = function (code, i, extra) {
+      return apDecision(AP_DECISION.REQUIRE_APPROVAL, code, Object.assign({
+        priority: prio(i), priorityRule: prio(i), errors: [], reasons: reasons,
+        answers: 'may-this-agent-spend-without-asking-the-user',
+        notABudgetDecision: true,
+        grantsBudget: AUTONOMY_POLICY_GRANTS_BUDGET
+      }, extra || {}));
+    };
+
+    /* ── ① 没有策略 ⇒ REQUIRE_APPROVAL（§4）─────────────────────────── */
+    if (policy == null) {
+      return needApproval(DENY_REASON.APPROVAL_REQUIRED, 0, {
+        policyPresent: false,
+        defaultedToRequireApproval: true,
+        rule: 'no-autonomy-policy-defaults-to-require-approval'
+      });
+    }
+
+    /* ── ② 策略必须是一份形状可信的**记录**。这里只检查"是不是一个对象"
+          与"它自己有没有说自己是坏的"：真正的形状校验在 validateAutonomyPolicy
+          里（store 层落库前跑一次），而这里再确认一次是刻意的 —— 一条被
+          外部工具改坏的策略行不能因为"它当初校验过"就被放行。 */
+    if (typeof policy !== 'object' || Array.isArray(policy)) {
+      return deny(DENY_REASON.POLICY_INPUT_NOT_STRUCTURED, 1, { errors: ['autonomy-policy-must-be-a-structured-object'] });
+    }
+    if (policy.unusable === true) {
+      return deny(DENY_REASON.POLICY_INPUT_NOT_STRUCTURED, 1, {
+        errors: policy.unusableErrors || ['autonomy-policy-row-is-not-trustworthy'],
+        systemFailure: false
+      });
+    }
+
+    var norm = normalizeAutonomyPolicyInput(context);
+    if (!norm.ok) {
+      return deny(DENY_REASON.POLICY_INPUT_NOT_STRUCTURED, 1, { errors: norm.errors });
+    }
+    var ctx = norm.input;
+
+    /* ── ③ 作用域：策略属于谁，它就只能替谁判定 ─────────────────────── */
+    if (!partyRefEquals(ctx.ownerId, policy.ownerId)) {
+      return deny(DENY_REASON.POLICY_NOT_FOUND, 2, {
+        errors: ['autonomy-policy-owner-does-not-match-the-evaluated-owner']
+      });
+    }
+    if (ctx.currency != null && String(ctx.currency) !== String(policy.currency == null ? ctx.currency : policy.currency)) {
+      return deny(DENY_REASON.INVALID_CURRENCY, 4, {
+        errors: ['autonomy-policy-currency-does-not-match-the-evaluated-currency'],
+        policyCurrency: policy.currency == null ? null : String(policy.currency),
+        contextCurrency: String(ctx.currency)
+      });
+    }
+
+    /* ── ④ §4 的开关。enabled=false 是"这台 Agent 不许自主购买"，它与
+           "没有策略"是两件事：前者是有人**明确关掉了**它。 */
+    if (policy.enabled !== true) {
+      return deny(DENY_REASON.AUTONOMY_NOT_PERMITTED, 3, {
+        policyEnabled: false,
+        rule: 'autonomy-is-disabled-by-policy'
+      });
+    }
+
+    /* ── ⑤ 商品种类白名单（缺省空集 ⇒ 什么都不自主买）───────────────── */
+    var kinds = policy.allowedProductKinds || [];
+    if (ctx.productKind == null || kinds.indexOf(String(ctx.productKind)) < 0) {
+      return deny(DENY_REASON.AUTONOMY_NOT_PERMITTED, 5, {
+        productKind: ctx.productKind == null ? null : String(ctx.productKind),
+        allowedProductKinds: kinds.slice(),
+        rule: 'product-kind-is-not-in-the-autonomy-scope'
+      });
+    }
+
+    /* ── ⑥ 结算形态白名单。★ 这里同时要求"这种形态**有**可原子执行的
+           原语"：自主策略对 SERVICE_EXECUTION 说"可以"是没有意义的，
+           因为 P22-6 §22/§54 会在预留之前就拒绝它。让授权层说出一个
+           结算层永远不接受的决定，会把"为什么没成"变成两句话。 */
+    var settlements = policy.allowedSettlementTypes || [];
+    if (ctx.settlementType == null || settlements.indexOf(String(ctx.settlementType)) < 0) {
+      return deny(DENY_REASON.AUTONOMY_NOT_PERMITTED, 6, {
+        settlementType: ctx.settlementType == null ? null : String(ctx.settlementType),
+        allowedSettlementTypes: settlements.slice(),
+        rule: 'settlement-type-is-not-in-the-autonomy-scope'
+      });
+    }
+    var prim = settlementPrimitiveOfFulfillment(ctx.settlementType);
+    if (!prim.ok || prim.primitive == null) {
+      return deny(DENY_REASON.AUTONOMY_NOT_PERMITTED, 6, {
+        settlementType: String(ctx.settlementType),
+        settlementPrimitive: null,
+        rule: 'this-settlement-type-has-no-atomic-primitive-and-can-never-be-autonomous'
+      });
+    }
+
+    /* ── ⑦ 金额必须存在且为正。0 金额没有经济内容 —— 与 P22-4 同判。 */
+    if (ctx.amountMinor == null || ctx.amountMinor === 0n) {
+      return deny(DENY_REASON.INVALID_AMOUNT, 7, { errors: ['autonomy-evaluation-amount-must-be-positive'] });
+    }
+    var amount = ctx.amountMinor;
+
+    /* ── ⑧ §12 Gift：默认**不**允许自主送礼。★ 刻意排在金额判据之前：
+           一次送礼是否是"被允许的行为"与金额无关，而"Relationship 高所以
+           自动允许送礼"这句话在这里连一个字段都找不到（关系/好感不在
+           输入白名单里）。 */
+    var isGift = ctx.gift === true || (ctx.selfDirected === false && ctx.recipientId != null);
+    if (isGift && policy.allowGift !== true) {
+      return deny(DENY_REASON.AUTONOMY_NOT_PERMITTED, 5, {
+        gift: true, allowGift: false,
+        rule: 'gifting-someone-else-is-not-autonomous-by-default'
+      });
+    }
+
+    /* ── ⑨ per-purchase 额度（DENY，不是 REQUIRE_APPROVAL）──────────── */
+    var perPurchaseLimit = policy.perPurchaseLimitMinor;
+    if (perPurchaseLimit == null) {
+      return deny(DENY_REASON.POLICY_INPUT_NOT_STRUCTURED, 7, { errors: ['autonomy-policy-carries-no-per-purchase-limit'] });
+    }
+    if (amount > perPurchaseLimit) {
+      return deny(DENY_REASON.AUTONOMY_LIMIT, 7, {
+        amountMinor: serializeAmountMinor(amount),
+        perPurchaseLimitMinor: serializeAmountMinor(perPurchaseLimit),
+        rule: 'amount-exceeds-the-autonomy-per-purchase-limit'
+      });
+    }
+
+    /* ── ⑩ 日自主额度。spentTodayMinor 缺省**不**当成 0：一个不知道
+           "今天已经自主花了多少"的评估不能得出 AUTO_ALLOW —— 那正是
+           P22-4 §17 点名禁止的形状（未知被兜成 0）。
+           ★ 排队顺序上：金额没到 per-purchase 上限、且今天没有超日额度，
+           才需要看审批线；因此下面两条 REQUIRE_APPROVAL 判据排在所有
+           DENY 判据之后。 */
+    if (ctx.spentTodayMinor == null) {
+      return deny(DENY_REASON.POLICY_INPUT_NOT_STRUCTURED, 9, {
+        errors: ['autonomy-context-must-carry-spent-today-minor']
+      });
+    }
+    var dailyLimit = policy.dailyAutonomousLimitMinor;
+    if (dailyLimit == null) {
+      return deny(DENY_REASON.POLICY_INPUT_NOT_STRUCTURED, 9, { errors: ['autonomy-policy-carries-no-daily-limit'] });
+    }
+    if (ctx.spentTodayMinor + amount > dailyLimit) {
+      return deny(DENY_REASON.AUTONOMY_LIMIT, 9, {
+        amountMinor: serializeAmountMinor(amount),
+        spentTodayMinor: serializeAmountMinor(ctx.spentTodayMinor),
+        dailyAutonomousLimitMinor: serializeAmountMinor(dailyLimit),
+        rule: 'this-purchase-would-exceed-the-daily-autonomous-limit'
+      });
+    }
+
+    /* ── ⑪ 到这里只说明"额度允许"。§5 的审批线是**许可线**，不是额度线：
+           它表达的是"金额本身经济上没问题，但它需要人点头"。 */
+    var threshold = policy.approvalAboveMinor;
+    if (threshold != null && amount > threshold) {
+      return needApproval(DENY_REASON.APPROVAL_REQUIRED, 8, {
+        amountMinor: serializeAmountMinor(amount),
+        approvalAboveMinor: serializeAmountMinor(threshold),
+        rule: 'amount-exceeds-the-autonomy-approval-threshold'
+      });
+    }
+
+    reasons.push('autonomy-allowed-by-policy');
+    return apDecision(AP_DECISION.AUTO_ALLOW, BUDGET_ALLOWED_REASON, {
+      priority: null, priorityRule: null, errors: [], reasons: reasons,
+      amountMinor: serializeAmountMinor(amount),
+      perPurchaseLimitMinor: serializeAmountMinor(perPurchaseLimit),
+      spentTodayMinor: serializeAmountMinor(ctx.spentTodayMinor),
+      dailyAutonomousLimitMinor: serializeAmountMinor(dailyLimit),
+      /* ★ 逐字：这条结论**只**回答"Agent 有没有权不问用户直接花"。
+         它没有说"这笔钱花得起"，也没有说"这份报价还有效"。 */
+      answers: 'may-this-agent-spend-without-asking-the-user',
+      notABudgetDecision: true,
+      grantsBudget: AUTONOMY_POLICY_GRANTS_BUDGET
+    });
+  }
+  function apDecision(outcome, reasonCode, extra) {
+    var o = String(outcome);
+    if (AP_DECISIONS.indexOf(o) < 0) {
+      return { ok: false, errors: ['autonomy-decision-not-in-closed-set'] };
+    }
+    var reason = reasonCode == null ? null : String(reasonCode);
+    if (o === AP_DECISION.DENY) {
+      if (!reason) return { ok: false, errors: ['autonomy-deny-requires-a-reason-code'] };
+      if (!isDenyReasonCode(reason)) return { ok: false, errors: ['deny-reason-code-not-in-closed-set'] };
+    } else if (reason != null && reason !== BUDGET_ALLOWED_REASON && !isDenyReasonCode(reason)) {
+      return { ok: false, errors: ['deny-reason-code-not-in-closed-set'] };
+    }
+    var detail = Object.assign({}, extra || {});
+    var atValue = detail.timestamp != null ? detail.timestamp : (detail.at != null ? detail.at : null);
+    var state = {
+      domain: DOMAIN,
+      namespace: NAMESPACES.BUDGET,
+      kind: 'autonomy-evaluation',
+      authority: 'none',
+      at: atValue == null ? null : Number(atValue)
+    };
+    return Object.freeze(Object.assign({
+      domain: DOMAIN,
+      namespace: NAMESPACES.BUDGET,
+      outcome: o,
+      reasonCode: reason,
+      autoAllowed: o === AP_DECISION.AUTO_ALLOW,
+      requiresApproval: o === AP_DECISION.REQUIRE_APPROVAL,
+      denied: o === AP_DECISION.DENY,
+      evaluatedOnly: true,
+      snapshot: Object.freeze(state)
+    }, detail));
+  }
+
+  /* ══════════════════════════════════════════════════════════════════
+     P22-7 §3 · Approval 记录的 canonical 指纹
+     ══════════════════════════════════════════════════════════════════
+
+     纯函数：把九个绑定事实变成一个稳定的字符串身份。它**不含**任何
+     生成的 id，因此"批准的是哪一件事"与"批准记录叫什么名字"是两回事
+     —— 前者可以被独立重算，后者只是这条记录的主键。
+
+     ★ 它刻意**不**把 units 与 grantQuantity 合并成一个：两者是不同的
+     事实（"买 3 份"与"收到 30 个 computeUnit"），而 §6 要求换掉"数量"
+     之后批准必须失效 —— 换掉哪一个都算。 */
+  function approvalFingerprint(binding) {
+    var o = binding || {};
+    var parts = [];
+    var keys = APPROVAL_BINDING_KEYS;
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      var v = o[k];
+      if (v == null) parts.push(k + '=');
+      else if (k === 'amountMinor') {
+        var amt = normalizeAmountMinor(v);
+        if (!amt.ok) return { ok: false, fingerprint: null, errors: ['approval-binding-amount-is-not-canonical'] };
+        parts.push(k + '=' + serializeAmountMinor(amt.amountMinor));
+      } else parts.push(k + '=' + String(v));
+    }
+    return { ok: true, fingerprint: parts.join('\u0001'), errors: [] };
+  }
+
+  /* 一次批准必须是"针对一份具体报价快照"的授权（§7）。因此这份记录在
+     落库前必须通过形状校验：九个绑定事实齐全、五个时间字段各自可判定。 */
+  function validateApproval(input) {
+    var o = input || {};
+    var errors = [];
+    var approvalId = o.approvalId == null ? null : String(o.approvalId);
+    if (!isEconomyId('APPROVAL', approvalId)) errors.push('approval-id-not-canonical');
+    var buyer = promotePartyRef(o.buyerId);
+    if (!buyer) errors.push('approval-buyer-must-be-a-canonical-party-ref');
+    else if (String(buyer.type) === PARTY_TYPE.SYSTEM) errors.push('system-party-cannot-buy');
+    if (o.recipientId != null && !promotePartyRef(o.recipientId)) {
+      errors.push('approval-recipient-must-be-a-canonical-party-ref');
+    }
+    if (!isEconomyId('PRODUCT', o.productId)) errors.push('approval-product-id-not-canonical');
+    if (!isEconomyId('QUOTE', o.quoteId)) errors.push('approval-quote-id-not-canonical');
+    var cur = validateCurrency(o.currency);
+    if (!cur.ok) errors.push.apply(errors, cur.errors);
+    var amt = normalizeAmountMinor(o.amountMinor);
+    if (!amt.ok) errors.push.apply(errors, amt.errors);
+    if (!isFulfillment(o.settlementType)) errors.push('approval-settlement-type-not-in-closed-set');
+    if (!isQuoteKind(o.quoteKind)) errors.push('approval-quote-kind-not-in-closed-set');
+    if (!Number.isSafeInteger(o.grantQuantity) || o.grantQuantity < 0) {
+      errors.push('approval-grant-quantity-must-be-a-non-negative-safe-integer');
+    }
+    if (!Number.isSafeInteger(o.units) || o.units < 1) {
+      errors.push('approval-units-must-be-a-positive-safe-integer');
+    }
+    if (!isApprovalState(o.status)) errors.push('approval-status-not-in-closed-set');
+    if (!isPurchaseApprovalMode(o.approvalMode)) errors.push('approval-approval-mode-not-in-closed-set');
+    if (o.expiresAt == null || !Number.isSafeInteger(Number(o.expiresAt)) || Number(o.expiresAt) < 0) {
+      errors.push('approval-expires-at-must-be-a-non-negative-safe-integer');
+    }
+    if (errors.length) return { ok: false, approval: null, errors: errors };
+    return {
+      ok: true,
+      errors: [],
+      approval: Object.freeze({
+        domain: DOMAIN,
+        namespace: NAMESPACES.APPROVAL,
+        approvalId: approvalId,
+        buyerId: Object.freeze({ type: buyer.type, id: buyer.id }),
+        recipientId: o.recipientId == null ? null : (function () {
+          var r = promotePartyRef(o.recipientId);
+          return Object.freeze({ type: r.type, id: r.id });
+        })(),
+        productId: String(o.productId),
+        quoteId: String(o.quoteId),
+        quoteKind: String(o.quoteKind),
+        currency: cur.currency,
+        amountMinor: amt.amountMinor,
+        settlementType: String(o.settlementType),
+        grantQuantity: Number(o.grantQuantity),
+        units: Number(o.units),
+        status: String(o.status),
+        approvalMode: String(o.approvalMode),
+        expiresAt: Number(o.expiresAt)
+      })
+    };
+  }
+
   /* 一份 Purchase 的 ledger transaction id **确定性地**派生自 purchaseId。
      与 P22-3 的 deriveCommitTransactionId(reservationId) 同一手法，理由
      也相同：重放同一个业务必须得到同一个记账身份，而**第二次提交**会
@@ -3626,8 +4515,14 @@
 
   /* 刻意**没有**：refundPurchase / reversePurchase / chargeback（§59）、
      购物车 quantity（§75，Product 一次购买固定 grantQuantity）、
-     部分消费（一份 Quote 恰好被消费一次）、pending approval 记录（§11，
-     Approval 不存在，因此不创建一个永远没人处理的记录）。 */
+     部分消费（一份 Quote 恰好被消费一次）。
+     ★ P22-7 更正了最后一项：pending approval 记录**现在存在**了
+     （APPROVAL_STATE 五态 + economy_approvals 一张表）。P22-6 冻结的
+     `PURCHASE_CREATES_PENDING_APPROVAL_RECORDS = false` 说的是"P22-6 的
+     preparePurchase / settlePurchase 自己不创建它"，那句话**逐字仍然成立**
+     —— 创建它的是 P22-7 的 authorizePurchaseIntent。两条事实分开表达，
+     因为把 false 改成 true 会让"P22-6 的结算路径会凭空多写一张表"成为
+     一个看起来为真的陈述。 */
   var PURCHASE_AMOUNT_SOURCE = 'quote-snapshot';
   var PURCHASE_QUOTE_RELATION = 'CANONICAL_LINKAGE';
   var PURCHASE_PREPARE_REQUIRES_BUDGET_ALLOW = true;
@@ -3794,6 +4689,67 @@
       if (isForbiddenPurchaseFieldName(PURCHASE_SETTLE_INPUT_KEYS[s])) {
         die('settle input keys must not contain a tamperable economic field: ' + PURCHASE_SETTLE_INPUT_KEYS[s]);
       }
+    }
+    /* ── P22-7 的载入期不变量 ────────────────────────────────────────────
+       ① APPROVAL_STATE 的终态必须**恰好**是三个（REJECTED / EXPIRED /
+          CONSUMED），且 PENDING 与 APPROVED 都不是终态。少一个意味着某个
+          终局无法表达；多一个意味着"一个批准还能再动"在结构上成立。
+       ② 自主策略的三个结论与预算决策的三个词必须**各自独立**：它们的
+          字面值恰好相同是刻意设计的（语义同形），但两个数组不能是同一个
+          对象 —— 那会让"改一个就改了另一个"。
+       ③ 自主策略的默认结论必须是 REQUIRE_APPROVAL。一条把"没有策略"
+          读成 AUTO_ALLOW 的系统，会在配置丢失的那一刻变成"什么都能自己买"。 */
+    if (APPROVAL_TERMINAL_STATES.length !== 3) {
+      die('approval terminal states must be exactly three; got=[' + APPROVAL_TERMINAL_STATES.join(',') + ']');
+    }
+    if (isApprovalTerminalState(APPROVAL_STATE.PENDING) || isApprovalTerminalState(APPROVAL_STATE.APPROVED)) {
+      die('PENDING and APPROVED must not be terminal approval states');
+    }
+    if (AP_DECISIONS.length !== 3 || AP_DECISIONS === BUDGET_DECISIONS) {
+      die('the autonomy decision set must be its own closed set of exactly three words');
+    }
+    /* ★ 两个词表**刻意不是**逐字相同的，而这一条正是它们的差别所在：
+       Budget 说 ALLOW（"这笔钱花得起"），Autonomy 说 AUTO_ALLOW
+       （"这台 Agent 有权不问用户直接花"）。它们共享 DENY 与
+       REQUIRE_APPROVAL 两个词（那两句话在两层上的含义逐字一样），
+       但"允许"那个词必须不同族 —— 若两层都叫 ALLOW，审计里
+       "为什么这笔购买了" 就会有两个都叫 ALLOW 的答案。 */
+    for (var ad = 0; ad < AP_DECISIONS.length; ad++) {
+      var word = AP_DECISIONS[ad];
+      if (word === AP_DECISION.AUTO_ALLOW) {
+        if (BUDGET_DECISIONS.indexOf(word) >= 0) {
+          die('the autonomous allowance must not reuse the budget allowance word: ' + word);
+        }
+        continue;
+      }
+      if (BUDGET_DECISIONS.indexOf(word) < 0) {
+        die('autonomy decisions must share the budget words for deny and require-approval: ' + word);
+      }
+    }
+    if (AP_DECISION.DENY !== BUDGET_DECISION.DENY || AP_DECISION.REQUIRE_APPROVAL !== BUDGET_DECISION.REQUIRE_APPROVAL) {
+      die('DENY and REQUIRE_APPROVAL must be the same word in both decision sets');
+    }
+    if (AUTONOMY_DEFAULT_WHEN_NO_POLICY !== AP_DECISION.REQUIRE_APPROVAL) {
+      die('a missing autonomy policy must default to REQUIRE_APPROVAL, never to AUTO_ALLOW');
+    }
+    if (APPROVAL_IS_SINGLE_USE !== true || APPROVAL_BYPASSES_BUDGET !== false ||
+      APPROVAL_BYPASSES_QUOTE_EXPIRY !== false) {
+      die('an approval must be single-use and must never bypass budget or quote expiry');
+    }
+    if (AUTONOMY_POLICY_IS_A_DECISION_LAYER !== false || AUTONOMY_POLICY_GRANTS_BUDGET !== false) {
+      die('the autonomy policy is a permission layer, not a decision layer, and it never grants budget');
+    }
+    /* 自主策略的输入白名单里**不得**出现任何正文 / 关系 / 模型输出类键
+       （§2 的"禁止输入"清单）。这一条放在载入期，于是"某天有人加了
+       relationship 字段"会在 require 的那一刻就炸，而不是等到审计时。 */
+    for (var ak = 0; ak < AUTONOMY_POLICY_INPUT_KEYS.length; ak++) {
+      if (AUTONOMY_FORBIDDEN_INDEX[AUTONOMY_POLICY_INPUT_KEYS[ak]] === true) {
+        die('autonomy input keys must not carry non-deterministic text: ' + AUTONOMY_POLICY_INPUT_KEYS[ak]);
+      }
+    }
+    /* 九条绑定事实必须**恰好**覆盖 §6 点名的那九个，一条不少也一条不多。 */
+    if (APPROVAL_BINDING_KEYS.length !== 9) {
+      die('an approval must bind exactly nine economic facts; got=' + APPROVAL_BINDING_KEYS.length);
     }
   })();
 
@@ -4088,6 +5044,44 @@
     validatePurchase: validatePurchase,
     settlementCounterpartyFor: settlementCounterpartyFor,
     derivePurchaseLedgerTransactionId: derivePurchaseLedgerTransactionId,
+    /* ══ P22-7 §23 · Approval + Autonomous Purchase Policy ══════════════ */
+    APPROVAL_STATE: APPROVAL_STATE,
+    APPROVAL_STATES: APPROVAL_STATES,
+    APPROVAL_TRANSITIONS: APPROVAL_TRANSITIONS,
+    APPROVAL_TERMINAL_STATES: APPROVAL_TERMINAL_STATES,
+    APPROVAL_INITIAL_STATE: APPROVAL_INITIAL_STATE,
+    isApprovalState: isApprovalState,
+    isApprovalTerminalState: isApprovalTerminalState,
+    canTransitionApproval: canTransitionApproval,
+    assertApprovalTransition: assertApprovalTransition,
+    AP_DECISION: AP_DECISION,
+    AP_DECISIONS: AP_DECISIONS,
+    AP_EVALUATION_PRIORITY: AP_EVALUATION_PRIORITY,
+    AUTONOMY_POLICY_INPUT_KEYS: AUTONOMY_POLICY_INPUT_KEYS,
+    AUTONOMY_POLICY_KEYS: AUTONOMY_POLICY_KEYS,
+    AUTONOMY_POLICY_FORBIDDEN_INPUT_KEYS: AUTONOMY_POLICY_FORBIDDEN_INPUT_KEYS,
+    APPROVAL_BINDING_KEYS: APPROVAL_BINDING_KEYS,
+    APPROVAL_MAX_LIFETIME_MS: APPROVAL_MAX_LIFETIME_MS,
+    normalizeAutonomyPolicyInput: normalizeAutonomyPolicyInput,
+    validateAutonomyPolicy: validateAutonomyPolicy,
+    evaluateAutonomousPurchase: evaluateAutonomousPurchase,
+    apDecision: apDecision,
+    approvalFingerprint: approvalFingerprint,
+    validateApproval: validateApproval,
+    PURCHASE_APPROVAL_MODE: PURCHASE_APPROVAL_MODE,
+    PURCHASE_APPROVAL_MODES: PURCHASE_APPROVAL_MODES,
+    isPurchaseApprovalMode: isPurchaseApprovalMode,
+    AUTONOMY_POLICY_IS_A_DECISION_LAYER: AUTONOMY_POLICY_IS_A_DECISION_LAYER,
+    AUTONOMY_POLICY_READS_LLM_OUTPUT: AUTONOMY_POLICY_READS_LLM_OUTPUT,
+    AUTONOMY_POLICY_READS_MEMORY: AUTONOMY_POLICY_READS_MEMORY,
+    AUTONOMY_POLICY_READS_RELATIONSHIP: AUTONOMY_POLICY_READS_RELATIONSHIP,
+    AUTONOMY_POLICY_GRANTS_BUDGET: AUTONOMY_POLICY_GRANTS_BUDGET,
+    AUTONOMY_REPLACES_BUDGET: AUTONOMY_REPLACES_BUDGET,
+    APPROVAL_BYPASSES_BUDGET: APPROVAL_BYPASSES_BUDGET,
+    APPROVAL_BYPASSES_QUOTE_EXPIRY: APPROVAL_BYPASSES_QUOTE_EXPIRY,
+    APPROVAL_IS_SINGLE_USE: APPROVAL_IS_SINGLE_USE,
+    APPROVAL_IS_BOUND_TO_A_QUOTE: APPROVAL_IS_BOUND_TO_A_QUOTE,
+    AUTONOMY_DEFAULT_WHEN_NO_POLICY: AUTONOMY_DEFAULT_WHEN_NO_POLICY,
     formatPurchaseId: formatPurchaseId
   });
 });

@@ -564,7 +564,26 @@ const GROUPS = [
               prepare 得到 6 个互不相同的 purchaseId。 */
       ['test_p22_6_economy_purchase.js'],
       ['test_p22_6_economy_settlement.js'],
-      ['test_p22_6_economy_runtime.js']
+      ['test_p22_6_economy_runtime.js'],
+      /* ── P22-7 · Approval + Autonomous Purchase Policy ────────────────
+         authority 层（"Agent 有没有权不问用户直接花"）的完整运行时：
+         两条链（AUTO_ALLOW / APPROVAL）、五态批准记录、九元组绑定、
+         一次性消费、self-approval 拒绝、以及 HTTP 仍然零写路由。
+            autonomy  —— 契约与**纯策略**：三个结论、十条判据的冻结顺序、
+                          no-policy fail closed、§3 的 Budget×Autonomy 两层
+                          边界、§6 的九元组绑定、Gift 与 Compute/API quota；
+            approval  —— 批准记录的生命周期：请求 / 决定 / 拒绝 / 过期 /
+                          消费，§6 的"批准不能被挪给另一笔购买"，§8 的
+                          "一个批准最多一笔购买"，§11 的"批准不是预算豁免"；
+            runtime   —— **真实 spawn services/home-node-service.js**（schema 6）
+                          + 两条写面为空的只读权限面 + **两个真实子进程**
+                          分别 APPROVE/REJECT 同一条批准（恰好一个写入者）
+                          与同时拿同一条批准去买（恰好一笔购买）+
+                          7 个注入点上的**真实进程崩溃**（exit 134）与回滚，
+                          断言绝不出现「批准已 CONSUMED 但没有 Purchase」。 */
+      ['test_p22_7_economy_autonomy.js'],
+      ['test_p22_7_economy_approval.js'],
+      ['test_p22_7_economy_runtime.js']
     ]
   },
   {

@@ -1244,12 +1244,27 @@ section('O · Runtime 依赖纪律（静态：本条与 boundary 测试互补）
      它们改的是**这次购买现在处在哪个结局**，改不到任何一笔已经发生的
      经济事实：金额在 amount_minor（Prepare 时从 Quote 快照写下，两条
      语句的 SET 里都没有它），钱动没动在 ledger 里（那三张表仍然被 O9b
-     挡着）。O9f/O9g 追加逐列断言。 */
+     挡着）。O9f/O9g 追加逐列断言。
+
+     ── P22-7 再扩两张（第五次）────────────────────────────────────────
+     autonomy_policies 与 approvals 各有一条 UPDATE：
+       · autonomy_policies —— 改的是**规则**（enabled / 三个额度 /
+                              两个白名单 / allow_gift），不是任何一笔已发生
+                              的经济事实；
+       · approvals         —— 改的是**这条批准处在哪个结局**（status /
+                              决定者 / 决定时间 / 消费链接）。九条**绑定
+                              事实**（buyer / recipient / product / quote /
+                              currency / amount / settlement / grantQuantity /
+                              units）与 binding_fingerprint 一次都不出现在
+                              任何 UPDATE 的 SET 里 —— 那正是 §6 的落点：
+                              "批准之后换掉商品/价格/recipient/数量/settlement，
+                              批准必须失效"意味着批准的**内容**不可变，
+                              唯一能变的是它的结局。O9i/O9j 追加逐列断言。 */
   const MUTABLE_TABLES = ['WALLETS_TABLE', 'META_TABLE', 'IDEMPOTENCY_TABLE',
     'OPERATIONS_TABLE', 'RESERVATIONS_TABLE', 'OPERATION_IDEMPOTENCY_TABLE',
     'BUDGET_POLICIES_TABLE', 'QUOTES_TABLE',
     'STORES_TABLE', 'PRODUCTS_TABLE', 'INVENTORY_TABLE',
-    'PURCHASES_TABLE'];
+    'PURCHASES_TABLE', 'AUTONOMY_POLICIES_TABLE', 'APPROVALS_TABLE'];
   check('O9 被 UPDATE / DELETE 的表只可能是"派生缓存 / 水位 / 生命周期行 / 幂等表"这四类，'
     + 'ACCOUNTS 与三个 ledger 事实表都不在内',
     mutatedTables.every(t => MUTABLE_TABLES.indexOf(t) >= 0), mutatedTables);
@@ -1320,13 +1335,74 @@ section('O · Runtime 依赖纪律（静态：本条与 boundary 测试互补）
     /WHERE purchase_id=\? AND status=\?/.test(statementWindow('setPurchaseSettled') || '') &&
     /WHERE purchase_id=\? AND status=\?/.test(statementWindow('setPurchaseTerminal') || ''),
     [statementWindow('setPurchaseSettled'), statementWindow('setPurchaseTerminal')]);
+  /* ── O9i/O9j · P22-7：approval 的三条 UPDATE 逐列读出 ────────────────
+     ★ 这一组比 O9f/O9g **更强**：除了"经济内容不可变"，它还要求九条
+     **绑定事实**与 binding_fingerprint 不在任何 SET 里（§6：批准之后换掉
+     商品 / 价格 / recipient / 数量 / settlement，批准必须失效 —— 那句话
+     的静态一半就是"批准的授权内容不可变"）。
+     三条语句各自带一个 `AND status=?` 闸门：两个进程同时决定同一条批准时，
+     必然有一个 changes=0。 */
+  const approvalDecidedColumns = setColumnsOf('setApprovalDecided');
+  const approvalExpiredColumns = setColumnsOf('setApprovalExpired');
+  const APPROVAL_BINDING_COLUMNS = ['buyer_id', 'buyer_type', 'recipient_id', 'recipient_type',
+    'product_id', 'quote_id', 'quote_kind', 'currency', 'amount_minor', 'settlement_type',
+    'grant_quantity', 'units', 'binding_fingerprint', 'authorization_mode',
+    'approvalMode', 'autonomy_policy_id', 'autonomy_outcome', 'autonomy_reason_code',
+    'created_at', 'idempotency_key', 'fingerprint'];
+  check('O9i economy_approvals 的决定 UPDATE 只能赋结局列（status / 决定者 / revision / updated_at / decided_at），'
+    + '九条绑定事实一次都不出现',
+    approvalDecidedColumns != null &&
+    approvalDecidedColumns.join(',') === 'decided_at,decided_by_id,decided_by_type,revision,status,updated_at' &&
+    APPROVAL_BINDING_COLUMNS.every(c => approvalDecidedColumns.indexOf(c) < 0),
+    approvalDecidedColumns);
+  check('O9j economy_approvals 的过期与消费 UPDATE 只能赋结局列，且消费语句把"只能从 APPROVED 走到 CONSUMED"写进 WHERE'
+    + '（一次性消费是一条 SQL 谓词，不是一句约定）',
+    approvalExpiredColumns != null &&
+    approvalExpiredColumns.join(',') === 'revision,status,updated_at' &&
+    APPROVAL_BINDING_COLUMNS.every(c => approvalExpiredColumns.indexOf(c) < 0) &&
+    (() => {
+      const consumed = setColumnsOf('setApprovalConsumed');
+      if (consumed == null) return false;
+      return consumed.join(',') === 'consume_reason,consumed_at,consumed_by_purchase_id,revision,status,updated_at' &&
+        APPROVAL_BINDING_COLUMNS.every(c => consumed.indexOf(c) < 0) &&
+        /WHERE approval_id=\? AND status=\?/.test(statementWindow('setApprovalConsumed') || '') &&
+        (() => {
+          /* ★ 谓词的**实参**也必须逐字是 APPROVED：语句里写的是
+             `AND status=?`，因此"只能从 APPROVED 消费"这句话要靠绑定值
+             落实。这一条断言的是调用点，而不是 SQL 文本。 */
+          const call = /SQL\.setApprovalConsumed\)\.run\(([\s\S]{0,400}?)\);/.exec(src);
+          return call != null && /C\.APPROVAL_STATE\.APPROVED/.test(call[1]) &&
+            /C\.APPROVAL_STATE\.CONSUMED/.test(call[1]);
+        })();
+    })(),
+    [approvalExpiredColumns, setColumnsOf('setApprovalConsumed')]);
+  check('O9k 三条 approval UPDATE 都带 `AND status=?`，且自主策略的 UPDATE 只改规则列',
+    /WHERE approval_id=\? AND status=\?/.test(statementWindow('setApprovalDecided') || '') &&
+    /WHERE approval_id=\? AND status=\?/.test(statementWindow('setApprovalExpired') || '') &&
+    /WHERE approval_id=\? AND status=\?/.test(statementWindow('setApprovalConsumed') || '') &&
+    (() => {
+      const policyCols = setColumnsOf('updateAutonomyPolicy');
+      if (policyCols == null) return false;
+      return policyCols.join(',') === 'allow_gift,allowed_product_kinds,allowed_settlement_types,'
+        + 'approval_above_minor,daily_autonomous_limit_minor,enabled,fingerprint,idempotency_key,'
+        + 'per_purchase_limit_minor,revision,updated_at';
+    })(),
+    [statementWindow('setApprovalDecided'), statementWindow('setApprovalConsumed'), setColumnsOf('updateAutonomyPolicy')]);
   check('O11 故障注入只在 deps.faults 上，且没有任何 HTTP 层能写它（本文件不 require http）',
     /const faults = deps\.faults \|\| null/.test(src) && requires.indexOf('node:http') < 0);
   check('O12 test-only 的破坏辅助被**显式命名**为 ForTest（读代码时不会被误当成产品 API）',
     /corruptCachedBalanceForTest/.test(src) && /_internal/.test(src));
-  check('O13 文件里不出现 character_runtime_specs / Authorization / Bearer（凭据边界）',
+  check('O13 文件里不出现 character_runtime_specs / 凭据头的读法 / Bearer（凭据边界）',
     stripped.indexOf('character_runtime_specs') < 0 &&
-    !/authorization/i.test(stripped) && stripped.indexOf('Bearer') < 0);
+    /* ★ 这里断言的是**读凭据头**这件事，而不是 "authorization" 这个词。
+       P22-7 引入了 authorization 这一层（购买行上的授权模式与读面的
+       authorizationSummary），于是"出现这个词"与"读一个凭据头"不再等价 ——
+       继续用词禁会把它变成对命名的禁令，而那种断言只会逼出为绕过它而起的
+       名字。逐条点名真正的读法，反例由 http.js 提供（见 P22-1 的 B6.3）。 */
+    !/req\.headers\s*\.\s*authorization/i.test(stripped) &&
+    !/req\.headers\s*\[\s*['"]authorization['"]\s*\]/i.test(stripped) &&
+    !/headers\s*\.\s*authorization/i.test(stripped) &&
+    stripped.indexOf('Bearer') < 0);
 }
 
 /* ══════════════════════════════════════════════════════════════════

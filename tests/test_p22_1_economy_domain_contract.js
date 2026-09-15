@@ -542,10 +542,16 @@ check('D13.14 operation 的 reservationId / transactionId 若给了就必须是 
    锁的不是钱，但它们必须与 reserve/commit 一样是**互不混淆**的身份。
    P22-5 又加了四个（STORE / PRODUCT / INVENTORY_GRANT /
    INVENTORY_CONSUME）—— 阻力照旧生效：这一行是**手动**改的，而不是
-   被一个 `.length >= 7` 悄悄放过去的。 */
-check('D13.15 OPERATION_SCOPE 是封闭十三元集合（P22-1 的五个 + QUOTE/POLICY + P22-5 的四个 + P22-6 的两个）',
+   被一个 `.length >= 7` 悄悄放过去的。
+   P22-7 加四个（APPROVAL_REQUEST / APPROVAL_DECIDE / APPROVAL_CONSUME /
+   AUTONOMY_POLICY）—— 理由与前几次同源：一条**批准**的"请求 / 决定 /
+   消费"是三次不同的写入，而它们的重试语义各自独立；自主策略的一次变更
+   与预算策略的一次变更是两件事。 */
+check('D13.15 OPERATION_SCOPE 是封闭十七元集合（P22-1 的五个 + QUOTE/POLICY + P22-5 的四个 + P22-6 的两个 + P22-7 的四个）',
   C.OPERATION_SCOPES.slice().sort().join(',') ===
-    'COMMIT,EXPIRE,FAIL,INVENTORY_CONSUME,INVENTORY_GRANT,POLICY,PRODUCT,PURCHASE_PREPARE,PURCHASE_SETTLE,QUOTE,RELEASE,RESERVE,STORE' &&
+    'APPROVAL_CONSUME,APPROVAL_DECIDE,APPROVAL_REQUEST,AUTONOMY_POLICY,' +
+    'COMMIT,EXPIRE,FAIL,INVENTORY_CONSUME,INVENTORY_GRANT,POLICY,PRODUCT,' +
+    'PURCHASE_PREPARE,PURCHASE_SETTLE,QUOTE,RELEASE,RESERVE,STORE' &&
   C.isOperationScope('RESERVE') === true && C.isOperationScope('reserve') === false &&
   C.isOperationScope('QUOTE') === true && C.isOperationScope('POLICY') === true &&
   /* P22-6 的两个 scope 与 P22-3 的 RESERVE/COMMIT **刻意不同**：
@@ -553,6 +559,15 @@ check('D13.15 OPERATION_SCOPE 是封闭十三元集合（P22-1 的五个 + QUOTE
      答案在时间上不同（prepare 之后 settle 可能永远不发生）。 */
   C.isOperationScope('PURCHASE_PREPARE') === true && C.isOperationScope('PURCHASE_SETTLE') === true &&
   C.isOperationScope('PURCHASE') === false &&
+  /* P22-7 的三个 APPROVAL_* 与 P22-6 的 PURCHASE_* **刻意不同**：
+     "我那次请求批准成没成""我那一次决定写下了没有""那张许可证被用掉了
+     没有"是三个问题，而它们的答案在时间上依次分离。 */
+  C.isOperationScope('APPROVAL_REQUEST') === true &&
+  C.isOperationScope('APPROVAL_DECIDE') === true &&
+  C.isOperationScope('APPROVAL_CONSUME') === true &&
+  C.isOperationScope('APPROVAL') === false &&
+  C.isOperationScope('AUTONOMY_POLICY') === true &&
+  C.isOperationScope('AUTONOMY') === false &&
   C.isOperationScope('TOPUP') === false);
 check('D13.16 scopedIdempotencyIdentity 让同一个 key 在两个 scope 下是**两个**身份',
   C.scopedIdempotencyIdentity('RESERVE', 'X').identity !== C.scopedIdempotencyIdentity('COMMIT', 'X').identity &&
@@ -603,9 +618,22 @@ check('D10.5 特征串允许（uuid / 时间戳串 / 点分）',
    断言本身的**含义一个字都没改**：种类数、前缀唯一、互不为前缀、
    都以 econ_ 开头。因此这里只是把那个计数跟着契约走。
    为什么仍然要写死数字：`length === 13` 会在"有人悄悄加了第 14 种
-   id"时失败 —— 那正是一次需要被看见的契约变更。 */
-check('D11.1 十四种 id 种类各有唯一前缀（P22-3 加 OPERATION，P22-5 加 STORE）',
-  C.ID_KINDS.length === 14 && new Set(C.ID_KINDS.map(k => C.ID_PREFIX[k])).size === 14, C.ID_KINDS);
+   id"时失败 —— 那正是一次需要被看见的契约变更。
+   ★ P22-7 加了第 15 种（APPROVAL = econ_approval_）：一条**批准记录**
+   与它所授权的那笔购买是两个实体（Approval ≠ Purchase），因此它不能
+   复用 PURCHASE_INTENT（econ_intent_，购买自己用掉了），也不能复用
+   BUDGET_POLICY（econ_policy_，那是**规则**的身份，而一条批准恰好被
+   消费一次）。这一行同样是**手动**改的。 */
+check('D11.1 十五种 id 种类各有唯一前缀（P22-3 加 OPERATION，P22-5 加 STORE，P22-7 加 APPROVAL）',
+  C.ID_KINDS.length === 15 && new Set(C.ID_KINDS.map(k => C.ID_PREFIX[k])).size === 15, C.ID_KINDS);
+check('D11.1c APPROVAL 是 econ_approval_，且它与 PURCHASE_INTENT / BUDGET_POLICY **互不混淆**',
+  C.ID_PREFIX.APPROVAL === 'econ_approval_' &&
+  C.ID_PREFIX.APPROVAL !== C.ID_PREFIX.PURCHASE_INTENT &&
+  C.ID_PREFIX.APPROVAL !== C.ID_PREFIX.BUDGET_POLICY &&
+  C.formatEconomyId('APPROVAL', 'a1').id === 'econ_approval_a1' &&
+  C.isEconomyId('APPROVAL', 'econ_intent_x') === false &&
+  C.isEconomyId('APPROVAL', 'econ_policy_x') === false &&
+  C.isEconomyId('PURCHASE_INTENT', 'econ_approval_a1') === false);
 check('D11.1b OPERATION 是 econ_op_，且它是**新增**的而不是复用了 transaction / reservation',
   C.ID_PREFIX.OPERATION === 'econ_op_' &&
   C.ID_PREFIX.OPERATION !== C.ID_PREFIX.TRANSACTION &&
@@ -1218,12 +1246,28 @@ check('D14.2 P22-1 的三十一个 reason code 一个都没丢（35 = 31 + P22-3
     'ACCOUNT_NOT_ALLOWED', 'AUTONOMY_NOT_PERMITTED', 'INSUFFICIENT_COMPUTE_CREDIT',
     'EXCHANGE_RATE_UNKNOWN', 'EXCHANGE_ROUNDS_TO_ZERO', 'EXCHANGE_CROSS_DOMAIN_FORBIDDEN',
     'POLICY_INPUT_NOT_STRUCTURED', 'INSUFFICIENT_AVAILABLE_BALANCE'].every(r => C.isDenyReasonCode(r)) &&
-  /* 42 = P22-1 的 31 + P22-3 的 1 + P22-4 的 4 + P22-5 的 5
+  /* 47 = P22-1 的 31 + P22-3 的 1 + P22-4 的 4 + P22-5 的 5
      （INVENTORY / PRODUCT_NOT_FOUND / STORE_NOT_FOUND /
        CATALOG_INPUT_NOT_STRUCTURED / INVENTORY_INPUT_NOT_STRUCTURED）
-     + P22-6 的 2（PURCHASE_REQUIRES_APPROVAL / PURCHASE_NOT_SUPPORTED）。
+     + P22-6 的 2（PURCHASE_REQUIRES_APPROVAL / PURCHASE_NOT_SUPPORTED）
+     + P22-7 的 5（APPROVAL_REQUIRED / APPROVAL_NOT_FOUND /
+       APPROVAL_MISMATCH / APPROVAL_NOT_CONSUMED / APPROVAL_EXPIRED）。
+     ★ P22-7 **没有**新增 AUTONOMY_NOT_PERMITTED 与 AUTONOMY_LIMIT ——
+     那两个 P22-1 就已经冻结在上面这份名单里，本阶段是它们第一次真的有
+     写入方（这条区别本身值得被读出来：一个早就冻结的代码不等于一个
+     早已实现的代码）。
      写死数字是刻意的：加一个代码必须有人手动改这一行。 */
-  C.DENY_REASONS.length === 42, C.DENY_REASONS.length);
+  C.DENY_REASONS.length === 47, C.DENY_REASONS.length);
+check('D14.32 P22-7 新增的五个 reason code 各自可判定，且它与既有的两个自主代码**不重复**',
+  ['APPROVAL_REQUIRED', 'APPROVAL_NOT_FOUND', 'APPROVAL_MISMATCH', 'APPROVAL_NOT_CONSUMED', 'APPROVAL_EXPIRED']
+    .every(r => C.isDenyReasonCode(r)) &&
+  /* 两个 P22-1 就冻结的自主代码仍然在，而且它们与新增的四个是不同的词。 */
+  ['AUTONOMY_NOT_PERMITTED', 'AUTONOMY_LIMIT'].every(r => C.isDenyReasonCode(r)) &&
+  new Set(['APPROVAL_REQUIRED', 'APPROVAL_NOT_FOUND', 'APPROVAL_MISMATCH', 'APPROVAL_NOT_CONSUMED',
+    'APPROVAL_EXPIRED', 'AUTONOMY_NOT_PERMITTED', 'AUTONOMY_LIMIT']).size === 7 &&
+  C.DENY_REASONS.indexOf('OTHER') < 0 && C.DENY_REASONS.indexOf('PENDING') < 0 &&
+  C.DENY_REASONS.indexOf('APPROVED') < 0 && C.DENY_REASONS.indexOf('CONSUMED') < 0 &&
+  C.isDenyReasonCode('approval_required') === false);
 check('D14.3 P22-4 新增的四个 reason code 各自可判定，且没有引入兜底值',
   ['POLICY_NOT_FOUND', 'POLICY_TERM_EXPIRED', 'AMOUNT_EXCEEDS_PER_TRANSACTION',
     'AMOUNT_EXCEEDS_APPROVAL_THRESHOLD'].every(r => C.isDenyReasonCode(r)) &&
@@ -1373,15 +1417,29 @@ check('D14.26 P22-3 的 OPERATION_SCOPE 五元集合是**子集**（加 scope �
   ['QUOTE', 'POLICY'].every(s => C.OPERATION_SCOPES.indexOf(s) >= 0) &&
   ['STORE', 'PRODUCT', 'INVENTORY_GRANT', 'INVENTORY_CONSUME'].every(s => C.OPERATION_SCOPES.indexOf(s) >= 0) &&
   ['PURCHASE_PREPARE', 'PURCHASE_SETTLE'].every(s => C.OPERATION_SCOPES.indexOf(s) >= 0) &&
-  C.OPERATION_SCOPES.length === 13);
+  ['APPROVAL_REQUEST', 'APPROVAL_DECIDE', 'APPROVAL_CONSUME', 'AUTONOMY_POLICY']
+    .every(s => C.OPERATION_SCOPES.indexOf(s) >= 0) &&
+  C.OPERATION_SCOPES.length === 17);
+check('D14.26b P22-7 的十个新事件全部登记，且 P22-6 的五个 purchase 事件一个都没丢',
+  ['AUTONOMY_POLICY_CREATED', 'AUTONOMY_POLICY_UPDATED',
+    'APPROVAL_REQUESTED', 'APPROVAL_APPROVED', 'APPROVAL_REJECTED',
+    'APPROVAL_EXPIRED', 'APPROVAL_CONSUMED',
+    'PURCHASE_AUTHORIZED', 'AUTONOMY_PURCHASE_AUTO_ALLOWED',
+    'AUTONOMY_PURCHASE_REQUIRES_APPROVAL'].every(t => C.isEconomyEventType(t)) &&
+  ['PURCHASE_CREATED', 'PURCHASE_RESERVED', 'PURCHASE_COMPLETED',
+    'PURCHASE_RELEASED', 'PURCHASE_FAILED'].every(t => C.isEconomyEventType(t)) &&
+  /* 词表是封闭的：没有"泛化批准事件"这种兜底名字。 */
+  C.EVENT_TYPES.indexOf('APPROVAL_UPDATED') < 0 &&
+  C.EVENT_TYPES.indexOf('APPROVAL_DECIDED') < 0 &&
+  C.EVENT_TYPES.indexOf('AUTONOMY_DECIDED') < 0);
 check('D14.27 P22-4 的八个新事件全部登记，且 P22-1 的十一个事件一个都没丢',
   ['BUDGET_POLICY_CREATED', 'BUDGET_POLICY_UPDATED', 'BUDGET_POLICY_DISABLED', 'BUDGET_POLICY_EXPIRED',
     'QUOTE_CREATED', 'QUOTE_EXPIRED', 'QUOTE_CONSUMED', 'QUOTE_CANCELLED'].every(t => C.isEconomyEventType(t)) &&
   ['WALLET_OPENED', 'TRANSACTION_CREATED', 'PURCHASE_COMMITTED', 'PURCHASE_DENIED',
     'ITEM_GIFTED', 'ITEM_CONSUMED', 'COMPUTE_CREDIT_GRANTED', 'COMPUTE_CREDIT_CONSUMED',
     'EXCHANGE_COMMITTED', 'MINT_COMMITTED', 'BURN_COMMITTED'].every(t => C.isEconomyEventType(t)));
-check('D14.28 十四种 id 种类（P22-5 加 STORE），BUDGET_POLICY / QUOTE / PRODUCT / INVENTORY_ENTRY 的前缀在 P22-1 就已冻结',
-  C.ID_KINDS.length === 14 &&
+check('D14.28 十五种 id 种类（P22-5 加 STORE，P22-7 加 APPROVAL），BUDGET_POLICY / QUOTE / PRODUCT / INVENTORY_ENTRY 的前缀在 P22-1 就已冻结',
+  C.ID_KINDS.length === 15 &&
   C.ID_PREFIX.STORE === 'econ_store_' &&
   C.ID_PREFIX.BUDGET_POLICY === 'econ_policy_' && C.ID_PREFIX.QUOTE === 'econ_quote_' &&
   /* P22-5 第一次真的写下一行 product / inventory，而它们的**形状**在
@@ -1394,6 +1452,14 @@ check('D14.28 十四种 id 种类（P22-5 加 STORE），BUDGET_POLICY / QUOTE /
   C.isEconomyId('BUDGET_POLICY', 'econ_policy_x1') === true &&
   C.isEconomyId('QUOTE', 'econ_quote_q1') === true &&
   C.isEconomyId('QUOTE', 'econ_policy_x1') === false);
+check('D14.33 P22-7 的 APPROVAL 命名空间与 BUDGET / QUOTE / PURCHASE 命名空间是四个不同的字面值',
+  C.NAMESPACES.APPROVAL === 'ib.economy.approval' &&
+  C.NAMESPACES.APPROVAL !== C.NAMESPACES.PURCHASE &&
+  C.NAMESPACES.APPROVAL !== C.NAMESPACES.BUDGET &&
+  /* ★ 自主策略**复用** BUDGET 命名空间是刻意的：它与预算政策共用同一种
+     记录形状；它需要自己的**事件**名，但不需要第二个命名空间。 */
+  C.NAMESPACES.BUDGET === 'ib.economy.budget' &&
+  C.ID_PREFIX.APPROVAL === 'econ_approval_');
 check('D14.29 政策 / 报价命名空间在 P22-1 就已存在，P22-4 没有新造子域',
   C.NAMESPACES.BUDGET === 'ib.economy.budget' && C.NAMESPACES.QUOTE === 'ib.economy.quote' &&
   C.NAMESPACES.STORE === 'ib.economy.store');

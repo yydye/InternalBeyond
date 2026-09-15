@@ -773,6 +773,23 @@ function createHomeNodeHttp(deps) {
           purchaseIsALedgerTransaction: false,
           purchaseTouchesProvider: false,
           purchaseTouchesPayment: false,
+          /* ── P22-7：权限层 ────────────────────────────────────────────────
+             ★ 这一节的四句话是"HTTP 面**没有**获得批准能力"的逐字形式：
+               · approvalRuntimeImplemented —— 运行时**有**（同进程 API）；
+               · approvalWritesExposed / autonomyWritesExposed —— 写路由
+                 **没有**，而且是两项分开的名单；
+               · approveViaHttpIsForsen —— 不存在任何一条"用户点批准"的
+                 HTTP 入口，那个入口留给未来的 UI / Action authority 阶段。
+             §14 逐字要求本阶段即使有了 Approval runtime 也不开放
+             POST /economy/approve · /reject · /buy · /autonomy。 */
+          approvalRuntimeImplemented: true,
+          approvalWritesExposed: [],
+          autonomyWritesExposed: [],
+          approveViaHttpIsForbidden: true,
+          approvalConsumptionIsInsideSettlement: true,
+          approvalIsSingleUse: true,
+          autonomyDefaultWhenNoPolicy: 'REQUIRE_APPROVAL',
+          autonomyIsADecisionLayer: false,
           desktopPaths: ['/economy/health', '/economy/wallet', '/economy/ledger',
             '/economy/transaction', '/economy/changes',
             '/economy/reservations', '/economy/reservation',
@@ -785,7 +802,15 @@ function createHomeNodeHttp(deps) {
             '/economy/products', '/economy/product',
             '/economy/inventory', '/economy/inventory-entry',
             /* P22-6：购买读面（一对）。 */
-            '/economy/purchases', '/economy/purchase'],
+            '/economy/purchases', '/economy/purchase',
+            /* P22-7：权限读面（三对五条）。`/economy/approval` 从
+               unreachable 移到这里，而 `/economy/approvals` 从未在名单里；
+               `/economy/autonomy-policy` 是新增的只读面，而写形态
+               `/economy/autonomy` 与 `/economy/autonomy-policy` 的 POST
+               落在下面那个兜底分支上（一律 405）。 */
+            '/economy/approvals', '/economy/approval',
+            '/economy/autonomy-policies', '/economy/autonomy-policy',
+            '/economy/autonomy-evaluation'],
           /* P22-4：/economy/budget 与 /economy/quote **有**只读路由，
              因此它们不出现在 unreachable 里；而不存在的写路径
              （policy/quote 的 POST·PUT·DELETE、approve、evaluate 的写形态）
@@ -803,13 +828,18 @@ function createHomeNodeHttp(deps) {
             '/economy/provider', '/economy/mint', '/economy/burn', '/economy/transfer',
             '/economy/reserve', '/economy/commit', '/economy/release', '/economy/expire',
             '/economy/fail', '/economy/sweep',
-            '/economy/approve', '/economy/approval',
+            /* ★ `/economy/approval` 在 P22-6 时还在这份名单里（那时它确实
+               不存在）。P22-7 给了它一条**只读**路由，因此它必须被**移走**
+               —— 一条声明若比真实路由更保守，它就不再是在描述这个系统。
+               移走它**不是放松**：`/economy/approve` 与 `/economy/reject`
+               （真正的写入口）仍然逐名留在这里。 */
+            '/economy/approve', '/economy/reject',
             '/economy/inventory/grant', '/economy/inventory/consume',
             '/economy/store/create', '/economy/store/update',
             '/economy/product/create', '/economy/product/update',
             '/economy/prepare', '/economy/settle', '/economy/buy',
             '/economy/cancel', '/economy/refund', '/economy/reverse',
-            '/economy/exchange']
+            '/economy/exchange', '/economy/autonomy', '/economy/autonomy-policy']
         },
         doesNotExpose: ['llm-proxy', 'tools', 'payments', 'diary', 'letters', 'images', 'tts'],
         /* M1-B：设备身份 + 移动边界。mobile 面**只有** allowlist 里的 verb。 */
@@ -1209,14 +1239,18 @@ function createHomeNodeHttp(deps) {
        GET /economy/purchase    单次购买（purchaseId），带三个小结
 
        ★ P22-6 第一次让 Economy 拥有**完整**的购买运行时，而这里依然
-       **一条写路由都不开**（§60）：
-         · 没有 POST /economy/purchase、POST /economy/prepare、
-           POST /economy/settle、POST /economy/buy、POST /economy/cancel；
+       **一条写路由都不开**（§60）。
+       ★ P22-7 第一次让 Economy 拥有**完整的权限判定运行时**（自主策略 +
+       批准记录），而这里同样**一条写路由都不开**（§14）：
+         · 没有 POST /economy/approve、POST /economy/reject、
+           POST /economy/buy、POST /economy/autonomy、
+           POST /economy/autonomy-policy；
          · 它们全部落在下面那个兜底分支上，一律 405 economy-is-read-only；
-         · 理由不是"还没写"，而是 **Decision / Action / Approval / 用户
-           权限边界都还没有接入** —— 在那之前，"谁能要求系统为谁买什么"
-           这个问题没有答案，而没有答案的写入口就是一个权限漏洞。
-       mutation 只通过同进程 runtime fixture 触发（见 P22-6 focused tests）。 */
+         · 理由不是"还没写"，而是 **Decision / Action / 用户权限入口都还
+           没有接入** —— 在那之前，"谁有权替谁点头"这个问题没有答案，
+           而没有答案的写入口就是一个权限漏洞。真正的"用户点批准"入口
+           留给未来的 UI / Action authority 阶段。
+       mutation 只通过同进程 runtime fixture 触发（见 P22-7 focused tests）。 */
     if (path === '/economy/purchases' && method === 'GET') {
       if (!economy) { bad(res, 501, 'economy-not-assembled', null, req); return; }
       const result = economy.listPurchases({
@@ -1250,8 +1284,145 @@ function createHomeNodeHttp(deps) {
         isALedgerTransaction: false,
         isAReservation: false,
         isAQuote: false,
+        /* P22-7：购买也不是一条批准，而且它不携带任何权限（权限是
+           approvalId 那个一次性事实，不是这行记录）。 */
+        isAnApproval: false,
+        grantsAutonomy: false,
+        grantsBudget: false,
         exposesMutation: false
       }, result), req);
+      return;
+    }
+
+    /* ══════════════════════════════════════════════════════════════════
+       P22-7 · 权限读面（五条 GET，**零**条写路由）
+
+       ★ §14 逐字要求本阶段即使有了 Approval runtime 也不开放：
+           POST /economy/approve · /economy/reject · /economy/buy ·
+           /economy/autonomy
+         真正"用户点批准"的入口留给未来的 UI / Action authority 阶段 ——
+         在那之前，"谁有权替谁点头"这个问题没有答案，而没有答案的写入口
+         就是一个权限漏洞。因此这里给的是**只读**的：
+           GET /economy/approvals           列出批准（buyerId / quoteId / status）
+           GET /economy/approval            单条（approvalId）
+           GET /economy/autonomy-policies   列出自主策略（ownerId）
+           GET /economy/autonomy-policy     单条（policyId 或 ownerId）
+           GET /economy/autonomy-evaluation 对一份**已存在的报价**做一次
+                                            只读的自主判定（§19 的快照语义）
+       ★ 三条自述写在每一个响应上：这个读面不改任何状态、不创建任何记录、
+       不消费任何批准。 */
+    if (path === '/economy/approvals' && method === 'GET') {
+      if (!economy) { bad(res, 501, 'economy-not-assembled', null, req); return; }
+      const result = economy.listApprovals({
+        buyerId: url.searchParams.get('buyerId') || undefined,
+        quoteId: url.searchParams.get('quoteId') || undefined,
+        status: url.searchParams.get('status') || undefined,
+        limit: url.searchParams.get('limit') || undefined
+      });
+      if (!result.ok) { bad(res, 400, result.errors[0] || 'approval-read-failed', null, req); return; }
+      ok(res, {
+        approvals: result.approvals,
+        count: result.count,
+        personalized: false,
+        recommended: false,
+        ranked: false,
+        createsRecords: false,
+        consumesApprovals: false,
+        exposesMutation: false
+      }, req);
+      return;
+    }
+    if (path === '/economy/approval' && method === 'GET') {
+      if (!economy) { bad(res, 501, 'economy-not-assembled', null, req); return; }
+      const approvalId = url.searchParams.get('approvalId');
+      if (!approvalId) { bad(res, 400, 'missing-approval-id', null, req); return; }
+      const result = economy.getApproval({ approvalId: approvalId });
+      if (!result.ok) {
+        bad(res, result.reasonCode === 'APPROVAL_NOT_FOUND' ? 404 : 400,
+          result.reasonCode || result.errors[0] || 'approval-not-found', null, req);
+        return;
+      }
+      ok(res, {
+        approval: economy.serializeApproval(result.approval),
+        createsRecords: false,
+        consumesApprovals: false,
+        exposesMutation: false,
+        canApproveViaHttp: false,
+        canRejectViaHttp: false
+      }, req);
+      return;
+    }
+    if (path === '/economy/autonomy-policies' && method === 'GET') {
+      if (!economy) { bad(res, 501, 'economy-not-assembled', null, req); return; }
+      const result = economy.listAutonomyPolicies({
+        ownerId: url.searchParams.get('ownerId') || undefined,
+        limit: url.searchParams.get('limit') || undefined
+      });
+      if (!result.ok) { bad(res, 400, result.errors[0] || 'autonomy-policy-read-failed', null, req); return; }
+      ok(res, {
+        policies: result.policies,
+        count: result.count,
+        personalized: false,
+        grantsBudget: false,
+        isADecisionLayer: false,
+        exposesMutation: false
+      }, req);
+      return;
+    }
+    if (path === '/economy/autonomy-policy' && method === 'GET') {
+      if (!economy) { bad(res, 501, 'economy-not-assembled', null, req); return; }
+      const policyId = url.searchParams.get('policyId');
+      const ownerId = url.searchParams.get('ownerId');
+      if (!policyId && !ownerId) { bad(res, 400, 'missing-policy-id-or-owner-id', null, req); return; }
+      const result = economy.getAutonomyPolicy({
+        policyId: policyId || undefined, ownerId: ownerId || undefined
+      });
+      if (!result.ok) {
+        bad(res, result.reasonCode === 'POLICY_NOT_FOUND' ? 404 : 400,
+          result.reasonCode || result.errors[0] || 'autonomy-policy-not-found', null, req);
+        return;
+      }
+      ok(res, {
+        policy: economy.serializeAutonomyPolicy(result.policy),
+        defaultWhenNoPolicy: 'REQUIRE_APPROVAL',
+        grantsBudget: false,
+        isADecisionLayer: false,
+        exposesMutation: false
+      }, req);
+      return;
+    }
+    if (path === '/economy/autonomy-evaluation' && method === 'GET') {
+      if (!economy) { bad(res, 501, 'economy-not-assembled', null, req); return; }
+      const quoteId = url.searchParams.get('quoteId');
+      const buyerId = url.searchParams.get('buyerId');
+      if (!quoteId || !buyerId) { bad(res, 400, 'missing-quote-id-or-buyer-id', null, req); return; }
+      const result = economy.evaluateAutonomousPurchaseFor({
+        buyerId: buyerId, quoteId: quoteId,
+        recipientId: url.searchParams.get('recipientId') || undefined
+      });
+      if (!result.ok) { bad(res, 400, result.errors[0] || 'autonomy-evaluation-failed', null, req); return; }
+      ok(res, {
+        decision: result.decision,
+        quoteId: result.quoteId,
+        buyerId: result.buyerId,
+        recipientId: result.recipientId,
+        productId: result.productId,
+        productKind: result.productKind,
+        settlementType: result.settlementType,
+        currency: result.currency,
+        amountMinor: result.amountMinor,
+        autonomyPolicyId: result.autonomyPolicyId,
+        autonomyPolicyPresent: result.autonomyPolicyPresent,
+        spentTodayMinor: result.spentTodayMinor,
+        /* ★ 逐字：这是一次**快照评估**，不是可执行的许可（§19）。
+           它不 reserve、不创建批准、不创建购买。 */
+        evaluatedOnly: true,
+        notASpendPermit: result.notASpendPermit,
+        reserved: false,
+        createsRecords: false,
+        consumesApprovals: false,
+        exposesMutation: false
+      }, req);
       return;
     }
     /* 其余 /economy/* 一律 404 —— 尤其 POST 到上面任何一条路径。

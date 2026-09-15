@@ -230,10 +230,12 @@ check('A5 未登记状态 fail closed（不是"未知即允许"）',
   C.canTransitionPurchase('RESERVED', 'PENDING').ok === false &&
   C.assertPurchaseTransition(null, 'COMPLETED').ok === false);
 
-check('A6 ★ Purchase 的身份**不新增 id 种类**：P22-1 冻结的 PURCHASE_INTENT 第一次被用起来（ID_KINDS 仍然是 14）',
+check('A6 ★ Purchase 的身份**不新增 id 种类**：P22-1 冻结的 PURCHASE_INTENT 第一次被用起来'
+  + '（ID_KINDS 在 P22-6 之后是 14；P22-7 之后是 15，多出来的那一种是 APPROVAL，不是购买）',
   C.PURCHASE_ID_KIND === 'PURCHASE_INTENT' &&
   C.PURCHASE_ID_PREFIX === 'econ_intent_' &&
-  C.ID_KINDS.length === 14 &&
+  C.ID_KINDS.length === 15 &&
+  C.ID_KINDS.indexOf('PURCHASE_INTENT') >= 0 && C.ID_KINDS.indexOf('APPROVAL') >= 0 &&
   C.formatPurchaseId('x1').ok === true && C.formatPurchaseId('x1').id === 'econ_intent_x1' &&
   C.isEconomyId(C.PURCHASE_ID_KIND, 'econ_intent_x1') === true);
 
@@ -269,11 +271,13 @@ check('A9 三个"它不是"的逐字否认在契约上成立（§1：Purchase �
   C.PURCHASE_EXPOSES_HTTP_MUTATION === false &&
   C.PURCHASE_SETTLEMENT_MAY_READ_MUTABLE_PRODUCT_FIELDS === false);
 
-check('A10 命名空间是加法：PURCHASE 被登记，而既有 12 个字面值一个都没动',
+check('A10 命名空间是加法：PURCHASE 被登记，而既有 12 个字面值一个都没动'
+  + '（P22-7 又加第 14 个 APPROVAL，同样是纯加法）',
   C.NAMESPACES.PURCHASE === 'ib.economy.purchase' &&
   C.NAMESPACES.WALLET === 'ib.economy.wallet' && C.NAMESPACES.QUOTE === 'ib.economy.quote' &&
   C.NAMESPACES.RESERVATION === 'ib.economy.reservation' && C.NAMESPACES.INVENTORY === 'ib.economy.inventory' &&
-  Object.keys(C.NAMESPACES).length === 13);
+  C.NAMESPACES.APPROVAL === 'ib.economy.approval' &&
+  Object.keys(C.NAMESPACES).length === 14);
 
 check('A11 两个新 scope 与三个新事件都登记，且 P22-1 的十一个事件一个都没丢',
   ['PURCHASE_PREPARE', 'PURCHASE_SETTLE'].every(s => C.isOperationScope(s)) &&
@@ -1082,7 +1086,19 @@ section('K · HTTP：购买读面存在，写面逐名不存在');
   check('K4 ★ /security 的 unreachable 里逐条列着购买写形态，而 `/economy/purchase` 已经**不在**里面（它现在是一条真路由）',
     ['/economy/prepare', '/economy/settle', '/economy/buy', '/economy/cancel', '/economy/refund', '/economy/reverse']
       .every(p => httpSrc.indexOf("'" + p + "'") >= 0) &&
-    /desktopPaths:[\s\S]*?'\/economy\/purchases', '\/economy\/purchase'\]/.test(httpSrc));
+    /* ★ 这一条原来把 desktopPaths 的**结尾**写成了 purchase 那一对
+       （`...'/economy/purchase']`）。P22-7 在那之后又加了三对只读路径，
+       于是那个"结尾"断言就不再描述这个文件了 —— 而它失败的原因是**声明
+       与路由一起长**，不是路由被撤掉了。改成"这两条在 desktopPaths 里
+       存在"，并把"它们在 unreachable 里**不存在**"分开断言。 */
+    (() => {
+      const block = /desktopPaths:[\s\S]*?unreachable:/.exec(httpSrc);
+      const unreachable = /unreachable:[\s\S]*?\]/.exec(httpSrc);
+      return block != null && unreachable != null &&
+        block[0].indexOf("'/economy/purchases'") >= 0 &&
+        block[0].indexOf("'/economy/purchase'") >= 0 &&
+        unreachable[0].indexOf("'/economy/purchase'") < 0;
+    })());
 
   check('K5 ★ /security 自述里"购买运行时已实现"与"HTTP 写面为空"并存（两个都要为真）',
     /purchaseRuntimeImplemented:\s*true/.test(httpSrc) &&
