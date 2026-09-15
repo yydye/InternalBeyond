@@ -146,7 +146,15 @@ check('the committed runtime binary matches the pin byte for byte', () => {
 
 check('build gate fails hard instead of falling back to system Node', () => {
   assert.ok(/缺少内置运行时 runtime\\node\\node.exe/.test(BUILD_SRC), 'missing runtime must abort the build');
-  assert.ok(/Get-FileHash -LiteralPath \$file -Algorithm SHA256/.test(BUILD_SRC), 'must hash node.exe');
+  /* The primitive is SHA256.Create() rather than the Get-FileHash cmdlet: the
+     cmdlet lives in Microsoft.PowerShell.Utility and is auto-loaded from
+     PSModulePath, which a PowerShell 7 parent pollutes with PS7 module dirs
+     ahead of 5.1's own — the cmdlet then fails to load and the build dies at
+     this very gate. How the digest is computed is an implementation detail; that
+     the gate hashes the pinned runtime and aborts on mismatch is the contract. */
+  assert.ok(/\[System\.Security\.Cryptography\.SHA256\]::Create\(\)/.test(BUILD_SRC), 'must hash node.exe');
+  assert.ok(/ComputeHash/.test(BUILD_SRC), 'must actually compute the digest');
+  assert.ok(/ToLowerInvariant\(\)/.test(BUILD_SRC), 'digest must be lowercase to compare with the pin');
   assert.ok(/与钉定值不一致/.test(BUILD_SRC), 'hash mismatch must abort');
   assert.ok(/process\.version/.test(BUILD_SRC), 'must verify process.version');
   assert.ok(!/if \(.*nodeExe.*\)\s*\{\s*\$nodeExe\s*=\s*'node'/.test(BUILD_SRC), 'must not silently use PATH node for the payload');

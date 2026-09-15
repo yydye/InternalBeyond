@@ -137,7 +137,19 @@ function Fail([string]$message) {
 trap { Fail $_.Exception.Message }
 
 function Get-Sha256([string]$file) {
-  return (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
+  # .NET rather than Get-FileHash: the cmdlet lives in Microsoft.PowerShell.Utility,
+  # which is auto-loaded from PSModulePath. In a PowerShell host spawned with a
+  # reduced module path (observed when a Node test spawns powershell.exe) the
+  # cmdlet simply does not exist and the build dies at the runtime gate with
+  # "Get-FileHash is not recognized" — a tooling failure that looks like a broken
+  # release. SHA256.Create() needs no module, so the build no longer depends on
+  # how its parent launched it. Same bytes, same lowercase hex.
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $stream = [System.IO.File]::OpenRead((Resolve-Path -LiteralPath $file).Path)
+    try { $hash = $sha.ComputeHash($stream) } finally { $stream.Dispose() }
+  } finally { $sha.Dispose() }
+  return ([System.BitConverter]::ToString($hash) -replace '-', '').ToLowerInvariant()
 }
 
 function Resolve-Iscc {

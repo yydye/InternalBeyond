@@ -149,10 +149,20 @@ if (!ENABLED) {
     assert.ok(fs.existsSync(STAGING), 'staging kept with -KeepStaging must exist');
     const resolved = manifest.resolve({});
     const staged = manifest.auditDirectory(STAGING);
+    /* Staging is (whitelist + the install root's payload manifest), because the
+       build generates that file INTO staging after the whitelist has been
+       materialised — it is derived from the staged list, so it cannot exist in
+       the repository and cannot be a whitelist source entry. Naming it here keeps
+       the comparison exact without weakening it: anything else is still a
+       failure. */
+    const buildGenerated = ['ib-payload-manifest.json'];
     const expected = new Set(resolved.files.map(f => f.to));
     const actual = new Set(staged.files.map(f => f.path));
     const missing = [...expected].filter(f => !actual.has(f));
-    const extra = [...actual].filter(f => !expected.has(f));
+    const extra = [...actual].filter(f => !expected.has(f) && buildGenerated.indexOf(f) < 0);
+    for (const rel of buildGenerated) {
+      assert.ok(actual.has(rel), 'build-generated payload file missing from staging: ' + rel);
+    }
     assert.strictEqual(missing.length, 0, 'missing from staging: ' + missing.slice(0, 5).join(', '));
     assert.strictEqual(extra.length, 0, 'unexpected in staging: ' + extra.slice(0, 5).join(', '));
   });
