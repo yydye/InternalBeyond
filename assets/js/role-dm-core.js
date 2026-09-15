@@ -627,18 +627,33 @@
     if (!keys.length || !ny) return 0;
     return (2 * overlap) / (keys.length + ny);
   }
-  /* 低信息过滤：复用 reply-chain-core 的**同一份**词表（存在则用它的，
-     否则用本模块的冻结副本）—— 两处由测试钉住一致。 */
-  var LOW_INFO_FALLBACK = /^(哈哈+|嗯+|嗯嗯+|好的|好|不错|\+1|666|nb|强|赞|可爱|好看|加油|嘿|哎|哦|哈|呵|笑死|点赞|收藏|转发|同感|是啊|确实)$/i;
+  /* 低信息过滤：**生产走 reply-chain-core 的同一份实现**（存在则委托它），
+     否则用本模块的冻结副本 —— 两条路径的**语义必须逐字相同**，由测试钉住
+     （见测试 S1 段的 parity 一节：同一批正/负样本在两条路径上结果一致）。
+
+     冻结副本与共享核心曾经都犯同一个错：拿**原文**去比词表，于是
+     '好的' 命中而 '好的。' 不命中 —— 标点把一条空洞短句变成了"有信息量"的回复。
+     现在两条路径都是**先 canonicalize、再比词表**（normalize(input) ==
+     normalize(candidate)），用的就是本文件已有的 textKey（与 diceSimilarity
+     同一个 normalization，不是第二套实现）。词表本身也必须是 canonical 形。 */
+  var LOW_INFO_FALLBACK_WORDS = Object.freeze(['哈哈', '嗯', '好的', '好', '不错', '1', '666', 'nb',
+    '强', '赞', '可爱', '好看', '加油', '嘿', '哎', '哦', '哈', '呵', '笑死', '点赞', '收藏', '转发', '同感', '是啊', '确实']);
+  /* 原词表 `哈哈+` / `嗯+` 的重复语义（与共享核心同一份约定）。 */
+  var LOW_INFO_FALLBACK_REPEAT = Object.freeze(['哈哈', '嗯']);
+  var LOW_INFO_FALLBACK = new RegExp('^(?:' + LOW_INFO_FALLBACK_WORDS
+    .map(function (w) { return LOW_INFO_FALLBACK_REPEAT.indexOf(w) >= 0 ? w + '+' : w; })
+    .join('|') + ')$');
   function lowInfoMatch(content) {
     var t = str(content).trim();
     if (!t) return true;
-    if (t.length <= 1) return true;
     try {
       var rc = (typeof window !== 'undefined') && window._replyChainCore;
       if (rc && typeof rc.lowInfoMatch === 'function') return !!rc.lowInfoMatch(t);
     } catch (e) { /* 共享核心不可用 → 用冻结副本 */ }
-    return LOW_INFO_FALLBACK.test(t);
+    var k = textKey(t);
+    if (!k) return true;              /* 只剩形式噪声（"……" / "🙂"）：没有内容 */
+    if (k.length <= 1) return true;
+    return LOW_INFO_FALLBACK.test(k);
   }
 
   /* ══════════ 6b. M3 软复读分析（纯函数：零 IO / 零模型调用 / 零副作用）═══
@@ -1317,6 +1332,9 @@
     isDuplicateTurn: isDuplicateTurn,
     diceSimilarity: diceSimilarity,
     lowInfoMatch: lowInfoMatch,
+    /* 冻结副本的词表（canonical 形）。它不是第二份 authority，只是
+       shared core 不可用时的等价实现 —— 测试逐字断言两份词表相同。 */
+    LOW_INFO_FALLBACK_WORDS: LOW_INFO_FALLBACK_WORDS,
     /* M3 软复读（conversation quality；不是 runaway safety —— 见常量区注释） */
     SOFT_REPEAT: SOFT_REPEAT,
     AGREEMENT_PREFIXES: AGREEMENT_PREFIXES,

@@ -30,7 +30,20 @@
     SIMILARITY: 0.8,      /* 回复去重阈值（bigram Dice） */
     MAX_ATTEMPTS: 2       /* 单次生成的重试次数（解析失败/去重命中时提示重写） */
   };
-  const LOW_INFO = /^(哈哈+|嗯+|嗯嗯+|好的|好|不错|\+1|666|nb|强|赞|可爱|好看|加油|嘿|哎|哦|哈|呵|笑死|点赞|收藏|转发|同感|是啊|确实)$/i;
+  /* 低信息词表（"哈哈/嗯/不错"这类空洞短句）—— 唯一真源。
+     **词表里的每一个词都必须是 canonical 形**（即 textKey(word) === word）：
+     匹配发生在 canonical key 上（见 lowInfoMatch），只有**词表与输入经过同一个
+     normalization**，`normalize(input) === normalize(candidate)` 这条对称性才成立。
+     原词表里的 `\+1` 因此写作 canonical 形 `1`（`+` 属 \p{S}，由 textKey 去掉）。 */
+  const LOW_INFO_WORDS = Object.freeze(['哈哈', '嗯', '好的', '好', '不错', '1', '666', 'nb',
+    '强', '赞', '可爱', '好看', '加油', '嘿', '哎', '哦', '哈', '呵', '笑死', '点赞', '收藏', '转发', '同感', '是啊', '确实']);
+  /* 原词表里 `哈哈+` / `嗯+` 的**重复**语义（≥2 个"哈" / ≥1 个"嗯"）。
+     这不是新词，是同一个词的重复形态 —— 所以它记在这里，而不是把 "哈哈哈哈"
+     枚举进词表（枚举形态正是 S1 要消除的那类做法）。 */
+  const LOW_INFO_REPEAT = Object.freeze(['哈哈', '嗯']);
+  /* LOW_INFO 由上面的词表**派生**，不是第二份手写副本。 */
+  const LOW_INFO = new RegExp('^(?:' + LOW_INFO_WORDS
+    .map(w => (LOW_INFO_REPEAT.indexOf(w) >= 0 ? w + '+' : w)).join('|') + ')$');
 
   /* ══════════ 确定性哈希与角色对亲和度（原 moments.js 实现，迁移至此唯一化） ══════════ */
   function hashStr(s) {
@@ -59,12 +72,28 @@
     return (2 * overlap) / (gx.size + gy.size);
   }
 
-  /* ══════════ 低信息过滤（"哈哈/嗯/不错"+1 之类空洞短句） ══════════ */
+  /* ══════════ 低信息过滤 ══════════
+     判定顺序：**先 canonicalize，再比词表**。为什么必须过 textKey
+     （与 diceSimilarity 同一个 normalization）：标点 / 空白 / 全角空格 /
+     Unicode 符号 / emoji 都是**形式噪声**，不应该把"好的"变成一条有信息量的回复。
+     但 canonicalization 只去形式、不吞内容：
+
+       '好的'                            → '好的'                      → 命中
+       '好的。' / '好的！' / '好的……'    → '好的'                      → 命中
+       ' 好的 ' / '　好的　'             → '好的'                      → 命中
+       '好的🙂'                          → '好的'                      → 命中（emoji 没增加内容）
+       '好的，我去把实验数据备份下来。'   → '好的我去把实验数据备份下来'  → 不命中
+       '好的📌我已经记下 R-17'           → '好的我已经记下r17'          → 不命中
+
+     **整串相等**仍是硬要求：这不是 startsWithLowInfo、也不是 containsLowInfo ——
+     只要还有实质后文就一律放行。 */
   function lowInfoMatch(content) {
     const t = String(content || '').trim();
     if (!t) return true;
-    if (t.length <= 1) return true;
-    return LOW_INFO.test(t);
+    const k = textKey(t);
+    if (!k) return true;              /* 只剩形式噪声（"……" / "🙂"）：没有内容 */
+    if (k.length <= 1) return true;
+    return LOW_INFO.test(k);
   }
 
   /* ══════════ 线程轮数 / 调度可行性（纯函数） ══════════ */
@@ -290,6 +319,8 @@
   return {
     LIMITS,
     LOW_INFO,
+    LOW_INFO_WORDS,
+    LOW_INFO_REPEAT,
     hashStr,
     pairAffinity,
     textKey,

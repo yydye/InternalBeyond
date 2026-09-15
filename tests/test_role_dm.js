@@ -342,23 +342,36 @@ reset();
 /* ══════ 10 · duplicate / runaway guard ══════ */
 reset();
 {
-  /* 双方都只回同一句话 → 必须熔断，且不会把整段重复灌进历史 */
-  replyFor = () => '好的。';
+  /* 双方都只回同一句话 → 必须熔断，且不会把整段重复灌进历史。
+     样本刻意换掉了历史上的 '好的。'：S1 之后带标点的低信息短句**已经**被
+     low-info 守卫正确接管，而那个守卫在这段代码里排在前面（role-dm.js 的
+     守卫 6 先判 lowInfo 再判 duplicate），于是 '好的。' 再也走不到 runaway
+     熔断分支 —— 用它测 runaway 会把这条测试变成"测 low-info"。
+     换成语义有内容、但不构成低信息的整句，runaway 守卫才重新被测到。
+     （'好的。' 现在的正确归属由 S1 段（纯函数）与 S2 段（runtime）覆盖。） */
+  const HD10 = '关于那批样本的低温变色，我这边记录到的现象和你们不太一样。';
+  replyFor = () => HD10;
   const f1 = C.roleDmFriendId('friend_aaa', 'friend_bbb');
   const r = await RD.start('friend_aaa', 'friend_bbb', { turns: 6 });
   check('10a. 同内容对轰被熔断（stopReason=duplicate-stall）',
     r.stopReason === C.REASON.duplicateStall, r);
   check('10b. 远少于 maxTurns 次调用就停了', CALLS.length < 6, CALLS.length);
   check('10c. 重复内容最多只留下 1 条（第一次如实记录，之后熔断）',
-    msgsOf(f1).filter(m => String(m.content) === '好的。').length <= 1,
+    msgsOf(f1).filter(m => String(m.content) === HD10).length <= 1,
     msgsOf(f1).map(m => m.content));
   check('10d. 纯函数层：相同文本被判为 duplicate',
     C.isDuplicateTurn('好的。', ['好的。']).duplicate === true);
   check('10e. 纯函数层：不同文本不被判为 duplicate',
     C.isDuplicateTurn('今天想起一件事，想跟你聊聊海边的风。', ['好的。']).duplicate === false);
   check('10f. 低信息短句被判为低信息', C.lowInfoMatch('哈哈') === true && C.lowInfoMatch('嗯嗯') === true);
-  check('10g. 低信息词表与 reply-chain-core 一致（同一份语义）',
-    RC_CORE.LOW_INFO.test('哈哈') === C.lowInfoMatch('哈哈') && RC_CORE.LOW_INFO.test('确实') === C.lowInfoMatch('确实'));
+  /* 词表 authority：唯一真源在 reply-chain-core；role-dm-core 的冻结副本必须
+     **逐字同表**（不是"行为大致一样"—— 表不同就是两个 authority）。
+     canonical 形这条不变量由 S1 段逐词断言（textKey(word) === word）。 */
+  check('10g. 低信息词表唯一真源在 reply-chain-core，fallback 副本逐字同表',
+    Array.isArray(RC_CORE.LOW_INFO_WORDS) && RC_CORE.LOW_INFO_WORDS.length > 0 &&
+    RC_CORE.LOW_INFO_WORDS.join(',') === C.LOW_INFO_FALLBACK_WORDS.join(',') &&
+    RC_CORE.LOW_INFO_WORDS.every(w => RC_CORE.LOW_INFO.test(w)),
+    { canonical: RC_CORE.LOW_INFO_WORDS, fallback: C.LOW_INFO_FALLBACK_WORDS });
   check('10h. 相似度阈值与 reply-chain-core 的 SIMILARITY 同值',
     C.DUPLICATE_SIMILARITY === RC_CORE.LIMITS.SIMILARITY);
 }
@@ -1526,10 +1539,11 @@ reset();
     f7.softRepeat === false && f7.echoChars > 0 && f7.noveltyRatio > 0.5, f7);
 
   /* ── F8 短回复：authority 属于既有 low-info guard ── */
-  /* 这一组刻意覆盖两种形态。原因是一次真实发现：既有低信息词表是**整串**匹配
-     （/^(…)$/），因此带句号的 "嗯。" / "好的。" 今天**不被它识别**。
-     那是既有守卫的口径问题，不属于 M3（M3 不改它、也不替它兜底）；
-     这一节只钉住"两边的 authority 边界在哪"。 */
+  /* 这一组刻意覆盖两种形态。原因是一次真实发现：既有低信息词表曾经是拿**原文**
+     整串匹配（/^(…)$/），因此带句号的 "嗯。" / "好的。" 当时**不被它识别**。
+     那是既有守卫的口径缺陷，不属于 M3 —— M3 当时的处置是不改它、也不替它兜底，
+     只钉住"两边的 authority 边界在哪"。该缺陷已由 S1（低信息规范化闭合）修好：
+     现在两种形态都由 low-info 守卫接管，M3 对两者一律弃权。 */
   const lowInfoRecognized = ['哈哈', '好的', '嗯', '确实'];
   const lowInfoPunctuated = ['好的。', '嗯。'];
   check('AG8. F8 短回复 → M3 一律弃权或判 false，绝不把空信息短句算成软复读（不与低信息守卫争 authority）',
@@ -1545,9 +1559,11 @@ reset();
   check('AG8d. "确实"同时属于低信息词表与承接词闭集 → 弃权（低信息守卫优先，M3 不抢）',
     C.lowInfoMatch('确实') === true && C.AGREEMENT_PREFIXES.indexOf('确实') >= 0 &&
     sr('确实', '我觉得这件事可以再等等。').reason === 'low-info');
-  check('AG8e. 既有词表是整串匹配（带标点的 "好的。" 今天不被它识别）—— M3 只如实记录，不替它兜底',
-    C.lowInfoMatch('好的') === true && C.lowInfoMatch('好的。') === false &&
-    sr('好的。', '我觉得这件事可以再等等。').softRepeat === false);
+  /* S1 之后：带标点的等价形态**同样**归 low-info 守卫，M3 依然只如实记录、不兜底。 */
+  check('AG8e. 低信息守卫覆盖带标点的等价形态（"好的。" 也归它管）—— M3 仍不替它兜底',
+    C.lowInfoMatch('好的') === true && C.lowInfoMatch('好的。') === true &&
+    sr('好的。', '我觉得这件事可以再等等。').softRepeat === false &&
+    sr('好的。', '我觉得这件事可以再等等。').reason === 'low-info');
   check('AG8b. 空正文同样弃权（reason=empty），绝不产生 NaN 分数',
     (() => { const r = sr('   ', '随便一句。'); return r.reason === 'empty' && r.noveltyRatio === 1 && r.score === 0; })());
 
@@ -1744,6 +1760,157 @@ reset();
     rtSrc.indexOf('diceSimilarity(') < 0 && rtSrc.indexOf('textKey(') < 0 &&
     rtSrc.indexOf('sharedSpanCoverage(') < 0 && rtSrc.indexOf('agreementPrefixOf(') < 0,
     { dice: rtSrc.indexOf('diceSimilarity('), textKey: rtSrc.indexOf('textKey(') });
+}
+
+/* ══════ S1 · 低信息规范化闭合（纯函数契约）══════
+   缺陷：词表曾经拿**原文**整串匹配，于是 '好的' 命中而 '好的。' 不命中 ——
+   标点把一条空洞短句变成了"有信息量"的回复。修法是**规范化输入**（走已有的
+   textKey，不是第二套字符串算法），不是枚举标点：normalize(input) ==
+   normalize(candidate)，且词表自身也必须是 canonical 形。 */
+{
+  const WORDS = RC_CORE.LOW_INFO_WORDS;
+  check('S1a. 词表每个词都已是 canonical 形（textKey(word) === word）—— 对称性的前提',
+    WORDS.length > 0 && WORDS.every(w => RC_CORE.textKey(w) === w),
+    WORDS.filter(w => RC_CORE.textKey(w) !== w));
+  /* 原正则的 26 条备选里 `嗯嗯+` 与 `嗯+` 是同一个词（冗余），canonical 词表
+     因此是 25 个**词** —— 词汇集合逐字未变，只是不再重复写同一个词。 */
+  check('S1b. 词表本身冻结（S1 只规范化输入与词表**形态**，不动词汇集合）',
+    WORDS.length === 25 && C.LOW_INFO_FALLBACK_WORDS.length === 25 &&
+    RC_CORE.LOW_INFO_WORDS.join(',') === C.LOW_INFO_FALLBACK_WORDS.join(','), WORDS.length);
+  check('S1b2. 重复语义仍是原词表的 哈哈+ / 嗯+（不是新词）',
+    RC_CORE.LOW_INFO_REPEAT.join(',') === '哈哈,嗯');
+
+  /* 形式噪声矩阵：词 + 任意标点/空白/全角空格/符号，语义不变。 */
+  const PUNCT = ['', '。', '！', '？', '……', '，', ',', '~', '～', ' ', '　', '🙂'];
+  const suffix = [], prefix = [];
+  WORDS.forEach(w => PUNCT.forEach(p => { suffix.push(w + p); prefix.push(p + w); }));
+  const suffixBad = suffix.filter(x => C.lowInfoMatch(x) !== true);
+  const prefixBad = prefix.filter(x => C.lowInfoMatch(x) !== true);
+  check('S1c. 词 × 12 种尾随标点/空白/符号（' + suffix.length + ' 条）全部仍判低信息',
+    suffixBad.length === 0, suffixBad.slice(0, 5));
+  check('S1d. 词 × 12 种前置形式噪声（' + prefix.length + ' 条）全部仍判低信息',
+    prefixBad.length === 0, prefixBad.slice(0, 5));
+
+  /* §0 明写的那一组：语义等价 → 同一个判定。 */
+  const EQUIV_POS = ['好的', '好的。', '好的！', '好的？', '好的……', ' 好的 ', '　好的　',
+    '嗯', '嗯。', '嗯！', '嗯……', '嗯～', '哈哈', '哈哈哈哈', '嗯嗯嗯', '好的🙂'];
+  check('S1e. §0 的等价形态（好的/好的。/好的！/…；嗯/嗯。/嗯！）判定一致',
+    EQUIV_POS.every(x => C.lowInfoMatch(x) === true),
+    EQUIV_POS.map(x => x + ':' + C.lowInfoMatch(x)));
+  check('S1e2. 词内部插入标点后仍是同一个语义（canonicalization 只去形式噪声）',
+    C.lowInfoMatch('好。的') === true && C.lowInfoMatch('嗯 嗯') === true && C.lowInfoMatch('哈 哈') === true);
+
+  /* §8 误杀保护 —— 本轮最重要的负样本。 */
+  const NEG = ['好的，我去备份数据。', '好的，不过这里还有一个问题。', '好的，我去把实验数据备份下来。',
+    '嗯，我昨天也看到了 R-17。', '嗯……这个结果和昨天不一样。',
+    '是的，但时间戳提前了三个小时。', '没错，我认为这里还有第二种可能。',
+    '好的📌我已经记下 R-17', '好的，我去把窗户打开。'];
+  check('S1f. §8 负样本全部 PASS（有实质后文就不算低信息）',
+    NEG.every(x => C.lowInfoMatch(x) === false),
+    NEG.map(x => x + ':' + C.lowInfoMatch(x)));
+  check('S1g. 这不是 startsWithLowInfo / containsLowInfo —— 以词表词开头的长句一律放行',
+    ['好，我这就去。', '确实，我也这么想。', '哈哈，你太逗了。', '不错，这个方案我同意。']
+      .every(x => C.lowInfoMatch(x) === false));
+  check('S1h. §9 emoji/符号：只有 emoji 的 "好的🙂" 判低信息（emoji 没增加内容），带实质后文的不误杀',
+    C.lowInfoMatch('好的🙂') === true && C.lowInfoMatch('好的📌我已经记下 R-17') === false);
+
+  /* 只剩形式噪声 → 没有内容。这是 S1 的**显式加宽**（记录在案，不是副作用）：
+     '   ' 早就判低信息、'。' 因单字符规则也早就判低信息，但 '……'/'🙂'（代理对，
+     length=2）过去漏网 —— 同一个缺陷的另一副面孔，一并闭合。 */
+  check('S1i. 只剩形式噪声（"……"/"！？"/"🙂"）现在同样判低信息（显式加宽，闭合同一类不一致）',
+    ['……', '！？', '🙂', '　', '·'].every(x => C.lowInfoMatch(x) === true));
+
+  /* canonicalization 不能"发明"匹配：词表之外的形态一律不放行。 */
+  check('S1j. 词表之外的形态不会被 canonicalization 凑成命中',
+    ['不错啊', '真的不错', '呵呵呵', '好好', '是的是的', '哈哈哈哈啊'].every(x => C.lowInfoMatch(x) === false),
+    ['不错啊', '真的不错', '呵呵呵', '好好'].map(x => x + ':' + C.lowInfoMatch(x)));
+  /* §7：'是的/没错/知道了/明白' **不在**冻结词表里 —— 本轮不为了测试把它们加进去。 */
+  check('S1k. §7 词表冻结：是的/没错/知道了/明白 不在词表里，因此仍然不是低信息（没有为测试扩表）',
+    ['是的。', '没错！', '知道了。', '明白。'].every(x => C.lowInfoMatch(x) === false) &&
+    ['是的', '没错', '知道了', '明白'].every(w => WORDS.indexOf(w) < 0));
+
+  /* §10 既有 low-info authority 与 M3 的关系没有变。 */
+  check('S1l. §10 M3 对带标点的低信息短句仍然是弃权（reason=low-info），不再由 M3 兜底',
+    ['好的', '好的。', '嗯。', '哈哈。'].every(t =>
+      C.analyzeSoftRepetition(t, '你昨天说的那件事我想了很久。', []).reason === 'low-info') &&
+    C.analyzeSoftRepetition('好的。', '你昨天说的那件事我想了很久。', []).softRepeat === false);
+
+  /* §11 硬重复 / 相似度阈值逐字不变。 */
+  check('S1m. §11 阈值与状态逐字未动：0.8 / STALL_LIMIT=2 / SIMILARITY=0.8',
+    C.DUPLICATE_SIMILARITY === 0.8 && C.STALL_LIMIT === 2 && RC_CORE.LIMITS.SIMILARITY === 0.8);
+  check('S1n. diceSimilarity / textKey 语义未动（低信息判定只是开始复用它们）',
+    C.diceSimilarity('好的', '好的。') === 1 && RC_CORE.diceSimilarity('哈哈', '哈哈。') === 1 &&
+    RC_CORE.textKey('A B。') === 'ab' && C.isDuplicateTurn('好的。', ['好的。']).duplicate === true);
+
+  /* 结构保证：守卫顺序与 role-dm.js 的存在性未变（S1 只改口径，不改 authority 顺序）。 */
+  const rtSrcS1 = fs.readFileSync(path.join(ROOT, 'assets/js/role-dm.js'), 'utf8');
+  check('S1o. 守卫顺序未变：low-info 仍排在 duplicate 之前（"好的。" 归 low-info 守卫）',
+    rtSrcS1.indexOf('if (lowInfo)') > 0 &&
+    rtSrcS1.indexOf('if (lowInfo)') < rtSrcS1.indexOf('if (dup.duplicate)'));
+  check('S1p. role-dm.js 里没有第二套低信息实现（S1 落在两个 core 文件里）',
+    rtSrcS1.indexOf('LOW_INFO') < 0 && rtSrcS1.indexOf('textKey(') < 0);
+
+  /* §13 fallback parity：把同一批样本在**两条真实加载路径**上各跑一遍。 */
+  const ALL = EQUIV_POS.concat(NEG, ['不错啊', '呵呵呵', '好的📌我已经记下 R-17', '……', '是的。', '猫', '1', '666']);
+  check('S3a. 前置条件：本 harness 里 role-dm-core 走的是**冻结副本**路径（window._replyChainCore 未挂载）',
+    typeof global.window._replyChainCore === 'undefined');
+  const viaFallback = ALL.map(x => C.lowInfoMatch(x));
+  const viaCanonical = ALL.map(x => RC_CORE.lowInfoMatch(x));
+  check('S3b. 冻结副本路径 === 共享核心路径（' + ALL.length + ' 条样本逐条同值）',
+    viaFallback.join(',') === viaCanonical.join(','),
+    ALL.filter((x, i) => viaFallback[i] !== viaCanonical[i]));
+  /* 装上一个**会计数**的共享核心：委托是否真的发生，而不是"看起来一样"。 */
+  let delegated = 0;
+  try {
+    global.window._replyChainCore = { lowInfoMatch: (x) => { delegated++; return RC_CORE.lowInfoMatch(x); } };
+    const viaShared = ALL.map(x => C.lowInfoMatch(x));
+    check('S3c. 生产路径（共享核心已挂载）结果与冻结副本逐条一致',
+      viaShared.join(',') === viaFallback.join(','),
+      ALL.filter((x, i) => viaShared[i] !== viaFallback[i]));
+    check('S3d. 委托确实发生（' + delegated + '/' + ALL.length + '）—— 不是两条路径碰巧同值',
+      delegated === ALL.length);
+  } finally {
+    delete global.window._replyChainCore;
+  }
+  check('S3e. 卸载共享核心后回到冻结副本路径（两条路径可以各自被单独验证）',
+    typeof global.window._replyChainCore === 'undefined' && C.lowInfoMatch('好的。') === true);
+}
+
+/* ══════ S2 · S1 传导到 runtime（生产路径 fake executor，0 真实 API）══════ */
+reset();
+{
+  const fs2 = C.roleDmFriendId('friend_aaa', 'friend_bbb');
+  /* A 每次说一句**有内容且互不相同**的话，B 永远只回 "好的。"。
+     B 的每一轮都必须由既有 low-info 守卫接管：丢弃、不落库、不计数。
+     A 的句子刻意彼此相远：只改一个数字（"第 1 段"/"第 3 段"）会让两条的
+     bigram Dice 达到 0.833 ≥ 0.8 —— 那样测到的是 runaway 熔断，不是 low-info。 */
+  const S2_A = ['今天风很舒服，适合把观测舱的窗子擦一遍。',
+    '我把上一批样本的记录重新对了一遍，时间戳没有问题。',
+    '窗外那台仪器又跳数了，我先把读数记在手边。',
+    '关于低温变色的复现，我想再等两天看升温后的数据。'];
+  let aI = 0;
+  replyFor = (cfg) => (cfg.id === 'friend_aaa' ? S2_A[aI++ % S2_A.length] : '好的。');
+  const r = await RD.start('friend_aaa', 'friend_bbb', { turns: 4, force: true });
+  const rows = msgsOf(fs2).map(m => String(m.content));
+  check('S2a. B 的 "好的。" 由既有 low-info 守卫接管：一条都没落库',
+    rows.length === 2 && rows.every(x => x !== '好的。'), rows);
+  check('S2b. §16 成本不变：4 次迭代 = 4 次模型调用（S1 的额外调用 = 0）',
+    CALLS.length === 4, CALLS.length);
+  check('S2c. 停止原因是既有的 max-turns（S1 不新增 stop/stall 语义）',
+    r.stopReason === C.REASON.maxTurns && r.turns === 2, { stop: r.stopReason, turns: r.turns });
+
+  /* 对照：同一位置换成有实质后文的回复 → 必须正常落库。 */
+  reset();
+  replyFor = (cfg) => (cfg.id === 'friend_aaa'
+    ? '今天风很舒服，适合把观测舱的窗子擦一遍。'
+    : '好的，我去把窗户打开。');
+  const r2 = await RD.start('friend_aaa', 'friend_bbb', { turns: 2, force: true });
+  const rows2 = msgsOf(fs2).map(m => String(m.content));
+  check('S2d. "好的，我去把窗户打开。" 不被误杀：正常进入 persistence',
+    r2.turns === 2 && rows2.length === 2 && rows2.indexOf('好的，我去把窗户打开。') === 1, rows2);
+  check('S2e. 该 run 停在 max-turns（没有因为"以好的开头"被拦）',
+    r2.stopReason === C.REASON.maxTurns, r2.stopReason);
+  check('S2f. 2 轮 = 2 次调用（对照组的成本同样不变）', CALLS.length === 2, CALLS.length);
 }
 
 console.log('\n' + (failed === 0 ? 'ALL GREEN' : 'FAILURES') + ' — passed=' + passed + ' failed=' + failed);
