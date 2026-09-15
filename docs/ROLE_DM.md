@@ -231,16 +231,60 @@ optional autonomous social intent（role-dm-social-core.evaluateSocialIntent
 `SOFT GUIDANCE = 模型看到内容，只是被要求别提`。本契约实现的是**前者的数据前提**，
 **不是**前者本身 —— 前者需要 Phase 4B-2 的 authorization 阶段。
 
+## Disclosure Writer Authority（Phase 4B-1.1）
+
+回答的是**一个**问题：「谁有资格创建一条真正的 `PERSONAL` / `PRIVATE` / `SECRET`
+disclosure fact？」结论：**不是通道，是权威**。
+
+只读 writer 审计（`character` 编辑器 / Memory / Role DM / Diary / Understanding /
+consolidation / publicProfile / Moments / Letters 全部写入路径，file:line 见 D29）
+证明：**同一个通道既能承载人类显式写下的设定，也能承载模型自己生成的一句话**。
+所以 `source` 单独决定等级上限是**不够**的：
+
+```
+用户显式写下   「设定：昔涟很怕打雷，这是她不愿告诉别人的事。」
+模型在 Role DM 「我可能其实很怕打雷。」
+              ↑ 两者可以经过同一个通道；只看通道在类型上就无法区分
+```
+
+因此契约分成**两个维度**，并互相印证：
+
+| 维度 | 回答 | 取值 |
+|---|---|---|
+| `source` | 内容经过**哪条通道**产生（provenance） | 9 个封闭值（4B-1 冻结） |
+| `authority` | **谁对"这是本角色的秘密"负责**（writer authority） | `human_authoring` / `human_confirmation` / `derived` |
+| `authoredBy` | 该权威的**身份**（可选旁证，**不是**授权本身，见下） | 归一化后的 id 或 `''` |
+
+| 项 | 契约 |
+|---|---|
+| 等级上限 | **只由 `authority` 决定**：人类权威 → 可持 SECRET；`derived` → 强制降为 PUBLIC。`source` **不再**单独决定上限 |
+| 通道 ⇔ 权威 | 必须互相印证，**双向**都拒：非人类通道 + 人类权威（伪造）、人类通道 + 非人类权威（自相矛盾，含 `derived`）⇒ 整条拒绝 |
+| 畸形 authority | 一律 → `derived`（fail closed 到"**没有人对它负责**"，而不是"不参与契约"） |
+| `authoredBy` | 可选：derived 携带它 ⇒ **拒绝**（自相矛盾）；人类权威不要求它 —— 人类权威建立在**通道的结构性事实**上，纯函数里任何人都能写下 `authoredBy:'user'`，所以"必须实名"只是一道看起来像门的检查 |
+| record 形状 | **九个**字段：4B-1 的七个 + `authority` / `authoredBy` |
+| legacy 兼容 | 只给 `source`（4B-1 冻结形状 `{owner, level, text, source}`）时，authored 通道 → `human_authoring`、其余 → `derived`，**逐字保留** 4B-1 行为；归一化保持幂等 |
+| 生产 writer | **零**。本轮只扩展契约，**没有任何代码产出 disclosure fact**（见 D29「为什么不是 C」） |
+
+**`source` 与 `authority` 不是同一个维度** —— 一个描述**通道**，一个描述**责任**。
+把它们重载进同一个字段，就等于让"内容经过了哪条管道"悄悄变成"谁授权了它"。
+
 ## Deferred
 
 - **Relationship Consequences**：**Phase 4A（familiarity → 开场）已落地**；
   **Phase 4B-1（披露分级数据契约）已落地**（`assets/js/disclosure-core.js`，纯数据
   contract：分类 + provenance + 归一化；**不做授权、不接 Role DM**，见 D28）；
+  **Phase 4B-1.1（writer authority）已落地**（同上 core：新增 `authority` /
+  `authoredBy` 两维 + 通道交叉校验；**仍然零生产 writer、零消费者**，见 D29）；
   仍缺 **Phase 4B-2（authorization / filtering）** 与 **Phase 4C（affinity / 语气）**，
   设计候选见 Phase 4 审计文档与下节，**未实现**。
 - **Disclosure authorization**：`disclosure-core.js` 里**刻意不存在**
   `authorize()` / `filter()` / `canDisclose()` —— 授权的输入（`speakerId` / `peerId` /
   有向关系）和输出（哪些事实能进模型上下文）都还没有实现，且 **`trust` 完全未接入**。
+- **Disclosure candidate 流程（模型候选 → 人类确认）**：`human_confirmation` 的**语义**
+  已在契约里，但 candidate 的产生、展示与确认**全部未实现**，也没有任何模型调用被接入。
+- **Disclosure fact 的写入入口**：仓库里**没有任何**一个动作明确表示"用户正在创建
+  一条披露事实"（character 编辑器写的是 `systemPrompt`/`publicProfile`，Memory 编辑器
+  写的是 ACL）。因此本轮不接 writer —— 不是遗漏，是**证据不足**。
 - **M3 enforcement**：soft repetition 仍只观测；rewrite / retry / drop / stop / guidance 全部未开。
 - **Cross-run Duplicate S2**：跨 run 的重复判定尚未闭合。
 - **尚未闭合的 RCI attribution**：`moments` / `role_letters` / `active.proactive` /

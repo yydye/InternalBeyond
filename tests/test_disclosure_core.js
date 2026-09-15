@@ -200,9 +200,10 @@ group('H. provenance（inferred / generated 无资格持有 PRIVATE/SECRET）');
     check('H3.' + i + ' source=' + s + ' 可持有 SECRET',
       DC.normalizeDisclosureFact({ ownerCharacterId: 'A', level: 'SECRET', text: 'x', source: s }).level === 'SECRET');
   });
-  check('H4. maxLevelForSource：authored→SECRET，其余→PUBLIC',
-    DC.maxLevelForSource('user_authoring') === 'SECRET' && DC.maxLevelForSource('generated_inference') === 'PUBLIC'
-    && DC.maxLevelForSource('role_dm_conversation') === 'PUBLIC' && DC.maxLevelForSource('diary') === 'PUBLIC');
+  check('H4. maxLevelForAuthority：人类权威→SECRET，derived→PUBLIC（4B-1.1 起上限只由权威决定）',
+    DC.maxLevelForAuthority('human_authoring') === 'SECRET' && DC.maxLevelForAuthority('human_confirmation') === 'SECRET'
+    && DC.maxLevelForAuthority('derived') === 'PUBLIC'
+    && DC.maxLevelForAuthority('nonsense') === 'PUBLIC');
   check('H5. isAuthoredSource 只认三个 authored 来源',
     DC.AUTHORED_SOURCES.length === 3 && authored.every(s => DC.isAuthoredSource(s))
     && derived.every(s => DC.isAuthoredSource(s) === false));
@@ -312,7 +313,7 @@ group('K. mutation sensitivity（自我验证：变异必须让测试变红）')
   const MUT_ALLOW_DERIVED_SECRET = (input) => {
     const r = DC.normalizeDisclosureFact(input);
     if (r && DC.normalizeDisclosureLevel(input.level) === 'SECRET'
-      && !DC.isAuthoredSource(r.source)) r.level = 'SECRET';   /* ← 变异 */
+      && !DC.isHumanAuthority(r.authority)) r.level = 'SECRET';   /* ← 变异 */
     return r;
   };
   check('K3. 变异「generated 也能 SECRET」被 H1.x 的断言捕获',
@@ -337,6 +338,244 @@ group('K. mutation sensitivity（自我验证：变异必须让测试变红）')
   check('K5. 变异「删掉 persona 字段再继续」被 E1 的断言捕获',
     MUT_ALLOW_PERSONA({ ownerCharacterId: 'A', level: 'SECRET', text: 'x', systemPrompt: 'p' }) !== null
     && DC.normalizeDisclosureFact({ ownerCharacterId: 'A', level: 'SECRET', text: 'x', systemPrompt: 'p' }) === null);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   L / M / N — Phase 4B-1.1 · Disclosure Writer Authority
+   --------------------------------------------------------------------------
+   「谁有资格创建一条真正的 PERSONAL / PRIVATE / SECRET disclosure fact？」
+
+   这一组的每一条都对应仓库里一个**真实存在**的写者（file:line 见 docs/DECISIONS.md
+   D29 的审计表），不是假想调用方。L = 契约语义，M = 逐写者反例，N = 结构性与变异。
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ══════ L. writer authority 契约 ══════ */
+group('L. writer authority（authority 是独立于 source 的第二维）');
+{
+  check('L1. 三个权威值是封闭枚举，畸形一律 → derived（fail closed 到"没人负责"）',
+    DC.AUTHORITIES.length === 3 && DC.AUTHORITIES.join(',') === 'human_authoring,human_confirmation,derived'
+    && [null, undefined, 0, 1, true, [], {}, '', 'HUMAN', 'Human_Authoring', 'human',
+      'human_authoring ', ' human_authoring', 'human_authoring\u0000', 'confirmed']
+      .every(v => DC.normalizeDisclosureAuthority(v) === 'derived'));
+  check('L2. AUTHORITY 与 MAX_LEVEL_FOR_AUTHORITY 一一对应（无第四档、无遗漏键）',
+    DC.AUTHORITIES.every(a => typeof DC.MAX_LEVEL_FOR_AUTHORITY[a] === 'string')
+    && Object.keys(DC.MAX_LEVEL_FOR_AUTHORITY).length === 3);
+  check('L3. isHumanAuthority：两个人类权威 true，derived / 畸形 false',
+    DC.isHumanAuthority('human_authoring') && DC.isHumanAuthority('human_confirmation')
+    && !DC.isHumanAuthority('derived') && !DC.isHumanAuthority(undefined) && !DC.isHumanAuthority('HUMAN'));
+
+  /* ── 两条路都能得到人类权威，且语义可区分 ── */
+  const humanAuthoring = DC.normalizeDisclosureFact({
+    ownerCharacterId: 'A', level: 'SECRET', text: '她不愿告诉别人的事',
+    source: 'character_authoring', authority: 'human_authoring', authoredBy: 'user'
+  });
+  const humanConfirm = DC.normalizeDisclosureFact({
+    ownerCharacterId: 'A', level: 'SECRET', text: '模型提出的候选被确认',
+    source: 'user_correction', authority: 'human_confirmation', authoredBy: 'user'
+  });
+  check('L4. 显式 human_authoring + 人类通道 + 实名 → 可持 SECRET',
+    humanAuthoring && humanAuthoring.level === 'SECRET' && humanAuthoring.authority === 'human_authoring'
+    && humanAuthoring.authoredBy === 'user', humanAuthoring);
+  check('L5. human_confirmation 是**独立**的动作性质，不等于 human_authoring',
+    humanConfirm && humanConfirm.level === 'SECRET' && humanConfirm.authority === 'human_confirmation');
+  check('L6. 同一个人、同一段文字，authority 不同 ⇒ 引擎判定为**不同内容**（contentIdentical 对权威敏感）',
+    DC.contentIdentical(humanAuthoring, humanConfirm) === false
+    && DC.contentIdentical(humanAuthoring, Object.assign({}, humanAuthoring)) === true);
+  check('L7. serialize 含 9 个键且 authority / authoredBy 在内（权威是存储的一部分，不是推导出来的）',
+    DC.FIELD_ORDER.length === 9 && DC.FIELD_ORDER.indexOf('authority') >= 0 && DC.FIELD_ORDER.indexOf('authoredBy') >= 0
+    && Object.keys(JSON.parse(DC.serialize(humanAuthoring))).join(',') === DC.FIELD_ORDER.join(','));
+
+  /* ── 通道与权威必须互相印证（两个方向都要拒） ── */
+  check('L8. 畸形/未知 authority → derived → 最高 PUBLIC（不是"不参与契约"，而是"没人负责"）',
+    DC.normalizeDisclosureFact({ ownerCharacterId: 'A', level: 'SECRET', text: 'x', source: 'diary', authority: 'trusted' }).level === 'PUBLIC'
+    && DC.normalizeDisclosureFact({ ownerCharacterId: 'A', level: 'SECRET', text: 'x', source: 'diary', authority: 'trusted' }).authority === 'derived');
+  check('L9. 非人类通道 + 显式人类权威 → 整体拒绝（跨字段组合不能造出更弱的伪造者没有的权威）',
+    DC.normalizeDisclosureFact({ ownerCharacterId: 'A', level: 'SECRET', text: 'x', source: 'role_dm_conversation', authority: 'human_authoring', authoredBy: 'user' }) === null
+    && DC.normalizeDisclosureFact({ ownerCharacterId: 'A', level: 'SECRET', text: 'x', source: 'diary', authority: 'human_confirmation', authoredBy: 'user' }) === null);
+  check('L10. 人类通道 + derived 权威 → 整体拒绝（通道说人写的，权威说没人负责 = 自相矛盾）',
+    DC.normalizeDisclosureFact({ ownerCharacterId: 'A', level: 'SECRET', text: 'x', source: 'user_authoring', authority: 'derived' }) === null);
+  check('L11. 人类权威不依赖 authoredBy，但**依赖通道**：非人类通道上的人类权威一律拒绝（无论有没有实名）',
+    DC.normalizeDisclosureFact({ ownerCharacterId: 'A', level: 'SECRET', text: 'x', source: 'diary', authority: 'human_authoring' }) === null
+    && DC.normalizeDisclosureFact({ ownerCharacterId: 'A', level: 'SECRET', text: 'x', source: 'generated_inference', authority: 'human_authoring', authoredBy: 'user' }) === null
+    && DC.normalizeDisclosureFact({ ownerCharacterId: 'A', level: 'SECRET', text: 'x', source: 'user_authoring', authority: 'human_authoring', authoredBy: '   ' }).level === 'SECRET');
+  check('L12. authoredBy 与 owner 同规则归一：控制字符 / 空白 / 超长 → 视为无效（但**不**因此拒绝人类通道记录）',
+    (function () {
+      const a = DC.normalizeDisclosureFact({ ownerCharacterId: 'A', level: 'SECRET', text: 'x', source: 'user_authoring', authority: 'human_authoring', authoredBy: 'u\u0001ser' });
+      const b = DC.normalizeDisclosureFact({ ownerCharacterId: 'A', level: 'SECRET', text: 'x', source: 'user_authoring', authority: 'human_authoring', authoredBy: 'x'.repeat(500) });
+      return a && a.authoredBy === '' && b && b.authoredBy === '';
+    })());
+  check('L13. derived 权威不得携带 authoredBy（自相矛盾，整体拒绝 —— 不静默清空字段）',
+    DC.normalizeDisclosureFact({ ownerCharacterId: 'A', level: 'PRIVATE', text: 'x', source: 'diary', authority: 'derived', authoredBy: 'user' }) === null
+    && DC.normalizeDisclosureFact({ ownerCharacterId: 'A', level: 'PRIVATE', text: 'x', source: 'diary' }).authoredBy === '');
+  check('L14. explain 对拒因如实消歧（不把"伪造权威"报成"忘了写 owner"）',
+    DC.explain({ ownerCharacterId: 'A', level: 'SECRET', text: 'x', source: 'role_dm_conversation', authority: 'human_authoring', authoredBy: 'u' }).reason === DC.REJECT.AUTHORITY_SOURCE_CONFLICT
+    && DC.explain({ ownerCharacterId: 'A', level: 'SECRET', text: 'x', source: 'diary', authority: 'derived', authoredBy: 'u' }).reason === DC.REJECT.DERIVED_WITH_PRINCIPAL
+    && DC.explain({ level: 'SECRET', text: 'x' }).reason === DC.REJECT.MISSING_OWNER);
+  check('L15. explain 报告降级是**谁的**责任（authority，不是 source）',
+    DC.explain({ ownerCharacterId: 'A', level: 'SECRET', text: 'x', source: 'role_dm_conversation' }).downgradedBy === 'authority:derived'
+    && DC.explain({ ownerCharacterId: 'A', level: 'SECRET', text: 'x', source: 'character_authoring' }).trimmed === false);
+
+  /* ── 兼容适配器：只给 source 时逐字保留 Phase 4B-1 冻结行为 ── */
+  check('L16. authorityForSource：authored 通道 → human_authoring，其余 → derived',
+    DC.authorityForSource('character_authoring') === 'human_authoring'
+    && DC.authorityForSource('user_authoring') === 'human_authoring'
+    && DC.authorityForSource('user_correction') === 'human_authoring'
+    && DC.authorityForSource('role_dm_conversation') === 'derived'
+    && DC.authorityForSource('generated_inference') === 'derived'
+    && DC.authorityForSource(undefined) === 'derived');
+  check('L17. 只给 source（4B-1 冻结形状）仍逐字等价：authored→SECRET、其余→PUBLIC',
+    DC.normalizeDisclosureFact({ ownerCharacterId: 'A', level: 'SECRET', text: 'x', source: 'user_authoring' }).level === 'SECRET'
+    && DC.normalizeDisclosureFact({ ownerCharacterId: 'A', level: 'SECRET', text: 'x', source: 'generated_inference' }).level === 'PUBLIC'
+    && DC.normalizeDisclosureFact({ ownerCharacterId: 'A', level: 'SECRET', text: 'x' }).level === 'PUBLIC');
+  check('L18. buildDisclosureFact 同样执行权威上限与通道一致性',
+    DC.buildDisclosureFact({ ownerCharacterId: 'A', level: 'SECRET', text: 'x', source: 'diary' }).level === 'PUBLIC'
+    && DC.buildDisclosureFact({ ownerCharacterId: 'A', level: 'SECRET', text: 'x', source: 'character_authoring' }).level === 'SECRET'
+    && DC.buildDisclosureFact({ ownerCharacterId: 'A', level: 'SECRET', text: 'x', source: 'diary', authority: 'human_authoring', authoredBy: 'u' }).level === 'SECRET');
+  check('L19. 归一化幂等：normalize(normalize(x)) 与 normalize(x) 逐字节相同（authority 维度参与）',
+    (function () {
+      const cases = [
+        { ownerCharacterId: 'A', level: 'SECRET', text: 'x', source: 'character_authoring' },
+        { ownerCharacterId: 'A', level: 'SECRET', text: 'x', source: 'diary' },
+        { ownerCharacterId: 'A', level: 'SECRET', text: 'x', source: 'user_authoring', authority: 'human_confirmation', authoredBy: 'u' },
+        { ownerCharacterId: 'A', level: 'PERSONAL', text: 'x' }
+      ];
+      return cases.every(c => {
+        const a = DC.normalizeDisclosureFact(c);
+        const b = DC.normalizeDisclosureFact(a);
+        return a && b && DC.serialize(a) === DC.serialize(b) && b.authoredBy === a.authoredBy;
+      });
+    })());
+  check('L20. 授权仍未实现：authority 只是数据，不存在任何"据此放行"的函数',
+    typeof DC.authorize !== 'function' && typeof DC.filter !== 'function'
+    && typeof DC.canDisclose !== 'function' && typeof DC.isAuthorized !== 'function'
+    && typeof DC.allowedFacts !== 'function' && typeof DC.grantFromAuthority !== 'function');
+}
+
+/* ══════ M. 逐写者反例（每个真实 writer 一条）══════ */
+group('M. 逐 writer 反例（仓库里真实存在的产生路径，file:line 见 D29）');
+{
+  /* M-A role-dm.js:1364 emitMemories —— 角色在私聊里的自我陈述。 */
+  check('M-A. Role DM 自主对话文本（source=role_dm_conversation）不可能变 SECRET/PRIVATE',
+    ['SECRET', 'PRIVATE', 'PERSONAL'].every(l =>
+      DC.normalizeDisclosureFact({ ownerCharacterId: 'A', level: l, text: '我可能其实很怕打雷', source: 'role_dm_conversation' }).level === 'PUBLIC'));
+  /* M-B active-diary.js:831 日记/consolidation 产物。 */
+  check('M-B. diary 与 consolidation 产物同样被限在 PUBLIC',
+    ['diary', 'consolidation'].every(s =>
+      DC.normalizeDisclosureFact({ ownerCharacterId: 'A', level: 'SECRET', text: 'x', source: s }).level === 'PUBLIC'));
+  /* M-C memory.js:1494–1538 模型抽取候选（模型自己在 JSON 里选 visibility）。 */
+  check('M-C. memory_extraction（模型抽取）不可能自行升级',
+    DC.normalizeDisclosureFact({ ownerCharacterId: 'A', level: 'SECRET', text: 'x', source: 'memory_extraction' }).level === 'PUBLIC');
+  /* M-D moment.js / role-letters.js:236 主动写动态 / 主动写信。 */
+  check('M-D. 主动生成的动态与信件（无 disclosure 通道）→ unknown → PUBLIC',
+    ['unknown', 'moment', 'role_letter', 'blog', 'letter'].every(s =>
+      DC.normalizeDisclosureFact({ ownerCharacterId: 'A', level: 'SECRET', text: 'x', source: s }).level === 'PUBLIC'));
+  /* M-E Role DM 自动 intent（role-dm-social.js）不产生任何角色事实。 */
+  check('M-E. 自动 social intent 不是 self-fact：它没有等级可给（source 不识别 → derived）',
+    DC.normalizeDisclosureFact({ ownerCharacterId: 'A', level: 'SECRET', text: 'x', source: 'role_dm_autonomous_intent' }).authority === 'derived');
+}
+
+/* ══════ N. 结构与变异（本轮的鉴别力证明）══════ */
+group('N. 结构性 + mutation sensitivity（4B-1.1）');
+{
+  check('N1. 核心仍未读 trust / relationship / 任何 Memory store（authority 不是从这些推出来的）',
+    (function () {
+      const d = readSrc('assets/js/disclosure-core.js').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+      return !/\btrust\b/.test(d) && !/relationship/i.test(d) && !/\bmemories\b/.test(d) && !/createdBy/.test(d);
+    })());
+  check('N2. 核心仍无任何 IO / 定时器（本轮没有新增写者）',
+    (function () {
+      const d = readSrc('assets/js/disclosure-core.js').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+      return !/\bfetch\s*\(/.test(d) && !/indexedDB/i.test(d) && !/localStorage/.test(d) && !/setTimeout|setInterval/.test(d);
+    })());
+  check('N3. 没有生产 writer 接入：全部 assets/js 里只有 core 自己提到 IBDisclosureCore',
+    require('fs').readdirSync(path.join(ROOT, 'assets', 'js')).filter(f => /\.js$/.test(f))
+      .filter(f => f !== 'disclosure-core.js')
+      .every(f => readSrc(path.join('assets', 'js', f)).indexOf('IBDisclosureCore') < 0));
+  check('N4. HTML 仍未加载 disclosure-core.js（没有 UI seam 可接，故不接）',
+    (() => {
+      const html = fs.readdirSync(ROOT).filter(f => /\.html$/i.test(f)).map(f => readSrc(f)).join('\n');
+      return html.indexOf('disclosure-core.js') < 0;
+    })());
+
+  /* ── MUT-A：authority 上限变异 —— derived 也能 SECRET ── */
+  const MUT_A_DERIVED_SECRET = (input) => {
+    const r = DC.normalizeDisclosureFact(input);
+    if (r && r.authority === 'derived' && DC.normalizeDisclosureLevel(input.level) === 'SECRET') r.level = 'SECRET';
+    return r;
+  };
+  check('MUT-A. 变异「derived 允许 SECRET」被 L1/L8/M-A 的断言捕获',
+    MUT_A_DERIVED_SECRET({ ownerCharacterId: 'A', level: 'SECRET', text: 'x', source: 'role_dm_conversation' }).level === 'SECRET'
+    && DC.normalizeDisclosureFact({ ownerCharacterId: 'A', level: 'SECRET', text: 'x', source: 'role_dm_conversation' }).level === 'PUBLIC');
+
+  /* ── MUT-B：把 Memory ACL 映射成披露等级 —— 必须红 ── */
+  const MUT_B_ACL_TO_LEVEL = (mem) => {
+    const level = mem && mem.visibility === 'private' ? 'SECRET'      /* ← 变异：ACL → 等级 */
+      : (mem && mem.visibility === 'only' ? 'PRIVATE' : 'PUBLIC');
+    return DC.normalizeDisclosureFact({
+      ownerCharacterId: mem && mem.ownerCharacterId, level: level, text: mem && mem.text,
+      source: 'memory_extraction', authority: 'derived'
+    });
+  };
+  check('MUT-B. 变异「visibility:private → SECRET」被契约捕获：映射出来的 SECRET 仍被降为 PUBLIC',
+    MUT_B_ACL_TO_LEVEL({ visibility: 'private', ownerCharacterId: 'A', text: 'x' }).level === 'PUBLIC'
+    && DC.explain({ ownerCharacterId: 'A', level: 'SECRET', text: 'x', source: 'memory_extraction' }).level === 'PUBLIC');
+  check('MUT-B2. 无任何自动映射：visibility 不是本契约的输入，等级也不由它决定',
+    (() => {
+      const base = { ownerCharacterId: 'A', text: 'x', source: 'memory_extraction' };
+      const a = DC.normalizeDisclosureFact(Object.assign({}, base, { level: 'PUBLIC', visibility: 'private' }));
+      const b = DC.normalizeDisclosureFact(Object.assign({}, base, { level: 'PUBLIC', visibility: 'public' }));
+      return a.level === b.level && a.authority === b.authority && !Object.prototype.hasOwnProperty.call(a, 'visibility');
+    })());
+
+  /* ── MUT-C：createdBy → ownerCharacterId 回退 —— 必须红 ── */
+  const MUT_C_CREATEDBY_OWNER = (input) => {
+    const c = Object.assign({}, input);
+    if (!c.ownerCharacterId && c.createdBy) c.ownerCharacterId = c.createdBy;   /* ← 变异 */
+    return DC.normalizeDisclosureFact(c);
+  };
+  check('MUT-C. 变异「createdBy 冒充 owner」被 B3/C 的断言捕获',
+    MUT_C_CREATEDBY_OWNER({ createdBy: 'A', level: 'PRIVATE', text: 'x', source: 'user_authoring' }) !== null
+    && DC.normalizeDisclosureFact({ createdBy: 'A', level: 'PRIVATE', text: 'x', source: 'user_authoring' }) === null);
+  check('MUT-C2. 同样地，visibleTo / subjectCharacterId / nickname 都不能冒充 owner',
+    ['visibleTo', 'subjectCharacterId', 'nickname'].every(k => {
+      const o = { level: 'PRIVATE', text: 'x', source: 'user_authoring' };
+      o[k] = 'A';
+      return DC.normalizeDisclosureFact(o) === null;
+    }));
+
+  /* ── MUT-D：candidate 未确认却成为 canonical PRIVATE —— 必须红 ── */
+  const MUT_D_UNCONFIRMED_CANDIDATE = (candidate) => {
+    /* 变异：跳过"人类确认"这一步，直接把模型 candidate 当 canonical。
+       注意它**仍然**经过门槛；被捕获的原因不是忘了校验，而是权威维度错了。 */
+    return DC.normalizeDisclosureFact({
+      ownerCharacterId: candidate.ownerCharacterId, level: 'PRIVATE',
+      text: candidate.text, source: 'generated_inference',
+      authority: 'human_authoring', authoredBy: 'user'                 /* ← 变异：伪造人类权威 */
+    });
+  };
+  check('MUT-D. 变异「未确认的 candidate → canonical PRIVATE」被通道校验捕获',
+    MUT_D_UNCONFIRMED_CANDIDATE({ ownerCharacterId: 'A', text: '模型猜的' }) === null);
+  check('MUT-D1b. 同一变异若同时伪造通道，仍需第三个字段才成立 —— 三个维度都得对上',
+    DC.normalizeDisclosureFact({
+      ownerCharacterId: 'A', level: 'PRIVATE', text: '模型猜的',
+      source: 'generated_inference', authority: 'human_confirmation', authoredBy: 'user'
+    }) === null
+    && DC.normalizeDisclosureFact({
+      ownerCharacterId: 'A', level: 'PRIVATE', text: '模型猜的',
+      source: 'user_authoring', authority: 'human_confirmation', authoredBy: 'user'
+    }) !== null);
+  check('MUT-D2. 确认之后才合法：同一段文字 + 人类通道 + 实名 ⇒ PRIVATE 成立',
+    DC.normalizeDisclosureFact({ ownerCharacterId: 'A', level: 'PRIVATE', text: '模型猜的', source: 'user_authoring', authority: 'human_confirmation', authoredBy: 'user' }).level === 'PRIVATE');
+
+  /* ── MUT-E：把 owner 从 writer context 换成"当前位置" ── */
+  const MUT_E_LAST_SPEAKER_OWNER = (input, lastSpeakerId) => {
+    const c = Object.assign({}, input);
+    if (!c.ownerCharacterId) c.ownerCharacterId = lastSpeakerId;   /* ← 变异：用当前说话人兜底 */
+    return DC.normalizeDisclosureFact(c);
+  };
+  check('MUT-E. 变异「owner 回落到当前说话人」被 L/E 的"UNKNOWN OWNER → REJECT"捕获',
+    MUT_E_LAST_SPEAKER_OWNER({ level: 'SECRET', text: 'x', source: 'character_authoring' }, 'B') !== null
+    && DC.normalizeDisclosureFact({ level: 'SECRET', text: 'x', source: 'character_authoring' }) === null);
 }
 
 console.log('\n' + (failed === 0 ? 'ALL GREEN' : 'FAILURES') + ' — passed=' + passed + ' failed=' + failed);

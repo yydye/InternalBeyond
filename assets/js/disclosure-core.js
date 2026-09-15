@@ -28,22 +28,47 @@
      · thread `memorandum` / recent history 是 **A 与 B 共享**的经历，
        不是 A 单方面的自我秘密。
 
-   ── 本模块只做一件事 ─────────────────────────────────────────────
-   定义 canonical 数据类型 + 归一化 + 封闭枚举 + provenance 等级。
-   **不做授权、不做过滤、不接 Role DM、不读 trust、不读关系。**
+   ══ Phase 4B-1.1（writer authority）：source 与 authority 是**两个维度** ══
+   Phase 4B-1 用 `source`（内容经过哪个通道）作为等级上限的唯一依据。4B-1.1 的
+   只读 writer 审计证明这是**不够**的，而且不够的方式是具体的：
+
+     用户显式写下  「设定：昔涟很怕打雷，这是她不愿告诉别人的事。」
+     模型在 Role DM 里说 「我可能其实很怕打雷。」
+
+   两者可以经过**同一个通道**（同一个 character 编辑器 / 同一张 Memory 表 /
+   同一条对话）。若上限只看通道，这两句话在类型上就无法区分 —— 而它们恰恰是
+   本契约存在的理由。因此：
+
+     · `source`    = **provenance**：内容从哪条通道产生。**不再**单独决定等级上限。
+     · `authority` = **写者权威**：谁对"这条事实是本角色的秘密"这件事负责。
+     · `authoredBy`= 该权威的**身份**（human authoring 必须实名，不接受匿名断言）。
+
+   并且两者必须**互相印证**（§4b `authorityConflictsWithSource`）：
+     authored 通道 ⇔ human 权威；derived 通道 ⇔ derived 权威。
+   一个 `role_dm_conversation` 通道带上 `human_authoring` 是**矛盾**，
+   整体拒绝 —— 否则跨字段组合会造出一个比两者都强的伪造权威。
+
+   ── 本模块只做两件事 ─────────────────────────────────────────────
+   定义 canonical 数据类型 + 归一化 + 封闭枚举 + provenance + **writer authority**。
+   **不做授权、不做过滤、不接 Role DM、不读 trust、不读关系、不写任何 store。**
 
        canonical self facts → [本模块: classification] → authorization(4B-2, DEFERRED)
                                                        → AUTHORIZED FACTS ONLY
                                                        → composeSide → prompt
 
-   ── 两条必须靠**代码结构**保证的性质（不是注释纪律）────────────────
-   ① **fail closed**：任何 non-authored（generated/inferred）来源**在构造阶段**
-      就被降级为 `UNDETERMINED`，即在类型层面**不可能**持有 PERSONAL/PRIVATE/SECRET。
-      "模型推测出来的东西"没有资格自动升级成角色的秘密 —— 这不需要下游再检查一次。
+   ── 四条必须靠**代码结构**保证的性质（不是注释纪律）────────────────
+   ① **fail closed**：没有人类写者权威（`authority` 缺失/畸形 → `derived`）时，
+      **在构造阶段**就被降级为 `UNDETERMINED`，即在类型层面**不可能**持有
+      PERSONAL/PRIVATE/SECRET。"模型推测出来的东西"没有资格自动升级成角色的
+      秘密 —— 这不需要下游再检查一次。
    ② **legacy 不自动成为秘密**：缺失/非法 level 一律归 `UNDETERMINED`，
       它 `isDisclosureFact() === false`、`isClassified() === false`，
       因此**旧数据不进入披露子系统**（而不是"默认成 PRIVATE 更安全"——
       那会把每条没有元数据的旧记录都变成秘密，是 fail-**open** 到荒诞）。
+   ③ **通道 ≠ 权威**：`source` 不再单独决定上限；跨字段矛盾组合整体拒绝。
+   ④ **authority 不认匿名**：human 权威必须由 `authoredBy` 实名，
+      而 `authoredBy` 与 owner 同规则归一（空白/控制字符 → 拒绝）——
+      不能被 `createdBy` / `visibleTo` / 昵称 / 当前说话人顶替。
    ==================================================================== */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) { module.exports = factory(); }
@@ -123,6 +148,48 @@
     SOURCE.CONSOLIDATION, SOURCE.GENERATED_INFERENCE, SOURCE.UNKNOWN
   ];
 
+  /* ── writer authority：**谁**对"这是本角色的秘密"负责 ─────────────────
+     这是 Phase 4B-1.1 新增的**第二维**。它回答的不是"内容从哪来"，而是
+     "哪个人明确授权 IB 把它当作该角色的敏感事实"。
+
+     为什么不能只留 source：见文件头。同一个通道既能承载人类显式写下的设定，
+     也能承载模型自己生成的一句话；若上限只看通道，两者在类型上不可区分。
+
+     为什么是这三个值（**由仓库里真实存在的写者证明，不是设计想象**）：
+
+       human_authoring     人类在明确知道 owner 是谁的上下文里写下这条事实。
+                           今天的唯一合法形态是"角色编辑器正在编辑角色 A"；
+                           **本轮没有任何生产 writer 使用它**（见 DECISIONS D29）。
+       human_confirmation  人类**确认**了系统先产出的 candidate。
+                           语义：candidate 是模型产物（derived），只有显式确认
+                           这一步把责任转移给人。本轮只定义，不实现确认流程。
+       derived             系统/模型抽取、推断、生成的一切，以及**一切畸形、
+                           缺失、无法识别**的 authority（fail closed）。
+
+     关键：`derived` 不是"低人一等"，而是"**没有人类对这个断言负责**"。
+     因此它的等级上限是 PUBLIC —— 一条模型自己说的"我其实很怕打雷"最多
+     只能是一条公开可说的观察，不能自动变成角色的秘密。 */
+  var AUTHORITY = {
+    HUMAN_AUTHORING: 'human_authoring',
+    HUMAN_CONFIRMATION: 'human_confirmation',
+    DERIVED: 'derived'
+  };
+
+  /* 只有这两者是人类权威（=需要实名 authoredBy）。 */
+  var HUMAN_AUTHORITIES = [AUTHORITY.HUMAN_AUTHORING, AUTHORITY.HUMAN_CONFIRMATION];
+
+  /* 封闭枚举：合法值原样通过，其余一切 → derived（fail closed）。
+     与 level 不同，这里的 fail closed 落点是**最低权威**而不是"未分类"：
+     因为 authority 描述的是"谁负责"，而"不知道谁负责"的正确答案就是
+     "没有人负责"，不是"不参与披露契约" —— 一条记录仍然可以有 author。 */
+  var AUTHORITIES = [AUTHORITY.HUMAN_AUTHORING, AUTHORITY.HUMAN_CONFIRMATION, AUTHORITY.DERIVED];
+
+  /* 权威 → 允许声称的最高档位。**这是本契约唯一的等级上限来源。** */
+  var MAX_LEVEL_FOR_AUTHORITY = {};
+  MAX_LEVEL_FOR_AUTHORITY[AUTHORITY.HUMAN_AUTHORING] = 'SECRET';
+  MAX_LEVEL_FOR_AUTHORITY[AUTHORITY.HUMAN_CONFIRMATION] = 'SECRET';
+  MAX_LEVEL_FOR_AUTHORITY[AUTHORITY.DERIVED] = 'PUBLIC';
+
   /* ── 拒绝原因（诊断用；**不含正文**）── */
   var REJECT = {
     NOT_AN_OBJECT: 'not-an-object',
@@ -130,7 +197,11 @@
     MISSING_TEXT: 'missing-text',
     NOT_CLASSIFIED: 'not-classified',
     SELF_OWNED_PEER: 'owner-is-not-self',      /* 预留：调用方传错了方向 */
-    TEXT_DENYLISTED: 'text-denylisted'
+    TEXT_DENYLISTED: 'text-denylisted',
+    /* Phase 4B-1.1 新增：通道与写者权威互相矛盾（整体拒绝，不静默改写任一维）。 */
+    AUTHORITY_SOURCE_CONFLICT: 'authority-source-conflict',
+    /* "没有人类对它负责"却带着一个写者身份 —— 自相矛盾，且会让下游误读成人类授权。 */
+    DERIVED_WITH_PRINCIPAL: 'derived-authority-with-principal'
   };
 
   /* ── 结构性硬拒名单 ──────────────────────────────────────────────
@@ -223,28 +294,74 @@
     return GATED_LEVELS.indexOf(normalizeDisclosureLevel(level)) >= 0;
   }
 
-  /* ══════════ 4. source 归一化 + 授权上限（结构性降级）══════════════ */
+  /* ══════════ 4. source（通道）+ authority（写者权威）══════════════ */
 
   function normalizeDisclosureSource(v) {
     if (typeof v !== 'string') return SOURCE.UNKNOWN;
     return SOURCES.indexOf(v) >= 0 ? v : SOURCE.UNKNOWN;
   }
 
+  /* 该通道是否是"人类显式撰写"类通道。**注意它不再单独决定任何等级上限** ——
+     它现在的用途是**交叉校验**：人类权威必须走人类通道，反之亦然。
+     保留函数名与行为以便既有调用方与测试逐字不变。 */
   function isAuthoredSource(source) {
     return AUTHORED_SOURCES.indexOf(normalizeDisclosureSource(source)) >= 0;
   }
 
-  /* 该来源**在类型上**被允许声称的最高档位。
+  /* ══════════ 4b. writer authority 归一化 + 交叉校验 ══════════════ */
 
-     authored  → SECRET
-     其余一切 → PUBLIC
+  function normalizeDisclosureAuthority(v) {
+    if (typeof v !== 'string') return AUTHORITY.DERIVED;
+    return AUTHORITIES.indexOf(v) >= 0 ? v : AUTHORITY.DERIVED;
+  }
 
-     后半句是本契约最重要的一行：`memory_extraction` / `generated_inference` /
-     `role_dm_conversation` / `diary` / `consolidation` **不可能**持有
-     PERSONAL 以上档位。因此"模型推测出一条'角色害怕 X'，然后它变成 PRIVATE"
-     在归一化阶段就已经被消灭，下游不需要再防。 */
-  function maxLevelForSource(source) {
-    return isAuthoredSource(source) ? LEVEL.SECRET : LEVEL.PUBLIC;
+  /* 人类权威（需要 authoredBy 实名）。 */
+  function isHumanAuthority(v) {
+    return HUMAN_AUTHORITIES.indexOf(normalizeDisclosureAuthority(v)) >= 0;
+  }
+
+  /* 权威 → 等级上限。**唯一来源。** source 不参与。 */
+  function maxLevelForAuthority(v) {
+    return MAX_LEVEL_FOR_AUTHORITY[normalizeDisclosureAuthority(v)];
+  }
+
+  /* 通道与权威是否互相印证。返回 true = 矛盾（调用方必须整体拒绝）。
+
+     两个方向都查，而且**两个方向的不对称是有意的**：
+
+       · 非人类通道 + 人类权威 → 矛盾。
+         `role_dm_conversation` + `human_authoring` 是用跨字段组合造出一个
+         比任一字段单独都强的伪造权威 —— 模型自己说的话借人类的名义升级。
+
+       · 人类通道 + 非人类权威 → **同样**矛盾，包括 `derived`。
+         `user_authoring` / `character_authoring` / `user_correction` 是
+         "只有人类写作路径能到达"的通道（writer 审计结论，见 D29）；
+         一条走人类通道却声明"没有人对它负责"的记录是自相矛盾的，
+         而且它比**只给通道**的记录更弱 —— 证据更多却结论更弱，说明调用方在猜。
+         这是 fail closed 的方向：不静默把它当成人类权威继续用。
+
+     返回值只用归一化后的枚举，不做任何近似匹配。 */
+  function authorityConflictsWithSource(source, authority) {
+    var s = normalizeDisclosureSource(source);
+    var a = normalizeDisclosureAuthority(authority);
+    return isAuthoredSource(s) !== isHumanAuthority(a);
+  }
+
+  /* ── 兼容用法：把"只给了 source、没给 authority"输入映射成等价 authority。
+     规则：authored 来源 → `human_authoring`（语义即"由人类撰写"）；
+           其余一切     → `derived`。
+
+     **这是迁移适配器，不是等级权威**：它只在 authority 维度**没有**被显式给出
+     时才使用（见 `normalizeDisclosureFact`）。一旦调用方显式给了 `authority`，
+     通道不再参与上限计算，只参与上面的矛盾检查。
+     保留它是因为 Phase 4B-1 冻结的 H 组行为必须逐字不变（`source` 单独出现时
+     authored→SECRET、其余→PUBLIC），而 4B-1 的调用形状里没有 authority 字段。
+
+     它同时保证归一化**幂等**：authored 通道推导出的 `human_authoring` 与
+     非人类通道推导出的 `derived` 都经由 `authorityConflictsWithSource` 判断为
+     自洽，因此 `normalize(normalize(x))` 与 `normalize(x)` 逐字节相同。 */
+  function authorityForSource(source) {
+    return isAuthoredSource(source) ? AUTHORITY.HUMAN_AUTHORING : AUTHORITY.DERIVED;
   }
 
   /* ══════════ 5. 结构性拒绝 ══════════════ */
@@ -287,19 +404,31 @@
 
   /* ══════════ 6. canonical 记录 ══════════════ */
 
-  /* 字段只有七个。**刻意不加** confidence / tags / visibility / audience /
-     visibleTo —— 每个都要证明它不可被既有权威表达：
+  /* 字段只有九个（Phase 4B-1 的七个 + 4B-1.1 的 authority / authoredBy）。
+     **刻意不加** confidence / tags / visibility / audience / visibleTo ——
+     每个都要证明它不可被既有权威表达：
        · confidence / tags      → 既有 Memory 已有，复制即第二权威；
        · visibility / visibleTo → memory-visibility-core 的 ACL，本契约不碰；
-       · audience               → 由 level + owner 唯一决定，存下来就会分叉。 */
+       · audience               → 由 level + owner 唯一决定，存下来就会分叉。
+
+     为什么 authority 与 authoredBy 是**两个**字段而不是一个：
+       `authoredBy` 是身份，`authority` 是这一次写入的**动作性质**。同一个人类
+       在同一个编辑器里既可以"写下一条新事实"（human_authoring），也可以
+       "确认一条系统候选"（human_confirmation）—— 这两者的语义不同（后者意味着
+       存在一条被否定的 candidate 来源），而身份是同一个人。把两者压成一个字段
+       就必须在身份字符串里编码动作，那正是"偷偷重载字段"。 */
   function buildDisclosureFact(opts) {
     var o = isPlainObject(opts) ? opts : {};
     var owner = normalizeId(o.ownerCharacterId);
     var source = normalizeDisclosureSource(o.source);
+    /* authority 维度：显式给出则以它为准，否则由通道适配出等价权威。 */
+    var explicit = normalizeDisclosureAuthority(o.authority);
+    var authority = (o.authority != null) ? explicit : authorityForSource(source);
+    var authoredBy = normalizeId(o.authoredBy);
     var requested = normalizeDisclosureLevel(o.level);
-    /* 结构性降级：请求的档位若高于来源在类型上允许的上限 → 落到上限。
-       （non-authored 请求 SECRET ⇒ 实际 PUBLIC，并记下 trimmed。见 §7） */
-    var maxLevel = maxLevelForSource(source);
+    /* 结构性降级：请求的档位若高于**写者权威**允许的上限 → 落到上限。
+       （derived 请求 SECRET ⇒ 实际 PUBLIC，并记下 trimmed。见 §7） */
+    var maxLevel = maxLevelForAuthority(authority);
     var granted = requested;
     if (requested !== LEVEL.UNDETERMINED && LEVEL_RANK[requested] > LEVEL_RANK[maxLevel]) granted = maxLevel;
     var now = Number(o.now);
@@ -311,6 +440,8 @@
       level: granted,
       text: normalizeText(o.text),
       source: source,
+      authority: authority,
+      authoredBy: isHumanAuthority(authority) ? authoredBy : '',
       subjectCharacterId: subject,   /* '' = 无所谓对象（关于角色自己的事实） */
       updatedAt: Math.trunc(now)
     };
@@ -335,8 +466,37 @@
     /* 非法/缺失 level ⇒ UNDETERMINED（**不是** PUBLIC，也不是 PRIVATE）。 */
     var level = normalizeDisclosureLevel(rawLevel);
     var source = normalizeDisclosureSource(input.source);
+    /* authority：显式给出则以它为准（畸形值 → derived，见 normalizeDisclosureAuthority），
+       否则由通道适配。authoredBy 与 owner 同规则归一 —— 空白/控制字符/超长一律
+       视为**没有实名写者**，而不是"清洗后当成一个人"。 */
+    var authority = (input.authority != null)
+      ? normalizeDisclosureAuthority(input.authority)
+      : authorityForSource(source);
+    var authoredBy = normalizeId(input.authoredBy);
+    /* ① 通道 ⇔ 权威 必须互相印证。 */
+    if (authorityConflictsWithSource(source, authority)) return null;
+    /* ② 非人类权威不得携带写者身份 —— 那是自相矛盾（"没人负责"却有负责人），
+       而且会让下游把 derived 记录误读成人类授权。整体拒绝，不静默清空字段。 */
+    if (!isHumanAuthority(authority) && authoredBy) return null;
+    /* ③ 人类权威**不要求** authoredBy。这是一个刻意的、写下来的限制：
+
+       人类权威来自**通道的结构性事实**（character_authoring / user_authoring /
+       user_correction 在代码里只有人类写作路径能到达，见 §4b）。它不是由
+       `authoredBy` 这个字符串建立的 —— 一个纯函数里，任何人都能写下
+       `authoredBy:'user'`，所以"必须实名"在类型层拦不住想绕过它的人，
+       它只会制造一道**看起来像门**的检查。
+
+       如果这里拒绝空 authoredBy，就会同时拒绝掉 Phase 4B-1 冻结的调用形状
+       `{owner, level, text, source}`，以及**本模块自己归一化出来的记录**
+       （归一化输出的 authoredBy 恒为空）—— 即 normalize 不再幂等。
+       一条"输出不是自己的合法输入"的契约是坏的契约，所以这里不设该检查。
+
+       `authoredBy` 的值因此是**可选的旁证**（谁在场的记录），不是授权本身；
+       真正的授权载体是 authority + 通道。docs/DECISIONS.md D29 如实记录了这一点。 */
+    /* ③ 非人类权威不得携带写者身份（否则会在下游被误读成人类权威）。 */
+    if (!isHumanAuthority(authority)) authoredBy = '';
     if (level !== LEVEL.UNDETERMINED) {
-      var maxLevel = maxLevelForSource(source);
+      var maxLevel = maxLevelForAuthority(authority);
       if (LEVEL_RANK[level] > LEVEL_RANK[maxLevel]) level = maxLevel;
     }
     var now = Number(input.updatedAt);
@@ -348,6 +508,8 @@
       level: level,
       text: normalizeText(input.text),
       source: source,
+      authority: authority,
+      authoredBy: authoredBy,
       subjectCharacterId: normalizeId(input.subjectCharacterId),
       updatedAt: Math.trunc(now)
     };
@@ -368,20 +530,49 @@
     return true;
   }
 
-  /* 诊断用（**不含正文**）：为什么这条被拒/被降级。 */
+  /* 诊断用（**不含正文**）：为什么这条被拒/被降级。
+
+     Phase 4B-1.1：多一个**拒因消歧**步骤。`normalizeDisclosureFact` 返回 null
+     有三种原因（无 owner / 通道与权威矛盾 / 人类权威缺实名），而 explain 必须
+     如实说出是哪一种 —— 否则调用方会把"我伪造了权威"读成"我忘了写 owner"，
+     于是去补 owner，再失败一次，永远学不到真正的拒绝理由。
+     消歧用与 normalize 相同的判定函数，不复制逻辑。 */
   function explain(input) {
-    var out = { ok: false, reason: '', level: '', ownerCharacterId: '', source: '', trimmed: false };
+    var out = {
+      ok: false, reason: '', level: '', ownerCharacterId: '', source: '',
+      authority: '', authoredBy: '', trimmed: false, downgradedBy: ''
+    };
     if (!isPlainObject(input)) { out.reason = REJECT.NOT_AN_OBJECT; return out; }
     var hits = denylistHits(input);
     if (hits.length) { out.reason = REJECT.TEXT_DENYLISTED; out.fields = hits.slice(); return out; }
     if (publicProfileWouldDoubleOwn(input)) { out.reason = REJECT.TEXT_DENYLISTED; out.fields = ['public-profile-double-authority']; return out; }
+    /* 权威维度的拒因消歧（顺序与 normalizeDisclosureFact 内的检查顺序一致）。 */
+    var src = normalizeDisclosureSource(input.source);
+    var auth = (input.authority != null)
+      ? normalizeDisclosureAuthority(input.authority)
+      : authorityForSource(src);
+    if (authorityConflictsWithSource(src, auth)) {
+      out.reason = REJECT.AUTHORITY_SOURCE_CONFLICT;
+      out.source = src; out.authority = auth;
+      return out;
+    }
+    if (!isHumanAuthority(auth) && normalizeId(input.authoredBy)) {
+      out.reason = REJECT.DERIVED_WITH_PRINCIPAL;
+      out.source = src; out.authority = auth;
+      return out;
+    }
     var rec = normalizeDisclosureFact(input);
     if (!rec) { out.reason = REJECT.MISSING_OWNER; return out; }
     out.level = rec.level;
     out.ownerCharacterId = rec.ownerCharacterId;
     out.source = rec.source;
+    out.authority = rec.authority;
+    out.authoredBy = rec.authoredBy;
     var req = normalizeDisclosureLevel(input.level);
     out.trimmed = req !== LEVEL.UNDETERMINED && req !== rec.level;
+    /* 降级是**谁的**责任：写者权威的上限。让诊断能区分"因为来源是模型"
+       和"因为写者不是人" —— 在 4B-1.1 里这两件事不再是同一件事。 */
+    if (out.trimmed) out.downgradedBy = 'authority:' + rec.authority;
     if (!rec.text) { out.reason = REJECT.MISSING_TEXT; return out; }
     if (!isClassified(rec.level)) { out.reason = REJECT.NOT_CLASSIFIED; return out; }
     out.ok = true;
@@ -437,7 +628,7 @@
      没有遥测字段）；未知字段在 normalize 阶段已被丢弃，因此不存在
      "未知字段往返"问题 —— 这是与 memory-contract.js 的**刻意差异**：
      记忆是既有数据（必须能往返未知字段），disclosure fact 是新类型（必须封闭）。 */
-  var FIELD_ORDER = ['factId', 'ownerCharacterId', 'level', 'text', 'source', 'subjectCharacterId', 'updatedAt'];
+  var FIELD_ORDER = ['factId', 'ownerCharacterId', 'level', 'text', 'source', 'authority', 'authoredBy', 'subjectCharacterId', 'updatedAt'];
 
   function serialize(fact) {
     var rec = normalizeDisclosureFact(fact);
@@ -451,7 +642,8 @@
   }
 
   /* 两条记录内容是否相同（**不**看 factId / updatedAt —— 它们是身份与时间，
-     不是内容）。 */
+     不是内容）。authority / authoredBy **算**内容：同样的正文由人授权与由模型
+     生成是两条不同的事实，把它们判成"内容相同"正是本阶段要禁止的混淆。 */
   function contentIdentical(a, b) {
     var x = normalizeDisclosureFact(a), y = normalizeDisclosureFact(b);
     if (!x || !y) return false;
@@ -459,6 +651,8 @@
       && x.level === y.level
       && x.text === y.text
       && x.source === y.source
+      && x.authority === y.authority
+      && x.authoredBy === y.authoredBy
       && x.subjectCharacterId === y.subjectCharacterId;
   }
 
@@ -475,6 +669,10 @@
     SOURCE: SOURCE,
     SOURCES: SOURCES,
     AUTHORED_SOURCES: AUTHORED_SOURCES,
+    AUTHORITY: AUTHORITY,
+    AUTHORITIES: AUTHORITIES,
+    HUMAN_AUTHORITIES: HUMAN_AUTHORITIES,
+    MAX_LEVEL_FOR_AUTHORITY: MAX_LEVEL_FOR_AUTHORITY,
     REJECT: REJECT,
     DENY_FIELDS: DENY_FIELDS,
     DENY_DOMAIN: DENY_DOMAIN,
@@ -489,7 +687,11 @@
     isGatedLevel: isGatedLevel,
     levelRank: levelRank,
     isAuthoredSource: isAuthoredSource,
-    maxLevelForSource: maxLevelForSource,
+    normalizeDisclosureAuthority: normalizeDisclosureAuthority,
+    isHumanAuthority: isHumanAuthority,
+    maxLevelForAuthority: maxLevelForAuthority,
+    authorityForSource: authorityForSource,
+    authorityConflictsWithSource: authorityConflictsWithSource,
     denylistHits: denylistHits,
     publicProfileWouldDoubleOwn: publicProfileWouldDoubleOwn,
     buildDisclosureFact: buildDisclosureFact,

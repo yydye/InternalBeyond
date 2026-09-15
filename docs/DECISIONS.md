@@ -747,3 +747,122 @@ PUBLIC 不同于第二权威 / identity 边界 / shared-thread 边界 / legacy �
 provenance 降级 / 序列化 / 结构性零 IO / mutation sensitivity（5 组真实变异，
 含「undefined→PUBLIC」与「owner A→B」，均已实测能捕获）。
 行为零变化由 `tests/test_role_dm.js`（**390 绿**）与 `tests/test_frontend_structure.js`（PASS）复核。
+
+## D29. 披露敏感度需要**显式写者权威**：通道 ≠ 权威（Phase 4B-1.1，2026-09-15）
+
+### 背景
+D28 用 `source`（内容经过哪个通道）作为等级上限的唯一依据。本轮做了**只读 writer 审计**
+（穷举所有可能产生"关于角色自己的事实"的生产 writer），结论是**不够**，而且不够的方式很具体：
+
+| writer | file:line | 人类显式？ | 模型生成？ | owner 已知？ | 可持 PERSONAL？ | PRIVATE？ | SECRET？ |
+|---|---|---|---|---|---|---|---|
+| 角色编辑器（`systemPrompt` / `relationship`） | `social.js:1226-1237` →`_persistApiConfig` `social.js:710` | **是** | 否 | **是**（正在编辑 character A） | 否* | 否* | 否* |
+| 角色编辑器（`publicProfile`） | `social.js:1237` →`public-profile-core.js` | 是 | 否 | 是 | **否**（PUBLIC BY CONSTRUCTION） | 否 | 否 |
+| Memory 手工创建/编辑 | `memory.js:271 saveMemory`（`createdBy:'user'`）、`:735 _memInlineSave` | **是** | 否 | **否**（表单没有 character 维度） | 否† | 否† | 否† |
+| Memory 模型抽取 | `memory.js:1494-1538 _generateMemoryCore`，`createdBy:cfg.id` | 否 | **是**（模型自己在 JSON 里选 `visibility`，`:1525`） | 否（`createdBy` 是角色 id，不是披露主体） | — | 否 | 否 |
+| Memory 日记/信件派生 | `memory.js:1904 generateMemoryFromPost`、`:1934 generateMemoryFromLetter` | 否 | 是 | 否 | — | 否 | 否 |
+| consolidation（episodic→semantic） | `active-diary.js:831 quickCreateMemory` | 否 | **是** | 否（`createdBy:roleId`） | — | 否 | 否 |
+| Role DM 长期记忆 | `role-dm.js:1364`（`visibility:'only'`、`createdBy:roleId`、`source:'role_dm'`） | 否 | **是** | 否 | — | 否 | 否 |
+| Role DM 自主 intent | `role-dm-social.js:419 computeIntent` | 否 | 否（纯本地打分，**不写任何 store**） | N/A | — | — | — |
+| Understanding 派生 | `home-node/understanding-derivation.js`（唯一写者）；`memory.js:1053 unWrite` 在权威生效时**结构性拒绝** | 否 | 是 | 否（`characterId` 是"谁的理解"，不是"关于谁的事实"） | — | 否 | 否 |
+| Understanding 用户更正 | `memory.js:1136 rejectUnderstanding` → `recordCorrection(..., basis:'user_stated')` | **是** | 否 | 是 | 否‡ | 否‡ | 否‡ |
+| Role Letters 长期记忆 | `role-letters.js:236 _rlWriteRoleMemory`（独立 store，`owner=characterId`） | 否 | **是** | 是（仅该角色命名空间） | — | 否 | 否 |
+| Moments / 动态 | `moments.js:568-580`（只**读**上下文） | 否 | 是 | — | — | 否 | 否 |
+
+\* 不是"不允许"，而是**这些字段根本不是 disclosure fact 载体**：`systemPrompt` 是身份权威
+（写成一个 disclosure fact 会被 `denylistHits` 整体拒绝），`relationship` 是角色↔**用户**关系。
+† Memory 表单写的是 **ACL**（`public|only|except|private` + `visibleTo`），不是敏感度；
+表单里没有任何"这条有多敏感"的输入。‡ 用户更正的对象是**理解**，不是角色事实。
+
+表的读法（**精确，不要读成"人类通道也不行"**）：`—` = 该路径产生的记录在现有契约里
+**连等级都拿不到**（派生权威 ⇒ 上限 PUBLIC），永远不可能持有；`否` = **现有代码里**没有
+走到那一步，但原因是不同的两种：编辑器/表单**没有 disclosure 语义的入口**
+（`systemPrompt` 是被拒载体的身份权威、Memory 表单写的是 ACL），
+而用户更正**在本轮没有被接入本契约**（它今天写的是 Understanding correction，
+不是 disclosure fact）。`human_authoring` 这个权威值是给"未来某个明确表示
+'用户在创作一条披露事实'的 seam"预留的 —— 该 seam **今天不存在**（见决策 10）。
+
+**审计中最重要的发现是同一个通道承载两种权威：**
+
+```
+用户显式写下   「设定：昔涟很怕打雷，这是她不愿告诉别人的事。」   ← 人类授权
+模型在 Role DM 「我可能其实很怕打雷。」                          ← 模型自述
+```
+
+两者都可以经过同一条 `role_dm_conversation` / 同一张 `memories` 表。**若上限只看通道，
+这两句话在类型上无法区分** —— 而区分它们正是本契约存在的理由。
+
+### 决策
+1. **`source` 与 `authority` 是两个维度，不得重载。**
+   `source` = provenance（内容经过哪条通道）；`authority` = writer authority（谁负责）。
+   把两者压成一个字段，等于让"经过哪条管道"悄悄变成"谁授权了它"。
+2. **新增封闭枚举 `authority`：`human_authoring` / `human_confirmation` / `derived`。**
+   畸形/缺失 ⇒ `derived`（fail closed 到"**没有人对它负责**"）。
+3. **等级上限只由 `authority` 决定**：人类权威 → SECRET；`derived` → **强制 PUBLIC**。
+   `source` **不再**单独决定任何上限。D28 第 5 条被本条取代（其 H 组行为仍逐字保留，
+   见第 8 条）。
+4. **通道与权威必须互相印证，两个方向都拒**（`authorityConflictsWithSource`）：
+   非人类通道 + 人类权威 = 跨字段伪造；人类通道 + 非人类权威 = 自相矛盾
+   （包括 `derived` —— 证据更多却结论更弱，说明调用方在猜）。整条拒绝，不静默改写任一维。
+5. **`ownerCharacterId` 只能来自 writer context**，禁止从文本 / nickname /
+   `subjectCharacterId` / `visibleTo` / `createdBy` / 当前最后一个 speaker 猜。
+   审计结论是：**今天没有任何 writer 同时具备"明确 owner"与"明确 disclosure 动作"**，
+   所以没有 writer 能创建 canonical disclosure fact。
+6. **Memory ACL ≠ disclosure level，且不建立任何自动映射。**
+   `visibility:'only'` ≠ PRIVATE、`visibility:'private'` ≠ SECRET、`createdBy` ≠
+   `ownerCharacterId`。注意 `memory.js:1525` 处**模型自己在 JSON 里选 `visibility`**：
+   这条 ACL 连"谁决定"都是模型 —— 若把它映射成等级，等于让模型一句话给自己发秘密。
+7. **模型生成的事实只能成为 `candidate`，不能直接成为 canonical。**
+   `MODEL OUTPUT → candidate → 人类显式确认 → authored fact`；**不是**
+   `MODEL OUTPUT → SECRET`。`human_confirmation` 这个权威值就是为这条路径预留的语义，
+   但确认流程本身**本轮不实现**（也不接任何模型调用）。
+8. **legacy 兼容**：只给 `source`（4B-1 冻结形状）时，authored 通道 → `human_authoring`、
+   其余 → `derived`，逐字保留 4B-1 行为；并且**归一化保持幂等**
+   （归一化输出必须是自己合法的输入，否则契约是坏的）。
+9. **`authoredBy` 是可选的旁证，不是授权本身** —— 这条限制写下来是因为它**看起来**像安全机制：
+   在纯函数里任何人都能写下 `authoredBy:'user'`，所以"必须实名"拦不住想绕过它的人，
+   只会制造一道**看起来像门**的检查。真正的授权载体是 `authority` + 通道的结构性事实
+   （`character_authoring` / `user_authoring` / `user_correction` 只有人类写作路径能到达）。
+   `authoredBy` 唯一被**拒绝**的情形是"derived 权威却带写者身份"（自相矛盾）。
+10. **本轮选择 B（contract-only），不是 C（接一个 writer）。**
+    选 C 需要先证明某个 UI/action 明确表示"用户正在创建 disclosure fact"。
+    审计证明**不存在**这样的 seam：character 编辑器写的是 `systemPrompt`/`publicProfile`，
+    Memory 编辑器写的是 ACL。把普通 Memory 编辑器"硬解释成"披露事实创作动作，
+    正是本轮被明确禁止的事。因此：**零生产 writer**、**零消费者**。
+
+### 非目标（本轮）
+不实现 authorization / filtering / trust gate / negative trust / decay / 关系数值改动；
+不接 Role DM（`composeSide` / `buildRoleDmContext` 一行未动）；不把 disclosure fact
+注入 prompt；不自动抽取 private fact；**不调用模型判断"这是不是秘密"**；
+不改 trust writer；不做 UI；不做 Memory migration；不碰 autonomous scheduler / M3 /
+RCI-2 / installer / VERSION / dist。
+
+### 验证
+`tests/test_disclosure_core.js`（**149 绿 / 0 红**，0 次真实模型调用）：
+4B-1 的 111 项逐字保留并全绿，新增 **L（20）/ M（5）/ N（11）** 共 38 项 ——
+writer authority 契约（枚举封闭、上限只由权威决定、双向通道校验、拒因消歧、
+9 字段序列化、幂等、4B-1 兼容适配器、授权函数仍不存在）、
+逐 writer 反例（Role DM 自主文本 / diary / consolidation / memory extraction /
+actions·letters / autonomous intent 六条真实路径各自不得升级）、
+结构性（核心仍不读 trust·relationship·Memory、仍零 IO、全 `assets/js` 只有 core 自己
+提到 `IBDisclosureCore`、HTML 仍未加载它）、**5 组新变异**：
+
+| # | 变异 | 被哪条断言捕获 |
+|---|---|---|
+| MUT-A | `derived` 允许 SECRET | L1 / L8 / M-A |
+| MUT-B | `visibility:'private'` → SECRET | MUT-B（映射出的 SECRET 仍被降为 PUBLIC）+ MUT-B2（等级不由 visibility 决定） |
+| MUT-C | `createdBy` → `ownerCharacterId` 回退 | B3 / C 组 / MUT-C、MUT-C2（`visibleTo`/`subject`/`nickname` 同样不能冒充） |
+| MUT-D | 未确认的 candidate → canonical PRIVATE | 通道校验（含 MUT-D1b：三个维度都得对上） |
+| MUT-E | owner 回落到"当前说话人" | "UNKNOWN OWNER → REJECT" |
+
+行为零变化由 `tests/test_role_dm.js`（**390 绿 / 0 红**）、`tests/test_role_dm_social.js`
+（**216 绿 / 0 红**）、`tests/test_public_profile.js`（**87 通过 / 0 失败**）、
+`tests/test_frontend_structure.js`（**PASS**）复核。
+
+### 与 D28 的关系
+D28 的**结论仍然成立**（分类是显式数据权威、不从 persona / trust 推断、
+legacy 不自动成为秘密、publicProfile / persona / shared-thread 三域排除）。
+D29 只修正 D28 的**依据**：等级上限从"来源"移到"写者权威"，因为审计证明
+来源不等于权威。`disclosure-core.js` 里 `maxLevelForSource` 已被
+`maxLevelForAuthority` 取代，并由 `authorityForSource` 作为**迁移适配器**
+保留 4B-1 的调用形状语义。
