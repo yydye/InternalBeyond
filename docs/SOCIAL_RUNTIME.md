@@ -1,8 +1,8 @@
-﻿# InternalBeyond · 社会运行时（Social Runtime）
+# InternalBeyond · 社会运行时（Social Runtime）
 
 > 本文回答一个核心问题：**为什么 InternalBeyond 不是"一个带朋友圈的聊天机器人"。**
 > 它会解释 IB 把"角色"当成**社会实体**而非"API 回复端点"的机制，以及这个**社会闭环**是如何由持久状态 + 离散机制近似实现的。
-> 关联文档：[ARCHITECTURE.md](ARCHITECTURE.md)（怎么工作）· [CHRONICLE.md](CHRONICLE.md)（前世今生）· [MEMORY.md](MEMORY.md)（记忆系统）· [AUTONOMY.md](AUTONOMY.md)（自主性）· [OFFLINE.md](OFFLINE.md)（离线）· [WHY_IB.md](WHY_IB.md)（设计哲学）。
+> 关联文档：[ARCHITECTURE.md](ARCHITECTURE.md)（怎么工作）· [CHRONICLE.md](CHRONICLE.md)（前世今生）· [MEMORY.md](MEMORY.md)（记忆系统）· [AUTONOMY.md](AUTONOMY.md)（自主性）· [ROLE_DM.md](ROLE_DM.md)（角色私信）· [OFFLINE.md](OFFLINE.md)（离线）· [WHY_IB.md](WHY_IB.md)（设计哲学）。
 
 ---
 
@@ -87,13 +87,21 @@ score = importance × activationFactor × decayFactor × emotionFactor × relBoo
 
 召回：`getMemoryContext` 按分数排序，预算内**置顶优先 + 主选区(85%) + 探索窗口(15%)随机**——"沉睡的记忆有时也会被重新激活"。遗忘靠**指数衰减 + 标记已解决**。
 
-### 2.5 Relationship（关系 = 涌现而非脚本）
+### 2.5 Relationship（关系 = 涌现 + 私信域的有向关系）
 
-- `_momentsPairAffinity(a,b)`（`moments.js`）/ `pairAffinity`（`reply-chain-core.js`）= **40–95 的稳定哈希**，无存储、无新关系系统。
+- `_momentsPairAffinity(a,b)`（`moments.js`）/ `pairAffinity`（`reply-chain-core.js`）= **40–95 的稳定哈希**，无存储 —— 朋友圈与回复链这一层**没有**关系状态。
 - 点赞/评论/第三方加入候选**按亲和度过滤与点名**，于是自然出现"常互动 / 偶尔 / 潜水"的分布，而非写死的朋友关系。
-- **观测层**：`social-observe.js` 记录方向保留的互动矩阵 + 按日聚合，用于**校准关系参数**——关系层设计上是**待定**的（`DECISIONS.md` D13：校准后才实现关系状态层，禁止提前做）。
+- **观测层**：`social-observe.js` 记录方向保留的互动矩阵 + 按日聚合，用于**校准关系参数**。
+- **角色私信域已有真实关系状态层**（⚠️ 2026-09-15 修正）：`role-dm.js` 在 localStorage
+  `ib_role_dm_relations_v1` 保存**有向**记录，维度为 `trust` / `familiarity` / `affinity`
+  （`role-dm-core.js:181` 初值 0.5 / 0.2 / 0.5，单次 run 增量被 `RELATION_DELTA_CAP=0.03` 封顶）。
+  它**只**由私信 run 观测写入，**不**与上面那套哈希亲和度共享权威。
+  完整现状（含"这些数字目前真正影响什么"）见 [ROLE_DM.md](ROLE_DM.md) 与
+  [ROLE_DM_RELATIONSHIP_PHASE4_AUDIT.md](ROLE_DM_RELATIONSHIP_PHASE4_AUDIT.md)。
 
-> 诚实说明：目前的"关系"是**稳定哈希的亲和度**，**不是**一个富关系图或成长中的关系分数。真正的"关系状态层"**被明确禁止提前实现**，要等观测数据回填（见 D13）。
+> 诚实说明：朋友圈/回复链的"关系"仍是**稳定哈希的亲和度**，不是一个富关系图；
+> 该层的校准等待（D13）**未被解除**。真正的关系状态层目前只存在于**角色私信域**，
+> 且它当前**尚未**约束角色的披露、语气或主动性（只影响私信 prompt 里的一句自述与自主发起的评分）。
 
 ### 2.6 Decision（决策 = 机制 + 模型，非随机）
 
@@ -135,7 +143,9 @@ IB 的自主行动**不是**"让模型随机生成"，而是**调度 + 意图 + 
 ## 4. 已知边界 / 诚实清单
 
 - **非统一情感引擎**：情绪由 val/arousal、motive、声学语气**近似**，非一张状态机。
-- **关系层待校准**：现为稳定哈希亲和度；真正的关系状态层**被禁止提前实现**（D13），待观测数据回填。
+- **关系层分域**：朋友圈/回复链仍是稳定哈希亲和度，其校准等待（D13）未解除；
+  **角色私信域**已有有向关系状态（trust/familiarity/affinity），但当前不约束行为
+  —— 见 [ROLE_DM.md](ROLE_DM.md)。
 - **后台纯文字**：companion 后台只产纯文字动态（图片依赖浏览器 imageGen）。
 - **反幻觉边界**：上下文有界（不预告/不猜），宁可少给也不给错。
 - **个人本地应用**：不是 SaaS，无 RBAC/多用户（D1）；观测是为了**校准社交参数**，不是商业化埋点。

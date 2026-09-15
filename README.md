@@ -98,6 +98,7 @@
 | **Calendar** | AI 日历 — 悬浮小窗 + 挂历视窗，纪念日 / 生日 / 计划 / 记录，月相节气与传统节日，AI 读取临近日程、聊天中提起并留便笺 |
 | **Blog** | 日志 / 密码日记本 / AI 评论 / AI 批注 / 自定义剧本 |
 | **Letters** | AI 书信 — 异步通信，AI 读取你的资料后写回信 |
+| **Role DM** | 角色私信 — 角色之间的持久私聊：对方只以自己的**公开资料**出现，带上**有向关系**（信任 / 熟悉 / 好感）与**跨会话共同历史备忘**；可在开关开启后自主发起（有日额、冷却、退避与免打扰） |
 | **Memory** | 长期情感记忆库 — 星图可视化 + 自然衰减 + API 上下文自动注入 + Auto Memory（AI 自主记忆） |
 | **Active** | 全天候主动信息 — 每天 / 每周 / 自定义间隔，结合角色设定、关系、Memory、时间与最近聊天生成；关页后仍可继续（本地服务随应用自动启动） |
 | **Moments** | AI 朋友圈 → 已升级为 **社交圈（AI 社交网络）**：角色拥有主页（Banner/头像/@账号/简介/签名/关注）、混合 Feed（文字/图片/点赞/评论/回复线程/转发引用）、好友目录与完整讨论串；角色自主发布、互评互赞与私人日志全部保留（有冷却与去重） |
@@ -217,8 +218,9 @@ vision/                    # 可选本地视觉服务（Python，默认不随包
 | [`README.md`](README.md) | 安装、使用、下载（本文件） |
 | [`TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | 遇到问题先查这里 |
 | [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) | 这个项目是怎么工作的 |
-| [`DECISIONS.md`](docs/DECISIONS.md) | 为什么这么设计（D1–D19，"不要随便改"清单） |
+| [`DECISIONS.md`](docs/DECISIONS.md) | 为什么这么设计（D1–D26，"不要随便改"清单） |
 | [`HANDOVER.md`](docs/HANDOVER.md) | 现状、待办、DO / DON'T（Agent 第一入口） |
+| [`ROLE_DM.md`](docs/ROLE_DM.md) | 角色私信（Role DM）：能力、隐私边界、关系三维、自主发起、可观测性 |
 | [`CHANGELOG.md`](docs/CHANGELOG.md) | 以前发生过什么 |
 | [`docs/CHRONICLE.md`](docs/CHRONICLE.md) | 编年史（上游 → fork 全史） |
 | [`docs/WHY_IB.md`](docs/WHY_IB.md) / [`docs/SOCIAL_RUNTIME.md`](docs/SOCIAL_RUNTIME.md) / [`docs/MEMORY.md`](docs/MEMORY.md) / [`docs/AUTONOMY.md`](docs/AUTONOMY.md) / [`docs/OFFLINE.md`](docs/OFFLINE.md) | 定位、社会闭环、记忆、自主性、离线能力 |

@@ -73,6 +73,13 @@ Moments "output unparseable" 根因是推理型模型把 maxTokens=900 耗在 re
 - 行为观测层零行为变更：cooldown/affinity/reply-chain/companion 调度/Prompt/DB_VER 全部不动；接入点全部一行式旁路、失败静默；零新增模型调用。
 - **校准等待中（禁止提前实现关系状态层）**：relationship score 初值 / 正负增量 / 时间衰减 / 事件记忆阈值 / prompt 注入数量 / 高亲和短冷却阈值——全部待 1–2 周真实分布数据回填后再定。
 
+> ⚠️ **2026-09-15 补注（不修改上文历史结论）**：本条针对的是**朋友圈 / 回复链的哈希亲和度**校准路径，
+> 该等待**依然有效**。**角色私信域**后来实现了有向关系状态层（`trust` / `familiarity` / `affinity`，
+> 见 `assets/js/role-dm.js` 与 [ROLE_DM.md](ROLE_DM.md)）——它有自己的初值（0.5 / 0.2 / 0.5）、
+> 增量上限（`RELATION_DELTA_CAP = 0.03`）与 prompt 注入点，**不受本条约束**，
+> 但也没有覆盖本条的校准诉求。后续读者**不得**把本条读成"角色私信关系层现在仍被禁止"；
+> 反过来，也**不得**把私信关系层的存在当作"哈希亲和度可以开始做状态化"的依据。
+
 ## D14. 已接受的债务与"审计确认已达足够、不再改"项
 
 - 双执行器极小竞态：companion 误判离线 + DEL/PUT 双网络失败的理论窗口下可能双发（消息 ID 秒级幂等为最后兜底）——设计权衡，不阻塞。
@@ -647,3 +654,12 @@ DEFECT（不是产品 runtime bug）。
 `tests/test_rci1_call_identity.js`（39 项，0 次真实模型调用）：legacy 六个调用点全部具名、
 Role DM 双角色身份不串、预算重试身份不漂移、并发 diary/role_dm 同 provider/model 仍可区分、
 trace 键白名单与请求体不含身份键。
+
+> **2026-09-15 补注（RCI-1.1，commit `20ad52f`）**：本条的 `characterId` 契约在
+> **Diary** 域也已落地 —— `generateDiaryEntry` 与 `_diaryDailyPlanner` 两条生产路径
+> （consumer 恒为 `diary`，不碎片化成 `diary.entry` / `diary.planner`）现在如实传入 `cfg.id`；
+> 身份取自配置 id，拿不到时写 `''`。**Diary 的 `threadId` 恒为 `''` 是有意设计**：
+> Diary 没有会话线程概念，不为"看起来完整"制造假身份。
+> 验证：`tests/test_rci1_1_diary_identity.js`（40 项，0 次真实模型调用）。
+> 尚未声明身份的 consumer（`moments` / `role_letters` / `active.proactive` /
+> `memory_consolidation` 等）仍为 `''`，**不得**记为已完成 —— 见 [ROLE_DM.md](ROLE_DM.md) §Observability。
