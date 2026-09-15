@@ -518,7 +518,53 @@ const GROUPS = [
               且每个 worker 自己读到的数都 ≥ 0。 */
       ['test_p22_5_economy_catalog.js'],
       ['test_p22_5_economy_inventory.js'],
-      ['test_p22_5_economy_runtime.js']
+      ['test_p22_5_economy_runtime.js'],
+      /* P22-6：Purchase Orchestrator + Atomic Settlement —— 第一次把
+         Product → Quote → Budget → Reservation → Ledger → Quote 消费 →
+         Inventory/Compute 交付串成**一条**经济流程。
+         三组刻意分开：
+           ① purchase：域契约与 Prepare。Purchase 的四态状态机（终态不可逆、
+              初始态只有 RESERVED）、身份复用 P22-1 冻结的 PURCHASE_INTENT
+              （ID_KINDS 仍然是 14）、结算映射（fulfillment → primitive →
+              frozen TX_TYPE）、结算对手方来自 SYSTEM_ACCOUNTS 白名单且
+              **不是** MINT（一次购买不是一次增发）。Prepare 成功之后世界
+              逐字是：Purchase RESERVED / Reservation ACTIVE / Quote **仍然
+              OPEN** / Ledger 与 Inventory **一字节未动**（余额只是被锁）；
+              幂等的 prepare 重放不产生第二次 reserve；Product-backed 强制
+              （悬空引用、金额不符、收件人不符全部拒绝）；商品改价 / disable
+              / retire **不改变**已 Prepare 的购买（历史报价的有效性只由它
+              自己的 state 与 expiresAt 决定）；SERVICE 在 Prepare 就
+              fail closed 且**不 reserve**；静态边界：零 provider / 零支付 /
+              零 Memory / 零 Relationship / 零 Decision / 零 Action。
+           ② settlement：**一个 SQLite COMMIT 边界**。13 个故障点每一个都
+              断言七件事（ledger 未扣款 / reservation 仍 ACTIVE / quote 未
+              被消费 / inventory 未增 / purchase 未假完成 / revision 未泄漏 /
+              幂等无残留）并且有 **hit counter** 证明"注入了的确实被执行过"；
+              transactionDepth 观测证明所有结算步骤都在**同一个**事务里；
+              普通 / Gift（A 付款、B 收货、ledger 的 payer 是 A）/ Compute
+              （内部 computeUnit 额度真的 +1000，而 provider 零参与）/
+              Service 四条完整路径；exactly-once（一次购买至多一笔交易、
+              至多一次发放、一份报价至多一次成功消费）；取消**不产生退款**
+              也不取消报价；报价或预留在 Prepare 之后过期 → 拒绝 + 释放 +
+              终态，且 quote 进入 EXPIRED；预算的**最终**再评估（Prepare
+              ALLOW、settle 时政策改严 / 窗口被别处用掉 / 变成
+              REQUIRE_APPROVAL / 政策失效 —— 四种都 fail closed，且
+              REQUIRE_APPROVAL 进 RELEASED 而不是 FAILED）。
+           ③ runtime：**生产进程里到底有没有它**。两条新只读路由
+              （GET /economy/purchases · /purchase）走真实 server；八条购买
+              写路径 × 三种写动词 = 24 次写尝试全部 405；/security 把
+              purchaseWritesExposed / settlementWritesExposed /
+              policyApprovalWritesExposed 三条写面写成空名单；**真实 spawn
+              services/home-node-service.js** 打开 schema 5 的库、重启之后
+              同一条购买逐字相同；最后是 P22-3 那条纪律换到结算上：
+              **两个真实子进程**在同一墙钟时刻同时 settle 同一次购买，
+              断言恰好一笔 COMPLETED / 恰好一笔交易 / 恰好一次发放 /
+              恰好一次报价消费（另一个是幂等回放或终态冲突，绝不是双扣）；
+              两个进程同时 prepare 同一份报价 → 最多一条成功；6 个进程各自
+              prepare 得到 6 个互不相同的 purchaseId。 */
+      ['test_p22_6_economy_purchase.js'],
+      ['test_p22_6_economy_settlement.js'],
+      ['test_p22_6_economy_runtime.js']
     ]
   },
   {

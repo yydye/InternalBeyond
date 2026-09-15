@@ -185,15 +185,22 @@ section('A · schema（三张表 · 水位 4 · 列清单精确）');
   const dir = tmpDir('schema');
   const store = makeStore({ dataDir: dir });
   const opened = store.open();
-  check('A1 打开一个 P22-5 库：schemaVersion 是本 build 声明的 4',
-    opened.ok === true && Number(opened.schemaVersion) === 4 &&
-    Number(store.SCHEMA_VERSION) === 4 && Number(store.health().schemaVersion) === 4,
+  check('A1 打开一个库：schemaVersion 是**本 build 声明的那个**（P22-5 时是 4，P22-6 抬到 5）',
+    opened.ok === true && Number(opened.schemaVersion) === Number(store.SCHEMA_VERSION) &&
+    Number(store.health().schemaVersion) === Number(store.SCHEMA_VERSION),
     { opened: opened.schemaVersion, declared: store.SCHEMA_VERSION });
-  check('A2 三张新表被登记在 store.TABLES 上，且表的**总数**恰好是 15（多一张就会被看见）',
+  check('A2 三张新表被登记在 store.TABLES 上，且表的**总数**恰好是 16（多一张就会被看见）',
     store.TABLES.STORES === 'economy_stores' &&
     store.TABLES.PRODUCTS === 'economy_products' &&
     store.TABLES.INVENTORY === 'economy_inventory' &&
-    Object.keys(store.TABLES).length === 15, Object.keys(store.TABLES));
+    /* 16 = P22-2 的 8 + P22-3 的 3 + P22-4 的 2 + P22-5 的 3 + P22-6 的 1
+       （economy_purchases）。这一行的存在就是为了在跨阶段时被**显式**改
+       一次 —— 悄悄地多一张表会让"表的清单"这件事失去意义。 */
+    Object.keys(store.TABLES).length === 16, Object.keys(store.TABLES));
+  check('A2b P22-6 又加了一张表：PURCHASES 被登记，而三张 P22-5 的表一个都没丢',
+    store.TABLES.PURCHASES === 'economy_purchases' &&
+    store.TABLES.STORES === 'economy_stores' && store.TABLES.PRODUCTS === 'economy_products' &&
+    store.TABLES.INVENTORY === 'economy_inventory');
 
   const raw = new DatabaseSync(path.join(dir, 'home-node.db'));
   const tables = raw.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(r => String(r.name));
@@ -1052,7 +1059,9 @@ section('I · 重启恢复（close → open 之后五样东西逐字相同）');
 
   check('I1 重启之后：货架 / 商品 / 库存 / 报价 / 预算结论**五样**逐字相同',
     opened.ok === true &&
-    opened.schemaVersion === 4 &&
+    /* P22-6：水位是**本 build 声明的那个**（P22-5 时 4，P22-6 抬到 5）。
+       重启仍然只有一个要求：它不变。 */
+    Number(opened.schemaVersion) === Number(reopened.SCHEMA_VERSION) &&
     J(reopened.getStore({ storeId: st.storeId }).store) === snapshot.store &&
     J(reopened.getProduct({ productId: p.product.productId }).product) === snapshot.product &&
     J(reopened.serializeInventoryEntry(reopened.getInventoryEntry({
@@ -1106,7 +1115,12 @@ section('J · schema 3 → 4（补三张表 · 旧行一个字节都不动 · �
   seed.close();
 
   const raw = new DatabaseSync(path.join(dir, 'home-node.db'));
-  /* 造一个"P22-4 代"的库：删掉 P22-5 的三张表，把水位写回 3。 */
+  /* 造一个"P22-4 代"的库：删掉 P22-5 的三张表**与 P22-6 的那一张表**，
+     把水位写回 3。
+     ★ 为什么 P22-6 的表也要删：这一组的命题是"一个受支持的老版本库，
+     被本 build 打开之后会发生什么"，而 P22-6 的表对这个库来说同样是
+     缺失的第四张表。只删三张会让断言变成"补了其中的三张"。 */
+  raw.exec('DROP TABLE economy_purchases');
   raw.exec('DROP TABLE economy_inventory');
   raw.exec('DROP TABLE economy_products');
   raw.exec('DROP TABLE economy_stores');
@@ -1115,11 +1129,12 @@ section('J · schema 3 → 4（补三张表 · 旧行一个字节都不动 · �
 
   const upgraded = makeStore({ dataDir: dir });
   const opened = upgraded.open();
-  check('J1 打开 P22-4 代的库：水位抬到 4，三张新表被补上且**是空的**（补表不等于补数据）',
-    opened.ok === true && Number(opened.schemaVersion) === 4 &&
+  check('J1 打开 P22-4 代的库：水位抬到 5，四张新表被补上且**是空的**（补表不等于补数据）',
+    opened.ok === true && Number(opened.schemaVersion) === Number(upgraded.SCHEMA_VERSION) &&
     upgraded.health().counts.stores === 0 &&
     upgraded.health().counts.products === 0 &&
-    upgraded.health().counts.inventoryEntries === 0);
+    upgraded.health().counts.inventoryEntries === 0 &&
+    upgraded.health().counts.purchases === 0);
   check('J2 ★ 既有 ledger / 报价 / revision / change log 一字节都没动',
     upgraded.getRevision() === before.revision &&
     upgraded.listChanges(0, 500).length === before.changes &&
@@ -1166,12 +1181,12 @@ section('J · schema 3 → 4（补三张表 · 旧行一个字节都不动 · �
   putStoreOk(future, { name: 'Shelf' });
   future.close();
   const rawFuture = new DatabaseSync(path.join(dir2, 'home-node.db'));
-  rawFuture.prepare('UPDATE economy_meta SET value=? WHERE key=?').run('5', 'economy_schema');
+  rawFuture.prepare('UPDATE economy_meta SET value=? WHERE key=?').run('6', 'economy_schema');
   rawFuture.close();
   const tooNew = makeStore({ dataDir: dir2 });
   let rejected = null;
   try { tooNew.open(); } catch (error) { rejected = error; }
-  check('J8 更新的库（水位 5）被拒绝打开，错误码是 SCHEMA_TOO_NEW（不降级、不"尽力而为"）',
+  check('J8 更新的库（水位 = 本 build 的下一版）被拒绝打开，错误码是 SCHEMA_TOO_NEW（不降级、不"尽力而为"）',
     rejected != null && rejected.code === 'SCHEMA_TOO_NEW', String(rejected && rejected.code));
   const rawCheck = new DatabaseSync(path.join(dir2, 'home-node.db'));
   const stillThere = rawCheck.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(r => String(r.name));
@@ -1183,16 +1198,21 @@ section('J · schema 3 → 4（补三张表 · 旧行一个字节都不动 · �
          要用另一种方式证明：先造一个只有旧表的库，再让新版去开它。 */
       return true;
     })());
-  /* 真正的证明：手工造一个"水位 5、且**只有旧表**"的库。 */
+  /* 真正的证明：手工造一个"水位 = 本 build 的下一版、且**只有旧表**"的库。
+     P22-6 让这个库的缺失集合多了一张（economy_purchases），因此断言也
+     跟着扩到四张 —— 这恰好是"DDL 排在兼容性判断之后"这条纪律的第四次
+     应用被检验。 */
   const dir3 = tmpDir('toonew2');
   const builder = makeStore({ dataDir: dir3 });
   builder.open();
   builder.close();
   const rawStripped = new DatabaseSync(path.join(dir3, 'home-node.db'));
+  rawStripped.exec('DROP TABLE economy_purchases');
   rawStripped.exec('DROP TABLE economy_inventory');
   rawStripped.exec('DROP TABLE economy_products');
   rawStripped.exec('DROP TABLE economy_stores');
-  rawStripped.prepare('UPDATE economy_meta SET value=? WHERE key=?').run('5', 'economy_schema');
+  rawStripped.prepare('UPDATE economy_meta SET value=? WHERE key=?')
+    .run(String(Number(makeStore({ dataDir: tmpDir('verprobe') }).SCHEMA_VERSION) + 1), 'economy_schema');
   rawStripped.close();
   const tooNew2 = makeStore({ dataDir: dir3 });
   let rejected2 = null;
@@ -1200,9 +1220,10 @@ section('J · schema 3 → 4（补三张表 · 旧行一个字节都不动 · �
   const rawVerify = new DatabaseSync(path.join(dir3, 'home-node.db'));
   const afterReject = rawVerify.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(r => String(r.name));
   rawVerify.close();
-  check('J10 ★ 一个"水位更新且缺表"的库：拒绝打开，且它上面**一张 P22-5 的表都没被创建**',
+  check('J10 ★ 一个"水位更新且缺表"的库：拒绝打开，且它上面**一张 P22-5 / P22-6 的表都没被创建**',
     rejected2 != null && rejected2.code === 'SCHEMA_TOO_NEW' &&
-    ['economy_stores', 'economy_products', 'economy_inventory'].every(t => afterReject.indexOf(t) < 0),
+    ['economy_stores', 'economy_products', 'economy_inventory', 'economy_purchases']
+      .every(t => afterReject.indexOf(t) < 0),
     { code: String(rejected2 && rejected2.code), tables: afterReject });
 }
 

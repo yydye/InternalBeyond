@@ -103,8 +103,22 @@ const dbFailure = require('../../runtime/db-failure.js');
        · 一个 P22-5 的 build 打开 P22-4 的库 → 受支持的老版本路径，
          DDL 补上三张表，水位抬到 4，**既有 ledger / reservation /
          policy / quote 行一个字节都不动**（focused 测试的 N 组逐条断言）。
-     3 → 4 仍然是空的 MIGRATIONS 条目：没有既有列需要改写，只有新表。 */
-const ECONOMY_SCHEMA_VERSION = 4;
+     3 → 4（P22-5）仍然是空的 MIGRATIONS 条目：没有既有列需要改写，只有新表。
+
+   ── P22-6：4 → 5 ────────────────────────────────────────────────────
+     同一条纪律的第五次应用。P22-6 让这个库多出**一张**表
+     （economy_purchases），于是：
+       · 一个 P22-5 的 build 打开 P22-6 的库 → **拒绝**（SCHEMA_TOO_NEW）。
+         如果它不拒绝，它就会看到一个"预留凭空变成 COMMITTED、报价凭空
+         变成 CONSUMED、库存凭空多出来"的经济 —— 而它会把那些状态变化
+         归因到它认识的 primitive 上（reserve / commit / inventory），
+         于是审计给出的答案是**错的**。这比打不开严重。
+       · 一个 P22-6 的 build 打开 P22-5 的库 → 受支持的老版本路径，
+         DDL 补上那张表，水位抬到 5，**既有 ledger / reservation /
+         policy / quote / store / product / inventory 行一个字节都不动**
+         （focused 测试的 N 组逐条断言）。
+     4 → 5 依然是空的 MIGRATIONS 条目：没有既有列需要改写，只有新表。 */
+const ECONOMY_SCHEMA_VERSION = 5;
 const DEFAULT_DB_FILENAME = 'home-node.db';
 
 const META_TABLE = 'economy_meta';
@@ -141,6 +155,22 @@ const QUOTES_TABLE = 'economy_quotes';
 const STORES_TABLE = 'economy_stores';
 const PRODUCTS_TABLE = 'economy_products';
 const INVENTORY_TABLE = 'economy_inventory';
+/* ── P22-6 ────────────────────────────────────────────────────────────
+   第四张表（第五次抬水位）。Purchase 是**它自己的实体**，不是 ledger
+   transaction 的一个视图、也不是 reservation 的别名：
+
+     · 它引用的四件事（product / quote / reservation / ledger transaction）
+       各自有自己的表与 id 前缀，因此 purchase 只需要**外键形状的列**；
+     · 它自己带一个生命周期（RESERVED → {COMPLETED, RELEASED, FAILED}），
+       而那个生命周期比任何一个被引用者的生命周期都长（一次购买可以在
+       报价仍然 OPEN、预留已经 RELEASED 之后仍然存在）；
+     · 它保存**结算所需的最小快照**（fulfillment / assetKind / quantity /
+       unitName / currency / amountMinor），于是最终结算不需要回读一个
+       可变的 Product 行。
+
+   刻意**没有**的列：任何 ledger 金额的副本（金额只有一列，来自 Quote
+   快照）、任何 provider/payment/memory/relationship 字段、任何正文。 */
+const PURCHASES_TABLE = 'economy_purchases';
 
 /* meta 的键。**独立命名空间**：全部带 economy_ 前缀，且存在
    economy_meta 表里（不是共用的 meta 表），因此任何其它 store 都不可能
@@ -950,6 +980,124 @@ function createEconomyStore(deps) {
       'UPDATE ' + INVENTORY_TABLE + ' SET quantity = quantity + ?, idempotency_key=?, fingerprint=?, revision=?, updated_at=? WHERE inventory_entry_id=? AND quantity + ? <= ?',
     shrinkInventory:
       'UPDATE ' + INVENTORY_TABLE + ' SET quantity = quantity - ?, idempotency_key=?, fingerprint=?, revision=?, updated_at=? WHERE inventory_entry_id=? AND quantity >= ?',
+
+    /* ══ P22-6 · Purchase（高层生命周期 + 结算快照）══════════════════════
+       这张表回答的是"这次购买是哪一次购买"，而不是"钱动了多少"——
+       金额在 amount_minor（来自 Quote 快照），钱动没动在 ledger 里。
+
+       四条约束故意都落在 SQLite 上，而不是只靠 JS：
+
+       ① purchase_id PRIMARY KEY —— 身份唯一。
+       ② ledger_transaction_id UNIQUE —— **一笔 ledger transaction 不可能
+          被两笔 purchase 同时指向**。SQLite 的 UNIQUE 允许多个 NULL，
+          因此它约束的恰好是"已结算"的那一侧。这是"一次购买最多一笔交易"
+          的结构性一半。
+       ③ quote_id UNIQUE —— **一份报价不可能被两笔 purchase 同时指向**。
+          为什么是 UNIQUE 而不是 partial（只在非终态唯一）：一份 Quote 是
+          一次性的价格命题（P22-4 §9），它只能被消费一次；而"这次购买
+          释放了"并不让那份报价重新变成可用的价格命题 —— 重新买需要一份
+          新的报价。这条约束**不依赖任何状态检查**就挡住了 §38 的
+          "同一个 Quote 被第二个 Purchase 用掉"。
+          它与 ② 一起给出完整的两半：③ 保证 quote 只被一笔 purchase 引用，
+          ② 保证那笔 purchase 只可能有一笔交易。
+       ④ status / fulfillment / asset_kind CHECK —— 词表成员由数据库本身
+          把关（与 inventory 的 CHECK (quantity >= 0) 同款：约束不是注释）。
+
+       刻意**没有**的列：provider_* / api_key / payment_intent / checkout_url /
+       relationship_id / memory_ref / discount / coupon / recommended ——
+       它们不是"暂时没填"，而是**没有地方可以填**。 */
+    createPurchases:
+      'CREATE TABLE IF NOT EXISTS ' + PURCHASES_TABLE + ' (' +
+      ' purchase_id TEXT PRIMARY KEY,' +
+      ' buyer_id TEXT NOT NULL,' +
+      ' buyer_type TEXT NOT NULL,' +
+      ' recipient_id TEXT,' +
+      ' recipient_type TEXT,' +
+      ' product_id TEXT NOT NULL,' +
+      ' store_id TEXT,' +
+      ' quote_id TEXT NOT NULL,' +
+      ' reservation_id TEXT NOT NULL,' +
+      ' ledger_transaction_id TEXT,' +
+      ' currency TEXT NOT NULL,' +
+      ' amount_minor INTEGER NOT NULL CHECK (amount_minor >= 0),' +
+      ' quote_kind TEXT NOT NULL CHECK (quote_kind IN (\'PURCHASE\',\'GIFT\',\'COMPUTE_GRANT\')),' +
+      ' settlement_type TEXT NOT NULL CHECK (settlement_type IN (\'INVENTORY_GRANT\',\'COMPUTE_GRANT\',\'SERVICE_EXECUTION\')),' +
+      ' asset_kind TEXT CHECK (asset_kind IS NULL OR asset_kind IN (\'ITEM\',\'COMPUTE\')),' +
+      ' granted_quantity INTEGER NOT NULL CHECK (granted_quantity >= 0),' +
+      ' unit_name TEXT,' +
+      ' status TEXT NOT NULL CHECK (status IN (\'RESERVED\',\'COMPLETED\',\'RELEASED\',\'FAILED\')),' +
+      ' release_reason TEXT,' +
+      ' reason_code TEXT,' +
+      ' reservation_state TEXT NOT NULL,' +
+      ' reservation_expires_at INTEGER,' +
+      ' inventory_entry_id TEXT,' +
+      ' consent_snapshot TEXT,' +
+      ' idempotency_key TEXT NOT NULL,' +
+      ' fingerprint TEXT NOT NULL,' +
+      ' revision INTEGER NOT NULL,' +
+      ' created_at INTEGER NOT NULL,' +
+      ' updated_at INTEGER NOT NULL,' +
+      ' completed_at INTEGER' +
+      ')',
+    createPurchasesByBuyer: 'CREATE INDEX IF NOT EXISTS idx_econ_purchases_buyer ON ' + PURCHASES_TABLE + ' (buyer_id, status, created_at)',
+    createPurchasesByRecipient: 'CREATE INDEX IF NOT EXISTS idx_econ_purchases_recipient ON ' + PURCHASES_TABLE + ' (recipient_id, status, created_at)',
+    createPurchasesByStatus: 'CREATE INDEX IF NOT EXISTS idx_econ_purchases_status ON ' + PURCHASES_TABLE + ' (status, created_at)',
+    createPurchasesByQuote: 'CREATE UNIQUE INDEX IF NOT EXISTS idx_econ_purchases_quote ON ' + PURCHASES_TABLE + ' (quote_id)',
+    createPurchasesByProduct: 'CREATE INDEX IF NOT EXISTS idx_econ_purchases_product ON ' + PURCHASES_TABLE + ' (product_id, status)',
+    /* 预留是 1:1 的，因此这条索引同时也是"一笔预留只属于一次购买"的
+       结构性约束（NULL 仍然不参与）。 */
+    createPurchasesByReservationLive: 'CREATE UNIQUE INDEX IF NOT EXISTS idx_econ_purchases_reservation ON ' + PURCHASES_TABLE + ' (reservation_id)',
+    createPurchasesByLedgerTransaction: 'CREATE UNIQUE INDEX IF NOT EXISTS idx_econ_purchases_tx ON ' + PURCHASES_TABLE + ' (ledger_transaction_id)',
+
+    insertPurchase:
+      'INSERT INTO ' + PURCHASES_TABLE + ' (purchase_id, buyer_id, buyer_type, recipient_id, recipient_type, product_id, store_id, quote_id, reservation_id, ledger_transaction_id, currency, amount_minor, quote_kind, settlement_type, asset_kind, granted_quantity, unit_name, status, release_reason, reason_code, reservation_state, reservation_expires_at, inventory_entry_id, consent_snapshot, idempotency_key, fingerprint, revision, created_at, updated_at, completed_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    selectPurchase: 'SELECT * FROM ' + PURCHASES_TABLE + ' WHERE purchase_id=?',
+    selectPurchaseByQuote: 'SELECT * FROM ' + PURCHASES_TABLE + ' WHERE quote_id=?',
+    selectPurchaseByReservation: 'SELECT * FROM ' + PURCHASES_TABLE + ' WHERE reservation_id=?',
+    selectPurchaseByLedgerTransaction: 'SELECT * FROM ' + PURCHASES_TABLE + ' WHERE ledger_transaction_id=?',
+    /* 与其它 select*Filtered 同款：三个过滤条件全部在 SQL 里，LIMIT 在
+       过滤**之后**生效。刻意**没有**"给谁看"的个性化参数（§80）：
+       没有 recommendation、没有 analytics、没有全文检索。 */
+    selectPurchasesFiltered:
+      'SELECT * FROM ' + PURCHASES_TABLE + ' WHERE' +
+      ' (? IS NULL OR buyer_id = ?)' +
+      ' AND (? IS NULL OR recipient_id = ?)' +
+      ' AND (? IS NULL OR status = ?)' +
+      ' AND (? IS NULL OR product_id = ?)' +
+      ' AND (? IS NULL OR quote_id = ?)' +
+      ' ORDER BY created_at ASC, purchase_id ASC LIMIT ?',
+    selectPurchasesAll: 'SELECT * FROM ' + PURCHASES_TABLE + ' ORDER BY created_at ASC, purchase_id ASC',
+    countPurchases: 'SELECT COUNT(*) AS c FROM ' + PURCHASES_TABLE,
+    countPurchasesByStatus: 'SELECT COUNT(*) AS c FROM ' + PURCHASES_TABLE + ' WHERE status=?',
+    countPurchasesByQuote: 'SELECT COUNT(*) AS c FROM ' + PURCHASES_TABLE + ' WHERE quote_id=?',
+    /* ── 一次购买的**两个**状态推进语句（各自带乐观并发闸门）────────────
+       `AND status=?` 让"终态不可回退"成为一条**并发安全**的 SQL 约束：
+       两个进程同时结算同一次购买时，必然有一个 changes=0。
+
+       SET 里刻意**没有**：purchase_id / buyer_* / recipient_* / product_id /
+       store_id / quote_id / reservation_id / currency / amount_minor /
+       quote_kind / settlement_type / asset_kind / granted_quantity /
+       unit_name / created_at / idempotency_key / fingerprint。
+       一次购买的经济内容写下之后**不可变**，能变的只有它的结局。
+
+       ── 为什么 ledger_transaction_id 出现在结算语句里（这一条是算过的）──
+       ★ 它在 RESERVED 期间必须是 **NULL**。"这次购买已经有交易了"是一个
+       已发生的事实，而预留阶段钱一分都没动；把它预先写上会让
+       `ledger_transaction_id IS NOT NULL` 不再等于"已结算"，而那条等价
+       正是 getPurchase().settlement 判定的依据。
+       完整性不靠"谁来写这一列"保证，而靠三层结构：
+         · 它的值在 JS 里**确定性派生**自 purchaseId
+           （C.derivePurchaseLedgerTransactionId），不是调用方给的；
+         · 它一旦非 NULL 就落进 createPurchasesByLedgerTransaction 的
+           **UNIQUE** 索引里（一笔交易不可能被两笔购买指向）；
+         · integrity check 逐行验证被指向的 transaction 行**真的存在**。
+       于是这一列有且只有一个写入者（结算语句），而那个写入者写下的值
+       是可被独立验证的。 */
+    setPurchaseSettled:
+      'UPDATE ' + PURCHASES_TABLE + ' SET status=?, ledger_transaction_id=?, inventory_entry_id=?, revision=?, updated_at=?, completed_at=? WHERE purchase_id=? AND status=?',
+    setPurchaseTerminal:
+      'UPDATE ' + PURCHASES_TABLE + ' SET status=?, release_reason=?, reason_code=?, revision=?, updated_at=? WHERE purchase_id=? AND status=?'
   };
 
   /* ══════════════════════════════════════════════════════════════════
@@ -1034,6 +1182,14 @@ function createEconomyStore(deps) {
       db.exec(SQL.createInventory);
       db.exec(SQL.createInventoryByOwner);
       db.exec(SQL.createInventoryByProduct);
+      db.exec(SQL.createPurchases);
+      db.exec(SQL.createPurchasesByBuyer);
+      db.exec(SQL.createPurchasesByRecipient);
+      db.exec(SQL.createPurchasesByStatus);
+      db.exec(SQL.createPurchasesByQuote);
+      db.exec(SQL.createPurchasesByProduct);
+      db.exec(SQL.createPurchasesByReservationLive);
+      db.exec(SQL.createPurchasesByLedgerTransaction);
     } catch (error) {
       try { if (db) db.close(); } catch (_) { /* 已关闭 */ }
       db = null;
@@ -1111,7 +1267,13 @@ function createEconomyStore(deps) {
         3 → 4（P22-5）只**多**了三张表（stores / products / inventory），
        同样没有任何既有列或既有数据需要改写 —— 尤其是 quotes 表：
        P22-5 给它加了**零**列，因为 P22-4 已经把"什么 / 多少钱 / 到什么
-       时候"那几列冻结齐了，再加一列只会制造第二个价格来源。 */
+       时候"那几列冻结齐了，再加一列只会制造第二个价格来源。
+       4 → 5（P22-6）只**多**了一张表（economy_purchases），同样没有
+       任何既有列或既有数据需要改写 —— 尤其是 quotes 与 reservations：
+       P22-6 给它们加了**零**列，因为 P22-3/P22-4 已经把"锁了多少 /
+       锁到什么时候 / 这份报价是什么"冻结齐了，而"这笔预留属于哪次购买"
+       的事实属于 **purchase 那一侧**（purchase_id 是 purchase 自己的列），
+       往 reservation 上加一列只会制造第二个归属来源。 */
   ];
 
   function migrateSchema() {
@@ -1144,6 +1306,11 @@ function createEconomyStore(deps) {
     try { db.close(); } catch (_) { /* 已关闭 */ }
     db = null;
     opened = false;
+    /* P22-6：关库必须把事务深度归零。留下一个非零深度会让下一次 open
+       之后的第一个 withTransaction **跳过** BEGIN —— 那等于在没有事务
+       的情况下写账本，而症状会是一堆无法回滚的半完成状态。
+       这条不是防御性编程：close() 后面确实可以再 open()（测试就在这么做）。 */
+    txDepth = 0;
     /* 关库也要留一行**具名**观测：生产停机日志里"哪一个 store 关掉了"
        必须是可读的，否则"Economy 到底有没有被干净地关闭"只能靠猜。
        这与 memory/moments 的 `closed` 行同类，只是多带了名字。 */
@@ -1165,8 +1332,38 @@ function createEconomyStore(deps) {
     return row ? row.value : null;
   }
   function writeMeta(key, value) { db.prepare(SQL.upsertMeta).run(key, String(value)); }
+
+  /* ── 事务深度（P22-6）─────────────────────────────────────────────────
+     为什么需要它：P22-6 的 `settlePurchase` / `preparePurchase` 必须在
+     **一个** SQLite atomic boundary 里完成所有 canonical 事实，而它们
+     要复用的 canonical primitive（reserve / commit / release / inventory）
+     各自都是"开自己事务"的公开出口。SQLite 不允许嵌套 BEGIN
+     （`cannot start a transaction within a transaction`），因此只有两条路：
+       · 复制那些 primitive 的实现（=第二份 validator 与第二份 SQL，禁止）；
+       · 让事务**可重入**（本函数）。
+
+     ★ 重入不等于"把错误吞掉"。决定性的一点是：**内层永不 COMMIT**。
+       当 depth ≥ 1 时，内层只是直接跑 fn()，提交与否完全由最外层决定。
+       于是"任何一步失败 ⇒ 整体回滚"这条性质在嵌套下仍然逐字成立 ——
+       内层抛出的异常会一路穿过外层 fn()，由最外层的 catch 执行 ROLLBACK。
+       内层自己的 catch（那些 translateRefusal 的调用点）会把它变成
+       `{ok:false}` 返回值，而调用方看到 {ok:false} 之后按既有方式 `throw
+       refuse(...)`，因此回滚仍然发生。 */
+
+  let txDepth = 0;
+
   function withTransaction(fn) {
+    if (txDepth > 0) {
+      /* 已经在事务里：只增加深度，**不** BEGIN、**不** COMMIT。 */
+      txDepth += 1;
+      try {
+        return fn();
+      } finally {
+        txDepth -= 1;
+      }
+    }
     db.exec('BEGIN IMMEDIATE');
+    txDepth = 1;
     try {
       const out = fn();
       db.exec('COMMIT');
@@ -1174,8 +1371,15 @@ function createEconomyStore(deps) {
     } catch (error) {
       try { db.exec('ROLLBACK'); } catch (_) { /* 保留原始错误 */ }
       throw error;
+    } finally {
+      txDepth = 0;
     }
   }
+
+  /* 只读的观测口：测试用它证明"结算发生在恰好一条事务里"不是一句注释。
+     它是**读**，不是 seam —— 没有任何生产路径会根据它分支。 */
+  function transactionDepth() { return txDepth; }
+
   function getRevision() {
     if (!isOpen()) return 0;
     const stored = Number(readMeta(META_REVISION) || 0);
@@ -3242,6 +3446,192 @@ function createEconomyStore(deps) {
      crash 语义：这四步在同一个事务里，因此**不存在**
      "Ledger 已扣款而 Reservation 仍 RESERVED"的中间态 —— 要么两件事
      都发生了，要么一件都没发生。J 组逐个故障点证明这一点。 */
+  function commitReservationInTx(reservationId, at, fingerprint, o, plan) {
+    const p = plan || {};
+    const r = db.prepare(SQL.selectReservation).get(String(reservationId));
+    if (!r) throw refuse(null, ['reservation-not-found']);
+    const op = db.prepare(SQL.selectOperation).get(String(r.operation_id));
+    if (!op) throw refuse(null, ['operation-not-found']);
+    if (String(r.status) !== C.RESERVATION_STATE.ACTIVE) {
+      throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['reservation-is-not-active'],
+        { reservationState: String(r.status) });
+    }
+    if (String(op.status) !== C.TX_STATE.RESERVED) {
+      throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['operation-is-not-reserved'],
+        { operationStatus: String(op.status) });
+    }
+    if (r.expires_at != null && Number(r.expires_at) <= at) {
+      throw refuse(C.DENY_REASON.RESERVATION_EXPIRED, ['reservation-is-past-its-expires-at'],
+        { sweepRequired: true });
+    }
+    const wallet = db.prepare(SQL.selectWallet).get(String(r.wallet_id));
+    if (!wallet) throw refuse(null, ['wallet-not-found']);
+    const walletState = walletStateOfRow(wallet);
+    if (walletState.state !== C.WALLET_STATE.READY) {
+      throw refuse(C.DENY_REASON.WALLET_NOT_READY, ['wallet-is-not-ready'], { walletState: walletState.state });
+    }
+    /* 状态机闸门：RESERVED → COMMITTED 必须被**执行**，不是被假设。 */
+    const gate = C.assertTransactionTransition(C.TX_STATE.RESERVED, C.TX_STATE.COMMITTED);
+    if (!gate.ok) throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, gate.errors);
+    const resGate = C.assertReservationTransition(C.RESERVATION_STATE.ACTIVE, C.RESERVATION_STATE.COMMITTED);
+    if (!resGate.ok) throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, resGate.errors);
+
+    /* 双保险：账本金额必须等于预留金额。指纹里已经含了它，因此这一条
+       只在"有人绕过指纹把 expected 传错"时才可能触发 —— 而那种情况
+       必须是一个硬错误，不是一次静默扣款。 */
+    const resAmount = fromSqlAmount(r.amount_minor, 'reservation-amount');
+    if (p.expectedAmountMinor != null && resAmount !== p.expectedAmountMinor) {
+      throw refuse(C.DENY_REASON.INVALID_AMOUNT, ['commit-amount-must-equal-the-reserved-amount'], {
+        reservationAmountMinor: C.serializeAmountMinor(resAmount),
+        requestedAmountMinor: C.serializeAmountMinor(p.expectedAmountMinor)
+      });
+    }
+
+    /* 对手方账户必须先存在（commitLedgerTransactionInTx 不会替你创建）。 */
+    const sys = ensureSystemAccount(p.counterparty);
+    if (!sys.ok) throw refuse(null, sys.errors);
+
+    /* ── 收款人（§23）──────────────────────────────────────────────────
+       ★ 这里曾经写成 `recipientId: null`（"ledger 不关心这个"，那是一个
+       GIFT 的字面量）。但它其实**关心**：`rowToTransaction` 把
+       recipient_id 读出来，而一次 Gift 的审计要回答"这笔钱是为谁花的"。
+       写入的 payer 是 Purchase 的 buyer，收益人是 Purchase 的 recipient，
+       两者在**同一行**上必须同时可读。 */
+    const settledRecipientFromRes = db.prepare(SQL.selectPurchaseByReservation).get(String(reservationId));
+    const ledgerRecipientId = p.ledgerRecipientId != null
+      ? String(p.ledgerRecipientId)
+      : (settledRecipientFromRes && settledRecipientFromRes.recipient_id != null
+        ? String(settledRecipientFromRes.recipient_id) : null);
+
+    /* 一个 revision 覆盖"预留关闭"这件事；ledger 提交自己会再分配
+       一个用于那笔经济事实。两个 change 行、两个 revision，都在
+       同一个事务里，因此 revision 序列仍然**无洞**（每一次
+       allocateRevision 恰好配一条 change 行）。 */
+    const revision = allocateRevision();
+    faultPoint('after-commit-validated');
+
+    const movedRes = db.prepare(SQL.setReservationStatus).run(
+      C.RESERVATION_STATE.COMMITTED, p.transactionId, null,
+      Number(revision), Number(at), String(reservationId), C.RESERVATION_STATE.ACTIVE
+    );
+    if (Number(movedRes.changes) !== 1) {
+      throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['reservation-transition-affected-no-row']);
+    }
+    faultPoint('after-reservation-committed');
+
+    applyReservedCache(String(r.wallet_id), revision, at);
+    faultPoint('after-commit-reserved-cache');
+
+    const ledger = commitLedgerTransactionInTx({
+      transactionId: p.transactionId,
+      type: p.type,
+      idempotencyKey: p.ledgerIdempotencyKey,
+      actor: p.actor,
+      ownerId: String(wallet.owner_id),
+      recipientId: ledgerRecipientId,
+      entries: p.entries
+    });
+    if (ledger.ok !== true) {
+      /* ledger 拒绝 ⇒ 整个 commit 回滚（预留在事务外仍是 ACTIVE）。
+         这里刻意**不**把它变成 FAILED：一次被拒绝的提交不是"操作
+         进入了生命周期后不可继续"，而是"这次提交不成立" —— 后者
+         必须让调用方还能重试或显式 failExpired/fail。 */
+      const ledgerErrors = ledger.errors || [];
+      throw refuse(ledgerErrors.indexOf('insufficient-balance') >= 0
+        ? C.DENY_REASON.INSUFFICIENT_BALANCE : null, ledgerErrors.length ? ledgerErrors : ['ledger-commit-refused'], {
+        ledgerErrors: ledgerErrors,
+        overdrafts: ledger.overdrafts || []
+      });
+    }
+    faultPoint('after-commit-ledger');
+
+    const movedOp = db.prepare(SQL.setOperationStatus).run(
+      C.TX_STATE.COMMITTED, String(reservationId), String(ledger.transactionId), null,
+      Number(revision), Number(at), String(op.operation_id), C.TX_STATE.RESERVED
+    );
+    if (Number(movedOp.changes) !== 1) {
+      throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['operation-transition-affected-no-row']);
+    }
+    faultPoint('after-commit-operation-status');
+
+    const result = {
+      domain: C.DOMAIN,
+      operationId: String(op.operation_id),
+      operationStatus: C.TX_STATE.COMMITTED,
+      reservationId: String(reservationId),
+      reservationState: C.RESERVATION_STATE.COMMITTED,
+      walletId: String(r.wallet_id),
+      currency: String(r.currency),
+      amountMinor: C.serializeAmountMinor(resAmount),
+      transactionId: String(ledger.transactionId),
+      transactionType: p.type,
+      counterparty: p.counterparty,
+      revision: Number(revision),
+      at: Number(at),
+      idempotencyKey: p.callIdempotencyKey,
+      ledger: ledger.result,
+      /* 对 settlePurchase 有用的一条观测：这次 commit 的对手方是
+         **system** 账户，因此"Store 是不是商家"这个问题的答案在这里
+         就已经是结构性的（storeId 根本不出现在 entries 里）。 */
+      counterpartyAccountId: String(p.counterparty)
+    };
+
+    appendChange({
+      revision: Number(revision), kind: C.EVENT_TYPE.RESERVATION_COMMITTED,
+      entityId: String(reservationId), transactionId: String(ledger.transactionId),
+      walletId: String(r.wallet_id), at: Number(at),
+      payload: {
+        domain: C.DOMAIN,
+        operationId: String(op.operation_id),
+        reservationId: String(reservationId),
+        reservationState: C.RESERVATION_STATE.COMMITTED,
+        operationStatus: C.TX_STATE.COMMITTED,
+        transactionId: String(ledger.transactionId),
+        amountMinor: C.serializeAmountMinor(resAmount),
+        currency: String(r.currency),
+        counterparty: p.counterparty,
+        ledgerRevision: ledger.result.revision
+      }
+    });
+    faultPoint('before-commit-change-log');
+
+    if (p.writeIdempotency !== false && p.idempotencyScope != null && p.idempotencyKey != null) {
+      writeOperationIdempotency(p.idempotencyScope, p.idempotencyKey, fingerprint, {
+        operationId: String(op.operation_id), reservationId: String(reservationId),
+        transactionId: String(ledger.transactionId)
+      }, result, revision, at);
+    }
+    faultPoint('before-reservation-commit');
+    return result;
+  }
+
+  /* ── commitReservation（P22-3 §10/§11）─────────────────────────────
+     恰好一个 SQLite 事务，顺序是刻意的：
+
+       BEGIN IMMEDIATE
+         re-read reservation（必须 ACTIVE）与 operation（必须 RESERVED）
+         ★ reservation → COMMITTED（先离开 ACTIVE）
+         ★ reserved 缓存 ← Σ(ACTIVE)（此时已不含本笔）
+         ★ ledger transaction + entries（同一事务）
+         ★ operation → COMMITTED（并记下 transactionId）
+         ★ change log + 幂等行
+       COMMIT
+
+     为什么"预留先离开 ACTIVE"必须排在 ledger 之前：P22-2 的
+     applyDerivedBalances 有一条真实守卫 —— 若 reserved > resulting ledger
+     balance 就抛 RESERVED_EXCEEDS_LEDGER_BALANCE。余额 100、预留 70 时，
+     先扣款会让 ledger 变成 30 而 reserved 仍是 70 ⇒ 守卫触发、整个 commit
+     回滚。先释放预留再扣款则两数同步下降，守卫在任何中间时刻都成立。
+     这不是"绕过守卫"：守卫仍然在，只是被正确地喂了当前值。
+
+     crash 语义：这四步在同一个事务里，因此**不存在**
+     "Ledger 已扣款而 Reservation 仍 RESERVED"的中间态 —— 要么两件事
+     都发生了，要么一件都没发生。J 组逐个故障点证明这一点。
+
+     ★ P22-6：函数体被提取成 commitReservationInTx（**不自行 BEGIN**）。
+     本函数是它唯一的公开包装，行为逐字不变（同一条 SQL、同一组闸门、
+     同一个 idempotency scope）。P22-6 的 settlePurchase 调用的是同一个
+     事务体，因此"预留提交"这件事在本仓库里**只有一份实现**。 */
   function commitReservation(input) {
     requireOpen();
     const o = input || {};
@@ -3279,7 +3669,8 @@ function createEconomyStore(deps) {
     }, normalized.entries);
     const fingerprint = operationFingerprint(C.OPERATION_SCOPE.COMMIT, {
       reservationId: String(reservationId),
-      ledger: ledgerFingerprint
+      ledger: ledgerFingerprint,
+      amountMinor: C.serializeAmountMinor(fromSqlAmount(resRow.amount_minor, 'reservation-amount'))
     });
 
     /* ── 幂等闸门必须在**终态检查之前** ────────────────────────────────
@@ -3318,130 +3709,18 @@ function createEconomyStore(deps) {
     let committed = null;
     try {
       withTransaction(() => {
-        const r = db.prepare(SQL.selectReservation).get(String(reservationId));
-        if (!r) throw refuse(null, ['reservation-not-found']);
-        const op = db.prepare(SQL.selectOperation).get(String(r.operation_id));
-        if (!op) throw refuse(null, ['operation-not-found']);
-        if (String(r.status) !== C.RESERVATION_STATE.ACTIVE) {
-          throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['reservation-is-not-active'],
-            { reservationState: String(r.status) });
-        }
-        if (String(op.status) !== C.TX_STATE.RESERVED) {
-          throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['operation-is-not-reserved'],
-            { operationStatus: String(op.status) });
-        }
-        if (r.expires_at != null && Number(r.expires_at) <= at) {
-          throw refuse(C.DENY_REASON.RESERVATION_EXPIRED, ['reservation-is-past-its-expires-at'],
-            { sweepRequired: true });
-        }
-        const wallet = db.prepare(SQL.selectWallet).get(String(r.wallet_id));
-        if (!wallet) throw refuse(null, ['wallet-not-found']);
-        const walletState = walletStateOfRow(wallet);
-        if (walletState.state !== C.WALLET_STATE.READY) {
-          throw refuse(C.DENY_REASON.WALLET_NOT_READY, ['wallet-is-not-ready'], { walletState: walletState.state });
-        }
-        /* 状态机闸门：RESERVED → COMMITTED 必须被**执行**，不是被假设。 */
-        const gate = C.assertTransactionTransition(C.TX_STATE.RESERVED, C.TX_STATE.COMMITTED);
-        if (!gate.ok) throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, gate.errors);
-        const resGate = C.assertReservationTransition(C.RESERVATION_STATE.ACTIVE, C.RESERVATION_STATE.COMMITTED);
-        if (!resGate.ok) throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, resGate.errors);
-
-        /* 对手方账户必须先存在（commitLedgerTransactionInTx 不会替你创建）。 */
-        const sys = ensureSystemAccount(built.counterparty);
-        if (!sys.ok) throw refuse(null, sys.errors);
-
-        /* 一个 revision 覆盖"预留关闭"这件事；ledger 提交自己会再分配
-           一个用于那笔经济事实。两个 change 行、两个 revision，都在
-           同一个事务里，因此 revision 序列仍然**无洞**（每一次
-           allocateRevision 恰好配一条 change 行）。 */
-        const revision = allocateRevision();
-        faultPoint('after-commit-validated');
-
-        const movedRes = db.prepare(SQL.setReservationStatus).run(
-          C.RESERVATION_STATE.COMMITTED, transactionId, null,
-          Number(revision), Number(at), String(reservationId), C.RESERVATION_STATE.ACTIVE
-        );
-        if (Number(movedRes.changes) !== 1) {
-          throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['reservation-transition-affected-no-row']);
-        }
-        faultPoint('after-reservation-committed');
-
-        applyReservedCache(String(r.wallet_id), revision, at);
-        faultPoint('after-commit-reserved-cache');
-
-        const ledger = commitLedgerTransactionInTx({
-          transactionId: transactionId,
+        committed = commitReservationInTx(String(reservationId), at, fingerprint, o, {
           type: built.type,
-          idempotencyKey: 'econ.commit+' + String(reservationId) + '+' + key.key,
-          actor: actor.party,
-          ownerId: String(wallet.owner_id),
-          recipientId: null,
-          entries: normalized.entries
-        });
-        if (ledger.ok !== true) {
-          /* ledger 拒绝 ⇒ 整个 commit 回滚（预留在事务外仍是 ACTIVE）。
-             这里刻意**不**把它变成 FAILED：一次被拒绝的提交不是"操作
-             进入了生命周期后不可继续"，而是"这次提交不成立" —— 后者
-             必须让调用方还能重试或显式 failExpired/fail。 */
-          throw refuse(ledger.errors && ledger.errors.indexOf('insufficient-balance') >= 0
-            ? C.DENY_REASON.INSUFFICIENT_BALANCE : null, ledger.errors || ['ledger-commit-refused'], {
-            ledgerErrors: ledger.errors || []
-          });
-        }
-        faultPoint('after-commit-ledger');
-
-        const movedOp = db.prepare(SQL.setOperationStatus).run(
-          C.TX_STATE.COMMITTED, String(reservationId), String(ledger.transactionId), null,
-          Number(revision), Number(at), String(op.operation_id), C.TX_STATE.RESERVED
-        );
-        if (Number(movedOp.changes) !== 1) {
-          throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['operation-transition-affected-no-row']);
-        }
-        faultPoint('after-commit-operation-status');
-
-        const result = {
-          domain: C.DOMAIN,
-          operationId: String(op.operation_id),
-          operationStatus: C.TX_STATE.COMMITTED,
-          reservationId: String(reservationId),
-          reservationState: C.RESERVATION_STATE.COMMITTED,
-          walletId: String(r.wallet_id),
-          currency: String(r.currency),
-          amountMinor: C.serializeAmountMinor(fromSqlAmount(r.amount_minor, 'reservation-amount')),
-          transactionId: String(ledger.transactionId),
-          transactionType: built.type,
           counterparty: built.counterparty,
-          revision: Number(revision),
-          at: Number(at),
+          transactionId: transactionId,
+          actor: actor.party,
+          entries: normalized.entries,
+          idempotencyScope: C.OPERATION_SCOPE.COMMIT,
           idempotencyKey: key.key,
-          ledger: ledger.result
-        };
-
-        appendChange({
-          revision: Number(revision), kind: C.EVENT_TYPE.RESERVATION_COMMITTED,
-          entityId: String(reservationId), transactionId: String(ledger.transactionId),
-          walletId: String(r.wallet_id), at: Number(at),
-          payload: {
-            domain: C.DOMAIN,
-            operationId: String(op.operation_id),
-            reservationId: String(reservationId),
-            reservationState: C.RESERVATION_STATE.COMMITTED,
-            operationStatus: C.TX_STATE.COMMITTED,
-            transactionId: String(ledger.transactionId),
-            amountMinor: C.serializeAmountMinor(fromSqlAmount(r.amount_minor, 'reservation-amount')),
-            currency: String(r.currency),
-            counterparty: built.counterparty,
-            ledgerRevision: ledger.result.revision
-          }
+          ledgerIdempotencyKey: 'econ.commit+' + String(reservationId) + '+' + key.key,
+          callIdempotencyKey: key.key,
+          expectedAmountMinor: fromSqlAmount(resRow.amount_minor, 'reservation-amount')
         });
-        faultPoint('before-commit-change-log');
-
-        writeOperationIdempotency(C.OPERATION_SCOPE.COMMIT, key.key, fingerprint, {
-          operationId: String(op.operation_id), reservationId: String(reservationId),
-          transactionId: String(ledger.transactionId)
-        }, result, revision, at);
-        faultPoint('before-reservation-commit');
-        committed = result;
       });
     } catch (error) {
       const refusal = translateRefusal(error);
@@ -3472,6 +3751,142 @@ function createEconomyStore(deps) {
      reserve 从来没有让钱离开钱包，因此"释放"不可能、也不允许产生任何
      退款交易（P22-3 §12）。这条性质在测试里是逐字断言的：transaction
      计数、entry 计数、cached balance 全部不变。 */
+  /* ── settleReservationInTx（P22-3 内核，提取于 P22-6）────────────────
+     ★ 它**不自行 BEGIN/COMMIT**：由调用方（settleReservation 的公开包装，
+     或 P22-6 的 settlePurchase / cancelPurchase）拥有事务边界。
+
+     提取是纯机械的：同一条 SQL、同一组状态机闸门、同一条 change log、
+     同一条幂等写入。被改的只有三件事：
+       · `at` / `fingerprint` 由调用方传入（settlePurchase 用它的事务时钟）；
+       · 幂等写入可以按调用方的 (scope, key) 写，也可以**整个跳过**
+         （当外层已经有自己的幂等闸门时 —— 见 cancelPurchase）；
+       · 多了一个可选的 preCommit 钩子（cancelPurchase 用它把 Purchase 的
+         终局写进**同一个**事务）。
+
+     调用方负责的那些检查（用 plan.precheck）在公开包装里**原样保留**，
+     并且在事务体内再执行一次 —— 因为公开包装的检查发生在拿写锁之前。 */
+  function settleReservationInTx(reservationId, o, plan, opts) {
+    const p = plan || {};
+    const q = opts || {};
+    const at = q.at;
+    const fingerprint = q.fingerprint;
+    const idem = p.idempotency || null;
+
+    const r = db.prepare(SQL.selectReservation).get(String(reservationId));
+    if (!r) throw refuse(null, ['reservation-not-found']);
+    const op = db.prepare(SQL.selectOperation).get(String(r.operation_id));
+    if (!op) throw refuse(null, ['operation-not-found']);
+    if (String(r.status) !== C.RESERVATION_STATE.ACTIVE) {
+      throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['reservation-is-already-terminal'],
+        { reservationState: String(r.status) });
+    }
+    if (String(op.status) !== C.TX_STATE.RESERVED) {
+      throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['operation-is-not-reserved'],
+        { operationStatus: String(op.status) });
+    }
+    /* 两个状态机各自被**执行**一次。终态不可回退在这里不是一句注释：
+       assert* 会对 ACTIVE→X 与 RESERVED→Y 分别给出 allowed。 */
+    const resGate = C.assertReservationTransition(C.RESERVATION_STATE.ACTIVE, p.reservationState);
+    if (!resGate.ok) throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, resGate.errors);
+    const opGate = C.assertTransactionTransition(C.TX_STATE.RESERVED, p.operationState);
+    if (!opGate.ok) throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, opGate.errors);
+    if (p.requireDue && (r.expires_at == null || Number(r.expires_at) > at)) {
+      throw refuse(null, ['reservation-not-yet-due'], { expiresAt: r.expires_at == null ? null : Number(r.expires_at), now: at });
+    }
+    /* 调用方在事务外做过的判断，在拿到写锁之后再回答一次。 */
+    if (typeof q.enforce === 'function') {
+      const pre = q.enforce(r, op, at);
+      if (pre && pre.ok === false) {
+        throw refuse(pre.reasonCode == null ? null : pre.reasonCode,
+          (pre.errors && pre.errors.length) ? pre.errors : ['reservation-settlement-refused'],
+          pre.detail || {});
+      }
+    }
+
+    const revision = allocateRevision();
+    faultPoint(p.faultPrefix + '-validated');
+
+    const movedRes = db.prepare(SQL.setReservationStatus).run(
+      p.reservationState, null, p.releaseReason,
+      Number(revision), Number(at), String(reservationId), C.RESERVATION_STATE.ACTIVE
+    );
+    if (Number(movedRes.changes) !== 1) {
+      throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['reservation-transition-affected-no-row']);
+    }
+    faultPoint(p.faultPrefix + '-after-status');
+
+    /* reserved 缓存 ← Σ(ACTIVE)（本笔已经不在里面了）。 */
+    const sum = applyReservedCache(String(r.wallet_id), revision, at);
+    faultPoint(p.faultPrefix + '-after-reserved-cache');
+
+    const movedOp = db.prepare(SQL.setOperationStatus).run(
+      p.operationState, String(reservationId), null, p.reasonCode == null ? null : String(p.reasonCode),
+      Number(revision), Number(at), String(op.operation_id), C.TX_STATE.RESERVED
+    );
+    if (Number(movedOp.changes) !== 1) {
+      throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['operation-transition-affected-no-row']);
+    }
+
+    const amountMinor = fromSqlAmount(r.amount_minor, 'reservation-amount');
+    const result = {
+      domain: C.DOMAIN,
+      operationId: String(op.operation_id),
+      operationStatus: p.operationState,
+      reservationId: String(reservationId),
+      reservationState: p.reservationState,
+      walletId: String(r.wallet_id),
+      currency: String(r.currency),
+      amountMinor: C.serializeAmountMinor(amountMinor),
+      releaseReason: p.releaseReason,
+      reasonCode: p.reasonCode == null ? null : String(p.reasonCode),
+      /* 逐字写明"这件事没有产生任何 ledger 事实"。字段名与 commit 路径
+         用的是同一个（transactionId），因为它们是同一个概念；这里它
+         恒为 null —— 一条"还回去"的操作不可能、也不允许有一笔交易。 */
+      transactionId: null,
+      revision: Number(revision),
+      at: Number(at),
+      idempotencyKey: idem ? idem.key : null,
+      reservedBalanceMinor: C.serializeAmountMinor(sum.reservedMinor),
+      activeReservations: sum.activeCount
+    };
+
+    appendChange({
+      revision: Number(revision), kind: p.changeKind,
+      entityId: String(reservationId), transactionId: null,
+      walletId: String(r.wallet_id), at: Number(at),
+      payload: {
+        domain: C.DOMAIN,
+        operationId: String(op.operation_id),
+        reservationId: String(reservationId),
+        reservationState: p.reservationState,
+        operationStatus: p.operationState,
+        releaseReason: p.releaseReason,
+        reasonCode: p.reasonCode == null ? null : String(p.reasonCode),
+        amountMinor: C.serializeAmountMinor(amountMinor),
+        currency: String(r.currency),
+        /* 逐字写明"这件事没有产生任何 ledger 事实"：审计里"钱还回去了"
+           与"账本动了"必须一眼可分。 */
+        ledgerMutation: false,
+        reservedBalanceMinor: C.serializeAmountMinor(sum.reservedMinor),
+        activeReservations: sum.activeCount
+      }
+    });
+    faultPoint(p.faultPrefix + '-before-change-log');
+
+    /* preCommit 钩子：把"认购方"的终局写进**同一个**事务。它只在
+       Purchase 路径上存在；P22-3 自己的三个出口传 null，因此它们的
+       行为逐字不变。 */
+    if (typeof q.preCommit === 'function') q.preCommit({ reservation: r, operation: op, revision: revision, at: at, result: result });
+
+    if (idem && idem.write !== false) {
+      writeOperationIdempotency(idem.scope, idem.key, fingerprint, {
+        operationId: String(op.operation_id), reservationId: String(reservationId), transactionId: null
+      }, result, revision, at);
+    }
+    faultPoint('before-reservation-commit');
+    return result;
+  }
+
   function settleReservation(input, plan) {
     const o = input || {};
     const reservationId = o.reservationId;
@@ -3514,102 +3929,11 @@ function createEconomyStore(deps) {
     let committed = null;
     try {
       withTransaction(() => {
-        const r = db.prepare(SQL.selectReservation).get(String(reservationId));
-        if (!r) throw refuse(null, ['reservation-not-found']);
-        const op = db.prepare(SQL.selectOperation).get(String(r.operation_id));
-        if (!op) throw refuse(null, ['operation-not-found']);
-        if (String(r.status) !== C.RESERVATION_STATE.ACTIVE) {
-          throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['reservation-is-already-terminal'],
-            { reservationState: String(r.status) });
-        }
-        if (String(op.status) !== C.TX_STATE.RESERVED) {
-          throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['operation-is-not-reserved'],
-            { operationStatus: String(op.status) });
-        }
-        /* 两个状态机各自被**执行**一次。终态不可回退在这里不是一句注释：
-           assert* 会对 ACTIVE→X 与 RESERVED→Y 分别给出 allowed。 */
-        const resGate = C.assertReservationTransition(C.RESERVATION_STATE.ACTIVE, plan.reservationState);
-        if (!resGate.ok) throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, resGate.errors);
-        const opGate = C.assertTransactionTransition(C.TX_STATE.RESERVED, plan.operationState);
-        if (!opGate.ok) throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, opGate.errors);
-        if (plan.requireDue && (r.expires_at == null || Number(r.expires_at) > at)) {
-          throw refuse(null, ['reservation-not-yet-due'], { expiresAt: r.expires_at == null ? null : Number(r.expires_at), now: at });
-        }
-
-        const revision = allocateRevision();
-        faultPoint(plan.faultPrefix + '-validated');
-
-        const movedRes = db.prepare(SQL.setReservationStatus).run(
-          plan.reservationState, null, plan.releaseReason,
-          Number(revision), Number(at), String(reservationId), C.RESERVATION_STATE.ACTIVE
-        );
-        if (Number(movedRes.changes) !== 1) {
-          throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['reservation-transition-affected-no-row']);
-        }
-        faultPoint(plan.faultPrefix + '-after-status');
-
-        /* reserved 缓存 ← Σ(ACTIVE)（本笔已经不在里面了）。 */
-        const sum = applyReservedCache(String(r.wallet_id), revision, at);
-        faultPoint(plan.faultPrefix + '-after-reserved-cache');
-
-        const movedOp = db.prepare(SQL.setOperationStatus).run(
-          plan.operationState, String(reservationId), null, plan.reasonCode == null ? null : String(plan.reasonCode),
-          Number(revision), Number(at), String(op.operation_id), C.TX_STATE.RESERVED
-        );
-        if (Number(movedOp.changes) !== 1) {
-          throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['operation-transition-affected-no-row']);
-        }
-
-        const result = {
-          domain: C.DOMAIN,
-          operationId: String(op.operation_id),
-          operationStatus: plan.operationState,
-          reservationId: String(reservationId),
-          reservationState: plan.reservationState,
-          walletId: String(r.wallet_id),
-          currency: String(r.currency),
-          amountMinor: C.serializeAmountMinor(fromSqlAmount(r.amount_minor, 'reservation-amount')),
-          releaseReason: plan.releaseReason,
-          reasonCode: plan.reasonCode == null ? null : String(plan.reasonCode),
-          /* 逐字写明"这件事没有产生任何 ledger 事实"。字段名与 commit 路径
-             用的是同一个（transactionId），因为它们是同一个概念；这里它
-             恒为 null —— 一条"还回去"的操作不可能、也不允许有一笔交易。 */
-          transactionId: null,
-          revision: Number(revision),
-          at: Number(at),
-          idempotencyKey: key.key,
-          reservedBalanceMinor: C.serializeAmountMinor(sum.reservedMinor),
-          activeReservations: sum.activeCount
-        };
-
-        appendChange({
-          revision: Number(revision), kind: plan.changeKind,
-          entityId: String(reservationId), transactionId: null,
-          walletId: String(r.wallet_id), at: Number(at),
-          payload: {
-            domain: C.DOMAIN,
-            operationId: String(op.operation_id),
-            reservationId: String(reservationId),
-            reservationState: plan.reservationState,
-            operationStatus: plan.operationState,
-            releaseReason: plan.releaseReason,
-            reasonCode: plan.reasonCode == null ? null : String(plan.reasonCode),
-            amountMinor: C.serializeAmountMinor(fromSqlAmount(r.amount_minor, 'reservation-amount')),
-            currency: String(r.currency),
-            /* 逐字写明"这件事没有产生任何 ledger 事实"：审计里"钱还回去了"
-               与"账本动了"必须一眼可分。 */
-            ledgerMutation: false,
-            reservedBalanceMinor: C.serializeAmountMinor(sum.reservedMinor),
-            activeReservations: sum.activeCount
-          }
-        });
-        faultPoint(plan.faultPrefix + '-before-change-log');
-
-        writeOperationIdempotency(plan.scope, key.key, fingerprint, {
-          operationId: String(op.operation_id), reservationId: String(reservationId), transactionId: null
-        }, result, revision, at);
-        faultPoint('before-reservation-commit');
-        committed = result;
+        /* ★ P22-6：幂等参数随 plan 一起传进事务体，因此"事务外算出的指纹"
+           与"事务内写下的幂等行"是同一个值（不是各算一遍）。 */
+        committed = settleReservationInTx(reservationId, o, Object.assign({}, plan, {
+          idempotency: plan.idempotency === undefined ? { scope: plan.scope, key: key.key, write: true } : plan.idempotency
+        }), { at: at, fingerprint: fingerprint });
       });
     } catch (error) {
       const refusal = translateRefusal(error);
@@ -5446,6 +5770,11 @@ function createEconomyStore(deps) {
   function totalInventoryQuantity() {
     return Number((db.prepare(SQL.sumInventoryQuantity).get() || {}).total || 0);
   }
+  /* P22-6：购买的几个观测计数。与上面同款 —— counting 是观测，不是判断。 */
+  function countPurchases() { return Number((db.prepare(SQL.countPurchases).get() || {}).c || 0); }
+  function countPurchasesByStatus(status) {
+    return Number((db.prepare(SQL.countPurchasesByStatus).get(String(status)) || {}).c || 0);
+  }
 
   /* ── evaluateQuote（§18）：一次**读**，产出四样东西 ─────────────────
        quote            —— 那份价格命题（可能已经过期，如实报告）
@@ -6334,6 +6663,183 @@ function createEconomyStore(deps) {
           负数量也进不了库。
      三道同时存在是有意的：§16 要求的是"结构性保证"，而"结构性"在这里
      意味着**不依赖任何单点**。 */
+  /* ── mutateInventoryInTx（P22-5 内核，提取于 P22-6）──────────────────
+     ★ 它**不自行 BEGIN/COMMIT**。由调用方（grantInventory / consumeInventory
+     的公开包装，或 P22-6 的 settlePurchase）拥有事务边界。
+
+     提取是纯机械的：同一条 canonical 读、同一对带算术守卫的 UPDATE、
+     同一条 change log、同一条读回自检。写入方看到的只有：
+
+       ctx = { owner, productRow, fingerprint, at, key, existingRow? }
+
+     调用方负责的那些检查（owner / product 存在性 / assetKind）在公开包装
+     里原样保留，并且**也**保留在这里 —— 因为 P22-6 的 settlePurchase 在
+     同一个事务里直接调用它，而那时"商品行还是刚才那一行吗"必须在写锁
+     之下再回答一次（Product 的 asset_kind 本身不可变，但这一条是**结构**
+     性质，不该被当成跳过读取的理由）。 */
+  function mutateInventoryInTx(mode, input, ctx) {
+    const grant = String(mode) === 'grant';
+    const o = input || {};
+    const c = ctx || {};
+    const owner = c.owner;
+    const productRow = c.productRow;
+    const ownerId = String(owner.party.id);
+    const quantity = Number(o.quantity);
+    const productId = String(c.productId);
+    const key = c.key;
+    const fingerprint = c.fingerprint;
+    const idem = c.idempotency || null;
+
+    /* ── 商品行在写锁之下再读一次（canonical，不是缓存）───────────── */
+    const lockedProductRow = db.prepare(SQL.selectProduct).get(productId);
+    if (!lockedProductRow) throw refuse(C.DENY_REASON.PRODUCT_NOT_FOUND, ['product-not-found'], { productId: productId });
+    const lockedProduct = rowToProduct(lockedProductRow);
+    if (lockedProduct.assetKind == null) {
+      throw refuse(C.DENY_REASON.EFFECT_NOT_ALLOWED,
+        ['this-product-fulfillment-does-not-produce-inventory'],
+        { productId: productId, fulfillment: lockedProduct.fulfillment });
+    }
+    /* 若调用方已经持有那一行，就断言它没有在锁外被换掉。这条不是防御性
+       编程：settlePurchase 的 Ledger 金额与库存发放必须来自**同一次**
+       商品快照，而"两次读之间被改过"是唯一能破坏它的情形。 */
+    if (productRow && String(productRow.product_id) !== String(lockedProductRow.product_id)) {
+      throw refuse(null, ['inventory-product-row-changed-under-the-transaction'], { productId: productId });
+    }
+
+    const at = c.at;
+    const revision = allocateRevision();
+    /* ── canonical 读：数量**只**从这一行来 ─────────────────────── */
+    const existingRow = db.prepare(SQL.selectInventoryByOwnerProduct).get(ownerId, productId);
+    let entryId;
+    if (grant) {
+      if (!existingRow) {
+        entryId = c.requestedEntryId == null ? nextId('INVENTORY_ENTRY') : String(c.requestedEntryId);
+        if (!C.isEconomyId('INVENTORY_ENTRY', entryId)) {
+          throw refuse(null, ['inventory-entry-id-not-canonical']);
+        }
+        db.prepare(SQL.insertInventory).run(
+          String(entryId), ownerId, String(owner.party.type), productId, String(lockedProduct.assetKind),
+          Number(quantity), key, fingerprint, Number(revision), Number(at), Number(at)
+        );
+        faultPoint('after-inventory-insert');
+      } else {
+        entryId = String(existingRow.inventory_entry_id);
+        const before = Number(existingRow.quantity);
+        /* JS 侧的溢出预判（给出可读的拒绝），SQL 侧的守卫是第二道。 */
+        if (!Number.isSafeInteger(before + quantity) || before + quantity > MAX_INVENTORY_QUANTITY) {
+          throw refuse(C.DENY_REASON.INVENTORY_INPUT_NOT_STRUCTURED,
+            ['inventory-quantity-would-exceed-the-safe-integer-range'],
+            { ownerId: ownerId, productId: productId, current: before, requested: quantity });
+        }
+        const grown = db.prepare(SQL.growInventory).run(
+          Number(quantity), key, fingerprint, Number(revision), Number(at),
+          String(entryId), Number(quantity), Number(MAX_INVENTORY_QUANTITY)
+        );
+        if (Number(grown.changes) !== 1) {
+          throw refuse(C.DENY_REASON.INVENTORY_INPUT_NOT_STRUCTURED,
+            ['inventory-quantity-growth-was-not-applied'],
+            { ownerId: ownerId, productId: productId, current: before, requested: quantity });
+        }
+        faultPoint('after-inventory-write');
+      }
+    } else {
+      /* ── 不足的两种形态，同一个 reason code，不同的 detail ──────
+         "从来没有过这一行"与"有过但现在不够"对调用方是同一件事
+         （拿不出这么多），因此共用一个代码；而 available / requested
+         两个数把差别说清楚（§50："consume 8 → DENY，quantity 仍为 7"）。 */
+      if (!existingRow) {
+        throw refuse(C.DENY_REASON.INSUFFICIENT_INVENTORY, ['inventory-entry-not-found'],
+          { ownerId: ownerId, productId: productId, available: 0, requested: quantity });
+      }
+      entryId = String(existingRow.inventory_entry_id);
+      const before = Number(existingRow.quantity);
+      if (before < quantity) {
+        throw refuse(C.DENY_REASON.INSUFFICIENT_INVENTORY, ['inventory-quantity-is-insufficient'],
+          { ownerId: ownerId, productId: productId, available: before, requested: quantity });
+      }
+      const shrunk = db.prepare(SQL.shrinkInventory).run(
+        Number(quantity), key, fingerprint, Number(revision), Number(at),
+        String(entryId), Number(quantity)
+      );
+      if (Number(shrunk.changes) !== 1) {
+        throw refuse(C.DENY_REASON.INSUFFICIENT_INVENTORY, ['inventory-decrement-was-not-applied'],
+          { ownerId: ownerId, productId: productId, available: before, requested: quantity });
+      }
+      faultPoint('after-inventory-write');
+    }
+    const row = db.prepare(SQL.selectInventoryEntry).get(String(entryId));
+    if (!row) throw refuse(null, ['inventory-row-missing-after-write']);
+    /* ── 一次**读回**的自检：写进去的数量必须等于我们算出来的那个数。
+       它不是防御性编程，而是把"quantity 是这个账户唯一的真相"变成
+       一条每次都被检查的性质（缓存不存在，因此这里读的就是它）。 */
+    const after = Number(row.quantity);
+    const expected = grant
+      ? (existingRow ? Number(existingRow.quantity) + quantity : quantity)
+      : Number(existingRow.quantity) - quantity;
+    if (after !== expected || after < 0) {
+      throw refuse(C.DENY_REASON.INVENTORY_INPUT_NOT_STRUCTURED,
+        ['inventory-quantity-does-not-match-the-expected-result'],
+        { ownerId: ownerId, productId: productId, before: existingRow ? Number(existingRow.quantity) : 0, expected: expected, actual: after });
+    }
+    const view = rowToInventoryEntry(row, lockedProductRow);
+    const eventKind = grant ? C.EVENT_TYPE.INVENTORY_GRANTED : C.EVENT_TYPE.INVENTORY_CONSUMED;
+    const result = {
+      domain: C.DOMAIN,
+      inventoryEntryId: String(entryId),
+      ownerId: ownerId,
+      ownerType: String(owner.party.type),
+      productId: productId,
+      assetKind: String(lockedProduct.assetKind),
+      quantity: after,
+      previousQuantity: existingRow ? Number(existingRow.quantity) : 0,
+      delta: grant ? Number(quantity) : -Number(quantity),
+      grantedQuantity: grant ? Number(quantity) : 0,
+      consumedQuantity: grant ? 0 : Number(quantity),
+      eventKind: String(eventKind),
+      revision: Number(revision),
+      at: Number(at),
+      idempotencyKey: idem ? idem.key : null,
+      entry: serializeInventoryEntry(view),
+      /* ── §13/§14：三句逐字的自述 ────────────────────────────────
+         primitive 不动钱、不动钱包；它**自己**不是一次购买。
+         P22-6 的 settlePurchase 仍然借用了这个 primitive，而它借用的
+         那一刻恰好是"钱与货在同一个事务里"那一刻 —— 于是这三句在
+         那条路径上依然为真（ledgerMutation 由 ledger 那一步负责，
+         不属于 inventory 这一步）。 */
+      ledgerMutation: false,
+      walletMutation: false,
+      isAPurchase: false,
+      notAPurchase: (grant ? 'grantInventory' : 'consumeInventory') +
+        ' is an inventory primitive; a purchase is quote + reservation + ledger + inventory in ONE transaction (see settlePurchase)'
+    };
+    appendChange({
+      revision: Number(revision), kind: String(eventKind),
+      entityId: String(entryId), transactionId: null, walletId: null, at: Number(at),
+      payload: {
+        domain: C.DOMAIN,
+        inventoryEntryId: String(entryId),
+        ownerId: ownerId,
+        ownerType: String(owner.party.type),
+        productId: productId,
+        assetKind: String(lockedProduct.assetKind),
+        quantity: after,
+        previousQuantity: existingRow ? Number(existingRow.quantity) : 0,
+        delta: grant ? Number(quantity) : -Number(quantity),
+        ledgerMutation: false,
+        walletMutation: false,
+        isAPurchase: false
+      }
+    });
+    faultPoint('before-inventory-change-log');
+    if (idem && idem.write !== false) {
+      writeOperationIdempotency(idem.scope, idem.key, fingerprint, {
+        operationId: null, reservationId: null, transactionId: null
+      }, result, revision, at);
+    }
+    faultPoint('before-inventory-commit');
+    return result;
+  }
+
   function mutateInventory(mode, input) {
     requireOpen();
     const grant = String(mode) === 'grant';
@@ -6395,131 +6901,11 @@ function createEconomyStore(deps) {
     let committed = null;
     try {
       withTransaction(() => {
-        const revision = allocateRevision();
-        /* ── canonical 读：数量**只**从这一行来 ─────────────────────── */
-        const existingRow = db.prepare(SQL.selectInventoryByOwnerProduct).get(ownerId, productId);
-        let entryId;
-        if (grant) {
-          if (!existingRow) {
-            entryId = requestedEntryId == null ? nextId('INVENTORY_ENTRY') : requestedEntryId;
-            if (!C.isEconomyId('INVENTORY_ENTRY', entryId)) {
-              throw refuse(null, ['inventory-entry-id-not-canonical']);
-            }
-            db.prepare(SQL.insertInventory).run(
-              String(entryId), ownerId, String(owner.party.type), productId, String(product.assetKind),
-              Number(quantity), key.key, fingerprint, Number(revision), Number(at), Number(at)
-            );
-            faultPoint('after-inventory-insert');
-          } else {
-            entryId = String(existingRow.inventory_entry_id);
-            const before = Number(existingRow.quantity);
-            /* JS 侧的溢出预判（给出可读的拒绝），SQL 侧的守卫是第二道。 */
-            if (!Number.isSafeInteger(before + quantity) || before + quantity > MAX_INVENTORY_QUANTITY) {
-              throw refuse(C.DENY_REASON.INVENTORY_INPUT_NOT_STRUCTURED,
-                ['inventory-quantity-would-exceed-the-safe-integer-range'],
-                { ownerId: ownerId, productId: productId, current: before, requested: quantity });
-            }
-            const grown = db.prepare(SQL.growInventory).run(
-              Number(quantity), key.key, fingerprint, Number(revision), Number(at),
-              String(entryId), Number(quantity), Number(MAX_INVENTORY_QUANTITY)
-            );
-            if (Number(grown.changes) !== 1) {
-              throw refuse(C.DENY_REASON.INVENTORY_INPUT_NOT_STRUCTURED,
-                ['inventory-quantity-growth-was-not-applied'],
-                { ownerId: ownerId, productId: productId, current: before, requested: quantity });
-            }
-            faultPoint('after-inventory-write');
-          }
-        } else {
-          /* ── 不足的两种形态，同一个 reason code，不同的 detail ──────
-             "从来没有过这一行"与"有过但现在不够"对调用方是同一件事
-             （拿不出这么多），因此共用一个代码；而 available / requested
-             两个数把差别说清楚（§50："consume 8 → DENY，quantity 仍为 7"）。 */
-          if (!existingRow) {
-            throw refuse(C.DENY_REASON.INSUFFICIENT_INVENTORY, ['inventory-entry-not-found'],
-              { ownerId: ownerId, productId: productId, available: 0, requested: quantity });
-          }
-          entryId = String(existingRow.inventory_entry_id);
-          const before = Number(existingRow.quantity);
-          if (before < quantity) {
-            throw refuse(C.DENY_REASON.INSUFFICIENT_INVENTORY, ['inventory-quantity-is-insufficient'],
-              { ownerId: ownerId, productId: productId, available: before, requested: quantity });
-          }
-          const shrunk = db.prepare(SQL.shrinkInventory).run(
-            Number(quantity), key.key, fingerprint, Number(revision), Number(at),
-            String(entryId), Number(quantity)
-          );
-          if (Number(shrunk.changes) !== 1) {
-            throw refuse(C.DENY_REASON.INSUFFICIENT_INVENTORY, ['inventory-decrement-was-not-applied'],
-              { ownerId: ownerId, productId: productId, available: before, requested: quantity });
-          }
-          faultPoint('after-inventory-write');
-        }
-        const row = db.prepare(SQL.selectInventoryEntry).get(String(entryId));
-        if (!row) throw refuse(null, ['inventory-row-missing-after-write']);
-        /* ── 一次**读回**的自检：写进去的数量必须等于我们算出来的那个数。
-           它不是防御性编程，而是把"quantity 是这个账户唯一的真相"变成
-           一条每次都被检查的性质（缓存不存在，因此这里读的就是它）。 */
-        const after = Number(row.quantity);
-        const expected = grant
-          ? (existingRow ? Number(existingRow.quantity) + quantity : quantity)
-          : Number(existingRow.quantity) - quantity;
-        if (after !== expected || after < 0) {
-          throw refuse(C.DENY_REASON.INVENTORY_INPUT_NOT_STRUCTURED,
-            ['inventory-quantity-does-not-match-the-expected-result'],
-            { ownerId: ownerId, productId: productId, before: existingRow ? Number(existingRow.quantity) : 0, expected: expected, actual: after });
-        }
-        const view = rowToInventoryEntry(row, productRow);
-        const eventKind = grant ? C.EVENT_TYPE.INVENTORY_GRANTED : C.EVENT_TYPE.INVENTORY_CONSUMED;
-        const result = {
-          domain: C.DOMAIN,
-          inventoryEntryId: String(entryId),
-          ownerId: ownerId,
-          ownerType: String(owner.party.type),
-          productId: productId,
-          assetKind: String(product.assetKind),
-          quantity: after,
-          previousQuantity: existingRow ? Number(existingRow.quantity) : 0,
-          delta: grant ? Number(quantity) : -Number(quantity),
-          grantedQuantity: grant ? Number(quantity) : 0,
-          consumedQuantity: grant ? 0 : Number(quantity),
-          eventKind: String(eventKind),
-          revision: Number(revision),
-          at: Number(at),
-          idempotencyKey: key.key,
-          entry: serializeInventoryEntry(view),
-          /* ── §13/§14：三句逐字的自述 ────────────────────────────────
-             primitive 不动钱、不动钱包；它不是一次购买。 */
-          ledgerMutation: false,
-          walletMutation: false,
-          isAPurchase: false,
-          notAPurchase: (grant ? 'grantInventory' : 'consumeInventory') +
-            ' is an inventory primitive; a purchase is quote + reservation + ledger + inventory in ONE transaction (a later phase)'
-        };
-        appendChange({
-          revision: Number(revision), kind: String(eventKind),
-          entityId: String(entryId), transactionId: null, walletId: null, at: Number(at),
-          payload: {
-            domain: C.DOMAIN,
-            inventoryEntryId: String(entryId),
-            ownerId: ownerId,
-            ownerType: String(owner.party.type),
-            productId: productId,
-            assetKind: String(product.assetKind),
-            quantity: after,
-            previousQuantity: existingRow ? Number(existingRow.quantity) : 0,
-            delta: grant ? Number(quantity) : -Number(quantity),
-            ledgerMutation: false,
-            walletMutation: false,
-            isAPurchase: false
-          }
+        committed = mutateInventoryInTx(grant ? 'grant' : 'consume', o, {
+          owner: owner, productRow: productRow, productId: productId,
+          key: key.key, fingerprint: fingerprint, requestedEntryId: requestedEntryId, at: at,
+          idempotency: { scope: scope, key: key.key, write: true }
         });
-        faultPoint('before-inventory-change-log');
-        writeOperationIdempotency(scope, key.key, fingerprint, {
-          operationId: null, reservationId: null, transactionId: null
-        }, result, revision, at);
-        faultPoint('before-inventory-commit');
-        committed = result;
       });
     } catch (error) {
       const refusal = translateRefusal(error);
@@ -6537,6 +6923,1759 @@ function createEconomyStore(deps) {
 
   function grantInventory(input) { return mutateInventory('grant', input); }
   function consumeInventory(input) { return mutateInventory('consume', input); }
+
+  /* ══════════════════════════════════════════════════════════════════
+     P22-6 · Purchase Orchestrator + Atomic Settlement
+
+     这一层把六件既有的事实组织成一个高层生命周期：
+
+       Product → Product-backed Quote → Budget → Reservation
+               → Final Revalidation → Atomic Settlement
+                 ├── Ledger Transaction
+                 ├── Reservation → COMMITTED
+                 ├── Quote → CONSUMED
+                 ├── Inventory / Compute entitlement grant
+                 ├── Wallet derived cache
+                 ├── Economy change log
+                 └── Idempotency
+
+     ★ 本层最重要的一条性质写在 settlePurchase 里：**最终结算恰好是
+     一个 SQLite 事务**。它不是靠"顺序调用几个都会自己开事务的方法"
+     实现的，而是靠三件事同时成立：
+       ① withTransaction 可重入（内层永不 COMMIT）；
+       ② 每一步走的是 P22-2/P22-3/P22-5 的**同一个**事务体内核
+          （commitLedgerTransactionInTx / commitReservationInTx /
+          settleReservationInTx / mutateInventoryInTx），不是它们的拷贝；
+       ③ 结算的故障注入点全部落在那个事务里面。
+     ══════════════════════════════════════════════════════════════════ */
+
+  /* ── 读模型（§2：Purchase 必须足以回答八个问题）─────────────────────
+     一份 purchase 视图同时回答：
+       谁买的（buyerId）· 给谁（recipientId 或 null = 自己）·
+       买了什么（productId）· 按哪个 Quote（quoteId）· 多少钱
+       （amountMinor + currency）· 锁的是哪笔 Reservation（reservationId）·
+       最后是哪笔 Ledger Transaction（ledgerTransactionId）·
+       settlement 给了什么（settlement 那一块）· 成功还是失败（status）。
+
+     刻意**不**把 quote/reservation/ledger 的整行嵌进来（§79）：那是
+     三个无界的对象，而 Purchase 是一个 canonical entity。 */
+
+  /* recipientId 的**唯一**编码：'user' 与 'character' 的 id 空间可能
+     重叠（一个角色可以就叫 cfg_a，而 canonical 用户分区键恰好也是
+     user:{...} 的形状），因此裸 id 不足以回答"给谁"。P22-1 冻结的
+     party ref 是二元组，这里把它写成 'type:id' 一个字符串。 */
+  function partyKeyOf(type, id) {
+    return String(type == null ? '' : type) + ':' + String(id == null ? '' : id);
+  }
+
+  /* ── 结算发放的**读面**自述（结算完整性用它与 canonical 库存行对账）──
+     它回答："一条 COMPLETED 的购买说它发了 N 份，那一行库存真的在吗？"
+     与 P22-5 的 inventoryProblemsOf 同款：**查询出来的前提**，不是假设。 */
+  function inventorySettlementProblemsOf(purchase) {
+    const problems = [];
+    const prim = C.settlementPrimitiveOfFulfillment(purchase.settlementType);
+    if (!prim.ok || prim.primitive == null) return problems;
+    if (String(purchase.status) !== C.PURCHASE_STATE.COMPLETED) return problems;
+    if (Number(purchase.settledQuantity) <= 0) return problems;
+    const row = db.prepare(SQL.selectInventoryByOwnerProduct)
+      .get(String(purchase.recipientId), String(purchase.productId));
+    if (!row) return problems.concat(['a-completed-purchase-without-its-inventory-row']);
+    if (purchase.inventoryEntryId != null && String(row.inventory_entry_id) !== String(purchase.inventoryEntryId)) {
+      problems.push('a-completed-purchase-whose-inventory-row-is-not-the-one-it-references');
+    }
+    if (purchase.settledAssetKind != null && String(row.asset_kind) !== String(purchase.settledAssetKind)) {
+      problems.push('a-completed-purchase-with-an-inventory-row-of-a-different-asset-kind');
+    }
+    return problems;
+  }
+
+  function rowToPurchase(row) {
+    const quoteRow = db.prepare(SQL.selectQuote).get(String(row.quote_id));
+    const resRow = db.prepare(SQL.selectReservation).get(String(row.reservation_id));
+    const txRow = row.ledger_transaction_id == null
+      ? null : db.prepare(SQL.selectTransaction).get(String(row.ledger_transaction_id));
+    const invRow = row.inventory_entry_id == null
+      ? null : db.prepare(SQL.selectInventoryEntry).get(String(row.inventory_entry_id));
+    const settlementPrimitive = C.settlementPrimitiveOfFulfillment(row.settlement_type);
+    return {
+      domain: C.DOMAIN,
+      namespace: C.NAMESPACES.PURCHASE,
+      purchaseId: String(row.purchase_id),
+      buyerId: partyKeyOf(row.buyer_type, row.buyer_id),
+      buyerType: String(row.buyer_type),
+      buyerRef: Object.freeze({ type: String(row.buyer_type), id: String(row.buyer_id) }),
+      recipientId: row.recipient_id == null ? null : partyKeyOf(row.recipient_type, row.recipient_id),
+      recipientType: row.recipient_id == null ? null : String(row.recipient_type),
+      recipientRef: row.recipient_id == null ? null
+        : Object.freeze({ type: String(row.recipient_type), id: String(row.recipient_id) }),
+      /* 送到自己手上与送给别人是**两个不同的键**：null 与 'character:x'
+         不是在同一个字段里混用 —— 这是 §23"不要默认 buyer == recipient"
+         在读面上的落点。 */
+      selfDirected: row.recipient_id == null,
+      productId: String(row.product_id),
+      storeId: row.store_id == null ? null : String(row.store_id),
+      quoteId: String(row.quote_id),
+      quoteState: quoteRow ? String(quoteRow.state) : null,
+      quotePresent: !!quoteRow,
+      reservationId: String(row.reservation_id),
+      reservationState: resRow ? String(resRow.status) : null,
+      reservationStateAtPrepare: String(row.reservation_state),
+      reservationPresent: !!resRow,
+      reservationExpiresAt: row.reservation_expires_at == null ? null : Number(row.reservation_expires_at),
+      ledgerTransactionId: row.ledger_transaction_id == null ? null : String(row.ledger_transaction_id),
+      ledgerTransactionPresent: !!txRow,
+      ledgerTransactionType: txRow ? String(txRow.tx_type) : null,
+      currency: String(row.currency),
+      amountMinor: fromSqlAmount(row.amount_minor, 'purchase-amount'),
+      quoteKind: String(row.quote_kind),
+      /* settlementType **就是** Product 的 fulfillment（见契约 §22 的
+         说明），因此它是"这次怎么结算"的那一个词。 */
+      settlementType: String(row.settlement_type),
+      settlementPrimitive: settlementPrimitive.ok ? settlementPrimitive.primitive : null,
+      settledAssetKind: row.asset_kind == null ? null : String(row.asset_kind),
+      /* granted_quantity 是**本次结算发放了多少份**（= 报价的 quantity ×
+         一份交付量），不是 Product 行上的 grantQuantity。 */
+      grantedQuantity: Number(row.granted_quantity),
+      unitName: row.unit_name == null ? null : String(row.unit_name),
+      inventoryEntryId: row.inventory_entry_id == null ? null : String(row.inventory_entry_id),
+      inventoryEntryPresent: !!invRow,
+      inventoryQuantityAfter: invRow ? Number(invRow.quantity) : null,
+      status: String(row.status),
+      terminal: C.PURCHASE_TERMINAL_STATES.indexOf(String(row.status)) >= 0,
+      completed: String(row.status) === C.PURCHASE_STATE.COMPLETED,
+      releaseReason: row.release_reason == null ? null : String(row.release_reason),
+      reasonCode: row.reason_code == null ? null : String(row.reason_code),
+      idempotencyKey: String(row.idempotency_key),
+      revision: Number(row.revision),
+      createdAt: Number(row.created_at),
+      updatedAt: Number(row.updated_at),
+      completedAt: row.completed_at == null ? null : Number(row.completed_at)
+    };
+  }
+
+  /* 结算那一块的对外形态。**只有已完成的购买**才有 ledgerTransactionId 与
+     一份真实交付；RESERVED / RELEASED / FAILED 三者在这里逐字写着
+     `spentAnything: false` / `grantedAnything: false` —— 于是"钱还在不在"
+     这个问题的答案在**读面**上也是结构性的，不需要再去查一遍账本。 */
+  function purchaseSettlementOf(purchase) {
+    const completed = String(purchase.status) === C.PURCHASE_STATE.COMPLETED;
+    return {
+      ledgerTransactionId: completed ? purchase.ledgerTransactionId : null,
+      ledgerTransactionType: completed ? purchase.ledgerTransactionType : null,
+      spentAmountMinor: completed ? C.serializeAmountMinor(purchase.amountMinor) : '0',
+      currency: purchase.currency,
+      settlementType: purchase.settlementType,
+      settlementPrimitive: purchase.settlementPrimitive,
+      assetKind: purchase.settledAssetKind,
+      grantedQuantity: completed ? purchase.grantedQuantity : 0,
+      unitName: purchase.unitName,
+      inventoryEntryId: completed ? purchase.inventoryEntryId : null,
+      /* ★ 收货人 **永远**有答案：买给自己时它就是买家。
+         （Purchase 行上的 recipientId 是 null，那表示"这不是一份礼物"，
+         不是"没有人收到"—— 两者混用会让 §52 的问题"B 收到了吗"
+         在一个送礼给自己以外的人的场景里得到 null。） */
+      recipientId: completed ? (purchase.recipientId == null ? purchase.buyerId : purchase.recipientId) : null,
+      selfDirected: purchase.selfDirected === true,
+      /* 逐字的自述，与 P22-5 的 inventory primitive 同款。 */
+      spentAnything: completed,
+      grantedAnything: completed,
+      ledgerMutation: completed,
+      providerMutation: false,
+      paymentMutation: false,
+      memoryMutation: false,
+      relationshipMutation: false,
+      amountSource: C.PURCHASE_AMOUNT_SOURCE,
+      rewritesHistoricalQuotes: C.PURCHASE_REWRITES_HISTORICAL_QUOTES
+    };
+  }
+
+  function serializePurchase(view) {
+    return {
+      domain: view.domain,
+      namespace: view.namespace,
+      purchaseId: view.purchaseId,
+      buyerId: view.buyerId,
+      recipientId: view.recipientId,
+      selfDirected: view.selfDirected,
+      productId: view.productId,
+      storeId: view.storeId,
+      quoteId: view.quoteId,
+      reservationId: view.reservationId,
+      ledgerTransactionId: view.ledgerTransactionId,
+      currency: view.currency,
+      amountMinor: C.serializeAmountMinor(view.amountMinor),
+      quoteKind: view.quoteKind,
+      settlementType: view.settlementType,
+      settlementPrimitive: view.settlementPrimitive,
+      assetKind: view.settledAssetKind,
+      grantedQuantity: view.grantedQuantity,
+      unitName: view.unitName,
+      inventoryEntryId: view.inventoryEntryId,
+      status: view.status,
+      terminal: view.terminal === true,
+      completed: view.completed === true,
+      releaseReason: view.releaseReason,
+      reasonCode: view.reasonCode,
+      revision: view.revision,
+      createdAt: view.createdAt,
+      updatedAt: view.updatedAt,
+      completedAt: view.completedAt,
+      /* 三句与 P22-5 同款的逐字否认（§1：Purchase 不等于它们中的任何一个）。 */
+      isALedgerTransaction: false,
+      isAReservation: false,
+      isAQuote: false,
+      hasRefund: C.PURCHASE_HAS_REFUND,
+      exposesHttpMutation: C.PURCHASE_EXPOSES_HTTP_MUTATION
+    };
+  }
+
+  /* ── getPurchase（§79：稳定形状，三个**小结**而不是三棵历史）───────── */
+  function getPurchase(input) {
+    requireOpen();
+    const o = typeof input === 'string' ? { purchaseId: input } : (input || {});
+    const purchaseId = o.purchaseId == null ? null : String(o.purchaseId);
+    if (!C.isEconomyId(C.PURCHASE_ID_KIND, purchaseId)) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['purchase-id-not-canonical'] };
+    }
+    const row = db.prepare(SQL.selectPurchase).get(purchaseId);
+    if (!row) return { ok: false, denied: false, reasonCode: null, errors: ['purchase-not-found'] };
+    const view = rowToPurchase(row);
+    const quoteRow = db.prepare(SQL.selectQuote).get(view.quoteId);
+    const resRow = db.prepare(SQL.selectReservation).get(view.reservationId);
+    const productRow = db.prepare(SQL.selectProduct).get(view.productId);
+    return {
+      ok: true,
+      purchase: serializePurchase(view),
+      quoteSummary: quoteRow ? {
+        quoteId: String(quoteRow.quote_id),
+        state: String(quoteRow.state),
+        amountMinor: C.serializeAmountMinor(fromSqlAmount(quoteRow.amount_minor, 'quote-amount')),
+        currency: String(quoteRow.currency),
+        quantity: Number(quoteRow.quantity),
+        kind: String(quoteRow.quote_kind),
+        expiresAt: Number(quoteRow.expires_at)
+      } : null,
+      reservationSummary: resRow ? {
+        reservationId: String(resRow.reservation_id),
+        state: String(resRow.status),
+        amountMinor: C.serializeAmountMinor(fromSqlAmount(resRow.amount_minor, 'reservation-amount')),
+        currency: String(resRow.currency),
+        transactionId: resRow.transaction_id == null ? null : String(resRow.transaction_id),
+        expiresAt: resRow.expires_at == null ? null : Number(resRow.expires_at)
+      } : null,
+      productSummary: productRow ? {
+        productId: String(productRow.product_id),
+        name: String(productRow.name),
+        storeId: String(productRow.store_id),
+        status: String(productRow.status),
+        kind: String(productRow.kind),
+        fulfillment: String(productRow.fulfillment),
+        unitName: String(productRow.unit_name),
+        grantQuantity: Number(productRow.grant_quantity),
+        present: true,
+        /* P22-5 的冻结结论在这里逐字重述：商品行只是**出处**，而这次
+           购买的经济内容不依赖它 —— 一次改价/下架不会改写历史。 */
+        purchaseEconomicContentDependsOnThisRow: false
+      } : { productId: view.productId, present: false, purchaseEconomicContentDependsOnThisRow: false },
+      settlement: purchaseSettlementOf(view)
+    };
+  }
+
+  function listPurchases(options) {
+    requireOpen();
+    const o = options || {};
+    const limit = normalizeLimit(o.limit, 50, 500);
+    const buyerId = o.buyerId == null ? null : String(o.buyerId);
+    const recipientId = o.recipientId == null ? null : String(o.recipientId);
+    const status = o.status == null ? null : String(o.status);
+    const productId = o.productId == null ? null : String(o.productId);
+    const quoteId = o.quoteId == null ? null : String(o.quoteId);
+    if (status != null && !C.isPurchaseState(status)) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['purchase-status-not-in-closed-set'], allowed: C.PURCHASE_STATES };
+    }
+    /* 调用方给的是**裸 id**（'cfg_a'），落库的是 'type:id'。这里做一次
+       规范化，而且只在"给了"的情况下 —— 一条"必须给 buyerId"的规则会
+       让"列出所有购买"变成不可能，而那是审计需要的操作。 */
+    const rows = db.prepare(SQL.selectPurchasesFiltered).all(
+      buyerId, buyerId, recipientId, recipientId,
+      status, status,
+      productId, productId,
+      quoteId, quoteId,
+      Number(limit)
+    );
+    return {
+      ok: true,
+      purchases: rows.map(r => serializePurchase(rowToPurchase(r))),
+      count: rows.length,
+      /* 逐字：这个列表**不是**个性化的（§40/§80）。没有推荐、没有排序
+         分数、没有"给谁看"的参数 —— 它只是按 created_at 排的过滤结果。 */
+      personalized: false,
+      recommended: false,
+      ranked: false
+    };
+  }
+
+  /* ── 指纹（§36）───────────────────────────────────────────────────────
+     描述的是**业务意图**，不是生成的 identity：purchaseId 与
+     ledgerTransactionId 都不在里面，因此"同一件事重试"必然得到同一个
+     指纹，而"改了一件事"必然得到不同的指纹。 */
+  function purchaseFingerprint(scope, payload) {
+    return fingerprintOf(stableStringify({ scope: String(scope), request: payload }));
+  }
+
+  /* ── 请求中"给谁"的归一化（§23）────────────────────────────────────
+     必须显式区分两种情况，而不是给 recipientId 一个"缺省等于 buyer"的
+     便利默认值：
+       · 没给 recipientId          → 这次购买是买给自己的（selfDirected）；
+       · 给了 recipientId 且 == buyer → 也要拒绝。
+     第二条不是吹毛求疵：P22-4 的 GIFT 报价要求 recipient 存在，而
+     "把一份 GIFT 报价拿来买给自己"会让"谁付钱 / 谁收货"在读面上
+     变成同一个 id，于是审计无法回答 §52 的问题。 */
+  function deriveRecipient(buyerParty, recipientInput) {
+    if (recipientInput == null || String(recipientInput).trim() === '') {
+      return { ok: true, party: null, selfDirected: true, errors: [] };
+    }
+    const r = partyInput(recipientInput);
+    if (!r.ok) return { ok: false, party: null, selfDirected: false, errors: r.errors };
+    if (r.party.type === C.PARTY_TYPE.SYSTEM) {
+      return { ok: false, party: null, selfDirected: false, errors: ['system-party-cannot-receive-a-purchase'] };
+    }
+    if (String(r.party.type) === String(buyerParty.type) && String(r.party.id) === String(buyerParty.id)) {
+      return { ok: false, party: null, selfDirected: false, errors: ['a-recipient-must-differ-from-the-buyer'] };
+    }
+    return { ok: true, party: r.party, selfDirected: false, errors: [] };
+  }
+
+  /* 报价上的收件人与请求上的收件人必须是**同一个二元组**（类型 + id）。
+     只比 id 是不够的：一个角色可以恰好叫 cfg_a，而 canonical 用户分区键
+     的形状完全不同 —— 两者混为一谈会让"礼物送给了谁"出现两个答案。 */
+  function recipientMatchesQuote(recipientParty, quoteRow) {
+    const quoteHas = quoteRow.recipient_id != null && String(quoteRow.recipient_id).trim() !== '';
+    if (recipientParty == null) return !quoteHas;
+    if (!quoteHas) return false;
+    return String(quoteRow.recipient_id) === String(recipientParty.id)
+      && String(quoteRow.recipient_type == null ? '' : quoteRow.recipient_type) === String(recipientParty.type);
+  }
+
+  /* ── Budget 评价的读面（fail closed，§10/§30）───────────────────────
+     空决策**不是** ALLOW。P22-4 的 evaluateBudgetFor 在"没有政策"或
+     "政策不可信"时返回一个 systemFailure 决策，而这里把"没有任何决策"
+     也归到同一条失败上：一次无法解释的预算评价不允许放行任何花钱的
+     动作。 */
+  function budgetDecisionOf(ownerId, currency, amountMinor, at) {
+    const policyRow = policyForOwner(String(ownerId));
+    const evalResult = evaluateBudgetFor({
+      ownerId: String(ownerId), currency: String(currency), amountMinor: amountMinor, now: Number(at)
+    });
+    if (evalResult.ok !== true || !evalResult.decision) {
+      return {
+        ok: false,
+        denial: denial(C.DENY_REASON.POLICY_INPUT_NOT_STRUCTURED, ['budget-evaluation-failed'], {
+          systemFailure: true, ownerId: String(ownerId)
+        })
+      };
+    }
+    return {
+      ok: true,
+      /* ★ 用**决策自己**的 policyId，而不是从政策行再读一次：
+         `policyForOwner` 返回的是 rowToBudgetPolicy 的**视图**（键名是
+         `policyId`），而这里曾经写成 `policyRow.policy_id` —— 一个
+         不存在的键，于是 `String(undefined)` 让返回里出现字面量
+         `"undefined"`。决策对象上已经有权威的那个值，读它就不会有
+         第二次命名机会出错。 */
+      policyId: evalResult.decision.policyId == null ? null : String(evalResult.decision.policyId),
+      policyPresent: !!policyRow,
+      decision: evalResult.decision,
+      snapshot: evalResult.snapshot || null
+    };
+  }
+
+  /* 预算决策 → 一个**可解释的拒绝**。刻意分开三种形态：
+     · DENY              → 规则说不（reasonCode 来自契约的封闭集合）；
+     · REQUIRE_APPROVAL  → 规则说"要人点头"，而本阶段没有 Approval
+                           workflow，因此它必须在**预留之前**停下（§10），
+                           既不伪装成 FAILED，也不假装成 ALLOW（§11）；
+     · systemFailure     → 规则这一面不可信 → fail closed。 */
+  function budgetRefusalOf(budget, actionLabel) {
+    const d = budget.decision;
+    const detail = {
+      outcome: d.outcome,
+      priority: d.priority,
+      policyId: budget.policyId,
+      spentTodayMinor: d.spentTodayMinor,
+      spentThisWeekMinor: d.spentThisWeekMinor,
+      spentThisMonthMinor: d.spentThisMonthMinor,
+      availableBalanceMinor: d.availableBalanceMinor,
+      systemFailure: d.systemFailure === true,
+      action: String(actionLabel)
+    };
+    if (d.outcome === C.BUDGET_DECISION.REQUIRE_APPROVAL) {
+      return denial(C.DENY_REASON.PURCHASE_REQUIRES_APPROVAL,
+        ['this-purchase-requires-approval-and-no-approval-workflow-exists'], detail);
+    }
+    return denial(d.reasonCode, ['budget-does-not-allow-this-spend'], detail);
+  }
+
+  /* ── ledger 对手方（§17/§18）──────────────────────────────────────────
+     白名单来自 P22-1 的 SYSTEM_ACCOUNTS。★ Store **不是**商家：它没有
+     价格、没有拥有关系，因此 storeId 不可能是一个 accounting account。
+     这里把"对手方是谁"的判定放在契约里（settlementCounterpartyFor），
+     运行层只负责把它落实成一行账户。 */
+  function purchaseCounterpartyOf(quoteKind) {
+    const cp = C.settlementCounterpartyFor(quoteKind);
+    if (!cp.ok) return cp;
+    const sys = ensureSystemAccount(cp.accountId);
+    if (!sys.ok) return { ok: false, accountId: null, errors: sys.errors };
+    return cp;
+  }
+
+  /* ── 结算条目的构造（**唯一一份**，§17）─────────────────────────────
+     buyer wallet ──CREDIT──▶ system counterparty
+
+     ★ 两件事都只从**已经落库的行**读，绝不接受调用方传入：
+       · 金额   ← reservation 行（不是 Quote，不是请求，不是当前商品价）；
+       · 账户   ← wallet 行的 account_id（**不是** wallet_id —— 钱包 id 与
+                  它在 ledger 里的账户 id 是两个不同的东西，把后者写成前者
+                  会得到一个"账户不存在"的拒绝，而更糟的写法会在某天
+                  恰好同名时静默记错账）。
+     与 P22-3 的 buildCommitEntries 同一条纪律："如果 commit 能自己指定
+     金额，那它就不是一次提交，而是一次任意转账"。 */
+  function buildPurchaseEntries(walletRow, reservationRow, counterparty) {
+    const amountMinor = fromSqlAmount(reservationRow.amount_minor, 'reservation-amount');
+    return normalizeEntries([
+      { ledgerEntryId: null, accountId: String(walletRow.account_id), direction: C.ENTRY_DIRECTION.CREDIT, amountMinor: amountMinor, currency: String(reservationRow.currency) },
+      { ledgerEntryId: null, accountId: String(counterparty), direction: C.ENTRY_DIRECTION.DEBIT, amountMinor: amountMinor, currency: String(reservationRow.currency) }
+    ]);
+  }
+
+  /* ══════════════════════════════════════════════════════════════════
+     §7 · preparePurchase（Prepare 阶段）
+
+     它做四件事，而且**全部在一个 SQLite 事务里**：
+       validate Product-backed Quote
+       evaluate Budget（ALLOW 才继续）
+       reserve funds（复用 P22-3 canonical 的 reserve 内核）
+       create Purchase（RESERVED）
+
+     Prepare 成功后世界的状态逐字是：
+       Purchase = RESERVED · Reservation = ACTIVE · Quote = OPEN
+       Ledger = unchanged · Inventory = unchanged
+
+     ★ Quote 在 reserve 时**必须**保持 OPEN（§6）：资金只是被锁住，
+     还没有最终 settlement。若此时就把它写成 CONSUMED，
+     "reserve 成功 + 进程崩溃"会留下"报价已消费但商品没发"的**假事实**。
+     ══════════════════════════════════════════════════════════════════ */
+  function preparePurchase(input) {
+    requireOpen();
+    const o = input || {};
+
+    const key = C.normalizeIdempotencyKey(o.idempotencyKey);
+    if (!key.ok) return { ok: false, denied: false, reasonCode: null, errors: key.errors };
+    if (o.purchaseId != null && !C.isEconomyId(C.PURCHASE_ID_KIND, o.purchaseId)) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['purchase-id-not-canonical'] };
+    }
+    const units = o.units == null ? 1 : Number(o.units);
+    if (!Number.isSafeInteger(units) || units < 1) {
+      return denial(C.DENY_REASON.INVALID_AMOUNT, ['units-must-be-a-positive-safe-integer']);
+    }
+
+    const buyer = partyInput(o.buyerId != null ? o.buyerId : o.ownerId);
+    if (!buyer.ok) return { ok: false, denied: false, reasonCode: null, errors: buyer.errors };
+    if (buyer.party.type === C.PARTY_TYPE.SYSTEM) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['system-party-cannot-buy'] };
+    }
+    const recipient = deriveRecipient(buyer.party, o.recipientId);
+    if (!recipient.ok) return { ok: false, denied: false, reasonCode: null, errors: recipient.errors };
+
+    const quoteId = o.quoteId == null ? null : String(o.quoteId);
+    if (!C.isEconomyId('QUOTE', quoteId)) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['quote-id-not-canonical'] };
+    }
+    const quoteRow = db.prepare(SQL.selectQuote).get(quoteId);
+    if (!quoteRow) return { ok: false, denied: false, reasonCode: null, errors: ['quote-not-found'] };
+
+    /* ── §7：**只**接受 Product-backed Quote ──────────────────────────
+       P22-4 的 raw createQuote 允许"随手给一个 productId"（它只做形状
+       校验，deps.productExists 未注入时不查目录）。那种报价的 productId
+       可能指向一个根本不存在的商品行，而 Purchase 的结算快照是从
+       **products 行**派生 fulfillment / assetKind / unitName 的 ——
+       对一份没有出处的报价，那三样只能靠猜。因此这里是硬门：目录里
+       必须有这一行，而且它必须仍然 ACTIVE（报价**创建时**它必须是
+       ACTIVE，这一条由 createProductQuote 保证；这里再确认一次，
+       于是"手工改过库"不会绕过它）。 */
+    const productRow = db.prepare(SQL.selectProduct).get(String(quoteRow.product_id));
+    if (!productRow) {
+      return denial(C.DENY_REASON.PRODUCT_NOT_FOUND, ['product-not-found'],
+        { productId: String(quoteRow.product_id), productBacked: false });
+    }
+    const product = rowToProduct(productRow);
+    const provenance = C.QUOTE_PRODUCT_RELATION.PROVENANCE_ONLY;
+
+    /* ── §7：报价的每一个可变属性都必须与请求一致 ───────────────────── */
+    if (String(quoteRow.buyer_id) !== String(buyer.party.id) || String(quoteRow.buyer_type) !== String(buyer.party.type)) {
+      return denial(C.DENY_REASON.QUOTE_MISMATCH, ['quote-buyer-does-not-match-the-purchase-buyer'],
+        { quoteBuyerId: String(quoteRow.buyer_id), purchaseBuyerId: String(buyer.party.id) });
+    }
+    if (!recipientMatchesQuote(recipient.party, quoteRow)) {
+      return denial(C.DENY_REASON.QUOTE_MISMATCH, ['quote-recipient-does-not-match-the-purchase-recipient'],
+        { quoteRecipientId: quoteRow.recipient_id == null ? null : String(quoteRow.recipient_id) });
+    }
+    const quoteAmountMinor = fromSqlAmount(quoteRow.amount_minor, 'quote-amount');
+    const expectedAmount = C.productQuoteAmountMinor(product, units);
+    if (!expectedAmount.ok) return denial(C.DENY_REASON.CATALOG_INPUT_NOT_STRUCTURED, expectedAmount.errors);
+    const expectedQuantity = C.productQuoteQuantity(product, units);
+    if (!expectedQuantity.ok) return denial(C.DENY_REASON.CATALOG_INPUT_NOT_STRUCTURED, expectedQuantity.errors);
+    if (expectedAmount.amountMinor !== quoteAmountMinor || Number(quoteRow.quantity) !== expectedQuantity.quantity) {
+      return denial(C.DENY_REASON.QUOTE_MISMATCH, ['purchase-amount-must-equal-the-quote-snapshot'], {
+        quoteAmountMinor: C.serializeAmountMinor(quoteAmountMinor),
+        requestedAmountMinor: C.serializeAmountMinor(expectedAmount.amountMinor),
+        quoteQuantity: Number(quoteRow.quantity),
+        requestedQuantity: expectedQuantity.quantity
+      });
+    }
+
+    /* ── §7/§72：结算形态来自**不可变**的商品列 ───────────────────────
+       fulfillment 与 asset_kind 是 Product 的本体列，P22-5 冻结了它们
+       不可变（唯一能改的是 status 与 unit_price_minor）。因此从它们派生
+       是安全的 —— 而**单价**绝不参与：价格事实只来自 Quote 快照。 */
+    const fulfillment = C.fulfillmentOfProductKind(product.kind);
+    if (!C.isFulfillment(fulfillment)) {
+      return denial(C.DENY_REASON.EFFECT_NOT_ALLOWED, ['product-kind-has-no-fulfillment'], { kind: product.kind });
+    }
+    const primitive = C.settlementPrimitiveOfFulfillment(fulfillment);
+    if (!primitive.ok) {
+      /* §73：未知的 settlement 必须 **fail closed**，而且必须在 Ledger
+         commit 之前 —— 绝不能出现"扣钱成功但不知道发什么"。 */
+      return denial(C.DENY_REASON.PURCHASE_NOT_SUPPORTED, ['settlement-type-not-registered'], { fulfillment: String(fulfillment) });
+    }
+    if (primitive.primitive == null) {
+      /* SERVICE_EXECUTION：本阶段没有可原子执行的结算原语（Action 层
+         未接入），因此它必须在**预留之前**失败（§22/§54 fail early）。
+         刻意不 reserve 之后再 release：那会白占一次 revision、一行预留
+         与一次 change log，而"这件事还做不到"是一个**静态**事实。 */
+      return denial(C.DENY_REASON.PURCHASE_NOT_SUPPORTED,
+        ['service-settlement-requires-the-action-layer-and-is-not-implemented-in-this-phase'], {
+        fulfillment: String(fulfillment),
+        productKind: String(product.kind),
+        settlementPrimitive: null,
+        reservedNothing: true
+      });
+    }
+
+    const tx = C.transactionTypeOfQuoteKind(String(quoteRow.quote_kind));
+    if (!tx.ok) return denial(C.DENY_REASON.EFFECT_NOT_ALLOWED, tx.errors, { quoteKind: String(quoteRow.quote_kind) });
+    const counterparty = purchaseCounterpartyOf(String(quoteRow.quote_kind));
+    if (!counterparty.ok) return denial(C.DENY_REASON.ACCOUNT_NOT_ALLOWED, counterparty.errors);
+
+    const currency = String(quoteRow.currency);
+    const walletRow = findWalletRowBy({ ownerId: String(buyer.party.id), ownerType: String(buyer.party.type) }, currency);
+    if (!walletRow) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['wallet-not-found'], hint: 'open a wallet for the buyer in the quote currency first' };
+    }
+    const walletId = String(walletRow.wallet_id);
+
+    const now = clock();
+    const expiresAt = normalizeExpiresAt(o.expiresAt);
+    if (!expiresAt.ok) return { ok: false, denied: false, reasonCode: null, errors: expiresAt.errors };
+    if (expiresAt.expiresAt <= now) {
+      return denial(C.DENY_REASON.RESERVATION_EXPIRED, ['reserve-expires-at-is-not-in-the-future'],
+        { expiresAt: expiresAt.expiresAt, now: now });
+    }
+
+    /* ── 指纹（**不含任何生成的 id**）────────────────────────────────── */
+    const fingerprint = purchaseFingerprint(C.OPERATION_SCOPE.PURCHASE_PREPARE, {
+      buyer: buyer.party,
+      recipient: recipient.party,
+      quoteId: quoteId,
+      productId: String(quoteRow.product_id),
+      currency: currency,
+      amountMinor: C.serializeAmountMinor(quoteAmountMinor),
+      units: units,
+      reservationExpiresAt: Number(expiresAt.expiresAt)
+    });
+
+    /* ── 幂等闸门（在任何写之前，重放零成本、零副作用）──────────────── */
+    const seen = operationIdempotencyLookup(C.OPERATION_SCOPE.PURCHASE_PREPARE, key.key, fingerprint);
+    if (seen.found && seen.conflict) return operationIdempotencyConflict(C.OPERATION_SCOPE.PURCHASE_PREPARE, key.key, seen);
+    if (seen.found) return { ok: true, replayed: true, idempotencyKey: key.key, result: seen.result };
+
+    /* ── §7/§57：报价的状态与时间在这里先问一次（快速失败），事务里再问一次 */
+    if (String(quoteRow.state) !== C.QUOTE_STATE.OPEN) {
+      return denial(String(quoteRow.state) === C.QUOTE_STATE.CONSUMED ? C.DENY_REASON.QUOTE_MISMATCH : C.DENY_REASON.QUOTE_EXPIRED,
+        ['quote-is-not-open'], { quoteState: String(quoteRow.state), quoteId: quoteId });
+    }
+    if (Number(quoteRow.expires_at) <= now) {
+      return denial(C.DENY_REASON.QUOTE_EXPIRED, ['quote-is-past-its-expires-at'],
+        { expiresAt: Number(quoteRow.expires_at), now: now, sweepRequired: true, expiredBeforePrepare: true });
+    }
+
+    /* ── 候选 id（来自注入的随机源，且形状受契约约束）────────────────── */
+    const purchaseId = o.purchaseId != null ? String(o.purchaseId) : nextId(C.PURCHASE_ID_KIND);
+    if (!C.isEconomyId(C.PURCHASE_ID_KIND, purchaseId)) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['purchase-id-not-canonical'] };
+    }
+    const operationId = nextId('OPERATION');
+    const reservationId = nextId('RESERVATION');
+    if (!C.isEconomyId('OPERATION', operationId) || !C.isEconomyId('RESERVATION', reservationId)) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['generated-id-not-canonical'] };
+    }
+    const ledgerTx = C.derivePurchaseLedgerTransactionId(purchaseId);
+    if (!ledgerTx.ok) return { ok: false, denied: false, reasonCode: null, errors: ledgerTx.errors };
+
+    const at = now;
+    let committed = null;
+    try {
+      withTransaction(() => {
+        /* ① 拿写锁之后**重新读**报价与商品：这是 §7 与 §51 的同一道闸门 */
+        const q = db.prepare(SQL.selectQuote).get(quoteId);
+        if (!q) throw refuse(null, ['quote-not-found']);
+        const p = db.prepare(SQL.selectProduct).get(String(q.product_id));
+        if (!p) throw refuse(C.DENY_REASON.PRODUCT_NOT_FOUND, ['product-not-found'], { productId: String(q.product_id) });
+        if (String(q.state) !== C.QUOTE_STATE.OPEN) {
+          throw refuse(C.DENY_REASON.QUOTE_MISMATCH, ['quote-is-not-open'],
+            { quoteState: String(q.state), quoteId: quoteId });
+        }
+        if (Number(q.expires_at) <= at) {
+          throw refuse(C.DENY_REASON.QUOTE_EXPIRED, ['quote-is-past-its-expires-at'],
+            { expiresAt: Number(q.expires_at), now: at, sweepRequired: true });
+        }
+        if (fromSqlAmount(q.amount_minor, 'quote-amount') !== quoteAmountMinor) {
+          throw refuse(C.DENY_REASON.QUOTE_MISMATCH, ['quote-amount-changed-under-the-transaction']);
+        }
+        if (String(p.fulfillment) !== String(fulfillment)) {
+          throw refuse(C.DENY_REASON.EFFECT_NOT_ALLOWED, ['product-fulfillment-changed-under-the-transaction']);
+        }
+        /* 商品在 prepare 与 settle 之间可以被停用/退役，但**报价的有效性
+           不受影响**（P22-5 冻结结论）。因此这里刻意**不**检查
+           product.status —— 一份在商品还 ACTIVE 时创建的报价，在商品
+           RETIRED 之后依然可以被买到它那一刻表达的价格与交付。**
+
+           注意这与 createProductQuote 的检查不矛盾：那条规则管的是
+           "还能不能**创建**新报价"，这条管的是"已经存在的报价还能不能
+           被用掉"。P22-5 的 F 组逐条冻结了这个区别。 */
+
+        const rev = allocateRevision();
+
+        /* ② Budget 评价 —— ★ 在**写锁里面**，与预留同一个事务（§10）。
+              这让"检查规则"与"锁住钱"之间不存在窗口。ALLOW 之外的
+              两种结局都在这里停下，且**一个字节都还没写**。 */
+        const budget = budgetDecisionOf(String(buyer.party.id), currency, quoteAmountMinor, at);
+        if (!budget.ok) throw refuse(budget.denial.reasonCode, budget.denial.errors, budget.denial);
+        if (budget.decision.allowed !== true) {
+          /* 早期实测踩到的一个真实缺陷：这里曾经写成
+             `budgetRefusalOf(...).detail` —— 而 `denial()` 是把 extra
+             **摊平**在顶层返回的（`{ok, denied, reasonCode, errors, ...extra}`），
+             它没有 `detail` 字段。于是 `.detail` 恒为 undefined，`|| {}`
+             把 outcome / spentToday / policyId 全部丢掉：拒绝仍然发生，
+             但**为什么**被拒绝在返回里消失了。这不是一个"少几个字段"的
+             小事 —— §48 要求的正是"仅通过 canonical facts 解释为什么
+             这次没成"。因此这里直接用那个 denial 对象本身。 */
+          throw refuse(budgetRefusalOf(budget, 'prepare').reasonCode,
+            ['budget-does-not-allow-this-spend'], budgetRefusalOf(budget, 'prepare'));
+        }
+        faultPoint('after-purchase-budget');
+
+        /* ③ reservation（P22-3 的 canonical 形态，同一套列与状态机）────
+              operation: CREATED → RESERVED；reservation: ACTIVE。
+              缺省**不**开 enforceBudget：这一层刚刚在同一个锁里评估过，
+              再评估一次只会读到同一个快照。P22-4 的开关语义一个字不改。 */
+        db.prepare(SQL.insertOperation).run(
+          String(operationId), C.TX_STATE.CREATED, walletId, currency,
+          toSqlAmount(quoteAmountMinor, 'purchase-amount'), null, null,
+          key.key, fingerprint, Number(expiresAt.expiresAt), null, Number(rev), Number(at), Number(at)
+        );
+        const preg = C.assertTransactionTransition(C.TX_STATE.CREATED, C.TX_STATE.RESERVED);
+        if (!preg.ok) throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, preg.errors);
+        const movedOp = db.prepare(SQL.setOperationStatus).run(
+          C.TX_STATE.RESERVED, String(reservationId), null, null,
+          Number(rev), Number(at), String(operationId), C.TX_STATE.CREATED
+        );
+        if (Number(movedOp.changes) !== 1) {
+          throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['operation-transition-affected-no-row']);
+        }
+        const shape = C.validateReservation({
+          reservationId: String(reservationId),
+          operationId: String(operationId),
+          walletId: walletId,
+          currency: currency,
+          amountMinor: quoteAmountMinor,
+          idempotencyKey: key.key,
+          status: C.RESERVATION_STATE.ACTIVE,
+          expiresAt: Number(expiresAt.expiresAt)
+        });
+        if (!shape.ok) throw refuse(C.DENY_REASON.INVALID_AMOUNT, shape.errors);
+        db.prepare(SQL.insertReservation).run(
+          String(reservationId), String(operationId), walletId, currency,
+          toSqlAmount(quoteAmountMinor, 'purchase-amount'), C.RESERVATION_STATE.ACTIVE,
+          key.key, fingerprint, Number(expiresAt.expiresAt), null, null,
+          Number(rev), Number(at), Number(at)
+        );
+        faultPoint('after-purchase-reservation');
+        const sum = applyReservedCache(walletId, rev, at);
+
+        /* ④ 余额与可用量在**预留之后**再确认一次。applyReservedCache 自己
+              带有"Σ(ACTIVE) ≤ ledger 余额"的守卫，因此这一步的任何失败
+              都会抛出并整体回滚 —— 于是"预留成功但钱不够"不可能留库。 */
+        const availability = walletAvailability(db.prepare(SQL.selectWallet).get(walletId));
+        if (!availability.ok) {
+          throw refuse(C.DENY_REASON.WALLET_NOT_READY, ['wallet-integrity-failed'], { integrity: availability.problems });
+        }
+
+        /* ⑤ Purchase 行（RESERVED）。结算所需的最小快照写在这里 ────────
+              四个"目标 id"（purchase / quote / reservation / ledger tx）
+              都写下来，因此最终结算**不需要**再向调用方要任何东西。 */
+        const purchaseShape = C.validatePurchase({
+          purchaseId: String(purchaseId),
+          buyer: buyer.party,
+          recipient: recipient.party,
+          quoteId: quoteId,
+          reservationId: String(reservationId),
+          productId: String(p.product_id),
+          currency: currency,
+          amountMinor: quoteAmountMinor,
+          quoteKind: String(q.quote_kind),
+          fulfillment: String(fulfillment),
+          settledAssetKind: product.assetKind,
+          settledQuantity: expectedQuantity.quantity,
+          settledUnitName: product.unitName,
+          status: C.PURCHASE_STATE.RESERVED,
+          revision: Number(rev),
+          createdAt: Number(at),
+          updatedAt: Number(at)
+        });
+        if (!purchaseShape.ok) throw refuse(C.DENY_REASON.CATALOG_INPUT_NOT_STRUCTURED, purchaseShape.errors);
+
+        /* ── 先做一次**结构化**的引用唯一性检查，再 INSERT ──────────────
+           economy_purchases 上有两条 UNIQUE（quote_id 与 ledger_transaction_id），
+           它们是"一份报价只能被一条购买指向"这条性质的结构性一半（§51）。
+           但一个裸的 SQLite 约束异常（`UNIQUE constraint failed:
+           economy_purchases.quote_id`）**不是**一次可解释的拒绝：它没有
+           reasonCode、没有 detail，调用方拿到的是一个数据库错误，而不是
+           "这份报价已经被另一次购买用掉了"。因此这里在检查之后再 INSERT
+           （唯一索引是最后一道，不是唯一一道）—— 与 P22-5 的库存
+           "quantity >= ? 守卫 + CHECK" 同时保留两道是同一种做法。 */
+        const alreadyLinked = db.prepare(SQL.selectPurchaseByQuote).get(quoteId);
+        if (alreadyLinked) {
+          throw refuse(C.DENY_REASON.QUOTE_MISMATCH, ['this-quote-is-already-linked-to-a-purchase'], {
+            quoteId: quoteId,
+            existingPurchaseId: String(alreadyLinked.purchase_id),
+            existingPurchaseStatus: String(alreadyLinked.status),
+            oneQuoteToOneSuccessfulPurchase: true
+          });
+        }
+
+        const consent = {
+          quoteId: quoteId,
+          quoteKind: String(q.quote_kind),
+          settlementType: String(fulfillment),
+          amountMinor: C.serializeAmountMinor(quoteAmountMinor),
+          currency: currency,
+          units: units,
+          grantedQuantity: expectedQuantity.quantity,
+          recipientId: recipient.party == null ? null : String(recipient.party.id),
+          buyerId: String(buyer.party.id),
+          capturedAt: Number(at)
+        };
+
+        db.prepare(SQL.insertPurchase).run(
+          String(purchaseId), String(buyer.party.id), String(buyer.party.type),
+          recipient.party == null ? null : String(recipient.party.id),
+          recipient.party == null ? null : String(recipient.party.type),
+          String(p.product_id), String(p.store_id),
+          quoteId, String(reservationId),
+          /* ★ ledger_transaction_id 在 RESERVED 期间必须是 **NULL** ——
+             这里曾经传入派生出来的那个 id（因为它"反正要等于它"），
+             而那让 `ledger_transaction_id IS NOT NULL` 不再等于
+             "已结算"：一条**还没有花一分钱**的购买会看起来像"已经有一笔
+             交易了"。实测症状是 getPurchase() 在 Prepare 之后返回一个
+             非空的 ledgerTransactionId，而 settlement.spentAnything 仍是
+             false —— 两个字段互相矛盾。列在结算语句里被填上，那才是它
+             第一次成为事实的时刻。 */
+          null,
+          currency, toSqlAmount(quoteAmountMinor, 'purchase-amount'),
+          String(q.quote_kind), String(fulfillment),
+          product.assetKind == null ? null : String(product.assetKind),
+          Number(expectedQuantity.quantity),
+          product.unitName == null ? null : String(product.unitName),
+          C.PURCHASE_STATE.RESERVED, null, null,
+          C.RESERVATION_STATE.ACTIVE, Number(expiresAt.expiresAt), null,
+          JSON.stringify(consent),
+          key.key, fingerprint, Number(rev), Number(at), Number(at), null
+        );
+        faultPoint('after-purchase-created');
+
+        const purchaseRow = db.prepare(SQL.selectPurchase).get(String(purchaseId));
+        if (!purchaseRow) throw refuse(null, ['purchase-row-missing-after-insert']);
+
+        const result = {
+          domain: C.DOMAIN,
+          purchaseId: String(purchaseId),
+          purchaseStatus: C.PURCHASE_STATE.RESERVED,
+          buyerId: partyKeyOf(buyer.party.type, buyer.party.id),
+          recipientId: recipient.party == null ? null : partyKeyOf(recipient.party.type, recipient.party.id),
+          selfDirected: recipient.party == null,
+          productId: String(p.product_id),
+          storeId: String(p.store_id),
+          quoteId: quoteId,
+          quoteState: C.QUOTE_STATE.OPEN,
+          productBacked: true,
+          productProvenanceRelation: provenance,
+          reservationId: String(reservationId),
+          reservationState: C.RESERVATION_STATE.ACTIVE,
+          reservationExpiresAt: Number(expiresAt.expiresAt),
+          operationId: String(operationId),
+          operationStatus: C.TX_STATE.RESERVED,
+          walletId: walletId,
+          currency: currency,
+          amountMinor: C.serializeAmountMinor(quoteAmountMinor),
+          quoteKind: String(q.quote_kind),
+          settlementType: String(fulfillment),
+          settlementPrimitive: primitive.primitive,
+          assetKind: product.assetKind == null ? null : String(product.assetKind),
+          grantedQuantity: expectedQuantity.quantity,
+          unitName: product.unitName == null ? null : String(product.unitName),
+          /* 预期的那笔 ledger 交易 id（它还没有发生）。写出来是为了让
+             "这次购买最终会记在哪笔交易上"在 Prepare 之后就是可预测的，
+             而**不是**为了假装它已经发生 —— ledger_transaction_id 列在
+             RESERVED 期间仍然是 NULL。 */
+          expectedLedgerTransactionId: ledgerTx.id,
+          budget: {
+            outcome: budget.decision.outcome,
+            priority: budget.decision.priority,
+            policyId: budget.policyId,
+            spentTodayMinor: budget.decision.spentTodayMinor,
+            spentThisWeekMinor: budget.decision.spentThisWeekMinor,
+            spentThisMonthMinor: budget.decision.spentThisMonthMinor,
+            availableBalanceMinor: budget.decision.availableBalanceMinor,
+            /* ★ Prepare 的预算结论只是**解释性历史**，不是 capability
+               （§33）。最终使用的永远是 settlement 事务里最新的事实。 */
+            isACapability: false,
+            revalidatedAtSettlement: true
+          },
+          reservedBalanceMinor: C.serializeAmountMinor(sum.reservedMinor),
+          activeReservations: sum.activeCount,
+          revision: Number(rev),
+          at: Number(at),
+          idempotencyKey: key.key,
+          ledgerMutation: false,
+          inventoryMutation: false,
+          quoteConsumed: false
+        };
+
+        appendChange({
+          revision: Number(rev), kind: C.EVENT_TYPE.PURCHASE_CREATED,
+          entityId: String(purchaseId), transactionId: null, walletId: walletId, at: Number(at),
+          payload: {
+            domain: C.DOMAIN,
+            purchaseId: String(purchaseId),
+            purchaseStatus: C.PURCHASE_STATE.RESERVED,
+            buyerId: String(buyer.party.id),
+            recipientId: recipient.party == null ? null : String(recipient.party.id),
+            productId: String(p.product_id),
+            storeId: String(p.store_id),
+            quoteId: quoteId,
+            reservationId: String(reservationId),
+            currency: currency,
+            amountMinor: C.serializeAmountMinor(quoteAmountMinor),
+            settlementType: String(fulfillment),
+            grantedQuantity: expectedQuantity.quantity,
+            ledgerMutation: false,
+            inventoryMutation: false,
+            /* ★ 两条 Prepare 事件各写**两句**否认。为什么都要写全（而不是
+               各写一句）：只写一半的 payload 会让"这条事件有没有声称发货"
+               变成一个"字段存不存在"的问题，而 read 侧要么写
+               `=== false`（对缺字段的事件为 false ⇒ 断言无声失败），
+               要么写 `!== true`（对**任何**缺失都为 true ⇒ 断言永不失败）。
+               两种写法都不会失败得**有意义**。写全之后，`=== false` 是
+               一条真断言。 */
+            grantedAnything: false,
+            quoteConsumed: false
+          }
+        });
+        /* ★ 第二条事件**自己分配**一个 revision。P22-3 的纪律是"每一次
+           allocateRevision 恰好配一条 change 行"，而
+           economy_change_log.revision 是**主键** —— 两条事件共用同一个
+           数字会直接撞 UNIQUE 约束（开发期实测踩到，症状是一条
+           `UNIQUE constraint failed: economy_change_log.revision`）。
+           因此下面 result.revision 用的是**最后**那一个，而幂等行也用它：
+           它描述的是"这次 prepare 结束在哪一个 revision 上"。 */
+        const revReserved = allocateRevision();
+        appendChange({
+          revision: Number(revReserved), kind: C.EVENT_TYPE.PURCHASE_RESERVED,
+          entityId: String(purchaseId), transactionId: null, walletId: walletId, at: Number(at),
+          payload: {
+            domain: C.DOMAIN,
+            purchaseId: String(purchaseId),
+            purchaseStatus: C.PURCHASE_STATE.RESERVED,
+            reservationId: String(reservationId),
+            reservationState: C.RESERVATION_STATE.ACTIVE,
+            quoteId: quoteId,
+            quoteState: C.QUOTE_STATE.OPEN,
+            amountMinor: C.serializeAmountMinor(quoteAmountMinor),
+            reservedBalanceMinor: C.serializeAmountMinor(sum.reservedMinor),
+            /* ★ 两句逐字的自述（§5/§6）：Prepare 不发货、也不消费报价。 */
+            quoteConsumed: false,
+            grantedAnything: false,
+            ledgerMutation: false,
+            inventoryMutation: false
+          }
+        });
+        faultPoint('before-purchase-prepare-change-log');
+
+        result.revision = Number(revReserved);
+        writeOperationIdempotency(C.OPERATION_SCOPE.PURCHASE_PREPARE, key.key, fingerprint, {
+          operationId: String(operationId), reservationId: String(reservationId), transactionId: null
+        }, result, Number(revReserved), at);
+        faultPoint('before-purchase-prepare-commit');
+        committed = result;
+      });
+    } catch (error) {
+      const refusal = translateRefusal(error);
+      if (!refusal) throw error;
+      return refusal;
+    }
+
+    pruneOperationIdempotency(at);
+    logger('economy-purchase-prepared', {
+      purchaseId: committed.purchaseId,
+      reservationId: committed.reservationId,
+      quoteId: committed.quoteId,
+      buyerId: committed.buyerId,
+      currency: committed.currency,
+      amountMinor: committed.amountMinor,
+      revision: committed.revision
+    });
+    return { ok: true, replayed: false, idempotencyKey: key.key, result: committed };
+  }
+
+  /* ══════════════════════════════════════════════════════════════════
+     §28 · releaseReservationInTx —— "把钱还回去"的事务内核
+
+     它只是 P22-3 的 settleReservationInTx 在 (RELEASED, RELEASED) 上的
+     一次固定调用。抽出来只有一个理由：cancelPurchase 与 settlePurchase
+     的失败分支都需要**在同一个事务里**释放预留，而它们不该各自复制
+     一遍 plan 的字面值 —— 一份 plan、一个 scope、一条 change log 类型。
+     ══════════════════════════════════════════════════════════════════ */
+  function releaseReservationInTx(reservationId, at, hooks) {
+    return settleReservationInTx(reservationId, { reservationId: String(reservationId) }, {
+      scope: C.OPERATION_SCOPE.RELEASE,
+      reservationState: C.RESERVATION_STATE.RELEASED,
+      operationState: C.TX_STATE.RELEASED,
+      releaseReason: RELEASE_REASON.SYSTEM,
+      reasonCode: null,
+      changeKind: C.EVENT_TYPE.RESERVATION_RELEASED,
+      faultPrefix: 'after-purchaserelease',
+      logEvent: 'economy-reservation-released',
+      /* ★ 刻意**不**写 RELEASE scope 的幂等行：
+         · 幂等身份已经由 Purchase 那一侧持有（PURCHASE_SETTLE /
+           PURCHASE_CANCEL 的 scope），一次重试会在那里就被识别为
+           "回放"而根本走不到这里；
+         · 而如果这里也写一行 RELEASE scope 的记录，就会出现两个
+           "这次释放成没成"的答案，且其中一个的 key 是内部派生的 ——
+           调用方永远问不到它。这正是 P22-3 §18 要避免的那种含糊。 */
+      idempotency: null
+    }, { at: at, fingerprint: null, enforce: hooks && hooks.enforce, preCommit: hooks && hooks.preCommit });
+  }
+
+  /* ══════════════════════════════════════════════════════════════════
+     §28/§29/§32 · cancelPurchase（结算之前终止）
+
+     它只对**未完成**的 Purchase 生效，效果恰好两件：
+       release 活跃的 Reservation + Purchase 进入一个不可逆的终态。
+     它**不**产生任何 Ledger refund（钱从来没有离开钱包，§28）。
+
+     reasonCode 的映射（这是"为什么结束"的唯一答案）：
+       quote 已过期                  → RESERVATION_EXPIRED + Quote → EXPIRED
+       预留已过期                    → RESERVATION_EXPIRED
+       结算时预算变成 REQUIRE_APPROVAL → PURCHASE_REQUIRES_APPROVAL
+       其它结算时预算不允许            → 契约给出的那个 reasonCode
+       显式取消                       → null（没有"原因"这个东西）
+     ══════════════════════════════════════════════════════════════════ */
+  function cancelPurchase(input) {
+    requireOpen();
+    const o = input || {};
+    const purchaseId = o.purchaseId == null ? null : String(o.purchaseId);
+    if (!C.isEconomyId(C.PURCHASE_ID_KIND, purchaseId)) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['purchase-id-not-canonical'] };
+    }
+    const key = C.normalizeIdempotencyKey(o.idempotencyKey);
+    if (!key.ok) return { ok: false, denied: false, reasonCode: null, errors: key.errors };
+    if (o.reasonCode != null && !C.isDenyReasonCode(o.reasonCode)) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['reason-code-not-in-closed-set'] };
+    }
+
+    const row = db.prepare(SQL.selectPurchase).get(purchaseId);
+    if (!row) return { ok: false, denied: false, reasonCode: null, errors: ['purchase-not-found'] };
+
+    const fingerprint = purchaseFingerprint(C.OPERATION_SCOPE.PURCHASE_CANCEL, {
+      purchaseId: purchaseId,
+      reasonCode: o.reasonCode == null ? null : String(o.reasonCode)
+    });
+    const seen = operationIdempotencyLookup(C.OPERATION_SCOPE.PURCHASE_CANCEL, key.key, fingerprint);
+    if (seen.found && seen.conflict) return operationIdempotencyConflict(C.OPERATION_SCOPE.PURCHASE_CANCEL, key.key, seen);
+    if (seen.found) return { ok: true, replayed: true, idempotencyKey: key.key, result: seen.result };
+
+    /* 幂等之后才是终态检查 —— 与 commit/release 同一条纪律：一次成功的
+       取消，它的重放必须返回当初那个结果，而不是"已经终态"的拒绝。 */
+    if (String(row.status) !== C.PURCHASE_STATE.RESERVED) {
+      return denial(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['purchase-is-already-terminal'],
+        { purchaseStatus: String(row.status), reservationState: String(row.reservation_state) });
+    }
+    const gate = C.assertPurchaseTransition(C.PURCHASE_STATE.RESERVED, C.PURCHASE_STATE.RELEASED);
+    if (!gate.ok) return denial(C.DENY_REASON.TRANSITION_NOT_ALLOWED, gate.errors);
+
+    const at = clock();
+    const reasonCode = o.reasonCode == null ? null : String(o.reasonCode);
+    let committed = null;
+    try {
+      withTransaction(() => {
+        const locked = db.prepare(SQL.selectPurchase).get(purchaseId);
+        if (!locked) throw refuse(null, ['purchase-not-found']);
+        if (String(locked.status) !== C.PURCHASE_STATE.RESERVED) {
+          throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['purchase-is-already-terminal'],
+            { purchaseStatus: String(locked.status) });
+        }
+        const rev = allocateRevision();
+        /* ① 释放预留（P22-3 的同一条内核；预留如果已经是终态，这一步会
+              抛出 —— 那意味着另一个 writer 抢先动了它，整体回滚）。 */
+        const res = releaseReservationInTx(String(locked.reservation_id), at, null);
+        faultPoint('after-purchase-cancel-release');
+        /* ② Purchase → RELEASED（与释放同一个事务） */
+        const moved = db.prepare(SQL.setPurchaseTerminal).run(
+          C.PURCHASE_STATE.RELEASED, RELEASE_REASON.SYSTEM, reasonCode,
+          Number(rev), Number(at), purchaseId, C.PURCHASE_STATE.RESERVED
+        );
+        if (Number(moved.changes) !== 1) {
+          throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['purchase-transition-affected-no-row']);
+        }
+        faultPoint('after-purchase-cancel-status');
+
+        const result = {
+          domain: C.DOMAIN,
+          purchaseId: purchaseId,
+          purchaseStatus: C.PURCHASE_STATE.RELEASED,
+          buyerId: partyKeyOf(locked.buyer_type, locked.buyer_id),
+          recipientId: locked.recipient_id == null ? null : partyKeyOf(locked.recipient_type, locked.recipient_id),
+          quoteId: String(locked.quote_id),
+          reservationId: String(locked.reservation_id),
+          reservationState: C.RESERVATION_STATE.RELEASED,
+          currency: String(locked.currency),
+          amountMinor: C.serializeAmountMinor(fromSqlAmount(locked.amount_minor, 'purchase-amount')),
+          reasonCode: reasonCode,
+          releaseReason: RELEASE_REASON.SYSTEM,
+          ledgerTransactionId: null,
+          revision: Number(rev),
+          at: Number(at),
+          idempotencyKey: key.key,
+          reservedBalanceMinor: res.reservedBalanceMinor,
+          activeReservations: res.activeReservations,
+          /* ── §28 的三句自述 ────────────────────────────────────────
+             "钱还回去了"不等于"退了一笔款"：这次操作没有产生任何 ledger
+             事实，因为钱从来没有离开过钱包。 */
+          ledgerMutation: false,
+          refundIssued: false,
+          inventoryGranted: false,
+          quoteConsumed: false,
+          /* §58：Purchase 的取消 ≠ Quote 的取消。一份报价是否仍然可用
+             只由它自己的 state 与 expiresAt 决定。 */
+          quoteState: 'unchanged-by-this-operation'
+        };
+
+        appendChange({
+          revision: Number(rev), kind: C.EVENT_TYPE.PURCHASE_RELEASED,
+          entityId: purchaseId, transactionId: null, walletId: null, at: Number(at),
+          payload: {
+            domain: C.DOMAIN,
+            purchaseId: purchaseId,
+            purchaseStatus: C.PURCHASE_STATE.RELEASED,
+            reservationId: String(locked.reservation_id),
+            reservationState: C.RESERVATION_STATE.RELEASED,
+            quoteId: String(locked.quote_id),
+            currency: String(locked.currency),
+            amountMinor: C.serializeAmountMinor(fromSqlAmount(locked.amount_minor, 'purchase-amount')),
+            reasonCode: reasonCode,
+            ledgerMutation: false,
+            refundIssued: false,
+            inventoryGranted: false,
+            quoteConsumed: false
+          }
+        });
+        faultPoint('before-purchase-cancel-change-log');
+        writeOperationIdempotency(C.OPERATION_SCOPE.PURCHASE_CANCEL, key.key, fingerprint, {
+          operationId: null, reservationId: String(locked.reservation_id), transactionId: null
+        }, result, rev, at);
+        faultPoint('before-purchase-cancel-commit');
+        committed = result;
+      });
+    } catch (error) {
+      const refusal = translateRefusal(error);
+      if (!refusal) throw error;
+      return refusal;
+    }
+
+    pruneOperationIdempotency(at);
+    logger('economy-purchase-released', {
+      purchaseId: committed.purchaseId,
+      reservationId: committed.reservationId,
+      reasonCode: committed.reasonCode,
+      revision: committed.revision
+    });
+    return { ok: true, replayed: false, idempotencyKey: key.key, result: committed };
+  }
+
+  /* ══════════════════════════════════════════════════════════════════
+     §14 · settlePurchase —— 本阶段的核心
+
+     ★ 它恰好是**一个** SQLite 事务。事务里的顺序是刻意的，而且每一步
+     都被 J/K 组的故障注入点钉住：
+
+       BEGIN IMMEDIATE
+         re-read Purchase / Quote / Reservation / Wallet
+         revalidate（状态、时间、四元组一致性、商品不可变的交付形态）
+         Quote/预留已过期？            → 释放预留 + Purchase FAILED（同一事务）
+         evaluateBudgetInTx（**最新**规则，§30/§31/§33）
+           不允许                       → 释放预留 + Purchase FAILED/RELEASED
+         commitReservationInTx（预留 → COMMITTED；ledger transaction + entries）
+         buildPurchaseEntries（金额只来自 reservation 行）
+         commitLedgerTransactionInTx（同一个事务体，不是第二次提交）
+         Quote OPEN → CONSUMED
+         结算原语（INVENTORY → mutateInventoryInTx；COMPUTE → 同一条，
+                    因为 assetKind 决定了那是"额度"还是"物品"）
+         Purchase RESERVED → COMPLETED（completedAt 与 commit 同事务）
+         change log + 幂等行
+       COMMIT
+
+     为什么"预留先离开 ACTIVE"必须排在 ledger 之前：见 commitReservation
+     的说明（P22-2 的 applyDerivedBalances 守卫）。settlePurchase 沿用
+     **同一个**事务体，因此那条性质不是"这里也记得这样做"，而是"这里
+     调用的是同一份实现"。
+
+     失败的两种形态刻意分开：
+       · **瞬时**失败（余额不够、账本拒绝、注入的故障）→ 整个事务回滚，
+         Purchase 仍然 RESERVED，预留仍然 ACTIVE，可以用**另一个**幂等键
+         重试（§49）。绝不留下半完成状态。
+       · **确定性**失败（报价/预留已过期、预算不允许、结算形态不支持）
+         → 在同一个事务里"释放 + 终结"，返回一个具名拒绝。
+         §11/§32：REQUIRE_APPROVAL **不伪装**成 FAILED —— 它进入
+         RELEASED（"流程被放弃"）而不是 FAILED（"试过了、不成立"）。
+     ══════════════════════════════════════════════════════════════════ */
+  function settlePurchase(input) {
+    requireOpen();
+    const o = input || {};
+    const purchaseId = o.purchaseId == null ? null : String(o.purchaseId);
+    if (!C.isEconomyId(C.PURCHASE_ID_KIND, purchaseId)) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['purchase-id-not-canonical'] };
+    }
+    const key = C.normalizeIdempotencyKey(o.idempotencyKey);
+    if (!key.ok) return { ok: false, denied: false, reasonCode: null, errors: key.errors };
+    const now = o.now != null ? Number(o.now) : clock();
+    if (!Number.isSafeInteger(now) || now < 0) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['now-must-be-a-non-negative-safe-integer'] };
+    }
+
+    const row = db.prepare(SQL.selectPurchase).get(purchaseId);
+    if (!row) return { ok: false, denied: false, reasonCode: null, errors: ['purchase-not-found'] };
+
+    /* ── §40：指纹里**只有** purchaseId ────────────────────────────────
+       不是"我们决定不收金额"，而是**入参名单里根本没有金额**
+       （C.PURCHASE_SETTLE_INPUT_KEYS 恰好三个键）。于是"settle 时改价"
+       这句话在结构上不成立 —— 没有字段可以承载它。 */
+    const fingerprint = purchaseFingerprint(C.OPERATION_SCOPE.PURCHASE_SETTLE, { purchaseId: purchaseId });
+    const seen = operationIdempotencyLookup(C.OPERATION_SCOPE.PURCHASE_SETTLE, key.key, fingerprint);
+    if (seen.found && seen.conflict) return operationIdempotencyConflict(C.OPERATION_SCOPE.PURCHASE_SETTLE, key.key, seen);
+    if (seen.found) return { ok: true, replayed: true, idempotencyKey: key.key, result: seen.result };
+
+    if (String(row.status) !== C.PURCHASE_STATE.RESERVED) {
+      /* 已经完成的购买被再次 settle：回一个**终态冲突**而不是假装成功。
+         注意它不会是"第二次扣款"—— 见 §37 的结构性证明。
+         ★ `terminal: true` 是刻意的：调用方必须能一眼区分"这次请求不成立、
+         你可以改一改再来"与"这件事已经定局、不要再试了"。 */
+      return denial(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['purchase-is-already-terminal'],
+        {
+          terminal: true,
+          purchaseStatus: String(row.status),
+          completedAt: row.completed_at == null ? null : Number(row.completed_at)
+        });
+    }
+    const gate = C.assertPurchaseTransition(C.PURCHASE_STATE.RESERVED, C.PURCHASE_STATE.COMPLETED);
+    if (!gate.ok) return denial(C.DENY_REASON.TRANSITION_NOT_ALLOWED, gate.errors);
+
+    const at = now;
+    let committed = null;
+    try {
+      withTransaction(() => {
+        /* ── ① re-read 四个 canonical 事实 ──────────────────────────── */
+        const purchase = db.prepare(SQL.selectPurchase).get(purchaseId);
+        if (!purchase) throw refuse(null, ['purchase-not-found']);
+        if (String(purchase.status) !== C.PURCHASE_STATE.RESERVED) {
+          throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['purchase-is-already-terminal'],
+            { purchaseStatus: String(purchase.status) });
+        }
+        const quote = db.prepare(SQL.selectQuote).get(String(purchase.quote_id));
+        if (!quote) throw refuse(null, ['quote-not-found']);
+        const reservation = db.prepare(SQL.selectReservation).get(String(purchase.reservation_id));
+        if (!reservation) throw refuse(null, ['reservation-not-found']);
+        const wallet = db.prepare(SQL.selectWallet).get(String(reservation.wallet_id));
+        if (!wallet) throw refuse(null, ['wallet-not-found']);
+
+        /* ── ② §7：Product-backed 与四元组一致性（**每个可变属性**）────
+           settle 请求里没有这些字段，因此"它们不一致"只可能来自一次
+           被篡改或被外部工具改过的库 —— 那必须 fail closed。 */
+        const productRow = db.prepare(SQL.selectProduct).get(String(purchase.product_id));
+        if (!productRow) {
+          throw refuse(C.DENY_REASON.PRODUCT_NOT_FOUND, ['product-not-found'], { productId: String(purchase.product_id) });
+        }
+        const product = rowToProduct(productRow);
+        if (String(purchase.quote_id) !== String(quote.quote_id) ||
+          String(purchase.product_id) !== String(quote.product_id)) {
+          throw refuse(C.DENY_REASON.QUOTE_MISMATCH, ['purchase-does-not-point-at-the-quote-it-was-created-with']);
+        }
+        /* 交付形态必须与 purchase 冻结的那一个一致。fulfillment 是
+           Product 的**不可变**本体列（P22-5），因此这一条同时也是
+           "没有人偷偷换了这件商品的结算方式"。 */
+        if (String(product.fulfillment) !== String(purchase.settlement_type)) {
+          throw refuse(C.DENY_REASON.EFFECT_NOT_ALLOWED,
+            ['product-fulfillment-does-not-match-the-frozen-purchase-settlement-type'],
+            { purchaseSettlementType: String(purchase.settlement_type), productFulfillment: String(product.fulfillment) });
+        }
+        const quoteKind = String(quote.quote_kind);
+        if (String(purchase.quote_kind) !== quoteKind) {
+          throw refuse(C.DENY_REASON.QUOTE_MISMATCH, ['purchase-quote-kind-does-not-match-the-quote']);
+        }
+        /* settlement_type == "我把这份报价当作哪一种结算"。
+           契约里 QUOTE_SETTLEMENT_TYPE 把三个 quote kind 各自映到自己，
+           因此这个等式的成立是 P22-4 冻结表的结果，不是本阶段的约定。 */
+        if (String(quote.service_role) !== quoteKind) {
+          throw refuse(C.DENY_REASON.QUOTE_MISMATCH, ['quote-service-role-does-not-match-its-quote-kind'],
+            { quoteKind: quoteKind, serviceRole: String(quote.service_role) });
+        }
+        if (String(purchase.currency) !== String(quote.currency) || String(purchase.currency) !== String(reservation.currency)) {
+          throw refuse(C.DENY_REASON.QUOTE_MISMATCH, ['purchase-currency-does-not-match-the-quote-snapshot'],
+            { purchaseCurrency: String(purchase.currency), quoteCurrency: String(quote.currency) });
+        }
+        const purchaseAmount = fromSqlAmount(purchase.amount_minor, 'purchase-amount');
+        const reservationAmount = fromSqlAmount(reservation.amount_minor, 'reservation-amount');
+        if (purchaseAmount !== reservationAmount) {
+          throw refuse(C.DENY_REASON.INVALID_AMOUNT, ['purchase-amount-must-equal-the-reserved-amount'],
+            { purchaseAmountMinor: C.serializeAmountMinor(purchaseAmount), reservationAmountMinor: C.serializeAmountMinor(reservationAmount) });
+        }
+        /* 收件人 / 购买人：请求里根本没有这两个字段（§39），因此这里比的是
+           **两行持久化事实** —— purchase 与 quote。 */
+        if (String(purchase.buyer_id) !== String(quote.buyer_id) || String(purchase.buyer_type) !== String(quote.buyer_type)) {
+          throw refuse(C.DENY_REASON.QUOTE_MISMATCH, ['purchase-buyer-does-not-match-the-quote-buyer']);
+        }
+        const quoteRecipientId = quote.recipient_id == null ? null : String(quote.recipient_id);
+        const purchaseRecipientId = purchase.recipient_id == null ? null : String(purchase.recipient_id);
+        if (quoteRecipientId !== purchaseRecipientId) {
+          throw refuse(C.DENY_REASON.QUOTE_MISMATCH, ['purchase-recipient-does-not-match-the-quote-recipient']);
+        }
+        /* 结算原语 + 账户白名单：未知一律 fail closed，且必须在 Ledger
+           commit **之前**（§73）。 */
+        const primitive = C.settlementPrimitiveOfFulfillment(String(purchase.settlement_type));
+        if (!primitive.ok || primitive.primitive == null) {
+          throw refuse(C.DENY_REASON.PURCHASE_NOT_SUPPORTED,
+            ['this-settlement-type-has-no-atomic-primitive'], { settlementType: String(purchase.settlement_type) });
+        }
+        const tx = C.transactionTypeOfQuoteKind(quoteKind);
+        if (!tx.ok) throw refuse(C.DENY_REASON.EFFECT_NOT_ALLOWED, tx.errors);
+        const counterparty = purchaseCounterpartyOf(quoteKind);
+        if (!counterparty.ok) throw refuse(C.DENY_REASON.ACCOUNT_NOT_ALLOWED, counterparty.errors);
+
+        /* 结算目标：selfDirected ⇒ 买家自己收货；否则是报价上的收件人。 */
+        const targetId = purchaseRecipientId == null ? String(purchase.buyer_id) : purchaseRecipientId;
+        const targetType = purchaseRecipientId == null ? String(purchase.buyer_type) : String(purchase.recipient_type);
+        const target = partyInput(C.makePartyRef(targetType, targetId).party);
+        if (!target.ok) throw refuse(C.DENY_REASON.PARTY_NOT_ALLOWED, target.errors);
+
+        const expiresAtMs = Number(quote.expires_at);
+        const reservationExpiresAt = reservation.expires_at == null ? null : Number(reservation.expires_at);
+
+        /* ── ③ §29/§57：报价与预留在**结算这一刻**都必须仍然有效 ────────
+           "12:04 reserve 时有效"不是"12:06 可以按过期报价扣钱"的理由。
+           已经过期时**先终结再拒绝**：释放预留 + Purchase FAILED，
+           两者与"没有花钱、没有发货"处在同一个事务里。 */
+        const quoteExpired = expiresAtMs <= at;
+        const reservationExpired = reservationExpiresAt != null && reservationExpiresAt <= at;
+        if (quoteExpired || reservationExpired) {
+          const revRelease = allocateRevision();
+          releaseReservationInTx(String(purchase.reservation_id), at, null);
+          const rev = allocateRevision();
+          const moved = db.prepare(SQL.setPurchaseTerminal).run(
+            C.PURCHASE_STATE.FAILED, RELEASE_REASON.EXPIRED, C.DENY_REASON.RESERVATION_EXPIRED,
+            Number(rev), Number(at), purchaseId, C.PURCHASE_STATE.RESERVED
+          );
+          if (Number(moved.changes) !== 1) {
+            throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['purchase-transition-affected-no-row']);
+          }
+          /* 报价进入 EXPIRED 是它**自己的**状态机（P22-4 canonical 语义），
+             而"谁把它变成 EXPIRED 的"在这里只有一个答案。 */
+          let quoteMoved = null;
+          if (quoteExpired && String(quote.state) === C.QUOTE_STATE.OPEN) {
+            const qGate = C.assertQuoteTransition(C.QUOTE_STATE.OPEN, C.QUOTE_STATE.EXPIRED);
+            if (!qGate.ok) throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, qGate.errors);
+            quoteMoved = Number(db.prepare(SQL.setQuoteState).run(
+              C.QUOTE_STATE.EXPIRED, Number(rev), Number(at), String(purchase.quote_id), C.QUOTE_STATE.OPEN
+            ).changes) === 1;
+            if (quoteMoved) {
+              /* ★ QUOTE_EXPIRED 与 PURCHASE_FAILED 是**两条** change 行，
+                 因此各自需要**自己**的 revision（economy_change_log.revision
+                 是主键）。开发期实测踩到：两条共用 `rev` 会撞 UNIQUE 约束，
+                 而症状是"报价过期的整条路径抛错"。 */
+              const revQuote = allocateRevision();
+              appendChange({
+                revision: Number(revQuote), kind: C.EVENT_TYPE.QUOTE_EXPIRED,
+                entityId: String(purchase.quote_id), transactionId: null, walletId: null, at: Number(at),
+                payload: {
+                  domain: C.DOMAIN, quoteId: String(purchase.quote_id), quoteState: C.QUOTE_STATE.EXPIRED,
+                  expiredAtSettlement: true, purchaseId: purchaseId,
+                  ledgerMutation: false, inventoryMutation: false
+                }
+              });
+            }
+          }
+          appendChange({
+            revision: Number(rev), kind: C.EVENT_TYPE.PURCHASE_FAILED,
+            entityId: purchaseId, transactionId: null, walletId: String(reservation.wallet_id), at: Number(at),
+            payload: {
+              domain: C.DOMAIN,
+              purchaseId: purchaseId,
+              purchaseStatus: C.PURCHASE_STATE.FAILED,
+              reservationId: String(purchase.reservation_id),
+              reservationState: C.RESERVATION_STATE.RELEASED,
+              quoteId: String(purchase.quote_id),
+              quoteState: quoteMoved ? C.QUOTE_STATE.EXPIRED : String(quote.state),
+              reasonCode: C.DENY_REASON.RESERVATION_EXPIRED,
+              quoteExpiredAtSettlement: quoteExpired,
+              reservationExpiredAtSettlement: reservationExpired,
+              ledgerMutation: false,
+              refundIssued: false,
+              inventoryGranted: false
+            }
+          });
+          faultPoint('before-purchase-settle-commit');
+          committed = {
+            ok: false, denied: true, terminal: true,
+            reasonCode: C.DENY_REASON.RESERVATION_EXPIRED,
+            errors: [quoteExpired ? 'quote-is-past-its-expires-at' : 'reservation-is-past-its-expires-at'],
+            /* ★ 终局的两个状态写在**顶层**（detail 里也留一份给"完整原因"）：
+               `x.purchaseStatus` 是调用方读这个结果时第一件想做的事，而
+               把它埋在 detail 里会让每一个调用点都要先知道这个方法的形状
+               约定。形状一致比字段最少更重要。 */
+            purchaseStatus: C.PURCHASE_STATE.FAILED,
+            reservationState: C.RESERVATION_STATE.RELEASED,
+            quoteState: quoteMoved ? C.QUOTE_STATE.EXPIRED : String(quote.state),
+            ledgerMutation: false,
+            inventoryMutation: false,
+            refundIssued: false,
+            detail: {
+              purchaseId: purchaseId,
+              purchaseStatus: C.PURCHASE_STATE.FAILED,
+              reservationState: C.RESERVATION_STATE.RELEASED,
+              quoteState: quoteMoved ? C.QUOTE_STATE.EXPIRED : String(quote.state),
+              quoteExpiresAt: expiresAtMs,
+              reservationExpiresAt: reservationExpiresAt,
+              now: at,
+              ledgerMutation: false,
+              inventoryMutation: false
+            }
+          };
+          return;
+        }
+
+        /* ── ④ §30/§31/§33：Budget **最终**再评估（在写锁里，用最新事实）──
+           T1 prepare ALLOW + reserve；T2 另一笔购买落定；T3 settle A。
+           此时日/周/月窗口已经变了。预留保证的是"这笔钱不会被别的预留
+           花掉"，它**不**保证预算没有被别的已提交交易用掉。因此最终结算
+           必须同时满足"预留仍然有效"与"预算仍然允许"。 */
+        const budget = budgetDecisionOf(String(purchase.buyer_id), String(purchase.currency), purchaseAmount, at);
+        if (!budget.ok) {
+          const rev = allocateRevision();
+          releaseReservationInTx(String(purchase.reservation_id), at, null);
+          const moved = db.prepare(SQL.setPurchaseTerminal).run(
+            C.PURCHASE_STATE.FAILED, RELEASE_REASON.SYSTEM, budget.denial.reasonCode,
+            Number(rev), Number(at), purchaseId, C.PURCHASE_STATE.RESERVED
+          );
+          if (Number(moved.changes) !== 1) {
+            throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['purchase-transition-affected-no-row']);
+          }
+          appendChange({
+            revision: Number(rev), kind: C.EVENT_TYPE.PURCHASE_FAILED,
+            entityId: purchaseId, transactionId: null, walletId: String(reservation.wallet_id), at: Number(at),
+            payload: {
+              domain: C.DOMAIN, purchaseId: purchaseId, purchaseStatus: C.PURCHASE_STATE.FAILED,
+              reservationId: String(purchase.reservation_id), reservationState: C.RESERVATION_STATE.RELEASED,
+              reasonCode: budget.denial.reasonCode, budgetOutcome: null, budgetSystemFailure: true,
+              ledgerMutation: false, refundIssued: false, inventoryGranted: false
+            }
+          });
+          faultPoint('before-purchase-settle-commit');
+          committed = {
+            ok: false, denied: true, terminal: true,
+            reasonCode: budget.denial.reasonCode, errors: budget.denial.errors, detail: budget.denial.detail || {}
+          };
+          return;
+        }
+        if (budget.decision.allowed !== true) {
+          /* ★ REQUIRE_APPROVAL 走 RELEASED 而不是 FAILED（§11/§32）：
+             请求本身是合法的，只是规则要人点头 —— 而本阶段没有人能点头。
+             于是"流程被放弃"是准确的描述，"不成立"不是。 */
+          /* ★ 词表判错会**静默**走错分支，这是一个真实缺陷（开发期实测）：
+             这里曾经写 `budget.decision.outcome === C.APPROVAL.USER_APPROVAL_REQUIRED`，
+             而预算决策的 outcome 来自 **P22-4 的 BUDGET_DECISION**
+             （ALLOW / DENY / REQUIRE_APPROVAL），不是 P22-1 §4 的 APPROVAL
+             （AUTO_APPROVED / USER_APPROVAL_REQUIRED / DENIED）。两个词表
+             没有一个成员相同，因此那个比较恒为 false：需要批准的购买被
+             记成了 **FAILED**（"试过了、不成立"）而不是 RELEASED
+             （"流程被放弃"）—— 而 §11/§32 要求区分这两件事。 */
+          const needsApproval = budget.decision.outcome === C.BUDGET_DECISION.REQUIRE_APPROVAL;
+          const terminalState = needsApproval ? C.PURCHASE_STATE.RELEASED : C.PURCHASE_STATE.FAILED;
+          const reasonCode = needsApproval ? C.DENY_REASON.PURCHASE_REQUIRES_APPROVAL : budget.decision.reasonCode;
+          const rev = allocateRevision();
+          releaseReservationInTx(String(purchase.reservation_id), at, null);
+          const moved = db.prepare(SQL.setPurchaseTerminal).run(
+            terminalState, RELEASE_REASON.SYSTEM, reasonCode,
+            Number(rev), Number(at), purchaseId, C.PURCHASE_STATE.RESERVED
+          );
+          if (Number(moved.changes) !== 1) {
+            throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['purchase-transition-affected-no-row']);
+          }
+          appendChange({
+            revision: Number(rev),
+            kind: needsApproval ? C.EVENT_TYPE.PURCHASE_RELEASED : C.EVENT_TYPE.PURCHASE_FAILED,
+            entityId: purchaseId, transactionId: null, walletId: String(reservation.wallet_id), at: Number(at),
+            payload: {
+              domain: C.DOMAIN, purchaseId: purchaseId, purchaseStatus: terminalState,
+              reservationId: String(purchase.reservation_id), reservationState: C.RESERVATION_STATE.RELEASED,
+              reasonCode: reasonCode, budgetOutcome: budget.decision.outcome,
+              /* 逐字：本阶段**没有**创建任何待批准记录（§11）。 */
+              pendingApprovalRecordCreated: false,
+              ledgerMutation: false, refundIssued: false, inventoryGranted: false
+            }
+          });
+          faultPoint('before-purchase-settle-commit');
+          committed = {
+            ok: false, denied: true, terminal: true,
+            reasonCode: reasonCode,
+            errors: ['budget-does-not-allow-this-spend'],
+            purchaseStatus: terminalState,
+            reservationState: C.RESERVATION_STATE.RELEASED,
+            ledgerMutation: false,
+            inventoryMutation: false,
+            quoteConsumed: false,
+            refundIssued: false,
+            pendingApprovalRecordCreated: false,
+            detail: {
+              outcome: budget.decision.outcome,
+              priority: budget.decision.priority,
+              policyId: budget.policyId,
+              spentTodayMinor: budget.decision.spentTodayMinor,
+              spentThisWeekMinor: budget.decision.spentThisWeekMinor,
+              spentThisMonthMinor: budget.decision.spentThisMonthMinor,
+              availableBalanceMinor: budget.decision.availableBalanceMinor,
+              purchaseStatus: terminalState,
+              reservationState: C.RESERVATION_STATE.RELEASED,
+              pendingApprovalRecordCreated: false
+            }
+          };
+          return;
+        }
+        faultPoint('after-purchase-settle-budget');
+
+        /* ── ⑤ 预留 → COMMITTED，并写入 ledger transaction + entries ────
+           走的是 P22-3 的**同一个**事务体内核。它内部按顺序做：
+             reservation → COMMITTED、reserved 缓存 ← Σ(ACTIVE)、
+             commitLedgerTransactionInTx(...)、operation → COMMITTED。
+           任何一步抛错 → 整个结算回滚（预留在库外仍然是 ACTIVE）。 */
+        const entryShape = buildPurchaseEntries(wallet, reservation, counterparty.accountId);
+        if (!entryShape.ok) throw refuse(C.DENY_REASON.LEDGER_UNBALANCED, entryShape.errors);
+        const ledgerFingerprint = transactionFingerprint({
+          type: tx.type,
+          actor: C.makePartyRef(String(purchase.buyer_type), String(purchase.buyer_id)).party,
+          ownerId: String(purchase.buyer_id),
+          recipientId: purchaseRecipientId
+        }, entryShape.entries);
+
+        /* ★ 交易 id **在结算这一刻派生**，不从 purchase 行读。
+           原因是一个真实缺陷（开发期实测）：purchase 行上的
+           ledger_transaction_id 在 RESERVED 期间**必须是 NULL**（见
+           insertPurchase 那里的说明），因此在结算时读它会拿到 null，
+           而 commitReservationInTx 会以 `transaction-id-not-canonical`
+           拒绝 —— 一次永远无法完成的结算。派生值本身是确定的
+           （C.derivePurchaseLedgerTransactionId 只依赖 purchaseId），
+           因此"读"与"派生"必须得到同一个答案，而派生是唯一在两种状态下
+           都成立的那一个。 */
+        const settleTxId = C.derivePurchaseLedgerTransactionId(String(purchaseId));
+        if (!settleTxId.ok) throw refuse(null, settleTxId.errors);
+
+        const settlementCommit = commitReservationInTx(String(purchase.reservation_id), at, ledgerFingerprint, o, {
+          type: tx.type,
+          counterparty: counterparty.accountId,
+          transactionId: settleTxId.id,
+          actor: C.makePartyRef(String(purchase.buyer_type), String(purchase.buyer_id)).party,
+          entries: entryShape.entries,
+          /* ★ 幂等身份**只由 settlePurchase 写一次**（见函数末尾）。
+             commitReservationInTx 的 (scope, key) 写入在这里被关掉，理由是
+             一个具体的事实：operation_idempotency 的主键是
+             (scope, idempotency_key)，而 P22-4 给 INSERT 加了
+             `ON CONFLICT DO NOTHING`（"幂等记录是第一次执行的证据，
+             后来的重试没有权力覆盖它"）。
+             两条写入用同一个 (scope, key) 时，第二条会被**静默丢弃** ——
+             于是重放 settle 会拿到 commit 那一层的 result，而不是这次
+             购买的 result。开发期实测踩到：`settlePurchase` 的重放返回
+             `{ok:false}`（因为 commit 的 result 里没有 purchase 的那几个
+             字段）。一次写入、一个结果，才是幂等该有的样子。 */
+          idempotencyScope: null,
+          idempotencyKey: null,
+          ledgerIdempotencyKey: 'econ.purchase+' + String(purchaseId) + '+ledger',
+          callIdempotencyKey: key.key,
+          expectedAmountMinor: purchaseAmount
+        });
+        faultPoint('after-purchase-ledger');
+
+        /* ── ⑥ Quote → CONSUMED（OPEN → CONSUMED 是它唯一的一条出边）──── */
+        if (String(quote.state) !== C.QUOTE_STATE.OPEN) {
+          throw refuse(String(quote.state) === C.QUOTE_STATE.CONSUMED ? C.DENY_REASON.QUOTE_MISMATCH : C.DENY_REASON.QUOTE_EXPIRED,
+            ['quote-is-not-open-at-settlement'], { quoteState: String(quote.state) });
+        }
+        const qGate = C.assertQuoteTransition(C.QUOTE_STATE.OPEN, C.QUOTE_STATE.CONSUMED);
+        if (!qGate.ok) throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, qGate.errors);
+        const consumed = db.prepare(SQL.setQuoteState).run(
+          C.QUOTE_STATE.CONSUMED, Number(settlementCommit.revision), Number(at),
+          String(purchase.quote_id), C.QUOTE_STATE.OPEN
+        );
+        if (Number(consumed.changes) !== 1) {
+          throw refuse(C.DENY_REASON.QUOTE_MISMATCH, ['quote-consumption-affected-no-row']);
+        }
+        /* ── ★ 一次成功结算必须留下 QUOTE_CONSUMED ────────────────────────
+           这里曾经**只**改状态、不写事件（因为"ledger 那一条已经记过这笔
+           交易了"）—— 那是一个真实缺陷：P22-4 的事件词表里早就冻结了
+           QUOTE_CONSUMED，而审计要回答的是"这份报价**为什么**不再 OPEN"。
+           ledger 记的是钱，报价状态记的是命题被用掉；两件事各有一条事件，
+           合并会让"报价被消费"在 change log 里变得不可见。 */
+        const revQuoteConsumed = allocateRevision();
+        appendChange({
+          revision: Number(revQuoteConsumed), kind: C.EVENT_TYPE.QUOTE_CONSUMED,
+          entityId: String(purchase.quote_id), transactionId: String(settlementCommit.transactionId),
+          walletId: String(settlementCommit.walletId), at: Number(at),
+          payload: {
+            domain: C.DOMAIN,
+            quoteId: String(purchase.quote_id),
+            quoteState: C.QUOTE_STATE.CONSUMED,
+            purchaseId: purchaseId,
+            transactionId: String(settlementCommit.transactionId),
+            consumedByASinglePurchase: true,
+            ledgerMutation: true,
+            inventoryMutation: false
+          }
+        });
+        faultPoint('after-purchase-quote-consumed');
+
+        /* ── ⑦ 结算原语（§19/§20/§21/§22）──────────────────────────────
+           INVENTORY 与 COMPUTE_ENTITLEMENT **走的是同一条**原语：P22-5
+           已经用 economy_inventory 表达"已发生的拥有事实"，而 compute
+           额度的 assetKind 是 COMPUTE —— 于是"1000 computeUnit 的额度"
+           与"1 件物品"是同一种东西的两种单位。
+           刻意**不**新建 providerQuota / apiBalance / tokenBalance：
+           §21 明确禁止，而 computeUnit 是 P22-1 冻结的单位名。 */
+        const grantQuantity = Number(purchase.granted_quantity);
+        let settlementGrant = null;
+        if (grantQuantity > 0) {
+          const invCtx = {
+            owner: target,
+            productRow: productRow,
+            productId: String(purchase.product_id),
+            key: 'econ.purchase+' + String(purchaseId) + '+inventory',
+            fingerprint: fingerprint,
+            at: at,
+            /* 幂等身份由 Purchase 持有（见 releaseReservationInTx 的同一条
+               说明）：这里刻意**不**写第二行 inventory scope 的幂等记录，
+               否则"这次发放成没成"会有两个答案。 */
+            idempotency: null
+          };
+          settlementGrant = mutateInventoryInTx('grant', {
+            ownerId: targetId, productId: String(purchase.product_id), quantity: grantQuantity
+          }, invCtx);
+        }
+        faultPoint('after-purchase-settlement-grant');
+
+        /* ── ⑧ Purchase → COMPLETED（completedAt 与 commit 同事务）────── */
+        const movedPurchase = db.prepare(SQL.setPurchaseSettled).run(
+          C.PURCHASE_STATE.COMPLETED,
+          String(settlementCommit.transactionId),
+          settlementGrant ? String(settlementGrant.inventoryEntryId) : null,
+          Number(settlementCommit.revision), Number(at), Number(at),
+          purchaseId, C.PURCHASE_STATE.RESERVED
+        );
+        if (Number(movedPurchase.changes) !== 1) {
+          throw refuse(C.DENY_REASON.TRANSITION_NOT_ALLOWED, ['purchase-transition-affected-no-row']);
+        }
+        faultPoint('after-purchase-completed');
+
+        const settledView = rowToPurchase(db.prepare(SQL.selectPurchase).get(purchaseId));
+        const result = {
+          domain: C.DOMAIN,
+          purchaseId: purchaseId,
+          purchaseStatus: C.PURCHASE_STATE.COMPLETED,
+          buyerId: settledView.buyerId,
+          recipientId: settledView.recipientId,
+          selfDirected: settledView.selfDirected,
+          productId: settledView.productId,
+          storeId: settledView.storeId,
+          quoteId: settledView.quoteId,
+          quoteState: C.QUOTE_STATE.CONSUMED,
+          reservationId: settledView.reservationId,
+          reservationState: C.RESERVATION_STATE.COMMITTED,
+          operationId: String(settlementCommit.operationId),
+          operationStatus: C.TX_STATE.COMMITTED,
+          walletId: String(settlementCommit.walletId),
+          currency: settledView.currency,
+          amountMinor: C.serializeAmountMinor(settledView.amountMinor),
+          quoteKind: settledView.quoteKind,
+          settlementType: settledView.settlementType,
+          settlementPrimitive: primitive.primitive,
+          assetKind: settledView.settledAssetKind,
+          grantedQuantity: settledView.grantedQuantity,
+          unitName: settledView.unitName,
+          inventoryEntryId: settlementGrant ? String(settlementGrant.inventoryEntryId) : null,
+          ledgerTransactionId: String(settlementCommit.transactionId),
+          ledgerTransactionType: String(settlementCommit.transactionType),
+          counterparty: String(settlementCommit.counterparty),
+          /* 结算之后这个钱包的**派生**缓存值（来自 ledger，不是增量）。 */
+          buyerBalanceAfterMinor: (() => {
+            const touched = settlementCommit.ledger.wallets.find(w => String(w.walletId) === String(settlementCommit.walletId));
+            return touched ? String(touched.balanceMinor) : null;
+          })(),
+          reservedBalanceMinor: (() => {
+            const touched = settlementCommit.ledger.wallets.find(w => String(w.walletId) === String(settlementCommit.walletId));
+            return touched ? String(touched.reservedBalanceMinor) : null;
+          })(),
+          budget: {
+            outcome: budget.decision.outcome,
+            priority: budget.decision.priority,
+            policyId: budget.policyId,
+            /* ★ 这是**最终**结论用的那个快照，不是 Prepare 时的历史。 */
+            evaluatedAtSettlement: true,
+            spentTodayMinor: budget.decision.spentTodayMinor,
+            spentThisWeekMinor: budget.decision.spentThisWeekMinor,
+            spentThisMonthMinor: budget.decision.spentThisMonthMinor,
+            availableBalanceMinor: budget.decision.availableBalanceMinor
+          },
+          revision: Number(settlementCommit.revision),
+          at: Number(at),
+          idempotencyKey: key.key,
+          ledgerMutation: true,
+          inventoryMutation: !!settlementGrant,
+          quoteConsumed: true,
+          reservationCommitted: true,
+          purchaseCompleted: true,
+          /* 四句逐字的否认（§17/§18/§62/§63）。 */
+          providerMutation: false,
+          paymentMutation: false,
+          memoryMutation: false,
+          relationshipMutation: false,
+          storeIsAMerchant: false,
+          amountSource: C.PURCHASE_AMOUNT_SOURCE
+        };
+
+        /* ★ 高层事件用**它自己**的 revision（`settlementCommit.revision`
+           已经被 RESERVATION_COMMITTED 那条 change 行用掉了，而
+           economy_change_log.revision 是主键）。这不是记账事实的第二个
+           版本号 —— canonical 记账事实的 revision 仍然是 ledger 那一条；
+           这里分配的是"这次购买结束在哪个 revision 上"。 */
+        const revCompleted = allocateRevision();
+        result.revision = Number(revCompleted);
+        appendChange({
+          revision: Number(revCompleted), kind: C.EVENT_TYPE.PURCHASE_COMPLETED,
+          entityId: purchaseId, transactionId: String(settlementCommit.transactionId),
+          walletId: String(settlementCommit.walletId), at: Number(at),
+          payload: {
+            domain: C.DOMAIN,
+            purchaseId: purchaseId,
+            purchaseStatus: C.PURCHASE_STATE.COMPLETED,
+            buyerId: String(purchase.buyer_id),
+            recipientId: purchaseRecipientId,
+            productId: String(purchase.product_id),
+            storeId: purchase.store_id == null ? null : String(purchase.store_id),
+            quoteId: String(purchase.quote_id),
+            quoteState: C.QUOTE_STATE.CONSUMED,
+            reservationId: String(purchase.reservation_id),
+            reservationState: C.RESERVATION_STATE.COMMITTED,
+            transactionId: String(settlementCommit.transactionId),
+            transactionType: String(settlementCommit.transactionType),
+            counterparty: String(settlementCommit.counterparty),
+            currency: String(purchase.currency),
+            amountMinor: C.serializeAmountMinor(purchaseAmount),
+            settlementType: String(purchase.settlement_type),
+            settlementPrimitive: primitive.primitive,
+            assetKind: settledView.settledAssetKind,
+            grantedQuantity: settledView.grantedQuantity,
+            unitName: settledView.unitName,
+            inventoryEntryId: settlementGrant ? String(settlementGrant.inventoryEntryId) : null,
+            ledgerMutation: true,
+            inventoryMutation: !!settlementGrant,
+            providerMutation: false,
+            paymentMutation: false,
+            memoryMutation: false,
+            relationshipMutation: false,
+            storeIsAMerchant: false
+          }
+        });
+        faultPoint('before-purchase-settle-change-log');
+
+        /* Purchase 自己的幂等行在**这里**写（scope = PURCHASE_SETTLE），
+           而且上面 commitReservationInTx 的幂等写入被刻意关掉了
+           （见那里的说明）：一个请求恰好一行、一个结果。 */
+        writeOperationIdempotency(C.OPERATION_SCOPE.PURCHASE_SETTLE, key.key, fingerprint, {
+          operationId: String(settlementCommit.operationId),
+          reservationId: String(purchase.reservation_id),
+          transactionId: String(settlementCommit.transactionId)
+        }, result, Number(settlementCommit.revision), at);
+        faultPoint('before-purchase-settle-commit');
+        committed = result;
+      });
+    } catch (error) {
+      const refusal = translateRefusal(error);
+      if (!refusal) throw error;
+      return refusal;
+    }
+
+    /* ── 结算的**两种结局**共用同一个出口形状 ────────────────────────────
+       ★ 一个真实的 API 形状缺陷（开发期实测踩到）：成功路径返回
+       `{ok:true, replayed:false, idempotencyKey, result}`，而"已经在事务里
+       终结这笔购买"的三条路径（报价/预留过期、预算 DENY、预算
+       REQUIRE_APPROVAL）把结果写进 `committed` 之后走到同一个出口 ——
+       于是它们在 `result` 里被包了一层 `ok:true`。同一个方法对同一类问题
+       给出两种形状，调用方必须写 `res.result || res`，而任何一处漏写都会
+       **静默**读到 `undefined`（`res.reasonCode` 与 `res.terminal` 都是
+       undefined）—— 这是最难查的一类 bug。
+
+       现在终局路径在最外层**直接返回它自己**，成功路径才返回包装。
+       形状由"这件事是不是成功了"决定，而不由"它是在哪一行被决定的"决定。 */
+    if (committed && committed.terminal === true) {
+      pruneOperationIdempotency(at);
+      pruneIdempotency(at);
+      logger('economy-purchase-settle-refused', {
+        purchaseId: purchaseId,
+        reasonCode: committed.reasonCode,
+        purchaseStatus: committed.detail ? committed.detail.purchaseStatus : null
+      });
+      return committed;
+    }
+
+    pruneOperationIdempotency(at);
+    pruneIdempotency(at);
+    logger('economy-purchase-settled', {
+      purchaseId: committed.purchaseId,
+      transactionId: committed.ledgerTransactionId,
+      reservationId: committed.reservationId,
+      quoteId: committed.quoteId,
+      amountMinor: committed.amountMinor,
+      grantedQuantity: committed.grantedQuantity,
+      settlementPrimitive: committed.settlementPrimitive,
+      revision: committed.revision
+    });
+    return { ok: true, replayed: false, idempotencyKey: key.key, result: committed };
+  }
 
   /* ══════════════════════════════════════════════════════════════════
      P22-4 · 评估完整性（§17 fail closed 的落点）
@@ -6723,6 +8862,154 @@ function createEconomyStore(deps) {
     for (const row of db.prepare(SQL.selectInventoryAll).all()) {
       problems.push.apply(problems, inventoryProblemsOf(row));
     }
+    for (const row of db.prepare(SQL.selectPurchasesAll).all()) {
+      problems.push.apply(problems, purchaseProblemsOf(row));
+    }
+    return problems;
+  }
+
+  /* ══════════════════════════════════════════════════════════════════
+     P22-6 · 结算完整性（§48 fail closed 的落点）
+
+     与 P22-4/P22-5 的 *ProblemsOf 同款：每一行的**自述**必须与它引用的
+     事实一致。任何一条不成立即"这次购买这一面不可信"，而不可信必须
+     fail closed。
+     ══════════════════════════════════════════════════════════════════ */
+  function purchaseProblemsOf(row) {
+    const problems = [];
+    const id = String(row.purchase_id);
+    const status = String(row.status);
+    const push = (msg) => problems.push(id + ':' + msg);
+
+    if (!C.isEconomyId(C.PURCHASE_ID_KIND, id)) push('not-a-canonical-purchase-id');
+    if (!C.isPurchaseState(status)) { push('status-not-in-closed-set'); return problems; }
+    if (!C.isFulfillment(row.settlement_type)) push('settlement-type-not-in-closed-set');
+    if (!C.isQuoteKind(row.quote_kind)) push('quote-kind-not-in-closed-set');
+
+    /* 身份分离：purchaseId 不得等于它引用的任何一件事的 id（§3）。 */
+    if (String(row.quote_id) === id) push('purchase-id-equals-its-quote-id');
+    if (String(row.reservation_id) === id) push('purchase-id-equals-its-reservation-id');
+    if (row.ledger_transaction_id != null && String(row.ledger_transaction_id) === id) {
+      push('purchase-id-equals-its-ledger-transaction-id');
+    }
+
+    /* 引用必须存在。 */
+    if (!db.prepare(SQL.selectQuote).get(String(row.quote_id))) push('quote-row-missing');
+    if (!db.prepare(SQL.selectReservation).get(String(row.reservation_id))) push('reservation-row-missing');
+    if (!db.prepare(SQL.selectProduct).get(String(row.product_id))) push('product-row-missing');
+    if (row.store_id != null && !db.prepare(SQL.selectStore).get(String(row.store_id))) push('store-row-missing');
+
+    /* 一个收件人与买家**相同**的购买是一个读面上无法回答"给谁"的记录。 */
+    if (row.recipient_id != null &&
+      String(row.recipient_id) === String(row.buyer_id) &&
+      String(row.recipient_type) === String(row.buyer_type)) {
+      push('recipient-equals-the-buyer');
+    }
+
+    /* 经济内容：金额与交付量只能是**非负安全整数**，而金额以原子单位存。 */
+    let amountMinor = null;
+    try { amountMinor = fromSqlAmount(row.amount_minor, 'purchase-amount'); }
+    catch (_) { push('amount-is-not-a-canonical-non-negative-safe-integer'); }
+    const granted = Number(row.granted_quantity);
+    if (!Number.isSafeInteger(granted) || granted < 0) push('granted-quantity-is-not-a-non-negative-safe-integer');
+    if (String(row.settlement_type) === C.FULFILLMENT.SERVICE_EXECUTION && granted !== 0) {
+      push('service-settlement-must-not-grant-inventory');
+    }
+    if (String(row.settlement_type) !== C.FULFILLMENT.SERVICE_EXECUTION && granted <= 0) {
+      /* 非 service 的交付形态必然产生一个正数的交付量：一份"发了 0 个"
+         的已完成购买与"没发"在读面上无法区分。 */
+      push('a-non-service-settlement-must-grant-a-positive-quantity');
+    }
+    if (row.asset_kind != null && !C.isAssetKind(row.asset_kind)) push('asset-kind-not-in-closed-set');
+    if (row.unit_name != null && !C.isUnitName(row.unit_name)) push('unit-name-not-canonical');
+    if (row.asset_kind == null && String(row.settlement_type) !== C.FULFILLMENT.SERVICE_EXECUTION) {
+      push('a-fulfillment-that-produces-inventory-must-name-an-asset-kind');
+    }
+
+    /* consent 快照必须可解析（它是"这次购买是什么"在它自己那一侧的记录）。 */
+    if (row.consent_snapshot != null) {
+      try { JSON.parse(String(row.consent_snapshot)); }
+      catch (_) { push('consent-snapshot-is-not-valid-json'); }
+    }
+
+    /* 预留列的自述。 */
+    if (String(row.reservation_state) !== C.RESERVATION_STATE.ACTIVE) {
+      push('reservation-state-at-prepare-must-be-active');
+    }
+
+    const completed = status === C.PURCHASE_STATE.COMPLETED;
+    if (completed) {
+      if (row.ledger_transaction_id == null) { push('completed-without-a-ledger-transaction'); return problems; }
+      const txId = String(row.ledger_transaction_id);
+      const tx = db.prepare(SQL.selectTransaction).get(txId);
+      if (!tx) { push('completed-ledger-transaction-missing'); return problems; }
+      if (String(tx.state) !== C.TX_STATE.COMMITTED) push('completed-with-an-uncommitted-ledger-transaction');
+      /* ★ 交易 id 必须**确定性地**派生自 purchaseId：这一条把"这笔购买
+         的交易"从"某笔交易"变成一个可独立验证的事实。 */
+      const derived = C.derivePurchaseLedgerTransactionId(id);
+      if (!derived.ok || String(derived.id) !== txId) {
+        push('completed-ledger-transaction-id-is-not-the-derived-one');
+      }
+      const expectedType = C.transactionTypeOfQuoteKind(row.quote_kind);
+      if (expectedType.ok && String(tx.tx_type) !== String(expectedType.type)) {
+        push('completed-with-a-ledger-transaction-of-the-wrong-type');
+      }
+      const byTx = db.prepare(SQL.selectPurchaseByLedgerTransaction).get(txId);
+      if (!byTx || String(byTx.purchase_id) !== id) {
+        push('completed-but-its-transaction-points-at-another-purchase');
+      }
+      const quoteRow = db.prepare(SQL.selectQuote).get(String(row.quote_id));
+      if (!quoteRow || String(quoteRow.state) !== C.QUOTE_STATE.CONSUMED) push('completed-without-consuming-its-quote');
+      const resRow = db.prepare(SQL.selectReservation).get(String(row.reservation_id));
+      if (!resRow || String(resRow.status) !== C.RESERVATION_STATE.COMMITTED) {
+        push('completed-without-committing-its-reservation');
+      } else if (String(resRow.transaction_id == null ? '' : resRow.transaction_id) !== txId) {
+        push('completed-but-the-reservation-points-at-another-transaction');
+      }
+      if (row.completed_at == null || !Number.isSafeInteger(Number(row.completed_at))) {
+        push('completed-without-a-completed-at');
+      } else if (Number(row.completed_at) !== Number(row.updated_at)) {
+        /* completedAt 与成功的 commit 是**同一刻**：两者分开会制造
+           "它什么时候完成的"两个答案。 */
+        push('completed-at-does-not-match-the-update-that-completed-it');
+      }
+      if (row.reason_code != null) push('completed-with-a-reason-code');
+      if (row.release_reason != null) push('completed-with-a-release-reason');
+      problems.push.apply(problems, inventorySettlementProblemsOf({
+        status: status,
+        settlementType: String(row.settlement_type),
+        settledQuantity: granted,
+        settledAssetKind: row.asset_kind == null ? null : String(row.asset_kind),
+        recipientId: row.recipient_id == null ? String(row.buyer_id) : String(row.recipient_id),
+        productId: String(row.product_id),
+        inventoryEntryId: row.inventory_entry_id == null ? null : String(row.inventory_entry_id)
+      }));
+    } else {
+      /* 未完成的购买**不许**留下任何结算痕迹（§14"禁止任何半完成状态"）。 */
+      if (row.ledger_transaction_id != null) push('not-completed-but-claims-a-ledger-transaction');
+      if (row.completed_at != null) push('not-completed-but-has-a-completed-at');
+      if (row.inventory_entry_id != null) push('not-completed-but-claims-an-inventory-entry');
+      const quoteRow = db.prepare(SQL.selectQuote).get(String(row.quote_id));
+      if (quoteRow && String(quoteRow.state) === C.QUOTE_STATE.CONSUMED) {
+        push('not-completed-but-its-quote-was-consumed');
+      }
+      const resRow = db.prepare(SQL.selectReservation).get(String(row.reservation_id));
+      if (resRow && String(resRow.status) === C.RESERVATION_STATE.COMMITTED) {
+        push('not-completed-but-its-reservation-was-committed');
+      }
+      if (status === C.PURCHASE_STATE.RESERVED) {
+        /* 一条 RESERVED 的购买必须有一笔**活跃**的预留，反之就是一条
+           "锁已经没了却还说自己锁着"的记录。 */
+        if (!resRow || String(resRow.status) !== C.RESERVATION_STATE.ACTIVE) push('reserved-without-an-active-reservation');
+        if (row.release_reason != null) push('reserved-with-a-release-reason');
+        if (row.reason_code != null) push('reserved-with-a-reason-code');
+      }
+      if (status === C.PURCHASE_STATE.RELEASED || status === C.PURCHASE_STATE.FAILED) {
+        if (resRow && String(resRow.status) === C.RESERVATION_STATE.ACTIVE) {
+          push('terminal-but-its-reservation-is-still-active');
+        }
+      }
+    }
     return problems;
   }
 
@@ -6764,7 +9051,9 @@ function createEconomyStore(deps) {
       wallets: 0, transactions: 0, entries: 0, changes: 0, operations: 0, reservations: 0,
       activeReservations: 0, budgetPolicies: 0, activeBudgetPolicies: 0, quotes: 0, openQuotes: 0,
       stores: 0, activeStores: 0, products: 0, activeProducts: 0,
-      inventoryEntries: 0, inventoryTotalQuantity: 0
+      inventoryEntries: 0, inventoryTotalQuantity: 0,
+      purchases: 0, reservedPurchases: 0, completedPurchases: 0,
+      releasedPurchases: 0, failedPurchases: 0
     };
     let revision = 0;
     let schema = ECONOMY_SCHEMA_VERSION;
@@ -6792,7 +9081,14 @@ function createEconomyStore(deps) {
           products: countProducts(),
           activeProducts: countProductsByStatus(C.PRODUCT_STATUS.ACTIVE),
           inventoryEntries: countInventory(),
-          inventoryTotalQuantity: totalInventoryQuantity()
+          inventoryTotalQuantity: totalInventoryQuantity(),
+          /* P22-6：四个按状态分的计数。它们是"现在有几笔购买处在哪个阶段"
+             的唯一观测口，而 0 绝不等于"没有人买过"（那是 purchases 的事）。 */
+          purchases: countPurchases(),
+          reservedPurchases: countPurchasesByStatus(C.PURCHASE_STATE.RESERVED),
+          completedPurchases: countPurchasesByStatus(C.PURCHASE_STATE.COMPLETED),
+          releasedPurchases: countPurchasesByStatus(C.PURCHASE_STATE.RELEASED),
+          failedPurchases: countPurchasesByStatus(C.PURCHASE_STATE.FAILED)
         };
         revision = getRevision();
         schema = Number(readMeta(META_SCHEMA) || ECONOMY_SCHEMA_VERSION);
@@ -6878,7 +9174,34 @@ function createEconomyStore(deps) {
       inventoryIsNotABalance: true,
       inventoryUniqueItemsModelled: C.INVENTORY_UNIQUE_ITEMS_MODELLED,
       aGrantIsNotAPurchase: true,
-      purchaseIsNotImplementedInThisPhase: true
+      /* ── P22-6：这几句是**目录与购买之间**那条界线的自述。上面那句
+         `purchaseIsNotImplementedInThisPhase` 在 P22-5 是真的，而本阶段
+         第一次让它变成假的 —— 因此它必须被**替换**而不是被保留：
+         一个恒为 true 的字段在它变成 false 的那一天不会自己消失。 */
+      purchaseImplemented: true,
+      purchaseIsNotALedgerTransaction: true,
+      purchaseIsNotAReservation: true,
+      purchaseIsNotAQuote: true,
+      purchaseCanonical: 'sqlite-purchases',
+      purchaseSettlementIsOneTransaction: C.PURCHASE_SETTLEMENT_IS_ONE_TRANSACTION,
+      purchaseAmountSource: C.PURCHASE_AMOUNT_SOURCE,
+      purchaseRequiresABudgetAllow: C.PURCHASE_PREPARE_REQUIRES_BUDGET_ALLOW,
+      purchaseRevalidatesBudgetAtSettlement: C.PURCHASE_SETTLE_REVALIDATES_BUDGET,
+      purchaseRewritesHistoricalQuotes: C.PURCHASE_REWRITES_HISTORICAL_QUOTES,
+      purchaseCancelIssuesARefund: C.PURCHASE_CANCEL_PRODUCES_A_LEDGER_REFUND,
+      purchaseCancelCancelsTheQuote: C.PURCHASE_CANCEL_CANCELS_THE_QUOTE,
+      purchaseHasRefund: C.PURCHASE_HAS_REFUND,
+      quoteConsumptionIsPartial: C.PURCHASE_QUOTE_CONSUMPTION_IS_PARTIAL,
+      purchaseHasCartQuantity: C.PURCHASE_HAS_CART_QUANTITY,
+      purchaseCreatesPendingApprovalRecords: C.PURCHASE_CREATES_PENDING_APPROVAL_RECORDS,
+      purchaseExposesHttpMutation: C.PURCHASE_EXPOSES_HTTP_MUTATION,
+      purchaseSettlementReadsMutableProductFields: C.PURCHASE_SETTLEMENT_MAY_READ_MUTABLE_PRODUCT_FIELDS,
+      purchaseTouchesProvider: C.PURCHASE_TOUCHES_PROVIDER,
+      purchaseTouchesPayment: C.PURCHASE_TOUCHES_PAYMENT,
+      purchaseTouchesMemory: C.PURCHASE_TOUCHES_MEMORY,
+      purchaseTouchesRelationship: C.PURCHASE_TOUCHES_RELATIONSHIP,
+      storeIsAMerchant: false,
+      walletDerivedCacheRebuiltAtSettlement: true
     };
   }
 
@@ -6968,7 +9291,8 @@ function createEconomyStore(deps) {
       OPERATIONS: OPERATIONS_TABLE, RESERVATIONS: RESERVATIONS_TABLE,
       OPERATION_IDEMPOTENCY: OPERATION_IDEMPOTENCY_TABLE,
       BUDGET_POLICIES: BUDGET_POLICIES_TABLE, QUOTES: QUOTES_TABLE,
-      STORES: STORES_TABLE, PRODUCTS: PRODUCTS_TABLE, INVENTORY: INVENTORY_TABLE
+      STORES: STORES_TABLE, PRODUCTS: PRODUCTS_TABLE, INVENTORY: INVENTORY_TABLE,
+      PURCHASES: PURCHASES_TABLE
     }),
     META_KEYS: Object.freeze({
       SCHEMA: META_SCHEMA, REVISION: META_REVISION,
@@ -7079,6 +9403,24 @@ function createEconomyStore(deps) {
     serializeInventoryEntry: serializeInventoryEntry,
     productProvenanceOf: productProvenanceOf,
 
+    /* ── P22-6：Purchase 编排 + 原子结算 ────────────────────────────────
+       写的一半（preparePurchase / settlePurchase / cancelPurchase）与
+       P22-3/P22-4/P22-5 的所有 mutation 同级：只对同进程调用方开放，
+       **不在任何 HTTP 路由上**（boundary B16 逐名断言，§60）。
+       读的一半（getPurchase / listPurchases / serializePurchase）可以被
+       HTTP 只读面使用。
+
+       ★ 刻意**没有** refundPurchase / reversePurchase / chargeback（§59）：
+       一次 COMPLETED 的购买是不可变的历史，退款将来必须是一条新的
+       补偿性经济操作，而不是对旧事实的改写。 */
+    preparePurchase: preparePurchase,
+    settlePurchase: settlePurchase,
+    cancelPurchase: cancelPurchase,
+    getPurchase: getPurchase,
+    listPurchases: listPurchases,
+    serializePurchase: serializePurchase,
+    purchaseSettlementOf: purchaseSettlementOf,
+
     /* 观测 */
     health: health,
     isDegraded: isDegraded,
@@ -7108,6 +9450,13 @@ function createEconomyStore(deps) {
       productProblemsOf: productProblemsOf,
       inventoryProblemsOf: inventoryProblemsOf,
       quoteProvenanceProblemsOf: quoteProvenanceProblemsOf,
+      purchaseProblemsOf: purchaseProblemsOf,
+      purchaseFingerprint: purchaseFingerprint,
+      budgetDecisionOf: budgetDecisionOf,
+      buildPurchaseEntries: buildPurchaseEntries,
+      /* 事务深度**只读**观测口：测试用它证明"结算发生在恰好一条事务里"
+         不是一句注释。它没有任何生产分支依赖它。 */
+      transactionDepth: transactionDepth,
       economyIntegrityCheck: economyIntegrityCheck,
       spendingWindowBounds: spendingWindowBounds,
       SQL: SQL
@@ -7125,7 +9474,8 @@ module.exports.tables = Object.freeze({
   OPERATIONS: OPERATIONS_TABLE, RESERVATIONS: RESERVATIONS_TABLE,
   OPERATION_IDEMPOTENCY: OPERATION_IDEMPOTENCY_TABLE,
   BUDGET_POLICIES: BUDGET_POLICIES_TABLE, QUOTES: QUOTES_TABLE,
-  STORES: STORES_TABLE, PRODUCTS: PRODUCTS_TABLE, INVENTORY: INVENTORY_TABLE
+  STORES: STORES_TABLE, PRODUCTS: PRODUCTS_TABLE, INVENTORY: INVENTORY_TABLE,
+  PURCHASES: PURCHASES_TABLE
 });
 module.exports.releaseReason = RELEASE_REASON;
 module.exports.maxInventoryQuantity = MAX_INVENTORY_QUANTITY;

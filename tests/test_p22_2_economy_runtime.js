@@ -318,9 +318,18 @@ async function httpGroup() {
     security.body.economyPolicy.writesExposed.length === 0 &&
     security.body.economyPolicy.mintingExposed === false,
     security.body.economyPolicy);
-  check('C15 /security 把"够不到的路径"写成字段（topup / purchase / payment / provider / mint / burn / transfer）',
-    ['topup', 'purchase', 'payment', 'provider', 'mint', 'burn', 'transfer'].every(k =>
-      security.body.economyPolicy.unreachable.some(p => p.indexOf('/economy/' + k) === 0)),
+  check('C15 /security 的 unreachable 写出 topup / payment / provider / mint / burn / transfer，并把购买写形态逐条列进去',
+    ['topup', 'payment', 'provider', 'mint', 'burn', 'transfer'].every(k =>
+      security.body.economyPolicy.unreachable.some(p => p.indexOf('/economy/' + k) === 0)) &&
+    /* ★ P22-6 把 `/economy/purchase` 从这份名单里**移走**了（它现在是一条
+       真实的只读路由）。一条不再为真的声明，它的正确归宿不是留着，而是
+       换成**真正**不可达的那些写形态：prepare / settle / buy / cancel /
+       refund。这里同时做**反向**断言，证明它确实被移走了 —— 否则"移走"
+       与"忘了留"在测试里长得一模一样。 */
+    ['/economy/prepare', '/economy/settle', '/economy/buy', '/economy/cancel', '/economy/refund']
+      .every(p => security.body.economyPolicy.unreachable.indexOf(p) >= 0) &&
+    security.body.economyPolicy.unreachable.indexOf('/economy/purchase') < 0 &&
+    security.body.economyPolicy.desktopPaths.indexOf('/economy/purchase') >= 0,
     security.body.economyPolicy.unreachable);
   check('C16 Economy 仍然声明**不给设备**：servedToDevices=false 且 deviceVerbs 为空',
     security.body.economyPolicy.servedToDevices === false &&

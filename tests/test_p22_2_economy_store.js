@@ -1235,11 +1235,21 @@ section('O · Runtime 依赖纪律（静态：本条与 boundary 测试互补）
                        asset_kind / created_at 一次都不出现，P22-5 测试
                        的静态断言逐列检查）。
      三个 ledger 事实表与 ACCOUNTS 仍然**不**在允许集合里，O9b 继续逐字
-     断言这一点。 */
+     断言这一点。
+
+     ── P22-6 再扩一张（第四次）────────────────────────────────────────
+     purchases 有两条 UPDATE：结算（status / ledger_transaction_id /
+     inventory_entry_id / revision / updated_at / completed_at）与终结
+     （status / release_reason / reason_code / revision / updated_at）。
+     它们改的是**这次购买现在处在哪个结局**，改不到任何一笔已经发生的
+     经济事实：金额在 amount_minor（Prepare 时从 Quote 快照写下，两条
+     语句的 SET 里都没有它），钱动没动在 ledger 里（那三张表仍然被 O9b
+     挡着）。O9f/O9g 追加逐列断言。 */
   const MUTABLE_TABLES = ['WALLETS_TABLE', 'META_TABLE', 'IDEMPOTENCY_TABLE',
     'OPERATIONS_TABLE', 'RESERVATIONS_TABLE', 'OPERATION_IDEMPOTENCY_TABLE',
     'BUDGET_POLICIES_TABLE', 'QUOTES_TABLE',
-    'STORES_TABLE', 'PRODUCTS_TABLE', 'INVENTORY_TABLE'];
+    'STORES_TABLE', 'PRODUCTS_TABLE', 'INVENTORY_TABLE',
+    'PURCHASES_TABLE'];
   check('O9 被 UPDATE / DELETE 的表只可能是"派生缓存 / 水位 / 生命周期行 / 幂等表"这四类，'
     + 'ACCOUNTS 与三个 ledger 事实表都不在内',
     mutatedTables.every(t => MUTABLE_TABLES.indexOf(t) >= 0), mutatedTables);
@@ -1284,6 +1294,32 @@ section('O · Runtime 依赖纪律（静态：本条与 boundary 测试互补）
     /WHERE operation_id=\? AND status=\?/.test(statementWindow('setOperationStatus') || '') &&
     /WHERE reservation_id=\? AND status=\?/.test(statementWindow('setReservationStatus') || ''),
     [statementWindow('setOperationStatus'), statementWindow('setReservationStatus')]);
+  /* ── O9f/O9g · P22-6：purchase 的两条 UPDATE 逐列读出 ────────────────
+     它们能赋的列是一个**精确集合**，而经济内容列（buyer / recipient /
+     product / store / quote / reservation / currency / amount / 交付形态 /
+     交付量 / 单位名 / created_at / idempotency_key / fingerprint）一次都
+     不出现。这一条正是 §1"Purchase 不是 ledger transaction 的视图、
+     它的经济内容写下之后不可变"的静态落点。 */
+  const purchaseSettledColumns = setColumnsOf('setPurchaseSettled');
+  const purchaseTerminalColumns = setColumnsOf('setPurchaseTerminal');
+  const PURCHASE_ECONOMIC_COLUMNS = ['buyer_id', 'buyer_type', 'recipient_id', 'recipient_type',
+    'product_id', 'store_id', 'quote_id', 'reservation_id', 'currency', 'amount_minor',
+    'quote_kind', 'settlement_type', 'asset_kind', 'granted_quantity', 'unit_name',
+    'created_at', 'idempotency_key', 'fingerprint', 'consent_snapshot'];
+  check('O9f economy_purchases 的结算 UPDATE 只能赋结局列（status / ledger_transaction_id / inventory_entry_id / revision / updated_at / completed_at）',
+    purchaseSettledColumns != null &&
+    purchaseSettledColumns.join(',') === 'completed_at,inventory_entry_id,ledger_transaction_id,revision,status,updated_at' &&
+    PURCHASE_ECONOMIC_COLUMNS.every(c => purchaseSettledColumns.indexOf(c) < 0),
+    purchaseSettledColumns);
+  check('O9g economy_purchases 的终结 UPDATE 只能赋结局列（status / release_reason / reason_code / revision / updated_at）',
+    purchaseTerminalColumns != null &&
+    purchaseTerminalColumns.join(',') === 'reason_code,release_reason,revision,status,updated_at' &&
+    PURCHASE_ECONOMIC_COLUMNS.every(c => purchaseTerminalColumns.indexOf(c) < 0),
+    purchaseTerminalColumns);
+  check('O9h 两条 purchase UPDATE 都带 `AND status=?`（"一个终态不可回退"由 SQL 承担，不靠 JS 的 if）',
+    /WHERE purchase_id=\? AND status=\?/.test(statementWindow('setPurchaseSettled') || '') &&
+    /WHERE purchase_id=\? AND status=\?/.test(statementWindow('setPurchaseTerminal') || ''),
+    [statementWindow('setPurchaseSettled'), statementWindow('setPurchaseTerminal')]);
   check('O11 故障注入只在 deps.faults 上，且没有任何 HTTP 层能写它（本文件不 require http）',
     /const faults = deps\.faults \|\| null/.test(src) && requires.indexOf('node:http') < 0);
   check('O12 test-only 的破坏辅助被**显式命名**为 ForTest（读代码时不会被误当成产品 API）',

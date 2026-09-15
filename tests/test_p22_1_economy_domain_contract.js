@@ -543,11 +543,16 @@ check('D13.14 operation 的 reservationId / transactionId 若给了就必须是 
    P22-5 又加了四个（STORE / PRODUCT / INVENTORY_GRANT /
    INVENTORY_CONSUME）—— 阻力照旧生效：这一行是**手动**改的，而不是
    被一个 `.length >= 7` 悄悄放过去的。 */
-check('D13.15 OPERATION_SCOPE 是封闭十一元集合（P22-1 的五个 + QUOTE/POLICY + P22-5 的四个）',
+check('D13.15 OPERATION_SCOPE 是封闭十三元集合（P22-1 的五个 + QUOTE/POLICY + P22-5 的四个 + P22-6 的两个）',
   C.OPERATION_SCOPES.slice().sort().join(',') ===
-    'COMMIT,EXPIRE,FAIL,INVENTORY_CONSUME,INVENTORY_GRANT,POLICY,PRODUCT,QUOTE,RELEASE,RESERVE,STORE' &&
+    'COMMIT,EXPIRE,FAIL,INVENTORY_CONSUME,INVENTORY_GRANT,POLICY,PRODUCT,PURCHASE_PREPARE,PURCHASE_SETTLE,QUOTE,RELEASE,RESERVE,STORE' &&
   C.isOperationScope('RESERVE') === true && C.isOperationScope('reserve') === false &&
   C.isOperationScope('QUOTE') === true && C.isOperationScope('POLICY') === true &&
+  /* P22-6 的两个 scope 与 P22-3 的 RESERVE/COMMIT **刻意不同**：
+     "我那次购买准备成没成"与"我那笔预留成没成"是两个问题，而它们的
+     答案在时间上不同（prepare 之后 settle 可能永远不发生）。 */
+  C.isOperationScope('PURCHASE_PREPARE') === true && C.isOperationScope('PURCHASE_SETTLE') === true &&
+  C.isOperationScope('PURCHASE') === false &&
   C.isOperationScope('TOPUP') === false);
 check('D13.16 scopedIdempotencyIdentity 让同一个 key 在两个 scope 下是**两个**身份',
   C.scopedIdempotencyIdentity('RESERVE', 'X').identity !== C.scopedIdempotencyIdentity('COMMIT', 'X').identity &&
@@ -1213,11 +1218,12 @@ check('D14.2 P22-1 的三十一个 reason code 一个都没丢（35 = 31 + P22-3
     'ACCOUNT_NOT_ALLOWED', 'AUTONOMY_NOT_PERMITTED', 'INSUFFICIENT_COMPUTE_CREDIT',
     'EXCHANGE_RATE_UNKNOWN', 'EXCHANGE_ROUNDS_TO_ZERO', 'EXCHANGE_CROSS_DOMAIN_FORBIDDEN',
     'POLICY_INPUT_NOT_STRUCTURED', 'INSUFFICIENT_AVAILABLE_BALANCE'].every(r => C.isDenyReasonCode(r)) &&
-  /* 40 = P22-1 的 31 + P22-3 的 1 + P22-4 的 4 + P22-5 的 5
+  /* 42 = P22-1 的 31 + P22-3 的 1 + P22-4 的 4 + P22-5 的 5
      （INVENTORY / PRODUCT_NOT_FOUND / STORE_NOT_FOUND /
-       CATALOG_INPUT_NOT_STRUCTURED / INVENTORY_INPUT_NOT_STRUCTURED）。
+       CATALOG_INPUT_NOT_STRUCTURED / INVENTORY_INPUT_NOT_STRUCTURED）
+     + P22-6 的 2（PURCHASE_REQUIRES_APPROVAL / PURCHASE_NOT_SUPPORTED）。
      写死数字是刻意的：加一个代码必须有人手动改这一行。 */
-  C.DENY_REASONS.length === 40, C.DENY_REASONS.length);
+  C.DENY_REASONS.length === 42, C.DENY_REASONS.length);
 check('D14.3 P22-4 新增的四个 reason code 各自可判定，且没有引入兜底值',
   ['POLICY_NOT_FOUND', 'POLICY_TERM_EXPIRED', 'AMOUNT_EXCEEDS_PER_TRANSACTION',
     'AMOUNT_EXCEEDS_APPROVAL_THRESHOLD'].every(r => C.isDenyReasonCode(r)) &&
@@ -1365,7 +1371,9 @@ check('D14.25 契约的输入白名单仍然是 Budget 的唯一入口（maxBudg
 check('D14.26 P22-3 的 OPERATION_SCOPE 五元集合是**子集**（加 scope 不是换 scope）',
   ['RESERVE', 'COMMIT', 'RELEASE', 'EXPIRE', 'FAIL'].every(s => C.OPERATION_SCOPES.indexOf(s) >= 0) &&
   ['QUOTE', 'POLICY'].every(s => C.OPERATION_SCOPES.indexOf(s) >= 0) &&
-  C.OPERATION_SCOPES.length === 11);
+  ['STORE', 'PRODUCT', 'INVENTORY_GRANT', 'INVENTORY_CONSUME'].every(s => C.OPERATION_SCOPES.indexOf(s) >= 0) &&
+  ['PURCHASE_PREPARE', 'PURCHASE_SETTLE'].every(s => C.OPERATION_SCOPES.indexOf(s) >= 0) &&
+  C.OPERATION_SCOPES.length === 13);
 check('D14.27 P22-4 的八个新事件全部登记，且 P22-1 的十一个事件一个都没丢',
   ['BUDGET_POLICY_CREATED', 'BUDGET_POLICY_UPDATED', 'BUDGET_POLICY_DISABLED', 'BUDGET_POLICY_EXPIRED',
     'QUOTE_CREATED', 'QUOTE_EXPIRED', 'QUOTE_CONSUMED', 'QUOTE_CANCELLED'].every(t => C.isEconomyEventType(t)) &&

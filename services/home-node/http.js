@@ -755,6 +755,24 @@ function createHomeNodeHttp(deps) {
           storeHoldsOwnership: false,
           productPricingIsRelationshipFree: true,
           catalogIsPersonalized: false,
+          /* ── P22-6：购买面 ────────────────────────────────────────────────
+             这一层第一次有了**完整**的购买运行时，而它给出的仍然是一句
+             彻底的否认。三条自述逐字对应 §60/§61：
+               · 读路由**有**（两张）；
+               · 写路由**没有**，而且是三项分开的名单（不是一句笼统的
+                 "read-only"）—— 因为"哪一类写被挡住了"正是审计要问的。 */
+          purchaseWritesExposed: [],
+          settlementWritesExposed: [],
+          policyApprovalWritesExposed: [],
+          purchaseRuntimeImplemented: true,
+          purchaseSettlementIsOneTransaction: true,
+          purchaseAmountSource: 'quote-snapshot',
+          purchaseHasRefund: false,
+          purchaseCreatesPendingApprovalRecords: false,
+          purchaseRewritesHistoricalQuotes: false,
+          purchaseIsALedgerTransaction: false,
+          purchaseTouchesProvider: false,
+          purchaseTouchesPayment: false,
           desktopPaths: ['/economy/health', '/economy/wallet', '/economy/ledger',
             '/economy/transaction', '/economy/changes',
             '/economy/reservations', '/economy/reservation',
@@ -765,7 +783,9 @@ function createHomeNodeHttp(deps) {
                否则"声明"会落后于"真实路由"。 */
             '/economy/stores', '/economy/store',
             '/economy/products', '/economy/product',
-            '/economy/inventory', '/economy/inventory-entry'],
+            '/economy/inventory', '/economy/inventory-entry',
+            /* P22-6：购买读面（一对）。 */
+            '/economy/purchases', '/economy/purchase'],
           /* P22-4：/economy/budget 与 /economy/quote **有**只读路由，
              因此它们不出现在 unreachable 里；而不存在的写路径
              （policy/quote 的 POST·PUT·DELETE、approve、evaluate 的写形态）
@@ -773,8 +793,13 @@ function createHomeNodeHttp(deps) {
              P22-5 从这份名单里**移走**三条（/economy/store、/economy/product、
              /economy/inventory）—— 它们现在真的有只读路由了。一条声明
              若比真实路由更保守，那么它就不再是在描述这个系统；因此移走
-             它们不是放松，而是让这张表继续为真。 */
-          unreachable: ['/economy/topup', '/economy/purchase', '/economy/payment',
+             它们不是放松，而是让这张表继续为真。
+             ★ P22-6 同一条纪律的第二次应用：`/economy/purchase` 从这份
+             名单里**移走**（它现在是一条真实的只读路由），而
+             `/economy/purchases` 从未在名单里。同时**加进**这一次新增的
+             写形态：prepare / settle / buy / cancel / refund —— 一个都不
+             存在，而且它们的存在性必须被逐名断言（boundary B16）。 */
+          unreachable: ['/economy/topup', '/economy/payment',
             '/economy/provider', '/economy/mint', '/economy/burn', '/economy/transfer',
             '/economy/reserve', '/economy/commit', '/economy/release', '/economy/expire',
             '/economy/fail', '/economy/sweep',
@@ -782,6 +807,8 @@ function createHomeNodeHttp(deps) {
             '/economy/inventory/grant', '/economy/inventory/consume',
             '/economy/store/create', '/economy/store/update',
             '/economy/product/create', '/economy/product/update',
+            '/economy/prepare', '/economy/settle', '/economy/buy',
+            '/economy/cancel', '/economy/refund', '/economy/reverse',
             '/economy/exchange']
         },
         doesNotExpose: ['llm-proxy', 'tools', 'payments', 'diary', 'letters', 'images', 'tts'],
@@ -1174,6 +1201,57 @@ function createHomeNodeHttp(deps) {
       });
       if (!result.ok) { bad(res, 404, result.errors[0] || 'inventory-entry-not-found', null, req); return; }
       ok(res, { entry: economy.serializeInventoryEntry(result.entry) }, req);
+      return;
+    }
+    /* ── P22-6 · 购买（**只读**）─────────────────────────────────────────
+       GET /economy/purchases   列出购买（buyerId / recipientId / status /
+                                productId / quoteId 过滤）
+       GET /economy/purchase    单次购买（purchaseId），带三个小结
+
+       ★ P22-6 第一次让 Economy 拥有**完整**的购买运行时，而这里依然
+       **一条写路由都不开**（§60）：
+         · 没有 POST /economy/purchase、POST /economy/prepare、
+           POST /economy/settle、POST /economy/buy、POST /economy/cancel；
+         · 它们全部落在下面那个兜底分支上，一律 405 economy-is-read-only；
+         · 理由不是"还没写"，而是 **Decision / Action / Approval / 用户
+           权限边界都还没有接入** —— 在那之前，"谁能要求系统为谁买什么"
+           这个问题没有答案，而没有答案的写入口就是一个权限漏洞。
+       mutation 只通过同进程 runtime fixture 触发（见 P22-6 focused tests）。 */
+    if (path === '/economy/purchases' && method === 'GET') {
+      if (!economy) { bad(res, 501, 'economy-not-assembled', null, req); return; }
+      const result = economy.listPurchases({
+        buyerId: url.searchParams.get('buyerId') || undefined,
+        recipientId: url.searchParams.get('recipientId') || undefined,
+        status: url.searchParams.get('status') || undefined,
+        productId: url.searchParams.get('productId') || undefined,
+        quoteId: url.searchParams.get('quoteId') || undefined,
+        limit: url.searchParams.get('limit') || undefined
+      });
+      if (!result.ok) { bad(res, 400, result.errors[0] || 'purchase-read-failed', null, req); return; }
+      ok(res, {
+        purchases: result.purchases,
+        count: result.count,
+        /* 三句逐字的自述（§80：这个读面不是个性化的）。 */
+        personalized: false,
+        recommended: false,
+        ranked: false,
+        exposesMutation: false
+      }, req);
+      return;
+    }
+    if (path === '/economy/purchase' && method === 'GET') {
+      if (!economy) { bad(res, 501, 'economy-not-assembled', null, req); return; }
+      const purchaseId = url.searchParams.get('purchaseId');
+      if (!purchaseId) { bad(res, 400, 'missing-purchase-id', null, req); return; }
+      const result = economy.getPurchase({ purchaseId: purchaseId });
+      if (!result.ok) { bad(res, 404, result.errors[0] || 'purchase-not-found', null, req); return; }
+      ok(res, Object.assign({
+        /* 一句结构性的自述：Purchase 不是它所引用的任何一件事。 */
+        isALedgerTransaction: false,
+        isAReservation: false,
+        isAQuote: false,
+        exposesMutation: false
+      }, result), req);
       return;
     }
     /* 其余 /economy/* 一律 404 —— 尤其 POST 到上面任何一条路径。

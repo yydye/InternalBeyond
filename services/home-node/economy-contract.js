@@ -77,6 +77,11 @@
     EXCHANGE: 'ib.economy.exchange',
     COMPUTE: 'ib.economy.compute',
     QUOTE: 'ib.economy.quote',
+    /* P22-6：Purchase 是它自己的命名空间。加一项是加法 —— 既有 12 个
+       字面值一个都没动，而"一次购买属于哪个域"必须有一个名字，
+       否则读面只能借用 QUOTE 或 RESERVATION 的命名空间，
+       那会让"这是报价还是购买"在第一眼就含糊。 */
+    PURCHASE: 'ib.economy.purchase',
     EVENT: 'ib.economy.event',
     AUDIT: 'ib.economy.audit'
   });
@@ -426,7 +431,27 @@
        §4 明确禁止的兜底值（"没有 OTHER/UNKNOWN 兜底"）。这两个名字各自
        指向一个具体的域。 */
     CATALOG_INPUT_NOT_STRUCTURED: 'CATALOG_INPUT_NOT_STRUCTURED',
-    INVENTORY_INPUT_NOT_STRUCTURED: 'INVENTORY_INPUT_NOT_STRUCTURED'
+    INVENTORY_INPUT_NOT_STRUCTURED: 'INVENTORY_INPUT_NOT_STRUCTURED',
+    /* ── P22-6 追加的两个（加法）──────────────────────────────────────────
+       PURCHASE_REQUIRES_APPROVAL —— 这是 §4 的第三条路径。P22-4 的
+       AMOUNT_EXCEEDS_APPROVAL_THRESHOLD 说的是"金额越过了审批线"，它
+       是**预算评价**的 outcome 的 reasonCode；而 P22-6 需要的名字是
+       "一次购买因为需要批准而**没有发生**"。两者不是同义：
+         · 前者描述规则被触发的那条线（一个金额事实）；
+         · 后者描述一次购买的结局（一件事没有做成）。
+       把后者写成前者会让"这笔采购为什么没成"的答案变成"因为金额超过
+       了 500"，而真实答案可能是"因为 autonomy_level 要求人工点头"。
+       本阶段 Approval workflow **不存在**，因此它只表示"停在这里"，
+       绝不表示"稍后会有人批准"。它**不伪装**成 FAILED（§11）。
+
+       PURCHASE_NOT_SUPPORTED —— SERVICE_EXECUTION 在本阶段没有可原子
+       执行的结算原语（Action 层未接入）。它必须是一个具名代码而不是
+       复用 EFFECT_NOT_ALLOWED：后者说的是"这个 effect 不被允许"，而
+       这里的真相是"这个 effect 还没有实现"。审计里"被规则拒绝"与
+       "这一刻还做不到"必须可分 —— 与 P22-5 分出 PRODUCT_NOT_FOUND 的
+       理由逐字同源。 */
+    PURCHASE_REQUIRES_APPROVAL: 'PURCHASE_REQUIRES_APPROVAL',
+    PURCHASE_NOT_SUPPORTED: 'PURCHASE_NOT_SUPPORTED'
   });
 
   var DENY_REASONS = Object.freeze(Object.keys(DENY_REASON));
@@ -1149,7 +1174,21 @@
     STORE: 'STORE',
     PRODUCT: 'PRODUCT',
     INVENTORY_GRANT: 'INVENTORY_GRANT',
-    INVENTORY_CONSUME: 'INVENTORY_CONSUME'
+    INVENTORY_CONSUME: 'INVENTORY_CONSUME',
+    /* ── P22-6 追加的两个（加法）──────────────────────────────────────────
+       PURCHASE_PREPARE / PURCHASE_SETTLE 是一条**高层**流程的两个阶段。
+       为什么它们不能共用 P22-3 已有的 RESERVE / COMMIT：
+         · 同一个 HTTP/内部请求里的 key 会被 prepare 与 settle 各用一次，
+           而 RESERVE/COMMIT 的语义是"锁钱 / 把锁变成事实"——那是
+           Purchase **内部**的两步，不是调用方看到的两步。压成同一个
+           scope 会让"我那次购买准备成没成"与"我那笔预留成没成"变成
+           同一个问题，而它们的答案在时间上不同（prepare 之后 settle
+           可能永远不发生）。
+         · P22-3 的 RESERVE/COMMIT 继续为**独立的** reserve/commit 用法
+           服务（P22-5 的库存、P22-3 自己的测试），一个字不改。
+       scope 增加是加法：既有的 11 个 (scope, key) 身份逐字不变。 */
+    PURCHASE_PREPARE: 'PURCHASE_PREPARE',
+    PURCHASE_SETTLE: 'PURCHASE_SETTLE'
   });
 
   var OPERATION_SCOPES = Object.freeze(Object.keys(OPERATION_SCOPE));
@@ -2443,6 +2482,31 @@
     QUOTE_CANCELLED: 'QUOTE_CANCELLED',
     PURCHASE_COMMITTED: 'PURCHASE_COMMITTED',
     PURCHASE_DENIED: 'PURCHASE_DENIED',
+    /* ── P22-6 追加的四个（加法）──────────────────────────────────────────
+       P22-1 §18 冻结的十四个事件里已经有 PURCHASE_COMMITTED 与
+       PURCHASE_DENIED —— 那时候没有 purchase 表，只有**词表**。P22-6 是
+       第一个真的会写 purchase 事件的阶段，而它需要的名字比这两个多：
+       一次购买会**先被预留**（还没有成交），而"预留住了"与"成交了"是
+       两件在审计里必须能分开的事（前者可能永远不成交）。
+
+       为什么还需要 CREATED：一次 prepare 在**预留之前**就已经写下了
+       Purchase 行（它在同一个事务里）。因此"购买被创建"是一个真实的
+       状态跃迁，不是"预留"的同义词。
+
+       为什么需要 RELEASED / FAILED：两者都是 RESERVED 之后的终局，而
+       它们的区别是**为什么**结束（主动放弃 / 规则或时间不允许继续）。
+       这与 P22-3 分出 RESERVATION_RELEASED 与 OPERATION_FAILED 的理由
+       逐字同源。
+
+       刻意**不**新增 Settlement 类事件：一次成功结算的 canonical 事实
+       已经由 ledger 的 `<TYPE>_COMMITTED`、RESERVATION_COMMITTED、
+       QUOTE_CONSUMED 与 INVENTORY_GRANTED 四条分别写下（§47：不为
+       "日志详细"重复表达同一事实）。 */
+    PURCHASE_CREATED: 'PURCHASE_CREATED',
+    PURCHASE_RESERVED: 'PURCHASE_RESERVED',
+    PURCHASE_COMPLETED: 'PURCHASE_COMPLETED',
+    PURCHASE_RELEASED: 'PURCHASE_RELEASED',
+    PURCHASE_FAILED: 'PURCHASE_FAILED',
     ITEM_GIFTED: 'ITEM_GIFTED',
     ITEM_CONSUMED: 'ITEM_CONSUMED',
     COMPUTE_CREDIT_GRANTED: 'COMPUTE_CREDIT_GRANTED',
@@ -2940,6 +3004,15 @@
   });
 
   var ASSET_KINDS = Object.freeze(Object.keys(ASSET_KIND));
+  var ASSET_KIND_INDEX = (function () {
+    var map = Object.create(null);
+    for (var i = 0; i < ASSET_KINDS.length; i++) map[ASSET_KINDS[i]] = true;
+    return map;
+  })();
+
+  function isAssetKind(value) {
+    return value != null && ASSET_KIND_INDEX[String(value)] === true;
+  }
 
   var ASSET_KIND_OF_PRODUCT_KIND = Object.freeze({
     DIGITAL_ITEM: ASSET_KIND.ITEM,
@@ -3040,8 +3113,17 @@
   var STORE_NAME_MAX = 120;
   var STORE_DESCRIPTION_MAX = 500;
   var UNIT_NAME_RE = /^[A-Za-z][A-Za-z0-9]{0,31}$/;
-  /* sortOrder 的界：它只影响展示顺序，取一个足够大又不会溢出的范围。 */
-  var SORT_ORDER_MAX = 1000000;
+
+  /* unitName 的形状判定 —— P22-6 把它从 validateProduct 里提取成**一份**
+     实现。提取的理由不是"复用好看"，而是"两个写入方必须用同一条规则"：
+     P22-5 的商品行与 P22-6 的结算交付量名，如果各自实现一遍正则，它们会
+     漂移，而漂移的症状是"结算写下的单位名不合法"只在很久以后被一次完整性
+     检查发现。函数声明提升使它可以在上面的 unitNameOfProductKind 旁边被
+     引用，而正则本身仍在原处。 */
+  function isUnitName(value) {
+    return value != null && UNIT_NAME_RE.test(String(value));
+  }
+  /* sortOrder 的界：它只影响展示顺序，取一个足够大又不会溢出的范围。 */  var SORT_ORDER_MAX = 1000000;
 
   function validateStore(input) {
     var o = input || {};
@@ -3269,6 +3351,452 @@
      导出
      ══════════════════════════════════════════════════════════════════ */
 
+  /* ══════════════════════════════════════════════════════════════════
+     §22 · P22-6 · Purchase Orchestrator + Atomic Settlement
+     ══════════════════════════════════════════════════════════════════
+
+     Purchase 是**把既有事实组织成一个高层生命周期**的那一层。它不是
+     新的经济事实，因此本节的每一条都在回答"它引用谁"，而不是"它自己
+     是什么"：
+
+       Product              商品定义（可变的只有 status 与 unit_price_minor）
+       Quote                某一时刻的价格命题（写下即不可变）
+       Budget Evaluation    当前规则允不允许（每一次执行时重新算）
+       Reservation          对 Wallet 可用资源的临时锁定
+       Ledger Transaction   已经发生的 accounting fact
+       Inventory/Entitlement settlement 产生的资产事实
+       Purchase             以上六者的**组织方式**
+
+     严格禁止的等同（§1）：Purchase ≠ Ledger Transaction / Reservation /
+     Quote。它们各有自己的 id 前缀、自己的表、自己的状态机。 */
+
+  /* ── Purchase 状态机 ──────────────────────────────────────────────────
+     最小四态。它要回答的问题只有四个：
+       尚未 settlement     → RESERVED
+       settlement 已完成    → COMPLETED
+       流程终止但未消费资金  → RELEASED（主动放弃）/ FAILED（规则或时间
+                              不允许继续）
+     刻意**不**在这里区分"报价过期了"与"预算不给过了"：两者的资源后果
+     完全相同，而**为什么**结束由 change log 的 reasonCode 如实记下
+     （与 P22-3 分出 releaseReason 的做法同款：状态词表保持最小，
+     原因留在 payload 里）。
+
+     终态不可逆是**被执行**的规则，不是注释：三个终态的出边都是空数组，
+     而 assertPurchaseTransition 会被运行路径真的调用一次。 */
+  var PURCHASE_STATE = Object.freeze({
+    RESERVED: 'RESERVED',
+    COMPLETED: 'COMPLETED',
+    RELEASED: 'RELEASED',
+    FAILED: 'FAILED'
+  });
+
+  var PURCHASE_STATES = Object.freeze(Object.keys(PURCHASE_STATE));
+
+  var PURCHASE_TRANSITIONS = Object.freeze({
+    RESERVED: Object.freeze([PURCHASE_STATE.COMPLETED, PURCHASE_STATE.RELEASED, PURCHASE_STATE.FAILED]),
+    COMPLETED: Object.freeze([]),
+    RELEASED: Object.freeze([]),
+    FAILED: Object.freeze([])
+  });
+
+  var PURCHASE_TERMINAL_STATES = Object.freeze(
+    PURCHASE_STATES.filter(function (s) { return PURCHASE_TRANSITIONS[s].length === 0; })
+  );
+
+  /* 一条 Purchase 的**唯一**入口状态：prepare 要么把它留在 RESERVED，
+     要么根本不写这一行。因为没有 CREATED 这个持久状态，
+     "尚未 settlement"与"还没有 Purchase"不会互相伪装。 */
+  var PURCHASE_INITIAL_STATE = PURCHASE_STATE.RESERVED;
+
+  var PURCHASE_STATE_INDEX = (function () {
+    var map = Object.create(null);
+    for (var i = 0; i < PURCHASE_STATES.length; i++) map[PURCHASE_STATES[i]] = true;
+    return map;
+  })();
+
+  function isPurchaseState(value) {
+    return value != null && PURCHASE_STATE_INDEX[String(value)] === true;
+  }
+
+  function canTransitionPurchase(from, to) {
+    var f = String(from == null ? '' : from);
+    var t = String(to == null ? '' : to);
+    if (!PURCHASE_STATE_INDEX[f] || !PURCHASE_STATE_INDEX[t]) {
+      return { ok: false, allowed: false, errors: ['purchase-state-not-in-closed-set'] };
+    }
+    var allowed = PURCHASE_TRANSITIONS[f].indexOf(t) >= 0;
+    return { ok: true, allowed: allowed, errors: allowed ? [] : ['transition-not-allowed'], from: f, to: t };
+  }
+
+  function assertPurchaseTransition(from, to) {
+    var r = canTransitionPurchase(from, to);
+    if (!r.ok) return { ok: false, errors: r.errors };
+    if (!r.allowed) {
+      return {
+        ok: false,
+        errors: ['transition-not-allowed'],
+        from: r.from, to: r.to,
+        hint: 'a terminal purchase is immutable; a refund must be a new compensating economic operation'
+      };
+    }
+    return { ok: true, errors: [], from: r.from, to: r.to };
+  }
+
+  /* ── Purchase 身份 ────────────────────────────────────────────────────
+     ★ 刻意**不**新增第 15 种 id 种类。
+
+     P22-1 §5 冻结的 ID_PREFIX 里已经有 `PURCHASE_INTENT: 'econ_intent_'`，
+     而它从冻结那天起**没有任何写入方**（P22-2/3/4/5 都没有用过它）——
+     它是"先冻结形状、后实现"留下的那个空槽，语义正是"一次购买"。
+     P22-6 把它用起来，而不是新造一个 `econ_purchase_`：
+
+       · 加第 15 种前缀会让两个语义相同的前缀同时存在，此后每一次审计
+         都要先回答"intent 与 purchase 差在哪"，而它们没有差；
+       · 仓库存量 id 一个都不受影响（这个前缀此前从未被写过），
+         因此这是**零迁移**的加法。
+
+     Purchase identity 仍然与它引用的四件事完全分离：
+       quoteId / reservationId / ledgerTransactionId / operationId 各自
+       有自己的前缀，purchaseId 不得复用其中任何一个（§3）。 */
+  var PURCHASE_ID_KIND = 'PURCHASE_INTENT';
+  var PURCHASE_ID_PREFIX = ID_PREFIX.PURCHASE_INTENT;
+
+  function formatPurchaseId(suffix) {
+    return formatEconomyId(PURCHASE_ID_KIND, suffix);
+  }
+
+  /* ── 输入白名单（§40/§41）────────────────────────────────────────────
+     与 P22-4 的 BUDGET_INPUT_KEYS / P22-5 的 PRODUCT_INPUT_KEYS 同款：
+     让越界的输入**没有地方可以放**。
+
+     settle 的名单是本阶段最重要的一条安全性质：它**恰好三个**键，而
+     amount / currency / grantQuantity / recipientId / assetKind /
+     settlementType / price / productId / buyerId 全部不在里面。于是
+     "settle 时把金额改成 1"这句话在**结构上**不成立 —— 不是被校验
+     拒绝，而是没有字段可以承载它。这些值一律从 canonical Purchase /
+     Quote 快照读。 */
+  var PURCHASE_INPUT_KEYS = Object.freeze([
+    'purchaseId', 'buyerId', 'recipientId', 'quoteId',
+    'expiresAt', 'units', 'ifRevision', 'idempotencyKey'
+  ]);
+
+  var PURCHASE_SETTLE_INPUT_KEYS = Object.freeze([
+    'purchaseId', 'now', 'idempotencyKey'
+  ]);
+
+  var PURCHASE_CANCEL_INPUT_KEYS = Object.freeze([
+    'purchaseId', 'reasonCode', 'idempotencyKey'
+  ]);
+
+  /* 逐个点名否认的 Purchase 字段名。它们全是"把结算面变成可篡改面"或
+     "影响 Economy 之外的世界"的企图：
+       · amount / currency / price / grantQuantity … —— 结算输入篡改；
+       · provider* / real* / cny / usd —— P22 的硬边界；
+       · discount / coupon / recommended —— 个性化定价；
+       · trust / affection / memoryRef —— Relationship / Memory 写入。 */
+  var PURCHASE_FORBIDDEN_FIELDS = Object.freeze([
+    'amountMinor', 'amount', 'price', 'unitPriceMinor', 'cost', 'money',
+    'currency', 'grantQuantity', 'assetKind', 'settlementType', 'unitName',
+    'productId', 'buyerId', 'recipientId', 'quoteId', 'reservationId',
+    'walletId', 'stock', 'owned', 'providerApiKey', 'providerAccount',
+    'providerBalance', 'providerTopup', 'providerQuota', 'realMoney', 'realPrice',
+    'cny', 'usd', 'fiatAmount', 'checkoutUrl', 'paymentIntent', 'paymentLink',
+    'discount', 'promo', 'coupon', 'featured', 'recommended', 'personalized',
+    'trust', 'affection', 'affinity', 'relationshipId', 'memoryRef'
+  ]);
+
+  var PURCHASE_FORBIDDEN_FIELD_INDEX = (function () {
+    var map = Object.create(null);
+    for (var i = 0; i < PURCHASE_FORBIDDEN_FIELDS.length; i++) map[PURCHASE_FORBIDDEN_FIELDS[i]] = true;
+    return map;
+  })();
+
+  function isForbiddenPurchaseFieldName(value) {
+    return value != null && PURCHASE_FORBIDDEN_FIELD_INDEX[String(value)] === true;
+  }
+
+  /* 读面允许出现的键（白名单构造，§79）。它同时挡住"顺手把整个 ledger
+     历史嵌进来"——那是一棵无界对象，而不是一个 canonical entity。 */
+  var PURCHASE_SUMMARY_KEYS = Object.freeze([
+    'quoteId', 'quoteState', 'quoteAmountMinor', 'quoteCurrency',
+    'productId', 'productBacked', 'settlementType',
+    'reservationId', 'reservationState', 'reservationAmountMinor',
+    'ledgerTransactionId', 'settlement'
+  ]);
+
+  var PURCHASE_LIST_KEYS = Object.freeze([
+    'buyerId', 'recipientId', 'status', 'productId', 'quoteId', 'limit'
+  ]);
+
+  /* ── 结算形态 → canonical in-tx primitive（§72）──────────────────────
+     封闭映射，**不是** switch(product.name)。三行恰好覆盖三种交付形态，
+     而第四种（Service 的执行）刻意指向 null：本阶段没有可原子执行的
+     原语，它必须在 Ledger commit **之前**被拒绝（§73 fail closed）。
+
+     null 与"没登记"是两件事：null 是"这一刻还做不到"（有代码
+     SERVICE_EXECUTION 回答"为什么"），没登记是"我不知道这是什么"
+     （拼错即抛）。因此下面用 hasOwnProperty 而不是真值判断。 */
+  var SETTLEMENT_PRIMITIVE = Object.freeze({
+    INVENTORY: 'INVENTORY',
+    COMPUTE_ENTITLEMENT: 'COMPUTE_ENTITLEMENT',
+    SERVICE_EXECUTION: 'SERVICE_EXECUTION'
+  });
+
+  var SETTLEMENT_PRIMITIVES = Object.freeze(Object.keys(SETTLEMENT_PRIMITIVE));
+
+  var SETTLEMENT_PRIMITIVE_OF_FULFILLMENT = Object.freeze({
+    INVENTORY_GRANT: SETTLEMENT_PRIMITIVE.INVENTORY,
+    COMPUTE_GRANT: SETTLEMENT_PRIMITIVE.COMPUTE_ENTITLEMENT,
+    SERVICE_EXECUTION: null
+  });
+
+  function settlementPrimitiveOfFulfillment(fulfillment) {
+    if (fulfillment == null) return { ok: false, registered: false, primitive: null, errors: ['fulfillment-required'] };
+    var f = String(fulfillment);
+    if (!Object.prototype.hasOwnProperty.call(SETTLEMENT_PRIMITIVE_OF_FULFILLMENT, f)) {
+      return { ok: false, registered: false, primitive: null, errors: ['fulfillment-not-in-closed-set'], fulfillment: f };
+    }
+    return { ok: true, registered: true, primitive: SETTLEMENT_PRIMITIVE_OF_FULFILLMENT[f], fulfillment: f };
+  }
+
+  /* Purchase 的 settlementType **就是** FULFILLMENT 的词表成员。
+     为什么不另起一套名字（例如 SETTLEMENT_TYPE.INVENTORY_GRANT_AT_SETTLEMENT）：
+     同一个概念有两个词表，此后每一次跨模块对话都要做一次翻译，而
+     "翻译错了"的症状是路由到错误的原语。 */
+
+  /* ── 结算的 ledger transaction type ───────────────────────────────────
+     ★ 它来自 **Quote 快照**（quotes.service_role 在报价创建时就冻结），
+     而不是结算时重新推导。三个 kind 各自映射到一个 P22-1 已冻结的
+     TX_TYPE，因此 Purchase 不需要发明任何新的交易类型：
+       PURCHASE      → PURCHASE        （商品换 IB Credit）
+       GIFT          → GIFT            （别人付款、别人收货）
+       COMPUTE_GRANT → COMPUTE_GRANT   （额度被授予；NEUTRAL，占日额度 = 否） */
+  var TX_TYPE_OF_QUOTE_KIND = Object.freeze({
+    PURCHASE: TX_TYPE.PURCHASE,
+    GIFT: TX_TYPE.GIFT,
+    COMPUTE_GRANT: TX_TYPE.COMPUTE_GRANT
+  });
+
+  function transactionTypeOfQuoteKind(kind) {
+    if (!isQuoteKind(kind)) return { ok: false, type: null, errors: ['quote-kind-not-in-closed-set'] };
+    var k = String(kind);
+    if (!Object.prototype.hasOwnProperty.call(TX_TYPE_OF_QUOTE_KIND, k)) {
+      return { ok: false, type: null, errors: ['quote-kind-has-no-ledger-transaction-type'], kind: k };
+    }
+    return { ok: true, type: TX_TYPE_OF_QUOTE_KIND[k], errors: [], kind: k };
+  }
+
+  /* ── 结算对手方（§17/§18）─────────────────────────────────────────────
+     普通购买：buyer wallet → SYSTEM_ACCOUNT.MARKET。
+     ★ Store **不是**商家：它没有价格、没有拥有关系（P22-5 §2），因此
+     它不可能是一个 accounting account。把 storeId 当账户会让一次目录
+     变更（新建一个货架）变成一次记账拓扑变更。
+
+     ★★ COMPUTE_GRANT 的对手方**也是** MARKET，不是 MINT。
+     这里曾经写过 MINT（理由是"额度是被授予的、没有第二方"），而那条路
+     走不通 —— 而且走不通是**对的**：P22-2 的 assertBalanced 有一条硬
+     规则"system:mint / system:burn 只允许出现在 MINT / BURN 里"，它的
+     存在理由是"否则写一笔 PURCHASE 而把对手方写成 system:mint 就能绕过
+     增发的显式命名要求"。为了 cos 破那条规则等于把那条防线拆掉。
+
+     真实语义也比 MINT 更准确：一次 compute 额度购买**不是**一次增发
+     （IB Credit 的总量没有从无到有）—— 买家付了 IB Credit，对手方收到
+     了它，而"额度"是这次交易**交付的东西**，不是一种货币。MINT / BURN
+     留给真正改变总量的那两次操作（P22-2 的 mintForSystem / burnForSystem）。 */
+  function settlementCounterpartyFor(quoteKind) {
+    if (!isQuoteKind(quoteKind)) return { ok: false, accountId: null, errors: ['quote-kind-not-in-closed-set'] };
+    return { ok: true, accountId: SYSTEM_ACCOUNT.MARKET, errors: [] };
+  }
+
+  /* 一份 Purchase 的 ledger transaction id **确定性地**派生自 purchaseId。
+     与 P22-3 的 deriveCommitTransactionId(reservationId) 同一手法，理由
+     也相同：重放同一个业务必须得到同一个记账身份，而**第二次提交**会
+     撞上同一个 transactionId —— 于是"一次购买最多一笔交易"由
+     ledger 自己的 UNIQUE 主键兜底，不靠代码自律。 */
+  function derivePurchaseLedgerTransactionId(purchaseId) {
+    if (!isEconomyId(PURCHASE_ID_KIND, purchaseId)) {
+      return { ok: false, transactionId: null, errors: ['purchase-id-not-canonical'] };
+    }
+    var encoded = String(purchaseId).split('').map(function (ch) {
+      var code = ch.charCodeAt(0);
+      return (code >= 97 && code <= 122) || (code >= 48 && code <= 57) ? ch : '_';
+    }).join('');
+    return formatEconomyId('TRANSACTION', 'purchase_' + encoded);
+  }
+
+  /* 刻意**没有**：refundPurchase / reversePurchase / chargeback（§59）、
+     购物车 quantity（§75，Product 一次购买固定 grantQuantity）、
+     部分消费（一份 Quote 恰好被消费一次）、pending approval 记录（§11，
+     Approval 不存在，因此不创建一个永远没人处理的记录）。 */
+  var PURCHASE_AMOUNT_SOURCE = 'quote-snapshot';
+  var PURCHASE_QUOTE_RELATION = 'CANONICAL_LINKAGE';
+  var PURCHASE_PREPARE_REQUIRES_BUDGET_ALLOW = true;
+  var PURCHASE_SETTLE_REVALIDATES_BUDGET = true;
+  var PURCHASE_REWRITES_HISTORICAL_QUOTES = false;
+  var PURCHASE_CANCEL_PRODUCES_A_LEDGER_REFUND = false;
+  var PURCHASE_CANCEL_CANCELS_THE_QUOTE = false;
+  var PURCHASE_SETTLEMENT_IS_ONE_TRANSACTION = true;
+  var PURCHASE_HAS_REFUND = false;
+  var PURCHASE_QUOTE_CONSUMPTION_IS_PARTIAL = false;
+  var PURCHASE_HAS_CART_QUANTITY = false;
+  var PURCHASE_CREATES_PENDING_APPROVAL_RECORDS = false;
+  var PURCHASE_EXPOSES_HTTP_MUTATION = false;
+  var PURCHASE_SETTLEMENT_MAY_READ_MUTABLE_PRODUCT_FIELDS = false;
+  var PURCHASE_TOUCHES_PROVIDER = false;
+  var PURCHASE_TOUCHES_PAYMENT = false;
+  var PURCHASE_TOUCHES_MEMORY = false;
+  var PURCHASE_TOUCHES_RELATIONSHIP = false;
+
+  /* 结算路径**不允许**触碰的 ledger 账户名（§17：不得临时创建任意
+     system account，必须来自白名单）。MINT/BURN 在这里被点名否认：
+     一次购买不是一次增发或销毁 —— 钱从买家到对手方，总量不变。
+     （COMPUTE_GRANT 的 MINT 对手方是 §17 允许的那一种：额度是被**授予**
+     的，它没有第二方。见 settlementCounterpartyFor。） */
+  var FORBIDDEN_PURCHASE_LEDGER_ACCOUNTS = Object.freeze([
+    'provider:openai', 'provider:anthropic', 'provider:deepseek',
+    'provider:gemini', 'provider:openrouter', 'provider:teamrouter',
+    'provider:zenmux', 'merchant:alipay', 'merchant:external', 'seller:external',
+    'bank:external', 'system:provider', 'system:bank', 'system:balance',
+    'system:quota', 'token:balance', 'apiBalance', 'tokenBalance'
+  ]);
+
+  /* ── 形状校验（纯函数）────────────────────────────────────────────────
+     它校验的是**一条已经冻结的 Purchase 快照**：所有 id 都必须是
+     canonical，金额必须能被范式化，四个引用（quote/reservation/product/
+     ledger）各自形状正确。它**不**查询任何东西 —— 存在性属于运行层。 */
+  function validatePurchase(input) {
+    var o = input || {};
+    var errors = [];
+    if (!isEconomyId(PURCHASE_ID_KIND, o.purchaseId)) errors.push('purchase-id-not-canonical');
+    if (!isPartyRef(o.buyer)) errors.push('purchase-buyer-must-be-a-canonical-party-ref');
+    else if (String(o.buyer.type) === PARTY_TYPE.SYSTEM) errors.push('system-party-cannot-buy');
+    if (o.recipient != null && !isPartyRef(o.recipient)) errors.push('purchase-recipient-must-be-a-canonical-party-ref');
+    if (!isEconomyId('QUOTE', o.quoteId)) errors.push('quote-id-not-canonical');
+    if (!isEconomyId('RESERVATION', o.reservationId)) errors.push('reservation-id-not-canonical');
+    if (!isEconomyId('PRODUCT', o.productId)) errors.push('product-id-not-canonical');
+    if (o.ledgerTransactionId != null && !isEconomyId('TRANSACTION', o.ledgerTransactionId)) {
+      errors.push('transaction-id-not-canonical');
+    }
+    var cur = validateCurrency(o.currency);
+    if (!cur.ok) errors.push.apply(errors, cur.errors);
+    var amt = normalizeAmountMinor(o.amountMinor);
+    if (!amt.ok) errors.push.apply(errors, amt.errors);
+    if (!isQuoteKind(o.quoteKind)) errors.push('quote-kind-not-in-closed-set');
+    var tx = transactionTypeOfQuoteKind(o.quoteKind);
+    if (!tx.ok) errors.push.apply(errors, tx.errors);
+    if (!isFulfillment(o.fulfillment)) errors.push('fulfillment-not-in-closed-set');
+    var prim = settlementPrimitiveOfFulfillment(o.fulfillment);
+    if (!prim.ok) errors.push.apply(errors, prim.errors);
+    if (o.settledAssetKind != null && !isAssetKind(o.settledAssetKind)) errors.push('asset-kind-not-in-closed-set');
+    if (!Number.isSafeInteger(o.settledQuantity) || o.settledQuantity < 0) {
+      errors.push('purchase-settled-quantity-must-be-a-non-negative-safe-integer');
+    }
+    if (o.settledUnitName != null && !isUnitName(o.settledUnitName)) errors.push('unit-name-not-in-closed-set');
+    if (!isPurchaseState(o.status)) errors.push('purchase-status-not-in-closed-set');
+    if (!Number.isSafeInteger(o.revision) || o.revision < 0) errors.push('purchase-revision-must-be-a-non-negative-safe-integer');
+    if (!Number.isSafeInteger(o.createdAt) || o.createdAt < 0) errors.push('purchase-created-at-must-be-a-non-negative-safe-integer');
+    if (!Number.isSafeInteger(o.updatedAt) || o.updatedAt < 0) errors.push('purchase-updated-at-must-be-a-non-negative-safe-integer');
+    if (o.completedAt != null && (!Number.isSafeInteger(o.completedAt) || o.completedAt < 0)) {
+      errors.push('purchase-completed-at-must-be-a-non-negative-safe-integer');
+    }
+    if (errors.length) return { ok: false, errors: errors };
+    var snapshot = {
+      domain: DOMAIN,
+      namespace: NAMESPACES.QUOTE && o.namespace ? o.namespace : o.namespace,
+      purchaseId: String(o.purchaseId),
+      buyer: Object.freeze({ type: String(o.buyer.type), id: String(o.buyer.id) }),
+      recipient: o.recipient == null ? null : Object.freeze({ type: String(o.recipient.type), id: String(o.recipient.id) }),
+      quoteId: String(o.quoteId),
+      reservationId: String(o.reservationId),
+      productId: String(o.productId),
+      currency: cur.currency,
+      amountMinor: amt.amountMinor,
+      quoteKind: String(o.quoteKind),
+      transactionType: tx.type,
+      fulfillment: String(o.fulfillment),
+      settlementPrimitive: prim.primitive,
+      settledAssetKind: o.settledAssetKind == null ? null : String(o.settledAssetKind),
+      settledQuantity: o.settledQuantity,
+      settledUnitName: o.settledUnitName == null ? null : String(o.settledUnitName),
+      ledgerTransactionId: o.ledgerTransactionId == null ? null : String(o.ledgerTransactionId),
+      status: String(o.status),
+      revision: o.revision,
+      createdAt: o.createdAt,
+      updatedAt: o.updatedAt,
+      completedAt: o.completedAt == null ? null : o.completedAt,
+      amountSource: PURCHASE_AMOUNT_SOURCE,
+      settlementIsOneTransaction: PURCHASE_SETTLEMENT_IS_ONE_TRANSACTION,
+      rewritesHistoricalQuotes: PURCHASE_REWRITES_HISTORICAL_QUOTES,
+      hasRefund: PURCHASE_HAS_REFUND
+    };
+    return { ok: true, errors: [], snapshot: snapshot };
+  }
+
+  /* ── 载入期自检 ───────────────────────────────────────────────────────
+     这一节的映射表如果漏了一项，症状是"某种商品永远买不成"，而那会在
+     很久以后才被发现。因此载入即查（与 §21 的目录自检同款）。 */
+  (function () {
+    function die(msg) { throw new Error('P22-6 purchase contract ' + msg); }
+    for (var i = 0; i < FULFILLMENTS.length; i++) {
+      var f = FULFILLMENTS[i];
+      if (!Object.prototype.hasOwnProperty.call(SETTLEMENT_PRIMITIVE_OF_FULFILLMENT, f)) {
+        die('settlement primitive table must cover every fulfillment; missing=[' + f + ']');
+      }
+      var got = SETTLEMENT_PRIMITIVE_OF_FULFILLMENT[f];
+      if (got != null && SETTLEMENT_PRIMITIVES.indexOf(got) < 0) {
+        die('settlement primitive must be null or a registered primitive: ' + f + ' -> ' + String(got));
+      }
+    }
+    /* 每个 product kind 都必须有一条可推导的路径。SERVICE 是唯一一条
+       指向 null 的路径，而且它必须**恰好**是 null（"还做不到"），不是
+       未登记（"不知道"）。 */
+    var unsupported = [];
+    for (var k = 0; k < PRODUCT_KINDS.length; k++) {
+      var kind = PRODUCT_KINDS[k];
+      var ff = fulfillmentOfProductKind(kind);
+      if (!isFulfillment(ff)) die('product kind has no fulfillment: ' + kind);
+      var p = settlementPrimitiveOfFulfillment(ff);
+      if (!p.ok) die('product kind fulfillment has no settlement primitive: ' + kind + ' -> ' + String(ff));
+      if (p.primitive == null) unsupported.push(kind);
+      if (unitNameOfProductKind(kind) == null) die('product kind has no unit name: ' + kind);
+      if (!Object.prototype.hasOwnProperty.call(FULFILLMENT_OF_PRODUCT_KIND, kind)) {
+        die('product kind is missing from the fulfillment table: ' + kind);
+      }
+    }
+    if (unsupported.length !== 1 || unsupported[0] !== PRODUCT_KIND.SERVICE) {
+      die('exactly one product kind must be unsupported at settlement and it must be SERVICE; got=[' + unsupported.join(',') + ']');
+    }
+    /* 三个 quote kind 必须各自映射到一个 frozen TX_TYPE，且映射表里
+       不能出现任何未登记的 kind。 */
+    for (var q = 0; q < QUOTE_KINDS.length; q++) {
+      var qk = QUOTE_KINDS[q];
+      if (!Object.prototype.hasOwnProperty.call(TX_TYPE_OF_QUOTE_KIND, qk)) {
+        die('quote kind has no ledger transaction type: ' + qk);
+      }
+      if (TX_TYPES.indexOf(TX_TYPE_OF_QUOTE_KIND[qk]) < 0) {
+        die('quote kind maps to a transaction type outside the frozen set: ' + qk);
+      }
+      var cp = settlementCounterpartyFor(qk);
+      if (!cp.ok || SYSTEM_ACCOUNTS.indexOf(cp.accountId) < 0) {
+        die('quote kind has no whitelisted settlement counterparty: ' + qk);
+      }
+    }
+    /* 终态集合必须**恰好**是三个，且 RESERVED 不是其中之一。少一个
+       意味着某个终局无法表达，多一个意味着某个终态有出边。 */
+    if (PURCHASE_TERMINAL_STATES.length !== 3 || isPurchaseState(PURCHASE_INITIAL_STATE) !== true) {
+      die('purchase terminal states must be exactly three and the initial state must be registered');
+    }
+    if (PURCHASE_TERMINAL_STATES.indexOf(PURCHASE_INITIAL_STATE) >= 0) {
+      die('the initial purchase state must not be terminal');
+    }
+    /* settle 的输入名单里**不得**出现任何可篡改的经济字段（§40/§41）。 */
+    for (var s = 0; s < PURCHASE_SETTLE_INPUT_KEYS.length; s++) {
+      if (isForbiddenPurchaseFieldName(PURCHASE_SETTLE_INPUT_KEYS[s])) {
+        die('settle input keys must not contain a tamperable economic field: ' + PURCHASE_SETTLE_INPUT_KEYS[s]);
+      }
+    }
+  })();
+
   return Object.freeze({
     /* §1 */
     DOMAIN: DOMAIN,
@@ -3493,6 +4021,8 @@
     assetKindOfProductKind: assetKindOfProductKind,
     INVENTORY_CANONICAL_KEY: INVENTORY_CANONICAL_KEY,
     INVENTORY_UNIQUE_ITEMS_MODELLED: INVENTORY_UNIQUE_ITEMS_MODELLED,
+    isAssetKind: isAssetKind,
+    isUnitName: isUnitName,
     PRODUCT_UNIT_NAME: PRODUCT_UNIT_NAME,
     unitNameOfProductKind: unitNameOfProductKind,
     PRODUCT_INPUT_KEYS: PRODUCT_INPUT_KEYS,
@@ -3510,6 +4040,54 @@
     productQuoteQuantity: productQuoteQuantity,
     productQuoteAmountMinor: productQuoteAmountMinor,
     QUOTE_PRODUCT_RELATION: QUOTE_PRODUCT_RELATION,
-    PRODUCT_IS_PROVENANCE_FOR_QUOTES: PRODUCT_IS_PROVENANCE_FOR_QUOTES
+    PRODUCT_IS_PROVENANCE_FOR_QUOTES: PRODUCT_IS_PROVENANCE_FOR_QUOTES,
+
+    /* ── P22-6 · Purchase Orchestrator + Atomic Settlement ─────────────── */
+    PURCHASE_STATE: PURCHASE_STATE,
+    PURCHASE_STATES: PURCHASE_STATES,
+    PURCHASE_TRANSITIONS: PURCHASE_TRANSITIONS,
+    PURCHASE_TERMINAL_STATES: PURCHASE_TERMINAL_STATES,
+    isPurchaseState: isPurchaseState,
+    canTransitionPurchase: canTransitionPurchase,
+    assertPurchaseTransition: assertPurchaseTransition,
+    PURCHASE_INITIAL_STATE: PURCHASE_INITIAL_STATE,
+    PURCHASE_ID_KIND: PURCHASE_ID_KIND,
+    PURCHASE_ID_PREFIX: PURCHASE_ID_PREFIX,
+    PURCHASE_INPUT_KEYS: PURCHASE_INPUT_KEYS,
+    PURCHASE_SETTLE_INPUT_KEYS: PURCHASE_SETTLE_INPUT_KEYS,
+    PURCHASE_CANCEL_INPUT_KEYS: PURCHASE_CANCEL_INPUT_KEYS,
+    PURCHASE_FORBIDDEN_FIELDS: PURCHASE_FORBIDDEN_FIELDS,
+    isForbiddenPurchaseFieldName: isForbiddenPurchaseFieldName,
+    PURCHASE_SUMMARY_KEYS: PURCHASE_SUMMARY_KEYS,
+    PURCHASE_LIST_KEYS: PURCHASE_LIST_KEYS,
+    SETTLEMENT_PRIMITIVE: SETTLEMENT_PRIMITIVE,
+    SETTLEMENT_PRIMITIVES: SETTLEMENT_PRIMITIVES,
+    SETTLEMENT_PRIMITIVE_OF_FULFILLMENT: SETTLEMENT_PRIMITIVE_OF_FULFILLMENT,
+    settlementPrimitiveOfFulfillment: settlementPrimitiveOfFulfillment,
+    TX_TYPE_OF_QUOTE_KIND: TX_TYPE_OF_QUOTE_KIND,
+    transactionTypeOfQuoteKind: transactionTypeOfQuoteKind,
+    PURCHASE_AMOUNT_SOURCE: PURCHASE_AMOUNT_SOURCE,
+    PURCHASE_QUOTE_RELATION: PURCHASE_QUOTE_RELATION,
+    PURCHASE_PREPARE_REQUIRES_BUDGET_ALLOW: PURCHASE_PREPARE_REQUIRES_BUDGET_ALLOW,
+    PURCHASE_SETTLE_REVALIDATES_BUDGET: PURCHASE_SETTLE_REVALIDATES_BUDGET,
+    PURCHASE_REWRITES_HISTORICAL_QUOTES: PURCHASE_REWRITES_HISTORICAL_QUOTES,
+    PURCHASE_CANCEL_PRODUCES_A_LEDGER_REFUND: PURCHASE_CANCEL_PRODUCES_A_LEDGER_REFUND,
+    PURCHASE_CANCEL_CANCELS_THE_QUOTE: PURCHASE_CANCEL_CANCELS_THE_QUOTE,
+    PURCHASE_SETTLEMENT_IS_ONE_TRANSACTION: PURCHASE_SETTLEMENT_IS_ONE_TRANSACTION,
+    PURCHASE_HAS_REFUND: PURCHASE_HAS_REFUND,
+    PURCHASE_QUOTE_CONSUMPTION_IS_PARTIAL: PURCHASE_QUOTE_CONSUMPTION_IS_PARTIAL,
+    PURCHASE_HAS_CART_QUANTITY: PURCHASE_HAS_CART_QUANTITY,
+    PURCHASE_CREATES_PENDING_APPROVAL_RECORDS: PURCHASE_CREATES_PENDING_APPROVAL_RECORDS,
+    PURCHASE_EXPOSES_HTTP_MUTATION: PURCHASE_EXPOSES_HTTP_MUTATION,
+    PURCHASE_SETTLEMENT_MAY_READ_MUTABLE_PRODUCT_FIELDS: PURCHASE_SETTLEMENT_MAY_READ_MUTABLE_PRODUCT_FIELDS,
+    PURCHASE_TOUCHES_PROVIDER: PURCHASE_TOUCHES_PROVIDER,
+    PURCHASE_TOUCHES_PAYMENT: PURCHASE_TOUCHES_PAYMENT,
+    PURCHASE_TOUCHES_MEMORY: PURCHASE_TOUCHES_MEMORY,
+    PURCHASE_TOUCHES_RELATIONSHIP: PURCHASE_TOUCHES_RELATIONSHIP,
+    FORBIDDEN_PURCHASE_LEDGER_ACCOUNTS: FORBIDDEN_PURCHASE_LEDGER_ACCOUNTS,
+    validatePurchase: validatePurchase,
+    settlementCounterpartyFor: settlementCounterpartyFor,
+    derivePurchaseLedgerTransactionId: derivePurchaseLedgerTransactionId,
+    formatPurchaseId: formatPurchaseId
   });
 });

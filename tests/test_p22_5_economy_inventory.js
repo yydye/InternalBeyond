@@ -974,13 +974,33 @@ section('N · Memory / Relationship / Decision / Action 隔离');
     typeof store.recommendProducts === 'undefined' &&
     typeof store.suggestPurchase === 'undefined' &&
     typeof store.decide === 'undefined');
-  check('N5 库存这一层**没有**"买"的入口：不存在 acceptQuote / purchase / buy（那是未来阶段）',
-    typeof store.acceptQuote === 'undefined' &&
+  check('N5 ★ P22-6 让"这一层没有买"这句话变成假的：买有了一个具名入口（prepare/settle），但决策与推荐仍然不存在',
+    /* P22-5 当时断言的三句是 `typeof store.purchase === 'undefined'` 等 ——
+       那是"购买入口不存在"。P22-6 第一次让它们变成假的，因此这里把它们
+       换成**更强**的三条：入口名叫什么、以及它**不是**什么。
+       一条恒为 true 的断言在它变成 false 的那一天不会自己消失，
+       所以它必须被显式替换，而不是被删掉。 */
+    typeof store.preparePurchase === 'function' &&
+    typeof store.settlePurchase === 'function' &&
+    typeof store.cancelPurchase === 'function' &&
+    typeof store.getPurchase === 'function' &&
+    typeof store.listPurchases === 'function' &&
+    /* ★ `purchase` / `buy` / `acceptQuote` 这三个**名字**刻意仍然不存在：
+       "买"在这份设计里是一条两阶段的编排（prepare + settle），
+       而不是一次原子调用；一个叫 purchase() 的方法会是那种"一次调用
+       完成一切"的形状，而它恰恰是 §14 要避免的东西的表层。 */
     typeof store.purchase === 'undefined' &&
     typeof store.buy === 'undefined' &&
+    typeof store.acceptQuote === 'undefined' &&
     typeof store.consumeQuote === 'undefined' &&
+    /* 决策与推荐仍然**不存在**：P22-6 只提供编排，不做"买不买"。 */
+    typeof store.decide === 'undefined' &&
+    typeof store.recommendProducts === 'undefined' &&
+    typeof store.suggestPurchase === 'undefined' &&
+    typeof store.refundPurchase === 'undefined' &&
+    typeof store.reversePurchase === 'undefined' &&
     store.health().aGrantIsNotAPurchase === true &&
-    store.health().purchaseIsNotImplementedInThisPhase === true);
+    store.health().purchaseImplemented === true);
   check('N6 doesNotExpose 追加了 store-writes / product-writes / inventory-writes / purchase',
     ['store-writes', 'product-writes', 'inventory-writes', 'purchase']
       .every(k => store.health().doesNotExpose.indexOf(k) >= 0) &&
