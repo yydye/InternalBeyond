@@ -907,6 +907,15 @@ stores 包括：聊天消息（经 dbPut）、`apiConfigs`、`memories`、`blogA
 | 分类契约 | `assets/js/disclosure-core.js` | canonical 记录的**形状**：4 档 level + `UNDETERMINED`、9 个 source、3 个 authority、归一化、封闭记录 |
 | 写作契约 | `assets/js/disclosure-authoring-core.js` | 人类显式写者：owner 只从 writer context 取、source/authority 固定、PUBLIC 被拒、update 的不可变面 |
 | 持久化 | `assets/js/disclosure-store.js` | `window.IBDisclosureStore`：create / list / update / delete，唯一 canonical store |
+| 授权判定 | `assets/js/disclosure-authorization-core.js`（v24，4B-2A） | `window.IBDisclosureAuthorizationCore`：`authorize(fact, context)` → `{allowed, reasonCode}`。**纯函数**，只读 canonical 形状与封闭枚举，**不读盘、不读关系分数、不产生 trace** |
+
+授权核与前三层是**并列**而不是叠加：它的输入是一条 fact **值**（不是 factId 查询），
+因此它不引用 `disclosure-store`；它 factory 期只读 `disclosure-core`。
+`DEFAULT DENY`：畸形 fact / 缺 owner / 缺 factId / 缺 recipient / 未知 level /
+`PUBLIC` / 畸形 grant / 没有匹配 grant 全部 DENY，`ALLOW` 只有 `explicit-grant` 一条路径。
+grant 是 per-fact、per-recipient、有向的显式许可（`factId` + `ownerCharacterId` +
+`recipientCharacterId` + `permission:'disclose'` + 人类 `authority` + `levelAtGrant`），
+**本轮不持久化**（没有第二个 objectStore，DB_VER 仍是 24）。见 D31。
 
 **为什么是独立 store 而不是 `memories`**：`visibility` 是 **ACL**（哪些消费方可以读），
 `level` 是 **sensitivity**（内容本身多敏感）——两者正交，塞进同一张表就是让
@@ -923,8 +932,19 @@ stores 包括：聊天消息（经 dbPut）、`apiConfigs`、`memories`、`blogA
 
 **写入路径存在，读取路径不存在**：`window.IBDisclosureStore` 的唯一引用方是角色编辑器 UI
 （`social.js` 的「私密事实」小节）。`composeSide` / `getMemoryContext` / diary / moments /
-letters / understanding / Middle Brain **没有任何一处**引用它 —— 授权（哪些事实在
-A→B 时可见）是 Phase 4B-2，**未实现**。
+letters / understanding / Middle Brain **没有任何一处**引用它。
+
+⚠ 这两句话在 4B-2A 之后必须分开说（混称会把两件事说成一件）：
+
+- **AUTHORIZATION = 已实现**（`window.IBDisclosureAuthorizationCore`，4B-2A）——
+  它能回答「A 的这条事实能不能告诉 B」。但它今天**没有生产 grant writer**：
+  `recipientCharacterId` 在整个 `assets/js` 里只出现在授权核自己身上，
+  没有任何 UI 或模型路径能造出一条 grant。所以
+  `CONTRACT CAN REPRESENT ALLOW = YES` / `PRODUCTION CAN CREATE ALLOW = NO`。
+- **CONSUMPTION = 未实现**（Phase 4B-2B）——即使授权结果是 `ALLOW`，
+  真实 `composeSide` 仍然**逐字节**看不到那条事实。测试用真实的
+  `role-dm.js` 证明这一点，并用一个子进程对照证明真实 `run/turn` 的
+  模型调用次数与逐条 messages 不变。**把门锁接到模型房间**是 4B-2B。
 
 #### localStorage 键（部分）
 

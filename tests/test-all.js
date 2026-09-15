@@ -307,6 +307,19 @@ const GROUPS = [
          以及 5 组 mutation（owner 取 peer / caller 传 authority / 允许 PUBLIC /
          秘密进 composeSide / 秘密复制进 memories）各自的变红证明。 */
       ['test_disclosure_authoring.js'],
+      /* Role DM Phase 4B-2A：披露**授权**判定核（Hard Disclosure Authorization Kernel）。
+         纯 Node、零浏览器、零真实模型调用：判定本身是纯函数；"判定不走关系分数"
+         由去注释/去字符串后的源码结构断言钉住；"授权存在、消费不存在"由三段
+         真实生产路径证明——真实的 composeSide 在两个方向上都逐字节不变、
+         真实的 memories → buildMemoryContext 读取链不变、真实 run/turn 的
+         模型调用次数在**两个独立子进程**里完全相同。
+         覆盖 default deny（畸形 fact / 缺 owner / 缺 recipient / 未知 level）、
+         三档 × grant 矩阵、有向性（A→B / A→C / B→A）、grant 生命周期
+         （删除 / 文本 / level 提升 / subject 变更）、trust·familiarity·affinity·
+         Memory ACL·provenance 全部**无法**授权、结果里没有正文、
+         6 组 mutation（trust gate / 缺 grant 放行 / grant 忽略 recipient /
+         ACL 当授权 / ALLOW 后自动注入 prompt / 未知 level 回落 PERSONAL）。 */
+      ['test_disclosure_authorization.js'],
       ['test_role_dm_smoke.js'],
       ['test_video_runtime.js'],
       ['test_voice_pcm_adapter.js'],

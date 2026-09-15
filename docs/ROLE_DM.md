@@ -229,7 +229,8 @@ optional autonomous social intent（role-dm-social-core.evaluateSocialIntent
 **HARD vs SOFT（术语纪律，见 D26 / Phase 4B-0 审计）**：
 `HARD DISCLOSURE BOUNDARY = 未授权内容从不进入模型上下文`；
 `SOFT GUIDANCE = 模型看到内容，只是被要求别提`。本契约实现的是**前者的数据前提**，
-**不是**前者本身 —— 前者需要 Phase 4B-2 的 authorization 阶段。
+**不是**前者本身 —— 前者需要 Phase 4B-2 的 authorization 阶段
+（4B-2A 已落地判定核，**但消费仍未落地**，故本句至今成立）。
 
 ## Disclosure Writer Authority（Phase 4B-1.1）
 
@@ -279,8 +280,12 @@ consolidation / publicProfile / Moments / Letters 全部写入路径，file:line
                   ↓
         canonical disclosure fact（本机数据库）
                   ↓
-        ✗ 模型看不到（授权 = Phase 4B-2，未实现）
+        ✗ 模型看不到（**消费** = Phase 4B-2B，未实现）
 ```
+
+⚠ 上图那一行在 4B-2A 之后要读准：**授权**（"能不能告诉 B"）已经在
+`disclosure-authorization-core.js` 里实现了，但**没有任何东西消费那个答案** ——
+消费（prompt 集成）是 Phase 4B-2B。两件事不得混称，见本文档 Phase 4B-2A 一节。
 
 ### 存储权威：**独立 objectStore `disclosureFacts`**（DB_VER 23 → 24）
 
@@ -339,6 +344,127 @@ character-owned store），结论与理由见 [DECISIONS.md](DECISIONS.md) D30�
 **等级今天只是分类**：`PERSONAL` / `PRIVATE` / `SECRET` 在 Phase 4B-2 之前
 **没有一档**是模型可见的 —— 全部是 NO。这是 hard boundary 的必要前提。
 
+## Disclosure Authorization（Phase 4B-2A）
+
+`assets/js/disclosure-authorization-core.js`（`window.IBDisclosureAuthorizationCore`）
+是「角色 A 的 fact F 能否披露给角色 B」的**唯一**实现：UMD 双载、零 IO、
+零模型调用、**不读 trust / 不读关系 / 不读 Memory / 不读 persona / 不产生 trace**。
+
+这一层回答的是**四个问题里的第三个**（D31 把边界写死）：
+
+```
+① 这条事实是真的吗？          → 事实内容（本模块**不看** text）
+② 谁对这条事实负责？          → writer authority（4B-1.1，已冻结）
+③ 谁**被允许**知道这条事实？  → **本模块**
+④ 模型这一次**应该**看到它吗？→ prompt 装配（**未实现**，4B-2B）
+```
+
+### 判定契约
+
+```
+authorize(fact, { recipientCharacterId, grants? }) → { allowed, reasonCode, … }
+```
+
+结果对象只有六个键（闭集）：`allowed` / `reasonCode` / `recipientCharacterId` /
+`factId` / `ownerCharacterId` / `level`。**没有** `text` / `prompt` / `persona` /
+`systemPrompt` / `Memory` / `apiKey` / 任何关系分数。`resultKeys()` 把这一点
+从一句承诺变成一条可断言的性质。
+
+| 项 | 契约 |
+|---|---|
+| 授权维度 | **owner**（来自 canonical 记录）/ **recipient**（调用方显式给出）/ **level** / **explicit grant** —— 四个缺一不可 |
+| **不是**授权维度 | `source` / `authority` / `authoredBy`：它们回答"这条事实从哪来、谁负责"。一条人类亲手写下的事实**照样**需要 grant |
+| **不是**授权维度 | `trust` / `affinity` / `familiarity` / `dmCount` / `relationship` / `toneCounts` / `initiative` / `intent` / `memorandum` / 消息历史 / Memory ACL |
+| 默认 | **DENY**。PRIVATE / SECRET 无 grant ⇒ DENY；PERSONAL 亦同（见下） |
+| 唯一 ALLOW 路径 | `reasonCode === 'explicit-grant'`（`ALLOW_REASONS` 恰好一项） |
+| 有向 | A→B 的许可**不**是 A→C 的，也**不**是 B→A 的，更**不**能由 B 转述给 C |
+| 异常 | **从不 throw**（包括 `disclosure-core` 抛的时候：边界上转成一条明确的拒绝） |
+
+### reasonCode 闭集（10 项，含数据即视为违约）
+
+| allowed | reasonCode | 触发 |
+|---|---|---|
+| ✗ | `authorization-core-unavailable` | 依赖缺失 |
+| ✗ | `invalid-fact` | 畸形 fact / 缺 owner / 缺 factId / 无正文 / 硬名单字段 |
+| ✗ | `recipient-missing` | 缺 / 空白 / 控制字符 / 超长 recipient |
+| ✗ | `recipient-is-owner` | recipient === owner（Role DM 无 self-DM） |
+| ✗ | `level-unknown` | 未知字符串 / 非字符串 level（**绝不**回落成任何真实档位） |
+| ✗ | `level-not-authorizable` | `PUBLIC`、`UNDETERMINED`（公开权威在 `publicProfile`） |
+| ✗ | `invalid-grant` | grant 畸形 / permission 拼错 / authority 非人类 / 缺 `levelAtGrant` / 任何一条混在列表里 |
+| ✗ | `grant-level-stale` | 许可范围低于 fact 当前等级（level 提升后旧 grant 不静默续期） |
+| ✗ | `no-explicit-grant` | 没有匹配 (factId, owner, recipient) 的合法 grant |
+| ✓ | `explicit-grant` | 匹配且合法 —— **唯一**放行 |
+
+原因码里**没有**任何内容是数据（不含 factId / 昵称 / 正文 / 分数）。
+
+### grant 契约（4B-2A **不持久化**）
+
+```
+{ grantId?, factId, ownerCharacterId, recipientCharacterId,
+  permission: 'disclose', authority: 'human_authoring' | 'human_confirmation',
+  authoredBy?, levelAtGrant: 'PERSONAL' | 'PRIVATE' | 'SECRET', updatedAt? }
+```
+
+| 项 | 契约 |
+|---|---|
+| 形状 | **ALLOW-only**：没有 ALLOW/DENY 双状态。默认已经 DENY，再发明一层 deny override 只会制造"两次拒绝、一次允许"的优先级问题，而今天没有任何真实数据需要它 |
+| `permission` | 封闭单值 `disclose`。**刻意不发明 permission hierarchy** —— PRIVATE 与 SECRET 要求的是**同一种** explicit per-fact recipient grant；更细粒度记在 Deferred |
+| `authority` | 必须是**人类权威**。`derived` grant（模型自己决定"可以告诉她"）是**无效 grant**，不是"弱一点的 grant" |
+| 绑定 | `factId` + `ownerCharacterId` + `recipientCharacterId` 三键同时对上；**不绑 text** |
+| `levelAtGrant` | 许可的**范围**。缺失/非法 ⇒ `invalid-grant`（残缺的授权不是授权）；低于当前等级 ⇒ `grant-level-stale` |
+| 存储 | **无**。本轮零持久化、零 UI、零生产写者 ⇒ `CONTRACT CAN REPRESENT ALLOW = YES` / `PRODUCTION CAN CREATE ALLOW = NO` |
+
+**生命周期**（按证据而不是感觉）：
+
+| 事件 | grant 是否仍有效 | 为什么 |
+|---|---|---|
+| fact 删除 | **不可再成立** | kernel 的主语是 fact；没有 fact 就没有判定对象 |
+| 正文修改 | **仍有效** | 授权绑定 `factId`（身份），不是内容。正文改了，授权的**对象**没变 |
+| level PRIVATE→SECRET | **失效**（`grant-level-stale`） | 旧 grant 是人在**旧等级**下给的许可；沿用等于让一次升级免费带走原本没有作出的许可 |
+| level SECRET→PRIVATE | **仍有效** | 许可范围更宽，覆盖得住 |
+| `subjectCharacterId` 变更 | **仍有效** | subject 不是收件人；grant 不含它 |
+| owner 变更 | **不可能** | owner 不可变（4B-1.2 §8）。"改归属"是删一条 + 建一条 |
+
+### 三档矩阵
+
+|  | 无 grant | explicit grant |
+|---|---|---|
+| `PERSONAL` | **DENY** `no-explicit-grant` | **ALLOW** `explicit-grant` |
+| `PRIVATE` | **DENY** `no-explicit-grant` | **ALLOW** `explicit-grant` |
+| `SECRET` | **DENY** `no-explicit-grant` | **ALLOW** `explicit-grant` |
+| `PUBLIC` | **DENY** `level-not-authorizable` | **DENY** `level-not-authorizable` |
+
+### PERSONAL 的最终语义（**审计后决定，不是脑补**）
+
+冻结文档里 PERSONAL 的 audience 写的是「角色自己；亲近者可了解」，且
+`role-dm-core.js:83` 的「需额外授权?」一列对它写的是「未来：是」。这里必须
+补一个历史 contract **没有回答**的问题：**谁是"亲近者"？**
+
+本轮的选择是 **B —— PERSONAL 仍需 recipient grant**，理由是证据而不是偏好：
+唯一能定义"亲近"的现成东西是 `trust` / `familiarity` / `affinity`，而那三个
+正是 D28/D29 已经证明**没有资格**担任披露权威的 inferred state（trust 可达范围
+只有 `[0.5, 1.0]`、只涨不跌、无 decay，其 writer 读的是本侧自己说的话）。
+用一个不够格的信号去定义"亲近者"，等于把授权重新变成推断。
+
+因此三档在授权上**行为一致**（都要求同一个 explicit per-fact recipient grant），
+差异留给消费阶段（4B-2B：三档在未来如何进入 prompt 仍未设计）。
+**PERSONAL ≠ PUBLIC** 这条守住了：PERSONAL 是 gated，PUBLIC 不是。
+
+### 本轮硬停线：AUTHORIZATION EXISTS / CONSUMPTION DOES NOT
+
+构造一个 pure-core `ALLOW` + 真实 store 里真有一条 SECRET 之后：
+
+| 断言 | 结果 |
+|---|---|
+| 真实 `composeSide(A→B)` | **逐字节不变** |
+| 真实 `composeSide(B→A)` | **逐字节不变**（两个方向是两份 prompt，都要测） |
+| 真实 `run/turn`（**两个独立子进程**对照） | 模型调用次数相同、逐条 messages 不含秘密 |
+| 真实 `memories → buildMemoryContext` | 输出**逐字节相同** |
+| 结果对象本身 | 不含正文（ALLOW 与 DENY 两个方向都测） |
+
+变异 MU-E 反向证明这套断言有鉴别力：一旦在 `ALLOW` 之后"顺手"把事实复制进
+`memories`，同一条断言**立刻变红**。
+
 ## Deferred
 
 - **Relationship Consequences**：**Phase 4A（familiarity → 开场）已落地**；
@@ -349,12 +475,33 @@ character-owned store），结论与理由见 [DECISIONS.md](DECISIONS.md) D30�
   **Phase 4B-1.2（人类显式写入路径）已落地**（`disclosure-authoring-core.js` +
   `disclosure-store.js` + 角色编辑器的「私密事实」小节 + 独立 store
   `disclosureFacts`，DB_VER 23→24；**写入路径存在、读取路径仍不存在**，见 D30）；
-  仍缺 **Phase 4B-2（authorization / filtering）** 与 **Phase 4C（affinity / 语气）**，
+  **Phase 4B-2A（授权判定核）已落地**（`disclosure-authorization-core.js`：
+  `authorize()` / default deny / reasonCode 闭集 / 有向 / grant 契约；
+  **授权存在、消费不存在**，见 D31）；
+  仍缺 **Phase 4B-2B（prompt integration / filtering）** 与 **Phase 4C（affinity / 语气）**，
   设计候选见 Phase 4 审计文档与下节，**未实现**。
-- **Disclosure authorization**：`disclosure-core.js` 里**刻意不存在**
-  `authorize()` / `filter()` / `canDisclose()` —— 授权的输入（`speakerId` / `peerId` /
-  有向关系）和输出（哪些事实能进模型上下文）都还没有实现，且 **`trust` 完全未接入**。
+- **Disclosure consumption（4B-2B）**：**未实现，且是本轮硬停线**。
+  授权核已经能回答「A 的这条事实能不能告诉 B」，但**没有任何东西消费那个答案** ——
+  真实 `composeSide` 在 `ALLOW` 之后仍然逐字节看不到那条事实。
+  `disclosure-core.js` / `disclosure-authoring-core.js` 里**刻意没有**
+  `authorize()` / `filter()` / `canDisclose()`（授权在独立核里），
+  授权核里**刻意没有** `filter()` / `selectDisclosable()` / `buildPrivateFactsBlock()`
+  （"挑出能说的几条"是 prompt 装配，属于第四个问题）。
   **今天没有任何一档是模型可见的**（`PERSONAL` / `PRIVATE` / `SECRET` 全部 = 看不到）。
+- **生产 grant 写入路径**：**未实现，且是有意的**。授权核接受 grant 作为**输入**，
+  但整个 `assets/js` 里**没有任何地方**能造出一条 grant ——
+  没有 UI、没有 store、`recipientCharacterId` 只出现在授权核自己身上。
+  因此 `CONTRACT CAN REPRESENT ALLOW = YES` / `PRODUCTION CAN CREATE ALLOW = NO`。
+  真实入口（谁在什么界面里为哪一对角色写下许可）需要它自己的决策。
+- **grant 的持久化与生命周期**：**未持久化**。grant 的形状与判定已经有了契约，
+  但"存哪里 / 删除 fact 时级联 / 换机迁移 / 备份是否进明文"全部是**独立决策**
+  （`disclosureFacts` 自己就因为"明文备份"这个问题而刻意不进导出名单）。
+  本轮**没有**为了对称而新增第二个 IndexedDB store，DB_VER 仍是 24。
+- **更细粒度的授权**：**未做**。PRIVATE 与 SECRET 要求的是**同一种** explicit
+  per-fact recipient grant，**没有** permission hierarchy、没有按等级分级的授权类型、
+  没有 deny override、没有"授权到某个时间点"。没有证据支持就先不发明。
+- **`SECRET` 是否需要比 `PRIVATE` 更强的授权**：**未回答**，见上一条。
+  今天的答案就是"两者要求同一种 grant"，差异留给消费阶段。
 - **Disclosure candidate 流程（模型候选 → 人类确认）**：`human_confirmation` 的**语义**
   已在契约里，但 candidate 的产生、展示与确认**全部未实现**，也没有任何模型调用被接入。
 - **`human_confirmation` 的 UI**：**未实现**。人类确认是一条**独立权威值**（与

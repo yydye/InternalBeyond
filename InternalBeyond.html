@@ -3202,6 +3202,15 @@ i would like the room to be enough.
 <script src="assets/js/disclosure-core.js"></script>
 <script src="assets/js/disclosure-authoring-core.js"></script>
 <script src="assets/js/disclosure-store.js"></script>
+<!-- 披露**授权**（Phase 4B-2A）：一个纯函数判定核，回答「A 的这条事实能不
+     能告诉 B」。它与上面三层的关系是**并列**而不是叠加：
+       · 它工厂期读 disclosure-core（形状/enum），**不读** authoring-core、
+         **不读** disclosure-store —— 判定不读盘，输入是一条 fact **值**。
+       · 它**不被任何模型上下文构建器引用**。今天"授权 = ALLOW"与
+         "模型看得到"是两件事：4B-2B 才把门接到模型房间，而那件事未做。
+     因此它加载在 store 之后、role-dm 之前是**刻意**的：位置本身就是
+     "判定核在两侧之间，但不属于任何一侧"的书面记录。 -->
+<script src="assets/js/disclosure-authorization-core.js"></script>
 <script src="assets/js/role-dm-core.js"></script>
 <script src="assets/js/role-dm.js"></script>
 <script src="assets/js/role-dm-social-core.js"></script>

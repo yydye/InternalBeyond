@@ -982,6 +982,9 @@ PRODUCTION DISCLOSURE WRITER = 0
 ### 非目标（本轮明确不做）
 
 - **不做授权、不做过滤**：没有 `authorize()` / `filter()` / `canDisclose()`。
+  （4B-2A 起，`authorize()` 存在于**另一个**文件 `disclosure-authorization-core.js`，
+  见 D31 —— 本条仍然成立：disclosure-core 自己至今没有授权函数，
+  而 `filter()` / `canDisclose()` 至今**哪里都没有**。）
 - **不把 disclosure fact 注入 Role DM prompt**。
 - **不让模型自动抽取披露事实**、**不实现 candidate 生成**、**不实现
   `human_confirmation` UI**。
@@ -1044,3 +1047,179 @@ D30 只新增**写入路径**：它把 D29 里那个"预留但不存在"的 `hum
 **最终原则**：先建立一个**真正存在的秘密**，再讨论这个秘密应该告诉谁。
 反过来先造一套精密的 trust gate，然后发现门后面什么都没有 —— 那正是 4B-0
 审计证明过的状态。
+
+## D31. 披露授权是**显式且有向**的；关系分数不是权威（Phase 4B-2A，2026-09-15）
+
+### 背景
+
+D28 定义了形状、D29 定义了资格、D30 建立了第一条写入路径。到 4B-2A 之前，
+"这条秘密该不该告诉 B"**一个字都没有回答**：`disclosure-core.js` 里刻意不存在
+`authorize()` / `filter()` / `canDisclose()`，导出表里找不到这些名字是刻意的
+（"未实现"应当是**找不到函数**，不是"有个函数永远返回 true"）。
+
+本轮先做**只读的 recipient authority 审计**，逐个检查七个候选：
+
+| 候选 | 有没有字段能表达"这条可以告诉 B，但不能告诉 C"？ | 结论 |
+|---|---|---|
+| canonical disclosure record（9 字段） | **没有**。`factId`/`ownerCharacterId`/`level`/`text`/`source`/`authority`/`authoredBy`/`subjectCharacterId`/`updatedAt` —— 全部回答"这是什么 / 谁负责"，没有一个回答"谁可以知道" | **否定** |
+| `disclosure-authoring-core.js` | **没有**。它管 owner 绑定、保留键、可变面；`MUTABLE_FIELDS` 是 `text`/`level`/`subjectCharacterId` | **否定** |
+| `disclosure-store.js` | **没有**。四个操作按 owner 分区，没有 recipient 维度 | **否定** |
+| Memory ACL（`memory-visibility-core.js`，**作为反例**） | `visibility:'only'` + `visibleTo` 能表达"只有 A 能读"，但那是**消费方 ACL**，不是**披露对象**：它没有方向（不是 A→B），`createdBy` 也不是 owner，而且 `memory.js:1525` 处**模型自己在 JSON 里选 `visibility`** | **不可复用** |
+| Role DM relationship | **没有**。`buildRelationRecord` 的字段是 `trust`/`familiarity`/`affinity`/`observations`/`dmCount`/`lastDmAt` —— 全是 inferred behavioral state，没有 per-fact 许可 | **否定** |
+| `publicProfile` | **没有**。它是构造式**公开**白名单（"允许公开"的定义本身） | **否定** |
+| thread participants | **没有**。它表达"这个群里谁在"，不是"谁能知道 A 的哪一条事实" | **否定** |
+| 角色编辑器 UI | **没有**。表单字段是 `systemPrompt`/`relationship`/`publicProfile` + 「私密事实」三档等级；没有任何"告诉谁"的输入 | **否定** |
+
+```
+EXISTING DISCLOSURE RECIPIENT AUTHORITY = NO
+```
+
+⇒ 4B-2A 需要一份**最小的 recipient grant 契约**。
+
+### 决策
+
+1. **`DISCLOSURE AUTHORIZATION CORE = assets/js/disclosure-authorization-core.js`**
+   （`window.IBDisclosureAuthorizationCore`）。UMD 双载、纯函数、零 IO、零模型调用。
+   它是**唯一**的判定入口：`authorize(fact, context) → { allowed, reasonCode }`。
+   `disclosure-core.js` / `disclosure-authoring-core.js` 在本轮**一个字节都没改**
+   （由 `git diff --name-only HEAD` 在测试里逐字节证明）。
+2. **四个维度：owner / recipient / level / explicit grant**，缺一不可。
+   **`source` / `authority` / `authoredBy` 不是 recipient authorization** ——
+   它们回答"这条事实从哪来 / 谁负责"，不是"谁可以知道"。一条人类亲手写下、
+   完美授权的事实**照样**需要一条 grant 才能告诉别人。
+3. **关系分数不是授权权威，且这是源码级禁止而不是纪律**：
+   授权核去注释/去字符串后对 `trust` / `affinity` / `familiarity` / `dmCount` /
+   `relationship` / `toneCounts` / `initiative` / `intent` / `memorandum` /
+   消息历史**零引用**（测试 S1/S2 逐项断言）。理由不是洁癖：它们全是
+   inferred / behavioral state，而披露对象是用户**显式**写下的敏感事实；
+   当前 trust 可达范围 `[0.5, 1.0]`、单向棘轮、无 decay，其 writer 读的是
+   **本侧自己说的话** —— 它连"对方做了什么"都不是。
+   测试另有 MUT-A「trust ≥ 0.7 ⇒ ALLOW」变异的变红证明。
+4. **Memory ACL 不能授权，且不能借用**：`visibility:'only', visibleTo:[B]` 的
+   Memory 行在授权核里被 `invalid-fact` **整体拒绝**（`visibility` 是 core 名单
+   之外的键，由授权核自己补上）。`MUTABLE`/`createdBy` 同理。
+5. **DEFAULT DENY + 唯一 ALLOW 路径**。`ALLOW_REASONS` 恰好是 `['explicit-grant']`；
+   畸形 fact / 缺 owner / 缺 factId / 缺 recipient / 未知 level / `PUBLIC` /
+   畸形 grant / 无匹配 grant **全部 DENY**。
+   **未知 level 绝不回落成任何真实档位**（15 种大小写变体/非字符串逐个测），
+   也**不是**"默认 PERSONAL"。
+6. **本模块从不 throw**，包括 `disclosure-core` 抛的时候。测试用一个
+   "访问即抛"的 getter 抓出过一个真实缺口：core 的归一化会**读取**输入字段，
+   因此敌意对象能让它抛。修法是在**边界**上加一层显式允许名单（`SAFE_DC`），
+   把 core 的异常转成一条明确的拒绝 —— 而不是给冻结面加 try/catch，也不是
+   删掉那条断言。
+7. **授权是有向的**：A→B 的许可不是 A→C 的，也不是 B→A 的，也不能由 B 转述给 C
+   （判定输入里根本没有"当前说话人"这个维度）。三人矩阵 A→B ALLOW / A→C DENY /
+   B→A DENY 由一条断言钉住。
+8. **`recipient === owner` 不是披露**：拒因 `recipient-is-owner`。仓库里不存在
+   self-DM，因此**不为理论完整性发明一种 A→A 行为**。
+9. **grant 是 ALLOW-only、per-fact、per-recipient 的显式人类许可**：
+   `{ factId, ownerCharacterId, recipientCharacterId, permission:'disclose',
+   authority, levelAtGrant }`。
+   - **没有 ALLOW/DENY 双状态**：默认已经 DENY，再加一层 deny override 只会
+     制造"两次拒绝、一次允许"的优先级问题，而今天没有任何真实数据需要它
+     （需要时按证据增加，而不是先发明再找理由）。
+   - **`permission` 是封闭单值 `disclose`**：PRIVATE 与 SECRET 要求的是**同一种**
+     grant。**刻意不发明 permission hierarchy** —— 没有证据支持"SECRET 需要比
+     PRIVATE 更强的 grant 类型"。
+   - **`authority` 必须是人类权威**：`derived` grant（模型自己说"可以告诉她"）
+     是**无效 grant**，不是"弱一点的 grant"。
+   - **`levelAtGrant` 是许可的范围**：缺失/非法 ⇒ `invalid-grant`（残缺的授权不是
+     授权，fail closed）；低于 fact 当前等级 ⇒ `grant-level-stale`。
+10. **PERSONAL 仍需 recipient grant**（本轮第一次回答这个问题）。
+    冻结文档写了 PERSONAL 的 audience 是「角色自己；亲近者可了解」，但**没有回答
+    "谁是亲近者"**。唯一现成的定义来自 `trust` / `familiarity` / `affinity` ——
+    而这三个正是 D28/D29 已经证明没有资格担任披露权威的 inferred state。
+    用不够格的信号去定义"亲近者"，等于把授权重新变成推断。因此选择最保守、
+    且与"explicit human authority"原则一致的行为：**三档都要求同一个 explicit
+    per-fact recipient grant**，差异留给消费阶段。**PERSONAL ≠ PUBLIC** 守住。
+11. **`PUBLIC` 不可经本契约放行**（拒因 `level-not-authorizable`）：
+    公开权威是 `public-profile-core.js` 的构造式白名单。注意类型层与授权层不矛盾：
+    `isClassified('PUBLIC') === true`（边界语义），而 `PUBLIC` 不可授权（路径资格）。
+12. **grant 的拒绝是"整次"，不是"跳过"**：列表里混进一条畸形 grant ⇒ 整次
+    判定 `invalid-grant`，而不是"用那条合法的放行"。理由与 `denylistHits` 同款：
+    调用方以为自己提交了一份许可，而系统"没看见"它，比明确报错危险得多。
+13. **生命周期**：fact 删除 ⇒ 授权不可再成立；正文修改 ⇒ grant 仍有效
+    （绑定 `factId` 这个**身份**，不是内容）；level PRIVATE→SECRET ⇒
+    `grant-level-stale`（**不静默续期**）；level SECRET→PRIVATE ⇒ 仍有效；
+    `subjectCharacterId` 变更 ⇒ 仍有效（subject 不是收件人）；owner 变更 ⇒
+    不可能（不可变，见 D30 §8）。
+14. **授权结果里没有任何事实内容**：六个键的闭集，没有 `text` / `prompt` /
+    `persona` / `systemPrompt` / `Memory` / `apiKey` / 任何分数；
+    **不新增任何运行时 trace**（源码里没有 trace / console 出口）。
+15. **`PRODUCTION GRANT WRITER = 0`，且本轮不制造假的**。
+    授权核接受 grant 作为**输入**，但整个 `assets/js` 里没有任何地方能造出一条
+    grant：没有 UI、没有 store、`recipientCharacterId` 只出现在授权核自己身上
+    （测试 V1/V3/Z3 在**全仓库**范围内断言）。因此报告必须把两件事分开：
+    ```
+    CONTRACT CAN REPRESENT ALLOW = YES
+    PRODUCTION CAN CREATE ALLOW  = NO
+    ```
+    测试可以用 fixture 构造 ALLOW，**但报告不得因此声称授权功能"已上线"**。
+16. **不新增第二个 IndexedDB store**：grant **不持久化**，DB_VER 仍是 24。
+    先把语义分离（fact truth ≠ recipient authorization），但**不为了架构漂亮**
+    马上造一张表 —— 存储 / 级联 / 明文备份是它自己的一组决策。
+17. **AUTHORIZATION EXISTS / CONSUMPTION DOES NOT**：本轮是 hard boundary 的
+    **门锁逻辑**，不是"把门接到模型房间"。即使 `authorize()` 返回 `ALLOW`，
+    真实 `composeSide` 仍**逐字节**看不到那条事实。
+
+### 非目标（本轮明确不做）
+
+- **不进入 prompt**：不接 `composeSide`、不改 Role DM prompt、不做 filtering。
+- **不读 trust / affinity / familiarity / dmCount / relationship / toneCounts /
+  initiative / intent / memorandum / recent messages**；不改 relationship 数值；
+  不做 decay / negative trust。
+- **不读 Memory ACL**（只作为反例审计），不建立任何自动映射。
+- **不实现 LLM authorization judge**；不新增任何模型调用。
+- **不实现模型 candidate / `human_confirmation` UI**。
+- **不实现 grant 的持久化 / UI / 级联**。
+- **不做 permission hierarchy / deny override / 时效授权**。
+- 不碰 M3 / RCI-2 / scheduler / Economy / installer / VERSION / dist。
+
+### 验证
+
+`tests/test_disclosure_authorization.js`（**202 绿 / 0 红**，0 次真实模型调用）：
+
+- **契约层（A–U）**：default deny 的四类畸形输入、recipient 的 7 种缺失/畸形形态、
+  level 的 15 种未知变体、PUBLIC、三档 × grant 矩阵、有向性三人矩阵、
+  grant 的 23 条畸形形态、grant 生命周期 9 条、trust/familiarity/affinity/
+  `dmCount`/自主 intent 分数全满、Memory ACL 5 条、provenance 11 条、
+  结构性（零关系信号引用 / 零 IO / 零 `Date.now` / 无 `throw` / 结果键与原因码闭集）、
+  结果无正文、幂等与纯函数性。
+- **真实生产路径（X/Y/Z）**：真实 `createFact` 造出的记录过同一个判定核；
+  真实 `role-dm.js` 的 `composeSide` 在「真实 SECRET + pure-core ALLOW」之后
+  **两个方向都逐字节相同**；真实 `run/turn` 在**两个独立子进程**里
+  模型调用次数相同、逐条 messages 不含秘密。
+- **6 组变异**：`MUT-A` trust ≥ 阈值 ⇒ ALLOW、`MUT-B` 缺 grant ⇒ ALLOW、
+  `MUT-C` grant 忽略 recipient、`MUT-D` `visibility:'only'` 当授权、
+  `MUT-E` ALLOW 后自动进 memories（**实测会让 §Y 的断言变红**）、
+  `MUT-F` 未知 level 回落 PERSONAL。每一组都**先把变异真的造出来**，
+  再证明正常实现不走那条路。
+
+**测试自我纠错记录**（写下来是因为"绿得没有内容"的断言比红的更危险）：
+第一轮 17 条红里有 12 条是**测试自己写错了输入/期望**，逐条查证后改的是**断言**，
+不是实现；另外 **1 条是真实缺口**（`describeDecision` 读取调用方对象的 getter 会抛，
+而契约说"从不 throw"）—— 那一条改的是**实现**（`tryRead`）。
+两个方向都记在这里，不混为一谈。
+
+被**有意改写**的既有断言：`test_disclosure_core.js` 的 **N3 / N4** ——
+它们原本把引用 `IBDisclosureCore` 的文件白名单写死为三个、加载顺序写死为三步。
+4B-2A 增加了第四个文件，前提因此改变。改写方向是**加强**：N3 的白名单仍然
+**封闭**（多一个文件就红），并追加"模型侧消费链**也不得**引用授权核"；
+N4 追加了授权核的位置（在 store 之后、role-dm 之前）。
+D28/D29/D30 的真正冻结面（J5 / J8 / N1 / N2 / C8 等）**一个字都没改**。
+
+### 与 D28 / D29 / D30 的关系
+
+四者**结论全部保持不变**，且各自负责一个不同的问题：
+
+| 决策 | 回答的问题 | 载体 |
+|---|---|---|
+| D28 | 这条记录是什么形状？敏感度从哪里来？ | `disclosure-core.js` 类型层 |
+| D29 | 谁有资格说"这是本角色的秘密"？ | `disclosure-core.js` authority 维 |
+| D30 | 谁能**造出**一条秘密？ | `disclosure-authoring-core.js` + store + UI |
+| **D31** | 谁**被允许知道**这条秘密？ | `disclosure-authorization-core.js` |
+
+**最终原则**：事实是否真实、谁对事实负责、谁被允许知道事实、模型这一次是否
+应该看到事实，是**四个不同的问题**。D31 只回答第三个 —— 而第四个（prompt
+integration）连一行代码都还没有，并且是被明确禁止开始的下一步。
