@@ -530,7 +530,7 @@
       delete _charInFlight[initiatorId];
       delete _charInFlight[peerId];
     }
-    /* ③ 记账：**这次真的聊起来了才记**（res.ok === true，即 turnsDone > 0）。
+    /* ③ 记账：**这次真的聊起来了才记**（res.ok === true，即 turns > 0）。
        两个半真的失败必须被排除：
          · 被守卫拒绝（上面两处 early return）—— 什么都没发生，不记账；
          · 发起于守卫之后但**一轮都没说成**（stopReason=provider-failed /
@@ -591,14 +591,18 @@
           ? reason
           : ((c && c.REASON && c.REASON.providerFailed) ? c.REASON.providerFailed : 'provider-failed'),
         runId: str(failedRec.runId || ''),
-        turns: Number(failedRec.turnsDone) || 0,
+        /* 字段名必须是 run 结果的**对外**字段名 turns。
+           这里一度写成 turnsDone（run 内部局部变量的名字，不在返回对象里）
+           → 每条 trace 的轮数恒为 0，而且没有任何断言会红：一个恒为常量
+           的观测字段，比缺这个字段更坏。 */
+        turns: Number(failedRec.turns) || 0,
         stopReason: str(failedRec.stopReason || reason)
       });
     }
     return audit(decision, now, {
       initiated: true,
       runId: str(res.runId || ''),
-      turns: Number(res.turnsDone) || 0,
+      turns: Number(res.turns) || 0,
       stopReason: str(res.stopReason || ''),
       firstSpeakerId: str(res.firstSpeakerId || '')
     });

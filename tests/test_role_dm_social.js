@@ -592,6 +592,11 @@ reset();
   CALLS.length = 0;
   const r = await RD.startAutonomous('friend_aaa', 'friend_bbb', { initiatorId: 'friend_aaa', turns: 2, force: true });
   check('26·setup run 成功', r.ok === true, r);
+  /* run 结果里描述轮数的字段名**是** turns。审计层曾去读 res.turnsDone
+     （一个不存在的字段）→ 每条 trace 的轮数恒为 0 而没有任何断言会红。
+     这条钉住字段名本身，41·setup2 钉住审计确实读到了真值。 */
+  check('26·setup2 run 结果暴露 turns，不暴露 turnsDone（turnsDone 不是对外契约）',
+    r.turns === 2 && Object.prototype.hasOwnProperty.call(r, 'turnsDone') === false, [r.turns, Object.keys(r)]);
   check('26a. 两个角色各自用自己的 provider（不共享）',
     CALLS.map(c => c.provider).join(',') === 'anthropic,qwen', CALLS.map(c => c.provider));
   check('26b. model 也各自独立', CALLS.map(c => c.model).join(',') === 'claude-x,qwen-plus', CALLS.map(c => c.model));
@@ -693,6 +698,31 @@ reset();
   check('27b-10. 对应的 trace reasonCode 也是 empty-output', !!traceE && traceE.reasonCode === C.REASON.emptyOutput, traceE);
   check('27b-11. 空的 run 不进"主动聊过一次"的账（账面上她没聊成）',
     RS._state().globalUsedToday.length === 0, RS._state().globalUsedToday);
+  /* 失败那条 trace 的轮数同样来自真实的 run 结果（字段名 turns）。
+     这一条**不是** 27b-10 的重复：就算审计又把字段名写错，这里仍然会
+     是 0 —— 所以它真正钉的是"失败路径也走同一个字段名"，而 41·setup2
+     钉的是"成功路径读得到真值"。两条合起来才排除"恒为 0 也算过"。 */
+  check('27b-12. 失败 trace 的轮数与真实 run 结果一致（字段名是 turns）',
+    !!traceE && traceE.turns === 0, traceE && traceE.turns);
+  /* 失败路径同样只暴露 turns —— "字段名只有一个"是一条**双向**契约：
+     光有成功路径的断言不足以排除"失败路径另写一个名字"。
+     这个探针必须**真的走到 run**：在 27b 这一块里角色正处在失败退避中，
+     直接再发起只会拿到闸门的拒绝对象 {ok,reason,blockedBy}（它压根没有
+     轮数这个概念）—— 拿它断言字段名等于在测一个没跑起来的路径。
+     所以这里重建一个干净场景，让 provider 在**第一轮**就失败。 */
+  reset();
+  await makeAcquainted('friend_aaa', 'friend_bbb', { turns: 2 });
+  setRelation('friend_aaa', 'friend_bbb', { familiarity: 0.85, affinity: 0.85, trust: 0.8, dmCount: 6 });
+  armForInitiation('friend_aaa', 'friend_bbb');
+  RS.setCharacterPrefs('friend_aaa', { enabled: true, initiative: 0.9 });
+  failFor = 'friend_aaa';
+  const probeFailed = await RD.startAutonomous('friend_aaa', 'friend_bbb', { initiatorId: 'friend_aaa', turns: 2, force: true });
+  failFor = null;
+  check('27b-13. 失败的 run 结果同样只暴露 turns，没有 turnsDone',
+    probeFailed.ok === false && probeFailed.stopReason === 'provider-failed' &&
+    Object.prototype.hasOwnProperty.call(probeFailed, 'turns') === true &&
+    Object.prototype.hasOwnProperty.call(probeFailed, 'turnsDone') === false,
+    [probeFailed.ok, probeFailed.stopReason, Object.keys(probeFailed)]);
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -909,6 +939,15 @@ reset();
   CALLS.length = 0; TRACES.length = 0; RS._trace(0);
   const started = await RS.tick({ now: armAt, force: true });
   check('41·setup 本块确实发起了一次（否则下面的断言没有意义）', started.initiated === 1, started);
+  /* 这次 run 真的说成了话，所以 trace 里的轮数必须是**真的那个数**。
+     钉这条的理由不是"多一个字段"：run() 返回的字段名是 turns，
+     而审计一度去读 res.turnsDone（不存在的字段）→ 每条 trace 的轮数
+     恒为 0，且**没有任何断言会红**。一个恒为常量 0 的观测字段比没有
+     这个字段更坏：它会让"她主动聊了 0 轮就停了"看起来像事实。 */
+  const runTraces = RS._trace(50).filter(t => t.decision === 'initiate');
+  const okTrace = runTraces.pop();
+  check('41·setup2 成功发起的那条 trace 轮数是真的（run 结果字段名 turns）',
+    !!okTrace && okTrace.turns === 2, okTrace && okTrace.turns);
   RS.computeIntent('friend_ccc', { now: armAt });   /* 也产生一条 no-action */
   const dump = JSON.stringify(RS._trace(50));
   check('41a. trace 里有记录', RS._trace(50).length >= 1, RS._trace(50).length);
