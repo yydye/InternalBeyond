@@ -211,6 +211,27 @@ const api = http.createServer(async (req, res) => {
       assert.equal(await evaluate(cdp, `typeof window._diaryModelCall==='function' && IB.active.diary._diaryModelCall===window._diaryModelCall`), true, '接缝必须唯一（双挂载同一函数）');
     });
 
+    /* RCI-1.1：diary 的 reasoningTrace 必须能回答"这是哪个角色的日记调用"。
+       三个日记角色（cd_anth/cd_gem/cd_oai）的 planner 与 generation 都产生记录：
+       每条都必须带自己的 cfg.id —— 同 provider/model 的两个角色（这里 cd_oai 与任何其它
+       openai 消费者）**不能**靠 provider/model 区分，只有 characterId 能。 */
+    await check('diary trace 归因到具体角色（characterId = cfg.id · planner + generation）', async () => {
+      const out = await evaluate(cdp, `(function(){
+        var t=(window.IBModelCore&&typeof IBModelCore.reasoningTrace==='function')?IBModelCore.reasoningTrace(100):[];
+        var d=t.filter(function(r){return r.consumer==='diary'});
+        return {n:d.length,ids:d.map(function(r){return r.characterId}),rows:d.map(function(r){return [r.characterId,r.provider,r.model]})};
+      })()`);
+      assert.ok(out.n >= 6, 'diary 必须产生 trace 记录（planner+generation × 3 角色）：' + JSON.stringify(out));
+      assert.ok(out.ids.indexOf('') < 0, 'diary 的每条 trace 记录都必须带角色 id：' + JSON.stringify(out.rows));
+      for (const id of ['cd_anth', 'cd_gem', 'cd_oai'])
+        assert.ok(out.ids.indexOf(id) >= 0, 'diary 调用必须能归因到角色 ' + id + '：' + JSON.stringify([...new Set(out.ids)]));
+      /* 归因必须来自角色身份而不是 provider/model：cd_oai 的 provider/model 与其它
+         openai 消费者同形，仍必须只被算到 cd_oai 名下。 */
+      const oai = out.rows.filter(r => r[0] === 'cd_oai');
+      assert.ok(oai.length > 0 && oai.every(r => r[1] === 'custom' && r[2] === 'cd-oai-model'),
+        'cd_oai 的记录必须自带其 provider/model（同时证明归因不是从 provider/model 反推的）：' + JSON.stringify(oai));
+    });
+
     await check('planner contract 与 direct 等价（body + 执行器选项）', async () => {
       const from = captured.length;
       const probe = await evaluate(cdp, `(async function(){
@@ -218,7 +239,7 @@ const api = http.createServer(async (req, res) => {
         var msgs=[{role:'system',content:'CONV_SYS'},{role:'user',content:'CONV_PLAN_PROBE'}];
         var opts={maxTokens:300,timeoutMs:60000,wantMeta:false,jsonMode:true,_noWebSearch:true,disableTools:true};
         var orig=window.callApiChat,seen=[];
-        window.callApiChat=function(c,m,o){o=o||{};seen.push({maxTokens:o.maxTokens,timeoutMs:o.timeoutMs,wantThinking:!!o.wantThinking,disableTools:o.disableTools,jsonMode:o.jsonMode,noWebSearch:o._noWebSearch});return orig.apply(null,arguments)};
+        window.callApiChat=function(c,m,o){o=o||{};seen.push({maxTokens:o.maxTokens,timeoutMs:o.timeoutMs,wantThinking:!!o.wantThinking,disableTools:o.disableTools,jsonMode:o.jsonMode,noWebSearch:o._noWebSearch,consumer:o._ibConsumer,characterId:o._ibCharacterId});return orig.apply(null,arguments)};
         try{
           window.runtimeDiaryExecuteEnabled=true;var a=await _diaryModelCall(cfg,msgs,opts,{kind:'planner'});
           window.runtimeDiaryExecuteEnabled=false;var b=await _diaryModelCall(cfg,msgs,opts,{kind:'planner'});
@@ -227,7 +248,9 @@ const api = http.createServer(async (req, res) => {
       })()`);
       assert.equal(probe.same, true);
       assert.deepEqual(probe.opts[0], probe.opts[1], 'planner 执行器选项必须一致');
-      assert.deepEqual(probe.opts[0], { maxTokens: 300, timeoutMs: 60000, wantThinking: false, disableTools: true, jsonMode: true, noWebSearch: true });
+      assert.deepEqual(probe.opts[0], { maxTokens: 300, timeoutMs: 60000, wantThinking: false, disableTools: true, jsonMode: true, noWebSearch: true, consumer: 'diary', characterId: 'cd_oai' });
+      assert.equal(probe.opts[0].characterId, 'cd_oai');
+      assert.equal(probe.opts[0].consumer, 'diary');
       const reqs = reqsFor(from, 'oai', 'CONV_PLAN_PROBE');
       assert.equal(reqs.length, 2);
       assert.deepEqual(reqs[0].body, reqs[1].body, 'planner 请求体必须逐字段一致');
@@ -259,8 +282,29 @@ const api = http.createServer(async (req, res) => {
       assert.equal(all.length, 1, 'diary.js 只应保留 _diaryModelCall 内的 direct 回退，实际 ' + all.length);
       const seam = src.slice(src.indexOf('async function _diaryModelCall('), src.indexOf('/* 主生成管线'));
       /* P11-FIX：接缝内的 direct 回退在 opts 前追加诊断用 _ibConsumer（不进请求体），
-         仍是唯一 direct 调用；此处锁死"只有这一处、且在接缝内"。 */
-      assert.ok(seam.includes("callApiChat(cfg,messages,Object.assign({_ibConsumer:'diary'},opts))"), '唯一 direct 调用必须在接缝内');
+         仍是唯一 direct 调用；此处锁死"只有这一处、且在接缝内"。
+         RCI-1.1：同一处必须携带角色身份 _ibCharacterId（= 接缝内的 cfg.id，**不是**常量、
+         不是昵称、不是 provider/model）—— 否则 diary 的 trace 记录无法回答
+         "这是哪个角色的日记调用"。 */
+      const directLiteral = "callApiChat(cfg,messages,Object.assign({_ibConsumer:'diary',_ibCharacterId:_ibCharId},opts))";
+      assert.ok(seam.includes(directLiteral), '唯一 direct 调用必须在接缝内且携带 _ibCharacterId');
+      assert.ok(seam.includes("const _ibCharId=String((cfg&&cfg.id)||'');"), '角色身份必须取自本域权威 cfg.id');
+      /* 敏感性证明（真变异测试）：把接缝原文逐条改坏，同一判定必须变红。 */
+      const anchor = "const _ibCharId=String((cfg&&cfg.id)||'');";
+      const matches = s => s.includes(directLiteral) && s.includes(anchor);
+      assert.equal(matches(seam), true, '正例必须绿');
+      const mutants = {
+        '去掉 _ibCharacterId': "callApiChat(cfg,messages,Object.assign({_ibConsumer:'diary'},opts))",
+        '写成固定值': "callApiChat(cfg,messages,Object.assign({_ibConsumer:'diary',_ibCharacterId:'diary'},opts))",
+        '写成错误角色来源（model 冒充 id）': "callApiChat(cfg,messages,Object.assign({_ibConsumer:'diary',_ibCharacterId:String((cfg&&cfg.model)||'')},opts))"
+      };
+      for (const label of Object.keys(mutants)) {
+        assert.equal(matches(seam.replace(directLiteral, mutants[label])), false, '变异体必须变红（匹配器失效）：' + label);
+      }
+      assert.equal(matches(seam.replace(anchor, "const _ibCharId=String((cfg&&cfg.model)||'');")), false,
+        '身份来源被换成非 cfg.id 时必须变红');
+      assert.ok(!seam.includes("_ibCharacterId:'diary'") && !seam.includes("_ibCharacterId:String((cfg&&cfg.model)"),
+        '接缝内不得出现固定值/错误来源的角色身份');
       assert.ok(!/await callApiChat\(/.test(src.replace(seam, '')), '接缝之外不得再有 await callApiChat');
     });
 

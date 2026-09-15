@@ -216,14 +216,19 @@ function _diaryExecLog(cfg,rec,meta){
     console.info('[Diary] model executor',record);
   }catch(e){}
 }
-/* meta（可选第 4 参）只用于 telemetry 区分调用点（kind），绝不进入执行器 opts */
+/* meta（可选第 4 参）只用于 telemetry 区分调用点（kind），绝不进入执行器 opts。
+   RCI-1.1 身份：consumer 恒为 'diary'（planner / generation 共用，不制造碎片 consumer），
+   角色身份由 characterId 表达 = cfg.id（**本域唯一权威**：cfg 就是本次日记 owner 的角色配置，
+   planner 与 generation 两条路径拿到的都是同一个 cfg；拿不到才写 ''）。
+   两者都只是诊断 metadata，绝不进入 provider 请求体。 */
 async function _diaryModelCall(cfg,messages,opts,meta){
+  const _ibCharId=String((cfg&&cfg.id)||'');
   opts=opts||{};
   if(opts.signal&&opts.signal.aborted){var ae=new Error('已中止');ae.name='AbortError';ae.kind='abort';throw ae}
   const runtime=_diaryRuntimeInstance(),gate=_diaryRuntimeGate(),jsonMode=!!opts.jsonMode;
   if(!(gate&&runtime)){
     const reason=gate?'runtime_unavailable':'gate_disabled',t0=Date.now();
-    const raw=await callApiChat(cfg,messages,Object.assign({_ibConsumer:'diary'},opts));/* opts 逐字段原样，仅追加诊断用 _ibConsumer（不进请求体） */
+    const raw=await callApiChat(cfg,messages,Object.assign({_ibConsumer:'diary',_ibCharacterId:_ibCharId},opts));/* opts 逐字段原样，仅追加诊断用 _ibConsumer/_ibCharacterId（不进请求体） */
     _diaryExecLog(cfg,{executor:'direct',format:_diaryFormat(cfg,null),jsonMode:jsonMode,
       usage:'unavailable',abortMode:'none',abortReason:'',fallbackReason:reason,ok:true,ms:Date.now()-t0},meta);
     return raw;
@@ -237,7 +242,7 @@ async function _diaryModelCall(cfg,messages,opts,meta){
   let abortReason='',outcome;
   try{
     outcome=await runtime.execute(
-      {consumer:'diary',spec:spec,messages:messages,jsonMode:jsonMode,budget:(opts.maxTokens!=null?opts.maxTokens:null),executor:executor},
+      {consumer:'diary',characterId:_ibCharId,spec:spec,messages:messages,jsonMode:jsonMode,budget:(opts.maxTokens!=null?opts.maxTokens:null),executor:executor},
       {signal:opts.signal||undefined,onEvent:function(ev){if(ev&&ev.type==='error'&&ev.kind==='abort'&&!abortReason)abortReason='abort'}}
     );
   }catch(e){

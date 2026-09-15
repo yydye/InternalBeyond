@@ -156,7 +156,14 @@
                    'diary' / 'moments' / 'active.proactive' / 'memory_consolidation' 等，取自调用方
                    自己的执行上下文（不是页面、不是 prompt 文本、不是调用栈）。唯一用途是让
                    [IB Cache Audit] 按请求流隔离 baseline；Runtime 不解释其语义、不写回 outcome，
-                   也绝不进入 provider 请求体（只作为 callOpts._ibConsumer 传给执行器）。 */
+                   也绝不进入 provider 请求体（只作为 callOpts._ibConsumer 传给执行器）。
+     · characterId —— RCI-1.1：与 request.consumer **同一类**的调用方声明身份（诊断 metadata，可选，
+                    缺省 ''）：表示"这是哪个角色的调用"（stable id，**不是**昵称）。
+                    存在的唯一理由：同一个 consumer（如 diary）会并发服务多个角色，而
+                    provider/model 完全无法区分它们 —— 只有 identity 能把记账归到正确角色。
+                    Runtime 不解释其语义、不写回 outcome、绝不进入 provider 请求体，
+                    只作为 callOpts._ibCharacterId 传给执行器（与 legacy callApi 的
+                    opts._ibCharacterId 语义逐位一致）。 */
   const EXECUTOR_PASSTHROUGH = ['wantThinking', 'timeoutMs', 'heartbeatMs', 'disableTools'];
   function executorPassthrough(request) {
     const out = {};
@@ -183,6 +190,9 @@
          （'diary' / 'moments' / 'active.proactive' / 'memory_consolidation' …），
          只用于把 Cache Audit 的 baseline 按请求流隔离；不进入 cfg、不进入任何 provider body。 */
       const consumer = String((request && request.consumer) || '').trim().slice(0, 40);
+      /* RCI-1.1：角色身份（诊断用，非 wire 字段）—— 与 consumer 同一类：由调用方从自己的
+         执行上下文声明（如 diary 的 cfg.id）。Runtime 既不推断也不回落（拿不到就是 ''）。 */
+      const characterId = String((request && request.characterId) || '').trim().slice(0, 80);
       /* 从 ModelSpec 还原执行器需要的最小 cfg 形态（≠ 整个 cfg）。
          必须带上 id / maxTokens / promptCache / vision / streaming：这些字段参与缓存键、
          输出上限与请求参数决策，早期版本丢字段会让执行器悄悄回落到默认行为。 */
@@ -242,6 +252,7 @@
           _noWebSearch: true,
           /* 诊断身份：只被 [IB Cache Audit] 读取用于隔离 baseline，执行器不把它写进任何请求体 */
           _ibConsumer: consumer,
+          _ibCharacterId: characterId,
           wantMeta: true
         };
         if (budget != null) callOpts.maxTokens = budget;
