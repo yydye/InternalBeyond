@@ -147,3 +147,14 @@ body.theme-infernal .mi-sub-inf{display:inline}
 .ir-line-k{color:var(--content-primary);opacity:.9;letter-spacing:.02em}
 .ir-line-dim{opacity:.7}
 @media (max-width:560px){.ir-select-row{flex-wrap:wrap}}
+
+/* ── 公开资料（角色公开认知层）折叠块 ────────────────────────────────
+   刻意沿用 .ir-adv 的 details/summary 折叠语汇：同一个编辑器里已经有两种
+   折叠块的话，用户要学两遍。默认收起 —— 它不影响既有编辑流程。 */
+.api-public-profile{margin-top:2px}
+.api-public-profile>summary{cursor:pointer;font-size:0.88rem;color:var(--silver);letter-spacing:0.03em;margin-bottom:2px}
+.api-public-profile>summary:hover{color:var(--accent)}
+.api-public-profile[open]>summary{margin-bottom:10px}
+.api-pp-label{display:block;font-size:0.82rem;color:var(--text-muted);margin:10px 0 5px;letter-spacing:0.02em}
+.api-pp-hint{margin:8px 0 10px}
+.api-public-profile input{font-size:0.88rem;padding:9px 13px}

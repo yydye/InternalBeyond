@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 
 /* Internal Beyond · 一键全量测试入口（Node 18+，零依赖，跨平台）。
  *
@@ -289,6 +289,13 @@ const GROUPS = [
       ['test_proactive_phase2.js'],
       ['test_role_letters.js'],
       ['test_role_dm.js'],
+      /* Peer Awareness Phase 1：角色公开认知层（Public Character Profile）。
+         纯 Node、零浏览器、零网络：契约是纯函数，证据也该是纯的。
+         覆盖公开资料归一化/可选/畸形/有界、旧角色零 migration 的 fallback 优先级、
+         Self-private ≠ Peer-visible 的**构造式**边界（新字段默认不可见）、
+         prompt 组装三层独立（对方是谁 / 我怎么看你 / 聊过什么）、
+         prompt-injection 消毒与反例、唯一真源与非 IO 断言、DB_VER 未变。 */
+      ['test_public_profile.js'],
       ['test_role_dm_smoke.js'],
       ['test_video_runtime.js'],
       ['test_voice_pcm_adapter.js'],

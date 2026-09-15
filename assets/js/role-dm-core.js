@@ -71,6 +71,16 @@
   /* 空转熔断：连续 N 轮被判为重复/低信息即停止整个 run。 */
   var STALL_LIMIT = 2;
 
+  /* 「对方是谁」这一整块在 system 里的字符预算。
+     注意它与 public-profile-core.js 的 LIMITS **不是同一件事**，刻意不合并：
+       · public-profile-core.LIMITS —— **数据**能有多长（字段级契约，
+         别的消费者如 UI / 未来的群聊也用同一份）；
+       · 本常量 —— **prompt** 里这块能占多少（本能力的预算维度，
+         与 MEMORY_CHAR_CAP / UNDERSTANDING_CHAR_CAP 同一类）。
+     把两者合成一个数，等于让"UI 能存多长"和"模型能看多少"互相绑架。
+     整块按**整行**累积，绝不从中间切断一行。 */
+  var PEER_PROFILE_CHAR_CAP = 600;
+
   /* 关系观测（directional）的有界步长与初值。 */
   var RELATION_DIMS = ['trust', 'familiarity', 'affinity'];
   var RELATION_DEFAULT = { trust: 0.5, familiarity: 0.2, affinity: 0.5 };
@@ -91,6 +101,20 @@
   function str(v) { return String(v == null ? '' : v); }
 
   function isNonEmptyString(v) { return typeof v === 'string' && v.trim().length > 0; }
+
+  /* 把公开资料的列表字段（traits / interests）渲染成一行。
+     非数组一律视为"没有" —— 绝不把对象/字符串 toString 之后塞进 prompt
+     （那会把 `[object Object]` 变成"公开特征"，比缺失更糟）。 */
+  function peerListLine(list, maxItems, maxItemChars) {
+    if (!Array.isArray(list)) return '';
+    var out = [];
+    for (var i = 0; i < list.length && out.length < maxItems; i++) {
+      var item = str(list[i]).replace(/[\r\n]+/g, ' ').trim();
+      if (!item) continue;
+      out.push(item.slice(0, maxItemChars));
+    }
+    return out.join('、');
+  }
 
   /* 与 reply-chain-core.js 的 hashStr 逐位同款（同一位运算链），
      但**自带一份**：本模块必须能在 reply-chain-core 未加载时工作
@@ -511,10 +535,26 @@
      spec：{
        selfName, selfSystemPrompt, selfRelationshipToUser,      ← Self
        peerName, peerMissing, peerRelationship, peerNote,       ← Peer（只给允许公开的信息）
-       peerIntro, userPresent, userName,                        ← User（默认不出现）
+       peerProfile, peerIntro, userPresent, userName,           ← User（默认不出现）
        history:[{senderId,content,fromPeer,fromUser}],          ← 只含本 thread
        threadContext, nowLabel, topic, turnIndex, trigger
      }
+
+     ── 三层必须独立（Peer Awareness Phase 1 的契约）────────────────────
+     组装结果里这三层各自成块、互不混写，因为它们回答三个不同的问题、
+     有各自的真源与生命周期：
+
+       ① 你是谁      【对方】+ 公开简介/身份/公开特征/兴趣
+                     ← public-profile-core（构造式白名单，相对稳定）
+       ② 我怎么看你  【你怎么看 TA】
+                     ← relationRecord（**有向**、每次 run 都会变）
+       ③ 我们聊过什么  messages 历史 + threadContext
+                     ← 本 thread 的消息（跨 run 的备忘录仍是 FUTURE）
+
+     所以公开资料里**没有** relationship 字段、关系块里**没有**公开资料。
+     合并的代价不是"少一个字段"，而是把"B 是谁"和"A 怎么看 B"变成同一个
+     真源的两种说法 —— 于是 A→B 与 B→A 会开始互相污染。
+
      绝不在这里读取任何存储；调用方把"已经读到的"事实交进来。 */
   function buildRoleDmContext(spec) {
     var s = spec || {};
@@ -536,13 +576,39 @@
     if (isNonEmptyString(s.topic)) {
       rules.push('6. 这次是带着一个话题开始聊的：「' + str(s.topic).slice(0, 200) + '」。它可以作为开场或方向，但不必生硬地反复回到它。');
     }
-    /* Peer 段：只给"允许公开"的信息。绝不注入对方的 systemPrompt / 记忆。 */
+    /* ── 层①「对方是谁」：只给"允许公开"的信息 ──────────────────────
+       绝不注入对方的 systemPrompt / apiKey / 记忆 / 对用户的关系。
+       结构化 peerProfile（public-profile-core 的产物）优先；peerIntro 是
+       本能力引入时的单字段入口，保留为回落到同一行的兼容通道。 */
     var peerLines = ['【对方】' + peerName];
     if (s.peerMissing === true) peerLines.push('（这个角色已经从站点里删除了，你们的历史还在；你不知道 TA 为什么不再出现。）');
-    if (isNonEmptyString(s.peerRelationship)) peerLines.push('你对 TA 的看法/关系：' + str(s.peerRelationship).slice(0, 300));
+    var pp = (s.peerProfile && typeof s.peerProfile === 'object') ? s.peerProfile : {};
+    var peerIntro = isNonEmptyString(pp.publicIntro) ? str(pp.publicIntro) : str(s.peerIntro);
+    if (peerIntro) peerLines.push('公开简介：' + peerIntro.slice(0, 300));
+    if (isNonEmptyString(pp.occupation)) peerLines.push('公开身份：' + str(pp.occupation).slice(0, 60));
+    var peerTraits = peerListLine(pp.traits, 5, 24);
+    if (peerTraits) peerLines.push('公开特征：' + peerTraits);
+    var peerInterests = peerListLine(pp.interests, 5, 32);
+    if (peerInterests) peerLines.push('兴趣：' + peerInterests);
     if (isNonEmptyString(s.peerNote)) peerLines.push('关于 TA 你已知的信息：' + str(s.peerNote).slice(0, 300));
-    if (isNonEmptyString(s.peerIntro)) peerLines.push('TA 的公开简介：' + str(s.peerIntro).slice(0, 300));
-    system = (system ? system + '\n\n' : '') + rules.join('\n') + '\n\n' + peerLines.join('\n');
+
+    /* ── 层②「我怎么看 TA」：来自**有向**关系记录 ──────────────────────
+       与层①刻意分开（见 §8 文件头）：公开资料是"B 是谁"，
+       这一层是"A 怎么看 B"，两者不同真源、不同生命周期。 */
+    var relationBlock = '';
+    if (isNonEmptyString(s.peerRelationship)) {
+      relationBlock = '【你怎么看 TA】' + str(s.peerRelationship).slice(0, 300);
+    }
+
+    var peerBlock = '';
+    for (var pi = 0; pi < peerLines.length; pi++) {
+      var pl = peerLines[pi];
+      if (!pl) continue;
+      if (peerBlock && (peerBlock.length + pl.length + 1) > PEER_PROFILE_CHAR_CAP) break;
+      peerBlock = peerBlock ? (peerBlock + '\n' + pl) : pl;
+    }
+    system = (system ? system + '\n\n' : '') + rules.join('\n') + '\n\n' + peerBlock;
+    if (relationBlock) system += '\n\n' + relationBlock;
     var tail = [];
     if (isNonEmptyString(s.nowLabel)) tail.push('当前时间：' + str(s.nowLabel) + '。');
     /* 用户信息**只在真的相关时**进入 —— 调用方负责判定（s.userPresent），
@@ -653,6 +719,7 @@
     CONTENT_MAX: CONTENT_MAX,
     DUPLICATE_SIMILARITY: DUPLICATE_SIMILARITY,
     STALL_LIMIT: STALL_LIMIT,
+    PEER_PROFILE_CHAR_CAP: PEER_PROFILE_CHAR_CAP,
     RELATION_DIMS: RELATION_DIMS,
     RELATION_DEFAULT: RELATION_DEFAULT,
     RELATION_DELTA_CAP: RELATION_DELTA_CAP,

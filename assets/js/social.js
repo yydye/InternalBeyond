@@ -1149,6 +1149,17 @@ function editApi(id){
   _renderApiBannerPreview(cfg.banner||'');
   var _jl=document.getElementById('api-joined-label');
   if(_jl)_jl.textContent=cfg.joinedAt||cfg.created?('Joined '+(new Date(Number(cfg.joinedAt||cfg.created)||Date.now()).toLocaleDateString('en-US',{year:'numeric',month:'long'}))):'Joined —';
+  /* 公开资料（角色公开认知层）：归一化只用唯一实现 public-profile-core.js，
+     这里**不自己截断、不自己拆分** —— UI 与 prompt 必须看到同一份形状。
+     旧角色没有这个字段 → 全部留空（不迁移、不猜、不从 systemPrompt 摘）。 */
+  var _pp=(window.IBPublicProfileCore&&typeof window.IBPublicProfileCore.normalizePublicProfile==='function')
+    ?window.IBPublicProfileCore.normalizePublicProfile(cfg.publicProfile)
+    :{publicIntro:'',occupation:'',traits:[],interests:[]};
+  var _ppSet=function(id,val){var el=document.getElementById(id);if(el)el.value=val;};
+  _ppSet('api-public-intro',_pp.publicIntro||'');
+  _ppSet('api-public-occupation',_pp.occupation||'');
+  _ppSet('api-public-traits',(_pp.traits||[]).join('、'));
+  _ppSet('api-public-interests',(_pp.interests||[]).join('、'));
 }
 
 async function saveCurrentApi(btn){
@@ -1188,6 +1199,24 @@ async function saveCurrentApi(btn){
   /* Resolve banner（社交身份背景图）：三态同头像 */
   var bannerVal=existing.banner||'';
   if(_pendingApiBanner!==null)bannerVal=_pendingApiBanner;
+  /* ── 公开资料（角色公开认知层）──────────────────────────────────────
+     归一化交给唯一实现（public-profile-core.js）：上限、去重、拆分、消毒
+     都只在那里定义一次。全部留空 → 写 null（等于"没有公开资料"），
+     于是旧角色与清空后的角色走**同一条** safe fallback，不需要迁移。 */
+  var _ppVal=null;
+  try{
+    var _ppCore=window.IBPublicProfileCore;
+    if(_ppCore&&typeof _ppCore.normalizePublicProfile==='function'){
+      var _ppRead=function(id){var el=document.getElementById(id);return el?el.value:'';};
+      var _ppNorm=_ppCore.normalizePublicProfile({
+        publicIntro:_ppRead('api-public-intro'),
+        occupation:_ppRead('api-public-occupation'),
+        traits:_ppRead('api-public-traits'),
+        interests:_ppRead('api-public-interests')
+      });
+      if(!_ppCore.publicProfileIsEmpty(_ppNorm))_ppVal=_ppNorm;
+    }
+  }catch(e){}
   const cfg=Object.assign({},existing,{
     id:editingApiId,
     provider:document.getElementById('api-provider').value,
@@ -1202,6 +1231,10 @@ async function saveCurrentApi(btn){
     banner:bannerVal,
     bio:document.getElementById('api-bio')?document.getElementById('api-bio').value.trim().slice(0,160):'',
     signature:document.getElementById('api-signature')?document.getElementById('api-signature').value.trim().slice(0,80):'',
+    /* ── 公开资料（其他角色可以知道的部分）：null = 没有 ──
+       与 bio/signature 不同，它**不是**显示字段，而是"别的角色能读到什么"
+       的输入 —— 因此它的形状由 public-profile-core.js 定义，不是这里。 */
+    publicProfile:_ppVal,
     joinedAt:existing.joinedAt||existing.created||Date.now(),
     temperature:parseFloat(document.getElementById('api-temperature').value)||1.0,
     storyPersonalize:document.getElementById('api-story-personalize').checked,

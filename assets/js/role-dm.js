@@ -38,6 +38,7 @@
   'use strict';
 
   var CORE = (typeof window !== 'undefined' && window.IBRoleDmCore) || null;
+  var PROFILE_CORE = (typeof window !== 'undefined' && window.IBPublicProfileCore) || null;
   /* 本 run 里"真正交给模型"的历史条数上限。角色私信是**会话**而不是检索：
      模型必须看见刚说过的话，因此这里不接 planParts 的可压缩阶梯（那会允许
      裁剪当前对话本身）。作为代价，可压缩块全部使用**固定小上限**：
@@ -80,6 +81,13 @@
     try { CORE = window.IBRoleDmCore; } catch (e) { CORE = null; }
     return CORE;
   }
+  /* 「角色公开认知层」唯一实现（assets/js/public-profile-core.js）。
+     与 core() 同款延迟解析 —— 本文件不得在加载期就对另一个脚本求值。 */
+  function profileCore() {
+    if (PROFILE_CORE) return PROFILE_CORE;
+    try { PROFILE_CORE = window.IBPublicProfileCore; } catch (e) { PROFILE_CORE = null; }
+    return PROFILE_CORE;
+  }
   function apiConfigsLive() {
     try { return window.apiConfigs || []; } catch (e) { return []; }
   }
@@ -120,18 +128,22 @@
   }
   function uid(prefix) { return prefix + nowMs().toString(36) + '_' + Math.random().toString(36).slice(2, 8); }
   /* 用户可控 metadata 进入 prompt 的**唯一**消毒实现（与群聊同一个核心）。
-     签名必须与 canonical 核心一致：`sanitizePromptInput(value, options) → string`
-     —— options 是 `{maxLength}` 之类的**对象**，不是标签字符串。传错会让返回值
-     不再是字符串，进而在下一步 `.replace` 上炸掉（浏览器 smoke 实测踩过：
-     返错参数把整轮 run 变成 run-error，而单测因为注入了假实现而全绿）。
-     因此这里既校验返回类型，也在核心不可用时退回保守的本地位清理 ——
-     绝不因为核心缺失就把原始自由文本直接拼进 prompt。 */
-  function sanitizeInput(v) {
+     签名必须与 canonical 核心一致。canonical 的
+     `sanitizePromptInput(value, options)` 返回的是**对象**
+     `{value, changed, findings, reason, ...}`（见 prompt-boundary-core.js §6），
+     而 communication.js:1416-1418 的既有读法正是 `r.value`。
+     本函数曾经写成 `typeof out === 'string'` —— 在 canonical 对象上永远为
+     false，于是生产里 canonical 消毒**一次都没有生效过**，实际一直跑的是
+     下面那个更弱的本地兜底（它不处理零宽/双向控制字符，也不报告 findings）。
+     单测没抓到，是因为 mock 注入的假实现恰好返回字符串（正是本函数注释里
+     警告过的"因为注入了假实现而全绿"）。两种形状都必须接受。 */
+  function sanitizeInput(v, options) {
     try {
       var core = window.IBPromptBoundaryCore;
       if (core && typeof core.sanitizePromptInput === 'function') {
-        var out = core.sanitizePromptInput(v, {});
+        var out = core.sanitizePromptInput(v, (options && typeof options === 'object') ? options : {});
         if (typeof out === 'string') return out;
+        if (out && typeof out.value === 'string') return out.value;
       }
     } catch (e) { }
     return String(v == null ? '' : v).replace(/[\r\n\t]+/g, ' ').replace(/\s{2,}/g, ' ').trim();
@@ -395,14 +407,33 @@
   }
 
   /* ══════════ A 侧 / B 侧 context 组装 ═══════════════
-     每一侧只用**自己**的人格与**自己**的记忆；对方只以公开信息（名字/你对 TA
-     的看法/公开简介）出现。这从结构上排除"人格串角色"。 */
+     每一侧只用**自己**的人格与**自己**的记忆；对方只以**公开认知层**
+     （名字 / 公开简介·身份·特征·兴趣 / 你对 TA 的有向看法）出现。
+     这从结构上排除"人格串角色"。
+
+     ── 对方的公开资料从哪里来（Peer Awareness Phase 1）────────────────
+     唯一来源是 assets/js/public-profile-core.js 的 buildPeerView()：
+     构造式白名单 —— 只读 `publicProfile` 与既有的真正公开字段
+     （bio / signature），**绝不**读 systemPrompt / apiKey / endpoint /
+     memory / relationship。本文件不做任何自己的"截取 persona"逻辑，
+     也不在别处拼第二份公开资料 —— 需要的人去调那一个函数。
+
+     为什么不是 `peer.systemPrompt.slice(...)`：persona 是 **Self-private
+     authority**，"哪一段算公开"无法判定；截取长度是任意选择，而秘密设定 /
+     OOC 指令 / 隐藏关系一旦被截进去，就是一个无法回滚的泄漏。安全优先于
+     信息量：旧角色没有公开资料时，对方就只以**名字**出现。 */
   async function composeSide(speakerId, peerId, thread, opts) {
     var c = core();
     opts = opts || {};
     var speaker = cfgOf(speakerId);
     var peer = cfgOf(peerId);
     var history = opts.history || [];
+    /* 对方的公开认知层（唯一投影点）。核心缺失时退回"只有名字"——
+       绝不因为依赖缺失就把 persona 塞进去。 */
+    var pc = profileCore();
+    var peerView = (pc && typeof pc.buildPeerView === 'function')
+      ? pc.buildPeerView(peer || {}, { sanitize: sanitizeInput, name: peer ? nameOf(peer) : '' })
+      : { name: peer ? nameOf(peer) : '', publicIntro: '', occupation: '', traits: [], interests: [], source: 'name-only' };
     var spec = {
       selfName: sanitizeName(nameOf(speaker)) || 'AI',
       selfSystemPrompt: String((speaker && speaker.systemPrompt) || ''),
@@ -414,7 +445,14 @@
       /* 你对 TA 的看法：来自**有向**关系记录，不是对方的 relationship 字段。 */
       peerRelationship: describeRelation(relationGet(speakerId, peerId)),
       peerNote: '',
-      peerIntro: sanitizeInput(String((peer && (peer.bio || peer.signature || peer.handle)) || '').slice(0, 300)),
+      /* 对方是谁：**只**允许公开的资料（层①）。 */
+      peerProfile: {
+        publicIntro: peerView.publicIntro,
+        occupation: peerView.occupation,
+        traits: peerView.traits,
+        interests: peerView.interests
+      },
+      peerProfileSource: peerView.source,
       userPresent: opts.userPresent === true,
       userName: sanitizeInput(opts.userName || ''),
       topic: sanitizeInput(opts.topic || '').slice(0, 200),
@@ -491,6 +529,10 @@
       built.messages[built.messages.length - 1].content += '\n\n' + _mbTailParts.join('\n\n');
     }
     built._mb = { source: mbSource, injected: mbInjected };
+    /* 本侧"对方是谁"的公开来源（profile / legacy / name-only）。
+       只作观测：它回答"这次她到底知不知道对方是什么样的人"，
+       而这个问题的答案在真实 run 之后无法从消息正文反推。 */
+    built.peerProfileSource = peerView.source;
     /* 输出契约：一句话正文 + 可选的、有界的私聊记忆候选。
        记忆候选**不是** <mem_create> 标签（那是给前台聊天、且带用户审批弹窗的
        协议）；它只作为本 run 的一次候选，由本域在 run 结束后统一决定是否落成
@@ -570,6 +612,9 @@
       trace.note(speakerId, 'source', built._mb.source);
       trace.note(speakerId, 'messagesChanged', !!built._mb.injected);
     }
+    /* 对方公开认知的来源（profile / legacy / name-only）—— 值本身不含任何
+       角色内容，只说明"这一侧有没有拿到公开资料"。 */
+    if (trace) trace.note(speakerId, 'peerProfileSource', String(built.peerProfileSource || 'name-only'));
     var raw = '';
     try {
       if (typeof callApiChat !== 'function') {
