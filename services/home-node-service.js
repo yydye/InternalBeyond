@@ -46,6 +46,10 @@ const createMobileGateway = require('../services/home-node/mobile-gateway.js');
    Wallet 余额）。**唯一** require 点是这里 —— Economy 自己不 require
    本文件、不 require 网关、不 require 设备注册表，方向是单向的。 */
 const createEconomyStore = require('../services/home-node/economy-store.js');
+/* P22-9：Economy 的准入门（**唯一**一个）。它**不是** store 的一部分 ——
+   门长在 store 上面，因此 P22-6 ~ P22-8 的 canonical ownership 一行不改。
+   与 createEconomyStore 同款：**只有**这一处 require 它。 */
+const createEconomyCapabilityGate = require('../services/home-node/economy-capability.js');
 const createNodeModelPort = require('../active/node-model-port.js');
 /* P11-3E：canonical store 失败分类器（**唯一**一份，见 runtime/db-failure.js）。
    它在 runtime/ 下，与 runtime/local-services-runner.js 那份是同一模块 ——
@@ -383,7 +387,25 @@ function economyAssembly(options) {
       ? options.systemAuthority
       : () => options.systemMintingEnabled !== false
   });
-  return { economyStore: economyStore };
+
+  /* ── P22-9 · 准入门（**唯一**一处装配）──────────────────────────────
+     ★ 它为什么在**装配期**构造，而不是让每个 consumer 自己 new 一个：
+       构造就是身份绑定（`bind(consumer)`）。把构造放在装配层意味着
+       "这台节点上有哪些消费者、各自拿到哪个句柄"是一份**唯一的**装配
+       事实，而不是分散在每个调用点上的一句自觉。
+
+     ★ 它为什么不传进 http.js：HTTP 上的经济写面从 P22-2 起就是 0，
+       把门交给路由层只会凭空多出一条需要防守的边。门的公开面只到
+       buildHomeNode() 的返回值为止。
+
+     ★ `economyCapabilityConfig` 只允许**收窄**（revokedCapabilities），
+       而一个损坏的配置让整扇门 fail closed（见 economy-capability.js）。 */
+  const economyCapabilityGate = options.economyGate || createEconomyCapabilityGate({
+    store: economyStore,
+    config: options.economyCapabilityConfig,
+    logger: (e, f) => serviceLog('info', e, f)
+  });
+  return { economyStore: economyStore, economyCapabilityGate: economyCapabilityGate };
 }
 
 /* ── canonical Moments store 的失败探针（**唯一**一处）────────────────
@@ -583,6 +605,8 @@ function buildHomeNode(options) {
     dataDir: dataDir,
     registry: instanceRegistry,
     economyStore: options.economyStore,
+    economyGate: options.economyGate,
+    economyCapabilityConfig: options.economyCapabilityConfig,
     ownerExists: options.ownerExists,
     systemAuthority: options.systemAuthority,
     systemMintingEnabled: options.systemMintingEnabled,
@@ -705,8 +729,11 @@ function buildHomeNode(options) {
     momentsStore: instanceMoments.momentsStore,
     momentsRetrieval: instanceMoments.momentsRetrieval,
     /* P22-2：Economy 的实例，导出给"两条装配路径不得再次漂移"这类断言
-       （与 memoryStore / momentsStore 被导出的理由逐字相同）。 */
+       （与 memoryStore / momentsStore 被导出的理由逐字相同）。
+       ★ P22-9 把门一并导出，理由完全相同：它是装配事实，而不是 store 的
+       一个内部细节；"这台节点到底装没装门"必须可以直接断言。 */
     economyStore: instanceEconomy.economyStore,
+    economyCapabilityGate: instanceEconomy.economyCapabilityGate,
     registry: instanceRegistry,
     gateway: instanceGateway,
     executor: instanceExecutor,
@@ -815,6 +842,10 @@ const httpLayer = createHttp({
      两个事实同时为真，正是 P11-3E 那个缺口的第四次形态。
      单元测试与直接 store 测试全绿，缺的只是这一行接线。 */
   economyStore: economy.economyStore,
+  /* P22-9：**进程级**的门。它与 store 同级导出，理由逐字相同 —— 门的缺席
+     在生产上是一个静默的"每个 consumer 都能直接提议"，而那种缺口只有
+     直接断言语料才能发现。 */
+  economyCapabilityGate: economy.economyCapabilityGate,
   stores: [
     { store, name: 'chat', role: 'canonical-chat-authority' },
     { store: moments.momentsStore, name: 'moments', role: 'canonical-moments-authority', probe: momentStoreFailureProbe }
@@ -1058,6 +1089,8 @@ module.exports = {
      authority"必须是一句可以直接断言的事实，而不是靠读代码。
      见 tests/test_p22_2_economy_runtime.js 的 C/D 组。 */
   economyStore: economy.economyStore,
+  /* P22-9：进程级的门与进程级的 store 一起导出。 */
+  economyCapabilityGate: economy.economyCapabilityGate,
   economyAssembly,
   buildHomeNode,
   memoryAssembly,

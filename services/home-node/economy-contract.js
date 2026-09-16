@@ -2760,7 +2760,21 @@
        触发的 Purchase 在 P22-6 的事务里动，而那条事务有自己的事件。 */
     AGENT_INTENT_PROPOSED: 'AGENT_INTENT_PROPOSED',
     AGENT_INTENT_AWAITING_APPROVAL: 'AGENT_INTENT_AWAITING_APPROVAL',
-    AGENT_INTENT_DETERMINED: 'AGENT_INTENT_DETERMINED'
+    AGENT_INTENT_DETERMINED: 'AGENT_INTENT_DETERMINED',
+
+    /* ── P22-9 追加的一个（加法）─────────────────────────────────────────
+       ECONOMY_CAPABILITY_DECIDED —— 一次**准入**决定被写进 change log。
+
+       ★ 为什么它必须是自己的事件，而不是并进某条 AGENT_INTENT_*：
+         它回答的是另一个问题（"谁有资格开口"），而且它**可以在没有任何
+         intent 的情况下发生** —— 一次被门拒掉的提议根本没有 intent。
+         把它塞进 AGENT_INTENT_PROPOSED 会让"一条 intent 存在"与
+         "一次准入决定发生过"共用一条记录，而后者比前者多。
+
+       ★ 而它为什么不是"每次能力检查都写一行"：见 economy-capability.js
+         的说明 —— 纯检查（checkEconomyCapability）零副作用、零记录；
+         只有**被拒的提议**与**真正被授权去执行的提议**才写。 */
+    ECONOMY_CAPABILITY_DECIDED: 'ECONOMY_CAPABILITY_DECIDED'
   });
 
   var EVENT_TYPES = Object.freeze(Object.keys(EVENT_TYPE));
@@ -5575,6 +5589,405 @@
     '/economy/buy', '/economy/execute'
   ]);
 
+  /* ══════════════════════════════════════════════════════════════════
+     §25 · Economy Capability Contract（P22-9）
+     ──────────────────────────────────────────────────────────────────
+     ── 这一节回答的问题与 §23（自主权威）**不是**同一个问题 ────────────
+
+       §23 问：「Economy 允不允许这个 Agent 直接买？」—— 一个**经济**裁决。
+             它的输入是余额、预算、商品、限额、策略。
+       本节问：「这个**运行时消费者**有没有资格开口？」—— 一个**准入**裁决。
+             它的输入只有两样：consumer 是谁、它要哪一个 capability。
+
+     两者绝不能合并成一句话。合并的第一个后果是：一次
+     CAPABILITY_GRANTED 会被读成"这笔购买被批准了"，而它真正的意思只是
+     "你有资格问"。§5 因此把这条写成了返回值里的七个**恒为 false** 的位
+     （见 checkEconomyCapability）—— "能力不是权威"在返回值里成立，
+     而不是靠读者去读文档。
+
+     ── 为什么 consumer 是一个**封闭集合**，而不是一个自由字符串 ────────
+       §3 要求 fail closed。而一个自由字符串的默认答案是"我不知道它是谁"，
+       那就只能一律 DENY —— 于是一个真门会退化成两种坏形状之一：
+       要么永远关着（没人能用），要么某天被人改成"非空即放行"（fail open）。
+       因此 consumer 必须是**枚举**：每一个成员在本仓库里都有一个真实的、
+       可核对的运行时锚点，而锚点不是名字，是**已经存在的进程**。
+
+     ── 锚点为什么是 runtime/component-registry.js 的 id ────────────────
+       P22-9 §1 的只读审计结论：这个仓库里真正跑着 JS 的 Node 组件恰好是
+       component-registry.js 登记的那几个（static / bridge / active /
+       homeNode / restart / vision），而其中只有三个进程可能持有 canonical
+       Economy store 的引用。因此消费者成员不是"产品愿景里的界面"，是进程：
+
+         active_agent_runtime ←→ component-registry id 'active'
+             IB Active 的调度器与 Moments companion。它是这个仓库里**唯一**
+             一个"Agent 自己决定要不要动手"的 Node 运行时：它的计划来自
+             模型，而计划必须过 sanitizeAiPlan 的封闭动作集
+             （['schedule','none','cancel_existing']）。因此它是唯一一个
+             被授予 PROPOSE_PURCHASE 的消费者。
+         home_node_authority ←→ component-registry id 'homeNode'
+             canonical 权威进程本身。它**服务**经济事实（http.js 的只读面），
+             但它不是一个会自己做决定的 agent。**权威不行动** —— 因此它的
+             能力列表是空的，而这不是"暂时还没配"。
+         desktop_bridge ←→ component-registry id 'bridge'
+             模型 / 工具网络面。它是整条链上离外部网络最近的一环，把
+             Economy 的准入交给它是最坏的选择；审计里它的经济引用数是 0。
+
+     ── 为什么**没有**把 Chat / Group / Voice / Diary 写进这个集合 ───────
+       §1 明确要求"不要凭提示词假设"。审计结果（见 CAPABILITY_SURFACES_NOT_
+       PRESENT）：这几个界面**不是** Node 运行时消费者 —— 它们是浏览器侧
+       的编排（assets/js/*），而它们到 canonical store 的唯一通道是 HTTP，
+       而 HTTP 上的经济写面从 P22-2 起就是 0。把它们写进能力表等于凭空
+       发明一个已经授予的权限。它们全部登记在下面那份**缺席清单**里：
+       缺席是一个有内容的回答，而不是一个待补的空白。
+
+     ── 为什么决策词与 AP_DECISION 刻意**字形不同** ─────────────────────
+       AP_DECISION 里已经有一个 'DENY'。如果准入决定也叫 DENY，那么
+       `decision === 'DENY'` 这句话在审计里就有两个可能的意思，而
+       "能力不是权威"这条纪律会退化成一个注释。这里用
+       CAPABILITY_GRANTED / CAPABILITY_DENIED —— 载入期不变量会断言这两套
+       词表的交集是空的。
+     ══════════════════════════════════════════════════════════════════ */
+
+  var CAPABILITY = Object.freeze({
+    /* 提出一条 Agent Purchase Intent。它是 P22-8 **唯一**写入口的准入。 */
+    PROPOSE_PURCHASE: 'PROPOSE_PURCHASE',
+    /* 在用户点头之后继续**同一条** intent（P22-8 的第二条写路径）。
+       ★ 它为什么必须在这里，而不是"以后需要再加"：P22-8 的公开写面上有
+       **两个**动词。只给其中一个加门，另一个就成了一条旁路 —— 而那条
+       旁路走完同样会让钱动（E 组的批准恢复路径）。门的完备性只由
+       "公开写面被完整覆盖"决定，不由"哪个动词更常被调用"决定。 */
+    RESUME_APPROVED_PURCHASE: 'RESUME_APPROVED_PURCHASE'
+  });
+  var CAPABILITIES = Object.freeze(Object.keys(CAPABILITY));
+
+  var ECONOMY_CONSUMER = Object.freeze({
+    ACTIVE_AGENT_RUNTIME: 'active_agent_runtime',
+    HOME_NODE_AUTHORITY: 'home_node_authority',
+    DESKTOP_BRIDGE: 'desktop_bridge'
+  });
+  /* ★ 这里是**值**，不是键。与 CAPABILITY 那种"键等于值"的词表不同：
+     消费者 id 是 lowercase 身份，而常量名是 SCREAMING 读法。写成
+     Object.keys(...) 会让整个集合变成常量名，而载入期不变量会当场炸掉
+     —— 这个错误在开发期被那条不变量真的抓到过一次。 */
+  var ECONOMY_CONSUMERS = Object.freeze(Object.keys(ECONOMY_CONSUMER).map(function (k) {
+    return ECONOMY_CONSUMER[k];
+  }));
+
+  /* 每个 consumer 的运行时锚点。它的用途只有一个：让"这个成员真的存在"
+     可以被核对，而不是一句声明。键在载入期与 ECONOMY_CONSUMERS 逐字核对。 */
+  var CONSUMER_RUNTIME_ANCHOR = Object.freeze({
+    active_agent_runtime: 'runtime/component-registry.js#active',
+    home_node_authority: 'runtime/component-registry.js#homeNode',
+    desktop_bridge: 'runtime/component-registry.js#bridge'
+  });
+
+  var EMPTY_CAPABILITY_LIST = Object.freeze([]);
+
+  /* 权限矩阵。它是**唯一**真源：运行时不得再维护第二份。
+     ★ 它是不可变的，而且没有任何运行时 API 能改它 —— 唯一能做的
+     是**收窄**（见 normalizeCapabilityConfig 的 revokedCapabilities），
+     而收窄永远不能提权。 */
+  var CONSUMER_CAPABILITY_MATRIX = Object.freeze({
+    active_agent_runtime: Object.freeze([CAPABILITY.PROPOSE_PURCHASE, CAPABILITY.RESUME_APPROVED_PURCHASE]),
+    home_node_authority: EMPTY_CAPABILITY_LIST,
+    desktop_bridge: EMPTY_CAPABILITY_LIST
+  });
+
+  /* 缺席清单：审计里**核对过、并确认不是**运行时消费者的界面。
+     它的价值与 §23 的否认清单同源 —— 一份"我们没有给它权限，而且我们知道
+     为什么"的记录，与"我们忘了它"是两件事。因此任何一天有人把
+     consumer: 'chat' 传进来，得到的答案是一个**有名有姓的拒绝理由**，
+     而不是一句"未知消费者"。 */
+  var CAPABILITY_SURFACES_NOT_PRESENT = Object.freeze([
+    Object.freeze({ surface: 'chat', why: '浏览器侧编排（assets/js/chat-core.js）；到 store 的通道只有 HTTP，而 HTTP 经济写面为 0' }),
+    Object.freeze({ surface: 'group_chat', why: '浏览器侧编排（assets/js/communication.js）；不是 Node 运行时消费者' }),
+    Object.freeze({ surface: 'voice', why: '浏览器侧音频工作单元（assets/js/voice-worklet.js）；与经济域零引用' }),
+    Object.freeze({ surface: 'active_diary', why: '浏览器侧时间线渲染（assets/js/active-diary.js）；不是提议发起者' }),
+    Object.freeze({ surface: 'moments_ui', why: 'canonical Moments 的 consumer 是浏览器读面；Node 侧的 companion 属于 active_agent_runtime' }),
+    Object.freeze({ surface: 'mcp_client', why: '§8：本阶段不接 MCP；外部工具没有任何经济能力' }),
+    Object.freeze({ surface: 'llm', why: '模型输出不是一个消费者：它连身份都没有，因此它无法成为矩阵里的键' })
+  ]);
+
+  /* 准入决定：与 AP_DECISION 字形不同（载入期断言交集为空）。 */
+  var CAPABILITY_DECISION = Object.freeze({
+    CAPABILITY_GRANTED: 'CAPABILITY_GRANTED',
+    CAPABILITY_DENIED: 'CAPABILITY_DENIED'
+  });
+  var CAPABILITY_DECISIONS = Object.freeze(Object.keys(CAPABILITY_DECISION));
+
+  /* 拒绝理由是一个**封闭**集合，而且与 DENY_REASON 分开：
+     后者说的是"经济上为什么不行"，这里说的是"准入上为什么不行"。
+     把两者混在一起，运维看到一条 UNKNOWN_CONSUMER 时就得先猜它是不是
+     一条经济裁决。 */
+  var CAPABILITY_DENY_REASON = Object.freeze({
+    MISSING_CONSUMER: 'MISSING_CONSUMER',
+    UNKNOWN_CONSUMER: 'UNKNOWN_CONSUMER',
+    MISSING_CAPABILITY: 'MISSING_CAPABILITY',
+    UNKNOWN_CAPABILITY: 'UNKNOWN_CAPABILITY',
+    CAPABILITY_NOT_GRANTED: 'CAPABILITY_NOT_GRANTED',
+    CAPABILITY_REVOKED: 'CAPABILITY_REVOKED',
+    CONFIGURATION_CORRUPT: 'CONFIGURATION_CORRUPT'
+  });
+  var CAPABILITY_DENY_REASONS = Object.freeze(Object.keys(CAPABILITY_DENY_REASON));
+
+  var CONSUMER_INDEX = (function () {
+    var map = Object.create(null);
+    for (var i = 0; i < ECONOMY_CONSUMERS.length; i++) map[ECONOMY_CONSUMERS[i]] = true;
+    return map;
+  })();
+  var CAPABILITY_INDEX = (function () {
+    var map = Object.create(null);
+    for (var j = 0; j < CAPABILITIES.length; j++) map[CAPABILITIES[j]] = true;
+    return map;
+  })();
+
+  function isEconomyConsumer(value) {
+    return typeof value === 'string' && CONSUMER_INDEX[value] === true;
+  }
+  function isEconomyCapability(value) {
+    return typeof value === 'string' && CAPABILITY_INDEX[value] === true;
+  }
+  function isCapabilityDecision(value) {
+    return typeof value === 'string' && CAPABILITY_DECISIONS.indexOf(value) >= 0;
+  }
+  function isCapabilityDenyReason(value) {
+    return typeof value === 'string' && CAPABILITY_DENY_REASONS.indexOf(value) >= 0;
+  }
+  function runtimeAnchorOfConsumer(value) {
+    return isEconomyConsumer(value) ? CONSUMER_RUNTIME_ANCHOR[value] : null;
+  }
+
+  /* ★ 这里**刻意没有** §6 的 promotePartyRef 那种"同义词提升"。一个
+     consumer id 是**身份**，不是类别：'active' 不等于 'active_agent_runtime'，
+     'homeNode' 不等于 'home_node_authority'。允许提升就等于允许调用方
+     用近义词猜身份，而猜错的代价是拿到别人的能力。 */
+  function normalizeEconomyConsumerId(value) {
+    if (value == null) return { ok: false, consumer: null, errors: ['consumer-required'] };
+    if (typeof value !== 'string') return { ok: false, consumer: null, errors: ['consumer-must-be-a-string'] };
+    var s = value.trim();
+    if (s === '') return { ok: false, consumer: null, errors: ['consumer-required'] };
+    if (!isEconomyConsumer(s)) return { ok: false, consumer: null, errors: ['consumer-not-in-closed-set'] };
+    return { ok: true, consumer: s, errors: [] };
+  }
+
+  function normalizeEconomyCapability(value) {
+    if (value == null) return { ok: false, capability: null, errors: ['capability-required'] };
+    if (typeof value !== 'string') return { ok: false, capability: null, errors: ['capability-must-be-a-string'] };
+    var s = value.trim();
+    if (s === '') return { ok: false, capability: null, errors: ['capability-required'] };
+    if (!isEconomyCapability(s)) return { ok: false, capability: null, errors: ['capability-not-in-closed-set'] };
+    return { ok: true, capability: s, errors: [] };
+  }
+
+  /* 一个已知 consumer 的**生效**能力（契约矩阵减去被收回的）。
+     未知 consumer 得到空列表 —— 与"被拒"是同一个结果，但与"它有一堆能力
+     只是这次没要"绝不是同一个状态。 */
+  function grantedCapabilitiesOf(consumer, revoked) {
+    if (!isEconomyConsumer(consumer)) return EMPTY_CAPABILITY_LIST;
+    var base = CONSUMER_CAPABILITY_MATRIX[consumer] || EMPTY_CAPABILITY_LIST;
+    if (!revoked || revoked.length === 0) return base;
+    var out = [];
+    for (var i = 0; i < base.length; i++) {
+      if (revoked.indexOf(base[i]) < 0) out.push(base[i]);
+    }
+    return Object.freeze(out);
+  }
+
+  function capabilitiesOfConsumer(consumer) {
+    return grantedCapabilitiesOf(consumer, EMPTY_CAPABILITY_LIST);
+  }
+
+  /* ── 配置：只允许**收窄** ────────────────────────────────────────────
+     §3 要求"损坏配置 → DENY"。因此必须真的存在一个配置面，而它只有一种
+     合法形状：`{ revokedCapabilities: [capability…] }`。
+
+     ★ 为什么白名单**只有一个键**：任何别的键（grants / allow / matrix /
+       bypass）都是**一次提权企图**，而不是一次配置。它必须表现为
+       CONFIGURATION_CORRUPT，而不是被静默忽略 —— 静默忽略会让"我明明配了"
+       与"配置根本没生效"看起来完全一样，而这两种情况的处置方式相反。 */
+  function normalizeCapabilityConfig(value) {
+    if (value == null) return { ok: true, revoked: EMPTY_CAPABILITY_LIST, errors: [] };
+    if (typeof value !== 'object' || Array.isArray(value)) {
+      return { ok: false, revoked: EMPTY_CAPABILITY_LIST, errors: ['capability-config-must-be-a-plain-object'] };
+    }
+    var keys = Object.keys(value);
+    for (var i = 0; i < keys.length; i++) {
+      if (keys[i] !== 'revokedCapabilities') {
+        return { ok: false, revoked: EMPTY_CAPABILITY_LIST, errors: ['capability-config-key-not-recognised:' + keys[i]] };
+      }
+    }
+    var raw = value.revokedCapabilities;
+    if (raw == null) return { ok: true, revoked: EMPTY_CAPABILITY_LIST, errors: [] };
+    if (!Array.isArray(raw)) {
+      return { ok: false, revoked: EMPTY_CAPABILITY_LIST, errors: ['revoked-capabilities-must-be-an-array'] };
+    }
+    for (var j = 0; j < raw.length; j++) {
+      if (!isEconomyCapability(raw[j])) {
+        return { ok: false, revoked: EMPTY_CAPABILITY_LIST, errors: ['revoked-capability-not-in-closed-set:' + safeWord(raw[j])] };
+      }
+    }
+    return { ok: true, revoked: Object.freeze(raw.slice()), errors: [] };
+  }
+
+  function safeWord(value) {
+    if (typeof value === 'string') return value;
+    if (value === null) return 'null';
+    if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+    return typeof value;
+  }
+  function isBlankish(value) {
+    return value == null || (typeof value === 'string' && value.trim() === '');
+  }
+
+  /* ── 唯一的准入判定 ──────────────────────────────────────────────────
+     它是**纯函数**：不读时钟、不读随机、不写任何东西、不 require 任何模块。
+     因此它同时可以被 Node 侧与浏览器侧的测试直接调用，而"矩阵说了什么"
+     在两侧只有一个答案。
+
+     ── 拒绝的**顺序**是有意的 ──────────────────────────────────────────
+     ① 配置坏 → 先拒。一份损坏的配置让其余一切答案都不可信。
+     ② 身份（consumer）→ 再拒。一个连自己是谁都说不清的调用方，不该先收到
+        "这个能力不存在"的答案 —— 那会把一次**身份**问题伪装成一次
+        **能力**问题，而这两件事的处置方式相反（前者是调用方接错了，
+        后者是它问错了）。
+     ③ 能力（capability）→ 再拒。
+     ④ 被收回 → 拒（"这台节点关了它"）。
+     ⑤ 没被授予 → 拒（"这个消费者从来没有它"）。
+     ⑥ 只有走到这里才是 GRANTED。 */
+  function checkEconomyCapability(input) {
+    var o = input || {};
+    /* ★ 这七个位恒为 false，而且它们在**每一个**返回分支里都在。
+       理由与 P22-8 的 `suppliedEconomicFacts` 同款：一次"我拒了"与一次
+       "我准了"必须是同一个形状，否则调用方只能靠 `undefined` 去猜自己
+       拿到的是哪一种；而"能力 = 权威"这个误读正是从"结果里恰好没有那个
+       位"开始的。 */
+    var base = {
+      domain: DOMAIN,
+      consumer: null,
+      capability: null,
+      decision: CAPABILITY_DECISION.CAPABILITY_DENIED,
+      granted: false,
+      reasonCode: null,
+      capabilities: EMPTY_CAPABILITY_LIST,
+      revokedCapabilities: EMPTY_CAPABILITY_LIST,
+      /* §5：能力不是权威。 */
+      isEconomyAuthority: false,
+      isBudgetDecision: false,
+      isAutonomyDecision: false,
+      isApproval: false,
+      isPurchasePermission: false,
+      authorizesSpending: false,
+      bypassesBudget: false,
+      errors: []
+    };
+
+    var config = normalizeCapabilityConfig(o.config);
+    if (config.ok !== true) {
+      return Object.assign({}, base, {
+        reasonCode: CAPABILITY_DENY_REASON.CONFIGURATION_CORRUPT,
+        errors: config.errors
+      });
+    }
+    base.revokedCapabilities = config.revoked;
+
+    var consumer = normalizeEconomyConsumerId(o.consumer);
+    if (consumer.ok !== true) {
+      return Object.assign({}, base, {
+        reasonCode: isBlankish(o.consumer)
+          ? CAPABILITY_DENY_REASON.MISSING_CONSUMER
+          : CAPABILITY_DENY_REASON.UNKNOWN_CONSUMER,
+        errors: consumer.errors
+      });
+    }
+    base.consumer = consumer.consumer;
+    base.capabilities = grantedCapabilitiesOf(consumer.consumer, config.revoked);
+
+    var capability = normalizeEconomyCapability(o.capability);
+    if (capability.ok !== true) {
+      return Object.assign({}, base, {
+        reasonCode: isBlankish(o.capability)
+          ? CAPABILITY_DENY_REASON.MISSING_CAPABILITY
+          : CAPABILITY_DENY_REASON.UNKNOWN_CAPABILITY,
+        errors: capability.errors
+      });
+    }
+    base.capability = capability.capability;
+
+    if (config.revoked.indexOf(capability.capability) >= 0) {
+      return Object.assign({}, base, { reasonCode: CAPABILITY_DENY_REASON.CAPABILITY_REVOKED, errors: [] });
+    }
+    if (base.capabilities.indexOf(capability.capability) < 0) {
+      return Object.assign({}, base, { reasonCode: CAPABILITY_DENY_REASON.CAPABILITY_NOT_GRANTED, errors: [] });
+    }
+    return Object.assign({}, base, {
+      decision: CAPABILITY_DECISION.CAPABILITY_GRANTED,
+      granted: true,
+      reasonCode: null,
+      errors: []
+    });
+  }
+
+  /* 准入审计记录的形状（P22-9 §7）。store 用**同一个**函数校验它被要求
+     写下的东西，因此"伪造一个 consumer 写进 change log"在结构上不成立：
+     写不进去的那一行不是一个策略，而是一次类型错误。 */
+  var CAPABILITY_AUDIT_KEYS = Object.freeze([
+    'domain', 'consumerId', 'capability', 'decision', 'reasonCode',
+    'agentIntentId', 'runtimeAnchor',
+    'capabilityIsNotEconomyAuthority', 'capabilityDecisionIsNotABudgetDecision',
+    'ledgerMutation', 'inventoryMutation', 'providerMutation',
+    'paymentMutation', 'memoryMutation', 'relationshipMutation'
+  ]);
+
+  function makeCapabilityAuditRecord(input) {
+    var o = input || {};
+    var errors = [];
+    var consumer = normalizeEconomyConsumerId(o.consumerId);
+    if (consumer.ok !== true) errors.push('capability-audit-consumer-not-canonical');
+    var capability = normalizeEconomyCapability(o.capability);
+    if (capability.ok !== true) errors.push('capability-audit-capability-not-canonical');
+    if (!isCapabilityDecision(o.decision)) errors.push('capability-audit-decision-not-in-closed-set');
+    if (o.reasonCode != null && !isCapabilityDenyReason(o.reasonCode)) {
+      errors.push('capability-audit-reason-not-in-closed-set');
+    }
+    /* ★ 一条 GRANTED 记录不得带拒绝理由，一条 DENIED 记录必须带一个。
+       这条不是洁癖：一个写错的组合会让审计里出现"被批准，理由是
+       UNKNOWN_CONSUMER"这种自相矛盾的行。 */
+    if (o.decision === CAPABILITY_DECISION.CAPABILITY_GRANTED && o.reasonCode != null) {
+      errors.push('capability-audit-granted-must-not-carry-a-deny-reason');
+    }
+    if (o.decision === CAPABILITY_DECISION.CAPABILITY_DENIED && !isCapabilityDenyReason(o.reasonCode)) {
+      errors.push('capability-audit-denied-must-carry-a-deny-reason');
+    }
+    if (o.agentIntentId != null && !isEconomyId('AGENT_INTENT', o.agentIntentId)) {
+      errors.push('capability-audit-agent-intent-id-not-canonical');
+    }
+    if (errors.length) return { ok: false, errors: errors, record: null };
+    return {
+      ok: true,
+      errors: [],
+      record: {
+        domain: DOMAIN,
+        consumerId: consumer.consumer,
+        capability: capability.capability,
+        decision: o.decision,
+        reasonCode: o.reasonCode == null ? null : String(o.reasonCode),
+        agentIntentId: o.agentIntentId == null ? null : String(o.agentIntentId),
+        runtimeAnchor: CONSUMER_RUNTIME_ANCHOR[consumer.consumer],
+        /* §5 的两句自述必须**落在记录里**，而不只在文档里：一个读到这行的
+           审计者应当同时读到"它不是经济权威"。 */
+        capabilityIsNotEconomyAuthority: true,
+        capabilityDecisionIsNotABudgetDecision: true,
+        /* 准入决定从不动任何东西。 */
+        ledgerMutation: false,
+        inventoryMutation: false,
+        providerMutation: false,
+        paymentMutation: false,
+        memoryMutation: false,
+        relationshipMutation: false
+      }
+    };
+  }
+
   /* ── 载入期不变量 ───────────────────────────────────────────────────
      与 P22-7 的同一段同款：把"某天有人放松了边界"变成 require 那一刻的
      崩溃，而不是审计时才发现。 */
@@ -5643,6 +6056,194 @@
     if (PURCHASE_INTENT_IS_A_PERMISSION !== false) die('an intent is not a permission');
     if (PURCHASE_INTENT_CARRIES_PRICE !== false) die('an intent must not carry a price');
     if (PURCHASE_INTENT_REASON_IS_AUTHORITY !== false) die('reason is not authority');
+  })();
+
+  /* ── §25 的载入期不变量 ─────────────────────────────────────────────
+     与上面那段同款：把"某天有人把门改松了"变成 require 那一刻的崩溃。 */
+  (function capabilityInvariants() {
+    function die(message) { throw new Error('economy-contract: ' + message); }
+
+    /* ① 最小能力集。多出第三个能力必须是一次**刻意的**契约修改，而这条
+       断言让"顺手加一个"表现为启动失败。 */
+    if (CAPABILITIES.length !== 2) {
+      die('exactly two economy capabilities exist; got=' + CAPABILITIES.length);
+    }
+    if (CAPABILITIES.indexOf(CAPABILITY.PROPOSE_PURCHASE) < 0 ||
+      CAPABILITIES.indexOf(CAPABILITY.RESUME_APPROVED_PURCHASE) < 0) {
+      die('the two capabilities must be PROPOSE_PURCHASE and RESUME_APPROVED_PURCHASE');
+    }
+
+    /* ② 矩阵与消费者集合必须逐字对应：既不能漏一个消费者（漏掉的消费者
+       会走 CONSUMER_CAPABILITY_MATRIX[c] === undefined 这条路 —— 那是
+       fail closed，但它是**偶然**的 fail closed），也不能多一个不在闭集里
+       的键（那是一个永远不会被问到的授予）。 */
+    var matrixKeys = Object.keys(CONSUMER_CAPABILITY_MATRIX).sort().join(',');
+    if (matrixKeys !== ECONOMY_CONSUMERS.slice().sort().join(',')) {
+      die('the capability matrix must name exactly the canonical consumers; got=' + matrixKeys);
+    }
+    var anchorKeys = Object.keys(CONSUMER_RUNTIME_ANCHOR).sort().join(',');
+    if (anchorKeys !== matrixKeys) {
+      die('every consumer must carry a runtime anchor; got=' + anchorKeys);
+    }
+    for (var a = 0; a < ECONOMY_CONSUMERS.length; a++) {
+      var anchor = CONSUMER_RUNTIME_ANCHOR[ECONOMY_CONSUMERS[a]];
+      if (typeof anchor !== 'string' || anchor.trim() === '') {
+        die('a consumer runtime anchor must be a non-empty string: ' + ECONOMY_CONSUMERS[a]);
+      }
+    }
+
+    /* ③ 矩阵里不得出现闭集外的能力，且每个值必须是冻结的数组。 */
+    for (var c = 0; c < ECONOMY_CONSUMERS.length; c++) {
+      var id = ECONOMY_CONSUMERS[c];
+      var grants = CONSUMER_CAPABILITY_MATRIX[id];
+      if (!Array.isArray(grants) || !Object.isFrozen(grants)) {
+        die('a capability grant list must be a frozen array: ' + id);
+      }
+      for (var g = 0; g < grants.length; g++) {
+        if (!isEconomyCapability(grants[g])) {
+          die('the matrix grants a capability outside the closed set: ' + id + ' → ' + String(grants[g]));
+        }
+      }
+    }
+
+    /* ④ 每个能力都必须至少被授予**一个**消费者。一个谁都拿不到的能力
+       不是"更安全"，而是一条永远走不通的路径 —— 而它会让所有相关测试
+       只能测到拒绝，从来看不到一次成功的提议。 */
+    for (var k = 0; k < CAPABILITIES.length; k++) {
+      var holder = ECONOMY_CONSUMERS.filter(function (x) {
+        return CONSUMER_CAPABILITY_MATRIX[x].indexOf(CAPABILITIES[k]) >= 0;
+      });
+      if (holder.length === 0) {
+        die('a capability that no consumer holds is a dead path: ' + CAPABILITIES[k]);
+      }
+    }
+
+    /* ⑤ ★ 矩阵与判定器不得各说一套：对每一个 (consumer, capability) 组合，
+       checkEconomyCapability 的结论必须与矩阵逐字一致。 */
+    for (var m = 0; m < ECONOMY_CONSUMERS.length; m++) {
+      for (var n = 0; n < CAPABILITIES.length; n++) {
+        var verdict = checkEconomyCapability({ consumer: ECONOMY_CONSUMERS[m], capability: CAPABILITIES[n] });
+        var expected = CONSUMER_CAPABILITY_MATRIX[ECONOMY_CONSUMERS[m]].indexOf(CAPABILITIES[n]) >= 0;
+        if (verdict.granted !== expected) {
+          die('the matrix and the evaluator disagree: ' + ECONOMY_CONSUMERS[m] + ' / ' + CAPABILITIES[n]);
+        }
+        /* ⑥ §5：无论准还是拒，那七个位永远为 false。 */
+        if (verdict.isEconomyAuthority || verdict.isBudgetDecision || verdict.isAutonomyDecision ||
+          verdict.isApproval || verdict.isPurchasePermission || verdict.authorizesSpending ||
+          verdict.bypassesBudget) {
+          die('a capability decision must never claim economy authority');
+        }
+      }
+    }
+
+    /* ⑦ 缺身份 / 缺能力必须落在**不同**的理由上（fail closed 的第一层）。 */
+    if (checkEconomyCapability({}).reasonCode !== CAPABILITY_DENY_REASON.MISSING_CONSUMER) {
+      die('a capability check without a consumer must be MISSING_CONSUMER');
+    }
+    if (checkEconomyCapability({ consumer: ECONOMY_CONSUMER.ACTIVE_AGENT_RUNTIME }).reasonCode !==
+      CAPABILITY_DENY_REASON.MISSING_CAPABILITY) {
+      die('a capability check without a capability must be MISSING_CAPABILITY');
+    }
+    /* ⑧ 近似名字**不得**被提升：consumer id 是身份，不是类别。 */
+    var nearMisses = ['agent_runtime', 'active', 'ACTIVE_AGENT_RUNTIME', 'homeNode',
+      'home_node', 'bridge', 'desktop-bridge'];
+    for (var nm = 0; nm < nearMisses.length; nm++) {
+      if (checkEconomyCapability({ consumer: nearMisses[nm], capability: CAPABILITY.PROPOSE_PURCHASE }).granted) {
+        die('a near-miss consumer id must never be promoted to a canonical consumer: ' + nearMisses[nm]);
+      }
+    }
+    /* ⑨ 配置只能收窄。任何别的键都是一次提权企图。 */
+    if (normalizeCapabilityConfig({ grants: { desktop_bridge: CAPABILITIES } }).ok) {
+      die('a capability config may only revoke, never grant');
+    }
+    if (checkEconomyCapability({
+      consumer: ECONOMY_CONSUMER.ACTIVE_AGENT_RUNTIME,
+      capability: CAPABILITY.PROPOSE_PURCHASE,
+      config: { allow: true }
+    }).granted) {
+      die('an unrecognised capability config key must fail closed, not be ignored');
+    }
+    if (checkEconomyCapability({
+      consumer: ECONOMY_CONSUMER.ACTIVE_AGENT_RUNTIME,
+      capability: CAPABILITY.PROPOSE_PURCHASE,
+      config: { revokedCapabilities: [CAPABILITY.PROPOSE_PURCHASE] }
+    }).granted) {
+      die('a revoked capability must be refused even for a consumer that holds it');
+    }
+
+    /* ⑩ 缺席清单不得与真实消费者同名 —— 否则"它不存在"与"它存在"会有
+       两个答案，而那种含糊正是 consumer identity 想要消除的东西。 */
+    for (var s = 0; s < CAPABILITY_SURFACES_NOT_PRESENT.length; s++) {
+      var entry = CAPABILITY_SURFACES_NOT_PRESENT[s];
+      if (typeof entry.surface !== 'string' || typeof entry.why !== 'string' || entry.why.trim() === '') {
+        die('an absent surface entry must carry a surface and a why');
+      }
+      if (isEconomyConsumer(entry.surface)) {
+        die('an absent surface must not also be a canonical consumer: ' + entry.surface);
+      }
+    }
+    if (CAPABILITY_SURFACES_NOT_PRESENT.length < 5) {
+      die('the absent-surface list is too short to be a real audit result');
+    }
+    var absentNames = CAPABILITY_SURFACES_NOT_PRESENT.map(function (e) { return e.surface; });
+    if (absentNames.indexOf('llm') < 0) {
+      die('the model itself must be named as a non-consumer');
+    }
+
+    /* ⑪ 决策词表与权威词表**字形不相交**。"能力不是权威"这句话的第一层
+       保证是：两件事不可能被读成同一个词。 */
+    for (var d = 0; d < CAPABILITY_DECISIONS.length; d++) {
+      if (AP_DECISIONS.indexOf(CAPABILITY_DECISIONS[d]) >= 0) {
+        die('a capability decision word must not collide with an autonomy decision word: ' + CAPABILITY_DECISIONS[d]);
+      }
+    }
+    /* ⑫ 准入拒绝理由与经济拒绝理由同样不相交：一次准入拒绝不是一次经济
+       裁决，而共用一个词会让审计无法区分它们。 */
+    for (var r = 0; r < CAPABILITY_DENY_REASONS.length; r++) {
+      if (DENY_REASONS.indexOf(CAPABILITY_DENY_REASONS[r]) >= 0) {
+        die('a capability deny reason must not collide with an economy deny reason: ' + CAPABILITY_DENY_REASONS[r]);
+      }
+    }
+
+    /* ⑬ 审计记录的形状：键恰好是白名单那 15 个。多一个键就意味着有人往
+       准入记录里塞了经济内容。 */
+    var audited = makeCapabilityAuditRecord({
+      consumerId: ECONOMY_CONSUMER.ACTIVE_AGENT_RUNTIME,
+      capability: CAPABILITY.PROPOSE_PURCHASE,
+      decision: CAPABILITY_DECISION.CAPABILITY_GRANTED,
+      reasonCode: null,
+      agentIntentId: null
+    });
+    if (audited.ok !== true) die('the canonical capability audit record must validate');
+    if (Object.keys(audited.record).sort().join(',') !== CAPABILITY_AUDIT_KEYS.slice().sort().join(',')) {
+      die('a capability audit record must carry exactly the declared keys');
+    }
+    /* ⑭ 而伪造一条准入记录必须失败：一个不在闭集里的 consumer 不得被写下来。 */
+    if (makeCapabilityAuditRecord({
+      consumerId: 'gpt', capability: CAPABILITY.PROPOSE_PURCHASE,
+      decision: CAPABILITY_DECISION.CAPABILITY_GRANTED, reasonCode: null, agentIntentId: null
+    }).ok) {
+      die('a capability audit record must refuse a non-canonical consumer');
+    }
+    if (makeCapabilityAuditRecord({
+      consumerId: ECONOMY_CONSUMER.ACTIVE_AGENT_RUNTIME, capability: CAPABILITY.PROPOSE_PURCHASE,
+      decision: CAPABILITY_DECISION.CAPABILITY_GRANTED,
+      reasonCode: CAPABILITY_DENY_REASON.UNKNOWN_CONSUMER, agentIntentId: null
+    }).ok) {
+      die('a granted capability audit record must not carry a deny reason');
+    }
+    if (makeCapabilityAuditRecord({
+      consumerId: ECONOMY_CONSUMER.ACTIVE_AGENT_RUNTIME, capability: CAPABILITY.PROPOSE_PURCHASE,
+      decision: CAPABILITY_DECISION.CAPABILITY_DENIED, reasonCode: null, agentIntentId: null
+    }).ok) {
+      die('a denied capability audit record must carry a deny reason');
+    }
+    /* ⑮ 一次准入决定**永不**触碰任何经济事实 —— 这句话在契约里可断言。 */
+    if (audited.record.ledgerMutation !== false || audited.record.inventoryMutation !== false ||
+      audited.record.providerMutation !== false || audited.record.paymentMutation !== false ||
+      audited.record.memoryMutation !== false || audited.record.relationshipMutation !== false) {
+      die('a capability decision must not mutate anything');
+    }
   })();
 
   return Object.freeze({
@@ -6026,6 +6627,31 @@
     PURCHASE_INTENT_EXPOSES_HTTP_MUTATION: PURCHASE_INTENT_EXPOSES_HTTP_MUTATION,
     PURCHASE_INTENT_TOUCHES_PROVIDER: PURCHASE_INTENT_TOUCHES_PROVIDER,
     PURCHASE_INTENT_TOUCHES_PAYMENT: PURCHASE_INTENT_TOUCHES_PAYMENT,
+    /* ══ P22-9 §25 · Economy Capability Contract ══════════════════════ */
+    CAPABILITY: CAPABILITY,
+    CAPABILITIES: CAPABILITIES,
+    ECONOMY_CONSUMER: ECONOMY_CONSUMER,
+    ECONOMY_CONSUMERS: ECONOMY_CONSUMERS,
+    CONSUMER_RUNTIME_ANCHOR: CONSUMER_RUNTIME_ANCHOR,
+    CONSUMER_CAPABILITY_MATRIX: CONSUMER_CAPABILITY_MATRIX,
+    CAPABILITY_SURFACES_NOT_PRESENT: CAPABILITY_SURFACES_NOT_PRESENT,
+    CAPABILITY_DECISION: CAPABILITY_DECISION,
+    CAPABILITY_DECISIONS: CAPABILITY_DECISIONS,
+    CAPABILITY_DENY_REASON: CAPABILITY_DENY_REASON,
+    CAPABILITY_DENY_REASONS: CAPABILITY_DENY_REASONS,
+    CAPABILITY_AUDIT_KEYS: CAPABILITY_AUDIT_KEYS,
+    isEconomyConsumer: isEconomyConsumer,
+    isEconomyCapability: isEconomyCapability,
+    isCapabilityDecision: isCapabilityDecision,
+    isCapabilityDenyReason: isCapabilityDenyReason,
+    runtimeAnchorOfConsumer: runtimeAnchorOfConsumer,
+    normalizeEconomyConsumerId: normalizeEconomyConsumerId,
+    normalizeEconomyCapability: normalizeEconomyCapability,
+    normalizeCapabilityConfig: normalizeCapabilityConfig,
+    capabilitiesOfConsumer: capabilitiesOfConsumer,
+    grantedCapabilitiesOf: grantedCapabilitiesOf,
+    checkEconomyCapability: checkEconomyCapability,
+    makeCapabilityAuditRecord: makeCapabilityAuditRecord,
     PURCHASE_INTENT_TOUCHES_MEMORY: PURCHASE_INTENT_TOUCHES_MEMORY,
     PURCHASE_INTENT_TOUCHES_RELATIONSHIP: PURCHASE_INTENT_TOUCHES_RELATIONSHIP,
     PURCHASE_INTENT_CAN_CALL_SETTLE_DIRECTLY: PURCHASE_INTENT_CAN_CALL_SETTLE_DIRECTLY,

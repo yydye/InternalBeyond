@@ -57,10 +57,21 @@ function read(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8').replac
 
    P22-2 加入 economy-store.js（canonical Ledger + Wallet runtime）。
    它**没有**添加任何新的生产模块 —— 本阶段刻意只加一个文件，
-   因为"多一个 manager/service/repository"正是 P22 §1 明确不要的东西。 */
+   因为"多一个 manager/service/repository"正是 P22 §1 明确不要的东西。
+
+   P22-9 加入 economy-capability.js（运行时准入门）。
+   ★ 它是**第三**个文件，而这不是"又一个 manager"。理由只有一条：
+     门必须长在 P22-8 的**上面**。把它写进 store 会让
+     proposeAgentPurchaseIntent 自己变成准入判定的一环（P22-8 的
+     canonical ownership 就变了），而那时"consumer 是否先过门"这个问题
+     会退化成"你有没有记得在 propose 里调那个检查"。
+     相反，把权限表写进契约、把执行写进第三个文件之后，**"没有旁路"
+     变成了一次可以在整个仓库上做的断言**（见下面的 B18）。
+   它没有引入任何新依赖：它 require 的仍是那份契约。 */
 const PRODUCTION_FILES = [
   'services/home-node/economy-contract.js',
-  'services/home-node/economy-store.js'
+  'services/home-node/economy-store.js',
+  'services/home-node/economy-capability.js'
 ];
 
 /* 目录前缀与文件名模式：用来发现"清单漏登记"的文件。
@@ -284,7 +295,11 @@ check('B4.2 启动链**只** require Economy 的 canonical store —— 而且**
       /* P22-2 的接线**恰好**是一处：装配层 require economy-store.js。
          允许清单写成精确集合，而不是"含有 economy 就行"。 */
       if (rel !== 'services/home-node-service.js') { offenders.push(rel + ' -> ' + hits.join(',')); return; }
-      const allowed = ['../services/home-node/economy-store.js'];
+      /* P22-2 的接线**恰好**是一处：装配层 require economy-store.js。
+         P22-9 加第二处：装配层 require 准入门（门在上层，装配是它唯一的
+         构造点）。允许清单写成精确集合，而不是"含有 economy 就行"。 */
+      const allowed = ['../services/home-node/economy-store.js',
+        '../services/home-node/economy-capability.js'];
       hits.forEach(h => { if (allowed.indexOf(h) < 0) offenders.push(rel + ' -> ' + h); });
     });
     return offenders.length === 0;
@@ -298,7 +313,10 @@ check('B4.2 启动链**只** require Economy 的 canonical store —— 而且**
         normalizeSpecifier(rel, spec).value.indexOf('economy') >= 0);
       if (!hits.length) return;
       if (rel !== 'services/home-node-service.js') { offenders.push(rel + ' -> ' + hits.join(',')); return; }
-      hits.forEach(h => { if (h !== '../services/home-node/economy-store.js') offenders.push(rel + ' -> ' + h); });
+      hits.forEach(h => {
+        if (h !== '../services/home-node/economy-store.js' &&
+          h !== '../services/home-node/economy-capability.js') offenders.push(rel + ' -> ' + h);
+      });
     });
     return offenders;
   })());
@@ -993,16 +1011,24 @@ section('B15 · P22-5 store / product / inventory（依赖闭包、不可删除�
    全部落在**同一个** economy-store.js 里，因为它们的写路径必须与
    change log / revision / idempotency 处在**同一个**事务边界里 ——
    抽出去就把那个保证降级成跨模块约定。 */
-check('B15.1 P22-5 没有新增生产文件（Economy 仍然只有契约 + store 两个文件）',
-  PRODUCTION_FILES.length === 2 &&
+check('B15.1 P22-5 的三张表全部落在同一个 economy-store.js 里（它自己没新增生产文件）',
+  PRODUCTION_FILES.length === 3 &&
   PRODUCTION_FILES.indexOf('services/home-node/economy-contract.js') >= 0 &&
-  PRODUCTION_FILES.indexOf('services/home-node/economy-store.js') >= 0,
+  PRODUCTION_FILES.indexOf('services/home-node/economy-store.js') >= 0 &&
+  /* ★ P22-9 的第三个文件是**门**（在 store 上面），不是 P22-5 的表。
+     这里断言的是"三张表仍然只由 store 拥有"：契约件里没有 SQL，
+     而门里没有一张表 —— 两个断言合起来让"P22-5 没有开新文件"继续成立。 */
+  PRODUCTION_FILES.indexOf('services/home-node/economy-capability.js') >= 0 &&
+  read('services/home-node/economy-store.js').indexOf('economy_inventory') >= 0 &&
+  read('services/home-node/economy-contract.js').indexOf('CREATE TABLE') < 0,
   PRODUCTION_FILES);
-check('B15.2 依赖闭包没有变宽：require 目标仍然只有那三个（P22-5 一个新依赖都没加）',
-  allRequires.length === 3 &&
-  allRequires.map(r => r.value).sort().join(',') ===
-    'node:sqlite,runtime/db-failure.js,services/home-node/economy-contract.js',
-  allRequires.map(r => r.value));
+check('B15.2 依赖闭包没有变宽：require 的**目标集合**仍然是那三个（P22-9 也一个新依赖都没加）',
+  Array.from(new Set(allRequires.map(r => r.value))).sort().join(',') ===
+    'node:sqlite,runtime/db-failure.js,services/home-node/economy-contract.js' &&
+  /* ★ 断言的是**目标集合**，不是条目数：P22-9 的第三个文件 require 的是
+     那份**已经存在**的契约 —— 那是同一个依赖，不是一次放宽。 */
+  allRequires.length === 4,
+  allRequires.map(r => r.from + ' -> ' + r.value));
 check('B15.2b 三个 require 里没有任何一个是"能碰钱 / 凭据 / 网络"的模块',
   allRequires.every(r => !/crypto|net|http|child_process|fs\.promises|commerce|payment|provider|credential/i.test(r.value)),
   allRequires.map(r => r.value));
@@ -1144,6 +1170,171 @@ check('B15.15 库存这一层没有派生缓存：不存在 inventory_cached_qua
   /inventoryDerived: 'none'/.test(STORE_SRC),
   { hits: ['inventory_cached_quantity', 'cache_inventory', 'rebuildInventory']
     .filter(n => stripCommentsAndStrings(STORE_SRC).indexOf(n) >= 0) });
+
+/* ══════════════════════════════════════════════════════════════════
+   B18 · P22-9 准入门（门在 P22-8 **上面**、没有旁路、写能力不上 HTTP）
+   ══════════════════════════════════════════════════════════════════
+   这一组的存在理由只有一条：§4 要求"不存在 consumer → proposePurchaseIntent
+   的旁路"，而一句"我们记得总是先过门"不是证明。
+
+   能成为证明的只有两件事，这里都做：
+     · **句柄没有那个输入位**（consumer 与 capability 在构造期/方法名上绑定
+       —— B18.12 断言公开面，P22-9 的测试断言行为）；
+     · **全仓库的调用点断言**（B18.3）—— 生产代码里调用 P22-8 两个写入口的
+       地方**只有**门的两个方法，一个都不多。
+   它与既有的 B12.3 / B13.11 / B15.9（"http.js 里没有那些方法名"）同源：
+   一条边界要么可被断言，要么只是一个愿望。 */
+section('B18 · P22-9 准入门（门在 P22-8 上面、没有旁路、写能力不上 HTTP）');
+
+const GATE_REL = 'services/home-node/economy-capability.js';
+const GATE_SRC = read(GATE_REL);
+const GATE_CODE = stripCommentsAndStrings(GATE_SRC);
+
+check('B18.1 门是**第三个** Economy 生产文件，且它的依赖只有那份契约（一个新依赖都没有）',
+  PRODUCTION_FILES.indexOf(GATE_REL) >= 0 &&
+  scanRequires(GATE_SRC).length === 1 &&
+  scanRequires(GATE_SRC)[0] === './economy-contract.js',
+  { files: PRODUCTION_FILES, requires: scanRequires(GATE_SRC) });
+
+check('B18.2 门自己**不写库**：源码里没有表名、没有 SQL 动词（它只调 store）',
+  ['economy_change_log', 'economy_store', 'INSERT INTO', 'SELECT ', 'UPDATE ', 'appendChange']
+    .every(n => GATE_CODE.indexOf(n) < 0),
+  ['economy_change_log', 'economy_store', 'INSERT INTO', 'SELECT ', 'UPDATE ', 'appendChange']
+    .filter(n => GATE_CODE.indexOf(n) >= 0));
+
+/* ── B18.3 ★ 这一组里最重要的一条：全仓库的调用点 ─────────────────────
+   ★ 测试直接调用 store 是**允许且必要**的：P22-6 ~ P22-8 的 canonical 行为
+   必须在"没有门"的情况下也能被独立证明（那些阶段的测试就是这么写的）。
+   这里断言的是**生产代码**里的调用点，而它只有一个文件。 */
+const BYPASS_SCAN_DIRS = ['services', 'active', 'runtime', 'assets/js', 'bridge', 'scripts'];
+const BYPASS_CALL_RE = /\.\s*(?:proposeAgentPurchaseIntent|resumeAgentPurchaseIntent)\s*\(/;
+const bypassCallSites = [];
+function scanBypassCalls(dirRel) {
+  const abs = path.join(ROOT, dirRel);
+  if (!fs.existsSync(abs)) return;
+  for (const entry of fs.readdirSync(abs, { withFileTypes: true })) {
+    const rel = dirRel + '/' + entry.name;
+    if (entry.isDirectory()) { scanBypassCalls(rel); continue; }
+    if (!/\.js$/i.test(entry.name)) continue;
+    const lines = read(rel).split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+      if (BYPASS_CALL_RE.test(lines[i])) bypassCallSites.push(rel + ':' + (i + 1));
+    }
+  }
+}
+BYPASS_SCAN_DIRS.forEach(scanBypassCalls);
+
+check('B18.3 ★ 生产代码里调用 P22-8 两个写入口的地方**只有**门（没有任何旁路）',
+  bypassCallSites.length === 2 &&
+  bypassCallSites.every(site => site.indexOf(GATE_REL + ':') === 0),
+  bypassCallSites);
+check('B18.3b 门里那两处恰好各一次：propose 一次、resume 一次（不是"一个循环调一百次"）',
+  (GATE_SRC.match(/store\.proposeAgentPurchaseIntent\s*\(/g) || []).length === 1 &&
+  (GATE_SRC.match(/store\.resumeAgentPurchaseIntent\s*\(/g) || []).length === 1,
+  { propose: (GATE_SRC.match(/store\.proposeAgentPurchaseIntent\s*\(/g) || []).length,
+    resume: (GATE_SRC.match(/store\.resumeAgentPurchaseIntent\s*\(/g) || []).length });
+
+check('B18.4 门对 store 的访问全是**字面成员名**，没有 `store[…]` 形式的计算型分派'
+  + '（§6：不存在 executeEconomyAction 那种万能入口）',
+  !/store\s*\[/.test(GATE_CODE) &&
+  (GATE_SRC.match(/store\.appendCapabilityAudit\s*\(/g) || []).length === 1 &&
+  GATE_CODE.indexOf('executeEconomyAction') < 0 &&
+  GATE_CODE.indexOf('apply(') < 0 &&
+  GATE_CODE.indexOf('dispatch') < 0,
+  { computedAccess: /store\s*\[/.test(GATE_CODE), src: GATE_CODE.indexOf('store[') });
+
+check('B18.5 门里不存在任何 P22-3 ~ P22-8 的底层写动词（作为标识符）',
+  ['settlePurchase', 'preparePurchase', 'cancelPurchase', 'reserveFunds', 'commitReservation',
+    'releaseReservation', 'expireReservation', 'failReservation', 'grantInventory',
+    'consumeInventory', 'createQuote', 'putProduct', 'putStore', 'putBudgetPolicy',
+    'putAutonomyPolicy', 'decideApproval', 'createApprovalRequest', 'authorizePurchaseIntent',
+    'mintForSystem', 'burnForSystem', 'commitLedgerTransaction', 'transferBetweenWallets',
+    'openWallet']
+    .every(v => !new RegExp('\\b' + v + '\\b').test(GATE_CODE)),
+  ['settlePurchase', 'preparePurchase', 'cancelPurchase', 'reserveFunds', 'commitReservation',
+    'releaseReservation', 'expireReservation', 'failReservation', 'grantInventory',
+    'consumeInventory', 'createQuote', 'putProduct', 'putStore', 'putBudgetPolicy',
+    'putAutonomyPolicy', 'decideApproval', 'createApprovalRequest', 'authorizePurchaseIntent',
+    'mintForSystem', 'burnForSystem', 'commitLedgerTransaction', 'transferBetweenWallets',
+    'openWallet'].filter(v => new RegExp('\\b' + v + '\\b').test(GATE_CODE)));
+
+check('B18.6 门不 require 进程 / 网络 / 加密原语，也没有定时器'
+  + '（准入是一个**纯查表 + 一次调用**，它不需要时间也不需要端口）',
+  scanRequires(GATE_SRC).every(spec => !/^(?:node:)?(child_process|net|http|https|tls|dgram|crypto|worker_threads|fs|worker_threads)$/.test(spec)) &&
+  !/\bsetTimeout\b|\bsetInterval\b/.test(GATE_CODE) &&
+  !/\bnew Date\b|\bDate\.now\b/.test(GATE_CODE),
+  { requires: scanRequires(GATE_SRC) });
+
+check('B18.7 门没有**模块级可变状态**（顶层没有 let / var 声明）'
+  + '—— 权限不活在某个进程的内存里，它活在契约里',
+  !/^(?:let|var)\s/m.test(GATE_SRC) &&
+  /\bObject\.freeze\(/.test(GATE_SRC),
+  GATE_SRC.split(/\r?\n/).filter(l => /^(?:let|var)\s/.test(l)));
+
+/* ── B18.8 ~ B18.11：HTTP 面 ───────────────────────────────────────── */
+/* ★ 下面两条断言都**剥掉注释与字符串**再比：http.js 的 economyPolicy 那一段
+   必须能解释"为什么准入不上 HTTP"，而那段解释里当然会写出这个文件名；
+   同理门自己的头部注释里会提到契约那张表的名字。被禁止的是**引用**
+   （一个真实的标识符），不是解释 —— 这与 B3.7 的 require 扫描同源
+   （那里的注释假阳性修的是扫描器，不是那句话）。 */
+const httpCode = stripCommentsAndStrings(read('services/home-node/http.js'));
+
+check('B18.8 http.js 里没有门的**任何**成员名（门不是一项服务，因此连名字都不该出现在路由层）',
+  ['economy-capability', 'createEconomyCapabilityGate', 'economyCapabilityGate',
+    'appendCapabilityAudit', 'checkEconomyCapability', 'proposePurchaseIntent',
+    'resumeApprovedPurchase'].every(n => httpCode.indexOf(n) < 0),
+  ['economy-capability', 'createEconomyCapabilityGate', 'economyCapabilityGate',
+    'appendCapabilityAudit', 'checkEconomyCapability', 'proposePurchaseIntent',
+    'resumeApprovedPurchase'].filter(n => httpCode.indexOf(n) >= 0));
+
+check('B18.9 /security 的 economyPolicy 把 P22-9 的"没有"写成可断言字段'
+  + '（读写两个名单**都**是空的：门连读面都不对外）',
+  /capabilityGateImplemented:\s*true/.test(read('services/home-node/http.js')) &&
+  /capabilityWritesExposed:\s*\[\]/.test(read('services/home-node/http.js')) &&
+  /capabilityReadsExposed:\s*\[\]/.test(read('services/home-node/http.js')) &&
+  /capabilityGrantViaHttpIsForbidden:\s*true/.test(read('services/home-node/http.js')) &&
+  /capabilityIsNotEconomyAuthority:\s*true/.test(read('services/home-node/http.js')) &&
+  /capabilityIsNotABudgetDecision:\s*true/.test(read('services/home-node/http.js')));
+
+check('B18.10 六条"授权形态"的路径都在 unreachable 里，且**没有**一条进 desktopPaths'
+  + '（声明与真实路由不得分叉）',
+  (() => {
+    const capabilityPaths = ['/economy/capability', '/economy/capabilities',
+      '/economy/capability/grant', '/economy/capability/revoke',
+      '/economy/gate', '/economy/gate/check'];
+    const inUnreachable = capabilityPaths.every(p => read('services/home-node/http.js').indexOf("'" + p + "'") >= 0);
+    const desktopBlock = (read('services/home-node/http.js').match(/desktopPaths:\s*\[[\s\S]*?\]/) || [''])[0];
+    const noneInDesktop = capabilityPaths.every(p => desktopBlock.indexOf(p) < 0);
+    return inUnreachable && noneInDesktop;
+  })());
+
+check('B18.11 权限表只有**一份**：CONSUMER_CAPABILITY_MATRIX 只出现在契约的**代码**里'
+  + '（生产代码里没有第二张表）',
+  PRODUCTION_FILES.filter(rel => stripCommentsAndStrings(read(rel)).indexOf('CONSUMER_CAPABILITY_MATRIX') >= 0)
+    .join(',') === 'services/home-node/economy-contract.js' &&
+  GATE_CODE.indexOf('CONSUMER_CAPABILITY_MATRIX') < 0 &&
+  GATE_CODE.indexOf('PROPOSE_PURCHASE:') < 0,
+  { holders: PRODUCTION_FILES.filter(rel => stripCommentsAndStrings(read(rel)).indexOf('CONSUMER_CAPABILITY_MATRIX') >= 0),
+    gateHoldsATable: GATE_CODE.indexOf('PROPOSE_PURCHASE:') >= 0 });
+
+/* ── B18.12：公开面（§6 的机器可读形式）───────────────────────────── */
+const createGateForShape = require(path.join(ROOT, GATE_REL));
+const shapeGate = createGateForShape({ store: null });
+
+check('B18.12 门只公开六个成员，而且句柄的键**恰好**是那五个'
+  + '（没有 store、没有底层动词、没有万能入口）',
+  Object.keys(shapeGate).sort().join(',') ===
+    ['bind', 'checkEconomyCapability', 'describe', 'HANDLE_KEYS', 'PROPOSE_INPUT_KEYS', 'RESUME_INPUT_KEYS'].sort().join(',') &&
+  Object.keys(shapeGate.bind('active_agent_runtime')).sort().join(',') ===
+    ['anchor', 'capabilities', 'consumer', 'proposePurchaseIntent', 'resumeApprovedPurchase'].sort().join(','),
+  { gate: Object.keys(shapeGate), handle: Object.keys(shapeGate.bind('active_agent_runtime')) });
+
+check('B18.13 句柄是**冻结**的，而且它的原型就是 Object.prototype'
+  + '（拿不到 store，也拿不到任何继承来的能力）',
+  Object.isFrozen(shapeGate.bind('active_agent_runtime')) &&
+  Object.getPrototypeOf(shapeGate.bind('active_agent_runtime')) === Object.prototype &&
+  shapeGate.bind('active_agent_runtime').proposePurchaseIntent.length === 1 &&
+  shapeGate.bind('active_agent_runtime').resumeApprovedPurchase.length === 1);
 
 /* ══════════════════════════════════════════════════════════════════
    B10 · 反向断言：契约里**必须**存在的"否认"数据

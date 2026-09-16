@@ -815,6 +815,24 @@ function createHomeNodeHttp(deps) {
           intentCarriesPrice: false,
           intentTouchesProvider: false,
           intentTouchesPayment: false,
+          /* ── P22-9：准入层 ───────────────────────────────────────────────
+             ★ 这一节回答"HTTP 面**有没有**获得准入能力"，答案同样必须是
+             **没有**，而且这一次的"没有"比前几次更硬：
+               · capabilityGateImplemented —— 运行时**有**（装配期构造的
+                 economy-capability.js，门在 P22-8 上面）；
+               · capabilityWritesExposed / capabilityReadsExposed —— 两个
+                 **都**是空名单：门没有任何 HTTP 面，连读面都没有（矩阵
+                 是同进程的装配事实，不是一项对外服务）；
+               · capabilityIsNotEconomyAuthority —— 一次准入通过**不是**
+                 预算通过、不是权威通过、不是批准。
+             `unreachable` 里逐名列出六条"授权形态"的路径，因为那些路径
+             一旦存在，权限就来自一个请求了。 */
+          capabilityGateImplemented: true,
+          capabilityWritesExposed: [],
+          capabilityReadsExposed: [],
+          capabilityGrantViaHttpIsForbidden: true,
+          capabilityIsNotEconomyAuthority: true,
+          capabilityIsNotABudgetDecision: true,
           desktopPaths: ['/economy/health', '/economy/wallet', '/economy/ledger',
             '/economy/transaction', '/economy/changes',
             '/economy/reservations', '/economy/reservation',
@@ -880,7 +898,17 @@ function createHomeNodeHttp(deps) {
                "声明"与"真实路由"无法分叉。 */
             '/economy/intent/propose', '/economy/intent/execute',
             '/economy/intent/resume', '/economy/execute', '/economy/approval/decide',
-            '/economy/intent/create', '/economy/intents/create']
+            '/economy/intent/create', '/economy/intents/create',
+            /* ── P22-9：准入层的写形态 ────────────────────────────────────
+               ★ 门**没有**任何 HTTP 面 —— 它是同进程的装配事实，而不是
+               一个服务。因此这里列出的不是"还没做的路由"，而是**不许有**
+               的路由：哪一天有人想从浏览器给一个 consumer 开权限，那一次
+               授权就来自一个 HTTP 请求，而 §3 逐字禁止权限来自请求内容。
+               `/economy/capability*` 与 `/economy/gate*` 是这件事最自然的
+               两种写法，因此它们在这里。 */
+            '/economy/capability', '/economy/capabilities',
+            '/economy/capability/grant', '/economy/capability/revoke',
+            '/economy/gate', '/economy/gate/check']
         },
         doesNotExpose: ['llm-proxy', 'tools', 'payments', 'diary', 'letters', 'images', 'tts'],
         /* M1-B：设备身份 + 移动边界。mobile 面**只有** allowlist 里的 verb。 */

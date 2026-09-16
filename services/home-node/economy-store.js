@@ -11186,6 +11186,60 @@ function createEconomyStore(deps) {
     return Number(rev);
   }
 
+  /* ── §7 的准入审计（P22-9）──────────────────────────────────────────
+     这条方法**不是**门的一部分：门在 economy-capability.js 里，它决定
+     ALLOW / DENY。这里只做一件事 —— 把一次已经发生的准入决定**如实**记进
+     canonical change log。
+
+     ★ 为什么它必须由 store 写，而不是由门自己开一张表：
+       审计事实只能有一个地方，而这个仓库里"经济事实的唯一真源"是
+       economy_store.db 的 change log。门自建一张表会让"这台机器上发生过
+       什么"变成两个答案。
+
+     ★ 为什么 store 要**重新校验**它被要求写下的 consumer / capability：
+       那是"伪造一行审计"在结构上不成立的地方。一个不在闭集里的 consumer
+       （例如模型输出的 'gpt'）写不下去 —— 这不是一条策略，是一次类型错误。
+       如果这里只是 `String(o.consumerId)`，那么"consumer 身份不得来自
+       模型输出"就退化成一句注释。
+
+     ★ 为什么它不是一次经济动作：record 里的六个 mutation 位全 false，
+       而且它**不参与**任何判定 —— 没有任何经济路径读这张行来决定什么。 */
+  function appendCapabilityAudit(input) {
+    requireOpen();
+    const o = input || {};
+    const made = C.makeCapabilityAuditRecord({
+      consumerId: o.consumerId,
+      capability: o.capability,
+      decision: o.decision,
+      reasonCode: o.reasonCode == null ? null : o.reasonCode,
+      agentIntentId: o.agentIntentId == null ? null : o.agentIntentId
+    });
+    if (made.ok !== true) {
+      /* 一行都写不下去。调用方会把这个失败**带出去**（门把它放进
+         `auditFailure`），而不是被这里吞掉。 */
+      return { ok: false, denied: false, reasonCode: null, errors: made.errors, written: false };
+    }
+    const record = made.record;
+    /* entity_id 指向这次决定**关于**的那件事：有 intent 时是那条 intent
+       （于是"哪个 consumer 提出了它"与那条 intent 在 change log 里同键），
+       没有 intent 时（一次被拒的提议）是提出请求的 consumer。 */
+    const entityId = record.agentIntentId == null ? String(record.consumerId) : String(record.agentIntentId);
+    const out = withTransaction(() => {
+      const rev = allocateRevision();
+      appendChange({
+        revision: Number(rev),
+        kind: C.EVENT_TYPE.ECONOMY_CAPABILITY_DECIDED,
+        entityId: entityId,
+        transactionId: null,
+        walletId: null,
+        at: Number(clock()),
+        payload: record
+      });
+      return { ok: true, revision: Number(rev), kind: C.EVENT_TYPE.ECONOMY_CAPABILITY_DECIDED, entityId: entityId, written: true };
+    });
+    return out;
+  }
+
   /* ── §10 的重复抑制查询 ───────────────────────────────────────────── */
   function suppressingIntentFor(intentFingerprint, at) {
     const since = Number(at) - C.PURCHASE_INTENT_DEDUPE_WINDOW_MS;
@@ -14472,6 +14526,18 @@ function createEconomyStore(deps) {
     listPurchaseIntents: listPurchaseIntents,
     serializePurchaseIntent: serializePurchaseIntent,
     countPurchaseIntentStates: intentStateCounts,
+
+    /* ── P22-9 §7 · 准入审计（**加法**，不是门）─────────────────────────
+       ★ 它为什么不是"门的一部分"：它不做任何准入判定，也不读任何经济
+       事实来决定什么。它只是把一次**已经发生**的准入决定如实记下来。
+       门（economy-capability.js）是它唯一的调用方，而它与 P22-3 起那些
+       mutation 同级：只对同进程调用方开放，**不在任何 HTTP 路由上**。
+
+       ★ 它与 P22-8 写入口的关系：零。proposeAgentPurchaseIntent 与
+       resumeAgentPurchaseIntent **一行都没有改** —— 本阶段的纪律是
+       P22-6 ~ P22-8 的 canonical ownership 保持不变，而"门在上面一层"
+       正是那条纪律的推论。 */
+    appendCapabilityAudit: appendCapabilityAudit,
 
     /* 观测 */
     health: health,

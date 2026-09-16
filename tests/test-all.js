@@ -612,7 +612,27 @@ const GROUPS = [
                          没有 intent」「假完成」「丢失等待批准状态」。 */
       ['test_p22_8_economy_intent.js'],
       ['test_p22_8_economy_decision_bridge.js'],
-      ['test_p22_8_economy_runtime.js']
+      ['test_p22_8_economy_runtime.js'],
+      /* ── P22-9 · Economy Capability Gate ────────────────────────────────
+         在所有 runtime consumer 与 P22-8 之间加**唯一**一道确定性的准入
+         门，而它刻意**不是** P22-8 的一部分：门在 store 上面，因此
+         P22-6 ~ P22-8 的 canonical ownership 一行不改。
+           capability —— 契约里的封闭词表（两个能力、三个消费者，每个消费者
+                          带一个可核对的运行时锚点）、唯一真源的权限矩阵、
+                          纯函数 checkEconomyCapability（不读时钟、不写任何
+                          东西）、fail closed 的六类理由（缺身份 / 未知身份 /
+                          缺能力 / 未知能力 / 被收回 / 损坏配置）、"配置只能
+                          收窄"、以及**七位恒 false**（能力不是经济权威）；
+           runtime    —— 真实装配（buildHomeNode 与进程级装配两条路径给出
+                          逐字相同的矩阵）+ 真实 in-process HTTP（六条"授权
+                          形态"的路径 × 四种动词全部 405、24 次尝试之后经济
+                          事实逐字未变、/security 把它写成可断言字段）；
+          ★ 本阶段**零子进程**：门是纯查表 + 一次调用，它的全部自有 invariant
+          都是单进程可判定的，而唯一跨进程的性质（同一个提议在两个真实进程
+          里恰好产生一条 Intent）属于 P22-8 的 store，已在 p22-8 的两进程组
+          里证明过 —— §9/§10 明确不要在 P22-9 重做。 */
+      ['test_p22_9_economy_capability.js'],
+      ['test_p22_9_economy_runtime.js']
     ]
   },
   {
