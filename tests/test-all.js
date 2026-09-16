@@ -632,7 +632,34 @@ const GROUPS = [
           里恰好产生一条 Intent）属于 P22-8 的 store，已在 p22-8 的两进程组
           里证明过 —— §9/§10 明确不要在 P22-9 重做。 */
       ['test_p22_9_economy_capability.js'],
-      ['test_p22_9_economy_runtime.js']
+      ['test_p22_9_economy_runtime.js'],
+      /* ── P22-10 · Economy Action Adapter ────────────────────────────────
+         给现有 Agent / Action runtime 一个**极窄**的经济接口，使它只能
+         经 P22-9 的 bound capability handle 提出购买意图，拿不到 raw store，
+         也拿不到任何底层经济写能力（settlePurchase / reserveFunds /
+         mutateInventory / ledger transaction / approveApproval …）。
+           adapter  —— §2 封闭动作集（**只**开放 ECONOMY_PROPOSE_PURCHASE；
+                        §9 的 resume 登记为"已知但不开放"，理由是生产代码里
+                        decideApproval 的调用方数为 0 —— 没有"用户已批准"的
+                        触发 seam）；§7 净化器（未知动作 / 畸形 proposal /
+                        缺幂等键 / 白名单外的键一律拒绝，不猜修复）；§4 模型
+                        不得提供九个经济事实（action 层由适配器列名拒绝、
+                        proposal 层由 P22-8 以 MODEL_SUPPLIED_ECONOMIC_FACT
+                        拒绝）；§3 传 store 进去**构造期就抛**、拒绝路径一个
+                        句柄调用都不发（用一个一被调用就抛错的句柄证伪）；
+                        §8 重复动作不重复购买而适配器里**零**去重状态；
+                        §5 成功与拒绝带同一组恒 false 位；
+           runtime  —— §6 只接 active_agent_runtime：真实装配（buildHomeNode
+                        与进程级装配）都有已绑定的适配器、消费者锚点可核对
+                        （component-registry#active → 23114）、Active 的既有
+                        两条封闭动作集逐字未改且不含任何经济动词、Middle
+                        Brain 零经济引用、只有 Active 一个消费者被 bind；
+                        以及装配面端到端走完 P22-9 → P22-8 → P22-7 → P22-6。
+         ★ 本阶段**零子进程**：动作净化是纯函数、转发是一次字面成员调用，
+         全部自有 invariant 单进程可判定；P22-6 ~ P22-8 已经证明过的
+         崩溃/竞争矩阵只做 regression，不复制（§12）。 */
+      ['test_p22_10_economy_action_adapter.js'],
+      ['test_p22_10_economy_active_runtime.js']
     ]
   },
   {

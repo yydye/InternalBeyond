@@ -50,6 +50,12 @@ const createEconomyStore = require('../services/home-node/economy-store.js');
    门长在 store 上面，因此 P22-6 ~ P22-8 的 canonical ownership 一行不改。
    与 createEconomyStore 同款：**只有**这一处 require 它。 */
 const createEconomyCapabilityGate = require('../services/home-node/economy-capability.js');
+/* P22-10：Economy 的 **Action Adapter** —— Agent / Action runtime 与整个
+   经济域之间的**唯一**界面。它与上面两个同款：**只有**这一处 require 它，
+   而且它 require 的仍是那份已有的契约（依赖闭包没有变宽）。
+   ★ 这里只取 bindActiveAgentEconomyAdapter（装配助手）：全仓库唯一一次
+   `gate.bind(consumer)` 就发生在它里面，而 consumer 身份写在适配器旁边。 */
+const economyActionAdapterModule = require('../services/home-node/economy-action-adapter.js');
 const createNodeModelPort = require('../active/node-model-port.js');
 /* P11-3E：canonical store 失败分类器（**唯一**一份，见 runtime/db-failure.js）。
    它在 runtime/ 下，与 runtime/local-services-runner.js 那份是同一模块 ——
@@ -405,7 +411,29 @@ function economyAssembly(options) {
     config: options.economyCapabilityConfig,
     logger: (e, f) => serviceLog('info', e, f)
   });
-  return { economyStore: economyStore, economyCapabilityGate: economyCapabilityGate };
+
+  /* ── P22-10 · Action Adapter（**唯一**一处装配 · 全仓库唯一一次 bind）──
+     ★ 为什么 bind 发生在**装配层**：P22-9 说得很准 —— "构造就是身份绑定"。
+       把 `gate.bind('active_agent_runtime')` 放在这里，意味着
+       "这台节点上哪一个消费者真的拿到了句柄"是一份**唯一的**装配事实。
+       在 P22-10 之前，这句话在 production 里是**零次**（bind 只出现在
+       tests/）；本阶段让那个被声明的身份第一次真的被实例化。
+     ★ 为什么只绑**一个**消费者：审计（P22-9 §1 复核）结论是 Active 是
+       这个仓库里唯一一个"Agent 自己决定要不要动手"的 Node 运行时。
+       Chat / Group / Voice / Diary / desktop_bridge / home_node_authority /
+       MCP 一个都不绑 —— 它们作为 Node 运行时消费者**不存在**，
+       凭空绑一个等于凭空发明一个已经授予的权限。
+     ★ 适配器**不**交给 http.js：HTTP 上的经济写面从 P22-2 起就是 0，
+       而 P22-8 逐字写着 proposeAgentPurchaseIntent 的调用方是
+       Decision/Action seam，不是一个 HTTP 请求。它的公开面到此为止
+       （buildHomeNode() 的返回值），与门逐字同级。 */
+  const economyActionAdapter = options.economyActionAdapter
+    || economyActionAdapterModule.bindActiveAgentEconomyAdapter(economyCapabilityGate);
+  return {
+    economyStore: economyStore,
+    economyCapabilityGate: economyCapabilityGate,
+    economyActionAdapter: economyActionAdapter
+  };
 }
 
 /* ── canonical Moments store 的失败探针（**唯一**一处）────────────────
@@ -734,6 +762,11 @@ function buildHomeNode(options) {
        一个内部细节；"这台节点到底装没装门"必须可以直接断言。 */
     economyStore: instanceEconomy.economyStore,
     economyCapabilityGate: instanceEconomy.economyCapabilityGate,
+    /* P22-10：Action Adapter 也一并导出。它与 store / 门逐字同级 ——
+       "这台节点上有没有一个 Agent 能提议"必须是一句可断言的事实，
+       而它同时也是 §6 的机器可读答案：装配里**只**绑了 active_agent_runtime
+       一个消费者（describe().consumer）。 */
+    economyActionAdapter: instanceEconomy.economyActionAdapter,
     registry: instanceRegistry,
     gateway: instanceGateway,
     executor: instanceExecutor,
@@ -846,6 +879,11 @@ const httpLayer = createHttp({
      在生产上是一个静默的"每个 consumer 都能直接提议"，而那种缺口只有
      直接断言语料才能发现。 */
   economyCapabilityGate: economy.economyCapabilityGate,
+  /* P22-10：**进程级**的 Action Adapter。这一行是"生产启动路径上真的有一个
+     Agent 动作面"的机器可读形式：P22-9 导出的门在 P22-10 之前**没有任何
+     production 调用方 bind 过它**，于是"谁被授予了 PROPOSE_PURCHASE"
+     只是一个声明。这里是那个声明第一次被实例化的地方。 */
+  economyActionAdapter: economy.economyActionAdapter,
   stores: [
     { store, name: 'chat', role: 'canonical-chat-authority' },
     { store: moments.momentsStore, name: 'moments', role: 'canonical-moments-authority', probe: momentStoreFailureProbe }
@@ -1091,6 +1129,8 @@ module.exports = {
   economyStore: economy.economyStore,
   /* P22-9：进程级的门与进程级的 store 一起导出。 */
   economyCapabilityGate: economy.economyCapabilityGate,
+  /* P22-10：进程级的 Action Adapter（= 生产侧"Agent 能不能提议"的唯一答案）。 */
+  economyActionAdapter: economy.economyActionAdapter,
   economyAssembly,
   buildHomeNode,
   memoryAssembly,

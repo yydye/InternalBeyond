@@ -71,7 +71,13 @@ function read(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8').replac
 const PRODUCTION_FILES = [
   'services/home-node/economy-contract.js',
   'services/home-node/economy-store.js',
-  'services/home-node/economy-capability.js'
+  'services/home-node/economy-capability.js',
+  /* P22-10 加入 economy-action-adapter.js（Agent/Action → 门的唯一界面）。
+     ★ 它是**第四**个文件，理由与 P22-9 逐字同构：适配器必须长在门的
+     **上面**。把它写进门里会让"门是否被正确调用"变成门内部的一件事，
+     而把它写进 store 就是又一次改写 P22-8 的 canonical ownership。
+     它同样没有引入任何新依赖：它 require 的仍是那份契约。 */
+  'services/home-node/economy-action-adapter.js'
 ];
 
 /* 目录前缀与文件名模式：用来发现"清单漏登记"的文件。
@@ -297,9 +303,13 @@ check('B4.2 启动链**只** require Economy 的 canonical store —— 而且**
       if (rel !== 'services/home-node-service.js') { offenders.push(rel + ' -> ' + hits.join(',')); return; }
       /* P22-2 的接线**恰好**是一处：装配层 require economy-store.js。
          P22-9 加第二处：装配层 require 准入门（门在上层，装配是它唯一的
-         构造点）。允许清单写成精确集合，而不是"含有 economy 就行"。 */
+         构造点）。
+         P22-10 加第三处：装配层 require Action Adapter（适配器同样长在
+         门的上面，而它是全仓库唯一一次 gate.bind(consumer) 的所在地）。
+         允许清单写成精确集合，而不是"含有 economy 就行"。 */
       const allowed = ['../services/home-node/economy-store.js',
-        '../services/home-node/economy-capability.js'];
+        '../services/home-node/economy-capability.js',
+        '../services/home-node/economy-action-adapter.js'];
       hits.forEach(h => { if (allowed.indexOf(h) < 0) offenders.push(rel + ' -> ' + h); });
     });
     return offenders.length === 0;
@@ -315,7 +325,8 @@ check('B4.2 启动链**只** require Economy 的 canonical store —— 而且**
       if (rel !== 'services/home-node-service.js') { offenders.push(rel + ' -> ' + hits.join(',')); return; }
       hits.forEach(h => {
         if (h !== '../services/home-node/economy-store.js' &&
-          h !== '../services/home-node/economy-capability.js') offenders.push(rel + ' -> ' + h);
+          h !== '../services/home-node/economy-capability.js' &&
+          h !== '../services/home-node/economy-action-adapter.js') offenders.push(rel + ' -> ' + h);
       });
     });
     return offenders;
@@ -1012,22 +1023,29 @@ section('B15 · P22-5 store / product / inventory（依赖闭包、不可删除�
    change log / revision / idempotency 处在**同一个**事务边界里 ——
    抽出去就把那个保证降级成跨模块约定。 */
 check('B15.1 P22-5 的三张表全部落在同一个 economy-store.js 里（它自己没新增生产文件）',
-  PRODUCTION_FILES.length === 3 &&
+  PRODUCTION_FILES.length === 4 &&
   PRODUCTION_FILES.indexOf('services/home-node/economy-contract.js') >= 0 &&
   PRODUCTION_FILES.indexOf('services/home-node/economy-store.js') >= 0 &&
   /* ★ P22-9 的第三个文件是**门**（在 store 上面），不是 P22-5 的表。
      这里断言的是"三张表仍然只由 store 拥有"：契约件里没有 SQL，
-     而门里没有一张表 —— 两个断言合起来让"P22-5 没有开新文件"继续成立。 */
+     而门里没有一张表 —— 两个断言合起来让"P22-5 没有开新文件"继续成立。
+     ★ P22-10 的第四个文件是**动作适配器**（在门上面），它同样没有一张
+     表：适配器只做动作净化与转发，SQL 与 schema 仍然只由 store 拥有。
+     两句话合起来仍然是 P22-5 §1 那句"不要为了新概念多开几个文件"。 */
   PRODUCTION_FILES.indexOf('services/home-node/economy-capability.js') >= 0 &&
+  PRODUCTION_FILES.indexOf('services/home-node/economy-action-adapter.js') >= 0 &&
   read('services/home-node/economy-store.js').indexOf('economy_inventory') >= 0 &&
-  read('services/home-node/economy-contract.js').indexOf('CREATE TABLE') < 0,
+  read('services/home-node/economy-contract.js').indexOf('CREATE TABLE') < 0 &&
+  read('services/home-node/economy-action-adapter.js').indexOf('CREATE TABLE') < 0 &&
+  read('services/home-node/economy-capability.js').indexOf('CREATE TABLE') < 0,
   PRODUCTION_FILES);
-check('B15.2 依赖闭包没有变宽：require 的**目标集合**仍然是那三个（P22-9 也一个新依赖都没加）',
+check('B15.2 依赖闭包没有变宽：require 的**目标集合**仍然是那三个（P22-9/P22-10 也一个新依赖都没加）',
   Array.from(new Set(allRequires.map(r => r.value))).sort().join(',') ===
     'node:sqlite,runtime/db-failure.js,services/home-node/economy-contract.js' &&
-  /* ★ 断言的是**目标集合**，不是条目数：P22-9 的第三个文件 require 的是
-     那份**已经存在**的契约 —— 那是同一个依赖，不是一次放宽。 */
-  allRequires.length === 4,
+  /* ★ 断言的是**目标集合**，不是条目数：P22-9 的第三个文件与 P22-10 的
+     第四个文件 require 的都是那份**已经存在**的契约 —— 那是同一个依赖，
+     不是两次放宽。条目数从 4 变成 5 只反映"多了一个文件复用同一个依赖"。 */
+  allRequires.length === 5,
   allRequires.map(r => r.from + ' -> ' + r.value));
 check('B15.2b 三个 require 里没有任何一个是"能碰钱 / 凭据 / 网络"的模块',
   allRequires.every(r => !/crypto|net|http|child_process|fs\.promises|commerce|payment|provider|credential/i.test(r.value)),

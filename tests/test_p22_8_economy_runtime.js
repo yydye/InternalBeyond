@@ -39,6 +39,22 @@ const C = require(path.join(ROOT, 'services', 'home-node', 'economy-contract.js'
 const SERVICE_SOURCE = fs.readFileSync(path.join(ROOT, SERVICE_FILE), 'utf8');
 const HTTP_SOURCE = fs.readFileSync(path.join(ROOT, 'services', 'home-node', 'http.js'), 'utf8');
 
+/* ── 剥注释（与 P22-1 boundary 的 stripCommentsAndStrings 同款纪律）────
+   P22-10 踩到的实测：装配层新增了一句**解释性注释**，它逐字引用了
+   P22-8 的写入口名字（"proposeAgentPurchaseIntent 的调用方是
+   Decision/Action seam，不是一个 HTTP 请求" —— 那句话正是 P22-8 自己
+   写在 http.js 里的）。若扫描器读原始文本，这句**否认/引用**会被 A6 判成
+   "service 层引入了写入口"。
+   ★ 修的是**扫描器**，不是那句话 —— 与 P22-2 的 B3.7 同源（那里的一句
+   "本文件不 require('crypto')" 曾被判成一条真实依赖）。让人为了变绿而
+   删掉解释，是这类假阳性最坏的后果。 */
+function stripComments(src) {
+  return String(src)
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:\\])\/\/[^\n\r]*/g, '$1');
+}
+const SERVICE_CODE = stripComments(SERVICE_SOURCE);
+
 let failures = 0;
 function check(name, cond, extra) {
   if (cond) console.log('✔ ' + name);
@@ -247,8 +263,15 @@ section('A · 静态边界（§14/§15：模型能到达的只有 propose，而�
       .every(k => HTTP_SOURCE.indexOf(k) >= 0));
 
   check('A6 ★ service 层没有引入任何 P22-8 的写入口（Home Node 服务也不获得购买权）',
-    SERVICE_SOURCE.indexOf('proposeAgentPurchaseIntent') < 0 &&
-    SERVICE_SOURCE.indexOf('resumeAgentPurchaseIntent') < 0);
+    /* ★ 按**代码**视图断言，不按原始文本：P22-10 的装配层注释逐字引用了
+       proposeAgentPurchaseIntent（那句引用本身就是 P22-8 写在 http.js 里的
+       一句话），而一句引用不是一次调用。 */
+    SERVICE_CODE.indexOf('proposeAgentPurchaseIntent') < 0 &&
+    SERVICE_CODE.indexOf('resumeAgentPurchaseIntent') < 0 &&
+    /* 反向自证：这句扫描确实能抓到一次真的调用。 */
+    stripComments('store.proposeAgentPurchaseIntent({})').indexOf('proposeAgentPurchaseIntent') >= 0,
+    { propose: SERVICE_CODE.indexOf('proposeAgentPurchaseIntent'),
+      resume: SERVICE_CODE.indexOf('resumeAgentPurchaseIntent') });
 }
 
 /* ══════════════════════════════════════════════════════════════════════

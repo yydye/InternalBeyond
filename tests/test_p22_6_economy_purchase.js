@@ -1118,18 +1118,24 @@ section('K · HTTP：购买读面存在，写面逐名不存在');
     /purchaseHasRefund:\s*false/.test(httpSrc) &&
     /purchaseCreatesPendingApprovalRecords:\s*false/.test(httpSrc));
 
-  check('K6 P22-6 没有新增生产文件：economy-*.js 仍然只有契约 + store（外加 P22-9 的准入门）',
+  check('K6 P22-6 没有新增生产文件：economy-*.js 仍然只有契约 + store（外加 P22-9 / P22-10 的上层）',
     /* ★ P22-9 之后磁盘上多了第三个 economy-*.js：**门**。它是 P22-9 加的，
        而且它加的理由恰好是 P22-6 这条纪律的另一面 —— 门必须长在 P22-8
        **上面**，因此它不能写进 store。P22-6 自己"没有新增文件"这句话仍然
        成立：它的三张表与它的结算全部在 economy-store.js 里，而
        tests/test_p22_1_economy_boundary.js 的 B15.1 对同一件事断言了
-       "三张表只由 store 拥有"这个更精确的版本。 */
+       "三张表只由 store 拥有"这个更精确的版本。
+       ★ P22-10 之后又多了第四个：**动作适配器**（Agent/Action → 门的唯一
+       界面）。理由逐字同构 —— 适配器必须长在门的**上面**，把它写进门里
+       就等于让"门有没有被正确调用"变成门内部的一件事。它同样没有一张表、
+       没有一行 SQL。 */
     fs.readdirSync(path.join(ROOT, 'services', 'home-node'))
       .filter(f => /^economy-/.test(f)).sort().join(',') ===
-      'economy-capability.js,economy-contract.js,economy-store.js' &&
+      'economy-action-adapter.js,economy-capability.js,economy-contract.js,economy-store.js' &&
     fs.readFileSync(path.join(ROOT, 'services', 'home-node', 'economy-store.js'), 'utf8')
-      .indexOf('economy_purchases') >= 0);
+      .indexOf('economy_purchases') >= 0 &&
+    fs.readFileSync(path.join(ROOT, 'services', 'home-node', 'economy-action-adapter.js'), 'utf8')
+      .indexOf('economy_purchases') < 0);
 
   check('K7 ★ health 如实自述这几条边界（每一条都是可断言的字段，不是注释）',
     (() => {
