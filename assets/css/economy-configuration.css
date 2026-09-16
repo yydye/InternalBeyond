@@ -1,0 +1,372 @@
+﻿/* ====================================================================
+   IB · Economy 配置（P22-16）
+   --------------------------------------------------------------------
+   这一份样式表**不是**一套 Economy 设计系统。它只描述这一页新增的外壳
+   （页签 / 配置对象 / 三张配置卡），而它用的每一个颜色、圆角、模糊、
+   阴影、间距都来自既有设计令牌（core.css 的 --glass-* / --radius-* /
+   --surface-* / --border-* / --content-* / --shadow-* / --accent /
+   --status-* / --space-*）。
+
+   四件刻意的事：
+     ① 按模块运行时注入（assets/js/economy-configuration.js 的 injectStyle），
+        与 diagnostics / guide-beginner / setup-wizard / update-card /
+        economy-approval 同一条既有做法 —— 于是 HTML 的样式表预算
+        （20）一个都不占。
+     ② 玻璃层级**最多两层**：卡片一层，输入面一层。刻度条 / 徽标 /
+        说明块一律用 `inset` 的实底，不再叠 backdrop-filter —— 玻璃套玻璃
+        套五层会让小字糊掉，也会让"哪一层是当前作用域"变得看不出来。
+     ③ 数字用 `font-variant-numeric: tabular-nums` 且等宽对齐：额度要能
+        一眼扫读，而"12.00"与"9.50"在小数点上对齐比任何装饰都有用。
+     ④ 状态只有**一种**色彩渠道（--ecfg-tone）。没有红黄绿三盏灯：
+        "关着""缺一条规则""读不到"都用同一族低饱和色 + 一句人话表达。
+
+   层级（§6）：
+     Page → .ecfg-card(玻璃) → .ecfg-input-wrap / .ecfg-meter-track(实底内嵌)
+          → .ecfg-actions(最上层的一对按钮)
+   ==================================================================== */
+
+/* ── 外壳：与 P22-15 的内容同宽同中轴，页签在最上面 ───────────────── */
+#economy-configuration{max-width:940px;margin:0 auto}
+#page-economy{padding-top:80px}
+
+.ecfg{display:flex;flex-direction:column;gap:var(--space-4)}
+
+/* ── 页签 ─────────────────────────────────────────────────────────────
+   它不是"管理系统侧边栏"：一条安静的文字轨，当前项由一段细轨与
+   更实的前景色表示，而不是一块高饱和色块。 */
+.ecfg-tabs{display:flex;align-items:stretch;gap:2px;flex-wrap:wrap;
+  border-bottom:1px solid var(--border-soft);margin-bottom:var(--space-4)}
+.ecfg-tab{
+  position:relative;appearance:none;background:none;border:0;cursor:pointer;
+  padding:9px 14px 11px;margin:0;
+  font-family:var(--font-ui);font-size:.82rem;letter-spacing:.02em;
+  color:var(--content-muted);
+  transition:color var(--motion-fast) var(--transition),opacity var(--motion-fast) var(--transition);
+}
+.ecfg-tab:hover{color:var(--content-secondary)}
+.ecfg-tab:focus-visible{outline:1px solid var(--accent-light);outline-offset:2px;border-radius:var(--radius-control)}
+.ecfg-tab.is-active{color:var(--content-primary);font-weight:500}
+.ecfg-tab-rail{position:absolute;left:12px;right:12px;bottom:-1px;height:2px;border-radius:2px;
+  background:var(--accent);opacity:0;transform:scaleX(.4);
+  transition:opacity var(--motion-normal) var(--transition),transform var(--motion-normal) var(--transition)}
+.ecfg-tab.is-active .ecfg-tab-rail{opacity:.9;transform:scaleX(1)}
+
+/* ── 配置对象条 ───────────────────────────────────────────────────────
+   钱与规则都属于某个角色，所以"配谁"是一个必须被说出来的输入。 */
+.ecfg-ownerbar{display:flex;align-items:center;justify-content:space-between;gap:var(--space-4);
+  flex-wrap:wrap;padding:10px 14px;border-radius:var(--radius-card);
+  border:1px solid var(--glass-border-soft);background:var(--glass-bg-ambient)}
+.ecfg-owner-left{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0}
+.ecfg-owner-label{font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;color:var(--accent-light);opacity:.9}
+.ecfg-owner-select{
+  appearance:none;-webkit-appearance:none;
+  font-family:var(--font-ui);font-size:.86rem;color:var(--content-primary);
+  padding:6px 30px 6px 12px;border-radius:var(--radius-control);cursor:pointer;
+  border:1px solid var(--border-soft);background:var(--surface-input);
+  background-image:linear-gradient(45deg,transparent 50%,currentColor 50%),linear-gradient(135deg,currentColor 50%,transparent 50%);
+  background-position:calc(100% - 16px) 52%,calc(100% - 11px) 52%;
+  background-size:5px 5px,5px 5px;background-repeat:no-repeat;
+  transition:border-color var(--motion-fast) var(--transition),background-color var(--motion-fast) var(--transition);
+}
+.ecfg-owner-select:hover{border-color:var(--border-strong)}
+.ecfg-owner-select:focus-visible{outline:1px solid var(--accent-light);outline-offset:1px}
+.ecfg-owner-select option{background:var(--glass-bg-modal);color:var(--content-primary)}
+.ecfg-owner-hint{font-size:.72rem;line-height:1.6;color:var(--content-muted);min-width:0}
+.ecfg-owner-right{display:flex;align-items:center;gap:var(--space-3);flex:0 0 auto}
+.ecfg-sync{font-size:.7rem;letter-spacing:.04em;color:var(--content-muted);min-height:1em}
+
+/* ── 面板 ─────────────────────────────────────────────────────────────
+   ★ [hidden] 必须真的隐藏：三块面板同时存在于 DOM 里，靠 hidden 开合。
+     显式写出来，因为一条 `display:flex` 会盖掉 UA 的 [hidden]{display:none}。 */
+.ecfg-panes{display:block}
+.ecfg-pane[hidden]{display:none}
+
+/* ── 卡片 ─────────────────────────────────────────────────────────── */
+.ecfg-card{
+  display:flex;flex-direction:column;gap:var(--space-4);
+  padding:20px 22px 18px 24px;
+  border:1px solid var(--border-soft);
+  border-radius:var(--radius-panel);
+  background:var(--glass-bg-elevated);
+  backdrop-filter:var(--glass-filter-md);-webkit-backdrop-filter:var(--glass-filter-md);
+  box-shadow:var(--shadow-panel);
+  color:var(--content-primary);
+}
+.ecfg-card-plain{gap:var(--space-3)}
+.ecfg-head{display:flex;align-items:flex-start;gap:12px}
+.ecfg-mark{flex:0 0 22px;width:22px;height:22px;margin-top:1px;color:var(--accent-light);opacity:.92;display:inline-flex}
+.ecfg-head-text{display:flex;flex-direction:column;gap:3px;min-width:0}
+.ecfg-card-title{font-family:var(--font-display);font-weight:600;font-size:1.22rem;letter-spacing:.04em;margin:0;color:var(--content-primary)}
+.ecfg-card-sub{margin:0;font-size:.76rem;line-height:1.72;color:var(--content-secondary);max-width:62ch}
+
+/* ── 一句说明（安静的一行，不是警告框）───────────────────────────── */
+.ecfg-note{margin:0;font-size:.74rem;line-height:1.75;color:var(--content-secondary);max-width:66ch;overflow-wrap:anywhere}
+.ecfg-note.is-quiet{color:var(--content-muted)}
+.ecfg-note.is-warn{color:var(--content-secondary);border-left:2px solid var(--status-warning);padding-left:10px}
+
+/* ── "初始额度已设置"这枚安静的标记 ─────────────────────────────────
+   它不是绿灯：没有色块、没有阴影，只有一条细线与一个勾。 */
+.ecfg-flag{display:inline-flex;align-items:center;gap:8px;align-self:flex-start;
+  padding:5px 12px 5px 10px;border-radius:999px;
+  border:1px solid color-mix(in srgb,var(--accent) 30%,transparent);
+  background:color-mix(in srgb,var(--accent) 9%,transparent);
+  font-size:.76rem;letter-spacing:.03em;color:var(--content-primary)}
+.ecfg-flag-mark{display:inline-flex;color:var(--accent-light)}
+.ecfg-flag-mark svg{display:block}
+
+/* ── 额度：主数一眼可读，其余两个是它的注脚 ──────────────────────── */
+.ecfg-figures{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:2px var(--space-5);
+  padding:14px 16px;border-radius:var(--radius-card);
+  border:1px solid var(--glass-border-soft);background:var(--glass-bg-ambient)}
+.ecfg-figure{display:flex;flex-direction:column;gap:3px;min-width:0}
+.ecfg-figure-k{font-size:.66rem;letter-spacing:.12em;text-transform:uppercase;color:var(--content-muted)}
+.ecfg-figure-v{
+  font-family:var(--font-reading);font-size:.98rem;line-height:1.35;color:var(--content-secondary);
+  font-variant-numeric:tabular-nums;overflow-wrap:anywhere;
+}
+.ecfg-figure-v.is-muted{color:var(--content-muted);opacity:.8}
+.ecfg-figure.is-primary .ecfg-figure-v{
+  font-family:var(--font-display);font-weight:600;font-size:1.7rem;letter-spacing:.01em;
+  color:var(--content-primary);
+}
+
+/* ── 表单 ─────────────────────────────────────────────────────────────
+   ★ 三个一排、窄屏两排一列：**不是**一整页输入框。高级设置默认收起
+     （见 .ecfg-advanced）。 */
+.ecfg-form{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-4) var(--space-5)}
+.ecfg-field{display:flex;flex-direction:column;gap:6px;min-width:0}
+.ecfg-field-label{font-size:.76rem;letter-spacing:.02em;color:var(--content-primary)}
+.ecfg-field-hint{margin:0;font-size:.68rem;line-height:1.7;color:var(--content-muted);max-width:44ch}
+.ecfg-input-wrap{position:relative;display:flex;align-items:center}
+.ecfg-input{
+  width:100%;box-sizing:border-box;
+  font-family:var(--font-reading);font-size:.95rem;
+  font-variant-numeric:tabular-nums;
+  color:var(--content-primary);
+  padding:8px 12px;border-radius:var(--radius-control);
+  border:1px solid var(--border-soft);background:var(--surface-input);
+  transition:border-color var(--motion-fast) var(--transition),box-shadow var(--motion-fast) var(--transition);
+}
+.ecfg-input-wrap:has(.ecfg-unit) .ecfg-input{padding-right:74px}
+.ecfg-input::placeholder{color:var(--content-muted);opacity:.7}
+.ecfg-input:hover{border-color:var(--border-strong)}
+.ecfg-input:focus{outline:none;border-color:var(--accent-light);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 16%,transparent)}
+.ecfg-input:disabled{opacity:.6}
+.ecfg-unit{position:absolute;right:12px;font-size:.68rem;letter-spacing:.06em;color:var(--content-muted);pointer-events:none}
+
+/* 勾选行：整行可点，命中的是原生 checkbox（没有自绘开关要维护） */
+.ecfg-check-row{display:flex;align-items:flex-start;gap:10px;cursor:pointer;min-width:0}
+.ecfg-check{flex:0 0 auto;margin:3px 0 0;width:15px;height:15px;accent-color:var(--accent);cursor:pointer}
+.ecfg-check-text{display:flex;flex-direction:column;gap:2px;min-width:0}
+.ecfg-check-label{font-size:.8rem;line-height:1.5;color:var(--content-primary)}
+.ecfg-check-hint{font-size:.68rem;line-height:1.65;color:var(--content-muted)}
+.ecfg-checks{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px var(--space-4)}
+
+/* 单选段（自主程度标记 / 任何四选一） */
+.ecfg-seg{display:inline-flex;flex-wrap:wrap;gap:2px;padding:3px;border-radius:var(--radius-control);
+  border:1px solid var(--border-soft);background:var(--glass-bg-ambient);align-self:flex-start}
+.ecfg-seg-btn{
+  appearance:none;border:0;background:none;cursor:pointer;margin:0;
+  font-family:var(--font-ui);font-size:.74rem;letter-spacing:.03em;
+  padding:5px 13px;border-radius:calc(var(--radius-control) - 3px);
+  color:var(--content-muted);
+  transition:background-color var(--motion-fast) var(--transition),color var(--motion-fast) var(--transition);
+}
+.ecfg-seg-btn:hover{color:var(--content-secondary)}
+.ecfg-seg-btn:focus-visible{outline:1px solid var(--accent-light);outline-offset:1px}
+.ecfg-seg-btn.is-on{background:var(--surface-hover);color:var(--content-primary)}
+
+/* ── 高级设置：默认收起 ───────────────────────────────────────────────
+   它是一条细线下面的一行字，不是第二个表单区。 */
+.ecfg-advanced{display:flex;flex-direction:column;gap:var(--space-4);
+  padding-top:var(--space-3);border-top:1px solid var(--glass-border-soft)}
+.ecfg-advanced-toggle{
+  appearance:none;border:0;background:none;cursor:pointer;align-self:flex-start;margin:0;padding:2px 0;
+  font-family:var(--font-ui);font-size:.74rem;letter-spacing:.05em;color:var(--accent-light);
+  border-bottom:1px dashed color-mix(in srgb,var(--accent-light) 46%,transparent);
+}
+.ecfg-advanced-toggle:focus-visible{outline:1px solid var(--accent-light);outline-offset:2px}
+.ecfg-advanced-body{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-4) var(--space-5)}
+.ecfg-advanced-body[hidden]{display:none}
+
+/* ── 每日预算刻度 ─────────────────────────────────────────────────────
+   ★ 已用与上限都直接来自权威读面。读不到"已用"时这里退化成纯额度刻度
+     （一条实心的线），**不编一个进度值**。 */
+.ecfg-meter{display:flex;flex-direction:column;gap:8px;
+  padding:14px 16px;border-radius:var(--radius-card);
+  border:1px solid var(--glass-border-soft);background:var(--glass-bg-ambient)}
+.ecfg-meter-title{font-size:.68rem;letter-spacing:.14em;text-transform:uppercase;color:var(--content-muted)}
+.ecfg-meter-track{position:relative;height:9px;border-radius:999px;overflow:hidden;
+  background:color-mix(in srgb,var(--content-muted) 24%,transparent);
+  box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--content-muted) 20%,transparent)}
+.ecfg-meter-fill{height:100%;border-radius:999px;min-width:3px;
+  background:linear-gradient(90deg,var(--accent) 0%,var(--accent-light) 100%);
+  box-shadow:0 0 8px color-mix(in srgb,var(--accent-light) 42%,transparent);
+  transition:width var(--motion-normal) var(--transition)}
+/* 超出上限是一个**事实**，不是错误：换成低饱和的暖色，不加红、不闪 */
+.ecfg-meter-fill.is-over{background:linear-gradient(90deg,var(--status-warning),color-mix(in srgb,var(--status-warning) 60%,var(--accent-light)))}
+/* 纯额度刻度：没有进度可言，因此它是一条刻度线而不是一根进度条 */
+.ecfg-meter-fill.is-scale{background:none;
+  background-image:repeating-linear-gradient(90deg,
+    color-mix(in srgb,var(--accent) 62%,transparent) 0 1px,transparent 1px 7px);
+  border-radius:0;height:100%}
+.ecfg-meter-legend{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.ecfg-meter-k{font-size:.68rem;letter-spacing:.06em;color:var(--content-muted)}
+.ecfg-meter-v{font-family:var(--font-reading);font-size:.86rem;color:var(--content-primary);
+  font-variant-numeric:tabular-nums;margin-right:var(--space-4)}
+.ecfg-meter-v:last-child{margin-right:0}
+
+/* ── 反馈：保存之后的一句话 ───────────────────────────────────────────
+   成功与失败用同一个结构，只换一条左轨的颜色与一个线性小图 —— 不做
+   成"红绿灯色块"。 */
+.ecfg-feedback{display:flex;flex-direction:column;gap:5px;
+  padding:11px 14px;border-radius:var(--radius-card);
+  border:1px solid var(--glass-border-soft);background:var(--glass-bg-ambient);
+  border-left:2px solid var(--content-muted)}
+.ecfg-feedback.is-good{border-left-color:var(--status-success)}
+.ecfg-feedback.is-bad{border-left-color:var(--status-warning)}
+.ecfg-feedback-head{display:flex;align-items:flex-start;gap:8px}
+.ecfg-feedback-mark{display:inline-flex;flex:0 0 15px;color:var(--content-muted)}
+.ecfg-feedback.is-good .ecfg-feedback-mark{color:var(--status-success)}
+.ecfg-feedback.is-bad .ecfg-feedback-mark{color:var(--status-warning)}
+.ecfg-feedback-mark svg{display:block}
+.ecfg-feedback-text{font-size:.78rem;line-height:1.7;color:var(--content-primary);overflow-wrap:anywhere}
+.ecfg-feedback-detail{margin:0;font-size:.68rem;line-height:1.7;color:var(--content-muted);overflow-wrap:anywhere}
+
+/* ── 动作 ─────────────────────────────────────────────────────────── */
+.ecfg-actions{display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap}
+.ecfg-btn{
+  appearance:none;font-family:var(--font-ui);font-size:.78rem;letter-spacing:.03em;cursor:pointer;
+  padding:7px 18px;border-radius:var(--radius-control);min-height:34px;
+  border:1px solid var(--border-soft);background:var(--surface-input);color:var(--content-secondary);
+  transition:border-color var(--motion-fast) var(--transition),background-color var(--motion-fast) var(--transition),color var(--motion-fast) var(--transition),transform var(--motion-fast) var(--transition);
+}
+.ecfg-btn:hover{border-color:var(--border-strong);color:var(--content-primary)}
+.ecfg-btn:focus-visible{outline:1px solid var(--accent-light);outline-offset:2px}
+.ecfg-btn:disabled{opacity:.5;cursor:default;transform:none}
+.ecfg-btn-primary{border-color:color-mix(in srgb,var(--accent) 52%,transparent);
+  background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--content-primary)}
+.ecfg-btn-primary:hover{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 24%,transparent)}
+.ecfg-btn-quiet{background:none;border-color:transparent;color:var(--content-muted)}
+.ecfg-btn-quiet:hover{border-color:var(--border-soft);color:var(--content-secondary)}
+
+/* ── "仍受约束"的一句话 ───────────────────────────────────────────────
+   §4 要求逐字表达它，因此它是一条安静的事实行，不是一句免责声明。 */
+.ecfg-bound{display:flex;align-items:flex-start;gap:9px;
+  padding:10px 14px;border-radius:var(--radius-card);
+  border:1px solid var(--glass-border-soft);background:var(--glass-bg-ambient)}
+.ecfg-bound-mark{display:inline-flex;flex:0 0 16px;margin-top:1px;color:var(--accent-light);opacity:.85}
+.ecfg-bound-mark svg{display:block}
+.ecfg-bound-text{font-size:.72rem;line-height:1.78;color:var(--content-secondary);overflow-wrap:anywhere}
+
+/* ── 配置面关着（§7）──────────────────────────────────────────────────
+   它不是错误框：没有红色、没有图标，一个安静的点 + 两行字 + 折叠的
+   技术说明。**这一块里没有任何按钮。** */
+.ecfg-gate{display:flex;align-items:flex-start;gap:10px;
+  padding:12px 15px;border-radius:var(--radius-card);
+  border:1px solid var(--glass-border-soft);background:var(--glass-bg-ambient)}
+.ecfg-gate-dot{flex:0 0 6px;width:6px;height:6px;margin-top:7px;border-radius:50%;background:var(--status-warning);opacity:.9}
+.ecfg-gate-body{display:flex;flex-direction:column;gap:4px;min-width:0}
+.ecfg-gate-title{margin:0;font-size:.82rem;color:var(--content-primary)}
+.ecfg-gate-text{margin:0;font-size:.74rem;line-height:1.75;color:var(--content-secondary);max-width:62ch;overflow-wrap:anywhere}
+
+/* ── 技术说明：底层词只出现在这个折叠区里（P6 契约）──────────────── */
+.ecfg-technical{font-size:.68rem;color:var(--content-muted)}
+.ecfg-technical summary{cursor:pointer;letter-spacing:.04em;padding:2px 0}
+.ecfg-technical summary:focus-visible{outline:1px solid var(--accent-light);outline-offset:2px}
+.ecfg-technical-list{margin:6px 0 0;padding-left:16px;display:flex;flex-direction:column;gap:3px}
+.ecfg-technical-list li{line-height:1.7;overflow-wrap:anywhere}
+
+/* ── 空状态 / 骨架 ───────────────────────────────────────────────── */
+.ecfg-empty{display:flex;flex-direction:column;align-items:center;gap:6px;padding:10px 0 4px;text-align:center}
+.ecfg-empty-art{color:var(--accent-light);opacity:.42;line-height:0}
+.ecfg-empty-art svg{display:block}
+.ecfg-empty-title{margin:0;font-size:.88rem;color:var(--content-primary)}
+.ecfg-empty-body{margin:0;font-size:.74rem;line-height:1.78;color:var(--content-secondary);max-width:52ch}
+.ecfg-card-plain .ecfg-empty-art{opacity:.38}
+
+.ecfg-skeleton{display:flex;flex-direction:column;gap:10px}
+.ecfg-sk{height:44px;border-radius:var(--radius-card);background:var(--glass-bg-ambient);position:relative;overflow:hidden}
+.ecfg-sk::after{content:"";position:absolute;inset:0;transform:translateX(-100%);
+  background:linear-gradient(90deg,transparent,color-mix(in srgb,var(--white) 18%,transparent),transparent);
+  animation:ecfg-sheen 1.6s var(--transition) infinite}
+@keyframes ecfg-sheen{to{transform:translateX(100%)}}
+.ecfg-sr{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+
+/* ── 主题适配 ────────────────────────────────────────────────────────
+   浅色（internal）与深色（infernal）各自成立：本节只做两件事 ——
+   关掉浅色主题那条会糊掉小字的白色发光，并给浅色主题更实的底色。
+   所有状态色、边框、模糊、阴影都继续来自 core.css 的令牌，因此这里
+   没有一条"只在一个主题里正确"的 RGB。 */
+body:not(.theme-infernal) #economy-configuration,
+body:not(.theme-infernal) #economy-configuration *{text-shadow:none}
+body:not(.theme-infernal) #economy-configuration .ecfg-card-title{text-shadow:0 0 12px rgba(255,255,255,.5)}
+body:not(.theme-infernal) .ecfg-card{background:var(--surface-panel-strong)}
+body:not(.theme-infernal) .ecfg-ownerbar,
+body:not(.theme-infernal) .ecfg-figures,
+body:not(.theme-infernal) .ecfg-meter,
+body:not(.theme-infernal) .ecfg-gate,
+body:not(.theme-infernal) .ecfg-bound,
+body:not(.theme-infernal) .ecfg-feedback,
+body:not(.theme-infernal) .ecfg-seg,
+body:not(.theme-infernal) .ecfg-sk{background:rgba(255,255,255,.40);border-color:rgba(200,225,248,.45)}
+body:not(.theme-infernal) .ecfg-input{background:rgba(255,255,255,.52);border-color:rgba(170,205,242,.34)}
+body:not(.theme-infernal) .ecfg-owner-select{background-color:rgba(255,255,255,.52);border-color:rgba(170,205,242,.34)}
+body:not(.theme-infernal) .ecfg-seg-btn.is-on{background:rgba(255,255,255,.72)}
+body:not(.theme-infernal) .ecfg-btn{background:rgba(255,255,255,.42);border-color:rgba(170,205,242,.36)}
+body:not(.theme-infernal) .ecfg-btn-primary{background:color-mix(in srgb,var(--accent) 13%,rgba(255,255,255,.5))}
+body:not(.theme-infernal) .ecfg-btn-quiet{background:none}
+body:not(.theme-infernal) .ecfg-empty-art{color:#5a7ba6}
+body:not(.theme-infernal) .ecfg-meter-track{background:rgba(120,165,215,.26);box-shadow:inset 0 0 0 1px rgba(120,165,215,.24)}
+body.theme-infernal .ecfg-card{background:var(--glass-bg-elevated)}
+body.theme-infernal .ecfg-empty-art{color:#8fa8c8}
+
+/* ── 响应式（§6）─────────────────────────────────────────────────────
+   一处 DOM，四个断点：
+     1024px 以下收窄内边距与网格；
+     880px  以下表单从三列变两列，刻度条进入卡片流；
+     640px  以下全部单列、按钮整行、页签可横向滚动而不是折成两排，
+            并给底部留出 safe-area；
+     380px  以下只做字号微调。 */
+@media (max-width:1024px){
+  .ecfg-card{padding:18px 18px 16px 20px}
+  .ecfg-form,.ecfg-advanced-body{grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--space-4)}
+  .ecfg-checks{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .ecfg-figures{grid-template-columns:repeat(3,minmax(0,1fr));gap:2px var(--space-4)}
+}
+@media (max-width:880px){
+  #page-economy{padding-top:76px}
+  #economy-configuration{max-width:none}
+  .ecfg-ownerbar{gap:var(--space-3)}
+  .ecfg-owner-hint{flex-basis:100%}
+  .ecfg-figures{grid-template-columns:1fr 1fr}
+  .ecfg-figure.is-primary{grid-column:1 / -1}
+}
+@media (max-width:640px){
+  .ecfg{gap:var(--space-3)}
+  /* 页签：一条可横向滚动的轨，而不是折成两排把标题推下去 */
+  .ecfg-tabs{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;-ms-overflow-style:none;padding-bottom:1px}
+  .ecfg-tabs::-webkit-scrollbar{display:none}
+  .ecfg-tab{flex:0 0 auto;padding:8px 11px 10px;font-size:.78rem}
+  .ecfg-tab-rail{left:9px;right:9px}
+  .ecfg-card{padding:16px 15px 14px 17px;gap:13px;border-radius:var(--radius-card)}
+  .ecfg-card-title{font-size:1.1rem}
+  .ecfg-ownerbar{padding:9px 12px}
+  .ecfg-owner-select{width:100%}
+  .ecfg-form,.ecfg-advanced-body,.ecfg-checks{grid-template-columns:1fr;gap:var(--space-3)}
+  .ecfg-figures{grid-template-columns:1fr;gap:var(--space-3)}
+  .ecfg-figure.is-primary .ecfg-figure-v{font-size:1.5rem}
+  .ecfg-input-wrap:has(.ecfg-unit) .ecfg-input{padding-right:66px}
+  .ecfg-actions{flex-direction:column-reverse;align-items:stretch}
+  .ecfg-actions .ecfg-btn{width:100%;min-height:42px}
+  .ecfg-seg{width:100%;justify-content:space-between}
+  .ecfg-seg-btn{flex:1 1 auto;text-align:center;padding:6px 8px}
+  #page-economy{padding-bottom:calc(80px + env(safe-area-inset-bottom,0px))}
+}
+@media (max-width:380px){
+  .ecfg-card-sub,.ecfg-note{font-size:.7rem}
+  .ecfg-meter-v{font-size:.8rem}
+}
+@media (prefers-reduced-motion:reduce){
+  .ecfg-tab-rail,.ecfg-meter-fill,.ecfg-sk::after,.ecfg-input,.ecfg-btn{transition:none;animation:none}
+}

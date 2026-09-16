@@ -418,6 +418,11 @@ function navTo(page){
   if(page==='diary'){loadDiaryPage()}
   if(page==='moments'){loadMomentsPage()}
   if(page==='apps'){if(typeof renderAppStore==='function')renderAppStore()}
+  /* P22-16 · Economy 配置外壳：页签 / 配置对象 / 三个配置面板。它在
+     P22-15 之前渲染，因为它要先把外壳插好，并决定 `#economy-requests`
+     这一块现在可不可见（默认页签是「待处理」，因此打开这一页的样子与
+     P22-15 交付时逐字相同）。同样只在被打开时才去读只读面。 */
+  if(page==='economy'){try{if(window.IB&&IB.economyConfigurationUI&&typeof IB.economyConfigurationUI.render==='function')IB.economyConfigurationUI.render()}catch(e){}}
   /* P22-15 · Economy 待决定：页面只在被打开时才去读三个只读面
      （绝大多数会话不会打开它，因此不制造后台请求）。整块渲染在
      assets/js/economy-approval.js 里，本行只是既有的路由接线。 */

@@ -230,6 +230,44 @@ function createHomeNodeRemote(deps) {
       });
     },
 
+    /* ── P22-16 · 用户配置这台节点的钱与规则 ──────────────────────────
+       数据源是 **P22-14** 那条 authenticated seam
+       （/internal/economy/configuration），而这里刻意只做一件事：
+       把调用方给的**三个**字段原样发出去 —— 命令、该命令自己的 config、
+       幂等键。
+
+       ★ 为什么把方法放在本文件而不是让 UI 自己 fetch()：
+         §5 逐字要求 UI 只能走配置 seam。这一层的存在让"哪一条路径、
+         什么方法、什么凭据头"只有**一处**实现 —— 与 approvalDecision /
+         memory / chat / catalog 的 remote driver 同一条纪律。
+       ★ 为什么信封是构造出来的：一个 `_request(path, {body: options})`
+         会让 UI 有机会顺手塞进 actor / amountMinor / approved 之类的
+         **顶层**字段。构造式让顶层恰好三个键在结构上成立 —— 不是
+         "记得别传"，而是这里没有第四个位置。
+       ★ 为什么 config 是**原样透传**而不是在这里再抄一份每命令白名单：
+         那份白名单已经有两个权威 —— 纯层
+         （assets/js/economy-configuration-core.js 的 CONFIG_KEYS，在构造
+         时逐键拒绝）与服务端的 economy-configuration.js
+         （UNEXPECTED_CONFIG_KEYS，在 body 解析之后逐键拒绝）。第三份副本
+         只会多一个能漂移的地方，而它漂移的方向是**静默少发一个字段**。
+         这里只保证 config 是一个普通对象。
+       ★ 它**不**解释回答：信封的判定在 economy-configuration-core.js 里。 */
+    economyConfiguration: function (options) {
+      options = options || {};
+      var raw = options.config;
+      var config = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
+      var body = {
+        command: String(options.command || ''),
+        config: config,
+        idempotencyKey: String(options.idempotencyKey || '')
+      };
+      return _request('/internal/economy/configuration', {
+        method: 'POST',
+        body: body,
+        timeoutMs: deps.configurationTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+
     /* ── P22-15 · 通用只读 GET ────────────────────────────────────────
        P22-15 的 UI 要读**三条既有**只读面（intents / approvals / products）。
        与其为每条路径各写一个方法，这里给一个只做 GET 的读取器：
@@ -237,8 +275,9 @@ function createHomeNodeRemote(deps) {
          · 路径必须是一个以 '/' 开头的路径段，且**不得**包含 '://'
            （于是它不可能被用来打别的主机）；
          · query 只支持字符串或一层的键值对，值一律 encodeURIComponent。
-       ★ 它到不了任何写面：这一层没有 POST 的入口 —— 唯一的写方法叫
-         approvalDecision，而它的路径与信封都是构造出来的。
+       ★ 它到不了任何写面：这一层没有任意 POST 的入口 —— 两个写方法分别叫
+         approvalDecision 与 economyConfiguration，它们的路径与信封都是
+         构造出来的。
        ★ 缺 query 时只发路径，不做任何默认过滤：过滤条件是调用方的事。 */
     getJson: function (pathname, query) {
       var p = String(pathname == null ? '' : pathname);

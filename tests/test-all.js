@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 
 /* Internal Beyond · 一键全量测试入口（Node 18+，零依赖，跨平台）。
  *
@@ -756,7 +756,7 @@ const GROUPS = [
   },
   {
     name: 'p22-ui',
-    note: 'P22-15 · Economy Approval UI（纯层 + 渲染器 + 浏览器视觉核对）',
+    note: 'P22-15/16 · Economy Approval UI + Economy Configuration UI（纯层 + 渲染器 + 浏览器视觉核对）',
     tests: [
       /* P22-15 第一次让这一域出现**浏览器侧**的文件：
            assets/js/economy-approval-core.js（纯层：视图模型 / 文案映射 /
@@ -784,7 +784,34 @@ const GROUPS = [
                     主题令牌真的换了 / 浅色主题那条白色发光在卡片子树里被关掉。
                     P22-15 交付时它 66/66 通过，六张图人工看过。 */
       ['test_p22_15_economy_approval_ui_core.js'],
-      ['test_p22_15_economy_approval_ui.js']
+      ['test_p22_15_economy_approval_ui.js'],
+      /* P22-16 · Economy Configuration UI（钱包与初始额度 / 预算限制 / 自主购买）。
+         ui_core —— 纯层加载进一个**没有 document、没有 fetch、没有 location**
+                     的沙箱：于是"它不碰 DOM、不发请求"是环境事实而不是注释；
+                     同时逐字比对镜像表与 canonical 契约/配置 seam 一致
+                     （命令词表 / 信封键 / 每命令 config 白名单 / 币种 scale /
+                     limits 键 / 自主等级 / 商品类别 / 交付方式），并证明
+                     "留空 = 不设""空选集 = 省略""非法输入 = 一个请求都不发"
+                     这些投影规则是结构性的。
+         ui      —— 一个只实现渲染器真正用到的成员的 DOM 桩 + 真实网络形状的
+                     假 driver：fresh / 已初始化两种钱包状态 / 预算与自主的
+                     canonical 投影逐字节比对 / 非法输入 fail closed / 保存后
+                     重新读权威 / 配置面关着时不提供假按钮 / 页签开合不搬动
+                     P22-15 的 DOM 节点。
+                     ★ 零子进程、零 socket、零浏览器。
+                     ★ 角色目录的桩与**生产同形**：裸标识符与 window 的活
+                       getter 两条都装（social.js:607 / 2654），因为只装一条
+                       的桩看不见"渲染器只认某一条路"这种缺陷。
+         visual  —— ★ 这个**不在**默认套件里（它要开一个真实浏览器）。跑法：
+                       node tests/test_p22_16_economy_configuration_visual.js
+                     它按 2 主题 × 3 宽度各截一张图到 %TEMP%（**不写进仓库**），
+                     并在真实排版引擎上断言外壳宽度 / 横向溢出 / 刻度条真的按
+                     权威数据算出百分比 / 主题令牌真的换了 / 按钮在手机上是整行
+                     的，以及**没有任何覆盖视口的层把页面糊掉**（这是开发期真的
+                     发生过的事：截图是一团雾而所有 DOM 断言全绿）。
+                     P22-16 交付时它 86/86 通过，十六张图人工看过。 */
+      ['test_p22_16_economy_configuration_ui_core.js'],
+      ['test_p22_16_economy_configuration_ui.js']
     ]
   },
   {

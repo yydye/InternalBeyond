@@ -3324,6 +3324,12 @@ i would like the room to be enough.
      它不碰 DOM、不发请求，因此放在这里不会影响任何既有加载顺序。 -->
 <script src="assets/js/economy-approval-core.js"></script>
 <script src="assets/js/economy-approval.js"></script>
+<!-- P22-16 · Economy Configuration UI 的纯层与渲染器（钱包与初始额度 /
+      预算限制 / 自主购买）。纯层同样必须在渲染器之前加载。
+      它是**加法**：页面容器仍然是 P22-15 的那一个（渲染器把外壳插在它
+      前面并按页签开合它的 display），因此这一行不改动任何既有 DOM。 -->
+<script src="assets/js/economy-configuration-core.js"></script>
+<script src="assets/js/economy-configuration.js"></script>
 <script src="assets/js/home-node-bootstrap.js"></script>
 <!-- 深渊暗线：只在 Infernal（暗色）模式可瞥见——"你知道这里通向深渊，但你也知道，你随时可以离开。" -->
 <div class="ib-beyond-leave" id="ib-beyond-leave" aria-hidden="true">你知道这里通向深渊，但你也知道，你随时可以离开。</div>
