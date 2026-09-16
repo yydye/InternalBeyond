@@ -153,12 +153,12 @@ check('A5 ★★ 装配层**没有**把适配器交给 http 层（HTTP 上的经
   readIfExists('services/home-node/http.js').indexOf('economyActionAdapter') < 0 &&
   readIfExists('services/home-node/http.js').indexOf('economy-action-adapter') < 0);
 
-check('A6 ★ 装配层对 Economy 的 require 恰好是那五个模块，而且**没有**第二个 store owner',
+check('A6 ★ 装配层对 Economy 的 require 恰好是那六个模块，而且**没有**第二个 store owner',
   (() => {
     const src = stripComments(readIfExists('services/home-node-service.js'));
     const targets = (src.match(/require\s*\(\s*'([^']*economy[^']*)'\s*\)/g) || [])
       .map(s => s.replace(/[\s\S]*'([^']*)'[\s\S]*/, '$1'));
-    return targets.length === 5 &&
+    return targets.length === 6 &&
       targets.indexOf('../services/home-node/economy-store.js') >= 0 &&
       targets.indexOf('../services/home-node/economy-capability.js') >= 0 &&
       targets.indexOf('../services/home-node/economy-action-adapter.js') >= 0 &&
@@ -167,7 +167,13 @@ check('A6 ★ 装配层对 Economy 的 require 恰好是那五个模块，而且
       targets.indexOf('../services/home-node/economy-command-channel.js') >= 0 &&
       /* P22-13 的第五处：用户决定 seam（长在门的旁边，与通道并列 ——
          两者是两个身份、两条路径）。装配仍然是它唯一的构造点。 */
-      targets.indexOf('../services/home-node/economy-approval-decision.js') >= 0;
+      targets.indexOf('../services/home-node/economy-approval-decision.js') >= 0 &&
+      /* P22-14 的第六处：配置 seam（fresh install 的配置入口）。★ 它必须
+         在**装配层**被 require，因为它的 store 视图恰好三个键 —— 那份
+         "配置面能碰哪三件事"的唯一装配事实只能在装配层成形。
+         ★ 而"没有第二个 store owner"这句话仍然逐字成立：配置 seam 拿到的
+         不是 store，是一份三个具名成员的视图（见 economyAssembly）。 */
+      targets.indexOf('../services/home-node/economy-configuration.js') >= 0;
   })(),
   (stripComments(readIfExists('services/home-node-service.js')).match(/require\s*\(\s*'[^']*economy[^']*'\s*\)/g) || []));
 

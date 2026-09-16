@@ -3244,6 +3244,297 @@ function createEconomyStore(deps) {
   }
 
   function mintForSystem(input) { return systemTransfer('MINT', input); }
+
+  /* ══════════════════════════════════════════════════════════════════
+     P22-14 · Initial IB Credit Bootstrap（**一次性** · 唯一的初始额度入口）
+     ──────────────────────────────────────────────────────────────────
+     §3/§4 的问题不是"能不能铸一次币"，而是"怎么让'初始额度'不能被同一个
+     入口反复调用、变成普通充值接口"。答案在这段代码的结构里，而不是在
+     某一句纪律里：
+
+      ① **导出的幂等键是派生的，不是调用方给的。**
+         调用方可以传 idempotencyKey，但本函数**不用**它做身份：真正进
+         P22-2 账本幂等表的 key 是 bootstrapCreditKeyFor(owner, currency)。
+         于是"同一个 owner 再来一次、换一个 key"在结构上**无法**产生第二笔
+         铸币 —— 它在账本幂等闸门上撞到**同一把** key，而指纹（含 wallet
+         account、金额、币种）要么相同（⇒ 重放，返回当初那条交易），要么
+         不同（⇒ IDEMPOTENCY_CONFLICT，拒绝）。这条不是"我们记得检查"，
+         而是"第二次调用手里根本没有第二个身份可用"。
+
+      ② **一次性事实写在 canonical 的 meta 行里**（economy_meta，与
+         economy_schema / economy_revision 同一张表）。它落库、进同一个事
+         务、跨重启仍然在 —— 因此它**不是**一个进程内 Set，也不是"这台机器
+         记得"。★ 为什么需要它，既然 ① 已经够了：① 依赖账本幂等行，而幂等
+         行会被**回收**（IDEMPOTENCY_TTL_MS / IDEMPOTENCY_MAX）。回收之后
+         同一个 key 会变成"从未见过" —— 那时 ① 就悄悄失效了。meta 行是
+         永久的，因此"这个 owner 的初始额度发过了"在 ① 之外仍然是一个
+         可读、可审计、不可绕过的**规范事实**。
+
+      ③ **它只产生 IB_CREDIT，而且只经由 commitLedgerTransaction。**
+         它不接受 currency 以外的任何账户事实：没有 debit/credit account
+         参数、没有 transactionId 参数、没有 raw entry。currency 由契约的
+         validateCurrency 收窄到封闭集合（§3：只有 IB_CREDIT），金额走
+         normalizeAmountMinor（minor unit、非负、上界）。
+         ★ provider quota / 真实货币：本函数没有任何一行、任何一条依赖能
+         表达它们 —— 它写的是 economy_ledger_entries 上的一对借贷。
+
+      ★ 为什么它**不是** mintForSystem 的别名：mintForSystem 是"我可以凭空
+        造任意一笔钱"的通用系统原语（无限次、任意金额、任意 wallet）；
+        本函数是"这个 owner 的初始额度，恰好一次"。把前者挂到配置面上正是
+        §3 逐字禁止的那件事（POST /mint {ownerId, amount}）。
+      ★ 它仍然经过 systemTransfer，因此 systemInitiated / systemAuthority
+        两道既有闸门逐字保留 —— 初始额度不是绕开它们的第三扇门。
+      ══════════════════════════════════════════════════════════════════ */
+
+  /* 初始额度的 canonical 身份：owner 的 partyRef + 币种。
+     ★ 刻意**不含** walletId：walletId 由 nextId() 生成，它带进程 PID 与
+     时钟 —— 重启后同一个 owner 会得到另一个 walletId。用它当身份等于
+     "重启之后我认不出你发过了"。 */
+  function bootstrapCreditKeyFor(ownerId, currency) {
+    return 'bootstrap-credit:' + String(ownerId) + ':' + String(currency);
+  }
+  function bootstrapMarkerKeyFor(ownerId, currency) {
+    return 'economy_bootstrap_credit:' + String(ownerId) + ':' + String(currency);
+  }
+
+  function bootstrapInitialCredit(input) {
+    requireOpen();
+    const o = input || {};
+    const owner = normalizeOwner(o.owner);
+    if (!owner.ok) return { ok: false, denied: false, reasonCode: null, errors: owner.errors };
+    if (owner.party.type === C.PARTY_TYPE.SYSTEM) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['system-party-cannot-hold-an-initial-credit'] };
+    }
+    const cur = C.validateCurrency(o.currency);
+    if (!cur.ok) return { ok: false, denied: false, reasonCode: null, errors: cur.errors };
+    const amt = C.normalizeAmountMinor(o.amountMinor);
+    if (!amt.ok) return { ok: false, denied: false, reasonCode: null, errors: amt.errors };
+
+    const ownerId = String(owner.party.id) + ':' + String(owner.party.type);
+    const markerKey = bootstrapMarkerKeyFor(ownerId, cur.currency);
+    /* ★ 调用方给的 key **只**进 change 记录与返回值，不做身份。 */
+    const requestedKey = o.idempotencyKey == null ? null : String(o.idempotencyKey).trim();
+    const ledgerKey = bootstrapCreditKeyFor(ownerId, cur.currency);
+
+    /* ── ① canonical 一次性闸门（永久的 meta 事实）────────────────────
+       ★ 它在事务**之前**读一次、在事务**之内**再读一次：前者让重放几乎
+       零成本，后者才是权威（BEGIN IMMEDIATE 之后写锁已持有，因此
+       "读过没有"与"写上"之间不存在第二个 writer）。 */
+    const priorRaw = readMeta(markerKey);
+    if (priorRaw != null) {
+      const prior = parseJsonOrNull(priorRaw) || {};
+      /* ★ 一个真实的缺陷（开发期实测）：这一行的取值一度写成
+         `alreadyBootstrappedAmountMinor: prior.amountMinor` —— 而 marker 行是
+         一个**两层**对象（canonical 事实在外层，store 的 result 在 `result` 里），
+         于是它恒为 undefined。症状是"拒绝发生了，但被拒的那笔金额是多少"
+         消失了（与 denial() 修过的那个 `.detail` 恒 undefined 的形状同源）。
+         取值必须逐字落在 `prior.amountMinor` 上，且返回值自己会被断言。 */
+      const priorAmount = prior.amountMinor == null ? null : String(prior.amountMinor);
+      /* ★ 同一个 owner 用**另一个** amount 再来一次：这不是重放，是第二次
+         初始额度。拒绝，而且明说它是一次性的 —— 不允许"静默按第一次的
+         金额再来一遍"，因为那会把一个被拒的请求伪装成成功。 */
+      if (priorAmount !== C.serializeAmountMinor(amt.amountMinor)) {
+        return {
+          ok: false, denied: true, replayed: false,
+          reasonCode: 'INITIAL_CREDIT_ALREADY_BOOTSTRAPPED',
+          errors: ['initial-credit-is-one-shot-per-owner-and-currency'],
+          bootstrapAlreadyConsumed: true,
+          alreadyBootstrappedAmountMinor: priorAmount,
+          requestedAmountMinor: C.serializeAmountMinor(amt.amountMinor),
+          transactionId: prior.transactionId == null ? null : String(prior.transactionId),
+          walletId: prior.walletId == null ? null : String(prior.walletId)
+        };
+      }
+      return {
+        ok: true, denied: false, replayed: true,
+        reasonCode: null, errors: [],
+        bootstrapAlreadyConsumed: true,
+        result: prior.result || null,
+        walletId: prior.walletId == null ? null : String(prior.walletId),
+        transactionId: prior.transactionId == null ? null : String(prior.transactionId),
+        amountMinor: C.serializeAmountMinor(amt.amountMinor),
+        currency: cur.currency,
+        idempotencyKey: ledgerKey
+      };
+    }
+
+    const at = clock();
+    let committed = null;
+    try {
+      withTransaction(() => {
+        /* ── ② 事务内权威复查（写锁已持有）─────────────────────────── */
+        const insideRaw = readMeta(markerKey);
+        if (insideRaw != null) {
+          const inside = parseJsonOrNull(insideRaw) || {};
+          if (String(inside.amountMinor) !== C.serializeAmountMinor(amt.amountMinor)) {
+            throw refuse('INITIAL_CREDIT_ALREADY_BOOTSTRAPPED',
+              ['initial-credit-is-one-shot-per-owner-and-currency'],
+              { bootstrapAlreadyConsumed: true });
+          }
+          committed = { replayedInsideTheTransaction: true, prior: inside };
+          return;
+        }
+
+        /* ── ③ 钱包：同一个 (owner, currency) 恰好一个 ────────────────
+           ★ openWallet 自己也是事务（嵌套时只加深度、不提交），因此"钱包
+           被创建"与"初始额度被铸出"共享同一个 atomic boundary —— 中途失败
+           不会留下一个"有初始额度的钱包"或"钱包有了、钱没有"的中间态。 */
+        const walletResult = openWallet({ owner: owner.party, currency: cur.currency });
+        if (!walletResult || walletResult.ok !== true) {
+          throw refuse(null, (walletResult && walletResult.errors) || ['wallet-not-opened']);
+        }
+        const walletRow = db.prepare(SQL.selectWallet).get(String(walletResult.wallet.walletId));
+        if (!walletRow) throw refuse(null, ['wallet-row-missing-after-open']);
+
+        /* ── ④ 唯一一条到账本的边：systemTransfer → commitLedgerTransaction ──
+           ★ 这里**没有**第二处余额写法，也**没有**任何 raw entry。 */
+        const minted = systemTransfer('MINT', {
+          systemInitiated: true,
+          walletId: String(walletRow.wallet_id),
+          currency: cur.currency,
+          amountMinor: amt.amountMinor,
+          idempotencyKey: ledgerKey,
+          transactionId: o.transactionId == null ? nextId('TRANSACTION') : String(o.transactionId)
+        });
+        if (!minted || minted.ok !== true) {
+          throw refuse(null, (minted && minted.errors) || ['initial-credit-mint-refused'],
+            { mintResult: minted || null });
+        }
+
+        /* ── ⑤ canonical 一次性事实 + 结果（重放与 TTL 回收之后都靠它）── */
+        const revision = allocateRevision();
+        const result = {
+          domain: C.DOMAIN,
+          kind: 'initial-credit-bootstrap',
+          walletId: String(walletRow.wallet_id),
+          ownerId: String(owner.party.id),
+          ownerType: String(owner.party.type),
+          currency: cur.currency,
+          amountMinor: C.serializeAmountMinor(amt.amountMinor),
+          transactionId: minted.transactionId == null ? null : String(minted.transactionId),
+          ledgerRevision: minted.result ? Number(minted.result.revision) : null,
+          ledgerKey: ledgerKey,
+          requestedIdempotencyKey: requestedKey,
+          /* 逐字：这条 change 说的是"初始额度发过了"，而它**不是**一次
+             购买、不是一次预留、不是一次授权。 */
+          isAPurchase: false,
+          isAReservation: false,
+          isAnApproval: false,
+          isProviderQuota: false,
+          isRealCurrency: false
+        };
+        writeMeta(markerKey, JSON.stringify({
+          ownerId: String(owner.party.id),
+          ownerType: String(owner.party.type),
+          currency: cur.currency,
+          amountMinor: C.serializeAmountMinor(amt.amountMinor),
+          walletId: String(walletRow.wallet_id),
+          transactionId: result.transactionId,
+          ledgerKey: ledgerKey,
+          requestedIdempotencyKey: requestedKey,
+          at: Number(at),
+          revision: Number(revision),
+          result: result
+        }));
+        appendChange({
+          revision: Number(revision), kind: 'ECONOMY_INITIAL_CREDIT_BOOTSTRAPPED',
+          entityId: String(walletRow.wallet_id), transactionId: result.transactionId,
+          walletId: String(walletRow.wallet_id), at: Number(at),
+          payload: {
+            domain: C.DOMAIN,
+            ownerId: result.ownerId, ownerType: result.ownerType,
+            currency: cur.currency,
+            amountMinor: result.amountMinor,
+            oneShot: true,
+            ledgerMutation: true,
+            providerQuotaMutation: false,
+            realCurrencyMutation: false,
+            purchaseMutation: false
+          }
+        });
+        committed = { replayedInsideTheTransaction: false, prior: null, result: result, revision: Number(revision) };
+      });
+    } catch (error) {
+      const translated = translateRefusal(error);
+      if (translated) {
+        if (translated.reasonCode === 'INITIAL_CREDIT_ALREADY_BOOTSTRAPPED') {
+          const current = readMeta(markerKey);
+          const parsed = current == null ? {} : (parseJsonOrNull(current) || {});
+          return {
+            ok: false, denied: true, replayed: false,
+            reasonCode: 'INITIAL_CREDIT_ALREADY_BOOTSTRAPPED',
+            errors: ['initial-credit-is-one-shot-per-owner-and-currency'],
+            bootstrapAlreadyConsumed: true,
+            alreadyBootstrappedAmountMinor: parsed.amountMinor == null ? null : String(parsed.amountMinor),
+            requestedAmountMinor: C.serializeAmountMinor(amt.amountMinor),
+            transactionId: parsed.transactionId == null ? null : String(parsed.transactionId),
+            walletId: parsed.walletId == null ? null : String(parsed.walletId)
+          };
+        }
+        return translated;
+      }
+      throw error;
+    }
+
+    /* 事务内复查撞上了既有的 meta 行：这次调用**没有**产生第二笔铸币。 */
+    if (committed && committed.replayedInsideTheTransaction === true) {
+      const prior = committed.prior || {};
+      return {
+        ok: true, denied: false, replayed: true,
+        reasonCode: null, errors: [],
+        bootstrapAlreadyConsumed: true,
+        result: prior.result || null,
+        walletId: prior.walletId == null ? null : String(prior.walletId),
+        transactionId: prior.transactionId == null ? null : String(prior.transactionId),
+        amountMinor: C.serializeAmountMinor(amt.amountMinor),
+        currency: cur.currency,
+        idempotencyKey: ledgerKey
+      };
+    }
+
+    return {
+      ok: true, denied: false, replayed: false,
+      reasonCode: null, errors: [],
+      bootstrapAlreadyConsumed: false,
+      result: committed.result,
+      walletId: committed.result.walletId,
+      transactionId: committed.result.transactionId,
+      amountMinor: committed.result.amountMinor,
+      currency: cur.currency,
+      idempotencyKey: ledgerKey,
+      ledgerResult: null
+    };
+  }
+
+  /* 只读观测口：这一行 meta 事实本身。它让"一次性"可以被**核对**，
+     而不是只能被相信（/security 与配置面都用它回答 alreadyBootstrapped）。
+     ★ 它返回的键恰好六个，没有任何金额以外的经济事实。 */
+  function getInitialCreditBootstrap(ownerId, currency) {
+    requireOpen();
+    const owner = normalizeOwner(ownerId);
+    if (!owner.ok) return { ok: false, bootstrapped: false, errors: owner.errors };
+    const cur = C.validateCurrency(currency);
+    if (!cur.ok) return { ok: false, bootstrapped: false, errors: cur.errors };
+    const normalizedOwnerId = String(owner.party.id) + ':' + String(owner.party.type);
+    const raw = readMeta(bootstrapMarkerKeyFor(normalizedOwnerId, cur.currency));
+    if (raw == null) {
+      return {
+        ok: true, bootstrapped: false, ownerId: String(owner.party.id),
+        ownerType: String(owner.party.type), currency: cur.currency,
+        amountMinor: null, walletId: null, transactionId: null, at: null
+      };
+    }
+    const parsed = parseJsonOrNull(raw) || {};
+    return {
+      ok: true, bootstrapped: true,
+      ownerId: String(owner.party.id), ownerType: String(owner.party.type),
+      currency: cur.currency,
+      amountMinor: parsed.amountMinor == null ? null : String(parsed.amountMinor),
+      walletId: parsed.walletId == null ? null : String(parsed.walletId),
+      transactionId: parsed.transactionId == null ? null : String(parsed.transactionId),
+      at: parsed.at == null ? null : Number(parsed.at)
+    };
+  }
   function burnForSystem(input) { return systemTransfer('BURN', input); }
 
   /* 两个钱包之间的原子转账。它**不是** P22-3 的购买流程：没有 quote、
@@ -14408,6 +14699,18 @@ function createEconomyStore(deps) {
     mintForSystem: mintForSystem,
     burnForSystem: burnForSystem,
     transferBetweenWallets: transferBetweenWallets,
+
+    /* ── P22-14：初始 IB Credit（**一次性**）────────────────────────────
+       ★ 它为什么**不是** mintForSystem 的别名，因此必须与它并存：
+         mintForSystem 是通用系统原语（无限次、任意金额、任意 wallet），
+         而"初始额度"必须恰好一次。把前者接到配置面上就是 §3 逐字禁止的
+         `POST /mint { ownerId, amount }`。
+       ★ 它与 P22-3 的六个 mutation 同级：只对同进程调用方开放，不在任何
+         HTTP 路由上（boundary B11/B12 会逐字断言这一点）。
+       ★ `getInitialCreditBootstrap` 是**只读**的一半：它让"这个 owner 的初始
+         额度发过了没有"成为一个可核对的答案，而不是靠"再试一次"去问。 */
+    bootstrapInitialCredit: bootstrapInitialCredit,
+    getInitialCreditBootstrap: getInitialCreditBootstrap,
 
     /* ── P22-3：reservation 生命周期 ────────────────────────────────────
        这六个方法会**改状态**，因此它们与铸币同级：只对同进程调用方开放，

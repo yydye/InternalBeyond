@@ -82,6 +82,15 @@ function createHomeNodeHttp(deps) {
        写成一条 canonical 批准，然后把同一条 intent 交回 P22-8。
      ★ 不注入时（分解装配、只看读面的测试）这一整条分支**不存在**。 */
   const economyApprovalDecision = deps.economyApprovalDecision || null;
+  /* ── P22-14 · Economy Configuration Seam（fresh install 的配置入口）────
+     ★ 与上面两行同款：这里拿到的**不是** store、不是门、不是适配器，而是
+       一个窄对象（公开面只有 { path, commands, dispatch, describe, audit }）。
+       ★ 它为什么可以上 HTTP，而 store 的铸币原语不能：它不是通用 mutation
+         入口 —— 它的命令词表**封闭三词**（BOOTSTRAP_CREDIT /
+         PUT_BUDGET_POLICY / PUT_AUTONOMY_POLICY），而"初始额度恰好一次"
+         由 store 的 canonical 事实持有，不由路由层"记得检查"。
+       ★ 不注入时（分解装配、只看读面的测试）这一整条分支**不存在**。 */
+  const economyConfiguration = deps.economyConfiguration || null;
   const executor = deps.executor || null;
   const gateway = deps.gateway || null;
   const clock = deps.clock || (() => Date.now());
@@ -502,6 +511,51 @@ function createHomeNodeHttp(deps) {
       transportIsNotAnEconomyAuthority: true
     });
     sendJson(res, decision.status || 400, decision, req);
+  }
+
+  /* ── P22-14 · 配置面的来源信息 ──────────────────────────────────────
+     ★ 与 economyApprovalDecisionRequestInfo **逐字同形**，但它是一个独立
+       的函数：两条路径各自回答一次"调用者是谁"，而不是共用一个入口。
+     ★ 本文件仍然**不判定**：它把三个原始事实（是不是 loopback、请求头里的
+       凭据、来源地址）交给 seam，判定与拒绝信封由 seam 唯一给出。 */
+  function economyConfigurationRequestInfo(req) {
+    const headerToken = String(req.headers['x-ib-home-token'] || '');
+    const auth = String(req.headers.authorization || '');
+    const bearer = /^Bearer\s+(.+)$/i.test(auth) ? auth.replace(/^Bearer\s+/i, '') : '';
+    return {
+      loopback: isLoopback(req),
+      remoteAddress: String((req.socket && req.socket.remoteAddress) || ''),
+      desktopCredential: headerToken || bearer
+    };
+  }
+  async function handleEconomyConfiguration(req, res) {
+    let body = null;
+    try {
+      body = await readBody(req, MAX_BODY_BYTES);
+    } catch (error) {
+      const code = (error && error.code) || 'read-error';
+      record('warn', 'economy-configuration-unreadable', { code: code, loopback: isLoopback(req) });
+      /* ★ 读不出来也走**同一个**拒绝信封（seam 自己给的）——
+         与两条既有写路径逐字同源。 */
+      const refused = economyConfiguration.dispatch(economyConfigurationRequestInfo(req), null);
+      bad(res, code === 'too-large' ? 413 : 400, refused.reasonCode, {
+        dispatched: false,
+        unreadableBody: code
+      }, req);
+      return;
+    }
+    const configured = economyConfiguration.dispatch(economyConfigurationRequestInfo(req), body);
+    record(configured.ok === true ? 'info' : 'warn', 'economy-configuration', {
+      /* ★ 审计只记这六样：命令词、配置目标、结果、下游原因码、有没有真的
+         铸出钱。凭据**绝不**进来（源头就不在 configured 里）。 */
+      command: configured.command || null,
+      ownerId: configured.ownerId || null,
+      outcome: configured.ok === true ? 'accepted' : String(configured.reasonCode || 'refused'),
+      downstreamReasonCode: configured.downstreamReasonCode || null,
+      creditMinted: configured.creditMinted === true,
+      transportIsNotAnEconomyAuthority: true
+    });
+    sendJson(res, configured.status || 400, configured, req);
   }
   function authorized(req, url) {
     if (!token) return true;
@@ -1153,6 +1207,76 @@ function createHomeNodeHttp(deps) {
             proposalWritesExposed: [],
             bypassesTheResumeChain: false,
             carriesEconomicFacts: false,
+            requiresConfiguredDesktopCredential: true
+          },
+          /* ── P22-14：Configuration Seam（第三条、也是最后一条写路径）──────
+             ★ 这一节同样是**加法**，而且是"把已经发生的事实写成字段"：
+               · configurationCommandsExposed —— 恰好三个命令（BOOTSTRAP_CREDIT
+                 / PUT_BUDGET_POLICY / PUT_AUTONOMY_POLICY），由 seam 持有；
+               · configurationWritesThatAreNotOneOfThoseThree —— 恒为空：
+                 BUY / SETTLE / RESERVE / GRANT_INVENTORY / APPROVE / REJECT /
+                 REFUND / EXCHANGE / PROVIDER_TOPUP / REAL_PAYMENT /
+                 RAW_LEDGER_WRITE 在这条路径上**不存在**（不是被过滤，是不在
+                 词表里）；
+               · exposesMintForSystem —— 恒 false：这条面拿到的 store 视图恰好
+                 三个键，mintForSystem 不在其中；
+               · initialCreditIsOneShot —— true，而且它的**持有者**是 store 的
+                 canonical 事实（economy_meta 行），不是路由层的一次检查。
+             ★ `open:false` 的两种情况（未配置桌面凭据 / 未装配）都必须是空名单：
+               "不可达的写面"与"可达的写面"在审计里必须是两个答案。
+             ★ 与 approvalDecision 的关系逐字写出来：两条路径**不共用**命令、
+               不共用信封 —— 配置不能决定一条批准，决定也不能改配置。 */
+          configuration: economyConfiguration ? (() => {
+            const d = economyConfiguration.describe();
+            const open = d.open === true;
+            return Object.assign({
+              implemented: true,
+              open: open,
+              configurationCommandsExposed: open ? d.commands.slice() : [],
+              configurationWritesThatAreNotOneOfThoseThree: [],
+              configurationCannotDecideAnApproval: true,
+              approvalDecisionCannotConfigure: true,
+              sharesACommandWithTheApprovalDecisionSeam: false,
+              sharesAnEnvelopeWithTheApprovalDecisionSeam: false,
+              exposesMintForSystem: false,
+              exposesGenericDispatch: false,
+              isAnAgentAuthority: false,
+              isAPurchaseAuthority: false,
+              isAPaymentAuthority: false,
+              configurationTouchesProvider: false,
+              configurationTouchesPayment: false,
+              configurationWritesRawLedgerEntries: false,
+              initialCreditIsOneShot: true,
+              initialCreditOneShotLivesInTheCanonicalStore: true,
+              budgetPolicyIsAVersionedUpdate: true,
+              autonomyPolicyIsAVersionedUpdate: true,
+              identityComesFromTheTransportNotThePayload: true,
+              requiresConfiguredDesktopCredential: true,
+              pathIsNotUnderEconomyReadPaths: String(economyConfiguration.path).indexOf('/economy/') !== 0,
+              transportIsNotAnEconomyAuthority: true
+            }, { path: economyConfiguration.path });
+          })() : {
+            implemented: false,
+            open: false,
+            configurationCommandsExposed: [],
+            configurationWritesThatAreNotOneOfThoseThree: [],
+            configurationCannotDecideAnApproval: true,
+            approvalDecisionCannotConfigure: true,
+            sharesACommandWithTheApprovalDecisionSeam: false,
+            sharesAnEnvelopeWithTheApprovalDecisionSeam: false,
+            exposesMintForSystem: false,
+            exposesGenericDispatch: false,
+            isAnAgentAuthority: false,
+            isAPurchaseAuthority: false,
+            isAPaymentAuthority: false,
+            configurationTouchesProvider: false,
+            configurationTouchesPayment: false,
+            configurationWritesRawLedgerEntries: false,
+            initialCreditIsOneShot: true,
+            initialCreditOneShotLivesInTheCanonicalStore: true,
+            budgetPolicyIsAVersionedUpdate: true,
+            autonomyPolicyIsAVersionedUpdate: true,
+            identityComesFromTheTransportNotThePayload: true,
             requiresConfiguredDesktopCredential: true
           }
         },
@@ -1867,6 +1991,30 @@ function createHomeNodeHttp(deps) {
         return;
       }
       await handleEconomyApprovalDecision(req, res);
+      return;
+    }
+
+    /* ══════════════════════════════════════════════════════════════════
+       P22-14 · Economy Configuration Seam（fresh install 的配置 · POST）
+
+       ★ 它是**第三条**写路径，而且必须是第三条而不是前两条上的新命令：
+         · command 路径代表 Agent WANT（一个进程在提议）；
+         · approval-decision 路径代表 User DECISION（用户对**一条**intent 点头）；
+         · configuration 路径代表 User CONFIGURATION（用户**预设**这台节点的
+           钱与规则）。
+         三者的权威不同、词表不同、信封不同。把它们合并成"万能 user
+         command endpoint"正是 §8 逐字禁止的那件事。
+
+       ★ 本文件在这里仍然只做三件事：readBody（有界）→ dispatch → 原样发出
+         它给的信封。**不解释**命令、**不挑**身份、**不看**经济事实，也没有
+         任何一行能从这条路到达 store、门或适配器。 */
+    if (economyConfiguration && path === economyConfiguration.path) {
+      if (method !== 'POST') {
+        record('warn', 'economy-configuration-wrong-method', { method: method, loopback: isLoopback(req) });
+        bad(res, 405, 'economy-configuration-is-post-only', { allowedMethods: ['POST'] }, req);
+        return;
+      }
+      await handleEconomyConfiguration(req, res);
       return;
     }
 

@@ -164,13 +164,17 @@ section('A · 装配形状：能力在 store 上，一个都不在 HTTP 上');
 
 {
   const src = fs.readFileSync(path.join(ROOT, SERVICE_FILE), 'utf8');
+  /* ★ 与 P22-1 的 B3.7 同款纪律：被禁止的是**引用**（一个真实的标识符），
+     不是解释。装配层必须能说明"货架与商品的写入口**不在**配置面上"，
+     而那句说明里当然会写出那个成员名 —— 因此这里剥掉注释与字符串再判。 */
+  const srcCode = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
   check('A1 P22-5 没有新增 store 装配点：Economy 的装配仍然只有 economyAssembly 一份',
     (src.match(/function economyAssembly/g) || []).length === 1);
   check('A2 P22-5 的五个写方法一个都没有进入装配层（装配层只创建/打开 store，不替它决定业务）',
     ['putStore', 'putProduct', 'grantInventory', 'consumeInventory', 'createProductQuote']
-      .every(name => src.indexOf(name) < 0),
+      .every(name => srcCode.indexOf(name) < 0),
     ['putStore', 'putProduct', 'grantInventory', 'consumeInventory', 'createProductQuote']
-      .filter(name => src.indexOf(name) >= 0));
+      .filter(name => srcCode.indexOf(name) >= 0));
   check('A3 生产 store 上真的有 P22-5 的全部方法与读面（能力存在，只是没有暴露到 HTTP）',
     ['putStore', 'putProduct', 'getStore', 'listStores', 'getProduct', 'listProducts',
       'serializeStore', 'serializeProduct', 'createProductQuote',

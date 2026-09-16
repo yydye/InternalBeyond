@@ -197,7 +197,13 @@ const LOW_LEVEL_ECONOMY_VERBS = Object.freeze([
   'transferBetweenWallets', 'createQuote', 'expireQuote', 'createProductQuote',
   'decideApproval', 'createApprovalRequest', 'expireApproval', 'expireDueApprovals',
   'putAutonomyPolicy', 'authorizePurchaseIntent', 'appendCapabilityAudit',
-  'putStore', 'putProduct', 'putBudgetPolicy'
+  'putStore', 'putProduct', 'putBudgetPolicy',
+  /* ★ P22-14：初始额度那一个（`bootstrapInitialCredit`）。它为什么必须在这份
+     名单里：这份名单的用途是"**认出**传进来的对象是不是 store"，而不是
+     列一份历史遗留。store 多了一个成员而名单没跟上，就等于那道构造期防线
+     出现了一个它认不出来的 store —— 而那条防线的作用正是把一个装配期错误
+     当场炸掉，而不是让它在第一次购买时表现成一句奇怪的拒绝。 */
+  'bootstrapInitialCredit'
 ]);
 
 /* 实例的键恰好是这七个。测试与边界断言逐字读它。 */

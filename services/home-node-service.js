@@ -69,6 +69,15 @@ const economyCommandChannelModule = require('../services/home-node/economy-comma
    Intent 点头 / 摇头的**唯一生产入口**（桌面面的一条窄 POST 路径）。
    ★ 与它上面每一个模块同款：**只有**这一处 require 它。 */
 const economyApprovalDecisionModule = require('../services/home-node/economy-approval-decision.js');
+/* P22-14：Economy 的 **Configuration Seam** —— fresh install 在不改代码、
+   不直接操作 SQLite 的前提下完成初始配置（初始 IB Credit / Budget Policy /
+   Autonomy Policy）的**唯一生产入口**。
+   ★ 与它上面每一个模块同款：**只有**这一处 require 它。
+   ★ 它为什么是**第七**个文件、而且必须与 P22-13 分开：那一条是"用户对一条
+     具体的 intent 点头/摇头"，这一条是"用户预设这台节点的钱与规则"。两者
+     都是用户操作，但它们是**两种权威**；合成一条万能 user command endpoint
+     会让"允许 Agent 自主花多少钱"与"批准这一笔"在审计里变成同一件事。 */
+const economyConfigurationModule = require('../services/home-node/economy-configuration.js');
 const createNodeModelPort = require('../active/node-model-port.js');
 /* P11-3E：canonical store 失败分类器（**唯一**一份，见 runtime/db-failure.js）。
    它在 runtime/ 下，与 runtime/local-services-runner.js 那份是同一模块 ——
@@ -500,12 +509,42 @@ function economyAssembly(options) {
       clock: options.clock,
       logger: (e, f) => serviceLog('info', e, f)
     });
+
+  /* ── P22-14 · Economy Configuration Seam（**唯一**一处装配）───────────
+     ★ 它的 store 视图**恰好三个键**：bootstrapInitialCredit /
+       putBudgetPolicy / putAutonomyPolicy。本文件在这一行完成的是
+       §1「不要新造 generic Economy mutation API」的**结构性**版本：
+       seam 拿到的不是 store，而是三个**具名**入口，因此
+       `mintForSystem` / `burnForSystem` / `commitLedgerTransaction` /
+       `openWallet` / `settlePurchase` / `grantInventory` / `decideApproval`
+       在这段依赖上**不存在** —— 它连那些成员名都拿不到。
+     ★ 为什么凭据是**桌面 token**（与 P22-13 同一份）：在这个仓库里，
+       "这台机器的用户"的唯一既有凭据就是它，而 §1 逐字要求优先复用既有
+       认证。Agent 的来源凭据（IB_ECONOMY_CHANNEL_TOKEN，按端口登记）在这条
+       路径上根本不被读 —— 于是"Agent 凭据换配置权威"没有输入位（§12）。
+     ★ 为什么它与 approvalDecision 是**两个实例**而不是一个实例的两种
+       command：它们各有自己的词表、自己的信封键、自己的拒绝码，而
+       `describe()` 会把"两者不共用命令、不共用信封"写成可断言字段（§8）。
+     ★ 与 P22-11 修掉的那个装配缺口同款纪律：`desktopToken` 必须是**可注入**
+       的，测试才能构造出"未配置凭据 ⇒ 这一面关闭"这个真实部署形态。 */
+  const economyConfiguration = options.economyConfiguration
+    || economyConfigurationModule({
+      store: Object.freeze({
+        bootstrapInitialCredit: economyStore.bootstrapInitialCredit,
+        putBudgetPolicy: economyStore.putBudgetPolicy,
+        putAutonomyPolicy: economyStore.putAutonomyPolicy
+      }),
+      desktopCredential: options.desktopToken === undefined ? TOKEN : String(options.desktopToken == null ? '' : options.desktopToken),
+      clock: options.clock,
+      logger: (e, f) => serviceLog('info', e, f)
+    });
   return {
     economyStore: economyStore,
     economyCapabilityGate: economyCapabilityGate,
     economyActionAdapter: economyActionAdapter,
     economyCommandChannel: economyCommandChannel,
-    economyApprovalDecision: economyApprovalDecision
+    economyApprovalDecision: economyApprovalDecision,
+    economyConfiguration: economyConfiguration
   };
 }
 
@@ -757,6 +796,11 @@ function buildHomeNode(options) {
        这一面关闭"这个真实部署形态。 */
     desktopToken: options.token === undefined ? TOKEN : options.token,
     ownerExists: options.ownerExists,
+    /* P22-14：Configuration Seam 与 Approval Decision Seam 一样必须是
+       **可注入**的 —— 理由逐字相同（P22-11 修掉的那个缺口：装配层支持某个
+       注入点、而 buildHomeNode 没有把它转发下去，于是"注入"被静默忽略）。
+       ★ 它也是"未配置凭据 ⇒ 这一面关闭"这个部署形态可被真实构造的前提。 */
+    economyConfiguration: options.economyConfiguration,
     systemAuthority: options.systemAuthority,
     systemMintingEnabled: options.systemMintingEnabled,
     clock: options.clock,
@@ -826,6 +870,17 @@ function buildHomeNode(options) {
          它自己不判断价格、预算、自主性或商品。P22-12C §10.2 的 B1 说的
          正是"缺这条入口"，而不是"不该有这条入口"。 */
     economyApprovalDecision: instanceEconomy.economyApprovalDecision,
+    /* P22-14 · Economy 的 **Configuration Seam**（fresh install 的配置入口）。
+       ★ 与上面两行同级、与 economyStore 不同级：它的公开面里没有 store、
+         没有门、没有 SQL，只有 { path, dispatch, describe, audit }；而它
+         拿到的 store 视图恰好三个键（见 economyAssembly 那一行）。
+       ★ 为什么它可以上 HTTP，而 store 的铸币原语不能：它**不是**一个通用
+         mutation 入口 —— 它是一条**封闭三命令**的配置面，其中"初始额度恰好
+         一次"这条规则由 store 的 canonical 事实（economy_meta 行）持有，
+         而不是由这一层"记得检查"。
+       ★ 它**不是** /internal/economy/approval-decision 的别名，也不是它的
+         扩展：两条路径不共用命令、不共用信封（§8）。 */
+    economyConfiguration: instanceEconomy.economyConfiguration,
     /* P11-3E · canonical store 清单：健康与"能不能服务"是同一个问题，
        所以这里列出本进程承诺的全部 canonical store，而不是只有 chat。
        声明角色（chat）在最前，`failure` 取第一个命中它的。 */
@@ -913,6 +968,12 @@ function buildHomeNode(options) {
        它同时也是 §2 的机器可读答案：这条面绑的是**用户**那个身份
        （user_decision_seam），而不是 Agent。 */
     economyApprovalDecision: instanceEconomy.economyApprovalDecision,
+    /* P22-14：Configuration Seam 与上面五个同级导出 —— "fresh install 能不能
+       在不改代码、不碰 SQLite 的前提下被配到可运行"必须是一句可以直接断言的
+       事实。★ 它与 approvalDecision 是**两个**导出、两条路径、两份词表：
+       一个答案是"用户能决定一条 intent"，另一个是"用户能预设这台节点的钱与
+       规则"。 */
+    economyConfiguration: instanceEconomy.economyConfiguration,
     registry: instanceRegistry,
     gateway: instanceGateway,
     executor: instanceExecutor,
@@ -1031,6 +1092,11 @@ const httpLayer = createHttp({
      开/关由凭据决定（未配置 IB_HOME_NODE_TOKEN ⇒ 整面 403），
      因此 /security 的 economyPolicy.approvalDecision.open 才是诚实的答案。 */
   economyApprovalDecision: economy.economyApprovalDecision,
+  /* P22-14：**进程级**的 Configuration Seam。与上面那一行逐字同源 ——
+     它是"生产启动路径上真的有一个 fresh-install 配置入口"的机器可读形式，
+     而它的开/关由凭据与三个 store 入口是否齐全共同决定，
+     因此 /security 的 economyPolicy.configuration.open 才是诚实的答案。 */
+  economyConfiguration: economy.economyConfiguration,
   /* P22-9：**进程级**的门。它与 store 同级导出，理由逐字相同 —— 门的缺席
      在生产上是一个静默的"每个 consumer 都能直接提议"，而那种缺口只有
      直接断言语料才能发现。 */
@@ -1295,6 +1361,11 @@ module.exports = {
      等待中的 intent 点头/摇头"的唯一答案）。与上面那一行同级导出：
      它同样**不是**一条路由，而是那个能到达 P22-7 与 P22-9 句柄的对象。 */
   economyApprovalDecision: economy.economyApprovalDecision,
+  /* P22-14：进程级的 Configuration Seam（= 生产侧"fresh install 能不能在不改
+      代码、不碰 SQLite 的前提下被配到可运行"的唯一答案）。
+      ★ 与上面那一行同级导出，但它是**另一条**路径、**另一份**词表：把两者
+      合成一个导出会掩盖"这是两种权威"。 */
+  economyConfiguration: economy.economyConfiguration,
   defaultEconomyChannelSources,
   economyAssembly,
   buildHomeNode,

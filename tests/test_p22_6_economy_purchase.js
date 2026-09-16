@@ -1137,10 +1137,17 @@ section('K · HTTP：购买读面存在，写面逐名不存在');
        Agent Intent 点头 / 摇头的唯一生产入口）。理由仍然逐字同构 ——
        它长在门的**旁边**（与通道并列，因为它们是两个身份、两条路径），
        把 handler 写进 http.js 会让"谁在决定"散落在路由层里。它同样没有
-       一张表、没有一行 SQL：只有凭据判定、一次 canonical 决定与一次续做。 */
+       一张表、没有一行 SQL：只有凭据判定、一次 canonical 决定与一次续做。
+       ★ P22-14 之后又多了第七个：**配置 seam**（fresh install 在不改代码、
+       不直接操作 SQLite 的前提下完成初始配置的唯一生产入口）。理由与第六个
+       刻意**不同**：那一条的权威是"用户决定一条 intent"，这一条是"用户
+       **预设**这台节点的钱与规则"。两者都是用户操作，但它们是两种权威；
+       合成一条万能 user command endpoint 会让它们在经济审计里不可分。
+       它同样没有一张表、没有一行 SQL，也没有第二个 store owner：装配层交给
+       它的是一份**恰好三个键**的 store 视图。 */
     fs.readdirSync(path.join(ROOT, 'services', 'home-node'))
       .filter(f => /^economy-/.test(f)).sort().join(',') ===
-      'economy-action-adapter.js,economy-approval-decision.js,economy-capability.js,economy-command-channel.js,economy-contract.js,economy-store.js' &&
+      'economy-action-adapter.js,economy-approval-decision.js,economy-capability.js,economy-command-channel.js,economy-configuration.js,economy-contract.js,economy-store.js' &&
     fs.readFileSync(path.join(ROOT, 'services', 'home-node', 'economy-store.js'), 'utf8')
       .indexOf('economy_purchases') >= 0 &&
     fs.readFileSync(path.join(ROOT, 'services', 'home-node', 'economy-action-adapter.js'), 'utf8')

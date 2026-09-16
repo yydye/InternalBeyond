@@ -209,12 +209,16 @@ section('A · 装配形状：能力在 store 上，一个购买写方法都不�
 
 {
   const src = fs.readFileSync(path.join(ROOT, SERVICE_FILE), 'utf8');
+  /* ★ 与 P22-1 的 B3.7 同款纪律：被禁止的是**引用**（一个真实的标识符），
+     不是解释。装配层必须能说明"结算的写入口**不在**任何 seam 上"，
+     而那句说明里当然会写出那个成员名 —— 因此这里剥掉注释再判。 */
+  const srcCode = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
   check('A1 P22-6 没有新增 store 装配点：Economy 的装配仍然只有 economyAssembly 一份',
     (src.match(/function economyAssembly/g) || []).length === 1);
   check('A2 ★ 五个购买写方法一个都没有进入装配层（装配层只创建/打开 store）',
     ['preparePurchase', 'settlePurchase', 'cancelPurchase', 'refundPurchase', 'reversePurchase']
-      .every(name => src.indexOf(name) < 0),
-    ['preparePurchase', 'settlePurchase', 'cancelPurchase'].filter(name => src.indexOf(name) >= 0));
+      .every(name => srcCode.indexOf(name) < 0),
+    ['preparePurchase', 'settlePurchase', 'cancelPurchase'].filter(name => srcCode.indexOf(name) >= 0));
   check('A3 生产 store 上真的有 P22-6 的全部方法与读面（能力存在，只是没有暴露到 HTTP）',
     ['preparePurchase', 'settlePurchase', 'cancelPurchase', 'getPurchase', 'listPurchases', 'serializePurchase']
       .every(name => typeof SERVICE.economyStore[name] === 'function'),

@@ -143,13 +143,34 @@ section('A · 装配形状：能力在 store 上，一个都不在 HTTP 上');
 
 {
   const src = fs.readFileSync(path.join(ROOT, SERVICE_FILE), 'utf8');
+  /* ★ 把注释与字符串剥掉再判：一条 **hand-off** 是一句具名成员引用
+     （`putBudgetPolicy: economyStore.putBudgetPolicy`），而它必须落在
+     给某个 seam 的**具名视图**里 —— 不是一句"装配层自己在决定业务"。 */
+  const srcCode = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const HANDED_OFF = { putBudgetPolicy: 'economyConfiguration', putAutonomyPolicy: 'economyConfiguration' };
+  function handoffSitesOf(name) {
+    return srcCode.split(/\r?\n/)
+      .map((line, i) => ({ line: line, no: i + 1 }))
+      .filter(x => new RegExp('\\b' + name + '\\b').test(x.line));
+  }
+  const handoffs = Object.keys(HANDED_OFF);
   check('A1 P22-4 没有新增 store 装配点：Economy 的装配仍然只有 economyAssembly 一份',
     (src.match(/function economyAssembly/g) || []).length === 1);
-  check('A2 P22-4 的六个写方法一个都没有进入装配层（装配层只创建/打开 store，不替它决定业务）',
-    ['putBudgetPolicy', 'expirePolicy', 'expireDuePolicies', 'createQuote', 'expireQuote', 'expireDueQuotes']
-      .every(name => src.indexOf(name) < 0),
-    ['putBudgetPolicy', 'expirePolicy', 'expireDuePolicies', 'createQuote', 'expireQuote', 'expireDueQuotes']
-      .filter(name => src.indexOf(name) >= 0));
+  check('A2 P22-4 的六个写方法里，只有 putBudgetPolicy 出现在装配层 —— 而且它只以**具名交付**的形式出现'
+    + '（P22-14：fresh install 的配置面需要一个恰好三个键的 store 视图）',
+    ['expirePolicy', 'expireDuePolicies', 'createQuote', 'expireQuote', 'expireDueQuotes']
+      .every(name => srcCode.indexOf(name) < 0) &&
+    handoffs.every(name => {
+      const sites = handoffSitesOf(name);
+      /* 恰好一处，而且是 `name: economyStore.name` 这一种交付形态。 */
+      return sites.length === 1 && sites.every(s =>
+        new RegExp(name + ':\\s*economyStore\\.' + name).test(s.line));
+    }),
+    {
+      missing: ['expirePolicy', 'expireDuePolicies', 'createQuote', 'expireQuote', 'expireDueQuotes']
+        .filter(name => srcCode.indexOf(name) >= 0),
+      handoffs: handoffs.map(n => ({ name: n, sites: handoffSitesOf(n).map(s => s.no + ':' + s.line.trim()) }))
+    });
   check('A3 生产 store 上真的有 P22-4 的全部方法与读面（能力存在，只是没有暴露到 HTTP）',
     ['putBudgetPolicy', 'expirePolicy', 'expireDuePolicies', 'getBudgetPolicy', 'listBudgetPolicies',
       'serializeBudgetPolicy', 'buildBudgetSnapshot', 'spendingWindows', 'evaluateBudgetFor',
