@@ -884,7 +884,40 @@ const GROUPS = [
                    完整 / 旧的全局读面形状没变 / POST 一律 405。 */
       ['test_p22_19_economy_read_contract.js'],
       ['test_p22_19_economy_owner_scope.js'],
-      ['test_p22_19_economy_owner_scope_http.js']
+      ['test_p22_19_economy_owner_scope_http.js'],
+      /* P22-20：Economy 的**外部边界**审计（这一阶段刻意不新增任何
+         Economy 能力，也不实现 Exchange / Refund）。
+           ① external boundary —— §1 的七行外部能力矩阵（Provider billing /
+              Provider quota / Real payment / Refund / Exchange / Merchant /
+              External order）每一行的"存在 / 不存在"都由**真实文件里的逐字
+              证据**决定，而不是由名字决定；Economy 侧对七类能力的**调用形态**
+              为 0，代码里出现的每一个外部词都必须在"冻结词表 / 恒 false 自述"
+              两类声明里（新增一个未声明的词就红）；§2 的依赖闭包恰好是七个
+              Economy 文件 + runtime/db-failure.js，内建只有 sqlite / crypto /
+              http / path / fs，零 process.env、零 createServer、零 SDK；
+              §4 支付方向（合法方向存在且唯一、非法方向没有代码、counterparty
+              是封闭集合）；§5 Compute = 库存资产（含"那句否认真的被渲染出来"）；
+              §6 Refund 停在词表层的三个位置与四个缺口；§7 Exchange 的
+              0 capability 与两道币种闸门。纯 Node，不 open 数据库。
+           ② boundary injection —— §3 四种资源注入（USD / CNY / TOKEN /
+              API_BALANCE × 钱包/预算/商品/报价四入口，**带差分控制组**，控制组
+              必须被接受，于是拒绝可归因于币种）；§10 Provider 13 键 × 5 值 ×
+              三个入口 + 配置面 39 + 信封 16 次注入全部 DENY；Payment 那一节
+              **让支付模块真的可解析**（重定向到临时桩）再断言 Economy 零 import；
+              Exchange 让 convertCurrency 真的存在再跑完整读写面；Refund 的两件
+              不存在；capability 反例（14 词 × 4 consumer）。真实 store，
+              零子进程 / 零 spawn / 零浏览器 / 零 socket。
+           ③ public surface —— 解析 docs/ECONOMY_PUBLIC_SURFACE.md 并与真实
+              路由表 / 三个 seam 的 path 与词表 / 契约的 CAPABILITY 逐个比对；
+              本进程一个真实 HTTP（socket = 1）：28 条读面可达、每条 POST 都
+              405 economy-is-read-only、九个未来能力路径 GET 404 / POST 405、
+              这一整轮之后 change log 逐字不变、三条写面匿名写不进去；
+              §9 把三个真实渲染器挂在 DOM 桩上，把页面上**每一个按钮的文案**
+              收出来与冻结词表比对（多一个 / 少一个都红），并断言商品卡上
+              没有任何按钮、页面上没有表单与 submit。 */
+      ['test_p22_20_economy_external_boundary.js'],
+      ['test_p22_20_economy_boundary_injection.js'],
+      ['test_p22_20_economy_public_surface.js']
       /* P22-18 的浏览器视觉核对（test_p22_18_economy_experience_visual.js）
          与 P22-15/16/17 那三条一样**不在**默认套件里（它要开一个真实
          浏览器）：2 主题 × 4 宽度（含 320px）+ 截断/空/展开四种状态。
