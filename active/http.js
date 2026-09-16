@@ -65,6 +65,14 @@ function createHttp(ctx) {
     trimText, deepClone, finiteTimestamp,
     sanitizeMomentSchedule, publicMomentSchedule, proactiveTrace,
     credentialVault,
+    /* P22-11：Economy command channel 的两个注入点。
+       · economyPropose：已净化提案 → 通道客户端（缺省时这条路由不存在）；
+       · sanitizeEconomyProposal：**同一条**既有净化链上的那个净化器
+         （assets/js/active-diary/active-plans.js 的
+         _activeValidateEconomyProposal），由装配层注入而不是在这里复制。
+       两者都缺席时 `/economy/propose-purchase` 根本不存在。 */
+    economyPropose,
+    sanitizeEconomyProposal,
     /* P11-3H：合作停止面的判定钩子（runtime/service-control.js 的
        createStopDispatch()）。缺省时整个停止分支不存在。 */
     stopDispatch
@@ -486,8 +494,46 @@ function createHttp(ctx) {
         json(response, 200, { ok: true, missing: !existing, executed });
         return;
       }
-      if (request.method === 'POST' && url.pathname === '/reconcile') {
-        const body = await readBody(request);
+      /* ══════════════════════════════════════════════════════════════
+         P22-11 · Economy command channel 的出口（23114 → 23118）
+         ══════════════════════════════════════════════════════════════
+         ★ 路由只有这一条，而且它只做一件事：把一条**已经过净化**的
+         Economy 提案交给注入的通道客户端。它不解释经济语义、不选消费者、
+         不认识 23118 这个地址（地址与凭据都在客户端里，来自部署环境）。
+         ★ 净化是**同一条**链上那一个（assets/js/active-diary/active-plans.js
+         的 _activeValidateEconomyProposal）：本文件不另写一份白名单，
+         否则"模型动作必须过 sanitizer"这句话会有两个答案。
+         ★ 没有注入通道客户端时（分解装配 / 未配置凭据）这条分支整体
+         不存在 —— 落到下面的兜底 404，行为与 P22-10 逐字一致。 */
+      if (request.method === 'POST' && url.pathname === '/economy/propose-purchase') {
+        if (typeof economyPropose !== 'function') {
+          json(response, 404, { error: 'economy-channel-not-configured' });
+          return;
+        }
+        const raw = await readBody(request);
+        const sanitized = sanitizeEconomyProposal(raw);
+        if (!sanitized) {
+          json(response, 400, { ok: false, error: 'economy-proposal-rejected', sanitized: false });
+          return;
+        }
+        const outcome = await economyPropose(sanitized);
+        /* ★ 状态码刻意区分"确定"与"未知"：一次 DELIVERY_UNKNOWN 不能用
+           4xx/2xx 表达成一次经济裁决（§8）。因此这里永远回 200 + 通道
+           自己的 delivery，调用方按 delivery 分支，而不是按 HTTP 码猜。 */
+        json(response, 200, {
+          ok: !!(outcome && outcome.ok),
+          delivery: (outcome && outcome.delivery) || 'TRANSPORT_FAILED',
+          commandId: (outcome && outcome.commandId) || null,
+          reasonCode: (outcome && outcome.reasonCode) || null,
+          downstreamReasonCode: (outcome && outcome.downstreamReasonCode) || null,
+          intentCreated: (outcome && outcome.intentCreated) || null,
+          purchaseFailed: false,
+          purchaseDenied: false,
+          transportIsNotAnEconomyAuthority: true
+        });
+        return;
+      }
+      if (request.method === 'POST' && url.pathname === '/reconcile') {        const body = await readBody(request);
         const userId = String(body && body.user_id || '');
         /* 仅当对应字段存在时才清理该集合：调用方各自声明自己管辖的 id 列表，
            未声明的一侧保持不动（避免 AI 计划同步误删手动任务或反之） */

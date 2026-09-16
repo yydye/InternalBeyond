@@ -56,6 +56,15 @@ const createEconomyCapabilityGate = require('../services/home-node/economy-capab
    ★ 这里只取 bindActiveAgentEconomyAdapter（装配助手）：全仓库唯一一次
    `gate.bind(consumer)` 就发生在它里面，而 consumer 身份写在适配器旁边。 */
 const economyActionAdapterModule = require('../services/home-node/economy-action-adapter.js');
+/* P22-11：Economy 的 **Command Channel** —— Active（23114）与 Home Node
+   （23118）之间唯一的 command 面。与前面三个文件同款：**只有**装配层
+   require 它，而它 require 的目标仍然只有那份契约（依赖闭包不再变宽）。
+   ★ 通道是**第五**个文件，理由与第四个逐字同构：它必须长在适配器上面。
+     把 handler 写进 http.js 会让"这条路径能做什么"分散在路由层里，而
+     写进适配器就是把传输混进动作层。§1 还逐字要求"能复用就复用" ——
+     它复用的正是 http.js 既有的 transport（loopback + 凭据 + 信封 +
+     有界 body），只新增来源登记与一条专用路径。 */
+const economyCommandChannelModule = require('../services/home-node/economy-command-channel.js');
 const createNodeModelPort = require('../active/node-model-port.js');
 /* P11-3E：canonical store 失败分类器（**唯一**一份，见 runtime/db-failure.js）。
    它在 runtime/ 下，与 runtime/local-services-runner.js 那份是同一模块 ——
@@ -429,11 +438,73 @@ function economyAssembly(options) {
        （buildHomeNode() 的返回值），与门逐字同级。 */
   const economyActionAdapter = options.economyActionAdapter
     || economyActionAdapterModule.bindActiveAgentEconomyAdapter(economyCapabilityGate);
+
+  /* ── P22-11 · Economy Command Channel（**唯一**一处装配）──────────────
+     ★ 来源登记册在这一行成形，而且只有一份：哪个 consumer 能从哪条本机
+       端口提出哪种 command。它**不是**配置项 —— §3 逐字要求身份由
+       "authenticated transport + registered source"确定，而"登记"
+       这件事必须有一个唯一的、可核对的落点；分散到环境变量里就等于
+       让身份变成运行期可改的一件东西。
+     ★ token 从**部署环境**读（IB_ECONOMY_CHANNEL_TOKEN）：装配层不生成、
+       不落盘、不打日志、不进返回值 —— describe() 也只有一个 hasSourceCredential
+       风格的布尔（在客户端那一侧），服务端连布尔都不给。
+     ★ 未配置 token ⇒ 登记册为空 ⇒ 通道**关闭**（503）。
+       这不是"默认放行"，也不是一条永远失败的入口：`/security` 的
+       economyPolicy.commandChannel.open 会如实报 false。
+     ★ 登记项**只能**是 P22-9 契约里真实存在的 consumer id；给一个不存在的
+       身份会在构造期抛（见 economy-command-channel.js 的 normalizeSources）。
+       本阶段只登记**一个**来源：active_agent_runtime（P22-10 已证明它是
+       这个仓库里唯一一个"Agent 自己决定要不要动手"的 Node 运行时）。
+       ★ 它被登记的准入能力只有 PROPOSE_PURCHASE 一项 —— P22-9 给
+       active_agent_runtime 的矩阵里还有 RESUME_APPROVED_PURCHASE，而
+       P22-10 §9 已经决定不开放 resume；本阶段**不**偷偷恢复它：通道的
+       command 词表里恰好一个成员，resume 那个字符串在通道代码里一次都
+       不出现。 */
+  const economyCommandChannel = options.economyCommandChannel
+    || economyCommandChannelModule.createEconomyCommandChannel({
+      adapter: economyActionAdapter,
+      sources: options.economyChannelSources !== undefined
+        ? options.economyChannelSources
+        : defaultEconomyChannelSources(),
+      timeoutMs: options.economyChannelTimeoutMs,
+      maxAttempts: options.economyChannelMaxAttempts,
+      clock: options.clock,
+      logger: (e, f) => serviceLog('info', e, f)
+    });
   return {
     economyStore: economyStore,
     economyCapabilityGate: economyCapabilityGate,
-    economyActionAdapter: economyActionAdapter
+    economyActionAdapter: economyActionAdapter,
+    economyCommandChannel: economyCommandChannel
   };
+}
+
+/* ══ P22-11 · 通道的来源登记册（**唯一**一处读取那些环境键）══════════
+   ★ 默认**空**：没有 IB_ECONOMY_CHANNEL_TOKEN 就没有登记项，通道关闭。
+     显式地把"空"写成一个具名函数，是为了让"为什么生产上没开"这个问题
+     有一个可读的答案，而不是藏在一处 `|| []` 里。
+   ★ 端口取 IB_ECONOMY_CHANNEL_SOURCE_PORT（与 active/economy-channel-client.js
+     读的是**同一个键**），缺省回落到 IB_ACTIVE_PORT，再缺省 23114。
+     ★ 为什么要有那个专用键，而不是直接用 Active 的端口：Windows 上把一个
+     客户端 socket 绑到**已经被监听**的端口会一直失败（实测
+     `bind EADDRINUSE 127.0.0.1:<IB_ACTIVE_PORT>`，就地重试三次都不行）。
+     来源身份要的是一个**确定的、被登记的、不被监听**的端口，因此部署上
+     应当显式配置它。回落只是为了在没有它的部署上给出一个**可解释的
+     失败**（第一次提议 EADDRINUSE），而不是悄悄换一个没人登记的端口。
+   ★ 这里**不**校验端口"像不像 Active"：登记册是装配事实，用错端口
+     只会让那条来源连不上（fail closed），不会放行别人。 */
+function defaultEconomyChannelSources() {
+  const token = String(process.env.IB_ECONOMY_CHANNEL_TOKEN || '');
+  if (!token) return [];
+  const pick = value => (Number.isInteger(value) && value > 0 && value <= 65535 ? value : null);
+  const boundPort = pick(Number(process.env.IB_ECONOMY_CHANNEL_SOURCE_PORT))
+    || pick(Number(process.env.IB_ACTIVE_PORT))
+    || 23114;
+  return [{
+    consumer: economyCommandChannelModule.CONSUMER,
+    token: token,
+    boundPort: boundPort
+  }];
 }
 
 /* ── canonical Moments store 的失败探针（**唯一**一处）────────────────
@@ -635,6 +706,19 @@ function buildHomeNode(options) {
     economyStore: options.economyStore,
     economyGate: options.economyGate,
     economyCapabilityConfig: options.economyCapabilityConfig,
+    /* P22-11 修掉的一个**真实装配缺口**（开发期实测）：这两行以前不在
+       这里。economyAssembly 明确支持 `options.economyActionAdapter`
+       （P22-10 写的），但 buildHomeNode **没有把它转发下去** —— 于是
+       "注入一个适配器"在装配层被静默忽略，测试拿到的永远是内部自建的
+       那一个（实测症状：包装器的调用计数恒为 0，而命令照样成功）。
+       这正是这个文件里已经写过三次的同一种病（memory / understanding /
+       moments 的"装配好了但没接上"），只是这一次的受害者是注入点。
+       ★ 两行都必须在这里：漏掉 adapter 会让"谁被绑定了"不可注入，
+         漏掉 channel 会让通道在测试里永远是环境默认那一个。 */
+    economyActionAdapter: options.economyActionAdapter,
+    economyChannelSources: options.economyChannelSources,
+    economyChannelTimeoutMs: options.economyChannelTimeoutMs,
+    economyChannelMaxAttempts: options.economyChannelMaxAttempts,
     ownerExists: options.ownerExists,
     systemAuthority: options.systemAuthority,
     systemMintingEnabled: options.systemMintingEnabled,
@@ -690,6 +774,11 @@ function buildHomeNode(options) {
        http.js 的 /economy/* 全是 GET（见那边的注释），铸币与提交交易的
        入口都留在 store 内部 API 上。 */
     economyStore: instanceEconomy.economyStore,
+    /* P22-11 · Economy 的 command 通道（**唯一**一条写路径的承载者）。
+       ★ 与上面那一行刻意**不同级**：economyStore 是只读观测面，而这一行
+         是一个能到达适配器的对象。它替换不了 store —— 通道的公开面里
+         没有 store、没有门、没有 SQL，只有 dispatch。 */
+    economyCommand: instanceEconomy.economyCommandChannel,
     /* P11-3E · canonical store 清单：健康与"能不能服务"是同一个问题，
        所以这里列出本进程承诺的全部 canonical store，而不是只有 chat。
        声明角色（chat）在最前，`failure` 取第一个命中它的。 */
@@ -767,6 +856,10 @@ function buildHomeNode(options) {
        而它同时也是 §6 的机器可读答案：装配里**只**绑了 active_agent_runtime
        一个消费者（describe().consumer）。 */
     economyActionAdapter: instanceEconomy.economyActionAdapter,
+    /* P22-11：通道与 adapter/store/门同级导出 —— "这台节点上真实的
+       command 面是哪一条、它是开还是关"必须是一个可核对的事实，
+       而不是读者从环境变量里推断的东西。 */
+    economyCommandChannel: instanceEconomy.economyCommandChannel,
     registry: instanceRegistry,
     gateway: instanceGateway,
     executor: instanceExecutor,
@@ -875,6 +968,11 @@ const httpLayer = createHttp({
      两个事实同时为真，正是 P11-3E 那个缺口的第四次形态。
      单元测试与直接 store 测试全绿，缺的只是这一行接线。 */
   economyStore: economy.economyStore,
+  /* P22-11：**进程级**的 command 通道。这一行与上面那行一样，是
+     "生产启动路径上真的有一条可用的 command 面"的机器可读形式 ——
+     通道的存在不等于它是**开**的（open 取决于来源登记册），
+     因此 /security 的 commandChannel.open 才是那个诚实的答案。 */
+  economyCommand: economy.economyCommandChannel,
   /* P22-9：**进程级**的门。它与 store 同级导出，理由逐字相同 —— 门的缺席
      在生产上是一个静默的"每个 consumer 都能直接提议"，而那种缺口只有
      直接断言语料才能发现。 */
@@ -1131,6 +1229,11 @@ module.exports = {
   economyCapabilityGate: economy.economyCapabilityGate,
   /* P22-10：进程级的 Action Adapter（= 生产侧"Agent 能不能提议"的唯一答案）。 */
   economyActionAdapter: economy.economyActionAdapter,
+  /* P22-11：进程级的 command 通道（= 生产侧"Active 能不能把一条话语送进来"
+     的唯一答案）。它导出的**不是**一条路由，而是那个能到达适配器的对象；
+     路由由 http.js 从 buildHomeNode() 的 deps 里拿到。 */
+  economyCommandChannel: economy.economyCommandChannel,
+  defaultEconomyChannelSources,
   economyAssembly,
   buildHomeNode,
   memoryAssembly,

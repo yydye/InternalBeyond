@@ -77,7 +77,15 @@ const PRODUCTION_FILES = [
      **上面**。把它写进门里会让"门是否被正确调用"变成门内部的一件事，
      而把它写进 store 就是又一次改写 P22-8 的 canonical ownership。
      它同样没有引入任何新依赖：它 require 的仍是那份契约。 */
-  'services/home-node/economy-action-adapter.js'
+  'services/home-node/economy-action-adapter.js',
+  /* P22-11 加入 economy-command-channel.js（Active → Home Node 的**唯一**
+     command 面）。★ 它是**第五**个文件，理由与第四个逐字同构：通道必须
+     长在适配器**上面**，把 handler 写进 http.js 会让"这条路径能做什么"
+     散落在路由层里，而写进适配器就是把传输混进动作层。
+     它同样没有引入第二份经济依赖：它 require 的仍是那份契约（另加两个
+     **核心**模块 node:crypto / node:http，见下面的 B3.1 —— 通道要摘要、
+     恒定时间比较与一条出站 HTTP，而这三件事只能来自核心模块）。 */
+  'services/home-node/economy-command-channel.js'
 ];
 
 /* 目录前缀与文件名模式：用来发现"清单漏登记"的文件。
@@ -264,9 +272,33 @@ check('B3.5 Economy 不得依赖真实购物域本身（commerce.js / commerce-a
     r.value !== 'assets/js/payment-settings.js'));
 check('B3.6 Economy 不得依赖 Bridge（route 层是真实支付与语音/工具的网络面）',
   allRequires.every(r => r.value.indexOf('bridge/') !== 0));
-check('B3.7 Economy 不得依赖进程/网络/加密原语（child_process / net / http / crypto / https）',
-  allRequires.every(r => !/^(?:node:)?(child_process|net|http|https|tls|dgram|crypto|worker_threads)$/.test(r.value)),
+check('B3.7 Economy 不得依赖**进程 / 网络服务器 / 其它加密原语**（child_process / net / https / tls / dgram / worker_threads）',
+  /* ★ P22-11 让这条从"一个字都不能有"变成"逐项点名"：command 通道需要
+     node:crypto（SHA-256 摘要 + 恒定时间比较）与 node:http（一条**出站**
+     调用）。因此这里把禁令落在真正重要的那几件事上：
+       · 不起进程：child_process / worker_threads；
+       · 不自己开网络：net / dgram / tls；
+       · 更不开第二个 HTTP **服务器** —— Economy 的 handler 走的是
+         services/home-node/http.js 已经存在的那个 server（下面 B3.7b
+         逐字断言 Economy 里没有 createServer/.listen(）。 */
+  allRequires.every(r => !/^(?:node:)?(child_process|net|https|tls|dgram|worker_threads)$/.test(r.value)) &&
+  /* 被允许的两个核心模块必须**恰好**各自一处（多一处都要解释）。 */
+  allRequires.filter(r => r.value === 'node:crypto').length === 1 &&
+  allRequires.filter(r => r.value === 'node:http').length === 1,
   allRequires.map(r => r.value));
+
+check('B3.7b （输入存在）Economy 生产代码里**没有**第二个 HTTP 服务器，也没有任何 .listen( —— 通道只做一条出站调用',
+  (() => {
+    const code = stripCommentsAndStrings(read('services/home-node/economy-command-channel.js'));
+    return code.indexOf('createServer') < 0 &&
+      code.indexOf('.listen(') < 0 &&
+      code.indexOf('nodeHttp.request(') >= 0 &&
+      code.indexOf('timingSafeEqual') >= 0;
+  })(),
+  {
+    createServer: stripCommentsAndStrings(read('services/home-node/economy-command-channel.js')).indexOf('createServer'),
+    listen: stripCommentsAndStrings(read('services/home-node/economy-command-channel.js')).indexOf('.listen(')
+  });
 
 /* ══════════════════════════════════════════════════════════════════
    B4 · 依赖方向：钱 → Economy 的反向边也不存在
@@ -306,10 +338,13 @@ check('B4.2 启动链**只** require Economy 的 canonical store —— 而且**
          构造点）。
          P22-10 加第三处：装配层 require Action Adapter（适配器同样长在
          门的上面，而它是全仓库唯一一次 gate.bind(consumer) 的所在地）。
+         P22-11 加第四处：装配层 require command 通道（通道长在适配器上面，
+         装配是它唯一的构造点与唯一的来源登记处）。
          允许清单写成精确集合，而不是"含有 economy 就行"。 */
       const allowed = ['../services/home-node/economy-store.js',
         '../services/home-node/economy-capability.js',
-        '../services/home-node/economy-action-adapter.js'];
+        '../services/home-node/economy-action-adapter.js',
+        '../services/home-node/economy-command-channel.js'];
       hits.forEach(h => { if (allowed.indexOf(h) < 0) offenders.push(rel + ' -> ' + h); });
     });
     return offenders.length === 0;
@@ -794,9 +829,33 @@ check('B12.7 生命周期行的 UPDATE 只赋状态与链接列（经济内容�
   })());
 
 /* ── 过期不是定时器（§14）──────────────────────────────────────────── */
+/* ══ P22-11 · 定时器禁令的**精确**形式 ══════════════════════════════
+   三条既有的断言（B12.8 / B13.10 / B15.14）说的都是同一件事：Economy
+   里**到期是"比较 expires_at <= now"，不是某个调度**（§39）。P22-11 的
+   command 通道第一次在 Economy 命名空间里需要 setTimeout —— 但它要的是
+   **一次出站请求的最后期限与重试退避**，不是任何到期判定。
+   把这条区别写成可核对的形式，而不是把整条禁令删掉：
+     · 允许的文件**只有一个**（economy-command-channel.js）；
+     · 在那个文件里 setTimeout 的出现次数**恰好两处**（超时中止 + 重试退避）；
+     · 而且它**不做**任何到期扫描（没有 expireDue* 的调用、没有 setInterval）。 */
+const TIMER_EXEMPT_FILES = ['services/home-node/economy-command-channel.js'];
+function timerHitsIn(rel) {
+  return (stripCommentsAndStrings(read(rel)).match(/\bset(?:Timeout|Interval)\b/g) || []);
+}
+function economicCodeHasNoTimers() {
+  return PRODUCTION_FILES.every(rel => TIMER_EXEMPT_FILES.indexOf(rel) < 0
+    ? timerHitsIn(rel).length === 0
+    : true);
+}
 check('B12.8 到期判定不依赖任何定时器：生产文件里没有 setTimeout / setInterval',
-  PRODUCTION_FILES.every(rel => !/\bset(?:Timeout|Interval)\b/.test(stripCommentsAndStrings(read(rel)))),
-  PRODUCTION_FILES.filter(rel => /\bset(?:Timeout|Interval)\b/.test(stripCommentsAndStrings(read(rel)))));
+  economicCodeHasNoTimers(),
+  PRODUCTION_FILES.filter(rel => TIMER_EXEMPT_FILES.indexOf(rel) < 0 && timerHitsIn(rel).length));
+check('B12.8b （输入存在）唯一被豁免的文件里，setTimeout 恰好两处，且都不做任何到期扫描',
+  timerHitsIn(TIMER_EXEMPT_FILES[0]).length === 2 &&
+  timerHitsIn(TIMER_EXEMPT_FILES[0]).filter(t => t === 'setInterval').length === 0 &&
+  /\bsetTimeout\b/.test(stripCommentsAndStrings(read(TIMER_EXEMPT_FILES[0]))) &&
+  !/expireDue/i.test(stripCommentsAndStrings(read(TIMER_EXEMPT_FILES[0]))),
+  timerHitsIn(TIMER_EXEMPT_FILES[0]));
 check('B12.9 到期扫描接受**显式** now（真相是 expires_at <= now 这条比较，不是某个调度）',
   /function expireDueReservations\(input\)/.test(STORE_SRC) &&
   /o\.now != null \? Number\(o\.now\) : clock\(\)/.test(STORE_SRC) &&
@@ -916,7 +975,7 @@ check('B13.9 报价状态推进带并发守卫（`AND state=?`）—— 终态�
 check('B13.10 报价的到期判定是**比较**（state=OPEN AND expires_at <= now），不是定时器',
   /WHERE state=\? AND expires_at <= \?/.test(STORE_SRC) &&
   /function expireDueQuotes\(input\)/.test(STORE_SRC) &&
-  PRODUCTION_FILES.every(rel => !/\bset(?:Timeout|Interval)\b/.test(stripCommentsAndStrings(read(rel)))));
+  economicCodeHasNoTimers());
 
 /* ── B13.11：P22-4 的六个写方法一个都不在 HTTP 上 ─────────────────── */
 const POLICY_QUOTE_MUTATION_METHODS = ['putBudgetPolicy', 'expirePolicy', 'expireDuePolicies',
@@ -1023,7 +1082,7 @@ section('B15 · P22-5 store / product / inventory（依赖闭包、不可删除�
    change log / revision / idempotency 处在**同一个**事务边界里 ——
    抽出去就把那个保证降级成跨模块约定。 */
 check('B15.1 P22-5 的三张表全部落在同一个 economy-store.js 里（它自己没新增生产文件）',
-  PRODUCTION_FILES.length === 4 &&
+  PRODUCTION_FILES.length === 5 &&
   PRODUCTION_FILES.indexOf('services/home-node/economy-contract.js') >= 0 &&
   PRODUCTION_FILES.indexOf('services/home-node/economy-store.js') >= 0 &&
   /* ★ P22-9 的第三个文件是**门**（在 store 上面），不是 P22-5 的表。
@@ -1031,24 +1090,37 @@ check('B15.1 P22-5 的三张表全部落在同一个 economy-store.js 里（它�
      而门里没有一张表 —— 两个断言合起来让"P22-5 没有开新文件"继续成立。
      ★ P22-10 的第四个文件是**动作适配器**（在门上面），它同样没有一张
      表：适配器只做动作净化与转发，SQL 与 schema 仍然只由 store 拥有。
-     两句话合起来仍然是 P22-5 §1 那句"不要为了新概念多开几个文件"。 */
+     ★ P22-11 的第五个文件是**command 通道**（在适配器上面），它也没有
+     一张表：通道只做信封校验、来源判定与一次转发。
+     三句话合起来仍然是 P22-5 §1 那句"不要为了新概念多开几个文件"。 */
   PRODUCTION_FILES.indexOf('services/home-node/economy-capability.js') >= 0 &&
   PRODUCTION_FILES.indexOf('services/home-node/economy-action-adapter.js') >= 0 &&
+  PRODUCTION_FILES.indexOf('services/home-node/economy-command-channel.js') >= 0 &&
   read('services/home-node/economy-store.js').indexOf('economy_inventory') >= 0 &&
   read('services/home-node/economy-contract.js').indexOf('CREATE TABLE') < 0 &&
+  read('services/home-node/economy-command-channel.js').indexOf('CREATE TABLE') < 0 &&
   read('services/home-node/economy-action-adapter.js').indexOf('CREATE TABLE') < 0 &&
   read('services/home-node/economy-capability.js').indexOf('CREATE TABLE') < 0,
   PRODUCTION_FILES);
 check('B15.2 依赖闭包没有变宽：require 的**目标集合**仍然是那三个（P22-9/P22-10 也一个新依赖都没加）',
   Array.from(new Set(allRequires.map(r => r.value))).sort().join(',') ===
-    'node:sqlite,runtime/db-failure.js,services/home-node/economy-contract.js' &&
+    'node:crypto,node:http,node:sqlite,runtime/db-failure.js,services/home-node/economy-contract.js' &&
   /* ★ 断言的是**目标集合**，不是条目数：P22-9 的第三个文件与 P22-10 的
      第四个文件 require 的都是那份**已经存在**的契约 —— 那是同一个依赖，
-     不是两次放宽。条目数从 4 变成 5 只反映"多了一个文件复用同一个依赖"。 */
-  allRequires.length === 5,
+     不是两次放宽。P22-11 的第五个文件新增了 node:crypto 与 node:http
+     两个**核心**模块（见 B15.2b 对它们的逐字限制）。 */
+  allRequires.length === 8,
   allRequires.map(r => r.from + ' -> ' + r.value));
-check('B15.2b 三个 require 里没有任何一个是"能碰钱 / 凭据 / 网络"的模块',
-  allRequires.every(r => !/crypto|net|http|child_process|fs\.promises|commerce|payment|provider|credential/i.test(r.value)),
+check('B15.2b 依赖里没有任何一个能碰钱 / 凭据 / 真实购物的模块（crypto 与 http 各自只被允许一种用法）',
+  allRequires.every(r => !/payment|provider|credential|commerce|alipay|pay-gate|shopping/i.test(r.value)) &&
+  /* ★ P22-11 让 Economy 的依赖闭包里第一次出现 node:crypto 与 node:http。
+     它们不是"又一个可以碰网络的模块"，而是通道那两件**唯一**需要的能力：
+       · node:crypto —— SHA-256 摘要（凭据只以摘要形式进索引）+ 恒定时间比较；
+       · node:http  —— 一条有界超时/有界重试的出站调用（Home Node 侧不再
+         需要服务器：它本来就是 http.js 的既有 server）。
+     因此这里把允许的用法**逐字**写下来，而不是笼统放行。 */
+  allRequires.filter(r => r.value === 'node:crypto').length === 1 &&
+  allRequires.filter(r => r.value === 'node:http').length === 1,
   allRequires.map(r => r.value));
 
 /* ── B15.3：契约的新数据仍然是**输入**，不是注释 ───────────────────── */
@@ -1175,7 +1247,7 @@ check('B15.13 （输入存在）P22-5 的方法与契约件都真的存在',
   typeof C.productQuoteAmountMinor === 'function' && typeof C.assertProductStatusTransition === 'function' &&
   C.PRODUCT_KINDS.length === 5 && C.FULFILLMENTS.length === 3);
 check('B15.14 P22-5 没有引入定时器：目录与库存都**没有**任何基于时间的自动变化（§39）',
-  PRODUCTION_FILES.every(rel => !/\bset(?:Timeout|Interval)\b/.test(stripCommentsAndStrings(read(rel)))));
+  economicCodeHasNoTimers());
 check('B15.15 库存这一层没有派生缓存：不存在 inventory_cached_quantity / rebuildInventory',
   (() => {
     /* 同样必须先剥注释：DDL 旁边那句"刻意**没有**的列：

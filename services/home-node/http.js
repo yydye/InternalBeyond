@@ -63,6 +63,15 @@ function createHomeNodeHttp(deps) {
      正常行为"。本层**不**从 store 取得任何写能力：mint / burn /
      commitLedgerTransaction 一律不可达。 */
   const economy = deps.economyStore || null;
+  /* ── P22-11 · Economy Command Channel（23114 → 23118 的唯一 command 面）──
+     ★ 这里拿到的是一个**通道**，不是 store、不是门、不是适配器模块：
+       `economyCommand` 的公开面只有 { path, commands, dispatch, audit,
+       describe }，适配器在它内部，而 store 与门**根本不在**这条依赖里。
+       因此"handler 变成新的 Economy authority"在结构上不可能 —— 本文件
+       没有任何一行能派发到 store 的动词上。
+     ★ 不注入时（分解装配、只看读面的测试、未配置通道的部署）这一整条
+       分支**不存在**，行为与 P22-10 逐字一致。 */
+  const economyCommand = deps.economyCommand || null;
   const executor = deps.executor || null;
   const gateway = deps.gateway || null;
   const clock = deps.clock || (() => Date.now());
@@ -421,7 +430,20 @@ function createHomeNodeHttp(deps) {
 
   /* token 只在「配置了 token」时才强制 —— 默认安装（loopback 单用户）保持零门槛，
      与 D1 的风险接受范围一致；一旦用户显式设置 token，则没有豁免路径。
-     P11-3A 收紧了上面那一段"零门槛"的适用范围：凭据铸造面不再包含在内。 */
+     P11-3A 收紧了上面那一段"零门槛"的适用范围：凭据铸造面不再包含在内。
+     ── P22-11：为什么 command 路径**不**走这条判定 ─────────────────────
+     `/internal/economy/command` 的凭据是**来源凭据**（每个来源自己的
+     token，恒定时间比较 + 管道登记 + loopback），它是另一套东西：
+       · 桌面 token 回答的是"你有没有这台机器的桌面凭据"——它对 23114 与
+         对任何本机进程是**同一个答案**，因此它确定不了来源身份；
+       · 要求两者同时出示只会让 Active 也拿到桌面 token —— 那既没有更多
+         保护，又把两套凭据的边界糊在一起。
+     ⇒ 这里把它排除在这条判定之外，而不是"给它一个豁免"：它的准入完全
+     由 economyCommand.dispatch 内部完成（fail closed），而**读**面
+     （/economy/*）与桌面面的一切仍然逐字按既有规则。 */
+  function isEconomyCommandPath(path) {
+    return !!economyCommand && path === economyCommand.path;
+  }
   function authorized(req, url) {
     if (!token) return true;
     const headerToken = req.headers['x-ib-home-token'] || '';
@@ -434,6 +456,66 @@ function createHomeNodeHttp(deps) {
   function isLoopback(req) {
     const addr = String((req.socket && req.socket.remoteAddress) || '');
     return addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
+  }
+
+  /* ══════════════════════════════════════════════════════════════════
+     P22-11 · Economy Command Channel —— 唯一一条**写**路径
+     ══════════════════════════════════════════════════════════════════
+     它在整条路由链上的**位置**是刻意的：本函数在 /economy/* 的一切之前、
+     在桌面 token 与企业来源判定之后（见两边各自的注释）。
+
+     ★ 为什么它不是 /economy/* 下的一条路由：
+       `/economy/*` 上的每一件事都是只读（P22-2 起逐名断言）。把一条
+       **写**路径放进去，会让"POST /economy/* 一律 405 economy-is-read-only"
+       这句话变成半真 —— 这个仓库刚在 P22-6/7/8/10 里四次修掉"声明比
+       真实路由更保守/更激进"的同一类病。路径常量只有一份，在通道里
+       （economyCommand.path），本文件不重写那个字面量。
+
+     ★ 归入桌面面：`/internal/` 前缀被上面那条 isDesktopOnlyPath 收进
+       与 /memory/ /understanding/ /moments/ /economy/ 同一类保护 ——
+       远端未配置桌面 token 时它在通道判定之前就被 403。本层因此**不**
+       为它新写一套来源规则，而是复用它继承来的那一条。
+
+     ★ 身份**不**来自 payload：handleEconomyCommand 从 socket 与来源头
+       判定来源，payload 里出现身份键会被逐名拒绝。因此本文件不做任何
+       "相信调用方自称的 consumer"的动作，也没有这样的代码可以写错。 */
+  function economyCommandRequestInfo(req) {
+    return {
+      loopback: isLoopback(req),
+      remoteAddress: String((req.socket && req.socket.remoteAddress) || ''),
+      remotePort: (req.socket && Number(req.socket.remotePort)) || null,
+      sourceToken: String(req.headers['x-ib-economy-channel-source'] || '')
+    };
+  }
+  async function handleEconomyCommand(req, res) {
+    let body = null;
+    try {
+      body = await readBody(req, MAX_BODY_BYTES);
+    } catch (error) {
+      const code = (error && error.code) || 'read-error';
+      record('warn', 'economy-command-unreadable', { code: code, loopback: isLoopback(req) });
+      /* ★ 读不出来也走**同一个**拒绝信封（通道自己给的），而不是本文件
+         临时拼一个 —— 否则"这条路径的答案长什么样"会有两个来源。 */
+      const refused = economyCommand.dispatch(economyCommandRequestInfo(req), null);
+      bad(res, code === 'too-large' ? 413 : 400, refused.reasonCode, {
+        dispatched: false,
+        unreadableBody: code
+      }, req);
+      return;
+    }
+    const decision = economyCommand.dispatch(economyCommandRequestInfo(req), body);
+    record(decision.ok === true ? 'info' : 'warn', 'economy-command', {
+      /* ★ 审计只记这四样 + 结果：requestId、command、来源身份、result/linkage。
+         凭据**绝不**进来（源头就不在 decision 里）。 */
+      requestId: decision.commandId || null,
+      command: decision.command || null,
+      source: decision.source || null,
+      outcome: decision.ok === true ? 'accepted' : String(decision.reasonCode || 'refused'),
+      linkage: (decision.result && decision.result.intentId) || null,
+      /* 通道层自述：传输不是权威（这一句跟着**每一次**判定一起落审计）。 */
+      transportIsNotAnEconomyAuthority: true
+    });
+    sendJson(res, decision.status || 400, decision, req);
   }
 
   async function route(req, res, url, method, remote) {
@@ -512,7 +594,14 @@ function createHomeNodeHttp(deps) {
        M1-C.2m：`/understanding/*` 同理，而且是**更私密**的一类内容 ——
        它是角色对用户的私有认知状态（含用户更正原文）。前缀守卫必须与
        /memory/ 逐字同款，否则默认绑 0.0.0.0 的部署会让局域网读到"她怎么看你"。 */
-    const isDesktopOnlyPath = path.indexOf('/memory/') === 0 || path.indexOf('/understanding/') === 0 || path.indexOf('/moments/') === 0 || path.indexOf('/economy/') === 0;
+    const isDesktopOnlyPath = path.indexOf('/memory/') === 0 || path.indexOf('/understanding/') === 0 || path.indexOf('/moments/') === 0 || path.indexOf('/economy/') === 0
+      /* P22-11：`/internal/*` 是**进程间内部命令面**（目前只有一条
+         Economy command）。它与上述几条同类 —— 承载世界数据/写能力，
+         因此远端未配置桌面 token 时整片 403，而不是匿名可达。
+         ★ 前缀守卫写 `/internal/` 而不是只写那一条完整路径：这是本仓库
+         既有的做法（/memory/ /understanding/ /moments/ 都是前缀），
+         而后缀式白名单正是 P11-3E 那次"装配缺口伪装成正常行为"的成因。 */
+      || path.indexOf('/internal/') === 0;
     if (remote && (!isMobilePath || isDesktopOnlyPath)) {
       if (!token) {
         record('warn', 'rejected-remote-non-mobile', { path: path, reason: 'no-desktop-token-configured' });
@@ -564,7 +653,7 @@ function createHomeNodeHttp(deps) {
            server 层已经处理，这里只是不再套桌面 token。 */
         return gateway.dispatch(path, req, res, url);
       }
-      if (!authorized(req, url)) {
+      if (!isEconomyCommandPath(path) && !authorized(req, url)) {
         record('warn', 'unauthorized', { path: path, loopback: isLoopback(req) });
         bad(res, 401, 'unauthenticated', null, req);
         return;
@@ -584,7 +673,12 @@ function createHomeNodeHttp(deps) {
       return;
     }
 
-    if (!authorized(req, url)) {
+    /* ★ P22-11：Economy command 路径与 /mobile/v1/* 同款处理 —— 它有**自己**
+       的凭据域（来源凭据），因此不走桌面 token 判定。见 authorized() 上方
+       那段说明：这不是豁免，而是"这条路径的准入由另一个机制完整负责"。
+       顺序仍然在远端规则**之后**，所以远端未配置桌面 token 时它照样
+       在更早的那一条上被 403。 */
+    if (!isEconomyCommandPath(path) && !authorized(req, url)) {
       record('warn', 'unauthorized', { path: path, loopback: isLoopback(req) });
       bad(res, 401, 'unauthenticated', null, req);
       return;
@@ -908,7 +1002,48 @@ function createHomeNodeHttp(deps) {
                两种写法，因此它们在这里。 */
             '/economy/capability', '/economy/capabilities',
             '/economy/capability/grant', '/economy/capability/revoke',
-            '/economy/gate', '/economy/gate/check']
+            '/economy/gate', '/economy/gate/check'],
+          /* ── P22-11：进程间 command 通道（本阶段唯一一条**写**路径）────
+             ★ 这一节不是"放松"。它把 P22-11 新增的那件事写成**可断言的
+             字段**，而不是留给读者从路由表里推断：
+                · commandWritesExposed —— 恰好一条，路径由通道持有
+                  （本文件不重写字面量，见 handleEconomyCommand）；
+                · capacityWritesExposed / approvalWritesExposed /
+                  resumeWritesExposed —— 上面那三份名单**保持为空**：
+                  跨进程只开放 ECONOMY_PROPOSE_PURCHASE 一个 command，
+                  因此它们不是在 P22-11 被"搬到别处"，而是仍然不存在。
+                · httpVerbs 仍然是 ['GET'] —— 那句话说的是 /economy/*，
+                  而这条 command 路径**刻意不在** /economy/ 下（见上面
+                  handleEconomyCommand 的注释）。两句话同时为真。
+             ★ 通道未装配时（economyCommand == null）：`open:false`、
+             名单为空 —— 一个没接线的部署不该被读成"有一个开放的写面"。
+             ★ **装配了但关着**（登记册为空 = 生产未配置凭据）也必须是空
+             名单：这条路径此刻不可达，而"不可达的写面"与"可达的写面"
+             在审计里必须是两个答案。`implemented` 说"这个面在代码里
+             存在"，`open` + 名单一起说"它此刻能不能被用"。 */
+          commandChannel: economyCommand ? (() => {
+            const d = economyCommand.describe();
+            const open = d.open === true;
+            return Object.assign({
+              implemented: true,
+              open: open,
+              commandWritesExposed: open ? d.commands.slice() : [],
+              sourceCount: d.sourceCount,
+              identityComesFromTheTransportNotThePayload: true,
+              capabilityWritesExposed: [],
+              approvalWritesExposed: [],
+              resumeWritesExposed: [],
+              pathIsNotUnderEconomyReadPaths: String(economyCommand.path).indexOf('/economy/') !== 0,
+              transportIsNotAnEconomyAuthority: true
+            }, { path: economyCommand.path });
+          })() : {
+            implemented: false,
+            open: false,
+            commandWritesExposed: [],
+            capabilityWritesExposed: [],
+            approvalWritesExposed: [],
+            resumeWritesExposed: []
+          }
         },
         doesNotExpose: ['llm-proxy', 'tools', 'payments', 'diary', 'letters', 'images', 'tts'],
         /* M1-B：设备身份 + 移动边界。mobile 面**只有** allowlist 里的 verb。 */
@@ -1573,6 +1708,30 @@ function createHomeNodeHttp(deps) {
       record('warn', 'economy-unsupported', { path: path, method: method, loopback: isLoopback(req) });
       bad(res, method === 'GET' ? 404 : 405, method === 'GET' ? 'unknown-economy-path' : 'economy-is-read-only',
         method === 'GET' ? null : { hint: 'the economy HTTP surface exposes reads only' }, req);
+      return;
+    }
+
+    /* ══════════════════════════════════════════════════════════════════
+       P22-11 · Economy Command Channel（唯一一条写路径 · POST）
+
+       ★ 它在 `/economy/*` 一切分支**之前**，也在下面那条"其余 /economy/*
+         一律 405 economy-is-read-only"之前 —— 而这条路径不在 /economy/
+         前缀下，所以两件事不会互相遮挡：读面仍然全是 GET，写面只有这一条。
+
+       ★ 这里只做三件事：readBody（有界）→ economyCommand.dispatch(...)
+         → 把通道给出的状态码与信封原样发出。**没有**第四件事：本文件
+         不解释 command、不解释 proposal、不挑 consumer、不看经济事实。
+         那三件事分别在通道、P22-10、P22-8 里各有一份唯一实现。
+
+       ★ 未注入通道时（economyCommand == null）整条分支不存在，落到
+         下面的兜底：GET 404 / 非 GET 405 unknown-path，与 P22-10 逐字一致。 */
+    if (economyCommand && path === economyCommand.path) {
+      if (method !== 'POST') {
+        record('warn', 'economy-command-wrong-method', { method: method, loopback: isLoopback(req) });
+        bad(res, 405, 'economy-command-is-post-only', { allowedMethods: ['POST'] }, req);
+        return;
+      }
+      await handleEconomyCommand(req, res);
       return;
     }
 

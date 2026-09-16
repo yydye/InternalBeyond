@@ -153,15 +153,18 @@ check('A5 ★★ 装配层**没有**把适配器交给 http 层（HTTP 上的经
   readIfExists('services/home-node/http.js').indexOf('economyActionAdapter') < 0 &&
   readIfExists('services/home-node/http.js').indexOf('economy-action-adapter') < 0);
 
-check('A6 ★ 装配层对 Economy 的 require 恰好是那三个模块，而且**没有**第二个 store owner',
+check('A6 ★ 装配层对 Economy 的 require 恰好是那四个模块，而且**没有**第二个 store owner',
   (() => {
     const src = stripComments(readIfExists('services/home-node-service.js'));
     const targets = (src.match(/require\s*\(\s*'([^']*economy[^']*)'\s*\)/g) || [])
       .map(s => s.replace(/[\s\S]*'([^']*)'[\s\S]*/, '$1'));
-    return targets.length === 3 &&
+    return targets.length === 4 &&
       targets.indexOf('../services/home-node/economy-store.js') >= 0 &&
       targets.indexOf('../services/home-node/economy-capability.js') >= 0 &&
-      targets.indexOf('../services/home-node/economy-action-adapter.js') >= 0;
+      targets.indexOf('../services/home-node/economy-action-adapter.js') >= 0 &&
+      /* P22-11 的第四处：command 通道（长在适配器上面，装配是它唯一的
+         构造点与唯一的来源登记处）。 */
+      targets.indexOf('../services/home-node/economy-command-channel.js') >= 0;
   })(),
   (stripComments(readIfExists('services/home-node-service.js')).match(/require\s*\(\s*'[^']*economy[^']*'\s*\)/g) || []));
 
@@ -169,6 +172,29 @@ check('A6 ★ 装配层对 Economy 的 require 恰好是那三个模块，而且
    B · §6 只接 Active：既有动作链一行未改，别的东西一个都没开
    ══════════════════════════════════════════════════════════════════ */
 section('B · §6 只接 active_agent_runtime（既有 Action 链一行未改）');
+
+/* ══ P22-11 · "谁被允许提到 economy" 的**可核对**形式 ═══════════════
+   P22-10 时期这句话是"Active runtime 的每一个文件里零经济引用"。P22-11
+   有意让三个文件不再满足它 —— 而那正是本阶段的任务（Active 要有一条
+   通向 23118 的通道）。把豁免写成一份**精确的、逐字的**清单，而不是把
+   整条断言删掉：
+     · active/economy-channel-client.js —— P22-11 新增的出站腿本身；
+     · active/http.js                    —— P22-11 新增的那一条出口路由；
+     · services/active-message-service.js
+                                         —— P22-11 在这条组合根上把通道与
+                                            净化器接进 HTTP 层（那**就是**
+                                            它的职责：唯一的装配点）；
+     · assets/js/active-diary/active-plans.js
+                                         —— P22-11 在既有净化链上加的
+                                            那一个结构化动作与它的出口。
+   ★ 其余每一个 Active 文件仍然必须是零引用：没有第二套 action framework、
+     没有 store owner、没有经济事实。 */
+const ECONOMY_WIRING_FILES = [
+  'active/economy-channel-client.js',
+  'active/http.js',
+  'services/active-message-service.js',
+  'assets/js/active-diary/active-plans.js'
+];
 
 check('B1 ★★ 消费者身份锚点可以**核对**，而不是一句声明：component-registry 里真有一个 active 组件，端口与服务文件都在',
   (() => {
@@ -190,46 +216,61 @@ check('B2 ★★ 既有封闭动作集**逐字未变**，而且**不含**任何�
     const browser = readIfExists('assets/js/active-diary/active-plans.js');
     const node = readIfExists('active/scheduler.js');
     /* Active 的两条既有封闭链：浏览器侧规划器（sanitizeAiPlan 之后的
-       封闭动作集）与 Node companion 的到期评估。 */
+       封闭动作集）与 Node companion 的到期评估。
+       ★ P22-11 之后这句话的形状变了一点，而且变得更**可核对**：
+         · 浏览器侧的既有核心函数被逐字保留为
+           `_activeValidatePlanResultCore`，它的封闭集与"不认识经济动词"
+           两句话都仍然为真（P22-11 的分流发生在**它之外**）；
+         · Node 侧的到期评估**一个字都没有改** —— P22-11 没有给它加任何
+           经济动作（那正是 P22-10 §9 的边界）。
+       因此这条断言仍然断言"既有链没有把经济动词吃进自己的封闭集"，
+       而不是断言"整个 runtime 里没有 economy 这个词"（那是 B3 的事，
+       而 P22-11 会让它有意地不再为真）。 */
     return browser.indexOf("['schedule','none','cancel_existing'].includes(action)") >= 0 &&
+      browser.indexOf('function _activeValidatePlanResultCore(raw,now,prefs){') >= 0 &&
       node.indexOf("['send', 'reschedule', 'cancel'].includes(String(parsed.action || ''))") >= 0 &&
-      !/ECONOMY_/.test(browser) && !/ECONOMY_/.test(node);
+      !/ECONOMY_/.test(node) &&
+      /* 既有核心函数体内不认识任何经济动词。 */
+      !/ECONOMY_/.test(browser.slice(browser.indexOf('function _activeValidatePlanResultCore('),
+        browser.indexOf('function _activeIsInDnd(')));
   })(),
-  { browser: readIfExists('assets/js/active-diary/active-plans.js').indexOf('cancel_existing'),
-    node: readIfExists('active/scheduler.js').indexOf("['send', 'reschedule', 'cancel']") });
+  {
+    browserCore: readIfExists('assets/js/active-diary/active-plans.js').indexOf('function _activeValidatePlanResultCore('),
+    node: readIfExists('active/scheduler.js').indexOf("['send', 'reschedule', 'cancel']")
+  });
 
-check('B3 ★★ Active runtime 的每一个文件里**零**经济引用（既没有塞进既有动作集，也没有第二套 action framework）',
-  (() => {
-    const activeRuntimeFiles = [];
-    const walk = rel => {
-      const abs = path.join(ROOT, rel);
-      for (const entry of fs.readdirSync(abs, { withFileTypes: true })) {
-        const child = rel + '/' + entry.name;
-        if (entry.isDirectory()) { walk(child); continue; }
-        if (/\.js$/i.test(entry.name)) activeRuntimeFiles.push(child);
-      }
-    };
-    ['active', 'services/active-message-service.js', 'assets/js/active-diary'].forEach(rel => {
-      if (fs.statSync(path.join(ROOT, rel)).isDirectory()) walk(rel);
-      else activeRuntimeFiles.push(rel);
-    });
-    const offenders = activeRuntimeFiles.filter(rel =>
-      /economy/i.test(stripCommentsAndStrings(readIfExists(rel))));
-    return activeRuntimeFiles.length >= 10 && offenders.length === 0;
-  })(),
-  (() => {
-    const out = [];
-    const walk = rel => {
-      for (const entry of fs.readdirSync(path.join(ROOT, rel), { withFileTypes: true })) {
-        const child = rel + '/' + entry.name;
-        if (entry.isDirectory()) { walk(child); continue; }
-        if (/\.js$/i.test(entry.name) && /economy/i.test(stripCommentsAndStrings(readIfExists(child)))) out.push(child);
-      }
-    };
-    walk('active');
-    walk('assets/js/active-diary');
-    return out;
-  })());
+check('B3 ★★ Active runtime 的**其余每一个文件**里零经济引用（既没有塞进既有动作集，也没有第二套 action framework）',
+  (() => b3Result().ok)(),
+  (() => b3Result().detail)());
+
+/* B3 的扫描体抽成一次函数：断言与诊断读**同一份**结果，而不是各算各的
+   （开发期实测踩到过：诊断说"没有未解释的引用"而断言为假，因为两边各自
+   遍历了一遍，其中一遍还把豁免清单写错了位置）。 */
+function b3Result() {
+  const activeRuntimeFiles = [];
+  const walk = rel => {
+    for (const entry of fs.readdirSync(path.join(ROOT, rel), { withFileTypes: true })) {
+      const child = rel + '/' + entry.name;
+      if (entry.isDirectory()) { walk(child); continue; }
+      if (/\.js$/i.test(entry.name)) activeRuntimeFiles.push(child);
+    }
+  };
+  ['active', 'services/active-message-service.js', 'assets/js/active-diary'].forEach(rel => {
+    if (fs.statSync(path.join(ROOT, rel)).isDirectory()) walk(rel);
+    else activeRuntimeFiles.push(rel);
+  });
+  const referencing = activeRuntimeFiles.filter(rel => /economy/i.test(stripCommentsAndStrings(readIfExists(rel))));
+  const unexplained = referencing.filter(rel => ECONOMY_WIRING_FILES.indexOf(rel) < 0);
+  return {
+    ok: activeRuntimeFiles.length >= 10 && unexplained.length === 0,
+    detail: {
+      scanned: activeRuntimeFiles.length,
+      referencing: referencing,
+      explainedByP22_11: ECONOMY_WIRING_FILES,
+      unexplained: unexplained
+    }
+  };
+}
 
 check('B4 ★★ Middle Brain 里**零**经济引用（§11：它不是这条链上的 seam，因此零改动）',
   /economy/i.test(stripCommentsAndStrings(readIfExists('services/home-node/middle-brain.js'))) === false &&
@@ -246,12 +287,15 @@ check('B5 ★★ 只有 Active 一个消费者被绑定 —— bridge / home_nod
   { allowed: scanProduction(/\.bind\s*\(\s*C\.ECONOMY_CONSUMER\.ACTIVE_AGENT_RUNTIME\s*\)/),
     bridge: scanProduction(/\.bind\s*\(\s*C\.ECONOMY_CONSUMER\.DESKTOP_BRIDGE\s*\)/) });
 
-check('B6 ★ 适配器不在任何 HTTP 路由上，也不在任何 MCP 工具面上',
-  (() => {
+check('B6 ★ 适配器不在任何 HTTP 路由上，也不在任何 MCP 工具面上',  (() => {
     const httpSrc = readIfExists('services/home-node/http.js');
-    /* ① 没人把适配器交给路由层；② /economy/* 仍然全是 GET； */
+    /* ① 没有人把**适配器本身**交给路由层（P22-11 交给它的是通道，
+          而通道的公开面里没有适配器）；
+       ② /economy/* 仍然全是 GET（P22-11 的 command 路径**不在**这个
+          前缀下，因此这句话逐字为真）。 */
     const economyBlocks = httpSrc.match(/path === '\/economy\/[^']*' && method === '[A-Z]+'/g) || [];
     return httpSrc.indexOf('actionAdapter') < 0 &&
+      httpSrc.indexOf('economyActionAdapter') < 0 &&
       economyBlocks.length > 0 &&
       economyBlocks.every(b => /&& method === 'GET'$/.test(b)) &&
       /* ③ MCP 面（bridge / assets/js/integrations.js）里没有经济动词。 */

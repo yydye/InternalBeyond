@@ -659,7 +659,36 @@ const GROUPS = [
          全部自有 invariant 单进程可判定；P22-6 ~ P22-8 已经证明过的
          崩溃/竞争矩阵只做 regression，不复制（§12）。 */
       ['test_p22_10_economy_action_adapter.js'],
-      ['test_p22_10_economy_active_runtime.js']
+      ['test_p22_10_economy_active_runtime.js'],
+      /* ── P22-11 · Active → Home Node Economy Command Channel ────────────
+         P22-10 的审计留下了一个已确认的断点：Active 的决策运行时在 23114，
+         而 canonical Economy store 只在 23118 被装配，两个进程之间**没有**
+         经济通道（HTTP 上的经济写面从 P22-2 起就是 0）。P22-11 建立**一条**
+         极窄的 command 通道：
+           channel  —— 单进程 · 真实 HTTP（零子进程）：复用既有 transport
+                        （loopback + 凭据 + 信封 + 有界 body），新增的只有
+                        "来源登记"（每个来源自己的 token、只以 SHA-256 摘要
+                        进索引、恒定时间比较、管道端口登记）与一条专用路径
+                        `/internal/economy/command`。§3 payload 里出现
+                        consumerId/consumer/capability/role/authority/approved/
+                        autoAllow 任何一个 → 403 且**没碰适配器**；§2 只开放
+                        ECONOMY_PROPOSE_PURCHASE（禁止的八个名字逐个断言
+                        404；resume 在通道代码里一次都不出现）；§7 同一
+                        requestId 重放收敛到同一条 Intent、不同 payload 复用
+                        同一 id 则 409；§8 超时/重试有界，传输失败只能表达
+                        DELIVERY_UNKNOWN / TRANSPORT_FAILED（绝不写成
+                        purchase failed / denied）；未配置来源 ⇒ 503（fail
+                        closed）；
+           bridge   —— **两个真实进程**（Active companion 23114 的组合根 +
+                       Home Node 23118 的生产启动路径）：一条 authenticated
+                       Active command 真的跨进程建出一笔购买，重放不产生第二
+                       笔，未知 command 跨进程被拒，普通 `/economy/*` 写面在
+                       真实进程上仍然为 0，且两个进程的输出里都没有来源凭据。
+         ★ §12 的进程纪律：**max concurrent child = 2 · total spawn = 2 ·
+         0 leftover**，一对 fixture 的生命周期里跑完全部用例；单进程能证明
+         的（认证 / 来源 / 信封 / 幂等 / 超时）一个 child 都不开。 */
+      ['test_p22_11_economy_command_channel.js'],
+      ['test_p22_11_economy_active_bridge.js']
     ]
   },
   {

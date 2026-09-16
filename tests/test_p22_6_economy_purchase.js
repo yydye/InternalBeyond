@@ -1128,10 +1128,14 @@ section('K · HTTP：购买读面存在，写面逐名不存在');
        ★ P22-10 之后又多了第四个：**动作适配器**（Agent/Action → 门的唯一
        界面）。理由逐字同构 —— 适配器必须长在门的**上面**，把它写进门里
        就等于让"门有没有被正确调用"变成门内部的一件事。它同样没有一张表、
-       没有一行 SQL。 */
+       没有一行 SQL。
+       ★ P22-11 之后又多了第五个：**command 通道**（Active → Home Node 的
+       唯一 command 面）。理由同样逐字同构 —— 通道长在适配器**上面**，
+       把 handler 写进 http.js 会让"这条路径能做什么"散落在路由层里。
+       它也没有一张表：只有信封校验、来源判定与一次转发。 */
     fs.readdirSync(path.join(ROOT, 'services', 'home-node'))
       .filter(f => /^economy-/.test(f)).sort().join(',') ===
-      'economy-action-adapter.js,economy-capability.js,economy-contract.js,economy-store.js' &&
+      'economy-action-adapter.js,economy-capability.js,economy-command-channel.js,economy-contract.js,economy-store.js' &&
     fs.readFileSync(path.join(ROOT, 'services', 'home-node', 'economy-store.js'), 'utf8')
       .indexOf('economy_purchases') >= 0 &&
     fs.readFileSync(path.join(ROOT, 'services', 'home-node', 'economy-action-adapter.js'), 'utf8')

@@ -107,6 +107,18 @@ function _activeParsePlanJson(text,opts){
 function _activeValidatePlanResult(raw,now,prefs){
   if(!raw||typeof raw!=='object'||Array.isArray(raw))return null;
   const action=String(raw.action||'').trim();
+  /* ★ P22-11 §9：经济提案是这条链上的一个新出口，但它**不在**
+     _activeValidatePlanResultCore 的封闭集里 —— 那个集合
+     ['schedule','none','cancel_existing'] **逐字未变**，而且仍然不认识
+     任何经济动词（P22-10 的 B2 断言的就是这一条，它必须继续为真）。
+     分流发生在这里，而不是把第四个成员塞进那个数组。 */
+  if(action===ACTIVE_ECONOMY_PROPOSAL_ACTION)return _activeValidateEconomyPlanResult(raw);
+  return _activeValidatePlanResultCore(raw,now,prefs)
+}
+/* 既有封闭动作集的**原文**（P22-11 一个字都没有改动它）。 */
+function _activeValidatePlanResultCore(raw,now,prefs){
+  if(!raw||typeof raw!=='object'||Array.isArray(raw))return null;
+  const action=String(raw.action||'').trim();
   if(!['schedule','none','cancel_existing'].includes(action))return null;
   const out={action:action,reason:String(raw.reason||'').slice(0,300)};
   if(action!=='schedule')return out;
@@ -155,6 +167,54 @@ function _activeNextDndFree(nowMs,prefs){
 }
 function _activePlanLog(step,detail){
   try{if(_activeAiPrefs().showDebug)console.info('[ProactivePlan] '+step,detail||'')}catch(e){}
+}
+/* ══════════════════════════════════════════════════════════════════════
+   P22-11 §9 · Economy 提案动作（**唯一**新增的那一种结构化动作）
+   ────────────────────────────────────────────────────────────────────
+   本阶段逐字要求：如果跨进程接入需要最小扩展，就**只**增加
+   ECONOMY_PROPOSE_PURCHASE 这一种结构化动作，不要造 dispatcher
+   framework，未知/畸形模型动作 fail closed。
+
+   因此这里**没有**新的动作框架：它是同一条既有链上的一个新成员 ——
+     · 动作名 join `_activeValidatePlanResult` 的封闭集（默认**不在**里面，
+       见 ACTIONS_WITH_ECONOMY）；
+     · 净化器仍然是**这一份**（不在别处再写一个白名单）；
+     · 载荷形状的权威仍然是 P22-10 的净化器 + P22-8 的 proposal 校验
+       （本文件只拦"身份自报"，那一类键的权威同样在那边）。
+   ★ 为什么默认**不**开放：开放它等于给这条链加一个真实的经济出口。
+     一个"以后可能会用"的开关如果默认打开，那就是一条已经存在的写路径。
+   ★ 身份键为什么在这里也拦一次：跨进程后**唯一**会被相信的身份来自
+     传输层与来源登记，模型在 payload 里写 consumerId/capability 只是
+     一次自报。拦住它的地方在 Home Node（那一份是权威），这里提前拦
+     只是为了不让一条明显非法的动作白白发出去。 */
+var ACTIVE_ECONOMY_PROPOSAL_ACTION='economy_propose_purchase';
+/* ★ 这份名单与 P22-11 通道的 FORBIDDEN_IDENTITY_KEYS 是**同一件事**，
+   但它是**另一个层**的同名检查（模型输出层），不是第二份经济事实名单：
+   经济事实（价格/金额/预算/批准）一个都不在这里 —— 那是 P22-8 的事。 */
+var ACTIVE_ECONOMY_IDENTITY_KEYS=['consumerId','consumer','capability','role','authority','approved','autoAllow'];
+function _activeEconomyProposalAllowed(){
+  try{return NS.activeEconomyProposalEnabled===true}catch(e){return false}
+}
+/* 净化一个经济提案：返回 {proposal,idempotencyKey} 或 null（fail closed）。 */
+function _activeValidateEconomyProposal(raw){
+  if(raw==null||typeof raw!=='object'||Array.isArray(raw))return null;
+  var proposal=raw.proposal;
+  if(proposal==null||typeof proposal!=='object'||Array.isArray(proposal))return null;
+  for(var i=0;i<ACTIVE_ECONOMY_IDENTITY_KEYS.length;i++){
+    if(Object.prototype.hasOwnProperty.call(proposal,ACTIVE_ECONOMY_IDENTITY_KEYS[i]))return null;
+    if(Object.prototype.hasOwnProperty.call(raw,ACTIVE_ECONOMY_IDENTITY_KEYS[i]))return null;
+  }
+  var key=String(raw.idempotencyKey||'').trim();
+  if(!key||key.length>200)return null;
+  return {proposal:proposal,idempotencyKey:key};
+}
+/* 经济提案那一条动作的规范结果（只有开启且形状合法时才不是 null）。 */
+function _activeValidateEconomyPlanResult(raw){
+  if(!_activeEconomyProposalAllowed())return null;
+  const economy=_activeValidateEconomyProposal(raw);
+  if(!economy)return null;
+  return {action:ACTIVE_ECONOMY_PROPOSAL_ACTION,reason:String(raw.reason||'').slice(0,300),
+    proposal:economy.proposal,idempotencyKey:economy.idempotencyKey};
 }
 function _activePlanStatusLabel(s){return({scheduled:'已安排',evaluating:'评估中',sending:'发送中',waiting_for_user:'等待回复',completed:'已完成',cancelled:'已取消',expired:'已过期',failed:'失败'})[s]||s}
 function _activePlanSourceLabel(s){return s==='user_reminder'?'用户提醒':'AI 规划'}
@@ -309,6 +369,29 @@ async function planNextProactiveMessage(args){
     if(validated.action==='cancel_existing'){
       await _activeCancelAiPlans(character.id,'用户表示不需要继续提醒');
       return null
+    }
+    /* ── P22-11 §9 · 这条结构化动作的出口 ──────────────────────────────
+       ★ 它**不是**一个计划：没有 scheduledAt、不写 active_message_plans、
+         不由调度器执行。它是一次"把一句话交给传输层"的尝试，因此它
+         在**这里**、在净化器**之后**结束。
+       ★ 出口由注入提供（NS.activeEconomyProposalSink）：本文件不 require
+         任何传输实现，也不认识 23118 —— 跨进程通道属于 Active companion
+         （active/economy-channel-client.js）。注入缺席时 fail closed，
+         并且如实记一条日志（不是静默成功）。 */
+    if(validated.action===ACTIVE_ECONOMY_PROPOSAL_ACTION){
+      const sink=NS.activeEconomyProposalSink;
+      if(typeof sink!=='function'){
+        _activePlanLog('economy proposal sink is not wired',{characterId:character.id});
+        return null
+      }
+      try{
+        const outcome=await sink({proposal:validated.proposal,idempotencyKey:validated.idempotencyKey,characterId:character.id});
+        _activePlanLog('economy proposal sent',{characterId:character.id,delivery:outcome&&outcome.delivery,ok:!!(outcome&&outcome.ok)});
+        return outcome||null
+      }catch(e){
+        _activePlanLog('economy proposal failed',{characterId:character.id,error:String(e&&e.message||e).slice(0,200)});
+        return null
+      }
     }
     const plan=_activePlanDefaults({
       characterId:character.id,
@@ -1068,6 +1151,10 @@ NS.expose('active.plans', {
   _activePlanDefaults: _activePlanDefaults,
   _activeParsePlanJson: _activeParsePlanJson,
   _activeValidatePlanResult: _activeValidatePlanResult,
+  _activeValidateEconomyProposal: _activeValidateEconomyProposal,
+  _activeEconomyProposalAllowed: _activeEconomyProposalAllowed,
+  ACTIVE_ECONOMY_PROPOSAL_ACTION: ACTIVE_ECONOMY_PROPOSAL_ACTION,
+  ACTIVE_ECONOMY_IDENTITY_KEYS: ACTIVE_ECONOMY_IDENTITY_KEYS,
   _activeIsInDnd: _activeIsInDnd,
   _activeNextDndFree: _activeNextDndFree,
   _activePlanLog: _activePlanLog,

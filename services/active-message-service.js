@@ -292,6 +292,40 @@ const activeStopDispatch = serviceControl.createStopDispatch({
 });
 
 /* ------------------------------------------------------------------ */
+/* P22-11 · Economy command channel（23114 → 23118 的**唯一**出站腿）    */
+/* ------------------------------------------------------------------ */
+
+/* 客户端本身只做传输：有界超时、有界重试、以及"确定"与"未知"的区分。
+   地址与来源凭据来自**部署环境**（IB_ECONOMY_CHANNEL_*），缺省时
+   configured === false —— 一条写路径**不**继承本机的 loopback 零门槛。 */
+const createActiveEconomyChannelClient = require('../active/economy-channel-client.js');
+const economyChannel = createActiveEconomyChannelClient({});
+/* ── 净化：与浏览器侧**同一个答案**，但是 companion 的一份镜像 ─────────
+   ★ 为什么不是 require assets/js/active-diary/active-plans.js：那是个
+     浏览器 IIFE（末行 `window.IB || (window.IB = {})`），在 Node 里
+     require 会直接抛 ReferenceError（开发期实测）。硬给它造一个全局
+     `window` 才能载入 —— 而那会改掉那个文件在 Node 测试里的既有语义。
+   ★ 这一份是**镜像**，不是第二个权威：经济提案的形状权威是 P22-10 的
+     净化器 + P22-8 的 proposal 校验，本函数只做两件在任何运行时都必须
+     成立的事（与浏览器侧逐字同款）：① 动作/载荷形状不对 → 返回 null
+     （fail closed）；② payload 里出现身份自报键 → 返回 null。
+     它**不**列经济事实（那是 P22-8 的名单），也不填任何默认值。 */
+const ACTIVE_ECONOMY_PROPOSAL_ACTION = 'economy_propose_purchase';
+const ACTIVE_ECONOMY_IDENTITY_KEYS = ['consumerId', 'consumer', 'capability', 'role', 'authority', 'approved', 'autoAllow'];
+function sanitizeActiveEconomyProposal(raw) {
+  if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const proposal = raw.proposal;
+  if (proposal == null || typeof proposal !== 'object' || Array.isArray(proposal)) return null;
+  for (const key of ACTIVE_ECONOMY_IDENTITY_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(proposal, key)) return null;
+    if (Object.prototype.hasOwnProperty.call(raw, key)) return null;
+  }
+  const idempotencyKey = trimText(raw.idempotencyKey, 200);
+  if (!idempotencyKey) return null;
+  return { proposal: proposal, idempotencyKey: idempotencyKey };
+}
+
+/* ------------------------------------------------------------------ */
 /* HTTP 层（已提取到 active/http.js 工厂；server 实例随工厂返回）       */
 /* ------------------------------------------------------------------ */
 
@@ -309,7 +343,13 @@ const httpLayer = createHttp({
   trimText, deepClone, finiteTimestamp,
   sanitizeMomentSchedule, publicMomentSchedule,
   proactiveTrace,
-  credentialVault
+  credentialVault,
+  /* P22-11：把通道与**同一个**净化器交给路由层。两者都缺席（分解装配 /
+     未配置通道）时 `/economy/propose-purchase` 那条分支根本不存在。 */
+  economyPropose: economyChannel.configured
+    ? input => economyChannel.proposePurchase({ proposal: input.proposal, idempotencyKey: input.idempotencyKey })
+    : undefined,
+  sanitizeEconomyProposal: sanitizeActiveEconomyProposal
 });
 const server = httpLayer.server;
 const originAllowed = httpLayer.originAllowed;
@@ -429,5 +469,12 @@ module.exports = {
   mergeThreadComments,
   replyTaskKey,
   replyChainCore,
-  credentialVault
+  credentialVault,
+  /* P22-11：出站通道与净化链的既有入口。导出它们是为了让"生产侧到底有
+     没有一点通向 Home Node 的经济能力"成为一句可以断言的事实 ——
+     而不是让读者从 active/http.js 的路由表里推断。 */
+  economyChannel,
+  sanitizeActiveEconomyProposal,
+  ACTIVE_ECONOMY_PROPOSAL_ACTION,
+  ACTIVE_ECONOMY_IDENTITY_KEYS
 };
