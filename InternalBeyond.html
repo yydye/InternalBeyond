@@ -143,6 +143,7 @@
     <li><a href="#diy" data-page="diy">DIY</a></li>
     <li><a href="#apps" data-page="apps">Apps</a></li>
     <li><a href="#favorites" data-page="favorites">Favorites</a></li>
+    <li><a href="#economy" data-page="economy">Economy</a></li>
     <li><a id="ib-bridge-nav" href="#bridge" data-page="bridge" aria-haspopup="dialog" aria-controls="ib-bridge-panel" aria-expanded="false">Bridge</a></li>
     <li><a href="#diagnostics" data-page="diagnostics" title="系统诊断">Diagnostics</a></li>
   </ul>
@@ -2434,6 +2435,13 @@ i would like the room to be enough.
 
 <div class="page" id="page-diagnostics"></div>
 
+<!-- P22-15 · Economy 待决定（Approval Requests）
+     容器刻意是**空的**：整页由 assets/js/economy-approval.js 渲染。
+     这样做的理由不是省字节，而是"经济事实只有一个来源"：把卡片结构写在
+     HTML 里就等于在模板里复述一遍 canonical 读面的形状，而那份形状由
+     Home Node 唯一持有。 -->
+<div class="page" id="page-economy"><div id="economy-requests"></div></div>
+
 <div class="page" id="page-coread"><div class="plate">
   <div class="cr-reader" id="cr-reader">
     <div id="coread-list-view">
@@ -3311,6 +3319,11 @@ i would like the room to be enough.
 <script src="assets/js/moments-authority.js"></script>
 <script src="assets/js/mobile-dto.js"></script>
 <script src="assets/js/home-node-client.js"></script>
+<!-- P22-15 · Economy Approval UI 的纯层（视图模型 / 文案映射 / 请求体构造）。
+     必须在渲染器之前加载：渲染器只消费它，不重写它里面任何一个映射。
+     它不碰 DOM、不发请求，因此放在这里不会影响任何既有加载顺序。 -->
+<script src="assets/js/economy-approval-core.js"></script>
+<script src="assets/js/economy-approval.js"></script>
 <script src="assets/js/home-node-bootstrap.js"></script>
 <!-- 深渊暗线：只在 Infernal（暗色）模式可瞥见——"你知道这里通向深渊，但你也知道，你随时可以离开。" -->
 <div class="ib-beyond-leave" id="ib-beyond-leave" aria-hidden="true">你知道这里通向深渊，但你也知道，你随时可以离开。</div>

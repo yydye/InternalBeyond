@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 
 /* Internal Beyond · 一键全量测试入口（Node 18+，零依赖，跨平台）。
  *
@@ -752,6 +752,39 @@ const GROUPS = [
           因此一个 child 都不开，也不重跑 P22-6 ~ P22-8 的 race/crash matrix。 */
       ['test_p22_13_economy_approval_decision.js'],
       ['test_p22_13_economy_approval_runtime.js']
+    ]
+  },
+  {
+    name: 'p22-ui',
+    note: 'P22-15 · Economy Approval UI（纯层 + 渲染器 + 浏览器视觉核对）',
+    tests: [
+      /* P22-15 第一次让这一域出现**浏览器侧**的文件：
+           assets/js/economy-approval-core.js（纯层：视图模型 / 文案映射 /
+           请求体构造）与 assets/js/economy-approval.js（渲染器）、
+           assets/css/economy-approval.css（运行时注入，不占 HTML 的样式表预算）。
+         ui_core —— 纯层加载进一个**没有 document、没有 fetch、没有 location**
+                    的沙箱：于是"它不碰 DOM、不发请求"是环境事实而不是注释；
+                    同时逐字比对币种 scale / 展示名 / 商品类别三张镜像表与
+                    canonical 契约一致，以及 §14 的文案表覆盖全部 50 个
+                    DENY_REASON、§15 的请求体恰好三个字段（函数签名只有三个
+                    位置参数，没有第四个位置可以放身份或金额）。
+         ui      —— 一个只实现渲染器真正用到的成员的 DOM 桩 + 真实网络形状的
+                    假 driver：渲染 / APPROVE 与 REJECT 的请求体 / 双击保护 /
+                    拒绝的两步确认 / 决定之后**重新读** canonical 状态（不乐观
+                    宣称购买成功）/ APPROVED 而最终 DENY / 完成 / 拒绝 / 过期 /
+                    失败 / 空状态 / 坏读模型 / 节点不可达 / 凭据未配置。
+                    ★ 零子进程、零 socket、零浏览器。
+         visual  —— ★ 这个**不在**默认套件里（它要开一个真实浏览器，与
+                    test_ui_regression.js 同款）。它存在的唯一理由是 §12/§13/
+                    §18 的三条人工要求："internal / infernal / desktop / narrow /
+                    mobile 都真的看一眼"。跑法：
+                      node tests/test_p22_15_economy_approval_visual.js
+                    它按 2 主题 × 3 宽度各截一张图到 %TEMP%（**不写进仓库**），
+                    并在真实排版引擎上断言卡片宽度 / 横向溢出 / 按钮尺寸 /
+                    主题令牌真的换了 / 浅色主题那条白色发光在卡片子树里被关掉。
+                    P22-15 交付时它 66/66 通过，六张图人工看过。 */
+      ['test_p22_15_economy_approval_ui_core.js'],
+      ['test_p22_15_economy_approval_ui.js']
     ]
   },
   {

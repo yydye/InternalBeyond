@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 /* ====================================================================
    P22-1 · Agent Economy 依赖边界与真实支付隔离测试（static，零依赖）
    --------------------------------------------------------------------
@@ -651,6 +651,46 @@ check('B7.7 契约里禁止清单**确实**点名了 Memory 与 Relationship 类
 check('B7.8 Economy event envelope 不携带记忆/关系载荷（只有事实与标量 metadata）',
   !C.EVENT_ENVELOPE_KEYS.some(k => /memory|relationship|affection|trust|content|prompt/i.test(k)),
   C.EVENT_ENVELOPE_KEYS);
+
+/* ── B7.9~B7.13 · P22-15：**浏览器侧**的 Economy 文件也在同一条边界里 ──
+   ★ 为什么这几条写在这里而不是只写在 P22-15 自己的测试里：
+     PRODUCTION_FILES 是"Economy 生产文件"这份名单，而它扫的是
+     services/home-node/economy*。P22-15 第一次让 **assets/js/** 出现经济
+     文件，于是"这份名单之外的 Economy 代码"出现了。把它接进这条既有边界，
+     下一个人加第二个经济前端文件时会撞上同一套检查，而不是撞上一句注释。
+   ★ 判的是**代码**（剥注释与字符串）：这些禁令应当写在注释里（解释边界），
+     但不该出现在代码里。 */
+const BROWSER_ECONOMY_FILES = [
+  'assets/js/economy-approval-core.js',
+  'assets/js/economy-approval.js'
+];
+const browserEconomyCode = BROWSER_ECONOMY_FILES.map(rel => stripCommentsAndStrings(read(rel))).join('\n');
+
+check('B7.9 ★★★ 浏览器侧的 Economy 文件不认识任何 store / 门 / 适配器 / 通道（它们只有一条 HTTP 接缝）',
+  !/\b(?:economyStore|getWallet|listPurchases|createQuote|reserveFunds|settlePurchase|decideApproval|proposeAgentPurchaseIntent|resumeApprovedPurchase|mintForSystem|putBudgetPolicy|putAutonomyPolicy)\b/.test(browserEconomyCode),
+  browserEconomyCode.match(/\b(?:economyStore|getWallet|listPurchases|createQuote|reserveFunds|settlePurchase|decideApproval|proposeAgentPurchaseIntent|resumeApprovedPurchase|mintForSystem|putBudgetPolicy|putAutonomyPolicy)\b/g));
+
+check('B7.10 ★★★ 浏览器侧的 Economy 文件不认识任何钱 / 账本原语（渲染事实可以，造事实不行）',
+  !/\b(?:ledgerEntry|grantInventory|consumeInventory|transferFunds|balanceMinor\s*[-+*/]?=|reservedBalanceMinor\s*[-+*/]?=)/.test(browserEconomyCode));
+
+check('B7.11 ★★★ 浏览器侧的 Economy 文件不 require 任何东西（浏览器里没有 require，也没有第二套契约）',
+  !/\brequire\s*\(/.test(browserEconomyCode) && !/\bimport\s*\(/.test(browserEconomyCode));
+
+check('B7.12 ★★★ 浏览器侧的 Economy 文件里没有 fetch / XMLHttpRequest（传输只有 home-node-client 一处）',
+  !/\bfetch\s*\(/.test(browserEconomyCode) && !/XMLHttpRequest/.test(browserEconomyCode));
+
+check('B7.13 ★★★ 浏览器侧的 Economy 文件只认一条 /internal/economy/* 路径，而且就是 P22-13 那条决定面',
+  /* ★ 这条是 B7.9 的第二种问法，而两种都要：B7.9 读的是**剥掉注释与字符串**
+     的代码（问"入口名在不在代码里"），这一条读**原文**（路径本来就是一个
+     字符串字面量 —— 剥掉字符串就什么都看不见了）。 */
+  BROWSER_ECONOMY_FILES.every(rel => !/economy-(?:store|capability|action-adapter|command-channel|approval-decision|configuration)\.js/.test(read(rel))) &&
+  (function () {
+    const paths = BROWSER_ECONOMY_FILES
+      .map(rel => read(rel).match(/\/internal\/economy\/[a-z-]+/g) || [])
+      .reduce((a, b) => a.concat(b), []);
+    return paths.length >= 1 && paths.every(p => p === '/internal/economy/approval-decision');
+  })(),
+  BROWSER_ECONOMY_FILES.map(rel => (read(rel).match(/\/internal\/economy\/[a-z-]+/g) || [])));
 
 /* ══════════════════════════════════════════════════════════════════
    B8 · P22-0 R2：真实购物 maxBudget 命名冲突

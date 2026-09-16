@@ -1,0 +1,284 @@
+﻿/* ====================================================================
+   IB · Economy 待决定（P22-15）
+   --------------------------------------------------------------------
+   这一份样式表**不是**一套 Economy 设计系统。它只描述一个新页面，而且
+   它用的每一个颜色、圆角、模糊、阴影、间距都来自既有的设计令牌
+   （core.css 的 --glass-* / --radius-* / --surface-* / --border-* /
+    --content-* / --shadow-* / --accent / --status-* / --space-*）。
+
+   三件刻意的事：
+     ① 按模块运行时注入（assets/js/economy-approval.js 的 injectStyle），
+        与 diagnostics / guide-beginner / setup-wizard / update-card
+        同一条既有做法 —— 于是 HTML 的样式表预算（20）一个都不占。
+     ② 浅色（internal）主题下**关掉** core.css 那条"整棵子树都加白色
+        发光"的规则（body:not(.theme-infernal) .page.active div 等）：
+        卡片是有玻璃底的浮起表面，光晕会让里面的小字糊掉。关闭只作用于
+        #economy-requests 这棵子树，不影响任何既有页面。
+     ③ 状态色一律由**一个变量**给（--ec-tone），因此新增状态不需要新增
+        六种高饱和色块，也不会出现"只在一个主题里成立"的硬编码。
+
+   层级（§11）：
+     Page → .ec-card(玻璃) → .ec-product(内嵌玻璃) → .ec-reason(内嵌衬底)
+          → .ec-actions(最上层的一对按钮)
+   ==================================================================== */
+
+/* ── 页面骨架：居中且不横跨整个屏幕 ─────────────────────────────────── */
+#page-economy{padding-top:80px}
+#economy-requests{max-width:940px;margin:0 auto;min-height:60vh}
+
+.ec-bar{display:flex;align-items:baseline;justify-content:space-between;gap:var(--space-4);margin-bottom:var(--space-5);flex-wrap:wrap}
+.ec-bar-left{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;min-width:0}
+.ec-title{font-family:var(--font-display);font-weight:600;font-size:1.5rem;letter-spacing:.05em;margin:0;color:var(--content-primary)}
+.ec-sub{font-family:'Raleway',sans-serif;font-weight:300;font-size:.82rem;letter-spacing:.2em;text-transform:uppercase;color:var(--accent-light);opacity:.85;position:relative;padding-left:14px}
+.ec-sub::before{content:"";position:absolute;left:0;top:50%;transform:translateY(-50%);width:1px;height:.95em;background:currentColor;opacity:.5}
+.ec-bar-right{display:flex;align-items:center;gap:var(--space-3)}
+.ec-sync{font-size:.7rem;letter-spacing:.04em;color:var(--content-muted);min-height:1em}
+.ec-refresh{font-size:.74rem;padding:5px 14px;border-radius:var(--radius-control)}
+.ec-refresh[disabled]{opacity:.5;cursor:default;transform:none}
+
+/* 只给屏幕阅读器的一句话（视觉上不占位） */
+.ec-sr{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+
+/* ── 列表 ───────────────────────────────────────────────────────────── */
+.ec-list{display:flex;flex-direction:column;gap:18px}
+
+/* ── 卡片 ───────────────────────────────────────────────────────────── */
+.ec-card{
+  --ec-tone:var(--accent);
+  position:relative;
+  display:flex;flex-direction:column;gap:var(--space-4);
+  padding:20px 22px 18px 24px;
+  border:1px solid var(--border-soft);
+  border-radius:var(--radius-panel);
+  background:var(--glass-bg-elevated);
+  backdrop-filter:var(--glass-filter-md);-webkit-backdrop-filter:var(--glass-filter-md);
+  box-shadow:var(--shadow-panel);
+  color:var(--content-primary);
+  transition:border-color var(--motion-normal) var(--transition),box-shadow var(--motion-normal) var(--transition),transform var(--motion-normal) var(--transition),opacity var(--motion-normal) var(--transition);
+}
+/* 卡片左缘的一条细轨：状态的**位置**标识，而不是又一块色块。 */
+.ec-card::before{
+  content:"";position:absolute;left:0;top:14px;bottom:14px;width:3px;border-radius:3px;
+  background:linear-gradient(180deg,var(--ec-tone),transparent 92%);opacity:.62;
+}
+.ec-card-quiet{opacity:.86}
+.ec-card-quiet:hover{opacity:1}
+.ec-card-waiting:hover{border-color:var(--border-strong);box-shadow:var(--glass-shadow-elevated);transform:translateY(-2px)}
+.ec-card[aria-busy="true"]{border-color:color-mix(in srgb,var(--accent) 42%,var(--border-soft))}
+
+/* 状态色调：一处定义，徽标 / 左轨 / 结果行共用 */
+.ec-tone-waiting{--ec-tone:var(--accent)}
+.ec-tone-progress{--ec-tone:var(--accent-light)}
+.ec-tone-done{--ec-tone:var(--status-success)}
+.ec-tone-denied{--ec-tone:var(--status-warning)}
+.ec-tone-expired{--ec-tone:var(--content-muted)}
+.ec-tone-failed{--ec-tone:var(--status-warning)}
+
+/* ① 谁在请求 */
+.ec-head{display:flex;align-items:center;gap:13px}
+.ec-who-line{display:flex;align-items:center;justify-content:space-between;gap:10px;min-width:0}
+.ec-avatar{
+  width:40px;height:40px;flex:0 0 40px;border-radius:50%;overflow:hidden;
+  display:flex;align-items:center;justify-content:center;
+  background:radial-gradient(circle at 36% 30%,rgba(255,255,255,.8),var(--accent) 72%);
+  color:#fff;font-family:var(--font-display);font-size:1.15rem;
+  box-shadow:0 0 0 1px var(--border-soft),0 3px 12px rgba(72,118,172,.16);
+}
+.ec-avatar img{width:100%;height:100%;object-fit:cover;display:block}
+.ec-who{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
+.ec-name{font-family:var(--font-reading);font-size:1rem;font-weight:600;letter-spacing:.03em;color:var(--content-primary);overflow-wrap:anywhere}
+.ec-ask{font-size:.76rem;line-height:1.5;color:var(--content-secondary)}
+
+.ec-badge{
+  display:inline-flex;align-items:center;gap:6px;flex:0 0 auto;
+  padding:4px 10px;border-radius:999px;white-space:nowrap;
+  font-size:.68rem;letter-spacing:.05em;
+  border:1px solid color-mix(in srgb,var(--ec-tone) 34%,transparent);
+  background:color-mix(in srgb,var(--ec-tone) 12%,transparent);
+  color:var(--ec-tone);
+}
+.ec-badge span{text-shadow:none}
+.ec-badge svg{opacity:.9;flex:0 0 11px}
+/* 窄屏：徽标落到名字下面（.ec-who 那一列的缩进里），而不是横跨整行。 */
+@media (max-width:640px){
+  .ec-who-line{flex-wrap:wrap;justify-content:flex-start;gap:4px 8px}
+}
+
+/* ② 那件东西：内嵌一层玻璃（与卡片底不同透明度，形成第二层） */
+.ec-product{
+  display:flex;align-items:flex-start;gap:14px;
+  padding:14px 16px;border-radius:var(--radius-card);
+  border:1px solid var(--glass-border-soft);
+  background:var(--glass-bg-surface);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.14);
+}
+.ec-kind-icon{flex:0 0 24px;width:24px;height:24px;margin-top:2px;color:var(--accent-light);opacity:.95}
+.ec-product-text{display:flex;flex-direction:column;gap:3px;min-width:0}
+.ec-product-name{font-size:.98rem;font-weight:600;line-height:1.4;letter-spacing:.02em;color:var(--content-primary);overflow-wrap:anywhere}
+.ec-product-kind{font-size:.66rem;letter-spacing:.1em;text-transform:uppercase;color:var(--content-muted)}
+.ec-product-desc{font-size:.8rem;line-height:1.7;color:var(--content-secondary);overflow-wrap:anywhere}
+.ec-product-unknown .ec-product-name{font-style:italic;color:var(--content-muted)}
+
+/* ③ 她给的理由 */
+.ec-reason{
+  margin:0;padding:12px 15px;border-radius:var(--radius-card);
+  border:1px solid var(--glass-border-soft);
+  background:var(--glass-bg-ambient);
+  display:flex;gap:2px;align-items:flex-start;
+}
+.ec-reason-mark{font-family:var(--font-display);font-size:1.1rem;line-height:1.1;color:var(--accent-light);opacity:.7;flex:0 0 auto}
+.ec-reason-mark-end{align-self:flex-end}
+.ec-reason-text{flex:1;font-family:var(--font-reading);font-size:.86rem;line-height:1.8;color:var(--content-primary);overflow-wrap:anywhere;word-break:break-word}
+
+/* ④ 数字与权威事实 */
+.ec-facts{display:flex;flex-direction:column;gap:10px;padding-top:2px;border-top:1px solid var(--border-soft)}
+.ec-figures{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;padding-top:12px}
+.ec-amount{font-family:var(--font-display);font-size:1.34rem;font-weight:600;letter-spacing:.02em;color:var(--content-primary)}
+.ec-amount-unknown{font-family:var(--font-ui);font-size:.8rem;font-weight:400;color:var(--content-muted)}
+.ec-units{font-size:.86rem;color:var(--content-secondary);letter-spacing:.06em}
+.ec-recipient{font-size:.76rem;color:var(--content-muted)}
+.ec-attrs{display:grid;grid-template-columns:auto 1fr;gap:5px 14px;margin:0;font-size:.74rem;line-height:1.7}
+.ec-attr-k{margin:0;color:var(--content-muted);letter-spacing:.04em;white-space:nowrap}
+.ec-attr-v{margin:0;color:var(--content-secondary);overflow-wrap:anywhere}
+
+/* ⑤ 动作：这一层最实（不透明底 + 明确边界），因为它是**唯一的**写入点 */
+.ec-actions{display:flex;flex-direction:column;gap:10px;padding-top:2px}
+.ec-action-note{margin:0;font-size:.72rem;line-height:1.6;color:var(--content-muted)}
+.ec-action-row{display:flex;justify-content:flex-end;align-items:center;gap:10px;flex-wrap:wrap}
+.ec-action-row .btn{min-width:112px;min-height:38px;display:inline-flex;align-items:center;justify-content:center;gap:8px}
+.ec-btn-reject{color:var(--content-secondary)}
+.ec-btn-reject:hover{border-color:color-mix(in srgb,var(--status-warning) 48%,var(--border-soft));color:var(--content-primary)}
+.ec-btn-allow{font-weight:500}
+.ec-btn-keep{min-width:96px !important;color:var(--content-secondary)}
+.ec-action-row .btn[disabled]{opacity:.55;cursor:default;transform:none;box-shadow:none}
+
+/* pending 指示：一个 12px 的环，不写"购买中"这种不真实的字。 */
+.ec-spin{width:12px;height:12px;flex:0 0 12px;border-radius:50%;border:1.5px solid currentColor;border-top-color:transparent;animation:ec-spin .8s linear infinite;opacity:.85}
+@keyframes ec-spin{to{transform:rotate(360deg)}}
+
+/* 结果行（终态卡片）：安静，不是警告框 */
+.ec-result{display:flex;flex-direction:column;gap:4px}
+.ec-result-note{margin:0;font-size:.73rem;color:var(--content-muted);line-height:1.6}
+.ec-result-detail{margin:0;font-size:.76rem;color:var(--content-secondary);line-height:1.7;overflow-wrap:anywhere}
+.ec-result-detail-warn{color:color-mix(in srgb,var(--status-warning) 78%,var(--content-secondary))}
+
+/* ⑥ 技术细节：默认收起，ID 与 canonical 原词只在这里出现 */
+.ec-detail{padding-top:4px}
+.ec-detail-toggle{
+  background:none;border:0;padding:2px 0;cursor:pointer;
+  font-size:.68rem;letter-spacing:.08em;color:var(--content-muted);text-decoration:underline;
+  text-decoration-thickness:1px;text-underline-offset:4px;text-decoration-color:color-mix(in srgb,currentColor 38%,transparent);
+}
+.ec-detail-toggle:hover{color:var(--content-secondary)}
+.ec-detail-body{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;margin:8px 0 0;font-size:.68rem;line-height:1.7;color:var(--content-muted)}
+.ec-detail-body[hidden]{display:none}
+.ec-detail-body dt{margin:0;color:var(--content-muted)}
+.ec-detail-body dd{margin:0;color:var(--content-secondary);overflow-wrap:anywhere;word-break:break-all}
+
+/* ── 历史（安静区）─────────────────────────────────────────────────── */
+.ec-history{margin-top:34px;display:flex;flex-direction:column;gap:14px}
+.ec-history-head{display:flex;align-items:baseline;gap:12px;position:relative;padding-left:14px}
+.ec-history-head::before{content:"";position:absolute;left:0;top:50%;transform:translateY(-50%);width:1px;height:.95em;background:currentColor;opacity:.28}
+.ec-history-title{font-family:var(--font-display);font-size:.94rem;font-weight:600;letter-spacing:.1em;text-transform:uppercase;margin:0;color:var(--content-muted)}
+.ec-history-count{font-size:.68rem;color:var(--content-muted)}
+.ec-history-list{display:flex;flex-direction:column;gap:12px}
+.ec-history-list .ec-card{padding:16px 18px 14px 20px;gap:12px;box-shadow:var(--shadow-card)}
+.ec-history-more{align-self:flex-start;font-size:.74rem;padding:5px 14px;border-radius:var(--radius-control)}
+
+/* ── 空状态 / 失败面（§9：安静的空托盘，不是"没有数据"）─────────────── */
+.ec-surface{
+  position:relative;display:flex;flex-direction:column;align-items:center;text-align:center;
+  gap:6px;padding:46px 26px 42px;
+  border:1px solid var(--glass-border-soft);border-radius:var(--radius-panel);
+  background:var(--glass-bg-surface);
+  backdrop-filter:var(--glass-filter-sm);-webkit-backdrop-filter:var(--glass-filter-sm);
+  color:var(--content-secondary);
+}
+.ec-surface-art{color:var(--content-muted);opacity:.5;margin-bottom:14px;line-height:0}
+.ec-surface-art svg{display:block}
+.ec-surface-title{margin:0;font-family:var(--font-reading);font-size:1.02rem;font-weight:600;letter-spacing:.03em;color:var(--content-primary)}
+.ec-surface-body{margin:0;font-size:.82rem;line-height:1.85;color:var(--content-secondary);max-width:34ch}
+.ec-surface-hint{margin:10px 0 0;font-size:.72rem;line-height:1.7;color:var(--content-muted);max-width:40ch}
+.ec-surface-detail{margin:6px 0 0;font-size:.68rem;line-height:1.6;color:var(--content-muted);max-width:44ch;overflow-wrap:anywhere}
+.ec-surface-action{margin-top:16px;font-size:.76rem;padding:6px 18px;border-radius:var(--radius-control)}
+.ec-surface-empty .ec-surface-art{opacity:.44}
+.ec-surface-failed .ec-surface-art{opacity:.3;color:var(--status-warning)}
+
+/* 决定路径关着时的一句提前说明（把 /security 已经说过的话写在页面上）。
+   它不是错误框：没有红色、没有图标，只有一枚安静的点与一行字。 */
+.ec-gate{display:flex;align-items:flex-start;gap:10px;margin:-8px 0 var(--space-5);
+  padding:11px 15px;border-radius:var(--radius-card);
+  border:1px solid var(--glass-border-soft);background:var(--glass-bg-ambient);
+  font-size:.75rem;line-height:1.75;color:var(--content-secondary)}
+.ec-gate-dot{flex:0 0 6px;width:6px;height:6px;margin-top:7px;border-radius:50%;background:var(--status-warning);opacity:.9}
+.ec-gate-text{min-width:0;overflow-wrap:anywhere}
+body:not(.theme-infernal) .ec-gate{background:rgba(255,255,255,.34)}
+
+/* ── 骨架：安静的三档高度，不做大幅动画 ────────────────────────────── */
+.ec-card-skeleton{opacity:.55;pointer-events:none}
+.ec-card-skeleton::before{opacity:.3}
+.ec-sk{border-radius:8px;background:var(--glass-bg-ambient);position:relative;overflow:hidden}
+.ec-sk::after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,color-mix(in srgb,var(--white) 18%,transparent),transparent);transform:translateX(-100%);animation:ec-sheen 1.6s var(--transition) infinite}
+@keyframes ec-sheen{to{transform:translateX(100%)}}
+.ec-sk-head{height:40px;width:56%}
+.ec-sk-surface{height:62px}
+.ec-sk-line{height:14px;width:78%}
+.ec-sk-foot{height:38px;width:42%;align-self:flex-end}
+
+/* ── 主题适配 ────────────────────────────────────────────────────────
+   浅色（internal）与深色（infernal）各自成立：本节只做**两件事** ——
+   关闭浅色主题那条会糊掉小字的白色发光，并给浅色主题更实的卡片底。
+   所有状态色、边框、模糊、阴影都继续来自 core.css 的令牌，
+   因此这里没有一条"只在一个主题里正确"的 RGB。 */
+body:not(.theme-infernal) #economy-requests,
+body:not(.theme-infernal) #economy-requests *{text-shadow:none}
+/* 唯一一处保留的发光：页面标题，与既有的 module-intro h2 同款。 */
+body:not(.theme-infernal) #economy-requests .ec-title{text-shadow:0 0 12px rgba(255,255,255,.5)}
+body:not(.theme-infernal) .ec-card{background:var(--surface-panel-strong)}
+body:not(.theme-infernal) .ec-product{background:rgba(255,255,255,.46);border-color:rgba(170,205,242,.34)}
+body:not(.theme-infernal) .ec-reason{background:rgba(255,255,255,.32)}
+body:not(.theme-infernal) .ec-surface{background:rgba(250,253,255,.62);border-color:rgba(200,225,248,.45)}
+body:not(.theme-infernal) .ec-surface-art{color:#5a7ba6}
+body:not(.theme-infernal) .ec-sk{background:rgba(150,185,225,.14)}
+body.theme-infernal .ec-card{background:var(--glass-bg-elevated)}
+body.theme-infernal .ec-reason{background:rgba(10,20,40,.20)}
+body.theme-infernal .ec-surface{background:var(--glass-bg-surface)}
+body.theme-infernal .ec-surface-art{color:#8fa8c8}
+
+/* ── 响应式（§12）─────────────────────────────────────────────────────
+   只有一处 DOM，两处断点：
+     880px 以下收窄内边距（窄桌面）；
+     640px 以下把动作按钮变成整行、金额不再与数量挤在一行、
+     并给底部留出 safe-area。 */
+@media (max-width:1024px){
+  .ec-card{padding:18px 18px 16px 20px}
+}
+@media (max-width:880px){
+  #page-economy{padding-top:76px}
+  #economy-requests{max-width:none}
+  .ec-bar{gap:var(--space-3)}
+  .ec-attrs{grid-template-columns:1fr;gap:2px}
+  .ec-attr-k{margin-top:6px}
+}
+@media (max-width:640px){
+  .ec-card{padding:16px 15px 14px 17px;gap:13px;border-radius:var(--radius-card)}
+  .ec-card::before{width:2px;top:12px;bottom:12px}
+  .ec-title{font-size:1.28rem}
+  .ec-sub{font-size:.72rem}
+  .ec-avatar{width:34px;height:34px;flex-basis:34px;font-size:1rem}
+  .ec-head{gap:10px;align-items:flex-start}
+  .ec-product{padding:12px 13px;gap:11px}
+  .ec-amount{font-size:1.16rem}
+  .ec-figures{gap:8px 10px}
+  .ec-action-row{flex-direction:column-reverse;align-items:stretch;gap:9px}
+  .ec-action-row .btn{width:100%;min-width:0;min-height:44px}
+  .ec-surface{padding:36px 18px 34px}
+  #page-economy{padding-bottom:calc(80px + env(safe-area-inset-bottom,0px))}
+}
+@media (max-width:380px){
+  .ec-reason-text{font-size:.82rem}
+}
+@media (prefers-reduced-motion:reduce){
+  .ec-card,.ec-sk::after,.ec-spin{transition:none;animation:none}
+  .ec-card-waiting:hover{transform:none}
+}

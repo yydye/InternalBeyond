@@ -202,6 +202,64 @@ function createHomeNodeRemote(deps) {
         });
     },
 
+    /* ── P22-15 · 用户对一条等待中的请求点头 / 摇头 ──────────────────
+       数据源是 **P22-13** 那条 authenticated seam
+       （/internal/economy/approval-decision），而这里刻意只做一件事：
+       把调用方给的**三个**字段原样发出去。
+
+       ★ 为什么把方法放在本文件而不是让 UI 自己 fetch()：
+         §15 逐字要求 UI 不得出现 `fetch('/economy/...', {method:'POST'})`。
+         这一层的存在让"哪一条路径、什么方法、什么凭据头"只有**一处**
+         实现 —— 与 memory / chat / catalog 的 remote driver 同一条纪律。
+       ★ 为什么 body 用**白名单构造**而不是把 options 直接传下去：
+         一个 `_request(path, {body: options})` 会让 UI 有机会顺手塞进
+         amountMinor / productId / approved 之类的字段。构造式让那些字段
+         在结构上不可达 —— 不是"记得别传"，而是这里没有那个位置。
+       ★ 它**不**解释回答：信封的判定在 economy-approval-core.js 里。 */
+    approvalDecision: function (options) {
+      options = options || {};
+      var body = {
+        approvalId: String(options.approvalId || ''),
+        decision: String(options.decision || ''),
+        idempotencyKey: String(options.idempotencyKey || '')
+      };
+      return _request('/internal/economy/approval-decision', {
+        method: 'POST',
+        body: body,
+        timeoutMs: deps.decisionTimeoutMs || DEFAULT_TIMEOUT_MS
+      });
+    },
+
+    /* ── P22-15 · 通用只读 GET ────────────────────────────────────────
+       P22-15 的 UI 要读**三条既有**只读面（intents / approvals / products）。
+       与其为每条路径各写一个方法，这里给一个只做 GET 的读取器：
+         · 方法被钉死成 GET（它没有 method 参数）；
+         · 路径必须是一个以 '/' 开头的路径段，且**不得**包含 '://'
+           （于是它不可能被用来打别的主机）；
+         · query 只支持字符串或一层的键值对，值一律 encodeURIComponent。
+       ★ 它到不了任何写面：这一层没有 POST 的入口 —— 唯一的写方法叫
+         approvalDecision，而它的路径与信封都是构造出来的。
+       ★ 缺 query 时只发路径，不做任何默认过滤：过滤条件是调用方的事。 */
+    getJson: function (pathname, query) {
+      var p = String(pathname == null ? '' : pathname);
+      if (p.charAt(0) !== '/' || p.indexOf('://') >= 0 || p.indexOf('..') >= 0) {
+        return Promise.resolve({ ok: false, error: 'invalid-read-path' });
+      }
+      var qs = '';
+      if (typeof query === 'string' && query) {
+        qs = query.charAt(0) === '?' ? query : ('?' + query);
+      } else if (query && typeof query === 'object') {
+        var parts = [];
+        for (var k in query) {
+          if (!Object.prototype.hasOwnProperty.call(query, k)) continue;
+          if (query[k] == null) continue;
+          parts.push(encodeURIComponent(k) + '=' + encodeURIComponent(String(query[k])));
+        }
+        if (parts.length) qs = '?' + parts.join('&');
+      }
+      return _request(p + qs, {});
+    },
+
     /* ── M1-B：桌面管理面（配对 / 设备 / 角色目录）─────────────────────
        这些路径**不是** mobile namespace：它们走 Home Node 既有的 loopback +
        token 保护，属于"本机特权客户端"的能力。设备 API 在 /mobile/v1/* 下，

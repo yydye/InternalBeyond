@@ -418,6 +418,10 @@ function navTo(page){
   if(page==='diary'){loadDiaryPage()}
   if(page==='moments'){loadMomentsPage()}
   if(page==='apps'){if(typeof renderAppStore==='function')renderAppStore()}
+  /* P22-15 · Economy 待决定：页面只在被打开时才去读三个只读面
+     （绝大多数会话不会打开它，因此不制造后台请求）。整块渲染在
+     assets/js/economy-approval.js 里，本行只是既有的路由接线。 */
+  if(page==='economy'){try{if(window.IB&&IB.economyApprovalUI&&typeof IB.economyApprovalUI.render==='function')IB.economyApprovalUI.render()}catch(e){}}
   if(page==='favorites'){if(typeof favOpenPage==='function')favOpenPage()}
   if(page==='coread'){if(typeof loadCoreadPage==='function')loadCoreadPage()}
   if(page==='moments-settings'){_momentsRenderSettings();try{if(typeof window._rlRenderSettings==='function')window._rlRenderSettings()}catch(e){}}
