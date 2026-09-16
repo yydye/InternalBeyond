@@ -104,15 +104,17 @@ function _activeParsePlanJson(text,opts){
   return asObject(s.slice(start,end+1));
 }
 /* 白名单校验 + 安全裁剪。返回规范化计划结果，非法输入返回 null（调用方放弃创建，不影响聊天）。 */
-function _activeValidatePlanResult(raw,now,prefs){
+function _activeValidatePlanResult(raw,now,prefs,ctx){
   if(!raw||typeof raw!=='object'||Array.isArray(raw))return null;
   const action=String(raw.action||'').trim();
   /* ★ P22-11 §9：经济提案是这条链上的一个新出口，但它**不在**
      _activeValidatePlanResultCore 的封闭集里 —— 那个集合
      ['schedule','none','cancel_existing'] **逐字未变**，而且仍然不认识
      任何经济动词（P22-10 的 B2 断言的就是这一条，它必须继续为真）。
-     分流发生在这里，而不是把第四个成员塞进那个数组。 */
-  if(action===ACTIVE_ECONOMY_PROPOSAL_ACTION)return _activeValidateEconomyPlanResult(raw);
+     分流发生在这里，而不是把第四个成员塞进那个数组。
+     ★ P22-12：ctx 只是**转发**（经济提案需要那个由运行环境给出的
+     agentId）；非经济动作完全不看它，而省略 ctx 时经济动作 fail closed。 */
+  if(action===ACTIVE_ECONOMY_PROPOSAL_ACTION)return _activeValidateEconomyPlanResult(raw,now,prefs,ctx);
   return _activeValidatePlanResultCore(raw,now,prefs)
 }
 /* 既有封闭动作集的**原文**（P22-11 一个字都没有改动它）。 */
@@ -169,20 +171,26 @@ function _activePlanLog(step,detail){
   try{if(_activeAiPrefs().showDebug)console.info('[ProactivePlan] '+step,detail||'')}catch(e){}
 }
 /* ══════════════════════════════════════════════════════════════════════
-   P22-11 §9 · Economy 提案动作（**唯一**新增的那一种结构化动作）
+   P22-11 §9 / P22-12 §2–§10 · Economy 提案动作（**唯一**新增的那一种结构化动作）
    ────────────────────────────────────────────────────────────────────
-   本阶段逐字要求：如果跨进程接入需要最小扩展，就**只**增加
-   ECONOMY_PROPOSE_PURCHASE 这一种结构化动作，不要造 dispatcher
-   framework，未知/畸形模型动作 fail closed。
+   P22-11 只做到"净化器认识这个动作、出口存在"。P22-12 让这条出口第一次
+   有**生产者**：同一个 buildPlanPrompt 会在目录事实可用时向模型宣告这一种
+   动作，planNextProactiveMessage 把模型选出的**意图字段**补上本地身份后
+   送进同一条既有链，再交给注入的出口（P22-11 的 command channel client）。
 
-   因此这里**没有**新的动作框架：它是同一条既有链上的一个新成员 ——
-     · 动作名 join `_activeValidatePlanResult` 的封闭集（默认**不在**里面，
-       见 ACTIONS_WITH_ECONOMY）；
+   因此这里仍然**没有**新的动作框架、没有第二个 planner、没有第二个
+   dispatcher：它是同一条既有链上的一个新成员 ——
+     · 动作名在 `_activeValidatePlanResult` 里分流，而**封闭集**
+       `['schedule','none','cancel_existing']` 逐字未变（见 _activeValidatePlanResultCore）；
      · 净化器仍然是**这一份**（不在别处再写一个白名单）；
-     · 载荷形状的权威仍然是 P22-10 的净化器 + P22-8 的 proposal 校验
-       （本文件只拦"身份自报"，那一类键的权威同样在那边）。
+     · 载荷形状的权威仍然是 P22-10 的净化器 + P22-8 的 proposal 校验：
+       本文件只做"模型能选择哪些字段"这一件事，**不**列经济事实、
+       **不**填默认值、**不**裁决任何经济结论。
    ★ 为什么默认**不**开放：开放它等于给这条链加一个真实的经济出口。
      一个"以后可能会用"的开关如果默认打开，那就是一条已经存在的写路径。
+     生产上它由 active-diary.js 依**companion 是否真的配好了通道**
+     （23114 /health 的 economy_proposals_enabled）来置位 —— 也就是说
+     "prompt 里宣告了这个动作"与"这个动作真的送得出去"是同一个条件。
    ★ 身份键为什么在这里也拦一次：跨进程后**唯一**会被相信的身份来自
      传输层与来源登记，模型在 payload 里写 consumerId/capability 只是
      一次自报。拦住它的地方在 Home Node（那一份是权威），这里提前拦
@@ -192,29 +200,170 @@ var ACTIVE_ECONOMY_PROPOSAL_ACTION='economy_propose_purchase';
    但它是**另一个层**的同名检查（模型输出层），不是第二份经济事实名单：
    经济事实（价格/金额/预算/批准）一个都不在这里 —— 那是 P22-8 的事。 */
 var ACTIVE_ECONOMY_IDENTITY_KEYS=['consumerId','consumer','capability','role','authority','approved','autoAllow'];
+/* ★ P22-12 §4 · 模型**只能选择意图字段**。
+   这是一份**构造式白名单**，不是"把危险键列出来再拦"：不在表里的键让整条
+   提案 fail closed，而不是转发给下游去拒。名单恰好是 P22-8 的
+   PURCHASE_INTENT_PROPOSAL_KEYS 减去两样：
+     · agentId   —— 它是**本地配置事实**（这次购买以哪个角色名义），由
+                    运行环境填写，不由模型自报（见 _activeValidateEconomyPlanResult）；
+     · expiresAt —— 有效期是"这个打算我想到什么时候为止"，属于生命周期，
+                    P22-8 自己夹取，模型不选。
+   这两条减法由 test_p22_12_economy_intent_producer.js 用 P22-8 契约里的
+   那份**真实名单**逐字对齐，因此它不是"另一份经济事实 authority"。 */
+var ACTIVE_ECONOMY_PROPOSAL_FIELDS=['productId','recipientId','units','reason'];
+/* ★ 动作对象自己也只有这四个键：`{action, proposal, idempotencyKey, reason}`。
+   P22-10 的净化器对**动作**也做白名单（"动作对象上不能有白名单之外的键"），
+   这里做的是同一件事的另一半：模型在顶层写 `price` / `approved` 与写在
+   proposal 里一样被拒。 */
+var ACTIVE_ECONOMY_ACTION_FIELDS=['action','proposal','idempotencyKey','reason'];
+/* ★ 与 P22-8 的 PURCHASE_INTENT_REASON_MAX 逐字相同的上界（reason 只是
+   telemetry，超长基本就是把整段回复塞进来了）。 */
+var ACTIVE_ECONOMY_REASON_MAX=400;
+/* ★ P22-12 §9 · 可以注入 prompt 的目录事实**只有这些**：商品"是什么"。
+   价格 / 币种 / 发放数量 / 库存 / 余额 / 预算 / 批准 / 账本一个都不在表里，
+   而且投影是构造式的 —— 不在表里的字段在注入之前就被丢掉（不是靠调用方
+   自觉不传）。 */
+var ACTIVE_ECONOMY_CATALOG_FIELDS=['productId','name','description','kind','unitName','status'];
+var ACTIVE_ECONOMY_CATALOG_MAX_ITEMS=12;
+/* ★ P22-12 §10 · 生产者层的**轻量**行为约束窗口。它不是第二套 canonical
+   dedupe：它只决定"这一条完全相同的提议要不要再发一次"，从不裁决经济事实。
+   窗口数值刻意与 P22-8 的 PURCHASE_INTENT_DEDUPE_WINDOW_MS 相同，并由
+   测试钉住两者相等 —— 因此 P22-8 改窗口时这里会跟着红，而不是悄悄分叉。 */
+var ACTIVE_ECONOMY_REPROPOSE_WINDOW_MS=60*1000;
+var ACTIVE_ECONOMY_REPROPOSE_MAX_ENTRIES=64;
+var _activeEconomyRecentProposals=[];
 function _activeEconomyProposalAllowed(){
   try{return NS.activeEconomyProposalEnabled===true}catch(e){return false}
 }
-/* 净化一个经济提案：返回 {proposal,idempotencyKey} 或 null（fail closed）。 */
+/* 目录事实的只读投影（构造式白名单；形状不对的条目直接丢弃，不猜修复）。 */
+function _activeEconomyCatalogFacts(raw){
+  if(!Array.isArray(raw))return [];
+  var out=[];
+  for(var i=0;i<raw.length&&out.length<ACTIVE_ECONOMY_CATALOG_MAX_ITEMS;i++){
+    var f=raw[i];
+    if(!f||typeof f!=='object'||typeof f.productId!=='string')continue;
+    var productId=f.productId.trim();
+    if(!productId||productId.length>200)continue;
+    var item={productId:productId};
+    for(var j=1;j<ACTIVE_ECONOMY_CATALOG_FIELDS.length;j++){
+      var k=ACTIVE_ECONOMY_CATALOG_FIELDS[j];
+      if(f[k]==null)continue;
+      item[k]=String(f[k]).slice(0,k==='description'?200:120);
+    }
+    out.push(item)
+  }
+  return out
+}
+/* 净化一个经济提案：返回 {proposal,idempotencyKey} 或 null（fail closed）。
+   ★ 返回的 proposal 是**模型选择的意图字段**的投影，不含 agentId ——
+   身份由 _activeValidateEconomyPlanResult 注入。 */
 function _activeValidateEconomyProposal(raw){
   if(raw==null||typeof raw!=='object'||Array.isArray(raw))return null;
-  var proposal=raw.proposal;
-  if(proposal==null||typeof proposal!=='object'||Array.isArray(proposal))return null;
+  /* ① 动作对象自己的键也要在白名单里（顶层偷渡与 proposal 里偷渡同罪）。 */
+  var rawKeys=Object.keys(raw);
+  for(var r=0;r<rawKeys.length;r++){
+    if(ACTIVE_ECONOMY_ACTION_FIELDS.indexOf(rawKeys[r])<0)return null
+  }
+  var model=raw.proposal;
+  if(model==null||typeof model!=='object'||Array.isArray(model))return null;
   for(var i=0;i<ACTIVE_ECONOMY_IDENTITY_KEYS.length;i++){
-    if(Object.prototype.hasOwnProperty.call(proposal,ACTIVE_ECONOMY_IDENTITY_KEYS[i]))return null;
+    if(Object.prototype.hasOwnProperty.call(model,ACTIVE_ECONOMY_IDENTITY_KEYS[i]))return null;
     if(Object.prototype.hasOwnProperty.call(raw,ACTIVE_ECONOMY_IDENTITY_KEYS[i]))return null;
+  }
+  /* ② 白名单外的键 ⇒ 整条拒绝。price / amountMinor / currency / balance /
+     budget / approvalId / approved / autoAllow / settlementType / ledger /
+     grantQuantity / consumerId / capability 以及 agentId 都在这里结束 ——
+     它们是"不认识的键"，而不是"需要被下游再拒一次的东西"。 */
+  var keys=Object.keys(model);
+  for(var m=0;m<keys.length;m++){
+    if(ACTIVE_ECONOMY_PROPOSAL_FIELDS.indexOf(keys[m])<0)return null
+  }
+  if(typeof model.productId!=='string')return null;
+  var productId=model.productId.trim();
+  if(!productId||productId.length>200)return null;
+  var proposal={productId:productId};
+  if(model.recipientId!=null){
+    if(typeof model.recipientId!=='string')return null;
+    var recipientId=model.recipientId.trim();
+    /* ★ 空串按 P22-8 自己的读法处理（`recipientId != null && trim()!==''`
+       才是一份礼物）。这里不发明第三种解释，也不补一个"等于自己"的
+       recipient —— 那正是 P22-8 明确禁止的建模。 */
+    if(recipientId){
+      if(recipientId.length>200)return null;
+      proposal.recipientId=recipientId
+    }
+  }
+  if(model.units!=null){
+    /* ★ 不猜修复：`"2"` 这样的字符串不会被解析成 2，直接 fail closed。 */
+    if(typeof model.units!=='number'||!Number.isSafeInteger(model.units)||model.units<1)return null;
+    proposal.units=model.units
+  }
+  if(model.reason!=null){
+    if(typeof model.reason!=='string')return null;
+    proposal.reason=model.reason.trim().slice(0,ACTIVE_ECONOMY_REASON_MAX)
   }
   var key=String(raw.idempotencyKey||'').trim();
   if(!key||key.length>200)return null;
   return {proposal:proposal,idempotencyKey:key};
 }
-/* 经济提案那一条动作的规范结果（只有开启且形状合法时才不是 null）。 */
-function _activeValidateEconomyPlanResult(raw){
+/* 经济提案那一条动作的规范结果（只有开启且形状合法时才不是 null）。
+   ctx.agentId 由**运行环境**给出（本地角色配置），不是模型输出的一部分：
+   模型写了 agentId 会被上面的白名单拒掉，ctx 缺席则整条 fail closed ——
+   两种情况都不"替模型编一个身份"。 */
+function _activeValidateEconomyPlanResult(raw,now,prefs,ctx){
   if(!_activeEconomyProposalAllowed())return null;
   const economy=_activeValidateEconomyProposal(raw);
   if(!economy)return null;
+  const agentId=String(ctx&&ctx.agentId||'').trim();
+  if(!agentId||agentId.length>200)return null;
+  const proposal={agentId:agentId};
+  for(const k in economy.proposal){
+    if(Object.prototype.hasOwnProperty.call(economy.proposal,k))proposal[k]=economy.proposal[k]
+  }
   return {action:ACTIVE_ECONOMY_PROPOSAL_ACTION,reason:String(raw.reason||'').slice(0,300),
-    proposal:economy.proposal,idempotencyKey:economy.idempotencyKey};
+    proposal:proposal,
+    /* ★ canonical 身份由生产者推导（见 _activeEconomyIdempotencyKey）；
+       模型自己写的那个字符串只作为可观测的旁证保留下来 —— 它**不**上路。 */
+    idempotencyKey:_activeEconomyIdempotencyKey(proposal),
+    modelIdempotencyKey:economy.idempotencyKey};
+}
+/* canonical idempotency identity —— 由**生产者**从 P22-8 的指纹字段推导，
+   而不是采信模型自己写的那个字符串。
+   ★ 为什么要推导而不是透传模型的 key：P22-8 的重复抑制有两条腿 ——
+   意图**指纹**（agentId/productId/recipientId/units/selfDirected，不含 reason）
+   与**幂等键**。如果身份由模型自由生成，那么"同一份输出复读两次、每次换一个
+   key"就会在下游变成两条不同的业务请求身份，幂等那条腿直接失效（只剩 60s
+   指纹窗口兜着）。生产者从同一组字段推导，则同一份模型输出**永远**得到同一个
+   身份，两条腿都成立。
+   ★ 形状：只用 [A-Za-z0-9_.:+-]（P22-8 的 IDEMPOTENCY_KEY_RE 就是这一组），
+   长度有界，并且带一个 p22-12. 前缀以便在审计里认出它来自哪一层。
+   ★ 极端情况下的碰撞（某个 id 恰好含分隔符）只会让两条不同的提议共用同一个
+   命令身份，而那条路径的后果是**下游拒绝**（P22-11 的"同 id 不同 payload 409"），
+   不是一次错误的购买。宁可拒绝，不可猜。 */
+function _activeEconomyIdempotencyKey(proposal){
+  const p=proposal||{};
+  const seg=v=>String(v==null?'':v).trim().replace(/[^A-Za-z0-9_.:+-]/g,'-').slice(0,60);
+  return ('p22-12.'+seg(p.agentId)+'.'+seg(p.productId)+'.'+
+    (p.recipientId==null?'self':seg(p.recipientId))+'.'+(p.units==null?'1':seg(p.units))).slice(0,200)
+}
+/* 提议的身份 = 上面那个 canonical 身份（同一个函数、同一个答案）。
+   它用在生产者层那一个**轻量**行为约束上：只决定"这条完全相同的提议要不要
+   再发一次"，从不参与任何经济判定。 */
+function _activeEconomyProposalIdentity(proposal){
+  return _activeEconomyIdempotencyKey(proposal)
+}
+function _activeEconomyProposalSuppressed(identity,nowMs){
+  const at=Number(nowMs)||Date.now();
+  for(let i=_activeEconomyRecentProposals.length-1;i>=0;i--){
+    const e=_activeEconomyRecentProposals[i];
+    if(at-e.at>ACTIVE_ECONOMY_REPROPOSE_WINDOW_MS){_activeEconomyRecentProposals.splice(i,1);continue}
+    if(e.identity===identity)return true
+  }
+  return false
+}
+function _activeEconomyNoteProposal(identity,nowMs){
+  _activeEconomyRecentProposals.push({identity:identity,at:Number(nowMs)||Date.now()});
+  while(_activeEconomyRecentProposals.length>ACTIVE_ECONOMY_REPROPOSE_MAX_ENTRIES)_activeEconomyRecentProposals.shift()
 }
 function _activePlanStatusLabel(s){return({scheduled:'已安排',evaluating:'评估中',sending:'发送中',waiting_for_user:'等待回复',completed:'已完成',cancelled:'已取消',expired:'已过期',failed:'失败'})[s]||s}
 function _activePlanSourceLabel(s){return s==='user_reminder'?'用户提醒':'AI 规划'}
@@ -231,6 +380,11 @@ function buildPlanPrompt(args){
   const tz=Intl.DateTimeFormat().resolvedOptions().timeZone||'local';
   const activePlans=(args.activePlans||[]).filter(p=>p&&p.status==='scheduled');
   const plansText=activePlans.length?activePlans.map((p,i)=>(i+1)+'. 时间：'+p.scheduledAt+'；意图：'+(p.intent||'未说明')).join('\n'):'（当前没有其他待执行的主动计划）';
+  /* ★ P22-12 §9：**只有**在真的有目录事实时才向模型宣告这个动作。
+     一个"可以提出购买"却没有任何 productId 可选的画面只会把模型推向
+     编造商品 —— 而编造商品正是 §9 要挡的事。 */
+  const economyCatalog=_activeEconomyProposalAllowed()?_activeEconomyCatalogFacts(args.economyCatalog):[];
+  const economyOffered=economyCatalog.length>0;
   const system=String(character.systemPrompt||'').slice(0,30000)
     +'\n\n你是「'+characterName+'」，正在协助判断是否应该主动联系'+userName+'。你只输出 JSON，不输出任何其他文字。';
   const prompt=[
@@ -256,6 +410,12 @@ function buildPlanPrompt(args){
     '1. {"action":"schedule","scheduledAt":"ISO8601 带时区时间","interaction":"text_message","intent":"下次联系的目的（≤80字）","reason":"依据（≤100字）","cancelIfUserReplies":true,"cancelIfIntentResolved":false,"allowReschedule":true,"allowFollowUpPlan":false}',
     '2. {"action":"none","reason":"当前没有自然的后续联系理由"}',
     '3. {"action":"cancel_existing","reason":"用户明确表示不希望继续提醒"}',
+    /* ── P22-12 §2/§3/§5：**唯一**新增的那一种动作。它只在
+       _activeEconomyProposalAllowed() **且**真的有目录事实时出现；
+       两种情况缺一，prompt 里连这个动作名都不会出现。 */
+    ...(economyOffered?[
+      '4. {"action":"economy_propose_purchase","proposal":{"productId":"下面目录里的某个 productId","recipientId":"（可省略；省略表示买给自己）","units":1,"reason":"为什么需要（≤80字）"},"idempotencyKey":"这段提议的稳定标识","reason":"依据（≤100字）"}'
+    ]:[]),
     '【规划规则】',
     '1. 不要为了展示主动功能而强行安排任务；没有自然理由时必须返回 action:"none"。',
     '2. 普通寒暄结束通常不需要立刻主动联系。',
@@ -270,7 +430,31 @@ function buildPlanPrompt(args){
     '11. 用户说“我要睡了”等不适合打扰的时段，应把时间安排到合适的时段。',
     '12. allowFollowUpPlan 默认 false：除非用户明确要求持续陪伴，否则不允许本次发送后再自动规划下一条。',
     '13. 已存在“当前仍有效的主动计划”时，若新计划更有价值才返回 schedule（程序会自动替换旧计划），否则返回 none。',
-    '14. interaction 只能是 "text_message" 或 "voice_call"。默认 "text_message"；语音通话不是默认选项，只有对方正处在“适合直接说两句”的时刻、且你确实有理由想立刻听见对方时，才选 "voice_call"，否则一律 "text_message"。'
+    '14. interaction 只能是 "text_message" 或 "voice_call"。默认 "text_message"；语音通话不是默认选项，只有对方正处在“适合直接说两句”的时刻、且你确实有理由想立刻听见对方时，才选 "voice_call"，否则一律 "text_message"。',
+    /* ══ P22-12 §3/§5/§6/§7/§8 · 关于提议购买 ══════════════════════════
+       ★ 这一段只给**语义**，一个字都不给 authority：没有"你有权购买"、
+        没有"余额足够就买"、没有"预算允许"、没有"用户已批准"、没有
+        "可以自动结算"。模型决定的是 WANT，MAY 全部在内部经济层。
+       ★ 它同时明确 `none` 是一等正常输出，并且**不**给任何消费激励：
+        没有"有钱就花""定期消费""为了体验经济系统而购物""尽量用完预算"。 */
+    ...(economyOffered?[
+      '【关于提议购买（economy_propose_purchase）】',
+      '1. 提出购买**不等于**获准购买。你没有购买权、没有预算权、没有批准权：能不能买、要不要先由用户批准、以及买完怎么结算，全部由内部经济层决定，不由你决定。',
+      '2. 只在当前目标**确实需要**某个内部数字物品时才提出：例如当前任务真的要用到某个内部服务或内部物品，或者你明确想把某个内部物品送给某个人。',
+      '3. 正常情况下返回 action:"none" 是完全正确、完全正常的决定。不要为了"用上经济系统"、不要因为余额看起来充足、不要因为今天还没买过、不要为了提高好感度或亲密度而提出购买。经济系统是一种可选能力，不是你要完成的指标。',
+      '4. productId 只能从下面的目录里选。目录里没有的商品一律不要提；你也**不要**写出价格、金额、币种、余额、预算结果、批准状态或结算方式 —— 这些不是你可以决定的事实。',
+      '5. 你选择的是意图：买什么（productId）、给谁（recipientId，省略表示给自己）、几份（units）、为什么（reason）。谁在买（身份）由运行环境填写，你不要写，也不要猜。',
+      '6. idempotencyKey 只是你给这段提议的一个记号：同样的商品 + 同样的收件人 + 同样的份数请给同样的记号。真正用于去重的身份由运行环境从你这几个字段推导，你不需要（也无法）决定它。',
+      '7. 最近刚提过的同一件商品不要再次提出。',
+      '8. 当你觉得"内部算力/额度不够"时，请不要把它说成充值：这里说的只是 InternalBeyond 的**内部 entitlement**（内部额度），不是给任何外部 Provider 充值、不是购买真实 token、也不会调用任何 Provider 的计费。即使成功，你得到的也只是这份内部额度本身。',
+      '9. 想送礼物时你只表达"想送什么、给谁"。你**没有**"因为关系好所以不用批准"这种判断权：是否需要批准完全由内部审批层决定。',
+      '【内部商品目录（只读）】',
+      ...economyCatalog.map(f=>'- '+f.productId+'：'+String(f.name||'')
+        +(f.kind?'（类型 '+f.kind+'）':'')
+        +(f.unitName?'（单位 '+f.unitName+'）':'')
+        +(f.status?'（状态 '+f.status+'）':'')
+        +(f.description?' —— '+String(f.description).slice(0,200):''))
+    ]:[])
   ];
   return{system:system,messages:[{role:'system',content:system},{role:'user',content:prompt.join('\n')}],prompt:prompt.join('\n')}
 }
@@ -342,11 +526,33 @@ async function planNextProactiveMessage(args){
     const userName=(about&&about.name)||_cachedUserName||'用户';
     const recent=await _activeRecentMessages(character.id);
     const now=new Date();
+    /* ── P22-12 §9 · Catalog grounding ─────────────────────────────────
+       ★ 目录只从**注入的只读 provider** 来（装配层用既有 Home Node
+         客户端读既有 `/economy/products` 并投影），本文件不认识 23118、
+         不发起任何请求、也不造第二套 Economy API。
+       ★ 取不到（provider 缺席 / 抛错 / 空目录）时结果是**空数组** ——
+         于是 prompt 里连那个动作名都不会出现（buildPlanPrompt 只看
+         economyCatalog.length）。"没有可靠目录"这件事因此是 fail closed
+         的，而不是"让模型自由发挥"。 */
+    let economyCatalog=[];
+    if(_activeEconomyProposalAllowed()){
+      const provider=NS.activeEconomyCatalogProvider;
+      if(typeof provider==='function'){
+        try{
+          economyCatalog=_activeEconomyCatalogFacts(await provider({characterId:character.id}))
+        }catch(e){
+          _activePlanLog('economy catalog failed',{characterId:character.id,error:String(e&&e.message||e).slice(0,200)})
+        }
+      }else{
+        _activePlanLog('economy catalog provider is not wired',{characterId:character.id})
+      }
+    }
     const built=buildPlanPrompt({
       character:character,user:{name:userName},prefs:prefs,memories:memories,
       recentMessages:recent,recentProactiveMessages:recentProactive,currentTime:now,
       chatSummary:String(summaryItem&&summaryItem.summary||'').slice(0,1200),
       userMessage:args.userMessage,assistantMessage:args.assistantMessage,
+      economyCatalog:economyCatalog,
       activePlans:activePlans.filter(p=>p.characterId===character.id&&p.status==='scheduled')
     });
     let raw='';
@@ -359,7 +565,9 @@ async function planNextProactiveMessage(args){
     _activePlanLog('model result',{characterId:character.id,raw:String(raw||'').slice(0,400)});
     const parsed=_activeParsePlanJson(raw);
     if(!parsed){_activePlanLog('validation failed',{characterId:character.id,reason:'invalid json'});return null}
-    const validated=_activeValidatePlanResult(parsed,Date.now(),prefs);
+    /* ★ ctx.agentId 是本地角色配置事实，不是模型输出：见
+       _activeValidateEconomyPlanResult 的说明。 */
+    const validated=_activeValidatePlanResult(parsed,Date.now(),prefs,{agentId:String(character.id)});
     if(!validated){_activePlanLog('validation failed',{characterId:character.id,reason:'whitelist rejection',raw:parsed});return null}
     _activePlanLog('validation passed',{characterId:character.id,action:validated.action});
     if(validated.action==='none'){
@@ -384,8 +592,28 @@ async function planNextProactiveMessage(args){
         _activePlanLog('economy proposal sink is not wired',{characterId:character.id});
         return null
       }
+      /* ── P22-12 §10 · 生产者层的轻量行为约束 ────────────────────────
+         ★ 它**只是**"这条完全相同的提议刚刚已经发过一次，不再发第二次"。
+           它不裁决任何经济结论、不返回任何裁决（返回的是 null，不是
+           "被拒绝"），而且是有界的、会话内的、可被清空的。
+         ★ 它是**相加**的一层，不是替代：绕过或清空它，结论不变 ——
+           同一份模型输出仍然给出同一个 idempotencyKey 与同一组
+           fingerprint 字段（agentId/productId/recipientId/units），
+           P22-8 的指纹 + 60s 窗口 + 幂等仍然是唯一的收敛权威。 */
+      const at=Date.now();
+      const identity=_activeEconomyProposalIdentity(validated.proposal);
+      if(_activeEconomyProposalSuppressed(identity,at)){
+        _activePlanLog('economy proposal suppressed',{characterId:character.id,reason:'duplicate-within-window'});
+        return null
+      }
       try{
         const outcome=await sink({proposal:validated.proposal,idempotencyKey:validated.idempotencyKey,characterId:character.id});
+        /* ★ §12：只有**确定送达**才记账。一次 DELIVERY_UNKNOWN / 传输失败
+           不记入窗口 —— 否则一次超时会被写成"已经提议过"，而那正好把
+           "未知"当成了"买过了"。这里**没有**重试循环：这条链每次聊天只
+           走一次，失败就如实结束（transport unknown ≠ purchase failed，
+           也绝不演变成"立刻再买一次"）。 */
+        if(outcome&&outcome.ok===true&&outcome.delivery==='DELIVERED')_activeEconomyNoteProposal(identity,at);
         _activePlanLog('economy proposal sent',{characterId:character.id,delivery:outcome&&outcome.delivery,ok:!!(outcome&&outcome.ok)});
         return outcome||null
       }catch(e){
@@ -1153,8 +1381,19 @@ NS.expose('active.plans', {
   _activeValidatePlanResult: _activeValidatePlanResult,
   _activeValidateEconomyProposal: _activeValidateEconomyProposal,
   _activeEconomyProposalAllowed: _activeEconomyProposalAllowed,
+  _activeEconomyCatalogFacts: _activeEconomyCatalogFacts,
+  _activeEconomyProposalIdentity: _activeEconomyProposalIdentity,
+  _activeEconomyIdempotencyKey: _activeEconomyIdempotencyKey,
+  _activeEconomyProposalSuppressed: _activeEconomyProposalSuppressed,
   ACTIVE_ECONOMY_PROPOSAL_ACTION: ACTIVE_ECONOMY_PROPOSAL_ACTION,
   ACTIVE_ECONOMY_IDENTITY_KEYS: ACTIVE_ECONOMY_IDENTITY_KEYS,
+  ACTIVE_ECONOMY_PROPOSAL_FIELDS: ACTIVE_ECONOMY_PROPOSAL_FIELDS,
+  ACTIVE_ECONOMY_ACTION_FIELDS: ACTIVE_ECONOMY_ACTION_FIELDS,
+  ACTIVE_ECONOMY_CATALOG_FIELDS: ACTIVE_ECONOMY_CATALOG_FIELDS,
+  ACTIVE_ECONOMY_CATALOG_MAX_ITEMS: ACTIVE_ECONOMY_CATALOG_MAX_ITEMS,
+  ACTIVE_ECONOMY_REASON_MAX: ACTIVE_ECONOMY_REASON_MAX,
+  ACTIVE_ECONOMY_REPROPOSE_WINDOW_MS: ACTIVE_ECONOMY_REPROPOSE_WINDOW_MS,
+  ACTIVE_ECONOMY_REPROPOSE_MAX_ENTRIES: ACTIVE_ECONOMY_REPROPOSE_MAX_ENTRIES,
   _activeIsInDnd: _activeIsInDnd,
   _activeNextDndFree: _activeNextDndFree,
   _activePlanLog: _activePlanLog,

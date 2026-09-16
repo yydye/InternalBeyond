@@ -116,6 +116,28 @@ var _remoteFactory = (NS && typeof NS.createHomeNodeRemote === 'function')
 if (!_remoteFactory) { warn('remote-driver-missing', { ibHas: typeof (NS && NS.createHomeNodeRemote) }); return; }
 var remoteDriver = _remoteFactory({});
 
+/* ── P22-12 §9 · Active planner 的**只读**目录事实 seam ─────────────────
+   ★ 这只是把**既有**的 Home Node 只读客户端接到 Active 的规划器上：
+     规划器（assets/js/active-diary/active-plans.js）不认识 23118、不发起
+     任何请求、也不新增 Economy API —— 它读一个注入的只读 provider，而
+     provider 就是上面那个 remote driver 上那个**已经做过构造式投影**的
+     只读方法（economyCatalogFacts → 既有 GET /economy/products）。
+   ★ 注册是无条件的，**宣告**不是：模型那边是否被告知可以提议购买，由
+     IB.activeEconomyProposalEnabled 决定（它由 companion 是否真的配好了
+     经济通道决定）。注册这个 provider 不会让任何东西开始花钱，也不会让
+     任何一条读不到的路径变成"可以买"。
+   ★ 失败不抛：客户端自己已经把不可达归类成 {ok:false, products:[]}，
+     规划器拿到空目录的后果只有一个 —— 这次不宣告这个动作。因此这里
+     只把 products 交出去（信封留给需要区分"取不到"与"目录真的是空的"
+     的读者），而空/失败都收敛成 []。 */
+if (remoteDriver && typeof remoteDriver.economyCatalogFacts === 'function') {
+  NS.activeEconomyCatalogProvider = function (options) {
+    return remoteDriver.economyCatalogFacts(options).then(function (res) {
+      return (res && res.ok === true && Array.isArray(res.products)) ? res.products : [];
+    }, function () { return []; });
+  };
+}
+
 var authority = _authorityFactory({
   remote: remoteDriver,
   local: localDriver,

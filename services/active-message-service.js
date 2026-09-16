@@ -312,6 +312,28 @@ const economyChannel = createActiveEconomyChannelClient({});
      它**不**列经济事实（那是 P22-8 的名单），也不填任何默认值。 */
 const ACTIVE_ECONOMY_PROPOSAL_ACTION = 'economy_propose_purchase';
 const ACTIVE_ECONOMY_IDENTITY_KEYS = ['consumerId', 'consumer', 'capability', 'role', 'authority', 'approved', 'autoAllow'];
+/* ★ P22-12 §4：与浏览器侧**逐字相同**的构造式白名单（模型只能选择意图
+   字段）。它恰好是 P22-8 的 PURCHASE_INTENT_PROPOSAL_KEYS 减去 agentId
+   （由运行环境注入，不由模型自报）与 expiresAt（生命周期，P22-8 自己夹取）。
+   ★ 为什么两处都要有：它们挡的是**两件不同的事** —— 浏览器那份挡的是
+   "模型写了什么"，这份挡的是"任何绕过生产者的调用方递了什么"。两份必须
+   给出**同一个答案**，而这件事由 test_p22_12_economy_active_plan.js 的
+   等价矩阵（同一批 payload 喂给两个实现，逐条比较接受/拒绝）钉住，
+   不是靠注释承诺。 */
+const ACTIVE_ECONOMY_PROPOSAL_FIELDS = ['productId', 'recipientId', 'units', 'reason'];
+/* ★ 这一份守在**传输边界**上，而不是模型边界上，因此它比浏览器那份多**一个**
+   名字：agentId。
+   为什么必须多这一个：生产者的顺序是"模型选意图 → 运行环境补上本地身份
+   （agentId）→ 净化 → 送出"，因此到达 23114 的 payload **本来就应该**带着
+   agentId。把它也拦掉，等于把唯一的合法生产者挡在门外（开发期实测过：
+   症状是每一次真实提议都在 23114 拿到 400 economy-proposal-rejected）。
+   ★ 反过来，浏览器那一份**必须**拦它：那里是模型输出的入口，而
+   "我是谁"不由模型自报。
+   ⇒ 两份名单的差集恰好是 ['agentId']，这件事由
+   test_p22_12_economy_intent_producer.js 的等价矩阵逐条钉住，
+   而不是靠这段注释承诺。 */
+const ACTIVE_ECONOMY_WIRE_FIELDS = ['agentId'].concat(ACTIVE_ECONOMY_PROPOSAL_FIELDS);
+const ACTIVE_ECONOMY_REASON_MAX = 400;
 function sanitizeActiveEconomyProposal(raw) {
   if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const proposal = raw.proposal;
@@ -320,9 +342,46 @@ function sanitizeActiveEconomyProposal(raw) {
     if (Object.prototype.hasOwnProperty.call(proposal, key)) return null;
     if (Object.prototype.hasOwnProperty.call(raw, key)) return null;
   }
+  /* ② 白名单外的键 ⇒ 整条拒绝（与浏览器侧同款：价 格 / 金额 / 币种 /
+     余额 / 预算 / 批准 / autoAllow / 结算 / 账本 / 发放数量 都在这里结束）。
+     ★ 顶层键**不**在这里做白名单，这是刻意的：这一层是**投影**（返回值只含
+     {proposal, idempotencyKey}），因此顶层多出来的键本来就不会被转发 ——
+     再拒一次只会让一条无害的调用失败。而"模型写了不该写的东西"必须在**模型
+     边界**上被拒（浏览器那一份做白名单），不是在这里被悄悄丢掉。
+     开发期实测：这里曾经也拒顶层键，症状是 P22-11 的 bridge 直接红 ——
+     那个 fixture 的测试入口把整条 {command, commandId, idempotencyKey,
+     proposal} 交给这同一个净化器，于是"未知 command 应该被 23118 拒"这条
+     跨进程断言变成了"在 23114 就被拒"，也就测不到它要测的东西了。 */
+  const keys = Object.keys(proposal);
+  for (const key of keys) {
+    if (ACTIVE_ECONOMY_WIRE_FIELDS.indexOf(key) < 0) return null;
+  }
+  if (typeof proposal.agentId !== 'string') return null;
+  const agentId = proposal.agentId.trim();
+  if (!agentId || agentId.length > 200) return null;
+  if (typeof proposal.productId !== 'string') return null;
+  const productId = proposal.productId.trim();
+  if (!productId || productId.length > 200) return null;
+  const projected = { agentId: agentId, productId: productId };
+  if (proposal.recipientId != null) {
+    if (typeof proposal.recipientId !== 'string') return null;
+    const recipientId = proposal.recipientId.trim();
+    if (recipientId) {
+      if (recipientId.length > 200) return null;
+      projected.recipientId = recipientId;
+    }
+  }
+  if (proposal.units != null) {
+    if (typeof proposal.units !== 'number' || !Number.isSafeInteger(proposal.units) || proposal.units < 1) return null;
+    projected.units = proposal.units;
+  }
+  if (proposal.reason != null) {
+    if (typeof proposal.reason !== 'string') return null;
+    projected.reason = proposal.reason.trim().slice(0, ACTIVE_ECONOMY_REASON_MAX);
+  }
   const idempotencyKey = trimText(raw.idempotencyKey, 200);
   if (!idempotencyKey) return null;
-  return { proposal: proposal, idempotencyKey: idempotencyKey };
+  return { proposal: projected, idempotencyKey: idempotencyKey };
 }
 
 /* ------------------------------------------------------------------ */
@@ -345,9 +404,21 @@ const httpLayer = createHttp({
   proactiveTrace,
   credentialVault,
   /* P22-11：把通道与**同一个**净化器交给路由层。两者都缺席（分解装配 /
-     未配置通道）时 `/economy/propose-purchase` 那条分支根本不存在。 */
+     未配置通道）时 `/economy/propose-purchase` 那条分支根本不存在。
+     ★ P22-12 的唯一一处改动：把生产者给出的**稳定** idempotencyKey 也作为
+     命令身份交给通道（commandId 与 idempotencyKey 是这条通道对"一条 command"
+     的身份定义，见契约的 createCommandIdentity）。
+     为什么必须带：不带时通道会为每次调用**新生成**一个身份，于是"同一份模型
+     输出复读两次"在下游变成两条不同的请求身份，P22-8 的幂等那条腿就形同虚设
+     （只剩它自己的 60s 指纹窗口兜着）。带上它之后，同一份输出 → 同一个身份
+     → 下游给回**同一笔** Intent。这不是新增语义，只是不再把调用方已经算好的
+     身份丢掉。 */
   economyPropose: economyChannel.configured
-    ? input => economyChannel.proposePurchase({ proposal: input.proposal, idempotencyKey: input.idempotencyKey })
+    ? input => economyChannel.proposePurchase({
+      proposal: input.proposal,
+      commandId: input.idempotencyKey,
+      idempotencyKey: input.idempotencyKey
+    })
     : undefined,
   sanitizeEconomyProposal: sanitizeActiveEconomyProposal
 });
@@ -476,5 +547,8 @@ module.exports = {
   economyChannel,
   sanitizeActiveEconomyProposal,
   ACTIVE_ECONOMY_PROPOSAL_ACTION,
-  ACTIVE_ECONOMY_IDENTITY_KEYS
+  ACTIVE_ECONOMY_IDENTITY_KEYS,
+  ACTIVE_ECONOMY_PROPOSAL_FIELDS,
+  ACTIVE_ECONOMY_WIRE_FIELDS,
+  ACTIVE_ECONOMY_REASON_MAX
 };

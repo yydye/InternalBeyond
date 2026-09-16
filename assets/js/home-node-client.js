@@ -94,6 +94,26 @@ function _request(pathname, options) {
   });
 }
 
+/* ── P22-12 §9 · 商品 → 目录事实的**唯一**投影 ─────────────────────────
+   白名单构造式：结果里只有这六个键，而且值是字符串且长度有界。
+   ★ 它刻意**不**是 `delete` 列表：`/economy/products` 现在返回的字段里就有
+   currency / unitPriceMinor / grantQuantity，服务端将来还可能新增别的经济
+   字段 —— 白名单让那些字段**默认不可达**，而不是"记得去删它"。
+   ★ 这里也不判断"这个商品能不能买"：availability（status）只是事实，
+   能不能买是 P22-7/P22-8 的判定，不属于本函数。 */
+var ECONOMY_CATALOG_FACT_FIELDS = ['productId', 'name', 'description', 'kind', 'unitName', 'status'];
+var ECONOMY_CATALOG_FACT_MAX = 200;
+function economyCatalogFact(product) {
+  var src = (product && typeof product === 'object') ? product : {};
+  var fact = {};
+  for (var i = 0; i < ECONOMY_CATALOG_FACT_FIELDS.length; i++) {
+    var key = ECONOMY_CATALOG_FACT_FIELDS[i];
+    if (src[key] == null) continue;
+    fact[key] = String(src[key]).slice(0, ECONOMY_CATALOG_FACT_MAX);
+  }
+  return fact;
+}
+
 /* ── remote driver（chat-authority 的注入契约）────────────────────── */
 function createHomeNodeRemote(deps) {
   deps = deps || {};
@@ -151,6 +171,37 @@ function createHomeNodeRemote(deps) {
       return _request('/security');
     },
 
+    /* ── P22-12 §9 · 目录事实（只读 · 构造式投影）────────────────────
+       数据源是**既有**的 P22-5 读面 `GET /economy/products`（本文件不认识
+       任何新的 Economy API，也不新增端点）。它做且只做一件事：把服务端
+       那条**完整**的商品序列化投影成"商品是什么"。
+
+       ★ 为什么投影是构造式的而不是"删掉几个字段"：服务端的
+       serializeProduct 里真的有 currency / unitPriceMinor / grantQuantity
+       （`/economy/products` 是**桌面**读面，它的读者本来就有权看价格）。
+       而这份投影的唯一消费者是**模型 prompt**，因此价格、币种、发放数量
+       一律不进结果 —— 不是靠调用方记得别传，而是白名单里根本没有它们。
+       一份"减字段"的实现会在服务端**新增**一个经济字段时静默泄漏它。
+
+       ★ 返回形状：`{ok, products:[…], unreachable|error}`。失败**不抛**：
+       目录取不到只是"这次不宣告这个动作"，绝不能让一次网络抖动打断
+       规划链（调用方 fail closed 到空目录）。 */
+    economyCatalogFacts: function (options) {
+      options = options || {};
+      var qs = ['limit=' + encodeURIComponent(Number(options.limit) || 20)];
+      if (options.storeId) qs.push('storeId=' + encodeURIComponent(String(options.storeId)));
+      if (options.status) qs.push('status=' + encodeURIComponent(String(options.status)));
+      return _request('/economy/products?' + qs.join('&'), { timeoutMs: deps.catalogTimeoutMs || DEFAULT_TIMEOUT_MS })
+        .then(function (res) {
+          if (!res || res.ok !== true || !Array.isArray(res.products)) {
+            return { ok: false, products: [], error: (res && res.error) || 'catalog-unavailable' };
+          }
+          return { ok: true, products: res.products.map(economyCatalogFact), error: null };
+        }, function (error) {
+          return { ok: false, products: [], error: 'catalog-unreachable', detail: String((error && error.message) || error) };
+        });
+    },
+
     /* ── M1-B：桌面管理面（配对 / 设备 / 角色目录）─────────────────────
        这些路径**不是** mobile namespace：它们走 Home Node 既有的 loopback +
        token 保护，属于"本机特权客户端"的能力。设备 API 在 /mobile/v1/* 下，
@@ -202,6 +253,8 @@ NS.ibHomeNodeBase = ibHomeNodeBase;
 NS.ibHomeNodeMode = ibHomeNodeMode;
 NS.ibHomeNodeToken = ibHomeNodeToken;
 NS.createHomeNodeRemote = createHomeNodeRemote;
+NS.economyCatalogFact = economyCatalogFact;
+NS.ECONOMY_CATALOG_FACT_FIELDS = ECONOMY_CATALOG_FACT_FIELDS;
 NS.ibHomeNodeConstants = { DEFAULT_BASE: DEFAULT_BASE, DEFAULT_TIMEOUT_MS: DEFAULT_TIMEOUT_MS, MIGRATION_TIMEOUT_MS: MIGRATION_TIMEOUT_MS };
 
 /* ── memory remote driver（memory-authority 的注入契约）──────────────

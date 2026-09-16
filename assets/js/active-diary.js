@@ -1252,15 +1252,65 @@ async function _activeCompanionRequest(path,opts){
   }finally{clearTimeout(tm)}
 }
 function _activeSetServiceStatus(online){
-  const changed=_activeCompanionOnline!==!!online;_activeCompanionOnline=!!online;if(!online)_activeCompanionReady=false;const el=document.getElementById('active-service-status');if(!el)return;
+  const changed=_activeCompanionOnline!==!!online;_activeCompanionOnline=!!online;if(!online)_activeCompanionReady=false;
+  /* ★ P22-12：这个服务一旦不可达，经济 command 通道就不可用 ——
+     于是模型那边也不再被告知可以提议购买。放在这里（而不是只在
+     /health 的 catch 里）是因为**每一条**离线转移都经过这个函数，
+     而"上一轮 health 说 true、这一轮服务没了"必须立刻收敛成 false。 */
+  if(!online)_activeEconomyGate(false);
+  const el=document.getElementById('active-service-status');if(!el)return;
   el.classList.toggle('online',!!online);el.textContent=online?(_activeCompanionReady?'已连接 · 已同步':'已连接 · 待同步'):'未连接'
   if(changed&&currentPage==='active')setTimeout(_activeRenderSettings,0)
 }
+/* ── P22-12 §11 · 经济提案的**生产者侧**接线 ─────────────────────────────
+   两件事，各自只有一个来源：
+     ① 闸门：NS.activeEconomyProposalEnabled。它只由 companion 的
+        /health（同一个本机服务的只读响应）里的 economy_proposals_enabled
+        决定 —— 也就是说"prompt 里宣告这个动作"与"这个部署真的配好了
+        command 通道"是**同一个条件**。未连接 / 字段为假 / 字段缺席时
+        一律 false（fail closed），与 P22-11 的默认逐字相同。
+     ② 出口：NS.activeEconomyProposalSink。它用**既有**的 companion 传输
+        （_activeCompanionRequest → POST /economy/propose-purchase，P22-11
+        就在那条路由上）把一条**已经净化过**的提案交出去。本文件不认识
+        23118、不认识凭据、也不做第二次净化 —— 净化器是 active-plans.js
+        那一份，Home Node 侧另有权威的一份。
+   ★ 出口**不**重试、不轮询、不补偿：§12 要求一次超时/未知不得演变成
+     "立刻再买一次"，而"未知"必须原样留在 delivery 里，不能被写成任何
+     购买结论。 */
+function _activeEconomyGate(available){
+  const on=available===true;
+  try{NS.activeEconomyProposalEnabled=on}catch(e){}
+  return on
+}
+async function _activeEconomyProposalSink(input){
+  const body={proposal:input&&input.proposal,idempotencyKey:input&&input.idempotencyKey};
+  try{
+    return await _activeCompanionRequest('/economy/propose-purchase',{method:'POST',timeout:12000,body:body})
+  }catch(e){
+    /* ★ 失败**不是**购买失败。这里合成的是与通道同族的"传输"结论：
+       非 2xx 一律 TRANSPORT_FAILED，并把 HTTP 码原样带回去。
+       ★ 400 是**本机守护**（companion 那份净化器）在触到传输之前就拒了，
+         因此额外记一个 rejectedBeforeTransport —— 它同样不是一条购买
+         裁决，只是"这条提议根本没出去"。
+       ★ 这里没有重试：一次失败就是一次失败，如实返回。 */
+    const status=Number(e&&e.status)||0;
+    return{ok:false,delivery:'TRANSPORT_FAILED',httpStatus:status||null,
+      rejectedBeforeTransport:status===400,
+      notAPurchaseVerdict:true,
+      detail:String(e&&e.message||e).slice(0,200)}
+  }
+}
+NS.activeEconomyProposalSink=_activeEconomyProposalSink;
 async function _activeCheckCompanion(showToast,force){
   if(Date.now()-_activeCompanionCheckedAt<15000&&!showToast&&!force)return _activeCompanionOnline;
   _activeCompanionCheckedAt=Date.now();
-  try{await _activeCompanionRequest('/health',{timeout:1800});_activeSetServiceStatus(true);if(showToast){const synced=await _activeSyncAllBackground();toast(synced?'后台服务连接正常，计划已同步':'后台服务已连接，但计划同步未完成，请重试')}return true}
+  try{
+    const health=await _activeCompanionRequest('/health',{timeout:1800});
+    _activeSetServiceStatus(true);
+    _activeEconomyGate(!!(health&&health.economy_proposals_enabled));
+    if(showToast){const synced=await _activeSyncAllBackground();toast(synced?'后台服务连接正常，计划已同步':'后台服务已连接，但计划同步未完成，请重试')}return true}
   catch(e){
+    _activeEconomyGate(false);
     _activeSetServiceStatus(false);
     if(showToast){
       /* P3：普通用户只看能力层面的影响；「后台服务 404 / ECONNREFUSED」进「查看详情」 */

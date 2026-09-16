@@ -190,6 +190,16 @@ function createHttp(ctx) {
           reply_chains: Object.keys(s.replyChains || {}).length,
           pending_events: Object.values(s.events).filter(event => !event.acknowledged).length,
           armed_users: armedUsers.size,
+          /* ── P22-12 §11 · 一个只读布尔，不是什么新 API ────────────────
+             它回答的只有一个问题："这个部署到底有没有接上经济 command
+             通道？" —— 也就是 economyPropose 那个注入点在不在。浏览器侧
+             的 Active 规划器据此决定**要不要向模型宣告** propose_purchase
+             这个动作：未配置通道的部署里，prompt 里连那个动作名都不会出现。
+             ★ 它不携带任何权威事实：没有余额、没有预算、没有批准状态、
+               没有账本、没有门。它只说"这条腿接没接上"。
+             ★ 它也不放宽任何东西：为 false 时那条 POST 分支根本不存在
+               （逐字与 P22-11 相同，404 economy-channel-not-configured）。 */
+          economy_proposals_enabled: typeof economyPropose === 'function',
           now: Date.now()
         });
         return;

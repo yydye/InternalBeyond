@@ -688,7 +688,38 @@ const GROUPS = [
          0 leftover**，一对 fixture 的生命周期里跑完全部用例；单进程能证明
          的（认证 / 来源 / 信封 / 幂等 / 超时）一个 child 都不开。 */
       ['test_p22_11_economy_command_channel.js'],
-      ['test_p22_11_economy_active_bridge.js']
+      ['test_p22_11_economy_active_bridge.js'],
+      /* ── P22-12 · Economy Intent Producer ───────────────────────────────
+          P22-11 结束时留下了一句必须被兑现的话：动作在净化边界上被接受，
+          但**今天没有任何生产代码会主动发出它**。P22-12 补上生产者 ——
+          而且只补生产者：
+            producer —— 单进程 · 真实文件（四个真实浏览器文件在一个 vm 沙箱里
+                        按 InternalBeyond.html 的顺序求值）· 真实 in-process
+                        23114 路由（createHttp 工厂）+ 真实 P22-11 通道客户端：
+                        §11 真实 prompt（buildPlanPrompt）在**真的有目录事实**
+                        时才宣告这个动作、§3 只给语义不给 authority（"你有权
+                        购买/余额足够就买/预算允许/已批准/自动结算/有钱就花/
+                        定期消费"逐句断言不存在）、§4 模型只能选四个意图字段
+                        （二十二个经济事实 / authority 键逐个被拒，且净化器
+                        代码里一个事实键名都没有——白名单而不是黑名单）、
+                        §4 agentId 由本地角色配置注入而不由模型自报、§5 `none`
+                        走完整条真实链之后零请求、§6/§7/§8 的语义边界、
+                        §9 目录注入只有六个只读事实（价格/币种/发放数量不进
+                        prompt）、§10 同一份模型输出两次 → 同一个 canonical
+                        身份（两条腿：幂等 + P22-8 的 60s 指纹窗口）、
+                        §12 malformed / 偷渡 / 不可达一律 fail closed 且
+                        transport unknown ≠ purchase failed；
+            plan     —— 边界与 authority：只扩 active_agent_runtime（bind 仍然
+                        恰好一处）、九个禁止动作名零出现、生产者零经济句柄 /
+                        零 require / 零 23118、闸门只有一个写入点且由 companion
+                        的 /health 驱动（默认 false）、批准面没有被顺手打开、
+                        目录走**既有** GET /economy/products 且投影是构造式的、
+                        经济侧四份文件完全不认识生产者。
+          ★ §12 的进程纪律：**max concurrent child = 0 · total spawn = 0 ·
+          0 leftover**。P22-11 已经用两个真实进程证明过跨进程通道，本阶段
+          不再重跑那套证明；所有自有 invariant 都是单进程可判定的。 */
+      ['test_p22_12_economy_intent_producer.js'],
+      ['test_p22_12_economy_active_plan.js']
     ]
   },
   {
