@@ -917,7 +917,51 @@ const GROUPS = [
               没有任何按钮、页面上没有表单与 submit。 */
       ['test_p22_20_economy_external_boundary.js'],
       ['test_p22_20_economy_boundary_injection.js'],
-      ['test_p22_20_economy_public_surface.js']
+      ['test_p22_20_economy_public_surface.js'],
+      /* P22-21：Economy v1 的**最终闭包审计与冻结**（这一阶段刻意
+         production diff = 0，也不实现任何 future capability）。
+           ① freeze —— 解析 `docs/ECONOMY_V1_FROZEN_CONTRACT.md` 的每一张表，
+              与真实代码逐格比对：schema 水位 / 28 条读面 + /security /
+              三条写面及其词表与信封 / capability 与 consumer 矩阵 /
+              六个币种 / 两个资产类别 / 52 个事件类型 / 六个状态机的
+              状态与转移 / 外部边界（含"实际 require 说明符恰好 8 个"）/
+              九个 UI 模块 / 七个生产文件。★ 每一个集合比较都**报成员名**
+              （`newInCode_notInManifest` / `inManifest_butGoneFromCode`），
+              并带一句 verdict：新增路由 / REFUND / PROVIDER_TOPUP / 第 8 个
+              Economy 生产文件都必须声明新阶段，而不是静默扩 v1。
+              `FUTURE_NOT_PRESENT` 的 11 个词逐条区分"标识符存在"与
+              "capability 存在"（`REFUND` / `EXCHANGE` 只出现在账本交易类型
+              词表里），并有守卫**灵敏度自测**（往 manifest 的内存副本里注入
+              一条哨兵，断言 diff 逐名报出它）。纯 Node，零 socket。
+           ② golden path —— 一次真正的 fresh install：真实 buildHomeNode +
+              真实 HTTP + 真实 SQLite。BOOTSTRAP_CREDIT → PUT_BUDGET_POLICY
+              → PUT_AUTONOMY_POLICY → 目录 fixture（显式标记目录管理面
+              **故意不在** v1 公开面上）→ Active command → Intent
+              (WAITING_APPROVAL) + Approval(PENDING) → 用户决定 seam APPROVE
+              → resume → 购买 COMPLETED → 账本一笔平衡交易 → 库存恰好发放一次
+              → owner-scoped 时间线不泄漏另一个 owner → UI 纯层投影显示的
+              就是 canonical 最终状态。另有 §1 authority graph（用一层**只读
+              记账代理**记录真实的 `调用者文件 → store 方法` 调用边，shortcut
+              edge 逐一为 0）、§5 exactly-once 七层重放（producer / transport
+              / intent / decision / resume / settlement / restart 之后，购买数、
+              库存量、账本 delta 三者逐字不变）、§10 六条失败金路径
+              （预算拒绝 / 批准拒绝 / 批准过期 / 报价过期 / 重复请求 /
+              畸形权威注入）。★ 本进程两个实例、每个恰好 1 个 socket，
+              零 spawn、零浏览器；临时目录在 exit 上退避删除。
+           ③ closure audit —— §0 阶段账本（22 个 authority 各恰好一个定义点：
+              C = 0 / D = 0）· §2 写面普查（39 个经济 mutation 动词逐类计数：
+              生产可达 7 · 内部编排 32 · tests-only 0 · dead 0 ·
+              suspicious bypass 0，并单独证明唯一的"读面传递可达写"是
+              派生缓存修复）· §3 读面普查（CODE−DOC = 0 且 DOC−CODE = 0，
+              两份文档互相一致）+ owner-scope 对抗性 fixture（交错噪声 +
+              分页截断取最新一段）· §4 四个状态机叉积（可达组合由真实
+              fixture 生成，六个"不可能但可观测"的候选逐条证伪）·
+              §6 崩溃边界（一次结算 = 恰好一个事务，`COMMIT` 只出现在
+              withTransaction 里）· §7 四资源的四条"无路径"证明 ·
+              §8 UI authority（六条泄漏形态零命中）。零 socket。 */
+      ['test_p22_21_economy_v1_freeze.js'],
+      ['test_p22_21_economy_golden_path.js'],
+      ['test_p22_21_economy_v1_closure_audit.js']
       /* P22-18 的浏览器视觉核对（test_p22_18_economy_experience_visual.js）
          与 P22-15/16/17 那三条一样**不在**默认套件里（它要开一个真实
          浏览器）：2 主题 × 4 宽度（含 320px）+ 截断/空/展开四种状态。
