@@ -425,7 +425,7 @@ P22 全量（27 个文件）
   test_p22_11_economy_command_channel   65   ← 本阶段新增（0 child）
   test_p22_11_economy_active_bridge     17   ← 本阶段新增（2 child / 0 leftover）
   ---------------------------------------------------------------
-  合计 2618 checks · 0 failed
+  合计 2614 checks · 0 failed（提交后复跑，逐文件 0 failed）
 ```
 
 ### 12.1 本阶段修改的既有断言（四类，逐条有理由）
@@ -449,7 +449,43 @@ P22 全量（27 个文件）
 ```text
 tests/test_p22_11_economy_command_channel.js   连跑 3 次：全绿（端口与幂等无抖动）
 tests/test_p22_11_economy_active_bridge.js     连跑 2 次：全绿，且两次都是 2/2/0
+tests/test_p22_5_economy_runtime.js            连跑 2 次：全绿（见下面的已知抖动）
 ```
+
+### 12.3 aggregate（提交后）
+
+```text
+static  108 项 · 373.6s · 4 失败
+service  29 项 · 109.2s · 全部通过
+browser  66 项 · 869.2s · 11 失败（全部为基线失败：Home Node offline / CDP 面）
+```
+
+那 4 项 static 失败逐条说明：
+
+| 失败项 | 判定 |
+|---|---|
+| `test_cache_audit.js` | **已知基线失败**（economy 引用为 0，全量前提交前同款） |
+| `test_middle_brain_convergence_counterproof.js` | **已知基线失败**（变异 harness 起不来，economy 引用为 0） |
+| `test_p22_7_economy_runtime.js` | **负载抖动**：D8（两个真实进程同时决定同一条批准）在 aggregate 的一次运行里少了一个见证进程的读数。单跑 / 连跑 **2 次全绿**。 |
+| `test_p22_8_economy_runtime.js` | **负载抖动**：D6a（两个见证人的读数必须逐字一致）同源。单跑 / 连跑 **2 次全绿**。 |
+
+★ 这两条与 P22-5 的 E1 是**同一类**：多进程 race 组在机器被 aggregate
+压满时会出现 SQLite 写锁竞争（`db-busy`），而它们的断言对时序敏感。
+本阶段没有改 `economy-store.js`、也没有改这两个文件，因此**不是** P22-11
+引入的回归 —— 但这条记录留在这里，让下一个人不必重新判定一次。
+
+### 12.4 一条**没有**被本阶段顺手修掉的既有抖动
+
+在全量 aggregate 的**前一次**运行里，`test_p22_5_economy_runtime.js` 的
+E1 组也出现过一次 `db-busy — database is locked`（四个真实 worker 同时
+`open()` 同一个库；`open()` 遇到 SQLITE_BUSY 时没有重试）。
+它单跑与连跑都是绿的，而且本阶段没有改 `economy-store.js`、`open()` 或
+那个 worker fixture。
+
+⇒ 判定：**既有的、由机器负载诱发的抖动**，不是 P22-11 引入的回归。
+它**没有**被本阶段顺手修掉 —— 那属于 P22-5 的领域，而 P22-11 的范围
+纪律不允许顺手改别的模块。这条记录留在这里，是为了让下一个人不必再
+花时间重新判定它是谁的问题。
 
 ---
 
