@@ -431,16 +431,50 @@ P22-11 已经用两个真实进程证明过跨进程通道，本阶段**没有**
 
 ---
 
-## §15 回归与提交
+## §15 回归与证据
 
-* `tests/test-all.js` 登记了两个新文件（同一个 GROUPS 块里）。
-* P22-1 ~ P22-12 **全量 29 个文件**：`ran=29 failed=0`。
-* 聚合（static + service）结果见提交信息与 §16。
+### 15.1 P22 全量（提交后）
+
+```text
+ran = 29 · failed = 0
+```
+
+`tests/test-all.js` 里新登记的两个文件都在同一个 GROUPS 块里，
+并且它们是这一轮里**独立跑出来的**（不是只在聚合里被顺带跑到）。
+
+### 15.2 聚合（提交后，`node tests/test-all.js --quick`）
+
+```text
+static  110 项 · 361.4s · 5 失败
+service  29 项 · 112.0s · 全部通过
+总耗时 468.1s · 3 项失败
+```
+
+新增的两条使 static 从 108 变成 110。提交后**逐个复核**过每一项失败：
+
+| 用例 | 单独跑 | 判定 |
+|---|---|---|
+| `test_frontend_structure.js` | **exit 0** | 曾因本阶段四个文件被工具抹掉 BOM 而红（4 条 `encoding.bom.*`）；**已修**，提交后逐字变绿 |
+| `test_astra_readiness_observe.js` | **exit 0** | `Z1.noProductionFileChanged` 在提交前必然红（它观测"生产文件是否被改动"）；**提交后逐字变绿** —— 这本身就是"它不是回归"的独立证据（与 P22-11 同一现象） |
+| `test_cache_audit.js` | exit 1 | **已知基线失败**（economy 引用 0，与 P22 无关） |
+| `test_middle_brain_convergence_counterproof.js` | exit 1 | **已知基线失败**（同上） |
+| `test_p22_7_economy_runtime.js` | **exit 0** | 多进程 race 组在聚合负载下的抖动；单独跑、以及 P22 全量里的那一次都是绿的。本阶段没有改这个文件，也没有改 `economy-store.js` |
+
+⇒ 提交后剩下的 3 项失败 = **2 项已知基线 + 1 项已知负载抖动**，
+与 P22-11 记录的图景一致（P22-11 那一轮抖动的是 p22_7 与 p22_8 两条）。
+
+### 15.3 一个真实的开发期缺陷：BOM
+
+本阶段的四个浏览器文件都被编辑工具**抹掉了 UTF-8 BOM**，而
+`test_frontend_structure.js` 的 `encoding.bom.*` 逐文件要求它。
+这是 P22-11 发生过一次的**同一类**事故（当时是 `active-plans.js`）——
+两轮都靠 aggregate 抓到、靠一个"补 BOM 并复跑该文件"的最小动作修掉。
+教训写在这里而不是只留在提交里：**编辑 `assets/` 下的文件之后，
+`test_frontend_structure.js` 必须复跑一次**。
 
 ---
 
 ## §16 本阶段**没有**做的事（逐条说明，而不是省略）
-
 1. **没有改任何生产 prompt 的既有部分** —— 新增的是一个**条件块**，
    闸门关着时 prompt 与 P22-11 逐字节相同（A1、A2）。
 2. **没有开 Approval UI / 用户批准入口。** P22-10 的 `NO_APPROVAL_TRIGGER_SEAM`
