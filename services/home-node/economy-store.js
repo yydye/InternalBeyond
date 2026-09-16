@@ -349,6 +349,45 @@ function stableStringify(value) {
   return JSON.stringify('<unserializable:' + t + '>');
 }
 
+/* ── P22-19 · change log 的归属谓词与 owner 键 ────────────────────────
+   ★ 归属只有**一处**实现（这里 + SQL.selectChangesByOwner{Asc,Desc}）。
+     在此之前它在浏览器解释层（P22-18 的 changeBelongsTo），而那条规则
+     有两个实测出来的结构性缺陷，见 listChangesForOwner 的说明。
+
+   一个 owner 在 change log 里可能出现的样子：
+   ★ 两种拼写**都是** canonical 的，因此这里不是"容错"，而是把契约的
+     封闭 party 类型集合逐一列出来：`character:char_a` 与 `char_a` 指的是
+     同一个 party，读面必须同时认。
+   ★ 词表来自契约的 `PARTY_TYPES`（封闭三词），不在这里另写一份。 */
+function ownerScopedChangeKeys(ownerKey, partyTypes) {
+  const types = Array.isArray(partyTypes) ? partyTypes : [];
+  const keys = [ownerKey];
+  for (let i = 0; i < types.length; i += 1) {
+    const t = String(types[i]);
+    if (t) keys.push(t + ':' + ownerKey);
+  }
+  return keys;
+}
+
+/* owner 归属谓词（canonical `affectedOwner` 的**唯一**实现）。
+   参数 `n` 是 owner 键的个数；四个证据分支见
+   SQL.selectChangesByOwnerAsc 上面的说明。
+   占位符的次序是固定的：E1、E2、E3×3、E4 —— 绑定侧必须逐个对应。 */
+function changeOwnerPredicate(n) {
+  const list = 'IN (' + new Array(n).fill('?').join(',') + ')';
+  return '(' +
+    'wallet_id IN (SELECT wallet_id FROM ' + WALLETS_TABLE + ' WHERE owner_id = ?)' +
+    ' OR transaction_id IN (SELECT e.transaction_id FROM ' + ENTRIES_TABLE + ' e' +
+      ' JOIN ' + WALLETS_TABLE + ' w ON w.account_id = e.account_id' +
+      ' WHERE w.owner_id = ? AND e.transaction_id IS NOT NULL)' +
+    ' OR (json_valid(payload_json) AND (' +
+      'json_extract(payload_json, \'$.ownerId\') ' + list +
+      ' OR json_extract(payload_json, \'$.buyerId\') ' + list +
+      ' OR json_extract(payload_json, \'$.agentId\') ' + list + '))' +
+    ' OR entity_id IN (SELECT approval_id FROM ' + APPROVALS_TABLE + ' WHERE buyer_id = ?)' +
+    ')';
+}
+
 function createEconomyStore(deps) {
   deps = deps || {};
   const dataDir = deps.dataDir || process.cwd();
@@ -553,6 +592,35 @@ function createEconomyStore(deps) {
     insertChange:
       'INSERT INTO ' + CHANGE_LOG_TABLE + ' (revision, kind, entity_id, transaction_id, wallet_id, at, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?)',
     selectChanges: 'SELECT revision, kind, entity_id, transaction_id, wallet_id, at, payload_json FROM ' + CHANGE_LOG_TABLE + ' WHERE revision > ? ORDER BY revision ASC LIMIT ?',
+    /* ── P22-19 · owner-scoped 的 change 读面（**唯一**的归属实现）────────
+       ★ 为什么它必须在 SQL 里、而不是"取一段再在 JS 里筛"：change log 是
+         **全局**的（所有 owner、所有货架、所有商品、所有 intent 共用一本），
+         而分页是 `revision` 上的 keyset。先取一页再筛，筛出来的是"这一页
+         里的那些"，不是"这个 owner 的那些" —— 见 docs §3.2 的对抗性反证。
+       ★ 归属判据（canonical `affectedOwner`，四处证据的**析取**）：
+         E1 `wallet_id` 属于该 owner 的钱包（列本身就是 canonical 的）；
+         E2 这笔账本交易动到的钱包里有该 owner 的（**列只记 touched[0]**，
+            所以必须走 entries；见 appendChange 的调用点与
+            docs §2.4 的 `payload.wallets[]` 实测）；
+         E3 payload 里的当事人字段（ownerId / buyerId / agentId）等于该
+            owner —— 两种 canonical 拼写**都认**（裸 id，以及
+            `<partyType>:<id>`；见 docs §2.3 的实测差异）；
+         E4 该 change 的 entity_id 是一条**属于该 owner 的批准**
+            （APPROVAL_* 的 owner 权威在 approvals 行上，不在 payload 里：
+            APPROVAL_EXPIRED 的 payload **一个 owner 字段都没有**）。
+         ★ 刻意**不含** `recipientId`：一次"买给别人"是**买家**的钱动了，
+           收礼的人余额没有变化（P22-18 的决定，本阶段不倒退）。
+         见 docs §6 的 gift 语义。
+       ★ `json_valid` 守卫是必要的，不是防御性编程：`listChanges` 的 JS
+         读取路径对坏 JSON 是 try/catch（返回 null），而 SQL 的
+         `json_extract` 遇到坏 JSON 会**整个查询报错** —— 一行历史数据形状
+         异常不该让整条时间线打不开。 */
+    selectChangesByOwnerAsc:
+      'SELECT revision, kind, entity_id, transaction_id, wallet_id, at, payload_json FROM ' + CHANGE_LOG_TABLE +
+      ' WHERE revision > ? AND %PREDICATE% ORDER BY revision ASC LIMIT ?',
+    selectChangesByOwnerDesc:
+      'SELECT revision, kind, entity_id, transaction_id, wallet_id, at, payload_json FROM ' + CHANGE_LOG_TABLE +
+      ' WHERE revision < ? AND %PREDICATE% ORDER BY revision DESC LIMIT ?',
     maxChangeRevision: 'SELECT MAX(revision) AS m FROM ' + CHANGE_LOG_TABLE,
     countChanges: 'SELECT COUNT(*) AS c FROM ' + CHANGE_LOG_TABLE,
 
@@ -2637,12 +2705,13 @@ function createEconomyStore(deps) {
     return db.prepare(SQL.selectTransactions).all(limit).map(rowToTransaction);
   }
 
-  function listChanges(cursor, limit) {
-    requireOpen();
-    const from = Number(cursor) || 0;
-    const size = Math.max(1, Math.min(500, Number(limit) || 200));
-    const rows = db.prepare(SQL.selectChanges).all(from, size);
-    return rows.map(r => ({
+  /* ── P22-19 · change log 的一行 → 读面形状 ──────────────────────────
+     刻意是**一个**函数：`listChanges`（全局）与 `listChangesForOwner`
+     （owner-scoped）必须逐字给出同一种行。两处各写一遍映射迟早会漂移，
+     而"同一个 revision 在两个读面上形状不同"是最难查的一类不一致。
+     `payload_json` 坏了时返回 null 而不是抛 —— 与 P22-2 起的读法一致。 */
+  function rowToChange(r) {
+    return {
       domain: C.DOMAIN,
       revision: Number(r.revision),
       kind: String(r.kind),
@@ -2651,7 +2720,88 @@ function createEconomyStore(deps) {
       walletId: r.wallet_id == null ? null : String(r.wallet_id),
       at: Number(r.at),
       payload: (() => { try { return JSON.parse(r.payload_json); } catch (_) { return null; } })()
-    }));
+    };
+  }
+
+  function listChanges(cursor, limit) {
+    requireOpen();
+    const from = Number(cursor) || 0;
+    const size = Math.max(1, Math.min(500, Number(limit) || 200));
+    const rows = db.prepare(SQL.selectChanges).all(from, size);
+    return rows.map(rowToChange);
+  }
+
+  /* ══ P22-19 · owner-scoped change 读面 ═══════════════════════════════
+     这是 Economy 里**唯一**一处"一条 change 是否属于某个 owner"的实现。
+     在此之前，这条规则存在于浏览器解释层（P22-18 的 changeBelongsTo），
+     而它有两个结构性缺陷（都是实测出来的，见 docs §2/§3）：
+
+     ① 逐字比较撞上两种 canonical 拼写。生产 payload 里 `buyerId` 既可能
+        是裸 party id（QUOTE_CREATED / PURCHASE_CREATED / APPROVAL_REQUESTED），
+        也可能是 `<partyType>:<id>`（APPROVAL_APPROVED / REJECTED /
+        CONSUMED —— 它们用的是 partyKeyOf）。逐字比较于是**必然漏掉**
+        这三类，而它们恰好是"用户点过头的证据"。这一条不修写入侧：那三行
+        的拼写在**别的**读面上是被冻结的 canonical 形状
+        （serializeApproval().buyerId === 'character:…'，
+        test_p22_7_economy_approval.js:468 逐字断言），而 change log 是
+        已经写下的历史 —— 无论写入侧怎么改，历史行仍然是两种拼写并存。
+        因此归一化**必须**发生在读的一条实现里。
+     ② APPROVAL_EXPIRED 的 payload **没有任何 owner 字段**（只有
+        approvalId）。它的 owner 权威在 approvals 行上，浏览器没有那张表，
+        于是它永远无法归属。
+
+     还有第三条，属于分页语义而不是字段语义：本函数之前的读法是"从最早
+     往新的一页页取"，而 change log 是**全局**的。先取一页再在 JS 里筛，
+     截断时留下的是**最旧**的一段 —— 那时页面把"最旧的一段"叫作"最近
+     活动"就是错的（docs §3.2 的对抗性反证）。
+
+     ★ 本函数**只**做 filter / sort / project：它不重算余额、不重判预算、
+       不重判批准有效性、不重判报价有效性、不重判购买结果、不重算库存
+       数量、不重判自主裁决。返回的每一行都是 change log 那一行本身。 */
+  function listChangesForOwner(options) {
+    requireOpen();
+    const o = options || {};
+    /* owner 键与其它 owner-scoped 读面**同一个词表**：裸 party id
+       （`char_a`、或用户方 `user`）。ref 形态（`character:char_a`）在这里
+       被拒，而不是被悄悄接受 —— "一个 owner 只有一种写下来的样子"，
+       否则每个读面都要各自猜一次。 */
+    const ref = partyInput(o.ownerId);
+    if (!ref || ref.ok !== true) {
+      return { ok: false, changes: [], errors: (ref && ref.errors) || ['party-ref-invalid'], scope: null };
+    }
+    const ownerKey = String(ref.party.id);
+    const order = o.order == null ? 'asc' : String(o.order).toLowerCase();
+    if (order !== 'asc' && order !== 'desc') {
+      return { ok: false, changes: [], errors: ['change-order-not-supported'], scope: null };
+    }
+    const size = Math.max(1, Math.min(500, Number(o.limit) || 200));
+    /* cursor 的语义按方向各自是 keyset：
+         asc  —— "取 revision 大于它的"；缺省 0 即"从最早的那条开始"；
+         desc —— "取 revision 小于它的"；缺省即"从**最新**的那条开始"。
+       两个方向都用同一本账上的同一个键（revision），因此顺序是稳定的，
+       而方向只决定从哪一端进入。 */
+    const rawCursor = Number(o.cursor) || 0;
+    const cursor = order === 'desc'
+      ? (rawCursor > 0 ? rawCursor : Number.MAX_SAFE_INTEGER)
+      : rawCursor;
+
+    const ownerKeys = ownerScopedChangeKeys(ownerKey, C.PARTY_TYPES);
+    const sqlText = (order === 'desc' ? SQL.selectChangesByOwnerDesc : SQL.selectChangesByOwnerAsc)
+      .replace('%PREDICATE%', changeOwnerPredicate(ownerKeys.length));
+    const params = [cursor];
+    /* 占位符的次序与 changeOwnerPredicate 里的写法逐个对应。 */
+    params.push(ownerKey);          /* E1 wallet 列 */
+    params.push(ownerKey);          /* E2 账本交易动到的钱包 */
+    for (let i = 0; i < 3; i += 1) for (let j = 0; j < ownerKeys.length; j += 1) params.push(ownerKeys[j]); /* E3 ×3 字段 */
+    params.push(ownerKey);          /* E4 批准行 */
+    params.push(size);
+    const rows = db.prepare(sqlText).all(...params);
+    return {
+      ok: true,
+      changes: rows.map(rowToChange),
+      errors: [],
+      scope: { ownerId: ownerKey, ownerKeys: ownerKeys.slice(), order: order, scoped: true }
+    };
   }
 
   /* ══════════════════════════════════════════════════════════════════
@@ -14692,6 +14842,9 @@ function createEconomyStore(deps) {
     getTransaction: getTransaction,
     listTransactions: listTransactions,
     listChanges: listChanges,
+    /* P22-19：owner-scoped 的 change 读面。它是 Economy 里**唯一**一处
+       "一条 change 属于谁"的实现；HTTP 侧只把 ownerId 透传过来。 */
+    listChangesForOwner: listChangesForOwner,
     ledgerTopology: ledgerTopology,
 
     /* 唯一写入口 */

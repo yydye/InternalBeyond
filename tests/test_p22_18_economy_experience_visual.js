@@ -190,26 +190,18 @@ const SEED = `(function(){
   };
   var NOW = 1760000000000;
   var W = 'econ_wallet_vis';
-  /* ★ change log 按 canonical 的语义给：从最早的往新的一页一页发。
-     这里一次给完（短页 ⇒ 外壳只发一次请求）。 */
+  var OTHER = { revision: 101, kind: 'PURCHASE_COMPLETED', entityId: 'econ_pur_other', walletId: 'econ_wallet_other',
+    at: NOW - 500000, payload: { domain: 'economy', buyerId: 'agent_zzz',
+      purchaseId: 'econ_pur_other', amountMinor: '999900', currency: 'IB_CREDIT' } };
+  /* ★ change log 按 canonical 的**真实语义**给（P22-19）：
+       带 ownerId  ⇒ owner 作用域，按 order（这一页要 desc）排序，按
+                     (cursor, limit) 做 keyset；
+       不带 ownerId ⇒ 全局读面（里面**确实**有别人的一行）。
+     于是"外壳到底有没有带 ownerId"是一件可以被这个夹具**证伪**的事：
+     它一旦不带，页面上就会多出 9999.00 那一条。 */
   function push(arr, row) { arr.push(row); return arr; }
-  function changes(query) {
-    if (window.__ibWorld.empty) return { ok: true, revision: 0, changes: [] };
-    /* ★ 满页：每页恰好 500 条（canonical 自己的上限），revision 严格递增——
-       于是外壳只有走到第 6 页才会发现自己被挡住了。canonical 的响应里
-       **没有** truncated 字段，因此"被截断"这条路径只有这样才走得出来。 */
-    if (window.__ibWorld.truncated) {
-      var mm = /cursor=(\d+)/.exec(String(query || ""));
-      var from = mm ? Number(mm[1]) : 0;
-      var page = [];
-      for (var i = 1; i <= 500; i += 1) {
-        push(page, { revision: from + i, kind: "RESERVATION_CREATED", entityId: "econ_res_full_" + (from + i),
-          walletId: W, at: NOW - 90000000 + (from + i) * 1000,
-          payload: { domain: "economy", ownerId: "agent_a", amountMinor: "100", currency: "IB_CREDIT" } });
-      }
-      return { ok: true, revision: from + 500, changes: page };
-    }
-    var rows = [
+  function scopedRows() {
+    return [
       { revision: 10, kind: 'WALLET_OPENED', entityId: W, walletId: W, at: NOW - 90000000,
         payload: { domain: 'economy', ownerId: 'agent_a' } },
       { revision: 20, kind: 'ECONOMY_INITIAL_CREDIT_BOOTSTRAPPED', entityId: W, walletId: W, at: NOW - 89000000,
@@ -220,8 +212,9 @@ const SEED = `(function(){
       { revision: 40, kind: 'APPROVAL_REQUESTED', entityId: 'econ_apr_vis_1', walletId: null, at: NOW - 5480000,
         payload: { domain: 'economy', buyerId: 'agent_a', approvalId: 'econ_apr_vis_1',
           productId: 'econ_prod_vis_1', amountMinor: '2000', currency: 'IB_CREDIT', units: 1 } },
+      /* ★ 生产形状：canonical 写下来的是 <partyType>:<id>。 */
       { revision: 50, kind: 'APPROVAL_APPROVED', entityId: 'econ_apr_vis_1', walletId: null, at: NOW - 5450000,
-        payload: { domain: 'economy', buyerId: 'agent_a', approvalId: 'econ_apr_vis_1',
+        payload: { domain: 'economy', buyerId: 'character:agent_a', approvalId: 'econ_apr_vis_1',
           productId: 'econ_prod_vis_1', amountMinor: '2000', currency: 'IB_CREDIT' } },
       { revision: 60, kind: 'PURCHASE_RESERVED', entityId: 'econ_pur_vis_1', walletId: W, at: NOW - 5420000,
         payload: { domain: 'economy', buyerId: 'agent_a', purchaseId: 'econ_pur_vis_1',
@@ -238,12 +231,42 @@ const SEED = `(function(){
       { revision: 100, kind: 'AGENT_INTENT_PROPOSED', entityId: 'econ_int_vis_9', walletId: null, at: NOW - 610000,
         payload: { domain: 'economy', agentId: 'agent_a', agentIntentId: 'econ_int_vis_9',
           productId: 'econ_prod_vis_3', units: 2, approvalId: 'econ_apr_vis_9',
-          reason: '想把这一段内部的算力留一点给下一次长任务用；如果这一次不够，就等下一轮再说。' } },
-      { revision: 101, kind: 'PURCHASE_COMPLETED', entityId: 'econ_pur_other', walletId: 'econ_wallet_other',
-        at: NOW - 500000, payload: { domain: 'economy', buyerId: 'agent_zzz',
-          purchaseId: 'econ_pur_other', amountMinor: '999900', currency: 'IB_CREDIT' } }
+          reason: '想把这一段内部的算力留一点给下一次长任务用；如果这一次不够，就等下一轮再说。' } }
     ];
-    return { ok: true, revision: 101, changes: rows };
+  }
+  var HI = 9000000;
+  function changes(query) {
+    var q = String(query || '');
+    /* 显式的三项：作用域、方向、游标。缺 ownerId ⇒ 全局读面（这一页不该走到）。 */
+    function param(k) { var m = new RegExp('[?&]' + k + '=([^&]*)').exec(q); return m ? decodeURIComponent(m[1]) : null; }
+    var ownerId = param('ownerId');
+    if (!ownerId) {
+      var all = scopedRows(); all.push(OTHER);
+      return { ok: true, revision: 101, changes: all };
+    }
+    if (window.__ibWorld.empty) {
+      return { ok: true, revision: 0, changes: [], ownerScope: { ownerId: ownerId, order: param('order') || 'asc', scoped: true } };
+    }
+    if (window.__ibWorld.truncated) {
+      /* 满页：每页恰好 500 条，revision 严格**递减**（desc）。于是外壳只有
+         走到第 6 页才会发现自己被挡住了 —— 而 canonical 的响应里**没有**
+         truncated 字段，"被截断"这条路径只有这样才走得出来。 */
+      var cur = Number(param('cursor') || 0);
+      var from = cur > 0 ? cur : HI + 1;
+      var page = [];
+      for (var i = 1; i <= 500; i += 1) {
+        var rev = from - i;
+        push(page, { revision: rev, kind: 'RESERVATION_CREATED', entityId: 'econ_res_full_' + rev,
+          walletId: W, at: NOW - (HI - rev) * 1000,
+          payload: { domain: 'economy', ownerId: 'agent_a', amountMinor: '100', currency: 'IB_CREDIT' } });
+      }
+      return { ok: true, revision: HI, changes: page,
+        ownerScope: { ownerId: ownerId, order: 'desc', scoped: true } };
+    }
+    var rows = scopedRows().sort(function (a, b) { return b.revision - a.revision; });
+    return { ok: true, revision: 101, changes: rows,
+      ownerScope: { ownerId: ownerId, order: param('order') || 'asc', scoped: true },
+      recomputesEconomyFacts: false };
   }
   window.fetch = function (url, init) {
     var u = String(url); var method = String((init && init.method) || 'GET').toUpperCase();
@@ -796,10 +819,17 @@ const dismissOverlays = `(function(){
       var o = document.getElementById('economy-shell-overview');
       return { text: o.textContent, items: o.querySelectorAll('.esh-tl').length }; })()`);
     const truncatedCalls = await evaluate('(window.__ibCalls.reads || []).filter(function(r){ return r.path.indexOf("/economy/changes") === 0; }).length');
-    check('④-1 ★★★★★ 被截断时页面**明说**它不是全部（"最近什么都没发生"是最危险的假信息）',
-      trunc.text.indexOf('这台设备的活动记录比这一页读出来的多') >= 0 &&
+    /* ★ P22-19：作用域与方向都在**请求**上 —— 全局读面会带回别人的一行
+       （9999.00），因此这条断言是可被证伪的。 */
+    const changedQuery = await evaluate('(window.__ibCalls.reads || []).filter(function(r){ return r.path.indexOf("/economy/changes") === 0; }).every(function(r){ return r.path.indexOf("ownerId=agent_a") >= 0 && r.path.indexOf("order=desc") >= 0; })');
+    check('④-1 ★★★★★ 被截断时页面明说"只有最近的一部分"（desc 之下这句话是真的）',
+      trunc.text.indexOf('这里只显示最近的一部分活动') >= 0 &&
       trunc.items === 24 && truncatedCalls >= 7,
       { items: trunc.items, changeReads: truncatedCalls });
+    check('④-1a ★★★★★ change log 的每一次请求都带 ownerId 与 order=desc，' +
+      '而且页面上**没有**别人的那条（9999.00）',
+      changedQuery === true && trunc.text.indexOf('9,999.00') < 0 && trunc.text.indexOf('9999.00') < 0,
+      { changedQuery: changedQuery });
     await shot('p22-18-truncated-desktop', true);
 
     await evaluate('window.__ibWorld.truncated = false; window.__ibWorld.empty = true;');

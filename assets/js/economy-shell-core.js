@@ -404,7 +404,13 @@ var COPY = Object.freeze({
   timelineSub: '这里按时间列出这个角色身上发生过的事，从最近一次往前。',
   timelineEmpty: '还没有任何记录',
   timelineEmptyBody: '额度、购买、Agent 的请求与你的决定一旦发生，就会出现在这里。',
-  timelineTruncated: '这台设备的活动记录比这一页读出来的多，因此这里不是全部。',
+  /* ★ §7 逐字：截断**不能**静默，而且这三句话互不相同 ——
+     `timelineTruncated` 说的是"这里只有**最近**的一部分"（在 desc 之下
+     这句话是真的：截掉的另一端是更早的），`timelineUncertain` 说的是
+     "这一页不知道完不完整"。两句说成同一句，用户就没法区分"看少了"
+     与"不知道看了多少"。 */
+  timelineTruncated: '这里只显示最近的一部分活动，更早的记录没有读出来。',
+  timelineUncertain: '这一页拿到了活动记录，但没法确定它是不是完整的。',
   timelineUnavailable: '读不到活动记录，因此这一格现在是空的。',
   recentChange: '最近变化',
   recentChangeNone: '暂无记录',
@@ -414,7 +420,11 @@ var COPY = Object.freeze({
   activityTitle: '经济活动',
   activitySub: '每一次购买，连同它是怎么来的、走到了哪一步。',
   activityMorePrefix: '还有 ',
+  /* ★ P22-19：这句话只在时间线**真的**读完整时才成立。截断时它必须换一句 ——
+     否则同一页上会有两格互相矛盾的完整性声明（一格说"只有最近的一部分"，
+     另一格说"更早的仍然在那一格里"），而用户无法判断哪句是真的。 */
   activityMoreSuffix: ' 次更早的购买没有铺在这里 —— 它们仍然在「活动时间线」里。',
+  activityMoreSuffixPartial: ' 次更早的购买没有铺在这里；这一格与「活动时间线」读到的都是最近的一部分。',
   sourceTitle: '来源',
   stepsTitle: '时间线',
   sourceAgent: 'Agent 提议',
@@ -937,37 +947,55 @@ function buildPurchaseModel(purchasesRes, productsRes, intentsRes, options) {
         看起来像答案的猜测）。
    ══════════════════════════════════════════════════════════════════ */
 
-/* ── 归属：一条 change 属不属于这个角色 ──────────────────────────────
-   ★ 这是一次**用 canonical 自己的键做的过滤**，不是一次推断：
-     · `walletId` 列（canonical 写下这条变化时就带着它）；
-     · `payload.ownerId` / `payload.buyerId` / `payload.agentId`
-       （三处都是 canonical 的**当事人 id 本身**，逐字比较）；
-     · `payload.wallets[].walletId`（账本交易的两端）。
-   ★ 刻意**不**把 `recipientId` 算进来：一次"买给别人"是**买家**的钱动了，
-     收礼的人余额没有变化。把它算进来会让收礼者的时间线上出现一笔
-     "我没有变过的余额变化"，而那正是这一页要避免的误导。
-   ★ 归属不到的变化**不进时间线**，并被计进 `unattributed` —— 一个可被
-     读出来的数，而不是被静默丢掉。 */
-function changeBelongsTo(change, ownerId, walletId) {
-  if (change == null || ownerId == null) return false;
-  var oid = String(ownerId);
-  var wid = walletId == null ? null : String(walletId);
-  if (change.walletId != null && wid != null && String(change.walletId) === wid) return true;
-  var p = change.payload;
-  if (p == null || typeof p !== 'object') return false;
-  if (p.ownerId != null && String(p.ownerId) === oid) return true;
-  if (p.buyerId != null && String(p.buyerId) === oid) return true;
-  if (p.agentId != null && String(p.agentId) === oid) return true;
-  if (Array.isArray(p.wallets)) {
-    for (var i = 0; i < p.wallets.length; i += 1) {
-      var w = p.wallets[i];
-      if (w && w.walletId != null && wid != null && String(w.walletId) === wid) return true;
-    }
-  }
-  return false;
-}
+/* ── P22-19 · 归属：**这一层不再自己判断** ────────────────────────────
+   ★ P22-18 曾在这里实现过一个 `changeBelongsTo(change, ownerId, walletId)`：
+     逐字比较 change 的 `walletId` 列与 payload 里的
+     `ownerId` / `buyerId` / `agentId` / `wallets[].walletId`。
+     它在**生产数据上漏记录**，而且漏的恰好是最该被看见的那几条 —— 这是
+     实测出来的（docs §2.3 有逐行证据），不是推测：
 
-/* ── 从一条 change 的 payload 里取出**可显示的事实** ─────────────────
+       · `APPROVAL_APPROVED` / `APPROVAL_REJECTED` / `APPROVAL_CONSUMED`
+         的 `payload.buyerId` 是 `<partyType>:<id>` 形态
+         （store 用的是 `partyKeyOf`），而其它 kind 用的是裸 id。
+         逐字比较于是**必然**判 false —— "用户点过头的证据"从时间线上消失。
+       · `APPROVAL_EXPIRED` 的 payload **一个 owner 字段都没有**，只有
+         `approvalId`。它的 owner 权威在 approvals 行上，而浏览器没有那张表，
+         因此它在这条规则下**永远**无法归属。
+
+   ★ 所以本阶段把归属**上移到 canonical**：`GET /economy/changes?ownerId=…`
+     由 store 的 `listChangesForOwner` 在 SQL 里筛（四处证据的析取，见
+     docs §6）。这一层因此**不**再持有那套规则，`changeBelongsTo` 被删除 ——
+     而这不是"少了一个函数"，是"这条规则从两个实现变成一个"。测试断言它
+     **不存在**（tests/test_p22_19_economy_read_contract.js 的 D 组）：
+     一个仍然留在这里的旧判据会在 canonical 已经正确放行的行上再筛一次，
+     于是把拼写差异重新变成丢记录 —— 那正是要修的东西。
+
+   ★ 这一层仍然知道的两件事（都是**契约常量**，不是判断）：
+     `CHANGE_ORDER` —— 从哪一端进入（§7：方向是 newest first）；
+     `COMPLETENESS` —— 这一页读到的窗口完不完整（§7：complete / truncated
+     / unknown 三态，绝不允许把 truncated 当 complete 展示）。 */
+
+/* ══ §7 · 方向：**从最新的一端进入** ════════════════════════════════
+   ★ canonical 的 change 读面按 `revision` 排序，而 keyset 分页有两个方向：
+     asc 从最早往新走，desc 从最新往旧走。本层选 desc，理由是一个**已证明
+     的**性质而不是偏好：全局 change log 上的 asc + 截断留下的是**最旧**的
+     一段（docs §3.2 的对抗性反证），那时把页面叫作"最近活动"就是错的。
+     desc 之下截断留下的是**最新**的一段，于是"这里只显示最近的一部分活动"
+     这句话是真的。 */
+var CHANGE_ORDER = 'desc';
+
+/* ══ §7 · 完整性的三态 ══════════════════════════════════════════════
+   ★ 三态而不是一个布尔：`unknown` 与 `truncated` 是两种不同的情况，
+     说成同一句会让"读失败"看起来像"读到了但被截断"，而后者至少还知道
+     自己看到的是真的。 */
+var COMPLETENESS = Object.freeze({
+  COMPLETE: 'complete',   /* 走到了这一端：窗口里就是这个 owner 的全部 */
+  TRUNCATED: 'truncated', /* 被读面窗口挡住：这里只有**最近**的一段 */
+  UNKNOWN: 'unknown'      /* 读面本身没给出可用的结果 */
+});
+var COMPLETENESS_LIST = Object.freeze(['complete', 'truncated', 'unknown']);
+
+/* ══ 从一条 change 的 payload 里取出**可显示的事实** ─────────────────
    ★ 只取这几样，而且都做了类型检查：金额原样（canonical 的十进制字符串）、
      数量、商品、以及四个编号（给 §7 的折叠区用）。取了 payload 里没有的
      东西就是编 —— 因此这里没有 `|| 0` 这种兜底。 */
@@ -996,35 +1024,56 @@ function changeRefsOf(change) {
    ★ 每一条都**指得回去**：`revision` 是 canonical 的序列号，`refs` 是那条
      记录自己带的编号。于是"这一行是从哪来的"有一个可核对的答案。
    ★ 顺序按 canonical 的 **revision 倒序**（不是按毫秒）：同一毫秒里发生的
-     两件事也有确定的先后，而时间只用于**显示**。
-   ★ 窗口被截断时 `truncated` 为真，页面必须说出来 —— 一个残缺的时间线
-     最危险的读法是"最近什么都没发生"。 */
+     两件事也有确定的先后，而时间只用于**显示**。canonical 的 owner 读面
+     已经按 revision 给了（desc），这里的排序是对**窗口内**顺序的再次确认
+     —— 窗口跨页时它是唯一的保证。
+   ★ ★ P22-19：**这一层不再筛归属**。传进来的 `changesRes` 已经是
+     canonical 按 owner 作用域给出来的。这一层只做三件事：取字段、排序、
+     说清楚这个窗口完不完整。
+   ★ `completeness` 是 §7 要求的三态，且**不**允许退化成两态：
+       complete  —— 走到了这一端，窗口里就是这个 owner 的全部；
+       truncated —— 被读面窗口挡住，页面必须说"这里只是最近的一部分"；
+       unknown   —— 读面没给出可用结果（整格说读不到，而不是说"没有记录"）。
+     ★ 三种情况在页面上是三句**不同**的话。把 unknown 说成空、把
+       truncated 说成 complete，都会让用户以为"最近什么都没发生"。 */
 function buildTimelineModel(changesRes, options) {
   options = options || {};
   var all = listOf(changesRes, 'changes');
-  var ownerId = options.ownerId == null ? null : String(options.ownerId);
-  var walletId = options.walletId == null ? null : String(options.walletId);
+  var scope = (changesRes && changesRes.ownerScope && typeof changesRes.ownerScope === 'object')
+    ? changesRes.ownerScope : null;
+  var declared = changesRes && changesRes.completeness != null ? String(changesRes.completeness) : null;
   var out = {
     read: all != null,
     error: failureOf(changesRes),
-    ownerId: ownerId,
-    walletId: walletId,
+    /* 作用域：canonical 在响应里自述的那一条（`ownerScope.ownerId`），
+       以及这一层**要求**的那一条（options.ownerId）。两个都带出来，于是
+       "这一页读的是不是这个角色"是一个可断言的等式，而不是一个假设。 */
+    ownerId: options.ownerId == null ? null : String(options.ownerId),
+    scopeOwnerId: scope && scope.ownerId != null ? String(scope.ownerId) : null,
+    scopeOrder: scope && scope.order != null ? String(scope.order) : null,
+    requestedOrder: CHANGE_ORDER,
     revision: (changesRes && changesRes.revision != null) ? Number(changesRes.revision) : null,
-    truncated: !!(changesRes && changesRes.truncated === true),
+    completeness: COMPLETENESS.UNKNOWN,
     fetched: all == null ? 0 : all.length,
-    unattributed: 0,
+    /* ★ 窗口内**顺序不成立**的条数（revision 缺失或重复）。
+       它不是"归属不到"——归属已经由 canonical 决定了；它说的是"这一页
+       拿到的行里，有几行没法被确定地排序"。>0 时窗口的可信度下降，
+       页面据此不说"这是最近的一部分"。 */
+    unorderable: 0,
     rows: [],
     empty: false,
     /* 余额那一格要的"最近变化"：最近一次**真的动了钱**的那一条。 */
     lastBalanceChange: null
   };
-  if (all == null) return out;
-  var scoped = [];
-  for (var i = 0; i < all.length; i += 1) {
-    if (!changeBelongsTo(all[i], ownerId, walletId)) { out.unattributed += 1; continue; }
-    scoped.push(all[i]);
+  if (all == null) {
+    /* 读面没给出数组 ⇒ unknown，而不是"没有记录"。 */
+    out.completeness = COMPLETENESS.UNKNOWN;
+    out.error = out.error || 'changes-read-returned-no-list';
+    return out;
   }
+  var scoped = all.slice();
   /* revision 倒序：新的在前。revision 缺失时退回用时间排，但仍然确定性。 */
+  var seenRevision = Object.create(null);
   scoped.sort(function (a, b) {
     var ra = Number(a && a.revision), rb = Number(b && b.revision);
     if (Number.isFinite(ra) && Number.isFinite(rb) && ra !== rb) return rb - ra;
@@ -1032,10 +1081,14 @@ function buildTimelineModel(changesRes, options) {
   });
   for (var j = 0; j < scoped.length; j += 1) {
     var ch = scoped[j];
+    var rev = Number(ch && ch.revision);
+    if (!Number.isFinite(rev) || rev <= 0) out.unorderable += 1;
+    else if (seenRevision[rev] === true) out.unorderable += 1;
+    else seenRevision[rev] = true;
     var face = changeKindFace(ch && ch.kind);
     var refs = changeRefsOf(ch);
     var row = {
-      revision: Number(ch && ch.revision),
+      revision: rev,
       kind: face.kind,
       face: face.face,
       tone: face.tone,
@@ -1054,7 +1107,26 @@ function buildTimelineModel(changesRes, options) {
     if (Number.isFinite(q)) row.quantity = q;
     out.rows.push(row);
   }
-  /* 只保留最近的一段（§2 要的是"最近发生了什么"，不是全部历史）。 */
+  /* ── §7 完整性：窗口的**读数**，不是窗口的猜测 ─────────────────────
+     三种证据，按可信度递减：
+       ① canonical 自述的 `completeness`（若将来有）；
+       ② 读取器自己说的截断标记 `truncated`（false = 走到了这一端）；
+       ③ 都没有 —— **unknown**，而不是 complete。一个没说过自己走完的
+          窗口不能被当成走完了的窗口；把它默认成 complete 正是 §7 逐字
+          禁止的"truncated → 当 complete 展示"。
+     ★ 排序不可信（unorderable > 0）时**降级**为 unknown：一个顺序都不
+       成立的窗口，说它"完整"没有意义。 */
+  if (declared != null && COMPLETENESS_LIST.indexOf(declared) >= 0) {
+    out.completeness = declared;
+  } else if (changesRes && changesRes.truncated === true) {
+    out.completeness = COMPLETENESS.TRUNCATED;
+  } else if (changesRes && changesRes.truncated === false) {
+    out.completeness = COMPLETENESS.COMPLETE;
+  }
+  if (out.unorderable > 0) out.completeness = COMPLETENESS.UNKNOWN;
+  /* 只保留最近的一段（§2 要的是"最近发生了什么"，不是全部历史）。
+     ★ 这一条是**显示**的上限，与上面那个**读取窗口**的上限是两件事：
+     前者说本页铺几条，后者说读到了多少。页面把两个数分开说。 */
   var keep = Number(options.keep) > 0 ? Number(options.keep) : TIMELINE_KEEP;
   if (out.rows.length > keep) out.rows = out.rows.slice(0, keep);
   for (var k = 0; k < out.rows.length; k += 1) {
@@ -1236,7 +1308,13 @@ function buildActivityModel(purchasesRes, intentsRes, productsRes, timeline, opt
        "合计"在窗口满时**必然**不是全部，因此这里是 saturated 而不是
        "可能还有"。 */
     saturated: saturated,
-    empty: purchases != null && rows.length === 0
+    empty: purchases != null && rows.length === 0,
+    /* ★ P22-19：这一格说"更早的仍然在「活动时间线」里"之前，必须先知道
+       那一格**有没有**读完整 —— 于是这里把它的完整性原样带出来，措辞由
+       渲染器按它选。两个格子对同一件事的说法不许互相矛盾。 */
+    timelineCompleteness: timeline && timeline.completeness != null
+      ? String(timeline.completeness) : null,
+    timelineIsComplete: !!(timeline && timeline.completeness === COMPLETENESS.COMPLETE)
   };
 }
 
@@ -1409,12 +1487,7 @@ function buildPageView(sources) {
   sources = sources || {};
   var wallet = buildWalletModel(sources.wallet, { ownerId: sources.owner });
   var intentModel = buildIntentExplanationModel(sources.intents, sources.products, {});
-  var timeline = buildTimelineModel(sources.changes, {
-    ownerId: sources.owner,
-    /* 归属的第二把钥匙：canonical 的 change 带着 walletId，而钱包那一格里
-       就有它。因此"这条变化是不是这个角色的"在钱包读得到时是逐字比较。 */
-    walletId: sources.wallet && sources.wallet.wallet ? sources.wallet.wallet.walletId : null
-  });
+  var timeline = buildTimelineModel(sources.changes, { ownerId: sources.owner });
   var activity = buildActivityModel(sources.purchases, sources.intents, sources.products, timeline, sources);
   return {
     owner: sources.owner || null,
@@ -1473,6 +1546,10 @@ NS.economyShellCore = Object.freeze({
   /* ── P22-18 · 第九条只读面与解释层 ─────────────────────────────── */
   CHANGE_READ: CHANGE_READ,
   CHANGE_LIMIT: CHANGE_LIMIT,
+  /* ── P22-19 · 方向与完整性三态（归属已上移到 canonical）────────── */
+  CHANGE_ORDER: CHANGE_ORDER,
+  COMPLETENESS: COMPLETENESS,
+  COMPLETENESS_LIST: COMPLETENESS_LIST,
   TIMELINE_KEEP: TIMELINE_KEEP,
   ACTIVITY_KEEP: ACTIVITY_KEEP,
   TONE: TONE,
@@ -1480,7 +1557,6 @@ NS.economyShellCore = Object.freeze({
   CHANGE_KIND_KEYS: CHANGE_KIND_KEYS,
   changeKindFace: changeKindFace,
   isLedgerCommitKind: isLedgerCommitKind,
-  changeBelongsTo: changeBelongsTo,
   minorUnitsOf: minorUnitsOf,
 
   STORE_STATUS_FACE: STORE_STATUS_FACE,

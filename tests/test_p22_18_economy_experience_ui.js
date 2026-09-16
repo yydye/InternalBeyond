@@ -198,41 +198,74 @@ const INTENTS = { ok: true, intents: [
 const INVENTORY = { ok: true, entries: [{ inventoryEntryId: 'econ_inv_1', productId: 'econ_product_1',
   ownerId: 'a1', assetKind: 'COMPUTE', quantity: 100, productPresent: true, updatedAt: 1700000600000,
   isABalance: false }], isABalance: false, contributesToAvailableBalance: false, locksFunds: false };
-const CHANGES = { ok: true, revision: 61, changes: [
-  { revision: 10, kind: 'WALLET_OPENED', entityId: W, walletId: W, at: 1699900000000, payload: { ownerId: 'a1' } },
-  { revision: 20, kind: 'AGENT_INTENT_PROPOSED', entityId: 'econ_agent_intent_1', walletId: null,
-    at: 1699999800000, payload: { agentId: 'a1', agentIntentId: 'econ_agent_intent_1', productId: 'econ_product_1', units: 1 } },
-  { revision: 30, kind: 'APPROVAL_REQUESTED', entityId: 'econ_approval_1', walletId: null,
-    at: 1700000100000, payload: { buyerId: 'a1', approvalId: 'econ_approval_1', amountMinor: '500', currency: 'IB_CREDIT', units: 1 } },
-  { revision: 40, kind: 'APPROVAL_APPROVED', entityId: 'econ_approval_1', walletId: null,
-    at: 1700000300000, payload: { buyerId: 'a1', approvalId: 'econ_approval_1', productId: 'econ_product_1' } },
-  { revision: 50, kind: 'PURCHASE_RESERVED', entityId: 'econ_purchase_1', walletId: W,
-    at: 1700000400000, payload: { buyerId: 'a1', purchaseId: 'econ_purchase_1', amountMinor: '500', currency: 'IB_CREDIT' } },
-  { revision: 60, kind: 'PURCHASE_COMPLETED', entityId: 'econ_purchase_1', walletId: W,
-    at: 1700000600000, payload: { buyerId: 'a1', purchaseId: 'econ_purchase_1', productId: 'econ_product_1', amountMinor: '500', currency: 'IB_CREDIT', units: 1 } },
+/* ★ 这份夹具就是 **canonical 的 owner 读面会给出的样子**（P22-19）：
+   只含 a1 自己的行、已经是 desc、并且自述了自己的作用域。
+   另一个角色的那条行（econ_purchase_9）留在 `ALL_CHANGES` 里，由**全局**
+   读面（不带 ownerId）返回 —— 于是"外壳到底带没带 ownerId"是一个可以被
+   夹具**证伪**的性质，而不是一句假设。 */
+const CHANGES = { ok: true, revision: 61, truncated: false,
+  ownerScope: { ownerId: 'a1', order: 'desc', scoped: true }, recomputesEconomyFacts: false,
+  changes: [
+    { revision: 10, kind: 'WALLET_OPENED', entityId: W, walletId: W, at: 1699900000000, payload: { ownerId: 'a1' } },
+    { revision: 20, kind: 'AGENT_INTENT_PROPOSED', entityId: 'econ_agent_intent_1', walletId: null,
+      at: 1699999800000, payload: { agentId: 'a1', agentIntentId: 'econ_agent_intent_1', productId: 'econ_product_1', units: 1 } },
+    { revision: 30, kind: 'APPROVAL_REQUESTED', entityId: 'econ_approval_1', walletId: null,
+      at: 1700000100000, payload: { buyerId: 'a1', approvalId: 'econ_approval_1', amountMinor: '500', currency: 'IB_CREDIT', units: 1 } },
+    /* ★ 生产形状：这一条的 buyerId 是 <partyType>:<id>。canonical 认它。 */
+    { revision: 40, kind: 'APPROVAL_APPROVED', entityId: 'econ_approval_1', walletId: null,
+      at: 1700000300000, payload: { buyerId: 'character:a1', approvalId: 'econ_approval_1', productId: 'econ_product_1' } },
+    { revision: 50, kind: 'PURCHASE_RESERVED', entityId: 'econ_purchase_1', walletId: W,
+      at: 1700000400000, payload: { buyerId: 'a1', purchaseId: 'econ_purchase_1', amountMinor: '500', currency: 'IB_CREDIT' } },
+    { revision: 60, kind: 'PURCHASE_COMPLETED', entityId: 'econ_purchase_1', walletId: W,
+      at: 1700000600000, payload: { buyerId: 'a1', purchaseId: 'econ_purchase_1', productId: 'econ_product_1', amountMinor: '500', currency: 'IB_CREDIT', units: 1 } }
+  ] };
+/* 全局读面（不带 ownerId 时 canonical 给的东西）：多出**别人**的一行。 */
+const ALL_CHANGES = { ok: true, revision: 61, changes: CHANGES.changes.concat([
   { revision: 61, kind: 'PURCHASE_COMPLETED', entityId: 'econ_purchase_9', walletId: 'econ_wallet_other',
     at: 1700000700000, payload: { buyerId: 'a9', purchaseId: 'econ_purchase_9', amountMinor: '900', currency: 'IB_CREDIT' } }
-] };
+]) };
 
 function defaultWorld() {
   return { wallet: WALLET_READY, policy: POLICY, budget: BUDGET, stores: STORES, products: PRODUCTS,
-    inventory: INVENTORY, purchases: PURCHASES, intents: INTENTS, changes: CHANGES };
+    inventory: INVENTORY, purchases: PURCHASES, intents: INTENTS, changes: CHANGES, allChanges: ALL_CHANGES };
 }
 
 /* ── 假 driver：既有 remote driver 的同形替身 ─────────────────────────
-   ★ 两个写方法**真的装上去**：否则"一次都没被调用"这条断言是在为空气作证。 */
+   ★ 两个写方法**真的装上去**：否则"一次都没被调用"这条断言是在为空气作证。
+   ★ ★ P22-19：`/economy/changes` 的替身必须和生产**同形**。它按 canonical
+     的语义切片 —— 带 ownerId 时返回 owner 作用域的那一份、按 order 排序、
+     按 (cursor, limit) 做 keyset。替身比生产宽松是这一仓库反复踩到的一类
+     缺陷（P22-16 记过一次：纯 Node 测试全绿而真浏览器里错），因此这里
+     不再"原样吐出 world.changes"，也不在这儿重新实现归属 —— 归属是
+     canonical 的事，夹具只声明"canonical 会返回哪一份"。 */
 function makeDriver(world) {
   const calls = { reads: [], writes: [] };
-  const pages = world.changePages || [world.changes || { ok: true, changes: [], revision: 0 }];
-  let pageIndex = 0;
   const d = {
     calls: calls,
     getJson: function (p, q) {
       calls.reads.push({ path: p, query: q });
       if (p === '/economy/changes') {
-        const page = pages[Math.min(pageIndex, pages.length - 1)];
-        pageIndex += 1;
-        return Promise.resolve(page);
+        const req = q || {};
+        /* 不带 ownerId ⇒ 全局读面（生产里存在，但这一页**不**该用它）。 */
+        if (req.ownerId == null) {
+          return Promise.resolve(world.allChanges || world.changes || { ok: true, changes: [], revision: 0 });
+        }
+        const src = world.changes || { ok: true, changes: [], revision: 0 };
+        if (src.ok !== true) return Promise.resolve(src);
+        const order = req.order === 'desc' ? 'desc' : 'asc';
+        const limit = Math.max(1, Math.min(500, Number(req.limit) || 200));
+        const cursor = Number(req.cursor) || 0;
+        const rows = (src.changes || []).slice().sort(function (a, b) {
+          return order === 'desc' ? Number(b.revision) - Number(a.revision) : Number(a.revision) - Number(b.revision);
+        });
+        const page = (order === 'desc'
+          ? rows.filter(function (r) { return cursor <= 0 || Number(r.revision) < cursor; })
+          : rows.filter(function (r) { return Number(r.revision) > cursor; })
+        ).slice(0, limit);
+        return Promise.resolve({ ok: true, revision: src.revision == null ? null : src.revision,
+          changes: page,
+          ownerScope: { ownerId: String(req.ownerId), order: order, scoped: true },
+          recomputesEconomyFacts: false });
       }
       if (p === '/economy/wallet') return Promise.resolve(world.wallet || { ok: false, error: 'wallet-not-found', status: 404 });
       if (p === '/economy/policy') return Promise.resolve(world.policy || { ok: false, error: 'budget-policy-not-found', status: 404 });
@@ -329,7 +362,8 @@ check('A2 ★★★ 没有新增页面/页签：外层仍然是五个，而且�
   m.core.TABS.length === 5 && m.core.TABS[0].key === 'overview' &&
   m.dom.doc.getElementById('economy-shell').children.length === 3);
 
-check('A3 ★★★ 归属只读一次：所有带归属的读面都发的是同一个 ownerId',
+check('A3 ★★★★ 归属只读一次：所有带归属的读面都发的是同一个 ownerId，' +
+  '而且 change log 的读面**带上了** ownerId 与 order=desc（作用域与方向都在请求上）',
   (function () {
     const byPath = {};
     m.driver.calls.reads.forEach(r => {
@@ -338,6 +372,8 @@ check('A3 ★★★ 归属只读一次：所有带归属的读面都发的是同
     return byPath['/economy/wallet'].ownerId === 'a1' &&
       byPath['/economy/inventory'].ownerId === 'a1' &&
       byPath['/economy/purchases'].buyerId === 'a1' &&
+      byPath['/economy/changes'].ownerId === 'a1' &&
+      byPath['/economy/changes'].order === 'desc' &&
       byPath['/economy/changes'].cursor === 0 && byPath['/economy/changes'].limit === 500 &&
       byPath['/economy/stores'].ownerId === undefined;
   })(), m.driver.calls.reads.map(r => r.path + '?' + JSON.stringify(r.query)));
@@ -382,13 +418,23 @@ await (async function () {
 /* ══ C · 时间线四态（§12-3）════════════════════════════════════════ */
 section('C · 时间线：有数据 / 空 / 读不到 / 被截断');
 
-check('C1 ★★★★ 有数据：六条属于这个角色的事件渲染出来了（另一个角色的那条不在）',
+check('C1 ★★★★ 有数据：六条（canonical 按 owner 作用域给出的那六条）都渲染出来了',
   (function () {
     const items = find(overview(), 'esh-tl');
     return items.length === 6 && items[0].getAttribute('data-tone') === 'money' &&
       items[0].textContent.indexOf('购买完成') >= 0 &&
-      bodyText(overview(), true).indexOf('econ_purchase_9') < 0;
+      /* 生产形状的 APPROVAL_APPROVED（buyerId = character:a1）在页面上 */
+      bodyText(overview(), true).indexOf('你允许继续') >= 0;
   })(), find(overview(), 'esh-tl').map(n => n.textContent));
+
+check('C1.1 ★★★★★ 外壳**从不**读全局 change log：它的每一次请求都带 ownerId' +
+  '（夹具的全局列表里确实有别人的一行 —— 这条断言因此是可被证伪的）',
+  (function () {
+    const calls = m.driver.calls.reads.filter(r => r.path === '/economy/changes');
+    return calls.length >= 1 && calls.every(r => r.query && r.query.ownerId === 'a1') &&
+      (ALL_CHANGES.changes.length === CHANGES.changes.length + 1) &&
+      bodyText(overview(), true).indexOf('9.00') < 0;
+  })(), m.driver.calls.reads.filter(r => r.path === '/economy/changes').map(r => r.query));
 
 check('C2 ★★★★ 顺序是 canonical 的 revision 倒序（最新在最上面）',
   (function () {
@@ -429,40 +475,84 @@ await (async function () {
 })();
 
 await (async function () {
-  /* 第一页满 500 条 ⇒ 必须继续走；第二页短 ⇒ 到末尾。 */
+  /* ★ desc 之下"走到这一端"才是完整：第一页满 500 条 ⇒ 继续带着**本页最小**
+     的 revision 往回走；第二页短 ⇒ 到这一端了。 */
   const full = { ok: true, revision: 600, changes: [] };
-  for (let i = 1; i <= 500; i += 1) {
-    full.changes.push({ revision: i, kind: 'RESERVATION_CREATED', entityId: 'r' + i, walletId: W, at: 1000000 + i, payload: {} });
+  for (let i = 1000; i > 500; i -= 1) {
+    full.changes.push({ revision: i, kind: 'RESERVATION_CREATED', entityId: 'r' + i, walletId: W, at: 1000000 + i, payload: { ownerId: 'a1' } });
   }
-  const tail = { ok: true, revision: 600, changes: [
-    { revision: 600, kind: 'PURCHASE_COMPLETED', entityId: 'econ_purchase_1', walletId: W, at: 2000000,
-      payload: { buyerId: 'a1', purchaseId: 'econ_purchase_1', amountMinor: '500', currency: 'IB_CREDIT' } }
-  ] };
-  const paged = mountR(Object.assign(defaultWorld(), { changePages: [full, tail] }));
+  const paged = mountR(Object.assign(defaultWorld(), { changes: full }));
   await settle(30);
   const changeCalls = paged.driver.calls.reads.filter(r => r.path === '/economy/changes');
-  check('C6 ★★★★★ change log 是**走到末尾**地读的：第一页满就带着 cursor 继续（否则最近发生的事情看不到）',
+  check('C6 ★★★★★ desc 之下第一页满就带着**本页最小 revision**继续（否则更早的那一段看不到）',
     changeCalls.length === 2 && changeCalls[0].query.cursor === 0 &&
-    changeCalls[1].query.cursor === 500,
+    changeCalls[0].query.order === 'desc' &&
+    changeCalls[1].query.cursor === 501,
     changeCalls.map(c => c.query));
   const t = bodyText(paged.dom.doc.getElementById('economy-shell-overview'), true);
-  check('C7 ★★★★★ 走到末尾之后，"购买完成"这条**真的**出现在时间线顶端',
-    t.indexOf('购买完成') >= 0 && t.indexOf('这台设备的活动记录比这一页读出来的多') < 0);
+  check('C7 ★★★★★ 走到这一端之后**不说**自己被截断（它真的读完了）',
+    t.indexOf('这里只显示最近的一部分活动') < 0);
   check('C8 ★★★ 短页之后**不再**多发一页',
     paged.driver.calls.reads.filter(r => r.path === '/economy/changes').length === 2);
 })();
 
 await (async function () {
-  const full = { ok: true, revision: 9999, changes: [] };
-  for (let i = 1; i <= 500; i += 1) {
-    full.changes.push({ revision: i, kind: 'RESERVATION_CREATED', entityId: 'r' + i, walletId: W, at: 1000000 + i, payload: {} });
+  /* ★ 上限：3000 条以上 ⇒ 6 页 × 500 之后被挡住。desc 之下留下的是
+     **最新**的那一段，因此"只有最近的一部分"这句话是真的。 */
+  const many = { ok: true, revision: 9999, changes: [] };
+  for (let i = 9999; i > 9999 - 3200; i -= 1) {
+    many.changes.push({ revision: i, kind: 'RESERVATION_CREATED', entityId: 'r' + i, walletId: W, at: 1000000 + i, payload: { ownerId: 'a1' } });
   }
-  const capped = mountR(Object.assign(defaultWorld(), { changePages: [full] }));
-  await settle(60);
-  const n = capped.driver.calls.reads.filter(r => r.path === '/economy/changes').length;
+  const capped = mountR(Object.assign(defaultWorld(), { changes: many }));
+  await settle(90);
+  const calls = capped.driver.calls.reads.filter(r => r.path === '/economy/changes');
   const t = bodyText(capped.dom.doc.getElementById('economy-shell-overview'), true);
-  check('C9 ★★★★★ 上限是**有界的**（不会无限翻页），而且被挡住时页面**明说**它不是全部',
-    n === 6 && t.indexOf('这台设备的活动记录比这一页读出来的多') >= 0, { pages: n });
+  check('C9 ★★★★★ 上限是**有界的**（6 页），而且被挡住时页面明说"只有最近的一部分"',
+    calls.length === 6 &&
+    t.indexOf('这里只显示最近的一部分活动') >= 0 &&
+    /* 而且它确实拿到了最新的那一条（desc 的意义就在这里） */
+    find(capped.dom.doc.getElementById('economy-shell-overview'), 'esh-tl').length === m.core.TIMELINE_KEEP,
+    { pages: calls.length });
+})();
+
+await (async function () {
+  /* ★ ★ P22-19：**两格对完整性的说法不许互相矛盾**。
+     经济活动那一格的脚注在时间线读完整时才说"更早的仍然在那一格里"；
+     时间线被截断时必须换一句。这里用 8 笔购买（> ACTIVITY_KEEP）把那条
+     脚注真的逼出来，再看它说的是哪一句。 */
+  const manyPurchases = { ok: true, purchases: [], count: 8 };
+  for (let i = 1; i <= 8; i += 1) {
+    manyPurchases.purchases.push({
+      purchaseId: 'econ_purchase_g' + i, productId: 'econ_product_1', status: 'COMPLETED', completed: true,
+      amountMinor: '100', currency: 'IB_CREDIT', createdAt: 1700000000000 + i, completedAt: 1700000000000 + i,
+      approvalMode: 'AUTO_ALLOW', units: 1, quoteId: null, selfDirected: true, approval: null
+    });
+  }
+  const cutWorld = Object.assign(defaultWorld(), {
+    purchases: manyPurchases,
+    changes: { ok: true, revision: 999, changes: (function () {
+      const rows = [];
+      for (let i = 999; i > 999 - 3200; i -= 1) {
+        rows.push({ revision: i, kind: 'RESERVATION_CREATED', entityId: 'r' + i, walletId: W, at: 1000000 + i, payload: { ownerId: 'a1' } });
+      }
+      return rows;
+    })(), ownerScope: { ownerId: 'a1', order: 'desc', scoped: true } }
+  });
+  const cutPage = mountR(cutWorld);
+  await settle(90);
+  const cutText = bodyText(cutPage.dom.doc.getElementById('economy-shell-overview'), true);
+  const doneWorld = Object.assign(defaultWorld(), { purchases: manyPurchases });
+  const donePage = mountR(doneWorld);
+  await settle(30);
+  const doneText = bodyText(donePage.dom.doc.getElementById('economy-shell-overview'), true);
+  check('C10 ★★★★★ 时间线被截断时，经济活动那一格**不再**说"更早的仍然在时间线里"',
+    cutText.indexOf(m.core.COPY.activityMoreSuffixPartial.trim()) >= 0 &&
+    cutText.indexOf(m.core.COPY.activityMoreSuffix.trim()) < 0 &&
+    doneText.indexOf(m.core.COPY.activityMoreSuffix.trim()) >= 0 &&
+    doneText.indexOf(m.core.COPY.activityMoreSuffixPartial.trim()) < 0,
+    { cutHasPartial: cutText.indexOf(m.core.COPY.activityMoreSuffixPartial.trim()) >= 0,
+      cutHasFull: cutText.indexOf(m.core.COPY.activityMoreSuffix.trim()) >= 0,
+      doneHasFull: doneText.indexOf(m.core.COPY.activityMoreSuffix.trim()) >= 0 });
 })();
 
 /* ══ D · §3 经济活动 ═══════════════════════════════════════════════ */

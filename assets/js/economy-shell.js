@@ -249,10 +249,11 @@ function boot() {
       jobs.push(readJson(CORE.READS.BUDGET, { ownerId: oid, currency: 'IB_CREDIT', amountMinor: '0' }));
       jobs.push(readJson(CORE.READS.INVENTORY, { ownerId: oid, limit: CORE.LIMITS.INVENTORY }));
       jobs.push(readJson(CORE.READS.PURCHASES, { buyerId: oid, limit: CORE.LIMITS.PURCHASES }));
-      /* ★ 第九条只读面：canonical change log。它**需要归属** —— 一条变化
-         是谁的要用 canonical 自己的键比出来，因此没有角色时不读它，而不是
-         读回来一堆别人的变化。 */
-      jobs.push(loadChanges());
+      /* ★ 第九条只读面：canonical change log，**按 owner 作用域**读。
+         作用域与方向都写在请求上，因此"哪些变化属于这个角色"由 canonical
+         回答，而不是由这一层猜。没有选中角色时不读它 —— 而不是退回去读
+         全局 change log（那会把别人的活动混进这一格）。 */
+      jobs.push(loadChanges(oid));
     }
     return Promise.all(jobs).then(function (r) {
       if (my !== seq) return;
@@ -299,34 +300,56 @@ function boot() {
   function nowMs() { try { return Date.now(); } catch (e) { return 0; } }
 
   /* ── 活动记录（§2 的时间线）─────────────────────────────────────────
-     ★ canonical 的 `/economy/changes` 是**从最早的往新的**一页一页给的
-       （`WHERE revision > cursor ORDER BY revision ASC LIMIT n`）。因此要拿到
-       "最近发生了什么"必须**走到末尾** —— 只取第一页会在记录超过一页时
-       给出**最旧**的那一段，而那正好是这一格最不能犯的错（用户会以为
-       最近什么都没发生）。
-     ★ 走法有界：每次 500 条（canonical 自己的上限），最多走
-       CHANGE_MAX_PAGES 页。没走到末尾就被上限挡住时，结果上写着
-       `truncated: true`，页面**必须**说出来。
-     ★ 中途失败不丢已经读到的部分（把 `truncated` 置真），第一页就失败
-       则原样把失败交出去 —— 于是"读不到"在页面上仍然是一句人话。 */
+     ★ ★ P22-19：读法换了，而且换的是**读法本身**，不是参数。
+
+     之前：`/economy/changes` 是全局面，且是**从最早的往新的**一页页给
+     （`WHERE revision > cursor ORDER BY revision ASC`），于是要在浏览器里
+     做两件它做不到的事 —— ① 判断一条 change 属不属于这个角色；② 走到
+     末尾才能拿到"最近"。两件都失败了（docs §2/§3 有逐行实测证据）：
+     字段层的逐字比较漏掉 APPROVAL_APPROVED/REJECTED/CONSUMED，而分页层
+     的 asc + 截断留下的是**最旧**的一段。
+
+     现在：canonical 按 owner 作用域筛（`?ownerId=`），方向是 `desc`
+     （从最新往旧），于是这一层拿到的是**这个角色的、从最近往前的**流。
+     少一件事：不再有任何归属判断（`changeBelongsTo` 已删）。
+     多一件事：说清楚窗口完不完整（complete / truncated / unknown）。
+
+     ★ 走法仍然有界：每次 500 条（canonical 自己的上限），最多
+       CHANGE_MAX_PAGES 页。desc 之下被上限挡住时留下的是**最新**的一段，
+       因此 `truncated: true` 在页面上是一句**真话**：
+       "这里只显示最近的一部分活动"。 */
   var CHANGE_PAGE = 500;
   var CHANGE_MAX_PAGES = 6;
-  function loadChanges() {
+  function loadChanges(oid) {
     var acc = [];
     var pages = 0;
     var cursor = 0;
-    var truncated = false;
+    /* 截断的三态由读取器决定，页面照抄：
+         complete  —— 某一页短了，走到了这一端；
+         truncated —— 配额用完，或中途失败但仍拿到了前面的部分；
+         unknown   —— 第一页就没读成（把失败原样交出去，让页面说"读不到"）。 */
+    var truncated = null;
     function merged(revision) {
       return {
         ok: true,
         changes: acc,
         revision: revision == null ? null : Number(revision),
         pages: pages,
-        truncated: truncated
+        /* 显式的三态标记：`buildTimelineModel` 只认 true/false，
+           null 会被它读成 unknown。 */
+        truncated: truncated === true
       };
     }
     function step() {
-      return readJson(CORE.CHANGE_READ, { cursor: cursor, limit: CHANGE_PAGE }).then(function (res) {
+      /* owner 作用域与方向都在**请求**上，因此过滤发生在 canonical 的
+         query 里，而不是在这一层。 */
+      var params = {
+        ownerId: oid,
+        order: CORE.CHANGE_ORDER,
+        cursor: cursor,
+        limit: CHANGE_PAGE
+      };
+      return readJson(CORE.CHANGE_READ, params).then(function (res) {
         pages += 1;
         if (!res || res.ok !== true || !Array.isArray(res.changes)) {
           if (pages === 1) return res;
@@ -334,19 +357,25 @@ function boot() {
           return merged(null);
         }
         var batch = res.changes;
-        var last = cursor;
+        /* desc 之下 cursor 是"取 revision 小于它的"，因此下一轮的游标是
+           本页**最小**的那个 revision（不是最大的）。 */
+        var next = null;
         for (var i = 0; i < batch.length; i += 1) {
           acc.push(batch[i]);
           var rv = Number(batch[i] && batch[i].revision);
-          if (Number.isFinite(rv) && rv > last) last = rv;
+          if (Number.isFinite(rv) && (next === null || rv < next)) next = rv;
         }
-        /* 短页 = 到末尾了。长页且还有配额就继续（cursor 用 `>` 语义，
-           因此下一轮的 cursor 就是这一页最大的那个 revision）。 */
-        if (batch.length < CHANGE_PAGE) return merged(res.revision);
+        /* 短页 = 走到这一端了。 */
+        if (batch.length < CHANGE_PAGE) { truncated = false; return merged(res.revision); }
         if (pages >= CHANGE_MAX_PAGES) { truncated = true; return merged(res.revision); }
-        cursor = last;
+        cursor = next;
         return step();
       });
+    }
+    if (oid == null) {
+      /* 没有选中的角色 ⇒ 不读。这一层**不**退回去读全局 change log：
+         那会把别的角色的活动混进这一格，而这一格的全部意义就是"我的"。 */
+      return Promise.resolve({ ok: true, changes: [], revision: null, pages: 0, truncated: false, noOwner: true });
     }
     return step();
   }
@@ -666,9 +695,13 @@ function boot() {
     var list = el('ol', 'esh-timeline');
     for (var i = 0; i < tl.rows.length; i += 1) list.appendChild(timelineItem(tl.rows[i]));
     c.appendChild(list);
-    /* ★ 被截断时**必须说出来**：一个残缺的时间线最危险的读法是
-       "最近什么都没发生"。 */
-    if (tl.truncated) c.appendChild(note(CORE.COPY.timelineTruncated, 'is-quiet'));
+    /* ★ §7 的三态：页面**只**在 truncated 时说"只有最近的一部分"，
+       并且**不**在 unknown 时把它说成 complete。两句不同的话。 */
+    if (tl.completeness === CORE.COMPLETENESS.TRUNCATED) {
+      c.appendChild(note(CORE.COPY.timelineTruncated, 'is-quiet'));
+    } else if (tl.completeness === CORE.COMPLETENESS.UNKNOWN) {
+      c.appendChild(note(CORE.COPY.timelineUncertain, 'is-quiet'));
+    }
     c.appendChild(timelineTechnical(tl));
     return c;
   }
@@ -699,10 +732,13 @@ function boot() {
   }
   function timelineTechnical(tl) {
     var lines = [
-      'changes: ' + tl.fetched + ' 条（本页显示 ' + tl.rows.length + ' 条）' +
-      (tl.truncated ? ' · 窗口已满，因此不是全部' : ''),
-      '归属过滤：按 canonical 的 walletId / ownerId / buyerId / agentId 逐字比较，' +
-      '未归属 ' + tl.unattributed + ' 条（不进时间线）',
+      'changes: ' + tl.fetched + ' 条（本页显示 ' + tl.rows.length + ' 条）',
+      /* ★ 归属不再由这一层判断：范围、顺序、完整性都是 canonical 的答案。 */
+      '归属：canonical owner 作用域（ownerId=' + (tl.scopeOwnerId || tl.ownerId || '(无)') +
+      ' · order=' + (tl.scopeOrder || tl.requestedOrder) + '）',
+      '完整性 = ' + tl.completeness +
+      (tl.completeness === 'complete' ? '（走到了这一端）'
+        : (tl.completeness === 'truncated' ? '（只有最近的一段）' : '（读面没给出可用的窗口）')),
       'change log revision = ' + (tl.revision == null ? '(未读到)' : String(tl.revision)),
       CORE.COPY.canonicalCodes + '（变化）：' + codeList(CORE.CHANGE_KIND_FACE)
     ];
@@ -725,14 +761,16 @@ function boot() {
       c.appendChild(emptySurface('history', CORE.COPY.purchasesEmpty, CORE.COPY.purchasesEmptyBody));
       return c;
     }
-    /* ★ 明细有上限：概览不是无底洞。被截住多少条**说出来**，而完整的
-       历史在「活动时间线」那一格里（它按 canonical 的顺序列出全部窗口内的
-       记录）。 */
+    /* ★ 明细有上限：概览不是无底洞。被截住多少条**说出来**，而更早的那些
+       在「活动时间线」那一格里。
+       ★ ★ P22-19：这句话只在那一格**真的**读完整时才成立。截断时它换成
+       另一句 —— 同一页上两格对完整性给出互相矛盾的说法，比不说还坏。 */
     var shown = Math.min(a.rows.length, CORE.ACTIVITY_KEEP);
     for (var i = 0; i < shown; i += 1) c.appendChild(activityItem(a.rows[i]));
     if (a.rows.length > shown) {
       c.appendChild(note(CORE.COPY.activityMorePrefix + (a.rows.length - shown) +
-        CORE.COPY.activityMoreSuffix, 'is-quiet'));
+        (a.timelineIsComplete ? CORE.COPY.activityMoreSuffix : CORE.COPY.activityMoreSuffixPartial),
+        'is-quiet'));
     }
     var tech = [CORE.COPY.canonicalCodes + '（购买）：' + codeList(CORE.PURCHASE_STATE_FACE),
       CORE.COPY.canonicalCodes + '（请求）：' + codeList(CORE.INTENT_STATE_FACE),

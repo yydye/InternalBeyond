@@ -1393,10 +1393,67 @@ function createHomeNodeHttp(deps) {
       }, req);
       return;
     }
+    /* ── P22-19 · change log 的 owner 作用域读面 ───────────────────────
+       `GET /economy/changes?ownerId=<canonical-owner-id>[&order=desc]`
+
+       ★ 为什么这里多了一个参数而不是新增一条路由：change log 是**全局**
+         的，而 P22-18 的时间线需要的是"**这个 owner 的**最近活动"。之前
+         的做法是取一页全局 change 再用 JS 筛 —— 那是错的，而且错在两个
+         层次：字段层（生产 payload 的 `buyerId` 有两种 canonical 拼写，
+         逐字比较必然漏掉 APPROVAL_APPROVED/REJECTED/CONSUMED；而
+         APPROVAL_EXPIRED 的 payload 一个 owner 字段都没有），以及分页层
+         （`revision` 上的 keyset 是从**最早**往新走的，截断时留下的是最旧
+         的一段，把它叫"最近活动"就是错的）。见 docs §2/§3。
+
+       ★ 过滤发生在 **canonical query**（economy-store 的
+         `listChangesForOwner` → SQL 的 owner 谓词），**不是**在本函数里
+         取全部再筛。本函数只做一件事：把参数透传下去，把结果和一句作用域
+         自述一起交出去。断言这件事的测试是
+         tests/test_p22_19_economy_owner_scope_http.js 的 A 组 —— 它扫本
+         文件的源码，确认这里没有出现"取一段再 filter"的形状。
+
+       ★ `order` **必须**与 `ownerId` 同时出现：全局读面的契约是
+         `ORDER BY revision ASC`（P22-1 起，P22-2 的 C10 逐字钉住），而
+         "要最新的一段"这个需求只在 owner 作用域下被证明过。带了 `order`
+         却不带 `ownerId` 时一律 400 —— 静默忽略一个参数会让调用方以为
+         自己拿到了 desc（那正是本阶段在别处反复拒绝的那种静默谎言）。
+
+       ★ 不带 `ownerId` 时这条路由的行为与 P22-1 起**逐字相同**：
+         同一条 SQL、同一个响应形状（没有多出 `ownerScope`）。 */
     if (path === '/economy/changes' && method === 'GET') {
       if (!economy) { bad(res, 501, 'economy-not-assembled', null, req); return; }
-      const changes = economy.listChanges(url.searchParams.get('cursor') || 0, url.searchParams.get('limit') || undefined);
-      ok(res, { changes: changes, revision: economy.getRevision() }, req);
+      const ownerId = url.searchParams.get('ownerId');
+      const order = url.searchParams.get('order');
+      if (order && !ownerId) {
+        bad(res, 400, 'change-order-requires-owner',
+          { hint: 'order is only defined for the owner-scoped change read' }, req);
+        return;
+      }
+      if (!ownerId) {
+        const changes = economy.listChanges(url.searchParams.get('cursor') || 0, url.searchParams.get('limit') || undefined);
+        ok(res, { changes: changes, revision: economy.getRevision() }, req);
+        return;
+      }
+      const scoped = economy.listChangesForOwner({
+        ownerId: ownerId,
+        cursor: url.searchParams.get('cursor') || 0,
+        limit: url.searchParams.get('limit') || undefined,
+        order: order || undefined
+      });
+      if (!scoped.ok) {
+        bad(res, 400, scoped.errors[0] || 'change-scope-read-failed', null, req);
+        return;
+      }
+      ok(res, {
+        changes: scoped.changes,
+        revision: economy.getRevision(),
+        /* 作用域写在响应里：于是"这一页是不是 owner-scoped"不用猜。 */
+        ownerScope: scoped.scope,
+        /* §8 逐字：这一层只做 filter / sort / project。它**不**重算余额、
+           不重判预算决定、不重判批准有效性、不重判报价有效性、不重判购买
+           结果、不重算库存数量、不重判自主裁决。 */
+        recomputesEconomyFacts: false
+      }, req);
       return;
     }
     /* ── P22-3 · reservation 的两条**只读**路由 ─────────────────────────

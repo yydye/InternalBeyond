@@ -845,17 +845,53 @@ const GROUPS = [
                   §7 的高级信息只有四个编号、默认折叠。
          ui   —— 同一条纪律的渲染器部分：概览的四个区域共用同一份归属 /
                   时间线四态（有数据 / 空 / 读不到 / 被截断）/
-                  change log 是**走到末尾**地读的（第一页满就继续）/
+                  change log 按 owner 作用域、**从最新往前**地读（P22-19 起）/
                   高级信息默认折叠、点一下展开 /
                   九个读路径全在声明里 / 两个写方法一次都没被调用 /
                   三个既有节点的 DOM 顺序逐字未变。
                   ★ 零子进程、零 socket、零浏览器。 */
       ['test_p22_18_economy_experience_ui_core.js'],
-      ['test_p22_18_economy_experience_ui.js']
+      ['test_p22_18_economy_experience_ui.js'],
+      /* ── P22-19 · Economy Read Model & Owner Scope Closure ─────────────
+         ★ 这一阶段**没有**新增 Economy 功能：它把"一条 change 属于谁"
+           从浏览器解释层收回到 canonical 的只读 query 里，并把只读契约
+           冻结成机器可检查的东西。
+
+         读契约 —— 四个 UI（P22-15/16/17/18）的
+                   READS / WRITES / OPTIONAL_READS /
+                   AUTHORITY_FIELDS / DERIVED_FIELDS 声明
+                   × 各个 core 的**真实导出**逐字比对；
+                   归属只有一处实现（纯层里不存在第二份）；
+                   §7 完整性三态各自有自己的话；
+                   §10 高级信息仍然只是调试面；
+                   §14 本阶段禁止的一整套词一个都没有出现；
+                   schema 水位仍然是 7（本阶段没有写入侧改动）。
+         owner scope —— **真实 store**：两个 owner 的隔离 / 全部 §12 场景
+                   （gift 双向 / AUTO_ALLOW / 用户批准 / 拒绝 / 批准过期 /
+                   预留 / 初始额度 / 余额重建 / 库存发放与消耗 / 算力额度）/
+                   EVENT_TYPE × ownership evidence 矩阵 /
+                   四个证据分支各自独立成立 /
+                   对抗性交错证明"先分页再筛"会漏掉**最新**的一段 /
+                   一份独立 oracle 正反两向交叉核对 /
+                   历史与坏 JSON 形状不让整条读面打不开 /
+                   §6 gift 语义（recipientId 不算归属）/
+                   §8 投影不是第二权威（同一 revision 在两个读面上逐字相同）。
+                   ★ 零子进程、零 socket、零浏览器。
+         http     —— 真实 in-process Home Node + 真实 socket（**恰好一个**，
+                   不 spawn、不开第二个）：ownerId 真的下到 canonical query /
+                   带与不带 ownerId 是两条语义 /
+                   order 只能与 ownerId 同时出现 / 分页在 HTTP boundary 上
+                   完整 / 旧的全局读面形状没变 / POST 一律 405。 */
+      ['test_p22_19_economy_read_contract.js'],
+      ['test_p22_19_economy_owner_scope.js'],
+      ['test_p22_19_economy_owner_scope_http.js']
       /* P22-18 的浏览器视觉核对（test_p22_18_economy_experience_visual.js）
          与 P22-15/16/17 那三条一样**不在**默认套件里（它要开一个真实
          浏览器）：2 主题 × 4 宽度（含 320px）+ 截断/空/展开四种状态。
-         跑法：node tests/test_p22_18_economy_experience_visual.js */
+         跑法：node tests/test_p22_18_economy_experience_visual.js
+         ★ P22-19 **没有**新增视觉矩阵：它只改了读取逻辑与两句文案，
+           UI 的结构、类名、节点顺序都逐字未变 —— 因此按 §13 的要求
+           **不**重跑完整矩阵，只跑 P22-18 那一条既有回归。 */
     ]
   },
   {

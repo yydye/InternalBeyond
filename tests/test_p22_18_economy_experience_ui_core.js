@@ -196,38 +196,78 @@ check('B9 ★★★ 未知 kind 不编解释：说一句诚实的"记下了一�
     return f.known === false && f.face === C.COPY.changeUnknown && f.tone === C.TONE.NOTE;
   })());
 
-/* ══ C · 归属：用 canonical 自己的键比出来 ════════════════════════════ */
-section('C · 归属：只认 canonical 自己的键（收礼者不算）');
+/* ══ C · 归属已上移到 canonical ══════════════════════════════════════
+   ★ P22-19 把这一组从"纯层真的去比归属"改成了"纯层**不**比归属"。
+     这不是放松，是这件事**换了地方**：归属现在是 canonical 的
+     `GET /economy/changes?ownerId=…`（store 的 `listChangesForOwner`），
+     因为旧判据在生产 payload 上漏记录（`buyerId` 有两种 canonical 拼写，
+     见 docs §2.3）。留下来的旧判据会在 canonical 已经正确放行的行上再筛
+     一次，把拼写差异重新变成丢记录 —— 所以断言的是它**不存在**。 */
+section('C · 归属：纯层不再持有这条规则（它已经上移到 canonical）');
 
 const W = 'econ_wallet_a1';
 
-check('C1 ★★★ walletId 列命中（钱包那一格里就有这个值）',
-  C.changeBelongsTo({ walletId: W, payload: {} }, 'a1', W) === true &&
-  C.changeBelongsTo({ walletId: 'econ_wallet_zzz', payload: {} }, 'a1', W) === false);
+check('C1 ★★★★★ 纯层里**没有** changeBelongsTo（一个留下来的旧判据会二次过滤，' +
+  '把 canonical 已经放行的行重新丢掉）',
+  (function () {
+    /* 判据必须落在**代码**上，而不是文件上：本文件的注释**必须**提到这个
+       名字才能解释它为什么被删。 */
+    const code = strip(coreSrc);
+    return typeof C.changeBelongsTo === 'undefined' &&
+      code.indexOf('changeBelongsTo') < 0;
+  })(), { exported: typeof C.changeBelongsTo, inCode: strip(coreSrc).indexOf('changeBelongsTo') >= 0 });
 
-check('C2 ★★★★ payload 里的 ownerId / buyerId / agentId 命中（逐字比较）',
-  C.changeBelongsTo({ walletId: null, payload: { ownerId: 'a1' } }, 'a1', W) === true &&
-  C.changeBelongsTo({ walletId: null, payload: { buyerId: 'a1' } }, 'a1', W) === true &&
-  C.changeBelongsTo({ walletId: null, payload: { agentId: 'a1' } }, 'a1', W) === true &&
-  C.changeBelongsTo({ walletId: null, payload: { buyerId: 'a2' } }, 'a1', W) === false);
+check('C2 ★★★★ 传进来的每一行都进时间线（这一层不筛、不丢）',
+  (function () {
+    const rows = [
+      { revision: 1, kind: 'WALLET_OPENED', entityId: W, walletId: W, at: 1000, payload: { ownerId: 'a1' } },
+      /* 一条**别的 owner** 的行：canonical 的 owner 作用域不会给它，但这一层
+         也不许自己判断 —— 它只对"canonical 说这是你的"负全责。 */
+      { revision: 2, kind: 'PURCHASE_COMPLETED', entityId: 'econ_pur_x', walletId: 'econ_wallet_zzz',
+        at: 2000, payload: { buyerId: 'a9', amountMinor: '900', currency: 'IB_CREDIT' } },
+      { revision: 3, kind: 'QUOTE_EXPIRED', entityId: 'econ_quote_x', walletId: null, at: 3000,
+        payload: { buyerId: 'character:a1', quoteId: 'econ_quote_x' } }
+    ];
+    const tl = C.buildTimelineModel({ ok: true, revision: 3, changes: rows, truncated: false }, { ownerId: 'a1' });
+    return tl.fetched === 3 && tl.rows.length === 3 && typeof tl.fetched === 'number';
+  })());
 
-check('C3 ★★★ 账本交易那一端也命中（payload.wallets[].walletId）',
-  C.changeBelongsTo({ walletId: null, payload: { wallets: [{ walletId: W }] } }, 'a1', W) === true &&
-  C.changeBelongsTo({ walletId: null, payload: { wallets: [{ walletId: 'econ_wallet_b' }] } }, 'a1', W) === false);
+check('C3 ★★★★ "收礼者不算归属"这条判断在纯层里**不存在**：' +
+  '时间线的每一行都带不出 recipientId，因此它结构上无法用它做归属',
+  (function () {
+    const one = { ok: true, revision: 9, truncated: false, changes: [
+      { revision: 9, kind: 'PURCHASE_COMPLETED', entityId: 'econ_pur_g', walletId: null, at: 900,
+        payload: { recipientId: 'a1', purchaseId: 'econ_pur_g', amountMinor: '100', currency: 'IB_CREDIT' } }
+    ] };
+    const tl = C.buildTimelineModel(one, { ownerId: 'a1' });
+    /* 行为判据：一条**只有** recipientId 的 change 仍然被收下（这一层不筛），
+       而它的 refs 里没有 recipientId —— 于是"用收礼者当归属"在这里既没有
+       动机也没有入口。真正的收礼者语义判据在 canonical 侧
+       （tests/test_p22_19_economy_owner_scope.js 的 H 组）。 */
+    return tl.rows.length === 1 &&
+      Object.keys(tl.rows[0].refs).indexOf('recipientId') < 0;
+  })(), Object.keys(C.buildTimelineModel({ ok: true, revision: 1, truncated: false, changes: [
+    { revision: 1, kind: 'PURCHASE_COMPLETED', entityId: 'x', walletId: null, at: 1, payload: {} }
+  ] }, { ownerId: 'a1' }).rows[0].refs));
 
-check('C4 ★★★★★ 收礼者**不**算归属：一次"买给别人"不是收礼者的余额变化',
-  C.changeBelongsTo({ walletId: null, payload: { buyerId: 'a2', recipientId: 'a1' } }, 'a1', W) === false,
-  'recipientId 只被当作"别人"');
+check('C4 ★★★★ 方向与完整性是这一层唯一仍然持有的两件契约事实',
+  C.CHANGE_ORDER === 'desc' &&
+  JSON.stringify(C.COMPLETENESS_LIST) === JSON.stringify(['complete', 'truncated', 'unknown']) &&
+  C.COMPLETENESS.COMPLETE === 'complete' && C.COMPLETENESS.TRUNCATED === 'truncated' &&
+  C.COMPLETENESS.UNKNOWN === 'unknown');
 
-check('C5 ★★★ 没有归属时什么都不算（不猜）',
-  C.changeBelongsTo({ walletId: W, payload: { buyerId: 'a1' } }, null, W) === false &&
-  C.changeBelongsTo(null, 'a1', W) === false);
+check('C5 ★★★ 作用域写在请求上：读面常量就是 canonical 的那一条，没有第二个路径',
+  C.CHANGE_READ === '/economy/changes' && C.readPathList().length === 8 &&
+  C.readPathList().indexOf(C.CHANGE_READ) < 0);
 
 /* ══ D · 时间线 ════════════════════════════════════════════════════ */
-section('D · 时间线：按 canonical 的 revision 倒序，截断时说出来');
+section('D · 时间线：按 canonical 的 revision 倒序，三态完整性如实带出');
 
+/* ★ 这份夹具是**canonical 的 owner 读面会给出的样子**：全部属于 a1、
+   已经是 desc（最新的在前）、并且自述了自己是不是完整的一段。 */
 const CHANGES = {
   ok: true, revision: 61, truncated: false,
+  ownerScope: { ownerId: 'a1', order: 'desc', scoped: true },
   changes: [
     { revision: 10, kind: 'WALLET_OPENED', entityId: W, walletId: W, at: 1000, payload: { ownerId: 'a1' } },
     { revision: 20, kind: 'ECONOMY_INITIAL_CREDIT_BOOTSTRAPPED', entityId: W, walletId: W, at: 2000,
@@ -236,73 +276,133 @@ const CHANGES = {
       payload: { agentId: 'a1', agentIntentId: 'econ_agent_intent_1', productId: 'econ_product_1', units: 1, reason: '用于生成更多视觉素材' } },
     { revision: 40, kind: 'APPROVAL_REQUESTED', entityId: 'econ_approval_1', walletId: null, at: 4000,
       payload: { buyerId: 'a1', approvalId: 'econ_approval_1', quoteId: 'econ_quote_1', amountMinor: '500', currency: 'IB_CREDIT', units: 1 } },
+    /* ★ 生产形状：这一条的 buyerId 是 `<partyType>:<id>`。canonical 认它，
+       因此它**在**这里 —— P22-19 之前它会被纯层丢掉。 */
     { revision: 45, kind: 'APPROVAL_APPROVED', entityId: 'econ_approval_1', walletId: null, at: 4500,
-      payload: { buyerId: 'a1', approvalId: 'econ_approval_1', productId: 'econ_product_1' } },
+      payload: { buyerId: 'character:a1', approvalId: 'econ_approval_1', productId: 'econ_product_1' } },
     { revision: 50, kind: 'PURCHASE_RESERVED', entityId: 'econ_purchase_1', walletId: W, at: 4800,
       payload: { buyerId: 'a1', purchaseId: 'econ_purchase_1', productId: 'econ_product_1', amountMinor: '500', currency: 'IB_CREDIT' } },
     { revision: 60, kind: 'PURCHASE_COMPLETED', entityId: 'econ_purchase_1', walletId: W, at: 5000,
-      payload: { buyerId: 'a1', purchaseId: 'econ_purchase_1', productId: 'econ_product_1', amountMinor: '500', currency: 'IB_CREDIT', units: 1 } },
-    /* 另一个角色的事件：必须**不**进这个角色的时间线 */
-    { revision: 61, kind: 'PURCHASE_COMPLETED', entityId: 'econ_purchase_9', walletId: 'econ_wallet_zzz', at: 5100,
-      payload: { buyerId: 'a9', purchaseId: 'econ_purchase_9', amountMinor: '900', currency: 'IB_CREDIT' } }
+      payload: { buyerId: 'a1', purchaseId: 'econ_purchase_1', productId: 'econ_product_1', amountMinor: '500', currency: 'IB_CREDIT', units: 1 } }
   ]
 };
 
-check('D1 ★★★★ 有数据时：七条属于这个角色的事件按 revision **倒序**（最新在前）',
+check('D1 ★★★★ 有数据时：七条按 revision **倒序**（最新在前）',
   (function () {
-    const tl = C.buildTimelineModel(CHANGES, { ownerId: 'a1', walletId: W });
+    const tl = C.buildTimelineModel(CHANGES, { ownerId: 'a1' });
     return tl.read === true && tl.rows.length === 7 && tl.rows[0].revision === 60 &&
       tl.rows[6].revision === 10 &&
       tl.rows.map(r => r.revision).join(',') === '60,50,45,40,30,20,10';
-  })(), C.buildTimelineModel(CHANGES, { ownerId: 'a1', walletId: W }).rows.map(r => r.revision));
+  })(), C.buildTimelineModel(CHANGES, { ownerId: 'a1' }).rows.map(r => r.revision));
 
-check('D2 ★★★★ 另一个角色的那条**没有**进来，而且被计进 unattributed（不是被静默丢掉）',
+check('D2 ★★★★★ 生产形状的 APPROVAL_APPROVED（buyerId = character:a1）**在**时间线里',
   (function () {
-    const tl = C.buildTimelineModel(CHANGES, { ownerId: 'a1', walletId: W });
-    return tl.unattributed === 1 && tl.fetched === 8 &&
-      tl.rows.every(r => r.refs.purchaseId !== 'econ_purchase_9');
+    const tl = C.buildTimelineModel(CHANGES, { ownerId: 'a1' });
+    const r = tl.rows.filter(x => x.kind === 'APPROVAL_APPROVED');
+    return r.length === 1 && r[0].revision === 45 && r[0].face === C.CHANGE_KIND_FACE.APPROVAL_APPROVED.face &&
+      C.CHANGE_KIND_FACE.APPROVAL_APPROVED.face === '你允许继续';
+  })(), C.buildTimelineModel(CHANGES, { ownerId: 'a1' }).rows.map(r => r.kind + ':' + r.revision));
+
+check('D3 ★★★★ canonical 自述的作用域与这一层要求的 must 一致（可断言，不是假设）',
+  (function () {
+    const tl = C.buildTimelineModel(CHANGES, { ownerId: 'a1' });
+    return tl.ownerId === 'a1' && tl.scopeOwnerId === 'a1' && tl.scopeOrder === 'desc' &&
+      tl.requestedOrder === 'desc';
   })());
 
-check('D3 ★★★ 每条都带 revision / 时间 / 人话 / 语气 / 可指回的编号',
+check('D3.1 ★★★★ 每条都带 revision / 时间 / 人话 / 语气 / 可指回的编号',
   (function () {
-    const r = C.buildTimelineModel(CHANGES, { ownerId: 'a1', walletId: W }).rows[0];
+    const r = C.buildTimelineModel(CHANGES, { ownerId: 'a1' }).rows[0];
     return r.revision === 60 && r.kind === 'PURCHASE_COMPLETED' && r.face === '购买完成' &&
       r.tone === C.TONE.MONEY && typeof r.atText === 'string' && r.atText.length >= 10 &&
       r.refs.purchaseId === 'econ_purchase_1' && r.amountText.indexOf('5.00') >= 0 &&
       r.quantity === 1;
-  })(), C.buildTimelineModel(CHANGES, { ownerId: 'a1', walletId: W }).rows[0]);
+  })(), C.buildTimelineModel(CHANGES, { ownerId: 'a1' }).rows[0]);
 
 check('D4 ★★★★ 最近变化取的是**最近一次真的动了钱**的那一条（不是随意一条）',
   (function () {
-    const tl = C.buildTimelineModel(CHANGES, { ownerId: 'a1', walletId: W });
+    const tl = C.buildTimelineModel(CHANGES, { ownerId: 'a1' });
     return tl.lastBalanceChange != null && tl.lastBalanceChange.revision === 60 &&
       tl.lastBalanceChange.kind === 'PURCHASE_COMPLETED';
   })());
 
-check('D5 ★★★★ 截断原样带出（"最近什么都没发生"是这个页面最危险的假信息）',
+check('D5 ★★★★★ §7 三态：complete / truncated / unknown 三句话互不相同，' +
+  '而"没说"是 unknown 而**不是** complete',
   (function () {
-    const tl = C.buildTimelineModel(
-      Object.assign({}, CHANGES, { truncated: true }), { ownerId: 'a1', walletId: W });
-    return tl.truncated === true;
+    const done = C.buildTimelineModel(CHANGES, { ownerId: 'a1' });
+    const cut = C.buildTimelineModel(
+      Object.assign({}, CHANGES, { truncated: true }), { ownerId: 'a1' });
+    /* ★ 没有任何截断标记的响应：不许被当成"完整" —— 那正是 §7 禁止的
+       "truncated → 当 complete 展示"的另一种写法。 */
+    const silent = C.buildTimelineModel(
+      { ok: true, revision: 61, changes: CHANGES.changes }, { ownerId: 'a1' });
+    return done.completeness === C.COMPLETENESS.COMPLETE &&
+      cut.completeness === C.COMPLETENESS.TRUNCATED &&
+      silent.completeness === C.COMPLETENESS.UNKNOWN &&
+      C.COPY.timelineTruncated !== C.COPY.timelineUncertain;
+  })(),
+  {
+    done: C.buildTimelineModel(CHANGES, { ownerId: 'a1' }).completeness,
+    cut: C.buildTimelineModel(Object.assign({}, CHANGES, { truncated: true }), { ownerId: 'a1' }).completeness,
+    silent: C.buildTimelineModel({ ok: true, revision: 61, changes: CHANGES.changes }, { ownerId: 'a1' }).completeness
+  });
+
+check('D5.1 ★★★★ 顺序不成立时完整性**降级**为 unknown（一个顺序都不成立的窗口不能说它完整）',
+  (function () {
+    const rows = CHANGES.changes.concat([
+      { revision: 60, kind: 'PURCHASE_COMPLETED', entityId: 'dup', walletId: W, at: 5000, payload: {} }
+    ]);
+    const tl = C.buildTimelineModel({ ok: true, revision: 61, changes: rows, truncated: false }, { ownerId: 'a1' });
+    return tl.unorderable === 1 && tl.completeness === C.COMPLETENESS.UNKNOWN;
   })());
 
-check('D6 ★★★ 空 change log 是"还没有任何记录"，不是"读不到"',
+check('D6 ★★★ 空 change log 是"还没有任何记录"，不是"读不到"；' +
+  '而读面没给成数组是 unknown（不是"空"）',
   (function () {
-    const empty = C.buildTimelineModel({ ok: true, revision: 0, changes: [] }, { ownerId: 'a1', walletId: W });
-    const down = C.buildTimelineModel({ ok: false, error: 'home-node-unreachable' }, { ownerId: 'a1', walletId: W });
+    const empty = C.buildTimelineModel({ ok: true, revision: 0, changes: [], truncated: false }, { ownerId: 'a1' });
+    const down = C.buildTimelineModel({ ok: false, error: 'home-node-unreachable' }, { ownerId: 'a1' });
+    const noList = C.buildTimelineModel({ ok: true, revision: 0 }, { ownerId: 'a1' });
     return empty.read === true && empty.empty === true && empty.rows.length === 0 &&
-      down.read === false && down.empty === false && down.error === 'home-node-unreachable';
+      empty.completeness === C.COMPLETENESS.COMPLETE &&
+      down.read === false && down.empty === false && down.error === 'home-node-unreachable' &&
+      down.completeness === C.COMPLETENESS.UNKNOWN &&
+      noList.read === false && noList.completeness === C.COMPLETENESS.UNKNOWN;
   })());
 
-check('D7 ★★ 时间线在页面上有上限（不是无底洞），上限就是常量',
+check('D7 ★★ 时间线在页面上有上限（不是无底洞），上限就是常量；' +
+  '而它说的是**显示**的上限，不是**读取窗口**的上限',
   (function () {
-    const many = { ok: true, revision: 100, changes: [] };
+    const many = { ok: true, revision: 100, changes: [], truncated: true };
     for (let i = 1; i <= 60; i += 1) {
       many.changes.push({ revision: i, kind: 'RESERVATION_CREATED', entityId: 'x' + i, walletId: W, at: 1000 + i, payload: {} });
     }
-    const tl = C.buildTimelineModel(many, { ownerId: 'a1', walletId: W });
-    return tl.rows.length === C.TIMELINE_KEEP && tl.rows[0].revision === 60;
+    const tl = C.buildTimelineModel(many, { ownerId: 'a1' });
+    return tl.rows.length === C.TIMELINE_KEEP && tl.rows[0].revision === 60 &&
+      tl.fetched === 60 && tl.completeness === C.COMPLETENESS.TRUNCATED;
   })());
+
+check('D8 ★★★★★ §7 的完整性是**全页一致**的：经济活动那一格说"更早的仍在时间线里"之前，' +
+  '必须先知道时间线读完整了 —— 否则同一页上两格互相矛盾',
+  (function () {
+    const purchases = { ok: true, purchases: [] };
+    for (let i = 1; i <= 9; i += 1) {
+      purchases.purchases.push({ purchaseId: 'p' + i, buyerId: 'character:a1', productId: 'econ_product_1',
+        currency: 'IB_CREDIT', amountMinor: '100', status: 'COMPLETED', terminal: true, completed: true,
+        units: 1, grantedQuantity: 1, createdAt: 1700000000000 + i });
+    }
+    const complete = C.buildActivityModel(purchases, null, null,
+      C.buildTimelineModel(CHANGES, { ownerId: 'a1' }), {});
+    const cut = C.buildActivityModel(purchases, null, null,
+      C.buildTimelineModel(Object.assign({}, CHANGES, { truncated: true }), { ownerId: 'a1' }), {});
+    return complete.timelineIsComplete === true &&
+      complete.timelineCompleteness === C.COMPLETENESS.COMPLETE &&
+      cut.timelineIsComplete === false &&
+      cut.timelineCompleteness === C.COMPLETENESS.TRUNCATED &&
+      C.COPY.activityMoreSuffix !== C.COPY.activityMoreSuffixPartial;
+  })(), {
+    complete: C.buildActivityModel({ ok: true, purchases: [] }, null, null,
+      C.buildTimelineModel(CHANGES, { ownerId: 'a1' }), {}).timelineCompleteness
+  });
 
 /* ══ E · 经济活动：§3 的 join ══════════════════════════════════════ */
 section('E · 经济活动：来源三词各有证据，三步各有 canonical 时间');
