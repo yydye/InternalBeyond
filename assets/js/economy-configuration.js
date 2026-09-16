@@ -802,8 +802,29 @@ function boot() {
   }
 
   /* ══ ② 预算限制 ═══════════════════════════════════════════════════ */
-  function budgetCard() {
-    var b = view.budget;
+  /* ── P22-18 · §6：两条"体验"解释 ──────────────────────────────────
+     ★ 它们都**只是话**：不改任何一条判定、不读任何新的读面、也不新增
+       任何输入。放在这里是因为这一页的误解成本最高 —— 把"上限"读成
+       "余额"、把"自主"读成"免审"，两者都会让用户对自己的钱做错判断。
+     ★ 与既有 `.ecfg-gate` 同一种语言（一个小标记 + 一句话），因此这一页
+       没有出现第四种提示样式。 */
+  function experienceNotice(mark, title, body) {
+    var box = el('div', 'ecfg-experience');
+    box.setAttribute('role', 'note');
+    box.appendChild(svgOf(mark, 16, 'ecfg-experience-mark'));
+    var text = el('div', 'ecfg-experience-body');
+    text.appendChild(el('p', 'ecfg-experience-title', title));
+    text.appendChild(el('p', 'ecfg-experience-text', body));
+    box.appendChild(text);
+    return box;
+  }
+  function limitNotice() {
+    return experienceNotice(
+      '<path d="M5.2 12h13.6"/><path d="M8.4 8.4v7.2"/><path d="M15.6 8.4v7.2"/>',
+      CORE.COPY.budgetIsALimit, CORE.COPY.budgetIsALimitBody);
+  }
+
+  function budgetCard() {    var b = view.budget;
     var c = card('budget', CORE.COPY.budgetTitle, CORE.COPY.budgetIntro);
 
     if (b.state === 'unknown' || b.state === 'malformed') {
@@ -814,6 +835,9 @@ function boot() {
     }
 
     if (b.state === 'absent') c.appendChild(note(CORE.COPY.budgetAbsent, 'is-quiet'));
+    /* ★ P22-18 · §6：一句解释放在**刻度之前**。它要回答的正是这一格最
+       容易被误读的那件事 —— 这里的数字是上限，不是余额。 */
+    c.appendChild(limitNotice());
     c.appendChild(meterBlock());
 
     var source = gateSource();
@@ -923,6 +947,11 @@ function boot() {
   function autonomyCard() {
     var a = view.autonomy;
     var c = card('autonomy', CORE.COPY.autonomyTitle, CORE.COPY.autonomyIntro);
+    /* ★ P22-18 · §6：这条边界放在**表单之前**。等用户把开关拨完再解释
+       "这不等于是免审" 就已经晚了 —— 误解是在拨开关的那一刻形成的。 */
+    c.appendChild(experienceNotice(
+      '<path d="M12 3.6l7 3v6c0 4-3 6.4-7 7.8-4-1.4-7-3.8-7-7.8v-6z"/><path d="M9.4 9.6l5.2 4.8"/>',
+      CORE.COPY.autonomyNotBypass, CORE.COPY.autonomyNotBypassBody));
 
     if (a.state === 'unknown' || a.state === 'malformed') {
       c.appendChild(note(a.text || CORE.COPY.readFailed, 'is-quiet'));

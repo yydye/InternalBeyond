@@ -321,5 +321,188 @@ body.theme-infernal .esh-empty-art{color:#8fa8c8}
   .esh-wallet-value{font-size:1.38rem}
 }
 @media (prefers-reduced-motion:reduce){
-  .esh-tab-rail,.esh-chip,.esh-btn-primary,.esh-btn-quiet,.esh-btn-link,.esh-store,.esh-product{transition:none;animation:none}
+  .esh-tab-rail,.esh-chip,.esh-btn-primary,.esh-btn-quiet,.esh-btn-link,.esh-store,.esh-product{transition:none;animation:none}}
+
+/* ====================================================================
+   P22-18 · 解释层（§2 时间线 / §3 经济活动 / §4 为什么 / §7 高级信息）
+   --------------------------------------------------------------------
+   这一块新增的是**读得懂**，不是**更多东西**。三条约束：
+
+     ① 视觉目标是"AI 世界里的资源面板"：玻璃、安静、克制、柔软。
+        **不**是银行后台（没有表格线网、没有红绿涨跌）、**不**是财务软件
+        （没有科目、没有预算进度环）、**不**是游戏商城（没有徽章、没有
+        宝箱）、**不**是加密钱包（没有地址串、没有哈希）。
+     ② 时间线的圆点与短轨只用**一个**颜色变量（--esh-tone），因此
+        "这一条是什么"在结构上只有一个来源，而不是四套散落的颜色规则。
+     ③ 数字继续 tabular-nums；长 id 一律 `overflow-wrap:anywhere` 且
+        只出现在折叠区里 —— 高级信息**不许**把页面撑宽。
+   ==================================================================== */
+
+/* ── 钱包那一格的"最近变化"───────────────────────────────────────────
+   它是一条**说明**而不是第二个余额：左边一个标签，右边一句发生了什么。 */
+.esh-recent{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;
+  padding-top:9px;border-top:1px solid var(--border-soft)}
+.esh-recent-l{flex:0 0 auto;font-size:.71rem;letter-spacing:.08em;color:var(--content-muted)}
+.esh-recent-none{font-size:.74rem;color:var(--content-muted);opacity:.85}
+.esh-recent-v{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;min-width:0}
+.esh-recent-face{font-size:.8rem;color:var(--content-secondary)}
+.esh-recent-when{font-size:.72rem;color:var(--content-muted);font-variant-numeric:tabular-nums}
+
+/* ── 活动时间线 ───────────────────────────────────────────────────────
+   ★ 一条细轨 + 一个圆点。轨是 CSS 的一根 1px 线（不是位图、不是边框
+     拼出来的），因此它在任何缩放与任何主题里都是同一条。 */
+.esh-timeline{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
+.esh-tl{position:relative;display:flex;gap:11px;padding:0 0 13px 0;min-width:0}
+.esh-tl:last-child{padding-bottom:0}
+.esh-tl-mark{position:relative;flex:0 0 auto;width:22px;display:flex;justify-content:center;
+  padding-top:2px;color:var(--esh-tone,var(--content-muted))}
+.esh-tl-mark svg{position:relative;z-index:1}
+/* 轨：从这一条圆点的中心连到下一条圆点的中心。最后一条不画。 */
+/* ★ 轨是**语气着色**的：--border-soft 在深色主题里几乎全透明，于是这一列
+   只剩圆点、没有连线（开发期在真实截图上发现的）。用当前这一条的 tone
+   着色之后，线看得见，而且"这一段发生了什么"在结构上就分得出来。 */
+.esh-tl:not(:last-child) .esh-tl-mark::after{content:"";position:absolute;top:20px;bottom:-13px;
+  left:50%;width:1px;margin-left:-.5px;
+  background:color-mix(in srgb,var(--esh-tone,var(--content-muted)) 42%,transparent)}
+.esh-tl-body{min-width:0;display:flex;flex-direction:column;gap:2px;flex:1 1 auto}
+.esh-tl-head{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;margin:0;min-width:0}
+.esh-tl-time{flex:0 0 auto;font-size:.71rem;color:var(--content-muted);
+  font-variant-numeric:tabular-nums;letter-spacing:.02em;min-width:34px}
+.esh-tl-face{font-size:.83rem;color:var(--content-primary);overflow-wrap:anywhere}
+.esh-tl-sub{margin:0;font-size:.72rem;line-height:1.7;color:var(--content-muted);
+  font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+
+/* 语气 → 一个颜色。七个成员，全部落在既有状态令牌上。 */
+.esh-tl[data-tone="money"]{--esh-tone:var(--status-info)}
+.esh-tl[data-tone="hold"]{--esh-tone:var(--content-muted)}
+.esh-tl[data-tone="ask"]{--esh-tone:var(--status-warning)}
+.esh-tl[data-tone="decision"]{--esh-tone:var(--status-success)}
+.esh-tl[data-tone="asset"]{--esh-tone:var(--accent-light)}
+.esh-tl[data-tone="rule"]{--esh-tone:var(--content-muted)}
+.esh-tl[data-tone="fail"]{--esh-tone:var(--status-danger)}
+.esh-tl[data-tone="note"]{--esh-tone:var(--content-muted)}
+/* "钱真的动了"这一条**稍微**更实一点：它是这一格存在的理由。 */
+.esh-tl[data-tone="money"] .esh-tl-face{font-weight:500}
+
+/* ── 经济活动（§3）───────────────────────────────────────────────────
+   一次购买 = 一张安静的条目：上面一行是"什么、多少、到哪一步了"，
+   中间一行是"它是怎么来的"，下面一条细轨是"走了哪几步"。 */
+.esh-activity{display:flex;flex-direction:column;gap:9px;padding:12px 14px;
+  border-radius:var(--radius-control);border:1px solid var(--glass-border-soft);
+  background:rgba(255,255,255,.12);min-width:0}
+.esh-act-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;
+  flex-wrap:wrap;min-width:0}
+.esh-act-main{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;min-width:0}
+.esh-act-side{display:flex;align-items:baseline;gap:10px;flex:0 0 auto}
+.esh-act-sources{display:flex;align-items:center;gap:7px;flex-wrap:wrap;min-width:0}
+.esh-act-label{font-size:.7rem;letter-spacing:.1em;color:var(--content-muted);
+  text-transform:none;flex:0 0 auto}
+.esh-act-src{font-size:.72rem;padding:2px 9px;border-radius:999px;
+  border:1px solid var(--glass-border-soft);color:var(--content-secondary);white-space:nowrap}
+/* 三种来源各自的语气很轻：一条边框上的偏色，而不是三个彩色徽章。 */
+.esh-src-agent{border-color:color-mix(in srgb,var(--accent-light) 42%,transparent);
+  color:var(--content-secondary)}
+.esh-src-user{border-color:color-mix(in srgb,var(--status-success) 42%,transparent)}
+.esh-src-system{border-color:color-mix(in srgb,var(--status-info) 36%,transparent)}
+.esh-src-auto{border-color:color-mix(in srgb,var(--status-warning) 40%,transparent)}
+.esh-act-who{font-size:.72rem;color:var(--content-muted);overflow-wrap:anywhere}
+
+/* 三步细轨：Intent → Approval → Purchase */
+.esh-steps{list-style:none;margin:2px 0 0;padding:0;display:flex;flex-direction:column;gap:4px;
+  border-top:1px solid var(--border-soft);padding-top:9px}
+.esh-steps-label{font-size:.7rem;letter-spacing:.1em;color:var(--content-muted)}
+.esh-step{display:flex;align-items:baseline;gap:8px;min-width:0}
+.esh-step-mark{flex:0 0 auto;display:inline-flex;color:var(--status-success);opacity:.9;
+  transform:translateY(1px)}
+.esh-step.is-absent .esh-step-mark{color:var(--content-muted);opacity:.5}
+.esh-step-body{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;min-width:0}
+.esh-step-label{font-size:.76rem;color:var(--content-secondary)}
+.esh-step.is-absent .esh-step-label{color:var(--content-muted)}
+.esh-step-sub{font-size:.71rem;color:var(--content-muted);font-variant-numeric:tabular-nums;
+  overflow-wrap:anywhere}
+
+/* ── 支出说明 ─────────────────────────────────────────────────────────
+   一个合计 + 几行明细。合计**不是**一块大数字：它是这一格里的一个读数。 */
+.esh-spend-total{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;
+  padding:9px 12px;border-radius:var(--radius-control);
+  border:1px solid var(--glass-border-soft);background:rgba(255,255,255,.10)}
+.esh-spend-l{font-size:.72rem;letter-spacing:.06em;color:var(--content-muted)}
+.esh-spend-v{font-family:var(--font-ui);font-size:1.06rem;color:var(--content-primary);
+  font-variant-numeric:tabular-nums}
+
+/* ── Agent 为什么提出（§4）────────────────────────────────────────────
+   ★ 原因那一格是**逐字**的：因此它用等宽以外的普通字体、允许换行、
+     不截断、不加引号装饰 —— 一句被排版改写过的理由就不再是原话了。 */
+.esh-why{display:flex;flex-direction:column;gap:8px;padding:12px 14px;
+  border-radius:var(--radius-control);border:1px solid var(--glass-border-soft);
+  background:rgba(255,255,255,.12);min-width:0}
+.esh-why-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;
+  flex-wrap:wrap;min-width:0}
+.esh-why-facts{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;margin:0;min-width:0}
+.esh-why-dt{margin:0;font-size:.71rem;letter-spacing:.06em;color:var(--content-muted);
+  white-space:nowrap}
+.esh-why-dd{margin:0;font-size:.82rem;line-height:1.75;color:var(--content-primary);
+  overflow-wrap:anywhere;min-width:0}
+
+/* ── 高级信息（§7）────────────────────────────────────────────────────
+   默认折叠；展开之后是一张**没有竖线网**的对照表（每行四列，
+   窄屏两列），因为它的用途是"对着记录排查"，不是给人读表格。 */
+.esh-audit-toggle{appearance:none;cursor:pointer;font-family:var(--font-ui);font-size:.76rem;
+  color:var(--content-secondary);padding:6px 12px;border-radius:var(--radius-control);
+  border:1px solid var(--glass-border-soft);background:none;
+  transition:color var(--motion-fast) var(--transition),border-color var(--motion-fast) var(--transition)}
+.esh-audit-toggle:hover{color:var(--content-primary);border-color:var(--glass-border-strong)}
+.esh-audit-toggle:focus-visible{outline:1px solid var(--accent-light);outline-offset:2px}
+.esh-audit-body{display:flex;flex-direction:column;gap:8px;padding:11px 12px;
+  border-radius:var(--radius-control);background:rgba(0,0,0,.10);
+  border:1px solid var(--glass-border-soft)}
+.esh-audit-body[hidden]{display:none}
+.esh-audit-table{display:flex;flex-direction:column;gap:6px;min-width:0}
+.esh-audit-row{display:grid;grid-template-columns:minmax(0,1.1fr) repeat(4,minmax(0,1.7fr));
+  gap:4px 12px;align-items:baseline;min-width:0}
+.esh-audit-row.is-head .esh-audit-cell{font-size:.68rem;letter-spacing:.06em;
+  color:var(--content-muted);text-transform:none}
+.esh-audit-cell{font-size:.68rem;line-height:1.6;color:var(--content-muted);min-width:0;
+  overflow-wrap:anywhere;word-break:break-all}
+.esh-audit-name{color:var(--content-secondary)}
+.esh-audit-id{font-variant-numeric:tabular-nums}
+
+/* ── 浅色主题：与 P22-17 同款 —— 把会糊掉小字的白色发光关掉 ────────── */
+body:not(.theme-infernal) .esh-activity,
+body:not(.theme-infernal) .esh-why,
+body:not(.theme-infernal) .esh-spend-total{background:rgba(255,255,255,.40);
+  border-color:rgba(200,225,248,.45)}
+body:not(.theme-infernal) .esh-audit-body{background:rgba(120,160,210,.10)}
+
+/* ── 响应式：320px 是硬要求（§9）─────────────────────────────────────
+   ★ 手机上一律改成"标签在上、内容在下"，因为把"原因"那一格挤成
+     半宽会在 320px 上把一句中文切成每行两个字。 */
+@media (max-width:880px){
+  .esh-audit-row{grid-template-columns:1fr;gap:3px 12px}
+  .esh-audit-row.is-head{display:none}
+  /* ★ 窄屏上四列会堆成一列，表头也因此藏起来了 —— 没有前缀就只剩四个
+     裸编号，而这一格存在的理由正是"对着记录排查"。前缀是**显示**层的
+     东西（data-k 属性），DOM 里没有多一层。 */
+  .esh-audit-cell[data-k]::before{content:attr(data-k) " ";color:var(--content-muted);opacity:.9}
+  .esh-audit-name{font-size:.74rem;color:var(--content-secondary);margin-bottom:2px}
 }
+@media (max-width:640px){
+  .esh-tl{gap:9px}
+  .esh-tl-time{min-width:0}
+  .esh-act-head,.esh-why-head{flex-direction:column;align-items:flex-start;gap:5px}
+  .esh-act-side{flex-wrap:wrap}
+  /* ★ 三步在手机上**不折叠掉任何一步**：它们是这一格的解释力所在。
+     折行即可 —— 每一步自己就是"标签 + 一行小字"。 */
+  .esh-step-body{flex-direction:column;gap:1px}
+  .esh-why-facts{grid-template-columns:1fr;gap:2px 0}
+  .esh-why-dt{margin-top:6px}
+  .esh-spend-v{font-size:1rem}
+  .esh-steps-label,.esh-act-label{flex-basis:100%}
+}
+@media (max-width:380px){
+  .esh-activity,.esh-why{padding:10px 11px}
+  .esh-audit-row{grid-template-columns:1fr}
+  .esh-audit-body{padding:9px 10px}
+  .esh-tl-face{font-size:.8rem}
+}
+

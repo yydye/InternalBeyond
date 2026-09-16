@@ -270,6 +270,22 @@
 .ecfg-gate-title{margin:0;font-size:.82rem;color:var(--content-primary)}
 .ecfg-gate-text{margin:0;font-size:.74rem;line-height:1.75;color:var(--content-secondary);max-width:62ch;overflow-wrap:anywhere}
 
+/* ── P22-18 · §6：两条"体验"解释 ──────────────────────────────────────
+   与 .ecfg-gate / .ecfg-bound 同一族（一个小线稿 + 两行字），但标题
+   更醒目一点 —— 它要纠正的是一个**已经形成的**读法，因此标题那一行
+   必须先从旁边两格里跳出来。没有红色、没有感叹号、没有图标警告。 */
+.ecfg-experience{display:flex;align-items:flex-start;gap:10px;
+  padding:11px 14px;border-radius:var(--radius-card);
+  border:1px solid var(--glass-border-soft);background:var(--glass-bg-ambient)}
+.ecfg-experience-mark{display:inline-flex;flex:0 0 16px;margin-top:2px;
+  color:var(--accent-light);opacity:.88}
+.ecfg-experience-mark svg{display:block}
+.ecfg-experience-body{display:flex;flex-direction:column;gap:3px;min-width:0}
+.ecfg-experience-title{margin:0;font-size:.82rem;line-height:1.6;
+  color:var(--content-primary);letter-spacing:.02em}
+.ecfg-experience-text{margin:0;font-size:.73rem;line-height:1.78;
+  color:var(--content-secondary);max-width:62ch;overflow-wrap:anywhere}
+
 /* ── 技术说明：底层词只出现在这个折叠区里（P6 契约）──────────────── */
 .ecfg-technical{font-size:.68rem;color:var(--content-muted)}
 .ecfg-technical summary{cursor:pointer;letter-spacing:.04em;padding:2px 0}
@@ -307,6 +323,7 @@ body:not(.theme-infernal) .ecfg-figures,
 body:not(.theme-infernal) .ecfg-meter,
 body:not(.theme-infernal) .ecfg-gate,
 body:not(.theme-infernal) .ecfg-bound,
+body:not(.theme-infernal) .ecfg-experience,
 body:not(.theme-infernal) .ecfg-feedback,
 body:not(.theme-infernal) .ecfg-seg,
 body:not(.theme-infernal) .ecfg-sk{background:rgba(255,255,255,.40);border-color:rgba(200,225,248,.45)}

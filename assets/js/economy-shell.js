@@ -57,8 +57,37 @@ var MARK = Object.freeze({
   inventory: '<path d="M3.9 7.6h16.2v3.6H3.9z"/><path d="M5.5 11.2h13v7.9h-13z"/><path d="M9.9 14.9h4.2"/>',
   history: '<path d="M12 6.4v5.6l3.4 2.1"/><path d="M4.9 12a7.1 7.1 0 1 0 2.2-5.1"/><path d="M4.7 4.9v3.2h3.2"/>',
   lock: '<rect x="5.5" y="10.6" width="13" height="8.8" rx="2.2"/><path d="M8.7 10.6V8.3a3.3 3.3 0 0 1 6.6 0v2.3"/><path d="M12 14.2v2"/>',
-  unlock: '<rect x="5.5" y="10.6" width="13" height="8.8" rx="2.2"/><path d="M8.7 10.6V8.3a3.3 3.3 0 0 1 6.2-1.3"/><path d="M12 14.2v2"/>'
+  unlock: '<rect x="5.5" y="10.6" width="13" height="8.8" rx="2.2"/><path d="M8.7 10.6V8.3a3.3 3.3 0 0 1 6.2-1.3"/><path d="M12 14.2v2"/>',
+  /* ── P22-18 · 时间线用的四个线稿（§8：circle / check / clock / arrow）──
+     ★ 全部 24×24、currentColor、统一 stroke，因此两套主题自动适配。 */
+  clock: '<circle cx="12" cy="12" r="8.2"/><path d="M12 7.4v4.8l3.2 2"/>',
+  check: '<circle cx="12" cy="12" r="8.2"/><path d="M8.2 12.3l2.6 2.6 5-5.4"/>',
+  ask: '<circle cx="12" cy="12" r="8.2"/><path d="M12 16.4v.1"/><path d="M9.6 9.6a2.5 2.5 0 1 1 3.1 2.4c-.5.2-.7.6-.7 1.1v.6"/>',
+  arrow: '<path d="M5 12h13.4"/><path d="M14.2 7.8l4.2 4.2-4.2 4.2"/>',
+  hold: '<circle cx="12" cy="12" r="8.2"/><path d="M12 7.8v4.4l2.8 1.8"/>',
+  ledger: '<path d="M6.2 4.6h11.6v14.8H6.2z"/><path d="M9.2 8.4h5.6M9.2 11.6h5.6M9.2 14.8h3.4"/>',
+  asset: '<path d="M12 3.8l7 4v8.4l-7 4-7-4V7.8z"/><path d="M5 7.8l7 4 7-4M12 11.8v8.4"/>',
+  rule: '<path d="M5.4 6.4h13.2M5.4 12h13.2M5.4 17.6h13.2"/><circle cx="9.4" cy="6.4" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="8" cy="17.6" r="1.6"/>',
+  cross: '<circle cx="12" cy="12" r="8.2"/><path d="M9.2 9.2l5.6 5.6M14.8 9.2l-5.6 5.6"/>',
+  dot: '<circle cx="12" cy="12" r="8.2"/><circle cx="12" cy="12" r="2.6"/>'
 });
+
+/* ── 语气 → 线稿（§8）───────────────────────────────────────────────
+   ★ 映射是封闭的：七个语气各有一张脸，而语气本身来自纯层的 TONE。
+     于是"这一条画成什么"没有第二种答案，也不取决于任何经济判定。 */
+var TONE_MARK = Object.freeze({
+  money: 'ledger',
+  hold: 'hold',
+  ask: 'ask',
+  decision: 'check',
+  asset: 'asset',
+  rule: 'rule',
+  fail: 'cross',
+  note: 'dot'
+});
+function markOfTone(tone) {
+  return MARK[TONE_MARK[tone] || 'dot'] || MARK.dot;
+}
 
 /* ── 商品占位块的 5 张确定性线稿（§4）────────────────────────────────
    ★ 它们**只是**装饰：选哪一张由 productId 的哈希决定，而哈希不进
@@ -220,6 +249,10 @@ function boot() {
       jobs.push(readJson(CORE.READS.BUDGET, { ownerId: oid, currency: 'IB_CREDIT', amountMinor: '0' }));
       jobs.push(readJson(CORE.READS.INVENTORY, { ownerId: oid, limit: CORE.LIMITS.INVENTORY }));
       jobs.push(readJson(CORE.READS.PURCHASES, { buyerId: oid, limit: CORE.LIMITS.PURCHASES }));
+      /* ★ 第九条只读面：canonical change log。它**需要归属** —— 一条变化
+         是谁的要用 canonical 自己的键比出来，因此没有角色时不读它，而不是
+         读回来一堆别人的变化。 */
+      jobs.push(loadChanges());
     }
     return Promise.all(jobs).then(function (r) {
       if (my !== seq) return;
@@ -230,6 +263,7 @@ function boot() {
       var budgetRes = oid ? r[idx++] : null;
       var inventoryRes = oid ? r[idx++] : null;
       var purchasesRes = oid ? r[idx++] : null;
+      var changesRes = oid ? r[idx++] : null;
       /* 整页不可用只有一个判据：**传输**断了（不是某一条 404）。 */
       if (isTransportDown(walletRes) && isTransportDown(storesRes)) {
         stage = 'failed';
@@ -242,7 +276,7 @@ function boot() {
         owner: oid,
         stores: storesRes, products: productsRes, intents: intentsRes,
         wallet: walletRes, policy: policyRes, budgetSnapshot: budgetRes,
-        inventory: inventoryRes, purchases: purchasesRes,
+        inventory: inventoryRes, purchases: purchasesRes, changes: changesRes,
         apiConfigs: roleList(function () { return (typeof apiConfigs !== 'undefined') ? apiConfigs : undefined; }, 'apiConfigs'),
         archivedConfigs: roleList(function () { return (typeof archivedConfigs !== 'undefined') ? archivedConfigs : undefined; }, 'archivedConfigs')
       });
@@ -263,6 +297,59 @@ function boot() {
       e === 'home-node-transport-error' || res.offline === true;
   }
   function nowMs() { try { return Date.now(); } catch (e) { return 0; } }
+
+  /* ── 活动记录（§2 的时间线）─────────────────────────────────────────
+     ★ canonical 的 `/economy/changes` 是**从最早的往新的**一页一页给的
+       （`WHERE revision > cursor ORDER BY revision ASC LIMIT n`）。因此要拿到
+       "最近发生了什么"必须**走到末尾** —— 只取第一页会在记录超过一页时
+       给出**最旧**的那一段，而那正好是这一格最不能犯的错（用户会以为
+       最近什么都没发生）。
+     ★ 走法有界：每次 500 条（canonical 自己的上限），最多走
+       CHANGE_MAX_PAGES 页。没走到末尾就被上限挡住时，结果上写着
+       `truncated: true`，页面**必须**说出来。
+     ★ 中途失败不丢已经读到的部分（把 `truncated` 置真），第一页就失败
+       则原样把失败交出去 —— 于是"读不到"在页面上仍然是一句人话。 */
+  var CHANGE_PAGE = 500;
+  var CHANGE_MAX_PAGES = 6;
+  function loadChanges() {
+    var acc = [];
+    var pages = 0;
+    var cursor = 0;
+    var truncated = false;
+    function merged(revision) {
+      return {
+        ok: true,
+        changes: acc,
+        revision: revision == null ? null : Number(revision),
+        pages: pages,
+        truncated: truncated
+      };
+    }
+    function step() {
+      return readJson(CORE.CHANGE_READ, { cursor: cursor, limit: CHANGE_PAGE }).then(function (res) {
+        pages += 1;
+        if (!res || res.ok !== true || !Array.isArray(res.changes)) {
+          if (pages === 1) return res;
+          truncated = true;
+          return merged(null);
+        }
+        var batch = res.changes;
+        var last = cursor;
+        for (var i = 0; i < batch.length; i += 1) {
+          acc.push(batch[i]);
+          var rv = Number(batch[i] && batch[i].revision);
+          if (Number.isFinite(rv) && rv > last) last = rv;
+        }
+        /* 短页 = 到末尾了。长页且还有配额就继续（cursor 用 `>` 语义，
+           因此下一轮的 cursor 就是这一页最大的那个 revision）。 */
+        if (batch.length < CHANGE_PAGE) return merged(res.revision);
+        if (pages >= CHANGE_MAX_PAGES) { truncated = true; return merged(res.revision); }
+        cursor = last;
+        return step();
+      });
+    }
+    return step();
+  }
 
   /* ── 外壳 ───────────────────────────────────────────────────────
      ① 外壳**追加**在 `#page-economy` 的最后，不搬动 P22-15/16 的两个
@@ -492,8 +579,11 @@ function boot() {
      ★ 每一块自己的开合状态按**它的第一行**记住 —— 共用一个开关会让
        点开一处把整页的技术层一起掀开。 */
   var techOpen = Object.create(null);
-  function technical(lines) {
-    var key = String(lines[0] || 'technical');
+  /* ★ P22-18 起第一行会随数据变化（"changes: 12 条"），因此多了一个显式
+     key 参数：折叠状态必须由一个**稳定**的键决定，否则读回来一次就
+     "自己合上"了 —— 而那正是这一层最容易被忽略的失效方式。 */
+  function technical(lines, stableKey) {
+    var key = stableKey == null ? String(lines[0] || 'technical') : String(stableKey);
     var open = techOpen[key] === true;
     var box = el('div', 'esh-technical-box');
     var b = el('button', 'esh-technical-toggle', CORE.COPY.technical + (open ? ' ▾' : ' ▸'));
@@ -537,12 +627,322 @@ function boot() {
 
   /* ══ 概览 ═════════════════════════════════════════════════════════
      Wallet 是这一页最明显的信息（§3），但它不是一块霓虹数字：一个
-     等宽的数字 + 一句它是什么 + 它属于谁。 */
+     等宽的数字 + 一句它是什么 + 它属于谁。
+
+     P22-18 在**同一格**里追加解释层（§2 明令"不要再增加页面"）：
+       Wallet Summary · 活动时间线 · 经济活动 · 预算 · 支出说明 ·
+       Agent 为什么提出 · 我的资产 · 高级信息（默认折叠）
+     ★ 顺序不是装饰：先回答"我现在有多少"，再回答"它是怎么变成这样的"，
+       最后才是"细节编号"。 */
   function overviewInto(pane) {
     pane.appendChild(walletCard());
+    pane.appendChild(timelineCard());
+    pane.appendChild(activityCard());
     pane.appendChild(budgetCard());
-    pane.appendChild(purchasesCard());
+    pane.appendChild(spendingCard());
+    pane.appendChild(whyCard());
     pane.appendChild(recentAssetsCard());
+    pane.appendChild(auditCard());
+  }
+
+  /* ── 活动时间线（§2）──────────────────────────────────────────────
+     每一行都指得回一条 canonical 记录：圆点的语气来自纯层的 TONE，
+     时间来自 canonical 的毫秒，金额与数量来自那条 change 自己的 payload。
+     ★ 页面**不**把两行合并成"发生了什么故事" —— 那是第二个叙述权威。
+       它只把 canonical 已经分开记录的事件按 canonical 的顺序摆出来。 */
+  function timelineCard() {
+    var tl = view.timeline;
+    var c = card('clock', CORE.COPY.timelineTitle, CORE.COPY.timelineSub);
+    if (!tl.read) {
+      c.appendChild(note(CORE.COPY.timelineUnavailable, 'is-quiet'));
+      c.appendChild(timelineTechnical(tl));
+      return c;
+    }
+    if (tl.empty) {
+      c.appendChild(emptySurface('history', CORE.COPY.timelineEmpty, CORE.COPY.timelineEmptyBody));
+      c.appendChild(timelineTechnical(tl));
+      return c;
+    }
+    var list = el('ol', 'esh-timeline');
+    for (var i = 0; i < tl.rows.length; i += 1) list.appendChild(timelineItem(tl.rows[i]));
+    c.appendChild(list);
+    /* ★ 被截断时**必须说出来**：一个残缺的时间线最危险的读法是
+       "最近什么都没发生"。 */
+    if (tl.truncated) c.appendChild(note(CORE.COPY.timelineTruncated, 'is-quiet'));
+    c.appendChild(timelineTechnical(tl));
+    return c;
+  }
+  function timelineItem(r) {
+    var li = el('li', 'esh-tl');
+    li.setAttribute('data-tone', r.tone || 'note');
+    var mark = el('span', 'esh-tl-mark');
+    mark.appendChild(svgOf(markOfTone(r.tone), 16, null));
+    li.appendChild(mark);
+    var body = el('div', 'esh-tl-body');
+    var head = el('p', 'esh-tl-head');
+    if (r.atText) head.appendChild(el('span', 'esh-tl-time', shortTime(r.atText)));
+    head.appendChild(el('span', 'esh-tl-face', r.face));
+    body.appendChild(head);
+    var bits = [];
+    if (r.quantity != null && r.quantity > 0) bits.push('×' + r.quantity);
+    if (r.amountText) bits.push(r.amountText);
+    if (bits.length) body.appendChild(el('p', 'esh-tl-sub', bits.join(' · ')));
+    li.appendChild(body);
+    return li;
+  }
+  /* 时间线上只要"几点几分"：日期在下面那一段里由技术层给出完整值。
+     截取只作用于**已经格式化好的**那一串，因此它不改变时间的来源。 */
+  function shortTime(text) {
+    var s = String(text == null ? '' : text);
+    var sp = s.indexOf(' ');
+    return sp >= 0 ? s.slice(sp + 1) : s;
+  }
+  function timelineTechnical(tl) {
+    var lines = [
+      'changes: ' + tl.fetched + ' 条（本页显示 ' + tl.rows.length + ' 条）' +
+      (tl.truncated ? ' · 窗口已满，因此不是全部' : ''),
+      '归属过滤：按 canonical 的 walletId / ownerId / buyerId / agentId 逐字比较，' +
+      '未归属 ' + tl.unattributed + ' 条（不进时间线）',
+      'change log revision = ' + (tl.revision == null ? '(未读到)' : String(tl.revision)),
+      CORE.COPY.canonicalCodes + '（变化）：' + codeList(CORE.CHANGE_KIND_FACE)
+    ];
+    return technical(lines, 'timeline');
+  }
+
+  /* ── 经济活动（§3：购买记录的升级）────────────────────────────────
+     ★ canonical 的三张记录（Intent / Approval / Purchase）并排摆开，各自
+       带着自己的时间；"来源"是**连出来的**，连不上就不写那一个词。
+     ★ 这里没有购买按钮，也没有"再来一次" —— canonical 至今没有人类直接
+       购买这条接缝（§11：本阶段不造）。 */
+  function activityCard() {
+    var a = view.activity;
+    var c = card('history', CORE.COPY.activityTitle, CORE.COPY.activitySub);
+    if (!a.read) {
+      c.appendChild(note(CORE.COPY.readFailed, 'is-quiet'));
+      return c;
+    }
+    if (a.empty) {
+      c.appendChild(emptySurface('history', CORE.COPY.purchasesEmpty, CORE.COPY.purchasesEmptyBody));
+      return c;
+    }
+    /* ★ 明细有上限：概览不是无底洞。被截住多少条**说出来**，而完整的
+       历史在「活动时间线」那一格里（它按 canonical 的顺序列出全部窗口内的
+       记录）。 */
+    var shown = Math.min(a.rows.length, CORE.ACTIVITY_KEEP);
+    for (var i = 0; i < shown; i += 1) c.appendChild(activityItem(a.rows[i]));
+    if (a.rows.length > shown) {
+      c.appendChild(note(CORE.COPY.activityMorePrefix + (a.rows.length - shown) +
+        CORE.COPY.activityMoreSuffix, 'is-quiet'));
+    }
+    var tech = [CORE.COPY.canonicalCodes + '（购买）：' + codeList(CORE.PURCHASE_STATE_FACE),
+      CORE.COPY.canonicalCodes + '（请求）：' + codeList(CORE.INTENT_STATE_FACE),
+      CORE.COPY.canonicalCodes + '（决定）：' + codeList(CORE.APPROVAL_STATE_FACE)];
+    for (var k = 0; k < a.rows.length && k < 8; k += 1) {
+      tech.push((a.rows[k].purchaseId || '(no id)') + ' · ' + (a.rows[k].status || '—') +
+        (a.rows[k].mode == null ? ' · approvalMode=null' : (' · ' + a.rows[k].mode)));
+    }
+    c.appendChild(technical(tech));
+    return c;
+  }
+  function activityItem(r) {
+    var box = el('article', 'esh-activity');
+    var head = el('header', 'esh-act-head');
+    var main = el('div', 'esh-act-main');
+    main.appendChild(el('span', 'esh-row-name', r.name));
+    if (r.atText) main.appendChild(el('span', 'esh-row-sub', r.atText));
+    head.appendChild(main);
+    var side = el('div', 'esh-act-side');
+    if (r.amountText) side.appendChild(el('span', 'esh-row-amount', r.amountText));
+    side.appendChild(el('span', 'esh-status', r.statusFace));
+    head.appendChild(side);
+    box.appendChild(head);
+
+    /* 来源：每一个词后面都有一条证据（没有证据的词不会出现在这里）。 */
+    if (r.source.length) {
+      var src = el('div', 'esh-act-sources');
+      src.appendChild(el('span', 'esh-act-label', CORE.COPY.sourceTitle));
+      for (var s = 0; s < r.source.length; s += 1) {
+        src.appendChild(el('span', 'esh-act-src esh-src-' + r.source[s].key, r.source[s].face));
+        /* 角色名只在连得上时出现一次，而且它是一个**独立的元素**：
+           来源那一列说的是"哪一类来源"，这一句说的是"是谁"。 */
+        if (r.source[s].who) src.appendChild(el('span', 'esh-act-who', r.source[s].who));
+      }
+      box.appendChild(src);
+    } else {
+      box.appendChild(note(CORE.COPY.sourceUnknown, 'is-quiet'));
+    }
+
+    /* 时间线：Intent → Approval → Purchase（三步，各带 canonical 的时间）。 */
+    var steps = el('ol', 'esh-steps');
+    steps.appendChild(el('span', 'esh-steps-label', CORE.COPY.stepsTitle));
+    for (var t = 0; t < r.steps.length; t += 1) steps.appendChild(stepItem(r.steps[t]));
+    box.appendChild(steps);
+    return box;
+  }
+  function stepItem(st) {
+    var li = el('li', 'esh-step' + (st.present ? ' is-there' : ' is-absent'));
+    li.setAttribute('data-step', st.key);
+    var mark = el('span', 'esh-step-mark');
+    mark.appendChild(svgOf(st.present ? MARK.check : markOfTone('note'), 14, null));
+    li.appendChild(mark);
+    var body = el('div', 'esh-step-body');
+    body.appendChild(el('span', 'esh-step-label', st.label));
+    /* ★ "这一步没有发生"的**原因**也要说：三种原因的措辞各不相同，
+       统一成一句"无"会把"旧记录"与"自主放行"混成同一个答案。 */
+    body.appendChild(el('span', 'esh-step-sub', st.present
+      ? ((st.stateFace || '') + (st.atText ? (' · ' + st.atText) : ''))
+      : (st.absentText || CORE.COPY.stepNotApplicable)));
+    li.appendChild(body);
+    return li;
+  }
+
+  /* ── 支出说明（§2）────────────────────────────────────────────────
+     ★ 合计旁边逐字写着它是**这一页**加出来的，权威的当日累计在「预算」
+       那一格（canonical 自己算的）。两个数并排放而不合并，是因为它们的
+       出处不同 —— 合并就会造出第二个"花了多少"。 */
+  function spendingCard() {
+    var sp = view.spending;
+    var c = card('credit', CORE.COPY.spendTitle, CORE.COPY.spendSub);
+    if (!sp.read) {
+      c.appendChild(note(CORE.COPY.readFailed, 'is-quiet'));
+      return c;
+    }
+    if (sp.isEmpty) {
+      c.appendChild(note(CORE.COPY.spendNone, 'is-quiet'));
+      return c;
+    }
+    var total = el('div', 'esh-spend-total');
+    total.appendChild(el('span', 'esh-spend-l', CORE.COPY.spendTotal));
+    total.appendChild(el('span', 'esh-spend-v', sp.totalText == null ? '—' : String(sp.totalText)));
+    c.appendChild(total);
+    c.appendChild(note(CORE.COPY.spendTotalNote, 'is-quiet'));
+    if (sp.saturated) c.appendChild(note(CORE.COPY.spendSaturated, 'is-quiet'));
+    if (sp.missingAmountRows > 0) c.appendChild(note(CORE.COPY.spendUnknownAmount, 'is-quiet'));
+    var list = el('ul', 'esh-list');
+    for (var i = 0; i < sp.rows.length && i < 6; i += 1) {
+      var r = sp.rows[i];
+      var li = el('li', 'esh-row');
+      var main = el('div', 'esh-row-main');
+      main.appendChild(el('span', 'esh-row-name', r.name));
+      main.appendChild(el('span', 'esh-row-sub', r.atText || '—'));
+      li.appendChild(main);
+      var side = el('div', 'esh-row-side');
+      if (r.amountText) side.appendChild(el('span', 'esh-row-amount', r.amountText));
+      li.appendChild(side);
+      list.appendChild(li);
+    }
+    c.appendChild(list);
+    c.appendChild(technical([
+      'spend rows: ' + sp.count + ' / missing amount: ' + sp.missingAmountRows,
+      'totalMinor = ' + String(sp.totalMinor) + '（本页整数相加，未经过浮点）'
+    ], 'spending'));
+    return c;
+  }
+
+  /* ── Agent 为什么提出（§4）────────────────────────────────────────
+     ★ 这一格的纪律只有一条：**一个字节都不改**。原因逐字来自 canonical
+       的 intent.reason，本页不摘要、不改写、不再让模型解释一次 —— 第二份
+       解释就是第二个权威，而两份不一致时用户没有办法判断。 */
+  function whyCard() {
+    var ex = view.explanations;
+    var c = card('ask', CORE.COPY.whyTitle, CORE.COPY.whySub);
+    if (!ex.read) {
+      c.appendChild(note(CORE.COPY.whyUnavailable, 'is-quiet'));
+      return c;
+    }
+    if (ex.empty) {
+      c.appendChild(note(CORE.COPY.whyEmpty, 'is-quiet'));
+      return c;
+    }
+    for (var i = 0; i < ex.rows.length && i < 6; i += 1) {
+      var r = ex.rows[i];
+      var box = el('article', 'esh-why');
+      var head = el('header', 'esh-why-head');
+      head.appendChild(el('span', 'esh-row-name', r.name));
+      head.appendChild(el('span', 'esh-status', r.stateFace));
+      box.appendChild(head);
+      var dl = el('dl', 'esh-why-facts');
+      dl.appendChild(el('dt', 'esh-why-dt', CORE.COPY.whyReasonLabel));
+      /* 理由**原样**：textContent 意味着连换行都不会被解释成结构。 */
+      dl.appendChild(el('dd', 'esh-why-dd is-reason', r.reason == null ? CORE.COPY.whyNoReason : r.reason));
+      if (r.unitsText != null) {
+        dl.appendChild(el('dt', 'esh-why-dt', CORE.COPY.whyUnitsLabel));
+        dl.appendChild(el('dd', 'esh-why-dd', r.unitsText));
+      }
+      box.appendChild(dl);
+      box.appendChild(note(CORE.COPY.whyVerbatim, 'is-quiet'));
+      if (r.atText) box.appendChild(el('p', 'esh-card-foot', r.atText));
+      c.appendChild(box);
+    }
+    return c;
+  }
+
+  /* ── 高级信息（§7）────────────────────────────────────────────────
+     ★ 默认折叠，并且里面**只有**四个编号。数据库行、账本内部结构、
+       revision、迁移状态一个都不出现（§7 明令）。 */
+  var auditOpen = false;
+  function auditCard() {
+    var a = view.audit;
+    var c = el('section', 'esh-card esh-audit');
+    var head = el('header', 'esh-card-head');
+    head.appendChild(svgOf(MARK.dot, 18, 'esh-mark'));
+    var titles = el('div', 'esh-card-titles');
+    titles.appendChild(el('h3', 'esh-card-title', CORE.COPY.auditTitle));
+    titles.appendChild(el('p', 'esh-card-sub', CORE.COPY.auditSub));
+    head.appendChild(titles);
+    c.appendChild(head);
+    var toggle = el('button', 'esh-audit-toggle', (auditOpen ? CORE.COPY.auditClose : CORE.COPY.auditOpen) + (auditOpen ? ' ▾' : ' ▸'));
+    toggle.type = 'button';
+    toggle.setAttribute('aria-expanded', auditOpen ? 'true' : 'false');
+    toggle.addEventListener('click', function () { auditOpen = !auditOpen; render(); });
+    var act = el('div', 'esh-actions');
+    act.appendChild(toggle);
+    c.appendChild(act);
+    /* ★ 体内同时带 `esh-technical`：canonical 的编号**按定义**属于"折叠的
+       技术层"这一类，而 P22-17 那条"正文里没有原始代号"的纪律正是以这个
+       class 为界的（本阶段不放开它，只把这一格放进那一类里）。 */
+    var body = el('div', 'esh-technical esh-audit-body');
+    body.hidden = !auditOpen;
+    if (!a.count) {
+      body.appendChild(note(CORE.COPY.auditNone, 'is-quiet'));
+    } else {
+      var table = el('div', 'esh-audit-table');
+      table.appendChild(auditHead());
+      for (var i = 0; i < a.rows.length; i += 1) table.appendChild(auditRow(a.rows[i]));
+      body.appendChild(table);
+    }
+    body.appendChild(note(CORE.COPY.auditNote, 'is-quiet'));
+    c.appendChild(body);
+    return c;
+  }
+  function auditHead() {
+    var row = el('div', 'esh-audit-row is-head');
+    row.appendChild(el('span', 'esh-audit-cell', ''));
+    row.appendChild(el('span', 'esh-audit-cell', CORE.COPY.auditIntent));
+    row.appendChild(el('span', 'esh-audit-cell', CORE.COPY.auditApproval));
+    row.appendChild(el('span', 'esh-audit-cell', CORE.COPY.auditPurchase));
+    row.appendChild(el('span', 'esh-audit-cell', CORE.COPY.auditQuote));
+    return row;
+  }
+  function auditRow(r) {
+    var row = el('div', 'esh-audit-row');
+    row.appendChild(el('span', 'esh-audit-cell esh-audit-name', r.name));
+    /* ★ 每一格自己带一个**它是什么**：宽屏上表头已经说了，窄屏上四列会
+       堆成一列，而没有这个前缀就只剩四个裸编号 —— 而这一格存在的理由正是
+       "对着记录排查"。属性由 CSS 的 ::before 显示，DOM 因此没有多一层。 */
+    var cols = [
+      { key: 'agentIntentId', label: CORE.COPY.auditIntent },
+      { key: 'approvalId', label: CORE.COPY.auditApproval },
+      { key: 'purchaseId', label: CORE.COPY.auditPurchase },
+      { key: 'quoteId', label: CORE.COPY.auditQuote }
+    ];
+    for (var i = 0; i < cols.length; i += 1) {
+      var v = r.refs ? r.refs[cols[i].key] : null;
+      var cell = el('span', 'esh-audit-cell esh-audit-id', v == null ? CORE.COPY.auditNone : String(v));
+      cell.setAttribute('data-k', cols[i].label);
+      row.appendChild(cell);
+    }
+    return row;
   }
 
   function walletCard() {
@@ -572,9 +972,32 @@ function boot() {
       c.appendChild(note(w.reservedLabel + ' ' + w.reserved + (w.currencyFace ? (' ' + w.currencyFace) : ''), 'is-quiet'));
     }
     if (w.note) c.appendChild(note(w.note, 'is-quiet'));
+    /* ── §2 的"最近变化"────────────────────────────────────────────
+       ★ 它来自 canonical 的 change log（最近一次真的动了钱的记录），
+         **不是**从余额反推出来的。一条都读不到时说的是"暂无记录"，
+         而**不是**"0"或"没有变化" —— 前者是事实，后者是一个结论。 */
+    c.appendChild(recentChangeLine());
     c.appendChild(assetOwnerLine());
     c.appendChild(walletTechnical(w));
     return c;
+  }
+  function recentChangeLine() {
+    var box = el('div', 'esh-recent');
+    box.appendChild(el('span', 'esh-recent-l', CORE.COPY.recentChange));
+    var tl = view.timeline;
+    var last = tl ? tl.lastBalanceChange : null;
+    if (!tl || !tl.read || last == null) {
+      box.appendChild(el('span', 'esh-recent-none', CORE.COPY.recentChangeNone));
+      return box;
+    }
+    var right = el('span', 'esh-recent-v');
+    right.appendChild(el('span', 'esh-recent-face', last.face));
+    var bits = [];
+    if (last.atText) bits.push(last.atText);
+    if (last.amountText) bits.push(last.amountText);
+    if (bits.length) right.appendChild(el('span', 'esh-recent-when', bits.join(' · ')));
+    box.appendChild(right);
+    return box;
   }
   function assetOwnerLine() {
     var picked = CORE.resolveOwnerOf(owners, ownerId);
@@ -617,44 +1040,9 @@ function boot() {
     if (b.note) c.appendChild(note(b.note, 'is-quiet'));
     return c;
   }
-
-  function purchasesCard() {
-    var p = view.purchases;
-    var c = card('history', CORE.COPY.purchasesTitle, null);
-    if (p.empty) {
-      c.appendChild(emptySurface('history', CORE.COPY.purchasesEmpty, CORE.COPY.purchasesEmptyBody));
-      return c;
-    }
-    var list = el('ul', 'esh-list');
-    for (var i = 0; i < p.rows.length; i += 1) {
-      var r = p.rows[i];
-      var li = el('li', 'esh-row');
-      var main = el('div', 'esh-row-main');
-      main.appendChild(el('span', 'esh-row-name', r.name));
-      var meta = el('div', 'esh-row-meta');
-      var bits = [];
-      /* 发起者只在 join 成功**且**角色名认得出来时出现 —— 连不上就什么都不说。 */
-      if (r.agentLabel) bits.push('由 ' + r.agentLabel + ' 发起');
-      if (r.authText) bits.push(r.authText);
-      if (r.atText) bits.push(r.atText);
-      meta.appendChild(el('span', 'esh-row-sub', bits.join(' · ')));
-      main.appendChild(meta);
-      li.appendChild(main);
-      var side = el('div', 'esh-row-side');
-      if (r.amountText) side.appendChild(el('span', 'esh-row-amount', r.amountText));
-      side.appendChild(el('span', 'esh-status', r.statusFace));
-      li.appendChild(side);
-      list.appendChild(li);
-    }
-    c.appendChild(list);
-    var tech = [CORE.COPY.canonicalCodes + '（购买）：' + codeList(CORE.PURCHASE_STATE_FACE)];
-    for (var k = 0; k < p.rows.length && k < 8; k += 1) {
-      tech.push((p.rows[k].purchaseId || '(no id)') + ' · ' + (p.rows[k].status || '—') +
-        (p.rows[k].mode == null ? ' · approvalMode=null' : (' · ' + p.rows[k].mode)));
-    }
-    c.appendChild(technical(tech));
-    return c;
-  }
+  /* ── P22-18：原来的「最近购买」卡已被「经济活动」取代（§3）。
+     它现在与 intent / approval 并排摆开，并带回"这一步走到哪了"；
+     因此这个函数**被删掉而不是留着**，免得下一个人以为页面上有两份购买历史。 */
 
   function recentAssetsCard() {
     var a = view.assets;

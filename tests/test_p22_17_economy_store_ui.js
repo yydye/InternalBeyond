@@ -582,11 +582,28 @@ section('B · 外壳：五个页签，两个既有节点留在原位');
         t.indexOf('20.00 IB Credit') >= 0;
     })(), paneText(m.dom.doc, 'economy-shell-overview'));
 
-  check('C6 ★★★ 最近购买那一块最多三条，剩下的进「我的资产」的那一块',
+  /* ★ P22-18 改过这一条（唯一一处语义级的改动，理由逐字记在这里）。
+     P22-17 的原判据是"概览上的 `.esh-row` 数在 5..7 之间"，它隐含了两件
+     当时的决定：①「最近购买」那一块最多铺三条；②那三条用的是 `.esh-row`。
+     §3 把这一块升级成了「经济活动」（每条记录多出"来源"与"Intent →
+     Approval → Purchase"三步），于是它换了类名、并且有自己的上限常量
+     （CORE.ACTIVITY_KEEP）。原来那个 5..7 的数字因此不再表达任何东西 ——
+     它还会因为"已完成购买多了一条"而随机变红。
+     改成**不变量**：明细有上限、上限就是常量、资产那一格最多三条。 */
+  check('C6 ★★★ P22-18 起：「经济活动」在概览上**有上限**，而「我的资产」那一格最多三条明细',
     (function () {
-      const list = find(byId(m.dom.doc, 'economy-shell-overview'), 'esh-row');
-      return list.length <= 7 && list.length >= 5;
-    })(), find(byId(m.dom.doc, 'economy-shell-overview'), 'esh-row').length);
+      const root = byId(m.dom.doc, 'economy-shell-overview');
+      const acts = find(root, 'esh-activity');
+      /* 「我的资产」那一格的行数按它自己的分组数出来（不再按整页的
+         `.esh-row` 计数 —— 支出说明那一块也用同一个类名）。 */
+      const groupRows = find(root, 'esh-group')
+        .reduce((n, g) => n + find(g, 'esh-row').length, 0);
+      return acts.length >= 1 && acts.length <= m.core.ACTIVITY_KEEP &&
+        groupRows <= 3 && m.core.ACTIVITY_KEEP === 6;
+    })(), {
+      activity: find(byId(m.dom.doc, 'economy-shell-overview'), 'esh-activity').length,
+      keep: m.core.ACTIVITY_KEEP
+    });
 
   check('C7 ★★★ COLD / DEGRADED 时**一个 0 都不出现**，而是一句"还没有读出来"',
     (async function () { return true; })(),
@@ -839,12 +856,19 @@ section('B · 外壳：五个页签，两个既有节点留在原位');
   /* ══ G · 传输纪律 ══════════════════════════════════════════════════ */
   section('G · 传输：八条既有 GET，写方法一次都没被调用');
 
-  check('G1 ★★★★ 全部读请求都落在八条既有只读面上（没有一条新路径）',
+  check('G1 ★★★★ 全部读请求都落在已声明的只读面上（没有一条新路径，也没有一条写路径）',
     (function () {
-      const allowed = m.core.readPathList();
+      /* ★ P22-18 改过这一条的**判据形状**：原来写死 `=== 8`。
+         §2 要求复用 canonical 的 change log（`/economy/changes`），于是这一页
+         的读面从八条变成九条。写死的 8 会把"这一页多读了一条**已声明的**只读
+         面"判成红的，而那条真正的性质（"请求的每一条路径都在声明表里"）
+         并不需要那个数字。改成 `allowed.length` 之后，这条断言在下一个阶段
+         再加读面时**仍然**在问同一个问题。 */
+      const allowed = m.core.readPathList().concat([m.core.CHANGE_READ]);
       const paths = m.driver.calls.reads.map(r => r.path);
       return paths.length >= 8 && paths.every(p => allowed.indexOf(p) >= 0) &&
-        Array.from(new Set(paths)).length === 8;
+        Array.from(new Set(paths)).length === allowed.length &&
+        allowed.length === 9;
     })(), Array.from(new Set(m.driver.calls.reads.map(r => r.path))));
 
   check('G2 ★★★ 归属过滤只发给需要归属的四条（钱包 / 政策 / 预算 / 库存 / 购买），目录不带 owner',

@@ -756,7 +756,7 @@ const GROUPS = [
   },
   {
     name: 'p22-ui',
-    note: 'P22-15/16 · Economy Approval UI + Economy Configuration UI（纯层 + 渲染器 + 浏览器视觉核对）',
+    note: 'P22-15/16/17/18 · Economy 的四个用户面（Approval / Configuration / Store·Wallet·Inventory / Experience 解释层）——纯层 + 渲染器；浏览器视觉核对不在默认套件里',
     tests: [
       /* P22-15 第一次让这一域出现**浏览器侧**的文件：
            assets/js/economy-approval-core.js（纯层：视图模型 / 文案映射 /
@@ -833,10 +833,29 @@ const GROUPS = [
                       正文里没有 canonical 原始代号（只在折叠的技术层）。
                       ★ 零子进程、零 socket、零浏览器。 */
       ['test_p22_17_economy_store_ui_core.js'],
-      ['test_p22_17_economy_store_ui.js']
-      /* P22-17 的浏览器视觉核对（test_p22_17_economy_store_visual.js）与
-         P22-15/16 那两条一样**不在**默认套件里（它要开一个真实浏览器）。
-         跑法：node tests/test_p22_17_economy_store_visual.js */
+      ['test_p22_17_economy_store_ui.js'],
+      /* ── P22-18 · Economy Experience（解释层）──────────────────────────
+         core —— 「解释层不产生任何经济事实」这一条纪律的纯层部分：
+                  canonical change log 的**每一个**事件类型都有一句人话
+                  （名单从契约与 store 的源码里抽出来，不是本地编的）/
+                  归属只用 canonical 自己的键、收礼者不算 /
+                  时间线按 canonical 的 revision 倒序、截断时说出来 /
+                  §3 的"来源"与"三步"各有证据 /
+                  §4 的理由**逐字**（不摘要、不改写、不再调模型）/
+                  §7 的高级信息只有四个编号、默认折叠。
+         ui   —— 同一条纪律的渲染器部分：概览的四个区域共用同一份归属 /
+                  时间线四态（有数据 / 空 / 读不到 / 被截断）/
+                  change log 是**走到末尾**地读的（第一页满就继续）/
+                  高级信息默认折叠、点一下展开 /
+                  九个读路径全在声明里 / 两个写方法一次都没被调用 /
+                  三个既有节点的 DOM 顺序逐字未变。
+                  ★ 零子进程、零 socket、零浏览器。 */
+      ['test_p22_18_economy_experience_ui_core.js'],
+      ['test_p22_18_economy_experience_ui.js']
+      /* P22-18 的浏览器视觉核对（test_p22_18_economy_experience_visual.js）
+         与 P22-15/16/17 那三条一样**不在**默认套件里（它要开一个真实
+         浏览器）：2 主题 × 4 宽度（含 320px）+ 截断/空/展开四种状态。
+         跑法：node tests/test_p22_18_economy_experience_visual.js */
     ]
   },
   {
