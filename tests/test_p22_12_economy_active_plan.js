@@ -287,10 +287,17 @@ const catRemote = catSandbox.IB.createHomeNodeRemote({});
     read('assets/js/active-diary.js').indexOf('notAPurchaseVerdict:true') > 0 &&
     companionSrc.indexOf('TRANSPORT_FAILED') < 0);
   check('E10 ★★ 本阶段没有新增任何 Economy 相关源文件（只在既有文件里接线）',
+    /* ★ P22-13 追加了**第六**个文件（economy-approval-decision.js，用户点头/
+       摇头的唯一生产入口）。因此这份清单从五个变成六个 —— 而这条断言真正
+       保护的东西一行没变，而且它被写得更准确了：Economy 生产文件的数量是
+       **一个被逐字点名的封闭集合**，任何一次新增都必须在这里被显式承认。
+       下面两行仍然断言 P22-12 **自己**没有新开文件。 */
     fs.readdirSync(path.join(ROOT, 'services/home-node')).filter(f => /economy/.test(f)).sort().join(',') ===
-    ['economy-action-adapter.js', 'economy-capability.js', 'economy-command-channel.js', 'economy-contract.js', 'economy-store.js'].join(',') &&
+    ['economy-action-adapter.js', 'economy-approval-decision.js', 'economy-capability.js',
+      'economy-command-channel.js', 'economy-contract.js', 'economy-store.js'].join(',') &&
     !exists('assets/js/active-diary/economy-proposal-core.js') &&
-    !exists('active/economy-planner.js'));
+    !exists('active/economy-planner.js'),
+    fs.readdirSync(path.join(ROOT, 'services/home-node')).filter(f => /economy/.test(f)).sort());
 
   section('F · 资源账');
   check('F1 ★★ 本文件一次 spawn 都没有发生', spawnAttempts === 0, spawnAttempts);

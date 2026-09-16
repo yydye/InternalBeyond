@@ -65,6 +65,10 @@ const economyActionAdapterModule = require('../services/home-node/economy-action
      它复用的正是 http.js 既有的 transport（loopback + 凭据 + 信封 +
      有界 body），只新增来源登记与一条专用路径。 */
 const economyCommandChannelModule = require('../services/home-node/economy-command-channel.js');
+/* P22-13：Economy 的 **Approval Decision Seam** —— 用户对一条等待中的 Agent
+   Intent 点头 / 摇头的**唯一生产入口**（桌面面的一条窄 POST 路径）。
+   ★ 与它上面每一个模块同款：**只有**这一处 require 它。 */
+const economyApprovalDecisionModule = require('../services/home-node/economy-approval-decision.js');
 const createNodeModelPort = require('../active/node-model-port.js');
 /* P11-3E：canonical store 失败分类器（**唯一**一份，见 runtime/db-failure.js）。
    它在 runtime/ 下，与 runtime/local-services-runner.js 那份是同一模块 ——
@@ -471,11 +475,37 @@ function economyAssembly(options) {
       clock: options.clock,
       logger: (e, f) => serviceLog('info', e, f)
     });
+  /* ── P22-13 · Approval Decision Seam（**唯一**一处装配）──────────────
+     ★ 它是本仓库里**第二次** `gate.bind(consumer)`，而这一次绑的是一个
+       新身份（contract 的 ECONOMY_CONSUMER.USER_DECISION_SEAM）。审计
+       （P22-13 §1）的结论是：用户对一条 intent 的点头/摇头在这之前
+       **没有任何生产入口**（P22-12C §10.2 的 B1），而它必须经过门 ——
+       因为 P22-9 §6 的纪律是"P22-8 的公开写面被完整覆盖"，漏掉任何一条
+       能到钱的路径都会让"唯一准入门"变成一句声明。
+     ★ 为什么这个身份**不是** home_node_authority，也**不是**
+       active_agent_runtime：前者是"权威不行动"（A5 冻结它的能力表为空），
+       后者恰恰是**被决定**的一方 —— 把用户的决定记在 Agent 的身份下，
+       等于让"Agent 自己批准自己"在审计里看不出来（§2）。
+     ★ 句柄**只**给 seam 一个（resumeApprovedPurchase 那一个成员可达），
+       而它**不能**提出意图：user_decision_seam 的能力表里没有
+       PROPOSE_PURCHASE（见契约的矩阵）。
+     ★ seam 拿到的 store 视图是**一个对象、一个键**：decideApproval。
+       本文件不把 store 本体交给它 —— 于是"seam 顺便 settle 一笔"在这条
+       依赖上也不成立（它连那个成员名都拿不到）。 */
+  const economyApprovalDecision = options.economyApprovalDecision
+    || economyApprovalDecisionModule({
+      store: Object.freeze({ decideApproval: economyStore.decideApproval }),
+      resumeHandle: economyCapabilityGate.bind(economyApprovalDecisionModule.CONSUMER),
+      desktopCredential: options.desktopToken === undefined ? TOKEN : String(options.desktopToken == null ? '' : options.desktopToken),
+      clock: options.clock,
+      logger: (e, f) => serviceLog('info', e, f)
+    });
   return {
     economyStore: economyStore,
     economyCapabilityGate: economyCapabilityGate,
     economyActionAdapter: economyActionAdapter,
-    economyCommandChannel: economyCommandChannel
+    economyCommandChannel: economyCommandChannel,
+    economyApprovalDecision: economyApprovalDecision
   };
 }
 
@@ -719,6 +749,13 @@ function buildHomeNode(options) {
     economyChannelSources: options.economyChannelSources,
     economyChannelTimeoutMs: options.economyChannelTimeoutMs,
     economyChannelMaxAttempts: options.economyChannelMaxAttempts,
+    /* P22-13：Approval Decision Seam 的**身份**来自与桌面面同一份凭据 ——
+       也就是 http.js 从 `deps.token` 读到的那一个。两处必须是同一份，
+       否则"用户点得动 UI、却过不了 seam"会成为一个只在生产上出现的缺口。
+       ★ 与 P22-11 修掉的那个缺口逐字同形（"buildHomeNode 没有把某个注入点
+       转发下去"）：这一行也必须是可注入的，测试才能构造出"未配置凭据 ⇒
+       这一面关闭"这个真实部署形态。 */
+    desktopToken: options.token === undefined ? TOKEN : options.token,
     ownerExists: options.ownerExists,
     systemAuthority: options.systemAuthority,
     systemMintingEnabled: options.systemMintingEnabled,
@@ -779,6 +816,16 @@ function buildHomeNode(options) {
          是一个能到达适配器的对象。它替换不了 store —— 通道的公开面里
          没有 store、没有门、没有 SQL，只有 dispatch。 */
     economyCommand: instanceEconomy.economyCommandChannel,
+    /* P22-13 · Economy 的 **Approval Decision Seam**（第二条、也是最后一条
+       写路径的承载者）。
+       ★ 与 economyCommand 同级、与 economyStore 不同级：它是一个能到达
+         P22-9 门的对象，但它的公开面里没有 store、没有门、没有 SQL，
+         只有 { path, dispatch }。
+       ★ 为什么它能上 HTTP，而适配器与门不能：它**不是**权威 —— 它把用户的
+         决定写成一条 canonical 批准（P22-7），再把同一条 intent 交回 P22-8；
+         它自己不判断价格、预算、自主性或商品。P22-12C §10.2 的 B1 说的
+         正是"缺这条入口"，而不是"不该有这条入口"。 */
+    economyApprovalDecision: instanceEconomy.economyApprovalDecision,
     /* P11-3E · canonical store 清单：健康与"能不能服务"是同一个问题，
        所以这里列出本进程承诺的全部 canonical store，而不是只有 chat。
        声明角色（chat）在最前，`failure` 取第一个命中它的。 */
@@ -860,6 +907,12 @@ function buildHomeNode(options) {
        command 面是哪一条、它是开还是关"必须是一个可核对的事实，
        而不是读者从环境变量里推断的东西。 */
     economyCommandChannel: instanceEconomy.economyCommandChannel,
+    /* P22-13：Approval Decision Seam 与上面四个同级导出 ——
+       "这台节点上用户能不能对一条等待中的 intent 点头/摇头"必须是一句可以
+       直接断言的事实，而不是读者从路由表或环境变量里推断的东西。
+       它同时也是 §2 的机器可读答案：这条面绑的是**用户**那个身份
+       （user_decision_seam），而不是 Agent。 */
+    economyApprovalDecision: instanceEconomy.economyApprovalDecision,
     registry: instanceRegistry,
     gateway: instanceGateway,
     executor: instanceExecutor,
@@ -973,6 +1026,11 @@ const httpLayer = createHttp({
      通道的存在不等于它是**开**的（open 取决于来源登记册），
      因此 /security 的 commandChannel.open 才是那个诚实的答案。 */
   economyCommand: economy.economyCommandChannel,
+  /* P22-13：**进程级**的 Approval Decision Seam。与上面那一行逐字同源 ——
+     它是"生产启动路径上真的有一个用户决定入口"的机器可读形式，而它的
+     开/关由凭据决定（未配置 IB_HOME_NODE_TOKEN ⇒ 整面 403），
+     因此 /security 的 economyPolicy.approvalDecision.open 才是诚实的答案。 */
+  economyApprovalDecision: economy.economyApprovalDecision,
   /* P22-9：**进程级**的门。它与 store 同级导出，理由逐字相同 —— 门的缺席
      在生产上是一个静默的"每个 consumer 都能直接提议"，而那种缺口只有
      直接断言语料才能发现。 */
@@ -1233,6 +1291,10 @@ module.exports = {
      的唯一答案）。它导出的**不是**一条路由，而是那个能到达适配器的对象；
      路由由 http.js 从 buildHomeNode() 的 deps 里拿到。 */
   economyCommandChannel: economy.economyCommandChannel,
+  /* P22-13：进程级的 Approval Decision Seam（= 生产侧"用户能不能对一条
+     等待中的 intent 点头/摇头"的唯一答案）。与上面那一行同级导出：
+     它同样**不是**一条路由，而是那个能到达 P22-7 与 P22-9 句柄的对象。 */
+  economyApprovalDecision: economy.economyApprovalDecision,
   defaultEconomyChannelSources,
   economyAssembly,
   buildHomeNode,

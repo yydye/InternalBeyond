@@ -719,7 +719,39 @@ const GROUPS = [
           0 leftover**。P22-11 已经用两个真实进程证明过跨进程通道，本阶段
           不再重跑那套证明；所有自有 invariant 都是单进程可判定的。 */
       ['test_p22_12_economy_intent_producer.js'],
-      ['test_p22_12_economy_active_plan.js']
+      ['test_p22_12_economy_active_plan.js'],
+      /* ── P22-13 · Economy Approval Decision Path ────────────────────────
+          P22-12C 的 Closure Audit 留下的唯一 Backend Core blocker（B1）：
+          `decideApproval` / `resumeAgentPurchaseIntent` /
+          `resumeApprovedPurchase` 三者在**生产代码里**的调用方都是 0，
+          于是默认部署（AUTONOMY_DEFAULT_WHEN_NO_POLICY = REQUIRE_APPROVAL）
+          下每一条 Agent Intent 都停在 WAITING_APPROVAL 且**没有任何生产路径**
+          能把它推到终态。P22-13 补上这一段，而且只补这一段：
+            decision —— 单进程 · 真实 store + 真实门 + 真 seam：§2/§3 决定
+                        词表恰好两个（BUY/SETTLE/RESERVE/GRANT/REFUND/LEDGER/
+                        AUTO_ALLOW/FORCE_APPROVE 逐个断言：它们在这份代码里
+                        **不存在**）；信封恰好三个键、身份键逐名拒；§4/§5
+                        APPROVE 只能走既有 resume 链（一个探针句柄证明 resume
+                        恰好被调用一次、入参只有 canonical 两个键），REJECT
+                        零 Ledger / Inventory / Settlement 且不再 resume；
+                        §6 single-use / 过期 / CONSUMED / 错误配对全部由
+                        P22-7 的状态机回答（本阶段不造第二套）；§7 重试
+                        exactly-once、同身份换决定词 conflict；§8 approved
+                        之后 Budget / Quote / intent 有效期仍然是权威
+                        （APPROVED → resume → FAILED / DENIED 是合法结局）；
+            runtime  —— 真实 buildHomeNode + 真实 server + 真实 fetch：
+                        一条 authenticated 的用户决定真的建出一笔购买；
+                        没有桌面凭据 / 凭据不对 / 拿来源凭据一律被外层挡住；
+                        出示正确凭据但自报身份 ⇒ 403 且没碰 store；
+                        普通 /economy/* 写面仍然**为 0**（八条写形态逐个
+                        405 economy-is-read-only）；/security 把这条新面写成
+                        可断言字段，且与 command 通道**不共用** consumer 与凭据。
+          ★ §12 的进程纪律：**max concurrent child = 0 · total spawn = 0 ·
+          0 leftover**。本阶段没有任何必须跨进程才能证明的新身份 invariant
+          （身份分离是结构性的，single-use 是 P22-7 的两进程组已经证明过的），
+          因此一个 child 都不开，也不重跑 P22-6 ~ P22-8 的 race/crash matrix。 */
+      ['test_p22_13_economy_approval_decision.js'],
+      ['test_p22_13_economy_approval_runtime.js']
     ]
   },
   {

@@ -1132,10 +1132,15 @@ section('K · HTTP：购买读面存在，写面逐名不存在');
        ★ P22-11 之后又多了第五个：**command 通道**（Active → Home Node 的
        唯一 command 面）。理由同样逐字同构 —— 通道长在适配器**上面**，
        把 handler 写进 http.js 会让"这条路径能做什么"散落在路由层里。
-       它也没有一张表：只有信封校验、来源判定与一次转发。 */
+       它也没有一张表：只有信封校验、来源判定与一次转发。
+       ★ P22-13 之后又多了第六个：**用户决定 seam**（用户对一条等待中的
+       Agent Intent 点头 / 摇头的唯一生产入口）。理由仍然逐字同构 ——
+       它长在门的**旁边**（与通道并列，因为它们是两个身份、两条路径），
+       把 handler 写进 http.js 会让"谁在决定"散落在路由层里。它同样没有
+       一张表、没有一行 SQL：只有凭据判定、一次 canonical 决定与一次续做。 */
     fs.readdirSync(path.join(ROOT, 'services', 'home-node'))
       .filter(f => /^economy-/.test(f)).sort().join(',') ===
-      'economy-action-adapter.js,economy-capability.js,economy-command-channel.js,economy-contract.js,economy-store.js' &&
+      'economy-action-adapter.js,economy-approval-decision.js,economy-capability.js,economy-command-channel.js,economy-contract.js,economy-store.js' &&
     fs.readFileSync(path.join(ROOT, 'services', 'home-node', 'economy-store.js'), 'utf8')
       .indexOf('economy_purchases') >= 0 &&
     fs.readFileSync(path.join(ROOT, 'services', 'home-node', 'economy-action-adapter.js'), 'utf8')

@@ -1494,6 +1494,25 @@ function createEconomyStore(deps) {
       'INSERT INTO ' + PURCHASE_INTENTS_TABLE + ' (agent_intent_id, agent_id, agent_type, product_id, recipient_id, recipient_type, self_directed, units, store_id, quote_id, approval_id, purchase_id, state, authority_outcome, authority_reason_code, reason_code, reason, intent_fingerprint, idempotency_key, fingerprint, revision, created_at, updated_at, expires_at, completed_at) ' +
       'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     selectPurchaseIntent: 'SELECT * FROM ' + PURCHASE_INTENTS_TABLE + ' WHERE agent_intent_id=?',
+    /* ── P22-13 修复一个**真实缺陷**（开发期实测）──────────────────────
+       这条 SQL 曾经**不存在**：`resumeAgentPurchaseIntent` 的
+       `else if (o.approvalId != null)` 那一支直接写了
+       `db.prepare(SQL.selectPurchaseIntentByApproval)`，而那个常量从来没被
+       定义过。于是这条分支的执行结果是
+       `TypeError: The "sql" argument must be a string`
+       —— 一条**裸的驱动异常**，而不是一次可解释的拒绝。
+
+       ★ 它为什么一直没被发现：在 P22-13 之前，生产与测试里**每一次**
+       resume 都带着 agentIntentId（P22-8 的调用方手里就有那个 id），
+       于是 `if` 那一支永远先命中，`else if` 是一次**从未被执行过**的代码。
+       P22-13 的 seam 刻意**不**传 agentIntentId（让"这条批准对应哪条
+       intent"由 store 回答，而不是由调用方声明），于是第一次真的走到了它。
+
+       ★ 修的是这条缺失的语句，而不是"让 seam 改传 agentIntentId"：
+       按批准 id 定位是 P22-8 自己声明的能力（它的入参白名单里有
+       approvalId），一条声明与它背后的实现必须同时为真。 */
+    selectPurchaseIntentByApproval:
+      'SELECT * FROM ' + PURCHASE_INTENTS_TABLE + ' WHERE approval_id=? ORDER BY created_at DESC, agent_intent_id DESC LIMIT 1',
     selectPurchaseIntentsAll: 'SELECT * FROM ' + PURCHASE_INTENTS_TABLE + ' ORDER BY created_at ASC, agent_intent_id ASC',
     selectPurchaseIntentsFiltered:
       'SELECT * FROM ' + PURCHASE_INTENTS_TABLE + ' WHERE' +
@@ -14554,6 +14573,23 @@ function createEconomyStore(deps) {
        *ProblemsOf 同源：有一条纪律（"这张表里没有地方可以读价格"）只能
        在**列这一层**被证伪，而"我们没有写那一列"这句话如果只能靠读源码
        来相信，它就不是一条被执行的规则。两者都只读、都不在 HTTP 面上。 */
+    /* ★ P22-13：一次**只读**的幂等记录查询。它的理由与下面几个
+       *ForTest 逐字同源：有一条纪律（"一次成功的决定，它的重放必须返回
+       当初那个结果"）只能在**那张表**这一层被证伪，而"我们写了那条记录"
+       这句话如果只能靠读源码来相信，它就不是一条被执行的规则。
+       只读、只回形状，不回任何经济事实，也不在 HTTP 面上。 */
+    operationIdempotencyRowForTest: function (scope, key) {
+      if (!isOpen()) return null;
+      const row = db.prepare(SQL.selectOperationIdempotency).get(String(scope), String(key));
+      if (!row) return null;
+      return {
+        scope: String(row.scope),
+        idempotencyKey: String(row.idempotency_key),
+        fingerprint: String(row.fingerprint),
+        revision: Number(row.revision),
+        at: Number(row.at)
+      };
+    },
     tableColumnsForTest: function (tableName) {
       if (!isOpen()) return null;
       const name = String(tableName);

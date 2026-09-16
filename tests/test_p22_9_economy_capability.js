@@ -190,11 +190,23 @@ check('A2 RESUME 这一项**不是**可选的：P22-8 的公开写面有两个�
   C.CAPABILITIES.indexOf(C.CAPABILITY.RESUME_APPROVED_PURCHASE) >= 0 &&
   C.CAPABILITY.RESUME_APPROVED_PURCHASE === 'RESUME_APPROVED_PURCHASE');
 
-check('A3 每个 canonical consumer 都带一个可核对的运行时锚点（不是一句声明）',
-  C.ECONOMY_CONSUMERS.length === 3 &&
-  C.ECONOMY_CONSUMERS.every(c => typeof C.CONSUMER_RUNTIME_ANCHOR[c] === 'string' &&
-    C.CONSUMER_RUNTIME_ANCHOR[c].indexOf('runtime/component-registry.js#') === 0),
+check('A3 ★ 每个 canonical consumer 都带一个可核对的运行时锚点（不是一句声明）',
+  /* ★ P22-13 把这一条**写宽了一条**（不是放松）：第四个消费者
+     （user_decision_seam）不是常驻运行时组件 —— 用户的决定是一次已认证的
+     桌面请求，不是一个被 runner 拉起的进程 —— 因此它的锚点是**装配点**，
+     而那是这个身份真正成形的地方。判据同时**收严**了另一半：既不是组件、
+     也不是装配点的字符串会被拒（见契约的 isConsumerRuntimeAnchor）。 */
+  C.ECONOMY_CONSUMERS.length === 4 &&
+  C.ECONOMY_CONSUMERS.every(c => C.isConsumerRuntimeAnchor(c, C.CONSUMER_RUNTIME_ANCHOR[c])) &&
+  C.ECONOMY_CONSUMERS.every(c => C.CONSUMER_RUNTIME_ANCHOR[c].indexOf('runtime/component-registry.js#') === 0 ||
+    C.CONSUMER_RUNTIME_ANCHOR[c].indexOf(C.CONSUMER_ANCHOR_ASSEMBLY_PREFIX) === 0),
   C.CONSUMER_RUNTIME_ANCHOR);
+
+check('A3b ★ 第四个消费者是**用户的决定**，而且它恰好只有一项能力：RESUME（不能提出意图）',
+  C.ECONOMY_CONSUMER.USER_DECISION_SEAM === 'user_decision_seam' &&
+  C.capabilitiesOfConsumer(C.ECONOMY_CONSUMER.USER_DECISION_SEAM).length === 1 &&
+  C.capabilitiesOfConsumer(C.ECONOMY_CONSUMER.USER_DECISION_SEAM)[0] === C.CAPABILITY.RESUME_APPROVED_PURCHASE &&
+  C.capabilitiesOfConsumer(C.ECONOMY_CONSUMER.USER_DECISION_SEAM).indexOf(C.CAPABILITY.PROPOSE_PURCHASE) < 0);
 
 check('A4 矩阵与判定器逐字一致（对每一个组合）',
   C.ECONOMY_CONSUMERS.every(c => C.CAPABILITIES.every(cap => {
@@ -202,10 +214,17 @@ check('A4 矩阵与判定器逐字一致（对每一个组合）',
     return v.granted === (C.CONSUMER_CAPABILITY_MATRIX[c].indexOf(cap) >= 0);
   })));
 
-check('A5 只有 active_agent_runtime 持有能力；权威进程与 bridge 都是空的（"权威不行动"）',
+check('A5 只有 active_agent_runtime 持有 PROPOSE；权威进程与 bridge 都是空的（"权威不行动"）',
+  /* ★ P22-13：第四个消费者（user_decision_seam）在这里**必须**持有一项能力
+     —— 否则"用户批准之后继续那条 intent"这条路径走不通。而这条断言真正要
+     保护的东西一行没变：**没有任何消费者能提出意图，除了 Agent**，
+     而两个"权威/bridge"身份的能力表仍然是空的。 */
   C.capabilitiesOfConsumer(ALLOWED).length === 2 &&
   C.capabilitiesOfConsumer(DENIED_A).length === 0 &&
-  C.capabilitiesOfConsumer(DENIED_B).length === 0);
+  C.capabilitiesOfConsumer(DENIED_B).length === 0 &&
+  C.ECONOMY_CONSUMERS.filter(c => C.capabilitiesOfConsumer(c).indexOf(C.CAPABILITY.PROPOSE_PURCHASE) >= 0)
+    .join(',') === ALLOWED,
+  C.ECONOMY_CONSUMERS.map(c => c + ':' + C.capabilitiesOfConsumer(c).join('+')));
 
 check('A6 ★ 准入决策词与自主权威决策词**字形不相交**（"能力不是权威"的第一层保证）',
   C.CAPABILITY_DECISIONS.every(d => C.AP_DECISIONS.indexOf(d) < 0) &&

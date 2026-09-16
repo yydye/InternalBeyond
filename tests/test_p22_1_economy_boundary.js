@@ -85,7 +85,14 @@ const PRODUCTION_FILES = [
      它同样没有引入第二份经济依赖：它 require 的仍是那份契约（另加两个
      **核心**模块 node:crypto / node:http，见下面的 B3.1 —— 通道要摘要、
      恒定时间比较与一条出站 HTTP，而这三件事只能来自核心模块）。 */
-  'services/home-node/economy-command-channel.js'
+  'services/home-node/economy-command-channel.js',
+  /* P22-13 加入 economy-approval-decision.js（用户对一条等待中的 Agent Intent
+     点头 / 摇头的**唯一**生产入口）。★ 它是**第六**个文件，理由与第五个
+     逐字同构：这条 seam 必须长在通道**旁边**（它们是两条路径、两个身份），
+     而把 handler 写进 http.js 会让"谁在决定"散落在路由层里。
+     它的依赖仍然是那份契约（另加 node:crypto —— 与通道同一个理由：
+     桌面凭据的恒定时间比较需要摘要）。 */
+  'services/home-node/economy-approval-decision.js'
 ];
 
 /* 目录前缀与文件名模式：用来发现"清单漏登记"的文件。
@@ -282,10 +289,32 @@ check('B3.7 Economy 不得依赖**进程 / 网络服务器 / 其它加密原语*
          services/home-node/http.js 已经存在的那个 server（下面 B3.7b
          逐字断言 Economy 里没有 createServer/.listen(）。 */
   allRequires.every(r => !/^(?:node:)?(child_process|net|https|tls|dgram|worker_threads)$/.test(r.value)) &&
-  /* 被允许的两个核心模块必须**恰好**各自一处（多一处都要解释）。 */
-  allRequires.filter(r => r.value === 'node:crypto').length === 1 &&
+  /* 被允许的核心模块必须**恰好**：node:crypto 两处（通道的摘要/恒定时间
+     比较，以及 P22-13 那条 seam 对桌面凭据的同一个比较），
+     node:http **一处**（通道那一条出站调用）。
+     ★ P22-13 把 crypto 从 1 改成 2 —— 这是**加法**，不是放松：多出来的那
+     一处只在 economy-approval-decision.js 里，而下面 B3.7c 逐字断言那条
+     seam **没有** http / net / listen / 定时器。 */
+  allRequires.filter(r => r.value === 'node:crypto').length === 2 &&
   allRequires.filter(r => r.value === 'node:http').length === 1,
   allRequires.map(r => r.value));
+
+check('B3.7c ★ P22-13 那条 seam **不碰网络、不开服务器、不起定时器**：'
+  + '它是一次同进程的两步调用（决定 + 续做），凭据比较用的还是那把摘要',
+  (() => {
+    const rel13 = 'services/home-node/economy-approval-decision.js';
+    const code = stripCommentsAndStrings(read(rel13));
+    const specs = scanRequires(read(rel13));
+    return code.indexOf('createServer') < 0 &&
+      code.indexOf('.listen(') < 0 &&
+      code.indexOf('request(') < 0 &&
+      code.indexOf('timingSafeEqual') >= 0 &&
+      !/\bsetTimeout\b|\bsetInterval\b/.test(code) &&
+      specs.length === 2 &&
+      specs.indexOf('node:crypto') >= 0 &&
+      specs.indexOf('./economy-contract.js') >= 0;
+  })(),
+  { requires: scanRequires(read('services/home-node/economy-approval-decision.js')) });
 
 check('B3.7b （输入存在）Economy 生产代码里**没有**第二个 HTTP 服务器，也没有任何 .listen( —— 通道只做一条出站调用',
   (() => {
@@ -344,7 +373,10 @@ check('B4.2 启动链**只** require Economy 的 canonical store —— 而且**
       const allowed = ['../services/home-node/economy-store.js',
         '../services/home-node/economy-capability.js',
         '../services/home-node/economy-action-adapter.js',
-        '../services/home-node/economy-command-channel.js'];
+        '../services/home-node/economy-command-channel.js',
+        /* P22-13 加第五处：装配层 require Approval Decision Seam（同样是
+           "构造就是身份绑定"的那个理由 —— 见 economyAssembly 里的说明）。 */
+        '../services/home-node/economy-approval-decision.js'];
       hits.forEach(h => { if (allowed.indexOf(h) < 0) offenders.push(rel + ' -> ' + h); });
     });
     return offenders.length === 0;
@@ -361,7 +393,9 @@ check('B4.2 启动链**只** require Economy 的 canonical store —— 而且**
       hits.forEach(h => {
         if (h !== '../services/home-node/economy-store.js' &&
           h !== '../services/home-node/economy-capability.js' &&
-          h !== '../services/home-node/economy-action-adapter.js') offenders.push(rel + ' -> ' + h);
+          h !== '../services/home-node/economy-action-adapter.js' &&
+          h !== '../services/home-node/economy-command-channel.js' &&
+          h !== '../services/home-node/economy-approval-decision.js') offenders.push(rel + ' -> ' + h);
       });
     });
     return offenders;
@@ -1082,7 +1116,7 @@ section('B15 · P22-5 store / product / inventory（依赖闭包、不可删除�
    change log / revision / idempotency 处在**同一个**事务边界里 ——
    抽出去就把那个保证降级成跨模块约定。 */
 check('B15.1 P22-5 的三张表全部落在同一个 economy-store.js 里（它自己没新增生产文件）',
-  PRODUCTION_FILES.length === 5 &&
+  PRODUCTION_FILES.length === 6 &&
   PRODUCTION_FILES.indexOf('services/home-node/economy-contract.js') >= 0 &&
   PRODUCTION_FILES.indexOf('services/home-node/economy-store.js') >= 0 &&
   /* ★ P22-9 的第三个文件是**门**（在 store 上面），不是 P22-5 的表。
@@ -1096,9 +1130,15 @@ check('B15.1 P22-5 的三张表全部落在同一个 economy-store.js 里（它�
   PRODUCTION_FILES.indexOf('services/home-node/economy-capability.js') >= 0 &&
   PRODUCTION_FILES.indexOf('services/home-node/economy-action-adapter.js') >= 0 &&
   PRODUCTION_FILES.indexOf('services/home-node/economy-command-channel.js') >= 0 &&
+  /* ★ P22-13 的第六个文件是**用户决定 seam**（在门的旁边，与通道并列），
+     它同样没有一张表：它做的是"判定桌面凭据 → 记一次决定 → 用门给的句柄
+     续做"，SQL 与 schema 仍然只由 store 拥有。
+     四句话合起来仍然是 P22-5 §1 那句"不要为了新概念多开几个文件"。 */
+  PRODUCTION_FILES.indexOf('services/home-node/economy-approval-decision.js') >= 0 &&
   read('services/home-node/economy-store.js').indexOf('economy_inventory') >= 0 &&
   read('services/home-node/economy-contract.js').indexOf('CREATE TABLE') < 0 &&
   read('services/home-node/economy-command-channel.js').indexOf('CREATE TABLE') < 0 &&
+  read('services/home-node/economy-approval-decision.js').indexOf('CREATE TABLE') < 0 &&
   read('services/home-node/economy-action-adapter.js').indexOf('CREATE TABLE') < 0 &&
   read('services/home-node/economy-capability.js').indexOf('CREATE TABLE') < 0,
   PRODUCTION_FILES);
@@ -1108,8 +1148,10 @@ check('B15.2 依赖闭包没有变宽：require 的**目标集合**仍然是那�
   /* ★ 断言的是**目标集合**，不是条目数：P22-9 的第三个文件与 P22-10 的
      第四个文件 require 的都是那份**已经存在**的契约 —— 那是同一个依赖，
      不是两次放宽。P22-11 的第五个文件新增了 node:crypto 与 node:http
-     两个**核心**模块（见 B15.2b 对它们的逐字限制）。 */
-  allRequires.length === 8,
+     两个**核心**模块（见 B15.2b 对它们的逐字限制）。
+     ★ P22-13 的第六个文件只新增了 node:crypto 的**一次**使用（桌面凭据的
+     恒定时间比较），因此**目标集合一个成员都没变**，而条目数是 10。 */
+  allRequires.length === 10,
   allRequires.map(r => r.from + ' -> ' + r.value));
 check('B15.2b 依赖里没有任何一个能碰钱 / 凭据 / 真实购物的模块（crypto 与 http 各自只被允许一种用法）',
   allRequires.every(r => !/payment|provider|credential|commerce|alipay|pay-gate|shopping/i.test(r.value)) &&
@@ -1118,8 +1160,10 @@ check('B15.2b 依赖里没有任何一个能碰钱 / 凭据 / 真实购物的模
        · node:crypto —— SHA-256 摘要（凭据只以摘要形式进索引）+ 恒定时间比较；
        · node:http  —— 一条有界超时/有界重试的出站调用（Home Node 侧不再
          需要服务器：它本来就是 http.js 的既有 server）。
-     因此这里把允许的用法**逐字**写下来，而不是笼统放行。 */
-  allRequires.filter(r => r.value === 'node:crypto').length === 1 &&
+     ★ P22-13 的第二个 crypto 是**同一个用法**的第二次出现（对桌面凭据的
+     恒定时间比较），而它**没有**带来 node:http —— 那条 seam 是同进程的
+     两步调用。因此这里逐项写下来：crypto 两处、http 一处。 */
+  allRequires.filter(r => r.value === 'node:crypto').length === 2 &&
   allRequires.filter(r => r.value === 'node:http').length === 1,
   allRequires.map(r => r.value));
 

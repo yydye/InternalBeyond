@@ -5663,7 +5663,27 @@
   var ECONOMY_CONSUMER = Object.freeze({
     ACTIVE_AGENT_RUNTIME: 'active_agent_runtime',
     HOME_NODE_AUTHORITY: 'home_node_authority',
-    DESKTOP_BRIDGE: 'desktop_bridge'
+    DESKTOP_BRIDGE: 'desktop_bridge',
+    /* ── P22-13 追加的第四个消费者（**加法**，不是提权）──────────────────
+       "用户对一条等待中的 Agent Intent 点头 / 摇头"这件事需要一个**名字**。
+
+       ★ 为什么它不能借用已有的三个：
+         · active_agent_runtime —— 那正是**被决定**的一方。把用户的决定记在
+           Agent 的身份下，等于让"Agent 自己批准自己"在审计里看不出来；
+         · home_node_authority —— P22-9 的 A5 逐字冻结了"权威不行动"：
+           这个消费者的能力表是空的，而它是**本进程自己的**身份；让储备
+           在同一个进程里的身份去 resume，等于把"谁在决定"这个问题留在
+           进程内部，与"用户决定"这个事实无关；
+         · desktop_bridge —— 它的运行时锚点是 Bridge 进程（另一个进程），
+           而这条决定来自一个**已经过认证的桌面请求**，不是 Bridge 在做决定。
+       ★ 于是这里不是"给某个消费者加权限"，而是**让一条真实存在的路径
+         拥有它自己的身份**。它拿到的能力只有 RESUME_APPROVED_PURCHASE
+         一项 —— 它**不能**提出意图（PROPOSE_PURCHASE 不在它的表里），
+         因此"用户决定"无法被用来凭空发起一笔购买。
+
+       ★ 它与"模型不是消费者"（缺席清单里的 llm）不矛盾：模型输出连身份
+         都没有；而这条身份是**已认证的桌面传输**，不是模型给的字符串。 */
+    USER_DECISION_SEAM: 'user_decision_seam'
   });
   /* ★ 这里是**值**，不是键。与 CAPABILITY 那种"键等于值"的词表不同：
      消费者 id 是 lowercase 身份，而常量名是 SCREAMING 读法。写成
@@ -5678,8 +5698,29 @@
   var CONSUMER_RUNTIME_ANCHOR = Object.freeze({
     active_agent_runtime: 'runtime/component-registry.js#active',
     home_node_authority: 'runtime/component-registry.js#homeNode',
-    desktop_bridge: 'runtime/component-registry.js#bridge'
+    desktop_bridge: 'runtime/component-registry.js#bridge',
+    /* ★ P22-13：这一条**刻意**不指向 component-registry。用户的决定不是
+       一个常驻运行时组件（它不是被 runner 拉起的一件服务，而是用户在
+       桌面点下的一次决定），把它挂到某个组件上会让"这个身份真的存在"
+       变成一句假话。它的锚点是**装配点自己**：那一次 `bind(consumer)`
+       就是身份成形的唯一位置（见 services/home-node-service.js 的
+       economyAssembly）。载入期不变量 B/§A3 因此被写宽了一条：锚点要么
+       指向 component-registry 里的一个真实组件，要么指向**装配点**，
+       两者都必须是可核对的具体位置。 */
+    user_decision_seam: 'services/home-node-service.js#economyAssembly'
   });
+
+  /* ★ 每个 consumer 的锚点形状。P22-13 把这条不变量**写宽了一条**，而不是
+     悄悄放松：一个常驻运行时组件的锚点必须指向 component-registry 里真实
+     存在的那个组件；而"用户的一次决定"这种**非组件**身份，锚点必须指向
+     那个**装配点**（identity is bound at assembly）。两者都必须是可核对的
+     具体位置 —— 被禁止的是"随便填一个字符串"。 */
+  var CONSUMER_ANCHOR_ASSEMBLY_PREFIX = 'services/home-node-service.js#';
+  function isConsumerRuntimeAnchor(consumer, anchor) {
+    if (typeof anchor !== 'string' || anchor === '') return false;
+    return anchor.indexOf('runtime/component-registry.js#') === 0 ||
+      anchor.indexOf(CONSUMER_ANCHOR_ASSEMBLY_PREFIX) === 0;
+  }
 
   var EMPTY_CAPABILITY_LIST = Object.freeze([]);
 
@@ -5690,7 +5731,13 @@
   var CONSUMER_CAPABILITY_MATRIX = Object.freeze({
     active_agent_runtime: Object.freeze([CAPABILITY.PROPOSE_PURCHASE, CAPABILITY.RESUME_APPROVED_PURCHASE]),
     home_node_authority: EMPTY_CAPABILITY_LIST,
-    desktop_bridge: EMPTY_CAPABILITY_LIST
+    desktop_bridge: EMPTY_CAPABILITY_LIST,
+    /* ★ P22-13：恰好一项，而且**只有**这一项。
+       "用户点头之后继续那条 intent"是这条路径存在的全部理由；把它写成
+       [PROPOSE_PURCHASE, RESUME_APPROVED_PURCHASE] 会让"用户决定"顺带获得
+       发起新购买的能力 —— 而那正是 P22-9 §5 说的"能力不是权威"要防的
+       那种顺手扩大。 */
+    user_decision_seam: Object.freeze([CAPABILITY.RESUME_APPROVED_PURCHASE])
   });
 
   /* 缺席清单：审计里**核对过、并确认不是**运行时消费者的界面。
@@ -6087,8 +6134,13 @@
     }
     for (var a = 0; a < ECONOMY_CONSUMERS.length; a++) {
       var anchor = CONSUMER_RUNTIME_ANCHOR[ECONOMY_CONSUMERS[a]];
-      if (typeof anchor !== 'string' || anchor.trim() === '') {
-        die('a consumer runtime anchor must be a non-empty string: ' + ECONOMY_CONSUMERS[a]);
+      /* ★ P22-13：这一条从"必须指向 component-registry"改成"必须指向一个
+         可核对的具体位置"（组件或装配点）。见 CONSUMER_RUNTIME_ANCHOR 上方
+         的说明 —— 这里同时**收严**了另一件事：一个既不是组件锚点、也不是
+         装配锚点的字符串现在会被当场拒绝，而在此之前任何非空串都能过。 */
+      if (!isConsumerRuntimeAnchor(ECONOMY_CONSUMERS[a], anchor)) {
+        die('a consumer runtime anchor must point at a real component or at the assembly site: ' +
+          ECONOMY_CONSUMERS[a] + ' → ' + String(anchor));
       }
     }
 
@@ -6146,10 +6198,20 @@
     }
     /* ⑧ 近似名字**不得**被提升：consumer id 是身份，不是类别。 */
     var nearMisses = ['agent_runtime', 'active', 'ACTIVE_AGENT_RUNTIME', 'homeNode',
-      'home_node', 'bridge', 'desktop-bridge'];
+      'home_node', 'bridge', 'desktop-bridge',
+      /* ★ P22-13：'user' 是**当事人**（PARTY_TYPE.USER 的 canonical id，
+         见 USER_PARTY_ID），它**不是**消费者。让近似名字被提升，正是
+         "拿一个字符串换一个身份"那条禁令要防的事，而这里多了一个
+         恰好在两套词表里都读得通的候选。 */
+      'user', 'USER_DECISION_SEAM', 'desktop_user', 'approval_seam'];
     for (var nm = 0; nm < nearMisses.length; nm++) {
       if (checkEconomyCapability({ consumer: nearMisses[nm], capability: CAPABILITY.PROPOSE_PURCHASE }).granted) {
         die('a near-miss consumer id must never be promoted to a canonical consumer: ' + nearMisses[nm]);
+      }
+      /* ★ 能力维度也一样：一个猜错的 consumer 名不该因为在"另一个能力"
+         上被拒就恰好在这一个上被放行。 */
+      if (checkEconomyCapability({ consumer: nearMisses[nm], capability: CAPABILITY.RESUME_APPROVED_PURCHASE }).granted) {
+        die('a near-miss consumer id must never hold a capability: ' + nearMisses[nm]);
       }
     }
     /* ⑨ 配置只能收窄。任何别的键都是一次提权企图。 */
@@ -6632,6 +6694,8 @@
     CAPABILITIES: CAPABILITIES,
     ECONOMY_CONSUMER: ECONOMY_CONSUMER,
     ECONOMY_CONSUMERS: ECONOMY_CONSUMERS,
+    isConsumerRuntimeAnchor: isConsumerRuntimeAnchor,
+    CONSUMER_ANCHOR_ASSEMBLY_PREFIX: CONSUMER_ANCHOR_ASSEMBLY_PREFIX,
     CONSUMER_RUNTIME_ANCHOR: CONSUMER_RUNTIME_ANCHOR,
     CONSUMER_CAPABILITY_MATRIX: CONSUMER_CAPABILITY_MATRIX,
     CAPABILITY_SURFACES_NOT_PRESENT: CAPABILITY_SURFACES_NOT_PRESENT,

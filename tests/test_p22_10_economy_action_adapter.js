@@ -806,21 +806,30 @@ check('H1 ★★ 全仓库生产代码里，只有**一个**文件调用 capabil
   })(),
   scanProduction(/\.\s*proposePurchaseIntent\s*\(/));
 
-check('H2 ★★ 全仓库生产代码里 `gate.bind(<那个消费者>)` 恰好一次，而且就在适配器的装配助手里',
+check('H2 ★★ 全仓库生产代码里 `gate.bind(<那个消费者>)` 恰好一次，而且就在适配器的装配助手里；'
+  + 'P22-13 之后多了**第二**次 bind —— 但它绑的是另一个身份（用户决定），不是这个',
   (() => {
     /* ★ 不能笼统地数 `.bind(`：Function.prototype.bind 与 server.bind 到处都是，
        那种断言既会误报，也不会说出任何关于**门**的事情。要断言的是
-       "谁 bind 了这扇门、绑的是谁"。 */
+       "谁 bind 了这扇门、绑的是谁"。
+       ★ P22-13 把这条从"恰好一处"改成"**这两个身份各恰好一处**"：
+       用户的点头/摇头需要它自己的身份（user_decision_seam），否则
+       "Agent 自己批准自己"在审计里就看不出来。约束因此落在**身份**上，
+       而不是落在次数上 —— 而且它更硬：除这两个之外，没有任何消费者
+       拿到过句柄（P22-13 的测试把这件事在整个 services/ 上断言了一遍）。 */
     const bindSites = scanProduction(/\.bind\s*\(\s*C\.ECONOMY_CONSUMER\.ACTIVE_AGENT_RUNTIME\s*\)/);
-    const directSites = scanProduction(/economyCapabilityGate\.bind\s*\(/);
+    const agentDirectSites = scanProduction(/\.bind\s*\(\s*C\.ECONOMY_CONSUMER\.USER_DECISION_SEAM\s*\)/);
+    const seamSites = scanProduction(/\.bind\s*\(\s*economyApprovalDecisionModule\.CONSUMER\s*\)/);
     return bindSites.length === 1 && bindSites[0] === ADAPTER_REL &&
-      directSites.length === 0 &&
+      agentDirectSites.length === 0 &&
+      seamSites.length === 1 && seamSites[0] === 'services/home-node-service.js' &&
       /* 适配器自己也只有那一处（另一处是 `typeof gate.bind !== 'function'` 的形状守卫，
          它不是一次绑定）。 */
       (SRC_CODE.match(/\.bind\s*\(\s*C\.ECONOMY_CONSUMER/g) || []).length === 1;
   })(),
   { bind: scanProduction(/\.bind\s*\(\s*C\.ECONOMY_CONSUMER\.ACTIVE_AGENT_RUNTIME\s*\)/),
-    direct: scanProduction(/economyCapabilityGate\.bind\s*\(/) });
+    agentDirect: scanProduction(/\.bind\s*\(\s*C\.ECONOMY_CONSUMER\.USER_DECISION_SEAM\s*\)/),
+    seam: scanProduction(/\.bind\s*\(\s*economyApprovalDecisionModule\.CONSUMER\s*\)/) });
 
 check('H3 ★★ 门绑定的消费者是 P22-9 契约里那个有运行时锚点的消费者（而且只有一个）',
   ADAPTER.CONSUMER === C.ECONOMY_CONSUMER.ACTIVE_AGENT_RUNTIME &&

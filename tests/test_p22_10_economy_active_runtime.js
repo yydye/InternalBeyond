@@ -153,18 +153,21 @@ check('A5 ★★ 装配层**没有**把适配器交给 http 层（HTTP 上的经
   readIfExists('services/home-node/http.js').indexOf('economyActionAdapter') < 0 &&
   readIfExists('services/home-node/http.js').indexOf('economy-action-adapter') < 0);
 
-check('A6 ★ 装配层对 Economy 的 require 恰好是那四个模块，而且**没有**第二个 store owner',
+check('A6 ★ 装配层对 Economy 的 require 恰好是那五个模块，而且**没有**第二个 store owner',
   (() => {
     const src = stripComments(readIfExists('services/home-node-service.js'));
     const targets = (src.match(/require\s*\(\s*'([^']*economy[^']*)'\s*\)/g) || [])
       .map(s => s.replace(/[\s\S]*'([^']*)'[\s\S]*/, '$1'));
-    return targets.length === 4 &&
+    return targets.length === 5 &&
       targets.indexOf('../services/home-node/economy-store.js') >= 0 &&
       targets.indexOf('../services/home-node/economy-capability.js') >= 0 &&
       targets.indexOf('../services/home-node/economy-action-adapter.js') >= 0 &&
       /* P22-11 的第四处：command 通道（长在适配器上面，装配是它唯一的
          构造点与唯一的来源登记处）。 */
-      targets.indexOf('../services/home-node/economy-command-channel.js') >= 0;
+      targets.indexOf('../services/home-node/economy-command-channel.js') >= 0 &&
+      /* P22-13 的第五处：用户决定 seam（长在门的旁边，与通道并列 ——
+         两者是两个身份、两条路径）。装配仍然是它唯一的构造点。 */
+      targets.indexOf('../services/home-node/economy-approval-decision.js') >= 0;
   })(),
   (stripComments(readIfExists('services/home-node-service.js')).match(/require\s*\(\s*'[^']*economy[^']*'\s*\)/g) || []));
 

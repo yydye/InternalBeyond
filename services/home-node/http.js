@@ -72,6 +72,16 @@ function createHomeNodeHttp(deps) {
      ★ 不注入时（分解装配、只看读面的测试、未配置通道的部署）这一整条
        分支**不存在**，行为与 P22-10 逐字一致。 */
   const economyCommand = deps.economyCommand || null;
+  /* ── P22-13 · Economy Approval Decision Seam（用户的点头 / 摇头）────────
+     ★ 与上面一行同款：这里拿到的**不是** store、不是门、不是适配器，而是
+       一个窄对象（公开面只有 { path, dispatch, describe, audit }）。
+       用户的决定由它自己判定与记录，本文件只负责"把请求送到它那里、
+       把它的信封原样发出去"。
+     ★ 它为什么可以上 HTTP，而门与适配器不能：它不判断任何经济事实
+       （价格 / 预算 / 自主性 / 商品），它只是把一次**已认证的用户决定**
+       写成一条 canonical 批准，然后把同一条 intent 交回 P22-8。
+     ★ 不注入时（分解装配、只看读面的测试）这一整条分支**不存在**。 */
+  const economyApprovalDecision = deps.economyApprovalDecision || null;
   const executor = deps.executor || null;
   const gateway = deps.gateway || null;
   const clock = deps.clock || (() => Date.now());
@@ -443,6 +453,55 @@ function createHomeNodeHttp(deps) {
      （/economy/*）与桌面面的一切仍然逐字按既有规则。 */
   function isEconomyCommandPath(path) {
     return !!economyCommand && path === economyCommand.path;
+  }
+  /* ── P22-13 · 用户决定面的来源信息 ──────────────────────────────────
+     ★ 与 economyCommandRequestInfo 同款，但**故意是两个函数**：它们带的是
+       两种不同的凭据（来源 token vs 桌面 token），而"一个函数同时回答
+       两套凭据"正是两套身份边界要被糊掉的地方。
+     ★ 本文件仍然**不判定**：它把三个原始事实（是不是 loopback、请求头里的
+       凭据、来源地址）交给 seam，判定与拒绝信封由 seam 唯一给出 ——
+       与 P22-11 那条命令路径逐字同源。 */
+  function economyApprovalDecisionRequestInfo(req) {
+    const headerToken = String(req.headers['x-ib-home-token'] || '');
+    const auth = String(req.headers.authorization || '');
+    const bearer = /^Bearer\s+(.+)$/i.test(auth) ? auth.replace(/^Bearer\s+/i, '') : '';
+    return {
+      loopback: isLoopback(req),
+      remoteAddress: String((req.socket && req.socket.remoteAddress) || ''),
+      desktopCredential: headerToken || bearer
+    };
+  }
+  async function handleEconomyApprovalDecision(req, res) {
+    let body = null;
+    try {
+      body = await readBody(req, MAX_BODY_BYTES);
+    } catch (error) {
+      const code = (error && error.code) || 'read-error';
+      record('warn', 'economy-approval-decision-unreadable', { code: code, loopback: isLoopback(req) });
+      /* ★ 读不出来也走**同一个**拒绝信封（seam 自己给的），而不是本文件
+         临时拼一个 —— 与 handleEconomyCommand 逐字同源。 */
+      const refused = economyApprovalDecision.dispatch(economyApprovalDecisionRequestInfo(req), null);
+      bad(res, code === 'too-large' ? 413 : 400, refused.reasonCode, {
+        dispatched: false,
+        unreadableBody: code
+      }, req);
+      return;
+    }
+    const decision = economyApprovalDecision.dispatch(economyApprovalDecisionRequestInfo(req), body);
+    record(decision.ok === true ? 'info' : 'warn', 'economy-approval-decision', {
+      /* ★ 审计只记这五样：批准 id、决定词、结果、续做的归类、linkage。
+         凭据**绝不**进来（源头就不在 decision 里），决定者身份只记
+         canonical 的 'user:user'。 */
+      approvalId: decision.approvalId || null,
+      decision: decision.decision || null,
+      decider: decision.decider || null,
+      outcome: decision.ok === true ? 'accepted' : String(decision.reasonCode || 'refused'),
+      continuation: decision.continuation || null,
+      linkage: (decision.continuationResult && decision.continuationResult.intentId) || null,
+      /* 通道层自述：传输不是权威（跟着**每一次**判定一起落审计）。 */
+      transportIsNotAnEconomyAuthority: true
+    });
+    sendJson(res, decision.status || 400, decision, req);
   }
   function authorized(req, url) {
     if (!token) return true;
@@ -1043,6 +1102,58 @@ function createHomeNodeHttp(deps) {
             capabilityWritesExposed: [],
             approvalWritesExposed: [],
             resumeWritesExposed: []
+          },
+          /* ── P22-13：Approval Decision Seam（第二条、也是最后一条写路径）──
+             ★ 这一节同样是**加法**，而且是"把已经发生的事实写成字段"：
+               · approvalDecisionWritesExposed —— 恰好两个决定词
+                 （APPROVE / REJECT），由 seam 持有；
+               · decisionWritesThatAreNotAPPROVEorREJECT —— 恒为空：
+                 BUY / SETTLE / RESERVE / GRANT / REFUND / LEDGER /
+                 AUTO_ALLOW 在这条路径上**不存在**（不是被过滤，是不在词表里）；
+               · bypassesTheResumeChain —— 恒 false：批准之后**只能**走
+                 P22-8 的恢复路径，seam 里没有第二条到钱的边；
+               · carriesEconomicFacts —— 恒 false：价格 / 金额 / 币种 /
+                 预算 / 钱包 / 商品事实 / 结算方式 / 发放数量 / consumer /
+                 capability 都不在这条路径的信封里（出现即拒）。
+             ★ `open:false` 的两种情况（未配置桌面凭据 / 未装配）都必须是空名单：
+               "不可达的写面"与"可达的写面"在审计里必须是两个答案。
+             ★ 与 commandChannel 的关系逐字写出来：两条路径**不共用**
+               consumer、不共用凭据、不代表同一件事。 */
+          approvalDecision: economyApprovalDecision ? (() => {
+            const d = economyApprovalDecision.describe();
+            const open = d.open === true;
+            return Object.assign({
+              implemented: true,
+              open: open,
+              approvalDecisionWritesExposed: open ? d.decisions.slice() : [],
+              decisionWritesThatAreNotAPPROVEorREJECT: [],
+              capability: d.capability,
+              capabilityConsumer: d.capabilityConsumer,
+              proposalWritesExposed: [],
+              bypassesTheResumeChain: false,
+              carriesEconomicFacts: false,
+              deciderComesFromTheAssemblyNotThePayload: true,
+              identityComesFromTheTransportNotThePayload: true,
+              requiresConfiguredDesktopCredential: true,
+              commandMeans: d.differsFromTheCommandChannel.commandMeans,
+              decisionMeans: d.differsFromTheCommandChannel.decisionMeans,
+              sharesAConsumerWithTheCommandChannel: false,
+              sharesACredentialWithTheCommandChannel: false,
+              pathIsNotUnderEconomyReadPaths: String(economyApprovalDecision.path).indexOf('/economy/') !== 0,
+              approvalIsNotAGuaranteedPurchase: true,
+              transportIsNotAnEconomyAuthority: true
+            }, { path: economyApprovalDecision.path });
+          })() : {
+            implemented: false,
+            open: false,
+            approvalDecisionWritesExposed: [],
+            decisionWritesThatAreNotAPPROVEorREJECT: [],
+            capability: null,
+            capabilityConsumer: null,
+            proposalWritesExposed: [],
+            bypassesTheResumeChain: false,
+            carriesEconomicFacts: false,
+            requiresConfiguredDesktopCredential: true
           }
         },
         doesNotExpose: ['llm-proxy', 'tools', 'payments', 'diary', 'letters', 'images', 'tts'],
@@ -1732,6 +1843,30 @@ function createHomeNodeHttp(deps) {
         return;
       }
       await handleEconomyCommand(req, res);
+      return;
+    }
+
+    /* ══════════════════════════════════════════════════════════════════
+       P22-13 · Economy Approval Decision Seam（用户的点头 / 摇头 · POST）
+
+       ★ 它与上面那条命令路径是**两条**路径，而不是一条路径上的两种
+         command。一个代表 Agent WANT（ECONOMY_PROPOSE_PURCHASE），
+         一个代表 User APPROVAL DECISION（APPROVE / REJECT）；两条各有
+         自己的准入、自己的凭据要求、自己的 consumer，而它们**不共用**
+         任何一样（见 seam 的 describe().differsFromTheCommandChannel）。
+         把它们合成一条，就等于让"Agent 的传输"与"用户的传输"看起来是
+         同一个东西 —— 而 P22-13 §2 的全部要点正是它们必须分开。
+
+       ★ 本文件在这里仍然只做三件事：readBody（有界）→ dispatch → 原样
+         发出它给的信封。**不解释**决定、**不挑**身份、**不看**经济事实，
+         也没有任何一行能从这条路到达 store 或门。 */
+    if (economyApprovalDecision && path === economyApprovalDecision.path) {
+      if (method !== 'POST') {
+        record('warn', 'economy-approval-decision-wrong-method', { method: method, loopback: isLoopback(req) });
+        bad(res, 405, 'economy-approval-decision-is-post-only', { allowedMethods: ['POST'] }, req);
+        return;
+      }
+      await handleEconomyApprovalDecision(req, res);
       return;
     }
 
