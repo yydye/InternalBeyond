@@ -97,14 +97,103 @@ const COPY_FILES = [
   'services/home-node/mobile-gateway.js',
   'services/home-node/p0-context.js',
   'active/node-model-port.js',
+  /* P22-15C note: these Economy files are only *loaded* in the copy (home-node-service's
+     require graph needs them). This file never mutates any of them — the only mutation
+     targets are execution.js / mobile-gateway.js / middle-brain-config-core.js. */
+  /* ── P22-15C：以下九个是**闭包算出来的**，不是又一轮人工补名单 ──────────
+     P11-3X-B（67c59be）给 home-node 的各 store 与装配层加了
+     `require('../../runtime/db-failure.js')`（唯一一处数据库失败分类器），
+     P22-2/9~14 又让装配层 require 了 Economy 的六个生产文件。
+     本文件的 COPY_FILES 是人工维护的，没跟上 → 基线副本
+     `Cannot find module '../../runtime/db-failure.js'`（MODULE_NOT_FOUND）
+     → 收敛测试在真断言之前中止 → 0 passed / 11 failed 的**假红**。
+     这里把它们显式登记（下面的 closure 判据会持续守住"不许再漏"）。 */
+  'runtime/db-failure.js',
+  'runtime/service-control.js',
+  'services/home-node/economy-store.js',
+  'services/home-node/economy-capability.js',
+  'services/home-node/economy-action-adapter.js',
+  'services/home-node/economy-command-channel.js',
+  'services/home-node/economy-approval-decision.js',
+  'services/home-node/economy-configuration.js',
+  'services/home-node/economy-contract.js',
   'tests/test_middle_brain_convergence.js'
 ];
 
 const tempDirs = [];
+
+/* ── P22-15C：COPY_FILES 不再只靠人工维护 ─────────────────────────────
+   这个清单是**人工**长的，而生产依赖是自动长的 —— P11-3X-B（67c59be）给
+   chat-store / device-registry / memory-store / home-node-service 加了
+   `require('../../runtime/db-failure.js')`，清单没跟上。后果不是一条断言变红，
+   而是**基线副本连模块都加载不了**：
+
+       Error: Cannot find module '../../runtime/db-failure.js'
+       Require stack: .../services/home-node/chat-store.js  (MODULE_NOT_FOUND)
+
+   于是收敛测试在真断言之前就中止 → '(no summary)' → base.copyIsGreen 与
+   五个变体的 turnsRed / redAreTheExpectedOnes 一起红（0 passed / 11 failed），
+   而生产侧的收敛其实完全正常。**假红**是最坏的一种红：它让人以为被测系统坏了。
+
+   修法不是"再补一个文件名"（下一个新依赖会再来一次），而是让副本集**自维护**：
+   从 COPY_FILES 出发做一次**相对 require 闭包**（只在本仓库内解析，裸模块说明符
+   与 node: 内置一律跳过），把缺口并进来。清单仍然保留 —— 它是"种子"，
+   而种子决定这次复制**只为哪些文件做对照证明**。 */
+const COPY_DIRS = ['assets/js/', 'services/home-node/', 'services/', 'runtime/', 'active/', 'tests/'];
+
+function requiresOf(rel) {
+  const raw = fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/^\uFEFF/, '');
+  /* 只在本仓库的源码目录里解析：裸说明符（包名 / node: 内置）在闭包里没有意义，
+     而越出这些目录的路径本来就不该出现在生产 require 里（出现了要另立一条断言）。 */
+  if (!COPY_DIRS.some(d => rel.indexOf(d) === 0)) return [];
+  const out = [];
+  const re = /require\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
+  let m;
+  while ((m = re.exec(raw))) {
+    const head = raw.slice(0, m.index);
+    /* 与 tests/test_p22_1_economy_boundary.js 的 scanRequires 同口径：注释里的
+       require 字样不是依赖（这个仓库的解释性注释极多，误判的代价是删解释）。 */
+    if (head.slice(head.lastIndexOf('\n') + 1).indexOf('//') >= 0) continue;
+    if (head.lastIndexOf('/*') > head.lastIndexOf('*/')) continue;
+    if (!/^\.{1,2}\//.test(m[1])) continue;
+    out.push(m[1]);
+  }
+  return out;
+}
+function resolveRelative(fromRel, spec) {
+  const base = path.posix.normalize(path.posix.join(path.posix.dirname(fromRel), spec));
+  for (const cand of [base, base + '.js', base + '/index.js']) {
+    const abs = path.join(ROOT, cand);
+    if (fs.existsSync(abs) && fs.statSync(abs).isFile()) return cand;
+  }
+  return null;
+}
+/* 返回 { files, added }：files = 种子 ∪ 闭包（保持种子顺序，新增项按发现顺序）。 */
+function copyClosure() {
+  const files = COPY_FILES.slice();
+  const known = new Set(files);
+  const added = [];
+  const queue = files.slice();
+  while (queue.length) {
+    const rel = queue.shift();
+    if (!fs.existsSync(path.join(ROOT, rel))) continue;
+    for (const spec of requiresOf(rel)) {
+      const target = resolveRelative(rel, spec);
+      if (!target || known.has(target)) continue;
+      known.add(target);
+      files.push(target);
+      added.push(rel + ' -> ' + target);
+      queue.push(target);
+    }
+  }
+  return { files: files, added: added };
+}
+const CLOSURE = copyClosure();
+
 function mirrorWorkspace(tag) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-cp-' + tag + '-'));
   tempDirs.push(dir);
-  for (const rel of COPY_FILES) {
+  for (const rel of CLOSURE.files) {
     const src = path.join(ROOT, rel);
     if (!fs.existsSync(src)) continue;
     const dst = path.join(dir, rel);
@@ -125,7 +214,9 @@ function mutate(dir, rel, from, to) {
   fs.writeFileSync(file, Buffer.concat([hadBom ? Buffer.from([0xEF, 0xBB, 0xBF]) : Buffer.alloc(0), Buffer.from(text, 'utf8')]));
 }
 
-/* 在临时副本里跑收敛测试，返回 { failedNames, allPassed, output }。 */
+/* 在临时副本里跑收敛测试，返回 { exitCode, failedNames, passedCount, failedCount, hasSummary, summary, output }。
+   P22-15C：把"跑到了真断言"变成可断言的读数 —— 只看 exitCode !== 0 的话，
+   一次 MODULE_NOT_FOUND 崩溃与"断言真的红了"完全无法区分（这正是本次假红的形状）。 */
 function runConvergence(dir) {
   let output = '';
   let exitCode = 0;
@@ -143,6 +234,9 @@ function runConvergence(dir) {
   return {
     exitCode: exitCode,
     failedNames: failedNames,
+    passedCount: summary ? Number(summary[1]) : 0,
+    failedCount: summary ? Number(summary[2]) : 0,
+    hasSummary: !!summary,
     summary: summary ? summary[0] : '(no summary)',
     output: output
   };
@@ -161,7 +255,17 @@ function main() {
   const baseline = runConvergence(baselineDir);
   check('base.copyIsGreen', baseline.exitCode === 0 && baseline.failedNames.length === 0,
     { exit: baseline.exitCode, failed: baseline.failedNames, summary: baseline.summary });
-  console.log('  baseline: ' + baseline.summary + '\n');
+  /* P22-15C：绿还不够 —— 必须绿在**真断言**上。
+     崩溃（MODULE_NOT_FOUND / 语法错误 / 找不到文件）只会给出 '(no summary)'，
+     以前它与"断言真的红了"长得一模一样，于是五个变体一起变成假绿或假红。
+     这里把"跑到过断言"变成独立判据：pass>0 且 failed=0 且 exit=0。 */
+  check('base.ranRealAssertions', baseline.hasSummary && baseline.passedCount > 0 && baseline.failedCount === 0,
+    { summary: baseline.summary, exit: baseline.exitCode, tail: baseline.output.split(/\r?\n/).slice(-6) });
+  /* 副本集自维护：闭包缺一个相对依赖 → 基线连模块都加载不了（本次的根因）。 */
+  check('base.copyClosureIsComplete', CLOSURE.added.length === 0,
+    { addedByClosure: CLOSURE.added });
+  console.log('  baseline: ' + baseline.summary + '  [copyFiles=' + CLOSURE.files.length
+    + ' closureAdded=' + CLOSURE.added.length + ']\n');
 
   const variants = [
     {
@@ -220,7 +324,14 @@ function main() {
 
     const result = runConvergence(dir);
     const names = result.failedNames;
-    check(variant.id + '.turnsRed', result.exitCode !== 0 && names.length > 0,
+    /* P22-15C：这三条把"假红"和"真红"分开。
+       ① mutationApplied 已由 apply 不抛错证明（锚点必须存在，否则抛）；
+       ② turnsRed 要求**跑到过真断言**（有 summary）且失败数 > 0；
+       ③ redAreTheExpectedOnes 要求红的是指名断言。
+       旧版只要求 exitCode !== 0 && names.length > 0 —— 崩溃时 exitCode 也是非 0，
+       但打印里一条 ✘ 都没有，于是两条断言一起红成"harness 起不来"的样子。 */
+    check(variant.id + '.turnsRed',
+      result.exitCode !== 0 && result.hasSummary && result.failedCount > 0 && names.length > 0,
       { name: variant.name, exit: result.exitCode, summary: result.summary, failed: names });
     check(variant.id + '.redAreTheExpectedOnes', reportsAny(names, variant.expect),
       { name: variant.name, expected: variant.expectedRed, actuallyRed: names });
