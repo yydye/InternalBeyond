@@ -411,6 +411,11 @@ const SEED = `(function(){
         return true;
       })()`);
       await evaluate(`(function(){
+        /* ★ P22-17：Economy 页面多了一个**外层**页签条，「待处理」是其中
+           一格。切到它之后 economy-requests 那个容器才可见 —— 这是 §2 要求
+           的信息架构变更，而本文件其余每一处断言都逐字未动（P22-15 的实现
+           一个字节都没改，只是住进了一个页签里）。 */
+        if (window.IB && IB.economyShellUI) IB.economyShellUI.show('requests');
         if (window.IB && IB.economyApprovalUI) IB.economyApprovalUI.render();
         return true;
       })()`);
@@ -464,6 +469,7 @@ const SEED = `(function(){
     section('手机端一次真实点击');
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
     await evaluate(`(function(){ document.body.className=''; location.hash='economy';
+      if (window.IB && IB.economyShellUI) IB.economyShellUI.show('requests');
       if (window.IB && IB.economyApprovalUI) IB.economyApprovalUI.render(); return true; })()`);
     await new Promise(r => setTimeout(r, 600));
     await evaluate(`(function(){ var b=document.querySelector('.ec-btn-allow'); if(b) b.click(); return true; })()`);

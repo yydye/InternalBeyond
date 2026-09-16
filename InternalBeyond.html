@@ -3330,6 +3330,13 @@ i would like the room to be enough.
       前面并按页签开合它的 display），因此这一行不改动任何既有 DOM。 -->
 <script src="assets/js/economy-configuration-core.js"></script>
 <script src="assets/js/economy-configuration.js"></script>
+<!-- P22-17 · Economy Shell 的纯层与渲染器（概览 / 商店 / 我的资产）。
+     纯层**依赖** P22-16 的纯层（币种 scale / 展示名 / 商品类别三张镜像表
+     只有一个出处），因此必须排在它后面；渲染器**依赖** P22-16 的渲染器
+     （「设置」那一格由它渲染，「待处理」那一格由 P22-15 渲染）。
+     它是**加法**：两个既有容器留在原位，本层只追加自己的一个节点。 -->
+<script src="assets/js/economy-shell-core.js"></script>
+<script src="assets/js/economy-shell.js"></script>
 <script src="assets/js/home-node-bootstrap.js"></script>
 <!-- 深渊暗线：只在 Infernal（暗色）模式可瞥见——"你知道这里通向深渊，但你也知道，你随时可以离开。" -->
 <div class="ib-beyond-leave" id="ib-beyond-leave" aria-hidden="true">你知道这里通向深渊，但你也知道，你随时可以离开。</div>

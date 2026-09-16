@@ -662,7 +662,13 @@ check('B7.8 Economy event envelope 不携带记忆/关系载荷（只有事实�
      但不该出现在代码里。 */
 const BROWSER_ECONOMY_FILES = [
   'assets/js/economy-approval-core.js',
-  'assets/js/economy-approval.js'
+  'assets/js/economy-approval.js',
+  /* P22-17 第二次应用同一条纪律：Economy 的**门面**（概览 / 商店 / 我的资产）
+     也在这一份名单里，因此它同样拿不到 store、门、适配器、账本原语、
+     fetch，也一条 /internal/economy/* 路径都没有。B7.9~B7.13 因此从
+     "P22-15 那两个文件"变成"浏览器侧全部经济文件"。 */
+  'assets/js/economy-shell-core.js',
+  'assets/js/economy-shell.js'
 ];
 const browserEconomyCode = BROWSER_ECONOMY_FILES.map(rel => stripCommentsAndStrings(read(rel))).join('\n');
 

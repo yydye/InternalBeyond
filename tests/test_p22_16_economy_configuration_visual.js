@@ -451,6 +451,20 @@ const metricsOf = `(function(){
       return out;
     })()`;
 
+    /* ── P22-17 · 壳层重组的最小适配（本文件里唯一的改动类型）──────────
+       Economy 页面现在有一个**外层**页签条（概览 / 商店 / 我的资产 /
+       待处理 / 设置），而 P22-16 的三块配置面板住在「设置」那一格里 ——
+       这是 P22-17 §2 要求的信息架构变更。于是"这一页打开时看得见配置
+       面板"这件事，现在需要先切到「设置」。
+
+       ★ 本文件因此增加了**一类**调用：`IB.economyShellUI.show('settings')`
+         出现在每一处 `economyConfigurationUI.show(...)` 之前（⑦ 那一处
+         用 `show('requests')`，因为那里要的是「待处理」）。
+       ★ 除此之外本文件一个断言都没改：P22-16 的排版、宽度、主题令牌、
+         刻度条百分比、按钮尺寸、覆盖层判据全部逐字保留 —— 因为 P22-17
+         没有改 P22-16 的任何实现，只是把它放进了一个页签里。
+       ★ P22-16 自己的**纯 Node 套件**（ui_core / ui）一行都没改，也没有
+         任何地方需要它知道外壳的存在。 */
     const VIEWPORTS = [
       { key: 'desktop', width: 1440, height: 900, mobile: false },
       { key: 'tablet', width: 834, height: 1000, mobile: false },
@@ -484,7 +498,7 @@ const metricsOf = `(function(){
           try { localStorage.setItem('ib_theme', '${theme.key}'); } catch (e) {}
           window.__ibSeedRoles();
           if (location.hash !== '#economy') location.hash = 'economy';
-          if (window.IB && IB.economyConfigurationUI) { IB.economyConfigurationUI.render(); IB.economyConfigurationUI.show('budget'); }
+          if (window.IB && IB.economyConfigurationUI) { IB.economyConfigurationUI.render(); if (IB.economyShellUI) IB.economyShellUI.show('settings'); IB.economyConfigurationUI.show('budget'); }
           return true;
         })()`);
         await new Promise(r => setTimeout(r, 700));
@@ -553,7 +567,7 @@ const metricsOf = `(function(){
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 780, deviceScaleFactor: 1, mobile: true });
     await evaluate(`(function(){ document.body.className = ''; return true; })()`);
     for (const key of ['wallet', 'budget', 'autonomy']) {
-      await evaluate(`(function(){ IB.economyConfigurationUI.show('${key}'); return true; })()`);
+      await evaluate(`(function(){ if (IB.economyShellUI) IB.economyShellUI.show('settings'); IB.economyConfigurationUI.show('${key}'); return true; })()`);
       await new Promise(r => setTimeout(r, 500));
       await evaluate(dismissOverlays);
       const m = await evaluate(metricsOf);
@@ -574,6 +588,7 @@ const metricsOf = `(function(){
       window.__ibSeedRoles();
       window.__ibWorld.walletPresent = true;
       window.__ibSeedRoles();
+      IB.economyShellUI.show('settings');
       IB.economyConfigurationUI.show('wallet');
       IB.economyConfigurationUI.refresh();
       return true;
@@ -611,7 +626,7 @@ const metricsOf = `(function(){
     section('④ 真实交互：改一个限额 → 保存 → 检查发出去的信封与后续重新读');
 
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
-    await evaluate(`(function(){ document.body.className = ''; window.__ibSeedRoles(); IB.economyConfigurationUI.show('budget'); return true; })()`);
+    await evaluate(`(function(){ document.body.className = ''; window.__ibSeedRoles(); IB.economyShellUI.show('settings'); IB.economyConfigurationUI.show('budget'); return true; })()`);
     await new Promise(r => setTimeout(r, 700));
     const postResult = await evaluate(`(function(){
       window.__ibCalls.posts.length = 0;
@@ -678,7 +693,7 @@ const metricsOf = `(function(){
     /* ══════════════════════════════════════════════════════════════ */
     section('⑤ 自主购买页：那句话与那些控件真的在，没有"完全放权"类按钮');
 
-    await evaluate(`(function(){ window.__ibSeedRoles(); IB.economyConfigurationUI.show('autonomy'); return true; })()`);
+    await evaluate(`(function(){ window.__ibSeedRoles(); IB.economyShellUI.show('settings'); IB.economyConfigurationUI.show('autonomy'); return true; })()`);
     await new Promise(r => setTimeout(r, 600));
     await evaluate(dismissOverlays);
     const auto = await evaluate(metricsOf);
@@ -698,6 +713,7 @@ const metricsOf = `(function(){
       document.body.className = '';
       window.__ibWorld.gate = { implemented: true, open: false, configurationCommandsExposed: [] };
       window.__ibSeedRoles();
+      IB.economyShellUI.show('settings');
       IB.economyConfigurationUI.show('budget');
       IB.economyConfigurationUI.refresh();
       return true;
@@ -716,7 +732,10 @@ const metricsOf = `(function(){
     await evaluate(`(function(){
       window.__ibWorld.gate = { implemented: true, open: true, configurationCommandsExposed: ['BOOTSTRAP_CREDIT','PUT_BUDGET_POLICY','PUT_AUTONOMY_POLICY'] };
       window.__ibSeedRoles();
-      IB.economyConfigurationUI.show('requests');
+      /* ★ P22-17：切到外层页签的「待处理」。它内部就是把 P22-16 的分区切到
+         requests（P22-15 的容器因此可见），同时把 P22-16 的外壳收起 ——
+         于是"这一格是谁的"只有一个状态源，而 ⑦ 断言的结构逐字不变。 */
+      IB.economyShellUI.show('requests');
       return true;
     })()`);
     await new Promise(r => setTimeout(r, 700));

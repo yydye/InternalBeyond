@@ -811,7 +811,32 @@ const GROUPS = [
                      发生过的事：截图是一团雾而所有 DOM 断言全绿）。
                      P22-16 交付时它 86/86 通过，十六张图人工看过。 */
       ['test_p22_16_economy_configuration_ui_core.js'],
-      ['test_p22_16_economy_configuration_ui.js']
+      ['test_p22_16_economy_configuration_ui.js'],
+      /* P22-17 · Economy Store / Wallet / Inventory UI（概览 / 商店 / 我的资产）。
+         ★ 它是 Economy 页面的**外壳**：五个外层页签，其中「待处理」与
+           「设置」分别委托给 P22-15 / P22-16 各自的渲染器（本阶段不复制
+           任何一边的实现，只开合它们的可见性）。
+         ui_core —— 纯层加载进一个**没有 document、没有 fetch、没有 location**
+                      的沙箱，而且**先**加载 P22-16 的纯层（币种 scale /
+                      展示名 / 商品类别 / 角色目录四张镜像表只有一个出处）。
+                      它钉住的是"从五条只读面读回来的 JSON 长成什么样子"：
+                      钱包三态（COLD / DEGRADED 的主数字是 null，不是 0）、
+                      预算摘要不含 decision、目录顺序就是读面顺序、
+                      assetKind 分组、购买状态的人话映射、
+                      以及**确定性视觉身份的签名只有一个位置参数**
+                      （于是 buyerId / 关系 / 亲和度在结构上进不来）。
+         ui      —— 一个只实现渲染器真正用到的成员的 DOM 桩 + 真实网络形状的
+                      假 driver：五个页签 / 默认概览 / 委托两格的开合 /
+                      外壳追加在页尾（P22-15/16 的两个节点位置逐字未变）/
+                      钱包与预算与购买与资产的渲染 / 商品卡上没有购买按钮 /
+                      八个读路径全在既有白名单里 / 两个写方法一次都没被调用 /
+                      正文里没有 canonical 原始代号（只在折叠的技术层）。
+                      ★ 零子进程、零 socket、零浏览器。 */
+      ['test_p22_17_economy_store_ui_core.js'],
+      ['test_p22_17_economy_store_ui.js']
+      /* P22-17 的浏览器视觉核对（test_p22_17_economy_store_visual.js）与
+         P22-15/16 那两条一样**不在**默认套件里（它要开一个真实浏览器）。
+         跑法：node tests/test_p22_17_economy_store_visual.js */
     ]
   },
   {

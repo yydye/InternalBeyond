@@ -1,0 +1,325 @@
+﻿/* ====================================================================
+   IB · Economy Shell（P22-17）
+   --------------------------------------------------------------------
+   这一份样式表描述 Economy 的**门面**：外层页签、钱包、商店、资产。
+   它**不是**一套新的设计系统：每一个颜色、圆角、模糊、阴影、间距都
+   来自既有设计令牌（core.css 的 --glass-* / --radius-* / --surface-* /
+   --border-* / --content-* / --shadow-* / --accent / --status-* / --space-*），
+   与 P22-15 的 .ec-* 和 P22-16 的 .ecfg-* 同一族。
+
+   五件刻意的事：
+     ① 按模块运行时注入（assets/js/economy-shell.js 的 injectStyle），
+        于是 HTML 的样式表预算（20）一个都不占。
+     ② **谁可见**由一个页面级 class 决定（#page-economy.ibecon-tab-*），
+        而**谁在上**由 flex 的 order 决定。为什么需要 order：P22-15 与
+        P22-16 的两个容器必须留在 `#page-economy` 的第 1、2 个位置
+        （P22-16 的视觉断言逐字依赖这一点），因此本层的节点只能追加在
+        它们后面，而页签必须显示在最上面 —— 唯一不改 DOM 顺序的做法
+        就是 flex order。
+     ③ 玻璃层级**最多两层**：卡片一层，内嵌实底一层。刻度、状态、说明块
+        一律用实底，不再叠 backdrop-filter。
+     ④ 商品卡的视觉身份来自 productId 的确定性哈希（data-variant /
+        data-mark / --esh-angle）。它**只**画脸：颜色族、渐变几何、
+        线稿的轻微旋转/缩放。它不进价格、不进排序、不进任何判定。
+     ⑤ 数字一律 `font-variant-numeric: tabular-nums`。额度要能一眼扫读，
+        而"12,450.00"与"9.50"在小数点上对齐比任何装饰都有用。
+     ⑥ 余额**不是**一块霓虹数字：一个中等字号的数字 + 一句它是什么 +
+        它属于谁。没有光晕、没有金币、没有购物车、没有 emoji。
+   ==================================================================== */
+
+/* ── 页面容器与三个兄弟的可见顺序 ───────────────────────────────────
+   ★ order 只在 flex 容器里生效，因此这里必须把页容器的 display 改成
+     flex column。副作用只有一个：三个子节点从"块级自上而下"变成
+     "主轴自上而下"，而它们的 max-width / margin:0 auto 在交叉轴上
+     仍然居中（auto 外边距吸收自由空间，优先于 align-items）。 */
+#page-economy.active{display:flex;flex-direction:column}
+#economy-shell{order:1;max-width:940px;margin:0 auto;width:100%}
+#economy-configuration{order:2}
+#economy-requests{order:2}
+
+/* 只有「设置」那一格看得见 P22-16 的外壳；只有「待处理」看得见 P22-15。
+   ★ P22-16 自己的页签条里第一个是「待处理」—— 那一格现在由外层页签
+     提供，因此在这里把它藏起来，避免同一句话上下各出现一次。
+     这是**展示**层面的收纳：P22-16 的 DOM 一个节点都没动，它的页签
+     仍然四个都在（只是其中一个在设置里不显示）。 */
+#page-economy:not(.ibecon-tab-settings) #economy-configuration{display:none}
+#page-economy.ibecon-tab-settings .ecfg-tab[data-section="requests"]{display:none}
+
+.esh{display:flex;flex-direction:column;gap:var(--space-4)}
+
+/* ── 外层页签 ─────────────────────────────────────────────────────────
+   与 P22-16 的页签同一种语言（一条文字轨 + 一段细轨），因为它们是
+   同一页的两层，而不是两套风格。 */
+.esh-tabs{display:flex;align-items:stretch;gap:2px;flex-wrap:wrap;
+  border-bottom:1px solid var(--border-soft);margin-bottom:var(--space-3)}
+.esh-tab{
+  position:relative;appearance:none;background:none;border:0;cursor:pointer;
+  padding:9px 15px 11px;margin:0;
+  font-family:var(--font-ui);font-size:.86rem;letter-spacing:.03em;
+  color:var(--content-muted);
+  transition:color var(--motion-fast) var(--transition);
+}
+.esh-tab:hover{color:var(--content-secondary)}
+.esh-tab:focus-visible{outline:1px solid var(--accent-light);outline-offset:2px;border-radius:var(--radius-control)}
+.esh-tab.is-active{color:var(--content-primary);font-weight:500}
+.esh-tab-rail{position:absolute;left:13px;right:13px;bottom:-1px;height:2px;border-radius:2px;
+  background:var(--accent);opacity:0;transform:scaleX(.4);
+  transition:opacity var(--motion-normal) var(--transition),transform var(--motion-normal) var(--transition)}
+.esh-tab.is-active .esh-tab-rail{opacity:.9;transform:scaleX(1)}
+
+/* ── 归属条（这是谁的）───────────────────────────────────────────────── */
+.esh-ownerbar{display:flex;align-items:center;justify-content:space-between;gap:var(--space-4);
+  flex-wrap:wrap;padding:10px 14px;border-radius:var(--radius-card);
+  border:1px solid var(--glass-border-soft);background:var(--glass-bg-ambient)}
+.esh-owner-left{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0}
+.esh-owner-label{font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;color:var(--accent-light);opacity:.9}
+.esh-owner-empty{font-size:.84rem;color:var(--content-secondary);margin:0}
+.esh-owner-hint{font-size:.72rem;line-height:1.6;color:var(--content-muted);min-width:0}
+.esh-owner-right{display:flex;align-items:center;gap:var(--space-3);flex:0 0 auto}
+.esh-sync{font-size:.72rem;color:var(--content-muted);font-variant-numeric:tabular-nums}
+.esh-owner-select{
+  appearance:none;-webkit-appearance:none;
+  font-family:var(--font-ui);font-size:.86rem;color:var(--content-primary);
+  padding:6px 30px 6px 12px;border-radius:var(--radius-control);cursor:pointer;
+  border:1px solid var(--border-soft);background:var(--surface-input);
+  background-image:linear-gradient(45deg,transparent 50%,currentColor 50%),linear-gradient(135deg,currentColor 50%,transparent 50%);
+  background-position:calc(100% - 16px) 52%,calc(100% - 11px) 52%;
+  background-size:5px 5px,5px 5px;background-repeat:no-repeat;
+  transition:border-color var(--motion-fast) var(--transition);
+}
+.esh-owner-select:hover{border-color:var(--border-strong)}
+.esh-owner-select:focus-visible{outline:1px solid var(--accent-light);outline-offset:1px}
+.esh-owner-select option{background:var(--glass-bg-modal);color:var(--content-primary)}
+
+/* ── 面板与卡片 ─────────────────────────────────────────────────────── */
+.esh-panes{display:flex;flex-direction:column;gap:var(--space-4)}
+.esh-pane{display:flex;flex-direction:column;gap:var(--space-4)}
+.esh-pane[hidden]{display:none}
+
+.esh-card{
+  display:flex;flex-direction:column;gap:var(--space-3);
+  padding:19px 20px 17px 22px;border-radius:var(--radius-card);
+  border:1px solid var(--glass-border-soft);
+  background:var(--glass-bg-elevated);
+  backdrop-filter:blur(14px) saturate(1.05);
+  -webkit-backdrop-filter:blur(14px) saturate(1.05);
+  box-shadow:var(--shadow-card);
+}
+.esh-card-head{display:flex;align-items:flex-start;gap:10px}
+.esh-mark{display:inline-flex;flex:0 0 auto;margin-top:2px;color:var(--accent-light);opacity:.92}
+.esh-card-titles{min-width:0}
+.esh-card-title{margin:0;font-family:var(--font-ui);font-size:1.02rem;font-weight:500;
+  letter-spacing:.02em;color:var(--content-primary);line-height:1.4}
+.esh-card-sub{margin:3px 0 0;font-size:.74rem;letter-spacing:.05em;color:var(--content-muted)}
+.esh-card-foot{margin:0;font-size:.72rem;color:var(--content-muted)}
+
+/* ── 钱包：一个数字 + 一句它是什么（**不**是霓虹大卡）──────────────── */
+.esh-wallet-figure{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin:2px 0 0}
+.esh-wallet-value{
+  font-family:var(--font-ui);font-size:1.72rem;font-weight:400;line-height:1.15;
+  letter-spacing:.01em;color:var(--content-primary);
+  font-variant-numeric:tabular-nums;
+}
+.esh-unit{font-size:.74rem;letter-spacing:.06em;color:var(--content-muted);white-space:nowrap}
+
+/* ── 数字格子（预算摘要）─────────────────────────────────────────────── */
+.esh-figures{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+  gap:2px var(--space-4);padding:11px 14px;border-radius:var(--radius-control);
+  background:rgba(255,255,255,.16);border:1px solid var(--glass-border-soft)}
+.esh-figure{display:flex;flex-direction:column;gap:3px;min-width:0;padding:5px 0}
+.esh-figure-l{font-size:.72rem;color:var(--content-muted)}
+.esh-figure-v{font-size:.98rem;color:var(--content-primary);font-variant-numeric:tabular-nums}
+.esh-usage{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
+.esh-usage-l{font-size:.74rem;color:var(--content-muted)}
+.esh-usage-v{font-size:.95rem;color:var(--content-secondary);font-variant-numeric:tabular-nums}
+
+/* ── 列表（购买历史 / 资产）──────────────────────────────────────────── */
+.esh-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
+.esh-row{display:flex;align-items:center;justify-content:space-between;gap:var(--space-4);
+  padding:11px 0;border-top:1px solid var(--glass-border-soft)}
+.esh-row:first-child{border-top:0}
+.esh-row-main{display:flex;flex-direction:column;gap:3px;min-width:0}
+.esh-row-name{font-size:.88rem;color:var(--content-primary);overflow-wrap:anywhere}
+.esh-row-meta{display:flex;gap:8px;flex-wrap:wrap}
+.esh-row-sub{font-size:.72rem;color:var(--content-muted);overflow-wrap:anywhere}
+.esh-row-side{display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex:0 0 auto}
+.esh-row-amount,.esh-row-qty{font-size:.88rem;color:var(--content-secondary);font-variant-numeric:tabular-nums}
+
+/* 状态只有一种呈现：一枚安静的字，不是红黄绿三盏灯（§9）。 */
+.esh-status{font-size:.72rem;letter-spacing:.04em;color:var(--content-muted);white-space:nowrap}
+.esh-kind{font-size:.72rem;letter-spacing:.04em;color:var(--content-muted);white-space:nowrap;opacity:.85}
+
+/* ── 商店 ───────────────────────────────────────────────────────────── */
+/* ★ 真实的可用宽度不是 940：既有 `.page` 是 max-width:900px + 左右 32px
+   padding（assets/css/core/memory.css:4），因此三个兄弟容器拿到的都是
+   **836**（开发期在浏览器里量出来的，而不是猜的）。商品/货架网格的最小
+   轨道因此按 836 − 卡片内边距 = 792 来定：792 + 间隙 / 252 = 3 列。 */
+.esh-store-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:var(--space-3)}
+.esh-store{display:flex;flex-direction:column;gap:7px;padding:14px 15px;border-radius:var(--radius-control);
+  border:1px solid var(--glass-border-soft);background:rgba(255,255,255,.14);
+  transition:border-color var(--motion-fast) var(--transition),background-color var(--motion-fast) var(--transition)}
+.esh-store:hover{border-color:var(--glass-border-strong)}
+.esh-store.is-picked{border-color:var(--accent-light)}
+.esh-store-head{display:flex;align-items:baseline;justify-content:space-between;gap:var(--space-3)}
+.esh-store-name{margin:0;font-size:.94rem;font-weight:500;color:var(--content-primary);overflow-wrap:anywhere}
+.esh-store-desc{margin:0;font-size:.78rem;line-height:1.7;color:var(--content-secondary);overflow-wrap:anywhere}
+.esh-store-count{font-size:.72rem;color:var(--content-muted)}
+
+/* ── 商品：确定性视觉身份（§4）────────────────────────────────────────
+   ★ 下面六条 variant 规则与五条 mark 规则**只**改几何与淡淡的色偏，
+     一个价格、一个排序、一个可购性都不在这里。哈希的输入只有
+     productId（见纯层的 visualIdentityOf，签名只有一个位置参数）。 */
+.esh-chips{display:flex;gap:6px;flex-wrap:wrap}
+.esh-chip{appearance:none;cursor:pointer;font-family:var(--font-ui);
+  font-size:.74rem;letter-spacing:.03em;color:var(--content-muted);
+  padding:5px 11px;border-radius:999px;border:1px solid var(--glass-border-soft);
+  background:rgba(255,255,255,.12);
+  transition:color var(--motion-fast) var(--transition),border-color var(--motion-fast) var(--transition)}
+.esh-chip:hover{color:var(--content-secondary);border-color:var(--glass-border-strong)}
+.esh-chip.is-active{color:var(--content-primary);border-color:var(--accent-light)}
+.esh-chip:focus-visible{outline:1px solid var(--accent-light);outline-offset:2px}
+
+.esh-product-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:var(--space-3)}
+.esh-product{display:flex;gap:13px;padding:14px 15px;border-radius:var(--radius-control);
+  border:1px solid var(--glass-border-soft);background:var(--glass-bg-ambient);
+  transition:border-color var(--motion-fast) var(--transition)}
+.esh-product:hover{border-color:var(--glass-border-strong)}
+.esh-product-art{flex:0 0 auto;display:flex;align-items:center;justify-content:center;
+  width:52px;height:52px;border-radius:var(--radius-control);
+  border:1px solid var(--glass-border-soft);color:var(--content-muted);
+  background-color:var(--glass-bg-surface);
+  background-image:linear-gradient(var(--esh-angle,0deg),rgba(114,168,216,.22),rgba(114,168,216,0));
+  overflow:hidden}
+.esh-product-body{display:flex;flex-direction:column;gap:6px;min-width:0;flex:1 1 auto}
+.esh-product-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+.esh-product-name{margin:0;font-size:.9rem;font-weight:500;color:var(--content-primary);overflow-wrap:anywhere}
+.esh-kind-mark{display:inline-flex;flex:0 0 auto;color:var(--content-muted);opacity:.8}
+.esh-product-desc{margin:0;font-size:.76rem;line-height:1.7;color:var(--content-secondary);overflow-wrap:anywhere}
+.esh-product-facts{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.esh-product-price{font-size:.88rem;color:var(--content-primary);font-variant-numeric:tabular-nums}
+.esh-product-unitline{font-size:.72rem;color:var(--content-muted)}
+.esh-product-foot{display:flex;align-items:center;justify-content:space-between;gap:8px}
+
+/* 六种视觉族：几何不同、色偏不同，饱和度都很低 —— 这是"同一货架上
+   不同的东西"，不是"六种颜色的徽章"。 */
+.esh-product[data-variant="0"] .esh-product-art{background-image:linear-gradient(var(--esh-angle,0deg),rgba(114,168,216,.26),rgba(114,168,216,0) 72%)}
+.esh-product[data-variant="1"] .esh-product-art{background-image:radial-gradient(130% 130% at 26% 18%,rgba(126,196,200,.28),rgba(126,196,200,0) 66%)}
+.esh-product[data-variant="2"] .esh-product-art{background-image:linear-gradient(calc(var(--esh-angle,0deg) + 90deg),rgba(150,160,224,.24),rgba(150,160,224,0) 78%)}
+.esh-product[data-variant="3"] .esh-product-art{background-image:radial-gradient(120% 120% at 78% 84%,rgba(176,186,214,.26),rgba(176,186,214,0) 70%)}
+.esh-product[data-variant="4"] .esh-product-art{background-image:linear-gradient(var(--esh-angle,0deg),rgba(140,180,170,.24),rgba(140,180,170,0) 62%)}
+.esh-product[data-variant="5"] .esh-product-art{background-image:radial-gradient(150% 110% at 50% 0%,rgba(160,172,230,.24),rgba(160,172,230,0) 74%)}
+.esh-product[data-mark="1"] .esh-product-art svg{transform:rotate(-8deg)}
+/* ★ 15° 而不是 45°：十字线稿转 45° 会读成一个"关闭 / 错误"的叉 —— 那是
+   这一域最不该出现的字形（同一族纪律：不要把资源页做成状态灯墙）。
+   开发期在真实截图上看出来的，纯 DOM 断言看不见这件事。 */
+.esh-product[data-mark="2"] .esh-product-art svg{transform:rotate(15deg) scale(.96)}
+.esh-product[data-mark="3"] .esh-product-art svg{transform:scale(.9)}
+.esh-product[data-mark="4"] .esh-product-art svg{opacity:.72}
+
+/* ── 资产分组 ───────────────────────────────────────────────────────── */
+.esh-group{display:flex;flex-direction:column;gap:8px;padding:12px 14px;border-radius:var(--radius-control);
+  border:1px solid var(--glass-border-soft);background:rgba(255,255,255,.12)}
+.esh-group-head{display:flex;align-items:center;gap:8px}
+.esh-group-mark{display:inline-flex;color:var(--accent-light);opacity:.9}
+.esh-group-title{margin:0;font-size:.86rem;font-weight:500;letter-spacing:.03em;color:var(--content-primary)}
+
+/* ── 说明 / 空状态 / 技术层 ─────────────────────────────────────────── */
+.esh-note{margin:0;font-size:.76rem;line-height:1.8;color:var(--content-secondary);max-width:56ch}
+.esh-note.is-quiet{color:var(--content-muted);font-size:.73rem}
+.esh-empty{display:flex;flex-direction:column;align-items:center;gap:9px;padding:14px 0 8px;text-align:center}
+.esh-empty-art{color:var(--content-muted);opacity:.55;line-height:0}
+.esh-empty-title{margin:0;font-size:.88rem;color:var(--content-secondary)}
+.esh-empty-body{margin:0;font-size:.74rem;line-height:1.7;color:var(--content-muted);max-width:40ch}
+.esh-technical-box{display:flex;flex-direction:column;gap:6px}
+.esh-technical-toggle{appearance:none;background:none;border:0;cursor:pointer;padding:0;
+  font-family:var(--font-ui);font-size:.71rem;letter-spacing:.06em;color:var(--content-muted);text-align:left}
+.esh-technical-toggle:hover{color:var(--content-secondary)}
+.esh-technical{display:flex;flex-direction:column;gap:4px;padding:9px 11px;border-radius:var(--radius-control);
+  background:rgba(0,0,0,.10);border:1px solid var(--glass-border-soft)}
+.esh-technical[hidden]{display:none}
+.esh-technical-line{margin:0;font-size:.68rem;line-height:1.65;color:var(--content-muted);overflow-wrap:anywhere}
+
+/* ── 按钮：两个就够 —— 一个主按钮，一个文字按钮 ─────────────────────── */
+.esh-actions{display:flex;gap:var(--space-3);flex-wrap:wrap;align-items:center}
+.esh-btn-primary{appearance:none;cursor:pointer;font-family:var(--font-ui);font-size:.82rem;
+  color:var(--content-primary);padding:9px 18px;border-radius:var(--radius-control);
+  border:1px solid var(--glass-border-strong);
+  background:color-mix(in srgb,var(--accent) 16%,rgba(255,255,255,.16));
+  transition:background-color var(--motion-fast) var(--transition)}
+.esh-btn-primary:hover{background:color-mix(in srgb,var(--accent) 24%,rgba(255,255,255,.16))}
+.esh-btn-primary:focus-visible{outline:1px solid var(--accent-light);outline-offset:2px}
+/* ★ 文字按钮**不铺底**：在深色主题里一块 rgba(255,255,255,.12) 的实底
+   会把 muted 的字压成"几乎看不见的浅灰压浅灰"（开发期在真实截图上看出来的）。
+   一条边框 + 一行字就已经是按钮了，而且两套主题都对。 */
+.esh-btn-quiet{appearance:none;cursor:pointer;font-family:var(--font-ui);font-size:.76rem;
+  color:var(--content-secondary);padding:6px 12px;border-radius:var(--radius-control);
+  border:1px solid var(--glass-border-soft);background:none;
+  transition:color var(--motion-fast) var(--transition),border-color var(--motion-fast) var(--transition)}
+.esh-btn-quiet:hover{color:var(--content-primary);border-color:var(--glass-border-strong)}
+.esh-btn-link{appearance:none;cursor:pointer;background:none;border:0;padding:2px 0;
+  font-family:var(--font-ui);font-size:.76rem;color:var(--accent-light);
+  border-bottom:1px solid transparent;align-self:flex-start;
+  transition:border-color var(--motion-fast) var(--transition)}
+.esh-btn-link:hover{border-bottom-color:var(--accent-light)}
+.esh-btn-link:focus-visible{outline:1px solid var(--accent-light);outline-offset:2px}
+
+.esh-skeleton{min-height:96px;justify-content:center}
+
+/* ── 主题：浅色那一支关掉会糊掉小字的白色发光，并给更实的底色 ─────────
+   所有状态色、边框、模糊、阴影继续来自 core.css 的令牌，因此这里没有
+   一条"只在一个主题里正确"的 RGB。 */
+body:not(.theme-infernal) #economy-shell,
+body:not(.theme-infernal) #economy-shell *{text-shadow:none}
+body:not(.theme-infernal) .esh-card{background:var(--surface-panel-strong)}
+body:not(.theme-infernal) .esh-figures,
+body:not(.theme-infernal) .esh-group,
+body:not(.theme-infernal) .esh-store,
+body:not(.theme-infernal) .esh-chip,
+body:not(.theme-infernal) .esh-btn-quiet,
+body:not(.theme-infernal) .esh-ownerbar{background:rgba(255,255,255,.40);border-color:rgba(200,225,248,.45)}
+body:not(.theme-infernal) .esh-owner-select{background-color:rgba(255,255,255,.52);border-color:rgba(170,205,242,.34)}
+body:not(.theme-infernal) .esh-btn-primary{background:color-mix(in srgb,var(--accent) 13%,rgba(255,255,255,.5))}
+body:not(.theme-infernal) .esh-empty-art{color:#5a7ba6}
+body:not(.theme-infernal) .esh-technical{background:rgba(120,160,210,.10)}
+body.theme-infernal .esh-card{background:var(--glass-bg-elevated)}
+body.theme-infernal .esh-empty-art{color:#8fa8c8}
+
+/* ── 响应式：一处 DOM，四个断点 ─────────────────────────────────────── */
+@media (max-width:1024px){
+  .esh-card{padding:17px 18px 15px 19px}
+  .esh-product-grid,.esh-store-grid{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
+}
+@media (max-width:880px){
+  #economy-shell{max-width:none}
+  .esh-ownerbar{gap:var(--space-3)}
+  .esh-owner-hint{flex-basis:100%}
+  .esh-figures{grid-template-columns:1fr 1fr}
+}
+@media (max-width:640px){
+  .esh{gap:var(--space-3)}
+  .esh-tabs{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;-ms-overflow-style:none;padding-bottom:1px}
+  .esh-tabs::-webkit-scrollbar{display:none}
+  .esh-tab{flex:0 0 auto;padding:8px 12px 10px;font-size:.82rem}
+  .esh-tab-rail{left:10px;right:10px}
+  .esh-card{padding:15px 14px 13px 16px;gap:11px;border-radius:var(--radius-card)}
+  .esh-card-title{font-size:.98rem}
+  .esh-wallet-value{font-size:1.5rem}
+  .esh-ownerbar{padding:9px 12px}
+  .esh-owner-select{width:100%}
+  /* ★ 预算是**两列**而不是一列：三档限额各自是"标签 + 数字 + 币种"，
+     单列会把这一张卡拉成三段互不相干的竖排（真实截图上看出来的）。
+     两列在 390px 上仍然放得下"单次最多可花 / 50.00"。 */
+  .esh-figures{grid-template-columns:1fr 1fr;gap:var(--space-2) var(--space-3)}
+  .esh-product-grid,.esh-store-grid{grid-template-columns:1fr}
+  .esh-actions{flex-direction:column-reverse;align-items:stretch}
+  .esh-actions .esh-btn-primary{width:100%;min-height:42px}
+  .esh-row{flex-direction:column;align-items:flex-start;gap:6px}
+  .esh-row-side{flex-direction:row;align-items:baseline;gap:10px}
+}
+@media (max-width:380px){
+  .esh-card-sub,.esh-note,.esh-note.is-quiet{font-size:.7rem}
+  .esh-wallet-value{font-size:1.38rem}
+}
+@media (prefers-reduced-motion:reduce){
+  .esh-tab-rail,.esh-chip,.esh-btn-primary,.esh-btn-quiet,.esh-btn-link,.esh-store,.esh-product{transition:none;animation:none}
+}

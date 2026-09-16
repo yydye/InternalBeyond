@@ -427,6 +427,12 @@ function navTo(page){
      （绝大多数会话不会打开它，因此不制造后台请求）。整块渲染在
      assets/js/economy-approval.js 里，本行只是既有的路由接线。 */
   if(page==='economy'){try{if(window.IB&&IB.economyApprovalUI&&typeof IB.economyApprovalUI.render==='function')IB.economyApprovalUI.render()}catch(e){}}
+  /* P22-17 · Economy 外壳：五个外层页签 + 概览 / 商店 / 我的资产三块。
+     ★ 它必须排在上面两行**之后**：外壳要先把 P22-15 与 P22-16 的两个
+       容器认出来，再决定现在谁可见（它只开合它们的 display，不搬动节点）。
+     ★ 默认页签是「概览」，因此打开这一页看到的是这个角色的额度与资产，
+       而「待处理」「设置」仍然各自由 P22-15 / P22-16 渲染。 */
+  if(page==='economy'){try{if(window.IB&&IB.economyShellUI&&typeof IB.economyShellUI.render==='function')IB.economyShellUI.render()}catch(e){}}
   if(page==='favorites'){if(typeof favOpenPage==='function')favOpenPage()}
   if(page==='coread'){if(typeof loadCoreadPage==='function')loadCoreadPage()}
   if(page==='moments-settings'){_momentsRenderSettings();try{if(typeof window._rlRenderSettings==='function')window._rlRenderSettings()}catch(e){}}
