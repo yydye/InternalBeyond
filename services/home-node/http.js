@@ -790,6 +790,31 @@ function createHomeNodeHttp(deps) {
           approvalIsSingleUse: true,
           autonomyDefaultWhenNoPolicy: 'REQUIRE_APPROVAL',
           autonomyIsADecisionLayer: false,
+          /* ── P22-8：Agent Purchase Intent 层 ─────────────────────────────
+             ★ 这一节回答"HTTP 面**有没有**获得替 Agent 提出购买意图的
+             能力"，而答案必须是**没有**：
+               · intentBridgeImplemented —— 运行时**有**（同进程窄接口
+                 proposeAgentPurchaseIntent / resumeAgentPurchaseIntent）；
+               · intentWritesExposed —— 写路由**没有**（空名单，
+                 `unreachable` 里逐名列出四条写形态）；
+               · proposeViaHttpIsForbidden —— 不存在任何一条"提出意图"的
+                 HTTP 入口。
+             §15 逐字要求本阶段禁止 POST /economy/intent · /economy/buy ·
+             /economy/execute · /economy/approve。
+             ★ 另三句是本阶段三条边界的机器可读形式：Agent 的 reason 不是
+             权限；每一个 intent 都必须过 P22-7 的权威闸门；而
+             AUTO_ALLOW 仍然要过 P22-6 的预算与原子结算。 */
+          intentBridgeImplemented: true,
+          intentWritesExposed: [],
+          proposeViaHttpIsForbidden: true,
+          reasonIsAuthority: false,
+          everyIntentPassesTheAuthorityGate: true,
+          autoAllowStillRequiresBudget: true,
+          approvalPathReservesNothing: true,
+          intentIsAnEconomicFact: false,
+          intentCarriesPrice: false,
+          intentTouchesProvider: false,
+          intentTouchesPayment: false,
           desktopPaths: ['/economy/health', '/economy/wallet', '/economy/ledger',
             '/economy/transaction', '/economy/changes',
             '/economy/reservations', '/economy/reservation',
@@ -810,7 +835,10 @@ function createHomeNodeHttp(deps) {
                落在下面那个兜底分支上（一律 405）。 */
             '/economy/approvals', '/economy/approval',
             '/economy/autonomy-policies', '/economy/autonomy-policy',
-            '/economy/autonomy-evaluation'],
+            '/economy/autonomy-evaluation',
+            /* P22-8：Agent Purchase Intent 读面（一对）。这是本阶段新增的
+               **全部** HTTP 面 —— 两条 GET，零条写路由。 */
+            '/economy/intents', '/economy/intent'],
           /* P22-4：/economy/budget 与 /economy/quote **有**只读路由，
              因此它们不出现在 unreachable 里；而不存在的写路径
              （policy/quote 的 POST·PUT·DELETE、approve、evaluate 的写形态）
@@ -839,7 +867,20 @@ function createHomeNodeHttp(deps) {
             '/economy/product/create', '/economy/product/update',
             '/economy/prepare', '/economy/settle', '/economy/buy',
             '/economy/cancel', '/economy/refund', '/economy/reverse',
-            '/economy/exchange', '/economy/autonomy', '/economy/autonomy-policy']
+            '/economy/exchange', '/economy/autonomy', '/economy/autonomy-policy',
+            /* ★ P22-8 新增的四条写形态，一个都不存在，而且必须被**逐名**
+               断言（boundary 测试的 B 组）：`intent/propose` 与
+               `intent/execute` 是"提出意图"与"执行意图"最自然会被写出来
+               的两个路径名，而它们恰恰是本阶段最不该存在的东西 ——
+               前者会让任何 HTTP 调用方获得 Agent 的购买权，后者会让模型
+               绕过 权威判定 与 预算。`/economy/execute` 是"通用经济动作
+               执行器"的路径名（§14 逐字禁止的那个形状），
+               `/economy/approval/decide` 是"从 HTTP 替用户点头"。
+               它们在这里而不是在别处，因为这份名单的**用途**就是让
+               "声明"与"真实路由"无法分叉。 */
+            '/economy/intent/propose', '/economy/intent/execute',
+            '/economy/intent/resume', '/economy/execute', '/economy/approval/decide',
+            '/economy/intent/create', '/economy/intents/create']
         },
         doesNotExpose: ['llm-proxy', 'tools', 'payments', 'diary', 'letters', 'images', 'tts'],
         /* M1-B：设备身份 + 移动边界。mobile 面**只有** allowlist 里的 verb。 */
@@ -1423,6 +1464,78 @@ function createHomeNodeHttp(deps) {
         consumesApprovals: false,
         exposesMutation: false
       }, req);
+      return;
+    }
+    /* ══════════════════════════════════════════════════════════════════
+       P22-8 · Agent Purchase Intent 读面（两条 GET，**零**条写路由）
+
+       ★ §15 逐字要求本阶段：
+           可以加 GET /economy/intents · GET /economy/intent
+           禁止   POST /economy/intent · /economy/buy · /economy/execute ·
+                  /economy/approve
+       两条 POST 形态落在下面那个兜底分支上，一律 405 economy-is-read-only。
+
+       ★ 本阶段第一次让**模型**有能力影响经济 —— 而 HTTP 上依然一条写路由
+       都没有。这不是保守，而是 §14 那条边界在传输层的落点：
+       `proposeAgentPurchaseIntent` 是同进程的**窄接口**，它的调用方是
+       Decision Bridge（未来的 Decision/Action seam），而不是一个 HTTP 请求。
+       把"提出购买意图"做成一个 HTTP 端点，等于让任何能发请求的东西获得
+       Agent 的购买权 —— 而"谁有权替谁提出意图"这个问题在本阶段同样没有
+       答案（与 P22-7 拒绝 POST /economy/approve 是同一条理由）。
+
+       ★ 读面上四句自述：这个读面不改状态、不创建 intent、不执行任何购买、
+       不消费任何批准。尤其 `reasonIsAuthority: false` —— Agent 给的理由随
+       读面出来，但它在同一个响应里被标明"不是权限"。 */
+    if (path === '/economy/intents' && method === 'GET') {
+      if (!economy) { bad(res, 501, 'economy-not-assembled', null, req); return; }
+      const result = economy.listPurchaseIntents({
+        agentId: url.searchParams.get('agentId') || undefined,
+        productId: url.searchParams.get('productId') || undefined,
+        state: url.searchParams.get('state') || undefined,
+        limit: url.searchParams.get('limit') || undefined
+      });
+      if (!result.ok) { bad(res, 400, result.errors[0] || 'intent-read-failed', null, req); return; }
+      ok(res, {
+        intents: result.intents,
+        count: result.count,
+        /* 三句逐字的自述（与 purchases / approvals 同款）。 */
+        personalized: false,
+        recommended: false,
+        ranked: false,
+        createsIntents: false,
+        executesPurchases: false,
+        consumesApprovals: false,
+        exposesMutation: false
+      }, req);
+      return;
+    }
+    if (path === '/economy/intent' && method === 'GET') {
+      if (!economy) { bad(res, 501, 'economy-not-assembled', null, req); return; }
+      const agentIntentId = url.searchParams.get('agentIntentId');
+      if (!agentIntentId) { bad(res, 400, 'missing-agent-intent-id', null, req); return; }
+      const result = economy.getPurchaseIntent({
+        agentIntentId: agentIntentId,
+        withChain: url.searchParams.get('withChain') === '1'
+      });
+      if (!result.ok) { bad(res, 404, result.errors[0] || 'intent-not-found', null, req); return; }
+      ok(res, Object.assign({
+        /* ── 这个读面**是**什么、**不是**什么（逐句可断言）──────────────
+           · 它是一条编排事实，不是经济事实：钱、库存、账本各自有自己的
+             canonical owner，而这个记录从不承载它们；
+           · 它不是权限：一条 AUTO_ALLOW 的 intent 不蕴含"以后也放行"；
+           · 它不携带价格：价格唯一来自 quote。
+           这三句与 wallet / purchase / approval 上的自述是同一条纪律。 */
+        isAnEconomicFact: false,
+        isAnOrchestrationFact: true,
+        isAnApproval: false,
+        isAPurchase: false,
+        isAQuote: false,
+        grantsAutonomy: false,
+        grantsBudget: false,
+        carriesPrice: false,
+        reasonIsAuthority: false,
+        exposesMutation: false
+      }, result), req);
       return;
     }
     /* 其余 /economy/* 一律 404 —— 尤其 POST 到上面任何一条路径。

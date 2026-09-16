@@ -231,13 +231,19 @@ check('A5 未登记状态 fail closed（不是"未知即允许"）',
   C.assertPurchaseTransition(null, 'COMPLETED').ok === false);
 
 check('A6 ★ Purchase 的身份**不新增 id 种类**：P22-1 冻结的 PURCHASE_INTENT 第一次被用起来'
-  + '（ID_KINDS 在 P22-6 之后是 14；P22-7 之后是 15，多出来的那一种是 APPROVAL，不是购买）',
+  + '（ID_KINDS 在 P22-6 之后是 14；P22-7 之后是 15，多出来的是 APPROVAL；'
+  + 'P22-8 之后是 16，多出来的是 AGENT_INTENT —— 两次都不是购买）',
   C.PURCHASE_ID_KIND === 'PURCHASE_INTENT' &&
   C.PURCHASE_ID_PREFIX === 'econ_intent_' &&
-  C.ID_KINDS.length === 15 &&
+  C.ID_KINDS.length === 16 &&
   C.ID_KINDS.indexOf('PURCHASE_INTENT') >= 0 && C.ID_KINDS.indexOf('APPROVAL') >= 0 &&
+  C.ID_KINDS.indexOf('AGENT_INTENT') >= 0 &&
+  C.ID_PREFIX.AGENT_INTENT !== C.PURCHASE_ID_PREFIX &&
   C.formatPurchaseId('x1').ok === true && C.formatPurchaseId('x1').id === 'econ_intent_x1' &&
-  C.isEconomyId(C.PURCHASE_ID_KIND, 'econ_intent_x1') === true);
+  C.isEconomyId(C.PURCHASE_ID_KIND, 'econ_intent_x1') === true &&
+  /* ★ P22-8 的那一种前缀**不是**一次购买：一笔购买的身份一个字都没变。 */
+  C.isEconomyId(C.PURCHASE_ID_KIND, 'econ_agentintent_x1') === false &&
+  C.isEconomyId('AGENT_INTENT', 'econ_agentintent_x1') === true);
 
 check('A7 ★ purchaseId 不可能与它引用的四件事互换：四个前缀互不相同，形状校验也互相拒绝',
   ['QUOTE', 'RESERVATION', 'TRANSACTION', 'OPERATION'].every(kind => {
@@ -272,12 +278,17 @@ check('A9 三个"它不是"的逐字否认在契约上成立（§1：Purchase �
   C.PURCHASE_SETTLEMENT_MAY_READ_MUTABLE_PRODUCT_FIELDS === false);
 
 check('A10 命名空间是加法：PURCHASE 被登记，而既有 12 个字面值一个都没动'
-  + '（P22-7 又加第 14 个 APPROVAL，同样是纯加法）',
+  + '（P22-7 又加第 14 个 APPROVAL、P22-8 加第 15 个 AGENT_INTENT，同样是纯加法）',
   C.NAMESPACES.PURCHASE === 'ib.economy.purchase' &&
   C.NAMESPACES.WALLET === 'ib.economy.wallet' && C.NAMESPACES.QUOTE === 'ib.economy.quote' &&
   C.NAMESPACES.RESERVATION === 'ib.economy.reservation' && C.NAMESPACES.INVENTORY === 'ib.economy.inventory' &&
   C.NAMESPACES.APPROVAL === 'ib.economy.approval' &&
-  Object.keys(C.NAMESPACES).length === 14);
+  /* ★ P22-8：一次**打算**有它自己的命名空间，而它与 PURCHASE 是两个词 ——
+     一条 intent 可以永远不变成购买（WAITING_APPROVAL / DENIED / EXPIRED），
+     那正是 §8 要求它被当作"编排事实"而不是"经济事实"的理由。 */
+  C.NAMESPACES.AGENT_INTENT === 'ib.economy.agent-intent' &&
+  C.NAMESPACES.AGENT_INTENT !== C.NAMESPACES.PURCHASE &&
+  Object.keys(C.NAMESPACES).length === 15);
 
 check('A11 两个新 scope 与三个新事件都登记，且 P22-1 的十一个事件一个都没丢',
   ['PURCHASE_PREPARE', 'PURCHASE_SETTLE'].every(s => C.isOperationScope(s)) &&

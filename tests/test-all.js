@@ -583,7 +583,36 @@ const GROUPS = [
                           断言绝不出现「批准已 CONSUMED 但没有 Purchase」。 */
       ['test_p22_7_economy_autonomy.js'],
       ['test_p22_7_economy_approval.js'],
-      ['test_p22_7_economy_runtime.js']
+      ['test_p22_7_economy_runtime.js'],
+      /* ── P22-8 · Agent Purchase Intent + Decision Bridge ───────────────
+         第一次允许 Agent（模型）**提出内部购买意图**，而它只能提出"想买
+         什么"，不能提出"多少钱 / 什么币种 / 打几折 / 批没批 / 走哪种结算"。
+         三层各守各的边界：Agent 决定 WANT、P22-7 决定 MAY、P22-6 执行
+         SETTLEMENT，而三者绝不合并。
+            intent    —— 契约与**纯函数**（零数据库）：Intent 的七态状态机
+                         与四条终态、§8 的三条禁令、§4 的经济事实拒绝清单
+                         （含大小写与分隔符变体）、§3 的 reason≠authority、
+                         §10/§11 的意图指纹（不含 reason、不含 expiresAt）、
+                         指纹算法与 store 那一份**逐字相同**、
+                         §5–§7 的裁决表与它的七条判据顺序；
+            bridge    —— store 层的编排：Intent → Product-backed Quote →
+                         P22-7 权威闸门 → 三条出口（AUTO_ALLOW 直通 P22-6 /
+                         REQUIRE_APPROVAL 停在批准 / DENY 终结）、§7 的批准
+                         恢复路径（同一份报价、不问模型第二次、批准不复活
+                         过期报价）、§10 的重复窗口、§11 的跨重启幂等、
+                         §12 Gift 与 §13 Compute quota、§17 的可解释链、
+                         以及"那张表里没有地方可以读价格"的列级断言；
+            runtime   —— **真实 spawn services/home-node-service.js**（schema 7）
+                         + 两条只读路由（GET /economy/intents · /economy/intent）
+                         与六十次写尝试全部 405 + **两个真实子进程**同时提
+                         同一份模型输出（最多一条 Intent、一笔购买、一次
+                         资金动作）与同时恢复同一条 APPROVED Intent（最多
+                         消费一次批准）+ §16 点名的**六个边界**上的真实
+                         process.abort() 崩溃与恢复，断言绝不出现「钱花了但
+                         没有 intent」「假完成」「丢失等待批准状态」。 */
+      ['test_p22_8_economy_intent.js'],
+      ['test_p22_8_economy_decision_bridge.js'],
+      ['test_p22_8_economy_runtime.js']
     ]
   },
   {

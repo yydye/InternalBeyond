@@ -139,8 +139,22 @@ const dbFailure = require('../../runtime/db-failure.js');
      `ALTER TABLE ... ADD COLUMN` 对既有行填 NULL —— 而 NULL 在这里恰好
      是正确的语义：**P22-7 之前写下的购买没有授权模式**，把它猜成
      AUTO_ALLOW 或 APPROVAL 都是伪造历史。integrity check 因此把
-     "旧行的 approval_mode 为 NULL" 认成合法，而"新行没有它"认成问题。 */
-const ECONOMY_SCHEMA_VERSION = 6;
+     "旧行的 approval_mode 为 NULL" 认成合法，而"新行没有它"认成问题。
+
+     ★ 6 → 7（P22-8）又回到了**空**的迁移，而这不是退步：
+     新增的只有一张表（economy_purchase_intents），没有任何既有列需要
+     改写 —— 因为"一次打算买什么"在 P22-8 之前**根本不存在**：它不是
+     既有行上的新事实，而是一个全新的实体。这与 5 → 6 恰好相反，而两者
+     的差别正是这条纪律的判据：**新实体 → 空迁移 + 补表；既有实体上的
+     新事实 → 非空迁移 + ALTER**。
+     为什么这条差别值得写下来：一次"顺手也 ALTER 一下 purchases"的迁移
+     会把 intent 的 id 塞进 purchase 行，而 purchase 行只该描述**已经
+     预留了资金**的那件事（intent_id 留在 intent 那一侧，见下面的 DDL）。
+
+     ★ 水位仍然要抬到 7，因为一个 P22-7 的 build 打开 P22-8 的库时**必须
+     拒绝**：它看不到 economy_purchase_intents，于是会理直气壮地认为
+     "这个经济里没有任何待批准的打算" —— 那个误读比打不开严重得多。 */
+const ECONOMY_SCHEMA_VERSION = 7;
 const DEFAULT_DB_FILENAME = 'home-node.db';
 
 const META_TABLE = 'economy_meta';
@@ -223,6 +237,30 @@ const PURCHASES_TABLE = 'economy_purchases';
    不给它留 —— "Agent 觉得可以买"在这两张表上无处可写。 */
 const AUTONOMY_POLICIES_TABLE = 'economy_autonomy_policies';
 const APPROVALS_TABLE = 'economy_approvals';
+
+/* ── P22-8 · Agent Purchase Intent（一次**打算**买什么）───────────────
+   一张表，而且它刻意**不是** economy_purchases。
+
+   ★ 为什么必须是两张表（这是本阶段最重要的一次切分）：
+     · economy_purchases 的每一行都意味着一笔**已经预留了资金**的购买
+       （P22-6：它的唯一入口状态是 RESERVED）。把"打算"写进去，就必须
+       给 purchase 加一个"还没有预留"的状态 —— 而 P22-6 逐字拒绝过
+       CREATED 状态，理由正是"尚未结算"与"还没有购买"会互相伪装。
+     · 一条 Intent 可以**永远**不变成购买（WAITING_APPROVAL / DENIED /
+       EXPIRED），可以在没有任何资金动作的情况下存在。它是**编排事实**，
+       不是经济事实（§8）。编排事实与经济事实各有一张表，各自的
+       canonical owner 才成立。
+
+   刻意**没有**的列：amount_minor / currency / price / grant_quantity /
+   settlement_type / wallet_id / reservation_id / transaction_id ——
+   经济值一个都不在这里。价格事实唯一的家是 quotes（P22-4 冻结），
+   而这正是 §4"Agent 不得提供经济事实"在**表结构**上的那一半：
+   即使有人想从这条记录读价格，也读不到。
+
+   唯一的例外是 `units`：它是**选择**而不是事实（"两杯咖啡"），
+   而 P22-6 的 preparePurchase 也要求调用方说出 units，因此它必须被
+   记下来，否则恢复路径无法用同一个数量重建同一次请求。 */
+const PURCHASE_INTENTS_TABLE = 'economy_purchase_intents';
 
 /* meta 的键。**独立命名空间**：全部带 economy_ 前缀，且存在
    economy_meta 表里（不是共用的 meta 表），因此任何其它 store 都不可能
@@ -1360,7 +1398,153 @@ function createEconomyStore(deps) {
        "SET 了哪些列"可以被机器断言，而"只能从 APPROVED 走到这里"仍然由
        WHERE 逐字保证。绑定的是 C.APPROVAL_STATE.CONSUMED。 */
     setApprovalConsumed:
-      'UPDATE ' + APPROVALS_TABLE + ' SET status=?, consumed_by_purchase_id=?, consume_reason=?, revision=?, updated_at=?, consumed_at=? WHERE approval_id=? AND status=?'
+      'UPDATE ' + APPROVALS_TABLE + ' SET status=?, consumed_by_purchase_id=?, consume_reason=?, revision=?, updated_at=?, consumed_at=? WHERE approval_id=? AND status=?',
+
+    /* ══════════════════════════════════════════════════════════════════
+       P22-8 §3–§14 · economy_purchase_intents（一次**打算**买什么）
+       ══════════════════════════════════════════════════════════════════
+       ★ 这张表里**没有**任何经济值列：没有 amount_minor、没有 currency、
+       没有 price、没有 grant_quantity、没有 settlement_type、没有
+       reservation_id、没有 transaction_id。这不是"我们记得不去读"，
+       而是"没有地方可以读" —— §4 的那句话因此是**结构性**的。
+       唯一的数量列是 units，而它是一个**选择**（"两杯咖啡"）而不是一个
+       事实，且 P22-6 的 preparePurchase 也要求调用方说出 units。 */
+    createPurchaseIntents:
+      'CREATE TABLE IF NOT EXISTS ' + PURCHASE_INTENTS_TABLE + ' (' +
+      ' agent_intent_id TEXT PRIMARY KEY,' +
+      ' agent_id TEXT NOT NULL,' +
+      ' agent_type TEXT NOT NULL,' +
+      ' product_id TEXT NOT NULL,' +
+      ' recipient_id TEXT,' +
+      ' recipient_type TEXT,' +
+      ' self_directed INTEGER NOT NULL CHECK (self_directed IN (0,1)),' +
+      ' units INTEGER NOT NULL CHECK (units >= 1),' +
+      ' store_id TEXT,' +
+      ' quote_id TEXT,' +
+      ' approval_id TEXT,' +
+      ' purchase_id TEXT,' +
+      ' state TEXT NOT NULL CHECK (state IN (\'PROPOSED\',\'WAITING_APPROVAL\',\'EXECUTING\',\'COMPLETED\',\'DENIED\',\'EXPIRED\',\'FAILED\')),' +
+      ' authority_outcome TEXT CHECK (authority_outcome IS NULL OR authority_outcome IN (\'AUTO_ALLOW\',\'REQUIRE_APPROVAL\',\'DENY\')),' +
+      ' authority_reason_code TEXT,' +
+      ' reason_code TEXT,' +
+      ' reason TEXT,' +
+      ' intent_fingerprint TEXT NOT NULL,' +
+      ' idempotency_key TEXT NOT NULL,' +
+      ' fingerprint TEXT NOT NULL,' +
+      ' revision INTEGER NOT NULL,' +
+      ' created_at INTEGER NOT NULL,' +
+      ' updated_at INTEGER NOT NULL,' +
+      ' expires_at INTEGER NOT NULL,' +
+      ' completed_at INTEGER,' +
+      /* ── 三条结构约束，逐条对应一条纪律 ─────────────────────────────
+       ① A 与 B 与 C 是**三件**事，因此三个各自为空/非空的判据都必须
+          与状态一致：
+            · self_directed 必须与 recipient_id 是否为空一致 —— 否则
+              "这份礼物送给了谁"会因为读哪一个字段而有两个答案；
+            · COMPLETED 必须有 purchase_id 与 completed_at —— 一条声称
+              完成的 intent 指不出它买成了哪一笔，那是"假完成"；
+            · quote_id 在四个"代码后面还会用这份报价"的状态上必须存在。
+              PROPOSED 刻意**不**在这里：它是"刚被收下、报价可能还没
+              生成完"的状态，而崩溃模拟恰恰要在那个缝上发生（§16）。
+              把 PROPOSED 也要求 quote_id 会让"Intent created"与
+              "Quote created"之间的那次崩溃变成**不可表示**的状态，
+              于是恢复路径就只能靠猜。 */
+      ' CHECK ((recipient_id IS NULL) = (self_directed = 1)),' +
+      ' CHECK (state <> \'COMPLETED\' OR (purchase_id IS NOT NULL AND completed_at IS NOT NULL)),' +
+      ' CHECK (state NOT IN (\'WAITING_APPROVAL\',\'EXECUTING\',\'COMPLETED\') OR quote_id IS NOT NULL),' +
+      /* ② WAITING_APPROVAL 必须指得出那条待批准的记录 —— 否则"在等谁
+          点头"没有答案。
+          ★ 反过来**不**成立，而它一度写成"当且仅当"：开发期实测证明那是
+          错的 —— 用户点头之后那条 intent 走到 EXECUTING / COMPLETED，而
+          它**仍然**指着那张批准（那正是 §17 第五问"最后是谁批准的"要读的
+          东西）。迁移时清空 approval_id 会让审计失去这个答案，留着它又
+          违反"当且仅当"。正确的规则是**不对称**的：等待态**必须**有批准；
+          其它状态**可以**有（它们只是不再需要它）。
+          ★ 这里同样刻意**没有**"PROPOSED 时两个引用必须同时为空"的约束：
+          PROPOSED 加上一个已挂好的 quote_id、而 approval_id 仍为空，是一个
+          真实存在的状态（"报价已建、权威还没判"），而那正是 §16 要求可被
+          崩溃打断的第二个边界。一条把真实状态判成非法的约束比没有约束更
+          糟：它会在**写锁里**抛一次 SQLite 错误，而那个错误既不是业务拒绝，
+          也无法被恢复路径理解。 */
+      ' CHECK (state <> \'WAITING_APPROVAL\' OR approval_id IS NOT NULL)' +
+      ')',
+    /* ★ §10/§11 的重复抑制闸门。索引建在 intent_fingerprint 与 created_at
+       上，于是"同一个 Agent 在窗口内对同一个商品 + 同一个 recipient 说过
+       没有"是一次索引查找，而不是全表扫描。
+       ★ 刻意**不是** UNIQUE：一条 COMPLETED 的 intent 之后允许出现一条新
+       的同指纹 intent（用户明天还想买同一件东西），而 UNIQUE 会让"重复
+       抑制"退化成"永久禁止"。窗口是时间语义，因此由 WHERE 表达。 */
+    createPurchaseIntentsByFingerprint:
+      'CREATE INDEX IF NOT EXISTS idx_econ_intents_fingerprint ON ' + PURCHASE_INTENTS_TABLE + ' (intent_fingerprint, created_at)',
+    createPurchaseIntentsByAgent:
+      'CREATE INDEX IF NOT EXISTS idx_econ_intents_agent ON ' + PURCHASE_INTENTS_TABLE + ' (agent_id, state, created_at)',
+    createPurchaseIntentsByState:
+      'CREATE INDEX IF NOT EXISTS idx_econ_intents_state ON ' + PURCHASE_INTENTS_TABLE + ' (state, expires_at)',
+    createPurchaseIntentsByQuote:
+      'CREATE INDEX IF NOT EXISTS idx_econ_intents_quote ON ' + PURCHASE_INTENTS_TABLE + ' (quote_id)',
+    createPurchaseIntentsByApproval:
+      'CREATE INDEX IF NOT EXISTS idx_econ_intents_approval ON ' + PURCHASE_INTENTS_TABLE + ' (approval_id)',
+    /* ★ 这一条是"一条 intent 最多变成一笔 purchase"的结构性一半
+       （另一半是 store 里的乐观闸门 —— 与 approvals 的
+       idx_econ_approvals_consumed_by 逐字同款）。NULL 不参与唯一性，
+       因此所有还没买成的 intent 可以有很多条。 */
+    createPurchaseIntentsByPurchase:
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_econ_intents_purchase ON ' + PURCHASE_INTENTS_TABLE + ' (purchase_id)',
+    insertPurchaseIntent:
+      'INSERT INTO ' + PURCHASE_INTENTS_TABLE + ' (agent_intent_id, agent_id, agent_type, product_id, recipient_id, recipient_type, self_directed, units, store_id, quote_id, approval_id, purchase_id, state, authority_outcome, authority_reason_code, reason_code, reason, intent_fingerprint, idempotency_key, fingerprint, revision, created_at, updated_at, expires_at, completed_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    selectPurchaseIntent: 'SELECT * FROM ' + PURCHASE_INTENTS_TABLE + ' WHERE agent_intent_id=?',
+    selectPurchaseIntentsAll: 'SELECT * FROM ' + PURCHASE_INTENTS_TABLE + ' ORDER BY created_at ASC, agent_intent_id ASC',
+    selectPurchaseIntentsFiltered:
+      'SELECT * FROM ' + PURCHASE_INTENTS_TABLE + ' WHERE' +
+      ' (? IS NULL OR agent_id = ?)' +
+      ' AND (? IS NULL OR product_id = ?)' +
+      ' AND (? IS NULL OR state = ?)' +
+      ' ORDER BY created_at ASC, agent_intent_id ASC LIMIT ?',
+    selectPurchaseIntentIdempotency:
+      'SELECT * FROM ' + PURCHASE_INTENTS_TABLE + ' WHERE idempotency_key=? AND fingerprint=?',
+    selectPurchaseIntentByIdempotencyKey:
+      'SELECT * FROM ' + PURCHASE_INTENTS_TABLE + ' WHERE idempotency_key=? LIMIT 1',
+    /* §10 的重复窗口查询：**同指纹、在窗口内、且是"还活着或刚买成"的那些**。
+       ★ 为什么把 COMPLETED 也算进"要抑制的"：模型复读二十次时，第一次
+       可能**已经买成了** —— 那时正确的行为恰恰是"不要再买"，而不是
+       "既然上一个完成了，那再来一个"。反过来 DENIED / EXPIRED / FAILED
+       不抑制：那三条是"上一次没成"，而"没成"必须允许再试（否则一次
+       暂时缺货就永久禁止了这件商品）。 */
+    selectSuppressingIntents:
+      'SELECT * FROM ' + PURCHASE_INTENTS_TABLE +
+      ' WHERE intent_fingerprint=? AND created_at > ?' +
+      ' AND state IN (\'PROPOSED\',\'WAITING_APPROVAL\',\'EXECUTING\',\'COMPLETED\')' +
+      ' ORDER BY created_at ASC, agent_intent_id ASC',
+    /* 三条状态推进语句，各自带一个**乐观并发闸门**（`AND state=?`）。
+       与 purchases / approvals 的同款纪律：两个进程同时推进同一条
+       intent 时，必然有一个 changes=0 —— 于是"只能一个成功"不是靠时间
+       窗口，而是靠 SQL。
+       ★ SET 里刻意没有 product / recipient / units / quote /
+       intent_fingerprint：一条 intent 的**内容**写下之后不可变，能变的
+       只有它的结局与它引用的那些 id。 */
+    setPurchaseIntentState:
+      'UPDATE ' + PURCHASE_INTENTS_TABLE + ' SET state=?, quote_id=?, approval_id=?, purchase_id=?, authority_outcome=?, authority_reason_code=?, reason_code=?, completed_at=?, revision=?, updated_at=? WHERE agent_intent_id=? AND state=?',
+    /* ★ 挂报价与挂购买各自有一条语句，而且它们**不是**状态迁移。
+          理由：一条 intent 的报价是**同一次打算的一部分**，把它写下来不改变
+          "这次打算走到哪一步"。把它们压进 setPurchaseIntentState 会要求状态
+          机里存在 PROPOSED → PROPOSED 这样的自环，而自环会让"静默重入同一
+          状态"变成合法 —— §8 那张表刻意一个自环都没有（每一个状态迁移都
+          意味着**真的动了**）。
+          两张语句各自带 `AND state=?` 前置条件，于是"挂报价时这条 intent
+          已经不在 PROPOSED 了"（另一个进程推进过它）会返回 changes=0。 */
+    attachPurchaseIntentQuote:
+      'UPDATE ' + PURCHASE_INTENTS_TABLE + ' SET quote_id=?, revision=?, updated_at=? WHERE agent_intent_id=? AND state=? AND quote_id IS NULL',
+    attachPurchaseIntentPurchase:
+      'UPDATE ' + PURCHASE_INTENTS_TABLE + ' SET purchase_id=?, revision=?, updated_at=? WHERE agent_intent_id=? AND state=? AND purchase_id IS NULL',
+    /* ── 为什么是**一条**万能推进语句而不是七条（每个迁移一条）：七条会让
+       "SET 了哪些列"随迁移不同而不同，于是"某次迁移顺手改了 quote_id"
+       就再也无法被断言。一条语句 + 每次都显式传全所有列，意味着"这次
+       迁移允许改哪些列"是一个**常量**，而每个调用点只决定**值**。
+       代价是调用方必须把不变的列原样传回来 —— 那是可见的，因此比隐含的
+       更安全。 */
+    countPurchaseIntents: 'SELECT COUNT(*) AS c FROM ' + PURCHASE_INTENTS_TABLE,
+    countPurchaseIntentsByState: 'SELECT COUNT(*) AS c FROM ' + PURCHASE_INTENTS_TABLE + ' WHERE state=?'
   };
 
   /* ══════════════════════════════════════════════════════════════════
@@ -1467,6 +1651,17 @@ function createEconomyStore(deps) {
       db.exec(SQL.createApprovalsByBuyer);
       db.exec(SQL.createApprovalsByQuote);
       db.exec(SQL.createApprovalsByStatus);
+      /* P22-8 的一张表（schema 6 → 7）。6 → 7 的 MIGRATIONS 是**空**的：
+         新实体只需要补表，没有任何既有列需要改写（见文件头的说明）。
+         与前面四代一样，这几句排在 migrateSchema() **之后** ——
+         SCHEMA_TOO_NEW 的库上不许悄悄多出空表。 */
+      db.exec(SQL.createPurchaseIntents);
+      db.exec(SQL.createPurchaseIntentsByFingerprint);
+      db.exec(SQL.createPurchaseIntentsByAgent);
+      db.exec(SQL.createPurchaseIntentsByState);
+      db.exec(SQL.createPurchaseIntentsByQuote);
+      db.exec(SQL.createPurchaseIntentsByApproval);
+      db.exec(SQL.createPurchaseIntentsByPurchase);
     } catch (error) {
       try { if (db) db.close(); } catch (_) { /* 已关闭 */ }
       db = null;
@@ -1605,7 +1800,22 @@ function createEconomyStore(deps) {
           handle.exec('ALTER TABLE ' + PURCHASES_TABLE + ' ADD COLUMN ' + entry[0] + ' ' + entry[1]);
         }
       }
-    }
+    },
+    /* ── 6 → 7（P22-8）：空的，而且是**刻意**空的 ──────────────────────
+       这是本文件里第二条空迁移，而它与第一条（5 → 6 那条非空的）合起来
+       才构成完整的判据：
+
+         新实体      → 空迁移 + CREATE TABLE IF NOT EXISTS 补表
+         既有实体上的新事实 → 非空迁移 + ALTER TABLE（且列可空、不回填）
+
+       P22-8 的 economy_purchase_intents 是前者：它是一张全新的表，没有任何
+       既有行需要改写。★ 唯一**可能**让人想在这里 ALTER 的是 purchases
+       （"这笔购买来自哪条 intent"），而那恰恰是错的：那条事实属于 intent
+       那一侧（intents.purchase_id），因为 intent 才是可选的那一半 ——
+       一笔 P22-6 的购买完全可以没有任何 intent（它由代码直接发起），
+       往 purchases 上加一列会让那些行留下一个永远为 NULL 的、看起来像
+       "缺失数据"的列，而它其实是"本来就没有"。 */
+    { from: 6, to: 7, apply: function () { /* 新表，无既有行需要改写 */ } }
   ];
 
   function migrateSchema() {
@@ -10781,6 +10991,2260 @@ function createEconomyStore(deps) {
   }
 
   /* ══════════════════════════════════════════════════════════════════
+     P22-8 §3–§14 · Agent Purchase Intent（Decision Bridge 的 canonical 一半）
+
+     这一块是"模型说出它想买什么"与"canonical Economy 决定能不能买"之间
+     的**唯一**接缝，而它的形状是被 §14 钉死的：
+
+       窄接口 proposeAgentPurchaseIntent(proposal)  →  确定性 runtime 接管
+
+     ★ 为什么这里**没有** executeEconomyAction(modelOutput) 这种东西：
+     一个"让模型指定 method"的通用入口会把下面整块变成一句"模型可以调用
+     settlePurchase"。本块的公开面只有三个动词（propose / resume /
+     读），而它们各自接受的字段是**封闭白名单**。
+
+     ★ 三层各守各的边界，逐字对应 §1 的三句话：
+         Agent decides WANT   → proposeAgentPurchaseIntent（本块）
+         Economy decides MAY  → evaluateAutonomousPurchaseFor（P22-7）
+         Runtime executes     → preparePurchase / settlePurchase（P22-6）
+
+     ★ 本块**从不**自己扣钱、发资产、写 ledger。它只调用 P22-6 的两个
+     canonical 入口，而那两个入口自己带事务、预算复核、幂等与原子结算。
+     ══════════════════════════════════════════════════════════════════ */
+
+  /* ── 读面（§17）──────────────────────────────────────────────────────
+     `reasonIsAuthority: false` 与 reason 并列出现是刻意的：一个读到
+     agent 理由的消费者，**同时**读到"它不是权限"。 */
+  function rowToPurchaseIntent(row) {
+    const state = String(row.state);
+    return {
+      domain: C.DOMAIN,
+      namespace: C.NAMESPACES.AGENT_INTENT,
+      agentIntentId: String(row.agent_intent_id),
+      state: state,
+      terminal: C.isPurchaseIntentTerminalState(state),
+      /* §8：这一句在每一个读面上都在。 */
+      stateIsAnOrchestrationFact: true,
+      stateIsNotAnEconomicFact: true,
+
+      agentId: String(row.agent_id),
+      agentType: String(row.agent_type),
+      agentRef: Object.freeze({ type: String(row.agent_type), id: String(row.agent_id) }),
+      productId: String(row.product_id),
+      recipientId: row.recipient_id == null ? null : String(row.recipient_id),
+      recipientType: row.recipient_id == null ? null : String(row.recipient_type),
+      recipientRef: row.recipient_id == null ? null
+        : Object.freeze({ type: String(row.recipient_type), id: String(row.recipient_id) }),
+      selfDirected: Number(row.self_directed) === 1,
+      units: Number(row.units),
+      storeId: row.store_id == null ? null : String(row.store_id),
+
+      quoteId: row.quote_id == null ? null : String(row.quote_id),
+      approvalId: row.approval_id == null ? null : String(row.approval_id),
+      purchaseId: row.purchase_id == null ? null : String(row.purchase_id),
+
+      authorityOutcome: row.authority_outcome == null ? null : String(row.authority_outcome),
+      authorityReasonCode: row.authority_reason_code == null ? null : String(row.authority_reason_code),
+      reasonCode: row.reason_code == null ? null : String(row.reason_code),
+
+      /* ── §3：reason 是**解释文本**，它在这一行里被逐字标明身份 ──────── */
+      reason: row.reason == null ? null : String(row.reason),
+      reasonIsAuthority: false,
+      reasonIsTelemetry: true,
+      reasonParticipatesInDecisions: false,
+
+      intentFingerprint: String(row.intent_fingerprint),
+      idempotencyKey: String(row.idempotency_key),
+      fingerprint: String(row.fingerprint),
+      revision: Number(row.revision),
+      createdAt: Number(row.created_at),
+      updatedAt: Number(row.updated_at),
+      expiresAt: Number(row.expires_at),
+      expiredByTime: !C.isPurchaseIntentTerminalState(state) && Number(row.expires_at) <= clock(),
+      completedAt: row.completed_at == null ? null : Number(row.completed_at)
+    };
+  }
+
+  function serializePurchaseIntent(view) {
+    const out = {};
+    for (const k of C.PURCHASE_INTENT_SUMMARY_KEYS) {
+      if (Object.prototype.hasOwnProperty.call(view, k)) out[k] = view[k];
+    }
+    return out;
+  }
+
+  /* ── 参与者归一化（与 P22-6 的 partyInput 同一条纪律）────────────────
+     ★ 契约层校验**语法**（非空、无冒号、有界），store 校验**语义**
+     （这个 id 是一个用户还是角色）。两层都要：只有语法会让 'nobody'
+     变成一笔"给不存在的角色"的礼物；只有语义会让一个带注入字符的 id
+     被当成角色名。 */
+  function intentPartyOf(value, label) {
+    const shape = C.normalizeIntentPartyId(value);
+    if (!shape.ok) return { ok: false, party: null, errors: shape.errors.map(e => (label || 'party') + ':' + e) };
+    const ref = partyInput(shape.id);
+    if (!ref || ref.ok !== true) {
+      return { ok: false, party: null, errors: (ref && ref.errors) || [(label || 'party') + ':invalid'] };
+    }
+    if (ref.party.type === C.PARTY_TYPE.SYSTEM) {
+      return { ok: false, party: null, errors: [(label || 'party') + ':system-party-is-not-an-agent'] };
+    }
+    return { ok: true, party: ref.party, errors: [] };
+  }
+
+  /* ── §3：canonical 提议的**唯一**规范化出口 ──────────────────────────
+     契约的 normalizePurchaseIntentProposal 只做形状；这里补上 store 才知道
+     的事：这个 agent 在不在、这个商品在不在。 */
+
+  /* ── 状态推进的唯一出口 ──────────────────────────────────────────────
+     两个闸门叠在一起，而它们拦的是**不同**的东西：
+       · C.assertPurchaseIntentTransition —— "这条迁移在状态机里存在吗"
+         （§8 的三条禁令在这里被执行）；
+       · SQL 的 `AND state=?` —— "我读到的那个状态现在还是那个状态吗"
+         （两个进程同时推进时的乐观并发闸门）。
+
+     ★ 为什么两者都要：第一条是**规则**，第二条是**并发**。只有规则会让
+     两个进程都通过检查、然后都写；只有并发会让一条 COMPLETED 的 intent
+     被推进到 EXECUTING（因为 UPDATE 的谓词恰好匹配）。
+     与 approvals / purchases 的 setXxx 同款，而这里多一层 assert 是因为
+     intent 的合法迁移比那两者更"分叉"（PROPOSED 有五个出口）。 */
+  function transitionPurchaseIntent(intentId, fromState, toState, columns) {
+    const cols = columns || {};
+    const from = String(fromState);
+    const to = String(toState);
+    const allowed = C.assertPurchaseIntentTransition(from, to);
+    if (allowed.allowed !== true) {
+      return { ok: false, reasonCode: C.DENY_REASON.INTENT_NOT_EXECUTABLE, transition: allowed };
+    }
+    const row = db.prepare(SQL.selectPurchaseIntent).get(String(intentId));
+    if (!row) return { ok: false, reasonCode: null, errors: ['intent-not-found'] };
+    if (String(row.state) !== from) {
+      /* 另一个进程先动了。返回它**当前**的状态，于是调用方不需要再查一次。 */
+      return {
+        ok: false,
+        reasonCode: C.DENY_REASON.INTENT_NOT_EXECUTABLE,
+        concurrent: true,
+        currentState: String(row.state),
+        errors: ['intent-state-changed-under-the-transition']
+      };
+    }
+    const rev = allocateRevision();
+    const at = clock();
+    const info = db.prepare(SQL.setPurchaseIntentState).run(
+      to,
+      cols.quoteId === undefined ? row.quote_id : (cols.quoteId == null ? null : String(cols.quoteId)),
+      cols.approvalId === undefined ? row.approval_id : (cols.approvalId == null ? null : String(cols.approvalId)),
+      cols.purchaseId === undefined ? row.purchase_id : (cols.purchaseId == null ? null : String(cols.purchaseId)),
+      cols.authorityOutcome === undefined
+        ? row.authority_outcome : (cols.authorityOutcome == null ? null : String(cols.authorityOutcome)),
+      cols.authorityReasonCode === undefined
+        ? row.authority_reason_code : (cols.authorityReasonCode == null ? null : String(cols.authorityReasonCode)),
+      cols.reasonCode === undefined ? row.reason_code : (cols.reasonCode == null ? null : String(cols.reasonCode)),
+      cols.completedAt === undefined ? row.completed_at : (cols.completedAt == null ? null : Number(cols.completedAt)),
+      Number(rev), Number(at),
+      String(intentId), from
+    );
+    if (Number(info.changes) !== 1) {
+      return {
+        ok: false,
+        reasonCode: C.DENY_REASON.INTENT_NOT_EXECUTABLE,
+        concurrent: true,
+        errors: ['intent-state-changed-under-the-transition']
+      };
+    }
+    return { ok: true, revision: Number(rev), at: Number(at), from: from, to: to };
+  }
+
+  /* 一条 intent 的每一次结局都写一行 change log。它**不是**经济事件：
+     ledgerMutation / inventoryMutation 全 false —— Intent 自己从不动钱。 */
+  function appendIntentChange(intent, eventType, payload) {
+    const rev = allocateRevision();
+    appendChange({
+      revision: Number(rev),
+      kind: eventType,
+      entityId: String(intent.agentIntentId),
+      transactionId: intent.purchaseId == null ? null : String(intent.purchaseId),
+      walletId: null,
+      at: Number(clock()),
+      payload: Object.assign({
+        domain: C.DOMAIN,
+        agentIntentId: String(intent.agentIntentId),
+        agentId: String(intent.agentId),
+        agentType: String(intent.agentType),
+        productId: String(intent.productId),
+        recipientId: intent.recipientId,
+        quoteId: intent.quoteId,
+        approvalId: intent.approvalId,
+        purchaseId: intent.purchaseId,
+        ledgerMutation: false,
+        inventoryMutation: false,
+        providerMutation: false,
+        paymentMutation: false,
+        memoryMutation: false,
+        relationshipMutation: false
+      }, payload || {})
+    });
+    return Number(rev);
+  }
+
+  /* ── §10 的重复抑制查询 ───────────────────────────────────────────── */
+  function suppressingIntentFor(intentFingerprint, at) {
+    const since = Number(at) - C.PURCHASE_INTENT_DEDUPE_WINDOW_MS;
+    const rows = db.prepare(SQL.selectSuppressingIntents).all(String(intentFingerprint), since);
+    return rows.length ? rows[0] : null;
+  }
+
+  /* ── §11 幂等读：找一个 (key, fingerprint) 的既有 intent ──────────── */
+  function intentByIdempotencyKey(key, fingerprint) {
+    const row = db.prepare(SQL.selectPurchaseIntentIdempotency).get(String(key), String(fingerprint));
+    if (row) return { found: true, conflict: false, row: row };
+    const any = db.prepare(SQL.selectPurchaseIntentByIdempotencyKey).get(String(key));
+    if (any) {
+      return {
+        found: true, conflict: true, row: any,
+        storedFingerprint: String(any.fingerprint),
+        presentedFingerprint: String(fingerprint)
+      };
+    }
+    return { found: false, conflict: false, row: null };
+  }
+
+  const EXECUTABLE_INTENT_STATES = Object.freeze([
+    C.PURCHASE_INTENT_STATE.PROPOSED,
+    C.PURCHASE_INTENT_STATE.WAITING_APPROVAL
+  ]);
+
+  /* ── ★★ 执行权的**唯一**闸门（多进程实测逼出来的设计）────────────────
+     两个真实进程同时提同一份提议（模型复读的形态）时，两者都会认为
+     "这条 intent 可以执行"。若两者都去执行，它们会各自 prepare 同一份
+     报价（P22-6 的幂等闸门会给出**同一笔**购买 —— 那是幂等性在起作用，
+     不是缺陷），而随后两条路径会各自把 purchase 挂到同一条 intent 上、
+     各自尝试结算 —— 症状是"赢家报 COMPLETED，输家报 QUOTE_MISMATCH"，
+     也就是**两个进程读到两个世界**。
+
+     修法不是在各个闸门上打补丁，而是让"能不能执行"这个问题只有**一个**
+     答案、而且只能有**一个**赢家：
+
+       把 state 从 {PROPOSED, WAITING_APPROVAL} 原子地推到 EXECUTING。
+       一条 `UPDATE ... WHERE agent_intent_id=? AND state=?` 恰好只有一个
+       进程能拿到 changes=1 —— 而**state 本身就是执行权的令牌**。
+       拿到的人执行；没拿到的人不再尝试，而是等赢家写下结局
+       （见 waitForIntentEndpoint）。
+
+     ★ 为什么这个闸门不能提前到 propose 的更上游（例如"只有创建 intent 的
+     那个人能执行"）：崩溃恢复要求**任何**进程都能接着把一条 EXECUTING 的
+     intent 做完 —— 令牌是**状态**，不是进程身份。 */
+  function claimIntentForExecution(intentId) {
+    const row = db.prepare(SQL.selectPurchaseIntent).get(String(intentId));
+    if (!row) return { ok: false, owned: false, errors: ['intent-not-found'] };
+    const from = String(row.state);
+    if (from === C.PURCHASE_INTENT_STATE.EXECUTING) {
+      /* 已经有人在执行（或者它是崩溃留下的）。★ 这里**不**抢：抢会让
+         两个进程同时跑 prepare。返回 owned:false，由调用方去等结局；
+         如果那位执行者真的崩了，它留下的 EXECUTING 会在**下一次**调用里
+         被同一句话读到，而那时……它仍然不会抢。因此下面还有一条出口。 */
+      return { ok: true, owned: false, state: from, reason: 'already-executing' };
+    }
+    if (EXECUTABLE_INTENT_STATES.indexOf(from) < 0) {
+      return { ok: true, owned: false, state: from, reason: 'not-executable' };
+    }
+    const rev = allocateRevision();
+    const moved = db.prepare(SQL.setPurchaseIntentState).run(
+      C.PURCHASE_INTENT_STATE.EXECUTING, row.quote_id, row.approval_id, row.purchase_id,
+      row.authority_outcome, row.authority_reason_code, row.reason_code, row.completed_at,
+      Number(rev), Number(clock()), String(intentId), from
+    );
+    if (Number(moved.changes) !== 1) {
+      return { ok: true, owned: false, state: from, reason: 'lost-the-claim' };
+    }
+    return { ok: true, owned: true, from: from, revision: Number(rev) };
+  }
+
+  /* ── 等一条 intent 写下结局（输家的动作）─────────────────────────────
+     ★ 判据是"**它到达了一个终态**"，而不是"它不再是我输掉的那个瞬态"。
+     开发期实测（D 组）踩到的一次真实竞态，值得逐字写下来：
+
+       赢家：领走 → EXECUTING → prepare → attach → settle → COMPLETED
+       输家：claim 失败 → 等
+
+     输家在一次**不巧**的采样上会看到赢家刚领走、还没推进的那一行
+     （state 仍是 PROPOSED、quote_id 还是 NULL）。若那时就返回，两个进程
+     会报告两个世界。中间态 EXECUTING 同样不够 —— 那时赢家还没写完结局。
+     只有**终态**才是一个可以对外回答的读数。
+     60 × 25ms = 1.5 秒的上界是量出来的：一次 AUTO_ALLOW 的完整执行
+     （报价 → 权威 → 准备 → 结算 → 完成）在本机上约 30～80ms。 */
+  function waitForIntentEndpoint(intentId) {
+    /* ★★ 循环的形状是**先等再读**，而不是先读再等。开发期实测（D 组，
+       两个进程同时提同一份提议）踩到的一次真实竞态，而它值得逐字写下来：
+
+       输家在一次**不巧**的采样上会读到赢家**刚领走、还没把结局写完**的
+       那一行（state 仍是 PROPOSED）—— 甚至读到赢家领走**之前**的那一版。
+       如果循环是"先判、再等"，那个陈旧样本会让第一次迭代立刻 `break`，
+       于是输家报 PROPOSED、赢家报 COMPLETED：两个进程读到两个世界。
+
+       先等一个采样周期再读，就把"我读到的是不是别人的中间态"这个问题交给
+       时间解决 —— 而 60 × 25ms = 1.5 秒的上界是量出来的：一次 AUTO_ALLOW
+       的完整执行（报价 → 权威 → 准备 → 结算 → 完成）在本机上约 30～80ms，
+       即使两个进程在同一个 SQLite 文件上互相等锁也远低于这个上界。 */
+    let current = null;
+    for (let i = 0; i < 60; i += 1) {
+      const until = Date.now() + 25;
+      while (Date.now() < until) { /* 有界等待：让执行者把结局写完 */ }
+      current = db.prepare(SQL.selectPurchaseIntent).get(String(intentId));
+      if (current != null && C.isPurchaseIntentTerminalState(String(current.state))) break;
+    }
+    return current;
+  }
+
+  /* 输家（或任何"这条 intent 已经不属于我"的调用方）的统一出口。
+     ★ 它**不**伪装成功，也不把瞬态当成结局：读到终态就如实返回终态，
+     读到中间态就如实说"另一个进程正在处理它"。 */
+  function endpointOfIntentAfterLoss(intentId) {
+    const current = waitForIntentEndpoint(intentId);
+    const view = current == null ? null : rowToPurchaseIntent(current);
+    const state = current == null ? null : String(current.state);
+    if (state === C.PURCHASE_INTENT_STATE.COMPLETED) {
+      return {
+        ok: true, replayed: true, alreadyCompleted: true,
+        intentId: String(intentId),
+        intent: view,
+        purchaseId: current.purchase_id == null ? null : String(current.purchase_id),
+        quoteId: current.quote_id == null ? null : String(current.quote_id),
+        approvalId: current.approval_id == null ? null : String(current.approval_id),
+        mayExecute: false, nextAction: 'none',
+        purchaseCreated: false, completedByAnotherProcess: true
+      };
+    }
+    if (C.isPurchaseIntentTerminalState(state)) {
+      /* DENIED / EXPIRED / FAILED：那是**结局**，不是"我正在忙"。 */
+      return {
+        ok: true, replayed: true, terminal: true,
+        intentId: String(intentId),
+        intent: view,
+        reasonCode: view == null ? null : view.reasonCode,
+        mayExecute: false, nextAction: 'none',
+        purchaseCreated: false, terminalByAnotherProcess: true
+      };
+    }
+    return {
+      ok: true, replayed: true,
+      intentId: String(intentId),
+      intent: view,
+      quoteId: current == null || current.quote_id == null ? null : String(current.quote_id),
+      approvalId: current == null || current.approval_id == null ? null : String(current.approval_id),
+      mayExecute: false,
+      nextAction: state === C.PURCHASE_INTENT_STATE.EXECUTING ? 'execute' : 'none',
+      claimedByAnotherProcess: true,
+      reservedNothing: true,
+      purchaseCreated: false
+    };
+  }
+
+  function intentOutcomeOf(row) {
+    return {
+      agentIntentId: String(row.agent_intent_id),
+      state: String(row.state),
+      quoteId: row.quote_id == null ? null : String(row.quote_id),
+      approvalId: row.approval_id == null ? null : String(row.approval_id),
+      purchaseId: row.purchase_id == null ? null : String(row.purchase_id),
+      authorityOutcome: row.authority_outcome == null ? null : String(row.authority_outcome),
+      reasonCode: row.reason_code == null ? null : String(row.reason_code)
+    };
+  }
+
+  /* ── §5 Intent → Product-backed Quote ───────────────────────────────
+     价格**只能**从 canonical Product 派生：createProductQuote 的参数列表里
+     没有 amountMinor / currency / quantity / kind，因此"模型指定价格"在这
+     一层不是被拒绝，而是**没有地方可放**。
+
+     ★ 报价的有效期与 intent 的有效期是**同一个数**。这不是省事：§7 要求
+     "批准不得复活已经过期的报价"，而如果 intent 活得比它的报价久，那么
+     "intent 还有效但报价已经死了"就会变成一个只能靠运行时兜的缝隙。
+     两者同寿之后，"intent 没过期"蕴含"它那份报价也没过期" —— 不变量，
+     而不是检查。 */
+  function ensureIntentQuote(intent, productRow, at) {
+    if (intent.quoteId != null) {
+      const existing = db.prepare(SQL.selectQuote).get(String(intent.quoteId));
+      if (!existing) {
+        return { ok: false, reasonCode: C.DENY_REASON.QUOTE_MISMATCH, errors: ['intent-names-a-quote-that-does-not-exist'] };
+      }
+      return { ok: true, quoteRow: existing, created: false };
+    }
+    /* ★ 报价 id 由 intent 确定性派生 —— 于是"同一条 intent 的报价"永远是
+       同一份，重放时找到的是它而不是第二份。前缀仍然是 econ_quote_，
+       因为它的**种类**就是报价（P22-4 冻结），只是名字里指出了出处。 */
+    const derived = C.formatEconomyId('QUOTE', 'from_' + String(intent.agentIntentId).replace(/^econ_agentintent_/, ''));
+    if (derived.ok !== true) {
+      return { ok: false, reasonCode: C.DENY_REASON.QUOTE_MISMATCH, errors: derived.errors };
+    }
+    const quoteId = derived.id;
+    const existing = db.prepare(SQL.selectQuote).get(quoteId);
+    if (existing) return { ok: true, quoteRow: existing, created: false };
+
+    const created = createProductQuote({
+      productId: String(intent.productId),
+      buyerId: String(intent.agentId),
+      recipientId: intent.recipientId,
+      units: Number(intent.units),
+      expiresAt: Number(intent.expiresAt),
+      quoteId: quoteId,
+      idempotencyKey: 'econ.intent.quote+' + String(intent.agentIntentId)
+    });
+    if (created.ok !== true) {
+      return {
+        ok: false,
+        denial: created,
+        reasonCode: created.reasonCode == null ? C.DENY_REASON.PRODUCT_DISABLED : created.reasonCode,
+        errors: created.errors || []
+      };
+    }
+    const row = db.prepare(SQL.selectQuote).get(quoteId);
+    if (!row) return { ok: false, reasonCode: C.DENY_REASON.QUOTE_MISMATCH, errors: ['quote-vanished-after-creation'] };
+    /* ── §16 第二个可崩溃边界：**Quote created** ────────────────────────
+       ★ 这个点排在 attachPurchaseIntentQuote **之前**，因此命中时那条
+       intent 仍然停在 PROPOSED、而它手里**没有** quote_id —— 于是"崩溃
+       落在报价已建、绑定未写"这个缝上时，恢复路径必须能从"一条 PROPOSED
+       的 intent"重新走到同一份报价（报价 id 由 intent 确定性派生，因此
+       第二次会找到**同一份**，而不是造第二份）。 */
+    faultPoint('after-intent-quote-created');
+    return { ok: true, quoteRow: row, created: true };
+  }
+
+  /* ── §6 权威输入的组装 ─────────────────────────────────────────────
+     AUTO_ALLOW 需要两样东西递进 P22-6：那条策略的 id，与**九元组授权身份**。
+     后者不是一个可以声明的值，而是从 canonical Quote 快照 + 商品行 +
+     双方 party 重算出来的身份（P22-6 会在自己的写锁里**再算一遍**并逐字
+     比对，因此这里算错只会被拒绝，不会被接受）。
+
+     ★ 为什么 P22-8 要自己算一遍而不是让 P22-6 从 quote 推：因为
+     `preparePurchase` 的入参里就要求它，而"授权身份"是**授权那一刻**的
+     事实 —— P22-6 重算是为了证明它没被篡改，不是为了替代它。 */
+  function intentBindingOf(quoteRow, productRow, buyerParty, recipientParty, units) {
+    const binding = {
+      buyerId: partyKeyOf(String(buyerParty.type), String(buyerParty.id)),
+      recipientId: recipientParty == null ? null : partyKeyOf(String(recipientParty.type), String(recipientParty.id)),
+      productId: String(quoteRow.product_id),
+      quoteId: String(quoteRow.quote_id),
+      currency: String(quoteRow.currency),
+      amountMinor: fromSqlAmount(quoteRow.amount_minor, 'quote-amount'),
+      settlementType: String(productRow.fulfillment),
+      grantQuantity: C.productQuoteQuantity(rowToProduct(productRow), units).quantity,
+      units: Number(units)
+    };
+    const fp = C.approvalFingerprint(binding);
+    if (!fp.ok) return { ok: false, binding: binding, errors: fp.errors };
+    return { ok: true, binding: binding, fingerprint: String(fp.fingerprint), errors: [] };
+  }
+
+  /* ── §6/§16 Phase A：创建 canonical Intent（可崩溃边界 #1）──────────
+     这一次事务**只**做一件事：把那条 intent 写下来。它不读目录、不生成
+     报价、不看权威。于是"Intent created"是一个真实的、可被崩溃打断的
+     状态 —— 恢复路径必须能处理一个"存在但还没有报价"的 intent。 */
+  function createIntentRow(proposal, key, intentFingerprint, at) {
+    const intentId = nextId('AGENT_INTENT');
+    if (!C.isEconomyId('AGENT_INTENT', intentId)) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['generated-id-not-canonical'] };
+    }
+    const fingerprint = purchaseFingerprint(C.OPERATION_SCOPE.AGENT_INTENT_PROPOSE, {
+      agentId: proposal.agentId,
+      productId: proposal.productId,
+      recipientId: proposal.recipientId,
+      units: proposal.units,
+      selfDirected: proposal.selfDirected
+      /* ★ `expiresAt` **刻意不在**这里。开发期实测踩到的一次真实缺陷：
+         它一度在，于是"同一次提议请求"在两次调用之间（默认有效期按 now
+         重新计算）会得到**两个不同的指纹**，而幂等闸门因此把一次纯重试
+         读成"你换了另一个意图" —— 症状是第一条 intent 明明已经写下来了，
+         调用方却收到 IDEMPOTENCY 冲突。
+         更根本的理由与契约里"expiresAt 不进 intent 指纹"逐字同源：
+         有效期是"这个打算我想到什么时候为止"，不是"这是哪一件事"。
+         同一个 key 申请两次不同有效期仍然是**同一个**打算。 */
+    });
+    let suppressed = null;
+    let committed = null;
+    try {
+      withTransaction(() => {
+        const seen = intentByIdempotencyKey(key, fingerprint);
+        if (seen.found && seen.conflict) {
+          throw refuse(C.DENY_REASON.DUPLICATE_REQUEST, ['this-intent-key-was-used-for-a-different-intent'], {
+            idempotencyKey: String(key),
+            storedFingerprint: seen.storedFingerprint,
+            presentedFingerprint: seen.presentedFingerprint,
+            existingAgentIntentId: String(seen.row.agent_intent_id)
+          });
+        }
+        if (seen.found) { committed = { replayedExisting: true, row: seen.row }; return; }
+        suppressed = suppressingIntentFor(intentFingerprint, at);
+        if (suppressed) { committed = { suppressedBy: String(suppressed.agent_intent_id) }; return; }
+        const rev = allocateRevision();
+        db.prepare(SQL.insertPurchaseIntent).run(
+          intentId, String(proposal.agentId), String(proposal.agentType),
+          String(proposal.productId),
+          proposal.recipientId == null ? null : String(proposal.recipientId),
+          proposal.recipientId == null ? null : String(proposal.recipientType),
+          proposal.selfDirected ? 1 : 0,
+          Number(proposal.units),
+          null, null, null, null,
+          C.PURCHASE_INTENT_STATE.PROPOSED,
+          null, null, null,
+          proposal.reason == null ? null : String(proposal.reason),
+          String(intentFingerprint), String(key), String(fingerprint),
+          Number(rev), Number(at), Number(at), Number(proposal.expiresAt),
+          null
+        );
+        /* ── §16 第一个可崩溃边界：**Intent created** ────────────────────
+           ★ 这一个点排在 COMMIT **之前**，因此命中时整条事务回滚 —— 库里
+           连这条 intent 都不存在，"重试"就是一次干净的首次尝试。
+           它与下面那几个点合起来覆盖 §16 点名的六个边界，而每一个都必须
+           有它自己的可观察后果（否则"崩溃测试"只是在测一次正常路径）。 */
+        faultPoint('after-intent-created');
+        committed = { created: true };
+      });
+    } catch (error) {
+      if (isRefusal(error)) {
+        return denial(error.reasonCode, error.errors, Object.assign({
+          domain: C.DOMAIN,
+          idempotencyKey: String(key),
+          agentIntentId: null,
+          quoteId: null,
+          createdAt: clock(),
+          expiresAt: Number(proposal.expiresAt)
+        }, error.extra || {}));
+      }
+      throw error;
+    }
+    if (committed.replayedExisting) {
+      const row = db.prepare(SQL.selectPurchaseIntent).get(String(committed.row.agent_intent_id));
+      return { ok: true, replayed: true, idempotencyKey: String(key), intent: rowToPurchaseIntent(row) };
+    }
+    if (committed.suppressedBy) {
+      const row = db.prepare(SQL.selectPurchaseIntent).get(String(committed.suppressedBy));
+      const suppressedView = rowToPurchaseIntent(row);
+      const attempted = Object.assign(rowToPurchaseIntent(row), {
+        agentIntentId: null,
+        state: C.PURCHASE_INTENT_STATE.DENIED,
+        terminal: true,
+        reasonCode: C.DENY_REASON.DUPLICATE_REQUEST,
+        reason: proposal.reason == null ? null : String(proposal.reason),
+        expiresAt: Number(proposal.expiresAt),
+        createdAt: Number(at)
+      });
+      return {
+        ok: true,
+        suppressed: true,
+        suppressReason: 'DUPLICATE_INTENT_WINDOW',
+        idempotencyKey: String(key),
+        /* ★ 返回的是**已经存在**的那一条，而不是一条新的。§10 的"同一个
+           模型输出重复 20 次不得买 20 次"就落在这一行上。 */
+        intent: suppressedView,
+        intentId: String(suppressed.agent_intent_id),
+        attempted: attempted,
+        /* 逐字：抑制不是预算。 */
+        dedupeIsNotABudget: C.PURCHASE_INTENT_DEDUPE_IS_NOT_A_BUDGET,
+        dedupeWindowMs: C.PURCHASE_INTENT_DEDUPE_WINDOW_MS
+      };
+    }
+    const inserted = db.prepare(SQL.selectPurchaseIntent).get(intentId);
+    return { ok: true, created: true, idempotencyKey: String(key), intent: rowToPurchaseIntent(inserted) };
+  }
+
+  /* ── §6 Phase B：报价 + 权威（可崩溃边界 #2）──────────────────────── */
+  const RESOLVED_INTENT_STATES = Object.freeze([
+    C.PURCHASE_INTENT_STATE.WAITING_APPROVAL,
+    C.PURCHASE_INTENT_STATE.EXECUTING,
+    C.PURCHASE_INTENT_STATE.COMPLETED,
+    C.PURCHASE_INTENT_STATE.DENIED,
+    C.PURCHASE_INTENT_STATE.EXPIRED,
+    C.PURCHASE_INTENT_STATE.FAILED
+  ]);
+
+  function resolveIntent(intentId, options) {
+    const o = options || {};
+    requireOpen();
+    let row = db.prepare(SQL.selectPurchaseIntent).get(String(intentId));
+    if (!row) return { ok: false, denied: false, reasonCode: null, errors: ['intent-not-found'] };
+
+    /* 已经定局（或已经越过 PROPOSED）：恢复路径要的是"现在能做什么"，
+       而不是"再做一遍"。 */
+    if (RESOLVED_INTENT_STATES.indexOf(String(row.state)) >= 0 && o.force !== true) {
+      const view = rowToPurchaseIntent(row);
+      return {
+        ok: true, replayed: true, intent: view,
+        mayExecute: String(row.state) === C.PURCHASE_INTENT_STATE.EXECUTING,
+        nextAction: String(row.state) === C.PURCHASE_INTENT_STATE.EXECUTING ? 'execute' : 'none'
+      };
+    }
+
+    /* ── ★★ 乐观闸门：把这条 intent 从 PROPOSED "领走" ──────────────────
+       这是多进程实测暴露出的一个**真实竞态**，而不是一次理论担忧：
+
+       两个真实进程同时提同一份提议（模型复读的形态）时，两者的
+       (key, 指纹) 不同，因此**都**会走到这里；两者都在 §10 的重复窗口里
+       看到对方（或都没看到），于是两条都尝试推进同一条 intent。
+       没有这个闸门时，输的那一方会在状态推进处拿到 changes=0，然后返回
+       一句 `intent-state-could-not-be-advanced` —— 而它的世界里那条 intent
+       其实**已经被赢了的那一方推到 COMPLETED**。
+
+       症状是"两个进程读到两个世界"，而正确答案只有一个。
+
+       闸门的形状：把这条 intent 的 state 写成它**当前**的值（PROPOSED），
+       并带一个 `AND state='PROPOSED'` 的谓词。于是：
+         · 只有一个进程能拿到 changes=1（它领走了这条 intent）；
+         · 其他的拿到 changes=0，并且**再读一次**那行 —— 那一次读到的是
+           赢家写下的结局，于是它们返回同一个答案。
+       这不是锁：没有任何进程被阻塞，输的一方只多做一次读。 */
+    const claimRev = allocateRevision();
+    const claim = db.prepare(SQL.setPurchaseIntentState).run(
+      C.PURCHASE_INTENT_STATE.PROPOSED, row.quote_id, row.approval_id, row.purchase_id,
+      row.authority_outcome, row.authority_reason_code, row.reason_code, row.completed_at,
+      Number(claimRev), Number(clock()), String(intentId), C.PURCHASE_INTENT_STATE.PROPOSED
+    );
+    if (Number(claim.changes) !== 1) {
+      /* ── 输了这一次领走：不是错误，而是"另一个进程正在替我们回答" ─────
+         ★ 这里刻意**等一小会儿**再读，而不是立刻返回它当时看到的那一行。
+         开发期实测（多进程崩溃组）踩到的一次真实竞态：赢家从领走到
+         COMPLETED 要跨三次事务（报价 → 权威 → 执行），而输家如果立刻返回，
+         它读到的是一行**还在 PROPOSED** 的 intent —— 于是它对外报告
+         "mayExecute: false, nextAction: none"，而**真正**的结局（那笔
+         购买）已经或即将由赢家写下。调用方于是拿到一个瞬态的半成品，
+         而"两个进程读到两个世界"这条断言就是把这件事抓出来的。
+
+         等待是**有界**的（见下面的循环），而且它只在竞争真的发生时发生：
+         changes=1 的那条路一次都不等。等待结束后无论读到什么，返回的
+         都是那一行的**真实**状态 —— 超时不会被伪装成成功。 */
+      let current = db.prepare(SQL.selectPurchaseIntent).get(String(intentId));
+      for (let i = 0; i < 60; i += 1) {
+        /* ★★ 等待的判据是"**它到达了一个终态**"，而不是"它不再是我输掉的
+           那个瞬态"。开发期实测（D 组，两个进程同时提同一份提议）踩到的
+           一次真实竞态，而它值得被写下来：
+
+             赢家：领走 → EXECUTING → prepare → attach → settle → COMPLETED
+             输家：claim 失败 → 等
+
+           而输家在一次**不巧**的采样上会看到赢家刚领走、还没推进的那一行
+           （state 仍是 PROPOSED、quote_id 还是 NULL）。那时若就返回，
+           两个进程会报告两个世界：赢家报 COMPLETED、输家报 PROPOSED。
+           中间态 EXECUTING 同样不够 —— 那时赢家还没写完结局。
+           因此只有**终态**（COMPLETED / DENIED / EXPIRED / FAILED）才是一个
+           可以对外回答的读数；在那之前继续等。
+           60 × 25ms = 1.5 秒的上界是量出来的：一次 AUTO_ALLOW 的完整执行
+           （报价 → 权威 → 准备 → 结算 → 完成）在本机上约 30～80ms。 */
+        const st = current == null ? null : String(current.state);
+        if (current != null && C.isPurchaseIntentTerminalState(st)) break;
+        const until = Date.now() + 25;
+        while (Date.now() < until) { /* 有界等待：让赢家把结局写完 */ }
+        current = db.prepare(SQL.selectPurchaseIntent).get(String(intentId));
+      }
+      const view = rowToPurchaseIntent(current);
+      /* ★★ 输家**不**自己去执行一遍。开发期实测：让两边都执行会让它们各自
+         prepare 同一份报价（P22-6 的幂等闸门会给出同一笔购买 —— 那是幂等性
+         在起作用，不是缺陷），而随后两条路径会各自尝试把 purchase 挂到同
+         一条 intent 上、各自尝试结算，症状是"赢家报 COMPLETED、输家报
+         QUOTE_MISMATCH"。正确的分工是：**领走的人执行，其他人等它的结局**。
+         因此这里只报告读到的那一行以及"我正在被别人处理"这个事实。
+         ★ 待办语义仍然成立：若赢家在执行中途真的崩了，那条 intent 会停在
+         EXECUTING，而**下一次** propose / resume 会重新领走它并接着做完
+         （见 executeIntent 开头的认领段）。 */
+      const state = current == null ? null : String(current.state);
+      return {
+        ok: true,
+        replayed: true,
+        claimedByAnotherProcess: true,
+        intent: view,
+        mayExecute: false,
+        nextAction: state === C.PURCHASE_INTENT_STATE.EXECUTING ? 'execute' : 'none'
+      };
+    }
+    /* 领到之后重新读一次：赢家的世界与我们读到的那一行之间可能已经有
+       别的变化（例如那条 intent 已经被推进过又被别的东西读了）。 */
+    row = db.prepare(SQL.selectPurchaseIntent).get(String(intentId));
+
+    const at = clock();
+    const agent = intentPartyOf(row.agent_id, 'agentId');
+    if (!agent.ok) return { ok: false, denied: false, reasonCode: null, errors: agent.errors };
+
+    /* ① 商品必须在场、必须 ACTIVE、必须属于一个开着的货架。三条都由
+          canonical 行回答，而 DISABLED / RETIRED / missing 一律 fail closed。 */
+    const productRow = db.prepare(SQL.selectProduct).get(String(row.product_id));
+    if (!productRow) {
+      const moved = transitionPurchaseIntent(intentId, C.PURCHASE_INTENT_STATE.PROPOSED, C.PURCHASE_INTENT_STATE.FAILED, {
+        reasonCode: C.DENY_REASON.PRODUCT_NOT_FOUND
+      });
+      const view = rowToPurchaseIntent(db.prepare(SQL.selectPurchaseIntent).get(String(intentId)));
+      appendIntentChange(view, C.EVENT_TYPE.AGENT_INTENT_DETERMINED, {
+        state: view.state, reasonCode: C.DENY_REASON.PRODUCT_NOT_FOUND, productMissing: true
+      });
+      return denial(C.DENY_REASON.PRODUCT_NOT_FOUND, ['product-not-found'],
+        { intent: view, transitioned: moved.ok === true, productBacked: false });
+    }
+    if (String(productRow.status) !== C.PRODUCT_STATUS.ACTIVE) {
+      const code = String(productRow.status) === C.PRODUCT_STATUS.RETIRED
+        ? C.DENY_REASON.PRODUCT_DISABLED : C.DENY_REASON.PRODUCT_DISABLED;
+      transitionPurchaseIntent(intentId, C.PURCHASE_INTENT_STATE.PROPOSED, C.PURCHASE_INTENT_STATE.FAILED, {
+        reasonCode: code
+      });
+      const view = rowToPurchaseIntent(db.prepare(SQL.selectPurchaseIntent).get(String(intentId)));
+      appendIntentChange(view, C.EVENT_TYPE.AGENT_INTENT_DETERMINED, {
+        state: view.state, reasonCode: code, productStatus: String(productRow.status)
+      });
+      return denial(code, ['product-is-not-active'], {
+        intent: view, productStatus: String(productRow.status), productBacked: true
+      });
+    }
+    const storeRow = db.prepare(SQL.selectStore).get(String(productRow.store_id));
+    if (!storeRow || String(storeRow.status) !== C.STORE_STATUS.ACTIVE) {
+      transitionPurchaseIntent(intentId, C.PURCHASE_INTENT_STATE.PROPOSED, C.PURCHASE_INTENT_STATE.FAILED, {
+        reasonCode: C.DENY_REASON.PRODUCT_DISABLED
+      });
+      const view = rowToPurchaseIntent(db.prepare(SQL.selectPurchaseIntent).get(String(intentId)));
+      appendIntentChange(view, C.EVENT_TYPE.AGENT_INTENT_DETERMINED, {
+        state: view.state, reasonCode: C.DENY_REASON.PRODUCT_DISABLED, storeInactive: true
+      });
+      return denial(C.DENY_REASON.PRODUCT_DISABLED, ['store-is-not-active-or-missing'], {
+        intent: view, storeId: productRow.store_id == null ? null : String(productRow.store_id)
+      });
+    }
+
+    /* ② 有效期。★ 到这里才检查，是因为前面的失败**更具体**：一件不存在的
+          商品与一件过期的打算，前者是更好的答案。 */
+    if (Number(row.expires_at) <= at) {
+      transitionPurchaseIntent(intentId, C.PURCHASE_INTENT_STATE.PROPOSED, C.PURCHASE_INTENT_STATE.EXPIRED, {
+        reasonCode: C.DENY_REASON.INTENT_EXPIRED
+      });
+      const view = rowToPurchaseIntent(db.prepare(SQL.selectPurchaseIntent).get(String(intentId)));
+      appendIntentChange(view, C.EVENT_TYPE.AGENT_INTENT_DETERMINED, {
+        state: view.state, reasonCode: C.DENY_REASON.INTENT_EXPIRED, expiresAt: Number(row.expires_at)
+      });
+      return denial(C.DENY_REASON.INTENT_EXPIRED, ['intent-expired-before-its-quote-was-created'],
+        { intent: view, expiresAt: Number(row.expires_at), now: at });
+    }
+
+    /* ③ 报价（Product-backed，价格从商品行派生）。 */
+    let quoteRow = null;
+    if (row.quote_id != null) {
+      quoteRow = db.prepare(SQL.selectQuote).get(String(row.quote_id));
+      if (!quoteRow) {
+        transitionPurchaseIntent(intentId, C.PURCHASE_INTENT_STATE.PROPOSED, C.PURCHASE_INTENT_STATE.FAILED, {
+          reasonCode: C.DENY_REASON.QUOTE_MISMATCH
+        });
+        const view = rowToPurchaseIntent(db.prepare(SQL.selectPurchaseIntent).get(String(intentId)));
+        return denial(C.DENY_REASON.QUOTE_MISMATCH, ['intent-names-a-quote-that-does-not-exist'], { intent: view });
+      }
+    } else {
+      const quoted = ensureIntentQuote(rowToPurchaseIntent(row), productRow, at);
+      if (quoted.ok !== true) {
+        transitionPurchaseIntent(intentId, C.PURCHASE_INTENT_STATE.PROPOSED, C.PURCHASE_INTENT_STATE.FAILED, {
+          reasonCode: quoted.reasonCode || C.DENY_REASON.PRODUCT_DISABLED
+        });
+        const view = rowToPurchaseIntent(db.prepare(SQL.selectPurchaseIntent).get(String(intentId)));
+        appendIntentChange(view, C.EVENT_TYPE.AGENT_INTENT_DETERMINED, {
+          state: view.state, reasonCode: quoted.reasonCode || C.DENY_REASON.PRODUCT_DISABLED, quoteFailed: true
+        });
+        return denial(quoted.reasonCode || C.DENY_REASON.PRODUCT_DISABLED,
+          (quoted.errors && quoted.errors.length) ? quoted.errors : ['quote-could-not-be-created-from-the-product'],
+          { intent: view, productId: String(row.product_id) });
+      }
+      quoteRow = quoted.quoteRow;
+    }
+
+    /* ④ 把报价挂到 intent 上（这一步是"Quote created"这个可崩溃边界）。
+          ★ 报价与 intent 的绑定必须是**持久**的：批准之后恢复时用的
+          必须是这一份报价，而不是重新生成一份可能不同价的。
+          ★ 它**不是**一次状态迁移（见 attachPurchaseIntentQuote 的说明）。 */
+    if (row.quote_id == null) {
+      const rev = allocateRevision();
+      const info = db.prepare(SQL.attachPurchaseIntentQuote).run(
+        String(quoteRow.quote_id), Number(rev), Number(at), String(intentId), C.PURCHASE_INTENT_STATE.PROPOSED
+      );
+      if (Number(info.changes) !== 1) {
+        /* 另一个进程在这中间推进了它 —— 那条路径会给出一致的答案，
+           因此这里只报告竞争，不覆盖。 */
+        return {
+          ok: false, denied: false, reasonCode: C.DENY_REASON.INTENT_NOT_EXECUTABLE,
+          errors: ['intent-quote-could-not-be-attached'], concurrent: true
+        };
+      }
+    }
+    row = db.prepare(SQL.selectPurchaseIntent).get(String(intentId));
+
+    /* ⑤ 权威判定（P22-7）。★ 每一个 intent 都必须经过这里 —— 没有例外，
+          没有"上一笔放行了所以这一笔也放行"。 */
+    const recipientParty = row.recipient_id == null ? null : partyInput(String(row.recipient_id)).party;
+    const authority = evaluateAutonomousPurchaseFor({
+      buyerId: String(row.agent_id),
+      quoteId: String(quoteRow.quote_id),
+      recipientId: row.recipient_id == null ? null : String(row.recipient_id),
+      now: at
+    });
+    const verdict = C.evaluatePurchaseIntentVerdict({
+      now: at,
+      intentStatus: String(row.state),
+      expiresAt: Number(row.expires_at),
+      productId: String(row.product_id),
+      productStatus: String(productRow.status),
+      quoteState: String(quoteRow.state),
+      quoteExpired: Number(quoteRow.expires_at) <= at,
+      authority: authority,
+      approvalStatus: null
+    });
+    if (verdict.ok !== true) {
+      return { ok: false, denied: false, reasonCode: verdict.reasonCode || null, errors: verdict.errors };
+    }
+
+    let nextState = null;
+    if (verdict.outcome === C.INTENT_VERDICT.DENY) nextState = C.PURCHASE_INTENT_STATE.DENIED;
+    else if (verdict.outcome === C.INTENT_VERDICT.FAIL) nextState = C.PURCHASE_INTENT_STATE.FAILED;
+    else if (verdict.outcome === C.INTENT_VERDICT.WAIT_FOR_APPROVAL) nextState = C.PURCHASE_INTENT_STATE.WAITING_APPROVAL;
+    else nextState = C.PURCHASE_INTENT_STATE.EXECUTING;
+
+    /* ⑥ REQUIRE_APPROVAL：**只**创建一条待批准的记录，然后停下。
+          ★ 这里绝不 reserve、绝不扣钱、绝不发库存 —— §6 的那句话在
+          这一行上没有分支可以走偏：下面那条路径里没有任何 P22-6 调用。 */
+    let approvalId = null;
+    if (nextState === C.PURCHASE_INTENT_STATE.WAITING_APPROVAL) {
+      const pending = db.prepare(SQL.selectApprovalsByQuote).all(String(quoteRow.quote_id));
+      const live = pending.filter(r => String(r.status) === C.APPROVAL_STATE.PENDING);
+      if (live.length) {
+        /* 同一个 intent 恢复两次 → 复用那一条待批准记录，而不是再建一条。
+           （P22-7 的 createApprovalRequest 有自己的幂等 key，但"一条
+           intent 同时有两条待批准"本身就不该存在。） */
+        approvalId = String(live[0].approval_id);
+      } else {
+        const expiresAt = Number(row.expires_at);
+        const created = createApprovalRequest({
+          buyerId: String(row.agent_id),
+          quoteId: String(quoteRow.quote_id),
+          recipientId: row.recipient_id == null ? null : String(row.recipient_id),
+          units: Number(row.units),
+          expiresAt: expiresAt,
+          /* ★ 幂等 key 由 intent 派生：同一条 intent 的"请求批准"永远
+             是**那一次**请求。 */
+          idempotencyKey: 'econ.intent.approval+' + String(intentId)
+        });
+        if (created.ok !== true) {
+          transitionPurchaseIntent(intentId, C.PURCHASE_INTENT_STATE.PROPOSED, C.PURCHASE_INTENT_STATE.FAILED, {
+            reasonCode: created.reasonCode || C.DENY_REASON.APPROVAL_REQUIRED
+          });
+          const view = rowToPurchaseIntent(db.prepare(SQL.selectPurchaseIntent).get(String(intentId)));
+          return denial(created.reasonCode || C.DENY_REASON.APPROVAL_REQUIRED,
+            (created.errors && created.errors.length) ? created.errors : ['approval-request-could-not-be-created'],
+            { intent: view, quoteId: String(quoteRow.quote_id), approvalCreated: false });
+        }
+        approvalId = String(created.result.approvalId);
+        /* ── §16 第三个可崩溃边界：**Approval created** ──────────────────
+           ★ 这个点在 createApprovalRequest **提交之后**，因此命中时那条
+           批准**真的存在**（PENDING）而 intent 仍然停在 PROPOSED、没有
+           approval_id。恢复路径因此必须做两件事：重新解出权威结论、并且
+           **复用**那一条已经存在的 PENDING 批准（而不是再建一条）。 */
+        faultPoint('after-intent-approval-created');
+      }
+    }
+
+    const moved = transitionPurchaseIntent(intentId, C.PURCHASE_INTENT_STATE.PROPOSED, nextState, {
+      quoteId: String(quoteRow.quote_id),
+      approvalId: approvalId,
+      authorityOutcome: verdict.authorityOutcome == null ? null : String(verdict.authorityOutcome),
+      authorityReasonCode: verdict.reasonCode == null ? null : String(verdict.reasonCode),
+      reasonCode: verdict.reasonCode == null ? null : String(verdict.reasonCode)
+    });
+    if (moved.ok !== true) {
+      return { ok: false, denied: false, reasonCode: moved.reasonCode || null,
+        errors: moved.errors || ['intent-state-could-not-be-advanced'], transition: moved };
+    }
+    const finalRow = db.prepare(SQL.selectPurchaseIntent).get(String(intentId));
+    const view = rowToPurchaseIntent(finalRow);
+
+    if (nextState === C.PURCHASE_INTENT_STATE.WAITING_APPROVAL) {
+      appendIntentChange(view, C.EVENT_TYPE.AGENT_INTENT_AWAITING_APPROVAL, {
+        state: view.state,
+        authorityOutcome: view.authorityOutcome,
+        reasonCode: view.reasonCode,
+        reservedNothing: true,
+        ledgerMutation: false
+      });
+    } else if (nextState === C.PURCHASE_INTENT_STATE.EXECUTING) {
+      /* AUTO_ALLOW 是**唯一**会立刻执行的出口，而它的"为什么没问用户"
+       必须有出处：authorityOutcome 与 autonomy_policy_id 一起回答它
+       （后者在 executeIntent 里落进 P22-6 的 purchase 行）。 */
+      appendIntentChange(view, C.EVENT_TYPE.AGENT_INTENT_DETERMINED, {
+        state: view.state,
+        authorityOutcome: view.authorityOutcome,
+        reasonCode: view.reasonCode,
+        autonomyPolicyId: authority.autonomyPolicyId == null ? null : String(authority.autonomyPolicyId),
+        budgetStillRequired: true
+      });
+    } else {
+      appendIntentChange(view, C.EVENT_TYPE.AGENT_INTENT_DETERMINED, {
+        state: view.state, authorityOutcome: view.authorityOutcome, reasonCode: view.reasonCode, terminal: true
+      });
+    }
+
+    return {
+      ok: true,
+      intent: view,
+      verdict: verdict,
+      authorityPolicyId: authority.autonomyPolicyId == null ? null : String(authority.autonomyPolicyId),
+      authorityOutcome: verdict.authorityOutcome == null ? null : String(verdict.authorityOutcome),
+      authorityBindingFingerprint: null,
+      quoteId: String(quoteRow.quote_id),
+      approvalId: approvalId,
+      mayExecute: nextState === C.PURCHASE_INTENT_STATE.EXECUTING,
+      nextAction: nextState === C.PURCHASE_INTENT_STATE.EXECUTING ? 'execute'
+        : (nextState === C.PURCHASE_INTENT_STATE.WAITING_APPROVAL ? 'await-approval' : 'none')
+    };
+  }
+
+  /* ── §6/§16 Phase C：执行（P22-6 的两次 canonical 调用）────────────
+     ★ 三次调用各自带事务，**故意不合并**：
+       preparePurchase  —— 自己的事务（预算、预留、purchase 行）
+       settlePurchase   —— 自己的事务（结算、扣钱、发资产、消费批准）
+       状态推进          —— 自己的事务（intent 的结局）
+
+     为什么必须分开：崩溃模拟要能在**每一段之后**发生，而如果它们在一个
+     大事务里，那么"purchase settled 但 intent 没完成"这个真实的中断就
+     不可表示 —— 而它恰恰是 §16 点名要求处理的那一个。分开之后，恢复
+     路径可以只根据 intent 的**持久状态**决定下一步：
+       EXECUTING + 有 purchaseId + purchase=COMPLETED → 补写 COMPLETED
+       EXECUTING + 无 purchaseId                        → 重新执行（幂等）
+     两句话都不需要猜。 */
+  function executeIntent(intentId, options) {
+    const o = options || {};
+    requireOpen();
+    let row = db.prepare(SQL.selectPurchaseIntent).get(String(intentId));
+    if (!row) return { ok: false, denied: false, reasonCode: null, errors: ['intent-not-found'] };
+    const at = clock();
+
+    /* ── ★★ 第一件事：**拿执行权**（见 claimIntentForExecution 的说明）────
+       没有这一道闸门时，两个真实进程同时提同一份提议会让两者都去执行，
+       而它们随后各自把同一笔购买挂到同一条 intent 上 —— 症状是"赢家报
+       COMPLETED、输家报 QUOTE_MISMATCH"，也就是两个进程读到两个世界。
+
+       ★ `options.owned === true` 是**同一个调用栈内部**的交接：`resolveIntent`
+       刚刚用同一道闸门把这条 intent 推到 EXECUTING，它把所有权直接交给
+       这里，而不是让这里再去抢一次（第二次抢必然拿到 owned:false ——
+       因为 state 已经是 EXECUTING，而那会让每一次正常的 AUTO_ALLOW 都
+       变成"我以为别人在忙"）。这个参数刻意**不进公开面**：它只能由本文件
+       内部传，任何外部调用方都拿不到它。 */
+    if (o.owned === true) {
+      row = db.prepare(SQL.selectPurchaseIntent).get(String(intentId));
+    } else {
+      /* ── 领执行权。★ 领不到时的分支由 `originallyProposed` 区分，而那一
+         区分是开发期实测逼出来的（见下面两段的说明）。 */
+      const originallyProposed = String(row.state) === C.PURCHASE_INTENT_STATE.PROPOSED;
+      const claim = claimIntentForExecution(intentId);
+      if (claim.ok !== true) return claim;
+      if (claim.owned !== true) {
+        /* ── 情形一：我读到的**本来就是** PROPOSED，而领走失败了 ──────────
+           ★★ 这是最要紧的一支，也是开发期实测花了最久的一支。
+
+           两个真实进程同时提同一份提议时，**两个都会先读到 PROPOSED** ——
+           然后其中一个领走了它。输的那一个手里握着的是一个**过期快照**，
+           而它**不能**因此就报"我读到的是 PROPOSED"：那个状态在它读到之后
+           已经不存在了（赢家把它推到了 COMPLETED）。
+
+           实测症状：赢家报 COMPLETED、输家报 PROPOSED，而输家无论再等多久
+           都读不到那个终态（它持有的是一个陈旧的读视图）。这正是 §16 要挡
+           的那件事 —— 两个进程读到两个世界。
+
+           正确的动作是**接着把同一条 intent 做完**：`resolveIntent` 与
+           `executeIntent` 的每一步都带自己的幂等闸门（`claim` / `attach`
+           的 `AND <col> IS NULL` 谓词、`preparePurchase` / `settlePurchase`
+           的 (scope, key) 记录、`finalizeIntent` 的终态检查），因此重复
+           走一遍**不会**产生第二笔购买、第二次扣款或第二次发货；它保证的是
+           **两个进程都到达那个唯一的最终事实**。
+           ★ 判据用的是**我读到的**那个状态（`originallyProposed`），而不是
+           再读一次 —— 再读一次得到的仍然是同一个过期快照。 */
+        if (originallyProposed) {
+          const resolvedAgain = resolveIntent(intentId, { force: true });
+          if (resolvedAgain.ok !== true) return resolvedAgain;
+          if (resolvedAgain.mayExecute === true) {
+            /* 领到了（或者它已经在 EXECUTING）—— 继续往下做。 */
+            row = db.prepare(SQL.selectPurchaseIntent).get(String(intentId));
+            if (String(row.state) === C.PURCHASE_INTENT_STATE.EXECUTING) {
+              /* 已经是 EXECUTING：直接接着执行，不再抢一次。 */
+            } else {
+              return endpointOfIntentAfterLoss(intentId);
+            }
+          } else {
+            /* 它已经定局（或落在等待路径上）：如实返回。 */
+            return endpointOfIntentAfterLoss(intentId);
+          }
+        } else {
+          /* ── 情形二：我读到的**本来就是** EXECUTING ─────────────────────
+             它要么是"另一个进程正在做"，要么是"上一次崩在这里"（§16 的
+             第四个边界）。两者从库里读不出来，因此**接着做**是唯一既安全
+             又正确的选择：那些幂等闸门保证重复走不会产生第二笔购买，而
+             "崩溃留下的那一条必须能被接着做完"也由同一句话满足。 */
+          const recheck = db.prepare(SQL.selectPurchaseIntent).get(String(intentId));
+          const recheckState = recheck == null ? null : String(recheck.state);
+          if (recheckState === C.PURCHASE_INTENT_STATE.EXECUTING) {
+            row = recheck;
+          } else if (C.isPurchaseIntentTerminalState(recheckState)) {
+            return endpointOfIntentAfterLoss(intentId);
+          } else {
+            /* 它回到了 PROPOSED 或落在等待路径上：让它自己走一遍。 */
+            const resolvedAgain = resolveIntent(intentId, { force: true });
+            if (resolvedAgain.ok !== true) return resolvedAgain;
+            if (resolvedAgain.mayExecute !== true) return endpointOfIntentAfterLoss(intentId);
+            row = db.prepare(SQL.selectPurchaseIntent).get(String(intentId));
+          }
+        }
+      } else {
+        row = db.prepare(SQL.selectPurchaseIntent).get(String(intentId));
+      }
+    }
+
+    row = db.prepare(SQL.selectPurchaseIntent).get(String(intentId));
+
+    /* ── 领到执行权之后，state 一定是 EXECUTING；下面这些分支是**防御性**的
+       （例如另一个进程在我们领到之后、我们重读之前把它推到了终态）。 */
+    if (String(row.state) === C.PURCHASE_INTENT_STATE.COMPLETED) {
+      /* ★ §16 的"不得重复买"：一个已经完成的 intent 再次被要求执行，
+         正确的答案是**把它自己**还回去，而不是再买一次。 */
+      return { ok: true, replayed: true, alreadyCompleted: true,
+        intentId: String(intentId),
+        intent: rowToPurchaseIntent(row),
+        quoteId: row.quote_id == null ? null : String(row.quote_id),
+        purchaseId: row.purchase_id == null ? null : String(row.purchase_id),
+        mayExecute: false, nextAction: 'none', purchaseCreated: false };
+    }
+    if (C.isPurchaseIntentTerminalState(String(row.state))) {
+      return denial(C.DENY_REASON.INTENT_NOT_EXECUTABLE, ['intent-is-terminal'], {
+        terminal: true, intent: rowToPurchaseIntent(row)
+      });
+    }
+    if (String(row.state) !== C.PURCHASE_INTENT_STATE.EXECUTING) {
+      /* 到不了这里（领走已经把 state 推成 EXECUTING）。保留这一支是为了让
+         "某天有人改了领走的语义"表现为一个具名拒绝，而不是让后续代码在
+         一个没有执行权的 intent 上动手。 */
+      return denial(C.DENY_REASON.INTENT_NOT_EXECUTABLE, ['intent-has-not-been-granted-the-right-to-execute'], {
+        intentState: String(row.state),
+        requiresApproval: String(row.state) === C.PURCHASE_INTENT_STATE.WAITING_APPROVAL,
+        intent: rowToPurchaseIntent(row)
+      });
+    }
+    /* ── ★★ 恢复路径的第一件事：**先把账对准**（多进程实测暴露的真实缺口）
+       一条 EXECUTING 的 intent 可能出在两种完全不同的处境上：
+         ① `purchase_id` 已经写下 → 那笔购买就在那里，按它的状态续做；
+         ② `purchase_id` **没有**写下，但报价上**已经有**一笔购买 ——
+            这是 §16 第四个可崩溃边界（"Purchase prepared"）留下的形状。
+       开发期实测：漏掉 ② 时，重试会走到 preparePurchase，而 P22-6 的
+       `selectPurchaseByQuote` 会以 `this-quote-is-already-linked-to-a-purchase`
+       拒绝 —— 于是那条 intent 永久卡在 EXECUTING，而库里躺着一笔 RESERVED
+       的购买与一次**没有释放**的预留。那既不是"重复买"，也不是"假完成"，
+       而是第三种更坏的东西：一笔锁住的钱没有主人。
+       正确的动作是**认领**它（把那笔购买挂回 intent）然后结算它。 */
+    if (row.purchase_id == null && row.quote_id != null) {
+      const orphan = db.prepare(SQL.selectPurchaseByQuote).get(String(row.quote_id));
+      if (orphan) {
+        const orphanId = String(orphan.purchase_id);
+        const revAdopt = allocateRevision();
+        const adopted = db.prepare(SQL.attachPurchaseIntentPurchase).run(
+          orphanId, Number(revAdopt), Number(clock()), String(intentId), C.PURCHASE_INTENT_STATE.EXECUTING
+        );
+        if (Number(adopted.changes) === 1) {
+          row = db.prepare(SQL.selectPurchaseIntent).get(String(intentId));
+          appendIntentChange(rowToPurchaseIntent(row), C.EVENT_TYPE.AGENT_INTENT_DETERMINED, {
+            state: String(row.state), adoptedOrphanPurchase: true, purchaseId: orphanId,
+            recoveredAt: 'execution'
+          });
+        }
+      }
+    }
+    if (Number(row.expires_at) <= at) {
+      transitionPurchaseIntent(intentId, C.PURCHASE_INTENT_STATE.EXECUTING, C.PURCHASE_INTENT_STATE.EXPIRED, {
+        reasonCode: C.DENY_REASON.INTENT_EXPIRED
+      });
+      const view = rowToPurchaseIntent(db.prepare(SQL.selectPurchaseIntent).get(String(intentId)));
+      appendIntentChange(view, C.EVENT_TYPE.AGENT_INTENT_DETERMINED, {
+        state: view.state, reasonCode: C.DENY_REASON.INTENT_EXPIRED, atExecution: true
+      });
+      return denial(C.DENY_REASON.INTENT_EXPIRED, ['intent-expired-before-execution'], { intent: view });
+    }
+    if (row.quote_id == null) {
+      transitionPurchaseIntent(intentId, C.PURCHASE_INTENT_STATE.EXECUTING, C.PURCHASE_INTENT_STATE.FAILED, {
+        reasonCode: C.DENY_REASON.QUOTE_MISMATCH
+      });
+      const view = rowToPurchaseIntent(db.prepare(SQL.selectPurchaseIntent).get(String(intentId)));
+      return denial(C.DENY_REASON.QUOTE_MISMATCH, ['an-executing-intent-must-name-its-quote'], { intent: view });
+    }
+
+    const quoteRow = db.prepare(SQL.selectQuote).get(String(row.quote_id));
+    if (!quoteRow) {
+      transitionPurchaseIntent(intentId, C.PURCHASE_INTENT_STATE.EXECUTING, C.PURCHASE_INTENT_STATE.FAILED, {
+        reasonCode: C.DENY_REASON.QUOTE_MISMATCH
+      });
+      const view = rowToPurchaseIntent(db.prepare(SQL.selectPurchaseIntent).get(String(intentId)));
+      return denial(C.DENY_REASON.QUOTE_MISMATCH, ['intent-names-a-quote-that-does-not-exist'], { intent: view });
+    }
+    const productRow = db.prepare(SQL.selectProduct).get(String(quoteRow.product_id));
+    if (!productRow) {
+      transitionPurchaseIntent(intentId, C.PURCHASE_INTENT_STATE.EXECUTING, C.PURCHASE_INTENT_STATE.FAILED, {
+        reasonCode: C.DENY_REASON.PRODUCT_NOT_FOUND
+      });
+      const view = rowToPurchaseIntent(db.prepare(SQL.selectPurchaseIntent).get(String(intentId)));
+      return denial(C.DENY_REASON.PRODUCT_NOT_FOUND, ['product-not-found'], { intent: view });
+    }
+
+    /* ── 恢复：已经有一笔 purchase 挂在 intent 上 ───────────────────── */
+    if (row.purchase_id != null) {
+      const purchaseRow = db.prepare(SQL.selectPurchase).get(String(row.purchase_id));
+      if (!purchaseRow) {
+        transitionPurchaseIntent(intentId, C.PURCHASE_INTENT_STATE.EXECUTING, C.PURCHASE_INTENT_STATE.FAILED, {
+          reasonCode: C.DENY_REASON.INTENT_NOT_EXECUTABLE
+        });
+        const view = rowToPurchaseIntent(db.prepare(SQL.selectPurchaseIntent).get(String(intentId)));
+        return denial(C.DENY_REASON.INTENT_NOT_EXECUTABLE, ['intent-names-a-purchase-that-does-not-exist'], { intent: view });
+      }
+      const pstate = String(purchaseRow.status);
+      if (pstate === C.PURCHASE_STATE.COMPLETED) {
+        return finalizeIntent(intentId, String(row.purchase_id), at, { recoveredCompletion: true });
+      }
+      if (pstate === C.PURCHASE_STATE.RELEASED || pstate === C.PURCHASE_STATE.FAILED) {
+        transitionPurchaseIntent(intentId, C.PURCHASE_INTENT_STATE.EXECUTING, C.PURCHASE_INTENT_STATE.FAILED, {
+          reasonCode: purchaseRow.reason_code == null ? C.DENY_REASON.INTENT_NOT_EXECUTABLE : String(purchaseRow.reason_code)
+        });
+        const view = rowToPurchaseIntent(db.prepare(SQL.selectPurchaseIntent).get(String(intentId)));
+        appendIntentChange(view, C.EVENT_TYPE.AGENT_INTENT_DETERMINED, {
+          state: view.state, reasonCode: view.reasonCode, purchaseStatus: pstate
+        });
+        return denial(C.DENY_REASON.INTENT_NOT_EXECUTABLE,
+          ['the-purchase-this-intent-prepared-was-not-completed'],
+          { intent: view, purchaseStatus: pstate });
+      }
+      /* RESERVED：结算没走完（崩溃在这里）。继续结算 —— 它是幂等的。 */
+      return settleIntentPurchase(intentId, String(row.purchase_id), at, { resumedSettlement: true });
+    }
+
+    /* ── 恢复：intent 上没有 purchase_id，但**报价上**可能已经有一笔 ──────
+       ★ 这是 §16 第四个可崩溃边界（"Purchase prepared"）的正确恢复语义，
+       而它是一次真实发现：崩溃发生在 preparePurchase **提交之后**、
+       `attachPurchaseIntentPurchase` **之前**时，库里有：
+         · 一条 INTENT_STATE=EXECUTING、purchase_id 为 NULL 的 intent；
+         · 一笔 RESERVED 的 purchase（挂在同一份报价上）；
+         · 一次被占用的预留。
+       此时**不能**重新 prepare —— P22-6 的 UNIQUE(quote_id) 会以
+       `this-quote-is-already-linked-to-a-purchase` 拒绝，而那不是缺陷，
+       那正是"一份报价最多一笔购买"这条性质在起作用。
+       正确的动作是**接着做**：把那笔已经存在的购买挂回 intent 上，然后
+       结算它。这与 P22-7 worker 的 'resume' 模式是同一条纪律（先找既有
+       的 RESERVED 购买，有就续做），只是这次它由 runtime 自己完成。 */
+    const existingForQuote = db.prepare(SQL.selectPurchaseByQuote).get(String(row.quote_id));
+    if (existingForQuote) {
+      const existingId = String(existingForQuote.purchase_id);
+      const revAdopt = allocateRevision();
+      const adopted = db.prepare(SQL.attachPurchaseIntentPurchase).run(
+        existingId, Number(revAdopt), Number(at), String(intentId), C.PURCHASE_INTENT_STATE.EXECUTING
+      );
+      if (Number(adopted.changes) !== 1) {
+        return { ok: false, denied: false, reasonCode: C.DENY_REASON.INTENT_NOT_EXECUTABLE,
+          errors: ['an-existing-purchase-could-not-be-adopted-by-the-intent'], purchaseId: existingId };
+      }
+      const existingState = String(existingForQuote.status);
+      if (existingState === C.PURCHASE_STATE.COMPLETED) {
+        return finalizeIntent(intentId, existingId, at, { recoveredCompletion: true, adoptedExistingPurchase: true });
+      }
+      if (existingState === C.PURCHASE_STATE.RESERVED) {
+        return settleIntentPurchase(intentId, existingId, at, { resumedSettlement: true, adoptedExistingPurchase: true });
+      }
+      transitionPurchaseIntent(intentId, C.PURCHASE_INTENT_STATE.EXECUTING, C.PURCHASE_INTENT_STATE.FAILED, {
+        reasonCode: existingForQuote.reason_code == null
+          ? C.DENY_REASON.INTENT_NOT_EXECUTABLE : String(existingForQuote.reason_code)
+      });
+      const view = rowToPurchaseIntent(db.prepare(SQL.selectPurchaseIntent).get(String(intentId)));
+      return denial(C.DENY_REASON.INTENT_NOT_EXECUTABLE,
+        ['the-purchase-already-linked-to-this-quote-was-not-completed'],
+        { intent: view, purchaseId: existingId, purchaseStatus: existingState });
+    }
+
+    /* ── 首次执行：preparePurchase（P22-6 的 canonical 入口）────────── */
+    const agent = intentPartyOf(row.agent_id, 'agentId');
+    if (!agent.ok) return { ok: false, denied: false, reasonCode: null, errors: agent.errors };
+    const recipientRef = row.recipient_id == null ? null : partyInput(String(row.recipient_id));
+    const recipientParty = recipientRef == null ? null : (recipientRef.ok === true ? recipientRef.party : null);
+
+    /* ★ 授权那一面由 intent 的**引用**决定，而不是由 `authority_outcome`
+       这一个字段决定 —— 这是开发期实测踩到的一次真实缺陷：
+       `authority_outcome` 记的是**权威判定的结论**
+       （AUTO_ALLOW / REQUIRE_APPROVAL / DENY），而 P22-6 要的是
+       **购买的授权模式**（PURCHASE_APPROVAL_MODE 只有两个词）。
+       两者看起来都能回答"这算不算自主"，但它们**不是**同一个词表：
+       REQUIRE_APPROVAL 是一个结论，而不是一种购买模式 —— 它变成购买模式
+       的唯一方式是**那条批准真的存在**。因此判据是：
+         approval_id 存在 → APPROVAL 模式（把那张批准的 id 递进去）
+         否则             → AUTO_ALLOW 模式（把重算出来的授权身份递进去）
+       用 authority_outcome 去选模式会让一条被批准过的 intent 走进
+       "AUTO_ALLOW"分支，而它手里握着的是一张批准 —— 那正是 §6 禁止的
+       "把批准当成一次自主放行"。 */
+    const mode = row.approval_id != null
+      ? C.PURCHASE_APPROVAL_MODE.APPROVAL
+      : C.PURCHASE_APPROVAL_MODE.AUTO_ALLOW;
+    let prepareInput = {
+      quoteId: String(row.quote_id),
+      buyerId: String(row.agent_id),
+      recipientId: row.recipient_id == null ? null : String(row.recipient_id),
+      units: Number(row.units),
+      expiresAt: Number(row.expires_at),
+      /* ★ 幂等 key 由 intent 派生：同一条 intent 的"准备购入"永远是
+         那一次，于是重放返回的是**同一笔** purchase，而不是第二笔。 */
+      idempotencyKey: 'econ.intent.prepare+' + String(intentId)
+    };
+    if (mode === C.PURCHASE_APPROVAL_MODE.APPROVAL) {
+      if (row.approval_id == null) {
+        transitionPurchaseIntent(intentId, C.PURCHASE_INTENT_STATE.EXECUTING, C.PURCHASE_INTENT_STATE.FAILED, {
+          reasonCode: C.DENY_REASON.APPROVAL_NOT_FOUND
+        });
+        const view = rowToPurchaseIntent(db.prepare(SQL.selectPurchaseIntent).get(String(intentId)));
+        return denial(C.DENY_REASON.APPROVAL_NOT_FOUND, ['approval-mode-without-an-approval-id'], { intent: view });
+      }
+      /* §7：恢复执行带的是**那条批准**，而它绑定的必须是**这一份**报价。
+         P22-6 会在自己的写锁里逐字复核九个字段，因此"拿批准 A 去买 B"
+         在这里不可能成立。 */
+      prepareInput.approvalId = String(row.approval_id);
+    } else if (mode === C.PURCHASE_APPROVAL_MODE.AUTO_ALLOW) {
+      if (row.approval_id != null) {
+        transitionPurchaseIntent(intentId, C.PURCHASE_INTENT_STATE.EXECUTING, C.PURCHASE_INTENT_STATE.FAILED, {
+          reasonCode: C.DENY_REASON.TRANSITION_NOT_ALLOWED
+        });
+        const view = rowToPurchaseIntent(db.prepare(SQL.selectPurchaseIntent).get(String(intentId)));
+        return denial(C.DENY_REASON.TRANSITION_NOT_ALLOWED,
+          ['an-autonomous-intent-must-not-carry-an-approval-id'], { intent: view });
+      }
+      /* ★ 策略 id 从**当前**策略重读，而不是从 intent 行里读一个可能已经
+         被改掉 / 删掉的 id：P22-6 会在自己的写锁里把 (策略身份, 九元组)
+         一起重算，因此这里读到的那一个必须与它算出来的一致。
+         ★ 这里**不**重新判定"是不是 AUTO_ALLOW"（那已经在 Phase B 由
+         P22-7 做过，结论落库在 authority_outcome 上）。这里只取策略的
+         **身份**，而 P22-6 用这个身份证明"当初放行的那条规则现在仍然说
+         得通"。两者合起来才是"权威判定不是一次性的声明"。 */
+      const policy = autonomyPolicyForOwner(String(row.agent_id));
+      if (!policy) {
+        transitionPurchaseIntent(intentId, C.PURCHASE_INTENT_STATE.EXECUTING, C.PURCHASE_INTENT_STATE.FAILED, {
+          reasonCode: C.DENY_REASON.AUTONOMY_NOT_PERMITTED
+        });
+        const view = rowToPurchaseIntent(db.prepare(SQL.selectPurchaseIntent).get(String(intentId)));
+        return denial(C.DENY_REASON.AUTONOMY_NOT_PERMITTED,
+          ['the-autonomy-policy-that-allowed-this-intent-is-no-longer-present'], { intent: view });
+      }
+      const binding = intentBindingOf(quoteRow, productRow, agent.party, recipientParty, Number(row.units));
+      if (binding.ok !== true) {
+        transitionPurchaseIntent(intentId, C.PURCHASE_INTENT_STATE.EXECUTING, C.PURCHASE_INTENT_STATE.FAILED, {
+          reasonCode: C.DENY_REASON.POLICY_INPUT_NOT_STRUCTURED
+        });
+        const view = rowToPurchaseIntent(db.prepare(SQL.selectPurchaseIntent).get(String(intentId)));
+        return denial(C.DENY_REASON.POLICY_INPUT_NOT_STRUCTURED, binding.errors, { intent: view });
+      }
+      prepareInput.autonomyPolicyId = String(policy.policyId);
+      prepareInput.approvalBindingFingerprint = String(binding.fingerprint);
+    } else {
+      transitionPurchaseIntent(intentId, C.PURCHASE_INTENT_STATE.EXECUTING, C.PURCHASE_INTENT_STATE.FAILED, {
+        reasonCode: C.DENY_REASON.POLICY_INPUT_NOT_STRUCTURED
+      });
+      const view = rowToPurchaseIntent(db.prepare(SQL.selectPurchaseIntent).get(String(intentId)));
+      return denial(C.DENY_REASON.POLICY_INPUT_NOT_STRUCTURED,
+        ['an-executing-intent-must-name-a-canonical-authority-outcome'],
+        { intent: view, authorityOutcome: row.authority_outcome == null ? null : String(row.authority_outcome) });
+    }
+
+    const prepared = preparePurchase(prepareInput);
+    if (prepared.ok !== true) {
+      /* ★ 预算 DENY / 预留不足 / 报价改动都会到这里，而它们的正确结局是
+         **FAILED**：intent 说自己拿到了执行权，但 P22-6 拒绝了这笔钱。
+         §6 的"仍必经 Budget + Reservation"就落在这里 —— 这句话不是
+         "我们会记得检查"，而是"唯一通往结算的路要经过那两个函数"。 */
+      transitionPurchaseIntent(intentId, C.PURCHASE_INTENT_STATE.EXECUTING, C.PURCHASE_INTENT_STATE.FAILED, {
+        reasonCode: prepared.reasonCode == null ? C.DENY_REASON.INTENT_NOT_EXECUTABLE : prepared.reasonCode
+      });
+      const view = rowToPurchaseIntent(db.prepare(SQL.selectPurchaseIntent).get(String(intentId)));
+      appendIntentChange(view, C.EVENT_TYPE.AGENT_INTENT_DETERMINED, {
+        state: view.state,
+        reasonCode: view.reasonCode,
+        prepareFailed: true,
+        reservedNothing: prepared.reservedNothing === true || prepared.denied === true
+      });
+      return denial(prepared.reasonCode == null ? C.DENY_REASON.INTENT_NOT_EXECUTABLE : prepared.reasonCode,
+        (prepared.errors && prepared.errors.length) ? prepared.errors : ['purchase-could-not-be-prepared'],
+        { intent: view, prepareDenied: prepared.denied === true, purchasePrepared: false });
+    }
+    const purchaseId = String(prepared.result.purchaseId);
+    /* ── §16 第四个可崩溃边界：**Purchase prepared** ────────────────────
+       ★ 这个点在 preparePurchase **提交之后**、attach 之前：命中时库里
+       有一笔 RESERVED 的购买与一笔被占用的预留，而 intent 仍然停在
+       EXECUTING 且**没有** purchase_id。恢复路径因此不能只看 intent 的
+       purchase_id 就下结论 —— 它必须能从"报价 → 购买"这条既有链上找到
+       那一笔（见 executeIntent 开头的认领段）。 */
+    faultPoint('after-intent-purchase-prepared');
+    /* 把 purchase 挂到 intent 上（恢复路径的锚点）。同样**不是**状态迁移：
+       EXECUTING 还是 EXECUTING，变的只是"它已经进行到哪一笔购买"。 */
+    const attachRev = allocateRevision();
+    const attachInfo = db.prepare(SQL.attachPurchaseIntentPurchase).run(
+      purchaseId, Number(attachRev), Number(at), String(intentId), C.PURCHASE_INTENT_STATE.EXECUTING
+    );
+    if (Number(attachInfo.changes) !== 1) {
+      /* ★★ 挂不上 purchase 有**两个**完全不同的原因，而它们必须分开回答：
+         ① 另一个进程已经在这条 intent 上挂好并结算完了 —— 那**不是**失败，
+            它的世界是正确的，而正确的动作是**读回那个结局**；
+         ② 这条 intent 已经不在 EXECUTING 了（被别的路径推进）—— 同样读回。
+       开发期实测（E 组，两个真实进程同时 resume 同一条 APPROVED intent）：
+       `preparePurchase` 的幂等闸门让输的那一方**拿到了赢家的同一笔购买**
+       （这正是幂等性在起作用），于是它手里的 purchaseId 与 intent 上已经
+       写着的那一个**逐字相同**，而 attach 的 `AND purchase_id IS NULL`
+       谓词让它拿到 changes=0。少了下面这一段时，结果是"输的一方报
+       INTENT_NOT_EXECUTABLE，而它的世界里一切正常" —— 两个进程读到两个
+       世界，而这正是 §16 要挡的东西。 */
+      const settledRow = db.prepare(SQL.selectPurchaseIntent).get(String(intentId));
+      const settledState = settledRow == null ? null : String(settledRow.state);
+      const samePurchase = settledRow != null && settledRow.purchase_id != null &&
+        String(settledRow.purchase_id) === purchaseId;
+      if (settledState === C.PURCHASE_INTENT_STATE.COMPLETED) {
+        return {
+          ok: true,
+          replayed: true,
+          alreadyCompleted: true,
+          intentId: String(intentId),
+          intent: rowToPurchaseIntent(settledRow),
+          purchaseId: purchaseId,
+          quoteId: settledRow.quote_id == null ? null : String(settledRow.quote_id),
+          mayExecute: false,
+          nextAction: 'none',
+          purchaseCreated: false,
+          completedByAnotherProcess: true
+        };
+      }
+      if (samePurchase && settledState === C.PURCHASE_INTENT_STATE.EXECUTING) {
+        /* 同一笔购买、同一条 intent、还在执行中：**接着把它结算完**。
+           settlePurchase 是幂等的（自己的 (scope, key) 记录），因此赢家先
+           做完也只会得到同一个答案 —— 而这一支是多进程实测补上的第三类
+           原因：挂不上不等于冲突。 */
+        return settleIntentPurchase(intentId, purchaseId, at, { adoptedSamePurchase: true });
+      }
+      /* 那条 intent 上挂着的是**另一笔**购买：这是一次真实的冲突，应当
+         如实报告，而不是把它悄悄改成"成功"。 */
+      return { ok: false, denied: false, reasonCode: C.DENY_REASON.INTENT_NOT_EXECUTABLE,
+        errors: ['purchase-could-not-be-attached-to-the-intent'],
+        purchaseId: purchaseId,
+        intentState: settledState,
+        attachedPurchaseId: settledRow == null || settledRow.purchase_id == null
+          ? null : String(settledRow.purchase_id) };
+    }
+    return settleIntentPurchase(intentId, purchaseId, at, { prepared: true, replayedPrepare: prepared.replayed === true });
+  }
+
+  /* settlePurchase → 成功则把 intent 记为 COMPLETED（可崩溃边界 #4）。 */
+  function settleIntentPurchase(intentId, purchaseId, at, meta) {
+    const settled = settlePurchase({
+      purchaseId: String(purchaseId),
+      idempotencyKey: 'econ.intent.settle+' + String(intentId)
+    });
+    if (settled.ok !== true) {
+      /* ★★ "结算没成功"有两种截然不同的意思，而合并它们会让一条**正确**的
+         实现被判成失败 —— 这是多进程实测踩到的一次真实缺陷：
+
+         ① 另一个进程**已经把它结算完了**（或它已经不是 RESERVED 了）：
+            P22-6 的终态闸门会以 TRANSITION_NOT_ALLOWED + terminal:true 拒绝。
+            那不是失败 —— 那笔购买已经完成，正确的动作是把它与 intent 一起
+            推到终点。
+         ② 结算**真的**失败了（预算在最后一道复核处说不、余额不足、预留
+            过期…）：那才是 FAILED。
+
+         判据是"那笔 purchase 现在是不是 COMPLETED"。少了这一区分时，症状
+         是"两个进程同时结算同一笔购买 → 输的那个把 intent 写成 FAILED，
+         而那笔购买其实是 COMPLETED"：一条**假失败**的 intent 对应一笔已经
+         完成的购买，而两个进程从此读到两个世界。 */
+      const purchaseNow = db.prepare(SQL.selectPurchase).get(String(purchaseId));
+      const purchaseNowState = purchaseNow == null ? null : String(purchaseNow.status);
+      if (purchaseNowState === C.PURCHASE_STATE.COMPLETED) {
+        /* 它已经完成了：**照常完成 intent**，而不是报一次失败。
+           （`finalizeIntent` 自己会在终态闸门上认出并发完成并返回同一个结局。） */
+        faultPoint('after-intent-purchase-settled');
+        return finalizeIntent(intentId, String(purchaseId), at,
+          Object.assign({ settledByAnotherProcess: true }, meta || {}));
+      }
+      if (settled.terminal === true && purchaseNowState === C.PURCHASE_STATE.RESERVED) {
+        /* terminal 拒绝、而购买仍停在 RESERVED：这是"另一个进程正在结算"的
+           中间视图。
+           ★★ 这里**不能**就此放手 —— 多进程实测（D 组）踩到过一次"一笔
+           RESERVED 的购买没有主人"：赢家被撞了一下、而输家读到中间态就走了，
+           于是那笔钱一直锁着，而 intent 停在 EXECUTING。
+           正确的动作是**有界地再试一次**：赢家写完结局之后，这一次读到的就是
+           终态（或者我们领到并把它做完）。上限 20 × 25ms = 0.5 秒 —— 与
+           一次完整执行同量级。 */
+        for (let attempt = 0; attempt < 60; attempt += 1) {
+          const until = Date.now() + 25;
+          while (Date.now() < until) { /* 有界等待 */ }
+          const now = db.prepare(SQL.selectPurchase).get(String(purchaseId));
+          const nowState = now == null ? null : String(now.status);
+          if (nowState === C.PURCHASE_STATE.COMPLETED) {
+            faultPoint('after-intent-purchase-settled');
+            return finalizeIntent(intentId, String(purchaseId), at,
+              Object.assign({ settledByAnotherProcess: true, waitedForSettlement: true }, meta || {}));
+          }
+          if (nowState !== C.PURCHASE_STATE.RESERVED) break;
+          /* 还是 RESERVED：再试一次结算 —— 它自己是幂等的，而且写锁会让
+             两个进程串行化。 */
+          const retry = settlePurchase({
+            purchaseId: String(purchaseId),
+            idempotencyKey: 'econ.intent.settle+' + String(intentId)
+          });
+          if (retry.ok === true) {
+            faultPoint('after-intent-purchase-settled');
+            return finalizeIntent(intentId, String(purchaseId), at,
+              Object.assign({ settled: true, retriedSettlement: true }, meta || {}));
+          }
+          if (retry.reasonCode !== settled.reasonCode) {
+            /* 换了一个拒绝码：那才是真的失败。 */
+            transitionPurchaseIntent(intentId, C.PURCHASE_INTENT_STATE.EXECUTING, C.PURCHASE_INTENT_STATE.FAILED, {
+              reasonCode: retry.reasonCode == null ? C.DENY_REASON.INTENT_NOT_EXECUTABLE : retry.reasonCode
+            });
+            const failedView = rowToPurchaseIntent(db.prepare(SQL.selectPurchaseIntent).get(String(intentId)));
+            appendIntentChange(failedView, C.EVENT_TYPE.AGENT_INTENT_DETERMINED, {
+              state: failedView.state, reasonCode: failedView.reasonCode, settleFailed: true
+            });
+            return denial(retry.reasonCode == null ? C.DENY_REASON.INTENT_NOT_EXECUTABLE : retry.reasonCode,
+              (retry.errors && retry.errors.length) ? retry.errors : ['purchase-could-not-be-settled'],
+              { intent: failedView, purchaseId: String(purchaseId), purchaseSettled: false });
+          }
+        }
+        /* 有界重试用完，而它仍然停在 RESERVED：如实报告"我读到的是中间态"。
+           下一次调用会接着做（`executeIntent` 的恢复段认识 EXECUTING +
+           RESERVED 的组合）。 */
+        const pendingView = rowToPurchaseIntent(db.prepare(SQL.selectPurchaseIntent).get(String(intentId)));
+        return {
+          ok: true, replayed: true, pendingSettlement: true,
+          intentId: String(intentId),
+          intent: pendingView,
+          purchaseId: String(purchaseId),
+          quoteId: pendingView == null ? null : pendingView.quoteId,
+          mayExecute: false,
+          nextAction: 'execute',
+          purchaseCreated: true
+        };
+      }
+      transitionPurchaseIntent(intentId, C.PURCHASE_INTENT_STATE.EXECUTING, C.PURCHASE_INTENT_STATE.FAILED, {
+        reasonCode: settled.reasonCode == null ? C.DENY_REASON.INTENT_NOT_EXECUTABLE : settled.reasonCode
+      });
+      const view = rowToPurchaseIntent(db.prepare(SQL.selectPurchaseIntent).get(String(intentId)));
+      appendIntentChange(view, C.EVENT_TYPE.AGENT_INTENT_DETERMINED, {
+        state: view.state, reasonCode: view.reasonCode, settleFailed: true
+      });
+      return denial(settled.reasonCode == null ? C.DENY_REASON.INTENT_NOT_EXECUTABLE : settled.reasonCode,
+        (settled.errors && settled.errors.length) ? settled.errors : ['purchase-could-not-be-settled'],
+        { intent: view, purchaseId: String(purchaseId), purchaseSettled: false,
+          reasonCodes: settled.reasonCodes || null });
+    }
+    /* ── §16 第五个可崩溃边界：**Purchase settled** ─────────────────────
+       ★ 这个点在 settlePurchase **提交之后**、intent 记成 COMPLETED
+       **之前**。命中时库里是"钱扣了、资产发了、报价消费了、批准消费了，
+       而 intent 仍然写着 EXECUTING" —— 也就是一条**看起来还没完成**的
+       intent 对应一笔**已经完成**的购买。
+       恢复路径必须能认出这个组合并且只做一件事：把 intent 补写成
+       COMPLETED。它**绝不能**重新结算（那会试图再扣一次钱），而
+       settlePurchase 的终态闸门会拒绝第二次，因此这里的安全性是双重的。 */
+    faultPoint('after-intent-purchase-settled');
+    return finalizeIntent(intentId, String(purchaseId), at, Object.assign({ settled: true }, meta || {}));
+  }
+
+  /* ── ★★ 收尾：一条 intent 必须收敛到终态（`owned` 路径的纪律）──────────
+     多进程实测（D / G 组）反复暴露同一类症状：赢家完成了、而**另一个**进程
+     报的是中间态（PROPOSED / EXECUTING）。让每一个调用方各自实现"再等等、
+     再做一次"的循环，等于把同一条不变量抄写在十处。
+
+     因此它被收敛成一个出口：**有界地重复执行，直到那条 intent 到达终态、
+     或直到上界用完**。每一次重复都经过 `executeIntent` —— 而它的每一步都带
+     自己的幂等闸门（claim / attach 的 `AND <col> IS NULL` 谓词、prepare /
+     settle 的 (scope, key) 记录、finalize 的终态检查），因此重复**不会**
+     产生第二笔购买、第二次扣款或第二次发货。
+     上界 8 × 每轮 0.5 秒 = 4 秒，与"一次完整执行约 30～80ms"差两个数量级。 */
+  function convergeIntentToEndpoint(intentId, options) {
+    const o = options || {};
+    let last = null;
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      last = executeIntent(intentId, o);
+      const row = db.prepare(SQL.selectPurchaseIntent).get(String(intentId));
+      if (row == null) break;
+      if (C.isPurchaseIntentTerminalState(String(row.state))) break;
+      /* 它没到终态：等一会儿再来一次。
+         ★ 而"再来一次"必须走**同一条**入口（`executeIntent`），因此它会
+         重新领执行权 —— 领到的人接着做，领不到的人继续等。
+         两条路都由各自的幂等闸门保证只发生一次经济动作。 */
+      const until = Date.now() + 500;
+      while (Date.now() < until) { /* 有界等待：让另一个进程把结局写完 */ }
+    }
+    const finalRow = db.prepare(SQL.selectPurchaseIntent).get(String(intentId));
+    if (finalRow != null && C.isPurchaseIntentTerminalState(String(finalRow.state))) {
+      const view = rowToPurchaseIntent(finalRow);
+      /* ★★ `ok` 的语义必须在这里被**算一次**，而不能无条件写成 true ——
+         多进程实测（B / C 组）踩到的一次真实缺陷：这一支一度硬编码
+         `ok: true`，于是"预算说不、intent 走 FAILED"被报成一次成功，
+         而 C1 恰好断言 `ok === false`。
+
+         语义定下来是这一句：**`ok` 回答"这条 intent 最后买成了吗"**，
+         而不是"这次调用有没有抛错"。
+           · COMPLETED          → ok:true（买成了）；
+           · DENIED / EXPIRED / FAILED → ok:false，并带回那个拒绝码 ——
+             它是一次**有答案的拒绝**，不是一个未定义的结果。
+         调用方要区分"被拒绝"与"出了故障"，看 `reasonCode` 是否落在契约的
+         封闭集合里（`isDenyReasonCode`）。 */
+      const completed = String(finalRow.state) === C.PURCHASE_INTENT_STATE.COMPLETED;
+      return Object.assign({}, last, {
+        ok: completed,
+        intentId: String(intentId),
+        intent: view,
+        quoteId: view.quoteId,
+        approvalId: view.approvalId,
+        purchaseId: view.purchaseId,
+        mayExecute: false,
+        nextAction: 'none',
+        purchaseCreated: view.purchaseId != null,
+        reasonCode: completed ? null : view.reasonCode,
+        terminalState: String(finalRow.state),
+        converged: true
+      });
+    }
+    return last;
+  }
+
+  /* 结算成功之后把 intent 记为 COMPLETED。**只有当 P22-6 的那一行真的是
+     COMPLETED 时**才允许 —— 这条读是"不得假完成"的结构保证。 */
+  function finalizeIntent(intentId, purchaseId, at, meta) {
+    const purchaseRow = db.prepare(SQL.selectPurchase).get(String(purchaseId));
+    if (!purchaseRow) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['purchase-not-found-after-settlement'] };
+    }
+    if (String(purchaseRow.status) !== C.PURCHASE_STATE.COMPLETED) {
+      transitionPurchaseIntent(intentId, C.PURCHASE_INTENT_STATE.EXECUTING, C.PURCHASE_INTENT_STATE.FAILED, {
+        reasonCode: C.DENY_REASON.INTENT_NOT_EXECUTABLE
+      });
+      const view = rowToPurchaseIntent(db.prepare(SQL.selectPurchaseIntent).get(String(intentId)));
+      return denial(C.DENY_REASON.INTENT_NOT_EXECUTABLE,
+        ['an-intent-may-only-complete-on-a-completed-purchase'],
+        { intent: view, purchaseStatus: String(purchaseRow.status), purchaseId: String(purchaseId) });
+    }
+    const moved = transitionPurchaseIntent(intentId, C.PURCHASE_INTENT_STATE.EXECUTING, C.PURCHASE_INTENT_STATE.COMPLETED, {
+      purchaseId: String(purchaseId),
+      /* ★ 一条成功的 intent 没有拒绝码。写成 `null` 而不是留旧值：
+         它曾经带着 authority 的 reasonCode（可能是一条"为什么需要批准"
+         的解释），而那条解释在成功的记录上会变成一句误导。 */
+      reasonCode: null,
+      completedAt: Number(at)
+    });
+    if (moved.ok !== true) {
+      /* 并发：另一个进程先把它完成了。**不是**错误 —— 那正是"最多一次"
+         想要的结果。 */
+      const current = db.prepare(SQL.selectPurchaseIntent).get(String(intentId));
+      const view = rowToPurchaseIntent(current);
+      if (String(current.state) === C.PURCHASE_INTENT_STATE.COMPLETED) {
+        return { ok: true, replayed: true, intent: view, purchaseId: String(purchaseId),
+          concurrentCompletion: true };
+      }
+      return { ok: false, denied: false, reasonCode: moved.reasonCode || null,
+        errors: moved.errors || ['intent-could-not-be-completed'], transition: moved, intent: view };
+    }
+    const finalRow = db.prepare(SQL.selectPurchaseIntent).get(String(intentId));
+    const view = rowToPurchaseIntent(finalRow);
+    /* ── §16 第六个可崩溃边界：**Intent completed** ─────────────────────
+       ★ 这个点排在状态推进**之后**、change log 之前：命中时那条 intent
+       已经是 COMPLETED，而它缺一条 AGENT_INTENT_DETERMINED 的 change log。
+       这是六个边界里**唯一**一个"事实已经全部成立、只是少了一条解释"的
+       情形 —— 因此恢复路径对它的正确答案是"什么都不用重做"（终态闸门会
+       把任何重试挡回去），而 change log 里少一条是**可接受**的：审计读的
+       是 intent 的状态与它引用的购买，而不是某一条日志行是否写下了。 */
+    faultPoint('after-intent-completed');
+    appendIntentChange(view, C.EVENT_TYPE.AGENT_INTENT_DETERMINED, Object.assign({
+      state: view.state,
+      reasonCode: null,
+      /* ★ 最终买了多少钱的**唯一**答案来自 canonical 行，而不是 intent。 */
+      quoteId: String(purchaseRow.quote_id),
+      transactionId: purchaseRow.ledger_transaction_id == null ? null : String(purchaseRow.ledger_transaction_id),
+      reservationId: String(purchaseRow.reservation_id),
+      inventoryEntryId: purchaseRow.inventory_entry_id == null ? null : String(purchaseRow.inventory_entry_id),
+      ledgerMutation: true,
+      inventoryMutation: purchaseRow.inventory_entry_id != null,
+      completed: true
+    }, meta || {}));
+    return {
+      ok: true,
+      intentId: String(intentId),
+      intent: view,
+      quoteId: String(purchaseRow.quote_id),
+      purchaseId: String(purchaseId),
+      completed: true
+    };
+  }
+
+  /* ══════════════════════════════════════════════════════════════════
+     P22-8 §14 · proposeAgentPurchaseIntent —— **唯一**的提议入口
+
+     它接受的是**一条提议**（六个字段的白名单），而不是一个经济请求。
+     ★ 它的名字里没有 "execute"、没有 "settle"、没有 "approve"：
+     那些词属于本函数**调用**的确定性 runtime，不属于它的调用方。
+     ══════════════════════════════════════════════════════════════════ */
+  function proposeAgentPurchaseIntent(input) {
+    requireOpen();
+    const o = input || {};
+    const key = C.normalizeIdempotencyKey(o.idempotencyKey);
+    if (!key.ok) return { ok: false, denied: false, reasonCode: null, errors: key.errors };
+
+    /* ① 规范化（§4 的经济事实拒绝发生在这里，排在一切之前）。 */
+    const normalized = C.normalizePurchaseIntentProposal(o.proposal);
+    if (normalized.ok !== true) {
+      const code = normalized.reasonCode == null ? null : normalized.reasonCode;
+      if (normalized.suppliedEconomicFacts && normalized.suppliedEconomicFacts.length) {
+        /* ★ 这是一次**信任边界违规**，不是一次格式错误。 */
+        return denial(C.DENY_REASON.MODEL_SUPPLIED_ECONOMIC_FACT,
+          normalized.errors,
+          {
+            suppliedEconomicFacts: normalized.suppliedEconomicFacts,
+            unknownKeys: normalized.unknownKeys,
+            /* 这三句是"这些字段必须重新从 canonical Economy facts 派生"的
+               可读版本 —— 递进来也不会被采纳。 */
+            rejectedFieldsAreDerivedFromCanonicalFacts: true,
+            acceptedProposalKeys: C.PURCHASE_INTENT_PROPOSAL_KEYS,
+            proposedNothing: true
+          });
+      }
+      return {
+        ok: false, denied: false, reasonCode: code, errors: normalized.errors,
+        unknownKeys: normalized.unknownKeys || [],
+        /* ★ 这两个字段在**两种**拒绝上都在：一条"我拒了，而且我没读到任何
+           经济事实"与一条"我拒了，因为你递了经济事实"必须是同一个形状，
+           否则调用方就得靠 `undefined` 去猜自己撞上了哪一种。 */
+        suppliedEconomicFacts: normalized.suppliedEconomicFacts || [],
+        acceptedProposalKeys: C.PURCHASE_INTENT_PROPOSAL_KEYS,
+        proposedNothing: true
+      };
+    }
+    const proposal = normalized.proposal;
+    const at = clock();
+
+    /* ② 语义归一化：agent 必须是 canonical 角色 / 用户；recipient 同理。 */
+    const agent = intentPartyOf(proposal.agentId, 'agentId');
+    if (!agent.ok) return { ok: false, denied: false, reasonCode: null, errors: agent.errors };
+    let recipient = null;
+    if (proposal.recipientId != null) {
+      const r = intentPartyOf(proposal.recipientId, 'recipientId');
+      if (!r.ok) return { ok: false, denied: false, reasonCode: null, errors: r.errors };
+      recipient = r.party;
+      if (String(recipient.id) === String(agent.party.id)) {
+        /* 与 P22-6 的 deriveRecipient 同一条纪律：给自己买就是 selfDirected，
+           而不是"recipient 恰好等于 buyer"。 */
+        return {
+          ok: false, denied: false, reasonCode: C.DENY_REASON.INTENT_NOT_EXECUTABLE,
+          errors: ['a-recipient-must-differ-from-the-agent'],
+          hint: 'omit recipientId for a self-directed purchase'
+        };
+      }
+    }
+
+    /* ③ 有效期：夹在 [now, now + 上限] 之内。 */
+    const requested = proposal.expiresAt == null ? null : Number(proposal.expiresAt);
+    let expiresAt = requested == null ? at + C.PURCHASE_INTENT_DEFAULT_LIFETIME_MS : requested;
+    if (expiresAt > at + C.PURCHASE_INTENT_MAX_LIFETIME_MS) {
+      expiresAt = at + C.PURCHASE_INTENT_MAX_LIFETIME_MS;
+    }
+    if (expiresAt <= at) {
+      return denial(C.DENY_REASON.INTENT_EXPIRED, ['intent-expires-at-is-not-in-the-future'],
+        { expiresAt: Number(expiresAt), now: at, proposedNothing: true });
+    }
+
+    const canonical = {
+      agentId: String(agent.party.id),
+      agentType: String(agent.party.type),
+      productId: String(proposal.productId),
+      recipientId: recipient == null ? null : String(recipient.id),
+      recipientType: recipient == null ? null : String(recipient.type),
+      selfDirected: recipient == null,
+      units: Number(proposal.units),
+      reason: proposal.reason,
+      expiresAt: Number(expiresAt)
+    };
+
+    /* ④ 身份（不含 reason，不含 expiresAt，不含任何生成的 id）。 */
+    const fp = C.purchaseIntentFingerprint({
+      agentId: canonical.agentId,
+      productId: canonical.productId,
+      recipientId: canonical.recipientId,
+      units: canonical.units,
+      selfDirected: canonical.selfDirected
+    });
+    if (fp.ok !== true) return denial(C.DENY_REASON.INTENT_NOT_EXECUTABLE, fp.errors);
+
+    /* ⑤ 那个商品此刻**存在**吗。这一条必须在写任何东西之前：一条指向
+       不存在商品的 intent 连自己的报价都生成不出来，而"先写一条注定
+       失败的记录"会让审计里多出一堆没有信息量的行。 */
+    const productRow = db.prepare(SQL.selectProduct).get(canonical.productId);
+    if (!productRow) {
+      return denial(C.DENY_REASON.PRODUCT_NOT_FOUND, ['product-not-found'],
+        { productId: canonical.productId, proposedNothing: true, productBacked: false });
+    }
+    if (String(productRow.status) !== C.PRODUCT_STATUS.ACTIVE) {
+      return denial(C.DENY_REASON.PRODUCT_DISABLED, ['product-is-not-active'],
+        { productId: canonical.productId, productStatus: String(productRow.status), proposedNothing: true });
+    }
+
+    /* ⑥ Phase A：写下这条 intent（可崩溃边界 #1）。 */
+    const created = createIntentRow(canonical, key.key, fp.fingerprint, at);
+    if (created.ok !== true) return created;
+    if (created.suppressed) return created;
+
+    const intentId = created.intent.agentIntentId;
+    /* ★ 重放的处理有一个真实的分支，而不是"原样返回当初那个结果"：
+         ① 那条 intent 已经**越过** PROPOSED → 原样返回它当初的结局，
+            但返回形状必须与首次调用**一致**（`intentId` / `quoteId` /
+            `approvalId` 三个顶层字段都要在）。开发期实测踩到的一次真实
+            缺陷：这一支曾经直接把 createIntentRow 的结果交出去，于是重放
+            时 `intentId` 变成 undefined —— 一个"偶发缺失的 id"比一句错误
+            难查得多，因为调用方会拿 undefined 去做下一步。
+         ② 那条 intent **还停在** PROPOSED → 上一次调用在写完之后就中断了
+            （§16 的第一个可崩溃边界）。此时"重放"的正确含义是**继续**，
+            而不是把一条半成品当成答案 —— 否则这条 intent 会永久卡在
+            PROPOSED 上，而调用方每次重试都拿到同一句"已存在"。
+       两条都不是猜测：判据是那条 canonical 行自己的 state。 */
+    if (created.replayed && RESOLVED_INTENT_STATES.indexOf(String(created.intent.state)) >= 0) {
+      /* ★★ 而"越过 PROPOSED"里还有**两种**情形，它们的正确动作不同：
+         · 那条 intent 还在 EXECUTING —— 上一次调用在结算前后中断了。此时
+           "重放"= **继续把它做完**（`executeIntent` 自己会认出它有没有一笔
+           已准备的购买，见 executeIntent 的恢复段）；
+         · 任何终态 —— 原样返回它当初的结局。
+        开发期实测（多进程崩溃组）踩到：少了上面那一条时，崩溃在
+        "Purchase prepared" 之后的那条 intent 永久卡在 EXECUTING ——
+        每次重试都回一句"已存在"，而库里躺着一次没有释放的预留。 */
+      if (String(created.intent.state) === C.PURCHASE_INTENT_STATE.EXECUTING && created.intent.purchaseId == null) {
+        /* ★ `owned` **不**传 true：这一支是从库里读到的 EXECUTING，而它究竟
+           是"我上一次崩在这里"还是"另一个进程正在做"**读不出来**。执行权
+           必须由 `claimIntentForExecution` 回答 —— 而它对 EXECUTING 的回答
+           是 owned:false（不抢），于是这一支会走 `endpointOfIntentAfterLoss`：
+           等那位执行者写完结局；如果根本没有执行者（崩溃留下的），那它写不出
+           结局，于是本次调用如实回答"我正在被别人处理"。
+           ★ 而"崩溃留下的 EXECUTING 必须能被接着做完"这条要求由**另一条
+           路**满足：同一条 intent 的下一次 propose 会走到 `resolveIntent`，
+           而它里面的认领段（`purchase_id == null && quote_id != null` →
+           从报价上找回那笔 RESERVED 的购买并续做）正是为此存在的。
+           开发期实测：把 `owned: true` 传进这一支会让两个进程**都**执行，
+           而那正是 D 组与 E 组反复出现的不一致。 */
+        const resumedExecution = executeIntent(intentId, {});
+        return Object.assign({
+          ok: resumedExecution.ok === true,
+          intentId: intentId,
+          quoteId: created.intent.quoteId,
+          approvalId: created.intent.approvalId,
+          mayExecute: true,
+          replayedResolution: true,
+          authorityOutcome: created.intent.authorityOutcome
+        }, resumedExecution);
+      }
+      return {
+        ok: true,
+        replayed: true,
+        idempotencyKey: String(key),
+        intentId: created.intent.agentIntentId,
+        intent: created.intent,
+        quoteId: created.intent.quoteId,
+        approvalId: created.intent.approvalId,
+        purchaseId: created.intent.purchaseId,
+        mayExecute: created.intent.state === C.PURCHASE_INTENT_STATE.EXECUTING,
+        nextAction: created.intent.state === C.PURCHASE_INTENT_STATE.EXECUTING ? 'execute' : 'none'
+      };
+    }
+    if (!created.replayed) {
+      appendIntentChange(created.intent, C.EVENT_TYPE.AGENT_INTENT_PROPOSED, {
+        state: C.PURCHASE_INTENT_STATE.PROPOSED,
+        intentFingerprint: String(fp.fingerprint),
+        /* ★ reason 进 change log 的 payload（可解释性），但**不进**指纹、
+           不进任何判定 —— 见契约里那条载入期不变量。 */
+        reason: canonical.reason == null ? null : String(canonical.reason),
+        reasonIsAuthority: false,
+        reasonParticipatesInDecisions: false,
+        dedupeWindowMs: C.PURCHASE_INTENT_DEDUPE_WINDOW_MS
+      });
+    }
+
+    /* ⑦ Phase B：报价 + 权威。 */
+    const resolved = resolveIntent(intentId, {});
+    if (resolved.ok !== true) {
+      return Object.assign({}, resolved, { intentId: intentId, proposalAccepted: true });
+    }
+    /* ★ 一条已经拿到执行权的 intent 被重新提起时（`resolved.mayExecute`），
+       "重放"的正确含义是**继续把它做完**，不是"原样返回一个还没做完的
+       半成品"。开发期实测（多进程崩溃组）踩到的一次真实缺陷：少了这一段
+       时，崩溃在 "Purchase prepared" 与 "Intent completed" 之间的那条
+       intent 会永久卡在 EXECUTING —— 每一次重试都回一句"可以执行"然后
+       什么都不做，而库里躺着一笔 RESERVED 的购买与一次**没有释放**的预留。
+
+       ★ 而"要不要真的动手"由 `executeIntent` 自己决定：它第一件事就是去
+       领执行权（`claimIntentForExecution`）。**领到的人执行，领不到的人
+       等结局** —— 这条分工是多进程实测逼出来的，见那一处的说明。
+       ★★ 反之，`resolved.claimedByAnotherProcess === true`（另一个进程正在
+       处理它）**绝不能**走进执行 —— 那会让两个进程都动手，而它们的症状
+       正是"赢家报 COMPLETED、输家报 QUOTE_MISMATCH"。
+       （开发期实测：这一条曾经误写成 `mayExecute || claimedByAnotherProcess`，
+       于是每一次正常的 AUTO_ALLOW 都变成"我以为别人在忙"而永不执行。） */
+    if (resolved.mayExecute === true) {
+      /* ★ 收尾之后把**权威那两句话**补回来：`convergeIntentToEndpoint` 只
+         回答"这条 intent 最后怎么样了"，而"它为什么没问用户"由
+         `authorityOutcome` / `autonomyPolicyId` 回答 —— 那是 §17 第四问的
+         答案，不能因为多了一层收尾就丢掉。
+         （开发期实测：少了这三行时，`propose` 在 AUTO_ALLOW 路径上不再返回
+         `authorityOutcome`，而 D 组与 B 组都会把它读成 undefined。） */
+      const converged = convergeIntentToEndpoint(intentId, { owned: true });
+      /* `ok` 回答的是"**这次调用**成不成"，而一次"预算说不"的拒绝也是一次
+         成立的调用 —— 但它必须与"它买成了"区分开，因此另给一位
+         `purchaseCompleted`。（B/C 组的断言各自读它们要的那一位。） */
+      const convergedOk = converged.ok === true;
+      return Object.assign({
+        ok: convergedOk,
+        intentId: intentId,
+        quoteId: resolved.quoteId == null ? converged.quoteId : resolved.quoteId,
+        approvalId: resolved.approvalId == null ? null : resolved.approvalId,
+        mayExecute: true,
+        replayedResolution: resolved.replayed === true,
+        authorityOutcome: resolved.authorityOutcome == null ? null : String(resolved.authorityOutcome),
+        autonomyPolicyId: resolved.authorityPolicyId
+      }, converged);
+    }
+    /* ★ 另一个进程正在处理这条 intent：**不**伪装成功，也**不**自己动手。
+       如实返回它引用的东西与"我正在被别人处理"这个事实。 */
+    if (resolved.claimedByAnotherProcess === true) {
+      return {
+        ok: true,
+        intentId: intentId,
+        intent: resolved.intent,
+        quoteId: resolved.intent == null ? null : resolved.intent.quoteId,
+        approvalId: resolved.intent == null ? null : resolved.intent.approvalId,
+        mayExecute: false,
+        nextAction: resolved.nextAction,
+        claimedByAnotherProcess: true,
+        /* 逐字：这条路径**没有**由本进程 reserve / 扣钱 / 发货。 */
+        reservedNothing: true,
+        purchaseCreated: false
+      };
+    }
+    if (resolved.mayExecute !== true) {
+      return {
+        ok: true,
+        intentId: intentId,
+        intent: resolved.intent,
+        verdict: resolved.verdict,
+        /* ★ 这两个字段必须显式带出来，而不是靠"resolved 里有"。开发期实测
+           踩到的一次真实缺陷：这个分支一度只手写了 8 个字段，于是
+           `authorityOutcome` 在**不执行**的三条出口上都是 undefined ——
+           而"这笔为什么没直接买"恰恰是那三条出口上最该被读到的答案。
+           一个手写返回对象会把"加了一层"变成"少了一个字段"，而后者在
+           JSON 里表现为**消失**，不是 null。 */
+        authorityOutcome: resolved.authorityOutcome == null ? null : String(resolved.authorityOutcome),
+        authorityPolicyId: resolved.authorityPolicyId == null ? null : String(resolved.authorityPolicyId),
+        quoteId: resolved.quoteId,
+        approvalId: resolved.approvalId,
+        mayExecute: false,
+        nextAction: resolved.nextAction,
+        /* 逐字：这条路径**没有** reserve / 扣钱 / 发货。 */
+        reservedNothing: true,
+        purchaseCreated: false
+      };
+    }
+
+    /* ⑧ Phase C：执行（P22-6）。★ 所有权交接：resolveIntent 刚刚把这条
+       intent 领到 EXECUTING，因此这里直接以 owned: true 进入执行，而不是
+       再抢一次（见 executeIntent 的说明）。 */
+    const executed = executeIntent(intentId, { owned: true });
+    return Object.assign({
+      ok: executed.ok === true,
+      intentId: intentId,
+      quoteId: resolved.quoteId,
+      approvalId: null,
+      mayExecute: true,
+      authorityOutcome: resolved.verdict.authorityOutcome,
+      autonomyPolicyId: resolved.authorityPolicyId
+    }, executed);
+  }
+
+  /* ── §7 Approval 恢复路径 ───────────────────────────────────────────
+     ★ 它**不问模型第二次**：这条 intent 的 agent / 商品 / recipient /
+     数量 / 报价全部来自 canonical 行，函数根本不接受这些参数。
+
+     ★ 它也**不重新生成报价**：用的就是 intent 上挂的那一份。于是"批准
+     一份 400 的报价、然后执行一份 500 的"在结构上不成立。
+
+     ★ 如果那份报价已经过期：P22-6 的 preparePurchase 会用
+     QUOTE_EXPIRED 拒绝，而 intent 走到 EXPIRED。**批准不会复活报价** ——
+     这不是一句承诺，而是"preparePurchase 在写锁里重新比较 expires_at"
+     的必然结果。 */
+  function resumeAgentPurchaseIntent(input) {
+    requireOpen();
+    const o = input || {};
+    const key = C.normalizeIdempotencyKey(o.idempotencyKey);
+    if (!key.ok) return { ok: false, denied: false, reasonCode: null, errors: key.errors };
+    if (o.agentIntentId != null && !C.isEconomyId('AGENT_INTENT', o.agentIntentId)) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['agent-intent-id-not-canonical'] };
+    }
+    if (o.approvalId != null && !C.isEconomyId('APPROVAL', o.approvalId)) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['approval-id-not-canonical'] };
+    }
+    const at = clock();
+
+    /* 定位那条 intent：可以按 intentId，也可以按 approvalId（用户刚决定
+       的就是那一条批准）。两条路都只**读** canonical 行。 */
+    let row = null;
+    if (o.agentIntentId != null) {
+      row = db.prepare(SQL.selectPurchaseIntent).get(String(o.agentIntentId));
+    } else if (o.approvalId != null) {
+      const byApproval = db.prepare(SQL.selectPurchaseIntentByApproval).get(String(o.approvalId));
+      row = byApproval || null;
+    }
+    if (!row) return { ok: false, denied: false, reasonCode: null, errors: ['intent-not-found'] };
+    const intentId = String(row.agent_intent_id);
+
+    const seen = purchaseFingerprint(C.OPERATION_SCOPE.AGENT_INTENT_EXECUTE, {
+      agentIntentId: intentId,
+      approvalId: row.approval_id == null ? null : String(row.approval_id)
+    });
+    const replay = operationIdempotencyLookup(C.OPERATION_SCOPE.AGENT_INTENT_EXECUTE, key.key, seen);
+    if (replay.found && replay.conflict) {
+      return operationIdempotencyConflict(C.OPERATION_SCOPE.AGENT_INTENT_EXECUTE, key.key, replay);
+    }
+    if (replay.found) return { ok: true, replayed: true, idempotencyKey: key.key, result: replay.result };
+
+    const state = String(row.state);
+    if (state === C.PURCHASE_INTENT_STATE.COMPLETED) {
+      /* ★ 一条已经完成的 intent 在被要求继续时，正确的答案是**重放它当初
+         的结局**，而不是再走一遍裁决。
+         ★ 开发期实测踩到的一次真实缺陷：这里一度先走裁决表，而裁决表看到
+         "它那份报价已经被结算消费掉了（CONSUMED）"于是给出 INTENT_FAILED /
+         QUOTE_MISMATCH —— 把一次**成功的**购买读成一次失败。报价被消费是
+         购买成立的**结果**，不是它失败的原因；因此"已经完成"必须在读报价
+         之前被回答，而且它不是一个裁决。 */
+      return recordIntentExecution(key.key, seen, {
+        ok: true, replayed: true, alreadyCompleted: true,
+        intentId: intentId,
+        intent: rowToPurchaseIntent(row),
+        purchaseId: row.purchase_id == null ? null : String(row.purchase_id),
+        quoteId: row.quote_id == null ? null : String(row.quote_id),
+        mayExecute: false,
+        nextAction: 'none',
+        purchaseCreated: false
+      }, intentId);
+    }
+    if (C.isPurchaseIntentTerminalState(state)) {
+      const err = denial(C.DENY_REASON.INTENT_NOT_EXECUTABLE, ['intent-is-terminal'],
+        { terminal: true, intent: rowToPurchaseIntent(row) });
+      return recordIntentExecution(key.key, seen, err, intentId);
+    }
+    if (state === C.PURCHASE_INTENT_STATE.EXECUTING) {
+      /* 崩溃在"报价已建、权威已放行、购买还没开始"之后 —— 继续执行。
+         ★ 这里**不**传 owned：那条 EXECUTING 究竟是"我上一次崩在这里"还是
+         "另一个进程正在做"从库里读不出来，而执行权必须由
+         `claimIntentForExecution` 回答（它对 EXECUTING 的回答是"不抢"）。
+         于是本调用要么自己领到并接着做完，要么等赢家的结局 —— 两条都由
+         `executeIntent` 自己决定。 */
+      const executed = executeIntent(intentId, {});
+      return recordIntentExecution(key.key, seen, executed, intentId);
+    }
+    if (state !== C.PURCHASE_INTENT_STATE.WAITING_APPROVAL) {
+      /* PROPOSED：还没经过权威。先把它解出来。 */
+      const resolved = resolveIntent(intentId, {});
+      if (resolved.ok !== true) return recordIntentExecution(key.key, seen, resolved, intentId);
+      if (resolved.mayExecute !== true) {
+        /* ★ 领不到（另一个进程正在处理）或它落在等待路径上：如实返回，
+           **不**伪装成功。 */
+        return recordIntentExecution(key.key, seen, {
+          ok: true, intentId: intentId, intent: resolved.intent,
+          quoteId: resolved.quoteId == null ? null : resolved.quoteId,
+          mayExecute: false,
+          nextAction: resolved.nextAction,
+          claimedByAnotherProcess: resolved.claimedByAnotherProcess === true,
+          reservedNothing: true, purchaseCreated: false
+        }, intentId);
+      }
+      /* ★ 所有权交接：resolveIntent 刚刚把这条 intent 领到 EXECUTING。 */
+      const executed = convergeIntentToEndpoint(intentId, { owned: true });
+      return recordIntentExecution(key.key, seen, executed, intentId);
+    }
+
+    /* ── WAITING_APPROVAL：唯一的恢复分支 ──────────────────────────────
+       它的裁决**完全**由 P22-7 的那条批准记录决定，而 P22-8 不做任何
+       "信任 / 好感 / 关系"的判断（§12）。 */
+    const approvalRow = row.approval_id == null ? null
+      : db.prepare(SQL.selectApproval).get(String(row.approval_id));
+    if (!approvalRow) {
+      const err = denial(C.DENY_REASON.APPROVAL_NOT_FOUND, ['the-approval-this-intent-waits-on-is-missing'],
+        { intent: rowToPurchaseIntent(row) });
+      return recordIntentExecution(key.key, seen, err, intentId);
+    }
+    const approvalStatus = rowToApproval(approvalRow).status;
+    /* ★ 用户**还没有决定**时，"继续执行"的正确答案是"还没有" —— 而不是
+       把这次 continue 当成一次拒绝。开发期实测踩到的一次真实缺陷：少了这
+       一句，一次在用户决定**之前**发出的 continue 会走进下面的裁决表，
+       而裁决表看到 status=PENDING 会给出 DENY，于是那条 intent 被**终结**
+       成 DENIED —— 用户随后点头就再也没有东西可以继续了。
+       因此这里必须先回答"还没决定"，而且**不写任何东西**（不迁移状态、
+       不写 change log）。这条判断属于 P22-8 而不是裁决表，因为裁决表回答
+       的是"这条 intent 现在能做什么"，而"批准还没决定"是 P22-7 的那张
+       记录的状态，不是裁决的一部分。 */
+    if (String(approvalStatus) === C.APPROVAL_STATE.PENDING) {
+      const notYet = denial(C.DENY_REASON.APPROVAL_REQUIRED,
+        ['the-approval-this-intent-waits-on-has-not-been-decided-yet'],
+        {
+          /* ★ `intentId` 必须在：它与每一条别的出口一样，是调用方接下来
+             要用它去继续做事的那个身份。开发期实测踩到的一次真实缺陷：
+             这一支一度漏了它，于是"还没决定"这一条**唯一**正常的、会发生
+             很多次的返回里，调用方拿到的 intentId 是 undefined。 */
+          intentId: String(intentId),
+          intent: rowToPurchaseIntent(row),
+          approvalId: String(row.approval_id),
+          approvalStatus: String(approvalStatus),
+          intentState: String(row.state),
+          purchaseCreated: false,
+          reservedNothing: true
+        });
+      return recordIntentExecution(key.key, seen, notYet, intentId);
+    }
+    const authority = evaluateAutonomousPurchaseFor({
+      buyerId: String(row.agent_id),
+      quoteId: String(row.quote_id),
+      recipientId: row.recipient_id == null ? null : String(row.recipient_id),
+      now: at
+    });
+    const verdict = C.evaluatePurchaseIntentVerdict({
+      now: at,
+      intentStatus: String(row.state),
+      expiresAt: Number(row.expires_at),
+      productId: String(row.product_id),
+      quoteState: row.quote_id == null ? null : (db.prepare(SQL.selectQuote).get(String(row.quote_id)) || {}).state,
+      authority: authority,
+      approvalStatus: approvalStatus
+    });
+    if (verdict.ok !== true) return recordIntentExecution(key.key, seen, verdict, intentId);
+
+    if (verdict.outcome === C.INTENT_VERDICT.DENY) {
+      const to = String(approvalStatus) === C.APPROVAL_STATE.REJECTED
+        ? C.PURCHASE_INTENT_STATE.DENIED : C.PURCHASE_INTENT_STATE.DENIED;
+      const moved = transitionPurchaseIntent(intentId, C.PURCHASE_INTENT_STATE.WAITING_APPROVAL, to, {
+        reasonCode: verdict.reasonCode == null ? C.DENY_REASON.APPROVAL_REQUIRED : String(verdict.reasonCode)
+      });
+      const view = rowToPurchaseIntent(db.prepare(SQL.selectPurchaseIntent).get(intentId));
+      appendIntentChange(view, C.EVENT_TYPE.AGENT_INTENT_DETERMINED, {
+        state: view.state, reasonCode: view.reasonCode, approvalStatus: String(approvalStatus),
+        rejectedByUser: String(approvalStatus) === C.APPROVAL_STATE.REJECTED,
+        approvalAlreadySpent: verdict.approvalAlreadySpent === true
+      });
+      const err = denial(verdict.reasonCode == null ? C.DENY_REASON.APPROVAL_REQUIRED : verdict.reasonCode,
+        ['the-approval-path-ended-without-executing'], {
+          intent: view, approvalStatus: String(approvalStatus), transitioned: moved.ok === true, purchaseCreated: false
+        });
+      return recordIntentExecution(key.key, seen, err, intentId);
+    }
+    if (verdict.outcome === C.INTENT_VERDICT.FAIL) {
+      const to = verdict.reasonCode === C.DENY_REASON.INTENT_EXPIRED
+        ? C.PURCHASE_INTENT_STATE.EXPIRED : C.PURCHASE_INTENT_STATE.FAILED;
+      transitionPurchaseIntent(intentId, C.PURCHASE_INTENT_STATE.WAITING_APPROVAL, to, {
+        reasonCode: verdict.reasonCode == null ? C.DENY_REASON.APPROVAL_EXPIRED : String(verdict.reasonCode)
+      });
+      const view = rowToPurchaseIntent(db.prepare(SQL.selectPurchaseIntent).get(intentId));
+      const err = denial(verdict.reasonCode == null ? C.DENY_REASON.APPROVAL_EXPIRED : verdict.reasonCode,
+        [to === C.PURCHASE_INTENT_STATE.EXPIRED
+          ? 'the-intent-expired-before-its-approval-could-be-used'
+          : 'the-approved-path-could-not-be-executed'],
+        { intent: view, approvalStatus: String(approvalStatus), purchaseCreated: false,
+          approvalCannotReviveAnExpiredQuote: true });
+      return recordIntentExecution(key.key, seen, err, intentId);
+    }
+    if (verdict.outcome !== C.INTENT_VERDICT.EXECUTE_APPROVED) {
+      const err = denial(C.DENY_REASON.APPROVAL_REQUIRED, ['the-approval-is-not-yet-approved'],
+        { intent: rowToPurchaseIntent(row), approvalStatus: String(approvalStatus), purchaseCreated: false });
+      return recordIntentExecution(key.key, seen, err, intentId);
+    }
+
+    /* ── 用户点头了：WAITING_APPROVAL → EXECUTING → P22-6 ───────────────
+       ★★ 这一步同时是**执行权的领取**（与 propose 路径共用同一个答案：
+       领到的人执行，领不到的人等结局）。开发期实测（E / F 组，两个真实
+       进程同时 resume 同一条 APPROVED intent）踩到过两种都错的写法：
+
+         ① 两边都执行 —— 它们各自 prepare 同一份报价（P22-6 的幂等闸门会
+            给出同一笔购买，那是幂等性在起作用），随后各自把 purchase 挂到
+            同一条 intent 上、各自结算。症状是"赢家报 COMPLETED、输家报
+            QUOTE_MISMATCH"，以及库里留下一笔 RESERVED 的购买与一次
+            **没有释放**的预留；
+         ② 把并发失败报成一次业务拒绝（`intent-state-changed-under-the-
+            transition`）—— 而输家的世界其实**完全正确**（赢家已经结算完
+            了）。这会让两个进程读到两个世界。
+
+       正确的形状：这一句 UPDATE 的 `changes` 就是执行权的判决 ——
+       changes=1 的人继续做（并以 `owned: true` 进入 executeIntent，因为
+       所有权刚刚到手）；changes=0 的人去 `endpointOfIntentAfterLoss`
+       读赢家写下的结局（有界等待到终态为止）。 */
+    const moved = transitionPurchaseIntent(intentId, C.PURCHASE_INTENT_STATE.WAITING_APPROVAL,
+      C.PURCHASE_INTENT_STATE.EXECUTING, { reasonCode: null });
+    if (moved.ok !== true) {
+      if (moved.concurrent === true) {
+        const lost = endpointOfIntentAfterLoss(intentId);
+        return recordIntentExecution(key.key, seen, lost, intentId);
+      }
+      const err = denial(C.DENY_REASON.INTENT_NOT_EXECUTABLE, moved.errors || ['intent-could-not-enter-execution'],
+        { transition: moved, intent: rowToPurchaseIntent(db.prepare(SQL.selectPurchaseIntent).get(intentId)) });
+      return recordIntentExecution(key.key, seen, err, intentId);
+    }
+    const executed = convergeIntentToEndpoint(intentId, { owned: true });
+    return recordIntentExecution(key.key, seen, executed, intentId);
+  }
+
+  /* §11：跨重启的幂等结果。**只在对端有定论时写** —— 一条"还没决定"的
+     结果不该被记成可重放的答案。 */
+  function recordIntentExecution(key, fingerprint, result, intentId) {
+    const row = db.prepare(SQL.selectPurchaseIntent).get(String(intentId));
+    const settledState = row ? String(row.state) : null;
+    const definite = settledState != null && C.isPurchaseIntentTerminalState(settledState);
+    if (definite && result && result.ok === true) {
+      try {
+        withTransaction(() => {
+          db.prepare(SQL.insertOperationIdempotency).run(
+            C.OPERATION_SCOPE.AGENT_INTENT_EXECUTE, String(key), String(fingerprint),
+            /* operation_id / reservation_id / transaction_id 三列在这里是
+               null：这条 scope 锁的是一次**执行尝试**，它自己的身份就是
+               (scope, key)，而它产生的 operation/reservation/transaction
+               属于 purchase 那一侧、各有自己的 id。塞一个 purchaseId 进去
+               会让"operation_id 指向什么"变成一个问题。 */
+            null, null, null,
+            JSON.stringify({ intentId: String(intentId), state: settledState }),
+            Number(allocateRevision()), Number(clock())
+          );
+        });
+      } catch (error) {
+        if (!isRefusal(error)) throw error;
+      }
+    }
+    return result;
+  }
+
+  /* ── 读面（§15/§17）──────────────────────────────────────────────── */
+  function getPurchaseIntent(input) {
+    requireOpen();
+    const o = typeof input === 'string' ? { agentIntentId: input } : (input || {});
+    const id = o.agentIntentId != null ? String(o.agentIntentId) : null;
+    if (!C.isEconomyId('AGENT_INTENT', id)) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['agent-intent-id-not-canonical'] };
+    }
+    const row = db.prepare(SQL.selectPurchaseIntent).get(id);
+    if (!row) return { ok: false, denied: false, reasonCode: null, errors: ['intent-not-found'], agentIntentId: id };
+    const view = rowToPurchaseIntent(row);
+    const out = {
+      ok: true,
+      agentIntentId: view.agentIntentId,
+      intent: serializePurchaseIntent(view),
+      personalized: false,
+      recommended: false,
+      ranked: false
+    };
+    if (o.withChain === true) {
+      out.chain = intentChainOf(view);
+    }
+    return out;
+  }
+
+  /* §17：仅凭 canonical facts 就能回答那六个问题。这个函数把那条链拼出来，
+     而它**不**读 reason 来做任何判断 —— reason 只是被带出来给人看。 */
+  function intentChainOf(view) {
+    const chain = {
+      agentIntentId: view.agentIntentId,
+      whyThisPurchaseExists: { agentIntentId: view.agentIntentId },
+      whatTheAgentWanted: {
+        productId: view.productId, recipientId: view.recipientId, units: view.units,
+        reason: view.reason, reasonIsAuthority: false
+      },
+      whyItDidNotBuyDirectly: view.authorityOutcome === C.AP_DECISION.REQUIRE_APPROVAL
+        ? { authorityOutcome: view.authorityOutcome, reasonCode: view.authorityReasonCode } : null,
+      whyItBoughtDirectly: view.authorityOutcome === C.AP_DECISION.AUTO_ALLOW
+        ? { authorityOutcome: view.authorityOutcome, budgetWasStillRequired: true } : null,
+      approval: null,
+      quote: null,
+      purchase: null
+    };
+    if (view.approvalId != null) {
+      const a = db.prepare(SQL.selectApproval).get(String(view.approvalId));
+      if (a) {
+        chain.approval = {
+          approvalId: String(a.approval_id),
+          status: String(a.status),
+          consumedByPurchaseId: a.consumed_by_purchase_id == null ? null : String(a.consumed_by_purchase_id),
+          bindingFingerprint: String(a.binding_fingerprint)
+        };
+      }
+    }
+    if (view.quoteId != null) {
+      const q = db.prepare(SQL.selectQuote).get(String(view.quoteId));
+      if (q) {
+        chain.quote = {
+          quoteId: String(q.quote_id), state: String(q.state), currency: String(q.currency),
+          amountMinor: C.serializeAmountMinor(fromSqlAmount(q.amount_minor, 'quote-amount')),
+          quantity: Number(q.quantity), quoteKind: String(q.quote_kind),
+          productId: String(q.product_id), expiresAt: Number(q.expires_at)
+        };
+      }
+    }
+    if (view.purchaseId != null) {
+      const p = db.prepare(SQL.selectPurchase).get(String(view.purchaseId));
+      if (p) {
+        chain.purchase = {
+          purchaseId: String(p.purchase_id), status: String(p.status),
+          quoteId: String(p.quote_id), reservationId: String(p.reservation_id),
+          ledgerTransactionId: p.ledger_transaction_id == null ? null : String(p.ledger_transaction_id),
+          approvalMode: p.approval_mode == null ? null : String(p.approval_mode),
+          autonomyPolicyId: p.autonomy_policy_id == null ? null : String(p.autonomy_policy_id),
+          inventoryEntryId: p.inventory_entry_id == null ? null : String(p.inventory_entry_id),
+          amountMinor: C.serializeAmountMinor(fromSqlAmount(p.amount_minor, 'purchase-amount')),
+          currency: String(p.currency)
+        };
+      }
+    }
+    return chain;
+  }
+
+  function listPurchaseIntents(options) {
+    requireOpen();
+    const o = options || {};
+    const agentShape = o.agentId == null ? null : C.normalizeIntentPartyId(o.agentId);
+    if (agentShape != null && agentShape.ok !== true) {
+      return { ok: false, denied: false, reasonCode: null, errors: agentShape.errors };
+    }
+    const productId = o.productId == null ? null : String(o.productId);
+    if (productId != null && !C.isEconomyId('PRODUCT', productId)) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['product-id-not-canonical'] };
+    }
+    const state = o.state == null ? null : String(o.state);
+    if (state != null && !C.isPurchaseIntentState(state)) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['intent-state-not-in-closed-set'],
+        allowed: C.PURCHASE_INTENT_STATES };
+    }
+    let limit = o.limit == null ? 50 : Number(o.limit);
+    if (!Number.isSafeInteger(limit) || limit < 1) limit = 50;
+    if (limit > 200) limit = 200;
+    const rows = db.prepare(SQL.selectPurchaseIntentsFiltered).all(
+      agentShape == null ? null : agentShape.id, agentShape == null ? null : agentShape.id,
+      productId, productId,
+      state, state,
+      Number(limit)
+    );
+    return {
+      ok: true,
+      intents: rows.map(r => serializePurchaseIntent(rowToPurchaseIntent(r))),
+      count: rows.length,
+      personalized: false,
+      recommended: false,
+      ranked: false
+    };
+  }
+
+  function countPurchaseIntents(state) {
+    if (!isOpen()) return 0;
+    if (state == null) return Number(db.prepare(SQL.countPurchaseIntents).get().c);
+    return Number(db.prepare(SQL.countPurchaseIntentsByState).get(String(state)).c);
+  }
+
+  function intentStateCounts() {
+    const out = {};
+    for (const s of C.PURCHASE_INTENT_STATES) out[s] = countPurchaseIntents(s);
+    return out;
+  }
+
+  /* ══════════════════════════════════════════════════════════════════
      P22-7 §26 · authorizePurchaseIntent（授权闸门）
 
      §10 的四个出口，逐字对应下面四条 return：
@@ -11526,7 +13990,10 @@ function createEconomyStore(deps) {
       releasedPurchases: 0, failedPurchases: 0,
       autonomyPolicies: 0, enabledAutonomyPolicies: 0,
       approvals: 0, pendingApprovals: 0, approvedApprovals: 0,
-      rejectedApprovals: 0, expiredApprovals: 0, consumedApprovals: 0
+      rejectedApprovals: 0, expiredApprovals: 0, consumedApprovals: 0,
+      purchaseIntents: 0, intentsProposed: 0, intentsWaitingApproval: 0,
+      intentsExecuting: 0, intentsCompleted: 0, intentsDenied: 0,
+      intentsExpired: 0, intentsFailed: 0
     };
     let revision = 0;
     let schema = ECONOMY_SCHEMA_VERSION;
@@ -11574,7 +14041,19 @@ function createEconomyStore(deps) {
           approvedApprovals: countApprovalsByStatus(C.APPROVAL_STATE.APPROVED),
           rejectedApprovals: countApprovalsByStatus(C.APPROVAL_STATE.REJECTED),
           expiredApprovals: countApprovalsByStatus(C.APPROVAL_STATE.EXPIRED),
-          consumedApprovals: countApprovalsByStatus(C.APPROVAL_STATE.CONSUMED)
+          consumedApprovals: countApprovalsByStatus(C.APPROVAL_STATE.CONSUMED),
+          /* ── P22-8：一次打算的七态计数。它们与 purchases / approvals 同级
+             出现在 health 上，因为"有多少条打算正在等用户点头"是这个经济
+             此刻最重要的一个操作读数 —— 而它**不是**钱：七个数里没有一个
+             回答"花了多少"。 */
+          purchaseIntents: countPurchaseIntents(),
+          intentsProposed: countPurchaseIntents(C.PURCHASE_INTENT_STATE.PROPOSED),
+          intentsWaitingApproval: countPurchaseIntents(C.PURCHASE_INTENT_STATE.WAITING_APPROVAL),
+          intentsExecuting: countPurchaseIntents(C.PURCHASE_INTENT_STATE.EXECUTING),
+          intentsCompleted: countPurchaseIntents(C.PURCHASE_INTENT_STATE.COMPLETED),
+          intentsDenied: countPurchaseIntents(C.PURCHASE_INTENT_STATE.DENIED),
+          intentsExpired: countPurchaseIntents(C.PURCHASE_INTENT_STATE.EXPIRED),
+          intentsFailed: countPurchaseIntents(C.PURCHASE_INTENT_STATE.FAILED)
         };
         revision = getRevision();
         schema = Number(readMeta(META_SCHEMA) || ECONOMY_SCHEMA_VERSION);
@@ -11971,6 +14450,29 @@ function createEconomyStore(deps) {
     serializeApproval: serializeApproval,
     autonomousSpentTodayMinor: autonomousSpentTodayMinor,
 
+    /* ── P22-8 §14 · Agent Purchase Intent + Decision Bridge ─────────────
+       ★ 公开面上只有**三个**动词，而它们各自的名字里就写着边界：
+         · proposeAgentPurchaseIntent —— "提出一条打算"（唯一的写入口，
+           接受的是六字段的提议白名单，不是一次经济请求）；
+         · resumeAgentPurchaseIntent  —— "在用户决定之后继续**同一条**打算"
+           （不接受 agentId / productId / recipientId / units / 报价 ——
+           它要的东西全部来自 canonical 行）；
+         · 读面三个。
+       ★ 刻意**没有**的公开成员（§14 的禁令在这里是"不存在"而不是"不推荐"）：
+         executeEconomyAction / runAction / settleForAgent / buyNow /
+         approveForAgent / grantForAgent。模型能到达的最远的地方是
+         proposeAgentPurchaseIntent，而它之后的每一步都由本文件里的确定性
+         代码决定。
+       ★ 与 P22-7 的八个 mutation 同级：只对同进程调用方开放。http.js 里
+         没有它们的名字（boundary 测试逐字断言这一点），而 HTTP 上新增的
+         只有两条**只读**路由。 */
+    proposeAgentPurchaseIntent: proposeAgentPurchaseIntent,
+    resumeAgentPurchaseIntent: resumeAgentPurchaseIntent,
+    getPurchaseIntent: getPurchaseIntent,
+    listPurchaseIntents: listPurchaseIntents,
+    serializePurchaseIntent: serializePurchaseIntent,
+    countPurchaseIntentStates: intentStateCounts,
+
     /* 观测 */
     health: health,
     isDegraded: isDegraded,
@@ -11982,6 +14484,22 @@ function createEconomyStore(deps) {
     ledgerBalanceOf: ledgerBalanceOf,
     reservedBalanceOf: reservedBalanceOf,
     systemAccountBalance: systemAccountBalance,
+    /* ★ P22-8：两个**结构性**断言用的只读口。它们存在的理由与众多个
+       *ProblemsOf 同源：有一条纪律（"这张表里没有地方可以读价格"）只能
+       在**列这一层**被证伪，而"我们没有写那一列"这句话如果只能靠读源码
+       来相信，它就不是一条被执行的规则。两者都只读、都不在 HTTP 面上。 */
+    tableColumnsForTest: function (tableName) {
+      if (!isOpen()) return null;
+      const name = String(tableName);
+      /* 表名来自测试常量，但仍然受一次白名单检查：一个能任意拼表名的
+         读口等于把整个库的 schema 变成一个 HTTP 可达面。 */
+      const known = [PURCHASE_INTENTS_TABLE, PURCHASES_TABLE, APPROVALS_TABLE,
+        QUOTES_TABLE, RESERVATIONS_TABLE, AUTONOMY_POLICIES_TABLE];
+      if (known.indexOf(name) < 0) return null;
+      return db.prepare('PRAGMA table_info(' + name + ')').all().map(r => String(r.name));
+    },
+    schemaVersionForTest: function () { return ECONOMY_SCHEMA_VERSION; },
+    dataDirForTest: function () { return dataDir; },
 
     /* 内部工具，供 boundary/装配断言"没有别的余额写路径"时点名 */
     _internal: Object.freeze({
@@ -12039,4 +14557,14 @@ module.exports.releaseReason = RELEASE_REASON;
 module.exports.maxInventoryQuantity = MAX_INVENTORY_QUANTITY;
 module.exports.fnv1a64Hex = fnv1a64Hex;
 module.exports.stableStringify = stableStringify;
+
+
+
+
+
+
+
+
+
+
 

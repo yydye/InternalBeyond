@@ -210,8 +210,8 @@ async function runServiceGroup() {
      的行号。 */
   const health = await request(svc.port, 'GET', '/economy/health');
   const econ = health.body && health.body.economy ? health.body.economy : {};
-  check('B2 P22-7 的库被真实 store 打开（schema 水位 = 6，Economy READY）',
-    health.status === 200 && Number(econ.schemaVersion) === 6 && econ.state === 'READY',
+  check('B2 P22-7 的库被真实 store 打开（schema 水位 = 7，Economy READY）',
+    health.status === 200 && Number(econ.schemaVersion) === 7 && econ.state === 'READY',
     { status: health.status, schemaVersion: econ.schemaVersion, state: econ.state, body: health.body });
   check('B3 ★ health 暴露权限层的九个计数（批准五个状态 + 策略两个）',
     econ.counts && econ.counts.approvals === 1 && econ.counts.approvedApprovals === 1 &&
@@ -336,8 +336,8 @@ async function runServiceGroup() {
   const svc2 = await startProduction(dir);
   const up2 = await waitListening(svc2, 20000);
   const after = await request(svc2.port, 'GET', '/economy/health');
-  check('B10 重启：同一个库再次打开，水位仍然是 6，且批准与 revision 都在',
-    up2 === true && Number(after.body.economy.schemaVersion) === 6 &&
+  check('B10 重启：同一个库再次打开，水位仍然是 7，且批准与 revision 都在',
+    up2 === true && Number(after.body.economy.schemaVersion) === 7 &&
     after.body.economy.counts.approvals === 1 &&
     after.body.economy.counts.approvedApprovals === 1 &&
     after.body.economy.revision >= revBefore,
@@ -531,9 +531,17 @@ async function runMultiProcess() {
      策略的写入。刻意不把 P22-6 的 purchase 点混进来 —— 它们的语义由
      P22-6 的 focused 测试逐点断言，而 P22-6 的 `after-purchase-approval`
      这个名字里虽然含有 "approval"，含义却完全不同（它是 purchase 的一步，
-     不是批准记录）。 */
+     不是批准记录）。
+     ★★ P22-8 又加了一族 `after-intent-*` 的点，而它们**也**必须在这里被
+     排除掉 —— 这是"清单从源码推导"这条纪律的一个真实代价：一个新阶段的
+     注入点会自动出现在**所有**旧阶段的清单里，于是旧阶段的测试会去执行
+     一个它没有计划的点，然后以 `Cannot read properties of undefined`
+     崩掉（开发期实测踩到）。判据因此必须同时说清"我要哪些"与"我不要
+     哪些"：`approval-` / `autonomy-` 取，`intent-` 排除。
+     P22-8 的那六个点由 test_p22_8_economy_runtime.js 的 G 组逐点断言。 */
   const faultPoints = allFaultPoints.filter(p =>
-    p.indexOf('approval-') >= 0 || p.indexOf('autonomy-') >= 0);
+    (p.indexOf('approval-') >= 0 || p.indexOf('autonomy-') >= 0) &&
+    p.indexOf('intent-') < 0);
   /* ★ 每个注入点用它**自己的**入口到达。一个从不运行的注入点等于一句
      没有证据的声明 —— 而清单是从源码推导的，所以"哪个点走哪条路"必须
      在这里逐点说清，而不是让所有点共用一条恰好能命中一个的流水线。 */
@@ -744,3 +752,4 @@ runServiceGroup().then(finish).catch(error => {
   console.error('✖ B 组抛出异常 — ' + String(error && (error.stack || error.message)));
   finish();
 });
+

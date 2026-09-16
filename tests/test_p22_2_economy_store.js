@@ -1264,7 +1264,16 @@ section('O · Runtime 依赖纪律（静态：本条与 boundary 测试互补）
     'OPERATIONS_TABLE', 'RESERVATIONS_TABLE', 'OPERATION_IDEMPOTENCY_TABLE',
     'BUDGET_POLICIES_TABLE', 'QUOTES_TABLE',
     'STORES_TABLE', 'PRODUCTS_TABLE', 'INVENTORY_TABLE',
-    'PURCHASES_TABLE', 'AUTONOMY_POLICIES_TABLE', 'APPROVALS_TABLE'];
+    'PURCHASES_TABLE', 'AUTONOMY_POLICIES_TABLE', 'APPROVALS_TABLE',
+    /* ★ P22-8：一次 Agent 打算的**结局**是可以变的（PROPOSED → … →
+       COMPLETED／DENIED／EXPIRED／FAILED），因此它的行必须可 UPDATE。这与
+       P22-3 的 reservations / P22-6 的 purchases / P22-7 的 approvals 是
+       同一类：一条**生命周期行**，而"它走到哪一步了"正是那个会变的事实。
+       ★ 它变不了的东西由另外两条断言守着（P22-8 的 L 组：那张表里没有
+       任何经济值列），而不是靠"不许 UPDATE"来守 —— 把一条会走到终态的
+       记录写成 append-only，等于要求"打算"在写下的那一刻就知道自己的
+       结局，那正是本阶段刻意不要的东西。 */
+    'PURCHASE_INTENTS_TABLE'];
   check('O9 被 UPDATE / DELETE 的表只可能是"派生缓存 / 水位 / 生命周期行 / 幂等表"这四类，'
     + 'ACCOUNTS 与三个 ledger 事实表都不在内',
     mutatedTables.every(t => MUTABLE_TABLES.indexOf(t) >= 0), mutatedTables);

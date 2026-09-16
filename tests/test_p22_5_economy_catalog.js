@@ -1187,12 +1187,32 @@ section('J · schema 3 → 4（补三张表 · 旧行一个字节都不动 · �
             .replace(/\/\/[^\n]*/g, ' ')
         });
       }
-      return steps.length === 1 &&
-        steps[0].from === 5 && steps[0].to === SCHEMA_GUARD &&
-        steps[0].body.indexOf('ALTER TABLE') >= 0 &&
+      /* ★★ P22-8 更新了这条断言的**形状**（P22-7 更新过它的字面话）：
+       P22-8 加了 6→7，而它是**空**的（新实体只需要补表）—— 于是
+       "登记在册的迁移步骤恰好一条且它 ALTER" 不再为真，而它本来也不该
+       为真：判据是"**哪些步骤真的改写了既有行**"。
+
+       现在这条断言的是三件可检查的事：
+         ① 源码里登记在册的迁移步骤恰好两条：5→6 与 6→7；
+         ② 5→6 是数据迁移（它 ALTER 既有表），而 6→7 里**一句 SQL 都没
+            有** —— 于是"P22-8 没有改写任何既有行"由 ② 直接证明；
+         ③ 那唯一一条非空步骤**只加列**：没有 UPDATE / DELETE / INSERT。
+       而"开一个旧库之后既有数据逐字节不变"由 J1/J2 用**行为**证明。
+       ★ ②的判据是"没有 SQL 语句"而不是"函数体长度为 0"：一个空的 apply
+       函数剥掉注释之后仍会剩下缩进与换行（开发期实测：长度 5）。把
+       "长度 === 0"当成"空"会让一条正确的迁移被判成非空。 */
+      const SQL_RE = /(ALTER\s+TABLE|UPDATE\s+\w|DELETE\s+FROM|INSERT\s+INTO|DROP\s+TABLE)/;
+      const dataSteps = steps.filter(s => SQL_RE.test(s.body));
+      const emptySteps = steps.filter(s => !SQL_RE.test(s.body));
+      return steps.length === 2 &&
+        J(steps.map(s => s.from + '->' + s.to)) === J(['5->6', '6->' + SCHEMA_GUARD]) &&
+        dataSteps.length === 1 &&
+        dataSteps[0].from === 5 && dataSteps[0].to === 6 &&
+        dataSteps[0].body.indexOf('ALTER TABLE') >= 0 &&
         /* 它只加列，不改写任何既有值：没有 UPDATE / DELETE / INSERT。 */
-        steps[0].body.indexOf('UPDATE ') < 0 && steps[0].body.indexOf('DELETE ') < 0 &&
-        steps[0].body.indexOf('INSERT ') < 0;
+        dataSteps[0].body.indexOf('UPDATE ') < 0 && dataSteps[0].body.indexOf('DELETE ') < 0 &&
+        dataSteps[0].body.indexOf('INSERT ') < 0 &&
+        emptySteps.length === 1 && emptySteps[0].from === 6;
     })());
   check('J4 迁移之后旧的 raw quote 仍然可读（它的 productId 现在指向一个**不存在**的商品 —— 见 J5）',
     upgraded.getQuote({ quoteId: raw1.result.quoteId }).ok === true &&

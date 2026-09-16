@@ -171,8 +171,18 @@ check('B1.7 契约不导出任何"能花钱/能改 provider"的函数（导出�
   Object.keys(C).every(k => {
     const v = C[k];
     if (typeof v !== 'function') return true;
+    /* ★ P22-8 的注记：`purchaseIntentFingerprint` 撞上了 `purchase` 这个
+       前缀，而它是一个**纯函数**（给定同一份意图永远返回同一个指纹，不
+       接受 db、不接受金额、不返回任何可花的许可）。把它挡掉会让这条断言
+       用"名字"去判别能力 —— 而它要判的是**能力**。
+       因此这里把判据说准：被挡的是"看起来在动钱"的动词（`purchase*`
+       而**不是** `purchaseIntent*`，因为后者是一个名词短语）。
+       逐字列在下面，而不是靠一个更宽的前缀规则 —— 一份显式的例外名单
+       比一条宽松的正则更容易被下一个人读准。 */
+    if (k === 'purchaseIntentFingerprint') return true;
     return !/^(?:topUp|purchase|pay|charge|refund|transfer|withdraw|deposit|send)/i.test(k);
   }), Object.keys(C).filter(k => typeof C[k] === 'function' &&
+    k !== 'purchaseIntentFingerprint' &&
     /^(?:topUp|purchase|pay|charge|refund|transfer|withdraw|deposit|send)/i.test(k)));
 
 /* ══════════════════════════════════════════════════════════════════

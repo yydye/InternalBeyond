@@ -86,6 +86,13 @@
        域"必须有一个名字 —— 借用 PURCHASE 的命名空间会让 §5 那句
        "Approval ≠ Purchase"在读面上第一眼就含糊。 */
     APPROVAL: 'ib.economy.approval',
+    /* P22-8：与 PURCHASE 同一条理由的**第四次**应用，而这一次最容易被
+       省掉 —— 因为"Agent 的购买意图"听起来就是"购买"的一部分。它不是：
+       一条 intent 可以永远不变成购买（WAITING_APPROVAL / DENIED /
+       EXPIRED），而 §8 逐字要求它被当作**编排事实**而不是经济事实。
+       给它自己的命名空间，是让那句区别在读面上第一眼就成立的成本最低的
+       方式。它的 id 前缀（econ_agentintent_）也是同一个理由。 */
+    AGENT_INTENT: 'ib.economy.agent-intent',
     /* 自主策略复用 BUDGET 的命名空间是**刻意**的：它与预算政策共用同一种
        记录形状与同一条"规则不是许可"语义（§3）。它需要自己的**事件**名
        （AUTONOMY_POLICY_*），但不需要第二个命名空间 —— 加一个只会在
@@ -507,7 +514,44 @@
        QUOTE_EXPIRED / RESERVATION_EXPIRED 是同一种事实（时间到了），
        而"时间到了"在审计里必须能与"规则说不"分开。
        ★ 封闭集合因此从 46 变成 47。 */
-    APPROVAL_EXPIRED: 'APPROVAL_EXPIRED'
+    APPROVAL_EXPIRED: 'APPROVAL_EXPIRED',
+    /* ── P22-8 追加的三个（加法）──────────────────────────────────────────
+       三者各自是一句**别的地方说不出**的话，因此都必须有自己的字形。
+
+       · MODEL_SUPPLIED_ECONOMIC_FACT —— "这个字段不属于你，它属于
+         canonical Economy facts"。它是本阶段的第一条纪律（§4）在拒绝码
+         上的落点：模型递来 amountMinor / price / currency / discount /
+         grantQuantity / settlementType / approved / approvalId 中的任何
+         一个，拒绝理由就是这一个词。
+         ★ 为什么不能复用现有的：
+           · POLICY_INPUT_NOT_STRUCTURED 说的是"你给的输入形状不对"
+             —— 而这里形状往往是**对的**（`price: 1` 完全合法），错的
+               是**谁在说**。把那句话用在这里，等于把一次信任边界违规
+               降级成一次格式错误，审计里就再也看不见"模型试图指定价格"
+               这件事发生过；
+           · TRANSITION_NOT_ALLOWED / EFFECT_NOT_ALLOWED 说的是状态或
+             效果，与"谁提供的事实"无关。
+         一句话：这是**唯一**一个表达"模型的手伸进了经济事实里"的代码，
+         因此它必须只表达这一件事。
+
+       · INTENT_EXPIRED —— "这次打算已经过了它的 expiresAt"。它与
+         QUOTE_EXPIRED / APPROVAL_EXPIRED / RESERVATION_EXPIRED 是同
+         一族（时间到了），但对象是第四种东西。把它写成 QUOTE_EXPIRED
+         会让审计说"报价过期了"—— 而报价过期是 intent 过期的**结果之
+         一**，不是它的原因；反过来，一个 intent 完全可能在报价之前就
+         过期（PROPOSED 阶段）。
+
+       · INTENT_NOT_EXECUTABLE —— "这条 intent 现在不允许执行"。
+         四种状态各有一个具体答案，而这个代码覆盖的是**结构性**那一种：
+         报出这条 intent 的状态是终态（COMPLETED / DENIED / EXPIRED /
+         FAILED），或者它根本不在可执行的来源状态上。审计里它与
+         `terminal: true` 一起读，因此调用方一眼能看出"该重试还是该
+         放弃"—— 与 canTransitionApproval 的同一条纪律。
+
+       ★ 封闭集合因此从 47 变成 50。 */
+    MODEL_SUPPLIED_ECONOMIC_FACT: 'MODEL_SUPPLIED_ECONOMIC_FACT',
+    INTENT_EXPIRED: 'INTENT_EXPIRED',
+    INTENT_NOT_EXECUTABLE: 'INTENT_NOT_EXECUTABLE'
   });
 
   var DENY_REASONS = Object.freeze(Object.keys(DENY_REASON));
@@ -596,7 +640,33 @@
        因此批准拿到自己的前缀，这也让它与自主政策（复用 BUDGET_POLICY /
        econ_policy_ 的同一种记录形状，见 §3）在字形上就不会被混淆。 */
     APPROVAL: 'econ_approval_',
-    EVENT: 'econ_evt_'
+    EVENT: 'econ_evt_',
+    /* ── P22-8 追加的一种（加法）─────────────────────────────────────────
+       AGENT_INTENT（econ_agentintent_）是**一次 Agent 打算买什么**的身份，
+       也就是"模型这一次说出来的一句话"。
+
+       ★ 为什么不能复用 PURCHASE_INTENT（econ_intent_）—— 这是本阶段最
+       容易走错的一步，因为两个名字读起来几乎一样。P22-6 已经把它用掉
+       了，而且**逐字**用在了另一件事上：
+
+         · PURCHASE_INTENT（econ_intent_）= 一笔**Purchase 本身**的 id
+           （economy_purchases 的主键）。P22-6 的原文写得很清楚：它把
+           "一次购买"的身份收敛到这个 P22-1 留下的空槽上，于是
+           `purchaseIntentId` 这个字段名在整个仓库里**已经**指购买。
+         · 本阶段的 Intent 是那笔购买**之前**的东西：它可能永远不变成
+           购买（WAITING_APPROVAL / DENIED / EXPIRED），也可能变成一个
+           购买（COMPLETED）。一个会变成另一个的东西不是同一个东西。
+
+       如果两者共用一个前缀，那么每一次审计都要先回答"这个 econ_intent_
+       指向打算还是购买"—— 而那个问题的答案取决于它出现在哪张表里，
+       这正是 P22-7 拒绝让 approval 复用 econ_intent_ 时给出的**同一个**
+       理由。因此这里加第 16 种前缀，而不是把两个语义压进一个字形。
+
+       它同时让 §4 那条纪律在结构上成立：Intent 的 id 由 canonical
+       runtime 生成（`econ_agentintent_...`），模型**没有地方**传自己的
+       id 进来当主键 —— 而如果沿用 econ_intent_，模型给的 purchaseId
+       与它自己的意图 id 就会在字面上无法区分。 */
+    AGENT_INTENT: 'econ_agentintent_'
   });
 
   var ID_KINDS = Object.freeze(Object.keys(ID_PREFIX));
@@ -1274,7 +1344,22 @@
     APPROVAL_REQUEST: 'APPROVAL_REQUEST',
     APPROVAL_DECIDE: 'APPROVAL_DECIDE',
     APPROVAL_CONSUME: 'APPROVAL_CONSUME',
-    AUTONOMY_POLICY: 'AUTONOMY_POLICY'
+    AUTONOMY_POLICY: 'AUTONOMY_POLICY',
+    /* ── P22-8 追加的两个（加法）──────────────────────────────────────────
+       为什么一次"提出购买意图"需要两个 scope 而不是一个：
+
+         · AGENT_INTENT_PROPOSE —— 模型那**一次请求**（"我打算买 X 送给
+           Y"）。它锁的是"这句话说过没有"，重试同一个 key 必须返回**同一
+           条** Intent，而不是再造一条。
+         · AGENT_INTENT_EXECUTE —— 那条 Intent 的**一次执行尝试**（走
+           Quote → Authority → Budget → Settlement）。它与 propose 是两件
+           事，而它们必须分开的理由正是 §7：批准之后恢复执行时带的是**另一
+           个** key（用户的批准动作），而它要执行的仍是**同一条** intent。
+           压成一个 scope 会让"我恢复执行时换了个 key"读成一次冲突。
+
+       两者都与既有的 17 个 (scope, key) 身份互不影响 —— 加法。 */
+    AGENT_INTENT_PROPOSE: 'AGENT_INTENT_PROPOSE',
+    AGENT_INTENT_EXECUTE: 'AGENT_INTENT_EXECUTE'
   });
 
   var OPERATION_SCOPES = Object.freeze(Object.keys(OPERATION_SCOPE));
@@ -2651,7 +2736,31 @@
     PRODUCT_DISABLED: 'PRODUCT_DISABLED',
     PRODUCT_RETIRED: 'PRODUCT_RETIRED',
     INVENTORY_GRANTED: 'INVENTORY_GRANTED',
-    INVENTORY_CONSUMED: 'INVENTORY_CONSUMED'
+    INVENTORY_CONSUMED: 'INVENTORY_CONSUMED',
+    /* ── P22-8 追加的三个（加法）─────────────────────────────────────────
+       ★ 为什么只有三个，而不是"每个 Intent 状态一条"（§8 的同一纪律：
+         不要为了状态齐全硬加词表）：
+
+         · AGENT_INTENT_PROPOSED —— 模型那句话被 canonical runtime 收下
+           的那一刻。它是 §17 第一问"为什么出现这笔购买"的**唯一**起点，
+           因此必须有自己的事件：把它并进 PURCHASE_AUTHORIZED 会让
+           "打算"与"成立"共用一条记录。
+         · AGENT_INTENT_AWAITING_APPROVAL —— 这一条刻意**不**合并进
+           AGENT_INTENT_DETERMINED，因为它是唯一一个"这个故事还没有结束"
+           的中间结局：用户明天点头之后，同一条 intent 还会继续写入。把
+           它写成 DETERMINED 会让审计以为事情已经定局。
+         · AGENT_INTENT_DETERMINED —— 四个终局（COMPLETED / DENIED /
+           EXPIRED / FAILED）共用**一条**事件类型，而区别落在 payload 的
+           reasonCode 上。这与 P22-5 把 DISABLED / RETIRED 分成两条事件的
+           做法**看似相反**，其实同源：那两条描述的是两个不同的**状态**，
+           而这里四个终局说的是同一件事（"这条 intent 结束了"），不同的
+           只是原因 —— 而原因在封闭集合里有自己的词。
+
+       三者都写 ledgerMutation: false：**Intent 自己从不动钱**。钱由它
+       触发的 Purchase 在 P22-6 的事务里动，而那条事务有自己的事件。 */
+    AGENT_INTENT_PROPOSED: 'AGENT_INTENT_PROPOSED',
+    AGENT_INTENT_AWAITING_APPROVAL: 'AGENT_INTENT_AWAITING_APPROVAL',
+    AGENT_INTENT_DETERMINED: 'AGENT_INTENT_DETERMINED'
   });
 
   var EVENT_TYPES = Object.freeze(Object.keys(EVENT_TYPE));
@@ -2766,7 +2875,14 @@
     if (AUDIT_OPERATIONS.indexOf(String(o.operation)) < 0) errors.push('audit-operation-not-in-closed-set');
 
     var refs = {};
-    ['decisionRef', 'actionRef', 'purchaseIntentId', 'quoteId', 'reservationId', 'transactionId', 'productId', 'walletId']
+    /* ★ P22-8 加 `agentIntentId` 是加法，而且它与 `purchaseIntentId`
+       **并列存在**而不是替换它 —— 两个字段名指的是两件不同的东西：
+         · purchaseIntentId 是**购买**的身份（P22-6 用掉 econ_intent_ 时
+           冻结下来的语义，见 ID_PREFIX.AGENT_INTENT 的说明）；
+         · agentIntentId 是**那条打算**的身份（econ_agentintent_）。
+       一条审计记录可以同时指向两者（"因为这条打算，所以有那笔购买"），
+       而这正是 §17 要求的可解释链。 */
+    ['decisionRef', 'actionRef', 'purchaseIntentId', 'agentIntentId', 'quoteId', 'reservationId', 'transactionId', 'productId', 'walletId']
       .forEach(function (k) {
         if (o[k] == null) { refs[k] = null; return; }
         if (k === 'decisionRef' || k === 'actionRef') {
@@ -2775,7 +2891,8 @@
           refs[k] = r.ref; return;
         }
         var kind = {
-          purchaseIntentId: 'PURCHASE_INTENT', quoteId: 'QUOTE', reservationId: 'RESERVATION',
+          purchaseIntentId: 'PURCHASE_INTENT', agentIntentId: 'AGENT_INTENT',
+          quoteId: 'QUOTE', reservationId: 'RESERVATION',
           transactionId: 'TRANSACTION', productId: 'PRODUCT', walletId: 'WALLET'
         }[k];
         if (!isEconomyId(kind, o[k])) { errors.push('audit-ref-not-canonical'); return; }
@@ -4753,6 +4870,781 @@
     }
   })();
 
+  /* ══════════════════════════════════════════════════════════════════
+     P22-8 §3–§14 · AGENT PURCHASE INTENT（一次打算买什么）
+
+     三句话必须同时成立，而它们分别属于三个不同的层：
+
+       Agent decides WANT           —— 本层：一条 Intent
+       Economy decides MAY          —— P22-7：authority gate
+       Purchase runtime executes    —— P22-6：Quote → Budget → Settlement
+
+     ★ 本层刻意**只**表达 WANT。它不拥有价格、不拥有权限、不拥有钱。
+     于是 §4 那条纪律并不是靠"我们记得不要读 price"来遵守的，而是结构性
+     的：Intent 的记录形状里**没有**任何承载价格的列，而它接受的输入白名单
+     里**没有**任何经济字段。模型想说的一切都只能落进 `reason`，而
+     `reason` 在下面被逐字证明为**不参与**任何判定。
+     ══════════════════════════════════════════════════════════════════ */
+
+  /* ── §8 状态机（七态，以现有 contract 为准，不为了齐全硬加）──────────
+     PROPOSED        刚被收下，报价可能还没生成完
+     WAITING_APPROVAL 权威判定要求用户点头（**唯一**的"故事还没结束"）
+     EXECUTING       已取得执行权，正在走 P22-6
+     COMPLETED       那笔 Purchase 已经结算成功  ← 终态
+     DENIED          规则/权威说不               ← 终态
+     EXPIRED         时间到了                   ← 终态
+     FAILED          执行过但没成，或规则面不可信 ← 终态
+
+     ★ 为什么 EXECUTING 必须是**持久**状态而不是内存里的一个瞬间：
+     §16 要求"在 Purchase prepared 与 Intent completed 之间崩溃之后不得
+     重复买"。如果 EXECUTING 只活在内存里，那么崩溃重启后那条 intent 读
+     起来仍是"刚被收下"，而"再执行一次"就会走到 preparePurchase —— 那里
+     的幂等闸门确实能兜住（key 相同），但它兜住的是**同一个 key**，而
+     一个只读的事实无法证明它一定会用同一个 key。持久化 EXECUTING 之后，
+     恢复路径的第一问变成"这条 intent 处于哪一步"，而不是"我猜它做过
+     没有"。
+
+     ★ 四条终态的出边全空，于是 §8 的三条禁令（COMPLETED 不可逆、
+     DENIED 不可复活、EXPIRED 不可复活）是**结构**事实。FAILED 同样终态：
+     "再试一次"是一张新的 Intent（新的 key、新的报价、重新过权威），而
+     不是把一条已经写下失败原因的记录改成成功 —— 那会让 §17 的审计读到
+     一个从未发生的因果。 */
+  var PURCHASE_INTENT_STATE = Object.freeze({
+    PROPOSED: 'PROPOSED',
+    WAITING_APPROVAL: 'WAITING_APPROVAL',
+    EXECUTING: 'EXECUTING',
+    COMPLETED: 'COMPLETED',
+    DENIED: 'DENIED',
+    EXPIRED: 'EXPIRED',
+    FAILED: 'FAILED'
+  });
+
+  var PURCHASE_INTENT_STATES = Object.freeze(Object.keys(PURCHASE_INTENT_STATE));
+
+  var PURCHASE_INTENT_TRANSITIONS = Object.freeze({
+    PROPOSED: Object.freeze([
+      PURCHASE_INTENT_STATE.WAITING_APPROVAL,
+      PURCHASE_INTENT_STATE.EXECUTING,
+      PURCHASE_INTENT_STATE.DENIED,
+      PURCHASE_INTENT_STATE.EXPIRED,
+      PURCHASE_INTENT_STATE.FAILED
+    ]),
+    /* ★ WAITING_APPROVAL 是唯一一个可以走到 EXECUTING 的**等待**状态：
+       用户点头之后同一条 intent 继续。它也可以走到 DENIED（用户拒绝）、
+       EXPIRED（批准或 intent 过期）、FAILED（批准之后执行失败）。 */
+    WAITING_APPROVAL: Object.freeze([
+      PURCHASE_INTENT_STATE.EXECUTING,
+      PURCHASE_INTENT_STATE.DENIED,
+      PURCHASE_INTENT_STATE.EXPIRED,
+      PURCHASE_INTENT_STATE.FAILED
+    ]),
+    /* EXECUTING 只有三个出口：结算成功、超时、失败。
+       ★ 刻意**没有** EXECUTING → WAITING_APPROVAL：执行到一半才想起要
+       问用户，意味着那笔钱可能已经预留在路上 —— 那是 P22-7 花整段篇幅
+       禁止的"先 reserve 再问"。权威判定必须在 EXECUTING **之前**完成。 */
+    EXECUTING: Object.freeze([
+      PURCHASE_INTENT_STATE.COMPLETED,
+      PURCHASE_INTENT_STATE.EXPIRED,
+      PURCHASE_INTENT_STATE.FAILED
+    ]),
+    COMPLETED: Object.freeze([]),
+    DENIED: Object.freeze([]),
+    EXPIRED: Object.freeze([]),
+    FAILED: Object.freeze([])
+  });
+
+  var PURCHASE_INTENT_TERMINAL_STATES = Object.freeze(
+    PURCHASE_INTENT_STATES.filter(function (s) { return PURCHASE_INTENT_TRANSITIONS[s].length === 0; })
+  );
+
+  /* 一条 Intent 的入口状态。刻意**没有** CREATED / DRAFT：与 P22-6 拒绝
+     给 Purchase 一个 CREATED 状态同一条理由 —— "被收下的打算"与"还没
+     被收下的打算"如果都持久化，那么"这条 intent 到底存不存在"就需要
+     第二列来判断。 */
+  var PURCHASE_INTENT_INITIAL_STATE = PURCHASE_INTENT_STATE.PROPOSED;
+
+  var PURCHASE_INTENT_STATE_INDEX = (function () {
+    var map = Object.create(null);
+    for (var i = 0; i < PURCHASE_INTENT_STATES.length; i++) map[PURCHASE_INTENT_STATES[i]] = true;
+    return map;
+  })();
+
+  function isPurchaseIntentState(value) {
+    return value != null && PURCHASE_INTENT_STATE_INDEX[String(value)] === true;
+  }
+
+  function isPurchaseIntentTerminalState(value) {
+    return isPurchaseIntentState(value) &&
+      PURCHASE_INTENT_TRANSITIONS[String(value)].length === 0;
+  }
+
+  function canTransitionPurchaseIntent(from, to) {
+    var f = String(from == null ? '' : from);
+    var t = String(to == null ? '' : to);
+    if (!PURCHASE_INTENT_STATE_INDEX[f] || !PURCHASE_INTENT_STATE_INDEX[t]) {
+      return { allowed: false, from: f, to: t, errors: ['purchase-intent-state-not-in-closed-set'] };
+    }
+    if (PURCHASE_INTENT_TRANSITIONS[f].indexOf(t) >= 0) return { allowed: true, from: f, to: t, errors: [] };
+    /* 与 canTransitionApproval / assertPurchaseTransition 逐字同源：
+       终态回退与"非法转移"是两句不同的话，而 `terminal` 让调用方一眼看出
+       该不该重试 —— §8 的三条禁令正是靠这一位被机器断言的。 */
+    return {
+      allowed: false, from: f, to: t,
+      terminal: PURCHASE_INTENT_TRANSITIONS[f].length === 0,
+      errors: ['transition-not-allowed']
+    };
+  }
+
+  function assertPurchaseIntentTransition(from, to) {
+    var r = canTransitionPurchaseIntent(from, to);
+    if (r.allowed) return r;
+    if (r.errors.indexOf('purchase-intent-state-not-in-closed-set') >= 0) {
+      return Object.assign({}, r, { hint: 'both intent states must come from PURCHASE_INTENT_STATE' });
+    }
+    if (r.terminal) {
+      return Object.assign({}, r, {
+        hint: 'a purchase intent in a terminal state cannot move again; propose a new intent instead of reviving this one'
+      });
+    }
+    return Object.assign({}, r, {
+      hint: 'PROPOSED can wait/execute/deny/expire/fail; WAITING_APPROVAL can execute/deny/expire/fail; EXECUTING can only complete/expire/fail'
+    });
+  }
+
+  /* ── §4 模型**不得**提供的经济事实（封闭拒绝清单）─────────────────────
+     ★ 这一份名单与 PURCHASE_FORBIDDEN_FIELDS 是**两个**东西，刻意不合并：
+
+       · PURCHASE_FORBIDDEN_FIELDS 保护的是 P22-6 的 purchase 快照 ——
+         它连 productId / recipientId 都在内，因为在**结算**那一层，
+         连"买什么"都必须是既成事实而不是请求；
+       · 这一份保护的是 P22-8 的**提议**入口 —— Agent 恰恰有权说
+         productId 与 recipientId（那是它的 WANT），它无权说的是"多少钱
+         / 什么币种 / 打几折 / 批没批 / 走哪种结算"。
+
+     把两份合并会得到一个二选一的坏结果：要么 Agent 连"想买什么"都不能
+     说（那 Decision Bridge 就没有意义了），要么结算层重新信任 productId
+     （那是 P22-6 §7 明确拒绝的）。
+
+     ★ 匹配是**大小写不敏感 + 去分隔符**的（canonicalizeIntentKey）：
+     `amount_minor` / `AmountMinor` / `amountMinor` 是同一个企图。一个只
+     认精确 camelCase 的黑名单等于在说"换个写法就可以"，那不是边界，
+     那是拼写检查。
+
+     ★★ `units` 与 `quantity` **不在**这份名单里，而 `grantQuantity` 在。
+     这不是漏了，而是本阶段最要紧的一次切分（载入期不变量会强制它）：
+
+       Agent 有权选择的（WANT）        Economy 独占的（FACT）
+       ─────────────────────────      ─────────────────────────
+       productId                       amountMinor / price / currency
+       recipientId                     discount / promo / coupon
+       units（要几份）                  grantQuantity（一份实际发放多少）
+                                       settlementType / assetKind / unitName
+                                       approvalId / approved / 任何权威词
+
+     左边三个是"选哪一件、送给谁、要几份"——**一个选择**。右边是"这东西
+     值多少钱、要发多少资产、谁批准了"——**一个事实**。把 `units` 当成经济
+     事实会让 Agent 连"两杯咖啡"都说不出口（Decision Bridge 就没有意义），
+     而把 `grantQuantity` 交给它等于让它自己发资产（P22-5 的 grantQuantity
+     是商品的**本体**列）。因此名单与白名单必须是**两个**集合，而"派生金额"
+     那一类（amount / price / currency / discount / grantQuantity /
+     settlementType）必须与白名单**不相交** —— 这一条由载入期不变量执行。 */
+  var PURCHASE_INTENT_ECONOMIC_FACTS = Object.freeze([
+    'amountMinor', 'amount', 'price', 'unitPriceMinor', 'unitPrice', 'cost',
+    'totalMinor', 'currency', 'discount', 'promo', 'coupon', 'priceMinor',
+    'grantQuantity', 'settlementType', 'assetKind',
+    'fulfillment', 'unitName',
+    'walletId', 'walletBalance', 'balanceMinor', 'reservedBalanceMinor',
+    'budgetResult', 'budgetDecision', 'budgetOutcome', 'budgetPolicyId',
+    'autonomyOutcome', 'autonomyPolicyId', 'autoAllow', 'approvalId',
+    'approvalBindingFingerprint', 'approved', 'isApproved', 'approvalRequired',
+    'purchaseId', 'purchaseState', 'quoteId', 'quoteState', 'reservationId',
+    'transactionId', 'ledgerTransactionId', 'inventoryEntryId',
+    'providerApiKey', 'providerAccount', 'providerBalance', 'providerTopup',
+    'providerQuota', 'realMoney', 'realPrice', 'fiatAmount', 'cny', 'usd',
+    'checkoutUrl', 'paymentIntent', 'paymentLink', 'stock', 'owned'
+  ]);
+
+  /* "派生金额 / 派生资产"那一类 —— 它们必须与提议白名单**不相交**。
+     它是上面那份名单的一个**子集**，单独列出来是为了让载入期不变量能说
+     出确切的那句话（"模型不得提供派生经济值"），而不是"模型不得提供任何
+     经济词"（后者会误伤 units，见上）。 */
+  var PURCHASE_INTENT_DERIVED_ECONOMIC_FACTS = Object.freeze([
+    'amountMinor', 'amount', 'price', 'unitPriceMinor', 'unitPrice', 'cost',
+    'totalMinor', 'currency', 'discount', 'promo', 'coupon', 'priceMinor',
+    'grantQuantity', 'settlementType', 'assetKind', 'fulfillment', 'unitName'
+  ]);
+
+  function canonicalizeIntentKey(value) {
+    if (value == null) return '';
+    return String(value).replace(/[^A-Za-z0-9]/g, '').toLowerCase();
+  }
+
+  var PURCHASE_INTENT_ECONOMIC_FACT_INDEX = (function () {
+    var map = Object.create(null);
+    for (var i = 0; i < PURCHASE_INTENT_ECONOMIC_FACTS.length; i++) {
+      map[canonicalizeIntentKey(PURCHASE_INTENT_ECONOMIC_FACTS[i])] = PURCHASE_INTENT_ECONOMIC_FACTS[i];
+    }
+    return map;
+  })();
+
+  /* 返回**canonical 的那个名字**（而不是 true/false），于是拒绝里能说出
+     "你到底递了哪一个" —— 审计需要的正是这句话。 */
+  function economicFactOfIntentKey(value) {
+    var c = canonicalizeIntentKey(value);
+    if (!c) return null;
+    return PURCHASE_INTENT_ECONOMIC_FACT_INDEX[c] || null;
+  }
+
+  function isIntentEconomicFactKey(value) {
+    return economicFactOfIntentKey(value) != null;
+  }
+
+  /* ── §3/§4 提议的输入白名单 ───────────────────────────────────────────
+     六个键，**恰好**是"模型有权说出口的东西"：
+       agentId · productId · recipientId · units · reason · expiresAt
+
+     ★ 注意 `units` 在这里，而 `grantQuantity` **不**在。这不是笔误：
+     units 是"要几份"（一个数量选择，像"两杯咖啡"），而 grantQuantity 是
+     "这次结算实际发放多少个内部单位" —— 后者由 canonical Product 决定
+     （P22-5 的 grantQuantity 是商品的**本体**列）。Agent 选份数，产品决定
+     一份是什么。把 grantQuantity 交给模型就等于让它自己发资产。
+
+     ★ `expiresAt` 也在：它表达"这个打算我想到什么时候为止"，是一个
+     **请求**，而 store 会把它夹在 [now, now + PURCHASE_INTENT_MAX_LIFETIME_MS]
+     之内，并且**永不**让它超过报价的有效期（见 store 里的说明）。 */
+  var PURCHASE_INTENT_PROPOSAL_KEYS = Object.freeze([
+    'agentId', 'productId', 'recipientId', 'units', 'reason', 'expiresAt'
+  ]);
+
+  /* reason 是 telemetry / explainability，因此它必须**有界**：
+     400 与 makeEconomyEvent 的 metadata 字符串上限逐字相同（同一个理由：
+     超过它基本就是把 prompt 或整段回复塞进来了）。 */
+  var PURCHASE_INTENT_REASON_MAX = 400;
+  /* 默认有效期 15 分钟，上限 24 小时 —— 与 APPROVAL_MAX_LIFETIME_MS 逐字
+     相同，而这不是巧合：§7 要求"批准不得复活已经过期的报价"，而一条
+     intent 的有效期就是它那份报价的有效期，因此两者的上界必须一样宽，
+     否则会出现"批准还在有效期内、它要执行的东西已经死了"这种只能靠
+     运行时兜的缝隙。 */
+  var PURCHASE_INTENT_DEFAULT_LIFETIME_MS = 15 * 60 * 1000;
+  var PURCHASE_INTENT_MAX_LIFETIME_MS = APPROVAL_MAX_LIFETIME_MS;
+  /* §10 的重复窗口：同一个 Agent 对同一个商品 + 同一个 recipient，在这个
+     窗口内产生的**第二条** intent 会被抑制（返回已存在的那一条）。
+     ★ 60 秒是"防模型复读"的量级，不是预算：它挡住的是同一个模型输出被
+     连续喂二十次，而不是"今天少买点"。真正的上限永远是 P22-7 的
+     per-purchase / daily 自主额度与 P22-4 的预算 —— 这一点由
+     PURCHASE_INTENT_DEDUPE_IS_NOT_A_BUDGET = true 写在下面。 */
+  var PURCHASE_INTENT_DEDUPE_WINDOW_MS = 60 * 1000;
+
+  /* ── 自述字段（可断言，不是文档里的句子）───────────────────────────
+     与 P22-7 的 AUTONOMY_POLICY_READS_LLM_OUTPUT 同款：让"Intent 不是
+     权限"成为这个系统自己说出来的话。 */
+  var PURCHASE_INTENT_IS_A_PERMISSION = false;
+  var PURCHASE_INTENT_CARRIES_PRICE = false;
+  var PURCHASE_INTENT_REASON_IS_AUTHORITY = false;
+  var PURCHASE_INTENT_REASON_PARTICIPATES_IN_DECISIONS = false;
+  var PURCHASE_INTENT_GRANTS_BUDGET = false;
+  var PURCHASE_INTENT_BYPASSES_AUTONOMY = false;
+  var PURCHASE_INTENT_BYPASSES_BUDGET = false;
+  var PURCHASE_INTENT_BYPASSES_QUOTE_EXPIRY = false;
+  var PURCHASE_INTENT_DEDUPE_IS_NOT_A_BUDGET = true;
+  var PURCHASE_INTENT_EVERY_INTENT_PASSES_THE_AUTHORITY_GATE = true;
+  var PURCHASE_INTENT_AUTO_ALLOW_STILL_REQUIRES_BUDGET = true;
+  var PURCHASE_INTENT_APPROVAL_PATH_RESERVES_NOTHING = true;
+  var PURCHASE_INTENT_RESUME_REQUIRES_THE_ORIGINAL_QUOTE = true;
+  var PURCHASE_INTENT_RESUME_ASKS_THE_MODEL_AGAIN = false;
+  var PURCHASE_INTENT_EXPOSES_HTTP_MUTATION = false;
+  var PURCHASE_INTENT_TOUCHES_PROVIDER = false;
+  var PURCHASE_INTENT_TOUCHES_PAYMENT = false;
+  var PURCHASE_INTENT_TOUCHES_MEMORY = false;
+  var PURCHASE_INTENT_TOUCHES_RELATIONSHIP = false;
+  var PURCHASE_INTENT_CAN_CALL_SETTLE_DIRECTLY = false;
+
+  /* ── §3 形状校验（纯函数；**不查任何东西**）──────────────────────────
+     存在性属于运行层。这里只回答"这条 intent 的形状能不能被写下来"。
+
+     ★ agentId / recipientId 的**类型**不在这一层校验：一个 id 是角色还是
+     用户，只有 canonical 角色注册表与用户分区知道（P22-6 的 partyInput
+     就是干这个的）。契约这一层只要求它们是**非空、无冒号、有界**的裸 id
+     —— 与 store 里 partyInput 接受的裸 id 形状一致。 */
+  var INTENT_PARTY_ID_RE = /^[A-Za-z0-9_.:@-]{1,128}$/;
+
+  function normalizeIntentPartyId(value) {
+    if (value == null) return { ok: false, id: null, errors: ['intent-party-id-required'] };
+    if (typeof value !== 'string' && typeof value !== 'number') {
+      return { ok: false, id: null, errors: ['intent-party-id-type-unsupported'] };
+    }
+    var s = String(value).trim();
+    if (!s) return { ok: false, id: null, errors: ['intent-party-id-required'] };
+    if (!INTENT_PARTY_ID_RE.test(s)) return { ok: false, id: null, errors: ['intent-party-id-not-canonical'] };
+    return { ok: true, id: s, errors: [] };
+  }
+
+  /* reason：**允许**空（一次没有解释的打算仍然是一次打算），但一旦有内容
+     就必须是标量字符串且有界。刻意**不**做内容审核：它是 telemetry，
+     不是权限，因此"这句话说了什么"不影响任何判定。 */
+  function normalizeIntentReason(value) {
+    if (value == null) return { ok: true, reason: null, errors: [] };
+    if (typeof value !== 'string') return { ok: false, reason: null, errors: ['intent-reason-must-be-a-string'] };
+    var s = value.trim();
+    if (!s) return { ok: true, reason: null, errors: [] };
+    if (s.length > PURCHASE_INTENT_REASON_MAX) {
+      return { ok: false, reason: null, errors: ['intent-reason-too-long'] };
+    }
+    return { ok: true, reason: s, errors: [] };
+  }
+
+  /* ── §3/§4 提议入口的**唯一**规范化函数（纯函数）────────────────────
+     它做三件事，而顺序是刻意的：
+
+       ① 先找出**所有**经济事实键并**拒绝**整条提议；
+       ② 再找出所有不在白名单里的键并拒绝；
+       ③ 最后才规范化留下的六个。
+
+     ★ 为什么①必须排在②之前：一条同时递了 `price` 与 `nonsense` 的提议，
+     正确的第一句话是"你的手伸进了经济事实里"（MODEL_SUPPLIED_ECONOMIC_FACT），
+     而不是"你有个不认识的字段"。②能说出的话①说不出，而①更严重。
+
+     ★ 为什么"未知键"是**拒绝**而不是忽略：静默忽略一个模型以为有用的
+     参数，会让它反复尝试同一个参数而永远得不到更正 —— 那正是"幻觉的
+     参数看起来像是生效了"。拒绝是一次可学习的反馈。 */
+  function normalizePurchaseIntentProposal(input) {
+    var o = input == null ? null : input;
+    if (o == null || typeof o !== 'object' || Array.isArray(o)) {
+      return { ok: false, proposal: null, reasonCode: null, suppliedEconomicFacts: [], unknownKeys: [],
+        errors: ['intent-proposal-must-be-a-plain-object'] };
+    }
+    var keys = Object.keys(o);
+    var economic = [];
+    var unknown = [];
+    for (var i = 0; i < keys.length; i++) {
+      var fact = economicFactOfIntentKey(keys[i]);
+      if (fact != null) { economic.push(fact); continue; }
+      if (PURCHASE_INTENT_PROPOSAL_KEYS.indexOf(keys[i]) < 0) unknown.push(keys[i]);
+    }
+    if (economic.length) {
+      return {
+        ok: false, proposal: null,
+        reasonCode: DENY_REASON.MODEL_SUPPLIED_ECONOMIC_FACT,
+        suppliedEconomicFacts: Object.freeze(economic.slice().sort()),
+        unknownKeys: Object.freeze(unknown.slice().sort()),
+        errors: economic.map(function (f) { return 'model-must-not-supply-economic-fact:' + f; })
+      };
+    }
+    if (unknown.length) {
+      return {
+        ok: false, proposal: null, reasonCode: null,
+        suppliedEconomicFacts: Object.freeze([]),
+        unknownKeys: Object.freeze(unknown.slice().sort()),
+        errors: unknown.map(function (k) { return 'intent-proposal-key-not-whitelisted:' + k; })
+      };
+    }
+
+    var agent = normalizeIntentPartyId(o.agentId);
+    if (!agent.ok) return { ok: false, proposal: null, reasonCode: null, suppliedEconomicFacts: [], unknownKeys: [], errors: agent.errors };
+    if (!isEconomyId('PRODUCT', o.productId)) {
+      return { ok: false, proposal: null, reasonCode: null, suppliedEconomicFacts: [], unknownKeys: [], errors: ['product-id-not-canonical'] };
+    }
+    var recipientId = null;
+    if (o.recipientId != null && String(o.recipientId).trim() !== '') {
+      var recipient = normalizeIntentPartyId(o.recipientId);
+      if (!recipient.ok) return { ok: false, proposal: null, reasonCode: null, suppliedEconomicFacts: [], unknownKeys: [], errors: recipient.errors };
+      recipientId = recipient.id;
+    }
+    var units = o.units == null ? 1 : Number(o.units);
+    if (!Number.isSafeInteger(units) || units < 1) {
+      return { ok: false, proposal: null, reasonCode: DENY_REASON.INVALID_AMOUNT, suppliedEconomicFacts: [], unknownKeys: [],
+        errors: ['units-must-be-a-positive-safe-integer'] };
+    }
+    var reason = normalizeIntentReason(o.reason);
+    if (!reason.ok) return { ok: false, proposal: null, reasonCode: null, suppliedEconomicFacts: [], unknownKeys: [], errors: reason.errors };
+    var expiresAt = null;
+    if (o.expiresAt != null) {
+      var ms = Number(o.expiresAt);
+      if (!Number.isSafeInteger(ms) || ms < 0) {
+        return { ok: false, proposal: null, reasonCode: null, suppliedEconomicFacts: [], unknownKeys: [],
+          errors: ['expires-at-must-be-a-non-negative-safe-integer'] };
+      }
+      expiresAt = ms;
+    }
+    return {
+      ok: true,
+      reasonCode: null,
+      suppliedEconomicFacts: Object.freeze([]),
+      unknownKeys: Object.freeze([]),
+      errors: [],
+      proposal: Object.freeze({
+        agentId: agent.id,
+        productId: String(o.productId),
+        recipientId: recipientId,
+        selfDirected: recipientId == null,
+        units: units,
+        reason: reason.reason,
+        expiresAt: expiresAt
+      })
+    };
+  }
+
+  /* ── §10/§11 Intent 的身份（**不含** reason，也不含任何生成的 id）────
+     六个字段，而每一个都在回答"这两条打算是不是同一件事"：
+       agentId · productId · recipientId · units · selfDirected
+     加上一个 schema 标记，于是未来改变身份定义时旧指纹不会被误认。
+
+     ★ `reason` **刻意不在**。这是本阶段最要紧的一条"位置决定性质"：
+     模型把同一句话换个说法（"快没额度了" → "我需要更多算力"）不能让
+     重复抑制失效。如果 reason 进指纹，那么"复读二十次"只要每次改写
+     理由就能买二十次 —— 而 §10 要求恰好相反。
+     ★ `expiresAt` 也**不在**：有效期是"这个打算我想到什么时候为止"，
+     不是"这是哪一件事"。同一个打算申请两次不同有效期是同一件事。
+     ★ 生成的 intentId / quoteId 当然不在：否则每条都是新指纹。 */
+  var PURCHASE_INTENT_FINGERPRINT_KEYS = Object.freeze([
+    'agentId', 'productId', 'recipientId', 'units', 'selfDirected'
+  ]);
+  var PURCHASE_INTENT_FINGERPRINT_SCHEMA = 'p22-8-intent-v1';
+
+  /* 纯函数哈希（契约层自己的一份）。
+     ★ 为什么不 import store 的那一个：契约是**无依赖**的纯层（它甚至
+     只依赖 Object / String），而 store 依赖契约。让契约去 require store
+     会立刻造成循环，而"指纹的算法"恰恰是必须只有**一个**定义的东西 ——
+     两条不同的实现会让"同一个身份算出两个指纹"，那是重复抑制与幂等性
+     同时失效的最隐蔽方式。
+     因此这里是同一算法的第二份**逐字**副本，并且有一个测试钉住两者对
+     同一输入给出同一个值（test_p22_8_economy_intent.js 的 F 组）。 */
+  function fnv1a64Hex(text) {
+    var s = String(text);
+    var h1 = 0xcbf29ce484222325n;
+    var h2 = 0x9e3779b97f4a7c15n;
+    var P1 = 0x100000001b3n;
+    var P2 = 0x2545f4914f6cdd1dn;
+    for (var i = 0; i < s.length; i++) {
+      var c = BigInt(s.charCodeAt(i));
+      h1 = ((h1 ^ c) * P1) & 0xffffffffffffffffn;
+      h2 = ((h2 ^ (c + BigInt(s.length - i))) * P2) & 0xffffffffffffffffn;
+    }
+    return h1.toString(16).padStart(16, '0') + h2.toString(16).padStart(16, '0');
+  }
+
+  function purchaseIntentFingerprint(intent) {
+    var o = intent || {};
+    var parts = [PURCHASE_INTENT_FINGERPRINT_SCHEMA];
+    var agent = normalizeIntentPartyId(o.agentId);
+    if (!agent.ok) return { ok: false, fingerprint: null, errors: agent.errors };
+    if (!isEconomyId('PRODUCT', o.productId)) {
+      return { ok: false, fingerprint: null, errors: ['product-id-not-canonical'] };
+    }
+    var recipientId = null;
+    if (o.recipientId != null && String(o.recipientId).trim() !== '') {
+      var recipient = normalizeIntentPartyId(o.recipientId);
+      if (!recipient.ok) return { ok: false, fingerprint: null, errors: recipient.errors };
+      recipientId = recipient.id;
+    }
+    var units = o.units == null ? 1 : Number(o.units);
+    if (!Number.isSafeInteger(units) || units < 1) {
+      return { ok: false, fingerprint: null, errors: ['units-must-be-a-positive-safe-integer'] };
+    }
+    var selfDirected = recipientId == null;
+    /* 顺序固定 + 定长写法：`a|b|c` 的朴素拼接里，("a","b|c") 与 ("a|b","c")
+       会撞出同一个字符串，而那正是"两条不同的打算被认成同一条"的入口。
+       JSON.stringify 一个**数组**不会有这个问题（每个元素被引号与逗号
+       逐字界定），因此指纹由它派生。 */
+    parts.push(agent.id, String(o.productId), recipientId == null ? '' : recipientId,
+      String(units), selfDirected ? 'self' : 'gift');
+    var canonical = JSON.stringify(parts);
+    return { ok: true, fingerprint: 'intent1_' + fnv1a64Hex(canonical), canonical: canonical, errors: [] };
+  }
+
+  /* ── §5–§7 权威判定的**纯决策表** ────────────────────────────────────
+     ★ 这是本阶段最容易写错的一处，因此它被写成一个**没有查询**的纯函数：
+     输入是已经读出来的事实，输出是"这条 intent 现在能做什么"。
+
+     它刻意**不**返回下一个状态（那是 orchestration 的事，属于 store）：
+     它返回的是**裁决** —— outcome / reasonCode / 以及三句布尔事实。状态
+     迁移由 store 依据裁决执行，而 status 那个词只出现一次（在 store 的
+     determination 里）。两个地方各自算一次状态，就是两个真值来源。
+
+     §7 的恢复语义在这里成文：approvalStatus === 'APPROVED' 时 outcome
+     是 EXECUTE_APPROVED（**不是** AUTO_ALLOW）。两者都导致执行，但审计里
+     必须能读出"这笔是自主放行的，还是有人点过头的" —— 那是 §17 第四问
+     与第三问的区别。 */
+  var INTENT_VERDICT = Object.freeze({
+    EXECUTE_AUTO_ALLOW: 'EXECUTE_AUTO_ALLOW',
+    EXECUTE_APPROVED: 'EXECUTE_APPROVED',
+    WAIT_FOR_APPROVAL: 'WAIT_FOR_APPROVAL',
+    DENY: 'DENY',
+    FAIL: 'FAIL'
+  });
+
+  var INTENT_VERDICTS = Object.freeze(Object.keys(INTENT_VERDICT));
+
+  /* 判据顺序（机器可断言，与 AP_EVALUATION_PRIORITY 同款）。
+     ★ 三条前置闸门（intent 已终态 / 已过期 / 事实不完整）刻意排在权威判定
+     **之前**：一条已经结束或已经过期的 intent，无论权威怎么说都不该再动，
+     而"权威说 AUTO_ALLOW"在这种情况下是一句**误导性**的真话。 */
+  var INTENT_VERDICT_PRIORITY = Object.freeze([
+    'input-structured',
+    'intent-not-terminal',
+    'intent-not-expired',
+    'product-is-purchasable',
+    'authority-present',
+    'authority-outcome',
+    'approval-outcome-when-required'
+  ]);
+
+  function evaluatePurchaseIntentVerdict(context) {
+    var c = context || {};
+    var at = Number(c.now);
+    if (!Number.isSafeInteger(at) || at < 0) {
+      return { ok: false, outcome: null, reasonCode: null, errors: ['now-must-be-a-non-negative-safe-integer'] };
+    }
+    var base = {
+      ok: true,
+      errors: [],
+      priority: 0,
+      at: at,
+      domain: DOMAIN,
+      /* §8：Intent 状态只是 orchestration fact —— 这句话在返回值里，于是
+         调用方无法把它当成经济事实使用。 */
+      intentStateIsAnOrchestrationFact: true,
+      mayExecute: false,
+      reservesNothing: true,
+      createsPurchase: false
+    };
+
+    /* ① 形状 */
+    if (!isPurchaseIntentState(c.intentStatus)) {
+      return Object.assign({}, base, { outcome: INTENT_VERDICT.FAIL, priority: 1,
+        reasonCode: DENY_REASON.INTENT_NOT_EXECUTABLE, errors: ['intent-status-not-in-closed-set'] });
+    }
+    if (!Number.isSafeInteger(Number(c.expiresAt))) {
+      return Object.assign({}, base, { outcome: INTENT_VERDICT.FAIL, priority: 1,
+        reasonCode: DENY_REASON.INTENT_NOT_EXECUTABLE, errors: ['expires-at-must-be-a-safe-integer'] });
+    }
+    if (!isEconomyId('PRODUCT', c.productId)) {
+      return Object.assign({}, base, { outcome: INTENT_VERDICT.FAIL, priority: 1,
+        reasonCode: DENY_REASON.INTENT_NOT_EXECUTABLE, errors: ['product-id-not-canonical'] });
+    }
+
+    /* ② 终态（§8 的三条禁令在这一行上被执行） */
+    if (isPurchaseIntentTerminalState(c.intentStatus)) {
+      return Object.assign({}, base, { outcome: INTENT_VERDICT.FAIL, priority: 2,
+        reasonCode: DENY_REASON.INTENT_NOT_EXECUTABLE,
+        terminal: true,
+        currentStatus: String(c.intentStatus) });
+    }
+
+    /* ③ 过期。★ 过期**优先于**一切权威判定：一份报价死了，AUTO_ALLOW
+       也不能让它复活（§7）。 */
+    if (Number(c.expiresAt) <= at || c.quoteExpired === true) {
+      return Object.assign({}, base, { outcome: INTENT_VERDICT.FAIL, priority: 3,
+        reasonCode: DENY_REASON.INTENT_EXPIRED,
+        expiredByTerm: Number(c.expiresAt) <= at,
+        quoteExpired: c.quoteExpired === true,
+        expiredQuoteIsNotRevivedByAuthority: true });
+    }
+    /* ★ 报价已不是 OPEN 时**不**在这里下结论，而是留给 ⑦ 的批准分支 ——
+       因为 "CONSUMED" 有两种截然不同的来源：
+         · 另一个进程／另一笔购买已经用掉了它（恢复路径要回答
+           "那条批准已经被消费"，而不是"报价不对"）；
+         · 手工改过库。
+       开发期实测踩到的一次真实缺陷：这一条曾经无条件下 FAIL / QUOTE_MISMATCH，
+       于是"批准已被另一笔购买消费"这条**真实**的恢复情形被读成一次报价
+       不匹配，而那条批准的一次性从未被说出来。
+       现在：**没有**批准参与判定时（c.approvalStatus == null）它仍然是
+       FAIL / QUOTE_MISMATCH；有批准参与时交给 ⑦。 */
+    if (c.approvalStatus == null && c.quoteState != null && String(c.quoteState) !== QUOTE_STATE.OPEN) {
+      return Object.assign({}, base, { outcome: INTENT_VERDICT.FAIL, priority: 3,
+        reasonCode: DENY_REASON.QUOTE_MISMATCH, quoteState: String(c.quoteState) });
+    }
+
+    /* ④ 商品此刻仍然可买（DISABLED / RETIRED / 货架关掉 → fail closed）。
+       这一条只依赖 P22-5 的既有状态词，不发明新的。 */
+    if (c.productStatus != null && String(c.productStatus) !== PRODUCT_STATUS.ACTIVE) {
+      return Object.assign({}, base, { outcome: INTENT_VERDICT.DENY, priority: 4,
+        reasonCode: DENY_REASON.PRODUCT_DISABLED, productStatus: String(c.productStatus) });
+    }
+
+    /* ⑤ 权威面必须在场且可信。**没有策略**时的 fail closed 已经由 P22-7
+       的 evaluateAutonomousPurchase 给出（REQUIRE_APPROVAL），因此这里
+       只处理"这一面根本读不出来"：那是 systemFailure，不是"需要点头"。 */
+    var authority = c.authority;
+    if (authority == null || authority.ok !== true || !authority.decision ||
+        AP_DECISIONS.indexOf(String(authority.decision.outcome)) < 0) {
+      return Object.assign({}, base, { outcome: INTENT_VERDICT.FAIL, priority: 5,
+        reasonCode: DENY_REASON.POLICY_INPUT_NOT_STRUCTURED,
+        systemFailure: true,
+        authorityPresent: false });
+    }
+    var outcome = String(authority.decision.outcome);
+    var reasonCode = authority.decision.reasonCode == null ? null : String(authority.decision.reasonCode);
+
+    /* ⑥ AUTO_ALLOW */
+    if (outcome === AP_DECISION.AUTO_ALLOW) {
+      return Object.assign({}, base, { outcome: INTENT_VERDICT.EXECUTE_AUTO_ALLOW, priority: 6,
+        reasonCode: reasonCode,
+        authorityOutcome: outcome,
+        mayExecute: true,
+        /* ★ 逐字：即使放行，钱的事仍未决定。 */
+        budgetStillRequired: true,
+        autonomyPolicyId: authority.autonomyPolicyId == null ? null : String(authority.autonomyPolicyId) });
+    }
+
+    /* ⑦ DENY */
+    if (outcome === AP_DECISION.DENY) {
+      return Object.assign({}, base, { outcome: INTENT_VERDICT.DENY, priority: 6,
+        reasonCode: reasonCode, authorityOutcome: outcome, terminal: false });
+    }
+
+    /* ⑧ REQUIRE_APPROVAL —— 唯一会分叉的一个。 */
+    if (outcome === AP_DECISION.REQUIRE_APPROVAL) {
+      var approvalStatus = c.approvalStatus == null ? null : String(c.approvalStatus);
+      /* 还没有批准记录 → 停下来问用户。 */
+      if (approvalStatus == null) {
+        return Object.assign({}, base, { outcome: INTENT_VERDICT.WAIT_FOR_APPROVAL, priority: 7,
+          reasonCode: reasonCode || DENY_REASON.APPROVAL_REQUIRED,
+          authorityOutcome: outcome,
+          reservesNothing: true, mayExecute: false, createsPurchase: false });
+      }
+      if (!isApprovalState(approvalStatus)) {
+        return Object.assign({}, base, { outcome: INTENT_VERDICT.FAIL, priority: 7,
+          reasonCode: DENY_REASON.POLICY_INPUT_NOT_STRUCTURED, systemFailure: true,
+          authorityOutcome: outcome, approvalStatus: approvalStatus });
+      }
+      /* ★ 用户点头：继续执行，但**不是** AUTO_ALLOW。 */
+      if (approvalStatus === APPROVAL_STATE.APPROVED) {
+        return Object.assign({}, base, { outcome: INTENT_VERDICT.EXECUTE_APPROVED, priority: 7,
+          reasonCode: reasonCode, authorityOutcome: outcome,
+          approvalStatus: approvalStatus,
+          mayExecute: true,
+          budgetStillRequired: true,
+          approvedIsNotAnAutonomousAllow: true });
+      }
+      /* REJECTED → 终结。 */
+      if (approvalStatus === APPROVAL_STATE.REJECTED) {
+        return Object.assign({}, base, { outcome: INTENT_VERDICT.DENY, priority: 7,
+          reasonCode: DENY_REASON.APPROVAL_REQUIRED, authorityOutcome: outcome,
+          approvalStatus: approvalStatus, rejectedByUser: true });
+      }
+      /* EXPIRED → 时间到了（与 §7 "批准不得复活报价"是同一族事实）。 */
+      if (approvalStatus === APPROVAL_STATE.EXPIRED) {
+        return Object.assign({}, base, { outcome: INTENT_VERDICT.FAIL, priority: 7,
+          reasonCode: DENY_REASON.APPROVAL_EXPIRED, authorityOutcome: outcome,
+          approvalStatus: approvalStatus });
+      }
+      /* ★ CONSUMED：批准已经被**另一笔**购买用掉了。这**不是**失败，而是
+         "这件事已经做完了，你手上这条 intent 不应该再动" —— 它是 P22-7
+         §8 一次性消费在恢复路径上的表现。刻意返回 DENY 而不是 FAIL：重试
+         不会改变它。 */
+      return Object.assign({}, base, { outcome: INTENT_VERDICT.DENY, priority: 7,
+        reasonCode: DENY_REASON.APPROVAL_NOT_CONSUMED, authorityOutcome: outcome,
+        approvalStatus: approvalStatus, approvalAlreadySpent: true });
+    }
+
+    /* 不可达：AP_DECISIONS 已经在上面的封闭集合检查里挡住了别的词。保留
+       这一支是为了让"某天加了一个 AP_DECISION"表现为 fail closed 而不是
+       静默返回 undefined。 */
+    return Object.assign({}, base, { outcome: INTENT_VERDICT.FAIL, priority: 6,
+      reasonCode: DENY_REASON.POLICY_INPUT_NOT_STRUCTURED, authorityOutcome: outcome });
+  }
+
+  /* ── §17 读面白名单 ──────────────────────────────────────────────────
+     它同时挡住"顺手把 agent reasoning 塞进读面" —— reason 在名单里，但
+     它旁边有 reasonIsAuthority: false，因此一个读到 reason 的消费者同时
+     读到"它不是权限"。 */
+  var PURCHASE_INTENT_SUMMARY_KEYS = Object.freeze([
+    'agentIntentId', 'state', 'agentId', 'productId', 'recipientId', 'selfDirected',
+    'units', 'quoteId', 'approvalId', 'purchaseId', 'authorityOutcome',
+    'authorityReasonCode', 'reasonCode', 'reason', 'reasonIsAuthority',
+    'intentFingerprint', 'expiresAt', 'createdAt', 'updatedAt', 'revision',
+    'terminal',
+    /* ★ §8 的两句自述必须在**读面**上（而不只是在内部视图里）：一个拿到
+       这条 intent 的消费者应当同时读到"它是一个编排事实，不是一个经济
+       事实" —— 否则"intent 里有没有钱的事实"就取决于消费者自己去猜。
+       ★ `mayExecute` **刻意不在**这份名单里：它是一次**裁决**的结论，不是
+       这条记录的一个字段（同一条 intent 在不同时刻有不同答案）。把它放进
+       读面会让"这条 intent 能不能执行"看起来像一个持久属性。 */
+    'stateIsAnOrchestrationFact', 'stateIsNotAnEconomicFact',
+    /* 与 reason 并列的两句：理由只是 telemetry。 */
+    'reasonIsTelemetry', 'reasonParticipatesInDecisions',
+    'expiredByTime'
+  ]);
+  var PURCHASE_INTENT_LIST_KEYS = Object.freeze([
+    'agentId', 'productId', 'state', 'limit'
+  ]);
+
+  var PURCHASE_INTENT_HTTP_MUTATION_ROUTES = Object.freeze([
+    '/economy/intent/propose', '/economy/intent/execute', '/economy/intent/resume',
+    '/economy/buy', '/economy/execute'
+  ]);
+
+  /* ── 载入期不变量 ───────────────────────────────────────────────────
+     与 P22-7 的同一段同款：把"某天有人放松了边界"变成 require 那一刻的
+     崩溃，而不是审计时才发现。 */
+  (function intentInvariants() {
+    function die(message) { throw new Error('economy-contract: ' + message); }
+
+    if (PURCHASE_INTENT_TERMINAL_STATES.length !== 4) {
+      die('exactly four purchase intent states must be terminal; got=' + PURCHASE_INTENT_TERMINAL_STATES.length);
+    }
+    for (var i = 0; i < PURCHASE_INTENT_TERMINAL_STATES.length; i++) {
+      var s = PURCHASE_INTENT_TERMINAL_STATES[i];
+      if (PURCHASE_INTENT_TRANSITIONS[s].length !== 0) die('terminal intent state has outgoing edges: ' + s);
+    }
+    /* §8：三条禁令逐条。 */
+    var forbidden = [
+      [PURCHASE_INTENT_STATE.COMPLETED, PURCHASE_INTENT_STATE.EXECUTING],
+      [PURCHASE_INTENT_STATE.DENIED, PURCHASE_INTENT_STATE.WAITING_APPROVAL],
+      [PURCHASE_INTENT_STATE.EXPIRED, PURCHASE_INTENT_STATE.WAITING_APPROVAL],
+      [PURCHASE_INTENT_STATE.FAILED, PURCHASE_INTENT_STATE.EXECUTING]
+    ];
+    for (var f = 0; f < forbidden.length; f++) {
+      if (canTransitionPurchaseIntent(forbidden[f][0], forbidden[f][1]).allowed) {
+        die('a terminal purchase intent must never move again: ' + forbidden[f][0] + ' → ' + forbidden[f][1]);
+      }
+    }
+    /* ★ §4：任何**派生**经济值都不得出现在提议白名单里 —— 这是结构性的
+       一半，另一半是 normalizePurchaseIntentProposal 的拒绝。
+       ★ 断言的是"派生经济值"而不是"任何经济词"：`units` 是一个选择而不是
+       一个事实（见 PURCHASE_INTENT_ECONOMIC_FACTS 的说明），把它一并断言
+       掉会让 Decision Bridge 连"要几份"都不能说。 */
+    for (var k = 0; k < PURCHASE_INTENT_PROPOSAL_KEYS.length; k++) {
+      var key = PURCHASE_INTENT_PROPOSAL_KEYS[k];
+      if (PURCHASE_INTENT_DERIVED_ECONOMIC_FACTS.indexOf(key) >= 0) {
+        die('a derived economic fact must not be settable through an intent proposal: ' + key);
+      }
+    }
+    /* ★ 而权威词（approved / approvalId / autoAllow …）无论怎么切都不许进
+       白名单 —— 它们不是"值"，它们是**许可**。 */
+    var authorityWords = ['approvalId', 'approved', 'isApproved', 'approvalRequired',
+      'autoAllow', 'autonomyOutcome', 'autonomyPolicyId'];
+    for (var a = 0; a < authorityWords.length; a++) {
+      if (PURCHASE_INTENT_PROPOSAL_KEYS.indexOf(authorityWords[a]) >= 0) {
+        die('an authority claim must not be settable through an intent proposal: ' + authorityWords[a]);
+      }
+      if (!isIntentEconomicFactKey(authorityWords[a])) {
+        die('an authority claim must be recognised as an economic fact: ' + authorityWords[a]);
+      }
+    }
+    /* ★ §3/§10：reason 不得出现在身份里，也不得出现在会影响判定的任何
+       名单里。这一条是"reason 只是 telemetry"的机器版本。 */
+    if (PURCHASE_INTENT_FINGERPRINT_KEYS.indexOf('reason') >= 0) {
+      die('reason must not participate in the intent fingerprint');
+    }
+    if (PURCHASE_INTENT_FINGERPRINT_KEYS.indexOf('expiresAt') >= 0) {
+      die('expiresAt must not participate in the intent fingerprint');
+    }
+    /* ★ §9：默认有效期不得超过上限，否则默认值本身就是一次违规。 */
+    if (PURCHASE_INTENT_DEFAULT_LIFETIME_MS > PURCHASE_INTENT_MAX_LIFETIME_MS) {
+      die('the default intent lifetime must not exceed the maximum');
+    }
+    if (PURCHASE_INTENT_MAX_LIFETIME_MS !== APPROVAL_MAX_LIFETIME_MS) {
+      die('an intent and the approval that may authorize it must share one lifetime ceiling');
+    }
+    /* ★ §2：Intent 自己绝不创建持久 Approval —— 创建它的是 store 在权威
+       判定之后的那一步。这句话在这里是可断言的，而不是注释。 */
+    if (PURCHASE_INTENT_IS_A_PERMISSION !== false) die('an intent is not a permission');
+    if (PURCHASE_INTENT_CARRIES_PRICE !== false) die('an intent must not carry a price');
+    if (PURCHASE_INTENT_REASON_IS_AUTHORITY !== false) die('reason is not authority');
+  })();
+
   return Object.freeze({
     /* §1 */
     DOMAIN: DOMAIN,
@@ -5082,6 +5974,61 @@
     APPROVAL_IS_SINGLE_USE: APPROVAL_IS_SINGLE_USE,
     APPROVAL_IS_BOUND_TO_A_QUOTE: APPROVAL_IS_BOUND_TO_A_QUOTE,
     AUTONOMY_DEFAULT_WHEN_NO_POLICY: AUTONOMY_DEFAULT_WHEN_NO_POLICY,
-    formatPurchaseId: formatPurchaseId
+    formatPurchaseId: formatPurchaseId,
+
+    /* ══ P22-8 §24 · Agent Purchase Intent + Decision Bridge ════════════ */
+    PURCHASE_INTENT_STATE: PURCHASE_INTENT_STATE,
+    PURCHASE_INTENT_STATES: PURCHASE_INTENT_STATES,
+    PURCHASE_INTENT_TRANSITIONS: PURCHASE_INTENT_TRANSITIONS,
+    PURCHASE_INTENT_TERMINAL_STATES: PURCHASE_INTENT_TERMINAL_STATES,
+    PURCHASE_INTENT_INITIAL_STATE: PURCHASE_INTENT_INITIAL_STATE,
+    isPurchaseIntentState: isPurchaseIntentState,
+    isPurchaseIntentTerminalState: isPurchaseIntentTerminalState,
+    canTransitionPurchaseIntent: canTransitionPurchaseIntent,
+    assertPurchaseIntentTransition: assertPurchaseIntentTransition,
+    PURCHASE_INTENT_PROPOSAL_KEYS: PURCHASE_INTENT_PROPOSAL_KEYS,
+    PURCHASE_INTENT_ECONOMIC_FACTS: PURCHASE_INTENT_ECONOMIC_FACTS,
+    PURCHASE_INTENT_DERIVED_ECONOMIC_FACTS: PURCHASE_INTENT_DERIVED_ECONOMIC_FACTS,
+    PURCHASE_INTENT_FINGERPRINT_KEYS: PURCHASE_INTENT_FINGERPRINT_KEYS,
+    PURCHASE_INTENT_FINGERPRINT_SCHEMA: PURCHASE_INTENT_FINGERPRINT_SCHEMA,
+    PURCHASE_INTENT_REASON_MAX: PURCHASE_INTENT_REASON_MAX,
+    PURCHASE_INTENT_DEFAULT_LIFETIME_MS: PURCHASE_INTENT_DEFAULT_LIFETIME_MS,
+    PURCHASE_INTENT_MAX_LIFETIME_MS: PURCHASE_INTENT_MAX_LIFETIME_MS,
+    PURCHASE_INTENT_DEDUPE_WINDOW_MS: PURCHASE_INTENT_DEDUPE_WINDOW_MS,
+    PURCHASE_INTENT_SUMMARY_KEYS: PURCHASE_INTENT_SUMMARY_KEYS,
+    PURCHASE_INTENT_LIST_KEYS: PURCHASE_INTENT_LIST_KEYS,
+    PURCHASE_INTENT_HTTP_MUTATION_ROUTES: PURCHASE_INTENT_HTTP_MUTATION_ROUTES,
+    INTENT_VERDICT: INTENT_VERDICT,
+    INTENT_VERDICTS: INTENT_VERDICTS,
+    INTENT_VERDICT_PRIORITY: INTENT_VERDICT_PRIORITY,
+    evaluatePurchaseIntentVerdict: evaluatePurchaseIntentVerdict,
+    normalizePurchaseIntentProposal: normalizePurchaseIntentProposal,
+    normalizeIntentPartyId: normalizeIntentPartyId,
+    normalizeIntentReason: normalizeIntentReason,
+    canonicalizeIntentKey: canonicalizeIntentKey,
+    economicFactOfIntentKey: economicFactOfIntentKey,
+    isIntentEconomicFactKey: isIntentEconomicFactKey,
+    purchaseIntentFingerprint: purchaseIntentFingerprint,
+    PURCHASE_INTENT_IS_A_PERMISSION: PURCHASE_INTENT_IS_A_PERMISSION,
+    PURCHASE_INTENT_CARRIES_PRICE: PURCHASE_INTENT_CARRIES_PRICE,
+    PURCHASE_INTENT_REASON_IS_AUTHORITY: PURCHASE_INTENT_REASON_IS_AUTHORITY,
+    PURCHASE_INTENT_REASON_PARTICIPATES_IN_DECISIONS: PURCHASE_INTENT_REASON_PARTICIPATES_IN_DECISIONS,
+    PURCHASE_INTENT_GRANTS_BUDGET: PURCHASE_INTENT_GRANTS_BUDGET,
+    PURCHASE_INTENT_BYPASSES_AUTONOMY: PURCHASE_INTENT_BYPASSES_AUTONOMY,
+    PURCHASE_INTENT_BYPASSES_BUDGET: PURCHASE_INTENT_BYPASSES_BUDGET,
+    PURCHASE_INTENT_BYPASSES_QUOTE_EXPIRY: PURCHASE_INTENT_BYPASSES_QUOTE_EXPIRY,
+    PURCHASE_INTENT_DEDUPE_IS_NOT_A_BUDGET: PURCHASE_INTENT_DEDUPE_IS_NOT_A_BUDGET,
+    PURCHASE_INTENT_EVERY_INTENT_PASSES_THE_AUTHORITY_GATE: PURCHASE_INTENT_EVERY_INTENT_PASSES_THE_AUTHORITY_GATE,
+    PURCHASE_INTENT_AUTO_ALLOW_STILL_REQUIRES_BUDGET: PURCHASE_INTENT_AUTO_ALLOW_STILL_REQUIRES_BUDGET,
+    PURCHASE_INTENT_APPROVAL_PATH_RESERVES_NOTHING: PURCHASE_INTENT_APPROVAL_PATH_RESERVES_NOTHING,
+    PURCHASE_INTENT_RESUME_REQUIRES_THE_ORIGINAL_QUOTE: PURCHASE_INTENT_RESUME_REQUIRES_THE_ORIGINAL_QUOTE,
+    PURCHASE_INTENT_RESUME_ASKS_THE_MODEL_AGAIN: PURCHASE_INTENT_RESUME_ASKS_THE_MODEL_AGAIN,
+    PURCHASE_INTENT_EXPOSES_HTTP_MUTATION: PURCHASE_INTENT_EXPOSES_HTTP_MUTATION,
+    PURCHASE_INTENT_TOUCHES_PROVIDER: PURCHASE_INTENT_TOUCHES_PROVIDER,
+    PURCHASE_INTENT_TOUCHES_PAYMENT: PURCHASE_INTENT_TOUCHES_PAYMENT,
+    PURCHASE_INTENT_TOUCHES_MEMORY: PURCHASE_INTENT_TOUCHES_MEMORY,
+    PURCHASE_INTENT_TOUCHES_RELATIONSHIP: PURCHASE_INTENT_TOUCHES_RELATIONSHIP,
+    PURCHASE_INTENT_CAN_CALL_SETTLE_DIRECTLY: PURCHASE_INTENT_CAN_CALL_SETTLE_DIRECTLY,
+    fnv1a64Hex: fnv1a64Hex
   });
 });
