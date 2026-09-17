@@ -1,10 +1,14 @@
-# InternalBeyond Release Builder（Release Tooling R1）
+# InternalBeyond Release Builder（Release Tooling R2）
 
 > 一个本地发布编排器：**AI 写代码，它负责发布。**
 >
 > 它**不产生任何发布真相**。唯一的版本源、唯一的清单生成器/校验器、唯一的构建脚本、
 > 唯一的载荷审计，仍然是仓库里的那一份 —— 它只负责**按正确顺序、在正确的前提下、
 > 用正确的字节**把它们串起来，并在任何一项对不上时**停下来**。
+>
+> R2 只改**表现层**：把界面从「调试面板」收成一个不需要懂流水线的人也能用的发布工具。
+> 唯一新增的写入口是 `docs/release-notes/<版本>.md` 的编辑器（见 [docs/RELEASE_BUILDER_GUI.md](../../docs/RELEASE_BUILDER_GUI.md)）。
+> 发布权威、阶段闸门、PUBLISH 确认链一字未动。
 
 ---
 
@@ -14,9 +18,18 @@
 改 `VERSION`、改 README、写 release notes、跑构建、复核四等式、比对文件名、算 SHA256、
 改清单、push、tag、`gh release create`、核对 digest、最后上传清单……
 
-现在：**双击 `tools\IB-Release-Builder.exe` → 输入目标版本 → 点「构建并封装」→ 看到
+现在：**双击 `tools\IB-Release-Builder.exe` → 输入目标版本 → 点「构建 Release」→ 看到
 `RELEASE READY`**。真正不可逆的那一步（push / tag / release / upload）是**另一个按钮**，
 默认不执行。
+
+主界面只回答八个问题：当前版本、目标版本、Git 状态、工作区状态、Release Notes 状态、
+以及 CHECK / BUILD / VERIFY / SEAL 各自到哪一步了。失败一律翻译成人能直接照做的一句话
+（「版本号没有增加」「工作区还有未提交的修改」「缺少 1.0.6 的 Release Notes」
+「安装包构建失败」「SHA256 校验失败」「GitHub tag 已存在」），原始证据放在同一条的
+「原始证据」里。几十行终端输出永远只在收起的「详细日志」区里。
+
+界面的设计约束、每个元素的位置、以及在 1280×800 / 1440×900 / 1920×1080 与 100% / 125%
+缩放下的实测结果，见 [docs/RELEASE_BUILDER_GUI.md](../../docs/RELEASE_BUILDER_GUI.md)。
 
 ---
 
@@ -39,6 +52,19 @@
 只在控制台打印地址（无人值守验证就是靠这个，见 §7 的 exe 套件）。
 配套的 `IB_RELEASE_PORT=<端口>` 可以固定端口，`IB_NODE=<node.exe>` 可以覆盖运行时解析。
 
+### 界面上有什么
+
+| 位置 | 内容 |
+|---|---|
+| 顶部 | `InternalBeyond / Release Builder`、`当前版本 1.0.5 → 目标版本 1.0.6`、通道、总状态 |
+| 流程条 | 检查 ↓ 构建 ↓ 验证 ↓ 封装，四个阶段各自的状态；失败阶段显示具体原因 |
+| 下方分隔 | 发布（到 GitHub）—— 与上面四步分开，永不自动执行 |
+| 左侧卡片 | 发行状态、当前版本、目标版本、目标产物、Git 状态、工作区、Release Notes（含「编辑发行说明」）、构建耗时 |
+| 右侧 | 需要处理的问题：每条一句话 + 「怎么办」 |
+| 构建成功后 | `RELEASE READY`、最终 EXE 文件名、文件大小、SHA256（可复制）、update-stable.json 状态、SHA256SUMS 状态、三方对账、构建耗时、产物目录 |
+| 底部 | 构建 Release / 检查 / 打开 dist / 编辑发行说明 / 预演（零副作用）/ 取消 / 重置 |
+| 最底 | 「详细日志」（默认收起）：全部条目、真实执行的命令、导出与复制 |
+
 ### 从源码构建 EXE
 
 ```powershell
@@ -48,6 +74,10 @@ node tools\release-builder\build.js --check  # 只检查工具链是否可用，
 
 用的是 Windows 自带的 .NET Framework 编译器（`csc.exe`，无需安装）。
 **不存在循环依赖**：Release Builder 由这个脚本构建，而构建 InternalBeyond 从来不需要它。
+
+`tools\release-builder-runtime\` 是工具的**构建产物副本**（供脱离仓库单独分发时使用），
+和 `dist\` 同类：`lib/seal.js` 的布局依赖闸门把它视为产物而不是产品代码 —— 否则工具会
+在自己的输出上失败于自己的闸门。
 
 ### 直接跑（不构建 EXE，开发时用）
 

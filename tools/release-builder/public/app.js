@@ -293,6 +293,46 @@
       why: '每次发行必须留下独立日志。',
       fix: '检查 dist 是否可写。'
     },
+    'CHECK:dist-staging': {
+      title: '上次构建中断，留下了 staging 残留',
+      why: 'dist\\staging 是构建的中间目录。它还在，说明上一次构建没有走到最后 —— 不是版本号或代码的问题，是上次那一次被打断了。',
+      fix: '删掉 dist\\staging，然后重新「构建 Release」；构建会在运行时重新生成它。'
+    },
+    'CHECK:dist-manifest-parse': {
+      title: 'dist 里的 update-stable.json 不是合法 JSON',
+      why: '上一次写入没有完成，这份清单已经损坏。',
+      fix: '重新完整构建一次即可覆盖它。'
+    },
+    'CHECK:dist-manifest-valid': {
+      title: 'dist 里的清单没通过 canonical 校验',
+      why: '清单存在，但内容不符合冻结的清单契约。',
+      fix: '重新完整构建一次即可覆盖它。'
+    },
+    'CHECK:dist-self-consistent': {
+      title: 'dist 里的清单与安装包字节对不上',
+      why: '清单记录的是另一份安装包的字节；发布它会让客户端下到与清单不符的产物。',
+      fix: '重新完整构建一次，让清单与安装包出自同一次构建。'
+    },
+    'CHECK:dist-writable': {
+      title: 'dist 目录不可写',
+      why: '构建产物没有地方可写。',
+      fix: '检查 dist 的权限，或去掉只读标记。'
+    },
+    'CHECK:file': {
+      title: '仓库缺少 U1–U5 必需的文件',
+      why: '清单契约、更新检查、传输或安装这些 canonical 运行时文件不在检出里。',
+      fix: '确认检出完整（这些文件必须存在，工具不提供替身）。'
+    },
+    'CHECK:runtime-exe': {
+      title: '内置 Node 运行时缺失',
+      why: 'runtime\\node\\node.exe 不在检出里，安装包会缺少内置运行环境。',
+      fix: '恢复内置运行时，或重新取一份完整检出。'
+    },
+    'CHECK:runtime-sha': {
+      title: '内置 Node 运行时的字节与钉定值不符',
+      why: 'runtime\\node\\node.exe 的哈希与 runtime-pin.json 记录的不一致。',
+      fix: '用钉定版本重新放置内置运行时。'
+    },
     'PUBLISH:tag-exists': {
       title: 'GitHub tag 已存在',
       why: 'tag %TAG% 已经被占用，发布会让身份冲突或静默替换。',
@@ -1249,6 +1289,9 @@
     var art = p.artifact || {};
     el('publish-summary').textContent = (p.tag || '') + ' · ' + (art.name || '') + ' · ' +
       (art.bytes ? bytes(art.bytes) : '?') + ' · sha256 ' + String(art.sha256 || '').slice(0, 16) + '…';
+    /* The action list shows exactly what will run; the full hash is here so the
+       fingerprint on screen is the artifact's, not a truncation of it. */
+    el('publish-fingerprint').title = 'artifact sha256 ' + String(art.sha256 || '');
 
     var blk = el('publish-blockers');
     blk.textContent = '';

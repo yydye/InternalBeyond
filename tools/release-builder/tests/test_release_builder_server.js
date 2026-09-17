@@ -196,21 +196,21 @@ function json(res) { try { return JSON.parse(res.body); } catch (e) { return nul
        * Two facts, both about the same guarantee: the file the editor writes is
        * a function of (resolved root, target version) and of nothing else.
        *
-       * The fixture is disposed BEFORE the server is started, so the path handed
-       * to discovery cannot resolve to anything. Discovery may then legitimately
-       * walk up and find a different checkout (in this suite that is the real
-       * one), which is exactly why this test never writes a path the caller
-       * picked: it writes through the endpoint's own `rel`, and removes it again.
+       * This test performs NO write at all, and that is deliberate. An earlier
+       * version of it pointed a server at a disposed fixture and then POSTed
+       * "just to see" — but discovery falls back to walking up from the tool, so
+       * that server resolved to the REAL checkout and the probe write landed in
+       * the real docs/release-notes/. A test for a write boundary must not be
+       * able to write outside its fixture, so the write path is checked by
+       * construction instead: no root, or no target, means no write.
        */
-      const fxGone = fixture.create({ version: '1.0.5', target: '1.0.6' });
-      const gone = fxGone.dir;
-      fixture.disposeAll([fxGone]);
-      assert.strictEqual(fs.existsSync(gone), false, 'the fixture must really be gone');
+      const absent = path.join(os.tmpdir(), 'ib-rb-does-not-exist-' + Date.now());
+      assert.strictEqual(fs.existsSync(absent), false, 'the probe path must not exist');
 
-      const apiNoRepo = serverMod.start({ root: gone, port: 0 });
+      const apiNoRepo = serverMod.start({ root: absent, port: 0 });
       const infoNoRepo = await apiNoRepo.ready;
       try {
-        assert.notStrictEqual(infoNoRepo.root, gone, 'a deleted path must never be accepted as the root');
+        assert.notStrictEqual(infoNoRepo.root, absent, 'a deleted path must never be accepted as the root');
 
         /* 1. No target version means no path, which means no write — the same
               answer whether or not a checkout was found. */
@@ -219,31 +219,43 @@ function json(res) { try { return JSON.parse(res.body); } catch (e) { return nul
         }));
         assert.strictEqual(noTarget.ok, false);
         assert.strictEqual(noTarget.error, 'bad-target');
-        assert.strictEqual(fs.existsSync(path.join(gone, 'docs')), false, 'nothing may be created where we pointed');
-
-        /* 2. With a target, the write lands on the resolved root's canonical
-              path — the one the endpoint reports, not one the request supplied. */
-        await request(infoNoRepo.port, '/api/options?token=' + apiNoRepo.token, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: { target: '1.0.6' }
-        });
-        const r = json(await request(infoNoRepo.port, '/api/notes?token=' + apiNoRepo.token, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: { content: '# probe\n' }
-        }));
-        if (infoNoRepo.root === null) {
-          assert.strictEqual(r.ok, false, 'no root, no write');
-          assert.strictEqual(r.error, 'no-repo');
-        } else {
-          assert.strictEqual(r.ok, true, 'unexpected response: ' + JSON.stringify(r));
-          assert.strictEqual(r.rel, 'docs/release-notes/1.0.6.md', 'the canonical relative path is fixed');
-          const landed = path.join(infoNoRepo.root, r.rel);
-          assert.ok(fs.existsSync(landed), 'the write must land under the resolved root');
-          const pointed = path.join(gone, 'docs', 'release-notes', '1.0.6.md');
-          assert.ok(!fs.existsSync(pointed) || fs.readFileSync(pointed, 'utf8').indexOf('probe') < 0,
-            'the write must not land where the caller pointed');
-          fs.rmSync(landed);
-        }
+        assert.strictEqual(fs.existsSync(path.join(absent, 'docs')), false, 'nothing may be created where we pointed');
       } finally {
         apiNoRepo.server.close();
+      }
+
+      /* 2. With a target but no checkout, the write is refused outright.
+            Discovery is pinned for this case rather than argued with: the tool
+            lives inside a real checkout, so `walkUp(__dirname)` legitimately
+            finds one, and no environment variable can talk it out of that. The
+            seam is stubbed to model "there is no checkout anywhere", which is
+            the state this branch exists for, and it is restored immediately. */
+      const canonicalMod = require(path.join(TOOL, 'lib', 'canonical.js'));
+      const realDiscover = canonicalMod.discover;
+      const fakeRoot = path.join(os.tmpdir(), 'ib-rb-not-a-checkout-' + Date.now());
+      canonicalMod.discover = function () { return { root: null, via: null, tried: ['stubbed'] }; };
+      const apiBare = serverMod.start({ root: fakeRoot, port: 0 });
+      try {
+        const infoBare = await apiBare.ready;
+        assert.strictEqual(infoBare.root, null, 'no checkout may be resolved in this case');
+        await request(infoBare.port, '/api/options?token=' + apiBare.token, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: { target: '1.0.6' }
+        });
+        const r = json(await request(infoBare.port, '/api/notes?token=' + apiBare.token, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: { content: '# probe\n' }
+        }));
+        assert.strictEqual(r.ok, false, 'no checkout, no write');
+        assert.strictEqual(r.error, 'no-repo');
+        assert.strictEqual(fs.existsSync(path.join(fakeRoot, 'docs')), false, 'no file may be created anywhere');
+
+        const reveal = json(await request(infoBare.port, '/api/reveal?token=' + apiBare.token, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: { what: 'dist' }
+        }));
+        assert.strictEqual(reveal.ok, false, 'reveal must also refuse without a checkout');
+        assert.strictEqual(reveal.error, 'no-repo');
+      } finally {
+        canonicalMod.discover = realDiscover;
+        apiBare.server.close();
       }
     });
 

@@ -161,6 +161,27 @@ function blockedKeys(r, stage) {
     assert2(human.indexOf('===== BUILD =====') >= 0, 'the log must record the BUILD stage');
     assert2(human.indexOf('EXEC') >= 0, 'the log must record the real command');
     assert2(human.indexOf('three-way') >= 0 || human.indexOf('三方对账') >= 0, 'the log must record the final reconciliation');
+
+    /*
+     * The fixture ships docs/release-notes/1.0.6.md, so the canonical command
+     * MUST carry -NotesFile and the manifest MUST carry the matching `notes`.
+     *
+     * This is a regression guard with a specific history: the stage context sets
+     * `ctx.notesFile`, while `ctx.options` is a copy of the USER's options and
+     * never carried that key — so a build that read the path from `options`
+     * dropped -NotesFile, exited 0, reported READY, and shipped a manifest with
+     * no release notes at all. Nothing failed; the release was just quietly
+     * worse. Only reading the actual command and the manifest back catches that.
+     */
+    const cmdItem = (snap.log.items || []).filter(i => i.key === 'BUILD:canonical-command')[0];
+    assert2(!!cmdItem, 'the BUILD stage must record the canonical command it will run');
+    const cmdText = String(cmdItem.actual || '');
+    assert2(cmdText.indexOf('-NotesFile') >= 0,
+      'the canonical build must be given -NotesFile; command was: ' + cmdText);
+    assert2(cmdText.indexOf('release-notes') >= 0 && cmdText.indexOf('1.0.6.md') >= 0,
+      'the notes path must be the target version file; command was: ' + cmdText);
+    assert2(typeof man.notes === 'string' && man.notes.indexOf('1.0.6') >= 0,
+      'the manifest must carry the release notes that CHECK found (notes = ' + JSON.stringify(man.notes) + ')');
   });
 
   await checkAsync('a one-click run stops at SEAL and never publishes', async () => {

@@ -28,7 +28,6 @@ const path = require('path');
 
 const env = require('./env.js');
 const plan = require('./plan.js');
-const notes = require('./notes.js');
 
 const { STAGE_STATUS } = plan;
 
@@ -229,8 +228,8 @@ function discoverArtifact(repo, version, log, stage, fault) {
 function canonicalBuildArgs(repo, options) {
   const script = path.join(repo.root, 'scripts', 'build-installer.ps1');
   const args = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script];
-  const notes = options.notesFile;
-  if (notes) args.push('-NotesFile', notes);
+  const notesFile = options.notesFile;
+  if (notesFile) args.push('-NotesFile', notesFile);
   if (options.minimumVersion) args.push('-MinimumVersion', String(options.minimumVersion));
   /* COUNTERPROOF-ONLY: the *stub* build script in the test fixture accepts this
      parameter. The real scripts/build-installer.ps1 has no -Fault parameter and
@@ -307,7 +306,17 @@ async function run(ctx) {
   /* 3. the canonical build --------------------------------------------------- */
   const pwshPath = env.pwsh();
   const nodeRes = env.node(repo.root);
-  const notesAbs = o.notesFile ? path.resolve(String(o.notesFile)) : '';
+  /*
+   * The notes path comes from ctx.notesFile — the ONE place lib/runner.js decides
+   * which file this release declares — and only falls back to an explicit option.
+   * It is not taken from ctx.options: `options` is built for the stages as a copy
+   * of the user's options and has never carried `notesFile`, so reading it there
+   * silently dropped -NotesFile from the canonical command and produced a release
+   * whose manifest omits `notes` (users then see an update card with no release
+   * notes). Caught by running a real build and reading the manifest back.
+   */
+  const declared = ctx.notesFile || o.notesFile || '';
+  const notesAbs = declared ? path.resolve(String(declared)) : '';
   const args = canonicalBuildArgs(repo, { notesFile: notesAbs, minimumVersion: o.minimumVersion, fault: o.fault });
   const cmdline = env.commandLine(pwshPath || 'powershell.exe', args);
   const started = Date.now();
