@@ -2050,8 +2050,24 @@ function createHomeNodeHttp(deps) {
       if (!approvalId) { bad(res, 400, 'missing-approval-id', null, req); return; }
       const result = economy.getApproval({ approvalId: approvalId });
       if (!result.ok) {
+        /* ── P22-24 · §Not-Found wire contract（与 /economy/policy /economy/wallet
+           逐字同一条规矩）────────────────────────────────────────────────
+           ★ 这两个词表**不是**同一个词表，而且不能互相顶替：
+             · reasonCode   = canonical **decision** vocabulary（DENY_REASON）
+                              ——"这个作用域上没有生效的规则/记录"，它属于
+                              评估与结算的裁决；
+             · errors[0]    = store 给**客户端**的资源缺席 token
+                              （'approval-not-found'），它属于读面。
+           ★ 第一版写成 `reasonCode || errors[0] || …`，于是一条**资源缺席**
+             被当成 client error token 发出去。那是一次 contract-layer
+             violation：客户端被迫学习内部裁决词表才能说出一句人话，
+             而这正是相邻的 /economy/wallet 与 /economy/policy 从来没有
+             发生过的事（它们一直用 errors[0]）。
+           ★ 顺序因此是 **errors[0] → 兜底**，与那两条同源；status 的判据
+             （reasonCode 是不是 NOT_FOUND）**不变** —— 改的只是"这句话用
+             哪个词说"，不是"这算不算 404"。 */
         bad(res, result.reasonCode === 'APPROVAL_NOT_FOUND' ? 404 : 400,
-          result.reasonCode || result.errors[0] || 'approval-not-found', null, req);
+          result.errors[0] || 'approval-not-found', null, req);
         return;
       }
       ok(res, {
@@ -2090,8 +2106,21 @@ function createHomeNodeHttp(deps) {
         policyId: policyId || undefined, ownerId: ownerId || undefined
       });
       if (!result.ok) {
+        /* ── P22-24 · §Not-Found wire contract ──────────────────────────
+           ★ 与上面 /economy/approval 逐字同源，也与 /economy/policy 逐字同源：
+             store 已经给了**客户端**该听到的那个 token
+             （'autonomy-policy-not-found'），它就是线上要发的词。
+           ★ 第一版发的是 `result.reasonCode`（= canonical DENY_REASON
+             'POLICY_NOT_FOUND'），后果是**产品级**的：Economy 设置页
+             「自主购买」那一格只把 'autonomy-policy-not-found' 认成
+             "尚未配置"（state=absent → 渲染首次配置表单），拿到裁决词表
+             则归成 state=unknown（"读不到自主规则" + 再试一次 + **没有
+             表单**）。于是全新 owner 永远进不去首次配置。
+           ★ status 的判据仍然是 reasonCode === 'POLICY_NOT_FOUND' → 404：
+             "这个作用域上没有生效的规则"这个 canonical 语义一个字都没变，
+             变的只是"这句话用哪个词说"。 */
         bad(res, result.reasonCode === 'POLICY_NOT_FOUND' ? 404 : 400,
-          result.reasonCode || result.errors[0] || 'autonomy-policy-not-found', null, req);
+          result.errors[0] || 'autonomy-policy-not-found', null, req);
         return;
       }
       ok(res, {

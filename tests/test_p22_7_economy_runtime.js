@@ -61,13 +61,33 @@ function freePort() {
   });
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+/* ── P22-24 · 这台测试节点自己的桌面凭据 ────────────────────────────────
+   ★ 为什么 P22-7 现在需要它：P22-23 之后，Economy 的只读面与 `/security`
+     都要求桌面凭据（在此之前它们对 loopback 是开着的）。一个用
+     `IB_HOME_NODE_DATA_DIR` 指向空临时目录起的节点会**自己生成**一份凭据
+     并要求每个 Economy 请求带上它 —— 于是这个文件里所有 Economy 读都变成
+     401 `unauthenticated`，与"被测契约"毫无关系。
+   ★ 语义选择：这里**显式注入** IB_HOME_NODE_TOKEN（与 P22-14 runtime 的
+     `buildHomeNode({ token: TOKEN })` 同一条纪律），而不是关掉自动
+     provisioning 让节点跑在"没有凭据"的形态里 —— 后者会把 P22-7 的只读面
+     变成 503/401 的另一半，测的东西就变了。
+   ★ 它是**测试值**，不是生产默认值：产品没有任何硬编码 token。 */
+const TOKEN = 'p22-7-runtime-desktop-token';
+function authFor(urlPath) {
+  const p = String(urlPath || '');
+  /* /health 是公开探活面；Economy 与 /security 是凭据面。 */
+  return (p.indexOf('/economy/') === 0 || p === '/security') ? { 'X-IB-Home-Token': TOKEN } : {};
+}
+
 function request(port, method, urlPath, body, headers) {
   return new Promise((resolve, reject) => {
     const data = body === undefined || body === null ? null : JSON.stringify(body);
     const req = http.request({
       host: '127.0.0.1', port: port, method: method, path: urlPath,
       headers: Object.assign({ 'Content-Type': 'application/json' },
-        data ? { 'Content-Length': Buffer.byteLength(data) } : {}, headers || {}),
+        data ? { 'Content-Length': Buffer.byteLength(data) } : {},
+        authFor(urlPath), headers || {}),
       timeout: 8000
     }, res => {
       let raw = '';
@@ -99,7 +119,9 @@ function startProduction(dir) {
       cwd: ROOT,
       env: Object.assign({}, process.env, {
         IB_HOME_NODE_PORT: String(port),
-        IB_HOME_NODE_DATA_DIR: dir
+        IB_HOME_NODE_DATA_DIR: dir,
+        /* P22-24：见 TOKEN 的说明 —— 显式凭据，让这台真实节点可被这个测试读。 */
+        IB_HOME_NODE_TOKEN: TOKEN
       }),
       stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true
     });
@@ -198,6 +220,17 @@ async function runServiceGroup() {
   const dir = tmpDir('service');
   const seeded = seed(dir);
 
+  /* ★ P22-24：在**同一份 fixture 库**上直接读 store 的 canonical 回答，
+     用来对证"HTTP 上那句话换了词，但裁决语义没换"。服务进程此刻也开着
+     这个库（两个读者、零个写者），因此这条打开是只读意义上的。 */
+  function storeResultForMissingAutonomyPolicy() {
+    const s = createEconomyStore({ dataDir: dir, logger: () => { } });
+    s.open();
+    const out = s.getAutonomyPolicy({ ownerId: { type: 'character', id: 'cfg_a' } });
+    s.close();
+    return out;
+  }
+
   const svc = await startProduction(dir);
   const up = await waitListening(svc, 20000);
   check('B1 production home-node 起来了（/health 200）', up === true, svc.output());
@@ -257,9 +290,30 @@ async function runServiceGroup() {
     policies.body.exposesMutation === false, policies.body);
 
   const noPolicy = await request(svc.port, 'GET', '/economy/autonomy-policy?ownerId=cfg_a');
-  check('B8 ★ 没有策略时 GET /economy/autonomy-policy 答 404 + POLICY_NOT_FOUND，'
-    + '而响应里逐字写着"缺省是 REQUIRE_APPROVAL"',
-    noPolicy.status === 404 && noPolicy.body.error === 'POLICY_NOT_FOUND', noPolicy.body);
+  /* ★★★ P22-24 · 这一条断言在 P22-7 里冻结的是一个**错的 wire shape**。
+     OLD ASSERTION FROZE A BUG —— 逐条披露见 docs/P22-24-NOT-FOUND-WIRE-CONTRACT.md §P22-7：
+
+       old：noPolicy.body.error === 'POLICY_NOT_FOUND'
+            （把 canonical **DENY_REASON** 当成了 client-facing error token）
+       new：noPolicy.body.error === 'autonomy-policy-not-found'
+            （store 自己给客户端的资源缺席 token，= result.errors[0]）
+
+     ★ 没有变的东西（同一行里继续证明）：
+       · HTTP status 仍然是 404（reasonCode === 'POLICY_NOT_FOUND' 这条判据
+         一个字都没改）；
+       · store 的 canonical 语义仍然是 DENY_REASON.POLICY_NOT_FOUND ——
+         就在下面用**同一份 fixture 库**直接读 store 对证，而不是靠 HTTP
+         自己说自己。 */
+  const canonicalNoPolicy = storeResultForMissingAutonomyPolicy();
+  check('B8 ★ 没有策略时 GET /economy/autonomy-policy 答 404 + 客户端缺席 token'
+    + '（**不是** canonical 裁决词表），而响应里逐字写着"缺省是 REQUIRE_APPROVAL"',
+    noPolicy.status === 404 &&
+    noPolicy.body.error === 'autonomy-policy-not-found' &&
+    noPolicy.body.error !== C.DENY_REASON.POLICY_NOT_FOUND &&
+    canonicalNoPolicy.reasonCode === C.DENY_REASON.POLICY_NOT_FOUND &&
+    canonicalNoPolicy.denied === true &&
+    canonicalNoPolicy.errors[0] === noPolicy.body.error,
+    { status: noPolicy.status, wireError: noPolicy.body.error, store: canonicalNoPolicy });
 
   const evalRes = await request(svc.port, 'GET',
     '/economy/autonomy-evaluation?buyerId=cfg_a&quoteId=' + encodeURIComponent(seeded.quoteId));

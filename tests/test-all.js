@@ -1026,6 +1026,34 @@ const GROUPS = [
          ★ 它要验的就是**产品默认**（自动 provisioning），因此本套件自己显式
            设置那个开关，不依赖运行器的隔离姿态。 */
       ['test_p22_23_home_node_provisioning.js'],
+      /* P22-24：Not-Found **wire contract**（anti-leak）。
+         一条 **canonical 裁决词**（DENY_REASON，SCREAMING_SNAKE）被当作
+         client-facing error token 发出去，是一整类回归而不是一处笔误：store 的
+         denied 结果里同时带着 reasonCode（裁决词）与 errors[]（面向客户端的资源
+         token，kebab-case），seam 只要写成 `reasonCode || errors[0]` 就会把两个
+         词表混起来。实测抓到两处（/economy/approval 发 APPROVAL_NOT_FOUND、
+         /economy/autonomy-policy 发 POLICY_NOT_FOUND），后者让 Economy 设置页
+         「自主购买」在**全新 owner** 上显示「读不到自主规则 + 再试一次」，
+         而"尚未配置 → 首次配置表单"那条分支在产品里从未执行过。
+         这一条守卫证明四层：① 真实节点上 11 条只读缺席面全部 404 + kebab-case
+         资源 token；② 那些 token 不是任何 DENY_REASON 成员（判据是**结构**的：
+         裁决词是 SCREAMING_SNAKE、客户端 token 是 kebab-case，交集为 0）；
+         ③ 同一份真实 payload 喂给 production UI core 得到 state=absent，而真
+         transport 失败仍然 state=unknown（证明的是**分离**）；④ 源码级：http.js
+         里所有"缺席即 404"的 error token 一律不是 reasonCode。
+         ★ 判据**限定**在这 11 条只读资源面上：写面（/internal/economy/…）的
+           信封本来就把 reasonCode 当 reasonCode 发，本条守卫不全局禁止
+           reason code 出现在响应里。零浏览器（一个真实 Home Node 子进程 +
+           私有临时数据目录 + 显式测试凭据，结束即清理）。 */
+      ['test_p22_24_not_found_wire_contract.js'],
+      /* P22-24 的**真实浏览器**验收（test_p22_24_fresh_owner_autonomy_ui.js）
+         与 P22-15/16/17/18/22/23 那几条一样**不在**默认套件里（它要开一个真实
+         Chromium）：fresh owner → 404 + 客户端缺席 token → production core
+         state=absent → **真实的自主购买表单出现**（不是"读不到 + 再试一次"）
+         → 填表 → 保存 → 权威侧真的落一条策略 → 页面进入 configured；
+         另含对照面（真 transport 故障仍给 Retry 且不给表单）、Internal/Infernal
+         两个外观与 390 窄屏。截图只落 %TEMP%。
+         跑法：node tests/test_p22_24_fresh_owner_autonomy_ui.js */
     ]
   },
   {
