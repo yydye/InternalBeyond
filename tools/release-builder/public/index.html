@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>InternalBeyond Release Builder</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23263050'/%3E%3Cpath d='M9 22V10h2.6v12H9zm5.6 0V10h5.2c2.6 0 4.2 1.3 4.2 3.4 0 1.5-.8 2.5-2.1 3 1.6.4 2.6 1.4 2.6 3.1 0 2.4-1.8 3.5-4.6 3.5h-5.3zm2.6-7.1h2.3c1.2 0 1.9-.5 1.9-1.5s-.7-1.4-1.9-1.4h-2.3v2.9zm0 5h2.6c1.3 0 2.1-.5 2.1-1.6 0-1-.8-1.5-2.1-1.5h-2.6v3.1z' fill='%23cdd6ea'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="builder.css">
+</head>
+<body>
+
+<header class="bar">
+  <div class="bar-id">
+    <span class="mark" aria-hidden="true">IB</span>
+    <div>
+      <h1>InternalBeyond Release Builder</h1>
+      <p class="bar-sub">本地发布编排器 · canonical 构建的唯一调用者 · Fail Closed</p>
+    </div>
+  </div>
+
+  <div class="bar-versions">
+    <div class="vblock">
+      <span class="vlabel">当前版本</span>
+      <span class="vvalue" id="v-current">—</span>
+    </div>
+    <span class="varrow" aria-hidden="true">→</span>
+    <div class="vblock">
+      <label class="vlabel" for="target">目标版本</label>
+      <input id="target" class="vinput" type="text" inputmode="numeric" spellcheck="false"
+             autocomplete="off" placeholder="1.0.6" aria-describedby="target-hint">
+    </div>
+    <div class="vblock">
+      <span class="vlabel">发布通道</span>
+      <div class="seg" role="radiogroup" aria-label="发布通道">
+        <button type="button" class="seg-item is-on" id="ch-stable" role="radio" aria-checked="true">Stable</button>
+        <button type="button" class="seg-item" id="ch-pre" role="radio" aria-checked="false" disabled
+                title="冻结的清单契约（runtime/update-manifest.js CHANNELS）只认识 Stable。在这里提供第二个通道就是制造第二份发布真相。">Prerelease</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="bar-status">
+    <button type="button" class="status-chip" id="status-chip" aria-live="polite">
+      <span class="dot" aria-hidden="true"></span><span id="status-text">未开始</span>
+    </button>
+    <div class="repo-line" id="repo-line" title="">—</div>
+  </div>
+</header>
+
+<main class="stage">
+  <nav class="rail" id="rail" aria-label="发布阶段"></nav>
+
+  <section class="detail card" id="detail" aria-live="polite">
+    <div class="detail-head">
+      <h2 id="detail-title">检查环境</h2>
+      <p id="detail-sub">还没有运行任何阶段。先补齐目标版本，然后「检查环境」。</p>
+    </div>
+    <div class="detail-body" id="detail-body"></div>
+  </section>
+
+  <aside class="side">
+    <section class="card side-card">
+      <h2>发布选项</h2>
+      <ul class="optlist">
+        <li>
+          <label><input type="checkbox" id="opt-archive" checked>
+            <span>归档旧版本安装包到 <code>dist/archive/&lt;版本&gt;/</code></span></label>
+          <small>仅在证明没有任何文件依赖 dist 扁平布局之后执行。</small>
+        </li>
+        <li>
+          <label><input type="checkbox" id="opt-probe">
+            <span>在线复核（只读）</span></label>
+          <small>查 GitHub 上是否已存在同版本 release。可选，不影响构建。</small>
+        </li>
+        <li>
+          <label><input type="checkbox" id="opt-regen">
+            <span>SEAL 时用 canonical 生成器重新生成清单（写入实际发布时刻）</span></label>
+          <small>默认关闭。开启后仍只重生成清单、绝不重编译安装器，并会再次校验与三方对账。</small>
+        </li>
+      </ul>
+      <p class="note" id="opt-note">SEAL 默认保留 canonical 构建产出的清单（<code>releasedAt</code> 省略：构建时刻不是发布时刻）。</p>
+    </section>
+
+    <section class="card side-card">
+      <h2>计划摘要</h2>
+      <dl class="kv" id="plan-kv">
+        <dt>将生成的产物</dt><dd id="k-artifact">—</dd>
+        <dt>将使用的 tag</dt><dd id="k-tag">—</dd>
+        <dt>清单地址</dt><dd id="k-url">—</dd>
+        <dt>minimumVersion</dt><dd id="k-min">—</dd>
+      </dl>
+    </section>
+
+    <section class="card side-card danger">
+      <h2>PUBLISH</h2>
+      <p class="note">Publish 与 Build/Seal 分权：不会自动执行，也不会因为上传失败而重新 build。</p>
+      <button type="button" class="btn quiet full" id="btn-plan-publish">查看 Publish 计划…</button>
+      <div id="publish-box" hidden></div>
+    </section>
+  </aside>
+</main>
+
+<footer class="dock">
+  <div class="dock-actions">
+    <button type="button" class="btn quiet" id="btn-dry">Dry Run</button>
+    <button type="button" class="btn quiet" id="btn-check">检查环境</button>
+    <button type="button" class="btn primary" id="btn-oneclick">构建并封装</button>
+    <button type="button" class="btn quiet" id="btn-cancel" hidden>取消</button>
+    <button type="button" class="btn quiet" id="btn-reset">重置</button>
+  </div>
+  <div class="dock-hint" id="dock-hint">Ctrl+Enter 运行下一步 · 日志在下方</div>
+</footer>
+
+<section class="logbar" id="logbar">
+  <button type="button" class="logbar-head" id="logbar-head" aria-expanded="false" aria-controls="logbar-body">
+    <span class="caret" aria-hidden="true"></span>
+    <span>实时日志</span>
+    <span class="logbar-meta" id="logbar-meta">0 行</span>
+  </button>
+  <div class="logbar-body" id="logbar-body" hidden>
+    <div class="logbar-tools">
+      <button type="button" class="btn tiny" id="btn-export">导出日志</button>
+      <button type="button" class="btn tiny" id="btn-copy">复制全部</button>
+      <span class="spacer"></span>
+      <label class="tiny-toggle"><input type="checkbox" id="log-follow" checked> 自动跟随</label>
+      <label class="tiny-toggle"><input type="checkbox" id="log-verbose"> 含事件明细</label>
+    </div>
+    <div class="logbar-view" id="log-view" tabindex="0" role="log" aria-label="实时日志"></div>
+  </div>
+</section>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="app.js"></script>
+</body>
+</html>

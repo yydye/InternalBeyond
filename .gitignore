@@ -37,3 +37,14 @@ runtime/node/node.exe
 # owns this process?" is answerable the way the product answers it (by command
 # line / executable path against the root). Created and removed by the suites.
 tests/.tmp/
+
+# Release Builder build outputs (Release Tooling R1). The SOURCE lives in
+# tools/release-builder/ and is committed; these two are what `node
+# tools/release-builder/build.js` regenerates from it, so they are not history:
+#   · the compiled launcher (csc.exe, ~11 KB), which is what the user double-clicks
+#   · the self-contained runtime copy the launcher runs (server.js + lib/ + public/)
+tools/IB-Release-Builder.exe
+tools/release-builder-runtime/
+# Dry-run scratch: a dry run must leave no trace, and this is where a log would
+# land if one were ever written during one. It never is; the ignore is a guard.
+tools/release-builder/.dry-run/

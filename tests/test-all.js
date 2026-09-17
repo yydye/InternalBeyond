@@ -104,7 +104,14 @@ const TEST_ROOT = __dirname;
 const REPO_ROOT = path.resolve(__dirname, '..');
 
 /* 脚本名 → 绝对路径（scripts_check_html.js 例外地住在 scripts/）。 */
-const SCRIPT_DIRS = { 'scripts_check_html.js': path.join(REPO_ROOT, 'scripts') };
+const SCRIPT_DIRS = {
+  'scripts_check_html.js': path.join(REPO_ROOT, 'scripts'),
+  /* Release Tooling R1：Release Builder 的套件与它自己的 fixture 住在一起
+     （tools/release-builder/tests/），所以它的三个入口在这里登记目录。 */
+  'test_release_builder_plan.js': path.join(REPO_ROOT, 'tools', 'release-builder', 'tests'),
+  'test_release_builder_astages.js': path.join(REPO_ROOT, 'tools', 'release-builder', 'tests'),
+  'test_release_builder_server.js': path.join(REPO_ROOT, 'tools', 'release-builder', 'tests')
+};
 function scriptPath(name) { return path.join(SCRIPT_DIRS[name] || TEST_ROOT, name); }
 
 const GROUPS = [
@@ -961,7 +968,26 @@ const GROUPS = [
               §8 UI authority（六条泄漏形态零命中）。零 socket。 */
       ['test_p22_21_economy_v1_freeze.js'],
       ['test_p22_21_economy_golden_path.js'],
-      ['test_p22_21_economy_v1_closure_audit.js']
+      ['test_p22_21_economy_v1_closure_audit.js'],
+      /* Release Tooling R1：Release Builder（本地发布编排器，tools/release-builder/）。
+         ① plan：纯规划 + 状态机 + 顶级状态 + **结构断言**（工具里不存在第二份
+            版本源 / 清单生成器 / semver 比较 / 四等式 / 密钥词表；只有
+            lib/canonical.js 允许 require 仓库真源）。
+         ② astages：在 %TEMP% 的临时检出里跑完整 CHECK→BUILD→VERIFY→SEAL，
+            再做**对照证明** —— 逐一故意破坏构建退出码 / 产物缺失 / 截断 /
+            产物名 / PE 版本 / 陈旧 SHA256SUMS / 清单版本 / 清单 sha / 未注册通道 /
+            清单与产物不一致 / 非法 VERSION / 非升级目标 / README 声明漂移 /
+            README 锚点消失 / 已存在的 tag / 残留 staging / 脏工作树，
+            确认每一种都能把 READY 打回 BLOCKED；另含 PUBLISH 必须带确认、
+            确认串绑定产物指纹、Dry Run 逐字节零副作用、日志脱敏。
+         ③ server：本地服务契约 —— 只绑 127.0.0.1、逐接口要 boot token、拒绝跨源、
+            静态路径不能逃出 public/、阶段门在服务端、一键流程不含 PUBLISH、
+            PUBLISH 无确认即拒、Dry Run 不改任何文件。
+         三者都**不联网、不安装、不开浏览器、不碰真实 dist/**；临时目录由套件
+         自己断言已删除。真实 ISCC 构建仍只在 test_installer_build.js --force 里跑。 */
+      ['test_release_builder_plan.js'],
+      ['test_release_builder_astages.js'],
+      ['test_release_builder_server.js']
       /* P22-18 的浏览器视觉核对（test_p22_18_economy_experience_visual.js）
          与 P22-15/16/17 那三条一样**不在**默认套件里（它要开一个真实
          浏览器）：2 主题 × 4 宽度（含 320px）+ 截断/空/展开四种状态。
