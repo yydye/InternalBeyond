@@ -40,6 +40,12 @@ const CHAT_CORE = require('../../assets/js/chat-core.js');
 const serviceControl = require('../../runtime/service-control.js');
 
 const PROTOCOL_VERSION = 1;
+/* P22-23 · 首次运行凭据交付面的**契约常量**（路径 + 请求头）。
+   放在模块作用域而不是工厂内部，是因为它们是契约而不是实例状态：
+   module.exports 下面要把它们交出去，客户端与测试都从这里取，
+   因此"这条路径叫什么"全仓只有一份字面量。 */
+const DESKTOP_CREDENTIAL_PATH = '/internal/desktop-credential';
+const DESKTOP_CREDENTIAL_HEADER = 'x-ib-bootstrap';
 const MAX_BODY_BYTES = 64 * 1024 * 1024;       /* 单条消息可能内联 base64 图片（IMG_MAX_BYTES=20MiB × 压缩前） */
 const MAX_BATCH_ITEMS = CHAT_CORE.MAX_MIGRATION_BATCH;
 const LOG_RING = 100;
@@ -98,6 +104,21 @@ function createHomeNodeHttp(deps) {
   const version = String(deps.version || '0.0.0');
   const allowedOrigins = Array.isArray(deps.allowedOrigins) ? deps.allowedOrigins.map(String) : [];
   const logger = deps.logger || (() => {});
+  /* ── P22-23 · 凭据来源与首次运行交付面 ──────────────────────────────
+     `token` 是"这台节点接受什么凭据"；下面两个字段回答的是另外两个问题：
+       · desktopCredentialSource —— 它是从哪来的（env / file / generated / null）。
+         这决定 bootstrap 交付面**开不开**：env 显式配置的部署代表"部署方已经
+         决定了凭据"，此时再让浏览器取一份就是在制造第二个来源。
+       · desktopCredentialAutoProvision —— 本进程是否允许自动 provisioning。
+     两者都不是凭据本体，都可以安全地出现在 /security 里。 */
+  const credentialSource = deps.desktopCredentialSource === undefined
+    ? null : (deps.desktopCredentialSource == null ? null : String(deps.desktopCredentialSource));
+  const credentialAutoProvision = deps.desktopCredentialAutoProvision === true;
+  /* bootstrap 交付面的诊断计数。**不是**闸门 —— 见上面"为什么没有一次性
+     限制"。它只回答"这条面被用过没有、用了几次"，让诊断页与日志能说明白
+     这台机器上到底发生过什么。 */
+  let bootstrapHandoutCount = 0;
+  let bootstrapLastHandoutAt = null;
   const startedAt = clock();
   const logRing = [];
 
@@ -572,6 +593,156 @@ function createHomeNodeHttp(deps) {
   }
 
   /* ══════════════════════════════════════════════════════════════════
+     P22-23 · 首次运行凭据交付面（bootstrap）
+
+     ── 它为什么必须存在 ───────────────────────────────────────────────
+     凭据现在由服务端生成并持久化（desktop-credential.js），但**桌面页面
+     拿不到它**：浏览器读不了文件系统，而把 secret 写进 HTML / URL /
+     localStorage 明文都是明确禁止的（§6 第 4 条）。所以需要一条交付通道。
+
+     ── 为什么它不是一个"无鉴权 localhost 旁路"（§6 第 9/10 条）────────
+     准入规则只有三条，而且**每一条都在拒绝某种具体的攻击者**：
+
+      1. socket 必须是 loopback。这条拒绝 LAN 上的一切 —— 它是既有的
+         isLoopback()，不是这里新写的判定。
+
+      2. `Origin` 头必须**存在**且必须是 loopback 源（http://127.0.0.1:*、
+         http://localhost:*、http://[::1]:*）。
+         ★ 缺失 Origin ⇒ 拒绝。非浏览器客户端（脚本、另一个本机应用）能
+           伪造这个头，但它同时也能直接读那个凭据文件 —— 它读文件不经过
+           本面，所以本面不欠它任何东西。反过来，一个**没有** Origin 的
+           请求正是"某个进程在打这条路径"的形状，而这条路径的存在理由
+           只是"给桌面页面一份它自己无法读到的秘密"，因此没有 Origin 就
+           没有理由放行。
+         ★ `Origin: null` ⇒ 拒绝（它落在"必须存在且是 loopback 源"之外）。
+           null 是 sandboxed iframe / data: URL 的形状，而本仓库早已把
+           null 归入"配置了 token 之后不再信任"的那一类（见上面的 CORS
+           注释），这里是同一条判断的延续。
+         ★ 远端页面的 Origin 是它自己的源，无论如何都变不成 loopback 源，
+           所以一个恶意网页既发不出这条请求（P11-3X-A 的 Origin 面会先
+           403 掉非 mobile 的命名外来 Origin），也读不到它的响应。
+
+      3. `X-IB-Protocol: 1`。它使这条请求**不是**一个 CORS 简单请求，
+         从而必然先走预检；预检由既有的 originAllowed() 裁决，而它只回显
+         loopback / `null`（后者在本面被第 2 条拒掉）。这一步把"盲写"这条
+         路也一并关掉：没有预检通过的跨源页面连发都发不出来。
+
+     ── 它交付什么，以及**为什么没有"一次性"限制** ─────────────────────
+     同一份**长期**桌面凭据。它不签发第二类凭据（没有 session token、没有
+     cookie）：那样会造出第二个 authority，而本阶段要做的恰恰是把凭据收敛
+     成一份。
+
+     ★ 这条面**可以**被重复调用，而这是刻意的，理由是一个真实的产品需求：
+       浏览器只把凭据留在**内存**里（不写 localStorage / sessionStorage ——
+       见 assets/js/home-node-client.js 的取舍），因此用户**刷新页面**之后
+       必须能再取一次。一个"每进程只交付一次"的实现会让刷新变成永久 401。
+
+     ★ 重复交付不构成权限扩大：交付的是**同一份**凭据，因此"多给一次"不会
+       让请求方获得它本来没有的能力（它下一次请求本来就能带着同一份凭据）。
+       真正的边界是上面第 2 条 —— loopback Origin 的**读**能力，而
+       `Origin: null` / 缺失 / 外来源全部被拒。一个恶意网页因此既拿不到
+       第一次，也拿不到"下一次"。
+
+       ├─ 远端页面    Origin 是自己的源 → 预检不过 / 非 mobile 命名外来源被 403
+       ├─ file://      Origin: null      → 拒（且 Chrome 在网络层就挡住 file→loopback）
+       ├─ 沙箱 iframe  Origin: null      → 拒
+       └─ 本机进程     能伪造 Origin，但它本来就能直接读那个凭据文件 → 不是新增暴露
+
+     什么时候**整面关闭**（fail closed，503 bootstrap-not-available）：
+       · token 为空（没有凭据可交付）；
+       · 凭据来自 env 或显式文件 —— 部署方已经决定了凭据，浏览器应当继续
+         用它自己的配置，而不是从服务端再取一份；
+       · 自动 provisioning 被显式关闭。
+     这是 §6 第 7 条"缺失/损坏时 fail closed"在本面上的形状：不开，并且
+     说清楚为什么不开。
+
+     ── 日志纪律 ──────────────────────────────────────────────────────
+     只记 source / length / 累计交付次数。**凭据本体绝不进日志**，也绝不进
+     任何响应头（它只在响应体里，且只有请求者读得到）。 */
+  const BOOTSTRAP_PATH = DESKTOP_CREDENTIAL_PATH;
+  const BOOTSTRAP_HEADER = DESKTOP_CREDENTIAL_HEADER;
+
+  /* loopback 源的形状判定。刻意**不**复用 originAllowed()：那一个的语义是
+     "能不能读我们的响应"，它对 `null` 有条件放行（file:// 兼容），而本面
+     要的是更窄的一个问题——"这个请求是不是来自本机 loopback 页面"。两个
+     问题混用一个函数，正是本仓库反复修掉的那类"一个函数回答两件事"。 */
+  function loopbackOrigin(value) {
+    const origin = String(value == null ? '' : value).trim();
+    if (!origin) return false;
+    return /^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?$/i.test(origin);
+  }
+
+  function bootstrapUnavailableReason() {
+    if (!token) return 'no-desktop-credential';
+    if (credentialSource === 'env' || credentialSource === 'file') return 'credential-supplied-by-deployment';
+    if (!credentialAutoProvision) return 'automatic-provisioning-not-enabled-for-this-process';
+    return null;
+  }
+
+  async function handleDesktopCredentialBootstrap(req, res) {
+    const denied = (status, error, extra) => {
+      record('warn', 'desktop-credential-bootstrap-refused', {
+        error: error,
+        loopback: isLoopback(req),
+        loopbackOrigin: loopbackOrigin(req.headers && req.headers.origin)
+      });
+      bad(res, status, error, extra || {}, req);
+    };
+
+    if (!isLoopback(req)) {
+      denied(403, 'loopback-only', {
+        hint: 'the desktop credential is delivered to this machine only'
+      });
+      return;
+    }
+    const origin = String((req.headers && req.headers.origin) || '');
+    if (!loopbackOrigin(origin)) {
+      denied(403, 'origin-not-loopback', {
+        hint: 'this path is for the desktop page served from a loopback origin',
+        originSeen: origin ? 'present-but-not-loopback' : 'absent'
+      });
+      return;
+    }
+    if (String((req.headers && req.headers[BOOTSTRAP_HEADER]) || '') !== '1') {
+      denied(400, 'bootstrap-header-required', {
+        requiredHeader: 'X-IB-Bootstrap: 1',
+        hint: 'this keeps the request out of the CORS simple-request set'
+      });
+      return;
+    }
+
+    const unavailable = bootstrapUnavailableReason();
+    if (unavailable) {
+      /* 503 而不是 403：这不是"你不够格"，而是"本进程现在没有可交付的东西"。
+         两者的下一步不同 —— 前者去改凭据，后者去看 /security 的原因码。 */
+      denied(503, 'bootstrap-not-available', {
+        reason: unavailable,
+        credentialConfigured: !!token,
+        credentialSource: credentialSource,
+        autoProvision: credentialAutoProvision
+      });
+      return;
+    }
+
+    bootstrapHandoutCount += 1;
+    bootstrapLastHandoutAt = clock();
+    /* ★ 这一行是**唯一**把凭据写进任何响应的地方，而且只在上面四条准入
+       全部通过之后。只记来源/长度/次数 —— 与启动日志同一纪律。 */
+    record('info', 'desktop-credential-handed-out', {
+      source: credentialSource,
+      length: token.length,
+      handoutCount: bootstrapHandoutCount,
+      /* 只记指纹，不记本体。 */
+      fingerprint: crypto.createHash('sha256').update(token, 'utf8').digest('hex').slice(0, 12)
+    });
+    ok(res, {
+      credential: token,
+      source: credentialSource,
+      deliveredAt: bootstrapLastHandoutAt
+    }, req);
+  }
+
+  /* ══════════════════════════════════════════════════════════════════
      P22-11 · Economy Command Channel —— 唯一一条**写**路径
      ══════════════════════════════════════════════════════════════════
      它在整条路由链上的**位置**是刻意的：本函数在 /economy/* 的一切之前、
@@ -728,6 +899,26 @@ function createHomeNodeHttp(deps) {
       }
     }
 
+    /* ── P22-23 · 首次运行凭据交付（必须在**凭据判定之前**）─────────────
+       位置是刻意的：这条请求的意义正是"调用方还没有凭据"，让它先过
+       authorized() 会得到一个永远解不开的死结（401 → 拿不到凭据 → 还是
+       401）。它的准入完全由 handleDesktopCredentialBootstrap 自己的三条
+       规则负责，而那三条里没有任何一条是"本机所以放行"。
+
+       ★ 远端永远到不了这里：上面那条 Origin 面已经先 403 掉命名外来
+         Origin，而本面自己再要一次 loopback socket。两道独立的门，任何
+         一道都足以挡住 LAN。 */
+    if (path === BOOTSTRAP_PATH && method === 'POST') {
+      await handleDesktopCredentialBootstrap(req, res);
+      return;
+    }
+    if (path === BOOTSTRAP_PATH) {
+      /* 非 POST：告诉调用方这里只有一个动词，而不是落进下面的 404 ——
+         "路径不存在"与"方法不对"是两件不同的事，而这条路径确实存在。 */
+      bad(res, 405, 'method-not-allowed', { allowedMethods: ['POST'] }, req);
+      return;
+    }
+
     /* ── 凭据铸造面（P11-3A）：loopback 上也不再默认放行 ──────────────────
        放在这里而不是 `authorized()` 里，是因为它们要用**不同的状态码与理由**：
        `authorized()` 的 401 语义是"带上凭据再来"，而这里在未配置 token 时
@@ -852,6 +1043,31 @@ function createHomeNodeHttp(deps) {
         },
         loopbackReadableWithoutToken: ['/status', '/meta', '/security', '/list', '/changes',
           '/message', '/messages', '/verify', '/migration', '/migrate', '/characters'],
+        /* ── P22-23 · 首次运行凭据的三个事实 ────────────────────────────
+           在它存在之前，`/security` 只能回答 `tokenRequired`，而"没有凭据"
+           与"凭据从没被创造过"是两件不同的事 —— 前者是部署决策，后者是
+           本阶段修掉的那个缺陷。UI 需要后者才能给出正确的诊断
+           （§8：区分 Home Node 未运行 / provisioning 失败 / mismatch）。
+
+           ★ 这三个字段都**不含凭据**：来源名、布尔、原因码。
+           ★ `bootstrap.available` 是公开的，这是刻意的：它不泄漏任何秘密
+             （想取凭据的人本来就会去打那条路径），而它让"为什么这台机器
+             取不到凭据"在诊断页上有一个可读的答案。 */
+        credentialSource: credentialSource,
+        credentialConfigured: !!token,
+        bootstrap: {
+          path: BOOTSTRAP_PATH,
+          available: !!token && credentialSource === 'generated' && credentialAutoProvision,
+          /* 用过了几次：**不是**闸门（这条面可以被重复调用 —— 见本文件里
+             "为什么没有一次性限制"那段），只是让"这台机器上到底发生过什么"
+             有一个可读的答案。 */
+          handoutCount: bootstrapHandoutCount,
+          lastHandoutAt: bootstrapLastHandoutAt,
+          autoProvision: credentialAutoProvision,
+          /* 未配置凭据时**明说**这是"这个进程没有凭据"，而不是让读者从
+             available:false 反推。措辞命名的是状态，不是让用户去执行的指令。 */
+          unavailableReason: bootstrapUnavailableReason()
+        },
         corsAllowlist: allowedOrigins,
         exposes: ['chat-store', 'character-turn', 'mobile-gateway', 'memory-store'],
         /* M1-C.2d Wave 2 的诚实更新：Home Node **现在确实存储** canonical
@@ -2244,11 +2460,33 @@ function createHomeNodeHttp(deps) {
     /* 跨域预检：只对允许的 Origin 放行，且只声明本服务真正实现的方法。 */
     if (method === 'OPTIONS') {
       const origin = String(req.headers.origin || '');
+      /* ★ 这个 handler 里**没有** `route()` 作用域里的那个 `path` 变量：
+         它当初写成引用 `path` 时，每一个带 Origin 的预检都在这一行抛
+         ReferenceError，请求**永远得不到响应**（客户端只看到超时 /
+         Failed to fetch），而服务端日志里只有一条 uncaught-exception。
+         实测症状：OPTIONS + loopback Origin → 挂死；OPTIONS 无 Origin → 204
+         （因为无 Origin 时这一行根本不会被求值）。因此这里的路径必须从
+         `url` 自己算，并且**只算一次**。 */
+      const preflightPath = url.pathname.replace(/\/+$/, '') || '/';
       const headers = { Vary: 'Origin' };
       if (originAllowed(origin)) {
         headers['Access-Control-Allow-Origin'] = origin;
         headers['Access-Control-Allow-Methods'] = 'GET, POST, DELETE, OPTIONS';
         headers['Access-Control-Allow-Headers'] = 'Content-Type, X-IB-Home-Token, X-IB-Protocol, Authorization';
+        /* ── P22-23 · 交付面的预检必须允许它自己的头 ────────────────────
+           这一行是**实测**补上的，不是防御性写法：凭据交付面要求
+           `X-IB-Bootstrap: 1`（它让这条请求必然走预检，从而把盲写那条路
+           关掉），而浏览器的预检会逐个检查请求头是否在允许名单里 —— 不在
+           就**在请求到达服务端之前**把它拦掉。症状是一条
+           `TypeError: Failed to fetch`，而服务端日志里**什么都没有**
+           （实测：同一页面的 GET /health 是 200，只有这一条 POST 失败）。
+           这正是本仓库已经记录过两次的同一类现象（见上面 PNA 那段：
+           "请求根本没有落到服务端日志里"）。
+           ★ 只对**这一条路径**放宽：别处没有理由带这个头，而 allow-headers
+             是一条声明"哪些头会被读"的清单，不是全局开关。 */
+        if (preflightPath === DESKTOP_CREDENTIAL_PATH) {
+          headers['Access-Control-Allow-Headers'] += ', X-IB-Bootstrap';
+        }
         headers['Access-Control-Max-Age'] = '600';
         /* Private Network Access（PNA）：Chrome 对「从 file:// 或公网 origin 发起、
            目标为 loopback/私网地址」的请求会先发一个带
@@ -2326,6 +2564,11 @@ function createHomeNodeHttp(deps) {
 
 module.exports = createHomeNodeHttp;
 module.exports.PROTOCOL_VERSION = PROTOCOL_VERSION;
+/* P22-23：交付面的路径与协议头是**契约**，由本文件唯一持有 —— 客户端
+   （assets/js/home-node-client.js）与测试都从这里取，不各写一份字面量。
+   这是本仓库对"路径常量只有一份"的既有做法（见 economyCommand.path）。 */
+module.exports.DESKTOP_CREDENTIAL_PATH = DESKTOP_CREDENTIAL_PATH;
+module.exports.DESKTOP_CREDENTIAL_HEADER = DESKTOP_CREDENTIAL_HEADER;
 module.exports.MAX_BODY_BYTES = MAX_BODY_BYTES;
 
 /* ── The ONE implementation of "why can't this canonical store serve"? ────

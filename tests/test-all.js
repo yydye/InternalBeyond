@@ -1012,6 +1012,20 @@ const GROUPS = [
           跑法：node tests/test_p22_22_economy_empty_state_visual.js
           ★ 这一阶段**只**动视觉与文案层：services/ runtime/ 的 diff 为空，
             路由、契约、能力判定与测试语义一条都没有改。 */
+      /* P22-23：Economy 首次使用链的**运行时**闭环。
+         在此之前那条链从未被证明过：服务端凭据只从 process.env 来、浏览器
+         那份从来没有代码写过，两端都是空的，于是配置面永远 503「请先设置
+         环境变量」。真正的问题不是那句话，是**凭据从没被创造过**。
+         这一条**真实 spawn services/home-node-service.js**（私有端口 + 私有
+         数据目录，无 IB_HOME_NODE_TOKEN），证明：凭据自动 provision 并持久化 /
+         本机交付面只认 loopback Origin（外来源 / null / 无 Origin / 缺协议头
+         四种形状逐个被拒）/ 拿到凭据后配置 seam 是开的 / **wallet 仍然没有
+         被自动创建** / 用户提交之后 wallet 才 READY / 重启不换凭据、不重复
+         铸币、balance 不变 / mismatch fail closed / secret 不进日志与响应 /
+         env 与 headless override 语义逐字未变。
+         ★ 它要验的就是**产品默认**（自动 provisioning），因此本套件自己显式
+           设置那个开关，不依赖运行器的隔离姿态。 */
+      ['test_p22_23_home_node_provisioning.js'],
     ]
   },
   {
@@ -1253,7 +1267,19 @@ for (const group of groups) {
       stdio: 'inherit',
       shell: false,
       timeout: PER_TEST_TIMEOUT_MS,
-      killSignal: 'SIGKILL'
+      killSignal: 'SIGKILL',
+      /* ── P22-23 · 测试默认不自动 provision 桌面凭据 ──────────────────
+         产品默认会在首次启动时生成并持久化一份桌面凭据（那正是 Economy
+         首次使用链闭合的前提）。但这会**改变**一大堆既有测试的部署形态：
+         它们真实 spawn services/home-node-service.js，而且刻意不设
+         IB_HOME_NODE_TOKEN，验的就是"未配置凭据时桌面面是什么姿态"。
+         那条部署路径依然合法（env 是 developer / headless override），
+         因此那些测试应当**显式**说"我要那个形态"，而不是依赖一个会随产品
+         演进的默认值。
+
+         在这里统一关掉，比在每个测试文件里各写一遍更难漂移；需要验
+         provisioning 的套件自己设 '1' 覆盖（子测试的显式 env 优先）。 */
+      env: Object.assign({}, process.env, { IB_HOME_NODE_TOKEN_AUTOPROVISION: '0' })
     });
     const ms = Date.now() - t0;
     const timedOut = !!(r.error && r.error.code === 'ETIMEDOUT');

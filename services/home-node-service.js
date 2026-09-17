@@ -88,6 +88,8 @@ const serviceControl = require('../runtime/service-control.js');
 /* M1-C.2i · canonical Middle Brain 的 Node 宿主适配（不是第二份实现：
    它 require assets/js 下那五层 + facade，只补宿主 shim 与配置注入）。 */
 const createNodeMiddleBrain = require('../services/home-node/middle-brain.js');
+/* P22-23：桌面凭据的**唯一** authority（生成 / 持久化 / 加载 / 诊断）。 */
+const desktopCredential = require('../services/home-node/desktop-credential.js');
 
 if (typeof fetch !== 'function') {
   console.error('Internal Beyond Home Node requires Node.js 18 or newer.');
@@ -100,7 +102,23 @@ const DATA_DIR = process.env.IB_HOME_NODE_DATA_DIR ||
   (process.platform === 'win32' && process.env.LOCALAPPDATA
     ? path.join(process.env.LOCALAPPDATA, 'InternalBeyond', 'home-node')
     : path.join(os.homedir(), '.internal-beyond', 'home-node'));
-const TOKEN = String(process.env.IB_HOME_NODE_TOKEN || '');
+/* ── P22-23 · 桌面凭据的**唯一** authority ────────────────────────────
+   这一行以前是 `String(process.env.IB_HOME_NODE_TOKEN || '')`。那个表达式
+   在产品上的后果是：普通用户装好、启动、打开 Economy，看到的是"请先设置
+   环境变量"——因为**没有任何代码创造过这份凭据**，两端（服务端 env /
+   浏览器 localStorage）都是空的。真正的问题不是那句提示的措辞，而是
+   "凭据从来没有被创造过"。
+
+   现在它由 services/home-node/desktop-credential.js 唯一决定，优先级
+   env > 显式文件 > 数据目录内生成并持久化。env 的语义一个字没改：显式设置
+   它依旧覆盖其余一切，并关闭自动 provisioning（developer / headless /
+   测试的既有旋钮）。
+   ★ 失败时**不退回空串**：见下面 require.main 里的硬门 —— 一个无法建立
+     凭据的节点以"健康但什么都写不了"的姿态对外服务，正是本阶段要消灭的
+     那种"看起来正常"的故障。 */
+const CREDENTIAL = desktopCredential.resolveDesktopCredential({ dataDir: DATA_DIR });
+const TOKEN = CREDENTIAL.ok ? CREDENTIAL.token : '';
+const TOKEN_SOURCE = CREDENTIAL.ok ? CREDENTIAL.source : null;
 const ALLOWED_ORIGINS = String(process.env.IB_HOME_NODE_ORIGINS || '')
   .split(',').map(s => s.trim()).filter(Boolean);
 /* Mobile Gateway 的额外出站 Origin 白名单。**不是**安全边界（设备 token 才是），
@@ -842,6 +860,20 @@ function buildHomeNode(options) {
     executor: instanceExecutor,
     gateway: instanceGateway,
     token: options.token === undefined ? TOKEN : options.token,
+    /* P22-23 · 凭据**来源**（不是凭据本体）交给传输层，因为它要回答两个
+       只有它才能回答的问题：
+         · bootstrap 交付面该不该开（env 显式配置时必须整面关闭 —— 那是
+           "部署方已经决定了凭据"，让浏览器再取一份就又多了一个来源）；
+         · /security 要如实说"凭据已配置 / 从哪来"，让 UI 能区分
+           「Home Node 没起来」与「凭据没配上」这两件不同的事。
+       ★ `desktopCredentialSource` 缺席（测试直接 buildHomeNode 且注入 token）
+         时传输层按"已配置但不允许 bootstrap"处理 —— 见 http.js 的那条默认值。 */
+    desktopCredentialSource: options.desktopCredentialSource === undefined
+      ? (options.token === undefined ? TOKEN_SOURCE : null)
+      : options.desktopCredentialSource,
+    desktopCredentialAutoProvision: options.desktopCredentialAutoProvision === undefined
+      ? (options.token === undefined && TOKEN_SOURCE === desktopCredential.SOURCE.GENERATED)
+      : options.desktopCredentialAutoProvision === true,
     version: options.version || productVersion(),
     allowedOrigins: options.allowedOrigins || ALLOWED_ORIGINS,
     /* P11-3E：canonical store 的失败分类只有一份（http.js 的 resolveStoreFailure），
@@ -1057,6 +1089,12 @@ const httpLayer = createHttp({
   executor,
   gateway,
   token: TOKEN,
+  /* P22-23：凭据的来源与自动 provisioning 事实上交给传输层 —— 只有它才能
+     回答"bootstrap 交付面该不该开"。**生产路径与 buildHomeNode 必须写同一份
+     事实**，这正是本文件已经记过三次的同一种病（装配了两条路径，其中一条
+     漏了一个字段，于是只有生产上出现缺口）。 */
+  desktopCredentialSource: TOKEN_SOURCE,
+  desktopCredentialAutoProvision: TOKEN_SOURCE === desktopCredential.SOURCE.GENERATED,
   version: productVersion(),
   allowedOrigins: ALLOWED_ORIGINS,
   /* P11-3H · 合作停止面。装在 http 层**内部**（而不是在 server 上再挂一个
@@ -1179,6 +1217,29 @@ function openAll() {
 /* require.main guard：测试可以直接 require 本模块并使用 createStore/createHttp，
    只有真正被当作入口运行时才监听端口。 */
 if (require.main === module) {
+  /* ── P22-23 · 凭据硬门（fail closed）──────────────────────────────
+     走到这里意味着凭据 authority **失败了**：一个既有的凭据文件读不动 /
+     内容坏了，或者生成后落盘失败。这两种情况的共同点是"我们无法确定这台
+     机器的凭据是什么"，而唯一比它更糟的选择是**假装它不存在**继续启动 ——
+     服务会健康地监听、读面照常可达，而每一条写路径都回答 503。用户看到的是
+     "Economy 用不了"，日志里没有任何一行说明为什么。
+
+     因此这里拒绝启动并指名那个文件。这不是把 Home Node 变成一个脆弱组件：
+     失败的原因只有一个可执行的下一步（检查/删除那个文件），而 runnner 会把
+     Home Node 的缺席记为 degraded 而不是 fatal（runtime/local-services-runner.js:157），
+     桌面主 UI 不受影响。
+
+     ★ 只有**显式设置过** env 部署才退回旧姿态：那是运维方明确的部署决策，
+       我们不去推翻它。判据取自凭据 authority 自己解析出来的来源，而不是
+       在这里再读一次 env —— "这台机器的凭据是什么"只能有一个答案，多读
+       一次就是给第二个答案留了一个位置。 */
+  if (!CREDENTIAL.ok && CREDENTIAL.source !== desktopCredential.SOURCE.ENV) {
+    console.error('Home Node could not establish its desktop credential (' +
+      CREDENTIAL.reason + '): ' + (CREDENTIAL.message || '') +
+      ' — inspect or remove ' + CREDENTIAL.file +
+      '. A node that cannot say what its desktop credential is must not serve.');
+    process.exit(1);
+  }
   let openResult = null;
   try { openResult = openAll(); }
   catch (error) {
@@ -1231,12 +1292,24 @@ if (require.main === module) {
     log('info', 'listening', {
       host: HOST, port: PORT, db: store.file, schema: store.schemaVersion,
       tokenRequired: !!TOKEN, loopbackOnly: !remoteOpen,
+      /* P22-23：凭据**从哪来**是这条日志最要紧的一栏。以前它只有
+         tokenRequired 一个布尔，于是"没配"与"配了但来源不明"看起来一样，
+         而排查"为什么配置面是 503"的第一步正是这个问题。
+         ★ 只有来源 / 长度 / 指纹，凭据本体**绝不**进日志。 */
+      credentialSource: TOKEN_SOURCE,
+      credentialLength: CREDENTIAL.ok ? CREDENTIAL.length : 0,
+      credentialFingerprint: CREDENTIAL.ok ? CREDENTIAL.fingerprint : null,
+      credentialGeneratedNow: CREDENTIAL.generatedNow === true,
       /* 如实区分三种状态：只服务本机 / 远端可达但每次都要设备 token / 远端一律拒绝。 */
       remoteClients: LOOPBACK_BIND ? 'refused (loopback bind)' : (remoteOpen ? 'device-token-required' : 'refused (' + authState.reason + ')'),
       /* P11-3A：凭据铸造面（配对 / 设备 / 目录发布）在未配置桌面 token 时是关的。
          把这件事写进启动日志，是为了让"为什么配对用不了"有一个可查的答案，
-         而不是让用户对着一个 403 猜。 */
-      credentialMinting: TOKEN ? 'enabled (desktop token configured)' : 'disabled (set IB_HOME_NODE_TOKEN to enable pairing)',
+         而不是让用户对着一个 403 猜。
+         P22-23：措辞跟着事实改了 —— 正常桌面启动**不再**需要用户去设环境变量，
+         因此这里说的是凭据的来源，而不是一条让用户去执行的指令。 */
+      credentialMinting: TOKEN
+        ? ('enabled (desktop credential configured via ' + TOKEN_SOURCE + ')')
+        : 'disabled (no desktop credential: set IB_HOME_NODE_TOKEN or allow first-run provisioning)',
       mobileGateway: '/mobile/v1', deviceAuth: 'per-device'
     });
   });
@@ -1381,6 +1454,13 @@ module.exports = {
   HOST,
   PORT,
   DATA_DIR,
+  /* P22-23：进程级的凭据 authority 与它的诊断投影。
+     ★ 导出的是**描述**（来源 / 长度 / 指纹 / 原因），不是凭据本体 ——
+       "凭据从哪来"必须是一句可以直接断言的事实，而"凭据是什么"不需要
+       经过这个导出被任何人看到（测试要验它时自己按来源去读那个文件）。 */
+  credentialAuthority: desktopCredential,
+  credentialDescription: desktopCredential.describeCredential(CREDENTIAL),
+  credentialSource: TOKEN_SOURCE,
   LOOPBACK_BIND,
   MOBILE_ORIGINS,
   SERVICE_VERSION,

@@ -1,4 +1,4 @@
-﻿/* ====================================================================
+/* ====================================================================
    IB Home Node Client — 浏览器侧唯一的 Home Node 传输实现
    --------------------------------------------------------------------
    职责边界（刻意收窄）：
@@ -13,13 +13,39 @@
      · localStorage['ib_home_node_mode'] = canonical（默认）| mirror | off
      · localStorage['ib_home_node_token'] 可选令牌（与 Bridge 的 token 同一思路）
    三项都是**私有的本地配置**，不进 apiSettings、不进导出、不进日志。
-   ==================================================================== */
+
+   ── P22-23 · 凭据是**取来**的，不是要求用户填的 ─────────────────────
+   在这一阶段之前，这一层是唯一的凭据来源，而**没有任何代码写过那个
+   localStorage 键**：正常安装的用户两边都是空的（服务端 process.env 空、
+   浏览器 localStorage 空），于是 Economy 的配置面永远 503 "请先设置环境
+   变量"。真正的问题不是那句话，是"凭据从来没有被创造过"。
+
+   现在：Home Node 自己生成并持久化凭据（services/home-node/desktop-credential.js），
+   本层在**自己那份为空时**向它取一次（POST /internal/desktop-credential，
+   仅 loopback + loopback Origin）。
+
+   ★ 取来的凭据**只存在于内存**（下面的 _sessionToken 闭包变量）：
+     不写 localStorage、不写 sessionStorage、不进 URL、不进 DOM、不进日志。
+     页面刷新即丢失，下一次请求重新取一次 —— 这是刻意的取舍：一份长期凭据
+     在浏览器存储里落盘的价值很小（它换来的只是少一次本机请求），而代价是
+     它从此留在磁盘上，且任何同源脚本都能读到。
+   ★ localStorage['ib_home_node_token'] 继续**优先**：显式配置过的部署
+     （developer / headless / 测试）语义一个字没变，而且那种部署下服务端的
+     bootstrap 面是关着的，取也取不到。
+   ★ 全部失败时**不**发明一个假凭据：写请求会带着空凭据发出去，由服务端
+     fail closed（401/403），而这一层把"为什么没有凭据"如实传上去。 */
 (function (NS) {
 'use strict';
 
 var DEFAULT_BASE = 'http://127.0.0.1:23118';
 var DEFAULT_TIMEOUT_MS = 15000;
 var MIGRATION_TIMEOUT_MS = 60000;
+/* 交付面的路径与请求头（与服务端 services/home-node/http.js 的
+   DESKTOP_CREDENTIAL_PATH / DESKTOP_CREDENTIAL_HEADER 是同一份契约）。
+   浏览器侧不能 require，因此这里只能写字面量 —— 而为了让它不漂移，
+   tests/test_p22_23_home_node_provisioning.js 会逐字比对两处。 */
+var CREDENTIAL_PATH = '/internal/desktop-credential';
+var CREDENTIAL_HEADER = 'X-IB-Bootstrap';
 
 function _ls(key) {
   try { return localStorage.getItem(key); } catch (e) { return null; }
@@ -40,6 +66,137 @@ window.ibHomeNodeBase = ibHomeNodeBase;
 window.ibHomeNodeMode = ibHomeNodeMode;
 window.ibHomeNodeToken = ibHomeNodeToken;
 
+/* ══ P22-23 · 凭据会话（**只在内存里**）══════════════════════════════
+   两个闭包变量，没有第三个：
+     _sessionToken       本轮页面生命周期内已经取到 / 已经显式配置的凭据。
+                         **不落任何存储** —— 见文件头那段取舍。
+     _provisionFailure   上一轮取凭据为什么失败（原因码 + 是否可重试）。
+                         它存在的意义是给 UI 一个**可区分的诊断**：
+                         "Home Node 没在跑"与"凭据没取到"是两件不同的事，
+                         而以前它们都表现为同一句空状态文案。
+   状态查询本身是同步的（ibHomeNodeToken），因为它在 _request 里被调用；
+   取凭据是异步的，只发生一次。 */
+var _sessionToken = null;          /* null = 还没试过；'' = 试过且没有 */
+var _provisionPromise = null;
+var _provisionFailure = null;
+
+/* 已经可用的凭据：显式配置（localStorage）优先，其次是本次会话取到的。
+   没有第三个来源 —— 这一层绝不发明凭据。 */
+function ibHomeNodeEffectiveToken() {
+  var configured = ibHomeNodeToken();
+  if (configured) return configured;
+  return _sessionToken == null ? '' : String(_sessionToken);
+}
+
+/* 取一次凭据（POST /internal/desktop-credential）。
+   并发去重：同一页面里几个渲染器同时发第一个请求时，只打一次。
+   失败**不抛错**：返回一个形状稳定的对象，让调用方继续用空凭据发请求 ——
+   服务端 fail closed 是权威的拒绝者，这一层不抢它的活。 */
+function ibHomeNodeProvisionCredential(options) {
+  options = options || {};
+  if (ibHomeNodeToken()) {
+    /* 显式配置过：不取。这条分支同时让"测试注入 token"的既有路径零改动。 */
+    return Promise.resolve({ ok: true, source: 'local-storage-configured' });
+  }
+  if (_sessionToken != null && _sessionToken !== '') {
+    return Promise.resolve({ ok: true, source: 'session' });
+  }
+  if (_provisionPromise) return _provisionPromise;
+  var url = ibHomeNodeBase() + CREDENTIAL_PATH;
+  var controller = (typeof AbortController === 'function') ? new AbortController() : null;
+  var timer = null;
+  var init = {
+    method: 'POST',
+    cache: 'no-store',
+    headers: { 'X-IB-Protocol': '1' }
+  };
+  /* 自定义头 ⇒ 跨源时必然先走预检，因此这条请求不会以 CORS 简单请求的
+     形态出现（服务端把这一点当作准入条件之一）。 */
+  init.headers[CREDENTIAL_HEADER] = '1';
+  if (controller) {
+    init.signal = controller.signal;
+    timer = setTimeout(function () { try { controller.abort(); } catch (e) { /* 已结束 */ } }, options.timeoutMs || 4000);
+  }
+  _provisionPromise = fetch(url, init).then(function (res) {
+    return res.text().then(function (raw) {
+      var parsed = null;
+      try { parsed = raw ? JSON.parse(raw) : null; } catch (e) { parsed = null; }
+      if (res.ok && parsed && typeof parsed === 'object' && typeof parsed.credential === 'string' && parsed.credential) {
+        _sessionToken = parsed.credential;
+        _provisionFailure = null;
+        return { ok: true, source: String(parsed.source || 'bootstrap') };
+      }
+      /* ★ 失败形状只保留**服务端说的原因码**，不保留任何响应正文片段：
+         这一层从不回显服务端返回的字段，因为那些字段里可能有凭据形状的东西。 */
+      _sessionToken = '';
+      _provisionFailure = {
+        code: 'home-node-credential-unavailable',
+        status: res.status,
+        reason: (parsed && typeof parsed.reason === 'string') ? parsed.reason
+          : ((parsed && typeof parsed.error === 'string') ? parsed.error : 'credential-not-delivered'),
+        retryable: false
+      };
+      return { ok: false, error: _provisionFailure.code, reason: _provisionFailure.reason, status: res.status };
+    });
+  }, function (error) {
+    var classified = _classifyFetchError(error);
+    _sessionToken = '';
+    /* 连不上与"拒绝交付"是**不同**的诊断，因此这里保留传输层的词表，
+       而不是把它们都折成 credential-unavailable。 */
+    _provisionFailure = { code: classified.code, status: 0, reason: classified.code, retryable: true };
+    return { ok: false, error: classified.code, reason: classified.code, retryable: true };
+  }).then(function (result) {
+    if (timer) clearTimeout(timer);
+    _provisionPromise = null;
+    return result;
+  });
+  return _provisionPromise;
+}
+
+/* 上一次取凭据失败的原因（没有失败时为 null）。UI 用它区分诊断。 */
+function ibHomeNodeCredentialState() {
+  var configured = ibHomeNodeToken();
+  return {
+    configured: !!configured,
+    source: configured ? 'local-storage' : (_sessionToken ? 'home-node-bootstrap' : null),
+    provisionedInThisSession: !!_sessionToken,
+    lastFailure: _provisionFailure ? {
+      code: _provisionFailure.code,
+      status: _provisionFailure.status,
+      reason: _provisionFailure.reason,
+      retryable: _provisionFailure.retryable === true
+    } : null
+  };
+}
+
+/* 服务端说"你没带凭据 / 你带的凭据不对"时，丢掉本轮会话里那份并允许重取。
+   这件事必须存在，理由很具体：Home Node 重启会重新读取（或重新生成）凭据，
+   而页面还活着。没有这条，用户会看到一个**永久**的 401，直到手动刷新页面 ——
+   一个"重启服务就再也配不了"的故障，正是本阶段要消灭的那一类。 */
+function ibHomeNodeForgetCredential() {
+  _sessionToken = null;
+  _provisionPromise = null;
+  _provisionFailure = null;
+}
+
+/* ── 保证"这一次请求会带凭据"（已经取到就立刻返回）────────────────────
+   ★ 它把"取凭据"变成**请求的前置步骤**，而不是事后补救。理由见 _request
+     里那段：先发再补会让用户先看到一次假失败。
+   ★ 一次失败**不**永久关闭自动重试：下一次请求还会再试一次（Home Node 可能
+     只是还没起来）。真正的节流来自"同一时刻只打一次"（_provisionPromise），
+     而不是"失败之后永不再试"。 */
+function ensureCredential() {
+  if (ibHomeNodeToken()) return Promise.resolve();   /* 显式配置：不用取 */
+  if (_sessionToken) return Promise.resolve();        /* 本轮已经取到 */
+  if (_provisionFailure && _provisionFailure.retryable !== true) {
+    /* 服务端**明确拒绝交付**（例如凭据来自部署、或自动 provisioning 关着）。
+       这不是暂时故障，重试同一个答案没有意义 —— 但也不缓存成"永久失败"：
+       下一次请求仍会重新问一次（服务端状态可能已经变了，例如重启过）。 */
+    return Promise.resolve();
+  }
+  return ibHomeNodeProvisionCredential({ timeoutMs: 4000 }).then(function () { });
+}
+
 /* 错误分类词表：调用方据此分支，禁止用错误文案匹配。 */
 function _classifyFetchError(error) {
   var name = String((error && error.name) || '');
@@ -49,29 +206,19 @@ function _classifyFetchError(error) {
   return { code: 'home-node-transport-error', retryable: true, message: msg };
 }
 
-function _request(pathname, options) {
-  options = options || {};
-  var url = ibHomeNodeBase() + pathname;
-  var headers = { 'X-IB-Protocol': '1' };
-  var token = ibHomeNodeToken();
-  if (token) headers['X-IB-Home-Token'] = token;
-  if (options.body !== undefined) headers['Content-Type'] = 'application/json';
-  var controller = (typeof AbortController === 'function') ? new AbortController() : null;
-  var timer = null;
-  var timeoutMs = options.timeoutMs || DEFAULT_TIMEOUT_MS;
-  if (controller) timer = setTimeout(function () { try { controller.abort(); } catch (e) { /* 已结束 */ } }, timeoutMs);
-  function finish(promise) {
-    return promise.then(function (res) { if (timer) clearTimeout(timer); return res; },
-      function (err) { if (timer) clearTimeout(timer); throw err; });
-  }
-  var init = {
-    method: options.method || 'GET',
-    headers: headers,
-    cache: 'no-store'
-  };
-  if (options.body !== undefined) init.body = JSON.stringify(options.body);
-  if (controller) init.signal = controller.signal;
-  return finish(fetch(url, init)).then(function (res) {
+/* ── P22-23 · 一次尝试（不带凭据重取）───────────────────────────────
+   把"发一次请求"与"凭据该不该重取"分开：_attempt 只负责一次传输，
+   _request 负责在服务端明确说"凭据不对/没带"时重取一次并重发。
+
+   重试**只**发生在 401 / 403 上，而且**只**发生一次：
+     · 401 = 带了凭据但不匹配；403 = 没带凭据（或凭据铸造面未配置）。
+       两者都可能意味着"服务端重启后换了凭据，而页面还活着"。
+     · 其余状态码（503 配置面关闭、400 信封错、409 冲突……）都不是凭据问题，
+       重发一次只会把同一个事实问第二遍 —— 因此不重试。
+   ★ 这条重试**不会**把任何写变成"自动成功"：它重发的是同一个请求体，
+     幂等键也一模一样，因此 canonical store 的一次性语义不受影响。 */
+function _attempt(url, init) {
+  return fetch(url, init).then(function (res) {
     return res.text().then(function (raw) {
       var parsed = null;
       try { parsed = raw ? JSON.parse(raw) : {}; } catch (e) { parsed = null; }
@@ -91,6 +238,70 @@ function _request(pathname, options) {
   }, function (error) {
     var classified = _classifyFetchError(error);
     return { ok: false, error: classified.code, retryable: classified.retryable, detail: classified.message, offline: true };
+  });
+}
+
+function _request(pathname, options) {
+  options = options || {};
+  var url = ibHomeNodeBase() + pathname;
+  var timeoutMs = options.timeoutMs || DEFAULT_TIMEOUT_MS;
+
+  function send() {
+    var headers = { 'X-IB-Protocol': '1' };
+    var token = ibHomeNodeEffectiveToken();
+    if (token) headers['X-IB-Home-Token'] = token;
+    if (options.body !== undefined) headers['Content-Type'] = 'application/json';
+    var controller = (typeof AbortController === 'function') ? new AbortController() : null;
+    var timer = null;
+    if (controller) timer = setTimeout(function () { try { controller.abort(); } catch (e) { /* 已结束 */ } }, timeoutMs);
+    var init = {
+      method: options.method || 'GET',
+      headers: headers,
+      cache: 'no-store'
+    };
+    if (options.body !== undefined) init.body = JSON.stringify(options.body);
+    if (controller) init.signal = controller.signal;
+    return _attempt(url, init).then(function (res) {
+      if (timer) clearTimeout(timer);
+      return res;
+    }, function (error) {
+      if (timer) clearTimeout(timer);
+      throw error;
+    });
+  }
+
+  /* ── 先取凭据，再发请求 ──────────────────────────────────────────────
+     ★ 顺序是这一层的核心，而且曾经写错过一次：先发再补的话，**用户看到的是
+       一次真实失败** —— 配置页第一次进入时会显示"读不到钱包 / unauthenticated"，
+       几百毫秒后才自愈。那不是一个无害的闪烁：这一页要回答的第一个问题就是
+       "这台节点现在能不能配"，用一次假失败回答它，正好是本阶段要消灭的
+       那种"看起来正常/看起来坏了"的错位。
+     ★ 没有凭据可取时（显式关掉了自动 provisioning、或 Home Node 拒绝交付）
+       ensureCredential 会如实返回失败，请求照发 —— 拒绝由服务端权威给出，
+       这一层不抢它的活。 */
+  return ensureCredential().then(function () {
+    return send();
+  }).then(function (res) {
+    /* ── 凭据被服务端拒绝（401 / 403）──────────────────────────────────
+       这一条的存在理由同样具体：Home Node 重启会重新读取凭据，而页面还活着。
+       没有它，用户会看到一个**永久**的 401，直到手动刷新页面 —— 一个
+       "重启服务就再也配不了"的故障。
+
+       只在两种情况下重取：
+         · 凭据是**本次会话取来的**（用户显式配置在 localStorage 里的那份
+           不该被我们偷偷换掉，而且服务端也不会交付）；
+         · 状态码确实是 401 / 403。其余状态码（503 配置面关闭、400 信封错、
+           409 冲突……）都不是凭据问题，重发只会把同一个事实问第二遍。
+       ★ 重发的是**同一个请求体**、同一个幂等键，因此 canonical store 的
+         一次性语义不受影响；这条重试不可能把一次写"自动变成成功"。 */
+    var credentialRejected = res && (res.status === 401 || res.status === 403);
+    if (!credentialRejected) return res;
+    if (ibHomeNodeToken()) return res;      /* 显式配置的凭据：重取没有意义 */
+    if (!_sessionToken) return res;         /* 本来就没有凭据可取 */
+    ibHomeNodeForgetCredential();
+    return ibHomeNodeProvisionCredential({ timeoutMs: 4000 }).then(function () {
+      return send();
+    });
   });
 }
 
@@ -349,10 +560,23 @@ function createHomeNodeRemote(deps) {
 NS.ibHomeNodeBase = ibHomeNodeBase;
 NS.ibHomeNodeMode = ibHomeNodeMode;
 NS.ibHomeNodeToken = ibHomeNodeToken;
+/* P22-23：凭据会话的三个入口。`ibHomeNodeEffectiveToken` 也是**唯一**回答
+   "这次请求会带什么凭据"的函数 —— 其余两个分别是"取"与"忘"。 */
+NS.ibHomeNodeEffectiveToken = ibHomeNodeEffectiveToken;
+NS.ibHomeNodeProvisionCredential = ibHomeNodeProvisionCredential;
+NS.ibHomeNodeCredentialState = ibHomeNodeCredentialState;
+NS.ibHomeNodeForgetCredential = ibHomeNodeForgetCredential;
 NS.createHomeNodeRemote = createHomeNodeRemote;
 NS.economyCatalogFact = economyCatalogFact;
 NS.ECONOMY_CATALOG_FACT_FIELDS = ECONOMY_CATALOG_FACT_FIELDS;
-NS.ibHomeNodeConstants = { DEFAULT_BASE: DEFAULT_BASE, DEFAULT_TIMEOUT_MS: DEFAULT_TIMEOUT_MS, MIGRATION_TIMEOUT_MS: MIGRATION_TIMEOUT_MS };
+NS.ibHomeNodeConstants = {
+  DEFAULT_BASE: DEFAULT_BASE,
+  DEFAULT_TIMEOUT_MS: DEFAULT_TIMEOUT_MS,
+  MIGRATION_TIMEOUT_MS: MIGRATION_TIMEOUT_MS,
+  /* 交付面的路径与头也是常量的一部分：测试要逐字比对服务端契约。 */
+  CREDENTIAL_PATH: CREDENTIAL_PATH,
+  CREDENTIAL_HEADER: CREDENTIAL_HEADER
+};
 
 /* ── memory remote driver（memory-authority 的注入契约）──────────────
    M1-C.2d Wave 2。刻意与 chat 的 remote driver **分开**：

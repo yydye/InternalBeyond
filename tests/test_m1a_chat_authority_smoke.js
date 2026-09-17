@@ -241,7 +241,15 @@ async function main() {
     cwd: ROOT,
     env: Object.assign({}, process.env, {
       IB_HOME_NODE_PORT: String(homePort),
-      IB_HOME_NODE_DATA_DIR: dataDir
+      IB_HOME_NODE_DATA_DIR: dataDir,
+      /* ★ P22-23：这一条验的是**未配置桌面凭据**的部署形态 —— 本文件下面要
+         走 /characters/publish 与 /pairing/session，而未配置凭据时那几条路径
+         按 P11-3A 就是 403 desktop-token-required。产品默认现在会在首次启动
+         时自动 provision 一份凭据（那正是 Economy 首次使用链闭合的前提），
+         因此这里显式关掉它，把"没有凭据"这个仍然合法的部署形态固定下来。
+         自动 provisioning 本身由 tests/test_p22_23_home_node_provisioning.js
+         与 tests/test_p22_23_first_run_acceptance.js 覆盖。 */
+      IB_HOME_NODE_TOKEN_AUTOPROVISION: '0'
     }),
     stdio: ['ignore', 'pipe', 'pipe']
   });

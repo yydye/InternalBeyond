@@ -83,9 +83,15 @@ function spawnService() {
     cwd: ROOT,
     env: Object.assign({}, process.env, {
       IB_HOME_NODE_PORT: String(PORT),
-      IB_HOME_NODE_DATA_DIR: DATA_DIR
+      IB_HOME_NODE_DATA_DIR: DATA_DIR,
       /* 刻意不设 IB_HOME_NODE_TOKEN：桌面面在 loopback 下的默认姿态就是本测试要验的
-         （生产默认安装即无 token；带 token 是另一条由 test_home_node_http.js 覆盖的路径）。 */
+         （生产默认安装即无 token；带 token 是另一条由 test_home_node_http.js 覆盖的路径）。
+         ★ P22-23：产品默认会在首次启动时**自动**生成并持久化一份桌面凭据
+         （Economy 首次使用链闭合的前提）。本测试要的是"没有凭据"这个部署形态
+         —— 它依然合法（env 是 developer / headless override），所以这里显式
+         关掉自动 provisioning，而不是依赖一个会随产品演进的默认值。
+         自动 provisioning 本身由 tests/test_p22_23_* 覆盖。 */
+      IB_HOME_NODE_TOKEN_AUTOPROVISION: '0'
     }),
     stdio: ['ignore', 'pipe', 'pipe']
   });
