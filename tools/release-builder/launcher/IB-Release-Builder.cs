@@ -320,14 +320,19 @@ internal static class Program
 
     private static void OpenBrowser(string url)
     {
-        Console.WriteLine("[已用系统默认浏览器打开] " + url);
         /* A headless check (CI, or a test proving the EXE starts) sets
-           IB_RELEASE_NO_BROWSER=1 and the EXE stays a pure server host. */
+           IB_RELEASE_NO_BROWSER=1 and the EXE stays a pure server host. The guard
+           is decided FIRST: printing "已用系统默认浏览器打开" and then declining to
+           open one would make the log lie about what happened, and a test that
+           watches for a browser open would be unable to trust either line. */
         if (Environment.GetEnvironmentVariable("IB_RELEASE_NO_BROWSER") == "1")
         {
             Console.WriteLine("[IB_RELEASE_NO_BROWSER=1] 未打开浏览器");
+            Console.WriteLine("请在浏览器中打开下面这个地址：");
+            Console.WriteLine("  " + url);
             return;
         }
+        Console.WriteLine("[已用系统默认浏览器打开] " + url);
         ProcessStartInfo psi = new ProcessStartInfo();
         psi.FileName = "cmd.exe";
         psi.Arguments = "/c start \"\" \"" + url.Replace("\"", "") + "\"";

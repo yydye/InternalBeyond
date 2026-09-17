@@ -35,6 +35,10 @@
 
 不需要装任何东西，不需要 PowerShell，不需要 npm，不需要 Electron/WebView2。
 
+**它只开浏览器这一件事是可关的**：设 `IB_RELEASE_NO_BROWSER=1` 后 EXE 变成纯服务宿主，
+只在控制台打印地址（无人值守验证就是靠这个，见 §7 的 exe 套件）。
+配套的 `IB_RELEASE_PORT=<端口>` 可以固定端口，`IB_NODE=<node.exe>` 可以覆盖运行时解析。
+
 ### 从源码构建 EXE
 
 ```powershell
@@ -124,15 +128,19 @@ PUBLISH → git commit → git push → git tag → git push <tag>
 | `tests/test_release_builder_plan.js` | 纯规划：版本计划、状态机、roll-up、顶级状态、**结构断言**（本工具里不存在第二份发布权威） |
 | `tests/test_release_builder_astages.js` | fixture / 集成 / **对照证明**：在临时目录里跑完整 CHECK→BUILD→VERIFY→SEAL，然后逐一故意破坏版本号、产物名、PE 版本、SHA、清单版本/通道、构建退出码、README 声明……确认每一种都能把 `READY` 打回 `BLOCKED` |
 | `tests/test_release_builder_server.js` | 本地服务契约：只绑 127.0.0.1、逐接口要 boot token、拒绝跨源、静态路径不能逃出 `public/`、阶段门在服务端、**一键流程不含 PUBLISH**、PUBLISH 必须带确认、Dry Run 零副作用 |
+| `tests/test_release_builder_exe.js` | **真启动那个双击用的 EXE**：找到的是仓库内置 `runtime\node\node.exe`（不是 PATH 上的 node）、`IB_RELEASE_NO_BROWSER=1` 下是纯服务宿主（`browserOpens===0`，且日志不得声称打开过浏览器）、GUI 页面与 `/api/snapshot` 报真实版本、无 token / 错 token 一律 403、静态路径不能穿越、杀掉 EXE 后不留 node 子进程（Windows Job Object）。EXE 没构建时跳过并返回 0 |
 
 ```powershell
 node tools\release-builder\tests\test_release_builder_plan.js
 node tools\release-builder\tests\test_release_builder_astages.js
 node tools\release-builder\tests\test_release_builder_server.js
+node tools\release-builder\tests\test_release_builder_exe.js
 ```
 
 全部遵守 `docs/P7-TEST-BUDGET.md`：不联网、不安装、不开浏览器、不碰真实 `dist/`，
-用完的临时目录全部删除（套件自己断言这一点）。
+用完的临时目录全部删除（套件自己断言这一点）。只有 `..._exe.js` 会监听一个本地
+127.0.0.1 端口（它验证的正是这个服务），它同样不开浏览器，并且刻意不把
+`powershell.exe`/`cmd.exe` 计入"浏览器进程"，否则它会把自己的探针当成浏览器。
 
 ---
 
@@ -152,7 +160,7 @@ tools/release-builder/
     runner.js            编排核心（阶段门、级联阻断、Dry Run 计划）
   public/                界面（复用产品自己的玻璃层设计 token）
   launcher/              IB-Release-Builder.exe 的 C# 源码
-  tests/                 fixture + 三个套件
+  tests/                 fixture + 四个套件（plan / astages / server / exe）
 ```
 
 ### 为什么 `canonical.js` 是唯一入口

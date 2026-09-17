@@ -535,16 +535,18 @@ function blockedKeys(r, stage) {
   /* ── temp cleanup ─────────────────────────────────────────────────────── */
 
   console.log('\n[CLEANUP] removing every throwaway checkout');
-  let removed = 0;
-  for (const fx of CLEANUPS) {
-    try { fx.dispose(); removed++; } catch (e) { /* reported below */ }
-  }
+  /* fixture.disposeAll() disposes the batch, waits out the transient Windows
+     handle holds that make a first rmSync fail, and reports what is actually
+     still on disk. The assertion below is deliberately made on the REAL final
+     state, so a leak is a failure rather than a silently ignored exception. */
+  const disposal = fixture.disposeAll(CLEANUPS);
   check('every fixture checkout was removed', () => {
-    const leftovers = CLEANUPS.filter(function (fx) { return fs.existsSync(fx.dir); });
-    assert2(leftovers.length === 0, 'leftover git working trees: ' + leftovers.map(f => f.dir).join(', '));
-    const remnantRemotes = CLEANUPS.filter(function (fx) { return fx.remoteDir && fs.existsSync(fx.remoteDir); });
-    assert2(remnantRemotes.length === 0, 'leftover bare remotes: ' + remnantRemotes.map(f => f.remoteDir).join(', '));
-    assert2(removed === CLEANUPS.length, 'removed ' + removed + ' of ' + CLEANUPS.length);
+    assert2(disposal.failed.length === 0,
+      'leftover temp directories: ' + disposal.failed.map(function (fx) {
+        return [fx.dir, fx.remoteDir].filter(function (p) { return p && fs.existsSync(p); }).join(' + ');
+      }).join(', '));
+    assert2(disposal.removed === CLEANUPS.length,
+      'removed ' + disposal.removed + ' of ' + CLEANUPS.length);
   });
 
   /*

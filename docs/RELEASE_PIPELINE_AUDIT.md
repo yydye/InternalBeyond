@@ -664,10 +664,50 @@ U1–U5 逐项 / Seal 结果 / Publish 结果（若执行）。
 | 文件 | 修改 | 性质 |
 |---|---|---|
 | `.gitignore` | 追加 3 条：`tools/IB-Release-Builder.exe`、`tools/release-builder-runtime/`、`tools/release-builder/.dry-run/` | 仅忽略生成物 |
-| `tests/test-all.js` | `SCRIPT_DIRS` 增加三个 Release Builder 套件的目录映射；static 组登记这三个套件 | 测试登记 |
-| `docs/RELEASE_PIPELINE_AUDIT.md` | 新增（本文档，含本节） | 文档 |
+| `tests/test-all.js` | `SCRIPT_DIRS` 增加四个 Release Builder 套件的目录映射；static 组登记这四个套件 | 测试登记 |
+| `docs/RELEASE_PIPELINE_AUDIT.md` | 新增（本文档，含本节与 §17） | 文档 |
 | `tools/release-builder/**` | 新增 | 新工具源码 |
 | **发布契约本身**（`runtime/update-manifest.js`、`scripts/build-installer.ps1`、`scripts/release-audit.js`、`scripts/release-manifest.js`、`installer/InternalBeyond.iss`） | **一字未改** | — |
 
 **U1–U5 一条都没有放宽**，`runtime/` 与 `scripts/` 下的既有文件全部保持原字节。
 
+---
+
+## 17. 收敛轮：一个真实缺陷 + 一个真实测试缺陷
+
+R1 收尾时补了第四个套件（`tests/test_release_builder_exe.js`，真启动那个双击用的 EXE），
+它当场抓到并最终验证了两件事。两条都记在这里，因为**一条是产品缺陷、一条是测量缺陷**，
+而「测试失败」不一定意味着被测对象有问题：
+
+### 17.1 【真实缺陷 · 已修】launcher 在无头模式下谎报「已打开浏览器」
+
+`launcher/IB-Release-Builder.cs` 的 `OpenBrowser()` 原本把
+`[已用系统默认浏览器打开] <url>` **打在自己的守卫之前**，然后才检查
+`IB_RELEASE_NO_BROWSER=1` 并返回。后果不是"多打了一行日志"：
+
+- 任何以日志判断"这次跑有没有开浏览器"的人（包括本套件、包括以后写 CI 的人）
+  **都会得到与事实相反的结论**；
+- 而"不偷偷打开浏览器"本身是用户的硬约束（P7 测试预算：默认 `browserOpens===0`），
+  一条会为假的动作打勾的日志，正好是这条约束最不该有的那种证据。
+
+修法：**先判守卫，再打印**。无头时输出 `[IB_RELEASE_NO_BROWSER=1] 未打开浏览器`，
+并把地址明明白白打给操作者（无头运行仍然必须告诉人工具在哪里）。
+"它到底开没开浏览器"现在有两条独立证据：日志里**不存在**`[已用系统默认浏览器打开]`，
+以及运行窗口期内**没有任何浏览器进程**启动。
+
+### 17.2 【测试自身的缺陷 · 已修】`//api/...` 与"把自己当浏览器"
+
+两个失败一度看起来像服务端坏了，实际都是本套件自己的问题，记下来是为了不重犯：
+
+1. **`http://127.0.0.1:PORT/` + `/api/snapshot` = `//api/snapshot`**。服务端把
+   `//api/snapshot` 当成静态路径去找文件，于是**如实地**返回 404 —— 那不是 bug，
+   是服务端正确工作。修法是先 `replace(/\/$/, '')` 再去拼 API 路径。
+   教训：一个 404 先要问"我请求的到底是什么路径"，而不是先怀疑路由。
+2. **浏览器探针把自己的 `cmd.exe` 数成了浏览器**。探针用
+   `Get-Process cmd,chrome,...` 找"新启动的浏览器"，而 PowerShell 探针自己就会
+   起 `cmd.exe`，于是套件**检测到了自己**。修法是只列真正的浏览器进程名
+   （`chrome/msedge/firefox/iexplore/brave/opera/launcher`），并在注释里写明
+   为什么这里**不能**包含 `cmd.exe`。
+
+两个修好之后，`test_release_builder_exe.js` 15 项全过（约 2.5 s），
+四个套件合计约 155 s，仍在单轮预算内。

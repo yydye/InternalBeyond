@@ -425,9 +425,50 @@ function create(opts) {
     version: version,
     target: o.target || version,
     dispose: function () {
-      rmrf(dir);
-      if (remoteDir) rmrf(remoteDir);
+      /* The bare origin is removed FIRST. It used to be removed second, after the
+         checkout — and that ordering left 14 of them behind in %TEMP% the moment a
+         checkout delete failed (git can still hold a handle on the working tree
+         for a moment). The origin holds only ~0.25 MB, so deleting it first is
+         cheap, and a failure on the checkout afterwards can no longer orphan it:
+         if either rmrf gives up, the entry is reported rather than silently
+         skipped, and disposeAll() below retries the whole set below. */
+      let ok = true;
+      if (remoteDir && fs.existsSync(remoteDir)) ok = rmrf(remoteDir) && ok;
+      if (fs.existsSync(dir)) ok = rmrf(dir) && ok;
+      return ok;
     }
-  };}
+  };
+}
 
-module.exports = { create, buildPeWithVersion, sha256, sha256File, rmrf, TOOL, REAL_REPO, STUB_PS1 };
+/*
+ * Dispose a whole batch, waiting out the transient Windows handle holds that
+ * make a first rmSync fail. Used by the suites at the end of a run: it returns
+ * { removed, failed } so a caller can assert on the REAL outcome instead of
+ * assuming success, and it never loops forever (DEADLINE_MS bounds the wait).
+ */
+const DISPOSE_DEADLINE_MS = 8000;
+function disposeAll(list) {
+  const inst = list || [];
+  let pending = inst.slice();
+  for (const fx of inst) { try { fx.dispose(); } catch (e) { /* retried below */ } }
+  pending = pending.filter(function (fx) {
+    return fs.existsSync(fx.dir) || (fx.remoteDir && fs.existsSync(fx.remoteDir));
+  });
+  const deadline = Date.now() + DISPOSE_DEADLINE_MS;
+  let wait = 120;
+  while (pending.length && Date.now() < deadline) {
+    const t0 = Date.now();
+    while (Date.now() - t0 < wait) { /* bounded sleep without timers */ }
+    for (const fx of pending) { try { fx.dispose(); } catch (e) { /* final state decides */ } }
+    pending = pending.filter(function (fx) {
+      return fs.existsSync(fx.dir) || (fx.remoteDir && fs.existsSync(fx.remoteDir));
+    });
+    wait = Math.min(wait * 2, 1000);
+  }
+  return { removed: inst.length - pending.length, failed: pending };
+}
+
+module.exports = {
+  create, buildPeWithVersion, sha256, sha256File, rmrf, disposeAll,
+  TOOL, REAL_REPO, STUB_PS1
+};

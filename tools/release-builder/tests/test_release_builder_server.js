@@ -63,6 +63,10 @@ function json(res) { try { return JSON.parse(res.body); } catch (e) { return nul
   console.log('Release Builder · local server contract\n');
 
   const fx = fixture.create({ version: '1.0.5', target: '1.0.6' });
+  /* Every fixture this suite creates is tracked here, because a fixture owns two
+     directories (the checkout AND the bare origin it pushes to) and an inline
+     rmSync of the checkout used to leave the origin behind in %TEMP%. */
+  const FIXTURES = [fx];
   const api = serverMod.start({ root: fx.dir, port: 0 });
   const info = await api.ready;
   const port = info.port;
@@ -143,6 +147,7 @@ function json(res) { try { return JSON.parse(res.body); } catch (e) { return nul
       /* A fresh checkout and a fresh server: the gate must refuse BUILD before
          CHECK has run, and this must not depend on anything that ran before. */
       const fxGate = fixture.create({ version: '1.0.5', target: '1.0.6' });
+      FIXTURES.push(fxGate);
       const apiGate = serverMod.start({ root: fxGate.dir, port: 0 });
       const infoGate = await apiGate.ready;
       try {
@@ -167,6 +172,7 @@ function json(res) { try { return JSON.parse(res.body); } catch (e) { return nul
       /* Its own checkout: one-click is the primary flow and must be proven on a
          clean repository, not on the leftovers of an earlier probe. */
       const fxOne = fixture.create({ version: '1.0.5', target: '1.0.6' });
+      FIXTURES.push(fxOne);
       const apiOne = serverMod.start({ root: fxOne.dir, port: 0 });
       const infoOne = await apiOne.ready;
       try {
@@ -205,6 +211,7 @@ function json(res) { try { return JSON.parse(res.body); } catch (e) { return nul
          this check seals one on its own checkout. Every check in this suite is
          independent of the others: none of them depends on what ran before. */
       const fxPlan = fixture.create({ version: '1.0.5', target: '1.0.6' });
+      FIXTURES.push(fxPlan);
       const apiPlan = serverMod.start({ root: fxPlan.dir, port: 0 });
       const infoPlan = await apiPlan.ready;
       try {
@@ -237,6 +244,7 @@ function json(res) { try { return JSON.parse(res.body); } catch (e) { return nul
       /* A separate checkout: a dry run is a fresh question, not a continuation
          of the one-click run above. */
       const fx2 = fixture.create({ version: '1.0.5', target: '1.0.6' });
+      FIXTURES.push(fx2);
       const api2 = serverMod.start({ root: fx2.dir, port: 0 });
       const info2 = await api2.ready;
       try {
@@ -295,11 +303,23 @@ function json(res) { try { return JSON.parse(res.body); } catch (e) { return nul
     });
   } finally {
     try { api.server.close(); } catch (e) { /* ignore */ }
-    try { fs.rmSync(fx.dir, { recursive: true, force: true }); } catch (e) { /* ignore */ }
   }
 
-  const leftover = fs.existsSync(fx.dir);
-  await check('the fixture checkout was removed', async () => { assert.strictEqual(leftover, false, fx.dir); });
+  /* Dispose every fixture in one batch: what is asserted below is the REAL state
+     on disk after the retrying sweep, not an assumption that rmSync worked. */
+  const disposal = fixture.disposeAll(FIXTURES);
+  await check('every fixture this suite created was removed (checkout AND origin)', async () => {
+    assert.strictEqual(disposal.failed.length, 0, 'leftover: ' + disposal.failed.map(f => f.dir).join(', '));
+    assert.strictEqual(disposal.removed, FIXTURES.length,
+      'removed ' + disposal.removed + ' of ' + FIXTURES.length);
+  });
+
+  const residue = fs.readdirSync(os.tmpdir()).filter(function (n) {
+    return (n.indexOf('ib-rb-') === 0 || n.indexOf('ib-rb-origin-') === 0) && n !== 'ib-rb-pe-cache';
+  });
+  await check('no test residue is left in %TEMP%', async () => {
+    assert.strictEqual(residue.length, 0, 'unexpected temp entries: ' + residue.join(', '));
+  });
 
   console.log('\n结果: ' + pass + ' 通过, ' + fail + ' 失败');
   if (failures.length) { console.log('失败明细:'); failures.forEach(f => console.log('  - ' + f)); }

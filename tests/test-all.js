@@ -110,7 +110,8 @@ const SCRIPT_DIRS = {
      （tools/release-builder/tests/），所以它的三个入口在这里登记目录。 */
   'test_release_builder_plan.js': path.join(REPO_ROOT, 'tools', 'release-builder', 'tests'),
   'test_release_builder_astages.js': path.join(REPO_ROOT, 'tools', 'release-builder', 'tests'),
-  'test_release_builder_server.js': path.join(REPO_ROOT, 'tools', 'release-builder', 'tests')
+  'test_release_builder_server.js': path.join(REPO_ROOT, 'tools', 'release-builder', 'tests'),
+  'test_release_builder_exe.js': path.join(REPO_ROOT, 'tools', 'release-builder', 'tests')
 };
 function scriptPath(name) { return path.join(SCRIPT_DIRS[name] || TEST_ROOT, name); }
 
@@ -983,11 +984,19 @@ const GROUPS = [
          ③ server：本地服务契约 —— 只绑 127.0.0.1、逐接口要 boot token、拒绝跨源、
             静态路径不能逃出 public/、阶段门在服务端、一键流程不含 PUBLISH、
             PUBLISH 无确认即拒、Dry Run 不改任何文件。
-         三者都**不联网、不安装、不开浏览器、不碰真实 dist/**；临时目录由套件
-         自己断言已删除。真实 ISCC 构建仍只在 test_installer_build.js --force 里跑。 */
+         ④ exe（需要已构建的 tools/IB-Release-Builder.exe；未构建则跳过并返回 0）：
+            真启动那个双击用的 EXE —— 确认它找到的是**仓库内置** runtime\node\node.exe
+            而不是 PATH 上的 node、确认 IB_RELEASE_NO_BROWSER=1 下它真的是纯服务宿主
+            （browserOpens===0，且日志不得声称打开了浏览器）、确认 GUI 页面与
+            /api/snapshot 报的是**真实**版本、无 token / 错 token 一律 403、
+            静态路径不能穿越、杀掉 EXE 后不留 node 子进程（Windows Job Object）。
+         四者都**不联网、不安装**；只有 ④ 会监听一个本地 127.0.0.1 端口（不开浏览器），
+         全都不碰真实 dist/；临时目录由套件自己断言已删除。
+         真实 ISCC 构建仍只在 test_installer_build.js --force 里跑。 */
       ['test_release_builder_plan.js'],
       ['test_release_builder_astages.js'],
-      ['test_release_builder_server.js']
+      ['test_release_builder_server.js'],
+      ['test_release_builder_exe.js'],
       /* P22-18 的浏览器视觉核对（test_p22_18_economy_experience_visual.js）
          与 P22-15/16/17 那三条一样**不在**默认套件里（它要开一个真实
          浏览器）：2 主题 × 4 宽度（含 320px）+ 截断/空/展开四种状态。
