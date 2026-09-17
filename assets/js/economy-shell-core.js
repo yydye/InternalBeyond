@@ -83,6 +83,35 @@ var TAB = Object.freeze({
   OVERVIEW: 'overview', STORE: 'store', ASSETS: 'assets',
   REQUESTS: 'requests', SETTINGS: 'settings'
 });
+/* ── P22-22 · 每一格的两句话（标题 + 一句"这一格看什么"）───────────────
+   ★ 它们是**只读的解释**，不是新的状态：值全部由上面那三张既有模型算出来，
+     一个字段都没有新增、一条读面都没有多读。放在这里而不是写在渲染器里，
+     是因为下面那段 COPY 才是这一层唯一的文案出处。
+   ★ `title` 逐个与页签**同一批词**（概览/商店/我的资产/待处理/设置），
+     因此"点了哪个页签"与"下面这一块的标题"永远对得上 —— 这是可访问性
+     要求，也是"用户在哪儿"的唯一答案。 */
+var SECTION_COPY = Object.freeze({
+  overview: Object.freeze({
+    title: '概览',
+    sub: '这位角色现在有多少额度，以及它是怎么变成这样的。'
+  }),
+  store: Object.freeze({
+    title: '商店',
+    sub: '这个域里现有的货架与商品目录 —— 能不能买由规则、预算与批准各自回答。'
+  }),
+  assets: Object.freeze({
+    title: '我的资产',
+    sub: '这位角色已经拿到的东西：物品与算力额度。'
+  }),
+  requests: Object.freeze({
+    title: '待处理',
+    sub: '在等你决定的购买请求。'
+  }),
+  settings: Object.freeze({
+    title: '设置',
+    sub: '钱包与初始额度、预算限制、自主购买 —— 这三块决定这位角色能动用多少。'
+  })
+});
 var TABS = Object.freeze([
   Object.freeze({ key: TAB.OVERVIEW, label: '概览', paneId: ID.OVERVIEW_PANE, delegate: null, needsOwner: true }),
   Object.freeze({ key: TAB.STORE, label: '商店', paneId: ID.STORE_PANE, delegate: null, needsOwner: false }),
@@ -93,6 +122,12 @@ var TABS = Object.freeze([
 var TAB_KEYS = Object.freeze(TABS.map(function (t) { return t.key; }));
 function isTabKey(key) {
   return key != null && TAB_KEYS.indexOf(String(key)) >= 0;
+}
+/* 未知键**不编一句**：回退到"概览"那一组，而不是留一个空标题
+   （页签与标题不一致是这一格最容易被忽略的失效方式）。 */
+function sectionCopyOf(key) {
+  var hit = SECTION_COPY[String(key)];
+  return hit || SECTION_COPY.overview;
 }
 
 /* ══ 只读面：**八**条既有 GET，本阶段一条新路由都不加 ═══════════════
@@ -345,9 +380,22 @@ var COPY = Object.freeze({
   walletTitle: 'IB Credit',
   walletKind: 'IB 内部虚拟额度',
   walletReserved: '其中已被预留',
-  walletAbsent: '这个角色还没有额度账户',
-  walletAbsentBody: '额度账户由「设置」里的初始额度建立，一次就好。',
+  /* ── P22-22 · 未初始化**不是**"没有钱包" ──────────────────────────
+     ★ 三句话各回答一件事，顺序就是用户读到的顺序（状态 → 原因 → 下一步）：
+         walletAbsent     它现在处在哪一个系统状态（尚未完成 Initial Bootstrap）
+         walletAbsentWhy  为什么会这样 / 谁创建它 / 为什么没有创建按钮
+         walletAbsentGo   用户现在能做的那一件事
+     ★ 刻意**不**写"这个角色还没有额度账户"：那句话读起来像一次失败或一个
+       缺失的对象，而真相是这台节点还没走过一次性的初始化。也刻意**不**给
+       "手工创建钱包"的按钮 —— 界面没有这条接缝（P22-14 只有 bootstrap）。 */
+  walletBootstrapState: '尚未完成 Initial Bootstrap',
+  walletAbsent: '尚未完成 Initial Bootstrap',
+  walletAbsentWhy: '额度账户由 Economy authority 创建：走过一次初始额度发放，账户才会出现。',
+  walletAbsentNoManual: '这个账户不能手动新建 —— 界面上没有「创建钱包」这一步，只有一次性发放初始额度。',
+  walletAbsentOnce: '初始额度只发放一次，发放之后不能再补、不能再改。',
+  walletAbsentBody: '在「设置 → 钱包与初始额度」里发放这次初始额度，只能发放一次。',
   walletAbsentGo: '去设置',
+  nextStep: '下一步',
 
   budgetTitle: '预算',
   budgetAbsent: '还没有为这个角色设过预算',
@@ -1539,6 +1587,8 @@ NS.economyShellCore = Object.freeze({
   TABS: TABS,
   TAB_KEYS: TAB_KEYS,
   isTabKey: isTabKey,
+  SECTION_COPY: SECTION_COPY,
+  sectionCopyOf: sectionCopyOf,
   READS: READS,
   LIMITS: LIMITS,
   COPY: COPY,

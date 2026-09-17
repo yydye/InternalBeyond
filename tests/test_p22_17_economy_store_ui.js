@@ -653,8 +653,17 @@ section('B · 外壳：五个页签，两个既有节点留在原位');
     const overview = byId(absent.dom.doc, 'economy-shell-overview');
     const t = textOutsideTechnical(overview);
     const go = buttonsWith(overview, ['去设置']);
-    check('C9 ★★★ 钱包还没建：说的是"还没有额度账户"并给一个"去设置"，点了真的切到设置页签',
-      t.indexOf('还没有额度账户') >= 0 && go.length === 1 &&
+    /* ★ P22-22：说的是**系统状态**（"尚未完成 Initial Bootstrap"），不是
+       "没有钱包"。同时逐字要求两条产品事实在场：账户由 Economy authority
+       创建、且不提供手工创建的动作；"下一步"必须只有一个动作。
+       判定语义没变：不画 0、只给一个「去设置」、点了真的切页签。 */
+    check('C9 ★★★ 钱包未初始化：说的是"尚未完成 Initial Bootstrap"（不是"没有钱包"）' +
+      '并给一个"去设置"、没有第二个创建按钮，点了真的切到设置页签',
+      t.indexOf('尚未完成 Initial Bootstrap') >= 0 &&
+      t.indexOf('没有额度账户') < 0 &&
+      t.indexOf('Economy authority') >= 0 &&
+      t.indexOf('不能手动新建') >= 0 &&
+      go.length === 1 && buttonsWith(overview, ['创建', '新建', '新建钱包']).length === 0 &&
       (function () { go[0].click(); return absent.ui.snapshot().tab === 'settings'; })());
   })();
 

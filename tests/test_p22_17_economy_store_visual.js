@@ -742,9 +742,15 @@ const overlayReport = `(function(){
     })()`);
     await show('assets');
     const emptyA = await evaluate(metricsOf);
-    check('③-空状态 · 空库存显示一张**真的有尺寸**的 160×120 线性 SVG（不是 0×0 的占位）',
+    /* ★ P22-22：线稿被**等比缩小显示**（46px 高）以收窄空状态，因此这里判的
+       不再是绝对像素下限（140×100 是 P22-18 时的显示尺寸），而是"它真的排
+       出来了、而且是完整的 160×120 线稿、比例没被裁坏"。 */
+    check('③-空状态 · 空库存显示一张**真的有尺寸**的 160×120 线性 SVG' +
+      '（等比缩放、不是 0×0 占位、也没被裁掉）',
       !!emptyA.emptyArt && emptyA.emptyArt.vb === '0 0 160 120' &&
-      emptyA.emptyArt.w >= 140 && emptyA.emptyArt.h >= 100, emptyA.emptyArt);
+      emptyA.emptyArt.w >= 30 && emptyA.emptyArt.h >= 30 &&
+      Math.abs((emptyA.emptyArt.w / emptyA.emptyArt.h) - (160 / 120)) < 0.15,
+      emptyA.emptyArt);
     await shot('p22-17-assets-empty-desktop', true);
 
     await show('store');

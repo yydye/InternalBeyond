@@ -153,15 +153,31 @@ var FULFILLMENT_LABEL = Object.freeze({
 
 /* ══ 页签 ═══════════════════════════════════════════════════════════
    ★ 第一个是 P22-15 的页面：它**不是**本模块渲染的，本模块只负责开合
-     它的 display。paneId 为 null 的对象就是"那一块不归我画"。 */
+     它的 display。paneId 为 null 的对象就是"那一块不归我画"。
+   ★ P22-22：每一格多带一句 `intro` —— 它是**这一格看什么**的一句话，
+     由外层外壳的页签标题显示。加在这里而不是写在渲染器里，理由与其它
+     文案同款：这一层才是它唯一的出处。
+     四句话都只是对这一格既有能力的复述，没有一句是新的判定。 */
 var SECTION = Object.freeze({
   REQUESTS: 'requests', WALLET: 'wallet', BUDGET: 'budget', AUTONOMY: 'autonomy'
 });
 var SECTIONS = Object.freeze([
-  Object.freeze({ key: SECTION.REQUESTS, label: '待处理', paneId: null, configuresAnOwner: false }),
-  Object.freeze({ key: SECTION.WALLET, label: '钱包与初始额度', paneId: ID.WALLET_PANE, configuresAnOwner: true }),
-  Object.freeze({ key: SECTION.BUDGET, label: '预算限制', paneId: ID.BUDGET_PANE, configuresAnOwner: true }),
-  Object.freeze({ key: SECTION.AUTONOMY, label: '自主购买', paneId: ID.AUTONOMY_PANE, configuresAnOwner: true })
+  Object.freeze({
+    key: SECTION.REQUESTS, label: '待处理', paneId: null, configuresAnOwner: false,
+    intro: '在等你决定的购买请求。'
+  }),
+  Object.freeze({
+    key: SECTION.WALLET, label: '钱包与初始额度', paneId: ID.WALLET_PANE, configuresAnOwner: true,
+    intro: '一次性的初始额度。发放之后，这位角色才有额度账户。'
+  }),
+  Object.freeze({
+    key: SECTION.BUDGET, label: '预算限制', paneId: ID.BUDGET_PANE, configuresAnOwner: true,
+    intro: '这位角色能动用多少的上限。上限不是余额。'
+  }),
+  Object.freeze({
+    key: SECTION.AUTONOMY, label: '自主购买', paneId: ID.AUTONOMY_PANE, configuresAnOwner: true,
+    intro: '哪些购买可以不先问你。启用它不绕过审批。'
+  })
 ]);
 
 /* ══ 文案 ═══════════════════════════════════════════════════════════
@@ -199,17 +215,29 @@ var COPY = Object.freeze({
   /* 钱包与初始额度 */
   walletTitle: '钱包与初始额度',
   walletKind: '内部虚拟额度',
-  walletAbsent: '还没有 IB Credit 钱包',
-  walletAbsentBody: '初始额度只发一次，发过之后不能再加。它决定了这位角色一开始能动用多少内部额度。',
+  /* ── P22-22 · 未初始化说的是**系统状态**，不是"没有钱包" ──────────
+     ★ 旧句是"还没有 IB Credit 钱包"：它读起来像一个缺失的对象或一次失败，
+       而真相是这台节点还没走过一次性的初始额度发放。
+     ★ 三句话各司其职，顺序就是用户读到的顺序：
+         walletAbsent        这一格现在是什么状态
+         walletAbsentBody    为什么没有「创建钱包」这个按钮（谁创建它）
+         walletAbsentOnce    为什么只有一次
+     ★ 按钮与成功文案**逐字未动**（"设置初始额度"/"初始额度已设置"）：改的是
+       空状态的语义，不是这条接缝的名字 —— P22-16 的交互断言因此继续成立。 */
+  walletAbsent: '尚未完成 Initial Bootstrap',
+  walletAbsentBody: '额度账户由 Economy authority 创建，不能手动新建：发放这一次初始额度之后，账户才会出现。',
+  walletAbsentOnce: '初始额度只能发放一次，发放之后不能再补、不能再改。',
   walletAbsentInput: '初始额度',
+  /* ★ 输入框下面那一句**不重复**上面两句：这里只说"这一格只出现这一次"。 */
+  walletAbsentInputHint: '这一格只会出现这一次。',
   walletAbsentUnit: 'IB Credit',
   walletSet: '设置初始额度',
-  walletSetAsk: '确定设置？只能设置一次。',
+  walletSetAsk: '确定设置？初始额度只能发放一次。',
   walletSetNo: '再想想',
   walletJustSet: '初始额度已设置',
   walletAlreadySet: '初始额度早已设置过，这次没有改动任何东西。',
   walletBootstrapped: '初始额度已设置',
-  walletBootstrappedBody: '一次性的初始化已经用掉了，因此这里没有第二个可以设置的额度。',
+  walletBootstrappedBody: '一次性的 Initial Bootstrap 已经完成，因此这里没有第二个可以设置的额度。',
   walletAvailable: '当前可用',
   walletLedger: '账本余额',
   walletReserved: '已预留',

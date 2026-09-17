@@ -426,9 +426,15 @@ section('C · ① 初始额度：fresh 时有一个、已初始化后一个都�
 
   const wallet = panelOf(m, 'wallet');
   const text = textOf(wallet);
-  check('C1 ★★★ fresh：钱包不存在 → 明确说"还没有 IB Credit 钱包"，并给一次性初始化输入',
-    text.indexOf('还没有 IB Credit 钱包') >= 0 && !!inputByName(m.dom.doc, 'bootstrapAmount'),
-    { text: text.slice(0, 160) });
+  /* ★ P22-22：说的是**系统状态**（尚未完成 Initial Bootstrap），不是"没有
+     钱包"；并逐字要求"谁创建它"与"为什么只有一次"在场。判定语义没变：
+     仍然给一次性初始化输入框，仍然只有一个可执行的初始额度按钮。 */
+  check('C1 ★★★ fresh：尚未完成 Initial Bootstrap → 明确说"尚未完成 Initial Bootstrap"' +
+    '（不是"没有钱包"）+ 账户由 Economy authority 创建、只发放一次，并给一次性初始化输入',
+    text.indexOf('尚未完成 Initial Bootstrap') >= 0 && text.indexOf('没有 IB Credit 钱包') < 0 &&
+    text.indexOf('Economy authority') >= 0 && text.indexOf('只能发放一次') >= 0 &&
+    !!inputByName(m.dom.doc, 'bootstrapAmount'),
+    { text: text.slice(0, 200) });
 
   check('C2 ★★★ fresh：唯一的初始额度按钮需要**两步确认**（一次点击不发送任何请求）',
     (function () {

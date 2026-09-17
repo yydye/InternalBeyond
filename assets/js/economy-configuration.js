@@ -313,6 +313,11 @@ function boot() {
     resetRefs();
     host.textContent = '';
     host.appendChild(tabbar(host));
+    /* ★ P22-22：二级页签之下先说"这一格是什么"（标签 + intro 一句）。
+       待处理那一格由外层外壳负责，因此这里不为它画第二个标题 —— 同一页上
+       出现两个标题会让"我在哪儿"有两个答案。 */
+    var head = sectionHead();
+    if (head) host.appendChild(head);
     if (section !== CORE.SECTION.REQUESTS) host.appendChild(ownerbar());
     var pane = el('div', 'ecfg-panes');
     host.appendChild(pane);
@@ -374,8 +379,23 @@ function boot() {
     return bar;
   }
 
-  function ownerbar() {
-    var bar = el('div', 'ecfg-ownerbar');
+  /* ── P22-22 · 二级页签的标题（§E）────────────────────────────────
+     ★ 标签与 intro 都来自 SECTIONS（这一层唯一的文案出处），因此页签与
+       标题永远同一批词。待处理那一格由外层提供标题，这里返回 null ——
+       一个节点都不多加。 */
+  function sectionHead() {
+    var hit = null;
+    for (var i = 0; i < CORE.SECTIONS.length; i++) {
+      if (CORE.SECTIONS[i].key === section) { hit = CORE.SECTIONS[i]; break; }
+    }
+    if (!hit || hit.key === CORE.SECTION.REQUESTS) return null;
+    var box = el('div', 'ecfg-section');
+    box.appendChild(el('h3', 'ecfg-section-title', hit.label));
+    if (hit.intro) box.appendChild(el('p', 'ecfg-section-sub', hit.intro));
+    return box;
+  }
+
+  function ownerbar() {    var bar = el('div', 'ecfg-ownerbar');
     bar.id = CORE.ID.OWNER_BAR;
     var left = el('div', 'ecfg-owner-left');
     left.appendChild(el('span', 'ecfg-owner-label', CORE.COPY.ownerLabel));
@@ -755,9 +775,10 @@ function boot() {
       return c;
     }
 
-    /* 钱包不存在 = 初始额度还没有设置过。**这是唯一会出现初始化表单的
-       状态**，因此这台节点上永远只会有一个"可执行的初始额度按钮"。 */
-    c.appendChild(emptySurface('wallet', CORE.COPY.walletAbsent, CORE.COPY.walletAbsentBody));
+    /* 尚未完成 Initial Bootstrap = 初始额度还没有发放过（**不是**"钱包丢了"）。
+       **这是唯一会出现初始化表单的状态**，因此这台节点上永远只会有一个
+       "可执行的初始额度按钮"。 */
+    c.appendChild(bootstrapStateSurface());
     var source = gateSource();
     if (source) { c.appendChild(closedNotice(source)); return c; }
     if (!view.canBootstrap) { c.appendChild(closedNotice(view.gateKnown ? 'closed' : 'unknown')); return c; }
@@ -766,7 +787,7 @@ function boot() {
     if (fb) c.appendChild(fb);
     var busy = !!pending[CORE.SECTION.WALLET];
     var form = el('div', 'ecfg-form');
-    form.appendChild(field(CORE.COPY.walletAbsentInput, null, {
+    form.appendChild(field(CORE.COPY.walletAbsentInput, CORE.COPY.walletAbsentInputHint, {
       name: 'bootstrapAmount', value: '', unit: CORE.COPY.walletAbsentUnit, placeholder: '1000'
     }));
     c.appendChild(form);
@@ -790,6 +811,25 @@ function boot() {
       ]));
     }
     return c;
+  }
+
+  /* ── P22-22 · 空状态说成"系统状态"，而不是一页错误（§A/§C）───────
+     ★ 三件的顺序是刻意的：先说这一格现在是什么（一行状态），再说为什么
+       没有"创建钱包"这个按钮（谁创建、为什么只有一次），最后才是输入框。
+       一个 `role="status"` 的安静标记 + 两行短句 —— 没有警示色、没有感叹号。
+     ★ 这里**不**给第二个按钮：界面没有"手工建钱包"这条接缝。 */
+  function bootstrapStateSurface() {
+    var box = el('div', 'ecfg-state');
+    box.setAttribute('role', 'status');
+    var head = el('div', 'ecfg-state-head');
+    head.appendChild(svgOf('<rect x="4.6" y="9.2" width="14.8" height="10.2" rx="2.6"/><path d="M8.4 9.2V7.4a3.6 3.6 0 0 1 7.2 0v1.8"/>', 16, 'ecfg-state-mark'));
+    head.appendChild(el('p', 'ecfg-state-text', CORE.COPY.walletAbsent));
+    box.appendChild(head);
+    var why = el('div', 'ecfg-state-why');
+    why.appendChild(el('p', 'ecfg-state-line', CORE.COPY.walletAbsentBody));
+    why.appendChild(el('p', 'ecfg-state-line', CORE.COPY.walletAbsentOnce));
+    box.appendChild(why);
+    return box;
   }
 
   function doBootstrap() {

@@ -113,6 +113,17 @@
 .esh-card-sub{margin:3px 0 0;font-size:.74rem;letter-spacing:.05em;color:var(--content-muted)}
 .esh-card-foot{margin:0;font-size:.72rem;color:var(--content-muted)}
 
+/* ── P22-22 · 页签之下的那一行标题（"我在哪一格、这一格看什么"）─────────
+   ★ 层级只有两级：`h2` 是这一格的标题（比页签响），它下面那句是灰的。
+     页签是**控件**，标题是**位置** —— 两者用不同的字重与亮度，因此
+     "点了哪儿"与"这是哪儿"不会互相冒充（§D）。 */
+.esh-section{display:flex;flex-direction:column;gap:5px;min-width:0;
+  padding:2px 2px 0 12px;border-left:2px solid var(--glass-border-soft)}
+.esh-section-title{margin:0;font-family:var(--font-display);font-size:1.16rem;font-weight:600;
+  letter-spacing:.03em;line-height:1.3;color:var(--content-primary)}
+.esh-section-sub{margin:0;font-size:.75rem;line-height:1.72;letter-spacing:.02em;
+  color:var(--content-secondary);opacity:.88;max-width:62ch;overflow-wrap:anywhere}
+
 /* ── 钱包：一个数字 + 一句它是什么（**不**是霓虹大卡）──────────────── */
 .esh-wallet-figure{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin:2px 0 0}
 .esh-wallet-value{
@@ -226,10 +237,42 @@
 /* ── 说明 / 空状态 / 技术层 ─────────────────────────────────────────── */
 .esh-note{margin:0;font-size:.76rem;line-height:1.8;color:var(--content-secondary);max-width:56ch}
 .esh-note.is-quiet{color:var(--content-muted);font-size:.73rem}
-.esh-empty{display:flex;flex-direction:column;align-items:center;gap:9px;padding:14px 0 8px;text-align:center}
-.esh-empty-art{color:var(--content-muted);opacity:.55;line-height:0}
-.esh-empty-title{margin:0;font-size:.88rem;color:var(--content-secondary)}
-.esh-empty-body{margin:0;font-size:.74rem;line-height:1.7;color:var(--content-muted);max-width:40ch}
+/* ── P22-22 · 空状态：**安静的一条**，不是一页错误 ────────────────────
+   ★ 三处只改排版，不改字形与结构（§C/§D）：
+       ① 高度：`padding` / `gap` 一起收，线稿**等比缩小显示**（58px 高），
+          因此这一块比 P22-18 时矮三分之一以上；160×120 的 viewBox 与
+          `width`/`height` 属性**逐字没动** —— 缩的是显示尺寸，不是线稿，
+          因此图上一条线都没有被裁掉（裁掉会让它读成一个错误图标）；
+       ② 层级：标题抬起（更大、更亮、display 字），说明压低（更小、更淡、
+          行高更紧）；
+       ③ 语气：线稿再退一档（opacity .42），于是这一格读起来像系统在
+          描述自己，而不像系统在报错。 */
+.esh-empty{display:flex;flex-direction:column;align-items:center;gap:5px;
+  padding:4px 0 2px;text-align:center}
+.esh-empty-art{color:var(--content-muted);opacity:.42;line-height:0}
+.esh-empty-art svg{display:block;height:46px;width:auto;margin:0 auto}
+.esh-empty-title{margin:0;font-family:var(--font-display);font-size:.96rem;font-weight:500;
+  letter-spacing:.02em;line-height:1.5;color:var(--content-primary)}
+.esh-empty-body{margin:0;font-size:.72rem;line-height:1.62;color:var(--content-muted);max-width:44ch}
+/* ── P22-22 · "尚未完成 Initial Bootstrap"：状态在前，原因居中，下一步在尾 ──
+   ★ 它不是 alert：没有警示色、没有边框感叹号，只有一个安静的锁形标记与
+     一行状态。行的亮度分三档 —— 状态最亮、原因中间、下一步的标签最淡。 */
+.esh-bootstrap{display:flex;flex-direction:column;gap:9px;min-width:0}
+.esh-bootstrap-head{display:flex;align-items:center;gap:8px;min-width:0}
+.esh-bootstrap-mark{display:inline-flex;flex:0 0 auto;color:var(--accent-light);opacity:.85}
+.esh-bootstrap-mark svg{display:block}
+.esh-bootstrap-state{margin:0;font-family:var(--font-display);font-size:1rem;font-weight:600;
+  letter-spacing:.02em;line-height:1.4;color:var(--content-primary);overflow-wrap:anywhere}
+.esh-bootstrap-why{display:flex;flex-direction:column;gap:3px;min-width:0}
+.esh-bootstrap-line{margin:0;font-size:.74rem;line-height:1.7;color:var(--content-secondary);
+  max-width:60ch;overflow-wrap:anywhere}
+.esh-bootstrap-foot{display:flex;flex-direction:column;gap:8px;min-width:0;
+  align-items:flex-start}
+.esh-bootstrap-next{display:flex;flex-direction:column;gap:2px;min-width:0;max-width:60ch}
+.esh-bootstrap-next-label{font-size:.66rem;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--content-muted)}
+.esh-bootstrap-next-text{margin:0;font-size:.78rem;line-height:1.62;
+  color:var(--content-secondary);overflow-wrap:anywhere}
 .esh-technical-box{display:flex;flex-direction:column;gap:6px}
 .esh-technical-toggle{appearance:none;background:none;border:0;cursor:pointer;padding:0;
   font-family:var(--font-ui);font-size:.71rem;letter-spacing:.06em;color:var(--content-muted);text-align:left}
@@ -280,6 +323,8 @@ body:not(.theme-infernal) .esh-ownerbar{background:rgba(255,255,255,.40);border-
 body:not(.theme-infernal) .esh-owner-select{background-color:rgba(255,255,255,.52);border-color:rgba(170,205,242,.34)}
 body:not(.theme-infernal) .esh-btn-primary{background:color-mix(in srgb,var(--accent) 13%,rgba(255,255,255,.5))}
 body:not(.theme-infernal) .esh-empty-art{color:#5a7ba6}
+body:not(.theme-infernal) .esh-section{border-left-color:rgba(170,205,242,.42)}
+body:not(.theme-infernal) .esh-bootstrap-mark{color:#3f6fa8}
 body:not(.theme-infernal) .esh-technical{background:rgba(120,160,210,.10)}
 body.theme-infernal .esh-card{background:var(--glass-bg-elevated)}
 body.theme-infernal .esh-empty-art{color:#8fa8c8}
@@ -303,6 +348,11 @@ body.theme-infernal .esh-empty-art{color:#8fa8c8}
   .esh-tab-rail{left:10px;right:10px}
   .esh-card{padding:15px 14px 13px 16px;gap:11px;border-radius:var(--radius-card)}
   .esh-card-title{font-size:.98rem}
+  .esh-section{padding-left:10px}
+  .esh-section-title{font-size:1.06rem}
+  .esh-section-sub{font-size:.72rem}
+  .esh-empty{padding:3px 0 2px}
+  .esh-empty-art svg{height:42px}
   .esh-wallet-value{font-size:1.5rem}
   .esh-ownerbar{padding:9px 12px}
   .esh-owner-select{width:100%}

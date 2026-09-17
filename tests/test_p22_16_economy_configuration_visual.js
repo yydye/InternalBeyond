@@ -616,9 +616,10 @@ const metricsOf = `(function(){
     await new Promise(r => setTimeout(r, 800));
     await evaluate(dismissOverlays);
     const wFresh = await evaluate(metricsOf);
-    check('③-3 ★★★ 未初始化：只有一个初始额度输入框 + 一个主按钮，页面说"还没有 IB Credit 钱包"',
+    check('③-3 ★★★ 未初始化：只有一个初始额度输入框 + 一个主按钮，页面说"尚未完成 Initial Bootstrap"',
       wFresh.bootstrapInput === true && wFresh.primaryButtons === 1 &&
-      wFresh.bodyText.indexOf('还没有 IB Credit 钱包') >= 0, wFresh);
+      wFresh.bodyText.indexOf('尚未完成 Initial Bootstrap') >= 0 &&
+      wFresh.bodyText.indexOf('没有 IB Credit 钱包') < 0, wFresh);
     check('③-4 ★★ 手机上未初始化的钱包也不横向溢出', wFresh.overflowX <= 1, wFresh.overflowX);
     await shot('p22-16-wallet-fresh-mobile', true);
 

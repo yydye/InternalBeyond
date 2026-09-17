@@ -51,6 +51,16 @@
   transition:opacity var(--motion-normal) var(--transition),transform var(--motion-normal) var(--transition)}
 .ecfg-tab.is-active .ecfg-tab-rail{opacity:.9;transform:scaleX(1)}
 
+/* ── P22-22 · 二级页签之下的标题（"这一格是什么"）────────────────────
+   ★ 页签是**控件**、标题是**位置**：标题更大更亮，那句 intro 更小更淡。
+     两级的亮度差就是"我在哪儿"这个问题的唯一答案。 */
+.ecfg-section{display:flex;flex-direction:column;gap:4px;min-width:0;
+  margin:0 0 var(--space-3);padding-left:12px;border-left:2px solid var(--border-soft)}
+.ecfg-section-title{margin:0;font-family:var(--font-display);font-size:1.06rem;font-weight:600;
+  letter-spacing:.03em;line-height:1.3;color:var(--content-primary)}
+.ecfg-section-sub{margin:0;font-size:.74rem;line-height:1.72;color:var(--content-secondary);
+  opacity:.88;max-width:62ch;overflow-wrap:anywhere}
+
 /* ── 配置对象条 ───────────────────────────────────────────────────────
    钱与规则都属于某个角色，所以"配谁"是一个必须被说出来的输入。 */
 .ecfg-ownerbar{display:flex;align-items:center;justify-content:space-between;gap:var(--space-4);
@@ -294,12 +304,33 @@
 .ecfg-technical-list li{line-height:1.7;overflow-wrap:anywhere}
 
 /* ── 空状态 / 骨架 ───────────────────────────────────────────────── */
-.ecfg-empty{display:flex;flex-direction:column;align-items:center;gap:6px;padding:10px 0 4px;text-align:center}
-.ecfg-empty-art{color:var(--accent-light);opacity:.42;line-height:0}
-.ecfg-empty-art svg{display:block}
-.ecfg-empty-title{margin:0;font-size:.88rem;color:var(--content-primary)}
-.ecfg-empty-body{margin:0;font-size:.74rem;line-height:1.78;color:var(--content-secondary);max-width:52ch}
-.ecfg-card-plain .ecfg-empty-art{opacity:.38}
+/* ── P22-22 · 空状态：**安静的一条**，不是一页错误 ────────────────────
+   ★ 高度：padding / gap 一起收，线稿**等比缩小显示**（58px 高），因此
+     "还没有角色"这一类空状态比 P22-18 时矮三分之一以上；160×120 的
+     viewBox 与 width/height 属性逐字没动 —— 缩的是显示尺寸，图上一条
+     线都没有被裁掉。
+   ★ 层级：标题抬起（display 字、更亮），说明压低（更小更淡）。 */
+.ecfg-empty{display:flex;flex-direction:column;align-items:center;gap:5px;
+  padding:4px 0 2px;text-align:center}
+.ecfg-empty-art{color:var(--accent-light);opacity:.38;line-height:0}
+.ecfg-empty-art svg{display:block;height:46px;width:auto;margin:0 auto}
+.ecfg-empty-title{margin:0;font-family:var(--font-display);font-size:.96rem;font-weight:500;
+  letter-spacing:.02em;line-height:1.5;color:var(--content-primary)}
+.ecfg-empty-body{margin:0;font-size:.72rem;line-height:1.62;color:var(--content-muted);max-width:52ch}
+.ecfg-card-plain .ecfg-empty-art{opacity:.34}
+
+/* ── P22-22 · "尚未完成 Initial Bootstrap"：状态 → 原因 → 输入 ─────────
+   ★ 它不是 alert：`role="status"`、没有警示色、没有感叹号，只有一个安静
+     的锁形标记与一行状态字。行的亮度分两档（状态最亮、原因中间）。 */
+.ecfg-state{display:flex;flex-direction:column;gap:7px;min-width:0}
+.ecfg-state-head{display:flex;align-items:center;gap:8px;min-width:0}
+.ecfg-state-mark{display:inline-flex;flex:0 0 auto;color:var(--accent-light);opacity:.85}
+.ecfg-state-mark svg{display:block}
+.ecfg-state-text{margin:0;font-family:var(--font-display);font-size:1.02rem;font-weight:600;
+  letter-spacing:.02em;line-height:1.4;color:var(--content-primary);overflow-wrap:anywhere}
+.ecfg-state-why{display:flex;flex-direction:column;gap:3px;min-width:0}
+.ecfg-state-line{margin:0;font-size:.74rem;line-height:1.7;color:var(--content-secondary);
+  max-width:64ch;overflow-wrap:anywhere}
 
 .ecfg-skeleton{display:flex;flex-direction:column;gap:10px}
 .ecfg-sk{height:44px;border-radius:var(--radius-card);background:var(--glass-bg-ambient);position:relative;overflow:hidden}
@@ -379,6 +410,13 @@ body.theme-infernal .ecfg-empty-art{color:#8fa8c8}
   .ecfg-seg{width:100%;justify-content:space-between}
   .ecfg-seg-btn{flex:1 1 auto;text-align:center;padding:6px 8px}
   #page-economy{padding-bottom:calc(80px + env(safe-area-inset-bottom,0px))}
+  /* P22-22：窄屏上标题与空状态再收一档，页签那一行不被推下去。 */
+  .ecfg-section{padding-left:10px}
+  .ecfg-section-title{font-size:.98rem}
+  .ecfg-section-sub{font-size:.71rem}
+  .ecfg-empty{padding:3px 0 2px}
+  .ecfg-empty-art svg{height:42px}
+  .ecfg-state-text{font-size:.96rem}
 }
 @media (max-width:380px){
   .ecfg-card-sub,.ecfg-note{font-size:.7rem}

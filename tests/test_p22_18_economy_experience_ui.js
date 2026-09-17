@@ -358,9 +358,18 @@ check('A1 ★★★★ 概览里八个块都在（钱包 / 时间线 / 经济活
       .every(t => titles.indexOf(t) >= 0);
   })(), find(overview(), 'esh-card-title').map(n => n.textContent));
 
-check('A2 ★★★ 没有新增页面/页签：外层仍然是五个，而且概览就是第一格',
-  m.core.TABS.length === 5 && m.core.TABS[0].key === 'overview' &&
-  m.dom.doc.getElementById('economy-shell').children.length === 3);
+check('A2 ★★★ 没有新增页面/页签：外层仍然是五个，而且概览就是第一格；' +
+  '外壳只有页签 / 这一格的标题 / （归属条）/ 面板四件（P22-22 多的那件只是标题）',
+  (function () {
+    const kids = Array.prototype.slice.call(m.dom.doc.getElementById('economy-shell').children);
+    const cls = k => String(k.className || '').split(/\s+/);
+    return m.core.TABS.length === 5 && m.core.TABS[0].key === 'overview' &&
+      kids.length === 4 &&
+      cls(kids[0]).indexOf('esh-tabs') >= 0 &&
+      cls(kids[1]).indexOf('esh-section') >= 0 &&
+      cls(kids[3]).indexOf('esh-panes') >= 0 &&
+      kids.filter(k => cls(k).indexOf('esh-panes') >= 0).length === 1;
+  })(), Array.prototype.slice.call(m.dom.doc.getElementById('economy-shell').children).map(k => k.className));
 
 check('A3 ★★★★ 归属只读一次：所有带归属的读面都发的是同一个 ownerId，' +
   '而且 change log 的读面**带上了** ownerId 与 order=desc（作用域与方向都在请求上）',
@@ -411,8 +420,11 @@ await (async function () {
   }));
   await settle();
   const t = bodyText(absent.dom.doc.getElementById('economy-shell-overview'), true);
-  check('B3 ★★★ 账户不存在：说"还没有额度账户"并给「去设置」，而不是画一个 0',
-    t.indexOf('还没有额度账户') >= 0 && t.indexOf('去设置') >= 0 && t.indexOf('12,450.00') < 0);
+  /* ★ P22-22：这一格说的是**系统状态**（尚未完成 Initial Bootstrap），
+     不是"没有钱包"。判定语义没变：不画 0、给「去设置」。 */
+  check('B3 ★★★ 尚未完成 Initial Bootstrap：说"尚未完成 Initial Bootstrap"并给「去设置」，而不是画一个 0',
+    t.indexOf('尚未完成 Initial Bootstrap') >= 0 && t.indexOf('没有额度账户') < 0 &&
+    t.indexOf('去设置') >= 0 && t.indexOf('12,450.00') < 0);
 })();
 
 /* ══ C · 时间线四态（§12-3）════════════════════════════════════════ */

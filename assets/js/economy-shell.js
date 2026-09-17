@@ -444,6 +444,10 @@ function boot() {
     refreshOwners();
     host.textContent = '';
     host.appendChild(tabbar());
+    /* ★ P22-22：页签之下、归属之上，先写上"这是哪一格、这一格看什么"。
+       它跟着当前页签走（`render()` 本来就在切页签时重画），因此页签与
+       标题永远同一批词。 */
+    host.appendChild(sectionHead());
     if (tabNeedsOwner()) host.appendChild(ownerbar());
     var panes = el('div', 'esh-panes');
     host.appendChild(panes);
@@ -551,8 +555,20 @@ function boot() {
     return bar;
   }
 
-  function paneOf(t) {
-    var pane = el('div', 'esh-pane');
+  /* ── P22-22 · 每格的标题与一句说明（§E）──────────────────────────
+     ★ 它回答的是"我现在在哪一格、这一格看什么"。此前这一层只有一排页签，
+       下面直接是卡片 —— 空状态时整页就只剩一个空盒子，读起来像一页错误。
+     ★ 文本**全部**来自纯层的 SECTION_COPY，而且标题与页签同词：这一层
+       不建第二份文案表，也不猜一个标题。 */
+  function sectionHead() {
+    var copy = CORE.sectionCopyOf(tab);
+    var box = el('header', 'esh-section');
+    box.appendChild(el('h2', 'esh-section-title', copy.title));
+    box.appendChild(el('p', 'esh-section-sub', copy.sub));
+    return box;
+  }
+
+  function paneOf(t) {    var pane = el('div', 'esh-pane');
     pane.id = t.paneId;
     pane.setAttribute('role', 'tabpanel');
     pane.setAttribute('aria-labelledby', CORE.ID.TABS);
@@ -987,19 +1003,15 @@ function boot() {
     var w = view.wallet;
     var c = card('credit', CORE.COPY.walletTitle, CORE.COPY.walletKind);
     /* ★ 三种形态各有各的话：
-         ① 账户不存在 —— 不画数字格，给一句"还没有额度账户" + 去设置；
-         ② 账户在、余额不可信（COLD / DEGRADED）—— 画**破折号**而不是 0，
+         ① 尚未完成 Initial Bootstrap —— 说清"这是哪一个系统状态"，再给
+            两件产品事实（谁创建它、为什么没有创建按钮），最后才是"下一步"；
+        ② 账户在、余额不可信（COLD / DEGRADED）—— 画**破折号**而不是 0，
             下面一句解释为什么这里没有数字；
-         ③ 余额可信 —— 权威的那个数字。
+        ③ 余额可信 —— 权威的那个数字。
        ②保留数字格是刻意的：卡片高度不跳，而且"这里本该有一个数字，只是
        现在读不到"比"这一格不存在"更准确。 */
     if (w.absent) {
-      c.appendChild(note(w.note || CORE.COPY.walletAbsent, 'is-quiet'));
-      var act = el('div', 'esh-actions');
-      act.appendChild(goToButton(CORE.COPY.walletAbsentGo, CORE.TAB.SETTINGS));
-      c.appendChild(act);
-      c.appendChild(assetOwnerLine());
-      c.appendChild(walletTechnical(w));
+      c.appendChild(walletBootstrapSurface(w));
       return c;
     }
     var fig = el('div', 'esh-wallet-figure');
@@ -1018,6 +1030,40 @@ function boot() {
     c.appendChild(assetOwnerLine());
     c.appendChild(walletTechnical(w));
     return c;
+  }
+
+  /* ── P22-22 · "尚未完成 Initial Bootstrap" 这一格的形态（§A/§B）────
+     ★ 它读起来必须像一个**系统状态**，不是一页错误：一个安静的状态标记
+       （`role="status"`，不是 alert），三行短句，然后才是"下一步"。
+     ★ 三行各回答一个问题，顺序固定：
+         状态 —— 这一格现在是什么（尚未完成 Initial Bootstrap）
+         原因 —— 谁创建额度账户 / 为什么没有"创建"按钮 / 为什么只能发一次
+         下一步 —— 用户现在能做的那一件事
+     ★ **没有**第二个按钮：这一格的动作只有一个（去设置），因为 canonical
+       到今天为止没有"人类手工建钱包"这条接缝。 */
+  function walletBootstrapSurface(w) {
+    var box = el('div', 'esh-bootstrap');
+    box.setAttribute('role', 'status');
+    var head = el('div', 'esh-bootstrap-head');
+    head.appendChild(svgOf(MARK.lock, 16, 'esh-bootstrap-mark'));
+    head.appendChild(el('p', 'esh-bootstrap-state', CORE.COPY.walletBootstrapState));
+    box.appendChild(head);
+    var why = el('div', 'esh-bootstrap-why');
+    why.appendChild(el('p', 'esh-bootstrap-line', CORE.COPY.walletAbsentWhy));
+    why.appendChild(el('p', 'esh-bootstrap-line', CORE.COPY.walletAbsentNoManual));
+    box.appendChild(why);
+    var foot = el('div', 'esh-bootstrap-foot');
+    var next = el('div', 'esh-bootstrap-next');
+    next.appendChild(el('span', 'esh-bootstrap-next-label', CORE.COPY.nextStep));
+    next.appendChild(el('p', 'esh-bootstrap-next-text', CORE.COPY.walletAbsentBody));
+    foot.appendChild(next);
+    var act = el('div', 'esh-actions');
+    act.appendChild(goToButton(CORE.COPY.walletAbsentGo, CORE.TAB.SETTINGS));
+    foot.appendChild(act);
+    box.appendChild(foot);
+    box.appendChild(assetOwnerLine());
+    box.appendChild(walletTechnical(w));
+    return box;
   }
   function recentChangeLine() {
     var box = el('div', 'esh-recent');
@@ -1042,12 +1088,52 @@ function boot() {
     return el('p', 'esh-card-foot', picked ? picked.label : CORE.COPY.ownerEmpty);
   }
   function walletTechnical(w) {
-    return technical([
+    return technical(walletTechnicalLines(w), 'wallet');
+  }
+  /* ── P22-22 · 技术说明的四行（§B）──────────────────────────────────
+     ★ 默认折叠，因此它**不占**这一格的高度；展开才看得见。
+     ★ 四行各回答一件底层的事，而且是用户自己要不要看才看的：
+         Home Node token —— **只说配没配、多长**，绝不写它的值（P5 契约：
+                            凭据不进正文、不进导出、不进日志）；
+         endpoint        —— 这一页读的是哪一台本机节点（默认 127.0.0.1:23118，
+                            可被 localStorage 覆盖，因此读实际的而不是写死的）；
+         runtime         —— 浏览器侧的传输形态（协议头与请求模式），
+                            以及这一页有没有走 index.html 之外的构建步骤（没有）。
+     ★ 取不到就写"（这一层读不到）"，**不猜**一个看起来合理的值。 */
+  function walletTechnicalLines(w) {
+    var lines = [
       w.state == null ? 'wallet: (未读到)' : ('state = ' + w.state),
       w.currency == null ? 'currency = (未读到)' : ('currency = ' + w.currency),
       CORE.COPY.canonicalCodes + '（钱包）：' + codeList(CORE.WALLET_STATE_FACE),
-      CORE.COPY.readPaths + '：' + CORE.readPathList().join(' · ')
-    ]);
+      CORE.COPY.readPaths + '：' + CORE.readPathList().join(' · '),
+      technicalEnvLine(),
+      technicalTokenLine(),
+      technicalRuntimeLine()
+    ];
+    return lines;
+  }
+  function technicalEnvLine() {
+    var base = null;
+    try { if (typeof NS.ibHomeNodeBase === 'function') base = NS.ibHomeNodeBase(); } catch (e) { base = null; }
+    if (!base) return 'endpoint：这一层读不到本机节点地址（传输实现可能没加载）。';
+    return 'endpoint：' + String(base);
+  }
+  /* ★ 令牌本身一个字符都不出现：可读的长度与"配没配"足够排查，
+     而值从这里流出去就会进截图、进导出。 */
+  function technicalTokenLine() {
+    var token = null;
+    try { if (typeof NS.ibHomeNodeToken === 'function') token = NS.ibHomeNodeToken(); } catch (e) { token = null; }
+    if (token == null) return 'Home Node token：这一层读不到（传输实现可能没加载）。';
+    var value = String(token);
+    return value
+      ? ('Home Node token：已配置（' + value.length + ' 个字符，值不在这里显示）。')
+      : 'Home Node token：没有配置（本机节点因此按无凭据对待）。';
+  }
+  function technicalRuntimeLine() {
+    var mode = null;
+    try { if (typeof NS.ibHomeNodeMode === 'function') mode = NS.ibHomeNodeMode(); } catch (e) { mode = null; }
+    return 'runtime：浏览器页面直接读本机节点（X-IB-Protocol: 1' +
+      (mode ? ('，模式 = ' + String(mode)) : '') + '）；这一页没有额外的构建产物。';
   }
 
   function budgetCard() {
