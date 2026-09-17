@@ -82,7 +82,169 @@ function json(res) { try { return JSON.parse(res.body); } catch (e) { return nul
     await check('serves the GUI shell at / without a token', async () => {
       const r = await request(port, '/');
       assert.strictEqual(r.status, 200);
-      assert.ok(r.body.indexOf('InternalBeyond Release Builder') >= 0, 'the shell must render');
+      assert.ok(r.body.indexOf('InternalBeyond') >= 0 && /Release Builder/.test(r.body),
+        'the shell must render');
+    });
+
+    await check('the GUI shell carries the screen the workflow needs, and no inline script', async () => {
+      const r = await request(port, '/');
+      /* The R2 screen is judged on what it shows: a four-stage pipeline, the
+         status facts, the artifact block, the notes editor and the separate
+         publish entry point. A missing id here is a missing screen element, so
+         this is a contract on the shipped markup, not a style preference. */
+      for (const id of ['pipeline', 'flow-steps', 'facts', 'card-result', 'artifact', 'alerts',
+        'btn-check', 'btn-build', 'btn-open-dist', 'btn-notes', 'btn-publish', 'notes-modal',
+        'notes-text', 'publish-modal', 'publish-confirm', 'logbar-body']) {
+        assert.ok(r.body.indexOf('id="' + id + '"') >= 0, 'the shell has no #' + id);
+      }
+      assert.ok(!/<script(?![^>]*\bsrc=)[^>]*>[\s\S]*?<\/script>/i.test(r.body),
+        'the page carries an inline script; the boot token must never be inlined into markup');
+    });
+
+    await check('the notes editor writes only the canonical release-notes file, and nothing else', async () => {
+      /* The canonical path is the one lib/publish.js hands to `gh release
+         create --notes-file`; the GUI editor must reach exactly that file and
+         no other. Everything below is asserted against the REAL checkout. */
+      const rel = 'docs/release-notes/1.0.6.md';
+      const abs = path.join(fx.dir, rel);
+
+      /* The path is a function of the target, so the target must be set first —
+         exactly as the GUI does it before it offers the editor at all. */
+      await request(port, '/api/options?token=' + token, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: { target: '1.0.6' }
+      });
+
+      const pre = json(await request(port, '/api/notes?token=' + token));
+      assert.strictEqual(pre.ok, true, 'GET must answer: ' + JSON.stringify(pre));
+      assert.strictEqual(pre.rel, rel, 'the canonical path is derived, not supplied by the caller');
+      assert.strictEqual(pre.exists, true, 'the fixture ships notes for 1.0.6');
+      assert.ok(pre.content.indexOf('1.0.6') >= 0, 'the editor must read the real file');
+
+      /* A browser textarea posts CRLF; the file on disk must still be LF so the
+         manifest's `notes` and the file can never differ by line endings. */
+      const text = '# InternalBeyond 1.0.6\n\n第二行。\n';
+      const w = json(await request(port, '/api/notes?token=' + token, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: { content: text.replace(/\n/g, '\r\n') }
+      }));
+      assert.strictEqual(w.ok, true, 'write failed: ' + JSON.stringify(w));
+      assert.strictEqual(w.rel, rel);
+      assert.strictEqual(w.created, false);
+      const onDisk = fs.readFileSync(abs, 'utf8');
+      assert.strictEqual(onDisk, text, 'the file must be written as-is with LF endings: ' + JSON.stringify(onDisk));
+      assert.ok(onDisk.indexOf('\r') < 0, 'CRLF must never reach the canonical notes file');
+
+      /* Deleting the target's notes must be reported as "not written yet", and
+         a fresh write must CREATE the file rather than fail. */
+      fs.rmSync(abs);
+      const gone = json(await request(port, '/api/notes?token=' + token));
+      assert.strictEqual(gone.exists, false);
+      const created = json(await request(port, '/api/notes?token=' + token, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: { content: '# created by the GUI\n' }
+      }));
+      assert.strictEqual(created.created, true, 'a missing file must be created: ' + JSON.stringify(created));
+      assert.strictEqual(fs.readFileSync(abs, 'utf8'), '# created by the GUI\n');
+
+      /* No version, no path: the caller cannot name a file of its own. */
+      await request(port, '/api/options?token=' + token, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: { target: '' }
+      });
+      const noTarget = json(await request(port, '/api/notes?token=' + token));
+      assert.strictEqual(noTarget.ok, false);
+      assert.strictEqual(noTarget.error, 'bad-target');
+
+      await request(port, '/api/options?token=' + token, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: { target: '../../VERSION' }
+      });
+      const traversal = json(await request(port, '/api/notes?token=' + token, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: { content: 'x\n' }
+      }));
+      assert.strictEqual(traversal.ok, false, 'a path-shaped target must be refused');
+      assert.strictEqual(fs.readFileSync(path.join(fx.dir, 'VERSION'), 'utf8').trim(), '1.0.5',
+        'VERSION must be untouched');
+
+      await request(port, '/api/options?token=' + token, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: { target: '1.0.6' }
+      });
+      const tooBig = json(await request(port, '/api/notes?token=' + token, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: { content: 'x'.repeat(300 * 1024) }
+      }));
+      assert.strictEqual(tooBig.error, 'notes-too-large', 'the editor must not be a way to write a huge file');
+    });
+
+    await check('opening a folder takes a fixed keyword, never a path', async () => {
+      /* A path-shaped argument is refused outright: the GUI can ask to open the
+         dist folder or this release's log, and can ask for nothing else. */
+      const bad = await request(port, '/api/reveal?token=' + token, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: { what: '../../' }
+      });
+      assert.strictEqual(bad.status, 400, 'only the two fixed keywords are accepted');
+      const missing = await request(port, '/api/reveal?token=' + token, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: { what: 'dist' }
+      });
+      assert.strictEqual(missing.status, 200);
+      const m = json(missing);
+      /* Either dist does not exist yet (the honest "build first" answer) or the
+         open itself was attempted; both are fine, a crash is not. */
+      assert.ok(m.ok === true || m.error === 'dist-missing', 'unexpected: ' + JSON.stringify(m));
+    });
+
+    await check('the notes editor cannot be aimed at a path the caller chose', async () => {
+      /*
+       * Two facts, both about the same guarantee: the file the editor writes is
+       * a function of (resolved root, target version) and of nothing else.
+       *
+       * The fixture is disposed BEFORE the server is started, so the path handed
+       * to discovery cannot resolve to anything. Discovery may then legitimately
+       * walk up and find a different checkout (in this suite that is the real
+       * one), which is exactly why this test never writes a path the caller
+       * picked: it writes through the endpoint's own `rel`, and removes it again.
+       */
+      const fxGone = fixture.create({ version: '1.0.5', target: '1.0.6' });
+      const gone = fxGone.dir;
+      fixture.disposeAll([fxGone]);
+      assert.strictEqual(fs.existsSync(gone), false, 'the fixture must really be gone');
+
+      const apiNoRepo = serverMod.start({ root: gone, port: 0 });
+      const infoNoRepo = await apiNoRepo.ready;
+      try {
+        assert.notStrictEqual(infoNoRepo.root, gone, 'a deleted path must never be accepted as the root');
+
+        /* 1. No target version means no path, which means no write — the same
+              answer whether or not a checkout was found. */
+        const noTarget = json(await request(infoNoRepo.port, '/api/notes?token=' + apiNoRepo.token, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: { content: '# x\n' }
+        }));
+        assert.strictEqual(noTarget.ok, false);
+        assert.strictEqual(noTarget.error, 'bad-target');
+        assert.strictEqual(fs.existsSync(path.join(gone, 'docs')), false, 'nothing may be created where we pointed');
+
+        /* 2. With a target, the write lands on the resolved root's canonical
+              path — the one the endpoint reports, not one the request supplied. */
+        await request(infoNoRepo.port, '/api/options?token=' + apiNoRepo.token, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: { target: '1.0.6' }
+        });
+        const r = json(await request(infoNoRepo.port, '/api/notes?token=' + apiNoRepo.token, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: { content: '# probe\n' }
+        }));
+        if (infoNoRepo.root === null) {
+          assert.strictEqual(r.ok, false, 'no root, no write');
+          assert.strictEqual(r.error, 'no-repo');
+        } else {
+          assert.strictEqual(r.ok, true, 'unexpected response: ' + JSON.stringify(r));
+          assert.strictEqual(r.rel, 'docs/release-notes/1.0.6.md', 'the canonical relative path is fixed');
+          const landed = path.join(infoNoRepo.root, r.rel);
+          assert.ok(fs.existsSync(landed), 'the write must land under the resolved root');
+          const pointed = path.join(gone, 'docs', 'release-notes', '1.0.6.md');
+          assert.ok(!fs.existsSync(pointed) || fs.readFileSync(pointed, 'utf8').indexOf('probe') < 0,
+            'the write must not land where the caller pointed');
+          fs.rmSync(landed);
+        }
+      } finally {
+        apiNoRepo.server.close();
+      }
     });
 
     await check('every /api/ call without the token is refused', async () => {

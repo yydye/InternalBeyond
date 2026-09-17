@@ -21,6 +21,7 @@ const path = require('path');
 
 const canonical = require('./canonical.js');
 const plan = require('./plan.js');
+const notes = require('./notes.js');
 const runLog = require('./log.js');
 const checkStage = require('./check.js');
 const buildStage = require('./build.js');
@@ -34,6 +35,22 @@ const { STAGE_STATUS, STATUS } = plan;
 /* The checksums record the canonical build writes beside the installer
    (docs/RELEASE.md §1). It is a record for humans; clients never read it. */
 const SUMS_FILE = 'SHA256SUMS' + '.txt';
+
+/*
+ * The facts the presentation layer is allowed to see.
+ *
+ * This is a WHITELIST, not a projection of everything: `results[name].facts` is
+ * an internal channel between stages, and only the named keys below are needed
+ * to answer "what is the state of this release?" on screen. Everything here is
+ * already computed by a stage — nothing in this list is recomputed, and no
+ * status is derived from it (statuses come from the log roll-up, as always).
+ */
+const RELEASE_FACTS = [
+  'artifact', 'threeWayOk', 'reread',
+  'buildExitCode', 'buildMs', 'rolledBack',
+  'dirtyPaths', 'notesFile', 'versionPlan', 'published', 'probeSkipped',
+  'distManifestVersion', 'readmeVersion', 'sourceVersion', 'expectedAsset'
+];
 
 function emptyStages() {
   const out = {};
@@ -66,6 +83,9 @@ class Runner {
     this.startedAt = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
     this.running = null;      /* { stage, abort:AbortController } */
     this.results = {};        /* stage → { status, blockers, facts } */
+    /* Whitelisted, accumulated, read-only release facts for the presentation
+       layer. Never used to decide anything: statuses come from the log. */
+    this.releaseFacts = { facts: {} };
     this.lastError = null;
     this.attempted = { BUILD: false, VERIFY: false, SEAL: false, PUBLISH: false };
     this.version = null;
@@ -105,6 +125,25 @@ class Runner {
 
   configured() {
     return !!(this.repo && this.options.target);
+  }
+
+  /**
+   * Throw away everything a previous run produced and start clean, keeping the
+   * open checkout. One method, so the server can never reset half the state:
+   * a stale `releaseFacts` after a RESET would let the GUI show a SEAL result
+   * from a run the user just discarded.
+   */
+  resetRun() {
+    const fresh = new Runner({ root: this.root });
+    this.stages = fresh.stages;
+    this.results = {};
+    this.releaseFacts = fresh.releaseFacts;
+    this.attempted = fresh.attempted;
+    this.log = fresh.log;
+    this.running = null;
+    this.lastError = null;
+    this.versionAtBuildStart = null;
+    return this;
   }
 
   setOptions(patch) {
@@ -183,7 +222,7 @@ class Runner {
        decided once, here, and carried in the context for both stages. */
     const notesTarget = String(this.options.target || '').trim();
     ctx.notesFile = notesTarget
-      ? path.join(this.repo.root, 'docs', 'release-notes', notesTarget + '.md')
+      ? notes.pathFor(this.repo.root, notesTarget)
       : '';
     ctx.notesFileExists = ctx.notesFile ? require('fs').existsSync(ctx.notesFile) : false;
 
@@ -211,6 +250,20 @@ class Runner {
     }
 
     this.results[name] = res;
+    /*
+     * Facts are accumulated per stage but merged across stages: BUILD's exit
+     * code must not be forgotten just because VERIFY ran afterwards. Only the
+     * whitelisted keys (RELEASE_FACTS) ever leave this process, and only the
+     * presentation layer reads them.
+     */
+    const prevFacts = (this.releaseFacts && this.releaseFacts.facts) || {};
+    const merged = Object.assign({}, prevFacts);
+    for (const k of RELEASE_FACTS) {
+      if (!Object.prototype.hasOwnProperty.call(res.facts || {}, k)) continue;
+      const v = res.facts[k];
+      if (v !== undefined) merged[k] = v;
+    }
+    this.releaseFacts = { facts: merged };
     /*
      * A stage that produced WARNINGS still succeeded: it ran, it measured, and
      * it found nothing that invalidates the release — but a human has to read
@@ -314,7 +367,7 @@ class Runner {
 
     const bump = buildStage.planBump(repo.root, current, target);
     const buildArgs = buildStage.canonicalBuildArgs(repo, {
-      notesFile: path.join(repo.root, 'docs', 'release-notes', target + '.md'),
+      notesFile: notes.pathFor(repo.root, target),
       minimumVersion: o.minimumVersion
     });
     const envMod = require('./env.js');
@@ -424,8 +477,8 @@ class Runner {
       publishActions: publishPlan.actions.map(function (a) { return { id: a.id, command: a.command, irreversible: a.irreversible }; }),
       publishBlockers: publishPlan.blockers,
       publishFingerprint: publishPlan.fingerprint,
-      notesFile: path.relative(repo.root, path.join(repo.root, 'docs', 'release-notes', target + '.md')).split(path.sep).join('/'),
-      notesFileExists: require('fs').existsSync(path.join(repo.root, 'docs', 'release-notes', target + '.md')),
+      notesFile: notes.relFor(repo.root, target),
+      notesFileExists: require('fs').existsSync(notes.pathFor(repo.root, target)),
       text: lines.join('\n')
     };
   }
@@ -437,15 +490,26 @@ class Runner {
     const statuses = {};
     for (const s of plan.STAGES) statuses[s] = this.stages[s];
     const stateForTop = { stages: statuses, blockers: this.log.blockers() };
+    const target = String(this.options.target || '').trim();
+    const notesAbs = notes.pathFor(this.root, target);
     return {
       tool: 'InternalBeyond Release Builder',
-      toolVersion: 'R1',
+      toolVersion: 'R2',
       describe: desc,
       options: this.options,
       stages: statuses,
       status: plan.topStatus(stateForTop),
       running: this.running ? { stage: this.running.stage, dryRun: this.running.dryRun } : null,
       attempted: this.attempted,
+      /* Read-only release facts. `notes` is what the GUI needs to offer an
+         editor for the canonical file without inventing its own path rule. */
+      facts: this.releaseFacts.facts,
+      notes: {
+        target: target,
+        path: notesAbs ? path.relative(this.root, notesAbs).split(path.sep).join('/') : '',
+        file: notesAbs,
+        editing: false
+      },
       log: logView,
       results: Object.keys(this.results).reduce((acc, k) => {
         const r = this.results[k];

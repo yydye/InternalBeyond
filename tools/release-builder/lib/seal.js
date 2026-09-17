@@ -23,11 +23,20 @@ const path = require('path');
 const crypto = require('crypto');
 
 const plan = require('./plan.js');
+/* Required under a distinct name: this file already uses `notes` for the note
+   TEXT it folds into a regenerated manifest, and shadowing the path rule with
+   it is exactly how the two would drift apart. */
+const notesPath = require('./notes.js');
 const { STAGE_STATUS } = plan;
 
-/* Directories under the repository root that are ALLOWED to mention dist/. */
+/* Directories under the repository root that are ALLOWED to mention dist/.
+   `release-builder-runtime` is the tool's own built copy (build.js writes it),
+   i.e. a build artifact exactly like dist/ — not product code that would break
+   if the dist layout changed. Scanning it would make the builder fail its own
+   layout gate on its own output. */
 const LAYOUT_DEP_SKIP_DIRS = new Set([
-  '.git', 'node_modules', 'dist', 'Economy-v1-release', '.dsh-research', '.venv-vision',
+  '.git', 'node_modules', 'dist', 'release-builder-runtime', 'Economy-v1-release',
+  '.dsh-research', '.venv-vision',
   'browser-data', 'logs', '.playwright-mcp', '.dsh', '.dsh-recovery', '.dsh-file-claim',
   '__pycache__', '.reasonix', '.workbuddy-ai', 'android', 'vision'
 ]);
@@ -312,7 +321,7 @@ async function run(ctx) {
           '清单的 productVersion 必须实测自产物字节');
       } else {
         let notes = '';
-        const notesFile = path.join(repo.root, 'docs', 'release-notes', target + '.md');
+        const notesFile = notesPath.pathFor(repo.root, target);
         if (fs.existsSync(notesFile)) notes = fs.readFileSync(notesFile, 'utf8').replace(/^\uFEFF/, '').trim();
         const releasedAt = String(o.releasedAt || '');
         const gen = repo.manifest.writeManifest({

@@ -27,9 +27,13 @@ const crypto = require('crypto');
 const { Runner } = require('./lib/runner.js');
 const canonical = require('./lib/canonical.js');
 const plan = require('./lib/plan.js');
+const notesPath = require('./lib/notes.js');
 const publishStage = require('./lib/publish.js');
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
+/* Generous for a release-notes file, small enough that the editor cannot be
+   used as a way to write an arbitrary large file into the checkout. */
+const MAX_NOTES_BYTES = 256 * 1024;
 const TOKEN = crypto.randomBytes(32).toString('hex');
 const MAX_BODY = 1 << 20;
 
@@ -147,6 +151,120 @@ function start(opts) {
       return send(200, { ok: true, options: runner.options });
     }
 
+    /* ── open a folder for the operator (read-only convenience) ─────────── */
+    /*
+     * Two things a person needs to touch with their own hands after a build:
+     * the dist folder (to hand the installer to someone) and this release's log
+     * file. This endpoint opens them in Explorer. It reads no repository state
+     * beyond listing dist, writes nothing, and takes a fixed keyword rather than
+     * a path — so it can never be pointed at an arbitrary file.
+     */
+    if (url.pathname === '/api/reveal' && req.method === 'POST') {
+      const body = await readBody(req);
+      if (!body || (body.what !== 'dist' && body.what !== 'log')) return send(400, { ok: false, error: 'bad-body' });
+      if (!runner.repo) return send(200, { ok: false, error: 'no-repo', why: '还没有识别到仓库根目录。' });
+      const dist = path.join(runner.repo.root, 'dist');
+      const { spawn } = require('child_process');
+      const open = function (args) {
+        try {
+          const p = spawn('explorer.exe', args, { detached: true, stdio: 'ignore', windowsHide: false });
+          p.unref();
+          return true;
+        } catch (e) { return false; }
+      };
+      if (body.what === 'dist') {
+        if (!fs.existsSync(dist)) return send(200, { ok: false, error: 'dist-missing', why: 'dist 目录还不存在：先完成一次构建。' });
+        if (!open([dist])) return send(200, { ok: false, error: 'open-failed', why: '无法调起资源管理器。' });
+        return send(200, { ok: true, opened: dist });
+      }
+      let newest = null;
+      try {
+        for (const n of fs.readdirSync(dist)) {
+          if (!/^release-.*\.log$/.test(n)) continue;
+          const st = fs.statSync(path.join(dist, n));
+          if (!newest || st.mtimeMs > newest.ms) newest = { name: n, ms: st.mtimeMs };
+        }
+      } catch (e) { newest = null; }
+      if (!newest) return send(200, { ok: false, error: 'log-missing', why: 'dist 里还没有本次发行的日志文件：先完成一次构建（构建过程中也会写）。' });
+      const abs = path.join(dist, newest.name);
+      if (!open(['/select,' + abs])) return send(200, { ok: false, error: 'open-failed', why: '无法调起资源管理器。' });
+      return send(200, { ok: true, opened: abs });
+    }
+
+    /* ── the canonical release notes (read + edit) ──────────────────────── */
+    /*
+     * The release notes ARE a canonical repository file, not a GUI artifact:
+     * lib/publish.js hands docs/release-notes/<target>.md to
+     * `gh release create --notes-file`, lib/seal.js folds its text into the
+     * manifest, and lib/verify.js proves the manifest still matches it.
+     *
+     * This endpoint exists so a human can fill that file in without leaving the
+     * tool, and it is deliberately the narrowest possible write:
+     *   · the path is derived from VERSION's shape by lib/notes.js, the one
+     *     place that knows the rule — a caller cannot name a file of its own;
+     *   · only docs/release-notes/<MAJOR.MINOR.PATCH>.md can ever be reached,
+     *     so this can never touch VERSION, dist/, or source;
+     *   · it refuses while a stage is running, and once BUILD has pinned the
+     *     notes into a manifest (SEAL or VERIFY green) editing them would
+     *     invalidate that run, so it refuses and asks for a re-run instead of
+     *     silently making the stored verification untrue.
+     */
+    if (url.pathname === '/api/notes') {
+      if (!runner.repo) return send(200, { ok: false, error: 'no-repo' });
+      const target = String((runner.options && runner.options.target) || '').trim();
+      if (!/^\d+\.\d+\.\d+$/.test(target)) {
+        return send(200, { ok: false, error: 'bad-target', why: '目标版本必须是 MAJOR.MINOR.PATCH（例如 1.0.6）' });
+      }
+      const abs = notesPath.pathFor(runner.repo.root, target);
+      const rel = notesPath.relFor(runner.repo.root, target);
+      if (!abs) return send(200, { ok: false, error: 'bad-target' });
+
+      const stageOf = function (n) { return (runner.stages[n] && runner.stages[n].status) || 'pending'; };
+
+      if (req.method === 'GET') {
+        if (!fs.existsSync(abs)) return send(200, { ok: true, exists: false, target: target, rel: rel, content: '' });
+        let content = '';
+        try { content = fs.readFileSync(abs, 'utf8').replace(/^\uFEFF/, ''); }
+        catch (e) { return send(200, { ok: false, error: 'read-failed', why: String((e && e.message) || e) }); }
+        return send(200, { ok: true, exists: true, target: target, rel: rel, content: content });
+      }
+
+      if (req.method === 'POST') {
+        const body = await readBody(req);
+        if (!body || typeof body.content !== 'string') return send(400, { ok: false, error: 'bad-body' });
+        if (runner.running) return send(409, { ok: false, error: 'busy', stage: runner.running.stage });
+        if (Buffer.byteLength(body.content, 'utf8') > MAX_NOTES_BYTES) {
+          return send(413, { ok: false, error: 'notes-too-large', limit: MAX_NOTES_BYTES });
+        }
+        const pinned = ['ok', 'warn'].indexOf(stageOf('SEAL')) >= 0 ? 'SEAL'
+          : (['ok', 'warn'].indexOf(stageOf('VERIFY')) >= 0 ? 'VERIFY' : '');
+        if (pinned) {
+          return send(409, {
+            ok: false, error: 'notes-pinned', stage: pinned,
+            why: pinned + ' 已用当前这份发行说明完成校验：现在改写它会让那次校验不再成立。先「重置」再改，然后重新运行一遍。'
+          });
+        }
+        const existed = fs.existsSync(abs);
+        try {
+          /*
+           * LF, always. The canonical build reads this file into the manifest and
+           * verify compares the two texts, so the bytes must not carry CRLF: a
+           * browser textarea posts CRLF, and a file that differs from its own
+           * normalized form is a difference git reports forever.
+           */
+          const text = body.content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+          fs.mkdirSync(path.dirname(abs), { recursive: true });
+          fs.writeFileSync(abs, text, 'utf8');
+        } catch (e) {
+          return send(200, { ok: false, error: 'write-failed', why: String((e && e.message) || e) });
+        }
+        runner.log.event((existed ? 'release notes updated: ' : 'release notes created: ') + rel + ' (' + Buffer.byteLength(body.content, 'utf8') + ' B)');
+        return send(200, { ok: true, target: target, rel: rel, created: !existed, bytes: fs.statSync(abs).size });
+      }
+
+      return send(405, { ok: false, error: 'method-not-allowed' });
+    }
+
     /* ── stages ─────────────────────────────────────────────────────────── */
     if (url.pathname === '/api/run' && req.method === 'POST') {
       const body = await readBody(req);
@@ -165,10 +283,10 @@ function start(opts) {
         return send(200, { ok: true, snapshot: runner.snapshot(0) });
       }
       if (body.stage === 'RESET') {
-        const fresh = new Runner({ root: runner.root });
-        runner.stages = fresh.stages;
-        runner.results = {};
-        runner.log = fresh.log;
+        /* One reset method on the runner, so a reset can never clear half the
+           run state (a stale `releaseFacts` would show a SEAL result from a run
+           the user just discarded). */
+        runner.resetRun();
         lastLogSeq = 0;
         runner.log.event('run state reset by the user');
         return send(200, { ok: true, snapshot: runner.snapshot(0) });

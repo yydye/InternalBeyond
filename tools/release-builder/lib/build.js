@@ -28,6 +28,7 @@ const path = require('path');
 
 const env = require('./env.js');
 const plan = require('./plan.js');
+const notes = require('./notes.js');
 
 const { STAGE_STATUS } = plan;
 

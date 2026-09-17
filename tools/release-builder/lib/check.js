@@ -25,6 +25,7 @@ const crypto = require('crypto');
 const env = require('./env.js');
 const git = require('./git.js');
 const plan = require('./plan.js');
+const notes = require('./notes.js');
 
 const { STAGE_STATUS } = plan;
 
@@ -393,7 +394,7 @@ async function run(ctx) {
   }
 
   /* ── 11. release notes for the target ─────────────────────────────────── */
-  const notesFile = targetVersion ? path.join(root, 'docs', 'release-notes', targetVersion + '.md') : '';
+  const notesFile = notes.pathFor(root, targetVersion);
   if (!targetVersion) {
     /* already blocked above */
   } else if (fs.existsSync(notesFile)) {

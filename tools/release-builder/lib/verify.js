@@ -28,6 +28,7 @@ const path = require('path');
 const crypto = require('crypto');
 
 const plan = require('./plan.js');
+const notesPath = require('./notes.js');
 const { STAGE_STATUS } = plan;
 
 function sha256File(file) {
@@ -154,7 +155,7 @@ async function run(ctx) {
    * happens to exist for the target: comparing against a different file would
    * report a difference that is not one.
    */
-  const notesFile = ctx.notesFile || path.join(repo.root, 'docs', 'release-notes', target + '.md');
+  const notesFile = ctx.notesFile || notesPath.pathFor(repo.root, target);
   const notesDeclared = ctx.notesFileExists !== false;
   let notes = '';
   if (notesDeclared && fs.existsSync(notesFile)) {

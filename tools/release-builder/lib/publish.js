@@ -29,6 +29,7 @@ const crypto = require('crypto');
 
 const git = require('./git.js');
 const plan = require('./plan.js');
+const notesPath = require('./notes.js');
 const { STAGE_STATUS } = plan;
 
 const ACTIONS = ['commit', 'push', 'tag', 'pushTag', 'releaseCreate', 'releaseUpload', 'manifestUpload'];
@@ -79,8 +80,8 @@ function buildPlan(repo, o) {
   const tag = repo.tagFor(target);
   const branch = git.branch(root) || 'master';
   const remote = o.remote || 'origin';
-  const notesRel = 'docs/release-notes/' + target + '.md';
-  const notesAbs = path.join(root, notesRel);
+  const notesRel = notesPath.relFor(root, target);
+  const notesAbs = notesPath.pathFor(root, target);
 
   const blockers = [];
   const actions = [];
