@@ -96,6 +96,7 @@ messages would break `favorites.sourceId` (`favorites.js:17-33`), notification d
 | `source:'active_message'` + `activePlanId` | `active-diary.js:1303-1304` region | proactive provenance |
 | `waifu:true` | `communication.js:2386` | MessagePresentation split part |
 | `eventType` + `characterId` | `social.js:1873` | group membership event |
+| `activityId` | `communication.js:2499-2503`（user）、`:2846`/`:2931`（assistant 从 `_turn.activityId` 继承）、`activity-runtime.js` 的 `send`/`mark` | 本轮注入的陪伴活动来源（与 `threadId` 的对话归属正交）；普通聊天与 legacy 频道消息不带此键 |
 
 Metadata is an **open union** — the union is not closed by a schema, and readers use
 `m.metadata && m.metadata.x` defensively. The canonical store therefore keeps metadata inside the

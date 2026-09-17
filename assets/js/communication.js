@@ -1669,7 +1669,7 @@ async function _buildSingleChatContext(cfg,opts){
       _mbTrSink.note(cfg.id,'messagesChanged',_mbInjected);
     }
   }catch(_mbErr){console.warn('[MiddleBrain] ctx failed',String(_mbErr&&_mbErr.message||_mbErr).slice(0,120))}
-  try{if(_threadMemOk&&typeof getActivityContext==='function'){const _actCtx=await getActivityContext(cfg.id,{userMessage:_ctxText,threadId:_targetThread,maxChars:_bActChars||undefined});
+  try{if(_threadMemOk&&typeof getActivityContext==='function'){const _actCtx=await getActivityContext(cfg.id,{userMessage:_ctxText,threadId:_targetThread,maxChars:_bActChars||undefined,activity:((opts&&Object.prototype.hasOwnProperty.call(opts,'activity'))?opts.activity:undefined)});
   if(_actCtx)_tailCtx+=(_tailCtx?'\n\n':'')+_actCtx;}}catch(_actErr){console.warn('[Activity] chat context failed',String(_actErr&&_actErr.message||_actErr).slice(0,120))}
   const _wsReadCtx=_getWsReadInjection()+_getWsOpFeedbackInjection()+_getWsRunOutputInjection()+_getIbToolResultInjection()+_getBlogReadInjection();
   if(_wsReadCtx)_tailCtx+=(_tailCtx?'\n':'')+_wsReadCtx;
@@ -1905,6 +1905,7 @@ function _ibTurnScope(label){
     _guardCycle:false,
     active:false,
     round:0,
+    activityId:null,/* 本回合实际注入/归属的 Activity（无则为 null；assistant 落库与广播继承此值） */
     ledger:{},nameMap:{},calls:[],tools:null,_acc:null
   };
 }
@@ -2468,6 +2469,22 @@ async function sendChatMessage(voiceMsg){
   }
   const thinkingOn=true;/* reasoning 始终接收和保存；是否展示由 cfg.showThinking 决定 */
 
+  /* ── M1 · Activity 上下文解析（每回合一次，前后两条落库路径共用）──────────
+     优先级由 IB.activity.resolveActivity 持有（显式 activityId → legacy 频道锚 →
+     current 指针 → status='active' 最新）。结果同时用于：
+       ① user 消息 metadata.activityId（activityId = 本轮活动来源，threadId = 对话归属，两个独立语义）；
+       ② _turn.activityId（assistant 从同一 turn 继承）；
+       ③ 预解析结果随 buildChatContext 传入，避免同回合重复读表。
+     无活动（普通聊天）时 _turnActivity 为 null，两个落库路径都不会凭空出现 activityId。 */
+  const _reqActivityId=String((voiceMsg&&voiceMsg.activityId)||'');
+  let _turnActivity=null;
+  try{
+    const _actApi=(window.IB&&window.IB.activity)||null;
+    if(_actApi&&typeof _actApi.resolveActivity==='function'){
+      _turnActivity=await _actApi.resolveActivity(_targetFriend,{activityId:_reqActivityId||undefined,threadId:_targetThread,userMessage:_ctxText});
+    }
+  }catch(_actResolveErr){console.warn('[Activity] resolve failed',String(_actResolveErr&&_actResolveErr.message||_actResolveErr).slice(0,120))}
+
   _chatSendingFor.add(_targetFriend);
   const sendBtn=document.getElementById('chat-send-btn');
   if(sendBtn)sendBtn.disabled=true;
@@ -2479,10 +2496,14 @@ async function sendChatMessage(voiceMsg){
   if(sentImages.length)userMsg.images=sentImages.map(img=>({dataUrl:img.dataUrl,base64:img.base64,mime:img.mime,name:img.name}));
   if(sentFiles.length)userMsg.files=sentFiles.map(f=>({name:f.name,ext:f.ext,size:f.size,text:f.text}));
   if(_voice)userMsg.voice={dataUrl:_voice.dataUrl,mime:_voice.mime,duration:_voice.duration,transcript:_voice.transcript||'',tone:_voice.tone||''};
-  if(_callTurn)userMsg.metadata={source:'voice_call',callSessionId:String(_callTurn.callSessionId||''),turnId:String(_callTurn.turnId||'')};
+  if(_callTurn||_turnActivity){
+    userMsg.metadata={};
+    if(_callTurn){userMsg.metadata.source='voice_call';userMsg.metadata.callSessionId=String(_callTurn.callSessionId||'');userMsg.metadata.turnId=String(_callTurn.turnId||'')}
+    if(_turnActivity)userMsg.metadata.activityId=_turnActivity.id;/* 只记来源，不改 threadId 归属 */
+  }
   if(_targetThread)userMsg.threadId=_targetThread;
   await dbPut('chatMessages',userMsg);
-  _ibAppBroadcast('turn',{state:'start',friendId:_targetFriend,threadId:_targetThread});
+  _ibAppBroadcast('turn',{state:'start',friendId:_targetFriend,threadId:_targetThread,activityId:(_turnActivity?_turnActivity.id:undefined)});
   appendChatBubble('user',text,undefined,undefined,userMsg.id,sentImages,sentFiles,undefined,_voice);
   /* AI 自主规划：用户主动发言 → 取消该角色等待中的 AI 计划（异步，不阻塞） */
   try{_activeUserReplied(userMsg)}catch(e){}
@@ -2514,6 +2535,7 @@ async function sendChatMessage(voiceMsg){
      随 ictx._ibTurn 显式传给 XML 工具批次与续轮 —— 没有任何全局"当前回合"可猜。 */
   const _turnLc=_ibTurnLc(_ibTurnScope('chat'));
   const _turn=_turnLc.turn();
+  _turn.activityId=_turnActivity?_turnActivity.id:null;
   _turnLc.begin();
   try{
     const lim=await getReadingLimits();
@@ -2567,7 +2589,7 @@ async function sendChatMessage(voiceMsg){
       _mbTrace.note(cfg.id,'inputMessages',messages.length);/* MB seam 之前的 messages 条数 */
       _mbTrace.note(cfg.id,'_paramsSeam',_mbParamsFingerprint(cfg,_streamingOk,thinkingOn));
     }
-    const _bcc=await buildChatContext(cfg,{userMessage:_ctxText,ss:ss,summaryText:summaryText,threadId:_targetThread,voice:!!_callTurn,sentFiles:sentFiles,
+    const _bcc=await buildChatContext(cfg,{userMessage:_ctxText,ss:ss,summaryText:summaryText,threadId:_targetThread,voice:!!_callTurn,sentFiles:sentFiles,activity:_turnActivity,
       /* M1-C.2o：把**本轮真正交给模型的那一段 canonical 历史**（上一行的 history，
          即阶梯窗口切片）交给上下文构建器，作为当前对话证据的来源。它不是"再读一次
          会话"，而是把同一个 `history` 变量复用 —— 于是"模型看到的对话"与
@@ -2595,11 +2617,11 @@ async function sendChatMessage(voiceMsg){
     try{if(_ibToolDrainImages.length){const _ti=_ibToolDrainImages.splice(0);if(_visionOk)_ti.forEach(u=>sentImages.push({dataUrl:u,name:'tool_result.png'}))}}catch(e){}
     /* 图片回注队列（ws_read_image / 聊天生图回传）：仅支持视觉的模型出队；文本模型保留队列（不做图不可见提示，等待视觉请求） */
     try{if(typeof _ibImageDrain!=='undefined'&&_ibImageDrain.length&&_visionOk){const _di2=_ibImageDrain.splice(0);_di2.forEach(u=>{const _du=String(u||'');if(_du.slice(0,5)==='data:')sentImages.push({dataUrl:_du,base64:_du.split(',')[1]||'',mime:(_du.match(/^data:([^;,]+)/i)||[])[1]||'image/jpeg',name:'image_inject.png'})})}}catch(e){}
-    /* P2 · Video Runtime 帧 → 复用既有视觉路由（request-local）：把 Call turn 的
-       visionReference（Video Runtime 产出的原始帧）并入 sentImages，由下方既有分支
-       (native→image parts / 本地 Qwen→描述) 统一处理；只作用于 messages，绝不写入
-       userMsg.content / chatMessages / Memory。无可用帧时为空，不影响。 */
-    try{if(_callTurn&&_callTurn.visionReference){const _fr=_callTurn.visionReference||{};const _du=String(_fr.dataUrl||'');if(_du.slice(0,5)==='data:')sentImages.push({dataUrl:_du,base64:_du.split(',')[1]||'',mime:'image/jpeg',name:'call_frame.jpg'});}}catch(e){}
+    /* Video Runtime / Cinema 留影帧 → 复用既有视觉路由（request-local）：任何合法请求
+       携带的 visionReference（Call 视频面 / Cinema 留影产出的原始帧）都并入 sentImages，
+       由下方既有分支 (native→image parts / 本地 Qwen→描述) 统一处理；只作用于 messages，
+       绝不写入 userMsg.content / chatMessages / Memory。无可用帧时为空，不影响。 */
+    try{if(voiceMsg&&voiceMsg.visionReference){const _fr=voiceMsg.visionReference||{};const _du=String(_fr.dataUrl||'');if(_du.slice(0,5)==='data:')sentImages.push({dataUrl:_du,base64:_du.split(',')[1]||'',mime:'image/jpeg',name:'vision_frame.jpg'});}}catch(e){}
     if(sentImages.length&&messages.length){
       if(_localVision){
         try{
@@ -2821,6 +2843,7 @@ async function sendChatMessage(voiceMsg){
          上面已完成的工具执行，只让整个回合在收尾时失败 —— 这正是"宿主回合还没
          结束就已经失败"，P11-3D.1 的周期所有权因此必须和它一起修。 */
       const aiMsg={id:'msg_'+Date.now()+'_'+Math.floor(Math.random()*100000),role:'assistant',content:replyText,reasoning_content:thinkingText||'',metadata:{model:cfg.provider||cfg.model||'',model_id:cfg.model||'',config_id:cfg.id,showThinking:_resolveShowThinking(cfg)},friendId:_targetFriend,timestamp:Date.now()};/* 编号方式与群聊统一：随机后缀防同毫秒碰撞 */
+      if(_turn&&_turn.activityId)aiMsg.metadata.activityId=_turn.activityId;/* assistant 与本回合 user 同源 */
       if(_srchLog.length)aiMsg.wsSearches=_srchLog;
       if(_memR.length)aiMsg.memOps=_memR.map(r=>({ok:r.ok,status:r.status||'',label:r.label,detail:r.detail}));
       if(_calR.length)aiMsg.calNotes=_calR.map(r=>({ok:r.ok,label:r.label,detail:r.detail}));
@@ -2833,8 +2856,8 @@ async function sendChatMessage(voiceMsg){
          不额外询问闸门。无抑制 ⇒ 不写键（历史消息无键的渲染路径因此与改动前逐字一致）。 */
       {const _n=_mbIntegrityNoticeFor(_mbVerdict);if(_n)aiMsg.metadata.integrityNotice=_n;}
       await dbPut('chatMessages',aiMsg);
-      _ibAppBroadcast('message',{id:aiMsg.id,role:'assistant',content:aiMsg.content,senderName:cfg.nickname||cfg.model||'AI',friendId:_targetFriend,threadId:_targetThread});
-      _ibAppBroadcast('turn',{state:'end',friendId:_targetFriend,threadId:_targetThread});
+      _ibAppBroadcast('message',{id:aiMsg.id,role:'assistant',content:aiMsg.content,senderName:cfg.nickname||cfg.model||'AI',friendId:_targetFriend,threadId:_targetThread,activityId:((aiMsg.metadata&&aiMsg.metadata.activityId)||undefined)});
+      _ibAppBroadcast('turn',{state:'end',friendId:_targetFriend,threadId:_targetThread,activityId:((aiMsg.metadata&&aiMsg.metadata.activityId)||undefined)});
       _sendResult={ok:true,replyText:replyText,messageId:aiMsg.id,userMessageId:userMsg.id,voiceStreamed:!!_voiceTurnSink};
       /* 内联提示卡：此刻 aiMsg 已经存在且已落库，读的是它的 metadata.integrityNotice。 */
       streamRefs.forEach(ref=>{_mbAppendNoticeCard((ref.isTextNode?ref.div:ref.txt),aiMsg)});
@@ -2905,6 +2928,7 @@ async function sendChatMessage(voiceMsg){
       /* 本回合 trace 收口（与非流式逐字同款） */
       _mbSecTraceFinish(_mbTrace,cfg.id,_mbVerdict);
       const aiMsg={id:'msg_'+Date.now()+'_'+Math.floor(Math.random()*100000),role:'assistant',content:replyText,reasoning_content:thinkingText||'',metadata:{model:cfg.provider||cfg.model||'',model_id:cfg.model||'',config_id:cfg.id,showThinking:_resolveShowThinking(cfg)},friendId:_targetFriend,timestamp:Date.now()};/* 编号方式与群聊统一：随机后缀防同毫秒碰撞 */
+      if(_turn&&_turn.activityId)aiMsg.metadata.activityId=_turn.activityId;/* assistant 与本回合 user 同源（非流式与流式一致） */
       if(_srchLogN.length)aiMsg.wsSearches=_srchLogN;/* 任务A */
       if(_memRNs.length)aiMsg.memOps=_memRNs.map(r=>({ok:r.ok,status:r.status||'',label:r.label,detail:r.detail}));
       if(_calRNs.length)aiMsg.calNotes=_calRNs.map(r=>({ok:r.ok,label:r.label,detail:r.detail}));
@@ -2924,6 +2948,7 @@ async function sendChatMessage(voiceMsg){
           if(_wDelay>0)await new Promise(function(r){setTimeout(r,_wDelay)});/* 真人节奏：随上一条长度动态取等待，不卡顿 */
           const _wId='msg_'+Date.now()+'_'+Math.floor(Math.random()*100000)+'_'+_wi;
           const _wMsg={id:_wId,role:'assistant',content:_wTxt,reasoning_content:_wi===0?(thinkingText||''):'',metadata:{model:cfg.provider||cfg.model||'',model_id:cfg.model||'',config_id:cfg.id,showThinking:_resolveShowThinking(cfg),waifu:true},friendId:_targetFriend,timestamp:Date.now()+_wi};
+          if(_turn&&_turn.activityId)_wMsg.metadata.activityId=_turn.activityId;
           if(_targetThread)_wMsg.threadId=_targetThread;
           await dbPut('chatMessages',_wMsg);
           if(activeFriendId===_targetFriend)appendChatBubble('ai',_wTxt,undefined,_wi===0?(thinkingText||undefined):undefined,_wId,undefined,undefined,undefined,undefined,cfg);
@@ -4009,6 +4034,7 @@ async function _wsToolContinueInner(cfg,o){
     var _cId='msg_'+Date.now()+'_'+Math.floor(Math.random()*100000);
     var _cImg=_wsCollectGenImages(_cResults);
     var _cMsg={id:_cId,role:'assistant',content:contText,reasoning_content:parsed.reasoning_content||'',metadata:{model:cfg.provider||cfg.model||'',model_id:cfg.model||'',config_id:cfg.id,showThinking:_resolveShowThinking(cfg),toolRound:round+1},friendId:o.friendId,timestamp:Date.now()};
+    if(_turn&&_turn.activityId)_cMsg.metadata.activityId=_turn.activityId;/* 同回合 activity 归属继承（与主流式/非流式/waifu 落库点同款） */
     if(o.senderName)_cMsg.senderName=o.senderName;
     if(_cImg.length)_cMsg.images=_cImg;
     if(o.threadId)_cMsg.threadId=o.threadId;

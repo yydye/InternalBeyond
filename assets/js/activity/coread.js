@@ -2,7 +2,9 @@
    IB Coread — 共读间（builtin 陪伴活动）
    --------------------------------------------------------------------
    一篇日志＝一本书：从 Blog（posts store）现读，分页、书签、进度；
-   选一位 AI 一起读，聊天落在「共读 · 书名」话题频道（IB.activity 统一运行时）。
+   选一位 AI 一起读，聊天就在与 TA 的当前会话里（IB.activity 统一运行时：
+   新活动不再创建话题频道，消息带 metadata.activityId；旧「共读 · 书名」
+   频道只读兼容、继续显示、继续注入旧频道上下文）。
    - 上下文仅透露到当前页 + 前文梗概（getActivityContext 注入）。
    - Memory 回写（IB.activity.writeMemory）与 Proactive 联动（nudge）。
    ==================================================================== */
@@ -71,6 +73,8 @@
       progress:_progress(),bookmarks:_bm}));
     if(!act){_toast('创建共读活动失败');return}
     _aiId=act.roleId;_activity=act;
+    /* M1：新活动置为 current（legacy 频道活动保持旧隔离，不抢指针） */
+    if(!act.threadId){try{IB.activity.setCurrent(act.id)}catch(e){}}
     _renderReader();_renderNotes();_renderAiSel(cfgs);
     /* 切换页面容器 */
     var list=document.getElementById('coread-list-view'),rd=document.getElementById('coread-read-view');
@@ -123,7 +127,8 @@
   async function _renderNotes(){
     var host=document.getElementById('cr-notes');if(!host||!_activity)return;
     var all=await dbGetAll('chatMessages');
-    var msgs=all.filter(function(m){return m.threadId===_activity.threadId}).sort(function(a,b){return a.timestamp-b.timestamp});
+    /* M1：新活动按 metadata.activityId 过滤（消息在主/当前会话）；legacy 活动仍按旧频道过滤 */
+    var msgs=all.filter(function(m){return _activity.threadId?(m.threadId===_activity.threadId):(m.metadata&&m.metadata.activityId===_activity.id)}).sort(function(a,b){return a.timestamp-b.timestamp});
     if(!msgs.length){host.innerHTML='<div class="cr-note-empty">在这里与 TA 聊这一页。</div>';return}
     host.innerHTML=msgs.slice(-40).map(function(m){
       var who=m.role==='user'?'我':(m.senderName||'TA');

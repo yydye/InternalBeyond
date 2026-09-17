@@ -971,19 +971,20 @@ letters / understanding / Middle Brain **没有任何一处**引用它。
 
 Coread 与 Cinema 不各自为政，统一跑在这套运行时上，天然可扩展其它陪伴活动：
 
-- **会话生命周期**：`createActivity`（自动创建/复用一条 `chatThreads` 频道：`kind + resourceKey` 去重，`quiet:true, memory:true`）、`findActivity`、`listActivities`、`saveActivity`、`deleteActivity`、`setProgress`。
-- **上下文注入**：`getActivityContext(friendId,{threadId})` 由 `communication.js` 的 `_buildSingleChatContext` 注入（与 `getMomentsContext` 同款钩子）。只透露**到当前页/播放点为止**的内容 + 进度 + 梗概，并附反幻觉边界——即 Mobile 的 `tail()` + `bound()` 语义。`buildActivityContext` 为类型定制（coread=页文本、cinema=最近字幕+进度+帧）。
+- **会话生命周期**：`createActivity`（只写 `activities`，**不再创建 `chatThreads` 频道**）、`findActivity`、`listActivities`、`saveActivity`、`deleteActivity`、`setProgress`；Current 指针 `setCurrent` / `clearCurrent` / `resolveActivity`（localStorage `ib_activity_current_v1`，每角色一个 current，轻量可重建，不是 authority）。
+- **上下文注入**：`getActivityContext(friendId,{threadId,activityId})` 由 `communication.js` 的 `_buildSingleChatContext` 注入（与 `getMomentsContext` 同款钩子），每回合解析一次、最多注入一块。解析优先级：显式 `activityId` → legacy 频道锚（旧 `activity.threadId` 与当前频道一致）→ current 指针（legacy 指针不注入非旧频道）→ `status==='active'` 且非 legacy（无 `threadId`）中 `lastActiveAt` 最新者 → 无。**legacy activity 只在旧频道锚命中时注入，不污染主对话**。只透露**到当前页/播放点为止**的内容 + 进度 + 梗概，并附反幻觉边界——即 Mobile 的 `tail()` + `bound()` 语义。`buildActivityContext` 为类型定制（coread=页文本、cinema=最近字幕+进度；嵌入播放器不提供进度时如实省略，不伪造）。
+- **Vision（与上下文正交）**：Cinema 留影帧走 `visionReference`（request-local）→ `sentImages` → 既有 provider 图像转义；帧不写入 `activities` / `chatMessages` / Memory，活动运行时本身不捕获、不存储像素。
 - **Memory 回写**：`writeMemory` 走 `quickCreateMemory`（`rawSource=coread|cinema`、`domain='陪伴'`、`createdBy=roleId`），写进共享 `memories` 库，能被后续注入。
 - **Proactive 联动**：`nudge` 经 `_activeSaveAiPlan` 生成一条**活动感知的主动消息计划** `{source:'ai_planned', intent:'共读/观影…'}`，由既有主动计划机器在设定时刻投递。
 - **事件订阅**：`on/off/emit`，供 App 前端订阅 `activity/update`。
 - **收藏联动**：`fav` 经 `IB.favorites.add` 把活动收进收藏层。
-- 消息页锚：activity 的消息落进频道时带 `threadId`；频道 conversation 即「共读 · 书名」「观影室 · 片名」，与主对话隔离。
+- 消息归属：activity 消息进入角色**当前会话**（`threadId` 保持对话归属语义），并带 `metadata.activityId`（本轮活动来源语义）；user/assistant 从同一回合作用域继承。旧 `kind=cinema|coread` 频道与其消息只读保留、继续显示、继续注入（legacy 支路），不自动合并、不删除。
 
 ### 11.3 Coread（共读间，builtin）
 
 - `assets/js/activity/coread.js` → `window.IB.coread` + `page-coread`。
 - 从 Blog（`posts` store）**现读**，不复制书。按段落边界分页（每个读者按 `_charsPerPage`），章节/页码/进度随 `setProgress` 即时写入 `activities.progress`，`getActivityContext` 据此只给 AI 当前页 + 前文梗概。
-- 选一位 AI（apiConfigs 非群聊成员），聊天落在 `共读 · 书名` 频道；书签（`bookmarks[]`）、「生成记忆」（writeMemory）、「提醒 TA」（nudge）、「在聊天里打开」（openChat → `page-chat` 选中该频道）。
+- 选一位 AI（apiConfigs 非群聊成员），聊天落在与 TA 的当前会话（消息带 `metadata.activityId`；旧「共读 · 书名」频道只读兼容）；书签（`bookmarks[]`）、「生成记忆」（writeMemory）、「提醒 TA」（nudge）、「在聊天里打开」（openChat → `page-chat` 选中当前会话或旧频道）。
 - 进入：Blog 侧「共读」入口、App Store（builtin）与导航「Apps」→ 打开。
 
 ### 11.4 Cinema（观影室，manifest + loader 外部 APP）
@@ -991,7 +992,7 @@ Coread 与 Cinema 不各自为政，统一跑在这套运行时上，天然可�
 - `apps/catalog.json` + `apps/catalog.js`（file:// 退回壳）、`apps/ib-app-cinema.js`（独立 APP）、`assets/js/app-store.js`（loader）。
 - APP 经 `IBApps.register({id,version,sdk:2,icon,mount(body,ctx),back,unmount})` 注册，`open(id)` 调 `mount`；APP 只经 `ctx` 与主程序对话（`app/storage/blog/chat/ai/ui/sys/on/off`），**不触碰底层 db/发送函数**——隔离按接口收窄（同 Mobile 约定，非强制 iframe 沙箱）。
 - **Media Adapter v1**（`apps/ib-media-adapter.js` → `window.IBMedia`）：统一 `resolveMedia(url|{file}) → {type,provider,id,url,caps{canFrame,canSeek,remote}}` 与 `createAdapter(media,host) → {load,play,pause,seek,getCurrentTime,getDuration,on,destroy}`。支持 `NativeVideoAdapter`（本地/直链 .mp4/.webm/blob:）、`HLSAdapter`（.m3u8，优先浏览器原生 / `window.Hls`，否则 graceful fallback）、`YouTubeAdapter`（官方 iframe API）、`BilibiliAdapter`（官方 embed iframe）、`UnknownAdapter`（未知来源提示，不强行播放）。平台受限（地区/X-Frame-Options/登录/浏览器）只识别并 graceful fallback，**禁止** DRM 绕过 / 防盗链破解 / Cookie·Token 偷取 / 下载受保护视频 / 代理绕过。Cinema Runtime 只依赖统一接口做进度/字幕/弹幕/共看/Memory/Proactive，不复制 Chat/Memory/Activity Runtime。
-- 视频/字幕文件**不入库、不随备份**（`ctx.storage` 只存片名/秒数/梗概；播放点不续播）。会话/进度/Memory/Proactive 仍经 `IB.activity` 统一运行时。
+- 视频/字幕文件**不入库、不随备份**（`ctx.storage` 只存片名/秒数/梗概；播放点不续播）。会话/进度/Memory/Proactive 仍经 `IB.activity` 统一运行时。**留影**仅 `caps.canFrame=true`（本地/直链/HLS）可用，帧经 `visionReference` 随当轮请求进入既有视觉链路（不入库、不进 Memory、不写聊天记录）；YouTube/Bilibili 嵌入源 `canFrame=false`，不截帧、不伪造进度（Bilibili 播放进度未知时如实标记 `noTime`），UI/文案不得暗示模型看到了当前画面。
 - 安装/卸载：enable 集合存 localStorage `ib_apps_on_v1`（app id→1）；builtin 不可卸载、「卸载但保留数据」。
 
 ### 11.5 App Store（manifest + loader）

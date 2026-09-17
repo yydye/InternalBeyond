@@ -3,10 +3,12 @@
    --------------------------------------------------------------------
    支持多视频来源（Media Adapter v1）：本地 / 直链 .mp4/.webm / HLS .m3u8 /
    YouTube 官方 embed / Bilibili 官方 embed；未知来源 graceful fallback。
-   - 只经 ctx 与主程序对话（sdk 2）；不直接触碰底层 db/发送函数。
-   - 会话/进度/Memory/Proactive 经 IB.activity 统一运行时；
-     · 视频与字幕文件一律不入库、不随备份（播放点只存秒数与梗概）。
-     · 上下文经 ctx 注入：只透露到播放点为止的字幕 + 进度 + 梗概。
+    - 只经 ctx 与主程序对话（sdk 2）；不直接触碰底层 db/发送函数。
+    - 会话/进度/Memory/Proactive 经 IB.activity 统一运行时；
+      · 视频与字幕文件一律不入库、不随备份（播放点只存秒数与梗概）。
+      · 上下文经 ctx 注入：只透露到播放点为止的字幕 + 进度 + 梗概。
+      · 留影帧经 IB.activity.send 的 visionReference 进入**既有**图片视觉链路，
+        只随当轮请求（request-local），不入库、不进 Memory、不写聊天记录。
    - Adapter 由 MB(IBMedia) 提供：load/play/pause/seek/getCurrentTime/getDuration/destroy。
    禁止：DRM 绕过 / 防盗链破解 / Cookie·Token 偷取 / 下载受保护视频 / 代理绕过平台限制。
    ==================================================================== */
@@ -37,7 +39,14 @@
   /* ---- 弹幕 / 共看面板 ---- */
   function strip(t){return String(t||'').replace(/<[^>]+>/g,'')}
   function danmaku(t){if(!S.dm||!t)return;var lay=H&&H.querySelector('#ci-dm-l');if(!lay)return;var b=document.createElement('div');b.className='ci-dmi';b.textContent=t;lay.appendChild(b);var dur=Math.min(8,Math.max(5,t.length*0.18));b.style.animationDuration=dur+'s';setTimeout(function(){try{b.remove()}catch(e){}},dur*1000+50);setTimeout(function(){if(lay.childElementCount>40)try{lay.removeChild(lay.firstChild)}catch(e){}},dur*1000+60)}
-  function _sameChannel(am){if(!_activity)return false;if(am&&am.threadId&&_activity.threadId&&am.threadId!==_activity.threadId)return false;if(am&&am.friendId&&_activity.roleId&&String(am.friendId)!==String(_activity.roleId))return false;return true}
+  /* 消息过滤（M1 · Activity Context）：friend 必须一致；legacy 活动继续按旧频道匹配；
+     新活动只认 metadata.activityId === 当前活动 id —— 防止角色主聊天里的普通消息灌进小窗。 */
+  function _sameChannel(am){
+    if(!_activity)return false;
+    if(am&&am.friendId&&String(am.friendId)!==String(_activity.roleId))return false;
+    if(_activity.threadId)return !(am&&am.threadId&&am.threadId!==_activity.threadId);
+    return !!(am&&am.activityId&&String(am.activityId)===String(_activity.id));
+  }
   function onMsg(am){if(!_sameChannel(am))return;var who=(am&&am.role==='user')?'我':((am&&am.senderName)||'TA');var text=String(am&&am.content||'');_endTyping();danmaku(strip(text));if((am&&am.role)==='user')_appendMsg('我',text);else _appendMsg(who,text)}
   function onTurn(t){if(t&&t.state==='start')_showTyping();else if(t&&t.state==='end')_endTyping()}
   function _showTyping(){var h=H&&H.querySelector('#ci-msgs');if(!h)return;var d=document.createElement('div');d.className='ci-typing';d.id='ci-typing';d.textContent='TA 正在输入…';h.appendChild(d);h.scrollTop=h.scrollHeight}
@@ -65,10 +74,22 @@
     var title=titleFor(media);
     var key='cin_'+hashStr(title+'|'+media.url+'|'+(media.id||''));
     _activity=await IB.activity.findActivity('cinema',_aiId,key);
-    if(!_activity){_activity=await IB.activity.createActivity({type:'cinema',roleId:_aiId,resourceId:key,resourceKey:key,title:title,kind:'cinema',name:'观影室 · '+title.slice(0,24),quiet:true,memory:true,progress:{sec:0,dur:0,subs:[],recap:''}})}
+    if(!_activity){_activity=await IB.activity.createActivity({type:'cinema',roleId:_aiId,resourceId:key,resourceKey:key,title:title,kind:'cinema',quiet:true,memory:true,progress:{sec:0,dur:0,subs:[],recap:'',noTime:(media.provider==='bilibili')}})}
     if(!_activity){toast('创建观影活动失败');return}
+    /* Bilibili embed 不提供播放进度：如实标记（不伪造 00:00），legacy 记录补一次 */
+    if(media.provider==='bilibili'&&_activity.progress&&!(_activity.progress.noTime)){
+      var _upd=await IB.activity.setProgress(_activity.id,Object.assign({},_activity.progress,{noTime:true}));
+      if(_upd)_activity=_upd;
+    }
+    /* M1：新活动置为 current；legacy 频道活动保持旧隔离（上下文走旧频道锚） */
+    if(!_activity.threadId){try{await IB.activity.setCurrent(_activity.id)}catch(e){}}
     var head=H&&H.querySelector('#ci-title');if(head)head.textContent=title;
-    await adapter.load().then(function(){var cap=H&&H.querySelector('#ci-snap');if(cap)cap.disabled=!media.caps.canFrame;var e=H&&H.querySelector('#ci-empty');if(e)e.style.display='none';toast('开始一起看《'+title+'》')}).catch(function(err){toast(String(err&&err.message||'播放失败'))});
+    await adapter.load().then(function(){
+      var cap=H&&H.querySelector('#ci-snap');
+      if(cap){cap.disabled=!media.caps.canFrame;cap.title=media.caps.canFrame?'留影：把当前画面发给识图的 TA（仅本地 / 直链 / HLS）':'当前来源（跨域嵌入）无法截取画面，可用聊天图片附件'}
+      var e=H&&H.querySelector('#ci-empty');if(e)e.style.display='none';
+      toast('开始播放《'+title+'》');
+    }).catch(function(err){toast(String(err&&err.message||'播放失败'))});
   }
   async function pickFilm(file){await _loadMedia({file:file})}
   async function loadUrl(url){url=String(url||'').trim();if(!url){toast('请输入视频链接');return}await _loadMedia({url:url})}
@@ -83,9 +104,9 @@
       H.innerHTML=
         '<div class="ci-app">'
         +'<div class="ci-head"><span class="ci-head-title" id="ci-title">观影室</span><button class="ci-exit" type="button" id="ci-exit">× Exit</button></div>'
-        +'<div class="ci-stage"><div class="ci-empty" id="ci-empty">选择下方「选择视频 / 粘贴链接」，或在 URL 框粘贴直链 / HLS / YouTube / Bilibili 链接即可一起看。</div><div class="ci-player" id="ci-player"></div><div class="ci-dm" id="ci-dm-l"></div><div class="ci-cc" id="ci-cc"></div></div>'
+        +'<div class="ci-stage"><div class="ci-empty" id="ci-empty">选择下方「选择视频 / 粘贴链接」，或在 URL 框粘贴直链 / HLS / YouTube / Bilibili 链接即可播放。留影仅本地 / 直链 / HLS 可把当前画面发给识图的 TA；嵌入平台只共享标题、字幕与可得的进度。</div><div class="ci-player" id="ci-player"></div><div class="ci-dm" id="ci-dm-l"></div><div class="ci-cc" id="ci-cc"></div></div>'
         +'<div class="ci-prog"><span id="ci-time">00:00</span><div class="ci-bar"><div class="ci-fill" id="ci-fill"></div></div><span id="ci-dur">00:00</span></div>'
-        +'<div class="ci-chat"><div class="ci-msgs" id="ci-msgs"></div><div class="ci-input"><textarea id="ci-input" placeholder="和 TA 聊此刻的画面…"></textarea><button id="ci-send" type="button">发送</button></div></div>'
+        +'<div class="ci-chat"><div class="ci-msgs" id="ci-msgs"></div><div class="ci-input"><textarea id="ci-input" placeholder="和 TA 聊聊这段视频…"></textarea><button id="ci-send" type="button">发送</button></div></div>'
         +'<div class="ci-tools">'
         +'<div class="ci-urlbar"><input id="ci-url" placeholder="粘贴视频链接（.mp4 / .m3u8 / YouTube / Bilibili）" class="ci-url-input"><button class="ci-btn primary" type="button" id="ci-url-btn">加载</button></div>'
         +'<button class="ci-pick primary" type="button" id="ci-pick">选择视频</button>'
@@ -102,7 +123,12 @@
       var ipk=H.querySelector('#ci-pick');if(ipk)ipk.onclick=function(){var inp=document.createElement('input');inp.type='file';inp.accept='video/*';inp.onchange=function(){if(inp.files&&inp.files[0])pickFilm(inp.files[0])};inp.click()};
       var isubBtn=H.querySelector('#ci-sub-btn');if(isubBtn)isubBtn.onclick=function(){var isub=H.querySelector('#ci-sub');if(isub)isub.click()};
       var isub=H.querySelector('#ci-sub');if(isub)isub.onchange=function(){if(isub.files&&isub.files[0])loadSub(isub.files[0])};
-      var snap=H.querySelector('#ci-snap');if(snap)snap.onclick=function(){var u=grabFrame();if(u){toast('已留影随下一句发出');snap.dataset.frame=u}else toast('当前来源不支持截帧')};
+      var snap=H.querySelector('#ci-snap');if(snap)snap.onclick=function(){
+        if(snap.disabled){toast('当前来源不支持截帧（跨域嵌入平台请改用聊天图片附件）');return}
+        var canSee=(C&&C.chat&&typeof C.chat.canSee==='function')?!!C.chat.canSee(_aiId):true;
+        if(!canSee){toast('这位 TA 的模型不识图，留影发不出画面');return}
+        var u=grabFrame();if(u){toast('已留影，随下一句发出');snap.dataset.frame=u}else toast('当前来源不支持截帧')
+      };
       var dm=H.querySelector('#ci-dm');if(dm)dm.onclick=function(){S.dm=!S.dm;dm.textContent=S.dm?'弹幕✓':'弹幕'};
       var fs=H.querySelector('#ci-fs');if(fs)fs.onclick=function(){var v=H.querySelector('#ci-player video');var p=v?v:H.querySelector('#ci-player iframe');if(p){if(document.fullscreenElement)document.exitFullscreen();else if(p.requestFullscreen)p.requestFullscreen()}else toast('暂不支持全屏')};
       var mem=H.querySelector('#ci-mem');if(mem)mem.onclick=function(){(async function(){if(!_activity){toast('先开始观看');return}await IB.activity.writeMemory(_activity,'观影 · '+(_activity?(_activity.title||''):''),(_lastCue||sum.recap||'').slice(0,400));toast('已把这段共同观影写进记忆')})()};
@@ -115,7 +141,17 @@
   }
   function paintAiSel(){var sel=H&&H.querySelector('#ci-ai');if(!sel)return;var list=(C&&C.chat&&C.chat.list()||[]).filter(function(a){return !String(a.id).startsWith('group_')});sel.innerHTML=list.map(function(a){return '<option value="'+esc(a.id)+'">'+esc(a.nickname)+'</option>'}).join('');if(!_aiId&&list.length)_aiId=list[0].id;sel.value=_aiId||''}
 
-  async function sendMsg(){var inp=H&&H.querySelector('#ci-input');if(!inp||!_activity)return;var text=inp.value.trim();if(!text)return;inp.value='';var snapH=H&&H.querySelector('#ci-snap');var frame=(snapH&&snapH.dataset&&snapH.dataset.frame)||'';if(frame){_appendMsg('我','[画面] '+text);danmaku(text);delete snapH.dataset.frame}else{_appendMsg('我',text);danmaku(text)}var cur=_adapter&&_adapter.getCurrentTime?_adapter.getCurrentTime():0;await IB.activity.send(_activity.id,text);setTimeout(function(){if(frame){_appendMsg('我','[留影 '+fmt(cur)+']')}},50)}
+  async function sendMsg(){
+    var inp=H&&H.querySelector('#ci-input');if(!inp||!_activity)return;
+    var text=inp.value.trim();if(!text)return;inp.value='';
+    var snapH=H&&H.querySelector('#ci-snap');var frame=(snapH&&snapH.dataset&&snapH.dataset.frame)||'';
+    if(frame){_appendMsg('我','[画面] '+text);danmaku(text);delete snapH.dataset.frame}else{_appendMsg('我',text);danmaku(text)}
+    var cur=_adapter&&_adapter.getCurrentTime?_adapter.getCurrentTime():0;
+    /* 留影帧：request-local visionReference，随本轮请求进入既有 sentImages → provider vision 链路 */
+    var opts={};if(frame)opts.visionReference={dataUrl:frame};
+    await IB.activity.send(_activity.id,text,opts);
+    setTimeout(function(){if(frame){_appendMsg('我','[留影 '+fmt(cur)+']')}},50)
+  }
 
   var _lastNudge=0;
   function tick(){if(_activity&&S.nudge&&Date.now()-_activity.lastActiveAt>120000&&Date.now()-_lastNudge>8*60*1000){_lastNudge=Date.now();IB.activity.nudge({activityId:_activity.id})}}

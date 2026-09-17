@@ -2,7 +2,18 @@
 
 /* Activity / Favorites / App Store 浏览器冒烟测试（Node 18+，零依赖，需 Chrome / Edge）。
    覆盖：v21 新 store、IB.activity 会话与上下文注入、跨模块收藏层、
-   App Store manifest+loader、共读间书架/分页、双挂载与运行时零异常。 */
+   App Store manifest+loader、共读间书架/分页、双挂载与运行时零异常。
+   M1（Activity Context 迁移）新增 T1–T8：
+     T1 新建 10 个不同 Cinema → chatThreads +0
+     T2 新建 Coread → chatThreads +0
+     T3 Activity 主聊天发送 → Context 正确注入（真实 mock 请求体取证）
+     T4 metadata.activityId user/assistant 一致（新活动消息在主对话）
+     T5 普通聊天无 activityId
+     T6 同角色多 Activity → current pointer 只选择一个
+     T7 pointer 丢失 → lastActiveAt fallback
+     T8 finished activity 不注入
+   另覆盖 Cinema 留影帧 request-local 视觉链路（activity.send → provider image part，不落库）
+   与 legacy：旧 cinema 频道继续注入、发消息继续落旧频道、openChat 仍选旧频道。 */
 
 const { spawn } = require('child_process');
 const fs = require('fs');
@@ -18,6 +29,12 @@ const { pathToFileURL } = require('url');
 
 
 const PAGE_URL = pathToFileURL(path.join(ROOT, 'InternalBeyond.html')).href;
+const MOCK_REPLY = '这是活动测试的 mock 回复。';
+/* 工具续轮探针：首次请求（不含工具结果）返回带 ws_read 的回复 → 主流程执行工具 →
+   续轮请求体含「工具执行结果」→ 返回纯文本收尾。用于验证续轮 assistant 继承 activityId。 */
+const TOOL_PROBE = '触发工具续轮';
+const TOOL_REPLY = MOCK_REPLY + '<ws_read path="m1_missing_file.txt"/>';
+const J = JSON.stringify;
 
 function chromePath() {
   if (process.env.CHROME_PATH && fs.existsSync(process.env.CHROME_PATH)) return process.env.CHROME_PATH;
@@ -44,8 +61,43 @@ async function evaluate(cdp, expression) { const r = await cdp.send('Runtime.eva
 async function waitFor(cdp, expression, timeout = 15000) { const end = Date.now() + timeout; while (Date.now() < end) { try { if (await evaluate(cdp, expression)) return true; } catch (e) {} await new Promise(r => setTimeout(r, 120)); } return false; }
 function freePort() { return new Promise((resolve, reject) => { const s = net.createServer(); s.unref(); s.on('error', reject); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(e => e ? reject(e) : resolve(p)); }); }); }
 
+/* 本地 mock OpenAI 兼容端点：记录最近一次请求体（用于证明 Activity Context / 帧真的进了请求）。 */
+function startMockApi() {
+  return new Promise((resolve) => {
+    const captured = { lastBody: '', count: 0, vision: false };
+    const server = http.createServer((req, res) => {
+      const headers = {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type,Authorization,X-API-Key,anthropic-version,x-goog-api-key'
+      };
+      if (req.method === 'OPTIONS') { res.writeHead(204, headers); res.end(); return; }
+      if (req.method === 'POST' && req.url.includes('/chat/completions')) {
+        const chunks = [];
+        req.on('data', c => chunks.push(c));
+        req.on('end', () => {
+          const body = Buffer.concat(chunks).toString('utf8');
+          captured.lastBody = body; captured.count++;
+          if (body.indexOf('image_url') !== -1 || body.indexOf('data:image/jpeg') !== -1) captured.vision = true;
+          /* 工具续轮探针：首次（无「工具执行结果」）返回带工具标签的回复，续轮返回纯文本 */
+          const wantsTool = body.indexOf(TOOL_PROBE) !== -1 && body.indexOf('工具执行结果') === -1;
+          const content = wantsTool ? TOOL_REPLY : MOCK_REPLY;
+          res.writeHead(200, headers);
+          res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content }, finish_reason: 'stop' }] }));
+        });
+        return;
+      }
+      res.writeHead(404, headers);
+      res.end(JSON.stringify({ error: 'not found' }));
+    });
+    server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port, captured }));
+  });
+}
+
 async function main() {
   const chrome = chromePath(); if (!chrome) throw new Error('未找到 Chrome / Edge');
+  const mock = await startMockApi();
   const port = await freePort();
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-activity-smoke-'));
   const browser = spawn(chrome, ['--headless=new','--disable-gpu','--no-sandbox','--no-first-run','--allow-file-access-from-files','--remote-debugging-address=127.0.0.1','--remote-debugging-port=' + port,'--user-data-dir=' + profile,'about:blank'], { stdio: 'ignore' });
@@ -64,28 +116,128 @@ async function main() {
        版本断言按"引入该 store 的版本"而不是把当前 DB_VER 写死：DB_VER 已随 v22/v23
        （understandings / threads）前进，写死 21 只会在每次升版时误报，且不能证明 store 存在。 */
     check('db.stores', await evaluate(cdp, "(async function(){var d=await ensureDB();return DB_VER>=21&&d.objectStoreNames.contains('activities')&&d.objectStoreNames.contains('favorites')})()"));
-    check('dual.activity', await evaluate(cdp, "typeof window.IBActivity==='object'&&typeof IB.activity.createActivity==='function'"));
+    check('dual.activity', await evaluate(cdp, "typeof window.IBActivity==='object'&&typeof IB.activity.createActivity==='function'&&typeof IB.activity.resolveActivity==='function'&&typeof IB.activity.setCurrent==='function'&&typeof IB.activity.clearCurrent==='function'"));
     check('dual.favorites', await evaluate(cdp, "typeof window.favAdd==='function'&&typeof IB.favorites.add==='function'"));
     check('dual.appstore', await evaluate(cdp, "typeof IB.apps==='object'&&typeof IB.apps.register==='function'&&typeof IBApps.boot==='function'"));
 
-    const cfg = "{id:'act_a',provider:'openai',model:'m',endpoint:'http://127.0.0.1:1/v1',apiKey:'',nickname:'书友',systemPrompt:'你是测试角色'}";
-    await evaluate(cdp, "(async function(){await dbPut('apiConfigs'," + cfg + ");await loadApiConfigs();await dbPut('posts',{id:'post_1',title:'夜航西飞',subtitle:'',content:'第一章 启程\\n\\n我们出发时，海面潋滟。\\n\\n第二章 归途\\n\\n彼时潮声未歇。',created:Date.now()});})()");
+    const mockEndpoint = 'http://127.0.0.1:' + mock.port + '/v1/chat/completions';
+    await evaluate(cdp, "(async function(){var mk=function(id,nick){return{id:id,provider:'custom',model:'m',endpoint:" + J(mockEndpoint) + ",apiKey:'',nickname:nick,relationship:'测试',systemPrompt:'你是测试角色',streaming:false,showThinking:false,created:Date.now()}};await dbPut('apiConfigs',mk('act_a','书友'));await dbPut('apiConfigs',mk('act_plain','洁净'));await dbPut('apiConfigs',mk('act_multi','多活动'));await loadApiConfigs();await dbPut('posts',{id:'post_1',title:'夜航西飞',subtitle:'',content:'第一章 启程\\n\\n我们出发时，海面潋滟。\\n\\n第二章 归途\\n\\n彼时潮声未歇。',created:Date.now()});})()");
+    check('configs.ready', await evaluate(cdp, "apiConfigs.length>=3&&apiConfigs.some(function(a){return a.id==='act_a'&&!!a.endpoint})"));
 
-    /* Activity 会话 + 上下文注入 */
-    const act = await evaluate(cdp, "IB.activity.createActivity({type:'coread',roleId:'act_a',resourceId:'post_1',resourceKey:'post_1',title:'夜航西飞',kind:'coread',name:'共读 · 夜航西飞',progress:{page:1,total:2,pct:50,pageText:'我们出发时，海面潋滟。'}}).then(function(a){return{id:a.id,roleId:a.roleId,threadId:a.threadId,type:a.type}})");
-    check('activity.create', act && /^act_/.test(act.id) && act.roleId === 'act_a' && /^thread_/.test(act.threadId), JSON.stringify(act));
-    const found = await evaluate(cdp, "IB.activity.findActivity('coread','act_a','post_1').then(function(a){return!!a})");
-    check('activity.findActivity', found === true, String(found));
+    const countThreads = "(async function(){return (await dbGetAll('chatThreads')).length})()";
+    const threadsBefore = await evaluate(cdp, countThreads);
 
-    /* 上下文：活动频道注入，普通频道不注入 */
-    const ctx = await evaluate(cdp, "IB.activity.getActivityContext('act_a',{threadId:'" + (act ? act.threadId : 'none') + "'})");
-    check('activity.contextInject', typeof ctx === 'string' && ctx.indexOf('共读') >= 0 && ctx.indexOf('夜航西飞') >= 0 && ctx.indexOf('海面潋滟') >= 0, String(ctx).slice(0, 160));
-    const ctxNone = await evaluate(cdp, "IB.activity.getActivityContext('act_a',{threadId:'thread_none'})");
-    check('activity.contextNone', ctxNone === '', String(ctxNone).slice(0, 120));
+    /* ── T1 新建 10 个不同 Cinema → chatThreads +0 ── */
+    const t1 = await evaluate(cdp, "(async function(){var bad=[];for(var i=0;i<10;i++){var a=await IB.activity.createActivity({type:'cinema',roleId:'act_a',resourceId:'cin_'+i,resourceKey:'cin_'+i,title:'片'+i,kind:'cinema',progress:{sec:0}});if(!a||a.threadId)bad.push(i)}return bad.join(',')})()");
+    const threadsAfterCinema = await evaluate(cdp, countThreads);
+    check('T1.newCinemaNoThread', t1 === '', String(t1));
+    check('T1.chatThreadsDelta0', threadsAfterCinema === threadsBefore, threadsBefore + ' -> ' + threadsAfterCinema);
 
-    /* 进度更新 */
-    const prog = await evaluate(cdp, "IB.activity.setProgress('" + (act ? act.id : 'none') + "',{page:2,total:2,pct:100,pageText:'彼时潮声未歇。'}).then(function(a){return a&&a.progress&&a.progress.page})");
+    /* ── T2 新建 Coread → chatThreads +0 ── */
+    const bookId = await evaluate(cdp, "IB.activity.createActivity({type:'coread',roleId:'act_a',resourceId:'book_1',resourceKey:'book_1',title:'书一',kind:'coread',progress:{page:1,total:2,pct:50,pageText:'我们出发时，海面潋滟。'}}).then(function(a){return a?a.id:''})");
+    const threadsAfterCoread = await evaluate(cdp, countThreads);
+    check('T2.coreadNoThread', await evaluate(cdp, "IB.activity.getActivity(" + J(bookId) + ").then(function(a){return !a.threadId})"));
+    check('T2.chatThreadsDelta0', threadsAfterCoread === threadsBefore, threadsBefore + ' -> ' + threadsAfterCoread);
+
+    /* 基础契约（create/find/setProgress/legacy 字段形状） */
+    const act = await evaluate(cdp, "IB.activity.listActivities({type:'cinema',roleId:'act_a'}).then(function(l){return l.length?{id:l[0].id,roleId:l[0].roleId,threadId:l[0].threadId||null,type:l[0].type}:null})");
+    check('activity.create', act && /^act_/.test(act.id) && act.roleId === 'act_a' && act.threadId === null && act.type === 'cinema', JSON.stringify(act));
+    check('activity.findActivity', (await evaluate(cdp, "IB.activity.findActivity('coread','act_a','book_1').then(function(a){return!!a})")) === true);
+    const prog = await evaluate(cdp, "IB.activity.setProgress(" + J(bookId) + ",{page:2,total:2,pct:100,pageText:'彼时潮声未歇。'}).then(function(a){return a&&a.progress&&a.progress.page})");
     check('activity.setProgress', prog === 2, String(prog));
+
+    /* ── T3 Activity 主聊天发送 → Context 正确注入；── T4 user/assistant metadata.activityId 一致 ── */
+    const filmId = await evaluate(cdp, "IB.activity.createActivity({type:'cinema',roleId:'act_a',resourceId:'film_ctx',resourceKey:'film_ctx',title:'测试片A',kind:'cinema',progress:{sec:90,dur:600,subs:[[80,0,'我们出发吧']],recap:''}}).then(function(a){return a.id})");
+    await evaluate(cdp, "IB.activity.setCurrent(" + J(filmId) + ")");
+    check('T3.pointerResolves', (await evaluate(cdp, "IB.activity.resolveActivity('act_a').then(function(r){return r&&r.id})")) === filmId);
+    mock.captured.lastBody = '';
+    const sendRes = await evaluate(cdp, "(async function(){return await IB.activity.send(" + J(filmId) + ",'这一幕怎么样？')})()");
+    check('T3.sendOk', sendRes && sendRes.ok === true, JSON.stringify(sendRes));
+    check('T3.contextInjected', mock.captured.lastBody.indexOf('观影室') >= 0 && mock.captured.lastBody.indexOf('测试片A') >= 0 && mock.captured.lastBody.indexOf('1:30') >= 0, mock.captured.lastBody.slice(-320));
+    const meta4 = await evaluate(cdp, "(async function(){var all=await dbGetAll('chatMessages');var u=null,ai=null;all.forEach(function(m){if(m.role==='user'&&m.content==='这一幕怎么样？')u=m;if(m.role==='assistant'&&m.content===" + J(MOCK_REPLY) + ")ai=m});return JSON.stringify({u:u&&u.metadata&&u.metadata.activityId,a:ai&&ai.metadata&&ai.metadata.activityId,thread:(u&&u.threadId)||null})})()");
+    const mm = JSON.parse(meta4 || '{}');
+    check('T4.userActivityId', mm.u === filmId, meta4);
+    check('T4.assistantActivityId', mm.a === filmId, meta4);
+    check('T4.mainConversation', mm.thread === null, meta4);
+
+    /* ── Cinema 留影帧（request-local）：activity.send → sentImages → provider vision；不落库 ── */
+    mock.captured.vision = false;
+    const vres = await evaluate(cdp, "(async function(){var cv=document.createElement('canvas');cv.width=64;cv.height=48;var cx=cv.getContext('2d');cx.fillStyle='#2a6';cx.fillRect(0,0,64,48);cx.fillStyle='#fc0';cx.fillRect(20,10,24,28);var du=cv.toDataURL('image/jpeg',0.8);return await IB.activity.send(" + J(filmId) + ",'留影这一幕，你看到了吗？',{visionReference:{dataUrl:du}})})()");
+    check('Vision.sendOk', vres && vres.ok === true, JSON.stringify(vres));
+    check('Vision.frameReachesProvider', mock.captured.vision === true, 'captured.vision=' + mock.captured.vision);
+    check('Vision.frameNotPersisted', await evaluate(cdp, "(async function(){var all=await dbGetAll('chatMessages');var u=null;all.forEach(function(m){if(m.role==='user'&&m.content==='留影这一幕，你看到了吗？')u=m});return !!u&&!(u.images&&u.images.length)&&String(u.content||'').indexOf('data:image')===-1})()"));
+
+    /* ── T9 工具续轮 assistant 继承同回合 activityId（真实非流式工具续轮链路：
+       主回复带 ws_read → 工具执行产生反馈 → _wsToolContinueInner 再落一条 assistant） ── */
+    const contSend = await evaluate(cdp, "(async function(){return await IB.activity.send(" + J(filmId) + "," + J(TOOL_PROBE) + ")})()");
+    check('T9.continuationSendOk', contSend && contSend.ok === true, JSON.stringify(contSend));
+    const contMeta = await evaluate(cdp, "(async function(){var all=await dbGetAll('chatMessages');var c=null;all.forEach(function(m){if(m.role==='assistant'&&m.metadata&&typeof m.metadata.toolRound==='number')c=m});return JSON.stringify({act:(c&&c.metadata&&c.metadata.activityId)||null,round:(c&&c.metadata&&typeof c.metadata.toolRound==='number')?c.metadata.toolRound:null,content:(c&&c.content)||null})})()");
+    const cm = JSON.parse(contMeta || '{}');
+    check('T9.toolContinueInheritsActivityId', cm.act === filmId && cm.round >= 1 && cm.content === MOCK_REPLY, String(contMeta));
+
+    /* ── T5 普通聊天无 activityId（act_plain 无任何活动） ── */
+    await evaluate(cdp, "selectFriend('act_plain')");
+    await evaluate(cdp, "(function(){var a=document.getElementById('chat-input'),b=document.getElementById('chat-full-input');if(a)a.value='普通一句';if(b)b.value='普通一句';sendChatMessage()})()");
+    check('T5.replyArrived', await waitFor(cdp, "(async function(){var all=await dbGetAll('chatMessages');return all.some(function(m){return m.friendId==='act_plain'&&m.role==='assistant'})})()", 15000));
+    const t5 = await evaluate(cdp, "(async function(){var all=await dbGetAll('chatMessages');var u=null,ai=null;all.forEach(function(m){if(m.friendId==='act_plain'&&m.role==='user')u=m;if(m.friendId==='act_plain'&&m.role==='assistant')ai=m});return JSON.stringify({u:!(u&&u.metadata&&u.metadata.activityId),a:!(ai&&ai.metadata&&ai.metadata.activityId)})})()");
+    check('T5.noActivityId', t5 === '{"u":true,"a":true}', String(t5));
+
+    /* ── T6 同角色多 Activity → current pointer 只选择一个 ── */
+    const multiIds = JSON.parse(await evaluate(cdp, "(async function(){var A=await IB.activity.createActivity({type:'cinema',roleId:'act_multi',resourceId:'m_a',resourceKey:'m_a',title:'甲片',kind:'cinema',progress:{sec:0}});var B=await IB.activity.createActivity({type:'coread',roleId:'act_multi',resourceId:'m_b',resourceKey:'m_b',title:'乙书',kind:'coread',progress:{page:1,total:1}});return JSON.stringify({a:A.id,b:B.id})})()"));
+    await evaluate(cdp, "IB.activity.setCurrent(" + J(multiIds.b) + ")");
+    check('T6.pointerPicksB', (await evaluate(cdp, "IB.activity.resolveActivity('act_multi').then(function(r){return r&&r.id})")) === multiIds.b);
+    await evaluate(cdp, "IB.activity.setCurrent(" + J(multiIds.a) + ")");
+    check('T6.pointerPicksA', (await evaluate(cdp, "IB.activity.resolveActivity('act_multi').then(function(r){return r&&r.id})")) === multiIds.a);
+
+    /* ── T7 pointer 丢失 → lastActiveAt fallback ── */
+    /* 两个活动显式分时 touch（25ms），保证 lastActiveAt 有确定的大小关系（避免同毫秒并列） */
+    await evaluate(cdp, "(async function(){await IB.activity.setProgress(" + J(multiIds.a) + ",{sec:1});await new Promise(function(r){setTimeout(r,25)});await IB.activity.setProgress(" + J(multiIds.b) + ",{page:1,total:2})})()");
+    await evaluate(cdp, "localStorage.removeItem('ib_activity_current_v1')");
+    const t7r = await evaluate(cdp, "IB.activity.resolveActivity('act_multi').then(function(r){return r?r.id:null})");
+    check('T7.pointerLossFallback', t7r === multiIds.b, 'got=' + t7r + ' want=' + multiIds.b);
+
+    /* ── T8 finished activity 不注入 ── */
+    await evaluate(cdp, "IB.activity.saveActivity(" + J(multiIds.b) + ",{status:'finished'})");
+    check('T8.finishedSkipped', (await evaluate(cdp, "IB.activity.resolveActivity('act_multi').then(function(r){return r&&r.id})")) === multiIds.a);
+    await evaluate(cdp, "IB.activity.saveActivity(" + J(multiIds.a) + ",{status:'finished'})");
+    check('T8.finishedNoInject', (await evaluate(cdp, "IB.activity.getActivityContext('act_multi',{})")) === '');
+
+    /* ── T10 finished activity：send 明确拒绝，不 fallback 到其他 activity ── */
+    const finSend = await evaluate(cdp, "IB.activity.send(" + J(multiIds.a) + ",'不该发出的消息').then(function(r){return JSON.stringify(r)})");
+    check('T10.finishedSendRejected', finSend === J({ ok: false, error: 'activity_finished' }), String(finSend));
+    check('T10.finishedSendNoMessage', await evaluate(cdp, "(async function(){var all=await dbGetAll('chatMessages');return !all.some(function(m){return m.content==='不该发出的消息'})})()"));
+
+    /* ── Legacy fallback 隔离：主对话不注入 legacy activity；旧频道锚仍正常注入 ── */
+    await evaluate(cdp, "(async function(){await dbPut('chatThreads',{id:'thread_lg1',friendId:'act_lg1',name:'观影室 · 旧片二号',kind:'cinema',quiet:true,memoryEnabled:true,created:Date.now()});await dbPut('activities',{id:'act_lg1_1',type:'cinema',roleId:'act_lg1',resourceId:'lg1_key',resourceKey:'lg1_key',title:'旧片二号',kind:'cinema',threadId:'thread_lg1',progress:{sec:42,dur:100,subs:[],recap:''},bookmarks:[],recap:'',config:{},status:'active',createdAt:Date.now(),updatedAt:Date.now(),lastActiveAt:Date.now()})})()");
+    check('legacy.mainChatNoInject', (await evaluate(cdp, "IB.activity.getActivityContext('act_lg1',{})")) === '');
+    check('legacy.resolveNullInMain', (await evaluate(cdp, "IB.activity.resolveActivity('act_lg1').then(function(r){return r?r.id:null})")) === null);
+    check('legacy.threadStillInjects', String(await evaluate(cdp, "IB.activity.getActivityContext('act_lg1',{threadId:'thread_lg1'})")).indexOf('旧片二号') >= 0);
+    await evaluate(cdp, "IB.activity.setCurrent('act_lg1_1')");
+    check('legacy.pointerDoesNotLeakToMain', (await evaluate(cdp, "IB.activity.getActivityContext('act_lg1',{})")) === '');
+    check('legacy.pointerThreadStillInjects', String(await evaluate(cdp, "IB.activity.getActivityContext('act_lg1',{threadId:'thread_lg1'})")).indexOf('旧片二号') >= 0);
+    await evaluate(cdp, "IB.activity.clearCurrent('act_lg1')");
+
+    /* 无活动角色不注入（替代旧“普通频道不注入”的平面断言） */
+    check('activity.contextNoActivity', (await evaluate(cdp, "IB.activity.getActivityContext('act_plain',{})")) === '');
+    check('activity.contextUnknownRole', (await evaluate(cdp, "IB.activity.getActivityContext('nobody',{activityId:" + J(filmId) + "})")) === '');
+
+    /* ── Legacy 兼容：旧 cinema 频道只读保留并可继续工作 ── */
+    await evaluate(cdp, "(async function(){await dbPut('chatThreads',{id:'thread_legacy1',friendId:'act_a',name:'观影室 · 旧片',kind:'cinema',quiet:true,memoryEnabled:true,created:Date.now()});await dbPut('activities',{id:'act_legacy1',type:'cinema',roleId:'act_a',resourceId:'legacy_key',resourceKey:'legacy_key',title:'旧片存档',kind:'cinema',threadId:'thread_legacy1',progress:{sec:10,dur:100,subs:[],recap:''},bookmarks:[],recap:'',config:{},status:'active',createdAt:Date.now(),updatedAt:Date.now(),lastActiveAt:Date.now()})})()");
+    const legCtx = await evaluate(cdp, "IB.activity.getActivityContext('act_a',{threadId:'thread_legacy1'})");
+    check('legacy.contextInject', typeof legCtx === 'string' && legCtx.indexOf('旧片存档') >= 0 && legCtx.indexOf('测试片A') === -1, String(legCtx).slice(0, 160));
+    const legSend = await evaluate(cdp, "(async function(){return await IB.activity.send('act_legacy1','旧频道继续聊')})()");
+    check('legacy.sendOk', legSend && legSend.ok === true, JSON.stringify(legSend));
+    check('legacy.replyInOldThread', await waitFor(cdp, "(async function(){var all=await dbGetAll('chatMessages');return all.some(function(m){return m.role==='assistant'&&m.threadId==='thread_legacy1'})})()", 15000));
+    const legStore = await evaluate(cdp, "(async function(){var all=await dbGetAll('chatMessages');var u=null;all.forEach(function(m){if(m.role==='user'&&m.content==='旧频道继续聊')u=m});return JSON.stringify({thread:(u&&u.threadId)||null,act:u&&u.metadata&&u.metadata.activityId})})()");
+    check('legacy.userInOldThread', legStore === J({ thread: 'thread_legacy1', act: 'act_legacy1' }), String(legStore));
+
+    /* openChat：新活动 → 主对话 + current；legacy → 旧频道 */
+    await evaluate(cdp, "IB.activity.openChat(" + J(filmId) + ")");
+    await new Promise(r => setTimeout(r, 200));
+    check('openChat.newActivityMain', await evaluate(cdp, "activeFriendId==='act_a'&&!activeThreadId"));
+    await evaluate(cdp, "IB.activity.openChat('act_legacy1')");
+    await new Promise(r => setTimeout(r, 200));
+    check('legacy.openChatSelectsThread', await evaluate(cdp, "activeFriendId==='act_a'&&activeThreadId==='thread_legacy1'"));
 
     /* 收藏层（跨模块） */
     const fav = await evaluate(cdp, "IB.favorites.add({type:'blog',roleId:'',sourceId:'post_1',title:'夜航西飞',body:'书签一段'});IB.favorites.add({type:'chat',roleId:'act_a',sourceId:'msg_x',body:'一句值得留的话'}).then(function(){return IB.favorites.count()})");
@@ -102,7 +254,7 @@ async function main() {
     check('appstore.install', await evaluate(cdp, "(function(){IB.apps.install('cinema');return IB.apps.isInstalled('cinema')})()"));
     check('appstore.registerGate', await evaluate(cdp, "IB.apps.register({id:'xx_bad--',name:'x',sdk:3,mount:function(){}})===false&&IB.apps.register({id:'good',name:'g',sdk:2,mount:function(){}})===true"));
 
-    /* 共读间书架渲染 */
+    /* 共读间书架渲染（coreadOpen 会为新活动 setCurrent，不影响已有断言） */
     await evaluate(cdp, "loadCoreadPage()");
     check('coread.shelf', await waitFor(cdp, "document.querySelectorAll('.cr-book').length>=1"));
     check('coread.open', await evaluate(cdp, "coreadOpen('post_1').then(function(){return document.getElementById('coread-read-view').style.display==='block'})"));
@@ -112,21 +264,23 @@ async function main() {
     check('favorites.render', await waitFor(cdp, "document.querySelectorAll('.fav-paper').length>=1"));
 
     /* Proactive 联动：nudge 应写出一条活动感知的主动计划 */
-    check('activity.nudge', await evaluate(cdp, "(async function(){await IB.activity.nudge({activityId:'" + (act ? act.id : 'none') + "'});var plans=await dbGetAll('active_message_plans');return plans.some(function(p){return p.characterId==='act_a'&&p.source==='ai_planned'&&p.intent&&p.intent.indexOf('共读')>=0})})()"));
+    check('activity.nudge', await evaluate(cdp, "(async function(){await IB.activity.nudge({activityId:" + J(bookId) + "});var plans=await dbGetAll('active_message_plans');return plans.some(function(p){return p.characterId==='act_a'&&p.source==='ai_planned'&&p.intent&&p.intent.indexOf('共读')>=0})})()"));
 
     /* Favorites 复用控件：makeBtn / starCard / 跳回原内容 */
     check('fav.controls', await evaluate(cdp, "typeof IB.favorites.makeBtn==='function'&&typeof IB.favorites.starCard==='function'&&typeof window._favOpenItem==='function'"));
     check('fav.starCard', await evaluate(cdp, "(function(){var el=document.createElement('div');var b=IB.favorites.starCard(el,{type:'blog',sourceId:'post_1',title:'t',body:'b'});return el.contains(b)&&b.className.indexOf('fav-toggle-btn')>=0})()"));
 
-    /* Cinema 流式接入：宿主 broadcast → 打开中的 App 经 ctx.on('message'|'turn') 收到 */
-    const streamGot = await evaluate(cdp, "(async function(){var got=[];IB.apps.register({id:'mockapp',name:'mock',sdk:2,mount:async function(h,c){c.on('message',function(m){got.push('m:'+(m&&m.content))});c.on('turn',function(t){got.push('turn:'+(t&&t.state))})}});IB.apps.open('mockapp');IB.apps.broadcast('message',{role:'assistant',content:'弹幕内容'});IB.apps.broadcast('turn',{state:'end'});await new Promise(function(r){setTimeout(r,60)});return got.join(',')})()");
-    check('appstream.emit', /m:弹幕内容/.test(streamGot || '') && /turn:end/.test(streamGot || ''), String(streamGot));
+    /* Cinema 流式接入：宿主 broadcast → 打开中的 App 经 ctx.on('message'|'turn') 收到；
+       M1：payload 新增 activityId 字段，Cinema 小窗据此过滤（此处只证明字段可透传且不破坏旧消费者）。 */
+    const streamGot = await evaluate(cdp, "(async function(){var got=[];IB.apps.register({id:'mockapp',name:'mock',sdk:2,mount:async function(h,c){c.on('message',function(m){got.push('m:'+(m&&m.content)+':'+(m&&m.activityId))});c.on('turn',function(t){got.push('turn:'+(t&&t.state))})}});IB.apps.open('mockapp');IB.apps.broadcast('message',{role:'assistant',content:'弹幕内容',activityId:'act_x'});IB.apps.broadcast('turn',{state:'end',activityId:'act_x'});await new Promise(function(r){setTimeout(r,60)});return got.join(',')})()");
+    check('appstream.emit', /m:弹幕内容:act_x/.test(streamGot || '') && /turn:end/.test(streamGot || ''), String(streamGot));
 
     await new Promise(r => setTimeout(r, 300));
     check('runtime.noExceptions', exceptions.length === 0, exceptions.join('\n').slice(0, 500));
     console.log(failures ? '\nActivity/Favorites/AppStore smoke failed: ' + failures : '\nActivity/Favorites/AppStore smoke passed ✔');
   } finally {
     if (cdp) cdp.close(); try { browser.kill(); } catch (e) {}
+    try { mock.server.close(); } catch (e) {}
     try { fs.rmSync(profile, { recursive: true, force: true }); } catch (e) {}
   }
   if (failures) process.exitCode = 1;
