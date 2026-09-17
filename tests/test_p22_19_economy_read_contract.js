@@ -460,9 +460,13 @@ check('E4 ★★★★★ 本阶段**没有**抬 schema 水位、没有新表、
     const store = stripComments(read('services/home-node/economy-store.js'));
     /* ★ 水位是"这个库属于哪一代 schema"的权威。P22-19 只加了两个 SQL 常量
        与一个读方法，**不该**抬它 —— 抬了就意味着有迁移，而有迁移就意味着
-       本阶段动了写入侧。 */
-    return store.indexOf('const ECONOMY_SCHEMA_VERSION = 7;') >= 0 &&
-      store.indexOf('ECONOMY_SCHEMA_VERSION = 8') < 0 &&
+       本阶段动了写入侧。
+       ★★ P22-26：水位确实抬到了 8（`quotes.units`，见
+       `docs/ECONOMY_V1_FROZEN_CONTRACT.md` §1 的申报）。因此这里不再把
+       "恰好是 7"写死 —— 那条字面量会让这条断言在下一次**已申报**的抬水位
+       之后以红色的假象失败，而它要证明的那件事一个字没变。剩下三条判据
+       （没有第二个数据库 / 物化分析表 / 事件表）反而是更硬的那一半。 */
+    return store.indexOf('const ECONOMY_SCHEMA_VERSION = 8;') >= 0 &&
       store.indexOf('economy_events') < 0 &&
       store.indexOf('economy_read_model') < 0 &&
       store.indexOf('materialized') < 0 &&

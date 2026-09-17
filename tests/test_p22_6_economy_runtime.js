@@ -225,10 +225,10 @@ section('A · 装配形状：能力在 store 上，一个购买写方法都不�
     Object.keys(SERVICE.economyStore).filter(k => /Purchase/.test(k)));
   check('A4 装配层**没有**为每条路由复制一份逻辑（新路由只是把参数转给 store）',
     src.indexOf('/economy/purchase') < 0 && src.indexOf('/economy/purchases') < 0);
-  check('A5 ★ 生产 store 的 schema 水位恰好是 7（P22-6 是 5，P22-7 抬到 6，P22-8 抬到 7），且与 store 模块自身声明一致',
+  check('A5 ★ 生产 store 的 schema 水位 ≥ 8（P22-6 是 5，P22-7 抬到 6，P22-8 抬到 7，P22-26 抬到 8），且与 store 模块自身声明一致',
     Number(SERVICE.economyStore.SCHEMA_VERSION) ===
     Number(require(path.join(ROOT, 'services', 'home-node', 'economy-store.js')).SCHEMA_VERSION) &&
-    Number(SERVICE.economyStore.SCHEMA_VERSION) === 7,
+    Number(SERVICE.economyStore.SCHEMA_VERSION) >= 8,
     { service: SERVICE.economyStore.SCHEMA_VERSION });
   check('A6 ★ 生产 store 上**不存在** refund / reverse / 决策 / 推荐 的入口',
     ['refundPurchase', 'reversePurchase', 'chargeback', 'decide', 'recommendProducts',
@@ -251,8 +251,10 @@ section('B · 真实 production Home Node：购买读面可用、写面不存在
   /* ── Economy 面 ─────────────────────────────────────────────────── */
   const health = await request(svc.port, 'GET', '/economy/health');
   const econ = health.body && health.body.economy ? health.body.economy : {};
-  check('B2 P22-6 的库被真实 store 打开（schema 水位 = 7，Economy READY）',
-    health.status === 200 && Number(econ.schemaVersion) === 7 && econ.state === 'READY',
+  check('B2 P22-6 的库被真实 store 打开（schema 水位 = SCHEMA_VERSION，Economy READY）',
+    health.status === 200 &&
+    Number(econ.schemaVersion) === Number(SERVICE.economyStore.SCHEMA_VERSION) &&
+    econ.state === 'READY',
     health.body);
   check('B3 ★ health 自述里 purchase 面是"已实现 + 不暴露 HTTP"并存',
     econ.purchaseImplemented === true &&
@@ -317,8 +319,9 @@ section('B · 真实 production Home Node：购买读面可用、写面不存在
   await stopProduction(svc);
   const svc2 = await startProduction(dir);
   const up2 = await waitListening(svc2, 20000);
-  check('B10 重启：同一个库再次打开，水位仍然是 7', up2 === true &&
-    Number(((await request(svc2.port, 'GET', '/economy/health')).body.economy || {}).schemaVersion) === 7, svc2.output());
+  check('B10 重启：同一个库再次打开，水位仍然是 SCHEMA_VERSION（不是"被悄悄抬过一次"）', up2 === true &&
+    Number(((await request(svc2.port, 'GET', '/economy/health')).body.economy || {}).schemaVersion) ===
+    Number(SERVICE.economyStore.SCHEMA_VERSION), svc2.output());
   const afterRestart = await request(svc2.port, 'GET', '/economy/purchases');
   check('B11 ★★ 重启之后同一条购买**逐字相同**（Purchase / Quote / Reservation 三样结论不变）',
     afterRestart.status === 200 && afterRestart.body.purchases.length === 1 &&

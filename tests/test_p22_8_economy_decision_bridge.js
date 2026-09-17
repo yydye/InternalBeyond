@@ -1217,14 +1217,48 @@ section('L · 表结构的边界（"没有地方可以读价格"）');
       return !/DELETE\s+FROM\s+economy_/i.test(stripped);
     })());
 
-  check('L5 ★ schema 水位抬到 7，而 6 → 7 的迁移是**空**的（新实体 → 补表，不是 ALTER）',
-    createEconomyStore.SCHEMA_VERSION === 7 &&
+  /* ★★ P22-26 更新了这两条的**字面话**（水位 7 → 8），判据一个字没改：
+     · 6 → 7 仍然是**空**的（新实体 → 补表），它证明的是"P22-8 没有改写
+       任何既有行"；
+     · 而 P22-26 又加了一条**非空**迁移（7 → 8 给 quotes 补 units 一列），
+       因此"最新那一条是空的"不再为真 —— 它本来也不该为真。新增的 L5B
+       单独把 7 → 8 钉住：它**必须**ALTER，而且**必须**只加列。 */
+  check('L5 ★ schema 水位抬到 8，而 6 → 7 的迁移仍然是**空**的（新实体 → 补表，不是 ALTER）',
+    createEconomyStore.SCHEMA_VERSION === 8 &&
     (function () {
-      const migrations = STORE_SOURCE.match(/\{\s*from:\s*6,\s*to:\s*7,[\s\S]{0,400}?\n\s{4}\}/);
-      return migrations != null && migrations[0].indexOf('ALTER') < 0;
+      /* ★ 窗口必须恰好是那条迁移**自己**的正文：`from: 6, to: 7` 的声明后面
+         跟着的是**下一条**迁移的说明注释（那段注释里就写着 `ALTER TABLE`
+         这几个字 —— 它在描述那一列，不是在执行），因此窗口的上界是下一条
+         说明注释的开头，而不是下一条声明的开头。开发期实测踩到过这一点：
+         取到下一条声明时，这条断言以"红色的假象"失败。
+         ★ 而且 6 → 7 的声明比 7 → 8 的说明注释更早出现，所以"注释先于声明"
+         这件事是这一段的**结构**，不是巧合 —— 用 indexOf 两次即可。 */
+      const at = STORE_SOURCE.indexOf('from: 6, to: 7');
+      if (at < 0) return false;
+      const nextComment = STORE_SOURCE.indexOf('── 7 → 8（P22-26）', at);
+      if (nextComment < 0) return false;
+      const block = STORE_SOURCE.slice(at, nextComment);
+      /* 6 → 7 是**空**的：它的正文里连 ALTER 这几个字母都不该出现。 */
+      return block.indexOf('ALTER') < 0 && block.indexOf('apply') >= 0 && block.length < 400;
     })());
 
-  check('L6 ★ 一个 schema 6 的库（P22-7 写的）打开之后水位变成 7，而且**补上了**新表',
+  /* ── L5B · P22-26 的 7 → 8 是与 6 → 7 恰好相反的那种迁移 ──────────────
+     它是**既有实体上的新事实**（quotes 多一列 units），因此必须是非空的
+     ALTER —— 而它又必须**只加列**：没有任何 UPDATE / DELETE / INSERT，
+     于是"P22-26 没有改写任何既有值"由这条直接证明（既有数据逐字节不变
+     另有 P22-5 的 J1/J2 用行为证明）。
+     ★ 判据用"块里有没有那三样动词"，而不是"块的长度" —— 与 L5 同款。 */
+  check('L5B ★ 7 → 8 **不是**空迁移：它 ALTER quotes 补一列 units，且只加列、不改写任何既有值',
+    (function () {
+      const at = STORE_SOURCE.indexOf('from: 7, to: 8');
+      if (at < 0) return false;
+      const block = STORE_SOURCE.slice(at, at + 1200);
+      return block.indexOf('ALTER TABLE') >= 0 &&
+        block.indexOf('ADD COLUMN units INTEGER NOT NULL') >= 0 &&
+        block.indexOf('UPDATE ') < 0 && block.indexOf('DELETE ') < 0 && block.indexOf('INSERT ') < 0;
+    })());
+
+  check('L6 ★ 一个 schema 6 的库（P22-7 写的）打开之后水位变成 8，而且**补上了**新表',
     (function () {
       const dir = tmpDir('l6');
       /* 手工造一个 P22-7 的库：用当前 build 建库之后把水位改回 6 再删掉新表，
@@ -1240,13 +1274,13 @@ section('L · 表结构的边界（"没有地方可以读价格"）');
       const s2 = createEconomyStore({ dataDir: dir, logger: () => {} });
       const opened = s2.open();
       const ok = opened.ok === true &&
-        s2.schemaVersionForTest() === 7 &&
+        s2.schemaVersionForTest() === 8 &&
         intentStates(s2).PROPOSED === 0;
       s2.close();
       return ok;
     })());
 
-  check('L7 ★ 一个"更新的 build 写的库"（水位 8）被**拒绝**，而且拒绝是只读的',
+  check('L7 ★ 一个"更新的 build 写的库"（水位 9）被**拒绝**，而且拒绝是只读的',
     (function () {
       const dir = tmpDir('l7');
       const s1 = createEconomyStore({ dataDir: dir, logger: () => {} });
@@ -1255,7 +1289,10 @@ section('L · 表结构的边界（"没有地方可以读价格"）');
       const sqlite = require('node:sqlite');
       const db = new sqlite.DatabaseSync(path.join(dir, 'home-node.db'));
       db.exec('DROP TABLE economy_purchase_intents');
-      db.exec("UPDATE economy_meta SET value='8' WHERE key='economy_schema'");
+      /* ★ 比当前水位**大一**：这个数字必须跟着 SCHEMA_VERSION 走，否则
+         下一次抬水位时这条断言会变成"打开一个同代库"，于是它证明的东西
+         （不降级）静默消失。 */
+      db.exec("UPDATE economy_meta SET value='" + (Number(createEconomyStore.SCHEMA_VERSION) + 1) + "' WHERE key='economy_schema'");
       db.close();
       const s2 = createEconomyStore({ dataDir: dir, logger: () => {} });
       let threw = null;

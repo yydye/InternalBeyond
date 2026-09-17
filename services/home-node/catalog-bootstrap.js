@@ -68,6 +68,11 @@
 const fs = require('fs');
 const path = require('path');
 
+/* 唯一一次 require：那份契约。派生链（kind → fulfillment → settlement
+   primitive）出自它，本文件**不复制**任何一张派生表 —— 复制的症状是"预检
+   说能买、prepare 说买不了"，而那正是本阶段要消灭的那种不一致。 */
+const C = require('./economy-contract.js');
+
 /* 仓库里图片资产的根（相对仓库根）。HTTP 层引用图片 URL 时只从这里取。 */
 const ASSET_ROOT = path.join(__dirname, '..', '..', 'assets', 'economy');
 const ASSET_ROOT_URL = '/assets/economy/';
@@ -85,16 +90,50 @@ function assetKeyIsCanonical(value) {
   return typeof value === 'string' && ASSET_KEY_RE.test(value);
 }
 
-/* ── 冻结的种子（版本 v1）──────────────────────────────────────────────
-   六个商品覆盖四种交付形态，service 是那个"买完不增加库存"的反例（§27）：
-     DIGITAL_ITEM → INVENTORY_GRANT / ITEM       （持有物）
-     CONSUMABLE   → INVENTORY_GRANT / ITEM       （消耗品）
-     API_QUOTA    → COMPUTE_GRANT   / COMPUTE    （算力）
-     SERVICE      → SERVICE_EXECUTION / null     （执行，不持有）
+/* ── 冻结的种子（版本 v2）──────────────────────────────────────────────
+   五件商品覆盖三种交付形态，而**每一种都能被买**（下面那条载入期断言
+   把这句话变成了结构）：
+
+     DIGITAL_ITEM → INVENTORY_GRANT / ITEM     （持有物）
+     CONSUMABLE   → INVENTORY_GRANT / ITEM     （消耗品，可以被用掉）
+     API_QUOTA    → COMPUTE_GRANT   / COMPUTE  （算力）
+
    规格（kind / fulfillment / assetKind / unitName / grantQuantity）由
    economy-contract.js 派生与冻结，这里**不重复声明**它们 —— 一份事实
-   只有一个来源，种子里多写一遍只会制造第二个可能漂移的答案。 */
-const SEED_VERSION = 'v1';
+   只有一个来源，种子里多写一遍只会制造第二个可能漂移的答案。
+
+   ── v1 → v2 的两处差异，以及它们各自的原因 ────────────────────────────
+   ① **去掉 SERVICE（Agent 编排服务）**。它在 v1 里是一件真商品，而它
+      `PURCHASE_NOT_SUPPORTED`：`SETTLEMENT_PRIMITIVE_OF_FULFILLMENT.
+      SERVICE_EXECUTION` 是 `null`（那一句注释逐字写着"需要 Action 层"），
+      因此 preparePurchase 在**预留之前**就拒绝。
+      ★ 一个商店不应该陈列无法结算的商品。这一条不是一个偏好，而是一条
+      结构性规则 —— 它由下面那条载入期断言表达（见 §载入期核对）。
+      ★ `SERVICE` **保留在 `PRODUCT_KIND` 里**（那五个成员是冻结的，本阶段
+      一个字不动），只是目录不发布它。
+
+   ② **每一件商品多一个 `rarity`**（封闭集合，只用于展示）。
+      它是一个纯粹的呈现标签，而它唯一危险的用法是变成定价或可用性的输入
+      —— 那正是 `PRICING_IS_RELATIONSHIP_FREE` 与 `FORBIDDEN_PRODUCT_FIELDS`
+      要挡的东西。因此它**不在 `products` 表里**、不进 DTO、不参与任何判定：
+      它只存在于这一份目录层数据里，而"没有任何经济代码读它"是一条可断言
+      的性质（见 tests/test_p22_26_catalog_v2.js 的 D 组）。
+      ★ 封闭集合而不是自由文本：一个无上界的文本字段是一条把任意正文塞进
+      目录的通道（P22-5 §19 的同一条理由）。
+      ★ 它与 `effect` 的区别是**决定性的**：`effect` 是一个有经济含义的
+      概念，因此不该有第二个名字；`rarity` 没有任何经济含义，因此它不制造
+      第二套答案 —— 但它的安全性必须由"没有经济代码读它"来保证。
+    */
+const SEED_VERSION = 'v2';
+
+/* 目录层的 rarity 词表。**只有三个成员**，而且它们的名字刻意是"程度词"
+   而不是游戏术语：本域没有等级、没有属性、没有掉落。 */
+const RARITY = Object.freeze({
+  COMMON: 'COMMON',
+  NOTABLE: 'NOTABLE',
+  RARE: 'RARE'
+});
+const RARITIES = Object.freeze(Object.keys(RARITY));
 
 const SEED = Object.freeze({
   version: SEED_VERSION,
@@ -108,50 +147,43 @@ const SEED = Object.freeze({
   products: Object.freeze([
     Object.freeze({
       productId: 'econ_product_catalog_memory_expansion',
-      kind: 'CONSUMABLE', name: '记忆扩容胶囊',
+      kind: 'CONSUMABLE', name: '记忆扩容胶囊', rarity: RARITY.COMMON,
       description: '一次性的记忆容量扩容。用掉之后这一段经历仍然留在时间线上。',
       unitPriceMinor: 400, grantQuantity: 1,
       imageKey: 'catalog/memory-expansion.webp'
     }),
     Object.freeze({
       productId: 'econ_product_catalog_room_decoration',
-      kind: 'DIGITAL_ITEM', name: '虚拟空间组件',
+      kind: 'DIGITAL_ITEM', name: '虚拟空间组件', rarity: RARITY.COMMON,
       description: '为共同的空间添一件摆设。持有即可，不会消耗。',
       unitPriceMinor: 600, grantQuantity: 1,
       imageKey: 'catalog/space-module.webp'
     }),
     Object.freeze({
       productId: 'econ_product_catalog_voice_pack',
-      kind: 'DIGITAL_ITEM', name: '声线素材包',
+      kind: 'DIGITAL_ITEM', name: '声线素材包', rarity: RARITY.RARE,
       description: '一组可反复使用的声线素材。它是数字资产，不是订阅。',
       unitPriceMinor: 900, grantQuantity: 1,
       imageKey: 'catalog/voice-pack.webp'
     }),
     Object.freeze({
       productId: 'econ_product_catalog_gift_box',
-      kind: 'CONSUMABLE', name: '心意礼盒',
+      kind: 'CONSUMABLE', name: '心意礼盒', rarity: RARITY.NOTABLE,
       description: '一份可以送给某位同伴的心意。送出即消耗。',
       unitPriceMinor: 150, grantQuantity: 1,
       imageKey: 'catalog/gift-box.webp'
     }),
     Object.freeze({
       productId: 'econ_product_catalog_compute_credit',
-      kind: 'API_QUOTA', name: '算力额度包',
+      kind: 'API_QUOTA', name: '算力额度包', rarity: RARITY.NOTABLE,
       description: '一小份算力额度，用于让思考继续下去。计量单位是 computeUnit。',
       unitPriceMinor: 800, grantQuantity: 1000,
       imageKey: 'catalog/compute-credit.webp'
-    }),
-    Object.freeze({
-      productId: 'econ_product_catalog_agent_orchestration',
-      kind: 'SERVICE', name: 'Agent 编排服务',
-      description: '一次由 Agent 完成的编排工作。它交付的是一次执行，不产生库存。',
-      unitPriceMinor: 500, grantQuantity: 0,
-      imageKey: 'catalog/agent-orchestration.webp'
     })
   ])
 });
 
-/* ── 种子资产的**载入期核对**（fail closed）────────────────────────────
+/* ══ 载入期核对 ①：种子引用的图片真的在仓库里（fail closed）════════════
    这里检查的是"种子引用的文件真的在仓库里"，而不是"URL 拼对了没有"。
    两者不是同一件事：一个拼错的名字会让后端 200、前端 404。 */
 const SEED_ASSET_KEYS = Object.freeze([SEED.store.imageKey].concat(
@@ -175,9 +207,91 @@ function missingSeedAssets() {
 const MISSING_ASSETS = missingSeedAssets();
 if (MISSING_ASSETS.length) {
   /* 抛而不是警告：一个引用了不存在图片的种子，会把这个世界的目录变成
-     六张破图。宁可让节点起不来，也不要静默地发布一个坏目录。 */
+     几张破图。宁可让节点起不来，也不要静默地发布一个坏目录。 */
   throw new Error('catalog seed references assets that do not exist: '
     + MISSING_ASSETS.join(', '));
+}
+
+/* ══ 载入期核对 ②：**不得发布买不了的商品**（P22-26 新增，fail closed）══
+   ★ 这一条是本阶段最重要的一条结构性规则，而不是一条纪律。
+
+   判据是**派生链**，不是一张手写名单：
+     kind → fulfillmentOfProductKind(kind)        （P22-5 冻结的派生表）
+          → settlementPrimitiveOfFulfillment(·)   （结算原语登记表）
+          → primitive !== null                    （买了之后真的能发货）
+   今天 `SERVICE_EXECUTION` 的原语是 `null`（"需要 Action 层"），因此任何
+   一件 `SERVICE` 商品在这里让 `require` 直接抛 —— 目录 v1 里那件
+   `agent_orchestration` 正是这样一件商品，而它现在不在种子里了。
+
+   ★ 为什么必须是**载入期**（而不是启动后的巡检）：一个陈列着买不了的商品
+   的商店，其缺陷在用户点下去的那一刻才显形，而那一刻离"谁把它放进去的"
+   已经很远。让它连**启动**都做不到，缺陷就永远不可能被发布出去。
+   ★ 为什么用派生而不是手写名单：手写名单会漂移（"以后有人给 SERVICE 填上
+   原语时忘了从名单里删掉它"），而派生链不会 —— 它读的就是 prepare 读的
+   那一份登记表。
+   ★ 与图片那条断言的区别：图片那条检查**仓库里有没有那个文件**，这条检查
+   **这个商品买了之后能不能发货**。两者都是"坏目录不可能被启动起来"，但
+   它们防的是两件不同的事。 */
+function unfulfillableSeedProducts() {
+  const problems = [];
+  for (let i = 0; i < SEED.products.length; i += 1) {
+    const p = SEED.products[i];
+    const fulfillment = C.fulfillmentOfProductKind(p.kind);
+    if (!C.isFulfillment(fulfillment)) {
+      problems.push(p.productId + ':product-kind-has-no-fulfillment:' + String(p.kind));
+      continue;
+    }
+    const primitive = C.settlementPrimitiveOfFulfillment(fulfillment);
+    if (primitive.ok !== true || primitive.primitive == null) {
+      problems.push(p.productId + ':no-settlement-primitive-for:' + String(fulfillment));
+    }
+  }
+  return problems;
+}
+
+const UNFULFILLABLE = unfulfillableSeedProducts();
+if (UNFULFILLABLE.length) {
+  /* 措辞刻意点明"这是目录的定义错了，不是运行时抖了一下"。 */
+  throw new Error('catalog seed would publish products that cannot be purchased: '
+    + UNFULFILLABLE.join(', ')
+    + ' —— a store must not display what it cannot settle');
+}
+
+/* ══ 载入期核对 ③：rarity 的取值全在封闭集合里 ═════════════════════════
+   与上面两条同一种做法：一个坏的目录定义不可能被启动起来。而它同时证明了
+   "rarity 只能取那三个值"不是一句注释。 */
+const BAD_RARITIES = SEED.products
+  .filter(function (p) { return RARITIES.indexOf(p.rarity) < 0; })
+  .map(function (p) { return p.productId + ':rarity-not-in-closed-set:' + String(p.rarity); });
+if (BAD_RARITIES.length) {
+  throw new Error('catalog seed has rarities outside the closed set: ' + BAD_RARITIES.join(', '));
+}
+
+/* ══ 载入期核对 ④：种子条目里**没有** `effect` 键 ══════════════════════
+   "买完发生什么"已经被 `kind → fulfillment → assetKind` 完整编码，而那是
+   P22-5 冻结的**唯一**一份编码。再加一个 catalog 层的 effect 就是同一件事
+   的第二个答案 —— 而第二个答案漂移的症状（"effect 说是消耗品、fulfillment
+   说是 grant"）只会在很久以后被一次审计发现。
+   ★ 契约里**已经**有一套 `EFFECT_TYPE`（P22-1 §15，有测试、零生产调用）。
+   本阶段不收敛那处不一致（它是独立阶段），但**绝不**在这里造第三套。 */
+const FORBIDDEN_SEED_PRODUCT_KEYS = Object.freeze([
+  'effect', 'effects', 'behavior', 'behaviorScript', 'onPurchase', 'onUse',
+  'category', 'icon', 'level', 'tier', 'attack', 'equipSlot',
+  'discount', 'promo', 'featured', 'recommended', 'personalized'
+]);
+const SEED_KEY_VIOLATIONS = [];
+for (let i = 0; i < SEED.products.length; i += 1) {
+  const p = SEED.products[i];
+  for (let k = 0; k < FORBIDDEN_SEED_PRODUCT_KEYS.length; k += 1) {
+    const key = FORBIDDEN_SEED_PRODUCT_KEYS[k];
+    if (Object.prototype.hasOwnProperty.call(p, key)) {
+      SEED_KEY_VIOLATIONS.push(p.productId + ':' + key);
+    }
+  }
+}
+if (SEED_KEY_VIOLATIONS.length) {
+  throw new Error('catalog seed carries keys that would create a second vocabulary: '
+    + SEED_KEY_VIOLATIONS.join(', '));
 }
 
 /* ── 商品 → 图片引用（HTTP 层的**唯一**取值点）─────────────────────────
@@ -206,6 +320,32 @@ function imageKeyFor(productId) {
 function imageUrlFor(productId) {
   const key = imageKeyFor(productId);
   return key == null ? null : ASSET_ROOT_URL + key;
+}
+
+/* ── 商品 → rarity（目录层的**唯一**取值点）─────────────────────────────
+   ★ 它与 `IMAGE_KEY_BY_PRODUCT` 是同一种做法：一张只读映射，而不是第二个
+   事实。**它不进 products 表** —— 那会让 rarity 变成"商品的一列"，而商品
+   的列是被经济代码读的（quote / availability / entitlement 都从那里取数）。
+   rarity 的全部意义是"呈现层可以读它"，因此它长在目录层。
+
+   ★ 判据是可断言的：`rarityFor` 的**唯一**调用方是呈现层，而
+   `productQuoteAmountMinor` / `productAvailabilityForQuote` 的源码里
+   `rarity` 零命中 —— 那一条由 tests/test_p22_26_catalog_v2.js 的 D 组
+   逐字证明，不由这里的一句注释保证。 */
+const RARITY_OF_PRODUCT = (function () {
+  const map = Object.create(null);
+  for (let i = 0; i < SEED.products.length; i += 1) {
+    map[SEED.products[i].productId] = SEED.products[i].rarity;
+  }
+  return Object.freeze(map);
+})();
+
+/** 商品的 rarity（例：'COMMON'），非种子商品为 null。**只用于展示。** */
+function rarityFor(productId) {
+  if (productId == null) return null;
+  const id = String(productId);
+  return Object.prototype.hasOwnProperty.call(RARITY_OF_PRODUCT, id)
+    ? RARITY_OF_PRODUCT[id] : null;
 }
 
 /* ── 幂等键：**版本化常量**，不是随机值 ────────────────────────────────
@@ -331,5 +471,17 @@ module.exports = {
   imageKeyFor: imageKeyFor,
   imageUrlFor: imageUrlFor,
   idempotencyKeyFor: idempotencyKeyFor,
+  /* ── P22-26 · 目录层 rarity（**只用于展示**）─────────────────────────
+     它是封闭集合，而且它不进 products 表、不进 DTO、不参与任何判定。
+     `RARITY_OF_PRODUCT` 是它在目录层的**唯一**取值点（与
+     `IMAGE_KEY_BY_PRODUCT` 同一种做法：一张只读的映射，不是第二个事实）。 */
+  RARITY: RARITY,
+  RARITIES: RARITIES,
+  RARITY_OF_PRODUCT: RARITY_OF_PRODUCT,
+  rarityFor: rarityFor,
+  /* 载入期断言的**判据本身**也被导出：测试要能对"放进一件 SERVICE ⇒ 抛"
+     这件事做一次真实调用（而不是去正则匹配源码）。 */
+  unfulfillableSeedProducts: unfulfillableSeedProducts,
+  FORBIDDEN_SEED_PRODUCT_KEYS: FORBIDDEN_SEED_PRODUCT_KEYS,
   apply: apply
 };

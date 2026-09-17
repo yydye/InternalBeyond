@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 /* ====================================================================
    P22-1 · Agent Economy 依赖边界与真实支付隔离测试（static，零依赖）
    --------------------------------------------------------------------
@@ -1163,7 +1163,16 @@ check('B13.17 报价表的列**恰好**是"什么/多少钱/到什么时候"那�
       .replace(/\/\/[^\n]*/g, ' ');
     const cols = Array.from(code.matchAll(/' ([a-z_]+) (?:TEXT|INTEGER)/g)).map(m => m[1]);
     const allowedColumns = ['quote_id', 'product_id', 'buyer_id', 'buyer_type', 'recipient_id',
-      'recipient_type', 'currency', 'amount_minor', 'quantity', 'quote_kind', 'service_role',
+      'recipient_type', 'currency', 'amount_minor', 'quantity',
+      /* ★★ P22-26 加了这一列（`quotes.units` = 这份报价买了几份）。
+         ★ 它**不是**一个隐蔽库存列：它与 `quantity` 是两个各自被冻结的事实
+         （quantity = units × grantQuantity —— 送达量 vs 份数），而这一列存在
+         的理由恰恰是"报价必须自己保存那个选择"，否则 `units > 1` 的报价必然
+         被 prepare 的重算判成 QUOTE_MISMATCH。
+         ★ 下面那条否定清单（inventory_count / owned_items /
+         provider_quota_balance …）一个字没改 —— 它才是这条断言真正要挡的东西。 */
+      'units',
+      'quote_kind', 'service_role',
       'state', 'expires_at', 'predecessor_quote_id', 'idempotency_key', 'fingerprint',
       'revision', 'created_at', 'updated_at'];
     const extra = cols.filter(c => allowedColumns.indexOf(c) < 0);

@@ -1147,8 +1147,8 @@ section('J · schema 3 → 4（补三张表 · 旧行一个字节都不动 · �
     upgraded.listQuotes({ limit: 50 }).quotes.length === before.quotes &&
     J(upgraded.ledgerTopology(null)) === J(before.topology),
     { revision: upgraded.getRevision(), before: before.revision });
-  check('J3 迁移是**空的**：MIGRATIONS 里没有一条数据改写步骤（只有新表）'
-    + ' —— ★ P22-7 之后这条断言收窄到"5 之前的每一步"（见下）',
+  check('J3 迁移的形状：登记在册的每一步要么是空的、要么**只加列**（没有任何一条改写既有值）'
+    + ' —— ★ 这条在 P22-7 / P22-8 / P22-26 各更新过一次形状（见下）',
     (() => {
       const src = fs.readFileSync(path.join(ROOT, 'services', 'home-node', 'economy-store.js'), 'utf8');
       const at = src.indexOf('const MIGRATIONS = [');
@@ -1187,32 +1187,41 @@ section('J · schema 3 → 4（补三张表 · 旧行一个字节都不动 · �
             .replace(/\/\/[^\n]*/g, ' ')
         });
       }
-      /* ★★ P22-8 更新了这条断言的**形状**（P22-7 更新过它的字面话）：
-       P22-8 加了 6→7，而它是**空**的（新实体只需要补表）—— 于是
-       "登记在册的迁移步骤恰好一条且它 ALTER" 不再为真，而它本来也不该
-       为真：判据是"**哪些步骤真的改写了既有行**"。
+      /* ★★ P22-26 更新了这条断言的形状（P22-7 / P22-8 各更新过一次）。
+       P22-26 加了 7→8，而它是**非空**的：`quotes` 上多一列 `units`。
+       于是"恰好一条数据迁移"不再为真 —— 而"恰好一条"本来也不是那条性质，
+       判据始终是"**哪些步骤真的改写了既有行**"。
 
-       现在这条断言的是三件可检查的事：
-         ① 源码里登记在册的迁移步骤恰好两条：5→6 与 6→7；
-         ② 5→6 是数据迁移（它 ALTER 既有表），而 6→7 里**一句 SQL 都没
-            有** —— 于是"P22-8 没有改写任何既有行"由 ② 直接证明；
-         ③ 那唯一一条非空步骤**只加列**：没有 UPDATE / DELETE / INSERT。
-       而"开一个旧库之后既有数据逐字节不变"由 J1/J2 用**行为**证明。
+       现在这条断言的是四件可检查的事：
+         ① 源码里登记在册的迁移步骤恰好三条：5→6、6→7、7→8；
+         ② 两条是数据迁移（5→6 与 7→8，各自 ALTER 既有表），一条是空的
+            （6→7：新实体只需要补表）；
+         ③ 两条数据迁移**只加列**：没有 UPDATE / DELETE / INSERT ——
+            于是"没有任何一条迁移改写既有值"由 ③ 直接证明；
+         ④ P22-26 那条 7→8 加的是 `quotes.units`，而且它**必须**是
+            NOT NULL —— "可选 + 读的时候补 1"正是本阶段修掉的那个形态。
+
+       而"开一个旧库之后既有数据逐字节不变"仍然由 J1/J2 用**行为**证明
+       （它们打开一个 P22-5 之前的库并逐项比对 ledger / reservation /
+       policy / quote 与拓扑）。形状靠这条、后果靠那两条，两者都不越界。
        ★ ②的判据是"没有 SQL 语句"而不是"函数体长度为 0"：一个空的 apply
        函数剥掉注释之后仍会剩下缩进与换行（开发期实测：长度 5）。把
        "长度 === 0"当成"空"会让一条正确的迁移被判成非空。 */
       const SQL_RE = /(ALTER\s+TABLE|UPDATE\s+\w|DELETE\s+FROM|INSERT\s+INTO|DROP\s+TABLE)/;
       const dataSteps = steps.filter(s => SQL_RE.test(s.body));
       const emptySteps = steps.filter(s => !SQL_RE.test(s.body));
-      return steps.length === 2 &&
-        J(steps.map(s => s.from + '->' + s.to)) === J(['5->6', '6->' + SCHEMA_GUARD]) &&
-        dataSteps.length === 1 &&
-        dataSteps[0].from === 5 && dataSteps[0].to === 6 &&
-        dataSteps[0].body.indexOf('ALTER TABLE') >= 0 &&
-        /* 它只加列，不改写任何既有值：没有 UPDATE / DELETE / INSERT。 */
-        dataSteps[0].body.indexOf('UPDATE ') < 0 && dataSteps[0].body.indexOf('DELETE ') < 0 &&
-        dataSteps[0].body.indexOf('INSERT ') < 0 &&
-        emptySteps.length === 1 && emptySteps[0].from === 6;
+      const keyOf = s => s.from + '->' + s.to;
+      const dataByKey = {};
+      dataSteps.forEach(s => { dataByKey[keyOf(s)] = s; });
+      const addsColumnOnly = s => s.body.indexOf('ALTER TABLE') >= 0 &&
+        s.body.indexOf('UPDATE ') < 0 && s.body.indexOf('DELETE ') < 0 && s.body.indexOf('INSERT ') < 0;
+      return steps.length === 3 &&
+        J(steps.map(keyOf)) === J(['5->6', '6->7', '7->' + SCHEMA_GUARD]) &&
+        dataSteps.length === 2 && emptySteps.length === 1 && emptySteps[0].from === 6 &&
+        !!dataByKey['5->6'] && addsColumnOnly(dataByKey['5->6']) &&
+        !!dataByKey['7->' + SCHEMA_GUARD] && addsColumnOnly(dataByKey['7->' + SCHEMA_GUARD]) &&
+        /* ④ 7→8 加的那一列是 units，且**不是**可空列。 */
+        dataByKey['7->' + SCHEMA_GUARD].body.indexOf('ADD COLUMN units INTEGER NOT NULL') >= 0;
     })());
   check('J4 迁移之后旧的 raw quote 仍然可读（它的 productId 现在指向一个**不存在**的商品 —— 见 J5）',
     upgraded.getQuote({ quoteId: raw1.result.quoteId }).ok === true &&

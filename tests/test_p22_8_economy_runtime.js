@@ -301,8 +301,10 @@ let svc = null;
 {
   svc = await startService(serviceDir);
   const health = await request(svc.port, 'GET', '/economy/health');
-  check('B2 P22-8 的库被真实 store 打开（schema 水位 = 7，Economy READY）',
-    health.status === 200 && Number(health.body.economy.schemaVersion) === 7 &&
+  check('B2 P22-8 的库被真实 store 打开（schema 水位 = store 自报的那个数，Economy READY）',
+    health.status === 200 &&
+    Number(health.body.economy.schemaVersion) ===
+    Number(createEconomyStore.SCHEMA_VERSION) &&
     health.body.economy.state === 'READY',
     { status: health.status, schema: health.body.economy && health.body.economy.schemaVersion });
 
@@ -345,8 +347,9 @@ let svc = null;
   svc = await startService(serviceDir);
   const after = await request(svc.port, 'GET', '/economy/intents');
   const health2 = await request(svc.port, 'GET', '/economy/health');
-  check('B10 重启：同一个库再次打开，水位仍然是 7，且那条 intent 与它引用的购买都还在',
-    Number(health2.body.economy.schemaVersion) === 7 &&
+  check('B10 重启：同一个库再次打开，水位仍然是 SCHEMA_VERSION，且那条 intent 与它引用的购买都还在',
+    Number(health2.body.economy.schemaVersion) ===
+    Number(createEconomyStore.SCHEMA_VERSION) &&
     after.body.count === 1 &&
     after.body.intents[0].agentIntentId === seeded.intentId &&
     after.body.intents[0].state === 'COMPLETED' &&

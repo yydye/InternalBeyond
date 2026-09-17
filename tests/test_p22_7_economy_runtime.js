@@ -243,8 +243,10 @@ async function runServiceGroup() {
      的行号。 */
   const health = await request(svc.port, 'GET', '/economy/health');
   const econ = health.body && health.body.economy ? health.body.economy : {};
-  check('B2 P22-7 的库被真实 store 打开（schema 水位 = 7，Economy READY）',
-    health.status === 200 && Number(econ.schemaVersion) === 7 && econ.state === 'READY',
+  check('B2 P22-7 的库被真实 store 打开（schema 水位 = store 自报的那个数，Economy READY）',
+    health.status === 200 &&
+    Number(econ.schemaVersion) === Number(createEconomyStore.SCHEMA_VERSION) &&
+    econ.state === 'READY',
     { status: health.status, schemaVersion: econ.schemaVersion, state: econ.state, body: health.body });
   check('B3 ★ health 暴露权限层的九个计数（批准五个状态 + 策略两个）',
     econ.counts && econ.counts.approvals === 1 && econ.counts.approvedApprovals === 1 &&
@@ -390,8 +392,9 @@ async function runServiceGroup() {
   const svc2 = await startProduction(dir);
   const up2 = await waitListening(svc2, 20000);
   const after = await request(svc2.port, 'GET', '/economy/health');
-  check('B10 重启：同一个库再次打开，水位仍然是 7，且批准与 revision 都在',
-    up2 === true && Number(after.body.economy.schemaVersion) === 7 &&
+  check('B10 重启：同一个库再次打开，水位仍然是 SCHEMA_VERSION，且批准与 revision 都在',
+    up2 === true &&
+    Number(after.body.economy.schemaVersion) === Number(createEconomyStore.SCHEMA_VERSION) &&
     after.body.economy.counts.approvals === 1 &&
     after.body.economy.counts.approvedApprovals === 1 &&
     after.body.economy.revision >= revBefore,

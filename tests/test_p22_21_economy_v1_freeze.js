@@ -180,10 +180,13 @@ const schemaRows = rowsAfter('1 · SCHEMA_VERSION') || [];
 const docSchema = schemaRows.map(r => cells(r)).filter(c => c.length >= 2)
   .map(c => ({ key: unquote(c[0]), value: unquote(c[1]) }))[0] || { key: null, value: null };
 
+/* ★ P22-26：这里原本还写着 `String(STORE_MODULE.SCHEMA_VERSION) === '7'`。
+   那个字面量在 P22-26 抬水位之后变成了这条断言失败的原因 —— 而它证明的东西
+   （"manifest 与代码逐字相同"）一个字没变。因此它被删掉，而"当前是几"这件
+   事由 §1 的表格**自己**回答（T1 会用同一个数字去核对真实新建的库）。 */
 check('S1 ★★★★★ manifest 里的 schema 水位与 store 的 `SCHEMA_VERSION` 逐字相同',
   docSchema.key === 'ECONOMY_SCHEMA_VERSION' &&
-  docSchema.value === String(STORE_MODULE.SCHEMA_VERSION) &&
-  String(STORE_MODULE.SCHEMA_VERSION) === '7',
+  docSchema.value === String(STORE_MODULE.SCHEMA_VERSION),
   { manifest: docSchema, code: STORE_MODULE.SCHEMA_VERSION, verdict: VERDICT });
 
 /* ★ 契约里**没有** schema 常量 —— 水位只有一个真源。 */
@@ -671,10 +674,19 @@ const createEconomyStore = require(path.join(ROOT, STORE_REL));
 const store = createEconomyStore({ dataDir: DATA_DIR, logger: () => { } });
 const opened = store.open();
 
+/* ★ P22-26：水位从 7 抬到 8（manifest §1 有完整申报）。这里因此不再写死那个
+   数字 —— 它由 manifest 的 §1 表格**逐字**给出，而 T1 的判据变成"真实新建的
+   库水位 = manifest 那个数字 = store 自报的那个数"。写死两个 7 会让这条断言在
+   下一次合法抬水位时变成"红色的假象"，而它证明的东西同时消失。 */
+const MANIFEST_SCHEMA = (function () {
+  const m = MD.match(/\|\s*`ECONOMY_SCHEMA_VERSION`\s*\|\s*`(\d+)`\s*\|/);
+  return m ? Number(m[1]) : null;
+})();
 check('T1 ★★★★★ 真实新建的库水位**就是** manifest 里那个数字，而且 store 自报同一个数',
+  MANIFEST_SCHEMA !== null &&
   opened.schemaVersion === STORE_MODULE.SCHEMA_VERSION &&
-  store.schemaVersionForTest() === 7 && opened.schemaVersion === 7,
-  { opened: opened.schemaVersion, exported: STORE_MODULE.SCHEMA_VERSION });
+  store.schemaVersionForTest() === MANIFEST_SCHEMA && opened.schemaVersion === MANIFEST_SCHEMA,
+  { opened: opened.schemaVersion, exported: STORE_MODULE.SCHEMA_VERSION, manifest: MANIFEST_SCHEMA });
 
 const TABLES = STORE_MODULE.tables;
 check('T2 ★★★★ `TABLES` 导出是**冻结**的：恰好 16 项，而且每一个都以 `economy_` 为前缀（一个独立命名空间）',

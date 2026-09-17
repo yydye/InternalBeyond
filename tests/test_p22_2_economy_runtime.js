@@ -295,11 +295,14 @@ async function httpGroup() {
 
   const changes = await request(port, 'GET', '/economy/changes?cursor=0');
   /* ★ P22-25：fresh install 的目录**不再从空开始** —— 装配期写入 canonical
-     初始目录（1 间系统商店 + 6 件种子商品 = 7 条 change）。这条全局读面
-     因此先给出那 7 条，再给出这一组自己的两条。断言改成"**尾两条**是这一
-     组自己的、且全局 revision 与它一致"，而不是"总共有两条" ——
-     增量的形状（两条、连续、kind 封闭）一字未改。 */
-  const SEEDED_CHANGES = 7;
+     初始目录（1 间系统商店 + 种子商品）。这条全局读面因此先给出那些条，
+     再给出这一组自己的两条。断言改成"**尾两条**是这一组自己的、且全局
+     revision 与它一致"，而不是"总共有两条" —— 增量的形状（两条、连续、
+     kind 封闭）一字未改。
+     ★★ P22-26：种子从 6 件变成 **5** 件（目录 v2 撤下了那件 `SERVICE`
+     商品）。因此种子的 change 数从 7 变成 **6**（1 间商店 + 5 件商品）。
+     这里数的是"种子现在有几条"，而那个数字确实变了。 */
+  const SEEDED_CHANGES = 6;
   const changeRows = changes.status === 200 ? changes.body.changes : [];
   const changeTail = changeRows.slice(-2);
   check('C10 GET /economy/changes → 200，revision 单调且 kind 封闭',
@@ -433,10 +436,15 @@ async function childProcessGroup() {
        而 P22-2 不给它任何外部写入口。因此 D 组的写入验证改为
        "重启后账本与 revision 原样" —— 用 E 组（同进程 store 与
        真实进程共用同一个库文件）来产生事实。 */
-    /* ★ P22-25：一个全新的库现在从**种子那 7 条**起（目录 bootstrap），
-       而不是从 0 起。 */
-    check('D8 生产进程的 /economy/changes 可读且 revision 从种子的 7 条起（新库）',
-      (await request(prod.port, 'GET', '/economy/changes?cursor=0')).body.revision === 7);
+    /* ★ P22-25：一个全新的库现在从**种子那几条**起（目录 bootstrap），
+       而不是从 0 起。
+       ★★ P22-26：那个数从 7 变成 **6**（目录 v2 的种子 = 1 间商店 + 5 件
+       商品）。★ 这个字面量刻意**不**引用 C 组那个常量：C 组的
+       `SEEDED_CHANGES` 长在它自己的块里（作用域不通），而在 D 组里再定义一个
+       同名的会是第二份可能漂移的答案。两处都在数同一个事实（种子有几条
+       change），而那个事实由 `catalog-bootstrap.js` 的 SEED 唯一决定。 */
+    check('D8 生产进程的 /economy/changes 可读且 revision 从种子的 6 条起（新库）',
+      (await request(prod.port, 'GET', '/economy/changes?cursor=0')).body.revision === 6);
 
     /* 干净停机：走合作停止面（Windows 上信号路径到不了 store.close）。 */
     await stopProduction(prod);

@@ -1079,6 +1079,29 @@ const GROUPS = [
          ★ 图片由桌面静态层（IB_WEB_PORT，默认 23120）服务；那一层不在时
            自动退回 Home Node 带凭据取一次，并如实标注走的是哪条路。 */
       ['test_p22_25_fresh_catalog_wire.js'],
+      /* P22-26：Economy 商品生命周期闭合 —— 四处断点（一处买不了 / 一处算错 /
+         一处边缺失 / 一处重复词表）修掉前三处，第四处明确不动（独立阶段）。
+         ① 份数契约：`quotes` 加一列 `units`（schema 7 → 8，非空迁移、只加列），
+            prepare / approval / intent 三处下游**只**从报价那一列读份数，请求里
+            带 units 也**不参与**；units = 1 / 3 /（grantQuantity=1000, units=3）
+            三条黄金路径 + 旧单数量语义兼容 + 坏输入 fail closed + 幂等。
+         ② 消耗缝：唯一的 runtime seam `consumeOwnedItem` —— owner 只来自权威
+            上下文（payload 自报被完全忽略）、只接受 productId、只有 CONSUMABLE
+            能被用掉、不动钱包 / 账本 / 预算 / 批准，且**没有**接上 HTTP /
+            capability / 命令通道 / 动作适配器 / UI（生产调用方 0）；两个真实
+            进程同时扣 ⇒ 恰好一个成功、数量不为负。
+         ③ 目录 v2：不发布买不了的 SERVICE（载入期断言由 kind → fulfillment →
+            settlement primitive 的**派生链**判定，而不是手写名单），每件加一个
+            只用于展示的 rarity（不进 products 表、不进 DTO、经济代码零命中）；
+            非空目录一次写都不发（用户已有的店与商品永不被覆盖）。
+         ④ 派生链与 `PRODUCT_INPUT_KEYS`（13）逐字冻结：没有 effect / behavior /
+            category 第二套词表，发货只有一个调用点。
+         四条都在真实 store + 真实 SQLite 上跑（③ 另含"把一件 SERVICE 塞进种子
+         ⇒ 模块载入期真的抛"的对照证明；② 含多进程夹具）；零浏览器。 */
+      ['test_p22_26_product_units.js'],
+      ['test_p22_26_inventory_consume.js'],
+      ['test_p22_26_catalog_v2.js'],
+      ['test_p22_26_product_fulfillment.js'],
     ]
   },
   {

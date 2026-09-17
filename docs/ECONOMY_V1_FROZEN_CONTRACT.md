@@ -15,6 +15,17 @@
 > **不要静默扩 v1。声明一个新阶段 / 新版本。**
 >
 > 基线：P22-20 · `45335f7`。Economy 生产文件 **7 个**，schema 水位 **7**。
+>
+> ★ **P22-26 的三个例外，逐个点名（其余每一格仍然逐字有效）：**
+>
+> | 格 | P22-26 的处置 | 为什么 |
+> | --- | --- | --- |
+> | `ECONOMY_SCHEMA_VERSION` | **7 → 8**（§1 有完整的申报） | `quotes.units`：报价必须保存"买了几份"，否则 `units > 1` 的报价必然被自己的一致性检查拒绝 |
+> | 目录种子（`catalog-bootstrap.js`） | **v1 → v2**：去掉那件 `SERVICE` 商品、每件商品加一个只用于展示的 `rarity` | 一个商店不得陈列买不了的商品；而 `rarity` 不进 `products` 表、不进 DTO、不被任何经济代码读 |
+> | 库存消耗 | 新增**唯一**一条 runtime seam `consumeOwnedItem(input, context)` | 在此之前 `consumeInventory` 的**生产调用方是 0**，于是 `CONSUMABLE` 与 `DIGITAL_ITEM` 在运行时是同一个东西。它**不**是一个 capability、**不**在 HTTP 上、**不**在命令通道的词表里 |
+>
+> 这三条都不扩大 v1 的**公开面**（路由 / capability / 事件类型 / 生产文件
+> 数量 / 币种 / 资产类别 / 状态机成员）。详见 `docs/P22-26-CATALOG-LIFECYCLE.md`。
 
 ---
 
@@ -22,10 +33,33 @@
 
 | key | value | 唯一真源 |
 | --- | --- | --- |
-| `ECONOMY_SCHEMA_VERSION` | `7` | `services/home-node/economy-store.js` |
+| `ECONOMY_SCHEMA_VERSION` | `8` | `services/home-node/economy-store.js` |
 
 schema 水位只在 P22-2（→1）、P22-3（→2）、P22-4（→3）、P22-5（→4）、
 P22-6（→5）、P22-7（→6）、P22-8（→7）七处动过。P22-9 起**一个字节都没有**。
+
+★ **P22-26 抬到 8 —— 这是本文件 §14 逐字要求的那种"声明"，不是一次静默扩张。**
+
+| 阶段 | 水位 | 唯一的那一处改动 | 为什么它必须发生 |
+| --- | --- | --- | --- |
+| P22-26 | →8 | `quotes` 表加一列 `units INTEGER NOT NULL DEFAULT 1` | `quotes.quantity` 是**送达量**（units × grantQuantity），因此"买了几份"这个选择从来没有被落库过 —— 而 `preparePurchase` 却要拿它去重算金额与数量并比对。调用方不传 units 时那个缺省是 1，于是 `units > 1` 的报价**必然**被自己的重算判成 `QUOTE_MISMATCH`：**报价把 units 算进了 quantity 与 amount，报价自己却没有保存它。** 一次"一次买三份"的失败因此长得像"账目对不上"，而它是自主 Agent 最难自愈的那类拒绝 |
+
+配套设施（全部已交付、且各自有独立的测试）：
+
+- 非空迁移 `7 → 8`（`ALTER TABLE … ADD COLUMN units INTEGER NOT NULL DEFAULT 1`，
+  带 `tableExists` 守卫与两处 `PRAGMA` 探测；**只加列**，没有任何 `UPDATE` /
+  `DELETE` / `INSERT`，因此既有行一个字节都不被改写）；
+- 三处下游（`preparePurchase` / `createApprovalRequest` /
+  `authorizePurchaseIntent`）**不再从请求里读 units**，改为从报价那一列读
+  （唯一实现 `quoteQuantitiesOf`）；
+- `quotes.quantity` 与 `units` 变成两个各自被冻结的事实，关系
+  `quantity = units × grantQuantity` 由一条载入期比对钉住。
+
+**本阶段没有做的事**（因此 v1 的其余每一格都仍然逐字有效）：没有新增任何
+`/economy/*` 路由、没有新增 capability、没有新增事件类型、没有新增
+`services/home-node/economy-*.js` 文件、没有新增币种 / 资产类别 / 状态机成员。
+
+详见 `docs/P22-26-CATALOG-LIFECYCLE.md`。
 
 ---
 

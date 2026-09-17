@@ -595,11 +595,19 @@ section('D · preparePurchase 前置拒绝（每个都必须是"零痕迹"）');
       ['D12.2 quoteId 形状不对', Object.assign({}, base, { quoteId: 'q1' })],
       ['D12.3 缺 buyerId', Object.assign({}, base, { buyerId: null })],
       ['D12.4 buyer 是 system', Object.assign({}, base, { buyerId: C.SYSTEM_ACCOUNT.MARKET })],
-      ['D12.5 units = 0', Object.assign({}, base, { units: 0 })],
-      ['D12.6 units = 1.5', Object.assign({}, base, { units: 1.5 })],
-      ['D12.7 缺 idempotencyKey', Object.assign({}, base, { idempotencyKey: null })],
-      ['D12.8 缺 expiresAt', Object.assign({}, base, { expiresAt: undefined })],
-      ['D12.9 expiresAt 在过去', Object.assign({}, base, { expiresAt: CLOCK - 1 })]
+      /* ★★ P22-26 把 D12.5 / D12.6 从这里移走了，理由是**判据变了**：
+         过去 `units` 是 preparePurchase 的一个入参（于是 `units: 0` /
+         `units: 1.5` 是两种"形状不对的输入"）。P22-26 之后份数不再是入参
+         —— 它的权威是**报价上冻结的那一列**，因此往 requests 里塞一个
+         非法的 units **不再是"被拒绝的请求"，而是"一个被忽略的键"**。
+         把这两条留在这里会让它们断言一件不再成立的事（旧代码会拒绝，
+         新代码正确地忽略它）。
+         ★ 而"这个键确实被忽略、且权威仍然来自报价"必须**更明确地**被
+         证明，因此它移到下面 D12U 那一条：那里用一个 units = 0 的请求去
+         prepare 一份 units = 3 的报价，并断言成交的是 **3 份**。 */
+      ['D12.5 缺 idempotencyKey', Object.assign({}, base, { idempotencyKey: null })],
+      ['D12.6 缺 expiresAt', Object.assign({}, base, { expiresAt: undefined })],
+      ['D12.7 expiresAt 在过去', Object.assign({}, base, { expiresAt: CLOCK - 1 })]
     ];
     const before = world(store);
     const results = cases.map(([label, input]) => {
@@ -611,6 +619,38 @@ section('D · preparePurchase 前置拒绝（每个都必须是"零痕迹"）');
       results.every(r => r.ok === false), results.filter(r => r.ok));
     check('D13 全部拒绝之后世界逐字未变（revision / ledger / 计数）',
       after.revision === before.revision && after.ledger === before.ledger && after.countsJson === before.countsJson);
+
+    /* ── D12U · P22-26：`units` 在请求里**不是**一个入参 ────────────────
+       用一份 units = 3 的报价 + 一个 units = 0 的请求（0 在过去是一条
+       必然被拒的"非法输入"），断言成交的是**报价说的 3 份**：
+         · 购买成功（没有 QUOTE_MISMATCH —— P22-26 修掉的那个算错）；
+         · 金额 = 3 × 单价、发放量 = 3 × grantQuantity、库存 +3；
+         · 而 `purchase.units === 3`，**不是**请求里那个 0。
+       这一条同时是"旧单数量语义保持兼容"的反面证明：旧的兼容性来自
+       "不传 units 就假定 1"，而新的兼容性来自"报价上那一列本来就是 1"。
+       ★ 单价刻意用 100：这个用例要证明的是**份数**，不是预算闸门 ——
+       3 × 100 = 300 在 starter 钱包的日额度之内，于是失败只可能来自
+       units 那一侧。 */
+    const shapedProduct = putProductOk(store, st.storeId, { name: 'Shaped', unitPriceMinor: 100, grantQuantity: 1 });
+    const q3 = quoteOk(store, { productId: shapedProduct.product.productId, units: 3 });
+    const beforeInv = store.inventoryQuantity('cfg_a', shapedProduct.product.productId).quantity;
+    const shaped = store.preparePurchase({
+      quoteId: q3.quoteId, buyerId: 'cfg_a', units: 0, unitsRequested: 'nonsense',
+      expiresAt: Date.UTC(2030, 0, 1), idempotencyKey: nextKey('prep')
+    });
+    const shapedRow = shaped.ok === true
+      ? store.getPurchase({ purchaseId: shaped.result.purchaseId }).purchase : null;
+    check('D12U ★ 请求里的 units 被完全忽略：units=0 的请求能 prepare 一份 units=3 的报价（权威是报价自己那一列）',
+      shaped.ok === true && Number(shapedRow.units) === 3 &&
+      Number(store.getQuote({ quoteId: q3.quoteId }).quote.units) === 3 &&
+      shapedRow.grantedQuantity === 3 && shapedRow.amountMinor === '300',
+      { ok: shaped.ok, errors: shaped.errors, units: shapedRow && shapedRow.units, amount: shapedRow && shapedRow.amountMinor });
+    const settled3 = store.settlePurchase({ purchaseId: shaped.result.purchaseId, idempotencyKey: nextKey('settle') });
+    const afterInv = store.inventoryQuantity('cfg_a', shapedProduct.product.productId).quantity;
+    check('D12V ★ 结算之后库存精确 +3（units=3 × grantQuantity=1）',
+      settled3.ok === true && afterInv - beforeInv === 3 &&
+      Number(store.getPurchase({ purchaseId: shaped.result.purchaseId }).purchase.grantedQuantity) === 3,
+      { before: beforeInv, after: afterInv, errors: settled3.errors });
 
     /* 收件人 = 买家 是一个**必须**被拒绝的形态（不是"默认等于买家"）。 */
     const self = store.preparePurchase({

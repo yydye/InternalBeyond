@@ -1,4 +1,4 @@
-﻿/* ====================================================================
+/* ====================================================================
    IB · Economy Shell（P22-17）
    --------------------------------------------------------------------
    这一份样式表描述 Economy 的**门面**：外层页签、钱包、商店、资产。
@@ -209,6 +209,16 @@
 .esh-product-facts{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
 .esh-product-price{font-size:.88rem;color:var(--content-primary);font-variant-numeric:tabular-nums}
 .esh-product-unitline{font-size:.72rem;color:var(--content-muted)}
+/* ── P22-26 · 商品卡上的四样（功能说明 / 结果预览 / 已拥有）────────────
+   三组样式都刻意比描述更轻：它们说的是"这是什么 / 买完会怎样 / 我已经有
+   几件"，而卡片的主角仍然是名字与价格。标签与正文同一行内并列，因此读起来
+   是"这是什么：一件用掉之后就少一件的东西"。 */
+.esh-product-function,
+.esh-product-result{margin:0;font-size:.72rem;line-height:1.65;color:var(--content-secondary);overflow-wrap:anywhere}
+.esh-product-result{color:var(--content-muted)}
+.esh-product-function-label,
+.esh-product-result-label{color:var(--content-muted);margin-right:6px}
+.esh-product-owned{font-size:.72rem;color:var(--content-muted);font-variant-numeric:tabular-nums}
 .esh-product-foot{display:flex;align-items:center;justify-content:space-between;gap:8px}
 
 /* 六种视觉族：几何不同、色偏不同，饱和度都很低 —— 这是"同一货架上

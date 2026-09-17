@@ -255,6 +255,17 @@ async function httpGroup() {
     '/economy/commit', '/economy/release', '/economy/expire', '/economy/fail',
     '/economy/sweep', '/economy/wallet'];
   const writeResults = [];
+  /* ★★ P22-26：这里原本**写死**了 `h.revision === 3`。那个绝对数字在 P22-25
+     装上目录 bootstrap 之后就已经依赖"种子有几件商品"（每一次 putProduct 各占
+     一个 revision），而 P22-26 把种子从 6 件改成 5 件之后它变成了另一个数 ——
+     症状是这条"写尝试没改变任何东西"的断言以**红色的假象**失败，而它证明的
+     那句话一个字没变。
+     因此这里改成**前后各取一次快照**：判据回到它本来要证明的事情（这些 POST
+     什么都没改），不再依赖任何绝对数字。 */
+  const beforeWrites = {
+    health: app.economyStore.health(),
+    reservation: app.economyStore.getReservation({ reservationId: reserved.result.reservationId }).reservation
+  };
   for (const p of writePaths) {
     const r = await request(port, 'POST', p, { amountMinor: '999999', currency: 'IB_CREDIT', reservationId: reserved.result.reservationId });
     writeResults.push({ path: p, status: r.status, error: r.body && r.body.error });
@@ -265,10 +276,16 @@ async function httpGroup() {
     (() => {
       const h = app.economyStore.health();
       const row = app.economyStore.getReservation({ reservationId: reserved.result.reservationId }).reservation;
-      return h.revision === 3 && h.counts.transactions === 1 && h.counts.entries === 2 &&
-        h.counts.reservations === 1 && h.counts.activeReservations === 1 &&
-        row.state === 'ACTIVE';
-    })(), app.economyStore.health().counts);
+      const b = beforeWrites;
+      return h.revision === b.health.revision &&
+        h.counts.transactions === b.health.counts.transactions &&
+        h.counts.entries === b.health.counts.entries &&
+        h.counts.reservations === b.health.counts.reservations &&
+        h.counts.activeReservations === b.health.counts.activeReservations &&
+        row.state === 'ACTIVE' && row.revision === b.reservation.revision &&
+        String(row.amountMinor) === String(b.reservation.amountMinor);
+    })(),
+    { before: beforeWrites.health.revision, after: app.economyStore.health().revision });
   check('B10 未知的 /economy/* GET → 404（与"写被拒"区分：一个是不存在，一个是不允许）',
     (await request(port, 'GET', '/economy/nope')).status === 404);
 

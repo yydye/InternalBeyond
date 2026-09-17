@@ -103,10 +103,20 @@ const SEED = BOOT.SEED;
       && p.assetKind === undefined && p.unitName === undefined),
     SEED.products.map(p => Object.keys(p)));
 
-  check('A4 种子覆盖多种交付形态（含 SERVICE 那个"买完不产生库存"的反例）',
-    new Set(SEED.products.map(p => C.fulfillmentOfProductKind(p.kind))).size >= 3 &&
-    SEED.products.some(p => p.kind === 'SERVICE' && p.grantQuantity === 0) &&
-    SEED.products.every(p => C.fulfillmentOfProductKind(p.kind) != null),
+  /* ★★ P22-26：目录 v2 撤下了那件 SERVICE 商品（`SERVICE_EXECUTION` 的结算
+     原语是 `null`，因此它买不了 —— 而一个商店不陈列买不了的东西）。于是
+     种子里**不再有**"买完不产生库存"的那件反例，而这条断言的判据改成目录 v2
+     实际覆盖的形态：**三种 kind、两种交付形态**，且每一种都能落地。
+     ★ 那件反例本身没有消失：它由 `test_p22_26_catalog_v2.js` 的 B 组从**契约**
+     那一侧证明（SERVICE 的 primitive 是 null），并从**目录定义**那一侧证明
+     （把一件 SERVICE 放进种子 ⇒ 模块载入期抛）。 */
+  check('A4 种子覆盖多种交付形态（v2：三种 kind / 两种能落地的交付形态）',
+    new Set(SEED.products.map(p => C.fulfillmentOfProductKind(p.kind))).size >= 2 &&
+    new Set(SEED.products.map(p => p.kind)).size >= 3 &&
+    SEED.products.every(p => C.fulfillmentOfProductKind(p.kind) != null) &&
+    /* 而且**每一件**都有非 null 的结算原语 —— 这就是"目录不陈列买不了的东西"。 */
+    SEED.products.every(p =>
+      C.settlementPrimitiveOfFulfillment(C.fulfillmentOfProductKind(p.kind)).primitive != null),
     SEED.products.map(p => [p.kind, C.fulfillmentOfProductKind(p.kind), p.grantQuantity]));
 
   check('A5 种子版本是固定字面量（不是时间戳、不是随机值）',
@@ -155,31 +165,35 @@ const SEED = BOOT.SEED;
     }),
     assetFiles.map(a => [a.key, fs.readFileSync(a.file).slice(0, 12).toString('ascii')]));
 
-  check('B5 ★★★★ assets/economy 下**没有**孤儿文件：文件集合与种子引用的集合恰好相等',
+  /* ★★ P22-26：这条断言原本要求"磁盘上的集合与种子引用的集合**恰好相等**"。
+     目录 v2 撤下了那件 SERVICE 商品，而它的配图
+     `catalog/agent-orchestration.webp` **留在仓库里**：它记录的是 v1 曾经
+     交付过的那件商品，而且**已经跑过 v1 的世界**里那一行商品的 imageUrl
+     仍然指向它 —— 那是一条只存在于那些世界里的历史引用，本阶段看不见它。
+     ★ 因此判据改成"磁盘集合 = 种子引用的集合 + 一份**逐名登记**的历史资产"，
+     而不是把"相等"放宽成一个不等式 —— 于是任何**新的**孤儿文件仍然当场变红，
+     而唯一被允许的那一个是被点名的。 */
+  const DETACHED_HISTORICAL_ASSETS = ['catalog/agent-orchestration.webp'];
+  const walkAssets = function () {
+    const onDisk = [];
+    const walk = function (dir, prefix) {
+      fs.readdirSync(dir, { withFileTypes: true }).forEach(function (e) {
+        const rel = prefix ? prefix + '/' + e.name : e.name;
+        if (e.isDirectory()) walk(path.join(dir, e.name), rel); else onDisk.push(rel);
+      });
+    };
+    walk(BOOT.ASSET_ROOT, '');
+    return onDisk.sort();
+  };
+  check('B5 ★★★★ assets/economy 下没有**未登记**的孤儿文件：文件集合 = 种子引用的集合 + 逐名登记的历史资产',
     (function () {
-      const onDisk = [];
-      const walk = function (dir, prefix) {
-        fs.readdirSync(dir, { withFileTypes: true }).forEach(function (e) {
-          const rel = prefix ? prefix + '/' + e.name : e.name;
-          if (e.isDirectory()) walk(path.join(dir, e.name), rel); else onDisk.push(rel);
-        });
-      };
-      walk(BOOT.ASSET_ROOT, '');
-      const referenced = Array.from(new Set(BOOT.SEED_ASSET_KEYS)).sort();
-      return onDisk.length === referenced.length
-        && onDisk.slice().sort().every((f, i) => f === referenced[i]);
+      const onDisk = walkAssets();
+      const allowed = Array.from(new Set(BOOT.SEED_ASSET_KEYS)).concat(DETACHED_HISTORICAL_ASSETS).sort();
+      const undocumented = onDisk.filter(f => allowed.indexOf(f) < 0);
+      const missing = allowed.filter(f => onDisk.indexOf(f) < 0);
+      return undocumented.length === 0 && missing.length === 0;
     })(),
-    (function () {
-      const onDisk = [];
-      const walk = function (dir, prefix) {
-        fs.readdirSync(dir, { withFileTypes: true }).forEach(function (e) {
-          const rel = prefix ? prefix + '/' + e.name : e.name;
-          if (e.isDirectory()) walk(path.join(dir, e.name), rel); else onDisk.push(rel);
-        });
-      };
-      walk(BOOT.ASSET_ROOT, '');
-      return { onDisk: onDisk.sort(), referenced: Array.from(new Set(BOOT.SEED_ASSET_KEYS)).sort() };
-    })());
+    { onDisk: walkAssets(), referenced: Array.from(new Set(BOOT.SEED_ASSET_KEYS)).sort(), detached: DETACHED_HISTORICAL_ASSETS });
 
   check('B6 ★★★★★ fail closed：把一张图从仓库里"拿走"，模块**载入就抛**'
     + '（不是一个静默的 404 图，也不是一个警告）',
@@ -500,15 +514,21 @@ const SEED = BOOT.SEED;
     { generative: false });
 
   check('G9 ★★★★ 商品模型**没有**要求 schema 变更：'
-    + 'economy-schema 的版本与商品表的列清单本阶段一字未改，'
+    + '**商品表**的列清单本阶段一字未改，'
     + '而 image 是种子的一个字段（不是商品行的一列）',
     (function () {
       const storeSrc = read('services/home-node/economy-store.js');
-      const schemaVersion = require(path.join(ROOT, 'services', 'home-node', 'economy-store.js')).SCHEMA_VERSION;
       const productColumns = storeSrc.match(/createProducts:[\s\S]*?'\)',/);
-      return schemaVersion === 7
-        && !!productColumns
+      /* ★★ P22-26：原本这里还写着 `schemaVersion === 7`。那个字面量在 P22-26
+         抬水位（`quotes.units`，见 ECONOMY_V1_FROZEN_CONTRACT.md §1）之后会
+         让这条断言以红色的假象失败 —— 而它要证明的那件事（"image **不是**
+         products 表的一列"）一个字没变。★ 而且这条断言真正的主体是
+         **商品表**的列清单，不是整个 schema 的版本号：P22-26 改的是 quotes，
+         不是 products。 */
+      return !!productColumns
         && productColumns[0].indexOf('image') < 0
+        && productColumns[0].indexOf('rarity') < 0
+        && productColumns[0].indexOf('effect') < 0
         && productColumns[0].indexOf('asset_kind') >= 0;
     })(),
     { schemaVersion: require(path.join(ROOT, 'services', 'home-node', 'economy-store.js')).SCHEMA_VERSION });

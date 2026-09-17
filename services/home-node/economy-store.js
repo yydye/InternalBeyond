@@ -154,9 +154,34 @@ const dbFailure = require('../../runtime/db-failure.js');
      ★ 水位仍然要抬到 7，因为一个 P22-7 的 build 打开 P22-8 的库时**必须
      拒绝**：它看不到 economy_purchase_intents，于是会理直气壮地认为
      "这个经济里没有任何待批准的打算" —— 那个误读比打不开严重得多。 */
-const ECONOMY_SCHEMA_VERSION = 7;
-const DEFAULT_DB_FILENAME = 'home-node.db';
+/* ── P22-26 · Schema 水位 8：`quotes.units` ───────────────────────────
+   唯一被改的是 **quotes** 上的一列：`units`（这份报价买了几份）。
 
+   ★ 为什么它必须在**报价**这一侧落库（而不是"prepare 时从请求里再要
+   一次"）：`quotes.quantity` 是**送达量**（units × grantQuantity），
+   因此"买了几份"这个**选择**在 P22-4 到 P22-25 之间从来没有被落库过 ——
+   而 P22-6 的 preparePurchase 却要拿它去重算金额与数量并比对。调用方
+   不传 units 时那个缺省是 1，于是 `units > 1` 的报价**必然**被自己的
+   重算判成 QUOTE_MISMATCH：**报价把 units 算进了 quantity 与 amount，
+   报价自己却没有保存它。** 一次"一次买三份"的失败因此长得像"账目对不
+   上"，而它是自主 Agent 最难自愈的那类拒绝。
+
+   修法是让报价**快照自足**（P22-4 的既有纪律）：units 与 quantity 变成
+   两个各自被冻结的事实，关系（quantity = units × grantQuantity）由
+   prepare 的比对钉住，而 prepare **不再从 payload 猜**。
+
+   新列 NOT NULL DEFAULT 1：历史行确实没有落过这个事实，而它们全部走的
+   是"一次一份"（那时 `quantity` 就等于 `grantQuantity`），因此 1 是对
+   **旧行**唯一正确的答案。新写入一律由 createProductQuote 显式给出
+   units；只有 raw createQuote（P22-4 的 primitive —— 它没有商品行，
+   因而根本没有 grantQuantity 概念）才落到那个 1。
+
+   ★ 水位抬到 8 是必须的：一个 P22-25 的 build 打开这张库时看不到
+   `quotes.units`，于是会把每一份报价都读成"一次一份"，随后用那个 1 去
+   重算并拒绝一份 units = 3 的报价。那个误读比打不开更隐蔽 —— 因此它
+   必须打不开。 */
+const ECONOMY_SCHEMA_VERSION = 8;
+const DEFAULT_DB_FILENAME = 'home-node.db';
 const META_TABLE = 'economy_meta';
 const CHANGE_LOG_TABLE = 'economy_change_log';
 const IDEMPOTENCY_TABLE = 'economy_idempotency';
@@ -875,6 +900,19 @@ function createEconomyStore(deps) {
       ' currency TEXT NOT NULL,' +
       ' amount_minor INTEGER NOT NULL,' +
       ' quantity INTEGER NOT NULL,' +
+      /* ── P22-26 · `units`（这份报价买了几份）─────────────────────────
+         ★ 它与 `quantity` 是**两个各自被冻结的事实**，不是一个的两个名字：
+           quantity = units × grantQuantity —— quantity 是**送达量**，
+           而 units 是**选择**（"两杯咖啡"）。
+         在 P22-26 之前这一列不存在，于是 preparePurchase 只能从请求里
+         再要一次 units（默认 1），并用它重算金额与数量去比对报价 ——
+         结果是 `units > 1` 的报价**必然**被自己的重算拒绝（见水位 8 的
+         说明）。现在 prepare **读这一列**，不再从 payload 猜。
+         NOT NULL DEFAULT 1 只服务于**历史行**：那些行确实只可能是"一次
+         一份"。新行一律由 createProductQuote 显式写入 units；raw
+         createQuote（P22-4 的 primitive，没有商品行）写 1。
+         CHECK 与 purchases.units 同款：份数是一个**正的安全整数**。 */
+      ' units INTEGER NOT NULL DEFAULT 1 CHECK (units >= 1),' +
       ' quote_kind TEXT NOT NULL,' +
       ' service_role TEXT NOT NULL,' +
       ' state TEXT NOT NULL,' +
@@ -891,8 +929,8 @@ function createEconomyStore(deps) {
     createQuotesByExpiry: 'CREATE INDEX IF NOT EXISTS idx_econ_quotes_expiry ON ' + QUOTES_TABLE + ' (state, expires_at)',
     createQuotesByPredecessor: 'CREATE UNIQUE INDEX IF NOT EXISTS idx_econ_quotes_predecessor ON ' + QUOTES_TABLE + ' (predecessor_quote_id)',
     insertQuote:
-      'INSERT INTO ' + QUOTES_TABLE + ' (quote_id, product_id, buyer_id, buyer_type, recipient_id, recipient_type, currency, amount_minor, quantity, quote_kind, service_role, state, expires_at, predecessor_quote_id, idempotency_key, fingerprint, revision, created_at, updated_at) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO ' + QUOTES_TABLE + ' (quote_id, product_id, buyer_id, buyer_type, recipient_id, recipient_type, currency, amount_minor, quantity, units, quote_kind, service_role, state, expires_at, predecessor_quote_id, idempotency_key, fingerprint, revision, created_at, updated_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     selectQuote: 'SELECT * FROM ' + QUOTES_TABLE + ' WHERE quote_id=?',
     selectQuoteByPredecessor: 'SELECT * FROM ' + QUOTES_TABLE + ' WHERE predecessor_quote_id=?',
     selectQuotes: 'SELECT * FROM ' + QUOTES_TABLE + ' ORDER BY created_at ASC, quote_id ASC LIMIT ?',
@@ -1902,7 +1940,55 @@ function createEconomyStore(deps) {
        一笔 P22-6 的购买完全可以没有任何 intent（它由代码直接发起），
        往 purchases 上加一列会让那些行留下一个永远为 NULL 的、看起来像
        "缺失数据"的列，而它其实是"本来就没有"。 */
-    { from: 6, to: 7, apply: function () { /* 新表，无既有行需要改写 */ } }
+    { from: 6, to: 7, apply: function () { /* 新表，无既有行需要改写 */ } },
+
+    /* ── 7 → 8（P22-26）：`quotes.units` ────────────────────────────────
+       既有实体上的新事实 ⇒ 非空迁移 + ALTER TABLE（与 5→6 的 purchases
+       同款，与 6→7 的空迁移相反）。
+
+       ★ 为什么是**有默认值**的 NOT NULL，而不是"可空 + 读的时候补 1"：
+       补 1 会把"这一行没有落过份数"与"这一行就是一份"写成同一件事，而
+       本阶段的全部内容正是"不要猜"。DEFAULT 1 只在 ALTER 那一刻对**既有
+       行**生效，此后每一次 INSERT 都必须显式给出 units（createQuote 的
+       insert 语句里有这一列），因此它不是一个运行期的兜底。
+       那 1 也是对旧行唯一正确的答案：在水位 8 之前，一份报价的 quantity
+       就等于它那一份的交付量。
+
+       ★ `tableExists` 守卫是**必须**的，而不是防御性编程：一个 schema 5
+       或更早的库走 5→6→7→8 时，这一步面对的是一个还没有 economy_quotes
+       的数据库（5→6 的注释里记着同一类真实缺陷：迁移如果假设"更早版本
+       负责过的表已经存在"，跨级升级路径会以 `no such table` 失败，而
+       跨一级的那条恰好是大多数测试走的）。那时唯一正确的动作是什么都
+       不做 —— 稍后 DDL 会按当前的 CREATE 语句建出带 units 的表。
+
+       ★ 三道防线（与 P22-5 库存的"守卫 + CHECK"同一种做法）：这里是
+       ① tableExists；② PRAGMA 列探测（迁移被重复调用时不能出错）；
+       ③ ALTER 之后 PRAGMA 再查一次，确认列**真的**在。第三道不是修辞：
+       "迁移跑过了"与"列存在"是两件事，而它们的差集只会在很久以后以
+       `quote-has-no-canonical-units` 的形式出现。 */
+    {
+      from: 7, to: 8,
+      apply: function (handle) {
+        const tableExists = handle.prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name=?"
+        ).get(QUOTES_TABLE);
+        if (!tableExists) return;
+        const columnsOf = function () {
+          return new Set(
+            handle.prepare('PRAGMA table_info(' + QUOTES_TABLE + ')').all().map(function (r) { return String(r.name); })
+          );
+        };
+        if (!columnsOf().has('units')) {
+          handle.exec('ALTER TABLE ' + QUOTES_TABLE + ' ADD COLUMN units INTEGER NOT NULL DEFAULT 1');
+        }
+        const after = columnsOf();
+        if (!after.has('units')) {
+          const err = new Error('economy store migration 7 -> 8 did not add ' + QUOTES_TABLE + '.units');
+          err.code = 'SCHEMA_MIGRATION_INCOMPLETE';
+          throw err;
+        }
+      }
+    }
   ];
 
   function migrateSchema() {
@@ -6334,6 +6420,14 @@ function createEconomyStore(deps) {
       currency: String(row.currency),
       amountMinor: fromSqlAmount(row.amount_minor, 'quote-amount'),
       quantity: Number(row.quantity),
+      /* ── P22-26 · `units`：这份报价买了几份 ──────────────────────────
+         ★ 它与 `quantity`（送达量）是两个各自被冻结的事实。水位 8 之前
+         写的行由迁移补上 1 —— 那是对它们唯一正确的答案（那时 quantity
+         就等于 grantQuantity）。
+         ★ 这里**不**做 `row.units == null ? 1 : …` 那种兜底：列是
+         NOT NULL，兜底只会把"读不到"伪装成"读到 1"，而那正是本阶段修掉
+         的那个缺陷的形态。 */
+      units: Number(row.units),
       kind: String(row.quote_kind),
       settlementType: String(row.service_role),
       state: state,
@@ -6363,6 +6457,9 @@ function createEconomyStore(deps) {
       currency: view.currency,
       amountMinor: C.serializeAmountMinor(view.amountMinor),
       quantity: view.quantity,
+      /* P22-26：报价的"买了几份"是**读面**上的一件事实（与 quantity 并列），
+         因为它与 quantity 不是同一个数（units=3 × grant=1000 ⇒ qty=3000）。 */
+      units: view.units,
       kind: view.kind,
       settlementType: view.settlementType,
       state: view.state,
@@ -6418,6 +6515,22 @@ function createEconomyStore(deps) {
     const qty = o.quantity == null ? 1 : Number(o.quantity);
     if (!Number.isSafeInteger(qty) || qty < 1) {
       return denial(C.DENY_REASON.INVALID_AMOUNT, ['quote-quantity-must-be-positive-safe-integer']);
+    }
+    /* ── P22-26 · `units`：报价上的"买了几份" ─────────────────────────
+       它是**选择**，因此与 quantity 分开校验、分开落库（见水位 8 与
+       createQuotes 的 DDL 说明）。
+
+       ★ 缺省是 1，而且这个缺省的位置是刻意的：raw createQuote 是 P22-4
+       的 primitive，它**没有商品行**，因而 quantity 是调用方直接给的
+       "送达量"而不是 units × grantQuantity —— 对它来说"一次一份"是唯一
+       自洽的读法。真正需要精确 units 的是 createProductQuote，它**总是**
+       显式传（见那里）。
+       ★ 校验失败是 INVALID_AMOUNT 而不是新词：份数与数量同属"金额/数量
+       这一族"的不合法输入，加一个新 reason code 等于为同一件事造第二个
+       名字（P22-6 的 preparePurchase 用的也是这一个）。 */
+    const units = o.units == null ? 1 : Number(o.units);
+    if (!Number.isSafeInteger(units) || units < 1) {
+      return denial(C.DENY_REASON.INVALID_AMOUNT, ['units-must-be-a-positive-safe-integer']);
     }
     const exp = normalizeExpiresAt(o.expiresAt);
     if (!exp.ok) return { ok: false, denied: false, reasonCode: null, errors: exp.errors };
@@ -6515,6 +6628,7 @@ function createEconomyStore(deps) {
       currency: cur.currency,
       amountMinor: C.serializeAmountMinor(amt.amountMinor),
       quantity: qty,
+      units: units,
       kind: kind,
       expiresAt: exp.expiresAt
       /* 刻意**不含** quoteId（§11）与 predecessorQuoteId：前者是执行时
@@ -6569,7 +6683,7 @@ function createEconomyStore(deps) {
         db.prepare(SQL.insertQuote).run(
           String(quoteId), productId, buyerId, String(buyer.party.type),
           recipient ? recipient.id : null, recipient ? recipient.type : null,
-          cur.currency, toSqlAmount(amt.amountMinor, 'quote-amount'), Number(qty),
+          cur.currency, toSqlAmount(amt.amountMinor, 'quote-amount'), Number(qty), Number(units),
           kind, String(settlementType), C.QUOTE_STATE.OPEN, Number(exp.expiresAt),
           predecessor, key.key, fingerprint, Number(revision), Number(at), Number(at)
         );
@@ -7637,6 +7751,59 @@ function createEconomyStore(deps) {
     };
   }
 
+  /* ── P22-26 · 报价的 `units`：三个下游调用方的**唯一**读法 ─────────────
+     `units`（买了几份）从 P22-26 起是**报价自己的一列**，因为 `quantity`
+     是送达量（units × grantQuantity）—— 报价把 units 算进了 quantity 与
+     amount，就必须自己保存它，否则"这份报价说的是哪一件事"无法被重新
+     回答（P22-4 的"快照必须自足"）。
+
+     ★ 这个函数存在，是为了让"读 units"这件事只有**一份**实现：
+     preparePurchase / createApprovalRequest / authorizePurchaseIntent 三者
+     都要用 units 去重算金额、数量与九元组绑定，而它们过去各自写着
+     `o.units == null ? 1 : Number(o.units)` —— 三处缺省、三处可能漂移，
+     且它们**全部**与报价无关（报价里 units 是 3，它们却按 1 重算）。
+     现在它们都从这里读，于是"prepare 从 payload 猜 units"在结构上不可能。
+
+     ★ `units` 是一个**选择**而不是经济事实，因此它的权威位置是
+     "当初写下这份报价的那一次请求" —— 也就是这一列。调用方**不能**再
+     声明它：没有任何入参可以覆盖它（与"Agent 不得提供经济事实"同源）。 */
+  function quoteUnitsOf(quoteRow) {
+    const raw = quoteRow == null ? null : quoteRow.units;
+    const units = Number(raw);
+    /* 列是 NOT NULL CHECK (units >= 1)，因此这里的失败只可能是"拿到了一行
+       根本不是报价行"。fail closed，不猜一个 1。 */
+    if (!Number.isSafeInteger(units) || units < 1) {
+      return { ok: false, units: null, errors: ['quote-has-no-canonical-units'] };
+    }
+    return { ok: true, units: units, errors: [] };
+  }
+
+  /* 报价的 units × 商品的 grantQuantity ⇒ 这一份报价的**送达量**。
+     载入期关系断言：它必须逐字等于报价上已经冻结的 `quantity`。
+     ── 为什么这条比对的存在理由是结构性的、而不是碰巧能过 ──────────────
+     `grantQuantity` 是 `economy_products` 的**不可变**本体列（P22-5：
+     唯一能改的两列是 status 与 unit_price_minor —— 见 updateProduct 的
+     SET），因此 `units × grantQuantity` 在报价创建之后不可能改变。于是
+     "quantity == units × grantQuantity" 是一条**只可能被绕过列约束的手工
+     改库**破坏的不变量，而不是一个每天都可能漂移的比较。
+     这正是把"份数"与"送达量"分成两个各自冻结的事实的代价 —— 而它换来
+     的是 prepare 不再需要从请求里猜任何一个数。 */
+  function quoteQuantitiesOf(product, quoteRow) {
+    const u = quoteUnitsOf(quoteRow);
+    if (!u.ok) return { ok: false, units: null, quantity: null, errors: u.errors };
+    const derived = C.productQuoteQuantity(product, u.units);
+    if (!derived.ok) return { ok: false, units: u.units, quantity: null, errors: derived.errors };
+    if (Number(quoteRow.quantity) !== Number(derived.quantity)) {
+      return {
+        ok: false, units: u.units, quantity: null,
+        errors: ['quote-quantity-must-equal-units-times-grant-quantity'],
+        quoteQuantity: Number(quoteRow.quantity),
+        derivedQuantity: Number(derived.quantity)
+      };
+    }
+    return { ok: true, units: u.units, quantity: Number(derived.quantity), errors: [] };
+  }
+
   function createProductQuote(input) {
     requireOpen();
     const o = input || {};
@@ -7649,7 +7816,16 @@ function createEconomyStore(deps) {
     const key = C.normalizeIdempotencyKey(o.idempotencyKey);
     if (!key.ok) return { ok: false, denied: false, reasonCode: null, errors: key.errors };
 
+    /* ── P22-26 · `units`（买了几份）：在这里校验，并**随报价一起落库** ──
+       这个显式校验不是多余的（createQuote 也会校验一次）：createProductQuote
+       是**唯一**知道 units 的经济含义的地方（quantity = units × grantQuantity），
+       因此它必须是给出那个拒绝的地方 —— 与 kind / amount / quantity 同款。
+       ★ 而真正的新东西在下面 `createQuote({... units: units ...})`：这是
+       "报价自己保存份数"的那一行。没有它，prepare 只能从请求里再要一次。 */
     const units = o.units == null ? 1 : Number(o.units);
+    if (!Number.isSafeInteger(units) || units < 1) {
+      return denial(C.DENY_REASON.INVALID_AMOUNT, ['units-must-be-a-positive-safe-integer']);
+    }
 
     const available = productAvailabilityForQuote(productId);
     if (!available.ok) return available.denial;
@@ -7670,6 +7846,10 @@ function createEconomyStore(deps) {
       currency: product.currency,
       amountMinor: derivedAmount.amountMinor,
       quantity: derivedQuantity.quantity,
+      /* ★ P22-26：份数随报价落库 —— 这就是本阶段修掉那个算错的那一列。
+         它必须在这里，因为这是**唯一**同时知道"买了几份"与"一份交付多少"
+         的地方，而报价的 quantity 只保存了那个乘积。 */
+      units: units,
       kind: derivedKind.kind,
       productId: product.productId,
       expiresAt: o.expiresAt,
@@ -7977,6 +8157,134 @@ function createEconomyStore(deps) {
       quantity: committed.quantity, revision: committed.revision
     });
     return { ok: true, replayed: false, idempotencyKey: key.key, result: committed };
+  }
+
+  function consumeOwnedItem(input, context) {
+    requireOpen();
+    const o = input || {};
+    const ctx = context || {};
+
+    /* ── ① owner 来自**权威上下文**，绝不来自 payload ──────────────────
+       ★ 这一条是结构性的，不是纪律：下面引用的每一个身份字段都取自
+       `ctx.ownerId`，而 `o.ownerId` / `o.characterId` / `o.buyerId` 在这个
+       函数体里**一次都不出现**。于是"调用方自报身份"没有地方可以发生 ——
+       与 economy command channel 的
+       `NOT_ALLOWED_FOR_A_CONSUMER_TO_SELF_REPORT` 是同一条纪律的两种落地
+       形态（那里是拒绝那个键，这里是根本没有读它的代码）。
+       ★ 缺失时 fail closed，而不是回落到 payload 或某个缺省 owner：
+       "谁的东西"是一次消耗的**全部**内容，猜一个等于替别人做决定。
+       ★ 判据分两级，因为"没有上下文"与"上下文里的 owner 不合法"是两件
+       事：第一级只回答"有没有一个非空的权威 owner"（`ctx.ownerId === ''`
+       与"整个 context 是空对象"都算没有）。 */
+    const authorityOwner = ctx.ownerId == null ? null : String(ctx.ownerId).trim();
+    /* ownerType 同样来自上下文；缺省 `character` 与这一域里 owner 的实际
+       形态一致（钱包与库存的 owner 都是 character）。它**不是**一个可自报
+       的字段：payload 里的 ownerType 不参与。 */
+    const authorityOwnerType = ctx.ownerType == null ? C.PARTY_TYPE.CHARACTER : String(ctx.ownerType);
+    if (authorityOwner == null || authorityOwner === '') {
+      return denial(C.DENY_REASON.ACCOUNT_NOT_ALLOWED,
+        ['consume-owned-item-requires-an-authority-context-with-an-owner'],
+        { identityComesFromThePayload: false, authorityContextRequired: true });
+    }
+    /* ── ★ 上下文准入：它必须是一份**说得通的权威身份** ────────────────
+       与"这个字段存不存在"是两件事。一个空串、一个 system party、或者一个
+       形状不对的 owner 都必须在这里被拒绝，而不是被下游翻译成一句关于
+       别的什么事的话（开发期实测踩到过：缺上下文时下游回的是
+       `party-id-required` —— 那是一句**关于 payload** 的抱怨，而真正的问题
+       是"这次调用没有权威上下文"）。
+       ★ system party 被拒绝的理由与库存 primitive 逐字相同：系统不持有
+       库存，因此它也不可能消耗库存。 */
+    const ownerRef = C.makePartyRef(authorityOwnerType, authorityOwner);
+    if (!ownerRef.ok) {
+      return denial(C.DENY_REASON.ACCOUNT_NOT_ALLOWED,
+        ['authority-context-owner-is-not-a-canonical-party'],
+        { ownerType: authorityOwnerType, ownerIsCanonical: false });
+    }
+    if (ownerRef.party.type === C.PARTY_TYPE.SYSTEM) {
+      return denial(C.DENY_REASON.ACCOUNT_NOT_ALLOWED,
+        ['system-party-cannot-hold-inventory-and-cannot-consume-it'],
+        { ownerType: String(ownerRef.party.type) });
+    }
+
+    /* ── ② 目标持有物：productId 是 canonical 的商品 id ───────────────
+       ★ 刻意**只**接受 productId，不接受 inventoryEntryId：库存的 canonical
+       键是 (owner_id, product_id)（P22-5 §13），而一个 inventory_entry_id
+       是一个**行 id** —— 接受它等于允许"拿别人的行 id 来扣"。用
+       (owner, product) 表达"用掉我的一个 X"让越权在形状上不可表达。 */
+    const productId = o.productId == null ? null : String(o.productId);
+    if (!C.isEconomyId('PRODUCT', productId)) {
+      return { ok: false, denied: false, reasonCode: null, errors: ['product-id-not-canonical'] };
+    }
+    const quantity = Number(o.quantity);
+    if (!Number.isSafeInteger(quantity) || quantity < 1) {
+      return denial(C.DENY_REASON.INVENTORY_INPUT_NOT_STRUCTURED,
+        ['inventory-quantity-must-be-a-positive-safe-integer']);
+    }
+    /* 唯一物品在本阶段不可表示（与 mutateInventory 逐字同一条否认）。 */
+    if (o.instanceId != null || o.serial != null || o.uniqueItemId != null) {
+      return denial(C.DENY_REASON.INVENTORY_INPUT_NOT_STRUCTURED,
+        ['unique-item-instances-are-not-modelled-in-this-schema']);
+    }
+
+    /* ── ③ 这件商品**是不是**消耗品：这是 CONSUMABLE 与 DIGITAL_ITEM
+       真正分开的那一条，而它必须在这里 fail closed ──────────────────
+       过去两个 kind 的 fulfillment 与 assetKind 逐字相同，因此它们在运行时
+       是同一个东西；"消耗品"只是契约注释里的一句话。现在：
+         · `kind === CONSUMABLE` ⇒ 可以被用掉；
+         · 任何其它 kind（含 DIGITAL_ITEM / API_QUOTA / SERVICE）⇒
+           EFFECT_NOT_ALLOWED，**一个字都不改**。
+       ★ 为什么用 kind 而不是新加一个字段：`kind → fulfillment → assetKind`
+       已经是"买完发生什么"的唯一编码（P22-5 冻结的派生表），再写一个
+       effect 就是同一件事的第二个答案。
+       ★ 这条检查在事务**之前**先做一次（快速失败、可读的拒绝），并在写锁里
+       由 mutateInventoryInTx 的 assetKind 检查再兜一次。 */
+    const productRowForKind = db.prepare(SQL.selectProduct).get(productId);
+    if (!productRowForKind) {
+      return denial(C.DENY_REASON.PRODUCT_NOT_FOUND, ['product-not-found'], { productId: productId });
+    }
+    if (String(productRowForKind.product_kind) !== C.PRODUCT_KIND.CONSUMABLE) {
+      return denial(C.DENY_REASON.EFFECT_NOT_ALLOWED,
+        ['only-a-consumable-can-be-consumed'],
+        {
+          productId: productId,
+          productKind: String(productRowForKind.product_kind),
+          consumable: false,
+          /* 逐字：这不是"权限不够"，而是"这件东西根本不是消耗品"。 */
+          aDurableItemIsNotConsumedByUsingIt: true
+        });
+    }
+
+    /* ── ④ 真正的那一次调用：consume 方向，且**只有** consume 方向 ────
+       ★ `'consume'` 在下面是一个**字面量**（不是参数）：这个接缝没有 grant
+       的形态，因此"通过消耗接缝发一次库存"在结构上不可能。
+       ★ ownerId 用的是权威上下文的那个字符串。 */
+    const out = mutateInventory('consume', {
+      /* ★ 写成 `{type, id}` 而不是裸字符串：`partyInput` 对裸字符串一律
+         assume CHARACTER，而那会让"上下文说这是一个 user-party"被静默
+         改写成 character。类型是身份的一半，不能由缺省补上。 */
+      ownerId: { type: authorityOwnerType, id: authorityOwner },
+      productId: productId,
+      quantity: quantity,
+      idempotencyKey: o.idempotencyKey
+    });
+    if (out.ok !== true) return out;
+
+    return Object.assign({}, out, {
+      result: Object.assign({}, out.result, {
+        /* ── 自述位（与 inventory primitive 的三句同源）────────────────
+           一次消耗**不动钱**：它不是一次支出，因此不需要预算、不需要批准、
+           不需要"花别人的钱的许可"。它需要的是"这个 owner 决定用掉自己的
+           东西" —— 而那个决定就是权威上下文。 */
+        consumedItem: true,
+        isAPurchase: false,
+        ledgerMutation: false,
+        walletMutation: false,
+        budgetEvaluated: false,
+        approvalRequired: false,
+        ownerFromAuthorityContext: true,
+        ownerFromPayload: false
+      })
+    });
   }
 
   function grantInventory(input) { return mutateInventory('grant', input); }
@@ -8500,10 +8808,10 @@ function createEconomyStore(deps) {
     if (o.purchaseId != null && !C.isEconomyId(C.PURCHASE_ID_KIND, o.purchaseId)) {
       return { ok: false, denied: false, reasonCode: null, errors: ['purchase-id-not-canonical'] };
     }
-    const units = o.units == null ? 1 : Number(o.units);
-    if (!Number.isSafeInteger(units) || units < 1) {
-      return denial(C.DENY_REASON.INVALID_AMOUNT, ['units-must-be-a-positive-safe-integer']);
-    }
+    /* ★ P22-26：这里**没有** `const units = o.units == null ? 1 : ...`。
+       份数不是请求参数，而是**报价上已冻结的一列**；它在这份报价被读出
+       之后、在写锁之内被读取（见下面的 quoteQuantitiesOf）。把它留在
+       这里会让"从 payload 猜 units"有一个看起来合法的位置。 */
 
     const buyer = partyInput(o.buyerId != null ? o.buyerId : o.ownerId);
     if (!buyer.ok) return { ok: false, denied: false, reasonCode: null, errors: buyer.errors };
@@ -8547,11 +8855,40 @@ function createEconomyStore(deps) {
         { quoteRecipientId: quoteRow.recipient_id == null ? null : String(quoteRow.recipient_id) });
     }
     const quoteAmountMinor = fromSqlAmount(quoteRow.amount_minor, 'quote-amount');
+    /* ── P22-26 · ★ 份数**只**来自报价，不再从请求里猜 ─────────────────
+       这一段是本阶段修掉的那个算错的全部内容。过去这里是
+         const units = o.units == null ? 1 : Number(o.units);
+       也就是说：调用方不说 units 时我们**假定 1**，再拿这个 1 去重算金额
+       与数量并与报价比对 —— 而报价里 units 可能是 3，于是那份报价被自己
+       的一致性检查判成 QUOTE_MISMATCH（症状"账目对不上"）。
+
+       ★ 现在权威是 `quoteRow.units`（报价创建时冻结的那一列）。请求里
+       就算带了 units 也**不参与**：没有任何入参可以覆盖一份快照 ——
+       "买几份"是当初那次请求的选择，它的家就是那份报价。
+       ★ 同一次读取出 quantities，并顺带断言 quantity == units ×
+       grantQuantity（见 quoteQuantitiesOf：grantQuantity 不可变，因此这是
+       一条载入期不变量，而不是一个每天都会漂移的比较）。 */
+    const quantities = quoteQuantitiesOf(product, quoteRow);
+    if (!quantities.ok) {
+      return denial(C.DENY_REASON.QUOTE_MISMATCH, quantities.errors, {
+        quoteId: quoteId,
+        quoteUnits: quantities.units,
+        quoteQuantity: quantities.quoteQuantity === undefined ? null : quantities.quoteQuantity,
+        derivedQuantity: quantities.derivedQuantity === undefined ? null : quantities.derivedQuantity
+      });
+    }
+    const units = quantities.units;
+    const expectedQuantity = {
+      ok: true, quantity: quantities.quantity,
+      deliveredPerUnit: quantities.quantity / units, errors: []
+    };
     const expectedAmount = C.productQuoteAmountMinor(product, units);
     if (!expectedAmount.ok) return denial(C.DENY_REASON.CATALOG_INPUT_NOT_STRUCTURED, expectedAmount.errors);
-    const expectedQuantity = C.productQuoteQuantity(product, units);
-    if (!expectedQuantity.ok) return denial(C.DENY_REASON.CATALOG_INPUT_NOT_STRUCTURED, expectedQuantity.errors);
-    if (expectedAmount.amountMinor !== quoteAmountMinor || Number(quoteRow.quantity) !== expectedQuantity.quantity) {
+    /* 金额仍然必须等于 `单价 × 份数`。这条**不是**多余：报价的金额是价格
+       快照，而 unit_price_minor 是 P22-5 唯一可变的价格列 —— 因此"商品在
+       报价之后改过价"正是在这里被发现并 fail closed 的。（H 组证明的是
+       "已 Prepare 的购买不被改价影响"，不是"改价后的报价仍然可用"。） */
+    if (expectedAmount.amountMinor !== quoteAmountMinor) {
       return denial(C.DENY_REASON.QUOTE_MISMATCH, ['purchase-amount-must-equal-the-quote-snapshot'], {
         quoteAmountMinor: C.serializeAmountMinor(quoteAmountMinor),
         requestedAmountMinor: C.serializeAmountMinor(expectedAmount.amountMinor),
@@ -10080,6 +10417,15 @@ function createEconomyStore(deps) {
     if (!Number.isSafeInteger(Number(row.quantity)) || Number(row.quantity) < 1) {
       problems.push(id + ':quantity-not-a-positive-safe-integer'); return problems;
     }
+    /* ── P22-26：份数也是报价行自己的一句事实 ──────────────────────────
+       它必须与 quantity（送达量）**一起**被检查，因为这两列的关系
+       （quantity = units × grantQuantity）是 prepare 那一条载入期断言的
+       依据。这里不重复那次乘法（那需要一行商品；quoteProblemsOf 刻意只
+       读报价自己那一行 —— 与 §22 "报价的可解释性不依赖商品行是否存在"
+       同款），只回答"这一个数本身说得通吗"。 */
+    if (!Number.isSafeInteger(Number(row.units)) || Number(row.units) < 1) {
+      problems.push(id + ':units-not-a-positive-safe-integer'); return problems;
+    }
     if (!Number.isSafeInteger(Number(row.expires_at)) || Number(row.expires_at) < 0) {
       problems.push(id + ':expires-at-not-a-non-negative-safe-integer'); return problems;
     }
@@ -10962,17 +11308,21 @@ function createEconomyStore(deps) {
        而 product 只提供两个**不可变**的本体列（fulfillment / grantQuantity）。
        报价之后商品改价（unit_price_minor 是 P22-5 唯一可变的价格列）
        对这条批准没有任何影响 —— 它绑的是 Q。 */
-    const units = o.units == null ? 1 : Number(o.units);
-    if (!Number.isSafeInteger(units) || units < 1) {
-      return denial(C.DENY_REASON.INVALID_AMOUNT, ['units-must-be-a-positive-safe-integer']);
+    /* ── P22-26 · 份数只来自报价（与 preparePurchase 同一条纪律）───────
+       过去这里是 `o.units == null ? 1 : Number(o.units)`：一条请求里没带
+       units 的批准请求会把一份 units = 3 的报价判成 QUOTE_MISMATCH ——
+       也就是说"请求批准买三份"会以"数量对不上"失败。现在权威是报价上
+       冻结的那一列，而且 quantity == units × grantQuantity 在这里同样
+       被断言（一条批准绑的是**报价快照**，不是别人报上来的一个数）。 */
+    const quantities = quoteQuantitiesOf(rowToProduct(productRow), quoteRow);
+    if (!quantities.ok) {
+      return denial(C.DENY_REASON.QUOTE_MISMATCH, quantities.errors, {
+        quoteId: quoteId, quoteUnits: quantities.units
+      });
     }
+    const units = quantities.units;
     const quoteAmountMinor = fromSqlAmount(quoteRow.amount_minor, 'quote-amount');
-    const expectedQuantity = C.productQuoteQuantity(rowToProduct(productRow), units);
-    if (!expectedQuantity.ok) return denial(C.DENY_REASON.CATALOG_INPUT_NOT_STRUCTURED, expectedQuantity.errors);
-    if (Number(quoteRow.quantity) !== expectedQuantity.quantity) {
-      return denial(C.DENY_REASON.QUOTE_MISMATCH, ['approval-quantity-must-equal-the-quote-snapshot'],
-        { quoteQuantity: Number(quoteRow.quantity), requestedQuantity: expectedQuantity.quantity });
-    }
+    const expectedQuantity = { ok: true, quantity: quantities.quantity, errors: [] };
     const fulfillment = String(productRow.fulfillment);
 
     const now = clock();
@@ -12696,7 +13046,10 @@ function createEconomyStore(deps) {
       quoteId: String(row.quote_id),
       buyerId: String(row.agent_id),
       recipientId: row.recipient_id == null ? null : String(row.recipient_id),
-      units: Number(row.units),
+      /* ★ P22-26：这里**刻意没有** `units`。preparePurchase 从**报价**读
+         份数（那是它唯一的权威），因此"intent 说自己买几份"与"报价说这份
+         报价买几份"之间的比对发生在下面 intentBindingOf 里（它用 intent
+         行上的 units 重算九元组），而不是靠把一个数递进 prepare。 */
       expiresAt: Number(row.expires_at),
       /* ★ 幂等 key 由 intent 派生：同一条 intent 的"准备购入"永远是
          那一次，于是重放返回的是**同一笔** purchase，而不是第二笔。 */
@@ -13812,12 +14165,21 @@ function createEconomyStore(deps) {
       return { ok: false, denied: false, reasonCode: null, errors: ['now-must-be-a-non-negative-safe-integer'] };
     }
     const product = rowToProduct(productRow);
-    const units = o.units == null ? 1 : Number(o.units);
-    if (!Number.isSafeInteger(units) || units < 1) {
-      return denial(C.DENY_REASON.INVALID_AMOUNT, ['units-must-be-a-positive-safe-integer']);
+    /* ── P22-26 · 份数只来自报价 ───────────────────────────────────────
+       这里是三处"从 payload 猜 units"的最后一处，而它的后果最隐蔽：
+       这一段的 `expected` 是**九元组绑定**（budget / approval 都拿它与
+       自己的记录逐项比对）。用请求里的 units 去重建它，会让一份 units = 3
+       的报价在授权判定里被表达成 units = 1 —— 于是批准九元组与实际要执行
+       的那一笔**不是同一件事**，而判定仍然"通过"。
+       权威是报价上冻结的那一列，且 quantity == units × grantQuantity 在此
+       同样被断言。 */
+    const quantities = quoteQuantitiesOf(product, quoteRow);
+    if (!quantities.ok) {
+      return denial(C.DENY_REASON.QUOTE_MISMATCH, quantities.errors, {
+        quoteId: quoteId, quoteUnits: quantities.units
+      });
     }
-    const expectedQuantity = C.productQuoteQuantity(product, units);
-    if (!expectedQuantity.ok) return denial(C.DENY_REASON.CATALOG_INPUT_NOT_STRUCTURED, expectedQuantity.errors);
+    const units = quantities.units;
     const quoteAmountMinor = fromSqlAmount(quoteRow.amount_minor, 'quote-amount');
     const expected = {
       buyerId: partyKeyOf(buyerType, buyerId),
@@ -13827,7 +14189,7 @@ function createEconomyStore(deps) {
       currency: String(quoteRow.currency),
       amountMinor: quoteAmountMinor,
       settlementType: String(product.fulfillment),
-      grantQuantity: expectedQuantity.quantity,
+      grantQuantity: quantities.quantity,
       units: units
     };
 
@@ -13937,7 +14299,7 @@ function createEconomyStore(deps) {
       currency: String(quoteRow.currency),
       amountMinor: C.serializeAmountMinor(quoteAmountMinor),
       units: units,
-      grantQuantity: expectedQuantity.quantity,
+      grantQuantity: quantities.quantity,
       expectedBinding: expected,
       autonomyOutcome: decision.outcome,
       autonomyReasonCode: decision.reasonCode,
@@ -14933,6 +15295,15 @@ function createEconomyStore(deps) {
     /* 库存原语。**不是** Purchase（§13）：它不动钱、不动钱包。 */
     grantInventory: grantInventory,
     consumeInventory: consumeInventory,
+    /* ── P22-26 · 消耗的**唯一** runtime seam ──────────────────────────
+       上面两个是 primitive（P22-5 冻结的公开面，语义一个字没改）；而
+       `consumeOwnedItem(input, context)` 是本阶段新增的那一条缝：它把
+       owner 的来源钉在**权威上下文**上，并只对 `CONSUMABLE` 生效。
+       生产代码里**没有**任何调用方 —— HTTP 上没有路由、capability 句柄里
+       没有这个方法、适配器把它列为不提供（P22-10 的 NOT_OFFERED）。它存在
+       的意义是：当那条缝被接上时，接上的**是**这一个，而不是 P22-5 的
+       primitive —— 于是"谁的东西可以被用掉"这个问题永远只有一个答案。 */
+    consumeOwnedItem: consumeOwnedItem,
     getInventoryEntry: getInventoryEntry,
     listInventory: listInventory,
     inventoryQuantity: inventoryQuantity,

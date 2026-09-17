@@ -1,4 +1,4 @@
-﻿/* ====================================================================
+/* ====================================================================
    IB · Economy Shell — 纯层（P22-17 · P22-18 追加解释层）
    --------------------------------------------------------------------
    P22-18 只在这一个文件里**追加**解释层，而不改 P22-17 的任何一条判定：
@@ -425,6 +425,33 @@ var COPY = Object.freeze({
   productUnitGrant: '每份发放',
   productUnitService: '一次执行',
   productGone: '已经不存在的商品',
+  /* ── P22-26 · 商品卡上的四样（§6）──────────────────────────────────
+     ★ 它们**全部是读法**，不是经济事实：四句里没有一个字落库、进 DTO 或
+     参与任何判定。功能说明由 `fulfillment` 派生，结果预览由 `fulfillment`
+     + `grantQuantity` + `unitName` 派生，已拥有数量来自 canonical 的库存行
+     （`economy_inventory`），而状态本来就有。
+     ★ 结果预览**不得**预测任何金额、余额或可用性 —— 它只说"买完会多什么"。
+     能不能买、够不够钱、要不要先问，都由 Economy 规则与预算回答，而这一页
+     只显示货架（见 productsRequestNote）。 */
+  productFunctionTitle: '这是什么',
+  productResultTitle: '买完会怎样',
+  productOwnedTitle: '已拥有',
+  productOwnedNone: '还没有',
+  /* ★ 措辞刻意**不**逐字使用 P22-16 那份类别镜像里的中文名（那个类别对应的
+     三个字）。理由不是洁癖：P22-17 有一条断言是"纯层源码里不得出现那些类别
+     中文名"（它们只能来自 `CFG.PRODUCT_KIND_LABEL` 那一张表，否则就是第二张
+     表）。一句**描述**用某几个字，会让那条断言以红色的假象失败，而它防的是
+     "有人在这里又抄了一张类别表"。 */
+  productFunctionConsumable: '一件用掉之后就少一件的东西。',
+  productFunctionDurable: '一件可以一直留着的东西，持有即可，不会少。',
+  productFunctionQuota: '一份供思考继续下去的额度，会累加到已有的额度上。',
+  productFunctionService: '一次由别人完成的工作。它交付的是一次执行，不留下库存。',
+  /* 结果预览的措辞。`grantQuantity` 为 0 或缺失时说的是"没有确定的发放量"
+     —— 而不是编一个数字出来。 */
+  productResultGrant: '会多出',
+  productResultNoQuantity: '会多出一份（数量由交付形态决定）',
+  productResultService: '会得到一次执行，不会多出库存',
+  productResultDurableNote: '可以反复购买，每次都留下新的一份。',
 
   assetsTitle: '我的资产',
   assetsEmpty: '还没有任何资产',
@@ -785,12 +812,80 @@ function unitLineOf(product) {
   return COPY.productUnitGrant + ' ' + (n == null ? '' : (n + ' ')) + unit;
 }
 
+/* ── P22-26 · 商品的功能说明（§6）───────────────────────────────────
+   ★ 它由 `fulfillment` 派生，而 `fulfillment` 是**商品本体列**（P22-5 冻结
+   的派生链：kind → fulfillment → assetKind）。因此这里没有新增契约字段、
+   没有落库、没有进 DTO —— 一句话也没有。
+   ★ 四种交付形态各自一句话，而它们说的都是"买完会发生什么"，不是"你能
+   不能买"。未知的 fulfillment **不编**：返回 null，卡片上就不显示这一段。 */
+function functionFaceOf(product) {
+  var fulfillment = product && product.fulfillment != null ? String(product.fulfillment) : null;
+  var kind = product && product.kind != null ? String(product.kind) : null;
+  if (fulfillment === 'SERVICE_EXECUTION') return COPY.productFunctionService;
+  if (fulfillment !== 'INVENTORY_GRANT' && fulfillment !== 'COMPUTE_GRANT') return null;
+  /* ★ 可被用掉的那些商品与永久资产之间的差别**只在这里的措辞上** —— 它不是
+   一个新的经济事实，而是 `kind === 'CONSUMABLE'` 在呈现层的一句人话。
+   能不能真的被用掉，由 P22-26 的消耗缝回答（`consumeOwnedItem`），不由
+   这句话回答。
+   ★ 这一段刻意**不**逐字写出那个类别的中文名（见上面 COPY 里同一段说明：
+   P22-17 有一条断言是"纯层源码里不得出现那些类别中文名"）。 */
+  if (kind === 'CONSUMABLE') return COPY.productFunctionConsumable;
+  if (kind === 'API_QUOTA' || kind === 'COMPUTE_CREDIT' || fulfillment === 'COMPUTE_GRANT') {
+    return COPY.productFunctionQuota;
+  }
+  if (kind === 'DIGITAL_ITEM') return COPY.productFunctionDurable;
+  return null;
+}
+
+/* ── P22-26 · 购买后的结果预览（§6）─────────────────────────────────
+   ★ 全部输入都是**已有**的事实：`fulfillment` / `grantQuantity` /
+   `unitName`（三者都已在商品行上）。
+   ★ 它**不**预测金额、余额、可用性或"你能不能买"—— 那些问题的答案在
+   Economy 规则与预算那里，而这一页只显示货架（见 productsRequestNote）。
+   ★ 数量为 0 或缺失时说"没有确定的发放量"，而不是把 0 当成 1 写出来。 */
+function resultPreviewOf(product) {
+  var fulfillment = product && product.fulfillment != null ? String(product.fulfillment) : null;
+  if (fulfillment == null) return null;
+  if (fulfillment === 'SERVICE_EXECUTION') return COPY.productResultService;
+  if (fulfillment !== 'INVENTORY_GRANT' && fulfillment !== 'COMPUTE_GRANT') return null;
+  var qty = product && product.grantQuantity != null ? Number(product.grantQuantity) : null;
+  var unit = product && product.unitName != null ? UNIT_FACE[String(product.unitName)] : null;
+  if (!Number.isFinite(qty) || qty <= 0 || unit == null) return COPY.productResultNoQuantity;
+  return COPY.productResultGrant + ' ' + qty + ' ' + unit;
+}
+
+/* ── P22-26 · "已拥有 N"：两张**既有**读面的一次 join ────────────────
+   ★ 数据来自 canonical 的 `economy_inventory` 那一行（`GET /economy/inventory`
+   已经读到了），而不是派生缓存 —— 因此它天然没有"缓存与行不一致"这类 bug，
+   也不该在呈现层再算一遍。**没有新的网络调用**：这一页本来就同时读库存。
+   ★ 读不到库存时说 `null`（卡片上就不显示这一段），而不是说"0" ——
+   "读不到"与"一件都没有"是两件不同的事。 */
+function ownedQuantityOf(inventoryRes, ownerId, productId) {
+  if (inventoryRes == null || productId == null) return null;
+  var entries = listOf(inventoryRes, 'entries');
+  if (entries == null) return null;
+  var wantOwner = ownerId == null ? null : String(ownerId);
+  var wantProduct = String(productId);
+  for (var i = 0; i < entries.length; i += 1) {
+    var e = entries[i];
+    if (!e || e.productId == null) continue;
+    if (String(e.productId) !== wantProduct) continue;
+    if (wantOwner != null && e.ownerId != null && String(e.ownerId) !== wantOwner) continue;
+    var q = Number(e.quantity);
+    return Number.isFinite(q) && q >= 0 ? q : null;
+  }
+  return 0;   /* 读到了库存、但这一件不在里面 ⇒ 确实是 0（不是"读不到"） */
+}
+
 function buildProductModel(productsRes, options) {
   options = options || {};
   var products = listOf(productsRes, 'products');
+  var inventoryRes = options.inventory == null ? null : options.inventory;
+  var ownerId = options.ownerId == null ? null : String(options.ownerId);
   var rows = (products || []).map(function (p) {
     var pid = p && p.productId != null ? String(p.productId) : '';
     var status = (p && p.status != null) ? String(p.status) : null;
+    var owned = ownedQuantityOf(inventoryRes, ownerId, pid);
     return {
       productId: pid,
       storeId: (p && p.storeId != null) ? String(p.storeId) : null,
@@ -801,6 +896,14 @@ function buildProductModel(productsRes, options) {
       kindFace: (CFG && p && p.kind != null) ? (CFG.PRODUCT_KIND_LABEL[String(p.kind)] || null) : null,
       fulfillmentFace: (CFG && p && p.fulfillment != null) ? (CFG.FULFILLMENT_LABEL[String(p.fulfillment)] || null) : null,
       unitLine: unitLineOf(p),
+      /* ── P22-26 的四样（三样是新增，状态本来就有）───────────────── */
+      functionFace: functionFaceOf(p),
+      resultPreview: resultPreviewOf(p),
+      ownedQuantity: owned,
+      /* "已拥有 N" 的整句话（含"还没有"那一种）—— 只在**读得到库存**时
+         才给，读不到就是 null。 */
+      ownedText: owned == null ? null
+        : (owned === 0 ? COPY.productOwnedNone : COPY.productOwnedTitle + ' ' + owned),
       priceText: groupedMoney(p && p.unitPriceMinor, p && p.currency),
       currency: (p && p.currency != null) ? String(p.currency) : null,
       status: status,
@@ -814,6 +917,11 @@ function buildProductModel(productsRes, options) {
     error: failureOf(productsRes),
     rows: rows,
     count: rows.length,
+    /* ★ 自述：这一层只读，而且"已拥有"来自 canonical 的库存行。 */
+    ownedComesFromCanonicalInventory: true,
+    ownedIsNotDerived: true,
+    /* ★ 四样新增里没有一样是新的经济判定。 */
+    addsNoEconomicFacts: true,
     saturated: !!(products && products.length >= LIMITS.PRODUCTS),
     notPersonalized: !!(productsRes && productsRes.personalized === false &&
       productsRes.hasRecommendations === false),
@@ -1543,7 +1651,7 @@ function buildPageView(sources) {
     budget: buildBudgetModel(sources.policy, sources.budgetSnapshot, { ownerId: sources.owner }),
     purchases: buildPurchaseModel(sources.purchases, sources.products, sources.intents, sources),
     stores: buildStoreModel(sources.stores, sources.products),
-    products: buildProductModel(sources.products, {}),
+    products: buildProductModel(sources.products, { inventory: sources.inventory, ownerId: sources.owner }),
     assets: buildAssetsModel(sources.inventory, sources.products, { ownerId: sources.owner }),
     /* ── P22-18 的四个新面（都是解释层，没有一个是新的经济事实）────── */
     timeline: timeline,
@@ -1643,6 +1751,11 @@ NS.economyShellCore = Object.freeze({
   buildBudgetModel: buildBudgetModel,
   buildStoreModel: buildStoreModel,
   buildProductModel: buildProductModel,
+  /* P22-26：这三样是**读法**，因此逐个导出（测试要能对它们做纯调用，
+     不必去解析渲染出来的 DOM）。 */
+  functionFaceOf: functionFaceOf,
+  resultPreviewOf: resultPreviewOf,
+  ownedQuantityOf: ownedQuantityOf,
   buildAssetsModel: buildAssetsModel,
   buildPurchaseModel: buildPurchaseModel,
   buildTimelineModel: buildTimelineModel,

@@ -276,11 +276,15 @@ async function httpGroup() {  const dir = tmpDir('http');
    try {
     const health = await request(port, 'GET', '/economy/health');
     /* ★ P22-25：fresh install 的目录**不再从空开始** —— 装配期会写入
-       canonical 初始目录（1 间系统商店 + 6 件种子商品）。因此这里数的是
-       **增量**：这一组自己播的那一间货架与两件商品，加上那 7 行种子。
-       （在 P22-25 之前，这两个数就是 1 与 2。） */
+       canonical 初始目录（1 间系统商店 + 种子商品）。因此这里数的是
+       **增量**：这一组自己播的那一间货架与两件商品，加上那些种子行。
+       （在 P22-25 之前，这两个数就是 1 与 2。）
+       ★★ P22-26：种子从 6 件变成 **5** 件（目录 v2 撤下了那件 `SERVICE`
+       商品 —— 一个商店不陈列买不了的东西）。因此这里的数字从 6 改成 5，
+       而这**不是**为了让它变绿：它数的是"种子现在有几件"，而那个数字确实
+       变了。 */
     const SEEDED_STORES = 1;
-    const SEEDED_PRODUCTS = 6;
+    const SEEDED_PRODUCTS = 5;
     check('B1 GET /economy/health 报告 stores / products / inventory 的计数（观测面跟着能力长）',
       health.status === 200 && health.body.economy.counts.stores === SEEDED_STORES + 1 &&
       health.body.economy.counts.activeStores === SEEDED_STORES + 1 &&

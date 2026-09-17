@@ -208,7 +208,13 @@ section('A · 报价表、状态词表、以及"它不锁任何东西"的自述'
       const banned = ['api_key', 'payment_link', 'checkout_url', 'provider', 'inventory_count',
         'owned_items', 'provider_quota_balance', 'relationship', 'memory', 'cny', 'usd'];
       return required.every(c => cols.indexOf(c) >= 0) && banned.every(c => cols.indexOf(c) < 0) &&
-        cols.length === required.length + 3;   /* + recipient_id, recipient_type, predecessor_quote_id */
+        /* ★★ P22-26：多了 `units`（这份报价买了几份）。它**不是**一个隐蔽库存
+           列 —— 它与 `quantity`（送达量）是两个各自被冻结的事实，而这一列
+           存在的理由正是"报价必须自己保存那个选择"，否则 `units > 1` 的报价
+           必然被 prepare 的重算判成 QUOTE_MISMATCH。上面那张 banned 清单一个字
+           没改，它才是这条断言真正要挡的东西。 */
+        cols.indexOf('units') >= 0 &&
+        cols.length === required.length + 4;   /* + recipient_id, recipient_type, predecessor_quote_id, units */
     })());
   check('A3 health() 自述报价的 canonical 来源与"不锁任何东西"',
     store.health().quoteCanonical === 'sqlite-quotes' &&

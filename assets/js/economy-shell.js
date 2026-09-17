@@ -1,4 +1,4 @@
-﻿/* ====================================================================
+/* ====================================================================
    IB · Economy Shell — 渲染器（P22-17）
    --------------------------------------------------------------------
    这一页是 Economy 的**门面**：用户真正会长期看的那一页。
@@ -1299,9 +1299,38 @@ function boot() {
     head.appendChild(kindMark(r));
     body.appendChild(head);
     if (r.description) body.appendChild(el('p', 'esh-product-desc', r.description));
+    /* ── P22-26 · 功能说明（§6）─────────────────────────────────────────
+       ★ 它是 `fulfillment`（+ kind）的一句人话，由纯层派生 —— 不落库、不进
+       DTO、不参与任何判定。
+       ★ 它刻意**不**说"你能买"或"要多少钱才够"：那两句的答案在 Economy 规则
+       与预算那里，而这一页只显示货架。 */
+    if (r.functionFace) {
+      var fn = el('p', 'esh-product-function');
+      fn.appendChild(el('span', 'esh-product-function-label', CORE.COPY.productFunctionTitle));
+      fn.appendChild(el('span', 'esh-product-function-text', r.functionFace));
+      body.appendChild(fn);
+    }
+    /* ── P22-26 · 购买后的结果预览（§6）───────────────────────────────
+       ★ 它只说"买完会多什么"，**不**预测金额、余额或可用性。
+       ★ 措辞里"会多出 N 件"的部分由 grantQuantity + unitName 派生，因此它
+       与 `unitLineOf` 读的是同一份事实（不会互相漂移）。 */
+    if (r.resultPreview) {
+      var rp = el('p', 'esh-product-result');
+      rp.appendChild(el('span', 'esh-product-result-label', CORE.COPY.productResultTitle));
+      rp.appendChild(el('span', 'esh-product-result-text', r.resultPreview));
+      body.appendChild(rp);
+    }
     var facts = el('div', 'esh-product-facts');
     if (r.priceText) facts.appendChild(el('span', 'esh-product-price', r.priceText));
     if (r.unitLine) facts.appendChild(el('span', 'esh-product-unitline', r.unitLine));
+    /* ── P22-26 · 已拥有数量（§6）─────────────────────────────────────
+       ★ 数字来自 canonical 的 `economy_inventory` 那一行（这一页本来就同时
+       读库存，因此**没有**新的网络调用）。读不到库存时 `ownedText` 是 null，
+       这一段就不出现 —— "读不到"与"一件都没有"是两件不同的事。
+       ★ 它**不**在呈现层再算一遍：那个数字就是那一行的 quantity。 */
+    if (r.ownedText) {
+      facts.appendChild(el('span', 'esh-product-owned', r.ownedText));
+    }
     body.appendChild(facts);
     var foot = el('div', 'esh-product-foot');
     foot.appendChild(el('span', 'esh-status', r.statusFace));
