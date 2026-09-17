@@ -36,6 +36,14 @@ const http = require('http');
 const crypto = require('crypto');
 
 const CHAT_CORE = require('../../assets/js/chat-core.js');
+/* P22-25 · 目录种子的**只读**描述（商品 id → 图片 key）。
+   ★ 这里拿到的不是写能力：本文件导入它的**唯一**用途是把一个既有的
+     asset key 变成 URL（见 withCatalogImage），而它导出的 `apply` 在
+     本文件里零调用 —— P22-21 §9 的 T5 仍然逐字成立（http.js 的代码里
+     `putStore` / `putProduct` 零调用形态）。
+   ★ 它同时是一道载入期硬门：种子里若有图片引用了不存在的仓库文件，
+     这个 require 会抛（见 catalog-bootstrap.js 的 missingSeedAssets）。 */
+const catalogBootstrap = require('./catalog-bootstrap.js');
 /* P11-3H：停止面的路径常量（唯一来源，不在这里再写一遍字面量）。 */
 const serviceControl = require('../../runtime/service-control.js');
 
@@ -57,6 +65,30 @@ function constantTimeEqual(a, b) {
   const y = Buffer.from(String(b == null ? '' : b));
   if (x.length !== y.length) return false;
   try { return crypto.timingSafeEqual(x, y); } catch (_) { return false; }
+}
+
+/* ── P22-25 · 目录图片引用（**唯一**取值点）─────────────────────────────
+   图片生命周期：
+     仓库代码资产 → Catalog seed（image key）→ Product image reference → UI
+   而 store 的序列化视图里**没有**这一列，因为商品行不知道也不该知道
+   "哪张图配它好看"：那个事实是**种子**的一部分，而种子住在
+   catalog-bootstrap.js。于是这一层只做一次纯映射，绝不落库、绝不生成图、
+   绝不接受调用方给的图片值 —— `productId` 是唯一的输入，因此一件用户
+   或 Agent 造出来的商品拿到的是 `image: null`（诚实：它没有配图），
+   而不是一个猜出来的默认图。
+
+   三个值的字形是**结构性**的（catalog-bootstrap.assetKeyIsCanonical）：
+      · `image`        = 'catalog/<name>.webp'   ← 只保存 asset key
+      · `imageUrl`     = '/assets/economy/catalog/<name>.webp'
+      · 非种子商品      = null（两个都是）
+   字符串里没有 `:`，因此不可能是 data URL；没有 scheme，因此不可能是
+   任何 provider 的临时链接；只有 [a-z0-9-]，因此不可能是 base64。 */
+function withCatalogImage(payload) {
+  if (!payload || payload.productId == null) return payload;
+  return Object.assign({}, payload, {
+    image: catalogBootstrap.imageKeyFor(payload.productId),
+    imageUrl: catalogBootstrap.imageUrlFor(payload.productId)
+  });
 }
 
 function createHomeNodeHttp(deps) {
@@ -1888,7 +1920,7 @@ function createHomeNodeHttp(deps) {
       });
       if (!result.ok) { bad(res, 400, result.errors[0] || 'product-read-failed', null, req); return; }
       ok(res, {
-        products: result.products.map(p => economy.serializeProduct(p)),
+        products: result.products.map(p => withCatalogImage(economy.serializeProduct(p))),
         /* 目录是 canonical 的，不是推荐系统（§40）：这一层不认识"给谁看"。 */
         personalized: false,
         hasRecommendations: false,
@@ -1903,7 +1935,7 @@ function createHomeNodeHttp(deps) {
       const result = economy.getProduct({ productId: productId });
       if (!result.ok) { bad(res, 404, result.errors[0] || 'product-not-found', null, req); return; }
       ok(res, {
-        product: economy.serializeProduct(result.product),
+        product: withCatalogImage(economy.serializeProduct(result.product)),
         /* 价格与关系无关（§41）；商品里没有拥有关系（§10）。 */
         pricingIsRelationshipFree: true,
         holdsOwnership: false

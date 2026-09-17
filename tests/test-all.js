@@ -1054,6 +1054,31 @@ const GROUPS = [
          另含对照面（真 transport 故障仍给 Retry 且不给表单）、Internal/Infernal
          两个外观与 390 窄屏。截图只落 %TEMP%。
          跑法：node tests/test_p22_24_fresh_owner_autonomy_ui.js */
+      /* P22-25：Economy Catalog Bootstrap —— 目录的**唯一** authority。
+         P22-24 §7 留下的缺口是"写方存在、读面齐备、GUI 只读、无 seed、
+         无 bootstrap —— 那么谁把第一件商品放进去？"这一条守卫钉住五条
+         **结构性**性质：① 空目录 → canonical 初始目录（固定 id、ACTIVE、
+         价格/单位/交付形态全部由契约**派生**）；② 第二次 bootstrap 不重复
+         创建（而且全局 revision 与 change log 一字不动，即"根本没写"而不是
+         "写了但值一样"）；③ 用户已有的货架/商品永不被覆盖（写路径在目录
+         非空时一次都不发）；④ 图片引用是**仓库里的一个文件**，拿掉它模块
+         载入就抛（fail closed），且 asset key 的形状里没有 `:`/scheme/base64；
+         ⑤ 种子不碰钱（change log 里只有 STORE_CREATED + PRODUCT_CREATED）。
+         外加本阶段禁止面的可断言形式：capability 词表里没有 CREATE_PRODUCT、
+         Agent 与 User 请求它都是 CAPABILITY_DENIED、http.js 的代码里 putStore/
+         putProduct 仍然零调用形态。零浏览器，一个私有临时目录。 */
+      ['test_p22_25_catalog_bootstrap.js'],
+      /* P22-25 的**真实节点**验收：一个全新 Home Node 子进程 + 私有数据目录 +
+         显式凭据，站在 HTTP 外面看到什么 —— fresh install 之后
+         /economy/stores 与 /economy/products **不为空**；每一行都带
+         `image`（asset key）+ `imageUrl`（/assets/economy/… 之下）；那些 URL
+         真的取得到 200 + image/webp；不存在的那张图是 404 而**不是** HTML
+         回落；/economy/* 的六种写尝试一律 405（商品集合一件不多）；不带凭据
+         读目录仍然 401；**同一数据目录重启一次**之后目录一字未增（日志上是
+         economy-catalog-bootstrap-skipped，而不是 seeded）。
+         ★ 图片由桌面静态层（IB_WEB_PORT，默认 23120）服务；那一层不在时
+           自动退回 Home Node 带凭据取一次，并如实标注走的是哪条路。 */
+      ['test_p22_25_fresh_catalog_wire.js'],
     ]
   },
   {

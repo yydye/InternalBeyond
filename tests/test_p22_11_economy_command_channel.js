@@ -74,7 +74,10 @@ const AGENT = 'cfg_agent';
 const PATHNAME = CHANNEL.COMMAND_PATH;
 const TOKEN = 'p22-11-source-token-0123456789';
 const OTHER_TOKEN = 'p22-11-other-source-token-987654321';
-
+/* P22-23：Economy 的读面（/economy/*、/security）要求**桌面凭据**。
+   这个文件在本阶段之前既不注入 token 也不带令牌头，因此 E/H 两组在
+   P22-23 之后一直是 401 —— 那是**既有**的红，与本阶段无关。这里只补夹具。 */
+const DESKTOP_TOKEN = 'p22-11-desktop-fixture-token';
 /* ══════════════════════════════════════════════════════════════════
    ⚠️ 静态扫描必须先剥注释与字符串字面量
    ══════════════════════════════════════════════════════════════════
@@ -129,7 +132,7 @@ function request(port, method, urlPath, body, headers, opts) {
     const data = body === undefined || body === null ? null : JSON.stringify(body);
     const requestOptions = {
       host: '127.0.0.1', port: port, method: method, path: urlPath,
-      headers: Object.assign({ 'Content-Type': 'application/json' },
+      headers: Object.assign({ 'Content-Type': 'application/json', 'X-IB-Home-Token': DESKTOP_TOKEN },
         data ? { 'Content-Length': Buffer.byteLength(data) } : {}, headers || {}),
       timeout: opts.timeout || 8000
     };
@@ -179,6 +182,9 @@ console.log('P22-11 \u00b7 Economy Command Channel');
   const app = SERVICE.buildHomeNode({
     dataDir: tmpDir('http'),
     logger: () => { },
+    /* P22-23：Economy 的读面（/economy/*、/security）要凭据；夹具显式给一个，
+       并对所有请求附上令牌头（见上面的 request）。断言本身一条都没有放宽。 */
+    token: DESKTOP_TOKEN,
     economyChannelSources: [
       { consumer: C.ECONOMY_CONSUMER.ACTIVE_AGENT_RUNTIME, token: TOKEN, boundPort: SOURCE_PORT },
       { consumer: C.ECONOMY_CONSUMER.DESKTOP_BRIDGE, token: OTHER_TOKEN, boundPort: OTHER_PORT }
@@ -889,6 +895,7 @@ console.log('P22-11 \u00b7 Economy Command Channel');
   const closedApp = SERVICE.buildHomeNode({
     dataDir: tmpDir('closed'),
     logger: () => { },
+    token: DESKTOP_TOKEN,
     economyChannelSources: []
   });
   closables.push({

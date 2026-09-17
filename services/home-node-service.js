@@ -90,6 +90,16 @@ const serviceControl = require('../runtime/service-control.js');
 const createNodeMiddleBrain = require('../services/home-node/middle-brain.js');
 /* P22-23：桌面凭据的**唯一** authority（生成 / 持久化 / 加载 / 诊断）。 */
 const desktopCredential = require('../services/home-node/desktop-credential.js');
+/* P22-25：目录 bootstrap 的**唯一** authority（种子 / 图片引用 / 幂等键）。
+   ★ 它为什么在**装配层**被 require，而不是在 http.js 里：P22-21 §9 的 T5
+     逐字断言 http.js 的代码里 28 个 store 写动词零调用形态，而
+     `putStore` / `putProduct` 都在那份名单上。那条不变量本阶段一字未改 ——
+     因此"把第一件商品放进去"是一个装配期动作，不是一条路由。
+   ★ 它的模块名里没有 "economy" 是**刻意的**：P22-1 的 B4.2 与 P22-10 的 A6
+     用一份**精确的** require 白名单把"装配层能碰 Economy 的哪几个模块"
+     钉死了（各六处）。目录 bootstrap 不是第七个经济 seam：它是一个消费者，
+     拿到的就是已有那个 economyStore，**没有**第二个 store owner。 */
+const catalogBootstrap = require('../services/home-node/catalog-bootstrap.js');
 
 if (typeof fetch !== 'function') {
   console.error('Internal Beyond Home Node requires Node.js 18 or newer.');
@@ -630,6 +640,39 @@ function openMomentStore(store, probe) {
   }
 }
 
+/* ── P22-25 · 目录 bootstrap（**唯一**调用点，两条装配路径共用）─────────
+   两条启动路径（进程级 openAll 与 buildHomeNode().open()）都必须走这一个
+   函数。理由与上面那三个 assembly 逐字相同：把调用写两遍，"某个入口没种
+   目录"就只会在其中一侧发生 —— 而那正是 P11-3E / P22-2 已经踩过的
+   "测试全绿、生产那台是空的"的形状。
+
+   它**不是**一个 fatal gate：种子写不进去不是"这台节点坏了"，而
+   economyStore.open() 本身抛错才是（那条路径一字未改）。因此这里只记录
+   一次，不拦启动 —— 一个空目录仍然是 canonical 的合法状态
+   （P22-21 · D1），而它不该让聊天也起不来。 */
+function applyCatalogBootstrap(economyStore) {
+  let outcome = null;
+  /* catalog-bootstrap.js 的 logger 是 (event, fields) 的两参形状，而本文件的
+     log 是三参 (level, event, fields)。在这里补齐那一层，而不是把 level 塞进
+     bootstrap 模块 —— 后者会让一个纯领域模块知道"日志级别"这件宿主的事。 */
+  const note = function (event, fields) { log('info', event, fields); };
+  try {
+    outcome = catalogBootstrap.apply(economyStore, { logger: note });
+  } catch (error) {
+    /* 抛出来的是"bootstrap 自己坏了"，与"store 说不行"是两件事。
+       两者都不得拦启动；差别只在日志里说得清。 */
+    log('error', 'economy-catalog-bootstrap-failed', {
+      error: (error && error.message) || String(error)
+    });
+    return { ok: false, applied: false, requested: false, reason: 'bootstrap-threw',
+      errors: [(error && error.message) || String(error)] };
+  }
+  if (!outcome.ok) {
+    log('error', 'economy-catalog-bootstrap-failed', { reason: outcome.reason, errors: outcome.errors });
+  }
+  return outcome;
+}
+
 /* ── 网关装配（**唯一**一处）─────────────────────────────────────────
    与 memoryAssembly 同一个理由：网关的依赖集合只能有一份定义。
    生产启动路径与 buildHomeNode() 都调用它，因此"某个 canonical 域没有接线"
@@ -946,6 +989,11 @@ function buildHomeNode(options) {
        损坏隔离（quarantine 由 chat store 负责），所以它在隔离完成之后
        连接同一个文件是安全的。 */
     instanceEconomy.economyStore.open();
+    /* P22-25：目录 bootstrap 紧跟在 open() 之后、**早于任何请求**。
+       顺序是有意的：它只可能写一次（目录非空即不再进入写路径），因此
+       放在监听之前意味着"这台节点对外服务时，它的目录已经是 canonical
+       的初始状态"。 */
+    applyCatalogBootstrap(instanceEconomy.economyStore);
     return openedStore;
   }
   function close() {
@@ -1211,6 +1259,8 @@ function openAll() {
      库不可写），而那时 require.main 的 catch 会如实退出 —— 一个打不开的
      canonical 账本不该被静默降级成"余额 0"。 */
   economy.economyStore.open();
+  /* P22-25：与 buildHomeNode().open() 走**同一个**调用点。 */
+  applyCatalogBootstrap(economy.economyStore);
   return opened;
 }
 

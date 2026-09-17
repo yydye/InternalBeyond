@@ -62,12 +62,17 @@ function freePort() {
   });
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+/* ★ P22-23 之后，Economy 的读面**要求凭据**。这个文件的 C 组起真实子进程
+   却既不注入 token 也不带令牌头，因此整组 C 在 P22-23 之后是 401 ——
+   那是**既有**的红，与本阶段无关，但它让本文件失去了守卫作用。这里只补
+   夹具（显式测试凭据 + 令牌头）。**断言本身一条都没有放宽。** */
+const TEST_TOKEN = 'p22-2-runtime-fixture-token';
 function request(port, method, urlPath, body, headers) {
   return new Promise((resolve, reject) => {
     const data = body === undefined || body === null ? null : JSON.stringify(body);
     const req = http.request({
       host: '127.0.0.1', port: port, method: method, path: urlPath,
-      headers: Object.assign({ 'Content-Type': 'application/json' },
+      headers: Object.assign({ 'Content-Type': 'application/json', 'X-IB-Home-Token': TEST_TOKEN },
         data ? { 'Content-Length': Buffer.byteLength(data) } : {}, headers || {}),
       timeout: 8000
     }, res => {
@@ -102,7 +107,9 @@ function startProduction(dir) {
       cwd: ROOT,
       env: Object.assign({}, process.env, {
         IB_HOME_NODE_PORT: String(port),
-        IB_HOME_NODE_DATA_DIR: dir
+        IB_HOME_NODE_DATA_DIR: dir,
+        /* P22-23：Economy 读面要凭据；夹具显式给一个。 */
+        IB_HOME_NODE_TOKEN: TEST_TOKEN
       }),
       stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true
     });
@@ -223,7 +230,7 @@ section('C · HTTP 面（只读 / 状态码 / 不暴露写入口）');
 
 async function httpGroup() {
   const dir = tmpDir('http');
-  const app = SERVICE.buildHomeNode({ dataDir: dir, logger: () => { } });
+  const app = SERVICE.buildHomeNode({ dataDir: dir, logger: () => { }, token: TEST_TOKEN });
   app.open();
   /* 角色的 canonical owner 是 device registry。先登记一个，否则
      ownerExists 会（正确地）拒绝开钱包。 */
@@ -287,10 +294,20 @@ async function httpGroup() {
     tx.status === 200 ? tx.body.entries.map(e => e.accountId + ':' + e.direction) : tx.body);
 
   const changes = await request(port, 'GET', '/economy/changes?cursor=0');
+  /* ★ P22-25：fresh install 的目录**不再从空开始** —— 装配期写入 canonical
+     初始目录（1 间系统商店 + 6 件种子商品 = 7 条 change）。这条全局读面
+     因此先给出那 7 条，再给出这一组自己的两条。断言改成"**尾两条**是这一
+     组自己的、且全局 revision 与它一致"，而不是"总共有两条" ——
+     增量的形状（两条、连续、kind 封闭）一字未改。 */
+  const SEEDED_CHANGES = 7;
+  const changeRows = changes.status === 200 ? changes.body.changes : [];
+  const changeTail = changeRows.slice(-2);
   check('C10 GET /economy/changes → 200，revision 单调且 kind 封闭',
-    changes.status === 200 && changes.body.changes.length === 2 &&
-    changes.body.changes[0].revision === 1 && changes.body.changes[1].revision === 2 &&
-    Number(changes.body.revision) === 2,
+    changes.status === 200 && changeRows.length === SEEDED_CHANGES + 2 &&
+    changeTail[0].revision === SEEDED_CHANGES + 1 &&
+    changeTail[1].revision === SEEDED_CHANGES + 2 &&
+    Number(changes.body.revision) === SEEDED_CHANGES + 2 &&
+    changeTail.map(c => c.kind).sort().join(',') === 'MINT_COMMITTED,WALLET_OPENED',
     changes.status === 200 ? changes.body.changes.map(c => c.revision + ':' + c.kind) : changes.body);
 
   /* ── 写入口**不存在**：这组是本阶段最重要的一条 ─────────────────── */
@@ -306,7 +323,7 @@ async function httpGroup() {
   check('C12 这些 POST 没有改变账本（写尝试之后 revision 与余额都不动）',
     (() => {
       const h = app.economyStore.health();
-      return h.revision === 2 && h.counts.transactions === 1 && h.counts.entries === 2;
+      return h.revision === SEEDED_CHANGES + 2 && h.counts.transactions === 1 && h.counts.entries === 2;
     })(), app.economyStore.health().counts);
   check('C13 未知的 /economy/* GET → 404 unknown-economy-path（与"写被拒"区分开：一个是不存在，一个是不允许）',
     (await request(port, 'GET', '/economy/nope')).status === 404);
@@ -416,8 +433,10 @@ async function childProcessGroup() {
        而 P22-2 不给它任何外部写入口。因此 D 组的写入验证改为
        "重启后账本与 revision 原样" —— 用 E 组（同进程 store 与
        真实进程共用同一个库文件）来产生事实。 */
-    check('D8 生产进程的 /economy/changes 可读且 revision 从 0 起（新库）',
-      (await request(prod.port, 'GET', '/economy/changes?cursor=0')).body.revision === 0);
+    /* ★ P22-25：一个全新的库现在从**种子那 7 条**起（目录 bootstrap），
+       而不是从 0 起。 */
+    check('D8 生产进程的 /economy/changes 可读且 revision 从种子的 7 条起（新库）',
+      (await request(prod.port, 'GET', '/economy/changes?cursor=0')).body.revision === 7);
 
     /* 干净停机：走合作停止面（Windows 上信号路径到不了 store.close）。 */
     await stopProduction(prod);

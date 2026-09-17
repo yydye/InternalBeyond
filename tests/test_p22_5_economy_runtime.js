@@ -65,12 +65,18 @@ function freePort() {
   });
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+/* ★ P22-23 之后，Economy 的读面**要求凭据**（`/economy/*` 属于
+   isDesktopOnlyPath）。这个文件在本阶段之前既不注入 token 也不带令牌头，
+   因此整组 B/D 在 P22-23 之后一直是 401 —— 那是**既有**的红，与本阶段
+   无关，但它让"回归 P22-5"变成一句空话。这里只补夹具：显式给节点一个
+   测试凭据，并对 /economy/* 附上那个头。**断言本身一条都没有放宽。** */
+const TEST_TOKEN = 'p22-5-runtime-fixture-token';
 function request(port, method, urlPath, body, headers) {
   return new Promise((resolve, reject) => {
     const data = body === undefined || body === null ? null : JSON.stringify(body);
     const req = http.request({
       host: '127.0.0.1', port: port, method: method, path: urlPath,
-      headers: Object.assign({ 'Content-Type': 'application/json' },
+      headers: Object.assign({ 'Content-Type': 'application/json', 'X-IB-Home-Token': TEST_TOKEN },
         data ? { 'Content-Length': Buffer.byteLength(data) } : {}, headers || {}),
       timeout: 8000
     }, res => {
@@ -102,7 +108,9 @@ function startProduction(dir) {
       cwd: ROOT,
       env: Object.assign({}, process.env, {
         IB_HOME_NODE_PORT: String(port),
-        IB_HOME_NODE_DATA_DIR: dir
+        IB_HOME_NODE_DATA_DIR: dir,
+        /* P22-23：Economy 读面要凭据；夹具显式给一个。 */
+        IB_HOME_NODE_TOKEN: TEST_TOKEN
       }),
       stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true
     });
@@ -200,9 +208,20 @@ section('B · HTTP 面：六条新只读路由 + 每一种写动词都是 405');
 const PRODUCT_READ_PATHS = ['/economy/stores', '/economy/store', '/economy/products',
   '/economy/product', '/economy/inventory', '/economy/inventory-entry'];
 
-async function httpGroup() {
-  const dir = tmpDir('http');
-  const app = SERVICE.buildHomeNode({ dataDir: dir, logger: () => { } });
+/* ★ P22-25：HTTP 面在商品序列化视图之上**派生**两个键（image / imageUrl）。
+   凡是要把"HTTP 读到的行"与"store 自己的序列化视图"逐字比对的断言，
+   都必须先把这两个派生键去掉 —— 那不是"第二套解释"，而是同一份事实的
+   一个已知的、显式的投影。 */
+function withoutCatalogImage(row) {
+  if (!row) return row;
+  const copy = Object.assign({}, row);
+  delete copy.image;
+  delete copy.imageUrl;
+  return copy;
+}
+
+async function httpGroup() {  const dir = tmpDir('http');
+  const app = SERVICE.buildHomeNode({ dataDir: dir, logger: () => { }, token: TEST_TOKEN });
   app.open();
   app.registry.putCharacter('cfg_a', { id: 'cfg_a', nickname: 'A' }, null);
   app.registry.putCharacter('cfg_b', { id: 'cfg_b', nickname: 'B' }, null);
@@ -254,13 +273,19 @@ async function httpGroup() {
   });
   const before = fingerprint();
 
-  try {
+   try {
     const health = await request(port, 'GET', '/economy/health');
+    /* ★ P22-25：fresh install 的目录**不再从空开始** —— 装配期会写入
+       canonical 初始目录（1 间系统商店 + 6 件种子商品）。因此这里数的是
+       **增量**：这一组自己播的那一间货架与两件商品，加上那 7 行种子。
+       （在 P22-25 之前，这两个数就是 1 与 2。） */
+    const SEEDED_STORES = 1;
+    const SEEDED_PRODUCTS = 6;
     check('B1 GET /economy/health 报告 stores / products / inventory 的计数（观测面跟着能力长）',
-      health.status === 200 && health.body.economy.counts.stores === 1 &&
-      health.body.economy.counts.activeStores === 1 &&
-      health.body.economy.counts.products === 2 &&
-      health.body.economy.counts.activeProducts === 2 &&
+      health.status === 200 && health.body.economy.counts.stores === SEEDED_STORES + 1 &&
+      health.body.economy.counts.activeStores === SEEDED_STORES + 1 &&
+      health.body.economy.counts.products === SEEDED_PRODUCTS + 2 &&
+      health.body.economy.counts.activeProducts === SEEDED_PRODUCTS + 2 &&
       health.body.economy.counts.inventoryEntries === 1 &&
       health.body.economy.counts.inventoryTotalQuantity === 10,
       health.body.economy && health.body.economy.counts);
@@ -273,11 +298,15 @@ async function httpGroup() {
       health.body.economy);
 
     const stores = await request(port, 'GET', '/economy/stores');
+    /* ★ P22-25：货架从**两**间开始（种子那间系统商店 + 这一组自己播的那间）。
+       判据按 storeId 找，而不是按位置找 —— "谁排在第一位"不该由测试来钉。 */
+    const testStoreRow = stores.body.stores.filter(s => s.storeId === st.result.storeId)[0];
     check('B3 GET /economy/stores 列得出货架，并逐字声明它不拥有价格与拥有关系',
-      stores.status === 200 && stores.body.stores.length === 1 &&
-      stores.body.stores[0].storeId === st.result.storeId &&
-      stores.body.stores[0].holdsPrices === false &&
-      stores.body.stores[0].holdsOwnership === false &&
+      stores.status === 200 && stores.body.stores.length === 2 &&
+      !!testStoreRow &&
+      testStoreRow.holdsPrices === false &&
+      testStoreRow.holdsOwnership === false &&
+      stores.body.stores.every(s => s.holdsPrices === false) &&
       stores.body.holdsPrices === false,
       stores.body);
     const oneStore = await request(port, 'GET', '/economy/store?storeId=' + encodeURIComponent(st.result.storeId));
@@ -287,14 +316,32 @@ async function httpGroup() {
       (await request(port, 'GET', '/economy/store?storeId=econ_store_nope')).status === 404);
 
     const products = await request(port, 'GET', '/economy/products');
+    /* ★ P22-25：这一条断言的是"**这一间货架**的商品"，而不是全局计数 ——
+       全局里现在还有种子那六件。两者的区别正是本阶段要区分的东西。 */
+    const scopedProducts = await request(port, 'GET',
+      '/economy/products?storeId=' + encodeURIComponent(st.result.storeId));
     check('B5 GET /economy/products 列出商品（金额是十进制字符串、带单位名），并声明目录不是推荐系统',
-      products.status === 200 && products.body.products.length === 2 &&
+      products.status === 200 && scopedProducts.status === 200 &&
+      scopedProducts.body.products.length === 2 &&
       products.body.products.every(p => typeof p.unitPriceMinor === 'string') &&
       products.body.personalized === false &&
       products.body.hasRecommendations === false &&
       products.body.hasDiscounts === false,
-      products.body.personalized);
-    const filtered = await request(port, 'GET', '/economy/products?kind=API_QUOTA');
+      { scoped: scopedProducts.body.products.length, all: products.body.products.length });
+    /* ★ P22-25：图片引用是 HTTP 面派生出来的两个键，而它**不在** store 的
+       序列化视图里（图片是种子的字段，不是商品行的一列）。 */
+    check('B5b ★★★ P22-25：每一行都带 `image` 与 `imageUrl`，'
+      + '种子商品是 catalog/*.webp 的 asset key，非种子商品是诚实的 null',
+      products.body.products.every(p => {
+        const seeded = /^catalog\/[a-z0-9-]+\.webp$/.test(String(p.image))
+          && p.imageUrl === '/assets/economy/' + p.image;
+        const notSeeded = p.image === null && p.imageUrl === null;
+        return seeded || notSeeded;
+      }) &&
+      scopedProducts.body.products.every(p => p.image === null && p.imageUrl === null),
+      products.body.products.map(p => [p.productId, p.image]));
+    const filtered = await request(port, 'GET',
+      '/economy/products?kind=API_QUOTA&storeId=' + encodeURIComponent(st.result.storeId));
     check('B6 GET /economy/products 的最小过滤（kind / status / currency / storeId）都可用',
       filtered.status === 200 && filtered.body.products.length === 1 &&
       filtered.body.products[0].kind === 'API_QUOTA' &&
@@ -544,15 +591,19 @@ async function subprocessGroup() {
     check('D2 生产进程读到的货架 / 商品 / 库存与播种时**逐字相同**（HTTP 面没有第二套解释）',
       a.status === 200 && b.status === 200 && c.status === 200 && d.status === 200 &&
       J(a.body.store) === expected.store &&
-      J(b.body.product) === expected.product &&
+      /* ★ P22-25：`image` / `imageUrl` 是 HTTP 面**派生**出来的两个键
+         （见 http.js 的 withCatalogImage），它们不是 store 序列化视图的一
+         部分 —— 而这一条断言的正是"HTTP 面没有第二套解释"。因此比对前把
+         那两个派生键去掉，其余字段仍然逐字相同。 */
+      J(withoutCatalogImage(b.body.product)) === expected.product &&
       J(c.body.entries[0]) === expected.listEntry &&
       J(d.body.entry) === expected.entry,
-      { a: J(a.body.store) === expected.store, b: J(b.body.product) === expected.product,
+      { a: J(a.body.store) === expected.store, b: J(withoutCatalogImage(b.body.product)) === expected.product,
         c: J(c.body.entries[0]) === expected.listEntry, d: J(d.body.entry) === expected.entry });
     check('D3 生产进程上的 /economy/products 列出了那件商品（能力真的被接上了）',
       e.status === 200 && e.body.products.length === 1 &&
-      e.body.products[0].productId === p.result.productId,
-      e.body);
+      e.body.products.some(x => x.productId === p.result.productId),
+      { length: e.body.products.length, ids: e.body.products.map(x => x.productId) });
     const post = await request(svc.port, 'POST', '/economy/inventory/grant', { quantity: 999999 });
     const post2 = await request(svc.port, 'POST', '/economy/product', { name: 'evil' });
     check('D4 生产进程上，POST 到库存与商品路径同样是 405（不是"开发机上挡着、生产上开着"）',
