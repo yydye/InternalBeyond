@@ -618,6 +618,10 @@ stop:       POST /__shutdown   → 202 {ok, stopping, service, pid}
 
 ## 15. M1-C.2d Wave 2 — canonical memory authority
 
+> Memory canonical docs: [`architecture/MEMORY.md`](architecture/MEMORY.md) ·
+> [`contracts/memory/`](contracts/memory/). This section is the contract origin; the canonical
+> documentation supersedes it for current description.
+
 `memories` becomes canonical durable state **owned by the Home Node**. This is the first
 vertical slice of memory-authority convergence; the rest of the memory ecosystem
 (`understandings`, `threads`, `chatSummaries`, `autoMemory`, `roleLetterMemories`,

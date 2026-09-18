@@ -67,6 +67,18 @@ Middle Brain runtime architecture 的**当前权威**见
 | `runtime/P2-CONTEXT-CONVERGENCE-AUDIT.md` | 上下文收敛只读核实 |
 | `platform/ASTRA_READINESS_PHASE1.md` | Astra Readiness Phase 1 |
 
+## memory/ —— Memory
+
+Memory 的**当前 authority** 见
+[`../architecture/MEMORY.md`](../architecture/MEMORY.md) 与
+[`../contracts/memory/`](../contracts/memory/)（canonical = Home Node `memory_records`）。
+历史记录分散在 runtime/（context convergence / 集成审计）。
+
+| 报告 | 阶段 |
+|---|---|
+| `runtime/CONTEXT-CONVERGENCE-C1-REPORT.md` | 上下文收敛 C1（含 memory 契约闭合） |
+| `runtime/P2-CONTEXT-CONVERGENCE-AUDIT.md` | 上下文收敛只读核实 |
+
 ## 归档约定
 
 - 报告按**完成时的原文**保留；报告里出现的历史路径、当时测试数量、当时端口与命令不做回写。

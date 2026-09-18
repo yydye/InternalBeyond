@@ -927,6 +927,8 @@ grant 是 per-fact、per-recipient、有向的显式许可（`factId` + `ownerCh
 仓库对"角色私有长期记忆"早有同款判断（`role-letters.js:26` 的 `roleLetterMemories`：
 "绝不写入共享 memories，避免污染 Memory 面板/export/backup"）。完整审计见 D30。
 
+> Memory 的专项架构与 authority 见 [architecture/MEMORY.md](architecture/MEMORY.md) 与 [contracts/memory/](contracts/memory/)（canonical = Home Node `memory_records`；browser `memories` = 镜像）。
+
 存储形态：keyPath **`factId`**（不是通用的 `id`——canonical 记录里没有 `id` 字段，
 为迁就 keyPath 复制一份会让身份有两个真源）；**没有 `byOwner` 索引**，
 按 owner 分区由 `authoring-core.partitionForOwner` 完成（分区语义写在契约里，

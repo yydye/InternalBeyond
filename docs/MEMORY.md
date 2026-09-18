@@ -4,6 +4,9 @@
 > 这是角色**情感连续性**与**社会闭环**（见 [SOCIAL_RUNTIME.md](SOCIAL_RUNTIME.md)）的底层。
 > 关联：[ARCHITECTURE.md](ARCHITECTURE.md) · [DECISIONS.md](DECISIONS.md)（D12/D14/D15 记忆相关决策）· CHANGELOG（Ombre Brain 演进）。
 
+> **当前 Memory authority 见 [architecture/MEMORY.md](architecture/MEMORY.md) 与 [contracts/memory/](contracts/memory/)。**
+> 本文档描述**检索 / 评分 / 固化算法**；§1 的 IndexedDB `memories` 是 Home Node canonical `memory_records` 的**镜像**，不是 durable authority。
+
 ---
 
 ## 0. 定位（一个关键的前提判断）
@@ -28,7 +31,10 @@ IB 的**原生记忆**不是向量库 / 嵌入检索——这是刻意的（D14/
 
 ---
 
-## 1. 数据模型（IndexedDB store `memories`）
+## 1. 数据模型（IndexedDB store `memories` · 镜像）
+
+> Storage authority：Home Node canonical `memory_records`；本 store 是**镜像 / 迁移来源 / 回滚影子**。
+> 见 [architecture/MEMORY.md](architecture/MEMORY.md) 与 [contracts/memory/](contracts/memory/)。
 
 每条记忆（`memory.js` 的 `memoryData` / `quickCreateMemory`）：
 
