@@ -91,6 +91,17 @@ Voice 的**当前架构与契约**见
 | `legacy/voice-runtime-phase1.md` | Voice Runtime Phase 1（被 bridge/voice-runtime.js 取代） |
 | `legacy/voice-runtime-phase2-3.md` | Voice Runtime Phase 2–3（被 P23-2A/2B/2C 拆分取代） |
 
+## companion/ —— Companion / Autonomy / Social
+
+Companion 的**当前架构与 authority 边界**见
+[`../architecture/COMPANION.md`](../architecture/COMPANION.md) 与
+[`../contracts/companion/`](../contracts/companion/)；
+自主行为机制见 [`../AUTONOMY.md`](../AUTONOMY.md)，社会闭环见 [`../SOCIAL_RUNTIME.md`](../SOCIAL_RUNTIME.md)。
+
+| 报告 | 阶段 |
+|---|---|
+| `platform/ROLE_DM_RELATIONSHIP_PHASE4_AUDIT.md` | Role DM / relationship 后果只读审计 |
+
 ## 归档约定
 
 - 报告按**完成时的原文**保留；报告里出现的历史路径、当时测试数量、当时端口与命令不做回写。

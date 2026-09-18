@@ -10,6 +10,9 @@
 
 ## Status
 
+> Relationship authority（`cfg.relationship` 为权威；`disclosureFacts` / `pairAffinity` 非 relationship authority）
+> 见 [contracts/companion/RELATIONSHIP_AUTHORITY_CONTRACT.md](contracts/companion/RELATIONSHIP_AUTHORITY_CONTRACT.md)。
+
 **已实现且稳定**（每项均有生产代码 + 测试证据）：
 
 - **持久角色 ↔ 角色私信**：一对角色一个 thread，消息落在既有 `chatMessages` store

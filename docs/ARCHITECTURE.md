@@ -786,6 +786,9 @@ Bark（iOS）与 ntfy（Android/OPPO）都支持；`recordPush` 同时记录两�
 
 ## 5. Active companion 服务（23114）
 
+> Companion 的专项架构与 authority 边界（Character ≠ Companion、relationship authority、queue ≠ chat storage）
+> 见 [architecture/COMPANION.md](architecture/COMPANION.md) 与 [contracts/companion/](contracts/companion/)。
+
 ### 组成
 
 `active-message-service.js`（root，约 268 行）装配五个域工厂 + `active/moments.js`；全部状态读写经 `getState()`（计划域、模型客户端、调度器、HTTP 四层一致），无循环依赖。文件被 require 时不再自启（`require.main` 守卫），`start-active-service.cmd` 直接运行方式不受影响；`module.exports` 供测试直调域函数。

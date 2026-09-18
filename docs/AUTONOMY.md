@@ -3,6 +3,10 @@
 > 本文定义 IB 的**自主行为机制**：它如何让角色"自己行动"，以及为什么这是**有节制的自主（Autonomy ≠ random generation）**。
 > 关联：[SOCIAL_RUNTIME.md](SOCIAL_RUNTIME.md)（社会闭环）· [MEMORY.md](MEMORY.md)（记忆）· [ARCHITECTURE.md](ARCHITECTURE.md) · [DECISIONS.md](DECISIONS.md)（D11/D13）。
 
+> Companion 的 authority 边界（定义、`cfg.relationship` vs `disclosureFacts` vs `pairAffinity`、
+> Active service 协议、子系统边界）见 [architecture/COMPANION.md](architecture/COMPANION.md)
+> 与 [contracts/companion/](contracts/companion/)；本文档保留自主行为**机制**。
+
 ---
 
 ## 0. 核心论断

@@ -8,6 +8,9 @@
 
 ## 0. 一句话定位
 
+> Companion authority / 子系统边界见 [architecture/COMPANION.md](architecture/COMPANION.md)
+> 与 [contracts/companion/](contracts/companion/)（Social/Moments 仍属 Social，不由 Companion 拥有）。
+
 > **InternalBeyond 是一个本地优先的 AI 社会世界**：角色会记住、能感知、有情绪分量、彼此互动，并**自主行动**。
 
 它不是"用户打字 → AI 回一句"的问答机，而是一个**持续演化、角色之间也在社交**的世界。核心证据是下面这条**社会闭环**。
