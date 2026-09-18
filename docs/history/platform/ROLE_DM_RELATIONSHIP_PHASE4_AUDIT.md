@@ -2,7 +2,7 @@
 
 > **状态：只读审计。本轮 0 行实现、0 个新 signal、0 次真实模型调用。**
 > 问题只有一个：**`trust` / `affinity` / `familiarity` 除了存储和显示之外，到底有没有真正改变 Role DM 的行为？**
-> 全部结论从**代码**回答，不从设计愿望回答。canonical 综述见 [ROLE_DM.md](ROLE_DM.md)。
+> 全部结论从**代码**回答，不从设计愿望回答。canonical 综述见 [ROLE_DM.md](../../ROLE_DM.md)。
 
 ## 1. 关系真源与写入路径
 

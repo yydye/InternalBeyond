@@ -3,7 +3,7 @@
 > 本文是 **角色私信（Role DM）** 的 canonical overview：当前稳定能力、真实调用路径、
 > 隐私边界、关系三维、自主发起、质量/安全层、可观测性，以及**明确 deferred** 的部分。
 > 关联：[ARCHITECTURE.md](ARCHITECTURE.md)（全局架构）· [DECISIONS.md](DECISIONS.md)（D13 / D24 / D25 / D26）·
-> [SOCIAL_RUNTIME.md](SOCIAL_RUNTIME.md)（社会闭环）· [ROLE_DM_RELATIONSHIP_PHASE4_AUDIT.md](ROLE_DM_RELATIONSHIP_PHASE4_AUDIT.md)（关系后果只读审计）。
+> [SOCIAL_RUNTIME.md](SOCIAL_RUNTIME.md)（社会闭环）· [ROLE_DM_RELATIONSHIP_PHASE4_AUDIT.md](history/platform/ROLE_DM_RELATIONSHIP_PHASE4_AUDIT.md)（关系后果只读审计）。
 >
 > 纪律：**本文只写已经被 production code / targeted tests / 已提交 decision 证明的事实。**
 > 凡未实现或未闭合者，一律进入 §Deferred，不写进"已实现"。
@@ -126,7 +126,7 @@ optional autonomous social intent（role-dm-social-core.evaluateSocialIntent
 - **仍然没有的**：`familiarity` **未**控制 disclosure（不决定"能说什么私事"）、
   **未**控制语气，**未**成为 initiative 的硬路由；`affinity` 仍对模型不可见。
   Phase 4B / 4C 见 §Deferred。
-- 完整取证见 [ROLE_DM_RELATIONSHIP_PHASE4_AUDIT.md](ROLE_DM_RELATIONSHIP_PHASE4_AUDIT.md)。
+- 完整取证见 [ROLE_DM_RELATIONSHIP_PHASE4_AUDIT.md](history/platform/ROLE_DM_RELATIONSHIP_PHASE4_AUDIT.md)。
 - **无 decay**：三个维度都不是衰减型；`trust` / `affinity` / `familiarity` 是**单向棘轮**
   （净 ≤ 0 记 0，不记负）。
 

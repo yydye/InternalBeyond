@@ -482,7 +482,7 @@ chat×diary parity / requested→effective→reasoning tokens 可对比）；同
   1. `assets/js/moments.js` `_momentsImagePayload`：`(src.match(...)||[])[1]` 正确取捕获组 + base64 去空白/剥重复 `data:…;base64,` 前缀；
   2. `assets/js/communication.js` `_adaptContentForApi`（openai 图片分支）：构造 `image_url` 时把 mime 强制为合法 `image/*`（`/^image\//i.test(p.mime) ? p.mime : 'image/jpeg'`）+ base64 去空白/剥重复前缀——wire 层兜底，覆盖任何来源的图片注入。
 - **验证（官方端点，mimo-v2.5，经 FlClash:7890 代理直连对照）**：`data:a;base64,…` = 400（与上述报错逐字一致）；`data:image/jpeg;base64,…` = 200；修复逻辑真实请求 400→200 确认。
-- **排查方法**：DevTools→Network→该 400 请求→Response 看 `error.param`；或临时在 `_adaptContentForApi` 打 `[IB-DIAG] img mime=…`（本次已移除）。详见 [TROUBLESHOOTING.md](TROUBLESHOOTING.md) T40、[docs/multimodal-image-inject-notes.md](multimodal-image-inject-notes.md)。
+- **排查方法**：DevTools→Network→该 400 请求→Response 看 `error.param`；或临时在 `_adaptContentForApi` 打 `[IB-DIAG] img mime=…`（本次已移除）。详见 [TROUBLESHOOTING.md](TROUBLESHOOTING.md) T40、[docs/history/legacy/multimodal-image-inject-notes.md](history/legacy/multimodal-image-inject-notes.md)。
 - **此前"强制 MiMo 契约"改动**（`communication.js` `callApi` + `active/node-model-port.js`）为防御性、非本次 400 根因，保留。
 
 ## 2026-09-10 · P12 · Image Router + GPT Image 2.5 双模型路由与并发控制

@@ -14,7 +14,7 @@
 
 ## 1. 它解决什么
 
-以前发一次版本要人工做 14 步（见 [docs/RELEASE_PIPELINE_AUDIT.md](../../docs/RELEASE_PIPELINE_AUDIT.md) §8）：
+以前发一次版本要人工做 14 步（见 [docs/history/release/RELEASE_PIPELINE_AUDIT.md](../../docs/history/release/RELEASE_PIPELINE_AUDIT.md) §8）：
 改 `VERSION`、改 README、写 release notes、跑构建、复核四等式、比对文件名、算 SHA256、
 改清单、push、tag、`gh release create`、核对 digest、最后上传清单……
 

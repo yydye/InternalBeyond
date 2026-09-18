@@ -97,7 +97,7 @@ score = importance × activationFactor × decayFactor × emotionFactor × relBoo
   （`role-dm-core.js:181` 初值 0.5 / 0.2 / 0.5，单次 run 增量被 `RELATION_DELTA_CAP=0.03` 封顶）。
   它**只**由私信 run 观测写入，**不**与上面那套哈希亲和度共享权威。
   完整现状（含"这些数字目前真正影响什么"）见 [ROLE_DM.md](ROLE_DM.md) 与
-  [ROLE_DM_RELATIONSHIP_PHASE4_AUDIT.md](ROLE_DM_RELATIONSHIP_PHASE4_AUDIT.md)。
+  [ROLE_DM_RELATIONSHIP_PHASE4_AUDIT.md](history/platform/ROLE_DM_RELATIONSHIP_PHASE4_AUDIT.md)。
 
 > 诚实说明：朋友圈/回复链的"关系"仍是**稳定哈希的亲和度**，不是一个富关系图；
 > 该层的校准等待（D13）**未被解除**。真正的关系状态层目前只存在于**角色私信域**，

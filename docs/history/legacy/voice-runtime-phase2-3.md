@@ -2,10 +2,10 @@
 
 > Note: `docs/` is currently claimed by another session (harness architecture
 > diagrams), so this note lives at the repo root. The Phase 1 note is
-> `docs/voice-runtime-phase1.md`.
+> `voice-runtime-phase1.md`.
 
 This document describes the second and third stages of the InternalBeyond voice
-runtime. Stage 1 (see `docs/voice-runtime-phase1.md`) remains intact: the voice
+runtime. Stage 1 (see `voice-runtime-phase1.md`) remains intact: the voice
 runtime is still a *transport / lifecycle layer* that never owns persona prompts,
 model routing, tools, workspace access, chat history, summaries, or memory. All of
 that lives in the browser chat runtime (`sendChatMessage`).
