@@ -908,6 +908,8 @@ stores 包括：聊天消息（经 dbPut）、`apiConfigs`、`memories`、`blogA
 
 ### 10.1 披露事实（`disclosureFacts`，v24）
 
+> Disclosure 的专项架构与 authority 见 [architecture/DISCLOSURE.md](architecture/DISCLOSURE.md) 与 [contracts/disclosure/](contracts/disclosure/)（注：`authorize()` 目前尚无 production consumer，集成状态为 PROVISIONAL）。
+
 回答的是「**这个角色自己**有什么非公开事实，它有多敏感」——一个在 4B-1.2 之前
 **无法被表达**的类型（详见 [ROLE_DM.md](ROLE_DM.md) 的 Phase 4B-1 / 4B-1.1 / 4B-1.2 三节）。
 三层，顺序即依赖：

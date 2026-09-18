@@ -12,6 +12,7 @@
 
 > Relationship authority（`cfg.relationship` 为权威；`disclosureFacts` / `pairAffinity` 非 relationship authority）
 > 见 [contracts/companion/RELATIONSHIP_AUTHORITY_CONTRACT.md](contracts/companion/RELATIONSHIP_AUTHORITY_CONTRACT.md)。
+> Formal disclosure authorization 见 [architecture/DISCLOSURE.md](architecture/DISCLOSURE.md)；Role DM 目前**未**被 disclosure authorization gate（PROVISIONAL / NOT WIRED）。
 
 **已实现且稳定**（每项均有生产代码 + 测试证据）：
 

@@ -871,6 +871,8 @@ D29 只修正 D28 的**依据**：等级上限从"来源"移到"写者权威"，
 
 ## D30. 披露事实需要一条**显式人类创作路径**（Phase 4B-1.2，2026-09-15）
 
+> Canonical Disclosure authority：见 [architecture/DISCLOSURE.md](architecture/DISCLOSURE.md) 与 [contracts/disclosure/](contracts/disclosure/)。D30/D31 为 decision provenance；`authorize()` 的 production 集成状态为 PROVISIONAL（尚无 consumer）。
+
 ### 背景
 
 D28 定义了 canonical 记录的形状，D29 定义了"谁有资格"，但两者都是**纯函数上的契约**：

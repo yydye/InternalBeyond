@@ -114,6 +114,14 @@ social mechanism 见 [`../SOCIAL_RUNTIME.md`](../SOCIAL_RUNTIME.md)。
 | `runtime/RUNTIME-INTEGRATION-AUDIT-2026-09-08.md` | 集成审计（含 moments 收敛） |
 | `runtime/RUNTIME-STABILIZATION-P2-REPORT.md` | runtime 稳定化 |
 
+## disclosure/ —— Disclosure
+
+Disclosure 的**当前架构与 authority** 见
+[`../architecture/DISCLOSURE.md`](../architecture/DISCLOSURE.md) 与
+[`../contracts/disclosure/`](../contracts/disclosure/)；
+decision provenance 见 [`../DECISIONS.md`](../DECISIONS.md) D30 / D31。
+（当前 production 集成为 PROVISIONAL：`authorize()` 尚无 consumer。）
+
 ## 归档约定
 
 - 报告按**完成时的原文**保留；报告里出现的历史路径、当时测试数量、当时端口与命令不做回写。
