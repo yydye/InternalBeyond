@@ -293,7 +293,7 @@ async function runServiceGroup() {
 
   const noPolicy = await request(svc.port, 'GET', '/economy/autonomy-policy?ownerId=cfg_a');
   /* ★★★ P22-24 · 这一条断言在 P22-7 里冻结的是一个**错的 wire shape**。
-     OLD ASSERTION FROZE A BUG —— 逐条披露见 docs/P22-24-NOT-FOUND-WIRE-CONTRACT.md §P22-7：
+     OLD ASSERTION FROZE A BUG —— 当前规则见 docs/contracts/economy/WIRE_NOT_FOUND_CONTRACT.md；逐条披露见 docs/history/economy/P22/P22-24-NOT-FOUND-WIRE-CONTRACT.md §P22-7：
 
        old：noPolicy.body.error === 'POLICY_NOT_FOUND'
             （把 canonical **DENY_REASON** 当成了 client-facing error token）

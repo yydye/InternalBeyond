@@ -45,7 +45,7 @@
 
 Economy v1（P22）已完成的阶段实施与审计记录。当前契约见
 [`../contracts/economy/`](../contracts/economy/)（`ECONOMY_V1_FROZEN_CONTRACT.md` ·
-`ECONOMY_PUBLIC_SURFACE.md`），打包清单见
+`ECONOMY_PUBLIC_SURFACE.md` · `WIRE_NOT_FOUND_CONTRACT.md`），打包清单见
 [`../release/ECONOMY_V1_RELEASE_MANIFEST.md`](../release/ECONOMY_V1_RELEASE_MANIFEST.md)。
 
 | 报告 | 阶段 |
