@@ -122,6 +122,12 @@ Disclosure 的**当前架构与 authority** 见
 decision provenance 见 [`../DECISIONS.md`](../DECISIONS.md) D30 / D31。
 （当前 production 集成为 PROVISIONAL：`authorize()` 尚无 consumer。）
 
+## letters/ —— Letters
+
+Letters 的**当前架构与 authority** 见
+[`../architecture/LETTERS.md`](../architecture/LETTERS.md) 与
+[`../contracts/letters/`](../contracts/letters/)（User ↔ Character 与 AI ↔ AI Role Letters 两个独立 surface）。
+
 ## 归档约定
 
 - 报告按**完成时的原文**保留；报告里出现的历史路径、当时测试数量、当时端口与命令不做回写。

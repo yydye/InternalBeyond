@@ -171,6 +171,8 @@ background Moments work; it does not own Moments. See [`SOCIAL_RUNTIME.md`](../S
 
 ## 10. Letters Boundary
 
+> Letters 的 canonical authority 见 [`LETTERS.md`](LETTERS.md) 与 [`../contracts/letters/`](../contracts/letters/)；本节仅述 Companion 边界。
+
 Two distinct letter surfaces, with separate storage:
 
 - **User ↔ Character** letters (`assets/js/communication/letters.js`);

@@ -939,6 +939,8 @@ grant 是 per-fact、per-recipient、有向的显式许可（`factId` + `ownerCh
 
 > Memory 的专项架构与 authority 见 [architecture/MEMORY.md](architecture/MEMORY.md) 与 [contracts/memory/](contracts/memory/)（canonical = Home Node `memory_records`；browser `memories` = 镜像）。
 
+> Letters 的专项架构与 authority 见 [architecture/LETTERS.md](architecture/LETTERS.md) 与 [contracts/letters/](contracts/letters/)（User ↔ Character 与 AI ↔ AI Role Letters 两个独立 surface；`roleLetterMemories` 不属于 Memory subsystem）。
+
 存储形态：keyPath **`factId`**（不是通用的 `id`——canonical 记录里没有 `id` 字段，
 为迁就 keyPath 复制一份会让身份有两个真源）；**没有 `byOwner` 索引**，
 按 owner 分区由 `authoring-core.partitionForOwner` 完成（分区语义写在契约里，
