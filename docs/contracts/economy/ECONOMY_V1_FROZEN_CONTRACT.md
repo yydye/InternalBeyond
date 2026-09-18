@@ -423,7 +423,7 @@ Economy 的浏览器面**恰好九个文件**（六个 JS + 三个 CSS），
 | id | 债务 | 为什么不阻塞 |
 | --- | --- | --- |
 | D1 | 目录（store / product）**没有** production 管理面：`putStore` / `putProduct` 的生产调用方是 0 | 目录**只**决定"有什么可买"，不决定"能不能买"。它由 `PUT_BUDGET_POLICY` / `PUT_AUTONOMY_POLICY` 与购买链上的每一条闸门约束；一个空目录的结果是"没有商品"，不是"越权" |
-| D1-amend · P22-25 | ★ **这一行的前半句在 P22-25 变更了；后半句（"目录不决定能不能买"）一字未改。** `putStore` / `putProduct` 现在各有**恰好一个**生产调用方：`services/home-node/catalog-bootstrap.js`（目录 bootstrap 的**唯一** authority）。它由**装配层**在 `economyStore.open()` 之后调用一次、**早于任何请求**，而且**只在目录为空时**才进入写路径。D1 的原意（"没有管理面"）因此仍然成立：**没有任何 HTTP 路由、没有任何 GUI、没有任何 capability 能让用户 / Agent / AI 创建货架或商品** —— P22-21 §9 的 T5（http.js 的**代码**里 28 个 store 写动词零调用形态）一字未改。详见 `docs/P22-25-CATALOG-BOOTSTRAP.md` |
+| D1-amend · P22-25 | ★ **这一行的前半句在 P22-25 变更了；后半句（"目录不决定能不能买"）一字未改。** `putStore` / `putProduct` 现在各有**恰好一个**生产调用方：`services/home-node/catalog-bootstrap.js`（目录 bootstrap 的**唯一** authority）。它由**装配层**在 `economyStore.open()` 之后调用一次、**早于任何请求**，而且**只在目录为空时**才进入写路径。D1 的原意（"没有管理面"）因此仍然成立：**没有任何 HTTP 路由、没有任何 GUI、没有任何 capability 能让用户 / Agent / AI 创建货架或商品** —— P22-21 §9 的 T5（http.js 的**代码**里 28 个 store 写动词零调用形态）一字未改。详见 `docs/history/economy/P22/P22-25-CATALOG-BOOTSTRAP.md` |
 | D2 | `/economy/purchases` · `/economy/intents` 是 `created_at ASC` 的**最早**一窗，而 UI 把这一窗称为"近期" | 这是**读窗口**的措辞问题，不是权威问题：窗口不完整时页面显式说明（`saturated` / `truncated`）；余额与预算的权威数字来自另外两条读面 |
 | D3 | 过期扫描（`expireDue*`）不是定时器：它由 `open()` 的对账与显式调用驱动 | 逾期状态在**读**侧被如实回答（`expiredByTime`）；`fail closed` 不依赖扫描是否跑过 |
 | D4 | `P22-15C` 是唯一没有 doc 的阶段（只有 commit subject） | 它的 production diff 为 0；它只改了两条**既有**测试。v1 的契约面不受影响 |
