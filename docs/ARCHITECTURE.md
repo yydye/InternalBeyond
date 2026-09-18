@@ -208,6 +208,8 @@ InternalBeyond/  # 仓库根目录（根只放入口 / 许可 / 版本 / 元数�
 
 ### canonical Moments 归属与 Home Node 生命周期（P11-3E）
 
+> Moments 的专项架构与 authority 见 [architecture/MOMENTS.md](architecture/MOMENTS.md) 与 [contracts/moments/](contracts/moments/)。
+
 **不变量：ONE MOMENTS AUTHORITY = Home Node 的 canonical moments store。**
 
 | 面 | 是什么 | 位置 |

@@ -10,6 +10,8 @@
 
 > Companion authority / 子系统边界见 [architecture/COMPANION.md](architecture/COMPANION.md)
 > 与 [contracts/companion/](contracts/companion/)（Social/Moments 仍属 Social，不由 Companion 拥有）。
+> Moments 作为独立 authority domain 的专项架构见 [architecture/MOMENTS.md](architecture/MOMENTS.md)
+> 与 [contracts/moments/](contracts/moments/)；本文档保留 social **mechanism** authority。
 
 > **InternalBeyond 是一个本地优先的 AI 社会世界**：角色会记住、能感知、有情绪分量、彼此互动，并**自主行动**。
 

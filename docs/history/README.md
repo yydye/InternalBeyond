@@ -102,6 +102,18 @@ Companion 的**当前架构与 authority 边界**见
 |---|---|
 | `platform/ROLE_DM_RELATIONSHIP_PHASE4_AUDIT.md` | Role DM / relationship 后果只读审计 |
 
+## moments/ —— Moments
+
+Moments 的**当前架构与 authority** 见
+[`../architecture/MOMENTS.md`](../architecture/MOMENTS.md) 与
+[`../contracts/moments/`](../contracts/moments/)；
+social mechanism 见 [`../SOCIAL_RUNTIME.md`](../SOCIAL_RUNTIME.md)。
+
+| 报告 | 阶段 |
+|---|---|
+| `runtime/RUNTIME-INTEGRATION-AUDIT-2026-09-08.md` | 集成审计（含 moments 收敛） |
+| `runtime/RUNTIME-STABILIZATION-P2-REPORT.md` | runtime 稳定化 |
+
 ## 归档约定
 
 - 报告按**完成时的原文**保留；报告里出现的历史路径、当时测试数量、当时端口与命令不做回写。

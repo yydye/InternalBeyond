@@ -160,6 +160,8 @@ producer under its own policy** (memory authority unchanged).
 
 ## 9. Moments Boundary
 
+> Moments 的 canonical authority 见 [`MOMENTS.md`](MOMENTS.md) 与 [`../contracts/moments/`](../contracts/moments/)；本节仅述 Companion 边界。
+
 Moments is an **independent Social subsystem**, not Companion-owned. It has three surfaces: browser
 Moments, a **Companion background execution surface** (`active/moments.js`), and the **Home Node
 canonical Moments authority** (`services/home-node/moments-store.js`). The Companion merely *executes*
