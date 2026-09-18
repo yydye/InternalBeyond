@@ -8,6 +8,9 @@
 > `docs/HANDOVER.md`, `docs/SOCIAL_RUNTIME.md` or any README, **this file wins** and the other
 > document is stale. Each claim carries `file:line`.
 
+> Voice shapes/call architecture are documented canonically in
+> [`architecture/VOICE.md`](architecture/VOICE.md) and [`contracts/voice/`](contracts/voice/).
+
 ---
 
 ## 1. The store

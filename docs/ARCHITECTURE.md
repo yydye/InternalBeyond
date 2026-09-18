@@ -753,6 +753,9 @@ telemetry / Cache Audit 仍各自留在原 runtime，core 保持零 window、零
 - 会话：`GET/POST/DELETE /api/sessions/:key`；上下文：`GET/POST /api/context?friend=`
 - 推送：`POST /api/push`、`GET /api/push/history`
 - TTS：`POST /api/tts`、`GET /tts/<id>.mp3`
+
+> Voice（Call / Voice Message / ASR / TTS / provider / barge-in）的专项架构与契约见
+> [architecture/VOICE.md](architecture/VOICE.md) 与 [contracts/voice/](contracts/voice/)。
 - AI 常驻：`GET/POST /api/ai/sessions`、`GET/DELETE /api/ai/sessions/:key`、`POST /api/ai/chat`、`POST /api/ai/proactive`
 
 ### AI 常驻引擎

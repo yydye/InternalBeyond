@@ -79,6 +79,18 @@ Memory 的**当前 authority** 见
 | `runtime/CONTEXT-CONVERGENCE-C1-REPORT.md` | 上下文收敛 C1（含 memory 契约闭合） |
 | `runtime/P2-CONTEXT-CONVERGENCE-AUDIT.md` | 上下文收敛只读核实 |
 
+## voice/ —— Voice
+
+Voice 的**当前架构与契约**见
+[`../architecture/VOICE.md`](../architecture/VOICE.md) 与
+[`../contracts/voice/`](../contracts/voice/)。
+`P23-*` 为开发中的 provisional phase 文档（尚未归档）；voice 早期记录在 legacy/。
+
+| 报告 | 阶段 |
+|---|---|
+| `legacy/voice-runtime-phase1.md` | Voice Runtime Phase 1（被 bridge/voice-runtime.js 取代） |
+| `legacy/voice-runtime-phase2-3.md` | Voice Runtime Phase 2–3（被 P23-2A/2B/2C 拆分取代） |
+
 ## 归档约定
 
 - 报告按**完成时的原文**保留；报告里出现的历史路径、当时测试数量、当时端口与命令不做回写。
