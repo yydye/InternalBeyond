@@ -1,77 +1,76 @@
 # Voice Acoustic Reference Contract
 
 **Status: Canonical**
-**Scope: Acoustic mood reference injection for voice calls**
+**Scope: voice calls 的 Acoustic mood reference 注入**
 
-> Current-state contract for the request-local acoustic mood reference captured during a voice-call
-> turn and injected into the LLM request. Sources: `assets/js/communication/call.js`
-> (`_acousticReferenceFor`), `assets/js/communication/voice.js` (`_vmToneAnalyze`),
-> `docs/P1-ACOUSTIC-REFERENCE.md`, and `tests/test_call_acoustic_inject.js`.
-
----
-
-## 1. What It Is
-
-A short textual "acoustic mood reference" derived from the **current turn's** accumulated PCM +
-transcript, attached to the request so the model can be aware of the caller's tone. It is request-local
-and describes the *present* turn only.
+> 关于在 voice-call turn 期间捕获并注入 LLM request 的 request-local acoustic mood reference 的
+> 当前状态 Contract。Sources：`assets/js/communication/call.js`
+> （`_acousticReferenceFor`）、`assets/js/communication/voice.js`（`_vmToneAnalyze`）、
+> `docs/P1-ACOUSTIC-REFERENCE.md`，以及 `tests/test_call_acoustic_inject.js`。
 
 ---
 
-## 2. Scope (hard)
+## 1. 它是什么
 
-- Injected **only into the LLM request**.
-- It is **not** an ASR contract and **not** a TTS contract.
-- It does not modify or bypass the ASR/TTS boundary; it is carried alongside the transcript.
-- It never persists audio: the reference is computed from the current turn's in-memory chunks and is
-  released after the turn.
+一段简短的文本 "acoustic mood reference"，派生自**当前 turn** 累积的 PCM +
+transcript，附加到 request 上，以便 model 能感知 caller 的 tone。它是 request-local 的，
+且只描述*当前* turn。
 
 ---
 
-## 3. Conditions
+## 2. 范围（硬性）
 
-`_acousticReferenceFor(roleCfg, chunks, transcript)` returns `''` (no reference) when:
-
-- the tone helpers are unavailable;
-- there are no chunks / zero bytes;
-- the derived tone is empty;
-- the role is **audio-native** (`_vmAudioNative(roleCfg)` true, or `roleCfg.audioInput === true`) — in
-  that case the model receives the audio directly and no text reference is injected.
-
-Otherwise it returns the tone string.
+- **只注入 LLM request**。
+- 它**不是** ASR Contract，也**不是** TTS Contract。
+- 它不修改或绕过 ASR/TTS 边界；它与 transcript 一起被携带。
+- 它绝不持久化 audio：reference 由当前 turn 的内存中 chunk 计算得出，并在该 turn 之后
+  释放。
 
 ---
 
-## 4. Single Implementation
+## 3. 条件
 
-`_vmToneAnalyze` is the **single** algorithm implementation; `docs/P1-ACOUSTIC-REFERENCE.md` records
-that the fork's upstream had it, and this fork keeps exactly one implementation. No duplicate analyzer.
+`_acousticReferenceFor(roleCfg, chunks, transcript)` 在以下情况返回 `''`（无 reference）：
+
+- tone helpers 不可用；
+- 没有 chunk / 零 bytes；
+- 派生出的 tone 为空；
+- role 是 **audio-native**（`_vmAudioNative(roleCfg)` 为 true，或 `roleCfg.audioInput === true`）——
+  这种情况下 model 直接接收 audio，不注入任何 text reference。
+
+否则它返回 tone 字符串。
 
 ---
 
-## 5. Consumer
+## 4. 单一实现
 
-The voice call is the only consumer: `call.js` calls the helper at `onTranscript` and passes the result
-as `acousticReference` into `sendChatMessage`.
+`_vmToneAnalyze` 是**唯一**的 algorithm 实现；`docs/P1-ACOUSTIC-REFERENCE.md` 记录
+了该 fork 的 upstream 曾拥有它，而本 fork 恰好保留一个实现。没有重复的 analyzer。
+
+---
+
+## 5. 消费者
+
+voice call 是唯一的消费者：`call.js` 在 `onTranscript` 处调用该 helper，并将结果作为
+`acousticReference` 传入 `sendChatMessage`。
 
 ---
 
 ## 6. Non-goals
 
-This contract does not define the tone algorithm itself, does not persist analysis, and does not apply
-to voice messages.
+本 Contract 不定义 tone algorithm 本身，不持久化 analysis，也不适用于 voice messages。
 
 ---
 
 ## 7. Enforcement
 
-| Test | Pins |
+| 测试 | Pins |
 | --- | --- |
-| `tests/test_call_acoustic_inject.js` | injection conditions / non-injection cases (P1 stage 2) |
-| `tests/test_voice_pcm_adapter.js` | PCM → audio-like adapter used by the reference |
+| `tests/test_call_acoustic_inject.js` | 注入条件 / 非注入场景（P1 stage 2） |
+| `tests/test_voice_pcm_adapter.js` | reference 使用的 PCM → audio-like adapter |
 
 ---
 
-## 8. Historical Origin
+## 8. 历史引用
 
-`docs/P1-ACOUSTIC-REFERENCE.md`; `assets/js/communication/call.js`.
+`docs/P1-ACOUSTIC-REFERENCE.md`；`assets/js/communication/call.js`。

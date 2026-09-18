@@ -1,30 +1,30 @@
 # Voice Message Contract
 
 **Status: Canonical**
-**Scope: The canonical chat-message `voice` field**
+**Scope: canonical chat-message `voice` 字段**
 
-> Current-state contract for a voice message. Derived from `assets/js/voice-message-core.js` (UMD,
-> shared by browser and Node). It defines the object shape only — no I/O, storage, transport, or
-> provider judgment.
-
----
-
-## 1. Field
-
-`voice` is a canonical chat-message field (`chat-core.js` `CONDITIONAL_FIELDS`; `validateMessage`
-requires it to be an object). This contract defines the object's shape.
+> 关于 voice message 的当前状态 Contract。派生自 `assets/js/voice-message-core.js`（UMD，
+> 由 browser 与 Node 共享）。它只定义对象 shape —— 不涉及 I/O、storage、transport 或
+> provider 判断。
 
 ---
 
-## 2. Shape
+## 1. 字段
 
-User recording (must be preserved verbatim):
+`voice` 是 canonical chat-message 字段（`chat-core.js` `CONDITIONAL_FIELDS`；`validateMessage`
+要求它是一个对象）。本 Contract 定义该对象的 shape。
+
+---
+
+## 2. 形状
+
+User recording（必须逐字保留）：
 
 ```
 { dataUrl, mime, duration, transcript, tone }
 ```
 
-Assistant (AI) voice message:
+Assistant (AI) voice message：
 
 ```
 {
@@ -36,68 +36,68 @@ Assistant (AI) voice message:
 }
 ```
 
-- `dataUrl` and `audioUrl` — **at least one is required** for a message's voice to be valid; an inline
-  audio larger than `INLINE_MAX_BYTES` (2,000,000 bytes) degrades to the bridge reference, or the voice
-  is dropped entirely (never a "playable" voice with no source).
-- `mime` defaults from URL/extension (`audio/mpeg` fallback); `duration` is a positive number or 0.
+- `dataUrl` 与 `audioUrl` —— 消息的 voice 要有效，**至少需要其中一个**；大于
+  `INLINE_MAX_BYTES`（2,000,000 bytes）的 inline audio 会降级为 bridge reference，或者该 voice
+  被整个丢弃（绝不会出现没有 source 的 "playable" voice）。
+- `mime` 默认取自 URL/extension（`audio/mpeg` fallback）；`duration` 是正数或 0。
 
 ---
 
-## 3. Provenance (hard security boundary)
+## 3. Provenance（硬性安全边界）
 
-`provenance` is a **flat, whitelisted, scalar** set:
-`source, provider, engine, model, voiceId, voiceType, refAudioId, profile`.
+`provenance` 是一组**扁平、白名单、标量**集合：
+`source, provider, engine, model, voiceId, voiceType, refAudioId, profile`。
 
-- Unknown keys, nested objects, and empty values are dropped.
-- Any secret-shaped key (`apikey|api_key|secret|token|authorization|password|credential|bearer`,
-  case-insensitive) and any bearer/`sk-` value is rejected — at any nesting level.
-- `bridge/tts.js` credentials and endpoints never enter the message.
+- 未知 key、嵌套对象和空值会被丢弃。
+- 任何 secret 形状的 key（`apikey|api_key|secret|token|authorization|password|credential|bearer`，
+  大小写不敏感）以及任何 bearer/`sk-` 值都会被拒绝 —— 在任何嵌套层级。
+- `bridge/tts.js` credentials 和 endpoints 永远不会进入消息。
 
 ---
 
 ## 4. Freshness / Lifecycle
 
-- `contentHash` records the content the audio was generated from (`contentFingerprint`).
-- `isStale(msg)` is true when `voice.contentHash` no longer matches `contentFingerprint(msg.content)`;
-  records without `contentHash` fail open (renderable).
-- **Any path that rewrites assistant content must call `dropVoice(msg)`** (immutable semantics: delete
-  the voice rather than letting text and audio diverge). `isAiVoiceMessage(msg)` requires a non-stale,
-  playable voice on a non-user message.
+- `contentHash` 记录该 audio 由之生成的内容（`contentFingerprint`）。
+- 当 `voice.contentHash` 不再匹配 `contentFingerprint(msg.content)` 时，`isStale(msg)` 为 true；
+  没有 `contentHash` 的 record 采用 fail open（可渲染）。
+- **任何重写 assistant content 的路径都必须调用 `dropVoice(msg)`**（immutable 语义：删除
+  voice，而不是让 text 与 audio 分叉）。`isAiVoiceMessage(msg)` 要求非 user 消息上存在
+  非 stale、playable 的 voice。
 
 ---
 
 ## 5. Playback Source
 
-`playSrc(voice)` is the only resolver: inline `dataUrl` first, then bridge `audioUrl`, else `''`.
-It never returns an object URL — the source must survive reload.
+`playSrc(voice)` 是唯一的 resolver：先 inline `dataUrl`，再 bridge `audioUrl`，否则 `''`。
+它从不返回 object URL —— source 必须在 reload 后仍然存在。
 
 ---
 
-## 6. Persistence Boundary
+## 6. Persistence 边界
 
-The voice object is persisted **as part of the chat message**. It is not a separate store and not owned
-by the Voice runtime.
+voice 对象**作为 chat message 的一部分**被持久化。它不是独立的 store，也不归 Voice runtime
+所有。
 
 ---
 
 ## 7. Non-goals
 
-This contract does not define chat message routing, delivery/timing, provider selection, or the
-acoustic reference algorithm.
+本 Contract 不定义 chat message routing、delivery/timing、provider selection，或
+acoustic reference algorithm。
 
 ---
 
 ## 8. Enforcement
 
-| Test | Pins |
+| 测试 | Pins |
 | --- | --- |
-| `tests/test_native_voice_message.js` | canonical shape, provenance whitelist, secret rejection, build/playSrc |
-| `tests/test_voice_message_lifecycle.js` | lifecycle (stale/drop voice, closure fixes) |
-| `tests/test_voice_playback_path.js` | playback source path |
+| `tests/test_native_voice_message.js` | canonical shape、provenance 白名单、secret 拒绝、build/playSrc |
+| `tests/test_voice_message_lifecycle.js` | 生命周期（stale/drop voice、closure 修复） |
+| `tests/test_voice_playback_path.js` | playback source 路径 |
 
 ---
 
-## 9. Historical Origin
+## 9. 历史引用
 
-`assets/js/voice-message-core.js` (P23 Phase 1). Phase provenance:
-`docs/P23-1-VOICE-RUNTIME-FOUNDATION.md`.
+`assets/js/voice-message-core.js`（P23 Phase 1）。Phase provenance：
+`docs/P23-1-VOICE-RUNTIME-FOUNDATION.md`。

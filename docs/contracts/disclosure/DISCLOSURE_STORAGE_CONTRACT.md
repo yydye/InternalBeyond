@@ -3,8 +3,8 @@
 **Status: Canonical**
 **Scope: Disclosure fact storage surface**
 
-> Current-state contract derived from `assets/js/disclosure-store.js`, `assets/js/core.js`
-> (`disclosureFacts` store, `DB_VER 24`), and `tests/test_disclosure_store_smoke.js`.
+> 当前状态 Contract，派生自 `assets/js/disclosure-store.js`、`assets/js/core.js`
+> （`disclosureFacts` store、`DB_VER 24`），以及 `tests/test_disclosure_store_smoke.js`。
 
 ---
 
@@ -17,17 +17,17 @@
 | Key | `factId` |
 | Scope | **browser-local persisted store** |
 
-No schema migration, revision, cursor, or lifecycle beyond the store record itself.
+除 store record 本身外，没有 schema migration、revision、cursor 或 lifecycle。
 
 ---
 
 ## 2. CRUD Surface
 
-`disclosure-store.js` exposes `createFact(writerContext, userInput)` (`factId` generated at the store
-layer), `listFacts(ownerCharacterId)` (partition by `ownerCharacterId`), `updateFact`, `deleteFact`.
-IO is injected (`dbPut` / `dbGet` / `dbGetAll` / `dbDelete`).
+`disclosure-store.js` 暴露 `createFact(writerContext, userInput)`（`factId` 在 store
+层生成）、`listFacts(ownerCharacterId)`（按 `ownerCharacterId` 分区）、`updateFact`、`deleteFact`。
+IO 是注入的（`dbPut` / `dbGet` / `dbGetAll` / `dbDelete`）。
 
-The store is **CRUD-only** and deliberately holds **no decision logic**.
+store 是 **CRUD-only**，并且刻意不持有**任何 decision logic**。
 
 ---
 
@@ -38,43 +38,43 @@ disclosure-store.js  =  CRUD storage surface
 disclosure-authorization-core.js  =  authorization authority
 ```
 
-Persisting facts does not make the store the Disclosure authority owner.
+持久化 facts 不会使 store 成为 Disclosure authority owner。
 
 ---
 
-## 4. No Home Node Authority
+## 4. 无 Home Node Authority
 
-Verified: **no Home Node disclosure table, no revision, no cursor, no Home Node migration**, and **no
-`canonical` / `mirror` / `off` authority mode**. Disclosure does not use the Memory/Moments authority
-pattern.
+已验证：**没有 Home Node disclosure table、没有 revision、没有 cursor、没有 Home Node
+migration**，也**没有 `canonical` / `mirror` / `off` authority mode**。Disclosure 不使用
+Memory/Moments authority pattern。
 
 ---
 
-## 5. Export Boundary
+## 5. Export 边界
 
-`disclosureFacts` is **excluded** from `_ibBuildExportData` (in `core.js`).
+`disclosureFacts` 被**排除**在 `_ibBuildExportData` 之外（位于 `core.js`）。
 
-> Disclosure facts are persisted browser-locally but excluded from the current general export surface.
+> Disclosure facts 持久化在 browser-local，但被排除在当前 general export surface 之外。
 
-Fact only; this contract does not evaluate or change export behavior.
+仅陈述事实；本 Contract 不评估也不改变 export behavior。
 
 ---
 
 ## 6. Non-goals
 
-This contract does not define the fact model, authoring, or authorization. It does not design sync,
-migration, or a Home Node authority.
+本 Contract 不定义 fact model、authoring 或 authorization。它不设计 sync、
+migration 或 Home Node authority。
 
 ---
 
 ## 7. Enforcement
 
-| Test | Pins |
+| Test | 固定内容 |
 | --- | --- |
-| `tests/test_disclosure_store_smoke.js` | real-browser write path (requires Chrome/Edge) |
+| `tests/test_disclosure_store_smoke.js` | real-browser write path（需要 Chrome/Edge） |
 
 ---
 
-## 8. Historical Origin
+## 8. 历史来源
 
-`assets/js/disclosure-store.js`; `DB_VER 24` addition of `disclosureFacts`.
+`assets/js/disclosure-store.js`；`DB_VER 24` 新增 `disclosureFacts`。

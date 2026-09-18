@@ -1,48 +1,48 @@
 # Economy Domain & Namespace Contract
 
-> Canonical authority for the Economy **domain marker** (`domain`) and the in-domain **namespace** closed set.
-> Narrow contract: routes, wire errors, and the frozen v1 behavior set live in the sibling Economy contracts.
+> Economy **domain marker**（`domain`）与 in-domain **namespace** 闭集的 Canonical authority。
+> Narrow Contract：routes、wire errors，以及 frozen v1 behavior set 位于 sibling Economy Contracts。
 
 ---
 
-## 1. Scope
+## 1. 范围
 
-This contract fixes two current Economy rules:
+本 Contract 固定当前两条 Economy 规则：
 
-1. every cross-module Economy payload / event / persistence record carries the **domain marker** with the canonical value;
-2. the in-domain **namespace** strings form a **closed set**.
+1. 每个 cross-module Economy payload / event / persistence record 都携带具有 canonical 值的 **domain marker**；
+2. in-domain **namespace** 字符串构成一个**闭集**。
 
-It is deliberately small. It does not describe routes, wire errors, storage schema, or UI.
+它刻意保持很小。它不描述 routes、wire errors、storage schema 或 UI。
 
 ---
 
 ## 2. Authority
 
-| Layer | Source of truth |
+| 层 | Source of truth |
 | --- | --- |
-| Production | `services/home-node/economy-contract.js` — `DOMAIN`, `NAMESPACES`, `isEconomyDomain`, `validateEconomyDomain` |
+| 生产 | `services/home-node/economy-contract.js` — `DOMAIN`, `NAMESPACES`, `isEconomyDomain`, `validateEconomyDomain` |
 | Enforcement tests | `tests/test_p22_1_economy_domain_contract.js` (D1.1 / D1.5 / D14.33), `tests/test_p22_6_economy_purchase.js`, `tests/test_p22_21_economy_v1_closure_audit.js` |
 
-Relationship to the sibling Economy contracts:
+与 sibling Economy Contracts 的关系：
 
-- `ECONOMY_V1_FROZEN_CONTRACT.md` freezes the route / capability / schema / event / currency closed sets.
-- `ECONOMY_PUBLIC_SURFACE.md` lists the routes.
-- `WIRE_NOT_FOUND_CONTRACT.md` fixes the not-found absence tokens.
-- **This** contract fixes only the domain marker and the namespace closed set.
+- `ECONOMY_V1_FROZEN_CONTRACT.md` 冻结 route / capability / schema / event / currency 闭集。
+- `ECONOMY_PUBLIC_SURFACE.md` 列出 routes。
+- `WIRE_NOT_FOUND_CONTRACT.md` 固定 not-found absence tokens。
+- **本** Contract 只固定 domain marker 与 namespace 闭集。
 
 ---
 
 ## 3. Domain Marker
 
-- Canonical value: `DOMAIN = 'ib.economy'`.
-- Rule: a cross-module Economy payload / event / persistence record carries `domain: 'ib.economy'`. `validateEconomyDomain(v)` accepts exactly this value and rejects everything else (including `undefined`, `'ib.payment'`, `'economy'`, `''`) with `missing-economy-domain`.
-- Evidence: `economy-contract.js` — value at `DOMAIN`; `isEconomyDomain`; `validateEconomyDomain`. Every constructor (wallet view / ledger entry / event / audit record / quote / approval / …) stamps `domain: DOMAIN`.
+- Canonical 值：`DOMAIN = 'ib.economy'`。
+- 规则：cross-module Economy payload / event / persistence record 携带 `domain: 'ib.economy'`。`validateEconomyDomain(v)` 只接受这个值，拒绝其他一切（包括 `undefined`、`'ib.payment'`、`'economy'`、`''`），并以 `missing-economy-domain` 拒绝。
+- 证据：`economy-contract.js` —— 值位于 `DOMAIN`；`isEconomyDomain`；`validateEconomyDomain`。每个 constructor（wallet view / ledger entry / event / audit record / quote / approval / …）都会盖上 `domain: DOMAIN`。
 
 ---
 
-## 4. Namespaces (closed set)
+## 4. Namespaces（闭集）
 
-`NAMESPACES` is an `Object.freeze`d closed set of **15** entries, each prefixed `ib.economy.`:
+`NAMESPACES` 是一个 `Object.freeze` 的闭集，包含 **15** 个条目，每个都以 `ib.economy.` 为前缀：
 
 | Key | Value |
 | --- | --- |
@@ -62,38 +62,38 @@ Relationship to the sibling Economy contracts:
 | `EVENT` | `ib.economy.event` |
 | `AUDIT` | `ib.economy.audit` |
 
-Stability rule: namespace strings are never built at runtime; the set is closed. Adding a namespace is **additive** (existing literals must not change). The autonomy policy deliberately **reuses** `BUDGET` — it shares the record shape and needs its own event names, not a second namespace.
+Stability 规则：namespace 字符串绝不在 runtime 构建；该集合是闭集。添加一个 namespace 是**增量的**（既有 literal 不得改变）。autonomy policy 刻意**复用** `BUDGET` —— 它共享 record shape，且需要自己的 event names，而不是第二个 namespace。
 
 ---
 
-## 5. Where the marker appears vs where it is persisted
+## 5. marker 出现的位置 vs 它被持久化的位置
 
-- **Not persisted as a key**: the Economy store schema has no `domain` / `namespace` column. The marker is not a query key and does not affect DB migration or backup / restore.
-- **Present in read views**: the serializers include it on wire responses (`serializeWallet` → `domain`; `serializeBudgetPolicy` / `serializeQuote` / `serializePurchase` / `serializeApproval` / `serializeAutonomyPolicy` → `domain` + `namespace`).
-- **Not branched on**: no production code and no client reads `domain` / `namespace` to make a decision. `validateEconomyDomain` is exported for callers but is not invoked inside the current production path.
+- **不作为 key 持久化**：Economy store schema 没有 `domain` / `namespace` 列。marker 不是查询 key，也不影响 DB migration 或 backup / restore。
+- **出现在 read views 中**：serializers 将其包含在 wire responses 上（`serializeWallet` → `domain`；`serializeBudgetPolicy` / `serializeQuote` / `serializePurchase` / `serializeApproval` / `serializeAutonomyPolicy` → `domain` + `namespace`）。
+- **不作为分支依据**：没有任何 production code 或 client 读取 `domain` / `namespace` 来做决策。`validateEconomyDomain` 为 callers 导出，但在当前 production path 内部并未被调用。
 
-Compatibility consequence: changing `DOMAIN` or any namespace literal silently changes every stamped payload / view and breaks the enforcing tests. This is a v1 identity marker — do not change it in place; declare a new version instead.
+Compatibility 后果：更改 `DOMAIN` 或任何 namespace literal 会静默改变每个已盖戳的 payload / view，并破坏 enforcing tests。这是 v1 identity marker —— 不要就地更改它；应声明新版本。
 
 ---
 
 ## 6. Non-goals
 
-This contract does **not** freeze: routes, response field sets, wire error tokens, persistence schema, UI, or the frozen behavior set (see the sibling contracts).
+本 Contract **不**冻结：routes、response field sets、wire error tokens、persistence schema、UI，或 frozen behavior set（见 sibling contracts）。
 
 ---
 
 ## 7. Enforcement
 
-| Test | What it pins |
+| 测试 | 固定内容 |
 | --- | --- |
-| `tests/test_p22_1_economy_domain_contract.js` | `DOMAIN === 'ib.economy'`; `validateEconomyDomain` accept/reject; every namespace prefixed `ib.economy.`; exact namespace literals |
-| `tests/test_p22_6_economy_purchase.js` | exact namespace literals; `Object.keys(NAMESPACES).length === 15` |
-| `tests/test_p22_21_economy_v1_closure_audit.js` | `C.DOMAIN === 'ib.economy'` among the closure audit |
+| `tests/test_p22_1_economy_domain_contract.js` | `DOMAIN === 'ib.economy'`；`validateEconomyDomain` 接受/拒绝；每个 namespace 前缀为 `ib.economy.`；精确的 namespace literals |
+| `tests/test_p22_6_economy_purchase.js` | 精确的 namespace literals；`Object.keys(NAMESPACES).length === 15` |
+| `tests/test_p22_21_economy_v1_closure_audit.js` | closure audit 中的 `C.DOMAIN === 'ib.economy'` |
 
-These are behavior-level tests against the production contract. This document is **human authority backed by runtime tests** — it is not itself a machine-parsed manifest.
+这些是针对 production contract 的 behavior-level tests。本文档是 **human authority backed by runtime tests** —— 它本身不是 machine-parsed manifest。
 
 ---
 
-## 8. Historical Origin
+## 8. 历史引用
 
-Historical origin: `docs/history/economy/P22/P22-1-ECONOMY-CONTRACT.md`
+历史来源：`docs/history/economy/P22/P22-1-ECONOMY-CONTRACT.md`

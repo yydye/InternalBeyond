@@ -1,28 +1,28 @@
-# Voice Architecture
+# Voice 架构
 
 **Status: Canonical**
-**Scope: Current Voice Architecture**
+**Scope: 当前 Voice 架构**
 
-> Current-state description of the InternalBeyond Voice system. Source-of-truth priority: production
-> code → running tests → contracts → audit → phase documents → history. The `P23-*` documents are
-> **provenance**, not authority; where they disagree with code, code wins.
-
----
-
-## 1. Purpose
-
-Voice gives characters a spoken surface without moving conversation ownership out of the chat runtime.
-It covers two separate surfaces: **Voice Call** (real-time speech conversation) and **Voice Message**
-(a recorded or synthesized audio clip attached to a chat message).
-
-Voice is **not**: the conversation owner, the model executor, the memory owner, or the LLM provider
-layer. It is an audio transport/format layer around the chat runtime.
+> InternalBeyond Voice 系统的当前状态描述。真相来源优先级：production
+> code → running tests → contracts → audit → phase documents → history。`P23-*` 文档属于
+> **provenance**，而非 authority；当它们与代码不一致时，以代码为准。
 
 ---
 
-## 2. Runtime Position
+## 1. 目的
 
-Voice has **two surfaces**; they must not be merged into one concept.
+Voice 为 character 提供口头表达的 surface，同时不将 conversation ownership 移出 chat runtime。
+它覆盖两个彼此独立的 surface：**Voice Call**（实时语音对话）与 **Voice Message**
+（附加到 chat message 上的录制或合成音频片段）。
+
+Voice **不是**：conversation 的 owner、model executor、memory owner 或 LLM provider
+layer。它是围绕 chat runtime 的 audio transport/format layer。
+
+---
+
+## 2. Runtime 位置
+
+Voice 有**两个 surface**；它们绝不能被合并为一个概念。
 
 **Voice Call**
 
@@ -32,8 +32,8 @@ Mic → Voice Worklet → Bridge Voice Runtime → ASR
     → TTS → Playback
 ```
 
-The bridge owns audio/ASR/TTS/session; the **browser chat runtime owns the model call, role context,
-tools, history, and memory** (`bridge/voice-runtime.js` header).
+bridge 拥有 audio/ASR/TTS/session；**browser chat runtime 拥有 model call、role context、
+tools、history 与 memory**（`bridge/voice-runtime.js` header）。
 
 **Voice Message**
 
@@ -41,121 +41,121 @@ tools, history, and memory** (`bridge/voice-runtime.js` header).
 Record → voice-message-core → Chat Message.voice → Playback
 ```
 
-| Module | Layer | Responsibility |
+| 模块 | 层级 | 职责 |
 | --- | --- | --- |
-| `assets/js/communication/call.js` | Browser | capture, VAD/barge-in, WS client, playback queue |
+| `assets/js/communication/call.js` | Browser | 采集、VAD/barge-in、WS client、播放队列 |
 | `assets/js/voice-worklet.js` | Browser | mic → 16k PCM16 + rms |
-| `bridge/voice-runtime.js` | Bridge | call session state machine, ASR/TTS orchestration, generation guards |
-| `bridge/asr.js` | Bridge | ASR transport (turn-based + opt-in streaming) |
-| `bridge/tts.js` | Bridge | TTS provider registry + synthesis + Voice API Source map |
-| `bridge/voicebox.js` | Bridge | external Voicebox local runtime adapter |
-| `bridge/tts-voices.js` | Bridge | VoiceClone reference-audio file infrastructure |
-| `assets/js/communication/voice.js` | Browser | voice message record/transcribe/playback |
+| `bridge/voice-runtime.js` | Bridge | call session 状态机、ASR/TTS 编排、generation guards |
+| `bridge/asr.js` | Bridge | ASR transport（turn-based + opt-in streaming） |
+| `bridge/tts.js` | Bridge | TTS provider 注册表 + synthesis + Voice API Source map |
+| `bridge/voicebox.js` | Bridge | 外部 Voicebox local runtime adapter |
+| `bridge/tts-voices.js` | Bridge | VoiceClone reference-audio 文件基础设施 |
+| `assets/js/communication/voice.js` | Browser | voice message 录制/转写/播放 |
 | `assets/js/voice-message-core.js` | shared UMD | canonical voice-message contract |
-| `assets/js/delivery-*.js` | shared UMD | multi-message turn delivery (not TTS) |
+| `assets/js/delivery-*.js` | shared UMD | multi-message turn delivery（非 TTS） |
 
 ---
 
-## 3. Voice Call Architecture
+## 3. Voice Call 架构
 
-- Browser captures mic via `voice-worklet.js` and streams binary PCM frames over a WebSocket to the
-  bridge `/voice` endpoint.
-- Bridge `voice-runtime.js` drives the session state machine, runs ASR, and synthesizes TTS in ordered
-  sentence units with generation guards.
-- Protocol messages include `transcript_partial` / `transcript_final` (bridge→browser),
-  `adapter_reply` / `adapter_reply_sentence` (browser→bridge), `audio` / `generation_end` /
-  `interrupted` / `error` / `state` (bridge→browser).
-- On a final transcript, the browser calls the normal chat entry (`sendChatMessage({ voiceCall:true,
-  transcript, acousticReference, … })`) and streams the reply sentences back to the bridge for TTS.
-
----
-
-## 4. Voice Message Architecture
-
-A voice message is a canonical chat-message field (`voice`), not a Voice-runtime-owned store:
-
-- Produced by `assets/js/communication/voice.js` (user recording) or by TTS for assistant messages.
-- Shape defined by `assets/js/voice-message-core.js`; see
-  [`../contracts/voice/VOICE_MESSAGE_CONTRACT.md`](../contracts/voice/VOICE_MESSAGE_CONTRACT.md).
-- Persisted as part of the chat message; playback source is `dataUrl` or bridge `audioUrl`, never a
-  runtime object URL.
+- Browser 通过 `voice-worklet.js` 采集 mic，并通过 WebSocket 将二进制 PCM 帧流式发送到
+  bridge 的 `/voice` endpoint。
+- Bridge `voice-runtime.js` 驱动 session 状态机、运行 ASR，并以有序的 sentence unit 合成 TTS，
+  同时带有 generation guards。
+- Protocol 消息包括 `transcript_partial` / `transcript_final`（bridge→browser）、
+  `adapter_reply` / `adapter_reply_sentence`（browser→bridge），以及 `audio` / `generation_end` /
+  `interrupted` / `error` / `state`（bridge→browser）。
+- 收到 final transcript 时，browser 调用常规 chat 入口（`sendChatMessage({ voiceCall:true,
+  transcript, acousticReference, … })`），并将 reply sentences 流式回传给 bridge 以进行 TTS。
 
 ---
 
-## 5. ASR Boundary
+## 4. Voice Message 架构
 
-ASR **owns**: audio capture transport, recognition, transcript generation.
-ASR **does not own**: conversation state, memory, or model routing.
+voice message 是一个规范性的 chat-message 字段（`voice`），而不是由 Voice-runtime 拥有的 store：
 
-Two ASR shapes exist: turn-based `openai-whisper` (default) and an opt-in `streaming` provider
-(`voiceAsr.streaming=true`); with no streaming provider wired, the runtime falls back to turn-based.
-The provider is **config**, not architecture (`bridge/config.js voiceAsr`, `bridge/asr.js`).
+- 由 `assets/js/communication/voice.js` 产生（用户录制），或由 TTS 为 assistant 消息产生。
+- 形态由 `assets/js/voice-message-core.js` 定义；参见
+  [`../contracts/voice/VOICE_MESSAGE_CONTRACT.md`](../contracts/voice/VOICE_MESSAGE_CONTRACT.md)。
+- 作为 chat message 的一部分被持久化；播放来源是 `dataUrl` 或 bridge 的 `audioUrl`，绝不是
+  runtime object URL。
 
 ---
 
-## 6. TTS Boundary
+## 5. ASR 边界
 
-Three distinct concepts, never merged:
+ASR **拥有**：audio capture transport、recognition、transcript generation。
+ASR **不拥有**：conversation state、memory 或 model routing。
 
-| Layer | Owner |
+存在两种 ASR 形态：turn-based `openai-whisper`（默认）与可选的 `streaming` provider
+（`voiceAsr.streaming=true`）；未接入 streaming provider 时，runtime 会回退到 turn-based。
+provider 是 **config**，不是 architecture（`bridge/config.js voiceAsr`、`bridge/asr.js`）。
+
+---
+
+## 6. TTS 边界
+
+三个彼此不同的概念，绝不合并：
+
+| 层级 | 拥有者 |
 | --- | --- |
-| Character voice preference | Character configuration (`apiConfigs[].voice`) |
-| TTS provider selection | Bridge (Voice API Source map) |
-| Audio synthesis | TTS runtime (`bridge/tts.js` / `bridge/voicebox.js`) |
-| Playback | Browser |
+| Character voice 偏好 | Character configuration（`apiConfigs[].voice`） |
+| TTS provider 选择 | Bridge（Voice API Source map） |
+| 音频合成 | TTS runtime（`bridge/tts.js` / `bridge/voicebox.js`） |
+| 播放 | Browser |
 
 ---
 
-## 7. Character Voice Boundary
+## 7. Character Voice 边界
 
-Character voice is a **preference**: it is stored on the character config and read at playback/synthesis
-time (`assets/js/bridge.js` `_ibGetCharVoice`). It may carry `source/provider`, `voiceId`, `voiceType`,
-`voiceData`, `voiceStyle`, and `autoPlay`. It never carries provider credentials, and it does not
-constitute TTS runtime ownership.
+Character voice 是一种**偏好**：它存储在 character config 上，并在 playback/synthesis
+时读取（`assets/js/bridge.js` `_ibGetCharVoice`）。它可能携带 `source/provider`、`voiceId`、
+`voiceType`、`voiceData`、`voiceStyle` 与 `autoPlay`。它绝不携带 provider credentials，也不
+构成 TTS runtime ownership。
 
 ---
 
-## 8. Provider Boundary
+## 8. Provider 边界
 
-Voice provider authority is **separate** from the LLM provider authority:
+Voice provider authority 与 LLM provider authority 是**分离**的：
 
 ```
 Voice:  bridge config (tts / ttsMimo / voicebox / voiceAsr) + bridge/tts.js / bridge/asr.js
 LLM:    assets/js/provider-directory.js + assets/js/ib-model-core.js
 ```
 
-The browser LLM provider layer contains no TTS/voice/speech handling. Voice does **not** use
-`provider-directory`. The browser only sees a read-only source catalog (`/api/tts/sources`), never
-credentials. Details: [`../contracts/voice/VOICE_PROVIDER_SOURCE_CONTRACT.md`](../contracts/voice/VOICE_PROVIDER_SOURCE_CONTRACT.md).
+browser LLM provider layer 不包含任何 TTS/voice/speech 处理。Voice **不**使用
+`provider-directory`。browser 只能看到只读的 source catalog（`/api/tts/sources`），绝不接触
+credentials。详情： [`../contracts/voice/VOICE_PROVIDER_SOURCE_CONTRACT.md`](../contracts/voice/VOICE_PROVIDER_SOURCE_CONTRACT.md)。
 
 ---
 
-## 9. Audio Lifecycle
+## 9. 音频生命周期
 
-Classified by kind — never generalized:
+按类型分类——绝不泛化：
 
-| Kind | Persisted? | Where |
+| 类型 | 是否持久化？ | 位置 |
 | --- | --- | --- |
-| Call audio | **ephemeral** | streamed in memory; not persisted |
+| Call audio | **ephemeral** | 在内存中流式处理；不持久化 |
 | Voice-message audio | **persisted** | chat message `voice.dataUrl` / `audioUrl` |
 | VoiceClone reference audio | **persisted** | `DATA_DIR/tts-voices/<id>.<ext>` + `tts-voices.json` registry |
-| Cached TTS mp3 (bridge) | transient cache | `DATA_DIR/tts` (`/tts/<name>`), name-pattern managed |
+| Cached TTS mp3（bridge） | transient cache | `DATA_DIR/tts`（`/tts/<name>`），按 name-pattern 管理 |
 
 ---
 
-## 10. Session State
+## 10. 会话状态
 
-| State | Authority |
+| 状态 | Authority |
 | --- | --- |
 | recording | browser capture + bridge call session |
 | transcribing | bridge ASR session |
-| generating | browser chat runtime (model) |
-| speaking | bridge TTS queue + browser playback |
+| generating | browser chat runtime（model） |
+| speaking | bridge TTS queue + browser 播放 |
 | interrupted | bridge `call.state` |
 
-Bridge `call.state` (`bridge/voice-runtime.js`) is the single source of truth for the call lifecycle
-(`idle/connecting/listening/thinking/speaking/interrupting/error/ended`). The browser mirrors state for
-UI; the mirror is not authority.
+Bridge `call.state`（`bridge/voice-runtime.js`）是 call lifecycle 的唯一真相来源
+（`idle/connecting/listening/thinking/speaking/interrupting/error/ended`）。browser 为
+UI 镜像 state；该镜像不是 authority。
 
 ---
 
@@ -168,97 +168,96 @@ User speech (VAD) → browser stops playback → send {type:'interrupt'}
    → resume listening
 ```
 
-Recorded current behavior: barge-in stops playback and advances the generation guard; it does not
-retroactively cancel delivered audio.
+记录到的当前行为：barge-in 会停止播放并推进 generation guard；它不会追溯性地取消已投递的音频。
 
 ---
 
-## 12. Memory Boundary
+## 12. Memory 边界
 
-Voice does **not** own Memory lifecycle (see
-[`MEMORY.md`](MEMORY.md) and [`../contracts/memory/`](../contracts/memory/)). Voice files do not call
-memory APIs. A call transcript enters the **normal chat runtime**, where memory retrieval/consolidation
-are handled by the memory subsystem.
-
----
-
-## 13. Middle Brain Boundary
-
-Per [MIDDLE_BRAIN.md](MIDDLE_BRAIN.md):
-
-- a voice-call transcript enters the **normal chat pipeline** (`sendChatMessage`), so MB
-  pre-generation (organize/compress) applies;
-- the **voice surface bypasses the MB Character Integrity guard intentionally**
-  (`middle-brain-integrity.js` `voice_surface` skip, tested).
-
-Voice does **not** have a separate Middle Brain path.
+Voice **不**拥有 Memory lifecycle（参见
+[`MEMORY.md`](MEMORY.md) 与 [`../contracts/memory/`](../contracts/memory/)）。Voice 文件不调用
+memory APIs。call transcript 进入**常规 chat runtime**，在那里 memory
+retrieval/consolidation 由 memory subsystem 处理。
 
 ---
 
-## 14. Consumer Matrix
+## 13. Middle Brain 边界
 
-| Consumer | Relationship |
+依据 [MIDDLE_BRAIN.md](MIDDLE_BRAIN.md)：
+
+- voice-call transcript 进入**常规 chat pipeline**（`sendChatMessage`），因此 MB
+  pre-generation（organize/compress）会生效；
+- **voice surface 有意绕过 MB Character Integrity guard**
+  （`middle-brain-integrity.js` `voice_surface` skip，已测试）。
+
+Voice **不**拥有独立的 Middle Brain path。
+
+---
+
+## 14. 消费者矩阵
+
+| 消费者 | 关系 |
 | --- | --- |
-| Single/Group chat call | Voice Call around the chat runtime |
-| Role DM | call/message using role voice preference |
-| Voice Message | chat message `voice` field |
-| Delivery (P23) | multi-message turn delivery; not TTS |
-| Middle Brain | applies to the transcript via the chat pipeline (integrity bypassed for voice) |
-| Memory | indirect, via chat runtime only |
-| Mobile | no Voice authority in this document scope |
+| 单聊/群聊 call | 围绕 chat runtime 的 Voice Call |
+| Role DM | 使用 role voice 偏好的 call/message |
+| Voice Message | chat message 的 `voice` 字段 |
+| Delivery (P23) | multi-message turn delivery；非 TTS |
+| Middle Brain | 经由 chat pipeline 作用于 transcript（voice 场景绕过 integrity） |
+| Memory | 间接，仅经由 chat runtime |
+| Mobile | 本文档范围内无 Voice authority |
 
 ---
 
-## 15. Configuration Boundary
+## 15. 配置边界
 
-| Config | Storage | Reader |
+| Config | Storage | 读取方 |
 | --- | --- | --- |
-| character `voice` preference | character config `apiConfigs[]` | browser bridge/social; bridge via `source` |
-| TTS credentials/endpoints (`tts`, `ttsMimo`) | bridge `config.json` | `bridge/tts.js` |
+| character `voice` 偏好 | character config `apiConfigs[]` | browser bridge/social；bridge 经由 `source` |
+| TTS credentials/endpoints（`tts`、`ttsMimo`） | bridge `config.json` | `bridge/tts.js` |
 | Voicebox endpoint | `config.voicebox.endpoint` → env → default | `bridge/voicebox.js` |
-| ASR (`voiceAsr`) | bridge `config.json` | `bridge/asr.js` |
+| ASR（`voiceAsr`） | bridge `config.json` | `bridge/asr.js` |
 
-Credentials are masked in `/api/config` and never reach the browser.
+credentials 在 `/api/config` 中被遮蔽，绝不抵达 browser。
 
 ---
 
-## 16. UI Boundary
+## 16. UI 边界
 
-Voice UI is a **configuration/control surface**, not runtime authority: source catalog display,
-character voice fields, VoiceClone upload, voice-message record button, and the call modal. Runtime
-authority lives in the bridge/browser Voice modules.
+Voice UI 是一个**配置/控制 surface**，不是 runtime authority：source catalog 展示、
+character voice 字段、VoiceClone 上传、voice-message 录制按钮，以及 call modal。Runtime
+authority 位于 bridge/browser 的 Voice 模块中。
 
 ---
 
 ## 17. Non-goals
 
-Voice does not own: conversation state, model routing/execution, LLM provider selection, memory
-lifecycle, Middle Brain composition, or provider credentials. It does not define the delivery/timing
-policy of multi-message turns (that is the delivery contract) nor the acoustic reference algorithm
-(that is the acoustic reference contract).
+Voice 不拥有：conversation state、model routing/execution、LLM provider selection、memory
+lifecycle、Middle Brain composition 或 provider credentials。它不定义 multi-message turn 的
+delivery/timing policy（那属于 delivery contract），也不定义 acoustic reference 算法
+（那属于 acoustic reference contract）。
 
 ---
 
 ## 18. Enforcement
 
-| Concern | Tests |
+| 关注点 | 测试 |
 | --- | --- |
 | Call runtime / session | `test_voice_runtime.js`, `test_voice_streaming.js`, `test_voice_reconnect.js` |
-| Capture / playback | `test_voice_capture.js`, `test_voice_playback_path.js` |
+| 采集 / 播放 | `test_voice_capture.js`, `test_voice_playback_path.js` |
 | Providers | `test_mimo_tts.js`, `test_mimo_voiceclone.js`, `test_mimo_voicedesign.js`, `test_voicebox_provider.js`, `test_tts_voices.js` |
-| Source/credential boundary | `test_voice_source.js` |
+| Source/credential 边界 | `test_voice_source.js` |
 | Voice message | `test_native_voice_message.js`, `test_voice_message_lifecycle.js` |
 | Acoustic reference | `test_call_acoustic_inject.js` |
 
-Runtime behavior is enforced by these tests; this document is human canonical authority.
+runtime 行为由这些测试强制执行；本文档是人类可读的 canonical authority。
 
 ---
 
-## 19. Historical References
+## 19. 历史参考
 
-Provenance only; not current authority:
+仅为 provenance；不是当前 authority：
 
 - `docs/P23-1-VOICE-RUNTIME-FOUNDATION.md`, `docs/P23-2A-MESSAGE-SEQUENCE-CONTRACT.md`,
-  `docs/P23-2B-DELIVERY-RUNTIME.md`, `docs/P23-2C-DELIVERY-PLANNER.md` (provisional phase docs)
+  `docs/P23-2B-DELIVERY-RUNTIME.md`, `docs/P23-2C-DELIVERY-PLANNER.md`（provisional phase docs）
 - `docs/history/legacy/voice-runtime-phase1.md`, `docs/history/legacy/voice-runtime-phase2-3.md`
 - `docs/P1-ACOUSTIC-REFERENCE.md`

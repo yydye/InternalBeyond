@@ -1,69 +1,66 @@
-# Middle Brain Architecture
+# Middle Brain 架构
 
 **Status: Canonical**
-**Scope: Current Middle Brain runtime architecture**
+**Scope: 当前 Middle Brain runtime 架构**
 
-> This document describes how the Middle Brain runtime works **today**. It is not a phase report,
-> a closure, or an audit. Where it references history, that is provenance only.
-> Source-of-truth priority: current production code → current enforcing tests → current canonical docs /
-> `DECISIONS.md` → historical records.
-
----
-
-## 1. Purpose
-
-The Middle Brain (MB) is InternalBeyond's **cognitive middle layer around the character model
-generation boundary**. It does not answer the user; it prepares context before generation and
-evaluates character consistency after generation.
-
-It is responsible for:
-
-- **pre-generation**: context organization, context compression, and the admission / local-fallback
-  decision;
-- **post-generation**: character-integrity evaluation, an optional single targeted rewrite, and
-  derivation of side-effect policy; plus a read-only quality Judge.
-
-It is **not**: a character reply generator, a character provider selector, a memory store or writer,
-a tool executor, the Image Router executor, a provider prompt cache, or a universal prompt owner.
+> 本文档描述 Middle Brain runtime 在**当前**是如何工作的。它不是 phase report、closure 或 audit。
+> 凡涉及历史之处，仅为 provenance。
+> Source-of-truth 优先级：当前生产代码 → 当前 enforcing tests → 当前 canonical docs /
+> `DECISIONS.md` → 历史记录。
 
 ---
 
-## 2. Runtime Position
+## 1. 目的
 
-Canonical implementation (browser):
+Middle Brain（MB）是 InternalBeyond 在 **character model 生成边界周围的认知中间层**。它不回答用户；
+它在生成前准备上下文，并在生成后评估角色一致性。
 
-| Module | Role |
+它负责：
+
+- **pre-generation**：上下文组织、上下文压缩，以及 admission / local-fallback 决策；
+- **post-generation**：character-integrity 评估、一次可选的针对性 rewrite，以及
+  side-effect policy 的推导；外加一个只读的 quality Judge。
+
+它**不是**：character reply 生成器、character provider 选择器、memory store 或 writer、
+tool executor、Image Router executor、provider prompt cache，或通用 prompt owner。
+
+---
+
+## 2. Runtime 位置
+
+Canonical 实现（browser）：
+
+| 模块 | 职责 |
 | --- | --- |
-| `assets/js/middle-brain.js` | facade: `IB.middleBrain`, pre/post seams, dev trace |
-| `assets/js/middle-brain-config.js` | config read/write, UI binding, settings card |
-| `assets/js/middle-brain-config-core.js` | config normalization, runtime predicates, projection, MB system prompt |
-| `assets/js/middle-brain-policy.js` | context organization, compression, Admission Gate |
-| `assets/js/middle-brain-astra.js` | MB's own network/model boundary |
-| `assets/js/middle-brain-judge.js` | read-only quality observation + telemetry |
+| `assets/js/middle-brain.js` | facade：`IB.middleBrain`、pre/post seams、dev trace |
+| `assets/js/middle-brain-config.js` | config 读/写、UI 绑定、settings card |
+| `assets/js/middle-brain-config-core.js` | config 归一化、runtime predicates、projection、MB system prompt |
+| `assets/js/middle-brain-policy.js` | 上下文组织、压缩、Admission Gate |
+| `assets/js/middle-brain-astra.js` | MB 自身的 network/model 边界 |
+| `assets/js/middle-brain-judge.js` | 只读 quality observation + telemetry |
 | `assets/js/middle-brain-integrity.js` | Character Integrity guard + side-effect policy |
 
-Host adapter:
+Host adapter：
 
-| Module | Role |
+| 模块 | 职责 |
 | --- | --- |
-| `services/home-node/middle-brain.js` | Home Node host adapter; loads the **same** canonical implementation via UMD/global shims (`loadCanonicalMiddleBrain`) |
+| `services/home-node/middle-brain.js` | Home Node host adapter；通过 UMD/global shims（`loadCanonicalMiddleBrain`）加载**同一份** canonical 实现 |
 
-The Home Node module is **not a second Middle Brain**. It is an adapter that installs a configuration
-reader (`globalThis.__ibMiddleBrainConfigReader`) and exposes the two seams in the same shape as the
-browser (`organizeContext` / `finalizeReply`). It performs no judgment of its own.
+Home Node 模块**不是第二个 Middle Brain**。它是一个 adapter，安装一个 configuration reader
+（`globalThis.__ibMiddleBrainConfigReader`），并以与 browser 相同的形态暴露两个 seams
+（`organizeContext` / `finalizeReply`）。它自身不做任何判断。
 
 ---
 
 ## 3. Canonical Facade
 
-`IB.middleBrain` is the single production entry point. It is assembled from frozen per-layer contracts
-(`MBC.config / policy / astra / judge / integrity`) in `assets/js/middle-brain.js:336` and published at
-`assets/js/middle-brain.js:351`. Architecture-significant seams are listed in §5; the facade's full key
-list is implementation detail and is intentionally not reproduced here.
+`IB.middleBrain` 是唯一的生产入口。它由 `assets/js/middle-brain.js:336` 处冻结的逐层 contracts
+（`MBC.config / policy / astra / judge / integrity`）组装而成，并在 `assets/js/middle-brain.js:351`
+处发布。架构相关的 seams 列于 §5；facade 的完整 key 列表属于实现细节，此处有意不复制。
 
 ---
 
-## 4. Canonical Execution Flow
+## 4. Canonical 执行流程
 
 ```text
 Caller (single chat / group chat / Role DM / Home Node execution)
@@ -95,196 +92,193 @@ reply + outcome {verdict, rewritten, reason}
 side-effect policy gates (consumer-applied)
 ```
 
-MB **composition**, **caller injection**, and **model execution** are three distinct stages:
+MB 的 **composition**、**caller injection** 与 **model execution** 是三个不同的阶段：
 
-> Middle Brain returns a compressed context. Whether — and how — it is injected into the character
-> model request is decided by the caller. The caller also owns the final character request.
+> Middle Brain 返回压缩后的上下文。它是否——以及如何——被注入 character model 请求，由 caller 决定。
+> caller 也拥有最终的 character 请求。
 
 ---
 
 ## 5. Canonical Seams
 
-| Seam | Canonical Entry | Responsibility | Does Not Own |
+| Seam | Canonical Entry | 职责 | 不拥有 |
 | --- | --- | --- | --- |
 | Pre-generation | `middleBrainExecute` (`middle-brain.js:201`) | readiness check + pipeline | context injection |
-| Pre-generation (pipeline) | `middleBrainCompressPipeline` (`middle-brain.js:147`) | organize → compress → admission/Astra | context injection, character request |
-| Post-generation | `middleBrainFinalizeReply` (`middle-brain.js:231`) | integrity guard; returns `{reply, outcome}` | reply generation, retry |
-| Side-effect policy | `middleBrainSideEffectAllowed` | allow/suppress decision from verdict | executing the side effect |
-| Group memory policy | `middleBrainGroupMemoryPolicy` | group memory scope decision | memory persistence |
-| Suppression snapshot | `middleBrainSideEffectSuppression` | read suppression record for the turn | enforcement |
+| Pre-generation (pipeline) | `middleBrainCompressPipeline` (`middle-brain.js:147`) | organize → compress → admission/Astra | context injection、character request |
+| Post-generation | `middleBrainFinalizeReply` (`middle-brain.js:231`) | integrity guard；返回 `{reply, outcome}` | reply generation、retry |
+| Side-effect policy | `middleBrainSideEffectAllowed` | 依据 verdict 的 allow/suppress 决策 | 执行 side effect |
+| Group memory policy | `middleBrainGroupMemoryPolicy` | group memory scope 决策 | memory persistence |
+| Suppression snapshot | `middleBrainSideEffectSuppression` | 读取该 turn 的 suppression record | enforcement |
 | Config decision | `middleBrainReasoningEffort` | canonical reasoning value | provider translation |
-| Config decision | `middleBrainImageMode` | canonical image policy decision | image execution |
+| Config decision | `middleBrainImageMode` | canonical image policy 决策 | image execution |
 
 ---
 
-## 6. Layer Architecture
+## 6. Layer 架构
 
 ```text
 config  →  policy  →  astra  →  judge / integrity  →  facade
 ```
 
-- **config** (`middle-brain-config.js`, `-config-core.js`): configuration normalization, runtime
-  predicates, canonical config projection, MB system prompt constant.
-- **policy** (`middle-brain-policy.js`): context organization into four categories
-  (memory / understanding / thread / moments) plus dialogue, local compression, and the Admission
-  Gate (local, deterministic, no LLM; decides whether to spend an Astra call).
-- **astra** (`middle-brain-astra.js`): MB's own network/model boundary — request/response
-  normalization and the Astra calls used for compression, judging, and rewriting.
-- **judge** (`middle-brain-judge.js`): read-only quality observation of the compressed result +
-  telemetry. Default off; never changes the execution result.
-- **integrity** (`middle-brain-integrity.js`): character consistency, verdict, targeted rewrite, and
-  side-effect policies.
-- **facade** (`middle-brain.js`): assembles and publishes `IB.middleBrain`.
+- **config**（`middle-brain-config.js`、`-config-core.js`）：configuration 归一化、runtime
+  predicates、canonical config projection、MB system prompt 常量。
+- **policy**（`middle-brain-policy.js`）：将上下文组织为四个类别
+  （memory / understanding / thread / moments）外加 dialogue，进行本地压缩，并包含 Admission
+  Gate（本地、确定性、无 LLM；决定是否花费一次 Astra 调用）。
+- **astra**（`middle-brain-astra.js`）：MB 自身的 network/model 边界——request/response
+  归一化，以及用于 compression、judging 与 rewriting 的 Astra calls。
+- **judge**（`middle-brain-judge.js`）：对压缩结果的只读 quality observation +
+  telemetry。默认关闭；永不改变执行结果。
+- **integrity**（`middle-brain-integrity.js`）：角色一致性、verdict、targeted rewrite 与
+  side-effect policies。
+- **facade**（`middle-brain.js`）：组装并发布 `IB.middleBrain`。
 
-Each layer depends only on upstream layers (DAG); per-layer exports are frozen contracts.
-
----
-
-## 7. Historical Terminology Warning
-
-Historical P11 material uses "five layers" differently from the current architecture.
-
-- **Current physical architecture** (five functional layers + facade):
-  `config / policy / astra / judge / integrity` + `facade`.
-- **Current integrity dimensions** (six): `persona / speech_style / relationship /
-  emotional_continuity / knowledge_boundary / behavior`.
-
-Do not merge the two, and do not call `persona / relationship / emotion / knowledge / speech` the
-"Middle Brain five-layer architecture". That is a historical terminology drift, not the current
-structure.
+每一层只依赖上游层（DAG）；逐层导出为冻结的 contracts。
 
 ---
 
-## 8. Context Responsibility
+## 7. Historical Terminology 警告
+
+历史 P11 材料对 "five layers" 的使用与当前架构不同。
+
+- **当前物理架构**（五个功能层 + facade）：
+  `config / policy / astra / judge / integrity` + `facade`。
+- **当前 integrity dimensions**（六个）：`persona / speech_style / relationship /
+  emotional_continuity / knowledge_boundary / behavior`。
+
+不要将两者混为一谈，也不要把 `persona / relationship / emotion / knowledge / speech` 称为
+"Middle Brain five-layer architecture"。那是一种历史术语漂移，而非当前结构。
+
+---
+
+## 8. Context 职责
 
 | Context | Authority | MB Role |
 | --- | --- | --- |
-| memory | other runtime | read / compress |
-| understanding | other runtime | read / compress |
-| thread | other runtime | read / compress |
-| moments | other runtime | read / compress |
-| dialogue / history | caller | read / compress |
-| persona (nickname / bio / relationship / role prompt) | caller | integrity **evidence** only |
-| role system instruction | caller | not owned |
-| MB system instruction | MB | own Astra calls only |
-| attachments / images | caller | not owned |
-| tools | caller / runtime | not owned |
+| memory | other runtime | 读取 / 压缩 |
+| understanding | other runtime | 读取 / 压缩 |
+| thread | other runtime | 读取 / 压缩 |
+| moments | other runtime | 读取 / 压缩 |
+| dialogue / history | caller | 读取 / 压缩 |
+| persona (nickname / bio / relationship / role prompt) | caller | 仅 integrity **evidence** |
+| role system instruction | caller | 不拥有 |
+| MB system instruction | MB | 仅自己的 Astra calls |
+| attachments / images | caller | 不拥有 |
+| tools | caller / runtime | 不拥有 |
 
-Core invariant: **visibility is not authority.** Middle Brain may read a context without owning it.
-Ownership stays with the runtime or caller that produced it.
+核心不变量：**可见性不等于 authority。** Middle Brain 可以读取一个 context 而不拥有它。
+Ownership 归属于产生它的 runtime 或 caller。
 
 ---
 
 ## 9. Character Integrity
 
-Character Integrity is the post-generation guard. It is a policy + validator + targeted rewriter, not
-a filter or a composer.
+Character Integrity 是 post-generation guard。它是 policy + validator + targeted rewriter，而不是
+filter 或 composer。
 
-**Dimensions (six, `middle-brain-integrity.js:28`):** `persona`, `speech_style`, `relationship`,
-`emotional_continuity`, `knowledge_boundary`, `behavior`.
+**Dimensions（六个，`middle-brain-integrity.js:28`）：** `persona`、`speech_style`、`relationship`、
+`emotional_continuity`、`knowledge_boundary`、`behavior`。
 
-**Verdicts (`middle-brain-integrity.js:82`):** `PASS`, `OOC`, `UNDECIDED`, `BYPASSED`.
+**Verdicts（`middle-brain-integrity.js:82`）：** `PASS`、`OOC`、`UNDECIDED`、`BYPASSED`。
 
-**Flow:** candidate → judge → sensitivity gate → optional targeted rewrite → optional verify →
-final reply + outcome.
+**流程：** candidate → judge → sensitivity gate → optional targeted rewrite → optional verify →
+final reply + outcome。
 
-Current invariants (production-backed):
+当前不变量（production-backed）：
 
-- rewrite is attempted **at most once** per candidate;
-- verify is **observation only** and never performs a second rewrite;
-- timeout / error / malformed judge output is **never coerced** into `PASS` or `OOC`; it yields
-  `UNDECIDED`;
-- failures never fail the turn — the candidate is passed through;
-- Character Integrity is **disabled by default** (`characterIntegrityEnabled:false`);
-- the voice surface is currently **explicitly bypassed** (`voice_surface` skip).
+- rewrite 对每个 candidate **至多尝试一次**；
+- verify 是**纯观察**，永不执行第二次 rewrite；
+- timeout / error / malformed judge output **绝不**被强制转为 `PASS` 或 `OOC`；它产出
+  `UNDECIDED`；
+- failures 永不使该 turn 失败——candidate 直接透传；
+- Character Integrity **默认禁用**（`characterIntegrityEnabled:false`）；
+- voice surface 当前**被显式 bypass**（`voice_surface` skip）。
 
-`UNDECIDED` is not `OOC`; `BYPASSED` is not `PASS`.
+`UNDECIDED` 不是 `OOC`；`BYPASSED` 不是 `PASS`。
 
 ---
 
-## 10. Side-Effect Boundary
+## 10. Side-Effect 边界
 
-The integrity outcome is not only a text result. The verdict feeds current downstream policy seams:
+integrity outcome 不只是一个文本结果。verdict 会输入当前下游的 policy seams：
 
-- `middleBrainSideEffectAllowed` — per-site allow/suppress decision (`MB_CI_SIDE_EFFECT_SITES`;
-  four adjudication points: mem_ops, calendar, blog_read, ws_ops);
-- `middleBrainSideEffectSuppression` — per-turn suppression record across categories
-  (memory, calendar, blog_read, workspace, file_archive, tool_continue);
-- `middleBrainGroupMemoryPolicy` — group memory scope decision (writable scope is `private_role`).
+- `middleBrainSideEffectAllowed` — 逐 site 的 allow/suppress 决策（`MB_CI_SIDE_EFFECT_SITES`；
+  四个 adjudication points：mem_ops、calendar、blog_read、ws_ops）；
+- `middleBrainSideEffectSuppression` — 跨类别的逐 turn suppression record
+  （memory、calendar、blog_read、workspace、file_archive、tool_continue）；
+- `middleBrainGroupMemoryPolicy` — group memory scope 决策（writable scope 为 `private_role`）。
 
-Middle Brain **provides a policy decision**; the downstream consumer performs the actual execution or
-suppression. MB does not control all side effects.
+Middle Brain **提供一个 policy 决策**；下游 consumer 执行实际的 execution 或 suppression。
+MB 并不控制所有 side effects。
 
 ---
 
 ## 11. Configuration Authority
 
-Canonical storage: IndexedDB `apiSettings['middle_brain']`. Architecture-significant fields:
+Canonical storage：IndexedDB `apiSettings['middle_brain']`。架构相关的字段：
 
-| Field | Meaning | Default |
+| Field | 含义 | Default |
 | --- | --- | --- |
-| `enabled` | MB runtime switch (see §12) | `false` |
-| `endpoint` / `model` / `apiKey` | MB's own model channel | OpenAI Responses URL / `gpt-6-astra` / `''` |
-| `reasoningEffort` | canonical thinking depth (see §15) | `auto` |
-| `speed` | MB service/latency tier | `standard` |
-| `imageMode` | Image Router policy decision | `auto` |
-| `admissionEnabled` | Admission Gate on/off | `true` |
-| `middleBrainJudgeEnabled` | quality Judge on/off | `false` |
+| `enabled` | MB runtime 开关（见 §12） | `false` |
+| `endpoint` / `model` / `apiKey` | MB 自身的 model channel | OpenAI Responses URL / `gpt-6-astra` / `''` |
+| `reasoningEffort` | canonical thinking depth（见 §15） | `auto` |
+| `speed` | MB service/latency 层级 | `standard` |
+| `imageMode` | Image Router policy 决策 | `auto` |
+| `admissionEnabled` | Admission Gate 开/关 | `true` |
+| `middleBrainJudgeEnabled` | quality Judge 开/关 | `false` |
 | `characterIntegrity*` | integrity enable / sensitivity / rewrite / verify | `false` / `conservative` / `false` / `false` |
 
-`apiKey` is a credential boundary and is never projected to another host (§14).
+`apiKey` 是凭据边界，永不 projection 到另一个 host（§14）。
 
 ---
 
-## 12. Enabled State
+## 12. Enabled 状态
 
-`middleBrainRuntimeEnabled(config)` (`middle-brain-config-core.js:147`) is the **single canonical
-runtime predicate**:
+`middleBrainRuntimeEnabled(config)`（`middle-brain-config-core.js:147`）是**唯一的 canonical
+runtime predicate**：
 
 ```text
 enabled && non-empty(endpoint) && non-empty(model)
 ```
 
-`isMiddleBrainEnabled` and the settings-card status badge read this same predicate. Note that it does
-**not** include `apiKey`; Astra readiness is the separate predicate `middleBrainApiReady`
-(`enabled && endpoint && model && apiKey`).
+`isMiddleBrainEnabled` 与 settings-card status badge 读取同一个 predicate。注意它**不**包含
+`apiKey`；Astra readiness 是单独的 predicate `middleBrainApiReady`
+（`enabled && endpoint && model && apiKey`）。
 
-The historical defect "UI Enabled while runtime Disabled" is a past issue (see §25), not current
-behavior.
+历史缺陷 "UI Enabled while runtime Disabled" 是过去的问题（见 §25），不是当前行为。
 
 ---
 
-## 13. Save / Immediate Semantics
+## 13. Save / Immediate 语义
 
-The settings card is a configuration surface. Two save semantics coexist:
+settings card 是一个 configuration surface。两种 save 语义并存：
 
-- **Save-to-apply**: `enabled`, `endpoint`, `apiKey`. Saving is the only point that updates the runtime
-  mirror.
-- **Immediate persistence**: `model`, `reasoningEffort`, `speed`, `imageMode`, and the integrity fields
-  persist on pick.
+- **Save-to-apply**：`enabled`、`endpoint`、`apiKey`。保存是更新 runtime mirror 的唯一时点。
+- **Immediate persistence**：`model`、`reasoningEffort`、`speed`、`imageMode` 以及 integrity
+  字段在选取时即持久化。
 
-A pristine/runtime snapshot backs the saved/unsaved display. This section documents the configuration
-surface, not MB runtime architecture.
+一个 pristine/runtime snapshot 支撑 saved/unsaved 显示。本节记录的是 configuration
+surface，而非 MB runtime 架构。
 
 ---
 
 ## 14. Cross-Host Projection
 
-Execution configuration is projected Browser → Home Node through an explicit allow-list:
+Execution configuration 通过一个显式 allow-list 从 Browser → Home Node 进行 projection：
 
-- `MB_EXECUTION_KEYS` (`middle-brain-config-core.js:217`) — nine keys;
-- `projectExecutionConfig` (`middle-brain-config-core.js:228`) — constructive, per-field, no arbitrary
-  fallback.
+- `MB_EXECUTION_KEYS`（`middle-brain-config-core.js:217`）— 九个 keys；
+- `projectExecutionConfig`（`middle-brain-config-core.js:228`）— 构造式、逐字段、无任意
+  fallback。
 
-> **`apiKey` is not projected.** The Home Node therefore never receives the desktop MB credential.
-> Consequently `middleBrainApiReady` is false on the Home Node, the Admission Gate resolves to
-> `astra_not_ready`, and the Home Node runs the **local pipeline** via the same canonical core.
+> **`apiKey` 不被 projection。** 因此 Home Node 永远收不到 desktop MB 凭据。
+> 于是 Home Node 上 `middleBrainApiReady` 为 false，Admission Gate 解析为
+> `astra_not_ready`，Home Node 通过同一 canonical core 运行 **local pipeline**。
 
-This is an intentional host boundary, not a missing feature.
+这是有意的 host 边界，而非缺失的功能。
 
 ---
 
-## 15. Reasoning Boundary
+## 15. Reasoning 边界
 
 ```text
 UI
@@ -295,114 +289,113 @@ UI
  → provider-specific translation
 ```
 
-Canonical enum: `auto / low / medium / high / max` (`middle-brain-config-core.js:161`).
+Canonical enum：`auto / low / medium / high / max`（`middle-brain-config-core.js:161`）。
 
-- **MB owns** the canonical reasoning value.
-- **MB does not own** provider-specific reasoning translation. `middle-brain-astra.js:73-91` produces
-  only the canonical value; provider capability translation happens at the provider request builder
-  (`IBModelCore` / `provider-directory.js`).
-- `reasoning_effort` (provider snake_case) is **not** MB canonical storage; MB emits only the official
-  `service_tier` for the fast tier.
-
----
-
-## 16. Provider Boundary
-
-Two distinct provider concepts:
-
-- **MB own model channel** — MB holds its own `endpoint` / `model` / `apiKey`, used for compression,
-  judging, and integrity rewrite. Its transport normalizes via `IBModelCore`'s Astra adapter.
-- **Character provider** — the character reply provider/model is **not controlled by MB**; it belongs
-  to the caller, `IBModelCore`, and the provider directory.
-
-> Middle Brain having its own model channel does not make Middle Brain the owner of character model
-> routing.
+- **MB owns** canonical reasoning value。
+- **MB does not own** provider 专属的 reasoning translation。`middle-brain-astra.js:73-91` 只产出
+  canonical value；provider capability translation 发生在 provider request builder
+  （`IBModelCore` / `provider-directory.js`）。
+- `reasoning_effort`（provider snake_case）**不是** MB canonical storage；MB 仅为 fast tier 发出官方
+  `service_tier`。
 
 ---
 
-## 17. Memory Boundary
+## 16. Provider 边界
 
-Middle Brain **reads selected context**, **compresses** it, and **returns** the compressed context. It
-does **not** hydrate memory, own canonical memory storage, perform consolidation, write memory, or own
-the retrieval lifecycle.
+两个不同的 provider 概念：
 
-When memory context is unavailable it is recorded as missing and MB continues (empty / local / bypass).
-This resilience behavior does not make MB a memory component.
+- **MB own model channel** — MB 持有自己的 `endpoint` / `model` / `apiKey`，用于 compression、
+  judging 与 integrity rewrite。其 transport 通过 `IBModelCore` 的 Astra adapter 归一化。
+- **Character provider** — character reply 的 provider/model **不受 MB 控制**；它属于
+  caller、`IBModelCore` 以及 provider directory。
 
----
-
-## 18. Image Router Boundary
-
-`middleBrainImageMode` returns the canonical image policy decision only (`fast / auto / precision`).
-Middle Brain does not select an image provider, execute generation, manage Image Router credentials,
-or perform image requests. The Image Router is the executor.
+> Middle Brain 拥有自己的 model channel 并不意味着 Middle Brain 是 character model routing
+> 的 owner。
 
 ---
 
-## 19. UI Boundary
+## 17. Memory 边界
 
-The Middle Brain settings card is a **configuration surface**, not the Middle Brain runtime. The card
-is responsible for configuration, saved/unsaved display, collapse state, and status display. Runtime
-authority lives in the canonical MB modules.
+Middle Brain **读取选定的 context**、**压缩**它，并**返回**压缩后的 context。它
+**不** hydrate memory、不拥有 canonical memory storage、不执行 consolidation、不写 memory，也不拥有
+retrieval lifecycle。
 
-User-facing surfaces are outside the ownership of the Middle Brain runtime architecture.
+当 memory context 不可用时，它被记录为 missing，MB 继续（empty / local / bypass）。
+这种韧性行为不会使 MB 成为 memory component。
+
+---
+
+## 18. Image Router 边界
+
+`middleBrainImageMode` 仅返回 canonical image policy 决策（`fast / auto / precision`）。
+Middle Brain 不选择 image provider、不执行 generation、不管理 Image Router 凭据，
+也不发起 image requests。Image Router 是 executor。
+
+---
+
+## 19. UI 边界
+
+Middle Brain settings card 是一个 **configuration surface**，而不是 Middle Brain runtime。该 card
+负责 configuration、saved/unsaved 显示、collapse 状态与 status 显示。Runtime
+authority 位于 canonical MB modules 中。
+
+面向用户的 surfaces 不在 Middle Brain runtime 架构的 ownership 之内。
 
 ---
 
 ## 20. Diagnostics / Observability
 
-- **Home Node diagnostics** (`services/home-node/middle-brain.js`): availability, load status, installed
-  shims, layer contract keys, facade key count, snapshot-contract presence, config-reader state. It
-  contains no configuration content and no credentials.
-- **Judge telemetry**: read-only quality counts and latency.
-- **Integrity telemetry**: verdict counts, judge/rewrite/verify counters, suppression counters.
-- **Dev trace**: `IB.__mbTrace` is a **dev-only** in-memory ring. It records state, flags, counters, and
-  selected metadata (verdict/reason, group scope ids, suppression categories). It does **not** record
-  reply body or memory content.
+- **Home Node diagnostics**（`services/home-node/middle-brain.js`）：availability、load status、已安装的
+  shims、layer contract keys、facade key count、snapshot-contract 是否存在、config-reader 状态。它
+  不包含任何 configuration 内容，也不包含凭据。
+- **Judge telemetry**：只读的 quality 计数与 latency。
+- **Integrity telemetry**：verdict 计数、judge/rewrite/verify 计数器、suppression 计数器。
+- **Dev trace**：`IB.__mbTrace` 是一个 **dev-only** 的内存 ring。它记录 state、flags、counters，以及
+  选定的 metadata（verdict/reason、group scope ids、suppression categories）。它**不**记录
+  reply body 或 memory 内容。
 
 ---
 
-## 21. Consumer Matrix
+## 21. Consumer 矩阵
 
-| Consumer | MB relationship | Notes |
+| Consumer | MB 关系 | Notes |
 | --- | --- | --- |
-| Single chat | full `execute` / `finalize` + side-effect gates + reasoning | canonical |
-| Group chat | `execute` / `finalize` + group memory policy | intentional scope difference |
+| Single chat | 完整 `execute` / `finalize` + side-effect gates + reasoning | canonical |
+| Group chat | `execute` / `finalize` + group memory policy | 有意的 scope 差异 |
 | Role DM | `execute` / `finalize` | canonical |
-| Home Node (mobile backend) | same canonical core, local path | no MB credentials |
-| Image Router | decision-only (`imageMode`) | executor is the Router |
-| Active Companion | currently not integrated (no direct MB call) | current fact |
-| Diary | currently not integrated (no direct MB call) | current fact |
-| Moments | currently not integrated (no direct MB call) | current fact |
-| Voice | integrity bypass | intentional |
+| Home Node (mobile backend) | 同一 canonical core，local path | 无 MB 凭据 |
+| Image Router | 仅决策（`imageMode`） | executor 是 Router |
+| Active Companion | 当前未集成（无直接 MB 调用） | 当前事实 |
+| Diary | 当前未集成（无直接 MB 调用） | 当前事实 |
+| Moments | 当前未集成（无直接 MB 调用） | 当前事实 |
+| Voice | integrity bypass | 有意为之 |
 
-"Currently not integrated" describes the present implementation. It does not define a permanent
-product prohibition.
+"当前未集成" 描述的是当前实现。它并不定义永久的产品禁令。
 
 ---
 
 ## 22. Non-goals
 
-Middle Brain does not currently own:
+Middle Brain 当前不拥有：
 
-- character provider selection;
-- character model execution;
-- role system-prompt authority;
-- memory persistence or consolidation;
-- tool execution;
-- image execution;
-- provider prompt cache, stable-prefix construction, cache baselines, or cache audit telemetry;
-- global side-effect execution.
+- character provider 选择；
+- character model execution；
+- role system-prompt authority；
+- memory persistence 或 consolidation；
+- tool execution；
+- image execution；
+- provider prompt cache、stable-prefix 构造、cache baselines，或 cache audit telemetry；
+- 全局 side-effect execution。
 
-The current non-integration of Active Companion / Diary / Moments does not by itself define a
-permanent prohibition. User-facing surfaces are outside this architecture's ownership.
+Active Companion / Diary / Moments 当前的非集成状态本身并不定义永久禁令。面向用户的
+surfaces 不在本架构的 ownership 之内。
 
 ---
 
 ## 23. Enforcement
 
-Runtime behavior is enforced by targeted tests; this document is the human canonical architecture
-authority. No new Markdown parser is added.
+Runtime 行为由针对性的 tests 强制；本文档是人类 canonical architecture
+authority。不新增 Markdown parser。
 
 | Concern | Key tests |
 | --- | --- |
@@ -418,8 +411,7 @@ authority. No new Markdown parser is added.
 
 ## 24. Historical References
 
-Historical documents describe implementation evolution. `MIDDLE_BRAIN.md` describes current
-architecture; historical files no longer carry current authority.
+历史文档描述实现演进。`MIDDLE_BRAIN.md` 描述当前架构；历史文件不再承载当前 authority。
 
 - `docs/history/runtime/P11-3-MIDDLE-BRAIN-SEMANTICS-CLOSURE.md`
 - `docs/history/runtime/CONTEXT-CONVERGENCE-C1-REPORT.md`

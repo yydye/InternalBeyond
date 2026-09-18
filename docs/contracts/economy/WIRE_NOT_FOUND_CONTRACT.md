@@ -1,52 +1,52 @@
 # Economy Not-Found Wire Contract
 
-> Current-state contract for how Economy read surfaces report a **missing resource**, and how the production client classifies that answer.
-> This is a **narrow** contract. It does not describe the whole Economy surface; route membership lives in
-> `docs/contracts/economy/ECONOMY_PUBLIC_SURFACE.md`, and the frozen closed sets live in
-> `docs/contracts/economy/ECONOMY_V1_FROZEN_CONTRACT.md`.
+> 关于 Economy read surfaces 如何报告**缺失资源**，以及 production client 如何对该答案进行分类的当前状态 Contract。
+> 这是一个**narrow** Contract。它不描述整个 Economy surface；route membership 位于
+> `docs/contracts/economy/ECONOMY_PUBLIC_SURFACE.md`，而 frozen closed sets 位于
+> `docs/contracts/economy/ECONOMY_V1_FROZEN_CONTRACT.md`。
 
 ---
 
-## 1. Scope
+## 1. 范围
 
-This contract fixes exactly three things:
+本 Contract 精确固定三件事：
 
-1. the **HTTP status** an Economy read surface returns when the requested resource does not exist;
-2. the **client-facing error token** in the response body for that condition;
-3. the **client-side classification** of that token (`absent` vs `unknown`).
+1. 当请求的资源不存在时，Economy read surface 返回的 **HTTP status**；
+2. 该情况下 response body 中的 **client-facing error token**；
+3. 该 token 的 **client-side classification**（`absent` vs `unknown`）。
 
-It is the separation between two vocabularies:
+它是两套词表之间的分离：
 
-- the canonical **decision** vocabulary (`DENY_REASON`, `SCREAMING_SNAKE_CASE`) — internal, authoritative, never sent as a client resource token;
-- the **client resource-absence** vocabulary (kebab-case resource tokens) — the only thing a not-found read surface emits as `body.error`.
+- canonical **decision** 词表（`DENY_REASON`，`SCREAMING_SNAKE_CASE`）—— internal、authoritative，绝不作为 client resource token 发送；
+- **client resource-absence** 词表（kebab-case resource tokens）—— not-found read surface 作为 `body.error` 发出的唯一内容。
 
 ---
 
 ## 2. Authority
 
-| Layer | Source of truth |
+| 层 | Source of truth |
 | --- | --- |
-| Production implementation | `services/home-node/http.js` — the single `bad(res, status, error, …)` envelope helper (sends `{ ok:false, error, … }`) |
+| Production implementation | `services/home-node/http.js` — 唯一的 `bad(res, status, error, …)` envelope helper（发送 `{ ok:false, error, … }`） |
 | Decision vocabulary | `services/home-node/economy-contract.js` — `DENY_REASON` (canonical, `SCREAMING_SNAKE`) |
 | Client classification | `assets/js/economy-configuration-core.js` |
 | Enforcing tests | `tests/test_p22_24_not_found_wire_contract.js`, `tests/test_p22_24_fresh_owner_autonomy_ui.js` |
 
-Relationship to the other Economy contracts:
+与其他 Economy contracts 的关系：
 
-- `ECONOMY_V1_FROZEN_CONTRACT.md` remains the authority for the **route / capability / schema closed sets**. This contract does not add, remove, or rename any of them.
-- `ECONOMY_PUBLIC_SURFACE.md` remains the authority for the **route list**. This contract only fixes the not-found **wire shape** of the single-resource read routes listed there.
+- `ECONOMY_V1_FROZEN_CONTRACT.md` 仍是 **route / capability / schema 闭集**的 authority。本 Contract 不添加、删除或重命名其中任何一个。
+- `ECONOMY_PUBLIC_SURFACE.md` 仍是 **route list** 的 authority。本 Contract 只固定其中所列 single-resource read routes 的 not-found **wire shape**。
 
 ---
 
 ## 3. Server Wire Semantics
 
-When a single-resource Economy `GET` read resolves to **no row**, the response is:
+当 single-resource Economy `GET` read 解析为**没有 row**时，response 为：
 
 ```json
 { "ok": false, "error": "<kebab-case resource token>" }
 ```
 
-with HTTP status **404**. The token is the store's client-facing `errors[0]` (never the canonical `reasonCode`).
+HTTP status 为 **404**。该 token 是 store 的 client-facing `errors[0]`（绝不是 canonical `reasonCode`）。
 
 | Surface | Condition | HTTP | Wire token (`body.error`) | Evidence |
 | --- | --- | ---: | --- | --- |
@@ -63,17 +63,17 @@ with HTTP status **404**. The token is the store's client-facing `errors[0]` (ne
 | `GET /economy/intent` | no purchase intent with that id | 404 | `intent-not-found` | `http.js` |
 | `GET /economy/autonomy-policy` | owner has no autonomy policy | 404 | `autonomy-policy-not-found` | `http.js` (status chosen by `reasonCode === 'POLICY_NOT_FOUND' ? 404 : 400`) |
 
-**Boundary (not the same condition, not these tokens):**
+**边界（不是同一种 condition，也不是这些 tokens）：**
 
-- an **unmatched** `/economy/*` path is `404 unknown-economy-path` on `GET` and `405 economy-is-read-only` otherwise;
-- a **non-resource read failure** (list / aggregate / ledger / change-scope) is `400` with its own read-failure token;
-- a **write-surface** response (`/internal/economy/*`) carries its own envelope and may carry `reasonCode` as `reasonCode` — that is a different contract.
+- **未匹配**的 `/economy/*` path 在 `GET` 上是 `404 unknown-economy-path`，否则是 `405 economy-is-read-only`；
+- **非资源 read failure**（list / aggregate / ledger / change-scope）是 `400`，并带有自己的 read-failure token；
+- **write-surface** response（`/internal/economy/*`）携带自己的 envelope，并可能以 `reasonCode` 形式携带 `reasonCode` —— 那是另一个 Contract。
 
 ---
 
 ## 4. Client Interpretation
 
-The production configuration UI core classifies a read answer from its `code` (the response `error`):
+production configuration UI core 根据 read answer 的 `code`（即 response `error`）对其进行分类：
 
 | View | Token | Client state | Carries text/detail? |
 | --- | --- | --- | --- |
@@ -82,7 +82,7 @@ The production configuration UI core classifies a read answer from its `code` (t
 | `buildAutonomyView` | `autonomy-policy-not-found` | `absent` | no |
 | (any view) | any other code / no response | `unknown` | yes (`text`, and `detail` when the code is unknown) |
 
-`absent` means "the system does not have this resource yet" (a normal, expected state that unlocks first-time configuration). `unknown` means "the answer could not be interpreted or did not arrive" (a real failure that shows retry wording). The two must not be collapsed.
+`absent` 意味着 "系统还没有这个资源"（一种正常、预期的 state，会解锁首次 configuration）。`unknown` 意味着 "答案无法被解释或没有到达"（一种真实 failure，会显示 retry wording）。两者绝不能合并。
 
 ---
 
@@ -90,40 +90,40 @@ The production configuration UI core classifies a read answer from its `code` (t
 
 | # | Invariant | Evidence |
 | --- | --- | --- |
-| I1 | The two vocabularies are **disjoint**: canonical decision reasons are `SCREAMING_SNAKE` (`DENY_REASON`, ≥ 50 members, all matching `^[A-Z][A-Z0-9_]*$`); client resource tokens are kebab-case. Intersection = 0. | `economy-contract.js`; guard checks ①/② |
-| I2 | On every "absence ⇒ 404" line, `body.error` is the **client token** (`errors[0]` or a literal), **never** a `reasonCode`. A `reasonCode` may only appear as a status selector (`reasonCode === 'X' ? 404 : 400`). | `http.js`; guard check ⑧ |
-| I3 | `NOT_FOUND ≠ EMPTY`: a missing single resource is `404` + resource token; an empty collection is `200` + an empty list. | `GET /economy/stores` / `/economy/products` on a fresh world return empty; single-resource reads above return 404 |
-| I4 | `NOT_FOUND ≠ TRANSPORT_FAILURE`: an absence token yields client `state=absent`; a transport failure / no response yields `state=unknown`. | `economy-configuration-core.js`; guard checks ④/⑥ |
-| I5 | Absence is a **system state, not an error**: the `absent` result carries no `text`/`detail` and no retry. | `economy-configuration-core.js`; guard check ⑤ |
-| I6 | The canonical decision vocabulary is unchanged: `POLICY_NOT_FOUND` and `APPROVAL_NOT_FOUND` remain `DENY_REASON` members; absence of an autonomy policy does **not** mean autonomy is enabled (evaluator default `REQUIRE_APPROVAL` is unchanged). | `economy-contract.js`; guard checks ②/⑨ |
+| I1 | 两套词表是**不相交的**：canonical decision reasons 是 `SCREAMING_SNAKE`（`DENY_REASON`，≥ 50 个成员，全部匹配 `^[A-Z][A-Z0-9_]*$`）；client resource tokens 是 kebab-case。交集 = 0。 | `economy-contract.js`; guard checks ①/② |
+| I2 | 在每一条 "absence ⇒ 404" 行上，`body.error` 都是 **client token**（`errors[0]` 或 literal），**绝不是** `reasonCode`。`reasonCode` 只可以作为 status selector 出现（`reasonCode === 'X' ? 404 : 400`）。 | `http.js`; guard check ⑧ |
+| I3 | `NOT_FOUND ≠ EMPTY`：缺失的单个 resource 是 `404` + resource token；空 collection 是 `200` + 空 list。 | `GET /economy/stores` / `/economy/products` on a fresh world 返回空；上述 single-resource reads 返回 404 |
+| I4 | `NOT_FOUND ≠ TRANSPORT_FAILURE`：absence token 产生 client `state=absent`；transport failure / 无 response 产生 `state=unknown`。 | `economy-configuration-core.js`; guard checks ④/⑥ |
+| I5 | absence 是一种 **system state，而不是 error**：`absent` 结果不携带 `text`/`detail`，也不重试。 | `economy-configuration-core.js`; guard check ⑤ |
+| I6 | canonical decision 词表未改变：`POLICY_NOT_FOUND` 与 `APPROVAL_NOT_FOUND` 仍是 `DENY_REASON` 成员；autonomy policy 的缺席**并不**意味着 autonomy 已启用（evaluator default `REQUIRE_APPROVAL` 未改变）。 | `economy-contract.js`; guard checks ②/⑨ |
 
 ---
 
 ## 6. Non-goals
 
-This contract deliberately does **not** freeze:
+本 Contract 刻意**不**冻结：
 
-- UI wording, copy, or layout;
-- implementation function names or internal helpers;
-- internal storage, tables, or schema;
-- write-surface envelopes or their `reasonCode` usage;
-- Economy errors unrelated to a missing resource;
-- the route list itself (owned by `ECONOMY_PUBLIC_SURFACE.md`);
-- phase history (see §8).
+- UI wording、copy 或 layout；
+- implementation function 名称或 internal helpers；
+- 内部 storage、tables 或 schema；
+- write-surface envelopes 或其 `reasonCode` 用法；
+- 与缺失资源无关的 Economy errors；
+- route list 本身（归 `ECONOMY_PUBLIC_SURFACE.md` 所有）；
+- phase history（见 §8）。
 
 ---
 
 ## 7. Enforcement
 
-| Test | What it pins |
+| 测试 | 固定内容 |
 | --- | --- |
-| `tests/test_p22_24_not_found_wire_contract.js` | live 404 + kebab token on the enumerated absence surfaces; token ∉ `DENY_REASON`; production UI core → `absent`; source-level "no `reasonCode` as error token" invariant |
-| `tests/test_p22_24_fresh_owner_autonomy_ui.js` | real browser: a fresh owner sees the absence state (config form), not an unknown/retry state; and a real transport failure still shows retry |
+| `tests/test_p22_24_not_found_wire_contract.js` | 枚举的 absence surfaces 上 live 404 + kebab token；token ∉ `DENY_REASON`；production UI core → `absent`；source-level "no `reasonCode` as error token" invariant |
+| `tests/test_p22_24_fresh_owner_autonomy_ui.js` | 真实 browser：fresh owner 看到 absence state（config form），而不是 unknown/retry state；且真实 transport failure 仍显示 retry |
 
-These are behavioral tests against the production implementation. This Markdown file is **human authority backed by runtime tests** — it is not itself a machine-parsed manifest.
+这些是针对 production implementation 的 behavioral tests。本 Markdown 文件是 **human authority backed by runtime tests** —— 它本身不是 machine-parsed manifest。
 
 ---
 
-## 8. Historical Origin
+## 8. 历史引用
 
-Historical origin: `docs/history/economy/P22/P22-24-NOT-FOUND-WIRE-CONTRACT.md`
+历史来源：`docs/history/economy/P22/P22-24-NOT-FOUND-WIRE-CONTRACT.md`

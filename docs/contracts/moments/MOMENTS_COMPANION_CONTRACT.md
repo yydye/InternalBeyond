@@ -1,14 +1,14 @@
 # Moments Companion Contract
 
 **Status: Canonical**
-**Scope: Companion ↔ Moments boundary**
+**Scope: Companion ↔ Moments 边界**
 
-> Current-state contract. Source: `active/moments.js` (Companion background Moments domain), returned
-> events, and `tests/test_moments_companion.js`.
+> 当前状态 contract。来源：`active/moments.js`（Companion background Moments domain）、返回的
+> events 与 `tests/test_moments_companion.js`。
 
 ---
 
-## 1. Core Rule
+## 1. 核心规则
 
 ```
 Companion executes Moments work   ≠   Companion owns Moments authority
@@ -18,64 +18,64 @@ Companion executes Moments work   ≠   Companion owns Moments authority
 
 ## 2. Companion YES
 
-`active/moments.js` owns:
+`active/moments.js` 拥有：
 
-- **background trigger** — a per-role recurrence schedule (`nextAt` / `lastPostAt` / `frequency` /
-  `enabled` / `status`), mirroring the browser tick semantics without redefining frequency;
-- **generation request** — calls the character model via `active/model-client` (`callCharacterModel`,
-  `jsonMode`), with `proactiveTextSimilarity` dedup;
-- **`wantImage` recommendation** — the model may recommend an image (`wantImage` / `imagePrompt`); this
-  is a suggestion only;
-- **event emission** — results are returned as `events` (`kind='moment'`) for browser reconcile
-  (`moment_ids`), consistent with the active `/events` + `/ack` flow.
+- **background trigger** — per-role recurrence schedule（`nextAt` / `lastPostAt` / `frequency` /
+  `enabled` / `status`），镜像 browser tick semantics，而不重新定义 frequency；
+- **generation request** — 通过 `active/model-client`（`callCharacterModel`,
+  `jsonMode`）调用 character model，并使用 `proactiveTextSimilarity` dedup；
+- **`wantImage` recommendation** — model 可以推荐图像（`wantImage` / `imagePrompt`）；这
+  仅是建议；
+- **event emission** — 结果作为 `events`（`kind='moment'`）返回，供 browser reconcile
+  （`moment_ids`），与 active `/events` + `/ack` 流程一致。
 
 ---
 
 ## 3. Companion NO
 
-Companion does **not** own:
+Companion **不**拥有：
 
-- persistence (the browser ingest persists through the Moments authority);
-- ACL / visibility (Moments visibility core);
-- image execution (no image interface calls; the browser Image Provider does it);
-- storage or retrieval authority;
-- the canonical record identity (`revision` / `revision` watermark from the service snapshot is used for
-  reconcile, not authored by Companion).
+- persistence（browser ingest 通过 Moments authority 持久化）；
+- ACL / visibility（Moments visibility core）；
+- image execution（不调用 image interface；由 browser Image Provider 完成）；
+- storage 或 retrieval authority；
+- canonical record identity（`revision` / `revision` watermark 来自 service snapshot，用于
+  reconcile，而非由 Companion 编写）。
 
 ---
 
-## 4. Failure Posture
+## 4. Failure 姿态
 
-Companion Moments work is fail-open: any failure is recorded and rescheduled with backoff; it never
-affects proactive messaging or task scheduling. Companion records only background failure / rejection /
-deferral / placement facts as events — successful text is persisted by the browser ingest, so there is
-no double-write.
+Companion 的 Moments 工作是 fail-open：任何失败都会被记录并以 backoff 重新调度；它绝不
+影响 proactive messaging 或 task scheduling。Companion 仅将 background failure / rejection /
+deferral / placement 事实记录为 events——成功的文本由 browser ingest 持久化，因此
+不存在 double-write。
 
 ---
 
 ## 5. Visibility
 
-Companion requires the shared visibility core (`../assets/js/moments-visibility-core.js`) rather than a
-mirror copy, so the two ends cannot drift.
+Companion 要求使用共享的 visibility core（`../assets/js/moments-visibility-core.js`），而非
+mirror copy，因此两端不会漂移。
 
 ---
 
 ## 6. Non-goals
 
-This contract does not define Moments persistence, ACL, or sync. It does not grant Companion any
-Moments authority.
+本 contract 不定义 Moments persistence、ACL 或 sync。它不授予 Companion 任何
+Moments authority。
 
 ---
 
 ## 7. Enforcement
 
-| Test | Pins |
+| 测试 | 约束内容 |
 | --- | --- |
 | `tests/test_moments_companion.js` | Companion ↔ Moments boundary |
-| `tests/test_runtime_convergence_moments.js` | browser↔companion convergence (no double-write) |
+| `tests/test_runtime_convergence_moments.js` | browser↔companion convergence（no double-write） |
 
 ---
 
-## 8. Historical Origin
+## 8. 历史起源
 
-`active/moments.js`; boundary context in `docs/architecture/COMPANION.md`.
+`active/moments.js`；边界上下文见 `docs/architecture/COMPANION.md`。

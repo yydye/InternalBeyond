@@ -1,33 +1,33 @@
 # Moments Sync Contract
 
 **Status: Canonical**
-**Scope: Browser ↔ Home Node Moments synchronization and hydration**
+**Scope: Browser ↔ Home Node Moments synchronization 与 hydration**
 
-> Current-state contract. Source: `assets/js/moments-authority.js`, `assets/js/home-node-client.js`
-> (`createMomentsRemote`), `assets/js/home-node-bootstrap.js`, `tests/test_moments_authority.js` /
-> `test_p11_3f_moments_hydration_safety.js`.
+> 当前状态 contract。来源：`assets/js/moments-authority.js`、`assets/js/home-node-client.js`
+>（`createMomentsRemote`）、`assets/js/home-node-bootstrap.js`、`tests/test_moments_authority.js` /
+> `test_p11_3f_moments_hydration_safety.js`。
 
 ---
 
-## 1. Direction Summary
+## 1. 方向摘要
 
-| Direction | Trigger | Data | Strategy |
+| 方向 | 触发 | 数据 | 策略 |
 | --- | --- | --- | --- |
-| Browser → Home Node | create / update / delete | record payload | Home Node authoritative; CAS + idempotency |
-| Home Node → Browser | hydrate / changes | records, tombstones | mirror replaced/patched from canonical |
-| Companion → Home Node | none | — | Companion does not persist (see `MOMENTS_COMPANION_CONTRACT.md`) |
+| Browser → Home Node | create / update / delete | record payload | Home Node authoritative；CAS + idempotency |
+| Home Node → Browser | hydrate / changes | records、tombstones | mirror 由 canonical replace/patch |
+| Companion → Home Node | none | — | Companion 不持久化（见 `MOMENTS_COMPANION_CONTRACT.md`） |
 
-`moments_revision` is an isolated namespace (a Moment write does not invalidate chat/memory cursors).
+`moments_revision` 是 isolated namespace（一次 Moment 写入不会使 chat/memory cursors 失效）。
 
 ---
 
 ## 2. Browser → Node
 
-- Endpoints: `POST /moments/record` (single), `POST /moments/records` (batch), `DELETE /moments/record`.
-- `requestId` provides **idempotency** (replay → `replayed`, no duplicate write).
-- `expectedRev` provides **CAS** on update; a mismatch is rejected (no silent overwrite of a concurrent
-  edit).
-- Writes go to the Home Node **first**; the browser mirror is updated on success.
+- Endpoints：`POST /moments/record`（单条）、`POST /moments/records`（批量）、`DELETE /moments/record`。
+- `requestId` 提供 **idempotency**（replay → `replayed`，无重复写入）。
+- `expectedRev` 在 update 时提供 **CAS**；不匹配会被拒绝（不会静默覆盖并发
+  编辑）。
+- 写入**先**发往 Home Node；成功后更新 browser mirror。
 
 ---
 
@@ -41,8 +41,8 @@ ensureReady()
         → apply upserts / tombstones ; cursor advances
 ```
 
-Additional read/ack endpoints: `GET /moments/visible` (visibility-scoped), `POST /moments/ack`,
-`GET /moments/migration`.
+额外的 read/ack endpoints：`GET /moments/visible`（visibility-scoped）、`POST /moments/ack`、
+`GET /moments/migration`。
 
 ---
 
@@ -52,35 +52,35 @@ Additional read/ack endpoints: `GET /moments/visible` (visibility-scoped), `POST
 ONE CANONICAL REMOTE STATE — ONE LOCAL MIRROR
 ```
 
-- Hydration performs an **authoritative replace** (`replaceAll`), not a merge.
-- The authority **rejects**:
-  - incomplete snapshots → `incomplete-snapshot`;
-  - invalid responses → `invalid-response`.
-- A `hydrateGen` watermark ensures a stale hydrate cannot overwrite a newer one.
-- A refused hydrate leaves the prior mirror state intact.
+- Hydration 执行 **authoritative replace**（`replaceAll`），而非 merge。
+- authority **拒绝**：
+  - 不完整的 snapshots → `incomplete-snapshot`；
+  - 无效的 responses → `invalid-response`。
+- `hydrateGen` watermark 确保过期的 hydrate 无法覆盖更新的 hydrate。
+- 被拒绝的 hydrate 会保持先前的 mirror 状态不变。
 
-> Moments hydration behavior differs from the Memory historical hazard documented in `MEMORY.md`:
-> Moments refuses a bad page instead of clearing the mirror with it.
+> Moments 的 hydration 行为不同于 `MEMORY.md` 中记录的 Memory 历史隐患：
+> Moments 拒绝错误的 page，而不是用它清空 mirror。
 
 ---
 
-## 5. Failure Semantics
+## 5. Failure 语义
 
-Local/mirror failures are surfaced with classified errors (`mirror-quota`, `mirror-unavailable`,
-`mirror-not-written`, `event-rejected`) rather than reported as success. Remote failure degrades the
-authority (`degradedReason`) instead of silently switching authority.
+Local/mirror 失败会以分类错误呈现（`mirror-quota`, `mirror-unavailable`,
+`mirror-not-written`, `event-rejected`），而不是上报为 success。Remote 失败会使
+authority 降级（`degradedReason`），而不是静默切换 authority。
 
 ---
 
 ## 6. Non-goals
 
-This contract does not define ACL, record fields, or Companion behavior.
+本 contract 不定义 ACL、record 字段或 Companion 行为。
 
 ---
 
 ## 7. Enforcement
 
-| Test | Pins |
+| 测试 | 约束内容 |
 | --- | --- |
 | `tests/test_p11_3f_moments_hydration_safety.js` | hydrate refusal + gen protection |
 | `tests/test_moments_authority.js` | sync / changes / cursor |
@@ -88,6 +88,6 @@ This contract does not define ACL, record fields, or Companion behavior.
 
 ---
 
-## 8. Historical Origin
+## 8. 历史起源
 
 `assets/js/moments-authority.js` (canonical hydration contract P11-3F).

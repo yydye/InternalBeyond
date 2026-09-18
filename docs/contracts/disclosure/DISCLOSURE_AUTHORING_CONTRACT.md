@@ -1,25 +1,25 @@
 # Disclosure Authoring Contract
 
 **Status: Canonical**
-**Scope: How a formal disclosure fact is authored (what a fact is), not whether it is disclosed**
+**Scope: 正式 disclosure fact 是如何被 author 的（fact 是什么），而非它是否被 disclosed**
 
-> Current-state contract derived from `assets/js/disclosure-authoring-core.js`,
-> `assets/js/social.js`, and `tests/test_disclosure_authoring.js`.
+> 当前状态 Contract，派生自 `assets/js/disclosure-authoring-core.js`、
+> `assets/js/social.js`，以及 `tests/test_disclosure_authoring.js`。
 
 ---
 
-## 1. Core Rule
+## 1. 核心规则
 
 ```
 Fact authored  ≠  Fact disclosed
 ```
 
-Authoring determines **what formal fact exists**; authorization determines **whether a recipient may
-receive it** (separate contract).
+Authoring 决定**存在哪些正式 fact**；authorization 决定**某个 recipient 是否可以接收它**（独立的
+contract）。
 
 ---
 
-## 2. Path
+## 2. 路径
 
 ```
 Authoring surface (social.js)
@@ -36,50 +36,50 @@ Disclosure store
 
 ## 3. Writer Context
 
-The authoring core takes **owner / source / authority from writer context**, never from untrusted
-client input:
+authoring core 从 **writer context 获取 owner / source / authority**，绝不来自不受信任的
+client input：
 
-- `ownerCharacterId` is derived from `writerContext` only (a user editing character A cannot author a
-  fact owned by B);
-- `source` is the writer's provenance (`character_authoring` for this path);
-- `authority` is the writer's write authority (`human_authoring` for explicit authoring);
-- explicit authoring is limited to **gated levels** (`PERSONAL` / `PRIVATE` / `SECRET`); `PUBLIC` is not
-  creatable by an explicit writer.
+- `ownerCharacterId` 仅从 `writerContext` 派生（编辑 character A 的 user 不能 author 属于 B 的
+  fact）；
+- `source` 是 writer 的 provenance（此路径为 `character_authoring`）；
+- `authority` 是 writer 的 write authority（显式 authoring 为 `human_authoring`）；
+- 显式 authoring 仅限于 **gated levels**（`PERSONAL` / `PRIVATE` / `SECRET`）；`PUBLIC` 不能
+  由显式 writer 创建。
 
-`writerContext` represents "the UI is editing character X"; it is not itself a claim of authority.
+`writerContext` 表示 "UI 正在编辑 character X"；它本身不是 authority 的主张。
 
 ---
 
 ## 4. Validation
 
-Authoring rejects: missing core (`authoring-core-unavailable`), bad writer context
-(`bad-writer-context`), no writer owner (`no-writer-owner`), invalid level (`bad-authoring-level`), and
-`PUBLIC` creation by an explicit writer (`public-not-creatable-by-explicit-writer`).
+Authoring 拒绝：缺少 core（`authoring-core-unavailable`）、错误的 writer context
+（`bad-writer-context`）、没有 writer owner（`no-writer-owner`）、无效 level（`bad-authoring-level`），以及
+显式 writer 创建 `PUBLIC`（`public-not-creatable-by-explicit-writer`）。
 
 ---
 
 ## 5. Production Authoring Surface
 
-The production authoring surface found is `assets/js/social.js` (`_dscStore`), which invokes the
-disclosure store/core/authoring modules. It is an **authoring/control surface**, not the Disclosure
-authority.
+发现的生产环境 authoring surface 是 `assets/js/social.js`（`_dscStore`），它调用
+disclosure store/core/authoring 模块。它是一个 **authoring/control surface**，不是 Disclosure
+authority。
 
 ---
 
 ## 6. Non-goals
 
-This contract does not define authorization, storage schema, or the fact model (see sibling contracts).
+本 Contract 不定义 authorization、storage schema 或 fact model（见同级 contracts）。
 
 ---
 
 ## 7. Enforcement
 
-| Test | Pins |
+| Test | 固定内容 |
 | --- | --- |
-| `tests/test_disclosure_authoring.js` | writer context, validation, boundary (no disclosure in memory.js etc.) |
+| `tests/test_disclosure_authoring.js` | writer context、validation、boundary（memory.js 等中无 disclosure） |
 
 ---
 
-## 8. Historical Origin
+## 8. 历史来源
 
-`assets/js/disclosure-authoring-core.js` (Phase 4B-1.2); `DECISIONS.md` D30.
+`assets/js/disclosure-authoring-core.js`（Phase 4B-1.2）；`DECISIONS.md` D30。
