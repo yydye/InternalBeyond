@@ -50,7 +50,7 @@ function check(name, cond, extra) {
 }
 function section(t) { console.log('\n── ' + t + ' ' + '─'.repeat(Math.max(0, 62 - t.length))); }
 
-const SURFACE_DOC = 'docs/ECONOMY_PUBLIC_SURFACE.md';
+const SURFACE_DOC = 'docs/contracts/economy/ECONOMY_PUBLIC_SURFACE.md';
 const C = require(path.join(ROOT, 'services', 'home-node', 'economy-contract.js'));
 
 /* ══════════════════════════════════════════════════════════════════════

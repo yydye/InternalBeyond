@@ -4,7 +4,7 @@
    ★ 这一条测试**不是**把 P22-1～P22-20 的测试复制一遍。
      它只做一件事：**跨阶段漂移守卫**。
 
-   它解析 `docs/ECONOMY_V1_FROZEN_CONTRACT.md` 的每一张表，再与**真实生产
+   它解析 `docs/contracts/economy/ECONOMY_V1_FROZEN_CONTRACT.md` 的每一张表，再与**真实生产
    代码**逐格比对：
 
      SCHEMA_VERSION       ← services/home-node/economy-store.js
@@ -65,7 +65,7 @@ function check(name, cond, extra) {
 }
 function section(t) { console.log('\n── ' + t + ' ' + '─'.repeat(Math.max(0, 62 - t.length))); }
 
-const MANIFEST = 'docs/ECONOMY_V1_FROZEN_CONTRACT.md';
+const MANIFEST = 'docs/contracts/economy/ECONOMY_V1_FROZEN_CONTRACT.md';
 const STORE_REL = 'services/home-node/economy-store.js';
 const HTTP_REL = 'services/home-node/http.js';
 const CONTRACT_REL = 'services/home-node/economy-contract.js';

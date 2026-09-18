@@ -61,8 +61,8 @@ const STORE_MODULE = require(path.join(ROOT, 'services/home-node/economy-store.j
 
 const STORE_REL = 'services/home-node/economy-store.js';
 const HTTP_REL = 'services/home-node/http.js';
-const MANIFEST_REL = 'docs/ECONOMY_V1_FROZEN_CONTRACT.md';
-const SURFACE_REL = 'docs/ECONOMY_PUBLIC_SURFACE.md';
+const MANIFEST_REL = 'docs/contracts/economy/ECONOMY_V1_FROZEN_CONTRACT.md';
+const SURFACE_REL = 'docs/contracts/economy/ECONOMY_PUBLIC_SURFACE.md';
 const PROD_FILES = fs.readdirSync(path.join(ROOT, 'services', 'home-node'))
   .filter(f => /^economy-.*\.js$/.test(f)).sort().map(f => 'services/home-node/' + f);
 
