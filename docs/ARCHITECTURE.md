@@ -379,6 +379,8 @@ attempts 计数、也没有终态、也没有回收。它属于 companion/active
 
 ### Image Router（统一图片策略层 · P12）
 
+> Image Router 的专项架构见 [architecture/IMAGE_ROUTER.md](architecture/IMAGE_ROUTER.md)（route decision ≠ provider/credential authority ≠ image execution ≠ storage）。
+
 **唯一图片请求入口**，位于所有 producer 与现有 executor 之间。它只做「策略 + 资源控制」，
 **不复制 provider executor、不新建第二份 provider metadata、不新建第二套 Middle Brain**。
 
@@ -867,6 +869,8 @@ Moment 字段：`id/roleId/authorType('user'|'role')/authorId/content/images[]/v
 
 ## 7. AI Diary 系统（角色生命日志）
 
+> Diary 的专项架构见 [architecture/DIARY.md](architecture/DIARY.md)（浏览器侧独立子系统；Memory producer 而非 Memory authority；Companion 不运行 diary）。
+
 - 存储：IndexedDB `diary_entries`（`id/characterId/date/title/content/mood/diaryType(daily|weekly|event|emotion)/importance(0-10)/relatedMemoryIds/trigger/reason/createdAt`），导出/导入/重置已贯通。
 - 调度（仅浏览器前端，companion 未扩展）：`_diaryTick` 挂 30s `_activeTick`——每周周记（默认周日 22:00，周水位线防重复）；每日 AI 规划（每角色每天一次 planner，`shouldWrite` + `importance>=6` 才生成，日水位线占位防重复）；特殊事件（首次聊天、久别重逢间隔 >3 天 → 事件日记，hook 在 `sendChatMessage` 单聊，fire-and-forget）。
 - 生成管线 `generateDiaryEntry`：`_diaryContext`（复用主动消息上下文加载）→ `buildDiaryPrompt`（第一人称私人日记，JSON 输出）→ `_diaryParseOutput`（JSON 优先，失败按文本格式「标题：/正文：/心情：」兜底）→ 相似度 ≥0.75 自动重生成一次 → 落库 → `_diaryWriteMemory`（importance≥6 且与现有记忆相似度 <0.8 才写 `memories`，`source:'diary'`）。
@@ -984,6 +988,9 @@ letters / understanding / Middle Brain **没有任何一处**引用它。
 备份：`_ibBuildExportData` 已含 `activities`/`favorites`，顶层 `version` 升为 **9**；`importAll` 按字段存在性守卫回灌。`site-operations.js` reset 清单与 `local-vault.js` 标签已同步。**保持旧备份（version 8 及更早）可导入**——importAll 为 lenient 逐 store 回灌、按 keyPath id 去重。
 
 ### 11.2 统一「Activity / Companion Session Runtime」（`assets/js/activity/activity-runtime.js` → `window.IB.activity`）
+
+> 相关专项架构：[architecture/AGENT_RUNTIME.md](architecture/AGENT_RUNTIME.md)（模型执行框架 ModelPort，非领域 authority）·
+> [architecture/PUBLIC_PROFILE.md](architecture/PUBLIC_PROFILE.md)（公开身份 ≠ Disclosure）。
 
 Coread 与 Cinema 不各自为政，统一跑在这套运行时上，天然可扩展其它陪伴活动：
 
