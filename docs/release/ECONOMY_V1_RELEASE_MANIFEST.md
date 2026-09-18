@@ -312,7 +312,7 @@ loopback 命令腿。
 ## 11 · Known non-blocking debt
 
 D1–D5 在 `docs/contracts/economy/ECONOMY_V1_FROZEN_CONTRACT.md` §13 逐格冻结；
-**D6 只在 `docs/P22-21-ECONOMY-V1-CLOSURE.md` §13**（冻结契约本身是 P22-21 的
+**D6 只在 `docs/history/economy/P22/P22-21-ECONOMY-V1-CLOSURE.md` §13**（冻结契约本身是 P22-21 的
 交付物，本打包阶段**不改它**）。
 
 | id | Debt | 为什么不阻塞 | 权威位置 |
@@ -597,7 +597,7 @@ P22-21 · freeze drift guard：51 / 51 通过      ← PASS（要求的那一条
 | 检查 | 结果 |
 | --- | --- |
 | 解压后顶层 | 恰好一个目录 `InternalBeyond-Economy-v1/` |
-| Manifest 存在 | `docs/ECONOMY_V1_RELEASE_MANIFEST.md` ✓ · `docs/ECONOMY_V1_FROZEN_CONTRACT.md` ✓ · `docs/P22-21-ECONOMY-V1-CLOSURE.md` ✓ |
+| Manifest 存在 | `docs/release/ECONOMY_V1_RELEASE_MANIFEST.md` ✓ · `docs/contracts/economy/ECONOMY_V1_FROZEN_CONTRACT.md` ✓ · `docs/history/economy/P22/P22-21-ECONOMY-V1-CLOSURE.md` ✓ |
 | `ECONOMY_V1_CHECKSUMS.txt` 存在 | ✓ |
 | Checksum 一致 | **逐行逐字节相同**，`mismatches: []` |
 | 文件数量一致 | `entriesExpected` = `entriesFound` → `countMatch: true` |

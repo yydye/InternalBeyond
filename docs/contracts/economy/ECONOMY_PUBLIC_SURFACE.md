@@ -116,7 +116,7 @@
 | §3 四资源注入（`USD` / `CNY` / `TOKEN` / `API_BALANCE`）fail closed | `tests/test_p22_20_economy_boundary_injection.js` |
 | §10 Provider / Payment / Exchange / Refund / capability 反例注入 | 同上 |
 | UI 上没有提前出现未来能力的入口 | `tests/test_p22_20_economy_public_surface.js`（§9） |
-| 审计全文与结论 | `docs/P22-20-ECONOMY-EXTERNAL-BOUNDARY.md` |
+| 审计全文与结论 | `docs/history/economy/P22/P22-20-ECONOMY-EXTERNAL-BOUNDARY.md` |
 
 ---
 

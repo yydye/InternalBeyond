@@ -41,6 +41,20 @@
 | `RUNTIME-CONVERGENCE-PHASE4-REPORT.md` | Phase 4 · Diary 域收敛 + Memory Consolidation |
 | `CONTEXT-CONVERGENCE-C1-REPORT.md` | Context Convergence C1 |
 
+## economy/ —— Agent Economy / P22 系列
+
+Economy v1（P22）已完成的阶段实施与审计记录。当前契约见
+[`../contracts/economy/`](../contracts/economy/)（`ECONOMY_V1_FROZEN_CONTRACT.md` ·
+`ECONOMY_PUBLIC_SURFACE.md`），打包清单见
+[`../release/ECONOMY_V1_RELEASE_MANIFEST.md`](../release/ECONOMY_V1_RELEASE_MANIFEST.md)。
+
+| 报告 | 阶段 |
+|---|---|
+| `P22/P22-0-ECONOMY-AUDIT.md` | P22-0 · 只读审计（起点） |
+| `P22/P22-1-ECONOMY-CONTRACT.md` | P22-1 · 领域契约（superseded，见 contracts/economy） |
+| `P22/P22-19-ECONOMY-READ-CONTRACT.md` | P22-19 · owner-scoped 读模型 closure（superseded） |
+| `P22/P22-2 … P22-26-*.md` | P22-2 ~ P22-26 · 实施 / 审计 / closure 阶段记录 |
+
 ## 归档约定
 
 - 报告按**完成时的原文**保留；报告里出现的历史路径、当时测试数量、当时端口与命令不做回写。

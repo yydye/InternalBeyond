@@ -915,7 +915,7 @@ const GROUPS = [
               Exchange 让 convertCurrency 真的存在再跑完整读写面；Refund 的两件
               不存在；capability 反例（14 词 × 4 consumer）。真实 store，
               零子进程 / 零 spawn / 零浏览器 / 零 socket。
-           ③ public surface —— 解析 docs/ECONOMY_PUBLIC_SURFACE.md 并与真实
+           ③ public surface —— 解析 docs/contracts/economy/ECONOMY_PUBLIC_SURFACE.md 并与真实
               路由表 / 三个 seam 的 path 与词表 / 契约的 CAPABILITY 逐个比对；
               本进程一个真实 HTTP（socket = 1）：28 条读面可达、每条 POST 都
               405 economy-is-read-only、九个未来能力路径 GET 404 / POST 405、
@@ -928,7 +928,7 @@ const GROUPS = [
       ['test_p22_20_economy_public_surface.js'],
       /* P22-21：Economy v1 的**最终闭包审计与冻结**（这一阶段刻意
          production diff = 0，也不实现任何 future capability）。
-           ① freeze —— 解析 `docs/ECONOMY_V1_FROZEN_CONTRACT.md` 的每一张表，
+           ① freeze —— 解析 `docs/contracts/economy/ECONOMY_V1_FROZEN_CONTRACT.md` 的每一张表，
               与真实代码逐格比对：schema 水位 / 28 条读面 + /security /
               三条写面及其词表与信封 / capability 与 consumer 矩阵 /
               六个币种 / 两个资产类别 / 52 个事件类型 / 六个状态机的

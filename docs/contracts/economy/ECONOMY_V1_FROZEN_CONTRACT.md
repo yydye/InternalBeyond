@@ -25,7 +25,7 @@
 > | 库存消耗 | 新增**唯一**一条 runtime seam `consumeOwnedItem(input, context)` | 在此之前 `consumeInventory` 的**生产调用方是 0**，于是 `CONSUMABLE` 与 `DIGITAL_ITEM` 在运行时是同一个东西。它**不**是一个 capability、**不**在 HTTP 上、**不**在命令通道的词表里 |
 >
 > 这三条都不扩大 v1 的**公开面**（路由 / capability / 事件类型 / 生产文件
-> 数量 / 币种 / 资产类别 / 状态机成员）。详见 `docs/P22-26-CATALOG-LIFECYCLE.md`。
+> 数量 / 币种 / 资产类别 / 状态机成员）。详见 `docs/history/economy/P22/P22-26-CATALOG-LIFECYCLE.md`。
 
 ---
 
@@ -59,7 +59,7 @@ P22-6（→5）、P22-7（→6）、P22-8（→7）七处动过。P22-9 起**一
 `/economy/*` 路由、没有新增 capability、没有新增事件类型、没有新增
 `services/home-node/economy-*.js` 文件、没有新增币种 / 资产类别 / 状态机成员。
 
-详见 `docs/P22-26-CATALOG-LIFECYCLE.md`。
+详见 `docs/history/economy/P22/P22-26-CATALOG-LIFECYCLE.md`。
 
 ---
 
@@ -414,7 +414,7 @@ Economy 的浏览器面**恰好九个文件**（六个 JS + 三个 CSS），
 | Fresh DB → 一次真实购买（含审批腿）→ 账本 / 库存 / 读面 / UI 纯层 | `tests/test_p22_21_economy_golden_path.js` |
 | 六条失败金路径 fail closed | 同上 |
 | §0 阶段账本 · §2 写面普查 · §3 读面普查 · §4 状态机叉积 · §6 崩溃边界 · §7 四资源隔离 · §8 UI authority | `tests/test_p22_21_economy_v1_closure_audit.js` |
-| 审计全文与最终分类 | `docs/P22-21-ECONOMY-V1-CLOSURE.md` |
+| 审计全文与最终分类 | `docs/history/economy/P22/P22-21-ECONOMY-V1-CLOSURE.md` |
 
 ---
 
