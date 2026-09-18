@@ -22,6 +22,68 @@ Internal Beyond 的"历史"其实来自**两类不同信源，可信度也要分
 
 ---
 
+# 序卷 · 项目起源（Origin）
+
+> 本卷记录**本仓库出现之前的来路**：工具与工作流怎样先形成，以及 ChatVault 与 InternalBeyond 为什么是两个不同项目。
+> 史料性质：以下起源链与两个项目的关系为**一手考古史料（维护者本人自述）**，未落盘、无 commit 可溯源；与后两卷"官方史料"分级相同（见 §0）。
+
+## 0.1 起源链
+
+```text
+快手
+  ↓（推荐算法持续推送老年人视频 → 删除快手，转向抖音）
+抖音
+  ↓（推荐到一个国外开发者手工打造的 DeepSeek TUI）
+DeepSeek TUI（测试阶段）
+  ↓（用 ChatGPT 随手要一个任务，用于测试 DeepSeek TUI 的能力）
+MuMu 模拟器 Agent 工具 + DeepSeek 模型积分
+  ↓（完成该任务，并持续扩展这个"随手来的任务"）
+GitHub / AI Agent 工作流形成
+  ↓
+ChatVault（AI 辅助软件开发实验）
+  ↓（另一条独立触发线：抖音推荐 Sui 发布的 InternalBeyond 宣传视频）
+InternalBeyond（AI Companion / AI System Architecture 探索）
+```
+
+`［叙事］` 这条链的因果是：**先有工具（DeepSeek TUI）与工作流（AI Agent / MuMu / GitHub），才有实验与探索**；ChatVault 与 InternalBeyond 分别落在这条链的不同位置上，不是同一序列的简单延伸。
+
+## 0.2 两个不同项目：ChatVault 与 InternalBeyond
+
+明确：
+
+```text
+ChatVault 与 InternalBeyond 是两个不同项目。
+
+ChatVault 建立了 AI 辅助开发流程。
+InternalBeyond 是后续 AI 系统架构探索。
+```
+
+**ChatVault** — 定位：AI 辅助软件开发实验。
+
+- DeepSeek TUI 测试阶段；
+- AI Coding workflow 的形成；
+- GitHub 工作流的形成。
+
+**InternalBeyond** — 定位：AI Companion / AI System Architecture 探索。
+
+- Memory / Middle Brain / Voice / Companion / Moments / Disclosure / Authority Architecture。
+
+> **禁止表述**：`ChatVault evolved into InternalBeyond`（错误）。
+> 正确关系：ChatVault 是 **AI 辅助开发流程实验**；InternalBeyond 是**后续的 AI 系统架构探索**，并由一个**独立触发点**（抖音推荐 Sui 发布的 InternalBeyond 宣传视频）引入。两者不构成"演化"关系。
+
+## 0.3 Timeline（阶段 0–5）
+
+| 阶段 | 名称 | 内容 |
+|------|------|------|
+| 阶段 0 | AI 工具探索 | 快手→抖音的使用迁移；发现 DeepSeek TUI；用 ChatGPT 随手任务测试其能力；用 MuMu 模拟器 Agent 工具 + DeepSeek 模型积分完成任务并持续扩展 |
+| 阶段 1 | ChatVault | AI 辅助软件开发实验：在 DeepSeek TUI 测试与 AI Coding workflow 中产生 |
+| 阶段 2 | GitHub 与 Agent 工作流 | 学习并使用 GitHub；AI Agent 工作流形成 |
+| 阶段 3 | 发现 InternalBeyond | 抖音推荐 Sui 发布的 InternalBeyond 宣传视频；接触上游项目 |
+| 阶段 4 | InternalBeyond 架构演化 | fork 后的模块化、拆分、主动消息、Moments、回复链、观测层等（详见第二卷） |
+| 阶段 5 | Authority Architecture | Economy / Middle Brain / Memory / Voice / Companion / Moments / Disclosure / Letters 的 canonical authority 文档化（详见各 `docs/architecture/*` 与 `docs/contracts/*`） |
+
+---
+
 # 第一卷 · 上游卷（Sui 时代 · InternalBeyond 1.x）
 
 ## 1.1 定位与出处
