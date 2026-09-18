@@ -55,6 +55,18 @@ Economy v1（P22）已完成的阶段实施与审计记录。当前契约见
 | `P22/P22-19-ECONOMY-READ-CONTRACT.md` | P22-19 · owner-scoped 读模型 closure（superseded） |
 | `P22/P22-2 … P22-26-*.md` | P22-2 ~ P22-26 · 实施 / 审计 / closure 阶段记录 |
 
+## Middle Brain / Runtime
+
+Middle Brain runtime architecture 的**当前权威**见
+[`../architecture/MIDDLE_BRAIN.md`](../architecture/MIDDLE_BRAIN.md)；以下为历史演进记录。
+
+| 报告 | 阶段 |
+|---|---|
+| `runtime/P11-3-MIDDLE-BRAIN-SEMANTICS-CLOSURE.md` | P11-3 · runtime semantics closure |
+| `runtime/CONTEXT-CONVERGENCE-C1-REPORT.md` | Context Convergence C1 |
+| `runtime/P2-CONTEXT-CONVERGENCE-AUDIT.md` | 上下文收敛只读核实 |
+| `platform/ASTRA_READINESS_PHASE1.md` | Astra Readiness Phase 1 |
+
 ## 归档约定
 
 - 报告按**完成时的原文**保留；报告里出现的历史路径、当时测试数量、当时端口与命令不做回写。

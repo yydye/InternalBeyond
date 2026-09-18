@@ -297,6 +297,8 @@ U-D1 Revised 只覆盖了「**检查**清单」的传输回退。U3 要下载 50
 
 ## D19. 统一思考深度（reasoningEffort）走 capability-driven，不做 provider 硬编码（P21）
 
+> Middle Brain 当前 runtime architecture 见 [architecture/MIDDLE_BRAIN.md](architecture/MIDDLE_BRAIN.md)。
+
 ### 决策
 
 1. **canonical 字段只有一个**：Middle Brain 配置里的 `reasoningEffort ∈ {auto, low, medium, high, max}`，

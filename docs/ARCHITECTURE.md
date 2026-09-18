@@ -513,6 +513,8 @@ Middle Brain 的一个 canonical 字段控制"思考深度"，翻译只发生在
 **auto = 一个字段都不发**（provider 原生行为），因此这条链默认不改变任何现有请求
 （DeepSeek 普通聊天 `reasoning_tokens=125` / 日记 `1082` 就是 auto 的基线）。
 
+> Middle Brain 的专项架构权威见 [architecture/MIDDLE_BRAIN.md](architecture/MIDDLE_BRAIN.md)（当前 runtime architecture）。
+
 - **canonical 值**：`auto | low | medium | high | max`（默认 `auto`）。
   配置读写/归一/UI 在 `assets/js/middle-brain-config.js`；`xhigh` 合并进 `high`；
   旧配置（无 `reasoningEffortV2` 标记）**一次性解析为 auto**，用户重新选择才落盘
