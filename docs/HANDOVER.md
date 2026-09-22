@@ -1,5 +1,7 @@
 # Internal Beyond · 交接文档（Agent 第一入口）
 
+> **项目身份（canonical）**：**边界之外（Project-IB）** 是项目的正式名称，通常简称 **IB**；项目始于 **2026 年 5 月 23 日**。**InternalBeyond** 是 Project-IB 当前主要实现 / 工程体系的名称——本仓库即是它的 Desktop / Web 实现，而不是对项目身份本身的替代。详见 [WHY_IB.md](WHY_IB.md) §0.1。
+>
 > 本文档回答「项目现在是什么情况、我接下来该干什么」。
 >
 > **必读（按顺序）：**

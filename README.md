@@ -1,4 +1,9 @@
-# InternalBeyond
+# 边界之外 / Project-IB
+
+> **边界之外（Project-IB）** 是项目的正式名称，通常简称 **IB**；项目始于 **2026 年 5 月 23 日**。
+> **InternalBeyond** 是 Project-IB 当前主要实现 / 工程体系的名称，覆盖 Desktop / Web、Mobile、Home Node、Middle Brain、Economy 等现有子系统。
+>
+> Project-IB (边界之外) began on **May 23, 2026**. **InternalBeyond** is the name of its primary implementation / engineering system.
 
 **一个离线运行、数据留在本机的个人 AI 陪伴站。** 支持同时对接多个 AI 模型，
 包含像素互动房间、多角色聊天、社交圈、长期记忆、日记、书信、代码工作区等 13 个模块与两套视觉主题。
@@ -232,6 +237,7 @@ vision/                    # 可选本地视觉服务（Python，默认不随包
 ## Introduction (EN)
 
 **InternalBeyond** is a local-first personal AI companion site that runs offline and keeps your data on your own machine.
+It is the primary implementation of the project **Project-IB (边界之外)**, which began on **May 23, 2026**.
 It ships 13 feature modules, two visual themes, and can talk to 15 AI providers at once.
 
 **Download for Windows:** see [GitHub Releases](https://github.com/yydye/InternalBeyond/releases) →

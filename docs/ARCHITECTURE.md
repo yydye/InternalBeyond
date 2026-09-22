@@ -1,6 +1,8 @@
 # Internal Beyond · 架构文档
 
 > 本文档回答「这个项目是怎么工作的」。历史演进见 [CHANGELOG.md](CHANGELOG.md)，设计理由见 [DECISIONS.md](DECISIONS.md)，踩坑见 [TROUBLESHOOTING.md](TROUBLESHOOTING.md)。
+>
+> **项目身份（canonical）**：**边界之外（Project-IB）** 是项目的正式名称，通常简称 **IB**；项目始于 **2026 年 5 月 23 日**。**InternalBeyond** 是 Project-IB 当前主要实现 / 工程体系的名称——本仓库即是它的 Desktop / Web 实现。详见 [WHY_IB.md](WHY_IB.md) §0.1。
 
 ## 1. 总览
 
