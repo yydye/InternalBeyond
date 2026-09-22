@@ -1,7 +1,7 @@
 ﻿# InternalBeyond 编年史
 
 > 本文记录 Internal Beyond 从上游原作到本仓库（fork）的全部演进。分两卷：
-> **第一卷 = 上游卷（Sui 时代，InternalBeyond 1.x）**；**第二卷 = fork 卷（yydye 时代，2026-08 → 09）**；**第三卷 = 两卷对照**。
+> **第一卷 = 上游卷（Sui 时代，上游版本线 V1.x → V2.x）**；**第二卷 = fork 卷（yydye 时代，2026-08 → 09）**；**第三卷 = 两卷对照**。
 >
 > 目录结构：与 [ARCHITECTURE.md](ARCHITECTURE.md)（怎么工作）· [CHANGELOG.md](CHANGELOG.md)（发明了什么）· [DECISIONS.md](DECISIONS.md)（为什么这么设计）· [HANDOVER.md](HANDOVER.md)（现状与待办）并列，互为索引。
 
@@ -66,7 +66,8 @@ InternalBeyond 是后续 AI 系统架构探索。
 
 **InternalBeyond** — 定位：AI Companion / AI System Architecture 探索。
 
-- Memory / Middle Brain / Voice / Companion / Moments / Disclosure / Authority Architecture。
+- 上游已有：Memory / Voice / 多端口 AI / 离线单文件架构。
+- fork 后 Project-IB 演化：Middle Brain / Companion（Active Companion）/ Moments / Disclosure / Authority Architecture / Home Node / Economy / Activity。
 
 > **禁止表述**：`ChatVault evolved into InternalBeyond`（错误）。
 > 正确关系：ChatVault 是 **AI 辅助开发流程实验**；InternalBeyond 是**后续的 AI 系统架构探索**，并由一个**独立触发点**（抖音推荐 Sui 发布的 InternalBeyond 宣传视频）引入。两者不构成"演化"关系。
@@ -82,9 +83,32 @@ InternalBeyond 是后续 AI 系统架构探索。
 | 阶段 4 | InternalBeyond 架构演化 | fork 后的模块化、拆分、主动消息、Moments、回复链、观测层等（详见第二卷） |
 | 阶段 5 | Authority Architecture | Economy / Middle Brain / Memory / Voice / Companion / Moments / Disclosure / Letters 的 canonical authority 文档化（详见各 `docs/architecture/*` 与 `docs/contracts/*`） |
 
+## 0.4 Origin Period（2026-05-23 ～ 2026-07-28）
+
+> 本节只收 CONFIRMED 事实（证据等级见 §0）；措辞纪律：不写"伴读模块上线 / 后端上线 / MCP Server 上线"。
+
+| 日期 | 事件 | 证据 |
+|------|------|------|
+| 2026-05-23 | Project-IB /「边界之外」开始 | L0 Author Confirmed |
+| 2026-06-05 | 首次公开可恢复 Git 记录（`9fd2fa3`；已含单文件 App、`game/game_module.js`、README、LICENSE） | L2 |
+| 2026-06-18 | 长期记忆库与 API 思考链形成（`551fcbe` / `bd4a4b8`） | L2 |
+| 2026-06-19 | Letter 重构与手机压缩版 | L2 |
+| 2026-06-22 | 像素房间迷你视窗 | L2 |
+| 2026-06-24 | 聊天发图与流式传输 | L2 |
+| 2026-06-27 | 缓存命中、Presence、文件上传 | L2 |
+| 2026-07-03 | ICode 工作区 | L2 |
+| 2026-07-11 | MCP 配置/连接能力与 Auto Memory | L2 |
+| 2026-07-12 | 语音消息输入与 AI 阅读 Blog | L2 |
+| 2026-07-19 | Markdown、封档线、Blog Notes 批注能力（提交描述为"伴读"，实际为 Blog 阅读视图内 AI 批注） | L2 |
+| 2026-07-21 | Internal Bridge 客户端连接能力 | L2 |
+| 2026-07-26 | Calendar 与版权协议更新 | L2 |
+| 2026-07-28 | 第一完整可恢复快照 | L1 / L2（Baseline `c151bb1`） |
+
+> `［史实限定］` 2026-05-23 → 2026-06-04 无公开 Git 或文件证据，该段实现细节为 **UNKNOWN**；本节仅列 CONFIRMED 节点，未列事件不等于不存在。
+
 ---
 
-# 第一卷 · 上游卷（Sui 时代 · InternalBeyond 1.x）
+# 第一卷 · 上游卷（Sui 时代 · 上游版本线 V1.x → V2.x，截至 2026-09 达 V2.7.2）
 
 ## 1.1 定位与出处
 
@@ -94,14 +118,16 @@ InternalBeyond 是后续 AI 系统架构探索。
 - **边界**：全部数据存本机（IndexedDB），**不依赖任何网络服务器**；无框架、无构建，直接打开 `InternalBeyond.html` 即可用。
 - **永久免费开源**。
 
-## 1.2 核心模块（上游 README：14 个）
+## 1.2 核心模块（上游 README：14 个 · 2026-08 之后口径）
+
+> 版本口径：2026-07-28 快照的 README 记为 **11 个核心功能模块**（无 Call / Circle / Data）；至 2026-08 之后上游 README 扩展为 **14 个**——下表即该 14 模块口径。Call / Circle / Data 属后续上游版本增量。
 
 | # | 模块 | 说明 |
 |---|------|------|
 | 1 | **Room** | 像素互动房间（1672×941），Sui 对话/茶歇/互动故事/塔罗/换装/休息 六子模块 |
 | 2 | **Chat** | 多端口实时对话：浮动面板+全屏+群聊+图像生成+附件处理+Token 仪表盘+联网搜索+语音消息+Select/封档 |
-| 3 | **Call** | 语音与视频通话：语音识别转写+逐句朗读+声学语气参考+视频直播间+弹幕+**五档礼物系统**+来电 |
-| 4 | **Circle** | InternetBeyond 社交圈：用户与 AI 共同发布/评论/回复/转发，好友资料页、可见范围、搜索、配图与定位 |
+| 3 | **Call** | 语音与视频通话：语音识别转写+逐句朗读+声学语气参考+视频直播间+弹幕+**五档礼物系统**+来电（2026-08 之后上游增量；7/28 快照无 Call） |
+| 4 | **Circle** | InternetBeyond 社交圈：用户与 AI 共同发布/评论/回复/转发，好友资料页、可见范围、搜索、配图与定位（2026-08 之后上游增量；7/28 快照无 Circle） |
 | 5 | **Calendar** | AI 日历：悬浮小窗+挂历视窗，月相节气，AI 读取临近日程、AI 写入 |
 | 6 | **Blog** | 日志/密码日记本/AI 评论/AI 批注/自定义剧本 |
 | 7 | **Letters** | AI 书信——异步通信，AI 读你资料后写回信 |
@@ -111,7 +137,7 @@ InternalBeyond 是后续 AI 系统架构探索。
 | 11 | **API** | 多端口配置中心，最多 10 个独立 API |
 | 12 | **ICode** | AI 代码工作区：文件管理/预览/内联编辑/沙箱运行/文档生成 |
 | 13 | **DIY** | 透明立绘/占卜桌布/外部工具/MCP 服务器/**Internal Bridge**/沙箱扩展/文件解析库 |
-| 14 | **Data** | 一键备份（全站导出/导入 JSON）、Token 用量仪表盘 |
+| 14 | **Data** | 一键备份（全站导出/导入 JSON）、Token 用量仪表盘（2026-08 之后上游增量；7/28 快照无独立 Data 模块） |
 
 > `［叙事］` 原项目 README 的表述已相当克制："两个方向都通往**边界之外**"——上游的自我气质是"一个可以住进去的、离线的情感空间"，而非一个工程系统。
 
@@ -239,7 +265,7 @@ InternalBeyond 是后续 AI 系统架构探索。
 - **两大本地服务**：Bridge（`ib-bridge-service.js`，23115）+ companion（`active-message-service.js`，23114）；Vision（可选，8765）；Web/启动器静态服务（23120）。
 - **能力面**：主聊天（浏览器直连各家 API）、社交圈（AI 社交网络 + AI↔AI 回复链前后台）、AI 日记、记忆系统、工作区、游戏模块、行为观测层；全部注册 `window.IB` 命名空间。
 - **测试基线全绿**：`node test-all.js --all`（static/service/browser 三组，约 150–165s）。
-- **git**：基线 `e4074cc`、模块化检查点 `800411d`；2026-08-26 起发布到 **GitHub 私有仓库**。
+- **git**：基线 `c151bb1`（2026-07-28；tree 与 rewrite 前 `e4074cc` 等价）、模块化检查点 `800411d`；2026-08-26 起发布到 **GitHub 私有仓库**。
 
 ## 2.8 近期工程：P1 声学语气参考 & P2 Video Runtime
 
@@ -295,7 +321,7 @@ InternalBeyond 是后续 AI 系统架构探索。
 ## 3.3 三代架构演化（`［叙事］`）
 
 ```
-IB 1.0（Sui · 上游）    「个人 AI 网站」——单文件 · 无后端 · 离线 · 14 模块 · IB-Mobile
+IB 1.x→2.x（Sui · 上游）「个人 AI 网站」——单文件 · 无后端 · 离线 · 7/28 快照 11 模块（2026-08 后扩至 14） · IB-Mobile
         ↓ fork 衍生
 IB 2.0（yydye）        「多 AI + 本地世界」——多模型对话 · 主动消息 · 朋友圈 · 本地 Bridge
         ↓ 工程化
@@ -311,5 +337,5 @@ IB 3.0（yydye）        「本地 AI Runtime」——社会网/回复链/观测
 - 上游 README：<https://github.com/Sui-IB/InternalBeyond>（唯一文档）
 - 上游 Mobile：<https://github.com/Sui-IB/InternalBeyond-Mobile>（未派生）
 - fork 文档：`README.md` / `ARCHITECTURE.md` / `CHANGELOG.md` / `DECISIONS.md` / `HANDOVER.md` / `TROUBLESHOOTING.md` / `LICENSES/`
-- fork git 关键点：`e4074cc`（baseline）、`800411d`（模块化检查点）、`bbafba5`（声明衍生与上游出处）、`e3c2f01`（社交网络/回复链/观测层/docs 重组）
+- fork git 关键点：`c151bb1`（baseline，2026-07-28；tree 与 rewrite 前 `e4074cc` 等价）、`800411d`（模块化检查点）、`bbafba5`（声明衍生与上游出处）、`e3c2f01`（社交网络/回复链/观测层/docs 重组）
 - 一手考古史料：开发阵容（§2.6）、模块数口径、个别决策动机——由维护者本人确认
