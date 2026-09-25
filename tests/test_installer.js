@@ -79,6 +79,23 @@ check('installer gets its version from the build script, never a literal', () =>
     'installer file name must be built from the version define');
 });
 
+check('installer identity has an explicit test-only compile seam', () => {
+  assert.ok(/#define ProductionAppId "\{\{78B427F6-A48F-4443-86D5-2F50DC899D07\}/.test(ISS_SRC),
+    'production AppId must remain the protected canonical GUID');
+  const testId = /#define TestOnlyAppId "\{\{([0-9A-F-]{36})\}/i.exec(ISS_SRC);
+  assert.ok(testId, 'test-only AppId must be a repo-owned GUID');
+  assert.notStrictEqual(testId[1].toUpperCase(), '78B427F6-A48F-4443-86D5-2F50DC899D07',
+    'test-only AppId must differ from production');
+  assert.ok(/#ifdef InstallerTestMode/.test(ISS_SRC) && /#define AppIdValue TestOnlyAppId/.test(ISS_SRC),
+    'test identity must require an explicit compile-time define');
+  assert.ok(/#define AppIdValue ProductionAppId/.test(ISS_SRC),
+    'normal compile path must resolve to production identity');
+  assert.ok(/\[switch\]\$TestMode/.test(BUILD_SRC) && /InstallerTestMode=1/.test(BUILD_SRC),
+    'build script must make test mode explicit');
+  assert.ok(/InstallAudit requires explicit -TestMode/.test(BUILD_SRC),
+    'install audit must refuse a production build');
+});
+
 check('build script reads VERSION and passes it to ISCC', () => {
   assert.ok(/Get-Content -LiteralPath \$versionFile -Raw/.test(BUILD_SRC), 'must read VERSION');
   assert.ok(/\/DAppVersion=\$version/.test(BUILD_SRC), 'must pass /DAppVersion');
@@ -212,6 +229,34 @@ check('payload contains the full application closure', () => {
   assert.ok(files.some(f => /^bridge\//.test(f)) && files.some(f => /^active\//.test(f)), 'bridge/active modules must ship');
 });
 
+check('canonical Node payload closes every static local require', () => {
+  /* Browser assets have their own client-side module conventions, so this
+     contract is deliberately scoped to the shipped Node-side trees. It follows
+     literal CommonJS local requires and compares them with the resolved
+     whitelist output; it is not a bundler and does not guess dynamic imports. */
+  const nodeRoots = ['runtime/', 'services/', 'bridge/', 'active/', 'tools/'];
+  const shipped = new Set(resolved.files.map(f => f.to.replace(/\\/g, '/')));
+  const gaps = [];
+  const candidates = (rel) => [rel, rel + '.js', rel + '.json', rel + '/index.js'];
+  for (const file of resolved.files) {
+    const importer = file.to.replace(/\\/g, '/');
+    if (!/\.js$/i.test(importer) || !nodeRoots.some(prefix => importer.indexOf(prefix) === 0)) continue;
+    const src = read(file.abs);
+    const re = /\brequire\s*\(\s*["'](\.[^"']+)["']\s*\)/g;
+    let match;
+    while ((match = re.exec(src))) {
+      const target = path.posix.normalize(path.posix.join(path.posix.dirname(importer), match[1]));
+      if (!candidates(target).some(candidate => shipped.has(candidate))) {
+        gaps.push(importer + ' -> ' + match[1] + ' [' + target + ']');
+      }
+    }
+  }
+  assert.deepStrictEqual(gaps, [], 'Node payload has unshipped local dependencies: ' + JSON.stringify(gaps));
+  for (const need of ['runtime/host-origin.js', 'services/project-knowledge.js']) {
+    assert.ok(shipped.has(need), 'canonical payload must ship ' + need);
+  }
+});
+
 check('payload excludes dev, private and test material', () => {
   const files = resolved.files.map(f => f.to);
   const forbidden = [
@@ -327,8 +372,10 @@ console.log('\n[4] Inno Setup contract');
 check('per-user, lowest privileges, no UAC elevation', () => {
   assert.ok(/^PrivilegesRequired=lowest$/m.test(ISS_SRC), 'must be lowest privileges');
   assert.ok(/^PrivilegesRequiredOverridesAllowed=\s*$/m.test(ISS_SRC), 'must not allow /ALLUSERS override');
-  assert.ok(/^DefaultDirName=\{localappdata\}\\Programs\\InternalBeyond$/m.test(ISS_SRC),
+  assert.ok(/^DefaultDirName=\{localappdata\}\\Programs\\\{#InstallDirectoryName\}$/m.test(ISS_SRC),
     'must install under the per-user app location');
+  assert.ok(/#define ProductionInstallDirectoryName "InternalBeyond"/.test(ISS_SRC),
+    'production default install directory must remain InternalBeyond');
   assert.ok(!/Program Files/i.test(ISS_SRC.replace(/^;.*$/gm, '')), 'must never target Program Files');
   assert.ok(/^ChangesEnvironment=no$/m.test(ISS_SRC), 'must not touch the environment / PATH');
   assert.ok(!/^\[Registry\]/m.test(ISS_SRC), 'must not write registry beyond the uninstall key');
@@ -340,10 +387,22 @@ check('single user-facing entry point, no dev launchers', () => {
   assert.strictEqual(iconNames, 1, 'exactly one start menu entry named InternalBeyond');
   assert.strictEqual(deskNames, 1, 'exactly one desktop entry');
   assert.ok(!/\.cmd/.test(ISS_SRC.replace(/^;.*$/gm, '')), 'installer must not reference development .cmd files');
-  assert.ok(/wscript\.exe/.test(ISS_SRC), 'shortcuts must launch through wscript (no console window)');
-  assert.ok(/启动 InternalBeyond\.vbs/.test(ISS_SRC), 'shortcuts must target the real silent launcher');
+  assert.ok(/\{app\}\\internalbeyond-host\.exe/.test(ISS_SRC), 'shortcuts must target the canonical Tauri Host');
+  assert.ok(!/^Name: "\{group\}\\\{#AppName\}"; Filename: "\{sys\}\\wscript\.exe"/m.test(ISS_SRC),
+    'production shortcut must not remain VBS-owned');
   assert.ok(/^Name: "desktopicon";.*Flags: unchecked/m.test(ISS_SRC), 'desktop shortcut must be opt-in');
   assert.ok(/postinstall skipifsilent/.test(ISS_SRC), 'finish page must offer launching the app');
+});
+
+check('canonical Inno consumes a stable Tauri Host and owns WebView2 policy', () => {
+  assert.ok(/internalbeyond-host\.exe/.test(ISS_SRC), 'canonical Inno must install and launch the Host');
+  assert.ok(/stage-tauri-host\.ps1/.test(BUILD_SRC), 'build must stage Host through the stable distribution helper');
+  assert.ok(/cargo build --release --locked/.test(read(path.join(ROOT, 'scripts', 'stage-tauri-host.ps1'))),
+    'Host staging must use the locked Cargo build');
+  assert.ok(/WebView2AppGuid/.test(ISS_SRC) && /WebView2BootstrapUrl/.test(ISS_SRC) && /EnsureWebView2/.test(ISS_SRC),
+    'canonical Inno must own WebView2 detect/bootstrap policy');
+  assert.ok(!/target\\release\\_up_|\.tauri-frontend/.test(ISS_SRC),
+    'canonical Inno source must not consume Tauri target/_up_ or frontend staging');
 });
 
 check('installer stops a running instance through IB control surfaces only', () => {
@@ -390,7 +449,7 @@ check('zero-touch update relaunch is installer-side and parameter-gated (U-D5)',
      silent update. It must therefore relaunch when — and only when — the updater
      asked for it by passing /IBRELAUNCH=1 (U-D3). */
   const code = ISS_SRC.replace(/^;.*$/gm, '');
-  assert.ok(/filename: "\{sys\}\\wscript\.exe"; Parameters: """\{app\}\\启动 InternalBeyond\.vbs"""; WorkingDir: "\{app\}"; Flags: nowait; Check: WantsRelaunch/i
+  assert.ok(/filename: "\{app\}\\internalbeyond-host\.exe"; WorkingDir: "\{app}"; Flags: nowait; Check: WantsRelaunch/i
     .test(code), '[Run] must carry a parameter-gated relaunch entry');
   assert.ok(/function WantsRelaunch\(\): Boolean;/.test(code), 'the gate must be a [Code] function');
   assert.ok(/\{param:IBRELAUNCH\|0\}/.test(code), 'the gate must read the IBRELAUNCH parameter');
@@ -398,7 +457,7 @@ check('zero-touch update relaunch is installer-side and parameter-gated (U-D5)',
   /* Exactly two launch entries: the untouched interactive one and the gated one.
      The gated entry must NOT be skipifsilent, or a silent update would install
      and never come back. */
-  const runs = (code.match(/^Filename: "\{sys\}\\wscript\.exe"/gm) || []).length;
+  const runs = (code.match(/^Filename: "\{app\}\\internalbeyond-host\.exe"/gm) || []).length;
   assert.strictEqual(runs, 2, 'exactly two launch entries, got ' + runs);
   assert.ok(/Flags: nowait postinstall skipifsilent/.test(code),
     'the ordinary interactive install must keep the finish-page entry');
@@ -480,6 +539,9 @@ check('stop helper never uses the image name as evidence', () => {
   assert.ok(!/taskkill\.exe',\s*\['\/F',\s*'\/IM'/.test(src), 'no /IM image-name kill');
   assert.ok(/IB_SCRIPTS/.test(src) && /processCommandline/.test(src), 'must read the command line');
   assert.ok(/pidsForPort/.test(src), 'must resolve PIDs from ports');
+  assert.ok(/executableIsRootHost/.test(src) && /hostDetected/.test(src), 'Host stop must be exact executable-path ownership');
+  assert.strictEqual(ibStop.executableIsRootHost('C:\\x\\InternalBeyond\\internalbeyond-host.exe', 'C:\\x\\InternalBeyond'), true);
+  assert.strictEqual(ibStop.executableIsRootHost('C:\\other\\InternalBeyond\\internalbeyond-host.exe', 'C:\\x\\InternalBeyond'), false);
 });
 
 /* ── [6] static server hardening ───────────────────────────────────────── */

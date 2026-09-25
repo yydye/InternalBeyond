@@ -271,6 +271,60 @@
     return { system: '', messages: [] };
   }
 
+  /* ── P23 Phase 2A · canonical history → provider wire 的**唯一**归一入口 ──────
+     为什么需要：canonical 存储里**允许**出现相邻同 role 的行 ——
+       · 一次模型回合交付多条 assistant 消息（waifu 多段呈现 / 工具续轮）；
+       · 用户连发、以及非 user/assistant 的 canonical 行在对话映射里落到 user。
+     这就是 "Storage truth ≠ Wire representation"：数据库里它们必须是独立消息
+     （P23 2A 不变量 1/11），但部分 provider 的 wire format **要求 user/assistant
+     交替** —— Gemini 的 contents 收到两个连续的 model 轮是非法请求。
+     因此合一只发生在这段边界上，且只有一份实现：
+       · Node   : buildRequestBody 调用它（Home Node 执行器走同一函数）；
+       · Browser: callApiChat / callApiChatStream 的 gemini 分支调用它。
+     规则：
+       · ALTERNATION_FORMATS（当前 = ['gemini']）以外的 format **原样返回** ——
+         OpenAI 接受相邻同 role；Anthropic 的 Messages API 自己合并相邻轮；
+         两者都不是本函数要改的行为，改了就是无理由的行为变更；
+       · 只合并 role 相同且**相邻**的行：字符串用 '\n\n' 连接，parts 数组拼接；
+         绝不丢内容、绝不改顺序、绝不改 role；
+       · 带原生工具协议字段（tool_calls / tool_call_id）的行不参与合并 ——
+         合并会把工具调用与普通文本糊成一条，破坏协议；
+       · 绝不改动入参（返回新数组 + 新对象），且这是**读侧**变换：
+         数据库里的独立消息一条都不动。
+     返回新数组（元素也是新对象）。 */
+  var ALTERNATION_FORMATS = ['gemini'];
+  function _wireJoinContent(a, b) {
+    if (typeof a === 'string' && typeof b === 'string') return a + '\n\n' + b;
+    var toParts = function (c) {
+      if (Array.isArray(c)) return c.slice();
+      return [{ type: 'text', text: String(c == null ? '' : c) }];
+    };
+    return toParts(a).concat(toParts(b));
+  }
+  function _wireHasProtocolFields(m) {
+    return !!(m && (m.tool_calls !== undefined || m.tool_call_id !== undefined));
+  }
+  function normalizeWireRoles(messages, format) {
+    var list = Array.isArray(messages) ? messages : [];
+    if (ALTERNATION_FORMATS.indexOf(String(format == null ? '' : format)) < 0) return list.slice();
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+      var m = list[i];
+      if (!m || typeof m !== 'object') continue;
+      var last = out.length ? out[out.length - 1] : null;
+      if (last && last.role === m.role && !_wireHasProtocolFields(last) && !_wireHasProtocolFields(m)) {
+        last.content = _wireJoinContent(last.content, m.content);
+        continue;
+      }
+      var copy = { role: m.role, content: m.content };
+      if (m.tool_calls !== undefined) copy.tool_calls = m.tool_calls;
+      if (m.tool_call_id !== undefined) copy.tool_call_id = m.tool_call_id;
+      if (m.name !== undefined) copy.name = m.name;
+      out.push(copy);
+    }
+    return out;
+  }
+
   /* ── P20 · canonical prompt → Anthropic wire 归一（Browser / Node 唯一真源）──────
      IB canonical 输入**允许**出现 system 消息。consumer 的常见形态是「顶层 system 与
      messages 首条 system 同时给同一段文本」，例如：
@@ -413,7 +467,9 @@
     if (fmt === 'gemini') {
       var gb = {
         system_instruction: { parts: [{ text: system }] },
-        contents: messages.map(function (m) { return { role: m.role === 'assistant' ? 'model' : 'user', parts: geminiParts(m.content) }; }),
+        /* P23 Phase 2A：Gemini 的 contents 必须 user/model 交替 —— 相邻同 role 在
+           这一段边界上合并（唯一实现，见 normalizeWireRoles）。 */
+        contents: normalizeWireRoles(messages, 'gemini').map(function (m) { return { role: m.role === 'assistant' ? 'model' : 'user', parts: geminiParts(m.content) }; }),
         generationConfig: { maxOutputTokens: maxTokens }
       };
       if (options.jsonMode) gb.generationConfig.responseMimeType = 'application/json';
@@ -885,7 +941,8 @@
     modelSupportsSamplingParameters: modelSupportsSamplingParameters,
     modelSupportsAssistantPrefill: modelSupportsAssistantPrefill,
     /* P20：Anthropic wire 归一的唯一真源（Browser / Node 共用同一实现） */
-    normalizeAnthropicMessages: normalizeAnthropicMessages,
+   normalizeAnthropicMessages: normalizeAnthropicMessages,
+    normalizeWireRoles: normalizeWireRoles,
     validateAnthropicRequestBody: validateAnthropicRequestBody,
     /* P21：reasoning 能力读取 + adapter 边界唯一翻译器 + 只读观测环 */
     normalizeReasoningTier: normalizeReasoningTier,

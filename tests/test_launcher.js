@@ -16,6 +16,9 @@ const path = require('path');
 
 /* Repository root — this file lives in tests/, so the root is one level up. */
 const ROOT = path.resolve(__dirname, '..');
+const ORIGINAL_LOCALAPPDATA = process.env.LOCALAPPDATA;
+const TEST_LOCALAPPDATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-launcher-local-'));
+process.env.LOCALAPPDATA = TEST_LOCALAPPDATA;
 
 const WEB = require(path.join(ROOT, 'services', 'internal-beyond-server.js'));
 const LAUNCH_PATH = require.resolve(path.join(ROOT, 'runtime', 'launch-internal-beyond.js'));
@@ -206,5 +209,13 @@ async function check(name, fn) {
   });
 
   console.log('\n结果: ' + pass + ' 通过, ' + fail + ' 失败');
+  if (ORIGINAL_LOCALAPPDATA == null) delete process.env.LOCALAPPDATA;
+  else process.env.LOCALAPPDATA = ORIGINAL_LOCALAPPDATA;
+  fs.rmSync(TEST_LOCALAPPDATA, { recursive: true, force: true });
   process.exit(fail ? 1 : 0);
-})().catch(e => { console.error(e && e.stack || e); process.exit(1); });
+})().catch(e => {
+  if (ORIGINAL_LOCALAPPDATA == null) delete process.env.LOCALAPPDATA;
+  else process.env.LOCALAPPDATA = ORIGINAL_LOCALAPPDATA;
+  try { fs.rmSync(TEST_LOCALAPPDATA, { recursive: true, force: true }); } catch (_) {}
+  console.error(e && e.stack || e); process.exit(1);
+});

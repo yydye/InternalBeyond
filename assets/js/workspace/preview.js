@@ -731,7 +731,7 @@ async function wsEditInPreview(fileId){
   acts.querySelector('[data-a="save"]').onclick=async function(){
     this.disabled=true;this.textContent='保存中…';
     try{
-      await wsSaveFile(f.projectId,f.path,ta.value,'User');
+      await wsSaveFile(f.projectId,f.path,ta.value,'User',{kind:'user'});
       toast('已保存');
       await renderWsFiles(f.projectId);/* 刷新大小/时间等元信息 */
       wsTogglePreview(fileId);/* 用最新内容重新展开预览 */

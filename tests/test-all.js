@@ -12,8 +12,8 @@
  * 子进程输出透传；任一失败最终返回非零退出码；浏览器测试串行执行
  * （避免 Chrome/CDP 相互干扰）；服务测试自带随机端口与临时数据目录。
  *
- * P2-07：入口不再遗漏仓库内的测试脚本。登记条目共 108 条 = 107 个 test_*.js
- * + scripts_check_html.js（HTML 结构检查）；分组：static 41 / service 18 / browser 51。
+ * P2-07：入口不再遗漏仓库内的测试脚本。登记条目共 110 条 = 109 个 test_*.js
+ * + scripts_check_html.js（HTML 结构检查）；分组：static 43 / service 18 / browser 51。
  * M1-A：新增 static 四条 —— test_lan_bridge_auth_contract.js（R19/§3.14 LAN 鉴权一致性）、
  *     test_chat_core_contract.js（Chat Message Contract）、
  *     test_chat_authority.js（权威/镜像/回退三态策略）、
@@ -122,6 +122,13 @@ const GROUPS = [
     tests: [
       ['scripts_check_html.js', 'InternalBeyond.html'],
       ['test_frontend_structure.js'],
+      /* P31 · Middle Brain Direct Channel：隐藏 query route、双 prompt contract、
+         有界只读 resolver、独立 transcript namespace 与 canonical Astra seam。 */
+      ['test_middle_brain_direct.js'],
+      /* P32-W.3 · Browser URL/hash 与 Tauri console 共用的 allowlist resolver，
+         只验证归一化、既有 handler identity 与零副作用解析。 */
+      ['test_secret_routes.js'],
+      ['test_secret_routes_acceptance_contract.js'],
       ['test_voice_capture.js'],
       ['test_voice_focus.js'],
       ['test_cache_audit.js'],
@@ -149,6 +156,43 @@ const GROUPS = [
          子进程在模块求值期即中止：零网络、零浏览器、零真实 API 调用，
          且在"合法持有凭据"的机器上同样确定性走中止分支。 */
       ['test_calibration_live_abort.js'],
+      /* P23 Phase 2A：Message Sequence Contract —— 一次模型回合交付 N 条**独立**
+         canonical chatMessage 的数据契约：sequence → messages 的纯构造、回合身份
+         （metadata.turnId / sequenceIndex / sequenceTotal）、确定性顺序
+         （回合内按 sequenceIndex、回合整体落在最早一条的位置 —— 修掉"工具续轮先落库、
+         主回复后落库 ⇒ reload 后顺序颠倒"这一真实缺陷）、真实 Home Node store 的
+         持久化/重放幂等/重启、真实撤回函数体的 unit 级语义、legacy 兼容、
+         export/import、search、context reconstruction、provider wire 归一
+         （连续 assistant 的 gemini 兼容性）、secret 探针、malformed/空 unit、
+         stale voice、Mobile DTO、无重复注入。纯 Node：真 SQLite 临时库 +
+         真共享核心，零浏览器、零网络。 */
+      ['test_message_sequence_contract.js'],
+      /* P23 Phase 2B：Delivery Runtime —— 一个 sequence **如何被交付**：
+         队列状态机（queued/delivering/completed/cancelled/failed）、确定性 timing
+         （delayBefore / typingDuration，两端夹紧，绝无 Math.random 与真实 sleep）、
+         typing ON/OFF 与"typing OFF 消息才出现"、cancel/user interrupt 的
+         部分交付保留、会话与 thread 隔离（按 canonical conversationId，不写死 friendId）、
+         voice 只在它自己的交付时刻出现、交付失败 fail closed、reload 后队列 ephemeral、
+         以及硬验收线"未交付 unit 不在 DB / context / memory / search 里"。
+         用**假时钟 + 真实 adapter 函数体沙箱**驱动：零浏览器、零网络、零真实等待。 */
+      ['test_delivery_runtime.js'],
+      /* P23 Phase 2C：Delivery Planner —— "模型一次生成的内容 → delivery sequence" 的
+         唯一规则型 planner（纯逻辑层）：结构保护（代码块/链接/图片/强调/列表/引用/
+         sticker·emoji/URL/JSON 一律不被内部切碎）、句读与转折分句切分、
+         min/max unit 长度策略（避免"你""好"各一条，也避免 5000 字一个气泡）、
+         persona/style hint（唯一 extension point，只移动上界、绝不改写内容）、
+         legacy 单条 fast path、功能标签整条不拆、无随机/无时钟/无 DOM/无网络、
+         与 Phase 2A 契约和 Phase 2B runtime 的兼容、voice/image 占位符保持完整。
+         纯函数测试：零浏览器、零网络、零真实 sleep。 */
+      ['test_delivery_planner.js'],
+      /* P23 Phase 2D：Multimodal Delivery Policy —— "这一段是 text 还是 voice" 的唯一决策点
+         （image 本阶段 DEFERRED，并有正式 contract 记录）：capability ≠ preference ≠ intent、
+         默认恒为 text、软偏好不升级结构、显式意图可升级（有预算护栏）、voice 不可用时
+         确定性降级为同内容 text（绝不换 provider / 绝不静默）、秘密消毒（capability 只暴露
+         可用性）、以及 delivery-time 物化的成本语义（cancel/interrupt ⇒ 零 TTS 请求）。
+         用**假时钟 + 真实 adapter 函数体沙箱 + 注入的 fake TTS**驱动：零浏览器、零网络、
+         零真实 sleep、零真实 provider。 */
+      ['test_multimodal_delivery_policy.js'],
       /* Astra Readiness Phase 1B：**校准的 CDP RPC 期限必须长于生产模型期限**。
          实测缺陷：共享 CDP 客户端（test_chat_smoke.js 的 Cdp.send）把
          Runtime.evaluate 的期限硬编码成 15000 ms，而校准 harness 正是用它等在页面里
@@ -190,6 +234,17 @@ const GROUPS = [
          conversation identity 派生与逆函数 / message id 形状保真 /
          幂等 requestId→messageId 确定性 / payload 往返不丢未知字段。纯 Node。 */
       ['test_chat_core_contract.js'],
+      /* P23 Phase 1：Voice API Source（canonical source 引用 / 旧 voice 配置不回归 /
+         endpoint 由 Bridge 唯一解析 / credential 绝不进入角色记录与 wire payload）。
+         P23 Phase 1：Native Voice Message（assistant 一级语音消息的 create / persist /
+         hydrate / render decision / play / duration / transcript / provenance / 失败边界）。 */
+      ['test_voice_source.js'],
+      ['test_native_voice_message.js'],
+      /* P23 Phase 1.1（Closure Fix）：Voice 播放取源路径（引用型必须走 ibBridgeLoadAudio，
+         绝不允许裸 new Audio(相对 /tts 路径)）+ Voice message 生命周期（撤回/续写/编辑/
+         重新生成后 voice 与 content 只能有一个真相）。 */
+      ['test_voice_playback_path.js'],
+      ['test_voice_message_lifecycle.js'],
       /* M1-A（Phase 7/16）：浏览器权威层三态策略 —— 写先到 Home Node 再落镜像 /
          Home Node 离线时写 fail closed 且读走镜像并标 degraded /
          镜像写失败仍以 Home Node 为权威并如实报告 / 明确拒绝不当作离线 /
@@ -354,6 +409,22 @@ const GROUPS = [
       ['test_anthropic_wire_contract.js'],
       ['test_installer.js'],
       ['test_installer_mock.js'],
+      ['test_fresh_install_data_loss_guard.js'],
+      ['test_recovery_engine.js'],
+      ['test_p32_w5_composite_recovery_plan.js'],
+      ['test_p32_w5_composite_authority_revision.js'],
+      ['test_p32_w5_composite_recovery_adapter.js'],
+      ['test_recovery_planner_diagnostics.js'],
+      ['test_recovery_dependency_analysis.js'],
+      ['test_recovery_only_host_contract.js'],
+      ['test_p32_w5_recovery_network_zero.js'],
+      ['test_p32_w5_apply_executor.js'],
+      ['test_recovery_production_adapter.js'],
+      ['test_p32_w5_target_snapshot_manifest.js'],
+      ['test_p32_w5_p5_8_6_recovery_preview.js'],
+      ['test_p32_w5_r3_c3_4_executor.js'],
+      ['test_p32_w5_r3_c3_5_production_reconstruction_adapter.js'],
+      ['test_recovery_ui_state_machine.js'],
       /* U1：更新清单契约（Stable 通道 schema / 唯一 URL 构造 / 客户端校验与解析），
          纯 Node、不联网、不安装。真实构建期的清单断言在 test_installer_build.js --force。 */
       ['test_update_manifest.js'],
@@ -759,7 +830,567 @@ const GROUPS = [
           （身份分离是结构性的，single-use 是 P22-7 的两进程组已经证明过的），
           因此一个 child 都不开，也不重跑 P22-6 ~ P22-8 的 race/crash matrix。 */
       ['test_p22_13_economy_approval_decision.js'],
-      ['test_p22_13_economy_approval_runtime.js']
+      ['test_p22_13_economy_approval_runtime.js'],
+      /* P24-M3.1 · Participation Contract + Deterministic Rule Planner —— 纯规则 planner：
+         WHO GETS A MEMBER TURN（SPEAK / omitted），reason 闭集，order = planned
+         participant order（空洞合法），runtime-only（沉默不是消息），fail closed
+         （重复 id / 未知 status / 非法 id ⇒ contract error），无时钟无随机无存储无 P23 字段。
+         本阶段**不接管生产**（communication.js 零修改）。纯 Node、零浏览器、零网络。 */
+      ['test_group_participation_planner.js'],
+      /* P24-M3.3.3.1 · Recent Speaker Derivation —— 纯 helper（capability only）：
+         canonical ordered history snapshot → recentSpeakerIds（most-recent-first）。
+         window 单位 = MemberTurn（turnId dedupe：multipart / 工具续轮只占 1 slot）；
+         只有 resolved 且属于当前 participants 的 assistant 消息消耗 window；
+         身份只经 M2 resolveSpeakerId（ambiguous/unresolved/非本群 一律忽略）；
+         输出 speaker 去重、不含 content/turnId/messageId。**不改 planner / 不改生产**。 */
+      ['test_group_recent_speakers.js'],
+      /* P24-M3.4.1 · Participation Policy Resolver —— 纯 resolver（capability only）：
+         group explicit > user default > system default 的**逐字段**优先级；allowed fields
+         闭集（maxResponders / recentSpeakerWindow = 非负有限整数）；absence 不物化默认值、
+         显式 0 是真值；非法 fragment / unknown field / prototype trick 一律 fail closed
+         （绝不 fallback 到低优先层）；sources 仅诊断；零存储零网络零 DOM。
+         **不接 production**：communication.js / social.js / planner / recent helper 零修改。 */
+      ['test_group_participation_policy.js'],
+      /* P25-1 · Autonomy Core Foundation（**纯裁决层**，零业务接入）：
+         Action Candidate → Context Evaluation → Decision → Executor → Result Trace。
+         闭集：actionType（moment.post/diary.write/active_message.send/activity.start 占位）、
+         source、decision（allow/deny/defer）、reason、errors。hard gates（非法 action / cancelled /
+         duplicate / cooldown / 无 executor）先于可选 decider；decider 抛错或返回未知词 ⇒ **DENY**
+         （裁决失败绝不执行）；只有 allow 才调用 executor，executor 抛错被捕获不上抛。
+         trace 仅内存（环形上限，memory=false / persist=false）、时间由 ctx.now 注入（无时钟/随机）。
+         零 provider / 零模型 / 零 Memory / 零 Middle Brain / 零 Group Brain / 零持久化；
+         P24（group-runtime-core / communication）零耦合。纯 Node、零浏览器、零网络。 */
+      ['test_autonomy_core.js'],
+      /* P25-2A · Moments Autonomy Adapter Foundation（P25 第一次**真实业务**接入）：
+         Candidate → (test-injected) Recommendation → fail-closed Moments policy →
+         P25 Autonomy Core（**永远显式 ctx.decide**，绝不依赖 Core 的 default-allow）→
+         Executor Bridge → Moments creation authority。闭集：source（schedule/character，
+         user 显式拒绝）、recommendation（post/skip）、reasonCode、adapter reason；
+         missing/malformed/未知词/策略抛错/读口失败 ⇒ DENY（fail closed）；
+         allow 才执行且恰好一次，执行失败是 ok:false 而**不是** DENY；DEFER 不排队不重试。
+         同时收敛 Moments 的**唯一**落盘通道（_momentsWriteCanonical）：mirror/local
+         与 Home Node canonical 都合法，canonical 下不再触发 moments-write-closed；
+         candidateId → 稳定 Moment id ⇒ 同一候选重试只有一行（幂等 ≠ 文本相似度）。
+         测试在 Node 里真实加载 moments.js（vm 沙箱 + 真实 moments-authority +
+         真实 canonical store），并守卫 P23/P24/Autonomy Core 的冻结 hash。
+         纯 Node、零浏览器、零网络、零真实 provider。 */
+      ['test_moments_autonomy.js'],
+      /* P25-2B · Moments Semantic Recommendation：
+         "一次模型调用同时返回 publish + content" 收敛成"一次模型调用返回结构化
+         recommendation + draft"。闭集：recommendation（post/skip，模型**不能**返回
+         allow/deny/defer）、reasonCode（post 词表 / skip 词表，方向错即 malformed）、
+         禁推理字段（thinking / analysis / reasoning / rationale / explanation 出现即
+         malformed，绝不保存、绝不进 trace）。topicKey → normalize → stableToken ⇒
+         topicFingerprint：改措辞不改指纹，换话题才换身份；模型不拥有 candidate identity。
+         旧 `publish:true/false` 只作为**一处**兼容 seam 投影进新契约（publish:true ≠ ALLOW）。
+         semantic → finalizeCandidate → runMomentAutonomy → executor → canonical writer
+         的真实组合在 Node 里跑通（真实 moments.js vm 沙箱 + 真实 moments-authority +
+         真实 canonical store），并守卫 P23 / P24 / Autonomy Core / active-diary /
+         active/moments.js 的冻结 hash 与"scheduler 仍未接 adapter"。
+         纯 Node、零浏览器、零网络、零真实 provider。 */
+      ['test_moments_semantic_recommendation.js'],
+      /* P25-2C · Scheduler / Trigger Migration（P25-2 的最后一个生产接线阶段）：
+         调度器不再拥有 permission authority —— 它只产出 **Candidate Seed**
+         （deterministic triggerRef：schedule:<nextAt 槽位>，无 Date.now / Math.random），
+         然后走 semantic → finalizeCandidate → runMomentAutonomy →（ALLOW）→ 图片 →
+         executor → createMoment 的唯一管线。图片生成时机整体后移到 ALLOW 之后：
+         skip / DENY / DEFER 的 image router 调用数 = 0。频率 / 最短间隔 /
+         declineStreak / 多标签 claim 互斥 / 手动触发无冷却全部逐字保留；
+         legacy `publish:true` 只剩投影，绝不再是写入许可；同一 candidate 重试仍只有一行。
+         测试在 vm 沙箱里加载真实 moments.js + semantic core + autonomy core + adapter
+         （真实 canonical store / 真实 Image Router 桩），并守卫 Core / P23 / P24 /
+         active-diary / active/moments.js 的冻结 hash。纯 Node、零浏览器、零网络。 */
+      ['test_moments_scheduler_migration.js'],
+      /* P25-2D · Companion Runtime Convergence（P25-2 的最后一个 runtime 收敛阶段）：
+         companion 不再拥有发布许可 —— 它的模型输出走**与桌面同一份** semantic core
+         （唯一 parser / 词表 / topic 归一 / fingerprint / 禁 CoT 字段 / draft 契约），
+         只产出 **candidate + recommendation** 事件（trigger_ref = recurrence 槽位，
+         无 Date.now / Math.random）；事件**不是许可**：浏览器 ingest 必须
+         finalizeCandidate → runMomentAutonomy → ALLOW 才写，旧 envelope 同样受管辖。
+         prefs / history / cooldown / canonical 写入仍由浏览器侧唯一权威提供；
+         图片在 ALLOW 之后才生成（skip / DENY / DEFER 的 image router 调用 = 0）。
+         companion 域仍零直接写入（createMoment / _momentsWriteCanonical 引用 = 0），
+         手动 composer 仍零 autonomy，Core / P23 / P24 / active-diary 冻结 hash 不变。
+         测试跑真实 companion service（模型打到本机 mock HTTP）+ 真实浏览器沙箱。 */
+      ['test_moments_companion_convergence.js'],
+      /* P25-2 · Moments Autonomy Closure / Freeze（Closure 阶段：只枚举 + 冻结 + 证明）：
+         **生产创建路径枚举**（源码扫描得到每条 createMoment 调用点并按所属函数分类）——
+         MANUAL_CREATE 是唯一允许绕过 Autonomy 的创建路径；两条 AUTONOMOUS_CREATE 只存在于
+         executor 的写入桥里；companion 域 createMoment / _momentsWriteCanonical / dbPut 引用 = 0。
+         冻结：语义 v2 契约（推荐 ≠ 许可）、closed reasonCode、共享 semantic core、
+         candidate identity（无 Date.now / Math.random / 到达时间）、triggerRef 语义、
+         ALLOW-only 执行、image-after-ALLOW、唯一 canonical writer、唯一 prefs 权威、
+         canonical 历史权威、no-CoT、secret 边界、DENY/DEFER 零写零图。
+         并断言 mutation authority debt（点赞/评论/删评/删除）单独归类、DB_VER / moments schema /
+         P23 / P24 / Autonomy Core 全部未因 P25-2 改变。纯 Node、零浏览器、零网络。 */
+      ['test_moments_autonomy_closure.js'],
+      /* P25-2.5 · Moments Mutation Authority（创建权限 ≠ 修改权限）：
+         点赞 / 取消点赞 / 评论 / 回复 / 删评 / 删动态都必须先过 Mutation Authority 的
+         decision，只有 ALLOW 才执行写入 —— 禁止 UI event → dbPut 的直达边，
+         禁止 companion / AI 自己写。闭集词表（mutationType / source / decision / reason），
+         actorId 必须在 canonical identity 域（apiConfigs.id / user principal，displayName 拒绝）。
+         与 Autonomy 刻意分开：like/comment 绝不进 runMomentAutonomy；Autonomy Core 与
+         canonical writer / DB schema / P23 / P24 全部保持不变。纯 Node、零浏览器、零网络。 */
+      ['test_moments_mutation_authority.js'],
+      /* P25-3A · Unified Agent Orchestration Foundation（**不接生产**）：
+         Intent → Observe → Plan → Capability Resolution → Authority Routing（只声明，
+         由 domain 裁决）→ Execute（executor 注入）→ Verify（只定义 contract）→ Reflect
+         （结构化 summary）。三件纯模块：capability registry（只存 metadata + binding key，
+         不裁决/不执行/不含凭据与函数）、orchestration core（Plan != Permission、
+         denied ≠ failed、deferred ≠ failed、取消不回滚已完成、依赖 DAG 无环、
+         side-effect 不自动 retry、idempotencyKey 只透传、零持久化/零 provider/零 CoT）、
+         Moments reference adapter（moment.post → P25-2 Autonomy；moment.like/comment/reply/
+         comment.delete/delete → P25-2.5 Mutation Authority）。纯 Node、零浏览器、零网络。 */
+      ['test_agent_capability_registry.js'],
+      ['test_agent_orchestration_core.js'],
+      ['test_agent_orchestration_moments_adapter.js'],
+      /* P25-3B · Diary Capability Integration（**第一个真正实现 verifier 的 capability**）：
+         Trigger → Diary Candidate → **Diary Authority** → ALLOW → Diary Executor →
+         Canonical Writer → Verifier。冻结：PLAN != PERMISSION · MODEL OUTPUT != PERMISSION ·
+         SCHEDULER TRIGGER != PERMISSION · CAPABILITY AVAILABILITY != PERMISSION。
+         新增两个纯/边界模块：diary-authority（唯一写权限；闭集 source（schedule/character/user）
+         与 decision（allow/deny，**无 DEFER**）；facts 只有 actorKnown/enabled/hasContent/cancelled，
+         缺一律 DENY；零 DB / DOM / 模型 / Memory / Middle Brain / 秘密 / CoT）与
+         agent-orchestration-diary-adapter（diary.write descriptor = domain authority，
+         只登记 + 路由 + 透传 idempotencyKey，绝不自己写库/调模型）。
+         Production convergence：legacy scheduler 的 generateDiaryEntry 收敛为
+         model → Diary Authority → ALLOW → _diaryWriteCanonical，authority 缺席即 fail closed；
+         _diaryWriteMemory 仍是 canonical write **之后**的 secondary side effect
+         （Memory 失败不得把已写成功的日记伪装成失败）；identity / duplicate / frequency /
+         prompt / 模型调用次数 / UI / P23 / P24 / Autonomy Core 全部未改。
+         第二个套件在 vm 沙箱里加载真实 diary.js 生产链（内存 store 桩），
+         含 verifier（canonical 行不存在 ⇒ verification failed，不补写、不 retry）。
+         纯 Node、零浏览器、零网络、零真实 provider。 */
+      ['test_diary_authority.js'],
+      ['test_agent_orchestration_diary_adapter.js'],
+      /* P25-3C · Active Message Capability Integration（主动消息：**发送**权限唯一权威）：
+         Trigger → Active Message Candidate → **Active Message Authority** → ALLOW →
+         Executor → Canonical Chat Write → Verify。冻结：PLAN != PERMISSION ·
+         MODEL OUTPUT != PERMISSION · SCHEDULER TRIGGER != PERMISSION ·
+         CAPABILITY AVAILABILITY != PERMISSION。
+         新增两个模块：active-message-authority（闭集 source（schedule/plan/character/user/
+         companion）与 decision（allow/deny，**无 DEFER**）；判定顺序 invalid-candidate →
+         unknown-actor → unknown-target → cancelled → disabled → quiet-hours → cooldown →
+         duplicate → allow；零 DB / DOM / 模型 / Memory / Middle Brain / Notification / TTS /
+         秘密 / CoT）与 agent-orchestration-active-message-adapter（active_message.send
+         descriptor = domain authority，只登记 + 路由 + 透传 idempotencyKey）。
+         Production convergence：设定计划（scheduler）/ AI 计划 / 手动"立即发送"三条路径
+         都收敛到 _activeSendAuthorized → authority → ALLOW → 唯一 canonical writer
+         _activeWriteCanonical（域内只剩一个 dbPut('chatMessages')）；companion 事件是
+         **投递镜像**（inbound，不重复裁决发送权限）。免打扰 / 冷却 / 去重 / 频率规则
+         仍然只有一份（BG-AI 休眠窗口 / 12 小时互动顺延 / 相似度 0.82），未被改写。
+         第二个套件在 vm 沙箱里加载真实 active-diary.js + active-plans.js（内存 store 与
+         最小 IndexedDB 桩），驱动真实 _activeTick → _activeClaimDue → _activeExecuteRun。
+         纯 Node、零浏览器、零网络、零真实 provider。 */
+      ['test_active_message_authority.js'],
+      ['test_agent_orchestration_active_message_adapter.js'],
+      /* P25-3C-Node · Active Message Companion Runtime Convergence：
+         Node companion 的发送出口（active/scheduler.js 的 executeTask / executePlan）
+         不再自行判断 send —— candidate + 既有 facts（BG-AI 休眠 / 12 小时顺延 /
+         model-client 0.82 去重）交给与 Browser **共用的同一个**
+         assets/js/active-message-authority.js；ALLOW 才走既有出口
+         （事件 / 历史 / windowsNotify），DENY 记 skipped（任务）/ canceled（计划），
+         权威缺席 ⇒ fail closed。scheduler 时序 / claim / retry / 免打扰语义未改。
+         本套件用真实 service 执行链（隔离数据目录 + global.fetch 场景桩）覆盖
+         NC1–NC10；纯 Node、零真实网络、零真实 Key、零 OS 通知。 */
+      ['test_active_message_node_convergence.js'],
+      /* P25-3D · Role Letter Capability Integration（AI↔AI 私信：**写信**权限唯一权威）：
+         Trigger → Role Letter Candidate → **Role Letter Authority** → ALLOW → Executor →
+         Canonical roleLetters Writer → Verify。冻结：PLAN != PERMISSION ·
+         MODEL OUTPUT != PERMISSION · SCHEDULER TRIGGER != PERMISSION ·
+         CAPABILITY AVAILABILITY != PERMISSION。
+         新增两个模块：role-letter-authority（闭集 source（schedule/character，**没有 user/manual**：
+         仓库里不存在用户直接写 Role Letter 的入口）与 decision（allow/deny，**无 DEFER**）；
+         判定顺序 invalid-candidate → unknown-actor → unknown-recipient → cancelled → disabled →
+         cooldown → duplicate → allow；零 DB / DOM / 模型 / Memory / Middle Brain / 通知 / 秘密 / CoT）
+         与 agent-orchestration-role-letter-adapter（role_letter.write descriptor = domain authority）。
+         Production convergence：cadence 写信（_rlInitStep）与读信后回信（_rlReplyStep）都收敛到
+         _rlStoreLetter → authority → ALLOW → 唯一 canonical writer _rlWriteCanonical
+         （roleLetters 只剩一个 dbPut 写点；replyStatus/readAt 状态更新走同一 writer 但不重复裁决）。
+         cadence / 对偶冷却（24~72h）/ 已回已拒 / 私有记忆命名空间 roleLetterMemories /
+         UI 读信 / 存储形状 / cfg.relationship 全部未改；权威缺席 ⇒ fail closed。
+         第二个套件在 vm 沙箱里加载真实 role-letters.js（内存 store + 假 LLM 门控），
+         驱动真实 _roleLettersTick。纯 Node、零浏览器、零网络、零真实 provider。 */
+      ['test_role_letter_authority.js'],
+      ['test_agent_orchestration_role_letter_adapter.js'],
+      /* P25-3E · Activity Boundary Audit & Runtime Vocabulary Stress Test（**纯审计阶段**，
+         production code changed = 0）：用 Activity / Cinema / Co-read 压测 P25 现有模型
+         （Candidate → Authority → Executor → Canonical Writer → Verify）能装下什么、
+         什么装不下。结论：单写命令（create/progress/save/delete）装得下；
+         session runtime state（current 指针 / 生命周期 / 参与者 / 资源归属）、
+         只读观察（frame/progress/subtitle/presence/timeline）与域事件
+         （started/finished/joined/left/paused/progressed）**NO_CURRENT_HOME**，
+         成为 P26 需求输入（docs/P25-3E-ACTIVITY-BOUNDARY-AUDIT.md、
+         docs/P25-3E-RUNTIME-GAPS.md）。
+         本套件是静态不变式守卫：清单完整 / 分类闭集与文档一致 / 未注册 activity capability /
+         无 Activity Authority / Foundation 逐字节 / Role Letter source 未变 / 无全局 source
+         或 decision enum 扩张 / 无 Event Bus / 无 queue / 无 session manager / P23·P24·M1
+         Activity runtime 未变 / 无 DB migration。纯 Node、零浏览器、零网络。 */
+      ['test_p25_3e_activity_boundary_audit.js'],
+      /* P26-0 · Runtime Architecture Requirements Closure（**纯需求闭合阶段**，
+         production code changed = 0）：把 P25-3E 找到的缺口（Domain Event Mechanism /
+         Generic Observation Layer / Session Runtime Contract / Resource Arbitration +
+         条件性 Participant / Runtime Feedback / Source Vocabulary）与 P23/P24/P25 已冻结边界
+         收敛成最小、可证明、不过度设计的 P26 Requirements Baseline —— 只给需求，
+         不选架构形状、不定 API、不实现 Event Bus / Observer / Session Manager / Arbitration / Feedback。
+         产出 docs/P26-0-RUNTIME-REQUIREMENTS.md（MINIMAL_P26 + 候选表 + 硬/条件/未来/不必要分类 +
+         非目标 + 候选形状 + 开放问题 + Q1–Q20）与 docs/P26-0-ARCHITECTURE-MAP.md
+         （CURRENT ARCHITECTURE / REQUIREMENT MAP / gap matrix / boundary matrix / vocabulary matrix）。
+         本套件是静态守卫 R1–R17（生产零改动 / 无 Bus·Observer·SessionManager·ResourceManager·
+         queue·scheduler·capability 注册 / 无 source 或 decision enum 扩张 / P23·P24·P25 Foundation·
+         四个域权威·Activity runtime 逐字节未变 / DB_VER 与 store 列表未变 / 基线文档齐备）。
+         纯 Node、零浏览器、零网络。 */
+      ['test_p26_0_runtime_requirements.js'],
+      /* P26-1 · Domain Event Contract Foundation（**FOUNDATION / CONTRACT / PURE CORE**）：
+         建立 assets/js/domain-event-core.js —— 只回答"什么东西有资格叫 Domain Event"：
+         eventId / domain / type / entityId / timestamp（+ 可选 actorId / origin /
+         causationId / correlationId），严格闭集字段、深冻结、JSON-serializable、
+         禁止业务正文槽与凭据、无时钟（不读 Date.now）、无随机、零 DOM / DB / fetch /
+         provider / 权威 / executor / writer / 订阅 / 持久化 / replay / ACK / 唤醒。
+         ordering 只给 domain / entity 两个作用域（**禁止**全局序）；
+         causationId 裁决 = 字段级 OPTIONAL、可再触发路径由 options.requireCausation 变 REQUIRED。
+         本阶段 **Production emitters = 0**：Moments / Diary / Active Message / Role Letter /
+         Activity 的生产 canonical writer 零 Domain Event 调用，既有事件式机制
+         （Activity on/off/_emit、IBApps.broadcast、Active 事件队列、Mobile Gateway 通知频道）
+         与 P23 / P24 / P25 冻结栈逐字节未变，DB_VER 与 store 列表未变。
+         套件覆盖 E1–E36 语义与纯度 + G1–G8 生产非接线/冻结守卫。纯 Node、零浏览器、零网络。 */
+      ['test_domain_event_core.js'],
+      /* P26-2 · Observation Contract Foundation（**FOUNDATION / CONTRACT / PURE CORE /
+         AUDIT-FIRST / NO PRODUCTION INTEGRATION**）：建立 assets/js/observation-core.js ——
+         只回答"什么是 Observation"：Observation = 某个 source 在某时刻对某 domain/entity
+         **当前状态**的可验证描述（"现在是什么"，与 P26-1 的 Event"发生了什么"互为镜像）。
+         最小形状：observationId / domain / entityId / source / observedAt /
+         freshness(fresh·stale·unknown) / availability(available·unavailable·unknown)
+         （+ 可选 valueRef 位置引用）；**禁止** value/snapshot/payload/frameBase64/subtitleText/
+         fullActivity 等状态正文槽（大对象走 resource reference）；confidence **不加入**
+         （今天没有概率型观察源）。零 DOM / DB / fetch / provider / 权威 / executor / writer /
+         订阅 / 路由 / 持久化 / 缓存 / 唤醒；无时钟、无随机、JSON-serializable、深冻结。
+         本阶段 **Production observers = 0**：Cinema / Co-read / Voice / Presence / Timeline /
+         Memory retrieval / Activity runtime 零接线，既有机制与 P23/P24/P25 冻结栈逐字节未变，
+         DB_VER 与 store 列表未变。套件覆盖 O1–O26 语义与纯度 + G1–G9 生产非接线/冻结守卫。
+         纯 Node、零浏览器、零网络。 */
+      ['test_observation_core.js'],
+      /* P26-3 · Session Runtime Contract Foundation（**FOUNDATION / CONTRACT / PURE CORE /
+         AUDIT-FIRST / NO PRODUCTION INTEGRATION**）：建立 assets/js/session-core.js ——
+         只回答"什么是 Session / 谁拥有 / 生命周期 / 与 Activity·Observation·Event·Resource 的关系"：
+         Session = a bounded runtime lifecycle containing participants, state transitions,
+         and temporal continuity（不是 Event / Observation / Capability / Canonical Record / Resource）。
+         最小 shape：sessionId / domain / participants(canonical id，禁 nickname，集合语义) /
+         status / createdAt（+ updatedAt / endedAt）；生命周期闭集 = created → active → ended / failed
+         （**paused NOT PRESENT**：P25-3E 已证明活动级 pause 不存在），终态不可再迁移；
+         状态迁移表 deterministic、失败返回 result 不抛异常、时间必须注入（不读 Date.now）。
+         零 DOM / DB / 传输 / 事件总线 / 观察依赖 / 权威 / executor / 资源仲裁 / 订阅 / 唤醒；
+         无随机、JSON-serializable、深冻结。本阶段 **Production sessions = 0**：
+         Cinema / Voice / Co-read / Activity / Group Runtime / P23 / Active Message 零接线，
+         既有机制与 P23/P24/P25 冻结栈逐字节未变，DB_VER 与 store 列表未变。
+         套件覆盖 S1–S19 语义与纯度 + 迁移表/失败语义 + G1–G9 生产非接线/冻结守卫。
+         纯 Node、零浏览器、零网络。 */
+      ['test_session_core.js'],
+      /* P26-4 · Resource Arbitration Boundary Foundation（**FOUNDATION / CONTRACT / PURE CORE /
+         AUDIT-FIRST / NO PRODUCTION INTEGRATION**）：建立 assets/js/resource-core.js ——
+         只回答"什么是 Resource、谁声明需求、何时竞争、谁仲裁"：
+         Resource = a constrained entity whose simultaneous usage requires explicit ownership
+         or arbitration（不是 Capability / Session / Observation / Event / Permission）。
+         最小形状：resource = { resourceId, domain, capacity (+ 可选 resourceClass) }；
+         claim = { claimId, resourceId, requesterId(canonical id), amount?, sessionId? }；
+         仲裁结果闭集 = **grant / conflict / deny**（**无** preempt、**无** priority、**无** queue、
+         **无** lease/TTL）；holders 由 caller 提供（Core 不持有状态、不持久化）。
+         零硬件 / 传输 / DB / scheduler / priority / 抢占 / 会话所有权 / capability 执行 /
+         观察依赖 / 事件总线；无时钟、无随机、JSON-serializable、深冻结。
+         本阶段 **Production resources = 0**：Cinema / Voice / Camera / Microphone / GPU /
+         Model Router / Mobile 零接线，既有机制与 P23/P24/P25/P26-1·2·3 冻结栈逐字节未变，
+         DB_VER 与 store 列表未变。套件覆盖 R1–R16 语义与纯度 + G1–G9 生产非接线/冻结守卫。
+         纯 Node、零浏览器、零网络。 */
+      ['test_resource_core.js'],
+      /* P26-5 · Feedback Boundary Foundation（**FOUNDATION / CONTRACT / PURE CORE /
+         AUDIT-FIRST / NO PRODUCTION INTEGRATION**）：建立 assets/js/feedback-core.js ——
+         只回答"什么是 Feedback、什么信息可以进入它、与 Event/Observation/Agent Wake/Autonomy
+         的边界"：Feedback = a derived signal that evaluates whether existing facts or
+         observations require further attention（不是 Event / Observation / Action / Command /
+         Decision）。最小形状：feedbackId / domain / source / reason（**机器可读原因码**，非自由文本）/
+         timestamp（+ 可选 severity ∈ low·medium·high / relatedEntity / derivedFrom）。
+         severity 属反馈本身；**priority / urgency / rank / schedule 属 policy**，契约显式
+         `policy-only-field` 拒绝。禁止 full payload / canonical body / memory dump。
+         Feedback 不执行 capability、不调 Authority、不创建 Action、不唤醒 Agent
+         （Feedback Available ≠ Agent Wake；无 triggerAgent）；零 Event Bus / Router / Scheduler /
+         Policy Engine / 持久化 / store / queue；无时钟、无随机、JSON-serializable、深冻结。
+         本阶段 **Production feedback = 0**：Cinema / Voice / Activity / Active Message /
+         Role Letter / Autonomy Core / Orchestration 零接线，既有机制与 P23/P24/P25 及
+         P26-1..4 冻结栈逐字节未变，DB_VER 与 store 列表未变。
+         套件覆盖 F1–F16 语义与纯度 + G1–G9 生产非接线/冻结守卫。纯 Node、零浏览器、零网络。 */
+       ['test_feedback_core.js'],
+       /* P26-6 · Feedback Consumption & Wake Eligibility Contract（**FOUNDATION / CONTRACT /
+          PURE CORE / AUDIT-FIRST / NO PRODUCTION INTEGRATION**）：建立
+          assets/js/feedback-consumption-core.js —— 只回答"一条 Feedback 被消费后，系统可以得出
+          什么注意力处理结论？"。Feedback Consumption = a pure evaluation of a Feedback signal
+          against explicit context to determine its attention disposition（不是 handling side effect /
+          execution / notification / model call）。处置闭集只有三个：IGNORE（无需进一步 runtime
+          attention）/ OBSERVE（有意义上报状态/telemetry/UI/未来上下文）/ WAKE_ELIGIBLE（**有资格**
+          进入未来 wake request policy，**不是** Wake）。原因码闭集：wake-eligible / default-observe /
+          duplicate / cooldown / cancelled / invalid-feedback / invalid-context。
+          context 是**闭集布尔字段**：wakeCapable / cancelled / alreadyConsumed / recentEquivalent /
+          cooldownActive（cancelled·dedupe·cooldown 均由 caller 注入；Core 不持时钟、不持 dedupe store）；
+          FORBIDDEN_CONTEXT_FIELDS 显式拒绝 metadata / payload / priority / urgency / rank / retry /
+          runtimeAvailable / userPresent / sessionActive / attention / score / energy / budget 及一切
+          凭据类字段（apikey/token/secret/credential/authorization…），context 不得成为凭据逃生舱。
+          **severity / priority 完全不参与判定**：high severity ≠ automatic WAKE_ELIGIBLE（由显式
+          consumption policy 决定）；未引入 DEFER（"以后可能 wake"属未来 scheduler / cooldown /
+          wake runtime，非本契约）；eligibility ≠ deliverability（runtime unavailable 不改变资格）。
+          Wake Ladder 只到 WAKE_ELIGIBLE：Feedback Exists → Consumption → WAKE_ELIGIBLE →
+          [future Wake Request] → [future Runtime Wake] → [future Planner] → Action → P25 Autonomy →
+          Domain Authority → Executor。不调 P25 Autonomy、不选 Capability、不调模型、不订阅 Event、
+          不读 Observation、不改 Session、不做 Resource arbitration、不通知、不持久化 / 无 store /
+          无 queue / 无 scheduler / 无 router / 无 Event Bus；无时钟、无随机、JSON-serializable、
+          深冻结、Feedback 只读不改。本阶段 **Production consumers = 0 · Production wakes = 0**：
+          Active Message / Diary / Role Letter / Moments / Activity / Cinema / Voice / P24 /
+          Middle Brain / Agent Runtime 零接线，既有机制与 P23/P24/P25 及 P26-1..5 冻结栈逐字节未变，
+          DB_VER 与 store 列表未变。套件覆盖 C1–C34 语义与纯度 + LM1·LM2 循环守卫 + G1–G3
+          生产非接线/冻结守卫。纯 Node、零浏览器、零网络。 */
+       ['test_feedback_consumption_core.js'],
+       /* P26-7 · Wake Request Boundary Foundation（**FOUNDATION / CONTRACT / PURE CORE /
+          AUDIT-FIRST / NO PRODUCTION INTEGRATION**）：建立 assets/js/wake-request-core.js ——
+          只回答"一个已经 eligibility 的信号如何表达'请未来 runtime 考虑一次激活'"。
+          Wake Request = a request object representing that a previously eligible signal
+          asks a future runtime to consider activation（不是 Wake / Agent execution /
+          Action / Capability call / Permission）。边界阶梯只到 Wake Request：
+          Feedback Exists → Consumption → WAKE_ELIGIBLE → **Wake Request** → STOP
+          （之后 Wake Runtime → Planner → Action → P25 Autonomy 全为未来阶段）。
+          唯一合法生产者是 Feedback Consumption：createWakeRequest 只能从
+          disposition = WAKE_ELIGIBLE 的 P26-6 消费结果创建（OBSERVE/IGNORE ⇒ not-eligible；
+          裸 feedback ⇒ not-eligible，不得绕过 Consumption；feedback 与 consumption 身份
+          不一致 ⇒ feedback-mismatch）。最小身份（闭集）：wakeRequestId（确定性 'wr_<token>'，
+          注入优先）/ feedbackId / domain / source / reason / createdFrom（默认 'consumption'）
+          + 可选 derivedFrom / causationId + 固定 version 'wake-request/v1'。处置词汇**来自**
+          P26-6（同一引用，不复制第二份）；feedback 校验**委托** P26-5。
+          禁止：priority/urgency/rank/deadline（policy-only-field）；queue/pendingRequests/waitingList；
+          timer/retry/backoff/expiration；WakeRequestStore/去重集合（caller 提供 alreadyRequested）；
+          持久化 / 数据库 / localStorage；Event Bus（publish/subscribe/emit/consume）；
+          运行时激活 / 模型 / planner / autonomy / authority / executor；无时钟、无随机、
+          JSON-serializable、深冻结。本阶段 **Production wake request = 0**：Active Message /
+          Diary / Role Letter / Activity / Cinema / Voice / Middle Brain / P24 零接线，
+          既有机制与 P23/P24/P25 及 P26-1..6 冻结栈逐字节未变，DB_VER 与 store 列表未变。
+          套件覆盖 W1–W23 语义与纯度 + G1–G3 生产非接线/冻结守卫。纯 Node、零浏览器、零网络。 */
+       ['test_wake_request_core.js'],
+       /* P26-8 · Wake Runtime Boundary Foundation（**FOUNDATION / CONTRACT / PURE CORE /
+          AUDIT-FIRST / NO PRODUCTION INTEGRATION**）：建立 assets/js/wake-runtime-core.js ——
+          只回答"一条 Wake Request 被谁消费、什么时候可以考虑 activation"。
+          Wake Runtime = a runtime boundary that evaluates whether a Wake Request may proceed
+          toward activation（不是 Agent Runtime / Planner / Executor / Authority / Scheduler）。
+          边界阶梯只到 Wake Runtime 的 activation 判定：
+          Feedback → Consumption → WAKE_ELIGIBLE → Wake Request → **Wake Runtime** → STOP
+          （之后 Activation → Planner → Action → P25 Autonomy 全为未来阶段）。
+          Activation 闭集：ACTIVATE_ELIGIBLE / BLOCKED / REJECTED（**不用** ALLOW/DENY/EXECUTE，
+          与 P25 决策词汇不重叠）。context 为**闭集布尔字段**且**显式注入**：
+          runtimeAvailable / cancelled / alreadyActive；缺字段 fail closed；
+          FORBIDDEN_CONTEXT_FIELDS 显式拒绝 metadata/payload/provider/model/prompt/memory dump/
+          apiKey/token/credential/authorization 及一切凭据类字段。判定顺序（deterministic）：
+          invalid-request → invalid-context → cancelled(REJECTED) → already-active(BLOCKED) →
+          runtime-unavailable(BLOCKED) → activate-eligible。请求校验**委托** P26-7
+          （唯一实现，不复制第二份）；identity 审计结论**不引入 activationId**（判定非实体，
+          无 random UUID）；causation 保留 feedbackId / wakeRequestId / causationId。
+          禁止：start agent / call model / create action / call authority / execute capability；
+          queue / pending wake / retry queue；timer / cron / retry / backoff；
+          persistence / store / activation history；Event Bus（publish/subscribe/consume）；
+          Session 创建（session 只作 context 事实，sessionActive 被拒）；Resource 仲裁
+          （resourceAvailable 被拒）；无时钟、无随机、JSON-serializable、深冻结。
+          本阶段 **Production wake runtime = 0**：Agent Runtime / Active Message / Diary /
+          Role Letter / Activity / Cinema / Voice / Middle Brain / P24 零接线，既有机制与
+          P23/P24/P25 及 P26-1..7 冻结栈逐字节未变，DB_VER 与 store 列表未变。
+          套件覆盖 W1–W23 语义与纯度 + G1–G3 生产非接线/冻结守卫。纯 Node、零浏览器、零网络。 */
+       ['test_wake_runtime_core.js'],
+       /* P26-9 · Activation Intent Boundary Foundation（**FOUNDATION / CONTRACT / PURE CORE /
+          AUDIT-FIRST / NO PRODUCTION INTEGRATION**）：建立 assets/js/activation-intent-core.js ——
+          只回答"一条 ACTIVATE_ELIGIBLE 结果如何形成未来 activation 请求的意图"。
+          Activation Intent = a pure intent object indicating that a runtime activation may be
+          requested in the future（不是 Agent Wake / Agent Start / Planner Call / Action / Capability）。
+          边界阶梯只到 Activation Intent：
+          Feedback → Consumption → WAKE_ELIGIBLE → Wake Request → Wake Runtime →
+          ACTIVATE_ELIGIBLE → **Activation Intent** → STOP
+          （之后 Agent Runtime → Planner → Action → P25 Autonomy 全为未来阶段）。
+          唯一合法来源是 Wake Runtime 的 ACTIVATE_ELIGIBLE 判定：createActivationIntent 只能从
+          ok:true 且 activation:ACTIVATE_ELIGIBLE 的 P26-8 结果创建（BLOCKED/REJECTED/ok:false ⇒
+          not-activatable；裸 Wake Request 当第一参数 ⇒ invalid-wake-result，不得绕过）；
+          request.wakeRequestId 必须与结果一致（否则 request-mismatch）。identity 审计结论
+          **需要 activationIntentId**（意图是新对象）：确定性 'ai_<token>'，注入优先，无 random UUID。
+          causation 保留 feedbackId / wakeRequestId / causationId（options 优先否则随请求携带）/
+          derivedFrom；**无 state**（created/consumed/expired 属未来队列生命周期）。
+          请求校验**委托** P26-7；激活词汇表**来自** P26-8（同一引用，不复制第二份）。
+          禁止：start agent / call model / call planner / call autonomy / call authority；
+          intent queue；timer/retry/backoff；intent store / activation history；Event Bus；
+          ActivationManager / ActivationService；无时钟、无随机、JSON-serializable、深冻结、
+          RESERVED/POLICY-ONLY 字段显式拒绝（metadata/payload/priority/urgency/retry…）。
+          本阶段 **Production activation intent = 0**：Agent Runtime / Active Message / Diary /
+          Role Letter / Activity / Cinema / Voice / Middle Brain / P24 零接线，既有机制与
+          P23/P24/P25 及 P26-1..8 冻结栈逐字节未变，DB_VER 与 store 列表未变。
+          套件覆盖 A1–A20 语义与纯度 + G1–G3 生产非接线/冻结守卫。纯 Node、零浏览器、零网络。 */
+       ['test_activation_intent_core.js'],
+       /* P26-10 · Activation Runtime Boundary Foundation（**FOUNDATION / CONTRACT / PURE CORE /
+          AUDIT-FIRST / NO PRODUCTION INTEGRATION**）：建立 assets/js/activation-runtime-core.js ——
+          只回答"一条 Activation Intent 如何进入未来 agent activation pipeline"。
+          Activation Runtime = a runtime boundary that accepts Activation Intent and evaluates
+          whether it may enter an agent activation pipeline（不是 Agent Runtime / Planner /
+          Executor / Authority）。边界阶梯只到 Activation Runtime 的 readiness 判定：
+          Feedback → Consumption → Wake Request → Wake Runtime → Activation Intent →
+          **Activation Runtime** → STOP（之后 Agent Runtime → Planner → Action → P25 全为未来阶段）。
+          readiness 闭集：READY / BLOCKED / REJECTED（**不用** ALLOW/DENY/EXECUTE，与 P25 决策
+          词汇不重叠）。context 为**闭集布尔字段**且**显式注入**：runtimeAvailable /
+          targetAvailable / cancelled；缺字段 fail closed；FORBIDDEN_CONTEXT_FIELDS 显式拒绝
+          model/provider/prompt/memory dump/apiKey 及一切凭据类字段。判定顺序（deterministic）：
+          invalid-intent → invalid-context → cancelled(REJECTED) → target-unavailable(BLOCKED) →
+          runtime-unavailable(BLOCKED) → ready。identity 审计结论**不引入 activationRequestId**
+          （结果是对已有 Intent 的判定，复用 activationIntentId；无 random UUID）；causation 保留
+          activationIntentId / wakeRequestId / feedbackId / causationId。Intent 校验**委托** P26-9。
+          禁止：createAgent / wakeAgent / runAgent；call model / create action / call planner /
+          call authority；queue；timer/retry/backoff；store/history；Event Bus；
+          ActivationManager / AgentStarter / WakeService；无时钟、无随机、JSON-serializable、深冻结。
+          本阶段 **Production activation runtime = 0**：Agent Runtime / Active Message / Diary /
+          Role Letter / Activity / Cinema / Voice / Middle Brain / P24 零接线，既有机制与
+          P23/P24/P25 及 P26-1..9 冻结栈逐字节未变，DB_VER 与 store 列表未变。
+          套件覆盖 B1–B21 语义与纯度 + G1–G3 生产非接线/冻结守卫。纯 Node、零浏览器、零网络。 */
+       ['test_activation_runtime_core.js'],
+       /* P26-C · Runtime Architecture Closure Guard（**CLOSURE / ARCHITECTURE AUDIT /
+          READ-ONLY / NO NEW FOUNDATION LAYER / NO PRODUCTION INTEGRATION**）：
+          保护 P26-1..10 十个 pure core 的冻结状态与"生产零接线"事实，并断言：
+          C1 十个 foundation 文件存在；C2 逐字节哈希冻结（含 P26-7..10）；
+          C3 生产 HTML 不加载任何 P26 core；C4 DB_VER=24 且无任何 P26 概念 store；
+          C5 每层闭集 API（冻结的导出函数集合）；C6 依赖 DAG 正确（P26-6→5 / 7→{5,6} /
+          8→7 / 9→{7,8} / 10→9；P26-1..4 互相独立；foundation 层不得依赖 P23/P24/P25 生产模块）；
+          C7 生产消费者 = 0；C8 P26-0 基线与 P26-CLOSURE 文档存在。
+          审计结论（见 docs/P26-CLOSURE.md）：P26 CLOSURE: PASS WITH NOTES / P26 LOGICALLY FROZEN；
+          P26-1..4 = ESSENTIAL（对应 P26-0 HARD）；P26-5..8 = JUSTIFIED_BUT_FUTURE；
+          P26-9/P26-10 = REDUNDANT_CANDIDATE（只审计、不删除）；EVENT BUS NOT REQUIRED YET；
+          Agent Runtime Entry verdict = STOP_FOUNDATION（不新增 P26-11）。纯 Node、零浏览器、零网络。 */
+       ['test_p26_closure_guard.js'],
+       /* P27-0 · Activity Production Wiring Guard（**READ-ONLY evidence guard**）：
+          把 P27-0 审计到的 Activity 生产事实固定下来，使后续 P27-x 一旦漂移立即变红：
+          A1 canonical storage（`activities` store + `ib_activity_current_v1` 指针 + DB_VER=24，
+          且无第二个 Activity canonical store）；A2 唯一 canonical writer = activity-runtime.js
+          （Cinema/Co-read/communication/app-store 一律经 IB.activity.*）；A3 API surface 冻结
+          且 finish/pause/resume **NOT PRESENT**；A4 `status:'finished'` 只有读侧、生产零 writer；
+          A5 `activity.mark` 无生产调用者；A6 `createActivity` 只被 Cinema + Co-read 调用；
+          A7 Chat 仍拥有 chatMessages canonical authority（activity.send 委托 sendChatMessage）；
+          A8 Activity/Cinema/Co-read/communication **零引用 P26-5..10**；A9 HTML 静态加载
+          activity-runtime.js + coread.js，Cinema 经 apps/catalog 惰性加载；A10 未引入 Event Bus。
+          本守卫不修改任何生产代码。纯 Node、零浏览器、零网络。 */
+       ['test_p27_0_activity_wiring_guard.js'],
+       /* P27-1 · Activity Lifecycle Closure Guard（**PRODUCTION INTEGRATION / LIFECYCLE
+          SEMANTICS ONLY / MINIMAL CHANGE / NO NEW WRITER / NO SCHEMA MIGRATION**）：
+          L1 `finishActivity` 存在并经既有 writer 暴露；L2 pause/resume 仍 NOT PRESENT
+          （Cinema pause 只属 media transport）；L3 finish 不自己写库（只经 saveActivity，
+          只改已有 status，无 finishedAt）；L4 **vm 语义探针**真实执行 finishActivity
+          （create→setCurrent→finish 置 finished + 清指针；第二次幂等零写；setCurrent 返回 null；
+          send 返回 activity_finished；nudge 返回 false）；L5 canonical writer 仍唯一
+          （只有 activity-runtime.js 写 activities）；L6 pointer 不是 authority / 不是 session
+          （无 sessionId / 无 session-core / 无 start-end-transition）；L7 无迁移（DB_VER=24、
+          无新 store、无新字段）；L8 Cinema close 仍 clearCurrent（未转 finish）；
+          L9 Co-read leave 仍 clearCurrent、progress/bookmark 语义不变；
+          L10 零 P26-5..10 引用、无 Event Bus。纯 Node、零浏览器、零网络。 */
+       ['test_p27_1_activity_lifecycle_guard.js'],
+       /* P27-2 · Activity Created Domain Event Guard（**PRODUCTION INTEGRATION / MINIMAL EVENT
+          WIRING / ONE EVENT ONLY / NO EVENT BUS / NO MANAGER / NO MIGRATION**）：
+          唯一接线 —— createActivity 的 canonical 写入（dbPut('activities')）成功之后，
+          经 P26-1 createDomainEvent 产生 `activity.created`（domain='activity', type='created',
+          entityId=activityId, actorId=roleId, origin='runtime', timestamp=createdAt）。
+          边界证据（vm + 桩真实执行）：E1 成功创建恰好一个事件；E2 事件携带 activityId；
+          E3 事件**不含** Activity 正文/聊天历史/记忆/帧/字幕/凭证且小于记录本身；
+          E4 canonical writer 失败 ⇒ null 且零事件；E5 事件失败（抛错 / ok:false / 核心缺失）
+          ⇒ Activity **仍创建**（不回滚）；E6 无 Event Bus / Manager / event store，DB_VER=24；
+          E7 接缝在 canonical 写入之后、恰一个调用点、不复制 P26-1 契约、**仅此一个事件**、
+          生产 HTML 只加载这一个 P26 core。生产改动仅两处：activity-runtime.js 的 helper+调用，
+          以及 InternalBeyond.html 新增 domain-event-core.js（放在 chat-core / voice-message-core 之后）。
+          本次同时**有意重新基线** P26-1 / P26-closure / P26-0 / P25-3E / P26-2..5 中冻结的
+          activity-runtime 哈希与 emitter / HTML 断言。纯 Node、零浏览器、零网络。 */
+       ['test_p27_2_activity_created_event_guard.js'],
+       /* P27-3 · Activity Observation Guard（**PRODUCTION INTEGRATION / MINIMAL OBSERVATION
+          WIRING / DOMAIN-OWNED GETTERS / NO OBSERVATION MANAGER / NO REGISTRY / NO MIGRATION**）：
+          唯一接线 —— IB.activity.getObservation(activityId, {observedAt?}) 对 canonical Activity
+          状态做**只读**观察（domain='activity', source='activity.state', entityId=activityId,
+          valueRef='activities/<activityId>'），经 P26-2 createObservation 创建（不复制契约）。
+          边界证据（vm + 桩真实执行，真 event core + 真 observation core）：O1 观察合法；
+          O2 entityId 指向正确 Activity；O3 不复制完整 Activity 对象；O4 无 subtitle/frame/page/
+          chat 正文泄漏；O5 **观察读取 0 写入**；O6 不可用来源不改变状态且非法 id 返回 null；
+          O7 观察**不发** Domain Event；O8 无 Feedback/Wake/Agent 行为；O9 无 manager/registry/
+          store/queue/scheduler 且只有一个观察入口；O10 DB_VER 仍 24 且无 observation store；
+          O11 生产只加载 domain-event-core + observation-core 两个 P26 core；O12 P27-2
+          activity.created 行为保持；O13 核心缺失安全（null + 0 写入）。
+          候选 current / subtitle / frame / page / progress 全部 **DEFER**（见 docs 报告 §2）。
+          production 改动仅两处：activity-runtime.js 新增只读 getter，InternalBeyond.html
+          新增 observation-core.js（紧随 domain-event-core.js）。冻结基线更新分类：
+          observation-core 守卫/O26-closure/P27-2 为**语义**更新（A），其余为**整文件哈希**更新（B）
+          —— 记录 HASH_COUPLING_DEBT 交 P27-C。纯 Node、零浏览器、零网络。 */
+       ['test_p27_3_activity_observation_guard.js'],
+       /* P27-4 · Activity Session Projection Guard（**PRODUCTION INTEGRATION / READ-ONLY
+          SESSION PROJECTION / MINIMAL WIRING / NO SESSION STORE / NO SESSION MANAGER /
+          NO MIGRATION**）：唯一接线 —— IB.activity.getSession(activityId) 把 canonical
+          Activity 记录**只读投影**成 P26-3 Session（复用 createSession 构造器 + validateSession
+          校验；**不**调用 transitionSession；**不**调用带写副作用的 resolveActivity）。
+          sessionId = activityId（复用，不新增持久身份）；participants = [roleId]（role-only，
+          **不发明** user/self/me）；status: active→active、finished→ended；createdAt ← rec.createdAt；
+          updatedAt ← rec.updatedAt；**无 endedAt**（Activity 无 finishedAt，P26-3 中 endedAt 可选）。
+          **不需要 current 指针**（记录独立充分）。边界证据（vm + 桩真实执行）：S1 合法 Session；
+          S2 sessionId 映射且不新增持久字段；S3 role-only 参与者；S4 active 映射；S5 finished→ended
+          且不发明 endedAt；S6 缺失→null；S7 投影零写入；S8 指针缺失≠Session 结束；S9 陈旧指针无清理写；
+          S12 不发事件；S13 不产生 Observation；S14 无 Feedback/Wake/Agent；S15/S15b 无 Manager/
+          Store/Registry 且函数体不调用 resolveActivity、不写存储；S16 DB_VER 24；S17 只加载 3 个预期
+          P26 core；S18/S19 P27-2/P27-3 保持；S20 核心缺失安全；S21 未知状态 fail closed。
+          production 改动仅两处：activity-runtime.js 新增只读投影 getter，InternalBeyond.html
+          新增 session-core.js。冻结基线更新：session/observation/closures/P27-1/P27-2/P27-3 为
+          **语义**（A），其余为**整文件哈希**（B）—— 第 3 次 B 类重复 ⇒
+          HASH_COUPLING_DEBT = CONFIRMED STRUCTURAL TEST DEBT（交 P27-C）。纯 Node、零浏览器、零网络。 */
+       ['test_p27_4_activity_session_projection_guard.js'],
+       /* P27-C · Activity Production Integration Closure Guard（**CLOSURE / PRODUCTION-INTEGRATION
+          AUDIT / TEST-ARCHITECTURE CLEANUP / NO NEW DOMAIN FEATURE / NO NEW P26 WIRING /
+          NO RESOURCE INTEGRATION / NO EVENT BUS**）：断言 P27 高层冻结架构 C1–C12 ——
+          C1 canonical Activity authority 唯一（`core.js` 仅既有备份导入路径）；
+          C2 唯一生产 Activity Domain Event = activity.created（下游于 canonical 写入）；
+          C3 唯一生产 Activity Observation = activity.state（只读、引用式）；
+          C4 getSession 只读投影（函数体内无 dbPut/dbDelete/localStorage/resolveActivity/
+          transitionSession/createDomainEvent/createObservation）；C5 P27-5 Resource 未集成；
+          C6 P26-5..10 未接线；C7 DB_VER=24 且零新 store；C8 无 Event Bus/Manager/Store；
+          C9 生产只加载 domain-event + observation + session 三个 P26 core；
+          C10 Cinema/Co-read 所有权保持（哈希 + 无 finish/endSession）；C11 P23/P24/P25 边界；
+          **C12 HASH_COUPLING_DEBT 结构性修复**：7 个既有守卫不再依赖 activity-runtime 整文件
+          哈希，改用 tests/activity-partitions.js 的**语义分区**断言；并在**字符串副本**上做
+          变异测试证明"canonical writer / pointer 语义变化必被发现"，而"新增无关 getter /
+          改 P27 适配器不触发既有分区重签"。本阶段**零 production 变更**。纯 Node、零网络。 */
+       ['test_p27_closure_guard.js'],
+       /* P28-0 · Runtime Entry Guard（**READ-ONLY ARCHITECTURE AUDIT / EVIDENCE-FIRST /
+          NO PRODUCTION MUTATION / NO NEW FOUNDATION / NO NEW MANAGER / NO EVENT BUS**）：
+          冻结 P28-0 审计到的运行时事实 —— R1 `assets/js/agent-runtime.js` 是**真实存在且被 HTML
+          加载**的 ModelPort 运行时（`IB.runtime.instance` + resolveModel + execute；retry/round/FC
+          明确留在既有执行器）；R2 它被 **Active Message / Diary / Moments** 三个生产域**真实调用**
+          （`runtime.execute(` + 可回滚开关 runtimeExecuteEnabled / runtimeMomentsExecuteEnabled）；
+          R3 **P25-3A 未接线**（orchestration core / capability registry 不在 HTML，且生产零调用
+          runAgentPlan/validateAgentPlan/createCapabilityRegistry）；R4 `active_agent_runtime` 是
+          **Economy consumer 身份**（锚点 `runtime/component-registry.js#active`；装配只绑它；
+          其它 consumer id 零绑定；不存在同名模块）；R5 P27 三项输出（activity.created /
+          activity.state / getSession）生产**消费者仍为 0**；R6 Group Runtime（P24）由
+          communication.js 生产调用；R7 tool loop 归 chat 执行器（autoContinue + maxRounds）；
+          R8 Middle Brain 边界（生成后收口，不进入 model seam）；R9 DB_VER=24 且无 runtime 类
+          store；R10 无新增 Bus/Manager。本阶段**零 production 变更**。纯 Node、零浏览器、零网络。 */
+       ['test_p28_0_runtime_entry_guard.js'],
+       /* P28-1 · Runtime Boundary Freeze Guard（**ARCHITECTURE DECISION CLOSURE / BOUNDARY
+          FREEZE / NO PRODUCTION IMPLEMENTATION / NO NEW RUNTIME / NO CONVERGENCE /
+          NO EVENT BUS / NO SCHEMA CHANGE**）：把 P28 的运行时边界冻结为**语义不变量**
+          （F1–F15，**不用整文件哈希**）——
+          F1 `IB.runtime` 仍是生产加载的共享模型执行缝且被 Active Message / Diary / Moments 消费；
+          F2 P25-3A 未被生产加载；F3 无生产 runAgentPlan 调用者；F4 `active_agent_runtime` 仍是
+          Economy consumer 身份（锚点 runtime/component-registry.js#active，非模块）；F5 P27 输出
+          消费者状态冻结（0 / 既有更丰富路径 getActivityContext 仍在）；F6 P26-5..10 未接线；
+          F7 P26-9/10 非生产；F8 无 AgentRuntimeManager/ConsumerManager/Event Bus；
+          F9 无 runtime/session/wake store；F10 DB_VER=24；F11 P23 交付所有权完好；
+          F12 P24 群参与所有权完好；F13 域权威/域 writer 仍属域（IB.runtime 零写库零裁决）；
+          F14 IB.runtime 保持窄（无 timer / 无 chatMessages / 无 queue/typing / retry 留在执行器）；
+          F15 不存在统一 runtime 生产入口。本阶段**零 production 变更**。纯 Node、零网络。 */
+       ['test_p28_1_runtime_boundary_freeze.js'],
+      /* P24-M1 · Group Turn Identity Foundation —— 群聊 identity-only 地基：
+         groupTurnId（由触发本回合的 canonical user message id 确定性派生）/
+         MemberTurn turnId（与 P23 turnIdFor 逐字等值）/ speakerId（apiConfigs.id）/
+         groupOrder（成员回合序号，不替代 sequenceIndex）。覆盖确定性、跨模块等值、
+         多单元同回合、多成员独立、legacy 兼容、单聊隔离、Home Node payload 往返、
+         秘密拒绝、不产生 parent/groupTurn 行、以及"绝不复制 P23 的排序·队列·拆句·
+         模态·voice 契约"的边界断言。纯 Node，零浏览器、零网络、零真实 provider。 */
+      ['test_group_turn_identity.js']
     ]
   },
   {
@@ -1115,6 +1746,10 @@ const GROUPS = [
       ['test_tts_voices.js'],
       ['test_mimo_voiceclone.js'],
       ['test_mimo_voicedesign.js'],
+      /* P23 Phase 1：Voicebox 本地运行时适配器 —— 上游 REST contract 的请求 shape /
+         profile 解析 / 轮询 / 错误分类 / offline 不回落别的 provider，最后用真实 Bridge
+         子进程验证「Voicebox offline 不影响纯文字聊天与旧 TTS 路径」。 */
+      ['test_voicebox_provider.js'],
       ['test_active_http.js'],
       /* M1-A：Home Node canonical chat authority（真实 HTTP + 临时数据目录） */
       ['test_home_node_http.js'],
@@ -1199,6 +1834,7 @@ const GROUPS = [
     name: 'browser',
     note: 'Chrome / Edge 集成（串行执行）',
     tests: [
+      ['test_recovery_webcore_adapter_browser.js'],
       ['test_game_smoke.js'],
       ['test_chat_smoke.js'],
       ['test_workspace_smoke.js'],
@@ -1242,6 +1878,7 @@ const GROUPS = [
       ['test_bgai_gate.js'],
       ['test_chat_smoke_provider_contract.js'],
       ['test_easteregg.js'],
+      ['test_secret_routes_cdp.js'],
       ['test_memory_consolidation.js'],
       ['test_memory_lyric_gate.js'],
       ['test_memory_repair_dryrun.js'],
@@ -1282,6 +1919,126 @@ const GROUPS = [
       ['test_runtime_convergence_diary.js'],
       ['test_runtime_convergence_phase4.js'],
       ['test_context_convergence_c1.js'],
+      /* P24-M1.1 · 群聊 trace runtime binding 回归（真实浏览器 + 真实群聊回合）：
+         修复的缺陷是"群聊分支引用裸 `_mbTrace`（唯一 var 声明在单聊分支）⇒ 每个成员
+         回合都抛 TypeError 且被成员级 catch 吞掉 ⇒ assistant message = 0"。
+         本测试在三条件下各发一次真实群聊：sink 存在 / sink 缺失 / sink 自身抛错，
+         断言 canonical 回复照常落库、M1 identity metadata（groupTurnId / speakerId /
+         groupOrder / turnId / sequenceIndex）确实进入消息，且单聊不受影响。 */
+      ['test_group_runtime_trace_binding.js'],
+      /* P24-M2 · Speaker Identity & Visibility Foundation（身份读路径迁移）：
+         canonical `metadata.speakerId` 取代 `senderName === selfName`；同名角色不再
+         互相把对方的发言当成"自己说过的"；legacy 走唯一精确匹配、歧义 fail closed；
+         不对称安全规则（UNKNOWN 永不判 SELF）；不写库、不回填、无迁移。
+         纯契约 A–O + 真实浏览器同名 E2E（检查真正进入 provider 请求的 context 角色映射）。 */
+      ['test_group_speaker_identity.js'],
+      /* P24-M3.2 · Participation Planner Production Integration（参与权威切换）：
+         canonical mention resolution（精确 token、无子串、同名 ambiguous ⇒ 不点名任何人）
+         → planParticipation → plan.entries → 逐成员 MemberTurn；groupOrder 取自 entry.order
+         （运行期失败留下合法空洞，不重编号）；planner 校验失败 / 抛错一律 FAIL CLOSED
+         （零 provider 调用、零 assistant 消息、无 legacy 回退）；被 omitted 的成员不参与
+         API 就绪校验；空计划不调用任何 provider。真实浏览器 + mock provider。 */
+      ['test_group_participation_integration.js'],
+      /* P24-M3.3.1 · GroupTurn Lifecycle & Cancellation Foundation（runtime-only）：
+         created → planning → planned → executing → completed | cancelled；
+         entry 边界检查 cancelled ⇒ 不启动 provider / 不产生 assistant 消息 / 不改 groupOrder；
+         stopStreaming 只翻 cancel 标记（当前流式成员仍走既有 st.ac.abort，无第二套 abort）；
+         已完成消息保留；单聊、fail closed、empty plan 行为不变。真实浏览器 + mock provider。 */
+      ['test_group_turn_cancellation.js'],
+      /* P24-M3.4.2 · Participation Policy Adapter Integration（resolver 接入 production
+         GroupTurn planning path）：真实 resolver 收到三份 undefined ⇒ 空 policy、window 回落
+         adapter fallback=2；再用最小 monkey-patch 预验证未来 policy 形状（max=2 由 planner
+         裁剪 / window=0 真的关闭 / max=0 走 planner 空计划而非 runtime skip / window=5+max=2
+         同时映射）；resolver 抛错 ⇒ derive 与 planner 都不被调用（fail closed）。
+         ★ 本套件使用 CDP（真实浏览器 + mock provider）⇒ 归 browser 组。 */
+      ['test_group_participation_policy_integration.js'],
+      /* P24-M3.4.3 · Group Participation Policy Storage（group-owned storage 契约）：
+         canonical owner = group object（groups store，keyPath='id'，schemaless，无 DB bump）；
+         shape = {maxResponders?,recentSpeakerWindow?}（非负有限整数，0 为显式值）；
+         字段缺失 = 未配置、两个都缺则删除整个键（绝不存 {}、不 backfill 老群）；
+         唯一 validation authority = core policy validator（storage 不复制第二套校验）；
+         唯一 storage authority = social.js set/clear helper；非法 update 原子（旧值不变）；
+         production 只从**已加载**的 group object 读 policy（不新增 DB 读），
+         invalid/unknown stored policy ⇒ 整轮 fail closed；policy 快照每 GroupTurn 一次
+         （轮内改 policy 下一轮才生效）。真实浏览器 + mock provider。 */
+      ['test_group_participation_policy_storage.js'],
+      /* P24-M3.4.4 · Group Participation Settings UI（UI + canonical mutation adapter）：
+         section 放在**既有**成员管理弹窗内（不新建页面/管理器）；保存模型与成员操作一致
+         = 即时保存，但每次 change 都是**一次原子 desired-state 保存**
+         （desired 空 ⇒ clear；否则 ⇒ exact replace；每次恰好 1 次 groups 写 = 无 partial save）。
+         「未设置」≠「0」（0 可显示/保存/重开恢复；fallback 2 只在 UI 里说明、绝不写库）；
+         非法输入被拒绝且不 clamp、旧 policy 不变；非法 stored policy → 显示"数据无效" +
+         「重置参与策略」（显式 reset，唯一能清掉非法 policy 的路径，绝不自动修复）。
+         真实浏览器 + 真实 IndexedDB + mock provider：E1–E7 证明 UI → canonical storage →
+         既有 production chain（planner 仍是唯一截断权威）。 */
+      ['test_group_participation_policy_ui.js'],
+      /* P24-M3.5.1A · Structured Target Identity Foundation（显式 targeting 的地基）：
+         text mention → canonical targetSpeakerIds（写入**群用户消息** metadata，始终写、
+         无 target 时是空数组）→ runtime projection → 既有 mentioned:boolean → planner v3。
+         冻结：field presence = structured authority（空数组也权威，绝不回退文本解析）；
+         field missing = legacy（走文本解析，不回填、不重写历史）；非法 structured ⇒ fail closed；
+         历史已退出成员的 id 允许留在事实里、projection 只映射当前参与者；数组顺序无语义
+         （canonical 写入按 participant 顺序）；每 GroupTurn 解析一次 + 投影一次 + 用户消息
+         恰好一次 canonical write；planner / planVersion / policy / P23 / MB / Memory 零改动。 */
+      ['test_group_explicit_targeting.js'],
+      /* P24-M3.5.1B · Historical Targeting Compatibility & Replay Hardening（hardening 阶段）：
+         structured 事实在历史读取中原样保留（含已退出成员的 id），成员映射只在 projection；
+         metadata 缺失/null/非 object ⇒ legacy（不炸历史）；corruption ⇒ TARGETING_CONTRACT fail closed
+         且绝不文本回退、不回显原值；rename / 改名碰撞 / 退群 / 重新加入 均不改写历史 fact；
+         历史读取、rename、成员变更、legacy 回退、corrupt 读取 ⇒ **0 次 chatMessages 写**；
+         display ≠ planning（损坏 metadata 仍能正常显示 content，不妨碍后续回合）；
+         provider history 不含 target ids；IDB 与 export→import 均保留 [ids] / [] / **missing** 三态区分；
+         静态证明 **不存在** 生产 GroupTurn replay（未来 replay MUST use persisted structured ids）。 */
+      ['test_group_targeting_history.js'],
+      /* P24-M3.5.2A · Dynamic Runtime State Foundation（runtime-only 准入队列 + hard gates）：
+         feature **默认关闭** ⇒ 与既有 static runtime 逐字等价（零额外模型调用 / 消息 / metadata）；
+         纯 helper：createDynamicRuntimeState / nextDynamicRuntimeEntry / mark* / snapshot，
+         校验 initial plan（speaker 与 order 唯一、order 非负整数、cap 合法；洞 0,2 合法），
+         hard gates = cancel（读 _gTurn.cancelled，**无第二 authority**）/ one MemberTurn per speaker /
+         removed deny / cap 不超 / muted 由 planner 准入、runtime 不否决；
+         DEFER/SILENT/INTERJECT 均**未实现**（INTERJECT 因无可实施人群与 identity/序号缺口而 deferred）。
+         真实浏览器：STATIC vs FOUNDATION 差分基线（provider 顺序/次数、canonical 行、groupOrder、
+         turnId 派生、DB 读写计数、metadata 键集合全等）+ 失败隔离 / 取消 / muted / removed / cap /
+         typing / 单聊。 */
+      ['test_group_dynamic_runtime.js'],
+      /* P29-0 · Identity Read-Path Closure（撤回 / 拍一拍等 ownership 读路径必须走
+         canonical id）：撤回目标的选择不再用 `senderName ===`（同名角色 A 会撤回 B 的
+         消息）。判定入口复用 M2 的 `resolveSpeakerId`/`classifyMessageForSpeaker`
+         （speakerId 优先；legacy 唯一精确名回退；同名歧义 ⇒ UNKNOWN ⇒ 永不 SELF）；
+         群聊透传本轮已有的 participants，单聊取当前角色一个参与者；
+         `_gMember === null` 的身份退化新增**可诊断信息**（计数 + 闭集日志，
+         不写 metadata / DB / prompt，fallback 语义不变）。
+         测试：I1 同名撤回隔离 · I2 speakerId 优先 · I3 legacy 保持 ·
+         I4 退化可诊断 · I5 无新 authority · I6 P24 不回归（真实浏览器 + 最小 mock provider）。 */
+      ['test_identity_read_path_closure.js'],
+      /* P29-3 · Workspace Actor Identity（canonical attribution preservation）：
+         producer 在 `_execWsOps` 当场保留 `actorId = cfg.id`（四类 runtime item：
+         read / op-feedback / run-output / tool-result），actor 仍是 display-only；
+         group reader `_gInjMine` 改 canonical-first（actorId 命中即归属；缺失 ⇒ legacy
+         唯一精确显示名；歧义/非法/无法解析 ⇒ not mine），无主条目保持既有首轮兜底；
+         1:1 take-all / image drain / projectFiles / session scope 均不变。
+         真实浏览器：四类 producer 形状 + cfg 边界（null/primitive/无 id）+ 同名隔离 +
+         canonical precedence + legacy 唯一与歧义 + foreign actorId + 无归属兜底。 */
+      ['test_workspace_actor_identity.js'],
+      /* P30-2 · Workspace Conversation Scope（P30-1 契约实施）：
+         producer 把既有 ictx 的 (friendId, threadId) 写入四类 runtime item（additive）；
+         consumer（群/1:1/tool continuation）只消费同会话条目，**不匹配项留在队列**；
+         scope 缺失（legacy / guard breaker / 手动脚本）保持旧行为（actor 规则 + 首轮兜底）；
+         比较键只来自 chat-core.conversationIdOf；image/blog 明确排除（各自 follow-up）。
+         覆盖 C1–C8（真实 producer/consumer + 源码守卫）。 */
+      ['test_workspace_conversation_scope.js'],
+      /* R4-2 · Workspace File Provenance：真实 Workspace writer 将 display label 与
+         canonical kind/id 一起写入 IndexedDB；reserved-label / legacy / partial canonical
+         的 archive collision routing canonical-first；export/import、mirror、reload 与
+         script writeback 均走真实浏览器 probe。 */
+      ['test_workspace_file_provenance.js'],
+      /* P30-5 · Blog Conversation Scope（P30-4 契约实施）：
+         `_execBlogReadOps(ops,scopeSrc)` 在 **request 创建时**捕获 request-origin scope 并写入
+         `_blogReqReg[uid]`；`_brAllow`/`_brDeny` 只从 registry 继承（不看 click-time active 会话）；
+         `_blogPendingReads` 带 scope、`_blogReadFeedback` 由 string[] 变为 scoped object[]（读侧兼容旧字符串）；
+         `_getBlogReadInjection(scopeFilter)` 两队列各自 take/keep（MATCH TAKE / MISMATCH KEEP，
+         不再清空）；自动续答仅在 origin 仍是活动会话时保留（canonical conversationId 比较）。 */
+      ['test_blog_conversation_scope.js'],
       ['test_understanding_admission.js'],
       ['test_understanding_generation.js'],
       ['test_understanding_thread.js'],

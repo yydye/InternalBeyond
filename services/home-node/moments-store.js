@@ -159,6 +159,7 @@ function createMomentsStore(deps) {
 
   let db = null;
   let opened = false;
+  let ownsDb = false;
 
   const SQL = {
     createRecords:
@@ -253,6 +254,7 @@ function createMomentsStore(deps) {
     }
     const { DatabaseSync } = sqlite;
     db = new DatabaseSync(dbFile);
+    ownsDb = true;
     db.exec('PRAGMA journal_mode = WAL');
     db.exec('PRAGMA synchronous = NORMAL');
     db.exec('PRAGMA foreign_keys = ON');
@@ -273,11 +275,38 @@ function createMomentsStore(deps) {
     return { ok: true, alreadyOpen: false, file: dbFile, schemaVersion: MOMENTS_SCHEMA_VERSION };
   }
 
+  /* RecoveryOnly attachment to a query-only connection; this deliberately
+     skips DDL, metadata initialization, and migration behavior in open(). */
+  function attachReadOnlyConnection(connection) {
+    if (opened || db) throw Object.assign(new Error('store-already-open'), { code: 'STORE_ALREADY_OPEN' });
+    if (!connection || typeof connection.prepare !== 'function' || typeof connection.exec !== 'function') {
+      throw Object.assign(new Error('readonly-connection-required'), { code: 'READONLY_CONNECTION_REQUIRED' });
+    }
+    db = connection;
+    try {
+      db.exec('PRAGMA query_only=ON');
+      const row = db.prepare('PRAGMA query_only').get();
+      const value = row && (row.query_only == null ? Object.values(row)[0] : row.query_only);
+      if (Number(value) !== 1) throw Object.assign(new Error('query-only-not-enabled'), { code: 'QUERY_ONLY_NOT_ENABLED' });
+      const schema = readMeta('moments_schema');
+      if (schema == null || Number(schema) > MOMENTS_SCHEMA_VERSION) throw Object.assign(new Error('schema-version-invalid'), { code: 'SCHEMA_VERSION_INVALID' });
+      opened = true;
+      ownsDb = false;
+      return { ok: true, readOnly: true, schemaVersion: MOMENTS_SCHEMA_VERSION };
+    } catch (error) {
+      db = null;
+      opened = false;
+      ownsDb = false;
+      throw error;
+    }
+  }
+
   function close() {
     if (!db) return { ok: true, alreadyClosed: true };
-    try { db.close(); } catch (_) { /* ignore */ }
+    if (ownsDb) { try { db.close(); } catch (_) { /* ignore */ } }
     db = null;
     opened = false;
+    ownsDb = false;
     return { ok: true };
   }
   function isOpen() { return opened && !!db; }
@@ -935,6 +964,7 @@ function createMomentsStore(deps) {
 
   return {
     open: open,
+    attachReadOnlyConnection: attachReadOnlyConnection,
     close: close,
     isOpen: isOpen,
     file: dbFile,

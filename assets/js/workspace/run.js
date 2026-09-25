@@ -175,7 +175,7 @@ async function _wsExecuteRun(ctx){
         var n=_wbKeys[_wi],c=res.changed[n];
         if(typeof c!=='string')continue;
         if(c.length>1000000){wbSkipped.push(n+'（超过 100 万字符写回上限）');continue}
-        try{await wsSaveFile(ctx.projId,n,c,'脚本');names.push(n)}catch(e){}
+        try{await wsSaveFile(ctx.projId,n,c,'脚本',{kind:'script'});names.push(n)}catch(e){}
       }
     }
     res.changedNames=names;
@@ -200,7 +200,12 @@ function _wsQueueRunOutput(ctx,res){
   if(res.images&&res.images.length)body+='\n[已生成图表 '+res.images.length+' 张，展示在聊天的运行卡片中]';
   if(res.writebackSkipped&&res.writebackSkipped.length)body+='\n[部分内容未写回: '+res.writebackSkipped.join('；')+']';
   if(!body)body='\n（无输出。请用 print / console.log 打印你需要看到的内容）';
-  _wsPendingRunOutputs.push({actor:ctx.author,text:head+body});
+  /* P29-3 · canonical attribution：actor 仍是显示名；actorId 由 _execWsOps（或卡片 ctx）透传，缺失为空串。
+     P30-2 · WHERE：会话归属同样由 ctx 透传（`_execWsOps` 的 _rCtx 已带上 friendId/threadId）；
+     两者都没有 ⇒ unscoped（不加任何 scope 字段）。只做字段搬运，不派生 conversationId。 */
+  var _sc=(ctx&&typeof ctx.friendId==='string'&&ctx.friendId)
+    ?{friendId:ctx.friendId,threadId:(ctx.threadId?String(ctx.threadId):null)}:null;
+  _wsPendingRunOutputs.push(Object.assign({actor:ctx.author,actorId:String(ctx.actorId||'')},_sc,{text:head+body}));
 }
 function _getWsRunOutputInjection(filterFn){
   if(!_wsPendingRunOutputs.length)return'';

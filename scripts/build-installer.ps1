@@ -18,9 +18,9 @@
                           run just produced (hash + size + PE product version are
                           all read back, never re-typed) and self-validated by
                           runtime\update-manifest.js
-    8. install audit    — OPT-IN only (-InstallAudit): silent install into a
-                          temp dir, enumerate + audit the installed payload,
-                          then uninstall (tests\test_installer_smoke.js --install-audit)
+    8. install audit    — OPT-IN only (-TestMode -InstallAudit): compile a
+                           test-only identity into a test-owned output root, then
+                           run tests\test_installer_smoke.js --install-audit
     9. summary
 
   Release order is a contract, not a preference (docs\RELEASE.md):
@@ -58,7 +58,12 @@
   Oldest version allowed to update in place (informational for now). Optional.
 
 .PARAMETER InstallAudit
-  Run step 8 (isolated install + payload audit + uninstall). Off by default.
+  Run step 8 (isolated install + payload audit + uninstall). Requires -TestMode;
+  a production build is never installed by this script.
+
+.PARAMETER TestMode
+  Compile the deterministic test-only Inno identity into
+  tmp\installer-smoke-build. This mode never writes dist\ or update-stable.json.
 
 .PARAMETER SkipInstallAudit
   Accepted for compatibility; skipping the audit is now the default.
@@ -71,6 +76,9 @@
 
 .EXAMPLE
   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-installer.ps1
+
+.EXAMPLE
+  powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-installer.ps1 -TestMode -InstallAudit
 #>
 [CmdletBinding()]
 param(
@@ -79,6 +87,7 @@ param(
   [string]$NotesFile = '',
   [string]$MinimumVersion = '',
   [switch]$InstallAudit,
+  [switch]$TestMode,
   [switch]$SkipInstallAudit,
   [switch]$KeepStaging,
   [switch]$SkipAudit
@@ -96,15 +105,72 @@ $script:stage = 'preflight'
 $script:stagingOwned = $false
 
 $repo      = Split-Path -Parent $PSScriptRoot
-$dist      = Join-Path $repo 'dist'
+$productionDist = Join-Path $repo 'dist'
+$dist      = $productionDist
 $staging   = Join-Path $dist 'staging'
 $iss       = Join-Path $repo 'installer\InternalBeyond.iss'
 $pinFile   = Join-Path $repo 'installer\runtime-pin.json'
 $versionFile = Join-Path $repo 'VERSION'
 $nodeExe   = Join-Path $repo 'runtime\node\node.exe'
 $smoke     = Join-Path $repo 'tests\test_installer_smoke.js'
+$hostStageTool = Join-Path $repo 'scripts\stage-tauri-host.ps1'
+$hostBuildRoot = Join-Path ($env:ProgramData | ForEach-Object { if ($_){$_} else { Split-Path -Parent $repo } }) 'InternalBeyond\host-build'
 $manifestOut = Join-Path $dist 'update-stable.json'
 $manifestTool = Join-Path $repo 'runtime\update-manifest.js'
+
+function Get-IssQuotedDefine([string]$source, [string]$name) {
+  $m = [regex]::Match($source, '(?m)^\s*#define\s+' + [regex]::Escape($name) + '\s+"([^"]+)"\s*$')
+  if (-not $m.Success) { Fail "installer identity define missing from $iss : $name" }
+  return $m.Groups[1].Value
+}
+
+function Get-IssGuidDefine([string]$source, [string]$name) {
+  $raw = Get-IssQuotedDefine $source $name
+  $m = [regex]::Match($raw, '^\{\{([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})\}$')
+  if (-not $m.Success) { Fail "installer identity define is not a valid Inno GUID: $name = $raw" }
+  return $m.Groups[1].Value.ToUpperInvariant()
+}
+
+function Normalize-FullPath([string]$value) {
+  return [System.IO.Path]::GetFullPath($value).TrimEnd('\')
+}
+
+function Assert-TestOutputIsolated([string]$candidate, [string]$production) {
+  $candidateAbs = Normalize-FullPath $candidate
+  $productionAbs = Normalize-FullPath $production
+  $candidateKey = $candidateAbs.ToLowerInvariant()
+  $productionKey = $productionAbs.ToLowerInvariant()
+  if ($candidateKey -eq $productionKey -or $candidateKey.StartsWith($productionKey + '\')) {
+    Fail "-TestMode output must be outside production dist: $candidateAbs"
+  }
+  return $candidateAbs
+}
+
+function Find-InstallerToken([byte[]]$bytes, [string]$token) {
+  $ascii = [System.Text.Encoding]::ASCII.GetString($bytes)
+  $utf16 = [System.Text.Encoding]::Unicode.GetString($bytes)
+  return $ascii.IndexOf($token, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+    $utf16.IndexOf($token, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+}
+
+function Assert-CompiledIdentity([string]$file, [string]$expectedAppId, [string]$forbiddenAppId, [string]$expectedName, [string]$forbiddenName) {
+  $bytes = [System.IO.File]::ReadAllBytes($file)
+  # Inno stores AppId in compiled setup data rather than as a stable plain-text
+  # GUID, so the direct EXE evidence here is the resolved display identity. The
+  # AppId proof is the source macro + explicit compiler define + test sidecar below.
+  $expectedTokens = @($expectedName)
+  $forbiddenTokens = @($forbiddenName) | Where-Object { $_ }
+  foreach ($token in $expectedTokens) {
+    if (-not (Find-InstallerToken $bytes $token)) {
+      Fail "compiled installer is missing the expected identity token: $token"
+    }
+  }
+  foreach ($token in $forbiddenTokens) {
+    if (Find-InstallerToken $bytes $token) {
+      Fail "compiled installer contains a forbidden identity token: $token"
+    }
+  }
+}
 
 function Write-Step([string]$n, [string]$t) {
   Write-Host ''
@@ -190,11 +256,42 @@ if (-not $pin.runtime -or -not $pin.runtime.version) { Fail "$pinFile 缺少 run
 Write-Ok "runtime pin = node $($pin.runtime.version) $($pin.runtime.platform)"
 
 if (-not (Test-Path -LiteralPath $iss)) { Fail "缺少 $iss" }
+$issSource = Get-Content -LiteralPath $iss -Raw -Encoding UTF8
+$productionAppId = Get-IssGuidDefine $issSource 'ProductionAppId'
+$testAppId = Get-IssGuidDefine $issSource 'TestOnlyAppId'
+$productionAppName = Get-IssQuotedDefine $issSource 'ProductionAppName'
+$testAppName = Get-IssQuotedDefine $issSource 'TestOnlyAppName'
+$productionOutputBaseName = Get-IssQuotedDefine $issSource 'ProductionOutputBaseName'
+$testOutputBaseName = Get-IssQuotedDefine $issSource 'TestOnlyOutputBaseName'
+if ($productionAppId -ne '78B427F6-A48F-4443-86D5-2F50DC899D07') {
+  Fail "production Inno AppId changed unexpectedly: $productionAppId"
+}
+if ($testAppId -eq $productionAppId) {
+  Fail 'TEST ONLY AppId must never equal the protected production AppId'
+}
+if ($InstallAudit -and -not $TestMode) {
+  Fail '-InstallAudit requires explicit -TestMode; a production installer is never installed by this script'
+}
+if ($TestMode) {
+  $dist = Assert-TestOutputIsolated (Join-Path $repo 'tmp\installer-smoke-build') $productionDist
+  $staging = Join-Path $dist 'staging'
+  $manifestOut = Join-Path $dist 'update-stable.json'
+  if (Test-Path -LiteralPath $manifestOut) {
+    Fail "test output already contains update-stable.json; refusing to treat release metadata as a test artifact: $manifestOut"
+  }
+  Write-Ok "TEST ONLY identity = $testAppName · AppId {$testAppId}"
+  Write-Ok "test output = $dist (production dist is not used)"
+} else {
+  Write-Ok "production identity = $productionAppName · AppId {$productionAppId}"
+}
 foreach ($required in @(
     (Join-Path $repo 'installer\languages\ChineseSimplified.isl'),
     (Join-Path $repo 'installer\tools\ib-stop.js'),
     (Join-Path $repo 'scripts\release-manifest.js'),
     (Join-Path $repo 'scripts\release-audit.js'),
+    $hostStageTool,
+    (Join-Path $repo 'src-tauri\Cargo.toml'),
+    (Join-Path $repo 'src-tauri\Cargo.lock'),
     $manifestTool,
     (Join-Path $repo 'LICENSE'),
     (Join-Path $repo 'LICENSES\THIRD-PARTY-NODE.md')
@@ -274,6 +371,18 @@ $stageResult = $stageJson.Trim() | ConvertFrom-Json
 if (-not $stageResult.ok) { Fail "staging 不完整：$stageJson" }
 Write-Ok ("staged {0} files · {1:N1} MiB → {2}" -f $stageResult.staged, ($stageResult.totalBytes / 1MB), $stageResult.dir)
 
+# The native host is the only generated production input. Build it from the
+# locked Cargo project, verify its PE version against root VERSION, then copy
+# exactly one executable into the canonical payload root. No _up_, target tree
+# or .tauri-frontend directory is ever consumed by Inno.
+$hostOutput = Join-Path $staging 'internalbeyond-host.exe'
+$hostJson = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $hostStageTool `
+  -RepositoryRoot $repo -OutputPath $hostOutput -Version $version -BuildRoot $hostBuildRoot 2>&1 | Out-String
+if ($LASTEXITCODE -ne 0) { Fail "Tauri host staging 失败：$hostJson" }
+$hostResult = $hostJson.Trim() | ConvertFrom-Json
+if (-not $hostResult.ok) { Fail "Tauri host staging 不完整：$hostJson" }
+Write-Ok ("stable host · {0:N1} MiB · version {1} · sha256 {2}" -f ($hostResult.bytes / 1MB), $hostResult.version, $hostResult.sha256)
+
 # The install root carries its OWN payload manifest (upgrade §7). It is written
 # from the bytes staging just produced — never hand-maintained — and it is what
 # makes obsolete-payload cleanup a diff of two declarations instead of a scan of
@@ -291,6 +400,7 @@ $payloadFiles = @($stageResult.files)
 if ($payloadFiles.Count -ne $stageResult.staged) {
   Fail "staging 报告 $($stageResult.staged) 个文件，但白名单返回 $($payloadFiles.Count) 条 —— 拒绝生成载荷清单"
 }
+$payloadFiles += 'internalbeyond-host.exe'
 $payloadFiles += 'ib-payload-manifest.json'
 $payloadManifestObject = [ordered]@{
   schema    = 'internalbeyond.payload-manifest'
@@ -340,25 +450,38 @@ $script:stage = 'compile'
 $stagingAbs = (Resolve-Path -LiteralPath $staging).Path.TrimEnd('\')
 $distAbs = (Resolve-Path -LiteralPath $dist).Path.TrimEnd('\')
 $logFile = Join-Path $dist 'build-compile.log'
-$compileOutput = & $iscc "/DAppVersion=$version" "/DStagingDir=$stagingAbs" "/DOutputDir=$distAbs" $iss 2>&1 | Out-String
+$compileArgs = @("/DAppVersion=$version", "/DStagingDir=$stagingAbs", "/DOutputDir=$distAbs")
+if ($TestMode) { $compileArgs += '/DInstallerTestMode=1' }
+$compileOutput = & $iscc @compileArgs $iss 2>&1 | Out-String
 $compileCode = $LASTEXITCODE
+$compileIdentity = if ($TestMode) { 'InstallerTestMode=1; resolved AppId = {' + $testAppId + '}' } else { 'InstallerTestMode absent; resolved AppId = {' + $productionAppId + '}' }
+$compileOutput = "compile identity: $compileIdentity`r`ncompile args: $($compileArgs -join ' ')`r`n" + $compileOutput
 $compileOutput | Set-Content -LiteralPath $logFile -Encoding UTF8
 if ($compileCode -ne 0) {
   Write-Host $compileOutput
   Fail "ISCC 编译失败（退出码 $compileCode），完整日志：$logFile"
 }
-$exe = Join-Path $dist "InternalBeyond-Setup-$version.exe"
+$outputBaseName = if ($TestMode) { $testOutputBaseName } else { $productionOutputBaseName }
+$exe = Join-Path $dist "$outputBaseName-Setup-$version.exe"
 if (-not (Test-Path -LiteralPath $exe)) { Fail "编译成功但找不到输出：$exe" }
 $exeItem = Get-Item -LiteralPath $exe
 Write-Ok ("{0} · {1:N1} MiB" -f $exeItem.Name, ($exeItem.Length / 1MB))
+
+$expectedAppId = if ($TestMode) { $testAppId } else { $productionAppId }
+$forbiddenAppId = if ($TestMode) { $productionAppId } else { $testAppId }
+$expectedAppName = if ($TestMode) { $testAppName } else { $productionAppName }
+$forbiddenAppName = if ($TestMode) { '' } else { $testAppName }
+Assert-CompiledIdentity $exe $expectedAppId $forbiddenAppId $expectedAppName $forbiddenAppName
+Write-Ok ("compiled identity verified · AppId {{{0}}} · {1}" -f $expectedAppId, $expectedAppName)
 
 # ── 6. hash ────────────────────────────────────────────────────────────────
 Write-Step '6/9' 'SHA-256'
 $script:stage = 'hash'
 $exeHash = Get-Sha256 $exe
 $sumsOut = Join-Path $dist 'SHA256SUMS.txt'
+$checksumTitle = if ($TestMode) { '# InternalBeyond installer smoke test checksums' } else { '# InternalBeyond release checksums' }
 $lines = @(
-  "# InternalBeyond release checksums",
+  $checksumTitle,
   "# product version : $version",
   "# built (local)   : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')",
   "# bundled runtime : node $($pin.runtime.version) ($($pin.runtime.platform)) sha256 $($pin.runtime.sha256)",
@@ -369,12 +492,42 @@ $lines | Set-Content -LiteralPath $sumsOut -Encoding ASCII
 Write-Ok "installer sha256 = $exeHash"
 Write-Ok "checksums → $sumsOut"
 
+if ($TestMode) {
+  $identityOut = Join-Path $dist 'installer-test-identity.json'
+  $identity = [ordered]@{
+    schema = 'internalbeyond.installer-test-identity'
+    testOnly = $true
+    appId = "{$testAppId}"
+    productionAppId = "{$productionAppId}"
+    resolvedAppId = "{$testAppId}"
+    appName = $testAppName
+    publisher = 'InternalBeyond (Test Only)'
+    installDirectoryName = (Get-IssQuotedDefine $issSource 'TestOnlyInstallDirectoryName')
+    hostVersion = [string]$hostResult.version
+    hostBytes = [int64]$hostResult.bytes
+    hostSha256 = [string]$hostResult.sha256
+    outputBaseName = $testOutputBaseName
+    artifact = $exeItem.Name
+    sha256 = $exeHash
+    compilerDefine = 'InstallerTestMode=1'
+    compilerArgs = @($compileArgs)
+    source = 'installer/InternalBeyond.iss'
+  }
+  $identityJson = $identity | ConvertTo-Json -Depth 4
+  [System.IO.File]::WriteAllText($identityOut, $identityJson + "`n", (New-Object System.Text.UTF8Encoding($false)))
+  Write-Ok "test identity evidence → $identityOut"
+}
+
 # ── 7. update manifest (Stable channel contract) ───────────────────────────
 # 值全部来自本次构建刚刚产生的字节，绝不重新输入：hash 用第 6 步算出的值，
 # size 取文件实际长度，productVersion 从 PE 里读回来核对。三者任一不符即失败
 # —— 发布契约宁可不产出，也不能产出一份和 exe 对不上的清单。
 Write-Step '7/9' 'update manifest'
 $script:stage = 'update manifest'
+$manifestResult = $null
+if ($TestMode) {
+  Write-Info 'test mode: update-stable.json is deliberately not generated'
+} else {
 $peProduct = (Get-Item -LiteralPath $exe).VersionInfo.ProductVersion
 $peMatch = [regex]::Match([string]$peProduct, '\d+\.\d+\.\d+')
 if (-not $peMatch.Success) { Fail "无法从安装包读取 ProductVersion：'$peProduct'" }
@@ -427,6 +580,7 @@ if (-not $manifestResult.notesSupplied) {
   Write-Warn '清单未包含 notes（未传 -NotesFile）：用户在更新卡片上看不到更新说明'
 }
 Write-Info '发布顺序：exe → SHA256SUMS.txt → update-stable.json（清单最后上传才进入 Stable 通道）'
+}
 
 # ── 7. install audit (opt-in: one real install per built installer) ────────
 Write-Step '8/9' 'install / content audit'
@@ -435,8 +589,12 @@ if ($SkipInstallAudit) {
   Write-Info '安装审计已跳过（-SkipInstallAudit，现在也是默认行为）'
 } elseif (-not $InstallAudit) {
   Write-Info '默认不安装：测试预算只允许一次真实安装 smoke（docs\P7-TEST-BUDGET.md）'
-  Write-Info '需要隔离载荷审计时显式加 -InstallAudit'
-  Write-Info '真实安装 smoke：node tests/test_installer_smoke.js --real-install-smoke'
+  if ($TestMode) {
+    Write-Info 'test mode 已编译；需要安装审计时再加 -InstallAudit'
+    Write-Info "真实安装 smoke：node tests/test_installer_smoke.js --real-install-smoke --exe `"$exe`""
+  } else {
+    Write-Info '需要测试 installer 时显式加 -TestMode（生产 build 不可直接安装）'
+  }
 } elseif (-not (Test-Path -LiteralPath $smoke)) {
   # 显式安装审计绝不能降级成「跳过」：缺脚本即构建失败（非零退出）。
   Fail "-InstallAudit 需要安装审计脚本，但找不到：$smoke`n  期望位置：tests\test_installer_smoke.js（测试套件位于 tests\）"
@@ -451,16 +609,22 @@ Write-Step '9/9' 'summary'
 $script:stage = 'summary'
 if (-not $KeepStaging) { Remove-Staging; Write-Ok 'staging 已清理' } else { Write-Info "保留 staging：$staging" }
 Write-Host ''
-Write-Host '  InternalBeyond release build complete' -ForegroundColor Green
+if ($TestMode) { Write-Host '  InternalBeyond test-only installer build complete' -ForegroundColor Yellow }
+else { Write-Host '  InternalBeyond release build complete' -ForegroundColor Green }
 Write-Host ("  version    : {0}" -f $version)
 Write-Host ("  installer  : {0}" -f $exe)
 Write-Host ("  size       : {0:N1} MiB ({1} bytes)" -f ($exeItem.Length / 1MB), $exeItem.Length)
 Write-Host ("  sha256     : {0}" -f $exeHash)
 Write-Host ("  checksums  : {0}" -f $sumsOut)
-Write-Host ("  manifest   : {0}" -f $manifestOut)
-Write-Host ''
-Write-Host '  发布（顺序即契约，清单最后）：' -ForegroundColor White
-Write-Host '    gh release create v<version> "<exe>" "dist\SHA256SUMS.txt" --title "InternalBeyond v<version>" --notes-file <notes>'
-Write-Host '    gh release upload v<version> "dist\update-stable.json"   # LAST: 进入 Stable 通道'
+if ($TestMode) {
+  Write-Host '  manifest   : (test mode intentionally emits no update-stable.json)'
+  Write-Host '  release    : TEST ONLY — do not upload or publish'
+} else {
+  Write-Host ("  manifest   : {0}" -f $manifestOut)
+  Write-Host ''
+  Write-Host '  发布（顺序即契约，清单最后）：' -ForegroundColor White
+  Write-Host '    gh release create v<version> "<exe>" "dist\SHA256SUMS.txt" --title "InternalBeyond v<version>" --notes-file <notes>'
+  Write-Host '    gh release upload v<version> "dist\update-stable.json"   # LAST: 进入 Stable 通道'
+}
 Write-Host ''
 exit 0

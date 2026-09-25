@@ -270,6 +270,26 @@ body:not(.theme-infernal) .member-mgr-item:hover{background:rgba(222,238,255,0.6
 .member-mgr-actions{display:flex;gap:4px;flex-shrink:0}
 .member-mgr-actions button{padding:3px 8px;border-radius:6px;border:1px solid rgba(140,180,230,.3);background:rgba(90,140,210,.2);color:#dbe9ff;font-size:.68rem;cursor:pointer;font-family:inherit;transition:background .15s ease}
 .member-mgr-actions button:hover{background:rgba(90,140,210,.35)}
+
+/* P24-M3.4.4 · 群聊参与策略 section（scoped：只作用于成员管理弹窗内的 .group-policy-*；
+   不新增全局 input/button/select 选择器，不引入新组件体系） */
+.group-policy-section{padding:10px 2px 2px;margin:0 0 12px;border-top:1px solid rgba(178,192,216,0.14)}
+.group-policy-title{font-size:.82rem;font-weight:500;color:var(--text-secondary);margin:0 0 10px;letter-spacing:.02em}
+.group-policy-section label{font-size:.78rem;display:block;margin:0 0 4px;color:var(--text-secondary)}
+.group-policy-select{width:100%;box-sizing:border-box;padding:6px 8px;border-radius:8px;border:1px solid var(--glass-border);
+  background:var(--glass-bg);color:var(--text);font-size:.78rem;font-family:inherit;margin:0 0 4px;outline:none}
+.group-policy-select:focus{border-color:var(--accent-light);box-shadow:0 0 10px rgba(114,168,216,0.14)}
+.group-policy-select:disabled{opacity:.55;cursor:not-allowed}
+.group-policy-hint{font-size:.68rem;color:var(--text-muted);line-height:1.5;margin:0 0 10px}
+.group-policy-invalid{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:.72rem;color:#ff8a80;margin:0 0 8px}
+.group-policy-invalid[hidden]{display:none}
+.group-policy-error{font-size:.72rem;color:#ff8a80;margin:0 0 4px}
+.group-policy-error[hidden]{display:none}
+body:not(.theme-infernal) .group-policy-section{border-top-color:rgba(120,165,220,0.22)}
+body:not(.theme-infernal) .group-policy-title{color:#1a3262}
+body:not(.theme-infernal) .group-policy-section label{color:#1a3262}
+body:not(.theme-infernal) .group-policy-select{background:rgba(248,252,255,0.6);color:#0a1e42;border-color:rgba(170,210,245,0.35)}
+body:not(.theme-infernal) .group-policy-hint{color:#3f5e8c}
 .member-mgr-actions button.danger{color:#ff8a80;border-color:rgba(255,100,100,.35)}
 .member-mgr-actions button.danger:hover{background:rgba(255,100,100,.18)}
 

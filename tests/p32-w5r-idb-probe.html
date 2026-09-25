@@ -1,0 +1,81 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>P32-W.5-R IndexedDB forensic probe</title>
+<pre id="out">running</pre>
+<script>
+(async function () {
+  const out = document.getElementById('out');
+  const safeKeys = value => value && typeof value === 'object' ? Object.keys(value) : [];
+  const valueTime = value => {
+    if (!value || typeof value !== 'object') return NaN;
+    const candidate = value.timestamp ?? value.createdAt ?? value.created ?? value.date ?? value.updatedAt ?? value.sent_at;
+    if (typeof candidate === 'number') return Number.isFinite(candidate) ? candidate : NaN;
+    const parsed = Date.parse(String(candidate || ''));
+    return Number.isFinite(parsed) ? parsed : NaN;
+  };
+  const range = rows => {
+    const values = (Array.isArray(rows) ? rows : []).map(valueTime).filter(Number.isFinite);
+    return values.length ? { min: new Date(Math.min(...values)).toISOString(), max: new Date(Math.max(...values)).toISOString() } : null;
+  };
+  const readStore = async (db, name, apiIds) => {
+    const tx = db.transaction(name, 'readonly');
+    const store = tx.objectStore(name);
+    const rows = await new Promise((resolve, reject) => {
+      const request = store.getAll();
+      request.onsuccess = () => resolve(request.result || []);
+      request.onerror = () => reject(request.error || new Error('store-read-failed'));
+    });
+    const result = { count: rows.length, range: range(rows) };
+    if (name === 'apiConfigs') {
+      result.secretBearingRecordCount = rows.filter(row => safeKeys(row).some(key => /api.?key|token|secret|auth|password|ciphertext|fingerprint/i.test(key))).length;
+      result.idCount = rows.filter(row => row && row.id != null).length;
+      apiIds.clear(); rows.forEach(row => { if (row && row.id != null) apiIds.add(String(row.id)); });
+    }
+    if (name === 'chatMessages') {
+      result.friendReference = { known: 0, group: 0, unknown: 0 };
+      rows.forEach(row => {
+        const id = String(row && row.friendId || '');
+        if (apiIds.has(id)) result.friendReference.known += 1;
+        else if (id.startsWith('group_')) result.friendReference.group += 1;
+        else result.friendReference.unknown += 1;
+      });
+    }
+    if (name === 'chatThreads') {
+      result.friendReference = { known: 0, unknown: 0 };
+      rows.forEach(row => {
+        const id = String(row && (row.friendId || row.characterId) || '');
+        if (apiIds.has(id)) result.friendReference.known += 1;
+        else result.friendReference.unknown += 1;
+      });
+    }
+    return result;
+  };
+  try {
+    const databases = typeof indexedDB.databases === 'function' ? await indexedDB.databases() : [];
+    const target = databases.find(item => item && item.name === 'InternalBeyondDB');
+    if (!target) {
+      out.textContent = JSON.stringify({ origin: location.origin, database: null, localStorageKeys: Object.keys(localStorage).sort(), sessionStorageKeys: Object.keys(sessionStorage).sort() });
+      return;
+    }
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open(target.name, target.version);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error('db-open-failed'));
+      request.onupgradeneeded = () => reject(new Error('unexpected-upgrade-required'));
+    });
+    const apiIds = new Set();
+    const names = Array.from(db.objectStoreNames).sort();
+    const stores = {};
+    for (const name of names) stores[name] = await readStore(db, name, apiIds);
+    db.close();
+    out.textContent = JSON.stringify({
+      origin: location.origin,
+      database: { name: db.name, version: db.version, stores: stores },
+      localStorageKeys: Object.keys(localStorage).sort(),
+      sessionStorageKeys: Object.keys(sessionStorage).sort()
+    });
+  } catch (error) {
+    out.textContent = JSON.stringify({ origin: location.origin, error: String(error && error.message || error) });
+  }
+}());
+</script>

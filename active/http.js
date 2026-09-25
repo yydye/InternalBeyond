@@ -5,6 +5,7 @@
 'use strict';
 
 const http = require('http');
+const { isTauriOrigin } = require('../runtime/host-origin.js');
 
 /* Proactive Observability v1..v3：只读 debug 页（消费 /proactive/traces，不参与任何决策）
    v3 增加“WHY THIS PROACTIVE?”可读解释 + 结果链（sent → laterOutcome）。无 UI 框架（原生 details）。 */
@@ -87,7 +88,7 @@ function createHttp(ctx) {
   }
 
   function originAllowed(origin) {
-    return !origin || origin === 'null' || /^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?$/i.test(origin);
+    return !origin || origin === 'null' || isTauriOrigin(origin) || /^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?$/i.test(origin);
   }
 
   function applyCors(request, response) {

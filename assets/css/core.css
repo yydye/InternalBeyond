@@ -346,6 +346,22 @@ body:not(.theme-infernal) #navbar.on-subpage .nav-user-avatar{border-color:rgba(
 .theme-toggle:active{box-shadow:var(--neo-pressed);transform:translateY(1px)}
 .nav-btn:focus-visible,.theme-toggle:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px;box-shadow:var(--neo-depth-sm)}
 
+/* Frameless Tauri window controls sit inside the existing nav actions. The
+   drag target occupies only the existing whitespace between brand and links. */
+#ib-tauri-drag-region{position:fixed;z-index:10000;cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none}
+#ib-tauri-drag-region:active{cursor:grabbing}
+.ib-window-controls{position:fixed;z-index:10000;display:flex;align-items:center;gap:1px;padding-left:5px;border-left:1px solid color-mix(in srgb,currentColor 18%,transparent)}
+.ib-window-controls-slot{display:block;flex:0 0 80px;width:80px;height:26px;pointer-events:none}
+.ib-window-control{appearance:none;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:24px;height:26px;padding:0;border:1px solid color-mix(in srgb,currentColor 12%,transparent);border-radius:7px;background:color-mix(in srgb,currentColor 5%,transparent);color:inherit;cursor:pointer;box-shadow:none;transition:background 0.16s ease,border-color 0.16s ease,color 0.16s ease,transform 0.12s ease}
+.ib-window-control svg{display:block;width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:1.45;stroke-linecap:round;stroke-linejoin:round}
+.ib-window-control:hover{background:color-mix(in srgb,currentColor 13%,transparent);border-color:color-mix(in srgb,currentColor 24%,transparent)}
+.ib-window-control:active{background:color-mix(in srgb,currentColor 18%,transparent);transform:translateY(1px)}
+.ib-window-control:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}
+.ib-window-control[data-window-action="close"]:hover{color:#c94f5d;background:rgba(220,90,105,0.15);border-color:rgba(220,90,105,0.32)}
+.ib-window-control[data-window-action="close"]:active{background:rgba(220,90,105,0.24)}
+body:not(.theme-infernal) .ib-window-controls{color:#304870}
+body.theme-infernal .ib-window-controls{color:#bccae2}
+
 /* Nav Home：首页两套主题都是浅雾底 → 一律深字。原有的白色发光已删。 */
 #navbar:not(.on-subpage) .nav-brand{color:#304870}
 #navbar:not(.on-subpage) .nav-links a{color:#364c74}

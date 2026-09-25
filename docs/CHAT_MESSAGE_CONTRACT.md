@@ -98,12 +98,42 @@ messages would break `favorites.sourceId` (`favorites.js:17-33`), notification d
 | `source:'voice_call'` + `callSessionId` + `turnId` | `communication.js:1993` | voice-turn provenance |
 | `source:'active_message'` + `activePlanId` | `active-diary.js:1303-1304` region | proactive provenance |
 | `waifu:true` | `communication.js:2386` | MessagePresentation split part |
+| `turnId` + `sequenceIndex` (+ `sequenceTotal`) | `delivery-sequence-core.js`（构造）、`communication.js`（waifu 多段与工具续轮的生产点） | **回合身份**：一次模型生成交付多条消息时的稳定归组键（P23 Phase 2A，见 §4.1） |
 | `eventType` + `characterId` | `social.js:1873` | group membership event |
 | `activityId` | `communication.js:2499-2503`（user）、`:2846`/`:2931`（assistant 从 `_turn.activityId` 继承）、`activity-runtime.js` 的 `send`/`mark` | 本轮注入的陪伴活动来源（与 `threadId` 的对话归属正交）；普通聊天与 legacy 频道消息不带此键 |
 
 Metadata is an **open union** — the union is not closed by a schema, and readers use
 `m.metadata && m.metadata.x` defensively. The canonical store therefore keeps metadata inside the
 JSON payload rather than as columns, and must round-trip unknown keys unchanged.
+
+### 4.1 Turn identity — one model turn may deliver N messages (P23 Phase 2A)
+
+One model turn can be delivered as **N independent chat messages** (this already happens in two
+production paths: waifu multi-part presentation and the tool-continuation round). The delivery-unit
+boundary is therefore *message*, never a segment inside a message: each unit has its own `id`, its
+own withdraw, its own playback, its own delete. Three metadata keys tie the units back to the turn:
+
+| Key | Meaning |
+|---|---|
+| `turnId` | stable identity of **one model generation**; byte-identical on every message of that turn. Absent on single-message turns and on every legacy row. |
+| `sequenceIndex` | deterministic order inside the turn (0-based). Readers must sort by it inside the turn. |
+| `sequenceTotal` | advisory count, present only when the producer knows it (the tool-continuation path cannot know it when it writes its first message). Readers **must** count by `turnId` instead of trusting it. |
+
+Why metadata and not a new top-level field: `metadata` is already the home of per-message
+cross-message annotations (`activityId` links the user row and assistant row of one host turn), it is
+a canonical conditional field, and it round-trips through the Home Node payload unchanged — so turn
+identity is **additive**: no DB migration, no new `KNOWN_FIELDS` entry, no change for legacy rows.
+
+Ordering is part of the contract, not an accident of the storage engine: the canonical order of a
+conversation is "each turn's units contiguous at the position of the turn's earliest message, units
+in `sequenceIndex` order, legacy rows by `(timestamp, id)`" — implemented once, in
+`assets/js/delivery-sequence-core.js` (`compareMessages` / `orderMessages`), and consumed by every
+chat read path (desktop mirror and Home Node paging alike). The full audit, the rejected
+alternatives and the frozen invariants live in `docs/P23-2A-MESSAGE-SEQUENCE-CONTRACT.md`.
+
+Line numbers in §6/§7 below are the M1-A snapshot they were written from; P23 Phase 2A added
+**no** new write or read sites — it stamped turn identity onto existing ones and routed existing
+reads through the canonical order.
 
 ---
 
@@ -207,3 +237,26 @@ every existing reader and writer keeps its exact semantics while authority moves
    id, so consumers can drop a row they cannot see.
 7. **Proactive ingest stays idempotent by `message_id`** (`active-diary.js:1301-1302`) — the
    canonical store must not weaken that guard by allocating a second id.
+
+---
+
+## 9. Invariants P23 Phase 2A freezes (message sequences)
+
+1. **One delivery unit = one canonical chatMessage.** No parent row with embedded segments, no
+   renderer-only illusion.
+2. **One model turn may produce N chatMessages.**
+3. **Every message has an independent `id`** (so withdraw / delete / playback / favourites keep
+   working per unit — they are all id-keyed today).
+4. **Same model turn shares a stable `turnId`**; absent on single-message turns and legacy rows.
+5. **Ordering is deterministic** (see §4.1); no fake millisecond offsets, no timer-driven skew.
+6. **`content` remains the text authority** — a sequence never creates a second copy of the text.
+7. **Voice stays the Phase 1 canonical voice** — no `sequenceVoice` / `deliveryVoice` second schema.
+8. **No parent+child duplicate persistence** — the units are the rows; nothing else is stored.
+9. **No secret in sequence metadata** — a sequence carrying a credential-shaped key or value is
+   rejected as a whole (fail closed).
+10. **Legacy single-message behaviour is unchanged** — legacy rows keep their exact shape, and a
+    turn with no sequence writes exactly what it wrote before.
+11. **Storage truth ≠ provider wire representation** — merging for providers that require
+    alternating roles happens only at the request-building boundary (`IBModelCore.normalizeWireRoles`).
+12. **The Sequence Core contains no timing / provider / network behaviour** — it is a pure module
+    (`assets/js/delivery-sequence-core.js`, zero DOM / fetch / storage / clock).

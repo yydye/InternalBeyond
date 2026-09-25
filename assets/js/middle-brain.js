@@ -253,6 +253,18 @@
     return { reply: text, outcome: outcome };
   }
 
+  /* P31 · Direct Channel transport seam。
+     与 runtimeSystemPrompt / middleBrainExecute 分开：Direct Channel 已经构造好
+     自己的 directChatSystemPrompt，只复用 canonical Astra model-call、provider
+     request builder 与 reasoning capability，不进入角色 compression / integrity。
+     不加入 MB_PUBLIC_API，避免改变既有角色 facade key contract。 */
+  async function middleBrainDirectModelCall(prompt, opts) {
+    var directOpts = Object.assign({}, opts || {});
+    directOpts.consumer = 'middle_brain.direct';
+    directOpts.jsonMode = false;
+    return ASTRA.middleBrainModelCall(prompt, directOpts);
+  }
+
   /* ── 公共 API 组装表（P11-1B）────────────────────────────────────────
      每项 = [public key, owner layer]；key 顺序即 IB.middleBrain 的键顺序，
      由 test_frontend_structure.js 锁定（不得重排 / 改名 / 改 owner）。
@@ -349,6 +361,7 @@
   root._middleBrain = _mbApi;
   root.IB = root.IB || {};
   root.IB.middleBrain = _mbApi;
+  root.IB.middleBrainDirectModelCall = middleBrainDirectModelCall;
   /* dev-only 观测入口（独立于 canonical 门面 key 列表，不参与 MB_PUBLIC_API 契约）。 */
   root.IB.__mbTrace = {
     begin: _mbTraceBegin, note: _mbTraceNote, finish: _mbTraceFinish,

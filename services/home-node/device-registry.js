@@ -39,6 +39,7 @@ const crypto = require('crypto');
 /* P11-3X-B：唯一的数据库失败分类来源。本层的 open() 失败会让 LAN 绑定被拒绝，
    因此那条拒绝必须能说出真正的类别（只读 / 权限 / 磁盘满 / 损坏 ……）。 */
 const dbFailure = require('../../runtime/db-failure.js');
+const createCharacterProjectionStore = require('./character-projection-store.js');
 
 const SCHEMA_VERSION = 1;
 const DEFAULT_DB_FILENAME = 'home-node.db';
@@ -138,7 +139,9 @@ function createDeviceRegistry(deps) {
 
   let sqlite = null;
   let db = null;
+  let characterProjectionStore = null;
   let opened = false;
+  let ownsDb = false;
   let lastOpenedAt = null;
 
   const SQL = {
@@ -252,6 +255,7 @@ function createDeviceRegistry(deps) {
        而这条失败恰恰会让 LAN 绑定被拒绝 —— 那条拒绝必须能说出真正的类别。 */
     try {
       db = new sqlite.DatabaseSync(dbFile);
+      ownsDb = true;
       db.exec('PRAGMA journal_mode = WAL');
       db.exec('PRAGMA synchronous = FULL');
       db.exec('PRAGMA busy_timeout = 5000');
@@ -263,6 +267,7 @@ function createDeviceRegistry(deps) {
       db.exec(SQL.createCharacters);
       db.exec(SQL.createCharacterSecrets);
       db.exec(SQL.createMeta);
+      characterProjectionStore = createCharacterProjectionStore(db);
       const stored = readMeta('devices_schema');
       if (stored == null) writeMeta('devices_schema', String(SCHEMA_VERSION));
       else if (Number(stored) > SCHEMA_VERSION) {
@@ -273,7 +278,9 @@ function createDeviceRegistry(deps) {
     } catch (error) {
       try { if (db) db.close(); } catch (_) { /* 已关闭 */ }
       db = null;
+      characterProjectionStore = null;
       opened = false;
+      ownsDb = false;
       throw dbFailure.toError(error);
     }
     opened = true;
@@ -288,11 +295,42 @@ function createDeviceRegistry(deps) {
     return { ok: true, alreadyOpen: false, file: dbFile, schemaVersion: SCHEMA_VERSION };
   }
 
+  /* RecoveryOnly binds this registry to a query-only SQLite handle and only
+     uses its characters.id/dto_json projection methods. It never reads the
+     character_runtime_specs table on this path. */
+  function attachReadOnlyConnection(connection) {
+    if (opened || db) throw Object.assign(new Error('store-already-open'), { code: 'STORE_ALREADY_OPEN' });
+    if (!connection || typeof connection.prepare !== 'function' || typeof connection.exec !== 'function') {
+      throw Object.assign(new Error('readonly-connection-required'), { code: 'READONLY_CONNECTION_REQUIRED' });
+    }
+    db = connection;
+    try {
+      db.exec('PRAGMA query_only=ON');
+      const row = db.prepare('PRAGMA query_only').get();
+      const value = row && (row.query_only == null ? Object.values(row)[0] : row.query_only);
+      if (Number(value) !== 1) throw Object.assign(new Error('query-only-not-enabled'), { code: 'QUERY_ONLY_NOT_ENABLED' });
+      const schema = readMeta('devices_schema');
+      if (schema == null || Number(schema) > SCHEMA_VERSION) throw Object.assign(new Error('schema-version-invalid'), { code: 'SCHEMA_VERSION_INVALID' });
+      characterProjectionStore = createCharacterProjectionStore(db, { readOnly: true });
+      opened = true;
+      ownsDb = false;
+      return { ok: true, readOnly: true, schemaVersion: SCHEMA_VERSION };
+    } catch (error) {
+      db = null;
+      characterProjectionStore = null;
+      opened = false;
+      ownsDb = false;
+      throw error;
+    }
+  }
+
   function close() {
     if (!opened || !db) return { ok: true, alreadyClosed: true };
-    try { db.close(); } catch (_) { /* 已关闭 */ }
+    if (ownsDb) { try { db.close(); } catch (_) { /* 已关闭 */ } }
     db = null;
+    characterProjectionStore = null;
     opened = false;
+    ownsDb = false;
     return { ok: true };
   }
   function isOpen() { return opened; }
@@ -682,6 +720,29 @@ function createDeviceRegistry(deps) {
     try { return JSON.parse(row.spec_json); } catch (_) { return null; }
   }
 
+  /* C3.4 · DTO-only projection boundary.
+     These methods touch characters.id/dto_json only. They deliberately do not
+     call putCharacter(), whose normal publish contract also upserts/deletes the
+     separate runtime binding. The C3 composite executor is the only intended
+     caller; no HTTP route exposes this operation. */
+  function readCharacterDtoProjections(characterIds) {
+    if (!opened || !characterProjectionStore) return { ok: false, code: 'STORE_CLOSED' };
+    try {
+      return { ok: true, rows: characterProjectionStore.readCharacterDtoProjections(characterIds) };
+    } catch (error) {
+      return { ok: false, code: String(error && error.code || 'CHARACTER_PROJECTION_READ_FAILED') };
+    }
+  }
+
+  function applyCharacterDtoProjectionBatch(updates) {
+    if (!opened || !characterProjectionStore) return { ok: false, code: 'STORE_CLOSED' };
+    try {
+      return characterProjectionStore.applyCharacterDtoProjectionBatch(updates);
+    } catch (error) {
+      return { ok: false, code: String(error && error.code || 'CHARACTER_PROJECTION_UPDATE_FAILED'), transactionRolledBack: true };
+    }
+  }
+
   function characterCatalogUpdatedAt() {
     if (!opened) return 0;
     const row = db.prepare(SQL.maxCharacterUpdatedAt).get();
@@ -736,6 +797,7 @@ function createDeviceRegistry(deps) {
 
   return {
     open: open,
+    attachReadOnlyConnection: attachReadOnlyConnection,
     close: close,
     isOpen: isOpen,
     meta: meta,
@@ -760,6 +822,8 @@ function createDeviceRegistry(deps) {
     listCharacters: listCharacters,
     getCharacter: getCharacter,
     getCharacterSpec: getCharacterSpec,
+    readCharacterDtoProjections: readCharacterDtoProjections,
+    applyCharacterDtoProjectionBatch: applyCharacterDtoProjectionBatch,
     characterCatalogUpdatedAt: characterCatalogUpdatedAt,
 
     /* M1-C.2i · 全局执行策略（非凭据；见函数头注释） */

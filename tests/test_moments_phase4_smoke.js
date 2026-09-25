@@ -285,22 +285,27 @@ async function main() {
     check('I.dedupeNotBypassedByImage', i && i.ok === false && /相似/.test(i.err || '') && i.count === 1 && mock.imageHits.length === imgHitsAfterF, JSON.stringify(i) + ' imgHits=' + mock.imageHits.length);
 
     /* ══ G + H + J：Companion 事件（want_image/image_prompt）→ 浏览器 Image Provider → 图文 Moment ══ */
+    /* P25-2D：事件**不是许可** —— ingest 现在必须过 Autonomy（prefs / cooldown / duplicate）。
+       用例先把这些角色的最短间隔状态归零（否则会被 cooldown 正确拦下），并按**内容**
+       查找落库行：canonical 身份由 candidate 派生，不再等于事件自带的临时 moment id。 */
+    const P4_FIND = "async function __p4find(role,content){var own=await getRoleMoments(role);var hit=own.filter(function(m){return m.content===content});return hit[0]||null}" +
+      ";var __st=JSON.parse(localStorage.getItem('ib_moments_state_v1')||'{}');['p4a','p4b','p4d','p4g'].forEach(function(k){__st[k]=Object.assign({},__st[k]||{},{lastPostAt:0})});localStorage.setItem('ib_moments_state_v1',JSON.stringify(__st));";
     const imgHitsAfterI = mock.imageHits.length;
-    const g = await evaluate(cdp, "(async function(){" +
+    const g = await evaluate(cdp, "(async function(){" + P4_FIND +
       "var ev={id:'event_mom_p4g',kind:'moment',moment:{id:'mom_p4g_comp',roleId:'p4a',content:'后台也想分享窗边的一只猫。',images:[],visibility:'all',visibleRoleIds:[],likes:[],comments:[],source:'proactive',createdAt:new Date().toISOString()},next_at:Date.now()+3600000,last_post_at:Date.now(),sent_at:Date.now(),want_image:true,image_prompt:'A cat by the window in warm evening light, casual photo'};" +
-      "var first=await _momentsIngestEvent(ev,_activeUserId());var second=await _momentsIngestEvent(ev,_activeUserId());var m=await getMoment('mom_p4g_comp');" +
+      "var first=await _momentsIngestEvent(ev,_activeUserId());var second=await _momentsIngestEvent(ev,_activeUserId());var m=await __p4find('p4a','后台也想分享窗边的一只猫。');" +
       "return{first:first,second:second,exists:!!m,images:m&&m.images.length,hasImagePrompt:!!(m&&('imagePrompt'in m||'wantImage'in m||'includeImage'in m||'image_prompt'in m||'want_image'in m)),content:m&&m.content}})()");
     check('G.companionEventBrowserImage', g && g.first === true && g.second === false && g.exists === true && g.images === 1 && mock.imageHits.length === imgHitsAfterI + 1, JSON.stringify(g));
     /* 幂等：重复事件不再补图 */
-    const g2 = await evaluate(cdp, "(async function(){var m=await getMoment('mom_p4g_comp');return{images:m&&m.images.length}})()");
+    const g2 = await evaluate(cdp, "(async function(){" + P4_FIND + "var m=await __p4find('p4a','后台也想分享窗边的一只猫。');return{images:m&&m.images.length}})()");
     check('G.idempotentNoRegenerate', g2 && g2.images === 1 && mock.imageHits.length === imgHitsAfterI + 1, JSON.stringify(g2) + ' imgHits=' + mock.imageHits.length);
     /* J：公开 Moment 不含内部参数（imagePrompt 不落库、正文无内部机制词） */
     check('J.noInternalPromptStored', g && g.hasImagePrompt === false && String(g.content || '').indexOf('casual photo') < 0, JSON.stringify(g));
     /* H：图片与 Moment 共用同一 visibility/visibleRoleIds（同一条记录；内容按概率门 hash 校准以稳定出图） */
-    const h = await evaluate(cdp, "(async function(){" +
+    const h = await evaluate(cdp, "(async function(){" + P4_FIND +
       "var ev={id:'event_mom_p4h',kind:'moment',moment:{id:'mom_p4h_comp',roleId:'p4b',content:'只想给部分朋友看的一张照片，阳光很好。',images:[],visibility:'roles',visibleRoleIds:['p4a'],likes:[],comments:[],source:'proactive',createdAt:new Date().toISOString()},next_at:Date.now()+3600000,last_post_at:Date.now(),sent_at:Date.now(),want_image:true,image_prompt:'A shared photo of a quiet street at noon'};" +
-      "var ok=await _momentsIngestEvent(ev,_activeUserId());var m=await getMoment('mom_p4h_comp');" +
-      "return{ok:ok,vis:m&&m.visibility,ids:m&&m.visibleRoleIds,images:m&&m.images.length,total:(await dbGetAll(MOMENT_STORE)).filter(function(x){return x.id==='mom_p4h_comp'}).length}})()");
+      "var ok=await _momentsIngestEvent(ev,_activeUserId());var m=await __p4find('p4b','只想给部分朋友看的一张照片，阳光很好。');" +
+      "return{ok:ok,vis:m&&m.visibility,ids:m&&m.visibleRoleIds,images:m&&m.images.length,total:(await dbGetAll(MOMENT_STORE)).filter(function(x){return x.id===(m&&m.id)}).length}})()");
     check('H.visibilitySharedWithImage', h && h.ok === true && h.vis === 'roles' && Array.isArray(h.ids) && h.ids[0] === 'p4a' && h.images === 1 && h.total === 1, JSON.stringify(h));
 
     /* ══ 凭证级解耦：文字模型（DeepSeek，无生图能力）+ 独立图片账号（OpenAI 兼容：ImageGenProvider/Endpoint/ApiKey） ══ */
@@ -457,10 +462,10 @@ async function main() {
 
     /* ══ 降级：companion 事件携带 want_image 但图片 Provider 未开启 / 报错 → 纯文字 Moment 照常发布 ══ */
     const imgHitsBeforeDeg = mock.imageHits.length;
-    const dg = await evaluate(cdp, "(async function(){" +
+    const dg = await evaluate(cdp, "(async function(){" + P4_FIND +
       "var evG={id:'event_mom_p4g2',kind:'moment',moment:{id:'mom_p4g2_comp',roleId:'p4g',content:'图片未开启时的后台动态。',images:[],visibility:'all',visibleRoleIds:[],likes:[],comments:[],source:'proactive',createdAt:new Date().toISOString()},next_at:Date.now()+3600000,last_post_at:Date.now(),sent_at:Date.now(),want_image:true,image_prompt:'A moon over the sea'};" +
       "var evD={id:'event_mom_p4d2',kind:'moment',moment:{id:'mom_p4d2_comp',roleId:'p4d',content:'后台发的一条动态，配图失败没关系。',images:[],visibility:'all',visibleRoleIds:[],likes:[],comments:[],source:'proactive',createdAt:new Date().toISOString()},next_at:Date.now()+3600000,last_post_at:Date.now(),sent_at:Date.now(),want_image:true,image_prompt:'A tiny shop at night'};" +
-      "var a=await _momentsIngestEvent(evG,_activeUserId());var b=await _momentsIngestEvent(evD,_activeUserId());var mg=await getMoment('mom_p4g2_comp');var md=await getMoment('mom_p4d2_comp');" +
+      "var a=await _momentsIngestEvent(evG,_activeUserId());var b=await _momentsIngestEvent(evD,_activeUserId());var mg=await __p4find('p4g','图片未开启时的后台动态。');var md=await __p4find('p4d','后台发的一条动态，配图失败没关系。');" +
       "return{a:a,b:b,mg:mg&&{content:mg.content,images:mg.images.length},md:md&&{content:md.content,images:md.images.length}}})()");
     check('degrade.imageDisabledKeepsText', dg && dg.a === true && dg.mg && dg.mg.images === 0 && dg.mg.content === '图片未开启时的后台动态。', JSON.stringify(dg));
     check('degrade.imageErrorKeepsText', dg && dg.b === true && dg.md && dg.md.images === 0 && dg.md.content === '后台发的一条动态，配图失败没关系。', JSON.stringify(dg));

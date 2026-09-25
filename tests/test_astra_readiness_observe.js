@@ -1,4 +1,4 @@
-﻿/* ====================================================================
+/* ====================================================================
    Astra Readiness Phase 1 · 只读观测（观测，不调参）
    --------------------------------------------------------------------
    本文件做三件事，全部**离线、零网络、零浏览器**：
@@ -18,6 +18,35 @@
    只测量、只记录。所以你会在这里看到 dlgCharsLow/High、multipleThreads 的
    触发式、MB_GATE_STATE 的生命周期**被断言为当前值**（防止有人在"观测阶段"
    顺手把它们改掉），而不是被调整。
+
+   ── §11 只读约束：它到底保护什么（P23 Phase 1.1 重新定位）─────────────
+   本文件原先用一条 blanket 断言保护只读性：
+
+       git diff --name-only HEAD -- assets services InternalBeyond.html == ''
+
+   那条断言保护的是**「本仓库没有人在任何地方改过任何东西」**，而不是这里真正
+   的只读性质。它有两个后果，且都与它声称的目的相反：
+
+     ① 误报：任何与 Astra 无关的别阶段工作（P23 的 Voice 消息）一落地就把它变红，
+        而它红的原因与"观测是否仍然成立"毫无关系；于是下一个人只能把它删掉、
+        放宽成"任何修改都允许"，或者对 diff 名单打补丁 —— 三种做法都让保护归零。
+     ② 漏报：它只比较**文件名**。一个把 `dlgCharsLow: 600` 改成 300、或把
+        `multipleThreads` 触发式改成 `>= 1` 的改动，只要不新增文件就**照样通过**，
+        而那种改动才是真正让本文件的每一个测量值失效的东西。
+
+   真正的不变量是「**本文件测量到的那条链路没有被改动**」，而不是"仓库干净"。
+   因此 §11 现在分成两条各自可证伪的断言：
+
+     · Z4 只读面：`READONLY_PROFILE` 里的文件（本文件的被测对象 + 生成被测量
+       的 harness + 测量所依赖的共享常量/限制）对 HEAD **逐字节**未变，
+       **唯一**豁免是"新增行且落在 P23 Voice UI 这些命名局部区段内"，
+       且新增行不含任何凭据承载键。任何**修改/删除**行、任何区段外的新增、
+       任何新文件都照旧失败。豁免写在 `p23VoiceUiOnly` 里，可以逐条被审查。
+     · Z6 耦合面：那条链路上没有任何东西引用 Voice 功能（P23 改的 20 个文件中
+       没有一个在这条链路上），所以 P23 的 Voice 工作**结构上不可能**改变
+       这里的测量值 —— 这两条合起来才是"本次观测仍然成立"的证明。
+
+   除 §11 之外，本文件全程只读：不修改任何生产文件，也不写任何存储。
    ==================================================================== */
 'use strict';
 
@@ -460,11 +489,381 @@ function bucketOf(chars) {
     && JSON.stringify(GATE.weights) === JSON.stringify({ context: 0.35, dialogue: 0.15, items: 0.20, redundancy: 0.30 }),
     JSON.stringify(GATE));
 
-  /* ═══════════ 7 · 本阶段零生产改动（§11）═══════════ */
-  let prodDiff = '';
-  try { prodDiff = execFileSync('git', ['diff', '--name-only', 'HEAD', '--', 'assets', 'services', 'InternalBeyond.html'], { cwd: ROOT, encoding: 'utf8' }).trim(); }
-  catch (e) { prodDiff = 'git-unavailable: ' + String(e.message || e).slice(0, 80); }
-  check('Z1.noProductionFileChanged', prodDiff === '', prodDiff);
+  /* ═══════════ 7 · 只读面（§11）· 本阶段纪律的真正不变量 ═══════════
+     判据是「本文件测量到的那条链路未被改动」，不是「仓库没有 diff」。
+     下面这些文件就是那条链路：
+       · 被测量对象：策略 / 对话核心 / 快照 / 作者核心 / canonical 装配；
+       · 生成被测量的 harness：语料 / 观测 / 两份校准夹具；
+       · 测量依赖的共享常量：历史窗口上限（§6 的 ceiling 就是它算出来的）。
+     Home Node 的 thread-retrieval.js 也在这里：本文件从它读 THREAD_HEADER。 */
+  const READONLY_PROFILE = [
+    'assets/js/middle-brain-policy.js',
+    'assets/js/middle-brain-integrity.js',
+    'assets/js/middle-brain-config-core.js',
+    'assets/js/dialogue-core.js',
+    'assets/js/context-snapshot.js',
+    'assets/js/understanding-derivation-core.js',
+    'services/home-node/middle-brain.js',
+    'services/home-node/thread-retrieval.js',
+    'services/home-node/execution.js',
+    'tests/astra-readiness-corpus.js',
+    'tests/astra-observation.js',
+    'tests/middle-brain-calibration.js',
+    'tests/middle-brain-calibration-cases.js'
+  ];
+  /* P23 Phase 1.1 豁免：**新增行**，且落在下列「命名局部区段」标题的第一个
+     函数/元素之前。它不是"social.js 随便改"：
+       · kind 'html-region' —— 只覆盖 `id="api-voice-detail"` 那一块，
+         Voice 卡片自己的界面上方（`api-voice-group` 起）到 `api-voice-model-wrap` 止；
+       · kind 'function'    —— 只覆盖该函数的函数体（`function NAME(` 到首个 行首 `}`）；
+     判定是"**每一个**新增行都落在某个豁免区段内"，只要有一行在外面就失败。
+     修改行 / 删除行在这里永远不被豁免。 */
+  const P23_VOICE_UI_ONLY = {
+    'InternalBeyond.html': [
+      { kind: 'html-region', from: 'id="api-voice-group"', until: 'id="api-voice-model-wrap"' },
+      /* Voice 卡片之外，P23 在 HTML 里唯一需要的第二个触点：那个脚本句柄自己
+         （新模块必须先加载再被引用）。范围收在它自己那一行所属的**脚本块**里，
+         而不是"整个 <head> 随便加"。 */
+      { kind: 'html-region', from: 'assets/js/voice-message-core.js', until: 'assets/js/chat-authority.js' }
+    ],
+    'assets/js/social.js': [
+      /* IB_TTS_CATALOG 的**目录声明块**：它上方的说明注释（"Voice API Source 目录 /
+         P23 Phase 1：source 是引用…"）与这份离线三 provider 目录本身。
+         范围收在这一个 const 声明里（注释行 → `];` 那一行）。 */
+      { kind: 'declaration', from: '/* Voice API Source 目录', until: '];' },
+      /* Voice 卡片自己的这几个 helper：说明注释（+ 它紧跟的状态变量）+ 函数体。 */
+      { kind: 'comment-and-function', from: '/* Bridge 提供的来源目录', name: '_ibVoiceSourceOf' },
+      { kind: 'function-with-comment', name: 'loadVoiceSourceCatalog' },
+      { kind: 'function-with-comment', name: '_voiceCatalogOf' },
+      { kind: 'comment-and-function', from: '/* Provider 下拉改由目录驱动生成', name: '_voiceSyncProviderOptions' },
+      { kind: 'function-with-comment', name: '_voiceSyncCapabilityFields' },
+      { kind: 'function-with-comment', name: '_voiceSyncVoiceOptions' },
+      /* P23 新加的 Voicebox Voice Profile 读取（同一 picker 的第二个数据来源）。 */
+      { kind: 'comment-and-function', from: '/* Voicebox Voice Profile 列表', name: '_voiceSyncVoiceboxProfiles' },
+      { kind: 'function-with-comment', name: '_voiceSyncModelOptions' },
+      { kind: 'function-with-comment', name: '_voiceUsesSelect' },
+      { kind: 'function-with-comment', name: '_voiceGetId' },
+      { kind: 'function-with-comment', name: 'testCharacterVoice' },
+      { kind: 'function-with-comment', name: 'loadApiSettingsUI' },
+      { kind: 'function-with-comment', name: 'saveCurrentApi' },
+      /* NS.expose('social', { … }) 这个**已有的** Voice 导出面上的一行新增
+         （loadVoiceSourceCatalog 与同一个对象里既有的 _voiceSyncProviderOptions
+         等导出并列）。它同样不能容纳任何凭据键。 */
+      { kind: 'object-literal', from: "NS.expose('social', {", until: '});' }
+    ]
+  };
+  /* 凭据边界：这些**键名 / 字面量**只要出现在新增行里就立刻失败，豁免区段也救不了它
+     （P23 的契约是"角色记录只保存来源引用，绝不保存任何凭据"）。
+     ⚠ 判据是"凭据承载**形状**"，不是"出现「凭据 / API Key / key」这几个字"：
+     说明文字（例如"凭据在 Bridge config.json 的 tts 区块"）完全合法，把它当成泄漏
+     只会让守卫变成一条谁都不敢碰的假红 —— 而假红的下场就是被人删掉。
+     所以：键名必须带赋值形状（`apiKey:` / `apiKey=`），字面量必须带**值**（Bearer <token> / sk-xxx）。 */
+  const CREDENTIAL_BEARING = /(?:apiKey|api_key|apikey|client_secret|access_token|refresh_token|Authorization)\s*[:=]|Bearer\s+[A-Za-z0-9._\-]{8,}|\bsk-[A-Za-z0-9_\-]{12,}/;
+
+  function gitDiffLines(args) {
+    try {
+      return {
+        ok: true,
+        lines: execFileSync('git', args, { cwd: ROOT, encoding: 'utf8' }).split(/\r?\n/)
+          .filter(l => l.length && l[0] !== '-' && l[0] !== '\\')
+      };
+    } catch (e) { return { ok: false, lines: [], error: 'git-unavailable: ' + String(e.message || e).slice(0, 120) }; }
+  }
+  function changedFiles(args) {
+    try {
+      return {
+        ok: true,
+        files: execFileSync('git', args, { cwd: ROOT, encoding: 'utf8' })
+          .split(/\r?\n/).map(s => s.trim()).filter(Boolean).map(s => s.replace(/\\/g, '/'))
+      };
+    } catch (e) { return { ok: false, files: [], error: 'git-unavailable: ' + String(e.message || e).slice(0, 120) }; }
+  }
+  function fileText(rel) {
+    try { return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/^\uFEFF/, ''); }
+    catch (e) { return null; }
+  }
+  /* 去掉字符串字面量与注释，只留"结构性字符"。花括号计数必须跑在它上面：
+     否则 `'{'` 这样的字面量和 `// }` 这样的注释都会把区段边界算歪。 */
+  function codeOnly(line) {
+    let out = '', i = 0, q = null;
+    const s = String(line);
+    while (i < s.length) {
+      const c = s[i], n = s[i + 1];
+      if (q) {
+        if (c === '\\') { i += 2; continue; }
+        if (c === q) q = null;
+        i++; continue;
+      }
+      if (c === '"' || c === "'" || c === '`') { q = c; i++; continue; }
+      if (c === '/' && n === '/') break;
+      if (c === '/' && n === '*') { const e = s.indexOf('*/', i + 2); i = e < 0 ? s.length : e + 2; continue; }
+      out += c; i++;
+    }
+    return out;
+  }
+  /* 把每个豁免声明算成行范围。算不出上界的声明**不使用**（宁可误报，也不要把一个
+     算错的区段当成豁免 —— 于是 regionRanges().length !== spec.length 会直接失败）。
+     四种声明：
+       html-region        —— 从 `from` 那一行到其后第一个含 `until` 的行；
+       declaration        —— 从 `from` 那一行到其后第一条以 `until` 开头的行；
+       function-with-comment —— 紧接在 function 前的 `/* … *​/` 注释 + 函数体（到收尾 `}`）；
+       object-literal     —— 从 `from` 那一行到其后第一个含 `until` 的行（`});` 之类）。 */
+  function regionRanges(text, spec) {
+    const lines = text.split('\n');
+    const out = [];
+    for (const sp of (spec || [])) {
+      if (sp.kind === 'leading-block') {
+        /* `from`（说明注释的第一行）→ `until`（紧接在函数前的那一行，通常是
+           它自己的 `var _…Cache=null;` 页内缓存声明）。用于"注释 + 变量 + 函数"
+           这种 P23 形状。 */
+        const a = lines.findIndex(l => l.indexOf(sp.from) >= 0);
+        const b = a < 0 ? -1 : lines.findIndex((l, i) => i > a && l.indexOf(sp.until) >= 0);
+        if (a >= 0 && b > a) out.push({ label: sp.from, start: a + 1, end: b + 1 });
+        continue;
+      }
+      if (sp.kind === 'comment-and-function') {
+        /* `from`（说明注释的第一行）→ 函数体的收尾 `}`。注释与它前面那几行
+           （`var _…Cache=null;` 之类的页内状态）都算在这个区段里，因为 P23 的
+           Voice 增量正是"注释 + 状态变量 + 函数"三件一起长出来的。 */
+        const a = lines.findIndex(l => l.indexOf(sp.from) >= 0);
+        const fa = lines.findIndex(l => l.indexOf('function ' + sp.name + '(') >= 0);
+        if (a < 0 || fa < a) continue;
+        let b = -1, depth = 0, opened = false;
+        for (let i = fa; i < lines.length && b < 0; i++) {
+          for (const ch of codeOnly(lines[i])) {
+            if (ch === '{') { depth++; opened = true; }
+            else if (ch === '}') { depth--; if (opened && depth <= 0) { b = i; break; } }
+          }
+        }
+        if (b > a) out.push({ label: sp.from, start: a + 1, end: b + 1 });
+        continue;
+      }
+      if (sp.kind === 'block-before-function') {
+        /* 「说明注释 + 它紧跟的 `var …` 声明 + 函数体」整个块（P23 的 Voicebox 读取
+           就是这种形状：注释 / 一个页内缓存变量 / 函数）。 */
+        const a = lines.findIndex(l => l.indexOf('function ' + sp.name + '(') >= 0);
+        if (a < 0) continue;
+        let s = a;
+        while (s > 0 && /^\s*(\*|\/\*|\/\/|var\s)/.test(lines[s - 1])) s--;
+        let b = -1, depth = 0, opened = false;
+        for (let i = a; i < lines.length && b < 0; i++) {
+          for (const ch of codeOnly(lines[i])) {
+            if (ch === '{') { depth++; opened = true; }
+            else if (ch === '}') { depth--; if (opened && depth <= 0) { b = i; break; } }
+          }
+        }
+        if (b > a) out.push({ label: 'block ' + sp.name, start: s + 1, end: b + 1 });
+        continue;
+      }
+      if (sp.kind === 'function-with-comment') {
+        const a = lines.findIndex(l => l.indexOf('function ' + sp.name + '(') >= 0);
+        if (a < 0) continue;
+        /* 收尾大括号靠字符扫描找（跳过字符串与注释），**不**靠缩进约定 ——
+           `function f(){ … }` 一行写完的形式必须同样被圈住。 */
+        let b = -1, depth = 0, opened = false;
+        for (let i = a; i < lines.length && b < 0; i++) {
+          for (const ch of codeOnly(lines[i])) {
+            if (ch === '{') { depth++; opened = true; }
+            else if (ch === '}') { depth--; if (opened && depth <= 0) { b = i; break; } }
+          }
+        }
+        if (b > a) {
+          let s = a;
+          while (s > 0 && /^\s*(\*|\/\*|\/\/)/.test(lines[s - 1])) s--;
+          out.push({ label: 'function ' + sp.name, start: s + 1, end: b + 1 });
+        }
+        continue;
+      }
+      const a = lines.findIndex(l => l.indexOf(sp.from) >= 0);
+      let b = -1;
+      if (a >= 0) {
+        if (sp.kind === 'declaration') b = lines.findIndex((l, i) => i > a && l.indexOf(sp.until) === 0);
+        else b = lines.findIndex((l, i) => i > a && l.indexOf(sp.until) >= 0);
+      }
+      if (a >= 0 && b > a) out.push({ label: sp.from + ' → ' + sp.until, start: a + 1, end: b + 1 });
+    }
+    return out;
+  }
+  /* 把 diff 文本（统一 0 上下文格式）解析成 { file, oldStart, newStart, added:[{newLine,text}] } */
+  function parseUnifiedDiff(diffText) {
+    const hunks = [];
+    let cur = null;
+    for (const raw of String(diffText).split(/\r?\n/)) {
+      const m = /^\+\+\+ b\/(.+)$/.exec(raw);
+      if (m) { cur = null; continue; }
+      /* git 对"只插入、无上下文"的 hunk 会写成 `@@ -106 +106 @@`（单个行号，
+         不带 `,count`），所以两个数字都必须可选。 */
+      const h = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(raw);
+      if (h) {
+        cur = { file: '', oldStart: Number(h[1]), newStart: Number(h[2]), added: [] };
+        hunks.push(cur);
+        continue;
+      }
+      const f = /^diff --git a\/(.+?) b\/(.+)$/.exec(raw);
+      if (f && hunks.length) hunks[hunks.length - 1].file = f[2];
+      if (cur && raw[0] === '+' && raw.slice(0, 3) !== '+++') cur.added.push({ newLine: cur.newStart + cur.added.length, text: raw.slice(1) });
+    }
+    return hunks;
+  }
+  /* 纯函数：给定「每个文件的 unified-0 diff」→ 违规清单（空数组 = 通过）。
+     回归测试（Z4b）用合成 fixture 直接喂它，因此这条判据本身是被测的，不是被信任的。 */
+  function readonlyViolations(diffs) {
+    const v = [];
+    for (const rel of Object.keys(diffs || {})) {
+      const hunks = parseUnifiedDiff(diffs[rel]);
+      const spec = P23_VOICE_UI_ONLY[rel];
+      const ranges = spec ? regionRanges(fileText(rel), spec) : [];
+      if (spec && ranges.length !== spec.length) {
+        v.push(rel + ': 豁免区段在文件里定位失败（' + ranges.length + '/' + spec.length + '）—— 宁可失败也不放宽');
+      }
+      for (const h of hunks) {
+        for (const a of h.added) {
+          if (CREDENTIAL_BEARING.test(a.text)) {
+            v.push(rel + ':' + a.newLine + ' 新增行出现凭据承载键：' + a.text.trim().slice(0, 90));
+            continue;
+          }
+          const inside = ranges.some(r => a.newLine >= r.start && a.newLine <= r.end);
+          if (!inside) v.push(rel + ':' + a.newLine + ' 新增行落在所有豁免区段之外：' + a.text.trim().slice(0, 90));
+        }
+      }
+    }
+    return v;
+  }
+  /* 逐文件取 diff：这样"被修改 / 被删除的行"有且仅有一种表现 —— 该文件的
+     added 行清单为空（或某行不在任何豁免区段内）→ 违规。不需要额外解析删除行。
+     先只问一次 `--name-only`，再对**真的改过**的文件取 diff（13 个文件不必付 13 次 git 进程）。 */
+  function readonlyDiff() {
+    const changed = changedFiles(['diff', '--name-only', 'HEAD', '--', ...READONLY_PROFILE]);
+    if (!changed.ok) return { ok: false, error: changed.error, diffs: {}, readonlyChanged: [], exemptChanged: [] };
+    const diffs = {};
+    for (const rel of changed.files.concat(Object.keys(P23_VOICE_UI_ONLY))) {
+      const d = gitDiffLines(['diff', '--unified=0', 'HEAD', '--', rel]);
+      if (!d.ok) return { ok: false, error: d.error, diffs: {}, readonlyChanged: [], exemptChanged: [] };
+      if (d.lines.length) diffs[rel] = d.lines.join('\n');
+    }
+    const exemptChanged = Object.keys(P23_VOICE_UI_ONLY).filter(rel => diffs[rel]);
+    return { ok: true, diffs: diffs, readonlyChanged: changed.files, exemptChanged: exemptChanged };
+  }
+
+  const roiResult = readonlyDiff();
+  const roiViolations = roiResult.ok ? readonlyViolations(roiResult.diffs) : [];
+  /* 非阻断的旁证：本文件之外到底改了什么（这些是**允许**存在的别阶段改动）。 */
+  const otherChanged = gitDiffLines(['diff', '--name-only', 'HEAD', '--', 'assets', 'services', 'InternalBeyond.html']);
+  console.log('\n  [§11] read-only profile (measured chain), NOT "the repo is clean"');
+  console.log('       guarded files: ' + READONLY_PROFILE.length + ' · changed among them: '
+    + (roiResult.ok ? (roiResult.readonlyChanged.length ? roiResult.readonlyChanged.join(', ') : 'none') : 'GIT UNAVAILABLE')
+    + ' · changed with an exemption: '
+    + (roiResult.ok ? (roiResult.exemptChanged.join(', ') || 'none') : '—'));
+  console.log('       changed under assets/services/HTML (allowed elsewhere, not here): '
+    + (otherChanged.ok ? (otherChanged.lines.length ? otherChanged.lines.join(', ') : 'none') : otherChanged.error));
+  check('Z4.noMeasuredChainFileChanged', roiResult.ok && roiViolations.length === 0,
+    roiResult.ok ? JSON.stringify(roiViolations).slice(0, 600) : roiResult.error);
+  /* 反向回归：本文件**声明了豁免**的文件，必须真的出现在本次 diff 里 ——
+     否则豁免账就是一张空账（而空账的下一次同样改动会重新变红，下一个人就会去删断言）。
+     注意判据只有这一个方向：豁免账 ⊆ 本次实际改动，**不是**"任何文件都可以出现"。 */
+  const untouchedButChanged = (() => {
+    if (!roiResult.ok) return [];
+    const all = changedFiles(['diff', '--name-only', 'HEAD', '--', 'assets', 'services', 'InternalBeyond.html']);
+    if (!all.ok) return ['name-only-unavailable: ' + all.error];
+    const changed = Object.create(null);
+    for (const f of all.files) changed[f] = true;
+    return Object.keys(P23_VOICE_UI_ONLY).filter(rel => !changed[rel]);
+  })();
+  check('Z5.exemptionLedgerIsNotAnEmptyAccount（声明的豁免文件必须真的改过；空账说明豁免写宽了）',
+    untouchedButChanged.length === 0, JSON.stringify(untouchedButChanged));
+
+  /* 回归：这条判据本身必须可证伪 —— 用合成 fixture 把「放行 / 拦下」各造一次。
+     如果哪天有人把它放宽成"任何修改都允许"（或算错区段），这里会立刻变红。 */
+  const unified = (rel, newLine, added) => ['diff --git a/' + rel + ' b/' + rel, '--- a/' + rel, '+++ b/' + rel,
+    '@@ -0,0 +' + newLine + ' @@'].concat(added.map(t => '+' + t)).join('\n');
+  /* ① 豁免区段内（HTML 的 Voice 卡片界面 + social.js 的 NS.expose 面上的新增）→ 放行 */
+  const okHtmlHunk = unified('InternalBeyond.html', 1614, [
+    '          <div id="api-voice-source-hint" class="ibv-source-hint field-hint"></div>',
+    '        </div>'
+  ]);
+  const okHtmlScriptHunk = unified('InternalBeyond.html', 3292, ['<script src="assets/js/voice-message-core.js"></script>']);
+  /* ② 同一文件、但在所有豁免区段之外（HTML 文档头 / social.js 顶部）→ 拦下 */
+  const badHtmlRegionHunk = unified('InternalBeyond.html', 1, ['<html lang="zh"><!-- P23 -->']);
+  const badSocialRegionHunk = unified('assets/js/social.js', 1, ["'use strict'; /* P23 */"]);
+  /* ③ 带凭据承载键的新增行 —— 即使在豁免区段内也拦下（P23 的凭据边界） */
+  const badCredentialHunk = unified('assets/js/social.js', 1, ["  source:'tts', apiKey:(p&&p.value)||''"]);
+  /* ④ 只读面文件（没有任何豁免）在任意位置的新增 → 拦下；
+        而"豁免账上没写的文件"根本进不了这条判据（它们由别阶段的守卫负责）。 */
+  const badReadonlyHunk = unified('assets/js/middle-brain-policy.js', 200, ['    dlgCharsLow: 300,']);
+  const R = (d) => readonlyViolations(d);
+  check('Z6.regressionExemptionIsBounded：豁免是有界的 —— 区段内的新增放行；区段外的、带凭据键的、以及只读面文件上的都被拦下',
+    R({ 'InternalBeyond.html': okHtmlHunk }).length === 0
+    && R({ 'InternalBeyond.html': okHtmlScriptHunk }).length === 0
+    && R({ 'InternalBeyond.html': badHtmlRegionHunk }).length === 1
+    && R({ 'assets/js/social.js': badSocialRegionHunk }).length === 1
+    && R({ 'assets/js/social.js': badCredentialHunk }).length === 1
+    && R({ 'assets/js/middle-brain-policy.js': badReadonlyHunk }).length === 1
+    && R({ 'assets/js/middle-brain-policy.js': badReadonlyHunk }).every(m => m.indexOf('豁免区段之外') >= 0)
+    && readonlyViolations({ 'assets/js/role-dm.js': unified('assets/js/role-dm.js', 1, ['x']) }).length === 1
+    && readonlyViolations({ 'assets/js/bridge.js': unified('assets/js/bridge.js', 1, ['x']) }).length === 1,
+    JSON.stringify({
+      html_in: R({ 'InternalBeyond.html': okHtmlHunk }), script_in: R({ 'InternalBeyond.html': okHtmlScriptHunk }),
+      html_out: R({ 'InternalBeyond.html': badHtmlRegionHunk }), social_out: R({ 'assets/js/social.js': badSocialRegionHunk }),
+      cred: R({ 'assets/js/social.js': badCredentialHunk }), policy_out: R({ 'assets/js/middle-brain-policy.js': badReadonlyHunk })
+    }).slice(0, 500));
+
+  /* 唯一实现面（与 §7 的只读面**不同**的性质，所以是单独一条）：
+     gate 参数、触发式、共享历史窗口上限都只能有一份。本文件在 Phase 1B.5 实测过
+     "锚点漂移"导致的假绿，因此这里把锚点做成必需而非可选。 */
+  const GATE_UNIQUE_SITES = [
+    { file: 'assets/js/middle-brain-policy.js', re: /dlgCharsLow\s*:\s*600/ },
+    { file: 'assets/js/middle-brain-policy.js', re: /dlgCharsHigh\s*:\s*3500/ },
+    { file: 'assets/js/middle-brain-policy.js', re: /multipleThreads\s*:\s*\(threadItems >= 2 \|\| understandingItems >= 2\)/ },
+    { file: 'assets/js/dialogue-core.js', re: /var HISTORY_MAX_MESSAGES\s*=\s*8;/ }
+  ];
+  const uniqueFailures = GATE_UNIQUE_SITES.filter(s => {
+    const t = fileText(s.file);
+    return t === null || !s.re.test(t);
+  });
+  check('Z7.gateAnchorStillUnique', uniqueFailures.length === 0,
+    'missing anchors: ' + JSON.stringify(uniqueFailures.map(s => s.file + ' ' + s.re)));
+
+  /* 反向回归：本文件新加的豁免**必须**真的覆盖了 P23 已落地的 Voice 增量。
+     否则"豁免"就只是一张空账 —— 下一次同样的改动会再次把它变红，
+     而下一个人还是会去删断言。 */
+  const htmlSrc = readRel('InternalBeyond.html');
+  const realExemptDiffs = {};
+  for (const rel of Object.keys(P23_VOICE_UI_ONLY)) {
+    const d = gitDiffLines(['diff', '--unified=0', 'HEAD', '--', rel]);
+    realExemptDiffs[rel] = d.lines.join('\n');
+  }
+  console.log('       exempt regions computed: ' + JSON.stringify(Object.keys(P23_VOICE_UI_ONLY).map(rel => rel + '=' + regionRanges(fileText(rel), P23_VOICE_UI_ONLY[rel]).length + '/' + P23_VOICE_UI_ONLY[rel].length)));
+  check('Z8.exemptionActuallyCoversP23VoiceIncrement（豁免必须**真的**消化了 P23 已落地的增量，而不是一张空账）',    htmlSrc.indexOf('id="api-voice-source-hint"') >= 0
+    && htmlSrc.indexOf('<script src="assets/js/voice-message-core.js"></script>') >= 0
+    && (fileText('assets/js/social.js') || '').indexOf('loadVoiceSourceCatalog') >= 0
+    /* **真实** diff 过同一个判据（不是只过 Z6 的合成 fixture）：两个文件都真的有改动，且违规数为 0 */
+    && realExemptDiffs['InternalBeyond.html'].length > 0
+    && realExemptDiffs['assets/js/social.js'].length > 0
+    && readonlyViolations(realExemptDiffs).length === 0,
+    JSON.stringify({ htmlDiff: realExemptDiffs['InternalBeyond.html'].length, socialDiff: realExemptDiffs['assets/js/social.js'].length, v: readonlyViolations(realExemptDiffs) }, null, 0).slice(0, 2000));
+
+  /* 耦合面：那条被测量的链路上**没有**任何 Voice 引用 —— 所以 P23 的 Voice 工作
+     结构上不可能改变本文件测到的任何值。这条与 Z4 一起构成"观测仍然成立"。 */
+  const VOICE_TOKENS = /\bvoicebox\b|\bIBVoiceMessage\b|voice-message-core|\bttsSources\b|loadVoiceSourceCatalog/i;
+  const coupledToVoice = READONLY_PROFILE.filter(rel => { const t = fileText(rel); return t !== null && VOICE_TOKENS.test(t); });
+  check('Z9.measuredChainHasZeroVoiceCoupling', coupledToVoice.length === 0, JSON.stringify(coupledToVoice));
+
+  /* 行为指纹（§11）：固定证据向量过**真实** Gate 判定，结果必须逐字一致。
+     这是对"参数没变、语义没变"的可证伪检查：改一个阈值、改一个分支、
+     改一处权重都会在这里留下痕迹（Z5 只看字面量，这里看行为）。 */
+  const gateFingerprint = (state) => {
+    const ev = { contextChars: 4500, dialogueChars: 1500, memoryItems: 2, understandingItems: 1, threadItems: 1, momentItems: 0, localCompressionRatio: 0.45, conflictSignal: false, multipleThreads: false, nearBudget: false };
+    const d = POL._mbDecisionFromSignals(ev, GATE, state || {}, 1000000);
+    return [d.useAstra, d.reason, Math.round(Number(d.score) * 1e6) / 1e6].join('|');
+  };
+  const FP_COLD = gateFingerprint({});
+  console.log('       gate fingerprint (cold / same evidence as §8): ' + FP_COLD);
+  check('Z10.gateBehaviourFingerprintUnchanged',
+    FP_COLD === 'false|simple_context|0.582107' && gateFingerprint({}) === FP_COLD
+    && gateFingerprint({ lastDecision: 'yes', lastDecisionAt: 1000000 - 1000 }) === 'true|hysteresis_hold|0.582107'
+    && gateFingerprint({ lastAstraAt: 1000000 - 5000, lastDecision: 'yes', lastDecisionAt: 1000000 - 5000 }) === 'false|cooldown|0.582107',
+    JSON.stringify({ cold: FP_COLD, warm: gateFingerprint({ lastDecision: 'yes', lastDecisionAt: 999000 }), cd: gateFingerprint({ lastAstraAt: 995000, lastDecision: 'yes', lastDecisionAt: 995000 }) }));
+
 
   /* ═══════════ 8 · 真实凭据可得性（§2：没有就如实说，绝不造一条路）═══════ */
   const KEY = process.env.IB_CI_CALIBRATION_KEY || '';

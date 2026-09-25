@@ -71,7 +71,15 @@
     try {
       if (!conversationId || typeof dbGetByIndex !== 'function') return Promise.resolve([]);
       return Promise.resolve(dbGetByIndex('chatMessages', 'byFriend', conversationId)).then(function (list) {
-        return (Array.isArray(list) ? list : []).slice().sort(function (a, b) { return (a.timestamp || 0) - (b.timestamp || 0); });
+        /* P23 2A：canonical 顺序（实现唯一 = delivery-sequence-core.orderMessages）——
+           一次模型回合可以产出多条共享同一 timestamp 的消息，"最后一条消息"必须是
+           真实顺序上的最后一条。核心未加载 ⇒ 退回取回顺序（仍是确定性的）。 */
+        var arr = Array.isArray(list) ? list : [];
+        try {
+          var seq = (typeof window !== 'undefined') ? window.IBDeliverySequence : null;
+          if (seq && typeof seq.orderMessages === 'function') return seq.orderMessages(arr);
+        } catch (e) { }
+        return arr;
       }, function () { return []; });
     } catch (e) { return Promise.resolve([]); }
   }

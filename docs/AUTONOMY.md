@@ -141,4 +141,4 @@ prefs: { maxConsecutive:1 /* 用户未回复只发一条 */, dndStart:'23:00', d
 
 ---
 
-*本文档描述 IB 的"自主行为"机制，全部由真实代码取证（`plan-domain.js` / `scheduler.js` / `model-client.js` / `proactive-interaction-core.js` / `moments.js` / `reply-chain-core.js`），并如实标注"无长时程规划""无内容级 OOC 防火墙"等边界。下一步见 [OFFLINE.md](OFFLINE.md)（规划中）与 [WHY_IB.md](WHY_IB.md)（规划中）。*
+*本文档描述 IB 的"自主行为"机制，全部由真实代码取证（`plan-domain.js` / `scheduler.js` / `model-client.js` / `proactive-interaction-core.js` / `moments.js` / `reply-chain-core.js`），并如实标注"无长时程规划""无内容级 OOC 防火墙"等边界。下一步见 [OFFLINE.md](OFFLINE.md)与 [WHY_IB.md](WHY_IB.md)。*

@@ -198,8 +198,11 @@ function startMockApi(delayMs) {
     check('chain.providerSawFlare', stats1.hits.some(h => h.model === 'gpt-image-2.5-flare' && h.prompt.indexOf('窗边') >= 0), JSON.stringify(stats1.hits));
     check('chain.imageKeyForwarded', stats1.hits[0] && stats1.hits[0].auth === 'Bearer sk-image-secret', JSON.stringify(stats1.hits[0] || {}));
 
-    /* ③ Moments 后台 → 同一 Router；优先级 P3 + 来源 ai_moments */
-    const bg = await evaluate(cdp, "(async function(){IB.imageRouter.reset();var ev={id:'event_ir_bg',kind:'moment',moment:{id:'mom_ir_bg',roleId:'ir1',content:'楼下的猫又来了。',images:[],visibility:'all',visibleRoleIds:[],likes:[],comments:[],source:'proactive',createdAt:new Date().toISOString()},next_at:Date.now()+3600000,last_post_at:Date.now(),sent_at:Date.now(),want_image:true,image_prompt:'A cat by the window, casual photo'};var ok=await _momentsIngestEvent(ev,_activeUserId());var m=await getMoment('mom_ir_bg');var tel=IB.imageRouter.telemetry();return{ok:ok,images:m&&m.images.length,tel:tel}})()");
+    /* ③ Moments 后台 → 同一 Router；优先级 P3 + 来源 ai_moments。
+       P25-2D：companion 事件必须过 Autonomy（cooldown/prefs），且 canonical Moment id 由
+       candidate 派生（不再等于事件自带的临时 moment id）⇒ 这里先把该角色的最短间隔
+       状态归零，并按内容找落库行。 */
+    const bg = await evaluate(cdp, "(async function(){IB.imageRouter.reset();var st=JSON.parse(localStorage.getItem('ib_moments_state_v1')||'{}');st.ir1=Object.assign({},st.ir1||{},{lastPostAt:0});localStorage.setItem('ib_moments_state_v1',JSON.stringify(st));var ev={id:'event_ir_bg',kind:'moment',moment:{id:'mom_ir_bg',roleId:'ir1',content:'楼下的猫又来了。',images:[],visibility:'all',visibleRoleIds:[],likes:[],comments:[],source:'proactive',createdAt:new Date().toISOString()},next_at:Date.now()+3600000,last_post_at:Date.now(),sent_at:Date.now(),want_image:true,image_prompt:'A cat by the window, casual photo'};var ok=await _momentsIngestEvent(ev,_activeUserId());var own=await getRoleMoments('ir1');var m=own.filter(function(x){return x.content==='楼下的猫又来了。'})[0]||null;var tel=IB.imageRouter.telemetry();return{ok:ok,images:m&&m.images.length,tel:tel}})()");
     check('chain.momentsBackgroundImage', bg && bg.ok === true && bg.images === 1, JSON.stringify(bg));
     const tel = (bg && bg.tel) || [];
     check('chain.telemetryPriorityP3', tel.some(t => t.source === 'ai_moments' && t.priorityName === 'P3' && t.selectedModel === 'gpt-image-2.5-flare'), JSON.stringify(tel));

@@ -411,14 +411,21 @@ test('API 失败退避有界（30 分钟量级，非永久停止/无限重试）
   assert.strictEqual(mockRequests - before, 0);
 });
 
-test('buildMomentPrompt 反空泛模板与 publish:false 正常化（与浏览器端镜像）', () => {
+/* P25-2D：prompt 的契约从旧 `publish:true/false` 迁移到结构化 semantic contract
+   （recommendation / reasonCode / topicKey / draft），与桌面端**同一份** schema
+   （assets/js/moments-semantic-core.js）。断言随之迁移 —— 反空泛的写作要求本身
+   （拒绝空泛模板 / 今天阳光很好 / 碎片化）一字未改，改的只是"不发布"在契约里的名字。 */
+test('buildMomentPrompt 反空泛模板与 recommendation:skip 正常化（与浏览器端同一契约）', () => {
   const snap = snapshot();
   snap.schedule = seedSchedule('c1');
   const built = buildMomentPrompt({ character: snap.character, user: snap.user, ...snap });
   const text = built.messages[1].content;
   assert.ok(text.includes('拒绝空泛模板'));
   assert.ok(text.includes('今天阳光很好'));
-  assert.ok(text.includes('publish:false'));
+  assert.ok(text.includes('recommendation:"skip"'));
+  assert.ok(text.includes('"reasonCode"'));
+  assert.ok(text.includes('topicKey'));
+  assert.ok(!/publish/i.test(text));
   assert.ok(text.includes('碎片化'));
 });
 

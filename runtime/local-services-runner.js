@@ -36,6 +36,7 @@ const supervisorModule = require('./component-supervisor.js');
    tools/ib-stop.js 都用它，因此不存在第二套停止语义。停止顺序是
    cooperative request → 有界等待 → 身份重验证后的 fallback kill → 有界等待。 */
 const lifecycle = require('./component-lifecycle.js');
+const { isTauriOrigin } = require('./host-origin.js');
 
 /* 恢复策略（P11-3C）。有界由四道独立的闸门保证，任何一道都足以阻止无限重启：
      maxAttempts     滑动窗口内允许的重启次数（有限值，supervisor 会强制夹紧）
@@ -915,7 +916,7 @@ function cancelRecoveryTimers() {
     if (u.protocol === 'file:') return true;
     if (u.protocol === 'http:' || u.protocol === 'https:') {
       const host = String(u.hostname).toLowerCase();
-      if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]') return true;
+      if (isTauriOrigin(origin) || host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]') return true;
     }
   } catch (e) { /* illegal origin → deny */ }
   return false;

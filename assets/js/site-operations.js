@@ -235,8 +235,8 @@ async function ibToolTest(id){
 /* ══════════ 外部工具（ws_tool）══════════ */
 var _ibToolsCache=null;
 var _ibToolPendingResults=[];/* 待注入的工具调用结果 */
-var _ibToolDrainImages=[];/* 视觉回注：随文本一同出队的工具图片（下次发送时并入图像块，上限4张） */
-var _ibImageDrain=[];/* 图片回注队列（新）：ICode ws_read_image / 聊天生图 / 朋友圈等来源的图片 dataUrl，
+var _ibToolDrainImages=[];/* R3：随已 scope-filtered 工具结果出队的图片对象（上限4张） */
+var _ibImageDrain=[];/* R3：ICode ws_read_image / 聊天生图等来源的 scoped runtime image objects，
    在用户下一条消息时并入图像块发给支持视觉的模型（与 _ibToolDrainImages 同一消费点，上限 6 张）。 */
 async function getIbTools(){
   if(_ibToolsCache)return _ibToolsCache;
@@ -288,8 +288,11 @@ async function _ibToolFetch(tool,args){
     return{ok:false,detail:msg};
   }
 }
-function _ibQueueToolResult(author,name,ok,detail){
-  _ibToolPendingResults.push({actor:author,images:[],text:'- 工具「'+name+'」：'+(ok?'成功':'失败')+(detail?' · '+String(detail).slice(0,700):'')});
+function _ibQueueToolResult(author,name,ok,detail,actorId,scope){
+  /* P29-3 · canonical attribution（第 5 参为新增的 additive 字段；旧调用点省略 ⇒ actorId=''）。
+     P30-2 · WHERE：第 6 参 `scope` 是**已归一**的 {friendId,threadId} 片段（或 null=unscoped），
+     由调用方（producer）传入；本层只合并，不派生 conversationId、不推导身份。 */
+  _ibToolPendingResults.push(Object.assign({actor:author,actorId:String(actorId||''),images:[]},scope||null,{text:'- 工具「'+name+'」：'+(ok?'成功':'失败')+(detail?' · '+String(detail).slice(0,700):'')}));
 }
 /* ── P11-3D.1 · XML 工具执行接上 canonical guard ──────────────────────
    XML 通道（<ws_tool>）与原生 FC 通道此前**共用同一个 turn 周期，但只有 FC
@@ -322,7 +325,7 @@ function _ibGuardSettle(g,op,r){
   }catch(e){}
 }
 /* 执行一次 ws_tool 操作，返回结果对象（渲染层据此出卡片） */
-async function _ibExecToolOp(op,author,ictx){
+async function _ibExecToolOp(op,author,ictx,actorId,scope){
   var _g=_ibGuardOf(ictx);
   /* ② P11-3D.1 · fc="1" 的卡片**不是一次新的调用**：它是原生 FC 通道执行完之后
      由宿主序列化出来的渲染标签（_ibExecToolOpInner 会按台账回查填卡，不执行任何东西）。
@@ -331,14 +334,18 @@ async function _ibExecToolOp(op,author,ictx){
      口径因此与"执行"对齐：**只有真的要去执行时才裁定**。 */
   var _replay=!!(op&&op.fc);
   if(_g&&!_replay){ var _deny=_ibGuardAllow(_g,op); if(_deny)return _deny; }
-  var _r=await _ibExecToolOpInner(op,author);
+  var _r=await _ibExecToolOpInner(op,author,actorId,scope);
   /* ③ 执行后结算：工具没执行（fc 回查/预检失败）就不结算；
      pendingConfirm 与成功一样算"本次调用已了结"，避免被误判成失败重试。 */
   var _settleable=!!(_r&&(_r.fed===true||_r.pendingConfirm===true));
   if(_g&&_settleable&&!_replay)_ibGuardSettle(_g,op,_r);
   return _r;
 }
-async function _ibExecToolOpInner(op,author){
+async function _ibExecToolOpInner(op,author,actorId,scope){
+  /* P29-3 · actor=显示名（不变）；actorId=canonical（可空，缺失 ⇒ reader 走 legacy 解析）。 */
+  var _aid=String(actorId||'');
+  /* P30-2 · WHERE：会话归属片段（已归一；null = intentionally unscoped）。 */
+  var _sc=scope||null;
   /* FC 原生通道已执行（fc="1"）：从台账取结果填卡，不再执行、不再排队注入 */
   if(op.fc&&typeof IBFC!=='undefined'){
     var _led=IBFC.ledgerGetByOp(op);
@@ -351,12 +358,12 @@ async function _ibExecToolOpInner(op,author){
     var _bArgsRaw=String(op.args||'').trim(),_bArgs={};
     if(_bArgsRaw){try{_bArgs=JSON.parse(_bArgsRaw)}catch(e){return{type:'tool',name:op.name,ok:false,reason:'args 不是合法 JSON'}}}
     if(IBNET.confirmRequired(op.name)){
-      _wsPendingOpFeedback.push({actor:author,text:'后端工具「'+op.name+'」调用请求已生成，等待用户确认。用户点击"执行"后，结果会在之后的消息回传给你——请等待，不要重复提交。'});
-      return{type:'tool',name:op.name,ok:true,pendingConfirm:true,args:_bArgsRaw,author:author};
+      _wsPendingOpFeedback.push(Object.assign({actor:author,actorId:_aid},_sc,{text:'后端工具「'+op.name+'」调用请求已生成，等待用户确认。用户点击"执行"后，结果会在之后的消息回传给你——请等待，不要重复提交。'}));
+      return Object.assign({type:'tool',name:op.name,ok:true,pendingConfirm:true,args:_bArgsRaw,author:author,actorId:_aid},_sc);
     }
     var _br=await IBNET.execOp(op.name,_bArgs);
     var _bDet=_br.ok?(_br.response||''):((_br.reason||'')+(_br.response?' · '+_br.response:''));
-    _ibToolPendingResults.push({actor:author,images:(_br&&_br.images)||[],text:'- 工具「'+op.name+'」：'+(_br.ok?'成功':'失败')+(_bDet?' · '+String(_bDet).slice(0,4000):'')});
+    _ibToolPendingResults.push(Object.assign({actor:author,actorId:_aid,images:(_br&&_br.images)||[]},_sc,{text:'- 工具「'+op.name+'」：'+(_br.ok?'成功':'失败')+(_bDet?' · '+String(_bDet).slice(0,4000):'')}));
     return{type:'tool',name:op.name,ok:_br.ok,fed:true,args:_bArgsRaw,response:_bDet,images:_br.images||[],reason:_br.ok?'':String(_br.reason||'').slice(0,120)};
   }
   /* MCP 工具（mcp.别名.工具名）：走 IBMCP 通道，独立于本地 Webhook 开关 */
@@ -365,12 +372,12 @@ async function _ibExecToolOpInner(op,author){
     var _mArgsRaw=String(op.args||'').trim(),_mArgs={};
     if(_mArgsRaw){try{_mArgs=JSON.parse(_mArgsRaw)}catch(e){return{type:'tool',name:op.name,ok:false,reason:'args 不是合法 JSON'}}}
     if(IBMCP.cfg().confirm!==false){
-      _wsPendingOpFeedback.push({actor:author,text:'工具「'+op.name+'」调用请求已生成，等待用户确认（用户开启了调用前询问）。用户点击"执行"后，结果会在之后的消息回传给你——请耐心等待，不要重复提交。'});
-      return{type:'tool',name:op.name,ok:true,pendingConfirm:true,args:_mArgsRaw,author:author};
+      _wsPendingOpFeedback.push(Object.assign({actor:author,actorId:_aid},_sc,{text:'工具「'+op.name+'」调用请求已生成，等待用户确认（用户开启了调用前询问）。用户点击"执行"后，结果会在之后的消息回传给你——请耐心等待，不要重复提交。'}));
+      return Object.assign({type:'tool',name:op.name,ok:true,pendingConfirm:true,args:_mArgsRaw,author:author,actorId:_aid},_sc);
     }
     var _mr=await IBMCP.execOp(op.name,_mArgs);
     var _mDet=_mr.ok?(_mr.response||''):((_mr.reason||'')+(_mr.response?' · '+_mr.response:''));
-    _ibToolPendingResults.push({actor:author,images:(_mr&&_mr.images)||[],text:'- 工具「'+op.name+'」：'+(_mr.ok?'成功':'失败')+(_mDet?' · '+String(_mDet).slice(0,4000):'')});
+    _ibToolPendingResults.push(Object.assign({actor:author,actorId:_aid,images:(_mr&&_mr.images)||[]},_sc,{text:'- 工具「'+op.name+'」：'+(_mr.ok?'成功':'失败')+(_mDet?' · '+String(_mDet).slice(0,4000):'')}));
     return{type:'tool',name:op.name,ok:_mr.ok,fed:true,args:_mArgsRaw,response:_mDet,images:_mr.images||[],reason:_mr.ok?'':String(_mr.reason||'').slice(0,120)};
   }
   var cfg=await getIbTools();
@@ -387,11 +394,11 @@ async function _ibExecToolOpInner(op,author){
   }
   if(cfg.confirm){
     /* 询问模式：出待执行卡，先告知 AI 等待，避免重复提交 */
-    _wsPendingOpFeedback.push({actor:author,text:'工具「'+op.name+'」调用请求已生成，等待用户确认（用户开启了调用前询问）。用户点击"执行"后，结果会在之后的消息回传给你——请耐心等待，不要重复提交。'});
-    return{type:'tool',name:op.name,ok:true,pendingConfirm:true,args:rawArgs,author:author};
+    _wsPendingOpFeedback.push(Object.assign({actor:author,actorId:_aid},_sc,{text:'工具「'+op.name+'」调用请求已生成，等待用户确认（用户开启了调用前询问）。用户点击"执行"后，结果会在之后的消息回传给你——请耐心等待，不要重复提交。'}));
+    return Object.assign({type:'tool',name:op.name,ok:true,pendingConfirm:true,args:rawArgs,author:author,actorId:_aid},_sc);
   }
   var r=await _ibToolFetch(tool,args);
-  _ibQueueToolResult(author,op.name,r.ok,r.detail);
+  _ibQueueToolResult(author,op.name,r.ok,r.detail,_aid,_sc);
   return{type:'tool',name:op.name,ok:r.ok,fed:true,args:rawArgs,response:r.detail,reason:r.ok?'':String(r.detail||'').slice(0,120)};
 }
 /* 待执行卡的「执行」按钮 */
@@ -399,21 +406,24 @@ async function _ibConfirmToolFromCard(btn,ctx,card){
   btn.disabled=true;btn.textContent='执行中…';
   var args={};
   if(ctx.args){try{args=JSON.parse(ctx.args)}catch(e){}}
+  /* P30-2 · WHERE：卡片 ctx 携带的会话归属（由 producer 在出卡时写入）；缺失 ⇒ unscoped。 */
+  var _csc=(ctx&&typeof ctx.friendId==='string'&&ctx.friendId)
+    ?{friendId:ctx.friendId,threadId:(ctx.threadId?String(ctx.threadId):null)}:null;
   var r;
   if(typeof IBNET!=='undefined'&&/^bridge\./.test(String(ctx.name||''))){
     var _br=await IBNET.execOp(ctx.name,args);
     r={ok:_br.ok,detail:_br.ok?(_br.response||''):((_br.reason||'')+(_br.response?' · '+_br.response:'')),images:_br.images||[]};
-    _ibToolPendingResults.push({actor:ctx.author,images:(r&&r.images)||[],text:'- 工具「'+ctx.name+'」：'+(r.ok?'成功':'失败')+(r.detail?' · '+String(r.detail).slice(0,4000):'')});
+    _ibToolPendingResults.push(Object.assign({actor:ctx.author,actorId:String(ctx.actorId||''),images:(r&&r.images)||[]},_csc,{text:'- 工具「'+ctx.name+'」：'+(r.ok?'成功':'失败')+(r.detail?' · '+String(r.detail).slice(0,4000):'')}));
   }else if(typeof IBMCP!=='undefined'&&/^mcp\./.test(String(ctx.name||''))){
     var _mr=await IBMCP.execOp(ctx.name,args);
     r={ok:_mr.ok,detail:_mr.ok?(_mr.response||''):((_mr.reason||'')+(_mr.response?' · '+_mr.response:'')),images:_mr.images||[]};
-    _ibToolPendingResults.push({actor:ctx.author,images:(r&&r.images)||[],text:'- 工具「'+ctx.name+'」：'+(r.ok?'成功':'失败')+(r.detail?' · '+String(r.detail).slice(0,4000):'')});
+    _ibToolPendingResults.push(Object.assign({actor:ctx.author,actorId:String(ctx.actorId||''),images:(r&&r.images)||[]},_csc,{text:'- 工具「'+ctx.name+'」：'+(r.ok?'成功':'失败')+(r.detail?' · '+String(r.detail).slice(0,4000):'')}));
   }else{
     var cfg=await getIbTools();
     var tool=(cfg.tools||[]).find(function(t){return t.name===ctx.name});
     if(!tool){toast('工具不存在或已删除');btn.disabled=false;btn.textContent='执行';return}
     r=await _ibToolFetch(tool,args);
-    _ibQueueToolResult(ctx.author,ctx.name,r.ok,r.detail);
+    _ibQueueToolResult(ctx.author,ctx.name,r.ok,r.detail,ctx.actorId||'',_csc);
   }
   btn.remove();
   var t=card.querySelector('.ws-op-text');
@@ -436,7 +446,19 @@ function _getIbToolResultInjection(filterFn){
   else{take=_ibToolPendingResults}
   _ibToolPendingResults=keep;
   if(!take.length)return'';
-  try{take.forEach(function(s2){(s2.images||[]).forEach(function(u){if(_ibToolDrainImages.length<4)_ibToolDrainImages.push(u)})})}catch(e){}
+  /* R3：derived tool-image items inherit the parent result's origin attribution.
+     Do not collapse them back to bare strings; the next consumer may run after a
+     conversation switch or a tool continuation yield. */
+  try{take.forEach(function(s2){(s2.images||[]).forEach(function(raw){
+    var _u=typeof raw==='string'?String(raw):String((raw&&raw.dataUrl)||'');
+    if(!_u||_u.slice(0,5)!=='data:'||_ibToolDrainImages.length>=4)return;
+    var _m=typeof raw==='object'&&raw&&raw.mime?String(raw.mime):(((_u.match(/^data:([^;,]+)/i)||[])[1])||'image/png');
+    var _b=typeof raw==='object'&&raw&&raw.base64?String(raw.base64):String(_u.split(',')[1]||'');
+    var _item={dataUrl:_u,base64:_b,mime:_m,name:(typeof raw==='object'&&raw&&raw.name?String(raw.name):'tool_result.png')};
+    if(s2.actorId)_item.actorId=String(s2.actorId);
+    if(s2.friendId){_item.friendId=String(s2.friendId);_item.threadId=s2.threadId==null?null:String(s2.threadId);}
+    _ibToolDrainImages.push(_item);
+  })})}catch(e){}
   var ctx='\n\n【工具调用结果】此前发起的外部工具调用已执行完毕，结果如下（据此答复用户；失败请核对工具名与 args 后可重试）：';
   take.forEach(function(s2){ctx+='\n'+s2.text});
   return ctx;

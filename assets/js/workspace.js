@@ -18,20 +18,36 @@ function _parseWsOps(text){
 
 /* ── ```file: 下载块自动归档：聊天里的下载卡照旧，同时把文件存入默认文件夹「ICode」，
    让 AI 生成的所有文件都能在 ICode 里找到（仅实时回复调用一次，历史渲染不会重复入库） ── */
-async function _wsArchiveFileBlocks(files,author){
+function _wsRoleFileProvenance(cfg){
+  if(!cfg||typeof cfg!=='object'||cfg.id===undefined||cfg.id===null)return null;
+  var id=String(cfg.id);
+  return id?{kind:'role',id:id}:null;
+}
+function _wsCanonicalFileProvenanceValid(record){
+  if(!record||typeof record.lastModifiedByKind!=='string')return false;
+  var kind=record.lastModifiedByKind;
+  var hasId=Object.prototype.hasOwnProperty.call(record,'lastModifiedById');
+  if(kind==='role')return typeof record.lastModifiedById==='string'&&record.lastModifiedById.length>0;
+  return (kind==='user'||kind==='import'||kind==='script'||kind==='system')&&!hasId;
+}
+function _wsArchiveCollisionNeedsUniquePath(record){
+  if(!_wsCanonicalFileProvenanceValid(record))return true;/* legacy/invalid is unknown: never overwrite */
+  return record.lastModifiedByKind==='user'||record.lastModifiedByKind==='import';
+}
+async function _wsArchiveFileBlocks(files,author,provenance){
   if(!files||!files.length)return;
   try{
     var pid=await wsEnsureDefaultProject();
     for(var i=0;i<files.length;i++){
       var f=files[i];
       if(!f||!f.path||!f.content||!f.content.trim())continue;
-      /* 归档撞名且旧文件出自用户手改（你）或导入 → 不覆盖，改存新名； */
+      /* R4-2 · canonical-first：valid canonical provenance decides; legacy/invalid stays conservative. */
       var dest=f.path;
       try{
         var old=await wsGetFileByPath(pid,f.path);
-        if(old&&(old.lastModifiedBy==='User'||old.lastModifiedBy==='你'||old.lastModifiedBy==='导入'))dest=await _wsUniquePath(pid,f.path);
+        if(old&&_wsArchiveCollisionNeedsUniquePath(old))dest=await _wsUniquePath(pid,f.path);
       }catch(e2){}
-      await wsSaveFile(pid,dest,f.content,author||'AI');
+      await wsSaveFile(pid,dest,f.content,author||'AI',provenance);
     }
   }catch(e){}
 }
@@ -214,9 +230,24 @@ window._imgEditCapability=_imgEditCapability;
        （同一 provider 推断/凭证/超时/响应解析；不建立第二套 provider 系统） */
 async function _wsExecImageGen(cfg,prompt,size,opts){
   cfg=cfg||{};opts=opts||{};
+  var bridge=(typeof window!=='undefined'&&window._ibWithRuntimeApiCredential)||null;
+  if(typeof bridge!=='function')return{ok:false,code:'CREDENTIAL_UNAVAILABLE',reason:'Credential Vault resolver unavailable'};
+  try{
+    var expectedImageProvider=_imgResolveProvider(cfg)||cfg.imageGenProvider||cfg.provider;
+    return await bridge(cfg,function(runtimeCfg){return _wsExecImageGenWithRuntimeCredential(runtimeCfg,prompt,size,opts);},{
+      endpoint:cfg.imageGenEndpoint||cfg.endpoint,
+      expectedProvider:expectedImageProvider,
+      rejectImageGenSecret:true
+    });
+  }catch(e){
+    return{ok:false,code:e&&e.code==='CREDENTIAL_UNAVAILABLE'?'CREDENTIAL_UNAVAILABLE':'IMAGE_PROVIDER_ERROR',reason:e&&e.code==='CREDENTIAL_UNAVAILABLE'?'Credential Vault credential unavailable':'Image provider request failed'};
+  }
+}
+async function _wsExecImageGenWithRuntimeCredential(cfg,prompt,size,opts){
+  cfg=cfg||{};opts=opts||{};
   var iprov=_imgResolveProvider(cfg);
   var iEp=String(cfg.imageGenEndpoint||'').trim()||String(cfg.endpoint||'').trim();
-  var iKey=String(cfg.imageGenApiKey||'').trim()||String(cfg.apiKey||'').trim();
+  var iKey=String(cfg.apiKey||'').trim();
   var model=(cfg.imageGenModel||'').trim()||(iprov==='gemini'?'gemini-2.5-flash-image':'gpt-image-1');
   var ctrl=new AbortController();var _tm=setTimeout(function(){try{ctrl.abort()}catch(e){}},120000);
   try{
@@ -227,12 +258,16 @@ async function _wsExecImageGen(cfg,prompt,size,opts){
       }catch(eS){}
     }
     if(iprov==='anthropic'||iprov==='deepseek'){
-      if(String(opts.operation||'').toLowerCase()==='edit')return await _wsExecImageEdit(cfg,prompt,opts,{model:model,iprov:iprov,iEp:iEp,iKey:iKey,ctrl:ctrl});
+      if(String(opts.operation||'').toLowerCase()==='edit'){
+        var unsupportedEditContext={model:model,iprov:iprov,iEp:iEp,iKey:iKey,ctrl:ctrl};
+        try{return await _wsExecImageEdit(cfg,prompt,opts,unsupportedEditContext)}finally{unsupportedEditContext.iKey=''}
+      }
       return{ok:false,code:'IMAGE_ROUTER_PROVIDER_UNSUPPORTED',reason:(iprov==='anthropic'?'Anthropic':'DeepSeek')+' 不支持图像生成；请把图片服务商改为 OpenAI 兼容或 Gemini（可在 API 设置中单独配置图片服务商/接口/Key）'};
     }
     /* 图片编辑：同一执行器入口，内部委托薄的编辑 wire format 函数（模型/并发/优先级仍由 Router 决定） */
     if(String(opts.operation||'').toLowerCase()==='edit'){
-      return await _wsExecImageEdit(cfg,prompt,opts,{model:model,iprov:iprov,iEp:iEp,iKey:iKey,ctrl:ctrl});
+      var editContext={model:model,iprov:iprov,iEp:iEp,iKey:iKey,ctrl:ctrl};
+      try{return await _wsExecImageEdit(cfg,prompt,opts,editContext)}finally{editContext.iKey=''}
     }
     var b64='',mime='image/png';
     if(iprov==='gemini'){
@@ -267,7 +302,7 @@ async function _wsExecImageGen(cfg,prompt,size,opts){
     return{ok:true,dataUrl:'data:'+mime+';base64,'+b64,base64:b64,mime:mime,model:model,bytes:Math.floor(b64.length*0.75)};
   }catch(e){
     return{ok:false,code:(e&&e.name==='AbortError')?((opts.signal&&opts.signal.aborted)?'IMAGE_ABORTED':'IMAGE_TIMEOUT'):'IMAGE_PROVIDER_ERROR',reason:(e&&e.name==='AbortError')?'生图超时（120 秒）':'网络错误：'+String(e&&e.message||e).slice(0,140)};
-  }finally{clearTimeout(_tm)}
+  }finally{clearTimeout(_tm);iKey='';}
 }
 /* 生成/编辑图片的 lineage（轻量元数据，挂在既有图片对象上，不重构图片存储）：
    A(generate,0) → B(edit,1) → C(edit,2)；无 imageId 时用 messageId+index 兜底（见 image-edit.js） */
@@ -314,6 +349,19 @@ async function _wsBuildEditIctx(instruction,op,ictx,cfg){
   return r;
 }
 
+/* ── P30-2 · 会话归属片段（WHERE）─────────────────────────────────────────────
+   只做**字段归一**：从既有 ictx / ctx / card 数据里取 `friendId` + `threadId`，
+   返回 `{friendId, threadId}`（threadId 无则 null）或 **null**（= intentionally unscoped）。
+   它**不**做身份推导（不看 actor/senderName/cfg），**不**派生 conversationId ——
+   conversationId 的派生规则唯一属于 chat-core，且只在比较时当场算出。 */
+function _wsScopeFragment(src){
+  var s=src||{};
+  var fid=(typeof s.friendId==='string')?s.friendId.trim():'';
+  if(!fid)return null;
+  var tid=(s.threadId==null)?'':String(s.threadId).trim();
+  return {friendId:fid,threadId:tid||null};
+}
+
 /* ── Execute workspace ops and return results ──
    注意：results 与 ops 严格一一对应（顺序、数量），渲染层依赖这一点做卡片对齐
    ictx（可选，第 4 参）：图片任务上下文，交给 Image Router 做优先级/模型决策——
@@ -322,6 +370,38 @@ async function _wsBuildEditIctx(instruction,op,ictx,cfg){
    缺省 = 用户主动的聊天内图片生成（P1）。 */
 async function _execWsOps(ops,authorName,cfg,ictx){
   ictx=ictx||{};
+  /* ── P30-2 · Workspace Conversation Scope（P30-1 契约）────────────────────────
+     WHERE（会话归属）只从**既有 ictx** 取：`{friendId, threadId}`；两者都没有 ⇒ 返回 null
+     ⇒ 条目保持 intentionally unscoped（不带任何 scope 字段）。
+     绝不从 actor / senderName 推导 scope；绝不复制 conversationIdOf 的派生逻辑
+     （派生键只在比较时由 chat-core 当场算出）。 */
+  var _sc=_wsScopeFragment(ictx);
+  /* ── P29-3 · Workspace Actor Canonical Attribution（P29-2 冻结）──────────────
+     producer 当场保留 canonical identity：actor=显示名（不变），actorId=cfg.id（新增，additive）。
+     cfg 缺失 / 非对象（测试与诊断入口，如 `_processWsResponse(text,'测试','p4a-json')`）⇒ actorId='' ⇒
+     条目走 legacy 解析；**绝不**按 authorName 反查 id（那正是被修复的压缩路径）。 */
+  var actorId=(cfg&&typeof cfg==='object')?String(cfg.id||''):'';
+  var fileProvenance=_wsRoleFileProvenance(cfg);
+  /* P30-2 · 本函数产生**所有** op-feedback 条目都经这一个入口入队
+     ⇒ WHERE（friendId/threadId）只在这一处合并；_sc 为 null（intentionally unscoped）时零字段。 */
+  var _pushOpFeedback=function(text){
+    _wsPendingOpFeedback.push(Object.assign({actor:authorName,actorId:actorId},_sc,{text:text}));
+  };
+  /* R3 · media queue attribution：图片在 origin-time 捕获 WHO + WHERE。
+     旧版本只把 dataUrl 丢进全局队列，consumer 无法安全判断归属；这里不派生
+     conversationId，也不读取 active conversation，缺失上下文就保留为 legacy。 */
+  var _queueImage=function(raw,name){
+    try{
+      var _u=typeof raw==='string'?String(raw):String((raw&&raw.dataUrl)||'');
+      if(!_u||_u.slice(0,5)!=='data:')return;
+      var _mime=typeof raw==='object'&&raw&&raw.mime?String(raw.mime):(((_u.match(/^data:([^;,]+)/i)||[])[1])||'image/png');
+      var _b64=typeof raw==='object'&&raw&&raw.base64?String(raw.base64):String(_u.split(',')[1]||'');
+      var _item={dataUrl:_u,base64:_b64,mime:_mime,name:(typeof raw==='object'&&raw&&raw.name?String(raw.name):String(name||'image_inject.png'))};
+      if(actorId)_item.actorId=actorId;
+      if(_sc){_item.friendId=_sc.friendId;_item.threadId=_sc.threadId;}
+      if(typeof _ibImageDrain!=='undefined'&&Array.isArray(_ibImageDrain)&&_ibImageDrain.length<6)_ibImageDrain.push(_item);
+    }catch(e){}
+  };
   var results=[];
   for(var op of ops){
     try{
@@ -383,11 +463,11 @@ async function _execWsOps(ops,authorName,cfg,ictx){
           var _giName=(op.file&&op.file.trim())||((_giIsEdit?'AI改图_':'AI生图_')+String(Date.now()).slice(-8)+'.png');
           if(!/\.(png|jpe?g|webp)$/i.test(_giName))_giName+='.png';
           _giPath=await _wsUniquePath(_giPid,_giName);
-          await wsSaveFile(_giPid,_giPath,_gi.dataUrl,authorName);
+          await wsSaveFile(_giPid,_giPath,_gi.dataUrl,authorName,fileProvenance);
         }catch(eS){_giPath=''}
-        _wsPendingOpFeedback.push({actor:authorName,text:(_giIsEdit?'图像已按用户要求修改并展示给用户':'图像已生成并展示给用户')+(_giPath?'，同时已存入 ICode 默认文件夹（'+_giPath+'）':'')+(_giIsEdit?'。修改要求：':'。提示词：')+_giPrompt.slice(0,120)});
+        _pushOpFeedback((_giIsEdit?'图像已按用户要求修改并展示给用户':'图像已生成并展示给用户')+(_giPath?'，同时已存入 ICode 默认文件夹（'+_giPath+'）':'')+(_giIsEdit?'。修改要求：':'。提示词：')+_giPrompt.slice(0,120));
         /* 图片回注：结果图在用户下一条消息时作为图像一并注入给支持视觉的模型（文本模型不消费） */
-        try{if(typeof _ibImageDrain!=='undefined'&&_ibImageDrain.length<6)_ibImageDrain.push(_gi.dataUrl)}catch(e){}
+        _queueImage(_gi,_giIsEdit?'edited_image.png':'generated_image.png');
         results.push({type:'gen_image',op:_giIsEdit?'edit':'generate',ok:true,prompt:_giPrompt,model:_gi.model,dataUrl:_gi.dataUrl,base64:_gi.base64,mime:_gi.mime,path:_giPath,bytes:_gi.bytes||0,
           /* 实际路由（谁被真正用了）：让上层/UI 不必猜，也不需要重新读配置 */
           route:_gi.route||null,fallbackUsed:!!_gi.fallbackUsed,
@@ -416,14 +496,14 @@ async function _execWsOps(ops,authorName,cfg,ictx){
         var _cUniq=await _wsUniquePath(_wsActiveProject,op.path);
         if(_cUniq!==op.path){_cRenamedFrom=op.path;_cPath=_cUniq}
       }
-      await wsSaveFile(_wsActiveProject,_cPath,op.content,authorName);
+      await wsSaveFile(_wsActiveProject,_cPath,op.content,authorName,fileProvenance);
       results.push({type:'create',path:_cPath,ok:true,size:new Blob([op.content]).size,truncated:!!op.truncated,projId:_wsActiveProject,renamedFrom:_cRenamedFrom||undefined});
     }else if(op.type==='edit'){
       if(op.malformed){results.push({type:'edit',path:op.path,ok:false,reason:op.truncated?'输出被截断':'指令格式不完整'});continue}
       if(!op.path){results.push({type:'edit',path:'',ok:false,reason:'缺少文件名（path 属性为空或无法解析）'});continue}
       if(!_wsActiveProject)await _wsResolveProject(op.path);
       if(!_wsActiveProject){results.push({type:'edit',path:op.path,ok:false,reason:'未指定项目'});continue}
-      var er=await wsEditFileContent(_wsActiveProject,op.path,op.find,op.replace,authorName);
+      var er=await wsEditFileContent(_wsActiveProject,op.path,op.find,op.replace,authorName,fileProvenance);
       results.push({type:'edit',path:op.path,ok:er.ok,reason:er.reason||'',find:op.find,replace:op.replace,projId:_wsActiveProject});
     }else if(op.type==='read'){
       if(!op.path){results.push({type:'read',path:'',ok:false,reason:'缺少文件名（path 属性为空或无法解析）'});continue}
@@ -433,7 +513,7 @@ async function _execWsOps(ops,authorName,cfg,ictx){
       if(rf){
         var _rContent=rf.content;
         if(typeof _rContent==='string'&&_rContent.slice(0,5)==='data:'&&_icodeIsRich(rf.path||op.path)){_rContent=await _wsExtractRichText(rf)}/* 富文件：注入提取文本而非 base64 */
-        var _rEntry={path:op.path,projectId:_wsActiveProject,actor:authorName,total:_rContent.length};
+        var _rEntry=Object.assign({path:op.path,projectId:_wsActiveProject,actor:authorName,actorId:actorId,total:_rContent.length},_sc);
         if(op.from>0||op.chars>0){/* 分段读取：from（1 起）+ chars，单段仍受注入上限约束 */
           var _rStart=Math.max(0,(op.from||1)-1);
           var _rLen=op.chars>0?Math.min(op.chars,_ibInjectMax()):_ibInjectMax();
@@ -459,7 +539,7 @@ async function _execWsOps(ops,authorName,cfg,ictx){
       var _riLooksImage=_riStr.slice(0,5)==='data:'||/\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(_riPath);
       if(!_riLooksImage){results.push({type:'read_image',path:_riPath,ok:false,reason:'不是图片文件（支持 data: 图片或 png/jpg/jpeg/gif/webp/bmp/svg 扩展名）'});continue}
       var _riUrl=_riStr.slice(0,5)==='data:'?_riStr:('data:image/png;base64,'+_riStr);/* 纯 base64 内容按 PNG 包装 */
-      try{if(typeof _ibImageDrain!=='undefined'&&_ibImageDrain.length<6)_ibImageDrain.push(_riUrl)}catch(e){}
+      _queueImage(_riUrl,_riPath.split('/').pop()||'read_image.png');
       results.push({type:'read_image',path:_riPath,ok:true,size:_riUrl.length,projId:resolvedProj});
     }else if(op.type==='make_docx'||op.type==='make_pdf'||op.type==='make_xlsx'){
       var _mkKind=op.type.slice(5);
@@ -471,12 +551,12 @@ async function _execWsOps(ops,authorName,cfg,ictx){
         await _wsResolveProject(op.path);
         if(!_wsActiveProject)_wsActiveProject=await wsEnsureDefaultProject();/* 未指定项目 → 静默存入默认文件夹 ICode */
       }
-      var _mkR=await _wsExecMakeOp(_mkKind,op,authorName);
+      var _mkR=await _wsExecMakeOp(_mkKind,op,authorName,fileProvenance);
       results.push(Object.assign({type:op.type,projId:_wsActiveProject},_mkR,{path:_mkR.path||op.path}));
     }else if(op.type==='tool'){
       /* P11-3D.1：把本 turn 的 guard 显式传给执行点 —— XML 工具与原生 FC
          共用同一个 turn 预算（不传 guard 时行为与改动前逐字一致）。 */
-      results.push(await _ibExecToolOp(op,authorName,ictx));
+      results.push(await _ibExecToolOp(op,authorName,ictx,actorId,_sc));
     }else if(op.type==='run'){
       if(op.malformed){results.push({type:'run',entry:op.entry||'',ok:false,reason:op.truncated?'输出被截断，脚本不完整':'指令格式不完整'});continue}
       if(op.truncated&&op.code){results.push({type:'run',entry:op.entry||'',ok:false,reason:'输出被截断，脚本不完整，未运行；请完整重发'});continue}
@@ -485,14 +565,14 @@ async function _execWsOps(ops,authorName,cfg,ictx){
         if(op.entry)await _wsResolveProject(op.entry);
         if(!_wsActiveProject)_wsActiveProject=await wsEnsureDefaultProject();
       }
-      var _rCtx={lang:op.lang||'',entry:op.entry||'',code:op.code||'',projId:_wsActiveProject,timeoutSec:op.timeoutSec||0,author:authorName,pip:op.pip||''};
+      var _rCtx=Object.assign({lang:op.lang||'',entry:op.entry||'',code:op.code||'',projId:_wsActiveProject,timeoutSec:op.timeoutSec||0,author:authorName,actorId:actorId,pip:op.pip||''},_sc);
       if(op.pip&&typeof IBSandbox!=='undefined'){
         var _pipChk=IBSandbox.checkPip(IBSandbox.parsePipAttr(op.pip));
         if(!_pipChk.ok){results.push({type:'run',entry:op.entry||'',ok:false,reason:'pip 包未在白名单: '+_pipChk.denied.join(', ')+'（DIY 页·沙箱扩展中添加后重试）'});continue}
       }
       if(_wsRunMode()!=='auto'){
         /* 询问模式：出待运行卡，等用户点击；先告知 AI 等待，避免它重复提交 */
-        _wsPendingOpFeedback.push({actor:authorName,text:'脚本「'+(op.entry||'内联代码')+'」已生成并进入待运行状态（用户开启了运行确认）。等用户点击「运行」后，输出会在之后的消息回传给你——请耐心等待，不要重复提交同一脚本。'});
+        _pushOpFeedback('脚本「'+(op.entry||'内联代码')+'」已生成并进入待运行状态（用户开启了运行确认）。等用户点击「运行」后，输出会在之后的消息回传给你——请耐心等待，不要重复提交同一脚本。');
         results.push(Object.assign({type:'run',ok:true,pendingConfirm:true},_rCtx));
       }else{
         var _rr=await _wsExecuteRun(_rCtx);
@@ -513,13 +593,13 @@ async function _execWsOps(ops,authorName,cfg,ictx){
       if(r.type==='run'&&r.fed)return;/* 自动运行的失败详情已由脚本输出通道回传，避免重复 */
       if(r.type==='tool'&&r.fed)return;/* 同上：工具结果通道已回传 */
       var act=r.type==='edit'?'编辑':r.type==='create'?'创建':r.type==='read'?'读取':r.type==='read_image'?'读取图片':r.type==='run'?'运行脚本':r.type==='tool'?'调用工具':r.type==='gen_image'?(r.op==='edit'?'编辑图像':'生成图像'):r.type==='make_docx'?'生成 Word 文档':r.type==='make_pdf'?'生成 PDF':r.type==='make_xlsx'?'生成 Excel 表格':'项目操作';
-      _wsPendingOpFeedback.push({actor:authorName,text:act+' '+(r.path||r.name||(r.prompt?'「'+String(r.prompt).slice(0,40)+'」':'')||'')+' 失败：'+(r.reason||'未知原因')});
+      _pushOpFeedback(act+' '+(r.path||r.name||(r.prompt?'「'+String(r.prompt).slice(0,40)+'」':'')||'')+' 失败：'+(r.reason||'未知原因'));
     }else if(r.type==='create'&&r.renamedFrom){
-      _wsPendingOpFeedback.push({actor:authorName,text:'创建时发现 '+r.renamedFrom+' 已存在，为避免覆盖旧文件，新文件已自动改存为 '+r.path+'。若你本意就是改写原文件，请改用 <ws_edit path="'+r.renamedFrom+'"> 做局部修改，或用 <ws_create path="'+r.renamedFrom+'" overwrite="true"> 整份重写。'});
+      _pushOpFeedback('创建时发现 '+r.renamedFrom+' 已存在，为避免覆盖旧文件，新文件已自动改存为 '+r.path+'。若你本意就是改写原文件，请改用 <ws_edit path="'+r.renamedFrom+'"> 做局部修改，或用 <ws_create path="'+r.renamedFrom+'" overwrite="true"> 整份重写。');
     }else if(r.type&&r.type.slice(0,5)==='make_'&&r.renamedFrom){
-      _wsPendingOpFeedback.push({actor:authorName,text:'生成时发现 '+r.renamedFrom+' 已存在，为避免覆盖旧文件，成品已自动改存为 '+r.path+'；后续读取或引用请使用新文件名。'});
+      _pushOpFeedback('生成时发现 '+r.renamedFrom+' 已存在，为避免覆盖旧文件，成品已自动改存为 '+r.path+'；后续读取或引用请使用新文件名。');
     }else if(r.type==='create'&&r.truncated){
-      _wsPendingOpFeedback.push({actor:authorName,text:'创建 '+r.path+' 已保存，但内容可能在末尾被截断，建议 <ws_read path="'+r.path+'"/> 校验结尾是否完整'});
+      _pushOpFeedback('创建 '+r.path+' 已保存，但内容可能在末尾被截断，建议 <ws_read path="'+r.path+'"/> 校验结尾是否完整');
     }
   });
   /* ICode 悬浮窗开着时同步刷新列表 + 底部存储条，让 AI 的操作"当场可见" */
@@ -584,14 +664,14 @@ function _buildWsOpCard(d){
   card.innerHTML=html;
   if(d.type==='run'&&d.pendingConfirm){
     var runBtn=document.createElement('button');runBtn.className='ws-file-btn primary';runBtn.style.flexShrink='0';runBtn.textContent='运行';
-    var _rc={lang:d.lang||'',entry:d.entry||'',code:d.code||'',projId:d.projId||_wsActiveProject,timeoutSec:d.timeoutSec||0,author:d.author||'AI',pip:d.pip||''};
+    var _rc=Object.assign({lang:d.lang||'',entry:d.entry||'',code:d.code||'',projId:d.projId||_wsActiveProject,timeoutSec:d.timeoutSec||0,author:d.author||'AI',actorId:d.actorId||'',pip:d.pip||''},_wsScopeFragment(d));
     runBtn.onclick=function(ev){ev.stopPropagation();_wsConfirmRunFromCard(runBtn,_rc,card)};
     var chev=card.querySelector('.ws-op-chevron');
     if(chev)card.insertBefore(runBtn,chev);else card.appendChild(runBtn);
   }
   if(d.type==='tool'&&d.pendingConfirm){
     var tBtn=document.createElement('button');tBtn.className='ws-file-btn primary';tBtn.style.flexShrink='0';tBtn.textContent='执行';
-    var _tc={name:d.name||'',args:d.args||'',author:d.author||'AI'};
+    var _tc=Object.assign({name:d.name||'',args:d.args||'',author:d.author||'AI',actorId:d.actorId||''},_wsScopeFragment(d));
     tBtn.onclick=function(ev){ev.stopPropagation();_ibConfirmToolFromCard(tBtn,_tc,card)};
     var tChev=card.querySelector('.ws-op-chevron');
     if(tChev)card.insertBefore(tBtn,tChev);else card.appendChild(tBtn);
@@ -652,7 +732,7 @@ function _buildWsOpCard(d){
 /* ── Process workspace ops in AI response (called after response received) ── */
 async function _processWsResponse(text,authorName,cfg){
   var parsed=_parseWsOps(text);
-  if(parsed.files&&parsed.files.length){try{await _wsArchiveFileBlocks(parsed.files,authorName)}catch(e){}}
+  if(parsed.files&&parsed.files.length){try{await _wsArchiveFileBlocks(parsed.files,authorName,_wsRoleFileProvenance(cfg))}catch(e){}}
   if(!parsed.ops.length)return{cleanText:text,cards:[]};
   var results=await _execWsOps(parsed.ops,authorName,cfg);
   var cards=results.map(_buildWsOpCard).filter(Boolean);
@@ -680,18 +760,22 @@ function _getWsOpFeedbackInjection(filterFn){
    ② 把纠正指令排进反馈队列，下一条消息自动注入，让 AI 自我修正。
    返回 'claim' / 'malformed' / null。 */
 var _WS_CLAIM_RE=/(已|已经)(为你|帮你|成功)?(创建|新建|生成|建立|保存|写入|建好|做好|完成)[^。！？!?\n]{0,30}(项目|文件|表格|文档|工作区)|(项目|文件|表格|文档)[^。！？!?\n]{0,16}(已|已经)(创建|生成|保存|建好|就绪|完成|写好)|(创建|生成|保存|写|建)好了[^。！？!?\n]{0,16}(项目|文件|表格|文档)|工作区里?(已|已经)(有|生成|创建|保存)|\[已(创建|编辑|输出)|\[系统归档/;
-function _wsCheckPhantom(cleanText,opsCount,actor){
+function _wsCheckPhantom(cleanText,opsCount,actor,actorId,scopeSrc){
   if(opsCount>0)return null;
   var t=cleanText||'';
+  /* P29-3 · 与 _execWsOps 同一条 canonical 归属规则：actor 仍是显示名，actorId 是 canonical（可为空）。 */
+  var _aid=String(actorId||'');
+  /* P30-2 · WHERE：调用方传入的会话上下文（{friendId,threadId}）；缺失 ⇒ unscoped（零字段）。 */
+  var _sc=_wsScopeFragment(scopeSrc);
   /* 情形一：存在疑似标签但连开标签的 > 都没有 → 格式残缺，未执行 */
   if(/<ws_(project|read|create|edit|run|tool|make_docx|make_pdf|make_xlsx)\b(?![^<]*>)/i.test(t)){
-    _wsPendingOpFeedback.push({actor:actor,text:'你上一条回复包含疑似工作区标签，但格式不完整、系统无法解析（常见原因：开标签没有以 > 结束，或缺少对应的闭合标签），因此本轮没有执行任何操作、工作区没有任何变化。请按标准格式把全部指令完整重发一次。'});
+    _wsPendingOpFeedback.push(Object.assign({actor:actor,actorId:_aid},_sc,{text:'你上一条回复包含疑似工作区标签，但格式不完整、系统无法解析（常见原因：开标签没有以 > 结束，或缺少对应的闭合标签），因此本轮没有执行任何操作、工作区没有任何变化。请按标准格式把全部指令完整重发一次。'}));
     return 'malformed';
   }
   if(/<ws_(project|read|create|edit|run|tool|make_docx|make_pdf|make_xlsx)\b/i.test(t))return null;/* 有完整标签却 0 op 的情况交由解析层处理 */
   /* 情形二：纯口头声称 */
   if(_WS_CLAIM_RE.test(t)){
-    _wsPendingOpFeedback.push({actor:actor,text:'你上一条回复在文字中声称已创建/修改了项目或文件，但回复中没有任何 <ws_project/>、<ws_create>、<ws_edit> 指令标签，因此系统没有执行任何操作，工作区里没有产生任何内容。请立即重新输出完整的工作区指令来真正完成刚才的操作——只有标签会被执行，纯文字描述（包括"[系统归档：…]"之类的占位写法）不会创建任何文件。'});
+    _wsPendingOpFeedback.push(Object.assign({actor:actor,actorId:_aid},_sc,{text:'你上一条回复在文字中声称已创建/修改了项目或文件，但回复中没有任何 <ws_project/>、<ws_create>、<ws_edit> 指令标签，因此系统没有执行任何操作，工作区里没有产生任何内容。请立即重新输出完整的工作区指令来真正完成刚才的操作——只有标签会被执行，纯文字描述（包括"[系统归档：…]"之类的占位写法）不会创建任何文件。'}));
     return 'claim';
   }
   return null;
@@ -977,11 +1061,29 @@ async function continueTruncatedMsg(msgId,pillEl){
     const _contSealTs=await getChatSealTimestamp(m.friendId);
     if(_contSealTs&&(m.timestamp||m.created||0)<=_contSealTs){toast('该消息位于封档线之前，不能继续发送给 API');return}
   }
-  /* 找到该消息的 API 配置：群聊按 senderName 反查成员，1对1按 friendId */
+  /* 找到该消息的 API 配置：1对1按 friendId；群聊按 **canonical speakerId** 反查成员
+     （P24-M2）。legacy 消息走唯一精确匹配；歧义 / 无匹配 / 非法一律 fail closed
+     —— 宁可提示"找不到可用的 API 配置"，也不用别的角色的模型去续写这条消息。
+     （旧实现是 senderName 名字匹配 + pick first：两个角色同名时会用错模型。） */
   var cfg=null;
   if((m.friendId||'').startsWith('group_')){
     try{var g=await dbGet('groups',m.friendId);
-      if(g&&g.members){normalizeGroupMembers(g);cfg=getGroupMemberIds(g).map(id=>apiConfigs.find(a=>a.id===id)).filter(Boolean).find(a=>(a.nickname||a.model)===m.senderName)}}catch(e){}
+      if(g&&g.members){
+        normalizeGroupMembers(g);
+        var _cIds=getGroupMemberIds(g);
+        var _cParts=_cIds.map(function(id){var c=apiConfigs.find(function(a){return a.id===id});return {id:id,name:c?String(c.nickname||c.model||''):''}});
+        var _cSid='';
+        var _cCore=(typeof window!=='undefined')?window.IBGroupRuntime:null;
+        if(_cCore&&typeof _cCore.resolveSpeakerId==='function'){
+          var _cRes=_cCore.resolveSpeakerId(m,{participants:_cParts});
+          if(_cRes&&_cRes.confidence!=='none')_cSid=_cRes.speakerId;
+        }else{
+          /* 核心未加载：只在**唯一精确匹配**时回退，绝不 pick first */
+          var _cHits=_cParts.filter(function(p){return p.name&&p.name===m.senderName});
+          if(_cHits.length===1)_cSid=_cHits[0].id;
+        }
+        if(_cSid)cfg=apiConfigs.find(function(a){return a.id===_cSid})||null;
+      }}catch(e){}
   }else{cfg=apiConfigs.find(a=>a.id===m.friendId)}
   if(!_ibApiReady(cfg)){toast('找不到可用的 API 配置');return}
   _contBusy.add(msgId);
@@ -1027,11 +1129,18 @@ async function continueTruncatedMsg(msgId,pillEl){
   var combined=_parseWsOps(newContent);
   var deltaStart=Math.max(0,oldOps.length-lastOldBroken);
   var deltaOps=combined.ops.slice(deltaStart);
-  var deltaResults=deltaOps.length?await _execWsOps(deltaOps,cfg.nickname||cfg.model||'AI',cfg):[];
-  if(combined.files&&combined.files.length){try{await _wsArchiveFileBlocks(combined.files.slice(_parseWsOps(oldContent).files.length),cfg.nickname||cfg.model||'AI')}catch(e){}}
+  /* P30-2：续写来自某条 canonical 消息 ⇒ 会话归属取自该消息（friendId + threadId），
+     不从 actor/显示名推导。 */
+  var deltaResults=deltaOps.length?await _execWsOps(deltaOps,cfg.nickname||cfg.model||'AI',cfg,
+    {source:'chat',friendId:(m&&m.friendId)||'',threadId:(m&&m.threadId)||''}):[];
+  if(combined.files&&combined.files.length){try{await _wsArchiveFileBlocks(combined.files.slice(_parseWsOps(oldContent).files.length),cfg.nickname||cfg.model||'AI',_wsRoleFileProvenance(cfg))}catch(e){}}
   var fullResults=new Array(deltaStart).fill(null).concat(deltaResults);
   /* 落库并重建气泡（旧指令卡呈历史中性态，新指令卡带真实执行状态） */
   m.content=newContent;
+  /* P23 Phase 1.1：content 变了，旧语音就不代表这条消息了 —— 必须消掉两个真相中的一个。
+     采用 immutable 语义（删 voice，而不是改 transcript）：音频已固化，改文字稿只会
+     制造「文字说 A、声音说 B」。这是与撤回路径共用的同一个生命周期原语。 */
+  try{ if(window.IBVoiceMessage&&IBVoiceMessage.dropVoice){IBVoiceMessage.dropVoice(m)}else if(m.voice){delete m.voice} }catch(e){ if(m.voice)delete m.voice }
   if(_ctParts.reasoning_content){const priorReasoning=m.reasoning_content||m.thinking||'';m.reasoning_content=(priorReasoning?priorReasoning+'\n\n':'')+_ctParts.reasoning_content}
   else if(m.reasoning_content==null)m.reasoning_content=m.thinking||'';
   if(!m.metadata)m.metadata={};
@@ -1093,25 +1202,31 @@ async function _blogFindPost(name){
 }
 
 /* 执行申请：生成卡片数据；未找到/多篇匹配的结果直接进反馈队列。每轮最多处理 3 个申请 */
-async function _execBlogReadOps(ops){
+async function _execBlogReadOps(ops,scopeSrc){
   var cards=[];
+  /* ── P30-5 · Blog Conversation Scope（P30-4 冻结）────────────────────────────
+     **request-origin scope 在 request 创建时捕获**：只从调用方已有的会话上下文（scopeSrc）取，
+     **绝不**读 UI 当前 active 会话。归一复用 P30-2 的 `_wsScopeFragment`（friendId 非空才成 scope；
+     否则 null ⇒ unscoped，仅可能出现在 legacy/test 入口）。 */
+  var _bsc=_wsScopeFragment(scopeSrc);
   for(var i=0;i<ops.length&&i<3;i++){
     var op=ops[i];
     var r=await _blogFindPost(op.name);
     if(r.status==='ok'){
       var full=String(r.post.content||'');
       var from=Math.max(0,(op.from||0)-1);
-      if(from>=full.length&&full.length>0){_blogReadFeedback.push('《'+(r.post.title||'无标题')+'》全文共 '+full.length+' 字符，from='+op.from+' 超出范围');cards.push({kind:'info',text:'申请的起始位置超出《'+(r.post.title||'无标题')+'》的全文范围'});continue}
+      if(from>=full.length&&full.length>0){_blogReadFeedback.push(Object.assign({text:'《'+(r.post.title||'无标题')+'》全文共 '+full.length+' 字符，from='+op.from+' 超出范围'},_bsc));cards.push({kind:'info',text:'申请的起始位置超出《'+(r.post.title||'无标题')+'》的全文范围'});continue}
       var segLen=op.chars>0?Math.min(op.chars,full.length-from):(full.length-from);
       var segTxt=full.slice(from,from+segLen);
       var uid='br_'+Date.now()+'_'+Math.floor(Math.random()*100000);
-      _blogReqReg[uid]={state:'pending',postId:r.post.id,title:r.post.title||'无标题',from:op.from||0,chars:op.chars||0,charCount:segTxt.length,total:full.length,tokens:_blogTokenEst(segTxt)};
+      /* scope 与 request 同时落库（registry）⇒ 用户稍后 allow/deny 时仍能继承 ORIGINAL scope。 */
+      _blogReqReg[uid]=Object.assign({state:'pending',postId:r.post.id,title:r.post.title||'无标题',from:op.from||0,chars:op.chars||0,charCount:segTxt.length,total:full.length,tokens:_blogTokenEst(segTxt)},_bsc);
       cards.push({kind:'req',uid:uid});
     }else if(r.status==='multi'){
-      _blogReadFeedback.push('日志名称「'+r.name+'」匹配到多篇：《'+r.titles.join('》《')+'》，请向用户确认是哪一篇后重新申请');
+      _blogReadFeedback.push(Object.assign({text:'日志名称「'+r.name+'」匹配到多篇：《'+r.titles.join('》《')+'》，请向用户确认是哪一篇后重新申请'},_bsc));
       cards.push({kind:'info',text:'「'+r.name+'」匹配到多篇日志，已请 AI 与你确认'});
     }else{
-      _blogReadFeedback.push('日志「'+r.name+'」不存在，可向用户确认名称');
+      _blogReadFeedback.push(Object.assign({text:'日志「'+r.name+'」不存在，可向用户确认名称'},_bsc));
       cards.push({kind:'info',text:'未找到名为「'+r.name+'」的日志'});
     }
   }
@@ -1152,16 +1267,31 @@ async function _brAllow(uid){
   var req=_blogReqReg[uid];if(!req||req.state!=='pending')return;
   var _tf=activeFriendId;
   if(_tf&&_chatSendingFor.has(_tf)){toast('对方正在回复中，请稍后再点允许');return}
+  /* ── P30-5 · ownership 只来自 registry（request origin）────────────────────
+     绝不用 click-time activeFriendId/threadId 作为 scope（用户可能已切换会话）。
+     legacy registry entry（无 friendId）⇒ _rsc=null ⇒ 条目 unscoped，保持既有 fallback。 */
+  var _rsc=_wsScopeFragment(req);
   /* 允许瞬间按最新内容注入（申请后用户可能编辑过日志）；已删除或已转私密则作废 */
   var p=null;try{p=await dbGet('posts',req.postId)}catch(e){}
-  if(!p||isLockedPost(p)){req.state='denied';_brUpdateCards(uid);_blogReadFeedback.push('《'+req.title+'》已不可读（被删除或转为私密），申请作废');toast('该日志已不可读，申请作废');return}
+  if(!p||isLockedPost(p)){req.state='denied';_brUpdateCards(uid);_blogReadFeedback.push(Object.assign({text:'《'+req.title+'》已不可读（被删除或转为私密），申请作废'},_rsc));toast('该日志已不可读，申请作废');return}
   var full=String(p.content||'');
   var from=Math.max(0,(req.from||0)-1);
   var segLen=req.chars>0?Math.min(req.chars,Math.max(0,full.length-from)):Math.max(0,full.length-from);
   var seg=full.slice(from,from+segLen);
   var range=(req.from>1||req.chars>0)?{from:from+1,to:from+seg.length,total:full.length}:null;
-  _blogPendingReads.push({title:p.title||req.title,content:seg,range:range,total:full.length});
+  _blogPendingReads.push(Object.assign({title:p.title||req.title,content:seg,range:range,total:full.length},_rsc));
   req.state='allowed';_brUpdateCards(uid);
+  /* ── P30-5 · 自动续答（P30-4 §16 冻结）────────────────────────────────────
+     仅当 request-origin == 当前活动会话时保留自动续答；否则**抑制**（scoped item 留在队列，
+     等 origin 会话的下一条消息消费）。比较走 canonical conversationId（复用 P30-2 的谓词
+     `window._ibWsScopeFilter`），**绝不用** `friendId === activeFriendId`（同角色多 thread 会误判）。
+     谓词不可用 ⇒ 抑制（fail closed，绝不把续答发往非 origin 会话）。 */
+  var _sameConv=false;
+  try{
+    var _sf=(typeof window!=='undefined'&&typeof window._ibWsScopeFilter==='function')?window._ibWsScopeFilter(activeFriendId,activeThreadId):null;
+    _sameConv=!!_sf&&!!_sf(_rsc||{});
+  }catch(e){_sameConv=false}
+  if(!_sameConv)return;
   /* 自动续答一轮：临时借用输入框触发发送，随后还原草稿与待发送附件（不让"请继续"带走它们） */
   var inp=currentPage==='chat'?document.getElementById('chat-full-input'):document.getElementById('chat-input');
   if(!inp)return;
@@ -1179,27 +1309,47 @@ async function _brAllow(uid){
 function _brDeny(uid){
   var req=_blogReqReg[uid];if(!req||req.state!=='pending')return;
   req.state='denied';_brUpdateCards(uid);
-  _blogReadFeedback.push('用户拒绝了阅读《'+req.title+'》的申请，内容未注入，请勿再次申请，除非用户主动要求');
+  /* P30-5 · 拒绝反馈同样继承 request-origin scope（**不是** click-time 活动会话）。 */
+  _blogReadFeedback.push(Object.assign({text:'用户拒绝了阅读《'+req.title+'》的申请，内容未注入，请勿再次申请，除非用户主动要求'},_wsScopeFragment(req)));
 }
 
-/* 已允许的正文与申请结果反馈 → 末条消息尾部一次性注入 */
-function _getBlogReadInjection(){
+/* 已允许的正文与申请结果反馈 → 末条消息尾部一次性注入
+   ── P30-5 · 会话归属过滤（P30-4 冻结）──────────────────────────────────────
+   `scopeFilter`（= 调用方用当前会话构造的谓词，通常 `_ibWsScopeFilter(friendId,threadId)`）：
+     · 谓词为真 ⇒ TAKE（本会话消费）；为假 ⇒ **KEEP**（留在原队列，等它所属会话）；
+     · 缺省/非函数（旧调用点、测试、诊断）⇒ 保持既有 take-all 行为；
+     · 两个队列**独立** partition（一个队列命中不得清空另一个）；
+     · legacy `string` 反馈（hot reload / 旧调用）视为 legacy unscoped：谓词放行、按字符串渲染
+       （绝不输出 `[object Object]`）；FIFO 相对顺序保持不变（take/keep 都是稳定遍历）。 */
+function _getBlogReadInjection(scopeFilter){
   if(!_blogPendingReads.length&&!_blogReadFeedback.length)return'';
+  var _flt=(typeof scopeFilter==='function')?scopeFilter:null;
+  var _take=function(list){
+    var t=[],k=[];
+    list.forEach(function(it){(_flt&&!_flt(it)?k:t).push(it)});
+    return {take:t,keep:k};
+  };
   var ctx='';
   if(_blogPendingReads.length){
-    var MAX=_ibInjectMax();
-    ctx+='\n\n【Blog 日志内容（用户已允许阅读；仅本轮注入，后续轮次不再携带）】';
-    _blogPendingReads.forEach(function(r){
-      var body=r.content.length>MAX?r.content.slice(0,MAX)+'\n[…超过注入上限，已截断（本段原为 '+r.content.length+' 字符）；如需后续部分，请用 <blog_read name="'+r.title+'" from="'+(MAX+1)+'"/> 重新申请，仍需用户允许]':r.content;
-      ctx+='\n--- 《'+r.title+'》'+(r.range?'（第 '+r.range.from+'–'+r.range.to+' 字符，全文共 '+r.range.total+' 字符）':'（全文 '+r.total+' 字符）')+' ---\n'+body;
-      if(r.range&&r.range.to<r.range.total)ctx+='\n[后续内容未注入：继续阅读请用 <blog_read name="'+r.title+'" from="'+(r.range.to+1)+'"/> 重新申请，仍需用户允许]';
-    });
-    _blogPendingReads=[];
+    var _p=_take(_blogPendingReads);
+    _blogPendingReads=_p.keep;
+    if(_p.take.length){
+      var MAX=_ibInjectMax();
+      ctx+='\n\n【Blog 日志内容（用户已允许阅读；仅本轮注入，后续轮次不再携带）】';
+      _p.take.forEach(function(r){
+        var body=r.content.length>MAX?r.content.slice(0,MAX)+'\n[…超过注入上限，已截断（本段原为 '+r.content.length+' 字符）；如需后续部分，请用 <blog_read name="'+r.title+'" from="'+(MAX+1)+'"/> 重新申请，仍需用户允许]':r.content;
+        ctx+='\n--- 《'+r.title+'》'+(r.range?'（第 '+r.range.from+'–'+r.range.to+' 字符，全文共 '+r.range.total+' 字符）':'（全文 '+r.total+' 字符）')+' ---\n'+body;
+        if(r.range&&r.range.to<r.range.total)ctx+='\n[后续内容未注入：继续阅读请用 <blog_read name="'+r.title+'" from="'+(r.range.to+1)+'"/> 重新申请，仍需用户允许]';
+      });
+    }
   }
   if(_blogReadFeedback.length){
-    ctx+='\n\n【Blog 阅读申请结果】';
-    _blogReadFeedback.forEach(function(f){ctx+='\n- '+f});
-    _blogReadFeedback=[];
+    var _f=_take(_blogReadFeedback);
+    _blogReadFeedback=_f.keep;
+    if(_f.take.length){
+      ctx+='\n\n【Blog 阅读申请结果】';
+      _f.take.forEach(function(f){ctx+='\n- '+((typeof f==='string')?f:String((f&&f.text)||''))});
+    }
   }
   return ctx;
 }
@@ -1441,6 +1591,9 @@ function ibWsLive(name, getter, setter){
   Object.defineProperty(window, name, { get: getter, set: setter, configurable: true });
 }
 window._parseWsOps=_parseWsOps;
+window._wsRoleFileProvenance=_wsRoleFileProvenance;
+window._wsCanonicalFileProvenanceValid=_wsCanonicalFileProvenanceValid;
+window._wsArchiveCollisionNeedsUniquePath=_wsArchiveCollisionNeedsUniquePath;
 window._wsArchiveFileBlocks=_wsArchiveFileBlocks;
 window._wsExecImageGen=_wsExecImageGen;
 window._wsExecImageEdit=_wsExecImageEdit;
@@ -1491,6 +1644,9 @@ ibWsLive('_blogReadFeedback', function(){return _blogReadFeedback}, function(v){
 ibWsLive('_wsWinState', function(){return _wsWinState}, function(v){_wsWinState=v});
 NS.expose('workspace', {
   _parseWsOps: _parseWsOps,
+  _wsRoleFileProvenance: _wsRoleFileProvenance,
+  _wsCanonicalFileProvenanceValid: _wsCanonicalFileProvenanceValid,
+  _wsArchiveCollisionNeedsUniquePath: _wsArchiveCollisionNeedsUniquePath,
   _wsArchiveFileBlocks: _wsArchiveFileBlocks,
   _wsExecImageGen: _wsExecImageGen,
   _wsExecImageEdit: _wsExecImageEdit,

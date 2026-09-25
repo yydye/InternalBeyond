@@ -134,7 +134,9 @@
     try { return fn(cfg) || { ok: true }; } catch (e) { return { ok: true }; }
   }
   function _endpointOf(cfg) { return _norm(cfg && cfg.imageGenEndpoint) || _norm(cfg && cfg.endpoint); }
-  function _keyOf(cfg) { return _norm(cfg && cfg.imageGenApiKey) || _norm(cfg && cfg.apiKey); }
+  function _hasCredentialBinding(cfg) {
+    return !!_norm(cfg && cfg.id) || _isLocalHost(_hostOf(_endpointOf(cfg)));
+  }
   /* 端点主机名 / 本地判定：IB 的 local-first 与 Bridge 本地服务（127.0.0.1:23115 等）
      本来就允许不填 API Key，配置层不得把这类可用配置判死。 */
   function _hostOf(url) {
@@ -212,10 +214,9 @@
         var provider = _resolveProvider(cfg);
         var endpoint = _endpointOf(cfg) || _providerDefaultEndpoint(provider);
         if (!endpoint) return _fail('IMAGE_ROUTER_NO_ENDPOINT', label + ' 使用的 API 配置没有接口地址', { routeName: name, apiConfigId: route.apiConfigId });
-        var key = _keyOf(cfg);
-        if (!key) {
+        if (!_hasCredentialBinding(cfg)) {
           if (_isLocalHost(_hostOf(endpoint))) warnings.push('no_key_local');
-          else return _fail('IMAGE_ROUTER_NO_KEY', label + ' 使用的 API 配置没有 API Key', { routeName: name, apiConfigId: route.apiConfigId });
+          else return _fail('IMAGE_ROUTER_NO_KEY', label + ' 使用的 API 配置没有 Vault credential binding', { routeName: name, apiConfigId: route.apiConfigId });
         }
 
         if (provider === 'anthropic' || provider === 'deepseek') {
@@ -270,7 +271,7 @@
       var fbProvider = _resolveProvider(cfg);
       var fbEndpoint = _endpointOf(cfg) || _providerDefaultEndpoint(fbProvider);
       if (!fbEndpoint) { warnings.push('fallback_incomplete'); return null; }
-      if (!_keyOf(cfg) && !_isLocalHost(_hostOf(fbEndpoint))) { warnings.push('fallback_incomplete'); return null; }
+      if (!_hasCredentialBinding(cfg) && !_isLocalHost(_hostOf(fbEndpoint))) { warnings.push('fallback_incomplete'); return null; }
       return { cfg: cfg, model: model, apiConfigId: fb.apiConfigId, modelSource: fb.model ? 'route_fallback' : 'api_config' };
     });
   }
@@ -310,7 +311,7 @@
           st.endpoint = _endpointOf(cfg) || _providerDefaultEndpoint(st.provider);
           if (!st.ok) return null;
           if (!st.endpoint) { st.ok = false; st.code = 'IMAGE_ROUTER_NO_ENDPOINT'; return null; }
-          if (!_keyOf(cfg)) {
+          if (!_hasCredentialBinding(cfg)) {
             if (_isLocalHost(_hostOf(st.endpoint))) st.warnings.push('no_key_local');
             else { st.ok = false; st.code = 'IMAGE_ROUTER_NO_KEY'; }
             return null;

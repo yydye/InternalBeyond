@@ -59,6 +59,7 @@ class Cdp {
 
 async function evaluate(cdp, expression) { const r = await cdp.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }); if (r.exceptionDetails) throw new Error('page exception: ' + JSON.stringify(r.exceptionDetails.exception)); return r.result && r.result.value; }
 async function waitFor(cdp, expression, timeout = 15000) { const end = Date.now() + timeout; while (Date.now() < end) { try { if (await evaluate(cdp, expression)) return true; } catch (e) {} await new Promise(r => setTimeout(r, 120)); } return false; }
+async function waitNode(fn, timeout = 15000) { const end = Date.now() + timeout; while (Date.now() < end) { try { if (fn()) return true; } catch (e) {} await new Promise(r => setTimeout(r, 120)); } return false; }
 function freePort() { return new Promise((resolve, reject) => { const s = net.createServer(); s.unref(); s.on('error', reject); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(e => e ? reject(e) : resolve(p)); }); }); }
 
 /* 本地 mock OpenAI 兼容端点：记录最近一次请求体（用于证明 Activity Context / 帧真的进了请求）。 */
@@ -275,8 +276,120 @@ async function main() {
     const streamGot = await evaluate(cdp, "(async function(){var got=[];IB.apps.register({id:'mockapp',name:'mock',sdk:2,mount:async function(h,c){c.on('message',function(m){got.push('m:'+(m&&m.content)+':'+(m&&m.activityId))});c.on('turn',function(t){got.push('turn:'+(t&&t.state))})}});IB.apps.open('mockapp');IB.apps.broadcast('message',{role:'assistant',content:'弹幕内容',activityId:'act_x'});IB.apps.broadcast('turn',{state:'end',activityId:'act_x'});await new Promise(function(r){setTimeout(r,60)});return got.join(',')})()");
     check('appstream.emit', /m:弹幕内容:act_x/.test(streamGot || '') && /turn:end/.test(streamGot || ''), String(streamGot));
 
+    /* ══ M1.5 · Activity Runtime Hardening ══════════════════════════
+       a) pointer 生命周期：Cinema unmount 只清自身 current
+       b) onTurn 通道过滤 + typing 超时
+       c) grabFrame 异常防御（mock SecurityError → 不抛/无帧/如实提示） */
+    await evaluate(cdp, "IB.apps.close()");
+    await evaluate(cdp, "(async function(){await dbPut('apiConfigs',{id:'act_m15',provider:'custom',model:'m',endpoint:" + J(mockEndpoint) + ",apiKey:'',nickname:'硬化',relationship:'测试',systemPrompt:'x',streaming:false,showThinking:false,vision:true,created:Date.now()});await loadApiConfigs()})()");
+    const ptrExpr = "JSON.parse(localStorage.getItem('ib_activity_current_v1')||'{}')";
+    const ptrHas = "(function(){try{var p=" + ptrExpr + ";return !!(p.act_m15&&p.act_m15.activityId)}catch(e){return false}})()";
+    const ptrOf = "(function(){try{return (" + ptrExpr + ").act_m15?(" + ptrExpr + ").act_m15.activityId:null}catch(e){return null}})()";
+    const clickLoad = "(function(url){var u=document.getElementById('ci-url'),b=document.getElementById('ci-url-btn');if(u)u.value=url;if(b)b.click();return true})";
+
+    await evaluate(cdp, "selectFriend('act_m15')");
+    await evaluate(cdp, "IB.apps.open('cinema')");
+    check('M15.cinemaOpen', await waitFor(cdp, "!!document.getElementById('ci-url')"));
+    await evaluate(cdp, clickLoad + "('https://cdn.example.com/m15a.mp4')");
+    check('M15.pointerSetOnOpen', await waitFor(cdp, ptrHas, 8000));
+    const a1Id = await evaluate(cdp, ptrOf);
+    const a1Shape = await evaluate(cdp, "IB.activity.getActivity(" + J(a1Id) + ").then(function(r){return r?r.roleId+'|'+String(r.threadId||''):null})");
+    check('M15.pointerIsCinemaActivity', a1Shape === 'act_m15|', String(a1Shape));
+    await evaluate(cdp, "IB.apps.close()");
+    await new Promise(r => setTimeout(r, 120));
+    check('M15.cinemaUnmountClearsSelf', await evaluate(cdp, "(function(){try{return !(" + ptrExpr + ").act_m15}catch(e){return false}})()"));
+
+    /* A/B：unmount A 时 current=B 必须保持 */
+    await evaluate(cdp, "IB.apps.open('cinema')");
+    await waitFor(cdp, "!!document.getElementById('ci-url')");
+    await evaluate(cdp, clickLoad + "('https://cdn.example.com/m15b.mp4')");
+    check('M15.pointerSetOnOpenB', await waitFor(cdp, ptrHas, 8000));
+    const bId15 = await evaluate(cdp, "IB.activity.createActivity({type:'coread',roleId:'act_m15',resourceId:'m15_b',resourceKey:'m15_b',title:'乙书',kind:'coread',progress:{page:1,total:1}}).then(function(a){return a.id})");
+    await evaluate(cdp, "IB.activity.setCurrent(" + J(bId15) + ")");
+    await evaluate(cdp, "IB.apps.close()");
+    await new Promise(r => setTimeout(r, 120));
+    const keepPtr = await evaluate(cdp, ptrOf);
+    check('M15.unmountKeepsOtherCurrent', keepPtr === bId15, 'ptr=' + keepPtr + ' want=' + bId15);
+
+    /* onTurn 通道过滤 + 超时 */
+    await evaluate(cdp, "IB.apps.open('cinema')");
+    await waitFor(cdp, "!!document.getElementById('ci-url')");
+    await evaluate(cdp, clickLoad + "('https://cdn.example.com/m15b.mp4')");
+    check('M15.ownActivityLoaded', await waitFor(cdp, "!document.getElementById('ci-typing')&&!!document.getElementById('ci-msgs')", 8000));
+    await new Promise(r => setTimeout(r, 250));
+    const a2Id = await evaluate(cdp, ptrOf);
+    const a2Shape = await evaluate(cdp, "IB.activity.getActivity(" + J(a2Id) + ").then(function(r){return r?r.roleId+'|'+r.type:null})");
+    check('M15.ownActivityForTurns', a2Shape === 'act_m15|cinema', String(a2Shape));
+    const turnProbe = "(function(actId,state){IBApps.broadcast('turn',{state:state,friendId:'act_m15',threadId:null,activityId:actId});return !!document.getElementById('ci-typing')})";
+    check('M15.plainTurnIgnored', (await evaluate(cdp, turnProbe + "(undefined,'start')")) === false);
+    check('M15.otherActivityIgnored', (await evaluate(cdp, turnProbe + "('act_other_activity','start')")) === false);
+    check('M15.ownTurnShowsTyping', (await evaluate(cdp, turnProbe + "(" + J(a2Id) + ",'start')")) === true);
+    check('M15.ownTurnEndHidesTyping', (await evaluate(cdp, turnProbe + "(" + J(a2Id) + ",'end')")) === false);
+    await evaluate(cdp, "window.__ciTypingTimeoutMs=120");
+    check('M15.typingShownForTimeout', (await evaluate(cdp, turnProbe + "(" + J(a2Id) + ",'start')")) === true);
+    check('M15.typingStaysSingle', (await evaluate(cdp, turnProbe + "(" + J(a2Id) + ",'start')")) === true && (await evaluate(cdp, "document.querySelectorAll('.ci-typing').length")) === 1, 'count=' + (await evaluate(cdp, "document.querySelectorAll('.ci-typing').length")));
+    await new Promise(r => setTimeout(r, 400));
+    check('M15.typingTimeoutClears', (await evaluate(cdp, "document.querySelectorAll('.ci-typing').length")) === 0, 'count=' + (await evaluate(cdp, "document.querySelectorAll('.ci-typing').length")));
+    await evaluate(cdp, "window.__ciTypingTimeoutMs=0");
+
+    /* grabFrame 异常防御：mock drawImage 抛 SecurityError */
+    const gres = await evaluate(cdp, "(function(){try{var p=document.getElementById('ci-player');var v=p?p.querySelector('video'):null;if(!v){v=document.createElement('video');if(p)p.appendChild(v)}Object.defineProperty(v,'videoWidth',{value:640});Object.defineProperty(v,'videoHeight',{value:360});var errs=[];var onerr=function(e){errs.push(String((e&&e.message)||e))};window.addEventListener('error',onerr);var orig=CanvasRenderingContext2D.prototype.drawImage;var snap=document.getElementById('ci-snap');try{CanvasRenderingContext2D.prototype.drawImage=function(){throw new DOMException('Tainted canvases may not be exported.','SecurityError')};if(snap)snap.click();}finally{CanvasRenderingContext2D.prototype.drawImage=orig;window.removeEventListener('error',onerr)}var s2=document.getElementById('ci-snap');return JSON.stringify({frame:!!(s2&&s2.dataset&&s2.dataset.frame),toast:Array.prototype.map.call(document.querySelectorAll('#toast-stack .toast'),function(x){return x.textContent}).join('|'),errs:errs,snapOk:!!snap,dis:snap?!!snap.disabled:null,bodyHas:/无法截取画面/.test(document.body.innerText)})}catch(e){return JSON.stringify({err:String(e&&e.name||e)})}})()");
+    const gm = JSON.parse(gres || '{}');
+    check('M15.grabFrameNoThrow', !gm.err && !(gm.errs && gm.errs.length), gres);
+    check('M15.grabFrameNoFrame', gm.frame === false, gres);
+    check('M15.grabFrameFallbackToast', /无法截取画面/.test((gm.toast || '') + '|' + (gm.bodyHas ? '无法截取画面' : '')), String(gres).slice(0, 260));
+    await evaluate(cdp, "IB.apps.close()");
+
+    /* 留影端到端：真实按钮 click → grabFrame（成功）→ dataset frame → sendMsg → activity.send
+       → sendChatMessage → provider image part。仅 mock 浏览器原语（drawImage/toDataURL），
+       production 链路逐环真实；并验证帧仍未落库。 */
+    await evaluate(cdp, "IB.apps.open('cinema')");
+    await waitFor(cdp, "!!document.getElementById('ci-url')");
+    await evaluate(cdp, clickLoad + "('https://cdn.example.com/m15e.mp4')");
+    check('M15.e2eActivityReady', await waitFor(cdp, ptrHas, 8000));
+    const e2eProbe = "(function(){var v=document.querySelector('#ci-player video');if(!v)return JSON.stringify({err:'no_video'});Object.defineProperty(v,'videoWidth',{value:640});Object.defineProperty(v,'videoHeight',{value:360});var od=CanvasRenderingContext2D.prototype.drawImage,ou=HTMLCanvasElement.prototype.toDataURL;var snap=document.getElementById('ci-snap');try{CanvasRenderingContext2D.prototype.drawImage=function(){};HTMLCanvasElement.prototype.toDataURL=function(){return 'data:image/jpeg;base64,/9j/4AAQSkZJRg=='};snap.click()}finally{CanvasRenderingContext2D.prototype.drawImage=od;HTMLCanvasElement.prototype.toDataURL=ou}return JSON.stringify({frame:!!(snap.dataset&&snap.dataset.frame),disabled:!!snap.disabled})})()";
+    const e2eShot = JSON.parse(await evaluate(cdp, e2eProbe) || '{}');
+    check('M15.shotCapturedByButton', e2eShot.frame === true && e2eShot.disabled === false, JSON.stringify(e2eShot));
+    mock.captured.vision = false; mock.captured.lastBody = '';
+    await evaluate(cdp, "(function(){document.getElementById('ci-input').value='这张画面你看到了吗？';document.getElementById('ci-send').click()})()");
+    check('M15.shotReachesProvider', await waitNode(() => mock.captured.vision === true, 15000), 'vision=' + mock.captured.vision + ' tail=' + mock.captured.lastBody.slice(-160));
+    const e2eStore = await evaluate(cdp, "(async function(){var all=await dbGetAll('chatMessages');var u=null;all.forEach(function(m){if(m.role==='user'&&m.content==='这张画面你看到了吗？')u=m});return JSON.stringify({has:!!u,imgs:(u&&u.images&&u.images.length)||0})})()");
+    check('M15.shotNotPersisted', (function(){var s=JSON.parse(e2eStore || '{}');return s.has === true && s.imgs === 0})(), String(e2eStore));
+    await evaluate(cdp, "IB.apps.close()");
+
+    /* 多角色隔离：act_m15 的 unmount 不得影响 act_rb 的 current */
+    const rbId = await evaluate(cdp, "IB.activity.createActivity({type:'cinema',roleId:'act_rb',resourceId:'rb_1',resourceKey:'rb_1',title:'RB片',kind:'cinema',progress:{sec:0}}).then(function(a){return IB.activity.setCurrent(a.id).then(function(){return a.id})})");
+    await evaluate(cdp, "IB.apps.open('cinema')");
+    await waitFor(cdp, "!!document.getElementById('ci-url')");
+    await evaluate(cdp, clickLoad + "('https://cdn.example.com/m15r.mp4')");
+    check('M15.multiRoleSetup', await waitFor(cdp, ptrHas, 8000));
+    await evaluate(cdp, "IB.apps.close()");
+    await new Promise(r => setTimeout(r, 120));
+    const rbPtr = await evaluate(cdp, "(function(){try{return JSON.parse(localStorage.getItem('ib_activity_current_v1')||'{}')['act_rb'].activityId}catch(e){return null}})()");
+    check('M15.multiRoleIsolation', rbPtr === rbId, 'rb=' + rbPtr + ' want=' + rbId);
+
+    /* Coread 返回书架：仅清自身 current（角色按"当前指针里属于 post_1 的 coread 活动"定位） */
+    await evaluate(cdp, "coreadOpen('post_1')");
+    await waitFor(cdp, "(function(){var rd=document.getElementById('coread-read-view');return !!rd&&rd.style.display==='block'})()");
+    const crRole = await evaluate(cdp, "(async function(){try{var all=JSON.parse(localStorage.getItem('ib_activity_current_v1')||'{}');var keys=Object.keys(all);for(var i=0;i<keys.length;i++){var r=await IB.activity.getActivity(all[keys[i]].activityId);if(r&&r.type==='coread'&&String(r.resourceId)==='post_1')return keys[i]}return null}catch(e){return null}})()");
+    check('M15.coreadSetsCurrent', !!crRole, String(crRole));
+    await evaluate(cdp, "coreadPaintshelf()");
+    await new Promise(r => setTimeout(r, 120));
+    const crAfter = JSON.parse(await evaluate(cdp, "localStorage.getItem('ib_activity_current_v1')||'{}'"));
+    check('M15.coreadLeaveClearsSelf', !!crRole && !crAfter[crRole], JSON.stringify(crAfter));
+
+    /* A/B：进共读（A=coread activity）→ setCurrent(B) → 返回书架，B 必须保持 */
+    await evaluate(cdp, "coreadOpen('post_1')");
+    await waitFor(cdp, "(function(){var rd=document.getElementById('coread-read-view');return !!rd&&rd.style.display==='block'})()");
+    const crKeep = await evaluate(cdp, "IB.activity.createActivity({type:'cinema',roleId:" + J(crRole) + ",resourceId:'m15_c',resourceKey:'m15_c',title:'丙片',kind:'cinema',progress:{sec:0}}).then(function(a){return IB.activity.setCurrent(a.id).then(function(){return a.id})})");
+    await evaluate(cdp, "coreadPaintshelf()");
+    await new Promise(r => setTimeout(r, 120));
+    const crKeepAfter = await evaluate(cdp, "(function(){try{return JSON.parse(localStorage.getItem('ib_activity_current_v1')||'{}')[" + J(crRole) + "].activityId}catch(e){return null}})()");
+    check('M15.coreadLeaveKeepsOther', crKeepAfter === crKeep, 'ptr=' + crKeepAfter + ' want=' + crKeep);
+
     await new Promise(r => setTimeout(r, 300));
     check('runtime.noExceptions', exceptions.length === 0, exceptions.join('\n').slice(0, 500));
+
     console.log(failures ? '\nActivity/Favorites/AppStore smoke failed: ' + failures : '\nActivity/Favorites/AppStore smoke passed ✔');
   } finally {
     if (cdp) cdp.close(); try { browser.kill(); } catch (e) {}

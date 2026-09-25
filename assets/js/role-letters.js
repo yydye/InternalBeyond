@@ -263,12 +263,77 @@ async function _rlHasRoleMem(characterId,letterId,direction){
   }catch(e){return false}
 }
 
-/* ── 落库 ── */
+/* ══════════ P25-3D · Role Letter Authority 接缝（写信权限的唯一来源） ══════════
+   收敛后的唯一合法链（§0）：
+     Trigger → Candidate → **Role Letter Authority** → ALLOW → Executor → Canonical Writer → Verify
+   冻结：PLAN != PERMISSION · MODEL OUTPUT != PERMISSION · SCHEDULER TRIGGER != PERMISSION ·
+        CAPABILITY AVAILABILITY != PERMISSION。
+
+   · 权威实现是**纯模块** assets/js/role-letter-authority.js（零 DOM / 零 DB / 零 fetch /
+     零 provider / 零模型 / 零 Memory / 零 Middle Brain / 零通知）。它缺席 ⇒ fail closed
+     （不写），**绝不**退回旧的直写路径。
+   · facts 的规则仍然只有一份，全部是既有实现：enabled = _rlIsEnabled()（总开关）；
+     cooldown = _rlPairCooldownMs()（既有 24~72h 对偶冷却，仅 init 路径 —— 回信路径由既有
+     回复队列 + lastReplyAt 24h 承担）；duplicate = 既有"已回/已拒"守卫（仅 reply 路径）；
+     actor/recipient 存在性 = _rlCfg()。
+   · _rlWriteCanonical 是本域**唯一**的 roleLetters 写入点（新建 + replyStatus/readAt 状态更新
+     都经它）；状态更新不是"新建信件"，因此不再走权限裁决（与 P25-3C 的投递镜像同理）。
+   · 本阶段不接 Relationship / Memory / Middle Brain：信件写入**不修改** cfg.relationship，
+     也不写共享 memories（既有私有命名空间 roleLetterMemories 原样保留）。 */
+function _rlAuthority(){
+  try{
+    const a=(typeof window!=='undefined'&&window.IBRoleLetterAuthority)
+      ||(typeof self!=='undefined'&&self.IBRoleLetterAuthority)
+      ||(typeof IBRoleLetterAuthority!=='undefined'?IBRoleLetterAuthority:null);
+    return(a&&typeof a.runRoleLetterWrite==='function'&&typeof a.buildRoleLetterCandidate==='function'&&typeof a.verifyRoleLetterWrite==='function')?a:null;
+  }catch(e){return null}
+}
+/* canonical writer：Role Letter 域唯一的 roleLetters 写入口。 */
+async function _rlWriteCanonical(rec){
+  const r=rec||{};
+  await dbPut(RL_STORE,r);
+  return r
+}
+/* 唯一裁决入口：权威缺席 ⇒ DENY（fail closed），executor 永不被调用。 */
+async function _rlRunWrite(candidate,facts,executor){
+  const auth=_rlAuthority();
+  if(!auth)return{ok:false,decision:'deny',reason:'authority-missing',executed:false,actorId:'',recipientId:'',letter:null,error:''};
+  try{return await auth.runRoleLetterWrite(candidate,facts,executor)}
+  catch(e){return{ok:false,decision:'deny',reason:'invalid-candidate',executed:false,actorId:'',recipientId:'',letter:null,error:String(e&&e.message||e).slice(0,200)}}
+}
+/* ── 落库（唯一新建入口）：先经 Role Letter Authority，ALLOW 才写 canonical。 ── */
 async function _rlStoreLetter(data){
-  const id='rletter_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,8);
-  const rec=Object.assign({id:id,createdAt:Date.now(),readAt:null,replyStatus:data.kind==='init'?'pending':'none'},data);
-  await dbPut(RL_STORE,rec);
-  return rec
+  const d=data||{};
+  const actorId=String(d.fromRoleId||''),recipientId=String(d.toRoleId||''),kind=String(d.kind||'init')==='reply'?'reply':'init';
+  const now=Number(d.createdAt)||Date.now();
+  /* facts 只读自**真实状态**（读一次、不复用生成前的快照）。 */
+  let duplicate=false;
+  if(kind==='reply'&&d.parentId){
+    try{const p=await dbGet(RL_STORE,String(d.parentId));duplicate=!!(p&&(p.replyStatus==='replied'||p.replyStatus==='declined'))}catch(e){duplicate=false}
+  }
+  const facts={
+    actorKnown:!!_rlCfg(actorId),
+    recipientKnown:!!_rlCfg(recipientId),
+    cancelled:false,                                   /* 本域没有取消语义（队列/状态更新不是取消） */
+    enabled:_rlIsEnabled(),
+    cooldown:kind==='init'?_rlPairCooldownMs(actorId,recipientId,now)>0:false,
+    duplicate:duplicate
+  };
+  const candidate={
+    actorId:actorId,recipientId:recipientId,
+    source:kind==='reply'?'character':'schedule',
+    letterKind:kind,
+    trigger:kind,
+    triggerRef:kind==='reply'?String(d.parentId||''):('cadence_'+actorId)
+  };
+  const run=await _rlRunWrite(candidate,facts,async()=>{
+    /* letter 身份仍由 domain 持有（既有格式，未重新发明）。 */
+    const id='rletter_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,8);
+    const rec=Object.assign({id:id,createdAt:Date.now(),readAt:null,replyStatus:kind==='init'?'pending':'none'},d);
+    await _rlWriteCanonical(rec);
+    return{ok:true,letter:rec}
+  });
+  return run.ok?run.letter:null
 }
 
 /* ── 调度：主动写信（每角色 1 封/天 + 对偶冷却 + 模型门控） ── */
@@ -290,12 +355,16 @@ async function _rlInitStep(cfg,now){
       const content=String(res.content||'').trim();
       if(content){
         const rec=await _rlStoreLetter({fromRoleId:roleId,toRoleId:toId,content:content,kind:'init',createdAt:now});
-        _rlPairSet(roleId,toId,now);
-        _rlSet(roleId,{lastInitAt:now});
-        /* 只让发送方记住"自己写了什么"（owner=roleId，不入共享 memories）；收件方记忆由其阅读后各自 tick 生成 */
-        _rlWriteRoleMemory(roleId,'我给'+_momName(toCfg)+'写了一封信，其中提到：'+content.slice(0,120),'写给'+_momName(toCfg)+'的信',rec.id,'send').catch(()=>{});
-        _rlQueueReply(rec,now);/* 收信方进入待回信队列（延迟、可选） */
-        try{toast(_momName(cfg)+' 给 '+_momName(toCfg)+' 写了一封信')}catch(e){}
+        /* P25-3D：Authority DENY（disabled / cooldown / duplicate / unknown-*）⇒ 零副作用：
+           不落库、不重置对偶冷却、不写私有记忆、不入回信队列（cadence 由末尾 nextInitAt 退避承担）。 */
+        if(rec){
+          _rlPairSet(roleId,toId,now);
+          _rlSet(roleId,{lastInitAt:now});
+          /* 只让发送方记住"自己写了什么"（owner=roleId，不入共享 memories）；收件方记忆由其阅读后各自 tick 生成 */
+          _rlWriteRoleMemory(roleId,'我给'+_momName(toCfg)+'写了一封信，其中提到：'+content.slice(0,120),'写给'+_momName(toCfg)+'的信',rec.id,'send').catch(()=>{});
+          _rlQueueReply(rec,now);/* 收信方进入待回信队列（延迟、可选） */
+          try{toast(_momName(cfg)+' 给 '+_momName(toCfg)+' 写了一封信')}catch(e){}
+        }
       }
     }
   }
@@ -325,25 +394,31 @@ async function _rlReplyStep(recipientId,now){
   let res=null;
   try{res=await _rlGenerateReply(recipientId,letter,now)}catch(e){res={error:String(e&&e.message||e).slice(0,200)}}
   const answered=!!(res&&res.reply&&String(res.content||'').trim());
+  let replied=false;
   if(answered){
     const content=String(res.content).trim();
     try{
       const replyRec=await _rlStoreLetter({fromRoleId:recipientId,toRoleId:letter.fromRoleId,content:content,kind:'reply',parentId:letter.id,createdAt:now});
-      letter.replyStatus='replied';
-      await dbPut(RL_STORE,letter);
-      _rlPairSet(recipientId,letter.fromRoleId,now);
-      const senderCfg=_rlCfg(letter.fromRoleId);
-      /* 只让回信方记住"自己回了什么"（owner=recipientId）；原收信方对回信的记忆由其阅读后各自 tick 生成 */
-      _rlWriteRoleMemory(recipientId,'我回复了'+_momName(senderCfg)+'的信，其中提到：'+content.slice(0,120),'回复'+_momName(senderCfg)+'的信',replyRec.id,'reply').catch(()=>{});
-      try{toast(_momName(_rlCfg(recipientId))+' 回复了 '+_momName(senderCfg)+' 的信')}catch(e){}
+      /* P25-3D：Authority DENY（disabled / duplicate=已回或已拒 / unknown-*）⇒ 不写回信、
+         不改父信状态、不写私有记忆、不计入 lastReplyAt（父信保持原状态，可被再次评估）。 */
+      if(replyRec){
+        letter.replyStatus='replied';
+        await _rlWriteCanonical(letter);
+        _rlPairSet(recipientId,letter.fromRoleId,now);
+        const senderCfg=_rlCfg(letter.fromRoleId);
+        /* 只让回信方记住"自己回了什么"（owner=recipientId）；原收信方对回信的记忆由其阅读后各自 tick 生成 */
+        _rlWriteRoleMemory(recipientId,'我回复了'+_momName(senderCfg)+'的信，其中提到：'+content.slice(0,120),'回复'+_momName(senderCfg)+'的信',replyRec.id,'reply').catch(()=>{});
+        try{toast(_momName(_rlCfg(recipientId))+' 回复了 '+_momName(senderCfg)+' 的信')}catch(e){}
+        replied=true;
+      }
     }catch(e){}
   }else{
     letter.replyStatus='declined';/* 不回/失败：标记为"未回复"，不再追发 */
-    try{await dbPut(RL_STORE,letter)}catch(e){}
+    try{await _rlWriteCanonical(letter)}catch(e){}
   }
   delete q[String(recipientId)];
   _rlReplyQSave(q);
-  _rlSet(recipientId,{replyClaimUntil:0,lastReplyAt:answered?now:(Number(st.lastReplyAt||0))});
+  _rlSet(recipientId,{replyClaimUntil:0,lastReplyAt:replied?now:(Number(st.lastReplyAt||0))});
 }
 function cfgOf(id){return _rlCfg(id)}
 
@@ -561,7 +636,7 @@ async function _rlExp(id){
   try{
     const l=await dbGet(RL_STORE,id);
     if(l&&String(l.toRoleId)===String(viewAs)&&!l.readAt){
-      l.readAt=Date.now();await dbPut(RL_STORE,l);
+      l.readAt=Date.now();await _rlWriteCanonical(l);/* P25-3D：状态更新经同一 canonical writer（非新建信件 ⇒ 不再裁决） */
       const nb=document.getElementById('rln-'+id);if(nb)nb.remove();
     }
   }catch(e){}
@@ -585,6 +660,8 @@ window._rlIsEnabled=_rlIsEnabled;window._rlSetEnabled=_rlSetEnabled;
 window._rlToggleInbox=_rlToggleInbox;window._rlRenderInbox=_rlRenderInbox;
 window._rlExp=_rlExp;window._rlRenderSettings=_rlRenderSettings;window._rlToggleEnabled=_rlToggleEnabled;
 window._rlStoreLetter=_rlStoreLetter;window._rlQueueReply=_rlQueueReply;window._rlInitInboxDrag=_rlInitInboxDrag;
+/* P25-3D：Role Letter Authority 接缝（测试/诊断入口；权威实现在 assets/js/role-letter-authority.js） */
+window._rlAuthority=_rlAuthority;window._rlWriteCanonical=_rlWriteCanonical;window._rlRunWrite=_rlRunWrite;
 window._rlLoadLettersFor=_rlLoadLettersFor;window._rlSetBox=_rlSetBox;window._rlSetViewAs=_rlSetViewAs;window._rlOnViewAs=_rlOnViewAs;
 window._rlWriteRoleMemory=_rlWriteRoleMemory;window._rlHasRoleMem=_rlHasRoleMem;window._rlMemoriesFor=_rlMemoriesFor;window._rlMemBlock=_rlMemBlock;
 NS.expose('roleLetters',{
@@ -592,6 +669,8 @@ NS.expose('roleLetters',{
   toggleInbox:_rlToggleInbox,renderInbox:_rlRenderInbox,exp:_rlExp,
   renderSettings:_rlRenderSettings,toggleEnabled:_rlToggleEnabled,
   storeLetter:_rlStoreLetter,queueReply:_rlQueueReply,initInboxDrag:_rlInitInboxDrag,
+  /* P25-3D：Role Letter Authority 接缝（编排 adapter / 其它域在**调用时刻**解析这些键） */
+  roleLetterAuthority:_rlAuthority,writeCanonicalLetter:_rlWriteCanonical,runRoleLetterWrite:_rlRunWrite,
   loadLettersFor:_rlLoadLettersFor,setBox:_rlSetBox,setViewAs:_rlSetViewAs,
   writeRoleMemory:_rlWriteRoleMemory,hasRoleMem:_rlHasRoleMem,memoriesFor:_rlMemoriesFor
 });

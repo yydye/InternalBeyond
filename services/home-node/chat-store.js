@@ -30,6 +30,11 @@ const path = require('path');
 const fs = require('fs');
 
 const CHAT_CORE = require('../../assets/js/chat-core.js');
+/* P23 Phase 2A · 顺序契约（回合内按 sequenceIndex、回合整体落在最早一条的位置）。
+   与桌面读取点**同一份实现**：一次模型回合可以产出多条消息，而 SQL 的
+   (timestamp, insert_seq) 在"续轮先落库、主回复后落库"这种真实情形下会把主回复
+   排到续轮后面。这里不重写排序规则，只在取页之后调用同一个纯函数。 */
+const DELIVERY_SEQUENCE = require('../../assets/js/delivery-sequence-core.js');
 /* P11-3X-B：数据库失败的**唯一**分类来源，以及"只有完整性结论才能授权隔离"这条
    闸门。见 runtime/db-failure.js 顶部：READONLY / 权限 / busy / 磁盘满 / 打不开
    都**不是**损坏，把它们当损坏会搬走一个完好的库。 */
@@ -106,6 +111,7 @@ function createChatStore(deps) {
 
   let db = null;
   let opened = false;
+  let ownsDb = false;
   let lastOpenedAt = 0;
 
   const SQL = {
@@ -236,6 +242,7 @@ function createChatStore(deps) {
     }
     try {
       db = new sqlite.DatabaseSync(dbFile);
+      ownsDb = true;
       db.exec('PRAGMA journal_mode = WAL');
       db.exec('PRAGMA synchronous = FULL');
       db.exec('PRAGMA busy_timeout = 5000');
@@ -262,6 +269,7 @@ function createChatStore(deps) {
       try { if (db) db.close(); } catch (_) { /* 已关闭 */ }
       db = null;
       opened = false;
+      ownsDb = false;
       throw dbFailure.toError(error);
     }
     opened = true;
@@ -275,6 +283,32 @@ function createChatStore(deps) {
       recoveredFromCorrupt: corruptBackup || undefined
     });
     return { ok: true, alreadyOpen: false, file: dbFile, schemaVersion: SCHEMA_VERSION, recoveredFromCorrupt: corruptBackup || null };
+  }
+
+  /* RecoveryOnly read-only attachment: no mkdir, schema DDL, metadata
+     initialization, writeability probe, quarantine, or integrity scan. */
+  function attachReadOnlyConnection(connection) {
+    if (opened || db) throw Object.assign(new Error('store-already-open'), { code: 'STORE_ALREADY_OPEN' });
+    if (!connection || typeof connection.prepare !== 'function' || typeof connection.exec !== 'function') {
+      throw Object.assign(new Error('readonly-connection-required'), { code: 'READONLY_CONNECTION_REQUIRED' });
+    }
+    db = connection;
+    try {
+      db.exec('PRAGMA query_only=ON');
+      const row = db.prepare('PRAGMA query_only').get();
+      const value = row && (row.query_only == null ? Object.values(row)[0] : row.query_only);
+      if (Number(value) !== 1) throw Object.assign(new Error('query-only-not-enabled'), { code: 'QUERY_ONLY_NOT_ENABLED' });
+      const schema = readMeta('schema_version');
+      if (schema == null || Number(schema) > SCHEMA_VERSION) throw Object.assign(new Error('schema-version-invalid'), { code: 'SCHEMA_VERSION_INVALID' });
+      opened = true;
+      ownsDb = false;
+      return { ok: true, readOnly: true, schemaVersion: SCHEMA_VERSION };
+    } catch (error) {
+      db = null;
+      opened = false;
+      ownsDb = false;
+      throw error;
+    }
   }
 
   /* 可写性预检：返回一个"带类别的失败"或 null。绝不修改任何东西 —— 只是把文件
@@ -399,8 +433,8 @@ function createChatStore(deps) {
 
   function close() {
     if (!opened || !db) return { ok: true, alreadyClosed: true };
-    try { db.close(); } catch (_) { /* 已关闭 */ }
-    db = null; opened = false;
+    if (ownsDb) { try { db.close(); } catch (_) { /* 已关闭 */ } }
+    db = null; opened = false; ownsDb = false;
     logger('closed', {});
     return { ok: true };
   }
@@ -627,7 +661,11 @@ function createChatStore(deps) {
        调用方拿到的永远是「按时间从旧到新」的一页。 */
     if (order === 'DESC') page = page.slice().reverse();
     const newest = query.cursor == null && query.before == null && query.after == null;
-    const messages = page.map(rowToMessage);
+    /* P23 Phase 2A：只把**同一个回合的多条消息**聚成连续块（base:'given' 表示
+       不重排 SQL 已经定好的 (timestamp, insert_seq) 全序 —— 旧消息的顺序逐字不变）。
+       分页锚点（cursor / hasOlder / hasNewer）仍按 SQL 的原始首尾行计算：
+       顺序契约作用于"这一段里同一回合的单元"，不改变翻页语义。 */
+    const messages = DELIVERY_SEQUENCE.orderMessages(page.map(rowToMessage), { base: 'given' });
     const first = page.length ? page[0] : null;
     const last = page.length ? page[page.length - 1] : null;
     /* hasMore / hasOlder / hasNewer 的精确含义：
@@ -930,8 +968,19 @@ function createChatStore(deps) {
     return { ok: value === 'ok', result: String(value) };
   }
 
+  function readDatabaseIdentity() {
+    if (!opened || !db) return { ok: false, error: 'store-closed' };
+    const userVersionRow = db.prepare('PRAGMA user_version').get();
+    const queryOnlyRow = db.prepare('PRAGMA query_only').get();
+    const userVersion = Number(userVersionRow && (userVersionRow.user_version == null ? Object.values(userVersionRow)[0] : userVersionRow.user_version));
+    const queryOnly = Number(queryOnlyRow && (queryOnlyRow.query_only == null ? Object.values(queryOnlyRow)[0] : queryOnlyRow.query_only));
+    return { ok: true, schemaUserVersion: userVersion, queryOnly: queryOnly === 1,
+      storeSchemaVersion: Number(readMeta('schema_version') || 0) };
+  }
+
   return {
     open: open,
+    attachReadOnlyConnection: attachReadOnlyConnection,
     close: close,
     isOpen: isOpen,
     meta: meta,
@@ -951,6 +1000,7 @@ function createChatStore(deps) {
     getUserProfile: getUserProfile,
     setUserProfile: setUserProfile,
     integrityCheck: integrityCheck,
+    readDatabaseIdentity: readDatabaseIdentity,
     backup: backup,
     /* 暴露给测试/诊断（只读） */
     file: dbFile,

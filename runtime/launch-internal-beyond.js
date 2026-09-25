@@ -27,6 +27,8 @@
 const http = require('http');
 const net = require('net');
 const fs = require('fs');
+const crypto = require('crypto');
+const os = require('os');
 const path = require('path');
 const { spawn, execFile } = require('child_process');
 const bootState = require('./boot-state.js');
@@ -54,9 +56,13 @@ const RESTART_IDENTITY = registry.byId('restart').identity.service;
 const VISION_PORT = registry.portOf('vision');
 const NODE_REQUIRED_MAJOR = 18;
 
-/* Launcher log goes to the project's logs\launcher.log (requirement). Service
-   logs continue to be written by local-services-runner.js to its own location. */
-const LOG_DIR = path.join(ROOT, 'logs');
+/* Runtime-generated logs belong to the per-user data root, not the replaceable
+   install payload. Installer diagnostics keep their own bounded installer log
+   contract; this path is only for the running launcher. */
+const LOCAL_DIR = process.platform === 'win32' && process.env.LOCALAPPDATA
+  ? path.join(process.env.LOCALAPPDATA, 'InternalBeyond')
+  : path.join(os.homedir(), '.internal-beyond');
+const LOG_DIR = path.join(LOCAL_DIR, 'logs');
 const LOG_FILE = path.join(LOG_DIR, 'launcher.log');
 
 const SERVICES_TIMEOUT_MS = Number(process.env.IB_LAUNCH_SERVICES_TIMEOUT_MS) || 25000;
@@ -115,6 +121,47 @@ function nodeRuntimeInfo() {
     bundled: exe.toLowerCase() === path.resolve(bundledPath).toLowerCase(),
     requiredMajor: NODE_REQUIRED_MAJOR,
     ok: Number(String(process.version).replace(/^v/, '').split('.')[0]) >= NODE_REQUIRED_MAJOR
+  };
+}
+
+function payloadManifestInfo() {
+  const file = path.join(ROOT, 'ib-payload-manifest.json');
+  if (!fs.existsSync(file)) return { version: null, identity: null };
+  try {
+    const raw = fs.readFileSync(file);
+    const parsed = JSON.parse(raw.toString('utf8'));
+    return {
+      version: Number.isInteger(parsed && parsed.version) ? parsed.version : null,
+      identity: crypto.createHash('sha256').update(raw).digest('hex')
+    };
+  } catch (_) {
+    return { version: null, identity: null };
+  }
+}
+
+function runtimeIdentity() {
+  const manifest = payloadManifestInfo();
+  const explicitMode = String(process.env.IB_RUNTIME_MODE || '').trim().toLowerCase();
+  const mode = ['production', 'acceptance', 'development'].includes(explicitMode)
+    ? explicitMode
+    : (manifest.identity ? 'production' : (process.env.IB_TAURI_HOST === '1' ? 'acceptance' : 'development'));
+  const rootClass = String(process.env.IB_RUNTIME_ROOT_CLASS || '').trim() || {
+    production: 'canonical-inno',
+    acceptance: 'tauri-resource',
+    development: 'workspace'
+  }[mode] || 'unknown';
+  const product = String(process.env.IB_RUNTIME_PRODUCT_VERSION || '').trim() || productInfo().version;
+  const manifestVersion = String(process.env.IB_RUNTIME_PAYLOAD_MANIFEST_VERSION || '').trim();
+  const payloadIdentity = String(process.env.IB_RUNTIME_PAYLOAD_IDENTITY || '').trim() || manifest.identity;
+  return {
+    runtimeMode: mode,
+    runtimeRootClass: rootClass,
+    productVersion: product,
+    payloadManifestVersion: manifestVersion ? Number(manifestVersion) : manifest.version,
+    payloadIdentity: payloadIdentity || null,
+    hostRoot: ROOT,
+    runnerRootClass: rootClass,
+    serviceRootClass: rootClass
   };
 }
 
@@ -542,7 +589,8 @@ function buildState(bootId, phase, ctx, extra) {
       arch: process.arch,
       product: productInfo(),
       node: nodeRuntimeInfo(),
-      serviceManager: ctx.serviceManager || null
+      serviceManager: ctx.serviceManager || null,
+      runtime: runtimeIdentity()
     },
     components: ctx.components,
     warnings: ctx.warnings,
@@ -682,6 +730,7 @@ module.exports = {
   RESTART_PORT: RESTART_PORT,
   VISION_PORT: VISION_PORT,
   nodeRuntimeInfo: nodeRuntimeInfo,
+  runtimeIdentity: runtimeIdentity,
   httpGetJson: httpGetJson,
   webHealthy: webHealthy,
   webUiDocumentReady: webUiDocumentReady,

@@ -40,7 +40,7 @@ async function _wsArchiveUserUploads(files){
       var old=await wsGetFileByPath(pid,f.name);
       if(old&&old.content===text)continue;
       var dest=old?await _wsUniquePath(pid,f.name):f.name;
-      await wsSaveFile(pid,dest,text,'User');
+      await wsSaveFile(pid,dest,text,'User',{kind:'user'});
     }catch(e){}
   }
   /* ICode 悬浮窗开着时当场刷新，让归档立刻可见 */
@@ -77,6 +77,40 @@ async function wsGetProjects(){try{return await dbGetAll('projects')}catch(e){re
 async function wsGetFiles(projId){try{return(await dbGetAll('projectFiles')).filter(f=>f.projectId===projId)}catch(e){return[]}}
 async function wsGetFileByPath(projId,path){var all=await wsGetFiles(projId);return all.find(f=>f.path===path)||null}
 
+/* R4-2 · persisted file provenance。
+   lastModifiedBy 永远是 display label；canonical fields 只来自 producer 明确传入的
+   frozen kind/id，不从 label 猜测，也不为缺失的 context 伪造 identity。 */
+var _WS_FILE_PROVENANCE_KINDS={role:1,user:1,import:1,script:1,system:1};
+function _wsFileProvenanceFields(author,provenance){
+  var label=author||'AI';
+  if(typeof label!=='string')label=String(label);
+  var out={lastModifiedBy:label};
+  if(!provenance||typeof provenance!=='object')return out;
+  var hasId=Object.prototype.hasOwnProperty.call(provenance,'id');
+  var kind=provenance.kind;
+  if(kind==='role'&&typeof provenance.id==='string'&&provenance.id.length>0){
+    out.lastModifiedByKind='role';out.lastModifiedById=provenance.id;return out;
+  }
+  if(_WS_FILE_PROVENANCE_KINDS[kind]&&kind!=='role'&&!hasId){
+    out.lastModifiedByKind=kind;return out;
+  }
+  return out;
+}
+function _wsApplyFileProvenance(record,author,provenance){
+  var fields=_wsFileProvenanceFields(author,provenance);
+  record.lastModifiedBy=fields.lastModifiedBy;
+  delete record.lastModifiedByKind;
+  delete record.lastModifiedById;
+  if(fields.lastModifiedByKind)record.lastModifiedByKind=fields.lastModifiedByKind;
+  if(fields.lastModifiedById)record.lastModifiedById=fields.lastModifiedById;
+  return record;
+}
+function _wsFileRoleProvenance(roleId){
+  if(roleId===undefined||roleId===null)return null;
+  var id=String(roleId);
+  return id?{kind:'role',id:id}:null;
+}
+
 async function wsCreateProject(name){
   var id='proj_'+Date.now();
   await dbPut('projects',{id:id,name:name,created:Date.now(),lastModified:Date.now()});
@@ -100,19 +134,22 @@ async function wsDeleteProject(id){
   if(_wsViewingProject===id)_wsViewingProject=null;
   if(_wsActiveProject===id)_wsActiveProject=null;
 }
-async function wsSaveFile(projId,path,content,author){
+async function wsSaveFile(projId,path,content,author,provenance){
   var existing=await wsGetFileByPath(projId,path);
   var now=Date.now();
   if(existing){
     existing.content=content;existing.size=new Blob([content]).size;
     existing.lastModified=now;existing.lastModifiedBy=author||'AI';
+    _wsApplyFileProvenance(existing,author,provenance);
     await dbPut('projectFiles',existing);
     /* update project lastModified */
     try{var p=await dbGet('projects',projId);if(p){p.lastModified=now;await dbPut('projects',p)}}catch(e){}
     return existing.id;
   }
   var id='pf_'+now+'_'+Math.random().toString(36).slice(2,6);
-  await dbPut('projectFiles',{id:id,projectId:projId,path:path,content:content,size:new Blob([content]).size,created:now,lastModified:now,lastModifiedBy:author||'AI'});
+  var record={id:id,projectId:projId,path:path,content:content,size:new Blob([content]).size,created:now,lastModified:now,lastModifiedBy:author||'AI'};
+  _wsApplyFileProvenance(record,author,provenance);
+  await dbPut('projectFiles',record);
   try{var p=await dbGet('projects',projId);if(p){p.lastModified=now;await dbPut('projects',p)}}catch(e){}
   return id;
 }
@@ -134,7 +171,7 @@ function _wsCountOcc(hay,needle){
   while((i=hay.indexOf(needle,i))!==-1){n++;i+=needle.length;if(n>9)break}
   return n;
 }
-async function wsEditFileContent(projId,path,findStr,replaceStr,author){
+async function wsEditFileContent(projId,path,findStr,replaceStr,author,provenance){
   var f=await wsGetFileByPath(projId,path);
   if(!f)return{ok:false,reason:'文件不存在: '+path};
   var content=f.content;
@@ -172,6 +209,7 @@ async function wsEditFileContent(projId,path,findStr,replaceStr,author){
   }
   f.content=content.slice(0,idx)+replaceStr+content.slice(idx+matchLen);
   f.size=new Blob([f.content]).size;f.lastModified=Date.now();f.lastModifiedBy=author||'AI';
+  _wsApplyFileProvenance(f,author,provenance);
   await dbPut('projectFiles',f);
   try{var p=await dbGet('projects',projId);if(p){p.lastModified=Date.now();await dbPut('projects',p)}}catch(e){}
   return{ok:true};
@@ -507,7 +545,7 @@ async function _wsBuildXlsxFromCsv(text){
   return new Blob([out],{type:_wsRichMime('x.xlsx')});
 }
 /* ── ── ws_make_* 执行器：构建 → base64 入库（与导入的富 ── */
-async function _wsExecMakeOp(kind,op,authorName){
+async function _wsExecMakeOp(kind,op,authorName,provenance){
   var extMap={docx:'.docx',pdf:'.pdf',xlsx:'.xlsx'};
   var path=String(op.path||'').trim();
   if(path.toLowerCase().slice(-extMap[kind].length)!==extMap[kind])path+=extMap[kind];
@@ -521,7 +559,7 @@ async function _wsExecMakeOp(kind,op,authorName){
     var renamedFrom='';
     var uniq=await _wsUniquePath(_wsActiveProject,path);
     if(uniq!==path){renamedFrom=path;path=uniq}
-    await wsSaveFile(_wsActiveProject,path,dataUrl,authorName);
+    await wsSaveFile(_wsActiveProject,path,dataUrl,authorName,provenance);
     return{ok:true,size:bytes.length,path:path,renamedFrom:renamedFrom||undefined};
   }catch(e){
     var msg=(e&&e._wsLibMsg)?e._wsLibMsg.replace(/^\[|\]$/g,''):('生成失败：'+String(e&&e.message||e).slice(0,120));
@@ -875,7 +913,7 @@ async function _icodeDoImport(col,projId,name){
   }
   for(var i=0;i<col.files.length;i++){
     var f=col.files[i];
-    try{await wsSaveFile(projId,f.path,f.content,'导入')}catch(e){}
+    try{await wsSaveFile(projId,f.path,f.content,'导入',{kind:'import'})}catch(e){}
   }
   _wsActiveProject=projId;
   toast('已导入 '+col.files.length+' 个文件');
@@ -1195,7 +1233,10 @@ async function wsMoveCopyDialog(fileId,fromProjId){
         try{var fp=await dbGet('projects',fromProjId);if(fp){fp.lastModified=now;await dbPut('projects',fp)}}catch(e){}
       }else{
         var nid='pf_'+now+'_'+Math.random().toString(36).slice(2,6);
-        await dbPut('projectFiles',{id:nid,projectId:pid,path:destPath,content:cur.content,size:cur.size,created:now,lastModified:now,lastModifiedBy:cur.lastModifiedBy||'AI'});
+        var copied={id:nid,projectId:pid,path:destPath,content:cur.content,size:cur.size,created:now,lastModified:now,lastModifiedBy:cur.lastModifiedBy||'AI'};
+        if(Object.prototype.hasOwnProperty.call(cur,'lastModifiedByKind'))copied.lastModifiedByKind=cur.lastModifiedByKind;
+        if(Object.prototype.hasOwnProperty.call(cur,'lastModifiedById'))copied.lastModifiedById=cur.lastModifiedById;
+        await dbPut('projectFiles',copied);
       }
       if(tp){tp.lastModified=now;await dbPut('projects',tp)}
       toast((move?'已移动到「':'已复制到「')+(tp?tp.name:'目标文件夹')+'」'+(renamed?'，同名已存为 '+destPath:''));
@@ -1223,6 +1264,8 @@ window.wsCreateProject=wsCreateProject;
 window.wsEnsureProject=wsEnsureProject;
 window.wsDeleteProject=wsDeleteProject;
 window.wsSaveFile=wsSaveFile;
+window._wsFileProvenanceFields=_wsFileProvenanceFields;
+window._wsFileRoleProvenance=_wsFileRoleProvenance;
 window._wsUniquePath=_wsUniquePath;
 window._wsCountOcc=_wsCountOcc;
 window.wsEditFileContent=wsEditFileContent;
@@ -1299,6 +1342,8 @@ NS.expose('workspace.files', {
   wsEnsureProject: wsEnsureProject,
   wsDeleteProject: wsDeleteProject,
   wsSaveFile: wsSaveFile,
+  _wsFileProvenanceFields: _wsFileProvenanceFields,
+  _wsFileRoleProvenance: _wsFileRoleProvenance,
   _wsUniquePath: _wsUniquePath,
   _wsCountOcc: _wsCountOcc,
   wsEditFileContent: wsEditFileContent,

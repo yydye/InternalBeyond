@@ -69,8 +69,7 @@ InternalBeyond 是后续 AI 系统架构探索。
 - 上游已有：Memory / Voice / 多端口 AI / 离线单文件架构。
 - fork 后 Project-IB 演化：Middle Brain / Companion（Active Companion）/ Moments / Disclosure / Authority Architecture / Home Node / Economy / Activity。
 
-> **禁止表述**：`ChatVault evolved into InternalBeyond`（错误）。
-> 正确关系：ChatVault 是 **AI 辅助开发流程实验**；InternalBeyond 是**后续的 AI 系统架构探索**，并由一个**独立触发点**（抖音推荐 Sui 发布的 InternalBeyond 宣传视频）引入。两者不构成"演化"关系。
+> ChatVault 是 **AI 辅助开发流程实验**；InternalBeyond 是**后续的 AI 系统架构探索**，并由一个**独立触发点**（抖音推荐 Sui 发布的 InternalBeyond 宣传视频）引入。两者不构成"演化"关系。
 
 ## 0.3 Timeline（阶段 0–5）
 

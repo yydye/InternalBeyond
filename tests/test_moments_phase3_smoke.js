@@ -248,7 +248,11 @@ async function main() {
     const dupCount = await evaluate(cdp, "(async function(){var own=await getRoleMoments('p3dup');return own.filter(function(m){return m.content==='重复内容测试。'}).length})()");
     check('content.duplicateRejected', d1 && d1.ok && d1.published === true && d2 && d2.ok === false && dupCount === 1, JSON.stringify({ d1ok: d1 && d1.ok, d2ok: d2 && d2.ok, dupCount }));
     const promptTxt = await evaluate(cdp, "buildMomentPrompt({character:{id:'x',nickname:'N',systemPrompt:''},context:{},trigger:'schedule'}).messages[1].content");
-    check('content.promptAntiGeneric', /拒绝空泛模板/.test(promptTxt) && /今天阳光很好/.test(promptTxt) && /publish:false 是正常输出/.test(promptTxt) && /碎片化/.test(promptTxt));
+    /* P25-2B：prompt 的契约从 `publish:true/false` 迁移到结构化 semantic contract
+       （recommendation / reasonCode / topicKey / draft）。断言随之迁移 —— 反空泛的
+       写作要求本身（拒绝空泛模板 / 今天阳光很好 / 碎片化）一字未改，改的只是
+       "不发布"在契约里的名字。 */
+    check('content.promptAntiGeneric', /拒绝空泛模板/.test(promptTxt) && /今天阳光很好/.test(promptTxt) && /recommendation:"skip" 是正常输出/.test(promptTxt) && /碎片化/.test(promptTxt));
 
     /* ── Motive 动机层（Case A–E,G：schema/落库/declineStreak/护栏不被绕过/无内部机制词） ── */
     /* Case E：解析与落库——publish:true + motive:'interaction' → 正文落库并携带 motive */
@@ -272,7 +276,8 @@ async function main() {
     /* Case F 前置：prompt 带动机段与 declineStreak 上下文；Case G：无内部机制词
        （imagePrompt 是模型要填写的 JSON 字段名，属协议键，不算内部机制泄漏） */
     const motPrompt = await evaluate(cdp, "(function(){var b=buildMomentPrompt({character:{id:'x',nickname:'N',systemPrompt:''},context:{},trigger:'schedule',declineStreak:3,lastPostAt:Date.now()-3*3600000});return{u:b.messages[1].content,s:b.messages[0].content}})()");
-    check('motive.promptHasMotiveSection', /发圈动机/.test(motPrompt.u) && /\{"publish":false,"motive":"none"\}/.test(motPrompt.u) && /"motive":"share\|daily_life\|emotion\|reflection\|interaction\|curiosity\|social_response\|none"/.test(motPrompt.u) && /最近连续 3 次你都没有发/.test(motPrompt.u) && /3 小时前/.test(motPrompt.u), motPrompt.u.slice(-260));
+    /* P25-2B：无动机 → 结构化 skip（reasonCode 闭集），而不是旧的 {"publish":false,...}。 */
+    check('motive.promptHasMotiveSection', /发圈动机/.test(motPrompt.u) && /\{"recommendation":"skip","reasonCode":"nothing-to-share"\}/.test(motPrompt.u) && /"motive":"share\|daily_life\|emotion\|reflection\|interaction\|curiosity\|social_response\|none"/.test(motPrompt.u) && /最近连续 3 次你都没有发/.test(motPrompt.u) && /3 小时前/.test(motPrompt.u), motPrompt.u.slice(-260));
     check('motive.noInternalMechanismWords', !/任务|定时|调度|API|模型|prompt|scheduler|timer|task|cron|autonomous|token/i.test((motPrompt.u + '\n' + motPrompt.s).replace(/imagePrompt/g, '')), (motPrompt.s + '\n' + motPrompt.u).slice(0, 400));
     /* Case G：发布正文不含内部机制词（mock 内容本身即验证用例） */
     check('motive.publishedContentClean', mot && mot.published === true && !/定时|任务|调度|AI 自主发文|系统|Prompt|API|模型/.test(String(mot.content || '')), String(mot.content || '').slice(0, 120));

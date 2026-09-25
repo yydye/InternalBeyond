@@ -491,6 +491,17 @@ body:not(.theme-infernal) .chat-load-more:hover{background:rgba(210,230,255,0.92
 .chat-voice-bar .vm-a2,.chat-voice-bar .vm-a3{opacity:1}
 .chat-voice-bar.playing .vm-a2{animation:vmArc 1.1s ease-in-out infinite}
 .chat-voice-bar.playing .vm-a3{animation:vmArc 1.1s ease-in-out 0.22s infinite}
+/* P23 Phase 1 · assistant 一级 voice message：
+   文字稿默认不铺开，由气泡上的「文」按钮展开；无可播放音源时明确表现为不可播放。 */
+.chat-voice-wrap{display:inline-flex;flex-direction:column;gap:4px;max-width:100%}
+.chat-voice-wrap .vm-transcript{font-size:0.86rem;line-height:1.55;opacity:0.88;white-space:pre-wrap;word-break:break-word;max-width:min(560px,72vw)}
+.chat-voice-bar .vm-transcript-btn{font-size:0.68rem;line-height:1.4;padding:0 4px;border:1px solid currentColor;border-radius:5px;opacity:0.7;cursor:pointer}
+.chat-voice-bar .vm-transcript-btn:hover{opacity:1}
+.chat-voice-bar.vm-unplayable{opacity:0.5;cursor:not-allowed}
+.chat-voice-bar.vm-loading{opacity:0.7;cursor:progress}
+.chat-voice-bar.vm-loading .vm-dur::after{content:'…'}
+/* P23 Phase 1 · 语音 API 来源提示（角色 Voice 卡片）：只说明来源与凭据在哪配，不编辑凭据。 */
+.ibv-source-hint{margin:-4px 0 8px}
 @keyframes vmArc{0%,100%{opacity:0.15}50%{opacity:1}}
 body:not(.theme-infernal) .page.active .chat-voice-btn{background:rgba(100,155,210,0.06);border-color:rgba(100,155,210,0.4);color:#2a5a8c}
 body:not(.theme-infernal) .page.active .chat-voice-btn:hover{background:rgba(100,155,210,0.16);color:#0a1e42}

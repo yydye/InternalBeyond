@@ -16,7 +16,7 @@
   'use strict';
   if(!window.IBApps||!window.IBActivity)return;
   var H,C;var S={dm:true,subN:6,vq:'m',sumEvery:15,nudge:2,lastAi:''};
-  var subs=[],sum={recap:''},_activity=null,_aiId='',_timer=null,_lastCue='';
+  var subs=[],sum={recap:''},_activity=null,_aiId='',_timer=null,_lastCue='',_typingTimer=null,_grabError='';
   var _media=null,_adapter=null,_lastPush=0;
   var $=function(s){return H&&H.querySelector(s)};
 
@@ -48,9 +48,18 @@
     return !!(am&&am.activityId&&String(am.activityId)===String(_activity.id));
   }
   function onMsg(am){if(!_sameChannel(am))return;var who=(am&&am.role==='user')?'我':((am&&am.senderName)||'TA');var text=String(am&&am.content||'');_endTyping();danmaku(strip(text));if((am&&am.role)==='user')_appendMsg('我',text);else _appendMsg(who,text)}
-  function onTurn(t){if(t&&t.state==='start')_showTyping();else if(t&&t.state==='end')_endTyping()}
-  function _showTyping(){var h=H&&H.querySelector('#ci-msgs');if(!h)return;var d=document.createElement('div');d.className='ci-typing';d.id='ci-typing';d.textContent='TA 正在输入…';h.appendChild(d);h.scrollTop=h.scrollHeight}
-  function _endTyping(){var d=H&&(H.querySelector('#ci-typing'));if(d)try{d.remove()}catch(e){}}
+  /* turn 通道过滤（M1.5）：只响应属于当前活动的 turn —— 普通聊天/其他角色的 turn
+     不得点亮或熄灭 Cinema 的 typing。超时兜底：缺失 turn end（非流式/失败路径）时自动收起。 */
+  function onTurn(t){
+    if(!_activity||!t)return;
+    if(!t.activityId||String(t.activityId)!==String(_activity.id))return;
+    if(t.state==='start')_showTyping();else if(t.state==='end')_endTyping();
+  }
+  function _showTyping(){var h=H&&H.querySelector('#ci-msgs');if(!h)return;var d=h.querySelector('#ci-typing');if(!d){d=document.createElement('div');d.className='ci-typing';d.id='ci-typing';d.textContent='TA 正在输入…';h.appendChild(d)}h.scrollTop=h.scrollHeight;_armTypingTimeout()}
+  /* window.__ciTypingTimeoutMs 是测试可覆写的超时接缝；默认 60s。 */
+  function _armTypingTimeout(){if(_typingTimer){clearTimeout(_typingTimer);_typingTimer=null}var _to=Number(window.__ciTypingTimeoutMs)>0?Number(window.__ciTypingTimeoutMs):60000;_typingTimer=setTimeout(function(){_typingTimer=null;_endTyping()},_to)}
+  /* 单例语义：无论历史遗留多少条，`end`/超时都一次清干净（防非流式路径多轮残留）。 */
+  function _endTyping(){if(_typingTimer){clearTimeout(_typingTimer);_typingTimer=null}if(!H)return;var ds=H.querySelectorAll('.ci-typing');for(var i=0;i<ds.length;i++)try{ds[i].remove()}catch(e){}}
   function _appendMsg(who,text){var h=H&&H.querySelector('#ci-msgs');if(!h)return;var d=document.createElement('div');d.className='ci-msg';d.innerHTML='<span>'+esc(who)+'</span> '+esc(String(text||''));h.appendChild(d);h.scrollTop=h.scrollHeight}
 
   /* ---- 播放进度（来自 Adapter 事件） ---- */
@@ -95,7 +104,9 @@
   async function loadUrl(url){url=String(url||'').trim();if(!url){toast('请输入视频链接');return}await _loadMedia({url:url})}
 
   /* ---- 留影（仅本地/直链/HLS 支持截帧） ---- */
-  function grabFrame(){var v=H&&H.querySelector('#ci-player video');if(!v||!v.videoWidth)return null;var w={l:384,m:512,h:768}[S.vq]||512,q={l:0.6,m:0.72,h:0.8}[S.vq]||0.72;var c=document.createElement('canvas');c.width=w;c.height=Math.round(v.videoHeight*(w/v.videoWidth)||w*0.75);c.getContext('2d').drawImage(v,0,0,c.width,c.height);return c.toDataURL('image/jpeg',q)}
+  /* 截帧防御（M1.5）：跨域直链可能因 canvas 污染抛 SecurityError —— 不抛异常、返回 null，
+     由调用方按 _grabError 给出真实提示。不设 crossOrigin、不绕过任何平台限制。 */
+  function grabFrame(){_grabError='';try{var v=H&&H.querySelector('#ci-player video');if(!v||!v.videoWidth)return null;var w={l:384,m:512,h:768}[S.vq]||512,q={l:0.6,m:0.72,h:0.8}[S.vq]||0.72;var c=document.createElement('canvas');c.width=w;c.height=Math.round(v.videoHeight*(w/v.videoWidth)||w*0.75);c.getContext('2d').drawImage(v,0,0,c.width,c.height);return c.toDataURL('image/jpeg',q)}catch(e){_grabError=String((e&&e.name)||'capture-failed');return null}}
 
   /* ---- UI ---- */
   function paint(paint){
@@ -125,9 +136,9 @@
       var isub=H.querySelector('#ci-sub');if(isub)isub.onchange=function(){if(isub.files&&isub.files[0])loadSub(isub.files[0])};
       var snap=H.querySelector('#ci-snap');if(snap)snap.onclick=function(){
         if(snap.disabled){toast('当前来源不支持截帧（跨域嵌入平台请改用聊天图片附件）');return}
-        var canSee=(C&&C.chat&&typeof C.chat.canSee==='function')?!!C.chat.canSee(_aiId):true;
+        var canSee=true;try{if(C&&C.chat&&typeof C.chat.canSee==='function')canSee=!!C.chat.canSee(_aiId)}catch(e){}
         if(!canSee){toast('这位 TA 的模型不识图，留影发不出画面');return}
-        var u=grabFrame();if(u){toast('已留影，随下一句发出');snap.dataset.frame=u}else toast('当前来源不支持截帧')
+        var u=grabFrame();if(u){toast('已留影，随下一句发出');snap.dataset.frame=u}else toast(_grabError?'当前视频源无法截取画面，请发送截图后继续讨论':'当前来源不支持截帧')
       };
       var dm=H.querySelector('#ci-dm');if(dm)dm.onclick=function(){S.dm=!S.dm;dm.textContent=S.dm?'弹幕✓':'弹幕'};
       var fs=H.querySelector('#ci-fs');if(fs)fs.onclick=function(){var v=H.querySelector('#ci-player video');var p=v?v:H.querySelector('#ci-player iframe');if(p){if(document.fullscreenElement)document.exitFullscreen();else if(p.requestFullscreen)p.requestFullscreen()}else toast('暂不支持全屏')};
@@ -163,6 +174,13 @@
     mount:async function(h,ctx){H=h;C=ctx;_aiId=(C.chat&&C.chat.current&&C.chat.current()&&C.chat.current().id)||'';await ensureMedia();start();
       if(C&&C.on){C.on('message',onMsg);C.on('turn',onTurn)}if(_timer)clearInterval(_timer);_timer=setInterval(tick,15000)},
     back:function(){},
-    unmount:function(){if(_timer)clearInterval(_timer);_timer=null;try{if(C&&C.off){C.off('message',onMsg);C.off('turn',onTurn)}}catch(e){}_destroyCurrent();subs=[];H=null;C=null}
+    unmount:function(){
+      if(_timer)clearInterval(_timer);_timer=null;
+      if(_typingTimer){clearTimeout(_typingTimer);_typingTimer=null}
+      try{if(C&&C.off){C.off('message',onMsg);C.off('turn',onTurn)}}catch(e){}
+      /* M1.5：离开观影室时仅当 current 指针指向本活动才清除（不影响其他 Activity 的 current） */
+      try{if(_activity&&_aiId&&IB.activity&&typeof IB.activity.clearCurrent==='function')IB.activity.clearCurrent(_aiId,_activity.id)}catch(e){}
+      _destroyCurrent();subs=[];H=null;C=null
+    }
   });
 })();

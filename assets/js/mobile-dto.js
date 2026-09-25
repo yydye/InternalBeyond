@@ -23,9 +23,13 @@
    ==================================================================== */
 (function (root, factory) {
   'use strict';
-  if (typeof module === 'object' && module.exports) { module.exports = factory(); }
-  else { root.IBMobileDto = factory(); }
-})(typeof self !== 'undefined' ? self : this, function () {
+  /* P23 Phase 2A：voice 的出站投影必须复用 Phase 1 的 canonical voice 契约
+     （audioUrl 只认 Bridge 引用形状、provenance 只走它的白名单清洗），
+     绝不在这里另写一份"什么算音源"的判定 —— 那是第二套 voice schema。
+     Node 侧同一个 require；浏览器侧同一份全局（voice-message-core 先加载）。 */
+  if (typeof module === 'object' && module.exports) { module.exports = factory(require('./voice-message-core.js')); }
+  else { root.IBMobileDto = factory(root.IBVoiceMessage); }
+})(typeof self !== 'undefined' ? self : this, function (VOICE) {
   'use strict';
 
   var DTO_VERSION = 1;
@@ -249,8 +253,12 @@
 
   /* metadata 白名单。注意 model / model_id 是**展示**信息，保留；
      config_id 是角色 id（公开发布的角色 id 本来就是明文），保留；
-     其余未知键一律丢弃 —— 未知键里可能正好是某个未来的 secret。 */
-  var MESSAGE_METADATA_KEYS = ['model', 'model_id', 'config_id', 'showThinking', 'source', 'eventType', 'characterId', 'waifu'];
+    其余未知键一律丢弃 —— 未知键里可能正好是某个未来的 secret。 */
+  /* P23 Phase 2A 新增三个**回合身份**键（turnId / sequenceIndex / sequenceTotal）：
+     它们让移动端知道"这几条消息来自同一次模型生成、以及它们在她那边的先后"。
+     三者都只是标识与序号：不含凭据、不含内容，与 activityId 同级的每消息注解。 */
+  var MESSAGE_METADATA_KEYS = ['model', 'model_id', 'config_id', 'showThinking', 'source', 'eventType', 'characterId', 'waifu',
+    'turnId', 'sequenceIndex', 'sequenceTotal'];
 
   function messageMetadata(metadata) {
     var out = pick(metadata, MESSAGE_METADATA_KEYS);
@@ -260,6 +268,13 @@
     if (out.config_id) out.config_id = str(out.config_id, 128);
     if (out.model) out.model = str(out.model, 64);
     if (out.model_id) out.model_id = str(out.model_id, 128);
+    if (out.turnId != null) { var _tid = str(out.turnId, 64); if (_tid) out.turnId = _tid; else delete out.turnId; }
+    /* 序号必须是有限非负数：非法值**丢掉**而不是归零 —— 归零会让"第 3 条"谎称"第 1 条"。 */
+    ['sequenceIndex', 'sequenceTotal'].forEach(function (k) {
+      if (out[k] == null) return;
+      var n = Number(out[k]);
+      if (isFinite(n) && n >= 0) out[k] = Math.floor(n); else delete out[k];
+    });
     return out;
   }
 
@@ -305,6 +320,21 @@
     if (voice.transcript) item.transcript = str(voice.transcript, 4000);
     /* dataUrl（音频本体）刻意不发。 */
     if (voice.dataUrl) item.inline = true;
+    /* P23 Phase 2A（Phase 1 已登记的缺口闭合）：
+       audioUrl —— 只接受 Phase 1 的 Bridge 引用形状（/tts/<name>.<ext>）。它是**引用**，
+                   不是音频本体；不接受任意 URL（否则 DTO 会变成"把记录里的任意字符串
+                   发给设备"的通道）。
+       provenance —— 走 voice-message-core 的**同一个**白名单清洗（只保留扁平标量、丢秘密）。
+       playable  —— "这条消息真的有一个音源"（Phase 1 的 canonical 判定），
+                   与 inline 配套使用：inline=true 表示音源在本条记录里（客户端要取字节
+                   得请求整条消息），绝不在 DTO 里内联音频。 */
+    var bridgeAudio = (VOICE && typeof VOICE.isBridgeAudioPath === 'function' && VOICE.isBridgeAudioPath(voice.audioUrl))
+      ? str(voice.audioUrl, 512) : '';
+    if (bridgeAudio) item.audioUrl = bridgeAudio;
+    var prov = (VOICE && typeof VOICE.sanitizeProvenance === 'function') ? VOICE.sanitizeProvenance(voice.provenance) : null;
+    if (prov && Object.keys(prov).length) item.provenance = prov;
+    item.playable = (VOICE && typeof VOICE.hasPlayable === 'function')
+      ? !!VOICE.hasPlayable(voice) : !!(voice.dataUrl || bridgeAudio);
     return item;
   }
 

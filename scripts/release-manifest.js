@@ -35,6 +35,7 @@ const ENTRIES = [
      official icon (assets/icons); bg-canvas.png is a 6 MB optional background
      that must stay out of the payload, exactly as the deny rule states. */
   { from: 'InternalBeyond.html', why: '主文档（唯一 HTML 入口）' },
+  { from: 'Recovery.html', why: 'Tauri RecoveryOnly source-validation / dry-run + one-use approved apply UI；不加载 normal Web Core / services，global apply 与 Active re-arm 默认关闭' },
   { from: 'assets', dir: true, exclude: ['images/bg-canvas.png'],
     why: '全部前端脚本与样式（含 Guide / 诊断 / 设置向导 / 错误目录）+ 背景图与图标（assets/images、assets/icons；bg-canvas.png 为 6 MB 可选背景，不入包）' },
   { from: 'apps', dir: true, why: 'APP 目录（apps/catalog.json 由 app-store 运行时 fetch）' },
@@ -62,6 +63,7 @@ const ENTRIES = [
   { from: 'runtime/launch-internal-beyond.js', why: '正式静默启动链（快捷方式最终执行）' },
   { from: 'runtime/local-services-runner.js', why: '本地服务管理进程（Bridge / Active / Home Node + 重启与停止控制面）' },
   { from: 'services/internal-beyond-server.js', why: '本地静态页面服务（AudioWorklet 必需）' },
+  { from: 'services/project-knowledge.js', why: 'Browser Project Knowledge 只读 adapter（静态服务的 /__project-knowledge contract）' },
   { from: 'services/ib-bridge-service.js', why: 'Bridge 后端' },
   { from: 'services/active-message-service.js', why: 'Active 后台主动消息服务' },
   /* P11-3B 收口既有缺口：runner 一直把 Home Node 当作已注册服务启动，但它从未
@@ -74,6 +76,7 @@ const ENTRIES = [
   { from: '启动 InternalBeyond.vbs', why: '唯一用户启动入口的实现（快捷方式目标，用户只看到名字 InternalBeyond）' },
   { from: 'installer/tools/ib-stop.js', to: 'tools/ib-stop.js', why: '升级/卸载前优雅停止自身实例的助手（P11-3H：需要 runtime/component-registry.js 与 runtime/component-lifecycle.js，它从 --root 里解析它们）' },
   { from: 'runtime/service-control.js', why: '合作停止面（/__shutdown 的唯一准入规则与拆除梯子；四个服务都 require 它，缺失会让启动链直接崩）' },
+  { from: 'runtime/host-origin.js', why: 'Tauri 2 bundled WebView origin predicate（Browser/Bridge/Active/Home Node/stop control 共用的纯 helper）' },
   { from: 'runtime/component-lifecycle.js', why: '组件停止状态机（唯一停止契约；runner 与 installer 的 ib-stop 都用它，缺失同样会让启动链直接崩）' },
 
   /* Bundled Node runtime (P1) */

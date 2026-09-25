@@ -183,3 +183,7 @@ node tests/test-all.js --all                 # 最终验收（--quick 约 17s）
 - **遗留（登记未做）**：未取证 provider 的档位；Anthropic 预算与 maxTokens 的联动策略
   （提高档位会让 reasoning 更吃 token，与 D12 的教训相关）；Node consumer 目前无人提供
   canonical effort（Node ModelPort 已支持，但 Middle Brain 配置在浏览器侧）。
+
+### P32-W5 recovery branch closure (2026-09-25)
+
+R3-B.3 restore remains PASS (539/539). R3-C is **NOT READY**: C3.5 canonical RecoveryOnly diagnostics now reach the runner and return the typed fail-closed blocker `C35_HOME_NODE_SIDECAR_INVALID`; the Home Node SHM is classified `INVALID_ORPHAN_ARTIFACT`. Cleanup and reconstruction remain unauthorized. See [the incident record](incidents/2026-09-role-recovery-incident.md) and [C3.5 closure report](../tmp/p32-w5-r3b/P32-W5-R3-C3.5-CLOSURE-REPORT.json).

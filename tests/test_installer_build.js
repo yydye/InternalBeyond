@@ -155,7 +155,7 @@ if (!ENABLED) {
        the repository and cannot be a whitelist source entry. Naming it here keeps
        the comparison exact without weakening it: anything else is still a
        failure. */
-    const buildGenerated = ['ib-payload-manifest.json'];
+    const buildGenerated = ['internalbeyond-host.exe', 'ib-payload-manifest.json'];
     const expected = new Set(resolved.files.map(f => f.to));
     const actual = new Set(staged.files.map(f => f.path));
     const missing = [...expected].filter(f => !actual.has(f));

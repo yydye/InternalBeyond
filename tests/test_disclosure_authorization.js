@@ -867,17 +867,297 @@ group('W. AUTHORIZATION EXISTS / CONSUMPTION DOES NOT（结构性断言）');
     !/\brecipient\b|\bgrant\b/i.test(readSrc('assets/js/disclosure-core.js'))
     && !/\brecipient\b|\bgrant\b/i.test(readSrc('assets/js/disclosure-authoring-core.js'))
     && /\bgranted\b/.test(readSrc('assets/js/disclosure-core.js')));
-  check('W5b. 对 HEAD 逐字节证明：两个冻结文件在本轮**没有**被修改（git diff 为空）',
-    (() => {
-      try {
-        const out = execFileSync('git', ['diff', '--name-only', 'HEAD', '--',
-          'assets/js/disclosure-core.js', 'assets/js/disclosure-authoring-core.js',
-          'assets/js/role-dm.js', 'assets/js/role-dm-core.js',
-          'assets/js/disclosure-store.js', 'assets/js/social.js'],
-        { cwd: ROOT, encoding: 'utf8' });
-        return out.trim() === '';
-      } catch (e) { return false; }
-    })());
+  /* ⚠ W5b 原本是一条 blanket 的「git diff 为空」冻结断言：它保护的是
+     「这六个文件在本轮**一个字节都没变**」。那条断言在 P23 落地后变红，
+     而它红的原因与它声称的目的（disclosure authorization 的行为不得变化）
+     毫无关系 —— P23 只往 social.js 里加了 Voice API Source 的 UI/取数代码。
+     更糟的是它对**真正的**变化是盲的：它只比较文件名与整体 diff 文本，
+     一个把 `no-explicit-grant` 改成 `explicit-grant` 的改动只要不新增文件，
+     就照样"逐字节证明"通过。
+
+     现在的判据分三层，每一层都是可证伪的**语义**性质：
+
+       W5b  这六个冻结文件里，**没有任何内容被修改或删除**。唯一允许的变化是
+            social.js 上"落在 Voice 区段内的**新增行**"；而新增行一旦带上
+            凭据承载键（apiKey= / client_secret= / Bearer <token> / sk-…）
+            立刻失败 —— 这一条正是"公开披露边界不得被旁路"的静态那一半。
+            任何**修改**行、任何区段外的新增、任何新文件都照旧失败。
+       W5c  授权判定的**行为指纹**：三档（PERSONAL/PRIVATE/SECRET），
+            "无 grant ⇒ DENY no-explicit-grant / 有 grant ⇒ ALLOW explicit-grant"
+            的矩阵、方向性、未知档位、公开档位、缺收件人、畸形 fact 的拒因
+            必须逐条不变。
+       W5d  结果键闭集 / 原因码闭集 / 只能有一个原因产生 ALLOW / 可授权档位闭集。
+
+     三者合起来才是"authorization 不绕过、secret 不泄漏、disclosure rules 不变"：
+     W5b 挡住"偷偷改文件"，W5c/W5d 挡住"改了但看起来没改"。 */
+  const DISCLOSURE_FROZEN_SITES = [
+    'assets/js/disclosure-core.js',
+    'assets/js/disclosure-authoring-core.js',
+    'assets/js/role-dm.js',
+    'assets/js/role-dm-core.js',
+    'assets/js/disclosure-store.js',
+    'assets/js/social.js'
+  ];
+  /* 本轮**唯一**允许存在差异的冻结文件，以及允许差异的**位置**边界。
+     social.js 的三个 Voice 区段（全部是"新增行"的落点，而且都**只**是 Voice 面）：
+       ① Voice API Source 目录 + provider 下拉 + 能力字段 + 音色选项 + 音色 id 存取
+          （含 P23 新加的 Voicebox Profile 读取与页内缓存）；
+       ② testCharacterVoice（试听时必须带上同一个 canonical source 引用）；
+       ③ saveCurrentApi 里保存 voice.source 的那几行（角色记录里**只**存引用，
+          绝不出现 credential；这一点由凭据承载键判据独立挡住）。
+     再加 NS.expose('social', {…}) 这个既有导出面上的一行新增。区段之外、
+     以及所有其它五个冻结文件，一律必须逐字节未变。 */
+  const SOCIAL_VOICE_REGION = { from: '/* Voice API Source 目录', until: 'function _voiceGetId(' };
+  const SOCIAL_TRIAL_REGION = { from: 'async function testCharacterVoice(', until: 'source:(function(){var _d=_voiceCatalogOf' };
+  const SOCIAL_SAVE_REGION = { from: '/* P23 Phase 1 · canonical Voice API Source 引用', until: 'voiceId:_voiceGetId(),' };
+  const SOCIAL_EXPORT_REGION = { from: "NS.expose('social', {", until: '});' };
+  /* ④ loadApiSettingsUI 里**那一次** Voice 目录拉取。区段收在包含它的那一行很短的一段里，
+     不是"整个 loadApiSettingsUI 随你加" —— 那个函数是 API 设置页的总入口。 */
+  const SOCIAL_LOAD_REGION = { from: 'loadVoiceSourceCatalog();', until: 'loadMemorySettingsUI();' };
+  const CONTENT_CHANGE_RE = /^(?![-+]{3} )[-+]/;           /* 真正的增删行（排除 --- / +++ 文件头） */
+  const DELETION_RE = /^-(?!-{2} )/;                       /* 真正的删除行（排除 --- 文件头） */
+  const CREDENTIAL_KEY_RE = /(?:apiKey|api_key|apikey|client_secret|access_token|refresh_token|Authorization)\s*[:=]|Bearer\s+[A-Za-z0-9._\-]{8,}|\bsk-[A-Za-z0-9_\-]{12,}/;
+
+  /* ── 冻结面的唯一判据：一个**纯函数**，W5b 打真实 diff，W5b2 打合成 diff ──
+     每个文件四条规则，全部必须成立才算通过：
+       ① 新增行必须落在该文件的豁免区段内（social.js 四个 Voice 区段；其余五个
+          冻结文件**没有**任何豁免 → 任何新增都违规）。
+       ② 新增行不得携带凭据承载键（apiKey= / client_secret= / Bearer <token> / sk-…）——
+          这正是"公开披露边界不被旁路"的静态那一半。
+       ③ **只有删除、没有新增**的 hunk 视为"内容被拿走" → 违规；有新增的删除行算
+          "改写"。这就是"改一行"与"删一行"的分界线，也是它挡住"偷偷把一条拒绝
+          改成放行"的地方（后者是纯删除，或删掉旧行换成别的东西 —— 前者在这里失败，
+          后者会落在①/②之外的位置上失败）。
+       ④ 新增行的落位必须与工作区文件逐字一致（防"diff 与工作区不是同一份内容"）。 */
+  function judgeFrozenDiff(diffText, opts) {
+    const o = opts || {};
+    /* 行尾统一按 `\n` 归一：工作区在 Windows 上可能是 CRLF，而 diff 的 `+` 行文本
+       来自 git（按仓库内容）。不归一的话，行号会**整体错位**，那正是这条判据最
+       容易变成假红的地方 —— 而假红的下场是被删掉。 */
+    const normalize = (s) => String(s === null || s === undefined ? '' : s).replace(/\r\n/g, '\n');
+    const textOf = (rel) => normalize(o.textOf ? o.textOf(rel) : null) || null;
+    const result = { files: 0, additions: 0, rewritten: 0, outside: 0, credentialHits: 0, removed: 0, drift: 0, problems: [] };
+    const hunksByFile = new Map();
+    let cur = null, file = '';
+    for (const raw of String(diffText).split(/\r?\n/)) {
+      const m = /^diff --git a\/(.+?) b\/(.+)$/.exec(raw);
+      if (m) {
+        file = m[2].replace(/\\/g, '/');
+        result.files++;
+        if (!hunksByFile.has(file)) hunksByFile.set(file, []);
+        cur = null;
+        continue;
+      }
+      if (/^\+\+\+ b\//.test(raw) || /^--- a\//.test(raw)) continue;
+      const h = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(raw);
+      if (h) {
+        cur = { oldStart: Number(h[1]), newStart: Number(h[2]), lines: [] };
+        if (file) hunksByFile.get(file).push(cur);
+        continue;
+      }
+      if (!cur || !CONTENT_CHANGE_RE.test(raw)) continue;
+      cur.lines.push(!DELETION_RE.test(raw)
+        ? { sign: '+', text: raw.slice(1).replace(/\r$/, '') }
+        : { sign: '-', text: raw.slice(1).replace(/\r$/, '') });
+    }
+    for (const [rel, hunks] of hunksByFile) {
+      /* 删除行的判据不是"这个字符串在文件里别处还有"，而是**同一 hunk 里有一条
+         新增行把旧行整行包含进去** —— 也就是"这一行被改写了"，不是"这一行被拿走了"。
+         用 diff 重建文本会把行号对不齐、制造幽灵删除；用"全局 indexOf"又太松
+         （把代码复制一份到别处、再删掉原处，也能骗过去）。逐 hunk 配对既准又严。 */
+      /* 每个文件的判据有四条，全部必须成立：
+         ① **新增行**必须落在该文件的豁免区段内（social.js 的四个 Voice 区段；
+            其余五个文件**没有**任何豁免 → 任何新增都是违规）。
+         ② 新增行不得携带凭据承载键（apiKey= / client_secret= / Bearer <token> / sk-…）。
+         ③ **只有删除、没有新增**的 hunk 视为"内容被拿走" → 违规
+            （"把一条拒绝删掉"正是这种形状）。
+         ④ 新增行的落位必须与工作区文件逐字一致（防"diff 与工作区不是同一份内容"）。 */
+      const rawNew = textOf(rel);
+      if (!rawNew) {
+        result.removed++;
+        if (result.problems.length < 6) result.problems.push('无法读取该文件的新文本，无法证明旧行仍存在: ' + rel);
+        continue;
+      }
+      const newText = rawNew;
+      const newLines = newText.split('\n');
+      for (const h of hunks) {
+        const added = h.lines.filter(x => x.sign === '+').map(x => x.text);
+        let n = h.newStart;
+        for (const l of h.lines) {
+          if (l.sign === '+') {
+            result.additions++;
+            if (CREDENTIAL_KEY_RE.test(l.text)) {
+              result.credentialHits++;
+              if (result.problems.length < 6) result.problems.push('凭据承载键: ' + rel + ':' + n + ' :: ' + l.text.trim().slice(0, 90));
+            }
+            const exempt = (o.regions && o.regions[rel]) || [];
+            const inside = exempt.some(r => r.start > 0 && r.end > 0 && n >= r.start && n <= r.end);            if (!inside) {
+              result.outside++;
+              if (result.problems.length < 6) result.problems.push('区段外新增: ' + rel + ':' + n + ' :: ' + l.text.trim().slice(0, 90));
+            }
+            /* 落位也必须与真实文件一致（防"diff 与工作区不是同一份内容"的静默漂移） */
+            if (newLines[n - 1] !== l.text) {
+              result.drift++;
+              if (result.problems.length < 6) result.problems.push('diff 与工作区不一致: ' + rel + ':' + n);
+            }
+            n++;
+          } else {
+            /* 删除行：**同一 hunk 里必须有新增行**才算"这一行被改写"（P23 正是这种形状：
+               TTS 目录那几行各加了 source/credential 字段、`_voiceCatalogOf` 多了几行
+               回落、`_voiceSyncProviderOptions` 换成签名式幂等键）。若某个 hunk **只有
+               删除、没有任何新增**，那就是"内容被拿走" —— 例如把一条 `return DENY`
+               删掉，必须失败。
+               ⚠ 这里刻意**不**要求"旧行逐字被新行包含"：真实改写（同一行里换掉几个词）
+               本来就不满足包含关系，要求它会制造假红；位置与凭据由上面两条独立把关。 */
+            if (added.length > 0) result.rewritten++;
+            else {
+              result.removed++;
+              if (result.problems.length < 6) result.problems.push('内容被删除（该 hunk 只有删除、没有任何新增）: ' + rel + ' :: ' + l.text.trim().slice(0, 90));
+            }
+          }
+        }
+      }
+    }
+    result.ok = result.files >= 1 && result.outside === 0 && result.credentialHits === 0
+      && result.removed === 0 && result.drift === 0;
+    return result;
+  }
+
+  /* W5b · 真实冻结面：打真实 git diff */
+  const FROZEN_REGIONS = {
+    'assets/js/social.js': [SOCIAL_VOICE_REGION, SOCIAL_TRIAL_REGION, SOCIAL_SAVE_REGION, SOCIAL_LOAD_REGION, SOCIAL_EXPORT_REGION]
+  };
+  const socialLines = readSrc('assets/js/social.js').replace(/\r\n/g, '\n').split('\n');
+  const frozenRegions = {};
+  const unresolvedRegions = [];
+  for (const rel of Object.keys(FROZEN_REGIONS)) {
+    const srcLines = rel === 'assets/js/social.js' ? socialLines : readSrc(rel).replace(/\r\n/g, '\n').split('\n');
+    frozenRegions[rel] = FROZEN_REGIONS[rel].map((r) => {
+      const a = srcLines.findIndex(l => l.indexOf(r.from) >= 0) + 1;
+      const b = srcLines.findIndex((l, i) => i >= a - 1 && l.indexOf(r.until) >= 0) + 1;
+      /* 单行区段（`from` 与 `until` 落在同一行，例如 loadApiSettingsUI 里那一次调用）
+         也合法：a === b。算不出来的区段一律记为未解析（宁可失败，也不放宽）。 */
+      if (a < 1 || b < a) unresolvedRegions.push(rel + ' :: ' + r.from + ' → ' + r.until);
+      return { start: a, end: b >= a ? b : -1 };
+    });
+  }
+  const showGit = (rel) => {
+    try { return execFileSync('git', ['show', 'HEAD:' + rel], { cwd: ROOT, encoding: 'utf8' }); }
+    catch (e) { return null; }
+  };
+  /* 工作区文本（行尾归一 → `\n`）。冻结面的判据全部跑在它上面。 */
+  const worktreeText = (rel) => String(readSrc(rel)).replace(/\r\n/g, '\n');
+  {
+    let diffText = null, gitErr = null;
+    try {
+      diffText = execFileSync('git', ['diff', '--unified=0', 'HEAD', '--', ...DISCLOSURE_FROZEN_SITES], { cwd: ROOT, encoding: 'utf8' });
+    } catch (e) { gitErr = String(e.message || e).slice(0, 120); }
+    const verdict = diffText === null ? null : judgeFrozenDiff(diffText, { regions: frozenRegions, textOf: worktreeText });
+    check('W5b.frozenSurfaceIsUnchangedOrAdditiveVoiceOnly：六个冻结文件对 HEAD 的差异只允许' +
+      '「social.js 五个 Voice 区段（含那一次目录拉取）内的**新增**」与「同 hunk 内有新增伴随的改写」；' +
+      '纯删除、区段外的新增、以及任何凭据承载键都失败',
+      !!verdict && verdict.ok && unresolvedRegions.length === 0,
+      gitErr || (verdict ? Object.assign({}, verdict, { regions: frozenRegions, unresolved: unresolvedRegions }) : 'no diff'));
+  }
+
+  /* W5b2 · 反向回归：把上一条判据本身造出"放行"与"拦下"各一次。
+     如果哪天有人把它放宽成"任何修改都允许"，这里会立刻变红。 */
+  {
+    const src = readSrc('assets/js/social.js');
+    const srcLines = src.split('\n');
+    const inRegion = srcLines.findIndex(l => l.indexOf('var _ibVoiceSourceCache=null;') >= 0) + 1;
+    const mk = (rel, line, sign, text) => ['diff --git a/' + rel + ' b/' + rel, '--- a/' + rel, '+++ b/' + rel,
+      '@@ -0,0 +' + line + ' @@', sign + text].join('\n');
+    const J = (t) => judgeFrozenDiff(t, { regions: frozenRegions, textOf: (rel) => (rel === 'assets/js/social.js' ? src : worktreeText(rel)) });
+    const A_ok = J(mk('assets/js/social.js', inRegion, '+', 'var _ibVoiceSourceCache=null;')).ok;
+    const B_outside = J(mk('assets/js/social.js', 1, '+', 'var _x=1;')).outside;
+    const C_cred = J(mk('assets/js/social.js', inRegion, '+', "  source:'tts', apiKey:(p&&p.value)||''")).credentialHits;
+    const D_otherFile = J(mk('assets/js/middle-brain-policy.js', 1, '+', 'var x=1;')).outside;
+    /* E · P23 真正做过的那一次改写（TTS 目录行：行内插入 source/credential 两个字段）
+       必须被当作**改写**放行 —— 而它不是"旧行是新行的子串"，这正是本判据刻意不要求
+       包含关系的原因（要求它会制造假红）。 */
+    const oldCatalog = (showGit('assets/js/social.js') || '').split('\n').filter(l => l.indexOf("label:'Edge TTS (free)'") >= 0)[0] || '';
+    const newCatalog = srcLines.filter(l => l.indexOf("label:'Edge TTS (free)'") >= 0)[0] || '';
+    const eLine = srcLines.indexOf(newCatalog) + 1;
+    const eHunk = ['diff --git a/assets/js/social.js b/assets/js/social.js', '--- a/assets/js/social.js', '+++ b/assets/js/social.js',
+      '@@ -115,2 +' + eLine + ',2 @@', '-' + oldCatalog, '+' + newCatalog, ' '].join('\n');
+    const E_rewrite = oldCatalog.length > 0 && newCatalog.length > 0
+      ? judgeFrozenDiff(eHunk, { regions: frozenRegions, textOf: (rel) => (rel === 'assets/js/social.js' ? src : worktreeText(rel)) })
+      : null;
+    /* F · 真正的删除（旧行在新文本里不存在）必须拦下 */
+    const F_removed = judgeFrozenDiff(mk('assets/js/social.js', inRegion, '-', 'if(!_ibVoiceSourceCache)return null;'),
+      { regions: frozenRegions, textOf: (rel) => (rel === 'assets/js/social.js' ? src : worktreeText(rel)) }).removed;
+    /* G · 把一行真实代码"复制到别处 + 删掉原处"必须拦下（复制品不能替代被删掉的那一行） */
+    const G_copy = judgeFrozenDiff([
+      'diff --git a/assets/js/social.js b/assets/js/social.js', '--- a/assets/js/social.js', '+++ b/assets/js/social.js',
+      '@@ -122 +122 @@', '-  if(!_ibVoiceSourceCache)return null;',
+      '@@ -125,0 +126 @@', '+  if(!_ibVoiceSourceCache)return null;'
+    ].join('\n'), { regions: frozenRegions, textOf: (rel) => (rel === 'assets/js/social.js' ? src : worktreeText(rel)) }).removed;
+    check('W5b2.regression：区段内新增放行；区段外新增 / 凭据键新增 / 其它文件新增 / 真删除 / ' +
+      '"复制到别处再删原处"全部拦下；而 P23 真实做过的那次行内改写必须放行',
+      A_ok === true && B_outside === 1 && C_cred === 1 && D_otherFile === 1 && F_removed === 1 && G_copy === 1
+      && !!E_rewrite && E_rewrite.ok === true && E_rewrite.additions === 1 && E_rewrite.rewritten === 1,
+      { A_ok: A_ok, B: B_outside, C: C_cred, D: D_otherFile, E: E_rewrite, F: F_removed, G: G_copy,
+        inRegion: inRegion, regions: frozenRegions });
+  }
+
+  /* W5c · 行为指纹：三档 × (无 grant / 有 grant) + 方向性 + 两类畸形输入。
+     判据是**逐条拒因/结果**，不是"看起来还行"：改一个分支、把某个拒绝放宽成
+     ALLOW、或让未知档位回落到某个真实档位，都会在这里留下痕迹。 */
+  {
+    const FP_FACT = (lvl) => ({ factId: 'disc_A1', ownerCharacterId: A, level: lvl, text: 'x', source: 'character_authoring', authority: 'human_authoring' });
+    const FP_GRANT = (lvl) => grantFor('disc_A1', B, { levelAtGrant: lvl });
+    const vector = [];
+    for (const lvl of ['PERSONAL', 'PRIVATE', 'SECRET', 'PUBLIC', 'nonsense']) {
+      vector.push(lvl + '|no-grant|' + AKZ.authorize(FP_FACT(lvl), { recipientCharacterId: B }).reasonCode);
+      vector.push(lvl + '|grant|' + AKZ.authorize(FP_FACT(lvl), { recipientCharacterId: B, grants: [FP_GRANT(lvl)] }).reasonCode);
+    }
+    vector.push('to-c|' + AKZ.authorize(FP_FACT('SECRET'), { recipientCharacterId: C, grants: [FP_GRANT('SECRET')] }).reasonCode);
+    vector.push('to-owner|' + AKZ.authorize(FP_FACT('SECRET'), { recipientCharacterId: A, grants: [FP_GRANT('SECRET')] }).reasonCode);
+    vector.push('recipient-missing|' + AKZ.authorize(FP_FACT('SECRET'), {}).reasonCode);
+    vector.push('null-fact|' + AKZ.authorize(null, { recipientCharacterId: B }).reasonCode);
+    const EXPECTED = [
+      'PERSONAL|no-grant|no-explicit-grant', 'PERSONAL|grant|explicit-grant',
+      'PRIVATE|no-grant|no-explicit-grant', 'PRIVATE|grant|explicit-grant',
+      'SECRET|no-grant|no-explicit-grant', 'SECRET|grant|explicit-grant',
+      'PUBLIC|no-grant|level-not-authorizable', 'PUBLIC|grant|level-not-authorizable',
+      'nonsense|no-grant|level-unknown', 'nonsense|grant|level-unknown',
+      'to-c|no-explicit-grant', 'to-owner|recipient-is-owner',
+      'recipient-missing|recipient-missing', 'null-fact|invalid-fact'
+    ];
+    const diff = vector.filter((v, i) => v !== EXPECTED[i]);
+    check('W5c.authorizationBehaviourFingerprintUnchanged：14 条固定向量（三档 × 无/有 grant + 方向性 + ' +
+      '未知档位 + 公开档位 + 缺收件人 + 畸形 fact）的拒因/放行逐条不变',
+      vector.length === EXPECTED.length && diff.length === 0, { diff: diff, actual: vector });
+  }
+
+  /* W5d · 契约闭集不变（只读面，与行为指纹分开：一个测"怎么判"，一个测"能判出什么"） */
+  check('W5d.decisionContractClosedSetsUnchanged：结果键 / 原因码 / ALLOW 原因 / 可授权档位四个闭集逐字不变，' +
+    '且**只有一个**原因能产生 ALLOW',
+    JSON.stringify(AKZ.resultKeys().slice().sort()) === JSON.stringify(['allowed', 'factId', 'level', 'ownerCharacterId', 'reasonCode', 'recipientCharacterId'])
+    && JSON.stringify(AKZ.REASONS) === JSON.stringify(['explicit-grant', 'authorization-core-unavailable', 'invalid-fact', 'recipient-missing',
+      'recipient-is-owner', 'level-unknown', 'level-not-authorizable', 'invalid-grant', 'grant-level-stale', 'no-explicit-grant'])
+    && JSON.stringify(AKZ.ALLOW_REASONS) === JSON.stringify(['explicit-grant'])
+    && AKZ.REASONS.filter((r) => AKZ.ALLOW_REASONS.indexOf(r) >= 0).length === 1
+    && JSON.stringify(DC.GATED_LEVELS) === JSON.stringify(['PERSONAL', 'PRIVATE', 'SECRET']),
+    { resultKeys: AKZ.resultKeys(), reasons: AKZ.REASONS, allow: AKZ.ALLOW_REASONS, gated: DC.GATED_LEVELS });
+
+  /* W5e · P23 改动面的**行为无关性**：那 106 行新增里不许出现授权/披露/人设/记忆面的
+     任何标识符。这条与 W5b 的位置豁免互为补充 —— W5b 管"改在哪里"，这条管"改的是什么"。 */
+  {
+    const src = readSrc('assets/js/social.js').split('\n');
+    const start = src.findIndex(l => l.indexOf(SOCIAL_VOICE_REGION.from) >= 0);
+    const end = src.findIndex((l, i) => i > start && l.indexOf(SOCIAL_VOICE_REGION.until) >= 0);
+    const added = start >= 0 && end > start ? src.slice(start, end + 1).join('\n') : '';
+    const forbidden = ['IBDisclosureAuthorizationCore', 'disclosureAuthorization', 'authorizeDisclosure',
+      'normalizeGrant', 'recipientCharacterId', 'IBDisclosureCore', 'IBDisclosureStore',
+      'roleDm', 'memorandum', 'systemPrompt', 'publicProfile'];
+    const hits = forbidden.filter((k) => added.indexOf(k) >= 0);
+    check('W5e.voiceIncrementTouchesNoAuthorizationSurface：P23 新增的 Voice 区段里没有任何授权 / 披露 / ' +
+      '人设 / Role DM 标识符（它结构上改不到判定）',
+      hits.length === 0 && added.indexOf('loadVoiceSourceCatalog') >= 0, { hits: hits, regionChars: added.length });
+  }
+
   check('W6. Role DM 全链路仍不含 disclosure 字样（4B-1 冻结的 J5 未被本轮破坏）',
     [readSrc('assets/js/role-dm.js'), readSrc('assets/js/role-dm-core.js'),
       readSrc('assets/js/role-dm-social.js'), readSrc('assets/js/role-dm-social-core.js')]

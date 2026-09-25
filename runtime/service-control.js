@@ -46,6 +46,7 @@
 
 /* The path, as a value, so nothing has to spell it twice. */
 const STOP_PATH = '/__shutdown';
+const { isTauriOrigin } = require('./host-origin.js');
 
 /* Loopback origins, file:// pages and local callers (no Origin). The same rule
    as `services/internal-beyond-server.js` since P7 — deliberately the same, not
@@ -60,7 +61,7 @@ function originAllowed(req) {
     if (u.protocol === 'file:') return true;
     if (u.protocol === 'http:' || u.protocol === 'https:') {
       const host = String(u.hostname).toLowerCase();
-      if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]') return true;
+      if (isTauriOrigin(origin) || host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]') return true;
     }
   } catch (e) { /* illegal origin → deny */ }
   return false;

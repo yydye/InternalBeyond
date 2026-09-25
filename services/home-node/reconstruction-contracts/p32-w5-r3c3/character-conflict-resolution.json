@@ -1,0 +1,496 @@
+{
+  "schema": "internalbeyond.p32-w5.r3-c2.character-conflict-resolution",
+  "version": 1,
+  "generatedAt": "2026-09-24T10:09:16.3055177Z",
+  "sourceAndTarget": {
+    "sourceSha256": "1170f2a805f25ce2e151b880858e0ab1fdd2aad61281a16754da08a843238401",
+    "homeNodeDatabaseSha256": "eaad098dccfc21835a0b079da03d28f4323fc977abfe94a289d8aeb471c18276",
+    "sourceHashMatchesC1": true,
+    "homeNodeDatabaseHashFromC1": "eaad098dccfc21835a0b079da03d28f4323fc977abfe94a289d8aeb471c18276"
+  },
+  "records": [
+    {
+      "stableCharacterId": "friend_1785224987526",
+      "safeDisplayIdentity": {
+        "webCore": "弗洛洛",
+        "homeNode": "弗洛洛",
+        "matches": true
+      },
+      "source": {
+        "fileName": "InternalBeyond_auto_2026-09-02.json",
+        "path": "C:\\Users\\admin\\Downloads\\InternalBeyond_auto_2026-09-02.json",
+        "sha256": "1170f2a805f25ce2e151b880858e0ab1fdd2aad61281a16754da08a843238401",
+        "provenance": "PRIMARY_2026_09_02",
+        "recordAlias": "apiConfigs#000001",
+        "recordIndex": 0
+      },
+      "actualConflictFields": [
+        "model",
+        "capabilities"
+      ],
+      "fields": [
+        {
+          "field": "model",
+          "webCoreValue": "deepseek-v4-flash-vision-exp",
+          "homeNodeValue": "deepseek-flash",
+          "classification": "AUTHORITATIVE_WEB_CORE",
+          "homeNodeFieldRole": "LEGACY_DUPLICATED_PROJECTION",
+          "rationale": "apiConfigs.model is the persisted Web Core model selection; Home Node characters.model is part of the mobile-safe DTO. Home Node role execution resolves the separate character_runtime_specs binding."
+        },
+        {
+          "field": "capabilities",
+          "webCoreValue": {
+            "chat": true,
+            "stream": false,
+            "vision": true,
+            "webSearch": true,
+            "imageGen": true
+          },
+          "homeNodeValue": {
+            "chat": true,
+            "stream": true,
+            "vision": true,
+            "webSearch": true,
+            "imageGen": true
+          },
+          "capabilityDelta": [
+            {
+              "capability": "stream",
+              "webCore": false,
+              "homeNode": true
+            }
+          ],
+          "classification": "DERIVED_RUNTIME_PROJECTION",
+          "underlyingChoiceAuthority": "AUTHORITATIVE_WEB_CORE",
+          "rationale": "MobileDTO.characterCapabilities derives the DTO flags from persisted per-role settings; Home Node stores and serves that mobile-safe projection."
+        }
+      ],
+      "nonConflictProjectionEvidence": {
+        "actualOtherFieldDifferences": [],
+        "avatarFingerprints": {
+          "webCore": "2f7d08d1ed9f66ba9082c938c1703510b538c88b886b348cb7ed8a094817709d",
+          "homeNode": "2f7d08d1ed9f66ba9082c938c1703510b538c88b886b348cb7ed8a094817709d"
+        },
+        "relationshipFingerprints": {
+          "webCore": "7cb9bf7527805a27527dd9831c6d7666fd59b1d32db167e1d5c41c5bf0867b52",
+          "homeNode": "7cb9bf7527805a27527dd9831c6d7666fd59b1d32db167e1d5c41c5bf0867b52"
+        },
+        "c1ReportedNonIdentityFieldList": [
+          "avatar",
+          "name",
+          "relationship"
+        ],
+        "c1LabelAssessment": "C1 listed avatar/name/relationship for these rows, but the direct full MobileDTO field comparison on the same source and unchanged Home Node database found those values equal. The C1 label is retained as an audit discrepancy; it is not treated as a current value conflict."
+      },
+      "runtimeSpecReference": {
+        "characterId": "friend_1785224987526",
+        "exists": true,
+        "specJsonRead": false,
+        "runtimeValueDisposition": "DEFER_TO_R3_D"
+      },
+      "classification": "FIELD_AUTHORITY_SPLIT_RESOLVED"
+    },
+    {
+      "stableCharacterId": "friend_1785251795342",
+      "safeDisplayIdentity": {
+        "webCore": "初音未来",
+        "homeNode": "初音未来",
+        "matches": true
+      },
+      "source": {
+        "fileName": "InternalBeyond_auto_2026-09-02.json",
+        "path": "C:\\Users\\admin\\Downloads\\InternalBeyond_auto_2026-09-02.json",
+        "sha256": "1170f2a805f25ce2e151b880858e0ab1fdd2aad61281a16754da08a843238401",
+        "provenance": "PRIMARY_2026_09_02",
+        "recordAlias": "apiConfigs#000002",
+        "recordIndex": 1
+      },
+      "actualConflictFields": [
+        "model"
+      ],
+      "fields": [
+        {
+          "field": "model",
+          "webCoreValue": "glm-4-flash",
+          "homeNodeValue": "glm-5.3-flash",
+          "classification": "AUTHORITATIVE_WEB_CORE",
+          "homeNodeFieldRole": "LEGACY_DUPLICATED_PROJECTION",
+          "rationale": "apiConfigs.model is the persisted Web Core model selection; Home Node characters.model is part of the mobile-safe DTO. Home Node role execution resolves the separate character_runtime_specs binding."
+        }
+      ],
+      "nonConflictProjectionEvidence": {
+        "actualOtherFieldDifferences": [],
+        "avatarFingerprints": {
+          "webCore": "8d0902ccd3117d7f46a7580711718547c1b0789831f7076e453f63278dc18d35",
+          "homeNode": "8d0902ccd3117d7f46a7580711718547c1b0789831f7076e453f63278dc18d35"
+        },
+        "relationshipFingerprints": {
+          "webCore": "4e6933a85624ff094e9a80666911da6bfc79e5e719a2a5ad129e35fb0c834784",
+          "homeNode": "4e6933a85624ff094e9a80666911da6bfc79e5e719a2a5ad129e35fb0c834784"
+        },
+        "c1ReportedNonIdentityFieldList": [
+          "avatar",
+          "name",
+          "relationship"
+        ],
+        "c1LabelAssessment": "C1 listed avatar/name/relationship for these rows, but the direct full MobileDTO field comparison on the same source and unchanged Home Node database found those values equal. The C1 label is retained as an audit discrepancy; it is not treated as a current value conflict."
+      },
+      "runtimeSpecReference": {
+        "characterId": "friend_1785251795342",
+        "exists": true,
+        "specJsonRead": false,
+        "runtimeValueDisposition": "DEFER_TO_R3_D"
+      },
+      "classification": "AUTHORITATIVE_WEB_CORE"
+    },
+    {
+      "stableCharacterId": "friend_1785261242640",
+      "safeDisplayIdentity": {
+        "webCore": "阮·梅",
+        "homeNode": "阮·梅",
+        "matches": true
+      },
+      "source": {
+        "fileName": "InternalBeyond_auto_2026-09-02.json",
+        "path": "C:\\Users\\admin\\Downloads\\InternalBeyond_auto_2026-09-02.json",
+        "sha256": "1170f2a805f25ce2e151b880858e0ab1fdd2aad61281a16754da08a843238401",
+        "provenance": "PRIMARY_2026_09_02",
+        "recordAlias": "apiConfigs#000003",
+        "recordIndex": 2
+      },
+      "actualConflictFields": [
+        "capabilities"
+      ],
+      "fields": [
+        {
+          "field": "capabilities",
+          "webCoreValue": {
+            "chat": true,
+            "stream": true,
+            "vision": true,
+            "webSearch": true,
+            "imageGen": false
+          },
+          "homeNodeValue": {
+            "chat": true,
+            "stream": true,
+            "vision": true,
+            "webSearch": true,
+            "imageGen": true
+          },
+          "capabilityDelta": [
+            {
+              "capability": "imageGen",
+              "webCore": false,
+              "homeNode": true
+            }
+          ],
+          "classification": "DERIVED_RUNTIME_PROJECTION",
+          "underlyingChoiceAuthority": "AUTHORITATIVE_WEB_CORE",
+          "rationale": "MobileDTO.characterCapabilities derives the DTO flags from persisted per-role settings; Home Node stores and serves that mobile-safe projection."
+        }
+      ],
+      "nonConflictProjectionEvidence": {
+        "actualOtherFieldDifferences": [],
+        "avatarFingerprints": {
+          "webCore": "6b91875b8505bf8b671ae9499e6bfbdd7a8b963f040d747443b48d0c9ab9732c",
+          "homeNode": "6b91875b8505bf8b671ae9499e6bfbdd7a8b963f040d747443b48d0c9ab9732c"
+        },
+        "relationshipFingerprints": {
+          "webCore": "251b5387c75d76eee8d2de7d36f90c9d439f3e6da9cc431b2205700d41508ad0",
+          "homeNode": "251b5387c75d76eee8d2de7d36f90c9d439f3e6da9cc431b2205700d41508ad0"
+        },
+        "c1ReportedNonIdentityFieldList": [
+          "avatar",
+          "name",
+          "relationship"
+        ],
+        "c1LabelAssessment": "C1 listed avatar/name/relationship for these rows, but the direct full MobileDTO field comparison on the same source and unchanged Home Node database found those values equal. The C1 label is retained as an audit discrepancy; it is not treated as a current value conflict."
+      },
+      "runtimeSpecReference": {
+        "characterId": "friend_1785261242640",
+        "exists": true,
+        "specJsonRead": false,
+        "runtimeValueDisposition": "DEFER_TO_R3_D"
+      },
+      "classification": "DERIVED_RUNTIME_PROJECTION"
+    },
+    {
+      "stableCharacterId": "friend_1785262029060",
+      "safeDisplayIdentity": {
+        "webCore": "洛天依",
+        "homeNode": "洛天依",
+        "matches": true
+      },
+      "source": {
+        "fileName": "InternalBeyond_auto_2026-09-02.json",
+        "path": "C:\\Users\\admin\\Downloads\\InternalBeyond_auto_2026-09-02.json",
+        "sha256": "1170f2a805f25ce2e151b880858e0ab1fdd2aad61281a16754da08a843238401",
+        "provenance": "PRIMARY_2026_09_02",
+        "recordAlias": "apiConfigs#000004",
+        "recordIndex": 3
+      },
+      "actualConflictFields": [
+        "model"
+      ],
+      "fields": [
+        {
+          "field": "model",
+          "webCoreValue": "deepseek-v4-flash-vision-exp",
+          "homeNodeValue": "deepseek-flash",
+          "classification": "AUTHORITATIVE_WEB_CORE",
+          "homeNodeFieldRole": "LEGACY_DUPLICATED_PROJECTION",
+          "rationale": "apiConfigs.model is the persisted Web Core model selection; Home Node characters.model is part of the mobile-safe DTO. Home Node role execution resolves the separate character_runtime_specs binding."
+        }
+      ],
+      "nonConflictProjectionEvidence": {
+        "actualOtherFieldDifferences": [],
+        "avatarFingerprints": {
+          "webCore": "8437467e9c27838c75055c6fd99a2bd95c4214575947346e5d156895885a6584",
+          "homeNode": "8437467e9c27838c75055c6fd99a2bd95c4214575947346e5d156895885a6584"
+        },
+        "relationshipFingerprints": {
+          "webCore": "9a258c706d7a8bc82636811ac1d4dc928f0b7cc83a77560f76b06db0c1d7392e",
+          "homeNode": "9a258c706d7a8bc82636811ac1d4dc928f0b7cc83a77560f76b06db0c1d7392e"
+        },
+        "c1ReportedNonIdentityFieldList": [
+          "avatar",
+          "name",
+          "relationship"
+        ],
+        "c1LabelAssessment": "C1 listed avatar/name/relationship for these rows, but the direct full MobileDTO field comparison on the same source and unchanged Home Node database found those values equal. The C1 label is retained as an audit discrepancy; it is not treated as a current value conflict."
+      },
+      "runtimeSpecReference": {
+        "characterId": "friend_1785262029060",
+        "exists": true,
+        "specJsonRead": false,
+        "runtimeValueDisposition": "DEFER_TO_R3_D"
+      },
+      "classification": "AUTHORITATIVE_WEB_CORE"
+    },
+    {
+      "stableCharacterId": "friend_1785301791932",
+      "safeDisplayIdentity": {
+        "webCore": "昔涟",
+        "homeNode": "昔涟",
+        "matches": true
+      },
+      "source": {
+        "fileName": "InternalBeyond_auto_2026-09-02.json",
+        "path": "C:\\Users\\admin\\Downloads\\InternalBeyond_auto_2026-09-02.json",
+        "sha256": "1170f2a805f25ce2e151b880858e0ab1fdd2aad61281a16754da08a843238401",
+        "provenance": "PRIMARY_2026_09_02",
+        "recordAlias": "apiConfigs#000005",
+        "recordIndex": 4
+      },
+      "actualConflictFields": [
+        "model"
+      ],
+      "fields": [
+        {
+          "field": "model",
+          "webCoreValue": "glm-4-flash",
+          "homeNodeValue": "glm-5.3-flash",
+          "classification": "AUTHORITATIVE_WEB_CORE",
+          "homeNodeFieldRole": "LEGACY_DUPLICATED_PROJECTION",
+          "rationale": "apiConfigs.model is the persisted Web Core model selection; Home Node characters.model is part of the mobile-safe DTO. Home Node role execution resolves the separate character_runtime_specs binding."
+        }
+      ],
+      "nonConflictProjectionEvidence": {
+        "actualOtherFieldDifferences": [],
+        "avatarFingerprints": {
+          "webCore": "a18ece11b5cb4d890df4cf772868cbeb05e75b4250fe298854dd92a0211d1c67",
+          "homeNode": "a18ece11b5cb4d890df4cf772868cbeb05e75b4250fe298854dd92a0211d1c67"
+        },
+        "relationshipFingerprints": {
+          "webCore": "0366d20751c6ad2057bb613e2a4b98541444fc42f2b261e04851719502ae729e",
+          "homeNode": "0366d20751c6ad2057bb613e2a4b98541444fc42f2b261e04851719502ae729e"
+        },
+        "c1ReportedNonIdentityFieldList": [
+          "avatar",
+          "name",
+          "relationship"
+        ],
+        "c1LabelAssessment": "C1 listed avatar/name/relationship for these rows, but the direct full MobileDTO field comparison on the same source and unchanged Home Node database found those values equal. The C1 label is retained as an audit discrepancy; it is not treated as a current value conflict."
+      },
+      "runtimeSpecReference": {
+        "characterId": "friend_1785301791932",
+        "exists": true,
+        "specJsonRead": false,
+        "runtimeValueDisposition": "DEFER_TO_R3_D"
+      },
+      "classification": "AUTHORITATIVE_WEB_CORE"
+    },
+    {
+      "stableCharacterId": "friend_1785310595095",
+      "safeDisplayIdentity": {
+        "webCore": "雷电影",
+        "homeNode": "雷电影",
+        "matches": true
+      },
+      "source": {
+        "fileName": "InternalBeyond_auto_2026-09-02.json",
+        "path": "C:\\Users\\admin\\Downloads\\InternalBeyond_auto_2026-09-02.json",
+        "sha256": "1170f2a805f25ce2e151b880858e0ab1fdd2aad61281a16754da08a843238401",
+        "provenance": "PRIMARY_2026_09_02",
+        "recordAlias": "apiConfigs#000008",
+        "recordIndex": 7
+      },
+      "actualConflictFields": [
+        "model"
+      ],
+      "fields": [
+        {
+          "field": "model",
+          "webCoreValue": "deepseek-v4-flash-vision-exp",
+          "homeNodeValue": "deepseek-flash",
+          "classification": "AUTHORITATIVE_WEB_CORE",
+          "homeNodeFieldRole": "LEGACY_DUPLICATED_PROJECTION",
+          "rationale": "apiConfigs.model is the persisted Web Core model selection; Home Node characters.model is part of the mobile-safe DTO. Home Node role execution resolves the separate character_runtime_specs binding."
+        }
+      ],
+      "nonConflictProjectionEvidence": {
+        "actualOtherFieldDifferences": [],
+        "avatarFingerprints": {
+          "webCore": "017cc9108a041c1ed7e52b2c81d17b24f791ac776b837ba7beab69b46db28871",
+          "homeNode": "017cc9108a041c1ed7e52b2c81d17b24f791ac776b837ba7beab69b46db28871"
+        },
+        "relationshipFingerprints": {
+          "webCore": "10c525460220140125354a168e41261b35cce843635577c91fb24c0708396763",
+          "homeNode": "10c525460220140125354a168e41261b35cce843635577c91fb24c0708396763"
+        },
+        "c1ReportedNonIdentityFieldList": [
+          "avatar",
+          "name",
+          "relationship"
+        ],
+        "c1LabelAssessment": "C1 listed avatar/name/relationship for these rows, but the direct full MobileDTO field comparison on the same source and unchanged Home Node database found those values equal. The C1 label is retained as an audit discrepancy; it is not treated as a current value conflict."
+      },
+      "runtimeSpecReference": {
+        "characterId": "friend_1785310595095",
+        "exists": true,
+        "specJsonRead": false,
+        "runtimeValueDisposition": "DEFER_TO_R3_D"
+      },
+      "classification": "AUTHORITATIVE_WEB_CORE"
+    },
+    {
+      "stableCharacterId": "friend_1787391487573_1w3xz7",
+      "safeDisplayIdentity": {
+        "webCore": "爱弥斯",
+        "homeNode": "爱弥斯",
+        "matches": true
+      },
+      "source": {
+        "fileName": "InternalBeyond_auto_2026-09-02.json",
+        "path": "C:\\Users\\admin\\Downloads\\InternalBeyond_auto_2026-09-02.json",
+        "sha256": "1170f2a805f25ce2e151b880858e0ab1fdd2aad61281a16754da08a843238401",
+        "provenance": "PRIMARY_2026_09_02",
+        "recordAlias": "apiConfigs#000010",
+        "recordIndex": 9
+      },
+      "actualConflictFields": [
+        "model"
+      ],
+      "fields": [
+        {
+          "field": "model",
+          "webCoreValue": "deepseek-v4-flash-vision-exp",
+          "homeNodeValue": "deepseek-flash",
+          "classification": "AUTHORITATIVE_WEB_CORE",
+          "homeNodeFieldRole": "LEGACY_DUPLICATED_PROJECTION",
+          "rationale": "apiConfigs.model is the persisted Web Core model selection; Home Node characters.model is part of the mobile-safe DTO. Home Node role execution resolves the separate character_runtime_specs binding."
+        }
+      ],
+      "nonConflictProjectionEvidence": {
+        "actualOtherFieldDifferences": [],
+        "avatarFingerprints": {
+          "webCore": "8d18c1173704b4d4dc5aee509dc681e48bbbb4f5468b6c0f335f68fe4fa34ad7",
+          "homeNode": "8d18c1173704b4d4dc5aee509dc681e48bbbb4f5468b6c0f335f68fe4fa34ad7"
+        },
+        "relationshipFingerprints": {
+          "webCore": "9baff1803c0a813d12a025df8bed03af1e317138d524291b5e40f2436ffedcc4",
+          "homeNode": "9baff1803c0a813d12a025df8bed03af1e317138d524291b5e40f2436ffedcc4"
+        },
+        "c1ReportedNonIdentityFieldList": [
+          "avatar",
+          "name",
+          "relationship"
+        ],
+        "c1LabelAssessment": "C1 listed avatar/name/relationship for these rows, but the direct full MobileDTO field comparison on the same source and unchanged Home Node database found those values equal. The C1 label is retained as an audit discrepancy; it is not treated as a current value conflict."
+      },
+      "runtimeSpecReference": {
+        "characterId": "friend_1787391487573_1w3xz7",
+        "exists": true,
+        "specJsonRead": false,
+        "runtimeValueDisposition": "DEFER_TO_R3_D"
+      },
+      "classification": "AUTHORITATIVE_WEB_CORE"
+    },
+    {
+      "stableCharacterId": "friend_1787813887723_w4lxqx",
+      "safeDisplayIdentity": {
+        "webCore": "洪伟湟",
+        "homeNode": "洪伟湟",
+        "matches": true
+      },
+      "source": {
+        "fileName": "InternalBeyond_auto_2026-09-02.json",
+        "path": "C:\\Users\\admin\\Downloads\\InternalBeyond_auto_2026-09-02.json",
+        "sha256": "1170f2a805f25ce2e151b880858e0ab1fdd2aad61281a16754da08a843238401",
+        "provenance": "PRIMARY_2026_09_02",
+        "recordAlias": "apiConfigs#000011",
+        "recordIndex": 10
+      },
+      "actualConflictFields": [
+        "model"
+      ],
+      "fields": [
+        {
+          "field": "model",
+          "webCoreValue": "deepseek-v4-flash-vision-exp",
+          "homeNodeValue": "deepseek-flash",
+          "classification": "AUTHORITATIVE_WEB_CORE",
+          "homeNodeFieldRole": "LEGACY_DUPLICATED_PROJECTION",
+          "rationale": "apiConfigs.model is the persisted Web Core model selection; Home Node characters.model is part of the mobile-safe DTO. Home Node role execution resolves the separate character_runtime_specs binding."
+        }
+      ],
+      "nonConflictProjectionEvidence": {
+        "actualOtherFieldDifferences": [],
+        "avatarFingerprints": {
+          "webCore": "5eceac7671cbe4a14d7f61d35f5ae33b13ea2faaf2b1b8400c7accade74391d3",
+          "homeNode": "5eceac7671cbe4a14d7f61d35f5ae33b13ea2faaf2b1b8400c7accade74391d3"
+        },
+        "relationshipFingerprints": {
+          "webCore": "cfefb9391ec43e0c203cbeec45a445c2c7491fb29e692d1243badd8b352acfe5",
+          "homeNode": "cfefb9391ec43e0c203cbeec45a445c2c7491fb29e692d1243badd8b352acfe5"
+        },
+        "c1ReportedNonIdentityFieldList": [
+          "avatar",
+          "name",
+          "relationship"
+        ],
+        "c1LabelAssessment": "C1 listed avatar/name/relationship for these rows, but the direct full MobileDTO field comparison on the same source and unchanged Home Node database found those values equal. The C1 label is retained as an audit discrepancy; it is not treated as a current value conflict."
+      },
+      "runtimeSpecReference": {
+        "characterId": "friend_1787813887723_w4lxqx",
+        "exists": true,
+        "specJsonRead": false,
+        "runtimeValueDisposition": "DEFER_TO_R3_D"
+      },
+      "classification": "AUTHORITATIVE_WEB_CORE"
+    }
+  ],
+  "summary": {
+    "characters": 8,
+    "modelDiffRoles": 7,
+    "capabilityDiffRoles": 2,
+    "actualOtherFieldDiffRoles": 0,
+    "identityConflicts": 0,
+    "unresolvedCanonicalBusinessDataConflicts": 0,
+    "c1NonIdentityFieldLabels": "avatar,name,relationship",
+    "currentDirectComparisonOtherDiffs": 0,
+    "runtimeBindingDisposition": "DEFER_TO_R3_D",
+    "newRoleProjectionEvidence": "RESOLVED"
+  }
+}

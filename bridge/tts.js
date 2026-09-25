@@ -5,7 +5,12 @@
    第三阶段 A：新增 MiMo（mimo-v2.5-tts）——官方 chat-completions 兼容格式，
    文本在 assistant 消息、style 指令在可选 user 消息、audio.{format,voice}。
    edgeTtsGen 的 WS/RFC6455 实现与 OpenAI 请求行为保持原逻辑逐字不变；
-   默认音色与默认语言收编为常量，数值与历史硬编码一致。 */
+   默认音色与默认语言收编为常量，数值与历史硬编码一致。
+   P23 Phase 1：新增 Voicebox（本地 Voice Runtime）provider 与 **Voice API Source** 概念。
+   source 是角色 voice 配置保存的 canonical 引用（edge / tts / ttsMimo / voicebox），
+   provider 是 wire 字段；两者的映射只在本文件（TTS_SOURCE_TO_PROVIDER）存在一份。
+   角色永远只保存 source 引用，绝不复制 credential —— endpoint/apiKey 全部由
+   Bridge config.json 的 tts / ttsMimo / voicebox 区块提供，浏览器与消息数据都拿不到。 */
 'use strict';
 
 const fs = require('fs');
@@ -37,6 +42,9 @@ function createTts(deps) {
   const uid = deps.uid;
   const ttsDir = deps.ttsDir;
   const ttsVoices = deps.ttsVoices;
+  /* Voicebox 是本地外部运行时（独立进程）。composition root 注入适配器；
+     缺省时该 provider 保持「未配置」的可失败状态，绝不静默回落到别的 provider。 */
+  const voicebox = deps.voicebox || null;
 
   async function edgeTtsGen(text, voiceId, rate, pitch) {
     const input = String(text || '').trim().slice(0, 2000);
@@ -275,10 +283,18 @@ function createTts(deps) {
     });
   }
 
-  /* 音频落盘（两类 provider 共用；写入失败返回与原实现一致的错误形态） */
-  function saveTtsAudio(buf, extra) { const id = uid('tts');
-    try { fs.writeFileSync(path.join(ttsDir, id + '.mp3'), buf); } catch (e) { return { ok: false, error: 'write failed' }; }
-    return Object.assign({ ok: true, id, url: '/tts/' + id + '.mp3', bytes: buf.length }, extra || {});
+  /* 音频落盘（三类 provider 共用；写入失败返回与原实现一致的错误形态）。
+     P23 Phase 1：Voicebox 输出 WAV，因此 extra.ext 允许 'wav'；缺省仍是历史的 mp3，
+     MiMo / Edge / OpenAI 的落地行为与字节完全不变。 */
+  function saveTtsAudio(buf, extra) {
+    const id = uid('tts');
+    const ext = (extra && String(extra.ext || '').toLowerCase() === 'wav') ? 'wav' : 'mp3';
+    const mime = (extra && extra.mime) || (ext === 'wav' ? 'audio/wav' : 'audio/mpeg');
+    try { fs.writeFileSync(path.join(ttsDir, id + '.' + ext), buf); } catch (e) { return { ok: false, error: 'write failed' }; }
+    const out = Object.assign({}, extra || {});
+    delete out.ext;
+    delete out.mime;
+    return Object.assign({ ok: true, id, url: '/tts/' + id + '.' + ext, bytes: buf.length, ext, mime }, out);
   }
 
   /* ── provider 适配器：入参一律为 normalizeVoiceProfile 输出的统一 profile ── */
@@ -507,6 +523,20 @@ function createTts(deps) {
     }
   }
 
+  async function voiceboxSynthesize(profile) {
+    /* Voicebox（本地 Voice Runtime，第四 provider · P23 Phase 1）。
+       边界：IB 决定「说什么」，Voicebox 只决定「怎么念」——
+       请求体恒 personality:false，personality/rewrite 通道永不启用（见 bridge/voicebox.js）。
+       请求组装、profile 解析、轮询、音频下载全部收在适配器内：
+       本函数只做「未配置」的可见失败与统一错误前缀，绝无第二套 request builder。 */
+    if (!voicebox) {
+      return { ok: false, error: 'Voicebox not configured: Bridge 未注入 voicebox 适配器' };
+    }
+    const r = await voicebox.synthesize(profile, saveTtsAudio);
+    if (r && r.ok) return r;
+    return { ok: false, error: String((r && r.error) || 'Voicebox synthesis failed') };
+  }
+
   /* ── Provider Registry（能力模型）────────────────────────────────
      capabilities：builtin / clone / design / style / language / prosody。
      各 provider 只声明官方 API 实际支持的参数：
@@ -517,11 +547,15 @@ function createTts(deps) {
               无独立 language 参数（语言由预置音色决定）；无 rate/pitch；
               B2 clone=true（mimo-v2.5-tts-voiceclone，audio.voice 为参考音频 data URI）；
               C 起 design=true（mimo-v2.5-tts-voicedesign，user 消息=音色设计描述，无 audio.voice）。
-     只有 mimo.clone===mimo.design===true：edge/openai + clone/design 仍被 normalize 回落 builtin。 */
+      只有 mimo.clone===mimo.design===true：edge/openai + clone/design 仍被 normalize 回落 builtin。
+      P23 Phase 1：每个 provider 增加 `source`（canonical Voice API Source id，角色保存的就是它）
+      与 `credential`（凭据来源说明，只用于 UI 提示，不含任何凭证值）。 */
   const TTS_PROVIDER_REGISTRY = {
     edge: {
       id: 'edge',
       label: 'Edge TTS (free)',
+      source: 'edge',
+      credential: 'none',
       capabilities: { builtin: true, clone: false, design: false, style: false, language: false, prosody: true },
       defaultVoice: EDGE_DEFAULT_VOICE,
       defaultLanguage: EDGE_DEFAULT_LANGUAGE,
@@ -531,6 +565,8 @@ function createTts(deps) {
     openai: {
       id: 'openai',
       label: 'OpenAI TTS',
+      source: 'tts',
+      credential: 'bridge:tts',
       capabilities: { builtin: true, clone: false, design: false, style: true, language: false, prosody: false },
       defaultVoice: OPENAI_DEFAULT_VOICE,
       defaultLanguage: '',
@@ -540,6 +576,8 @@ function createTts(deps) {
     mimo: {
       id: 'mimo',
       label: 'MiMo TTS',
+      source: 'ttsMimo',
+      credential: 'bridge:ttsMimo',
       capabilities: { builtin: true, clone: true, design: true, style: true, language: false, prosody: false },
       defaultVoice: MIMO_DEFAULT_VOICE,
       defaultLanguage: '',
@@ -550,8 +588,60 @@ function createTts(deps) {
       synthesize: mimoSynthesize,
       cloneSynthesize: mimoCloneSynthesize,
       designSynthesize: mimoDesignSynthesize
+    },
+    voicebox: {
+      id: 'voicebox',
+      label: 'Voicebox (local)',
+      source: 'voicebox',
+      credential: 'local-runtime',
+      capabilities: { builtin: true, clone: false, design: false, style: true, language: true, prosody: false },
+      defaultVoice: '',
+      defaultLanguage: '',
+      /* engine 清单镜像上游 GenerationRequest 的 enum（bridge/voicebox.js 的唯一常量）。
+         models 非空 ⇒ normalize 允许 voice.model 作为 engine 透传；留空则不发送 engine。 */
+      models: voicebox ? voicebox.ENGINES.slice() : [],
+      synthesize: voiceboxSynthesize
     }
   };
+
+  /* ── Voice API Source → provider 的唯一映射 ──────────────────────
+     角色保存 source（引用），wire 上传 provider。历史数据只有 provider，
+     因此 source 缺省时按此表的**逆向**回落到同义 source；表本身只有这一份。 */
+  const TTS_SOURCE_TO_PROVIDER = (function () {
+    const m = {};
+    Object.keys(TTS_PROVIDER_REGISTRY).forEach(function (pid) {
+      const s = TTS_PROVIDER_REGISTRY[pid].source || pid;
+      m[String(s).toLowerCase()] = pid;
+      m[String(pid).toLowerCase()] = pid;    /* provider 名本身也接受（历史 wire 参数） */
+    });
+    return m;
+  })();
+
+  /* 供 REST / UI 使用的 source 目录：只暴露 id/label/能力/凭据来源说明与是否已配置，
+     绝不包含 endpoint/apiKey 等任何凭证值。 */
+  function listVoiceSources() {
+    const t = config.tts || {};
+    const tm = (config.ttsMimo && typeof config.ttsMimo === 'object') ? config.ttsMimo : {};
+    const configured = {
+      edge: true,
+      tts: !!(t.enabled && t.endpoint && t.apiKey),
+      ttsMimo: !!(tm.enabled && tm.endpoint && tm.apiKey),
+      voicebox: !!voicebox
+    };
+    return Object.keys(TTS_PROVIDER_REGISTRY).map(function (pid) {
+      const def = TTS_PROVIDER_REGISTRY[pid];
+      return {
+        id: def.source,
+        provider: pid,
+        label: def.label,
+        credential: def.credential,
+        capabilities: Object.assign({}, def.capabilities),
+        models: (def.models || []).slice(),
+        isLocal: pid === 'voicebox',
+        configured: !!configured[def.source]
+      };
+    });
+  }
 
   /*
    * normalizeVoiceProfile(raw, configOverride)
@@ -572,10 +662,17 @@ function createTts(deps) {
     const r = raw && typeof raw === 'object' ? raw : {};
     const t = (cfgSource && cfgSource.tts) || {};
 
-    /* provider：显式合法值优先；否则沿用提取前的缺省规则 */
+    /* provider：显式合法值优先；否则先认 canonical source 引用，再沿用提取前的缺省规则 */
     let prov = String(r.provider || '').toLowerCase();
     if (!TTS_PROVIDER_REGISTRY[prov]) {
-      prov = (t.enabled && t.endpoint && t.apiKey ? 'openai' : 'edge');
+      /* P23 Phase 1：角色保存的是 source（edge / tts / ttsMimo / voicebox）。
+         历史数据没有 source ⇒ 本分支不会命中，缺省规则与历史行为逐字一致。 */
+      const src = String(r.source || '').toLowerCase();
+      if (src && TTS_SOURCE_TO_PROVIDER[src]) {
+        prov = TTS_SOURCE_TO_PROVIDER[src];
+      } else {
+        prov = (t.enabled && t.endpoint && t.apiKey ? 'openai' : 'edge');
+      }
     }
     const def = TTS_PROVIDER_REGISTRY[prov];
     const caps = def.capabilities;
@@ -630,6 +727,7 @@ function createTts(deps) {
 
     return {
       provider: prov,
+      source: def.source || prov,
       model: model,
       voice: { type: vtype, id: vid, data: vdata },
       language: language,
@@ -727,7 +825,7 @@ function createTts(deps) {
     }
   }
 
-  return { edgeTtsGen, ttsGenerate, normalizeVoiceProfile, ttsSynthesize, streamSynthesize };
+  return { edgeTtsGen, ttsGenerate, normalizeVoiceProfile, ttsSynthesize, streamSynthesize, listVoiceSources };
 }
 
 module.exports = createTts;

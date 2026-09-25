@@ -170,6 +170,46 @@ function _diaryParseOutput(raw){
   }
   return out
 }
+/* ══════════ P25-3B · Diary Authority 接缝（写权限的唯一来源） ══════════
+   收敛后的唯一合法链（§0/§25）：
+     Trigger → Candidate → **Diary Authority** → ALLOW → Executor → Canonical Writer → Verify
+   冻结：PLAN != PERMISSION · MODEL OUTPUT != PERMISSION · SCHEDULER TRIGGER != PERMISSION ·
+        CAPABILITY AVAILABILITY != PERMISSION。
+
+   · 权威实现是**纯模块** assets/js/diary-authority.js（零 DOM / 零 DB / 零 fetch / 零 provider /
+     零模型 / 零 Memory / 零 Middle Brain）；本域只做"读真实状态 → 传 facts → 传 executor"。
+   · 它缺席 ⇒ fail closed（DENY）：**绝不**退回旧直写路径（§13）。
+   · 本域不重新发明 Diary 身份（§19）：entry.id 仍由 _diaryDefaults 持有；
+     authority 的 candidateId 只作审计 / 幂等键透传。
+   · _diaryWriteCanonical 是本域**唯一** canonical writer（所有 diary_entries 落库都经它）。
+   · 不新增第二套 abort / queue / 定时器；scheduler 时序、水位线、频率全部未动（§15/§21）。 */
+function _diaryAuthority(){
+  try{
+    const a=(typeof window!=='undefined'&&window.IBDiaryAuthority)
+      ||(typeof self!=='undefined'&&self.IBDiaryAuthority)
+      ||(typeof IBDiaryAuthority!=='undefined'?IBDiaryAuthority:null);
+    return(a&&typeof a.runDiaryWrite==='function'&&typeof a.buildDiaryCandidate==='function'&&typeof a.sourceOfTrigger==='function')?a:null;
+  }catch(e){return null}
+}
+/* trigger → source 的唯一映射由 authority 提供（本域不维护第二份表；未知 trigger 返回 ''）。 */
+function _diarySourceOfTrigger(trigger){
+  const a=_diaryAuthority();
+  if(!a)return'';
+  try{return String(a.sourceOfTrigger(String(trigger||''))||'')}catch(e){return''}
+}
+/* canonical writer：Diary 域唯一的 diary_entries 写入口（options 只用于诊断 kind）。 */
+async function _diaryWriteCanonical(entry,options){
+  const e=entry||{};
+  await dbPut(DIARY_STORE,e);
+  return{ok:true,entry:e,kind:String((options&&options.kind)||'entry')}
+}
+/* 唯一裁决入口：authority 缺席 ⇒ DENY（fail closed），executor 永不被调用。 */
+async function _diaryRunWrite(candidate,facts,executor){
+  const auth=_diaryAuthority();
+  if(!auth)return{ok:false,decision:'deny',reason:'authority-missing',executed:false,actorId:'',entry:null,error:''};
+  try{return await auth.runDiaryWrite(candidate,facts,executor)}
+  catch(e){return{ok:false,decision:'deny',reason:'invalid-candidate',executed:false,actorId:'',entry:null,error:String(e&&e.message||e).slice(0,200)}}
+}
 /* ══════════ Runtime Convergence Phase 3 · Diary 统一执行接缝 ══════════
    只收敛"最终模型执行"，其余全部留在 Diary 业务链（未改一行）：
      触发条件 → _diaryContext → buildDiaryPrompt → _diaryModelCall
@@ -305,9 +345,25 @@ async function generateDiaryEntry(characterId,opts){
         trigger:opts.trigger||'manual',
         reason:opts.reason||''
       });
-      await dbPut(DIARY_STORE,entry);
+      /* ── 写权限不在 scheduler / model / executor 手里（P25-3B）──────────
+         模型输出（parsed）只提供"想写 + 内容"；能否落库由 Diary Authority 裁决。
+         facts 只读地从**真实状态**读出；executor 闭包只做**已授权的写入**，
+         不重新判断 enabled / duplicate / policy（§16）。 */
+      const trigger=String(opts.trigger||'manual');
+      const run=await _diaryRunWrite(
+        {actorId:characterId,source:_diarySourceOfTrigger(trigger),trigger:trigger,triggerRef:String(opts.triggerRef||''),diaryType:entry.diaryType,contextRef:String(opts.contextRef||'')},
+        {actorKnown:!!cfg,enabled:_diaryPrefs().enabled===true,hasContent:!!String(entry.content||'').trim(),cancelled:opts.cancelled===true},
+        async()=>await _diaryWriteCanonical(entry)
+      );
+      if(!run.executed||!run.ok){
+        /* DENY 与"执行失败"都不 retry、不写 Memory（既有语义：本次不落库即返回失败）。 */
+        lastError=new Error('写日记被拒绝（'+String(run.error||run.reason||'denied')+'）');
+        break
+      }
+      /* canonical write 成功后**才**做 secondary side effect（Memory，§18）：
+         _diaryWriteMemory 失败/跳过都不得把已经写成功的日记伪装成失败。 */
       const mem=await _diaryWriteMemory(cfg,parsed.memoryCandidate);
-      if(mem){entry.relatedMemoryIds=entry.relatedMemoryIds.concat([mem.id]);await dbPut(DIARY_STORE,entry)}
+      if(mem){entry.relatedMemoryIds=entry.relatedMemoryIds.concat([mem.id]);await _diaryWriteCanonical(entry,{kind:'memory-link'})}
       if(currentPage==='diary')_diaryRenderVault();
       return{ok:true,entry:entry,memory:mem}
     }
@@ -512,6 +568,11 @@ window._diaryContext=_diaryContext;
 window.buildDiaryPrompt=buildDiaryPrompt;
 window._diaryWriteMemory=_diaryWriteMemory;
 window._diaryParseOutput=_diaryParseOutput;
+/* P25-3B：Diary Authority 接缝（测试/诊断入口；权威实现在 assets/js/diary-authority.js） */
+window._diaryAuthority=_diaryAuthority;
+window._diarySourceOfTrigger=_diarySourceOfTrigger;
+window._diaryWriteCanonical=_diaryWriteCanonical;
+window._diaryRunWrite=_diaryRunWrite;
 window.generateDiaryEntry=generateDiaryEntry;
 window._diaryDailyPlanner=_diaryDailyPlanner;
 window._diaryTick=_diaryTick;
@@ -544,6 +605,11 @@ NS.expose('active.diary', {
   buildDiaryPrompt: buildDiaryPrompt,
   _diaryWriteMemory: _diaryWriteMemory,
   _diaryParseOutput: _diaryParseOutput,
+  /* ── P25-3B：Diary Authority 接缝 ── */
+  _diaryAuthority: _diaryAuthority,
+  _diarySourceOfTrigger: _diarySourceOfTrigger,
+  _diaryWriteCanonical: _diaryWriteCanonical,
+  _diaryRunWrite: _diaryRunWrite,
   /* ── Runtime Convergence Phase 3：统一执行接缝 ── */
   _diaryModelCall: _diaryModelCall,
   generateDiaryEntry: generateDiaryEntry,

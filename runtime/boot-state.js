@@ -264,6 +264,8 @@ function normalizeComponent(id, raw, absent) {
  * input = {
  *   bootId, now, startedAt, finishedAt, phase, opened,
  *   launcher: { pid, root, platform, arch, node: {path, version, source, bundled, requiredMajor, ok} },
+ *   runtime: { runtimeMode, runtimeRootClass, productVersion, payloadManifestVersion,
+ *              payloadIdentity, hostRoot, runnerRootClass, serviceRootClass },
  *   components: { static, bridge, active, restart, vision },
  *   warnings: [{code, message}],
  *   fatal: null | {category, message}
@@ -317,6 +319,7 @@ function buildBootState(input) {
   const node = launcher.node || {};
   const product = launcher.product || {};
   const mgr = launcher.serviceManager || {};
+  const runtime = i.runtime || {};
   const state = {
     schema: SCHEMA,
     version: VERSION,
@@ -355,6 +358,18 @@ function buildBootState(input) {
         wasRunning: mgr.wasRunning === true,
         startedByLauncher: mgr.started === true,
         error: mgr.error ? reasonOf(mgr.error, REASON.SPAWN_FAILED) : null
+      },
+      runtime: {
+        runtimeMode: String(runtime.runtimeMode || 'unknown').slice(0, 40),
+        runtimeRootClass: String(runtime.runtimeRootClass || 'unknown').slice(0, 40),
+        productVersion: String(runtime.productVersion || product.version || '').slice(0, 40),
+        payloadManifestVersion: Number.isFinite(Number(runtime.payloadManifestVersion))
+          ? Number(runtime.payloadManifestVersion)
+          : null,
+        payloadIdentity: runtime.payloadIdentity ? String(runtime.payloadIdentity).slice(0, 128) : null,
+        hostRoot: String(runtime.hostRoot || launcher.root || '').slice(0, MAX_STRING),
+        runnerRootClass: String(runtime.runnerRootClass || runtime.runtimeRootClass || 'unknown').slice(0, 40),
+        serviceRootClass: String(runtime.serviceRootClass || runtime.runtimeRootClass || 'unknown').slice(0, 40)
       }
     },
     components: components,

@@ -1576,7 +1576,7 @@ async function generateMemoryFromChat(){
   const lim=await getReadingLimits();
   const chatLimitVal=isGroup?(lim.groupChatLimit||DEFAULT_READ_GROUP_CHAT):(lim.chatLimit||DEFAULT_READ_CHAT);
   const _memSealTs=activeThreadId?0:(await getChatSealTimestamp(activeFriendId));/* 封档线仅作用于主对话 */
-  const msgs=filterSealed((await dbGetByIndex('chatMessages','byFriend',activeFriendId)).filter(m=>activeThreadId?m.threadId===activeThreadId:!m.threadId).sort((a,b)=>a.timestamp-b.timestamp),_memSealTs);
+  const msgs=filterSealed(_ibOrderMsgs((await dbGetByIndex('chatMessages','byFriend',activeFriendId)).filter(m=>activeThreadId?m.threadId===activeThreadId:!m.threadId)),_memSealTs);
   const recent=msgs.slice(-chatLimitVal);
   if(recent.length<2){toast('聊天记录太少，无法生成记忆');return}
   const about=await dbGet('about','main');
@@ -1722,6 +1722,17 @@ async function clearChatSeal(friendId){
   return true;
 }
 /* 过滤封档线之前的消息（供 API 读取链路使用） */
+/* P23 Phase 2A · conversation 的确定性顺序。实现唯一 = assets/js/delivery-sequence-core.js
+   （回合内按 sequenceIndex、回合整体落在最早一条的位置；旧消息退化为 (timestamp, id)）。
+   这里只转调：绝不在这份文件里写第二套排序规则 —— 一次模型回合可以产出多条消息，
+   它们共享同一个 timestamp，只按 timestamp 排会让顺序由引擎决定。 */
+function _ibOrderMsgs(list){
+  try{
+    var core=(typeof window!=='undefined')?window.IBDeliverySequence:null;
+    if(core&&typeof core.orderMessages==='function')return core.orderMessages(list);
+  }catch(e){}
+  return list;
+}
 function filterSealed(msgs,sealTs){
   if(!sealTs)return msgs;
   return msgs.filter(function(m){return (m.timestamp||m.created||0)>sealTs});
@@ -1839,7 +1850,7 @@ async function generateMemoryFromSelected(){
   }else{cfg=apiConfigs.find(a=>a.id===activeFriendId)}
   if(!_ibApiReady(cfg)){toast('请先配置 API');return}
   const allMsgs=await dbGetByIndex('chatMessages','byFriend',activeFriendId);
-  const selectedRaw=allMsgs.filter(m=>ids.includes(m.id)).sort((a,b)=>a.timestamp-b.timestamp);
+  const selectedRaw=_ibOrderMsgs(allMsgs.filter(m=>ids.includes(m.id)));
   const selectedSealTs=activeThreadId?0:(await getChatSealTimestamp(activeFriendId));
   const selected=filterSealed(selectedRaw,selectedSealTs);
   /* 选择模式也必须遵守封档边界，不能借“生成记忆”把已封档原文重新发给 API。 */
@@ -1977,7 +1988,7 @@ async function selectPanelGroup(gid){
     document.getElementById('chat-mini-title').textContent=group.name;
   }
   const container=document.getElementById('chat-messages');
-  const gMsgs=(await dbGetByIndex('chatMessages','byFriend',gid)).sort((a,b)=>(a.timestamp||0)-(b.timestamp||0));
+  const gMsgs=_ibOrderMsgs(await dbGetByIndex('chatMessages','byFriend',gid));
   if(gMsgs.length)_renderAllChat(container,gMsgs,false);
   else container.innerHTML='<div class="chat-msg system">群聊 "'+esc(group?.name||'')+'"</div>';
 }
@@ -1993,7 +2004,7 @@ async function selectPanelFriend(id){
   }
   /* Load messages for this friend in the mini panel — exclude threads */
   const container=document.getElementById('chat-messages');
-  const friendMsgs=(await dbGetByIndex('chatMessages','byFriend',id)).filter(m=>!m.threadId).sort((a,b)=>a.timestamp-b.timestamp);
+  const friendMsgs=_ibOrderMsgs((await dbGetByIndex('chatMessages','byFriend',id)).filter(m=>!m.threadId));
   if(friendMsgs.length)_renderAllChat(container,friendMsgs,false);
   else container.innerHTML='<div class="chat-msg system">发送消息开始对话</div>';
 }
@@ -2009,7 +2020,7 @@ async function selectPanelThread(friendId,threadId){
   document.getElementById('chat-header-name').textContent=label;
   document.getElementById('chat-mini-title').textContent=label;
   const container=document.getElementById('chat-messages');
-  const msgs=(await dbGetByIndex('chatMessages','byFriend',friendId)).filter(m=>m.threadId===threadId).sort((a,b)=>a.timestamp-b.timestamp);
+  const msgs=_ibOrderMsgs((await dbGetByIndex('chatMessages','byFriend',friendId)).filter(m=>m.threadId===threadId));
   if(msgs.length)_renderAllChat(container,msgs,false);
   else container.innerHTML='<div class="chat-msg system">'+(thread?esc(thread.name):'话题')+'</div>';
 }

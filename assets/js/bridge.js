@@ -733,13 +733,17 @@ var _ibTtsMaxLen=800;/* 单次 TTS 文本最大字符数 */
 /* 统一 wire payload：角色 Voice Profile → /api/tts 请求体的唯一组装点。
    旧五个字段（text/voice/provider/rate/pitch）的取值与回退保持历史行为逐字节一致；
    新增字段（model/voiceType/voiceData/language/style）允许为空值——Bridge 端
-   normalizeVoiceProfile 会按 provider capabilities 过滤并补默认值。禁止再出现第二套组装逻辑。 */
+   normalizeVoiceProfile 会按 provider capabilities 过滤并补默认值。禁止再出现第二套组装逻辑。
+   P23 Phase 1：新增 source（canonical Voice API Source id，角色保存的引用）。
+   source 只是**引用**——endpoint/apiKey 永远由 Bridge config.json 提供，
+   这个 payload 里不存在任何 credential，也永远不会出现在 chat message 里。 */
 function _ibTtsPayload(vc,text){
   var v=(vc&&typeof vc==='object')?vc:{};
   return {
     text:String(text==null?'':text),
     voice:v.voiceId||'',
     provider:v.provider||'edge',
+    source:v.source||'',
     rate:v.rate||1.0,
     pitch:v.pitch||'+0Hz',
     model:v.model||'',
@@ -830,21 +834,172 @@ function _ibTtsSpeakImpl(bubble,btn,vc,done){
   }
   if(btn)btn.classList.add('playing');
   var vcSafe=vc||_ibGetCharVoice(bubble)||{};
-  ibBridgeFetch(ibBridgeBase()+'/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_ibTtsPayload(vcSafe,text))}).then(function(r){return r.json()}).then(function(j){
+  ibBridgeFetch(ibBridgeBase()+'/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_ibTtsPayload(vcSafe,text))}).then(function(r){return r.json()}).then(async function(j){
     if(j&&j.ok){
       bubble.dataset.ibTtsUrl=j.url;
+      /* P23 Phase 1：语音合成成功 ⇒ 把这条 assistant 消息升级为**一级 voice message**
+         （transcript + 音源 + duration + provenance）。失败不写、不伪装、不动 content。 */
+      var owned=null;
+      try{ owned=await _ibPersistAiVoice(bubble,j,text); }catch(e){ owned=null }
+      if(owned&&owned.el){
+        /* 原生 voice message 已落地：由**气泡自己**控制播放（永久 UI），
+           绝不再创建 live 播放条 —— 同一消息只允许存在一个语音 UI。 */
+        if(btn)btn.remove();
+        _vmTogglePlay(owned.el,owned.voice,done||null);
+        return;
+      }
+      /* 记录不适合换气泡（富文本 / 落库失败）⇒ 保持既有的临时播放条路径（旧行为逐字不变）。 */
       ibBridgeLoadAudio(j.url,function(audioUrl,revoke){ _ibTtsPlayQ(bubble,btn,audioUrl,done,revoke); },function(){ if(btn)btn.classList.remove('playing');ibTtsFallback(text,btn);if(done)done(); });
     }else{
       if(btn)btn.classList.remove('playing');
-      /* 修复：Bridge TTS 失败时按 README 承诺降级到浏览器自带语音（原 ibTtsFallback 定义了却从未被调用） */
-      ibTtsFallback(text,btn,{message:String((j&&j.error)||'语音生成失败')});
+      /* P23 Phase 1.1：本地运行时（Voicebox）失败 ⇒ **明确失败**，绝不代读 ——
+         用系统语音念出来等于静默切换到另一个 provider，掩盖本地运行时的故障。
+         其它来源保持历史行为（Bridge TTS 失败时降级到浏览器自带语音）。 */
+      if(_ibTtsLocalRuntimeSource(vcSafe)){ ibErrLocal('tts',{message:String((j&&j.error)||'语音生成失败')},ibRetryBtn(btn),{reason:'local_runtime'}); }
+      else ibTtsFallback(text,btn,{message:String((j&&j.error)||'语音生成失败')});
       if(done)done();
     }
   }).catch(function(NS){
     if(btn)btn.classList.remove('playing');
-    ibTtsFallback(text,btn,NS);
+    if(_ibTtsLocalRuntimeSource(vcSafe)){ ibErrLocal('tts',NS,ibRetryBtn(btn),{reason:'local_runtime'}); }
+    else ibTtsFallback(text,btn,NS);
     if(done)done();
   });
+}
+/* 该角色的语音来源是否是不可替代的**本地运行时**（目前只有 Voicebox）。
+   它失败时只允许明确报错：不切换 provider、不用系统语音代读。 */
+function _ibTtsLocalRuntimeSource(vc){
+  try{ return String((vc&&(vc.source||vc.provider))||'').toLowerCase()==='voicebox'; }catch(e){ return false }
+}
+
+/* ---------- P23 Phase 1 · assistant 消息 → 一级 voice message ----------
+   语音合成成功后，把同一个 message 记录升级为 canonical voice message：
+     { dataUrl|audioUrl, mime, duration, transcript, provenance{source,provider,engine,model,voiceId,voiceType} }
+   铁律：
+     · 合成失败 ⇒ 一次写入都不发生（绝不写假 voice message）；
+     · 记录不存在 / 不是 assistant ⇒ 不写；
+     · 写入失败 ⇒ 可见失败（IBERR），但**不删**已生成音频、不改 content；
+     · provenance 只经 IBVoiceMessage.sanitizeProvenance 白名单，永不包含 credential。 */
+function _ibFetchAiVoiceDataUrl(pathname){
+  return ibBridgeFetch(ibBridgeAssetUrl(pathname),{cache:'no-store'}).then(function(r){
+    if(!r.ok)throw new Error('asset '+r.status);
+    return r.blob();
+  }).then(function(blob){
+    var core=window.IBVoiceMessage;
+    /* 超过内联上限：不内联，保留 Bridge 引用（audioUrl）——两种都能 reload 后播放 */
+    if(core&&blob.size>core.INLINE_MAX_BYTES)return '';
+    return new Promise(function(res,rej){var fr=new FileReader();fr.onload=function(){res(String(fr.result||''))};fr.onerror=rej;fr.readAsDataURL(blob)});
+  });
+}
+/* 真实时长（秒）。元数据加载与自动播放策略无关，因此 autoplay 被浏览器拦截也能取到。 */
+function _ibProbeAudioDuration(src){
+  return new Promise(function(res){
+    if(!src||typeof Audio==='undefined'){res(0);return}
+    var settled=false;var done=function(v){if(settled)return;settled=true;res(Number(v)||0)};
+    try{
+      var a=new Audio();
+      a.preload='metadata';
+      a.onloadedmetadata=function(){done(a.duration)};
+      a.onerror=function(){done(0)};
+      setTimeout(function(){done(a.duration||0)},4000);
+      a.src=src;
+    }catch(e){done(0)}
+  });
+}
+/* 用**已授权**的取源路径探时长（与播放同一取源法），objectURL 用完即回收。
+   不用裸 new Audio(ibBridgeBase()+url)：LAN/token 模式下那是未授权请求，只会得到 0 秒。 */
+function _ibProbeBridgeAudioDuration(pathname){
+  return new Promise(function(res){
+    if(typeof ibBridgeLoadAudio!=='function'){res(0);return}
+    var settled=false;
+    var fin=function(v,objUrl){ if(settled)return;settled=true; if(objUrl){try{URL.revokeObjectURL(objUrl)}catch(e){}} res(Number(v)||0) };
+    try{
+      ibBridgeLoadAudio(pathname,function(src,revoke){
+        if(typeof Audio==='undefined'){ fin(0,revoke?src:null); return }
+        var a=new Audio();
+        var done=function(v){ fin(v,revoke?src:null) };
+        a.preload='metadata';
+        a.onloadedmetadata=function(){done(a.duration)};
+        a.onerror=function(){done(0)};
+        setTimeout(function(){done(a.duration||0)},4000);
+        a.src=src;
+      },function(){ fin(0,null) });
+    }catch(e){ fin(0,null) }
+  });
+}
+async function _ibPersistAiVoice(bubble,tts,transcript){
+  var core=window.IBVoiceMessage;
+  if(!core||typeof dbGet!=='function'||typeof dbPut!=='function')return null;
+  var msgId=(bubble&&bubble.dataset&&bubble.dataset.msgId)||'';
+  if(!msgId)return null;
+  var url=String((tts&&tts.url)||'');
+  if(!url)return null;
+  /* 先读记录：不合格就早退，省掉一次音频取回（也避免给注定不语音化的消息生成音频）。 */
+  var m=null;
+  try{ m=await dbGet('chatMessages',msgId); }catch(e){ m=null; }
+  if(!m||m.role==='user'||m.truncated)return null;
+  var vc=_ibGetCharVoice(bubble)||{};
+  var inline='';
+  try{ inline=await _ibFetchAiVoiceDataUrl(url); }catch(e){ inline=''; }
+  var duration=Number(tts&&tts.duration)||0;
+  if(!duration&&inline)duration=await _ibProbeAudioDuration(inline);
+  if(!duration)duration=await _ibProbeBridgeAudioDuration(url);
+  var voice=core.build({
+    dataUrl:inline,
+    audioUrl:url,
+    mime:(tts&&tts.mime)||'',
+    duration:duration,
+    transcript:String(transcript||''),
+    content:String(m.content||''),   /* 记录音频所依据的 content 指纹（见 isStale / dropVoice） */
+    provenance:{
+      source:vc.source||vc.provider||'',
+      provider:(tts&&tts.provider)||vc.provider||'',
+      engine:(tts&&tts.engine)||vc.model||'',
+      model:vc.model||'',
+      voiceId:vc.voiceId||'',
+      voiceType:vc.voiceType||'builtin',
+      refAudioId:(vc.voiceData&&vc.voiceData.refAudioId)||''
+    }
+  });
+  if(!voice){
+    /* 没有任何可播放音源：不写记录（宁可没有 voice message，也不写可播放却无声的假消息） */
+    ibErrLocal('tts',null,null,{reason:'persist',stage:'voice_message'});
+    return null;
+  }
+  try{
+    m.voice=voice;
+    await dbPut('chatMessages',m);
+    /* 就地一致性：落库成功后才把已经渲染出来的那条消息换成 voice 气泡。
+       返回气泡（含 voice）⇒ **播放权归原生气泡**，调用方不得再建 live 播放条。 */
+    return _ibSwapLiveVoiceBubble(msgId,voice);
+  }catch(e){
+    /* 可见失败：音频仍在（用户可继续播放），只是这条消息没能持久化。 */
+    ibErrLocal('tts',e,null,{reason:'persist'});
+    return null;
+  }
+}
+/* 把当前已渲染的 assistant 消息就地换成 voice 气泡（与 canonical 记录一致）。
+   成功返回 { el:<.chat-voice-bar>, voice } —— 由调用方据此接管播放（不再创建第二个语音 UI）；
+   否则返回 null。守卫分两段，因为两类风险的作用域不同：
+     · 「已经有语音 UI」→ 看**整条消息容器**（气泡/包裹/旧播放条，任一存在即不换）；
+     · 「换掉会丢内容」  → 只看 `.r-text` 内部（贴纸/点歌/工具卡/图片会渲染成 button/img，
+                           而消息本身的操作按钮 .chat-msg-del / .chat-msg-fav 在 .r-text 之外，
+                           不能一并当作富文本）。 */
+function _ibSwapLiveVoiceBubble(msgId,voice){
+  if(!msgId||typeof document==='undefined'||typeof _buildVoiceEl!=='function')return null;
+  var el=null;
+  try{ document.querySelectorAll('.chat-msg.ai[data-msg-id="'+msgId+'"]').forEach(function(n){el=n}); }catch(e){ return null; }
+  if(!el)return null;
+  var txt=el.querySelector('.r-text');
+  if(!txt)return null;
+  if(el.querySelector('.chat-voice-bar,.chat-voice-wrap,.ib-tts-bar'))return null;
+  if(txt.querySelector('button,img,audio,video'))return null;
+  var wrap;
+  try{ wrap=_buildVoiceEl(voice,{transcriptToggle:true}); }catch(e){ return null; }
+  txt.innerHTML='';
+  txt.appendChild(wrap);
+  var bar=wrap.classList&&wrap.classList.contains('chat-voice-bar')?wrap:(wrap.querySelector('.chat-voice-bar')||wrap);
+  return { el:bar, voice:voice };
 }
 
 function _ibTtsPlayQ(bubble,btn,url,done,revokeUrl){
@@ -1156,6 +1311,11 @@ else setTimeout(ibBoot,0);
 NS.expose('bridge', {
   mounted: true,
   ttsPayload: _ibTtsPayload,
+  /* P23 Phase 2D：delivery-time voice 物化需要这两个**同一实现**的助手 ——
+     inline 体积上限判定（INLINE_MAX_BYTES）与真实时长探测都住在它们里面，
+     绝不在别处复制第二份（本阶段只把它们从私有提升为可复用，行为一字未改）。 */
+  fetchAiVoiceDataUrl: _ibFetchAiVoiceDataUrl,
+  probeAudioDuration: _ibProbeAudioDuration,
   ttsVoiceHead: ibTtsVoiceHead,
   ttsVoiceList: ibTtsVoiceList,
   ttsVoiceCheckImport: ibTtsVoiceCheckImport

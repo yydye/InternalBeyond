@@ -13,6 +13,13 @@ const ROOT = path.resolve(__dirname, '..');
 const createHttp = require(path.join(ROOT, 'active', 'http.js'));
 
 const source = f => fs.readFileSync(path.join(ROOT, f), 'utf8');
+/* moments.js 的模块级常量：审计只抽取**函数片段**，因此这些常量必须显式提供。
+   从源码推导而不是手抄 —— 否则两端的 45 分钟会悄悄漂移。 */
+const MOMENT_MIN_INTERVAL = (() => {
+  const m = /const MOMENT_MIN_INTERVAL\s*=\s*(\d+)\s*\*\s*60000/.exec(source('assets/js/moments.js'));
+  assert.ok(m, 'MOMENT_MIN_INTERVAL boundary missing');
+  return Number(m[1]) * 60000;
+})();
 function fragment(file, begin, end) {
   const text = source(file), start = text.indexOf(begin);
   assert.ok(start >= 0, 'source boundary missing: ' + begin);
@@ -22,7 +29,14 @@ function fragment(file, begin, end) {
 }
 const active = 'assets/js/active-diary.js', moments = 'assets/js/moments.js';
 const consumers = fragment(active, 'async function _activePullCompanionEvents(){', 'function initActiveMessages(){')
-  + fragment(moments, 'async function _momentsIngestEvent(ev,userId){', '/* 浏览器本地执行');
+  /* P25-2D：ingest 现在必须经 Autonomy（事件不是许可）。它依赖的两个 helper
+     （_momentsCompanionSemantic / _momentsWriteCompanionMoment）定义在 ingest 之前，
+     因此审计片段必须**从这里开始**，否则片段自身缺函数。 */
+  + fragment(moments, 'function _momentsCompanionSemantic(ev,moment){', '/* 浏览器本地执行');
+  /* P25-3C：Active Message 的 canonical 写入已收敛为唯一 writer `_activeWriteCanonical`
+     （companion 事件是投递镜像，经它落库且 effects:false）；片段必须包含它，
+     否则沙箱里的 ingest 会因为"调用了不存在的外部函数"而失败。 */
+const activeWriter = fragment(active, 'async function _activeWriteCanonical(msg,opts){', '/* 唯一裁决入口');
 const sync = fragment(moments, 'async function _momentsSyncCompanion(){', '/* 事件回传落库');
 /* Phase 4：consolidation 的模型执行已收敛到 _activeConsolidationModelCall 接缝，
    片段必须包含接缝本身（其依赖的 gate/instance/format/telemetry 在下方注入为最小替身）。 */
@@ -35,6 +49,7 @@ function environment(request) {
   const context = {
     console, setTimeout, clearTimeout, Date, Map, Set, apiConfigs: [cfg], archivedConfigs: [],
     ACTIVE_SETTINGS_STORE: 'settings', ACTIVE_HISTORY_STORE: 'history', ACTIVE_PLANS_STORE: 'plans', MOMENT_STORE: 'moments',
+    MOMENT_MIN_INTERVAL: MOMENT_MIN_INTERVAL,
     currentPage: '', activeFriendId: '', _activeCompanionOnline: true,
     _activeUserId: () => 'audit-user', _activeCompanionRequest: request,
     dbGetAll: async name => [...table(name).values()], dbGet: async (name, id) => table(name).get(id),
@@ -45,6 +60,44 @@ function environment(request) {
     _momentsState: () => ({}), _momentsSetState() {}, _momentsDefaults: x => x,
     _obsRec() {}, _momentsMaybeLike() {}, _momentsMaybeComment() {}, _momentsMaybeMention() {},
     _ibApiReady: () => true, _momentsCfg: () => cfg,
+    /* P25-2D：ingest 的裁决链依赖（真实语义核 + 真实 Autonomy adapter；见下面 runInContext）。
+       这里只做"接缝替身"：语义核 / adapter 都是**真实实现**，createMoment 落进审计表。 */
+    _momentsSemanticCore: () => context.IBMomentsSemanticCore,
+    _momentsAutonomyAdapter: () => context.IBMomentsAutonomy,
+    /* P25-2.5：mutation 现在也必须过 Mutation Authority（点赞/评论/回复/删除）。
+       审计片段只抽函数，因此这两个接缝在这里注入；decision 仍由**真实模块**做。 */
+    _momentsMutationAuthority: () => context.IBMomentsMutationAuthority,
+    _momentsRunMutation: (mutation, facts, executor) => context.IBMomentsMutationAuthority.runMomentMutation(mutation, facts, executor),
+    _momentsMutationFacts: (m, extra) => {
+      const e = extra || {};
+      const actorId = String(e.actorId || '');
+      const authorId = m ? String(m.roleId || m.authorId || '') : '';
+      const comment = e.comment || null;
+      return {
+        actorKnown: true,
+        momentExists: !!m,
+        momentAuthorKind: ((m && m.authorType) === 'user') ? 'user' : 'role',
+        momentAuthorId: authorId,
+        actorIsMomentAuthor: e.isUserActor === true ? ((m && m.authorType) === 'user') : (!!m && actorId === authorId),
+        commentExists: !!comment,
+        commentAuthorId: comment ? String(comment.authorId || '') : '',
+        actorIsCommentAuthor: !!comment && String(comment.authorId || '') === actorId,
+        actorCanSeeMoment: e.canSeeMoment !== false,
+        duplicateComment: e.duplicateComment === true
+      };
+    },
+    /* 不注入 parseJson：让语义核用 context 内的 _activeParsePlanJson（realm-local，
+       见 environment() 末尾）—— 跨 realm 的 JSON.parse 会产出"不是本 realm 的普通对象"，
+       而 parser 的 isPlainObject 会正确拒绝它。 */
+    _momentsParseSemantic: (raw) => context.IBMomentsSemanticCore.parseMomentSemanticOutput(raw),
+    _momentsRecentOwn: async () => [],
+    _momentsMakeImage: async () => [],
+    createMoment: async (data, options) => {
+      const id = (options && options.id) || data.id;
+      assert.ok(id, 'createMoment id required');
+      table('moments').set(id, structuredClone(Object.assign({}, data, { id })));
+      return { ok: true, moment: Object.assign({}, data, { id }) };
+    },
     _momentsCompanionBrokenAt: 0, _momentsLastSyncAt: 0, _momentsReownTried: {},
     _momentsPrefs: () => ({ enabled: true, autoPublish: true, frequency: 'medium' }),
     _momentsFreqMs: () => 3600000,
@@ -60,6 +113,22 @@ function environment(request) {
   /* M1-C.2d Wave 1：memory 可见性语义的唯一实现已提取到 memory-visibility-core.js。
      memory.js 现在是委托方，因此这里注入**同一份真实实现**，而不是复制一套判断。 */
   context.IBMemoryVisibilityCore = require(path.join(ROOT, 'assets', 'js', 'memory-visibility-core.js'));
+  /* P25-2D：把**真实的**语义核、Autonomy Core、Moments adapter 装进审计环境 ——
+     审计因此验证的是"事件必须经 Autonomy"这条真实行为，而不是一份替身策略。 */
+  context.IBChatCore = require(path.join(ROOT, 'assets', 'js', 'chat-core.js'));
+  context.IBVoiceMessage = require(path.join(ROOT, 'assets', 'js', 'voice-message-core.js'));
+  context.IBMomentsVisibilityCore = require(path.join(ROOT, 'assets', 'js', 'moments-visibility-core.js'));
+  /* 三个 UMD 模块整体装入（它们各自的 UMD 分支在无 module 的环境走 browser 分支，
+     把实例挂到本 context 的 IB* 名字上）。 */
+  ['assets/js/moments-semantic-core.js', 'assets/js/autonomy-core.js', 'assets/js/moments-autonomy.js',
+    'assets/js/moments-mutation-authority.js']
+    .forEach(f => vm.runInContext(source(f).replace(/^\uFEFF/, ''), context, { filename: f }));
+  /* realm-local 的 JSON 提取器：与审计环境里的 _activeParsePlanJson 契约一致，
+     但由本 context 自己的 JSON 产出对象（跨 realm 对象会被 parser 判为非 plain）。 */
+  vm.runInContext('window._activeParsePlanJson = function (text) { try { return JSON.parse(String(text)); } catch (e) { return null; } };', context, { filename: 'audit-parse-json.js' });
+  /* realm-local 的偏好读取器：adapter 的 policy 会对 prefs 做 isPlainObject 校验，
+     跨 realm 对象会被正确拒绝 —— 因此这个桩必须在 context 内定义。 */
+  vm.runInContext('window._momentsPrefs = function () { return { enabled: true, autoPublish: true, frequency: "medium" }; };', context, { filename: 'audit-prefs.js' });
   /* 注入真实的可见性函数，使 memory 相关断言按当前 schema 语义成立（而非依赖缺失时的旁路） */
   vm.runInContext(fragment('assets/js/memory.js', 'function _ibMemVisCore(', '/* --- 语义相关性'), context);
   return { context, table, cfg };
@@ -86,7 +155,7 @@ async function check(name, fn) {
   try {
     await check('Active messages still import and ACK through real HTTP', async () => {
       state.events = { a: { id: 'a', user_id: 'audit-user', character_id: 'role-a', status: 'sent', content: 'Hello', message_id: 'a-msg', run_id: 'a-run', sent_at: 1 } };
-      const { context, table } = environment(request); vm.runInContext(consumers, context);
+      const { context, table } = environment(request); vm.runInContext(activeWriter + consumers, context);
       await context._activePullCompanionEvents();
       assert.equal(table('chatMessages').get('a-msg').content, 'Hello');
       assert.equal(Object.keys(state.events).length, 0);
@@ -94,14 +163,21 @@ async function check(name, fn) {
     await check('Active then Moments consumers preserve a moment event until ingestion', async () => {
       state.events = { m: { id: 'm', kind: 'moment', user_id: 'audit-user', character_id: 'role-a', status: 'moment_sent', run_id: 'm-run', sent_at: 2,
         moment: { id: 'moment-a', roleId: 'role-a', content: 'A moment', comments: [] } } };
-      const { context, table } = environment(request); vm.runInContext(consumers, context);
+      const { context, table } = environment(request); vm.runInContext(activeWriter + consumers, context);
       await context._activePullCompanionEvents();
       await context._momentsPullCompanionEvents();
-      assert.ok(table('moments').has('moment-a'), 'event ACKed without a moments row');
+      /* P25-2D：canonical Moment id 由 candidate 派生（不再等于事件自带的临时 moment id），
+         因此按**内容**确认落库行，并额外证明它确实走了 candidate 身份。 */
+      const rows = [...table('moments').values()];
+      const hit = rows.filter(r => r && r.content === 'A moment')[0] || null;
+      assert.ok(hit, 'event ACKed without a moments row');
+      assert.match(String(hit.id), /^mom_/, 'canonical id must be candidate-derived');
     });
     await check('Moments pull dispatches comment-deletion events', async () => {
-      state.events = { d: { id: 'd', kind: 'moment_comment_deleted', user_id: 'audit-user', moment_id: 'moment-a', comment_id: 'c-a', sent_at: 3 } };
-      const { context, table } = environment(request); vm.runInContext(consumers, context);
+      /* P25-2.5：删评是 mutation，必须可归属 —— 事件里的 role_id 是执行者（楼主）。
+         无 role_id 的事件会被 Mutation Authority 判 DENY（fail closed）。 */
+      state.events = { d: { id: 'd', kind: 'moment_comment_deleted', user_id: 'audit-user', moment_id: 'moment-a', comment_id: 'c-a', role_id: 'role-a', character_id: 'role-a', sent_at: 3 } };
+      const { context, table } = environment(request); vm.runInContext(activeWriter + consumers, context);
       table('moments').set('moment-a', { id: 'moment-a', roleId: 'role-a', comments: [{ id: 'c-a', content: 'removed' }] });
       await context._momentsPullCompanionEvents();
       assert.equal(table('moments').get('moment-a').comments.length, 0, 'deleted comment remains in browser store');

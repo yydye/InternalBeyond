@@ -1,0 +1,107 @@
+{
+  "schema": "internalbeyond.p32-w5.r3-c2.character-projection-authority-report",
+  "version": 1,
+  "phase": "P32-W.5-R3-C.2 Remaining Character Field Authority Resolution",
+  "generatedAt": "2026-09-24T10:09:16.3070639Z",
+  "status": "PASS_FIELD_AUTHORITY_RESOLVED",
+  "gate": "READY_FOR_EXPLICIT_R3_C_RECONSTRUCTION_APPROVAL",
+  "plan": {
+    "planId": "r3b3:1ee6aba8f773b8297e25a3904bad0f9db51ec308e4d295a1718ae48912cf44c7",
+    "planSha256": "1ee6aba8f773b8297e25a3904bad0f9db51ec308e4d295a1718ae48912cf44c7",
+    "targetSnapshotSha256": "e353295cdb6d2c8bdd344b2b54bf4f5da59bbf7b2b85081380faefe022c76d9c",
+    "sourcePrimarySha256": "1170f2a805f25ce2e151b880858e0ab1fdd2aad61281a16754da08a843238401",
+    "authorityChanged": false,
+    "identitySuccessionReopened": false
+  },
+  "newRoleEvidence": {
+    "status": "RESOLVED",
+    "trace": "new-role-projection-evidence-trace.json",
+    "reopened": false
+  },
+  "authoritySummary": {
+    "characters": 8,
+    "modelDiffRoles": 7,
+    "capabilityDiffRoles": 2,
+    "otherFieldDiffRoles": 0,
+    "identityConflicts": 0,
+    "unresolvedCanonicalBusinessDataConflicts": 0,
+    "modelAuthority": "AUTHORITATIVE_WEB_CORE",
+    "homeNodeCharactersModel": "LEGACY_DUPLICATED_PROJECTION",
+    "capabilitiesAuthority": "DERIVED_RUNTIME_PROJECTION",
+    "providerDirectoryOrModelCoreCapabilityAuthority": false,
+    "actualHomeNodeRuntimeSpecParity": "DEFER_TO_R3_D",
+    "specJsonRead": false
+  },
+  "priorReportReconciliation": {
+    "c1ReportedNonIdentityProjectionFieldList": "avatar,name,relationship",
+    "directFieldComparisonOtherDifferences": 0,
+    "sourceAndHomeNodeDatabaseHashesMatchC1": true,
+    "assessment": "C1 label is not reproduced by direct field comparison; all compared display/profile fields match. It is recorded as an audit-label inconsistency, not an active projection conflict."
+  },
+  "writeSet": {
+    "status": "PROPOSED_ONLY_NOT_AUTHORIZED",
+    "planId": "r3b3:1ee6aba8f773b8297e25a3904bad0f9db51ec308e4d295a1718ae48912cf44c7",
+    "currentArtifactSha256": "c2f567943f299621537077a73739bb16853b99f474fe74407e20e3033febb70a",
+    "currentAggregateHashHadC1Baseline": false,
+    "inserts": 500,
+    "messages": 341,
+    "memory_records": 4,
+    "moment_records": 155,
+    "updates": 0,
+    "deletes": 0,
+    "independence": "500_INSERT_SET_INDEPENDENT_OF_CHARACTER_PROJECTION_CONFLICT",
+    "payloadBodiesInspected": false,
+    "basis": "Insert-only tables messages, memory_records, and moment_records; no model/capability columns or character-table foreign keys; references are stable character IDs; proposed set does not write characters or character_runtime_specs."
+  },
+  "mutations": {
+    "productionWrites": 0,
+    "homeNodeWrites": 0,
+    "indexedDbWrites": 0,
+    "restoreExecuted": false,
+    "approvalIssued": false,
+    "checkpointCreated": false,
+    "applyWindowOpened": false,
+    "providerCalls": 0
+  },
+  "lifecycle": {
+    "checkpoint": {
+      "sha256": "96fdc0aa099b955b5f1a3e4b17e7c0e154babe901fb63b89786f706d8ebdfadf",
+      "expected": "96fdc0aa099b955b5f1a3e4b17e7c0e154babe901fb63b89786f706d8ebdfadf"
+    },
+    "intent": {
+      "sha256": "ae8d6f25f8286fe421696c753eb9a00b4da7d7dfea162e230bbdc64599874513",
+      "expected": "ae8d6f25f8286fe421696c753eb9a00b4da7d7dfea162e230bbdc64599874513"
+    },
+    "ready": {
+      "sha256": "f3ef61f5f89f4a14acd0a386976d245f0dac5b3838fe2b6cb3b1a318a225de7a",
+      "expected": "f3ef61f5f89f4a14acd0a386976d245f0dac5b3838fe2b6cb3b1a318a225de7a"
+    },
+    "verified": {
+      "sha256": "8547e149ff5067c4e6ea4c8d319ac7febf702e58af9190bb4e2dcb8cbda4757e",
+      "expected": "8547e149ff5067c4e6ea4c8d319ac7febf702e58af9190bb4e2dcb8cbda4757e"
+    },
+    "consumedMarkerPresent": false,
+    "activeQuarantined": true,
+    "normalRuntimeStopped": true,
+    "recoveryOnlyHostCount": 1,
+    "normalHostCount": 0,
+    "providerCalls": 0,
+    "source": "current read-only lifecycle hashes and process snapshot; no lifecycle files changed"
+  },
+  "resolution": {
+    "newRoleEvidence": "RESOLVED",
+    "characterIdentityConflicts": 0,
+    "unresolvedCanonicalBusinessDataConflicts": 0,
+    "insertSetIndependent": true,
+    "updateCount": 0,
+    "deleteCount": 0,
+    "runtimeBindingDeferredTo": "R3-D",
+    "readyForExplicitR3CReconstructionApproval": true,
+    "reconstructionExecuted": false
+  },
+  "artifacts": [
+    "character-field-authority-matrix.json",
+    "character-conflict-resolution.json",
+    "P32-W5-R3-C2-CHARACTER-PROJECTION-AUTHORITY-REPORT.json"
+  ]
+}

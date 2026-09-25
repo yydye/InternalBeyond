@@ -72,6 +72,8 @@ const bootState = require('../runtime/boot-state.js');
 const productVersion = require('../runtime/product-version.js');
 /* P11-3H：停止面判定（唯一实现；Bridge / Active / Home Node 用的是同一份）。 */
 const serviceControl = require('../runtime/service-control.js');
+const { isTauriOrigin } = require('../runtime/host-origin.js');
+const { createProjectKnowledge } = require('./project-knowledge.js');
 
 /*
  * The update runtime is loaded DEFENSIVELY, and this is load-bearing.
@@ -202,7 +204,7 @@ function shutdownOriginAllowed(req) {
     if (u.protocol === 'file:') return true;
     if (u.protocol === 'http:' || u.protocol === 'https:') {
       const host = String(u.hostname).toLowerCase();
-      if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]') return true;
+      if (isTauriOrigin(origin) || host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]') return true;
     }
   } catch (e) { /* illegal origin → deny */ }
   return false;
@@ -357,6 +359,20 @@ function createWebServer(opts) {
      network or a real install. */
   const check = o.updateCheck || updateCheck;
   const install = o.updateInstall || updateInstall;
+  const acceptanceSecretRoutes = process.env.IB_ACCEPTANCE_SECRET_ROUTES === '1';
+  const acceptanceSecretRoutesRunId = String(process.env.IB_ACCEPTANCE_SECRET_ROUTES_RUN_ID || '');
+  let acceptanceSecretRouteResult = null;
+  let acceptanceSecretRouteGetLogged = false;
+  function acceptanceTransportLog(event) {
+    if (!acceptanceSecretRoutes) return;
+    const runId = (acceptanceSecretRoutesRunId || 'missing').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64) || 'missing';
+    const line = 'ts=' + Date.now() + ' pid=' + process.pid + ' runId=' + runId + ' event=' + String(event) + '\n';
+    try { fs.appendFileSync(path.join(os.tmpdir(), 'p32-w3a-' + runId + '-transport.log'), line); } catch (_) {}
+  }
+  acceptanceTransportLog('M2_SERVER_BOOT');
+  /* P32: the Browser adapter uses this same allowlisted, read-only resolver.
+     Tauri uses its Rust counterpart; neither path exposes the repository root. */
+  const projectKnowledge = o.projectKnowledge || createProjectKnowledge({ root: root });
 
   /* P11-3H · 停止面的判定（唯一实现在 runtime/service-control.js）。
      `exposeBody:false`：本文件的 /__shutdown 从 P7 起就回答
@@ -375,6 +391,184 @@ function createWebServer(opts) {
       const body = JSON.stringify({ ok: true, server: identity, version: pv.ok ? pv.version : '' });
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end(body);
+      return;
+    }
+    if (pathname === '/__p32-w3a/acceptance') {
+      /* W3A is an explicit, memory-only acceptance seam. It is absent from
+         normal production processes and accepts only the fixed probe's bounded
+         result shape; it never serves DOM, credentials, or arbitrary commands. */
+      const origin = String(req.headers.origin || '').trim();
+      const originOk = shutdownOriginAllowed(req);
+      const cors = {};
+      if (req.method === 'GET' && !acceptanceSecretRouteGetLogged) {
+        acceptanceSecretRouteGetLogged = true;
+        acceptanceTransportLog('M2_ENDPOINT_GET_FIRST');
+      }
+      if (req.method === 'POST') acceptanceTransportLog('M2_ENDPOINT_POST_RECEIVED');
+      if (origin && originOk) {
+        cors['Access-Control-Allow-Origin'] = origin;
+        cors.Vary = 'Origin';
+      }
+      if (!acceptanceSecretRoutes) {
+        res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: 'acceptance-disabled' }));
+        return;
+      }
+      if (!originOk) {
+        acceptanceTransportLog('M2_ORIGIN_DENIED');
+        res.writeHead(403, Object.assign({ 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, cors));
+        res.end(JSON.stringify({ ok: false, error: 'origin-denied' }));
+        return;
+      }
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204, Object.assign({
+          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+          'Access-Control-Allow-Headers': 'content-type',
+          'Cache-Control': 'no-store'
+        }, cors));
+        res.end();
+        return;
+      }
+      if (req.method === 'GET') {
+        res.writeHead(200, Object.assign({ 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, cors));
+        res.end(JSON.stringify({ ok: true, ready: !!acceptanceSecretRouteResult, result: acceptanceSecretRouteResult }));
+        return;
+      }
+      if (req.method !== 'POST') {
+        res.writeHead(405, Object.assign({ 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, cors));
+        res.end(JSON.stringify({ ok: false, error: 'method-not-allowed' }));
+        return;
+      }
+      readJsonBody(req, 32768).then(function (body) {
+        if (!body.ok || !body.json || typeof body.json !== 'object' || Array.isArray(body.json)) {
+          res.writeHead(400, Object.assign({ 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, cors));
+          res.end(JSON.stringify({ ok: false, error: body.kind || 'bad-body' }));
+          return;
+        }
+        const input = body.json;
+        const phases = ['probe_started', 'document_state', 'tauri_recognized', 'nav_home_found', 'probe_complete', 'probe_failed'];
+        if (input.schemaVersion !== 1 || typeof input.runId !== 'string' || input.runId !== acceptanceSecretRoutesRunId || phases.indexOf(input.phase) < 0) {
+          acceptanceTransportLog('M2_RUN_MISMATCH');
+          res.writeHead(409, Object.assign({ 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, cors));
+          res.end(JSON.stringify({ ok: false, error: 'acceptance-run-mismatch' }));
+          return;
+        }
+        const phaseRank = {
+          probe_started: 1,
+          document_state: 2,
+          tauri_recognized: 3,
+          nav_home_found: 4,
+          probe_complete: 5,
+          probe_failed: 6
+        };
+        if (acceptanceSecretRouteResult && acceptanceSecretRouteResult.runId === input.runId &&
+            phaseRank[input.phase] < (phaseRank[acceptanceSecretRouteResult.phase] || 0)) {
+          acceptanceTransportLog('M2_PHASE_REGRESSION_IGNORED');
+          res.writeHead(202, Object.assign({ 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, cors));
+          res.end(JSON.stringify({ ok: true, accepted: true, retained: true }));
+          return;
+        }
+        if (acceptanceSecretRouteResult && acceptanceSecretRouteResult.done === true && input.done !== true) {
+          acceptanceTransportLog('M2_AFTER_DONE_IGNORED');
+          res.writeHead(202, Object.assign({ 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, cors));
+          res.end(JSON.stringify({ ok: true, accepted: true, terminal: true }));
+          return;
+        }
+        const boolKeys = [
+          'ready', 'tauri', 'navHome', 'initialConsoleHidden', 'sixClicksNoConsole',
+          'timeoutReset', 'consoleOpened', 'consoleInput', 'consoleFocus',
+          'maliciousRejected', 'beyondOpened', 'beyondClosed', 'consoleReopened',
+          'middlebrainOpened', 'noNormalPage', 'middlebrainClosed', 'hashReturned',
+          'noMiddlebrainQuery', 'directMessageSent', 'done'
+        ];
+        const output = { schemaVersion: 1, runId: input.runId.slice(0, 64), phase: input.phase, reportedAt: Date.now() };
+        boolKeys.forEach(function (key) { output[key] = input[key] === true; });
+        ['origin', 'pathname', 'error'].forEach(function (key) {
+          if (typeof input[key] === 'string') output[key] = input[key].slice(0, 256);
+        });
+        if (['loading', 'interactive', 'complete'].indexOf(input.readyState) >= 0) output.readyState = input.readyState;
+        if (Number.isInteger(input.documentSeq) && input.documentSeq >= 0 && input.documentSeq <= 10000) output.documentSeq = input.documentSeq;
+        if (['BLANK', 'OPAQUE', 'INTERNALBEYOND', 'OTHER_LOCAL', 'UNEXPECTED', 'BOOTSTRAP'].indexOf(input.urlClass) >= 0) output.urlClass = input.urlClass;
+        if (['initialization', 'started', 'finished'].indexOf(input.pageLoadPhase) >= 0) output.pageLoadPhase = input.pageLoadPhase;
+        ['hrefClass', 'originClass', 'pathnameClass'].forEach(function (key) {
+          if (['TAURI', 'ASSET', 'HTTP', 'HTTPS', 'FILE', 'ABOUT', 'DATA', 'OTHER', 'CUSTOM', 'EMPTY', 'TAURI_LOCAL', 'LOOPBACK', 'OPAQUE', 'INTERNALBEYOND', 'ROOT'].indexOf(input[key]) >= 0) output[key] = input[key];
+        });
+        ['titlePresent', 'bodyPresent', 'ibMarkerPresent', 'ibHostPresent'].forEach(function (key) {
+          if (typeof input[key] === 'boolean') output[key] = input[key];
+        });
+        if (typeof input.errorCode === 'string') output.errorCode = input.errorCode.slice(0, 64);
+        output.modelCallsObserved = Number.isInteger(input.modelCallsObserved) && input.modelCallsObserved >= 0 && input.modelCallsObserved <= 1 ? input.modelCallsObserved : 0;
+        output.elapsedMs = Number.isFinite(input.elapsedMs) && input.elapsedMs >= 0 && input.elapsedMs <= 60000 ? Math.floor(input.elapsedMs) : 0;
+        acceptanceSecretRouteResult = output;
+        acceptanceTransportLog('M2_PHASE_' + input.phase.toUpperCase());
+        acceptanceTransportLog('M2_BODY_ACCEPTED');
+        res.writeHead(202, Object.assign({ 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, cors));
+        res.end(JSON.stringify({ ok: true, accepted: true }));
+      });
+      return;
+    }
+    if (pathname === '/__p32-w3a/acceptance') {
+      /* P32-W.3A is a fixed, memory-only acceptance seam. It is unreachable
+         unless the explicit test environment gate is present. The endpoint
+         accepts only bounded boolean/URL metadata from the fixed Rust probe. */
+      const origin = String(req.headers.origin || '').trim();
+      const originOk = shutdownOriginAllowed(req);
+      const cors = {};
+      if (origin && originOk) { cors['Access-Control-Allow-Origin'] = origin; cors.Vary = 'Origin'; }
+      if (!acceptanceSecretRoutes) {
+        res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: 'acceptance-disabled' }));
+        return;
+      }
+      if (!originOk) {
+        res.writeHead(403, Object.assign({ 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, cors));
+        res.end(JSON.stringify({ ok: false, error: 'origin-denied' }));
+        return;
+      }
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204, Object.assign({
+          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+          'Access-Control-Allow-Headers': 'content-type',
+          'Cache-Control': 'no-store'
+        }, cors));
+        res.end();
+        return;
+      }
+      if (req.method === 'GET') {
+        res.writeHead(200, Object.assign({ 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, cors));
+        res.end(JSON.stringify({ ok: true, ready: !!acceptanceSecretRouteResult, result: acceptanceSecretRouteResult }));
+        return;
+      }
+      if (req.method !== 'POST') {
+        res.writeHead(405, Object.assign({ 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, cors));
+        res.end(JSON.stringify({ ok: false, error: 'method-not-allowed' }));
+        return;
+      }
+      readJsonBody(req, 32768).then(function (body) {
+        if (!body.ok || !body.json || typeof body.json !== 'object' || Array.isArray(body.json)) {
+          res.writeHead(400, Object.assign({ 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, cors));
+          res.end(JSON.stringify({ ok: false, error: body.kind || 'bad-body' }));
+          return;
+        }
+        const input = body.json;
+        const boolKeys = [
+          'ready', 'tauri', 'navHome', 'initialConsoleHidden', 'sixClicksNoConsole',
+          'timeoutReset', 'consoleOpened', 'consoleInput', 'consoleFocus',
+          'maliciousRejected', 'beyondOpened', 'beyondClosed', 'consoleReopened',
+          'middlebrainOpened', 'noNormalPage', 'middlebrainClosed', 'hashReturned',
+          'noMiddlebrainQuery', 'directMessageSent', 'done'
+        ];
+        const output = { schema: 'p32-w3a.v1', reportedAt: Date.now() };
+        boolKeys.forEach(function (key) { output[key] = input[key] === true; });
+        ['origin', 'pathname', 'error'].forEach(function (key) {
+          if (typeof input[key] === 'string') output[key] = input[key].slice(0, 256);
+        });
+        output.modelCallsObserved = Number.isInteger(input.modelCallsObserved) && input.modelCallsObserved >= 0 && input.modelCallsObserved <= 1 ? input.modelCallsObserved : 0;
+        output.elapsedMs = Number.isFinite(input.elapsedMs) && input.elapsedMs >= 0 && input.elapsedMs <= 60000 ? Math.floor(input.elapsedMs) : 0;
+        acceptanceSecretRouteResult = output;
+        res.writeHead(202, Object.assign({ 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, cors));
+        res.end(JSON.stringify({ ok: true, accepted: true }));
+      });
       return;
     }
     if (pathname === '/__shutdown') {
@@ -497,6 +691,36 @@ function createWebServer(opts) {
         };
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify(body));
+      return;
+    }
+    if (pathname.indexOf('/__project-knowledge') === 0) {
+      if (req.method !== 'GET') {
+        res.writeHead(405, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: 'method-not-allowed' }));
+        return;
+      }
+      if (!shutdownOriginAllowed(req)) {
+        res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: 'origin-denied' }));
+        return;
+      }
+      let url;
+      try { url = new URL(String(req.url || '/'), 'http://127.0.0.1'); } catch (_) { url = null; }
+      let payload;
+      if (!url) payload = { ok: false, error: 'invalid-request' };
+      else if (url.pathname === '/__project-knowledge/status') payload = projectKnowledge.status();
+      else if (url.pathname === '/__project-knowledge/list') payload = projectKnowledge.listProjectDocs();
+      else if (url.pathname === '/__project-knowledge/search') {
+        payload = projectKnowledge.searchProjectDocs(url.searchParams.get('q') || '', {
+          limit: url.searchParams.get('limit'),
+          authority: url.searchParams.get('authority')
+        });
+      } else if (url.pathname === '/__project-knowledge/read') {
+        payload = projectKnowledge.readProjectDoc(url.searchParams.get('docId') || '', url.searchParams.get('section') || '');
+      } else payload = { ok: false, error: 'not-found' };
+      const statusCode = payload && payload.ok === false && payload.error === 'not-found' ? 404 : 200;
+      res.writeHead(statusCode, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify(payload));
       return;
     }
     const hit = resolveRequest(root, req.url);

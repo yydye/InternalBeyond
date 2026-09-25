@@ -1445,3 +1445,9 @@ discover → verify identity → cooperative request → wait bounded
   目标都已停止（或本来就没在跑）；非 0 = 至少一个自有目标没能停下，调用方不得继续。
 - 报告里没有正文、payload、凭据或路径秘密：只有组件 id、状态名、OS 给出的 pid 与已脱敏的理由。
 
+## Recovery-only architecture note · P32-W5 (2026-09)
+
+- Windows RecoveryOnly child processes require canonical path validation followed by normalization of the script argument to an equivalent plain Win32 absolute path.
+- Recovery diagnostics and dry-run reporting are separate from reconstruction apply; a valid fail-closed report can be the expected result.
+- Home Node SQLite sidecar remediation requires its own evidence-bound contract. Current incident status and evidence are in [the September 2026 role recovery incident](incidents/2026-09-role-recovery-incident.md).
+

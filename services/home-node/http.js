@@ -46,6 +46,9 @@ const CHAT_CORE = require('../../assets/js/chat-core.js');
 const catalogBootstrap = require('./catalog-bootstrap.js');
 /* P11-3H：停止面的路径常量（唯一来源，不在这里再写一遍字面量）。 */
 const serviceControl = require('../../runtime/service-control.js');
+/* P32：Tauri 2 的 bundled WebView 使用 tauri.localhost；它仍然是本机
+   应用来源，不应被误判成一个 LAN/公网 Origin。 */
+const { isTauriOrigin } = require('../../runtime/host-origin.js');
 
 const PROTOCOL_VERSION = 1;
 /* P22-23 · 首次运行凭据交付面的**契约常量**（路径 + 请求头）。
@@ -221,6 +224,7 @@ function createHomeNodeHttp(deps) {
     if (!value) return false;                       /* 无 Origin：不需要 CORS 头 */
     if (allowedOrigins.indexOf(value) >= 0) return true;
     if (value === 'null') return !token;             /* file:// —— 仅在无 token 时信任 */
+    if (isTauriOrigin(value)) return true;           /* Tauri 2 bundled WebView */
     if (/^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?$/.test(value)) return true;
     return false;
   }

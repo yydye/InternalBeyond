@@ -240,8 +240,11 @@ async function main() {
     check('private.noActions', await evaluate(cdp, "document.querySelector('.mom-private-lock') ? document.querySelector('.mom-private-lock').querySelectorAll('.mom-action-btn,.mom-comments').length===0 : false"));
     await evaluate(cdp, "(async function(){var s=document.getElementById('mom-role-scope');s.value='public';await _momentsRenderFeed()})()");
 
-    /* companion 事件回传落库（幂等） */
-    const ingest = await evaluate(cdp, "(async function(){var ev={id:'event_mom_p2t',kind:'moment',moment:{id:'mom_ingest_p2',roleId:'p2b',content:'companion 后台生成的动态。',visibility:'all',visibleRoleIds:[],likes:[],comments:[],source:'proactive',createdAt:new Date().toISOString()},next_at:Date.now()+3600000,last_post_at:Date.now(),sent_at:Date.now()};var a=await _momentsIngestEvent(ev,_activeUserId());var b=await _momentsIngestEvent(ev,_activeUserId());var ex=await getMoment('mom_ingest_p2');return{a:a,b:b,exists:!!ex}})()");
+    /* companion 事件回传落库（幂等）。
+       P25-2D：事件**不是许可** —— ingest 现在必须过 Autonomy（prefs / cooldown / duplicate）
+       ⇒ 用例先把该角色的最短间隔状态归零（否则会被 cooldown 正确拦下），
+       并且不再用事件自带的临时 moment id 找行：canonical 身份由 candidate 派生。 */
+    const ingest = await evaluate(cdp, "(async function(){var st=JSON.parse(localStorage.getItem('ib_moments_state_v1')||'{}');st.p2b=Object.assign({},st.p2b||{},{lastPostAt:0});localStorage.setItem('ib_moments_state_v1',JSON.stringify(st));var ev={id:'event_mom_p2t',kind:'moment',moment:{id:'mom_ingest_p2',roleId:'p2b',content:'companion 后台生成的动态。',visibility:'all',visibleRoleIds:[],likes:[],comments:[],source:'proactive',createdAt:new Date().toISOString()},next_at:Date.now()+3600000,last_post_at:Date.now(),sent_at:Date.now()};var a=await _momentsIngestEvent(ev,_activeUserId());var b=await _momentsIngestEvent(ev,_activeUserId());var own=await getRoleMoments('p2b');var ex=own.filter(function(m){return m.content==='companion 后台生成的动态。'});return{a:a,b:b,exists:ex.length===1,rows:ex.length,shape:ex[0]?Object.keys(ex[0]).sort().join(','):''}})()");
     check('companion.ingestIdempotent', ingest && ingest.a === true && ingest.b === false && ingest.exists === true, JSON.stringify(ingest));
 
     /* Feed 分页（>30 条 → 首屏 30，点击加载更多后全量） */

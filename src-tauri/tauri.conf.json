@@ -1,0 +1,63 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "InternalBeyond",
+  "identifier": "com.internalbeyond.desktop",
+  "build": {
+    "beforeBuildCommand": "",
+    "beforeDevCommand": "",
+    "devUrl": "http://127.0.0.1:23120/InternalBeyond.html",
+    "frontendDist": "../.tauri-frontend"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "security": {
+      "csp": null
+    },
+    "windows": [
+      {
+        "label": "main",
+        "title": "InternalBeyond",
+        "url": "InternalBeyond.html?ib_tauri_host=1",
+        "width": 1440,
+        "height": 920,
+        "resizable": true,
+        "decorations": false,
+        "shadow": false,
+        "visible": false,
+        "create": false
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["icons/icon.ico"],
+    "shortDescription": "InternalBeyond Windows desktop host",
+    "longDescription": "InternalBeyond desktop host for the existing Web Core and local services.",
+    "publisher": "InternalBeyond",
+    "copyright": "InternalBeyond",
+    "resources": [
+      "../docs",
+      "../README.md",
+      "../VERSION",
+      "../InternalBeyond.html",
+      "../assets",
+      "../apps",
+      "../game",
+      "../runtime",
+      "../services",
+      "../bridge",
+      "../active"
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "startMenuFolder": "InternalBeyond"
+      }
+    }
+  }
+}

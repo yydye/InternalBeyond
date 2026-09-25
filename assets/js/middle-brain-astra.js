@@ -178,7 +178,7 @@
        绝不影响正常角色聊天。
      - 结构化输出至少区分 keep / merge / drop / compressedContext，并可追溯到输入。
      ==================================================================== */
-  var MB_ASTRA_TIMEOUT_MS = 20000;
+  var MB_ASTRA_TIMEOUT_MS = 120000;
 
   /* 解析 Astra 返回的 JSON 认知结果（Astra 只输出结构化 JSON，不生成角色回复）。
      仅接受白名单字段；任何异常/非 JSON → null（上层走 fallback）。 */

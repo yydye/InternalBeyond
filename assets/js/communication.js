@@ -198,7 +198,91 @@ function _ibAnthropicWire(prompt){
   }
   return core.normalizeAnthropicMessages(prompt);
 }
+/* P23 Phase 2A · canonical history → provider wire 归一的**桌面转调点**。
+   实现唯一 = ib-model-core.js 的 normalizeWireRoles（Browser / Node 同一函数）；
+   桌面侧的请求体是就地拼的（不经过 buildRequestBody），因此必须显式转调，
+   绝不在这里写第二份"相邻同 role 怎么合并"的规则。
+   Gemini 的 contents 要求 user/model 交替：一次回合交付多条 assistant 消息时
+   （waifu 多段 / 工具续轮），数据库里的独立消息在这里被合并成一条 model 轮
+   —— **只改 wire，不改数据库**。
+   核心未加载时原样返回：那正是 P23 2A 之前的行为，不会因为归一层缺席而更难用。 */
+function _ibWireMessages(list,format){
+  try{
+    var core=(typeof window!=='undefined')?window.IBModelCore:null;
+    if(core&&typeof core.normalizeWireRoles==='function')return core.normalizeWireRoles(list,format);
+  }catch(e){}
+  return list;
+}
+/* P23 Phase 2A · conversation 的**确定性顺序**（实现唯一 = assets/js/delivery-sequence-core.js）。
+   为什么每个读取点都必须走它：一次模型回合可以产出多条消息，它们共享同一个 timestamp
+   （契约禁止用 +1ms 之类的时间差制造顺序）。只按 timestamp 排序时，"同毫秒"的先后
+   由引擎/主键顺序决定，而且工具续轮的消息先落库、主回复落库更晚 —— 主回复会排到
+   续轮**下面**（真实缺陷）。orderMessages 给出：回合内按 sequenceIndex 升序、回合整体
+   落在它最早一条的位置；没有回合键的旧消息退化为 (timestamp, id)，与今天的取回顺序一致。
+   核心未加载时原样返回（退回取回顺序，仍是确定性的，只是不含回合归组）。 */
+function _ibOrderMessages(list){
+  try{
+    var core=(typeof window!=='undefined')?window.IBDeliverySequence:null;
+    if(core&&typeof core.orderMessages==='function')return core.orderMessages(list);
+  }catch(e){}
+  return list;
+}
+function _ibCredentialUnavailable(){
+  var error=new Error('CREDENTIAL_UNAVAILABLE');
+  error.code='CREDENTIAL_UNAVAILABLE';
+  return error;
+}
+function _ibCredentialIsLocalEndpoint(endpoint){
+  try{
+    var url=new URL(String(endpoint||'')),host=String(url.hostname||'').toLowerCase();
+    return (url.protocol==='http:'||url.protocol==='https:')&&(host==='localhost'||host==='127.0.0.1'||host==='::1'||host==='[::1]');
+  }catch(e){return false}
+}
+function _ibCredentialEndpointSafe(endpoint){
+  var value=String(endpoint||'').trim();if(!value)return false;
+  if(/(?:[?&])(?:api[_-]?key|key|token|secret|authorization|bearer|password|credential|signature|sig)=[^&#]+/i.test(value))return false;
+  if(/(?:sk-[A-Za-z0-9_-]{12,}|AIza[0-9A-Za-z_-]{20,}|Bearer\s+[A-Za-z0-9._~+/-]{16,})/i.test(value))return false;
+  try{var url=new URL(value);return (url.protocol==='http:'||url.protocol==='https:')&&!url.username&&!url.password&&!url.hash}
+  catch(e){return false}
+}
+async function _ibWithRuntimeApiCredential(cfg,run,options){
+  options=options||{};cfg=cfg&&typeof cfg==='object'?cfg:{};
+  if(typeof run!=='function')throw _ibCredentialUnavailable();
+  if(options.rejectImageGenSecret&&(String(cfg.imageGenApiKey||'').trim()||cfg._credentialImageSecretLegacy===true))throw _ibCredentialUnavailable();
+  var requestCfg={};
+  Object.keys(cfg).forEach(function(key){if(key!=='apiKey'&&key!=='imageGenApiKey')requestCfg[key]=cfg[key]});
+  var resolverResponse=null,runtimeSecret='';
+  var endpoint=options.endpoint||cfg.endpoint;
+  try{
+    if(!_ibCredentialEndpointSafe(endpoint))throw _ibCredentialUnavailable();
+    if(_ibCredentialIsLocalEndpoint(endpoint)){
+      requestCfg.apiKey='';
+      return await run(requestCfg);
+    }
+    var bindingId=String(cfg.id||'').trim();
+    var host=typeof window!=='undefined'&&window.IB&&window.IB.host;
+    var resolver=host&&host.credentialResolver;
+    if(!bindingId||!resolver||typeof resolver.resolve!=='function'||resolver.available===false)throw _ibCredentialUnavailable();
+    try{resolverResponse=await resolver.resolve(bindingId)}catch(e){throw _ibCredentialUnavailable()}
+    if(!resolverResponse||resolverResponse.ok!==true||typeof resolverResponse.apiKey!=='string'||!resolverResponse.apiKey.trim())throw _ibCredentialUnavailable();
+    var expectedProvider=String(options.expectedProvider||cfg.provider||'').trim().toLowerCase();
+    var resolvedProvider=String(resolverResponse.provider||'').trim().toLowerCase();
+    if(!resolvedProvider||(expectedProvider&&resolvedProvider!==expectedProvider))throw _ibCredentialUnavailable();
+    runtimeSecret=resolverResponse.apiKey;
+    requestCfg.apiKey=runtimeSecret;
+    return await run(requestCfg);
+  }finally{
+    requestCfg.apiKey='';
+    runtimeSecret='';
+    if(resolverResponse&&typeof resolverResponse==='object')resolverResponse.apiKey='';
+  }
+}
+if(typeof window!=='undefined')window._ibWithRuntimeApiCredential=_ibWithRuntimeApiCredential;
+
 async function callApi(cfg,userMsg,opts){
+  return _ibWithRuntimeApiCredential(cfg,function(runtimeCfg){return _callApiWithRuntimeCredential(runtimeCfg,userMsg,opts)});
+}
+async function _callApiWithRuntimeCredential(cfg,userMsg,opts){
   const format=_providerFormat(cfg);
   /* P21：同一条 canonical 思考深度（MB 未启用 → auto），翻译只发生在 request builder。
      RCI-1：本接缝与 callApiChat* 对称地接受调用方声明的**诊断身份**（opts._ibConsumer /
@@ -350,6 +434,10 @@ function _getApiAvatarByName(senderName){if(!senderName)return '';var cfg=apiCon
 function _messageApiConfig(m){
   if(!m)return null;
   const all=(apiConfigs||[]).concat(archivedConfigs||[]);
+  /* P24-M2 · canonical 身份键优先（speakerId → config_id → friendId）；
+     senderName 只作最后的 legacy 回退（显示与旧数据兼容），不再承担身份权威。 */
+  const speakerId=m.metadata&&m.metadata.speakerId;
+  if(speakerId){const bySpeaker=all.find(a=>a.id===speakerId);if(bySpeaker)return bySpeaker}
   const configId=m.metadata&&m.metadata.config_id;
   if(configId){const exact=all.find(a=>a.id===configId);if(exact)return exact}
   if(m.friendId&&!String(m.friendId).startsWith('group_')){
@@ -400,6 +488,19 @@ function _buildAvatarCircle(name,src,size){
   if(src){var img=document.createElement('img');img.src=src;img.alt='';d.appendChild(img)}
   else{d.textContent=(name||'?').charAt(0).toUpperCase()}
   return d;
+}
+/* ── P23 Phase 1 · assistant 一级 voice message 渲染分支 ──────────────
+   voice 载荷存在且**有可播放音源**时，气泡取代整段文字稿（默认不重复显示文字）。
+   文字稿仍是消息自己的数据：保留在 content 与 voice.transcript 里，
+   由气泡上的「文」按钮展开 —— context / Memory / 搜索 / 导出 / 无障碍全部不受影响。
+   撤回（withdrawn）与无可播放音源的记录一律回落为普通文本，绝不伪装成可播放。 */
+function _ibAiVoicePayload(m){
+  if(!m||m.role==='user'||m.withdrawn)return null;
+  try{ if(window.IBVoiceMessage&&IBVoiceMessage.isAiVoiceMessage(m))return m.voice }catch(e){}
+  return null;
+}
+function _renderAiVoice(host,m){
+  host.appendChild(_buildVoiceEl(m.voice,{transcriptToggle:true}));
 }
 function _buildMsgEl(m,isFullscreen,isGroupCont){
   /* content 与 reasoning_content 始终分流；展示与否只由该消息对应模型的 showThinking 决定。 */
@@ -452,7 +553,7 @@ function _buildMsgEl(m,isFullscreen,isGroupCont){
         ct.textContent=timeStr;frag.appendChild(ct);
       }
       const txt=document.createElement('div');txt.className='r-text';
-      if(!isUser){_renderAiContent(txt,div,_displayContent);if(m.truncated)txt.appendChild(_buildContinuePill(m.id))}else if(m.voice){if(m.content)txt.appendChild(document.createTextNode(m.content));txt.appendChild(_buildVoiceEl(m.voice))}else{txt.textContent=m.content}
+      if(!isUser){const _avm=_ibAiVoicePayload(m);if(_avm)_renderAiVoice(txt,m);else _renderAiContent(txt,div,_displayContent);if(m.truncated)txt.appendChild(_buildContinuePill(m.id))}else if(m.voice){if(m.content)txt.appendChild(document.createTextNode(m.content));txt.appendChild(_buildVoiceEl(m.voice))}else{txt.textContent=m.content}
       div.appendChild(txt);
     }else{
       /* ── Original layout for AI without avatar ── */
@@ -460,7 +561,7 @@ function _buildMsgEl(m,isFullscreen,isGroupCont){
       head.innerHTML=esc(sName)+(timeStr?'<span class="r-time">'+timeStr+'</span>':'');
       div.appendChild(head);
       const txt=document.createElement('div');txt.className='r-text';
-      if(!isUser){_renderAiContent(txt,div,_displayContent);if(m.truncated)txt.appendChild(_buildContinuePill(m.id))}else if(m.voice){if(m.content)txt.appendChild(document.createTextNode(m.content));txt.appendChild(_buildVoiceEl(m.voice))}else{txt.textContent=m.content}
+      if(!isUser){const _avm=_ibAiVoicePayload(m);if(_avm)_renderAiVoice(txt,m);else _renderAiContent(txt,div,_displayContent);if(m.truncated)txt.appendChild(_buildContinuePill(m.id))}else if(m.voice){if(m.content)txt.appendChild(document.createTextNode(m.content));txt.appendChild(_buildVoiceEl(m.voice))}else{txt.textContent=m.content}
       div.appendChild(txt);
     }
     if(m.files&&m.files.length)m.files.forEach(function(f){div.appendChild(_buildFileCard(f))});
@@ -477,10 +578,12 @@ function _buildMsgEl(m,isFullscreen,isGroupCont){
       label.style.cssText='font-size:0.68rem;opacity:0.7;display:block;margin-bottom:2px';
       label.textContent=m.senderName;
       div.appendChild(label);
-      _renderSegments(_panelMdHost(div),_displayContent);
+      const _avm1=_ibAiVoicePayload(m);
+      if(_avm1)_renderAiVoice(div,m);else _renderSegments(_panelMdHost(div),_displayContent);
     }else if(!isUser){
       var _pm2=_mdMode();if(_pm2==='full'||_pm2==='partial')div.classList.add('md-rendered');
-      _renderSegments(_panelMdHost(div),_displayContent);
+      const _avm2=_ibAiVoicePayload(m);
+      if(_avm2)_renderAiVoice(div,m);else _renderSegments(_panelMdHost(div),_displayContent);
     }else if(m.voice){
       if(m.content)div.appendChild(document.createTextNode(m.content));
       div.appendChild(_buildVoiceEl(m.voice));
@@ -617,12 +720,14 @@ async function loadChatMessages(){
   const container=document.getElementById('chat-messages');
   try{
     const filtered=activeFriendId?(await dbGetByIndex('chatMessages','byFriend',activeFriendId)):(await dbGetAll('chatMessages'));
-    filtered.sort((a,b)=>a.timestamp-b.timestamp);
-    if(filtered.length===0){
+    const _ordered=_ibOrderMessages(filtered);
+    if(_ordered.length===0){
       container.innerHTML='<div class="chat-msg system">发送消息开始对话</div>';
+      _ibDeliveryTypingReassert();/* P23 2B：回到仍在交付中的会话时把 typing 重新画出来 */
       return;
     }
-    _renderAllChat(container,filtered,false);
+    _renderAllChat(container,_ordered,false);
+    _ibDeliveryTypingReassert();
   }catch(e){container.innerHTML='<div class="chat-msg system">发送消息开始对话</div>'}
 }
 
@@ -1314,7 +1419,7 @@ function getTextContent(msg){
   if(typeof msg.content==='string')t=msg.content;
   else if(Array.isArray(msg.content))t=msg.content.filter(b=>b.type==='text').map(b=>b.text||'').join('');
   else if(msg.content)t=String(msg.content);
-  if(msg.voice)t+=(t?'\n':'')+_voiceApiLine(msg.voice);/* 语音消息：存储记录读取时附上等效文本（映射后的 API 消息对象无 voice 字段，请求内容不经此改变） */
+  if(msg.voice&&msg.role==='user')t+=(t?'\n':'')+_voiceApiLine(msg.voice);/* 用户语音消息：存储记录读取时附上等效文本（映射后的 API 消息对象无 voice 字段，请求内容不经此改变）。P23：assistant 一级 voice message 的 content 本身就是文字稿，绝不重复追加。 */
   return t;
 }
 
@@ -1671,7 +1776,13 @@ async function _buildSingleChatContext(cfg,opts){
   }catch(_mbErr){console.warn('[MiddleBrain] ctx failed',String(_mbErr&&_mbErr.message||_mbErr).slice(0,120))}
   try{if(_threadMemOk&&typeof getActivityContext==='function'){const _actCtx=await getActivityContext(cfg.id,{userMessage:_ctxText,threadId:_targetThread,maxChars:_bActChars||undefined,activity:((opts&&Object.prototype.hasOwnProperty.call(opts,'activity'))?opts.activity:undefined)});
   if(_actCtx)_tailCtx+=(_tailCtx?'\n\n':'')+_actCtx;}}catch(_actErr){console.warn('[Activity] chat context failed',String(_actErr&&_actErr.message||_actErr).slice(0,120))}
-  const _wsReadCtx=_getWsReadInjection()+_getWsOpFeedbackInjection()+_getWsRunOutputInjection()+_getIbToolResultInjection()+_getBlogReadInjection();
+  /* P30-2 · 1:1 注入按**会话归属**过滤：只消费属于本会话的条目；其它会话的条目留在队列
+     （scope 缺失的 unscoped/legacy 条目仍放行 ⇒ 旧行为不变）。Blog 队列不在本阶段范围。 */
+  /* 本函数的会话键：由调用方透传 `opts.friendId`（1:1 = 角色 id；role-dm 等沿用调用方给的值）；
+     cfg.id 只作兜底（1:1 场景二者同值），**绝不**用于群聊（群走 `_buildGroupChatContext`）。 */
+  const _wsScopeMine=_ibWsScopeFilter(String(opts.friendId||cfg.id||''),opts.threadId||null);
+  /* P30-5 · Blog 注入同样按当前会话过滤（mismatch KEEP；legacy string feedback 放行）。 */
+  const _wsReadCtx=_getWsReadInjection(_wsScopeMine)+_getWsOpFeedbackInjection(_wsScopeMine)+_getWsRunOutputInjection(_wsScopeMine)+_getIbToolResultInjection(_wsScopeMine)+_getBlogReadInjection(_wsScopeMine);
   if(_wsReadCtx)_tailCtx+=(_tailCtx?'\n':'')+_wsReadCtx;
   try{if(_ibModelCanSee(cfg))sysContent+=_VISION_DECLARE}catch(e){}
   try{sysContent+='\n\n【撤回】如果你意识到自己上一条消息说错了话（比如 @ 错了人、说错了事实、语气不对），可以在本条回复里输出 <withdraw/>，系统会撤回你上一条消息并提示"XX撤回了一条消息"。只有确实说错时才用，不要频繁使用。'}catch(e){}
@@ -1794,7 +1905,46 @@ async function _buildGroupChatContext(cfg,opts){
     if(gMemCtx)_gTailCtx+=(_gTailCtx?'\n\n':'')+gMemCtx;
   }
   if(_gAmInj.tail)_gTailCtx+=(_gTailCtx?'\n\n':'')+_gAmInj.tail;
-  var _gInjMine=function(it){var a=it&&it.actor;if(a===selfName)return true;return isFirstTurn&&(!a||allNames.indexOf(a)<0)};
+  /* ── P29-3 · Workspace Actor Canonical Attribution（P29-2 冻结语义）──────────────
+     ① actorId 非空 ⇒ **只**比 canonical id；mismatch ⇒ not mine（绝不回退 display 匹配）。
+     ② actorId 空 ⇒ legacy：participants 里**唯一精确显示名** ⇒ 归属到该参与者；
+        同名歧义（≥2 命中）⇒ not mine（fail closed，永不 SELF）。
+     ③ 无主（actor 空，或本群没有任何参与者叫这个名字 —— 例如用户手动跑脚本的 'User'、
+        已退出成员）⇒ 保持既有"本轮首个发言者兜底消费"（兼容旧行为，绝不静默丢弃）。
+     actor 仍只是显示名；identity 只由 actorId（canonical）或唯一精确名（legacy）决定。 */
+  /* P30-2 · 本会话的 canonical conversation 键（派生规则唯一属于 chat-core，经 _ibConvId 调用）。
+     friendId 取群 id（= sendChatMessage 的 _targetFriend）；threadId 由调用方透传（群 UI 无话题频道 ⇒ null）。 */
+  var _gCurConv=_ibConvId(String(group.id||''),opts.threadId||null);
+  /* legacy 归属判定需要的参与者名单：唯一来源 = 群成员表 → apiConfigs 显示名
+     （`_ibGroupParticipants(getGroupMemberIds(group))`，与 sendChatMessage 的 `_gParticipants` 同源，
+     不新建注册表、不做第二次 DB 读）。**惰性构建**：canonical 路径（有 actorId）根本不碰它。 */
+  var _gInjParts=null;
+  function _gInjParticipants(){
+    if(_gInjParts)return _gInjParts;
+    _gInjParts=[];
+    try{
+      if(typeof _ibGroupParticipants==='function'&&typeof getGroupMemberIds==='function'&&group){
+        _gInjParts=_ibGroupParticipants(getGroupMemberIds(group));
+      }
+    }catch(e){_gInjParts=[]}
+    return _gInjParts;
+  }
+  var _gInjMine=function(it){
+    /* ① P30-2 · 会话归属（WHERE）：条目声明了 friendId 就必须与本会话一致；
+       不一致 ⇒ not mine（留在队列，等待其所属会话）。无 friendId ⇒ unscoped/legacy ⇒ 继续走 ②③。 */
+    if(it&&it.friendId&&_ibConvId(it.friendId,it.threadId)!==_gCurConv)return false;
+    var _aid=String((it&&it.actorId)||'');
+    if(_aid)return _aid===String(cfg.id);
+    var _a=String((it&&it.actor)||'');
+    var _parts=_gInjParticipants();
+    var _hits=0,_only='';
+    for(var _hi=0;_hi<_parts.length;_hi++){
+      if(_a&&String(_parts[_hi].name||'')===_a){_hits++;_only=String(_parts[_hi].id||'')}
+    }
+    if(_hits===1)return _only===String(cfg.id);
+    if(_hits>1)return false;
+    return isFirstTurn;
+  };
   var _gWsInject=_getWsReadInjection(_gInjMine)+_getWsOpFeedbackInjection(_gInjMine)+_getWsRunOutputInjection(_gInjMine)+_getIbToolResultInjection(_gInjMine);
   if(_gWsInject)_gTailCtx+=(_gTailCtx?'\n':'')+_gWsInject;
   try{if(_ibModelCanSee(cfg))sysContent+=_VISION_DECLARE}catch(e){}
@@ -2045,6 +2195,15 @@ function _ibBudgetLog(kind,alloc,extra){
   }catch(e){}
 }
 
+/* P24-M3.3.3.3 · Recent Speaker window（**临时 v1 adapter policy**）──────────────────
+   单位 = MemberTurn（**不是** message）：同一成员回合的多条 canonical 消息（multipart /
+   工具续轮）只占 1 个 slot。因此这里**不能**复用任何"按消息计数"的读取窗口
+   （DEFAULT_READ_GROUP_CHAT / glim.groupChatLimit / gss.keepCount 都是 message count，
+   语义不同，故意不复用）。
+   该值不进 storage / 不进 UI / 不进 schema / 不进 planner output；
+   未来的 Group Participation Policy 应当接管这个值（群参与策略的归属地）。 */
+const GROUP_RECENT_SPEAKER_WINDOW=2;
+
 async function sendChatMessage(voiceMsg){
   /* voiceMsg：由语音模块 _vmFinish 传入的 {dataUrl,mime,duration,transcript}；按钮点击/回车调用时为空 */
   const _voice=(voiceMsg&&voiceMsg.dataUrl)?voiceMsg:null;
@@ -2081,22 +2240,9 @@ async function sendChatMessage(voiceMsg){
     const allMemberIds=getGroupMemberIds(group);
     const memberCfgs=allMemberIds.map(mid=>apiConfigs.find(a=>a.id===mid)).filter(Boolean);
     if(memberCfgs.length<1){toast('群聊中没有有效的API成员');return}
-    /* 动态成员状态过滤：
-       status === 'active' → 正常发言
-       status === 'muted'  → 静音，仅当用户 @TA 时才发言
-       status === 'removed' → 已退出，不参与发言 */
-    const speakingCfgs=memberCfgs.filter(c=>{
-      const st=getGroupMemberStatus(group,c.id);
-      if(st==='removed')return false;
-      if(st==='muted'){
-        const nm=c.nickname||c.model||'';
-        return !!nm&&(_ctxText.indexOf('@'+nm)!==-1||_ctxText.indexOf('＠'+nm)!==-1);
-      }
-      return true;/* active 正常参与 */
-    });
-    /* 只校验本轮实际要发言的成员——静默成员即使API未配置完整也不阻塞发送 */
-    const invalidMembers=speakingCfgs.filter(c=>!_ibApiReady(c));
-    if(invalidMembers.length>0){toast('部分成员API未配置完整（'+invalidMembers.map(c=>c.nickname||c.model).join('、')+' ）');return}
+    /* P24-M3.2 · entry → cfg 的**唯一**映射：精确 id 匹配。
+       绝不按 nickname / model 回退，也不允许 pick first（M3.2 §17）。 */
+    const memberCfgById=new Map(memberCfgs.map(c=>[c.id,c]));
     const thinkingOn=true;/* reasoning 始终接收和保存；是否展示由每个成员 cfg.showThinking 决定 */
 
     const sendBtn=document.getElementById('chat-send-btn');
@@ -2108,25 +2254,178 @@ async function sendChatMessage(voiceMsg){
     if(sentImages.length)userMsg.images=sentImages.map(img=>({dataUrl:img.dataUrl,base64:img.base64,mime:img.mime,name:img.name}));
     if(sentFiles.length)userMsg.files=sentFiles.map(f=>({name:f.name,ext:f.ext,size:f.size,text:f.text}));
     if(_voice)userMsg.voice={dataUrl:_voice.dataUrl,mime:_voice.mime,duration:_voice.duration,transcript:_voice.transcript||'',tone:_voice.tone||''};
-    await dbPut('chatMessages',userMsg);
+    /* ── P24-M1 · 群回合身份地基（IDENTITY-ONLY）─────────────────────────────
+       groupTurnId 由触发本回合的 canonical user message id 确定性派生（身份里不存在
+       Date.now / 随机 / 昵称）；它**不落库为实体**，只作为运行期 context，最终事实来自
+       本轮成员消息上的 metadata.groupTurnId。
+       本阶段不改变：发言成员集合 / 顺序 / 上下文窗口 / 记忆 / persona / 工具 / typing /
+       text·voice 决策 / P23 交付。身份不可用（核心缺席或校验不过）⇒ 退回原行为。 */
+    const _gIdentity=_ibGroupIdentityContext({
+      triggerUserMessageId:userMsg.id,groupId:_targetFriend,friendId:_targetFriend,
+      threadId:_targetThread||'',createdAt:userMsg.timestamp
+    });
+    /* P24-M3.3.1 · GroupTurn runtime state（created）——runtime-only，见 _ibGroupTurnBegin。 */
+    const _gTurn=_ibGroupTurnBegin(_targetFriend,(_gIdentity&&_gIdentity.groupTurnId)||'');
+    /* ══ P24-M3.5.1A · 结构化 targeting（全部发生在**唯一一次** user 写入之前）══════
+       顺序：userMsg.id 已知 → groupTurnId 派生 → mention candidates → resolveMentionTargets
+             → canonicalize（participant 顺序 + 去重 + 仅当前参与者）→ 校验 writer invariant
+             → 组装 metadata → **一次** dbPut。
+       为什么必须在这里：① 解析只需 _ctxText / memberCfgs（都在上方就绪，纯函数零 I/O）；
+       ② 二次写同一行会让 Home Node 产生假 revision；③ "字段存在"是 structured authority 的
+       判据，只有写进去才能被 reader 认出来。
+       身份域：targetSpeakerIds 里的 id = apiConfigs.id，与 metadata.speakerId **同一 domain**。
+       本阶段**只写 targetSpeakerIds**（不写 metadata.groupTurnId：它可由 userMsg.id 纯派生，
+       落库等于制造第二份可推导事实；审计见 M3.5.1A 报告）。 */
+    const _gMentionCandidates=memberCfgs.map(c=>({id:c.id,name:c.nickname||c.model||''}));
+    const _gMentionParsed=(()=>{try{const _c=_ibGroupCore();if(_c&&typeof _c.resolveMentionTargets==='function')return _c.resolveMentionTargets(_ctxText||'',_gMentionCandidates)}catch(e){}return {targets:[],ambiguous:[],unresolved:[]}})();
+    const _gTargetIds=(()=>{try{const _c=_ibGroupCore();if(_c&&typeof _c.canonicalizeTargetSpeakerIds==='function')return _c.canonicalizeTargetSpeakerIds(_gMentionParsed.targets||[],memberCfgs.map(c=>c.id))}catch(e){}return null})();
+    const _gTargetVerdict=(()=>{try{const _c=_ibGroupCore();if(_c&&typeof _c.validateTargetSpeakerIds==='function')return _c.validateTargetSpeakerIds(_gTargetIds)}catch(e){}return {ok:false,errors:['core-unavailable']}})();
+    if(!_gTargetVerdict.ok){
+      /* internal invariant failure：canonical writer 绝不写坏 row（复用既有 fail-closed 提示）。 */
+      _ibGroupParticipationFailClosed('group-targeting-writer-invariant',(_gTargetVerdict.errors&&_gTargetVerdict.errors.length)||0);
+      _ibGroupTurnEnd(_targetFriend,_gTurn,'completed');
+      return;
+    }
+    userMsg.metadata={targetSpeakerIds:_gTargetIds};
+    await dbPut('chatMessages',userMsg);   /* ← 每个新群用户消息恰好一次 canonical write */
     appendChatBubble('user',text,undefined,undefined,userMsg.id,sentImages,sentFiles,undefined,_voice);
     /* 上传的文件同步归档进 ICode 的「User」文件夹（先落库再逐个请求成员；文件内容随本条消息注入，后续可按文件名 ws_read 读取） */
     if(sentFiles.length){try{await _wsArchiveUserUploads(sentFiles)}catch(e){}}
 
     const msgContainer=currentPage==='chat'?document.getElementById('chat-full-messages'):document.getElementById('chat-messages');
-    /* 静默模式安全网：创建时已保证至少一位常规发言者，正常情况下走不到这里； */
-    if(speakingCfgs.length===0){
+    /* ══ P24-M3.3.3.3 · ONE CANONICAL SNAPSHOT PER GROUP TURN ══════════════
+       本回合的 canonical 历史**只在这里读一次**（封档线过滤 + canonical 顺序），
+       之后同时供两个消费者使用：
+         A. deriveRecentSpeakerIds（participation planning 输入）
+         B. 后续 prompt history：_cacheStableSlice(gMsgs,gKeepCount)
+       因此本分支里**只允许一次** dbGetByIndex('chatMessages','byFriend',…)：
+       读两次会得到两份快照，"planner 看到的历史"与"成员看到的历史"可能不一致。
+       时机：① 晚于 userMsg dbPut ⇒ 当前用户消息在快照内（prompt 里只作为 user 出现
+             一次；tail 上下文挂在这条上，不是第二条 user 消息）；
+             ② 早于 MemberTurn loop ⇒ 本轮 A/B/C 的回复**不会**回流进 recent
+             （一个 GroupTurn 只规划一次；本轮新回复只经 roundExtras 传给后续成员）。 */
+    const _gSealTs=await getChatSealTimestamp(_targetFriend);
+    const gMsgs=filterSealed(_ibOrderMessages(await dbGetByIndex('chatMessages','byFriend',_targetFriend)),_gSealTs);/* 封档线过滤 · P23 2A：顺序走 canonical orderMessages */
+    /* ══ P24-M3.2 · Participation Plan（**唯一**参与权威）═════════════════════
+       流程：canonical participants → canonical mention targets → planParticipation()
+             → plan.entries（每个 entry = 一次 MemberTurn，order = planned order）
+       本阶段只替换"谁获得 MemberTurn"；context / provider / Middle Brain / P23 /
+       typing / voice / memory / summary / 工具执行 / 取消 / timing **全部原样**。
+       失败策略：**FAIL CLOSED**（绝不回退 legacy speakingCfgs —— 那会形成双权威并
+       重新引入 nickname 参与判定）。user 消息已在上方落库，保持不变。 */
+    let plannedEntries=[];
+    let plannedCfgs=[];
+    let _gPlannerFailed=false;
+    let _gResolvedCap;                    /* P24-M3.5.2A：resolved numeric cap 或 undefined */
+    _gTurn.status='planning';
+    try{
+      const _gCore=_ibGroupCore();
+      /* ══ P24-M3.4.2 · Participation Policy 解析（planner 上游 · 每 GroupTurn 恰好一次）══
+         pure resolver 只做 precedence + validation（零存储/零网络/零 DOM）；adapter 负责
+         把三份**已切出来的 fragment**交给它，然后把结果**逐字段**映射到下游：
+           resolved.policy.maxResponders        → planner input（条件注入）
+           resolved.policy.recentSpeakerWindow  → deriveRecentSpeakerIds 的 window
+         `sources` 只是诊断：绝不进 planner input / output、metadata、prompt、Memory、P23。
+
+         **本阶段没有任何 policy 来源**（group policy storage 属 M3.4.3；user defaults 与
+         system product defaults 尚不存在）⇒ 三份 fragment 都是 undefined ⇒ 解析结果必为
+         {policy:{},sources:{}}。因此：
+           · production 仍 unlimited（planner input 里**没有** cap 键）；
+           · productive window 仍是 GROUP_RECENT_SPEAKER_WINDOW=2 这个 **adapter fallback**
+             —— 它不是 system policy，绝不用它去凑 systemDefaults。
+         绝不从 group 的未知字段偷读 policy；绝不 fallback 成"空 policy 后继续"（抛错即
+         fail closed，交给本 try 的 catch 走既有 planner failure 路径）。 */
+      if(!_gCore||typeof _gCore.resolveParticipationPolicy!=='function'||typeof _gCore.deriveRecentSpeakerIds!=='function'
+        ||typeof _gCore.resolveTargetSpeakerIds!=='function'||typeof _gCore.projectTargetedParticipants!=='function')throw new Error('participation-policy-resolver-unavailable');
+      /* ── P24-M3.5.1A · 结构化 targeting 读取（**每 GroupTurn 恰好一次**）+ 投影 ──
+         message = 本轮刚写入 canonical 的 userMsg（字段必然存在 ⇒ structured authority）。
+         非法 structured metadata ⇒ 抛错 ⇒ 本 try 的 catch：既有的"本轮参与计划不可用"fail-closed
+         （user 消息已落库、planner 不执行、0 provider、0 assistant），**绝不回退文本解析**。
+         投影只映射**当前** participants：历史已退出成员的 id 不报错、也不产生 mentioned。 */
+      const _gTargetRes=_gCore.resolveTargetSpeakerIds({
+        message:userMsg,text:_ctxText||'',candidates:_gMentionCandidates,participantIds:memberCfgs.map(c=>c.id)
+      });
+      const _gTargetedIds=_gCore.projectTargetedParticipants(_gTargetRes.targetSpeakerIds,memberCfgs);
+      const _gMentionSet=new Set(_gTargetedIds);
+      /* P24-M3.4.3 · group policy 的来源 = **已经加载的** canonical group object（上方 2128 行
+         `loadGroups()` 的结果）：**不新增任何 policy DB 读**（每 GroupTurn 的 chatMessages
+         快照仍恰好一次，policy 不产生第二次 I/O）。
+         字段缺失 ⇒ `undefined` —— 绝不 `group.participationPolicy || {}`（那会把"未配置"
+         伪造成"空 policy"，丢掉 absence 语义，并让老群行为漂移）。
+         adapter **不做** validation：非法 stored policy 直接交给 resolver，由它 fail closed
+         （既有"本轮参与计划不可用"路径），storage 层也绝不"顺手修好"它。 */
+      const _gGroupPolicy=group.participationPolicy;
+      const _gUserDefaults=undefined,_gSystemDefaults=undefined;
+      const _gResolvedPolicy=_gCore.resolveParticipationPolicy(_gGroupPolicy,_gUserDefaults,_gSystemDefaults);
+      /* P24-M3.5.2A · runtime cap：只取**已解析出的数值**（缺字段 ⇒ undefined = unlimited），
+         绝不把整个 policy 对象传给 runtime，也绝不把 null 当 0。 */
+      if(Object.prototype.hasOwnProperty.call(_gResolvedPolicy.policy,'maxResponders'))_gResolvedCap=_gResolvedPolicy.policy.maxResponders;
+      /* effective recent window：**只**在 resolver 显式解析出该字段时才覆盖 adapter fallback。
+         用 hasOwnProperty —— `recentSpeakerWindow:0` 是"关闭 recent"的真值，绝不能被 `||` 吃掉。 */
+      const _gRecentWindow=Object.prototype.hasOwnProperty.call(_gResolvedPolicy.policy,'recentSpeakerWindow')
+        ? _gResolvedPolicy.policy.recentSpeakerWindow
+        : GROUP_RECENT_SPEAKER_WINDOW;
+      /* ── P24-M3.3.3.3 · Recent Speaker 派生（输入 = 上面那份 canonical 快照 gMsgs）──
+         participants 只传 canonical id，且**来自同一批** memberCfgs（= groups.members →
+         apiConfigs 的精确映射，见上方 memberCfgById）——绝不重新读 group.members、
+         绝不另建第二套 participant identity authority。
+         helper 抛错（含 helper 缺席）⇒ 直接抛出，交给本 try 的 catch 走既有 planner
+         fail-closed 路径：**绝不** fallback 成"没有 recent"后继续规划（那会把派生失败
+         静默降级成另一种参与语义）。 */
+      const _gRecentView=_gCore.deriveRecentSpeakerIds(gMsgs,memberCfgs.map(c=>c.id),{window:_gRecentWindow});
+      const _gPlanInput={
+        groupTurnId:(_gIdentity&&_gIdentity.groupTurnId)||'',
+        trigger:{userMessageId:userMsg.id,text:String(_ctxText||'')},
+        participants:memberCfgs.map(c=>({id:c.id,status:getGroupMemberStatus(group,c.id)||'',mentioned:_gMentionSet.has(c.id)})),
+        recentSpeakerIds:_gRecentView.recentSpeakerIds
+      };
+      /* planner 只接收**它已支持的具体值**（整个 resolved policy 对象与 sources 一律不外传），
+         且必须**条件注入**：absent ≠ "键存在但值为 undefined"。
+         当前 resolver 默认不产出 maxResponders ⇒ 这里不生效 ⇒ production 仍 unlimited。 */
+      if(Object.prototype.hasOwnProperty.call(_gResolvedPolicy.policy,'maxResponders'))_gPlanInput.maxResponders=_gResolvedPolicy.policy.maxResponders;
+      const _gVerdict=(_gCore&&typeof _gCore.validateParticipationInput==='function')?_gCore.validateParticipationInput(_gPlanInput):{ok:false,errors:['planner-core-unavailable']};
+      if(!_gVerdict||_gVerdict.ok!==true){
+        _gPlannerFailed=true;
+        _ibGroupParticipationFailClosed('group-participation-invalid-input',(_gVerdict&&_gVerdict.errors&&_gVerdict.errors.length)||0);
+      }else{
+        const _gPlan=_gCore.planParticipation(_gPlanInput);
+        plannedEntries=(_gPlan&&_gPlan.entries)||[];
+        const _gUnknown=[];
+        for(let _gi=0;_gi<plannedEntries.length;_gi++){
+          const _gc=memberCfgById.get(plannedEntries[_gi].speakerId);
+          if(!_gc){_gUnknown.push(plannedEntries[_gi].speakerId);continue}
+          plannedCfgs.push(_gc);
+        }
+        if(_gUnknown.length){
+          _gPlannerFailed=true;
+          _ibGroupParticipationFailClosed('group-participation-entry-unknown-speaker',_gUnknown.length);
+          plannedEntries=[];plannedCfgs=[];
+        }
+      }
+    }catch(_gPlanErr){
+      _gPlannerFailed=true;
+      _ibGroupParticipationFailClosed('group-participation-planner-exception',String((_gPlanErr&&_gPlanErr.message)||_gPlanErr).slice(0,80));
+      plannedEntries=[];plannedCfgs=[];
+    }
+    _gTurn.status='planned';
+    _gTurn.plannedCount=plannedEntries.length;
+    if(!plannedEntries.length){
+      /* 空计划 = 合法结果（全员静默未点名 / 全员已退出）⇒ 只呈现 UI 系统气泡。
+         计划不可用（invalld input / entry 找不到 cfg / planner 抛错）⇒ 明确的可理解提示。
+         **两种都不产生任何 canonical 消息**（沉默不是消息）。 */
       const quiet=document.createElement('div');
       quiet.className='chat-msg system';
-      quiet.textContent='（成员都在静默模式且没有被 @，本轮无人回应）';
+      quiet.textContent=_gPlannerFailed?'（本轮参与计划不可用，未发送任何成员回复）':'（成员都在静默模式且没有被 @，本轮无人回应）';
       msgContainer.appendChild(quiet);
       msgContainer.scrollTop=msgContainer.scrollHeight;
+      _ibGroupTurnEnd(_targetFriend,_gTurn,'completed');
       return;
     }
+    /* 只校验本轮**计划发言者**的 API：被 omitted 的成员 API 未就绪不阻塞整轮（语义与改动前一致）。 */
+    const invalidMembers=plannedCfgs.filter(c=>!_ibApiReady(c));
+    if(invalidMembers.length>0){toast('部分成员API未配置完整（'+invalidMembers.map(c=>c.nickname||c.model).join('、')+' ）');_ibGroupTurnEnd(_targetFriend,_gTurn,'completed');return}
     const glim=await getReadingLimits();
     const _vtSg=await _vtGet();/* 语音直发开关（成员是否能听原声在循环内按各自模型判定） */
-    const _gSealTs=await getChatSealTimestamp(_targetFriend);
-    const gMsgs=filterSealed((await dbGetByIndex('chatMessages','byFriend',_targetFriend)).sort((a,b)=>(a.timestamp||0)-(b.timestamp||0)),_gSealTs);/* 封档线过滤 */
     /* 历史生成图参考（群聊）：从历史取最近一条 AI 生成图补入本轮（仅支持视觉的成员；去重防重复） */
     try{
       if(_ibModelCanSee(cfg)){
@@ -2156,20 +2455,121 @@ async function sendChatMessage(voiceMsg){
     const userLabel=(about&&about.name)?about.name:'用户';
     const userDesc=(about&&about.name)?('用户「'+about.name+'」'):'用户';
     const allNames=memberCfgs.map(c=>c.nickname||c.model);
+    /* P24-M2 · 本群回合的 participant authority（只读消费 canonical 来源）：
+       groups.members 的 id + 角色显示名。历史里可能包含已静默 / 已退出成员的消息，
+       因此取**全部成员**（不是本轮发言者）。绝不在这里另建一份成员注册表。 */
+    const _gParticipants=_ibGroupParticipants(getGroupMemberIds(group));
     const roundExtras=[];/* FIX④: 本轮内先发言成员的回复，供后续成员接力可见 */
 
     _chatSendingFor.add(_targetFriend);
     if(sendBtn)sendBtn.disabled=true;
     try{
-    /* 工作区读取内容与操作结果反馈：带成员名的条目在各自成员发言前精准注入；
-       无主条目 / 成员已不在本群名单的条目，由本轮首个发言成员兜底消费（兼容旧行为） */
+    /* 工作区读取内容与操作结果反馈：**canonical 优先**地派发给真正所属成员（P29-3）；
+       无主条目 / 成员已不在本群名单的条目，仍由本轮首个发言成员兜底消费（兼容旧行为） */
     let _gWsFirstTurn=true;
-    for(const cfg of speakingCfgs){/* 静默模式：静默成员本轮不参与 */
+    /* ── P24-M1.1 · 群聊执行的 trace runtime binding ──────────────────────
+       既有缺陷（HEAD 即存在）：群聊循环引用的是**裸标识符** `_mbTrace`，而
+       `sendChatMessage` 里唯一的 `var _mbTrace=(window.IB&&window.IB.__mbTrace)||null;`
+       声明在**单聊分支**（同一函数作用域）。var 提升后群聊侧拿到的是 undefined，
+       于是 `_mbTrace.begin('group',…)` 必然抛 TypeError，又被成员级 catch 吞掉
+       —— 每个成员都产不出回复（assistant message = 0）。
+       修法：在群聊执行路径**首次使用之前**建立同一个 runtime binding。
+       用 `var`（不是 let/const）：它与单聊分支是**同一个函数作用域绑定**，
+       既不重复声明、也不 shadow 任何东西、更不是第二套 trace —— 取值仍然只来自
+       Middle Brain 暴露的唯一 sink `IB.__mbTrace`。 */
+    var _mbTrace=(window.IB&&window.IB.__mbTrace)||null;
+    /* P24-M3.3.1 · 进入执行阶段（planned → executing）。 */
+    _gTurn.status='executing';
+    /* ══ P24-M3.5.2A · Dynamic Runtime State Foundation（feature gate，默认关）══════════
+       本阶段只建立 runtime-only 的"准入队列 + hard gates + 记账"，**没有** SILENT / DEFER /
+       INTERJECT，也不调用任何模型。开关默认 false：
+         · false ⇒ 完全不建 runtime state，循环逐字沿用既有 static 语义（零额外读/写/调用）；
+         · true  ⇒ 用同一份 entries 建 state，并按 queue 驱动**同一个**循环体
+                    （enabled 但无任何 dynamic decision ⇒ 与 static 逐字等价）。
+       status 快照来自**本轮已加载**的 group 对象（turn-start snapshot），绝不为此再读 DB。
+       创建失败（非法 planner output）⇒ fail closed（既有"本轮参与计划不可用"路径）。 */
+    let _gDynRt=null;
+    if(_ibDynamicParticipationOn()){
+      try{
+        const _gStatusById={};
+        for(let _si=0;_si<plannedEntries.length;_si++){
+          const _sid=String(plannedEntries[_si].speakerId||'');
+          if(_sid)_gStatusById[_sid]=getGroupMemberStatus(group,_sid)||'';
+        }
+        _gDynRt=_ibGroupCore().createDynamicRuntimeState({
+          groupTurnId:(_gIdentity&&_gIdentity.groupTurnId)||'',
+          entries:plannedEntries.map(e=>({speakerId:e.speakerId,order:e.order,reason:e.reason})),
+          responderCap:_gResolvedCap,
+          statusById:_gStatusById
+        });
+      }catch(_gRtErr){
+        _ibGroupParticipationFailClosed('group-dynamic-runtime-contract',String((_gRtErr&&_gRtErr.message)||_gRtErr).slice(0,80));
+        _gTurn.status='planned';
+        _ibGroupTurnEnd(_targetFriend,_gTurn,'completed');
+        _chatSendingFor.delete(_targetFriend);
+        if(sendBtn)sendBtn.disabled=false;
+        return;
+      }
+    }
+    let _gRtCursor=0;
+    /* P24-M3.5.2B · runtime-only decision source：**仅测试用**注入（非产品 API、不持久化、
+       不进 prompt / metadata）。缺省 ⇒ SPEAK（生产默认行为不变）；disabled 时**完全不读**。 */
+    const _gDynDecider=(_gDynRt&&typeof window.IB_DYNAMIC_PARTICIPATION_DECIDER==='function')?window.IB_DYNAMIC_PARTICIPATION_DECIDER:null;
+    for(;;){/* P24-M3.2：entries 即参与计划（唯一权威）；M3.5.2A 起可选由 runtime queue 驱动 */
+      /* P24-M3.3.1 · entry 边界检查（GroupTurn cancel）：被取消 ⇒ **不启动 provider**、
+         不产生 assistant message、不改变 groupOrder；输出里已完成的成员消息一律保留。 */
+      let entry=null;
+      if(_gDynRt){
+        const _gNx=_ibGroupCore().nextDynamicRuntimeEntry(_gDynRt,{cancelled:_gTurn.cancelled});
+        if(_gNx.done)break;
+        entry=_gNx.entry;
+      }else{
+        if(_gRtCursor>=plannedEntries.length)break;
+        if(_gTurn.cancelled)break;
+        entry=plannedEntries[_gRtCursor++];
+      }
+      /* ── P24-M3.5.2B · Runtime SILENT seam ────────────────────────────────
+         位置：hard gates 之后（next 已通过 cancel/removed/cap/one-turn），
+               startedCount / markStarted / typing / provider **之前**。
+         SILENT ⇒ 该 speaker 本轮终止自己的 MemberTurn：不启动 provider、不建 typing、
+         不写 canonical assistant 消息、不进 roundExtras、不进 P23；
+         但 initial planner 的 admitted fact 保留（plannedCount 不变、groupOrder 空洞保留）。
+         决策失败（抛错 / malformed / 未知词，含 defer/interject）⇒ fallback SPEAK（可选增强失败
+         绝不改变既有行为，也不升级为 GroupTurn 失败）。 */
+      if(_gDynRt){
+        const _gDec=_ibGroupCore().resolveDynamicRuntimeDecision(_gDynRt,entry,{decider:_gDynDecider});
+        if(_gDec&&_gDec.decision==='silent'){
+          _ibGroupCore().markDynamicRuntimeSilent(_gDynRt,entry.speakerId);
+          continue;
+        }
+        /* P24-M3.5.2C · DEFER：entry 已通过 hard gate 并被取出 ⇒ 追加到本轮队列尾部，
+           等本轮后续机会（**NOT terminal**；同 speaker 本轮仍最多执行一次 SPEAK）。
+           词表只在 feature 打开时生效；同一 speaker 第二次 defer 由 core 侧 fallback SPEAK
+           （diagnostic='defer-limit'），defer 本身失败也一律继续 SPEAK ⇒ 绝不死循环 / 绝不丢 entry。 */
+        if(_gDec&&_gDec.decision==='defer'&&_ibGroupCore().deferDynamicRuntimeEntry(_gDynRt,entry).ok===true){
+          continue;
+        }
+      }
+      _gTurn.startedCount++;
+      if(_gDynRt)_ibGroupCore().markDynamicRuntimeStarted(_gDynRt,entry,{cancelled:_gTurn.cancelled});
+      const cfg=memberCfgById.get(entry.speakerId);/* §17：精确 id 命中，构建计划时已校验 */
       const selfName=cfg.nickname||cfg.model;
+      /* P24-M1 · MemberTurn identity：turnId 的种子与 P23 turnIdFor 逐字同源
+         （groupTurnId + ':' + speakerId + ':' + groupOrder），因此工具续轮可以按
+         P23 现行 tool-round 契约继承同一个 turnId；groupTurnId 只做群回合归属，
+         不替代 turnId（两者必须并存，见 P24 Phase 1 §4.1 硬约束 H2）。
+         身份不可用 ⇒ _gMember 为 null ⇒ 本成员退回 legacy 行为。 */
+      /* P24-M3.2：groupOrder 直接取 **planner 的 planned order**（entry.order）。
+         运行期失败不重排、不重编号（空洞合法，M3.1 已冻结）；OMITTED 者不占 order。 */
+      const _gMember=_ibGroupMemberIdentity(_gIdentity,cfg.id,entry.order);
+      /* P29-0 · Identity Read-Path Closure：身份不可用不再静默。
+         仅诊断（计数 + 闭集日志），fallback 语义与写入形状逐字不变。 */
+      if(!_gMember)_ibGroupIdentityDegraded(_gIdentity?'member-identity-unavailable':'group-identity-context-unavailable');
       /* P11-3D.1：群聊里**每个发言成员各自一个宿主回合** → 各自一个工具执行周期
          （成员之间不共享额度；这与"一次发言 = 一个 turn"的语义一致）。 */
       const _mbTurnLc=_ibTurnLc(_ibTurnScope('group'));
       const _mbTurn=_mbTurnLc.turn();
+      if(_gMember){_mbTurn.turnId=_gMember.turnId;_mbTurn.groupTurnId=_gMember.groupTurnId;_mbTurn.speakerId=_gMember.speakerId;_mbTurn.groupOrder=_gMember.groupOrder;}
       _mbTurnLc.begin();
       try{
       /* P11-2F · 群聊运行时可观测：**每个发言成员各自一条 trace 记录**，
@@ -2177,7 +2577,10 @@ async function sendChatMessage(voiceMsg){
          注意顺序：`_mbTraceNote` 在"没有 begin 过的记录"上是静默 no-op，
          因此这些字段必须在 begin **之后**写；写在循环之前会整片丢失。
          判定结果字段（policyDecision / blockedReason）由记忆指令消费点补写。 */
-      _mbTrace.begin('group',cfg.id);
+      /* P24-M1.1 · trace 是 observability，**不是** chat execution authority：
+         sink 缺席（null）或自身抛错，都不允许阻止本成员回合产出 canonical 回复。
+         与 `_mbGroupTraceContext` 同一防御风格（不新增 trace 抽象层）。 */
+      if(_mbTrace){try{_mbTrace.begin('group',cfg.id)}catch(e){}}
       _mbGroupTraceContext(_targetFriend,cfg.id,memberCfgs,selfName);
       const _gvNative=_vmAudioNative(cfg)&&(_vtSg.direct!==false);/* 本成员能否直接听音频原声 */
       const _gStreamOk=cfg.streaming!==undefined?!!cfg.streaming:!!(PROVIDERS[cfg.provider]&&PROVIDERS[cfg.provider].streaming);
@@ -2203,7 +2606,9 @@ async function sendChatMessage(voiceMsg){
         const _combined=history.concat(roundExtras);
         const mapped=_combined.filter(m=>m.role!=='system').map((m,i)=>{
           if(m.role==='user'){var uc='['+userLabel+'] '+(m.content||'');if(m.voice)uc+=(m.content?'\n':'')+_voiceApiLine(m.voice,!_gvNative);if(m.files&&m.files.length)m.files.forEach(function(f){uc+='\n\n[文件上传: '+f.name+']\n'+_capFileText(f.text)});return {role:'user',content:uc}}
-          if((m.senderName||'')===selfName){
+          /* P24-M2 · WHO SAID IT 由 canonical speakerId 决定（senderName 只作显示与 legacy 回退）。
+             不对称安全规则：unresolved / ambiguous / invalid / 非本群成员 一律不是 SELF。 */
+          if(_ibGroupClassifyMessage(m,cfg.id,_gParticipants)==='SELF'){
             let c=_wsStubHistory(sanitizeGroupReply(m.content,selfName,allNames));
             return {role:'assistant',content:c};
           }
@@ -2211,7 +2616,7 @@ async function sendChatMessage(voiceMsg){
         });
         const messages=collapseSameRole(mapped);
         /* FIX②: 上下文构建（Extraction Seam）——system/tail 分区由 buildChatContext 产出 */
-        const _gc=await buildChatContext(cfg,{isGroup:true,selfName:selfName,allNames:allNames,userDesc:userDesc,group:group,gss:gss,gSummaryText:gSummaryText,userMessage:_ctxText,isFirstTurn:_gWsFirstTurn,history:messages,sentFiles:sentFiles});
+        const _gc=await buildChatContext(cfg,{isGroup:true,selfName:selfName,allNames:allNames,userDesc:userDesc,group:group,gss:gss,gSummaryText:gSummaryText,userMessage:_ctxText,isFirstTurn:_gWsFirstTurn,history:messages,sentFiles:sentFiles,threadId:_targetThread||null});
         const sysContent=_gc.system;
         const _gTailCtx=_gc.tail;
         _gWsFirstTurn=false;/* 首个发言者兜底消费完无主/移出成员条目后置 false */
@@ -2222,13 +2627,16 @@ async function sendChatMessage(voiceMsg){
           for(let _gt=messages.length-1;_gt>=0;_gt--){if(messages[_gt].role==='user'&&!messages[_gt]._groupSender){_appendMsgText(messages[_gt],_CTX_TAIL_SEP+_gTailCtx);_gtDone=true;break}}
           if(!_gtDone){for(let _gt=messages.length-1;_gt>=0;_gt--){if(messages[_gt].role==='user'){_appendMsgText(messages[_gt],_CTX_TAIL_SEP+_gTailCtx);break}}}
         }
-        /* 群聊图片注入：检查当前成员是否支持视觉 */
+        /* R3 · 群聊图片注入：检查当前成员是否支持视觉，再按 group/thread WHERE
+           做稳定 take/keep；同一 WHERE 的图片是会话上下文，不按 actor 拆散。 */
         const _gLocalVision=_usesLocalDeepSeekVision(cfg);
         const _gNativeDeepSeekVision=_usesNativeDeepSeekVision(cfg);
         const _gVisionOk=_gLocalVision||_gNativeDeepSeekVision||(cfg.vision!==undefined?!!cfg.vision:true);/* 默认放行（多模态普遍；显式关闭才拒绝） */
-        try{if(_ibToolDrainImages.length){const _gti=_ibToolDrainImages.splice(0);if(_gVisionOk)_gti.forEach(u=>sentImages.push({dataUrl:u,name:'tool_result.png'}))}}catch(e){}
-        /* 图片回注队列（ws_read_image / 聊天生图回传）：仅支持视觉的成员出队；文本成员保留队列等待后续视觉请求 */
-        try{if(typeof _ibImageDrain!=='undefined'&&_ibImageDrain.length&&_gVisionOk){const _gdi=_ibImageDrain.splice(0);_gdi.forEach(u=>{const _du=String(u||'');if(_du.slice(0,5)==='data:')sentImages.push({dataUrl:_du,base64:_du.split(',')[1]||'',mime:(_du.match(/^data:([^;,]+)/i)||[])[1]||'image/jpeg',name:'image_inject.png'})})}}catch(e){}
+        if(_gVisionOk){
+          var _gScopeMine=_ibWsScopeFilter(_targetFriend,_targetThread||null);
+          _ibTakeScopedMedia('_ibToolDrainImages',_gScopeMine).forEach(function(u){var _gi=_ibMediaPromptImage(u,'tool_result.png');if(_gi)sentImages.push(_gi)});
+          _ibTakeScopedMedia('_ibImageDrain',_gScopeMine).forEach(function(u){var _gi=_ibMediaPromptImage(u,'image_inject.png');if(_gi)sentImages.push(_gi)});
+        }
         if(sentImages.length&&messages.length){
           if(_gLocalVision){
             try{
@@ -2295,7 +2703,7 @@ async function sendChatMessage(voiceMsg){
           _showStreamingUI(true);
           gStreamRefs=activeFriendId===_targetFriend?_createStreamBubble(_targetFriend,selfName):[];
           /* 群聊流式气泡：senderId 改用 config_id，Voice 匹配更精确 */
-          if(gStreamRefs&&gStreamRefs[0]&&isGroup&&cfg&&cfg.id){gStreamRefs[0].dataset.senderId=cfg.id}
+          if(gStreamRefs&&gStreamRefs[0]&&isGroup&&cfg&&cfg.id){gStreamRefs.forEach(ref=>{if(ref&&ref.div)ref.div.dataset.senderId=cfg.id})}
           let _gSBuf='',_gSThinkBuf='',_gSState=0;
           let _gLiveThink=[];
           const _gShowThinking=_resolveShowThinking(cfg);
@@ -2359,7 +2767,9 @@ async function sendChatMessage(voiceMsg){
            注：群聊不经过 Character Integrity，故 _mbVerdict 恒为 null；
            这**不改变**既有执行行为，只是把"这一轮没有裁定可问"如实标成 unverified。 */
         var _gMemR=[];
-        reply=await _applyWithdraw(cfg,reply,_targetFriend,selfName);
+        /* P29-0：群聊撤回必须用 canonical id 选目标 ⇒ 传入本轮已有的 participants
+           （group.members 派生，见 _gParticipants）；同名成员之间不再互相撤回。 */
+        reply=await _applyWithdraw(cfg,reply,_targetFriend,selfName,_gParticipants);
         {const _gmp=_parseMemOps(reply);
          if(_gmp.ops.length){
            reply=_gmp.clean;
@@ -2380,14 +2790,27 @@ async function sendChatMessage(voiceMsg){
         /* 群聊同样支持工作区：按顺序执行操作，操作者标注为发言成员 */
         var _gws=_parseWsOps(reply),_gwsR=[];
         if(_gws.ops.length){try{_gwsR=await _execWsOps(_gws.ops,selfName,cfg,{source:'chat',friendId:_targetFriend,senderName:selfName,threadId:_targetThread||'',_ibTurn:_mbTurn,guard:_ibTurnGuard(_mbTurn)})}catch(e){}}
-        if(_gws.files&&_gws.files.length){try{await _wsArchiveFileBlocks(_gws.files,selfName)}catch(e){}}
+        if(_gws.files&&_gws.files.length){try{await _wsArchiveFileBlocks(_gws.files,selfName,_wsRoleFileProvenance(cfg))}catch(e){}}
         /* 工具回合续（v6）：本成员执行了工具 → 结果自动回喂再生成一轮，用户无需再说一句。
            P11-3D.1：续轮继承**本成员这个宿主回合**的 turn（同一周期、同一预算）。 */
         if(_gws.ops.length||_gws.files.length){
           try{await _wsToolContinue(cfg,{messages:messages,lastReply:reply,friendId:_targetFriend,chatKey:_targetFriend,senderName:selfName,round:1,threadId:_targetThread,_ibTurn:_mbTurn,guard:_ibTurnGuard(_mbTurn)})}catch(e){}
         }
-        var _gwsPhantom=_wsCheckPhantom(_gws.cleanText,_gws.ops.length,selfName);
-        const aiMsg={id:'msg_'+Date.now()+'_'+Math.floor(Math.random()*100000),role:'assistant',content:reply,reasoning_content:groupThinking||'',metadata:{model:cfg.provider||cfg.model||'',model_id:cfg.model||'',config_id:cfg.id,showThinking:_resolveShowThinking(cfg)},friendId:_targetFriend,senderName:selfName,timestamp:Date.now()};
+        var _gwsPhantom=_wsCheckPhantom(_gws.cleanText,_gws.ops.length,selfName,cfg.id,{friendId:_targetFriend,threadId:_targetThread||''});
+        /* P24-M1 · canonical 消息经 Sequence 契约构造：P24 三键
+           （groupTurnId / speakerId / groupOrder）只从 extraMetadata 进入 canonical
+           message，绝不"dbPut 之后补写 metadata"。
+           核心缺席 / 契约拒绝 ⇒ 退回改动前逐字同形的单条构造（内容一字不丢）；
+           该情形只是**没有**群身份，其余行为与 M1 之前完全一致。 */
+        const _gBuilt=_gMember?_ibSequenceMessages([reply],{
+          turnId:_gMember.turnId,friendId:_targetFriend,threadId:_targetThread||'',
+          timestamp:Date.now(),senderName:selfName,
+          model:cfg.provider||cfg.model||'',modelId:cfg.model||'',configId:cfg.id,
+          showThinking:_resolveShowThinking(cfg),
+          extraMetadata:{groupTurnId:_gMember.groupTurnId,speakerId:_gMember.speakerId,groupOrder:_gMember.groupOrder}
+        }):null;
+        const aiMsg=(_gBuilt&&_gBuilt.length===1)?_gBuilt[0]:{id:'msg_'+Date.now()+'_'+Math.floor(Math.random()*100000),role:'assistant',content:reply,reasoning_content:groupThinking||'',metadata:{model:cfg.provider||cfg.model||'',model_id:cfg.model||'',config_id:cfg.id,showThinking:_resolveShowThinking(cfg)},friendId:_targetFriend,senderName:selfName,timestamp:Date.now()};
+        aiMsg.reasoning_content=groupThinking||'';/* Sequence 契约不写 reasoning；取值与改动前的单条构造逐字相同 */
         {const _gGiImgs=_wsCollectGenImages(_gwsR);if(_gGiImgs.length)aiMsg.images=_gGiImgs;}/* 生成的图片随消息持久化 */
         if(_gSrchLog.length)aiMsg.wsSearches=_gSrchLog.slice();
         if(_gMemR.length)aiMsg.memOps=_gMemR.map(r=>({ok:r.ok,status:r.status||'',label:r.label,detail:r.detail}));
@@ -2420,10 +2843,12 @@ async function sendChatMessage(voiceMsg){
             if(aiMsg.truncated)document.querySelectorAll('#chat-full-messages .chat-msg[data-msg-id="'+aiMsg.id+'"] .r-text').forEach(function(t){t.appendChild(_buildContinuePill(aiMsg.id))});/* 任务6 */
           }
         }
-        if(activeFriendId!==_targetFriend)_markUnread(_targetFriend);
-        _mbGroupTraceFinish(cfg.id,_mbVerdict);
+      if(activeFriendId!==_targetFriend)_markUnread(_targetFriend);
+      _mbGroupTraceFinish(cfg.id,_mbVerdict);
+      if(_gDynRt)_ibGroupCore().markDynamicRuntimeCompleted(_gDynRt,cfg.id);   /* P24-M3.5.2A：成功记账 */
       }catch(err){
-        if(_gTypTimer)clearInterval(_gTypTimer);
+      if(_gDynRt)_ibGroupCore().markDynamicRuntimeFailed(_gDynRt,cfg.id);      /* P24-M3.5.2A：失败记账（不重试） */
+      if(_gTypTimer)clearInterval(_gTypTimer);
         if(typingEl&&typingEl.parentNode)typingEl.remove();
         _showStreamingUI(false);
         /* 失败成员的流式气泡若还没写入内容，直接移除，避免残留带光标的空气泡（已流出内容的气泡保留） */
@@ -2442,14 +2867,18 @@ async function sendChatMessage(voiceMsg){
         _mbTurnLc.end();
       }
     }
+    /* P24-M3.3.1 · 执行阶段收尾：cancelled 与 completed 是仅有的两种终态。 */
+    _gTurn.status=_gTurn.cancelled?'cancelled':'completed';
     }finally{
+      /* P24-M3.3.1 · 注销 GroupTurn runtime state（runtime-only；正常/取消/失败路径统一收口）。 */
+      _ibGroupTurnEnd(_targetFriend,_gTurn,_gTurn.cancelled?'cancelled':'completed');
       _chatSendingFor.delete(_targetFriend);
       if(sendBtn)sendBtn.disabled=false;
       autoResizeInput(input);
       if(currentPage==='chat')renderChatCalendar();
       updateChatStorageInfo();
       /* Deferred group summary */
-      if(gss.enabled){const _gFid=_targetFriend;const _gSealTs2=_gSealTs;setTimeout(async()=>{try{const _gAll=filterSealed((await dbGetByIndex('chatMessages','byFriend',_gFid)).sort((a,b)=>a.timestamp-b.timestamp),_gSealTs2);await maybeSummarize(pickGroupUtilityCfg(group,speakingCfgs)||memberCfgs[0],_gFid,null,_gAll)}catch(e){}},500)}
+      if(gss.enabled){const _gFid=_targetFriend;const _gSealTs2=_gSealTs;setTimeout(async()=>{try{const _gAll=filterSealed(_ibOrderMessages(await dbGetByIndex('chatMessages','byFriend',_gFid)),_gSealTs2);await maybeSummarize(pickGroupUtilityCfg(group,plannedCfgs)||memberCfgs[0],_gFid,null,_gAll)}catch(e){}},500)}
     }
     return;
   }
@@ -2505,6 +2934,10 @@ async function sendChatMessage(voiceMsg){
   await dbPut('chatMessages',userMsg);
   _ibAppBroadcast('turn',{state:'start',friendId:_targetFriend,threadId:_targetThread,activityId:(_turnActivity?_turnActivity.id:undefined)});
   appendChatBubble('user',text,undefined,undefined,userMsg.id,sentImages,sentFiles,undefined,_voice);
+  /* P23 Phase 2B · user interrupt（§11）：用户在这个会话里说话 ⇒ 取消该会话**仍在投递**的
+     剩余 unit（已交付的一律保留）。没有这一条就会出现"AI 像没看见用户插话一样，
+     继续把上一轮剩下的 A/B/C 发完"。取消是幂等的：没有在途队列时什么也不做。 */
+  try{_ibDeliveryAbort(_targetFriend,_targetThread,'user_interrupt')}catch(e){}
   /* AI 自主规划：用户主动发言 → 取消该角色等待中的 AI 计划（异步，不阻塞） */
   try{_activeUserReplied(userMsg)}catch(e){}
   /* 日记特殊事件：首次聊天 / 久别重逢（异步，不阻塞） */
@@ -2514,16 +2947,12 @@ async function sendChatMessage(voiceMsg){
 
   const _streamingOk=cfg.streaming!==undefined?!!cfg.streaming:!!(PROVIDERS[cfg.provider]&&PROVIDERS[cfg.provider].streaming);
 
-  /* 非流式：显示typing计时器 */
-  let typingEl=null,_typStart=0,_typTimer=null;
+  /* 非流式：显示typing计时器（P23 Phase 2B：创建/销毁收敛到唯一 typing authority，
+     DOM 形状、id 约定、容器选择、1s 秒表全部逐字保留 —— 交付期的 typing 复用同一个实现）。 */
+  let typingEl=null,_typStart=0;/* 秒表计时器现在由 typing authority 持有（_ibTypingReg） */
   if(!_streamingOk){
-    typingEl=document.createElement('div');
-    typingEl.className='chat-typing';typingEl.id='chat-typing-'+_targetFriend;
     _typStart=Date.now();
-    typingEl.innerHTML=esc(cfg.nickname||cfg.model)+' 思考中…<span class="typing-sec">（0秒）</span>';
-    _typTimer=setInterval(()=>{const s=Math.round((Date.now()-_typStart)/1000);const sp=typingEl.querySelector('.typing-sec');if(sp)sp.textContent='（'+s+'秒）'},1000);
-    const msgContainer=currentPage==='chat'?document.getElementById('chat-full-messages'):document.getElementById('chat-messages');
-    if(activeFriendId===_targetFriend){msgContainer.appendChild(typingEl);msgContainer.scrollTop=msgContainer.scrollHeight}
+    typingEl=_ibTypingOn(_targetFriend,_targetThread,cfg.nickname||cfg.model,'thinking');
   }
 
   let ss={enabled:false};/* fix: 提升到 try 外供末尾延迟摘要使用，原 const 声明在 try 内、catch 后引用必抛 ReferenceError */
@@ -2536,11 +2965,16 @@ async function sendChatMessage(voiceMsg){
   const _turnLc=_ibTurnLc(_ibTurnScope('chat'));
   const _turn=_turnLc.turn();
   _turn.activityId=_turnActivity?_turnActivity.id:null;
+  /* P23 Phase 2A · 本回合的稳定身份。种子 = 触发本回合的 user 消息 id（确定性、唯一，
+     不新增 id 分配权）。一次模型回合可能交付多条消息（waifu 多段呈现 / 工具续轮），
+     它们共享这个 turnId 与各自的 sequenceIndex —— 单条回合根本不写这个键，
+     于是旧消息的形状逐字不变（additive capability）。 */
+  try{var _seqCore=_ibDeliveryCore();if(_seqCore&&typeof _seqCore.turnIdFor==='function')_turn.turnId=_seqCore.turnIdFor(userMsg.id)}catch(e){}
   _turnLc.begin();
   try{
     const lim=await getReadingLimits();
     _sealTs=await getChatSealTimestamp(_targetFriend);
-    const friendMsgs=filterSealed((await dbGetByIndex('chatMessages','byFriend',_targetFriend)).filter(m=>_targetThread?m.threadId===_targetThread:!m.threadId).sort((a,b)=>a.timestamp-b.timestamp),_targetThread?0:_sealTs);/* 封档线仅作用于主对话，话题频道不受影响 */
+    const friendMsgs=filterSealed(_ibOrderMessages((await dbGetByIndex('chatMessages','byFriend',_targetFriend)).filter(m=>_targetThread?m.threadId===_targetThread:!m.threadId)),_targetThread?0:_sealTs);/* 封档线仅作用于主对话，话题频道不受影响 · P23 2A：顺序走 canonical orderMessages */
     /* 历史生成图参考：用户间隔后再问"刚才那张图怎么样"时，队列可能已消费——从历史取最近一条
        assistant 生成图补入本轮（仅支持视觉的模型；图片去重防重复注入） */
     try{
@@ -2578,7 +3012,7 @@ async function sendChatMessage(voiceMsg){
     const _vNative=_vmAudioNative(cfg)&&(_vtS1.direct!==false);/* 音频直发判定：能听原声的模型（「音频直发」开关默认开）不附加声学语气段 */
     const messages=history.map((m,i)=>{
       var mc=m.content||'';
-      if(m.voice)mc+=(mc?'\n':'')+_voiceApiLine(m.voice,!_vNative);
+      if(m.role==='user'&&m.voice)mc+=(mc?'\n':'')+_voiceApiLine(m.voice,!_vNative);/* P23：仅用户语音需要等效文本行；assistant voice message 的 content 已经是文字稿本身 */
       if(m.files&&m.files.length)m.files.forEach(function(f){mc+='\n\n[文件上传: '+f.name+']\n'+_capFileText(f.text)});
       var _mm={role:m.role==='assistant'?'assistant':'user',content:m.role==='assistant'?_wsStubHistory(mc):mc};
       if(m.role!=='user'&&_mm.role==='user')_mm._groupSender=true;
@@ -2589,7 +3023,7 @@ async function sendChatMessage(voiceMsg){
       _mbTrace.note(cfg.id,'inputMessages',messages.length);/* MB seam 之前的 messages 条数 */
       _mbTrace.note(cfg.id,'_paramsSeam',_mbParamsFingerprint(cfg,_streamingOk,thinkingOn));
     }
-    const _bcc=await buildChatContext(cfg,{userMessage:_ctxText,ss:ss,summaryText:summaryText,threadId:_targetThread,voice:!!_callTurn,sentFiles:sentFiles,activity:_turnActivity,
+    const _bcc=await buildChatContext(cfg,{friendId:_targetFriend,userMessage:_ctxText,ss:ss,summaryText:summaryText,threadId:_targetThread,voice:!!_callTurn,sentFiles:sentFiles,activity:_turnActivity,
       /* M1-C.2o：把**本轮真正交给模型的那一段 canonical 历史**（上一行的 history，
          即阶梯窗口切片）交给上下文构建器，作为当前对话证据的来源。它不是"再读一次
          会话"，而是把同一个 `history` 变量复用 —— 于是"模型看到的对话"与
@@ -2614,9 +3048,13 @@ async function sendChatMessage(voiceMsg){
     const _nativeDeepSeekVision=_usesNativeDeepSeekVision(cfg);
     /* 视觉判定默认放行（如今多模态已普遍；显式关闭 cfg.vision=false 才拒绝）；DeepSeek 文本模型仍走本地视觉描述 */
     const _visionOk=_localVision||_nativeDeepSeekVision||(cfg.vision!==undefined?!!cfg.vision:true);
-    try{if(_ibToolDrainImages.length){const _ti=_ibToolDrainImages.splice(0);if(_visionOk)_ti.forEach(u=>sentImages.push({dataUrl:u,name:'tool_result.png'}))}}catch(e){}
-    /* 图片回注队列（ws_read_image / 聊天生图回传）：仅支持视觉的模型出队；文本模型保留队列（不做图不可见提示，等待视觉请求） */
-    try{if(typeof _ibImageDrain!=='undefined'&&_ibImageDrain.length&&_visionOk){const _di2=_ibImageDrain.splice(0);_di2.forEach(u=>{const _du=String(u||'');if(_du.slice(0,5)==='data:')sentImages.push({dataUrl:_du,base64:_du.split(',')[1]||'',mime:(_du.match(/^data:([^;,]+)/i)||[])[1]||'image/jpeg',name:'image_inject.png'})})}}catch(e){}
+    /* R3 · 图片回注：只有支持视觉时才 take；取之前按当前 friend/thread
+       做稳定 partition，错误 WHERE 与 legacy item 继续留在原队列。 */
+    if(_visionOk){
+      var _scopeMine=_ibWsScopeFilter(_targetFriend,_targetThread||null);
+      _ibTakeScopedMedia('_ibToolDrainImages',_scopeMine).forEach(function(u){var _si=_ibMediaPromptImage(u,'tool_result.png');if(_si)sentImages.push(_si)});
+      _ibTakeScopedMedia('_ibImageDrain',_scopeMine).forEach(function(u){var _si=_ibMediaPromptImage(u,'image_inject.png');if(_si)sentImages.push(_si)});
+    }
     /* Video Runtime / Cinema 留影帧 → 复用既有视觉路由（request-local）：任何合法请求
        携带的 visionReference（Call 视频面 / Cinema 留影产出的原始帧）都并入 sentImages，
        由下方既有分支 (native→image parts / 本地 Qwen→描述) 统一处理；只作用于 messages，
@@ -2806,13 +3244,13 @@ async function sendChatMessage(voiceMsg){
       /* Blog 阅读申请：截取 blog_read 标签并生成申请卡（标签不入库、不上屏） */
       var _brCards=[];
       {const _bp=_parseBlogReadOps(replyText);
-       if(_bp.ops.length){replyText=_bp.clean;try{if(_mbSideEffectsOk(_MB_SEC.blog,_bp.ops.length))_brCards=await _execBlogReadOps(_bp.ops)}catch(e){}}}
+       if(_bp.ops.length){replyText=_bp.clean;try{if(_mbSideEffectsOk(_MB_SEC.blog,_bp.ops.length))_brCards=await _execBlogReadOps(_bp.ops,{friendId:_targetFriend,threadId:_targetThread})}catch(e){}}}
       /* 以完整回复为准重建气泡：文本 + 操作卡 + 下载卡按原始顺序分段渲染，卡片状态对齐真实执行结果 */
       var _wsParsed=_parseWsOps(replyText);
       var _wsResults=[];
       if(_wsParsed.ops.length&&_mbSideEffectGate(_mbSecWsCats(_wsParsed.ops)))_wsResults=await _execWsOps(_wsParsed.ops,cfg.nickname||cfg.model||'AI',cfg,{source:'chat',friendId:_targetFriend,threadId:_targetThread||'',userMessageId:userMsg.id,_ibTurn:_turn,guard:_ibTurnGuard(_turn)});
-      if(_wsParsed.files&&_wsParsed.files.length){try{if(_mbSideEffectGate([_MB_SEC.file]))await _wsArchiveFileBlocks(_wsParsed.files,cfg.nickname||cfg.model||'AI')}catch(e){}}
-      var _wsPhantom=_wsCheckPhantom(_wsParsed.cleanText,_wsParsed.ops.length);
+      if(_wsParsed.files&&_wsParsed.files.length){try{if(_mbSideEffectGate([_MB_SEC.file]))await _wsArchiveFileBlocks(_wsParsed.files,cfg.nickname||cfg.model||'AI',_wsRoleFileProvenance(cfg))}catch(e){}}
+      var _wsPhantom=_wsCheckPhantom(_wsParsed.cleanText,_wsParsed.ops.length,cfg.nickname||cfg.model||'AI',cfg.id,{friendId:_targetFriend,threadId:_targetThread||''});
       streamRefs.forEach(ref=>{_wsFinalizeBubble(ref,replyText,_wsResults)});
       /* 工具回合续（v6）：执行了工具 → 结果自动回喂再生成一轮（用户无需再说一句；失败静默不影响已渲染内容）
          P11-2C：续轮本身不再回头问 Judge（那会新增模型调用，越界），因此它沿用**本回合**
@@ -2823,8 +3261,13 @@ async function sendChatMessage(voiceMsg){
          `tool_continue` 永远落进 `!(_mbSideEffectCounts[cat] > 0)` 分支：闸门照样
          正确拦截（allow=false），但**一个字都不记**，抑制记录因而声称"这一轮没拦下
          任何东西"。补上条数后记录才如实。**只补元数据，判定语义与拦截行为一字未改。** */
+      /* P23 Phase 2A · 工具续轮是否真的产出过消息。续轮消息与主回复属于**同一个模型
+         回合**，所以主回复必须能知道自己是不是"本回合的多条之一"（决定要不要带回合
+         身份）。返回值 round = 本回合最终的消息条数；null = 没有续轮。
+         这不改变任何执行/裁定语义：续轮的判定与执行条件逐字未动。 */
+      let _wsCont=null;
       if((_wsParsed.ops.length||_wsParsed.files.length)&&_mbSideEffectGate(_mbSecWsCats(_wsParsed.ops).concat(_wsParsed.files.length?[_MB_SEC.file]:[]),_mbSecWsCount(_wsParsed.ops,_wsParsed.files.length))){
-        try{await _wsToolContinue(cfg,{messages:messages,lastReply:replyText,friendId:_targetFriend,chatKey:_targetFriend,senderName:cfg.nickname||cfg.model||'AI',round:1,threadId:_targetThread,_ibTurn:_turn,guard:_ibTurnGuard(_turn)})}catch(e){}
+        try{_wsCont=await _wsToolContinue(cfg,{messages:messages,lastReply:replyText,friendId:_targetFriend,chatKey:_targetFriend,senderName:cfg.nickname||cfg.model||'AI',round:1,threadId:_targetThread,_ibTurn:_turn,guard:_ibTurnGuard(_turn)})}catch(e){}
       }
       /* 本回合 trace 收口（打印点已在副作用之后，故抑制记录此刻已是终值） */
       _mbSecTraceFinish(_mbTrace,cfg.id,_mbVerdict);
@@ -2844,6 +3287,9 @@ async function sendChatMessage(voiceMsg){
          结束就已经失败"，P11-3D.1 的周期所有权因此必须和它一起修。 */
       const aiMsg={id:'msg_'+Date.now()+'_'+Math.floor(Math.random()*100000),role:'assistant',content:replyText,reasoning_content:thinkingText||'',metadata:{model:cfg.provider||cfg.model||'',model_id:cfg.model||'',config_id:cfg.id,showThinking:_resolveShowThinking(cfg)},friendId:_targetFriend,timestamp:Date.now()};/* 编号方式与群聊统一：随机后缀防同毫秒碰撞 */
       if(_turn&&_turn.activityId)aiMsg.metadata.activityId=_turn.activityId;/* assistant 与本回合 user 同源 */
+      /* P23 Phase 2A：本回合交付了多条消息（工具续轮已落库）⇒ 主回复带回合身份与序号 0。
+         单条回合**不写**这个键 —— 旧消息形状与行为逐字不变（additive capability）。 */
+      if(_wsCont&&_turn&&_turn.turnId){aiMsg.metadata.turnId=_turn.turnId;aiMsg.metadata.sequenceIndex=0;if(Number(_wsCont.round)>0)aiMsg.metadata.sequenceTotal=Number(_wsCont.round);}
       if(_srchLog.length)aiMsg.wsSearches=_srchLog;
       if(_memR.length)aiMsg.memOps=_memR.map(r=>({ok:r.ok,status:r.status||'',label:r.label,detail:r.detail}));
       if(_calR.length)aiMsg.calNotes=_calR.map(r=>({ok:r.ok,label:r.label,detail:r.detail}));
@@ -2880,10 +3326,7 @@ async function sendChatMessage(voiceMsg){
         _mbTrace.note(cfg.id,'_paramsSend',_mbParamsFingerprint(cfg,_streamingOk,thinkingOn));
       }
       let rawReply=await callApiChat(cfg,messages,{_ibTurn:_turn,_ibConsumer:'chat',_ibCharacterId:cfg.id,wantThinking:thinkingOn,autoContinue:true,chatKey:_targetFriend,result:_callResN,searchLog:_srchLogN});
-      clearInterval(_typTimer);
-      const _elapsed=Math.round((Date.now()-_typStart)/1000);
-      const te=document.getElementById('chat-typing-'+_targetFriend);
-      if(te){te.textContent=(cfg.nickname||cfg.model)+'（'+_elapsed+'秒）';te.style.animation='none';setTimeout(()=>{if(te.parentNode)te.remove()},1200)}
+      _ibTypingFinish(_targetFriend,cfg.nickname||cfg.model,_typStart);
       var responsePartsN=_assistantResponseParts(rawReply,_callResN.reasoning_content||'');
       let thinkingText=responsePartsN.reasoning_content;
       var replyText=responsePartsN.content;
@@ -2914,21 +3357,24 @@ async function sendChatMessage(voiceMsg){
       /* Blog 阅读申请：截取 blog_read 标签并生成申请卡（标签不入库、不上屏） */
       var _brCardsNs=[];
       {const _bpn=_parseBlogReadOps(replyText);
-       if(_bpn.ops.length){replyText=_bpn.clean;try{if(_mbSideEffectGate([_MB_SEC.blog]))_brCardsNs=await _execBlogReadOps(_bpn.ops)}catch(e){}}}
+       if(_bpn.ops.length){replyText=_bpn.clean;try{if(_mbSideEffectGate([_MB_SEC.blog]))_brCardsNs=await _execBlogReadOps(_bpn.ops,{friendId:_targetFriend,threadId:_targetThread})}catch(e){}}}
       var _wsNs=_parseWsOps(replyText);
       var _wsRNs=[];
       if(_wsNs.ops.length&&_mbSideEffectGate(_mbSecWsCats(_wsNs.ops)))_wsRNs=await _execWsOps(_wsNs.ops,cfg.nickname||cfg.model||'AI',cfg,{source:'chat',friendId:_targetFriend,threadId:_targetThread||'',userMessageId:userMsg.id,_ibTurn:_turn,guard:_ibTurnGuard(_turn)});
-      if(_wsNs.files&&_wsNs.files.length){try{if(_mbSideEffectGate([_MB_SEC.file]))await _wsArchiveFileBlocks(_wsNs.files,cfg.nickname||cfg.model||'AI')}catch(e){}}
-      var _wsNsPhantom=_wsCheckPhantom(_wsNs.cleanText,_wsNs.ops.length);
+      if(_wsNs.files&&_wsNs.files.length){try{if(_mbSideEffectGate([_MB_SEC.file]))await _wsArchiveFileBlocks(_wsNs.files,cfg.nickname||cfg.model||'AI',_wsRoleFileProvenance(cfg))}catch(e){}}
+      var _wsNsPhantom=_wsCheckPhantom(_wsNs.cleanText,_wsNs.ops.length,cfg.nickname||cfg.model||'AI',cfg.id,{friendId:_targetFriend,threadId:_targetThread||''});
       /* 工具回合续（v6）：非流式主对话同样自动回喂再生成一轮（P11-2C：同款沿用本回合裁定状态）
          P11-2E：与流式路径同款补上条数（见上方流式路径的说明）。 */
+      let _wsContN=null;/* P23 Phase 2A：与流式路径同款 —— 本回合最终消息条数（null = 无续轮） */
       if((_wsNs.ops.length||_wsNs.files.length)&&_mbSideEffectGate(_mbSecWsCats(_wsNs.ops).concat(_wsNs.files.length?[_MB_SEC.file]:[]),_mbSecWsCount(_wsNs.ops,_wsNs.files.length))){
-        try{await _wsToolContinue(cfg,{messages:messages,lastReply:replyText,friendId:_targetFriend,chatKey:_targetFriend,senderName:cfg.nickname||cfg.model||'AI',round:1,threadId:_targetThread,_ibTurn:_turn,guard:_ibTurnGuard(_turn)})}catch(e){}
+        try{_wsContN=await _wsToolContinue(cfg,{messages:messages,lastReply:replyText,friendId:_targetFriend,chatKey:_targetFriend,senderName:cfg.nickname||cfg.model||'AI',round:1,threadId:_targetThread,_ibTurn:_turn,guard:_ibTurnGuard(_turn)})}catch(e){}
       }
       /* 本回合 trace 收口（与非流式逐字同款） */
       _mbSecTraceFinish(_mbTrace,cfg.id,_mbVerdict);
       const aiMsg={id:'msg_'+Date.now()+'_'+Math.floor(Math.random()*100000),role:'assistant',content:replyText,reasoning_content:thinkingText||'',metadata:{model:cfg.provider||cfg.model||'',model_id:cfg.model||'',config_id:cfg.id,showThinking:_resolveShowThinking(cfg)},friendId:_targetFriend,timestamp:Date.now()};/* 编号方式与群聊统一：随机后缀防同毫秒碰撞 */
       if(_turn&&_turn.activityId)aiMsg.metadata.activityId=_turn.activityId;/* assistant 与本回合 user 同源（非流式与流式一致） */
+      /* P23 Phase 2A：与流式路径逐字同款 —— 本回合有工具续轮 ⇒ 主回复带回合身份与序号 0。 */
+      if(_wsContN&&_turn&&_turn.turnId){aiMsg.metadata.turnId=_turn.turnId;aiMsg.metadata.sequenceIndex=0;if(Number(_wsContN.round)>0)aiMsg.metadata.sequenceTotal=Number(_wsContN.round);}
       if(_srchLogN.length)aiMsg.wsSearches=_srchLogN;/* 任务A */
       if(_memRNs.length)aiMsg.memOps=_memRNs.map(r=>({ok:r.ok,status:r.status||'',label:r.label,detail:r.detail}));
       if(_calRNs.length)aiMsg.calNotes=_calRNs.map(r=>({ok:r.ok,label:r.label,detail:r.detail}));
@@ -2940,21 +3386,92 @@ async function sendChatMessage(voiceMsg){
       /* waifu 消息呈现（MessagePresentation）：非流式纯文本长回复 → 按自然停顿拆多条，逐条上屏（像真人一条条发）。
          仅当 waifu 开、且回复为"纯文本、无功能标签"时介入；plan 决定 single/multi，绝不触碰模型执行/continuation。 */
       const _waifuPlan=(cfg.waifu===true&&!_wsNs.ops.length&&_wsNs.files.length===0&&_memRNs.length===0&&_calRNs.length===0&&_brCardsNs.length===0&&!_wsNsPhantom&&!_srchLogN.length&&!_callResN.truncated&&window.MessagePresentation&&window.MessagePresentation.plan)?window.MessagePresentation.plan(replyText,{waifu:true,streaming:false}):null;
-      const _waifuMsgs=(_waifuPlan&&_waifuPlan.mode==='multi')?_waifuPlan.messages:null;
-      if(_waifuMsgs&&_waifuMsgs.length){
-        for(let _wi=0;_wi<_waifuMsgs.length;_wi++){
-          const _wTxt=String(_waifuMsgs[_wi].text||'');
-          const _wDelay=_wi>0?(Number(_waifuMsgs[_wi].delay)||0):0;/* 每条 delay=显示前等待（首条 0 立即） */
-          if(_wDelay>0)await new Promise(function(r){setTimeout(r,_wDelay)});/* 真人节奏：随上一条长度动态取等待，不卡顿 */
-          const _wId='msg_'+Date.now()+'_'+Math.floor(Math.random()*100000)+'_'+_wi;
-          const _wMsg={id:_wId,role:'assistant',content:_wTxt,reasoning_content:_wi===0?(thinkingText||''):'',metadata:{model:cfg.provider||cfg.model||'',model_id:cfg.model||'',config_id:cfg.id,showThinking:_resolveShowThinking(cfg),waifu:true},friendId:_targetFriend,timestamp:Date.now()+_wi};
-          if(_turn&&_turn.activityId)_wMsg.metadata.activityId=_turn.activityId;
-          if(_targetThread)_wMsg.threadId=_targetThread;
-          await dbPut('chatMessages',_wMsg);
-          if(activeFriendId===_targetFriend)appendChatBubble('ai',_wTxt,undefined,_wi===0?(thinkingText||undefined):undefined,_wId,undefined,undefined,undefined,undefined,cfg);
+      const _waifuSegs=(_waifuPlan&&_waifuPlan.mode==='multi')?_waifuPlan.messages:null;
+      /* P23 Phase 2D：结构定下来之后，**模态**交给唯一的 Multimodal Delivery Policy。
+         默认（没有显式意图/偏好/提示）⇒ 全部 text，下面走的仍是 2A/2B 既有路径，
+         与 2D 之前逐字同形。只有 policy 真的决定出 voice unit 时，才切到
+         materialization path（音频在该 unit 到达 delivery time 时才合成）。 */
+      const _mmResult=(_waifuSegs&&_waifuSegs.length)?_ibMmResolve(
+        _waifuSegs.map(function(s){return String(s&&s.text||'')}),cfg,
+        {turnId:(_turn&&_turn.turnId)||'',conversationId:_ibConvId(_targetFriend,_targetThread),hints:(_waifuPlan&&_waifuPlan.hints)||null}
+      ):null;
+      const _mmHasVoice=!!(_mmResult&&_mmResult.stats&&_mmResult.stats.voiceResolved>0);
+      /* P23 Phase 2A：多段交付**必须**经 Sequence Contract 落库 —— 每条一条独立
+         canonical 消息，共享回合身份、共用同一个 timestamp（顺序由 sequenceIndex
+         决定，绝不再靠 +1ms 的时间差制造顺序）。节奏与渲染仍由下面的循环负责。 */
+      const _waifuMsgs=(_waifuSegs&&!_mmHasVoice)?_ibSequenceMessages((_mmResult?_mmResult.units:_waifuSegs.map(function(s){return {content:String(s&&s.text||'')}})).map(function(u){return String(u.content==null?'':u.content)}),{
+        turnId:(_turn&&_turn.turnId)||'',friendId:_targetFriend,threadId:_targetThread,timestamp:Date.now(),
+        model:cfg.provider||cfg.model||'',modelId:cfg.model||'',configId:cfg.id,
+        showThinking:_resolveShowThinking(cfg),extraMetadata:{waifu:true,activityId:(_turn&&_turn.activityId)||undefined}
+      }):null;
+      if(_mmHasVoice&&_mmResult&&_mmResult.units.length){
+        /* materialization path：unit 只带 kind/content；canonical 消息与音频都在 delivery time 生成。 */
+        const _wHandleV=_ibStartDelivery({
+          turnId:(_turn&&_turn.turnId)||'',friendId:_targetFriend,threadId:_targetThread,
+          cfg:cfg,senderName:cfg.nickname||cfg.model||'AI',thinkingText:thinkingText||'',
+          activityId:(_turn&&_turn.activityId)||null,timestamp:Date.now(),lazyBuild:true,
+          model:cfg.provider||cfg.model||'',modelId:cfg.model||'',configId:cfg.id,
+          showThinking:_resolveShowThinking(cfg),
+          units:_mmResult.units.map(function(u,i){
+            return {kind:u.kind,content:u.content,
+              delivery:(i===0?null:{delayBefore:(Number(_waifuSegs[i]&&_waifuSegs[i].delay)||0)})};
+          })
+        });
+        if(_wHandleV){
+          await _wHandleV.promise;
+          _sendResult={ok:true,replyText:replyText,messageId:null,userMessageId:userMsg.id};
+          if(activeFriendId!==_targetFriend)_markUnread(_targetFriend);
+        }else{
+          /* runtime 不可用 ⇒ 全部按 text 立即交付（内容一字不丢），并把这次形式降级记进 policy trace。 */
+          try{var _P0=_ibMmPolicy();if(_P0&&typeof _P0.note==='function')_P0.note(_mmResult.units.map(function(_,i){return {unitIndex:i,requested:'voice',resolved:'text',reason:'runtime-unavailable'}}),{turnId:(_turn&&_turn.turnId)||''});}catch(e){}
+          const _fbMsgs=_ibSequenceMessages(_mmResult.units.map(function(u){return u.content}),{
+            turnId:(_turn&&_turn.turnId)||'',friendId:_targetFriend,threadId:_targetThread,timestamp:Date.now(),
+            model:cfg.provider||cfg.model||'',modelId:cfg.model||'',configId:cfg.id,
+            showThinking:_resolveShowThinking(cfg),extraMetadata:{waifu:true,activityId:(_turn&&_turn.activityId)||undefined}
+          });
+          for(let _wi=0;_fbMsgs&&_wi<_fbMsgs.length;_wi++){
+            await dbPut('chatMessages',_fbMsgs[_wi]);
+            if(activeFriendId===_targetFriend)appendChatBubble('ai',_fbMsgs[_wi].content,undefined,_wi===0?(thinkingText||undefined):undefined,_fbMsgs[_wi].id,undefined,undefined,undefined,undefined,cfg);
+          }
+          _sendResult={ok:true,replyText:replyText,messageId:null,userMessageId:userMsg.id};
+          if(activeFriendId!==_targetFriend)_markUnread(_targetFriend);
         }
-        _sendResult={ok:true,replyText:replyText,messageId:null,userMessageId:userMsg.id};
-        if(activeFriendId!==_targetFriend)_markUnread(_targetFriend);/* BUGFIX: 多段消息同样需要在非活动好友时标记未读 */
+      }else if(_waifuMsgs&&_waifuMsgs.length){
+        /* P23 Phase 2B：交付交给 Delivery Runtime（时间 / typing / 取消 / 会话隔离的唯一
+           authority）。这里只做两件事：把 canonical unit 交出去、等它跑完。
+           · 首条不等待（生成期的"思考中"已经承担了那段时间）；后续条目的等待值仍然来自
+             既有 planner（MessagePresentation）——runtime 不在本阶段新增任何节奏策略；
+           · await handle.promise 保持"本函数在交付结束后才返回"的既有语义，
+             因此 call.js / active-plans 等调用方逐字不受影响；
+           · 用户中途插话 / 点停止 ⇒ runtime 取消剩余 unit，已交付的保留（§10/§11）。 */
+        for(let _wi=0;_wi<_waifuMsgs.length;_wi++){
+          _waifuMsgs[_wi].reasoning_content=(_wi===0?(thinkingText||''):'');
+        }
+        const _wUnits=_waifuMsgs.map(function(m,i){
+          return {kind:m.voice?'voice':'text',content:m.content,
+            delivery:(i===0?null:{delayBefore:(Number(_waifuSegs[i]&&_waifuSegs[i].delay)||0)}),
+            message:m};
+        });
+        const _wHandle=_ibStartDelivery({
+          turnId:(_turn&&_turn.turnId)||'',friendId:_targetFriend,threadId:_targetThread,
+          cfg:cfg,senderName:cfg.nickname||cfg.model||'AI',thinkingText:thinkingText||'',
+          activityId:(_turn&&_turn.activityId)||null,units:_wUnits
+        });
+        if(_wHandle){
+          await _wHandle.promise;
+          _sendResult={ok:true,replyText:replyText,messageId:null,userMessageId:userMsg.id};
+          if(activeFriendId!==_targetFriend)_markUnread(_targetFriend);/* BUGFIX: 多段消息同样需要在非活动好友时标记未读 */
+        }else{
+          /* runtime 不可用（旧宿主 / 未加载）⇒ 退回**逐条立即交付**：顺序与内容不变，
+             只失去节奏与 typing（绝不因为归一层缺席而丢消息）。 */
+          for(let _wi=0;_wi<_waifuMsgs.length;_wi++){
+            const _wMsg=_waifuMsgs[_wi];
+            await dbPut('chatMessages',_wMsg);
+            if(activeFriendId===_targetFriend)appendChatBubble('ai',_wMsg.content,undefined,_wi===0?(thinkingText||undefined):undefined,_wMsg.id,undefined,undefined,undefined,undefined,cfg);
+          }
+          _sendResult={ok:true,replyText:replyText,messageId:null,userMessageId:userMsg.id};
+          if(activeFriendId!==_targetFriend)_markUnread(_targetFriend);
+        }
       }else{
         await dbPut('chatMessages',aiMsg);
         _sendResult={ok:true,replyText:replyText,messageId:aiMsg.id,userMessageId:userMsg.id};
@@ -2978,8 +3495,7 @@ async function sendChatMessage(voiceMsg){
       }
     }
   }catch(err){
-    if(_typTimer)clearInterval(_typTimer);
-    const te=document.getElementById('chat-typing-'+_targetFriend);if(te)te.remove();
+    _ibTypingOff(_targetFriend);/* P23 Phase 2B：错误路径同样经唯一 typing authority 清理 */
     _showStreamingUI(false);
     /* Middle Brain Trace · 失败轮也打印一次（层参与度与成功轮同格式，便于对照断点） */
     if(_mbTrace)_mbTrace.finish(cfg.id,{});
@@ -3008,7 +3524,7 @@ async function sendChatMessage(voiceMsg){
   if(ss.enabled){
     const _sumFid=_targetFriend,_sumTid=_targetThread,_sumSealTs=_sealTs;
     setTimeout(async()=>{try{
-      const _allM=filterSealed((await dbGetByIndex('chatMessages','byFriend',_sumFid)).filter(m=>_sumTid?m.threadId===_sumTid:!m.threadId).sort((a,b)=>a.timestamp-b.timestamp),_sumTid?0:_sumSealTs);
+      const _allM=filterSealed(_ibOrderMessages((await dbGetByIndex('chatMessages','byFriend',_sumFid)).filter(m=>_sumTid?m.threadId===_sumTid:!m.threadId)),_sumTid?0:_sumSealTs);/* P23 2A：canonical 顺序 */
       await maybeSummarize(cfg,_sumFid,_sumTid,_allM);
     }catch(e){}},500);
   }
@@ -3072,14 +3588,18 @@ function appendChatBubble(role,text,senderName,reasoningContent,msgId,images,fil
           ct.textContent=timeStr;container.appendChild(ct);
         }
         const txt=document.createElement('div');txt.className='r-text';
-        if(!isUser){_renderAiContent(txt,div,text,wsResults)}else if(voice){if(text)txt.appendChild(document.createTextNode(text));txt.appendChild(_buildVoiceEl(voice))}else{txt.textContent=text}
+        /* P23 Phase 2D：assistant 的一级 voice message 也必须能**即时**画成语音气泡
+           （历史重载走 _buildMsgEl，那里早就会画；实时追加过去只画文本，会出现
+           "落库是 voice、眼前是文字"的分叉）。判定仍复用 Phase 1 的唯一函数
+           _ibAiVoicePayload（陈旧/撤回/不可播放一律回落文本）。 */
+        if(!isUser){var _av1=_ibAiVoicePayload({role:'assistant',content:text,voice:voice||null});if(_av1)_renderAiVoice(txt,{voice:_av1});else _renderAiContent(txt,div,text,wsResults)}else if(voice){if(text)txt.appendChild(document.createTextNode(text));txt.appendChild(_buildVoiceEl(voice))}else{txt.textContent=text}
         div.appendChild(txt);
       }else{
         const head=document.createElement('div');head.className='r-head';
         head.innerHTML=esc(sName)+'<span class="r-time">'+timeStr+'</span>';
         div.appendChild(head);
         const txt=document.createElement('div');txt.className='r-text';
-        if(!isUser){_renderAiContent(txt,div,text,wsResults)}else if(voice){if(text)txt.appendChild(document.createTextNode(text));txt.appendChild(_buildVoiceEl(voice))}else{txt.textContent=text}
+        if(!isUser){var _av2=_ibAiVoicePayload({role:'assistant',content:text,voice:voice||null});if(_av2)_renderAiVoice(txt,{voice:_av2});else _renderAiContent(txt,div,text,wsResults)}else if(voice){if(text)txt.appendChild(document.createTextNode(text));txt.appendChild(_buildVoiceEl(voice))}else{txt.textContent=text}
         div.appendChild(txt);
       }
       fls.forEach(function(f){div.appendChild(_buildFileCard(f))});
@@ -3092,10 +3612,13 @@ function appendChatBubble(role,text,senderName,reasoningContent,msgId,images,fil
         label.style.cssText='font-size:0.68rem;opacity:0.7;display:block;margin-bottom:2px';
         label.textContent=senderName;
         div.appendChild(label);
-        _renderSegments(_panelMdHost(div),text,wsResults);
+        /* P23 2D：小窗同样按 Phase 1 的唯一判定画语音气泡（历史/实时一致）。 */
+        var _av3=_ibAiVoicePayload({role:'assistant',content:text,voice:voice||null});
+        if(_av3)_renderAiVoice(_panelMdHost(div),{voice:_av3});else _renderSegments(_panelMdHost(div),text,wsResults);
       }else if(!isUser){
         var _acm2=_mdMode();if(_acm2==='full'||_acm2==='partial')div.classList.add('md-rendered');
-        _renderSegments(_panelMdHost(div),text,wsResults);
+        var _av4=_ibAiVoicePayload({role:'assistant',content:text,voice:voice||null});
+        if(_av4)_renderAiVoice(_panelMdHost(div),{voice:_av4});else _renderSegments(_panelMdHost(div),text,wsResults);
       }else if(voice){
         if(text)div.appendChild(document.createTextNode(text));
         div.appendChild(_buildVoiceEl(voice));
@@ -3535,6 +4058,14 @@ function _mSetThink(opts,v){_lastApiReasoning=v;if(opts&&opts._st)opts._st.think
 function _mSetFinish(opts,v){_lastApiFinish=v;if(opts&&opts._st)opts._st.finish=v}
 function _finishIsTrunc(f){return f==='length'||f==='max_tokens'||f==='MAX_TOKENS'}
 function stopStreaming(){
+  /* P23 Phase 2B：停止按钮同时取消本会话**仍在投递**的剩余 unit（已交付的保留）。
+     生成与交付是同一段用户体验，因此两者共用同一个停止入口 —— 不新增第二个 stop。 */
+  try{_ibDeliveryAbort(activeFriendId,activeThreadId,'user_stop')}catch(e){}
+  /* P24-M3.3.1 · GroupTurn cancel signal（runtime-only，仅翻标记）：
+     ① 未来**尚未启动**的 entry 由群聊循环在下一个 entry 边界检查并停止；
+     ② 当前正在流式的成员仍由下面的 st.ac.abort() 中止（同一个 stop 入口，**没有第二套 abort**）；
+     ③ 非流式成员当前无法中止（known limitation，见 docs）。 */
+  try{_ibGroupTurnCancel(activeFriendId,'user_stop')}catch(e){}
   /* 优先停当前查看的对话；当前对话没有进行中的传输而全局只剩一路时，停那一路 */
   var st=_chatCallStates[activeFriendId];
   if(!st){var ks=Object.keys(_chatCallStates);if(ks.length===1)st=_chatCallStates[ks[0]]}
@@ -3614,7 +4145,8 @@ const _WS_CONT_PROMPT='[系统指令] 你上一条回复因输出长度上限被
    现有工具结果（ws_read / ws_edit / ws_run / ws_tool / 生图/读图回注等）全部走 _wsPending* 队列，
    原本只在「用户下一条消息」时注入——用户必须再说一句才能收尾。本机制在工具执行完成后：
    ① 消费反馈队列（与下一条消息同一注入源，消费式、不重复注入）；
-   ② 附加图片回注（_ibImageDrain，仅 vision 模型；DeepSeek 文本模型走本地视觉描述）；
+   ② 附加图片回注（R3 scoped _ibImageDrain / _ibToolDrainImages，仅 vision 模型；
+      DeepSeek 文本模型走本地视觉描述）；
    ③ 自动再调用一次模型（非流式，上限 _WS_TOOL_CONT_MAX 轮）→ 渲染为同角色的续接气泡；
    ④ 续轮里再输出工具则继续执行+续轮（受轮数上限保护，死循环不可能）。
    任何失败静默：工具结果仍在队列中，用户下一条消息照常注入（零回退风险）。 */
@@ -3990,23 +4522,28 @@ async function _wsToolContinueInner(cfg,o){
     /* ① 消费本回合执行的工具反馈（消费式：后续用户消息不再重复注入） */
     var feed='';
     try{
-      feed=_getWsReadInjection()+_getWsOpFeedbackInjection()+_getWsRunOutputInjection()+_getIbToolResultInjection()+_getBlogReadInjection();
+      /* P30-2 · 工具续轮同样按会话归属过滤（friendId/threadId 来自本次续轮的会话上下文）。 */
+      const _scMine=_ibWsScopeFilter(o.friendId,o.threadId);
+      /* P30-5 · 工具续轮侧同样按会话过滤 Blog 注入。 */
+      feed=_getWsReadInjection(_scMine)+_getWsOpFeedbackInjection(_scMine)+_getWsRunOutputInjection(_scMine)+_getIbToolResultInjection(_scMine)+_getBlogReadInjection(_scMine);
     }catch(e){feed=''}
-    /* ② 图片回注（生图结果 / ws_read_image；仅支持视觉的模型消费；文本模型保留队列） */
+    /* ② 图片回注（工具图片 / 生图结果 / ws_read_image；仅支持视觉的模型消费；文本模型保留队列） */
     var imgParts=[],imgNote='';
     try{
       var _lv=_usesLocalDeepSeekVision(cfg),_nv=_usesNativeDeepSeekVision(cfg);
       var _vOk=_lv||_nv||(cfg.vision!==undefined?!!cfg.vision:!!(PROVIDERS[cfg.provider]&&PROVIDERS[cfg.provider].vision));
-      if(_vOk&&typeof _ibImageDrain!=='undefined'&&_ibImageDrain.length){
-        var _di=_ibImageDrain.splice(0);
-        var _urls=_di.filter(function(u){var s=String(u||'');return s.slice(0,5)==='data:'});
+      if(_vOk){
+        var _media=[];
+        _ibTakeScopedMedia('_ibToolDrainImages',_scMine).forEach(function(u){var _ti=_ibMediaPromptImage(u,'tool_result.png');if(_ti)_media.push(_ti)});
+        _ibTakeScopedMedia('_ibImageDrain',_scMine).forEach(function(u){var _ii=_ibMediaPromptImage(u,'image_inject.png');if(_ii)_media.push(_ii)});
+        var _urls=_media;
         if(_lv&&_urls.length){
           try{
-            var _desc=_describeImagesLocally(_urls.map(function(u){return{dataUrl:u}}),'请结合图片继续你刚才的工作：'+(o.lastReply||'').slice(0,120));
+            var _desc=_describeImagesLocally(_urls,'请结合图片继续你刚才的工作：'+(o.lastReply||'').slice(0,120));
             if(_desc)imgNote='\n\n[图像参考（本地视觉识别）] '+String(_desc).slice(0,2000);
           }catch(e){imgNote=''}
         }else if(_urls.length){
-          _urls.forEach(function(u){imgParts.push({type:'_image',base64:String(u.split(',')[1]||''),mime:(String(u.match(/^data:([^;,]+)/i)||[])[1]||'image/jpeg')})});
+          _urls.forEach(function(u){imgParts.push({type:'_image',base64:u.base64,mime:u.mime})});
         }
       }
     }catch(e){}
@@ -4029,12 +4566,23 @@ async function _wsToolContinueInner(cfg,o){
     var _cOp=_parseWsOps(contText),_cResults=[];
     var _cExec=_cOp.ops;
     try{_cResults=await _execWsOps(_cExec,o.senderName||(cfg.nickname||cfg.model||'AI'),cfg,{source:'chat',friendId:o.friendId||'',threadId:o.threadId||'',senderName:o.senderName||'',_ibTurn:_turn,guard:_g})}catch(e){}
-    if(_cOp.files&&_cOp.files.length){try{await _wsArchiveFileBlocks(_cOp.files,o.senderName||(cfg.nickname||cfg.model||'AI'))}catch(e){}}
+    if(_cOp.files&&_cOp.files.length){try{await _wsArchiveFileBlocks(_cOp.files,o.senderName||(cfg.nickname||cfg.model||'AI'),_wsRoleFileProvenance(cfg))}catch(e){}}
     /* ⑤ 渲染为同角色续接气泡（含操作卡），与主流程同款 */
     var _cId='msg_'+Date.now()+'_'+Math.floor(Math.random()*100000);
     var _cImg=_wsCollectGenImages(_cResults);
     var _cMsg={id:_cId,role:'assistant',content:contText,reasoning_content:parsed.reasoning_content||'',metadata:{model:cfg.provider||cfg.model||'',model_id:cfg.model||'',config_id:cfg.id,showThinking:_resolveShowThinking(cfg),toolRound:round+1},friendId:o.friendId,timestamp:Date.now()};
     if(_turn&&_turn.activityId)_cMsg.metadata.activityId=_turn.activityId;/* 同回合 activity 归属继承（与主流式/非流式/waifu 落库点同款） */
+    /* P23 Phase 2A：本回合的第 (round+1) 条消息。工具续轮与主回复是**同一个**模型回合
+       （同一个 turn 对象、同一份预算），因此共享回合身份、各自的 sequenceIndex 决定
+       顺序 —— 此前只按 timestamp 排，而续轮先落库、主回复落库更晚，reload 后顺序会
+       颠倒（真实缺陷）。回合身份**只在单聊回合**存在：群聊的回合归属（成员级 vs 群级）
+       需要单独设计，本阶段不为群聊引入 per-member turn。 */
+    if(_turn&&_turn.turnId){_cMsg.metadata.turnId=_turn.turnId;_cMsg.metadata.sequenceIndex=round+1;}
+    /* P24-M1 · 群聊工具续轮：groupTurnId / speakerId / groupOrder 与所属成员回合保持一致
+       （续轮绝不产生新的群回合）。turnId 仍按 P23 现行 tool-round 契约继承
+       （同一个 turn + sequenceIndex=round+1）。
+       只在群身份存在时写入 ⇒ 单聊逐字不变。 */
+    if(_turn&&_turn.groupTurnId){_cMsg.metadata.groupTurnId=_turn.groupTurnId;_cMsg.metadata.speakerId=_turn.speakerId;_cMsg.metadata.groupOrder=_turn.groupOrder;}
     if(o.senderName)_cMsg.senderName=o.senderName;
     if(_cImg.length)_cMsg.images=_cImg;
     if(o.threadId)_cMsg.threadId=o.threadId;
@@ -4065,209 +4613,38 @@ async function _wsToolContinueInner(cfg,o){
 }
 window._wsToolContinue=_wsToolContinue;
 
-/* ══════════ Waifu 消息呈现（MessagePresentation）· v10 ══════════
-   定位：Waifu Mode 是"消息呈现模式"，只回答一件事：完整响应 → 如何变成一条条"真人自然发送"的消息，
-        并带上节奏。核心不再纠结"在哪切"，而是"什么东西应该作为一次发送"（What is ONE message）。
-   三层概念：
-     ① Structural Parsing —— 识别并保护成对结构（括号/引号/代码/URL/链接/JSON/emoji/数字等），
-                            结构内部绝不切碎；有代码块时不整条 single，而是 散文→代码块→散文 各自成条。
-     ② Utterance Segmentation —— 仅对普通自然语言按 空行段落 > 句读（。！？）> 语义转折 > 长度控制 拆分。
-     ③ Human-like Message Planner —— 把 utterance 组装成"一个自然拍发送键"的 beat（消息），并做 anti-fragmentation。
-   对外 API：
+/* ══════════ Waifu 消息呈现（MessagePresentation）· v11 ══════════
+   定位：Waifu Mode 是"消息呈现模式"，只回答两件事：完整响应 → 呈现成几条、每条隔多久。
+         **"在哪切"不再是本模块的事**：P23 Phase 2C 之后，切分规则（Structural Parsing /
+         Utterance Segmentation / anti-fragmentation / min-max 长度策略 / 无损保证）
+         唯一实现 = assets/js/delivery-planner.js；本模块只做 mode 决策与节奏提示。
+   对外 API（语义与 v10 逐字兼容）：
      plan(reply, opts) → { mode:'stream'|'single'|'multi', messages:[{text,delay}], segments:[text] }
-     split(text, opts) → string[] | null   （向后兼容别名，= messages 的 text 数组）
-     delayBetween(len) → number            （真人节奏，确定性上界）
+     split(text, opts) → string[] | null   （向后兼容别名，= planner.segment）
+     delayBetween(len) → number            （真人节奏，确定性上界；Runtime 执行，本层只提示）
+     deliveryPlan(reply,opts) → planner 的完整计划（units/stats/policy，只读、无时间）
+     policy() → 生效的切分边界（只读）
    约束：不干预模型执行 / continuation / memory / tools；不改 Harness / ModelPort；
         streaming:true → {mode:'stream'}，交给现有 streaming renderer 实时呈现，绝不等待完整再拆。
-   lossless 硬性保证：join(messages) 与原文仅差空白归一，绝不丢内容/结构/标点/emoji。 */
+   lossless 硬性保证（由 planner 负责并自检）：join(messages) 与原文仅差空白归一。 */
 window.MessagePresentation = (function () {
   'use strict';
-  /* ── 标点 / 结构 ── */
-  const HARD_STOP = /[。！？!?]/;                       /* 真正句读：句号 / 感叹 / 问号 */
-  const SOFT_PAUSE = /[，,、；;…～~]/;                  /* 次级停顿：逗号 / 顿号 / 分号 / 省略 / 波浪 */
-  const COMMA = /[，,、]/;                              /* 逗号类（用于"转折分句"与"长句次级断"） */
-  /* 语义/叙事转折词：逗号后紧跟这类词 → 视为"新一拍"，即使同句也拆成独立消息。
-     注意：把 然后/接着/随后/终于 这类"顺承"词排除，保证"她看了你一会儿，然后轻轻笑了一下。"仍旧一条。 */
-  const SPLIT_CONNECTOR_RE = /^\s*(?:不过|但是|可是|然而|所以|因此|其实|对了|还有|而且|再说|就是说|换句话说|更重要的是|顺便|另外|况且|再者|总之|于是)\s*/;
-  const FILLER_RE = /^\s*(?:嗯|哦|噢|啊|哈|哎|唉|呃|唔|呀|嗯嗯|哦哦|哈哈|嘿嘿|哎呀|emm|emmm)\s*[，,。！？!?]?\s*$/;
-  const ONLY_STRUCT = /^[\s\-—–…\.。，、；;：:！!？?'"“”‘’()（）\[\]【】「」『』{}<>《》]+$/;
-  /* 成对结构：recursive（叙事可再拆，括号附着内容） vs atomic（JSON/列表/强调，整块不拆） */
-  const RECURSIVE_PAIRS = { '(': ')', '（': '）', '「': '」', '『': '』', '“': '”', '‘': '’', '"': '"' };
-  const ATOMIC_PAIRS = { '[': ']', '{': '}', '【': '】' };
-
-  /* 软目标（非硬限制）：作为"一个自然拍发送键"的参考长度 */
-  const SOFT_TARGET = 44;   /* 参照：普通消息 30~100 字（非硬上限） */
-  const HARD_LEN = 96;      /* 单句超过 → 在次级停顿处断 */
-  const SUB_MIN = 14;       /* 长句切分时子段最小长度 */
-  const BRACKET_INTACT = 48;/* 成对结构内文 ≤ 此且无段落 → 整块作为一条 */
-
-  /* ═══ ① Structural Parsing：文本 → token 序列（atomic / bracket / prose）═══
-     atomic：code fence / inline code / URL / Markdown link / 图片 / JSON / 列表 —— 绝不内部切分。
-     bracket：成对结构（含嵌套），开括号附着首条内文、闭括号附着末条内文，绝不孤立。
-     prose：普通自然语言，交给 ② utterance segmentation。 */
-  function _tokenize(t) {
-    const toks = []; let i = 0; const n = t.length;
-    let proseStart = -1;
-    const flushProse = (end) => { if (proseStart >= 0) { const p = t.slice(proseStart, end); if (p) toks.push({ kind: 'prose', text: p }); proseStart = -1; } };
-    const atomAdd = (s, e) => { if (e > s) toks.push({ kind: 'atomic', text: t.slice(s, e) }); };
-    while (i < n) {
-      const ch = t[i];
-      /* ── code fence（``` / ~~~）── */
-      if (t.slice(i, i + 3) === '```' || t.slice(i, i + 3) === '~~~') {
-        flushProse(i); const fence = t.slice(i, i + 3);
-        const close = t.indexOf(fence, i + 3); const end = close === -1 ? n : close + 3;
-        atomAdd(i, end); i = end; continue;
-      }
-      /* ── inline code（`）── */
-      if (ch === '`') {
-        flushProse(i); const close = t.indexOf('`', i + 1); const end = close === -1 ? n : close + 1;
-        atomAdd(i, end); i = end; continue;
-      }
-      /* ── Markdown 链接/图片 [文本](url) / ![alt](url) ── */
-      if (ch === '[' || (ch === '!' && t[i + 1] === '[')) {
-        const op = t.indexOf('](', i);
-        if (op > i) {
-          const cl = t.indexOf(')', op + 2); const end = cl === -1 ? n : cl + 1;
-          if (end - i <= 2000 && t.slice(i, end).indexOf('\n') === -1) { flushProse(i); atomAdd(i, end); i = end; continue; }
-        }
-      }
-      /* ── URL ── */
-      const u = t.slice(i).match(/^(?:https?:\/\/|www\.)[^\s`\u4e00-\u9fff，。；！？、；“”（）【】]+/i);
-      if (u && u[0].length >= 4) { flushProse(i); atomAdd(i, i + u[0].length); i += u[0].length; continue; }
-      /* ── 成对结构（嵌套感知；分清 recursive / atomic）── */
-      if (RECURSIVE_PAIRS[ch] || ATOMIC_PAIRS[ch]) {
-        const closeCh = RECURSIVE_PAIRS[ch] || ATOMIC_PAIRS[ch];
-        const end = _matchPaired(t, i, ch, closeCh);
-        if (end > i + 1) {
-          flushProse(i);
-          const isRecursive = !!RECURSIVE_PAIRS[ch];
-          toks.push({ kind: 'bracket', open: ch, close: closeCh, recursive: isRecursive, text: t.slice(i, end), inner: t.slice(i + 1, end - 1) });
-          i = end; continue;
-        }
-      }
-      if (proseStart < 0) proseStart = i;
-      i++;
-    }
-    flushProse(n);
-    return toks;
+  /* ══════════ P23 Phase 2C · 呈现层（"怎么拆"已交给 Delivery Planner）══════════
+     P23 2C 之前，"怎么拆"与"隔多久发"都住在这里。现在：
+       · 结构（切分规则 / 边界 / 无损保证）唯一实现 = assets/js/delivery-planner.js；
+       · 本模块只保留**呈现与节奏**：
+           - mode 决策（stream / single / multi）；
+           - delayBetween —— 既有节奏公式（被 waifu.pace.dynamic 钉住）。它只是**提示**，
+             真正的等待由 Phase 2B 的 Delivery Runtime 执行（时间不属于本层）；
+           - 向后兼容的 split / plan 入口（旧调用与浏览器端到端测试仍经它们，
+             语义逐字不变：null = 不拆）。
+     本文件**不再**实现任何第二套拆句规则。planner 缺席时 split 返回 null
+     （= 退回单条消息的安全退化，绝不因为归一层缺席而丢内容）。 */
+  function planner() {
+    try { return (typeof window !== 'undefined') ? window.IBDeliveryPlanner : null; } catch (e) { return null; }
   }
-  function _matchPaired(t, openIdx, openCh, closeCh) {
-    if (openCh === closeCh) { const nx = t.indexOf(closeCh, openIdx + 1); return nx === -1 ? -1 : nx + 1; }
-    let depth = 0;
-    for (let i = openIdx; i < t.length; i++) {
-      const c = t[i];
-      if (c === openCh) depth++;
-      else if (c === closeCh) { depth--; if (depth === 0) return i + 1; }
-    }
-    return -1;
-  }
-
-  /* ═══ ②③ 由 token 组装成"消息候选"（beats），并保证结构完整 ═══ */
-  function _beatsFromTokens(toks) {
-    const beats = [];
-    for (const tk of toks) {
-      if (tk.kind === 'atomic') { beats.push(tk.text); continue; }
-      if (tk.kind === 'prose') { const ps = _segmentProse(tk.text); for (const b of ps) beats.push(b); continue; }
-      /* bracket */
-      const inner = tk.inner;
-      const innerTrim = String(inner).replace(/\s+/g, ' ').trim();
-      const hasPara = /\n[ \t]*\n/.test(inner);
-      if (!tk.recursive || (innerTrim.length <= BRACKET_INTACT && !hasPara)) { beats.push(tk.text); continue; } /* 整块一条 */
-      const innerBeats = _beatsFromTokens(_tokenize(inner)).map(b => b.trim());
-      if (innerBeats.length === 0) { beats.push(tk.text); continue; }
-      if (innerBeats.length === 1) { beats.push(tk.open + innerBeats[0] + tk.close); continue; }
-      const out = innerBeats.slice();
-      out[0] = tk.open + out[0];
-      out[out.length - 1] = out[out.length - 1] + tk.close;
-      for (const b of out) beats.push(b);
-    }
-    return beats;
-  }
-
-  /* ═══ ② Utterance Segmentation：仅对自然语言 ═══
-     边界优先级：空行段落 > 句读（。！？）> 语义转折分句（逗号+转折词）> 过长在次级停顿处断。
-     每条 utterance 近似"一个真人拍一次发送键"（WHAT is ONE message），不跨边界合并，避免机械切碎。 */
-  function _segmentProse(text) {
-    const paras = String(text).split(/\n[ \t]*\n/);
-    const beats = [];
-    for (const p of paras) {
-      if (!String(p).replace(/\s/g, '')) continue;
-      const ut = _utterances(p);
-      let pending = null;
-      for (let k = 0; k < ut.length; k++) {
-        let u = String(ut[k]).replace(/\s+/g, ' ').trim();
-        if (!u) continue;
-        if (pending) { u = pending + u; pending = null; }
-        if (FILLER_RE.test(u)) { pending = u; continue; }   /* 前导语气（嗯，）与下一条合并，不单独发 */
-        beats.push(u);
-      }
-      if (pending) beats.push(pending);
-    }
-    return beats;
-  }
-  function _utterances(para) {
-    const base = []; let buf = '';
-    for (let i = 0; i < para.length; i++) {
-      const ch = para[i];
-      buf += ch;
-      if (HARD_STOP.test(ch)) { base.push(buf); buf = ''; continue; }        /* 句读 → 一句话 */
-      if (COMMA.test(ch) && SPLIT_CONNECTOR_RE.test(para.slice(i + 1))) {     /* 逗号+转折词 → 新拍 */
-        base.push(buf); buf = '';
-      }
-    }
-    if (buf.trim()) base.push(buf);
-    const out = [];
-    for (const s of base) { if (s.length <= HARD_LEN) { out.push(s); } else { for (const pt of _splitLong(s)) out.push(pt); } }
-    return out;
-  }
-  function _splitLong(s) {
-    const parts = []; let buf = '';
-    for (let i = 0; i < s.length; i++) {
-      const ch = s[i];
-      buf += ch;
-      if (COMMA.test(ch) && buf.trim().length >= SUB_MIN && !(ch === ',' && /\d/.test(s[i - 1] || '') && /\d/.test(s[i + 1] || ''))) { parts.push(buf); buf = ''; }
-    }
-    if (buf.trim()) parts.push(buf);
-    /* 尾部过短并入上一条，避免碎段 */
-    if (parts.length > 1 && parts[parts.length - 1].trim().length < SUB_MIN) {
-      parts[parts.length - 2] = parts[parts.length - 2] + parts[parts.length - 1];
-      parts.pop();
-    }
-    return parts.length > 1 ? parts : [s];
-  }
-
-  /* ═══ anti-fragmentation：绝不输出只有 结构/标点 的消息，自动并入相邻 ═══
-     只 trim 首尾空白、保留内部空白（否则会破坏 code 块/换行）；内容/结构/标点一律保留。 */
-  function _antiFrag(beats) {
-    const out = [];
-    for (const b of beats) {
-      const x = String(b).trim();
-      if (!x) continue;
-      if (ONLY_STRUCT.test(x)) { if (out.length) out[out.length - 1] = out[out.length - 1] + x; else out.push(x); continue; }
-      out.push(x);
-    }
-    return out.filter(Boolean);
-  }
-
-  /* ═══ 对外：split（向后兼容别名）═══ */
-  function split(text, opts) {
-    opts = opts || {};
-    try {
-      const t = String(text || '').trim();
-      if (!t) return null;
-      /* 功能标签（工作区/日历/记忆/思考/撤回）→ 不拆，整条原样呈现 */
-      if (/<\s*(ws_|cal_|mem_|think|withdraw)/i.test(t)) return null;
-      const MAX = Math.max(2, Math.min(opts.maxSegments || 30, 60));
-      let beats = _antiFrag(_beatsFromTokens(_tokenize(t)));
-      if (beats.length <= 1) return null;
-      /* 溢出合并：绝不丢内容，超出上限的部分并入最后一条 */
-      if (beats.length > MAX) { const tail = beats.slice(MAX - 1).join(''); beats.length = MAX - 1; beats.push(tail); }
-      return beats;
-    } catch (e) { return null; }
-  }
-
-  /* ═══ 真人发送节奏：根据上一条长度给出"到下一条"的确定性上界（无不可测随机）═══
-     短消息 300~500 · 普通 450~800 · 较长 600~1000；首条立即（delay 0）不等待。 */
+  /* 真人发送节奏：根据上一条长度给出"到下一条"的确定性上界（无不可测随机）。
+     短消息 320 · 普通 480 · 较长 640 · 长 800 · 超长 960；首条立即（delay 0）。 */
   function delayBetween(len) {
     len = Number(len) || 0;
     if (len <= 10) return 320;
@@ -4276,9 +4653,13 @@ window.MessagePresentation = (function () {
     if (len <= 120) return 800;
     return 960;
   }
-
-  /* ═══ 呈现决策（唯一入口）：完整响应 → 呈现计划（消息内容 + 发送节奏，同属一个 plan）═══
-     { mode:'stream'|'single'|'multi', messages:[{text,delay}], segments:[text] }
+  /* 向后兼容入口：语义 = planner.segment（null = 不拆；功能标签/空文本/拆不出多条）。 */
+  function split(text, opts) {
+    var P = planner();
+    if (!P || typeof P.segment !== 'function') return null;
+    return P.segment(text, opts || {});
+  }
+  /* 呈现决策（唯一入口）：完整响应 → 呈现计划（内容 + 节奏）。
      - streaming:true → 'stream'（现有 streaming renderer 实时呈现，不拆、不等完整）
      - waifu 关闭 或 无法自然拆成多条 → 'single'
      - waifu 开且能拆成多条 → 'multi'（messages 逐条呈现，含各自 delay） */
@@ -4286,15 +4667,647 @@ window.MessagePresentation = (function () {
     opts = opts || {};
     if (opts.streaming) return { mode: 'stream', messages: [], segments: [] };
     if (opts.waifu !== true) return { mode: 'single', messages: [], segments: [] };
-    const segs = split(reply, opts);
+    var segs = split(reply, opts);
     if (!segs || segs.length <= 1) return { mode: 'single', messages: [], segments: [] };
-    const messages = segs.map((t, i) => ({ text: t, delay: i === 0 ? 0 : delayBetween(segs[i - 1].length) }));
+    var messages = segs.map(function (t, i) { return { text: t, delay: i === 0 ? 0 : delayBetween(segs[i - 1].length) }; });
     return { mode: 'multi', messages: messages, segments: segs };
   }
-  return { split: split, plan: plan, delayBetween: delayBetween };
+  /* P23 2C 新增（只读、无时间）：把 planner 的完整计划暴露给 delivery 链路与诊断。
+     units 是 Phase 2C 的 unit 形状（{kind:'text',content}）；delay 仍然只出现在 plan()。 */
+  function deliveryPlan(reply, opts) {
+    var P = planner();
+    return (P && typeof P.planTurn === 'function') ? P.planTurn(reply, opts || {}) : null;
+  }
+  /* 生效的切分策略（只读；供诊断与测试断言"边界明确"）。 */
+  function policy() {
+    var P = planner();
+    return (P && typeof P.policyFor === 'function') ? P.policyFor(null) : null;
+  }
+  return { split: split, plan: plan, delayBetween: delayBetween, deliveryPlan: deliveryPlan, policy: policy };
 })();
 /* 向后兼容别名：旧调用/测试仍经 window._waifuSplit；语义 = MessagePresentation.split */
 window._waifuSplit = function (_t) { return window.MessagePresentation ? window.MessagePresentation.split(_t) : null; };
+
+/* ══════════ P23 Phase 2A · 多段交付的 canonical 构造（Message Sequence Contract）══════════
+   上层的「呈现计划」（MessagePresentation.plan）与本层的**数据契约**是两件事：
+     · plan 决定"拆成几条、每条等多久" —— 那是呈现策略，Phase 2A 不新增任何策略；
+     · 本层决定"这几条在数据库里长什么样" —— 每条都是**真正独立**的 canonical
+       chatMessage（各自 id、各自可撤回、各自可播放），通过 metadata 里的回合身份
+       （turnId / sequenceIndex / sequenceTotal）关联成同一个模型回合。
+   构造逻辑**全部**在 assets/js/delivery-sequence-core.js（纯模块，Node 可测）；
+   这里只转调一次：把文本片段 + 本回合的身份与模型信息交给契约层。
+   核心未加载 ⇒ 返回 null ⇒ 调用方退回单条行为（绝不在这里手写第二份构造逻辑）。
+   注意：本函数**不**产生延迟、不排队、不发请求 —— 节奏仍由调用方既有的循环负责。 */
+function _ibDeliveryCore(){
+  try{return (typeof window!=='undefined')?window.IBDeliverySequence:null}catch(e){return null}
+}
+function _ibSequenceMessages(texts,ctx){
+  var core=_ibDeliveryCore();
+  if(!core||typeof core.buildMessages!=='function')return null;
+  var c=ctx||{};
+  var units=[];
+  for(var i=0;i<(texts||[]).length;i++)units.push({kind:'text',text:String(texts[i]==null?'':texts[i])});
+  if(!units.length)return null;
+  var msgs=core.buildMessages({turnId:String(c.turnId||''),units:units},{
+    friendId:c.friendId,role:'assistant',senderName:c.senderName,threadId:c.threadId,
+    timestamp:c.timestamp,model:c.model,modelId:c.modelId,configId:c.configId,
+    showThinking:c.showThinking,extraMetadata:c.extraMetadata
+  });
+  return (msgs&&msgs.length)?msgs:null;
+}
+
+/* ══════════ P24-M1 · Group Runtime identity 的**桌面 adapter** ══════════
+   身份逻辑的**唯一实现** = assets/js/group-runtime-core.js（纯模块，Node 可测）：
+     groupTurnIdFor / memberTurnIdFor / createIdentityContext / createMemberIdentity
+     validateIdentityContext / validateMemberIdentity
+   本区块只做两件事（与 _ibSequenceMessages 同一纪律）：
+     ① 取模块（不复制任何 id 派生或校验规则）；
+     ② 建 → 校验 → 通过才返回，否则 **null**，调用方据此退回 legacy 行为。
+   为什么返回 null 而不是"尽力构造"：群身份一旦写进 canonical 消息就是事实，
+   宁可这条消息没有身份（行为与 M1 之前一致），也不写入一个无法校验的身份。
+   核心未加载（旧宿主 / 诊断页 / 测试沙箱）⇒ 同样是 null。 */
+function _ibGroupCore(){
+  try{return (typeof window!=='undefined')?window.IBGroupRuntime:null}catch(e){return null}
+}
+function _ibGroupIdentityContext(o){
+  var core=_ibGroupCore();
+  if(!core||typeof core.createIdentityContext!=='function'||typeof core.validateIdentityContext!=='function')return null;
+  var ctx=null;
+  try{ctx=core.createIdentityContext(o||{})}catch(e){return null}
+  /* 校验本身出问题也按"没有身份"处理（fail closed 到 legacy 行为）——绝不把
+     身份层的异常带进真实的发送链路。 */
+  try{var verdict=core.validateIdentityContext(ctx);return (verdict&&verdict.ok===true)?ctx:null}catch(e){return null}
+}
+function _ibGroupMemberIdentity(ctx,speakerId,groupOrder){
+  var core=_ibGroupCore();
+  if(!ctx||!core||typeof core.createMemberIdentity!=='function'||typeof core.validateMemberIdentity!=='function')return null;
+  var member=null;
+  try{member=core.createMemberIdentity(ctx,speakerId,groupOrder)}catch(e){return null}
+  try{var verdict=core.validateMemberIdentity(member);return (verdict&&verdict.ok===true)?member:null}catch(e){return null}
+}
+
+/* ══════════ P29-0 · Group member identity 退化的**诊断面**（只观测，不改语义）══════════
+   `_gMember === null` 时该成员回合会退回"无 P24 身份"的单条构造 —— 那是 M1 既有的
+   fallback 语义，本阶段**一字不改**（宁可少一条身份，也不写入无法校验的身份）。
+
+   但它此前是**静默**的：运行期既看不到发生次数、也看不到原因，于是"身份丢了"与
+   "本来就没有身份"无法区分（M2 的 UNKNOWN 永不 SELF 会让这条消息在后续回合里
+   不再是该角色自己的话）。
+
+   这里只加：一个稳定计数字典 + 一行闭集日志（**不含**正文 / id / 昵称 / 凭据），
+   供诊断与测试断言。**绝不**写 metadata / DB / prompt —— 因此不是新 authority、
+   不是新 store、不改变任何既有行为。 */
+var _gIdentityDegraded=Object.create(null);
+function _ibGroupIdentityDegraded(code){
+  try{
+    var k=String(code||'unknown');
+    _gIdentityDegraded[k]=(_gIdentityDegraded[k]||0)+1;
+    console.warn('[IB Group Identity] degraded | '+k+' | count='+_gIdentityDegraded[k]);
+  }catch(e){}
+  return false
+}
+function _ibGroupIdentityDegradedSnapshot(){
+  var out={};
+  try{Object.keys(_gIdentityDegraded).forEach(function(k){out[k]=_gIdentityDegraded[k]})}catch(e){}
+  return out
+}
+
+/* ══════════ P24-M2 · Speaker identity 的**桌面 adapter** ══════════
+   实现唯一 = assets/js/group-runtime-core.js 的
+     resolveSpeakerId / classifyMessageForSpeaker / normalizeParticipants
+   本区块只做两件事：
+     ① 从 canonical 来源组装 participants —— groups.members 的 id（只读）+
+        apiConfigs / archivedConfigs 的显示名；**不新建 participant registry**，
+        也不把 senderName 升级成 participant authority；
+     ② 转调并 fail closed。
+   核心未加载 ⇒ 分类一律 'UNKNOWN'（**永不 SELF**）：不对称安全规则在退化路径上同样
+   成立 —— 宁可少一条"自己的旧话"，也绝不把别人的话当成自己说过的。 */
+function _ibGroupParticipants(memberIds){
+  var out=[];
+  (memberIds||[]).forEach(function(mid){
+    var id=String(mid==null?'':mid);if(!id)return;
+    var c=null;
+    try{c=(apiConfigs||[]).find(function(a){return a.id===id})||null}catch(e){}
+    if(!c){try{c=(typeof archivedConfigs!=='undefined'&&archivedConfigs?archivedConfigs.find(function(a){return a.id===id}):null)||null}catch(e){}}
+    out.push({id:id,name:c?String(c.nickname||c.model||''):''});
+  });
+  return out;
+}
+function _ibGroupClassifyMessage(m,currentSpeakerId,participants){
+  var core=_ibGroupCore();
+  if(!core||typeof core.classifyMessageForSpeaker!=='function')return 'UNKNOWN';
+  try{return String(core.classifyMessageForSpeaker(m,currentSpeakerId,participants)||'UNKNOWN')}catch(e){return 'UNKNOWN'}
+}
+/* P24-M3.2 · participation fail-closed 的**唯一**用户呈现 + 稳定日志码。
+   只输出稳定 code 与计数（绝不含正文 / 昵称 / 凭据）；fail closed 时**不**回退 legacy
+   speakingCfgs —— 双权威会重新引入 nickname 参与判定（M3 IDENTITY RISK）。 */
+function _ibGroupParticipationFailClosed(code,detail){
+  try{console.warn('[IB Group Participation] '+String(code||'unknown')+(detail==null?'':(' | '+String(detail).slice(0,80))))}catch(e){}
+  try{toast('群聊参与计划不可用，本轮未发送（'+String(code||'unknown')+'）')}catch(e){}
+}
+
+/* ══════════ P24-M3.5.2A · Dynamic Runtime State Foundation 的 feature gate ══════════
+   默认关：本阶段不新增 storage / UI，生产默认走既有 static 路径（逐字不变）；
+   测试可通过 window.IB_DYNAMIC_PARTICIPATION=true 打开 foundation（仍无任何 dynamic decision）。 */
+const IB_DYNAMIC_PARTICIPATION_DEFAULT=false;
+function _ibDynamicParticipationOn(){
+  try{
+    if(typeof window!=='undefined'&&typeof window.IB_DYNAMIC_PARTICIPATION==='boolean')return window.IB_DYNAMIC_PARTICIPATION===true;
+  }catch(e){}
+  return IB_DYNAMIC_PARTICIPATION_DEFAULT;
+}
+
+/* ══════════ P24-M3.3.1 · GroupTurn runtime state（**runtime-only**）══════════
+   它只存在于内存：
+     · 不进 DB / 不进 chatMessages metadata / 不进 prompt / 不进 P23；
+     · 唯一用途：让"停止"能够阻止**尚未启动**的后续 entry（已完成的消息不受影响）；
+     · 不新增任何 abort 原语 —— 当前正在执行的成员仍由既有 `_chatCallStates[..].ac` 中止。
+   生命周期：created → planning → planned → executing → completed | cancelled
+   （`completed` 只表示"该 GroupTurn 结束"；是否真的执行过成员由 startedCount 区分。）
+   key = group id，与 `_chatSendingFor` / `_chatCallStates` 同一 key 空间。 */
+var _gGroupTurnStates=Object.create(null);
+function _ibGroupTurnBegin(groupId,groupTurnId){
+  var st={groupTurnId:String(groupTurnId||''),status:'created',cancelled:false,cancelReason:'',
+    plannedCount:0,startedCount:0};
+  try{var k=String(groupId||'');if(k)_gGroupTurnStates[k]=st}catch(e){}
+  return st;
+}
+function _ibGroupTurnEnd(groupId,st,terminal){
+  try{
+    if(st&&!st.cancelled&&terminal)st.status=String(terminal);
+    var k=String(groupId||'');
+    if(k&&_gGroupTurnStates[k]===st)delete _gGroupTurnStates[k];
+  }catch(e){}
+}
+/* 唯一的 cancel 信号入口（由 stopStreaming 调用）：只翻标记，不改状态机 ——
+   状态推进仍由生命周期自己完成（planning/planned/executing/cancelled）。 */
+function _ibGroupTurnCancel(groupId,reason){
+  try{
+    var st=_gGroupTurnStates[String(groupId||'')];
+    if(!st||st.cancelled)return false;
+    st.cancelled=true;st.cancelReason=String(reason||'cancelled');
+    return true;
+  }catch(e){return false}
+}
+
+/* ══════════ P23 Phase 2B · Delivery Runtime 的**桌面 adapter** ══════════
+   分层（单向依赖，见 docs/P23-2B-DELIVERY-RUNTIME.md）：
+     delivery-sequence-core（结构：unit → canonical chatMessage[]）
+       ↓
+     delivery-runtime（时间与生命周期：队列 / 状态 / typing 开关 / cancel；零 DOM）
+       ↓
+     本区块（adapter：把"交付"落成真实动作 —— dbPut + appendChatBubble + 广播 + typing DOM）
+
+   ── 为什么这里是唯一的交付入口 ─────────────────────────────────────
+   一条 unit 只有在**被本区块交付**时才进入 conversation stream；未交付的 unit 只活在
+   内存队列里，因此 provider context / Memory / Search / Middle Brain / Diary /
+   Role Letters / Home Node dialogue 都不可能看到它（它们直接读 canonical store）。
+   这一条是 Phase 2B 的硬验收线，靠结构成立而不是靠每个 consumer 各自过滤。
+
+   ── persistence timing（本阶段的关键决定）────────────────────────────
+   **每个 unit 到它的 delivery time 才 dbPut**（不预写、不留影子行）。理由见 runtime
+   顶部注释：91 个读取点直接读 chatMessages，没有任何一处认识"投递队列"。
+   reload / crash 语义因此天然正确：已交付的在库里，未交付的随页面消失（队列 ephemeral）。
+
+   ── 幂等与顺序 ─────────────────────────────────────────────────────
+   · 串行：runtime 保证同一时刻只有一个 unit 在飞（绝不交错、绝不重排）；
+   · id 由 Phase 2A 的契约确定（turnId+index+timestamp 唯一决定）⇒ 重放同一条 queue
+     会落到同一条记录（Home Node 判 identical ⇒ skipped），不会写第二份。 */
+var _ibDeliveryRuntimeSingleton=null;
+/* canonical conversation identity（**不是**裸 friendId）：唯一派生规则属于 chat-core。 */
+function _ibConvId(friendId,threadId){
+  try{
+    var c=(typeof window!=='undefined')?window.IBChatCore:null;
+    if(c&&typeof c.conversationIdOf==='function')return c.conversationIdOf(friendId,threadId);
+  }catch(e){}
+  return 'dm:'+String(friendId==null?'':friendId)+(threadId?('|'+String(threadId)):'');
+}
+/* ── P30-2 · Workspace 注入的会话归属 filter（WHERE）───────────────────────────
+   契约（P30-1 冻结）：
+     · item 声明了 `friendId`（非空）⇒ 只有 conversationIdOf(item.friendId,item.threadId)
+       与当前会话相等时才可见/可消费；不同会话 ⇒ **留在队列**（不消费、不丢弃）；
+     · item 没有 `friendId` ⇒ unscoped/legacy ⇒ 交给既有规则（actor / 首轮兜底），
+       本 filter 一律放行（保持旧行为，绝不为了完整率强绑）；
+     · 比较键只由 `_ibConvId`（= chat-core.conversationIdOf 的既有 adapter）产出，不在此复制派生逻辑。
+   返回的谓词可直接交给 `_getWs*Injection(filterFn)` 的 take/keep 机制（非匹配项自然保留）。 */
+function _ibWsScopeFilter(friendId,threadId){
+  var cur=_ibConvId(friendId,threadId);
+  return function(it){
+    if(!it||!it.friendId)return true;
+    return _ibConvId(it.friendId,it.threadId)===cur;
+  };
+}
+/* R3 · media queue boundary
+   Media queues are runtime-only, so scope must be checked immediately before a
+   destructive take. Scoped objects use the existing P30 predicate; legacy bare
+   strings/objects stay in the queue (fail closed) and are never assigned the
+   current conversation. The partition is stable for both take and keep. */
+function _ibTakeScopedMedia(queueName,filterFn){
+  var list=[];try{list=Array.isArray(window[queueName])?window[queueName]:[]}catch(e){list=[]}
+  var take=[],keep=[];
+  list.forEach(function(item){
+    var fid=(item&&typeof item==='object'&&typeof item.friendId==='string')?item.friendId.trim():'';
+    if(!fid){keep.push(item);return}
+    var ok=false;try{ok=typeof filterFn==='function'&&!!filterFn(item)}catch(e){ok=false}
+    (ok?take:keep).push(item);
+  });
+  try{window[queueName]=keep}catch(e){}
+  return take;
+}
+function _ibMediaPromptImage(raw,fallbackName){
+  var u=typeof raw==='string'?String(raw):String((raw&&raw.dataUrl)||'');
+  if(!u||u.slice(0,5)!=='data:')return null;
+  var mime=typeof raw==='object'&&raw&&raw.mime?String(raw.mime):(((u.match(/^data:([^;,]+)/i)||[])[1])||'image/jpeg');
+  var b64=typeof raw==='object'&&raw&&raw.base64?String(raw.base64):String(u.split(',')[1]||'');
+  if(!b64)return null;
+  return{dataUrl:u,base64:b64,mime:mime,name:(typeof raw==='object'&&raw&&raw.name?String(raw.name):String(fallbackName||'image_inject.png'))};
+}
+/* scope 只是**标注**（本阶段不实现任何群聊行为）：未来 Group Runtime 直接复用同一队列。 */
+function _ibConvScope(friendId){
+  try{
+    var c=(typeof window!=='undefined')?window.IBChatCore:null;
+    if(c&&typeof c.isGroupFriendId==='function')return c.isGroupFriendId(friendId)?'group':'single';
+  }catch(e){}
+  return String(friendId==null?'':friendId).indexOf('group_')===0?'group':'single';
+}
+/* 这条 unit 现在是否**看得见**（活动会话 + 同一 thread）——渲染与 typing 都要问它。
+   与旧 waifu 循环只比 activeFriendId 相比，这里补上了 thread：否则用户在交付期间
+   切到话题频道，主对话的后续单元会被追加进话题列表（真实缺陷）。 */
+function _ibConvIsActive(friendId,threadId){
+  try{
+    if(String(activeFriendId||'')!==String(friendId||''))return false;
+    var cur=(typeof activeThreadId==='undefined')?null:activeThreadId;
+    if(String(cur||'')!==String(threadId||''))return false;
+    return true;
+  }catch(e){return false}
+}
+/* ── typing authority（唯一实现）──────────────────────────────────────
+   既有 typing UI 就是 `div.chat-typing`（单聊 id = `chat-typing-<friendId>`），
+   Phase 2B 让它在**交付期**也能开关，因此把创建/销毁收敛到这一对函数上：
+     同一 class / 同一 id 约定 / 同一容器选择规则，只是文案分两种：
+       mode:'thinking' → `名字 思考中…（N秒）`（生成期；与改动前逐字一致，含 1s 秒表）
+       mode:'typing'   → `名字 正在输入…`（交付期；与 Cinema 文案同款，无秒表）
+   单例：按 friendId 注册。绝不创建第二套 typing UI；Cinema 的 `.ci-typing` 由 turn
+   广播驱动，与本函数无关，也不受影响。 */
+var _ibTypingReg=Object.create(null);/* friendId → {el,timer} */
+function _ibTypingOff(friendId){
+  var key=String(friendId==null?'':friendId);
+  var rec=_ibTypingReg[key];
+  if(rec){
+    if(rec.timer){try{clearInterval(rec.timer)}catch(e){}}
+    try{if(rec.el&&rec.el.parentNode)rec.el.parentNode.removeChild(rec.el)}catch(e){}
+    delete _ibTypingReg[key];
+  }
+  /* 兜底：DOM 里可能还留着别人创建的同类节点（例如失败路径），一并清掉。 */
+  try{
+    var id=key?('chat-typing-'+key):'';
+    ['chat-full-messages','chat-messages'].forEach(function(cid){
+      var box=document.getElementById(cid);if(!box)return;
+      var nodes=box.querySelectorAll('.chat-typing');
+      for(var i=0;i<nodes.length;i++){
+        var el=nodes[i];
+        /* 只清"本 authority 画出来的那一个"：id 命中或 data 标记命中。
+           群聊路径自己创建的 `.chat-typing`（无 id / 无标记）**不在**本函数的辖区里，
+           绝不能在单聊收尾时顺手把它删掉。 */
+        if((id&&el.id===id)||el.dataset.ibTypingFriend===key)try{el.remove()}catch(e){}
+      }
+    });
+  }catch(e){}
+}
+function _ibTypingOn(friendId,threadId,name,mode){
+  try{
+    if(!_ibConvIsActive(friendId,threadId))return null;      /* 只在活动会话里画 */
+    var key=String(friendId==null?'':friendId);
+    _ibTypingOff(key);                                        /* 单例：先清旧的（含秒表） */
+    var el=document.createElement('div');
+    el.className='chat-typing';
+    if(key)el.id='chat-typing-'+key;
+    el.dataset.ibTypingMode=(mode==='typing')?'typing':'thinking';
+    el.dataset.ibTypingFriend=key;
+    if(String(threadId||''))el.dataset.ibTypingThread=String(threadId);
+    var who=esc(name||'AI');
+    el.innerHTML=who+((mode==='typing')?' 正在输入…':' 思考中…<span class="typing-sec">（0秒）</span>');
+    var rec={el:el,timer:null};
+    if(mode!=='typing'){
+      var t0=Date.now();
+      rec.timer=setInterval(function(){
+        var sp=el.querySelector('.typing-sec');
+        if(sp)sp.textContent='（'+Math.round((Date.now()-t0)/1000)+'秒）';
+      },1000);
+    }
+    _ibTypingReg[key]=rec;
+    var container=currentPage==='chat'?document.getElementById('chat-full-messages'):document.getElementById('chat-messages');
+    if(container){container.appendChild(el);container.scrollTop=container.scrollHeight}
+    return el;
+  }catch(e){return null}
+}
+/* 生成结束的收尾：把 typing 文案改成「名字（N秒）」，1200ms 后移除 —— 与改动前逐字同感，
+   只是现在同时清掉注册表与秒表计时器（唯一的 typing 生命周期在这里收口）。 */
+function _ibTypingFinish(friendId,name,t0){
+  try{
+    var key=String(friendId==null?'':friendId);
+    var rec=_ibTypingReg[key];
+    if(rec&&rec.timer){try{clearInterval(rec.timer)}catch(e){}rec.timer=null}
+    var el=(rec&&rec.el)?rec.el:document.getElementById('chat-typing-'+key);
+    delete _ibTypingReg[key];
+    if(!el)return null;
+    var secs=Math.max(0,Math.round((Date.now()-Number(t0||Date.now()))/1000));
+    el.textContent=(name||'AI')+'（'+secs+'秒）';
+    el.style.animation='none';
+    setTimeout(function(){try{if(el.parentNode)el.remove()}catch(e){}},1200);
+    return el;
+  }catch(e){return null}
+}
+/* runtime 单例：时间只能经注入的时钟流动（测试用 fake clock 覆盖 window.__ibDeliveryClock）。 */
+function _ibDeliveryRuntime(){
+  if(_ibDeliveryRuntimeSingleton)return _ibDeliveryRuntimeSingleton;
+  try{
+    var rt=(typeof window!=='undefined')?window.IBDeliveryRuntime:null;
+    if(!rt||typeof rt.createDeliveryRuntime!=='function')return null;
+    var clock=(typeof window!=='undefined'&&window.__ibDeliveryClock)?window.__ibDeliveryClock:null;
+    _ibDeliveryRuntimeSingleton=rt.createDeliveryRuntime(clock?{
+      now:clock.now,setTimeout:clock.setTimeout,clearTimeout:clock.clearTimeout
+    }:{});
+  }catch(e){_ibDeliveryRuntimeSingleton=null}
+  return _ibDeliveryRuntimeSingleton;
+}
+/* 交付一个 unit = 落库 + （可见时）渲染 + 广播。返回 false/抛错 ⇒ runtime 判 failed
+   并停止剩余单元（已交付的一律保留）。 */
+async function _ibDeliverUnit(queue,unit,index){
+  var m=null;
+  if(queue.lazyBuild){
+    /* P23 Phase 2D · materialization path：voice unit 的音频在这一刻才合成（text unit 也一样，
+       为了保持同一份前缀构造），然后由 Phase 2A 构造 canonical 消息。 */
+    var built=await _ibBuildUnitAt(queue,unit,index);
+    if(!built||built.ok!==true)return {ok:false,reason:String((built&&built.reason)||'build-failed')};
+    m=built.message;
+    m.reasoning_content=(index===0?(queue.thinkingText||''):'');
+  }else{
+    m=unit&&unit.message;
+  }
+  if(!m||!m.id)return {ok:false,reason:'no-message'};
+  _ibTypingOff(queue.friendId);                      /* typing OFF ⇒ message appears（§8） */
+  try{await dbPut('chatMessages',m)}catch(e){return {ok:false,reason:'persist-failed'}}
+  if(_ibConvIsActive(queue.friendId,queue.threadId)){
+    try{
+      appendChatBubble('ai',m.content,undefined,(index===0?(queue.thinkingText||undefined):undefined),m.id,undefined,undefined,undefined,(m.voice||undefined),queue.cfg);
+    }catch(e){/* 渲染失败不回滚已落库的事实：消息已在 canonical store 里 */}
+  }
+  try{
+    _ibAppBroadcast('message',{id:m.id,role:'assistant',content:m.content,
+      senderName:queue.senderName||'',friendId:queue.friendId,threadId:queue.threadId,
+      activityId:((m.metadata&&m.metadata.activityId)||undefined)});
+  }catch(e){}
+  return {ok:true};
+}
+/* 启动一次序列交付。units = [{kind,content,delivery?,message}]。
+   返回 queue handle（无 runtime / 无单元 / 参数不全 ⇒ null，调用方必须退回单条行为）。 */
+function _ibStartDelivery(opts){
+  var o=opts||{};
+  var rt=_ibDeliveryRuntime();
+  if(!rt||!o.units||!o.units.length)return null;
+  var conversationId=_ibConvId(o.friendId,o.threadId);
+  var multi=(o.units.length>1);
+  var queue={
+    friendId:o.friendId,threadId:o.threadId||null,cfg:o.cfg,senderName:o.senderName||'',
+    thinkingText:o.thinkingText||'',
+    turnId:String(o.turnId||''),        /* lazy 模式下由本对象构造 canonical 消息（2A 需要回合身份） */
+    /* P23 2D · lazy（materialization）模式所需的本回合常量：voice unit 的音频要到 delivery
+       time 才产生，因此 canonical 消息也只能那时构造（见 _ibBuildUnitAt）。timestamp 在这里
+       固定一次，保证同一回合所有 unit 共享同一个时间戳（2A 的不变量）。 */
+    lazyBuild:o.lazyBuild===true,
+    units:o.units,                      /* lazy 模式需要按前缀回看已交付/正在交付的 unit（见 _ibBuildUnitAt） */
+    timestamp:Number(o.timestamp)||Date.now(),
+    model:String(o.model||''),modelId:String(o.modelId||''),configId:String(o.configId||''),
+    showThinking:(typeof o.showThinking==='boolean')?o.showThinking:undefined,
+    conversationId:conversationId,
+    onUnit:function(unit,index){return _ibDeliverUnit(queue,unit,index)},
+    onTyping:function(on){
+      if(on)_ibTypingOn(queue.friendId,queue.threadId,queue.senderName,'typing');
+      else _ibTypingOff(queue.friendId);
+    },
+    onState:function(state,info){
+      /* onState 只在**终结**状态被调用（runtime 的 finish()）：此刻交还发送按钮。
+         "交付期间保持停止按钮可用"由下面的 _showStreamingUI(true) 在开始时完成。 */
+      if(multi)try{_showStreamingUI(false)}catch(e){}
+      try{
+        _ibAppBroadcast('turn',{state:'end',friendId:queue.friendId,threadId:queue.threadId,
+          activityId:o.activityId||undefined});
+      }catch(e){}
+    }
+  };
+  try{
+    var handle=rt.enqueue({
+      turnId:String(o.turnId||''),conversationId:conversationId,scope:_ibConvScope(o.friendId),
+      units:o.units,onUnit:queue.onUnit,onTyping:queue.onTyping,onState:queue.onState
+    });
+    if(handle&&multi)try{_showStreamingUI(true)}catch(e){}
+    return handle;
+  }catch(e){return null}
+}
+/* 取消某会话仍在投递的剩余单元（已交付保留）。reason: user_interrupt / user_stop / superseded… */
+function _ibDeliveryAbort(friendId,threadId,reason){
+  var rt=_ibDeliveryRuntime();
+  if(!rt||typeof rt.abort!=='function')return false;
+  try{return rt.abort(_ibConvId(friendId,threadId),reason||'cancelled')}catch(e){return false}
+}
+function _ibDeliveryPending(friendId,threadId){
+  var rt=_ibDeliveryRuntime();
+  if(!rt||typeof rt.pending!=='function')return null;
+  try{return rt.pending(_ibConvId(friendId,threadId))}catch(e){return null}
+}
+/* 回到一个"仍在 typing 阶段"的会话时，把 typing 重新画出来（面板重渲染会销毁 DOM）。
+   只在活动会话里生效；不是第二套 typing UI，仍走 _ibTypingOn。 */
+function _ibDeliveryTypingReassert(){
+  try{
+    var p=_ibDeliveryPending(activeFriendId,activeThreadId);
+    if(!p||p.state!=='delivering'||!p.typing)return false;
+    _ibTypingOn(activeFriendId,activeThreadId,_getActiveAiName(),'typing');
+    return true;
+  }catch(e){return false}
+}
+
+/* ══════════ P23 Phase 2D · Multimodal Delivery Policy 的**桌面 adapter** ══════════
+   决策唯一实现 = assets/js/multimodal-delivery-policy.js（纯模块：零 DOM / 零 TTS / 零时间）。
+   本区块只做三件事，且**不做任何模态判断**：
+     ① 采集输入：capability（消毒视图）/ preference / intent / hint；
+     ② 转调 policy.resolve()，并把逐条决策写进 policy 的 trace；
+     ③ 在 **delivery time** 物化 voice 音频（TTS 只在这里、只在这一刻发生 —— 见下）。
+
+   ── 为什么 TTS 在 delivery time，而不是 sequence 创建时 ─────────────
+   若在创建序列时就把所有未来 voice 音频合成好，用户一旦 Stop / 插话 / 切走，
+   那些音频的钱已经花了，与 Phase 2B 的「cancelled before materialization ⇒ 零请求」冲突。
+   因此：policy 只决定"这一条是 voice unit"；音频在它**即将进入会话流**的那一刻才合成
+   （runtime 的 onUnit 内），未交付的 unit 永远不会触发 TTS。
+
+   ── 失败语义（§9）────────────────────────────────────────────────
+   TTS 失败 ⇒ **确定性降级**为同内容 text unit（content 一字不改），原因写进 policy trace。
+   绝不换 provider、绝不静默回落、绝不产生"文字 + 语音"两条消息。 */
+function _ibMmPolicy(){
+  try{return (typeof window!=='undefined')?window.IBMultimodalPolicy:null}catch(e){return null}
+}
+/* capability：**消毒视图**（策略层只看得到"能不能"，看不到任何凭据/端点）。
+   离线可判定（enabled + voiceId + clone 参考音频），真实合成失败由物化步骤兜底降级。 */
+function _ibVoiceCapability(cfg){
+  var vc=(cfg&&cfg.voice&&typeof cfg.voice==='object')?cfg.voice:{};
+  var enabled=vc.enabled===true;
+  var type=String(vc.voiceType||'builtin');
+  var voiceId=String(vc.voiceId||'');
+  var refId=String((vc.voiceData&&vc.voiceData.refAudioId)||'');
+  var reason='',available=false;
+  if(!enabled)reason='voice-disabled';
+  else if(type==='clone'&&!refId)reason='clone-reference-missing';
+  else if(!voiceId)reason='voice-id-missing';
+  else available=true;
+  return { voice:{
+    available:available, reason:reason,
+    source:String(vc.source||vc.provider||''),
+    provider:String(vc.provider||''),
+    engine:String(vc.model||''),
+    voiceId:voiceId,
+    voiceType:type,
+    model:String(vc.model||'')
+  } };
+}
+/* 意图 / 偏好（§5/§6/§13/§14）——三者必须分开：
+     intent.voice     显式意图（"这次用语音说"）。本阶段**没有 UI**，只有程序化接缝
+                      window.__ibMultimodalIntent（诊断/测试/未来上层），UI 留后续阶段。
+     preference.voice 角色配置里显式 opt-in（cfg.voice.replyDelivery==='voice'）——
+                      本阶段也没有 UI 写入它，因此生产默认恒为 text。
+     hints.preferVoice 上层（未来 Middle Brain）的**偏好**提示，不是命令。
+   三者都只是**输入**；模态仍由 policy 决定（本函数不做任何判断）。 */
+function _ibMmIntent(cfg,hints){
+  var vc=(cfg&&cfg.voice&&typeof cfg.voice==='object')?cfg.voice:{};
+  var seam=null;
+  try{seam=(typeof window!=='undefined')?(window.__ibMultimodalIntent||null):null}catch(e){seam=null}
+  return {
+    intent:{ voice:!!(seam&&seam.voice===true) },
+    preference:{ voice:String(vc.replyDelivery||'')==='voice' },
+    hints:{ preferVoice:!!(hints&&hints.preferVoice===true) }
+  };
+}
+/* 把 planner 的分段文本交给 policy（默认全 text；无 voice ⇒ 与 2A/2B 既有路径逐字同形）。 */
+function _ibMmResolve(segments,cfg,meta){
+  var P=_ibMmPolicy();
+  if(!P||typeof P.resolve!=='function')return null;
+  var m=meta||{};
+  var units=[];
+  for(var i=0;i<(segments||[]).length;i++)units.push({kind:'text',content:String(segments[i]==null?'':segments[i])});
+  if(!units.length)return null;
+  var inputs=_ibMmIntent(cfg,m.hints);
+  var result=null;
+  try{
+    result=P.resolve(units,{
+      turnId:m.turnId||'',conversationId:m.conversationId||'',
+      capability:_ibVoiceCapability(cfg),
+      intent:inputs.intent,preference:inputs.preference,hints:inputs.hints
+    });
+  }catch(e){return null}
+  try{ if(typeof P.note==='function'&&result&&result.decisions)P.note(result.decisions,{turnId:m.turnId||'',conversationId:m.conversationId||''}); }catch(e){}
+  return result;
+}
+/* voice 物化的唯一实现（**只在 delivery time 调用**）。
+   复用 Phase 1 的单实现部件：IB.bridge.ttsPayload（payload 组装）、/api/tts、
+   IB.bridge.fetchAiVoiceDataUrl（inline 上限判定）、IB.bridge.probeAudioDuration（真实时长）。
+   只回"音频证据"（dataUrl/audioUrl/mime/duration/provenance）——canonical voice 对象由
+   Phase 2A 的契约构造（本函数绝不自己拼 voice schema）。
+   测试用注入接缝 window.__ibVoiceMaterializer（fake TTS adapter）覆盖，绝不调用真实 provider。 */
+function _ibVoiceMaterializerSeam(){
+  try{return (typeof window!=='undefined'&&typeof window.__ibVoiceMaterializer==='function')?window.__ibVoiceMaterializer:null}catch(e){return null}
+}
+async function _ibMaterializeVoiceUnit(content,cfg){
+  var text=String(content==null?'':content);
+  var seam=_ibVoiceMaterializerSeam();
+  if(seam){
+    try{
+      var r=await seam({content:text,voice:(cfg&&cfg.voice)||{}});
+      if(r&&r.ok===true&&r.audio)return {ok:true,audio:r.audio};
+      return {ok:false,reason:String((r&&r.reason)||'materializer-empty').slice(0,40)};
+    }catch(e){return {ok:false,reason:'materializer-threw'}}
+  }
+  try{
+    var bridge=(typeof window!=='undefined'&&window.IB)?IB.bridge:null;
+    if(!bridge||typeof bridge.ttsPayload!=='function'||typeof window.ibBridgeFetch!=='function'||typeof window.ibBridgeBase!=='function'){
+      return {ok:false,reason:'tts-unavailable'};
+    }
+    var vc=(cfg&&cfg.voice&&typeof cfg.voice==='object')?cfg.voice:{};
+    var payload=bridge.ttsPayload(vc,text);
+    if(!payload)return {ok:false,reason:'tts-payload-empty'};
+    var res=await window.ibBridgeFetch(window.ibBridgeBase()+'/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    var j=null;try{j=await res.json()}catch(e){j=null}
+    if(!j||j.ok!==true||!j.url)return {ok:false,reason:'tts-failed'};
+    var inline='';
+    try{ if(typeof bridge.fetchAiVoiceDataUrl==='function')inline=String(await bridge.fetchAiVoiceDataUrl(String(j.url))||''); }catch(e){inline=''}
+    var duration=Number(j.duration)||0;
+    if(!duration&&typeof bridge.probeAudioDuration==='function'){
+      try{duration=Number(await bridge.probeAudioDuration(inline||String(j.url)))||0}catch(e){duration=0}
+    }
+    return { ok:true,audio:{
+      dataUrl:inline,audioUrl:String(j.url),mime:String(j.mime||''),duration:duration,
+      provenance:{
+        source:String(vc.source||vc.provider||''),
+        provider:String(j.provider||vc.provider||''),
+        engine:String(j.engine||vc.model||''),
+        model:String(vc.model||''),
+        voiceId:String(vc.voiceId||''),
+        voiceType:String(vc.voiceType||'builtin'),
+        refAudioId:String((vc.voiceData&&vc.voiceData.refAudioId)||'')
+      }
+    } };
+  }catch(e){return {ok:false,reason:'tts-error'}}
+}
+/* 逐 unit 构造 canonical 消息（**materialization path** 专用）。
+   为什么需要它：voice unit 的音频要到 delivery time 才有，而 Phase 2A 要求 voice unit
+   在构造时就带可播放音源。于是这里按"前缀"构造：把已交付/正在交付的 unit（它们的音频都已物化）
+   一起交给 2A，取最后一条 —— index / id / 回合身份仍然**只**由 2A 决定，adapter 绝不自己拼 id。
+   只丢掉一个字段：`metadata.sequenceTotal`（前缀长度 ≠ 回合总数；2A 已声明它是 advisory、
+   读取方以消息集合为准），绝不写一个错的数字进库。 */
+async function _ibBuildUnitAt(queue,unit,index){
+  var core=_ibDeliveryCore();
+  if(!core||typeof core.buildMessages!=='function')return {ok:false,reason:'no-core'};
+  var inputs=[];
+  try{
+    for(var i=0;i<=index;i++){
+      var u=queue.units[i]||{};
+      var content=String(u.content==null?'':u.content);
+      if(String(u.kind)==='voice'){
+        var audio=u.__audio||null;
+        if(!audio){
+          var got=await _ibMaterializeVoiceUnit(content,queue.cfg);
+          if(!got.ok){
+            /* §9 候选 B：确定性降级 —— 同内容 text unit，绝不换 provider、绝不静默。 */
+            u.kind='text';
+            u.__degraded=String(got.reason||'voice-unavailable');
+            try{var P=_ibMmPolicy();if(P&&typeof P.note==='function')P.note([{unitIndex:i,requested:'voice',resolved:'text',reason:u.__degraded}],{turnId:queue.turnId,conversationId:queue.conversationId});}catch(e){}
+            inputs.push({kind:'text',text:content});
+            continue;
+          }
+          audio=got.audio;u.__audio=audio;
+        }
+        inputs.push({kind:'voice',text:content,dataUrl:audio.dataUrl,audioUrl:audio.audioUrl,mime:audio.mime,duration:audio.duration,provenance:audio.provenance});
+      }else{
+        inputs.push({kind:'text',text:content});
+      }
+    }
+    var msgs=core.buildMessages({turnId:String(queue.turnId||''),units:inputs},{
+      friendId:queue.friendId,role:'assistant',senderName:queue.senderName,threadId:queue.threadId,
+      timestamp:queue.timestamp,model:queue.model,modelId:queue.modelId,configId:queue.configId,
+      showThinking:queue.showThinking
+    });
+    if(!msgs||!msgs.length){
+      /* 诊断：只打印**错误词表**（没有正文/凭据），与仓库既有 console 行同款。 */
+      try{var _chk=core.validate({turnId:String(queue.turnId||''),units:inputs});console.warn('[Delivery2D] build empty',JSON.stringify((_chk&&_chk.errors)||[]).slice(0,160))}catch(e){}
+      return {ok:false,reason:'build-failed'};
+    }
+    var msg=msgs[msgs.length-1];
+    if(msg.metadata)delete msg.metadata.sequenceTotal;   /* advisory；前缀构造算不出总数，绝不写错值 */
+    return {ok:true,message:msg};
+  }catch(e){
+    /* 诊断行沿用仓库既有形态（console 一行、长度受限、绝不打印正文/凭据）。 */
+    try{console.warn('[Delivery2D] build failed',String(e&&e.message||e).slice(0,120))}catch(_e){}
+    return {ok:false,reason:'build-threw'};
+  }
+}
 
 /* ══════════ 微信式社交小动作（v7）：AI 撤回 / 拍一拍（撤回） ══════════
    撤回 = 把该条 AI 消息内容改写为"【XX撤回了一条消息】"并重渲染（历史 content 已是文案，重载天然支持）。
@@ -4320,6 +5333,10 @@ async function _chatWithdrawMsg(msgId){
     m.content='【'+who+'撤回了一条消息】';
     m.withdrawn=true;m.withdrawnBy='self';
     if(m.images)delete m.images;if(m.wsSearches)delete m.wsSearches;if(m.memOps)delete m.memOps;
+    /* P23 Phase 1.1：voice 与 images/wsSearches/memOps 同类 —— 撤回必须连带清除音频、
+       文字稿与 provenance。否则撤回文本仍留在 voice.transcript、音频仍留在记录与导出里。
+       统一走 IBVoiceMessage.dropVoice（生命周期原语，与续写/未来编辑路径共用同一份语义）。 */
+    try{ if(window.IBVoiceMessage&&IBVoiceMessage.dropVoice){IBVoiceMessage.dropVoice(m)}else if(m.voice){delete m.voice} }catch(e){ if(m.voice)delete m.voice }
     await dbPut('chatMessages',m);
     try{document.querySelectorAll('.chat-msg[data-msg-id="'+msgId+'"]').forEach(function(el){el.remove()})}catch(e){}
     if(activeFriendId===String(m.friendId||'')){
@@ -4334,9 +5351,17 @@ async function _maybePatWithdraw(cfg,curMsgId){
   try{
     if(!cfg||!curMsgId)return false;
     const cur=await dbGet('chatMessages',curMsgId);if(!cur)return false;
-    const hist=filterSealed((await dbGetByIndex('chatMessages','byFriend',cur.friendId)).sort(function(a,b){return a.timestamp-b.timestamp}),0);
+    const hist=filterSealed(_ibOrderMessages(await dbGetByIndex('chatMessages','byFriend',cur.friendId)),0);/* P23 2A：canonical 顺序（"上一条"必须是真实的上一条） */
     let prev=null;
-    for(let i=hist.length-1;i>=0;i--){const x=hist[i];if(x&&x.id!==curMsgId&&x.role==='assistant'&&String(x.senderName||'')===String(cur.senderName||'')){prev=x;break}}
+    /* P29-0：找"上一条同发送者"也是 ownership 判断 ⇒ 走同一个 canonical 分类器
+       （单聊只有当前角色一个参与者，因此 legacy 的名字回退仍是唯一精确匹配）。 */
+    const _patParts=[{id:String(cfg.id||''),name:String(cur.senderName||cfg.nickname||cfg.model||'')}];
+    for(let i=hist.length-1;i>=0;i--){
+      const x=hist[i];
+      if(!x||x.id===curMsgId||x.role!=='assistant')continue;
+      if(_ibGroupClassifyMessage(x,cfg.id,_patParts)!=='SELF')continue;
+      prev=x;break
+    }
     if(!prev||prev.withdrawn)return false;
     const sim=(typeof _activeTextSimilarity==='function')?_activeTextSimilarity(String(cur.content||''),String(prev.content||'')):0;
     if(sim<0.75)return false;/* 不算重复废话 */
@@ -4363,19 +5388,41 @@ function _extractWithdraw(text){
     return{clean:t,withdraw:false};
   }catch(e){return{clean:String(text||''),withdraw:false}}
 }
-async function _chatWithdrawSelf(cfg,friendId,senderName){
+/* ── P29-0 · Identity Read-Path Closure：撤回目标的选择 = **ownership 判断** ────────────
+   旧实现用 `x.senderName === senderName` 找"我上一条"。两个角色同名时，A 撤回自己的话
+   会命中 B 的消息（审计已证明）。
+
+   现在唯一判定入口 = 已有的 canonical身份分类器 `_ibGroupClassifyMessage`
+   （内部走 M2 `resolveSpeakerId`：`metadata.speakerId` 优先；缺失才回退"唯一精确显示名"；
+   歧义 / 非法 / 非本群 / resolver 缺席 ⇒ UNKNOWN ⇒ **永不判 SELF**）。
+
+   参与者来源（不新建 authority）：
+     · 群聊：调用方传入本轮**已有的** participants 列表（`_gParticipants`，来自 groups.members）；
+     · 单聊：只有当前角色一个参与者（该会话的 assistant 行只可能属于它），
+       因此 legacy 的名字回退在这里仍然是**唯一精确匹配**，历史数据行为不变。
+   senderName 仍然参与 UI 文案与 legacy 显示，但不再参与"这是不是我上一条"的判定。 */
+async function _chatWithdrawSelf(cfg,friendId,senderName,participants){
   try{
     if(!cfg||!friendId)return false;
-    const hist=filterSealed((await dbGetByIndex('chatMessages','byFriend',friendId)).sort(function(a,b){return a.timestamp-b.timestamp}),0);
-    for(let i=hist.length-1;i>=0;i--){const x=hist[i];if(x&&x.role==='assistant'&&!x.withdrawn&&String(x.senderName||'')===String(senderName||'')){return await _chatWithdrawMsg(x.id)}}
+    const hist=filterSealed(_ibOrderMessages(await dbGetByIndex('chatMessages','byFriend',friendId)),0);/* P23 2A：canonical 顺序 */
+    const _parts=(Array.isArray(participants)&&participants.length)
+      ?participants
+      :[{id:String(cfg.id||''),name:String(senderName||'')}];
+    for(let i=hist.length-1;i>=0;i--){
+      const x=hist[i];
+      if(!x||x.role!=='assistant'||x.withdrawn)continue;
+      if(_ibGroupClassifyMessage(x,cfg.id,_parts)!=='SELF')continue;   /* canonical id 判定；歧义 ⇒ UNKNOWN ⇒ 跳过 */
+      return await _chatWithdrawMsg(x.id)
+    }
     return false;
   }catch(e){return false}
 }
-/* 统一收尾：若回复文本含 <withdraw/> → 清标签 + 撤回自己上一条；返回清理后的文本 */
-async function _applyWithdraw(cfg,text,friendId,senderName){
+/* 统一收尾：若回复文本含 <withdraw/> → 清标签 + 撤回自己上一条；返回清理后的文本。
+   participants 由群聊调用方透传（单聊省略 ⇒ 只认当前角色一个参与者）。 */
+async function _applyWithdraw(cfg,text,friendId,senderName,participants){
   try{
     const w=_extractWithdraw(text);
-    if(w.withdraw){await _chatWithdrawSelf(cfg,friendId,senderName);return w.clean}
+    if(w.withdraw){await _chatWithdrawSelf(cfg,friendId,senderName,participants);return w.clean}
     return text;
   }catch(e){return text}
 }
@@ -4383,6 +5430,8 @@ const _WITHDRAW_INSTR_BLOCK='\n\n【撤回】如果你意识到自己上一条�
 window._extractWithdraw=_extractWithdraw;
 window._chatWithdrawSelf=_chatWithdrawSelf;
 window._applyWithdraw=_applyWithdraw;
+/* P29-0 · 身份退化诊断快照（只读，透明面；非 authority、无持久化） */
+window._ibGroupIdentityDegradedSnapshot=_ibGroupIdentityDegradedSnapshot;
 
 /* ════ P21 · 统一思考深度（reasoningEffort）消费缝 ════
    canonical 值唯一来源 = Middle Brain 配置（IB.middleBrain.middleBrainReasoningEffort）：
@@ -4550,6 +5599,7 @@ async function callApiChatStream(cfg,messages,opts){
     var piece='';
     try{piece=await _callApiChatStreamOnce(cfg,msgs,o)}
     catch(e){
+      if(e&&e.code==='CREDENTIAL_UNAVAILABLE')throw _ibCredentialUnavailable();
       /* 联网搜索：报错明确指向搜索工具 → 只去掉搜索重试，保留原生 FC */
       if(!opts._noWebSearch&&round===0&&!full&&typeof IBWS!=='undefined'&&IBWS.on(cfg)&&/web_search|google_search/i.test(String(e&&e.message||e))){opts._noWebSearch=true;IBWS.markUnsupported(cfg,e);round--;continue}
       /* FC：端点不认 tools 参数 → 关掉 FC 原样重试一次（回落 XML 通道） */
@@ -4618,6 +5668,7 @@ async function callApiChat(cfg,messages,opts){
     var r;
     try{r=await _callApiChatOnce(cfg,msgs,o)}
     catch(e){
+      if(e&&e.code==='CREDENTIAL_UNAVAILABLE')throw _ibCredentialUnavailable();
       /* 联网搜索：报错明确指向搜索工具 → 只去掉搜索重试，保留原生 FC */
       if(!opts._noWebSearch&&round===0&&!full&&typeof IBWS!=='undefined'&&IBWS.on(cfg)&&/web_search|google_search/i.test(String(e&&e.message||e))){opts._noWebSearch=true;IBWS.markUnsupported(cfg,e);round--;continue}
       /* AI 规划 jsonMode：端点不认 response_format → 去掉 JSON 模式原样重试一次（降级为提示词 + 容错解析） */
@@ -4687,6 +5738,16 @@ function _ibwsFlushSearchMeta(opts){
 }
 
 async function _callApiChatStreamOnce(cfg,messages,opts){
+  return _ibWithRuntimeApiCredential(cfg,function(runtimeCfg){
+    return _callApiChatStreamOnceWithRuntimeCredential(runtimeCfg,messages,opts);
+  });
+}
+async function _callApiChatStreamOnceWithRuntimeCredential(cfg,messages,opts){
+  return _ibWithRuntimeApiCredential(cfg,function(runtimeCfg){
+    return _callApiChatStreamOnceWithRuntimeCredential(runtimeCfg,messages,opts);
+  });
+}
+async function _callApiChatStreamOnceWithRuntimeCredential(cfg,messages,opts){
   opts=opts||{};
   _mSetThink(opts,'');_mSetFinish(opts,'');
   const maxTok=opts.maxTokens||4096;
@@ -4734,7 +5795,7 @@ async function _callApiChatStreamOnce(cfg,messages,opts){
       url=cfg.endpoint.replace('{model}',cfg.model).replace('generateContent','streamGenerateContent')+'?key='+cfg.apiKey+'&alt=sse';
       hdrs={'Content-Type':'application/json'};
       const sysMsgG=_msgs.find(m=>m.role==='system');
-      const contents=_msgs.filter(m=>m.role!=='system').map(m=>{
+      const contents=_ibWireMessages(_msgs.filter(m=>m.role!=='system'),'gemini').map(m=>{
         const parts=[];
         if(Array.isArray(m.content)){m.content.forEach(p=>{if(p.type==='_image')parts.push({inlineData:{mimeType:p.mime,data:p.base64}});else if(p.type==='_audio')parts.push({inlineData:{mimeType:p.mime||'audio/wav',data:p.base64}});else parts.push({text:p.text||''})})}
         else{parts.push({text:String(m.content||'')})}
@@ -4774,7 +5835,7 @@ async function _callApiChatStreamOnce(cfg,messages,opts){
           /* URL 同样脱敏：Gemini 端点把 key 放进 ?key= 查询串，须隐藏其中的完整 API Key */
           var _dbgRedactUrl=function(u){try{return String(u||'').replace(/([?&])key=[^&]*/gi,'$1key=***********')}catch(e){return String(u||'')}};
           console.log('[IB调试] 最终请求体:',JSON.stringify(_dbgBody,null,2));
-          console.log('[IB调试] 请求URL:',_dbgRedactUrl(url),'| Authorization:',cfg.apiKey?('Bearer '+String(cfg.apiKey).slice(0,6)+'***'):'(无)');
+          console.log('[IB调试] 请求URL:',_dbgRedactUrl(url),'| credentialAttached:',!!cfg.apiKey);
         }
       }catch(e){}
       _ibApplyReasoningEffort(ob,'openai',cfg,opts,maxTok);
@@ -4942,6 +6003,16 @@ function _createStreamBubble(_targetFriend,senderName){
 
 /* Full API call for chat with history */
 async function _callApiChatOnce(cfg,messages,opts){
+  return _ibWithRuntimeApiCredential(cfg,function(runtimeCfg){
+    return _callApiChatOnceWithRuntimeCredential(runtimeCfg,messages,opts);
+  });
+}
+async function _callApiChatOnceWithRuntimeCredential(cfg,messages,opts){
+  return _ibWithRuntimeApiCredential(cfg,function(runtimeCfg){
+    return _callApiChatOnceWithRuntimeCredential(runtimeCfg,messages,opts);
+  });
+}
+async function _callApiChatOnceWithRuntimeCredential(cfg,messages,opts){
   opts=opts||{};
   _mSetThink(opts,'');_mSetFinish(opts,'');
   const maxTok=opts.maxTokens||4096;
@@ -5004,7 +6075,7 @@ async function _callApiChatOnce(cfg,messages,opts){
   if(fmt==='gemini'){
     const ep=cfg.endpoint.replace('{model}',cfg.model)+'?key='+cfg.apiKey;
     const sysMsgG=_msgs.find(m=>m.role==='system');
-    const contents=_msgs.filter(m=>m.role!=='system').map(m=>{
+    const contents=_ibWireMessages(_msgs.filter(m=>m.role!=='system'),'gemini').map(m=>{
       const parts=[];
       if(Array.isArray(m.content)){
         m.content.forEach(p=>{
@@ -5180,7 +6251,7 @@ function _chatExportMessage(m,speaker){
 async function confirmExport(){
   const selected=[...document.querySelectorAll('.export-chat-cb:checked')].map(cb=>cb.value);
   if(!selected.length){toast('请至少选择一个对话');return}
-  const msgs=await dbGetAll('chatMessages');msgs.sort((a,b)=>a.timestamp-b.timestamp);
+  const msgs=_ibOrderMessages(await dbGetAll('chatMessages'));/* P23 2A：导出顺序 = canonical 顺序（含回合归组） */
   const allThreads=await (async()=>{try{return await dbGetAll('chatThreads')}catch(e){return[]}})();
   const grouped={};msgs.forEach(m=>{const fid=m.friendId||'unknown';if(!selected.includes(fid))return;const key=fid+(m.threadId?'::'+m.threadId:'');if(!grouped[key])grouped[key]={fid:fid,threadId:m.threadId||null,msgs:[]};grouped[key].msgs.push(m)});
   let text='';const groups=await loadGroups();
@@ -5528,6 +6599,26 @@ window.collapseSameRole=collapseSameRole;
 window.sendChatMessage=sendChatMessage;
 window.appendChatBubble=appendChatBubble;
 window.deleteSingleMsg=deleteSingleMsg;
+/* P23 Phase 2B · Delivery Runtime 的桌面接缝（供 App / 测试 / 诊断只读观察与取消） */
+window._ibDeliveryRuntime=_ibDeliveryRuntime;
+window._ibStartDelivery=_ibStartDelivery;
+window._ibDeliveryAbort=_ibDeliveryAbort;
+window._ibDeliveryPending=_ibDeliveryPending;
+window._ibConvId=_ibConvId;
+/* P30-2 · 会话归属 filter（测试/诊断入口；生产内部直接调用同一函数） */
+window._ibWsScopeFilter=_ibWsScopeFilter;
+/* R3 · media queue partition/normalization seam (test + diagnostics; no new manager) */
+window._ibTakeScopedMedia=_ibTakeScopedMedia;
+window._ibMediaPromptImage=_ibMediaPromptImage;
+window._ibTypingOn=_ibTypingOn;
+window._ibTypingOff=_ibTypingOff;
+window._ibTypingFinish=_ibTypingFinish;
+/* P23 Phase 2D · Multimodal Delivery Policy 的桌面接缝（诊断 / 测试 / 未来上层） */
+window._ibMmResolve=_ibMmResolve;
+window._ibVoiceCapability=_ibVoiceCapability;
+window._ibMmIntent=_ibMmIntent;
+window._ibMaterializeVoiceUnit=_ibMaterializeVoiceUnit;
+window._ibBuildUnitAt=_ibBuildUnitAt;
 window.autoResizeInput=autoResizeInput;
 window._parseThinking=_parseThinking;
 window._assistantResponseParts=_assistantResponseParts;
@@ -5542,6 +6633,7 @@ window._ibOaiCacheDiag=_ibOaiCacheDiag;
 window._injectAnthropicMsgCache=_injectAnthropicMsgCache;
 window._adaptContentForApi=_adaptContentForApi;
 window._adaptMessageForApi=_adaptMessageForApi;
+window._ibModelCanSee=_ibModelCanSee;/* App Store ctx.chat.canSee 的既有依赖（此前漏导出 → 留影能力门 ReferenceError） */
 window._newCallState=_newCallState;
 window._endCallState=_endCallState;
 window._mSetThink=_mSetThink;
@@ -5826,6 +6918,23 @@ NS.expose('chat', {
   _CHAT_WIN: _CHAT_WIN,
   _pendingImages: _pendingImages,
   _pendingFiles: _pendingFiles,
+  /* P23 Phase 2B · Delivery Runtime 接缝 */
+  _ibDeliveryRuntime: _ibDeliveryRuntime,
+  _ibStartDelivery: _ibStartDelivery,
+  _ibDeliveryAbort: _ibDeliveryAbort,
+  _ibDeliveryPending: _ibDeliveryPending,
+  _ibConvId: _ibConvId,
+  _ibTakeScopedMedia: _ibTakeScopedMedia,
+  _ibMediaPromptImage: _ibMediaPromptImage,
+  _ibTypingOn: _ibTypingOn,
+  _ibTypingOff: _ibTypingOff,
+  _ibTypingFinish: _ibTypingFinish,
+  /* P23 Phase 2D · Multimodal Delivery Policy 接缝 */
+  _ibMmResolve: _ibMmResolve,
+  _ibVoiceCapability: _ibVoiceCapability,
+  _ibMmIntent: _ibMmIntent,
+  _ibMaterializeVoiceUnit: _ibMaterializeVoiceUnit,
+  _ibBuildUnitAt: _ibBuildUnitAt,
   _attachCloseHandler: _attachCloseHandler,
   _WS_OPEN_RE: _WS_OPEN_RE,
   _lastApiReasoning: _lastApiReasoning,

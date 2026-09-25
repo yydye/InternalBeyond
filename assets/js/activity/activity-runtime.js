@@ -60,6 +60,30 @@
   function _ptrClear(roleId){var all=_ptrAll();if(all[String(roleId)]){delete all[String(roleId)];_ptrWrite(all);return true}return false}
   function _usableFor(rec,roleId){return!!(rec&&String(rec.roleId)===String(roleId)&&rec.status!=='finished')}
 
+  /* ---- P27-2 · activity.created Domain Event（**唯一**接线的事件）----------------
+     边界：
+       · 顺序：canonical 写入（dbPut）**成功之后**才创建事件；**禁止** event -> createActivity；
+       · 失败语义：事件创建/投递失败 **不**回滚 canonical Activity（本函数**永不**抛错）；
+       · 所有权：生产者是 IB.activity（不是 Event Core / Cinema / Co-read / Chat）；
+       · 载荷：**只**带引用（entityId = activityId），**不带** Activity 正文 / 聊天历史 /
+         记忆 / 媒体帧 / 字幕 / 凭证（P26-1 契约会拒绝这些字段）；
+       · consumer：**无**（不建 Event Bus / Router / Listener）；只经**既有**本地回调通道广播，
+         因此"事件可以存在而没有消费者"；
+       · 契约：**复用** P26-1 createDomainEvent（不复制事件契约）；核心未加载时静默跳过。 */
+  function _emitActivityCreated(rec){
+    try{
+      var core=(typeof window!=='undefined')?window.IBDomainEventCore:null;
+      if(!core||typeof core.createDomainEvent!=='function'||!rec||!rec.id)return null;
+      var res=core.createDomainEvent({
+        domain:'activity',type:'created',entityId:String(rec.id),
+        actorId:String(rec.roleId||''),origin:'runtime',timestamp:rec.createdAt
+      });
+      if(!res||res.ok!==true||!res.event)return null;
+      _emit(rec.id,'created',res.event);
+      return res.event;
+    }catch(e){return null}
+  }
+
   /* 创建/恢复活动：只写 `activities`，不创建 chatThreads、不切换任何聊天频道。 */
   async function createActivity(p){
     p=p||{};
@@ -74,6 +98,7 @@
     };
     try{await dbPut(ACT_STORE,rec)}catch(e){return null}
     _emit(rec.id,'activity',rec);
+    _emitActivityCreated(rec);/* P27-2：canonical 写入成功后的**唯一**事件（失败不回滚） */
     return rec;
   }
   async function getActivity(id){if(typeof dbGet!=='function')return null;return await dbGet(ACT_STORE,id)}
@@ -106,7 +131,80 @@
   }
   async function setProgress(id,prog){return await saveActivity(id,{progress:prog,lastActiveAt:_now()})}
 
+  /* ---- P27-3 · Activity Observation（P26-2 接线 · **只读**）----------------------
+     领域自有的 observation getter（**没有** ObservationManager / Registry / Store）：
+       · 语义：对某个 Activity 的**当前 canonical 状态**做一次只读观察（"现在是什么"），
+         与"发生了什么"（P27-2 的 activity.created）严格分离；
+       · entityId = activityId；valueRef = 'activities/<activityId>'（**引用** canonical 位置；
+         progress / page / subtitle 切片都从该位置按需读取，**不复制**状态正文）；
+       · 观察**不写任何东西**：零 dbPut / 零 localStorage / 零回调副作用（纯读路径）；
+       · 记录不存在 ⇒ availability 'unavailable'（仍是**合法观察**，不是业务失败）；
+       · activityId 非法 / 核心缺失 / 契约拒绝 ⇒ 返回 null（不产生观察，**绝不抛错**）；
+       · **不发事件**、不产生 Feedback、不唤醒 agent、不建 session / resource。 */
+  async function getObservation(activityId,opts){
+    try{
+      var core=(typeof window!=='undefined')?window.IBObservationCore:null;
+      if(!core||typeof core.createObservation!=='function')return null;
+      var id=String(activityId==null?'':activityId);
+      if(!id)return null;
+      var o=(opts&&typeof opts==='object'&&!Array.isArray(opts))?opts:{};
+      var observedAt=(typeof o.observedAt==='number'&&isFinite(o.observedAt)&&o.observedAt>0)?o.observedAt:_now();
+      var rec=await getActivity(id);
+      var res=core.createObservation({
+        domain:'activity',entityId:id,source:'activity.state',
+        observedAt:observedAt,freshness:'fresh',
+        availability:(rec?'available':'unavailable'),
+        valueRef:'activities/'+id
+      });
+      if(!res||res.ok!==true||!res.observation)return null;
+      return res.observation;
+    }catch(e){return null}
+  }
+
   /* ---- Current 指针显式读写（App 打开活动时调用；UI 经事件总线订阅 'current'） ---- */
+  /* ---- P27-4 · Activity Session Projection（P26-3 接线 · **只读投影**）------------
+     语义：把一条 canonical Activity 记录**投影**成 P26-3 的 Session（"什么在持续"）。
+       · owner = IB.activity；契约 = P26-3（复用 createSession 构造器 + validateSession 校验，
+         **不**复制 session/v1、状态词表、参与者校验、身份规则）；
+       · **纯读投影**：不创建 Session 持久化、不迁移（**不调用 transitionSession**）、
+         不发事件、不产生 Observation / Feedback / Wake、不清理指针；
+       · sessionId = activityId（**复用**，不新增持久身份、不做映射表）；
+       · participants = [roleId]（**仅角色**：仓库里没有 canonical user participant id，
+         唯一的"用户身份"只是显示名 _cachedUserName ⇒ **不发明** 'user'/'self'/'me'）；
+       · status 映射：'active'→'active'，'finished'→'ended'（读侧承认的管理态；不新增 finish 命令）；
+       · createdAt ← rec.createdAt；updatedAt ← rec.updatedAt（记录最近写入时刻，**非**生命周期迁移时刻，
+         见报告 §9）；**endedAt 不提供**（Activity 无 finishedAt，P26-3 中 endedAt 为可选 ⇒ 不发明）；
+       · **不需要 current 指针**（可由记录独立派生完整 Session；指针只是导航提示）；
+       · 缺失 Activity / 无 roleId / 未知状态 / 契约校验失败 / 核心缺失 ⇒ 返回 null（**绝不抛错**）。 */
+  async function getSession(activityId){
+    try{
+      var core=(typeof window!=='undefined')?window.IBSessionCore:null;
+      if(!core||typeof core.createSession!=='function'||typeof core.validateSession!=='function')return null;
+      var id=String(activityId==null?'':activityId);
+      if(!id)return null;
+      var rec=await getActivity(id);
+      if(!rec)return null;                                  /* 缺失 ⇒ null（不造占位 Session） */
+      var roleId=String(rec.roleId==null?'':rec.roleId);
+      if(!roleId)return null;                               /* 无角色 ⇒ fail closed */
+      var mapped=(rec.status==='active')?'active':((rec.status==='finished')?'ended':null);
+      if(!mapped)return null;                               /* 未知状态 ⇒ fail closed */
+      if(core.SESSION_STATUSES&&core.SESSION_STATUSES.indexOf(mapped)<0)return null;/* 词表以 P26-3 为准 */
+      var base=core.createSession({sessionId:id,domain:'activity',participants:[roleId],createdAt:rec.createdAt},{createdAt:rec.createdAt});
+      if(!base||base.ok!==true||!base.session)return null;  /* 复用构造器：身份 + 参与者规范化 + 校验 */
+      var draft={
+        sessionId:base.session.sessionId,
+        domain:base.session.domain,
+        participants:base.session.participants,             /* 已由 P26-3 深冻结并规范化 */
+        status:mapped,
+        createdAt:base.session.createdAt
+      };
+      var updatedAt=rec.updatedAt;
+      if(typeof updatedAt==='number'&&isFinite(updatedAt)&&updatedAt>0)draft.updatedAt=updatedAt;
+      var verdict=core.validateSession(draft);
+      if(!verdict||verdict.ok!==true)return null;
+      return Object.freeze(draft);
+    }catch(e){return null}
+  }
   async function setCurrent(activityId){
     var rec=await getActivity(activityId);
     if(!rec||rec.status==='finished')return null;
@@ -115,8 +213,11 @@
     _emit(fid,'current',{roleId:fid,activityId:rec.id});
     return rec;
   }
-  function clearCurrent(roleId){
+  /* M1.5：clearCurrent(roleId, activityId?) —— 第二参可选：仅当指针当前指向该活动时才清除，
+     App 退出（Cinema unmount / Coread 返回书架）用它做"只清自己"，不影响其他 Activity。 */
+  function clearCurrent(roleId,activityId){
     var fid=String(roleId||'');if(!fid)return false;
+    if(activityId){var p=_ptrGet(fid);if(!p||String(p.activityId)!==String(activityId))return false}
     var had=_ptrClear(fid);
     _emit(fid,'current',{roleId:fid,activityId:null});
     return had;
@@ -311,7 +412,8 @@
 
   /* ---- 注册：window + IB.activity ---- */
   var api={createActivity:createActivity,getActivity:getActivity,findActivity:findActivity,listActivities:listActivities,
-    saveActivity:saveActivity,deleteActivity:deleteActivity,setProgress:setProgress,
+    saveActivity:saveActivity,deleteActivity:deleteActivity,setProgress:setProgress,getObservation:getObservation,
+    getSession:getSession,
     setCurrent:setCurrent,clearCurrent:clearCurrent,resolveActivity:resolveActivity,
     buildActivityContext:buildActivityContext,getActivityContext:getActivityContext,
     send:send,openChat:openChat,writeMemory:writeMemory,nudge:nudge,mark:mark,fav:fav,

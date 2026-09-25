@@ -14,6 +14,11 @@
    active/moments.js 此前完全没有可见性判定 —— 而它的回复链会把线程正文喂给
    其他角色的模型。require 同一份文件让两端不可能漂移。 */
 const MOMENT_VIS = require('../assets/js/moments-visibility-core.js');
+/* P25-2D：语义契约与浏览器侧**共用同一份实现**（不是"镜像一份"）。
+   它同时提供：唯一 parser（新结构化契约 + 旧 publish 契约的兼容投影）、
+   topic 归一 / 确定性 fingerprint、禁推理字段判定、prompt 用的 JSON schema 文本。
+   companion 因此不可能与桌面端在词表 / 归一 / 上限上漂移。 */
+const SEMANTIC = require('../assets/js/moments-semantic-core.js');
 
 function createMomentsDomain(deps) {
   const {
@@ -68,7 +73,8 @@ function createMomentsDomain(deps) {
      writeVisibility）负责，因此这里不再保留第二份枚举 ——
      两份档位表本身就是"两处可以漂移的语义"。 */
   /* 动机枚举（与浏览器端 assets/js/moments.js 完全一致）：motive 只标注"此刻为什么想发"，不是发布资格门 */
-  const MOMENT_MOTIVES = ['share', 'daily_life', 'emotion', 'reflection', 'interaction', 'curiosity', 'social_response', 'none'];
+  /* motive 枚举不再在这里维护：draft 契约（含 motive / visibility / 长度上限）的唯一
+     真源是 assets/js/moments-semantic-core.js（P25-2D §10：两端同一份实现）。 */
 
   function freqMs(frequency) {
     const range = MOMENT_FREQ[frequency] || MOMENT_FREQ.medium;
@@ -212,7 +218,7 @@ function createMomentsDomain(deps) {
     const system = trimText(character.systemPrompt, 30000)
       + `\n\n你是「${characterName}」——一个有自己生活的人。此刻你正站在自己的生活里，朋友圈只是随手写下这一刻想说的话的地方：不是聊天消息，也不是写给别人的总结。不要解释自己是 AI，不要提及任何内部机制或运行细节；不要暴露 Memory 与"注入上下文"之类的信息。`;
     const prompt = [
-      '【此刻】先由内而外感受一下：此刻的你，想不想发一条朋友圈？想发就给出正文；不想发就简单说明原因。输出严格 JSON。',
+      '【此刻】先由内而外感受一下：此刻的你，想不想发一条朋友圈？这是一次**推荐**，不是发布许可：想发就给 recommendation:"post" 并附上正文草稿；不想发就给 recommendation:"skip"。只输出严格 JSON。',
       '【今天日期与时间】' + now.toLocaleString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long', hour: '2-digit', minute: '2-digit' }),
       '【角色设定】' + trimText(character.systemPrompt, 800),
       '【角色与用户的关系】' + trimText(character.relationship || '尚未单独设定', 200),
@@ -227,54 +233,49 @@ function createMomentsDomain(deps) {
       '【触发方式】现在，看看自己有没有自然想分享的事',
       '【发圈动机】先想"为什么"，再想"发什么"：',
       '1. 像真实的人那样感受：有没有一件具体的事、一个画面、一丝情绪，让你此刻自然冒出一句想说的话？依据可以是角色设定、记忆、最近聊天、最近主动消息、最近动态、朋友们的动态、当前时间、距离上次发文时间。',
-      '2. 没有真实动机（比如今天就是个平常日子，没有具体的人事物支撑）→ {"publish":false,"motive":"none"}，并说明原因；这是正常结果，不是失败，不要为了"到时间了"硬造一件今天发生过的事。',
-      '3. 有 → 从下面挑一个最贴切的动机：share 单纯想分享一件事 / daily_life 日常生活碎片 / emotion 某种自然情绪想表达 / reflection 对近期的事产生一点想法 / interaction 与用户或其他角色近期互动引发分享欲 / curiosity 看到或想到什么，想分享或讨论 / social_response 对近期社交事件自然回应。motive:"none" 时 publish 必须为 false。',
+      '2. 没有真实动机（比如今天就是个平常日子，没有具体的人事物支撑）→ {"recommendation":"skip","reasonCode":"nothing-to-share"}；这是正常结果，不是失败，不要为了"到时间了"硬造一件今天发生过的事。',
+      '3. 有 → 先定一个最贴切的动机：share 单纯想分享一件事 / daily_life 日常生活碎片 / emotion 某种自然情绪想表达 / reflection 对近期的事产生一点想法 / interaction 与用户或其他角色近期互动引发分享欲 / curiosity 看到或想到什么，想分享或讨论 / social_response 对近期社交事件自然回应；再按下面的 reasonCode 闭集说明这一条为什么值得发。motive:"none" 只在 recommendation:"skip" 时出现。',
       '4. 正文必须从动机自然长出来——先有想说的话，再有这条动态；不要用"今天想和大家分享……""突然有感而发……""生活就是这样……""记录一下今天……"这类套话起头，除非角色本色如此。',
       '【写作要求】',
       '1. 第一人称，符合角色人格、口吻与日常习惯；内容是"这个角色自己发出来的"，不是 AI 总结。',
       '2. 写具体的小观察、小情绪、小念头，像真人的朋友圈；可以是疑问、感慨、细微的发现，不写成"今天我与用户进行了愉快的交流"这类总结句。',
-      '3. 拒绝空泛模板："今天阳光很好""今天心情不错""时间过得好快"这类换任何角色都能发的句子不要出现——如果一条动态没有具体的人/事/物/场景支撑，直接 publish:false。',
+      '3. 拒绝空泛模板："今天阳光很好""今天心情不错""时间过得好快"这类换任何角色都能发的句子不要出现——如果一条动态没有具体的人/事/物/场景支撑，直接 recommendation:"skip"（reasonCode:"low-substance"）。',
       '4. 不要复读写过的内容、主动消息或最近动态；不要重复自己最近使用的开头；允许短句和碎片化表达。',
       '5. 正文 8-120 字，1-2 句，不配 hashtag，不加引用格式，不要使用聊天回复格式，不要称呼读者。',
-      '6. 只输出一个 JSON 对象：{"publish":true/false,"content":"正文","visibility":"all"|"user"|"roles"|"private","visibleRoleIds":[],"motive":"share|daily_life|emotion|reflection|interaction|curiosity|social_response|none","wantImage":true/false,"imagePrompt":"想配图时的画面描述（≤120字）","reason":"不发布时说明原因（≤50字）"}',
+      '6. 只输出一个 JSON 对象，字段严格如下（recommendation 只能取 post 或 skip；reasonCode 只能取列出的那些值，post 的理由只能配 post，skip 的理由只能配 skip）：' + SEMANTIC.semanticOutputSchema(),
       '7. visibility：默认 "all"；仅当内容不适合用户看到（如私人情绪）才用 "user" 或 "private"；指定给某些角色时用 "roles" 并填 visibleRoleIds。',
-      '8. 今天没有值得分享的内容时必须 publish:false。宁可不发，也不要凑数；publish:false 是正常输出，不是失败。',
+      '8. 今天没有值得分享的内容时必须 recommendation:"skip"。宁可不发，也不要凑数；recommendation:"skip" 是正常输出，不是失败。',
       '9. 是否配图（wantImage）：像真实的人一样判断"这条内容此刻会不会自然想配一张照片"。明确的对象/场景/视觉瞬间（奇怪的猫、小店、月亮、风景、食物、街角、刚买到的东西、做过的某件事）→ 自然适合配图；单纯情绪、一句话感想、内心反思、对某人的想念、很抽象的想法 → 通常不适合配图。',
       '10. wantImage=true 表示"这条内容从内容和情境上自然适合配一张图"，不是要求系统保证出图；判断不适合就 false，不要为了配图而配图，也不是每条都要配。',
       '11. imagePrompt：仅 wantImage=true 时填写（≤120 字）。写具体画面——画面里有什么、什么光线、什么视角，与正文和角色情境一致，像"手机随手拍/日常照片/生活记录"；不要描述任何内部机制，不要出现"AI生成"等系统内部术语，不要提及接口、引擎或其他服务选项，也不要广告、海报、Logo、UI 截图或过度精致的宣传照；若角色设定有明确审美，按其偏好调整。',
       '12. 用词自然：描述画面时直接说"照片里/画面里/梦里"，不要用"生成的图片""AI 生成""提示词"这类说法；如果这条动态没有配图，就不要提"图片"，只说你此刻想表达的画面。',
-      '13. 点名朋友：如果此刻发的内容确实与某个朋友有关（想 @ TA、想让 TA 回应、刚提到 TA 的事），就在正文里用 @名字 指名（名字用【朋友名单】里的名字，如 @洪伟湟）；没有明确指向就不要 @，不要为了点名而点名。'
+      '13. 点名朋友：如果此刻发的内容确实与某个朋友有关（想 @ TA、想让 TA 回应、刚提到 TA 的事），就在正文里用 @名字 指名（名字用【朋友名单】里的名字，如 @洪伟湟）；没有明确指向就不要 @，不要为了点名而点名。',
+      '14. topicKey：用 2-6 个词概括这一条动态**说的是什么话题**（用 - 连接，例如 rainy-window / 雨天的窗台）。它必须稳定：换一种说法描述同一件事，topicKey 不变；只有真的换了话题才改。它是话题标识，不是正文——不要把正文或整句话粘进来，也不要把它当标题写。',
+      '15. ' + SEMANTIC.forbiddenFieldsSentence()
     ];
     return { system, messages: [{ role: 'system', content: system }, { role: 'user', content: prompt.join('\n') }] };
   }
 
-  /* parseOpts（P19）：由调用方按 model policy 声明本次请求是否真的用了 assistant
-     prefill（端口透传的 prefillApplied），决定解析是否允许「续写形态」。 */
+  /* ── P25-2D · 语义解析（唯一 parser 在共享核里）────────────────────────
+     parseOpts（P19）：由调用方按 model policy 声明本次请求是否真的用了 assistant
+     prefill（端口透传的 prefillApplied），决定解析是否允许「续写形态」。
+
+     两个视图、一个实现（与浏览器侧同构）：
+       · parseMomentSemantic(raw, opts) → canonical semantic result
+         {recommendation:{recommendation,reasonCode,topicKey,topicFingerprint,source}, draft|null, ...}
+       · parseMomentOutput(raw, opts)   → **legacy 形状视图**（旧调用方/旧测试看到的字段）
+     旧 `publish:true/false` 只作为一处兼容 seam 被投影进新契约：
+     `publish:true` **不是**许可，它只是 recommendation:'post' 的来源之一。 */
+  function parseMomentSemantic(raw, parseOpts) {
+    return SEMANTIC.parseMomentSemanticOutput(raw, {
+      parseJson: (text, opts) => parsePlanJson(text, Object.assign({}, opts, parseOpts))
+    });
+  }
   function parseMomentOutput(raw, parseOpts) {
-    const parsed = parsePlanJson(raw, parseOpts);
-    if (!parsed || typeof parsed !== 'object') return null;
-    if (parsed.publish === false) return { publish: false, reason: trimText(parsed.reason, 200), motive: 'none' }; /* none 语义强制：不发布=无动机 */
-    if (parsed.publish !== true) return null;
-    if (!String(parsed.content || '').trim()) return null;
-    /* 档位归一交给共享核心（M1-C.2n）：缺失 → 'all'（产品默认）；
-       模型给了**拼错的**档位 → 'invalid'，读侧永不可见（作者除外）。
-       原实现把两者都写成 'all'，等于让模型写错一个词直接变成公开动态。 */
-    const visibility = MOMENT_VIS.writeVisibility(parsed.visibility);
-    /* motive 归一（与浏览器端一致）：缺失/非法/与 publish:true 矛盾（none）→ daily_life；只是标注，不是发布资格门 */
-    const motive = (MOMENT_MOTIVES.includes(parsed.motive) && parsed.motive !== 'none') ? parsed.motive : 'daily_life';
-    /* wantImage/imagePrompt 归一（v4：模型建议配图 + 画面描述；图片由浏览器端 Image Provider 生成；
-       兼容旧字段 includeImage——任何一侧输出它都被归一为 wantImage。仅 publish:true 时有意义） */
-    const wantImage = parsed.wantImage === true || parsed.includeImage === true;
-    return {
-      publish: true,
-      content: trimText(String(parsed.content).trim(), 2000),
-      visibility,
-      visibleRoleIds: Array.isArray(parsed.visibleRoleIds) ? parsed.visibleRoleIds.slice(0, 20).map(String) : [],
-      reason: trimText(parsed.reason, 200),
-      motive,
-      wantImage,
-      imagePrompt: wantImage ? trimText(String(parsed.imagePrompt || '').trim(), 600) : ''
-    };
+    const parsed = parseMomentSemantic(raw, parseOpts);
+    if (!parsed || parsed.ok !== true) return null;
+    const legacy = SEMANTIC.legacyMomentOutput(parsed);
+    return legacy || null;
   }
 
   /* 去重：快照内最近动态 + 主动消息（bigram Dice，与浏览器端一致） */
@@ -399,7 +400,9 @@ function createMomentsDomain(deps) {
     for (let attempt = 0; attempt < MOMENT_MAX_ATTEMPTS; attempt += 1) {
       const __t0 = Date.now();
       try {
-        const out = await callCharacterModel(task, built, { jsonMode: true, jsonPrefill: '{"publish":' });
+        /* prefill 的 seed 必须与**新契约**的第一个键一致：否则 legacy prefill 模型
+           会被喂一个它已经不该输出的键，只会制造畸形续写。 */
+        const out = await callCharacterModel(task, built, { jsonMode: true, jsonPrefill: '{"recommendation":' });
         rawOut = contentText(out && out.content);
         prefillSeed = (out && out.prefillSeed) || '';
         obs({ t: 'llm_call', kind: 'moment', ok: true, ms: Date.now() - __t0, origin: 'companion' });
@@ -408,25 +411,28 @@ function createMomentsDomain(deps) {
         obs({ t: 'llm_call', kind: 'moment', ok: false, ms: Date.now() - __t0, origin: 'companion' });
         break;
       }
-      const parsed = parseMomentOutput(rawOut, { prefillSeed: prefillSeed });
-      if (!parsed || parsed.publish === false) {
-        if (parsed && parsed.publish === false) {
-          /* 模型选择不发布：按频率安静重排；declineStreak 只累计上下文，绝不强制发布 */
-          schedule.declineStreak = (Number(schedule.declineStreak) || 0) + 1;
-          obs({ t: 'post_declined', actor: characterId, origin: 'companion', reason: trimText(parsed.reason || '', 60), motive: 'none' });
-          advanceNext(schedule, now);
-          persistPatch(characterId, schedule);
-          console.log(`[Moments] ${characterId} chose not to publish: ${parsed.reason || ''}`);
-          return { published: false, reason: parsed.reason, motive: 'none' };
-        }
+      const parsed = parseMomentSemantic(rawOut, { prefillSeed: prefillSeed });
+      if (!parsed || parsed.ok !== true) {
         if (attempt === 0) {
-          appendMessageNote(built.messages[built.messages.length - 1], '\n\n【注意】上次输出不符合要求。请只输出一个 JSON 对象：{"publish":布尔,"content":"正文","visibility":"all|user|roles|private","visibleRoleIds":[],"motive":"share|daily_life|emotion|reflection|interaction|curiosity|social_response|none","wantImage":布尔,"imagePrompt":"想配图时的画面描述","reason":""}。');
+          appendMessageNote(built.messages[built.messages.length - 1], SEMANTIC.semanticCorrectionNote({}));
           continue;
         }
         lastError = new Error('moment output unparseable');
         break;
       }
-      const dup = duplicateOf(schedule, snapshot, parsed.content);
+      if (parsed.recommendation.recommendation !== 'post') {
+        {
+          /* 模型选择不发布：按频率安静重排；declineStreak 只累计上下文，绝不强制发布 */
+          schedule.declineStreak = (Number(schedule.declineStreak) || 0) + 1;
+          obs({ t: 'post_declined', actor: characterId, origin: 'companion', reason: trimText(parsed.recommendation.reasonCode || '', 60), reasonCode: parsed.recommendation.reasonCode || '', motive: 'none' });
+          advanceNext(schedule, now);
+          persistPatch(characterId, schedule);
+          console.log(`[Moments] ${characterId} chose not to publish: ${parsed.recommendation.reasonCode || ''}`);
+          return { published: false, reason: parsed.legacyReason || parsed.recommendation.reasonCode, motive: 'none', reasonCode: parsed.recommendation.reasonCode || '' };
+        }
+      }
+      const draft = parsed.draft;
+      const dup = duplicateOf(schedule, snapshot, draft.content);
       if (dup && attempt === 0) {
         obs({ t: 'dedupe', kind: 'moment', actor: characterId, origin: 'companion' });
         appendMessageNote(built.messages[built.messages.length - 1], `\n\n【注意】这条内容与最近发过的东西太相似（「${trimText(String(dup.content || '').slice(0, 40), 40)}」），请换一个角度、观察或情绪，完全重新写。`);
@@ -441,14 +447,14 @@ function createMomentsDomain(deps) {
       const moment = {
         id: momentId(),
         roleId: characterId,
-        content: parsed.content,
+        content: draft.content,
         images: [],
-        visibility: parsed.visibility,
-        visibleRoleIds: parsed.visibility === 'roles' ? parsed.visibleRoleIds : [],
+        visibility: draft.visibility,
+        visibleRoleIds: draft.visibility === 'roles' ? draft.visibleRoleIds : [],
         likes: [],
         comments: [],
         source: 'proactive',
-        motive: parsed.motive,
+        motive: draft.motive,
         createdAt: new Date(sentAt).toISOString()
       };
       schedule.executedAt = new Date(sentAt).toISOString();
@@ -469,7 +475,29 @@ function createMomentsDomain(deps) {
           role_name: character.nickname || character.model || ''
         }].concat(Array.isArray(rawNow.recent_moments) ? rawNow.recent_moments : []).slice(0, 30);
       }
+      /* P25-2D · 候选事件（**不是许可**）：
+         语义字段（recommendation / reasonCode / topic / draft）是权威输入，
+         legacy 字段只为"旧浏览器仍能消费"而保留 —— 新浏览器会把两者都送进
+         Autonomy，ALLOW 之后才写库。trigger_ref 用**本次触发的 recurrence 槽位**
+         （due），确定性且可重放；不用 Date.now / Math.random / 到达时间。 */
       const event = momentsEvent(schedule, 'moment_sent', {
+        actor_id: characterId,
+        source: 'schedule',
+        trigger_ref: `companion:${Number(due) || 0}`,
+        slot_at: Number(due) || 0,
+        semantic_contract: parsed.contract,
+        recommendation: parsed.recommendation.recommendation,
+        reason_code: parsed.recommendation.reasonCode,
+        topic_key: parsed.recommendation.topicKey,
+        topic_fingerprint: parsed.recommendation.topicFingerprint,
+        draft: {
+          content: draft.content,
+          visibility: draft.visibility,
+          visibleRoleIds: draft.visibility === 'roles' ? draft.visibleRoleIds : [],
+          motive: draft.motive,
+          wantImage: draft.wantImage === true,
+          imagePrompt: draft.imagePrompt || ''
+        },
         moment_id: moment.id,
         character_name: character.nickname || character.model || 'AI',
         moment,
@@ -478,8 +506,8 @@ function createMomentsDomain(deps) {
         motive: moment.motive,
         /* v4 图文协议：companion 只表达"配图建议 + 画面描述"，图片由浏览器端 Image Provider 在 ingest 时生成；
            失败/能力/概率门未过 → 浏览器侧保持纯文字 Moment。imagePrompt 不写入公开 Moment。 */
-        want_image: parsed.wantImage === true,
-        image_prompt: parsed.imagePrompt || '',
+        want_image: draft.wantImage === true,
+        image_prompt: draft.imagePrompt || '',
         decline_streak: schedule.declineStreak,
         next_at: schedule.nextAt,
         last_post_at: schedule.lastPostAt
@@ -487,7 +515,7 @@ function createMomentsDomain(deps) {
       s2.events[event.id] = event;
       saveNow();
       console.log(`[Moments] ${characterNameLog(character)} published a moment at ${new Date(sentAt).toLocaleString()}`);
-      return { published: true, moment };
+      return { published: true, moment, recommendation: parsed.recommendation, draft };
     }
     schedule.lastError = trimText(lastError && lastError.message || lastError || 'unknown', 300);
     advanceNext(schedule, now, MOMENT_BACKOFF_MS);
@@ -1164,6 +1192,7 @@ function createMomentsDomain(deps) {
     publicMomentSchedule,
     buildMomentPrompt,
     parseMomentOutput,
+    parseMomentSemantic,
     duplicateOf,
     executeMomentSchedule,
     momentsTick,

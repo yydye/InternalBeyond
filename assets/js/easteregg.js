@@ -161,7 +161,12 @@
     lastKey = now;
     buf += k;
     if (buf.length > MAGIC.length + 4) buf = buf.slice(-(MAGIC.length + 4));
-    if (buf.toLowerCase().indexOf(MAGIC) >= 0) { buf = ''; open(); }
+    if (buf.toLowerCase().indexOf(MAGIC) >= 0) {
+      buf = '';
+      var bridge = root.IB && root.IB.secretRoutes;
+      if (bridge && typeof bridge.dispatch === 'function') bridge.dispatch('beyond', { source: 'browser-keyboard' });
+      else open();
+    }
   }
   document.addEventListener('keydown', key);
 
@@ -170,7 +175,10 @@
   function checkHash() {
     try { if (/beyond/i.test(String(location.hash || ''))) open(); } catch (e) {}
   }
-  if (typeof document !== 'undefined') {
+  /* P32-W.3 owns the Browser adapter when present. Keep the old direct
+     listener only for standalone/legacy loading of this module. */
+  var hasSecretRouteBridge = !!(root.IB && root.IB.secretRoutes && typeof root.IB.secretRoutes.handleBrowser === 'function');
+  if (typeof document !== 'undefined' && !hasSecretRouteBridge) {
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', checkHash);
     else checkHash();
     window.addEventListener('hashchange', checkHash);

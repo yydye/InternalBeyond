@@ -30,6 +30,19 @@ docs/*.results.json
 # 发行产物：安装包 / staging / 构建日志通过 GitHub Releases 发布，不进入源码历史
 dist/
 
+# Economy v1 策展发布包（P23 Phase 1.1 环境清理确认）：**不是源码**，是
+# `node Economy-v1-release/build-package.js` 在仓库根目录跑出来的**快照**——
+# 它把当时那份 VERSION / 源码 / 文档复制进 `Economy-v1-release/`，并生成
+# `ECONOMY_V1_CHECKSUMS.txt`（152 条，含自身 manifestSha256）与压缩档。
+# 判据（已核对）：包内的 `services/home-node/economy-store.js` 与当前源码
+# **SHA-256 不同**，后续阶段改过的文件也不会被它收录 —— 也就是说它既不是真源，
+# 也已经过期。真源始终是被跟踪的 `services/` `assets/` `tests/` `docs/`。
+# 它同样**不是** IB 产品发布链的一部分（见 docs/RELEASE_PIPELINE_AUDIT.md §5/§307）。
+# 需要重新取一份就重跑那个脚本（它只写这个目录），所以不需要进版本库：
+Economy-v1-release/
+InternalBeyond-Economy-v1.tar.gz
+InternalBeyond-Economy-v1.tar.gz.sha256
+
 # bundled Node runtime binary: fetched by scripts/update-node-runtime.ps1, never committed
 runtime/node/node.exe
 
@@ -48,3 +61,14 @@ tools/release-builder-runtime/
 # Dry-run scratch: a dry run must leave no trace, and this is where a log would
 # land if one were ever written during one. It never is; the ignore is a guard.
 tools/release-builder/.dry-run/
+
+# Tauri 2 build metadata and native build output; source config/capabilities stay tracked.
+.tauri-frontend/
+src-tauri/target/
+src-tauri/gen/
+
+# 本机专用的 Agent / 研究缓存：不是产品源码，绝不进版本库
+.dsh-research/
+.codegraph/
+.ua/
+.claude/

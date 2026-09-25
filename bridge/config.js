@@ -9,6 +9,7 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const { deepMerge, constantTimeTokenMatch } = require('./util');
+const { isTauriOrigin } = require('../runtime/host-origin.js');
 
 function createConfig(deps) {
   const dataDir = deps.dataDir;
@@ -42,6 +43,10 @@ function createConfig(deps) {
         endpoint: 'https://api.xiaomimimo.com/v1/chat/completions',
         apiKey: '',
         voice: ''                    // 留空时按角色 voiceId，再兜底注册表默认（mimo_default）
+      },
+      voicebox: {                    // 本地 Voicebox Runtime（独立进程，IB 只调用其 REST API）
+        enabled: true,               // 本地运行时默认可用；offline 只影响选了该来源的角色
+        endpoint: ''                 // 留空 = 用 bridge/voicebox.js 的 DEFAULT_ENDPOINT（默认端点只在那一个文件里声明）
       },
       voiceAsr: {                    // 语音通话 ASR：OpenAI-compatible /audio/transcriptions
         enabled: false,
@@ -123,7 +128,7 @@ function createConfig(deps) {
       if (u.protocol === 'file:') return origin;
       if (u.protocol === 'http:' || u.protocol === 'https:') {
         const host = String(u.hostname).toLowerCase();
-        if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]') return origin;
+        if (isTauriOrigin(origin) || host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]') return origin;
       }
     } catch (e) { /* 忽略非法 Origin */ }
     return null;
@@ -138,7 +143,7 @@ function createConfig(deps) {
     if (!configRaw || typeof configRaw !== 'object') return false;
     if (Object.keys(d).some(k => !(k in configRaw))) return true;
     let nestedMissing = false;
-    ['music', 'tts', 'ttsMimo', 'voiceAsr', 'bark', 'ntfy', 'proactive'].forEach(k => {
+    ['music', 'tts', 'ttsMimo', 'voicebox', 'voiceAsr', 'bark', 'ntfy', 'proactive'].forEach(k => {
       const dv = d[k], rv = configRaw[k];
       if (dv && typeof dv === 'object' && rv && typeof rv === 'object') {
         if (Object.keys(dv).some(n => !(n in rv))) nestedMissing = true;

@@ -153,4 +153,4 @@ score = importance × activationFactor × decayFactor × emotionFactor
 
 ---
 
-*本文档由真实代码取证（`memory.js` / `auto-memory.js` / `diary.js` / `activity-runtime.js` / `DECISIONS.md` D12/D14/D15），并如实标注"非向量库""关系不直接加权"等边界。下一步见 [AUTONOMY.md](AUTONOMY.md)（规划中）。*
+*本文档由真实代码取证（`memory.js` / `auto-memory.js` / `diary.js` / `activity-runtime.js` / `DECISIONS.md` D12/D14/D15），并如实标注"非向量库""关系不直接加权"等边界。下一步见 [AUTONOMY.md](AUTONOMY.md)。*

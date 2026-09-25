@@ -343,6 +343,9 @@ function createHomeNodeRemote(deps) {
       if (query.friendId) qs.push('friendId=' + encodeURIComponent(query.friendId));
       if (query.threadId) qs.push('threadId=' + encodeURIComponent(query.threadId));
       if (query.limit) qs.push('limit=' + encodeURIComponent(query.limit));
+      if (query.cursor != null) qs.push('cursor=' + encodeURIComponent(typeof query.cursor === 'object' ? JSON.stringify(query.cursor) : String(query.cursor)));
+      if (query.before != null) qs.push('before=' + encodeURIComponent(typeof query.before === 'object' ? JSON.stringify(query.before) : String(query.before)));
+      if (query.after != null) qs.push('after=' + encodeURIComponent(typeof query.after === 'object' ? JSON.stringify(query.after) : String(query.after)));
       return _request('/list' + (qs.length ? '?' + qs.join('&') : ''));
     },
     changes: function (cursor, options) {

@@ -403,21 +403,66 @@ function _momentsWriteVisibility(raw){
 function _momentsCfg(id){return apiConfigs.find(a=>a.id===id)||archivedConfigs.find(a=>a.id===id)||null}
 
 /* ══════════ Service 层（UI 不直接操作存储） ══════════ */
-async function createMoment(data){
+/* ── canonical 写入路由：Moment 落盘的**唯一**通道 ────────────────────
+   M1-C.2n 把 moments 的权威搬到 Home Node，并在 home-node-bootstrap 里加了守卫：
+   权威生效时 `dbPut('moments', row)` 必须被拒绝（moments-write-closed）。
+   但本文件当时**没有**接上那条合法通道 —— 于是 canonical 承载下
+   createMoment / companion ingest 全部落盘失败（M1-C 遗留缺口，P25-2A §1-A 复核确认）。
+
+   现在把"已归一的行 → 落盘"收敛成**唯一**函数。路由规则只有一条，且只在这里：
+     · Home Node 面可用 → IB.homeNode.moments.put(...)（权威 = Home Node；失败即失败）
+     · 面不可用         → dbPut（本地/mirror 承载；canonical 下若面缺失，
+                          dbPut 守卫自己会 fail closed，绝不静默假成功）
+   三个写者（手动发帖 / 自主发布 / companion ingest）都经这里 —— 没有第二个写者。 */
+function _momentsHomeNodeMoments(){
+  try{
+    const IB=(typeof window!=='undefined'&&window.IB)||null;
+    const hn=IB&&IB.homeNode&&IB.homeNode.moments;
+    return(hn&&typeof hn.put==='function')?hn:null;
+  }catch(e){return null}
+}
+async function _momentsWriteCanonical(m,options){
+  options=options||{};
+  const hn=_momentsHomeNodeMoments();
+  if(hn){
+    const res=await hn.put(m,options.requestId?{requestId:String(options.requestId)}:undefined);
+    if(!res||res.ok!==true)throw new Error('moment-write-failed:'+String((res&&res.error)||'unknown'));
+    return{authority:String((res&&res.authority)||'home-node'),outcome:String((res&&res.outcome)||''),revision:(res&&res.revision)||null};
+  }
+  await dbPut(MOMENT_STORE,m);
+  return{authority:'indexeddb',outcome:'local',revision:null};
+}
+/* 落库之后的**表现层**副作用：UI 刷新 + AI 点赞/评论/@ 管线。
+   与 canonical persistence 结构分离 —— 写入权威只负责写，表现层由调用方选择。
+   options.presentation===false → 纯持久化（autonomous executor / 无界面场景）：
+   页面没打开、没有 DOM，写入照样成功。 */
+function _momentsPostWriteEffects(m,options){
+  options=options||{};
+  if(options.presentation===false||!m)return;
+  try{if(currentPage==='moments')loadMomentsPage()}catch(e){}
+  /* 动态创建 → 触发现有 AI 点赞/评论管线（延迟/上限/冷却不变；用户动态同样适用，无新增强制互动） */
+  try{
+    _momentsMaybeLike(m);
+    _momentsMaybeComment(m);
+    _momentsMaybeMention(m);/* @ 点名：正文 @ 的角色强制评论（2 分钟冷却，防刷屏） */
+  }catch(e){console.warn('[Moments] post-write social hook failed',String(e&&e.message||e).slice(0,200))}
+}
+/* options（全部可选，缺省行为与迁移前逐字一致）：
+     id           显式稳定 id（autonomous candidate 的幂等身份；缺省仍走 _momentsId()）
+     requestId    权威侧幂等键（同一 candidate 重放不产生第二行）
+     presentation false = 跳过 UI 刷新与 AI 互动管线（缺省 true） */
+async function createMoment(data,options){
+  options=options||{};
   try{
     if(!data||typeof data!=='object')return{ok:false,error:'参数错误'}
     const isUser=data.authorType==='user';
     if(!isUser&&!String(data.roleId||data.authorId||'').trim())return{ok:false,error:'缺少角色'}
     if(!String(data.content||'').trim()&&!(data.images&&data.images.length)&&!String(data.repostOf||'').trim())return{ok:false,error:'内容不能为空'}
-    const m=_momentsDefaults(data);
-    await dbPut(MOMENT_STORE,m);
+    const m=_momentsDefaults(options.id?Object.assign({},data,{id:String(options.id)}):data);
+    const write=await _momentsWriteCanonical(m,{requestId:options.requestId});
     if(isUser)_obsRec('user_post',{vis:m.visibility});
-    try{if(currentPage==='moments')loadMomentsPage()}catch(e){}
-    /* 动态创建 → 触发现有 AI 点赞/评论管线（延迟/上限/冷却不变；用户动态同样适用，无新增强制互动） */
-    _momentsMaybeLike(m);
-    _momentsMaybeComment(m);
-    _momentsMaybeMention(m);/* @ 点名：正文 @ 的角色强制评论（2 分钟冷却，防刷屏） */
-    return{ok:true,moment:m}
+    _momentsPostWriteEffects(m,options);
+    return{ok:true,moment:m,persistence:write}
   }catch(e){console.warn('[Moments] create failed',String(e&&e.message||e).slice(0,200));return{ok:false,error:String(e&&e.message||e).slice(0,200)}}
 }
 async function getMoments(maxScan){
@@ -430,10 +475,60 @@ async function getRoleMoments(roleId){
   return (own||[]).filter(m=>m&&m.roleId===String(roleId)).sort((a,b)=>String(b.createdAt||'').localeCompare(String(a.createdAt||'')))
 }
 async function getMoment(id){try{return await dbGet(MOMENT_STORE,id)}catch(e){return null}}
-async function deleteMoment(id){
+/* ── P25-2.5 · Mutation Authority（创建权限 ≠ 修改权限）──────────────────
+   创建走 Autonomy（runMomentAutonomy）；**修改**（点赞 / 评论 / 回复 / 删除）走本接缝：
+   contract → decision → 仅 ALLOW 才执行写入。两者刻意分开：like/comment 绝不进 Autonomy。
+   权威实现是纯模块 assets/js/moments-mutation-authority.js；缺席 ⇒ fail closed（DENY）。 */
+function _momentsMutationAuthority(){
+  try{
+    const a=(typeof window!=='undefined'&&window.IBMomentsMutationAuthority)
+      ||(typeof self!=='undefined'&&self.IBMomentsMutationAuthority)
+      ||(typeof IBMomentsMutationAuthority!=='undefined'?IBMomentsMutationAuthority:null);
+    return(a&&typeof a.runMomentMutation==='function'&&typeof a.buildMomentMutation==='function')?a:null;
+  }catch(e){return null}
+}
+/* facts 只读地从**真实状态**读出（authority 不做 IO、不认识 store/DOM）。 */
+function _momentsMutationFacts(m,extra){
+  const e=extra||{};
+  const isUserAuthor=!!m&&_momentIsUserAuthor(m);
+  const authorId=isUserAuthor?String((m&&m.authorId)||''):String(m?_momentsAuthorRoleId(m):'');
+  const actorId=String(e.actorId||'');
+  return{
+    /* 身份域：用户主体恒存在；角色主体必须在 apiConfigs/archivedConfigs 里（displayName ❌） */
+    actorKnown:(e.isUserActor===true)?true:(e.actorKnown!==undefined?e.actorKnown===true:!!_momentsCfg(actorId)),
+    momentExists:!!m,
+    momentAuthorKind:isUserAuthor?'user':'role',
+    momentAuthorId:authorId,
+    actorIsMomentAuthor:!!m&&(e.isUserActor===true?(isUserAuthor&&(!actorId||actorId===String(_activeUserId()))):(!isUserAuthor&&actorId===authorId)),
+    commentExists:!!e.comment,
+    commentAuthorId:e.comment?String(e.comment.authorId||''):'',
+    actorIsCommentAuthor:!!e.comment&&String(e.comment.authorId||'')===actorId,
+    actorCanSeeMoment:e.canSeeMoment!==false,
+    duplicateComment:e.duplicateComment===true
+  };
+}
+async function _momentsRunMutation(mutation,facts,executor){
+  const auth=_momentsMutationAuthority();
+  if(!auth){
+    /* 权威缺席 ⇒ 不允许任何 mutation 落地（fail closed），也绝不退回旧直写。 */
+    return{ok:false,decision:'deny',reason:'authority-missing',executed:false,result:null,error:''};
+  }
+  try{return await auth.runMomentMutation(mutation,facts,executor)}
+  catch(e){return{ok:false,decision:'deny',reason:'invalid-action',executed:false,result:null,error:String(e&&e.message||e).slice(0,200)}}
+}
+async function deleteMoment(id,opts){
+  opts=opts||{};
   try{
     const m=await getMoment(id);if(!m)return{ok:false,error:'动态不存在'};
-    await dbDelete(MOMENT_STORE,id);
+    const isUserActor=(opts.actorKind!=='role');
+    const actorId=String(opts.actorId||(isUserActor?_activeUserId():''));
+    const run=await _momentsRunMutation(
+      {mutationType:'moment.delete',actorId:actorId,actorKind:(isUserActor?'user':'role'),source:String(opts.source||(isUserActor?'user':'role_ai')),targetMomentId:String(id)},
+      _momentsMutationFacts(m,{actorId:actorId,isUserActor:isUserActor}),
+      async()=>{await dbDelete(MOMENT_STORE,id);return{ok:true}}
+    );
+    if(!run.executed)return{ok:false,error:(run.reason==='not-owner'?'只有作者可以删除这条动态':'删除被拒绝')};
+    if(!run.ok)return{ok:false,error:run.error||'删除失败'};
     try{if(currentPage==='moments')loadMomentsPage()}catch(e){}
     return{ok:true}
   }catch(e){return{ok:false,error:String(e&&e.message||e).slice(0,200)}}
@@ -466,16 +561,25 @@ async function likeMoment(id,likerId){
   try{
     const m=await getMoment(id);if(!m)return{ok:false,error:'动态不存在'};
     const who=String(likerId||_activeUserId());
-    if(_momentIsUserAuthor(m)?who===String(m.authorId||_activeUserId()):who===_momentsAuthorRoleId(m))return{ok:false,error:'作者不能点赞自己'};/* 作者不能给自己点赞 */
+    const isUserActor=(who===String(_activeUserId()));
     const i=m.likes.indexOf(who);
-    if(i>=0){
-      if(who===_activeUserId())m.likes.splice(i,1);/* 用户可取消；AI 点赞不撤销 */
-      else return{ok:true,liked:true,count:m.likes.length}
-    }else m.likes.push(who);
-    await dbPut(MOMENT_STORE,m);
+    /* 已是点赞状态且不是用户本人：AI 点赞不撤销 —— 没有 mutation，保持既有返回。
+       （这不是"绕过 authority"：这里根本没有写入，authority 的不变量是"写入前必须裁决"。） */
+    if(i>=0&&!isUserActor)return{ok:true,liked:true,count:m.likes.length};
+    const run=await _momentsRunMutation(
+      {mutationType:(i>=0?'unlike':'like'),actorId:who,actorKind:(isUserActor?'user':'role'),source:(isUserActor?'user':'role_ai'),targetMomentId:String(id)},
+      _momentsMutationFacts(m,{actorId:who,isUserActor:isUserActor}),
+      async()=>{
+        if(i>=0)m.likes.splice(i,1);else m.likes.push(who);/* 用户可取消；AI 点赞不撤销 */
+        await dbPut(MOMENT_STORE,m);
+        return{ok:true,liked:i<0,count:m.likes.length};
+      }
+    );
+    if(!run.executed)return{ok:false,error:(run.reason==='self-like'?'作者不能点赞自己':'点赞被拒绝')};
+    if(!run.ok)return{ok:false,error:run.error||'点赞失败'};
     /* 局部 patch（勿改回 loadMomentsPage：全量刷新会重置 Feed 分页展开状态并造成滚动瞬移） */
     try{_momentsPatchLikeUI(m.id,m.likes)}catch(e){}
-    return{ok:true,liked:i<0,count:m.likes.length}
+    return{ok:true,liked:run.result.liked,count:run.result.count}
   }catch(e){return{ok:false,error:String(e&&e.message||e).slice(0,200)}}
 }
 /* ══════════ 朋友圈评论区撤回（v7.1）：AI 评论 @ 错人 / 与已有评论重复 → 改写为"撤回了一条评论"占位 ══════════
@@ -501,22 +605,34 @@ async function addMomentComment(id,data){
     if(!c.content)return{ok:false,error:'评论不能为空'};
     const m=await getMoment(id);if(!m)return{ok:false,error:'动态不存在'};
     /* 同评论者同内容去重 */
-    if(m.comments.some(x=>x.authorId===c.authorId&&_activeTextSimilarity(x.content,c.content)>=MOMENT_COMMENT_SIMILARITY))return{ok:false,error:'评论重复'}
-    /* 评论区撤回（规则型）：AI 评论 @ 错人/重复 → 改写为撤回占位（保留位置） */
-    if(c.authorType==='role'&&_momentsCommentShouldWithdraw(c,m)){
-      const _rcf=_momentsCfg(c.authorId||'');
-      c.content='（'+(_rcf?(_rcf.nickname||_rcf.model||'AI'):'AI')+' 撤回了一条评论）';
-      c.withdrawn=true;
-    }
-    m.comments.push(c);
-    if(c.authorType==='user')_obsRec('user_comment',{momentId:id});
-    await dbPut(MOMENT_STORE,m);
+    const duplicate=m.comments.some(x=>x.authorId===c.authorId&&_activeTextSimilarity(x.content,c.content)>=MOMENT_COMMENT_SIMILARITY);
+    const isRole=(c.authorType==='role');
+    /* reply.create：被回复的评论必须已存在（fail closed，避免回复挂在不存在的父节点上） */
+    const replyTarget=c.replyTo?(m.comments||[]).find(x=>String(x.id)===String(c.replyTo))||null:null;
+    const run=await _momentsRunMutation(
+      {mutationType:(c.replyTo?'reply.create':'comment.create'),actorId:c.authorId,actorKind:(isRole?'role':'user'),source:(isRole?'role_ai':'user'),targetMomentId:String(id),targetCommentId:c.replyTo||'',context:{content:c.content}},
+      _momentsMutationFacts(m,{actorId:c.authorId,isUserActor:!isRole,duplicateComment:duplicate,comment:replyTarget,canSeeMoment:(isRole?_momentsVisibleToRole(m,c.authorId):true)}),
+      async()=>{
+        /* 评论区撤回（规则型）：AI 评论 @ 错人/重复 → 改写为撤回占位（保留位置） */
+        if(c.authorType==='role'&&_momentsCommentShouldWithdraw(c,m)){
+          const _rcf=_momentsCfg(c.authorId||'');
+          c.content='（'+(_rcf?(_rcf.nickname||_rcf.model||'AI'):'AI')+' 撤回了一条评论）';
+          c.withdrawn=true;
+        }
+        m.comments.push(c);
+        if(c.authorType==='user')_obsRec('user_comment',{momentId:id});
+        await dbPut(MOMENT_STORE,m);
+        return{ok:true,comment:c,count:m.comments.length};
+      }
+    );
+    if(!run.executed)return{ok:false,error:(run.reason==='duplicate-comment'?'评论重复':(run.reason==='not-visible'?'不可见':'评论被拒绝'))};
+    if(!run.ok)return{ok:false,error:run.error||'评论失败'};
     try{if(currentPage==='moments')loadMomentsPage()}catch(e){}
     /* 评论区 @ 触发（v7.2）：评论里 @ 某角色 → 被 @ 者必回该评论 */
     try{_momentsMaybeMentionComment(m,c)}catch(e){}
     /* AI↔AI 回复链：任何新评论落库后推进下一步（幂等 + 单线程单计划，见 _momentsMaybeReplyChain） */
     try{_momentsMaybeReplyChain(id,c.id)}catch(e){}
-    return{ok:true,comment:c,count:m.comments.length}
+    return{ok:true,comment:run.result.comment,count:run.result.count}
   }catch(e){return{ok:false,error:String(e&&e.message||e).slice(0,200)}}
 }
 /* 评论删除权限（v7.4，微信式）：动态作者（楼主）可删任何评论；评论者可删自己的；其他不可删。
@@ -541,9 +657,19 @@ async function deleteMomentComment(momentId,commentId,actorRoleId){
   try{
     const m=await getMoment(momentId);if(!m)return{ok:false,error:'动态不存在'};
     const c=(m.comments||[]).find(x=>x.id===commentId);if(!c)return{ok:false,error:'评论不存在'};
-    if(!(_momentsCanDeleteComment(m,c)||_momentsAuthorCanDelete(m,c,actorRoleId)))return{ok:false,error:'仅发布者可删除此评论'};
-    m.comments=m.comments.filter(x=>x.id!==commentId);
-    await dbPut(MOMENT_STORE,m);
+    const isUserActor=!actorRoleId;
+    const actorId=String(actorRoleId||_activeUserId());
+    const run=await _momentsRunMutation(
+      {mutationType:'comment.delete',actorId:actorId,actorKind:(isUserActor?'user':'role'),source:(isUserActor?'user':'role_ai'),targetMomentId:String(momentId),targetCommentId:String(commentId)},
+      _momentsMutationFacts(m,{actorId:actorId,isUserActor:isUserActor,comment:c}),
+      async()=>{
+        m.comments=m.comments.filter(x=>x.id!==commentId);
+        await dbPut(MOMENT_STORE,m);
+        return{ok:true};
+      }
+    );
+    if(!run.executed)return{ok:false,error:'仅发布者可删除此评论'};
+    if(!run.ok)return{ok:false,error:run.error||'删除评论失败'};
     try{if(currentPage==='moments')loadMomentsPage()}catch(e){}
     return{ok:true}
   }catch(e){return{ok:false,error:String(e&&e.message||e).slice(0,200)}}
@@ -620,7 +746,7 @@ function buildMomentPrompt(args){
   const system=String(character.systemPrompt||'').slice(0,30000)
     +'\n\n你是「'+characterName+'」——一个有自己生活的人。此刻你正站在自己的生活里，朋友圈只是随手写下这一刻想说的话的地方：不是聊天消息，也不是写给别人的总结。不要解释自己是 AI，不要提及任何内部机制或运行细节；不要暴露 Memory 与"注入上下文"之类的信息。';
   const prompt=[
-    '【此刻】先由内而外感受一下：此刻的你，想不想发一条朋友圈？想发就给出正文；不想发就简单说明原因。输出严格 JSON。',
+    '【此刻】先由内而外感受一下：此刻的你，想不想发一条朋友圈？这是一次**推荐**，不是发布许可：想发就给 recommendation:"post" 并附上正文草稿；不想发就给 recommendation:"skip"。只输出严格 JSON。',
     '【今天日期与时间】'+today.toLocaleString('zh-CN',{year:'numeric',month:'long',day:'numeric',weekday:'long',hour:'2-digit',minute:'2-digit'}),
     '【角色设定】'+(character.systemPrompt||'（无）').slice(0,800),
     '【角色与用户的关系】'+(character.relationship||'尚未单独设定'),
@@ -636,24 +762,26 @@ function buildMomentPrompt(args){
     '【触发方式】'+(args.trigger==='manual'?'你正被用户邀请，此刻想分享点什么':'现在，看看自己有没有自然想分享的事'),
     '【发圈动机】先想"为什么"，再想"发什么"：',
     '1. 像真实的人那样感受：有没有一件具体的事、一个画面、一丝情绪，让你此刻自然冒出一句想说的话？依据可以是角色设定、记忆、最近聊天、最近主动消息、最近动态、朋友们的动态、当前时间、距离上次发文时间。',
-    '2. 没有真实动机（比如今天就是个平常日子，没有具体的人事物支撑）→ {"publish":false,"motive":"none"}，并说明原因；这是正常结果，不是失败，不要为了"到时间了"硬造一件今天发生过的事。',
-    '3. 有 → 从下面挑一个最贴切的动机：share 单纯想分享一件事 / daily_life 日常生活碎片 / emotion 某种自然情绪想表达 / reflection 对近期的事产生一点想法 / interaction 与用户或其他角色近期互动引发分享欲 / curiosity 看到或想到什么，想分享或讨论 / social_response 对近期社交事件自然回应。motive:"none" 时 publish 必须为 false。',
+    '2. 没有真实动机（比如今天就是个平常日子，没有具体的人事物支撑）→ {"recommendation":"skip","reasonCode":"nothing-to-share"}；这是正常结果，不是失败，不要为了"到时间了"硬造一件今天发生过的事。',
+    '3. 有 → 先定一个最贴切的动机：share 单纯想分享一件事 / daily_life 日常生活碎片 / emotion 某种自然情绪想表达 / reflection 对近期的事产生一点想法 / interaction 与用户或其他角色近期互动引发分享欲 / curiosity 看到或想到什么，想分享或讨论 / social_response 对近期社交事件自然回应；再按下面的 reasonCode 闭集说明这一条为什么值得发。motive:"none" 只在 recommendation:"skip" 时出现。',
     '4. 正文必须从动机自然长出来——先有想说的话，再有这条动态；不要用"今天想和大家分享……""突然有感而发……""生活就是这样……""记录一下今天……"这类套话起头，除非角色本色如此。',
     '【写作要求】',
     '1. 第一人称，符合角色人格、口吻与日常习惯；内容是"这个角色自己发出来的"，不是 AI 总结。',
     '2. 写具体的小观察、小情绪、小念头，像真人的朋友圈；可以是疑问、感慨、细微的发现，不写成"今天我与用户进行了愉快的交流"这类总结句。',
-    '3. 拒绝空泛模板："今天阳光很好""今天心情不错""时间过得好快"这类换任何角色都能发的句子不要出现——如果一条动态没有具体的人/事/物/场景支撑，直接 publish:false。',
+    '3. 拒绝空泛模板："今天阳光很好""今天心情不错""时间过得好快"这类换任何角色都能发的句子不要出现——如果一条动态没有具体的人/事/物/场景支撑，直接 recommendation:"skip"（reasonCode:"low-substance"）。',
     '4. 不要复读写过的内容、主动消息或最近动态；不要重复自己最近使用的开头；允许短句和碎片化表达。',
     '5. 正文 8-120 字，1-2 句，不配 hashtag，不加引用格式，不要使用聊天回复格式，不要称呼读者。',
-    '6. 只输出一个 JSON 对象：{"publish":true/false,"content":"正文","visibility":"all"|"user"|"roles"|"private","visibleRoleIds":[],"motive":"share|daily_life|emotion|reflection|interaction|curiosity|social_response|none","wantImage":true/false,"imagePrompt":"想配图时的画面描述（≤120字）","reason":"不发布时说明原因（≤50字）"}',
+    '6. 只输出一个 JSON 对象，字段严格如下（recommendation 只能取 post 或 skip；reasonCode 只能取列出的那些值，post 的理由只能配 post，skip 的理由只能配 skip）：'+_momentsOutputSchema(),
     '7. visibility：默认 "all"（所有人都能看到）。**只有想让用户一个人看到**时才用 "user"；**只有写给自己**、不希望任何人（含用户）看到时才用 "private"；想让某几位朋友看到时用 "roles" 并填 visibleRoleIds。',
     '注：无论选哪一档，你自己都能看到自己发过的内容。',
-    '8. 今天没有值得分享的内容时必须 publish:false。宁可不发，也不要凑数；publish:false 是正常输出，不是失败。',
+    '8. 今天没有值得分享的内容时必须 recommendation:"skip"。宁可不发，也不要凑数；recommendation:"skip" 是正常输出，不是失败。',
     '9. 是否配图（wantImage）：像真实的人一样判断"这条内容此刻会不会自然想配一张照片"。明确的对象/场景/视觉瞬间（奇怪的猫、小店、月亮、风景、食物、街角、刚买到的东西、做过的某件事）→ 自然适合配图；单纯情绪、一句话感想、内心反思、对某人的想念、很抽象的想法 → 通常不适合配图。',
     '10. wantImage=true 表示"这条内容从内容和情境上自然适合配一张图"，不是要求系统保证出图；判断不适合就 false，不要为了配图而配图，也不是每条都要配。',
     '11. imagePrompt：仅 wantImage=true 时填写（≤120 字）。写具体画面——画面里有什么、什么光线、什么视角，与正文和角色情境一致，像"手机随手拍/日常照片/生活记录"；不要描述任何内部机制，不要出现"AI生成"等系统内部术语，不要提及接口、引擎或其他服务选项，也不要广告、海报、Logo、UI 截图或过度精致的宣传照；若角色设定有明确审美，按其偏好调整。',
     '12. 用词自然：描述画面时直接说"照片里/画面里/梦里"，不要用"生成的图片""AI 生成""提示词"这类说法；如果这条动态没有配图，就不要提"图片"，只说你此刻想表达的画面。',
-    '13. 点名朋友：如果此刻发的内容确实与某个朋友有关（想 @ TA、想让 TA 回应、刚提到 TA 的事），就在正文里用 @名字 指名（名字用【朋友名单】里的名字，如 @洪伟湟）；没有明确指向就不要 @，不要为了点名而点名。'
+    '13. 点名朋友：如果此刻发的内容确实与某个朋友有关（想 @ TA、想让 TA 回应、刚提到 TA 的事），就在正文里用 @名字 指名（名字用【朋友名单】里的名字，如 @洪伟湟）；没有明确指向就不要 @，不要为了点名而点名。',
+    '14. topicKey：用 2-6 个词概括这一条动态**说的是什么话题**（用 - 连接，例如 rainy-window / 雨天的窗台）。它必须稳定：换一种说法描述同一件事，topicKey 不变；只有真的换了话题才改。它是话题标识，不是正文——不要把正文或整句话粘进来，也不要把它当标题写。',
+    '15. '+_momentsForbiddenFieldsSentence()
   ];
   const retry=args.retryInstruction?'\n\n【上次生成的问题】'+args.retryInstruction+'请重新按要求生成。':'';
   return{system:system,messages:[{role:'system',content:system},{role:'user',content:prompt.join('\n')+retry}]}
@@ -685,30 +813,51 @@ function buildMomentCommentPrompt(args){
   return{system:system,messages:[{role:'system',content:system},{role:'user',content:prompt.join('\n')+retry}]}
 }
 
-/* ── 输出解析（JSON 优先 + 容错；v2 增加 includeImage/imagePrompt 图文扩展；v3 增加 motive 动机标注；
-   v4 统一为 wantImage/imagePrompt（wantImage 是模型建议配图的自然判断，图片生成由独立 Image Provider 完成）；
-   兼容旧字段 includeImage——任何一侧输出它都被归一为 wantImage） ── */
+/* ── 语义输出解析（P25-2B）────────────────────────────────────────────
+   canonical semantic contract 的**唯一**实现住在
+   `assets/js/moments-semantic-core.js`（UMD 双载；浏览器 window.IBMomentsSemanticCore）。
+   本文件只做三件事，绝不重写解析规则（两份实现必然漂移，而漂移的那一份会静默通过）：
+
+     · `_momentsParseSemantic(raw)`  → canonical semantic result
+        {ok, recommendation:{recommendation,reasonCode,topicKey,topicFingerprint,source}, draft|null, ...}
+     · `_momentsParseOutput(raw)`    → **legacy 形状视图**（publish/content/visibility/motive/
+        wantImage/imagePrompt）—— 旧调用方与旧测试看到的字段，**LEGACY UNTIL P25-2C**
+     · 语义核缺席 ⇒ 两个入口都 fail closed（解析不通过 ⇒ 不发布），绝不回退到"旧解析照发" */
+function _momentsSemanticCore(){
+  try{
+    const core=(typeof window!=='undefined'&&window.IBMomentsSemanticCore)
+      ||(typeof self!=='undefined'&&self.IBMomentsSemanticCore)
+      ||(typeof IBMomentsSemanticCore!=='undefined'?IBMomentsSemanticCore:null);
+    return(core&&typeof core.parseMomentSemanticOutput==='function')?core:null;
+  }catch(e){return null}
+}
+function _momentsParseSemantic(raw){
+  const core=_momentsSemanticCore();
+  if(!core)return{ok:false,error:'semantic-core-missing',stage:'no-semantic-core'};
+  try{return core.parseMomentSemanticOutput(raw)}catch(e){return{ok:false,error:'semantic-parse-threw',stage:'parse-threw'}}
+}
+function _momentsReasonLabel(code){
+  const core=_momentsSemanticCore();
+  try{return(core&&typeof core.reasonLabel==='function')?core.reasonLabel(code):String(code||'')}catch(e){return String(code||'')}
+}
+/* prompt 里的 JSON 契约与禁推理字段句都取自语义核（唯一真源）。
+   语义核缺席时的兜底串只是**占位**：那种情况下 parser 同样不可用（fail closed），
+   因此这段文字永远不可能变成一条成功发布的路径。 */
+function _momentsOutputSchema(){
+  const core=_momentsSemanticCore();
+  try{if(core&&typeof core.semanticOutputSchema==='function')return core.semanticOutputSchema()}catch(e){}
+  return'{"recommendation":"post|skip","reasonCode":"<闭集>","topicKey":"<话题标识>","draft":{"content":"正文","visibility":"all|user|roles|private","visibleRoleIds":[],"motive":"<闭集>","wantImage":true|false,"imagePrompt":"<画面描述>"}}';
+}
+function _momentsForbiddenFieldsSentence(){
+  const core=_momentsSemanticCore();
+  try{if(core&&typeof core.forbiddenFieldsSentence==='function')return core.forbiddenFieldsSentence()}catch(e){}
+  return'只输出上面这一个 JSON 对象：不要输出任何思考过程或解释文字。';
+}
+/* legacy 形状视图（同一份 parser 的投影；兼容 `includeImage` 旧字段归一由核心完成） */
 function _momentsParseOutput(raw){
-  const j=_activeParsePlanJson(raw);
-  if(!j||typeof j!=='object')return null;
-  if(j.publish===false)return{publish:false,reason:String(j.reason||'').slice(0,200),motive:'none'};/* none 语义强制：不发布=无动机 */
-  if(j.publish!==true)return null;
-  if(!String(j.content||'').trim())return null;
-  /* M1-C.2n：模型输出的档位也走共享核心的写入侧归一。
-     关键区别：模型**没给** visibility → 'all'（产品默认）；模型给了一个
-     **拼错的**档位（"everyone"）→ 'invalid'，读侧永不可见（作者除外）。
-     原实现把两者都兜底成 'all'，等于让"模型写错一个词"直接变成公开。 */
-  const visibility=_momentsWriteVisibility(j.visibility);
-  /* motive 归一：缺失/非法/与 publish:true 矛盾（none）→ daily_life；motive 只是标注，不是发布资格门，不因它拒绝发布 */
-  const motive=(MOMENT_MOTIVES.includes(j.motive)&&j.motive!=='none')?j.motive:'daily_life';
-  /* wantImage 归一：模型对"是否自然适合配图"的建议；false/缺失都不生成图片（由 _momentsImageGate 再过滤） */
-  const wantImage=j.wantImage===true||j.includeImage===true;
-  return{publish:true,content:String(j.content||'').trim().slice(0,2000),visibility:visibility,
-    visibleRoleIds:Array.isArray(j.visibleRoleIds)?j.visibleRoleIds.slice(0,20).map(String):[],
-    wantImage:wantImage,
-    imagePrompt:String(j.imagePrompt||'').trim().slice(0,600),
-    reason:String(j.reason||'').slice(0,200),
-    motive:motive}
+  const core=_momentsSemanticCore();
+  if(!core)return null;
+  try{return core.parseMomentOutputLegacy(raw)}catch(e){return null}
 }
 function _momentsParseCommentOutput(raw){
   const j=_activeParsePlanJson(raw);
@@ -819,15 +968,14 @@ function _momentsDiagnoseOutput(raw){
   const t=s.trim();
   if(!t){info.stage='empty-output';return info}/* 空输出：常见于推理型模型把 maxTokens 耗在思考上，或适配器未取到 content */
   info.preview=t.slice(0,240);
-  const j=_activeParsePlanJson(t);
-  if(!j){
-    if(s.indexOf('{')<0)info.stage='no-json-object';/* 纯自然语言（jsonMode 未生效或模型不遵守） */
-    else info.stage='json-parse-failed';/* 有大括号但截断/畸形 */
-    return info
-  }
-  if(j.publish!==true&&j.publish!==false)info.stage='schema-publish-not-boolean';/* 如 "publish":"true" 字符串 */
-  else if(j.publish===true&&!String(j.content||'').trim())info.stage='schema-empty-content';
-  else info.stage='parsed-but-unexpected';
+  /* P25-2B：stage 由**唯一 parser** 给出（新契约的 stage 与旧契约的 stage 同名同义：
+     empty-output / no-json-object / json-parse-failed / schema-publish-not-boolean / …）。
+     这里只补一个"解析成功却仍被判失败"的兜底分类。 */
+  const parsed=_momentsParseSemantic(t);
+  if(parsed&&parsed.ok===true)info.stage='parsed-but-unexpected';
+  else if(parsed&&parsed.stage)info.stage=String(parsed.stage);
+  else if(s.indexOf('{')<0)info.stage='no-json-object';
+  else info.stage='json-parse-failed';
   return info
 }
 
@@ -891,13 +1039,33 @@ async function _momentsInjectImages(cfg,message,images,note){
   }catch(e){return 0}
 }
 
-/* ══════════ AI 自主发布 ══════════ */
-async function generateRoleMoment(roleId,opts){
+function _momentsSemanticCorrectionNote(diag){
+  const core=_momentsSemanticCore();
+  try{if(core&&typeof core.semanticCorrectionNote==='function')return core.semanticCorrectionNote(diag)}catch(e){}
+  return'\n\n【注意】上次输出不符合要求。请重新输出一个新的 JSON 对象（recommendation / reasonCode / topicKey / draft）。';
+}
+/* ══════════ AI 自主发布 · 语义评估接缝（P25-2B）══════════════
+   一次候选语义评估 = **一次**逻辑模型调用：既有 malformed-correction 与
+   duplicate-rewrite 重试共用 MOMENT_MAX_ATTEMPTS 预算，属于既有 generation
+   failure recovery —— 不是"先问该不该发、再让模型写"的两次调用，
+   也不存在 recommendation model + content model 两个独立语义调用。
+
+   本函数**只评估**：build prompt → 1 次模型调用 → 唯一 parser → 内容级去重
+   → 返回结构化 semantic result。它**不**生图、**不**写库、**不**裁决：
+     createMoment / dbPut / IB.homeNode.moments.put 引用数 = 0（测试静态断言）。
+
+   返回：
+     {ok:true, recommendation:{recommendation,reasonCode,topicKey,topicFingerprint,source},
+      draft:{content,visibility,visibleRoleIds,motive,wantImage,imagePrompt}|null,
+      legacyReason, modelCalls, attempts}
+     {ok:false, error, modelCalls, attempts} */
+async function evaluateRoleMomentSemantic(roleId,opts){
   opts=opts||{};
+  let modelCalls=0,attempts=0;
   try{
     const cfg=_momentsCfg(roleId);
-    if(!cfg)return{ok:false,error:'角色配置不存在'};
-    if(!_ibApiReady(cfg))return{ok:false,error:'角色 API 配置不完整'};
+    if(!cfg)return{ok:false,error:'角色配置不存在',modelCalls:0,attempts:0};
+    if(!_ibApiReady(cfg))return{ok:false,error:'角色 API 配置不完整',modelCalls:0,attempts:0};
     const st=_momentsState()[roleId]||{};
     const context=await _momentsContext(cfg);
     const built=buildMomentPrompt({character:cfg,context:context,trigger:opts.trigger||'schedule',declineStreak:Number(st.declineStreak||0),lastPostAt:Number(st.lastPostAt||0)});
@@ -915,33 +1083,35 @@ async function generateRoleMoment(roleId,opts){
     }
     let raw='',lastError=null,genBudget=MOMENT_GEN_MAX_TOKENS;
     for(let attempt=0;attempt<MOMENT_MAX_ATTEMPTS;attempt++){
+      attempts=attempt+1;
       try{
         raw=await _obsCall('moment',cfg,built.messages,{maxTokens:genBudget,timeoutMs:120000,wantMeta:false,jsonMode:true,_noWebSearch:true,disableTools:true,signal:opts.signal});
+        modelCalls++;
       }catch(e){lastError=e;break}
-      const parsed=_momentsParseOutput(raw);
-      if(!parsed||parsed.publish===false){
-        if(parsed&&parsed.publish===false){
-          /* 模型选择不发布：今天是静默的一天；declineStreak 只累计上下文，绝不强制发布 */
-          _obsRec('post_declined',{actor:roleId,origin:'local',trigger:opts.trigger||'schedule',reason:String(parsed.reason||'').slice(0,60),motive:'none'});
-          _momentsSetState(roleId,{declineStreak:(Number(st.declineStreak||0)||0)+1});
-          console.info('[Moments] '+String(cfg.nickname||cfg.model||'AI')+' 选择不发布：'+(parsed.reason||''));
-          return{ok:true,published:false,reason:String(parsed.reason||'').slice(0,200),motive:'none'}
-        }
+      const parsed=_momentsParseSemantic(raw);
+      if(!parsed.ok){
+        /* malformed：第一次 → 结构化 correction 后重试一次；第二次仍 malformed → 失败（绝不 publish） */
+        const diag=_momentsDiagnoseOutput(raw);
         if(attempt===0){
-          const __diag=_momentsDiagnoseOutput(raw);
-          console.warn('[Moments] output unparseable (retrying):',JSON.stringify(__diag));
+          console.warn('[Moments] output unparseable (retrying):',JSON.stringify(diag));
           lastError=new Error('输出无法解析');
-          if(__diag.stage==='empty-output')genBudget=Math.min(8000,MOMENT_GEN_MAX_TOKENS*2);/* 推理吃满预算 → 提额重试（提示词无法解决 token 耗尽） */
-          _momentsAppendNote(built.messages[built.messages.length-1],'\n\n【注意】上次输出不符合要求。请只输出一个 JSON 对象：{"publish":布尔,"content":"正文","visibility":"all|user|roles|private","visibleRoleIds":[],"motive":"share|daily_life|emotion|reflection|interaction|curiosity|social_response|none","wantImage":布尔,"imagePrompt":"想配图时的画面描述","reason":""}。');
+          if(diag.stage==='empty-output')genBudget=Math.min(8000,MOMENT_GEN_MAX_TOKENS*2);/* 推理吃满预算 → 提额重试（提示词无法解决 token 耗尽） */
+          _momentsAppendNote(built.messages[built.messages.length-1],_momentsSemanticCorrectionNote(diag));
           continue
         }
-        console.warn('[Moments] output unparseable:',JSON.stringify(_momentsDiagnoseOutput(raw)));
+        console.warn('[Moments] output unparseable:',JSON.stringify(diag));
+        lastError=new Error('输出无法解析');
         break
       }
-      const dup=await _momentsDuplicateCheck(roleId,parsed.content);
+      /* recommendation === 'skip'：语义推荐到此为止（不写库、不生图、不占位） */
+      if(parsed.recommendation.recommendation!=='post'){
+        return{ok:true,recommendation:parsed.recommendation,draft:null,legacyReason:parsed.legacyReason||'',modelCalls:modelCalls,attempts:attempts}
+      }
+      /* 内容级重复防线（与语义话题身份互补，不互相替代） */
+      const dup=await _momentsDuplicateCheck(roleId,parsed.draft.content);
       if(dup&&attempt===0){
         _obsRec('dedupe',{kind:'moment',actor:roleId});
-        _momentsAppendNote(built.messages[built.messages.length-1],'\n\n【注意】这条内容与最近发过的东西太相似（「'+String(dup.content||'').slice(0,40)+'」），请换一个角度、观察或情绪，完全重新写。');
+        _momentsAppendNote(built.messages[built.messages.length-1],'\n\n【注意】这条内容与最近发过的东西太相似（「'+String(dup.content||'').slice(0,40)+'」），请换一个角度、观察或情绪，完全重新写；**话题没变时 topicKey 必须保持原样**，只有真的换了话题才改它。');
         continue
       }
       if(dup){
@@ -949,20 +1119,164 @@ async function generateRoleMoment(roleId,opts){
         lastError=new Error('与最近发布内容过于相似');
         break
       }
-      /* 图文增强：wantImage 只是模型建议；能力/概率允许 → 独立 Image Provider 生图+压缩；失败保留纯文字（图片非硬依赖）。
-         opts.forceImage=true 仅测试/手动调用时绕过概率门与 wantImage 判断；
-         opts.noImage=true 则完全跳过配图（纯文字手动发布）。 */
-      const images=(opts.noImage===true)?[]:await _momentsMakeImage(cfg,parsed,opts.forceImage===true,
+      return{ok:true,recommendation:parsed.recommendation,draft:parsed.draft,modelCalls:modelCalls,attempts:attempts}
+    }
+    return{ok:false,error:lastError?String(lastError.message||lastError).slice(0,200):'生成失败',modelCalls:modelCalls,attempts:attempts}
+  }catch(e){console.warn('[Moments] semantic evaluation failed',String(e&&e.message||e).slice(0,200));return{ok:false,error:String(e&&e.message||e).slice(0,200),modelCalls:modelCalls,attempts:attempts}}
+}
+
+/* ── P25-2C · autonomy adapter 解析（生产接线）──────────────────────────
+   2A/2B 期间 adapter 不被任何生产文件引用；本阶段起 autonomous 路径**必须**经它裁决。
+   adapter 由 InternalBeyond.html 在 chat-core / voice-message-core / autonomy-core /
+   语义核之后加载；缺席 ⇒ 返回 null ⇒ 调用方 fail closed（不发布，绝不绕过）。 */
+function _momentsAutonomyAdapter(){
+  try{
+    const a=(typeof window!=='undefined'&&window.IBMomentsAutonomy)
+      ||(typeof self!=='undefined'&&self.IBMomentsAutonomy)
+      ||(typeof IBMomentsAutonomy!=='undefined'?IBMomentsAutonomy:null);
+    return(a&&typeof a.runMomentAutonomy==='function'&&typeof a.finalizeMomentCandidate==='function')?a:null;
+  }catch(e){return null}
+}
+/* ── Candidate Seed（scheduler 唯一产出物）──────────────────────────────
+   scheduler 只回答"什么时候产生候选"：它不生成 candidateId、不读 recommendation、
+   不判断 publish、不调用 createMoment。
+
+   triggerRef 必须**确定性**（禁 Date.now / Math.random）：
+     · schedule → 'schedule:<本次调度槽位>'（槽位来自既有 nextAt 状态）——
+       因此同一槽位的重试得到同一个 candidate ⇒ 幂等，scheduler 重试不会双发；
+     · 其它触发 → 调用方显式给的 ref，否则退回状态水位（lastPostAt + 槽位）。 */
+function buildMomentCandidateSeed(roleId,opts){
+  opts=opts||{};
+  try{
+    const st=_momentsState()[roleId]||{};
+    const kind=String(opts.trigger||'schedule');
+    const slot=Number(opts.slotAt||st.nextAt||0)||0;
+    const explicit=String(opts.triggerRef||'').trim();
+    const ref=explicit||(kind==='schedule'?('schedule:'+slot):(kind+':'+String(Number(st.lastPostAt||0)||0)+':'+slot));
+    return{actorId:String(roleId),source:(kind==='manual'||opts.source==='character')?'character':'schedule',triggerRef:ref};
+  }catch(e){return null}
+}
+/* ── Executor 的写入桥（**只有 ALLOW 之后才可能被调用**）──────────────────
+   P25-2C §12：图片生成时机整体后移到 Autonomy 之后 —— skip / DENY / DEFER
+   一条都不生图。executor 不重新判断 recommendation / policy / cooldown（那是
+   adapter + Core 的职责），它只把**已授权**的动作变成一次真实写入。 */
+async function _momentsWriteApprovedMoment(cfg,opts,payload,options,draft,counters){
+  let images=[];
+  if(draft&&opts.noImage!==true){
+    try{
+      counters.imageCalls=(Number(counters.imageCalls)||0)+1;
+      images=await _momentsMakeImage(cfg,draft,opts.forceImage===true,
         (opts.trigger==='manual')
           ?{source:'moments',userInitiated:true,background:false}   /* 用户手动发布 → P1 */
           :{source:'ai_moments',userInitiated:false,background:true}/* AI 自主发布 → P3 */);
-      const res=await createMoment({roleId:roleId,content:parsed.content,images:images,visibility:parsed.visibility,visibleRoleIds:parsed.visibleRoleIds,source:'proactive',motive:parsed.motive});
-      if(!res.ok)return res;
-      _obsRec('post',{actor:roleId,origin:'local',vis:parsed.visibility,trigger:opts.trigger||'schedule',motive:parsed.motive,wantImage:parsed.wantImage===true,imageGenerated:(images&&images.length>0)});
-      _momentsSetState(roleId,{lastPostAt:Date.now(),declineStreak:0});/* 发布成功 → 连续未发归零 */
-      return{ok:true,published:true,moment:res.moment,imageAttempted:parsed.wantImage===true,wantImage:parsed.wantImage===true,imageGenerated:(images&&images.length>0),motive:parsed.motive}
+    }catch(e){images=[]}/* 图片失败绝不拖垮发文（既有降级：保留纯文字） */
+  }
+  const data=Object.assign({},payload,{images:Array.isArray(images)?images:[]});
+  return createMoment(data,options);/* ← 唯一创建权威；options 带稳定 id / requestId / presentation */
+}
+/* ── Autonomous 发布管线（scheduler 与 legacy 触发共用）──────────────────
+   Seed → Semantic（一次模型调用）→ Finalize → Autonomy Core
+        → ALLOW → 图片 → Executor → createMoment
+   DENY / DEFER / skip ⇒ 到此为止：零图片、零写入。 */
+async function _momentsRunAutonomousPost(roleId,opts){
+  opts=opts||{};
+  const cfg=_momentsCfg(roleId);
+  if(!cfg)return{ok:false,error:'角色配置不存在',modelCalls:0};
+  const seed=buildMomentCandidateSeed(roleId,opts);
+  if(!seed)return{ok:false,error:'候选种子生成失败',modelCalls:0};
+  const sem=await evaluateRoleMomentSemantic(roleId,opts);
+  const modelCalls=Number(sem.modelCalls||0);
+  if(!sem.ok)return{ok:false,error:String(sem.error||'生成失败').slice(0,200),modelCalls:modelCalls,candidateSeed:seed};
+  const core=_momentsSemanticCore();
+  const rec=(core&&typeof core.toAdapterRecommendation==='function')?core.toAdapterRecommendation(sem):null;
+  if(!rec)return{ok:false,error:'语义结果投影失败',modelCalls:modelCalls,candidateSeed:seed};
+  const adapter=_momentsAutonomyAdapter();
+  if(!adapter)return{ok:false,error:'autonomy-adapter-missing',modelCalls:modelCalls,candidateSeed:seed};
+  const finalized=adapter.finalizeMomentCandidate(seed,rec);
+  const base={modelCalls:modelCalls,candidateSeed:seed,draft:sem.draft||null,legacyReason:sem.legacyReason||'',
+    reasonCode:String(rec.reasonCode||''),topicFingerprint:String(rec.topicFingerprint||''),recommendation:String(rec.recommendation||'')};
+  if(!finalized.ok){
+    /* 语义 skip 且没有话题身份 ⇒ 没有候选：skip 本身就是决定性结论（零写、零图片） */
+    if(rec.recommendation==='skip'){
+      return Object.assign({},base,{ok:true,published:false,decision:'deny',reason:'recommendation-skip',imageCalls:0,moment:null,candidateId:''})
     }
-    return{ok:false,error:lastError?String(lastError.message||lastError).slice(0,200):'生成失败'}
+    return Object.assign({},base,{ok:false,error:'候选身份生成失败：'+String((finalized.errors||[]).join(',')||'').slice(0,120)})
+  }
+  const draft=sem.draft||null;
+  const counters={imageCalls:0};
+  /* 频率/冷却**完全沿用既有规则**：只有调度路径受最短间隔约束（tick 本来就先做这道门），
+     手动触发（用户点「让 TA 发一条」）在迁移前没有冷却，迁移后也不能凭空多一道 ——
+     否则就是 §10 禁止的"trigger 次数变化"。 */
+  const scheduled=(String(opts.trigger||'schedule')==='schedule');
+  const deps={
+    /* 真实 policy 依赖（不复制 policy：adapter 继续提供 ctx.decide / cooldown / duplicate） */
+    now:Date.now(),/* 注入时钟：只用于 duplicate/cooldown 窗口判定，**绝不**用于候选身份 */
+    readPrefs:_momentsPrefs,
+    prefs:_momentsPrefs(),
+    readLastPostAt:scheduled?(()=>{const s=(_momentsState()[roleId]||{});return Number(s.lastPostAt||0)||null}):(()=>null),
+    cooldownMs:scheduled?MOMENT_MIN_INTERVAL:0,/* 复用既有最短间隔常量，不新增第二套 cooldown */
+    readRecentOwnMoments:(id,limit)=>_momentsRecentOwn(id,limit),
+    recommendation:rec,
+    visibility:draft?draft.visibility:'all',
+    visibleRoleIds:draft?draft.visibleRoleIds:[],
+    motive:draft?draft.motive:'',
+    images:[],
+    writeMoment:(payload,options)=>_momentsWriteApprovedMoment(cfg,opts,payload,options,draft,counters)
+  };
+  if(opts.presentation===false)deps.presentation=false;
+  /* 策略加严接缝：调用方（测试 / 未来的 quiet-hours 之类）可以把额外裁决交给 adapter，
+     由 Core 统一记 trace —— 管线本身不解释它。 */
+  if(typeof opts.extraPolicy==='function')deps.extraPolicy=opts.extraPolicy;
+  const run=await adapter.runMomentAutonomy(finalized.candidate,deps);
+  const published=run.written===true;
+  /* 决策语义：ALLOW/ DENY / DEFER 都是**已完成**的裁决（ok:true，只是没写）；
+     只有"已授权但执行失败"才是 ok:false。这样调用方不需要猜"没发是因为不允许，还是因为出错"。 */
+  const decided=String(run.decision)==='allow';
+  return Object.assign({},base,{
+    ok:decided?(run.ok===true):true,published:published,decision:String(run.decision||''),reason:String(run.reason||''),
+    executed:run.executed===true,idempotent:run.idempotent===true,moment:run.moment||null,
+    momentId:String(run.momentId||''),candidateId:String(run.candidateId||''),
+    imageCalls:counters.imageCalls,persistence:run.persistence||null,
+    coreReason:String(run.coreReason||''),errors:Array.isArray(run.errors)?run.errors.slice(0,4):[],
+    error:(decided&&run.ok!==true)?String(run.error||run.reason||'执行失败'):''
+  });
+}
+/* ══════════ AI 自主发布（LEGACY WRAPPER · P25-2C 已完成接线）══════════════
+   P25-2C 之后 `generateRoleMoment` **不再是 permission authority**：它只做三件事 ——
+   构造 Candidate Seed、调用 autonomous 管线、把结果翻译回旧的调用约定
+   （返回值 / 观测 / 状态）。发布权限在 Moments Autonomy Adapter + P25 Autonomy Core；
+   写入在 executor（`_momentsWriteApprovedMoment` → `createMoment`）。
+
+   保留它的唯一理由：scheduler 与既有调用方（UI「让 TA 发一条」/ 测试）仍用它。 */
+async function generateRoleMoment(roleId,opts){
+  opts=opts||{};
+  try{
+    const cfg=_momentsCfg(roleId);
+    if(!cfg)return{ok:false,error:'角色配置不存在'};
+    const st=_momentsState()[roleId]||{};
+    const r=await _momentsRunAutonomousPost(roleId,opts);
+    if(!r.ok)return{ok:false,error:String(r.error||'生成失败').slice(0,200)};
+    if(r.published!==true){
+      const semanticSkip=(r.reason==='recommendation-skip');
+      /* 语义 skip 与 policy DENY/DEFER 语义不同：前者是"角色不想发"（declineStreak+1），
+         后者是"这次不允许/推迟"（declineStreak 不动，也不生成图片、不写库）。 */
+      if(semanticSkip){
+        /* legacy 原始理由只用于旧 UI 文案；绝不进 candidate / action / Moment / trace */
+        const label=String(r.legacyReason||_momentsReasonLabel(r.reasonCode)).slice(0,200);
+        _obsRec('post_declined',{actor:roleId,origin:'local',trigger:opts.trigger||'schedule',reason:String(r.reasonCode||'').slice(0,60),reasonCode:r.reasonCode||'',topicFingerprint:r.topicFingerprint||'',decision:r.decision||'deny',motive:'none'});
+        _momentsSetState(roleId,{declineStreak:(Number(st.declineStreak||0)||0)+1});
+        console.info('[Moments] '+String(cfg.nickname||cfg.model||'AI')+' 选择不发布：'+label);
+        return{ok:true,published:false,reason:label,motive:'none',reasonCode:r.reasonCode||'',topicFingerprint:r.topicFingerprint||'',decision:r.decision||'deny'}
+      }
+      _obsRec('post_blocked',{actor:roleId,origin:'local',trigger:opts.trigger||'schedule',reason:String(r.reason||'').slice(0,60),reasonCode:r.reasonCode||'',topicFingerprint:r.topicFingerprint||'',decision:r.decision||'deny'});
+      console.info('[Moments] '+String(cfg.nickname||cfg.model||'AI')+' 本次未发布（'+String(r.reason||r.decision||'deny')+'）');
+      return{ok:true,published:false,reason:String(r.reason||r.decision||'deny'),motive:'none',reasonCode:r.reasonCode||'',topicFingerprint:r.topicFingerprint||'',decision:r.decision||'deny'}
+    }
+    const draft=r.draft||{};
+    const images=(r.moment&&Array.isArray(r.moment.images))?r.moment.images:[];
+    _obsRec('post',{actor:roleId,origin:'local',vis:draft.visibility,trigger:opts.trigger||'schedule',motive:draft.motive,wantImage:draft.wantImage===true,imageGenerated:images.length>0,reasonCode:r.reasonCode||'',topicFingerprint:r.topicFingerprint||''});
+    _momentsSetState(roleId,{lastPostAt:Date.now(),declineStreak:0});/* 发布成功 → 连续未发归零 */
+    return{ok:true,published:true,moment:r.moment,imageAttempted:draft.wantImage===true,wantImage:draft.wantImage===true,imageGenerated:images.length>0,motive:draft.motive,reasonCode:r.reasonCode||'',topicFingerprint:r.topicFingerprint||'',candidateId:r.candidateId||'',idempotent:r.idempotent===true}
   }catch(e){console.warn('[Moments] generate failed',String(e&&e.message||e).slice(0,200));return{ok:false,error:String(e&&e.message||e).slice(0,200)}}
 }
 
@@ -1734,6 +2048,53 @@ async function _momentsSyncCompanion(){
   }catch(e){console.warn('[Moments] companion sync failed',String(e&&e.message||e).slice(0,200));return false}
 }
 /* 事件回传落库（按 moment id 幂等；companion 已执行 → 本地 nextAt 同步避免补发） */
+/* ── P25-2D · companion 事件 → semantic result ─────────────────────────
+   事件**不是许可**。这里只把事件翻译成与桌面端**同一形状**的 semantic result：
+     · 新 envelope（带 recommendation / reason_code / topic_key / draft）→ 直接过
+       **同一个 parser**（闭集 / 禁推理字段 / 上限 / draft 契约都在那一处校验），
+       事件没有"绕过 parser"的口子；
+     · 旧 envelope（只有 moment/content/visibility/motive/want_image）→ 走同一 parser 的
+       **legacy 兼容投影**：`publish` 形态只变成 recommendation:'post'，绝不变成许可。
+   两种形态都必须再经 finalize → runMomentAutonomy 才可能写入。 */
+function _momentsCompanionSemantic(ev,moment){
+  const core=_momentsSemanticCore();
+  if(!core||!moment)return null;
+  const hasStructured=!!(ev&&ev.recommendation!==undefined&&ev.recommendation!==null&&ev.recommendation!=='');
+  let payload;
+  if(hasStructured){
+    const d=(ev.draft&&typeof ev.draft==='object')?ev.draft:moment;
+    payload={
+      recommendation:ev.recommendation,
+      reasonCode:(ev.reason_code!==undefined?ev.reason_code:ev.reasonCode),
+      topicKey:(ev.topic_key!==undefined?ev.topic_key:ev.topicKey),
+      draft:{
+        content:d.content,visibility:d.visibility,visibleRoleIds:d.visibleRoleIds,motive:d.motive,
+        wantImage:(d.wantImage===true||d.want_image===true||d.includeImage===true),
+        imagePrompt:(d.imagePrompt||d.image_prompt||'')
+      }
+    };
+  }else{
+    payload={publish:true,content:moment.content,visibility:moment.visibility,visibleRoleIds:moment.visibleRoleIds,motive:moment.motive,
+      wantImage:(ev.want_image===true||ev.wantImage===true||moment.wantImage===true),
+      imagePrompt:String(ev.image_prompt||ev.imagePrompt||moment.imagePrompt||'')};
+  }
+  try{return _momentsParseSemantic(JSON.stringify(payload))}catch(e){return null}
+}
+/* companion 事件的 executor 侧写入桥：图片在 **ALLOW 之后**才生成（与桌面路径同一时序），
+   然后交给**唯一**创建权威 createMoment（稳定 Moment id 与 requestId 由 adapter 给出）。 */
+async function _momentsWriteCompanionMoment(sourceMoment,draft,payload,options,counters){
+  let images=[];
+  if(draft&&draft.wantImage===true&&draft.imagePrompt){
+    try{
+      counters.imageCalls=(Number(counters.imageCalls)||0)+1;
+      const imgCfg=_momentsCfg(String(payload.roleId||''));
+      if(imgCfg&&imgCfg.imageGen===true)images=await _momentsMakeImage(imgCfg,{content:draft.content,wantImage:true,imagePrompt:draft.imagePrompt},false,{source:'ai_moments',userInitiated:false,background:true});
+    }catch(e){_obsRec('image_generation_failed',{actor:String(payload.roleId||''),reason_class:String(e&&e.message||e).slice(0,60)})}
+  }
+  const data=Object.assign({},payload,{images:Array.isArray(images)?images:[],
+    createdAt:(sourceMoment&&sourceMoment.createdAt)||new Date().toISOString()});
+  return createMoment(data,options);
+}
 async function _momentsIngestEvent(ev,userId){
   try{
     /* ── 后台楼主删评（v7.5）：companion 删除了线程评论 → 同步删除浏览器动态里对应评论（按 comment id 幂等） ── */
@@ -1741,10 +2102,22 @@ async function _momentsIngestEvent(ev,userId){
       const mid=String(ev.moment_id||'');const cid=String(ev.comment_id||'');
       if(!mid||!cid)return false;
       const existing=await getMoment(mid);if(!existing)return false;
-      const had=(existing.comments||[]).some(x=>String(x.id)===String(cid));
-      if(!had){if(userId)await _activeCompanionRequest('/events/'+encodeURIComponent(ev.id)+'/ack',{method:'POST',body:{user_id:userId}}).catch(()=>{});return false;}
-      existing.comments=existing.comments.filter(x=>String(x.id)!==String(cid));
-      await dbPut(MOMENT_STORE,existing);
+      const c=(existing.comments||[]).find(x=>String(x.id)===String(cid));
+      if(!c){if(userId)await _activeCompanionRequest('/events/'+encodeURIComponent(ev.id)+'/ack',{method:'POST',body:{user_id:userId}}).catch(()=>{});return false;}
+      /* P25-2.5：companion 的删评也是 mutation —— 必须经 Mutation Authority。
+         事件自带 role_id/character_id（删评的执行者=楼主），据此裁决：角色只能删自己动态下别人的评论。 */
+      const actorId=String(ev.role_id||ev.character_id||'');
+      const run=await _momentsRunMutation(
+        {mutationType:'comment.delete',actorId:actorId,actorKind:'role',source:'companion',targetMomentId:mid,targetCommentId:cid},
+        _momentsMutationFacts(existing,{actorId:actorId,isUserActor:false,comment:c}),
+        async()=>{existing.comments=existing.comments.filter(x=>String(x.id)!==String(cid));await dbPut(MOMENT_STORE,existing);return{ok:true}}
+      );
+      if(!run.executed){
+        _obsRec('post_blocked',{actor:actorId,origin:'companion',reason:String(run.reason||'mutation-denied').slice(0,60),mutationType:'comment.delete',momentId:mid});
+        if(userId)await _activeCompanionRequest('/events/'+encodeURIComponent(ev.id)+'/ack',{method:'POST',body:{user_id:userId}}).catch(()=>{});
+        return false
+      }
+      if(!run.ok){console.warn('[Moments] companion comment delete failed',String(run.error||'').slice(0,120))}
       try{if(currentPage==='moments')loadMomentsPage()}catch(e){}
       if(userId)await _activeCompanionRequest('/events/'+encodeURIComponent(ev.id)+'/ack',{method:'POST',body:{user_id:userId}}).catch(()=>{});
       return true;
@@ -1761,8 +2134,22 @@ async function _momentsIngestEvent(ev,userId){
         return false;
       }
       const c={id:String(comment.id),authorType:comment.authorType==='role'?'role':'user',authorId:String(comment.authorId||'user'),content:String(comment.content||'').slice(0,600),replyTo:String(comment.replyTo||'').slice(0,80),createdAt:comment.createdAt||new Date().toISOString()};
-      existing.comments=(existing.comments||[]).concat([c]);
-      await dbPut(MOMENT_STORE,existing);
+      /* P25-2.5：companion 的后台回复也是 mutation（reply.create）—— 先裁决再写。
+         角色主体必须对该动态可见；replyTo 显式给出时被回复的评论必须已存在。 */
+      const isRole=(c.authorType==='role');
+      const run=await _momentsRunMutation(
+        {mutationType:'reply.create',actorId:c.authorId,actorKind:(isRole?'role':'user'),source:'companion',targetMomentId:mid,targetCommentId:c.replyTo||'',context:{content:c.content}},
+        _momentsMutationFacts(existing,{actorId:c.authorId,isUserActor:!isRole,
+          commentExists:(existing.comments||[]).some(x=>String(x.id)===String(c.replyTo||'')),
+          comment:(existing.comments||[]).find(x=>String(x.id)===String(c.replyTo||''))||null,
+          canSeeMoment:(isRole?_momentsVisibleToRole(existing,c.authorId):true)}),
+        async()=>{existing.comments=(existing.comments||[]).concat([c]);await dbPut(MOMENT_STORE,existing);return{ok:true,comment:c}}
+      );
+      if(!run.executed){
+        _obsRec('post_blocked',{actor:c.authorId,origin:'companion',reason:String(run.reason||'mutation-denied').slice(0,60),mutationType:'reply.create',momentId:mid});
+        if(userId)await _activeCompanionRequest('/events/'+encodeURIComponent(ev.id)+'/ack',{method:'POST',body:{user_id:userId}}).catch(()=>{});
+        return false
+      }
       /* 观测：后台回复成功统一在 ingest 入账（companion 侧只记失败/拒绝，避免双计） */
       try{
         const byId={};(existing.comments||[]).forEach(function(x){byId[x.id]=x});
@@ -1774,38 +2161,89 @@ async function _momentsIngestEvent(ev,userId){
       return true;
     }
     const moment=ev&&ev.moment||null;
-    if(!moment||!moment.id||moment.roleId===_activeUserId())return false;
-    if(await getMoment(moment.id))return false;/* 幂等：重复事件/双标签不重复入库 */
-    /* ── Phase 4 图文增强（companion 不生成图片：只携带 wantImage/imagePrompt，图片由浏览器 Image Provider 生成）──
-       数据流：Event(want_image/image_prompt) → 本函数 → _momentsMakeImage(cfg) → 与文字一次性入库（原子）；
-       图片失败/能力不可用/概率门未过 → 纯文字 Moment 照常发布（图片是增强，不是硬依赖）；
-       imagePrompt 只作内部生成参数，不写入公开 Moment 数据（_momentsDefaults 会剥离）。 */
-    const wantImage=ev.want_image===true||ev.wantImage===true||moment.wantImage===true;
-    const imagePrompt=String(ev.image_prompt||ev.imagePrompt||moment.imagePrompt||'').trim().slice(0,600);
-    let images=[];
-    if(wantImage&&imagePrompt){
-      try{
-        const imgCfg=_momentsCfg(moment.roleId);/* 独立 Image Provider 配置随角色 API Config（imageGen/imageGenModel），与文字模型解耦 */
-        if(imgCfg&&imgCfg.imageGen===true){images=await _momentsMakeImage(imgCfg,Object.assign({},moment,{wantImage:true,imagePrompt:imagePrompt}),false,{source:'ai_moments',userInitiated:false,background:true})}
-      }catch(e){/* 任何图片异常都不影响 Moment 发布 */
-        _obsRec('image_generation_failed',{actor:moment.roleId,reason_class:String(e&&e.message||e).slice(0,60)});
-      }
+    const roleId=String((moment&&moment.roleId)||(ev&&(ev.actor_id||ev.character_id))||'');
+    if(!moment||!roleId||roleId===_activeUserId())return false;
+    const ack=async()=>{if(userId)await _activeCompanionRequest('/events/'+encodeURIComponent(ev.id)+'/ack',{method:'POST',body:{user_id:userId}}).catch(()=>{})};
+    /* ① 事件 → semantic result（**不是许可**；畸形/未知词/禁字段 ⇒ 消费但不写） */
+    const semantic=_momentsCompanionSemantic(ev,moment);
+    if(!semantic||semantic.ok!==true){
+      _obsRec('post_blocked',{actor:roleId,origin:'companion',reason:'invalid-semantic-event'});
+      await ack();
+      return false
     }
-    const m=_momentsDefaults(Object.assign({},moment,{images:images}));
-    await dbPut(MOMENT_STORE,m);
-    _obsRec('post',{actor:m.roleId,origin:'companion',vis:m.visibility,motive:String(m.motive||''),wantImage:wantImage===true,imageGenerated:(images&&images.length>0)});
-    _momentsSetState(m.roleId,{
-      nextAt:Number(ev.next_at)||Date.now()+3600000,
-      lastPostAt:Number(ev.last_post_at)||Date.now(),
-      executedAt:ev.sent_at?new Date(ev.sent_at).toISOString():new Date().toISOString(),
-      lastMomentId:m.id,
-      declineStreak:0/* 后台成功发布 → 连续未发归零（计数随事件回合流通） */
-    });
-    _momentsMaybeLike(m);
-    _momentsMaybeComment(m);
-    _momentsMaybeMention(m);/* @ 点名：Companion 后台动态正文含 @ → 被 @ 角色强制评论（与本地路径一致） */
-    if(userId)await _activeCompanionRequest('/events/'+encodeURIComponent(ev.id)+'/ack',{method:'POST',body:{user_id:userId}}).catch(()=>{});
-    return true
+    /* ② 裁决层缺席 ⇒ fail closed：绝不退回"旧路径直接写" */
+    const adapter=_momentsAutonomyAdapter();
+    if(!adapter){
+      _obsRec('post_blocked',{actor:roleId,origin:'companion',reason:'autonomy-adapter-missing'});
+      await ack();
+      return false
+    }
+    /* ③ Candidate Seed：triggerRef 用 companion 的 recurrence 槽位（稳定、可重放；
+       不用 Date.now / Math.random / 事件到达时间） */
+    const slotAt=Number(ev.slot_at||ev.scheduled_for||0)||0;
+    const seed={actorId:roleId,source:'schedule',triggerRef:String(ev.trigger_ref||'').trim()||('companion:'+slotAt)};
+    const core=_momentsSemanticCore();
+    const rec=(core&&typeof core.toAdapterRecommendation==='function')?core.toAdapterRecommendation(semantic):null;
+    if(!rec){
+      _obsRec('post_blocked',{actor:roleId,origin:'companion',reason:'semantic-projection-failed'});
+      await ack();
+      return false
+    }
+    const finalized=adapter.finalizeMomentCandidate(seed,rec);
+    if(!finalized.ok){
+      _obsRec('post_blocked',{actor:roleId,origin:'companion',reason:'candidate-identity-failed'});
+      await ack();
+      return false
+    }
+    const canonicalId=adapter.momentIdForCandidate(finalized.candidate.candidateId);
+    if(canonicalId&&await getMoment(canonicalId)){/* 重放：同一事件/同一候选不重复消耗图片与写入 */
+      await ack();
+      return false
+    }
+    const draft=semantic.draft||{};
+    const counters={imageCalls:0};
+    const deps={
+      now:Date.now(),/* 注入时钟：只用于 duplicate/cooldown 窗口判定，绝不用于身份 */
+      readPrefs:_momentsPrefs,
+      prefs:_momentsPrefs(),
+      readLastPostAt:()=>{const s=(_momentsState()[roleId]||{});return Number(s.lastPostAt||0)||null},
+      cooldownMs:MOMENT_MIN_INTERVAL,/* 与桌面路径同一规则（不新增第二套 cooldown） */
+      readRecentOwnMoments:(id,limit)=>_momentsRecentOwn(id,limit),
+      recommendation:rec,
+      visibility:draft.visibility,visibleRoleIds:draft.visibleRoleIds,motive:draft.motive,images:[],
+      writeMoment:(payload,options)=>_momentsWriteCompanionMoment(moment,draft,payload,options,counters)
+    };
+    const run=await adapter.runMomentAutonomy(finalized.candidate,deps);
+    const written=run.written===true;
+    if(written){
+      _obsRec('post',{actor:roleId,origin:'companion',vis:draft.visibility,motive:String(draft.motive||''),
+        wantImage:draft.wantImage===true,imageGenerated:!!(run.moment&&run.moment.images&&run.moment.images.length),
+        reasonCode:rec.reasonCode,topicFingerprint:rec.topicFingerprint});
+      _momentsSetState(roleId,{
+        nextAt:Number(ev.next_at)||Date.now()+3600000,
+        lastPostAt:Number(ev.last_post_at)||Date.now(),
+        executedAt:ev.sent_at?new Date(ev.sent_at).toISOString():new Date().toISOString(),
+        lastMomentId:String(run.momentId||canonicalId),
+        declineStreak:0/* 后台成功发布 → 连续未发归零（计数随事件回合流通） */
+      });
+      const m=run.moment||null;
+      if(m){
+        _momentsMaybeLike(m);
+        _momentsMaybeComment(m);
+        _momentsMaybeMention(m);/* @ 点名：Companion 后台动态正文含 @ → 被 @ 角色强制评论（与本地路径一致） */
+      }
+    }else{
+      /* DENY / DEFER：本候选到此结束 —— 不写、不生图、不排队、不 setTimeout 重试；
+         只把"这个 slot 已被消费"同步给本地调度状态（lastPostAt 只在**真的写了**时推进）。 */
+      _obsRec('post_blocked',{actor:roleId,origin:'companion',reason:String(run.reason||'').slice(0,60),
+        reasonCode:rec.reasonCode||'',topicFingerprint:rec.topicFingerprint||'',decision:String(run.decision||'deny')});
+      _momentsSetState(roleId,{
+        nextAt:Number(ev.next_at)||Date.now()+3600000,
+        executedAt:ev.sent_at?new Date(ev.sent_at).toISOString():new Date().toISOString()
+      });
+    }
+    await ack();
+    return written
   }catch(e){console.warn('[Moments] ingest failed',String(e&&e.message||e).slice(0,200));return false}
 }
 async function _momentsPullCompanionEvents(){
@@ -2294,6 +2732,15 @@ window._momentsDefaults=_momentsDefaults;
 window._momentsVisibleToUser=_momentsVisibleToUser;
 window._momentsVisibleToRole=_momentsVisibleToRole;
 window.createMoment=createMoment;
+/* P25-2A：canonical 写入路由 + 表现层分离（测试/诊断入口；只有 createMoment /
+   companion ingest 两个**创建**点调用它们，其它模块不得直接调用） */
+window._momentsHomeNodeMoments=_momentsHomeNodeMoments;
+window._momentsWriteCanonical=_momentsWriteCanonical;
+window._momentsPostWriteEffects=_momentsPostWriteEffects;
+/* P25-2.5：Mutation Authority 接缝（创建走 Autonomy，修改走这里） */
+window._momentsMutationAuthority=_momentsMutationAuthority;
+window._momentsMutationFacts=_momentsMutationFacts;
+window._momentsRunMutation=_momentsRunMutation;
 window.getMoments=getMoments;
 window.getRoleMoments=getRoleMoments;
 window.getMoment=getMoment;
@@ -2306,6 +2753,14 @@ window._momentsContext=_momentsContext;
 window.buildMomentPrompt=buildMomentPrompt;
 window.buildMomentCommentPrompt=buildMomentCommentPrompt;
 window._momentsParseOutput=_momentsParseOutput;
+/* P25-2B：语义评估接缝（真实模型调用的那一层）+ 唯一 parser 的两个入口 */
+window._momentsParseSemantic=_momentsParseSemantic;
+window._momentsSemanticCore=_momentsSemanticCore;
+window.evaluateRoleMomentSemantic=evaluateRoleMomentSemantic;
+/* P25-2C：scheduler 只产出 Candidate Seed；autonomous 管线负责其余一切（含裁决） */
+window._momentsAutonomyAdapter=_momentsAutonomyAdapter;
+window.buildMomentCandidateSeed=buildMomentCandidateSeed;
+window._momentsRunAutonomousPost=_momentsRunAutonomousPost;
 /* Runtime Convergence Phase 2：Moments 统一执行接缝（测试/诊断入口；开关见 window.runtimeExecuteEnabled / runtimeMomentsExecuteEnabled） */
 window._obsCall=_obsCall;
 window._momentsModelCall=_momentsModelCall;
@@ -2407,6 +2862,12 @@ NS.expose('moments',{
   _momentsVisibleToUser:_momentsVisibleToUser,
   _momentsVisibleToRole:_momentsVisibleToRole,
   createMoment:createMoment,
+  _momentsHomeNodeMoments:_momentsHomeNodeMoments,
+  _momentsWriteCanonical:_momentsWriteCanonical,
+  _momentsPostWriteEffects:_momentsPostWriteEffects,
+  _momentsMutationAuthority:_momentsMutationAuthority,
+  _momentsMutationFacts:_momentsMutationFacts,
+  _momentsRunMutation:_momentsRunMutation,
   getMoments:getMoments,
   getRoleMoments:getRoleMoments,
   getMoment:getMoment,
@@ -2419,6 +2880,12 @@ NS.expose('moments',{
   buildMomentPrompt:buildMomentPrompt,
   buildMomentCommentPrompt:buildMomentCommentPrompt,
   _momentsParseOutput:_momentsParseOutput,
+  _momentsParseSemantic:_momentsParseSemantic,
+  _momentsSemanticCore:_momentsSemanticCore,
+  evaluateRoleMomentSemantic:evaluateRoleMomentSemantic,
+  _momentsAutonomyAdapter:_momentsAutonomyAdapter,
+  buildMomentCandidateSeed:buildMomentCandidateSeed,
+  _momentsRunAutonomousPost:_momentsRunAutonomousPost,
   _momentsParseCommentOutput:_momentsParseCommentOutput,
   _momentsDuplicateCheck:_momentsDuplicateCheck,
   generateRoleMoment:generateRoleMoment,

@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>InternalBeyond Recovery</title>
+  <style>
+    :root{color-scheme:dark;font:16px/1.5 "Segoe UI",sans-serif;background:#111722;color:#edf2f8;--preview-panel:#1b2532;--preview-rail:#253540;--preview-muted:#aabcc8;--preview-sea:#6bd0ba;--preview-amber:#e6b45c;--preview-line:#40525f}
+    body{max-width:1000px;margin:5vh auto;padding:24px}
+    main{border:1px solid #344256;border-radius:14px;padding:28px;background:var(--preview-panel)}
+    h1{margin:0 0 8px;font-size:1.55rem;letter-spacing:.01em}
+    h2{margin:0;font-size:1.3rem}
+    h3{margin:0 0 8px;font-size:1.05rem}
+    p{margin:0}
+    #status{margin:16px 0;padding:10px 12px;border-left:3px solid var(--preview-sea);background:#111722;color:#d5e2e9;white-space:pre-wrap}
+    #recovery-controls{display:grid;gap:16px;margin:20px 0}
+    #recovery-source-workflow{display:grid;gap:10px}
+    #recovery-controls label{font-weight:600}
+    #recovery-controls input[type="file"],#recovery-controls input[type="text"]{max-width:100%;padding:9px 10px;border:1px solid #52637a;border-radius:5px;background:#111722;color:inherit}
+    #recovery-controls input[type="checkbox"]{accent-color:var(--preview-sea)}
+    #recovery-controls button{justify-self:start;padding:9px 14px;border:1px solid #52637a;border-radius:5px;background:#263448;color:inherit;font:inherit;cursor:pointer}
+    #recovery-controls button:disabled{opacity:.45;cursor:not-allowed}
+    #composite-summary{display:grid;gap:9px;margin:0;padding:14px;border-left:3px solid var(--preview-amber);background:#151e2a}
+    #composite-summary dt{color:var(--preview-muted);font-size:.88rem}
+    #composite-summary dd{margin:2px 0 0;overflow-wrap:anywhere}
+    #composite-summary code,#recovery-details code,.preview-hash{font: .82rem/1.5 ui-monospace,Consolas,monospace;overflow-wrap:anywhere}
+    .recovery-note{margin:0;color:var(--preview-muted);font-size:.92rem}
+    #technical-plan-details{border-top:1px solid var(--preview-line);padding-top:10px;color:var(--preview-muted)}
+    #technical-plan-details summary{cursor:pointer}
+    #recovery-details{max-height:300px;overflow:auto;white-space:pre-wrap;background:#111722;padding:12px;border-radius:5px;overflow-wrap:anywhere;color:#d5e2e9}
+    #recovery-preview{display:grid;gap:20px}
+    #recovery-preview[hidden],#recovery-source-workflow[hidden],#technical-plan-details[hidden]{display:none}
+    html[data-c35-dry-run-only="true"] #production-approval-controls,html[data-c35-dry-run-only="true"] #enter-native-approval{display:none!important}
+    html[data-c35-dry-run-only="true"] #status,html[data-c35-dry-run-only="true"] #recovery-controls,html[data-c35-dry-run-only="true"] #preview-confirmation{display:none!important}
+    .preview-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;border-left:4px solid var(--preview-sea);padding:2px 0 2px 16px}
+    .preview-heading p{margin-top:4px;color:var(--preview-muted)}
+    .preview-readonly{flex:none;padding:4px 9px;border:1px solid #4c988b;border-radius:3px;color:var(--preview-sea);font-size:.84rem}
+    .preview-summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0;border-top:1px solid var(--preview-line);border-bottom:1px solid var(--preview-line)}
+    .preview-summary div{min-width:0;padding:12px 14px 12px 0}
+    .preview-summary div+div{padding-left:0;border-left:0}
+    .preview-summary div:nth-child(-n+3){grid-column:1/-1;border-bottom:1px solid var(--preview-line)}
+    .preview-summary dt{color:var(--preview-muted);font-size:.82rem}
+    .preview-summary dd{margin:4px 0 0;overflow-wrap:anywhere;font-weight:600}
+    .preview-summary code{display:block;font: .78rem/1.45 ui-monospace,Consolas,monospace;overflow-wrap:anywhere}
+    .preview-source-files{display:flex;flex-wrap:wrap;gap:6px 18px;padding:0;margin:0;list-style:none;color:var(--preview-muted);font-size:.88rem}
+    .preview-ledger-wrap{overflow-x:auto}
+    .preview-ledger{width:100%;border-collapse:collapse;text-align:left;min-width:680px}
+    .preview-ledger th{padding:8px 10px;border-bottom:1px solid var(--preview-line);color:var(--preview-muted);font-size:.84rem;font-weight:600}
+    .preview-ledger td{padding:10px;border-bottom:1px solid #344652;vertical-align:top}
+    .preview-ledger td:first-child{font-family:ui-monospace,Consolas,monospace;font-size:.88rem}
+    .preview-ledger .preview-count{font-variant-numeric:tabular-nums;font-weight:700}
+    .preview-bound{color:var(--preview-sea);white-space:nowrap;font-size:.88rem}
+    .preview-lineage{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:16px;padding:18px 20px;background:#151e2a;border-left:4px solid var(--preview-sea)}
+    .preview-lineage-item span{display:block;color:var(--preview-muted);font-size:.85rem}
+    .preview-lineage-item code{display:block;margin-top:4px;overflow-wrap:anywhere;font:600 .95rem/1.45 ui-monospace,Consolas,monospace}
+    .preview-lineage-arrow{color:var(--preview-sea);font-size:1.35rem}
+    .preview-authority{margin-top:8px;color:var(--preview-sea);font: .82rem/1.5 ui-monospace,Consolas,monospace;overflow-wrap:anywhere}
+    .preview-boundaries{display:grid;grid-template-columns:1fr 1fr;gap:22px;padding-top:14px;border-top:1px solid var(--preview-line)}
+    .preview-boundaries ul{margin:8px 0 0;padding-left:20px;color:#d5e2e9}
+    .preview-boundaries li{margin:3px 0}
+    .preview-included{color:var(--preview-sea)}
+    .preview-excluded{color:#f0c77d}
+    #preview-confirmation{padding:16px 18px;border:1px solid #9a7440;border-left:4px solid var(--preview-amber);background:#211f1a}
+    #preview-confirmation>p{color:#d6c8ad;margin-bottom:12px}
+    .preview-checks{display:grid;gap:8px;margin:12px 0}
+    .preview-checks label{display:flex;align-items:flex-start;gap:9px;font-weight:400!important;color:#e8e1d5}
+    .preview-checks input{margin-top:5px}
+    #preview-confirmation>label[for="final-restore-confirmation"]{display:block;margin-top:14px}
+    #final-restore-confirmation{display:block;width:min(100%,360px);margin-top:6px}
+    #enter-native-approval{margin-top:12px;border-color:var(--preview-amber)!important;background:#473a25!important}
+    #final-confirmation-status{margin-top:10px;color:var(--preview-sea);font-size:.9rem}
+    #production-approval-controls{display:grid;gap:10px;padding-top:18px;border-top:1px solid var(--preview-line)}
+    #production-approval-controls[hidden]{display:none}
+    :focus-visible{outline:2px solid var(--preview-amber);outline-offset:3px}
+    @media(max-width:760px){body{margin:0 auto;padding:12px}main{padding:18px}.preview-lineage{grid-template-columns:1fr;gap:6px}.preview-lineage-arrow{transform:rotate(90deg);transform-origin:left center;height:20px}.preview-boundaries{grid-template-columns:1fr}}
+    @media(max-width:420px){.preview-heading{display:grid}.preview-readonly{justify-self:start}.preview-summary{grid-template-columns:1fr 1fr}}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>InternalBeyond Recovery</h1>
+    <p>Recovery-only host mode. Normal application services are disabled.</p>
+    <p id="status" role="status">Checking recovery mode…</p>
+    <section id="recovery-controls" aria-label="Recovery workflow">
+      <div id="recovery-source-workflow">
+        <p>为组合恢复同时选择三份已批准的 JSON 来源。页面不会自动打开来源；计划固定且不可编辑。</p>
+        <label for="composite-files">组合恢复来源（一次选择三份文件）</label>
+        <input id="composite-files" type="file" accept=".json,application/json" multiple>
+        <p class="recovery-note">包括 2026-09-02 主 checkpoint、2026-09-03 角色 metadata、2026-08-27 memory。来源名、大小和 SHA-256 必须匹配冻结清单。</p>
+        <button id="validate-composite" type="button" disabled>验证来源并冻结组合计划</button>
+        <dl id="composite-summary" aria-live="polite" hidden></dl>
+        <button id="dry-run" type="button" disabled>对 canonical production target 执行只读 dry-run</button>
+        <p id="write-boundary" class="recovery-note">全局 apply 默认关闭。恢复只会在精确 plan ID/hash、最终确认与原生一次性审批后进入独立执行步骤。</p>
+      </div>
+
+      <details id="technical-plan-details" hidden>
+        <summary>技术计划详情</summary>
+        <pre id="recovery-details" aria-live="polite"></pre>
+      </details>
+
+      <section id="recovery-preview" aria-labelledby="recovery-preview-title" hidden>
+        <header class="preview-heading">
+          <div>
+            <h2 id="recovery-preview-title">恢复预览</h2>
+            <p>只读核对。此页面尚未创建 checkpoint，也没有写入生产数据。</p>
+          </div>
+          <span class="preview-readonly">Read-only</span>
+        </header>
+
+        <dl class="preview-summary" aria-label="Restore summary">
+          <div><dt>Plan ID</dt><dd><code id="preview-plan-id"></code></dd></div>
+          <div><dt>Plan SHA-256</dt><dd><code id="preview-plan-hash"></code></dd></div>
+          <div><dt>Target Snapshot SHA-256</dt><dd><code id="preview-target-snapshot-hash"></code></dd></div>
+          <div><dt>Source records</dt><dd id="preview-source-count"></dd></div>
+          <div><dt>Provenance records</dt><dd><span id="preview-provenance-count"></span> · <span id="preview-provenance-state"></span></dd></div>
+        </dl>
+        <ul id="preview-source-files" class="preview-source-files" aria-label="Verified recovery sources"></ul>
+
+        <section aria-labelledby="preview-domains-title">
+          <h3 id="preview-domains-title">各域恢复计划</h3>
+          <div class="preview-ledger-wrap">
+            <table class="preview-ledger">
+              <thead><tr><th scope="col">Domain</th><th scope="col">Planned restore</th><th scope="col">Source</th><th scope="col">Provenance</th></tr></thead>
+              <tbody id="preview-domain-rows"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section aria-labelledby="preview-identity-title">
+          <h3 id="preview-identity-title">Identity succession preview</h3>
+          <div class="preview-lineage">
+            <div class="preview-lineage-item"><span>OLD identity</span><code id="preview-identity-old"></code></div>
+            <div class="preview-lineage-arrow" aria-hidden="true">↓</div>
+            <div class="preview-lineage-item"><span>NEW identity</span><code id="preview-identity-new"></code></div>
+          </div>
+          <p id="preview-identity-authority" class="preview-authority"></p>
+          <p id="preview-identity-explanation" class="recovery-note"></p>
+        </section>
+
+        <div class="preview-boundaries">
+          <section aria-labelledby="preview-credential-title">
+            <h3 id="preview-credential-title">Credential boundary</h3>
+            <ul>
+              <li class="preview-included">✓ API config metadata (<span id="preview-api-metadata-count"></span>)</li>
+              <li class="preview-excluded">✗ API keys</li>
+              <li class="preview-excluded">✗ Secret values</li>
+              <li class="preview-excluded">✗ Credential Vault contents</li>
+            </ul>
+            <p class="preview-authority">State: <span id="preview-credential-state"></span></p>
+          </section>
+          <section aria-labelledby="preview-excluded-title">
+            <h3 id="preview-excluded-title">不会恢复</h3>
+            <ul id="preview-excluded-data"></ul>
+          </section>
+        </div>
+
+        <section id="preview-confirmation" aria-labelledby="preview-confirmation-title">
+          <h3 id="preview-confirmation-title">Final restore confirmation</h3>
+          <p>逐项核对当前计划。全部确认并输入指定短语后，才会显示独立的 native approval 步骤。</p>
+          <div class="preview-checks">
+            <label><input id="final-confirm-plan" type="checkbox">我已核对上方完整 Plan ID 和 SHA-256。</label>
+            <label><input id="final-confirm-snapshot" type="checkbox">我已核对绑定到该计划的 Target Snapshot SHA-256。</label>
+            <label><input id="final-confirm-identity" type="checkbox">我确认 OLD → NEW 是用户确认的身份继承关系，不是自动迁移发现。</label>
+            <label><input id="final-confirm-credentials" type="checkbox">我理解仅恢复 API config metadata；API keys、secret values 和 Vault 内容不会恢复，之后需要重新绑定。</label>
+          </div>
+          <label for="final-restore-confirmation">输入 <code>FINAL_RESTORE_CONFIRMATION</code></label>
+          <input id="final-restore-confirmation" type="text" autocomplete="off" spellcheck="false">
+          <button id="enter-native-approval" type="button" disabled>继续到 native approval</button>
+          <p id="final-confirmation-status" role="status" aria-live="polite"></p>
+        </section>
+      </section>
+
+      <section id="production-approval-controls" aria-label="Explicit production restore approval" hidden>
+        <h2>Native production approval</h2>
+        <p class="recovery-note">最终预览确认已绑定当前计划。原生一次性审批仍需再次核对 plan ID/hash 与执行确认短语；此处操作尚未发生。</p>
+        <label for="approval-plan-id">Plan ID（完整匹配）</label>
+        <input id="approval-plan-id" type="text" autocomplete="off" spellcheck="false">
+        <label for="approval-plan-hash">Plan SHA-256（完整匹配）</label>
+        <input id="approval-plan-hash" type="text" autocomplete="off" spellcheck="false">
+        <label for="approval-confirmation">执行确认短语</label>
+        <p class="recovery-note">确认短语必须逐字输入：执行 R3-B.3 production restore</p>
+        <input id="approval-confirmation" type="text" autocomplete="off" spellcheck="false">
+        <label><input id="approval-understands-production-write" type="checkbox">我理解该后续操作会向 canonical production IndexedDB 写入业务数据。</label>
+        <button id="issue-production-approval" type="button" disabled>签发本次精确计划审批</button>
+        <p id="approval-status" role="status"></p>
+        <button id="execute-production-restore" type="button" disabled>执行已批准的 production restore</button>
+      </section>
+    </section>
+    <section id="reconstruction-dry-run-panel" aria-labelledby="reconstruction-dry-run-title">
+      <h2 id="reconstruction-dry-run-title">R3-C3.5 Home Node reconstruction preflight</h2>
+      <p class="recovery-note">只读核对冻结的 Bundle、500 条 A INSERT、8 条 B DTO UPDATE 和当前 Home Node target。此页面没有 reconstruction Apply 控件。</p>
+      <dl id="reconstruction-frozen-summary" class="preview-summary">
+        <div><dt>Bundle ID</dt><dd><code>p32w5-r3c3:73527c524f091a8a44374090</code></dd></div>
+        <div><dt>Bundle SHA-256</dt><dd><code>73527c524f091a8a4437409069979c2141f03b7048f8a042ae912c645e33bf7d</code></dd></div>
+        <div><dt>WriteSet A</dt><dd><code>c12255e8483c090ba53d15f711da63b6579a78721010e7a1aedc73b50dd916cf</code><br>INSERT 500 · UPDATE 0 · DELETE 0</dd></div>
+        <div><dt>WriteSet B</dt><dd><code>5823cbfd64defc58e05f89c75bde3e8dd92c853d51cf5c71a7a32fe3035e2062</code><br>INSERT 0 · UPDATE 8 · DELETE 0</dd></div>
+        <div><dt>Home Node target</dt><dd><code>home-node.db</code> · path resolved by RecoveryOnly native preflight<br><code>eaad098dccfc21835a0b079da03d28f4323fc977abfe94a289d8aeb471c18276</code></dd></div>
+      </dl>
+      <button id="reconstruction-dry-run-button" type="button">运行只读 reconstruction dry-run</button>
+      <p id="reconstruction-dry-run-status" role="status" aria-live="polite">尚未运行。</p>
+      <pre id="reconstruction-dry-run-summary" aria-live="polite"></pre>
+    </section>
+    <section id="c35-child-boundary-probe-panel" aria-labelledby="c35-child-boundary-probe-title">
+      <h2 id="c35-child-boundary-probe-title">C3.5-J native child boundary probe</h2>
+      <p class="recovery-note">只启动一个固定 synthetic Node child，用于验证 Tauri native spawn 与 JavaScript entry marker。此探针不调用 reconstruction runner，不访问数据库或业务数据。</p>
+      <button id="c35-child-boundary-probe-button" type="button">运行 synthetic child spawn probe</button>
+      <p id="c35-child-boundary-probe-status" role="status" aria-live="polite">尚未运行。</p>
+      <pre id="c35-child-boundary-probe-summary" aria-live="polite"></pre>
+    </section>
+    <p>Production apply remains closed. P5.6.2 authority revision does not issue an approval token or create a rollback checkpoint.</p>
+    <p id="active-rearm-state" role="status">Active remains quarantined. Explicit re-arm is blocked until R3-C migration and a separate approval.</p>
+  </main>
+  <script src="assets/js/webcore-db-schema.js"></script>
+  <script src="assets/js/recovery-engine.js"></script>
+  <script src="assets/js/composite-recovery-plan.js"></script>
+  <script src="assets/js/recovery-webcore-adapter.js"></script>
+  <script src="assets/js/recovery-production-adapter.js"></script>
+  <script src="assets/js/recovery-apply-executor.js"></script>
+  <script src="assets/js/recovery-first-boot.js"></script>
+  <script src="assets/js/recovery-source-manifest.js"></script>
+  <script src="assets/js/recovery-ui.js"></script>
+  <script src="assets/js/recovery-shell.js"></script>
+  <script src="assets/js/recovery-c3-5-reconstruction.js"></script>
+</body>
+</html>

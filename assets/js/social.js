@@ -14,11 +14,32 @@ function _ibIsLoopbackEndpoint(endpoint){
     return (url.protocol==='http:'||url.protocol==='https:')&&(host==='localhost'||host==='127.0.0.1'||host==='::1'||host==='[::1]');
   }catch(e){return false}
 }
+function _ibApiConfigRuntimeCopy(cfg){
+  if(!cfg||typeof cfg!=='object')return cfg;
+  var legacyImageSecret=!!(cfg._credentialImageSecretLegacy||String(cfg.imageGenApiKey||'').trim());
+  var clean=window._ibCredentialFreeApiConfig&&typeof window._ibCredentialFreeApiConfig==='function'
+    ?window._ibCredentialFreeApiConfig(cfg):Object.assign({},cfg);
+  if(clean&&typeof clean==='object'&&legacyImageSecret)clean._credentialImageSecretLegacy=true;
+  return clean;
+}
+function _ibApiConfigStorageCopy(cfg){
+  if(window._ibCredentialFreeApiConfig&&typeof window._ibCredentialFreeApiConfig==='function')return window._ibCredentialFreeApiConfig(cfg);
+  var clean=Object.assign({},cfg||{});
+  ['apiKey','imageGenApiKey','authorization','bearer','accessToken','refreshToken','token','secret','password','_credentialImageSecretLegacy'].forEach(function(k){delete clean[k]});
+  return clean;
+}
 function _ibApiHasCredential(cfg){
-  return !!(cfg&&(String(cfg.apiKey||'').trim()||_ibIsLoopbackEndpoint(cfg.endpoint)));
+  /* Structural binding check only. The request boundary resolves the secret
+     from Vault and raises CREDENTIAL_UNAVAILABLE when that lookup fails. */
+  return !!(cfg&&(_ibIsLoopbackEndpoint(cfg.endpoint)||String(cfg.id||'').trim()));
 }
 function _ibApiReady(cfg){
   return !!(cfg&&String(cfg.endpoint||'').trim()&&String(cfg.model||'').trim()&&_ibApiHasCredential(cfg));
+}
+function _ibSetVaultManagedKeyInput(id){
+  var input=document.getElementById(id);if(!input)return;
+  input.value='';input.readOnly=true;
+  input.placeholder='Credential Vault 管理；此处不显示或保存密钥';
 }
 function _modelThinkingDefault(provider,model){
   provider=String(provider||'').toLowerCase();model=String(model||'').toLowerCase();
@@ -103,27 +124,58 @@ function _syncSamplingUI(){
 }
 
 /* Voice UI helpers */
-/* Voice Provider 目录：与 bridge/tts.js 的 TTS_PROVIDER_REGISTRY 字段对齐（label/capabilities/models/cloneModels/designModels）。
+/* Voice API Source 目录：与 bridge/tts.js 的 TTS_PROVIDER_REGISTRY 字段对齐（label/capabilities/models/cloneModels/designModels）。
    B2 起 MiMo clone=true（mimo-v2.5-tts-voiceclone，参考音频 data URI）；C 起 design=true
    （mimo-v2.5-tts-voicedesign，user 消息=音色设计描述，无 audio.voice）。
-   MiMo builtin 音色官方枚举（见 mimo.mi.com Speech Synthesis v2.5；语言由音色决定，无独立 language 参数）。 */
+   MiMo builtin 音色官方枚举（见 mimo.mi.com Speech Synthesis v2.5；语言由音色决定，无独立 language 参数）。
+   P23 Phase 1：`source` 是角色保存的 canonical Voice API 来源引用，`credential` 只说明
+   **凭据在哪里配**（角色卡片不提供第二份 credential editor，也不保存任何密钥）。
+   这里只保留「离线也能用」的既有三 provider；Bridge 提供的来源（本地 Voicebox）在
+   loadVoiceSourceCatalog() 合并进来 —— 能力/engine 清单全仓库只有 bridge 一份。 */
 const IB_TTS_CATALOG=[
-  {id:'openai',label:'OpenAI TTS',capabilities:{builtin:true,clone:false,design:false,style:true,language:false,prosody:false},models:['tts-1','tts-1-hd','gpt-4o-mini-tts'],voices:[]},
-  {id:'edge',label:'Edge TTS (free)',capabilities:{builtin:true,clone:false,design:false,style:false,language:false,prosody:true},models:[],voices:[]},
-  {id:'mimo',label:'MiMo TTS',capabilities:{builtin:true,clone:true,design:true,style:true,language:false,prosody:false},models:['mimo-v2.5-tts'],cloneModels:['mimo-v2.5-tts-voiceclone'],designModels:['mimo-v2.5-tts-voicedesign'],emptyModelLabel:'默认（mimo-v2.5-tts）',cloneModelLabel:'默认（mimo-v2.5-tts-voiceclone）',designModelLabel:'默认（mimo-v2.5-tts-voicedesign）',voices:['mimo_default','冰糖','茉莉','苏打','白桦','Mia','Chloe','Milo','Dean'],voiceLabels:{'mimo_default':'MiMo 默认（随集群）','冰糖':'冰糖 · 中文女声','茉莉':'茉莉 · 中文女声','苏打':'苏打 · 中文男声','白桦':'白桦 · 中文男声','Mia':'Mia · 英文女声','Chloe':'Chloe · 英文女声','Milo':'Milo · 英文男声','Dean':'Dean · 英文男声'}}
+  {id:'openai',label:'OpenAI TTS',source:'tts',credential:'bridge:tts',capabilities:{builtin:true,clone:false,design:false,style:true,language:false,prosody:false},models:['tts-1','tts-1-hd','gpt-4o-mini-tts'],voices:[]},
+  {id:'edge',label:'Edge TTS (free)',source:'edge',credential:'none',capabilities:{builtin:true,clone:false,design:false,style:false,language:false,prosody:true},models:[],voices:[]},
+  {id:'mimo',label:'MiMo TTS',source:'ttsMimo',credential:'bridge:ttsMimo',capabilities:{builtin:true,clone:true,design:true,style:true,language:false,prosody:false},models:['mimo-v2.5-tts'],cloneModels:['mimo-v2.5-tts-voiceclone'],designModels:['mimo-v2.5-tts-voicedesign'],emptyModelLabel:'默认（mimo-v2.5-tts）',cloneModelLabel:'默认（mimo-v2.5-tts-voiceclone）',designModelLabel:'默认（mimo-v2.5-tts-voicedesign）',voices:['mimo_default','冰糖','茉莉','苏打','白桦','Mia','Chloe','Milo','Dean'],voiceLabels:{'mimo_default':'MiMo 默认（随集群）','冰糖':'冰糖 · 中文女声','茉莉':'茉莉 · 中文女声','苏打':'苏打 · 中文男声','白桦':'白桦 · 中文男声','Mia':'Mia · 英文女声','Chloe':'Chloe · 英文女声','Milo':'Milo · 英文男声','Dean':'Dean · 英文男声'}}
 ];
-function _voiceCatalogOf(id){
-  for(var i=0;i<IB_TTS_CATALOG.length;i++)if(IB_TTS_CATALOG[i].id===id)return IB_TTS_CATALOG[i];
+/* Bridge 提供的来源目录（GET /api/tts/sources）。null = 还没拿到（离线 / Bridge 未启动）。 */
+var _ibVoiceSourceCache=null;
+function _ibVoiceSourceOf(providerId){
+  if(!_ibVoiceSourceCache)return null;
+  for(var i=0;i<_ibVoiceSourceCache.length;i++)if(_ibVoiceSourceCache[i].provider===providerId)return _ibVoiceSourceCache[i];
   return null;
 }
-/* Provider 下拉改由目录驱动生成：幂等重建，保留当前选中值（缺失时回落首项，保持 openai 在前的历史默认序）。 */
+/* 拉取一次 canonical 来源目录并刷新 UI。失败保持 null（目录退回静态三 provider），绝不伪造来源。 */
+async function loadVoiceSourceCatalog(){
+  try{
+    var r=await ibBridgeFetch(ibBridgeBase()+'/api/tts/sources',{cache:'no-store'});
+    var j=await r.json();
+    if(j&&j.ok&&Array.isArray(j.sources))_ibVoiceSourceCache=j.sources;
+  }catch(e){}
+  try{ _voiceSyncProviderOptions(); }catch(e){}
+  try{ _voiceSyncCapabilityFields(); }catch(e){}
+}
+function _voiceCatalogOf(id){
+  for(var i=0;i<IB_TTS_CATALOG.length;i++)if(IB_TTS_CATALOG[i].id===id)return IB_TTS_CATALOG[i];
+  var s=_ibVoiceSourceOf(id);
+  if(!s)return null;
+  return {id:s.provider,label:s.label,source:s.id,credential:s.credential,local:!!s.isLocal,
+    capabilities:s.capabilities||{},models:s.models||[],voices:[],
+    dynamicVoices:(s.provider==='voicebox')?'voicebox':''};
+}
+/* Provider 下拉改由目录驱动生成：幂等重建，保留当前选中值（缺失时回落首项，保持 openai 在前的历史默认序）。
+   P23：Bridge 来源目录到达后 option 列表会变化，因此用「签名」而不是一次性布尔量做幂等键。 */
 function _voiceSyncProviderOptions(){
-  var sel=document.getElementById('api-voice-provider');if(!sel||sel.dataset.ibCatalog==='1')return;
+  var sel=document.getElementById('api-voice-provider');if(!sel)return;
   var cur=sel.value;
-  sel.dataset.ibCatalog='1';
+  var want=IB_TTS_CATALOG.map(function(p){return p.id});
+  if(_ibVoiceSourceCache)_ibVoiceSourceCache.forEach(function(s){if(want.indexOf(s.provider)<0)want.push(s.provider)});
+  var sig=want.join(',');
+  if(sel.dataset.ibCatalog===sig)return;
+  sel.dataset.ibCatalog=sig;
   sel.innerHTML='';
-  IB_TTS_CATALOG.forEach(function(p){
-    var o=document.createElement('option');o.value=p.id;o.textContent=p.label;sel.appendChild(o);
+  want.forEach(function(pid){
+    var def=_voiceCatalogOf(pid);if(!def)return;
+    var o=document.createElement('option');o.value=pid;o.textContent=def.label;sel.appendChild(o);
   });
   if(cur&&_voiceCatalogOf(cur))sel.value=cur;
 }
@@ -136,7 +188,7 @@ function _voiceSyncProviderOptions(){
 function _voiceSyncCapabilityFields(){
   var sel=document.getElementById('api-voice-provider');
   var def=_voiceCatalogOf(sel&&sel.value||'')||IB_TTS_CATALOG[0];
-  var hasVoices=!!(def.voices&&def.voices.length);
+  var hasVoices=!!(def.voices&&def.voices.length)||!!def.dynamicVoices;
   var vt=_voiceCurrentType();
   var isSpecial=(vt==='clone'||vt==='design');
   var show=function(id,on){var el=document.getElementById(id);if(el)el.style.display=on?'':'none'};
@@ -152,9 +204,21 @@ function _voiceSyncCapabilityFields(){
   if(styleLabel)styleLabel.textContent=(vt==='design')?'Voice Design 描述（音色设计）':'Instructions / Style';
   var styleInput=document.getElementById('api-voice-style');
   if(styleInput)styleInput.placeholder=(vt==='design')?'用自然语言描述想要的音色，如「一位年迈的先生，嗓音略带沙哑与沧桑感，语速缓慢」。':'说话风格指令；仅支持的 Provider 会随请求发送（如 gpt-4o-mini-tts）';
+  /* P23 Phase 1 · 语音 API 来源提示：让用户一眼看出「这条语音走哪个来源」以及
+     **凭据在哪里配**（角色卡片不提供第二份 credential editor，也绝不显示密钥值）。 */
+  var hint=document.getElementById('api-voice-source-hint');
+  if(hint){
+    var CRED={'none':'无需凭据','bridge:tts':'凭据在 Bridge config.json 的 tts 区块','bridge:ttsMimo':'凭据在 Bridge config.json 的 ttsMimo 区块','local-runtime':'本地运行时，默认不需要 API Key'};
+    var txt='语音 API 来源：'+def.label+' · '+(CRED[def.credential]||'');
+    if(def.local)txt+=' · Voicebox 未启动时只影响选了这个来源的角色，纯文字聊天不受影响';
+    hint.textContent=txt;
+  }
 }
 function _voiceSyncVoiceOptions(def){
   var sel=document.getElementById('api-voice-select');if(!sel)return;
+  /* Voicebox：音色是 Voicebox 自己的 Voice Profile（id 由上游生成），
+     因此只能从运行时读取，不能手填 —— 但仍走同一个 select 元素与同一个 id 存取口。 */
+  if(def&&def.dynamicVoices==='voicebox'){_voiceSyncVoiceboxProfiles(sel);return}
   var list=(def&&def.voices)||[];
   /* 无官方预置目录的 provider（edge/openai）：下拉本就不该有值——清空，
      防止把上一个角色/上一次会话残留在 select 里的 id 以「(当前配置)」形式带进别的角色。 */
@@ -172,6 +236,32 @@ function _voiceSyncVoiceOptions(def){
     var o=document.createElement('option');o.value=cur;o.textContent='(当前配置) '+cur;sel.appendChild(o);
   }
   if(cur&&sel.querySelector('option[value="'+cur.replace(/"/g,'\\"')+'"]'))sel.value=cur;
+}
+/* Voicebox Voice Profile 列表：只读代理 GET /api/tts/voicebox/profiles（Bridge 再代理到本地运行时）。
+   offline / 无 profile 时如实显示，绝不伪造一个可选项。列表只在本页会话内复用（不落盘）。 */
+var _ibVoiceboxProfiles=null;
+function _voiceSyncVoiceboxProfiles(sel){
+  var cur=sel.value;
+  if(Array.isArray(_ibVoiceboxProfiles)){
+    sel.innerHTML='';
+    if(!_ibVoiceboxProfiles.length){
+      var oe=document.createElement('option');oe.value='';oe.textContent='未连接 Voicebox 或没有 Voice Profile';sel.appendChild(oe);
+    }else{
+      _ibVoiceboxProfiles.forEach(function(p){
+        var o=document.createElement('option');o.value=p.id;
+        o.textContent=p.name+(p.language?' · '+p.language:'')+(p.defaultEngine?' · '+p.defaultEngine:'');
+        sel.appendChild(o);
+      });
+    }
+    if(cur&&sel.querySelector('option[value="'+cur.replace(/"/g,'\\"')+'"]'))sel.value=cur;
+    return;
+  }
+  sel.innerHTML='';
+  var op=document.createElement('option');op.value=cur||'';op.textContent='读取 Voicebox Voice Profile…';sel.appendChild(op);
+  ibBridgeFetch(ibBridgeBase()+'/api/tts/voicebox/profiles',{cache:'no-store'}).then(function(r){return r.json()}).then(function(j){
+    _ibVoiceboxProfiles=(j&&j.ok&&Array.isArray(j.profiles))?j.profiles:[];
+    try{ _voiceSyncVoiceboxProfiles(sel); }catch(e){}
+  }).catch(function(){ _ibVoiceboxProfiles=[]; try{ _voiceSyncVoiceboxProfiles(sel); }catch(e){} });
 }
 /* Model 下拉按目录重建：builtin 用 models（openai 保持「跟随全局配置」语义；mimo 空选项即官方默认模型）；
    VoiceClone 用 cloneModels、VoiceDesign 用 designModels，均默认选中官方专用模型，避免误选普通 TTS model。 */
@@ -218,7 +308,7 @@ function _voiceSyncModelOptions(def){
 function _voiceUsesSelect(){
   var sel=document.getElementById('api-voice-provider');
   var def=_voiceCatalogOf(sel&&sel.value||'')||IB_TTS_CATALOG[0];
-  return !!(def.voices&&def.voices.length);
+  return !!(def.voices&&def.voices.length)||!!def.dynamicVoices;
 }
 function _voiceGetId(){
   var el=document.getElementById(_voiceUsesSelect()?'api-voice-select':'api-voice-id');
@@ -449,7 +539,7 @@ async function testCharacterVoice(){
   var vlC=document.getElementById('api-voice-language');
   var vsC=document.getElementById('api-voice-style');
   var sampleText='你好，我是'+(document.getElementById('api-ai-name').value||'AI')+'。';
-  var vc={provider:(vp&&vp.value)||'edge',voiceId:_voiceGetId(),rate:parseFloat((document.getElementById('api-voice-rate')&&document.getElementById('api-voice-rate').value)||'1.0'),pitch:(document.getElementById('api-voice-pitch')&&document.getElementById('api-voice-pitch').value)||'+0Hz',model:(vmC&&vmC.value)||'',language:(vlC&&vlC.value)||'',style:(vsC&&vsC.value)||'',voiceType:_vt,voiceData:_vd};
+  var vc={provider:(vp&&vp.value)||'edge',source:(function(){var _d=_voiceCatalogOf(vp&&vp.value||'');return (_d&&_d.source)||(vp&&vp.value)||'edge'})(),voiceId:_voiceGetId(),rate:parseFloat((document.getElementById('api-voice-rate')&&document.getElementById('api-voice-rate').value)||'1.0'),pitch:(document.getElementById('api-voice-pitch')&&document.getElementById('api-voice-pitch').value)||'+0Hz',model:(vmC&&vmC.value)||'',language:(vlC&&vlC.value)||'',style:(vsC&&vsC.value)||'',voiceType:_vt,voiceData:_vd};
   try{
     /* R19/§3.14：TTS 试听必须走 ibBridgeFetch（带 Authorization 头），
        不能裸 fetch —— LAN 模式下 needsHttpToken() 对所有调用者都为真，
@@ -649,12 +739,13 @@ function _apiStoreReadFrom(kind){
     const raw=kind==='memory'?_ibApiMemStore:_apiStoreArea(kind).getItem(API_CONFIG_FALLBACK_KEY);
     if(!raw)return[];
     const v=JSON.parse(raw);
-    return Array.isArray(v)?v.filter(a=>a&&a.id):[];
+    return Array.isArray(v)?v.filter(a=>a&&a.id).map(_ibApiConfigRuntimeCopy):[];
   }catch(e){return[]}
 }
 function _apiStoreWriteTo(kind,v){
   try{
-    const json=JSON.stringify(v);
+    const clean=(Array.isArray(v)?v:[]).map(_ibApiConfigStorageCopy);
+    const json=JSON.stringify(clean);
     if(kind==='memory'){_ibApiMemStore=json;return true}
     const caps=_ibStorageCaps();
     if(!caps[kind])return false;/* 探测判定不可写就不再尝试，避免每次保存都抛一轮异常 */
@@ -684,6 +775,7 @@ function _apiFallbackRead(){
    写入成功后清空所有更弱的层：否则某层曾降级留下的旧值会在能力恢复后
    按 _apiFallbackRead 的优先级永久遮蔽新值。 */
 function _apiFallbackWrite(v){
+  v=(Array.isArray(v)?v:[]).map(_ibApiConfigStorageCopy);
   for(let i=0;i<API_STORE_TIERS.length;i++){
     if(!_apiStoreWriteTo(API_STORE_TIERS[i],v))continue;
     for(let j=i+1;j<API_STORE_TIERS.length;j++)_apiStoreClear(API_STORE_TIERS[j]);
@@ -708,10 +800,16 @@ function _apiFallbackPut(cfg){
 }
 /* 返回 {durability,backend,idb}：durability 如实反映持久化强度，供 UI 区分提示。 */
 async function _persistApiConfig(cfg){
+  if(window._ibEndpointHasInlineCredential&&(
+    window._ibEndpointHasInlineCredential(cfg&&cfg.endpoint)||window._ibEndpointHasInlineCredential(cfg&&cfg.imageGenEndpoint)
+  )){
+    const error=new Error('CREDENTIAL_UNAVAILABLE');error.code='CREDENTIAL_UNAVAILABLE';throw error;
+  }
   /* 成功写入状态标记：每次保存都把 updatedAt 推进到当前时间（只增不减），
      供 loadApiConfigs 判断「刚保存成功的配置」vs「IndexedDB 里仍可读的旧记录」。
      同源同 payload 幂等，不影响既有读取；仅新增可选字段，向后兼容。 */
-  const saved=Object.assign({},cfg,{updatedAt:Math.max(Number(cfg&&cfg.updatedAt)||0,Date.now())});
+  const clean=_ibApiConfigStorageCopy(cfg);
+  const saved=Object.assign({},clean,{updatedAt:Math.max(Number(cfg&&cfg.updatedAt)||0,Date.now())});
   try{
     /* 正常 http/https 环境维持原有首选路径：IndexedDB 写入成功后照旧留一份轻量同源镜像，
        因为部分损坏状态会出现 put/get 成功、随后的 getAll 却返回空列表，
@@ -723,6 +821,7 @@ async function _persistApiConfig(cfg){
   }catch(e){
     /* IndexedDB 不可用（file:// 常见）→ localStorage → sessionStorage → 内存 逐级降级 */
     const tier=_apiFallbackPut(saved);
+    try{if(typeof _ibMarkBusinessDataPresent==='function')_ibMarkBusinessDataPresent('apiConfigs',saved)}catch(markErr){}
     console.warn('IndexedDB API config write failed; fell back to '+tier+' storage',e);
     return {durability:tier,backend:tier==='persistent'?'localstorage':(tier==='session'?'sessionstorage':'memory'),idb:false,mirror:tier};
   }
@@ -739,11 +838,12 @@ function _apiSaveNotice(res){
 async function loadApiConfigs(){
   let all=[];
   try{all=await dbGetAll('apiConfigs')}catch(e){console.warn('IndexedDB API config read failed; using local fallback',e)}
+  all=(Array.isArray(all)?all:[]).map(_ibApiConfigRuntimeCopy);
   /* 保留可读记录，并让本地镜像中的新版本覆盖同 id 的旧记录。
      precedence 规则：IndexedDB 为权威配置源；local/session/memory 镜像仅在两种情况补入/覆盖——
      1) IndexedDB 缺失该 id；2) 镜像记录更新（其 updatedAt 比 IndexedDB 记录更新，或镜像带成功写
      标记而 IndexedDB 记录缺失该标记——即「刚保存成功但 IndexedDB 写入失败」的降级场景）。
-     绝不因旧/残留无 updatedAt 的镜像遮蔽 IndexedDB 中仍完好的凭证（apiKey）。 */
+     每层在进入运行态前都去除 legacy secret 字段；镜像不能再提供凭据。 */
   const fallback=_apiFallbackRead();
   if(fallback.length){
     const merged=new Map(all.map(a=>[a.id,a]));
@@ -759,30 +859,115 @@ async function loadApiConfigs(){
   }
   apiConfigs=all.filter(a=>!a.archived);
   archivedConfigs=all.filter(a=>!!a.archived);
-  if(!all.length){
-    /* Migrate old single config */
-    const old=await dbGet('apiSettings','main');
-    if(old&&old.apiKey){
-      const cfg={id:'friend_1',provider:old.provider||'anthropic',apiKey:old.apiKey,model:old.model||'',endpoint:old.endpoint||'',systemPrompt:old.systemPrompt||'',nickname:old.aiName||'Glasswing',created:Date.now()};
-      await dbPut('apiConfigs',cfg);
-      apiConfigs=[cfg];
-    }
-  }
+  /* 不再把 legacy apiSettings.main.apiKey 自动复制进 apiConfigs。
+     credential-bearing migration 必须先有 Vault binding；此加载路径不拥有 secret resolver。 */
   /* Sort by user-defined order if present, otherwise by creation time */
   apiConfigs.sort((a,b)=>(a.sortOrder!=null&&b.sortOrder!=null)?(a.sortOrder-b.sortOrder):((a.created||0)-(b.created||0)));
   archivedConfigs.sort((a,b)=>(b.archivedAt||0)-(a.archivedAt||0));
 }
 
+function _ibApiCredentialStatusLabel(status){
+  const labels={
+    checking:'正在检查凭据状态',
+    ready:'凭据就绪',
+    missing:'缺少凭据',
+    unavailable:'凭据服务不可用',
+    unknown:'凭据状态未知',
+    none:'无需凭据'
+  };
+  return labels[String(status||'unknown')]||labels.unknown;
+}
+function _ibApiCredentialStatusClass(status){
+  const known=['checking','ready','missing','unavailable','unknown','none'];
+  return known.indexOf(String(status||''))>=0?String(status):'unknown';
+}
+function _ibApiCredentialEndpointClass(cfg){
+  return _ibIsLoopbackEndpoint(cfg&&cfg.endpoint)?'loopback':'remote';
+}
+function _ibApiCredentialLocalStatus(cfg){
+  return _ibApiCredentialEndpointClass(cfg)==='loopback'?'none':'';
+}
+function _ibApiCredentialProjection(status){
+  const row=status&&typeof status==='object'?status:{};
+  return {
+    credentialRef:row.credentialRef||null,
+    authorityScope:row.authorityScope||'desktop-local',
+    credentialStatus:_ibApiCredentialStatusClass(row.status),
+    credentialSecretPresent:row.secretPresent===true,
+    sourceClass:row.sourceClass||'unknown',
+    errorCode:row.errorCode||''
+  };
+}
+function _ibApiCredentialBindings(configs){
+  return (Array.isArray(configs)?configs:[]).map(function(cfg){
+    const local=_ibApiCredentialEndpointClass(cfg)==='loopback';
+    return {
+      bindingId:String(cfg&&cfg.id||''),
+      capability:'chat',
+      credentialPolicy:local?'none':'required',
+      endpointClass:local?'loopback':'remote'
+    };
+  }).filter(function(binding){return !!binding.bindingId});
+}
+async function _ibLoadApiCredentialProjection(configs){
+  const list=Array.isArray(configs)?configs:[];
+  const fallback={};
+  list.forEach(function(cfg){
+    const local=_ibApiCredentialLocalStatus(cfg);
+    if(local)fallback[String(cfg.id)]=_ibApiCredentialProjection({status:local});
+  });
+  const host=typeof window!=='undefined'&&window.IB&&window.IB.host;
+  const capability=host&&typeof host.capabilities==='function'?host.capabilities():null;
+  const statusHost=host&&host.credentialStatus;
+  if(!statusHost||typeof statusHost.query!=='function'||(capability&&capability.credentialStatus&&!capability.credentialStatus.available)){
+    return {ok:false,status:'unavailable',byId:fallback,transport:'unavailable'};
+  }
+  try{
+    const response=await statusHost.query(_ibApiCredentialBindings(list));
+    const byId=Object.assign({},fallback);
+    if(response&&response.ok&&Array.isArray(response.results)){
+      response.results.forEach(function(row){
+        const id=String(row&&row.bindingId||'');
+        if(id)byId[id]=_ibApiCredentialProjection(row);
+      });
+      return {ok:true,status:'ready',byId:byId,transport:'host'};
+    }
+    list.forEach(function(cfg){
+      const id=String(cfg&&cfg.id||'');
+      if(id&&!byId[id])byId[id]=_ibApiCredentialProjection({status:'unavailable'});
+    });
+    return {ok:false,status:'unavailable',byId:byId,transport:'host'};
+  }catch(e){
+    const byId=Object.assign({},fallback);
+    list.forEach(function(cfg){
+      const id=String(cfg&&cfg.id||'');
+      if(id&&!byId[id])byId[id]=_ibApiCredentialProjection({status:'unavailable'});
+    });
+    return {ok:false,status:'unavailable',byId:byId,transport:'host-error'};
+  }
+}
+function _ibRenderApiList(c,configs,statusMap,pending){
+  const map=statusMap||{};
+  c.innerHTML=configs.map(function(a,idx){
+    const id=String(a&&a.id||'');
+    const entry=map[id]||_ibApiCredentialProjection({
+      status:pending?_ibApiCredentialLocalStatus(a)||'checking':'unknown'
+    });
+    const status=_ibApiCredentialStatusClass(entry.credentialStatus);
+    const statusTag='<span class="ib-api-credential-status ib-api-credential-status-'+status+'" data-credential-status="'+status+'">（'+esc(_ibApiCredentialStatusLabel(status))+'）</span>';
+    const avInit=(a.nickname||a.model||'?').charAt(0).toUpperCase();
+    const avHtml=a.avatar?'<div class="api-item-avatar"><img src="'+a.avatar+'" alt=""></div>':'<div class="api-item-avatar">'+avInit+'</div>';
+    return '<div class="chat-history-item" style="cursor:grab;gap:12px" draggable="true" data-api-idx="'+idx+'" data-api-id="'+id+'" ondragstart="_apiDragStart(event)" ondragover="_apiDragOver(event)" ondrop="_apiDrop(event)" ondragend="_apiDragEnd(event)" onclick="editApi(\''+id+'\')">'+avHtml+'<div style="flex:1;min-width:0"><strong class="api-item-name">'+esc(a.nickname||a.model||'未命名')+statusTag+'</strong>'+(a.relationship?'<span style="font-size:0.7rem;color:var(--accent-light);opacity:0.7;margin-left:6px">'+esc(a.relationship)+'</span>':'')+'<div class="api-item-detail" style="font-size:0.72rem;margin-top:2px">'+esc(a.provider)+' · '+esc(a.model)+'</div></div><span class="del-btn" onclick="event.stopPropagation();deleteApiConfig(\''+id+'\')" title="删除">✕</span></div>';
+  }).join('');
+}
 async function renderApiList(){
   await loadApiConfigs();
   if(_apiArchView){renderApiArchiveList();return}
   const c=document.getElementById('api-list-container');
   if(!apiConfigs.length){c.innerHTML='<div class="empty-state u-pad-20">还没有添加API</div>';return}
-  c.innerHTML=apiConfigs.map((a,idx)=>{
-    var keyTag=a.apiKey?'':(_ibIsLoopbackEndpoint(a.endpoint)?'<span style="color:#8bc9a8;font-size:0.68rem;margin-left:6px;font-weight:400">（本机免密钥）</span>':'<span style="color:#e88;font-size:0.68rem;margin-left:6px;font-weight:400">（无密钥）</span>');
-    var avInit=(a.nickname||a.model||'?').charAt(0).toUpperCase();
-    var avHtml=a.avatar?'<div class="api-item-avatar"><img src="'+a.avatar+'" alt=""></div>':'<div class="api-item-avatar">'+avInit+'</div>';
-    return '<div class="chat-history-item" style="cursor:grab;gap:12px" draggable="true" data-api-idx="'+idx+'" data-api-id="'+a.id+'" ondragstart="_apiDragStart(event)" ondragover="_apiDragOver(event)" ondrop="_apiDrop(event)" ondragend="_apiDragEnd(event)" onclick="editApi(\''+a.id+'\')">'+avHtml+'<div style="flex:1;min-width:0"><strong class="api-item-name">'+esc(a.nickname||a.model||'未命名')+keyTag+'</strong>'+(a.relationship?'<span style="font-size:0.7rem;color:var(--accent-light);opacity:0.7;margin-left:6px">'+esc(a.relationship)+'</span>':'')+'<div class="api-item-detail" style="font-size:0.72rem;margin-top:2px">'+esc(a.provider)+' · '+esc(a.model)+'</div></div><span class="del-btn" onclick="event.stopPropagation();deleteApiConfig(\''+a.id+'\')" title="删除">✕</span></div>'}).join('');
+  _ibRenderApiList(c,apiConfigs,null,true);
+  const projection=await _ibLoadApiCredentialProjection(apiConfigs);
+  _ibRenderApiList(c,apiConfigs,projection.byId,false);
 }
 var _dragApiIdx=null;
 function _apiDragStart(e){_dragApiIdx=parseInt(e.currentTarget.dataset.apiIdx);e.currentTarget.style.opacity='0.4';e.dataTransfer.effectAllowed='move'}
@@ -866,7 +1051,7 @@ function addNewApi(){
   document.getElementById('api-ai-name').value='';
   _ibSetProviderSelection(_ibDefaultProvider());   /* P17：选项由目录构建，默认值取目录 */
   onProviderChange();
-  document.getElementById('api-key').value='';
+  _ibSetVaultManagedKeyInput('api-key');
   document.getElementById('api-system').value='';
   document.getElementById('api-system').style.opacity='';document.getElementById('api-system').style.fontStyle='';
   document.getElementById('api-system').placeholder=getDefaultPromptForTheme();
@@ -893,7 +1078,7 @@ function addNewApi(){
   var _igM=document.getElementById('api-imagegen-model');if(_igM)_igM.value='';
   var _igP=document.getElementById('api-imagegen-provider');if(_igP)_igP.value='';
   var _igE=document.getElementById('api-imagegen-endpoint');if(_igE)_igE.value='';
-  var _igK=document.getElementById('api-imagegen-apikey');if(_igK)_igK.value='';
+  _ibSetVaultManagedKeyInput('api-imagegen-apikey');
   var amT=document.getElementById('api-automem-toggle');if(amT)amT.checked=false;
   var amM=document.getElementById('api-automem-mode');if(amM)amM.value='hybrid';
   var amB=document.getElementById('api-automem-budget');if(amB)amB.value='1200';
@@ -1075,7 +1260,7 @@ function editApi(id){
   document.getElementById('api-relationship').value=cfg.relationship||'';
   /* P17：按目录选中既有 provider；历史 / 未知 provider 补占位选项，绝不静默清空。 */
   _ibSetProviderSelection(cfg.provider||_ibDefaultProvider());
-  document.getElementById('api-key').value=cfg.apiKey||'';
+  _ibSetVaultManagedKeyInput('api-key');
   document.getElementById('api-model').value=cfg.model||'';
   document.getElementById('api-endpoint').value=cfg.endpoint||'';
   document.getElementById('api-system').value=cfg.systemPrompt||'';
@@ -1115,7 +1300,7 @@ function editApi(id){
   var _igM2=document.getElementById('api-imagegen-model');if(_igM2)_igM2.value=cfg.imageGenModel||'';
   var _igP2=document.getElementById('api-imagegen-provider');if(_igP2)_igP2.value=cfg.imageGenProvider||'';
   var _igE2=document.getElementById('api-imagegen-endpoint');if(_igE2)_igE2.value=cfg.imageGenEndpoint||'';
-  var _igK2=document.getElementById('api-imagegen-apikey');if(_igK2)_igK2.value=cfg.imageGenApiKey||'';
+  _ibSetVaultManagedKeyInput('api-imagegen-apikey');
   /* Voice settings */
   var vc=cfg.voice||{};
   var _vt=document.getElementById('api-voice-toggle');if(_vt)_vt.checked=!!vc.enabled;
@@ -1169,6 +1354,12 @@ function editApi(id){
 
 async function saveCurrentApi(btn){
   if(btn&&btn.disabled)return;
+  var keyInput=document.getElementById('api-key'),imageKeyInput=document.getElementById('api-imagegen-apikey');
+  if(String(keyInput&&keyInput.value||'').trim()||String(imageKeyInput&&imageKeyInput.value||'').trim()){
+    if(keyInput)keyInput.value='';if(imageKeyInput)imageKeyInput.value='';
+    toast('API 凭据由 Credential Vault 管理；此表单不会保存或导入密钥。');
+    return;
+  }
   const oldBtnText=btn&&btn.textContent;
   if(btn){btn.disabled=true;btn.textContent='保存中…'}
   /* Check nickname uniqueness：按最终显示名比较（昵称留空时回落到模型名），覆盖"同模型+空昵称"的重名情况 */
@@ -1198,6 +1389,10 @@ async function saveCurrentApi(btn){
   /* Merge with existing config to preserve sortOrder, avatar, created, archived etc. */
   _syncVisionUI();/* 视觉模型名命中时保持“支持图片识别”与保存值一致 */
   const existing=apiConfigs.find(a=>a.id===editingApiId)||{};
+  if(existing._credentialImageSecretLegacy&&document.getElementById('api-imagegen-toggle')&&document.getElementById('api-imagegen-toggle').checked){
+    toast('此配置曾有独立图片凭据，但 Vault 当前没有对应的图片凭据绑定。已阻止保存；请先关闭图片生成功能或补齐 Vault binding。');
+    if(btn){btn.disabled=false;btn.textContent=oldBtnText}return;
+  }
   /* Resolve avatar: _pendingApiAvatar===null means no change, ''=remove, string=new */
   var avatarVal=existing.avatar||'';
   if(_pendingApiAvatar!==null)avatarVal=_pendingApiAvatar;
@@ -1225,7 +1420,7 @@ async function saveCurrentApi(btn){
   const cfg=Object.assign({},existing,{
     id:editingApiId,
     provider:document.getElementById('api-provider').value,
-    apiKey:document.getElementById('api-key').value.trim(),
+    apiKey:'',
     model:modelVal,
     endpoint:document.getElementById('api-endpoint').value.trim(),
     systemPrompt:document.getElementById('api-system').value||(_sysPromptCleared?'':getDefaultPromptForTheme()),
@@ -1254,7 +1449,7 @@ async function saveCurrentApi(btn){
     waifu:!!(document.getElementById('api-waifu-toggle')&&document.getElementById('api-waifu-toggle').checked),
     imageGenProvider:(function(){var el=document.getElementById('api-imagegen-provider');var v=(el&&el.value||'');return['','openai','gemini'].indexOf(v)>-1?v:''})(),
     imageGenEndpoint:(document.getElementById('api-imagegen-endpoint')?document.getElementById('api-imagegen-endpoint').value.trim():''),
-    imageGenApiKey:(document.getElementById('api-imagegen-apikey')?document.getElementById('api-imagegen-apikey').value.trim():''),
+    imageGenApiKey:'',
     autoMem:!!(document.getElementById('api-automem-toggle')&&document.getElementById('api-automem-toggle').checked),
     autoMemMode:(document.getElementById('api-automem-mode')&&document.getElementById('api-automem-mode').value)||'hybrid',
     autoMemBudget:parseInt(document.getElementById('api-automem-budget')&&document.getElementById('api-automem-budget').value)||1200,
@@ -1286,6 +1481,10 @@ async function saveCurrentApi(btn){
       return Object.assign({},_pv,{
         enabled:!!(document.getElementById('api-voice-toggle')&&document.getElementById('api-voice-toggle').checked),
         provider:(document.getElementById('api-voice-provider')&&document.getElementById('api-voice-provider').value)||'edge',
+        /* P23 Phase 1 · canonical Voice API Source 引用（edge / tts / ttsMimo / voicebox）。
+           它是**引用**：endpoint 与 apiKey 一律由 Bridge config.json 提供，
+           角色记录里永远没有、也不允许出现任何 credential。 */
+        source:(function(){var p=document.getElementById('api-voice-provider');var _d=_voiceCatalogOf(p&&p.value||'');return (_d&&_d.source)||(p&&p.value)||'edge'})(),
         voiceId:_voiceGetId(),
         rate:parseFloat((document.getElementById('api-voice-rate')&&document.getElementById('api-voice-rate').value)||'1.0')||1.0,
         pitch:(document.getElementById('api-voice-pitch')&&document.getElementById('api-voice-pitch').value)||'+0Hz',
@@ -1307,7 +1506,7 @@ async function saveCurrentApi(btn){
     const persisted=await _persistApiConfig(cfg);
     /* 校验读回：走 IndexedDB 时仍以 IndexedDB 为准，降级后从实际落地的那一层读回 */
     const saved=persisted.idb?await dbGet('apiConfigs',cfg.id):_apiFallbackRead().find(a=>a.id===cfg.id);
-    if(!saved||saved.apiKey!==cfg.apiKey)throw new Error('保存后校验失败');
+    if(!saved||saved.id!==cfg.id||saved.apiKey||saved.imageGenApiKey)throw new Error('保存后校验失败');
     _pendingApiAvatar=null;
     await renderApiList();
     try{await loadFriendsList()}catch(e){}
@@ -1670,7 +1869,7 @@ async function confirmApiRestore(){
   toast('已恢复，请填写 API Key');
 }
 
-async function loadApiSettingsUI(){_apiArchView=false;_apiArchToggleUI();renderApiList();updateChatCount();try{renderTokenDash()}catch(e){}loadReadingLimitsUI();loadVoiceTransUI();loadMemorySettingsUI();loadSummarySettingsUI();loadOutputSettings();updateDangerStorageInfo();
+async function loadApiSettingsUI(){_apiArchView=false;_apiArchToggleUI();renderApiList();updateChatCount();try{renderTokenDash()}catch(e){}loadReadingLimitsUI();loadVoiceTransUI();loadVoiceSourceCatalog();loadMemorySettingsUI();loadSummarySettingsUI();loadOutputSettings();updateDangerStorageInfo();
   /* Image Router 配置区：与 API 配置列表同页，进来即刷新（绑定下拉 / 当前路由状态） */
   try{if(typeof window.loadImageRouterSettingsUI==='function')await window.loadImageRouterSettingsUI()}catch(e){}
   /* Sync memory budget hint in the Memory page dashboard */
@@ -1861,6 +2060,7 @@ async function openMemberManager(){
   document.getElementById('member-mgr-title').textContent='Members / '+esc(group.name);
   renderMemberMgrList(group);
   renderMemberPicker(group);
+  renderGroupParticipationPolicy(group);   /* P24-M3.4.4：每次打开都从 canonical group 重新 hydrate */
 }
 
 function closeMemberManager(){
@@ -2139,6 +2339,233 @@ async function removeGroupMember(gid,characterId){
 /* 静默模式：群内「隐性」API调用（自动摘要、选择生成记忆的默认执笔者等）
    优先避开开启静默的成员——不该在用户没点名时替TA花Token。
    全员皆静默时按 fallbackCfgs（如本轮实际发言者）> 首位成员 兜底 */
+/* ══════════════════════════════════════════════════════════════════════
+   P24-M3.4.3 · Group Participation Policy storage（**唯一** storage authority）
+   ----------------------------------------------------------------------
+   canonical owner = **group object**（`groups` store：keyPath='id'、schemaless）。
+   没有第二套 policy store / cache / DB —— 这里只做"读 group → 改 group → dbPut(group)"，
+   与 setGroupMemberStatus / addGroupMember 走**同一条** group mutation 路径。
+
+   canonical shape：
+     group.participationPolicy = { maxResponders?, recentSpeakerWindow? }
+     · 两个字段都必须是**非负有限整数**；`0` 是合法显式值（max=0 ⇒ 本轮无人回复；
+       window=0 ⇒ 关闭 recent 偏好）；
+     · null / 字符串 / 布尔 / 小数 / NaN / Infinity / 对象 / 数组 / 未知字段 ⇒ fail closed；
+     · 字段缺失 = 未配置；**两个字段都缺失 ⇒ 删除整个 participationPolicy 键**
+       （绝不保存 {}、绝不物化默认对象、绝不 backfill 老群）；
+     · **原子性**：先算 merged candidate → 校验通过才落库；任何失败都不写库。
+
+   校验唯一权威 = IBGroupRuntime.validateParticipationPolicyFragment（core 的 policy 契约）：
+   本文件**不**复制第二套字段白名单 / 整数校验（否则 storage 会变成第二个 policy authority）。
+   已存在的 stored policy 若本身非法：写入与清除**都 fail closed**（绝不"顺手修好"非法高权威 policy）。
+   ══════════════════════════════════════════════════════════════════════ */
+const GROUP_POLICY_FIELDS=['maxResponders','recentSpeakerWindow'];
+function _ibGroupPolicyCoreValidator(){
+  const core=(typeof window!=='undefined')?window.IBGroupRuntime:null;
+  if(!core||typeof core.validateParticipationPolicyFragment!=='function')return null;
+  return function(fragment){return core.validateParticipationPolicyFragment(fragment)};
+}
+/* 只读访问器：缺字段 ⇒ undefined（**不** hydrate 成 {}）。 */
+function getGroupParticipationPolicy(group){
+  if(!group||typeof group!=='object'||Array.isArray(group))return undefined;
+  return group.participationPolicy;
+}
+async function setGroupParticipationPolicy(gid,fragment){
+  const validate=_ibGroupPolicyCoreValidator();
+  if(!validate)return {ok:false,error:'policy-validator-unavailable'};
+  if(fragment===undefined||fragment===null||typeof fragment!=='object'||Array.isArray(fragment))return {ok:false,error:'bad-fragment',errors:['bad-fragment']};
+  const keys=Object.keys(fragment);
+  if(!keys.length)return {ok:false,error:'empty-fragment',errors:[]};
+  const verdict=validate(fragment);
+  if(!verdict||verdict.ok!==true)return {ok:false,error:'invalid-policy',errors:(verdict&&verdict.errors)||[]};
+  const groups=await loadGroups();
+  const group=groups.find(g=>g.id===gid);
+  if(!group)return {ok:false,error:'群聊不存在'};
+  const stored=getGroupParticipationPolicy(group);
+  if(stored!==undefined){
+    const cur=validate(stored);
+    if(!cur||cur.ok!==true)return {ok:false,error:'invalid-stored-policy',errors:(cur&&cur.errors)||[]};
+  }
+  const candidate={};
+  if(stored&&typeof stored==='object'&&!Array.isArray(stored))GROUP_POLICY_FIELDS.forEach(function(k){if(Object.prototype.hasOwnProperty.call(stored,k))candidate[k]=stored[k]});
+  keys.forEach(function(k){candidate[k]=fragment[k]});                 /* fragment 已过白名单校验 */
+  if(!Object.keys(candidate).length)delete group.participationPolicy;  /* 空 policy ⇒ 键消失（绝不存 {}） */
+  else group.participationPolicy=candidate;
+  await dbPut('groups',group);
+  return {ok:true,policy:getGroupParticipationPolicy(group)};
+}
+async function clearGroupParticipationPolicy(gid,field){
+  const validate=_ibGroupPolicyCoreValidator();
+  if(!validate)return {ok:false,error:'policy-validator-unavailable'};
+  if(field!==undefined&&GROUP_POLICY_FIELDS.indexOf(field)<0)return {ok:false,error:'unknown-field',errors:['unknown-field']};
+  const groups=await loadGroups();
+  const group=groups.find(g=>g.id===gid);
+  if(!group)return {ok:false,error:'群聊不存在'};
+  const stored=getGroupParticipationPolicy(group);
+  if(stored===undefined)return {ok:true,policy:undefined};             /* 无 policy：幂等 no-op */
+  const cur=validate(stored);
+  if(!cur||cur.ok!==true)return {ok:false,error:'invalid-stored-policy',errors:(cur&&cur.errors)||[]};
+  const candidate={};
+  GROUP_POLICY_FIELDS.forEach(function(k){
+    /* field 省略 ⇒ 清空整个 policy（key 会被删除）；指定 field ⇒ 只删该字段。
+       注意：这里**不能**写成 `if(k===field)return` —— field 为 undefined 时会一个字段都不删，
+       变成静默 no-op（P24-M3.4.4 的 R8b 用例正是抓这个缺陷）。 */
+    if(field===undefined||k===field)return;
+    if(stored&&Object.prototype.hasOwnProperty.call(stored,k))candidate[k]=stored[k];
+  });
+  if(!Object.keys(candidate).length)delete group.participationPolicy;
+  else group.participationPolicy=candidate;
+  await dbPut('groups',group);
+  return {ok:true,policy:getGroupParticipationPolicy(group)};
+}
+/* ── P24-M3.4.4 · exact replace（UI 的 "desired state" 保存入口）──────────────
+   与 set 的 PATCH/MERGE 语义**并列**存在（set 语义不变）：
+     replace(gid, undefined)       ⇒ 删除整个 participationPolicy 键（= 显式 reset）
+     replace(gid, {})              ⇒ 拒绝（empty-fragment；清空请用 undefined/clear）
+     replace(gid, 合法 fragment)   ⇒ 校验整个 fragment 后**精确替换**（不是 merge）
+   原子性：先校验 desired → 再一次性 dbPut；失败时 stored policy 逐字不变。
+   校验权威仍是 core validator；这里不复制第二套白名单。 */
+async function replaceGroupParticipationPolicy(gid,policy){
+  if(policy===undefined)return clearGroupParticipationPolicy(gid);
+  const validate=_ibGroupPolicyCoreValidator();
+  if(!validate)return {ok:false,error:'policy-validator-unavailable'};
+  if(policy===null||typeof policy!=='object'||Array.isArray(policy))return {ok:false,error:'bad-fragment',errors:['bad-fragment']};
+  if(!Object.keys(policy).length)return {ok:false,error:'empty-fragment',errors:[]};
+  const verdict=validate(policy);
+  if(!verdict||verdict.ok!==true)return {ok:false,error:'invalid-policy',errors:(verdict&&verdict.errors)||[]};
+  const groups=await loadGroups();
+  const group=groups.find(g=>g.id===gid);
+  if(!group)return {ok:false,error:'群聊不存在'};
+  const stored=getGroupParticipationPolicy(group);
+  if(stored!==undefined){
+    const cur=validate(stored);
+    if(!cur||cur.ok!==true)return {ok:false,error:'invalid-stored-policy',errors:(cur&&cur.errors)||[]};
+  }
+  const candidate={};                                                   /* 只取白名单字段 + 按值拷贝（不共享调用方引用） */
+  GROUP_POLICY_FIELDS.forEach(function(k){if(Object.prototype.hasOwnProperty.call(policy,k))candidate[k]=policy[k]});
+  group.participationPolicy=candidate;
+  await dbPut('groups',group);
+  return {ok:true,policy:getGroupParticipationPolicy(group)};
+}
+/* ── 显式 reset（P24-M3.4.4）──────────────────────────────────────────────
+   语义：**无条件删除整个 participationPolicy 键**（包括"stored policy 非法"这种
+   set/clear/replace 都 fail closed 的情形）。它是唯一能修复"非法 stored policy 让 chat
+   fail closed"的**显式**入口（用户点击「重置参与策略」触发）—— 仍然是"删除"，
+   **绝不**猜测或修复非法内容，也不物化任何默认对象。
+   与 clear(gid[,field]) 的分工：clear 在 stored 非法时拒绝（保留证据）；
+   reset 是显式的清理动作（唯一允许删掉非法 policy 的路径）。 */
+async function resetGroupParticipationPolicy(gid){
+  const groups=await loadGroups();
+  const group=groups.find(g=>g.id===gid);
+  if(!group)return {ok:false,error:'群聊不存在'};
+  if(!Object.prototype.hasOwnProperty.call(group,'participationPolicy'))return {ok:true,policy:undefined,noop:true};
+  delete group.participationPolicy;
+  await dbPut('groups',group);
+  return {ok:true,policy:undefined};
+}
+/* ══════════════════════════════════════════════════════════════════════
+   P24-M3.4.4 · 群聊参与策略（Group Settings UI · **只做 UI + adapter**）
+   ----------------------------------------------------------------------
+   放置：现有成员管理弹窗（#member-mgr-overlay）里的一个 section —— 不新建页面/管理器。
+   保存模型：与既有群设置一致（成员操作是**即时保存**）⇒ 两个下拉的每次 change 都是一次
+   **原子 desired-state 保存**（不是先 set max 再 set window）：
+     desired 为空 ⇒ clearGroupParticipationPolicy(gid)（= 删除整个键）
+     否则        ⇒ replaceGroupParticipationPolicy(gid, desired)（exact replace）
+   本区块**不**直接 dbPut / 不直接改 group.participationPolicy：一律经 canonical storage API。
+   校验权威仍是 core validator（这里只做"把下拉值翻译成 desired"的解析，不复制白名单/整数校验）。
+   「未设置」与「0」是两个不同的选项：window 未设置显示"当前行为：2"（adapter fallback，**不是**
+   system policy），且**绝不**为了让界面好看而把 2 写进存储。
+   非法 stored policy：显示"参与策略数据无效" + 「重置参与策略」（显式动作，绝不自动修复）。
+   ══════════════════════════════════════════════════════════════════════ */
+const GROUP_POLICY_UI_MAX=10;   /* 下拉可选项上限（纯 UX；不限制 storage 接受的值） */
+function _ibGroupPolicySel(){return document.getElementById('member-mgr-overlay')?document.getElementById('member-mgr-overlay').querySelector('.group-policy-section'):null}
+function _ibGroupPolicyRenderOptions(sel,unsetLabel,value){
+  sel.innerHTML='';
+  const o0=document.createElement('option');
+  o0.value='unset';o0.textContent=unsetLabel;sel.appendChild(o0);
+  for(let n=0;n<=GROUP_POLICY_UI_MAX;n++){
+    const o=document.createElement('option');
+    o.value=String(n);o.textContent=String(n);sel.appendChild(o);
+  }
+  sel.value=(value===undefined||value===null)?'unset':String(value);
+}
+function renderGroupParticipationPolicy(group){
+  const section=_ibGroupPolicySel();
+  if(!section)return;
+  const maxSel=document.getElementById('group-policy-max');
+  const winSel=document.getElementById('group-policy-window');
+  const errEl=document.getElementById('group-policy-error');
+  const invalidEl=document.getElementById('group-policy-invalid');
+  const stored=getGroupParticipationPolicy(group);
+  let invalid=false,errors=[];
+  if(stored!==undefined){
+    const validate=_ibGroupPolicyCoreValidator();
+    const verdict=validate?validate(stored):{ok:false,errors:['policy-validator-unavailable']};
+    invalid=!(verdict&&verdict.ok===true);
+    errors=(verdict&&verdict.errors)||[];
+  }
+  section.dataset.groupId=(group&&group.id)||'';
+  if(errEl){errEl.textContent='';errEl.hidden=true}
+  if(invalid){
+    if(invalidEl)invalidEl.hidden=false;
+    if(maxSel)maxSel.disabled=true;
+    if(winSel)winSel.disabled=true;
+    return;
+  }
+  if(invalidEl)invalidEl.hidden=true;
+  if(maxSel){maxSel.disabled=false;_ibGroupPolicyRenderOptions(maxSel,'不限制（未设置）',stored?stored.maxResponders:undefined)}
+  if(winSel){winSel.disabled=false;_ibGroupPolicyRenderOptions(winSel,'不设置（当前行为：2）',stored?stored.recentSpeakerWindow:undefined)}
+}
+/* 下拉 → desired（纯解析：'unset' 表示未设置；数字字符串表示显式值）。 */
+function _ibGroupPolicyDesiredFromUI(){
+  const maxSel=document.getElementById('group-policy-max');
+  const winSel=document.getElementById('group-policy-window');
+  const desired={};
+  const read=(sel,key)=>{
+    if(!sel)return;
+    const raw=sel.value;
+    if(raw==='unset'||raw==='')return;                                   /* 未设置：键缺失（≠ 0） */
+    desired[key]=Number(raw);
+  };
+  read(maxSel,'maxResponders');
+  read(winSel,'recentSpeakerWindow');
+  return desired;
+}
+/* 原子保存（UI 的唯一写入路径）。可被测试直接调用以验证"非法输入不被 clamp"。 */
+async function saveGroupParticipationPolicyFromUI(gid,desired){
+  const frag=(desired===undefined)?_ibGroupPolicyDesiredFromUI():desired;
+  const result=(!frag||!Object.keys(frag).length)
+    ?await clearGroupParticipationPolicy(gid)
+    :await replaceGroupParticipationPolicy(gid,frag);
+  const errEl=document.getElementById('group-policy-error');
+  if(!result||result.ok!==true){
+    const msg='参与策略未保存：'+((result&&result.error)||'unknown');
+    try{toast(msg)}catch(e){}
+    if(errEl){errEl.textContent=msg;errEl.hidden=false}
+  }
+  const groups=await loadGroups();
+  const group=groups.find(g=>g.id===gid);
+  if(group)renderGroupParticipationPolicy(group);
+  return result;
+}
+async function onGroupParticipationPolicyChange(){
+  const section=_ibGroupPolicySel();
+  const gid=(section&&section.dataset.groupId)||activeFriendId;
+  if(!gid)return {ok:false,error:'no-group'};
+  return saveGroupParticipationPolicyFromUI(gid);
+}
+async function resetGroupParticipationPolicyUI(){
+  const section=_ibGroupPolicySel();
+  const gid=(section&&section.dataset.groupId)||activeFriendId;
+  if(!gid)return {ok:false,error:'no-group'};
+  /* 显式 reset：即使用户把非法 stored policy 留在这里，也能一键清掉（不修复、不猜测）。 */
+  const r=await resetGroupParticipationPolicy(gid);
+  if(r&&r.ok===true){try{toast('参与策略已重置')}catch(e){}}
+  const groups=await loadGroups();
+  const group=groups.find(g=>g.id===gid);
+  if(group)renderGroupParticipationPolicy(group);
+  return r;
+}
 function pickGroupUtilityCfg(group,fallbackCfgs){
   const ids=getGroupMemberIds(group);
   if(!ids.length)return (fallbackCfgs&&fallbackCfgs[0])||null;
@@ -2618,6 +3045,16 @@ window.getGroupMemberIds=getGroupMemberIds;
 window.getGroupMemberStatus=getGroupMemberStatus;
 window.countGroupMembersByStatus=countGroupMembersByStatus;
 window.setGroupMemberStatus=setGroupMemberStatus;
+window.GROUP_POLICY_FIELDS=GROUP_POLICY_FIELDS;
+window.getGroupParticipationPolicy=getGroupParticipationPolicy;
+window.setGroupParticipationPolicy=setGroupParticipationPolicy;
+window.clearGroupParticipationPolicy=clearGroupParticipationPolicy;
+window.replaceGroupParticipationPolicy=replaceGroupParticipationPolicy;
+window.resetGroupParticipationPolicy=resetGroupParticipationPolicy;
+window.renderGroupParticipationPolicy=renderGroupParticipationPolicy;
+window.saveGroupParticipationPolicyFromUI=saveGroupParticipationPolicyFromUI;
+window.onGroupParticipationPolicyChange=onGroupParticipationPolicyChange;
+window.resetGroupParticipationPolicyUI=resetGroupParticipationPolicyUI;
 window.insertGroupSystemEvent=insertGroupSystemEvent;
 window.addGroupMember=addGroupMember;
 window.removeGroupMember=removeGroupMember;
@@ -2696,6 +3133,7 @@ NS.expose('social', {
   _voiceCloneSelectionGet: function(){return _voiceCloneSelection?Object.assign({},_voiceCloneSelection):null;},
   _ibReferencedRefAudioIds: _ibReferencedRefAudioIds,
   _voiceSyncProviderOptions: _voiceSyncProviderOptions,
+  loadVoiceSourceCatalog: loadVoiceSourceCatalog,
   _voiceSyncCapabilityFields: _voiceSyncCapabilityFields,
   _voiceUsesSelect: _voiceUsesSelect,
   _voiceGetId: _voiceGetId,
@@ -2789,6 +3227,16 @@ NS.expose('social', {
   getGroupMemberStatus: getGroupMemberStatus,
   countGroupMembersByStatus: countGroupMembersByStatus,
   setGroupMemberStatus: setGroupMemberStatus,
+  GROUP_POLICY_FIELDS: GROUP_POLICY_FIELDS,
+  getGroupParticipationPolicy: getGroupParticipationPolicy,
+  setGroupParticipationPolicy: setGroupParticipationPolicy,
+  clearGroupParticipationPolicy: clearGroupParticipationPolicy,
+  replaceGroupParticipationPolicy: replaceGroupParticipationPolicy,
+  resetGroupParticipationPolicy: resetGroupParticipationPolicy,
+  renderGroupParticipationPolicy: renderGroupParticipationPolicy,
+  saveGroupParticipationPolicyFromUI: saveGroupParticipationPolicyFromUI,
+  onGroupParticipationPolicyChange: onGroupParticipationPolicyChange,
+  resetGroupParticipationPolicyUI: resetGroupParticipationPolicyUI,
   insertGroupSystemEvent: insertGroupSystemEvent,
   addGroupMember: addGroupMember,
   removeGroupMember: removeGroupMember,

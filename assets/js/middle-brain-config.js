@@ -137,6 +137,50 @@
 
   /* —— 设置 UI（API Settings 页 · 全局 Middle Brain 卡片） —— */
   function _mbEl(id) { return document.getElementById(id); }
+  async function getMiddleBrainCredentialStatus() {
+    var cfg = await getMiddleBrainConfig();
+    if (!cfg || cfg.enabled !== true) {
+      return {
+        credentialRef: null,
+        authorityScope: 'desktop-local',
+        status: 'none',
+        secretPresent: false,
+        sourceClass: 'middle-brain-policy-disabled'
+      };
+    }
+    /*
+     * R7 intentionally does not inspect cfg.apiKey. A legacy config without
+     * a v2 credentialRef remains unknown until a later migration phase.
+     */
+    var ref = String(cfg.credentialRef || '').trim();
+    if (!ref) {
+      return {
+        credentialRef: null,
+        authorityScope: 'desktop-local',
+        status: 'unknown',
+        secretPresent: false,
+        sourceClass: 'middle-brain-legacy-config',
+        errorCode: 'CREDENTIAL_REF_MISSING'
+      };
+    }
+    var consumers = root.IB && root.IB.credentialAuthorityConsumers;
+    if (!consumers || typeof consumers.queryBinding !== 'function') {
+      return {
+        credentialRef: ref,
+        authorityScope: 'desktop-local',
+        status: 'unavailable',
+        secretPresent: false,
+        sourceClass: 'middle-brain-config',
+        errorCode: 'CREDENTIAL_STATUS_UNAVAILABLE'
+      };
+    }
+    return consumers.queryBinding({
+      bindingId: ref,
+      capability: 'chat',
+      credentialPolicy: 'required',
+      endpointClass: 'remote'
+    });
+  }
   /* ====================================================================
    Phase 4 · Middle Brain Advanced Settings UI（Codex 风格滑动选择）
      --------------------------------------------------------------------
@@ -593,6 +637,9 @@
     _mbReadSpeed: _mbReadSpeed,
     _mbReadModel: _mbReadModel
   });
+  root.IB = root.IB || {};
+  root.IB.credentialAuthorityConsumers = root.IB.credentialAuthorityConsumers || {};
+  root.IB.credentialAuthorityConsumers.middleBrainStatus = getMiddleBrainCredentialStatus;
   /* Node 下把契约交回给 require 调用方（浏览器下 factory 的返回值被忽略）。
      注意这与其余五个 MB 层文件不同：那五个写全局 root.IB，本文件在 Node 下
      必须让调用方能拿到契约，否则 services 侧就没有 canonical 入口。 */

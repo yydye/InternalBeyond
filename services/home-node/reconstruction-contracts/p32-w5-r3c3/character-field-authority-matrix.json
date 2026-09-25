@@ -1,0 +1,131 @@
+{
+  "schema": "internalbeyond.p32-w5.r3-c2.character-field-authority-matrix",
+  "version": 1,
+  "phase": "P32-W.5-R3-C.2",
+  "generatedAt": "2026-09-24T10:09:16.3018876Z",
+  "scope": "Eight C1 character projection conflicts only; read-only",
+  "plan": {
+    "planId": "r3b3:1ee6aba8f773b8297e25a3904bad0f9db51ec308e4d295a1718ae48912cf44c7",
+    "planSha256": "1ee6aba8f773b8297e25a3904bad0f9db51ec308e4d295a1718ae48912cf44c7",
+    "targetSnapshotSha256": "e353295cdb6d2c8bdd344b2b54bf4f5da59bbf7b2b85081380faefe022c76d9c",
+    "sourcePrimarySha256": "1170f2a805f25ce2e151b880858e0ab1fdd2aad61281a16754da08a843238401",
+    "homeNodeDatabaseSha256": "eaad098dccfc21835a0b079da03d28f4323fc977abfe94a289d8aeb471c18276",
+    "newRoleEvidence": "RESOLVED",
+    "identitySuccessionReopened": false,
+    "authorityChanged": false
+  },
+  "authority": [
+    {
+      "field": "stable identity id",
+      "classification": "AUTHORITATIVE_WEB_CORE",
+      "producer": "Web Core apiConfigs.id",
+      "homeNodeRole": "characters.id stable key",
+      "finding": "All 8 source IDs equal Home Node IDs."
+    },
+    {
+      "field": "display identity name",
+      "classification": "AUTHORITATIVE_WEB_CORE",
+      "producer": "Web Core nickname/name via MobileDTO.characterDto",
+      "homeNodeRole": "mobile-safe display projection",
+      "finding": "All 8 projected display names match."
+    },
+    {
+      "field": "model",
+      "classification": "AUTHORITATIVE_WEB_CORE",
+      "producer": "Persisted Web Core apiConfigs.model",
+      "homeNodeFieldRole": "LEGACY_DUPLICATED_PROJECTION",
+      "homeNodeConsumer": "Mobile-safe character DTO/display output",
+      "executionAuthority": "Home Node character_runtime_specs runtime binding",
+      "runtimeSpecContentRead": false,
+      "runtimeBindingDisposition": "DEFER_TO_R3_D",
+      "finding": "characters.model is not used as Home Node role execution model; execution resolves the separate runtime spec."
+    },
+    {
+      "field": "capabilities",
+      "classification": "DERIVED_RUNTIME_PROJECTION",
+      "producer": "MobileDTO.characterCapabilities from Web Core per-role flags",
+      "underlyingChoiceAuthority": "AUTHORITATIVE_WEB_CORE",
+      "providerDirectoryAuthority": false,
+      "modelCoreAuthority": false,
+      "consumer": "Mobile-safe character DTO capability hints",
+      "finding": "Provider defaults apply only when per-role streaming/vision values are absent; provider/model policies do not own persisted per-character DTO capability flags."
+    },
+    {
+      "field": "credential/runtime values",
+      "classification": "DEFER_TO_R3_D",
+      "credentialValuesRead": false,
+      "runtimeSpecJsonRead": false
+    }
+  ],
+  "producerConsumerTrace": [
+    {
+      "path": "assets/js/social.js",
+      "lines": "788-795, 1362-1420",
+      "fact": "Persists apiConfigs to the apiConfigs store; saves model plus per-role vision/streaming/webSearch/imageGen flags."
+    },
+    {
+      "path": "assets/js/mobile-dto.js",
+      "lines": "69-126",
+      "fact": "characterDto copies model as display metadata; characterCapabilities derives mobile flags from raw per-role flags with projected-capability fallback."
+    },
+    {
+      "path": "assets/js/mobile-dto.js",
+      "lines": "129-189",
+      "fact": "characterCatalogEntry separates dto from mapSpec runtime projection; mapSpec builds the runtime spec."
+    },
+    {
+      "path": "services/home-node/mobile-gateway.js",
+      "lines": "2015-2030, 560-570, 848-858",
+      "fact": "Publish stores DTO and spec separately; character listing returns DTO; chat execution obtains runtime spec by character ID."
+    },
+    {
+      "path": "services/home-node/device-registry.js",
+      "lines": "207-229, 592-642, 678-683",
+      "fact": "characters.dto_json and character_runtime_specs.spec_json are separate; runtime spec read is only through getCharacterSpec."
+    },
+    {
+      "path": "services/home-node/execution.js",
+      "lines": "252-275, 541-543",
+      "fact": "Home Node role execution uses the runtime spec for endpoint/model; DTO model is not the execution binding."
+    },
+    {
+      "path": "active/scheduler.js",
+      "lines": "178-180",
+      "fact": "Active consumes character provider/model metadata from its task character config; Active remains quarantined and was not started."
+    },
+    {
+      "path": "assets/js/provider-directory.js",
+      "lines": "36-54, 128-150, 172-228",
+      "fact": "Provider entries supply new-config defaults and request-side model policies; existing saved model values are not overwritten."
+    },
+    {
+      "path": "assets/js/ib-model-core.js",
+      "lines": "40-56, 455-462",
+      "fact": "Model-core delegates sampling/prefill request constraints to provider-directory; it does not own per-character mobile capability flags."
+    },
+    {
+      "path": "assets/js/communication.js",
+      "lines": "2531, 2579, 2893, 2995, 4479",
+      "fact": "Web Core request path consumes saved streaming/vision flags with provider defaults only when the saved value is absent."
+    }
+  ],
+  "evidence": {
+    "sourcePath": "C:\\Users\\admin\\Downloads\\InternalBeyond_auto_2026-09-02.json",
+    "sourceSha256": "1170f2a805f25ce2e151b880858e0ab1fdd2aad61281a16754da08a843238401",
+    "sourceProvenance": "PRIMARY_2026_09_02",
+    "sourceRecordCount": 12,
+    "comparedCharacterCount": 8,
+    "homeNodeReadMode": "SQLite immutable read-only; dto_json and runtime-spec key existence only",
+    "homeNodeSchemaVersion": 0,
+    "specJsonRead": false
+  },
+  "finalClassification": {
+    "fieldValueDiffRoles": 8,
+    "modelDiffRoles": 7,
+    "capabilityDiffRoles": 2,
+    "otherFieldDiffRoles": 0,
+    "identityConflicts": 0,
+    "unresolvedCanonicalBusinessDataConflicts": 0,
+    "c1NonIdentityLabelsReproduced": false
+  }
+}

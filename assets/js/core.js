@@ -1,16 +1,73 @@
 ﻿/* IB 命名空间迁移：IIFE 私有作用域 + 全量双挂载（window 实时 + IB.core 注册）。 */
 (function(NS){
-const DB_NAME='InternalBeyondDB',DB_VER=24;let db;/* v24 — disclosureFacts（披露事实：角色私有的 PERSONAL/PRIVATE/SECRET 自我事实，独立 store 且**不进入**回忆池 / 导出 / 镜像 / 文件夹同步，见 docs/DECISIONS.md D30）；v23 — understandings（认识层活文档）+ threads（线索层 open thread）；v22 — （保留占位避免未来编号混乱）；v21 — activities（共读/观影等陪伴活动）+ favorites（跨模块收藏层）；v20 — roleLetters 加 byTo/byFrom 索引 + roleLetterMemories（角色私信记忆命名空间）；v19 roleLetters：角色互相写信 */
-function openDB(){return new Promise((resolve,reject)=>{const req=indexedDB.open(DB_NAME,DB_VER);req.onupgradeneeded=e=>{const d=e.target.result;['posts','categories','about','music','apiSettings','chatMessages','letters','apiConfigs','groups','blogComments','memories','chatThreads','chatSummaries','uploadedFiles','blogAnnotations','projects','projectFiles','autoMemory','calEvents','calNotes','calLedger','active_message_settings','active_message_history','active_message_plans','diary_entries','moments','roleLetters','roleLetterMemories','activities','favorites','understandings','threads','disclosureFacts'].forEach(s=>{if(!d.objectStoreNames.contains(s))d.createObjectStore(s,{keyPath:s==='categories'?'name':(s==='disclosureFacts'?'factId':'id'),autoIncrement:false})});try{const store=e.target.transaction.objectStore('chatMessages');if(!store.indexNames.contains('byFriend'))store.createIndex('byFriend','friendId',{unique:false})}catch(ex){};try{const pf=e.target.transaction.objectStore('projectFiles');if(!pf.indexNames.contains('byProject'))pf.createIndex('byProject','projectId',{unique:false})}catch(ex){};try{const am=e.target.transaction.objectStore('autoMemory');if(!am.indexNames.contains('byFriend'))am.createIndex('byFriend','friendId',{unique:false})}catch(ex){};try{const un=e.target.transaction.objectStore('understandings');if(!un.indexNames.contains('byCharacter'))un.createIndex('byCharacter','characterId',{unique:false})}catch(ex){};try{const th=e.target.transaction.objectStore('threads');if(!th.indexNames.contains('byCharacter'))th.createIndex('byCharacter','characterId',{unique:false})}catch(ex){};try{const aset=e.target.transaction.objectStore('active_message_settings');if(!aset.indexNames.contains('byCharacter'))aset.createIndex('byCharacter','character_id',{unique:false})}catch(ex){};try{const ah=e.target.transaction.objectStore('active_message_history');if(!ah.indexNames.contains('bySetting'))ah.createIndex('bySetting','setting_id',{unique:false})}catch(ex){};try{const ap=e.target.transaction.objectStore('active_message_plans');if(!ap.indexNames.contains('byCharacter'))ap.createIndex('byCharacter','characterId',{unique:false})}catch(ex){};try{const de=e.target.transaction.objectStore('diary_entries');if(!de.indexNames.contains('byCharacter'))de.createIndex('byCharacter','characterId',{unique:false});if(!de.indexNames.contains('byDate'))de.createIndex('byDate','date',{unique:false})}catch(ex){};try{const mo=e.target.transaction.objectStore('moments');if(!mo.indexNames.contains('byRole'))mo.createIndex('byRole','roleId',{unique:false});if(!mo.indexNames.contains('byCreated'))mo.createIndex('byCreated','createdAt',{unique:false})}catch(ex){};try{const rl=e.target.transaction.objectStore('roleLetters');if(!rl.indexNames.contains('byTo'))rl.createIndex('byTo','toRoleId',{unique:false});if(!rl.indexNames.contains('byFrom'))rl.createIndex('byFrom','fromRoleId',{unique:false})}catch(ex){};try{const rlm=e.target.transaction.objectStore('roleLetterMemories');if(!rlm.indexNames.contains('byCharacter'))rlm.createIndex('byCharacter','characterId',{unique:false})}catch(ex){};try{const ac=e.target.transaction.objectStore('activities');if(!ac.indexNames.contains('byRole'))ac.createIndex('byRole','roleId',{unique:false});if(!ac.indexNames.contains('byType'))ac.createIndex('byType','type',{unique:false})}catch(ex){};try{const fav=e.target.transaction.objectStore('favorites');if(!fav.indexNames.contains('byRole'))fav.createIndex('byRole','roleId',{unique:false});if(!fav.indexNames.contains('byType'))fav.createIndex('byType','type',{unique:false})}catch(ex){}};req.onblocked=()=>{try{console.warn('[DB] IndexedDB 升级被其他标签页阻塞：请关闭其他 InternalBeyond 标签页后刷新');toast('数据库升级被其他标签页阻塞，请关闭旧标签页后刷新')}catch(e){}};req.onsuccess=()=>{db=req.result;resolve(db)};req.onerror=()=>reject(req.error)})}
+const DB_SCHEMA=window.IBWebCoreDbSchema,DB_NAME=DB_SCHEMA.DB_NAME,DB_VER=DB_SCHEMA.DB_VERSION;let db;
+function openDB(){return DB_SCHEMA.open(indexedDB,{onblocked:function(){try{console.warn('[DB] IndexedDB 升级被其他标签页阻塞：请关闭其他 InternalBeyond 标签页后刷新');toast('数据库升级被其他标签页阻塞，请关闭旧标签页后刷新')}catch(e){}}})}
 /* 共享的数据库就绪守卫：db 尚未打开时，所有读写都等待同一份 openDB 结果，
    避免页面刚加载时直接访问 db.transaction 抛“Cannot read properties of undefined”。 */
 let _dbReadyP=null;
 async function ensureDB(){if(db)return db;if(!_dbReadyP){_dbReadyP=openDB().catch(function(e){_dbReadyP=null;throw new Error('本地数据库暂不可用：'+String(e&&e.message||e))})}return _dbReadyP}
-async function dbPut(s,d){await ensureDB();return new Promise((r,j)=>{let settled=false;const t=db.transaction(s,'readwrite');const fail=e=>{if(settled)return;settled=true;j(t.error||(e&&e.target&&e.target.error)||new Error('IndexedDB 写入失败'))};try{const q=t.objectStore(s).put(d);q.onerror=fail}catch(e){fail(e);return}t.oncomplete=()=>{if(settled)return;settled=true;_ibMirrorDirty=true;_ibFsDirty=true;r()};t.onerror=fail;t.onabort=fail})}
-async function dbGetAll(s){await ensureDB();return new Promise((r,j)=>{const t=db.transaction(s,'readonly');const q=t.objectStore(s).getAll();q.onsuccess=()=>r(q.result);q.onerror=()=>j(q.error)})}
-async function dbGet(s,k){await ensureDB();return new Promise((r,j)=>{const t=db.transaction(s,'readonly');const q=t.objectStore(s).get(k);q.onsuccess=()=>r(q.result);q.onerror=()=>j(q.error)})}
+function _ibEndpointHasInlineCredential(value){
+  const endpoint=String(value||'');
+  return /(?:[?&])(?:api[_-]?key|key|token|secret|authorization|bearer|password|credential|signature|sig)=[^&#]+/i.test(endpoint)
+    || /(?:sk-[A-Za-z0-9_-]{12,}|AIza[0-9A-Za-z_-]{20,}|Bearer\s+[A-Za-z0-9._~+/-]{16,})/i.test(endpoint)
+    || /^[a-z][a-z0-9+.-]*:\/\/[^/@?#]+:[^/@?#]+@/i.test(endpoint);
+}
+function _ibCredentialFreeApiConfig(value){
+  const blocked=/^(?:apiKey|api_key|imageGenApiKey|image_gen_api_key|authorization|bearer|accessToken|refreshToken|token|secret|password)$/i;
+  if(Array.isArray(value))return value.map(_ibCredentialFreeApiConfig);
+  if(!value||typeof value!=='object')return value;
+  const out={};
+  Object.keys(value).forEach(function(key){
+    if(blocked.test(key)||key==='_credentialImageSecretLegacy')return;
+    if((key==='endpoint'||key==='imageGenEndpoint')&&typeof value[key]==='string'&&_ibEndpointHasInlineCredential(value[key]))return;
+    out[key]=_ibCredentialFreeApiConfig(value[key]);
+  });
+  return out;
+}
+function _ibCredentialFreeApiConfigForRuntime(value){
+  if(!value||typeof value!=='object'||Array.isArray(value))return _ibCredentialFreeApiConfig(value);
+  const legacyImageSecret=!!(value._credentialImageSecretLegacy||String(value.imageGenApiKey||'').trim());
+  const out=_ibCredentialFreeApiConfig(value);
+  if(legacyImageSecret)out._credentialImageSecretLegacy=true;
+  return out;
+}
+async function dbPut(s,d){const stored=s==='apiConfigs'?_ibCredentialFreeApiConfig(d):d;await ensureDB();return new Promise((r,j)=>{let settled=false;const t=db.transaction(s,'readwrite');const fail=e=>{if(settled)return;settled=true;j(t.error||(e&&e.target&&e.target.error)||new Error('IndexedDB 写入失败'))};try{const q=t.objectStore(s).put(stored);q.onerror=fail}catch(e){fail(e);return}t.oncomplete=()=>{if(settled)return;settled=true;_ibMarkBusinessDataPresent(s,stored);_ibMirrorDirty=true;_ibFsDirty=true;r()};t.onerror=fail;t.onabort=fail})}
+async function dbGetAll(s){await ensureDB();return new Promise((r,j)=>{const t=db.transaction(s,'readonly');const q=t.objectStore(s).getAll();q.onsuccess=()=>r(s==='apiConfigs'?(q.result||[]).map(_ibCredentialFreeApiConfigForRuntime):q.result);q.onerror=()=>j(q.error)})}
+async function dbGet(s,k){await ensureDB();return new Promise((r,j)=>{const t=db.transaction(s,'readonly');const q=t.objectStore(s).get(k);q.onsuccess=()=>r(s==='apiConfigs'&&q.result?_ibCredentialFreeApiConfigForRuntime(q.result):q.result);q.onerror=()=>j(q.error)})}
 async function dbDelete(s,k){await ensureDB();return new Promise((r,j)=>{const t=db.transaction(s,'readwrite');t.objectStore(s).delete(k);t.oncomplete=()=>{_ibMirrorDirty=true;_ibFsDirty=true;r()};t.onerror=()=>j(t.error)})}
-async function dbGetByIndex(s,idx,val){await ensureDB();return new Promise((r,j)=>{const t=db.transaction(s,'readonly');const store=t.objectStore(s);if(!store.indexNames.contains(idx)){/* fallback if index missing */const fields={byFriend:'friendId',byCharacter:'character_id',bySetting:'setting_id',byProject:'projectId',byTo:'toRoleId',byFrom:'fromRoleId'},field=fields[idx]||idx;const q=store.getAll();q.onsuccess=()=>r(q.result.filter(i=>i[field]===val));q.onerror=()=>j(q.error);return}const q=store.index(idx).getAll(val);q.onsuccess=()=>r(q.result);q.onerror=()=>j(q.error)})}
+async function dbGetByIndex(s,idx,val){await ensureDB();return new Promise((r,j)=>{const t=db.transaction(s,'readonly');const store=t.objectStore(s);if(!store.indexNames.contains(idx)){/* fallback if index missing */const fields={byFriend:'friendId',byCharacter:'character_id',bySetting:'setting_id',byProject:'projectId',byTo:'toRoleId',byFrom:'fromRoleId'},field=fields[idx]||idx;const q=store.getAll();q.onsuccess=()=>{const rows=q.result.filter(i=>i[field]===val);r(s==='apiConfigs'?rows.map(_ibCredentialFreeApiConfigForRuntime):rows)};q.onerror=()=>j(q.error);return}const q=store.index(idx).getAll(val);q.onsuccess=()=>r(s==='apiConfigs'?(q.result||[]).map(_ibCredentialFreeApiConfigForRuntime):q.result);q.onerror=()=>j(q.error)})}
+/* P31 · 有界只读扫描：按游标逐条消费记录，不把整张 store 物化到内存。
+   visitor 在事务回调内同步执行；返回 false 或达到 maxRecords 即停止。
+   这是 Direct Channel 的读取能力，不改变任何既有 dbGet* 读写契约，也不升 DB 版本。 */
+async function dbScan(s,visitor,options){
+  await ensureDB();
+  options=options||{};
+  return new Promise((resolve,reject)=>{
+    let settled=false,count=0,stopped=false,t;
+    const finish=(err)=>{if(settled)return;settled=true;err?reject(err):resolve({count:count,stopped:stopped})};
+    try{
+      t=db.transaction(s,'readonly');
+      const store=t.objectStore(s);
+      const hasIndex=options.index&&store.indexNames.contains(options.index);
+      const source=hasIndex?store.index(options.index):store;
+      const req=source.openCursor(options.range||null,options.direction||'next');
+      req.onsuccess=()=>{
+        if(settled)return;
+        const cursor=req.result;
+        if(!cursor){finish();return}
+        count++;
+        let keep=true;
+        try{const value=s==='apiConfigs'?_ibCredentialFreeApiConfigForRuntime(cursor.value):cursor.value;keep=typeof visitor==='function'?visitor(value,count)!==false:false}catch(e){finish(e);return}
+        const max=Number(options.maxRecords);
+        if(!keep||(isFinite(max)&&max>0&&count>=Math.floor(max))){stopped=true;finish();return}
+        cursor.continue();
+      };
+      req.onerror=()=>finish(req.error||new Error('IndexedDB cursor 读取失败'));
+      t.onerror=()=>finish(t.error||new Error('IndexedDB cursor 事务失败'));
+      t.onabort=()=>finish(t.error||new Error('IndexedDB cursor 事务中止'));
+    }catch(e){finish(e)}
+  });
+}
 /* P11-3X-C · 读-改-写单事务原语（read-modify-write in ONE transaction）。
    为什么需要它：`for(...){ await dbGet(id); ...; await dbPut(rec) }` 这种形状
    每个 id 要开**两个**事务（一个 readonly 读 + 一个 readwrite 写），是实测到的
@@ -21,7 +78,7 @@ async function dbGetByIndex(s,idx,val){await ensureDB();return new Promise((r,j)
      · 每条记录 1 个事务而不是 2 个 → 事务数减半。
    mutator 返回 falsy 表示"不改写"（记录不存在或调用方决定跳过），此时不写。
    未改动任何 store、索引或 schema。 */
-async function dbUpdate(s,k,mutator){await ensureDB();return new Promise((resolve,reject)=>{let settled=false;const done=v=>{if(settled)return;settled=true;resolve(v)},fail=e=>{if(settled)return;settled=true;reject(e)};let t;try{t=db.transaction(s,'readwrite')}catch(e){fail(e);return}const store=t.objectStore(s);let changed=false;try{const q=store.get(k);q.onsuccess=()=>{const cur=q.result;if(cur==null)return;let next;try{next=mutator(cur)}catch(e){return}if(!next)return;try{store.put(next);changed=true}catch(e){}};q.onerror=()=>fail(q.error)}catch(e){fail(e);return}t.oncomplete=()=>{_ibMirrorDirty=true;_ibFsDirty=true;done(changed)};t.onerror=()=>fail(t.error);t.onabort=()=>fail(t.error||new Error('IndexedDB 事务被中止'))})}
+async function dbUpdate(s,k,mutator){await ensureDB();return new Promise((resolve,reject)=>{let settled=false;const done=v=>{if(settled)return;settled=true;resolve(v)},fail=e=>{if(settled)return;settled=true;reject(e)};let t;try{t=db.transaction(s,'readwrite')}catch(e){fail(e);return}const store=t.objectStore(s);let changed=false;try{const q=store.get(k);q.onsuccess=()=>{const cur=q.result;if(cur==null)return;let next;try{next=mutator(s==='apiConfigs'?_ibCredentialFreeApiConfigForRuntime(cur):cur)}catch(e){return}if(!next)return;try{store.put(s==='apiConfigs'?_ibCredentialFreeApiConfig(next):next);changed=true}catch(e){}};q.onerror=()=>fail(q.error)}catch(e){fail(e);return}t.oncomplete=()=>{_ibMirrorDirty=true;_ibFsDirty=true;done(changed)};t.onerror=()=>fail(t.error);t.onabort=()=>fail(t.error||new Error('IndexedDB 事务被中止'))})}
 /* M1-A · Home Node canonical authority 的浏览器接缝（唯一改动点）。
    ------------------------------------------------------------------
    把「未包装的原函数 + 镜像批量写入器」发布到一个**明确命名的接缝对象**上，
@@ -970,12 +1027,21 @@ function downloadJSON(data,filename){const blob=new Blob([JSON.stringify(data,nu
    浏览器可能在存储压力回收或数据库损坏自愈时清空 IndexedDB（localStorage 为独立子系统，不受影响）。
    四道防护各堵一个环节：
    ① persist()：申请持久化标记，避免存储压力自动回收（对损坏自愈无效，故有②③④）
-   ② 空库熔断：启动即检测"整站为空 + 存在历史活跃痕迹"，立刻弹警告并给出镜像回灌/导入备份两条出路
+   ② 空库熔断：只检测"业务数据曾成功落盘 + 当前业务 store 全空"，不把 boot/活跃/设置 marker 当历史证据
    ③ 每日自动备份：每天首次打开约半分钟后静默导出完整 JSON（含 ICode）到下载文件夹
    ④ 紧急镜像：核心数据节流写入 localStorage，按优先级装箱、聊天记录从最新往回塞满预算；
       带"空库保护"——全站为空时绝不覆盖上一份好镜像 */
 var IB_MIRROR_KEY='ib_mirror_v1',IB_MIRROR_META='ib_mirror_meta';
 var _ibMirrorDirty=false,_ibMirrorLastTs=0,_ibGuardShown=false;
+var _ibBusinessPresence=(typeof window!=='undefined'&&window.IBDataPresence)?window.IBDataPresence:null;
+function _ibSetBusinessPresence(){
+  if(!_ibBusinessPresence)return false;
+  try{localStorage.setItem(_ibBusinessPresence.MARKER_KEY,'1');return true}catch(e){return false}
+}
+function _ibMarkBusinessDataPresent(store,record){
+  if(!_ibBusinessPresence||!_ibBusinessPresence.isBusinessRecord(store,record))return false;
+  return _ibSetBusinessPresence();
+}
 async function _ibRequestPersist(){
   try{
     if(!(navigator.storage&&navigator.storage.persist))return;
@@ -987,10 +1053,21 @@ async function _ibRequestPersist(){
   }catch(e){}
 }
 async function _ibCount(s){try{await ensureDB();var t=db.transaction(s,'readonly');var q=t.objectStore(s).count();return await new Promise(function(r){q.onsuccess=function(){r(q.result||0)};q.onerror=function(){r(0)}})}catch(e){return 0}}
+async function _ibCountBusiness(s){
+  try{
+    /* The built-in sample letter is initialization-only, not user history. */
+    if(s==='letters'){
+      var rows=await dbGetAll(s),n=0;
+      for(var i=0;i<rows.length;i++)if(_ibBusinessPresence&&_ibBusinessPresence.isBusinessRecord(s,rows[i]))n++;
+      return n;
+    }
+    return await _ibCount(s);
+  }catch(e){return 0}
+}
 async function _ibVitals(){
-  var v={},ks=['chatMessages','posts','letters','memories','apiConfigs','projectFiles'];
-  for(var i=0;i<ks.length;i++)v[ks[i]]=await _ibCount(ks[i]);
-  v.total=v.chatMessages+v.posts+v.letters+v.memories+v.apiConfigs+v.projectFiles;
+  var v={},ks=_ibBusinessPresence?_ibBusinessPresence.BUSINESS_STORES:[],total=0;
+  for(var i=0;i<ks.length;i++){v[ks[i]]=await _ibCountBusiness(ks[i]);total+=v[ks[i]]}
+  v.businessTotal=total;v.total=total;
   return v;
 }
 /* —— 导出打包（Export 按钮 / 每日自动备份 / 紧急镜像 共用同一数据源） —— */
@@ -1044,12 +1121,17 @@ function _ibMirrorPack(all,budget){
   var pri=['about','apiSettings','apiConfigs','groups','chatThreads','active_message_settings','memories','chatSummaries','letters','categories'];
   for(var i=0;i<pri.length;i++){
     var st=pri[i],arr=all[st]||[];
+    if(st==='apiConfigs')arr=arr.map(_ibCredentialFreeApiConfig);
     if(!arr.length)continue;
     var j=JSON.stringify(arr);
     if(used+j.length>budget){out.truncated[st]=arr.length;continue}
     out.stores[st]=arr;used+=j.length;
   }
-  var msgs=(all.chatMessages||[]).map(function(m){var c=Object.assign({},m);delete c.upstreamRaw;delete c.thinkingSources;return c}).sort(function(a,b){return(a.timestamp||0)-(b.timestamp||0)});  var takeM=[];
+  /* P23 2A：紧急镜像的 chatMessages 也按 canonical 顺序（回合内按 sequenceIndex）——
+     镜像恢复出来的顺序必须与正式读取路径一致，否则"恢复后顺序变了"。
+     顺序实现唯一 = assets/js/delivery-sequence-core.js；这里只转调，不复制排序规则。 */
+  var _ibMsgsRaw=(all.chatMessages||[]).map(function(m){var c=Object.assign({},m);delete c.upstreamRaw;delete c.thinkingSources;return c});
+  var msgs=(function(){try{var seq=(typeof window!=='undefined')?window.IBDeliverySequence:null;if(seq&&typeof seq.orderMessages==='function')return seq.orderMessages(_ibMsgsRaw)}catch(e){}return _ibMsgsRaw})();  var takeM=[];
   for(var k=msgs.length-1;k>=0;k--){
     var mj=JSON.stringify(msgs[k]);
     if(used+mj.length>budget)break;
@@ -1077,10 +1159,8 @@ async function _ibMirrorNow(force){
     var v=await _ibVitals();
     var meta=null;try{meta=JSON.parse(localStorage.getItem(IB_MIRROR_META)||'null')}catch(e){}
     if(v.total===0&&meta&&meta.total>0){if(force)toast('站内没有数据，为保护上一份镜像未执行覆盖');return}
-    /* 紧急镜像是同源 localStorage 的「恢复副本」，绝不离机；它必须像 IndexedDB 一样
-       保留完整凭证（apiKey），否则 IndexedDB 意外清空后从镜像恢复会永久抹掉 API 密钥
-       （UI 显示「无密钥」）。红线不变：它不经过 _ibBuildRedactedExportData（那套脱敏
-       只用于 exportAll / 每日备份 / 文件夹同步等离机导出）。 */
+    /* 紧急镜像是同源 localStorage 的非秘密恢复副本。apiConfigs 在写入镜像前经过
+       _ibCredentialFreeApiConfig；Credential Vault 是唯一 secret authority，镜像不保存其凭据。 */
     var all=await _ibBuildExportData();
     var pack=_ibMirrorPack(all),str=JSON.stringify(pack);
     var ok=false;
@@ -1091,7 +1171,7 @@ async function _ibMirrorNow(force){
     if(!ok)return;
     try{localStorage.setItem(IB_MIRROR_META,JSON.stringify({ts:pack.ts,total:v.total,msgs:(pack.stores.chatMessages||[]).length}))}catch(e){}
     _ibMirrorLastTs=now;_ibMirrorDirty=false;
-    if(force)toast('紧急镜像已更新（同源恢复副本，含完整配置与密钥）');
+    if(force)toast('紧急镜像已更新（同源恢复副本，不含 Credential Vault 凭据）');
     _ibRenderGuardPanel();
   }catch(e){}
 }
@@ -1209,14 +1289,15 @@ async function _ibFsInit(){
 /* —— 空库熔断 —— */
 async function _ibGuardCheck(){
   try{
-    var la=null;try{la=localStorage.getItem('ib_lastActive')}catch(e){}
-    if(!la)return;/* 没有历史痕迹 → 真·首次使用 */
+    if(!_ibBusinessPresence)return;/* policy module missing → fail closed, never false-positive */
     var resetAt=0;try{resetAt=parseInt(localStorage.getItem('ib_resetAt'))||0}catch(e){}
     if(Date.now()-resetAt<15*60000)return;/* 刚主动重置过，属预期内的空 */
     var v=await _ibVitals();
-    if(v.total>0){try{localStorage.removeItem('ib_guardMuted')}catch(e){}return}
+    if(v.businessTotal>0){_ibSetBusinessPresence();try{localStorage.removeItem('ib_guardMuted')}catch(e){}return}
+    var marker='';try{marker=localStorage.getItem(_ibBusinessPresence.MARKER_KEY)||''}catch(e){}
     var muted='';try{muted=localStorage.getItem('ib_guardMuted')||''}catch(e){}
-    if(muted)return;
+    var decision=_ibBusinessPresence.decide({marker:marker,businessCount:v.businessTotal,muted:!!muted});
+    if(!decision.warn)return;
     _ibShowGuardOverlay();
   }catch(e){}
 }
@@ -1279,10 +1360,13 @@ function ibCoreLive(name, getter, setter){
 window.openDB=openDB;
 window.ensureDB=ensureDB;
 window.dbPut=dbPut;
+window._ibCredentialFreeApiConfig=_ibCredentialFreeApiConfig;
+window._ibEndpointHasInlineCredential=_ibEndpointHasInlineCredential;
 window.dbGetAll=dbGetAll;
 window.dbGet=dbGet;
 window.dbDelete=dbDelete;
 window.dbGetByIndex=dbGetByIndex;
+window.dbScan=dbScan;
 window.dbUpdate=dbUpdate;
 window.getDefaultPromptForTheme=getDefaultPromptForTheme;
 window.clearDefaultPrompt=clearDefaultPrompt;
@@ -1359,6 +1443,7 @@ window.exportAll=exportAll;
 window.downloadJSON=downloadJSON;
 window._ibRequestPersist=_ibRequestPersist;
 window._ibCount=_ibCount;
+window._ibMarkBusinessDataPresent=_ibMarkBusinessDataPresent;
 window._ibVitals=_ibVitals;
 window._ibBuildExportData=_ibBuildExportData;
 window._ibAutoBakOn=_ibAutoBakOn;
@@ -1438,6 +1523,7 @@ NS.expose('core', {
   dbGet: dbGet,
   dbDelete: dbDelete,
   dbGetByIndex: dbGetByIndex,
+  dbScan: dbScan,
   getDefaultPromptForTheme: getDefaultPromptForTheme,
   clearDefaultPrompt: clearDefaultPrompt,
   syncDefaultPromptToTheme: syncDefaultPromptToTheme,

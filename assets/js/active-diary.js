@@ -5,6 +5,18 @@ const ACTIVE_SETTINGS_STORE='active_message_settings';
 const ACTIVE_HISTORY_STORE='active_message_history';
 const ACTIVE_COMPANION_URL='http://127.0.0.1:23114';
 let _activeTimer=null,_activeTicking=false,_activeCompanionOnline=false,_activeCompanionReady=false,_activeCompanionCheckedAt=0,_activeLastContextSync=0;
+function _recoveryActiveHeld(){
+  const guarded=window.__IB_RECOVERY_FIRST_BOOT__===true||window.__IB_RECOVERY_ACTIVE_HOLD__===true||window.__IB_RECOVERY_BOOT_BLOCKED__===true;
+  if(!guarded)return false;
+  const policy=window.IBRecoveryFirstBoot;
+  return !policy||policy.shouldSuppressActive(policy.policyFromWindow(window));
+}
+async function _acknowledgeRecoveryFirstBoot(){
+  if(window.__IB_RECOVERY_FIRST_BOOT__!==true)return;
+  const policy=window.IBRecoveryFirstBoot;
+  const invoke=window.__TAURI__&&window.__TAURI__.core&&window.__TAURI__.core.invoke;
+  if(policy&&typeof invoke==='function')await policy.acknowledgeFirstBoot(policy.policyFromWindow(window),invoke.bind(window.__TAURI__.core));
+}
 
 async function _activeBackgroundSettings(characterId){
   let rows=[];try{rows=await dbGetAll(ACTIVE_SETTINGS_STORE)}catch(e){return[]}
@@ -375,13 +387,13 @@ async function _activeRecentMemories(characterId,contextText){
 }
 async function _activeRecentMessages(characterId){
   let all=[];try{all=await dbGetByIndex('chatMessages','byFriend',characterId)}catch(e){}
-  return all.filter(m=>!m.threadId).sort((a,b)=>(a.timestamp||0)-(b.timestamp||0)).slice(-16)
+  return _ibOrderMsgs(all.filter(m=>!m.threadId)).slice(-16)
     .map(m=>({role:m.role==='assistant'?'assistant':'user',content:String(m.content||'').slice(0,700),timestamp:m.timestamp||0,source:m.source||''}))
 }
 async function _activeRecentProactiveMessages(characterId){
   let all=[];try{all=await dbGetByIndex('chatMessages','byFriend',characterId)}catch(e){}
-  return all.filter(m=>!m.threadId&&m.role==='assistant'&&m.source==='active_message'&&String(m.content||'').trim())
-    .sort((a,b)=>(a.timestamp||0)-(b.timestamp||0)).slice(-10).map(m=>({content:String(m.content||'').slice(0,700),timestamp:m.timestamp||0,message_id:m.id||''}))
+  const _pm=all.filter(m=>!m.threadId&&m.role==='assistant'&&m.source==='active_message'&&String(m.content||'').trim());
+  return _ibOrderMsgs(_pm).slice(-10).map(m=>({content:String(m.content||'').slice(0,700),timestamp:m.timestamp||0,message_id:m.id||''}))
 }
 async function loadProactiveMessageContext(cfg,setting,currentTime){
   const recent=await _activeRecentMessages(cfg.id),contextText=recent.slice(-8).map(m=>m.content).join('\n')+'\n'+_activeCustomInstruction(setting);
@@ -622,6 +634,7 @@ async function _activeBuildPrompt(cfg,setting,currentTime){
   return Object.assign({},ctx,built,{recent:ctx.recentMessages})
 }
 async function _activeGenerate(cfg,setting){
+  if(_recoveryActiveHeld())throw new Error('recovery-active-hold');
   _activeProactiveLog('character loaded',{taskId:setting.id||'',characterId:cfg.id,name:cfg.nickname||cfg.model||'AI'});
   _activeProactiveLog('provider/model selected',{taskId:setting.id||'',characterId:cfg.id,apiConfigId:cfg.id,provider:cfg.provider||'custom',model:cfg.model||''});
   const ctx=await loadProactiveMessageContext(cfg,setting),pool=apiConfigs.filter(a=>a.id!==cfg.id),randomCharacter=setting.message_type==='random'&&pool.length?pool[Math.floor(Math.random()*pool.length)]:null;
@@ -633,11 +646,11 @@ async function _activeStoreMessage(cfg,setting,run,out){
   /* Active messages intentionally persist only the final visible reply. Normal chat keeps its
      existing model-level thinking policy; proactive generation never exposes private reasoning. */
   const msg={id:msgId,role:'assistant',content:out.content,reasoning_content:'',friendId:cfg.id,senderName:cfg.nickname||cfg.model||'AI',timestamp:Date.now(),source:'active_message',activeSettingId:setting.id,scheduledFor:run.scheduled_for,generatedByFallback:!!out.generatedByFallback,metadata:{config_id:cfg.id,apiConfigId:cfg.id,provider:cfg.provider||'custom',model:cfg.provider||'',model_id:cfg.model||'',showThinking:false,source:'active_message',generatedByFallback:!!out.generatedByFallback,generationAttempts:Number(out.generationAttempts||1)}};
-  await dbPut('chatMessages',msg);
-  if(activeFriendId===cfg.id)appendChatBubble('ai',msg.content,msg.senderName,msg.reasoning_content,msg.id,null,null,null,null,cfg);
-  else try{_markUnread(cfg.id)}catch(e){}
-  try{if(currentPage==='chat')renderChatCalendar()}catch(e){}
-  updateChatStorageInfo();_activeNotify(cfg,msg.content);_activeProactiveLog('message saved',{taskId:setting.id||'',characterId:cfg.id,messageId:msg.id,provider:cfg.provider||'custom',model:cfg.model||'',generatedByFallback:!!out.generatedByFallback});return msg
+  /* P25-3C · 写权限不在 scheduler / model / executor 手里：先经 Active Message Authority，只有 ALLOW 才 canonical 写。 */
+  const send=await _activeSendAuthorized({cfg:cfg,msg:msg,targetId:String(setting.user_id||''),source:(run.manual?'user':'schedule'),trigger:(run.manual?'manual':'schedule'),triggerRef:String(run.run_id||''),manual:run.manual===true,enabled:setting.enabled===true,quietHours:(await _bgAiGate())==='hibernate',cooldown:!!(await _activeAdaptiveReason(setting)),recentProactive:(out.context&&out.context.recentProactiveMessages)||[],cancelled:run.cancelled===true});
+  if(!send.ok)return null;/* DENY（disabled / quiet-hours / cooldown / duplicate / cancelled / unknown-*）⇒ 零写入、零副作用 */
+  _activeProactiveLog('message saved',{taskId:setting.id||'',characterId:cfg.id,messageId:msg.id,provider:cfg.provider||'custom',model:cfg.model||'',generatedByFallback:!!out.generatedByFallback});
+  return msg
 }
 async function _activeFinishRun(run,out,error){
   const now=Date.now(),s=await dbGet(ACTIVE_SETTINGS_STORE,run.setting.id)||run.setting;
@@ -656,7 +669,7 @@ async function _activeFinishRun(run,out,error){
 async function _activeAdaptiveReason(setting){
   if(!setting.adaptive_enabled)return'';
   let msgs=[];try{msgs=await dbGetByIndex('chatMessages','byFriend',setting.character_id)}catch(e){}
-  const users=msgs.filter(m=>m.role==='user'&&!m.threadId).sort((a,b)=>(b.timestamp||0)-(a.timestamp||0));
+  const users=_ibOrderMsgs(msgs.filter(m=>m.role==='user'&&!m.threadId)).slice().reverse();/* P23 2A：最新在前 = canonical 顺序反转 */
   if(!users.length)return'';
   const elapsed=Date.now()-Number(users[0].timestamp||0);
   return elapsed>=0&&elapsed<12*3600000?'最近 12 小时内刚互动过，本次计划已顺延':''
@@ -671,6 +684,7 @@ async function _activeSkipRun(run,reason){
   if(currentPage==='active'){await _activeRenderSettings();await _activeRenderHistory()}
 }
 async function _activeExecuteRun(run){
+  if(_recoveryActiveHeld())return{ok:false,reason:'recovery-active-hold'};
   const s=run.setting,cfg=apiConfigs.find(a=>a.id===s.character_id)||archivedConfigs.find(a=>a.id===s.character_id);
   run.character_name=cfg&&(cfg.nickname||cfg.model)||'AI';
   _activeProactiveLog('task triggered',{taskId:s.id||'',characterId:s.character_id||'',scheduledFor:run.scheduled_for,manual:!!run.manual});
@@ -682,7 +696,7 @@ async function _activeExecuteRun(run){
     if(!_ibApiReady(cfg))throw new Error('角色 API 配置不完整');
     if(_chatSendingFor.has(cfg.id))throw new Error('角色正在回复，已跳过本次主动消息');
     _chatSendingFor.add(cfg.id);
-    const out=await _activeGenerate(cfg,s);await _activeStoreMessage(cfg,s,run,out);await _activeFinishRun(run,out,null)
+    const out=await _activeGenerate(cfg,s);const sent=await _activeStoreMessage(cfg,s,run,out);if(!sent){await _activeSkipRun(run,'本次主动消息被 Active Message Authority 拒绝');return}await _activeFinishRun(run,out,null)
   }catch(e){
     console.error('[Active Messages]',e);await _activeFinishRun(run,null,e);
     if(run.manual){
@@ -694,6 +708,7 @@ async function _activeExecuteRun(run){
   finally{if(cfg)_chatSendingFor.delete(cfg.id)}
 }
 async function _activeRunNow(id){
+  if(_recoveryActiveHeld())return{ok:false,reason:'recovery-active-hold'};
   const s=await dbGet(ACTIVE_SETTINGS_STORE,id);if(!s)return;
   if(_chatSendingFor.has(s.character_id)){toast('该角色正在回复，请稍后再试');return}
   const scheduled=Date.now(),runId=_activeRunId(s.id,scheduled);
@@ -1194,6 +1209,7 @@ async function _bgAiLoadUI(){
   var se=document.getElementById('bga-sleep-end');if(se)se.value=cfg.sleepEnd||'';
 }
 async function _activeTick(){
+  if(_recoveryActiveHeld())return{ok:false,reason:'recovery-active-hold'};
   if(_activeTicking||!db)return;_activeTicking=true;
   try{
     /* 后台 AI 总开关 + 休眠时段：hibernate 时跳过一切"唤醒AI"的后台服务，
@@ -1234,6 +1250,7 @@ async function _activeRequestNotification(){
   try{const p=await Notification.requestPermission();toast(p==='granted'?'主动消息通知已允许':'未获得通知权限')}catch(e){toast('通知权限请求失败')}
 }
 async function _activeCompanionRequest(path,opts){
+  if(_recoveryActiveHeld())throw new Error('recovery-active-hold');
   opts=opts||{};const ac=new AbortController(),tm=setTimeout(()=>ac.abort(),opts.timeout||2500);
   try{
     const headers=Object.assign({'Content-Type':'application/json'},opts.headers||{});
@@ -1399,7 +1416,9 @@ async function _activePullCompanionEvents(){
         const msgId=ev.message_id||_activeMessageId(ev.setting_id||ev.plan_id,ev.scheduled_for);
         if(!(await dbGet('chatMessages',msgId))){
           const msg={id:msgId,role:'assistant',content:ev.content,reasoning_content:'',friendId:ev.character_id,senderName:ev.character_name||(cfg&&(cfg.nickname||cfg.model))||'AI',timestamp:ev.sent_at||Date.now(),source:'active_message',activeSettingId:ev.setting_id||ev.plan_id||'',activePlanId:ev.plan_id||'',scheduledFor:ev.scheduled_for,generatedByFallback:!!ev.generatedByFallback,metadata:{config_id:ev.character_id,apiConfigId:ev.character_id,provider:ev.provider||'',model:ev.provider||'',model_id:ev.model||'',showThinking:false,source:'active_message',activePlanId:ev.plan_id||'',task_revision:ev.task_revision||0,generatedByFallback:!!ev.generatedByFallback,generationAttempts:Number(ev.generation_attempts||1)}};
-          await dbPut('chatMessages',msg);
+          /* P25-3C · 唯一 canonical writer：companion 事件是"已授权发送"的**投递镜像**（inbound），
+             不是新的发送决策 —— 因此这里不重复裁决发送权限，只走同一条写入通道。 */
+          await _activeWriteCanonical(msg,{effects:false});
           if(activeFriendId===ev.character_id)appendChatBubble('ai',msg.content,msg.senderName,msg.reasoning_content,msg.id,null,null,null,null,cfg||msg.metadata);else try{_markUnread(ev.character_id)}catch(e){}
           if(cfg)_activeNotify(cfg,msg.content);_activeProactiveLog('message saved',{taskId:ev.setting_id||'',characterId:ev.character_id||'',messageId:msg.id,provider:ev.provider||'',model:ev.model||'',generatedByFallback:!!ev.generatedByFallback,source:'companion'})
         }
@@ -1435,15 +1454,21 @@ async function _activePullCompanionEvents(){
 }
 function initActiveMessages(){
   if(_activeTimer)clearInterval(_activeTimer);
+  if(_recoveryActiveHeld()){
+    const status=document.getElementById('active-local-status');
+    if(status){status.classList.remove('online');status.textContent='恢复安全保护：Active 已隔离'}
+    return false;
+  }
   _activeTimer=setInterval(_activeTick,30000);
   const ls=document.getElementById('active-local-status');if(ls){ls.classList.add('online');ls.textContent='页面调度运行中'}
   window.addEventListener('online',_activeTick);
   document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible')_activeTick();else if(_activeCompanionOnline)_activeSyncAllBackground()});
   setTimeout(_activeTick,2500);
-  setTimeout(function(){_activeRenderAiPrefs();_activeRenderAiPlans()},1200)
+  setTimeout(function(){_activeRenderAiPrefs();_activeRenderAiPlans()},1200);
+  return true
 }
 
-async function init(){await openDB();_ibGuardCheck();loadOutputSettings();await migrateLockedPosts();await loadApiConfigs();_refreshCachedUserName();loadPosts();loadCategories();updateBlogStats();loadAboutDisplay();_updateLastActive();_fabSyncHeight();_ibGuardInit();_vmInit();initActiveMessages();setTimeout(function(){_checkWelcomeBack(_presenceStartupLastActive)},2000)}
+async function init(){await openDB();await _ibGuardCheck();await _acknowledgeRecoveryFirstBoot();loadOutputSettings();await migrateLockedPosts();await loadApiConfigs();_refreshCachedUserName();loadPosts();loadCategories();updateBlogStats();loadAboutDisplay();_updateLastActive();_fabSyncHeight();_ibGuardInit();_vmInit();initActiveMessages();setTimeout(function(){_checkWelcomeBack(_presenceStartupLastActive)},2000)}
 init();
 initChatHeader();
 setTimeout(function(){var m=document.getElementById('music-mini');if(m)m.classList.add('visible')},1800);
@@ -1564,6 +1589,11 @@ window._threadRuleTick=_threadRuleTick;
 window._understandingAndThreadTick=_understandingAndThreadTick;
 window._activeNotify=_activeNotify;
 window._activeRequestNotification=_activeRequestNotification;
+/* P25-3C：Active Message Authority 接缝（测试/诊断入口；权威实现在 assets/js/active-message-authority.js） */
+window._activeMessageAuthority=_activeMessageAuthority;
+window._activeWriteCanonical=_activeWriteCanonical;
+window._activeRunSend=_activeRunSend;
+window._activeSendAuthorized=_activeSendAuthorized;
 window._activeCompanionRequest=_activeCompanionRequest;
 window._activeSetServiceStatus=_activeSetServiceStatus;
 window._activeCheckCompanion=_activeCheckCompanion;
@@ -1649,6 +1679,11 @@ NS.expose('active', {
   _activeTick: _activeTick,
   _activeNotify: _activeNotify,
   _activeRequestNotification: _activeRequestNotification,
+  /* ── P25-3C：Active Message Authority 接缝（active-plans.js 在调用时刻解析这些键）── */
+  sendAuthorized: _activeSendAuthorized,
+  writeCanonicalMessage: _activeWriteCanonical,
+  activeMessageAuthority: _activeMessageAuthority,
+  runActiveSend: _activeRunSend,
   _activeCompanionRequest: _activeCompanionRequest,
   _activeSetServiceStatus: _activeSetServiceStatus,
   _activeCheckCompanion: _activeCheckCompanion,
@@ -1676,4 +1711,96 @@ if(typeof document!=='undefined'){
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',function(){try{_bgAiLoadUI()}catch(e){}});
   else try{_bgAiLoadUI()}catch(e){}
 }
+/* ══════════ P23 Phase 2A · conversation 的确定性顺序（唯一的转调点）══════════
+   实现唯一 = assets/js/delivery-sequence-core.js：
+     回合内按 metadata.sequenceIndex 升序、一个回合的所有单元聚成连续块并落在它最早
+     一条的位置；没有回合键的旧消息退化为 (timestamp, id)。
+   为什么必须走它：一次模型回合可以交付多条消息（多段呈现 / 工具续轮），它们共享同一个
+   timestamp —— 只按 timestamp 排时"同毫秒"的先后由引擎/主键顺序决定。
+   为什么这个 helper 放在文件**末尾**：本文件上半部的 memory ACL 修复函数被
+   tests/test_moments_acl_contract.js 的 MEMORY_DOMAIN_ALLOW 以**行号**显式豁免；
+   在其上方插入任何行都会让那条豁免漂移（它宁可失败也不放宽）。函数声明在同一
+   IIFE 内提升，因此位置不影响调用。
+   核心未加载 ⇒ 原样返回取回顺序（仍是确定性的，只是不含回合归组）。 */
+function _ibOrderMsgs(list){
+  try{
+    var core=(typeof window!=='undefined')?window.IBDeliverySequence:null;
+    if(core&&typeof core.orderMessages==='function')return core.orderMessages(list);
+  }catch(e){}
+  return list;
+}
+/* ══════════ P25-3C · Active Message Authority 接缝（发送权限的唯一来源） ══════════
+   收敛后的唯一合法链（§0/§23）：
+     Trigger → Candidate → **Active Message Authority** → ALLOW → Executor → Canonical Chat Write → Verify
+   冻结：PLAN != PERMISSION · MODEL OUTPUT != PERMISSION · SCHEDULER TRIGGER != PERMISSION ·
+        CAPABILITY AVAILABILITY != PERMISSION。
+
+   · 权威实现是**纯模块** assets/js/active-message-authority.js（零 DOM / 零 DB / 零 fetch /
+     零 provider / 零模型 / 零 Memory / 零 Middle Brain / 零 Notification / 零 TTS）。
+   · 它缺席 ⇒ fail closed（DENY）：**绝不**退回旧的"模型输出直接落库"路径。
+   · facts 的**规则仍然只有一份**，全部是既有实现：enabled = setting.enabled / prefs.enabled；
+     quiet-hours = _bgAiGate()==='hibernate'（既有后台 AI 总开关 + 休眠时段）；
+     cooldown = _activeAdaptiveReason()（既有"12 小时内刚互动过"顺延）；
+     duplicate = _activeValidateProactiveReply()（既有相似度 0.82 / 同开头规则）。
+   · manual（用户显式点击"立即发送"）沿用既有产品语义（与 _activeExecuteRun 的
+     `if(!run.manual)` 同源）：调度期 gate 不适用于手动请求 —— 但它**同样**经过 authority
+     与同一条 canonical writer，因此 manual 不是 bypass。
+   · _activeWriteCanonical 是本域**唯一**的 chatMessages 写入口
+     （设定计划 / AI 计划 / companion 投递镜像 三条路径共用）。
+   · 不新增队列 / 定时器 / 后台进程；调度时序、频率、免打扰、去重规则全部未改。 */
+function _activeMessageAuthority(){
+  try{
+    const a=(typeof window!=='undefined'&&window.IBActiveMessageAuthority)
+      ||(typeof self!=='undefined'&&self.IBActiveMessageAuthority)
+      ||(typeof IBActiveMessageAuthority!=='undefined'?IBActiveMessageAuthority:null);
+    return(a&&typeof a.runActiveMessageSend==='function'&&typeof a.buildActiveMessageCandidate==='function'&&typeof a.verifyActiveMessageSend==='function')?a:null;
+  }catch(e){return null}
+}
+/* canonical writer：Active Message 域唯一的 chatMessages 写入口。
+   opts.effects!==false 时执行与既有实现逐字一致的后续动作（气泡 / 未读 / 日历 / 存储信息 / 通知）；
+   companion 投递镜像传 effects:false（它自带那一步的既有副作用，避免重复）。 */
+async function _activeWriteCanonical(msg,opts){
+  const m=msg||{},o=opts||{};
+  await dbPut('chatMessages',m);
+  if(o.effects!==false){
+    if(activeFriendId===m.friendId)appendChatBubble('ai',m.content,m.senderName,m.reasoning_content,m.id,null,null,null,null,o.cfg||m.metadata);
+    else try{_markUnread(m.friendId)}catch(e){}
+    try{if(currentPage==='chat')renderChatCalendar()}catch(e){}
+    updateChatStorageInfo();_activeNotify(o.cfg,m.content)
+  }
+  return m
+}
+/* 唯一裁决入口：authority 缺席 ⇒ DENY（fail closed），executor 永不被调用。 */
+async function _activeRunSend(candidate,facts,executor){
+  const auth=_activeMessageAuthority();
+  if(!auth)return{ok:false,decision:'deny',reason:'authority-missing',executed:false,actorId:'',targetId:'',message:null,error:''};
+  try{return await auth.runActiveMessageSend(candidate,facts,executor)}
+  catch(e){return{ok:false,decision:'deny',reason:'invalid-candidate',executed:false,actorId:'',targetId:'',message:null,error:String(e&&e.message||e).slice(0,200)}}
+}
+/* 发送接缝（唯一）：读真实状态 → candidate + facts → authority → ALLOW 才 canonical 写。
+   args = { cfg, msg, targetId, source, trigger, triggerRef, manual, enabled, quietHours,
+            cooldown, recentProactive, cancelled }
+   → { ok, decision, reason, message, run, duplicateReason }；DENY 时 message 为 null（零写入）。 */
+async function _activeSendAuthorized(args){
+  const a=args||{},cfg=a.cfg||null,msg=a.msg||null,manual=a.manual===true;
+  if(!msg||typeof msg!=='object')return{ok:false,decision:'deny',reason:'invalid-candidate',message:null,run:null,duplicateReason:''};
+  const targetId=String(a.targetId||_activeUserId()||'');
+  const recent=Array.isArray(a.recentProactive)?a.recentProactive:[];
+  const check=_activeValidateProactiveReply(msg.content,recent);
+  const candidate={actorId:String((cfg&&cfg.id)||''),targetId:targetId,source:String(a.source||''),trigger:String(a.trigger||''),triggerRef:String(a.triggerRef||''),messageRef:String(msg.id||'')};
+  const facts={
+    actorKnown:!!(cfg&&cfg.id)&&cfg.archived!==true,
+    targetKnown:!!targetId,
+    cancelled:a.cancelled===true,
+    enabled:manual?true:a.enabled===true,
+    quietHours:manual?false:a.quietHours===true,
+    cooldown:manual?false:a.cooldown===true,
+    duplicate:manual?false:!check.ok
+  };
+  const run=await _activeRunSend(candidate,facts,async()=>{await _activeWriteCanonical(msg,{cfg:cfg});return{ok:true,message:msg}});
+  return{ok:run.ok===true,decision:run.decision,reason:run.reason,message:run.ok?msg:null,run:run,duplicateReason:check.reason||''}
+}
+/* 跨 IIFE 接缝：上面 NS.expose('active', …) 里的 sendAuthorized / writeCanonicalMessage /
+   activeMessageAuthority / runActiveSend 就是给 active-plans.js 用的（它在**调用时刻**解析，
+   因此脚本加载顺序不影响"使用时刻"）。 */
 })(window.IB || (window.IB = {}));

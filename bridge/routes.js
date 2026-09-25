@@ -17,7 +17,7 @@ function createRoutes(ctx) {
     getLetters, setLetters, sessions, resident, contextStats, pushHistory,
     withListLock, uid, todayStr, saveList, saveGeo, saveSessions, saveResident,
     getWeather, searchMusic, musicPlayUrl, musicPlayRemote, searchNetease,
-    barkPush, ntfyPush, ttsNormalize, ttsSynthesize, ttsVoices,
+    barkPush, ntfyPush, ttsNormalize, ttsSynthesize, ttsVoices, ttsSources, voicebox,
     sessionGet, sessionSave, contextAppend, contextSummary,
     residentList, residentUpsert, residentSummary, residentChat, residentProactive,
     broadcast, recordPush, lanAddresses, fileSummary, directoryUsage,
@@ -396,11 +396,11 @@ function createRoutes(ctx) {
       return;
     }
 
-    /* TTS 音频文件 */
+    /* TTS 音频文件（P23 Phase 1：Voicebox 输出 WAV，故扩展名允许 wav；Content-Type 随之如实标注） */
     const ttsMatch = pathname.match(/^\/tts\/([^/]+)$/);
     if (ttsMatch && req.method === 'GET') {
       const name = path.basename(decodeURIComponent(ttsMatch[1]));
-      if (!/^[\w.\-]+\.mp3$/i.test(name)) {
+      if (!/^[\w.\-]+\.(mp3|wav)$/i.test(name)) {
         sendJsonRes(res, 400, { ok: false, error: '文件名不合法' });
         return;
       }
@@ -410,7 +410,7 @@ function createRoutes(ctx) {
         return;
       }
       res.writeHead(200, Object.assign({
-        'Content-Type': 'audio/mpeg',
+        'Content-Type': /\.wav$/i.test(name) ? 'audio/wav' : 'audio/mpeg',
         'Cache-Control': 'max-age=3600'
       }, corsHeaders(res)));
       const ts = fs.createReadStream(file);
@@ -735,6 +735,39 @@ function createRoutes(ctx) {
         const r = await ttsSynthesize(ttsNormalize(body));
         sendJsonRes(res, r.ok ? 200 : 503, r);
       } catch (e) { sendJsonRes(res, 400, { ok: false, error: e.message }); }
+      return;
+    }
+
+    /* ── Voice API Source 目录（P23 Phase 1 · canonical source authority）──
+       返回「这个 Bridge 能为角色提供哪些语音 API 来源」，用于角色 Voice 卡片的来源选择器。
+       只暴露 id / label / 能力 / 凭据来源说明 / 是否已配置 —— 绝不含 endpoint 或 apiKey。
+       credential 字段是**说明字符串**（none / bridge:tts / bridge:ttsMimo / local-runtime），
+       告诉用户去哪里配凭据，从而让角色卡片不需要（也不允许）再做一份 credential editor。 */
+    if (pathname === '/api/tts/sources' && req.method === 'GET') {
+      try {
+        const sources = typeof ttsSources === 'function' ? ttsSources() : [];
+        sendJsonRes(res, 200, { ok: true, sources: sources });
+      } catch (e) { sendJsonRes(res, 500, { ok: false, error: e.message }); }
+      return;
+    }
+
+    /* ── Voicebox 本地运行时状态与 Voice Profile 列表（只读代理）──
+       offline 时返回 ok:false（HTTP 200，避免浏览器把它当成 Bridge 故障），
+       由 UI 如实显示「未连接」。绝不缓存、绝不伪造 profile。 */
+    if (pathname === '/api/tts/voicebox/profiles' && req.method === 'GET') {
+      if (!voicebox) { sendJsonRes(res, 200, { ok: false, error: 'Voicebox 适配器未注入' }); return; }
+      try {
+        const list = await voicebox.profiles();
+        sendJsonRes(res, 200, list);
+      } catch (e) { sendJsonRes(res, 200, { ok: false, error: String(e && e.message || e) }); }
+      return;
+    }
+    if (pathname === '/api/tts/voicebox/health' && req.method === 'GET') {
+      if (!voicebox) { sendJsonRes(res, 200, { ok: false, error: 'Voicebox 适配器未注入' }); return; }
+      try {
+        const h = await voicebox.health();
+        sendJsonRes(res, 200, h);
+      } catch (e) { sendJsonRes(res, 200, { ok: false, error: String(e && e.message || e) }); }
       return;
     }
 

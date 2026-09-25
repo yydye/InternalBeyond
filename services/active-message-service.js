@@ -50,6 +50,8 @@ const queueSave = persistence.queueSave;
 const emptyData = persistence.emptyData;
 const parseDataFile = persistence.parseDataFile;
 const loadData = persistence.loadData;
+const mutateTargetMetadata = persistence.mutateTargetMetadata;
+const rollbackTargetMetadata = persistence.rollbackTargetMetadata;
 
 let ticking = false;
 /* Deliberately process-local: every service restart requires a fresh browser reconcile. */
@@ -215,6 +217,9 @@ const momentsDomain = createMomentsDomain({
 const sanitizeMomentSchedule = momentsDomain.sanitizeMomentSchedule;
 const publicMomentSchedule = momentsDomain.publicMomentSchedule;
 const parseMomentOutput = momentsDomain.parseMomentOutput;
+/* P25-2D：canonical semantic 视图（与桌面端同一 parser）。事件里的 recommendation/reasonCode/
+   topic 都来自它 —— 这里是 companion 侧唯一的语义入口。 */
+const parseMomentSemantic = momentsDomain.parseMomentSemantic;
 const executeMomentSchedule = momentsDomain.executeMomentSchedule;
 const momentsTick = momentsDomain.momentsTick;
 const momentsEvent = momentsDomain.momentsEvent;
@@ -234,6 +239,11 @@ const replyTaskKey = momentsDomain.replyTaskKey;
 /* ------------------------------------------------------------------ */
 
 const createScheduler = require('../active/scheduler');
+/* P25-3C-Node：Node companion 与 Browser **共用同一个** Active Message Authority
+   （同一份 assets/js/active-message-authority.js；不复制、不新建 Node 版权威），
+   并把既有 Node 事实探针（validateProactiveReply / recentProactiveMessages）注入调度器
+   —— 冷却 / 去重 / 免打扰规则仍然只有一份。 */
+const activeMessageAuthority = require('../assets/js/active-message-authority.js');
 const scheduler = createScheduler({
   getState: () => state,
   armedUsers,
@@ -250,7 +260,11 @@ const scheduler = createScheduler({
   startDelayMs: START_DELAY_MS,
   closeServer: callback => server.close(callback),
   proactiveTrace,
-  credentialVault
+  credentialVault,
+  /* P25-3C-Node：发送授权接缝的注入面（权威 + 既有事实探针） */
+  activeMessageAuthority,
+  validateProactiveReply,
+  recentProactiveMessages
 });
 const adaptiveSkipReason = scheduler.adaptiveSkipReason;
 const executeTask = scheduler.executeTask;
@@ -521,6 +535,7 @@ module.exports = {
   sanitizeMomentSchedule,
   publicMomentSchedule,
   parseMomentOutput,
+  parseMomentSemantic,
   buildMomentPrompt,
   executeMomentSchedule,
   momentsTick,
@@ -528,6 +543,8 @@ module.exports = {
   getState: () => state,
   setArmed: userId => { armedUsers.add(userId); },
   saveNow,
+  mutateTargetMetadata,
+  rollbackTargetMetadata,
   resetStateForTest: () => { state = emptyData(); },
   proactiveTrace,
   replyChainTick,

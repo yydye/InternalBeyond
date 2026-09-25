@@ -34,6 +34,9 @@ const path = require('path');
 /* Repository root — this file lives in tests/, so the root is one level up. */
 const ROOT = path.resolve(__dirname, '..');
 const { spawn } = require('child_process');
+const ORIGINAL_LOCALAPPDATA = process.env.LOCALAPPDATA;
+const TEST_LOCALAPPDATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-boot-state-local-'));
+process.env.LOCALAPPDATA = TEST_LOCALAPPDATA;
 
 const WEB = require(path.join(ROOT, 'services', 'internal-beyond-server.js'));
 const BOOT = require(path.join(ROOT, 'runtime', 'boot-state.js'));
@@ -228,6 +231,9 @@ function describeHandles() {
 
 function finalize() {
   console.log('\n结果: ' + pass + ' 通过, ' + fail + ' 失败');
+  if (ORIGINAL_LOCALAPPDATA == null) delete process.env.LOCALAPPDATA;
+  else process.env.LOCALAPPDATA = ORIGINAL_LOCALAPPDATA;
+  try { fs.rmSync(TEST_LOCALAPPDATA, { recursive: true, force: true }); } catch (_) {}
   process.exitCode = fail ? 1 : 0;
   /* Unref'd: never keeps the loop alive, but still fires if something else does. */
   setTimeout(() => {
@@ -845,6 +851,9 @@ function finalize() {
 
   finalize();
 })().catch(e => {
+  if (ORIGINAL_LOCALAPPDATA == null) delete process.env.LOCALAPPDATA;
+  else process.env.LOCALAPPDATA = ORIGINAL_LOCALAPPDATA;
+  try { fs.rmSync(TEST_LOCALAPPDATA, { recursive: true, force: true }); } catch (_) {}
   console.error('\nUNEXPECTED FAILURE: ' + (e && e.stack || e));
   console.error('    ' + describeHandles());
   process.exitCode = 1;

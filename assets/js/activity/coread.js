@@ -156,7 +156,8 @@
   var _activity=null;
 
   /* ---- 注册：IB.coread + window ---- */
-  function coreadPaintshelf(){var list=document.getElementById('coread-list-view'),rd=document.getElementById('coread-read-view');if(list)list.style.display='block';if(rd)rd.style.display='none';paintShelf()}
+  /* M1.5：返回书架即离开阅读页；仅当 current 指针指向本书活动时才清除（不打扰其他 Activity）。 */
+  function coreadPaintshelf(){try{if(_activity&&_activity.roleId&&IB.activity&&typeof IB.activity.clearCurrent==='function')IB.activity.clearCurrent(_activity.roleId,_activity.id)}catch(e){}var list=document.getElementById('coread-list-view'),rd=document.getElementById('coread-read-view');if(list)list.style.display='block';if(rd)rd.style.display='none';paintShelf()}
   var api={paintShelf:paintShelf,coreadOpen:coreadOpen,loadCoreadPage:loadCoreadPage,bind:bind,coreadPaintshelf:coreadPaintshelf};
   NS.coread=api;
   window.coreadOpen=coreadOpen;window._coreadSend=_coreadSend;window._coreadPrev=_prevPage;window._coreadNext=_nextPage;

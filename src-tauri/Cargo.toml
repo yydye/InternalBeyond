@@ -1,0 +1,30 @@
+[package]
+name = "internalbeyond-host"
+version = "1.0.6"
+description = "InternalBeyond Tauri 2 host foundation"
+authors = ["InternalBeyond"]
+edition = "2021"
+rust-version = "1.77"
+build = "build.rs"
+
+[lib]
+name = "internalbeyond_host_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
+tauri-plugin-single-instance = "2.0.0-rc.5"
+tauri-plugin-window-state = "2.0.0-rc.5"
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tauri = { version = "2.11.6", features = [] }
+uuid = { version = "1.26.1", features = ["v4"] }

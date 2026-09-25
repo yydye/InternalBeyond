@@ -71,6 +71,10 @@ global.window = {
 
 /* 载入模块（IIFE 挂在 window.IB） */
 global.window.IB = { expose: () => {} };
+/* P25-3D：Role Letter Authority 与浏览器共用**同一个纯模块**（assets/js/role-letter-authority.js）。
+   沙箱必须真的加载它 —— 否则 _rlStoreLetter 会按设计 fail closed（权威缺席 ⇒ 不写），
+   本套件测的就变成"fail closed 生效"而不是"写信流程正确"。 */
+global.window.IBRoleLetterAuthority = require(path.join(ROOT, 'assets/js/role-letter-authority.js'));
 (0, eval)(src);
 
 const tick = async () => { await window._roleLettersTick(); };
@@ -160,7 +164,9 @@ const sharedPollution = () => (Object.values(DB.memories || {}) || []).filter(m 
   ok('C 收件箱能看到 A→C', inboxC2.some(l => l.id === cross.id));
 
   /* 12) 旧信件兼容：无 readAt 视为未读 */
-  const legacy = await window._rlStoreLetter({ fromRoleId: 'b', toRoleId: 'a', content: '旧信，没有 readAt 字段。', kind: 'init', createdAt: now });
+  /* P25-3D：改用没有对偶冷却的角色对（a|b 已在步骤 2/9 进入 24~72h 冷却，
+     而"旧信无 readAt"这条用例与冷却无关）。 */
+  const legacy = await window._rlStoreLetter({ fromRoleId: 'c', toRoleId: 'a', content: '旧信，没有 readAt 字段。', kind: 'init', createdAt: now });
   delete legacy.readAt; global.dbPut('roleLetters', legacy);
   const legacyStored = await global.dbGet('roleLetters', legacy.id);
   ok('旧信无 readAt 视为未读', !legacyStored.readAt);

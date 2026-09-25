@@ -77,6 +77,79 @@ function createScheduler(ctx) {
     return _bgAiGateState() === 'hibernate';
   }
 
+  /* ══════════ P25-3C-Node · Active Message Authority 接缝 ══════════
+     Node companion 与 Browser **共用同一个权威**（assets/js/active-message-authority.js）：
+     Node 不自行判断 send，只负责"读既有闸门 → facts → 交给权威"。禁止第二套
+     cooldown / duplicate / quiet-hours / permission。
+
+     · 权威模块来源：ctx.activeMessageAuthority（显式注入）优先，否则懒加载 require 同一份
+       共享模块；两者都拿不到 ⇒ fail closed（deny / authority-missing），**绝不**退回直发。
+     · facts 全部由既有 Node 规则产出，不新增产品策略：
+         enabled     ← setting.enabled && setting.background_enabled（任务）/ plan.prefs.enabled（计划）
+         quietHours  ← _bgAiGateState()==='hibernate'（既有总开关 + 休眠时段；fresh 读）
+         cooldown    ← adaptiveSkipReason(task)（既有"12 小时内刚互动过"顺延）
+         duplicate   ← ctx.validateProactiveReply(content, ctx.recentProactiveMessages(task))
+                       （既有 0.82 相似度 / 同开头规则；探针缺席 ⇒ deny / duplicate-probe-missing）
+     · executor：只执行已授权发送。Node 的"发送"= 既有出口（事件 / 历史 / windowsNotify），
+       它位于接缝**之后**、只有 ALLOW 才会执行；capture 执行体只回执"已授权"，
+       因此 ALLOW 路径与本阶段之前逐字一致，DENY 路径零副作用。
+     · deny ≠ executor failure：DENY 记 skipped（任务）/ canceled（计划），
+       生成失败仍走既有 failed / retry；接缝**不**自动 retry、**不** rollback。 */
+  let _authorityModule = ctx.activeMessageAuthority || null;
+  let _authorityResolved = !!ctx.activeMessageAuthority;
+  function _activeMessageAuthority() {
+    if (!_authorityResolved) {
+      _authorityResolved = true;
+      try { _authorityModule = require('../assets/js/active-message-authority.js'); }
+      catch (error) { _authorityModule = null; }
+    }
+    const a = _authorityModule;
+    return (a && typeof a.runActiveMessageSend === 'function' && typeof a.buildActiveMessageCandidate === 'function') ? a : null;
+  }
+  /* 唯一裁决入口：权威缺席 ⇒ DENY（fail closed），executor 永不被调用。 */
+  async function _authorizeSend(candidate, facts, executor) {
+    const authority = _activeMessageAuthority();
+    if (!authority) return { ok: false, decision: 'deny', reason: 'authority-missing', executed: false, message: null, error: '' };
+    try { return await authority.runActiveMessageSend(candidate, facts, executor); }
+    catch (error) {
+      return { ok: false, decision: 'deny', reason: 'invalid-candidate', executed: false, message: null,
+        error: trimText(error && error.message || error, 200) };
+    }
+  }
+  /* 发送请求 → candidate + facts（facts 只读自真实状态与既有规则）。 */
+  async function _sendRequest(args) {
+    const req = args || {};
+    const duplicateProbe = ctx.validateProactiveReply;
+    if (typeof duplicateProbe !== 'function') {
+      return { ok: false, decision: 'deny', reason: 'duplicate-probe-missing', executed: false, message: null, error: '' };
+    }
+    let recent = [];
+    try {
+      recent = typeof ctx.recentProactiveMessages === 'function' ? (ctx.recentProactiveMessages(req.task) || []) : [];
+    } catch (error) { recent = []; }
+    let quality = { ok: true, reason: '' };
+    try { quality = duplicateProbe(req.content, recent) || quality; }
+    catch (error) { quality = { ok: false, reason: 'duplicate-probe-failed' }; }
+    const candidate = {
+      actorId: String(req.actorId || ''),
+      targetId: String(req.targetId || ''),
+      source: String(req.source || ''),
+      trigger: String(req.trigger || ''),
+      triggerRef: String(req.triggerRef || ''),
+      messageRef: String(req.messageRef || '')
+    };
+    const facts = {
+      actorKnown: !!candidate.actorId,
+      targetKnown: !!candidate.targetId,
+      cancelled: false,                       /* 失效/取消已由既有 claim / currentForRun 在接缝之前处理 */
+      enabled: req.enabled === true,
+      quietHours: _bgAiGateState() === 'hibernate',
+      cooldown: req.cooldown === true,
+      duplicate: !quality.ok
+    };
+    return _authorizeSend(candidate, facts, req.executor);
+  }
+
   function adaptiveSkipReason(task) {
     const setting = task && task.setting || {};
     if (!setting.adaptive_enabled) return '';
@@ -232,6 +305,49 @@ function createScheduler(ctx) {
     }
 
     const content = String(output.content || '').trim();
+    /* P25-3C-Node：发送前必须经共享 Active Message Authority（Node 不自行判断 send）。 */
+    const auth = await _sendRequest({
+      task,
+      actorId: setting.character_id,
+      targetId: userId,
+      source: 'schedule',
+      trigger: 'schedule',
+      triggerRef: id,
+      messageRef: messageId(taskId, scheduledFor),
+      content,
+      enabled: setting.enabled !== false && setting.background_enabled === true,
+      cooldown: !!adaptiveSkipReason(task),
+      executor: async () => ({ ok: true, message: { id: messageId(taskId, scheduledFor), friendId: String(setting.character_id || '') } })
+    });
+    if (!auth.ok) {
+      /* DENY：不发送。沿用既有"策略跳过"形状（skipped 事件 + next_run 前进），不 retry、不 rollback。 */
+      const deniedAt = Date.now();
+      const deniedNext = nextRun({ ...currentCheck.current.setting }, deniedAt + 1000);
+      replaceTaskRuntime(taskId, currentCheck.current, { next_run_at: deniedNext });
+      const deniedEvent = {
+        id: `event_${id}`,
+        run_id: id,
+        setting_id: taskId,
+        user_id: userId,
+        character_id: setting.character_id,
+        character_name: characterName,
+        scheduled_for: scheduledFor,
+        sent_at: deniedAt,
+        next_run_at: deniedNext,
+        task_revision: task.task_revision,
+        setting_updated_at: task.setting_updated_at,
+        status: 'skipped',
+        reason: `主动消息被拒绝：${auth.reason}`,
+        acknowledged: false
+      };
+      const sDenied = getState();
+      sDenied.history[id] = { ...sDenied.history[id], ...deniedEvent };
+      sDenied.events[deniedEvent.id] = deniedEvent;
+      saveNow();
+      proactiveLog('send denied by authority', { taskId, reason: auth.reason });
+      _trace.finish(traceId, 'skipped', { trigger: 'authority_deny', reason: auth.reason });
+      return;
+    }
     const sentAt = Date.now();
     const settingAfterSend = { ...currentCheck.current.setting, last_sent: sentAt };
     const next = nextRun(settingAfterSend, sentAt + 1000);
@@ -526,6 +642,33 @@ function createScheduler(ctx) {
       return;
     }
     const content = String(output.content || '').trim();
+    /* P25-3C-Node：计划发送同样必须经共享 Active Message Authority（Node 不自行判断 send）。
+       facts 只读既有规则：enabled ← plan.prefs.enabled；quietHours ← 既有 BG-AI 闸门（fresh 读）；
+       cooldown ← false（计划的 minIntervalMinutes 是**规划期**约束，发送期不重新施加）；
+       duplicate ← 既有 0.82 相似度 / 同开头规则（ctx.validateProactiveReply）。 */
+    const auth = await _sendRequest({
+      task,
+      actorId: plan.characterId,
+      targetId: userId,
+      source: 'plan',
+      trigger: 'ai_plan',
+      triggerRef: planId,
+      content,
+      enabled: !(plan.prefs && plan.prefs.enabled === false),
+      cooldown: false,
+      executor: async () => ({ ok: true })
+    });
+    if (!auth.ok) {
+      /* DENY：不发送。沿用既有 cancel 形状（计划 cancelled + canceled 事件），不 retry、不 rollback。 */
+      const deniedAt = new Date().toISOString();
+      updatePlan(planId, { status: 'cancelled', cancelledAt: deniedAt, cancelReason: `主动消息被拒绝：${auth.reason}`, updatedAt: deniedAt });
+      const deniedEvent = planEvent(claim, 'canceled', { reason: `主动消息被拒绝：${auth.reason}`, character_name: characterName });
+      getState().events[deniedEvent.id] = deniedEvent;
+      saveNow();
+      proactiveLog('plan send denied by authority', { planId, reason: auth.reason });
+      _trace.finish(traceId, 'cancelled', { trigger: 'authority_deny', reason: auth.reason });
+      return;
+    }
     const sentAt = Date.now();
     const messageId = planMessageId(planId, sentAt);
     const sentIso = new Date(sentAt).toISOString();

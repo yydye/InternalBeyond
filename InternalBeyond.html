@@ -19,6 +19,7 @@
 <link rel="stylesheet" href="assets/css/core/about.css">
 <link rel="stylesheet" href="assets/css/core/widgets.css">
 <link rel="stylesheet" href="assets/css/core/archive-active.css">
+<link rel="stylesheet" href="assets/css/core/middle-brain-direct.css">
 <link rel="stylesheet" href="assets/css/moments.css">
 <link rel="stylesheet" href="assets/css/social.css">
 <link id="ib-cal-css" rel="stylesheet" href="assets/css/calendar.css">
@@ -1586,7 +1587,7 @@
       </div>
       <div class="api-form-group" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--glass-border)" id="api-voice-group">
         <label class="form-check-row"><input type="checkbox" id="api-voice-toggle" class="u-native-check" onchange="_voiceToggleDetail()"> Enable Voice</label>
-        <div style="font-size:0.72rem;opacity:0.55;margin-top:0px;line-height:1.6">为这个角色配置语音合成，每条 AI 回复都可以播放声音。Edge / OpenAI 使用自由 Voice ID；MiMo 从官方预置音色中选择（音色决定中英文），风格指令随请求发送。MiMo 凭据在 Bridge config.json 的 ttsMimo 区块配置。</div>
+        <div style="font-size:0.72rem;opacity:0.55;margin-top:0px;line-height:1.6">为这个角色配置语音合成，语音会成为一等消息（气泡内播放，文字稿保留可展开）。来源决定音色与凭据位置：Edge 免费内置；OpenAI / MiMo 的凭据在 Bridge config.json 的 tts / ttsMimo 区块；本地 Voicebox Runtime 默认不需要 API Key。角色本身只保存来源引用，绝不保存任何密钥。</div>
         <div id="api-voice-detail" style="display:none;margin-top:10px">
           <div class="ibv-type-row" id="api-voice-type-row">
             <label class="form-check-row"><input type="radio" name="api-voice-type" id="api-voice-type-builtin" value="builtin" checked="checked" onchange="_voiceTypeChange()"> Built-in</label>
@@ -1611,6 +1612,7 @@
               <option value="mimo">MiMo TTS</option>
             </select>
           </div>
+          <div id="api-voice-source-hint" class="ibv-source-hint field-hint"></div>
           <div id="api-voice-model-wrap" class="ibv-field">
             <label class="ibv-label" for="api-voice-model">Model</label>
             <select id="api-voice-model" class="ibv-select">
@@ -1947,6 +1949,7 @@
       <h2 class="internal-only">Internal Beyond</h2>
       <h2 class="infernal-only">Infernal Beyond</h2>
       <p>A PERSONAL DIGITAL SANCTUARY — CRAFTED BY SUI & CLAUDE</p>
+      <p>边界之外 / Project-IB（IB）· 项目始于 2026.05.23 · 当前主要实现：InternalBeyond</p>
     </div>
 
     <!-- P6 · 零基础使用指南：内容与截图由 assets/js/guide-beginner.js 渲染 -->
@@ -2532,6 +2535,22 @@ i would like the room to be enough.
       <select id="member-mgr-picker" style="flex:1;border-radius:8px;border:1px solid var(--glass-border);background:var(--glass-bg);color:var(--text);padding:6px 8px;font-size:0.78rem;font-family:inherit"></select>
       <button type="button" class="btn btn-primary" id="member-mgr-add-btn" onclick="addMemberFromPicker()" style="width:auto;padding:6px 14px;font-size:0.78rem">+ 添加</button>
     </div>
+    <!-- P24-M3.4.4 · 群聊参与策略（group-owned policy）：两个下拉 + 非法数据恢复入口。
+         保存模型与成员操作一致 = 即时保存；所有写入都经 canonical storage API。 -->
+    <div class="group-policy-section" data-group-id="">
+      <div class="group-policy-title">群聊参与策略</div>
+      <label for="group-policy-max">每轮最多回复角色</label>
+      <select id="group-policy-max" class="group-policy-select" onchange="onGroupParticipationPolicyChange()"></select>
+      <div class="group-policy-hint">限制每轮最多由多少个角色回复。未设置时不限制。0 表示本轮不允许任何角色回复。</div>
+      <label for="group-policy-window">最近发言避让窗口</label>
+      <select id="group-policy-window" class="group-policy-select" onchange="onGroupParticipationPolicyChange()"></select>
+      <div class="group-policy-hint">在人数受限时，优先让最近较少发言的角色参与。0 表示关闭避让。未设置时沿用当前行为（2），不会写入存储。</div>
+      <div class="group-policy-invalid" id="group-policy-invalid" hidden>
+        <span>参与策略数据无效。</span>
+        <button type="button" class="btn" id="group-policy-reset" onclick="resetGroupParticipationPolicyUI()">重置参与策略</button>
+      </div>
+      <div class="group-policy-error" id="group-policy-error" role="status" aria-live="polite" hidden></div>
+    </div>
     <div class="group-dialog-actions">
       <button type="button" class="btn" onclick="closeMemberManager()">关闭</button>
     </div>
@@ -3072,8 +3091,12 @@ i would like the room to be enough.
 </div>
 
 <script src="assets/js/ib-namespace.js"></script>
+<!-- P32 · the only Browser/Tauri capability switch; business modules use IB.host. -->
+<script src="assets/js/host-capability.js"></script>
 <script src="assets/js/brevity-policy.js"></script>
 <script src="assets/js/proactive-interaction-core.js"></script>
+<script src="assets/js/data-presence-core.js"></script>
+<script src="assets/js/webcore-db-schema.js"></script>
 <script src="assets/js/core.js"></script>
 <script src="assets/js/provider-directory.js"></script>
 <script src="assets/js/context-snapshot.js"></script>
@@ -3152,9 +3175,17 @@ i would like the room to be enough.
 <script src="assets/js/memory/constellations.js"></script>
 <script src="assets/js/active-diary/active-plans.js"></script>
 <script src="assets/js/active-diary/diary.js"></script>
+<script src="assets/js/recovery-first-boot.js"></script>
 <script src="assets/js/active-diary.js"></script>
 <script src="assets/js/social-observe.js"></script>
 <script src="assets/js/reply-chain-core.js"></script>
+<!-- P25-2B：Moments 语义输出契约（recommendation / reasonCode / topicKey / draft）的
+     唯一实现 —— 唯一 parser + topic fingerprint 派生 + 旧 publish 契约的兼容投影。
+     必须在 moments.js 之前加载（moments.js 的 prompt 与 parser 都取自它；
+     它缺席时语义解析 fail closed：不发布，而不是回退到旧解析照发）。
+     它自身按调用时解析 chat-core（stableToken）与 moments-visibility-core，
+     因此这里的加载顺序只约束"使用时刻"，不制约脚本放置。 -->
+<script src="assets/js/moments-semantic-core.js"></script>
 <script src="assets/js/moments.js"></script>
 <script src="assets/js/social-network.js"></script>
 <script src="assets/js/role-letters.js"></script>
@@ -3227,6 +3258,7 @@ i would like the room to be enough.
 <script src="assets/js/image-models-core.js"></script>
 <script src="assets/js/image-router-core.js"></script>
 <script src="assets/js/image-router-config.js"></script>
+<script src="assets/js/credential-authority-consumers.js"></script>
 <script src="assets/js/image-router.js"></script>
 <script src="assets/js/image-router-settings.js"></script>
 <script src="assets/js/image-edit-core.js"></script>
@@ -3273,6 +3305,7 @@ i would like the room to be enough.
 <script src="assets/js/activity/activity-runtime.js"></script>
 <script src="assets/js/activity/coread.js"></script>
 <script src="assets/js/app-store.js"></script>
+<script src="assets/js/secret-routes.js"></script>
 <script src="assets/js/basement.js"></script>
 <script src="assets/js/easteregg.js"></script>
 <script src="assets/js/setup-wizard.js"></script>
@@ -3288,6 +3321,99 @@ i would like the room to be enough.
      mobile-safe 投影只有一份实现（assets/js/mobile-dto.js），
      桌面发布时用它，Mobile Gateway 出站时用同一份，两边结构上不可能漂移。 -->
 <script src="assets/js/chat-core.js"></script>
+<script src="assets/js/voice-message-core.js"></script>
+<!-- P27-2 · Activity Created Domain Event（P26-1 生产接线：**仅** activity.created）。
+     顺序固定：chat-core（stableToken）→ voice-message-core（唯一秘密探针）→
+     domain-event-core（纯事件契约）。
+     为什么现在才加载：P26-1 阶段刻意 foundation-only（不被任何生产文件引用）；
+     P27-2 把 `createActivity` 的 canonical 写入**成功之后**接到 `createDomainEvent`，
+     因此这里补齐它的依赖与它本身（与 P25-2C 给 autonomy-core 补依赖同一先例）。
+     仅此一个事件：activity.created（progressed / finished / deleted **不接**）。
+     事件**不落库**（无 event store / history / queue），事件失败**不回滚** canonical Activity；
+     无 consumer（不建 Event Bus / Router / Listener）。纯模块：零 DOM / 零 fetch / 零存储。 -->
+<script src="assets/js/domain-event-core.js"></script>
+<!-- P27-3 · Activity Observation（P26-2 生产接线：**只读**观察）。
+     顺序固定：chat-core（stableToken）→ voice-message-core（唯一秘密探针）→
+     observation-core（纯观察契约）。
+     为什么现在才加载：P26-2 阶段刻意 foundation-only（不被任何生产文件引用）；
+     P27-3 把 `IB.activity.observe(activityId)` 接到 `createObservation`（领域自有 getter，
+     无 ObservationManager / Registry / Store）。观察**只读**、**不落库**、
+     不发事件、不产生 Feedback、不唤醒 agent。纯模块：零 DOM / 零 fetch / 零存储。 -->
+<script src="assets/js/observation-core.js"></script>
+<!-- P27-4 · Activity Session Projection（P26-3 生产接线：**只读投影**）。
+     顺序固定：chat-core（stableToken）→ voice-message-core（唯一秘密探针）→
+     session-core（纯会话契约）。
+     为什么现在才加载：P26-3 阶段刻意 foundation-only（不被任何生产文件引用）；
+     P27-4 把 `IB.activity.getSession(activityId)` 接到 `createSession` + `validateSession`
+     （领域自有只读投影，无 SessionManager / Registry / Store；**不**调用 transitionSession）。
+     Session 投影**不落库**、不发事件、不产生 Observation / Feedback / Wake。纯模块：零 DOM / 零 fetch / 零存储。 -->
+<script src="assets/js/session-core.js"></script>
+<!-- P25-2C · Moments Autonomy 生产接线（autonomous 发布的裁决层）。
+     顺序固定：chat-core（stableToken）→ voice-message-core（唯一秘密探针）→
+     autonomy-core（纯裁决层）→ moments-semantic-core（语义契约，已在上文加载）→
+     moments-autonomy（业务 adapter，必须在 moments.js 之前加载）。
+     为什么现在才加载：2A/2B 阶段 adapter 刻意**不被任何生产文件引用**，
+     moments-autonomy.js 不在页面里；P25-2C 把 autonomous 触发接到
+     seed → semantic → finalize → runMomentAutonomy → executor，
+     因此这里补齐它的依赖与它本身。纯模块：零 DOM / 零 fetch / 零存储 / 零时钟。 -->
+<script src="assets/js/autonomy-core.js"></script>
+<script src="assets/js/moments-autonomy.js"></script>
+<!-- P25-2.5 · Moments Mutation Authority（**修改**权限的唯一权威：点赞 / 评论 / 回复 / 删除）。
+     与 Autonomy Core 刻意分开：创建权限 ≠ 修改权限，like/comment 绝不进 runMomentAutonomy。
+     必须在 moments.js 之前加载（moments.js 的所有 mutation 入口都先经它裁决）；
+     它缺席时 mutation fail closed（拒绝写入，绝不退回直写）。纯模块：零 DOM / 零网络 / 零存储。 -->
+<script src="assets/js/moments-mutation-authority.js"></script>
+<!-- P25-3B · Diary Authority（**写**日记的唯一权威：scheduler / model / executor 都不拥有写权限）。
+     必须在 diary.js 之前加载：diary.js 的主生成管线先经它裁决，只有 ALLOW 才落库；
+     它缺席时 diary 写入 fail closed（拒绝写入，绝不退回旧的"模型输出直接落库"路径）。
+     与 chat-core（stableToken）/ voice-message-core（唯一秘密探针）同层依赖，因此放在它们之后；
+     diary.js 在使用时刻（而非加载时刻）解析它，故这里的顺序只约束"使用时刻"。纯模块：
+     零 DOM / 零 IndexedDB / 零 fetch / 零 provider / 零模型 / 零 Memory / 零 Middle Brain。 -->
+<script src="assets/js/diary-authority.js"></script>
+<!-- P25-3C · Active Message Authority（**发送**主动消息的唯一权威：scheduler / model /
+     executor 都不拥有发送权限）。必须在 active-diary.js / active-diary/active-plans.js
+     之前加载：设定计划、AI 计划、companion 投递镜像三条路径都经它的裁决与同一条 canonical writer；
+     它缺席时主动消息发送 fail closed（拒绝发送，绝不退回旧的"模型输出直接落库"路径）。
+     与 chat-core（stableToken）/ voice-message-core（唯一秘密探针）同层依赖，因此放在它们之后；
+     active-diary.js 在使用时刻（而非加载时刻）解析它，故这里的顺序只约束"使用时刻"。纯模块：
+     零 DOM / 零 IndexedDB / 零 fetch / 零 provider / 零模型 / 零 Memory / 零 Middle Brain /
+     零 Notification / 零 TTS。 -->
+<script src="assets/js/active-message-authority.js"></script>
+<!-- P25-3D · Role Letter Authority（**写** Role Letter 的唯一权威：模型 / 调度器 /
+     executor 都不拥有写信权限）。必须在 role-letters.js 之前加载：角色自主写信（cadence）
+     与读信后回信两条路径都先经它裁决，只有 ALLOW 才落 canonical `roleLetters`；
+     它缺席时写信 fail closed（拒绝写入，绝不退回旧的"模型输出直接落库"路径）。
+     与 chat-core（stableToken）/ voice-message-core（唯一秘密探针）同层依赖，因此放在它们之后；
+     role-letters.js 在使用时刻（而非加载时刻）解析它。纯模块：零 DOM / 零 IndexedDB /
+     零 fetch / 零 provider / 零模型 / 零 Memory / 零 Middle Brain / 零通知。 -->
+<script src="assets/js/role-letter-authority.js"></script>
+<!-- P23 Phase 2A · 一次模型回合 → N 条 canonical chatMessage 的序列契约
+     （回合身份 / 确定性顺序 / sequence → messages 的纯构造）。
+     与 chat-core、voice-message-core 同层：必须在使用者之前加载，
+     且它依赖上面这两份（stableToken 与 voice 契约），因此插在它们之后、
+     权威层之前。纯模块：零 DOM / 零 fetch / 零存储 / 零时钟。 -->
+<script src="assets/js/delivery-sequence-core.js"></script>
+<!-- P23 Phase 2B · Delivery Runtime（时间与生命周期：队列 / 状态 / typing / cancel）。
+     与上面两份同层：core 决定结构，runtime 决定"什么时候进入会话流"，
+     communication.js 的 adapter 决定"怎么落库与渲染"。零 DOM / 零 fetch / 零存储，
+     时间只能经注入的时钟流动（测试用 fake clock 驱动）。 -->
+<script src="assets/js/delivery-runtime.js"></script>
+<!-- P23 Phase 2C · Delivery Planner（"模型一次生成的内容 → delivery sequence"的
+     唯一规则型 planner）：纯逻辑层，零 DOM / 零 fetch / 零存储 / 零时钟 / 零随机；
+     只产出内容结构（units），绝不产出时间 —— 时间属于上面的 Delivery Runtime。 -->
+<script src="assets/js/delivery-planner.js"></script>
+<!-- P23 Phase 2D · Multimodal Delivery Policy（"这一段是 text 还是 voice"的**唯一**决策点）：
+     纯逻辑层，零 DOM / 零 fetch / 零存储 / 零时钟 / 零随机 / 零 TTS；
+     默认恒为 text，只有显式意图 / 偏好 / 提示 + 能力齐备时才产出 voice unit。
+     音频物化（TTS）不在这里，而在 delivery time 的 adapter 里。 -->
+<script src="assets/js/multimodal-delivery-policy.js"></script>
+<!-- P24-M1 · Group Runtime Core（群回合 / 成员回合的**身份**唯一实现）：
+     groupTurnId / speakerId / groupOrder / turnId 的派生与校验。
+     只依赖上面已加载的 chat-core（stableToken / conversationIdOf）与
+     voice-message-core（唯一的秘密探针）；**不**依赖 P23 的 delivery 层，
+     也不做 planner / visibility / context / delivery 中的任何一件事。
+     纯模块：零 DOM / 零 fetch / 零存储 / 零时钟 / 零随机。 -->
+<script src="assets/js/group-runtime-core.js"></script>
 <script src="assets/js/chat-authority.js"></script>
 <!-- M1-C.2d Wave 2 · canonical memories authority。
      与 chat 同款三态（authority/mirror/fallback），只换一个 store：
@@ -3338,6 +3464,10 @@ i would like the room to be enough.
 <script src="assets/js/economy-shell-core.js"></script>
 <script src="assets/js/economy-shell.js"></script>
 <script src="assets/js/home-node-bootstrap.js"></script>
+<!-- P31 · Middle Brain Direct Channel：只在 ?middlebrain 隐藏入口挂载，
+     不注册普通导航 / page-* 路由 / 角色目录，也不进入角色聊天执行链。 -->
+<script src="assets/js/middle-brain-direct.js"></script>
+<script src="assets/js/tauri-window-chrome.js"></script>
 <!-- 深渊暗线：只在 Infernal（暗色）模式可瞥见——"你知道这里通向深渊，但你也知道，你随时可以离开。" -->
 <div class="ib-beyond-leave" id="ib-beyond-leave" aria-hidden="true">你知道这里通向深渊，但你也知道，你随时可以离开。</div>
 </body>

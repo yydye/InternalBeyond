@@ -484,10 +484,24 @@ function rootRuntimeExe(root) {
   return path.join(String(root || ''), 'runtime', 'node', 'node.exe');
 }
 
+/* The Tauri Host is the other executable the canonical installer owns. Its
+   exact absolute image path is the ownership proof; a shared process name is
+   never sufficient. */
+function rootHostExe(root) {
+  return path.join(String(root || ''), 'internalbeyond-host.exe');
+}
+
 function executableIsRootRuntime(executablePath, root) {
   if (!executablePath || !root) return false;
   const a = String(executablePath).replace(/\//g, '\\').toLowerCase().replace(/\\+$/, '');
   const b = String(rootRuntimeExe(root)).replace(/\//g, '\\').toLowerCase().replace(/\\+$/, '');
+  return a !== '' && a === b;
+}
+
+function executableIsRootHost(executablePath, root) {
+  if (!executablePath || !root) return false;
+  const a = String(executablePath).replace(/\//g, '\\').toLowerCase().replace(/\\+$/, '');
+  const b = String(rootHostExe(root)).replace(/\//g, '\\').toLowerCase().replace(/\\+$/, '');
   return a !== '' && a === b;
 }
 
@@ -516,9 +530,9 @@ function isResidualProcess(evidence, root) {
   if (pid === process.pid) return false;
   const cmdline = String(e.commandLine || '');
   if (cmdline && cmdline.toLowerCase().indexOf(HELPER_NAME) >= 0) return false;
-  /* Running this root's own bundled runtime is the strongest possible proof, and
-     it is the file an upgrade has to replace. */
-  if (executableIsRootRuntime(e.executablePath, root)) return true;
+  /* Running this root's own bundled runtime or Tauri Host is the strongest
+     possible proof, and both are files an upgrade has to replace. */
+  if (executableIsRootRuntime(e.executablePath, root) || executableIsRootHost(e.executablePath, root)) return true;
   if (!cmdline || !commandLineIsInternalBeyond(cmdline)) return false;
   /* Otherwise the script it names must be inside this root's OWNED LAYOUT — and
      "inside" is a path question, not a text question. Measured while building
@@ -701,7 +715,10 @@ async function stop(options) {
        whether files can be replaced. Conflating them is what aborted every
        upgrade from an instance whose stop had to fall back. */
     gracefulStop: null,
-    residual: []
+    residual: [],
+    hostDetected: [],
+    hostStopped: [],
+    hostFailures: []
   };
 
   /* Root binding is not optional: without it we cannot tell our own instance
@@ -822,6 +839,18 @@ async function stop(options) {
      rather than inferred from component states: nothing may still be running out
      of the directory whose files are about to be replaced. It can only ever make
      `ok` stricter, so it cannot turn a real failure into a success. */
+  /* The Host is not one of the HTTP components in the registry. Once every
+     component has had its cooperative stop window, stop only Host images whose
+     executable path proves they belong to this exact install root. */
+  const hostResiduals = (await residualProcesses(root)).filter(function (p) {
+    return executableIsRootHost(p.path, root);
+  });
+  report.hostDetected = hostResiduals.map(function (p) { return p.pid; });
+  for (const host of hostResiduals) {
+    if (await killPid(host.pid)) report.hostStopped.push(host.pid);
+    else report.hostFailures.push(host.pid);
+  }
+  if (hostResiduals.length) await sleep(500);
   report.residual = await residualProcesses(root);
   report.ok = summary.ok && report.residual.length === 0;
   if (report.residual.length) {
@@ -1001,6 +1030,8 @@ module.exports = {
   OWNED_LAYOUT_DIRS: OWNED_LAYOUT_DIRS,
   executableIsRootRuntime: executableIsRootRuntime,
   rootRuntimeExe: rootRuntimeExe,
+  executableIsRootHost: executableIsRootHost,
+  rootHostExe: rootHostExe,
   portBound: portBound,
   waitPortFree: waitPortFree,
   waitForUnlock: waitForUnlock,

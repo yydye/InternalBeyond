@@ -779,18 +779,30 @@ async function _activePlanLatestContext(cfg,plan){
   const ctx=await loadProactiveMessageContext(cfg,Object.assign({},plan,{user_id:plan.user_id||_activeUserId(),message_type:'greeting'}));
   return ctx
 }
-/* 发送 AI 计划消息：复用现有生成与去重机制 */
+/* 发送 AI 计划消息：复用现有生成与去重机制。
+   P25-3C：写入前必须经 **Active Message Authority**（与设定计划路径共用同一条接缝
+   `NS.active.sendAuthorized`：authority → ALLOW → canonical writer）。
+   权限规则仍然只有一份：enabled = prefs.enabled；duplicate = 既有相似度 0.82 / 同开头规则；
+   免打扰与冷却在本路径**恒为 false** —— 它们是**规划期**约束（_activeNextDndFree /
+   minIntervalMinutes / maxConsecutive），发送期不重新施加（否则会把调度期约束变成发送期否决，
+   那是新增产品策略）。返回 { ok, decision, reason, message }；DENY 时 message 为 null。 */
 async function _activeStoreAiPlanMessage(cfg,plan,out){
   const runAt=Date.now(),msgId='active_msg_'+String(plan.id).replace(/[^\w.-]/g,'_')+'_'+Math.floor(runAt/1000);
-  const existing=await dbGet('chatMessages',msgId);if(existing)return existing;
+  const existing=await dbGet('chatMessages',msgId);if(existing)return{ok:true,decision:'allow',reason:'already-sent',message:existing};
   const msg={id:msgId,role:'assistant',content:out.content,reasoning_content:'',friendId:cfg.id,senderName:cfg.nickname||cfg.model||'AI',timestamp:runAt,source:'active_message',activePlanId:plan.id,activeSettingId:plan.id,scheduledFor:runAt,generatedByFallback:!!out.generatedByFallback,metadata:{config_id:cfg.id,apiConfigId:cfg.id,provider:cfg.provider||'custom',model:cfg.model||'',model_id:cfg.model||'',showThinking:false,source:'active_message',activePlanId:plan.id,generatedByFallback:!!out.generatedByFallback,generationAttempts:Number(out.generationAttempts||1)}};
-  await dbPut('chatMessages',msg);
-  if(activeFriendId===cfg.id)appendChatBubble('ai',msg.content,msg.senderName,msg.reasoning_content,msg.id,null,null,null,null,cfg);
-  else try{_markUnread(cfg.id)}catch(e){}
-  try{if(currentPage==='chat')renderChatCalendar()}catch(e){}
-  updateChatStorageInfo();_activeNotify(cfg,msg.content);
+  const send=await _activePlanSendAuthorized({cfg:cfg,msg:msg,targetId:String(plan.user_id||''),source:'plan',trigger:'ai_plan',triggerRef:String(plan.id||''),enabled:_activeAiPrefs().enabled===true,quietHours:false,cooldown:false,recentProactive:(out.context&&out.context.recentProactiveMessages)||[]});
+  if(!send.ok){_activePlanLog('send denied by authority',{planId:plan.id,decision:send.decision,reason:send.reason});return{ok:false,decision:send.decision,reason:send.reason,message:null}}
   _activePlanLog('generated message',{planId:plan.id,messageId:msg.id,generatedByFallback:!!out.generatedByFallback});
-  return msg
+  return{ok:true,decision:send.decision,reason:send.reason,message:msg}
+}
+/* Active Message 发送接缝解析（跨 IIFE：active-diary.js 的 NS.active.sendAuthorized）。
+   模块缺席 ⇒ fail closed（绝不退回旧的直写）。 */
+async function _activePlanSendAuthorized(args){
+  const a=NS.active;
+  if(!a||typeof a.sendAuthorized!=='function')
+    return{ok:false,decision:'deny',reason:'authority-missing',message:null};
+  try{return await a.sendAuthorized(args)}
+  catch(e){return{ok:false,decision:'deny',reason:'invalid-candidate',message:null,error:String(e&&e.message||e).slice(0,200)}}
 }
 /* 执行 AI 计划状态机：scheduled → evaluating → sending → waiting_for_user / completed / cancelled / expired / failed */
 async function _activeExecuteAiPlan(planId){
@@ -903,7 +915,17 @@ async function _activeExecuteAiPlan(planId){
       /* 双执行器防护：生成期间若 companion 已发送（状态变为 waiting_for_user 等）→ 丢弃本地结果，避免双发 */
       const fresh=await dbGet(ACTIVE_PLANS_STORE,plan.id);
       if(fresh&&fresh.status!=='sending'&&fresh.status!=='evaluating')return{skipped:true,reason:'执行期间计划状态已被其他执行器更新（'+fresh.status+'）'};
-      const msg=await _activeStoreAiPlanMessage(cfg,plan,out);
+      const stored=await _activeStoreAiPlanMessage(cfg,plan,out);
+      /* P25-3C：Authority DENY ⇒ 不写消息、不写发送历史、计划标记为 cancelled（带原因）。
+         这里不重试、不改用其它通道 —— 拒绝就是拒绝（fail closed）。 */
+      if(!stored.ok){
+        const denyReason=String(stored.reason||'denied');
+        plan=Object.assign({},plan,{status:'cancelled',cancelledAt:new Date().toISOString(),cancelReason:'主动消息被拒绝：'+denyReason,updatedAt:new Date().toISOString()});
+        await dbPut(ACTIVE_PLANS_STORE,plan);if(_activeCompanionOnline)_activeSyncAiPlan(plan).catch(()=>{});
+        _activePlanLog('plan cancelled by authority',{planId:plan.id,reason:denyReason});
+        return{skipped:true,reason:'主动消息被拒绝：'+denyReason}
+      }
+      const msg=stored.message;
       /* 写入发送历史（与现有历史表兼容） */
       try{
         const histId='active_run_'+String(plan.id).replace(/[^\w.-]/g,'_')+'_'+Math.floor(msg.timestamp/1000);

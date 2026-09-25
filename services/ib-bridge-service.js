@@ -273,12 +273,18 @@ const createTtsVoices = require('../bridge/tts-voices');
 const ttsVoices = createTtsVoices({ dataDir: DATA_DIR, writeJson, loadJson });
 
 const createTts = require('../bridge/tts');
-const tts = createTts({ config, uid, ttsDir: DATA_DIR, ttsVoices });
+/* Voicebox：独立本地 Voice Runtime。IB 只调用其 REST API，不启动/安装/管理它。
+   适配器先建，作为依赖注入 createTts（provider 注册需要它的 engine 清单）。 */
+const createVoicebox = require('../bridge/voicebox');
+const voicebox = createVoicebox({ config });
+const tts = createTts({ config, uid, ttsDir: DATA_DIR, ttsVoices, voicebox });
 const edgeTtsGen = tts.edgeTtsGen;
 const ttsGenerate = tts.ttsGenerate;
 /* Voice Profile 统一入口（normalize 按 provider capabilities 过滤并补默认值） */
 const ttsNormalize = tts.normalizeVoiceProfile;
 const ttsSynthesize = tts.ttsSynthesize;
+/* Voice API Source 目录（canonical：角色保存 source 引用，绝不复制 credential） */
+const ttsSources = tts.listVoiceSources;
 
 /* ASR provider interface (turn-based OpenAI-Whisper-compatible default;
    streaming recognizer is opt-in). Wired into the voice runtime via deps so
@@ -892,6 +898,7 @@ const TOOLS = [
 /* ------------------------------------------------------------------ */
 
 const createWs = require('../bridge/ws');
+const { isTauriOrigin } = require('../runtime/host-origin.js');
 const pushHistory = pushes;
 const wsLayer = createWs({
   config,
@@ -933,7 +940,7 @@ const httpLayer = createRoutes({
   sessions, resident, contextStats, pushHistory,
   withListLock, uid, todayStr, saveList, saveGeo, saveSessions, saveResident,
   getWeather, searchMusic, musicPlayUrl, musicPlayRemote, searchNetease,
-  barkPush, ntfyPush, ttsNormalize, ttsSynthesize, ttsVoices,
+  barkPush, ntfyPush, ttsNormalize, ttsSynthesize, ttsVoices, ttsSources, voicebox,
   sessionGet, sessionSave, contextAppend, contextSummary,
   residentList, residentUpsert, residentSummary, residentChat, residentProactive,
   broadcast, recordPush, lanAddresses, fileSummary, directoryUsage,
@@ -1045,7 +1052,7 @@ server.on('upgrade', (req, socket, head) => {
       const u = new URL(origin);
       const host = String(u.hostname).toLowerCase();
       if ((u.protocol === 'http:' || u.protocol === 'https:') &&
-          (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]' ||
+          (isTauriOrigin(origin) || host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]' ||
            (LAN_EXPOSED && lanAddresses().indexOf(host) !== -1))) {
         originOk = true;
       }
