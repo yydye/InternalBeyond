@@ -8,6 +8,8 @@
 
 const http = require('http');
 const assert = require('assert');
+const tls = require('tls');
+const EventEmitter = require('events');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -25,6 +27,13 @@ function ok(name, cond, detail) {
   else { failCount++; console.error('  FAIL  ' + name + (detail !== undefined ? '  -> ' + String(detail).slice(0, 400) : '')); }
 }
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+async function waitFor(predicate, timeout = 1500) {
+  const started = Date.now();
+  while (!predicate()) {
+    if (Date.now() - started > timeout) throw new Error('waitFor timed out');
+    await sleep(5);
+  }
+}
 
 /* ─────────────────────────────────────────────────────────────────
    Mock Voicebox：只实现适配器真正调用的 4 个端点。
@@ -34,6 +43,7 @@ function startMockVoicebox(state) {
   const st = state || {};
   st.generateCalls = [];
   st.audioCalls = [];
+  st.cancelCalls = [];
   st.healthCalls = 0;
   st.profileCalls = 0;
   st.pollCount = 0;
@@ -58,7 +68,9 @@ function startMockVoicebox(state) {
       }
       if (url === '/profiles') {
         st.profileCalls++;
-        return json(200, st.profiles);
+        const sendProfiles = () => { if (!res.destroyed) json(200, st.profiles); };
+        if (st.profileDelayMs) { setTimeout(sendProfiles, st.profileDelayMs); return; }
+        return sendProfiles();
       }
       if (url === '/generate' && req.method === 'POST') {
         let parsed = {};
@@ -67,7 +79,18 @@ function startMockVoicebox(state) {
         if (st.generateStatus) { res.writeHead(st.generateStatus, { 'Content-Type': 'text/plain' }); res.end('boom'); return; }
         if (st.malformedGenerate) { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"not":"a generation"}'); return; }
         if (st.generateNotJson) { res.writeHead(200, { 'Content-Type': 'text/html' }); res.end('<html>nope</html>'); return; }
-        return json(200, { id: 'gen-' + st.generateCalls.length, profile_id: parsed.profile_id, status: 'generating', duration: 0 });
+        const sendGeneration = () => {
+          if (!res.destroyed) json(200, { id: 'gen-' + st.generateCalls.length, profile_id: parsed.profile_id, status: 'generating', duration: 0 });
+        };
+        if (st.holdGenerate) { st.releaseGenerate = sendGeneration; return; }
+        if (st.generateDelayMs) { setTimeout(sendGeneration, st.generateDelayMs); return; }
+        return sendGeneration();
+      }
+      const cancel = url.match(/^\/generate\/([^/]+)\/cancel$/);
+      if (cancel && req.method === 'POST') {
+        st.cancelCalls.push(decodeURIComponent(cancel[1]));
+        if (st.cancelStatus) { res.writeHead(st.cancelStatus, { 'Content-Type': 'text/plain' }); res.end(st.cancelStatus === 409 ? 'already completed' : 'cancel unavailable'); return; }
+        return json(200, { id: decodeURIComponent(cancel[1]), status: 'cancelled' });
       }
       const hist = url.match(/^\/history\/([^/]+)$/);
       if (hist) {
@@ -82,8 +105,14 @@ function startMockVoicebox(state) {
         st.audioCalls.push(aud[1]);
         if (st.audioStatus) { res.writeHead(st.audioStatus, { 'Content-Type': 'text/plain' }); res.end('gone'); return; }
         if (st.emptyAudio) { res.writeHead(200, { 'Content-Type': st.audioMime }); res.end(''); return; }
-        res.writeHead(200, { 'Content-Type': st.audioMime });
-        res.end(st.audioBytes);
+        const sendAudio = () => {
+          if (res.destroyed) return;
+          res.writeHead(200, { 'Content-Type': st.audioMime });
+          res.end(st.audioBytes);
+        };
+        if (st.holdAudio) { st.releaseAudio = sendAudio; return; }
+        if (st.audioDelayMs) { setTimeout(sendAudio, st.audioDelayMs); return; }
+        sendAudio();
         return;
       }
       res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -116,7 +145,7 @@ async function main() {
     const litHits = [];
     (function walk(dir) {
       fs.readdirSync(dir, { withFileTypes: true }).forEach(e => {
-        if (e.name === 'node_modules' || e.name === '.git' || e.name.startsWith('.')) return;
+        if (e.name === 'node_modules' || e.name === '.git' || e.name === 'target' || e.name.startsWith('.')) return;
         const full = path.join(dir, e.name);
         if (e.isDirectory()) return walk(full);
         if (!/\.(js|html|css)$/.test(e.name)) return;
@@ -336,6 +365,246 @@ async function main() {
       ]);
       ok('H.pollTimeout.noFalseSuccess', race === 'still-running' && mock.state.pollCount >= 2, JSON.stringify([race, mock.state.pollCount]));
       await new Promise(r2 => mock.server.close(r2));
+    }
+  }
+
+  /* ── J. Provider cancellation races: local HTTP mock only; no Voicebox runtime/model ── */
+  {
+    const profile = { text: 'cancel me', source: 'voicebox', voiceId: 'Morgan' };
+    const artifactCount = () => fs.readdirSync(ttsDir).filter(name => /^tts_/.test(name)).length;
+
+    /* Race A: abort while /generate is pending. Keep the bounded handshake alive,
+       capture the accepted ID, then cancel without polling or saving audio. */
+    {
+      const mock = await startMockVoicebox({ holdGenerate: true });
+      const cfg = voiceboxConfig('http://127.0.0.1:' + mock.port); cfg.__ttsDir = ttsDir;
+      const t = makeTts(cfg, createVoicebox({ config: cfg }));
+      const controller = new AbortController();
+      const diagnostics = [];
+      const before = artifactCount();
+      const pending = t.ttsSynthesize(t.normalizeVoiceProfile(profile), {
+        signal: controller.signal, callId: 'call-A', sessionId: 'session-A', generationId: 4,
+        sentenceId: 1, requestId: 'request-A', onDiagnostic: d => diagnostics.push(d)
+      });
+      await waitFor(() => mock.state.generateCalls.length === 1);
+      controller.abort();
+      const result = await pending;
+      ok('J.raceA.returnedCancelledBeforeLateId', result.cancelled === true && result.ok === false, JSON.stringify(result));
+      ok('J.raceA.noPollingOrAudio', mock.state.pollCount === 0 && mock.state.audioCalls.length === 0);
+      ok('J.raceA.noBridgeArtifact', artifactCount() === before);
+      mock.state.releaseGenerate();
+      await waitFor(() => mock.state.cancelCalls.length === 1);
+      ok('J.raceA.lateIdCancelled', mock.state.cancelCalls[0] === 'gen-1' && mock.state.pollCount === 0, JSON.stringify(mock.state.cancelCalls));
+      await waitFor(() => diagnostics.some(d => d.event === 'cancel_acknowledged'));
+      await new Promise(resolve => mock.server.close(resolve));
+    }
+
+    /* Abort after the ID is captured but before polling starts. */
+    {
+      const mock = await startMockVoicebox({});
+      const cfg = voiceboxConfig('http://127.0.0.1:' + mock.port); cfg.__ttsDir = ttsDir;
+      const t = makeTts(cfg, createVoicebox({ config: cfg }));
+      const controller = new AbortController();
+      const diagnostics = [];
+      const before = artifactCount();
+      const result = await t.ttsSynthesize(t.normalizeVoiceProfile(profile), {
+        signal: controller.signal, callId: 'call-B', sessionId: 'session-B', generationId: 5,
+        sentenceId: 1, requestId: 'request-B', onDiagnostic: d => {
+          diagnostics.push(d);
+          if (d.event === 'generation_created') controller.abort();
+        }
+      });
+      await waitFor(() => mock.state.cancelCalls.length === 1);
+      ok('J.raceB.abortAfterIdNoPoll', result.cancelled === true && mock.state.pollCount === 0 && mock.state.audioCalls.length === 0);
+      ok('J.raceB.cancelAcknowledged', diagnostics.some(d => d.event === 'cancel_acknowledged'));
+      ok('J.raceB.noBridgeArtifact', artifactCount() === before);
+      await new Promise(resolve => mock.server.close(resolve));
+    }
+
+    /* Abort during polling exits without the next 400 ms wait and is a stream cancel,
+       not an onError. */
+    {
+      const mock = await startMockVoicebox({ neverCompletes: true });
+      const cfg = voiceboxConfig('http://127.0.0.1:' + mock.port); cfg.__ttsDir = ttsDir;
+      const t = makeTts(cfg, createVoicebox({ config: cfg }));
+      const controller = new AbortController();
+      const before = artifactCount();
+      let cancelled = 0, errors = 0;
+      const streaming = t.streamSynthesize(t.normalizeVoiceProfile(profile), {
+        signal: controller.signal, callId: 'call-C', sessionId: 'session-C', generationId: 6,
+        sentenceId: 1, requestId: 'request-C'
+      }, { onCancel: () => cancelled++, onError: () => errors++ });
+      await waitFor(() => mock.state.pollCount > 0);
+      controller.abort();
+      await streaming;
+      await waitFor(() => mock.state.cancelCalls.length === 1);
+      const pollsAtReturn = mock.state.pollCount;
+      await sleep(30);
+      ok('J.raceC.pollAbortNoNextPoll', mock.state.pollCount === pollsAtReturn);
+      ok('J.raceC.cancelNotError', cancelled === 1 && errors === 0, JSON.stringify({ cancelled, errors }));
+      ok('J.raceC.noAudioOrBridgeArtifact', mock.state.audioCalls.length === 0 && artifactCount() === before);
+      await new Promise(resolve => mock.server.close(resolve));
+    }
+
+    /* Race C: upstream generation is complete but audio is still being downloaded.
+       Even an already-completed cancel response remains logically cancelled. */
+    {
+      const mock = await startMockVoicebox({ holdAudio: true, cancelStatus: 409 });
+      const cfg = voiceboxConfig('http://127.0.0.1:' + mock.port); cfg.__ttsDir = ttsDir;
+      const t = makeTts(cfg, createVoicebox({ config: cfg }));
+      const controller = new AbortController();
+      const diagnostics = [];
+      const before = artifactCount();
+      const pending = t.ttsSynthesize(t.normalizeVoiceProfile(profile), {
+        signal: controller.signal, callId: 'call-D', sessionId: 'session-D', generationId: 7,
+        sentenceId: 1, requestId: 'request-D', onDiagnostic: d => diagnostics.push(d)
+      });
+      await waitFor(() => mock.state.audioCalls.length === 1);
+      controller.abort();
+      const result = await pending;
+      await waitFor(() => mock.state.cancelCalls.length === 1);
+      await waitFor(() => diagnostics.some(d => d.event === 'cancel_failed'));
+      ok('J.raceD.alreadyCompletedStillCancelled', result.cancelled === true && diagnostics.some(d => d.event === 'cancel_failed' && d.status === 409));
+      ok('J.raceD.audioNotPersisted', artifactCount() === before);
+      if (mock.state.releaseAudio) mock.state.releaseAudio();
+      await new Promise(resolve => mock.server.close(resolve));
+    }
+
+    /* Race D: cancellation endpoint failure is diagnostic only; stale safety holds. */
+    {
+      const mock = await startMockVoicebox({ neverCompletes: true, cancelStatus: 500 });
+      const cfg = voiceboxConfig('http://127.0.0.1:' + mock.port); cfg.__ttsDir = ttsDir;
+      const t = makeTts(cfg, createVoicebox({ config: cfg }));
+      const controller = new AbortController();
+      const diagnostics = [];
+      const before = artifactCount();
+      const pending = t.ttsSynthesize(t.normalizeVoiceProfile(profile), {
+        signal: controller.signal, callId: 'call-E', sessionId: 'session-E', generationId: 8,
+        sentenceId: 1, requestId: 'request-E', onDiagnostic: d => diagnostics.push(d)
+      });
+      await waitFor(() => mock.state.pollCount > 0);
+      controller.abort();
+      const result = await pending;
+      await waitFor(() => diagnostics.some(d => d.event === 'cancel_failed'));
+      ok('J.raceE.failureStillCancelled', result.cancelled === true && mock.state.audioCalls.length === 0);
+      ok('J.raceE.cancelFailureDiagnosticSafe', diagnostics.some(d => d.event === 'cancel_failed' && d.stage === 'cancel'));
+      ok('J.raceE.noBridgeArtifact', artifactCount() === before);
+      await new Promise(resolve => mock.server.close(resolve));
+    }
+
+    /* Per-request identity: cancelling call A must not cancel call B in the same
+       Voicebox runtime/adapter instance. */
+    {
+      const mock = await startMockVoicebox({ neverCompletes: true });
+      const cfg = voiceboxConfig('http://127.0.0.1:' + mock.port); cfg.__ttsDir = ttsDir;
+      const t = makeTts(cfg, createVoicebox({ config: cfg }));
+      const a = new AbortController(), b = new AbortController();
+      const before = artifactCount();
+      const pendingA = t.ttsSynthesize(t.normalizeVoiceProfile(profile), {
+        signal: a.signal, callId: 'call-A', sessionId: 'session-A', generationId: 10,
+        sentenceId: 1, requestId: 'request-A'
+      });
+      const pendingB = t.ttsSynthesize(t.normalizeVoiceProfile(profile), {
+        signal: b.signal, callId: 'call-B', sessionId: 'session-B', generationId: 2,
+        sentenceId: 1, requestId: 'request-B'
+      });
+      await waitFor(() => mock.state.generateCalls.length === 2 && mock.state.pollCount >= 2);
+      a.abort();
+      const resultA = await pendingA;
+      await waitFor(() => mock.state.cancelCalls.length === 1);
+      const bStillRunning = await Promise.race([pendingB.then(() => 'settled'), sleep(30).then(() => 'pending')]);
+      ok('J.requestIdentity.cancelAOnly', resultA.cancelled === true && bStillRunning === 'pending' &&
+        mock.state.cancelCalls[0] === 'gen-1' && mock.state.cancelCalls.indexOf('gen-2') === -1, JSON.stringify(mock.state.cancelCalls));
+      b.abort();
+      const resultB = await pendingB;
+      await waitFor(() => mock.state.cancelCalls.length === 2);
+      ok('J.requestIdentity.cancelBSeparately', resultB.cancelled === true && mock.state.cancelCalls.indexOf('gen-2') !== -1);
+      ok('J.requestIdentity.noArtifacts', artifactCount() === before);
+      await new Promise(resolve => mock.server.close(resolve));
+    }
+
+    /* Timeout is a provider failure, distinct from caller cancellation. */
+    {
+      const mock = await startMockVoicebox({ profileDelayMs: 100 });
+      const cfg = voiceboxConfig('http://127.0.0.1:' + mock.port); cfg.__ttsDir = ttsDir;
+      const vb = createVoicebox({ config: cfg, timeouts: { requestMs: 20 } });
+      const result = await vb.synthesize({ text: 'x', voice: { id: 'Morgan' } }, () => ({ ok: true }));
+      ok('J.timeoutNotCancelled', result.ok === false && result.cancelled !== true && result.error.indexOf('请求超时') !== -1, JSON.stringify(result));
+      await sleep(110);
+      await new Promise(resolve => mock.server.close(resolve));
+    }
+
+    /* A provider without cancellation remains compatible: OpenAI finishes its
+       in-flight request, while the contract reports cancellation unsupported. */
+    {
+      let received = false;
+      const server = http.createServer((req, res) => {
+        req.resume();
+        req.on('end', () => {
+          received = true;
+          setTimeout(() => {
+            if (res.destroyed) return;
+            res.writeHead(200, { 'Content-Type': 'audio/mpeg' });
+            res.end(Buffer.from('openai-audio'));
+          }, 60);
+        });
+      });
+      await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+      const cfg = {
+        tts: { enabled: true, endpoint: 'http://127.0.0.1:' + server.address().port + '/speech', apiKey: 'test-key' },
+        ttsMimo: {}, voicebox: {}, __ttsDir: ttsDir
+      };
+      const t = makeTts(cfg, null);
+      const controller = new AbortController();
+      const diagnostics = [];
+      const pending = t.ttsSynthesize(t.normalizeVoiceProfile({ text: 'ordinary chat', source: 'tts' }), {
+        signal: controller.signal, onDiagnostic: d => diagnostics.push(d)
+      });
+      await waitFor(() => received);
+      controller.abort();
+      const result = await pending;
+      ok('J.providerWithoutCancellationRemainsCompatible', result.ok === true && result.cancelled !== true);
+      ok('J.providerWithoutCancellationDiagnostic', diagnostics.some(d => d.event === 'cancel_unsupported' && d.provider === 'openai'));
+      await new Promise(resolve => server.close(resolve));
+    }
+
+    /* Edge's true frame-stream path remains intact. Fake the TLS/WebSocket peer so
+       this regression check is local and deterministic. */
+    {
+      const originalConnect = tls.connect;
+      const t = makeTts({ tts: {}, ttsMimo: {}, voicebox: {}, __ttsDir: ttsDir }, null);
+      const controller = new AbortController();
+      const chunks = [], diagnostics = [];
+      tls.connect = (options, onSecureConnect) => {
+        const socket = new EventEmitter();
+        socket.destroyed = false;
+        socket.write = data => {
+          if (typeof data === 'string') {
+            setImmediate(() => socket.emit('data', Buffer.from('HTTP/1.1 101 Switching Protocols\r\n\r\n')));
+          } else {
+            setImmediate(() => {
+              const audio = Buffer.from([0x82, 0x02, 0x41, 0x42]);
+              const terminal = Buffer.from('Path:turn.end');
+              const end = Buffer.concat([Buffer.from([0x81, terminal.length]), terminal]);
+              socket.emit('data', Buffer.concat([audio, end]));
+            });
+          }
+          return true;
+        };
+        socket.end = () => { setImmediate(() => socket.emit('close')); };
+        socket.destroy = () => { socket.destroyed = true; setImmediate(() => socket.emit('close')); };
+        setImmediate(() => onSecureConnect.call(socket));
+        return socket;
+      };
+      try {
+        await t.streamSynthesize(t.normalizeVoiceProfile({ text: 'edge smoke', source: 'edge' }), {
+          signal: controller.signal, onDiagnostic: d => diagnostics.push(d)
+        }, { onChunk: (buf, mime) => chunks.push({ buf, mime }), onDone: () => {}, onError: err => { throw new Error(err); } });
+        ok('J.edgeTrueFrameStreamUnaffected', chunks.length === 1 && chunks[0].buf.toString('utf8') === 'AB' && chunks[0].mime === 'audio/mpeg');
+        ok('J.edgeNormalStreamNoCancellationNoise', diagnostics.length === 0);
+      } finally {
+        tls.connect = originalConnect;
+      }
     }
   }
 

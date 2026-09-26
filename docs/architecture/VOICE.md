@@ -163,12 +163,19 @@ UI 镜像 state；该镜像不是 authority。
 
 ```
 User speech (VAD) → browser stops playback → send {type:'interrupt'}
-   → bridge interrupt(): state=interrupting, emit 'interrupted' + generation_end(interrupted:true),
-     advance generation id, drop stale TTS/ASR chunks
-   → resume listening
+    → bridge interrupt(): state=interrupting, emit 'interrupted' + generation_end(interrupted:true),
+      advance generation id, abort active provider signal, clear queued sentences
+    → resume listening
 ```
 
-记录到的当前行为：barge-in 会停止播放并推进 generation guard；它不会追溯性地取消已投递的音频。
+取消分两层：
+
+- **Logical cancellation**：generation guard 使旧 TTS/ASR/audio 永远不能发出或播放。provider cancel 失败也不改变此保证。
+- **Physical/provider cancellation**：TTS request 携带 session、generation、sentence、request identity 和 `AbortSignal`。provider 通过 registry 的 `supportsCancellation` 声明能力；未声明的 provider 仍使用 logical cancellation，不要求实现 `cancel()`。
+- **Voicebox**：适配器把本次 IB request 与 Voicebox generation ID 关联；signal abort 后 POST `/generate/{id}/cancel`，停止 history polling / audio download，并阻止创建 Bridge TTS artifact。若 `/generate` 尚未返回 ID，受独立 timeout 约束的提交握手会继续到拿到 ID，再立即请求取消；该竞态中 synthesis promise 会先返回 cancelled，不阻塞下一轮。
+- **Queue ownership**：Bridge TTS drain 按 generation 独占。旧 drain 在 await 后发现 generation 已替换就退出，只能删除自己的 owner；它不能取走新 generation 的 queue 项，也不能清除新状态。
+
+目前只有 Voicebox 声明支持物理取消。Edge、OpenAI-compatible 和 MiMo 保留原行为并继续依靠 stale-result guard。Voicebox 仍然只是 TTS provider，不获得 Persona、Agent 或 final-text authority。
 
 ---
 

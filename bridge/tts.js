@@ -523,7 +523,7 @@ function createTts(deps) {
     }
   }
 
-  async function voiceboxSynthesize(profile) {
+  async function voiceboxSynthesize(profile, ctx) {
     /* Voicebox（本地 Voice Runtime，第四 provider · P23 Phase 1）。
        边界：IB 决定「说什么」，Voicebox 只决定「怎么念」——
        请求体恒 personality:false，personality/rewrite 通道永不启用（见 bridge/voicebox.js）。
@@ -532,8 +532,9 @@ function createTts(deps) {
     if (!voicebox) {
       return { ok: false, error: 'Voicebox not configured: Bridge 未注入 voicebox 适配器' };
     }
-    const r = await voicebox.synthesize(profile, saveTtsAudio);
+    const r = await voicebox.synthesize(profile, saveTtsAudio, ctx || {});
     if (r && r.ok) return r;
+    if (r && r.cancelled) return { ok: false, cancelled: true, error: String(r.error || 'Voicebox generation cancelled') };
     return { ok: false, error: String((r && r.error) || 'Voicebox synthesis failed') };
   }
 
@@ -556,6 +557,7 @@ function createTts(deps) {
       label: 'Edge TTS (free)',
       source: 'edge',
       credential: 'none',
+      supportsCancellation: false,
       capabilities: { builtin: true, clone: false, design: false, style: false, language: false, prosody: true },
       defaultVoice: EDGE_DEFAULT_VOICE,
       defaultLanguage: EDGE_DEFAULT_LANGUAGE,
@@ -567,6 +569,7 @@ function createTts(deps) {
       label: 'OpenAI TTS',
       source: 'tts',
       credential: 'bridge:tts',
+      supportsCancellation: false,
       capabilities: { builtin: true, clone: false, design: false, style: true, language: false, prosody: false },
       defaultVoice: OPENAI_DEFAULT_VOICE,
       defaultLanguage: '',
@@ -578,6 +581,7 @@ function createTts(deps) {
       label: 'MiMo TTS',
       source: 'ttsMimo',
       credential: 'bridge:ttsMimo',
+      supportsCancellation: false,
       capabilities: { builtin: true, clone: true, design: true, style: true, language: false, prosody: false },
       defaultVoice: MIMO_DEFAULT_VOICE,
       defaultLanguage: '',
@@ -594,6 +598,7 @@ function createTts(deps) {
       label: 'Voicebox (local)',
       source: 'voicebox',
       credential: 'local-runtime',
+      supportsCancellation: true,
       capabilities: { builtin: true, clone: false, design: false, style: true, language: true, prosody: false },
       defaultVoice: '',
       defaultLanguage: '',
@@ -743,28 +748,59 @@ function createTts(deps) {
   }
 
   /*
-   * ttsSynthesize(profile, ctx)：统一合成入口（ctx 目前保留未用，供未来会话级信息注入）。
-   * 文本判空与截断语义沿用提取前 ttsGenerate / 各 provider 的两层检查，错误文案不变。
+   * ttsSynthesize(profile, ctx)：统一合成入口。ctx carries request identity and an
+   * optional AbortSignal; only providers declaring supportsCancellation consume it.
+   * Legacy callers omit ctx and retain the existing behavior.
    */
   /* ── 统一合成入口：voice.type==='clone'/'design' 且 provider 有对应 synthesize 时走专用适配器；
      否则走普通 synthesize。edge/openai 的 clone/design 能力为 false，normalize 已回落到 builtin，
      因此 clone/design 请求只会命中 provider.cloneSynthesize/designSynthesize（当前仅 mimo）。 ── */
+  function providerContext(def, ctx) {
+    const out = Object.assign({}, ctx || {}, {
+      provider: def.id,
+      supportsCancellation: def.supportsCancellation === true
+    });
+    let onAbort = null;
+    if (out.signal && !out.supportsCancellation) {
+      onAbort = function () {
+        if (typeof out.onDiagnostic !== 'function') return;
+        try {
+          out.onDiagnostic({ event: 'cancel_unsupported', provider: def.id });
+        } catch (e) { /* diagnostics must not affect synthesis */ }
+      };
+      if (out.signal.aborted) onAbort();
+      else out.signal.addEventListener('abort', onAbort, { once: true });
+    }
+    return {
+      value: out,
+      cleanup: function () {
+        if (onAbort && out.signal && typeof out.signal.removeEventListener === 'function') {
+          out.signal.removeEventListener('abort', onAbort);
+        }
+      }
+    };
+  }
+
   async function ttsSynthesize(profile, ctx) {
-    void ctx;
     const prof = profile && typeof profile === 'object' ? profile : {};
     const input = String(prof.text || '').trim();
     if (!input) return { ok: false, error: 'No text to speak' };
     const def = TTS_PROVIDER_REGISTRY[prof.provider];
     if (!def) return { ok: false, error: 'Unknown TTS provider: ' + prof.provider };
+    const dispatched = providerContext(def, ctx);
     const isClone = prof.voice && prof.voice.type === 'clone';
-    if (isClone && def.cloneSynthesize) {
-      return def.cloneSynthesize(Object.assign({}, prof, { text: input }));
+    try {
+      if (isClone && def.cloneSynthesize) {
+        return await def.cloneSynthesize(Object.assign({}, prof, { text: input }), dispatched.value);
+      }
+      const isDesign = prof.voice && prof.voice.type === 'design';
+      if (isDesign && def.designSynthesize) {
+        return await def.designSynthesize(Object.assign({}, prof, { text: input }), dispatched.value);
+      }
+      return await def.synthesize(Object.assign({}, prof, { text: input }), dispatched.value);
+    } finally {
+      dispatched.cleanup();
     }
-    const isDesign = prof.voice && prof.voice.type === 'design';
-    if (isDesign && def.designSynthesize) {
-      return def.designSynthesize(Object.assign({}, prof, { text: input }));
-    }
-    return def.synthesize(Object.assign({}, prof, { text: input }));
   }
 
   /* 兼容包装：旧位置参数签名保持不变（routes / WS 工具历史调用者零改动即生效） */
@@ -782,12 +818,13 @@ function createTts(deps) {
      Edge 走真音频帧流（edgeTtsStream，每帧一个 MP3 chunk）；其余 provider
      （OpenAI / MiMo / clone / design）一次返回整段，回落为"单 chunk + done"
      的句级流式（真实 provider 能力所限，绝不伪装成字节流）。
-     handlers: { onChunk(buf, mime), onDone(), onError(err) }。 */
+     handlers: { onChunk(buf, mime), onDone(), onError(err), onCancel()? }。 */
   async function streamSynthesize(profile, ctx, handlers) {
     const h = handlers || {};
     const onChunk = h.onChunk || function () {};
     const onDone = h.onDone || function () {};
     const onError = h.onError || function () {};
+    const onCancel = h.onCancel || function () {};
     const prof = profile && typeof profile === 'object' ? profile : {};
     const input = String(prof.text || '').trim();
     if (!input) { onError('No text to speak'); return; }
@@ -796,6 +833,7 @@ function createTts(deps) {
 
     if (def.id === 'edge') {
       /* True MP3 frame streaming over the Edge websocket. */
+      const dispatched = providerContext(def, ctx);
       try {
         await edgeTtsStream(input, prof.voice && prof.voice.id || EDGE_DEFAULT_VOICE, prof.rate, prof.pitch, {
           onChunk: function (buf, mime) { onChunk(buf, mime); },
@@ -804,6 +842,8 @@ function createTts(deps) {
         });
       } catch (e) {
         onError(String(e && e.message || e).slice(0, 200));
+      } finally {
+        dispatched.cleanup();
       }
       return;
     }
@@ -812,6 +852,7 @@ function createTts(deps) {
        clone/design correctly), read the saved file and emit it as one chunk. */
     try {
       const result = await ttsSynthesize(prof, ctx || {});
+      if (result && result.cancelled) { onCancel(); return; }
       if (!result || !result.ok) { onError((result && result.error) || 'TTS failed'); return; }
       const fileName = path.basename(String(result.url || ''));
       const file = path.join(ttsDir, fileName);

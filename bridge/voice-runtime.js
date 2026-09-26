@@ -81,6 +81,47 @@ function createVoiceRuntime(deps) {
     return turn;
   }
 
+  function reportTtsDiagnostic(call, request, detail) {
+    const d = detail || {};
+    const payload = {
+      event: String(d.event || 'tts_diagnostic'),
+      provider: String(d.provider || request.provider || 'unknown'),
+      callId: call.callSessionId,
+      sessionId: call.callSessionId,
+      generationId: request.generation,
+      sentenceId: request.sentenceId,
+      requestId: request.requestId
+    };
+    if (d.voiceboxGenerationId != null) payload.voiceboxGenerationId = String(d.voiceboxGenerationId);
+    if (d.status != null && Number.isFinite(Number(d.status))) payload.status = Number(d.status);
+    if (d.stage) payload.stage = String(d.stage);
+    if (d.reason) payload.reason = String(d.reason);
+    const line = JSON.stringify(payload);
+    if (payload.event === 'cancel_failed') {
+      try { console.warn('[IB Voice] ' + line); } catch (e) { /* ignore */ }
+    } else if (debugOn) {
+      debugLog(line);
+    }
+  }
+
+  function abortTtsGeneration(call, generation, reason) {
+    if (!call || !call.ttsRequests) return;
+    call.ttsRequests.forEach(function (request) {
+      if (request.generation !== generation || request.controller.signal.aborted) return;
+      reportTtsDiagnostic(call, request, { event: 'cancel_requested', reason: reason || 'generation_invalidated' });
+      request.controller.abort();
+    });
+  }
+
+  function abortAllTts(call, reason) {
+    if (!call || !call.ttsRequests) return;
+    call.ttsRequests.forEach(function (request) {
+      if (request.controller.signal.aborted) return;
+      reportTtsDiagnostic(call, request, { event: 'cancel_requested', reason: reason || 'session_closed' });
+      request.controller.abort();
+    });
+  }
+
   function readTtsFile(result) {
     const fileName = path.basename(String(result.url || ''));
     const file = path.join(dataDir, fileName);
@@ -100,6 +141,7 @@ function createVoiceRuntime(deps) {
   async function defaultStreamSynthesize(profile, ctx, handlers) {
     try {
       const result = await ttsSynthesize(ttsNormalize(profile), ctx || {});
+      if (result && result.cancelled) { if (handlers.onCancel) handlers.onCancel(); return; }
       if (!result || !result.ok) { handlers.onError((result && result.error) || 'TTS failed'); return; }
       const loaded = readTtsFile(result);
       handlers.onChunk(loaded.audio, loaded.mime);
@@ -119,6 +161,13 @@ function createVoiceRuntime(deps) {
   function interrupt(conn, call, reason) {
     const oldGeneration = call.generation;
     const previousState = call.state;
+    const activeRequest = Array.from(call.ttsRequests.values()).some(function (request) {
+      return request.generation === oldGeneration && !request.controller.signal.aborted;
+    });
+    const hasWork = !!(call.activeReply || call.pendingTurn || call.capturing || call.asrSession || activeRequest ||
+      call.ttsQueue.some(function (item) { return item.generation === oldGeneration; }) ||
+      previousState === 'thinking' || previousState === 'speaking');
+    if (!hasWork) return;
     call.generation += 1;
     call.asrGeneration += 1; /* invalidate any in-flight ASR capture */
     if (call.pendingTurn) call.pendingTurn.cancelled = true;
@@ -126,6 +175,7 @@ function createVoiceRuntime(deps) {
     call.capturing = false;
     if (call.asrSession) { try { call.asrSession.cancel && call.asrSession.cancel(); call.asrSession.close && call.asrSession.close(); } catch (e) { /* ignore */ } call.asrSession = null; }
     call.ttsQueue = [];
+    abortTtsGeneration(call, oldGeneration, reason || 'user');
     call.activeReply = null;
     call.lastSpokenGeneration = null;
     setState(conn, call, 'interrupting', { reason: reason || 'user' });
@@ -165,8 +215,34 @@ function createVoiceRuntime(deps) {
     return new Promise(function (resolve) {
       let pending = null;
       let chunkId = 0;
+      let settled = false;
+      const requestId = String(call.callSessionId) + ':' + String(item.generation) + ':' + String(item.seq);
+      const controller = new AbortController();
+      const profile = Object.assign({}, call.voice || {}, { text: item.text });
+      const normalized = ttsNormalize(profile);
+      const request = {
+        requestId,
+        generation: item.generation,
+        sentenceId: item.seq,
+        provider: String(normalized && normalized.provider || 'unknown'),
+        controller,
+        staleReported: false
+      };
+      call.ttsRequests.set(requestId, request);
+      const finish = function () {
+        if (settled) return;
+        settled = true;
+        if (call.ttsRequests.get(requestId) === request) call.ttsRequests.delete(requestId);
+        resolve();
+      };
+      const dropStale = function () {
+        if (!request.staleReported) {
+          request.staleReported = true;
+          reportTtsDiagnostic(call, request, { event: 'stale_result_dropped' });
+        }
+      };
       const emit = function (chunk, doneFlag) {
-        if (item.generation !== call.generation || call.state === 'ended' || item.cancelled) return false;
+        if (item.generation !== call.generation || call.state === 'ended' || item.cancelled) { dropStale(); return false; }
         if (!call.turnTimings.ttsFirstChunkMs && call.replyStartMs) call.turnTimings.ttsFirstChunkMs = Date.now() - call.replyStartMs;
         sendAudio(conn, call, item.generation, item.seq, chunk.chunkId, chunk.buf, chunk.mime, doneFlag);
         call.lastSpokenGeneration = item.generation;
@@ -174,31 +250,41 @@ function createVoiceRuntime(deps) {
       };
       const handlers = {
         onChunk: function (buf, mime) {
-          if (item.generation !== call.generation || call.state === 'ended' || item.cancelled) { pending = null; return; }
+          if (item.generation !== call.generation || call.state === 'ended' || item.cancelled) { pending = null; dropStale(); return; }
           chunkId++;
           if (pending) emit(pending, false);
           pending = { chunkId: chunkId, buf: buf, mime: mime };
         },
         onDone: function () {
           if (pending) { emit(pending, replyDoneFlag); pending = null; }
-          resolve();
+          finish();
         },
         onError: function (err) {
           pending = null;
           if (item.generation === call.generation && call.state !== 'ended') {
             send(conn, { type: 'error', stage: 'tts', generation_id: item.generation, sentence_id: item.seq, error: String(err || 'TTS failed').slice(0, 300) });
           }
-          resolve();
-        }
+          finish();
+        },
+        onCancel: finish
       };
-      const profile = Object.assign({}, call.voice || {}, { text: item.text });
-      const ctx = { callSessionId: call.callSessionId, generation: item.generation, sentenceId: item.seq };
-      Promise.resolve(streamSynthesize(ttsNormalize(profile), ctx, handlers)).catch(function (e) {
+      const ctx = {
+        callId: call.callSessionId,
+        sessionId: call.callSessionId,
+        callSessionId: call.callSessionId,
+        generation: item.generation,
+        generationId: item.generation,
+        sentenceId: item.seq,
+        requestId,
+        signal: controller.signal,
+        onDiagnostic: function (detail) { reportTtsDiagnostic(call, request, detail); }
+      };
+      Promise.resolve(streamSynthesize(normalized, ctx, handlers)).catch(function (e) {
         if (item.generation === call.generation && call.state !== 'ended') {
           send(conn, { type: 'error', stage: 'tts', generation_id: item.generation, sentence_id: item.seq, error: String(e && e.message || e).slice(0, 300) });
         }
-        resolve();
-      });
+        finish();
+      }).then(finish);
     });
   }
 
@@ -207,29 +293,38 @@ function createVoiceRuntime(deps) {
      synthesizes them serially (so sentence order is preserved) and pushes each
      audio chunk as soon as it is ready, so playback can start on the first
      sentence without waiting for the rest. */
-  async function drainQueue(conn, call) {
-    if (call.ttsDraining || call.state === 'ended') return;
-    call.ttsDraining = true;
-    try {
-      while (call.ttsQueue.length) {
-        const item = call.ttsQueue[0];
-        if (item.generation !== call.generation || call.state === 'ended' || item.cancelled) { call.ttsQueue.shift(); continue; }
-        call.ttsQueue.shift();
-        const replyDone = !!(call.activeReply && call.activeReply.done);
-        const isLastSent = call.ttsQueue.length === 0;
-        await synthesizeSentence(conn, call, item, replyDone && isLastSent);
+  function drainQueue(conn, call, generation) {
+    const gen = generation == null ? call.generation : generation;
+    if (call.state === 'ended' || gen !== call.generation) return Promise.resolve();
+    const existing = call.ttsDrains.get(gen);
+    if (existing) return existing.promise;
+    const owner = { generation: gen, promise: null };
+    call.ttsDrains.set(gen, owner);
+    owner.promise = (async function () {
+      try {
+        while (call.generation === gen && call.state !== 'ended') {
+          const index = call.ttsQueue.findIndex(function (item) { return item.generation === gen; });
+          if (index < 0) break;
+          const item = call.ttsQueue.splice(index, 1)[0];
+          if (item.cancelled) continue;
+          const replyDone = !!(call.activeReply && call.activeReply.generation === gen && call.activeReply.done);
+          const isLastSent = !call.ttsQueue.some(function (queued) { return queued.generation === gen; });
+          await synthesizeSentence(conn, call, item, replyDone && isLastSent);
+        }
+        if (call.generation === gen && call.state !== 'ended' &&
+            !call.ttsQueue.some(function (item) { return item.generation === gen; }) &&
+            call.activeReply && call.activeReply.generation === gen && call.activeReply.done) {
+          call.activeReply = null;
+          if (call.pendingTurn) call.pendingTurn = null;
+          debugLog('generation_end gen=' + gen + (call.turnTimings.ttsFirstChunkMs != null ? ' tts_first_chunk_ms=' + call.turnTimings.ttsFirstChunkMs : ''));
+          send(conn, { type: 'generation_end', call_session_id: call.callSessionId, generation_id: gen });
+          setState(conn, call, 'listening');
+        }
+      } finally {
+        if (call.ttsDrains.get(gen) === owner) call.ttsDrains.delete(gen);
       }
-      if (call.state !== 'ended' && call.ttsQueue.length === 0 && call.activeReply && call.activeReply.done) {
-        const gen = call.activeReply.generation;
-        call.activeReply = null;
-        if (call.pendingTurn) call.pendingTurn = null;
-        debugLog('generation_end gen=' + gen + (call.turnTimings.ttsFirstChunkMs != null ? ' tts_first_chunk_ms=' + call.turnTimings.ttsFirstChunkMs : ''));
-        send(conn, { type: 'generation_end', call_session_id: call.callSessionId, generation_id: gen });
-        setState(conn, call, 'listening');
-      }
-    } finally {
-      call.ttsDraining = false;
-    }
+    })();
+    return owner.promise;
   }
 
   /* Submit a reply (whole or incremental) into the TTS queue. */
@@ -239,7 +334,10 @@ function createVoiceRuntime(deps) {
     const done = opts.done !== false;
     if (!call.activeReply || call.state === 'ended') {
       if (!text) return;
+      const replacedGeneration = call.generation;
       call.generation += 1;
+      abortTtsGeneration(call, replacedGeneration, 'generation_replaced');
+      call.ttsQueue = call.ttsQueue.filter(function (item) { return item.generation === call.generation; });
       call.activeReply = { generation: call.generation, done: done, turnId: turn.turnId };
       call.sentenceSeq = 0;
       call.replyStartMs = Date.now();
@@ -259,7 +357,7 @@ function createVoiceRuntime(deps) {
       call.activeReply.done = true;
       if (call.pendingTurn) call.pendingTurn = null;
     }
-    void drainQueue(conn, call);
+    void drainQueue(conn, call, call.activeReply.generation);
   }
 
   /* Standalone assistant utterance (incoming-call opening line): no pending user turn.
@@ -268,7 +366,10 @@ function createVoiceRuntime(deps) {
   function speakGreeting(conn, call, msg) {
     const text = String(msg && msg.text || '').trim();
     if (!text || call.state === 'ended') return true;
+    const replacedGeneration = call.generation;
     call.generation += 1;
+    abortTtsGeneration(call, replacedGeneration, 'generation_replaced');
+    call.ttsQueue = call.ttsQueue.filter(function (item) { return item.generation === call.generation; });
     call.activeReply = { generation: call.generation, done: true, turnId: String(msg.turn_id || 'greeting') };
     call.sentenceSeq = 0;
     call.replyStartMs = Date.now();
@@ -279,7 +380,7 @@ function createVoiceRuntime(deps) {
     for (const sentence of sentences) {
       call.ttsQueue.push({ generation: call.generation, seq: ++call.sentenceSeq, text: sentence, cancelled: false });
     }
-    void drainQueue(conn, call);
+    void drainQueue(conn, call, call.generation);
     return true;
   }
 
@@ -377,7 +478,8 @@ function createVoiceRuntime(deps) {
       capturing: false,
       pendingTurn: null,
       ttsQueue: [],
-      ttsDraining: false,
+      ttsDrains: new Map(),
+      ttsRequests: new Map(),
       activeReply: null,
       sentenceSeq: 0,
       lastSpokenGeneration: null,
@@ -444,6 +546,7 @@ function createVoiceRuntime(deps) {
     if (msg.type === 'hangup') {
       interrupt(conn, call, 'hangup');
       call.state = 'ended';
+      abortAllTts(call, 'hangup');
       send(conn, Object.assign({ type: 'hangup', call_session_id: call.callSessionId }, publicSession(call)));
       sessions.delete(conn);
       if (conn.session === call) conn.session = null;
@@ -470,11 +573,14 @@ function createVoiceRuntime(deps) {
     const call = sessions.get(conn);
     if (call) {
       call.state = 'ended';
+      call.generation += 1;
+      call.asrGeneration += 1;
       if (call.pendingTurn) call.pendingTurn.cancelled = true;
       call.capturing = false;
       call.ttsQueue = [];
       call.activeReply = null;
-      call.ttsDraining = false;
+      abortAllTts(call, 'session_closed');
+      call.ttsDrains.clear();
       if (call.asrSession) { try { call.asrSession.cancel && call.asrSession.cancel(); call.asrSession.close && call.asrSession.close(); } catch (e) { /* ignore */ } call.asrSession = null; }
       sessions.delete(conn);
       if (conn.session === call) conn.session = null;
