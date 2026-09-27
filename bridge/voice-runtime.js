@@ -423,7 +423,8 @@ function createVoiceRuntime(deps) {
           transcript = await call.asrSession.finalize();
           call.asrSession = null;
         } else {
-          transcript = await asr.transcribe(pcm);
+          const asrResult = await asr.transcribe(pcm, { requestId: turn.turnId });
+          transcript = typeof asrResult === 'string' ? asrResult : String(asrResult && asrResult.text || '');
         }
       }
       if (turn.cancelled || call.pendingTurn !== turn || call.state === 'ended') return;

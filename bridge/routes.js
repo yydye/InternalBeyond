@@ -17,7 +17,7 @@ function createRoutes(ctx) {
     getLetters, setLetters, sessions, resident, contextStats, pushHistory,
     withListLock, uid, todayStr, saveList, saveGeo, saveSessions, saveResident,
     getWeather, searchMusic, musicPlayUrl, musicPlayRemote, searchNetease,
-    barkPush, ntfyPush, ttsNormalize, ttsSynthesize, ttsVoices, ttsSources, voicebox,
+    barkPush, ntfyPush, ttsNormalize, ttsSynthesize, ttsVoices, ttsSources, voicebox, asr,
     sessionGet, sessionSave, contextAppend, contextSummary,
     residentList, residentUpsert, residentSummary, residentChat, residentProactive,
     broadcast, recordPush, lanAddresses, fileSummary, directoryUsage,
@@ -96,6 +96,22 @@ function createRoutes(ctx) {
       req.on('end', () => { if (!settled) { settled = true; resolve(Buffer.concat(chunks)); } });
       req.on('error', e => { if (!settled) { settled = true; reject(e); } });
     });
+  }
+
+  function audioSignatureMatches(mime, bytes) {
+    if (!Buffer.isBuffer(bytes) || bytes.length < 4) return false;
+    if (mime === 'audio/wav' || mime === 'audio/x-wav' || mime === 'audio/wave') {
+      return bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WAVE';
+    }
+    if (mime === 'audio/mpeg' || mime === 'audio/mp3') {
+      return bytes.toString('ascii', 0, 3) === 'ID3' || (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0);
+    }
+    if (mime === 'audio/mp4' || mime === 'audio/x-m4a') return bytes.toString('ascii', 4, 8) === 'ftyp';
+    if (mime === 'audio/ogg' || mime === 'audio/opus') return bytes.toString('ascii', 0, 4) === 'OggS';
+    if (mime === 'audio/flac' || mime === 'audio/x-flac') return bytes.toString('ascii', 0, 4) === 'fLaC';
+    if (mime === 'audio/aac') return bytes[0] === 0xff && (bytes[1] & 0xf6) === 0xf0;
+    if (mime === 'audio/webm') return bytes.length >= 4 && bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3;
+    return false;
   }
 
   function voiceboxProfileStatus(result, fallback) {
@@ -261,7 +277,7 @@ function createRoutes(ctx) {
         ntfy: !!(config.ntfy && config.ntfy.enabled && config.ntfy.topic),
         openaiTts: !!(config.tts && config.tts.enabled && config.tts.endpoint && config.tts.apiKey),
         mimoTts: !!(config.ttsMimo && config.ttsMimo.enabled && config.ttsMimo.endpoint && config.ttsMimo.apiKey),
-        voiceAsr: !!(config.voiceAsr && config.voiceAsr.enabled && config.voiceAsr.endpoint && config.voiceAsr.apiKey && config.voiceAsr.model),
+        voiceAsr: !!(asr && asr.configured),
         proactive: !!(config.proactive && config.proactive.enabled && config.proactive.endpoint),
         localAddresses: LAN_EXPOSED ? lanAddresses() : []
       },
@@ -437,7 +453,7 @@ function createRoutes(ctx) {
         ntfy: !!(config.ntfy && config.ntfy.enabled && config.ntfy.topic),
         tts: !!(config.tts && config.tts.enabled && config.tts.endpoint && config.tts.apiKey),
         mimoTts: !!(config.ttsMimo && config.ttsMimo.enabled && config.ttsMimo.endpoint && config.ttsMimo.apiKey),
-        voiceAsr: !!(config.voiceAsr && config.voiceAsr.enabled && config.voiceAsr.endpoint && config.voiceAsr.apiKey && config.voiceAsr.model),
+        voiceAsr: !!(asr && asr.configured),
         resident: Object.keys(resident).length,
         musicProvider: (config.music && config.music.provider) || 'kugou',
         lan: LAN_EXPOSED,
@@ -808,6 +824,60 @@ function createRoutes(ctx) {
     /* 配置（脱敏）与工具列表 */
     if (pathname === '/api/config' && req.method === 'GET') {
       sendJsonRes(res, 200, { ok: true, config: safeConfigSnapshot(), dataDir: DATA_DIR, stickerDir: STICKER_DIR });
+      return;
+    }
+    /* ASR capability metadata contains no Voicebox URL, model path or credentials. */
+    if (pathname === '/api/asr/capabilities' && req.method === 'GET') {
+      if (!asr) { sendJsonRes(res, 503, { ok: false, error: 'ASR provider is unavailable.' }); return; }
+      sendJsonRes(res, 200, {
+        ok: true,
+        provider: asr.provider,
+        configured: !!asr.configured,
+        capabilities: typeof asr.capabilities === 'function' ? asr.capabilities() : { streaming: !!asr.streaming },
+        fileTranscription: asr.provider === 'voicebox',
+        maxAudioBytes: Number(asr.maxAudioBytes) || 0,
+        supportedAudioTypes: asr.provider === 'voicebox' ? (asr.supportedAudioTypes || []) : []
+      });
+      return;
+    }
+    /* Voice messages and uploaded audio cross the Bridge as bytes, never as a
+       filesystem path. The selected provider remains entirely server-side. */
+    if (pathname === '/api/asr/transcriptions' && req.method === 'POST') {
+      if (!asr || asr.provider !== 'voicebox') {
+        sendJsonRes(res, 409, { ok: false, error: 'Voicebox file transcription is not selected.' });
+        return;
+      }
+      if (!asr.configured) {
+        sendJsonRes(res, 503, { ok: false, error: 'Voicebox ASR is not configured.' });
+        return;
+      }
+      const mime = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+      if (!(asr.supportedAudioTypes || []).includes(mime)) {
+        sendJsonRes(res, 415, { ok: false, code: 'INVALID_AUDIO', error: 'Unsupported audio content type.' });
+        return;
+      }
+      const maxBytes = Math.max(1024, Number(asr.maxAudioBytes) || 5 * 1024 * 1024);
+      const declared = Number(req.headers['content-length']);
+      if (Number.isFinite(declared) && declared > maxBytes) {
+        sendJsonRes(res, 413, { ok: false, code: 'AUDIO_TOO_LARGE', error: 'Audio exceeds the Bridge ASR size limit.' });
+        return;
+      }
+      try {
+        const bytes = await readRawBody(req, maxBytes);
+        if (!bytes.length || !audioSignatureMatches(mime, bytes)) {
+          sendJsonRes(res, 400, { ok: false, code: 'INVALID_AUDIO', error: 'Audio content does not match its declared type.' });
+          return;
+        }
+        const result = await asr.transcribe({ bytes, mime }, { requestId: uid('asr_request') });
+        sendJsonRes(res, 200, Object.assign({ ok: true }, result));
+      } catch (error) {
+        const bodyTooLarge = /body too large/i.test(String(error && error.message || ''));
+        const code = String(error && error.code || (bodyTooLarge ? 'AUDIO_TOO_LARGE' : 'ASR_UNAVAILABLE'));
+        const status = code === 'AUDIO_TOO_LARGE' ? 413 :
+          code === 'INVALID_AUDIO' ? 400 : Number(error && error.status) || 503;
+        if (bodyTooLarge && typeof req.resume === 'function') req.resume();
+        sendJsonRes(res, status, { ok: false, code, error: String(error && error.message || 'ASR failed').slice(0, 240) });
+      }
       return;
     }
     if (pathname === '/api/tools' && req.method === 'GET') {

@@ -286,11 +286,11 @@ const ttsSynthesize = tts.ttsSynthesize;
 /* Voice API Source 目录（canonical：角色保存 source 引用，绝不复制 credential） */
 const ttsSources = tts.listVoiceSources;
 
-/* ASR provider interface (turn-based OpenAI-Whisper-compatible default;
-   streaming recognizer is opt-in). Wired into the voice runtime via deps so
+/* ASR provider interface (OpenAI-compatible default; Voicebox is an optional
+   non-streaming turn/file provider). Wired into the voice runtime via deps so
    tests can inject a fake `asr`. */
 const createAsr = require('../bridge/asr');
-const asr = createAsr(config);
+const asr = createAsr(config, { voicebox });
 
 /* Voice Runtime only owns audio, ASR, call state and generation lifecycle. */
 const createVoiceRuntime = require('../bridge/voice-runtime');
@@ -940,7 +940,7 @@ const httpLayer = createRoutes({
   sessions, resident, contextStats, pushHistory,
   withListLock, uid, todayStr, saveList, saveGeo, saveSessions, saveResident,
   getWeather, searchMusic, musicPlayUrl, musicPlayRemote, searchNetease,
-  barkPush, ntfyPush, ttsNormalize, ttsSynthesize, ttsVoices, ttsSources, voicebox,
+  barkPush, ntfyPush, ttsNormalize, ttsSynthesize, ttsVoices, ttsSources, voicebox, asr,
   sessionGet, sessionSave, contextAppend, contextSummary,
   residentList, residentUpsert, residentSummary, residentChat, residentProactive,
   broadcast, recordPush, lanAddresses, fileSummary, directoryUsage,

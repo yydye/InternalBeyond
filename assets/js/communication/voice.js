@@ -29,9 +29,9 @@ const VM_MAX_SEC=60;/* 最长录音 60 秒，达到后自动停止并发送 */
 function _vmSupported(){return !!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia&&window.MediaRecorder)}
 function _voiceApiLine(v,withTone){var d=Math.max(1,Math.round((v&&v.duration)||1));var t=((v&&v.transcript)||'').trim();var tn=(withTone&&v&&v.tone)?('｜声学语气参考: '+v.tone):'';return '[语音消息 '+d+'秒'+tn+'] '+(t||'（语音内容未能自动识别）')}
 
-/* ── 语音转写（外部接口）· 音频直发 · 本地声学语气分析 ─────────
-   1) 转写：在 API 页面配置 OpenAI 兼容转写接口（/audio/transcriptions）后，
-      文字稿改由该服务产出，浏览器内置识别整条通道不再启动；任何浏览器、任何聊天模型可用。
+/* ── 语音转写（外部接口 / Bridge Voicebox）· 音频直发 · 本地声学语气分析 ─
+   1) 转写：Voicebox 被 Bridge 配置为 ASR provider 时，录音字节经 Bridge 转发；
+      否则沿用 API 页面 OpenAI 兼容转写或浏览器识别，不向浏览器暴露 Voicebox endpoint。
       设置为全局一份（apiSettings/voiceTrans），三项留空则维持原浏览器识别路径。
    2) 直发：能听音频的模型（Gemini 原生通道；OpenAI 兼容通道下模型名含 gemini/omni/audio）
       在语音发送当轮直接收到原声（16kHz 单声道 WAV 内联 parts），注入方式与图片附件完全一致：
@@ -43,6 +43,26 @@ var _vtCfg=null;
 async function getVoiceTransSettings(){try{const s=await dbGet('apiSettings','voiceTrans');return s||{endpoint:'',apiKey:'',model:'',direct:true}}catch(e){return{endpoint:'',apiKey:'',model:'',direct:true}}}
 async function _vtGet(){if(_vtCfg)return _vtCfg;_vtCfg=await getVoiceTransSettings();return _vtCfg}
 function _vtOn(s){return !!(s&&s.endpoint&&s.apiKey&&s.model)}
+async function _voiceboxAsrSelected(){
+  const controller=new AbortController();const timer=setTimeout(function(){controller.abort()},1500);
+  try{
+    if(typeof window.ibBridgeFetch!=='function'||typeof window.ibBridgeBase!=='function')return false;
+    const r=await window.ibBridgeFetch(window.ibBridgeBase()+'/api/asr/capabilities',{cache:'no-store',signal:controller.signal});
+    if(!r||!r.ok)return false;
+    const j=await r.json();
+    return !!(j&&j.provider==='voicebox'&&j.configured===true&&j.fileTranscription===true);
+  }catch(e){return false}finally{clearTimeout(timer)}
+}
+async function _voiceboxAsrTranscribe(blob,mime){
+  if(typeof window.ibBridgeFetch!=='function'||typeof window.ibBridgeBase!=='function')throw new Error('IB Bridge 不可用');
+  const type=String(mime||blob&&blob.type||'').split(';')[0].trim().toLowerCase();
+  const r=await window.ibBridgeFetch(window.ibBridgeBase()+'/api/asr/transcriptions',{
+    method:'POST',headers:{'Content-Type':type},body:blob
+  });
+  let j={};try{j=await r.json()}catch(e){}
+  if(!r.ok||!j||j.ok!==true)throw new Error(String(j&&j.error||('转写失败（HTTP '+(r&&r.status||0)+'）')));
+  return String(j.text||'').trim();
+}
 function _vtUrl(u){u=String(u||'').trim().replace(/\/+$/,'');if(!u)return '';if(/\/audio\/transcriptions$/i.test(u))return u;if(/\/v\d+[a-z]*$/i.test(u))return u+'/audio/transcriptions';return u+'/v1/audio/transcriptions'}
 async function saveVoiceTransSettings(){
   const s={id:'voiceTrans',
@@ -330,11 +350,11 @@ async function _vmStart(btn,options){
   if(!isReference&&!activeFriendId&&apiConfigs.length===0){toast('请先在 API 页面配置密钥');return}
   var _tgt=isReference?'':(activeFriendId||(apiConfigs[0]&&apiConfigs[0].id));
   if(!isReference&&_tgt&&_chatSendingFor.has(_tgt)){toast('对方正在回复中，请稍后再发语音');return}
-  var st={btn:btn,friendId:_tgt,purpose:isReference?'reference':'chat',onReferenceCapture:options.onReferenceCapture,onReferenceError:options.onReferenceError,released:false,chunks:[],transcript:'',interim:'',start:0,timer:null,rec:null,recog:null,recogDone:null,stream:null,mime:'',vt:null,vtOn:false,maxSeconds:isReference?30:VM_MAX_SEC};/* friendId：普通聊天录音记录目标对话；参考录音不进入聊天 */
+  var st={btn:btn,friendId:_tgt,purpose:isReference?'reference':'chat',onReferenceCapture:options.onReferenceCapture,onReferenceError:options.onReferenceError,released:false,chunks:[],transcript:'',interim:'',start:0,timer:null,rec:null,recog:null,recogDone:null,stream:null,mime:'',vt:null,vtOn:false,voiceboxAsr:false,maxSeconds:isReference?30:VM_MAX_SEC};/* friendId：普通聊天录音记录目标对话；参考录音不进入聊天 */
   _vmSt=st;
   if(!isReference){
-    try{st.vt=await _vtGet()}catch(e){st.vt=null}
-    st.vtOn=_vtOn(st.vt);/* 已配置外部转写：本次录音走转写接口，浏览器内置识别不启动 */
+    try{st.voiceboxAsr=await _voiceboxAsrSelected();st.vt=await _vtGet()}catch(e){st.vt=null;st.voiceboxAsr=false}
+    st.vtOn=st.voiceboxAsr||_vtOn(st.vt);/* Bridge Voicebox 或外部转写：本次录音不启动浏览器内置识别 */
   }
   var stream;
   try{stream=await navigator.mediaDevices.getUserMedia({audio:true})}
@@ -426,11 +446,11 @@ async function _vmFinish(st){
   var blob=new Blob(st.chunks,{type:st.mime});
   _vmSt=null;
   if(!blob.size){toast('录音失败，未捕获到音频');return}
-  /* 外部转写：配置后文字稿由转写接口产出（本次录音的浏览器识别通道未启动）；失败不拦截发送 */
-  if(st.vtOn&&st.vt){
+  /* Bridge Voicebox 或外部转写会产出文字稿；失败不拦截语音消息发送 */
+  if(st.voiceboxAsr||st.vtOn&&st.vt){
     toast('语音转写中…');
     try{
-      var _tx=await _vtTranscribe(st.vt,blob,st.mime);
+      var _tx=st.voiceboxAsr?await _voiceboxAsrTranscribe(blob,st.mime):await _vtTranscribe(st.vt,blob,st.mime);
       if(_tx)transcript=_tx;
       try{console.info('[IB语音转写] 完成，'+(_tx?_tx.length:0)+' 字')}catch(e){}
     }catch(exv){

@@ -48,11 +48,14 @@ function createConfig(deps) {
         enabled: true,               // 本地运行时默认可用；offline 只影响选了该来源的角色
         endpoint: ''                 // 留空 = 用 bridge/voicebox.js 的 DEFAULT_ENDPOINT（默认端点只在那一个文件里声明）
       },
-      voiceAsr: {                    // 语音通话 ASR：OpenAI-compatible /audio/transcriptions
+      voiceAsr: {                    // Bridge ASR：turn-based OpenAI-compatible / Voicebox
         enabled: false,
+        provider: 'openai-whisper',
         endpoint: 'https://api.openai.com/v1/audio/transcriptions',
         apiKey: '',                  // 仅保存在 Bridge；绝不发送到浏览器
         model: 'whisper-1',
+        voiceboxModel: 'base',        // Voicebox Whisper 模型；缺失时拒绝转写，不自动下载
+        maxAudioBytes: 5242880,
         language: 'zh',
         timeoutMs: 60000,
         maxTurnSeconds: 60
