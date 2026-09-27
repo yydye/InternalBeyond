@@ -98,6 +98,93 @@ function createRoutes(ctx) {
     });
   }
 
+  function voiceboxProfileStatus(result, fallback) {
+    const status = Number(result && result.status);
+    if (Number.isInteger(status) && status >= 400 && status <= 599) return status;
+    if (status === 200 && result && result.ok === false) return 502;
+    return result && result.ok === false ? (fallback || 502) : (fallback || 400);
+  }
+
+  /* Reference-audio validation for Voicebox uploads. Reuse the existing strict
+     MP3/WAV MIME + extension + magic validator; decode WAV structure and estimate
+     MP3 duration from frame headers before sending any bytes upstream. */
+  function validateVoiceboxReferenceAudio(buf, contentType, originalName) {
+    if (!ttsVoices || typeof ttsVoices.validateUpload !== 'function') return { ok: false, error: 'Reference-audio validator is unavailable' };
+    const checked = ttsVoices.validateUpload(buf, contentType, originalName);
+    if (!checked.ok) return checked;
+    let durationSeconds = null;
+    if (checked.ext === 'wav') {
+      if (!Buffer.isBuffer(buf) || buf.length < 44 || buf.toString('ascii', 0, 4) !== 'RIFF' || buf.toString('ascii', 8, 12) !== 'WAVE') {
+        return { ok: false, error: 'Corrupt WAV reference audio' };
+      }
+      const riffEnd = buf.readUInt32LE(4) + 8;
+      if (riffEnd > buf.length) return { ok: false, error: 'Incomplete WAV reference audio' };
+      let offset = 12, fmt = null, dataBytes = 0;
+      while (offset + 8 <= Math.min(riffEnd, buf.length)) {
+        const chunk = buf.toString('ascii', offset, offset + 4);
+        const size = buf.readUInt32LE(offset + 4);
+        const start = offset + 8, end = start + size;
+        if (end > riffEnd || end > buf.length) return { ok: false, error: 'Corrupt WAV chunk length' };
+        if (chunk === 'fmt ') {
+          if (size < 16) return { ok: false, error: 'Corrupt WAV format chunk' };
+          let format = buf.readUInt16LE(start);
+          if (format === 0xfffe && size >= 40) format = buf.readUInt16LE(start + 24); /* WAVE_FORMAT_EXTENSIBLE subtype */
+          fmt = {
+            format, channels: buf.readUInt16LE(start + 2),
+            sampleRate: buf.readUInt32LE(start + 4), byteRate: buf.readUInt32LE(start + 8),
+            bits: buf.readUInt16LE(start + 14)
+          };
+        } else if (chunk === 'data') {
+          dataBytes = size;
+        }
+        offset = end + (size & 1);
+      }
+      if (!fmt || !dataBytes || !fmt.channels || !fmt.sampleRate || !fmt.bits || ![1, 3].includes(fmt.format)) {
+        return { ok: false, error: 'WAV must contain valid PCM/float format and nonempty audio data' };
+      }
+      const bytesPerSecond = fmt.byteRate || (fmt.sampleRate * fmt.channels * Math.ceil(fmt.bits / 8));
+      if (!bytesPerSecond) return { ok: false, error: 'WAV duration cannot be determined' };
+      durationSeconds = dataBytes / bytesPerSecond;
+    } else if (checked.ext === 'mp3') {
+      durationSeconds = mp3DurationSeconds(buf);
+      if (!durationSeconds) return { ok: false, error: 'MP3 has no valid MPEG Layer III frames' };
+    }
+    if (durationSeconds != null && (durationSeconds < 2 || durationSeconds > 30)) {
+      return { ok: false, error: 'Voicebox reference audio must be 2–30 seconds long' };
+    }
+    return Object.assign({}, checked, { durationSeconds: durationSeconds });
+  }
+
+  function mp3DurationSeconds(buf) {
+    if (!Buffer.isBuffer(buf)) return null;
+    const bitrateV1L3 = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320];
+    const bitrateV2L3 = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160];
+    const sampleRates = { 3: [44100, 48000, 32000], 2: [22050, 24000, 16000], 0: [11025, 12000, 8000] };
+    let offset = 0;
+    if (buf.length >= 10 && buf.toString('ascii', 0, 3) === 'ID3') {
+      const tagSize = ((buf[6] & 0x7f) << 21) | ((buf[7] & 0x7f) << 14) | ((buf[8] & 0x7f) << 7) | (buf[9] & 0x7f);
+      offset = 10 + tagSize + ((buf[5] & 0x10) ? 10 : 0);
+    }
+    let frames = 0, duration = 0;
+    while (offset + 4 <= buf.length) {
+      if (buf.toString('ascii', offset, offset + 3) === 'TAG' || buf.toString('ascii', offset, offset + 8) === 'APETAGEX') break;
+      const b0 = buf[offset], b1 = buf[offset + 1], b2 = buf[offset + 2];
+      if (b0 !== 0xff || (b1 & 0xe0) !== 0xe0) return null;
+      const version = (b1 >> 3) & 0x03, layer = (b1 >> 1) & 0x03;
+      const bitrateIndex = (b2 >> 4) & 0x0f, sampleIndex = (b2 >> 2) & 0x03;
+      if (version === 1 || layer !== 1 || bitrateIndex === 0 || bitrateIndex === 15 || sampleIndex === 3) return null;
+      const rate = sampleRates[version][sampleIndex];
+      const bitrate = (version === 3 ? bitrateV1L3 : bitrateV2L3)[bitrateIndex] * 1000;
+      const padding = (b2 >> 1) & 1;
+      const frameBytes = Math.floor((version === 3 ? 144 : 72) * bitrate / rate) + padding;
+      if (!frameBytes || offset + frameBytes > buf.length) return null;
+      duration += (version === 3 ? 1152 : 576) / rate;
+      frames++;
+      offset += frameBytes;
+    }
+    return frames ? duration : null;
+  }
+
   function safeConfigSnapshot() {
     /* JSON round-trip avoids mutating the live nested config while masking. */
     let copy = {};
@@ -732,7 +819,12 @@ function createRoutes(ctx) {
     if (pathname === '/api/tts' && req.method === 'POST') {
       try {
         const body = await readBody(req);
-        const r = await ttsSynthesize(ttsNormalize(body));
+        const profile = ttsNormalize(body);
+        if (body.preview === true && String(profile.text || '').length > 300) {
+          sendJsonRes(res, 400, { ok: false, error: 'Voice preview text must be 300 characters or shorter.' });
+          return;
+        }
+        const r = await ttsSynthesize(profile, body.preview === true ? { previewOnly: true } : undefined);
         sendJsonRes(res, r.ok ? 200 : 503, r);
       } catch (e) { sendJsonRes(res, 400, { ok: false, error: e.message }); }
       return;
@@ -768,6 +860,130 @@ function createRoutes(ctx) {
         const h = await voicebox.health();
         sendJsonRes(res, 200, h);
       } catch (e) { sendJsonRes(res, 200, { ok: false, error: String(e && e.message || e) }); }
+      return;
+    }
+
+    /* Voicebox profile lifecycle APIs. The browser talks only to Bridge; audio
+       bodies are validated here and forwarded as bytes, never as file paths. */
+    if (pathname === '/api/tts/voicebox/capabilities' && req.method === 'GET') {
+      if (!voicebox) { sendJsonRes(res, 200, { ok: false, error: 'Voicebox 适配器未注入' }); return; }
+      const caps = voicebox.profileCapabilities();
+      sendJsonRes(res, 200, Object.assign({}, caps, { referenceAudio: Object.assign({}, caps.referenceAudio, { maxBytes: ttsVoices.maxBytes }) }));
+      return;
+    }
+    if (pathname === '/api/tts/voicebox/models' && req.method === 'GET') {
+      if (!voicebox) { sendJsonRes(res, 200, { ok: false, error: 'Voicebox 适配器未注入' }); return; }
+      try { sendJsonRes(res, 200, await voicebox.modelStatus()); }
+      catch (e) { sendJsonRes(res, 200, { ok: false, error: String(e && e.message || e) }); }
+      return;
+    }
+    const presetMatch = pathname.match(/^\/api\/tts\/voicebox\/presets\/([^/]+)$/);
+    if (presetMatch && req.method === 'GET') {
+      if (!voicebox) { sendJsonRes(res, 200, { ok: false, error: 'Voicebox 适配器未注入' }); return; }
+      let engine;
+      try { engine = decodeURIComponent(presetMatch[1]); } catch (e) { sendJsonRes(res, 400, { ok: false, error: 'preset engine is invalid' }); return; }
+      const result = await voicebox.presetVoices(engine);
+      sendJsonRes(res, result.ok ? 200 : voiceboxProfileStatus(result, 502), result);
+      return;
+    }
+    if (pathname === '/api/tts/voicebox/profiles' && req.method === 'POST') {
+      if (!voicebox) { sendJsonRes(res, 503, { ok: false, error: 'Voicebox 适配器未注入' }); return; }
+      try {
+        const body = await readBody(req);
+        const result = await voicebox.createProfile(body);
+        sendJsonRes(res, result.ok ? 201 : voiceboxProfileStatus(result, 400), result);
+      } catch (e) { sendJsonRes(res, 400, { ok: false, error: String(e && e.message || e) }); }
+      return;
+    }
+    const profileSamplesMatch = pathname.match(/^\/api\/tts\/voicebox\/profiles\/([^/]+)\/samples$/);
+    if (profileSamplesMatch && req.method === 'GET') {
+      if (!voicebox) { sendJsonRes(res, 200, { ok: false, error: 'Voicebox 适配器未注入' }); return; }
+      let profileId;
+      try { profileId = decodeURIComponent(profileSamplesMatch[1]); } catch (e) { sendJsonRes(res, 400, { ok: false, error: 'profile ID is invalid' }); return; }
+      const result = await voicebox.profileSamples(profileId);
+      sendJsonRes(res, result.ok ? 200 : voiceboxProfileStatus(result, 502), result);
+      return;
+    }
+    if (profileSamplesMatch && req.method === 'POST') {
+      if (!voicebox) { sendJsonRes(res, 503, { ok: false, error: 'Voicebox 适配器未注入' }); return; }
+      const maxBytes = ttsVoices.maxBytes;
+      const declared = Number(req.headers['content-length']);
+      if (declared > maxBytes) {
+        res.on('finish', () => { try { req.resume(); } catch (e) { /* ignore */ } });
+        sendJsonRes(res, 413, { ok: false, error: 'Reference audio exceeds the IB 10 MB limit' }); return;
+      }
+      try {
+        const profileId = decodeURIComponent(profileSamplesMatch[1]);
+        const profile = await voicebox.getProfile(profileId);
+        if (!profile.ok) { sendJsonRes(res, voiceboxProfileStatus(profile, 502), profile); return; }
+        if (profile.profile.voiceType !== 'cloned') { sendJsonRes(res, 400, { ok: false, error: 'Reference samples can only be added to cloned profiles.' }); return; }
+        const bytes = await readRawBody(req, maxBytes);
+        const fileName = String(q.filename || 'reference.wav');
+        const checked = validateVoiceboxReferenceAudio(bytes, req.headers['content-type'] || '', fileName);
+        if (!checked.ok) { sendJsonRes(res, 400, checked); return; }
+        const result = await voicebox.addProfileSample(profileId, {
+          bytes, mime: checked.mime, originalName: checked.originalName,
+          referenceText: String(q.reference_text || '')
+        });
+        sendJsonRes(res, result.ok ? 201 : voiceboxProfileStatus(result, 400), result.ok ? Object.assign({}, result, { referenceAudio: { mime: checked.mime, size: checked.size, durationSeconds: checked.durationSeconds } }) : result);
+      } catch (e) {
+        const tooLarge = /body too large/.test(String(e && e.message || e));
+        if (tooLarge) res.on('finish', () => { try { req.resume(); } catch (e2) { /* ignore */ } });
+        sendJsonRes(res, tooLarge ? 413 : 400, { ok: false, error: tooLarge ? 'Reference audio exceeds the IB 10 MB limit' : String(e && e.message || e) });
+      }
+      return;
+    }
+    const profileDeleteMatch = pathname.match(/^\/api\/tts\/voicebox\/profiles\/([^/]+)$/);
+    if (profileDeleteMatch && req.method === 'GET') {
+      if (!voicebox) { sendJsonRes(res, 200, { ok: false, error: 'Voicebox 适配器未注入' }); return; }
+      let id;
+      try { id = decodeURIComponent(profileDeleteMatch[1]); } catch (e) { sendJsonRes(res, 400, { ok: false, error: 'profile ID is invalid' }); return; }
+      const result = await voicebox.getProfile(id);
+      sendJsonRes(res, result.ok ? 200 : voiceboxProfileStatus(result, 502), result);
+      return;
+    }
+    if (profileDeleteMatch && req.method === 'DELETE') {
+      if (!voicebox) { sendJsonRes(res, 503, { ok: false, error: 'Voicebox 适配器未注入' }); return; }
+      let id;
+      try { id = decodeURIComponent(profileDeleteMatch[1]); } catch (e) { sendJsonRes(res, 400, { ok: false, error: 'profile ID is invalid' }); return; }
+      const result = await voicebox.deleteProfile(id);
+      sendJsonRes(res, result.ok ? 200 : voiceboxProfileStatus(result, 502), result);
+      return;
+    }
+    const sampleTextMatch = pathname.match(/^\/api\/tts\/voicebox\/samples\/([^/]+)\/text$/);
+    if (sampleTextMatch && req.method === 'POST') {
+      if (!voicebox) { sendJsonRes(res, 503, { ok: false, error: 'Voicebox 适配器未注入' }); return; }
+      try {
+        const body = await readBody(req);
+        const id = decodeURIComponent(sampleTextMatch[1]);
+        const result = await voicebox.updateProfileSample(id, body.referenceText);
+        sendJsonRes(res, result.ok ? 200 : voiceboxProfileStatus(result, 400), result);
+      } catch (e) { sendJsonRes(res, 400, { ok: false, error: String(e && e.message || e) }); }
+      return;
+    }
+    const sampleDeleteMatch = pathname.match(/^\/api\/tts\/voicebox\/samples\/([^/]+)$/);
+    if (sampleDeleteMatch && req.method === 'DELETE') {
+      if (!voicebox) { sendJsonRes(res, 503, { ok: false, error: 'Voicebox 适配器未注入' }); return; }
+      let id;
+      try { id = decodeURIComponent(sampleDeleteMatch[1]); } catch (e) { sendJsonRes(res, 400, { ok: false, error: 'sample ID is invalid' }); return; }
+      const result = await voicebox.deleteProfileSample(id);
+      sendJsonRes(res, result.ok ? 200 : voiceboxProfileStatus(result, 502), result);
+      return;
+    }
+    const sampleAudioMatch = pathname.match(/^\/api\/tts\/voicebox\/samples\/([^/]+)\/audio$/);
+    if (sampleAudioMatch && req.method === 'GET') {
+      if (!voicebox) { sendJsonRes(res, 503, { ok: false, error: 'Voicebox 适配器未注入' }); return; }
+      let id;
+      try { id = decodeURIComponent(sampleAudioMatch[1]); } catch (e) { sendJsonRes(res, 400, { ok: false, error: 'sample ID is invalid' }); return; }
+      const result = await voicebox.profileSampleAudio(id);
+      if (!result.ok) { sendJsonRes(res, voiceboxProfileStatus(result, 502), { ok: false, error: result.error }); return; }
+      res.writeHead(200, Object.assign({
+        'Content-Type': result.mime,
+        'Content-Length': result.bytes.length,
+        'Cache-Control': 'no-store',
+        'X-Content-Type-Options': 'nosniff'
+      }, corsHeaders(res)));
+      res.end(result.bytes);
       return;
     }
 

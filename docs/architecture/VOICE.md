@@ -234,6 +234,47 @@ Voice UI 是一个**配置/控制 surface**，不是 runtime authority：source 
 character voice 字段、VoiceClone 上传、voice-message 录制按钮，以及 call modal。Runtime
 authority 位于 bridge/browser 的 Voice 模块中。
 
+### 16.1 Voicebox Profile 生命周期
+
+Profile 的所有权保持在 Voicebox：Voicebox 保存 profile、参考音频、transcript 与声学数据；
+Project-IB 的角色只保存 canonical external reference：
+
+```text
+apiConfigs[].voice.source = "voicebox"
+apiConfigs[].voice.voiceId = <Voicebox profile ID>
+```
+
+IB 不复制 profile、sample、`audio_path`、personality 或模型状态。Voicebox UUID 在同一数据库
+中用于 profile 查找；Voicebox export/import 可能生成新 ID，因此它不是跨安装永久标识。IB 不按
+名称自动修复引用：缺失 ID 显示为“音色不可用”，用户从当前 profile 列表显式重新绑定。
+
+profile 管理只经由 IB Bridge；Browser 不直接请求 Voicebox localhost。Bridge 对 profile 和 sample
+响应做白名单清理，参考音频通过内存中的受限二进制请求转发，不传文件路径，也不保存在
+`DATA_DIR/tts-voices`。当前 IB 上传范围为 WAV/MP3、2–30 秒、最多 10 MiB；浏览器本地预览和
+Bridge 分别校验，Voicebox 再执行其自身音频校验。录音复用 `assets/js/communication/voice.js`
+的 MediaRecorder 状态机，停止后在本地转换为 WAV 预览；参考录音不走 `voiceTrans`、聊天发送、
+Memory 或 Middle Brain。
+
+Voicebox 把克隆 profile 与预设 profile 分开。Bridge capability map 按上游
+`jamiepine/voicebox` `main` 的 `backend/services/profiles.py`、`backend/routes/profiles.py`、
+`backend/routes/audio.py`、`backend/models.py` 与 `backend/backends/__init__.py` 审计，基线为
+`51f49dea198384b4eb6087b72c17057c6eb1c1cd`。克隆引擎为 `qwen`、`luxtts`、`chatterbox`、
+`chatterbox_turbo`、`tada`；预设引擎为 `qwen_custom_voice`、`kokoro`。UI 依据这张 capability
+map 展示选项，不由 browser 根据 engine 名称猜能力。Voicebox 要求参考样本带有非空 transcript。
+创建克隆音色通过 Bridge 分两步执行（创建 profile，再上传/处理样本）；样本失败后尽力删除，
+清理失败时显示可修复或删除的不完整 profile。
+
+试听通过现有 `/api/tts` provider seam 并设置 `preview: true`；不会创建聊天消息或更改角色配置。
+Bridge 先只读检查 `/models/status`；所需模型缺失或状态不可读时拒绝试听，也不会启动模型下载。
+Voicebox generation 始终发送 `personality: false`；Persona、最终文本、自动播放与何时发声仍由 IB
+决定。只有经过 capability map 确认支持 `instruct` 的 engine 才会收到该字段。
+
+已存参考样本通过 Voicebox `GET /samples/{sample_id}` 读取。Bridge 最多在内存代理 10 MiB 音频
+字节到 Browser，不返回 sample `audio_path`，也不在 IB 文件系统中落盘。
+
+删除 profile 前会列出当前引用该 ID 的活跃与归档角色。确认删除后不会重写这些角色，也不会选择
+同名替代音色；原引用会保留为 dangling 状态，等待用户显式重新绑定。
+
 ---
 
 ## 17. Non-goals
@@ -252,6 +293,7 @@ delivery/timing policy（那属于 delivery contract），也不定义 acoustic 
 | Call runtime / session | `test_voice_runtime.js`, `test_voice_streaming.js`, `test_voice_reconnect.js` |
 | 采集 / 播放 | `test_voice_capture.js`, `test_voice_playback_path.js` |
 | Providers | `test_mimo_tts.js`, `test_mimo_voiceclone.js`, `test_mimo_voicedesign.js`, `test_voicebox_provider.js`, `test_tts_voices.js` |
+| Voicebox profile lifecycle / local reference recording | `test_voicebox_profile_lifecycle_ui.js` |
 | Source/credential 边界 | `test_voice_source.js` |
 | Voice message | `test_native_voice_message.js`, `test_voice_message_lifecycle.js` |
 | Acoustic reference | `test_call_acoustic_inject.js` |

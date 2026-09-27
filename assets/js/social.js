@@ -189,21 +189,30 @@ function _voiceSyncCapabilityFields(){
   var sel=document.getElementById('api-voice-provider');
   var def=_voiceCatalogOf(sel&&sel.value||'')||IB_TTS_CATALOG[0];
   var hasVoices=!!(def.voices&&def.voices.length)||!!def.dynamicVoices;
+  var isVoicebox=def.dynamicVoices==='voicebox';
+  var voiceboxStyle=false;
+  if(isVoicebox&&window.IBVoiceboxProfileManager&&typeof window.IBVoiceboxProfileManager.styleSupported==='function'){
+    var profileSelect=document.getElementById('api-voice-select');
+    voiceboxStyle=window.IBVoiceboxProfileManager.styleSupported(profileSelect&&profileSelect.value||'');
+  }
   var vt=_voiceCurrentType();
   var isSpecial=(vt==='clone'||vt==='design');
   var show=function(id,on){var el=document.getElementById(id);if(el)el.style.display=on?'':'none'};
+  show('api-voice-type-row',!isVoicebox);
+  show('api-voice-clone-panel',!isVoicebox&&vt==='clone');
+  show('api-voicebox-role-controls',isVoicebox);
   show('api-voice-model-wrap', vt==='clone'?(def.cloneModels&&def.cloneModels.length>0):(vt==='design'?(def.designModels&&def.designModels.length>0):def.models.length>0));
   show('api-voice-select-wrap', !isSpecial && hasVoices);
   show('api-voice-id-wrap', !isSpecial && !hasVoices);
   show('api-voice-provider-wrap', !isSpecial);
-  show('api-voice-language-wrap', !isSpecial && !!(def.capabilities&&def.capabilities.language));
-  show('api-voice-style-wrap', !!(def.capabilities&&def.capabilities.style));
+  show('api-voice-language-wrap', !isVoicebox && !isSpecial && !!(def.capabilities&&def.capabilities.language));
+  show('api-voice-style-wrap', isVoicebox ? voiceboxStyle : !!(def.capabilities&&def.capabilities.style));
   show('api-voice-prosody-wrap', !isSpecial && !!(def.capabilities&&def.capabilities.prosody));
   /* Style 标签按类型切换：Design 的 style=音色设计描述（官方 user 消息），其余为 Instructions / Style */
   var styleLabel=document.querySelector('#api-voice-style-wrap .ibv-label');
-  if(styleLabel)styleLabel.textContent=(vt==='design')?'Voice Design 描述（音色设计）':'Instructions / Style';
+  if(styleLabel)styleLabel.textContent=isVoicebox?'Instructions / Style（仅支持的 Voicebox engine）':(vt==='design'?'Voice Design 描述（音色设计）':'Instructions / Style');
   var styleInput=document.getElementById('api-voice-style');
-  if(styleInput)styleInput.placeholder=(vt==='design')?'用自然语言描述想要的音色，如「一位年迈的先生，嗓音略带沙哑与沧桑感，语速缓慢」。':'说话风格指令；仅支持的 Provider 会随请求发送（如 gpt-4o-mini-tts）';
+  if(styleInput)styleInput.placeholder=isVoicebox?'Voicebox 仅在当前 profile engine 支持 instruct 时发送。':(vt==='design'?'用自然语言描述想要的音色，如「一位年迈的先生，嗓音略带沙哑与沧桑感，语速缓慢」。':'说话风格指令；仅支持的 Provider 会随请求发送（如 gpt-4o-mini-tts）');
   /* P23 Phase 1 · 语音 API 来源提示：让用户一眼看出「这条语音走哪个来源」以及
      **凭据在哪里配**（角色卡片不提供第二份 credential editor，也绝不显示密钥值）。 */
   var hint=document.getElementById('api-voice-source-hint');
@@ -213,6 +222,7 @@ function _voiceSyncCapabilityFields(){
     if(def.local)txt+=' · Voicebox 未启动时只影响选了这个来源的角色，纯文字聊天不受影响';
     hint.textContent=txt;
   }
+  if(isVoicebox&&window.IBVoiceboxProfileManager&&typeof window.IBVoiceboxProfileManager.syncRoleControls==='function')window.IBVoiceboxProfileManager.syncRoleControls();
 }
 function _voiceSyncVoiceOptions(def){
   var sel=document.getElementById('api-voice-select');if(!sel)return;
@@ -240,12 +250,14 @@ function _voiceSyncVoiceOptions(def){
 /* Voicebox Voice Profile 列表：只读代理 GET /api/tts/voicebox/profiles（Bridge 再代理到本地运行时）。
    offline / 无 profile 时如实显示，绝不伪造一个可选项。列表只在本页会话内复用（不落盘）。 */
 var _ibVoiceboxProfiles=null;
+var _ibVoiceboxProfilesStatus='unknown';
+var _ibVoiceboxProfilesLoading=false;
 function _voiceSyncVoiceboxProfiles(sel){
   var cur=sel.value;
   if(Array.isArray(_ibVoiceboxProfiles)){
     sel.innerHTML='';
     if(!_ibVoiceboxProfiles.length){
-      var oe=document.createElement('option');oe.value='';oe.textContent='未连接 Voicebox 或没有 Voice Profile';sel.appendChild(oe);
+      var oe=document.createElement('option');oe.value='';oe.textContent=_ibVoiceboxProfilesStatus==='unavailable'?'Voicebox runtime unavailable':'没有 Voice Profile';sel.appendChild(oe);
     }else{
       _ibVoiceboxProfiles.forEach(function(p){
         var o=document.createElement('option');o.value=p.id;
@@ -253,15 +265,28 @@ function _voiceSyncVoiceboxProfiles(sel){
         sel.appendChild(o);
       });
     }
+    if(cur&&!_ibVoiceboxProfiles.some(function(p){return p.id===cur})){
+      var missing=document.createElement('option');missing.value=cur;
+      missing.textContent=_ibVoiceboxProfilesStatus==='unavailable'?'Voicebox 不可用 · 已保存 ID '+cur:'音色不可用 · '+cur;
+      sel.appendChild(missing);
+    }
     if(cur&&sel.querySelector('option[value="'+cur.replace(/"/g,'\\"')+'"]'))sel.value=cur;
+    if(window.IBVoiceboxProfileManager&&typeof window.IBVoiceboxProfileManager.syncRoleControls==='function'){
+      window.IBVoiceboxProfileManager.syncRoleControls();
+      if(typeof window._voiceSyncCapabilityFields==='function')window._voiceSyncCapabilityFields();
+    }
     return;
   }
   sel.innerHTML='';
   var op=document.createElement('option');op.value=cur||'';op.textContent='读取 Voicebox Voice Profile…';sel.appendChild(op);
+  if(_ibVoiceboxProfilesLoading)return;
+  _ibVoiceboxProfilesLoading=true;
   ibBridgeFetch(ibBridgeBase()+'/api/tts/voicebox/profiles',{cache:'no-store'}).then(function(r){return r.json()}).then(function(j){
+    _ibVoiceboxProfilesLoading=false;
     _ibVoiceboxProfiles=(j&&j.ok&&Array.isArray(j.profiles))?j.profiles:[];
+    _ibVoiceboxProfilesStatus=(j&&j.ok)?'ready':'unavailable';
     try{ _voiceSyncVoiceboxProfiles(sel); }catch(e){}
-  }).catch(function(){ _ibVoiceboxProfiles=[]; try{ _voiceSyncVoiceboxProfiles(sel); }catch(e){} });
+  }).catch(function(){ _ibVoiceboxProfilesLoading=false;_ibVoiceboxProfiles=[];_ibVoiceboxProfilesStatus='unavailable';try{ _voiceSyncVoiceboxProfiles(sel); }catch(e){} });
 }
 /* Model 下拉按目录重建：builtin 用 models（openai 保持「跟随全局配置」语义；mimo 空选项即官方默认模型）；
    VoiceClone 用 cloneModels、VoiceDesign 用 designModels，均默认选中官方专用模型，避免误选普通 TTS model。 */
@@ -404,7 +429,8 @@ function _voiceCloneBind(){
 function _voiceCloneRender(){
   _voiceCloneBind();
   var vt=_voiceCurrentType();
-  var isClone=vt==='clone';
+  var provider=document.getElementById('api-voice-provider');
+  var isClone=vt==='clone'&&(!provider||provider.value!=='voicebox');
   var panel=document.getElementById('api-voice-clone-panel');
   var cur=document.getElementById('api-voice-clone-current');
   var status=document.getElementById('api-voice-clone-status');
@@ -453,12 +479,14 @@ function _voiceTypeChange(){
      回 Built-in 时恢复强制前的 provider（否则旧 Edge 角色看一眼 Clone 再切回来会被静默改成 MiMo + 不匹配音色）。 */
   var vt=_voiceCurrentType();
   var provEl=document.getElementById('api-voice-provider');
-  if(vt==='clone'||vt==='design'){
+  var isVoicebox=!!(provEl&&provEl.value==='voicebox');
+  if(!isVoicebox&&(vt==='clone'||vt==='design')){
     if(provEl&&provEl.value!=='mimo'){_voiceProvBeforeSpecial=provEl.value;provEl.value='mimo';}
-  }else if(vt==='builtin'){
+  }else if(!isVoicebox&&vt==='builtin'){
     if(_voiceProvBeforeSpecial&&provEl&&provEl.value==='mimo')provEl.value=_voiceProvBeforeSpecial;
     _voiceProvBeforeSpecial=null;
   }
+  if(isVoicebox)_voiceProvBeforeSpecial=null;
   var def=_voiceCatalogOf(provEl&&provEl.value||'')||IB_TTS_CATALOG[0];
   _voiceSyncCapabilityFields();
   _voiceSyncModelOptions(def);
@@ -524,27 +552,33 @@ async function testCharacterVoice(){
      B2：VoiceClone 模式走真实 /api/tts → MiMo VoiceClone；无 refAudioId 则阻断。
      B3：VoiceDesign 模式走真实 /api/tts → MiMo Voice Design；无「Voice Design 描述」则阻断。 */
   var _vt=_voiceCurrentType();
+  var _providerEl=document.getElementById('api-voice-provider');
+  var _isVoicebox=!!(_providerEl&&_providerEl.value==='voicebox');
   var _vd=null;
-  if(_vt==='clone'){
+  if(!_isVoicebox&&_vt==='clone'){
     var _sel=_voiceCloneSelection;
     if(!_sel||!_sel.refAudioId){toast('请先上传 Reference Audio 再试听克隆音色');return;}
     _vd={refAudioId:_sel.refAudioId,mime:_sel.mime||'',name:_sel.name||'',size:_sel.size||0};
-  }else if(_vt==='design'){
+  }else if(!_isVoicebox&&_vt==='design'){
     var _vs=document.getElementById('api-voice-style');
     var _designPrompt=String((_vs&&_vs.value)||'').trim();
     if(!_designPrompt){toast('请先填写 Voice Design 描述再试听');return;}
   }
-  var vp=document.getElementById('api-voice-provider');
+  var vp=_providerEl;
   var vmC=document.getElementById('api-voice-model');
   var vlC=document.getElementById('api-voice-language');
   var vsC=document.getElementById('api-voice-style');
-  var sampleText='你好，我是'+(document.getElementById('api-ai-name').value||'AI')+'。';
+  var previewField=document.getElementById('api-voicebox-preview-text');
+  var sampleText=_isVoicebox?String(previewField&&previewField.value||'').trim():'你好，我是'+(document.getElementById('api-ai-name').value||'AI')+'。';
+  if(!sampleText)sampleText='你好，这是一段本地音色试听。';
   var vc={provider:(vp&&vp.value)||'edge',source:(function(){var _d=_voiceCatalogOf(vp&&vp.value||'');return (_d&&_d.source)||(vp&&vp.value)||'edge'})(),voiceId:_voiceGetId(),rate:parseFloat((document.getElementById('api-voice-rate')&&document.getElementById('api-voice-rate').value)||'1.0'),pitch:(document.getElementById('api-voice-pitch')&&document.getElementById('api-voice-pitch').value)||'+0Hz',model:(vmC&&vmC.value)||'',language:(vlC&&vlC.value)||'',style:(vsC&&vsC.value)||'',voiceType:_vt,voiceData:_vd};
   try{
     /* R19/§3.14：TTS 试听必须走 ibBridgeFetch（带 Authorization 头），
        不能裸 fetch —— LAN 模式下 needsHttpToken() 对所有调用者都为真，
        裸 fetch 会被 bridge/routes.js:316 的全局闸门 403/401 拒绝。 */
-    var j=await ibBridgeFetch(ibBridgeBase()+'/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(IB.bridge.ttsPayload(vc,sampleText))}).then(function(r){return r.json()});
+    var payload=IB.bridge.ttsPayload(vc,sampleText);
+    if(_isVoicebox)payload.preview=true;
+    var j=await ibBridgeFetch(ibBridgeBase()+'/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(r){return r.json()});
     if(j&&j.ok){
       /* R19/§3.14：媒体元素（<audio>/<img>）按构造不可能携带请求头，
          因此受保护的 Bridge 资产必须 blob 取回后再播；直接 new Audio(base+url)
@@ -1376,13 +1410,14 @@ async function saveCurrentApi(btn){
     if(_hDup){toast('@账号「@'+_hVal+'」已被「'+(_hDup.nickname||_hDup.model||'另一角色')+'」使用，请换一个。');if(btn){btn.disabled=false;btn.textContent=oldBtnText}return}
   }
   if(!editingApiId){toast('保存失败：API 配置标识已失效，请重新打开编辑器');if(btn){btn.disabled=false;btn.textContent=oldBtnText}return}
+  var _savingVoicebox=(document.getElementById('api-voice-provider')&&document.getElementById('api-voice-provider').value)==='voicebox';
   /* VoiceClone：选了 Clone 但还没有 Reference Audio（未上传 / 引用已清空）→ 阻断保存 */
-  if(_voiceCurrentType()==='clone'&&(!_voiceCloneSelection||!_voiceCloneSelection.refAudioId)){
+  if(!_savingVoicebox&&_voiceCurrentType()==='clone'&&(!_voiceCloneSelection||!_voiceCloneSelection.refAudioId)){
     toast('请先上传 Reference Audio 再保存克隆音色');
     if(btn){btn.disabled=false;btn.textContent=oldBtnText}return;
   }
   /* VoiceDesign：选了 Design 但没有「Voice Design 描述」→ 阻断保存（官方 user 消息必填） */
-  if(_voiceCurrentType()==='design'&&!String((document.getElementById('api-voice-style')||{}).value||'').trim()){
+  if(!_savingVoicebox&&_voiceCurrentType()==='design'&&!String((document.getElementById('api-voice-style')||{}).value||'').trim()){
     toast('请先填写 Voice Design 描述再保存');
     if(btn){btn.disabled=false;btn.textContent=oldBtnText}return;
   }
@@ -1465,6 +1500,8 @@ async function saveCurrentApi(btn){
     voice:(function(){
       var _pv=existing.voice&&typeof existing.voice==='object'?existing.voice:{};
       var _pvType=_voiceCurrentType();
+      var _pvProvider=(document.getElementById('api-voice-provider')&&document.getElementById('api-voice-provider').value)||'edge';
+      var _pvVoicebox=_pvProvider==='voicebox';
       var _pvData;
       if(_pvType==='clone'){
         var _sel=_voiceCloneSelection||{};
@@ -1492,8 +1529,8 @@ async function saveCurrentApi(btn){
         model:(document.getElementById('api-voice-model')&&document.getElementById('api-voice-model').value)||'',
         language:(document.getElementById('api-voice-language')&&document.getElementById('api-voice-language').value)||'',
         style:(document.getElementById('api-voice-style')&&document.getElementById('api-voice-style').value)||'',
-        voiceType:_pvType,
-        voiceData:_pvData
+        voiceType:_pvVoicebox?(_pv.voiceType||'builtin'):_pvType,
+        voiceData:_pvVoicebox?(_pv.voiceData!=null?_pv.voiceData:null):_pvData
       });
     })(),
     avatar:avatarVal,

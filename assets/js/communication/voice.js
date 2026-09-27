@@ -286,24 +286,59 @@ function _vmInit(){
 
 /* 点按切换：无录音会话时开始录音；录音中再次点按（任一语音按钮）停止并发送 */
 function _vmToggle(btn){
-  if(_vmSt){_vmFinish(_vmSt);return}
+  if(_vmSt){
+    if(_vmSt.purpose==='reference'){toast('参考音频录制中，请在音色管理中停止');return}
+    _vmFinish(_vmSt);return
+  }
   _vmStart(btn);
 }
 
-async function _vmStart(btn){
-  if(_vmSt)return;/* 已有录音进行中 */
-  if(!_vmSupported()){toast('当前浏览器不支持录音');return}
-  if(_chatArchMode)return;
-  if(!activeFriendId&&apiConfigs.length===0){toast('请先在 API 页面配置密钥');return}
-  var _tgt=activeFriendId||(apiConfigs[0]&&apiConfigs[0].id);
-  if(_tgt&&_chatSendingFor.has(_tgt)){toast('对方正在回复中，请稍后再发语音');return}
-  var st={btn:btn,friendId:_tgt,released:false,chunks:[],transcript:'',interim:'',start:0,timer:null,rec:null,recog:null,recogDone:null,stream:null,mime:'',vt:null,vtOn:false};/* friendId：记录开始录音时的目标对话，发送前校验，防止录音期间切换对话导致语音串发 */
+function _vmReferenceError(st,message){
+  var error=new Error(String(message||'参考录音失败'));
+  if(st&&st.purpose==='reference'&&typeof st.onReferenceError==='function'){
+    try{st.onReferenceError(error)}catch(e){}
+  }else toast(error.message);
+}
+function _vmVoiceCallActive(){
+  try{
+    var api=window.IB&&window.IB.voiceCall;
+    return !!(api&&typeof api.getCurrent==='function'&&api.getCurrent());
+  }catch(e){return false}
+}
+function _vmStartReferenceCapture(btn,onCapture,onError){
+  if(_vmSt&&_vmSt.purpose==='reference'){_vmFinish(_vmSt);return}
+  _vmStart(btn,{purpose:'reference',onReferenceCapture:onCapture,onReferenceError:onError});
+}
+async function _vmReferenceBlobToWav(blob){
+  var decoded=await _vmDecode(blob);
+  var raw=atob(_vmWav16kBase64(decoded)),bytes=new Uint8Array(raw.length);
+  for(var i=0;i<raw.length;i++)bytes[i]=raw.charCodeAt(i);
+  return new Blob([bytes],{type:'audio/wav'});
+}
+
+async function _vmStart(btn,options){
+  options=options||{};
+  var isReference=options.purpose==='reference';
+  if(_vmSt){
+    if(isReference&&_vmSt.purpose==='reference'){_vmFinish(_vmSt);return}
+    if(isReference)_vmReferenceError(options,'另一段语音录制正在进行');
+    return;/* 已有录音进行中 */
+  }
+  if(!_vmSupported()){if(isReference)_vmReferenceError(options,'当前浏览器不支持录音');else toast('当前浏览器不支持录音');return}
+  if(isReference&&_vmVoiceCallActive()){_vmReferenceError(options,'语音通话正在使用麦克风，请结束通话后再录制');return}
+  if(!isReference&&_chatArchMode)return;
+  if(!isReference&&!activeFriendId&&apiConfigs.length===0){toast('请先在 API 页面配置密钥');return}
+  var _tgt=isReference?'':(activeFriendId||(apiConfigs[0]&&apiConfigs[0].id));
+  if(!isReference&&_tgt&&_chatSendingFor.has(_tgt)){toast('对方正在回复中，请稍后再发语音');return}
+  var st={btn:btn,friendId:_tgt,purpose:isReference?'reference':'chat',onReferenceCapture:options.onReferenceCapture,onReferenceError:options.onReferenceError,released:false,chunks:[],transcript:'',interim:'',start:0,timer:null,rec:null,recog:null,recogDone:null,stream:null,mime:'',vt:null,vtOn:false,maxSeconds:isReference?30:VM_MAX_SEC};/* friendId：普通聊天录音记录目标对话；参考录音不进入聊天 */
   _vmSt=st;
-  try{st.vt=await _vtGet()}catch(e){st.vt=null}
-  st.vtOn=_vtOn(st.vt);/* 已配置外部转写：本次录音走转写接口，浏览器内置识别不启动 */
+  if(!isReference){
+    try{st.vt=await _vtGet()}catch(e){st.vt=null}
+    st.vtOn=_vtOn(st.vt);/* 已配置外部转写：本次录音走转写接口，浏览器内置识别不启动 */
+  }
   var stream;
   try{stream=await navigator.mediaDevices.getUserMedia({audio:true})}
-  catch(err){if(_vmSt===st)_vmSt=null;toast('无法访问麦克风，请检查浏览器权限');return}
+  catch(err){if(_vmSt===st)_vmSt=null;if(isReference)_vmReferenceError(st,'无法访问麦克风，请检查浏览器权限');else toast('无法访问麦克风，请检查浏览器权限');return}
   if(_vmSt!==st||st.released){stream.getTracks().forEach(function(t){t.stop()});if(_vmSt===st)_vmSt=null;return}/* 授权弹窗期间已被再次点按停止 */
   st.stream=stream;
   var mime='';
@@ -314,12 +349,12 @@ async function _vmStart(btn){
   }catch(ex){}
   st.mime=mime||'audio/webm';
   try{st.rec=mime?new MediaRecorder(stream,{mimeType:mime,audioBitsPerSecond:32000}):new MediaRecorder(stream)}
-  catch(ex){try{st.rec=new MediaRecorder(stream);st.mime=st.rec.mimeType||st.mime}catch(e2){stream.getTracks().forEach(function(t){t.stop()});_vmSt=null;toast('录音初始化失败');return}}
+  catch(ex){try{st.rec=new MediaRecorder(stream);st.mime=st.rec.mimeType||st.mime}catch(e2){stream.getTracks().forEach(function(t){t.stop()});_vmSt=null;if(isReference)_vmReferenceError(st,'录音初始化失败');else toast('录音初始化失败');return}}
   st.rec.ondataavailable=function(ev){if(ev.data&&ev.data.size)st.chunks.push(ev.data)};
   /* 本地语音识别（浏览器内置：Chrome / Edge 可用，Firefox 不支持）——识别失败不影响语音本身的发送；
      已配置外部转写服务时整条浏览器识别通道跳过（其失联/报错提示也随之消失） */
   var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-  if(SR&&!st.vtOn){
+  if(!isReference&&SR&&!st.vtOn){
     try{
       var rg=new SR();
       rg.lang=navigator.language||'zh-CN';
@@ -330,13 +365,13 @@ async function _vmStart(btn){
     }catch(ex){st.recog=null}
   }
   st.start=Date.now();
-  try{st.rec.start(250)}catch(ex){if(st.recog){try{st.recog.stop()}catch(e3){}}stream.getTracks().forEach(function(t){t.stop()});_vmSt=null;toast('录音启动失败');return}
+  try{st.rec.start(250)}catch(ex){if(st.recog){try{st.recog.stop()}catch(e3){}}stream.getTracks().forEach(function(t){t.stop()});_vmSt=null;if(isReference)_vmReferenceError(st,'录音启动失败');else toast('录音启动失败');return}
   btn.classList.add('recording');
-  _vmIndicator(true);
+  _vmIndicator(true,isReference?'录制参考音频 · 再次点击停止':'点按麦克风按钮停止并发送');
   st.timer=setInterval(function(){
     var s=Math.floor((Date.now()-st.start)/1000);
     _vmIndicatorTime(s);
-    if(s>=VM_MAX_SEC)_vmFinish(st);/* 到达时长上限：自动停止并发送 */
+    if(s>=st.maxSeconds)_vmFinish(st);/* 普通语音自动发送；参考音频只交给本地预览回调 */
   },200);
 }
 
@@ -354,7 +389,7 @@ async function _vmFinish(st){
   if(st.timer){clearInterval(st.timer);st.timer=null}
   st.btn.classList.remove('recording');
   _vmIndicator(false);
-  if(!st.rec){_vmSt=null;return}/* 麦克风尚未就绪就被再次点按：授权分支自行收尾 */
+  if(!st.rec){_vmSt=null;if(st.purpose==='reference')_vmReferenceError(st,'麦克风尚未就绪');return}/* 麦克风尚未就绪就被再次点按：授权分支自行收尾 */
   var durMs=Date.now()-st.start;
   var stopped=new Promise(function(res){
     if(st.rec.state==='inactive'){res();return}
@@ -364,6 +399,17 @@ async function _vmFinish(st){
   if(st.recog){try{st.recog.stop()}catch(ex){}}
   await stopped;
   if(st.stream)st.stream.getTracks().forEach(function(t){t.stop()});
+  if(st.purpose==='reference'){
+    var referenceBlob=new Blob(st.chunks,{type:st.mime||'audio/webm'});
+    _vmSt=null;
+    if(durMs<2000){_vmReferenceError(st,'参考录音至少需要 2 秒');return}
+    if(durMs>30000){_vmReferenceError(st,'参考录音不能超过 30 秒');return}
+    if(!referenceBlob.size){_vmReferenceError(st,'录音失败，未捕获到音频');return}
+    try{
+      if(typeof st.onReferenceCapture==='function')await st.onReferenceCapture({blob:referenceBlob,durationMs:durMs,mime:st.mime||referenceBlob.type});
+    }catch(error){_vmReferenceError(st,'参考录音处理失败：'+String(error&&error.message||error).slice(0,120))}
+    return;/* 参考录音不转写、不做声学分析、不创建聊天消息 */
+  }
   var tooShort=durMs<800;
   if(tooShort){
     _vmSt=null;
@@ -418,7 +464,7 @@ async function _vmFinish(st){
   sendChatMessage({dataUrl:dataUrl,mime:st.mime,duration:Math.max(1,Math.round(durMs/1000)),transcript:transcript,tone:_tone,_ab:_ab});
 }
 
-function _vmIndicator(show){
+function _vmIndicator(show,hint){
   var el=document.getElementById('vm-indicator');
   if(!show){if(el)el.remove();return}
   if(!el){
@@ -426,6 +472,7 @@ function _vmIndicator(show){
     el.innerHTML='<div class="vm-ind-core"><span class="vm-ind-dot"></span><span class="vm-ind-time">0:00</span></div><div class="vm-ind-hint">点按麦克风按钮停止并发送</div>';
     document.body.appendChild(el);
   }
+  var hintEl=el.querySelector('.vm-ind-hint');if(hintEl&&hint)hintEl.textContent=hint;
   _vmIndicatorTime(0);
 }
 function _vmIndicatorTime(s){var el=document.querySelector('#vm-indicator .vm-ind-time');if(el)el.textContent=Math.floor(s/60)+':'+String(s%60).padStart(2,'0')}
@@ -581,6 +628,8 @@ window._vmPcmToAudioLike=_vmPcmToAudioLike;
 window._vmInit=_vmInit;
 window._vmToggle=_vmToggle;
 window._vmStart=_vmStart;
+window._vmStartReferenceCapture=_vmStartReferenceCapture;
+window._vmReferenceBlobToWav=_vmReferenceBlobToWav;
 window._vmStopForMsgIds=_vmStopForMsgIds;
 window._vmFinish=_vmFinish;
 window._vmIndicator=_vmIndicator;
@@ -617,6 +666,8 @@ NS.expose('chat.voice', {
   _vmInit: _vmInit,
   _vmToggle: _vmToggle,
   _vmStart: _vmStart,
+  startReferenceCapture: _vmStartReferenceCapture,
+  referenceBlobToWav: _vmReferenceBlobToWav,
   _vmStopForMsgIds: _vmStopForMsgIds,
   _vmFinish: _vmFinish,
   _vmIndicator: _vmIndicator,

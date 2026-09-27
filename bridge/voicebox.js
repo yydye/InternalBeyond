@@ -35,6 +35,73 @@ const ENGINES = ['qwen', 'qwen_custom_voice', 'luxtts', 'chatterbox', 'chatterbo
 /* 上游 GenerationRequest 的 language enum（backend/models.py）。空值不发送。 */
 const LANGUAGES = ['zh', 'en', 'ja', 'ko', 'de', 'fr', 'ru', 'pt', 'es', 'it', 'he', 'ar', 'da', 'el', 'fi', 'hi', 'ms', 'nl', 'no', 'pl', 'sv', 'sw', 'tr'];
 
+/* Current upstream source: backend/services/profiles.py CLONING_ENGINES,
+   backend/backends/__init__.py ModelConfig, and the preset route's engine list.
+   This is a Bridge-owned allowlist; browser code never infers clone support from names. */
+const PROFILE_ENGINE_CAPABILITIES = {
+  qwen: {
+    profileTypes: ['cloned'], clone: true, preset: false, multipleSamples: true,
+    languages: ['zh', 'en', 'ja', 'ko', 'de', 'fr', 'ru', 'pt', 'es', 'it'], instruct: false,
+    defaultModel: 'qwen-tts-1.7B',
+    models: [
+      { name: 'qwen-tts-1.7B', modelSize: '1.7B', languages: ['zh', 'en', 'ja', 'ko', 'de', 'fr', 'ru', 'pt', 'es', 'it'], ibDefault: true },
+      { name: 'qwen-tts-0.6B', modelSize: '0.6B', languages: ['zh', 'en', 'ja', 'ko', 'de', 'fr', 'ru', 'pt', 'es', 'it'], ibDefault: false }
+    ]
+  },
+  qwen_custom_voice: {
+    profileTypes: ['preset'], clone: false, preset: true, multipleSamples: false,
+    languages: ['zh', 'en', 'ja', 'ko', 'de', 'fr', 'ru', 'pt', 'es', 'it'], instruct: true,
+    defaultModel: 'qwen-custom-voice-1.7B',
+    models: [
+      { name: 'qwen-custom-voice-1.7B', modelSize: '1.7B', languages: ['zh', 'en', 'ja', 'ko', 'de', 'fr', 'ru', 'pt', 'es', 'it'], ibDefault: true },
+      { name: 'qwen-custom-voice-0.6B', modelSize: '0.6B', languages: ['zh', 'en', 'ja', 'ko', 'de', 'fr', 'ru', 'pt', 'es', 'it'], ibDefault: false }
+    ]
+  },
+  luxtts: {
+    profileTypes: ['cloned'], clone: true, preset: false, multipleSamples: true,
+    languages: ['en'], instruct: false, defaultModel: 'luxtts',
+    models: [{ name: 'luxtts', modelSize: 'default', languages: ['en'], ibDefault: true }]
+  },
+  chatterbox: {
+    profileTypes: ['cloned'], clone: true, preset: false, multipleSamples: true,
+    languages: ['zh', 'en', 'ja', 'ko', 'de', 'fr', 'ru', 'pt', 'es', 'it', 'he', 'ar', 'da', 'el', 'fi', 'hi', 'ms', 'nl', 'no', 'pl', 'sv', 'sw', 'tr'],
+    instruct: false, defaultModel: 'chatterbox-tts',
+    models: [{ name: 'chatterbox-tts', modelSize: 'default', languages: ['zh', 'en', 'ja', 'ko', 'de', 'fr', 'ru', 'pt', 'es', 'it', 'he', 'ar', 'da', 'el', 'fi', 'hi', 'ms', 'nl', 'no', 'pl', 'sv', 'sw', 'tr'], ibDefault: true }]
+  },
+  chatterbox_turbo: {
+    profileTypes: ['cloned'], clone: true, preset: false, multipleSamples: true,
+    languages: ['en'], instruct: false, defaultModel: 'chatterbox-turbo',
+    models: [{ name: 'chatterbox-turbo', modelSize: 'default', languages: ['en'], ibDefault: true }]
+  },
+  tada: {
+    profileTypes: ['cloned'], clone: true, preset: false, multipleSamples: true,
+    /* IB's current Voicebox TTS request does not choose model_size. Upstream's
+       1B fallback is English; the 3B multilingual variant stays undiscoverable
+       as an IB-selectable capability until that contract gains model-size choice. */
+    languages: ['en'], instruct: false, defaultModel: 'tada-1b',
+    models: [
+      { name: 'tada-1b', modelSize: '1B', languages: ['en'], ibDefault: true },
+      { name: 'tada-3b-ml', modelSize: '3B', languages: ['en', 'ar', 'zh', 'de', 'es', 'fr', 'it', 'ja', 'pl', 'pt'], ibDefault: false, ibSelectable: false }
+    ]
+  },
+  kokoro: {
+    profileTypes: ['preset'], clone: false, preset: true, multipleSamples: false,
+    languages: ['en', 'es', 'fr', 'hi', 'it', 'pt', 'ja', 'zh'], instruct: false,
+    defaultModel: 'kokoro', models: [{ name: 'kokoro', modelSize: 'default', languages: ['en', 'es', 'fr', 'hi', 'it', 'pt', 'ja', 'zh'], ibDefault: true }]
+  }
+};
+const CLONING_ENGINES = Object.keys(PROFILE_ENGINE_CAPABILITIES).filter(function (engine) {
+  return PROFILE_ENGINE_CAPABILITIES[engine].clone;
+});
+const PRESET_ENGINES = Object.keys(PROFILE_ENGINE_CAPABILITIES).filter(function (engine) {
+  return PROFILE_ENGINE_CAPABILITIES[engine].preset;
+});
+const PROFILE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const SAMPLE_ID_RE = PROFILE_ID_RE;
+const PROFILE_NAME_MAX = 100;
+const PROFILE_DESCRIPTION_MAX = 500;
+const SAMPLE_TEXT_MAX = 1000;
+
 const HEALTH_TIMEOUT_MS = 2500;
 const REQUEST_TIMEOUT_MS = 15000;
 const AUDIO_TIMEOUT_MS = 30000;
@@ -64,7 +131,7 @@ function createVoicebox(deps) {
   }
 
   function notConfigured() {
-    return { ok: false, error: 'Voicebox 未启用：请在 Bridge config.json 的 voicebox 区块把 enabled 设为 true（本地运行时默认不需要 API Key）' };
+    return { ok: false, status: 503, error: 'Voicebox 未启用：请在 Bridge config.json 的 voicebox 区块把 enabled 设为 true（本地运行时默认不需要 API Key）' };
   }
 
   function sleep(ms, signal) {
@@ -145,6 +212,7 @@ function createVoicebox(deps) {
       const isAbort = timedOut || (e && e.name === 'AbortError');
       return {
         ok: false,
+        status: 503,
         error: isAbort
           ? 'Voicebox 请求超时（' + Math.max(1, Math.ceil(timeoutMs / 1000)) + 's）：' + url
           : 'Voicebox 未连接（' + base + '）：' + msg
@@ -153,6 +221,269 @@ function createVoicebox(deps) {
       clearTimeout(timer);
       if (externalSignal && typeof externalSignal.removeEventListener === 'function') externalSignal.removeEventListener('abort', onAbort);
     }
+  }
+
+  function sanitizeProfile(profile) {
+    const p = profile || {};
+    return {
+      id: String(p.id || ''),
+      name: String(p.name || ''),
+      description: String(p.description || ''),
+      language: String(p.language || ''),
+      voiceType: String(p.voice_type || 'cloned'),
+      presetEngine: String(p.preset_engine || ''),
+      presetVoiceId: String(p.preset_voice_id || ''),
+      defaultEngine: String(p.default_engine || ''),
+      sampleCount: Math.max(0, Number(p.sample_count) || 0),
+      generationCount: Math.max(0, Number(p.generation_count) || 0)
+    };
+  }
+
+  function sanitizeSample(sample) {
+    const s = sample || {};
+    return {
+      id: String(s.id || ''),
+      profileId: String(s.profile_id || ''),
+      referenceText: String(s.reference_text || '')
+    };
+  }
+
+  function profileCapabilities() {
+    return {
+      ok: true,
+      engines: JSON.parse(JSON.stringify(PROFILE_ENGINE_CAPABILITIES)),
+      cloneEngines: CLONING_ENGINES.slice(),
+      presetEngines: PRESET_ENGINES.slice(),
+      designedProfiles: false,
+      referenceAudio: { requiredForClone: true, formats: ['mp3', 'wav'], maxBytes: 10 * 1024 * 1024, minDurationSeconds: 2, maxDurationSeconds: 30 },
+      transcript: { required: true, minLength: 1, maxLength: SAMPLE_TEXT_MAX, autoTranscribe: false, reason: 'Voicebox transcription may load/download Whisper; IB keeps sample transcript explicit in this phase.' }
+    };
+  }
+
+  async function modelStatus() {
+    if (!isEnabled()) return notConfigured();
+    const r = await requestJson('/models/status', { timeoutMs: requestTimeoutMs });
+    if (!r.ok) return r;
+    const sourceModels = Array.isArray(r.data && r.data.models) ? r.data.models : [];
+    const known = new Map();
+    Object.keys(PROFILE_ENGINE_CAPABILITIES).forEach(function (engine) {
+      PROFILE_ENGINE_CAPABILITIES[engine].models.forEach(function (model) { known.set(model.name, { engine: engine, config: model }); });
+    });
+    return {
+      ok: true,
+      models: sourceModels.map(function (m) {
+        const item = m || {};
+        const match = known.get(String(item.model_name || ''));
+        if (!match) return null;
+        return {
+          name: String(item.model_name || ''),
+          displayName: String(item.display_name || item.model_name || ''),
+          engine: match.engine,
+          modelSize: String(match.config.modelSize || ''),
+          languages: match.config.languages.slice(),
+          ibSelectable: match.config.ibSelectable !== false,
+          downloaded: item.downloaded === true,
+          downloading: item.downloading === true,
+          loaded: item.loaded === true,
+          sizeMb: Number.isFinite(Number(item.size_mb)) ? Number(item.size_mb) : null
+        };
+      }).filter(Boolean)
+    };
+  }
+
+  function defaultModelForEngine(engine) {
+    const cap = PROFILE_ENGINE_CAPABILITIES[String(engine || '').toLowerCase()];
+    if (!cap) return null;
+    return cap.models.filter(function (m) { return m.ibDefault; })[0] || null;
+  }
+
+  async function previewModelReady(engine) {
+    const cap = PROFILE_ENGINE_CAPABILITIES[String(engine || '').toLowerCase()];
+    const required = defaultModelForEngine(engine);
+    if (!cap || !required) return { ok: false, error: 'Voicebox engine capability is unknown; preview stopped without starting a generation.' };
+    const status = await modelStatus();
+    if (!status.ok) return { ok: false, error: 'Voicebox model status is unavailable; preview stopped to avoid an automatic model download.' };
+    const found = status.models.filter(function (m) { return m.name === required.name; })[0];
+    if (!found || !found.downloaded) {
+      return { ok: false, error: 'Voicebox model is not available: ' + required.name + '. IB will not automatically download it.' };
+    }
+    return { ok: true, model: found };
+  }
+
+  async function getProfile(profileId) {
+    if (!isEnabled()) return notConfigured();
+    const id = String(profileId || '');
+    if (!PROFILE_ID_RE.test(id)) return { ok: false, status: 400, error: 'Voicebox profile ID is invalid' };
+    const r = await requestJson('/profiles/' + encodeURIComponent(id), { timeoutMs: requestTimeoutMs });
+    if (!r.ok) return r;
+    return { ok: true, profile: sanitizeProfile(r.data) };
+  }
+
+  async function createProfile(options) {
+    if (!isEnabled()) return notConfigured();
+    const o = options && typeof options === 'object' ? options : {};
+    const name = String(o.name || '').trim();
+    const description = String(o.description || '').trim();
+    const language = String(o.language || '').trim();
+    const voiceType = String(o.voiceType || 'cloned');
+    const engine = String(o.engine || '').trim();
+    if (!name || name.length > PROFILE_NAME_MAX) return { ok: false, status: 400, error: 'Profile name must be 1–100 characters.' };
+    if (description.length > PROFILE_DESCRIPTION_MAX) return { ok: false, status: 400, error: 'Profile description must be at most 500 characters.' };
+    if (LANGUAGES.indexOf(language) === -1) return { ok: false, status: 400, error: 'Unsupported Voicebox profile language.' };
+    let body = { name, description: description || null, language };
+    if (voiceType === 'cloned') {
+      const cap = PROFILE_ENGINE_CAPABILITIES[engine];
+      if (!cap || !cap.clone) return { ok: false, status: 400, error: 'This Voicebox engine does not support reference-audio cloning.' };
+      if (cap.languages.indexOf(language) === -1) return { ok: false, status: 400, error: 'The selected engine does not support this profile language in the IB generation contract.' };
+      body = Object.assign(body, { voice_type: 'cloned', default_engine: engine });
+    } else if (voiceType === 'preset') {
+      const cap = PROFILE_ENGINE_CAPABILITIES[engine];
+      const presetVoiceId = String(o.presetVoiceId || '').trim();
+      if (!cap || !cap.preset || !presetVoiceId) return { ok: false, status: 400, error: 'Select an available preset voice and preset engine.' };
+      const presetList = await presetVoices(engine);
+      if (!presetList.ok) return presetList;
+      if (!presetList.voices.some(function (voice) { return voice.id === presetVoiceId; })) return { ok: false, status: 400, error: 'The selected preset voice is not available in Voicebox.' };
+      body = Object.assign(body, { voice_type: 'preset', preset_engine: engine, preset_voice_id: presetVoiceId, default_engine: engine });
+    } else {
+      return { ok: false, status: 400, error: 'Designed profiles are not supported by the current Voicebox engines.' };
+    }
+    const r = await requestJson('/profiles', { method: 'POST', body: body, timeoutMs: requestTimeoutMs });
+    if (!r.ok) return r;
+    return { ok: true, profile: sanitizeProfile(r.data) };
+  }
+
+  async function deleteProfile(profileId) {
+    if (!isEnabled()) return notConfigured();
+    const id = String(profileId || '');
+    if (!PROFILE_ID_RE.test(id)) return { ok: false, status: 400, error: 'Voicebox profile ID is invalid' };
+    const r = await requestJson('/profiles/' + encodeURIComponent(id), { method: 'DELETE', timeoutMs: requestTimeoutMs });
+    if (!r.ok) return r;
+    return { ok: true, deleted: true };
+  }
+
+  async function profileSamples(profileId) {
+    if (!isEnabled()) return notConfigured();
+    const id = String(profileId || '');
+    if (!PROFILE_ID_RE.test(id)) return { ok: false, status: 400, error: 'Voicebox profile ID is invalid' };
+    const r = await requestJson('/profiles/' + encodeURIComponent(id) + '/samples', { timeoutMs: requestTimeoutMs });
+    if (!r.ok) return r;
+    return { ok: true, samples: (Array.isArray(r.data) ? r.data : []).map(sanitizeSample) };
+  }
+
+  async function profileSampleAudio(sampleId) {
+    if (!isEnabled()) return notConfigured();
+    const id = String(sampleId || '');
+    if (!SAMPLE_ID_RE.test(id)) return { ok: false, status: 400, error: 'Voicebox sample ID is invalid' };
+    const base = endpoint();
+    const url = base + '/samples/' + encodeURIComponent(id);
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), audioTimeoutMs);
+    try {
+      const response = await fetch(url, { signal: ctrl.signal });
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        return { ok: false, status: response.status, error: 'Voicebox sample audio failed (HTTP ' + response.status + '): ' + String(text || '').slice(0, 160) };
+      }
+      const length = Number(response.headers.get('content-length'));
+      const maxBytes = 10 * 1024 * 1024;
+      if (Number.isFinite(length) && length > maxBytes) {
+        if (response.body && typeof response.body.cancel === 'function') response.body.cancel().catch(() => {});
+        return { ok: false, status: 413, error: 'Voicebox sample audio exceeds the IB 10 MiB preview limit.' };
+      }
+      const chunks = [];
+      let total = 0;
+      if (response.body && typeof response.body.getReader === 'function') {
+        const reader = response.body.getReader();
+        for (;;) {
+          const part = await reader.read();
+          if (part.done) break;
+          total += part.value.byteLength;
+          if (total > maxBytes) {
+            await reader.cancel().catch(() => {});
+            return { ok: false, status: 413, error: 'Voicebox sample audio exceeds the IB 10 MiB preview limit.' };
+          }
+          chunks.push(Buffer.from(part.value));
+        }
+      } else {
+        const body = Buffer.from(await response.arrayBuffer());
+        if (body.length > maxBytes) return { ok: false, status: 413, error: 'Voicebox sample audio exceeds the IB 10 MiB preview limit.' };
+        chunks.push(body); total = body.length;
+      }
+      const bytes = Buffer.concat(chunks, total);
+      if (!bytes.length) return { ok: false, status: 502, error: 'Voicebox returned empty profile sample audio.' };
+      const mime = String(response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+      if (!/^audio\//.test(mime)) return { ok: false, status: 502, error: 'Voicebox sample audio returned an unsupported content type.' };
+      return { ok: true, bytes, mime };
+    } catch (error) {
+      return { ok: false, status: 503, error: error && error.name === 'AbortError' ? 'Voicebox sample audio timed out.' : 'Voicebox sample audio is unavailable: ' + String(error && error.message || error).slice(0, 160) };
+    } finally { clearTimeout(timer); }
+  }
+
+  async function addProfileSample(profileId, sample) {
+    if (!isEnabled()) return notConfigured();
+    const id = String(profileId || '');
+    const upload = sample && typeof sample === 'object' ? sample : {};
+    const referenceText = String(upload.referenceText || '').trim();
+    if (!PROFILE_ID_RE.test(id)) return { ok: false, status: 400, error: 'Voicebox profile ID is invalid' };
+    if (!Buffer.isBuffer(upload.bytes) || upload.bytes.length === 0) return { ok: false, status: 400, error: 'Reference audio is empty.' };
+    if (upload.bytes.length > 10 * 1024 * 1024) return { ok: false, status: 413, error: 'Reference audio exceeds the IB 10 MB limit.' };
+    if (['audio/mpeg', 'audio/wav'].indexOf(String(upload.mime || '').toLowerCase()) === -1) return { ok: false, status: 400, error: 'Only MP3 and WAV reference audio are accepted by the current IB validation chain.' };
+    if (!referenceText || referenceText.length > SAMPLE_TEXT_MAX) return { ok: false, status: 400, error: 'Reference transcript must be 1–1000 characters.' };
+    const form = new FormData();
+    form.append('file', new Blob([upload.bytes], { type: upload.mime }), String(upload.originalName || 'reference.wav'));
+    form.append('reference_text', referenceText);
+    const base = endpoint();
+    const pathname = '/profiles/' + encodeURIComponent(id) + '/samples';
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), audioTimeoutMs);
+    try {
+      const response = await fetch(base + pathname, { method: 'POST', body: form, signal: ctrl.signal });
+      const text = await response.text().catch(() => '');
+      if (!response.ok) return { ok: false, status: response.status, error: 'Voicebox ' + pathname + ' failed (HTTP ' + response.status + '): ' + String(text || '').slice(0, 200) };
+      let data = null;
+      try { data = JSON.parse(text); } catch (e) { data = null; }
+      if (!data || typeof data !== 'object') return { ok: false, status: response.status, error: 'Voicebox sample upload returned malformed JSON.' };
+      return { ok: true, sample: sanitizeSample(data) };
+    } catch (e) {
+      return { ok: false, status: 503, error: e && e.name === 'AbortError' ? 'Voicebox reference upload timed out.' : 'Voicebox reference upload failed: ' + String(e && e.message || e).slice(0, 160) };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function updateProfileSample(sampleId, referenceText) {
+    if (!isEnabled()) return notConfigured();
+    const id = String(sampleId || '');
+    const text = String(referenceText || '').trim();
+    if (!SAMPLE_ID_RE.test(id)) return { ok: false, status: 400, error: 'Voicebox sample ID is invalid' };
+    if (!text || text.length > SAMPLE_TEXT_MAX) return { ok: false, status: 400, error: 'Reference transcript must be 1–1000 characters.' };
+    const r = await requestJson('/profiles/samples/' + encodeURIComponent(id), { method: 'PUT', body: { reference_text: text }, timeoutMs: requestTimeoutMs });
+    if (!r.ok) return r;
+    return { ok: true, sample: sanitizeSample(r.data) };
+  }
+
+  async function deleteProfileSample(sampleId) {
+    if (!isEnabled()) return notConfigured();
+    const id = String(sampleId || '');
+    if (!SAMPLE_ID_RE.test(id)) return { ok: false, status: 400, error: 'Voicebox sample ID is invalid' };
+    const r = await requestJson('/profiles/samples/' + encodeURIComponent(id), { method: 'DELETE', timeoutMs: requestTimeoutMs });
+    if (!r.ok) return r;
+    return { ok: true, deleted: true };
+  }
+
+  async function presetVoices(engine) {
+    if (!isEnabled()) return notConfigured();
+    const key = String(engine || '').toLowerCase();
+    if (PRESET_ENGINES.indexOf(key) === -1) return { ok: false, status: 400, error: 'Engine does not have preset profiles.' };
+    const r = await requestJson('/profiles/presets/' + encodeURIComponent(key), { timeoutMs: requestTimeoutMs });
+    if (!r.ok) return r;
+    return {
+      ok: true,
+      engine: key,
+      voices: (Array.isArray(r.data && r.data.voices) ? r.data.voices : []).map(function (v) {
+        return { id: String(v.voice_id || ''), name: String(v.name || ''), language: String(v.language || '') };
+      }).filter(function (v) { return !!v.id; })
+    };
   }
 
   /* GET /health —— 可见的健康检查；offline 时返回 ok:false，绝不假装在线。 */
@@ -186,7 +517,10 @@ function createVoicebox(deps) {
           name: String(p && p.name || ''),
           language: String(p && p.language || ''),
           voiceType: String(p && p.voice_type || ''),
-          defaultEngine: String(p && p.default_engine || '')
+          defaultEngine: String(p && p.default_engine || ''),
+          presetEngine: String(p && p.preset_engine || ''),
+          presetVoiceId: String(p && p.preset_voice_id || ''),
+          sampleCount: Math.max(0, Number(p && p.sample_count) || 0)
         };
       }).filter(function (p) { return !!p.id; })
     };
@@ -360,12 +694,22 @@ function createVoicebox(deps) {
       /* 不请求任何改写：IB 已经决定了要说什么。 */
       personality: false
     };
-    const engine = (typeof p.model === 'string') ? p.model.trim() : '';
-    if (engine) body.engine = engine;
+    const engine = String((typeof p.model === 'string' && p.model.trim()) || resolved.profile.defaultEngine || 'qwen');
+    const engineCapabilities = PROFILE_ENGINE_CAPABILITIES[engine];
+    if (!engineCapabilities) return { ok: false, error: 'Unsupported Voicebox engine: ' + engine };
+    body.engine = engine;
     const language = (typeof p.language === 'string') ? p.language.trim() : '';
     if (language && LANGUAGES.indexOf(language) !== -1) body.language = language;
     const instruct = (typeof p.style === 'string') ? p.style.trim() : '';
-    if (instruct) body.instruct = instruct.slice(0, 500);
+    if (instruct && engineCapabilities && engineCapabilities.instruct) body.instruct = instruct.slice(0, 500);
+    if (language && engineCapabilities && engineCapabilities.languages.indexOf(language) === -1) {
+      return { ok: false, error: 'Voicebox engine ' + engine + ' does not support language ' + language + ' in the current IB capability map.' };
+    }
+
+    if (ctx && ctx.previewOnly === true) {
+      const ready = await previewModelReady(engine);
+      if (!ready.ok) return ready;
+    }
 
     /* Keep the bounded /generate handshake alive after cancellation so an accepted
        upstream job ID is not lost. If cancellation wins this race, the late ID is
@@ -426,7 +770,12 @@ function createVoicebox(deps) {
     }
   }
 
-  return { endpoint, isEnabled, health, profiles, resolveProfile, synthesize, DEFAULT_ENDPOINT, ENGINES, LANGUAGES };
+  return {
+    endpoint, isEnabled, health, profiles, resolveProfile, synthesize,
+    profileCapabilities, modelStatus, previewModelReady, getProfile, createProfile, deleteProfile,
+    profileSamples, profileSampleAudio, addProfileSample, updateProfileSample, deleteProfileSample, presetVoices,
+    DEFAULT_ENDPOINT, ENGINES, LANGUAGES, PROFILE_ENGINE_CAPABILITIES
+  };
 }
 
 module.exports = createVoicebox;

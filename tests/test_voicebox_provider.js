@@ -19,6 +19,7 @@ const ROOT = path.resolve(__dirname, '..');
 
 const createTts = require(path.join(ROOT, 'bridge', 'tts'));
 const createVoicebox = require(path.join(ROOT, 'bridge', 'voicebox'));
+const createVoiceRuntime = require(path.join(ROOT, 'bridge', 'voice-runtime'));
 
 let passCount = 0;
 let failCount = 0;
@@ -34,6 +35,17 @@ async function waitFor(predicate, timeout = 1500) {
     await sleep(5);
   }
 }
+function wavBuffer(durationSeconds) {
+  const sampleRate = 16000, channels = 1, bits = 16;
+  const data = Buffer.alloc(Math.round(sampleRate * durationSeconds) * channels * (bits / 8), 0x20);
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0); header.writeUInt32LE(36 + data.length, 4); header.write('WAVE', 8);
+  header.write('fmt ', 12); header.writeUInt32LE(16, 16); header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(channels, 22); header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * channels * (bits / 8), 28); header.writeUInt16LE(channels * (bits / 8), 32);
+  header.writeUInt16LE(bits, 34); header.write('data', 36); header.writeUInt32LE(data.length, 40);
+  return Buffer.concat([header, data]);
+}
 
 /* ─────────────────────────────────────────────────────────────────
    Mock Voicebox：只实现适配器真正调用的 4 个端点。
@@ -46,10 +58,14 @@ function startMockVoicebox(state) {
   st.cancelCalls = [];
   st.healthCalls = 0;
   st.profileCalls = 0;
+  st.profileCreateCalls = [];
+  st.profileDeleteCalls = [];
+  st.sampleUploadCalls = [];
+  st.profileSamples = st.profileSamples || {};
   st.pollCount = 0;
   st.profiles = st.profiles || [
-    { id: 'prof-uuid-1', name: 'Morgan', language: 'en', voice_type: 'cloned', default_engine: 'qwen' },
-    { id: 'prof-uuid-2', name: 'Scarlett', language: 'zh', voice_type: 'preset', default_engine: 'kokoro' }
+     { id: 'prof-uuid-1', name: 'Morgan', language: 'en', voice_type: 'cloned', default_engine: 'qwen', sample_count: 1 },
+     { id: 'prof-uuid-2', name: 'Scarlett', language: 'zh', voice_type: 'preset', default_engine: 'kokoro', preset_engine: 'kokoro', preset_voice_id: 'af_heart', sample_count: 0 }
   ];
   st.audioBytes = st.audioBytes || Buffer.from('RIFF0000WAVEfmt-fake-audio-bytes');
   st.audioMime = st.audioMime || 'audio/wav';
@@ -59,7 +75,8 @@ function startMockVoicebox(state) {
     let body = '';
     req.on('data', c => { body += c; });
     req.on('end', () => {
-      const url = String(req.url || '');
+      const parsedUrl = new URL(String(req.url || ''), 'http://127.0.0.1');
+      const url = parsedUrl.pathname;
       const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
       if (url === '/health') {
         st.healthCalls++;
@@ -68,9 +85,104 @@ function startMockVoicebox(state) {
       }
       if (url === '/profiles') {
         st.profileCalls++;
+        if (st.profilesOffline) { req.socket.destroy(); return; }
+        if (req.method === 'POST') {
+          let parsed = {};
+          try { parsed = JSON.parse(body || '{}'); } catch (e) { parsed = {}; }
+          st.profileCreateCalls.push(parsed);
+          if (st.profileCreateStatus) { res.writeHead(st.profileCreateStatus, { 'Content-Type': 'text/plain' }); res.end('profile create failed'); return; }
+          const n = st.profileCreateCalls.length;
+          const profile = Object.assign({
+            id: '00000000-0000-4000-8000-' + String(n).padStart(12, '0'),
+            name: '', description: '', language: 'en', voice_type: 'cloned',
+            default_engine: '', sample_count: 0, generation_count: 0, personality: 'MUST_NOT_LEAK'
+          }, parsed);
+          st.profiles.unshift(profile);
+          st.profileSamples[profile.id] = [];
+          return json(201, profile);
+        }
+        if (st.profileListStatus) { res.writeHead(st.profileListStatus, { 'Content-Type': 'text/plain' }); res.end('profile list failed'); return; }
         const sendProfiles = () => { if (!res.destroyed) json(200, st.profiles); };
         if (st.profileDelayMs) { setTimeout(sendProfiles, st.profileDelayMs); return; }
         return sendProfiles();
+      }
+      if (url === '/models/status') {
+        return json(200, { models: st.modelStatuses || [
+          { model_name: 'qwen-tts-1.7B', display_name: 'Qwen 1.7B', downloaded: true, downloading: false, loaded: false, size_mb: 3500 },
+          { model_name: 'qwen-custom-voice-1.7B', display_name: 'Qwen CustomVoice 1.7B', downloaded: true, downloading: false, loaded: false, size_mb: 3500 },
+          { model_name: 'luxtts', display_name: 'LuxTTS', downloaded: true, downloading: false, loaded: false, size_mb: 300 },
+          { model_name: 'chatterbox-tts', display_name: 'Chatterbox', downloaded: true, downloading: false, loaded: false, size_mb: 3200 },
+          { model_name: 'chatterbox-turbo', display_name: 'Chatterbox Turbo', downloaded: true, downloading: false, loaded: false, size_mb: 1500 },
+          { model_name: 'tada-1b', display_name: 'TADA 1B', downloaded: true, downloading: false, loaded: false, size_mb: 4000 },
+          { model_name: 'kokoro', display_name: 'Kokoro', downloaded: true, downloading: false, loaded: false, size_mb: 350 }
+        ] });
+      }
+      const preset = url.match(/^\/profiles\/presets\/([^/]+)$/);
+      if (preset) {
+        const engine = decodeURIComponent(preset[1]);
+        if (engine === 'qwen_custom_voice') return json(200, { engine, voices: [{ voice_id: 'Ryan', name: 'Ryan', language: 'en' }] });
+        if (engine === 'kokoro') return json(200, { engine, voices: [{ voice_id: 'af_heart', name: 'Heart', language: 'en' }] });
+        return json(200, { engine, voices: [] });
+      }
+      const sampleAudio = url.match(/^\/samples\/([^/]+)$/);
+      if (sampleAudio && req.method === 'GET') {
+        const sampleId = decodeURIComponent(sampleAudio[1]);
+        const known = Object.values(st.profileSamples).some(list => Array.isArray(list) && list.some(sample => sample.id === sampleId));
+        if (!known) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ detail: 'Sample not found' })); return; }
+        if (st.sampleAudioStatus) { res.writeHead(st.sampleAudioStatus, { 'Content-Type': 'text/plain' }); res.end('sample audio failed'); return; }
+        const bytes = st.sampleAudioBytes || wavBuffer(2);
+        res.writeHead(200, { 'Content-Type': 'audio/wav', 'Content-Length': bytes.length }); res.end(bytes); return;
+      }
+      const samples = url.match(/^\/profiles\/([^/]+)\/samples$/);
+      if (samples) {
+        const profileId = decodeURIComponent(samples[1]);
+        if (req.method === 'POST') {
+          const refAt = body.indexOf('name="reference_text"');
+          const refStart = refAt >= 0 ? body.indexOf('\r\n\r\n', refAt) + 4 : -1;
+          const refEnd = refStart >= 4 ? body.indexOf('\r\n', refStart) : -1;
+          const uploadedText = refStart >= 4 && refEnd > refStart ? body.slice(refStart, refEnd) : 'Reference words';
+          st.sampleUploadCalls.push({ profileId, multipart: String(req.headers['content-type'] || '').indexOf('multipart/form-data; boundary=') === 0, hasReferenceText: refAt >= 0, referenceText: uploadedText });
+          if (st.sampleUploadStatus) { res.writeHead(st.sampleUploadStatus, { 'Content-Type': 'text/plain' }); res.end('sample upload failed'); return; }
+          const sample = { id: '10000000-0000-4000-8000-' + String(st.sampleUploadCalls.length).padStart(12, '0'), profile_id: profileId, reference_text: uploadedText, audio_path: 'C:\\private\\voicebox\\sample.wav' };
+          st.profileSamples[profileId] = st.profileSamples[profileId] || [];
+          st.profileSamples[profileId].push(sample);
+          const profile = st.profiles.find(p => p.id === profileId);
+          if (profile) profile.sample_count = st.profileSamples[profileId].length;
+          return json(201, sample);
+        }
+        return json(200, st.profileSamples[profileId] || []);
+      }
+      const sampleItem = url.match(/^\/profiles\/samples\/([^/]+)$/);
+      if (sampleItem && req.method === 'PUT') {
+        const sampleId = decodeURIComponent(sampleItem[1]);
+        let parsed = {};
+        try { parsed = JSON.parse(body || '{}'); } catch (e) {}
+        for (const list of Object.values(st.profileSamples)) {
+          const sample = list.find(s => s.id === sampleId);
+          if (sample) { sample.reference_text = parsed.reference_text || ''; return json(200, sample); }
+        }
+        res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ detail: 'sample not found' })); return;
+      }
+      if (sampleItem && req.method === 'DELETE') {
+        const sampleId = decodeURIComponent(sampleItem[1]);
+        for (const list of Object.values(st.profileSamples)) {
+          const index = list.findIndex(s => s.id === sampleId);
+          if (index >= 0) { list.splice(index, 1); return json(200, { message: 'Sample deleted successfully' }); }
+        }
+        res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ detail: 'sample not found' })); return;
+      }
+      const profileItem = url.match(/^\/profiles\/([^/]+)$/);
+      if (profileItem) {
+        const profileId = decodeURIComponent(profileItem[1]);
+        const index = st.profiles.findIndex(p => p.id === profileId);
+        if (req.method === 'GET' && index >= 0) return json(200, st.profiles[index]);
+        if (req.method === 'DELETE') {
+          st.profileDeleteCalls.push(profileId);
+          if (st.profileDeleteStatus) { res.writeHead(st.profileDeleteStatus, { 'Content-Type': 'text/plain' }); res.end('profile delete failed'); return; }
+          if (index < 0) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ detail: 'profile not found' })); return; }
+          st.profiles.splice(index, 1); delete st.profileSamples[profileId];
+          return json(200, { message: 'Profile deleted successfully' });
+        }
       }
       if (url === '/generate' && req.method === 'POST') {
         let parsed = {};
@@ -252,14 +364,17 @@ async function main() {
     ok('E.request.personalityHardFalse', call.body.personality === false, JSON.stringify(call.body.personality));
     ok('E.request.enginePassed', call.body.engine === 'qwen', call.body.engine);
     ok('E.request.languagePassed', call.body.language === 'zh', call.body.language);
-    ok('E.request.styleToInstruct', call.body.instruct === '轻声一点', call.body.instruct);
+    ok('E.request.styleOmittedForUnsupportedEngine', !('instruct' in call.body), JSON.stringify(call.body));
     ok('E.request.noCredentialShape', !/apikey|api_key|authorization|bearer|token/i.test(JSON.stringify(call.body)), JSON.stringify(call.body));
     ok('E.poll.untilCompleted', mock.state.pollCount === 2, mock.state.pollCount);
     ok('E.audio.fetchedOnce', mock.state.audioCalls.length === 1 && mock.state.audioCalls[0] === 'gen-1', JSON.stringify(mock.state.audioCalls));
+    mock.state.profiles.push({ id: 'prof-uuid-3', name: 'Ryan Custom', language: 'en', voice_type: 'preset', default_engine: 'qwen_custom_voice', preset_engine: 'qwen_custom_voice', preset_voice_id: 'Ryan' });
+    await t.ttsSynthesize(t.normalizeVoiceProfile({ text: 'Custom voice instruction test.', source: 'voicebox', voiceId: 'prof-uuid-3', model: 'qwen_custom_voice', style: 'speak softly' }));
+    ok('E.request.styleToInstructOnlyWhenSupported', mock.state.generateCalls[1].body.instruct === 'speak softly', JSON.stringify(mock.state.generateCalls[1].body));
     await new Promise(r2 => mock.server.close(r2));
   }
 
-  /* ── F. Profile 解析：id 或 name（大小写不敏感）；engine 留空则不发 ── */
+  /* ── F. Profile 解析：id 或 name（大小写不敏感）；engine 留空则用 profile default ── */
   {
     const mock = await startMockVoicebox({});
     const cfg = voiceboxConfig('http://127.0.0.1:' + mock.port);
@@ -268,7 +383,7 @@ async function main() {
     await t.ttsSynthesize(t.normalizeVoiceProfile({ text: 'x', source: 'voicebox', voiceId: 'scarlett' }));
     const b = mock.state.generateCalls[0].body;
     ok('F.profileNameCaseInsensitive', b.profile_id === 'prof-uuid-2', JSON.stringify(b));
-    ok('F.engineOmittedWhenEmpty', !('engine' in b), JSON.stringify(b));
+    ok('F.engineUsesProfileDefaultWhenEmpty', b.engine === 'kokoro', JSON.stringify(b));
     ok('F.languageOmittedWhenEmpty', !('language' in b), JSON.stringify(b));
     ok('F.instructOmittedWhenEmpty', !('instruct' in b), JSON.stringify(b));
     await new Promise(r2 => mock.server.close(r2));
@@ -690,6 +805,200 @@ async function main() {
       try { child.kill(); } catch (e) { /* 忽略 */ }
       await new Promise(r => mockOpenai.close(r));
       try { fs.rmSync(dataDir, { recursive: true, force: true }); } catch (e) { /* 忽略 */ }
+    }
+  }
+
+  /* ── K. Bridge profile lifecycle surface: local Voicebox mock only ── */
+  {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-bridge-vb-lifecycle-'));
+    const mock = await startMockVoicebox({});
+    fs.writeFileSync(path.join(dataDir, 'config.json'), JSON.stringify({
+      voicebox: { enabled: true, endpoint: 'http://127.0.0.1:' + mock.port },
+      tts: { enabled: false }, ttsMimo: { enabled: false }
+    }, null, 2), 'utf8');
+    const port = 26000 + Math.floor(Math.random() * 2000);
+    const child = spawn(process.execPath, [path.join(ROOT, 'services', 'ib-bridge-service.js')], {
+      cwd: ROOT,
+      env: Object.assign({}, process.env, { IB_BRIDGE_PORT: String(port), IB_BRIDGE_HOST: '127.0.0.1', IB_BRIDGE_DATA_DIR: dataDir }),
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    child.stdout.on('data', () => {}); child.stderr.on('data', () => {});
+    const base = 'http://127.0.0.1:' + port;
+    let healthy = false;
+    for (let i = 0; i < 50; i++) { try { const r = await fetch(base + '/health'); if (r.ok) { healthy = true; break; } } catch (e) { /* retry */ } await sleep(200); }
+    ok('K.bridge.healthy', healthy);
+    try {
+      const caps = await (await fetch(base + '/api/tts/voicebox/capabilities')).json();
+      ok('K.capabilities.clonePresetSeparation', caps.ok && caps.engines.qwen.clone === true && caps.engines.kokoro.preset === true && caps.engines.kokoro.clone === false);
+      ok('K.capabilities.currentCloneEngineMatrix', caps.cloneEngines.slice().sort().join(',') === 'chatterbox,chatterbox_turbo,luxtts,qwen,tada');
+      ok('K.capabilities.currentPresetEngineMatrix', caps.presetEngines.slice().sort().join(',') === 'kokoro,qwen_custom_voice');
+      ok('K.capabilities.instructIsEngineSpecific', caps.engines.qwen.instruct === false && caps.engines.qwen_custom_voice.instruct === true && caps.engines.chatterbox.instruct === false);
+      ok('K.capabilities.designNotShipped', caps.designedProfiles === false);
+      ok('K.capabilities.uploadContract', caps.referenceAudio.formats.join(',') === 'mp3,wav' && caps.referenceAudio.maxBytes === 10 * 1024 * 1024 && caps.transcript.required === true && caps.transcript.autoTranscribe === false);
+      ok('K.modelStatus.readOnly', (await (await fetch(base + '/api/tts/voicebox/models')).json()).models.some(m => m.name === 'qwen-tts-1.7B' && m.downloaded === true));
+      const preset = await (await fetch(base + '/api/tts/voicebox/presets/qwen_custom_voice')).json();
+      ok('K.presetDiscovery', preset.ok && preset.voices[0].id === 'Ryan');
+
+      const wav = wavBuffer(2);
+      const createdResponse = await fetch(base + '/api/tts/voicebox/profiles', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'IB Local Clone', language: 'en', voiceType: 'cloned', engine: 'qwen' })
+      });
+      const created = await createdResponse.json();
+      ok('K.cloneCreate.profileCreated', createdResponse.status === 201 && created.ok && created.profile.voiceType === 'cloned' && created.profile.sampleCount === 0);
+      ok('K.profileCreate.noVoiceboxSnapshotLeak', !/audio_path|personality|MUST_NOT_LEAK|private\\\\voicebox/.test(JSON.stringify(created)));
+      const profileId = created.profile.id;
+      const sampleQuery = new URLSearchParams({ filename: 'reference.wav', reference_text: 'Hello there.' });
+      const sampleResponse = await fetch(base + '/api/tts/voicebox/profiles/' + encodeURIComponent(profileId) + '/samples?' + sampleQuery, {
+        method: 'POST', headers: { 'Content-Type': 'audio/wav' }, body: wav
+      });
+      const added = await sampleResponse.json();
+      ok('K.cloneCreate.referenceProcessed', sampleResponse.status === 201 && added.ok && added.sample.referenceText === 'Hello there.' && added.referenceAudio.durationSeconds === 2, JSON.stringify({ status: sampleResponse.status, added, calls: mock.state.sampleUploadCalls }));
+      ok('K.cloneCreate.sampleWasMultipart', mock.state.sampleUploadCalls.length === 1 && mock.state.sampleUploadCalls[0].multipart && mock.state.sampleUploadCalls[0].hasReferenceText, JSON.stringify(mock.state.sampleUploadCalls));
+      ok('K.profileCreate.idIsCanonicalExternalReference', /^[0-9a-f-]{36}$/i.test(profileId));
+
+      const samples = await (await fetch(base + '/api/tts/voicebox/profiles/' + encodeURIComponent(profileId) + '/samples')).json();
+      ok('K.samples.listSanitized', samples.ok && samples.samples.length === 1 && !JSON.stringify(samples).includes('audio_path'));
+      const storedSampleAudio = await fetch(base + '/api/tts/voicebox/samples/' + encodeURIComponent(samples.samples[0].id) + '/audio');
+      const storedSampleBytes = Buffer.from(await storedSampleAudio.arrayBuffer());
+      ok('K.samples.audioProxiedThroughBridge', storedSampleAudio.status === 200 && storedSampleAudio.headers.get('content-type') === 'audio/wav' && storedSampleBytes.length === wav.length);
+      const missingSampleAudio = await fetch(base + '/api/tts/voicebox/samples/10000000-0000-4000-8000-999999999999/audio');
+      ok('K.samples.missingAudioMapped', missingSampleAudio.status === 404);
+      mock.state.sampleAudioBytes = Buffer.alloc(10 * 1024 * 1024 + 1);
+      const oversizedSampleAudio = await fetch(base + '/api/tts/voicebox/samples/' + encodeURIComponent(samples.samples[0].id) + '/audio');
+      mock.state.sampleAudioBytes = null;
+      ok('K.samples.audioPreviewSizeBounded', oversizedSampleAudio.status === 413);
+      const updateSample = await (await fetch(base + '/api/tts/voicebox/samples/' + encodeURIComponent(samples.samples[0].id) + '/text', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ referenceText: 'Updated exact words.' })
+      })).json();
+      ok('K.samples.transcriptUpdate', updateSample.ok && updateSample.sample.referenceText === 'Updated exact words.');
+      const secondQuery = new URLSearchParams({ filename: 'second.wav', reference_text: 'Second sample.' });
+      const secondSample = await (await fetch(base + '/api/tts/voicebox/profiles/' + encodeURIComponent(profileId) + '/samples?' + secondQuery, {
+        method: 'POST', headers: { 'Content-Type': 'audio/wav' }, body: wav
+      })).json();
+      ok('K.samples.multipleWhenSupported', secondSample.ok && mock.state.profileSamples[profileId].length === 2);
+      const deleteSample = await (await fetch(base + '/api/tts/voicebox/samples/' + encodeURIComponent(secondSample.sample.id), { method: 'DELETE' })).json();
+      ok('K.samples.deleteSupported', deleteSample.ok && mock.state.profileSamples[profileId].length === 1);
+
+      const uploadReference = async (filename, mime, bytes, transcript) => {
+        const query = new URLSearchParams({ filename, reference_text: transcript || 'Reference text' });
+        const response = await fetch(base + '/api/tts/voicebox/profiles/' + encodeURIComponent(profileId) + '/samples?' + query, {
+          method: 'POST', headers: { 'Content-Type': mime }, body: bytes
+        });
+        return { response, data: await response.json() };
+      };
+      const invalid = await uploadReference('bad.wav', 'audio/wav', Buffer.from('RIFFnot-a-wave'), 'Bad reference');
+      ok('K.audio.corruptRejectedBeforeUpstream', invalid.data.ok === false && mock.state.sampleUploadCalls.length === 2);
+      const unsupported = await uploadReference('reference.m4a', 'audio/mp4', Buffer.from('not-m4a'), 'Bad reference');
+      ok('K.audio.unsupportedBridgeFormatRejected', unsupported.data.ok === false && mock.state.sampleUploadCalls.length === 2);
+      const mimeMismatch = await uploadReference('reference.wav', 'audio/mpeg', wav, 'Bad reference');
+      ok('K.audio.mimeExtensionMagicMustAgree', mimeMismatch.data.ok === false && mock.state.sampleUploadCalls.length === 2);
+      const shortAudio = await uploadReference('short.wav', 'audio/wav', wavBuffer(1), 'Short reference');
+      ok('K.audio.durationValidated', shortAudio.data.ok === false && mock.state.sampleUploadCalls.length === 2);
+      const emptyAudio = await uploadReference('empty.wav', 'audio/wav', Buffer.alloc(0), 'Empty reference');
+      ok('K.audio.emptyRejected', emptyAudio.data.ok === false && mock.state.sampleUploadCalls.length === 2);
+      const tooLargeAudio = await uploadReference('large.wav', 'audio/wav', Buffer.alloc(10 * 1024 * 1024 + 1), 'Large reference');
+      ok('K.audio.oversizedRejected', tooLargeAudio.response.status === 413 && tooLargeAudio.data.ok === false && mock.state.sampleUploadCalls.length === 2);
+
+      /* The UI owns the create → upload → rollback sequence. Exercise its Bridge primitives deterministically. */
+      const transactionProfile = await (await fetch(base + '/api/tts/voicebox/profiles', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Rollback profile', language: 'en', voiceType: 'cloned', engine: 'qwen' })
+      })).json();
+      mock.state.sampleUploadStatus = 500;
+      const txQuery = new URLSearchParams({ filename: 'reference.wav', reference_text: 'Reference text' });
+      const failedSample = await fetch(base + '/api/tts/voicebox/profiles/' + encodeURIComponent(transactionProfile.profile.id) + '/samples?' + txQuery, { method: 'POST', headers: { 'Content-Type': 'audio/wav' }, body: wav });
+      mock.state.sampleUploadStatus = 0;
+      const rollback = await fetch(base + '/api/tts/voicebox/profiles/' + encodeURIComponent(transactionProfile.profile.id), { method: 'DELETE' });
+      ok('K.transaction.sampleFailureRollsBack', failedSample.status === 500 && rollback.ok && !mock.state.profiles.some(p => p.id === transactionProfile.profile.id));
+      const incompleteProfile = await (await fetch(base + '/api/tts/voicebox/profiles', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Incomplete profile', language: 'en', voiceType: 'cloned', engine: 'qwen' })
+      })).json();
+      mock.state.sampleUploadStatus = 500;
+      const incompleteSample = await fetch(base + '/api/tts/voicebox/profiles/' + encodeURIComponent(incompleteProfile.profile.id) + '/samples?' + txQuery, { method: 'POST', headers: { 'Content-Type': 'audio/wav' }, body: wav });
+      mock.state.sampleUploadStatus = 0;
+      mock.state.profileDeleteStatus = 500;
+      const failedCleanup = await fetch(base + '/api/tts/voicebox/profiles/' + encodeURIComponent(incompleteProfile.profile.id), { method: 'DELETE' });
+      mock.state.profileDeleteStatus = 0;
+      const stillIncomplete = await (await fetch(base + '/api/tts/voicebox/profiles')).json();
+      ok('K.transaction.cleanupFailureLeavesRepairableProfile', incompleteSample.status === 500 && failedCleanup.status === 500 && stillIncomplete.profiles.some(p => p.id === incompleteProfile.profile.id && p.sampleCount === 0));
+      await fetch(base + '/api/tts/voicebox/profiles/' + encodeURIComponent(incompleteProfile.profile.id), { method: 'DELETE' });
+
+      mock.state.profileCreateStatus = 422;
+      const upstreamCreateError = await fetch(base + '/api/tts/voicebox/profiles', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Upstream error', language: 'en', voiceType: 'cloned', engine: 'qwen' }) });
+      mock.state.profileCreateStatus = 0;
+      ok('K.error.upstreamStatusMapped', upstreamCreateError.status === 422);
+      const invalidProfile = await fetch(base + '/api/tts/voicebox/profiles', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: '', language: 'en', voiceType: 'cloned', engine: 'qwen' }) });
+      ok('K.error.invalidProfileRejected', invalidProfile.status === 400);
+      mock.state.profilesOffline = true;
+      const offlineList = await (await fetch(base + '/api/tts/voicebox/profiles')).json();
+      const offlineCreate = await fetch(base + '/api/tts/voicebox/profiles', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Offline profile', language: 'en', voiceType: 'cloned', engine: 'qwen' }) });
+      mock.state.profilesOffline = false;
+      ok('K.error.offlineDiscoveryStaysAvailableToUi', offlineList.ok === false);
+      ok('K.error.offlineCreateMapsToUnavailable', offlineCreate.status === 503);
+
+      const presetProfile = await (await fetch(base + '/api/tts/voicebox/profiles', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Preset Profile', language: 'en', voiceType: 'preset', engine: 'qwen_custom_voice', presetVoiceId: 'Ryan' })
+      })).json();
+      ok('K.profile.createPresetDistinctFromClone', presetProfile.ok && presetProfile.profile.voiceType === 'preset' && presetProfile.profile.sampleCount === 0);
+      ok('K.profile.listDoesNotLeakInternalFields', !JSON.stringify((await (await fetch(base + '/api/tts/voicebox/profiles')).json()).profiles).match(/audio_path|personality|MUST_NOT_LEAK/));
+
+      const beforeMissingModel = mock.state.generateCalls.length;
+      mock.state.modelStatuses = [{ model_name: 'qwen-tts-1.7B', display_name: 'Qwen 1.7B', downloaded: false, downloading: false, loaded: false }];
+      const missingPreview = await (await fetch(base + '/api/tts', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: 'Short neutral preview.', source: 'voicebox', provider: 'voicebox', voiceId: profileId, model: 'qwen', language: 'en', preview: true })
+      })).json();
+      ok('K.preview.missingModelNoAutoDownload', missingPreview.ok === false && String(missingPreview.error).includes('will not automatically download') && mock.state.generateCalls.length === beforeMissingModel);
+      mock.state.modelStatuses = null;
+      const preview = await (await fetch(base + '/api/tts', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: 'Short neutral preview.', source: 'voicebox', provider: 'voicebox', voiceId: profileId, model: 'qwen', language: 'en', preview: true })
+      })).json();
+      ok('K.preview.reusesBridgeTtsAndPersonalityFalse', preview.ok === true && mock.state.generateCalls[mock.state.generateCalls.length - 1].body.personality === false);
+      const tooLong = await fetch(base + '/api/tts', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: 'x'.repeat(301), source: 'voicebox', provider: 'voicebox', voiceId: profileId, model: 'qwen', preview: true })
+      });
+      ok('K.preview.lengthLimited', tooLong.status === 400);
+      const deleteProfile = await (await fetch(base + '/api/tts/voicebox/profiles/' + encodeURIComponent(profileId), { method: 'DELETE' })).json();
+      ok('K.profile.deleteLeavesNoVoiceboxProfile', deleteProfile.ok && !mock.state.profiles.some(p => p.id === profileId));
+    } finally {
+      try { child.kill(); } catch (e) { /* ignore */ }
+      await new Promise(resolve => mock.server.close(resolve));
+      try { fs.rmSync(dataDir, { recursive: true, force: true }); } catch (e) { /* ignore */ }
+    }
+  }
+
+  /* ── L. Voice Call generation continues through the Voicebox TTS provider seam ── */
+  {
+    const mock = await startMockVoicebox({});
+    const cfg = voiceboxConfig('http://127.0.0.1:' + mock.port);
+    cfg.__ttsDir = ttsDir;
+    const t = makeTts(cfg, createVoicebox({ config: cfg }));
+    let uid = 0;
+    const runtime = createVoiceRuntime({
+      config: { voiceAsr: {} }, dataDir: ttsDir,
+      uid(prefix) { uid += 1; return prefix + '_' + uid; },
+      ttsNormalize: t.normalizeVoiceProfile,
+      ttsSynthesize: t.ttsSynthesize,
+      asr: { configured: false, streaming: false, transcribe: async () => '', createSession: () => null }
+    });
+    const events = [];
+    const conn = { closed: false, sendJson(event) { events.push(event); } };
+    try {
+      runtime.handleEvent(conn, { type: 'start', roleId: 'role-call-vb', conversationId: 'main:voicebox', voice: { source: 'voicebox', provider: 'voicebox', voiceId: 'Morgan', model: 'qwen', language: 'en' } });
+      runtime.handleEvent(conn, { type: 'text', text: 'A voice call input.' });
+      await waitFor(() => events.some(event => event.type === 'transcript'));
+      const turn = events.find(event => event.type === 'transcript');
+      runtime.handleEvent(conn, { type: 'adapter_reply', turn_id: turn.turn_id, text: 'A Voicebox call reply.' });
+      await waitFor(() => events.some(event => event.type === 'generation_end'));
+      ok('L.voiceCall.usesVoiceboxTtsSeam', mock.state.generateCalls.length === 1 && mock.state.generateCalls[0].body.profile_id === 'prof-uuid-1');
+      ok('L.voiceCall.finalTextAndPersonalityBoundary', mock.state.generateCalls[0].body.text === 'A Voicebox call reply.' && mock.state.generateCalls[0].body.personality === false);
+      ok('L.voiceCall.audioReturnedToCall', events.some(event => event.type === 'audio' && event.generation_id === 1));
+    } finally {
+      runtime.close(conn);
+      await new Promise(resolve => mock.server.close(resolve));
     }
   }
 

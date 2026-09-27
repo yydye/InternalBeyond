@@ -1613,6 +1613,16 @@
             </select>
           </div>
           <div id="api-voice-source-hint" class="ibv-source-hint field-hint"></div>
+          <div id="api-voicebox-role-controls" style="display:none;margin:8px 0 10px;padding:10px;border:1px solid var(--glass-border);border-radius:10px">
+            <div id="api-voicebox-role-status" role="status" aria-live="polite" class="field-hint">Voicebox 状态尚未检测</div>
+            <label class="ibv-label" for="api-voicebox-preview-text">试听文本</label>
+            <textarea id="api-voicebox-preview-text" class="ibv-input" rows="2" maxlength="300">你好，这是一段本地音色试听。</textarea>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+              <button type="button" class="btn" id="api-voicebox-preview-btn" onclick="previewSelectedVoiceboxProfile(this)">试听此音色</button>
+              <button type="button" class="btn" id="api-voicebox-bind-btn" onclick="bindSelectedVoiceboxProfile(this)">绑定并保存当前角色</button>
+              <button type="button" class="btn" onclick="openVoiceboxProfileManager()">管理本地音色</button>
+            </div>
+          </div>
           <div id="api-voice-model-wrap" class="ibv-field">
             <label class="ibv-label" for="api-voice-model">Model</label>
             <select id="api-voice-model" class="ibv-select">
@@ -1627,7 +1637,7 @@
           </div>
           <div id="api-voice-select-wrap" class="ibv-field">
             <label class="ibv-label" for="api-voice-select">Voice</label>
-            <select id="api-voice-select" class="ibv-select"></select>
+            <select id="api-voice-select" class="ibv-select" onchange="_voiceSyncCapabilityFields()"></select>
           </div>
           <div id="api-voice-language-wrap" class="ibv-field">
             <label class="ibv-label" for="api-voice-language">Language</label>
@@ -1644,6 +1654,45 @@
           <label class="form-check-row"><input type="checkbox" id="api-voice-autoplay" class="u-native-check"> 收到回复后自动播放</label>
           <button type="button" class="btn" id="api-voice-test-btn" onclick="testCharacterVoice()" style="margin-top:10px;font-size:0.82rem;padding:6px 16px">Test Voice</button>
           </div>
+        </div>
+      </div>
+      <div id="api-voicebox-manager-backdrop" hidden style="display:none;position:fixed;inset:0;z-index:10020;background:rgba(0,0,0,.72);align-items:center;justify-content:center;padding:18px;box-sizing:border-box" onclick="if(event.target===this)closeVoiceboxProfileManager()">
+        <div role="dialog" aria-modal="true" aria-labelledby="api-voicebox-manager-title" style="width:min(760px,100%);max-height:90vh;overflow:auto;padding:20px;border-radius:16px;background:var(--bg-card,#171923);border:1px solid var(--glass-border);box-shadow:0 20px 60px rgba(0,0,0,.45)">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+            <h3 id="api-voicebox-manager-title" style="margin:0">Voicebox 本地音色</h3>
+            <button type="button" class="btn" onclick="closeVoiceboxProfileManager()">关闭</button>
+          </div>
+          <div id="api-voicebox-manager-status" role="status" aria-live="polite" class="field-hint" style="margin:8px 0"></div>
+          <button type="button" class="btn" id="api-voicebox-refresh-btn" onclick="refreshVoiceboxProfileManager(this)">重新检测</button>
+          <div id="api-voicebox-profile-list" style="margin-top:12px"></div>
+          <details open style="margin-top:16px;padding:12px;border:1px solid var(--glass-border);border-radius:10px">
+            <summary style="cursor:pointer;font-weight:600">创建 Voicebox 音色</summary>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-top:12px">
+              <div><label class="ibv-label" for="api-voicebox-create-name">名称</label><input id="api-voicebox-create-name" class="ibv-input" maxlength="100" autocomplete="off"></div>
+              <div><label class="ibv-label" for="api-voicebox-create-type">类型</label><select id="api-voicebox-create-type" class="ibv-select" onchange="voiceboxCreateTypeChanged()"><option value="cloned">参考音频克隆</option><option value="preset">Voicebox 预设音色</option></select></div>
+              <div><label class="ibv-label" for="api-voicebox-create-engine">Engine</label><select id="api-voicebox-create-engine" class="ibv-select" onchange="voiceboxCreateEngineChanged()"></select></div>
+              <div id="api-voicebox-preset-wrap" style="display:none"><label class="ibv-label" for="api-voicebox-preset-voice">预设音色</label><select id="api-voicebox-preset-voice" class="ibv-select"></select></div>
+              <div><label class="ibv-label" for="api-voicebox-create-language">语言</label><select id="api-voicebox-create-language" class="ibv-select"></select></div>
+            </div>
+            <div id="api-voicebox-reference-fields" style="margin-top:8px">
+              <label class="ibv-label" for="api-voicebox-reference-text">参考音频文本（必填）</label>
+              <textarea id="api-voicebox-reference-text" class="ibv-input" rows="2" maxlength="1000" placeholder="准确填写参考音频中说出的内容"></textarea>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
+                <input type="file" id="api-voicebox-reference-file" accept=".wav,.mp3,audio/wav,audio/mpeg" aria-label="选择 WAV 或 MP3 参考音频">
+                <button type="button" class="btn" id="api-voicebox-record-btn" onclick="toggleVoiceboxReferenceRecording(this)">录制参考音频</button>
+                <button type="button" class="btn" onclick="discardVoiceboxReference()">清除本地音频</button>
+              </div>
+              <div id="api-voicebox-reference-status" role="status" aria-live="polite" class="field-hint" style="margin-top:6px">支持 WAV / MP3，2–30 秒，最大 10 MiB。上传前可本地试听。</div>
+              <audio id="api-voicebox-reference-preview" controls hidden style="display:none;width:100%;margin-top:8px"></audio>
+            </div>
+            <label class="ibv-label" for="api-voicebox-create-description" style="margin-top:8px">描述（可选）</label>
+            <textarea id="api-voicebox-create-description" class="ibv-input" rows="2" maxlength="500"></textarea>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px">
+              <button type="button" class="btn btn-primary" id="api-voicebox-create-btn" onclick="createVoiceboxProfile(this)">创建</button>
+              <span id="api-voicebox-create-state" role="status" aria-live="polite" class="field-hint"></span>
+            </div>
+          </details>
+          <div id="api-voicebox-sample-manager" hidden style="margin-top:14px;padding:12px;border:1px solid var(--glass-border);border-radius:10px"></div>
         </div>
       </div>
       <div class="api-form-group u-mt-1" id="api-websearch-group">
@@ -3106,6 +3155,7 @@ i would like the room to be enough.
 <script src="assets/js/api-onboarding.js"></script>
 <script src="assets/js/communication/letters.js"></script>
 <script src="assets/js/communication/voice.js"></script>
+<script src="assets/js/voicebox-profile-manager.js"></script>
 <script src="assets/js/communication/annotations.js"></script>
 <script src="assets/js/communication/summary.js"></script>
 <script src="assets/js/communication/video-runtime.js"></script>
