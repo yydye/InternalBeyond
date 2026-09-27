@@ -371,14 +371,15 @@ check('A2 ★★★ 没有新增页面/页签：外层仍然是五个，而且�
       kids.filter(k => cls(k).indexOf('esh-panes') >= 0).length === 1;
   })(), Array.prototype.slice.call(m.dom.doc.getElementById('economy-shell').children).map(k => k.className));
 
-check('A3 ★★★★ 归属只读一次：所有带归属的读面都发的是同一个 ownerId，' +
-  '而且 change log 的读面**带上了** ownerId 与 order=desc（作用域与方向都在请求上）',
+check('A3 ★★★★ 归属只读一次：钱包明确读 IB_CREDIT，所有带归属的读面都发同一个 ownerId，' +
+  'change log 也带 ownerId 与 order=desc（作用域与方向都在请求上）',
   (function () {
     const byPath = {};
     m.driver.calls.reads.forEach(r => {
       if (byPath[r.path] == null) byPath[r.path] = r.query || {};
     });
     return byPath['/economy/wallet'].ownerId === 'a1' &&
+      byPath['/economy/wallet'].currency === 'IB_CREDIT' &&
       byPath['/economy/inventory'].ownerId === 'a1' &&
       byPath['/economy/purchases'].buyerId === 'a1' &&
       byPath['/economy/changes'].ownerId === 'a1' &&

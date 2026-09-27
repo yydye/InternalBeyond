@@ -41,6 +41,9 @@ function section(t) { console.log('\n── ' + t + ' ' + '─'.repeat(Math.max(
 function read(f) { return fs.readFileSync(path.join(ROOT, f), 'utf8'); }
 const uiSrc = read(UI_REL);
 const uiCode = uiSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+const ECONOMY_CSS_HREF = 'assets/css/economy-configuration.css';
+const ECONOMY_CSS_STATIC_LINKS = read('InternalBeyond.html')
+  .match(/<link\b[^>]*href=["']assets\/css\/economy-configuration\.css["'][^>]*>/gi) || [];
 
 console.log('P22-16 · Economy Configuration UI（渲染器 + 假 driver）');
 
@@ -293,6 +296,8 @@ function mount(world, options) {
   const box = { console: { log() {}, warn() {}, error() {}, info() {} } };
   box.window = box; box.self = box;
   box.document = dom.doc;
+  let shellRefreshes = 0;
+  box.IB = { economyShellUI: { refresh: function () { shellRefreshes += 1; return Promise.resolve(); } } };
   const sandbox = vm.createContext(box);
   /* ★ 角色目录必须与**生产**同形：生产里那个名字有两个入口，而且两个都
      是活的 —— 裸标识符（social.js:607 顶层 `let`）与 window.apiConfigs
@@ -322,7 +327,8 @@ function mount(world, options) {
   const driver = makeDriver(world || defaultWorld());
   box.IB.__ibEconomyConfigDriver = driver;
   vm.runInContext(uiSrc, sandbox, { filename: 'economy-configuration.js' });
-  return { box: box, dom: dom, driver: driver, ui: box.IB.economyConfigurationUI, core: box.IB.economyConfigurationCore };
+  return { box: box, dom: dom, driver: driver, ui: box.IB.economyConfigurationUI,
+    core: box.IB.economyConfigurationCore, shellRefreshCount: function () { return shellRefreshes; } };
 }
 
 /* 只加载纯层：拿一份**真的** ID / SECTIONS / COPY，而不是用正则去源码里猜
@@ -363,10 +369,11 @@ check('A3 ★★★ 渲染器不新增任何 /economy/* 的写方法名（mint /
   ['mint', 'transferBetweenWallets', 'settlePurchase', 'refund', 'exchange', 'topup', 'grantInventory']
     .every(w => uiCode.indexOf(w) < 0));
 
-check('A4 ★★★ 样式表按模块运行时注入（HTML 的 20 个样式表预算一个都不占）',
+check('A4 ★★★ Economy CSS 资源存在，且没有被写成 HTML 静态 stylesheet link',
   /STYLE_ID: 'ib-econ-cfg-style'/.test(uiSrc) &&
   /STYLE_HREF: 'assets\/css\/economy-configuration\.css'/.test(uiSrc) &&
-  (read('InternalBeyond.html').match(/rel="stylesheet"/g) || []).length === 20);
+  fs.existsSync(path.join(ROOT, ECONOMY_CSS_HREF)) &&
+  ECONOMY_CSS_STATIC_LINKS.length === 0);
 
 check('A5 ★★★ HTML 里 P22-15 的页面容器**逐字未改**，只多了两个 script 标签',
   /<div class="page" id="page-economy"><div id="economy-requests"><\/div><\/div>/.test(read('InternalBeyond.html')) &&
@@ -407,7 +414,8 @@ check('B1 ★★★ "钱包在 ⟹ 初始额度发过了"这条耦合被逐字�
 section('C · ① 初始额度：fresh 时有一个、已初始化后一个都没有');
 
 {
-  const m = mount(defaultWorld());
+  const firstWorld = defaultWorld();
+  const m = mount(firstWorld);
   m.ui.render();
   await settle();
 
@@ -448,18 +456,27 @@ section('C · ① 初始额度：fresh 时有一个、已初始化后一个都�
   check('C3 ★★★ 两步确认的第一步不会把用户刚填的金额弄丢（重画之后输入框里还是它）',
     (function () {
       const input = inputByName(m.dom.doc, 'bootstrapAmount');
-      return !!input && input.value === '';
+      return !!input && input.value === '1000';
     })() && (function () {
-      /* 走"再想想"回到第一步，敲一个数，再点确认 —— 值必须在重画之后还在。 */
+      /* 走"再想想"回到第一步，改一个数，再点确认 —— 值必须在重画之后还在。 */
       const keep = buttonByText(panelOf(m, 'wallet'), m.core.COPY.walletSetNo);
       if (keep.length !== 1) return false;
       keep[0].click();
-      typeInto(inputByName(m.dom.doc, 'bootstrapAmount'), '1000');
+      typeInto(inputByName(m.dom.doc, 'bootstrapAmount'), '1250');
       buttonByText(panelOf(m, 'wallet'), m.core.COPY.walletSet)[0].click();
       const after = inputByName(m.dom.doc, 'bootstrapAmount');
-      return !!after && after.value === '1000' && m.driver.calls.writes.length === 0;
+      return !!after && after.value === '1250' && m.driver.calls.writes.length === 0;
     })());
 
+  typeInto(inputByName(m.dom.doc, 'bootstrapAmount'), '1000');
+  firstWorld.write = function () {
+    firstWorld.wallet = { ok: true, wallet: {
+      walletId: 'econ_wallet_bootstrap', currency: 'IB_CREDIT', state: 'READY', balanceKnown: true,
+      ledgerBalanceMinor: '100000', reservedBalanceMinor: '0', availableBalanceMinor: '100000'
+    } };
+    return { ok: true, command: 'BOOTSTRAP_CREDIT', configuredAnything: true,
+      initialCreditBootstrapped: true, initialCreditMintedNow: true, walletId: 'econ_wallet_bootstrap' };
+  };
   buttonByText(panelOf(m, 'wallet'), m.core.COPY.walletSet)[0].click();
   await settle();
   const w1 = m.driver.calls.writes;
@@ -478,6 +495,22 @@ section('C · ① 初始额度：fresh 时有一个、已初始化后一个都�
       const w = m.driver.calls.reads.filter(r => r.path === '/economy/wallet');
       return w.length >= 2;
     })(), { reads: m.driver.calls.reads.length });
+
+  check('C5b ★★★ Bootstrap 读回钱包后刷新 Economy 概览，余额与时间线不会停留在旧缓存',
+    m.shellRefreshCount() === 1 &&
+    m.ui.snapshot().view.wallet.state === 'present',
+    { shellRefreshes: m.shellRefreshCount(), wallet: m.ui.snapshot().view.wallet.state });
+
+  const defaultRun = mount(defaultWorld());
+  defaultRun.ui.show('wallet');
+  await settle();
+  buttonByText(panelOf(defaultRun, 'wallet'), defaultRun.core.COPY.walletSet)[0].click();
+  buttonByText(panelOf(defaultRun, 'wallet'), defaultRun.core.COPY.walletSet)[0].click();
+  await settle();
+  check('C5c ★★★ 不改默认值直接二次确认：实际 payload 包含 1000 IB Credit（100000 minor）',
+    defaultRun.driver.calls.writes.length === 1 &&
+    defaultRun.driver.calls.writes[0].config.amountMinor === '100000',
+    defaultRun.driver.calls.writes[0]);
 
   check('C6 ★★★ `/economy/*` 上的**写**请求仍然是 0：所有的写都落在 /internal/economy/configuration',
     m.driver.calls.reads.every(r => r.path.indexOf('/economy/') === 0 || r.path === '/security') &&
@@ -950,9 +983,13 @@ section('J · ⑦ P22-15 不回归的结构保证');
     CORE_REF.ID.PAGE === 'page-economy',
     { host: CORE_REF.ID.HOST, requests: CORE_REF.ID.REQUESTS_HOST });
 
-  check('J4 ★★★ 渲染器不新增 <link rel=stylesheet>：样式仍然只有运行时注入那一条',
-    (uiCode.match(/rel = 'stylesheet'/g) || []).length === 1 &&
-    (read('InternalBeyond.html').match(/rel="stylesheet"/g) || []).length === 20);
+  const cssRelAssignments = uiCode.match(/link\.rel\s*=\s*'stylesheet'/g) || [];
+  check('J4 ★★★ Economy CSS 只有一个运行时注入点，且 DOM id guard 防止重复加载',
+    cssRelAssignments.length === 1 &&
+    /if\s*\(byId\(DOM\.STYLE_ID\)\)\s*return;/.test(uiCode) &&
+    /link\.id\s*=\s*DOM\.STYLE_ID;/.test(uiCode) &&
+    /link\.href\s*=\s*DOM\.STYLE_HREF;/.test(uiCode) &&
+    ECONOMY_CSS_STATIC_LINKS.length === 0);
 }
 
 console.log('\n结果: ' + checks + ' 通过, ' + failures + ' 失败');

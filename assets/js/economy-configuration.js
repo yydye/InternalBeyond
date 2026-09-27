@@ -258,7 +258,23 @@ function boot() {
     return Promise.resolve(d.economyConfiguration(built.body)).then(function (res) {
       delete pending[sectionKey];
       notes[sectionKey] = CORE.classifyConfigurationResponse(res);
-      return load();
+      return load().then(function (updatedView) {
+        /* Bootstrap creates the wallet that the separate overview renderer reads.
+           Refresh that existing read model after the settings pane has confirmed
+           the wallet, so returning to Overview does not leave a cached COLD view. */
+        if (command === CORE.COMMAND.BOOTSTRAP_CREDIT && updatedView &&
+            updatedView.wallet && updatedView.wallet.state === 'present') {
+          var shell = NS.economyShellUI;
+          if (shell && typeof shell.refresh === 'function') {
+            try {
+              return Promise.resolve(shell.refresh()).then(function () {
+                return updatedView;
+              }, function () { return updatedView; });
+            } catch (e) { /* settings readback remains authoritative for this pane */ }
+          }
+        }
+        return updatedView;
+      });
     }, function (error) {
       delete pending[sectionKey];
       var note = CORE.classifyConfigurationResponse({ ok: false, error: 'home-node-transport-error' });
@@ -788,7 +804,7 @@ function boot() {
     var busy = !!pending[CORE.SECTION.WALLET];
     var form = el('div', 'ecfg-form');
     form.appendChild(field(CORE.COPY.walletAbsentInput, CORE.COPY.walletAbsentInputHint, {
-      name: 'bootstrapAmount', value: '', unit: CORE.COPY.walletAbsentUnit, placeholder: '1000'
+      name: 'bootstrapAmount', value: '1000', unit: CORE.COPY.walletAbsentUnit
     }));
     c.appendChild(form);
     if (confirmBootstrap) {

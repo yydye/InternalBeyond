@@ -3488,23 +3488,20 @@ function createEconomyStore(deps) {
      入口反复调用、变成普通充值接口"。答案在这段代码的结构里，而不是在
      某一句纪律里：
 
-      ① **导出的幂等键是派生的，不是调用方给的。**
-         调用方可以传 idempotencyKey，但本函数**不用**它做身份：真正进
+      ① **账本幂等键是派生的，不是调用方给的。**
+         调用方给的 idempotencyKey 只标识安全重放，不形成新的 bootstrap 权限；
          P22-2 账本幂等表的 key 是 bootstrapCreditKeyFor(owner, currency)。
-         于是"同一个 owner 再来一次、换一个 key"在结构上**无法**产生第二笔
-         铸币 —— 它在账本幂等闸门上撞到**同一把** key，而指纹（含 wallet
-         account、金额、币种）要么相同（⇒ 重放，返回当初那条交易），要么
-         不同（⇒ IDEMPOTENCY_CONFLICT，拒绝）。这条不是"我们记得检查"，
-         而是"第二次调用手里根本没有第二个身份可用"。
+         固定 key 保证账本层永远没有第二把铸币 key；永久 marker 则拒绝带新 key 的
+         bootstrap（拒绝 INITIAL_CREDIT_ALREADY_BOOTSTRAPPED）。
+         原 key + 相同金额安全重放；新 key 代表第二次调用而被 marker 拒绝。
 
       ② **一次性事实写在 canonical 的 meta 行里**（economy_meta，与
          economy_schema / economy_revision 同一张表）。它落库、进同一个事
          务、跨重启仍然在 —— 因此它**不是**一个进程内 Set，也不是"这台机器
-         记得"。★ 为什么需要它，既然 ① 已经够了：① 依赖账本幂等行，而幂等
-         行会被**回收**（IDEMPOTENCY_TTL_MS / IDEMPOTENCY_MAX）。回收之后
-         同一个 key 会变成"从未见过" —— 那时 ① 就悄悄失效了。meta 行是
-         永久的，因此"这个 owner 的初始额度发过了"在 ① 之外仍然是一个
-         可读、可审计、不可绕过的**规范事实**。
+         记得"。marker 是 one-shot 的权威事实，也用于拒绝新幂等键发起的第二次请求。
+         账本幂等行会被回收（IDEMPOTENCY_TTL_MS / IDEMPOTENCY_MAX）；marker
+         不受 TTL 影响，因此 one-shot 不会因幂等记录清理而失效。它让"这个
+         owner 的初始额度发过了"成为永久、可读、可审计、不可绕过的规范事实。
 
       ③ **它只产生 IB_CREDIT，而且只经由 commitLedgerTransaction。**
          它不接受 currency 以外的任何账户事实：没有 debit/credit account
@@ -3548,7 +3545,8 @@ function createEconomyStore(deps) {
 
     const ownerId = String(owner.party.id) + ':' + String(owner.party.type);
     const markerKey = bootstrapMarkerKeyFor(ownerId, cur.currency);
-    /* ★ 调用方给的 key **只**进 change 记录与返回值，不做身份。 */
+    /* ★ 调用方给的 key 只用于识别同一请求的安全重放；它不能为第二次初始额度
+       打开新身份。one-shot 的持久身份仍然是 owner + currency 的 marker。 */
     const requestedKey = o.idempotencyKey == null ? null : String(o.idempotencyKey).trim();
     const ledgerKey = bootstrapCreditKeyFor(ownerId, cur.currency);
 
@@ -3566,10 +3564,12 @@ function createEconomyStore(deps) {
          消失了（与 denial() 修过的那个 `.detail` 恒 undefined 的形状同源）。
          取值必须逐字落在 `prior.amountMinor` 上，且返回值自己会被断言。 */
       const priorAmount = prior.amountMinor == null ? null : String(prior.amountMinor);
-      /* ★ 同一个 owner 用**另一个** amount 再来一次：这不是重放，是第二次
-         初始额度。拒绝，而且明说它是一次性的 —— 不允许"静默按第一次的
-         金额再来一遍"，因为那会把一个被拒的请求伪装成成功。 */
-      if (priorAmount !== C.serializeAmountMinor(amt.amountMinor)) {
+      /* ★ 相同幂等键 + 相同金额才是同一次 HTTP 请求的安全重放。任何新键，
+         即使金额逐字相同，也是第二次 bootstrap，必须明确拒绝；否则 UI 外部
+         的调用方会把“已初始化”误读成一次成功的配置动作。 */
+      const sameRequest = requestedKey != null && prior.requestedIdempotencyKey != null &&
+        String(prior.requestedIdempotencyKey) === requestedKey;
+      if (priorAmount !== C.serializeAmountMinor(amt.amountMinor) || !sameRequest) {
         return {
           ok: false, denied: true, replayed: false,
           reasonCode: 'INITIAL_CREDIT_ALREADY_BOOTSTRAPPED',
@@ -3602,7 +3602,9 @@ function createEconomyStore(deps) {
         const insideRaw = readMeta(markerKey);
         if (insideRaw != null) {
           const inside = parseJsonOrNull(insideRaw) || {};
-          if (String(inside.amountMinor) !== C.serializeAmountMinor(amt.amountMinor)) {
+          const sameRequest = requestedKey != null && inside.requestedIdempotencyKey != null &&
+            String(inside.requestedIdempotencyKey) === requestedKey;
+          if (String(inside.amountMinor) !== C.serializeAmountMinor(amt.amountMinor) || !sameRequest) {
             throw refuse('INITIAL_CREDIT_ALREADY_BOOTSTRAPPED',
               ['initial-credit-is-one-shot-per-owner-and-currency'],
               { bootstrapAlreadyConsumed: true });

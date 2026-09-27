@@ -244,7 +244,7 @@ function boot() {
       readJson(CORE.READS.INTENTS, { limit: CORE.LIMITS.INTENTS })
     ];
     if (oid) {
-      jobs.push(readJson(CORE.READS.WALLET, { ownerId: oid }));
+      jobs.push(readJson(CORE.READS.WALLET, { ownerId: oid, currency: 'IB_CREDIT' }));
       jobs.push(readJson(CORE.READS.POLICY, { ownerId: oid }));
       jobs.push(readJson(CORE.READS.BUDGET, { ownerId: oid, currency: 'IB_CREDIT', amountMinor: '0' }));
       jobs.push(readJson(CORE.READS.INVENTORY, { ownerId: oid, limit: CORE.LIMITS.INVENTORY }));

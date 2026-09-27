@@ -281,6 +281,17 @@ async function main() {
     txRead.body.entries.length === 2,
     txRead.body.transaction);
 
+  const bootstrapChanges = await request(port, 'GET',
+    '/economy/changes?ownerId=' + encodeURIComponent(AGENT) + '&order=desc&cursor=0&limit=500', null, AUTH);
+  const bootstrapEvent = bootstrapChanges.body && Array.isArray(bootstrapChanges.body.changes)
+    ? bootstrapChanges.body.changes.find(change => change.kind === 'ECONOMY_INITIAL_CREDIT_BOOTSTRAPPED') : null;
+  check('B3b ★★ owner 作用域时间线读回初始额度事件、金额与 canonical 交易编号',
+    bootstrapChanges.status === 200 && bootstrapEvent &&
+    String(bootstrapEvent.payload.amountMinor) === String(BOOT_AMOUNT) &&
+    bootstrapEvent.transactionId === bootstrap1.body.transactionId &&
+    bootstrapEvent.walletId === bootstrap1.body.walletId,
+    { status: bootstrapChanges.status, event: bootstrapEvent });
+
   /* ── §10 replay：同一个请求重发（response 丢失的模拟）────────────── */
   const bootstrapReplay = await configure(bootstrapEnv);
   const walletAfterReplay = await request(port, 'GET', '/economy/wallet?ownerId=' + AGENT + '&currency=' + CUR, null, AUTH);
@@ -292,22 +303,32 @@ async function main() {
     { tx: bootstrapReplay.body.transactionId, first: bootstrap1.body.transactionId,
       balance: walletAfterReplay.body.wallet.cachedBalanceMinor });
 
-  const bootstrapOtherKey = await configure(Object.assign({}, bootstrapEnv, {
-    idempotencyKey: K('boot'), config: Object.assign({}, bootstrapEnv.config, { amountMinor: BOOT_AMOUNT * 5 })
+  const bootstrapOtherKeySameAmount = await configure(Object.assign({}, bootstrapEnv, {
+    idempotencyKey: K('boot')
   }));
   /* ★ 余额读的是**那个真的被 bootstrap 过的 owner** —— 而不是另一个身份：
      另一个 owner 从没被 bootstrap 过，那样读到的是 404 wallet-not-found，
      而不是"余额没动"。 */
   const walletAfterOtherKey = await request(port, 'GET',
     '/economy/wallet?ownerId=' + AGENT + '&currency=' + CUR, null, AUTH);
-  check('B5 ★★ §3/§10 换一个 idempotencyKey 且换一个金额 ⇒ **拒绝**（初始额度是一次性的），余额不动',
-    bootstrapOtherKey.status === 409 &&
-    bootstrapOtherKey.body.reasonCode === 'INITIAL_CREDIT_ALREADY_BOOTSTRAPPED' &&
-    String(bootstrapOtherKey.body.result.alreadyBootstrappedAmountMinor) === String(BOOT_AMOUNT) &&
+  check('B5 ★★ 相同金额 + 新 idempotencyKey 是第二次调用 ⇒ **拒绝**，余额不动',
+    bootstrapOtherKeySameAmount.status === 409 &&
+    bootstrapOtherKeySameAmount.body.reasonCode === 'INITIAL_CREDIT_ALREADY_BOOTSTRAPPED' &&
+    String(bootstrapOtherKeySameAmount.body.result.alreadyBootstrappedAmountMinor) === String(BOOT_AMOUNT) &&
     String(walletAfterOtherKey.body.wallet.cachedBalanceMinor) === String(BOOT_AMOUNT),
-    { status: bootstrapOtherKey.status, reason: bootstrapOtherKey.body.reasonCode,
+    { status: bootstrapOtherKeySameAmount.status, reason: bootstrapOtherKeySameAmount.body.reasonCode,
       walletStatus: walletAfterOtherKey.status,
       balance: walletAfterOtherKey.body.wallet && walletAfterOtherKey.body.wallet.cachedBalanceMinor });
+
+  const bootstrapDifferentAmount = await configure(Object.assign({}, bootstrapEnv, {
+    idempotencyKey: K('boot'), config: Object.assign({}, bootstrapEnv.config, { amountMinor: BOOT_AMOUNT * 5 })
+  }));
+  check('B5b ★★ 不同金额 + 新 idempotencyKey 也被拒绝，不能覆盖初始余额',
+    bootstrapDifferentAmount.status === 409 &&
+    bootstrapDifferentAmount.body.reasonCode === 'INITIAL_CREDIT_ALREADY_BOOTSTRAPPED' &&
+    String((await request(port, 'GET', '/economy/wallet?ownerId=' + AGENT + '&currency=' + CUR, null, AUTH))
+      .body.wallet.cachedBalanceMinor) === String(BOOT_AMOUNT),
+    { status: bootstrapDifferentAmount.status, reason: bootstrapDifferentAmount.body.reasonCode });
 
   /* ── §3 只允许 IB_CREDIT ─────────────────────────────────────────── */
   const otherCurrency = await configure({
@@ -681,9 +702,9 @@ async function main() {
     store2.getInitialCreditBootstrap({ type: 'character', id: AGENT }, CUR));
 
   const bootstrapAfterRestart = await request(port2, 'POST', CONFIG_PATH, {
-    command: 'BOOTSTRAP_CREDIT',
-    config: { ownerId: AGENT, currency: CUR, amountMinor: BOOT_AMOUNT },
-    idempotencyKey: K('boot-restart')
+    command: bootstrapEnv.command,
+    config: bootstrapEnv.config,
+    idempotencyKey: bootstrapEnv.idempotencyKey
   }, AUTH);
   const walletAfterRestart = await request(port2, 'GET', '/economy/wallet?ownerId=' + AGENT + '&currency=' + CUR, null, AUTH);
   check('F2 ★★ §10 重启之后再 bootstrap 同一个 owner ⇒ 同一笔交易，余额不翻倍',

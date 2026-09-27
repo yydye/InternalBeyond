@@ -731,31 +731,24 @@ check('g2 ★★ 第一次 bootstrap 成功，而且它建出的是一条 canoni
       firstBootstrap.replayed === false && firstBootstrap.bootstrapAlreadyConsumed === false;
   })(), firstBootstrap);
 
-check('g3 ★★ 同一个 owner 用**另一个** idempotencyKey 再来 ⇒ 仍然只返回**当初那条**交易，余额不翻倍',
+check('g3 ★★ 同一个 owner 用**新的** idempotencyKey 再来（即使金额相同）⇒ 拒绝，余额不翻倍',
   (() => {
-    /* ★ 这一条是 §10 逐字要求的形态："换一个 idempotencyKey 再次 bootstrap
-       同一 owner"。答案不是一句拒绝，而是**同一笔逻辑交易** —— 因为身份的
-       来源根本不是调用方给的 key：它是派生的 bootstrap-credit:<owner>:<currency>，
-       而 canonical 的一次性事实（meta 行）在它之前就已经成立。
-       因此调用方手里**没有第二个身份可用**，"再来一次"在结构上等于重放。 */
+    /* ★ 新幂等键代表第二次调用；只有原键重发才是网络层安全重放。 */
     const again = store.bootstrapInitialCredit({
       owner: { type: 'character', id: AGENT }, currency: CUR, amountMinor: BOOT_AMOUNT,
       idempotencyKey: SK('g3', 2)
     });
     const wallet = store.getWallet({ ownerId: AGENT, currency: CUR });
-    return again.ok === true && again.replayed === true &&
+    return again.ok === false && again.denied === true &&
+      again.reasonCode === 'INITIAL_CREDIT_ALREADY_BOOTSTRAPPED' &&
       again.bootstrapAlreadyConsumed === true &&
       again.transactionId === firstBootstrap.transactionId &&
       again.walletId === firstBootstrap.walletId &&
-      /* ★ 余额**一分不差**，而不是"翻倍"。 */
+      again.alreadyBootstrappedAmountMinor === String(BOOT_AMOUNT) &&
+      again.requestedAmountMinor === String(BOOT_AMOUNT) &&
+      /* ★ 没有第二笔交易，余额**一分不差**。 */
       String(wallet.wallet.cachedBalanceMinor) === String(BOOT_AMOUNT) &&
-      String(wallet.wallet.ledgerBalanceMinor) === String(BOOT_AMOUNT) &&
-      /* ★ 而调用方给的 key 逐字留在回答里（它是**这一次请求**的证据，
-         而重放返回的 result 里带着**当初那一次**的请求证据 —— 两者都不该
-         被抹掉，也都不该被当成身份）。 */
-      again.result.requestedIdempotencyKey === firstBootstrap.result.requestedIdempotencyKey &&
-      again.idempotencyKey === firstBootstrap.idempotencyKey &&
-      again.result.requestedIdempotencyKey !== again.idempotencyKey;
+      String(wallet.wallet.ledgerBalanceMinor) === String(BOOT_AMOUNT);
   })());
 
 check('g4 ★★ 换一个**金额**再来 ⇒ 拒绝，而且明说它是一次性的（余额一分不变）',
@@ -780,7 +773,7 @@ check('g5 ★★ 逐字重放（同 owner / 同币种 / 同金额）⇒ replayed
   (() => {
     const replay = store.bootstrapInitialCredit({
       owner: { type: 'character', id: AGENT }, currency: CUR, amountMinor: BOOT_AMOUNT,
-      idempotencyKey: SK('g5', 4)
+      idempotencyKey: SK('g2', 1)
     });
     const wallet = store.getWallet({ ownerId: AGENT, currency: CUR });
     return replay.ok === true && replay.replayed === true &&
