@@ -3,6 +3,8 @@
 **Status:** implemented · 2026-09 · scope = Voice API Source + Voicebox Local Provider + Native Voice Message 基础契约
 **Non-goals (P23 Phase 2):** Human-like Delivery Planner、按句自动拆消息、一轮多发、text→voice→image 消息序列、typing/pause、群聊与主动消息的语音行为重构、Voicebox personality/rewrite、Voicebox 安装器 / 模型下载器。
 
+> **Current-state note (P35-6):** 本文保留 P23 foundation 阶段的 source audit、实现证据与 phase-local 限制；其中“改动前”的 provider/storage 清单是 P23 时点快照。P35 完成了后续 Voicebox TTS cancellation、profile lifecycle 与 turn-based ASR provider。当前统一架构见 [`architecture/VOICE.md`](architecture/VOICE.md)，本文不作为 P35 后 provider 能力的 authority。
+
 ---
 
 ## 1. Phase 0 审计结论（全部 file:line 取自改动前的实现）

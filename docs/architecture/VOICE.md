@@ -46,7 +46,7 @@ Record → voice-message-core → Chat Message.voice → Playback
 | `assets/js/communication/call.js` | Browser | 采集、VAD/barge-in、WS client、播放队列 |
 | `assets/js/voice-worklet.js` | Browser | mic → 16k PCM16 + rms |
 | `bridge/voice-runtime.js` | Bridge | call session 状态机、ASR/TTS 编排、generation guards |
-| `bridge/asr.js` | Bridge | ASR transport（turn-based + opt-in streaming） |
+| `bridge/asr.js` | Bridge | OpenAI-compatible / Voicebox ASR transport（turn/file-based）；保留 streaming registry hook，无内置 streaming provider |
 | `bridge/tts.js` | Bridge | TTS provider 注册表 + synthesis + Voice API Source map |
 | `bridge/voicebox.js` | Bridge | 外部 Voicebox local runtime adapter |
 | `bridge/tts-voices.js` | Bridge | VoiceClone reference-audio 文件基础设施 |
@@ -54,15 +54,31 @@ Record → voice-message-core → Chat Message.voice → Playback
 | `assets/js/voice-message-core.js` | shared UMD | canonical voice-message contract |
 | `assets/js/delivery-*.js` | shared UMD | multi-message turn delivery（非 TTS） |
 
+### 2.1 权威归属
+
+| Owner | Owns |
+| --- | --- |
+| Project-IB / chat runtime | Character identity 与 role voice binding、Persona、Memory、Relationship、Middle Brain context、final response text、when-to-speak 与 autoplay policy |
+| Bridge Voice Runtime | 本次调用的 provider resolution/selection、ASR/TTS transport execution、Call session state、TTS queue、cancellation coordination、stale-result guards 与 Bridge/call status reporting |
+| Voicebox | 本机 TTS 与 Whisper inference、Voicebox profile、profile reference samples、对应的声学资产与模型状态 |
+
+Voicebox 只处理传入的音频或文本，不拥有 conversation、personality、Memory、reply generation
+或决定何时发声。Project-IB 的 role voice 是对 provider/profile 的引用；Bridge 执行该引用。
+
 ---
 
 ## 3. Voice Call 架构
 
 - Browser 通过 `voice-worklet.js` 采集 mic，并通过 WebSocket 将二进制 PCM 帧流式发送到
   bridge 的 `/voice` endpoint。
-- Bridge `voice-runtime.js` 驱动 session 状态机、运行 ASR，并以有序的 sentence unit 合成 TTS，
-  同时带有 generation guards。
-- Protocol 消息包括 `transcript_partial` / `transcript_final`（bridge→browser）、
+- Browser VAD 决定 capture 的 `speech_start` / `speech_end`；Bridge 在完整 turn 结束后调用
+  turn-based ASR，随后由既有 chat runtime 生成最终回复。
+- Bridge `voice-runtime.js` 驱动 session 状态机，并以有序 sentence unit 合成 TTS；所有迟到的
+  ASR/TTS 结果都受 turn/generation guards 保护。
+- Protocol 定义 `transcript_partial` / `transcript_final`（bridge→browser）；但当前内置
+  `openai-whisper` 与 `voicebox` providers 都是 turn-based，Voicebox 不产生 partial。
+  `transcript_partial` 是供可选注册 provider 使用的协议形状，不代表 Voicebox realtime 能力。
+- 其他 Protocol 消息包括
   `adapter_reply` / `adapter_reply_sentence`（browser→bridge），以及 `audio` / `generation_end` /
   `interrupted` / `error` / `state`（bridge→browser）。
 - 收到 final transcript 时，browser 调用常规 chat 入口（`sendChatMessage({ voiceCall:true,
@@ -84,12 +100,44 @@ voice message 是一个规范性的 chat-message 字段（`voice`），而不是
 
 ## 5. ASR 边界
 
-ASR **拥有**：audio capture transport、recognition、transcript generation。
-ASR **不拥有**：conversation state、memory 或 model routing。
+Voice Runtime **拥有**：microphone/capture transport、session 与 provider invocation/cancellation coordination。
+ASR provider **拥有**：audio recognition 与 transcript generation。
+ASR **不拥有**：conversation state、memory、persona、Middle Brain 或 model routing。
 
-存在两种 ASR 形态：turn-based `openai-whisper`（默认）与可选的 `streaming` provider
-（`voiceAsr.streaming=true`）；未接入 streaming provider 时，runtime 会回退到 turn-based。
-provider 是 **config**，不是 architecture（`bridge/config.js voiceAsr`、`bridge/asr.js`）。
+ASR 的 provider authority 在 Bridge（`bridge/asr.js`），设置位于 Bridge `config.json` 的
+`voiceAsr`。当前内置 provider 如下：
+
+| Provider | Input / result | Current capability |
+| --- | --- | --- |
+| `openai-whisper` | 完整 PCM16 turn 转 WAV，发往配置的 OpenAI-compatible transcription endpoint；返回最终文本 | turn-based；需要 Bridge 配置 endpoint、API key 与 model |
+| `voicebox` | 完整 PCM16 turn 或通过 Bridge 上传的音频文件；返回最终文本及可用的 duration/model/language | turn/file transcription；无 streaming、partial、timestamps 或物理取消保证 |
+
+Voice Message 有两个既有 Browser transcription paths；可选 Voicebox Bridge path 单独列出：
+
+| Path | Selection / behavior | Boundary |
+| --- | --- | --- |
+| Browser `SpeechRecognition` | 仅当 Voicebox Bridge ASR 与 `voiceTrans` 均未选用时作为 Browser fallback；接口开启 `continuous` 与 `interimResults` | 浏览器识别辅助，不是 Bridge ASR provider |
+| Legacy `apiSettings.voiceTrans` | 配置后 Browser 将整段录音直发到用户配置的 OpenAI-compatible transcription endpoint | Browser-owned message transcription setting；不经过 Bridge ASR，也不是 Voicebox 路径 |
+| Voicebox message transcription | 当 Bridge capability 选中的 provider 为 Voicebox 时，优先将完整录音 bytes 发到 `/api/asr/transcriptions` | Browser → IB Bridge → localhost Voicebox；不向 Voicebox 直连 |
+
+Voicebox 的 `capabilities()` 固定声明 `{streaming:false, partialResults:false, cancellation:false,
+timestamps:false}`。Voice Call 只有在 `speech_end` 后才把完整 PCM turn 交给它；Voice Message
+的原始音频字节由 Browser 发给 IB Bridge；Bridge Voicebox 路径不传本机文件路径。
+`/api/asr/transcriptions` 校验 content type、音频签名及大小，然后将音频字节代理给 Voicebox。
+当前接受 WAV、MP3、M4A/MP4、OGG/Opus、FLAC、AAC 与 WebM；Bridge `maxAudioBytes` 默认 5 MiB。
+
+调用 Voicebox `/transcribe` 前，Bridge 只读请求 `/models/status`。模型未缓存或状态不可用时拒绝
+请求，不触发模型下载；Voicebox ASR endpoint 限定 localhost。成功结果形状为
+`{text, duration?, language?, model?, provider:'voicebox'}`。
+IB 只做 model-status preflight，不安装、启动或下载 Whisper 模型，也不实现 model manager。
+
+`bridge/asr.js` 保留 deployer 注册 streaming provider 的扩展接口，但当前内置 registry 没有
+streaming provider。Voicebox 不能用于 partial/realtime ASR；未来 Voice Call realtime ASR 仍需
+另行设计与验证。
+
+Health ownership 按 surface 区分：`/health` 是 Bridge process liveness，`/status` 报告已配置能力，
+`/api/tts/voicebox/health` 探测 Voicebox runtime。`/api/asr/capabilities` 只描述 provider/configuration，
+不是 ASR inference health；当前没有独立 ASR `health()` API，provider connectivity 在 transcription request 时验证。
 
 ---
 
@@ -103,6 +151,31 @@ provider 是 **config**，不是 architecture（`bridge/config.js voiceAsr`、`b
 | TTS provider 选择 | Bridge（Voice API Source map） |
 | 音频合成 | TTS runtime（`bridge/tts.js` / `bridge/voicebox.js`） |
 | 播放 | Browser |
+
+合成调用的公共路径是：
+
+```text
+Project-IB final text + role voice reference
+    → Bridge TTS entry (`/api/tts` or Voice Call reply)
+    → `bridge/tts.js` normalize + provider registry
+    → provider synthesis
+    → Bridge audio result / Voice Call queue
+    → Browser playback and autoplay policy
+```
+
+当前 provider capability 由 `TTS_PROVIDER_REGISTRY` 声明，不由 UI 名称推断：
+
+| Provider | Current capability | Provider cancellation |
+| --- | --- | --- |
+| Edge | builtin voice、prosody | 不支持；依靠 stale-result guard |
+| OpenAI-compatible | builtin voice、style | 不支持；依靠 stale-result guard |
+| MiMo | builtin voice、VoiceClone、Voice Design、style | 不支持；依靠 stale-result guard |
+| Voicebox | 本机合成、engine/language/style；Voicebox profile 由 Voicebox 管理 | 支持 generation cancellation |
+
+Voice Call 的 P35-2 cancellation 以 request/session/generation identity 为范围：Voicebox provider
+收到取消后调用其 generation cancel surface，并停止 polling/audio delivery；其他 TTS provider
+不承诺停止上游 inference，但旧 generation 的结果仍不能进入新队列或播放。Voice Message 的
+持久化与播放路径由 message contract 管理，不等同于 Call TTS queue。
 
 ---
 
@@ -125,8 +198,9 @@ LLM:    assets/js/provider-directory.js + assets/js/ib-model-core.js
 ```
 
 browser LLM provider layer 不包含任何 TTS/voice/speech 处理。Voice **不**使用
-`provider-directory`。browser 只能看到只读的 source catalog（`/api/tts/sources`），绝不接触
-credentials。详情： [`../contracts/voice/VOICE_PROVIDER_SOURCE_CONTRACT.md`](../contracts/voice/VOICE_PROVIDER_SOURCE_CONTRACT.md)。
+`provider-directory`。对 TTS 与 Bridge-managed providers，Browser 只看到只读 source catalog
+（`/api/tts/sources`），不接触这些 provider credentials；legacy direct `voiceTrans` 是独立例外，
+见 §15。详情： [`../contracts/voice/VOICE_PROVIDER_SOURCE_CONTRACT.md`](../contracts/voice/VOICE_PROVIDER_SOURCE_CONTRACT.md)。
 
 ---
 
@@ -138,7 +212,8 @@ credentials。详情： [`../contracts/voice/VOICE_PROVIDER_SOURCE_CONTRACT.md`]
 | --- | --- | --- |
 | Call audio | **ephemeral** | 在内存中流式处理；不持久化 |
 | Voice-message audio | **persisted** | chat message `voice.dataUrl` / `audioUrl` |
-| VoiceClone reference audio | **persisted** | `DATA_DIR/tts-voices/<id>.<ext>` + `tts-voices.json` registry |
+| MiMo VoiceClone reference audio | **persisted** | `DATA_DIR/tts-voices/<id>.<ext>` + `tts-voices.json` registry |
+| Voicebox profile reference samples | **persisted by provider** | Voicebox profile/sample storage；IB 不复制样本或声学资产 |
 | Cached TTS mp3（bridge） | transient cache | `DATA_DIR/tts`（`/tts/<name>`），按 name-pattern 管理 |
 
 ---
@@ -148,7 +223,7 @@ credentials。详情： [`../contracts/voice/VOICE_PROVIDER_SOURCE_CONTRACT.md`]
 | 状态 | Authority |
 | --- | --- |
 | recording | browser capture + bridge call session |
-| transcribing | bridge ASR session |
+| transcribing | Bridge full-turn ASR（或未来显式注册的 streaming provider） |
 | generating | browser chat runtime（model） |
 | speaking | bridge TTS queue + browser 播放 |
 | interrupted | bridge `call.state` |
@@ -168,14 +243,14 @@ User speech (VAD) → browser stops playback → send {type:'interrupt'}
     → resume listening
 ```
 
-取消分两层：
+取消分两条彼此独立的路径：
 
-- **Logical cancellation**：generation guard 使旧 TTS/ASR/audio 永远不能发出或播放。provider cancel 失败也不改变此保证。
-- **Physical/provider cancellation**：TTS request 携带 session、generation、sentence、request identity 和 `AbortSignal`。provider 通过 registry 的 `supportsCancellation` 声明能力；未声明的 provider 仍使用 logical cancellation，不要求实现 `cancel()`。
+- **TTS cancellation**：generation guard 使旧 TTS/audio 永远不能发出或播放。TTS request 携带 session、generation、sentence、request identity 和 `AbortSignal`；provider 通过 registry 的 `supportsCancellation` 声明物理取消能力。provider cancel 失败或不支持时，logical guard 仍生效。
+- **ASR cancellation**：Voicebox 声明 `cancellation:false`。interrupt/hangup 会推进 ASR generation、标记当前 turn cancelled，并丢弃迟到 transcript；这只是 logical cancellation，不保证停止 Voicebox Whisper inference。
 - **Voicebox**：适配器把本次 IB request 与 Voicebox generation ID 关联；signal abort 后 POST `/generate/{id}/cancel`，停止 history polling / audio download，并阻止创建 Bridge TTS artifact。若 `/generate` 尚未返回 ID，受独立 timeout 约束的提交握手会继续到拿到 ID，再立即请求取消；该竞态中 synthesis promise 会先返回 cancelled，不阻塞下一轮。
 - **Queue ownership**：Bridge TTS drain 按 generation 独占。旧 drain 在 await 后发现 generation 已替换就退出，只能删除自己的 owner；它不能取走新 generation 的 queue 项，也不能清除新状态。
 
-目前只有 Voicebox 声明支持物理取消。Edge、OpenAI-compatible 和 MiMo 保留原行为并继续依靠 stale-result guard。Voicebox 仍然只是 TTS provider，不获得 Persona、Agent 或 final-text authority。
+目前 TTS registry 只有 Voicebox 声明支持物理取消。TTS cancellation 与 ASR cancellation 是不同 provider contract；不能把 TTS 的可取消性外推到 Whisper inference。Voicebox 不获得 Persona、Agent 或 final-text authority。
 
 ---
 
@@ -222,9 +297,14 @@ Voice **不**拥有独立的 Middle Brain path。
 | character `voice` 偏好 | character config `apiConfigs[]` | browser bridge/social；bridge 经由 `source` |
 | TTS credentials/endpoints（`tts`、`ttsMimo`） | bridge `config.json` | `bridge/tts.js` |
 | Voicebox endpoint | `config.voicebox.endpoint` → env → default | `bridge/voicebox.js` |
-| ASR（`voiceAsr`） | bridge `config.json` | `bridge/asr.js` |
+| Bridge ASR（`voiceAsr`） | bridge `config.json` | `bridge/asr.js`；Voicebox ASR 仅 localhost，无 Voicebox API key |
+| Legacy direct voice-message ASR（`apiSettings.voiceTrans`） | Browser IndexedDB 设置 | `assets/js/communication/voice.js`；只用于现有外部 OpenAI-compatible transcription path |
 
-credentials 在 `/api/config` 中被遮蔽，绝不抵达 browser。
+Bridge `tts.apiKey`、`ttsMimo.apiKey`、`voiceAsr.apiKey` 会由 `/api/config` 遮蔽。Voicebox
+provider 不需要 API key，Voicebox ASR routes 不向 Browser 返回 provider endpoint。现有
+`voiceTrans` 是不同的旧消息转写路径，使用者在 Browser API settings 中保存的 key 仍由 Browser
+直发上游；本阶段记录此边界，不改 Credential Authority 或该配置实现。Voice Runtime 本身不保存
+或派生 provider secret。
 
 ---
 
@@ -247,6 +327,19 @@ apiConfigs[].voice.voiceId = <Voicebox profile ID>
 IB 不复制 profile、sample、`audio_path`、personality 或模型状态。Voicebox UUID 在同一数据库
 中用于 profile 查找；Voicebox export/import 可能生成新 ID，因此它不是跨安装永久标识。IB 不按
 名称自动修复引用：缺失 ID 显示为“音色不可用”，用户从当前 profile 列表显式重新绑定。
+
+Voicebox 克隆音色的生命周期是 **Reference Audio → Voicebox cloned profile/sample → Bridge
+preflight + preview → explicit role binding**。IB 保存的只是 role 上的 `source/provider` 与外部
+`profileId`；profile embeddings、reference database、声学资产和模型状态留在 Voicebox。删除
+profile 前 Bridge 告知当前 role references；确认后不替换同名 profile，dangling reference 需要用户显式 rebind。
+
+```text
+Reference Audio + explicit transcript
+    → Bridge validation/proxy
+    → Voicebox cloned profile + sample storage
+    → cached-model preflight + preview
+    → IB role binding (`voice.source` + `voice.voiceId`)
+```
 
 profile 管理只经由 IB Bridge；Browser 不直接请求 Voicebox localhost。Bridge 对 profile 和 sample
 响应做白名单清理，参考音频通过内存中的受限二进制请求转发，不传文件路径，也不保存在
@@ -279,8 +372,9 @@ Voicebox generation 始终发送 `personality: false`；Persona、最终文本�
 
 ## 17. Non-goals
 
-Voice 不拥有：conversation state、model routing/execution、LLM provider selection、memory
-lifecycle、Middle Brain composition 或 provider credentials。它不定义 multi-message turn 的
+Voice Runtime 不拥有：conversation state、model routing/execution、LLM provider selection、memory
+lifecycle、Middle Brain composition 或 provider secret authority。Bridge-managed providers 由 Bridge
+config 持有其凭据；legacy direct `voiceTrans` 的 Browser setting 单独记录于 §15。Voice 不定义 multi-message turn 的
 delivery/timing policy（那属于 delivery contract），也不定义 acoustic reference 算法
 （那属于 acoustic reference contract）。
 
@@ -293,6 +387,7 @@ delivery/timing policy（那属于 delivery contract），也不定义 acoustic 
 | Call runtime / session | `test_voice_runtime.js`, `test_voice_streaming.js`, `test_voice_reconnect.js` |
 | 采集 / 播放 | `test_voice_capture.js`, `test_voice_playback_path.js` |
 | Providers | `test_mimo_tts.js`, `test_mimo_voiceclone.js`, `test_mimo_voicedesign.js`, `test_voicebox_provider.js`, `test_tts_voices.js` |
+| ASR provider / Bridge audio proxy | `test_voicebox_asr_provider.js` |
 | Voicebox profile lifecycle / local reference recording | `test_voicebox_profile_lifecycle_ui.js` |
 | Source/credential 边界 | `test_voice_source.js` |
 | Voice message | `test_native_voice_message.js`, `test_voice_message_lifecycle.js` |
@@ -310,3 +405,20 @@ runtime 行为由这些测试强制执行；本文档是人类可读的 canonica
   `docs/P23-2B-DELIVERY-RUNTIME.md`, `docs/P23-2C-DELIVERY-PLANNER.md`（provisional phase docs）
 - `docs/history/legacy/voice-runtime-phase1.md`, `docs/history/legacy/voice-runtime-phase2-3.md`
 - `docs/P1-ACOUSTIC-REFERENCE.md`
+
+---
+
+## 20. Voice Runtime 时间线
+
+| 阶段 | 形成的边界 |
+| --- | --- |
+| **P23** | Voice Runtime foundation：Bridge TTS/provider seam、Voicebox local TTS provider、native Voice Message contract；项目 Voice Runtime 的起点 |
+| **P35-0B / P35-0C** | 审计 Voicebox upstream 与 Project-IB Voice authority；冻结 Voicebox 是 provider，不拥有 Persona、Memory、Relationship、Middle Brain 或 chat response |
+| **P35-1** | 冻结 Voice Runtime / Voicebox provider contract |
+| **P35-2** | 补齐 Voicebox TTS generation cancellation 与 stale-result safety |
+| **P35-3** | 补齐 Voicebox profile / cloned voice / sample 生命周期与 role external-reference binding |
+| **P35-4** | 确认 ASR provider seam 与 Voicebox Whisper 的 turn/file 能力边界 |
+| **P35-5A** | 将 Voicebox 加为可选 ASR turn/file provider；Bridge 预检已缓存模型，不下载模型 |
+| **Future** | Realtime/partial ASR research；未实现，也不属于 Voicebox 当前 contract |
+
+本时间线保留 P23 起源与 P35 演进；具体当前 contract 以本文及其 scoped contracts 为准。

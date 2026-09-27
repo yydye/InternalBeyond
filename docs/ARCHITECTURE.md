@@ -16,7 +16,7 @@ Internal Beyond 是一个**个人本地 AI 陪伴站**。**正式发行形态是
 | 组件 | 端口 | 入口 | 职责 |
 |---|---|---|---|
 | 主站（浏览器） | `127.0.0.1:23120`（安装版由启动链提供） | 快捷方式 → `启动 InternalBeyond.vbs` → `launch-internal-beyond.js` → [internal-beyond-server.js](../services/internal-beyond-server.js)；开发期也可直接打开 `InternalBeyond.html`（`file://`） | 主聊天（浏览器直连各家 AI API）、社交圈、日记、记忆、工作区、游戏等全部页面功能 |
-| Bridge 后端 | `127.0.0.1:23115` | 安装版随启动链自动拉起；开发期 `start-bridge-service.cmd` → [ib-bridge-service.js](../services/ib-bridge-service.js) | 表情包、心语墙、健康/定位/天气看板、酷狗点歌、Bark/ntfy 推送、上下文进度条、`/continue` 续写、AI 常驻会话（多模型）、TTS 语音气泡、多窗口同步 |
+| Bridge 后端 | `127.0.0.1:23115` | 安装版随启动链自动拉起；开发期 `start-bridge-service.cmd` → [ib-bridge-service.js](../services/ib-bridge-service.js) | 表情包、心语墙、健康/定位/天气看板、酷狗点歌、Bark/ntfy 推送、上下文进度条、`/continue` 续写、AI 常驻会话（多模型）、Voice Runtime（ASR/TTS/Voice Call）、多窗口同步 |
 | Active companion | `127.0.0.1:23114` | 安装版随启动链自动拉起；开发期 `start-active-service.cmd` / `start-local-services.cmd` → [active-message-service.js](../services/active-message-service.js) | 浏览器关闭后的后台执行：主动消息计划（plans）、朋友圈调度（moments）、AI↔AI 回复链续推、事件回传 |
 | 静默重启控制面 | `127.0.0.1:23116` | [local-services-runner.js](../runtime/local-services-runner.js) | 诊断页「尝试修复」调用的真实恢复动作 |
 
@@ -759,6 +759,7 @@ telemetry / Cache Audit 仍各自留在原 runtime，core 保持零 window、零
 - 会话：`GET/POST/DELETE /api/sessions/:key`；上下文：`GET/POST /api/context?friend=`
 - 推送：`POST /api/push`、`GET /api/push/history`
 - TTS：`POST /api/tts`、`GET /tts/<id>.mp3`
+- ASR：`GET /api/asr/capabilities`、`POST /api/asr/transcriptions`（Voicebox 文件音频代理；Voice Call 将完整 turn 经 `/voice` WebSocket 交给 Bridge）
 
 > Voice（Call / Voice Message / ASR / TTS / provider / barge-in）的专项架构与契约见
 > [architecture/VOICE.md](architecture/VOICE.md) 与 [contracts/voice/](contracts/voice/)。

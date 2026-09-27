@@ -84,7 +84,8 @@ Memory 的**当前 authority** 见
 Voice 的**当前架构与契约**见
 [`../architecture/VOICE.md`](../architecture/VOICE.md) 与
 [`../contracts/voice/`](../contracts/voice/)。
-`P23-*` 为开发中的 provisional phase 文档（尚未归档）；voice 早期记录在 legacy/。
+`P23-*` 保留各自 phase 的实现记录与历史状态，不承担当前架构 authority；完整当前状态见上述
+`architecture/VOICE.md` 与 scoped contracts。Voice runtime 早期记录在 legacy/。
 
 | 报告 | 阶段 |
 |---|---|

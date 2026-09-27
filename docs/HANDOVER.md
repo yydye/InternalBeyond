@@ -95,6 +95,7 @@
 ### DO
 
 - ✅ 用**中文**交流。主要使用场景是 Android 手机（OPPO 等国产 ROM 需允许后台运行）：推送走 ntfy、健康走 Health Connect/HTTP Shortcuts。
+- ✅ Voice 当前架构的唯一综合说明见 [architecture/VOICE.md](architecture/VOICE.md)；P23/P35 phase 文档用于历史与来源，不要从旧阶段描述推断当前 provider 能力。
 - ✅ 用户对"看起来实现但实际没实现"非常敏感——交付前给代码证据与测试。
 - ✅ 改 `InternalBeyond.html` 或 assets 下任一 JS/CSS 后检查/补回 **UTF-8 BOM**（edit 工具会剥掉，结构测试会拦）；新文件必须 BOM + UTF-8。
 - ✅ 本地 file:// 验证改动用 **Ctrl+F5** 强刷。

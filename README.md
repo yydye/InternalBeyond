@@ -223,6 +223,7 @@ vision/                    # 可选本地视觉服务（Python，默认不随包
 | [`README.md`](README.md) | 安装、使用、下载（本文件） |
 | [`TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | 遇到问题先查这里 |
 | [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) | 这个项目是怎么工作的 |
+| [`architecture/VOICE.md`](docs/architecture/VOICE.md) | Voice Runtime、Voicebox、TTS、ASR 与语音权威边界 |
 | [`DECISIONS.md`](docs/DECISIONS.md) | 为什么这么设计（D1–D26，"不要随便改"清单） |
 | [`HANDOVER.md`](docs/HANDOVER.md) | 现状、待办、DO / DON'T（Agent 第一入口） |
 | [`ROLE_DM.md`](docs/ROLE_DM.md) | 角色私信（Role DM）：能力、隐私边界、关系三维、自主发起、可观测性 |
