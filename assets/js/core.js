@@ -845,7 +845,7 @@ async function loadAboutDisplay(){
           :'')
         +'<div class="pc-bio-actions">'
           +'<button class="btn" onclick="openAboutEdit()">设置资料</button>'
-          +'<button class="btn" onclick="navTo(\'api\')">设置API密钥</button>'
+          +'<button class="btn" onclick="navTo(\'api\')">设置API密钥</button>'+'<button type="button" class="u-context-link" id="profile-moments-link" onclick="navTo(\'moments\')">朋友圈 · Moments</button>'
         +'</div>'
       +'</div>'
       +'<div class="pc-gallery-col">'+slots+'</div>'

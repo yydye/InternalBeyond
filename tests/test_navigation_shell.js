@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 
 const assert = require('assert');
 const fs = require('fs');
@@ -43,7 +43,7 @@ assert.deepStrictEqual(groups.map(group => group.routes.map(route => route.page)
   ['workspace', 'chat', 'about', 'memory', 'favorites'],
   ['blog', 'moments', 'letters', 'roledm', 'diary'],
   ['active', 'diy', 'apps', 'economy'],
-  ['packaging', 'api', 'bridge', 'diagnostics'],
+  ['packaging', 'api', 'diagnostics'],
   ['guide']
 ]);
 
@@ -51,9 +51,47 @@ const visibleRoutes = groups.flatMap(group => group.routes);
 assert.strictEqual(new Set(visibleRoutes.map(route => route.page)).size, visibleRoutes.length, 'visible routes are unique');
 const pageIds = new Set(Array.from(html.matchAll(/id="page-([^"]+)"/g), match => match[1]));
 for (const route of visibleRoutes) {
-  if (route.page === 'bridge') continue; // Bridge is an existing dialog action, not a page route.
   assert.ok(pageIds.has(route.page), 'sidebar route has its original page id: ' + route.page);
 }
+
+/* Phase 2 · Navigation Exposure Reconciliation.
+   Desktop cornice keeps only the nine primary places; every exited route keeps its
+   page container, hash, navTo access and its sidebar entry below 769px. */
+const navLinksStart = html.indexOf('<ul class="nav-links"');
+const navLinksBlock = html.slice(navLinksStart, html.indexOf('</ul>', navLinksStart));
+assert.ok(!navLinksBlock.includes('ib-bridge-nav'), 'Bridge leaves the place list in nav-links');
+const navActionsStart = html.indexOf('<div class="nav-actions">');
+assert.ok(navActionsStart > navLinksStart && html.indexOf('id="ib-bridge-nav"') > navActionsStart,
+  'Bridge lives in the existing nav-actions region as a dialog action');
+assert.ok(/id="ib-bridge-nav"[^>]*aria-haspopup="dialog"[^>]*aria-controls="ib-bridge-panel"[^>]*aria-expanded="false"/.test(html),
+  'Bridge keeps its dialog action contract');
+assert.ok(!pageIds.has('bridge'), 'Bridge remains a modal action, not a route');
+
+const DESKTOP_PERMANENT = ['guide', 'about', 'blog', 'game', 'chat', 'letters', 'memory', 'api', 'diy'];
+assert.deepStrictEqual(navigation.DESKTOP_ROUTE_ORDER, DESKTOP_PERMANENT,
+  'desktop cornice order keeps only the nine primary places');
+
+const contextual = ['favorites', 'moments', 'roledm', 'diary', 'active', 'apps', 'economy', 'packaging', 'diagnostics'];
+for (const page of contextual) {
+  assert.ok(new RegExp('<li class="nav-item-contextual"><a href="#' + page + '" data-page="' + page + '"').test(html),
+    page + ' keeps its sidebar entry but leaves the permanent desktop cornice');
+}
+for (const page of ['workspace', 'chat', 'about', 'memory', 'blog', 'letters', 'diy', 'api', 'guide']) {
+  assert.ok(!new RegExp('<li class="nav-item-contextual"><a[^>]*data-page="' + page + '"').test(html),
+    page + ' does not carry the contextual marker');
+}
+
+const navCss = fs.readFileSync(path.join(ROOT, 'assets/css/navigation-shell.css'), 'utf8');
+assert.ok(navCss.includes('@media(min-width:769px)'), 'desktop cornice media block remains');
+assert.ok(navCss.includes('.nav-links>li.nav-item-contextual{display:none}'),
+  'contextual entries are hidden only at desktop widths');
+
+/* Owner entries for the real reachability gaps: one text-level link per owner page. */
+assert.ok(/<button[^>]*id="chat-roledm-link"[^>]*navTo\('roledm'\)/.test(html), 'Chat hosts the Role DM owner entry');
+assert.ok(/<button[^>]*id="mem-favorites-link"[^>]*navTo\('favorites'\)/.test(html), 'Memory hosts the Favorites owner entry');
+assert.ok(core.includes('id="profile-moments-link"') && core.includes("navTo(\\'moments\\')"), 'Profile hosts the low-weight Moments owner entry');
+assert.ok(fs.readFileSync(path.join(ROOT, 'assets/css/core.css'), 'utf8').includes('.u-context-link{'),
+  'owner entries share one text-level style');
 
 assert.ok(html.includes('id="nav-home"'), 'the original home trigger and secret gesture target remain');
 assert.ok(pageIds.has('home'));

@@ -1,6 +1,6 @@
 # Navigation Architecture
 
-状态：P36 Workspace Sidebar Shell 已实现；P37 为 Sidebar Home 增加独立 Workspace 页面路由。此文记录页面入口组织与 shell 边界；业务页面、router、存储和 service contract 仍由各自模块持有。
+状态：P36 Workspace Sidebar Shell 已实现；P37 为 Sidebar Home 增加独立 Workspace 页面路由。Phase 1 恢复 Original Desktop Shell（桌面回到顶部细 cornice，P36 侧栏保留为 <769px 窄屏形态）；Phase 2 完成 Navigation Exposure Reconciliation（桌面顶栏只保留九个一级地方，详见 §8）。此文记录页面入口组织与 shell 边界；业务页面、router、存储和 service contract 仍由各自模块持有。
 
 ## 1. Why Sidebar
 
@@ -43,7 +43,7 @@
 | Core | Home、Chat、Room、Profile、Memory、Favorites |
 | Create & Connect | Blog、Moments、Letters、Role DM、Diary |
 | Work | Active、DIY、Apps、Economy |
-| Tools | Packaging、API、Bridge、Diagnostics |
+| Tools | Packaging、API、Diagnostics |
 | Help | Guide |
 
 没有独立 Characters、Middle Brain、Cinema、Voice、Calendar、Work Mode 或 Settings 页面。Characters 属于 Chat；Middle Brain 普通配置位于 API 页；Cinema 属于 Apps；Voice 属于通信能力；Calendar 是浮动日历；当前没有独立的通用 Settings route。分组不会把这些能力伪装成新页面。
@@ -66,7 +66,7 @@ Expanded 模式显示原有标签。Collapsed 模式保留首字母标记、原�
 - `?middlebrain`、`?middlebrain=1`、`?middlebrain=true` 仍由 Middle Brain Direct Channel 处理；`?middlebrain=0` 仍不打开它。该 query route 不出现在 sidebar。
 - `#nav-home` 是 DOM element id，不是 hash route；点击仍通过 `navTo('home')` 返回 `page-home` Welcome / Landing。Sidebar Home 使用 `#workspace` 并打开 `page-workspace`。
 - `navTo()` 依据真实页面 route 更新 `.active` 与 `aria-current`：Welcome 不高亮 Sidebar Home，Home Workspace 高亮 Home，Active 高亮 Active。
-- Bridge 链接仍保留 `ib-bridge-nav` ID、dialog attributes 和原 modal click handler；它不会传入 `navTo('bridge')`。
+- Bridge 是 modal action 而非 route：Phase 2 起它从 `.nav-links` 的地方集合移入既有 `.nav-actions` 区，仍保留 `ib-bridge-nav` ID、`href="#bridge"`、dialog attributes 和原 modal click handler；它不会传入 `navTo('bridge')`。
 - Tauri 继续加载 `InternalBeyond.html?ib_tauri_host=1`。Rust command 和 `tauri.conf.json` 未改。`tauri-window-chrome.js` 将拖动区从旧横向导航空隙移到主内容上方独立标题条，最小化/最大化/关闭仍调用原 Window API。
 
 ## 7. Future Extension Rules
@@ -74,3 +74,30 @@ Expanded 模式显示原有标签。Collapsed 模式保留首字母标记、原�
 新增一级入口前，先确认存在稳定的页面 ID / route，选择一个真实职责分组，并更新结构测试与本导航清单。嵌入式能力、modal、query secret route 不应只为填满侧栏而变成普通页面。未来折叠/分组调整只可改变 shell 展示，不可自行更改 router 或 service authority。
 
 > Welcome and Home are separate product surfaces even if legacy DOM IDs or historical navigation identifiers use ambiguous names. Sidebar changes navigation architecture only; existing page content remains independently owned by its original module.
+
+## 8. Phase 2 · Navigation Exposure Reconciliation
+
+Phase 1 恢复 Original Desktop Shell 后，现代 route 增长使桌面顶栏永久入口过多（19 个，1024–1440 全部静默横向溢出）。Phase 2 用曝光分类根治，不新增 Launcher / Drawer / More / Command Palette / Grid menu / 第二套 Sidebar 等任何导航机制。
+
+### 8.1 曝光分类
+
+| 分类 | 含义 | 本版成员 |
+|---|---|---|
+| PRIMARY PLACE | 桌面顶栏永久入口 | Guide、Profile、Blog、Room、Chat、Letters、Memory、API、DIY（九个，即 Original Desktop 基准） |
+| CONTEXTUAL | 从自然 owner 页进入；sidebar（<769px）保留分组入口 | Moments（角色/Profile）、Role DM（Chat）、Diary（API 角色编辑器）、Active（Chat/Workspace）、Apps（Workspace）、Favorites（Memory/Workspace）、Economy（owner 后续单独确认；本轮仅退出顶栏，route 与程序化入口保留） |
+| UTILITY | 由 action / dialog / Dock / 错误卡片提供 | Packaging（Workspace 快捷卡）、Diagnostics（本地服务错误卡片 / IBERR `open_page`）、Bridge（modal action，移入 `.nav-actions`） |
+| DIRECT-ONLY | 保留 route/hash 与程序访问，无永久视觉入口 | moments-settings（Moments 页内按钮）、coread（Apps 页）、`#home`（品牌按钮）、`#workspace`（桌面顶栏本就不显示，splash/hash/页内链接到达）、secret routes（`#beyond`、`?middlebrain`） |
+
+### 8.2 实现约束
+
+- 退出的九个 route（moments、roledm、diary、active、apps、favorites、economy、packaging、diagnostics）在 `.nav-links` 的 `<li>` 上带 `nav-item-contextual`；仅 `@media(min-width:769px)` 下 `display:none`。page 容器、hash、`navTo()`、lazy init、键盘/ARIA、sidebar 全量分组全部不变。
+- `assets/js/navigation-shell.js` 的 `DESKTOP_ROUTE_ORDER` 收缩为九个一级地方（`guide, about, blog, game, chat, letters, memory, api, diy`），即桌面排序唯一真源。
+- Bridge 不是 route：锚点移入 `.nav-actions`（保留 `ib-bridge-nav` ID、`href="#bridge"`、`aria-haspopup/controls/expanded` 与原 click handler），面板定位继续以该锚点 rect 计算。
+- 可达性缺口只补三条文字级入口，共用低权重样式 `.u-context-link`：Chat 侧栏 `#chat-roledm-link` → `#roledm`；Memory 页 `#mem-favorites-link` → `#favorites`；Profile 操作行 `#profile-moments-link` → `#moments`（低权重）。
+- Home / Clock / Music / Dock / Room 的 Phase 1 composition 不在本轮范围内，未改。
+
+### 8.3 容量预算与 overflow 立场
+
+桌面 cornice 可用宽度（视口 − 品牌/用户区/Export/Import/主题/间距，Tauri 再 −80px 窗控）决定一级入口上限：1024 ≈ 9 个、1280 ≈ 10 个、1440 ≈ 12 个、1920 ≈ 17–18 个（按平均入口 ≈77px 估）。九个永久入口在四个宽度（含 Tauri、含 769–1180px 窄档降级）均无横向溢出。因此**不建 overflow UI**；既有隐藏横向滚动仅作静默兜底，不得视觉化。新增一级入口的门槛仍是：先论证“它是一个地方，而不是一个功能”，再核对最严约束（1024 窄档）下的容量。
+
+结构断言见 `tests/test_navigation_shell.js`（分组、contextual 标记、Bridge 位移、owner 入口、CSS 规则与 `DESKTOP_ROUTE_ORDER`）。

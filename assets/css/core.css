@@ -173,6 +173,11 @@ body{font-family:var(--font-ui);font-weight:300;background:var(--bg-deep);color:
 .u-mt-1{margin-top:var(--space-1)!important}
 .u-mt-3{margin-top:var(--space-3)!important}
 .u-opacity-80{opacity:.8}
+/* Phase 2 · Navigation Exposure Reconciliation：CONTEXTUAL route 的 owner 页内文字级入口。
+   低权重、纯文字，不形成新的导航系统。 */
+.u-context-link{appearance:none;background:none;border:0;padding:0;color:var(--content-muted);font-family:inherit;font-size:var(--fs-meta);letter-spacing:.04em;cursor:pointer;text-decoration:underline;text-underline-offset:3px;opacity:.85;transition:color var(--motion-fast),opacity var(--motion-fast)}
+.u-context-link:hover{color:var(--accent);opacity:1}
+.u-context-link:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}
 .settings-description{font-size:.92rem;line-height:1.8;margin-bottom:14px;opacity:.85;font-weight:400}
 .section-meta{font-size:.82rem;color:var(--content-muted);font-style:normal;font-weight:400;opacity:.9}
 

@@ -13,6 +13,13 @@
 
   const COLLAPSED_KEY = 'ib_navigation_collapsed_v1';
   const COLLAPSE_BREAKPOINT = 1120;
+  const DESKTOP_TOPBAR_BREAKPOINT = 769;
+  /* Phase 2 · Navigation Exposure Reconciliation: the permanent desktop cornice holds
+     only the nine primary places. The narrow sidebar (<769px) keeps the full grouped
+     inventory; routes not listed here keep their pages, hashes and programmatic access. */
+  const DESKTOP_ROUTE_ORDER = Object.freeze([
+    'guide', 'about', 'blog', 'game', 'chat', 'letters', 'memory', 'api', 'diy'
+  ]);
 
   function storedCollapsed(storage) {
     try {
@@ -73,6 +80,26 @@
     let explicit = storedCollapsed(storage) !== null;
     let collapsed = initialCollapsed(storage, win.innerWidth);
     const scrollRegion = sidebar.querySelector('.nav-scroll-region');
+    const originalLinkOrder = links ? Array.from(links.children) : [];
+
+    function arrangeRoutesForViewport() {
+      if (!links) return;
+      if (Number(win.innerWidth) < DESKTOP_TOPBAR_BREAKPOINT) {
+        originalLinkOrder.forEach(function (node) {
+          if (node.parentNode === links) links.appendChild(node);
+        });
+        return;
+      }
+      const rank = new Map(DESKTOP_ROUTE_ORDER.map(function (route, index) { return [route, index]; }));
+      Array.from(links.children)
+        .filter(function (node) { return node.querySelector && node.querySelector('a[data-page]'); })
+        .sort(function (a, b) {
+          const aRoute = a.querySelector('a[data-page]').dataset.page;
+          const bRoute = b.querySelector('a[data-page]').dataset.page;
+          return (rank.has(aRoute) ? rank.get(aRoute) : 999) - (rank.has(bRoute) ? rank.get(bRoute) : 999);
+        })
+        .forEach(function (node) { links.appendChild(node); });
+    }
 
     function revealCurrentRoute() {
       if (!scrollRegion) return;
@@ -82,6 +109,8 @@
       const item = current.getBoundingClientRect();
       if (item.top < viewport.top + 6) scrollRegion.scrollTop -= (viewport.top + 6) - item.top;
       else if (item.bottom > viewport.bottom - 6) scrollRegion.scrollTop += item.bottom - (viewport.bottom - 6);
+      if (item.left < viewport.left + 6) scrollRegion.scrollLeft -= (viewport.left + 6) - item.left;
+      else if (item.right > viewport.right - 6) scrollRegion.scrollLeft += item.right - (viewport.right - 6);
     }
 
     function emitLayoutChange() {
@@ -116,6 +145,7 @@
     });
     win.addEventListener('hashchange', function () { win.requestAnimationFrame(revealCurrentRoute); });
     win.addEventListener('resize', function () {
+      arrangeRoutesForViewport();
       if (!explicit) apply(defaultCollapsed(win.innerWidth), false);
     });
     win.addEventListener('storage', function (event) {
@@ -123,6 +153,7 @@
       const saved = storedCollapsed(storage);
       if (saved !== null) { explicit = true; apply(saved, false); }
     });
+    arrangeRoutesForViewport();
     apply(collapsed, false);
 
     return {
@@ -135,6 +166,7 @@
   return {
     COLLAPSED_KEY: COLLAPSED_KEY,
     COLLAPSE_BREAKPOINT: COLLAPSE_BREAKPOINT,
+    DESKTOP_ROUTE_ORDER: DESKTOP_ROUTE_ORDER,
     storedCollapsed: storedCollapsed,
     defaultCollapsed: defaultCollapsed,
     initialCollapsed: initialCollapsed,
