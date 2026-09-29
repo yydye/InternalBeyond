@@ -296,30 +296,39 @@
 
   /* ── 请求原语：单次、有硬超时、永不抛出 ── */
   function request(url, opts, timeoutMs) {
-    var out = { ok: false, httpStatus: 0, json: null, error: null };
-    if (typeof fetch !== 'function') { out.error = 'no-fetch'; return Promise.resolve(out); }
-    var ctl = null;
-    try { if (typeof AbortController === 'function') ctl = new AbortController(); } catch (e) { ctl = null; }
-    var timer = setTimeout(function () { try { if (ctl) ctl.abort(); } catch (e) { } }, timeoutMs);
-    var init = { cache: 'no-store' };
-    var o = opts || {};
-    for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) init[k] = o[k];
-    if (ctl) init.signal = ctl.signal;
-    return Promise.resolve().then(function () {
-      return fetch(url, init);
-    }).then(function (res) {
-      return res.text().then(function (text) {
-        var json = null;
-        try { json = JSON.parse(text); } catch (e) { json = null; }
-        out.ok = !!res.ok;
-        out.httpStatus = Number(res.status) || 0;
-        out.json = json;
+    if (typeof fetch !== 'function') return Promise.resolve({ ok: false, httpStatus: 0, json: null, error: 'no-fetch' });
+    var target = String(url || '');
+    var ready = Promise.resolve(true);
+    try {
+      var diag = NS.diagnostics;
+      if (diag && typeof diag.serviceUrl === 'function') target = diag.serviceUrl(target);
+      if (diag && typeof diag.waitForWebService === 'function') ready = diag.waitForWebService();
+    } catch (e) { ready = Promise.resolve(false); }
+    return Promise.resolve(ready).catch(function () { return false; }).then(function () {
+      var out = { ok: false, httpStatus: 0, json: null, error: null };
+      var ctl = null;
+      try { if (typeof AbortController === 'function') ctl = new AbortController(); } catch (e) { ctl = null; }
+      var timer = setTimeout(function () { try { if (ctl) ctl.abort(); } catch (e) { } }, timeoutMs);
+      var init = { cache: 'no-store' };
+      var o = opts || {};
+      for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) init[k] = o[k];
+      if (ctl) init.signal = ctl.signal;
+      return Promise.resolve().then(function () {
+        return fetch(target, init);
+      }).then(function (res) {
+        return res.text().then(function (text) {
+          var json = null;
+          try { json = JSON.parse(text); } catch (e) { json = null; }
+          out.ok = !!res.ok;
+          out.httpStatus = Number(res.status) || 0;
+          out.json = json;
+          return out;
+        });
+      }).catch(function (e) {
+        out.error = (e && e.name === 'AbortError') ? 'timeout' : 'unreachable';
         return out;
-      });
-    }).catch(function (e) {
-      out.error = (e && e.name === 'AbortError') ? 'timeout' : 'unreachable';
-      return out;
-    }).then(function (r) { clearTimeout(timer); return r; });
+      }).then(function (r) { clearTimeout(timer); return r; });
+    });
   }
   function readStatus() {
     return request(STATUS_URL, { method: 'GET' }, STATUS_TIMEOUT_MS);

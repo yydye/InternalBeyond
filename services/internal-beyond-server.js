@@ -210,6 +210,50 @@ function shutdownOriginAllowed(req) {
   return false;
 }
 
+/* The packaged Tauri page lives at tauri.localhost and reaches this loopback
+   service cross-origin. Permit only the small set of web-host control routes
+   needed by Diagnostics and Updates; ordinary browser pages remain same-origin. */
+const TAURI_CORS_METHODS = Object.freeze({
+  '/health': ['GET'],
+  '/__health': ['GET'],
+  '/__boot-state': ['GET'],
+  '/__update-check': ['GET'],
+  '/__update/status': ['GET'],
+  '/__update/start': ['POST']
+});
+
+function dispatchTauriCors(req, res, pathname) {
+  const origin = String(req.headers.origin || '').trim();
+  const methods = TAURI_CORS_METHODS[pathname];
+  if (!methods || !isTauriOrigin(origin)) return false;
+
+  res.setHeader('Access-Control-Allow-Origin', origin);
+  res.setHeader('Vary', 'Origin');
+  if (req.method !== 'OPTIONS') return false;
+
+  const requestedMethod = String(req.headers['access-control-request-method'] || '').trim().toUpperCase();
+  const requestedHeaders = String(req.headers['access-control-request-headers'] || '')
+    .split(',').map(function (value) { return value.trim().toLowerCase(); }).filter(Boolean);
+  if (methods.indexOf(requestedMethod) < 0 || requestedHeaders.some(function (header) { return header !== 'content-type'; })) {
+    res.writeHead(403, { 'Cache-Control': 'no-store' });
+    res.end();
+    return true;
+  }
+
+  const headers = {
+    'Access-Control-Allow-Methods': methods.join(', ') + ', OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Max-Age': '600',
+    'Cache-Control': 'no-store'
+  };
+  if (String(req.headers['access-control-request-private-network'] || '').toLowerCase() === 'true') {
+    headers['Access-Control-Allow-Private-Network'] = 'true';
+  }
+  res.writeHead(204, headers);
+  res.end();
+  return true;
+}
+
 /* Read a small JSON request body. Bounded: a request that keeps sending is
    dropped rather than buffered. Always resolves. */
 function readJsonBody(req, maxBytes) {
@@ -386,6 +430,7 @@ function createWebServer(opts) {
 
   const server = http.createServer(function (req, res) {
     const pathname = String(req.url || '/').split('?')[0];
+    if (dispatchTauriCors(req, res, pathname)) return;
     if (pathname === '/health' || pathname === '/__health') {
       const pv = productVersion.get();
       const body = JSON.stringify({ ok: true, server: identity, version: pv.ok ? pv.version : '' });

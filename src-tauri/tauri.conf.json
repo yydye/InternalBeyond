@@ -22,7 +22,7 @@
         "height": 920,
         "resizable": true,
         "decorations": false,
-        "shadow": false,
+        "shadow": true,
         "visible": false,
         "create": false
       }

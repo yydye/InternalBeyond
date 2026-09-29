@@ -35,6 +35,7 @@
   var MAX_ERRORS = 20;
   /* 视觉是否「已安装」的标记：与 scripts/windows/start-vision-service.cmd 建立的虚拟环境一致 */
   var VENV_MARKER = '.venv-vision/pyvenv.cfg';
+  var webReadyPromise = null;
 
   /* ── 状态词表（页面唯一来源；不新增第七种） ── */
   var ST = {
@@ -217,6 +218,53 @@
     return { ok: false, healthy: false, responding: false, httpStatus: 0, json: null, latencyMs: 0, error: reason, unavailable: true, endpoint: '' };
   }
 
+  /* The packaged Tauri page has its own origin. Its local web server origin is
+     supplied by the native host from the same IB_WEB_PORT environment value
+     inherited by the launcher; regular browser pages keep their existing
+     same-origin paths. */
+  function isTauriHost() {
+    try { return window.__IB_TAURI_HOST__ === true; } catch (e) { return false; }
+  }
+  function webServiceOrigin() {
+    if (isTauriHost()) {
+      try {
+        var configured = String(window.__IB_STATIC_SERVER_ORIGIN__ || '').trim().replace(/\/+$/, '');
+        var match = /^http:\/\/127\.0\.0\.1:(\d{1,5})$/i.exec(configured);
+        var port = match ? Number(match[1]) : 0;
+        if (port > 0 && port <= 65535) return configured;
+      } catch (e) { }
+      return '';
+    }
+    try { return String(location.origin || ''); } catch (e) { return ''; }
+  }
+  function webServiceUrl(path) {
+    if (!isTauriHost()) return String(path || '');
+    var origin = webServiceOrigin();
+    if (!origin) return null;
+    var suffix = String(path || '');
+    return origin + (suffix.charAt(0) === '/' ? suffix : '/' + suffix);
+  }
+  function waitForWebService() {
+    if (!isTauriHost()) return Promise.resolve(true);
+    if (webReadyPromise) return webReadyPromise;
+    var origin = webServiceOrigin();
+    if (!origin) return Promise.resolve(false);
+    var deadline = Date.now() + 10000;
+    function probe() {
+      return timedFetch(origin + '/health', { method: 'GET' }, 750).then(function (r) {
+        if (r.ok && r.json && r.json.ok === true && r.json.server === 'InternalBeyond Web') return true;
+        if (Date.now() >= deadline) return false;
+        return new Promise(function (resolve) { setTimeout(resolve, 250); }).then(probe);
+      });
+    }
+    var pending = probe().catch(function () { return false; }).then(function (ready) {
+      if (!ready) webReadyPromise = null;
+      return ready;
+    });
+    webReadyPromise = pending;
+    return pending;
+  }
+
   /* ── 组件端口：唯一来源是 P2 boot-state（不在前端复制端口表）── */
   function bootComponent(name) {
     var b = S.boot && S.boot.present ? S.boot.state : null;
@@ -235,11 +283,12 @@
   /* ── 各组件 probe（全部复用现有客户端，不新建请求层）── */
 
   function probeStatic() {
-    var origin = '';
-    try { origin = String(location.origin || ''); } catch (e) { }
+    var origin = webServiceOrigin();
     if (!origin || origin === 'null') return Promise.resolve(unavailable('file-origin'));
-    return timedFetch(origin + '/health', { method: 'GET' }, PROBE_TIMEOUT_MS).then(function (r) {
-      r.endpoint = origin + '/health';
+    var url = webServiceUrl('/health');
+    if (!url) return Promise.resolve(unavailable('static-origin-missing'));
+    return timedFetch(url, { method: 'GET' }, PROBE_TIMEOUT_MS).then(function (r) {
+      r.endpoint = url;
       r.identity = r.json ? String(r.json.server || '') : '';
       r.healthy = !!(r.ok && r.json && r.json.ok === true);
       return r;
@@ -357,7 +406,11 @@
   /* ── 启动快照（P2 唯一来源）── */
   function readBootState() {
     if (typeof fetch !== 'function') { S.boot = { present: false, error: 'no-fetch', stale: true, staleReason: 'unavailable', state: null }; return Promise.resolve(S.boot); }
-    return timedFetch(BOOT_URL, { method: 'GET' }, PROBE_TIMEOUT_MS).then(function (r) {
+    var url = webServiceUrl(BOOT_URL);
+    if (!url) { S.boot = { present: false, error: 'static-origin-missing', stale: true, staleReason: 'unavailable', state: null }; return Promise.resolve(S.boot); }
+    return waitForWebService().then(function () {
+      return timedFetch(url, { method: 'GET' }, PROBE_TIMEOUT_MS);
+    }).then(function (r) {
       if (r.ok && r.json && typeof r.json === 'object') {
         S.boot = {
           present: !!r.json.present,
@@ -1082,10 +1135,11 @@
     return readBootState().then(function () {
       var v = productVersion();
       if (v) return v;
-      var origin = '';
-      try { origin = String(location.origin || ''); } catch (e) { }
+      var origin = webServiceOrigin();
       if (!origin || origin === 'null') return '';
-      return timedFetch(origin + '/health', { method: 'GET' }, PROBE_TIMEOUT_MS).then(function (r) {
+      var url = webServiceUrl('/health');
+      if (!url) return '';
+      return timedFetch(url, { method: 'GET' }, PROBE_TIMEOUT_MS).then(function (r) {
         return (r && r.ok && r.json && r.json.version) ? String(r.json.version) : '';
       });
     }).catch(function () { return productVersion(); });
@@ -1371,6 +1425,8 @@
     technicalText: technicalText,
     /* 扩展卡位：注册一个 fn(host) 渲染器，见 registerCard */
     registerCard: registerCard,
+    serviceUrl: webServiceUrl,
+    waitForWebService: waitForWebService,
     /* 产品版本的唯一实现（VERSION 单一源 → boot-state → /health）。更新卡片
        判定「装的是不是目标版本」时读这里，不自己再解析一遍版本。 */
     productVersion: productVersion,

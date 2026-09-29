@@ -23,6 +23,7 @@ use tauri::{Manager, RunEvent, WindowEvent};
 use std::os::windows::process::CommandExt;
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+const DEFAULT_STATIC_WEB_PORT: u16 = 23120;
 const DEFAULT_RESTART_PORT: u16 = 23116;
 const RUNTIME_MODE_ENV: &str = "IB_RUNTIME_MODE";
 const RUNTIME_ROOT_CLASS_ENV: &str = "IB_RUNTIME_ROOT_CLASS";
@@ -2527,7 +2528,8 @@ fn acceptance_probe_parameters() -> Option<(String, String)> {
     if std::env::var("IB_ACCEPTANCE_SECRET_ROUTES").ok().as_deref() != Some("1") {
         return None;
     }
-    let port = std::env::var("IB_WEB_PORT").unwrap_or_else(|_| "23120".to_string());
+    let port = std::env::var("IB_WEB_PORT")
+        .unwrap_or_else(|_| DEFAULT_STATIC_WEB_PORT.to_string());
     let run_id = match acceptance_run_id() {
         Some(value) => value,
         None => return None,
@@ -2536,6 +2538,18 @@ fn acceptance_probe_parameters() -> Option<(String, String)> {
         return None;
     }
     Some((port, run_id))
+}
+
+/* The launcher child inherits IB_WEB_PORT and resolves the static server from
+   the same environment variable. Pass that loopback origin into the packaged
+   WebView so its diagnostics/update requests reach the existing Node service. */
+fn static_web_origin() -> String {
+    let port = std::env::var("IB_WEB_PORT")
+        .ok()
+        .and_then(|value| value.parse::<u16>().ok())
+        .filter(|port| *port > 0)
+        .unwrap_or(DEFAULT_STATIC_WEB_PORT);
+    format!("http://127.0.0.1:{port}")
 }
 
 fn acceptance_bootstrap_probe() -> Option<String> {
@@ -4382,6 +4396,30 @@ fn home_node_desktop_credential() -> Result<serde_json::Value, String> {
     }))
 }
 
+/* Windows: give the frameless (decorations:false) host window native DWM
+   rounded corners so the OS frame matches the glass UI instead of a square
+   frame. This is a native window attribute, not a CSS radius. */
+#[cfg(windows)]
+fn apply_native_window_rounding(window: &tauri::WebviewWindow) {
+    use windows::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
+    };
+    if let Ok(hwnd) = window.hwnd() {
+        let preference = DWMWCP_ROUND;
+        unsafe {
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_WINDOW_CORNER_PREFERENCE,
+                &preference as *const _ as *const core::ffi::c_void,
+                core::mem::size_of_val(&preference) as u32,
+            );
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn apply_native_window_rounding(_window: &tauri::WebviewWindow) {}
+
 fn chrono_free_timestamp() -> String {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -5428,7 +5466,10 @@ pub fn run() {
                     .windows
                     .first()
                     .ok_or("missing main Tauri window configuration")?;
-                let mut init_script = "window.__IB_TAURI_HOST__ = true;".to_string();
+                let static_origin = serde_json::to_string(&static_web_origin())?;
+                let mut init_script = format!(
+                    "window.__IB_TAURI_HOST__ = true; window.__IB_STATIC_SERVER_ORIGIN__ = {static_origin};"
+                );
                 if std::env::var("IB_ACCEPTANCE_SECRET_ROUTES_MODE")
                     .ok()
                     .as_deref()
@@ -5451,6 +5492,7 @@ pub fn run() {
                 .initialization_script(init_script)
                 .build()?;
             let _ = window.show();
+            apply_native_window_rounding(&window);
             let lifecycle = Arc::new(HostLifecycle::new(runtime, recovery_policy.clone()));
             app.manage(Arc::clone(&lifecycle));
             if !recovery_policy.suppress_services() {
