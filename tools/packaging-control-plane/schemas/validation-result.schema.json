@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://internalbeyond.invalid/schemas/artifact-validation-result-v1.json",
+  "title": "InternalBeyond ArtifactValidationResult",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "schemaVersion", "status", "valid", "artifact", "context", "checks", "summary"],
+  "properties": {
+    "schema": { "const": "internalbeyond.artifact-validation-result" },
+    "schemaVersion": { "const": 1 },
+    "status": { "type": "string", "enum": ["PASS", "PASS_WITH_WARNINGS", "FAIL"] },
+    "valid": { "type": "boolean" },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "size", "sha256"],
+      "properties": {
+        "name": { "type": "string", "maxLength": 128 },
+        "size": { "type": "integer", "minimum": 0 },
+        "sha256": { "type": "string", "pattern": "^(|[0-9a-f]{64})$" }
+      }
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target", "version", "mode", "revision", "dirty"],
+      "properties": {
+        "target": { "type": "string", "enum": ["windows-installer"] },
+        "version": { "type": "string", "pattern": "^(|(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*))$" },
+        "mode": { "type": "string", "enum": ["release", "test"] },
+        "revision": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64}|unknown)$" },
+        "dirty": { "type": ["boolean", "null"] }
+      }
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "status", "code", "message"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z0-9-]{1,64}$" },
+          "status": { "type": "string", "enum": ["PASS", "WARN", "FAIL"] },
+          "code": {
+            "type": ["string", "null"],
+            "enum": [null, "INVALID_REQUEST", "ARTIFACT_NOT_FOUND", "ARTIFACT_OUTSIDE_ALLOWED_ROOT", "ARTIFACT_NOT_REGULAR_FILE", "ARTIFACT_FILENAME_MISMATCH", "ARTIFACT_SIZE_INVALID", "ARTIFACT_HASH_FAILED", "VERSION_MISMATCH", "VERSION_METADATA_UNAVAILABLE", "BUILD_METADATA_MISMATCH", "BUILD_METADATA_UNAVAILABLE", "PAYLOAD_VALIDATION_FAILED", "STAGING_EVIDENCE_UNAVAILABLE", "SECRET_DETECTED", "USER_DATA_DETECTED", "PATH_LEAK_DETECTED", "PROVENANCE_INCOMPLETE", "VALIDATION_INTERNAL_ERROR"]
+          },
+          "message": { "type": "string", "maxLength": 240 },
+          "evidence": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["pathKind", "matchCount"],
+            "properties": {
+              "pathKind": { "type": "string", "pattern": "^[a-z0-9-]{1,64}$" },
+              "matchCount": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pass", "warn", "fail"],
+      "properties": {
+        "pass": { "type": "integer", "minimum": 0 },
+        "warn": { "type": "integer", "minimum": 0 },
+        "fail": { "type": "integer", "minimum": 0 }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "PASS" } }, "required": ["status"] },
+      "then": { "properties": { "valid": { "const": true } } }
+    },
+    {
+      "if": { "properties": { "status": { "const": "PASS_WITH_WARNINGS" } }, "required": ["status"] },
+      "then": { "properties": { "valid": { "const": false } } }
+    },
+    {
+      "if": { "properties": { "status": { "const": "FAIL" } }, "required": ["status"] },
+      "then": { "properties": { "valid": { "const": false } } }
+    }
+  ]
+}

@@ -111,7 +111,13 @@ const SCRIPT_DIRS = {
   'test_release_builder_plan.js': path.join(REPO_ROOT, 'tools', 'release-builder', 'tests'),
   'test_release_builder_astages.js': path.join(REPO_ROOT, 'tools', 'release-builder', 'tests'),
   'test_release_builder_server.js': path.join(REPO_ROOT, 'tools', 'release-builder', 'tests'),
-  'test_release_builder_exe.js': path.join(REPO_ROOT, 'tools', 'release-builder', 'tests')
+  'test_release_builder_exe.js': path.join(REPO_ROOT, 'tools', 'release-builder', 'tests'),
+  'test_packaging_contract.js': path.join(REPO_ROOT, 'tools', 'packaging-control-plane', 'tests'),
+  'test_packaging_environment_inspector.js': path.join(REPO_ROOT, 'tools', 'packaging-control-plane', 'tests'),
+  'test_packaging_build_planner.js': path.join(REPO_ROOT, 'tools', 'packaging-control-plane', 'tests'),
+  'test_packaging_artifact_validator.js': path.join(REPO_ROOT, 'tools', 'packaging-control-plane', 'tests'),
+  'test_packaging_manifest_writer.js': path.join(REPO_ROOT, 'tools', 'packaging-control-plane', 'tests'),
+  'test_packaging_executor.js': path.join(REPO_ROOT, 'tools', 'packaging-control-plane', 'tests')
 };
 function scriptPath(name) { return path.join(SCRIPT_DIRS[name] || TEST_ROOT, name); }
 
@@ -1628,6 +1634,18 @@ const GROUPS = [
       ['test_release_builder_astages.js'],
       ['test_release_builder_server.js'],
       ['test_release_builder_exe.js'],
+      /* P35 Packaging Control Plane: schema contract, read-only preflight,
+         deterministic planning and read-only artifact validation. The suites
+         use isolated synthetic fixtures and never build or install. */
+      ['test_packaging_contract.js'],
+      ['test_packaging_environment_inspector.js'],
+      ['test_packaging_build_planner.js'],
+      ['test_packaging_artifact_validator.js'],
+      ['test_packaging_manifest_writer.js'],
+      ['test_packaging_executor.js'],
+      /* P35.6 · same-origin packaging API gate, UI state mapping and safe request surface. */
+      ['test_packaging_center_api.js'],
+      ['test_packaging_center_ui.js'],
       /* P22-18 的浏览器视觉核对（test_p22_18_economy_experience_visual.js）
          与 P22-15/16/17 那三条一样**不在**默认套件里（它要开一个真实
          浏览器）：2 主题 × 4 宽度（含 320px）+ 截断/空/展开四种状态。

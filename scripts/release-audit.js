@@ -195,7 +195,7 @@ const README_CREDIT = /非官方二次开发版|unofficial derivative/i;
 const README_FORK_SECTION = /^##\s*关于本仓库\s*\/\s*About this fork\s*$/m;
 const README_CREDIT_TOP_LINES = 25;
 
-function scanReleaseClaims(root, findings) {
+function scanReleaseClaimsText(readme, version, findings) {
   const out = findings || [];
   const bad = function (file, line, why, excerpt) {
     out.push({
@@ -204,16 +204,12 @@ function scanReleaseClaims(root, findings) {
     });
   };
 
-  let readme = null;
-  let version = null;
-  try { readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8'); } catch (e) { readme = null; }
-  try { version = fs.readFileSync(path.join(root, 'VERSION'), 'utf8').trim(); } catch (e) { version = null; }
-
-  if (readme === null) {
+  if (typeof readme !== 'string') {
     bad('README.md', 0, '载荷里没有 README.md，发行声明无法核对', 'missing');
     return out;
   }
-  if (!version || !/^\d+\.\d+\.\d+$/.test(version)) {
+  const resolvedVersion = typeof version === 'string' ? version.trim() : '';
+  if (!resolvedVersion || !/^\d+\.\d+\.\d+$/.test(resolvedVersion)) {
     bad('VERSION', 0, '载荷里没有可解析的 VERSION，发行声明无法核对', JSON.stringify(version));
     return out;
   }
@@ -221,18 +217,18 @@ function scanReleaseClaims(root, findings) {
   const claim = README_VERSION_CLAIM.exec(readme);
   if (!claim) {
     bad('README.md', 0, '找不到「当前版本 **x.y.z**」声明——闸门锚点消失，需人工确认文案后再放行', 'no anchor');
-  } else if (claim[1] !== version) {
+  } else if (claim[1] !== resolvedVersion) {
     bad('README.md', lineOf(readme, claim.index),
-      'README 声明的当前版本与 VERSION 不一致（README=' + claim[1] + ' · VERSION=' + version + '）',
+      'README 声明的当前版本与 VERSION 不一致（README=' + claim[1] + ' · VERSION=' + resolvedVersion + '）',
       claim[0]);
   }
 
   README_ASSET_NAME.lastIndex = 0;
   let m;
   while ((m = README_ASSET_NAME.exec(readme)) !== null) {
-    if (m[1] !== version) {
+    if (m[1] !== resolvedVersion) {
       bad('README.md', lineOf(readme, m.index),
-        'README 硬编码了非当前版本的安装包名（VERSION=' + version + '）', m[0]);
+        'README 硬编码了非当前版本的安装包名（VERSION=' + resolvedVersion + '）', m[0]);
     }
   }
 
@@ -253,6 +249,14 @@ function scanReleaseClaims(root, findings) {
       'no fork section');
   }
   return out;
+}
+
+function scanReleaseClaims(root, findings) {
+  let readme = null;
+  let version = null;
+  try { readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8'); } catch (e) { readme = null; }
+  try { version = fs.readFileSync(path.join(root, 'VERSION'), 'utf8').trim(); } catch (e) { version = null; }
+  return scanReleaseClaimsText(readme, version, findings);
 }
 
 /* ── Directory audit ─────────────────────────────────────────────────── */
@@ -329,6 +333,7 @@ module.exports = {
   scanText: scanText,
   scanMarkers: scanMarkers,
   scanReleaseClaims: scanReleaseClaims,
+  scanReleaseClaimsText: scanReleaseClaimsText,
   scanDirectory: scanDirectory,
   formatReport: formatReport,
   mask: mask

@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://internalbeyond.invalid/schemas/artifact-manifest-v1.json",
+  "title": "InternalBeyond Artifact Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "schemaVersion", "product", "target", "version", "revision", "sourceDirty", "mode", "channel", "options", "createdAt", "artifactFile", "artifactBytes", "hash", "validated", "validation"],
+  "properties": {
+    "schema": { "const": "internalbeyond.artifact-manifest" },
+    "schemaVersion": { "const": 1 },
+    "product": { "const": "InternalBeyond" },
+    "target": { "type": "string", "enum": ["windows-installer", "windows-portable", "web-export", "android-apk"] },
+    "version": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$" },
+    "revision": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64}|unknown)$" },
+    "sourceDirty": { "type": "boolean" },
+    "mode": { "type": "string", "enum": ["release", "debug", "test"] },
+    "channel": { "type": "string", "enum": ["stable", "local"] },
+    "options": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "includeDocs": { "type": "boolean", "const": false },
+        "includeExamples": { "type": "boolean", "const": false }
+      }
+    },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "artifactFile": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^(?!\\.{1,2}$)(?![A-Za-z]:)(?![/\\\\])[^/\\\\:]+$"
+    },
+    "artifactBytes": { "type": "integer", "minimum": 1 },
+    "hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "validated": { "type": "boolean" },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "checks"],
+      "properties": {
+        "status": { "type": "string", "enum": ["PASS", "WARN", "FAIL"] },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "status"],
+            "properties": {
+              "id": { "type": "string", "pattern": "^[a-z0-9-]{1,64}$" },
+              "status": { "type": "string", "enum": ["PASS", "WARN", "FAIL"] }
+            }
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "mode": { "const": "release" } }, "required": ["mode"] },
+      "then": { "properties": { "channel": { "const": "stable" } } }
+    },
+    {
+      "if": { "properties": { "mode": { "enum": ["debug", "test"] } }, "required": ["mode"] },
+      "then": { "properties": { "channel": { "const": "local" } } }
+    },
+    {
+      "if": { "properties": { "validated": { "const": true } }, "required": ["validated"] },
+      "then": { "properties": { "validation": { "properties": { "status": { "const": "PASS" } } } } }
+    }
+  ]
+}

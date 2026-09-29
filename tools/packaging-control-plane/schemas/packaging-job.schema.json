@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://internalbeyond.invalid/schemas/packaging-job-v1.json",
+  "title": "InternalBeyond PackagingJob",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "target", "version", "channel", "mode", "options"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    },
+    "target": {
+      "type": "string",
+      "enum": ["windows-installer", "windows-portable", "web-export", "android-apk"]
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^(|(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*))$",
+      "description": "Empty means read the repository VERSION; any explicit value must match it."
+    },
+    "channel": { "type": "string", "enum": ["stable", "local"] },
+    "mode": { "type": "string", "enum": ["release", "debug", "test"] },
+    "options": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "includeDocs": { "type": "boolean", "const": false },
+        "includeExamples": { "type": "boolean", "const": false }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "mode": { "const": "release" } }, "required": ["mode"] },
+      "then": { "properties": { "channel": { "const": "stable" } } }
+    },
+    {
+      "if": { "properties": { "mode": { "enum": ["debug", "test"] } }, "required": ["mode"] },
+      "then": { "properties": { "channel": { "const": "local" } } }
+    }
+  ]
+}

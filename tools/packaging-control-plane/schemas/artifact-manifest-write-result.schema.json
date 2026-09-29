@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://internalbeyond.invalid/schemas/artifact-manifest-write-result-v1.json",
+  "title": "InternalBeyond Artifact Manifest Write Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "schemaVersion", "status", "code", "message", "manifest"],
+  "properties": {
+    "schema": { "const": "internalbeyond.artifact-manifest-write-result" },
+    "schemaVersion": { "const": 1 },
+    "status": { "type": "string", "enum": ["WRITTEN", "ALREADY_IDENTICAL", "DENIED", "FAILED"] },
+    "code": {
+      "type": ["string", "null"],
+      "enum": [null, "INVALID_REQUEST", "VALIDATION_RESULT_INVALID", "VALIDATION_NOT_PASS", "MANIFEST_SCHEMA_INVALID", "OUTPUT_PATH_INVALID", "MANIFEST_ALREADY_EXISTS_CONFLICT", "MANIFEST_WRITE_FAILED", "MANIFEST_READBACK_FAILED", "MANIFEST_CONTENT_MISMATCH", "FORBIDDEN_FIELD_DETECTED"]
+    },
+    "message": { "type": "string", "maxLength": 200 },
+    "manifest": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["name", "sha256"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*\\.manifest\\.json$" },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "enum": ["WRITTEN", "ALREADY_IDENTICAL"] } }, "required": ["status"] },
+      "then": { "properties": { "code": { "const": null }, "manifest": { "type": "object" } } }
+    },
+    {
+      "if": { "properties": { "status": { "enum": ["DENIED", "FAILED"] } }, "required": ["status"] },
+      "then": { "properties": { "code": { "type": "string" }, "manifest": { "const": null } } }
+    }
+  ]
+}

@@ -74,6 +74,7 @@ const productVersion = require('../runtime/product-version.js');
 const serviceControl = require('../runtime/service-control.js');
 const { isTauriOrigin } = require('../runtime/host-origin.js');
 const { createProjectKnowledge } = require('./project-knowledge.js');
+const { createPackagingCenterApi } = require('./packaging-center-api.js');
 
 /*
  * The update runtime is loaded DEFENSIVELY, and this is load-bearing.
@@ -417,6 +418,11 @@ function createWebServer(opts) {
   /* P32: the Browser adapter uses this same allowlisted, read-only resolver.
      Tauri uses its Rust counterpart; neither path exposes the repository root. */
   const projectKnowledge = o.projectKnowledge || createProjectKnowledge({ root: root });
+  const packagingApiOptions = { root: root, originAllowed: shutdownOriginAllowed };
+  if (Object.prototype.hasOwnProperty.call(o, 'packagingControlPlane')) {
+    packagingApiOptions.controlPlane = o.packagingControlPlane;
+  }
+  const packagingApi = o.packagingApi || createPackagingCenterApi(packagingApiOptions);
 
   /* P11-3H · 停止面的判定（唯一实现在 runtime/service-control.js）。
      `exposeBody:false`：本文件的 /__shutdown 从 P7 起就回答
@@ -431,6 +437,9 @@ function createWebServer(opts) {
   const server = http.createServer(function (req, res) {
     const pathname = String(req.url || '/').split('?')[0];
     if (dispatchTauriCors(req, res, pathname)) return;
+    let requestUrl = null;
+    try { requestUrl = new URL(String(req.url || '/'), 'http://127.0.0.1'); } catch (_) { }
+    if (packagingApi.handle(req, res, pathname, requestUrl)) return;
     if (pathname === '/health' || pathname === '/__health') {
       const pv = productVersion.get();
       const body = JSON.stringify({ ok: true, server: identity, version: pv.ok ? pv.version : '' });

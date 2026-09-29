@@ -25,6 +25,7 @@
 <link id="ib-cal-css" rel="stylesheet" href="assets/css/calendar.css">
 <link rel="stylesheet" href="assets/css/local-vault.css">
 <link rel="stylesheet" href="assets/css/local-first.css">
+<link rel="stylesheet" href="assets/css/packaging-center.css">
 </head>
 <body>
 <a class="skip-link" href="#app">跳到主要内容</a>
@@ -2519,6 +2520,98 @@ i would like the room to be enough.
 
 <div class="page" id="page-diagnostics"></div>
 
+<!-- P35.6 · Self-Service Packaging Center presentation only. All execution,
+     eligibility, validation, and manifest decisions stay behind the local API. -->
+<div class="page" id="page-packaging">
+  <div class="pc-shell">
+    <header class="pc-page-heading">
+      <div>
+        <h2>Packaging Center</h2>
+        <p>从当前源码工作区构建 Windows 安装包。</p>
+      </div>
+      <p class="pc-availability" id="pc-availability" role="status" aria-live="polite">正在检查打包工具…</p>
+    </header>
+
+    <section class="glass-card pc-product" aria-labelledby="pc-product-title">
+      <div class="pc-product-mark" aria-hidden="true">IB</div>
+      <div class="pc-product-copy">
+        <p class="pc-eyebrow">Windows 安装包</p>
+        <h3 id="pc-product-title">InternalBeyond Setup</h3>
+        <p class="pc-product-subtitle">稳定版，使用标准安装包构建流程</p>
+      </div>
+      <div class="pc-product-version">
+        <span>版本</span>
+        <strong id="pc-version">—</strong>
+      </div>
+      <button type="button" class="btn btn-primary" id="pc-start" disabled>开始构建</button>
+    </section>
+
+    <div class="pc-information-grid">
+      <section class="glass-card pc-panel" aria-labelledby="pc-environment-title">
+        <div class="pc-panel-heading">
+          <div>
+            <h3 id="pc-environment-title">Environment</h3>
+            <p>检查构建所需的工具、文件和磁盘空间。</p>
+          </div>
+          <span class="pc-state" id="pc-environment-state" data-status="unknown">等待检查</span>
+        </div>
+        <p class="pc-panel-note" id="pc-environment-note" aria-live="polite">进入此页面后将检查当前工作区。</p>
+        <ul class="pc-check-list" id="pc-checks" aria-label="环境检查结果"></ul>
+      </section>
+
+      <section class="glass-card pc-panel" aria-labelledby="pc-plan-title">
+        <div class="pc-panel-heading">
+          <div>
+            <h3 id="pc-plan-title">Build Plan</h3>
+            <p>查看构建流程及其检查结果。</p>
+          </div>
+          <span class="pc-state" id="pc-plan-state" data-status="unknown">等待检查</span>
+        </div>
+        <p class="pc-panel-note" id="pc-plan-note">构建步骤由系统生成，此页面仅供查看。</p>
+        <ol class="pc-plan-list" id="pc-plan-steps"></ol>
+      </section>
+    </div>
+
+    <section class="glass-card pc-panel pc-run" id="pc-current-job" aria-labelledby="pc-run-title" hidden>
+      <div class="pc-panel-heading pc-run-heading">
+        <div>
+          <h3 id="pc-run-title">Build Activity</h3>
+          <p id="pc-run-job-id">当前会话</p>
+        </div>
+        <span class="pc-state" id="pc-run-state" data-status="unknown" role="status" aria-live="polite">等待开始</span>
+      </div>
+      <ol class="pc-timeline" id="pc-timeline" aria-label="打包进度"></ol>
+      <p class="pc-run-note" id="pc-run-note" aria-live="polite"></p>
+      <div class="pc-result" id="pc-result" hidden></div>
+      <div class="pc-run-actions">
+        <button type="button" class="btn btn-danger" id="pc-cancel" hidden>取消构建</button>
+      </div>
+    </section>
+
+    <section class="pc-history" aria-labelledby="pc-history-title">
+      <div class="pc-history-heading">
+        <h3 id="pc-history-title">Current Session Jobs</h3>
+        <span id="pc-history-count">0</span>
+      </div>
+      <div class="pc-history-list" id="pc-history-list">
+        <p class="pc-empty-state">当前会话暂无打包任务。</p>
+      </div>
+      <p class="pc-session-note">任务记录仅保留在当前会话中，打包服务重启后会清空。</p>
+    </section>
+
+    <p class="pc-future-targets">Windows 便携版、网页导出、Android APK <span>暂不支持，后续提供</span></p>
+
+    <dialog class="pc-cancel-dialog" id="pc-cancel-dialog" aria-labelledby="pc-cancel-title">
+      <h3 id="pc-cancel-title">Cancel this build?</h3>
+      <p>仅会停止当前任务的构建进程。构建结束并进入校验后，将无法取消。</p>
+      <div class="pc-dialog-actions">
+        <button type="button" class="btn" id="pc-cancel-dismiss">继续构建</button>
+        <button type="button" class="btn btn-danger" id="pc-cancel-confirm">取消构建</button>
+      </div>
+    </dialog>
+  </div>
+</div>
+
 <!-- P22-15 · Economy 待决定（Approval Requests）
      容器刻意是**空的**：整页由 assets/js/economy-approval.js 渲染。
      这样做的理由不是省字节，而是"经济事实只有一个来源"：把卡片结构写在
@@ -3550,6 +3643,7 @@ i would like the room to be enough.
      不注册普通导航 / page-* 路由 / 角色目录，也不进入角色聊天执行链。 -->
 <script src="assets/js/middle-brain-direct.js"></script>
 <script src="assets/js/tauri-window-chrome.js"></script>
+<script src="assets/js/packaging-center.js"></script>
 <!-- 深渊暗线：只在 Infernal（暗色）模式可瞥见——"你知道这里通向深渊，但你也知道，你随时可以离开。" -->
 <div class="ib-beyond-leave" id="ib-beyond-leave" aria-hidden="true">你知道这里通向深渊，但你也知道，你随时可以离开。</div>
 </body>

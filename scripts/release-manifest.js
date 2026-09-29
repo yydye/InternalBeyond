@@ -64,6 +64,7 @@ const ENTRIES = [
   { from: 'runtime/local-services-runner.js', why: '本地服务管理进程（Bridge / Active / Home Node + 重启与停止控制面）' },
   { from: 'services/internal-beyond-server.js', why: '本地静态页面服务（AudioWorklet 必需）' },
   { from: 'services/project-knowledge.js', why: 'Browser Project Knowledge 只读 adapter（静态服务的 /__project-knowledge contract）' },
+  { from: 'services/packaging-center-api.js', why: 'P35.6 同源 UI API adapter；仅在源码构建控制面可用时委托，安装包不包含 P35 Control Plane' },
   { from: 'services/ib-bridge-service.js', why: 'Bridge 后端' },
   { from: 'services/active-message-service.js', why: 'Active 后台主动消息服务' },
   /* P11-3B 收口既有缺口：runner 一直把 Home Node 当作已注册服务启动，但它从未
