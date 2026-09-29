@@ -19,6 +19,53 @@
     return null;
   }
 
+  /* P34.1 · 运行时凭据解析（不修改 Vault architecture，只复用既有 resolver）。
+     - 设了 credentialRef → 经 IB.host.credentialResolver 解析（Tauri 运行时；Vault 权威）。
+     - 否则回退 legacy cfg.apiKey（无 ref 时既有行为逐位不变）。
+     返回 {ok, apiKey, source}；失败 {ok:false, error}。明文只存活于本次请求生命周期。 */
+  async function resolveRuntimeCredential(cfg) {
+    try {
+      var ref = String((cfg && (cfg.credentialRef || cfg.providerConfigId)) || '').trim();
+      var host = root && root.IB && root.IB.host;
+      var resolver = host && host.credentialResolver;
+      if (ref) {
+        if (!resolver || typeof resolver.resolve !== 'function' || resolver.available === false) {
+          return { ok: false, error: 'credential-unavailable' };
+        }
+        var res = await resolver.resolve(ref);
+        if (res && res.ok === true && typeof res.apiKey === 'string' && res.apiKey.trim()) {
+          return { ok: true, apiKey: res.apiKey, source: 'vault' };
+        }
+        return { ok: false, error: 'credential-unavailable' };
+      }
+      /* Pre-ref configurations remain readable only until the user next saves this card. */
+      return { ok: true, apiKey: String((cfg && cfg.apiKey) || ''), source: 'config' };
+    } catch (e) { return { ok: false, error: 'credential-error' }; }
+  }
+
+  /* P34.2-A · 复用现有 provider 网络路径（只读）。
+     当 credentialRef / providerConfigId 指向一个现有 apiConfig 时，Middle Brain 采用该
+     配置的 provider/endpoint/model 作为**网络路径**，从而走与普通 Chat 相同的可达 seam
+     （同一 AstraAdapter.buildRequest / _ibApiPost）。绝不修改 apiConfigs，也绝不读取其密钥。
+     返回 null 表示未绑定或该 apiConfig 不可用 → 回退 Middle Brain 自身 endpoint（行为不变）。 */
+  async function _mbProviderPath(cfg) {
+    try {
+      var ref = String((cfg && (cfg.providerConfigId || cfg.credentialRef)) || '').trim();
+      if (!ref || typeof root.dbGet !== 'function') return null;
+      var row = await root.dbGet('apiConfigs', ref);
+      if (!row || row.archived) return null;
+      var endpoint = String(row.endpoint || '').trim();
+      var model = String(row.model || '').trim();
+      if (!endpoint || !model) return null;
+      return Object.assign({}, cfg, {
+        provider: String(row.provider || cfg.provider || 'openai'),
+        endpoint: endpoint,
+        model: model,
+        format: row.format
+      });
+    } catch (e) { return null; }
+  }
+
   /* —— 归一请求体（委托 AstraAdapter.buildRequest；返回 {endpoint, headers, body}） ——
      供后续 Middle Brain 接入复用；不在此处发起 fetch（保留独立调用权给中间层）。 */
   async function buildMiddleBrainRequest(spec, prompt, options) {
@@ -126,28 +173,37 @@
      opts: {maxTokens, jsonMode, schema, schemaName, timeoutMs} */
   async function middleBrainModelCall(prompt, opts) {
     opts = opts || {};
+    var cred = null, auth = '';
     try {
       if (!(await CFG.middleBrainReady())) return { ok: false, error: 'not_ready' };
       var cfg = await CFG.getMiddleBrainConfig();
+      cred = await resolveRuntimeCredential(cfg);
+      if (!cred.ok) return { ok: false, error: 'not_ready' };
+      auth = 'Bearer ' + (cred.apiKey || '');
       var consumer = String(opts.consumer || 'middle_brain');
-      var req = await buildMiddleBrainResponsesRequest(null, prompt, { maxTokens: opts.maxTokens || 900, jsonMode: opts.jsonMode !== false, consumer: consumer });
+      /* P34.2-A：绑定到现有 apiConfig 时复用其网络路径（provider/endpoint/model + 对应 wire 格式）。 */
+      var bound = await _mbProviderPath(cfg);
+      var eff = bound || cfg;
+      var req = bound
+        ? await buildMiddleBrainRequest(eff, prompt, { maxTokens: opts.maxTokens || 900, jsonMode: opts.jsonMode !== false, consumer: consumer })
+        : await buildMiddleBrainResponsesRequest(eff, prompt, { maxTokens: opts.maxTokens || 900, jsonMode: opts.jsonMode !== false, consumer: consumer });
       if (!req || !req.body) return { ok: false, error: 'request' };
       /* 结构化输出 schema 覆盖：仅 Responses 风格 body 才有 text.format（Chat Completions 回落不加此字段） */
-      if (opts.schema && req.body.messages === undefined) {
+      if (!bound && opts.schema && req.body.messages === undefined) {
         req.body.text = { format: { type: 'json_schema', name: opts.schemaName || 'middle_brain_report', schema: opts.schema } };
       }
-      if (cfg.endpoint) req.endpoint = cfg.endpoint;
+      if (eff.endpoint) req.endpoint = eff.endpoint;
       var ac = new AbortController();
       var timedOut = false;
       var tm = setTimeout(function () { timedOut = true; ac.abort(); }, (opts.timeoutMs != null ? Number(opts.timeoutMs) : MB_ASTRA_TIMEOUT_MS));
       var res;
       try {
         if (typeof root._ibApiPost === 'function') {
-          res = await root._ibApiPost(req.endpoint, Object.assign({}, req.headers, { Authorization: 'Bearer ' + (cfg.apiKey || '') }), JSON.stringify(req.body), { signal: ac.signal });
+          res = await root._ibApiPost(req.endpoint, Object.assign({}, req.headers, { Authorization: auth }), JSON.stringify(req.body), { signal: ac.signal });
         } else {
           res = await fetch(req.endpoint, {
             method: 'POST',
-            headers: Object.assign({}, req.headers, { Authorization: 'Bearer ' + (cfg.apiKey || '') }),
+            headers: Object.assign({}, req.headers, { Authorization: auth }),
             body: JSON.stringify(req.body),
             signal: ac.signal
           });
@@ -158,12 +214,16 @@
       var data = await res.json().catch(function () { return null; });
       if (!data) return { ok: false, error: 'parse' };
       var parsed = null;
-      try { var _a = adapter(); if (_a && typeof _a.parseResponsesResponse === 'function') parsed = _a.parseResponsesResponse(data, null, {}); } catch (e) { parsed = null; }
+      try {
+        if (bound) parsed = await parseMiddleBrainResponse(data, eff, {});
+        else { var _a = adapter(); if (_a && typeof _a.parseResponsesResponse === 'function') parsed = _a.parseResponsesResponse(data, null, {}); }
+      } catch (e) { parsed = null; }
       if (!parsed) parsed = { content: '', reasoning: '', truncated: false, usage: null };
       if (!parsed.content) return { ok: false, error: 'empty' };
       _mbNoteReasoningTokens(parsed.usage, cfg, consumer);
       return { ok: true, content: String(parsed.content), usage: parsed.usage || null };
     } catch (e) { return { ok: false, error: 'error' }; }
+    finally { if (cred) cred.apiKey = ''; auth = ''; }
   }
 
   /* ====================================================================
@@ -220,6 +280,7 @@
      任何失败（超时/网络/非 JSON/未启用/未配置/校验不过）→ 返回 null。 */
   async function middleBrainAstraInvoke(characterId, userMessage, opts) {
     opts = opts || {};
+    var cred = null, auth = '';
     try {
       if (!(await CFG.middleBrainReady())) return null;
       var organized = await POL.middleBrainOrganizeContext(characterId, userMessage, opts);
@@ -241,6 +302,9 @@
         + '【上下文】\n' + ctxBlocks.join('\n\n');
       var messages = [{ role: 'user', content: userPrompt }];
       var cfg = await CFG.getMiddleBrainConfig();
+      cred = await resolveRuntimeCredential(cfg);
+      if (!cred.ok) return null;
+      auth = 'Bearer ' + (cred.apiKey || '');
       /* Responses API 请求：优先 buildResponsesRequest；失败回落 Chat Completions（保聊天不破）。
          P21：思考深度走 canonical 配置（auto/未取证 → request builder 不写任何字段）。 */
       var req = await buildMiddleBrainResponsesRequest(null, messages, { maxTokens: 1600, jsonMode: true, consumer: 'middle_brain.compression' });
@@ -252,11 +316,11 @@
       /* 复用现有传输（Bridge-aware CORS 处理，file:// 也能直连 mock/远端）；无则回落 raw fetch */
       var res;
       if (typeof root._ibApiPost === 'function') {
-        res = await root._ibApiPost(req.endpoint, Object.assign({}, req.headers, { Authorization: 'Bearer ' + (cfg.apiKey || '') }), JSON.stringify(req.body), { signal: ac.signal });
+        res = await root._ibApiPost(req.endpoint, Object.assign({}, req.headers, { Authorization: auth }), JSON.stringify(req.body), { signal: ac.signal });
       } else {
         res = await fetch(req.endpoint, {
           method: 'POST',
-          headers: Object.assign({}, req.headers, { Authorization: 'Bearer ' + (cfg.apiKey || '') }),
+          headers: Object.assign({}, req.headers, { Authorization: auth }),
           body: JSON.stringify(req.body),
           signal: ac.signal
         });
@@ -288,6 +352,7 @@
         source: 'astra'
       };
     } catch (e) { return null; }   /* 超时/网络/校验失败 → fallback */
+    finally { if (cred) cred.apiKey = ''; auth = ''; }
   }
 
   /* —— layer contract（P11-1B）：astra 层唯一出口，冻结后下游只读 —— */
@@ -299,6 +364,8 @@
     parseMiddleBrainResponse: parseMiddleBrainResponse,
     /* 统一模型调用（judge / integrity 共用；唯一网络边界） */
     middleBrainModelCall: middleBrainModelCall,
+    /* P34.1 · 运行时凭据解析（judge / 其它同层网络边界复用；不落库、不缓存） */
+    resolveRuntimeCredential: resolveRuntimeCredential,
     /* P21 · reasoning 观测回填（judge / integrity 复用；只读 usage） */
     _mbNoteReasoningTokens: _mbNoteReasoningTokens,
     /* Astra 调用 + 结构化解析 */

@@ -16,7 +16,7 @@ function createPersistence(deps) {
   const DATA_BACKUP_FILE = DATA_FILE + '.bak';
 
   function emptyData() {
-    return { version: 3, tasks: {}, plans: {}, events: {}, history: {}, moments: {}, replyChains: {}, bgAi: { enabled: true, sleepStart: '', sleepEnd: '' } };
+    return { version: 3, tasks: {}, plans: {}, events: {}, history: {}, moments: {}, replyChains: {}, credentialBindings: [], bgAi: { enabled: true, sleepStart: '', sleepEnd: '' } };
   }
 
   function parseDataFile(file) {
@@ -32,6 +32,10 @@ function createPersistence(deps) {
       history: parsed.history && typeof parsed.history === 'object' && !Array.isArray(parsed.history) ? parsed.history : {},
       moments: parsed.moments && typeof parsed.moments === 'object' && !Array.isArray(parsed.moments) ? parsed.moments : {},
       replyChains: parsed.replyChains && typeof parsed.replyChains === 'object' && !Array.isArray(parsed.replyChains) ? parsed.replyChains : {},
+      /* Non-secret allowlist entries written only by the Credential Authority route. */
+      credentialBindings: Array.isArray(parsed.credentialBindings)
+        ? Array.from(new Set(parsed.credentialBindings.map(value => String(value || '').trim()).filter(value => value.length > 0 && value.length <= 180 && /^[A-Za-z0-9_.:-]+$/.test(value))))
+        : [],
       /* 后台 AI 总开关：随 state 持久化，重启后仍保持（缺省默认启用，向后兼容） */
       bgAi: Object.assign({ enabled: true, sleepStart: '', sleepEnd: '' }, (parsed.bgAi && typeof parsed.bgAi === 'object' && !Array.isArray(parsed.bgAi)) ? parsed.bgAi : {})
     };

@@ -202,6 +202,7 @@
         temperature: spec.temperature, promptCache: spec.promptCache,
         vision: spec.vision, systemPrompt: spec.systemPrompt, streaming: spec.streaming
       };
+      if (spec && Object.prototype.hasOwnProperty.call(spec, 'credentialRef')) cfg.credentialRef = spec.credentialRef;
       /* ── abort 桥接：外部 AbortSignal → 执行器可接受的 AbortController ── */
       const signal = options.signal || null;
       const ac = new AbortController();
@@ -382,7 +383,7 @@
        且以 formatKnown=false / formatSource 如实暴露（不再静默）。 */
     resolveModel(cfg) {
       const resolved = resolveProviderFormat(cfg && cfg.provider);
-      return {
+      const spec = {
         format: resolved.format, formatKnown: resolved.known, formatSource: resolved.source,
         provider: String((cfg && cfg.provider) || ''),
         model: String((cfg && cfg.model) || ''), endpoint: String((cfg && cfg.endpoint) || ''),
@@ -394,6 +395,8 @@
         streaming: (cfg && cfg.streaming !== undefined ? !!cfg.streaming : undefined),
         systemPrompt: String((cfg && cfg.systemPrompt) || '')
       };
+      if (cfg && Object.prototype.hasOwnProperty.call(cfg, 'credentialRef')) spec.credentialRef = String(cfg.credentialRef || '');
+      return spec;
     },
 
     /* ④ resolveTools(cfg) → 能力 / 开关位（只枚举 cfg 上已存在的标志，不发明新逻辑）。 */

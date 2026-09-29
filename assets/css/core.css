@@ -350,6 +350,28 @@ body:not(.theme-infernal) #navbar.on-subpage .nav-user-avatar{border-color:rgba(
    drag target occupies only the existing whitespace between brand and links. */
 #ib-tauri-drag-region{position:fixed;z-index:10000;cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none}
 #ib-tauri-drag-region:active{cursor:grabbing}
+
+/* Shared dialog / overlay primitive（surface.dialog + surface.overlay）——API credential modal（P1 token 化） */
+.ib-api-credential-status{font-size:var(--fs-meta);opacity:0.72;margin-left:4px}
+.ib-api-key-btn{appearance:none;margin-top:4px;padding:2px 9px;font-size:var(--fs-meta);border-radius:var(--radius-control);border:1px solid color-mix(in srgb,currentColor 20%,transparent);background:color-mix(in srgb,currentColor 6%,transparent);color:inherit;cursor:pointer;transition:background 0.16s ease,border-color 0.16s ease}
+.ib-api-key-btn:hover{background:color-mix(in srgb,currentColor 14%,transparent);border-color:color-mix(in srgb,currentColor 32%,transparent)}
+.ib-cred-modal-backdrop{position:fixed;inset:0;z-index:10050;display:flex;align-items:center;justify-content:center;background:var(--surface-dialog-scrim);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
+.ib-cred-modal-backdrop[hidden]{display:none}
+.ib-cred-modal{width:min(420px,92vw);padding:var(--space-5) var(--space-5) var(--space-4);border-radius:var(--radius-panel);background:var(--glass-bg-modal);border:1px solid var(--glass-border-floating);box-shadow:var(--glass-shadow-modal);color:var(--content-primary)}
+.ib-cred-modal-title{margin:0 0 12px;font-size:1rem;font-weight:500}
+.ib-cred-modal-meta{display:flex;flex-direction:column;gap:var(--space-1);margin-bottom:var(--space-3);font-size:0.78rem}
+.ib-cred-modal-label{opacity:0.55;margin-right:8px}
+.ib-cred-modal-value{opacity:0.9}
+.ib-cred-modal-field{display:block;font-size:0.75rem;opacity:0.7;margin-bottom:6px}
+.ib-cred-modal-input{width:100%;box-sizing:border-box;padding:var(--space-2) var(--space-3);font-size:var(--fs-body);border-radius:var(--radius-control);border:1px solid var(--border-soft);background:var(--surface-input);color:var(--content-primary);outline:none}
+.ib-cred-modal-input:focus{border-color:var(--focus-ring)}
+.ib-cred-modal-note{margin:var(--space-2) 0 var(--space-4);font-size:var(--fs-meta);line-height:1.55;opacity:0.62}
+.ib-cred-modal-actions{display:flex;justify-content:flex-end;gap:var(--space-2)}
+.ib-cred-modal-btn{appearance:none;padding:var(--space-2) var(--space-4);font-size:0.8rem;border-radius:var(--radius-control);border:1px solid var(--border-soft);background:transparent;color:var(--content-primary);cursor:pointer}
+.ib-cred-modal-btn:hover{background:var(--surface-hover)}
+.ib-cred-modal-btn-primary{background:var(--accent);border-color:transparent;color:#fff}
+.ib-cred-modal-btn-danger{margin-right:auto;color:var(--status-danger);border-color:color-mix(in srgb,var(--status-danger) 38%,transparent)}
+.ib-cred-modal-btn-danger[hidden]{display:none}
 .ib-window-controls{position:fixed;z-index:10000;display:flex;align-items:center;gap:1px;padding-left:5px;border-left:1px solid color-mix(in srgb,currentColor 18%,transparent)}
 .ib-window-controls-slot{display:block;flex:0 0 80px;width:80px;height:26px;pointer-events:none}
 .ib-window-control{appearance:none;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:24px;height:26px;padding:0;border:1px solid color-mix(in srgb,currentColor 12%,transparent);border-radius:7px;background:color-mix(in srgb,currentColor 5%,transparent);color:inherit;cursor:pointer;box-shadow:none;transition:background 0.16s ease,border-color 0.16s ease,color 0.16s ease,transform 0.12s ease}

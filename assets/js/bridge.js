@@ -82,7 +82,7 @@ window.ibBridgeToken=ibBridgeToken;
 window.ibBridgeFetch=ibBridgeFetch;
 
 var _ibToastEl=null;
-function ibToast(m){ try{ if(typeof toast==='function'){toast(m);return;} }catch(e){} var s=String(m||''); try{ console.log(s); }catch(e2){} try{ if(!_ibToastEl){ _ibToastEl=document.createElement('div'); _ibToastEl.id='ib-toast-fallback'; _ibToastEl.style.cssText='position:fixed;bottom:120px;left:50%;transform:translateX(-50%);z-index:9999;padding:10px 22px;border-radius:10px;background:rgba(16,22,38,.92);border:1px solid rgba(140,200,255,.35);color:#e0edff;font-size:.82rem;font-family:\"Noto Sans SC\",sans-serif;pointer-events:none;opacity:0;transition:opacity .3s ease;max-width:85vw;text-align:center;word-break:break-word'; document.body.appendChild(_ibToastEl); } _ibToastEl.textContent=s; _ibToastEl.style.opacity='1'; clearTimeout(_ibToastEl._t); _ibToastEl._t=setTimeout(function(NS){ _ibToastEl.style.opacity='0'; },2500); }catch(e){} }
+function ibToast(m){ try{ if(typeof toast==='function'){toast(m);return;} }catch(e){} var s=String(m||''); try{ console.log(s); }catch(e2){} try{ if(!_ibToastEl){ _ibToastEl=document.createElement('div'); _ibToastEl.id='ib-toast-fallback'; _ibToastEl.style.cssText='position:fixed;bottom:120px;left:50%;transform:translateX(-50%);z-index:9999;padding:10px 22px;border-radius:var(--radius-control);background:var(--glass-bg-floating);border:1px solid var(--glass-border-floating);color:var(--content-primary);font-size:.82rem;font-family:\"Noto Sans SC\",sans-serif;pointer-events:none;opacity:0;transition:opacity .3s ease;max-width:85vw;text-align:center;word-break:break-word'; document.body.appendChild(_ibToastEl); } _ibToastEl.textContent=s; _ibToastEl.style.opacity='1'; clearTimeout(_ibToastEl._t); _ibToastEl._t=setTimeout(function(NS){ _ibToastEl.style.opacity='0'; },2500); }catch(e){} }
 function ibEsc(s){ try{ if(typeof esc==='function')return esc(s); }catch(e){} return String(s==null?'':s).replace(/[&<>"']/g,function(c){return({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]}) }
 
 /* ---------- P3：本地服务 / TTS 错误的统一用户提示 ----------
@@ -1165,6 +1165,9 @@ function ibAiNew(){
   try{ if(typeof apiConfigs!=='undefined'&&Array.isArray(apiConfigs))cfgs=apiConfigs; }catch(e){}
   var cfg=cfgs[idx];
   if(!cfg){ ibToast('请先在 API 设置里添加一个模型'); btn.disabled=false; return; }
+  var hasCredentialRef=Object.prototype.hasOwnProperty.call(cfg,'credentialRef');
+  var credentialRef=hasCredentialRef?String(cfg.credentialRef||'').trim():String(cfg.id||'').trim();
+  if(!credentialRef){ ibToast('该 API 配置没有 Credential Vault 凭据，请先添加 API Key'); btn.disabled=false; return; }
   var fmt='openai';
   try{
     if(cfg.format)fmt=cfg.format;
@@ -1176,7 +1179,8 @@ function ibAiNew(){
     name:cfg.nickname||cfg.model||'AI',
     provider:{
       endpoint:cfg.endpoint||'',
-      apiKey:cfg.apiKey||'',
+      credentialRef:credentialRef,
+      providerId:cfg.provider||'',
       model:cfg.model||'',
       format:fmt
     },

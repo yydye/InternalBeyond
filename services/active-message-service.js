@@ -29,6 +29,7 @@ const DATA_DIR = process.env.IB_ACTIVE_DATA_DIR ||
   (process.platform === 'win32' && process.env.LOCALAPPDATA
     ? path.join(process.env.LOCALAPPDATA, 'InternalBeyond')
     : path.join(os.homedir(), '.internal-beyond'));
+const CREDENTIAL_DATA_DIR = process.env.IB_CREDENTIAL_DATA_DIR || DATA_DIR;
 const DATA_FILE = path.join(DATA_DIR, 'active-message-service.json');
 const DATA_TEMP_FILE = `${DATA_FILE}.tmp`;
 const DATA_BACKUP_FILE = `${DATA_FILE}.bak`;
@@ -37,6 +38,7 @@ const PROACTIVE_MAX_ATTEMPTS = 3; // initial request + at most two regeneration 
 const PROACTIVE_SIMILARITY_LIMIT = 0.82;
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
+if (CREDENTIAL_DATA_DIR !== DATA_DIR) fs.mkdirSync(CREDENTIAL_DATA_DIR, { recursive: true });
 
 /* ------------------------------------------------------------------ */
 /* 持久化层（已提取到 active/persistence.js 工厂；state 为共享引用）    */
@@ -156,7 +158,7 @@ const windowsNotify = modelClient.windowsNotify;
 /* ------------------------------------------------------------------ */
 
 const createCredentialVault = require('../active/credential-vault');
-const credentialVault = createCredentialVault({ dataDir: DATA_DIR });
+const credentialVault = createCredentialVault({ dataDir: CREDENTIAL_DATA_DIR });
 credentialVault.load();
 try {
   const mig = credentialVault.migrateFromState(() => state);

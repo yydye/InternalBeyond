@@ -9,9 +9,15 @@ const createCredentialResolver = require('./credential-resolver');
 
 const MAX_REQUEST_BYTES = 2048;
 const MAX_SECRET_BYTES = 8192;
-const dataDir = process.env.LOCALAPPDATA
+const activeDataDir = process.env.IB_ACTIVE_DATA_DIR || (process.env.LOCALAPPDATA
   ? path.join(process.env.LOCALAPPDATA, 'InternalBeyond')
-  : '';
+  : '');
+const dataDir = process.env.IB_CREDENTIAL_DATA_DIR || activeDataDir;
+
+/* P34.1 · Non-Active system bindings explicitly allowed to use the Vault.
+   This adds a fixed constant id only; role bindings remain governed solely by
+   the Active metadata set below, so existing role behavior is unchanged. */
+const SYSTEM_BINDING_IDS = ['middle_brain'];
 
 function fail() {
   process.stdout.write(JSON.stringify({ ok: false, errorCode: 'CREDENTIAL_UNAVAILABLE' }));
@@ -23,17 +29,19 @@ function validBindingId(value) {
 }
 
 function knownActiveBindings() {
-  if (!dataDir) return new Set();
+  if (!activeDataDir) return new Set(SYSTEM_BINDING_IDS);
   try {
-    const state = JSON.parse(fs.readFileSync(path.join(dataDir, 'active-message-service.json'), 'utf8'));
+    const state = JSON.parse(fs.readFileSync(path.join(activeDataDir, 'active-message-service.json'), 'utf8'));
     return new Set([
+      ...SYSTEM_BINDING_IDS,
       ...Object.keys(state.moments || {}),
       ...Object.values(state.plans || {}).map(item => String(item && item.characterId || '')).filter(Boolean),
       ...Object.values(state.events || {}).map(item => String(item && item.character_id || '')).filter(Boolean),
-      ...Object.values(state.history || {}).map(item => String(item && item.character_id || '')).filter(Boolean)
+      ...Object.values(state.history || {}).map(item => String(item && item.character_id || '')).filter(Boolean),
+      ...(Array.isArray(state.credentialBindings) ? state.credentialBindings.filter(validBindingId) : [])
     ]);
   } catch (_) {
-    return new Set();
+    return new Set(SYSTEM_BINDING_IDS);
   }
 }
 

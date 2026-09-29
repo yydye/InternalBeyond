@@ -98,7 +98,7 @@ async function main() {
 
   const core = fs.readFileSync(path.join(__dirname, '..', 'assets', 'js', 'core.js'), 'utf8');
   check(core.includes("s==='apiConfigs'?_ibCredentialFreeApiConfig(d):d"), 'indexeddb-api-config-writes-sanitized');
-  check(core.includes("if(st==='apiConfigs')arr=arr.map(_ibCredentialFreeApiConfig)"), 'emergency-mirror-api-configs-sanitized');
+  check(core.includes("if(st==='apiConfigs'||st==='apiSettings')arr=arr.map(_ibCredentialFreeApiConfig)"), 'emergency-mirror-config-and-settings-sanitized');
   const sanitizeStart = core.indexOf('function _ibEndpointHasInlineCredential(value){');
   const sanitizeEnd = core.indexOf('\nasync function dbPut(', sanitizeStart);
   check(sanitizeStart >= 0 && sanitizeEnd > sanitizeStart, 'storage-sanitizer-boundary');
@@ -179,6 +179,6 @@ async function main() {
 }
 
 main().catch(function (error) {
-  process.stderr.write('CREDENTIAL_BRIDGE_R1_SYNTHETIC_FAIL:' + String(error && error.message || 'unknown') + '\n');
+  process.stderr.write('CREDENTIAL_BRIDGE_R1_SYNTHETIC_FAIL:' + String(error && error.stack || error && error.message || 'unknown') + '\n');
   process.exitCode = 1;
 });

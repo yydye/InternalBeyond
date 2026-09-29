@@ -259,7 +259,8 @@ async function _ibWithRuntimeApiCredential(cfg,run,options){
       requestCfg.apiKey='';
       return await run(requestCfg);
     }
-    var bindingId=String(cfg.id||'').trim();
+    var hasCredentialRef=Object.prototype.hasOwnProperty.call(cfg,'credentialRef');
+    var bindingId=hasCredentialRef?String(cfg.credentialRef||'').trim():String(cfg.id||'').trim();
     var host=typeof window!=='undefined'&&window.IB&&window.IB.host;
     var resolver=host&&host.credentialResolver;
     if(!bindingId||!resolver||typeof resolver.resolve!=='function'||resolver.available===false)throw _ibCredentialUnavailable();

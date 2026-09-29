@@ -110,11 +110,16 @@
   /* Judge 主入口：复用现有 Responses 调用链，只读评估；失败 → null（不影响聊天/压缩）。 */
   async function middleBrainAstraJudge(characterId, userMessage, organized, compressedContext, opts) {
     opts = opts || {};
+    var cred = null, auth = '';
     try {
       /* disabled → 完全不调用 Judge（不计 telemetry，恢复 Phase 2 行为） */
       if (!(await middleBrainJudgeEnabled())) return null;
       if (!(await CFG.middleBrainReady())) return null;
       var cfg = await CFG.getMiddleBrainConfig();
+      /* P34.1 · 凭据复用同一运行时解析缝（credentialRef → Vault resolver；无 ref 回退 apiKey）。 */
+      cred = await ASTRA.resolveRuntimeCredential(cfg);
+      if (!cred.ok) return null;
+      auth = 'Bearer ' + (cred.apiKey || '');
       var t0 = Date.now();
       _mbJudgeTelemetry.attempted++;
       var prompt = _mbBuildJudgePrompt(organized, compressedContext, userMessage);
@@ -124,9 +129,9 @@
       var tm = setTimeout(function () { ac.abort(); }, (opts.timeoutMs != null ? Number(opts.timeoutMs) : MB_JUDGE_TIMEOUT_MS));
       var res;
       if (typeof root._ibApiPost === 'function') {
-        res = await root._ibApiPost(req.endpoint, Object.assign({}, req.headers, { Authorization: 'Bearer ' + (cfg.apiKey || '') }), JSON.stringify(req.body), { signal: ac.signal });
+        res = await root._ibApiPost(req.endpoint, Object.assign({}, req.headers, { Authorization: auth }), JSON.stringify(req.body), { signal: ac.signal });
       } else {
-        res = await fetch(req.endpoint, { method: 'POST', headers: Object.assign({}, req.headers, { Authorization: 'Bearer ' + (cfg.apiKey || '') }), body: JSON.stringify(req.body), signal: ac.signal });
+        res = await fetch(req.endpoint, { method: 'POST', headers: Object.assign({}, req.headers, { Authorization: auth }), body: JSON.stringify(req.body), signal: ac.signal });
       }
       clearTimeout(tm);
       if (!res.ok) return null;
@@ -159,7 +164,7 @@
     } catch (e) {
       _mbJudgeTelemetry.failed++;
       return null;
-    }
+    } finally { if (cred) cred.apiKey = ''; auth = ''; }
   }
   function middleBrainJudgeTelemetry() { return _mbJudgeTelemetry; }
   function middleBrainJudgeReset() { _mbJudgeTelemetry.attempted = 0; _mbJudgeTelemetry.success = 0; _mbJudgeTelemetry.failed = 0; _mbJudgeTelemetry.totalLatencyMs = 0; _mbJudgeTelemetry.overallSum = 0; _mbJudgeTelemetry.contradictionDetected = 0; _mbJudgeTelemetry.missingTotal = 0; _mbJudgeTelemetry.staleTotal = 0; _mbJudgeTelemetry.duplicateTotal = 0; _mbJudgeTelemetry.currentTurnCoverageSum = 0; _mbJudgeTelemetry.last = null; }

@@ -33,6 +33,13 @@
     endpoint: 'https://api.openai.com/v1/responses',
     model: 'gpt-6-astra',
     apiKey: '',
+    /* P34.1 · 非密凭据引用（Vault binding id / 现有 apiConfig id）。设置后运行时经
+       IB.host.credentialResolver 解析明文；apiKey 仅作为无 ref 时的 legacy 回退。
+       明文永不写入本记录（secret 不进 IndexedDB / localStorage）。 */
+    credentialRef: '',
+    /* P34.2-A · 可选：复用现有 apiConfig 作为**网络路径**（provider/endpoint/model）。
+       非密；设置后 Middle Brain 走该配置的可达 provider seam；留空则用上面的 Endpoint。 */
+    providerConfigId: '',
     /* Phase 2 · Astra Admission Gate：本地确定性判定"这次 Context 是否值得花一次 Astra 调用"。
        默认开启（省钱优先：简单对话不调用 Astra）。可通过 admissionEnabled:false 完全关闭（恢复 Phase 1）。
        gate:{} 为可选调参覆盖（scoreOn/cooldownMs/...），仅前进式覆盖，不强制持久化。 */
@@ -149,7 +156,9 @@
   }
   /* 独立 API 就绪判定：Middle Brain 走自己的 endpoint/model/apiKey，与角色配置无关 */
   function middleBrainApiReady(c) {
-    return !!(c && c.enabled && String(c.endpoint || '').trim() && String(c.model || '').trim() && String(c.apiKey || '').trim());
+    /* P34.1：凭据条件 = legacy apiKey **或** 非密 credentialRef（运行时经 Vault resolver 解析）。 */
+    return !!(c && c.enabled && String(c.endpoint || '').trim() && String(c.model || '').trim()
+      && (String(c.apiKey || '').trim() || String(c.credentialRef || c.providerConfigId || '').trim()));
   }
 
   /* ── 4 · P21 · canonical reasoningEffort（统一「思考深度」）────────────
@@ -204,6 +213,17 @@
   function normalizeMiddleBrainImageMode(v) {
     var s = String(v == null ? '' : v).trim().toLowerCase();
     return MB_IMAGE_MODES.indexOf(s) >= 0 ? s : 'auto';
+  }
+  /* P34.1 · 凭据引用归一：与 Vault resolver 的 bindingId 字符集一致（见 host-capability.js）。
+     这是**非密**字段，只接受绑定 id；任何越界 / 非法值（含形如密钥的长串）→ ''。 */
+  function normalizeMiddleBrainCredentialRef(v) {
+    var s = String(v == null ? '' : v).trim();
+    return /^[A-Za-z0-9_.:-]{1,180}$/.test(s) ? s : '';
+  }
+  /* P34.2-A · 网络路径配置引用（apiConfig id）归一：非密，只接受绑定 id。 */
+  function normalizeMiddleBrainProviderConfigId(v) {
+    var s = String(v == null ? '' : v).trim();
+    return /^[A-Za-z0-9_.:-]{1,180}$/.test(s) ? s : '';
   }
 
   /* ── 6 · 构造式投影：把**任意**配置对象收成一份形状确定的执行配置 ────────
@@ -271,6 +291,8 @@
     normalizeMiddleBrainSpeed: normalizeMiddleBrainSpeed,
     normalizeMiddleBrainIntegritySensitivity: normalizeMiddleBrainIntegritySensitivity,
     normalizeMiddleBrainImageMode: normalizeMiddleBrainImageMode,
+    normalizeMiddleBrainCredentialRef: normalizeMiddleBrainCredentialRef,
+    normalizeMiddleBrainProviderConfigId: normalizeMiddleBrainProviderConfigId,
     reasoningEffortResolved: reasoningEffortResolved,
     reasoningEffortOf: reasoningEffortOf,
     projectExecutionConfig: projectExecutionConfig,

@@ -74,6 +74,8 @@
   var normalizeMiddleBrainSpeed = CORE.normalizeMiddleBrainSpeed;
   var normalizeMiddleBrainIntegritySensitivity = CORE.normalizeMiddleBrainIntegritySensitivity;
   var normalizeMiddleBrainImageMode = CORE.normalizeMiddleBrainImageMode;
+  var normalizeMiddleBrainCredentialRef = CORE.normalizeMiddleBrainCredentialRef;
+  var normalizeMiddleBrainProviderConfigId = CORE.normalizeMiddleBrainProviderConfigId;
 
   function getMiddleBrainSystemPrompt() { return MB_SYSTEM_PROMPT; }
 
@@ -109,6 +111,30 @@
   }
   async function saveMiddleBrainConfig(cfg) {
     var merged = Object.assign({}, await getMiddleBrainConfig(), cfg || {});
+    var hasApiKeyField = Object.prototype.hasOwnProperty.call(cfg || {}, 'apiKey');
+    var credentialRef = String(merged.credentialRef || '').trim();
+    var keyToWrite = hasApiKeyField
+      ? String(cfg.apiKey || '').trim()
+      : (!credentialRef ? String(merged.apiKey || '').trim() : '');
+    if (keyToWrite) {
+      var bindingId = credentialRef || 'middle_brain';
+      var provider = 'openai';
+      if (merged.providerConfigId && typeof dbGet === 'function') {
+        try {
+          var providerConfig = await dbGet('apiConfigs', merged.providerConfigId);
+          if (providerConfig && providerConfig.provider) provider = String(providerConfig.provider);
+        } catch (e) {}
+      }
+      if (typeof root._ibWriteVaultCredential !== 'function') throw new Error('credentials-service-unavailable');
+      credentialRef = await root._ibWriteVaultCredential(bindingId, {
+        provider: provider,
+        endpoint: String(merged.endpoint || ''),
+        model: String(merged.model || '')
+      }, keyToWrite);
+      merged.credentialRef = credentialRef;
+    }
+    /* apiSettings keeps only the reference and non-sensitive Middle Brain settings. */
+    merged.apiKey = '';
     await _mbPersist(merged);
     return merged;
   }
@@ -152,7 +178,7 @@
      * R7 intentionally does not inspect cfg.apiKey. A legacy config without
      * a v2 credentialRef remains unknown until a later migration phase.
      */
-    var ref = String(cfg.credentialRef || '').trim();
+    var ref = String(cfg.credentialRef || cfg.providerConfigId || '').trim();
     if (!ref) {
       return {
         credentialRef: null,
@@ -222,7 +248,8 @@
        toggle 改了但没保存 → runtime **不变**，徽标不得显示 Enabled。
      `_mbSaved` = 上述三个 Save-才生效字段的 pristine 快照；`_mbRuntime` = runtime 态镜像。
      两者只在「加载配置完成」与「保存成功」两处刷新 —— 没有第三条写入路径。 */
-  var _mbSaved = { enabled: false, endpoint: '', apiKey: '' };
+  var _mbSaved = { enabled: false, endpoint: '' };
+  var _mbKeyDirty = false;
   var _mbRuntime = { enabled: false };
 
   function _mbReasoningDesc(v) { return MB_REASONING_DESC[v] || '默认平衡'; }
@@ -266,23 +293,22 @@
   }
   /* 表单里两个 Save-才生效的输入框（读值只归一空白，不改内容） */
   function _mbFormEndpoint() { var e = _mbEl('mb-endpoint'); return e ? String(e.value == null ? '' : e.value).trim() : ''; }
-  function _mbFormApiKey() { var e = _mbEl('mb-apikey'); return e ? String(e.value == null ? '' : e.value).trim() : ''; }
   /* pristine 快照：表单被填成持久化值（或保存成功后）调用，此后 DOM 与它一致 → 不 dirty。
      runtime 镜像与它同源刷新：徽标读的是**持久化**配置，不是编辑态。 */
   function _mbCaptureSaved(c) {
     c = c || {};
     _mbSaved = {
       enabled: !!c.enabled,
-      endpoint: String(c.endpoint == null ? '' : c.endpoint).trim(),
-      apiKey: String(c.apiKey == null ? '' : c.apiKey).trim()
+      endpoint: String(c.endpoint == null ? '' : c.endpoint).trim()
     };
+    _mbKeyDirty = false;
     _mbRuntime = { enabled: _mbRuntimeEnabled(c) };
   }
   /* dirty = 编辑态（toggle + 两个 Save-才生效的输入框）与持久化态不一致 → 尚未生效 */
   function _mbDirty() {
     return _mbUi.enabled !== _mbSaved.enabled
       || _mbFormEndpoint() !== _mbSaved.endpoint
-      || _mbFormApiKey() !== _mbSaved.apiKey;
+      || _mbKeyDirty;
   }
   /* 徽标三态：on（runtime 启用且无未保存改动）/ off（runtime 关闭且无改动）/ unsaved（有未保存改动）。
      unsaved **绝不**渲染成 Enabled —— 这正是本阶段要修掉的"假 Enabled"。 */
@@ -322,7 +348,8 @@
   function _mbConfigIncomplete(c) {
     c = c || {};
     if (!c.enabled) return true;
-    return !(String(c.endpoint || '').trim() && String(c.model || '').trim() && String(c.apiKey || '').trim());
+    return !(String(c.endpoint || '').trim() && String(c.model || '').trim()
+      && (String(c.apiKey || '').trim() || String(c.credentialRef || c.providerConfigId || '').trim()));
   }
   /* 事件只绑一次：header 点击 / Enter / Space（button 原生支持键盘，这里只防重复绑定）。
      P11-3：三个 Save-才生效的控件各自独立绑定（此前 enabled 开关的绑定被
@@ -336,7 +363,7 @@
     if (en) en.addEventListener('change', function () { _mbUi.enabled = !!en.checked; _mbRenderHeader(); });
     ['mb-endpoint', 'mb-apikey'].forEach(function (id) {
       var el = _mbEl(id);
-      if (el) el.addEventListener('input', function () { _mbRenderHeader(); });
+      if (el) el.addEventListener('input', function () { if (id === 'mb-apikey') _mbKeyDirty = true; _mbRenderHeader(); });
     });
     _mbCollapseBound = true;
   }
@@ -561,20 +588,85 @@
   function mbModelPick(m) { _mbModelSet(m); }
   function mbModelStep(delta) { var list = _mbModelList(_mbReadModel()); _mbModelSet(list[Math.max(0, Math.min(list.length - 1, _mbModelIdx(_mbReadModel()) + delta))]); }
 
+  /* credentialRef 本身是非密 binding；新 API Key 由 saveMiddleBrainConfig 转交 Vault writer。 */
+  function _mbReadCredentialRef() {
+    var el = _mbEl('mb-credential-ref');
+    return normalizeMiddleBrainCredentialRef(el ? el.value : '');
+  }
+  /* P34.2-A · 网络路径（复用现有 apiConfig）选择；非密。 */
+  function _mbReadProviderConfigId() {
+    var el = _mbEl('mb-provider-config');
+    return normalizeMiddleBrainProviderConfigId(el ? el.value : '');
+  }
+  /* 只读状态渲染：复用既有 credentialAuthorityConsumers 状态查询（不返回 secret）。 */
+  function _mbRefreshCredentialStatus() {
+    var out = _mbEl('mb-credential-status'); if (!out) return;
+    out.textContent = '';
+    getMiddleBrainCredentialStatus().then(function (status) {
+      var s = String(status && status.status || 'unknown');
+      var labels = { ready: '凭据已就绪', missing: '凭据缺失', unavailable: '凭据服务不可用', unknown: '待确认', none: '无需凭据' };
+      out.textContent = labels[s] || s;
+      out.setAttribute('data-credential-status', s);
+    }).catch(function () { out.textContent = ''; });
+  }
+  /* 绑定候选来源 = 既有 apiConfigs（其密钥已在 Vault；记录本身非密）→ datalist，便于选择。 */
+  function _mbPopulateCredentialRefs() {
+    var list = _mbEl('mb-credential-ref-list'); if (!list || typeof dbGetAll !== 'function') return;
+    dbGetAll('apiConfigs').then(function (rows) {
+      var opts = (Array.isArray(rows) ? rows : []).filter(function (r) { return r && !r.archived && r.id; })
+        .map(function (r) { var label = String(r.nickname || r.model || r.id); return '<option value="' + String(r.id).replace(/"/g, '') + '">' + label.replace(/</g, '') + '</option>'; });
+      list.innerHTML = opts.join('');
+      var plist = _mbEl('mb-provider-config-list'); if (plist) plist.innerHTML = opts.join('');
+    }).catch(function () {});
+  }
   function saveMiddleBrainConfigUI() {
     var enabled = !!(_mbEl('mb-enabled-toggle') && _mbEl('mb-enabled-toggle').checked);
     var endpoint = (_mbEl('mb-endpoint') ? _mbEl('mb-endpoint').value : '').trim();
+    var credentialRef = _mbReadCredentialRef();
+    var providerConfigId = _mbReadProviderConfigId();
     var apiKey = (_mbEl('mb-apikey') ? _mbEl('mb-apikey').value : '').trim();
     _mbCiReadUi();
     /* P11-3：保存成功是 runtime 态唯一的更新点。pristine 快照与 runtime 镜像一起刷新，
        徽标此刻才允许显示 runtime Enabled（未保存期间一律 unsaved / 旧 runtime 值）。 */
-    return saveMiddleBrainConfig({ enabled: enabled, endpoint: endpoint, model: _mbReadModel(), apiKey: apiKey, reasoningEffort: _mbReadReasoning(), reasoningEffortV2: true, speed: _mbReadSpeed(), characterIntegrityEnabled: _mbUi.integrity.enabled, characterIntegritySensitivity: _mbUi.integrity.sensitivity, characterIntegrityRewrite: _mbUi.integrity.rewrite, characterIntegrityVerify: _mbUi.integrity.verify, imageMode: normalizeMiddleBrainImageMode(_mbUi.imageMode) }).then(function (merged) {
+    return saveMiddleBrainConfig({ enabled: enabled, endpoint: endpoint, model: _mbReadModel(), apiKey: apiKey, credentialRef: credentialRef, providerConfigId: providerConfigId, reasoningEffort: _mbReadReasoning(), reasoningEffortV2: true, speed: _mbReadSpeed(), characterIntegrityEnabled: _mbUi.integrity.enabled, characterIntegritySensitivity: _mbUi.integrity.sensitivity, characterIntegrityRewrite: _mbUi.integrity.rewrite, characterIntegrityVerify: _mbUi.integrity.verify, imageMode: normalizeMiddleBrainImageMode(_mbUi.imageMode) }).then(function (merged) {
       _mbCaptureSaved(merged || { enabled: enabled, endpoint: endpoint, apiKey: apiKey });
+      if (_mbEl('mb-apikey') && merged && !merged.apiKey) _mbEl('mb-apikey').value = '';
+      var clearCredential = _mbEl('mb-clear-credential');
+      if (clearCredential) clearCredential.hidden = String(merged && merged.credentialRef || '') !== 'middle_brain';
+      _mbRefreshCredentialStatus();
       _mbRenderHeader();
       var st = _mbEl('mb-save-status'); if (st) { st.textContent = '已保存'; setTimeout(function () { if (st.textContent === '已保存') st.textContent = ''; }, 1600); }
       if (typeof toast === 'function') toast('Middle Brain 已保存');
       return merged;
     }).catch(function (e) { if (typeof toast === 'function') toast('Middle Brain 保存失败：' + String(e && e.message || e)); });
+  }
+  async function clearMiddleBrainCredential() {
+    var cfg = await getMiddleBrainConfig();
+    var ref = String(cfg && cfg.credentialRef || '').trim();
+    var providerConfigId = String(cfg && cfg.providerConfigId || '').trim();
+    if (ref !== 'middle_brain' || ref === providerConfigId) {
+      if (typeof toast === 'function') toast('此处引用的是角色 API 凭据，请在角色 API 配置中清除');
+      return false;
+    }
+    if (typeof root.confirm === 'function' && !root.confirm('清除 Middle Brain 凭据？此操作会从 Credential Vault 删除该绑定。')) return false;
+    try {
+      if (typeof root._ibDeleteVaultCredential !== 'function') throw new Error('credentials-service-unavailable');
+      await root._ibDeleteVaultCredential(ref);
+      var merged = Object.assign({}, cfg, { credentialRef: '', providerConfigId: '', apiKey: '' });
+      await _mbPersist(merged);
+      if (_mbEl('mb-apikey')) _mbEl('mb-apikey').value = '';
+      if (_mbEl('mb-credential-ref')) _mbEl('mb-credential-ref').value = '';
+      if (_mbEl('mb-provider-config')) _mbEl('mb-provider-config').value = '';
+      var clearCredential = _mbEl('mb-clear-credential'); if (clearCredential) clearCredential.hidden = true;
+      _mbCaptureSaved(merged);
+      _mbRefreshCredentialStatus();
+      _mbRenderHeader();
+      if (typeof toast === 'function') toast('Middle Brain 凭据已清除');
+      return true;
+    } catch (e) {
+      if (typeof toast === 'function') toast('Middle Brain 凭据清除失败：' + String(e && e.message || e));
+      return false;
+    }
   }
   /* 填充设置卡片（dom 就绪后由 middle-brain.js 调用）。
      返回 Promise：新增折叠态初始化也纳入同一条链（便于等待与测试，不改变既有语义）。 */
@@ -583,6 +675,10 @@
       if (_mbEl('mb-enabled-toggle')) _mbEl('mb-enabled-toggle').checked = !!c.enabled;
       if (_mbEl('mb-endpoint')) _mbEl('mb-endpoint').value = c.endpoint || '';
       if (_mbEl('mb-apikey')) _mbEl('mb-apikey').value = c.apiKey || '';
+      if (_mbEl('mb-credential-ref')) _mbEl('mb-credential-ref').value = c.credentialRef || '';
+      if (_mbEl('mb-provider-config')) _mbEl('mb-provider-config').value = c.providerConfigId || '';
+      var clearCredential = _mbEl('mb-clear-credential');
+      if (clearCredential) clearCredential.hidden = String(c.credentialRef || '') !== 'middle_brain';
       /* P11-3：先对齐编辑态与 pristine/runtime 快照，再渲染（load 之后必须 UI === runtime）。
          之后任何 toggle / 输入都只是"未保存改动"，不会改动 _mbSaved / _mbRuntime。 */
       _mbUi.enabled = !!c.enabled;
@@ -602,6 +698,8 @@
       if (_mbEl('mb-model')) _mbEl('mb-model').value = _mbUi.model;
       _mbInitAdvancedUI();
       _mbUpdateSummary(_mbUi.reasoning, _mbUi.speed);
+      _mbPopulateCredentialRefs();
+      _mbRefreshCredentialStatus();
       return _mbInitCollapse(c);
     }).catch(function () {});
   }
@@ -628,7 +726,9 @@
     normalizeMiddleBrainImageMode: normalizeMiddleBrainImageMode,
     /* 设置卡片 UI */
     saveMiddleBrainConfigUI: saveMiddleBrainConfigUI,
+    clearMiddleBrainCredential: clearMiddleBrainCredential,
     loadMiddleBrainConfigUI: loadMiddleBrainConfigUI,
+    refreshMiddleBrainCredentialStatus: _mbRefreshCredentialStatus,
     mbReasoningPick: mbReasoningPick,
     mbSpeedPick: mbSpeedPick,
     mbModelPick: mbModelPick,
@@ -640,6 +740,8 @@
   root.IB = root.IB || {};
   root.IB.credentialAuthorityConsumers = root.IB.credentialAuthorityConsumers || {};
   root.IB.credentialAuthorityConsumers.middleBrainStatus = getMiddleBrainCredentialStatus;
+  root.saveMiddleBrainConfigUI = saveMiddleBrainConfigUI;
+  root.clearMiddleBrainCredential = clearMiddleBrainCredential;
   /* Node 下把契约交回给 require 调用方（浏览器下 factory 的返回值被忽略）。
      注意这与其余五个 MB 层文件不同：那五个写全局 root.IB，本文件在 Node 下
      必须让调用方能拿到契约，否则 services 侧就没有 canonical 入口。 */

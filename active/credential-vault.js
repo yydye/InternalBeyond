@@ -16,6 +16,7 @@ const crypto = require('crypto');
 
 function createCredentialVault(deps) {
   const dataDir = deps && deps.dataDir || process.cwd();
+  const fileSystem = deps && deps.fs || fs;
   const KEY_FILE = path.join(dataDir, 'credential-vault.key');
   const DATA_FILE = path.join(dataDir, 'credential-vault.json');
   const TMP_FILE = DATA_FILE + '.tmp';
@@ -25,13 +26,13 @@ function createCredentialVault(deps) {
   function ensureKey() {
     if (key) return key;
     try {
-      if (fs.existsSync(KEY_FILE)) {
-        const b = Buffer.from(String(fs.readFileSync(KEY_FILE, 'utf8')).trim(), 'base64');
+      if (fileSystem.existsSync(KEY_FILE)) {
+        const b = Buffer.from(String(fileSystem.readFileSync(KEY_FILE, 'utf8')).trim(), 'base64');
         if (b.length === 32) { key = b; return key; }
       }
     } catch (_) { /* fall through to generate */ }
     key = crypto.randomBytes(32);
-    fs.writeFileSync(KEY_FILE, key.toString('base64'), { flag: 'w' });
+    fileSystem.writeFileSync(KEY_FILE, key.toString('base64'), { flag: 'w' });
     return key;
   }
 
@@ -59,23 +60,28 @@ function createCredentialVault(deps) {
 
   function load() {
     try {
-      if (!fs.existsSync(DATA_FILE)) { vault = {}; return; }
-      const parsed = decrypt(fs.readFileSync(DATA_FILE, 'utf8'));
+      if (!fileSystem.existsSync(DATA_FILE)) { vault = {}; return; }
+      const parsed = decrypt(fileSystem.readFileSync(DATA_FILE, 'utf8'));
       vault = (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
     } catch (_) { vault = {}; }
   }
 
   function save() {
     try {
-      fs.writeFileSync(TMP_FILE, encrypt(vault));
-      fs.renameSync(TMP_FILE, DATA_FILE);
-    } catch (_) { /* best effort; keep last good vault */ }
+      fileSystem.writeFileSync(TMP_FILE, encrypt(vault));
+      fileSystem.renameSync(TMP_FILE, DATA_FILE);
+      return true;
+    } catch (_) {
+      try { if (fileSystem.existsSync(TMP_FILE)) fileSystem.unlinkSync(TMP_FILE); } catch (_) {}
+      return false;
+    }
   }
 
   function upsert(characterId, credential) {
     const id = String(characterId || '');
     if (!id) return false;
-    const cur = vault[id] || {};
+    const previous = vault[id];
+    const cur = previous || {};
     const incomingKey = String(credential && credential.apiKey || '');
     /* 已有有效凭证不被空值清空 */
     const apiKey = incomingKey || cur.apiKey || '';
@@ -87,8 +93,10 @@ function createCredentialVault(deps) {
       model: String(credential && credential.model || cur.model || ''),
       updatedAt: Date.now()
     };
-    save();
-    return true;
+    if (save()) return true;
+    if (previous) vault[id] = previous;
+    else delete vault[id];
+    return false;
   }
 
   function get(characterId) {
@@ -104,11 +112,18 @@ function createCredentialVault(deps) {
 
   function remove(characterId) {
     const id = String(characterId || '');
-    if (vault[id]) { delete vault[id]; save(); return true; }
+    if (vault[id]) {
+      const previous = vault[id];
+      delete vault[id];
+      if (save()) return true;
+      vault[id] = previous;
+      return false;
+    }
     return false;
   }
 
   function all() { return vault; }
+  function bindingIds() { return Object.keys(vault); }
   function count() { return Object.keys(vault).length; }
 
   /* ── 迁移：从旧业务 snapshot 的 character.apiKey 提取到 vault（幂等）──
@@ -117,8 +132,8 @@ function createCredentialVault(deps) {
      · 单角色失败不影响其它角色。 */
   function migrateFromState(getState) {
     const state = getState ? getState() : null;
-    if (!state) return { migrated: 0, skipped: 0 };
-    let migrated = 0, skipped = 0;
+    if (!state) return { migrated: 0, skipped: 0, failed: 0 };
+    let migrated = 0, skipped = 0, failed = 0;
     const visit = (character) => {
       if (!character) return;
       const id = String(character.id || '');
@@ -126,18 +141,18 @@ function createCredentialVault(deps) {
       if (!id || !keyNow.trim()) return;
       if (has(id)) { skipped += 1; return; }
       try {
-        upsert(id, { provider: character.provider || '', apiKey: keyNow, endpoint: character.endpoint || '', model: character.model || '' });
-        migrated += 1;
+        if (upsert(id, { provider: character.provider || '', apiKey: keyNow, endpoint: character.endpoint || '', model: character.model || '' })) migrated += 1;
+        else failed += 1;
       } catch (_) { /* keep going; single-failure isolation */ }
     };
     Object.values(state.moments || {}).forEach(function (m) { if (m && m.character) visit(m.character); });
     Object.values(state.plans || {}).forEach(function (p) { if (p && p.character) visit(p.character); });
     Object.values(state.tasks || {}).forEach(function (t) { if (t && t.character) visit(t.character); });
-    return { migrated: migrated, skipped: skipped };
+    return { migrated: migrated, skipped: skipped, failed: failed };
   }
 
   return {
-    load, save, upsert, get, has, remove, all, count, migrateFromState
+    load, save, upsert, get, has, remove, all, bindingIds, count, migrateFromState
   };
 }
 

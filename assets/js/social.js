@@ -31,7 +31,10 @@ function _ibApiConfigStorageCopy(cfg){
 function _ibApiHasCredential(cfg){
   /* Structural binding check only. The request boundary resolves the secret
      from Vault and raises CREDENTIAL_UNAVAILABLE when that lookup fails. */
-  return !!(cfg&&(_ibIsLoopbackEndpoint(cfg.endpoint)||String(cfg.id||'').trim()));
+  if(!cfg)return false;
+  if(_ibIsLoopbackEndpoint(cfg.endpoint))return true;
+  if(Object.prototype.hasOwnProperty.call(cfg,'credentialRef'))return !!String(cfg.credentialRef||'').trim();
+  return !!String(cfg.id||'').trim();
 }
 function _ibApiReady(cfg){
   return !!(cfg&&String(cfg.endpoint||'').trim()&&String(cfg.model||'').trim()&&_ibApiHasCredential(cfg));
@@ -39,7 +42,9 @@ function _ibApiReady(cfg){
 function _ibSetVaultManagedKeyInput(id){
   var input=document.getElementById(id);if(!input)return;
   input.value='';input.readOnly=true;
-  input.placeholder='Credential Vault 管理；此处不显示或保存密钥';
+  input.placeholder=id==='api-imagegen-apikey'
+    ?'图片请求复用角色的 Credential Vault API Key；不单独保存图片 Key'
+    :'Credential Vault 管理；此处不显示或保存密钥';
 }
 function _modelThinkingDefault(provider,model){
   provider=String(provider||'').toLowerCase();model=String(model||'').toLowerCase();
@@ -834,15 +839,28 @@ function _apiFallbackPut(cfg){
 }
 /* 返回 {durability,backend,idb}：durability 如实反映持久化强度，供 UI 区分提示。 */
 async function _persistApiConfig(cfg){
+  const input=cfg&&typeof cfg==='object'?cfg:{};
+  const legacyKey=String(input.apiKey||'').trim();
+  if(String(input.imageGenApiKey||'').trim())throw Object.assign(new Error('IMAGE_CREDENTIAL_UNAVAILABLE'),{code:'CREDENTIAL_UNAVAILABLE'});
   if(window._ibEndpointHasInlineCredential&&(
-    window._ibEndpointHasInlineCredential(cfg&&cfg.endpoint)||window._ibEndpointHasInlineCredential(cfg&&cfg.imageGenEndpoint)
+    window._ibEndpointHasInlineCredential(input.endpoint)||window._ibEndpointHasInlineCredential(input.imageGenEndpoint)
   )){
     const error=new Error('CREDENTIAL_UNAVAILABLE');error.code='CREDENTIAL_UNAVAILABLE';throw error;
+  }
+  let credentialRef=String(input.credentialRef||'').trim();
+  if(legacyKey){
+    const bindingId=credentialRef||String(input.id||'').trim();
+    if(!bindingId)throw Object.assign(new Error('CREDENTIAL_UNAVAILABLE'),{code:'CREDENTIAL_UNAVAILABLE'});
+    credentialRef=await _ibWriteVaultCredential(bindingId,input,legacyKey);
   }
   /* 成功写入状态标记：每次保存都把 updatedAt 推进到当前时间（只增不减），
      供 loadApiConfigs 判断「刚保存成功的配置」vs「IndexedDB 里仍可读的旧记录」。
      同源同 payload 幂等，不影响既有读取；仅新增可选字段，向后兼容。 */
-  const clean=_ibApiConfigStorageCopy(cfg);
+  const source=Object.assign({},input);
+  delete source.apiKey;
+  delete source.imageGenApiKey;
+  if(legacyKey||Object.prototype.hasOwnProperty.call(input,'credentialRef'))source.credentialRef=credentialRef;
+  const clean=_ibApiConfigStorageCopy(source);
   const saved=Object.assign({},clean,{updatedAt:Math.max(Number(cfg&&cfg.updatedAt)||0,Date.now())});
   try{
     /* 正常 http/https 环境维持原有首选路径：IndexedDB 写入成功后照旧留一份轻量同源镜像，
@@ -902,11 +920,11 @@ async function loadApiConfigs(){
 
 function _ibApiCredentialStatusLabel(status){
   const labels={
-    checking:'正在检查凭据状态',
-    ready:'凭据就绪',
-    missing:'缺少凭据',
-    unavailable:'凭据服务不可用',
-    unknown:'凭据状态未知',
+    checking:'正在检查',
+    ready:'API 已就绪',
+    missing:'未连接',
+    unavailable:'暂时不可用',
+    unknown:'待确认',
     none:'无需凭据'
   };
   return labels[String(status||'unknown')]||labels.unknown;
@@ -914,6 +932,10 @@ function _ibApiCredentialStatusLabel(status){
 function _ibApiCredentialStatusClass(status){
   const known=['checking','ready','missing','unavailable','unknown','none'];
   return known.indexOf(String(status||''))>=0?String(status):'unknown';
+}
+function _ibApiConfigCredentialRef(cfg){
+  if(cfg&&Object.prototype.hasOwnProperty.call(cfg,'credentialRef'))return String(cfg.credentialRef||'').trim();
+  return String(cfg&&cfg.id||'').trim();
 }
 function _ibApiCredentialEndpointClass(cfg){
   return _ibIsLoopbackEndpoint(cfg&&cfg.endpoint)?'loopback':'remote';
@@ -935,8 +957,10 @@ function _ibApiCredentialProjection(status){
 function _ibApiCredentialBindings(configs){
   return (Array.isArray(configs)?configs:[]).map(function(cfg){
     const local=_ibApiCredentialEndpointClass(cfg)==='loopback';
+    const hasRef=!!(cfg&&Object.prototype.hasOwnProperty.call(cfg,'credentialRef'));
     return {
-      bindingId:String(cfg&&cfg.id||''),
+      configId:String(cfg&&cfg.id||''),
+      bindingId:hasRef?String(cfg.credentialRef||'').trim():String(cfg&&cfg.id||''),
       capability:'chat',
       credentialPolicy:local?'none':'required',
       endpointClass:local?'loopback':'remote'
@@ -946,9 +970,17 @@ function _ibApiCredentialBindings(configs){
 async function _ibLoadApiCredentialProjection(configs){
   const list=Array.isArray(configs)?configs:[];
   const fallback={};
+  const bindings=_ibApiCredentialBindings(list);
+  const configIdsByBinding={};
+  bindings.forEach(function(binding){
+    if(!configIdsByBinding[binding.bindingId])configIdsByBinding[binding.bindingId]=[];
+    configIdsByBinding[binding.bindingId].push(binding.configId);
+  });
   list.forEach(function(cfg){
     const local=_ibApiCredentialLocalStatus(cfg);
     if(local)fallback[String(cfg.id)]=_ibApiCredentialProjection({status:local});
+    else if(!String(cfg&&Object.prototype.hasOwnProperty.call(cfg,'credentialRef')?cfg.credentialRef:cfg&&cfg.id||'').trim())
+      fallback[String(cfg&&cfg.id||'')]=_ibApiCredentialProjection({status:'missing'});
   });
   const host=typeof window!=='undefined'&&window.IB&&window.IB.host;
   const capability=host&&typeof host.capabilities==='function'?host.capabilities():null;
@@ -957,12 +989,12 @@ async function _ibLoadApiCredentialProjection(configs){
     return {ok:false,status:'unavailable',byId:fallback,transport:'unavailable'};
   }
   try{
-    const response=await statusHost.query(_ibApiCredentialBindings(list));
+    const response=await statusHost.query(bindings);
     const byId=Object.assign({},fallback);
     if(response&&response.ok&&Array.isArray(response.results)){
       response.results.forEach(function(row){
-        const id=String(row&&row.bindingId||'');
-        if(id)byId[id]=_ibApiCredentialProjection(row);
+        const bindingId=String(row&&row.bindingId||'');
+        (configIdsByBinding[bindingId]||[]).forEach(function(configId){byId[configId]=_ibApiCredentialProjection(row)});
       });
       return {ok:true,status:'ready',byId:byId,transport:'host'};
     }
@@ -989,9 +1021,11 @@ function _ibRenderApiList(c,configs,statusMap,pending){
     });
     const status=_ibApiCredentialStatusClass(entry.credentialStatus);
     const statusTag='<span class="ib-api-credential-status ib-api-credential-status-'+status+'" data-credential-status="'+status+'">（'+esc(_ibApiCredentialStatusLabel(status))+'）</span>';
+    const needsKey=_ibApiCredentialEndpointClass(a)==='remote';
+    const keyBtn=needsKey?'<button type="button" class="ib-api-key-btn" onclick="event.stopPropagation();_ibOpenApiKeyModal(\''+id+'\',\''+(status==='ready'?'replace':'add')+'\')">'+(status==='ready'?'更换 API Key':'添加 API Key')+'</button>':'';
     const avInit=(a.nickname||a.model||'?').charAt(0).toUpperCase();
     const avHtml=a.avatar?'<div class="api-item-avatar"><img src="'+a.avatar+'" alt=""></div>':'<div class="api-item-avatar">'+avInit+'</div>';
-    return '<div class="chat-history-item" style="cursor:grab;gap:12px" draggable="true" data-api-idx="'+idx+'" data-api-id="'+id+'" ondragstart="_apiDragStart(event)" ondragover="_apiDragOver(event)" ondrop="_apiDrop(event)" ondragend="_apiDragEnd(event)" onclick="editApi(\''+id+'\')">'+avHtml+'<div style="flex:1;min-width:0"><strong class="api-item-name">'+esc(a.nickname||a.model||'未命名')+statusTag+'</strong>'+(a.relationship?'<span style="font-size:0.7rem;color:var(--accent-light);opacity:0.7;margin-left:6px">'+esc(a.relationship)+'</span>':'')+'<div class="api-item-detail" style="font-size:0.72rem;margin-top:2px">'+esc(a.provider)+' · '+esc(a.model)+'</div></div><span class="del-btn" onclick="event.stopPropagation();deleteApiConfig(\''+id+'\')" title="删除">✕</span></div>';
+    return '<div class="chat-history-item" style="cursor:grab;gap:12px" draggable="true" data-api-idx="'+idx+'" data-api-id="'+id+'" ondragstart="_apiDragStart(event)" ondragover="_apiDragOver(event)" ondrop="_apiDrop(event)" ondragend="_apiDragEnd(event)" onclick="editApi(\''+id+'\')">'+avHtml+'<div style="flex:1;min-width:0"><strong class="api-item-name">'+esc(a.nickname||a.model||'未命名')+statusTag+'</strong>'+(a.relationship?'<span style="font-size:var(--fs-meta);color:var(--accent-light);opacity:0.7;margin-left:6px">'+esc(a.relationship)+'</span>':'')+'<div class="api-item-detail" style="font-size:var(--fs-meta);margin-top:2px">'+esc(a.provider)+' · '+esc(a.model)+'</div></div>'+keyBtn+'<span class="del-btn" onclick="event.stopPropagation();deleteApiConfig(\''+id+'\')" title="删除">✕</span></div>';
   }).join('');
 }
 async function renderApiList(){
@@ -1003,6 +1037,149 @@ async function renderApiList(){
   const projection=await _ibLoadApiCredentialProjection(apiConfigs);
   _ibRenderApiList(c,apiConfigs,projection.byId,false);
 }
+
+/* ── API credential management UX ─────────────────────────────────────────
+   The API editor is secret-free (it refuses keys). This modal reuses the
+   EXISTING Vault authority: it posts the new key to the Active service's
+   existing `POST /credentials` route (Vault upsert) keyed by apiConfig.credentialRef
+   (legacy configs without one use apiConfig.id), then persists the returned ref.
+   The old key is never read, shown or echoed; the key is never written to
+   apiConfigs, IndexedDB, localStorage or sessionStorage. */
+let _ibCredModalCtx=null;
+function _ibCredModalEls(){return{
+  backdrop:document.getElementById('ib-cred-modal-backdrop'),
+  title:document.getElementById('ib-cred-modal-title'),
+  provider:document.getElementById('ib-cred-modal-provider'),
+  name:document.getElementById('ib-cred-modal-name'),
+  key:document.getElementById('ib-cred-modal-key'),
+  save:document.getElementById('ib-cred-modal-save'),
+  clear:document.getElementById('ib-cred-modal-clear')
+};}
+async function _ibWriteVaultCredential(bindingId,cfg,secret){
+  const id=String(bindingId||'').trim(),key=String(secret||'').trim();
+  if(!/^[A-Za-z0-9_.:-]{1,180}$/.test(id)||!key)throw Object.assign(new Error('CREDENTIAL_UNAVAILABLE'),{code:'CREDENTIAL_UNAVAILABLE'});
+  if(window._ibEndpointHasInlineCredential&&(
+    window._ibEndpointHasInlineCredential(cfg&&cfg.endpoint)||window._ibEndpointHasInlineCredential(cfg&&cfg.imageGenEndpoint)
+  ))throw Object.assign(new Error('CREDENTIAL_UNAVAILABLE'),{code:'CREDENTIAL_UNAVAILABLE'});
+  if(typeof _activeCompanionRequest!=='function')throw new Error('credentials-service-unavailable');
+  const source=cfg&&typeof cfg==='object'?cfg:{};
+  const res=await _activeCompanionRequest('/credentials',{method:'POST',body:{credentials:[{
+    credentialRef:id,characterId:id,provider:String(source.provider||'openai'),apiKey:key,
+    endpoint:String(source.endpoint||''),model:String(source.model||'')
+  }]},timeout:8000});
+  const refs=Array.isArray(res&&res.credentialRefs)?res.credentialRefs.map(String):[];
+  if(!res||res.ok!==true||Number(res.stored||0)<1||String(res.credentialRef||'')!==id||refs.indexOf(id)<0)
+    throw new Error('credentials-save-rejected');
+  return id;
+}
+async function _ibDeleteVaultCredential(bindingId){
+  const id=String(bindingId||'').trim();
+  if(!/^[A-Za-z0-9_.:-]{1,180}$/.test(id))throw Object.assign(new Error('CREDENTIAL_UNAVAILABLE'),{code:'CREDENTIAL_UNAVAILABLE'});
+  if(typeof _activeCompanionRequest!=='function')throw new Error('credentials-service-unavailable');
+  const res=await _activeCompanionRequest('/credentials',{method:'DELETE',body:{credentialRefs:[id]},timeout:8000});
+  const refs=Array.isArray(res&&res.credentialRefs)?res.credentialRefs.map(String):[];
+  if(!res||res.ok!==true||refs.indexOf(id)<0)throw new Error('credentials-delete-rejected');
+  return {credentialRef:id,removed:Number(res.removed)||0};
+}
+async function _ibDeleteAllVaultCredentials(){
+  if(typeof _activeCompanionRequest!=='function')throw new Error('credentials-service-unavailable');
+  const res=await _activeCompanionRequest('/credentials',{method:'DELETE',body:{all:true},timeout:12000});
+  if(!res||res.ok!==true||!Array.isArray(res.credentialRefs))throw new Error('credentials-delete-rejected');
+  return {removed:Number(res.removed)||0,credentialRefCount:res.credentialRefs.length};
+}
+async function _ibSaveApiConfigCredential(configId,secret){
+  const cfg=(apiConfigs||[]).find(function(a){return String(a&&a.id||'')===String(configId||'')});
+  if(!cfg)throw new Error('api-config-not-found');
+  const bindingId=_ibApiConfigCredentialRef(cfg)||String(cfg.id||'').trim();
+  const credentialRef=await _ibWriteVaultCredential(bindingId,cfg,secret);
+  const persisted=await _persistApiConfig(Object.assign({},cfg,{credentialRef:credentialRef,apiKey:''}));
+  const saved=persisted&&persisted.idb?await dbGet('apiConfigs',cfg.id):_apiFallbackRead().find(function(a){return a.id===cfg.id});
+  if(!saved||String(saved.credentialRef||'')!==credentialRef||saved.apiKey||saved.imageGenApiKey)throw new Error('credential-ref-save-rejected');
+  await renderApiList();
+  return credentialRef;
+}
+async function _ibPersistImportedApiSetting(setting){
+  if(!setting||typeof setting!=='object')throw new Error('invalid-api-setting');
+  const copy=Object.assign({},setting);
+  const key=String(copy.apiKey||'').trim();
+  if(String(copy.imageGenApiKey||'').trim())throw Object.assign(new Error('CREDENTIAL_UNAVAILABLE'),{code:'CREDENTIAL_UNAVAILABLE'});
+  if(key){
+    const bindingId=String(copy.credentialRef||copy.id||'').trim();
+    if(!bindingId)throw Object.assign(new Error('CREDENTIAL_UNAVAILABLE'),{code:'CREDENTIAL_UNAVAILABLE'});
+    copy.credentialRef=await _ibWriteVaultCredential(bindingId,copy,key);
+  }
+  delete copy.apiKey;
+  delete copy.imageGenApiKey;
+  await dbPut('apiSettings',copy);
+  return copy;
+}
+async function _ibClearApiConfigCredential(configId,confirmClear){
+  const cfg=(apiConfigs||[]).find(function(a){return String(a&&a.id||'')===String(configId||'')});
+  if(!cfg)throw new Error('api-config-not-found');
+  if(confirmClear!==false&&!window.confirm('清除该配置的 API Key？此操作会从 Credential Vault 删除对应凭据。'))return false;
+  const bindingId=_ibApiConfigCredentialRef(cfg);
+  if(bindingId)await _ibDeleteVaultCredential(bindingId);
+  await _persistApiConfig(Object.assign({},cfg,{credentialRef:'',apiKey:''}));
+  await renderApiList();
+  toast('API Key 已清除');
+  return true;
+}
+function _ibOpenApiKeyModal(configId,mode){
+  const cfg=apiConfigs.find(function(a){return a.id===configId});
+  const els=_ibCredModalEls();
+  if(!cfg||!els.backdrop)return;
+  _ibCredModalCtx=cfg;
+  els.title.textContent=(mode==='add'?'添加 API Key':'更换 API Key');
+  if(els.provider)els.provider.textContent=String(cfg.provider||'—');
+  if(els.name)els.name.textContent=String(cfg.nickname||cfg.model||'未命名');
+  if(els.clear)els.clear.hidden=mode!=='replace';
+  els.key.value='';
+  els.backdrop.hidden=false;
+  window.setTimeout(function(){els.key.focus()},0);
+}
+function _ibCloseApiKeyModal(){
+  const els=_ibCredModalEls();
+  if(els.backdrop)els.backdrop.hidden=true;
+  if(els.key)els.key.value='';
+  _ibCredModalCtx=null;
+}
+async function _ibSaveApiKey(btn){
+  const cfg=_ibCredModalCtx;
+  if(!cfg)return;
+  const els=_ibCredModalEls();
+  const key=String(els.key&&els.key.value||'').trim();
+  if(!key){toast('请输入 API Key');return}
+  if(btn)btn.disabled=true;
+  try{
+    await _ibSaveApiConfigCredential(cfg.id,key);
+    _ibCloseApiKeyModal();
+    toast('API Key 已保存到本地凭据存储');
+  }catch(e){
+    const msg=String(e&&e.message||e);
+    toast(msg==='recovery-active-hold'?'当前处于恢复保护状态，暂不可写入凭据':'保存失败：'+msg.slice(0,80));
+  }finally{if(btn)btn.disabled=false}
+}
+async function _ibClearApiKey(btn){
+  if(btn)btn.disabled=true;
+  try{
+    if(!_ibCredModalCtx)return;
+    await _ibClearApiConfigCredential(_ibCredModalCtx.id,true);
+    _ibCloseApiKeyModal();
+  }catch(e){
+    const msg=String(e&&e.message||e);
+    toast('清除失败：'+msg.slice(0,80));
+  }finally{if(btn)btn.disabled=false}
+}
+window._ibOpenApiKeyModal=_ibOpenApiKeyModal;
+window._ibCloseApiKeyModal=_ibCloseApiKeyModal;
+window._ibSaveApiKey=_ibSaveApiKey;
+window._ibClearApiKey=_ibClearApiKey;
+window._ibWriteVaultCredential=_ibWriteVaultCredential;
+window._ibDeleteVaultCredential=_ibDeleteVaultCredential;
+window._ibDeleteAllVaultCredentials=_ibDeleteAllVaultCredentials;
+window._ibSaveApiConfigCredential=_ibSaveApiConfigCredential;
+window._ibPersistImportedApiSetting=_ibPersistImportedApiSetting;
+window._ibClearApiConfigCredential=_ibClearApiConfigCredential;
 var _dragApiIdx=null;
 function _apiDragStart(e){_dragApiIdx=parseInt(e.currentTarget.dataset.apiIdx);e.currentTarget.style.opacity='0.4';e.dataTransfer.effectAllowed='move'}
 function _apiDragOver(e){e.preventDefault();e.dataTransfer.dropEffect='move';const t=e.currentTarget;t.style.borderTop=e.offsetY<t.offsetHeight/2?'2px solid var(--accent)':'none';t.style.borderBottom=e.offsetY>=t.offsetHeight/2?'2px solid var(--accent)':'none'}
@@ -1790,8 +1967,9 @@ async function _archiveApiConfig(id){
   const cfg=apiConfigs.find(a=>a.id===id);if(!cfg)return false;
   if(typeof _activePrepareCharacterBackgroundChange==='function'&&!(await _activePrepareCharacterBackgroundChange(id,'归档角色')))return false;
   try{await _detachCharacterFromGroups(id)}catch(e){console.error('Group reference cleanup failed',e);toast('归档失败：无法清理群聊成员引用');return false}
-  cfg.archived=true;cfg.archivedAt=Date.now();cfg.apiKey='';/* 归档即清除密钥，其余设置全部保留 */
-  await _persistApiConfig(cfg);
+  try{const ref=_ibApiConfigCredentialRef(cfg);if(ref)await _ibDeleteVaultCredential(ref)}catch(e){toast('归档失败：Credential Vault 暂不可用，角色未归档');return false}
+  cfg.archived=true;cfg.archivedAt=Date.now();cfg.apiKey='';cfg.credentialRef='';/* 归档清除 Vault 凭据，非敏感配置保留 */
+  try{await _persistApiConfig(cfg)}catch(e){toast('归档失败：凭据已清除，但角色配置未能保存');return false}
   await renderApiList();
   try{await loadFriendsList()}catch(e){}
   try{if(typeof _activeSyncAllBackground==='function'&&_activeCompanionOnline){_activeLastContextSync=0;await _activeSyncAllBackground()}}catch(e){console.warn('[Active Messages] archived API cleanup failed',e)}
@@ -1805,6 +1983,7 @@ async function _hardDeleteApiConfig(id){
      directional 关系记录与其轮次账本一并清理。删除失败不阻塞角色删除本身。 */
   try{if(window.IB&&IB.roleDm&&typeof IB.roleDm.onCharacterDeleted==='function')await IB.roleDm.onCharacterDeleted(id)}catch(e){console.warn('Role DM cleanup failed',e)}
   try{await _detachCharacterFromGroups(id)}catch(e){console.error('Group reference cleanup failed',e);toast('删除失败：无法清理群聊成员引用');return false}
+  try{const cfg=apiConfigs.find(a=>a.id===id)||{};const ref=_ibApiConfigCredentialRef(cfg);if(ref)await _ibDeleteVaultCredential(ref)}catch(e){toast('删除失败：Credential Vault 暂不可用，角色配置仍保留');return false}
   try{await dbDelete('apiConfigs',id)}catch(e){console.warn('IndexedDB API delete failed',e);toast('删除失败：角色配置未能从数据库移除');return false}
   _apiFallbackRemove(id);
   /* Clear related messages */

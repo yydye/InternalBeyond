@@ -6,7 +6,7 @@
         （enabled / apiConfigId / model / fallback），与既有并发覆盖字段共存于同一
         私有 key（**不新建第二套存储**，也不动 'middle_brain' / 角色配置契约）。
      ② 把一条路由解析成执行器能吃的 cfg + 模型：
-          route.apiConfigId → 已有 apiConfig（endpoint / apiKey / provider metadata）
+          route.apiConfigId → 已有 apiConfig（endpoint / credentialRef / provider metadata）
           route.model       → 唯一 canonical 图片模型目录（image-models-core.js）
      ③ 在**发请求之前**给出明确、可执行的错误码（缺 Key / 缺 Endpoint / 配置不存在 /
         模型不支持该操作 / 路由被关闭），绝不把配置问题变成 fetch 401/404。
@@ -15,7 +15,7 @@
    解析语义（三条，缺一不可）：
      · apiConfigId 为空  → mode='inherit'：沿用调用方传入的角色 cfg（与 P12/P13 行为逐字一致，
        老用户不需要重新配置就能继续用；角色 cfg 缺 Key/Endpoint 时同样给出明确错误）。
-     · apiConfigId 有值  → mode='bound'：完全使用该 API 配置的 endpoint / apiKey / provider，
+     · apiConfigId 有值  → mode='bound'：完全使用该 API 配置的 endpoint / Vault credentialRef / provider，
        与"当时正在和谁聊天"解耦（后台任务、朋友圈、Activity 共用同一条路由）。
      · model 为空        → 'auto'：交给 Image Router 的 Fast/Auto/Precision 双模型策略
        （Flare / Sunburst）。model 有值 → 用户显式选择，最高优先，Fast/Precision 覆盖不能改它。
@@ -135,7 +135,8 @@
   }
   function _endpointOf(cfg) { return _norm(cfg && cfg.imageGenEndpoint) || _norm(cfg && cfg.endpoint); }
   function _hasCredentialBinding(cfg) {
-    return !!_norm(cfg && cfg.id) || _isLocalHost(_hostOf(_endpointOf(cfg)));
+    if (cfg && Object.prototype.hasOwnProperty.call(cfg, 'credentialRef')) return !!_norm(cfg.credentialRef);
+    return !!_norm(cfg && cfg.id);
   }
   /* 端点主机名 / 本地判定：IB 的 local-first 与 Bridge 本地服务（127.0.0.1:23115 等）
      本来就允许不填 API Key，配置层不得把这类可用配置判死。 */

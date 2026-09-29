@@ -745,6 +745,7 @@
       promptCache: false,
       vision: false
     };
+    if (Object.prototype.hasOwnProperty.call(cfg, 'credentialRef')) testCfg.credentialRef = cfg.credentialRef;
     S.aiBusy = true;
     S.aiTest = { state: 'running', at: Date.now(), roleId: target.id, label: target.label };
     render();

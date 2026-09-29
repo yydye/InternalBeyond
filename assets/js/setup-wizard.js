@@ -852,7 +852,20 @@
     S.busy = true; S.testState = 'running'; S.test = null;
     render();
     var cfg = testConfig(S);
+    var tempBindingId = 'ib_setup_test_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+    var requestError = null;
+    var credentialWritten = false;
     try {
+      if (String(cfg.apiKey || '').trim()) {
+        if (typeof window._ibWriteVaultCredential !== 'function' || typeof window._ibDeleteVaultCredential !== 'function') {
+          throw new Error('credentials-service-unavailable');
+        }
+        cfg.id = tempBindingId;
+        cfg.credentialRef = tempBindingId;
+        await window._ibWriteVaultCredential(tempBindingId, cfg, cfg.apiKey);
+        credentialWritten = true;
+        cfg.apiKey = '';
+      }
       await window.callApiChat(cfg, [{ role: 'user', content: '你好' }], {
         _ibConsumer: 'setup',/* 诊断身份：testConfig().promptCache=false → 审计不运行，此键为身份完整性预留 */
         maxTokens: 16,
@@ -864,6 +877,7 @@
       S.testState = 'ok';
       S.test = null;
     } catch (e) {
+      requestError = e;
       S.testState = 'fail';
       try {
         S.test = window.IBERR && window.IBERR.present
@@ -881,6 +895,13 @@
       /* 原始诊断只在开发者控制台（不含密钥）；用户界面只显示 P3 文案 */
       try { console.warn('[IBSetup] 连接测试失败', e); } catch (e3) {}
     } finally {
+      try { if (credentialWritten) await window._ibDeleteVaultCredential(tempBindingId); }
+      catch (cleanupError) {
+        if (!requestError) {
+          S.testState = 'fail';
+          S.test = { code: 'IBERR.UNKNOWN.UNKNOWN', title: '凭据清理失败', message: '测试结束后未能清除临时凭据，请稍后在 API 设置中清除。', suggestion: '', technicalDetails: {} };
+        }
+      }
       S.busy = false;
     }
     render();
@@ -895,8 +916,17 @@
     }
     var id = null;
     try {
+      if (S.savedRoleId && (window.apiConfigs || []).some(function (c) { return c.id === S.savedRoleId; })) {
+        if (String(S.apiKey || '').trim()) {
+          if (typeof window._ibSaveApiConfigCredential !== 'function') throw new Error('credentials-service-unavailable');
+          await window._ibSaveApiConfigCredential(S.savedRoleId, S.apiKey);
+          S.apiKey = '';
+        }
+        return true;
+      }
       window.addNewApi();
       id = window.editingApiId;
+      var keyToSave = String(S.apiKey || '');
       var setVal = function (domId, value) {
         var n = $(domId);
         if (n) n.value = value == null ? '' : String(value);
@@ -907,13 +937,19 @@
       if (typeof window.onProviderChange === 'function') window.onProviderChange();
       setVal('api-model', S.model);
       setVal('api-endpoint', S.endpoint);
-      setVal('api-key', S.apiKey);
+      setVal('api-key', '');
       setVal('api-relationship', S.relationship);
       setVal('api-system', S.promptDirty ? S.systemPrompt : composePrompt(defaultPrompt(), S.desc));
       window._pendingApiAvatar = S.avatar || null;
       await window.saveCurrentApi(null);
       var saved = (window.apiConfigs || []).filter(function (c) { return c.id === id; })[0];
       if (!saved) throw new Error('角色没有保存成功');
+      if (keyToSave.trim()) {
+        if (typeof window._ibSaveApiConfigCredential !== 'function') throw new Error('credentials-service-unavailable');
+        await window._ibSaveApiConfigCredential(id, keyToSave);
+        S.apiKey = '';
+        var keyInput = $('api-key'); if (keyInput) keyInput.value = '';
+      }
       S.savedRoleId = id;
       S.savedName = saved.nickname || saved.model || S.nickname;
       return true;

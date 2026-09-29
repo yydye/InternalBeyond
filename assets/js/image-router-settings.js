@@ -9,7 +9,7 @@
      · 把配置写进 apiSettings['image_router'].routes（image-router-config.js 负责存储与解析）
    不做的事：不发请求、不选并发、不复制 API 表单。
    A1.5（止血）：这里不再提供「+ 新建」按钮。理由成事实：IB 当前没有"独立的图片 API 配置"实体
-   —— 图片凭据来自角色 API 配置里的「图片服务商 / 图片接口地址 / 图片 API Key」，而那条记录同时
+   —— 图片凭据来自角色 API 配置绑定的 Credential Vault；图片 provider / endpoint 与那条记录同时
    就是角色档案。所以在 Image Router 里放新建按钮会让人以为存在独立图片配置实体（点下去打开的
    其实是角色 API 编辑器）。新建图片来源的唯一入口是下方「角色库」的 API 编辑器（addNewApi）。
    正式解耦登记为 P16 · Image Config Decoupling，本层不预支该改动。
@@ -26,7 +26,7 @@
   var INHERIT_LABEL = '跟随当前角色';
   /* 两条路由共用的来源说明：把"凭据到底从哪来"讲清楚，用户不用猜 */
   var SOURCE_HINT_PICK = '留空 = 跟随当前角色（用正在聊天的那个角色的图片凭据，与旧行为一致）；选择具体来源 = 该路由始终使用它，与正在和谁聊天无关。';
-  var SOURCE_HINT_FROM = '图片凭据取自该来源的 图片服务商 / 图片接口地址 / 图片 API Key（在下方「角色库」的 API 编辑器里设置）。';
+  var SOURCE_HINT_FROM = '图片凭据取自该来源绑定的 Credential Vault API Key；图片服务商与接口地址在下方「角色库」的 API 编辑器里设置。';
   var _bound = false;
   var _collapsed = false;
 

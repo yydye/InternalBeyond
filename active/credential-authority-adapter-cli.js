@@ -7,8 +7,8 @@
  * stdout: bounded secret-free projection only
  *
  * This process owns no second credential authority. It calls the R5 adapter
- * and first restricts requests to binding IDs currently known by Active
- * metadata. Unknown IDs receive UNKNOWN and never reach vault.has().
+ * and restricts requests to Active metadata plus refs registered by the
+ * /credentials writer. Unknown IDs never reach Vault status lookup.
  */
 
 const fs = require('fs');
@@ -17,9 +17,15 @@ const readline = require('readline');
 const createAdapter = require('./credential-authority-adapter.js');
 
 const MAX_BINDINGS = 200;
-const dataDir = process.env.LOCALAPPDATA
+const activeDataDir = process.env.IB_ACTIVE_DATA_DIR || (process.env.LOCALAPPDATA
   ? path.join(process.env.LOCALAPPDATA, 'InternalBeyond')
-  : '';
+  : '');
+const dataDir = process.env.IB_CREDENTIAL_DATA_DIR || activeDataDir;
+
+/* P34.1 · Non-Active system bindings explicitly allowed to use the Vault.
+   Adds a fixed constant id only; role binding status stays governed solely by
+   the Active metadata set below. */
+const SYSTEM_BINDING_IDS = ['middle_brain'];
 
 function fixedError(errorCode) {
   return { ok: false, errorCode, results: [] };
@@ -31,18 +37,20 @@ function validBindingId(value) {
 }
 
 function knownActiveBindings() {
-  if (!dataDir) return new Set();
+  if (!activeDataDir) return new Set(SYSTEM_BINDING_IDS);
   try {
-    const file = path.join(dataDir, 'active-message-service.json');
+    const file = path.join(activeDataDir, 'active-message-service.json');
     const state = JSON.parse(fs.readFileSync(file, 'utf8'));
     return new Set([
+      ...SYSTEM_BINDING_IDS,
       ...Object.keys(state.moments || {}),
       ...Object.values(state.plans || {}).map(item => String(item && item.characterId || '')).filter(Boolean),
       ...Object.values(state.events || {}).map(item => String(item && item.character_id || '')).filter(Boolean),
-      ...Object.values(state.history || {}).map(item => String(item && item.character_id || '')).filter(Boolean)
+      ...Object.values(state.history || {}).map(item => String(item && item.character_id || '')).filter(Boolean),
+      ...(Array.isArray(state.credentialBindings) ? state.credentialBindings.filter(validBindingId) : [])
     ]);
   } catch (_) {
-    return new Set();
+    return new Set(SYSTEM_BINDING_IDS);
   }
 }
 

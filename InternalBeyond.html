@@ -1306,7 +1306,19 @@
         </div>
         <div class="api-form-group mb-apikey-group">
           <label>API Key</label>
-          <input type="password" id="mb-apikey" placeholder="输入 AI 的 API Key…">
+          <input type="password" id="mb-apikey" placeholder="输入新的 API Key；保存后写入 Credential Vault">
+          <div class="f-hint">此处输入的 Key 会先保存到 Credential Vault，再写入非密绑定引用。</div>
+        </div>
+        <div class="api-form-group mb-credential-group">
+          <label>凭据绑定 (Credential Vault)</label>
+          <input id="mb-credential-ref" list="mb-credential-ref-list" placeholder="留空则使用下方 API Key；或填 API 配置 id，运行时从 Vault 解析" spellcheck="false" autocomplete="off">
+          <datalist id="mb-credential-ref-list"></datalist>
+          <span class="mb-credential-status" id="mb-credential-status" role="status" aria-live="polite"></span>
+        </div>
+        <div class="api-form-group mb-provider-group">
+          <label>网络路径 (复用现有 API 配置)</label>
+          <input id="mb-provider-config" list="mb-provider-config-list" placeholder="留空则使用上方 Endpoint；或填 API 配置 id，复用其 provider / endpoint / model" spellcheck="false" autocomplete="off">
+          <datalist id="mb-provider-config-list"></datalist>
         </div>
         <div class="mb-adv-divider"></div>
         <div class="mb-adv-card">
@@ -1354,6 +1366,7 @@
           <div class="mb-adv-hint">保守优先：只修明显违反角色证据的回复，轻微风格差异不干预；当前上下文中的明确变化证据优先于静态人设。默认关闭。</div>
         </div>
         <div class="mb-actions">
+          <button type="button" class="btn" id="mb-clear-credential" onclick="clearMiddleBrainCredential()" hidden>清除 Middle Brain Key</button>
           <button type="button" class="btn btn-primary" onclick="saveMiddleBrainConfigUI()">保存 Middle Brain</button>
           <span id="mb-save-status" class="mb-save-status"></span>
         </div>
@@ -1479,7 +1492,8 @@
       <div class="api-form-group" id="ibo-provider-note"></div>
       <div class="api-form-group">
         <label>API Key <span class="field-note-inline" id="ibo-key-help"></span></label>
-        <input type="password" id="api-key" placeholder="输入你的 API Key…">
+        <input type="password" id="api-key" placeholder="Credential Vault 管理；此处不显示或保存密钥">
+        <div id="ibo-key-vault-hint" class="f-hint" aria-live="polite"></div>
       </div>
       <div class="api-form-group" id="ibo-compatible-hint"></div>
       <div class="api-form-group">
@@ -1508,7 +1522,7 @@
           </select>
         </div>
         <input id="api-imagegen-endpoint" placeholder="图片接口地址（可选；留空=复用文字接口）" class="img-svc-field">
-        <input type="password" id="api-imagegen-apikey" placeholder="图片 API Key（可选；留空=复用文字 Key）" class="img-svc-field">
+        <input type="password" id="api-imagegen-apikey" placeholder="图片请求复用角色的 Credential Vault API Key" class="img-svc-field">
       </div>
       </div>
       <!-- 私密事实（Phase 4B-1.2）：**人类显式创作**一条角色私有事实的唯一入口。
@@ -1971,6 +1985,24 @@
         <div style="font-size:0.72rem;opacity:0.6;line-height:1.7;margin-top:4px">自动备份：每天首次打开站点时静默导出完整 JSON 到下载文件夹。紧急镜像：核心数据每 10 分钟写入浏览器的备用存储，空库警告弹窗中可一键回灌。本地文件夹同步：绑定磁盘文件夹后，数据变动时自动写入备份文件；浏览器重启后需重新授权。</div>
       </div>
       <div id="ib-local-vault-root" class="ib-vault-shell"></div>
+<!-- API credential management (reuses the existing Vault authority; key never enters the config) -->
+<div id="ib-cred-modal-backdrop" class="ib-cred-modal-backdrop" hidden>
+  <div class="ib-cred-modal" role="dialog" aria-modal="true" aria-labelledby="ib-cred-modal-title">
+    <h3 id="ib-cred-modal-title" class="ib-cred-modal-title">更换 API Key</h3>
+    <div class="ib-cred-modal-meta">
+      <div><span class="ib-cred-modal-label">Provider</span><span id="ib-cred-modal-provider" class="ib-cred-modal-value"></span></div>
+      <div><span class="ib-cred-modal-label">当前配置</span><span id="ib-cred-modal-name" class="ib-cred-modal-value"></span></div>
+    </div>
+    <label class="ib-cred-modal-field" for="ib-cred-modal-key">新的 API Key</label>
+    <input id="ib-cred-modal-key" class="ib-cred-modal-input" type="password" autocomplete="off" spellcheck="false" placeholder="粘贴新的 API Key">
+    <p class="ib-cred-modal-note">API Key 将保存在本地加密凭据存储中，不会写入角色配置。</p>
+    <div class="ib-cred-modal-actions">
+      <button type="button" id="ib-cred-modal-clear" class="ib-cred-modal-btn ib-cred-modal-btn-danger" hidden onclick="_ibClearApiKey(this)">清除 API Key</button>
+      <button type="button" class="ib-cred-modal-btn" onclick="_ibCloseApiKeyModal()">取消</button>
+      <button type="button" id="ib-cred-modal-save" class="ib-cred-modal-btn ib-cred-modal-btn-primary" onclick="_ibSaveApiKey(this)">保存</button>
+    </div>
+  </div>
+</div>
       <div id="ib-local-first-root"></div>
       <h3 style="color:#e88">危险操作</h3>
       <div id="danger-storage-overview" style="margin-bottom:16px">

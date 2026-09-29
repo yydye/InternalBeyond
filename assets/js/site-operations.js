@@ -4,7 +4,17 @@
 async function clearAllApiKeys(){
   if(!confirm('⚠ 确定要清除所有 API 密钥吗？\n\nAPI昵称和其他设置会保留，但密钥会被清空。'))return;
   if(typeof _activePrepareAllBackgroundRemoval==='function'&&!(await _activePrepareAllBackgroundRemoval('清除全部 API Key')))return;
-  for(const cfg of apiConfigs){cfg.apiKey='';await _persistApiConfig(cfg)}
+  try{
+    await _ibDeleteAllVaultCredentials();
+    for(const cfg of apiConfigs){
+      await _persistApiConfig(Object.assign({},cfg,{apiKey:'',credentialRef:''}));
+    }
+    const settings=await dbGetAll('apiSettings');
+    for(const setting of settings){
+      if(!setting||(!String(setting.credentialRef||'').trim()&&!String(setting.apiKey||'').trim()))continue;
+      await dbPut('apiSettings',Object.assign({},setting,{apiKey:'',credentialRef:''}));
+    }
+  }catch(e){toast('清除未完成：Credential Vault 暂不可用，剩余配置未处理');return}
   /* Also hide editor panel and refresh UI */
   var editor=document.getElementById('api-editor');if(editor)editor.style.display='none';
   await renderApiList();
@@ -19,6 +29,9 @@ async function resetAllData(){
   if(!confirm('⚠ 这将删除所有数据：日志、聊天记录、信件、API配置、个人资料…\n\n确定要重置吗？'))return;
   if(!confirm('最后确认：此操作不可逆，所有数据将永久丢失。'))return;
   if(typeof _activePrepareAllBackgroundRemoval==='function'&&!(await _activePrepareAllBackgroundRemoval('重置全部数据')))return;
+  try{
+    await _ibDeleteAllVaultCredentials();
+  }catch(e){toast('重置未完成：Credential Vault 暂不可用，数据仍保留');return}
   try{localStorage.setItem('ib_resetAt',String(Date.now()))}catch(e){}/* 主动重置：熔断警告静音 15 分钟 */
   const stores=['posts','categories','about','music','apiSettings','chatMessages','letters','apiConfigs','groups','blogComments','memories','chatThreads','chatSummaries','uploadedFiles','projects','projectFiles','blogAnnotations','active_message_settings','active_message_history','active_message_plans','diary_entries','roleLetters','roleLetterMemories','activities','favorites'];
   for(const s of stores){try{const all=await dbGetAll(s);for(const item of all)await dbDelete(s,item.id||item.name)}catch(e){}}

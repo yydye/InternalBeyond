@@ -254,10 +254,11 @@
     setGuided(!!o.guided);
     renderKeyHelp(pid);
 
-    /* 5) 把编辑器带到用户眼前，光标落到 Key 输入框——用户只需要粘贴 */
+    /* 5) Key 走独立的 Vault 按钮；先把焦点放在角色名称字段。 */
     revealEditor();
-    var key = byId('api-key');
-    if (key) { try { key.focus(); } catch (e) { } }
+    renderVaultKeyHint();
+    var name = byId('api-ai-name');
+    if (name) { try { name.focus(); } catch (e) { } }
     return applied;
   }
 
@@ -311,6 +312,12 @@
     host.appendChild(a);
     return true;
   }
+  function renderVaultKeyHint() {
+    var host = byId('ibo-key-vault-hint');
+    if (!host) return false;
+    host.textContent = '先保存角色配置；随后在 API 列表点击「添加 API Key」，密钥会写入 Credential Vault。';
+    return true;
+  }
 
   /* ══ 入口分流（#page-api 顶部） ═════════════════════════════ */
   function entryCard(title, sub, label, onClick, primary) {
@@ -335,11 +342,11 @@
 
     var grid = el('div', 'ibo-entry-grid');
     grid.appendChild(entryCard('我还没有 API Key', '带你从零拿到一把 Key：选服务、打开官方平台、创建、复制。', '带我获取', function () { openWizard(); }, true));
-    grid.appendChild(entryCard('我已经有 API Key', '直接进配置页：服务选好、地址自动填好，你只要粘贴 Key。', '去粘贴', function () { openManualEditor(); }));
-    grid.appendChild(entryCard('导入 OpenAI Compatible API', '中转服务或自建网关，地址和 Key 都由你自己填。', '手动填写', function () { openCompatibleImport(); }));
+    grid.appendChild(entryCard('我已经有 API Key', '先保存服务、地址和模型；随后在 API 列表把 Key 添加到 Credential Vault。', '去配置', function () { openManualEditor(); }));
+    grid.appendChild(entryCard('导入 OpenAI Compatible API', '填写中转服务或自建网关地址并保存配置，再从 API 列表添加 Key。', '手动填写', function () { openCompatibleImport(); }));
     box.appendChild(grid);
 
-    var note = el('p', 'ibo-entry-note', '不确定该选哪个？点「带我获取」，里面每个服务都写清楚了适合谁。');
+    var note = el('p', 'ibo-entry-note', '角色配置保存后，在 API 列表点「添加 API Key」即可安全保存密钥。');
     box.appendChild(note);
 
     host.appendChild(box);
@@ -366,8 +373,9 @@
     }
     renderKeyHelp(pid);
     revealEditor();
-    var key = byId('api-key');
-    if (key) { try { key.focus(); } catch (e) { } }
+    renderVaultKeyHint();
+    var name = byId('api-ai-name');
+    if (name) { try { name.focus(); } catch (e) { } }
     return pid;
   }
 
@@ -386,8 +394,9 @@
     }
     var host = byId('ibo-compatible-hint');
     if (host && !host.firstChild) {
-      host.appendChild(el('span', null, '把服务方给你的接口地址和 Key 填在下面。地址一般要填到完整路径（例如 …/v1/chat/completions）。'));
+      host.appendChild(el('span', null, '把服务方给你的接口地址填在下面，通常要填到完整路径（例如 …/v1/chat/completions）；保存配置后，再从 API 列表把 Key 添加到 Credential Vault。'));
     }
+    renderVaultKeyHint();
     revealEditor();
     var ep = byId('api-endpoint');
     if (ep) { try { ep.focus(); } catch (e) { } }

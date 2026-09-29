@@ -216,29 +216,88 @@ function createHttp(ctx) {
         response.end(TRACE_DEBUG_HTML);
         return;
       }
-      /* ── Credential Vault v1：独立 credential-sync endpoint（只写 vault，不动业务 state）──
-         保留顶层 Origin guard（不在此路由内放行）；不参与 Moments ownership/reown；
-         只写 credential-vault.json；任何响应/异常都不回传完整 API Key。 */
+      /* ── Credential Authority: Vault secret + non-secret resolver allowlist ──
+         The allowlist is reference metadata only; API keys remain exclusively in the encrypted Vault.
+         No response or exception echoes the submitted secret. */
       if (request.method === 'POST' && url.pathname === '/credentials') {
         const body = await readBody(request);
         const list = Array.isArray(body && body.credentials) ? body.credentials : [];
         let stored = 0;
+        const credentialRefs = [];
         for (const c of list) {
-          if (!c || !c.characterId) continue;
+          if (!c) continue;
           const keyNow = String(c.apiKey || '').trim();
           if (!keyNow) continue;
-          const id = String(c.characterId);
-          /* 独立按 characterId 存取：绝不按 nickname/provider/model 合并 */
+          const id = String(c.credentialRef || c.characterId || '').trim();
+          if (!/^[A-Za-z0-9_.:-]{1,180}$/.test(id)) continue;
+          /* Stable binding identity; never merge by nickname/provider/model. */
           try {
-            if (credentialVault.upsert(id, {
+            const state = getState();
+            const bindings = Array.isArray(state.credentialBindings) ? state.credentialBindings : [];
+            if (bindings.indexOf(id) < 0) bindings.push(id);
+            state.credentialBindings = bindings;
+            /* Persist authorization metadata first. A failure must not return success
+               after the secret was written but the resolver still cannot reach it. */
+            saveNow();
+            if (!credentialVault.upsert(id, {
               provider: String(c.provider || ''),
               apiKey: keyNow,
               endpoint: String(c.endpoint || ''),
               model: String(c.model || '')
-            })) stored += 1;
+            })) continue;
+            stored += 1;
+            credentialRefs.push(id);
           } catch (_) {}
         }
-        json(response, 200, { ok: true, stored });
+        json(response, 200, {
+          ok: true,
+          stored,
+          credentialRef: credentialRefs.length === 1 ? credentialRefs[0] : null,
+          credentialRefs: credentialRefs
+        });
+        return;
+      }
+      if (request.method === 'DELETE' && url.pathname === '/credentials') {
+        const body = await readBody(request);
+        let requested = Array.isArray(body && body.credentialRefs)
+          ? body.credentialRefs
+          : (body && body.credentialRef ? [body.credentialRef] : []);
+        if (body && body.all === true) {
+          if (!credentialVault || typeof credentialVault.bindingIds !== 'function') {
+            json(response, 500, { ok: false, error: 'CREDENTIAL_AUTHORITY_UNAVAILABLE', removed: 0, credentialRefs: [] });
+            return;
+          }
+          const state = getState();
+          requested = credentialVault.bindingIds().concat(Array.isArray(state.credentialBindings) ? state.credentialBindings : []);
+        }
+        const refs = Array.from(new Set(requested.map(value => String(value || '').trim())
+          .filter(value => /^[A-Za-z0-9_.:-]{1,180}$/.test(value))));
+        const state = getState();
+        const bindings = Array.isArray(state.credentialBindings) ? state.credentialBindings : [];
+        let removed = 0;
+        let writeFailed = false;
+        for (const id of refs) {
+          const existed = credentialVault.has(id);
+          let didRemove = false;
+          try { didRemove = credentialVault.remove(id); } catch (_) {}
+          if (existed && !didRemove) { writeFailed = true; continue; }
+          if (didRemove) removed += 1;
+          const index = bindings.indexOf(id);
+          if (index >= 0) bindings.splice(index, 1);
+        }
+        state.credentialBindings = bindings;
+        if (writeFailed) {
+          try { saveNow(); } catch (_) {}
+          json(response, 500, { ok: false, error: 'CREDENTIAL_AUTHORITY_UNAVAILABLE', removed, credentialRefs: refs });
+          return;
+        }
+        try {
+          saveNow();
+        } catch (_) {
+          json(response, 500, { ok: false, error: 'CREDENTIAL_AUTHORITY_UNAVAILABLE', removed: 0, credentialRefs: [] });
+          return;
+        }
+        json(response, 200, { ok: true, removed, credentialRefs: refs });
         return;
       }
       if (request.method === 'GET' && url.pathname === '/bg-ai') {

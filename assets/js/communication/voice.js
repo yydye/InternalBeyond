@@ -39,10 +39,9 @@ function _voiceApiLine(v,withTone){var d=Math.max(1,Math.round((v&&v.duration)||
    3) 语气：录音结束后本地计算语速/音量/停顿/基频等声学特征（不联网、确定性），
       定格存入消息（voice.tone），仅拼进「听不到原声的模型」的语音等效文本供其自行判断情绪；
       能听原声的模型不附加任何语气标签；界面不显示；不动 system、不改旧消息文本，升级零缓存重建。 */
-var _vtCfg=null;
-async function getVoiceTransSettings(){try{const s=await dbGet('apiSettings','voiceTrans');return s||{endpoint:'',apiKey:'',model:'',direct:true}}catch(e){return{endpoint:'',apiKey:'',model:'',direct:true}}}
-async function _vtGet(){if(_vtCfg)return _vtCfg;_vtCfg=await getVoiceTransSettings();return _vtCfg}
-function _vtOn(s){return !!(s&&s.endpoint&&s.apiKey&&s.model)}
+async function getVoiceTransSettings(){try{const s=await dbGet('apiSettings','voiceTrans');return s||{endpoint:'',apiKey:'',credentialRef:'',model:'',direct:true}}catch(e){return{endpoint:'',apiKey:'',credentialRef:'',model:'',direct:true}}}
+async function _vtGet(){return await getVoiceTransSettings()}
+function _vtOn(s){return !!(s&&s.endpoint&&(s.credentialRef||s.apiKey)&&s.model)}
 async function _voiceboxAsrSelected(){
   const controller=new AbortController();const timer=setTimeout(function(){controller.abort()},1500);
   try{
@@ -65,15 +64,30 @@ async function _voiceboxAsrTranscribe(blob,mime){
 }
 function _vtUrl(u){u=String(u||'').trim().replace(/\/+$/,'');if(!u)return '';if(/\/audio\/transcriptions$/i.test(u))return u;if(/\/v\d+[a-z]*$/i.test(u))return u+'/audio/transcriptions';return u+'/v1/audio/transcriptions'}
 async function saveVoiceTransSettings(){
-  const s={id:'voiceTrans',
-    endpoint:(document.getElementById('api-vt-endpoint')?.value||'').trim(),
-    apiKey:(document.getElementById('api-vt-key')?.value||'').trim(),
-    model:(document.getElementById('api-vt-model')?.value||'').trim(),
-    direct:!!document.getElementById('api-vt-direct')?.checked};
-  await dbPut('apiSettings',s);_vtCfg=s;toast('设置已保存');
+  try{
+    const existing=await getVoiceTransSettings();
+    const s={id:'voiceTrans',
+      endpoint:(document.getElementById('api-vt-endpoint')?.value||'').trim(),
+      apiKey:(document.getElementById('api-vt-key')?.value||'').trim(),
+      credentialRef:String(existing.credentialRef||''),
+      model:(document.getElementById('api-vt-model')?.value||'').trim(),
+      direct:!!document.getElementById('api-vt-direct')?.checked};
+    if(s.apiKey){
+      if(typeof window._ibWriteVaultCredential!=='function')throw new Error('credentials-service-unavailable');
+      s.credentialRef=await window._ibWriteVaultCredential(s.credentialRef||'voice_transcription',{provider:'openai',endpoint:s.endpoint,model:s.model},s.apiKey);
+      s.apiKey='';
+    }
+    await dbPut('apiSettings',s);
+    const key=document.getElementById('api-vt-key');if(key)key.value='';
+    toast('设置已保存');
+    return true;
+  }catch(e){
+    toast('语音转写设置保存失败：Credential Vault 暂不可用');
+    return false;
+  }
 }
 async function loadVoiceTransUI(){
-  const s=await getVoiceTransSettings();_vtCfg=s;
+  const s=await getVoiceTransSettings();
   const e=document.getElementById('api-vt-endpoint');if(e)e.value=s.endpoint||'';
   const k=document.getElementById('api-vt-key');if(k)k.value=s.apiKey||'';
   const m=document.getElementById('api-vt-model');if(m)m.value=s.model||'';
@@ -88,7 +102,7 @@ function _vmAudioNative(cfg){
   return /(gemini|omni|audio)/i.test(String(cfg.model||''));
 }
 /* OpenAI 兼容转写请求：multipart 上传原始录音（webm/mp4 原样交给服务端解码） */
-async function _vtTranscribe(vt,blob,mime){
+async function _vtTranscribeWithKey(vt,runtimeKey,blob,mime){
   const url=_vtUrl(vt.endpoint);
   if(!url)throw new Error('转写接口地址为空');
   const fd=new FormData();
@@ -97,13 +111,26 @@ async function _vtTranscribe(vt,blob,mime){
   fd.append('model',vt.model);
   const ac=new AbortController();const tm=setTimeout(function(){try{ac.abort()}catch(e){}},30000);
   try{
-    const res=await fetch(url,{method:'POST',signal:ac.signal,headers:{'Authorization':'Bearer '+vt.apiKey},body:fd});
+    const res=await fetch(url,{method:'POST',signal:ac.signal,headers:{'Authorization':'Bearer '+runtimeKey},body:fd});
     clearTimeout(tm);
     if(!res.ok){const t=await res.text();throw new Error(res.status+': '+String(t||'').slice(0,200))}
     const ct=res.headers.get('content-type')||'';
     if(ct.includes('json')){const j=await res.json();return String((j&&(j.text!=null?j.text:(j.data&&j.data.text!=null?j.data.text:'')))||'').trim()}
     return String(await res.text()||'').trim();
   }catch(e){clearTimeout(tm);if(e&&e.name==='AbortError')throw new Error('转写请求超时（30秒）');throw e}
+}
+async function _vtTranscribe(vt,blob,mime){
+  const ref=String(vt&&vt.credentialRef||'').trim();
+  if(ref){
+    if(typeof window._ibWithRuntimeApiCredential!=='function')throw new Error('CREDENTIAL_UNAVAILABLE');
+    return window._ibWithRuntimeApiCredential({id:ref,credentialRef:ref,provider:'openai',endpoint:vt.endpoint},function(runtimeCfg){
+      return _vtTranscribeWithKey(vt,runtimeCfg.apiKey,blob,mime);
+    });
+  }
+  /* Pre-ref data remains usable only as migration compatibility; saving the form moves it into Vault. */
+  const legacyKey=String(vt&&vt.apiKey||'');
+  if(!legacyKey)throw new Error('CREDENTIAL_UNAVAILABLE');
+  return _vtTranscribeWithKey(vt,legacyKey,blob,mime);
 }
 /* 解码到 AudioBuffer（回调式写法兼容 Safari） */
 var _vmACtx=null;
@@ -663,7 +690,6 @@ ibVoiceLive('_vmSt', function(){return _vmSt}, function(v){_vmSt=v});
 ibVoiceLive('_vmAudio', function(){return _vmAudio}, function(v){_vmAudio=v});
 ibVoiceLive('_vmNoSrWarned', function(){return _vmNoSrWarned}, function(v){_vmNoSrWarned=v});
 ibVoiceLive('_vmRecogWarned', function(){return _vmRecogWarned}, function(v){_vmRecogWarned=v});
-ibVoiceLive('_vtCfg', function(){return _vtCfg}, function(v){_vtCfg=v});
 ibVoiceLive('_vmACtx', function(){return _vmACtx}, function(v){_vmACtx=v});
 ibVoiceLive('_vmPlayingEl', function(){return _vmPlayingEl}, function(v){_vmPlayingEl=v});
 NS.expose('chat.voice', {
@@ -701,7 +727,6 @@ NS.expose('chat.voice', {
   _vmAudio: _vmAudio,
   _vmNoSrWarned: _vmNoSrWarned,
   _vmRecogWarned: _vmRecogWarned,
-  _vtCfg: _vtCfg,
   _vmACtx: _vmACtx,
   _vmPlayingEl: _vmPlayingEl,
 });
