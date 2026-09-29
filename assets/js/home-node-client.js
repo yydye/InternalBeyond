@@ -66,6 +66,21 @@ window.ibHomeNodeBase = ibHomeNodeBase;
 window.ibHomeNodeMode = ibHomeNodeMode;
 window.ibHomeNodeToken = ibHomeNodeToken;
 
+/* Canonical Tauri desktop host detection + IPC invoker.
+   The canonical desktop page is served from http://tauri.localhost, which the
+   Home Node HTTP bootstrap refuses (loopback origin only). Inside the Tauri
+   WebView the host exposes an IPC command that returns the Home Node desktop
+   credential through the native seam; a plain browser page has no
+   window.__TAURI__, so this path is host-only. */
+function _ibTauriInvoke() {
+  try {
+    var tauri = (typeof window !== 'undefined') ? window.__TAURI__ : null;
+    if (!tauri) return null;
+    var invoke = (tauri.core && tauri.core.invoke) || tauri.invoke;
+    return (typeof invoke === 'function') ? invoke : null;
+  } catch (e) { return null; }
+}
+
 /* ══ P22-23 · 凭据会话（**只在内存里**）══════════════════════════════
    两个闭包变量，没有第三个：
      _sessionToken       本轮页面生命周期内已经取到 / 已经显式配置的凭据。
@@ -102,6 +117,36 @@ function ibHomeNodeProvisionCredential(options) {
     return Promise.resolve({ ok: true, source: 'session' });
   }
   if (_provisionPromise) return _provisionPromise;
+  var _nativeInvoke = _ibTauriInvoke();
+  if (_nativeInvoke) {
+    /* Canonical Tauri desktop host: get the credential over the native IPC seam
+       instead of the loopback-only HTTP bootstrap. This does not widen the Home
+       Node's HTTP admission (browsers/plain HTTP clients cannot invoke IPC). */
+    _provisionPromise = _nativeInvoke('home_node_desktop_credential').then(function (result) {
+      var credential = (result && typeof result.credential === 'string') ? result.credential : '';
+      if (credential) {
+        _sessionToken = credential;
+        _provisionFailure = null;
+        return { ok: true, source: 'tauri-host-bridge' };
+      }
+      _sessionToken = '';
+      _provisionFailure = { code: 'home-node-credential-unavailable', status: 0, reason: 'tauri-host-bridge-empty', retryable: true };
+      return { ok: false, error: _provisionFailure.code, reason: _provisionFailure.reason, retryable: true };
+    }, function (error) {
+      _sessionToken = '';
+      _provisionFailure = {
+        code: 'home-node-credential-unavailable',
+        status: 0,
+        reason: String((error && error.message) || error || 'tauri-host-bridge-failed').slice(0, 80),
+        retryable: true
+      };
+      return { ok: false, error: _provisionFailure.code, reason: _provisionFailure.reason, retryable: true };
+    }).then(function (result) {
+      _provisionPromise = null;
+      return result;
+    });
+    return _provisionPromise;
+  }
   var url = ibHomeNodeBase() + CREDENTIAL_PATH;
   var controller = (typeof AbortController === 'function') ? new AbortController() : null;
   var timer = null;

@@ -90,6 +90,7 @@ const serviceControl = require('../runtime/service-control.js');
 const createNodeMiddleBrain = require('../services/home-node/middle-brain.js');
 /* P22-23：桌面凭据的**唯一** authority（生成 / 持久化 / 加载 / 诊断）。 */
 const desktopCredential = require('../services/home-node/desktop-credential.js');
+const createCredentialAccess = require('../services/home-node/credential-access.js');
 /* P22-25：目录 bootstrap 的**唯一** authority（种子 / 图片引用 / 幂等键）。
    ★ 它为什么在**装配层**被 require，而不是在 http.js 里：P22-21 §9 的 T5
      逐字断言 http.js 的代码里 28 个 store 写动词零调用形态，而
@@ -112,6 +113,12 @@ const DATA_DIR = process.env.IB_HOME_NODE_DATA_DIR ||
   (process.platform === 'win32' && process.env.LOCALAPPDATA
     ? path.join(process.env.LOCALAPPDATA, 'InternalBeyond', 'home-node')
     : path.join(os.homedir(), '.internal-beyond', 'home-node'));
+/* Credential Vault is shared with Active and the Tauri resolver at the app data root,
+   while Home Node's SQLite stores live in the `home-node` child directory. */
+const CREDENTIAL_DATA_DIR = process.env.IB_CREDENTIAL_DATA_DIR || process.env.IB_ACTIVE_DATA_DIR ||
+  (process.platform === 'win32' && process.env.LOCALAPPDATA
+    ? path.join(process.env.LOCALAPPDATA, 'InternalBeyond')
+    : path.join(os.homedir(), '.internal-beyond'));
 /* ── P22-23 · 桌面凭据的**唯一** authority ────────────────────────────
    这一行以前是 `String(process.env.IB_HOME_NODE_TOKEN || '')`。那个表达式
    在产品上的后果是：普通用户装好、启动、打开 Economy，看到的是"请先设置
@@ -129,6 +136,29 @@ const DATA_DIR = process.env.IB_HOME_NODE_DATA_DIR ||
 const CREDENTIAL = desktopCredential.resolveDesktopCredential({ dataDir: DATA_DIR });
 const TOKEN = CREDENTIAL.ok ? CREDENTIAL.token : '';
 const TOKEN_SOURCE = CREDENTIAL.ok ? CREDENTIAL.source : null;
+/* P34.3-B · Home Node credential access (ADR P34.3-A.1 Decision 1 = Option A).
+   Least-privilege allowlist = the Node's own published characters. The predicate
+   is lazy because the production registry is created later in this module; it is
+   only evaluated at request time. */
+let productionRegistry = null;
+function registryAllowsCredentialRef(reg, requestedRef) {
+  const ref = String(requestedRef || '').trim();
+  if (!ref || !reg || typeof reg.listCharacters !== 'function' || typeof reg.getCharacterSpec !== 'function') return false;
+  try {
+    return reg.listCharacters().some((character) => {
+      if (!character || !character.id) return false;
+      const spec = reg.getCharacterSpec(character.id);
+      if (!spec || typeof spec !== 'object') return false;
+      const hasRef = Object.prototype.hasOwnProperty.call(spec, 'credentialRef');
+      const allowedRef = hasRef ? String(spec.credentialRef || '').trim() : String(character.id);
+      return !!allowedRef && allowedRef === ref;
+    });
+  } catch (_) { return false; }
+}
+const productionCredentialAccess = createCredentialAccess({
+  dataDir: CREDENTIAL_DATA_DIR,
+  isAllowed: (id) => registryAllowsCredentialRef(productionRegistry, id)
+});
 const ALLOWED_ORIGINS = String(process.env.IB_HOME_NODE_ORIGINS || '')
   .split(',').map(s => s.trim()).filter(Boolean);
 /* Mobile Gateway 的额外出站 Origin 白名单。**不是**安全边界（设备 token 才是），
@@ -173,6 +203,7 @@ const port = createNodeModelPort({});
 const executor = createExecutor({
   store,
   port,
+  credentialAccess: productionCredentialAccess,
   logger: (event, fields) => log('info', event, fields)
 });
 
@@ -347,6 +378,7 @@ function understandingAssembly(options) {
         memoryStore: options.memoryStore,
         registry: options.registry,
         modelPort: modelPort,
+        credentialAccess: options.credentialAccess || null,
         clock: options.clock,
         logger: (e, f) => serviceLog('info', e, f)
       })
@@ -753,6 +785,7 @@ function gatewayAssembly(options) {
 function buildHomeNode(options) {
   options = options || {};
   const dataDir = options.dataDir || DATA_DIR;
+  const credentialDataDir = options.credentialDataDir || (options.dataDir ? dataDir : CREDENTIAL_DATA_DIR);
   const serviceLog = options.logger || ((level, event, fields) => log(level, event, fields));
   const instanceStore = options.store || createStore({ dataDir: dataDir, logger: (e, f) => serviceLog('info', e, f) });
   /* M1-C.2d Wave 2：canonical `memories`（与 chatMessages 同一个 SQLite 文件，
@@ -770,6 +803,12 @@ function buildHomeNode(options) {
   const instanceMemoryStore = memoryDeps.memoryStore;
   const instanceMemoryRetrieval = memoryDeps.memoryRetrieval;
   const instanceRegistry = options.registry || createDeviceRegistry({ dataDir: dataDir, logger: (e, f) => serviceLog('info', e, f) });
+  /* P34.3-B · instance-scoped credential access bound to the instance registry
+     (test instances never read the production data directory's registry). */
+  const instanceCredentialAccess = options.credentialAccess || createCredentialAccess({
+    dataDir: credentialDataDir,
+    isAllowed: (id) => registryAllowsCredentialRef(instanceRegistry, id)
+  });
   /* M1-C.2i · canonical Middle Brain 执行缝（Node 宿主适配）。
      工厂本身不抛错：canonical 层加载失败时它返回一个"永远未参与"的降级对象，
      于是回合照常跑（Middle Brain 是认知增强层，不是聊天单点故障）。
@@ -792,6 +831,7 @@ function buildHomeNode(options) {
     store: instanceStore,
     port: options.port || createNodeModelPort({}),
     middleBrain: instanceMiddleBrain,
+    credentialAccess: instanceCredentialAccess,
     logger: (e, f) => serviceLog('info', e, f)
   });
   /* M1-C.2m：理解域的挂载点（网关委派给它的 store / 取回 / 派生）。
@@ -807,6 +847,7 @@ function buildHomeNode(options) {
     memoryStore: instanceMemoryStore,
     registry: instanceRegistry,
     modelPort: options.port || createNodeModelPort({}),
+    credentialAccess: instanceCredentialAccess,
     clock: options.clock,
     logger: serviceLog
   });
@@ -1082,6 +1123,7 @@ const registry = createDeviceRegistry({
   dataDir: DATA_DIR,
   logger: (event, fields) => log('info', event, fields)
 });
+productionRegistry = registry;
 /* M1-C.2m：进程级启动路径同样必须挂上理解域 —— 与 memory 那次教训逐字同形
    （只接 buildHomeNode 会让 23118 上的 /understanding/* 全 501，而测试全绿）。
    modelPort 复用进程级 port：派生与回合走同一条 wire 层。 */
@@ -1090,6 +1132,7 @@ const understanding = understandingAssembly({
   memoryStore: memory.memoryStore,
   registry,
   modelPort: port,
+  credentialAccess: productionCredentialAccess,
   logger: (level, event, fields) => log(level, event, fields)
 });
 /* M1-C.2n：进程级启动路径同样必须挂上动态域 —— 与理解域那次教训逐字同形

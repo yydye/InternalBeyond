@@ -33,9 +33,10 @@ function freePort() {
     server.listen(0, '127.0.0.1', () => { const port = server.address().port; server.close(() => resolve(port)); });
   });
 }
-function get(port, pathname) {
+function get(port, pathname, token) {
   return new Promise(resolve => {
-    const req = http.get({ host: '127.0.0.1', port, path: pathname, timeout: 2500 }, res => {
+    const req = http.get({ host: '127.0.0.1', port, path: pathname, timeout: 2500,
+      headers: token ? { 'X-IB-Home-Token': token } : {} }, res => {
       let raw = '';
       res.on('data', c => raw += c);
       res.on('end', () => { let parsed = null; try { parsed = JSON.parse(raw); } catch (e) { parsed = null; } resolve({ status: res.statusCode, body: parsed }); });
@@ -88,9 +89,10 @@ function runNode(args, env) {
   {
     const port = await freePort();
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-hn-run-'));
+    const statusToken = 'home-node-status-contract-token';
     const child = spawn(process.execPath, [SERVICE], {
       cwd: ROOT,
-      env: Object.assign({}, process.env, { IB_HOME_NODE_PORT: String(port), IB_HOME_NODE_DATA_DIR: dataDir }),
+      env: Object.assign({}, process.env, { IB_HOME_NODE_PORT: String(port), IB_HOME_NODE_DATA_DIR: dataDir, IB_HOME_NODE_TOKEN: statusToken }),
       stdio: ['ignore', 'pipe', 'pipe']
     });
     let out = '';
@@ -110,7 +112,7 @@ function runNode(args, env) {
         !fs.existsSync(path.join(ROOT, 'home-node.db')));
 
       /* 身份必须能与「占着同一端口的别的服务」区分开 */
-      const unrelated = await get(port, '/status');
+      const unrelated = await get(port, '/status', statusToken);
       check('service.status 需要路由存在且可读', unrelated.status === 200 && !!unrelated.body.meta, unrelated.status);
       check('service.status 日志环存在且不含正文', Array.isArray(unrelated.body.log));
     } finally {

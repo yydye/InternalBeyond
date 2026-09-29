@@ -155,7 +155,9 @@
       return {
         id: id,
         dto: characterDto(Object.assign({ id: id }, projectedDto)),
-        spec: (raw.spec && typeof raw.spec === 'object') ? mapSpec(raw.spec) : null
+        /* id 一并带入，使 mapSpec 能在入站已投影 spec 缺 credentialRef 时回落到 character id
+           （P34.3-B：credentialRef 的权威来源仍是 id）。 */
+        spec: (raw.spec && typeof raw.spec === 'object') ? mapSpec(Object.assign({ id: id }, raw.spec)) : null
       };
     }
     var entry = { id: id, dto: characterDto(raw), spec: null };
@@ -169,9 +171,13 @@
     var provider = str(raw.provider, 64);
     var model = str(raw.model, 256);
     var endpoint = str(raw.endpoint, 512);
-    var apiKey = str(raw.apiKey, 4096);
-    if (!provider || !model || !endpoint || !apiKey) return null;
-    var spec = { provider: provider, model: model, endpoint: endpoint, apiKey: apiKey };
+    /* P34.3-B · Home Node Vault authority: publish the non-secret credentialRef;
+       old configs without it fall back to character id. The Home Node resolves
+       the secret from the Vault at request time (credential-access.js). */
+    var hasCredentialRef = Object.prototype.hasOwnProperty.call(raw, 'credentialRef');
+    var credentialRef = hasCredentialRef ? str(raw.credentialRef, 180) : str(raw.id, 180);
+    if (!provider || !model || !endpoint || !credentialRef) return null;
+    var spec = { provider: provider, model: model, endpoint: endpoint, credentialRef: credentialRef };
     var systemPrompt = str(raw.systemPrompt, 200000);
     if (systemPrompt) spec.systemPrompt = systemPrompt;
     if (raw.temperature != null) spec.temperature = num(raw.temperature, 1);

@@ -308,8 +308,8 @@ function newRegistry(overrides) {
 
     /* spec 表里有凭据 —— 但它只供 Node 执行路径读取，形状与 DTO 完全不同。 */
     const spec = registry.getCharacterSpec('friend_a');
-    check('catalog.spec 可被 Node 执行路径读取',
-      spec && spec.apiKey === 'sk-SECRET-LEAK' && spec.endpoint === raw.endpoint && spec.systemPrompt === 'HIDDEN-PROMPT', spec && Object.keys(spec));
+    check('catalog.spec 可被 Node 执行路径读取（P34.3-B：只含 credentialRef，无明文 apiKey）',
+      spec && spec.credentialRef === 'friend_a' && spec.apiKey === undefined && spec.endpoint === raw.endpoint && spec.systemPrompt === 'HIDDEN-PROMPT', spec && Object.keys(spec));
     check('catalog.spec 不含与文本回合无关的凭据（imageGenApiKey 被投影掉）',
       spec.imageGenApiKey === undefined, Object.keys(spec));
     check('catalog.getCharacter 不带 spec',

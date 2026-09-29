@@ -182,6 +182,15 @@ function mem(id, over) {
   const providerEndpoint = 'http://127.0.0.1:' + providerPort + '/v1/chat/completions';
 
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-thr-'));
+/* P34.3-B · Home Node resolves provider secrets from the Vault now. Seed a
+   synthetic Vault for this temp data dir so migrated reads resolve. */
+(function seedVault() {
+  const createVault = require(path.join(ROOT, 'active', 'credential-vault.js'));
+  const vault = createVault({ dataDir: dataDir });
+  vault.load();
+  vault.upsert(CHARACTER_ID, { provider: 'custom', apiKey: M.secret });
+  vault.save();
+})();
   const ADMIN_TOKEN = 'thread-admin-token';
   const instance = SERVICE.buildHomeNode({
     dataDir: dataDir, token: ADMIN_TOKEN, logger: () => {},

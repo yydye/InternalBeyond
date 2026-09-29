@@ -33,6 +33,10 @@ const DATA_DIR = process.env.IB_BRIDGE_DATA_DIR ||
   (process.platform === 'win32' && process.env.LOCALAPPDATA
     ? path.join(process.env.LOCALAPPDATA, 'InternalBeyond', 'bridge')
     : path.join(os.homedir(), '.internal-beyond', 'bridge'));
+const CREDENTIAL_DATA_DIR = process.env.IB_CREDENTIAL_DATA_DIR || process.env.IB_ACTIVE_DATA_DIR ||
+  (process.platform === 'win32' && process.env.LOCALAPPDATA
+    ? path.join(process.env.LOCALAPPDATA, 'InternalBeyond')
+    : path.join(os.homedir(), '.internal-beyond'));
 const STICKER_DIR = path.join(DATA_DIR, 'stickers');
 
 const MAX_BODY = 8 * 1024 * 1024;
@@ -55,6 +59,8 @@ const uid = util.uid;
 const todayStr = util.todayStr;
 const constantTimeTokenMatch = util.constantTimeTokenMatch;
 const parseQuery = util.parseQuery;
+const createCredentialResolver = require('../active/credential-resolver.js');
+const credentialResolver = createCredentialResolver({ dataDir: CREDENTIAL_DATA_DIR });
 
 /* ------------------------------------------------------------------ */
 /* 支付（Phase 2B）：Payment Authorization + Alipay Provider + Gate    */
@@ -337,6 +343,19 @@ function residentList() {
     .sort((a, b) => (b.updated || 0) - (a.updated || 0));
 }
 
+function resolveResidentCredential(provider) {
+  const ref = String(provider && provider.credentialRef || '').trim();
+  if (!ref) return null;
+  const credential = credentialResolver.resolve(ref);
+  if (!credential || !String(credential.apiKey || '').trim()) return null;
+  const expectedProvider = String(provider && provider.providerId || '').trim().toLowerCase();
+  if (expectedProvider && expectedProvider !== String(credential.provider || '').trim().toLowerCase()) {
+    credential.apiKey = '';
+    return null;
+  }
+  return credential;
+}
+
 function residentUpsert(key, body) {
   const k = String(key || '').trim();
   if (!k) return { ok: false, error: '缺少会话 key' };
@@ -345,8 +364,16 @@ function residentUpsert(key, body) {
   const prov = Object.assign({}, base.provider || {}, body.provider || {});
   if (body.endpoint !== undefined) prov.endpoint = String(body.endpoint);
   if (body.apiKey !== undefined) prov.apiKey = String(body.apiKey);
+  if (body.provider && body.provider.credentialRef !== undefined) prov.credentialRef = String(body.provider.credentialRef || '').trim();
+  if (body.provider && body.provider.providerId !== undefined) prov.providerId = String(body.provider.providerId || '').trim();
   if (body.model !== undefined) prov.model = String(body.model);
   if (body.format !== undefined) prov.format = String(body.format);
+  if (prov.credentialRef) delete prov.apiKey;
+  if (prov.credentialRef) {
+    const available = resolveResidentCredential(prov);
+    if (!available) return { ok: false, error: 'CREDENTIAL_UNAVAILABLE' };
+    available.apiKey = '';
+  }
   if (!prov.endpoint) return { ok: false, error: '缺少 provider.endpoint' };
   if (!prov.model) return { ok: false, error: '缺少 provider.model' };
   const s = {
@@ -478,6 +505,27 @@ async function residentChat(key, message, maxContinues) {
   return withResidentLock(String(key || '').trim(), () => residentChatImpl(key, message, maxContinues));
 }
 
+/* New resident sessions store only the API Config reference. Resolve a fresh
+   secret for each provider call and clear the temporary copy when it returns. */
+async function residentAiChatOnce(provider, messages, system, temperature) {
+  const source = provider && typeof provider === 'object' ? provider : {};
+  const ref = String(source.credentialRef || '').trim();
+  let runtimeProvider = Object.assign({}, source);
+  if (ref) {
+    const credential = resolveResidentCredential(source);
+    if (!credential) return { ok: false, error: 'CREDENTIAL_UNAVAILABLE' };
+    runtimeProvider.apiKey = credential.apiKey;
+    credential.apiKey = '';
+  } else if (!String(runtimeProvider.apiKey || '').trim()) {
+    return { ok: false, error: 'CREDENTIAL_UNAVAILABLE' };
+  }
+  try {
+    return await aiChatOnce(runtimeProvider, messages, system, temperature);
+  } finally {
+    runtimeProvider.apiKey = '';
+  }
+}
+
 async function residentChatImpl(key, message, maxContinues) {
   const s = resident[key];
   if (!s) return { ok: false, error: '会话不存在：' + key };
@@ -489,7 +537,7 @@ async function residentChatImpl(key, message, maxContinues) {
   let continued = 0, reply = '', usageTotal = { i: 0, o: 0 };
   try {
     for (;;) {
-      const r = await aiChatOnce(s.provider, s.history, residentSystem(s), s.temperature);
+      const r = await residentAiChatOnce(s.provider, s.history, residentSystem(s), s.temperature);
       if (!r.ok) {
         s.history.splice(userIdx);
         return { ok: false, error: r.error };
@@ -522,7 +570,7 @@ async function residentProactiveImpl(key, prompt) {
   if (!s) return { ok: false, error: '会话不存在：' + key };
   const userText = String(prompt || '').trim().slice(0, 2000) ||
     '现在主动给用户发一条消息（80 字以内，像真人一样自然，不要加任何前缀或解释）。';
-  const r = await aiChatOnce(s.provider, [{ role: 'user', content: userText }], residentSystem(s), Math.min(1.2, (s.temperature || 0.8) + 0.1));
+  const r = await residentAiChatOnce(s.provider, [{ role: 'user', content: userText }], residentSystem(s), Math.min(1.2, (s.temperature || 0.8) + 0.1));
   if (!r.ok) return r;
   const text = String(r.text || '').trim().replace(/(?:^|[\s，。！？!?,.;；])\/continue\s*$/i, '');
   if (!text) return { ok: false, error: '主动消息为空' };

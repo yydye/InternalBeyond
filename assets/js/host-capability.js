@@ -139,7 +139,7 @@
     function query(bindings) {
       var list = Array.isArray(bindings) ? bindings : [];
       if (list.length > 200) return Promise.resolve({ ok: false, errorCode: 'BATCH_TOO_LARGE', results: [] });
-      return invoke('credential_status', { bindings: list }).then(function (value) {
+      return invoke('credential_status', { request: { bindings: list } }).then(function (value) {
         return value && typeof value === 'object' ? value : { ok: false, error: 'host-invalid-response' };
       }, function (error) {
         return { ok: false, error: 'credential-status-unavailable', detail: safeString(error && error.message || error) };
@@ -169,7 +169,7 @@
       resolve: function (bindingId) {
         var id = safeString(bindingId).trim();
         if (!id || id.length > 180 || !/^[A-Za-z0-9_.:-]+$/.test(id)) return credentialUnavailable();
-        return invoke('credential_resolve', { bindingId: id }).then(function (value) {
+        return invoke('credential_resolve', { request: { bindingId: id } }).then(function (value) {
           if (!value || value.ok !== true || typeof value.apiKey !== 'string' || !value.apiKey.trim()
             || typeof value.provider !== 'string' || !/^[A-Za-z0-9._-]{1,48}$/.test(value.provider)) {
             return credentialUnavailable();

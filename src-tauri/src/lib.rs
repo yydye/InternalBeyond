@@ -4342,6 +4342,46 @@ fn finalize_recovery(
     }))
 }
 
+/* Home Node desktop-credential bridge for the canonical Tauri desktop host.
+   The page origin (http://tauri.localhost) is not a loopback origin, so the
+   Home Node HTTP bootstrap (/internal/desktop-credential) refuses it. This
+   native command reads the same credential authority file the Home Node
+   generated and returns it over the Tauri IPC seam, which browsers and plain
+   HTTP clients cannot invoke. The Home Node's own HTTP admission is unchanged. */
+fn read_home_node_desktop_credential(data_root: &Path) -> Result<String, String> {
+    let path = data_root.join("home-node").join("desktop-credential.json");
+    let bytes = fs::read(&path).map_err(|_| "HOME_NODE_CREDENTIAL_UNAVAILABLE".to_string())?;
+    let value: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|_| "HOME_NODE_CREDENTIAL_INVALID".to_string())?;
+    if value.get("schema").and_then(serde_json::Value::as_u64) != Some(1) {
+        return Err("HOME_NODE_CREDENTIAL_INVALID".to_string());
+    }
+    let token = value
+        .get("token")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    if token.len() < 16
+        || token.len() > 512
+        || token.trim() != token.as_str()
+        || token.chars().any(|c| c.is_control())
+    {
+        return Err("HOME_NODE_CREDENTIAL_INVALID".to_string());
+    }
+    Ok(token)
+}
+
+#[tauri::command]
+fn home_node_desktop_credential() -> Result<serde_json::Value, String> {
+    let data_root = recovery_data_root()?;
+    let credential = read_home_node_desktop_credential(&data_root)?;
+    Ok(serde_json::json!({
+        "ok": true,
+        "credential": credential,
+        "source": "tauri-host-bridge"
+    }))
+}
+
 fn chrono_free_timestamp() -> String {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -5449,6 +5489,7 @@ pub fn run() {
             credential_resolve,
             acknowledge_recovery_first_boot,
             finalize_recovery,
+            home_node_desktop_credential
         ])
     };
 
@@ -6316,6 +6357,34 @@ mod runtime_authority_tests {
             .remove(&f_approval.token);
         fs::remove_dir_all(&root).unwrap();
         fs::remove_dir_all(&foreign_root).unwrap();
+    }
+
+    #[test]
+    fn home_node_desktop_credential_reads_only_a_valid_authority_file() {
+        let root = synthetic_temp_root("home-node-credential");
+        let dir = root.join("home-node");
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("desktop-credential.json");
+
+        assert_eq!(
+            read_home_node_desktop_credential(&root).unwrap_err(),
+            "HOME_NODE_CREDENTIAL_UNAVAILABLE"
+        );
+        fs::write(&file, "{\"schema\":2,\"token\":\"aaaaaaaaaaaaaaaaaaaaaaaa\"}").unwrap();
+        assert_eq!(
+            read_home_node_desktop_credential(&root).unwrap_err(),
+            "HOME_NODE_CREDENTIAL_INVALID"
+        );
+        fs::write(&file, "{\"schema\":1,\"token\":\"short\"}").unwrap();
+        assert_eq!(
+            read_home_node_desktop_credential(&root).unwrap_err(),
+            "HOME_NODE_CREDENTIAL_INVALID"
+        );
+        let token = "A".repeat(43);
+        fs::write(&file, format!("{{\"schema\":1,\"token\":\"{token}\"}}")).unwrap();
+        assert_eq!(read_home_node_desktop_credential(&root).unwrap(), token);
+
+        fs::remove_dir_all(&root).unwrap();
     }
 
     fn synthetic_apply_window_approval(

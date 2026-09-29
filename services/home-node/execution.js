@@ -48,11 +48,35 @@ function createTurnExecutor(deps) {
      reasoningEffort 保持 'auto'，不做任何上下文替换。这让现有调用方（测试、
      只走 /turn 的桌面路径）不需要知道 Middle Brain 存在。 */
   const middleBrain = deps.middleBrain || null;
+  /* P34.3-B · Home Node credential access layer (ADR P34.3-A.1 Decision 1).
+     Optional: when absent the executor keeps pre-P34.3 behavior (spec.apiKey). */
+  const credentialAccess = deps.credentialAccess || null;
   const makeTurnId = deps.makeTurnId || (() => TURN_ID_PREFIX + CHAT_CORE.stableToken(String(clock()) + ':' + Math.random()));
   const inFlight = new Map();                   /* conversationId → turnId */
 
   function fail(code, extra) {
     return Object.assign({ ok: false, error: code }, extra || {});
+  }
+
+  /* P34.3-B · resolve this turn's provider secret from the Vault.
+     Prefers spec.credentialRef → Vault (request-scoped); during migration a
+     plaintext spec.apiKey is still honored; otherwise fail-closed.
+     The returned apiKey lives only in the request-scoped spec handed to the port. */
+  function resolveRuntimeSpec(spec) {
+    const hasCredentialRef = !!(spec && Object.prototype.hasOwnProperty.call(spec, 'credentialRef'));
+    const ref = String((spec && spec.credentialRef) || '').trim();
+    if (hasCredentialRef) {
+      if (!ref) return { ok: false, error: 'credential-unavailable' };
+      if (!credentialAccess) return { ok: false, error: 'credential-unavailable' };
+      const resolved = credentialAccess.resolve(ref);
+      if (resolved && resolved.ok === true && resolved.secret) {
+        return { ok: true, requestScoped: true, spec: Object.assign({}, spec, { apiKey: resolved.secret }) };
+      }
+      return { ok: false, error: 'credential-unavailable' };
+    }
+    /* Legacy readers remain only for pre-ref snapshots; once a ref exists, Vault failure is final. */
+    if (spec && typeof spec.apiKey === 'string' && spec.apiKey.trim()) return { ok: true, requestScoped: true, spec: Object.assign({}, spec) };
+    return { ok: false, error: 'credential-unavailable' };
   }
 
   /* ── prompt 组装 ────────────────────────────────────────────────────
@@ -395,24 +419,31 @@ function createTurnExecutor(deps) {
       mbPolicy = 'middle-brain:bypass/memory:' + memoryReadiness + '/error';
     }
     const composedRuntimeContext = composeRuntimeContext(request.runtimeContextParts, mbCtx.injectedContext);
+    const runtimeSpec = resolveRuntimeSpec(spec);
+    if (!runtimeSpec.ok) return fail(runtimeSpec.error || 'credential-unavailable');
     try {
-      const result = await port.runStream({
-        spec: spec,
-        prompt: buildPrompt(request, composedRuntimeContext),
-        maxTokens: request.maxTokens != null ? request.maxTokens : DEFAULT_MAX_TOKENS,
-        temperature: request.temperature != null ? request.temperature : (spec.temperature != null ? spec.temperature : null),
-        reasoningEffort: mbReasoningEffort,
-        consumer: 'home-node-chat'
-      }, {
-        signal: options.signal,
-        timeoutMs: options.timeoutMs != null ? options.timeoutMs : DEFAULT_TIMEOUT_MS,
-        onEvent: (event) => {
-          if (event && event.type === 'delta') {
-            if (event.kind === 'content') partial.text += String(event.text || '');
-            emit({ type: 'delta', kind: event.kind, text: event.text, index: event.index });
+      let result;
+      try {
+        result = await port.runStream({
+          spec: runtimeSpec.spec,
+          prompt: buildPrompt(request, composedRuntimeContext),
+          maxTokens: request.maxTokens != null ? request.maxTokens : DEFAULT_MAX_TOKENS,
+          temperature: request.temperature != null ? request.temperature : (spec.temperature != null ? spec.temperature : null),
+          reasoningEffort: mbReasoningEffort,
+          consumer: 'home-node-chat'
+        }, {
+          signal: options.signal,
+          timeoutMs: options.timeoutMs != null ? options.timeoutMs : DEFAULT_TIMEOUT_MS,
+          onEvent: (event) => {
+            if (event && event.type === 'delta') {
+              if (event.kind === 'content') partial.text += String(event.text || '');
+              emit({ type: 'delta', kind: event.kind, text: event.text, index: event.index });
+            }
           }
-        }
-      });
+        });
+      } finally {
+        if (runtimeSpec.requestScoped) runtimeSpec.spec.apiKey = '';
+      }
 
       const text = String(result.text || '');
       const reasoning = String(result.reasoning || '');

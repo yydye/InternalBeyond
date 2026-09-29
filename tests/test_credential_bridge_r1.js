@@ -121,7 +121,7 @@ async function main() {
     __TAURI__: { core: { invoke: async function (name, args) {
       nativeCallCount++;
       check(name === 'credential_resolve', 'native-resolver-command-name');
-      check(args && args.bindingId === 'synthetic-config', 'native-resolver-id-binding');
+      check(args && args.request && args.request.bindingId === 'synthetic-config', 'native-resolver-id-binding');
       return { ok: true, provider: 'openai', apiKey: 'synthetic-only-credential' };
     } } },
     location: { protocol: 'http:', origin: 'http://tauri.localhost', search: '' },

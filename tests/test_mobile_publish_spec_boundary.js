@@ -107,9 +107,9 @@ const M = {
 
     const specA = registry.getCharacterSpec('char_canonical');
     check('P1-A runtime spec 正常落库', !!specA, specA);
-    check('P1-A 合法字段按现有语义保留（provider/model/endpoint/apiKey/systemPrompt）',
+    check('P1-A 合法字段按 P34.3-B 语义保留（provider/model/endpoint/credentialRef/systemPrompt，无 apiKey）',
       specA && specA.provider === 'custom' && specA.model === 'canonical-model' &&
-      specA.endpoint === M.endpoint && specA.apiKey === M.apiKey &&
+      specA.endpoint === M.endpoint && specA.credentialRef === 'char_canonical' && specA.apiKey === undefined &&
       specA.systemPrompt === M.systemPrompt, specA && Object.keys(specA));
     check('P1-A 条件字段按 mapSpec 现有语义保留（temperature/thinkingEnabled/showThinking）',
       specA && specA.temperature === 0.7 && specA.thinkingEnabled === true && specA.showThinking === false,
@@ -137,8 +137,8 @@ const M = {
       reproject.status === 200 && reproject.body.payload.withSpec === 1 &&
       registry.getCharacterSpec('char_canonical').model === 'reprojected-model' &&
       registry.listCharacters().length === 1, reproject.body.payload);
-    check('P1-A 已投影形状的 spec 同样过白名单（二次投影不引入新键）',
-      Object.keys(registry.getCharacterSpec('char_canonical')).sort().join(',') === 'apiKey,endpoint,model,provider');
+    check('P1-A 已投影形状的 spec 同样过白名单（二次投影只含 credentialRef，不引入 apiKey）',
+      Object.keys(registry.getCharacterSpec('char_canonical')).sort().join(',') === 'credentialRef,endpoint,model,provider');
 
     /* ══ P1-B · raw spec bypass（OQ-1 的实测攻击形状）════════════════
        触发条件必须精确，否则这条测试是假绿：

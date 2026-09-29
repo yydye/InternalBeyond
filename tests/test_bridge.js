@@ -90,7 +90,8 @@ async function startBridgeOnce(dataDir, port, token, extraEnv) {
     env: Object.assign({}, process.env, {
       IB_BRIDGE_PORT: String(port),
       IB_BRIDGE_HOST: '127.0.0.1',
-      IB_BRIDGE_DATA_DIR: dataDir
+      IB_BRIDGE_DATA_DIR: dataDir,
+      IB_CREDENTIAL_DATA_DIR: dataDir
     }, extraEnv || {}),
     stdio: ['ignore', 'pipe', 'pipe']
   });
@@ -110,7 +111,8 @@ async function startLanBridge(dataDir, port, config) {
     env: Object.assign({}, process.env, {
       IB_BRIDGE_PORT: String(port),
       IB_BRIDGE_HOST: '0.0.0.0',
-      IB_BRIDGE_DATA_DIR: dataDir
+      IB_BRIDGE_DATA_DIR: dataDir,
+      IB_CREDENTIAL_DATA_DIR: dataDir
     }),
     stdio: ['ignore', 'pipe', 'pipe']
   });
@@ -135,12 +137,14 @@ function listenFree(server) {
 }
 
 async function startMockProvider() {
-  let calls = 0;
+  let calls = 0, expectedAuthorization = '';
+  const authorizationMatches = [];
   const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', c => { body += c; });
     req.on('end', () => {
       calls++;
+      authorizationMatches.push(!!expectedAuthorization && String(req.headers.authorization || '') === expectedAuthorization);
       const content = calls === 1 ? '第一段回复。/continue' : '第二段续写。';
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
@@ -150,7 +154,7 @@ async function startMockProvider() {
     });
   });
   const port = await listenFree(server);
-  return { port, server, calls: () => calls };
+  return { port, server, calls: () => calls, setExpectedAuthorization: value => { expectedAuthorization = String(value || ''); }, authorizationMatches: () => authorizationMatches.slice() };
 }
 
 async function startMockAnthropic() {
@@ -426,6 +430,45 @@ async function main() {
     ok('ai.proactive', pro.ok === true && typeof pro.text === 'string' && pro.text.length > 0);
     const detail = await (await fetch(base + '/api/ai/sessions/resident_review')).json();
     ok('ai.history', detail.ok === true && Array.isArray(detail.session.history) && detail.session.history.length >= 3);
+
+    /* New resident sessions bind a Credential Vault ref and resolve it afresh per request. */
+    const createVault = require(path.join(ROOT, 'active', 'credential-vault.js'));
+    const vault = createVault({ dataDir: dataDir });
+    vault.load();
+    const bridgeKeyA = 'SYNTHETIC_BRIDGE_RESIDENT_KEY_A';
+    const bridgeKeyB = 'SYNTHETIC_BRIDGE_RESIDENT_KEY_B';
+    const residentRef = 'friend_bridge_resident';
+    vault.upsert(residentRef, { provider: 'openai', apiKey: bridgeKeyA });
+    const refMock = await startMockProvider();
+    try {
+      refMock.setExpectedAuthorization('Bearer ' + bridgeKeyA);
+      const boundCreate = await (await fetch(base + '/api/ai/sessions', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: 'resident_vault_ref', name: 'Vault ref session', provider: {
+          endpoint: 'http://127.0.0.1:' + refMock.port + '/v1/chat/completions',
+          credentialRef: residentRef, providerId: 'openai', model: 'mock', format: 'openai'
+        } })
+      })).json();
+      ok('ai.vaultRef.create', boundCreate.ok === true && boundCreate.session.provider.credentialRef === residentRef
+        && !Object.prototype.hasOwnProperty.call(boundCreate.session.provider, 'apiKey'));
+      const boundChatA = await (await fetch(base + '/api/ai/chat', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: 'resident_vault_ref', message: 'A', maxContinues: 0 })
+      })).json();
+      ok('ai.vaultRef.requestScopedA', boundChatA.ok === true && refMock.authorizationMatches().length === 1 && refMock.authorizationMatches()[0]);
+      vault.upsert(residentRef, { provider: 'openai', apiKey: bridgeKeyB });
+      refMock.setExpectedAuthorization('Bearer ' + bridgeKeyB);
+      const boundChatB = await (await fetch(base + '/api/ai/chat', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: 'resident_vault_ref', message: 'B', maxContinues: 0 })
+      })).json();
+      const residentRaw = fs.readFileSync(path.join(dataDir, 'resident.json'), 'utf8');
+      ok('ai.vaultRef.updateIsLive', boundChatB.ok === true && refMock.authorizationMatches().length === 2 && refMock.authorizationMatches()[1]);
+      ok('ai.vaultRef.persistedWithoutSecret', residentRaw.indexOf(bridgeKeyA) < 0 && residentRaw.indexOf(bridgeKeyB) < 0
+        && residentRaw.indexOf(residentRef) >= 0);
+    } finally {
+      await new Promise(resolve => refMock.server.close(resolve));
+    }
 
     /* 8. TTS 未配置 → 503 且信息可读 */
     const tts = await fetch(base + '/api/tts', {

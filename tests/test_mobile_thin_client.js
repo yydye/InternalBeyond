@@ -26,6 +26,19 @@ const { spawn } = require('child_process');
 const ROOT = path.resolve(__dirname, '..');
 const ADMIN_TOKEN = 'test-home-node-admin-token';
 const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-mobile-'));
+/* P34.3-B · Home Node roles now resolve provider secrets from the Vault
+   (spec carries only credentialRef = character id, no plaintext apiKey).
+   Seed a synthetic Vault so the migrated reader can resolve — mirroring
+   production where the encrypted Vault is the single credential authority. */
+(function seedVault() {
+  const createVault = require(path.join(ROOT, 'active', 'credential-vault.js'));
+  const vault = createVault({ dataDir: DATA_DIR });
+  vault.load();
+  vault.upsert('friend_test_a', { provider: 'custom', apiKey: 'sk-SECRET-should-never-leak' });
+  vault.upsert('friend_test_b', { provider: 'custom', apiKey: 'sk-ANOTHER-secret' });
+  vault.upsert('friend_test_slow', { provider: 'custom', apiKey: 'sk-SLOW-secret' });
+  vault.save();
+})();
 
 let passed = 0, failed = 0;
 function check(name, cond, extra) {
@@ -268,6 +281,7 @@ function listen(server) {
       IB_HOME_NODE_PORT: String(servicePort),
       IB_HOME_NODE_HOST: '127.0.0.1',
       IB_HOME_NODE_DATA_DIR: DATA_DIR,
+      IB_CREDENTIAL_DATA_DIR: DATA_DIR,
       IB_HOME_NODE_TOKEN: ADMIN_TOKEN
     }),
     stdio: ['ignore', 'pipe', 'pipe']

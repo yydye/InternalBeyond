@@ -84,6 +84,9 @@ function createUnderstandingDerivation(deps) {
   const modelPort = deps.modelPort || null;         /* NodeModelPort（或同形 mock） */
   const clock = deps.clock || (() => Date.now());
   const logger = deps.logger || (() => {});
+  /* P34.3-B · Home Node credential access layer (ADR P34.3-A.1 Decision 1).
+     Optional: when absent, pre-P34.3 behavior (spec.apiKey) is preserved. */
+  const credentialAccess = deps.credentialAccess || null;
   const core = deps.core || UNDERSTANDING;
   const visibilityCore = deps.visibilityCore || VISIBILITY_CORE;
   const minIntervalMs = Number(deps.minIntervalMs) > 0 ? Number(deps.minIntervalMs) : UNDERSTANDING_MIN_INTERVAL_MS;
@@ -129,7 +132,7 @@ function createUnderstandingDerivation(deps) {
     if (!owner) return { eligible: false, skipReason: 'no-character' };
     if (!store || !store.isOpen || !store.isOpen()) return { eligible: false, skipReason: 'store-closed' };
     const spec = characterSpec(owner);
-    if (!spec || !spec.provider || !spec.model || !spec.endpoint || !spec.apiKey) {
+    if (!spec || !spec.provider || !spec.model || !spec.endpoint || !(spec.credentialRef || spec.apiKey)) {
       /* 不可派生的角色**必须**如实跳过：缺凭据时去调用只会得到认证错误，
          而那条错误会伪装成"模型没给结果"。 */
       return { eligible: false, skipReason: 'no-config' };
@@ -170,6 +173,25 @@ function createUnderstandingDerivation(deps) {
       return null;
     }
   }
+  /* P34.3-B · resolve this derivation's provider secret from the Vault.
+     Prefers spec.credentialRef → Vault; transitional spec.apiKey honored;
+     otherwise fail-closed (caller treats as no-config, zero remaining cost). */
+  function resolveRuntimeSpec(spec) {
+    const hasCredentialRef = !!(spec && Object.prototype.hasOwnProperty.call(spec, 'credentialRef'));
+    const ref = String((spec && spec.credentialRef) || '').trim();
+    if (hasCredentialRef) {
+      if (!ref) return { ok: false, reason: 'credential-unavailable' };
+      if (!credentialAccess) return { ok: false, reason: 'credential-unavailable' };
+      const resolved = credentialAccess.resolve(ref);
+      if (resolved && resolved.ok === true && resolved.secret) {
+        return { ok: true, requestScoped: true, spec: Object.assign({}, spec, { apiKey: resolved.secret }) };
+      }
+      return { ok: false, reason: 'credential-unavailable' };
+    }
+    /* Legacy readers remain only for pre-ref snapshots; once a ref exists, Vault failure is final. */
+    if (spec && typeof spec.apiKey === 'string' && spec.apiKey.trim()) return { ok: true, requestScoped: true, spec: Object.assign({}, spec) };
+    return { ok: false, reason: 'credential-unavailable' };
+  }
   function characterDto(characterId) {
     if (!registry || typeof registry.getCharacter !== 'function') return null;
     try {
@@ -208,7 +230,7 @@ function createUnderstandingDerivation(deps) {
     if (!owner) return { eligible: false, skipReason: 'no-character' };
     if (!store || !store.isOpen || !store.isOpen()) return { eligible: false, skipReason: 'store-closed' };
     const spec = characterSpec(owner);
-    if (!spec || !spec.provider || !spec.model || !spec.endpoint || !spec.apiKey) {
+    if (!spec || !spec.provider || !spec.model || !spec.endpoint || !(spec.credentialRef || spec.apiKey)) {
       return { eligible: false, skipReason: 'no-config' };
     }
     const cand = candidatesFor(owner);
@@ -245,11 +267,16 @@ function createUnderstandingDerivation(deps) {
       corrections: corrections.map(c => ({ text: c.text, basis: c.basis, at: c.createdAt, revision: c.revision }))
     });
 
+    const runtimeSpec = resolveRuntimeSpec(gate.spec);
+    if (!runtimeSpec.ok) {
+      stats.skipped++;
+      return { ok: true, outcome: 'ineligible', characterId: owner, skipReason: 'no-config' };
+    }
     stats.calls++;
     let raw = '';
     try {
       const result = await modelPort.run({
-        spec: gate.spec,
+        spec: runtimeSpec.spec,
         prompt: { system: prompt.system, messages: [{ role: 'user', content: prompt.user }] },
         messages: [{ role: 'user', content: prompt.user }],
         maxTokens: maxTokens,
@@ -268,6 +295,8 @@ function createUnderstandingDerivation(deps) {
       });
       logger('understanding-model-failed', { characterId: owner, error: String((error && error.message) || error).slice(0, 300) });
       return { ok: false, outcome: 'failed', characterId: owner, error: 'model-failed', detail: String((error && error.message) || error).slice(0, 300) };
+    } finally {
+      if (runtimeSpec.requestScoped) runtimeSpec.spec.apiKey = '';
     }
 
     const parsed = core.parseCandidate(raw, (text) => core.parseModelJson(text, {

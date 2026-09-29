@@ -175,6 +175,16 @@ function systemTextOf(body) {
   const providerEndpoint = 'http://127.0.0.1:' + providerPort + '/v1/chat/completions';
 
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-p0-'));
+/* P34.3-B · Home Node resolves provider secrets from the Vault (spec carries only
+   credentialRef). Seed a synthetic Vault so the migrated reader resolves. */
+(function seedVault() {
+  const createVault = require(path.join(ROOT, 'active', 'credential-vault.js'));
+  const vault = createVault({ dataDir: dataDir });
+  vault.load();
+  vault.upsert('friend_p0', { provider: 'custom', apiKey: M.secret });
+  vault.upsert('c', { provider: 'custom', apiKey: 'sk-x' });
+  vault.save();
+})();
   const ADMIN_TOKEN = 'p0-admin-token';
   /* 固定时钟 + 固定时区注入：让"现在是什么时候"可确定性断言，而不是靠墙钟。
      这是本轮**唯一**为可测试性加的 seam，没有引入 TimeService 框架。 */
