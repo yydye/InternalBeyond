@@ -5,7 +5,7 @@ function openDB(){return DB_SCHEMA.open(indexedDB,{onblocked:function(){try{cons
 /* 共享的数据库就绪守卫：db 尚未打开时，所有读写都等待同一份 openDB 结果，
    避免页面刚加载时直接访问 db.transaction 抛“Cannot read properties of undefined”。 */
 let _dbReadyP=null;
-async function ensureDB(){if(db)return db;if(!_dbReadyP){_dbReadyP=openDB().catch(function(e){_dbReadyP=null;throw new Error('本地数据库暂不可用：'+String(e&&e.message||e))})}return _dbReadyP}
+async function ensureDB(){if(db)return db;if(!_dbReadyP){_dbReadyP=openDB().catch(function(e){_dbReadyP=null;throw new Error('本地数据库暂不可用：'+String(e&&e.message||e))})}db=await _dbReadyP;return db}
 function _ibEndpointHasInlineCredential(value){
   const endpoint=String(value||'');
   return /(?:[?&])(?:api[_-]?key|key|token|secret|authorization|bearer|password|credential|signature|sig)=[^&#]+/i.test(endpoint)

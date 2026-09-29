@@ -61,6 +61,8 @@ const APPROVED_RECOVERY_EXPORT_VERSION: u32 = 8;
 const RECOVERY_CHECKPOINT_SCHEMA: &str = "internalbeyond.recovery-checkpoint";
 const RECOVERY_CHECKPOINT_LIFECYCLE_SCHEMA: &str = "internalbeyond.recovery-checkpoint-lifecycle";
 const RECOVERY_CONSUMED_SCHEMA: &str = "internalbeyond.recovery-first-boot-consumed";
+const RECOVERY_FINALIZED_SCHEMA: &str = "internalbeyond.recovery-finalized";
+const RECOVERY_FINALIZE_PHRASE: &str = "RECOVERY_FINALIZE";
 const RECOVERY_APPROVAL_PHRASE: &str = "执行 R3-B.3 production restore";
 const RECOVERY_APPROVAL_KIND: &str = "EXPLICIT_PRODUCTION_RESTORE_APPROVAL";
 const APPROVED_RECOVERY_ROLE_SOURCE_SHA256: &str =
@@ -469,6 +471,27 @@ struct RecoveryFirstBootConsumed {
     version: u8,
     plan_id: String,
     consumed_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RecoveryFinalizeRequest {
+    plan_id: String,
+    credential_ready_digest: String,
+    confirmation: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RecoveryFinalizedMarker {
+    schema: String,
+    version: u8,
+    plan_id: String,
+    lifecycle_id: String,
+    checkpoint_file_sha256: String,
+    verified_at: String,
+    credential_ready_digest: String,
+    authorized_at: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1938,9 +1961,18 @@ fn recovery_boot_policy_from_dir(data_root: &Path) -> RecoveryBootPolicy {
             || lifecycle_intent_path.exists()
             || lifecycle_ready_path.exists()
         {
-            RecoveryBootPolicy {
-                mode: RecoveryBootMode::Blocked,
-                plan_id: None,
+            /* A well-formed finalize marker retires the lifecycle once the
+               checkpoint artifact has been cleared; otherwise fail closed. */
+            if finalized_marker_well_formed(data_root) {
+                RecoveryBootPolicy {
+                    mode: RecoveryBootMode::Normal,
+                    plan_id: None,
+                }
+            } else {
+                RecoveryBootPolicy {
+                    mode: RecoveryBootMode::Blocked,
+                    plan_id: None,
+                }
             }
         } else {
             RecoveryBootPolicy::normal()
@@ -1996,6 +2028,22 @@ fn recovery_boot_policy_from_dir(data_root: &Path) -> RecoveryBootPolicy {
     {
         return RecoveryBootPolicy {
             mode: RecoveryBootMode::Blocked,
+            plan_id: Some(checkpoint.plan_id),
+        };
+    }
+    /* Recovery Finalize Authority: a valid, plan-pinned finalize marker moves
+       the boot policy to Normal without deleting the checkpoint artifact. */
+    let checkpoint_file_sha256 = sha256_hex(&checkpoint_bytes);
+    if read_finalized_marker_valid_for(
+        data_root,
+        &checkpoint.plan_id,
+        &checkpoint.lifecycle_id,
+        &checkpoint_file_sha256,
+    )
+    .is_some()
+    {
+        return RecoveryBootPolicy {
+            mode: RecoveryBootMode::Normal,
             plan_id: Some(checkpoint.plan_id),
         };
     }
@@ -2626,6 +2674,68 @@ fn consumed_marker_path(data_root: &Path) -> PathBuf {
 }
 fn verified_marker_path(data_root: &Path) -> PathBuf {
     data_root.join("recovery-checkpoint-verified.json")
+}
+
+fn finalized_marker_path(data_root: &Path) -> PathBuf {
+    data_root.join("recovery-finalized.json")
+}
+
+fn recovery_boot_mode_name(mode: RecoveryBootMode) -> &'static str {
+    match mode {
+        RecoveryBootMode::Normal => "Normal",
+        RecoveryBootMode::FirstBootPending => "FirstBootPending",
+        RecoveryBootMode::ActiveQuarantine => "ActiveQuarantine",
+        RecoveryBootMode::Blocked => "Blocked",
+    }
+}
+
+/* A finalize marker is only valid when it is well-formed and pinned to the
+   exact checkpoint artifact (planId + lifecycleId + checkpoint file hash). */
+fn read_finalized_marker_valid_for(
+    data_root: &Path,
+    plan_id: &str,
+    lifecycle_id: &str,
+    checkpoint_file_sha256: &str,
+) -> Option<RecoveryFinalizedMarker> {
+    let path = finalized_marker_path(data_root);
+    if !path.exists() {
+        return None;
+    }
+    let bytes = fs::read(&path).ok()?;
+    let marker: RecoveryFinalizedMarker = serde_json::from_slice(&bytes).ok()?;
+    if marker.schema != RECOVERY_FINALIZED_SCHEMA
+        || marker.version != 1
+        || marker.plan_id != plan_id
+        || marker.lifecycle_id != lifecycle_id
+        || marker.checkpoint_file_sha256 != checkpoint_file_sha256
+        || marker.verified_at.is_empty()
+        || marker.authorized_at.is_empty()
+        || !is_sha256(&marker.credential_ready_digest)
+    {
+        return None;
+    }
+    Some(marker)
+}
+
+fn finalized_marker_well_formed(data_root: &Path) -> bool {
+    let path = finalized_marker_path(data_root);
+    if !path.exists() {
+        return false;
+    }
+    let Ok(bytes) = fs::read(&path) else {
+        return false;
+    };
+    let Ok(marker) = serde_json::from_slice::<RecoveryFinalizedMarker>(&bytes) else {
+        return false;
+    };
+    marker.schema == RECOVERY_FINALIZED_SCHEMA
+        && marker.version == 1
+        && !marker.plan_id.is_empty()
+        && marker.lifecycle_id.len() == 32
+        && is_sha256(&marker.checkpoint_file_sha256)
+        && !marker.verified_at.is_empty()
+        && is_sha256(&marker.credential_ready_digest)
+        && !marker.authorized_at.is_empty()
 }
 
 fn current_recovery_boot_policy() -> (RecoveryBootPolicy, Option<PathBuf>) {
@@ -4147,6 +4257,91 @@ fn acknowledge_recovery_first_boot(
     Ok(serde_json::json!({"ok":true,"firstBootConsumed":true,"activeQuarantined":true}))
 }
 
+/* Recovery Finalize Authority (R3-E finalize).
+   Preconditions: checkpoint integrity + lifecycle files, verified marker,
+   credential-ready digest, no open apply window, plan binding match. On success
+   it writes recovery-finalized.json so recovery_boot_policy_from_dir resolves
+   Normal on the next start. It never spawns a service, never deletes the
+   checkpoint, and never touches ACTIVE_REARM_ENABLED. */
+#[tauri::command]
+fn finalize_recovery(
+    request: RecoveryFinalizeRequest,
+    state: tauri::State<'_, Arc<HostLifecycle>>,
+) -> Result<serde_json::Value, String> {
+    if request.confirmation != RECOVERY_FINALIZE_PHRASE {
+        return Err("RECOVERY_FINALIZE_CONFIRMATION_REQUIRED".to_string());
+    }
+    let root = state
+        .recovery_data_root
+        .as_ref()
+        .ok_or_else(|| "RECOVERY_DATA_ROOT_UNAVAILABLE".to_string())?;
+    let checkpoint_bytes = fs::read(checkpoint_path(root))
+        .map_err(|_| "RECOVERY_CHECKPOINT_NOT_FOUND".to_string())?;
+    let checkpoint: RecoveryCheckpoint = serde_json::from_slice(&checkpoint_bytes)
+        .map_err(|_| "RECOVERY_CHECKPOINT_INVALID".to_string())?;
+    validate_recovery_checkpoint(&checkpoint)?;
+    validate_checkpoint_lifecycle_files(root, &checkpoint, &checkpoint_bytes, true)?;
+    if checkpoint.plan_id != request.plan_id {
+        return Err("RECOVERY_FINALIZE_PLAN_MISMATCH".to_string());
+    }
+    let verified_bytes = fs::read(verified_marker_path(root))
+        .map_err(|_| "RECOVERY_FINALIZE_VERIFIED_MARKER_MISSING".to_string())?;
+    let verified: RecoveryCheckpointVerifiedMarker = serde_json::from_slice(&verified_bytes)
+        .map_err(|_| "RECOVERY_FINALIZE_VERIFIED_MARKER_INVALID".to_string())?;
+    if verified.schema != "internalbeyond.recovery-checkpoint-verified"
+        || verified.version != 1
+        || verified.plan_id != checkpoint.plan_id
+        || verified.verified_at.is_empty()
+    {
+        return Err("RECOVERY_FINALIZE_VERIFIED_MARKER_INVALID".to_string());
+    }
+    if recovery_apply_window_matches(&checkpoint.plan_id, None, None) {
+        return Err("RECOVERY_FINALIZE_APPLY_WINDOW_OPEN".to_string());
+    }
+    let credential_ready_digest = request.credential_ready_digest.to_lowercase();
+    if !is_sha256(&credential_ready_digest) {
+        return Err("RECOVERY_FINALIZE_CREDENTIAL_DIGEST_INVALID".to_string());
+    }
+    let checkpoint_file_sha256 = sha256_hex(&checkpoint_bytes);
+    if finalized_marker_path(root).exists() {
+        if read_finalized_marker_valid_for(
+            root,
+            &checkpoint.plan_id,
+            &checkpoint.lifecycle_id,
+            &checkpoint_file_sha256,
+        )
+        .is_some()
+        {
+            let policy = recovery_boot_policy_from_dir(root);
+            return Ok(serde_json::json!({
+                "ok": true,
+                "alreadyFinalized": true,
+                "planId": checkpoint.plan_id,
+                "bootMode": recovery_boot_mode_name(policy.mode)
+            }));
+        }
+        return Err("RECOVERY_FINALIZE_MARKER_FOREIGN".to_string());
+    }
+    let marker = RecoveryFinalizedMarker {
+        schema: RECOVERY_FINALIZED_SCHEMA.to_string(),
+        version: 1,
+        plan_id: checkpoint.plan_id.clone(),
+        lifecycle_id: checkpoint.lifecycle_id.clone(),
+        checkpoint_file_sha256,
+        verified_at: verified.verified_at.clone(),
+        credential_ready_digest,
+        authorized_at: chrono_free_timestamp(),
+    };
+    write_new_json(&finalized_marker_path(root), &marker)?;
+    let policy = recovery_boot_policy_from_dir(root);
+    Ok(serde_json::json!({
+        "ok": true,
+        "finalized": true,
+        "planId": marker.plan_id,
+        "bootMode": recovery_boot_mode_name(policy.mode)
+    }))
+}
+
 fn chrono_free_timestamp() -> String {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -5252,7 +5447,8 @@ pub fn run() {
             project_knowledge_status,
             credential_status,
             credential_resolve,
-            acknowledge_recovery_first_boot
+            acknowledge_recovery_first_boot,
+            finalize_recovery,
         ])
     };
 
@@ -5992,6 +6188,134 @@ mod runtime_authority_tests {
         checkpoint.lifecycle_id = approval.lifecycle_id.clone();
         checkpoint.integrity_sha256 = recovery_checkpoint_integrity_sha256(&checkpoint).unwrap();
         (approval, binding, host, checkpoint)
+    }
+
+    #[test]
+    fn recovery_finalize_boot_policy_matrix() {
+        /* FirstBootPending -> ActiveQuarantine -> Finalize Normal, plus
+           finalize-invalid (foreign plan) and finalize-replay. */
+        let root = synthetic_temp_root("recovery-finalize-policy");
+        fs::create_dir_all(&root).unwrap();
+        let (approval, binding, _host, checkpoint) = synthetic_issued_approval(&root);
+        persist_checkpoint_lifecycle_artifacts_with(
+            &root,
+            &checkpoint,
+            &approval,
+            &binding,
+            |path, value| write_new_json(path, value),
+        )
+        .unwrap();
+        let checkpoint_bytes = fs::read(checkpoint_path(&root)).unwrap();
+        let checkpoint_file_sha256 = sha256_hex(&checkpoint_bytes);
+
+        let verified = RecoveryCheckpointVerifiedMarker {
+            schema: "internalbeyond.recovery-checkpoint-verified".to_string(),
+            version: 1,
+            plan_id: checkpoint.plan_id.clone(),
+            verified_at: chrono_free_timestamp(),
+        };
+        write_new_json(&verified_marker_path(&root), &verified).unwrap();
+
+        /* (1) FirstBootPending */
+        assert_eq!(
+            recovery_boot_policy_from_dir(&root).mode,
+            RecoveryBootMode::FirstBootPending
+        );
+
+        /* (2) ActiveQuarantine after consuming the first-boot marker */
+        let consumed = RecoveryFirstBootConsumed {
+            schema: RECOVERY_CONSUMED_SCHEMA.to_string(),
+            version: 1,
+            plan_id: checkpoint.plan_id.clone(),
+            consumed_at: chrono_free_timestamp(),
+        };
+        write_new_json(&consumed_marker_path(&root), &consumed).unwrap();
+        assert_eq!(
+            recovery_boot_policy_from_dir(&root).mode,
+            RecoveryBootMode::ActiveQuarantine
+        );
+
+        /* (3) Finalize success -> Normal, checkpoint retained */
+        let marker = RecoveryFinalizedMarker {
+            schema: RECOVERY_FINALIZED_SCHEMA.to_string(),
+            version: 1,
+            plan_id: checkpoint.plan_id.clone(),
+            lifecycle_id: checkpoint.lifecycle_id.clone(),
+            checkpoint_file_sha256: checkpoint_file_sha256.clone(),
+            verified_at: verified.verified_at.clone(),
+            credential_ready_digest: "d".repeat(64),
+            authorized_at: chrono_free_timestamp(),
+        };
+        write_new_json(&finalized_marker_path(&root), &marker).unwrap();
+        assert_eq!(
+            recovery_boot_policy_from_dir(&root).mode,
+            RecoveryBootMode::Normal
+        );
+        assert!(checkpoint_path(&root).exists());
+
+        /* (5) Finalize replay: re-reading the policy stays Normal */
+        assert!(read_finalized_marker_valid_for(
+            &root,
+            &checkpoint.plan_id,
+            &checkpoint.lifecycle_id,
+            &checkpoint_file_sha256
+        )
+        .is_some());
+        assert_eq!(
+            recovery_boot_policy_from_dir(&root).mode,
+            RecoveryBootMode::Normal
+        );
+
+        /* (4) Finalize invalid (foreign plan) does not unlock */
+        let foreign_root = synthetic_temp_root("recovery-finalize-foreign");
+        fs::create_dir_all(&foreign_root).unwrap();
+        let (f_approval, f_binding, _f_host, f_checkpoint) =
+            synthetic_issued_approval(&foreign_root);
+        persist_checkpoint_lifecycle_artifacts_with(
+            &foreign_root,
+            &f_checkpoint,
+            &f_approval,
+            &f_binding,
+            |path, value| write_new_json(path, value),
+        )
+        .unwrap();
+        let f_bytes = fs::read(checkpoint_path(&foreign_root)).unwrap();
+        write_new_json(
+            &verified_marker_path(&foreign_root),
+            &RecoveryCheckpointVerifiedMarker {
+                schema: "internalbeyond.recovery-checkpoint-verified".to_string(),
+                version: 1,
+                plan_id: f_checkpoint.plan_id.clone(),
+                verified_at: chrono_free_timestamp(),
+            },
+        )
+        .unwrap();
+        let foreign = RecoveryFinalizedMarker {
+            schema: RECOVERY_FINALIZED_SCHEMA.to_string(),
+            version: 1,
+            plan_id: "r3b3:foreign".to_string(),
+            lifecycle_id: f_checkpoint.lifecycle_id.clone(),
+            checkpoint_file_sha256: sha256_hex(&f_bytes),
+            verified_at: "unix-ms:1".to_string(),
+            credential_ready_digest: "e".repeat(64),
+            authorized_at: "unix-ms:1".to_string(),
+        };
+        write_new_json(&finalized_marker_path(&foreign_root), &foreign).unwrap();
+        assert_eq!(
+            recovery_boot_policy_from_dir(&foreign_root).mode,
+            RecoveryBootMode::FirstBootPending
+        );
+
+        issued_recovery_approval_registry()
+            .lock()
+            .unwrap()
+            .remove(&approval.token);
+        issued_recovery_approval_registry()
+            .lock()
+            .unwrap()
+            .remove(&f_approval.token);
+        fs::remove_dir_all(&root).unwrap();
+        fs::remove_dir_all(&foreign_root).unwrap();
     }
 
     fn synthetic_apply_window_approval(
