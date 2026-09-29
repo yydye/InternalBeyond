@@ -31,6 +31,9 @@ const { pathToFileURL } = require('url');
 const PAGE_URL = pathToFileURL(path.join(ROOT, 'InternalBeyond.html')).href;
 const TINY_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8AAAwAB/AF/oS8AAAAASUVORK5CYII=';
 const TINY_BUF = Buffer.from(TINY_PNG, 'base64');
+const IMAGE_MAIN_KEY = 'SYNTHETIC_IMAGE_ROUTER_MAIN_KEY';
+const IMAGE_BACKUP_KEY = 'SYNTHETIC_IMAGE_ROUTER_BACKUP_KEY';
+const IMAGE_ROLE_KEY = 'SYNTHETIC_IMAGE_ROUTER_ROLE_KEY';
 const payload = (s) => Buffer.concat([TINY_BUF, Buffer.from(String(s), 'utf8')]).toString('base64');
 
 function chromePath() {
@@ -203,7 +206,8 @@ function startMockApi() {
   const mock = await startMockApi();
   const BASE = 'http://127.0.0.1:' + mock.port;
   const EP = BASE + '/v1/chat/completions';
-  const IMG_EP = BASE + '/v1';
+  const IMG_EP = 'https://provider.invalid/v1';
+  const LOCAL_IMG_EP = BASE + '/v1';
   const stats = async () => (await (await fetch(BASE + '/stats')).json());
   const setFailModels = async (list) => { await fetch(BASE + '/fail-models', { method: 'POST', body: JSON.stringify(list) }); };
   const port = await freePort();
@@ -224,17 +228,23 @@ function startMockApi() {
     const exceptions = [];
     cdp.on('Runtime.exceptionThrown', p => exceptions.push(JSON.stringify(p.exceptionDetails || {}).slice(0, 300)));
 
+    const installCredentialFixture = function () {
+      const expr = "(function(){var keys={ir_main:" + JSON.stringify(IMAGE_MAIN_KEY) + ",ir_backup:" + JSON.stringify(IMAGE_BACKUP_KEY) + ",ir_char:" + JSON.stringify(IMAGE_ROLE_KEY) + "};IB.host=IB.host||{};IB.host.credentialResolver={available:true,resolve:function(id){return Promise.resolve(keys[id]?{ok:true,provider:'openai',apiKey:keys[id]}:{ok:false,errorCode:'CREDENTIAL_UNAVAILABLE'})}};window.__irNativeFetch=window.fetch.bind(window);window.fetch=function(url,opts){var target=String(url||'');if(target.indexOf('https://provider.invalid')===0)target=target.replace('https://provider.invalid'," + JSON.stringify(BASE) + ");return window.__irNativeFetch(target,opts)};return true})()";
+      return evaluate(cdp, expr);
+    };
+
     check('page.modulesLoaded', await waitFor(cdp, "window.IBImageModelsCore&&window.IBImageRouterCore&&window.IB&&IB.imageModels&&IB.imageModels.available===true&&IB.imageRouterConfig&&IB.imageRouterSettings&&IB.imageRouter&&IB.imageRouter.available===true&&typeof _wsExecImageGen==='function'"));
     check('page.catalogIsImage25', await evaluate(cdp, "IB.imageModels.list({capability:'image-generation'}).some(function(m){return m.id==='gpt-image-2.5-flare'})&&IB.imageModels.list({capability:'image-editing'}).some(function(m){return m.id==='gpt-image-2.5-sunburst'})"));
     check('page.routerUsesCatalogIds', await evaluate(cdp, "IB.imageRouter.IMAGE_MODELS.flare==='gpt-image-2.5-flare'&&IB.imageRouter.IMAGE_MODELS.sunburst==='gpt-image-2.5-sunburst'"));
+    await installCredentialFixture();
 
     /* ── ① 种子：两个图片 API 配置 + 一个"图片凭证为空"的角色 ── */
     await evaluate(cdp, "(async function(){"
-      + "await dbPut('apiConfigs',{id:'ir_main',provider:'openai',model:'text-main',endpoint:'" + EP + "',apiKey:'sk-text-main',nickname:'主图片配置',imageGen:true,imageGenModel:'',imageGenEndpoint:'" + IMG_EP + "',imageGenApiKey:'sk-main-image'});"
-      + "await dbPut('apiConfigs',{id:'ir_backup',provider:'openai',model:'text-backup',endpoint:'" + EP + "',apiKey:'sk-text-backup',nickname:'备用图片配置',imageGen:true,imageGenModel:'',imageGenEndpoint:'" + IMG_EP + "',imageGenApiKey:'sk-backup-image'});"
-      + "await dbPut('apiConfigs',{id:'ir_nokey',provider:'openai',model:'text-nokey',endpoint:'https://api.openai.com/v1/chat/completions',apiKey:'',nickname:'没钥匙',imageGen:true,imageGenModel:'',imageGenEndpoint:'',imageGenApiKey:''});"
-      + "await dbPut('apiConfigs',{id:'ir_local',provider:'openai',model:'text-local',endpoint:'" + EP + "',apiKey:'',nickname:'本地无Key',imageGen:true,imageGenModel:'',imageGenEndpoint:'" + IMG_EP + "',imageGenApiKey:''});"
-      + "await dbPut('apiConfigs',{id:'ir_char',provider:'openai',model:'text-char',endpoint:'" + EP + "',apiKey:'sk-char-text',nickname:'角色',systemPrompt:'x',imageGen:true,imageGenModel:'',imageGenEndpoint:'',imageGenApiKey:''});"
+      + "await dbPut('apiConfigs',{id:'ir_main',credentialRef:'ir_main',provider:'openai',model:'text-main',endpoint:'" + EP + "',nickname:'主图片配置',imageGen:true,imageGenModel:'',imageGenEndpoint:'" + IMG_EP + "'});"
+      + "await dbPut('apiConfigs',{id:'ir_backup',credentialRef:'ir_backup',provider:'openai',model:'text-backup',endpoint:'" + EP + "',nickname:'备用图片配置',imageGen:true,imageGenModel:'',imageGenEndpoint:'" + IMG_EP + "'});"
+      + "await dbPut('apiConfigs',{id:'ir_nokey',credentialRef:'',provider:'openai',model:'text-nokey',endpoint:'https://api.openai.com/v1/chat/completions',nickname:'没钥匙',imageGen:true,imageGenModel:'',imageGenEndpoint:''});"
+      + "await dbPut('apiConfigs',{id:'ir_local',credentialRef:'',provider:'openai',model:'text-local',endpoint:'" + EP + "',nickname:'本地无Key',imageGen:true,imageGenModel:'',imageGenEndpoint:'" + LOCAL_IMG_EP + "'});"
+      + "await dbPut('apiConfigs',{id:'ir_char',credentialRef:'ir_char',provider:'openai',model:'text-char',endpoint:'" + EP + "',nickname:'角色',systemPrompt:'x',imageGen:true,imageGenModel:'',imageGenEndpoint:'" + IMG_EP + "'});"
       + "await loadApiConfigs();return true})()");
     /* 真实入口是 navTo('api') → loadApiSettingsUI() → loadImageRouterSettingsUI()：
        种子之后刷新一次，让绑定下拉看到刚写入的 API 配置 */
@@ -249,7 +259,7 @@ function startMockApi() {
        所以这个入口被移除，文案改为如实描述（图片 API 来源 / 跟随当前角色）。 */
     check('ui.noCreateEntry', await evaluate(cdp, "(function(){return !document.querySelector('#image-router-section .ir-new')&&!document.querySelector('#ir-card-generation button[onclick]')&&!document.querySelector('#ir-card-editing button[onclick]')})()"));
     check('ui.sourceWordingAccurate', await evaluate(cdp, "(function(){var t=document.getElementById('image-router-section').textContent;return t.indexOf('图片 API 来源')>=0&&t.indexOf('跟随当前角色')>=0&&t.indexOf('API Config')<0})()"));
-    check('ui.statesCredentialOrigin', await evaluate(cdp, "document.getElementById('image-router-section').textContent.indexOf('图片服务商 / 图片接口地址 / 图片 API Key')>=0"));
+    check('ui.statesCredentialOrigin', await evaluate(cdp, "document.getElementById('image-router-section').textContent.indexOf('Credential Vault API Key')>=0"));
     /* 图片来源下拉里必须仍能看到具体配置：选项保持「昵称 · provider · model」 */
     check('ui.configOptionsFromApiConfigs', await evaluate(cdp, "(function(){var s=document.getElementById('ir-config-generation');var t=[].map.call(s.options,function(o){return o.textContent}).join('|');var first=s.options[0]?s.options[0].textContent:'';return s.options.length>=4&&t.indexOf('主图片配置')>=0&&first==='跟随当前角色'&&/主图片配置 · openai · /.test(t)})()"));
     check('ui.modelOptionsFilteredByCapability', await evaluate(cdp, "(function(){var g=[].map.call(document.getElementById('ir-model-generation').options,function(o){return o.value});var e=[].map.call(document.getElementById('ir-model-editing').options,function(o){return o.value});return g.indexOf('gpt-image-2.5-flare')>=0&&g.indexOf('dall-e-3')>=0&&e.indexOf('gpt-image-2.5-sunburst')>=0&&e.indexOf('dall-e-3')<0})()"));
@@ -305,13 +315,14 @@ function startMockApi() {
       if (!ok) return false;
       return evaluate(cdp, "(async function(){var c=await dbGet('apiSettings','image_router');var g=document.getElementById('ir-model-generation');return !!(c&&c.routes.generation.model==='gpt-image-2.5-sunburst'&&g&&g.value==='gpt-image-2.5-sunburst')})()");
     })());
+    await installCredentialFixture();
 
     /* ── ④ 真实链路：生成走 Generation 路由（角色自己没有图片 Key） ── */
     mock.hits.length = 0;
     const gen1 = await evaluate(cdp, "(async function(){var cfg=apiConfigs.find(function(a){return a.id==='ir_char'});var ops=_parseWsOps('<ws_gen_image prompt=\"测试生成\" size=\"1024x1024\"/>').ops;var rs=await _execWsOps(ops,'角色',cfg,{source:'chat',friendId:'ir_char'});var r=rs[0]||{};return{ok:r.ok===true,code:r.code||'',reason:r.reason||'',model:r.model,op:r.op}})()");
     check('chain.generationUsesRouteModel', gen1 && gen1.ok === true && gen1.model === 'gpt-image-2.5-sunburst', JSON.stringify(gen1));
     const h1 = (await stats()).hits[0] || {};
-    check('chain.generationUsesBoundKey', h1.auth === 'Bearer sk-main-image' && h1.kind === 'gen' && h1.model === 'gpt-image-2.5-sunburst', JSON.stringify({ auth: h1.auth, model: h1.model }));
+    check('chain.generationUsesBoundKey', h1.auth === 'Bearer ' + IMAGE_MAIN_KEY && h1.kind === 'gen' && h1.model === 'gpt-image-2.5-sunburst', JSON.stringify({ authorized: h1.auth === 'Bearer ' + IMAGE_MAIN_KEY, model: h1.model }));
 
     /* ── ⑤ 编辑走 Editing 路由：不同模型 + multipart + 源图字节 ── */
     await evaluate(cdp, "(async function(){await dbPut('chatMessages',{id:'ir_a1',role:'assistant',content:'画好了',friendId:'ir_char',timestamp:Date.now()-1000,images:[{dataUrl:'data:image/png;base64," + TINY_PNG + "',base64:'" + TINY_PNG + "',mime:'image/png',name:'A.png',imageId:'img_A',generationType:'generate',editDepth:0}]});return true})()");
@@ -320,7 +331,7 @@ function startMockApi() {
     check('chain.editingUsesEditingRouteModel', ed1 && ed1.ok === true && ed1.model === 'gpt-image-2.5-flare', JSON.stringify(ed1));
     const h2 = (await stats()).hits[0] || {};
     check('chain.editingWireMultipart', h2.kind === 'edit' && /multipart\/form-data/i.test(h2.contentType || '') && h2.partNames.indexOf('image') >= 0, JSON.stringify({ kind: h2.kind, ct: h2.contentType, parts: h2.partNames }));
-    check('chain.editingUsesEditingRouteKey', h2.auth === 'Bearer sk-main-image' && h2.model === 'gpt-image-2.5-flare', JSON.stringify({ auth: h2.auth, model: h2.model }));
+    check('chain.editingUsesEditingRouteKey', h2.auth === 'Bearer ' + IMAGE_MAIN_KEY && h2.model === 'gpt-image-2.5-flare', JSON.stringify({ authorized: h2.auth === 'Bearer ' + IMAGE_MAIN_KEY, model: h2.model }));
     check('chain.editingInputIsSourceImage', (h2.images || [])[0] === TINY_PNG, 'provider 收到的字节必须就是被编辑的那张图');
 
     /* ── ⑥ 改模型 → request body 同步改变 ── */
@@ -347,7 +358,7 @@ function startMockApi() {
       + "var r=rs[0]||{};return{shown:shown,ok:r.ok===true,code:r.code||'',reason:r.reason||''}})()");
     check('error.noKeyCode', nokey && nokey.ok === false && nokey.code === 'IMAGE_ROUTER_NO_KEY', JSON.stringify(nokey));
     check('error.noKeyNoRequest', (await stats()).hits.length === 0);
-    check('error.noKeyUserText', nokey && nokey.reason.indexOf('API Key') >= 0 && nokey.reason.indexOf('Image Router') >= 0, JSON.stringify(nokey && nokey.reason));
+    check('error.noKeyUserText', nokey && nokey.reason.indexOf('Credential Vault') >= 0 && nokey.reason.indexOf('API Key') >= 0, JSON.stringify(nokey && nokey.reason));
     check('error.uiShowsSameProblem', nokey && nokey.shown.indexOf('API Key') >= 0, JSON.stringify(nokey && nokey.shown));
 
     /* ── ⑦b 本地端点不填 Key：允许（local-first / 自建代理常态），请求照常发出 ── */
@@ -406,9 +417,9 @@ function startMockApi() {
       + "var tel=IB.imageRouter.telemetry().slice(-1)[0]||{};"
       + "return{ok:r.ok===true,model:r.model,fallbackUsed:!!r.fallbackUsed,tel:{apiConfigId:tel.apiConfigId,routeName:tel.routeName,modelSource:tel.modelSource,fallbackUsed:tel.fallbackUsed,policy:tel.policy},raw:JSON.stringify(tel)}})()");
     const hits = (await stats()).hits;
-    check('fallback.retriedWithBackupConfig', fb && fb.ok === true && hits.length === 2 && hits[1].auth === 'Bearer sk-backup-image' && hits[1].model === 'gpt-image-1', JSON.stringify({ fb, hits: hits.map(h => ({ m: h.model, a: h.auth })) }));
+    check('fallback.retriedWithBackupConfig', fb && fb.ok === true && hits.length === 2 && hits[1].auth === 'Bearer ' + IMAGE_BACKUP_KEY && hits[1].model === 'gpt-image-1', JSON.stringify({ ok: fb && fb.ok, fallbackUsed: fb && fb.fallbackUsed, hits: hits.map(h => ({ m: h.model, authorized: h.auth === 'Bearer ' + IMAGE_BACKUP_KEY })) }));
     check('fallback.reportedInResult', fb && fb.fallbackUsed === true && fb.tel.fallbackUsed === true && fb.tel.apiConfigId === 'ir_main' && fb.tel.routeName === 'generation' && fb.tel.policy === 'route_model', JSON.stringify(fb && fb.tel));
-    check('telemetry.noSecrets', fb && fb.raw.indexOf('sk-main-image') < 0 && fb.raw.indexOf('sk-backup-image') < 0 && fb.raw.indexOf('base64') < 0, fb && fb.raw);
+    check('telemetry.noSecrets', fb && fb.raw.indexOf(IMAGE_MAIN_KEY) < 0 && fb.raw.indexOf(IMAGE_BACKUP_KEY) < 0 && fb.raw.indexOf('base64') < 0, fb && fb.raw);
     await setFailModels([]);
 
     /* ── ⑪ 页面无异常 ── */

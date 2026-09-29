@@ -235,6 +235,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
   const mock = await startMockProvider();
   const mockEndpoint = 'http://127.0.0.1:' + mock.port + '/v1/chat/completions';
+  const providerEndpoint = 'https://provider.invalid/v1/chat/completions';
   const webSrv = WEB.createWebServer({ port: 0, root: ROOT });
   const webPort = await new Promise((res, rej) => { webSrv.once('error', rej); webSrv.listen(0, '127.0.0.1', () => res(webSrv.address().port)); });
   const pageUrl = 'http://127.0.0.1:' + webPort + '/InternalBeyond.html';
@@ -272,12 +273,25 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
     /* ── 进入站点（splash → 跳过，直接探索） ── */
     const patchDialogs = () => ev(cdp, "window.confirm=function(){return true;};window.alert=function(){};true");
+    const installCredentialMock = () => ev(cdp, `(async function(){
+      window.__setupVault=window.__setupVault||{};
+      window._activeCompanionRequest=async function(route,opts){opts=opts||{};var body=opts.body||{};if(opts.method==='POST'){var row=(body.credentials||[])[0]||{};var id=String(row.credentialRef||row.characterId||'');if(!id||!row.apiKey)return{ok:true,stored:0,credentialRef:null,credentialRefs:[]};window.__setupVault[id]={provider:row.provider||'custom',apiKey:row.apiKey};return{ok:true,stored:1,credentialRef:id,credentialRefs:[id]}}if(opts.method==='DELETE'){var refs=body.all?Object.keys(window.__setupVault):(body.credentialRefs||[]);refs.forEach(function(id){delete window.__setupVault[id]});return{ok:true,removed:refs.length,credentialRefs:refs}}return{ok:false}};
+      window.IB.host=window.IB.host||{};
+      window.IB.host.credentialResolver={available:true,resolve:function(id){var c=window.__setupVault[id];return Promise.resolve(c?{ok:true,provider:c.provider,apiKey:c.apiKey}:{ok:false,errorCode:'CREDENTIAL_UNAVAILABLE'})}};
+      window._ibCredentialIsLocalEndpoint=function(){return false};
+      window.__setupNativeFetch=window.fetch.bind(window);
+      window.fetch=function(url,opts){var target=String(url||'');if(target.indexOf('https://provider.invalid')===0)target=target.replace('https://provider.invalid',${JSON.stringify('http://127.0.0.1:' + mock.port)});return window.__setupNativeFetch(target,opts)};
+      var rows=await dbGetAll('apiConfigs');(rows||[]).forEach(function(c){if(c&&c.credentialRef)window.__setupVault[c.credentialRef]={provider:c.provider||'custom',apiKey:${JSON.stringify(GOOD_KEY)}}});
+      return true;
+    })()`);
     const enterSite = async () => {
       await wait(cdp, "document.readyState==='complete' && !!document.getElementById('splash')", 25000);
       await patchDialogs();
       await ev(cdp, "(function(){var s=document.getElementById('splash-skip');if(s)s.click();else if(typeof enterSite==='function')enterSite();return true;})()");
     };
     await enterSite();
+    await installCredentialMock();
+    check('test-only Vault resolver installed', await ev(cdp, "window.IB.host.credentialResolver.available===true&&typeof window._activeCompanionRequest==='function'&&typeof window._ibCredentialIsLocalEndpoint==='function'"));
     check('A1) 模块已挂载且 splash 后自动出现向导', await wait(cdp, "!!window.IBSetup && !!document.querySelector('#ib-setup.is-open')", 20000));
     check('A2) 主界面同时可见（向导不是唯一入口）', await wait(cdp, "!!document.getElementById('app') && document.getElementById('app').classList.contains('visible')", 12000));
 
@@ -366,6 +380,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     await cdp.send('Page.reload');
     await sleep(800);
     await enterSite();
+    await installCredentialMock();
     check('D6) 刷新后自动继续（草稿生效）', await wait(cdp, "!!document.querySelector('#ib-setup.is-open') && document.getElementById('ib-setup-step').textContent==='第 3 步 / 共 7 步'", 20000));
     const resumed = await ev(cdp, "(()=>{const s=window.IBSetup.state();const i=document.getElementById('ib-setup-key');return {provider:s.provider,step:s.step,keyValue:i?i.value:null,restored:s.draftRestored};})()");
     check('D7) 恢复到第 3 步且密钥为空（需重新输入）', resumed && resumed.provider === 'custom' && resumed.step === 2 && resumed.keyValue === '' && resumed.restored === true, resumed);
@@ -376,7 +391,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     await wait(cdp, "!!document.getElementById('ib-setup-model')", 5000);
     await ev(cdp, setVal('ib-setup-model', 'smoke-model'));
     await ev(cdp, "(function(){var b=document.querySelector('.ib-setup-adv-btn');if(b)b.click();return true;})()");
-    await ev(cdp, setVal('ib-setup-endpoint', mockEndpoint));
+    await ev(cdp, setVal('ib-setup-endpoint', providerEndpoint));
     await ev(cdp, clickSel('#ib-setup-next'));
     check('E0) 进入测试连接步骤', await wait(cdp, "!!document.getElementById('ib-setup-run-test')", 5000));
     await ev(cdp, clickSel('#ib-setup-run-test'));
@@ -428,11 +443,13 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
       return {count:list.length, cfg:c, persisted:persisted};
     })()`);
     check('G3) apiConfigs 里恰好 1 个角色', saved && saved.count === 1, saved && saved.count);
-    check('G4) 角色字段走现有保存链（provider/model/endpoint/key/关系）', !!saved && !!saved.cfg &&
-      saved.cfg.provider === 'custom' && saved.cfg.model === 'smoke-model' && saved.cfg.endpoint === mockEndpoint &&
-      saved.cfg.apiKey === GOOD_KEY && saved.cfg.nickname === 'SmokeAI' && saved.cfg.relationship === '测试伙伴', saved && saved.cfg);
+    check('G4) 角色字段走现有保存链且 Key 只保存引用', !!saved && !!saved.cfg &&
+      saved.cfg.provider === 'custom' && saved.cfg.model === 'smoke-model' && saved.cfg.endpoint === providerEndpoint &&
+      saved.cfg.credentialRef === saved.cfg.id && !Object.prototype.hasOwnProperty.call(saved.cfg, 'apiKey')
+      && saved.cfg.nickname === 'SmokeAI' && saved.cfg.relationship === '测试伙伴', saved && saved.cfg);
     check('G5) 系统提示词 = 默认设定 + 描述', !!saved && !!saved.cfg && String(saved.cfg.systemPrompt || '').indexOf('说话简短。') !== -1 && String(saved.cfg.systemPrompt || '').length > 20, saved && saved.cfg && saved.cfg.systemPrompt);
-    check('G6) 已落 IndexedDB（不只是内存）', !!saved && !!saved.persisted && saved.persisted.apiKey === GOOD_KEY);
+    check('G6) 已落 IndexedDB 且无明文 API Key', !!saved && !!saved.persisted && saved.persisted.credentialRef === saved.cfg.id
+      && !Object.prototype.hasOwnProperty.call(saved.persisted, 'apiKey'));
     check('G7) 角色 id 沿用 friend_ 前缀', !!saved && !!saved.cfg && String(saved.cfg.id).indexOf('friend_') === 0, saved && saved.cfg && saved.cfg.id);
 
     /* ── 场景 6/7/13：完成 → ibSetupV1Done → 进入聊天 → 发出第一条消息 ── */
@@ -461,6 +478,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     await cdp.send('Page.reload');
     await sleep(800);
     await enterSite();
+    await installCredentialMock();
     await sleep(2500);
     const afterReload = await ev(cdp, "({open:!!document.querySelector('#ib-setup.is-open'), done:(window.IBSetup?window.IBSetup.state():null)!==null})");
     check('I1) 刷新后向导不再自动出现', afterReload && afterReload.open === false, afterReload);
@@ -503,6 +521,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     await cdp.send('Page.reload');
     await sleep(800);
     await enterSite();
+    await installCredentialMock();
     await sleep(1500);
     await ev(cdp, "(function(){var b=document.getElementById('ib-setup-rerun');if(b)b.click();return !!b;})()");
     check('K2) degraded 下向导仍可打开', await wait(cdp, "!!document.querySelector('#ib-setup.is-open')", 8000));
@@ -519,7 +538,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     await wait(cdp, "!!document.getElementById('ib-setup-model')", 5000);
     await ev(cdp, setVal('ib-setup-model', 'smoke-model'));
     await ev(cdp, "(function(){var b=document.querySelector('.ib-setup-adv-btn');if(b)b.click();return true;})()");
-    await ev(cdp, setVal('ib-setup-endpoint', mockEndpoint));
+    await ev(cdp, setVal('ib-setup-endpoint', providerEndpoint));
     await ev(cdp, "window.IBSetup.goStep(4)");
     await wait(cdp, "!!document.getElementById('ib-setup-run-test')", 5000);
     await ev(cdp, clickSel('#ib-setup-run-test'));

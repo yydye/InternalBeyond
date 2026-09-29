@@ -89,6 +89,23 @@ function dataFile() { return path.join(DATA_DIR, 'credential-vault.json'); }
   check('重复加载后凭证仍在（幂等持久化）', v2.count() === 5);
 })();
 
+/* A failed encrypted-file write must not be reported as a successful upsert. */
+(() => {
+  const failDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-credvault-write-fail-'));
+  const failingFs = Object.assign({}, fs, {
+    writeFileSync: function (file, ...args) {
+      if (String(file).endsWith('.tmp')) throw new Error('synthetic-write-failure');
+      return fs.writeFileSync(file, ...args);
+    }
+  });
+  const v = createCredentialVault({ dataDir: failDir, fs: failingFs });
+  v.load();
+  check('Vault 写入失败时 upsert 返回失败', v.upsert('write_fail', { provider: 'openai', apiKey: 'SYNTHETIC_FAILURE_ONLY' }) === false);
+  check('失败的 upsert 不留内存凭据', v.has('write_fail') === false && v.count() === 0);
+  check('失败的 upsert 不生成 Vault 数据文件', fs.existsSync(path.join(failDir, 'credential-vault.json')) === false);
+  try { fs.rmSync(failDir, { recursive: true, force: true }); } catch (_) {}
+})();
+
 try { fs.rmSync(DATA_DIR, { recursive: true, force: true }); } catch (_) {}
 
 console.log(failures ? `\ncredential-vault test failed: ${failures}` : `\ncredential-vault test passed ✔ (${passed})`);

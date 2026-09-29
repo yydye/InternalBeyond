@@ -293,6 +293,7 @@ function buildEnv(opts) {
 
   const editor = makeEl('div'); editor.id = 'api-editor'; editor.style.display = 'none'; doc.body.appendChild(editor);
   const keyHelp = makeEl('span'); keyHelp.id = 'ibo-key-help'; doc.body.appendChild(keyHelp);
+  const vaultKeyHint = makeEl('div'); vaultKeyHint.id = 'ibo-key-vault-hint'; doc.body.appendChild(vaultKeyHint);
   const compatHint = makeEl('div'); compatHint.id = 'ibo-compatible-hint'; doc.body.appendChild(compatHint);
   const guidedHint = makeEl('div'); guidedHint.id = 'ibo-guided-hint'; doc.body.appendChild(guidedHint);
   const fields = {};
@@ -344,7 +345,7 @@ function buildEnv(opts) {
   vm.createContext(box);
   let loadError = null;
   try { new vm.Script(jsSrc, { filename: 'api-onboarding.js' }).runInContext(box); } catch (e) { loadError = e; }
-  return { doc, box, entry, editor, fields, keyHelp, compatHint, guidedHint, calls, loadError, apiPage };
+  return { doc, box, entry, editor, fields, keyHelp, vaultKeyHint, compatHint, guidedHint, calls, loadError, apiPage };
 }
 
 section('入口分流（#page-api 顶部）');
@@ -440,7 +441,8 @@ check('能力开关按目录设定', env3.fields['api-vision-toggle'].checked ==
   && env3.fields['api-streaming-toggle'].checked === !!canon.PROVIDERS.deepseek.streaming);
 check('预填字段被标记为「自动填入」', env3.fields['api-endpoint'].dataset.ibAutoFilled === '1' && env3.fields['api-model'].dataset.ibAutoFilled === '1');
 check('API Key 输入框保持为空（绝不预填 / 生成 Key）', env3.fields['api-key'].value === '');
-check('光标落在 Key 输入框', env3.fields['api-key']._focused === true);
+check('光标落在角色名称输入框（Key 由 Vault 按钮管理）', env3.fields['api-ai-name']._focused === true);
+check('API Key Vault 使用说明已渲染', env3.vaultKeyHint.textContent.indexOf('添加 API Key') >= 0 && env3.vaultKeyHint.textContent.indexOf('Credential Vault') >= 0);
 check('新手模式收起协议字段', hasClass(env3.editor, 'ibo-guided'));
 check('新手模式给出人话提示', !!findById(env3.doc.body, 'ibo-guided-hint') && /接口地址已经帮你填好/.test(allText(findById(env3.doc.body, 'ibo-guided-hint'))));
 check('Key 获取提示链接已渲染', env3.keyHelp.children.length === 1 && env3.keyHelp.children[0].href === canon.onboardingEntry('deepseek').apiKeyUrl);
@@ -504,6 +506,7 @@ env9.box.IBOnboarding.openManualEditor();
 check('直接打开编辑器并预选第一个官方服务', env9.calls.addNewApi === 1 && !!env9.fields['api-provider'].value, env9.fields['api-provider'].value);
 check('自动填好接口地址与模型', !!env9.fields['api-endpoint'].value && !!env9.fields['api-model'].value);
 check('Key 输入框为空', env9.fields['api-key'].value === '');
+check('Key 的保存位置有明确说明', env9.vaultKeyHint.textContent.indexOf('Credential Vault') >= 0);
 check('刷新了 Key 获取提示', env9.keyHelp.children.length === 1);
 
 /* 从首次设置向导里进来的场景：预填前必须收起向导，否则用户看不到编辑器 */
