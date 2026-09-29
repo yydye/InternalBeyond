@@ -1,0 +1,515 @@
+﻿/* P2 · Workspace Home — presence header + token surfaces.
+   - The old brand Hero clone is retired: its atmosphere lives on as a compact presence header
+     in pageChrome language (caps eyebrow + brand mark + quiet line + local state, bottom hairline,
+     no glass), so the first screen opens on presence → work instead of a landing hero.
+   - Recent / Quick Access / System status consume the glass ladder + surface tokens only;
+     theme differences come from core.css token blocks (no raw rgba fills here).
+   - Density: standard tier — --space-4/5/6, rows ≥44px, nothing below --fs-meta. */
+#page-workspace {
+  max-width: none;
+  padding: var(--space-8) clamp(24px, 5vw, 64px) 48px;
+}
+
+#page-workspace .home-workspace {
+  width: min(100%, 1160px);
+  margin: 0 auto;
+  color: var(--content-primary);
+}
+
+/* Home's backdrop separates the photograph from reading surfaces. */
+body:not(.theme-infernal):has(#page-workspace.active) #page-overlay.show {
+  background: rgba(199, 214, 232, .64);
+}
+
+/* Keep workspace copy crisp against glass; the brand retains its own shadows. */
+#page-workspace .home-workspace-presence,
+#page-workspace .home-workspace-presence *,
+#page-workspace .home-workspace-grid,
+#page-workspace .home-workspace-grid *,
+#page-workspace .home-system-status,
+#page-workspace .home-system-status * {
+  text-shadow: none;
+}
+
+/* ── Presence header（surface.pageChrome 语言：无玻璃、无模糊、底部发丝线） ── */
+#page-workspace .home-workspace-presence {
+  display: block;
+  padding: 0 0 var(--space-5);
+  border-bottom: 1px solid var(--border-soft);
+  margin-bottom: var(--space-6);
+}
+
+#page-workspace .home-workspace-presence-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  color: var(--content-primary);
+}
+
+#page-workspace .home-workspace-eyebrow {
+  color: var(--content-muted);
+  font-family: var(--font-ui);
+  font-size: var(--fs-meta);
+  font-weight: 400;
+  letter-spacing: .14em;
+  line-height: 1.6;
+  text-transform: uppercase;
+  opacity: 1;
+}
+
+#page-workspace .home-presence-title {
+  margin: 0;
+  font-weight: 400;
+}
+
+#page-workspace .home-presence-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: clamp(8px, 1vw, 12px);
+  font-family: var(--font-display);
+  font-size: var(--fs-h2);
+  font-weight: 400;
+  letter-spacing: .2em;
+  padding-left: .2em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+#page-workspace .home-presence-mark .t-beyond {
+  color: var(--beyond-color);
+}
+
+#page-workspace .home-presence-mark .home-rule {
+  width: clamp(64px, 8vw, 132px);
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--border-strong), transparent);
+}
+
+#page-workspace .home-presence-line {
+  margin: 0;
+  max-width: 560px;
+  color: var(--content-secondary);
+  font-size: var(--fs-body);
+  font-weight: 400;
+  line-height: 1.7;
+}
+
+#page-workspace .workspace-brand-infernal {
+  display: none;
+}
+
+body.theme-infernal #page-workspace .workspace-brand-light {
+  display: none;
+}
+
+body.theme-infernal #page-workspace .workspace-brand-infernal {
+  display: inline;
+}
+
+#page-workspace .home-workspace-local {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--content-muted);
+  font-size: var(--fs-meta);
+  font-weight: 400;
+}
+
+#page-workspace .home-workspace-local span {
+  color: var(--accent);
+  font-size: var(--fs-body);
+}
+
+/* ── Workspace grid ── Recent carries the surface tier (the work); Quick Access stays a
+   quieter ambient layer, so the first screen keeps a single clear focus. */
+#page-workspace .home-workspace-grid {
+  display: grid;
+  grid-template-columns: minmax(0, .96fr) minmax(0, 1.04fr);
+  align-items: stretch;
+  gap: var(--space-6);
+}
+
+#page-workspace .home-workspace-panel {
+  min-width: 0;
+  padding: var(--space-6);
+  border-radius: var(--radius-panel);
+  color: var(--content-primary);
+}
+
+#page-workspace .home-recent,
+#page-workspace .home-recent:hover {
+  background: var(--glass-bg-surface);
+  border-color: var(--glass-border-soft);
+  box-shadow: var(--glass-shadow-soft);
+}
+
+#page-workspace .home-quick-access,
+#page-workspace .home-quick-access:hover {
+  background: var(--glass-bg-ambient);
+  border-color: var(--border-soft);
+  box-shadow: none;
+}
+
+#page-workspace .home-panel-heading,
+#page-workspace .home-status-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+#page-workspace .home-panel-heading > div,
+#page-workspace .home-status-heading > div {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+#page-workspace .home-panel-heading h2,
+#page-workspace .home-status-heading h2 {
+  margin: 0;
+  color: var(--content-primary);
+  font-family: var(--font-reading);
+  font-size: var(--fs-h3);
+  font-weight: 500;
+  letter-spacing: .025em;
+}
+
+#page-workspace .home-panel-note,
+#page-workspace .home-status-caption {
+  color: var(--content-muted);
+  font-size: var(--fs-meta);
+  font-weight: 400;
+  text-align: right;
+  opacity: 1;
+}
+
+#page-workspace .home-workspace-notice {
+  margin: calc(var(--space-1) * -1) 0 var(--space-3);
+  color: var(--content-muted);
+  font-size: var(--fs-meta);
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+#page-workspace .home-recent-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+#page-workspace .home-recent-item {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-1);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-soft) 50%, transparent);
+}
+
+#page-workspace .home-recent-item:last-child {
+  border-bottom: 0;
+}
+
+#page-workspace .home-recent-marker {
+  color: var(--accent);
+  font-family: var(--font-display);
+  font-size: var(--fs-body);
+  line-height: 1.6;
+  text-align: center;
+  opacity: .7;
+}
+
+#page-workspace .home-recent-content {
+  min-width: 0;
+}
+
+#page-workspace .home-recent-title {
+  display: block;
+  overflow: hidden;
+  color: var(--content-primary);
+  font-size: var(--fs-body);
+  font-weight: 400;
+  line-height: 1.6;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#page-workspace .home-recent-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  margin-top: 2px;
+  color: var(--content-muted);
+  font-size: var(--fs-meta);
+  font-weight: 400;
+}
+
+#page-workspace .home-recent-loading {
+  padding: var(--space-3) 0;
+  color: var(--content-muted);
+  font-size: var(--fs-meta);
+  font-weight: 400;
+}
+
+#page-workspace .home-empty-state {
+  padding: var(--space-4) 0 0;
+}
+
+#page-workspace .home-empty-state > strong {
+  color: var(--content-primary);
+  font-family: var(--font-reading);
+  font-size: var(--fs-h3);
+  font-weight: 500;
+}
+
+#page-workspace .home-empty-state > p {
+  margin: var(--space-2) 0 var(--space-4);
+  color: var(--content-secondary);
+  font-size: var(--fs-body);
+  font-weight: 400;
+  line-height: 1.6;
+}
+
+#page-workspace .home-empty-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+}
+
+#page-workspace .home-empty-links a {
+  color: var(--accent);
+  font-size: var(--fs-meta);
+  font-weight: 400;
+  text-decoration: none;
+}
+
+#page-workspace .home-empty-links a:hover {
+  color: var(--content-primary);
+  text-decoration: underline;
+}
+
+#page-workspace .home-empty-links a:focus-visible,
+#page-workspace .home-quick-link:focus-visible,
+#page-workspace .home-status-link:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 3px;
+}
+
+#page-workspace .home-quick-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+
+#page-workspace .home-quick-link.btn {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) 14px;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  min-height: 56px;
+  padding: var(--space-2) var(--space-3);
+  border-color: transparent;
+  border-bottom-color: color-mix(in srgb, var(--border-strong) 48%, transparent);
+  border-radius: var(--radius-control);
+  background: transparent;
+  box-shadow: none;
+  color: var(--content-primary);
+  text-align: left;
+  text-decoration: none;
+  white-space: normal;
+}
+
+#page-workspace .home-quick-link.btn:hover {
+  border-color: color-mix(in srgb, var(--accent-light) 60%, var(--border-soft));
+  background: var(--surface-hover);
+  color: var(--content-primary);
+  text-decoration: none;
+  transform: none;
+}
+
+#page-workspace .home-quick-glyph {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  color: var(--accent);
+  font-family: var(--font-display);
+  font-size: var(--fs-h3);
+  font-weight: 500;
+  opacity: 1;
+}
+
+#page-workspace .home-quick-link strong,
+#page-workspace .home-quick-link small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#page-workspace .home-quick-link strong {
+  color: var(--content-primary);
+  font-size: var(--fs-body);
+  font-weight: 500;
+}
+
+#page-workspace .home-quick-link small {
+  margin-top: 2px;
+  color: var(--content-muted);
+  font-size: var(--fs-meta);
+  font-weight: 400;
+}
+
+#page-workspace .home-quick-arrow {
+  align-self: center;
+  color: var(--content-muted);
+  font-size: var(--fs-meta);
+  opacity: 0;
+  transition: opacity var(--motion-fast);
+}
+
+#page-workspace .home-quick-link:hover .home-quick-arrow,
+#page-workspace .home-quick-link:focus-visible .home-quick-arrow {
+  opacity: 1;
+}
+
+#page-workspace .home-system-status {
+  margin-top: var(--space-6);
+  padding-top: var(--space-3);
+  border-top: 1px solid color-mix(in srgb, var(--border-strong) 60%, transparent);
+}
+
+#page-workspace .home-status-heading {
+  margin: 0 0 var(--space-2);
+}
+
+#page-workspace .home-status-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+#page-workspace .home-status-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+  min-height: 56px;
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-control);
+  box-shadow: none;
+  color: var(--content-primary);
+  text-decoration: none;
+}
+
+#page-workspace .home-status-mark {
+  display: grid;
+  place-items: center;
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  color: var(--content-muted);
+  font-family: var(--font-display);
+  font-size: var(--fs-body);
+}
+
+#page-workspace .home-status-item[data-state="ready"] .home-status-mark {
+  color: var(--accent);
+}
+
+#page-workspace .home-status-copy {
+  display: block;
+  min-width: 0;
+}
+
+#page-workspace .home-status-copy strong,
+#page-workspace .home-status-copy small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#page-workspace .home-status-copy strong {
+  color: var(--content-primary);
+  font-size: var(--fs-body);
+  font-weight: 400;
+}
+
+#page-workspace .home-status-copy small {
+  margin-top: 2px;
+  color: var(--content-muted);
+  font-size: var(--fs-meta);
+  font-weight: 400;
+}
+
+#page-workspace .home-status-link:hover {
+  border-color: transparent;
+  background: var(--surface-hover);
+  text-decoration: none;
+}
+
+@media (max-width: 1120px) {
+  #page-workspace {
+    padding: var(--space-6) var(--space-8) 40px;
+  }
+  #page-workspace .home-workspace-panel {
+    padding: var(--space-5);
+  }
+  #page-workspace .home-quick-link.btn {
+    gap: var(--space-2);
+    padding-right: var(--space-3);
+    padding-left: var(--space-3);
+  }
+}
+
+@media (max-width: 900px) {
+  #page-workspace .home-workspace-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  #page-workspace {
+    padding: var(--space-6) var(--space-4) var(--space-8);
+  }
+  #page-workspace .home-workspace-presence {
+    padding-bottom: var(--space-4);
+    margin-bottom: var(--space-5);
+  }
+  #page-workspace .home-workspace-panel {
+    padding: var(--space-4);
+  }
+  #page-workspace .home-status-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  #page-workspace .home-status-item {
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+  }
+}
+
+@media (max-width: 420px) {
+  #page-workspace .home-quick-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  #page-workspace .home-panel-heading,
+  #page-workspace .home-status-heading {
+    align-items: flex-start;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #page-workspace .home-quick-link,
+  #page-workspace .home-quick-arrow,
+  #page-workspace .home-empty-links a,
+  #page-workspace .home-status-link {
+    transition: none;
+  }
+}

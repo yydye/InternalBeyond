@@ -93,7 +93,8 @@ check('split.noInlineScripts', inlineScripts.length === 0, String(inlineScripts.
 const scriptSources = [...html.matchAll(/<script[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi)].map(m => m[1]);
 const styleSources = [...html.matchAll(/<link[^>]*\brel\s*=\s*["'][^"']*stylesheet[^"']*["'][^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*>/gi)].map(m => m[1]);
 check('split.externalScriptCount', scriptSources.length >= 15, String(scriptSources.length));
-check('split.externalStyleCount', styleSources.length === 21, String(styleSources.length));
+/* P35.6 Packaging Center, P36 Navigation Shell, and P37 Home Workspace each own one local stylesheet. */
+check('split.externalStyleCount', styleSources.length === 24, String(styleSources.length));
 const expectedCoreStyles = [
   'assets/css/core.css',
   'assets/css/core/chat-shell.css',

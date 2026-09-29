@@ -27,6 +27,7 @@
 <link rel="stylesheet" href="assets/css/local-first.css">
 <link rel="stylesheet" href="assets/css/packaging-center.css">
 <link rel="stylesheet" href="assets/css/navigation-shell.css">
+<link rel="stylesheet" href="assets/css/home-workspace.css">
 </head>
 <body>
 <a class="skip-link" href="#app">跳到主要内容</a>
@@ -188,6 +189,84 @@
       <p class="home-subtitle" id="home-subtitle">A place of waking in the mist.<br>All memories are kept here, waiting to be read.</p>
       <h1 class="home-title" id="home-title"><span class="t-internal">Internal</span><span class="home-rule"></span><span class="t-beyond">Beyond</span></h1>
       <div class="home-credit" id="home-credit"><span class="home-credit-label">Design by </span><span class="home-credit-sui">Sui</span><span class="home-credit-amp">&</span><span class="home-credit-claude">Claude</span><span class="home-credit-ver"> Opus 4.6</span></div>
+    </div>
+  </div>
+
+  <div class="page" id="page-workspace">
+    <div class="home-workspace" id="workspace-dashboard">
+            <header class="home-workspace-presence" aria-labelledby="workspace-presence-heading">
+                <div class="home-workspace-presence-body">
+                    <span class="home-workspace-eyebrow">PERSONAL WORKSPACE</span>
+                    <h2 class="home-presence-title" id="workspace-presence-heading"><span class="home-presence-mark"><span class="t-internal workspace-brand-light">Internal</span><span class="t-internal workspace-brand-infernal">Infernal</span><span class="home-rule" aria-hidden="true"></span><span class="t-beyond">Beyond</span></span></h2>
+                    <p class="home-presence-line"><span class="workspace-brand-light">A place of waking in the mist. All memories are kept here, waiting to be read.</span><span class="workspace-brand-infernal">It's our first meeting, but also long time no see.</span></p>
+                    <span class="home-workspace-local"><span aria-hidden="true">◌</span> Your space on this device</span>
+                </div>
+            </header>
+
+      <div class="home-workspace-grid">
+        <section class="glass-card home-workspace-panel home-recent" aria-labelledby="workspace-recent-heading">
+          <div class="home-panel-heading">
+            <div>
+              <span class="home-workspace-eyebrow">PICK UP WHERE YOU LEFT OFF</span>
+              <h2 id="workspace-recent-heading">Recent</h2>
+            </div>
+            <span class="home-panel-note">A few recent items</span>
+          </div>
+          <p class="home-workspace-notice" id="workspace-data-notice" role="status" aria-live="polite" hidden>Loading workspace...</p>
+          <ul class="home-recent-list" id="workspace-recent-list" aria-label="Recent conversations and activities"></ul>
+          <div class="home-empty-state" id="workspace-empty-state" hidden>
+            <strong>Nothing here yet</strong>
+            <p>Your recent conversations and activities will appear here.</p>
+            <div class="home-empty-links">
+              <a href="#chat" data-workspace-route="chat">Start a conversation <span aria-hidden="true">↗</span></a>
+              <a href="#memory" data-workspace-route="memory">Explore Memory <span aria-hidden="true">↗</span></a>
+              <a href="#apps" data-workspace-route="apps">Explore tools <span aria-hidden="true">↗</span></a>
+            </div>
+          </div>
+        </section>
+
+        <section class="glass-card home-workspace-panel home-quick-access" aria-labelledby="workspace-quick-heading">
+          <div class="home-panel-heading">
+            <div>
+              <span class="home-workspace-eyebrow">YOUR SPACE, ONE STEP AWAY</span>
+              <h2 id="workspace-quick-heading">Quick Access</h2>
+            </div>
+          </div>
+          <nav class="home-quick-grid" aria-label="Workspace quick access">
+            <a class="btn home-quick-link" href="#chat" data-workspace-route="chat"><span class="home-quick-glyph" aria-hidden="true">C</span><span><strong>Chat</strong><small>Talk with a role</small></span><span class="home-quick-arrow" aria-hidden="true">↗</span></a>
+            <a class="btn home-quick-link" href="#memory" data-workspace-route="memory"><span class="home-quick-glyph" aria-hidden="true">M</span><span><strong>Memory</strong><small>Browse saved memories</small></span><span class="home-quick-arrow" aria-hidden="true">↗</span></a>
+            <a class="btn home-quick-link" href="#blog" data-workspace-route="blog"><span class="home-quick-glyph" aria-hidden="true">W</span><span><strong>Create</strong><small>Write in your Blog</small></span><span class="home-quick-arrow" aria-hidden="true">↗</span></a>
+            <a class="btn home-quick-link" href="#active" data-workspace-route="active"><span class="home-quick-glyph" aria-hidden="true">A</span><span><strong>Activity</strong><small>Return to active work</small></span><span class="home-quick-arrow" aria-hidden="true">↗</span></a>
+            <a class="btn home-quick-link" href="#apps" data-workspace-route="apps"><span class="home-quick-glyph" aria-hidden="true">T</span><span><strong>Tools</strong><small>Explore the workspace</small></span><span class="home-quick-arrow" aria-hidden="true">↗</span></a>
+            <a class="btn home-quick-link" href="#packaging" data-workspace-route="packaging"><span class="home-quick-glyph" aria-hidden="true">P</span><span><strong>Packaging</strong><small>Open packaging tools</small></span><span class="home-quick-arrow" aria-hidden="true">↗</span></a>
+            <a class="btn home-quick-link" href="#api" data-workspace-route="api"><span class="home-quick-glyph" aria-hidden="true">S</span><span><strong>Settings</strong><small>API and Middle Brain</small></span><span class="home-quick-arrow" aria-hidden="true">↗</span></a>
+          </nav>
+        </section>
+      </div>
+
+      <section class="home-system-status" aria-labelledby="workspace-status-heading">
+        <div class="home-status-heading">
+          <div>
+            <span class="home-workspace-eyebrow">AT A GLANCE</span>
+            <h2 id="workspace-status-heading">Workspace Status</h2>
+          </div>
+          <span class="home-status-caption">Local and read-only</span>
+        </div>
+        <div class="home-status-grid">
+          <div class="glass-card home-status-item" id="workspace-status-storage" data-state="loading">
+            <span class="home-status-mark" aria-hidden="true">◌</span><span class="home-status-copy"><strong>Storage</strong><small class="workspace-status-value">Loading...</small></span>
+          </div>
+          <div class="glass-card home-status-item" id="workspace-status-memory" data-state="loading">
+            <span class="home-status-mark" aria-hidden="true">◌</span><span class="home-status-copy"><strong>Memory</strong><small class="workspace-status-value">Loading...</small></span>
+          </div>
+          <div class="glass-card home-status-item" id="workspace-status-packaging" data-state="loading">
+            <span class="home-status-mark" aria-hidden="true">◌</span><span class="home-status-copy"><strong>Packaging</strong><small class="workspace-status-value">Loading...</small></span>
+          </div>
+          <a class="glass-card home-status-item home-status-link" href="#chat" data-workspace-route="chat" id="workspace-status-voice">
+            <span class="home-status-mark" aria-hidden="true">↗</span><span class="home-status-copy"><strong>Voice</strong><small class="workspace-status-value">Open Chat to use Voice</small></span>
+          </a>
+        </div>
+      </section>
     </div>
   </div>
 
@@ -3662,6 +3741,7 @@ i would like the room to be enough.
 <script src="assets/js/navigation-shell.js"></script>
 <script src="assets/js/tauri-window-chrome.js"></script>
 <script src="assets/js/packaging-center.js"></script>
+<script src="assets/js/home-workspace.js"></script>
 <!-- 深渊暗线：只在 Infernal（暗色）模式可瞥见——"你知道这里通向深渊，但你也知道，你随时可以离开。" -->
 <div class="ib-beyond-leave" id="ib-beyond-leave" aria-hidden="true">你知道这里通向深渊，但你也知道，你随时可以离开。</div>
 </body>
