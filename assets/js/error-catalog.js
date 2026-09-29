@@ -593,7 +593,7 @@
       card.className = 'ib-err-card';
       card.dataset.errCode = m.code;
       card.setAttribute('role', 'alert');
-      card.style.cssText = 'pointer-events:auto;background:var(--glass-bg,rgba(16,22,38,.94));border:1px solid var(--glass-border,rgba(140,200,255,.28));border-radius:14px;padding:14px 16px;box-shadow:0 10px 30px rgba(0,0,0,.35);color:var(--text-primary,#e6eeff);font-size:.82rem;line-height:1.6';
+      card.style.cssText = 'pointer-events:auto;background:var(--glass-bg-floating);border:1px solid var(--glass-border-floating);border-radius:var(--radius-card);padding:14px 16px;box-shadow:var(--glass-shadow-floating);color:var(--content-primary);font-size:.82rem;line-height:1.6';
 
       var head = document.createElement('div');
       head.style.cssText = 'display:flex;align-items:flex-start;gap:8px';
@@ -628,13 +628,13 @@
         b.type = 'button';
         b.className = 'ib-err-btn ' + cls;
         b.textContent = label;
-        b.style.cssText = 'background:rgba(140,200,255,.12);border:1px solid rgba(140,200,255,.35);color:inherit;border-radius:8px;padding:4px 12px;font-size:.76rem;cursor:pointer;font-family:inherit';
+        b.style.cssText = 'background:color-mix(in srgb,var(--accent) 12%,transparent);border:1px solid color-mix(in srgb,var(--accent) 35%,transparent);color:inherit;border-radius:var(--radius-control);padding:4px 12px;font-size:.76rem;cursor:pointer;font-family:inherit';
         return b;
       }
 
       var det = document.createElement('pre');
       det.className = 'ib-err-details';
-      det.style.cssText = 'display:none;margin:10px 0 0;padding:8px 10px;border-radius:8px;background:rgba(0,0,0,.28);font-size:.7rem;line-height:1.55;white-space:pre-wrap;word-break:break-word;max-height:220px;overflow:auto';
+      det.style.cssText = 'display:none;margin:10px 0 0;padding:8px 10px;border-radius:var(--radius-control);background:var(--surface-input);font-size:var(--fs-meta);line-height:1.55;white-space:pre-wrap;word-break:break-word;max-height:220px;overflow:auto';
       det.textContent = detailsText(m);
 
       var toggle = mkBtn('查看详情', 'ib-err-toggle');

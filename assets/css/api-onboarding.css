@@ -47,7 +47,7 @@
   padding: 13px 14px;
   border-radius: var(--radius-card);
   border: 1px solid var(--border-soft);
-  background: var(--surface-input);
+  background: transparent;
   transition: background var(--motion-fast) var(--transition), border-color var(--motion-fast) var(--transition);
 }
 #api-onboarding-entry .ibo-entry-card:hover { background: var(--surface-hover); }
@@ -83,9 +83,9 @@
   align-items: center;
   justify-content: center;
   padding: clamp(10px, 3vw, 32px);
-  background: rgba(12, 18, 34, 0.42);
-  backdrop-filter: blur(14px) saturate(0.92);
-  -webkit-backdrop-filter: blur(14px) saturate(0.92);
+  background: var(--surface-dialog-scrim);
+  backdrop-filter: var(--surface-overlay-filter);
+  -webkit-backdrop-filter: var(--surface-overlay-filter);
 }
 .ibo-overlay.is-open { display: flex; }
 
@@ -174,17 +174,17 @@
   padding: 12px 13px;
   border-radius: var(--radius-card);
   border: 1px solid var(--border-soft);
-  background: var(--surface-input);
+  background: transparent;
 }
 .ibo-card-official { border-left: 3px solid var(--accent-light); }
 
 .ibo-card-top { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .ibo-card-name { font-size: 0.94rem; font-weight: 600; color: var(--content-primary); }
 .ibo-card-kind {
-  font-size: 0.68rem;
+  font-size: var(--fs-meta);
   letter-spacing: 0.04em;
   padding: 1px 7px;
-  border-radius: 999px;
+  border-radius: var(--radius-control);
   border: 1px solid var(--border-soft);
   color: var(--content-muted);
 }
@@ -199,15 +199,15 @@
 }
 .ibo-card-nokey { font-size: 0.74rem; color: var(--content-muted); }
 
-.ibo-meta { margin: 0; padding-left: 1.05em; font-size: 0.75rem; line-height: 1.65; color: var(--content-muted); }
+.ibo-meta { margin: 0; padding-left: 1.05em; font-size: var(--fs-meta); line-height: 1.65; color: var(--content-muted); }
 .ibo-meta li { margin-bottom: 2px; }
 
 .ibo-tags { display: flex; flex-wrap: wrap; gap: 5px; }
 .ibo-tag {
-  font-size: 0.68rem;
+  font-size: var(--fs-meta);
   line-height: 1.5;
   padding: 1px 7px;
-  border-radius: 999px;
+  border-radius: var(--radius-control);
   border: 1px solid var(--border-soft);
   color: var(--content-muted);
   background: transparent;
@@ -243,10 +243,10 @@
   padding: 10px 12px;
   border-radius: var(--radius-card);
   border: 1px solid var(--border-soft);
-  background: var(--surface-panel);
+  background: transparent;
 }
 .ibo-risk-title { display: block; font-size: 0.8rem; color: var(--content-primary); margin-bottom: 4px; }
-.ibo-risk-list { margin: 0; padding-left: 1.1em; font-size: 0.75rem; line-height: 1.68; color: var(--content-secondary); }
+.ibo-risk-list { margin: 0; padding-left: 1.1em; font-size: var(--fs-meta); line-height: 1.68; color: var(--content-secondary); }
 .ibo-risk-list li { margin-bottom: 2px; }
 
 .ibo-others { margin: 4px 0 0; font-size: 0.78rem; color: var(--content-muted); }

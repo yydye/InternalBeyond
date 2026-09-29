@@ -2045,8 +2045,8 @@ async function renderApiArchiveList(){
     var avHtml=a.avatar?'<div class="api-item-avatar"><img src="'+a.avatar+'" alt=""></div>':'<div class="api-item-avatar">'+avInit+'</div>';
     return '<div class="chat-history-item api-arch-item" style="gap:12px" data-arch-id="'+a.id+'">'+avHtml
       +'<div style="flex:1;min-width:0"><strong class="api-item-name">'+esc(a.nickname||a.model||'未命名')+'</strong>'
-      +(a.relationship?'<span style="font-size:0.7rem;color:var(--accent-light);opacity:0.7;margin-left:6px">'+esc(a.relationship)+'</span>':'')
-      +'<div class="api-item-detail" style="font-size:0.72rem;margin-top:2px">'+esc(a.provider||'')+' · '+esc(a.model||'')+'</div></div>'
+      +(a.relationship?'<span style="font-size:var(--fs-meta);color:var(--accent-light);opacity:0.7;margin-left:6px">'+esc(a.relationship)+'</span>':'')
+      +'<div class="api-item-detail" style="font-size:var(--fs-meta);margin-top:2px">'+esc(a.provider||'')+' · '+esc(a.model||'')+'</div></div>'
       +'<span class="arch-ops"><button class="arch-restore-btn" title="恢复到API管理区" onclick="openApiRestoreDialog(\''+a.id+'\')">'+_ARCH_RESTORE_SVG+'</button>'
       +'<span class="del-btn" title="彻底删除" onclick="archHardDeleteAsk(this,\''+a.id+'\')">✕</span></span></div>';
   }).join('');
@@ -2097,7 +2097,7 @@ async function loadFriendsList(){
   if(_chatArchMode)return renderArchFriendsList();
   await loadApiConfigs();
   const c=document.getElementById('friends-list');
-  if(!apiConfigs.length){c.innerHTML='<div style="font-size:0.72rem;color:var(--text-muted);padding:8px">去 API 页面添加API</div>';return}
+  if(!apiConfigs.length){c.innerHTML='<div style="font-size:var(--fs-meta);color:var(--content-muted);padding:8px">去 API 页面添加API</div>';return}
   const allThreads=await (async()=>{try{return await dbGetAll('chatThreads')}catch(e){return[]}})();
   let html='';
   for(const a of apiConfigs){
@@ -2133,7 +2133,7 @@ async function loadFriendsList(){
       normalizeGroupMembers(g);/* 自动迁移 */
       const memberNames=getGroupMemberIds(g).map(mid=>{const cfg=apiConfigs.find(a=>a.id===mid);return cfg?esc(cfg.nickname||cfg.model):'?'});
       const tags=memberNames.map(n=>'<span class="group-member-tag">'+n+'</span>').join('');
-      return '<div class="friend-item'+(activeFriendId===g.id?' active':'')+'" onclick="selectGroup(\''+g.id+'\')"><span class="friend-dot" style="background:#72a8d8"></span><span>'+esc(g.name)+'</span><span class="del-btn" onclick="event.stopPropagation();deleteGroup(\''+g.id+'\')" title="删除群聊" style="margin-left:auto;font-size:0.7rem;cursor:pointer;opacity:0.5">✕</span></div>';
+      return '<div class="friend-item'+(activeFriendId===g.id?' active':'')+'" onclick="selectGroup(\''+g.id+'\')"><span class="friend-dot" style="background:var(--accent-light)"></span><span>'+esc(g.name)+'</span><span class="del-btn" onclick="event.stopPropagation();deleteGroup(\''+g.id+'\')" title="删除群聊" style="margin-left:auto;font-size:var(--fs-meta);cursor:pointer;opacity:0.5">✕</span></div>';
     }).join('');
   }
 }
@@ -2183,7 +2183,7 @@ function _renderGroupRolePicker(){
   const list=document.getElementById('group-api-list');
   if(!list)return;
   const available=apiConfigs.filter(a=>_roleMatchesSearch(a,_groupRoleSearch));
-  list.innerHTML=available.length?available.map(a=>'<div class="group-api-item" data-id="'+a.id+'" onclick="_toggleGroupMember(this)"><input type="checkbox" tabindex="-1"><span>'+esc(a.nickname||a.model||'AI')+'</span><span class="group-order-badge" style="display:none;margin-left:auto;font-size:0.62rem;opacity:0.6;min-width:16px;text-align:center"></span></div>').join(''):'<div class="group-role-empty">没有匹配的角色</div>';
+  list.innerHTML=available.length?available.map(a=>'<div class="group-api-item" data-id="'+a.id+'" onclick="_toggleGroupMember(this)"><input type="checkbox" tabindex="-1"><span>'+esc(a.nickname||a.model||'AI')+'</span><span class="group-order-badge" style="display:none;margin-left:auto;font-size:var(--fs-meta);opacity:0.6;min-width:16px;text-align:center"></span></div>').join(''):'<div class="group-role-empty">没有匹配的角色</div>';
   document.querySelectorAll('#group-api-list .group-api-item').forEach(item=>{
     const selected=_groupSelectOrder.indexOf(item.dataset.id)>=0;
     item.classList.toggle('selected',selected);
@@ -2223,7 +2223,7 @@ function _renderGroupMentionList(){
   list.innerHTML=sel.map(id=>{
     const a=apiConfigs.find(x=>x.id===id);
     const on=_groupMentionOnly.has(id);
-    return '<div class="group-api-item'+(on?' selected':'')+'" data-mid="'+id+'" onclick="_toggleGroupMentionOnly(this)"><input type="checkbox" tabindex="-1"'+(on?' checked':'')+'><span>@ '+esc(a?(a.nickname||a.model||'AI'):'AI')+'</span><span style="margin-left:auto;font-size:0.62rem;opacity:0.55">静默</span></div>';
+    return '<div class="group-api-item'+(on?' selected':'')+'" data-mid="'+id+'" onclick="_toggleGroupMentionOnly(this)"><input type="checkbox" tabindex="-1"'+(on?' checked':'')+'><span>@ '+esc(a?(a.nickname||a.model||'AI'):'AI')+'</span><span style="margin-left:auto;font-size:var(--fs-meta);opacity:0.55">静默</span></div>';
   }).join('');
 }
 function _toggleGroupMentionOnly(el){
@@ -2818,7 +2818,7 @@ async function selectGroup(gid){
   const container=document.getElementById('chat-full-messages');
   if(!gMsgs.length){
     const memberNames=group.members.filter(m=>m.status!=='removed').map(m=>{const c=apiConfigs.find(a=>a.id===m.characterId);if(c){const nm=esc(c.nickname||c.model);return m.status==='muted'?nm+'（静默）':nm}const ac=archivedConfigs.find(a=>a.id===m.characterId);if(ac)return '<span style="opacity:0.5">'+esc(ac.nickname||ac.model)+'（已归档）</span>';return '?'}).join('、');
-    container.innerHTML='<div class="chat-msg system">群聊 "'+esc(group.name)+'"<br><span style="font-size:0.68rem">成员：'+memberNames+'</span></div>';
+    container.innerHTML='<div class="chat-msg system">群聊 "'+esc(group.name)+'"<br><span style="font-size:var(--fs-meta)">成员：'+memberNames+'</span></div>';
   }else{
     _renderAllChat(container,gMsgs,true);
   }
@@ -2986,7 +2986,7 @@ function exitChatArchive(quiet){
 async function renderArchFriendsList(){
   await loadApiConfigs();
   const c=document.getElementById('friends-list');if(!c)return;
-  if(!archivedConfigs.length){c.innerHTML='<div style="font-size:0.72rem;color:var(--text-muted);padding:8px">暂无离线好友</div>';return}
+  if(!archivedConfigs.length){c.innerHTML='<div style="font-size:var(--fs-meta);color:var(--content-muted);padding:8px">暂无离线好友</div>';return}
   const allThreads=await (async()=>{try{return await dbGetAll('chatThreads')}catch(e){return[]}})();
   let html='';
   for(const a of archivedConfigs){

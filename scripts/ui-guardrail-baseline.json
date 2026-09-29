@@ -1,0 +1,406 @@
+{
+  "generatedAt": "2026-09-29T01:30:25.348Z",
+  "note": "Frozen by scripts/ui-guardrail.js update. Known failures are historical debt (UI-VISUAL-MIGRATION-AUDIT.md §8.2); never add new ones.",
+  "structure": {
+    "knownFailures": [
+      "encoding.bom.assets\\js\\autonomy-core.js",
+      "encoding.bom.assets\\js\\composite-recovery-plan.js",
+      "encoding.bom.assets\\js\\economy-configuration-core.js",
+      "encoding.bom.assets\\js\\economy-shell-core.js",
+      "encoding.bom.assets\\js\\economy-shell.js",
+      "encoding.bom.assets\\js\\home-node-client.js",
+      "encoding.bom.assets\\js\\recovery-apply-executor.js",
+      "encoding.bom.assets\\js\\recovery-c3-5-reconstruction.js",
+      "encoding.bom.assets\\js\\recovery-engine.js",
+      "encoding.bom.assets\\js\\recovery-first-boot.js",
+      "encoding.bom.assets\\js\\recovery-production-adapter.js",
+      "encoding.bom.assets\\js\\recovery-shell.js",
+      "encoding.bom.assets\\js\\recovery-source-manifest.js",
+      "encoding.bom.assets\\js\\recovery-ui.js",
+      "encoding.bom.assets\\js\\voicebox-profile-manager.js",
+      "imageRouterSettings.statesCredentialOrigin"
+    ]
+  },
+  "kpi": {
+    "files": {
+      "assets/css/activity.css": {
+        "gradient": 2,
+        "backdropFilter": 0,
+        "bgRgba": 0,
+        "bgHex": 5,
+        "smallFont": 0,
+        "bigRadius": 0,
+        "important": 0,
+        "rawHex": 9,
+        "violet": 0
+      },
+      "assets/css/api-onboarding.css": {
+        "gradient": 0,
+        "backdropFilter": 2,
+        "bgRgba": 0,
+        "bgHex": 0,
+        "smallFont": 0,
+        "bigRadius": 0,
+        "important": 0,
+        "rawHex": 0,
+        "violet": 0
+      },
+      "assets/css/bridge.css": {
+        "gradient": 0,
+        "backdropFilter": 2,
+        "bgRgba": 0,
+        "bgHex": 0,
+        "smallFont": 0,
+        "bigRadius": 0,
+        "important": 0,
+        "rawHex": 0,
+        "violet": 0
+      },
+      "assets/css/calendar.css": {
+        "gradient": 7,
+        "backdropFilter": 6,
+        "bgRgba": 0,
+        "bgHex": 0,
+        "smallFont": 0,
+        "bigRadius": 0,
+        "important": 4,
+        "rawHex": 0,
+        "violet": 0
+      },
+      "assets/css/core.css": {
+        "gradient": 15,
+        "backdropFilter": 8,
+        "bgRgba": 12,
+        "bgHex": 2,
+        "smallFont": 2,
+        "bigRadius": 0,
+        "important": 12,
+        "rawHex": 48,
+        "violet": 0
+      },
+      "assets/css/core/about.css": {
+        "gradient": 0,
+        "backdropFilter": 2,
+        "bgRgba": 0,
+        "bgHex": 0,
+        "smallFont": 0,
+        "bigRadius": 0,
+        "important": 1,
+        "rawHex": 0,
+        "violet": 0
+      },
+      "assets/css/core/api-components.css": {
+        "gradient": 1,
+        "backdropFilter": 2,
+        "bgRgba": 0,
+        "bgHex": 0,
+        "smallFont": 0,
+        "bigRadius": 0,
+        "important": 1,
+        "rawHex": 0,
+        "violet": 0
+      },
+      "assets/css/core/archive-active.css": {
+        "gradient": 8,
+        "backdropFilter": 4,
+        "bgRgba": 0,
+        "bgHex": 0,
+        "smallFont": 0,
+        "bigRadius": 1,
+        "important": 2,
+        "rawHex": 6,
+        "violet": 0
+      },
+      "assets/css/core/blog.css": {
+        "gradient": 0,
+        "backdropFilter": 0,
+        "bgRgba": 0,
+        "bgHex": 0,
+        "smallFont": 0,
+        "bigRadius": 0,
+        "important": 0,
+        "rawHex": 0,
+        "violet": 0
+      },
+      "assets/css/core/chat-shell.css": {
+        "gradient": 0,
+        "backdropFilter": 0,
+        "bgRgba": 0,
+        "bgHex": 0,
+        "smallFont": 0,
+        "bigRadius": 0,
+        "important": 0,
+        "rawHex": 0,
+        "violet": 0
+      },
+      "assets/css/core/chat.css": {
+        "gradient": 17,
+        "backdropFilter": 14,
+        "bgRgba": 11,
+        "bgHex": 0,
+        "smallFont": 0,
+        "bigRadius": 12,
+        "important": 16,
+        "rawHex": 31,
+        "violet": 0
+      },
+      "assets/css/core/letters.css": {
+        "gradient": 6,
+        "backdropFilter": 2,
+        "bgRgba": 0,
+        "bgHex": 0,
+        "smallFont": 2,
+        "bigRadius": 0,
+        "important": 0,
+        "rawHex": 0,
+        "violet": 0
+      },
+      "assets/css/core/memory.css": {
+        "gradient": 118,
+        "backdropFilter": 14,
+        "bgRgba": 0,
+        "bgHex": 0,
+        "smallFont": 0,
+        "bigRadius": 2,
+        "important": 0,
+        "rawHex": 8,
+        "violet": 0
+      },
+      "assets/css/core/middle-brain-direct.css": {
+        "gradient": 1,
+        "backdropFilter": 4,
+        "bgRgba": 1,
+        "bgHex": 0,
+        "smallFont": 6,
+        "bigRadius": 2,
+        "important": 1,
+        "rawHex": 1,
+        "violet": 0
+      },
+      "assets/css/core/pages.css": {
+        "gradient": 2,
+        "backdropFilter": 0,
+        "bgRgba": 0,
+        "bgHex": 0,
+        "smallFont": 0,
+        "bigRadius": 0,
+        "important": 9,
+        "rawHex": 8,
+        "violet": 0
+      },
+      "assets/css/core/role-dm.css": {
+        "gradient": 0,
+        "backdropFilter": 1,
+        "bgRgba": 0,
+        "bgHex": 0,
+        "smallFont": 0,
+        "bigRadius": 0,
+        "important": 0,
+        "rawHex": 0,
+        "violet": 0
+      },
+      "assets/css/core/widgets.css": {
+        "gradient": 13,
+        "backdropFilter": 18,
+        "bgRgba": 7,
+        "bgHex": 1,
+        "smallFont": 2,
+        "bigRadius": 1,
+        "important": 0,
+        "rawHex": 13,
+        "violet": 0
+      },
+      "assets/css/core/workspace.css": {
+        "gradient": 3,
+        "backdropFilter": 8,
+        "bgRgba": 0,
+        "bgHex": 3,
+        "smallFont": 0,
+        "bigRadius": 0,
+        "important": 0,
+        "rawHex": 3,
+        "violet": 0
+      },
+      "assets/css/diagnostics.css": {
+        "gradient": 0,
+        "backdropFilter": 0,
+        "bgRgba": 0,
+        "bgHex": 0,
+        "smallFont": 0,
+        "bigRadius": 0,
+        "important": 0,
+        "rawHex": 0,
+        "violet": 0
+      },
+      "assets/css/economy-approval.css": {
+        "gradient": 3,
+        "backdropFilter": 4,
+        "bgRgba": 0,
+        "bgHex": 0,
+        "smallFont": 0,
+        "bigRadius": 0,
+        "important": 1,
+        "rawHex": 0,
+        "violet": 0
+      },
+      "assets/css/economy-configuration.css": {
+        "gradient": 6,
+        "backdropFilter": 2,
+        "bgRgba": 0,
+        "bgHex": 0,
+        "smallFont": 0,
+        "bigRadius": 0,
+        "important": 0,
+        "rawHex": 0,
+        "violet": 0
+      },
+      "assets/css/economy-shell.css": {
+        "gradient": 9,
+        "backdropFilter": 2,
+        "bgRgba": 0,
+        "bgHex": 0,
+        "smallFont": 0,
+        "bigRadius": 0,
+        "important": 0,
+        "rawHex": 0,
+        "violet": 0
+      },
+      "assets/css/guide-beginner.css": {
+        "gradient": 0,
+        "backdropFilter": 0,
+        "bgRgba": 0,
+        "bgHex": 0,
+        "smallFont": 0,
+        "bigRadius": 0,
+        "important": 0,
+        "rawHex": 0,
+        "violet": 0
+      },
+      "assets/css/home-workspace.css": {
+        "gradient": 1,
+        "backdropFilter": 0,
+        "bgRgba": 1,
+        "bgHex": 0,
+        "smallFont": 0,
+        "bigRadius": 0,
+        "important": 0,
+        "rawHex": 0,
+        "violet": 0
+      },
+      "assets/css/local-first.css": {
+        "gradient": 1,
+        "backdropFilter": 2,
+        "bgRgba": 0,
+        "bgHex": 0,
+        "smallFont": 0,
+        "bigRadius": 0,
+        "important": 7,
+        "rawHex": 0,
+        "violet": 0
+      },
+      "assets/css/local-vault.css": {
+        "gradient": 1,
+        "backdropFilter": 2,
+        "bgRgba": 0,
+        "bgHex": 0,
+        "smallFont": 0,
+        "bigRadius": 0,
+        "important": 0,
+        "rawHex": 0,
+        "violet": 0
+      },
+      "assets/css/moments.css": {
+        "gradient": 0,
+        "backdropFilter": 0,
+        "bgRgba": 0,
+        "bgHex": 0,
+        "smallFont": 0,
+        "bigRadius": 0,
+        "important": 1,
+        "rawHex": 0,
+        "violet": 0
+      },
+      "assets/css/navigation-shell.css": {
+        "gradient": 0,
+        "backdropFilter": 2,
+        "bgRgba": 0,
+        "bgHex": 0,
+        "smallFont": 0,
+        "bigRadius": 0,
+        "important": 1,
+        "rawHex": 0,
+        "violet": 0
+      },
+      "assets/css/packaging-center.css": {
+        "gradient": 0,
+        "backdropFilter": 4,
+        "bgRgba": 0,
+        "bgHex": 0,
+        "smallFont": 0,
+        "bigRadius": 0,
+        "important": 1,
+        "rawHex": 0,
+        "violet": 0
+      },
+      "assets/css/setup-wizard.css": {
+        "gradient": 0,
+        "backdropFilter": 2,
+        "bgRgba": 0,
+        "bgHex": 0,
+        "smallFont": 0,
+        "bigRadius": 0,
+        "important": 0,
+        "rawHex": 0,
+        "violet": 0
+      },
+      "assets/css/social.css": {
+        "gradient": 0,
+        "backdropFilter": 0,
+        "bgRgba": 0,
+        "bgHex": 0,
+        "smallFont": 0,
+        "bigRadius": 0,
+        "important": 1,
+        "rawHex": 0,
+        "violet": 0
+      },
+      "assets/css/update-card.css": {
+        "gradient": 0,
+        "backdropFilter": 0,
+        "bgRgba": 0,
+        "bgHex": 0,
+        "smallFont": 0,
+        "bigRadius": 0,
+        "important": 1,
+        "rawHex": 0,
+        "violet": 0
+      },
+      "assets/css/voice-call.css": {
+        "gradient": 1,
+        "backdropFilter": 2,
+        "bgRgba": 0,
+        "bgHex": 0,
+        "smallFont": 0,
+        "bigRadius": 0,
+        "important": 0,
+        "rawHex": 0,
+        "violet": 0
+      }
+    },
+    "totals": {
+      "gradient": 215,
+      "backdropFilter": 109,
+      "bgRgba": 32,
+      "bgHex": 11,
+      "smallFont": 12,
+      "bigRadius": 18,
+      "important": 59,
+      "rawHex": 127,
+      "violet": 0
+    }
+  },
+  "inline": {
+    "static": 190,
+    "total": 458
+  }
+}

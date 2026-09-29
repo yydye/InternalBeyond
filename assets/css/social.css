@@ -4,24 +4,22 @@
    深色（body.theme-infernal）自动随变量成立，不建第三套主题。 */
 
 #page-moments{max-width:1180px;margin:0 auto;padding-bottom:max(48px,env(safe-area-inset-bottom))}
-#page-moments [hidden]{display:none !important}
+#page-moments [hidden],.net-overlay[hidden],.net-hidden,.net-avi-hidden{display:none!important}
 
 /* ── 站点栏 ── */
 .net-sitebar{display:flex;align-items:center;gap:var(--space-4);flex-wrap:wrap;padding:var(--space-3) 0 var(--space-3);border-bottom:1px solid var(--border-soft)}
 .net-brand{font-size:1.35rem;font-weight:700;letter-spacing:.02em;color:var(--content-primary);white-space:nowrap}
 .net-site-actions{display:flex;align-items:center;gap:var(--space-2);margin-left:auto;flex:1 1 auto;justify-content:flex-end;min-width:0}
-.net-search{flex:0 1 260px;min-width:140px;padding:8px 14px;border-radius:999px;border:1px solid var(--border-soft);background:var(--surface-input);color:var(--content-primary);font-size:13px;outline:none}
-.net-search:focus{border-color:var(--focus-ring)}
+.net-search{flex:0 1 260px;min-width:140px;padding:8px 14px;border-radius:var(--radius-control);border:1px solid var(--border-soft);background:var(--surface-input);color:var(--content-primary);font-size:13px;outline:none}
+.net-search:focus{border-color:var(--focus-ring);box-shadow:0 0 0 2px color-mix(in srgb,var(--focus-ring) 16%,transparent)}
 .net-tool{padding:7px 14px;font-size:12.5px;white-space:nowrap}
 
 /* ── 页签 ── */
 .net-tabs{display:flex;gap:var(--space-2);padding:var(--space-3) 0 var(--space-3);border-bottom:1px solid var(--border-soft)}
-.net-tab{border:none;background:none;cursor:pointer;font-size:14.5px;font-weight:600;color:var(--content-muted);padding:8px 18px;border-radius:999px;transition:color var(--motion-fast) ease,background var(--motion-fast) ease}
+.net-tab{border:none;background:none;cursor:pointer;font-size:14.5px;font-weight:600;color:var(--content-muted);padding:8px 18px;border-radius:var(--radius-control);transition:color var(--motion-fast) ease,background var(--motion-fast) ease}
 .net-tab:hover{color:var(--content-primary);background:var(--surface-hover)}
 .net-tab.is-active{color:var(--content-primary);background:var(--surface-card);border:1px solid var(--border-soft);box-shadow:var(--shadow-card)}
 
-.net-hidden{display:none !important}
-.net-avi-hidden{display:none !important}
 .net-mini{padding:5px 12px;font-size:12px}
 
 /* ── 双栏布局 ── */
@@ -34,7 +32,7 @@
 .net-compose-row{display:flex;gap:var(--space-3);align-items:flex-start;flex-wrap:wrap;margin-bottom:var(--space-3)}
 .net-compose-row:last-of-type{align-items:center}
 .net-compose-text{flex:1 1 auto;width:100%;min-width:0;min-height:96px;padding:12px 14px;font-size:14px;line-height:1.65;border-radius:var(--radius-control);border:1px solid var(--border-soft);background:var(--surface-input);color:var(--content-primary);outline:none;resize:vertical;font-family:inherit;box-sizing:border-box}
-.net-compose-text:focus{border-color:var(--focus-ring)}
+.net-compose-text:focus{border-color:var(--focus-ring);box-shadow:0 0 0 2px color-mix(in srgb,var(--focus-ring) 16%,transparent)}
 .net-compose-select{padding:7px 10px;font-size:12.5px;min-width:130px;border-radius:var(--radius-control);border:1px solid var(--border-soft);background:var(--surface-input);color:var(--content-primary);outline:none}
 #mom-compose-imgs{margin-top:var(--space-2);max-width:100%}
 
@@ -57,8 +55,8 @@
 .net-card-name{font-size:14.5px;font-weight:700;color:var(--content-primary);background:none;border:none;padding:0;cursor:pointer;text-align:left;font-family:inherit}
 .net-card-name:hover{text-decoration:underline}
 .net-card-handle{font-size:12px;color:var(--content-muted)}
-.net-card-time{flex-shrink:0;font-size:11.5px;color:var(--content-muted);margin-top:2px}
-.net-card-tag{flex-shrink:0;font-size:10.5px;color:var(--content-muted);border:1px solid var(--border-soft);border-radius:8px;padding:1px 7px;line-height:1.5}
+.net-card-time{flex-shrink:0;font-size:var(--fs-meta);color:var(--content-muted);margin-top:2px}
+.net-card-tag{flex-shrink:0;font-size:var(--fs-meta);color:var(--content-muted);border:1px solid var(--border-soft);border-radius:var(--radius-control);padding:1px 7px;line-height:1.5}
 .net-card-body{padding:8px 0 2px;font-size:14.5px;line-height:1.75;color:var(--content-primary);word-break:break-word;white-space:pre-wrap}
 .net-card-body p{margin:0 0 6px}
 .net-card-body p:last-child{margin-bottom:0}
@@ -83,9 +81,9 @@
 .net-actions{display:flex;gap:var(--space-5);margin-top:var(--space-3);align-items:center}
 .net-action{border:none;background:none;cursor:pointer;font-size:12.5px;color:var(--content-muted);padding:3px 6px;border-radius:8px;transition:color var(--motion-fast) ease,background var(--motion-fast) ease;display:inline-flex;align-items:center;gap:4px}
 .net-action:hover{color:var(--content-primary);background:var(--surface-hover)}
-.net-action.is-liked{color:#e0565d}
+.net-action.is-liked{color:var(--status-danger)}
 .net-action.net-del{margin-left:auto;color:var(--content-muted)}
-.net-action.net-del:hover{color:#e0565d}
+.net-action.net-del:hover{color:var(--status-danger)}
 
 /* ── 卡片内评论预览 ── */
 .net-comments{margin-top:var(--space-3);background:var(--surface-card);border:1px solid var(--border-soft);border-radius:var(--radius-card);padding:var(--space-3);display:flex;flex-direction:column;gap:8px}
@@ -93,7 +91,7 @@
 .net-comment-row:hover .net-comment-text{text-decoration:underline}
 .net-comment-name{font-weight:700;color:var(--content-primary)}
 .net-comment-text{color:var(--content-primary);word-break:break-word}
-.net-comment-meta{font-size:10.5px;color:var(--content-muted);flex-shrink:0}
+.net-comment-meta{font-size:var(--fs-meta);color:var(--content-muted);flex-shrink:0}
 .net-thread-link{margin-top:2px;font-size:12px;color:var(--accent-light);background:none;border:none;padding:2px 0;cursor:pointer;text-align:left;font-family:inherit}
 .net-thread-link:hover{text-decoration:underline}
 
@@ -109,8 +107,8 @@
 .net-friend-info{flex:1;min-width:0}
 .net-friend-name{font-size:13px;font-weight:700;color:var(--content-primary);background:none;border:none;padding:0;cursor:pointer;font-family:inherit}
 .net-friend-name:hover{text-decoration:underline}
-.net-friend-handle{font-size:11px;color:var(--content-muted)}
-.net-follow-btn{flex-shrink:0;border:1px solid var(--border-soft);background:none;color:var(--content-secondary);border-radius:999px;padding:4px 12px;font-size:11.5px;cursor:pointer;transition:all var(--motion-fast) ease;font-family:inherit}
+.net-friend-handle{font-size:var(--fs-meta);color:var(--content-muted)}
+.net-follow-btn{flex-shrink:0;border:1px solid var(--border-soft);background:none;color:var(--content-secondary);border-radius:var(--radius-control);padding:4px 12px;font-size:var(--fs-meta);cursor:pointer;transition:all var(--motion-fast) ease;font-family:inherit}
 .net-follow-btn:hover{border-color:var(--focus-ring)}
 .net-follow-btn.is-following{background:color-mix(in srgb,var(--accent) 14%,var(--surface-card));border-color:color-mix(in srgb,var(--accent) 46%,var(--border-soft));color:var(--content-primary)}
 
@@ -118,7 +116,7 @@
 .net-friends-card{padding:var(--space-5)}
 .net-friends-head{display:flex;align-items:center;justify-content:space-between;gap:var(--space-3);flex-wrap:wrap;margin-bottom:var(--space-4)}
 .net-friends-filter{display:flex;gap:6px}
-.net-chip{border:1px solid var(--border-soft);background:none;color:var(--content-muted);border-radius:999px;padding:5px 14px;font-size:12px;cursor:pointer;font-family:inherit}
+.net-chip{border:1px solid var(--border-soft);background:none;color:var(--content-muted);border-radius:var(--radius-control);padding:5px 14px;font-size:12px;cursor:pointer;font-family:inherit}
 .net-chip.is-active{color:var(--content-primary);background:var(--surface-card);border-color:var(--border-strong)}
 .net-friends-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:var(--space-4)}
 .net-friend-card{padding:var(--space-4);border:1px solid var(--border-soft);border-radius:var(--radius-card);background:var(--surface-card);display:flex;flex-direction:column;gap:8px;transition:border-color var(--motion-fast) ease,box-shadow var(--motion-fast) ease}
@@ -133,8 +131,8 @@
 .net-profile-outer{max-width:760px;margin:0 auto}
 .net-profile{padding:0;overflow:hidden;margin-bottom:var(--space-3)}
 .net-profile-banner{height:240px;background-size:cover;background-position:center;position:relative}
-.net-profile-banner.is-empty{background:linear-gradient(135deg,color-mix(in srgb,var(--accent) 55%,var(--surface-panel-strong)),color-mix(in srgb,var(--accent-light) 30%,var(--surface-panel-strong)));display:flex;align-items:center;justify-content:center}
-.net-profile-banner-letter{font-size:88px;font-weight:800;color:rgba(255,255,255,.4);user-select:none}
+.net-profile-banner.is-empty{background:var(--surface-pressed);display:flex;align-items:center;justify-content:center}
+.net-profile-banner-letter{font-size:88px;font-weight:800;color:color-mix(in srgb,var(--white) 45%,transparent);user-select:none}
 .net-profile-head{display:flex;gap:var(--space-4);padding:0 var(--space-5) var(--space-4);flex-wrap:wrap}
 .net-profile-avatar{width:104px;height:104px;flex-shrink:0;border-radius:50%;overflow:hidden;background:var(--surface-pressed);color:var(--content-secondary);display:flex;align-items:center;justify-content:center;font-size:38px;font-weight:800;border:5px solid var(--surface-panel-strong);margin-top:-52px;box-shadow:var(--shadow-card);position:relative;z-index:2}
 .net-profile-avatar img{width:100%;height:100%;object-fit:cover;display:block}
@@ -157,8 +155,7 @@
 .net-pf-empty{padding:40px 16px;text-align:center;color:var(--content-muted);font-size:13px}
 
 /* ── 讨论串 ── */
-.net-overlay{position:fixed;inset:0;z-index:300;background:rgba(10,20,40,.5);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);display:flex;align-items:flex-start;justify-content:center;padding:max(24px,4vh) 16px 24px;overflow:auto}
-.net-overlay[hidden]{display:none !important}
+.net-overlay{position:fixed;inset:0;z-index:300;background:var(--surface-dialog-scrim);display:flex;align-items:flex-start;justify-content:center;padding:max(24px,4vh) 16px 24px;overflow:auto}
 .net-dialog{width:100%;max-width:620px;border-radius:var(--radius-panel);box-shadow:var(--shadow-panel);padding:var(--space-4);display:flex;flex-direction:column;gap:var(--space-3);max-height:calc(100vh - 64px)}
 .net-dialog-head{display:flex;align-items:center;justify-content:space-between;gap:var(--space-2)}
 .net-icon-btn{border:none;background:var(--surface-hover);color:var(--content-secondary);width:30px;height:30px;border-radius:50%;cursor:pointer;font-size:13px;line-height:1;font-family:inherit}
@@ -173,26 +170,26 @@
 .net-cmt.depth-1{margin-left:0}
 .net-cmt.depth-2{margin-left:0}
 .net-cmt.depth-3{margin-left:0}
-.net-cmt .net-avatar{width:28px;height:28px;font-size:11px;cursor:default}
+.net-cmt .net-avatar{width:28px;height:28px;font-size:var(--fs-meta);cursor:default}
 .net-cmt-main{flex:1;min-width:0;background:var(--surface-card);border:1px solid var(--border-soft);border-radius:var(--radius-control);padding:6px 10px}
 .net-cmt-name{font-weight:700;color:var(--content-primary);font-size:12.5px;margin-right:4px}
 .net-cmt-text{color:var(--content-secondary);word-break:break-word}
 .net-cmt-after{display:flex;gap:10px;align-items:center;margin-top:3px}
-.net-cmt-time{font-size:10.5px;color:var(--content-muted)}
-.net-cmt-act{font-size:11px;color:var(--accent-light);background:none;border:none;padding:0;cursor:pointer;font-family:inherit}
+.net-cmt-time{font-size:var(--fs-meta);color:var(--content-muted)}
+.net-cmt-act{font-size:var(--fs-meta);color:var(--accent-light);background:none;border:none;padding:0;cursor:pointer;font-family:inherit}
 .net-cmt-act:hover{text-decoration:underline}
-.net-cmt-del{font-size:11px;color:var(--content-muted);background:none;border:none;padding:0;cursor:pointer;font-family:inherit}
-.net-cmt-del:hover{color:#e0565d}
+.net-cmt-del{font-size:var(--fs-meta);color:var(--content-muted);background:none;border:none;padding:0;cursor:pointer;font-family:inherit}
+.net-cmt-del:hover{color:var(--status-danger)}
 .net-thread-reply{border-top:1px solid var(--border-soft);padding-top:var(--space-3)}
-.net-thread-reply-target{font-size:11.5px;color:var(--content-muted);min-height:16px;margin-bottom:6px}
+.net-thread-reply-target{font-size:var(--fs-meta);color:var(--content-muted);min-height:16px;margin-bottom:6px}
 .net-thread-reply-row{display:flex;gap:var(--space-2);align-items:center}
-.net-thread-reply-row input{flex:1;min-width:0;padding:9px 12px;font-size:13px;border-radius:999px;border:1px solid var(--border-soft);background:var(--surface-input);color:var(--content-primary);outline:none}
-.net-thread-reply-row input:focus{border-color:var(--focus-ring)}
+.net-thread-reply-row input{flex:1;min-width:0;padding:9px 12px;font-size:13px;border-radius:var(--radius-control);border:1px solid var(--border-soft);background:var(--surface-input);color:var(--content-primary);outline:none}
+.net-thread-reply-row input:focus{border-color:var(--focus-ring);box-shadow:0 0 0 2px color-mix(in srgb,var(--focus-ring) 16%,transparent)}
 
 /* ── 转发弹层 ── */
 .net-repost-original{padding:var(--space-3);border:1px solid var(--border-soft);background:var(--surface-card);border-radius:var(--radius-card);font-size:12.5px;line-height:1.7;color:var(--content-secondary);max-height:200px;overflow-y:auto}
 .net-repost-text{width:100%;min-height:88px;padding:10px 14px;font-size:14px;line-height:1.65;border-radius:var(--radius-control);border:1px solid var(--border-soft);background:var(--surface-input);color:var(--content-primary);outline:none;resize:vertical;font-family:inherit}
-.net-repost-text:focus{border-color:var(--focus-ring)}
+.net-repost-text:focus{border-color:var(--focus-ring);box-shadow:0 0 0 2px color-mix(in srgb,var(--focus-ring) 16%,transparent)}
 .net-dialog-actions{display:flex;justify-content:flex-end;gap:var(--space-2)}
 
 /* ── 设置折叠区 ── */
@@ -201,12 +198,12 @@
 .net-settings-summary::-webkit-details-marker{display:none}
 .net-settings-summary::before{content:'▸';color:var(--content-muted);font-size:12px;transition:transform var(--motion-fast) ease}
 .net-settings[open] .net-settings-summary::before{transform:rotate(90deg)}
-.net-settings-hint{font-size:11.5px;font-weight:400;color:var(--content-muted)}
+.net-settings-hint{font-size:var(--fs-meta);font-weight:400;color:var(--content-muted)}
 
 /* ── API 编辑器：社交身份区 ── */
 .api-soc-zone{display:flex;flex-direction:column;gap:8px;margin:6px 0 12px}
 .api-banner-preview{height:84px;border-radius:var(--radius-control);border:1px solid var(--border-soft);background-size:cover;background-position:center}
-.api-banner-preview.is-empty{background:var(--surface-input);background-image:linear-gradient(135deg,color-mix(in srgb,var(--accent) 18%,transparent),transparent);border-style:dashed}
+.api-banner-preview.is-empty{background:var(--surface-input);border-style:dashed}
 .api-banner-btns{display:flex;gap:8px;flex-wrap:wrap}
 
 /* ── 移动端 ── */
@@ -231,20 +228,20 @@
 }
 
 /* ── 支付授权设置卡（Phase 2C）：全部复用 API 设置类，零内联 style ── */
-.pay-auth-row{display:flex;align-items:flex-start;gap:8px;margin-bottom:8px;cursor:pointer;font-size:.82rem;color:var(--silver)}
+.pay-auth-row{display:flex;align-items:flex-start;gap:8px;margin-bottom:8px;cursor:pointer;font-size:.82rem;color:var(--content-secondary)}
 .pay-auth-rows{margin-bottom:12px}
-.pay-auth-status{font-size:.78rem;opacity:.78;margin:10px 0;padding:10px 12px;border:1px solid var(--glass-border);border-radius:8px;color:var(--light)}
+.pay-auth-status{font-size:.78rem;opacity:.78;margin:10px 0;padding:10px 12px;border:1px solid var(--border-soft);border-radius:var(--radius-control);color:var(--content-secondary)}
 .pay-auth-status b{font-weight:600}
-.mi-sub-hint{display:block;font-size:.72rem;opacity:.6;color:var(--text-secondary)}
+.mi-sub-hint{display:block;font-size:var(--fs-meta);opacity:.6;color:var(--content-secondary)}
 
 /* ── 3B 购物审核面板（Shopping Review）── */
-.sr-panel{position:fixed;right:18px;bottom:18px;z-index:1400;width:min(430px,92vw);padding:16px;border:1px solid var(--glass-border);border-radius:12px;background:var(--surface-panel);box-shadow:0 10px 34px rgba(0,0,0,.4);font-size:.85rem;color:var(--light)}
+.sr-panel{position:fixed;right:18px;bottom:18px;z-index:1400;width:min(430px,92vw);padding:16px;border:1px solid var(--border-soft);border-radius:var(--radius-card);background:var(--surface-panel);box-shadow:var(--glass-shadow-floating);font-size:.85rem;color:var(--content-secondary)}
 .sr-panel h4{margin:0 0 10px;font-size:1rem;font-weight:600}
 .sr-kv{display:flex;gap:8px;margin:4px 0;font-size:.82rem;line-height:1.5}
 .sr-kv .k{opacity:.6;min-width:64px;flex:none}
-.sr-url{display:block;font-size:.72rem;opacity:.65;word-break:break-all;margin-top:2px}
-.sr-reason{margin:10px 0;padding:8px 10px;border-top:1px solid var(--glass-border);border-bottom:1px solid var(--glass-border);font-size:.78rem;opacity:.88;line-height:1.7}
+.sr-url{display:block;font-size:var(--fs-meta);opacity:.65;word-break:break-all;margin-top:2px}
+.sr-reason{margin:10px 0;padding:8px 10px;border-top:1px solid var(--border-soft);border-bottom:1px solid var(--border-soft);font-size:.78rem;opacity:.88;line-height:1.7}
 .sr-reason b{display:block;margin-bottom:4px;font-weight:600}
 .sr-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}
 .sr-msg{font-size:.76rem;opacity:.8;margin-top:8px;min-height:1em}
-.sr-close{position:absolute;top:8px;right:12px;cursor:pointer;opacity:.6;background:none;border:none;color:var(--light);font-size:1rem;line-height:1}
+.sr-close{position:absolute;top:8px;right:12px;cursor:pointer;opacity:.6;background:none;border:none;color:var(--content-secondary);font-size:1rem;line-height:1}

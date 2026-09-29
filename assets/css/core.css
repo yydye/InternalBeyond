@@ -17,10 +17,22 @@
   --space-4:16px;
   --space-5:20px;
   --space-6:24px;
+  --space-8:32px;
+  /* Type scale — four steps; new UI should pick one of these instead of hand-tuned rem values. */
+  --fs-meta:.74rem;
+  --fs-body:.86rem;
+  --fs-h3:1.05rem;
+  --fs-h2:1.5rem;
   --surface-panel:rgba(248,252,255,.68);
   --surface-panel-strong:rgba(248,252,255,.82);
   --surface-card:rgba(250,253,255,.58);
   --surface-input:rgba(245,250,255,.62);
+  /* surface.chatBubble — P3.1 起聊天气泡唯一颜色来源（skill §5 canonical names） */
+  --surface-chat-bubble-bg:rgba(250,253,255,.62);
+  --surface-chat-bubble-bg-me:rgba(114,168,216,.22);
+  --surface-chat-bubble-border:rgba(200,225,248,.45);
+  --surface-chat-bubble-border-me:rgba(114,168,216,.40);
+  --surface-chat-bubble-fg:#1d2c44;
   --surface-hover:rgba(222,238,255,.72);
   --surface-pressed:rgba(205,226,248,.74);
   --border-soft:rgba(190,218,244,.44);
@@ -80,6 +92,10 @@
   --motion-normal:.35s;
   --layer-nav:100;
   --layer-floating-panel:9981;
+  /* surface.overlay / surface.dialog 遮罩（P1）——取值取自迁移前实测，仅来源令牌化 */
+  --surface-overlay-scrim:rgba(235,244,255,.32);
+  --surface-overlay-filter:blur(14px) saturate(1.1);
+  --surface-dialog-scrim:rgba(10,15,24,.46);
   --status-success:#6f9f83;
   --status-info:#5080b0;
   --status-warning:#b58a55;
@@ -96,6 +112,11 @@ body.theme-infernal{
   --surface-panel-strong:rgba(35,45,74,.92);
   --surface-card:rgba(155,180,218,.10);
   --surface-input:rgba(155,180,218,.075);
+  --surface-chat-bubble-bg:rgba(155,180,218,.10);
+  --surface-chat-bubble-bg-me:rgba(80,128,176,.25);
+  --surface-chat-bubble-border:rgba(165,188,230,.20);
+  --surface-chat-bubble-border-me:rgba(114,168,216,.45);
+  --surface-chat-bubble-fg:#e6eefc;
   --surface-hover:rgba(155,180,218,.16);
   --surface-pressed:rgba(155,180,218,.22);
   --border-soft:rgba(165,188,230,.20);
@@ -119,6 +140,8 @@ body.theme-infernal{
   --glass-shadow-elevated:0 18px 56px rgba(16,22,42,.28);
   --glass-shadow-floating:0 12px 32px rgba(6,12,28,.34);
   --glass-shadow-modal:0 28px 80px rgba(4,10,24,.46);
+  --surface-overlay-scrim:rgba(25,45,70,.16);
+  --surface-overlay-filter:blur(12px) saturate(1.1);
   --neo-highlight:rgba(255,255,255,.10);
   --neo-shadow:rgba(4,10,26,.42);
   --neo-inset-highlight:rgba(255,255,255,.06);
@@ -130,7 +153,9 @@ body.theme-infernal{
 /* Prevent text selection on navigation and home page */
 #navbar,#navbar *,#page-home .home-content,#page-home .home-content *{-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;user-select:none}
 html{font-size:16px;scroll-behavior:smooth;overflow-y:scroll}
-body{font-family:var(--font-ui);font-weight:300;background:var(--bg-deep);color:var(--text-primary);overflow-x:hidden;min-height:100vh}
+/* P4：body 文本改走 canonical token —— legacy --text-primary 是暗态原语，
+   浅色主题下会让「未显式声明颜色」的文本继承错误的蓝白值。 */
+body{font-family:var(--font-ui);font-weight:300;background:var(--bg-deep);color:var(--content-primary);overflow-x:hidden;min-height:100vh}
 .skip-link{position:fixed;left:18px;top:12px;z-index:100001;padding:8px 14px;border-radius:var(--radius-control);background:var(--surface-panel-strong);border:1px solid var(--border-strong);color:var(--content-primary);box-shadow:var(--shadow-card);transform:translateY(-160%);transition:transform var(--motion-fast) ease}
 .skip-link:focus{transform:translateY(0);outline:2px solid var(--focus-ring);outline-offset:2px}
 :where(button,[role="button"],a,input,textarea,select):focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}
@@ -139,8 +164,8 @@ body{font-family:var(--font-ui);font-weight:300;background:var(--bg-deep);color:
 .splash-loading-text{font-family:'Cormorant Garamond',serif;font-style:italic;font-size:20px;color:rgba(225,235,250,.85);letter-spacing:.15em;text-shadow:0 0 16px rgba(180,200,240,.25),0 1px 8px rgba(0,0,0,.4);animation:loadPulse 1.5s ease-in-out infinite}
 .u-native-check{width:auto!important;accent-color:var(--accent)}
 .form-check-row{display:flex;align-items:center;gap:8px;cursor:pointer}
-.field-note-inline{font-weight:400;opacity:.58;font-size:.72rem}
-.field-hint{font-size:.72rem;color:var(--content-muted);margin-top:4px;line-height:1.6}
+.field-note-inline{font-weight:400;opacity:.58;font-size:var(--fs-meta)}
+.field-hint{font-size:var(--fs-meta);color:var(--content-muted);margin-top:4px;line-height:1.6}
 .inline-code{background:var(--surface-card);border:1px solid var(--border-soft);padding:2px 8px;border-radius:6px;font-size:.82rem}
 .btn-danger{color:var(--status-danger)!important;border-color:color-mix(in srgb,var(--status-danger) 42%,transparent)!important}
 .btn-compact{padding:3px 14px!important;font-size:.75rem!important}
@@ -149,7 +174,7 @@ body{font-family:var(--font-ui);font-weight:300;background:var(--bg-deep);color:
 .u-mt-3{margin-top:var(--space-3)!important}
 .u-opacity-80{opacity:.8}
 .settings-description{font-size:.92rem;line-height:1.8;margin-bottom:14px;opacity:.85;font-weight:400}
-.section-meta{font-size:.82rem;color:var(--silver);font-style:normal;font-weight:400;opacity:.9}
+.section-meta{font-size:.82rem;color:var(--content-muted);font-style:normal;font-weight:400;opacity:.9}
 
 @media (prefers-reduced-motion:reduce){
   html{scroll-behavior:auto}
@@ -289,52 +314,26 @@ body.theme-infernal .bg-blur-active{filter:blur(22px) brightness(0.48) saturate(
   animation:splashDawn 58s ease-in-out infinite alternate}
 @keyframes splashDawn{0%{opacity:0.88;filter:brightness(1.0) saturate(1.03)}100%{opacity:1;filter:brightness(1.08) saturate(1.06)}}
 
-/* NAVIGATION — P10 Batch 2
-   导航不再是「一条有边框的白玻璃板」，而是一层上浓下淡、两端化开的面纱：
-   罩色取 ladder 的 elevated 档，只在标题与链接背后最实（正文行处约 0.47，
-   与原 0.45 的平铺底同量级，因此对比度没有回退），向下收到 ~0.31、两端收到 ~0.34。
-   没有描边、没有投影、没有发光；blur 只用 ladder 的 md 档（原 24px 为任意值）。
-   底部刻意留一层薄底而不是收干净：磨砂层的下边缘需要一点罩色压住，
-   否则滚动时正文会从模糊带的下沿「切」出来。 */
-#navbar{position:fixed;top:10px;left:28px;right:28px;z-index:var(--layer-nav);display:flex;align-items:center;justify-content:flex-start;gap:28px;
-  padding:0 22px;height:44px;border-radius:14px;border:0;box-shadow:none;
-  /* 底罩写成与子页同形的 radial-gradient（三停靠点、同位置），只是全透明：
-     这样 home → 子页切换时 background 仍可插值，不会突然跳一下。 */
-  background:radial-gradient(105% 165% at 50% -12%,transparent 0%,transparent 46%,transparent 100%);
-  backdrop-filter:var(--glass-filter-md);-webkit-backdrop-filter:var(--glass-filter-md);
-  transition:background 0.8s var(--transition),opacity 0.8s var(--transition),transform 0.8s var(--transition);
-  opacity:0;transform:translateY(-30px)}
-#navbar.visible{opacity:1;transform:translateY(0)}
+/* NAVIGATION — 单源权威（P1）：几何 / 表面 / 状态全部由 navigation-shell.css 持有。
+   core.css 只保留导航共用的控件基元（.nav-brand / .nav-btn / .theme-toggle /
+   .nav-user-*）；旧 44px 顶栏面纱与 home/subpage 颜色补丁已退役，主题差异改由
+   --content-* / --glass-bg-elevated 等语义 token 承担。 */
 .nav-brand{font-family:var(--font-display);font-style:normal;font-weight:300;font-size:1.1rem;letter-spacing:0.02em;
   cursor:pointer;transition:color 0.4s;display:flex;align-items:center;gap:6px;white-space:nowrap}
 .nav-brand:hover{opacity:0.8}
 #ghost-icon path,#ghost-icon line,#ghost-icon use,#ghost-icon g{transition:fill 1.2s ease,opacity 1.2s ease}
-.nav-links{display:flex;gap:26px;list-style:none}
-/* 链接状态只靠字色 + 一道 1px 下划线：hover 起线到 38%，active 实线到满。
-   不用发光、不用药丸底色，也不占布局（text-decoration 不参与排版）。 */
-.nav-links a{text-decoration:none;font-family:var(--font-display);font-size:0.92rem;font-weight:400;letter-spacing:0.08em;cursor:pointer;
-  transition:color 0.3s var(--transition),text-decoration-color 0.3s var(--transition)}
-.nav-links a:hover{text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:4px;text-decoration-color:color-mix(in srgb,currentColor 38%,transparent)}
-.nav-links a.active{text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:4px;text-decoration-color:currentColor}
-.nav-links a:focus-visible{outline:1px solid currentColor;outline-offset:4px;border-radius:3px}
-.nav-actions{display:flex;gap:8px;align-items:center;margin-left:auto}
 /* Nav user identity — avatar + name (display only) */
 .nav-user-id{display:flex;align-items:center;gap:5px;padding:2px 6px 2px 2px;border-radius:18px;border:none;background:none;flex-shrink:0}
-.nav-user-avatar{width:22px;height:22px;border-radius:50%;flex-shrink:0;overflow:hidden;background:rgba(175,195,228,0.15);border:1px solid rgba(175,195,228,0.25);display:flex;align-items:center;justify-content:center;font-size:0.55rem;font-weight:500;color:var(--text-muted)}
+.nav-user-avatar{width:22px;height:22px;border-radius:50%;flex-shrink:0;overflow:hidden;background:var(--glass-bg-ambient);border:1px solid var(--border-soft);display:flex;align-items:center;justify-content:center;font-size:var(--fs-meta);font-weight:500;color:var(--content-muted)}
 .nav-user-avatar img{width:100%;height:100%;object-fit:cover;display:block}
-.nav-user-name{font-family:'Noto Sans SC',sans-serif;font-size:0.74rem;font-weight:500;letter-spacing:0.01em;white-space:nowrap}
-#navbar:not(.on-subpage) .nav-user-name{color:#304870}
-#navbar:not(.on-subpage) .nav-user-avatar{border-color:rgba(50,70,90,0.3)}
-#navbar.on-subpage .nav-user-name{color:#bccae2}
-body:not(.theme-infernal) #navbar.on-subpage .nav-user-name{color:#1a3262}
-body:not(.theme-infernal) #navbar.on-subpage .nav-user-avatar{border-color:rgba(50,90,130,0.35)}
+.nav-user-name{font-family:var(--font-ui);font-size:var(--fs-meta);font-weight:500;letter-spacing:0.01em;white-space:nowrap}
 /* 导航里的小控件是「键」，不是玻璃面板 —— 唯一的 Neumorphism 2.0 落点：
    rest=neo-depth-sm / hover=neo-depth-md / active=neo-pressed，位移 1px，无缩放。
    描边由 currentColor 派生（首页深字→深边、暗色浅字→浅边），一行规则通吃四种底色；
    前面先给一条 --border-soft 兜底，color-mix 万一不被支持也不会丢边框。 */
 .nav-btn{padding:5px 13px;border-radius:18px;background:transparent;border:1px solid var(--border-soft);
   border-color:color-mix(in srgb,currentColor 34%,transparent);
-  font-size:0.65rem;font-weight:500;cursor:pointer;font-family:var(--font-ui);box-shadow:var(--neo-depth-sm);
+  font-size:var(--fs-meta);font-weight:500;cursor:pointer;font-family:var(--font-ui);box-shadow:var(--neo-depth-sm);
   transition:box-shadow var(--motion-fast) var(--transition),background var(--motion-fast) var(--transition),border-color var(--motion-fast) var(--transition),color var(--motion-fast) var(--transition)}
 .nav-btn:hover{background:var(--glass-bg-surface);border-color:color-mix(in srgb,currentColor 60%,transparent);box-shadow:var(--neo-depth-md)}
 .nav-btn:active{box-shadow:var(--neo-pressed);transform:translateY(1px)}
@@ -381,133 +380,28 @@ body:not(.theme-infernal) #navbar.on-subpage .nav-user-avatar{border-color:rgba(
 .ib-window-control:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}
 .ib-window-control[data-window-action="close"]:hover{color:#c94f5d;background:rgba(220,90,105,0.15);border-color:rgba(220,90,105,0.32)}
 .ib-window-control[data-window-action="close"]:active{background:rgba(220,90,105,0.24)}
-body:not(.theme-infernal) .ib-window-controls{color:#304870}
-body.theme-infernal .ib-window-controls{color:#bccae2}
+.ib-window-controls{color:var(--content-secondary)}
 
-/* Nav Home：首页两套主题都是浅雾底 → 一律深字。原有的白色发光已删。 */
-#navbar:not(.on-subpage) .nav-brand{color:#304870}
-#navbar:not(.on-subpage) .nav-links a{color:#364c74}
-#navbar:not(.on-subpage) .nav-links a:hover{color:#182852}
-#navbar:not(.on-subpage) .nav-links a.active{color:#182852}
-#navbar:not(.on-subpage) .nav-btn{color:#304870}
-#navbar:not(.on-subpage) .nav-brand svg{color:#304870}
-#navbar:not(.on-subpage) .theme-toggle{color:#304870}
-/* Nav Subpage：面纱罩色直接取 ladder 的 elevated 档 —— 浅色档是白雾、暗色档是深蓝雾，
-   同一行声明在两套主题下各自成立，因此不再需要按主题写两条背景。 */
-#navbar.on-subpage{background:radial-gradient(105% 165% at 50% -12%,
-  color-mix(in srgb,var(--glass-bg-elevated) 96%,transparent) 0%,
-  color-mix(in srgb,var(--glass-bg-elevated) 58%,transparent) 46%,
-  color-mix(in srgb,var(--glass-bg-elevated) 20%,transparent) 100%)}
-/* 暗色（Infernal）子页：浅字。hover / active 的 0 0 12px 光晕已删，状态只靠字色与下划线。 */
-#navbar.on-subpage .nav-brand{color:#dae5f5}
-#navbar.on-subpage .nav-links a{color:#bccae2}
-#navbar.on-subpage .nav-links a:hover{color:#eef2fa}
-#navbar.on-subpage .nav-links a.active{color:#eef2fa}
-#navbar.on-subpage .nav-btn{color:#bccae2}
-#navbar.on-subpage .nav-brand svg{color:#bccae2}
-#navbar.on-subpage .theme-toggle{color:#bccae2}
+/* 导航字色 / 表面 / 状态规则已并入 navigation-shell.css（P1 单源），此处不再保留。 */
 
-/* Internal theme: white/light-blue sub-page overlay & UI */
-body:not(.theme-infernal) .page-overlay.show{background:rgba(235,244,255,0.32);backdrop-filter:blur(14px) saturate(1.1);transition:background 3s ease,backdrop-filter 3s ease saturate(1.1);-webkit-backdrop-filter:blur(14px) saturate(1.1)}
+/* surface.overlay — 页面遮罩：主题差异只由 token 块承担（P1） */
+#page-overlay.show{background:var(--surface-overlay-scrim);backdrop-filter:var(--surface-overlay-filter);-webkit-backdrop-filter:var(--surface-overlay-filter);transition:background 3s var(--transition),backdrop-filter 3s var(--transition)}
 
-/* === Light mode: white text glow for readability === */
-body:not(.theme-infernal) .page.active,body:not(.theme-infernal) .page.active h2,body:not(.theme-infernal) .page.active h3,body:not(.theme-infernal) .page.active h4,body:not(.theme-infernal) .page.active p,body:not(.theme-infernal) .page.active span,body:not(.theme-infernal) .page.active label,body:not(.theme-infernal) .page.active div,body:not(.theme-infernal) .page.active button{text-shadow:0 0 8px rgba(255,255,255,0.4),0 0 18px rgba(255,255,255,0.25),0 0 32px rgba(255,255,255,0.1)}
-body:not(.theme-infernal) .modal h3,body:not(.theme-infernal) .modal label,body:not(.theme-infernal) .modal div{text-shadow:0 0 8px rgba(255,255,255,0.4),0 0 18px rgba(255,255,255,0.25),0 0 32px rgba(255,255,255,0.1)}
-body:not(.theme-infernal) .group-dialog h3,body:not(.theme-infernal) .group-dialog label,body:not(.theme-infernal) .group-dialog span{text-shadow:0 0 8px rgba(255,255,255,0.4),0 0 18px rgba(255,255,255,0.25),0 0 32px rgba(255,255,255,0.1)}
-body:not(.theme-infernal) #music-panel h4,body:not(.theme-infernal) #music-panel .now-playing,body:not(.theme-infernal) #music-panel .playlist-item,body:not(.theme-infernal) #music-panel .p-btn{text-shadow:0 0 8px rgba(255,255,255,0.4),0 0 18px rgba(255,255,255,0.25),0 0 32px rgba(255,255,255,0.1)}
-body:not(.theme-infernal) #chat-panel .chat-ai-name,body:not(.theme-infernal) #chat-panel .chat-msg,body:not(.theme-infernal) #chat-panel .cpf-item,body:not(.theme-infernal) #chat-panel .chat-typing{text-shadow:0 0 8px rgba(255,255,255,0.4),0 0 18px rgba(255,255,255,0.25),0 0 32px rgba(255,255,255,0.1)}
+/* 群聊对话框与 chat 面板自 P3.2 起由 token 表面承担对比度，不再依赖白色发光。 */
 /* 浮动控件（music-mini / dock 标签）的白色发光已删：Batch 2 起它们各自带 floating 玻璃底，
    对比度由底自己给，不靠光晕。 */
 
-/* === Light mode: brighten cards & buttons === */
-body:not(.theme-infernal) .glass-card{background:var(--surface-card);border-color:var(--border-soft);box-shadow:var(--shadow-card);color:var(--content-primary)}
-body:not(.theme-infernal) .glass-card:hover{border-color:var(--border-strong);box-shadow:var(--shadow-panel)}
 /* 浅色子页：背景罩已由 --glass-bg-elevated 的浅色档统一给出（见上），这里只留字色。
    发光全删；.nav-btn / .theme-toggle 的描边改由 currentColor 派生，不再按主题覆盖。 */
-body:not(.theme-infernal) #navbar.on-subpage .nav-brand{color:#1a3262}
-body:not(.theme-infernal) #navbar.on-subpage .nav-links a{color:#233e6c}
-body:not(.theme-infernal) #navbar.on-subpage .nav-links a:hover{color:#0a1e42}
-body:not(.theme-infernal) #navbar.on-subpage .nav-links a.active{color:#0a1e42}
-body:not(.theme-infernal) #navbar.on-subpage .nav-btn{color:#1a3262}
-body:not(.theme-infernal) #navbar.on-subpage .nav-brand svg{color:#1a3262}
-body:not(.theme-infernal) #navbar.on-subpage .theme-toggle{color:#1a3262}
-body:not(.theme-infernal) .page.active .post-card-title{color:#0f2045}
-body:not(.theme-infernal) .page.active .post-card-preview{color:#0a1e42}
-body:not(.theme-infernal) .page.active .post-card-meta{color:#2b487a;background-image:linear-gradient(90deg,rgba(50,100,160,0.22),transparent 60%)}
-body:not(.theme-infernal) .page.active .post-card-sub{color:#142e5e;opacity:1}
-body:not(.theme-infernal) .page.active .blog-header h2{color:#152c58}
-body:not(.theme-infernal) .page.active .blog-stats{color:#233e6c;opacity:1}
-body:not(.theme-infernal) .page.active .btn{color:var(--content-primary);border-color:var(--border-soft);background:var(--surface-card)}
-body:not(.theme-infernal) .page.active .btn:hover{background:var(--surface-hover)}
-body:not(.theme-infernal) .page.active .btn-primary{background:color-mix(in srgb,var(--accent) 18%,var(--surface-card));border-color:color-mix(in srgb,var(--accent) 46%,var(--border-soft))}
-body:not(.theme-infernal) .page.active .cat-tag{color:#1a3262;background:rgba(240,248,255,0.65);border-color:rgba(160,205,245,0.4)}
-body:not(.theme-infernal) .page.active .cat-tag:hover,body:not(.theme-infernal) .page.active .cat-tag.active{background:rgba(160,205,245,0.35);color:#0a1e42;border-color:rgba(90,160,215,0.5)}
-body:not(.theme-infernal) .page.active .api-section h3{color:#152c58}
-body:not(.theme-infernal) .page.active .api-section h3 span{color:#233e6c !important;opacity:1 !important}
-body:not(.theme-infernal) .page.active .api-form-group label{color:#233e6c}
-body:not(.theme-infernal) .page.active .api-form-group input,body:not(.theme-infernal) .page.active .api-form-group select,body:not(.theme-infernal) .page.active .api-form-group textarea{background:rgba(248,252,255,0.7);border-color:rgba(170,210,245,0.4);color:#1a3262}
-body:not(.theme-infernal) .page.active .letter-card-content{color:#0a1e42}
-body:not(.theme-infernal) .page.active .letter-card-meta{color:#2b487a;opacity:1}
-body:not(.theme-infernal) .page.active .post-view-title{color:#0f2045}
-body:not(.theme-infernal) .page.active .post-view-sub{color:#233e6c;opacity:1}
-body:not(.theme-infernal) .page.active .post-view-meta{color:#2b487a;opacity:1;border-bottom-color:rgba(220,235,250,0.55)}
-body:not(.theme-infernal) .page.active .post-view-content{color:#05132a}
-body:not(.theme-infernal) .page.active .about-info h2{color:#0f2045}
-body:not(.theme-infernal) .page.active .about-bio{color:#1a3262}
-body:not(.theme-infernal) .page.active .about-field-label{color:#233e6c;opacity:1}
-body:not(.theme-infernal) .page.active .about-field-value{color:#1a3262}
-body:not(.theme-infernal) .page.active .about-avatar-placeholder{color:#1a3262;opacity:1}
-body:not(.theme-infernal) .page.active .empty-state{color:#233e6c;opacity:1}
-body:not(.theme-infernal) #page-diy .module-intro-sub{color:rgba(40,85,145,0.85)}
-body:not(.theme-infernal) #page-diy .glass-card h3{color:#0a1e42 !important;text-shadow:0 0 10px rgba(255,255,255,0.5),0 0 18px rgba(255,255,255,0.25)}
-body:not(.theme-infernal) #page-diy .glass-card p,body:not(.theme-infernal) #page-diy .glass-card div{color:#1a3262}
-body:not(.theme-infernal) #page-diy .glass-card strong{color:#0f2045}
-body:not(.theme-infernal) #page-diy .glass-card code{background:rgba(200,225,250,0.35);color:#152c58}
-.ibtools-sw{display:flex;align-items:center;gap:var(--space-2);cursor:pointer;margin-bottom:var(--space-2);font-size:.82rem;color:var(--silver)}
+/* Blog/Letters/About 的浅色补丁自 P4 起退役：颜色由各文件 token 承担（此处曾覆盖 token）。 */
+/* API 页浅色补丁自 P6.1 起退役：api-components.css 已按 token 重写 */
+#page-diy .glass-card code{background:var(--glass-bg-ambient);color:var(--content-primary)}
+.ibtools-sw{display:flex;align-items:center;gap:var(--space-2);cursor:pointer;margin-bottom:var(--space-2);font-size:.82rem;color:var(--content-secondary)}
 .ibtools-sw.ibtools-sw-last{margin-bottom:14px}
-body:not(.theme-infernal) #page-diy .ibtools-sw{color:#1a3262 !important;text-shadow:0 0 8px rgba(255,255,255,0.4)}/* 任务1：internal 模式下开关文案加深 */
 
-body:not(.theme-infernal) .page.active .chat-full-header h2{color:#152c58}
-body:not(.theme-infernal) .page.active .chat-full-header{border-bottom-color:rgba(220,235,250,0.55)}
-body:not(.theme-infernal) .page.active .chat-sidebar{border-right-color:rgba(200,225,250,0.5)}
-body:not(.theme-infernal) .page.active .blog-comments-section{border-top-color:rgba(220,235,250,0.55)}
-body:not(.theme-infernal) .page.active .chat-input-area{border-top-color:rgba(200,225,250,0.5) !important}
-body:not(.theme-infernal) .page.active [style*="border-top:1px solid var(--glass-border)"]{border-top-color:rgba(200,225,250,0.5) !important}
-body:not(.theme-infernal) .page.active .chat-sidebar h4{color:#1a3262}
-body:not(.theme-infernal) .page.active .friend-item{color:#233e6c}
-body:not(.theme-infernal) .page.active .chat-msg.system{color:#2b487a}
-body:not(.theme-infernal) .page.active .chat-count{color:#2b487a}
-body:not(.theme-infernal) .page.active .chat-history-item{color:#233e6c}
-body:not(.theme-infernal) .page.active .chat-history-item strong{color:#0f2045 !important}
-body:not(.theme-infernal) .page.active .chat-history-item [style*="text-muted"]{color:#2b487a !important}
-body:not(.theme-infernal) .page.active .api-avatar-hint{color:#233e6c}
-body:not(.theme-infernal) .page.active .chat-full-search input{color:#1a3262;background:rgba(245,250,255,0.6);border-color:rgba(170,210,245,0.4)}
-body:not(.theme-infernal) .page.active .chat-full-search input::placeholder{color:#3f5e8c}
-body:not(.theme-infernal) .page.active .chat-input{color:#1a3262;background:rgba(245,250,255,0.6);border-color:rgba(170,210,245,0.4)}
-body:not(.theme-infernal) .page.active .chat-input::placeholder{color:#3f5e8c}
-body:not(.theme-infernal) .page.active h2{color:#152c58}
-body:not(.theme-infernal) .page.active .chat-msg.user{color:#0a1e42;background:rgba(102,150,226,0.14);border-color:rgba(88,136,208,0.4)}
-body:not(.theme-infernal) .page.active .chat-msg.ai{color:#0a1e42;background:rgba(245,250,255,0.55);border-color:rgba(185,220,250,0.35)}
-body:not(.theme-infernal) .page.active .api-section .chat-count{color:#233e6c}
-body:not(.theme-infernal) .modal h3{color:#152c58}
-body:not(.theme-infernal) .modal label{color:#233e6c}
-body:not(.theme-infernal) .page.active .letter-loading{color:#233e6c}
-body:not(.theme-infernal) .modal input,body:not(.theme-infernal) .modal textarea,body:not(.theme-infernal) .modal select{background:var(--surface-input);border-color:var(--border-soft);color:var(--content-primary)}
-body:not(.theme-infernal) .modal input::placeholder,body:not(.theme-infernal) .modal textarea::placeholder{color:var(--content-muted)}
-body:not(.theme-infernal) .modal select option{background:#eaf2fa;color:#1a3262}
-/* Internal 下弹窗（修改密码/输入密码/新建分类等）文字压深：
-   只动字色、不动按钮底板——变量重定义使行内 style 里的 var(--text-primary) 说明文字一并变深 */
-body:not(.theme-infernal) .modal{--text-primary:#1a3262;--text-secondary:#2b487a;--text-muted:#41608e}
-body:not(.theme-infernal) .modal .btn{color:#152c58}
-body:not(.theme-infernal) .page.active .module-intro{background:rgba(251,253,255,0.5);border-color:rgba(205,228,249,0.35)}
-body:not(.theme-infernal) .page.active .module-intro h2{color:#152c58;text-shadow:0 0 12px rgba(255,255,255,0.5)}
-body:not(.theme-infernal) .page.active .module-intro-sub{color:rgba(40,85,145,0.8)}
-body:not(.theme-infernal) .page.active .module-intro-desc{color:#1a3262;text-shadow:0 0 8px rgba(255,255,255,0.3)}
-body:not(.theme-infernal) .module-intro{--mi-rule:rgba(38,84,140,0.28)}
-/* Infernal theme: inherits Internal B */
-body.theme-infernal .page-overlay.show{background:rgba(25,45,70,0.16);backdrop-filter:blur(12px) saturate(1.1);-webkit-backdrop-filter:blur(12px) saturate(1.1)}
-body.theme-infernal .glass-card{background:var(--surface-card);border-color:var(--border-soft);box-shadow:var(--shadow-card)}
-body.theme-infernal .glass-card:hover{border-color:var(--border-strong);box-shadow:var(--shadow-panel)}
+.modal input,.modal textarea,.modal select{background:var(--surface-input);border-color:var(--border-soft);color:var(--content-primary)}
+.modal input::placeholder,.modal textarea::placeholder{color:var(--content-muted)}
+.modal select option{background:var(--bg-deep);color:var(--white)}
 
 /* 深渊暗线：只在 Infernal（暗色）模式可瞥见——出口线索藏在暗处，非警告 */
 body.theme-infernal .ib-beyond-leave{position:fixed;left:50%;bottom:6px;transform:translateX(-50%);font-size:10px;line-height:1;letter-spacing:.06em;opacity:.13;color:var(--content-primary);pointer-events:none;user-select:none;z-index:5}
@@ -527,8 +421,8 @@ body.theme-infernal .ib-beyond-leave{position:fixed;left:50%;bottom:6px;transfor
   padding:30px 44px;cursor:pointer;border:1px solid rgba(140,120,200,.25);border-radius:6px;
   text-shadow:0 0 24px rgba(150,120,255,.5);}
 .ib-basement-core:hover{color:#eadcff;border-color:rgba(170,150,255,.5);}
-.ib-basement-return{position:fixed;right:10px;bottom:8px;z-index:901;color:rgba(150,160,190,.18);font-size:14px;cursor:pointer;pointer-events:auto;user-select:none;}
-.ib-basement-return:hover{color:rgba(200,210,240,.7);}
+.ib-basement-return{position:fixed;right:10px;bottom:8px;z-index:901;color:color-mix(in srgb,var(--white) 18%,transparent);font-size:14px;cursor:pointer;pointer-events:auto;user-select:none;}
+.ib-basement-return:hover{color:color-mix(in srgb,var(--white) 70%,transparent);}
 .ib-basement-blind{position:fixed;inset:0;z-index:1100;background:#000;color:#d9d2f2;display:flex;align-items:center;justify-content:center;
   font-size:1.05rem;letter-spacing:.14em;text-align:center;padding:0 28px;opacity:1;transition:opacity .9s ease;
   text-shadow:0 0 18px rgba(170,140,255,.4);}
@@ -574,62 +468,62 @@ body.infernal-beyond #app{position:relative;z-index:1;}
 .mb-actions{margin-top:14px;display:flex;gap:10px;}
 .mb-save-status{opacity:.75;align-self:center;font-size:.85rem;}
 /* ── Middle Brain · Astra Cognitive Control（Phase 4 高级设置）── */
-.mb-adv-divider{height:1px;background:var(--glass-border);opacity:.5;margin:16px 0;}
-.mb-adv-card{border:1px solid var(--glass-border);border-radius:12px;padding:14px 16px;background:linear-gradient(180deg,rgba(120,140,255,.05),transparent);}
+.mb-adv-divider{height:1px;background:var(--border-soft);opacity:.5;margin:16px 0;}
+.mb-adv-card{border:1px solid var(--border-soft);border-radius:var(--radius-card);padding:14px 16px;background:var(--glass-bg-ambient);}
 .mb-adv-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px;}
 .mb-adv-title{font-weight:600;font-size:.92rem;letter-spacing:.02em;opacity:.9;}
-.mb-adv-summary{font-size:.78rem;padding:3px 10px;border-radius:999px;background:var(--glass-bg);border:1px solid var(--glass-border);opacity:.9;}
+.mb-adv-summary{font-size:.78rem;padding:3px 10px;border-radius:var(--radius-control);background:var(--glass-bg-ambient);border:1px solid var(--border-soft);opacity:.9;}
 .mb-adv-section{margin-top:12px;}
-.mb-adv-label{font-size:.72rem;text-transform:uppercase;letter-spacing:.1em;opacity:.6;margin-bottom:7px;}
-.mb-model-static-hint{font-size:.75rem;opacity:.55;}
+.mb-adv-label{font-size:var(--fs-meta);text-transform:uppercase;letter-spacing:.1em;opacity:.6;margin-bottom:7px;}
+.mb-model-static-hint{font-size:var(--fs-meta);opacity:.55;}
 /* 模型 swiper：左右箭头 + 中央当前模型 + 档位条 */
 .mb-model-row{display:flex;align-items:center;gap:10px;}
-.mb-model-arrow{flex:0 0 auto;width:34px;height:34px;border:1px solid var(--glass-border);background:transparent;color:var(--content-primary);border-radius:9px;cursor:pointer;font-size:.8rem;transition:border-color .15s,background .15s;}
-.mb-model-arrow:hover{border-color:var(--accent);background:var(--glass-bg);}
+.mb-model-arrow{flex:0 0 auto;width:34px;height:34px;border:1px solid var(--border-soft);background:transparent;color:var(--content-primary);border-radius:var(--radius-control);cursor:pointer;font-size:.8rem;transition:border-color .15s,background .15s;}
+.mb-model-arrow:hover{border-color:color-mix(in srgb,var(--accent) 55%,transparent);background:var(--surface-hover);}
 .mb-model-center{flex:1;text-align:center;min-width:0;}
 .mb-model-name{font-weight:600;font-size:.98rem;letter-spacing:.01em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.mb-model-sub{margin-top:2px;font-size:.72rem;opacity:.5;text-transform:uppercase;letter-spacing:.08em;}
+.mb-model-sub{margin-top:2px;font-size:var(--fs-meta);opacity:.5;text-transform:uppercase;letter-spacing:.08em;}
 .mb-model-strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(0,1fr));gap:6px;margin-top:10px;}
-.mb-model-cell{margin:0;padding:7px 6px;font-size:.74rem;text-align:center;border:1px solid var(--glass-border);border-radius:8px;background:transparent;color:var(--content-primary);cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;transition:border-color .15s,background .15s;}
-.mb-model-cell:hover{border-color:var(--accent);}
-.mb-model-cell.mb-model-active{border-color:var(--accent);background:linear-gradient(180deg,rgba(120,140,255,.14),transparent);color:var(--accent);font-weight:600;}
+.mb-model-cell{margin:0;padding:7px 6px;font-size:var(--fs-meta);text-align:center;border:1px solid var(--border-soft);border-radius:var(--radius-control);background:transparent;color:var(--content-primary);cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;transition:border-color .15s,background .15s;font-variant-numeric:tabular-nums;}
+.mb-model-cell:hover{border-color:color-mix(in srgb,var(--accent) 55%,transparent);}
+.mb-model-cell.mb-model-active{border-color:color-mix(in srgb,var(--accent) 62%,transparent);background:color-mix(in srgb,var(--accent) 14%,transparent);color:var(--accent-light);font-weight:600;}
 /* 可拖拽 slider（Reasoning / Speed 共用） */
 .mb-reasoning,.mb-speed{user-select:none;-webkit-user-select:none;}
 .mb-adv-slider-value{margin-bottom:8px;font-size:.95rem;font-weight:600;color:var(--accent);}
 .mb-trk{position:relative;height:26px;cursor:pointer;touch-action:none;}
-.mb-trk::before{content:"";position:absolute;left:0;right:0;top:50%;height:2px;transform:translateY(-50%);background:var(--glass-border);border-radius:2px;}
+.mb-trk::before{content:"";position:absolute;left:0;right:0;top:50%;height:2px;transform:translateY(-50%);background:var(--border-soft);border-radius:2px;}
 .mb-fill{position:absolute;left:0;top:50%;height:2px;transform:translateY(-50%);background:var(--accent);border-radius:2px;pointer-events:none;}
-.mb-thumb{position:absolute;top:50%;width:14px;height:14px;transform:translate(-50%,-50%);background:var(--accent);border-radius:50%;border:2px solid var(--surface-card);box-shadow:0 1px 4px rgba(0,0,0,.2);pointer-events:none;}
+.mb-thumb{position:absolute;top:50%;width:14px;height:14px;transform:translate(-50%,-50%);background:var(--accent);border-radius:50%;border:2px solid var(--surface-card);box-shadow:0 1px 4px color-mix(in srgb,var(--bg-deep) 20%,transparent);pointer-events:none;}
 .mb-thumb-grab{pointer-events:auto;cursor:grab;}
 .mb-thumb-grab:active{cursor:grabbing;}
 .mb-adv-reasoning .mb-trk{cursor:grab;}
 .mb-adv-reasoning .mb-ticks{cursor:grab;}
 .mb-ticks{position:absolute;inset:0;}
-.mb-tick{position:absolute;top:50%;width:6px;height:6px;transform:translate(-50%,-50%);border-radius:50%;background:var(--glass-border);cursor:pointer;}
-.mb-tick.mb-tick-active{background:var(--accent);box-shadow:0 0 0 3px rgba(120,140,255,.18);}
+.mb-tick{position:absolute;top:50%;width:6px;height:6px;transform:translate(-50%,-50%);border-radius:50%;background:var(--border-soft);cursor:pointer;}
+.mb-tick.mb-tick-active{background:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 18%,transparent);}
 .mb-labels{display:flex;justify-content:space-between;margin-top:8px;}
-.mb-lbl{font-size:.72rem;opacity:.62;font-weight:500;}
-/* Speed：⚡ 闪电切换按钮（激活时平滑过渡为紫色，非瞬间） */
+.mb-lbl{font-size:var(--fs-meta);opacity:.62;font-weight:500;}
+/* Speed：⚡ 闪电切换按钮（激活时平滑过渡为 accent，非瞬间；身份由 ⚡ 与档位承载，不再用紫） */
 .mb-adv-speed{display:flex;flex-direction:column;align-items:flex-start;gap:0;}
-.mb-speed-btn{display:inline-flex;align-items:center;gap:9px;padding:9px 18px;border:1px solid var(--glass-border);border-radius:999px;background:transparent;color:var(--content-primary);font-size:.9rem;font-weight:600;cursor:pointer;transition:background .9s ease,border-color .9s ease,color .9s ease,box-shadow .9s ease;}
-.mb-speed-btn:hover{border-color:var(--accent);}
+.mb-speed-btn{display:inline-flex;align-items:center;gap:9px;padding:9px 18px;border:1px solid var(--border-soft);border-radius:var(--radius-control);background:transparent;color:var(--content-primary);font-size:.9rem;font-weight:600;cursor:pointer;transition:background .9s ease,border-color .9s ease,color .9s ease,box-shadow .9s ease;}
+.mb-speed-btn:hover{border-color:color-mix(in srgb,var(--accent) 55%,transparent);}
 .mb-speed-bolt{font-size:1.08rem;line-height:1;opacity:.95;}
-.mb-speed-btn.mb-speed-on{background:rgba(168,85,247,.22);border-color:#a855f7;color:#c9b8fd;box-shadow:0 0 0 3px rgba(168,85,247,.16);}
-.mb-speed-note{margin-top:8px;font-size:.74rem;opacity:.6;}
-.mb-adv-hint{margin-top:12px;font-size:.76rem;opacity:.55;line-height:1.5;}
-@media (max-width:560px){.mb-model-cell{font-size:.68rem;}.mb-adv-card{padding:10px 12px;}}
+.mb-speed-btn.mb-speed-on{background:color-mix(in srgb,var(--accent) 22%,transparent);border-color:color-mix(in srgb,var(--accent) 65%,transparent);color:var(--accent-light);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 16%,transparent);}
+.mb-speed-note{margin-top:8px;font-size:var(--fs-meta);opacity:.6;}
+.mb-adv-hint{margin-top:12px;font-size:var(--fs-meta);opacity:.55;line-height:1.5;}
+@media (max-width:560px){.mb-model-cell{font-size:var(--fs-meta);}.mb-adv-card{padding:10px 12px;}}
 /* ── Middle Brain · 整块折叠头（P14：解决配置区过高、视觉占用过大）──
    只折叠 body，不销毁 DOM：收起时 body 用 max-height:0 + opacity + visibility 过渡，
    input / slider / API Key 的 DOM 与值原样保留（再展开不重新初始化 Middle Brain）。
    展开/收起态由 JS 切 body 上的 is-collapsed 与头部的 aria-expanded。 */
-.mb-collapse-head{display:flex;align-items:center;justify-content:space-between;gap:10px 14px;flex-wrap:wrap;width:100%;margin:2px 0 0;padding:10px 12px;border:1px solid var(--glass-border);border-radius:12px;background:var(--glass-bg);color:var(--content-primary);font:inherit;text-align:left;cursor:pointer;transition:border-color .18s ease,background .18s ease;}
-.mb-collapse-head:hover{border-color:var(--accent);}
+.mb-collapse-head{display:flex;align-items:center;justify-content:space-between;gap:10px 14px;flex-wrap:wrap;width:100%;margin:2px 0 0;padding:10px 12px;border:1px solid var(--border-soft);border-radius:var(--radius-card);background:var(--glass-bg-ambient);color:var(--content-primary);font:inherit;text-align:left;cursor:pointer;transition:border-color .18s ease,background .18s ease;}
+.mb-collapse-head:hover{border-color:color-mix(in srgb,var(--accent) 55%,transparent);}
 .mb-collapse-title{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1 1 180px;}
 .mb-collapse-name{font-weight:600;font-size:.92rem;letter-spacing:.02em;opacity:.92;}
 /* 摘要允许换行，但每行截断；窄屏也不会把 header 撑到接近展开态高度 */
-.mb-collapse-summary{font-size:.76rem;line-height:1.45;opacity:.62;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.mb-collapse-summary{font-size:var(--fs-meta);line-height:1.45;opacity:.62;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .mb-collapse-meta{display:flex;align-items:center;gap:8px;flex:0 0 auto;margin-left:auto;}
-.mb-collapse-badge{font-size:.72rem;letter-spacing:.02em;padding:3px 10px;border-radius:999px;border:1px solid var(--glass-border);background:var(--glass-bg);opacity:.9;white-space:nowrap;}
+.mb-collapse-badge{font-size:var(--fs-meta);letter-spacing:.02em;padding:3px 10px;border-radius:var(--radius-control);border:1px solid var(--border-soft);background:var(--glass-bg-ambient);opacity:.9;white-space:nowrap;}
 .mb-collapse-badge.is-on{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 45%,transparent);}
 /* P11-3 · 未保存态：编辑态与 runtime 态不一致。徽标此时显示 Unsaved（绝不显示 Enabled），
    虚线边框把"尚未生效"与"已生效"在视觉上分开；真实 runtime 值放在 title 里。 */
@@ -659,11 +553,11 @@ body.infernal-beyond #app{position:relative;z-index:1;}
 .mem-clean-loading{opacity:.7;font-size:.88rem;padding:16px 28px;text-align:center;}
 .mem-clean-empty{display:none;opacity:.7;font-size:.88rem;padding:16px 28px;text-align:center;}
 .mem-clean-actions{padding:6px 28px 24px;}
-.mem-clean-item{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:10px;cursor:pointer;
-  background:rgba(14,20,36,0.5);border:1px solid rgba(150,180,220,0.12);}
-.mem-clean-item:hover{background:rgba(30,42,66,0.6);}
+.mem-clean-item{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:var(--radius-control);cursor:pointer;
+  background:var(--glass-bg-ambient);border:1px solid var(--border-soft);}
+.mem-clean-item:hover{background:var(--surface-hover);}
 .mem-clean-item input[type=checkbox]{margin-top:3px;accent-color:var(--accent,#5080b0);}
 .mem-clean-body{display:flex;flex-direction:column;gap:3px;min-width:0;}
 .mem-clean-title{font-weight:600;letter-spacing:.03em;}
-.mem-clean-meta{font-size:.72rem;opacity:.6;}
+.mem-clean-meta{font-size:var(--fs-meta);opacity:.6;}
 .mem-clean-preview{font-size:.82rem;opacity:.8;word-break:break-word;}

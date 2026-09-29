@@ -39,7 +39,7 @@ function openAiSetup(){
   const panel=G.viewport.querySelector('#game-ai-setup');
   if(!panel){G.state='idle';return}
   if(!hasApi){
-    panel.innerHTML=`<h4>No API Configured</h4><p style="font-size:0.8rem;color:var(--text-muted);text-align:center">${FIXED_LINES.no_api}</p>
+    panel.innerHTML=`<h4>No API Configured</h4><p style="font-size:0.8rem;color:var(--content-muted);text-align:center">${FIXED_LINES.no_api}</p>
     <div class="game-ai-setup-actions"><button class="tarot-btn" id="game-ai-noapi-close">Close</button></div>`;
     panel.classList.add('show');
     panel.querySelector('#game-ai-noapi-close').addEventListener('click',()=>{panel.classList.remove('show');G.state='idle'});
@@ -87,7 +87,7 @@ async function openCustomScriptSetup(){
   const panel=G.viewport.querySelector('#game-ai-setup');
   if(!panel){G.state='idle';return}
   if(!hasApi){
-    panel.innerHTML=`<h4>No API Configured</h4><p style="font-size:0.8rem;color:var(--text-muted);text-align:center">${FIXED_LINES.no_api}</p>
+    panel.innerHTML=`<h4>No API Configured</h4><p style="font-size:0.8rem;color:var(--content-muted);text-align:center">${FIXED_LINES.no_api}</p>
     <div class="game-ai-setup-actions"><button class="tarot-btn" id="game-ai-noapi-close">Close</button></div>`;
     panel.classList.add('show');
     panel.querySelector('#game-ai-noapi-close').addEventListener('click',()=>{panel.classList.remove('show');G.state='idle'});
@@ -97,7 +97,7 @@ async function openCustomScriptSetup(){
   let posts=[];
   try{const all=await dbGetAll('posts');posts=all.filter(p=>p.locked!==true&&p.category!=='🔒 密码日记本').sort((a,b)=>b.created-a.created)}catch(e){}
   if(!posts.length){
-    panel.innerHTML=`<h4 style="font-family:'Noto Sans SC',sans-serif;font-style:normal">自定义剧本</h4><p style="font-size:0.85rem;color:var(--text-muted);text-align:center;line-height:1.8">Blog里还没有日志。\n请先去Blog写一篇日志作为剧本。</p>
+    panel.innerHTML=`<h4 style="font-family:'Noto Sans SC',sans-serif;font-style:normal">自定义剧本</h4><p style="font-size:0.85rem;color:var(--content-muted);text-align:center;line-height:1.8">Blog里还没有日志。\n请先去Blog写一篇日志作为剧本。</p>
     <div class="game-ai-setup-actions"><button class="tarot-btn" id="game-ai-noapi-close">Close</button></div>`;
     panel.classList.add('show');
     panel.querySelector('#game-ai-noapi-close').addEventListener('click',()=>{panel.classList.remove('show');G.state='idle'});
@@ -105,7 +105,7 @@ async function openCustomScriptSetup(){
   }
   const esc=(typeof escapeHtml==='function')?escapeHtml:(s=>String(s));
   const apiOpts=apiConfigs.map((a,i)=>`<option value="${i}">${esc(a.nickname||a.model||'AI')}</option>`).join('');
-  const postList=posts.map(p=>`<div class="game-script-item" data-pid="${p.id}" style="padding:10px 14px;margin-bottom:6px;border:1px solid rgba(175,195,228,0.15);border-radius:8px;cursor:pointer;transition:all 0.3s"><div style="font-size:0.88rem;color:var(--light);margin-bottom:3px">${esc(p.title||'无标题')}</div><div style="font-size:0.72rem;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc((p.content||'').slice(0,60))}</div></div>`).join('');
+  const postList=posts.map(p=>`<div class="game-script-item" data-pid="${p.id}" style="padding:10px 14px;margin-bottom:6px;border:1px solid var(--border-soft);border-radius:var(--radius-control);cursor:pointer;transition:all 0.3s"><div style="font-size:0.88rem;color:var(--light);margin-bottom:3px">${esc(p.title||'无标题')}</div><div style="font-size:0.72rem;color:var(--content-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc((p.content||'').slice(0,60))}</div></div>`).join('');
   panel.innerHTML=`<h4 style="font-family:'Noto Sans SC',sans-serif;font-style:normal">自定义剧本</h4>
     <label>AI</label><select id="game-cs-ai">${apiOpts}</select>
     <label style="margin-top:12px">Genre</label><select id="game-cs-genre"><option value="fantasy">Fantasy</option><option value="mystery">Mystic</option><option value="detective">Detective</option><option value="romance">Romance</option><option value="scifi">Sci-Fi</option></select>

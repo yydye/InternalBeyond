@@ -6,8 +6,8 @@ async function loadBlogComments(postId){
   if(!container)return;
   const all=await dbGetAll('blogComments');
   const comments=all.filter(c=>c.postId===postId).sort((a,b)=>b.created-a.created);
-  if(!comments.length){container.innerHTML='<div style="font-size:0.78rem;color:var(--text-muted);padding:8px 0;opacity:0.7">还没有留言</div>';return}
-  container.innerHTML=comments.map(c=>'<div class="blog-comment-card"><div class="blog-comment-from">'+esc(c.from||'AI')+'</div><div class="blog-comment-text">'+esc(c.content)+'</div><div class="blog-comment-time">'+new Date(c.created).toLocaleString('zh-CN')+'</div><div class="blog-comment-actions"><button class="btn" style="font-size:0.7rem;padding:3px 8px" onclick="deleteBlogComment(\''+c.id+'\',\''+c.postId+'\')">删除</button></div></div>').join('');
+  if(!comments.length){container.innerHTML='<div style="font-size:0.78rem;color:var(--content-muted);padding:8px 0;opacity:0.7">还没有留言</div>';return}
+  container.innerHTML=comments.map(c=>'<div class="blog-comment-card"><div class="blog-comment-from">'+esc(c.from||'AI')+'</div><div class="blog-comment-text">'+esc(c.content)+'</div><div class="blog-comment-time">'+new Date(c.created).toLocaleString('zh-CN')+'</div><div class="blog-comment-actions"><button class="btn" style="font-size:var(--fs-meta);padding:3px 8px" onclick="deleteBlogComment(\''+c.id+'\',\''+c.postId+'\')">删除</button></div></div>').join('');
 }
 
 async function requestBlogComment(postId){
@@ -576,7 +576,7 @@ function _buildMsgEl(m,isFullscreen,isGroupCont){
     if(!isUser&&m.senderName){
       var _pm=_mdMode();if(_pm==='full'||_pm==='partial')div.classList.add('md-rendered');
       const label=document.createElement('span');
-      label.style.cssText='font-size:0.68rem;opacity:0.7;display:block;margin-bottom:2px';
+      label.style.cssText='font-size:var(--fs-meta);opacity:0.7;display:block;margin-bottom:2px';
       label.textContent=m.senderName;
       div.appendChild(label);
       const _avm1=_ibAiVoicePayload(m);
@@ -3610,7 +3610,7 @@ function appendChatBubble(role,text,senderName,reasoningContent,msgId,images,fil
       if(senderName&&role==='ai'){
         var _acm=_mdMode();if(_acm==='full'||_acm==='partial')div.classList.add('md-rendered');
         const label=document.createElement('span');
-        label.style.cssText='font-size:0.68rem;opacity:0.7;display:block;margin-bottom:2px';
+        label.style.cssText='font-size:var(--fs-meta);opacity:0.7;display:block;margin-bottom:2px';
         label.textContent=senderName;
         div.appendChild(label);
         /* P23 2D：小窗同样按 Phase 1 的唯一判定画语音气泡（历史/实时一致）。 */
@@ -5991,7 +5991,7 @@ function _createStreamBubble(_targetFriend,senderName){
       }
     }else{
       if(senderName){
-        const label=document.createElement('span');label.style.cssText='font-size:0.68rem;opacity:0.7;display:block;margin-bottom:2px';label.textContent=senderName;div.appendChild(label)
+        const label=document.createElement('span');label.style.cssText='font-size:var(--fs-meta);opacity:0.7;display:block;margin-bottom:2px';label.textContent=senderName;div.appendChild(label)
       }
       const txt=document.createTextNode('');div.appendChild(txt);
       div.classList.add('chat-stream-cursor');

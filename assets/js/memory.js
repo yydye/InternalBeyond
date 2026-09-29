@@ -452,7 +452,7 @@ async function renderMemories(){
           +'<span class="mem-vis-badge">'+visLabels[m.visibility||'public']+'</span>'
         +'</div>'
         +'<div class="mem-card-content">'+esc(m.content||'')+'</div>'
-        +'<div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:12px;margin-top:6px">V:'+(m.valence!=null?m.valence:0.5)+' A:'+(m.arousal!=null?m.arousal:0.3)+' \u00B7 '+(m.activationCount||0)+'次激活</div>'
+        +'<div style="font-size:0.78rem;color:var(--content-muted);margin-bottom:12px;margin-top:6px">V:'+(m.valence!=null?m.valence:0.5)+' A:'+(m.arousal!=null?m.arousal:0.3)+' \u00B7 '+(m.activationCount||0)+'次激活</div>'
         +'<div class="mem-card-actions">'
           +'<button class="btn" onclick="event.stopPropagation();toggleMemPin(\''+m.id+'\')">'+(m.pinned?'取消置顶':'置顶')+'</button>'
           +'<button class="btn" onclick="event.stopPropagation();toggleMemResolved(\''+m.id+'\')">'+(m.resolved?'未解决':'解决')+'</button>'
@@ -1956,7 +1956,7 @@ async function renderChatPanelFriends(){
   await loadApiConfigs();
   const c=document.getElementById('chat-panel-friends');
   if(!c)return;
-  if(!apiConfigs.length){c.innerHTML='<div class="cpf-item" style="opacity:0.5;cursor:default;font-size:0.65rem">去API页面添加</div>';return}
+  if(!apiConfigs.length){c.innerHTML='<div class="cpf-item" style="opacity:0.5;cursor:default;font-size:var(--fs-meta)">去API页面添加</div>';return}
   const allThreads=await (async()=>{try{return await dbGetAll('chatThreads')}catch(e){return[]}})();
   let html='';
   apiConfigs.forEach(a=>{
@@ -1966,13 +1966,13 @@ async function renderChatPanelFriends(){
     if(threads.length&&activeFriendId===a.id){
       threads.forEach(t=>{
         const tActive=activeThreadId===t.id;
-        html+='<div class="cpf-item'+(tActive?' active':'')+'" onclick="selectPanelThread(\''+a.id+'\',\''+t.id+'\')" style="padding:3px 10px"><span style="margin-right:5px;font-size:0.55rem;vertical-align:1px;color:'+(tActive?'var(--thread-dot-active,#72a8d8)':'var(--text-muted)')+'">'+(tActive?'●':'○')+'</span>'+esc(t.name)+'</div>';
+        html+='<div class="cpf-item'+(tActive?' active':'')+'" onclick="selectPanelThread(\''+a.id+'\',\''+t.id+'\')" style="padding:3px 10px"><span style="margin-right:5px;font-size:var(--fs-meta);vertical-align:1px;color:'+(tActive?'var(--thread-dot-active,var(--accent-light))':'var(--content-muted)')+'">'+(tActive?'●':'○')+'</span>'+esc(t.name)+'</div>';
       });
     }
   });
   const groups=await loadGroups();
   if(groups.length){
-    html+=groups.map(g=>'<div class="cpf-item'+(activeFriendId===g.id?' active':'')+'" onclick="selectPanelGroup(\''+g.id+'\')" style="border-color:rgba(114,168,216,0.4)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px;opacity:0.8"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>'+esc(g.name)+'</div>').join('');
+    html+=groups.map(g=>'<div class="cpf-item'+(activeFriendId===g.id?' active':'')+'" onclick="selectPanelGroup(\''+g.id+'\')" style="border-color:color-mix(in srgb,var(--accent) 40%,transparent)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px;opacity:0.8"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>'+esc(g.name)+'</div>').join('');
   }
   c.innerHTML=html;
 }

@@ -92,7 +92,7 @@
 /* 版本 pill 是 chrome：本页唯一保留 --content-muted 的地方 */
 #guide-beginner .gb-meta-version {
   padding: 2px 9px;
-  border-radius: 999px;
+  border-radius: var(--radius-control);
   border: 1px solid var(--glass-border-soft);
   background: var(--glass-bg-ambient);
   color: var(--content-muted);
@@ -108,7 +108,7 @@
 
 #guide-beginner .gb-index-title {
   margin-bottom: 8px;
-  font-size: 0.72rem;
+  font-size: var(--fs-meta);
   letter-spacing: 0.06em;
   color: var(--content-muted);
 }

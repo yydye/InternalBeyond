@@ -166,14 +166,14 @@ async function renderIbToolsList(){
   const en=document.getElementById('ibtools-enabled');if(en)en.checked=!!cfg.enabled;
   const cf=document.getElementById('ibtools-confirm');if(cf)cf.checked=cfg.confirm!==false;
   const c=document.getElementById('ibtools-list');if(!c)return;
-  if(!(cfg.tools||[]).length){c.innerHTML='<div style="font-size:0.78rem;color:var(--text-muted);opacity:0.7;padding:4px 0">还没有配置工具</div>';return}
+  if(!(cfg.tools||[]).length){c.innerHTML='<div style="font-size:0.78rem;color:var(--content-muted);opacity:0.7;padding:4px 0">还没有配置工具</div>';return}
   c.innerHTML=cfg.tools.map(function(t){
-    return '<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--glass-border)">'
+    return '<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--border-soft)">'
       +'<div style="flex:1;min-width:0"><div style="font-size:0.86rem;font-weight:500">'+esc(t.name)+'</div>'
-      +'<div style="font-size:0.72rem;opacity:0.6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc((t.method||'GET')+' · '+t.url)+(t.desc?' · '+esc(t.desc):'')+'</div></div>'
-      +'<button class="btn" style="font-size:0.72rem;padding:4px 10px" onclick="ibToolTest(\''+t.id+'\')">测试</button>'
-      +'<button class="btn" style="font-size:0.72rem;padding:4px 10px" onclick="ibToolOpenEditor(\''+t.id+'\')">编辑</button>'
-      +'<button class="btn" style="font-size:0.72rem;padding:4px 10px;color:#e88" onclick="ibToolDelete(\''+t.id+'\')">删除</button>'
+      +'<div style="font-size:var(--fs-meta);opacity:0.6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc((t.method||'GET')+' · '+t.url)+(t.desc?' · '+esc(t.desc):'')+'</div></div>'
+      +'<button class="btn" style="font-size:var(--fs-meta);padding:4px 10px" onclick="ibToolTest(\''+t.id+'\')">测试</button>'
+      +'<button class="btn" style="font-size:var(--fs-meta);padding:4px 10px" onclick="ibToolOpenEditor(\''+t.id+'\')">编辑</button>'
+      +'<button class="btn" style="font-size:var(--fs-meta);padding:4px 10px;color:var(--status-danger)" onclick="ibToolDelete(\''+t.id+'\')">删除</button>'
       +'</div>';
   }).join('');
 }

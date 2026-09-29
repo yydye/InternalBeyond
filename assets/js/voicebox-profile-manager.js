@@ -395,7 +395,7 @@
     if (!profiles.length) { list.textContent = 'Voicebox 当前没有 Profile。'; return; }
     profiles.forEach(function (profile) {
       var card = document.createElement('div');
-      card.style.cssText = 'padding:12px;margin:8px 0;border:1px solid var(--glass-border);border-radius:10px';
+      card.style.cssText = 'padding:12px;margin:8px 0;border:1px solid var(--border-soft);border-radius:var(--radius-control)';
       var title = document.createElement('strong');
       title.textContent = profile.name + ' · ' + (profile.voiceType === 'cloned' ? '克隆音色' : '预设音色');
       card.appendChild(title);
@@ -451,7 +451,7 @@
       var samples = Array.isArray(data.samples) ? data.samples : [];
       profile.sampleCount = samples.length;
       samples.forEach(function (sample, index) {
-        var row = document.createElement('div'); row.style.cssText = 'padding:8px 0;border-bottom:1px solid var(--glass-border)';
+        var row = document.createElement('div'); row.style.cssText = 'padding:8px 0;border-bottom:1px solid var(--border-soft)';
         var label = document.createElement('div'); label.className = 'field-hint'; label.textContent = '参考样本 ' + String(index + 1).padStart(2, '0'); row.appendChild(label);
         row.appendChild(button('试听样本', async function (event) {
           event.currentTarget.disabled = true;

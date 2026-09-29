@@ -700,7 +700,7 @@ function _buildWsOpCard(d){
       det.textContent=(d.op==='edit'?'修改要求: ':'提示词: ')+(d.prompt||'');
       if(d.dataUrl){
         var _gImg=document.createElement('img');_gImg.className='chat-bubble-img';_gImg.loading='lazy';_gImg.decoding='async';
-        _gImg.src=d.dataUrl;_gImg.alt='AI 生成图像';_gImg.style.cssText='display:block;margin-top:8px;max-width:min(360px,100%);border-radius:10px;cursor:zoom-in';
+        _gImg.src=d.dataUrl;_gImg.alt='AI 生成图像';_gImg.style.cssText='display:block;margin-top:8px;max-width:min(360px,100%);border-radius:var(--radius-control);cursor:zoom-in';
         _gImg.onclick=function(ev){ev.stopPropagation();if(typeof _viewImageFull==='function')_viewImageFull(d.dataUrl)};
         det.appendChild(_gImg);
         var _gMeta=document.createElement('div');_gMeta.className='ws-run-out';

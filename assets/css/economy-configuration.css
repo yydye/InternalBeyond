@@ -67,7 +67,7 @@
   flex-wrap:wrap;padding:10px 14px;border-radius:var(--radius-card);
   border:1px solid var(--glass-border-soft);background:var(--glass-bg-ambient)}
 .ecfg-owner-left{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0}
-.ecfg-owner-label{font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;color:var(--accent-light);opacity:.9}
+.ecfg-owner-label{font-size:var(--fs-meta);letter-spacing:.14em;text-transform:uppercase;color:var(--accent-light);opacity:.9}
 .ecfg-owner-select{
   appearance:none;-webkit-appearance:none;
   font-family:var(--font-ui);font-size:.86rem;color:var(--content-primary);
@@ -81,9 +81,9 @@
 .ecfg-owner-select:hover{border-color:var(--border-strong)}
 .ecfg-owner-select:focus-visible{outline:1px solid var(--accent-light);outline-offset:1px}
 .ecfg-owner-select option{background:var(--glass-bg-modal);color:var(--content-primary)}
-.ecfg-owner-hint{font-size:.72rem;line-height:1.6;color:var(--content-muted);min-width:0}
+.ecfg-owner-hint{font-size:var(--fs-meta);line-height:1.6;color:var(--content-muted);min-width:0}
 .ecfg-owner-right{display:flex;align-items:center;gap:var(--space-3);flex:0 0 auto}
-.ecfg-sync{font-size:.7rem;letter-spacing:.04em;color:var(--content-muted);min-height:1em}
+.ecfg-sync{font-size:var(--fs-meta);letter-spacing:.04em;color:var(--content-muted);min-height:1em}
 
 /* ── 面板 ─────────────────────────────────────────────────────────────
    ★ [hidden] 必须真的隐藏：三块面板同时存在于 DOM 里，靠 hidden 开合。
@@ -117,7 +117,7 @@
 /* ── "初始额度已设置"这枚安静的标记 ─────────────────────────────────
    它不是绿灯：没有色块、没有阴影，只有一条细线与一个勾。 */
 .ecfg-flag{display:inline-flex;align-items:center;gap:8px;align-self:flex-start;
-  padding:5px 12px 5px 10px;border-radius:999px;
+  padding:5px 12px 5px 10px;border-radius:var(--radius-control);
   border:1px solid color-mix(in srgb,var(--accent) 30%,transparent);
   background:color-mix(in srgb,var(--accent) 9%,transparent);
   font-size:.76rem;letter-spacing:.03em;color:var(--content-primary)}
@@ -129,7 +129,7 @@
   padding:14px 16px;border-radius:var(--radius-card);
   border:1px solid var(--glass-border-soft);background:var(--glass-bg-ambient)}
 .ecfg-figure{display:flex;flex-direction:column;gap:3px;min-width:0}
-.ecfg-figure-k{font-size:.66rem;letter-spacing:.12em;text-transform:uppercase;color:var(--content-muted)}
+.ecfg-figure-k{font-size:var(--fs-meta);letter-spacing:.12em;text-transform:uppercase;color:var(--content-muted)}
 .ecfg-figure-v{
   font-family:var(--font-reading);font-size:.98rem;line-height:1.35;color:var(--content-secondary);
   font-variant-numeric:tabular-nums;overflow-wrap:anywhere;
@@ -146,7 +146,7 @@
 .ecfg-form{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-4) var(--space-5)}
 .ecfg-field{display:flex;flex-direction:column;gap:6px;min-width:0}
 .ecfg-field-label{font-size:.76rem;letter-spacing:.02em;color:var(--content-primary)}
-.ecfg-field-hint{margin:0;font-size:.68rem;line-height:1.7;color:var(--content-muted);max-width:44ch}
+.ecfg-field-hint{margin:0;font-size:var(--fs-meta);line-height:1.7;color:var(--content-muted);max-width:44ch}
 .ecfg-input-wrap{position:relative;display:flex;align-items:center}
 .ecfg-input{
   width:100%;box-sizing:border-box;
@@ -162,14 +162,14 @@
 .ecfg-input:hover{border-color:var(--border-strong)}
 .ecfg-input:focus{outline:none;border-color:var(--accent-light);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 16%,transparent)}
 .ecfg-input:disabled{opacity:.6}
-.ecfg-unit{position:absolute;right:12px;font-size:.68rem;letter-spacing:.06em;color:var(--content-muted);pointer-events:none}
+.ecfg-unit{position:absolute;right:12px;font-size:var(--fs-meta);letter-spacing:.06em;color:var(--content-muted);pointer-events:none}
 
 /* 勾选行：整行可点，命中的是原生 checkbox（没有自绘开关要维护） */
 .ecfg-check-row{display:flex;align-items:flex-start;gap:10px;cursor:pointer;min-width:0}
 .ecfg-check{flex:0 0 auto;margin:3px 0 0;width:15px;height:15px;accent-color:var(--accent);cursor:pointer}
 .ecfg-check-text{display:flex;flex-direction:column;gap:2px;min-width:0}
 .ecfg-check-label{font-size:.8rem;line-height:1.5;color:var(--content-primary)}
-.ecfg-check-hint{font-size:.68rem;line-height:1.65;color:var(--content-muted)}
+.ecfg-check-hint{font-size:var(--fs-meta);line-height:1.65;color:var(--content-muted)}
 .ecfg-checks{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px var(--space-4)}
 
 /* 单选段（自主程度标记 / 任何四选一） */
@@ -205,11 +205,11 @@
 .ecfg-meter{display:flex;flex-direction:column;gap:8px;
   padding:14px 16px;border-radius:var(--radius-card);
   border:1px solid var(--glass-border-soft);background:var(--glass-bg-ambient)}
-.ecfg-meter-title{font-size:.68rem;letter-spacing:.14em;text-transform:uppercase;color:var(--content-muted)}
-.ecfg-meter-track{position:relative;height:9px;border-radius:999px;overflow:hidden;
+.ecfg-meter-title{font-size:var(--fs-meta);letter-spacing:.14em;text-transform:uppercase;color:var(--content-muted)}
+.ecfg-meter-track{position:relative;height:9px;border-radius:var(--radius-control);overflow:hidden;
   background:color-mix(in srgb,var(--content-muted) 24%,transparent);
   box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--content-muted) 20%,transparent)}
-.ecfg-meter-fill{height:100%;border-radius:999px;min-width:3px;
+.ecfg-meter-fill{height:100%;border-radius:var(--radius-control);min-width:3px;
   background:linear-gradient(90deg,var(--accent) 0%,var(--accent-light) 100%);
   box-shadow:0 0 8px color-mix(in srgb,var(--accent-light) 42%,transparent);
   transition:width var(--motion-normal) var(--transition)}
@@ -221,7 +221,7 @@
     color-mix(in srgb,var(--accent) 62%,transparent) 0 1px,transparent 1px 7px);
   border-radius:0;height:100%}
 .ecfg-meter-legend{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
-.ecfg-meter-k{font-size:.68rem;letter-spacing:.06em;color:var(--content-muted)}
+.ecfg-meter-k{font-size:var(--fs-meta);letter-spacing:.06em;color:var(--content-muted)}
 .ecfg-meter-v{font-family:var(--font-reading);font-size:.86rem;color:var(--content-primary);
   font-variant-numeric:tabular-nums;margin-right:var(--space-4)}
 .ecfg-meter-v:last-child{margin-right:0}
@@ -241,7 +241,7 @@
 .ecfg-feedback.is-bad .ecfg-feedback-mark{color:var(--status-warning)}
 .ecfg-feedback-mark svg{display:block}
 .ecfg-feedback-text{font-size:.78rem;line-height:1.7;color:var(--content-primary);overflow-wrap:anywhere}
-.ecfg-feedback-detail{margin:0;font-size:.68rem;line-height:1.7;color:var(--content-muted);overflow-wrap:anywhere}
+.ecfg-feedback-detail{margin:0;font-size:var(--fs-meta);line-height:1.7;color:var(--content-muted);overflow-wrap:anywhere}
 
 /* ── 动作 ─────────────────────────────────────────────────────────── */
 .ecfg-actions{display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap}
@@ -267,7 +267,7 @@
   border:1px solid var(--glass-border-soft);background:var(--glass-bg-ambient)}
 .ecfg-bound-mark{display:inline-flex;flex:0 0 16px;margin-top:1px;color:var(--accent-light);opacity:.85}
 .ecfg-bound-mark svg{display:block}
-.ecfg-bound-text{font-size:.72rem;line-height:1.78;color:var(--content-secondary);overflow-wrap:anywhere}
+.ecfg-bound-text{font-size:var(--fs-meta);line-height:1.78;color:var(--content-secondary);overflow-wrap:anywhere}
 
 /* ── 配置面关着（§7）──────────────────────────────────────────────────
    它不是错误框：没有红色、没有图标，一个安静的点 + 两行字 + 折叠的
@@ -293,11 +293,11 @@
 .ecfg-experience-body{display:flex;flex-direction:column;gap:3px;min-width:0}
 .ecfg-experience-title{margin:0;font-size:.82rem;line-height:1.6;
   color:var(--content-primary);letter-spacing:.02em}
-.ecfg-experience-text{margin:0;font-size:.73rem;line-height:1.78;
+.ecfg-experience-text{margin:0;font-size:var(--fs-meta);line-height:1.78;
   color:var(--content-secondary);max-width:62ch;overflow-wrap:anywhere}
 
 /* ── 技术说明：底层词只出现在这个折叠区里（P6 契约）──────────────── */
-.ecfg-technical{font-size:.68rem;color:var(--content-muted)}
+.ecfg-technical{font-size:var(--fs-meta);color:var(--content-muted)}
 .ecfg-technical summary{cursor:pointer;letter-spacing:.04em;padding:2px 0}
 .ecfg-technical summary:focus-visible{outline:1px solid var(--accent-light);outline-offset:2px}
 .ecfg-technical-list{margin:6px 0 0;padding-left:16px;display:flex;flex-direction:column;gap:3px}
@@ -312,11 +312,11 @@
    ★ 层级：标题抬起（display 字、更亮），说明压低（更小更淡）。 */
 .ecfg-empty{display:flex;flex-direction:column;align-items:center;gap:5px;
   padding:4px 0 2px;text-align:center}
-.ecfg-empty-art{color:var(--accent-light);opacity:.38;line-height:0}
+.ecfg-empty-art{color:var(--content-muted);opacity:.38;line-height:0}
 .ecfg-empty-art svg{display:block;height:46px;width:auto;margin:0 auto}
 .ecfg-empty-title{margin:0;font-family:var(--font-display);font-size:.96rem;font-weight:500;
   letter-spacing:.02em;line-height:1.5;color:var(--content-primary)}
-.ecfg-empty-body{margin:0;font-size:.72rem;line-height:1.62;color:var(--content-muted);max-width:52ch}
+.ecfg-empty-body{margin:0;font-size:var(--fs-meta);line-height:1.62;color:var(--content-muted);max-width:52ch}
 .ecfg-card-plain .ecfg-empty-art{opacity:.34}
 
 /* ── P22-22 · "尚未完成 Initial Bootstrap"：状态 → 原因 → 输入 ─────────
@@ -347,7 +347,6 @@
    没有一条"只在一个主题里正确"的 RGB。 */
 body:not(.theme-infernal) #economy-configuration,
 body:not(.theme-infernal) #economy-configuration *{text-shadow:none}
-body:not(.theme-infernal) #economy-configuration .ecfg-card-title{text-shadow:0 0 12px rgba(255,255,255,.5)}
 body:not(.theme-infernal) .ecfg-card{background:var(--surface-panel-strong)}
 body:not(.theme-infernal) .ecfg-ownerbar,
 body:not(.theme-infernal) .ecfg-figures,
@@ -357,17 +356,15 @@ body:not(.theme-infernal) .ecfg-bound,
 body:not(.theme-infernal) .ecfg-experience,
 body:not(.theme-infernal) .ecfg-feedback,
 body:not(.theme-infernal) .ecfg-seg,
-body:not(.theme-infernal) .ecfg-sk{background:rgba(255,255,255,.40);border-color:rgba(200,225,248,.45)}
-body:not(.theme-infernal) .ecfg-input{background:rgba(255,255,255,.52);border-color:rgba(170,205,242,.34)}
-body:not(.theme-infernal) .ecfg-owner-select{background-color:rgba(255,255,255,.52);border-color:rgba(170,205,242,.34)}
-body:not(.theme-infernal) .ecfg-seg-btn.is-on{background:rgba(255,255,255,.72)}
-body:not(.theme-infernal) .ecfg-btn{background:rgba(255,255,255,.42);border-color:rgba(170,205,242,.36)}
-body:not(.theme-infernal) .ecfg-btn-primary{background:color-mix(in srgb,var(--accent) 13%,rgba(255,255,255,.5))}
+body:not(.theme-infernal) .ecfg-sk{background:color-mix(in srgb,var(--white) 40%,transparent);border-color:color-mix(in srgb,var(--accent-light) 37%,transparent)}
+body:not(.theme-infernal) .ecfg-input{background:color-mix(in srgb,var(--white) 52%,transparent);border-color:color-mix(in srgb,var(--accent-light) 28%,transparent)}
+body:not(.theme-infernal) .ecfg-owner-select{background-color:color-mix(in srgb,var(--white) 52%,transparent);border-color:color-mix(in srgb,var(--accent-light) 28%,transparent)}
+body:not(.theme-infernal) .ecfg-seg-btn.is-on{background:color-mix(in srgb,var(--white) 72%,transparent)}
+body:not(.theme-infernal) .ecfg-btn{background:color-mix(in srgb,var(--white) 42%,transparent);border-color:color-mix(in srgb,var(--accent-light) 30%,transparent)}
+body:not(.theme-infernal) .ecfg-btn-primary{background:color-mix(in srgb,var(--accent) 13%,color-mix(in srgb,var(--white) 50%,transparent))}
 body:not(.theme-infernal) .ecfg-btn-quiet{background:none}
-body:not(.theme-infernal) .ecfg-empty-art{color:#5a7ba6}
-body:not(.theme-infernal) .ecfg-meter-track{background:rgba(120,165,215,.26);box-shadow:inset 0 0 0 1px rgba(120,165,215,.24)}
+body:not(.theme-infernal) .ecfg-meter-track{background:color-mix(in srgb,var(--accent-light) 26%,transparent);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent-light) 24%,transparent)}
 body.theme-infernal .ecfg-card{background:var(--glass-bg-elevated)}
-body.theme-infernal .ecfg-empty-art{color:#8fa8c8}
 
 /* ── 响应式（§6）─────────────────────────────────────────────────────
    一处 DOM，四个断点：
@@ -413,13 +410,13 @@ body.theme-infernal .ecfg-empty-art{color:#8fa8c8}
   /* P22-22：窄屏上标题与空状态再收一档，页签那一行不被推下去。 */
   .ecfg-section{padding-left:10px}
   .ecfg-section-title{font-size:.98rem}
-  .ecfg-section-sub{font-size:.71rem}
+  .ecfg-section-sub{font-size:var(--fs-meta)}
   .ecfg-empty{padding:3px 0 2px}
   .ecfg-empty-art svg{height:42px}
   .ecfg-state-text{font-size:.96rem}
 }
 @media (max-width:380px){
-  .ecfg-card-sub,.ecfg-note{font-size:.7rem}
+  .ecfg-card-sub,.ecfg-note{font-size:var(--fs-meta)}
   .ecfg-meter-v{font-size:.8rem}
 }
 @media (prefers-reduced-motion:reduce){

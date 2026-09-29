@@ -29,10 +29,10 @@ function ensureStyle(){
   var st = document.createElement('style');
   st.id = 'ib-rs-style';
   st.textContent =
-    '#ib-rs-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:12px;padding-top:10px;border-top:1px solid var(--glass-border);font-size:0.82rem}' +
+    '#ib-rs-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:12px;padding-top:10px;border-top:1px solid var(--border-soft);font-size:0.82rem}' +
     '#ib-rs-row .ib-rs-status{opacity:0.75}' +
     '#ib-rs-row .ib-rs-status.ib-rs-ready{color:var(--accent-light);opacity:1}' +
-    '#ib-rs-row .ib-rs-status.ib-rs-failed{color:#c46060;opacity:1}';
+    '#ib-rs-row .ib-rs-status.ib-rs-failed{color:var(--status-danger);opacity:1}';
   document.head.appendChild(st);
 }
 

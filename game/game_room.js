@@ -287,7 +287,7 @@ async function openGamePanel(){
       await initGame(container);
     }catch(e){
       console.error('[SuiGame] Init failed:',e);
-      container.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:160px;color:#e88;font-size:0.85rem;padding:20px;text-align:center">加载失败，请按F12查看控制台<br>'+e.message+'</div>';
+      container.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:160px;color:var(--status-danger);font-size:0.85rem;padding:20px;text-align:center">加载失败，请按F12查看控制台<br>'+e.message+'</div>';
       return;
     }
   }else if(G.viewport && G.viewport.parentElement!==container){
@@ -459,7 +459,7 @@ async function openGamePage(){
       await initGame(container);
     }catch(e){
       console.error('[SuiGame] Init failed:',e);
-      container.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:300px;color:#e88;font-size:0.85rem;padding:20px;text-align:center">加载失败，请按F12查看控制台<br>'+e.message+'</div>';
+      container.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:300px;color:var(--status-danger);font-size:0.85rem;padding:20px;text-align:center">加载失败，请按F12查看控制台<br>'+e.message+'</div>';
       return;
     }
   }else if(G.viewport && G.viewport.parentElement!==container){

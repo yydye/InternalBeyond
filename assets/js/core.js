@@ -615,11 +615,11 @@ async function promptLockedDiary(){
   const cfg=await getLockedDiaryConfig();
   if(!cfg){/* First time — show setup */
     const modal=document.createElement('div');modal.className='modal-overlay show';modal.id='locked-diary-modal';
-    modal.innerHTML='<div class="modal glass-card" style="max-width:380px"><h3>密码日记本</h3><p style="font-size:0.82rem;line-height:1.7;margin-bottom:16px;color:var(--text-primary)">Tea 和 Story 的对话记录将保存在这里。首次使用请设置密码。</p><input type="password" id="ld-pwd" placeholder="设置6位数字密码" maxlength="6" value="260323"><input type="text" id="ld-sq" placeholder="密保问题（必填，如：我的生日是？）"><input type="text" id="ld-sa" placeholder="密保答案（必填）"><p style="font-size:0.72rem;color:var(--text-primary);line-height:1.6;margin-bottom:16px;opacity:0.7">请牢记密码和密保问题。忘记密码可通过密保重置为系统默认密码（260323），若密保也遗忘则只能清除浏览器数据重新开始。</p><div class="modal-actions"><button class="btn" onclick="cancelDiaryPrompt()">取消</button><button class="btn btn-primary" onclick="setupLockedDiary()">确认</button></div></div>';
+    modal.innerHTML='<div class="modal glass-card" style="max-width:380px"><h3>密码日记本</h3><p style="font-size:0.82rem;line-height:1.7;margin-bottom:16px;color:var(--content-primary)">Tea 和 Story 的对话记录将保存在这里。首次使用请设置密码。</p><input type="password" id="ld-pwd" placeholder="设置6位数字密码" maxlength="6" value="260323"><input type="text" id="ld-sq" placeholder="密保问题（必填，如：我的生日是？）"><input type="text" id="ld-sa" placeholder="密保答案（必填）"><p style="font-size:var(--fs-meta);color:var(--content-primary);line-height:1.6;margin-bottom:16px;opacity:0.7">请牢记密码和密保问题。忘记密码可通过密保重置为系统默认密码（260323），若密保也遗忘则只能清除浏览器数据重新开始。</p><div class="modal-actions"><button class="btn" onclick="cancelDiaryPrompt()">取消</button><button class="btn btn-primary" onclick="setupLockedDiary()">确认</button></div></div>';
     document.body.appendChild(modal);
   }else{/* Password entry */
     const modal=document.createElement('div');modal.className='modal-overlay show';modal.id='locked-diary-modal';
-    modal.innerHTML='<div class="modal glass-card" style="max-width:340px"><h3>输入密码</h3><p style="font-size:0.78rem;color:var(--text-primary);margin-bottom:14px;opacity:0.85">系统默认密码：260323</p><input type="password" id="ld-pwd-input" placeholder="6位数字密码" maxlength="6"><div class="modal-actions" style="justify-content:space-between"><span onclick="forgotLockedPwd()" style="font-size:0.78rem;color:#5577aa;cursor:pointer;text-decoration:underline;align-self:center">忘记密码?</span><div style="display:flex;gap:10px"><button class="btn" onclick="cancelDiaryPrompt()">取消</button><button class="btn btn-primary" onclick="unlockDiary()">解锁</button></div></div></div>';
+    modal.innerHTML='<div class="modal glass-card" style="max-width:340px"><h3>输入密码</h3><p style="font-size:0.78rem;color:var(--content-primary);margin-bottom:14px;opacity:0.85">系统默认密码：260323</p><input type="password" id="ld-pwd-input" placeholder="6位数字密码" maxlength="6"><div class="modal-actions" style="justify-content:space-between"><span onclick="forgotLockedPwd()" style="font-size:0.78rem;color:var(--accent);cursor:pointer;text-decoration:underline;align-self:center">忘记密码?</span><div style="display:flex;gap:10px"><button class="btn" onclick="cancelDiaryPrompt()">取消</button><button class="btn btn-primary" onclick="unlockDiary()">解锁</button></div></div></div>';
     document.body.appendChild(modal);
     setTimeout(()=>document.getElementById('ld-pwd-input')?.focus(),100);
   }
@@ -668,7 +668,7 @@ async function forgotLockedPwd(){
 function showChangeDiaryPwd(){
   if(!lockedDiaryUnlocked){toast('请先解锁密码日记本');return}
   const modal=document.createElement('div');modal.className='modal-overlay show';modal.id='locked-diary-modal';
-  modal.innerHTML='<div class="modal glass-card" style="max-width:380px"><h3>修改密码</h3><p style="font-size:0.82rem;line-height:1.7;margin-bottom:16px;color:var(--text-primary)">修改密码日记本的密码和密保问题。</p><input type="password" id="ld-new-pwd" placeholder="新密码（6位数字）" maxlength="6"><input type="text" id="ld-new-sq" placeholder="新密保问题（必填）"><input type="text" id="ld-new-sa" placeholder="新密保答案（必填）"><div class="modal-actions"><button class="btn" onclick="document.getElementById(\'locked-diary-modal\').remove()">取消</button><button class="btn btn-primary" onclick="confirmChangeDiaryPwd()">确认修改</button></div></div>';
+  modal.innerHTML='<div class="modal glass-card" style="max-width:380px"><h3>修改密码</h3><p style="font-size:0.82rem;line-height:1.7;margin-bottom:16px;color:var(--content-primary)">修改密码日记本的密码和密保问题。</p><input type="password" id="ld-new-pwd" placeholder="新密码（6位数字）" maxlength="6"><input type="text" id="ld-new-sq" placeholder="新密保问题（必填）"><input type="text" id="ld-new-sa" placeholder="新密保答案（必填）"><div class="modal-actions"><button class="btn" onclick="document.getElementById(\'locked-diary-modal\').remove()">取消</button><button class="btn btn-primary" onclick="confirmChangeDiaryPwd()">确认修改</button></div></div>';
   document.body.appendChild(modal);
 }
 async function confirmChangeDiaryPwd(){
@@ -915,25 +915,25 @@ async function openAboutEdit(){
         +'</div>'
       +'</div>'
       +'<div class="pc-bio-col" style="overflow-y:auto">'
-        +'<label style="font-size:0.78rem;color:var(--silver);margin:0 0 6px;letter-spacing:0.03em">昵称 <span style="font-weight:400;opacity:0.5;font-size:0.7rem">（限12个汉字或24个字符）</span></label>'
-        +'<input id="about-name" value="'+esc(data.name||'')+'" maxlength="24" oninput="limitNickname(this)" style="width:100%;padding:10px 14px;border-radius:10px;border:1px solid var(--glass-border);background:rgba(155,180,218,0.08);color:var(--text-primary);font-family:\'Noto Sans SC\',sans-serif;font-size:0.9rem;outline:none;box-sizing:border-box;margin-bottom:14px">'
-        +'<label style="font-size:0.78rem;color:var(--silver);margin:0 0 6px;letter-spacing:0.03em">昵称颜色</label>'
+        +'<label style="font-size:0.78rem;color:var(--content-secondary);margin:0 0 6px;letter-spacing:0.03em">昵称 <span style="font-weight:400;opacity:0.5;font-size:var(--fs-meta)">（限12个汉字或24个字符）</span></label>'
+        +'<input id="about-name" value="'+esc(data.name||'')+'" maxlength="24" oninput="limitNickname(this)" style="width:100%;padding:10px 14px;border-radius:var(--radius-control);border:1px solid var(--border-soft);background:var(--surface-input);color:var(--content-primary);font-family:\'Noto Sans SC\',sans-serif;font-size:0.9rem;outline:none;box-sizing:border-box;margin-bottom:14px">'
+        +'<label style="font-size:0.78rem;color:var(--content-secondary);margin:0 0 6px;letter-spacing:0.03em">昵称颜色</label>'
         +'<div class="pc-namecolor-row" id="pc-namecolor-row">'
           +'<button type="button" class="pc-cswatch'+(_pendingNameColor==='theme'?' active':'')+'" data-k="theme" onclick="selectNameColor(\'theme\')" title="跟随当前主题"><i style="background:linear-gradient(135deg,#152c58 0 50%,#e9eef7 50% 100%)"></i></button>'
           +'<button type="button" class="pc-cswatch'+(_pendingNameColor==='black'?' active':'')+'" data-k="black" onclick="selectNameColor(\'black\')" title="黑色"><i style="background:#1a1a1a"></i></button>'
           +'<button type="button" class="pc-cswatch'+(_pendingNameColor==='white'?' active':'')+'" data-k="white" onclick="selectNameColor(\'white\')" title="白色"><i style="background:#ffffff"></i></button>'
         +'</div>'
-        +'<label style="font-size:0.78rem;color:var(--silver);margin:0 0 6px;letter-spacing:0.03em">个人简介 <span style="font-size:0.7rem;color:var(--text-muted);float:right" id="pf-bio-count">'+_weightedLen(data.bio||'')+'/'+PROFILE_BIO_LIMIT+'</span></label>'
-        +'<textarea id="about-bio" rows="5" style="width:100%;padding:10px 14px;border-radius:10px;border:1px solid var(--glass-border);background:rgba(155,180,218,0.08);color:var(--text-primary);font-family:\'Noto Sans SC\',sans-serif;font-size:0.9rem;outline:none;box-sizing:border-box;resize:none;line-height:1.8;margin-bottom:14px" oninput="limitProfileField(this,'+PROFILE_BIO_LIMIT+',\'_lastValidBio\',\'pf-bio-count\')">'+esc(data.bio||'')+'</textarea>'
-        +'<label style="font-size:0.78rem;color:var(--silver);margin:0 0 6px;letter-spacing:0.03em">自定义文本（不发给 API）<span style="font-size:0.7rem;color:var(--text-muted);float:right" id="pf-custom-count">'+_weightedLen(data.customText||'')+'/'+PROFILE_CUSTOM_LIMIT+'</span></label>'
-        +'<textarea id="about-custom" rows="3" style="width:100%;padding:10px 14px;border-radius:10px;border:1px solid var(--glass-border);background:rgba(155,180,218,0.08);color:var(--text-primary);font-family:\'Noto Sans SC\',sans-serif;font-size:0.9rem;outline:none;box-sizing:border-box;resize:none;line-height:1.8;margin-bottom:14px" oninput="limitProfileField(this,'+PROFILE_CUSTOM_LIMIT+',\'_lastValidCustom\',\'pf-custom-count\')">'+esc(data.customText||'')+'</textarea>'
-        +'<label style="font-size:0.78rem;color:var(--silver);margin:0 0 6px;letter-spacing:0.03em">作品集图片</label>'
+        +'<label style="font-size:0.78rem;color:var(--content-secondary);margin:0 0 6px;letter-spacing:0.03em">个人简介 <span style="font-size:var(--fs-meta);color:var(--content-muted);float:right" id="pf-bio-count">'+_weightedLen(data.bio||'')+'/'+PROFILE_BIO_LIMIT+'</span></label>'
+        +'<textarea id="about-bio" rows="5" style="width:100%;padding:10px 14px;border-radius:var(--radius-control);border:1px solid var(--border-soft);background:var(--surface-input);color:var(--content-primary);font-family:\'Noto Sans SC\',sans-serif;font-size:0.9rem;outline:none;box-sizing:border-box;resize:none;line-height:1.8;margin-bottom:14px" oninput="limitProfileField(this,'+PROFILE_BIO_LIMIT+',\'_lastValidBio\',\'pf-bio-count\')">'+esc(data.bio||'')+'</textarea>'
+        +'<label style="font-size:0.78rem;color:var(--content-secondary);margin:0 0 6px;letter-spacing:0.03em">自定义文本（不发给 API）<span style="font-size:var(--fs-meta);color:var(--content-muted);float:right" id="pf-custom-count">'+_weightedLen(data.customText||'')+'/'+PROFILE_CUSTOM_LIMIT+'</span></label>'
+        +'<textarea id="about-custom" rows="3" style="width:100%;padding:10px 14px;border-radius:var(--radius-control);border:1px solid var(--border-soft);background:var(--surface-input);color:var(--content-primary);font-family:\'Noto Sans SC\',sans-serif;font-size:0.9rem;outline:none;box-sizing:border-box;resize:none;line-height:1.8;margin-bottom:14px" oninput="limitProfileField(this,'+PROFILE_CUSTOM_LIMIT+',\'_lastValidCustom\',\'pf-custom-count\')">'+esc(data.customText||'')+'</textarea>'
+        +'<label style="font-size:0.78rem;color:var(--content-secondary);margin:0 0 6px;letter-spacing:0.03em">作品集图片</label>'
         +'<div style="display:flex;gap:8px;margin-bottom:14px">'
           +'<button class="pc-edit-upload-btn" onclick="triggerGalleryEditUpload(0)">图片 I</button>'
           +'<button class="pc-edit-upload-btn" onclick="triggerGalleryEditUpload(1)">图片 II</button>'
           +'<button class="pc-edit-upload-btn" onclick="triggerGalleryEditUpload(2)">图片 III</button>'
         +'</div>'
-        +'<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:0.78rem;color:var(--silver);margin:0 0 14px;letter-spacing:0.03em"><input type="checkbox" id="about-show-nav" class="u-native-check"'+(data.showInNav!==false?' checked':'')+'>  在导航栏显示昵称和头像</label>'
+        +'<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:0.78rem;color:var(--content-secondary);margin:0 0 14px;letter-spacing:0.03em"><input type="checkbox" id="about-show-nav" class="u-native-check"'+(data.showInNav!==false?' checked':'')+'>  在导航栏显示昵称和头像</label>'
         +'<div style="display:flex;gap:10px;margin-top:auto;padding-top:12px">'
           +'<button class="btn btn-primary" onclick="saveAbout()">保存</button>'
           +'<button class="btn" onclick="loadAboutDisplay()">取消</button>'
@@ -1306,7 +1306,7 @@ function _ibShowGuardOverlay(){
   _ibGuardShown=true;
   var meta=null;try{meta=JSON.parse(localStorage.getItem(IB_MIRROR_META)||'null')}catch(e){}
   var ov=document.createElement('div');ov.id='ib-guard-overlay';
-  var mirrorBtn=(meta&&meta.total>0)?'<button class="btn" style="border-color:rgba(120,190,140,0.5)" onclick="_ibRestoreMirror()">从紧急镜像恢复（'+(meta.msgs||0)+' 条聊天 · '+new Date(meta.ts).toLocaleString('zh-CN',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})+'）</button>':'';
+  var mirrorBtn=(meta&&meta.total>0)?'<button class="btn" style="border-color:color-mix(in srgb,var(--status-success) 50%,transparent)" onclick="_ibRestoreMirror()">从紧急镜像恢复（'+(meta.msgs||0)+' 条聊天 · '+new Date(meta.ts).toLocaleString('zh-CN',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})+'）</button>':'';
   ov.innerHTML='<div class="ibg-card">'
     +'<div class="ibg-title">检测到异常：数据库清空</div>'
     +'<div class="ibg-text">这台浏览器留有本站的历史使用痕迹，但整站数据为空。可能刚刚发生了浏览器层面的数据清除（磁盘告急触发的存储回收 / 数据库损坏自愈重建）。建议请先不要写入新内容。</div>'

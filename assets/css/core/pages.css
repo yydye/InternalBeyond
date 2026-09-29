@@ -12,7 +12,7 @@
 #page-guide{--guide-rail:908px;max-width:calc(var(--guide-rail) + 64px);padding-top:74px}
 #page-guide .guide-header{margin-bottom:22px;padding-bottom:14px;border-bottom:1px solid var(--border-soft)}
 #page-guide .guide-header h2{font-size:1.5rem;font-weight:600;margin-bottom:6px;color:var(--content-primary)}
-#page-guide .guide-header p{font-size:0.72rem;letter-spacing:0.16em;color:var(--content-muted)}
+#page-guide .guide-header p{font-size:var(--fs-meta);letter-spacing:0.16em;color:var(--content-muted)}
 /* 轨道已由 #page-guide 的内容盒给出：此前并列的 1240px（页面）与 900px（非 P6 章节）两条宽度规则已删除。 */
 /* 右侧浮动 CONTENTS 退役：元素与 core.js 的 .visible 逻辑保留（深链与测试仍引用该锚点） */
 #guide-toc.visible{visibility:hidden;opacity:0;pointer-events:none}
@@ -20,16 +20,11 @@
 /* GUIDE TOC（已退役，见上；定位里的 908px 只是跟随同一条轨道，不影响任何显示） */
 .guide-toc{position:fixed;right:calc((100vw - 908px)/2 - 170px);top:50%;transform:translateY(-50%);z-index:50;width:auto;padding:16px 0 16px 18px;border-radius:0;border:none;background:none;max-height:calc(100vh - 140px);overflow-y:auto;opacity:0;pointer-events:none;transition:opacity 0.5s ease}
 .guide-toc.visible{opacity:1;pointer-events:auto}
-.guide-toc-title{font-family:'Cormorant Garamond',serif;font-size:1.05rem;font-weight:700;color:var(--white);letter-spacing:0.22em;margin-bottom:16px;text-transform:uppercase;opacity:1;text-shadow:0 0 16px rgba(114,168,216,0.55),0 1px 2px rgba(0,0,0,0.45)}
+.guide-toc-title{font-family:'Cormorant Garamond',serif;font-size:1.05rem;font-weight:700;color:var(--content-primary);letter-spacing:0.22em;margin-bottom:16px;text-transform:uppercase;opacity:1}
 .guide-toc-title::after{content:'';display:block;width:40px;height:2px;margin-top:9px;border-radius:2px;background:linear-gradient(90deg,var(--accent-light),transparent)}
-.guide-toc a{display:block;padding:6px 0 6px 16px;font-size:0.9rem;color:var(--silver);text-decoration:none;font-family:'Noto Sans SC',sans-serif;font-weight:400;transition:color 0.2s,border-color 0.2s,text-shadow 0.2s;letter-spacing:0.08em;line-height:1.95;border-left:1.5px solid rgba(165,188,230,0.28);white-space:nowrap;text-shadow:0 1px 2px rgba(0,0,0,0.3)}
-.guide-toc a:hover{color:var(--white);border-left-color:var(--accent-light);text-shadow:0 0 10px rgba(114,168,216,0.5)}
-body:not(.theme-infernal) .guide-toc{background:none;border:none}
-body:not(.theme-infernal) .guide-toc-title{color:#142f5e;text-shadow:0 0 14px rgba(255,255,255,0.75),0 1px 1px rgba(110,150,205,0.3)}
-body:not(.theme-infernal) .guide-toc-title::after{background:linear-gradient(90deg,#4f86bd,transparent)}
-body:not(.theme-infernal) .guide-toc a{color:#274781;border-left-color:rgba(80,140,200,0.3);text-shadow:0 1px 2px rgba(255,255,255,0.5)}
-body:not(.theme-infernal) .guide-toc a:hover{color:#0a1e42;border-left-color:#5080b0}
-.guide-toc::-webkit-scrollbar{width:2px}.guide-toc::-webkit-scrollbar-thumb{background:rgba(175,195,228,0.2);border-radius:2px}
+.guide-toc a{display:block;padding:6px 0 6px 16px;font-size:0.9rem;color:var(--content-secondary);text-decoration:none;font-family:'Noto Sans SC',sans-serif;font-weight:400;transition:color 0.2s,border-color 0.2s,text-shadow 0.2s;letter-spacing:0.08em;line-height:1.95;border-left:1.5px solid var(--border-soft);white-space:nowrap}
+.guide-toc a:hover{color:var(--content-primary);border-left-color:var(--accent)}
+.guide-toc::-webkit-scrollbar{width:2px}.guide-toc::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--accent) 22%,transparent);border-radius:2px}
 @media(max-width:1200px){.guide-toc{display:none}}
 /* Collapsible TOC sub-items */
 .toc-parent{cursor:pointer;position:relative}
@@ -41,8 +36,8 @@ body:not(.theme-infernal) .guide-toc a:hover{color:#0a1e42;border-left-color:#50
 .toc-sub a:hover{opacity:1}
 
 .guide-header{text-align:center;margin-bottom:52px}
-.page .guide-header h2{font-family:'Cormorant Garamond',serif;font-weight:300;font-style:italic;font-size:2.4rem;color:var(--silver);margin-bottom:10px}
-.guide-header p{font-size:0.72rem;color:var(--text-muted);letter-spacing:0.14em;font-family:'Raleway',sans-serif;font-weight:300;opacity:0.7}
+.page .guide-header h2{font-family:'Cormorant Garamond',serif;font-weight:300;font-style:italic;font-size:2.4rem;color:var(--content-secondary);margin-bottom:10px}
+.guide-header p{font-size:var(--fs-meta);color:var(--content-muted);letter-spacing:0.14em;font-family:'Raleway',sans-serif;font-weight:300;opacity:0.7}
 .guide-section{margin-bottom:36px}
 /* P10-B final polish：章节级规则收到直接子元素，避免泄漏进 #guide-beginner
    （#guide-beginner 本身就是 .guide-section，它内部的 h3 / li 有自己的排版）。 */
@@ -96,9 +91,13 @@ body:not(.theme-infernal) #page-guide span{text-shadow:none}
   color:var(--content-secondary);line-height:1.8;margin-bottom:14px}
 .author-links{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 .author-desc.meta{margin-top:6px;font-size:0.8rem;color:var(--content-muted)}
+.ib-email-link{color:var(--accent);text-decoration:underline}
+.ib-email-link:hover{color:var(--accent-light)}
+#page-guide a:not([class]){color:var(--accent);text-decoration:underline}
+#page-guide a:not([class]):hover{color:var(--accent-light)}
 .author-links.extra{margin-top:14px}
 /* 作者链接 = 控件：rest 微凸 → hover 抬 1px → 按下 inset */
-.author-link{display:inline-flex;align-items:center;gap:6px;padding:5px 14px;border-radius:999px;
+.author-link{display:inline-flex;align-items:center;gap:6px;padding:5px 14px;border-radius:var(--radius-control);
   font-family:'Noto Sans SC',sans-serif;font-size:0.78rem;font-weight:400;
   color:var(--content-secondary);text-decoration:none;
   background:var(--glass-bg-ambient);border:1px solid var(--glass-border-soft);
@@ -110,19 +109,16 @@ body:not(.theme-infernal) #page-guide span{text-shadow:none}
 .author-link:active{box-shadow:var(--neo-pressed);transform:translateY(0)}
 .author-link:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}
 .author-link svg{width:13px;height:13px;flex-shrink:0}
-.author-link.tip-btn{background:rgba(220,180,120,0.08);border-color:rgba(220,180,120,0.18);color:rgba(220,195,150,0.9)}
-.author-link.tip-btn:hover{background:rgba(220,180,120,0.18);border-color:rgba(220,180,120,0.35);color:rgba(240,210,160,1)}
+.author-link.tip-btn{background:color-mix(in srgb,var(--status-warning) 10%,transparent);border-color:color-mix(in srgb,var(--status-warning) 28%,transparent);color:color-mix(in srgb,var(--status-warning) 82%,var(--content-primary))}
+.author-link.tip-btn:hover{background:color-mix(in srgb,var(--status-warning) 18%,transparent);border-color:color-mix(in srgb,var(--status-warning) 45%,transparent);color:color-mix(in srgb,var(--status-warning) 95%,var(--content-primary))}
 .tip-dropdown{max-height:0;overflow:hidden;transition:max-height 0.4s var(--transition),margin 0.3s;margin-top:0}
 .tip-dropdown.open{max-height:360px;margin-top:14px}
 .tip-dropdown-inner{text-align:center;padding:18px;border-radius:var(--glass-radius-md);
   background:var(--glass-bg-ambient);border:1px solid var(--glass-border-soft)}
 .tip-dropdown-inner p{font-family:'Noto Sans SC',sans-serif;font-size:0.8rem;color:var(--content-muted);margin-bottom:12px;line-height:1.7}
 .tip-qr{width:180px;height:180px;border-radius:var(--glass-radius-sm);overflow:hidden;margin:0 auto;
-  border:1px solid var(--glass-border-soft);background:rgba(255,255,255,0.95)}
+  border:1px solid var(--glass-border-soft);background:var(--white)}
 .tip-qr img{width:100%;height:100%;object-fit:contain;display:block}
-body:not(.theme-infernal) .author-avatar{border-color:rgba(150,195,242,0.45);box-shadow:0 0 0 4px rgba(160,200,245,0.12),0 4px 16px rgba(110,165,238,0.16)}
-body:not(.theme-infernal) .author-link.tip-btn{color:#8a6520;background:rgba(255,235,180,0.35);border-color:rgba(210,175,100,0.25)}
-body:not(.theme-infernal) .author-link.tip-btn:hover{background:rgba(255,230,160,0.5);border-color:rgba(200,165,80,0.4);color:#6b4e10}
 @media(max-width:600px){
   .author-card{flex-direction:column;text-align:center;gap:16px;padding:24px 20px}
   .author-links{justify-content:center}
@@ -143,7 +139,7 @@ body:not(.theme-infernal) .author-link.tip-btn:hover{background:rgba(255,230,160
   background:var(--glass-bg-ambient);border:1px solid var(--glass-border-soft);border-radius:var(--glass-radius-md);
   font-family:'Raleway','Noto Sans SC',sans-serif;font-weight:300;letter-spacing:0.05em;transition:background var(--motion-fast) var(--transition),border-color var(--motion-fast) var(--transition),color var(--motion-fast) var(--transition);list-style:none;display:flex;align-items:center;gap:9px}
 .thinking-block summary::-webkit-details-marker{display:none}
-.thinking-block summary::before{content:'▸';font-size:0.66rem;transition:transform 0.3s,opacity 0.3s;color:var(--accent);opacity:0.7}
+.thinking-block summary::before{content:'▸';font-size:var(--fs-meta);transition:transform 0.3s,opacity 0.3s;color:var(--accent);opacity:0.7}
 .thinking-block[open] summary::before{transform:rotate(90deg);opacity:1}
 .thinking-block[open] summary{border-radius:var(--glass-radius-md) var(--glass-radius-md) 0 0;border-bottom-color:var(--glass-border-soft)}
 .thinking-block summary:hover{background:var(--glass-bg-elevated);color:var(--content-secondary)}
@@ -191,4 +187,3 @@ body.theme-infernal .home-content{--ti:#f5f0ee;--tb:#4c1a22;--tiglow:0 1px 12px 
 @keyframes fadeUp{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
 
 .theme-text-fade{opacity:0!important;transform:translateY(10px)!important;transition:opacity 1s ease-out,transform 1s ease-out!important}
-

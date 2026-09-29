@@ -630,7 +630,7 @@ function _ibRichLibsMount(){
   if(!body)return;
   body.innerHTML=''
     +'<label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer"><input type="checkbox" id="ib-richlib-toggle" class="u-native-check"'+(_ibRichLibsOn()?' checked':'')+'> 允许联网获取解析库</label>'
-    +'<div style="font-size:0.72rem;opacity:0.6;line-height:1.7;margin:4px 0 10px">解析库用于 PDF / DOCX / XLSX / PPTX 等文件的预览、文本提取与文件生成。开启后，首次用到某格式时才从公共代码源（cdnjs / jsDelivr，均为开源许可）下载对应库，并长期保存在浏览器本地，此后离线可用；关闭状态不发起任何网络请求，相关功能会提示先开启本开关。默认关闭。</div>'
+    +'<div style="font-size:var(--fs-meta);opacity:0.6;line-height:1.7;margin:4px 0 10px">解析库用于 PDF / DOCX / XLSX / PPTX 等文件的预览、文本提取与文件生成。开启后，首次用到某格式时才从公共代码源（cdnjs / jsDelivr，均为开源许可）下载对应库，并长期保存在浏览器本地，此后离线可用；关闭状态不发起任何网络请求，相关功能会提示先开启本开关。默认关闭。</div>'
     +'<div id="ib-richlib-list" style="font-size:0.8rem;line-height:2">检测中…</div>'
     +'<div style="margin:8px 0 14px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-compact" id="ib-richlib-all">一次性全部获取</button><button class="btn btn-compact" id="ib-richlib-clear">清除已下载</button></div>'
     +'<div style="font-size:13px;display:flex;flex-direction:column;gap:6px">'
@@ -638,7 +638,7 @@ function _ibRichLibsMount(){
     +'<label>PDF「以图片发送」单次页数上限（1–60）<input type="number" id="ib-richlib-pgs" class="ib-num" min="1" max="60" style="width:64px;margin-left:6px"></label>'
     +'<label>DOCX 内嵌图片提取张数上限（1–30）<input type="number" id="ib-richlib-din" class="ib-num" min="1" max="30" style="width:64px;margin-left:6px"></label>'
     +'</div>'
-    +'<div style="font-size:0.72rem;opacity:0.6;line-height:1.7;margin-top:6px">注入上限同时作用于聊天附件与 ws_read 的单文件文本；超出部分自动截断并注明，AI 可用 ws_read 的分段参数继续读取。调大仅对超长上下文模型有意义，且按输入计费。</div>';
+    +'<div style="font-size:var(--fs-meta);opacity:0.6;line-height:1.7;margin-top:6px">注入上限同时作用于聊天附件与 ws_read 的单文件文本；超出部分自动截断并注明，AI 可用 ws_read 的分段参数继续读取。调大仅对超长上下文模型有意义，且按输入计费。</div>';
   var tg=document.getElementById('ib-richlib-toggle');
   if(tg)tg.onchange=function(){
     try{localStorage.setItem('ib_richLibs',tg.checked?'1':'0')}catch(e){}
@@ -1026,7 +1026,7 @@ async function renderWsFiles(projId){
     +(isSys?'':'<button class="ws-file-btn" onclick="wsRenameCurrentProject(\''+projId+'\')">重命名</button>'
     +'<button class="ws-file-btn danger" onclick="wsConfirmDeleteProject(\''+projId+'\')">删除项目</button>')
     +'</div></div>';
-  if(!files.length){html+='<div class="ws-empty" style="padding:30px">'+(isUsr?'还没有上传过文件<br><span style="font-size:0.72rem;opacity:0.8">在聊天里附加发送的文件会自动归档到这里</span>':'项目中还没有文件')+'</div>';body.innerHTML=html;_wsUpdateStorage();return}
+  if(!files.length){html+='<div class="ws-empty" style="padding:30px">'+(isUsr?'还没有上传过文件<br><span style="font-size:var(--fs-meta);opacity:0.8">在聊天里附加发送的文件会自动归档到这里</span>':'项目中还没有文件')+'</div>';body.innerHTML=html;_wsUpdateStorage();return}
   for(var f of files){
     html+='<div class="ws-file-row" id="wsf-'+f.id+'" draggable="true" ondragstart="wsFileDragStart(event,this,\''+f.id+'\')" title="拖到聊天窗口可作为附件发送">'
       +'<div class="ws-file-icon">'+WS_ICON.file+'</div>'
@@ -1166,7 +1166,7 @@ async function wsMoveCopyDialog(fileId,fromProjId){
   var mask=document.createElement('div');mask.className='ws-dialog-mask';
   var d=document.createElement('div');d.className='ws-dialog';
   d.innerHTML='<h4>复制或移动文件</h4>'
-    +'<p><b>'+esc(f.path)+'</b>　<span style="font-size:0.72rem;opacity:0.75">'+_fmtFileSize(f.size||0)+'</span></p>'
+    +'<p><b>'+esc(f.path)+'</b>　<span style="font-size:var(--fs-meta);opacity:0.75">'+_fmtFileSize(f.size||0)+'</span></p>'
     +'<div class="ws-dialog-list">'+listHtml+'</div>'
     +'<div class="ws-dialog-note">若目标里已有同名文件，会自动存为「名称 (2)」的形式，不会覆盖。</div>'
     +'<div class="ws-dialog-actions">'

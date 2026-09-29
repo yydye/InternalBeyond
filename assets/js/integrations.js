@@ -1117,7 +1117,7 @@ const IBDIY = {
     const rows = c.servers.map((s, i) => {
       const st = s.status === 'ok'
         ? '<span style="color:var(--accent)">已连接 · ' + (s.tools || []).length + ' 个工具</span>'
-        : (s.lastError ? '<span style="color:#c44">' + this.esc(String(s.lastError).slice(0, 90)) + '</span>' : '<span style="opacity:.55">未连接</span>');
+        : (s.lastError ? '<span style="color:var(--status-danger)">' + this.esc(String(s.lastError).slice(0, 90)) + '</span>' : '<span style="opacity:.55">未连接</span>');
       const _mr = parseInt(s.maxRounds, 10);
       const mrv = (_mr >= 1 && _mr <= 99) ? _mr : '';
       const tools = (s.tools || []).map((t, j) =>
@@ -1125,7 +1125,7 @@ const IBDIY = {
         '<input type="checkbox" data-ib-mcptool="' + i + ':' + j + '"' + (t.enabled !== false ? ' checked' : '') + ' class="u-native-check">' +
         this.esc(t.name) + '</label>'
       ).join('');
-      return '<div style="border:1px solid var(--glass-border);border-radius:10px;padding:10px 12px;margin:8px 0">' +
+      return '<div style="border:1px solid var(--border-soft);border-radius:var(--radius-control);padding:10px 12px;margin:8px 0">' +
         '<div class="api-form-group" style="margin-bottom:6px"><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
         '<input data-ib-mcpalias="' + i + '" value="' + this.esc(s.alias) + '" placeholder="别名" style="width:90px">' +
         '<input data-ib-mcpurl="' + i + '" value="' + this.esc(s.url) + '" placeholder="服务器地址（含 token）" style="flex:1;min-width:180px">' +
@@ -1222,8 +1222,8 @@ const IBDIY = {
       '<button class="btn btn-primary" id="ib-net-btn-c" style="padding:5px 18px;font-size:0.82rem">连接</button>' +
       '<button class="btn" id="ib-net-btn-d" style="padding:5px 18px;font-size:0.82rem">断开</button>' +
       '</div>' +
-      '<div style="font-size:0.72rem;opacity:0.55;line-height:1.7;margin-bottom:14px">协议：JSON 文本帧（v1.1）。除 <code style="font-size:0.7rem">push</code> 外，后端可通过 <code style="font-size:0.7rem">tool_catalog</code> 声明工具，客户端用 <code style="font-size:0.7rem">tool_call</code> 调用并等待 <code style="font-size:0.7rem">tool_result</code>。完整协议见 Guide 页 DIY 章节。WebSocket 不受 CORS 约束；HTTPS 页面只能连 wss://。</div>' +
-      '<div style="display:flex;align-items:baseline;gap:10px;margin-bottom:6px"><span style="font-size:0.85rem;color:var(--silver);letter-spacing:0.03em">推送记录</span><span id="ib-net-inbox-count" style="font-size:0.72rem;opacity:0.5"></span><button class="btn" id="ib-net-inbox-clear" style="padding:2px 10px;font-size:0.7rem;margin-left:auto">清空</button></div>' +
+      '<div style="font-size:var(--fs-meta);opacity:0.55;line-height:1.7;margin-bottom:14px">协议：JSON 文本帧（v1.1）。除 <code style="font-size:var(--fs-meta)">push</code> 外，后端可通过 <code style="font-size:var(--fs-meta)">tool_catalog</code> 声明工具，客户端用 <code style="font-size:var(--fs-meta)">tool_call</code> 调用并等待 <code style="font-size:var(--fs-meta)">tool_result</code>。完整协议见 Guide 页 DIY 章节。WebSocket 不受 CORS 约束；HTTPS 页面只能连 wss://。</div>' +
+      '<div style="display:flex;align-items:baseline;gap:10px;margin-bottom:6px"><span style="font-size:0.85rem;color:var(--content-secondary);letter-spacing:0.03em">推送记录</span><span id="ib-net-inbox-count" style="font-size:var(--fs-meta);opacity:0.5"></span><button class="btn" id="ib-net-inbox-clear" style="padding:2px 10px;font-size:var(--fs-meta);margin-left:auto">清空</button></div>' +
       '<div id="ib-net-inbox"></div>';
 
     const self = this;
@@ -1286,15 +1286,15 @@ const IBDIY = {
       const tc = IBNET.tools().length;
       html = dot('var(--accent-light)') + '<span style="color:var(--accent-light)">已连接' + (IBNET._serverName ? ' · ' + this.esc(IBNET._serverName) : '') + (tc ? ' · ' + tc + ' 个后端工具' : '') + '</span>';
     }else if(s === 'connecting'){
-      html = dot('rgba(212,196,140,0.85)') + '<span style="opacity:0.8">连接中…</span>';
+      html = dot('color-mix(in srgb,var(--status-warning) 85%,transparent)') + '<span style="opacity:0.8">连接中…</span>';
     }else if(s === 'retry'){
-      html = dot('rgba(212,196,140,0.85)') + '<span style="opacity:0.8">' + this.esc(String(IBNET._lastError || '连接中断').slice(0, 60)) + ' · 稍后自动重连</span>';
+      html = dot('color-mix(in srgb,var(--status-warning) 85%,transparent)') + '<span style="opacity:0.8">' + this.esc(String(IBNET._lastError || '连接中断').slice(0, 60)) + ' · 稍后自动重连</span>';
     }else if(s === 'error'){
-      html = dot('#c46060') + '<span style="color:#c46060">' + this.esc(String(IBNET._lastError || '连接失败').slice(0, 80)) + '</span>';
+      html = dot('var(--status-danger)') + '<span style="color:var(--status-danger)">' + this.esc(String(IBNET._lastError || '连接失败').slice(0, 80)) + '</span>';
     }else if(s === 'idle'){
-      html = dot('rgba(150,168,198,0.4)') + '<span style="opacity:0.6">未连接</span>';
+      html = dot('color-mix(in srgb,var(--content-muted) 40%,transparent)') + '<span style="opacity:0.6">未连接</span>';
     }else{
-      html = dot('rgba(150,168,198,0.4)') + '<span style="opacity:0.6">未启用</span>';
+      html = dot('color-mix(in srgb,var(--content-muted) 40%,transparent)') + '<span style="opacity:0.6">未启用</span>';
     }
     el.innerHTML = html;
     const bc = document.getElementById('ib-net-btn-c');
@@ -1316,13 +1316,13 @@ const IBDIY = {
     }
     const fmt = t => { const d = new Date(t); const p = n => (n < 10 ? '0' : '') + n; return p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()); };
     list.innerHTML = a.slice(0, 8).map(m =>
-      '<div style="border-top:1px solid var(--glass-border);padding:8px 2px;font-size:0.8rem;line-height:1.7">' +
-      '<span style="opacity:0.5;font-size:0.72rem">' + fmt(m.time) + '</span>' +
+      '<div style="border-top:1px solid var(--border-soft);padding:8px 2px;font-size:0.8rem;line-height:1.7">' +
+      '<span style="opacity:0.5;font-size:var(--fs-meta)">' + fmt(m.time) + '</span>' +
       (m.from ? ' <span style="color:var(--accent-light);font-size:0.75rem">' + this.esc(m.from) + '</span>' : '') +
       (m.title ? ' <span style="font-weight:400">' + this.esc(m.title) + '</span>' : '') +
       (m.text ? '<div style="opacity:0.75;font-size:0.76rem;margin-top:2px;word-break:break-word">' + this.esc(String(m.text).slice(0, 200)) + (String(m.text).length > 200 ? '…' : '') + '</div>' : '') +
       '</div>'
-    ).join('') + (a.length > 8 ? '<div style="font-size:0.72rem;opacity:0.4;padding:6px 2px">…更早的 ' + (a.length - 8) + ' 条已收起</div>' : '');
+    ).join('') + (a.length > 8 ? '<div style="font-size:var(--fs-meta);opacity:0.4;padding:6px 2px">…更早的 ' + (a.length - 8) + ' 条已收起</div>' : '');
   }
 };
 
