@@ -1,0 +1,76 @@
+﻿/* P36 · Desktop workspace navigation — since P1 this file is the single source of truth
+   for the shell (geometry, surface, states, responsive). core.css keeps only shared
+   control primitives; do not re-declare nav geometry elsewhere. */
+:root{--ib-navigation-expanded:260px;--ib-navigation-collapsed:76px;--ib-navigation-width:var(--ib-navigation-expanded)}
+body.ib-nav-collapsed{--ib-navigation-width:var(--ib-navigation-collapsed)}
+
+#navbar{position:fixed;inset:0 auto 0 0;width:var(--ib-navigation-width);height:100vh;height:100dvh;z-index:var(--layer-nav);
+  display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;gap:0;padding:14px 12px 12px;
+  border:0;border-right:1px solid var(--border-soft);border-radius:0;box-shadow:none;
+  background:var(--glass-bg-elevated);backdrop-filter:var(--glass-filter-md);-webkit-backdrop-filter:var(--glass-filter-md);
+  opacity:0;transform:translateX(-14px);transition:width var(--motion-normal) var(--transition),transform var(--motion-normal) var(--transition),opacity var(--motion-normal) var(--transition),background var(--motion-normal) var(--transition)}
+#navbar.visible{transform:translateX(0);opacity:1}
+#app{margin-left:var(--ib-navigation-width);transition:opacity 1.2s var(--transition) .6s,margin-left var(--motion-normal) var(--transition)}
+
+.nav-shell-header{display:flex;align-items:center;justify-content:space-between;gap:6px;min-height:40px;flex:0 0 auto;margin:0 0 var(--space-4);padding:0 var(--space-1)}
+#navbar .nav-brand{display:flex;align-items:center;gap:7px;min-width:0;font-family:var(--font-display);font-size:var(--fs-h3);letter-spacing:.02em;color:var(--content-primary);text-decoration:none;cursor:pointer}
+#navbar .nav-brand svg{flex:0 0 auto}
+.nav-brand-label{white-space:nowrap}
+.nav-collapse-toggle{appearance:none;display:grid;place-items:center;flex:0 0 32px;width:32px;height:32px;padding:0;border:0;border-radius:var(--radius-control);background:transparent;color:var(--content-muted);font:400 1.15rem/1 var(--font-ui);cursor:pointer;box-shadow:none;transition:background var(--motion-fast),border-color var(--motion-fast),color var(--motion-fast)}
+.nav-collapse-toggle:hover{background:var(--surface-hover);color:var(--content-primary)}
+.nav-collapse-toggle:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}
+.nav-scroll-region{flex:1 1 auto;min-height:0;overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;padding:0 0 var(--space-3)}
+.nav-links{display:flex;flex-direction:column;align-items:stretch;gap:2px;list-style:none;margin:0;padding:0}
+.nav-group-label{margin:var(--space-5) var(--space-3) var(--space-1);color:var(--content-muted);font-family:var(--font-ui);font-size:var(--fs-meta);font-weight:400;letter-spacing:.14em;line-height:1.5;text-transform:uppercase;opacity:.6}
+.nav-group-label:first-child{margin-top:2px}
+#navbar .nav-links a{position:relative;display:grid;grid-template-columns:24px minmax(0,1fr);align-items:center;gap:var(--space-3);min-height:36px;padding:var(--space-1) var(--space-3);
+  border:0;border-radius:var(--radius-control);color:var(--content-secondary);font-family:var(--font-ui);font-size:var(--fs-body);font-weight:400;letter-spacing:0;text-decoration:none;white-space:nowrap;
+  transition:color var(--motion-fast),background var(--motion-fast),border-color var(--motion-fast)}
+#navbar .nav-links a:hover{background:var(--surface-hover);color:var(--content-primary);text-decoration:none}
+#navbar .nav-links a.active{background:var(--surface-pressed);box-shadow:inset 2px 0 0 var(--accent);color:var(--content-primary);text-decoration:none}
+#navbar .nav-links a:focus-visible{outline:2px solid var(--focus-ring);outline-offset:1px}
+.nav-glyph{display:grid;place-items:center;width:24px;height:24px;color:var(--content-muted);font-family:var(--font-display);font-size:var(--fs-h3);font-weight:500;line-height:1;transition:color var(--motion-fast)}
+#navbar .nav-links a:hover .nav-glyph,#navbar .nav-links a.active .nav-glyph{color:var(--accent)}
+.nav-label{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.nav-actions{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) 38px;align-items:center;gap:var(--space-2);flex:0 0 auto;margin:var(--space-2) 0 0;padding:var(--space-3) var(--space-1) 0;border-top:1px solid var(--border-soft)}
+.nav-user-id{grid-column:1/-1;min-width:0;justify-content:flex-start;padding:0 var(--space-1) var(--space-2)}
+.nav-user-name{overflow:hidden;text-overflow:ellipsis;color:var(--content-secondary)}
+.nav-actions .nav-btn{display:flex;align-items:center;justify-content:center;gap:var(--space-2);min-width:0;min-height:32px;padding:var(--space-1) var(--space-2);border-color:transparent;border-radius:var(--radius-control);box-shadow:none;color:var(--content-secondary);font-size:var(--fs-meta);white-space:nowrap}
+.nav-action-glyph{display:none;font-family:var(--font-display);font-size:.9rem}
+.nav-actions .theme-toggle{width:38px;height:32px;margin:0;border-radius:var(--radius-control);color:var(--content-secondary)}
+.nav-actions #importFile{display:none!important}
+
+/* Collapsed mode keeps the route text available to assistive technology and exposes native tooltips. */
+body.ib-nav-collapsed #navbar{padding-right:9px;padding-left:9px}
+body.ib-nav-collapsed .nav-shell-header{flex-direction:column;justify-content:flex-start;gap:var(--space-3);padding:0;margin-bottom:var(--space-4)}
+body.ib-nav-collapsed #navbar .nav-brand{justify-content:center}
+body.ib-nav-collapsed .nav-brand-label{display:none}
+body.ib-nav-collapsed .nav-collapse-toggle{transform:rotate(180deg)}
+body.ib-nav-collapsed .nav-group-label{display:none}
+body.ib-nav-collapsed #navbar .nav-links a{grid-template-columns:1fr;justify-items:center;gap:0;min-height:40px;padding:var(--space-1)}
+body.ib-nav-collapsed .nav-glyph{width:32px;height:32px}
+body.ib-nav-collapsed #navbar .nav-links a.active{box-shadow:none}
+body.ib-nav-collapsed .nav-label,.nav-label.visually-hidden{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+body.ib-nav-collapsed .nav-actions{grid-template-columns:1fr 1fr;gap:var(--space-1);padding-top:var(--space-3)}
+body.ib-nav-collapsed .nav-user-id{grid-column:1/-1;justify-content:center;padding:0 0 var(--space-1)}
+body.ib-nav-collapsed .nav-user-name{display:none}
+body.ib-nav-collapsed .nav-actions .nav-btn{width:100%;height:32px;padding:var(--space-1)}
+body.ib-nav-collapsed .nav-action-glyph{display:inline}
+body.ib-nav-collapsed .nav-action-label{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}
+body.ib-nav-collapsed .nav-actions .theme-toggle{grid-column:1/-1;justify-self:center}
+
+/* Tauri's frameless controls stay in a separate, empty titlebar over the workspace. */
+.ib-tauri-titlebar{position:fixed;top:0;left:var(--ib-navigation-width);right:0;height:32px;z-index:9999;pointer-events:none}
+.ib-tauri-titlebar .ib-window-controls-slot{position:absolute;top:0;right:0;width:80px;height:32px}
+
+@media(max-width:1120px){
+  :root{--ib-navigation-expanded:244px}
+}
+@media(max-width:760px){
+  :root{--ib-navigation-collapsed:66px}
+  #navbar{padding-top:10px;padding-bottom:10px}
+  #app{min-width:0}
+}
+@media(prefers-reduced-motion:reduce){
+  #navbar,#app,.nav-collapse-toggle,#navbar .nav-links a{transition:none}
+}

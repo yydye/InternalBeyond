@@ -128,6 +128,8 @@ const GROUPS = [
     tests: [
       ['scripts_check_html.js', 'InternalBeyond.html'],
       ['test_frontend_structure.js'],
+      /* P36 · grouped sidebar, original page ids/hash routing and secret/Tauri route compatibility. */
+      ['test_navigation_shell.js'],
       /* P31 · Middle Brain Direct Channel：隐藏 query route、双 prompt contract、
          有界只读 resolver、独立 transcript namespace 与 canonical Astra seam。 */
       ['test_middle_brain_direct.js'],

@@ -26,6 +26,7 @@
 <link rel="stylesheet" href="assets/css/local-vault.css">
 <link rel="stylesheet" href="assets/css/local-first.css">
 <link rel="stylesheet" href="assets/css/packaging-center.css">
+<link rel="stylesheet" href="assets/css/navigation-shell.css">
 </head>
 <body>
 <a class="skip-link" href="#app">跳到主要内容</a>
@@ -111,7 +112,8 @@
 </div>
 
 <nav id="navbar" aria-label="主导航">
-  <span class="nav-brand" id="nav-home" role="button" tabindex="0" aria-label="返回首页">
+  <div class="nav-shell-header">
+  <span class="nav-brand" id="nav-home" role="button" tabindex="0" aria-label="返回 Welcome / Landing">
     <svg id="ghost-icon" viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.85">
       <defs>
         <!-- Glasswing -->
@@ -128,34 +130,49 @@
         <use href="#gw-vein"/><use href="#gw-vein" transform="matrix(-1,0,0,1,24,0)"/>
       </g>
     </svg>
-    IB
+    <span class="nav-brand-label">IB</span>
   </span>
-  <ul class="nav-links">
-    <li><a href="#guide" data-page="guide">Guide</a></li>
-    <li><a href="#about" data-page="about">Profile</a></li>
-    <li><a href="#blog" data-page="blog">Blog</a></li>
-    <li><a href="#chat" data-page="chat">Chat</a></li>
-    <li><a href="#moments" data-page="moments">Moments</a></li>
-    <li><a href="#letters" data-page="letters">Letters</a></li>
-    <li><a href="#roledm" data-page="roledm">Role DM</a></li>
-    <li><a href="#memory" data-page="memory">Memory</a></li>
-    <li><a href="#diary" data-page="diary">Diary</a></li>
-    <li><a href="#active" data-page="active">Active</a></li>
-    <li><a href="#api" data-page="api">API</a></li>
-    <li><a href="#diy" data-page="diy">DIY</a></li>
-    <li><a href="#apps" data-page="apps">Apps</a></li>
-    <li><a href="#favorites" data-page="favorites">Favorites</a></li>
-    <li><a href="#economy" data-page="economy">Economy</a></li>
-    <li><a id="ib-bridge-nav" href="#bridge" data-page="bridge" aria-haspopup="dialog" aria-controls="ib-bridge-panel" aria-expanded="false">Bridge</a></li>
-    <li><a href="#diagnostics" data-page="diagnostics" title="系统诊断">Diagnostics</a></li>
-  </ul>
+    <button type="button" id="ib-navigation-collapse" class="nav-collapse-toggle" aria-label="Collapse navigation" aria-expanded="true" title="Collapse navigation"><span aria-hidden="true">‹</span></button>
+  </div>
+  <div class="nav-scroll-region">
+    <ul class="nav-links" aria-label="Workspace navigation">
+      <li class="nav-group-label" aria-hidden="true">Core</li>
+      <li><a id="ib-workspace-nav" href="#workspace" data-page="workspace" aria-label="Home" title="Home"><span class="nav-glyph" aria-hidden="true">H</span><span class="nav-label">Home</span></a></li>
+      <li><a href="#chat" data-page="chat" aria-label="Chat" title="Chat"><span class="nav-glyph" aria-hidden="true">C</span><span class="nav-label">Chat</span></a></li>
+      <li><a href="#about" data-page="about" aria-label="Profile" title="Profile"><span class="nav-glyph" aria-hidden="true">P</span><span class="nav-label">Profile</span></a></li>
+      <li><a href="#memory" data-page="memory" aria-label="Memory" title="Memory"><span class="nav-glyph" aria-hidden="true">M</span><span class="nav-label">Memory</span></a></li>
+      <li><a href="#favorites" data-page="favorites" aria-label="Favorites" title="Favorites"><span class="nav-glyph" aria-hidden="true">F</span><span class="nav-label">Favorites</span></a></li>
+
+      <li class="nav-group-label" aria-hidden="true">Create &amp; Connect</li>
+      <li><a href="#blog" data-page="blog" aria-label="Blog" title="Blog"><span class="nav-glyph" aria-hidden="true">B</span><span class="nav-label">Blog</span></a></li>
+      <li><a href="#moments" data-page="moments" aria-label="Moments" title="Moments"><span class="nav-glyph" aria-hidden="true">M</span><span class="nav-label">Moments</span></a></li>
+      <li><a href="#letters" data-page="letters" aria-label="Letters" title="Letters"><span class="nav-glyph" aria-hidden="true">L</span><span class="nav-label">Letters</span></a></li>
+      <li><a href="#roledm" data-page="roledm" aria-label="Role DM" title="Role DM"><span class="nav-glyph" aria-hidden="true">R</span><span class="nav-label">Role DM</span></a></li>
+      <li><a href="#diary" data-page="diary" aria-label="Diary" title="Diary"><span class="nav-glyph" aria-hidden="true">D</span><span class="nav-label">Diary</span></a></li>
+
+      <li class="nav-group-label" aria-hidden="true">Work</li>
+      <li><a href="#active" data-page="active" aria-label="Active" title="Active"><span class="nav-glyph" aria-hidden="true">A</span><span class="nav-label">Active</span></a></li>
+      <li><a href="#diy" data-page="diy" aria-label="DIY" title="DIY"><span class="nav-glyph" aria-hidden="true">D</span><span class="nav-label">DIY</span></a></li>
+      <li><a href="#apps" data-page="apps" aria-label="Apps" title="Apps"><span class="nav-glyph" aria-hidden="true">A</span><span class="nav-label">Apps</span></a></li>
+      <li><a href="#economy" data-page="economy" aria-label="Economy" title="Economy"><span class="nav-glyph" aria-hidden="true">E</span><span class="nav-label">Economy</span></a></li>
+
+      <li class="nav-group-label" aria-hidden="true">Tools</li>
+      <li><a href="#packaging" data-page="packaging" aria-label="Packaging" title="Packaging"><span class="nav-glyph" aria-hidden="true">P</span><span class="nav-label">Packaging</span></a></li>
+      <li><a href="#api" data-page="api" aria-label="API" title="API"><span class="nav-glyph" aria-hidden="true">A</span><span class="nav-label">API</span></a></li>
+      <li><a id="ib-bridge-nav" href="#bridge" data-page="bridge" aria-label="Bridge" title="Bridge" aria-haspopup="dialog" aria-controls="ib-bridge-panel" aria-expanded="false"><span class="nav-glyph" aria-hidden="true">B</span><span class="nav-label">Bridge</span></a></li>
+      <li><a href="#diagnostics" data-page="diagnostics" aria-label="Diagnostics" title="系统诊断"><span class="nav-glyph" aria-hidden="true">D</span><span class="nav-label">Diagnostics</span></a></li>
+
+      <li class="nav-group-label" aria-hidden="true">Help</li>
+      <li><a href="#guide" data-page="guide" aria-label="Guide" title="Guide"><span class="nav-glyph" aria-hidden="true">G</span><span class="nav-label">Guide</span></a></li>
+    </ul>
+  </div>
   <div class="nav-actions">
     <div class="nav-user-id" id="nav-user-id">
       <div class="nav-user-avatar" id="nav-user-avatar"></div>
       <span class="nav-user-name" id="nav-user-name"></span>
     </div>
-    <button type="button" class="nav-btn" onclick="exportAll()" title="导出存档">Export</button>
-    <button type="button" class="nav-btn" onclick="document.getElementById('importFile').click()" title="导入存档">Import</button>
+    <button type="button" class="nav-btn" onclick="exportAll()" title="导出存档" aria-label="Export"><span class="nav-action-glyph" aria-hidden="true">E</span><span class="nav-action-label">Export</span></button>
+    <button type="button" class="nav-btn" onclick="document.getElementById('importFile').click()" title="导入存档" aria-label="Import"><span class="nav-action-glyph" aria-hidden="true">I</span><span class="nav-action-label">Import</span></button>
     <input type="file" id="importFile" accept=".json,.ibvault,application/json" style="display:none" onchange="importAll(event)">
     <button type="button" class="theme-toggle" id="theme-toggle" onclick="toggleTheme()" title="切换主题" aria-label="切换到深色主题" aria-pressed="false">
       <svg id="drop-icon" viewBox="0 0 20 20" width="14" height="14" stroke="currentColor" stroke-width="1.5" fill="none">
@@ -3642,6 +3659,7 @@ i would like the room to be enough.
 <!-- P31 · Middle Brain Direct Channel：只在 ?middlebrain 隐藏入口挂载，
      不注册普通导航 / page-* 路由 / 角色目录，也不进入角色聊天执行链。 -->
 <script src="assets/js/middle-brain-direct.js"></script>
+<script src="assets/js/navigation-shell.js"></script>
 <script src="assets/js/tauri-window-chrome.js"></script>
 <script src="assets/js/packaging-center.js"></script>
 <!-- 深渊暗线：只在 Infernal（暗色）模式可瞥见——"你知道这里通向深渊，但你也知道，你随时可以离开。" -->

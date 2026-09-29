@@ -1,4 +1,4 @@
-(function () {
+﻿(function () {
   'use strict';
 
   const windowApi = window.__TAURI__ && window.__TAURI__.window;
@@ -11,6 +11,13 @@
   if (!navbar || !navBrand || !navLinks || !navActions) return;
 
   const appWindow = windowApi.getCurrentWindow();
+  const titlebar = document.createElement('div');
+  titlebar.id = 'ib-tauri-titlebar';
+  titlebar.className = 'ib-tauri-titlebar';
+  titlebar.setAttribute('data-tauri-drag-region', '');
+  titlebar.setAttribute('aria-hidden', 'true');
+  document.body.appendChild(titlebar);
+
   const controls = document.createElement('div');
   controls.className = 'ib-window-controls';
   controls.setAttribute('role', 'group');
@@ -18,7 +25,7 @@
   const controlsSlot = document.createElement('span');
   controlsSlot.className = 'ib-window-controls-slot';
   controlsSlot.setAttribute('aria-hidden', 'true');
-  navActions.appendChild(controlsSlot);
+  titlebar.appendChild(controlsSlot);
 
   const dragRegion = document.createElement('span');
   dragRegion.id = 'ib-tauri-drag-region';
@@ -55,34 +62,28 @@
   document.body.appendChild(controls);
 
   function positionDragRegion() {
-    const next = navBrand.nextElementSibling;
-    const navbarRect = navbar.getBoundingClientRect();
-    if (!next) {
-      dragRegion.style.width = '0px';
-      dragRegion.style.pointerEvents = 'none';
-      return;
-    }
-
-    const leftEdge = navBrand.getBoundingClientRect().right;
-    const rightEdge = next.getBoundingClientRect().left;
-    const width = rightEdge - leftEdge - 2;
+    /* The sidebar is fully interactive. Only the empty titlebar strip over the
+       workspace starts native window dragging; the control slot stays outside it. */
+    const titlebarRect = titlebar.getBoundingClientRect();
+    const slotRect = controlsSlot.getBoundingClientRect();
+    const leftEdge = titlebarRect.left;
+    const width = slotRect.left - titlebarRect.left - 2;
     if (width < 4) {
       dragRegion.style.width = '0px';
       dragRegion.style.pointerEvents = 'none';
       return;
     }
-
     dragRegion.style.left = `${leftEdge + 1}px`;
-    dragRegion.style.top = `${navbar.offsetTop}px`;
+    dragRegion.style.top = `${titlebarRect.top}px`;
     dragRegion.style.width = `${width}px`;
-    dragRegion.style.height = `${navbar.clientHeight}px`;
+    dragRegion.style.height = `${titlebarRect.height}px`;
     dragRegion.style.pointerEvents = 'auto';
   }
 
   function positionWindowControls() {
     const slotRect = controlsSlot.getBoundingClientRect();
     controls.style.left = `${slotRect.left}px`;
-    controls.style.top = `${navbar.offsetTop + Math.max(0, (navbar.clientHeight - controls.offsetHeight) / 2)}px`;
+    controls.style.top = `${slotRect.top + Math.max(0, (slotRect.height - controls.offsetHeight) / 2)}px`;
   }
 
   function reportWindowError(error) {
@@ -139,12 +140,14 @@
     positionWindowControls();
   });
   resizeObserver.observe(navbar);
+  resizeObserver.observe(titlebar);
+  resizeObserver.observe(controlsSlot);
   Array.from(navbar.children).forEach((child) => {
     if (child !== dragRegion) resizeObserver.observe(child);
   });
   const mutationObserver = new MutationObserver(() => {
-    if (controlsSlot.parentElement !== navActions || navActions.lastElementChild !== controlsSlot) {
-      navActions.appendChild(controlsSlot);
+    if (controlsSlot.parentElement !== titlebar || titlebar.lastElementChild !== controlsSlot) {
+      titlebar.appendChild(controlsSlot);
     }
     Array.from(navbar.children).forEach((child) => {
       if (child !== dragRegion) resizeObserver.observe(child);
@@ -159,6 +162,12 @@
   window.addEventListener('resize', () => {
     positionDragRegion();
     positionWindowControls();
+  });
+  window.addEventListener('ib:navigation-layout-change', () => {
+    window.requestAnimationFrame(() => {
+      positionDragRegion();
+      positionWindowControls();
+    });
   });
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => {
     positionDragRegion();
