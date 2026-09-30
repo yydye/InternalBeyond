@@ -10,8 +10,145 @@
    因此与折叠状态无关；这条性质由结构守卫断言锁死（禁止特判 / nth-child / 负 margin）。*/
 #page-api > .glass-card,
 #page-api > .api-section{margin-bottom:28px}
+/* ── Phase 3A · explanatory flow ────────────────────────────────────────
+   A 类 section 是页面上的连续纸面关系，不是另一种卡片：透明底、无模糊、
+   只用标题 / 说明 / 控件 / 发丝线建立节奏。B 类 collection 与 C 类 focus /
+   safety surface 继续使用它们自己的 surface contract。
+   P3A-R：结构不变（"结构正确"，本轮只恢复材质 / 色彩 / 文字层级 / 空间语言）。
+   分隔仍是 canonical 的 1px --border-soft 发丝线，只把纵向节奏放宽到 --space-8，
+   让纸面呼吸，而不是靠更多卡片。 */
+.api-section.api-paper{
+  padding:0 0 var(--space-8);
+  background:transparent;
+  border:0;
+  border-bottom:1px solid var(--border-soft);
+  border-radius:0;
+  box-shadow:none;
+  transform:none;
+}
+/* 章节标题回到 Original 的角色：区块标题是 UI sans，不是 display serif。
+   Original Desktop `.api-section h3` = Noto Sans SC 500 / 1.05rem / letter-spacing .02em。
+   P3A 曾把它改成 var(--font-display)；Cormorant 未随包分发，CJK 会落到通用 serif，
+   既不是原版层级，也违反"不要到处用 serif"。serif 仍属于页面标题（.module-intro h2）
+   与 .api-ed-btitle。 */
+.api-section.api-paper>h3{
+  margin:0 0 var(--space-3);
+  font-family:var(--font-ui);
+  font-size:var(--fs-h3);
+  font-weight:500;
+  letter-spacing:.02em;
+  color:var(--content-primary);
+}
+.api-section.api-paper>.settings-description{
+  margin:0 0 var(--space-5);
+  font-family:var(--font-ui);
+  font-size:var(--fs-body);
+  font-weight:300;
+  line-height:1.9;
+  color:var(--content-secondary);
+  opacity:1;
+}
+/* A 类内部说明块也回到同一条 paper flow；API editor 的 .api-ed-block 不受影响。 */
+.api-section.api-paper .api-ed-block{
+  margin:0 0 var(--space-5);
+  padding:0;
+  background:transparent;
+  border:0;
+  border-radius:0;
+}
+.api-section.api-paper .api-ed-block:last-child{margin-bottom:0}
+.api-section.api-paper .api-ed-btitle{margin-top:0}
+/* 控件文字回到 Original 的 UI sans。P3A 把 input/select 改成等宽栈后，中文
+   选项（"跟随当前角色"）在 Windows 上落到 NSimSun —— 点阵宋体，是实打实的
+   渲染缺陷。等宽只留给真正的机器值（.ir-route-line 的路由读数）。 */
+.api-section.api-paper .api-form-group input,
+.api-section.api-paper .api-form-group select,
+.api-section.api-paper .api-form-group textarea{
+  font-family:var(--font-ui);
+  font-size:var(--fs-body);
+}
+/* `.f-hint` 的唯一规则此前挂在 calendar.css（:501）上——Image Router 的
+   说明文字依赖另一个模块的样式表。这里给 API 页自己的 hint 角色，顺便去掉
+   color-mix(…,transparent) 造成的半透明发灰。 */
+#page-api .f-hint{
+  font-family:var(--font-ui);
+  font-weight:300;
+  font-size:var(--fs-meta);
+  line-height:1.7;
+  letter-spacing:.01em;
+  color:var(--content-muted);
+  margin-top:6px;
+}
+/* 折叠头：不复制标题，而是控制条。h3 已经是区块标题，折叠头只承担
+   「这是什么开关 + 当前状态」。 */
+.api-section.api-paper .mb-collapse-head{
+  margin:0 0 var(--space-4);
+  border:0;
+  border-bottom:1px solid var(--border-soft);
+  border-radius:0;
+  background:transparent;
+  padding:var(--space-2) 0;
+}
+.api-section.api-paper .mb-collapse-head:hover{
+  border-color:var(--border-strong);
+  background:transparent;
+}
+.api-section.api-paper .mb-collapse-name{
+  font-family:var(--font-ui);
+  font-size:var(--fs-meta);
+  font-weight:400;
+  letter-spacing:.2em;
+  text-transform:uppercase;
+  color:var(--content-muted);
+  opacity:1;
+}
+.api-section.api-paper .mb-collapse-summary{
+  font-family:var(--font-ui);
+  font-size:var(--fs-meta);
+  letter-spacing:.01em;
+  opacity:.9;
+}
+.api-section.api-paper .mb-collapse-badge{
+  font-family:var(--font-ui);
+  background:transparent;
+  color:var(--content-muted);
+}
+.api-section.api-paper .mb-collapse-body{padding-top:var(--space-1)}
+/* 章节副标题（h3 里的 span）：Original 里它是深靛蓝、不透明；旧值偏弱。 */
+#page-api .section-meta{
+  font-family:var(--font-ui);
+  font-size:var(--fs-meta);
+  letter-spacing:.02em;
+  color:var(--content-secondary);
+  opacity:.95;
+}
+/* ── Action hierarchy（brief §12）─────────────────────────────────────
+   Original：.btn = --glass-bg（10% 灰蓝，几乎只是一层薄壳），.btn-primary =
+   20% accent。层级来自两者的差，而不是把 primary 做亮。当前 .btn 用
+   --surface-card（58% 白），和 primary 一样抢眼，主操作因此消失。
+   这里把三种动作重新分开：薄壳次按钮 / accent 实面主按钮 / 淡玫瑰破坏性按钮。
+   仍然克制：无渐变、无发光、无 giant CTA。 */
+#page-api .mb-actions{align-items:center;gap:var(--space-3);margin-top:var(--space-5)}
+#page-api .mb-actions .btn{background:var(--glass-bg-ambient);border-color:var(--border-soft);color:var(--content-secondary)}
+#page-api .mb-actions .btn:hover{background:var(--surface-hover);border-color:var(--border-strong);color:var(--content-primary)}
+#page-api .mb-actions .btn-danger{background:color-mix(in srgb,var(--status-danger) 14%,transparent);border-color:color-mix(in srgb,var(--status-danger) 42%,transparent)}
+#page-api .mb-actions .btn-danger:hover{background:color-mix(in srgb,var(--status-danger) 22%,transparent)}
+#page-api .mb-actions .btn-primary{
+  background:color-mix(in srgb,var(--accent) 24%,var(--surface-card));
+  border-color:color-mix(in srgb,var(--accent) 52%,transparent);
+  color:var(--content-primary);
+  box-shadow:var(--neo-depth-sm);
+}
+#page-api .mb-actions .btn-primary:hover{
+  background:color-mix(in srgb,var(--accent) 34%,var(--surface-card));
+  border-color:color-mix(in srgb,var(--accent) 68%,transparent);
+  box-shadow:var(--neo-depth-md);
+}
 /* 渲染修复：设置页玻璃卡强制与其毛玻璃底同层栅格化。页面共94处back */
 .api-section.glass-card{transform:translateZ(0);backface-visibility:hidden}
+/* Original Desktop：.api-section h3 = 'Noto Sans SC' 500 / 1.05rem / .02em。
+   P3A 曾改成 var(--font-display) 600 / .04em —— Cormorant 不随包分发，
+   中文落到通用 serif。这里恢复原版权重与字距。 */
 .api-section h3{font-family:var(--font-ui);font-size:var(--fs-h3);font-weight:500;margin-bottom:14px;color:var(--content-primary);letter-spacing:0.02em}
 .api-form-group{margin-bottom:14px}
 .api-form-group label{display:block;font-size:0.88rem;color:var(--content-secondary);margin-bottom:7px;letter-spacing:0.03em}
@@ -108,23 +245,55 @@ body.theme-infernal .mi-sub-inf{display:inline}
 
 /* ── P15 · Image Router 配置卡片（Settings → API → Image Router）───────────
    与 Middle Brain 区块同一视觉语言：glass 卡片 + api-form-group 表单 + mb-collapse 折叠。
-   新增样式只覆盖"路由卡片"本身，不复制既有控件样式。 */
-.ir-card{margin:14px 0;padding:14px 16px;border:1px solid var(--border-soft);border-radius:var(--radius-panel);background:var(--surface-card)}
-.ir-card-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}
-.ir-card-title{font-family:'Raleway',sans-serif;font-size:var(--fs-meta);letter-spacing:.14em;text-transform:uppercase;color:var(--content-primary);opacity:.9}
-.ir-card-state{font-size:var(--fs-meta);line-height:1.4;padding:3px 10px;border-radius:var(--radius-control);border:1px solid var(--border-soft);background:var(--glass-bg);color:var(--content-muted);max-width:min(100%,46ch);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.ir-card-state.is-on{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 45%,transparent)}
+   新增样式只覆盖"路由卡片"本身，不复制既有控件样式。
+   P3A-R：IMAGE GENERATION / IMAGE EDITING 是"可编辑的对象"，不是 fieldset。
+   材质全部走 surface.object（core.css 主题层持有取值），组件只消费：
+   半透明表面 + 1px 冷蓝边 + 1px 冷白 rim + 柔和外阴影。圆角仍是 canonical
+   16px，不加发光、不加渐变、不加第二层嵌套卡。
+   这里刻意不再叠加 backdrop-filter：纸面世界已经被 bg-blur-active + veil
+   完全雾化，卡片背后没有可解析的细节，再叠一层 blur 只是多一份合成开销与
+   一条新的 backdrop-filter 债（ui-guardrail 不允许新增）。 */
+.ir-card{
+  margin:var(--space-4) 0;
+  padding:var(--space-4) var(--space-5);
+  background:var(--surface-object);
+  border:1px solid var(--surface-object-border);
+  border-radius:var(--radius-panel);
+  box-shadow:var(--surface-object-shadow),inset 0 1px 0 var(--surface-object-rim);
+}
+.ir-card-head{display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap;margin-bottom:var(--space-4)}
+/* 对象名 = wide caps 标签（brief §11），权重回到 content-primary，字距 0.2em。
+   Raleway 与本项目其它 caps 标签一致；未安装时与正文同一 UI sans，不再落到任意 sans。 */
+.ir-card-title{font-family:'Raleway',var(--font-ui);font-size:var(--fs-meta);font-weight:400;letter-spacing:.2em;text-transform:uppercase;color:var(--content-primary)}
+/* 状态徽标降为从属信息：无填充底色，只留发丝线，别和对象名抢第一眼。
+   文字用 accent 与正文的混合，保证浅色卡上也能过 AA；暗色下换成
+   --accent-light（Mobile 参考里 Infernal 的 accent 用的是这个亮蓝）。 */
+.ir-card-state{font-family:var(--font-ui);font-size:var(--fs-meta);line-height:1.4;padding:2px 9px;border-radius:var(--radius-control);border:1px solid var(--border-soft);background:transparent;color:var(--content-muted);max-width:min(100%,46ch);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ir-card-state.is-on{color:color-mix(in srgb,var(--accent) 72%,var(--content-primary));border-color:color-mix(in srgb,var(--accent) 42%,transparent)}
 .ir-card-state.is-bad{color:color-mix(in srgb,var(--status-danger) 80%,var(--content-primary));border-color:color-mix(in srgb,var(--status-danger) 35%,transparent)}
 .ir-card-state.is-off{opacity:.6}
+body.theme-infernal .ir-card-state.is-on{color:var(--accent-light);border-color:color-mix(in srgb,var(--accent-light) 42%,transparent)}
+body.theme-infernal .ir-card-state.is-bad{color:color-mix(in srgb,var(--status-danger) 62%,var(--content-primary));border-color:color-mix(in srgb,var(--status-danger) 45%,transparent)}
 .ir-card-switch{margin-left:auto;flex:0 0 auto}
 .ir-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:0 16px}
 .ir-select-row{display:flex;align-items:center;gap:8px}
 .ir-select-row select{flex:1 1 auto;min-width:0}
+/* 对象卡里的控件是"被按进材料里的凹槽"：cooler + 略暗的填充，让它低于卡面。 */
+.ir-card .api-form-group input,
+.ir-card .api-form-group select,
+.ir-card .api-form-group textarea{
+  background:var(--surface-object-field);
+  border-color:var(--surface-object-border);
+  font-family:var(--font-ui);
+  font-size:var(--fs-body);
+}
 .ir-adv{margin-top:6px;border-top:1px dashed var(--border-soft);padding-top:10px}
 .ir-adv>summary{cursor:pointer;font-size:var(--fs-meta);color:var(--content-muted);letter-spacing:.02em;margin-bottom:10px}
 .ir-adv>summary:hover{color:var(--accent)}
-.ir-route-line{margin-top:10px;padding-top:10px;border-top:1px solid var(--border-soft);font-size:var(--fs-meta);line-height:1.7;color:var(--content-muted);word-break:break-word}
-.ir-line-k{color:var(--content-primary);opacity:.9;letter-spacing:.02em}
+/* 卡脚：当前真实路由的读数区。它是机器值，允许等宽 —— 但栈里必须带 CJK
+   兜底，否则中文备注会掉到 NSimSun。 */
+.ir-route-line{margin-top:var(--space-3);padding-top:var(--space-3);border-top:1px solid var(--border-soft);font-family:'Fira Code',Consolas,var(--font-ui),monospace;font-size:var(--fs-meta);line-height:1.75;color:var(--content-muted);word-break:break-word}
+.ir-line-k{color:var(--content-secondary);letter-spacing:.02em}
 .ir-line-dim{opacity:.7}
 @media (max-width:560px){.ir-select-row{flex-wrap:wrap}}
 

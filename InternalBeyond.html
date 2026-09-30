@@ -1373,7 +1373,7 @@
          内容由 assets/js/api-onboarding.js 渲染（数据取 provider-directory.js） -->
     <div id="api-onboarding-entry"></div>
 
-    <div class="api-section glass-card u-pad-20" id="middle-brain-section">
+    <div class="api-section api-paper" id="middle-brain-section">
       <h3>Middle Brain <span class="section-meta">（全局 · GPT-6 Astra）</span></h3>
       <!-- 折叠头（始终可见）：点击 / Enter / Space 切换整个 Middle Brain 区块；
            默认 aria-expanded="false"（已有用户默认收起），首次配置 / 配置不完整时由 JS 展开 -->
@@ -1471,7 +1471,7 @@
       </div>
     </div>
 
-    <div class="api-section glass-card u-pad-20" id="image-router-section">
+    <div class="api-section api-paper" id="image-router-section">
       <h3>Image Router <span class="section-meta">（全局 · 图片生成 / 编辑路由）</span></h3>
       <button type="button" class="mb-collapse-head" id="ir-collapse-toggle" aria-expanded="true" aria-controls="ir-collapse-body">
         <span class="mb-collapse-title">
@@ -1887,7 +1887,7 @@
       </div>
     </div>
 
-    <div class="api-section glass-card u-pad-20">
+    <div class="api-section api-paper">
       <h3>AI 读取范围</h3>
       <p class="settings-description">控制AI在写信、留言、聊天时能读取多少你的内容。范围越大，AI越了解你，但也会消耗更多额度。</p>
       <div class="api-form-group">
@@ -1927,7 +1927,7 @@
       </div>
     </div>
 
-    <div class="api-section glass-card u-pad-20">
+    <div class="api-section api-paper">
       <h3>语音转写</h3>
       <p class="settings-description">语音消息文字稿的来源。配置一个 OpenAI 兼容的转写接口（/audio/transcriptions）后，录音将交由该服务转写，不再依赖浏览器内置识别——任何浏览器、任何聊天模型都能读到语音内容。本身能听音频的模型（如 Gemini）无需此配置，会直接收到原声。</p>
       <div class="api-form-group">
@@ -1948,7 +1948,7 @@
       <div style="font-size:var(--fs-meta);opacity:0.55;line-height:1.6">三项留空则维持浏览器内置识别。语音会附带本地计算的声学语气特征（语速 / 音量 / 停顿 / 语调），仅发给听不到原声的模型作参考，界面不显示；直发原声的模型自行听语气，不附加特征。转写失败时语音仍会发送并标注未能识别。若你的中转渠道不支持音频输入导致报错，可取消勾选「音频直发」。使用 Groq 等模型可能需要科学上网。</div>
     </div>
 
-    <div class="api-section glass-card u-pad-20">
+    <div class="api-section api-paper">
       <h3>对话摘要</h3>
       <p class="settings-description">开启后，超出近期保留范围的旧消息会被自动压缩成摘要笔记，笔记会按照消息频率更新写入。可减少长对话幻觉。</p>
       <div class="api-form-group" style="margin-bottom:10px">
@@ -1987,7 +1987,7 @@
       </div>
     </div>
 
-    <div class="api-section glass-card u-pad-20">
+    <div class="api-section api-paper">
       <h3>Presence</h3>
         <p class="internal-only settings-description">离开一段时间后再次重新打开页面时TA会收到你的离开时长。</p>
         <p class="infernal-only settings-description">让TA注意到你离开了多久后才回来。</p>
@@ -2010,7 +2010,7 @@
       </div>
     </div>
 
-    <div class="api-section glass-card u-pad-20">
+    <div class="api-section api-paper">
       <h3>记忆系统设置</h3>
       <p class="settings-description">控制记忆库在 API 调用时的注入行为。调高预算能让 AI 读取更多记忆，但会增加 Token 消耗。</p>
       <div class="si-bar-wrap" id="mem-si">
@@ -2047,7 +2047,7 @@
       </div>
     </div>
 
-    <div class="api-section glass-card u-pad-20">
+    <div class="api-section api-paper">
       <h3>输出与续写</h3>
       <p class="settings-description">回复触及模型单次输出上限而被截断时，系统会自动带着已生成内容请求"无缝续写"并拼接。这里配置自动续写的最大轮数；用尽后消息下方会出现「继续生成」按钮，点击即可在下一轮接着完成。</p>
       <div class="api-form-group">

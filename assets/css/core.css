@@ -77,6 +77,19 @@
   --glass-radius-sm:var(--radius-control);
   --glass-radius-md:var(--radius-card);
   --glass-radius-lg:var(--radius-panel);
+  /* ── surface.object（P3A-R）实体对象卡 ─────────────────────────────
+     "可被编辑的对象"（目前唯一消费者：Image Router 的 IMAGE GENERATION /
+     IMAGE EDITING 路由卡）所在的层。它比 paper 更高、比 input 更亮，靠
+     边缘（rim + 外阴影）建立物体感，而不是靠更大的圆角或更亮的填充。
+     recipe 来源：Original Desktop 的 .glass-card（浅色 rgba(250,253,255,.62)
+     + 1px rgba(200,225,248,.45) + 0 4px 20px rgba(130,175,235,.08)）与
+     对象卡的白边（.mem-card inset 0 1px 0 rgba(255,255,255,.55)）。
+     这一族是 P38 未来唯一需要覆写的对象表面，组件不再自己写死材质。 */
+  --surface-object:rgba(250,253,255,.64);
+  --surface-object-border:rgba(200,225,248,.48);
+  --surface-object-rim:rgba(255,255,255,.72);
+  --surface-object-shadow:0 6px 22px rgba(90,124,176,.13);
+  --surface-object-field:rgba(203,220,242,.66);
   /* ── Neumorphism 2.0：只给交互控件触感，不做容器 ─────────────
      rest=--neo-depth-sm / hover=--neo-depth-md / pressed=--neo-pressed(inset)
      位移 ≤1px，禁止缩放与弹跳；正文、长列表、页面级容器一律不用。 */
@@ -92,9 +105,12 @@
   --motion-normal:.35s;
   --layer-nav:100;
   --layer-floating-panel:9981;
-  /* surface.overlay / surface.dialog 遮罩（P1）——取值取自迁移前实测，仅来源令牌化 */
-  --surface-overlay-scrim:rgba(235,244,255,.32);
-  --surface-overlay-filter:blur(14px) saturate(1.1);
+  /* surface.overlay / surface.dialog 遮罩。P3A-R 把 veil 恢复到 Original 的
+     雾配方（rgba(235,244,255,0.5) + blur(32px) saturate(1.2)）；P1 时期实测的
+     0.32 / blur(14px) 让子页面世界仍是一张可辨认的照片，是「过灰」的来源之一。
+     影响范围：所有非 Home 页面共用的世界层（Home 不加 .show，不受影响）。 */
+  --surface-overlay-scrim:rgba(235,244,255,.50);
+  --surface-overlay-filter:blur(32px) saturate(1.2);
   --surface-dialog-scrim:rgba(10,15,24,.46);
   --status-success:#6f9f83;
   --status-info:#5080b0;
@@ -140,8 +156,16 @@ body.theme-infernal{
   --glass-shadow-elevated:0 18px 56px rgba(16,22,42,.28);
   --glass-shadow-floating:0 12px 32px rgba(6,12,28,.34);
   --glass-shadow-modal:0 28px 80px rgba(4,10,24,.46);
-  --surface-overlay-scrim:rgba(25,45,70,.16);
-  --surface-overlay-filter:blur(12px) saturate(1.1);
+  /* surface.object · 暗色反相：Original Desktop 的暗色玻璃 rgba(135,168,218,.13)
+     —— 比浅色档更蓝、更有色相，避免「灰蓝浑浊」；rim 用 Mobile Infernal 的
+     冷蓝白 rgba(214,234,255,.11)，而不是中性白。 */
+  --surface-object:rgba(135,168,218,.13);
+  --surface-object-border:rgba(155,185,232,.26);
+  --surface-object-rim:rgba(214,234,255,.11);
+  --surface-object-shadow:0 10px 34px rgba(4,10,24,.26);
+  --surface-object-field:rgba(9,16,34,.34);
+  --surface-overlay-scrim:rgba(25,45,70,.18);
+  --surface-overlay-filter:blur(26px) saturate(1.15);
   --neo-highlight:rgba(255,255,255,.10);
   --neo-shadow:rgba(4,10,26,.42);
   --neo-inset-highlight:rgba(255,255,255,.06);
@@ -474,13 +498,27 @@ body.infernal-beyond #app{position:relative;z-index:1;}
 .mb-save-status{opacity:.75;align-self:center;font-size:.85rem;}
 /* ── Middle Brain · Astra Cognitive Control（Phase 4 高级设置）── */
 .mb-adv-divider{height:1px;background:var(--border-soft);opacity:.5;margin:16px 0;}
-.mb-adv-card{border:1px solid var(--border-soft);border-radius:var(--radius-card);padding:14px 16px;background:var(--glass-bg-ambient);}
+/* Phase 3A：Middle Brain 的设置分组是 paper subsection，不再形成 card-inside-card。
+   标题、说明、间距与 hairline 仍保留三组身份；真实的安全 / 编辑 surface 不在此规则内。 */
+.mb-adv-card{border:0;border-radius:0;padding:16px 0 0;background:transparent;}
+.mb-adv-card + .mb-adv-card{margin-top:18px;border-top:1px solid var(--border-soft);padding-top:18px;}
 .mb-adv-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px;}
-.mb-adv-title{font-weight:600;font-size:.92rem;letter-spacing:.02em;opacity:.9;}
-.mb-adv-summary{font-size:.78rem;padding:3px 10px;border-radius:var(--radius-control);background:var(--glass-bg-ambient);border:1px solid var(--border-soft);opacity:.9;}
+/* .mb-adv-title 是对象名层级：Original 的 serif 角色始终写成
+   'Cormorant Garamond','Noto Serif SC'（见 .api-ed-btitle）。之前只写 var(--font-display)
+   —— Cormorant 不随包分发，中文靠通用 serif 兜底。这里把 CJK serif 显式写进栈。 */
+.mb-adv-title{font-family:'Cormorant Garamond','Noto Serif SC',serif;font-weight:600;font-size:1rem;letter-spacing:.06em;opacity:.95;}
+/* 摘要 / 控件值是机器读数。原栈以 Fira Code 开头，但没有 CJK 兜底 ——
+   中文会掉到 NSimSun。加 var(--font-ui) 兜底，保留等宽候选。 */
+.mb-adv-summary{font-family:'Fira Code','SFMono-Regular',Consolas,var(--font-ui),monospace;font-size:var(--fs-meta);padding:0;background:transparent;border:0;opacity:.75;}
 .mb-adv-section{margin-top:12px;}
 .mb-adv-label{font-size:var(--fs-meta);text-transform:uppercase;letter-spacing:.1em;opacity:.6;margin-bottom:7px;}
 .mb-model-static-hint{font-size:var(--fs-meta);opacity:.55;}
+#page-api .mb-adv-section + .mb-adv-section{margin-top:18px;padding-top:16px;border-top:1px solid var(--border-soft);}
+/* P3A 这条把 API 页所有 button 都改成等宽栈 —— 中文（"启用 Middle Brain" 等）
+   会落到 NSimSun。控件文字回到 Original 的 UI sans；等宽只留给机器值。 */
+#page-api .mb-adv-card input,
+#page-api .mb-adv-card select,
+#page-api .mb-adv-card button{font-family:var(--font-ui);}
 /* 模型 swiper：左右箭头 + 中央当前模型 + 档位条 */
 .mb-model-row{display:flex;align-items:center;gap:10px;}
 .mb-model-arrow{flex:0 0 auto;width:34px;height:34px;border:1px solid var(--border-soft);background:transparent;color:var(--content-primary);border-radius:var(--radius-control);cursor:pointer;font-size:.8rem;transition:border-color .15s,background .15s;}
