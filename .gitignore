@@ -21,6 +21,13 @@ logs/
 tmp_ib_probe*.js
 _icon_preview.png
 
+# 阶段验收用的临时工作区（CDP 截图、探针脚本、解压出来的参考实现、对照树）。
+# 它是证据，不是源码：**内容保留在工作机上不删**，这条规则只防止未来
+# `git add -A` 之类把上百 MB 的截图/参考副本误 stage 进版本库。
+# 目前 `git ls-files tmp/` 为 0，规则是向前防护，不是事后清理。
+# 注意与已有规则的分工：`tests/.tmp/` 由测试套件自建自删，是另一条独立规则。
+/tmp/
+
 # WorkBuddy AI 工具产物（本地记忆/缓存）
 .workbuddy-ai/
 
