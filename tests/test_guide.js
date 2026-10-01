@@ -69,7 +69,18 @@ const html = fs.readFileSync(HTML_PATH, 'utf8');
 const scriptTags = [...html.matchAll(/<script[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi)].map(m => m[1]);
 const styleTags = [...html.matchAll(/<link[^>]*\brel\s*=\s*["'][^"']*stylesheet[^"']*["'][^>]*\bhref\s*=\s*["']([^"']+)["']/gi)].map(m => m[1]);
 check('HTML 只挂载一次 guide-beginner.js', scriptTags.filter(s => s === 'assets/js/guide-beginner.js').length === 1);
-check('HTML 没有新增样式表（仍为 20）', styleTags.length === 20, styleTags.length);
+/* Guide 的挂载契约是「不往 HTML 里新增样式表 <link>」：它自己的作用域样式表由模块在
+   运行时注入（见下方 STYLE_HREF 断言），所以 HTML 的样式表集合不应因为 Guide 而增长。
+   原断言把这个契约写成了当时的快照数量（20）——模块增长后它就永久失效了（HEAD 实际
+   是 24），既拦不住新增也报不出真问题。精确数量与顺序由 tests/test_frontend_structure.js
+   的 split.externalStyleCount / split.coreStyleOrder 拥有并维护；这里改为断言语义契约
+   本身，而不是再维护第二个会各自失效的魔法数字。 */
+check('HTML 样式表契约（无 Guide <link> / 无重复加载 / canonical 入口仍外置）',
+  styleTags.length > 0
+  && !styleTags.some(h => /guide/i.test(h))
+  && new Set(styleTags).size === styleTags.length
+  && styleTags.includes('assets/css/core.css'),
+  `count=${styleTags.length}; dup=[${styleTags.filter((h, i) => styleTags.indexOf(h) !== i).join(',')}]; guide=[${styleTags.filter(h => /guide/i.test(h)).join(',')}]`);
 check('HTML 没有 guide-beginner.css 的 <link>', !styleTags.includes('assets/css/guide-beginner.css'));
 check('HTML 有 #guide-beginner 容器且只有一处', (html.match(/id=["']guide-beginner["']/g) || []).length === 1);
 const guidePage = (html.match(/<div class="page" id="page-guide">[\s\S]*?<div class="page" id="page-diy">/) || [''])[0];
