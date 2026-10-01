@@ -298,6 +298,22 @@ const GROUPS = [
       ['test_memory_recall_early_exit.js'],
       ['test_memory_recall_query.js'],
       ['test_memory_recall_wiring_guard.js'],
+      /* P21-R2-C：Orchestrator Skeleton + Hard Gate + Recall Trace + Legacy Parity。
+         C1（接线，行为等价）：桌面 selectMemoryContext 与 Home Node retrieve
+         改为经 memory-recall-orchestrator；两个 Host 都**不传 turn**，因此
+         内部走 legacy path 直接委托同一份 memory-retrieval-core。
+         C2（新语义，Host 暂不启用）：early exit / deterministic query /
+         visibility pre-filter / relevanceScore / Hard Gate(relevanceScore>0) /
+         RecallTrace（脱敏、零日志出口）。
+         legacy_parity 是本轮的**硬门**：29 组 fixture 下
+         deepStrictEqual(orchestrator.result, core.buildMemoryContext)，
+         逐字节比对 text / selected / count / chars / reason。
+         纯 Node、零浏览器、零网络。 */
+      ['test_memory_recall_scoring.js'],
+      ['test_memory_recall_trace.js'],
+      ['test_memory_recall_orchestrator.js'],
+      ['test_memory_recall_legacy_parity.js'],
+      ['test_memory_recall_two_host_parity.js'],
       /* M1-C.2m：canonical Understanding —— 存储/修订链/CAS/单活不变量/更正契约
          （纯 Node + 真 SQLite + 临时数据目录，零网络、零浏览器）。 */
       ['test_understanding_contract_closure.js'],

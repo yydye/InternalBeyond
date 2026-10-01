@@ -140,10 +140,70 @@ CURRENT_REASONS.forEach(r => {
 check('R.currentSuccessReasonIsNull',
   /reason:\s*null/.test(RETRIEVAL_TEXT),
   'successful recall must still report reason: null');
-/* 当前生产代码**不允许**出现新 reason —— 它们只能在契约里作为 FUTURE 存在。 */
-check('R.newReasonsAreNotYetInProduction',
-  RETRIEVAL_TEXT.indexOf("'early-exit'") < 0 && RETRIEVAL_TEXT.indexOf("'gate-rejected'") < 0,
-  'R2-A must not have introduced the new reasons into production code yet');
+/* ── PHASE TRANSITION（R2-B → R2-C，有意更新，不是 regression）────────────
+   旧断言（R2-B）R.newReasonsAreNotYetInProduction：
+     断言 'early-exit' / 'gate-rejected' 在生产代码里**根本不存在**。
+
+   R2-C 的目标就是让 Orchestrator 实现这两个 reason，因此"代码里不存在"
+   这条判据按设计失效。它被升级为两条更准确的：
+
+     R.newReasonsImplementedInOrchestrator
+        —— 两个 reason 已在 orchestrator 里实现。
+     R.newReasonsNotProducedByActiveLegacyPath
+        —— **active legacy path 从不产出它们**。
+
+   为什么最后一条才是真正要守的东西：用户可见行为由 **active path** 决定，
+   而不是由"代码里有没有这个字符串"决定。R2-C 允许 orchestrator 存在新语义，
+   但不允许 production 的 legacy 调用产出新 reason —— 那是 R2-D 的事。 */
+const ORCH_PATH = 'assets/js/memory-recall/memory-recall-orchestrator.js';
+const ORCH_TEXT = fs.existsSync(path.join(ROOT, ORCH_PATH)) ? read(ORCH_PATH) : '';
+
+check('R.newReasonsImplementedInOrchestrator',
+  ORCH_TEXT.indexOf("REASON_EARLY_EXIT = 'early-exit'") >= 0
+  && ORCH_TEXT.indexOf("REASON_GATE_REJECTED = 'gate-rejected'") >= 0,
+  'R2-C must implement the two new reasons in the orchestrator');
+
+/* 真判据：直接执行 production wrapper 的 legacy 路径（**不传 turn**）。 */
+check('R.newReasonsNotProducedByActiveLegacyPath', (() => {
+  if (!ORCH_TEXT) return false;
+  let ORCH;
+  try { ORCH = require(path.join(ROOT, ORCH_PATH)); } catch (e) { return false; }
+  const now = 1750000000000;
+  const day = 86400000;
+  const mk = (o) => Object.assign({
+    id: 'm', title: 't', content: 'c', importance: 5, arousal: 0.3, resolved: false,
+    activationCount: 0, created: now - day, lastActivated: now - day,
+    visibility: 'public', tags: [], domain: '日常'
+  }, o || {});
+  /* 覆盖面刻意拉满：空库 / 无命中 / 全私密 / 正常命中 / 预算打满 /
+     早退短语 / 纯 emoji / 空消息 —— 全部**不传 turn**（这就是 active legacy path）。 */
+  const cases = [
+    [[], {}],
+    [[mk({ id: 'a', title: 'zzz', content: 'qqq' })], { userMessage: '完全无关' }],
+    [[mk({ id: 'p', visibility: 'private' })], { userMessage: 'x' }],
+    [[mk({ id: 'a', title: '显卡', content: '显卡' })], { userMessage: '显卡' }],
+    [Array.from({ length: 20 }, (_, i) => mk({ id: 'e' + i, content: 'z'.repeat(200) })), { maxChars: 200 }],
+    [[mk({ id: 'a' })], { userMessage: '嗯' }],
+    [[mk({ id: 'a' })], { userMessage: '😂' }],
+    [[mk({ id: 'a' })], { userMessage: '' }]
+  ];
+  const seen = new Set();
+  for (const [recs, over] of cases) {
+    const out = ORCH.recall(recs, Object.assign({
+      apiId: 'role_a', now: now, random: () => 0.42, userMessage: '',
+      isGroup: false, groupMemEnabled: false, maxChars: 2000, contentLen: 200
+    }, over || {}));
+    seen.add(String(out.result.reason));
+    if (out.result.reason === 'early-exit' || out.result.reason === 'gate-rejected') return false;
+    if (out.meta.mode !== 'legacy') return false;
+  }
+  /* 覆盖度自检：必须真的跑到过 legacy 的既有 reason，
+     否则"没有新 reason"可能只是因为什么都没跑到。 */
+  return seen.has('null') && seen.has('no-visible-memory');
+})(), 'the active legacy path must never produce early-exit / gate-rejected (that is R2-D)');
+check('R.reverseControl.legacyReasonVocabularyIsReachable',
+  /reason:\s*'no-visible-memory'/.test(RETRIEVAL_TEXT),
+  'reverse control: the probe fixtures must be able to exercise a real legacy reason');
 
 CURRENT_REASONS.concat(['early-exit', 'gate-rejected']).forEach(r => {
   /* 词表条目可能写作 `'no-budget'`（代码字面量）或 `no-budget`（表格单元格）。

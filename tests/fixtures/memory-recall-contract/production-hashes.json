@@ -1,13 +1,13 @@
 {
-  "note": "P21-R2-A · production memory runtime SHA-256 baseline. Any production change to these files must be an explicit, reviewable update to this file. Written on first run; asserted equal on every later run.",
+  "note": "P21-R2-A established this baseline (production memory runtime SHA-256). R2-C intentionally rewired assets/js/memory.js and services/home-node/memory-retrieval.js through the Recall Orchestrator (legacy path delegates to the same core), and their hashes were updated here as an explicit, reviewable change. Any OTHER production change to these files must likewise be an explicit update to this file.",
   "files": {
-    "assets/js/memory.js": "3E6CEAEB565CCF3DB9D067D4801A5EA981C857FD7995AD7281FD944DB51D0244",
+    "assets/js/memory.js": "6C9829E5E7FB2612175CADE21DE935E32E6EFF76C9CAD811E75EC9EBF5FD128C",
     "assets/js/memory-contract.js": "AF493100CDB37313A8BE01A101F5E787809019CB9DAD67CB03E210C1005EC2C9",
     "assets/js/memory-retrieval-core.js": "CC578F2640C68CEA4992389AAC1C2A7D7B8AD9BFAC4311AFB51FB6AA0DCE5B72",
     "assets/js/memory-visibility-core.js": "95F8425CB01C899C4EA132C672606F5A3D1458BBF86E0E955A55CA69937E24C3",
     "assets/js/communication.js": "10E62E840567CAAF1914330EF234FF12DD6DE5EBF7D773CB260B4AE360531E08",
     "assets/js/home-node-bootstrap.js": "433BE876AEA4778FF46C35C204D50D3188065326C322E1A4FE493BE420F95EBF",
-    "services/home-node/memory-retrieval.js": "B8C05B3439912AC28A38D1EED2FA17021CE543CA837F15D78348733C8658DDB2",
+    "services/home-node/memory-retrieval.js": "BE82B4B43DC5B9DAD4801FE0FC9BADA1B3BB0F68B6B3FA3553F01ABEA1CC1722",
     "services/home-node/memory-store.js": "9CF07B4714D89567551241CF06248DAE773C2F76B698D81F997E12ECE10DA180",
     "assets/js/memory-authority.js": "68AD041E03D61CFCFD0EFA7259E97E646CEBE3FF4380A04B5426A6B098663FDD",
     "assets/js/memory/auto-memory.js": "1D3E692457B80F923ECFCE02C6BD88202EDC082B208FC261B18F02CB564B0101"

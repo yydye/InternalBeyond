@@ -40,6 +40,13 @@
 'use strict';
 
 const MEMORY_RETRIEVAL = require('../../assets/js/memory-retrieval-core.js');
+/* P21-R2-C：recall 的架构入口。Node 侧 require **同一份** orchestrator
+   （浏览器加载的是同一个文件），因此"她记得什么"仍然只有一个实现。
+   legacy path 会委托上面那份 core，所以召回结果逐字节不变。
+   顶层 require 失败时回落为 null —— fail-open 兼容缝：recall 模块缺失
+   绝不能让 Home Node 整轮不可用（见模块头"失败语义"一节）。 */
+let MEMORY_RECALL_ORCHESTRATOR = null;
+try { MEMORY_RECALL_ORCHESTRATOR = require('../../assets/js/memory-recall/memory-recall-orchestrator.js'); } catch (e) { MEMORY_RECALL_ORCHESTRATOR = null; }
 const P0_CONTEXT = require('./p0-context.js');
 
 /* 记忆块在 system 里的分隔说明。刻意**不**重复 P0 的标题 —— 两块上下文
@@ -87,7 +94,7 @@ function createMemoryRetrieval(deps) {
     const contentLen = published && published.contentLen ? published.contentLen
       : (options.contentLen != null ? Number(options.contentLen) : MEMORY_RETRIEVAL.DEFAULT_CONTENT_LEN);
 
-    const built = MEMORY_RETRIEVAL.buildMemoryContext(page.records || [], {
+    const buildOpts = {
       apiId: roleId,
       now: options.now != null ? options.now : clock(),
       random: random,
@@ -100,7 +107,14 @@ function createMemoryRetrieval(deps) {
       /* 标题由本模块提供（【长期记忆】）：只要正文行，保证"哪一行怎么渲染"
          仍然出自共享实现，而小节标题是执行缝的决定。 */
       includeHeader: false
-    });
+    };
+    /* P21-R2-C：经 orchestrator（legacy path 委托同一份 core）。
+       刻意**不**在 buildOpts 里放 turn ⇒ active behavior 始终是 legacy，
+       text / selectedIds / count / chars / reason 的语义完全不变。
+       orchestrator 缺失时回落到 core 直调（逐行为等价）。 */
+    const built = (MEMORY_RECALL_ORCHESTRATOR && typeof MEMORY_RECALL_ORCHESTRATOR.recall === 'function')
+      ? MEMORY_RECALL_ORCHESTRATOR.recall(page.records || [], buildOpts).result
+      : MEMORY_RETRIEVAL.buildMemoryContext(page.records || [], buildOpts);
     return {
       ok: true,
       text: built.text,

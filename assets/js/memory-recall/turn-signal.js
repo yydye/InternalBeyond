@@ -1,4 +1,4 @@
-/* ====================================================================
+﻿/* ====================================================================
    IB Memory Recall · Turn Signal / Early Exit — runtime-neutral 纯函数（UMD dual-load）
    --------------------------------------------------------------------
    - Browser: <script src="assets/js/memory-recall/turn-signal.js">

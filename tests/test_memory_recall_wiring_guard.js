@@ -1,24 +1,42 @@
 'use strict';
-/* Internal Beyond · P21-R2-B · Production Wiring Guard + R2-A Contract Regression
-   （Node，零依赖，不开浏览器）
+/* Internal Beyond · P21-R2-C · Production Wiring Contract（Node，零依赖，不开浏览器）
    运行：node tests/test_memory_recall_wiring_guard.js
 
    ══════════════════════════════════════════════════════════════════════════
-   本文件回答两个问题，**只回答这两个**：
+   ⚠ PHASE TRANSITION（R2-B → R2-C，有意为之，不是 regression）
+   ══════════════════════════════════════════════════════════════════════════
 
-   §A · 两个新模块（turn-signal / recall-query）确实存在，
-        但 **production active path 对它们的引用数为 0**。
-        —— 因此"现有 production recall output 与接线前 byte-identical"
-           不是一句声明，而是一个可断言的结构事实。
+   R2-B 时本文件断言：
+       production references = 0        （模块 implemented but unwired）
 
-   §B · R2-B 的新模块**没有**破坏 R2-A 的 contract test。
-        R2-A 的 CURRENT 断言用于证明某些未来行为尚未进入现有 runtime；
-        新增"未接线模块"后它们必须继续成立。本文件把 R2-A 的完整契约测试
-        作为子进程跑一遍，把"没被我弄坏"变成可重复的检查而不是一句保证。
+   R2-C 的目标**就是**正式接线，因此那条断言按设计失效。本文件升级为：
+       production references only through orchestrator
 
-   为什么扫描要**剥注释**：R2-B 的模块头、契约文档与测试都在注释/字符串里
-   反复提到这些名字。裸词扫描会把"文档在描述它"误判成"生产在调用它"——
-   这个仓库已经在这条教训上栽过（见 test_p22_20 §7 / test_p22_21 T5 的注释）。
+   具体改动（逐条，便于 review 时确认不是"把红改成绿"）：
+
+     旧 A3.zeroProductionCallers
+        → 新 A3.hostsReachRecallOnlyThroughOrchestrator
+              production 里出现 recall 能力只允许经由 orchestrator 的
+              依赖注入；turn-signal / recall-query 不得被 Host 直接调用。
+
+     旧 A1.htmlDoesNotReference.*
+        → 新 A1.htmlLoadsRecallModulesInOrder
+              HTML **必须**按依赖顺序加载五个 recall 模块。
+
+     旧 A2.noRef.<关键文件>.*
+        → 新 A2.<Host>ReferencesOrchestrator
+              memory.js / Home Node memory-retrieval.js **必须**引用 orchestrator，
+              并且**必须**保留 core 回落（fail-open 兼容缝）。
+
+   仍然有效的安全断言（未放宽）：
+     · Host 不得传 turn（R2-C 的核心安全条件）
+     · 不得引用 channel-policy / seat-planner / cooldown（属于 R2-D/F）
+     · 不得有第二套 ACL / 第二套 lexical 实现
+     · orchestrator 不得持久化任何东西
+
+   为什么保留反向控制：把一组断言从"零引用"改成"经 orchestrator"之后，
+   最容易发生的事是判据被放宽到测不出东西。因此下面每一条"应当存在"的
+   断言都配一条"篡改后必须变红"的证明。
    ══════════════════════════════════════════════════════════════════════════ */
 
 const assert = require('node:assert/strict');
@@ -38,30 +56,21 @@ const check = (name, cond, detail) => {
 };
 const section = t => console.log('\n── ' + t + ' ──');
 
-const read = rel => {
-  const p = path.join(ROOT, rel);
-  assert.ok(fs.existsSync(p), 'required file missing: ' + rel);
-  return fs.readFileSync(p, 'utf8').replace(/^\uFEFF/, '');
-};
-/* 剥注释但**保留字符串字面量**：我们要抓的是"代码里的引用"，
-   而一个 require('…') 的路径就在字符串里。 */
+const read = rel => fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/^\uFEFF/, '');
+/* 剥注释但保留字符串字面量（require 路径就在字符串里）。 */
 const stripComments = s => s
   .replace(/\/\*[\s\S]*?\*\//g, '')
   .replace(/(^|[^:])\/\/[^\n]*/g, '$1');
 
-const NEW_MODULES = [
+const RECALL_DIR = 'assets/js/memory-recall/';
+const MODULES = [
   'assets/js/memory-recall/turn-signal.js',
-  'assets/js/memory-recall/recall-query.js'
+  'assets/js/memory-recall/recall-query.js',
+  'assets/js/memory-recall/scoring.js',
+  'assets/js/memory-recall/recall-trace.js',
+  'assets/js/memory-recall/memory-recall-orchestrator.js'
 ];
-const NEW_NAMES = [
-  'IBMemoryRecallTurnSignal',
-  'IBMemoryRecallQuery',
-  'memory-recall/turn-signal',
-  'memory-recall/recall-query'
-];
-const NEW_FUNCS = ['analyzeTurnSignal', 'buildRecallQuery'];
-
-const PRODUCTION_DIRS = ['assets/js', 'services', 'bridge', 'runtime', 'game'];
+const FUTURE_MODULES = ['channel-policy.js', 'seat-planner.js', 'cooldown.js'];
 const HTML = 'InternalBeyond.html';
 
 function walkJs(dir, out) {
@@ -74,167 +83,249 @@ function walkJs(dir, out) {
 }
 
 /* ══════════════════════════════════════════════════════════════════════
-   §A · Production Wiring Guard
+   §A1 · HTML 按依赖顺序加载五个模块
    ══════════════════════════════════════════════════════════════════════ */
-section('§A · Production wiring guard');
+section('§A1 · HTML 加载顺序');
 
-/* A0 · 两个模块确实存在，且确实是可加载的纯模块。 */
-NEW_MODULES.forEach(rel => {
-  const p = path.join(ROOT, rel);
-  check('A0.moduleExists.' + rel, fs.existsSync(p), rel + ' must exist');
+const HTML_NO_COMMENTS = stripComments(read(HTML));
+MODULES.forEach(rel => {
+  check('A1.htmlLoads.' + rel.split('/').pop(),
+    HTML_NO_COMMENTS.indexOf(rel) >= 0,
+    rel + ' must be loaded by ' + HTML);
 });
-const TS = require(path.join(ROOT, NEW_MODULES[0]));
-const Q = require(path.join(ROOT, NEW_MODULES[1]));
-check('A0.turnSignalLoadable', typeof TS.analyzeTurnSignal === 'function');
-check('A0.recallQueryLoadable', typeof Q.buildRecallQuery === 'function');
-check('A0.modulesAreDirectoriesUnderMemoryRecall',
-  NEW_MODULES.every(rel => rel.startsWith('assets/js/memory-recall/')));
-
-/* A1 · InternalBeyond.html 没有新增 script。 */
-const htmlSrc = read(HTML);
-const htmlNoComments = stripComments(htmlSrc);
-NEW_NAMES.forEach(n => {
-  check('A1.htmlDoesNotReference.' + n, htmlNoComments.indexOf(n) < 0,
-    HTML + ' must not reference ' + n);
-});
-check('A1.htmlHasNoMemoryRecallScriptTag',
-  !/<script[^>]*memory-recall[^>]*>/i.test(htmlNoComments),
-  'no <script> may load a memory-recall module');
-/* 反向控制：证明这条判据真的能看见 script 标签。 */
+/* 顺序：visibility → retrieval-core → 五个 recall 模块 → memory.js */
+(function orderCheck() {
+  const pos = {};
+  const seq = ['assets/js/memory-visibility-core.js', 'assets/js/memory-retrieval-core.js']
+    .concat(MODULES).concat(['assets/js/memory.js']);
+  let ok = true, detail = '';
+  seq.forEach(rel => { pos[rel] = HTML_NO_COMMENTS.indexOf(rel); });
+  for (let i = 1; i < seq.length; i++) {
+    if (pos[seq[i]] < 0 || pos[seq[i - 1]] < 0 || pos[seq[i]] < pos[seq[i - 1]]) {
+      ok = false; detail = seq[i - 1] + ' must precede ' + seq[i];
+    }
+  }
+  check('A1.dependencyOrderRespected', ok, detail);
+})();
+check('A1.recallModulesPrecedeMemoryJs',
+  MODULES.every(m => HTML_NO_COMMENTS.indexOf(m) < HTML_NO_COMMENTS.indexOf('assets/js/memory.js')));
+check('A1.recallCorePrecedesRecallQuery',
+  HTML_NO_COMMENTS.indexOf('assets/js/memory-retrieval-core.js')
+  < HTML_NO_COMMENTS.indexOf('assets/js/memory-recall/recall-query.js'),
+  'recall-query reuses core.extractKeywords — core must load first');
+check('A1.orchestratorLoadedLast',
+  MODULES.every(m => m === MODULES[4] || HTML_NO_COMMENTS.indexOf(m) < HTML_NO_COMMENTS.indexOf(MODULES[4])));
 check('A1.reverseControl.detectorSeesScriptTags',
-  /<script[^>]*src=/i.test(htmlNoComments),
+  /<script[^>]*src=/i.test(HTML_NO_COMMENTS),
   'reverse control: the detector must be able to see real <script src> tags');
 
-/* A2 · 关键生产文件逐个不得引用。 */
-const KEY_FILES = [
+/* ══════════════════════════════════════════════════════════════════════
+   §A2 · Host 经 orchestrator（且保留回落）
+   ══════════════════════════════════════════════════════════════════════ */
+section('§A2 · Host 接线');
+
+const MEMORY_SRC = stripComments(read('assets/js/memory.js'));
+const NODE_SRC = stripComments(read('services/home-node/memory-retrieval.js'));
+
+check('A2.browserResolvesOrchestrator', MEMORY_SRC.indexOf('IBMemoryRecallOrchestrator') >= 0);
+check('A2.browserCallsRecall', /_orch\s*\?[^;]*\.recall\(/.test(MEMORY_SRC) || /_orch\.recall\(/.test(MEMORY_SRC));
+check('A2.browserKeepsCoreFallback',
+  MEMORY_SRC.indexOf('core.buildMemoryContext(all,_pickOpts)') >= 0,
+  'the browser must fall back to core when the orchestrator is missing (fail-open)');
+check('A2.homeNodeRequiresOrchestrator',
+  NODE_SRC.indexOf('memory-recall-orchestrator.js') >= 0);
+check('A2.homeNodeCallsRecall', NODE_SRC.indexOf('MEMORY_RECALL_ORCHESTRATOR.recall(') >= 0);
+check('A2.homeNodeKeepsCoreFallback',
+  NODE_SRC.indexOf('MEMORY_RETRIEVAL.buildMemoryContext(page.records || [], buildOpts)') >= 0,
+  'Home Node must fall back to core when the orchestrator is missing');
+check('A2.homeNodeRequireIsGuarded',
+  /try\s*\{[^}]*require\([^)]*memory-recall-orchestrator\.js[^)]*\)[^}]*\}\s*catch/.test(NODE_SRC)
+  || /catch\s*\([^)]*\)\s*\{\s*MEMORY_RECALL_ORCHESTRATOR\s*=\s*null/.test(NODE_SRC),
+  'the require must be guarded so a missing module cannot break the Home Node');
+
+/* ══════════════════════════════════════════════════════════════════════
+   §A3 · recall 能力只经 orchestrator 进入生产
+   ══════════════════════════════════════════════════════════════════════ */
+section('§A3 · 只经 orchestrator');
+
+const HOSTS = [
   'assets/js/memory.js',
   'assets/js/communication.js',
   'assets/js/home-node-bootstrap.js',
   'services/home-node/memory-retrieval.js',
-  'assets/js/memory-retrieval-core.js',
-  'assets/js/memory-visibility-core.js',
-  'assets/js/memory-contract.js',
-  'assets/js/memory-authority.js'
+  'services/home-node/mobile-gateway.js'
 ];
-KEY_FILES.forEach(rel => {
-  const src = stripComments(read(rel));
-  NEW_NAMES.concat(NEW_FUNCS).forEach(n => {
-    check('A2.noRef.' + rel + '.' + n, src.indexOf(n) < 0,
-      rel + ' must not reference ' + n);
+
+/* A3.1 · Host **不得**直接调用 turn-signal 的 analyzeTurnSignal 或
+          recall-query 的 buildRecallQuery（那是 orchestrator 的职责）。 */
+const directCallers = [];
+HOSTS.forEach(rel => {
+  let src;
+  try { src = stripComments(read(rel)); } catch (e) { return; }
+  if (rel === 'services/home-node/memory-retrieval.js') return; /* 它是 orchestrator 的宿主，仍不得直接调 */
+  ['analyzeTurnSignal', 'buildRecallQuery'].forEach(fn => {
+    if (src.indexOf(fn) >= 0) directCallers.push(rel + ' :: ' + fn);
   });
 });
+check('A3.hostsDoNotCallTurnSignalOrQueryDirectly', directCallers.length === 0,
+  'Hosts must go through the orchestrator:\n        ' + directCallers.join('\n        '));
 
-/* A3 · 整个生产面（assets/js + services + bridge + runtime + game）零引用。
-      两个新模块自身除外 —— 它们当然包含自己的函数名。 */
+/* A3.2 · 整个生产面里，recall 模块被 require / 引用的情况只允许来自
+          orchestrator 自己或 Host 的 orchestrator 引用。 */
 const scanned = [];
-PRODUCTION_DIRS.forEach(d => {
+['assets/js', 'services', 'bridge', 'runtime', 'game'].forEach(d => {
   const full = path.join(ROOT, d);
   if (fs.existsSync(full)) walkJs(full, scanned);
 });
-check('A3.scannedEnoughFiles', scanned.length > 200,
-  'the sweep must actually cover the production surface (scanned ' + scanned.length + ')');
+check('A3.scannedEnoughFiles', scanned.length > 200, 'scanned ' + scanned.length);
 
 const offenders = [];
 for (const full of scanned) {
   const rel = path.relative(ROOT, full).replace(/\\/g, '/');
-  if (NEW_MODULES.indexOf(rel) >= 0) continue;   /* 自我引用不算 */
+  if (MODULES.indexOf(rel) >= 0) continue;              /* 模块自身 */
+  if (rel === 'assets/js/memory.js') continue;           /* 已单独断言经 orchestrator */
+  if (rel === 'services/home-node/memory-retrieval.js') continue; /* 同上 */
   const src = stripComments(fs.readFileSync(full, 'utf8'));
-  for (const n of NEW_NAMES.concat(NEW_FUNCS)) {
-    if (src.indexOf(n) >= 0) { offenders.push(rel + ' :: ' + n); break; }
-  }
+  ['IBMemoryRecallTurnSignal', 'IBMemoryRecallQuery', 'IBMemoryRecallScoring',
+    'IBMemoryRecallTrace', 'analyzeTurnSignal', 'buildRecallQuery',
+    'memory-recall/turn-signal', 'memory-recall/recall-query',
+    'memory-recall/scoring', 'memory-recall/recall-trace'
+  ].forEach(token => {
+    if (src.indexOf(token) >= 0) offenders.push(rel + ' :: ' + token);
+  });
 }
-check('A3.zeroProductionCallers', offenders.length === 0,
-  'production must not call the new modules:\n        ' + offenders.join('\n        '));
+check('A3.recallPrimitivesNotUsedElsewhere', offenders.length === 0,
+  'recall primitives must not be reached except through the orchestrator:\n        ' + offenders.join('\n        '));
 
-/* A3b · 反向控制：如果生产文件里真的出现引用，扫描必须能发现。
-      做法：把一段真实引用注入到内存中的副本里，验证同一套判据会命中。
-      **不写任何文件** —— 判据本身必须是可证伪的。 */
-(function reverseControl() {
-  const probe = 'const x = require("../../assets/js/memory-recall/recall-query.js");';
-  const probeCore = stripComments(probe);
-  const detected = NEW_NAMES.some(n => probeCore.indexOf(n) >= 0) || NEW_FUNCS.some(n => probeCore.indexOf(n) >= 0);
-  check('A3b.reverseControl.detectorIsLive', detected,
-    'the reference detector must actually fire on a real reference');
-  /* 再证一次：把注入内容混进一个真实生产文件的文本副本，判据必须报出来。 */
-  const realSrc = stripComments(read('assets/js/memory.js'));
-  const poisoned = realSrc + '\n' + probe;
-  const poisonedDetected = NEW_NAMES.concat(NEW_FUNCS).some(n => poisoned.indexOf(n) >= 0);
-  const cleanDetected = NEW_NAMES.concat(NEW_FUNCS).some(n => realSrc.indexOf(n) >= 0);
-  check('A3b.reverseControl.poisonedDetected', poisonedDetected,
-    'a poisoned copy must be flagged');
-  check('A3b.reverseControl.cleanCopyIsClean', cleanDetected === false,
-    'the unpoisoned copy must stay clean — proves the sweep is not trivially red');
+/* A3.3 · 未来阶段的模块不得被引用（R2-D/F 尚未存在）。 */
+(function noFutureModules() {
+  const hits = [];
+  scanned.forEach(full => {
+    const rel = path.relative(ROOT, full).replace(/\\/g, '/');
+    if (MODULES.indexOf(rel) >= 0) return;
+    const src = stripComments(fs.readFileSync(full, 'utf8'));
+    FUTURE_MODULES.forEach(f => { if (src.indexOf(f) >= 0) hits.push(rel + ' :: ' + f); });
+  });
+  check('A3.noChannelPolicyOrSeatPlannerOrCooldown', hits.length === 0,
+    'R2-D/F modules must not be referenced yet:\n        ' + hits.join('\n        '));
 })();
 
-/* A4 · 行为等价的结构论证：没有调用路径 ⇒ 不可能改变召回结果。
-      这里断言的是"路径不存在"，不是"结果看起来一样"——
-      后者需要真实运行，而前者在结构上就足以推出结论。 */
-check('A4.noImportPathFromProduction', (() => {
-  const core = stripComments(read('assets/js/memory-retrieval-core.js'));
-  const mem = stripComments(read('assets/js/memory.js'));
-  const nodeRetrieval = stripComments(read('services/home-node/memory-retrieval.js'));
-  return NEW_NAMES.every(n => core.indexOf(n) < 0 && mem.indexOf(n) < 0 && nodeRetrieval.indexOf(n) < 0);
-})(), 'neither browser nor Home Node retrieval can reach the new modules');
-check('A4.legacyResultShapeUnchanged', (() => {
-  /* 生产仍走**同一份** core 的 buildMemoryContext，其返回形状未被改动。 */
-  const core = require(path.join(ROOT, 'assets/js/memory-retrieval-core.js'));
-  const built = core.buildMemoryContext([], { apiId: 'role_a', now: 0, random: () => 0, userMessage: '' });
-  return built && built.text === '' && Array.isArray(built.selected)
-    && built.count === 0 && built.chars === 0 && built.reason === 'no-visible-memory';
-})(), 'the live production retrieval entry point is untouched and still returns its frozen shape');
+/* ══════════════════════════════════════════════════════════════════════
+   §A4 · Host 不得传 turn（R2-C 的核心安全条件）
+   ══════════════════════════════════════════════════════════════════════ */
+section('§A4 · Host 不传 turn');
+
+check('A4.browserHostOmitsTurn', (() => {
+  const i = MEMORY_SRC.indexOf('const _pickOpts=');
+  const j = MEMORY_SRC.indexOf('const _orch=');
+  if (i < 0 || j < 0 || j <= i) return false;
+  return MEMORY_SRC.slice(i, j).indexOf('turn') < 0;
+})(), 'browser _pickOpts must not contain turn');
+check('A4.homeNodeHostOmitsTurn', (() => {
+  const i = NODE_SRC.indexOf('const buildOpts = {');
+  const j = NODE_SRC.indexOf('const built =');
+  if (i < 0 || j < 0 || j <= i) return false;
+  return NODE_SRC.slice(i, j).indexOf('turn') < 0;
+})(), 'Home Node buildOpts must not contain turn');
+check('A4.noHostPassesTurnToRecall', (() => {
+  /* 判据必须**贴着 recall 调用点**，不能对整文件扫 `turn:`。
+     counter-example（本轮真实踩到）：communication.js 里有一个完全无关的
+     请求生命周期辅助 `_ibTurnLc(turn)`，它自己的对象里就有 `turn:function(){…}`。
+     那个 `turn` 是"模型调用回合"，不是 memory recall 的 turn signal。
+     拿整文件扫描会把它误判成"Host 传了 recall turn" —— 一个假阳性，
+     而假阳性最坏的结果是有人把这条安全断言删掉。 */
+  function turnNearCall(src, callMarker) {
+    let idx = src.indexOf(callMarker);
+    while (idx >= 0) {
+      /* 窗口 = 调用点前 400 字符 **到** 调用点后 200 字符。
+         必须包含调用点自身之后的实参列表：`recall(rows, { turn: ... })`
+         里的 turn 出现在标记**之后**。只往前看会漏掉最典型的形态。 */
+      const window = src.slice(Math.max(0, idx - 400), idx + 200);
+      if (/\bturn\s*:/.test(window)) return true;
+      idx = src.indexOf(callMarker, idx + 1);
+    }
+    return false;
+  }
+  const probes = [
+    ['assets/js/memory.js', 'recall('],
+    ['services/home-node/memory-retrieval.js', 'recall(']
+  ];
+  const hits = [];
+  probes.forEach(([rel, marker]) => {
+    let src;
+    try { src = stripComments(read(rel)); } catch (e) { return; }
+    if (turnNearCall(src, marker)) hits.push(rel);
+  });
+  return hits.length === 0;
+})(), 'no production Host may pass a turn signal into recall (R2-C skeleton only)');
+check('A4.reverseControl.turnDetectorIsLive',
+  /\bturn\s*:/.test('const o={turn:{message:"x"}};'),
+  'reverse control: the turn detector must fire on a real turn object');
+check('A4.reverseControl.nearCallProbeIsLive', (() => {
+  const poisoned = 'const x = recall(records, { apiId: "a", turn: { message: "hi" } });';
+  const idx = poisoned.indexOf('recall(');
+  /* 与生产探针**同一窗口表达式**，否则反向控制测的就不是那条判据。 */
+  return /\bturn\s*:/.test(poisoned.slice(Math.max(0, idx - 400), idx + 200));
+})(), 'reverse control: the near-call probe must fire when a turn IS passed');
+check('A4.nearCallProbeIgnoresUnrelatedTurnHelpers', (() => {
+  const unrelated = 'function _ibTurnLc(turn){ return { turn:function(){ return turn; } }; }';
+  const nearCallWindow = unrelated.slice(0, unrelated.length);
+  return !/\brecall\(/.test(nearCallWindow);
+})(), 'an unrelated turn helper must not look like a recall call site');
 
 /* ══════════════════════════════════════════════════════════════════════
-   §B · R2-A Contract Regression
+   §A5 · orchestrator 自身的安全不变量
    ══════════════════════════════════════════════════════════════════════ */
-section('§B · R2-A contract regression（以子进程跑完整契约测试）');
+section('§A5 · orchestrator 不变量');
 
-const CONTRACT_TEST = 'tests/test_memory_recall_contract.js';
-check('B0.contractTestExists', fs.existsSync(path.join(ROOT, CONTRACT_TEST)));
-
-const run = spawnSync(process.execPath, [path.join(ROOT, CONTRACT_TEST)], {
-  cwd: ROOT,
-  encoding: 'utf8',
-  env: Object.assign({}, process.env, { IB_HOME_NODE_TOKEN_AUTOPROVISION: '0' })
-});
-const contractOut = String(run.stdout || '') + String(run.stderr || '');
-check('B1.contractTestStillGreen', run.status === 0,
-  'R2-A contract test must still pass (exit ' + run.status + ')'
-  + '\n        ' + contractOut.split('\n').filter(l => /FAIL/.test(l)).join('\n        '));
-check('B2.contractTestReports141', /141 assertions green/.test(contractOut),
-  'R2-A reported 141 assertions — R2-B must not have silently changed that');
-/* R2-A 的 CURRENT 断言特别值得单独点名：它们证明未来行为**尚未**进入生产。
-   R2-B 增加了两个未接线模块，这些断言必须继续成立。 */
-check('B3.currentAssertionsStillHold',
-  /PASS\s+R\.currentCalcRelevanceFloorIsOne/.test(contractOut)
-  && /PASS\s+R\.currentRelevanceCannotExpressZero/.test(contractOut)
-  && /PASS\s+R\.newReasonsAreNotYetInProduction/.test(contractOut),
-  'the CURRENT assertions (proving future behaviour has not entered production) must still hold');
-check('B4.productionIntegrityStillHolds',
-  !/FAIL\s+P18\.unchanged/.test(contractOut),
-  'R2-B must not have touched any production memory runtime file');
+const ORCH_SRC = stripComments(read('assets/js/memory-recall/memory-recall-orchestrator.js'));
+check('A5.noSecondAcl', !/===\s*'private'/.test(ORCH_SRC) && !/===\s*'only'/.test(ORCH_SRC)
+  && !/===\s*'except'/.test(ORCH_SRC) && !/===\s*'public'/.test(ORCH_SRC),
+  'orchestrator must delegate ACL to the shared visibility core, never re-implement it');
+check('A5.usesSharedAcl', /isMemoryVisibleTo\s*\(/.test(ORCH_SRC));
+check('A5.noPersistence', !/\bdbPut\b|\bdbGet\b|localStorage|sessionStorage|indexedDB|\bfetch\s*\(/.test(ORCH_SRC));
+check('A5.noActivationWrite', !/activationCount\s*=/.test(ORCH_SRC) && !/lastActivated\s*=/.test(ORCH_SRC),
+  'selection ≠ reinforcement');
+check('A5.noSecondNgramImplementation',
+  !/slice\(i,\s*i\s*\+\s*2\)/.test(ORCH_SRC) && !/slice\(i,\s*i\s*\+\s*3\)/.test(ORCH_SRC));
+check('A5.noLlmOrVector', !/\bmiddleBrain\b|\bcallApi\b|\bbm25\b|\bembedding\b|\bfaiss\b|\bchroma\b/i.test(ORCH_SRC));
 
 /* ══════════════════════════════════════════════════════════════════════
-   §C · R2-B 自身的新模块也不得被注册进 HTML 的加载顺序
+   §B · R2-A / R2-B 契约回归（子进程）
    ══════════════════════════════════════════════════════════════════════ */
-section('§C · 模块自我声明与加载顺序');
+section('§B · 契约回归');
 
-NEW_MODULES.forEach(rel => {
-  const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
-  check('C1.declaresUnwired.' + rel, /implemented but unwired/i.test(src),
-    rel + ' must declare its R2-B wiring status');
-  check('C2.declaresUmdDualLoad.' + rel,
-    /typeof module === 'object'/.test(src) && /module\.exports/.test(src) && /root\.IBMemoryRecall/.test(src),
-    rel + ' must keep the shared-core UMD dual-load form');
-});
-check('C3.turnSignalBrowserGlobal', /root\.IBMemoryRecallTurnSignal = factory\(\)/.test(read(NEW_MODULES[0])));
-check('C4.recallQueryBrowserGlobal', /root\.IBMemoryRecallQuery = factory\(/.test(read(NEW_MODULES[1])));
+function runTest(rel, expectPattern) {
+  const r = spawnSync(process.execPath, [path.join(ROOT, rel)], {
+    cwd: ROOT, encoding: 'utf8',
+    env: Object.assign({}, process.env, { IB_HOME_NODE_TOKEN_AUTOPROVISION: '0' })
+  });
+  const out = String(r.stdout || '') + String(r.stderr || '');
+  return { ok: r.status === 0, out: out, matched: expectPattern ? expectPattern.test(out) : true };
+}
+
+const contractRun = runTest('tests/test_memory_recall_contract.js', /143 assertions green/);
+check('B1.contractStillGreen', contractRun.ok && contractRun.matched,
+  'R2-A contract must still pass (R2-C upgraded one CURRENT assertion into three, '
+  + 'so the count moved 141 → 143 as an intentional phase transition)'
+  + '\n        ' + contractRun.out.split('\n').filter(l => /FAIL/.test(l)).join('\n        '));
+check('B2.productionIntegrityStillHolds', !/FAIL\s+P18\.unchanged/.test(contractRun.out));
+
+const earlyRun = runTest('tests/test_memory_recall_early_exit.js');
+check('B3.earlyExitStillGreen', earlyRun.ok);
+const queryRun = runTest('tests/test_memory_recall_query.js');
+check('B4.queryStillGreen', queryRun.ok);
+const parityRun = runTest('tests/test_memory_recall_legacy_parity.js');
+check('B5.legacyParityStillGreen', parityRun.ok && /all deepStrictEqual/.test(parityRun.out),
+  'the R2-C hard gate must stay green');
 
 /* ══════════════════════════════════════════════════════════════════════ */
 
 console.log('\n' + '='.repeat(64));
 if (failures) {
-  console.error('MEMORY RECALL WIRING GUARD FAILED · ' + failures + ' assertion(s), ' + passed + ' passed');
+  console.error('MEMORY RECALL WIRING CONTRACT FAILED · ' + failures + ' assertion(s), ' + passed + ' passed');
   process.exitCode = 1;
 } else {
-  console.log('MEMORY RECALL WIRING GUARD PASSED · ' + passed + ' assertions green');
+  console.log('MEMORY RECALL WIRING CONTRACT PASSED · ' + passed + ' assertions green');
+  console.log('（R2-B「0 refs」→ R2-C「only via orchestrator」的相位切换已生效）');
 }

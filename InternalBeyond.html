@@ -3422,6 +3422,18 @@ i would like the room to be enough.
 <script src="assets/js/memory-contract.js"></script>
 <script src="assets/js/memory-visibility-core.js"></script>
 <script src="assets/js/memory-retrieval-core.js"></script>
+<!-- P21-R2-C：recall 的架构入口（记忆召回编排器）。
+     依赖顺序：turn-signal / recall-query / scoring 各自只依赖上面已加载的
+     memory-retrieval-core（recall-query 复用其 extractKeywords，scoring 复用其
+     getMemoryScore / calcRelevance）；recall-trace 无依赖；orchestrator 依赖以上全部。
+     必须在 memory.js 之前加载（桌面召回经 selectMemoryContext → orchestrator）。
+     当前调用方**不传 turn** ⇒ orchestrator 走 legacy path，召回结果逐字节不变；
+     见 docs/contracts/memory/MEMORY_RECALL_CONTRACT.md §12（legacy compatibility）。 -->
+<script src="assets/js/memory-recall/turn-signal.js"></script>
+<script src="assets/js/memory-recall/recall-query.js"></script>
+<script src="assets/js/memory-recall/scoring.js"></script>
+<script src="assets/js/memory-recall/recall-trace.js"></script>
+<script src="assets/js/memory-recall/memory-recall-orchestrator.js"></script>
 <!-- M1-C.2k：线索（open thread）派生的唯一确定性实现（规则 / 去重阈值 / 合并语义）。
      Home Node 由 services/home-node/thread-retrieval.js require **同一份文件**，
      因此"她还惦记着什么"在两端出自同一条规则，而不是"浏览器写过盘才有"。

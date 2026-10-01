@@ -20,6 +20,20 @@ function _ibMemRetrievalCoreChecked(){
   if(c&&typeof c.buildMemoryContext==='function'&&typeof c.getMemoryScore==='function')return c;
   return null;
 }
+/* P21-R2-C：recall 的**架构入口**。桌面召回经 orchestrator 走一遍，
+   但当前调用方**不传 turn** ⇒ orchestrator 内部走 legacy path，
+   直接委托同一份 memory-retrieval-core，因此召回结果逐字节不变。
+   见 docs/contracts/memory/MEMORY_RECALL_CONTRACT.md §12（legacy compatibility）。
+   核心不可用或未加载时返回 null，调用方回落到既有 core 直调 ——
+   这是一个 fail-open 的兼容缝：recall 模块加载失败绝不能让聊天不可用。 */
+function _ibMemRecallOrchestrator(){
+  try{
+    const o=(typeof window!=='undefined'&&window.IBMemoryRecallOrchestrator)
+      || (typeof IBMemoryRecallOrchestrator!=='undefined'?IBMemoryRecallOrchestrator:null);
+    if(o&&typeof o.recall==='function')return o;
+  }catch(e){}
+  return null;
+}
 function getMemoryScore(mem,now){
   const core=_ibMemRetrievalCore();
   if(!core||typeof core.getMemoryScore!=='function')throw new Error('IBMemoryRetrievalCore not loaded');
@@ -138,7 +152,7 @@ async function selectMemoryContext(apiId,opts){
   try{
     const memSettings=await getMemorySettings();
     const all=await dbGetAll('memories');
-    const picked=core.buildMemoryContext(all,{
+    const _pickOpts={
       apiId:apiId,
       now:_now(),
       random:_rand,
@@ -147,8 +161,13 @@ async function selectMemoryContext(apiId,opts){
       groupMemEnabled:opts.groupMemEnabled||false,
       maxChars:opts.maxChars||memSettings.budget||core.DEFAULT_BUDGET_CHARS,
       contentLen:memSettings.contentLen||core.DEFAULT_CONTENT_LEN
-    });
-    if(!picked.text)return {context:'',selectedIds:[],reason:picked.reason};
+    };
+    /* P21-R2-C：经 orchestrator（当前经 legacy path 委托同一份 core）。
+       刻意**不**在 _pickOpts 里放 turn ⇒ active behavior 始终是 legacy。
+       orchestrator 未加载时回落到下面那条既有的 core 直调，逐行为等价。 */
+    const _orch=_ibMemRecallOrchestrator();
+    const picked=_orch?_orch.recall(all,_pickOpts).result:core.buildMemoryContext(all,_pickOpts);
+    if(!picked||!picked.text)return {context:'',selectedIds:[],reason:picked?picked.reason:undefined};
     return {context:picked.text,selectedIds:picked.selected.map(s=>s.id)};
   }catch(e){return {context:'',selectedIds:[]}}
 }
