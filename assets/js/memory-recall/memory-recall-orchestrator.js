@@ -55,6 +55,9 @@
     try { deps.scoring = require('./scoring.js'); } catch (e) { deps.scoring = null; }
     try { deps.channelPolicy = require('./channel-policy.js'); } catch (e) { deps.channelPolicy = null; }
     try { deps.seatPlanner = require('./seat-planner.js'); } catch (e) { deps.seatPlanner = null; }
+    try { deps.glossaryCatalog = require('./glossary-catalog.js'); } catch (e) { deps.glossaryCatalog = null; }
+    try { deps.glossaryMatch = require('./glossary-match.js'); } catch (e) { deps.glossaryMatch = null; }
+    try { deps.coldStartAnchor = require('./coldstart-anchor.js'); } catch (e) { deps.coldStartAnchor = null; }
     module.exports = factory(deps);
   } else {
     root.IBMemoryRecallOrchestrator = factory({
@@ -65,7 +68,10 @@
       trace: root.IBMemoryRecallTrace || null,
       scoring: root.IBMemoryRecallScoring || null,
       channelPolicy: root.IBMemoryRecallChannelPolicy || null,
-      seatPlanner: root.IBMemoryRecallSeatPlanner || null
+      seatPlanner: root.IBMemoryRecallSeatPlanner || null,
+      glossaryCatalog: root.IBMemoryRecallGlossaryCatalog || null,
+      glossaryMatch: root.IBMemoryRecallGlossaryMatch || null,
+      coldStartAnchor: root.IBMemoryRecallColdStartAnchor || null
     });
   }
 })(typeof self !== 'undefined' ? self : this, function (DEFAULT_DEPS) {
@@ -86,6 +92,8 @@
 
   var REJECT_NOT_SELECTED = 'not-selected-by-core';
   var REJECT_BUDGET = 'budget';
+  /* 非 lexical 通道上"未被准入"的诚实措辞（≠ gate-rejected）。 */
+  var REJECT_NOT_ADMITTED = 'not-admitted';
 
   function isPlainObject(v) {
     return !!v && typeof v === 'object' && !Array.isArray(v);
@@ -158,6 +166,41 @@
       } catch (e) {
         return false;
       }
+    }
+
+    /* ── glossary catalog：**纯注入** seam（§31）──────────────────────
+       优先 options.glossaryProvider（{getEntries}）；
+       其次 options.getGlossaryEntries（纯函数）；
+       都没有 ⇒ provider absent（available:false）—— 这是 production 默认，
+       不是失败：引擎就绪，等待写入侧 authority。
+       **绝不**从 DB / storage 读；**绝不**为了"看得见效果"造 demo entries。 */
+    function resolveGlossaryCatalog(options, turn) {
+      var GC = deps.glossaryCatalog;
+      if (!GC || typeof GC.createGlossaryCatalogProvider !== 'function') {
+        return { available: false, entries: [], dropped: 0, droppedReasons: {}, truncated: false, reason: 'catalog-module-unavailable' };
+      }
+      var ctx = {
+        apiId: (options && options.apiId != null) ? String(options.apiId) : '',
+        conversationId: (turn && typeof turn.conversationId === 'string') ? turn.conversationId : null,
+        message: (turn && turn.message != null) ? String(turn.message) : ''
+      };
+      var provider = options ? options.glossaryProvider : null;
+      if (provider && typeof provider.getEntries === 'function') {
+        try {
+          var got = provider.getEntries(ctx);
+          if (got && typeof got === 'object' && typeof got.available === 'boolean') return got;
+          /* provider 返回裸数组 ⇒ 按 E1a 的 normalize 路径处理 */
+          if (Array.isArray(got)) return GC.createGlossaryCatalogProvider(function () { return got; }).getEntries(ctx);
+          return { available: false, entries: [], dropped: 0, droppedReasons: {}, truncated: false, reason: 'provider-bad-result' };
+        } catch (e) {
+          return { available: false, entries: [], dropped: 0, droppedReasons: {}, truncated: false, reason: 'provider-error' };
+        }
+      }
+      if (options && typeof options.getGlossaryEntries === 'function') {
+        try { return GC.createGlossaryCatalogProvider(options.getGlossaryEntries).getEntries(ctx); }
+        catch (e) { return { available: false, entries: [], dropped: 0, droppedReasons: {}, truncated: false, reason: 'provider-error' }; }
+      }
+      return GC.createEmptyCatalogProvider().getEntries(ctx);
     }
 
     /* 用 core 已渲染好的 `line` 重组被 seat 上限保留的子集。
@@ -288,7 +331,7 @@
         };
       }
 
-      /* ① turn signal + early exit */
+      /* ① turn signal */
       var signal = deps.turnSignal.analyzeTurnSignal({
         message: turn.message,
         isConversationOpen: turn.isConversationOpen,
@@ -296,11 +339,65 @@
         explicitRecallHint: turn.explicitRecallHint,
         hasSemanticPayload: turn.hasSemanticPayload
       });
-      if (signal.earlyExit === true) {
+
+      /* ② channel 仲裁（P21-R2-E1b §25 冻结顺序）────────────────────────
+           0. host-forced coldStart（trusted explicit override，不参与自动序）
+           1. host-forced 其它通道
+           2. explicit recall intent
+           3. automatic coldStart（生命周期信号）
+           4. automatic glossary（exact catalog hit）
+           5. early exit
+           6. semantic surface
+
+         关键：**自动** coldStart 不得抢走**明确**的 recall 意图；
+         而 early exit **排在 glossary/coldStart 之后** —— 新会话第一句
+         "嗯" 正是 coldStart 最该起作用的时刻，不能被早退吃掉。
+         （turn-signal 已保证 host-forced 通道先于 early exit。） */
+      var forcedRaw = (turn.channelHint == null) ? null : String(turn.channelHint);
+      var signalChan = signal.suggestedChannel ? String(signal.suggestedChannel) : null;
+      var forced = forcedRaw || signalChan;
+      var explicitColdStart = (forced === 'coldStart');
+      var forcedOther = (forced && forced !== 'coldStart') ? forced : null;
+
+      /* E1a 的 latent 会话信号现在是正式输入（§22）。 */
+      var convSignal = {
+        conversationSignalAvailable: turn.conversationSignalAvailable === true,
+        isFirstTurn: turn.isFirstTurn === true,
+        conversationId: (typeof turn.conversationId === 'string' && turn.conversationId)
+          ? turn.conversationId : null
+      };
+      var autoColdStart = (deps.coldStartAnchor
+        && typeof deps.coldStartAnchor.coldStartApplicable === 'function')
+        ? deps.coldStartAnchor.coldStartApplicable(convSignal, { isGroup: options.isGroup === true })
+        : false;
+
+      /* glossary：provider **纯注入**，绝不从 DB 读（§31）。
+         默认（调用方不提供）⇒ provider absent ⇒ 自动 glossary 不会触发；
+         但这**不是**失败：引擎已就绪，等待写入侧 authority。 */
+      var catalog = resolveGlossaryCatalog(options, turn);
+      var glossaryHits = null;
+      var autoGlossary = false;
+      if (deps.glossaryMatch && typeof deps.glossaryMatch.matchGlossary === 'function') {
+        try { glossaryHits = deps.glossaryMatch.matchGlossary(turn.message, catalog); }
+        catch (e) { glossaryHits = null; }
+      }
+      if (glossaryHits && glossaryHits.available === true && glossaryHits.hits.length > 0) autoGlossary = true;
+
+      var channel;
+      if (explicitColdStart) channel = 'coldStart';
+      else if (forcedOther) channel = forcedOther;
+      else if (signal.explicitRecall === true) channel = 'recall';
+      else if (autoColdStart) channel = 'coldStart';
+      else if (autoGlossary) channel = 'glossary';
+      else if (signal.earlyExit === true) channel = 'early-exit';
+      else channel = 'surface';
+
+      if (channel === 'early-exit') {
         /* early exit：**不**读 relevance、**不**算 memoryValue、
-           **不**执行 buildMemoryContext。 */
+           **不**执行 buildMemoryContext、**不**解析 channel policy。
+           `channel: null` 是诚实的 —— 这一轮没有通道，因为它没有被启动。 */
         var eeTrace = T ? T.buildTrace({
-          channel: channel,
+          channel: null,
           earlyExit: true,
           earlyExitReason: signal.earlyExitReason,
           query: null,
@@ -312,38 +409,18 @@
         return {
           result: emptyResult(REASON_EARLY_EXIT),
           trace: eeTrace,
-          meta: { mode: 'turn', consulted: false, channel: channel }
+          meta: {
+            mode: 'turn', consulted: false, channel: null,
+            earlyExitReason: signal.earlyExitReason,
+            decisionSource: signal.decisionSource,
+            activationPolicy: 'normal'
+          }
         };
       }
 
-      /* 把 turn-signal 的**决策来源**映射到**channel 词表**。
-         这两个是不同的问题，混用会让 channel policy 收到 'surface-default' /
-         'early-exit' 这类非 channel 值，从而把一切都判成"未实现通道"：
-           · decisionSource = "这一轮为什么这样判"（host-forced / cold-start /
-             explicit-recall-intent / semantic-payload / early-exit / surface-default）
-           · channel       = "用哪条召回策略"（surface / recall / coldStart / …）
-         R2-D 的映射：explicit recall ⇒ recall；其余普通语义输入 ⇒ surface。
-         turn-signal 已经直接给出的 suggestedChannel（recall / coldStart / …）
-         优先采用，以便未来通道（如 coldStart）能被正确识别为"未实现"而不是
-         被误当成 surface。 */
-      var channel;
-      if (signal.suggestedChannel) {
-        channel = signal.suggestedChannel;
-      } else if (signal.explicitRecall === true) {
-        channel = 'recall';
-      } else {
-        /* 其它一切（surface-default / semantic-payload）= 普通语义输入。 */
-        channel = 'surface';
-      }
-
-      /* ── ①b channel policy 解析 ─────────────────────────────────────
-         R2-D 只实现 surface / recall。coldStart / glossary / reminisce 由
-         channel-policy 显式报告为未实现 —— **不静默映射成 surface**，
-         否则 R2-E 无法区分"还没做"与"做了但走错通道"。
-         未实现通道 ⇒ fail closed（不注入记忆），而不是 fail open。
-         理由：这三个通道的语义（比如 glossary 的确定性精确命中）在缺失时
-         会静默退化成"按普通相关性猜"，那是**另一种**行为，不是"少一点"。
-         宁可 0 条并如实上报，也不换一种方式猜。 */
+      /* ③ channel policy 解析。
+         reminisc 仍为 FUTURE；host 显式强制一个未实现通道 ⇒ channel-unsupported
+         （fail closed）。**自动**路径永远不会落到未实现通道上。 */
       var policyRes = (deps.channelPolicy && typeof deps.channelPolicy.resolveChannelPolicy === 'function')
         ? deps.channelPolicy.resolveChannelPolicy(channel)
         : null;
@@ -364,15 +441,44 @@
           meta: {
             mode: 'turn', consulted: false, channel: channel,
             channelSupported: false, channelImplemented: false,
-            channelUnsupportedReason: policyRes.reason || 'channel-unsupported'
+            channelUnsupportedReason: policyRes.reason || 'channel-unsupported',
+            activationPolicy: 'normal'
           }
         };
       }
+      /* §5：host **显式强制** glossary 而 provider 不可用 ⇒ channel-unsupported。
+         与"provider 可用但没有 entry"必须区分：后者是 0 hit（gate-rejected），
+         **不是**通道不可用 —— 把两者混起来会让"术语表是空的"看起来像"没实现"。 */
+      if (channel === 'glossary' && catalog.available !== true
+        && (forcedRaw === 'glossary' || signalChan === 'glossary')) {
+        var glUnsupTrace = T ? T.buildTrace({
+          channel: channel, earlyExit: false, earlyExitReason: null, query: null,
+          counts: { input: inputCount, visible: 0, gated: 0, selected: 0 },
+          candidates: [],
+          budget: { maxChars: maxChars, usedChars: 0 },
+          reason: CHANNEL_UNSUPPORTED
+        }) : null;
+        return {
+          result: emptyResult(CHANNEL_UNSUPPORTED),
+          trace: glUnsupTrace,
+          meta: {
+            mode: 'turn', consulted: false, channel: channel,
+            channelSupported: false, channelImplemented: true,
+            channelUnsupportedReason: catalog.reason || 'provider-unavailable',
+            activationPolicy: 'normal'
+          }
+        };
+      }
+
       var channelPolicy = policyRes ? policyRes.policy : null;
-      var seatCap = (channelPolicy && isFinite(Number(channelPolicy.maxPrimarySeats)))
-        ? Math.max(0, Math.floor(Number(channelPolicy.maxPrimarySeats))) : 0;
-
-
+      var seatCap = (channelPolicy && isFinite(Number(channelPolicy.maxTotalSeats)))
+        ? Math.max(0, Math.floor(Number(channelPolicy.maxTotalSeats))) : 0;
+      /* activation policy 只在 **meta** 上暴露（result 形状冻结，§19）。
+         coldStart = 'none'：自动恢复上下文 ≠ 用户主动想起。 */
+      var activationPolicy = (channelPolicy && channelPolicy.activationPolicy === 'none')
+        ? 'none' : 'normal';
+      /* requireRelevance=false 的通道用 exact evidence 作准入，**不**跑 lexical gate。 */
+      var requireRelevance = !(channelPolicy && channelPolicy.requireRelevance === false);
       /* ② query construction（确定性；不自行再 normalize 一遍） */
       var query = null;
       if (deps.query && typeof deps.query.buildRecallQuery === 'function') {
@@ -425,19 +531,87 @@
       var scoring = deps.scoring;
       var scored = [];
       var gated = [];
+
+      /* 各通道的**准入证据**（这是 R2-E1b 的核心差异）：
+           surface / recall —— relevanceScore > 0（lexical Hard Gate，R2-D 语义不变）
+           glossary        —— **exact catalog hit** 本身就是准入证据。
+                              刻意**不**再要求 memory content lexical 命中 alias，
+                              否则 alias→memoryId 这个确定性映射会被第二层
+                              lexical gate 错误拒绝（§8）。
+           coldStart       —— anchor eligibility（pinned OR kind==='semantic'）。
+                              **不**使用 current-turn lexical relevance，
+                              否则它会退化成 surface 的另一个名字（§14）。 */
+      var idOf = function (r) { return (r && r.id != null) ? String(r.id) : null; };
+      var visibleById = {};
+      for (var vb = 0; vb < visible.length; vb++) {
+        var vid = idOf(visible[vb]);
+        if (vid != null) visibleById[vid] = visible[vb];
+      }
+
+      /* 通道特定的准入理由表：id → reasons[]（trace 用，全部真实可观测）。 */
+      var admitReasons = {};
+      var rejectReasonsByChannel = {};
+
+      if (channel === 'glossary') {
+        /* 顺序安全（§6）：records → visibility → visibleById → catalog hit
+           → target id → **只保留 visible target** → canonical selection。
+           catalog 可以指向 hidden memory，但 hidden id 永不进入 gated/trace。 */
+        var byMem = (glossaryHits && glossaryHits.byMemoryId) ? glossaryHits.byMemoryId : {};
+        var seenPool = {};
+        for (var gm in byMem) {
+          if (!Object.prototype.hasOwnProperty.call(byMem, gm)) continue;
+          if (!visibleById[gm]) continue;              /* hidden ⇒ 静默排除，不产生 trace row */
+          if (seenPool[gm]) continue;
+          seenPool[gm] = 1;
+          admitReasons[gm] = (byMem[gm].reasons || []).slice();
+        }
+      } else if (channel === 'coldStart') {
+        var anchorRes = (deps.coldStartAnchor && typeof deps.coldStartAnchor.selectEligibleAnchors === 'function')
+          ? deps.coldStartAnchor.selectEligibleAnchors(visible)
+          : { anchors: [], rejected: visible.slice(), admitted: {} };
+        for (var aid in anchorRes.admitted) {
+          if (!Object.prototype.hasOwnProperty.call(anchorRes.admitted, aid)) continue;
+          admitReasons[aid] = ['cold-start-anchor'];
+        }
+        for (var rj = 0; rj < anchorRes.rejected.length; rj++) {
+          var rjid = idOf(anchorRes.rejected[rj]);
+          if (rjid != null) rejectReasonsByChannel[rjid] = ['not-cold-start-anchor'];
+        }
+      }
+
+      /* scored 覆盖**全部 visible**（trace 只描述 visible 记录），
+         但 relevance 只在 lexical 通道上计算 —— glossary / coldStart 上
+         它是 **null**：准入证据不是 lexical relevance，伪造一个分数
+         会让 trace 撒谎（§11.1 / §27）。 */
       for (var i = 0; i < visible.length; i++) {
         var m = visible[i];
-        var rel = (scoring && typeof scoring.scoreRelevance === 'function')
-          ? scoring.scoreRelevance(m, scoreQuery)
-          : { score: 0, signals: {} };
+        var mid = idOf(m);
+        var rel = null;
+        if (requireRelevance) {
+          rel = (scoring && typeof scoring.scoreRelevance === 'function')
+            ? scoring.scoreRelevance(m, scoreQuery)
+            : { score: 0, signals: {} };
+        }
         var value = (scoring && typeof scoring.computeLegacyMemoryValue === 'function')
           ? scoring.computeLegacyMemoryValue(m, options.now)
           : 0;
-        var passed = (scoring && typeof scoring.passesHardGate === 'function')
-          ? scoring.passesHardGate(rel) : false;
-        scored.push({ memory: m, relevance: rel, memoryValue: value, passed: passed });
+        var passed = false;
+        if (requireRelevance) {
+          passed = (scoring && typeof scoring.passesHardGate === 'function')
+            ? scoring.passesHardGate(rel) : false;
+        } else {
+          passed = (mid != null) && !!admitReasons[mid];
+        }
+        scored.push({
+          memory: m, relevance: rel, memoryValue: value, passed: passed,
+          admit: (mid != null) ? (admitReasons[mid] || null) : null,
+          rejectHint: (mid != null) ? (rejectReasonsByChannel[mid] || null) : null
+        });
         if (passed) gated.push(m);
       }
+      /* 全部通道共用**唯一**一个准入集 `gated`（⑦ 把它交给 core）。
+         glossary / coldStart 的准入证据不是 lexical gate，而是
+         exact catalog hit / anchor eligibility（见上面的 admitReasons）。 */
 
       /* ⑦ canonical selection：把**完整** gated 候选集交给既有 core。
             刻意**不**在 core 之前截断候选集，原因有两条，都是硬性的：
@@ -556,14 +730,18 @@
           selectedSeatById[selKey] = true;
           candidates.push(T.createCandidateEntry({
             memoryId: selKey,
-            relevanceScore: srcRow ? srcRow.relevance.score : null,
+            /* 非 lexical 通道上 relevance 为 null ⇒ 如实写 null（不伪造分数）。 */
+            relevanceScore: (srcRow && srcRow.relevance) ? srcRow.relevance.score : null,
             memoryValue: srcRow ? srcRow.memoryValue : null,
             finalScore: null,
             /* seat 已经由 seat planner 在 applySeats 里按 record.pinned 标注好；
                没有 seat planner 时才回落到 SEAT_LEGACY（表示非其管辖的既有路径）。 */
             seat: (selRow && typeof selRow.seat === 'string') ? selRow.seat : SEAT_LEGACY,
             decision: 'selected',
-            reasons: []
+            /* 准入证据进入 reasons[] —— 不扩 CANDIDATE_KEYS（§11）。
+               glossary / coldStart 的准入不是 lexical，必须由 reason 表达；
+               lexical 通道（surface/recall）保持空数组（分数已由 relevanceScore 表达）。 */
+            reasons: (admitReasons[selKey] || []).slice()
           }));
         }
       }
@@ -576,14 +754,23 @@
           if (id != null && selectedSeatById[id]) continue;
           var rowReasons = [];
           if (!row.passed) {
-            rowReasons.push(REASON_GATE_REJECTED);
+            /* 通道特定的拒绝理由优先（coldStart: not-cold-start-anchor）。 */
+            if (row.rejectHint && row.rejectHint.length) {
+              for (var rh = 0; rh < row.rejectHint.length; rh++) rowReasons.push(row.rejectHint[rh]);
+            } else if (requireRelevance) {
+              rowReasons.push(REASON_GATE_REJECTED);
+            } else {
+              /* 非 lexical 通道上"没被准入"不等于"gate 拒绝"：
+                 glossary 是"没有 exact catalog hit"。 */
+              rowReasons.push(REJECT_NOT_ADMITTED);
+            }
           } else {
             rowReasons.push(REJECT_NOT_SELECTED);
             if (reason === REASON_NO_BUDGET) rowReasons.push(REJECT_BUDGET);
           }
           candidates.push(T.createCandidateEntry({
             memoryId: id,
-            relevanceScore: row.relevance ? row.relevance.score : 0,
+            relevanceScore: row.relevance ? row.relevance.score : null,
             memoryValue: row.memoryValue,
             /* ── finalScore = null（P21-R2-C.1 · 诚实性裁决）─────────────────
                这里**曾经**填的是 memoryValue × relevanceScore。那是一个自造指标，
@@ -640,7 +827,11 @@
       return {
         result: result,
         trace: trace,
-        meta: { mode: 'turn', consulted: true, channel: channel }
+        meta: {
+          mode: 'turn', consulted: true, channel: channel,
+          /* §19：activation policy 只在这里暴露，result 形状保持冻结。 */
+          activationPolicy: activationPolicy
+        }
       };
     }
 

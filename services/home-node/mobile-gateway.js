@@ -936,6 +936,7 @@ function createMobileGateway(deps) {
       userMessage: userMessage,
       /* 供 handleSend 在回合成功之后做激活强化（C3 的 reinforcement 阶段）。 */
       selectedMemoryIds: runtime.selectedMemoryIds,
+      reinforcementIds: runtime.reinforcementIds,
       turnRequest: {
         requestId: requestId,
         conversationId: conversationIdFor(characterId, threadId),
@@ -1036,6 +1037,10 @@ function createMobileGateway(deps) {
         return {
           runtimeContext: built.runtimeContext,
           selectedMemoryIds: Array.isArray(built.selectedIds) ? built.selectedIds.slice() : [],
+          /* P21-R2-E1b · 强化资格（coldStart ⇒ 空）。内部 seam，不进 wire contract。 */
+          reinforcementIds: Array.isArray(built.reinforcementIds)
+            ? built.reinforcementIds.slice()
+            : (Array.isArray(built.selectedIds) ? built.selectedIds.slice() : []),
           memoryCount: built.memoryCount || 0,
           memoryReason: built.memoryReason || null,
           /* ── M1-C.2k · 分块字段必须**逐项透传** ──────────────────────────
@@ -1124,7 +1129,10 @@ function createMobileGateway(deps) {
       error: null,
       request: parsed.turnRequest,
       /* 本轮选中的 canonical 记忆 id：选择发生在解析阶段，强化发生在回合结束。 */
-      selectedMemoryIds: Array.isArray(parsed.selectedMemoryIds) ? parsed.selectedMemoryIds.slice() : []
+      selectedMemoryIds: Array.isArray(parsed.selectedMemoryIds) ? parsed.selectedMemoryIds.slice() : [],
+      reinforcementIds: Array.isArray(parsed.reinforcementIds)
+        ? parsed.reinforcementIds.slice()
+        : (Array.isArray(parsed.selectedMemoryIds) ? parsed.selectedMemoryIds.slice() : [])
     };
     if (!existing) trackTurn(turn);
     return turn;
@@ -2414,10 +2422,18 @@ function createMobileGateway(deps) {
                  镜像游标失效（排名提示不产生同步流量）。
                · 失败只记录，绝不抛出、绝不改变回合结果：强化是排名提示，
                  不是事实，不能因为它失败而让用户这一轮变成失败。 */
-          if (settled.status !== 'error' && turn.selectedMemoryIds && turn.selectedMemoryIds.length) {
+          /* P21-R2-E1b · 强化用 **reinforcementIds**（coldStart 时为空），
+             而不是 selectedMemoryIds —— 后者是"真正注入了谁"的事实，
+             绝不能因为"不强化"而被清空（§21）。
+             回退到 selectedMemoryIds 只发生在旧 turn（无该字段）上：
+             此时 activationPolicy 概念不存在 ⇒ 保持既有 normal 行为。 */
+          const _reinfIds = Array.isArray(turn.reinforcementIds)
+            ? turn.reinforcementIds
+            : turn.selectedMemoryIds;
+          if (settled.status !== 'error' && _reinfIds && _reinfIds.length) {
             try {
               const reinforced = memoryRetrieval
-                ? memoryRetrieval.reinforce(turn.selectedMemoryIds, {})
+                ? memoryRetrieval.reinforce(_reinfIds, {})
                 : null;
               if (reinforced && reinforced.ok) {
                 record('info', 'memory-activation', {

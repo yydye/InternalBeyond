@@ -3434,6 +3434,13 @@ i would like the room to be enough.
 <script src="assets/js/memory-recall/scoring.js"></script>
 <script src="assets/js/memory-recall/channel-policy.js"></script>
 <script src="assets/js/memory-recall/seat-planner.js"></script>
+<!-- P21-R2-E1b：glossary / coldStart 的实现模块。
+     依赖：glossary-match 复用 recall-query 的唯一 alias matcher；
+     glossary-catalog / coldstart-anchor 无依赖。
+     三者都必须在 orchestrator 之前加载。 -->
+<script src="assets/js/memory-recall/glossary-catalog.js"></script>
+<script src="assets/js/memory-recall/glossary-match.js"></script>
+<script src="assets/js/memory-recall/coldstart-anchor.js"></script>
 <script src="assets/js/memory-recall/recall-trace.js"></script>
 <script src="assets/js/memory-recall/memory-recall-orchestrator.js"></script>
 <!-- M1-C.2k：线索（open thread）派生的唯一确定性实现（规则 / 去重阈值 / 合并语义）。

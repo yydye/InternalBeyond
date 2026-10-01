@@ -48,7 +48,10 @@
 
   var CHANNEL_SURFACE = 'surface';
   var CHANNEL_RECALL = 'recall';
-  var FUTURE_CHANNELS = ['coldStart', 'glossary', 'reminisce'];
+  var CHANNEL_GLOSSARY = 'glossary';
+  var CHANNEL_COLDSTART = 'coldStart';
+  /* R2-E1b：glossary 与 coldStart 已实现；**只剩 reminisce** 是 future。 */
+  var FUTURE_CHANNELS = ['reminisce'];
 
   /* gate 判据只有一种：score > 0。
      刻意**不**提供 'strict-positive-0.1' 之类的档位 —— 那会变成
@@ -78,6 +81,39 @@
     maxTotalSeats: MAX_RECALL_TOTAL_SEATS
   });
 
+  /* ── R2-E1b · glossary ────────────────────────────────────────────
+     用户显式提到一个**已知术语/别名**时的确定性查表。
+     准入判据不是 memory-content 的 lexical 相关性，而是
+     「catalog exact hit」本身（见 glossary-match.js）。
+     seat 上限**继承 recall**，不新增未经校准的数字。 */
+  POLICIES[CHANNEL_GLOSSARY] = Object.freeze({
+    channel: CHANNEL_GLOSSARY,
+    implemented: true,
+    requireRelevance: false,   /* 准入证据 = exact catalog hit，不是 lexical */
+    gateMode: GATE_MODE_POSITIVE,
+    allowExploration: false,   /* 确定性查表：不引入随机探索 */
+    maxTotalSeats: MAX_RECALL_TOTAL_SEATS,
+    activationPolicy: 'normal' /* 用户确实提到了该术语 ⇒ 正常强化 */
+  });
+
+  /* ── R2-E1b · coldStart ───────────────────────────────────────────
+     新会话开头恢复少量**长期锚点**，不是"随机塞几条高分记忆"。
+     准入判据 = pinned OR kind==='semantic'（见 coldstart-anchor.js），
+     **不**使用 current-turn lexical relevance —— 否则它会退化成
+     surface 的另一个名字。seat 上限**继承 surface**（小型 anchor set）。
+     activationPolicy='none'：自动恢复上下文 ≠ 用户主动想起，
+     必须防止 coldStart→activation++→memoryValue↑→更易被 coldStart
+     选中的自强化回路（§18）。 */
+  POLICIES[CHANNEL_COLDSTART] = Object.freeze({
+    channel: CHANNEL_COLDSTART,
+    implemented: true,
+    requireRelevance: false,
+    gateMode: GATE_MODE_POSITIVE,
+    allowExploration: false,
+    maxTotalSeats: MAX_SURFACE_TOTAL_SEATS,
+    activationPolicy: 'none'
+  });
+
   var FUTURE_POLICY = Object.freeze({
     channel: null,
     implemented: false,
@@ -94,7 +130,8 @@
   function resolveChannelPolicy(channel) {
     var name = (channel == null) ? '' : String(channel);
 
-    if (name === CHANNEL_SURFACE || name === CHANNEL_RECALL) {
+    if (name === CHANNEL_SURFACE || name === CHANNEL_RECALL
+      || name === CHANNEL_GLOSSARY || name === CHANNEL_COLDSTART) {
       var p = POLICIES[name];
       return { ok: true, channel: name, implemented: true, future: false, policy: p, reason: null };
     }
@@ -123,7 +160,7 @@
   }
 
   function listImplementedChannels() {
-    return [CHANNEL_SURFACE, CHANNEL_RECALL];
+    return [CHANNEL_SURFACE, CHANNEL_RECALL, CHANNEL_GLOSSARY, CHANNEL_COLDSTART];
   }
   function listFutureChannels() {
     return FUTURE_CHANNELS.slice();
@@ -136,6 +173,8 @@
     listFutureChannels: listFutureChannels,
     CHANNEL_SURFACE: CHANNEL_SURFACE,
     CHANNEL_RECALL: CHANNEL_RECALL,
+    CHANNEL_GLOSSARY: CHANNEL_GLOSSARY,
+    CHANNEL_COLDSTART: CHANNEL_COLDSTART,
     FUTURE_CHANNELS: FUTURE_CHANNELS.slice(),
     GATE_MODE_POSITIVE: GATE_MODE_POSITIVE,
     MAX_SURFACE_TOTAL_SEATS: MAX_SURFACE_TOTAL_SEATS,

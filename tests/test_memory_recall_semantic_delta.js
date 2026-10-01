@@ -63,11 +63,28 @@ const PIN_UNRELATED = mk({ id: 'pinx', pinned: true, title: '纪念日', content
    ══════════════════════════════════════════════════════════════════════ */
 section('§1 · EXPECTED CHANGED（批准的四类语义变化）');
 
-const CHANGED_ROWS = [];
+/* ── 唯一矩阵行集合 ────────────────────────────────────────────────────
+   ROWS 是唯一真相；CHANGED_ROWS / SAME_ROWS 只是它按 **want** 的投影
+   （保留既有 M1–M5 的语义）。任何计数都必须在 ROWS 上、按 **actual** 做 ——
+   绝不能一处按数组长度、另一处按 actual，那正是之前 27/11/14 不闭合的原因。 */
+const ROWS = [];
+const CHANGED_ROWS = [];   /* 视图：want === 'CHANGED' */
+const SAME_ROWS = [];      /* 视图：want === 'SAME' */
+
+/* 未声明 want 的行必须**炸**，不能被静默丢进某个桶里。 */
+function pushRow(row) {
+  if (row.want !== 'CHANGED' && row.want !== 'SAME') {
+    throw new Error('delta matrix row must declare want CHANGED|SAME: ' + row.id);
+  }
+  ROWS.push(row);
+  if (row.want === 'CHANGED') CHANGED_ROWS.push(row); else SAME_ROWS.push(row);
+}
 
 function deltaRow(id, label, records, message, expect, extraCheck) {
   const legacyOpts = Object.assign({}, BASE, { userMessage: message });
-  const turnOpts = Object.assign({}, BASE, {
+  /* expect.options 允许把 glossaryProvider 等**纯注入**选项带进编排器，
+     这样 glossary 行也能作为真正的 matrix row（而不是外挂的临时断言）。 */
+  const turnOpts = Object.assign({}, BASE, (expect && expect.options) || {}, {
     userMessage: message,
     turn: Object.assign({ message: message }, (expect && expect.turnExtra) || {})
   });
@@ -91,7 +108,7 @@ function deltaRow(id, label, records, message, expect, extraCheck) {
     extraOk = r.ok; extraDetail = r.detail || '';
   }
 
-  CHANGED_ROWS.push({
+  pushRow({
     id, label,
     legacy: 'sel=' + legacy.selected.length + ' reason=' + String(legacy.reason),
     rd: 'sel=' + actual.selected.length + ' reason=' + String(actual.reason),
@@ -196,7 +213,6 @@ section('§2 · Explicit recall（channel=recall）');
    ══════════════════════════════════════════════════════════════════════ */
 section('§3 · EXPECTED SAME（不得出现未批准的漂移）');
 
-const SAME_ROWS = [];
 function sameRow(id, label, records, message, extraCheck, over) {
   const o = over || {};
   const legacyOpts = Object.assign({}, BASE, { userMessage: message }, o.legacy || {});
@@ -217,7 +233,7 @@ function sameRow(id, label, records, message, extraCheck, over) {
     const r = extraCheck({ legacy, actual, rd });
     ok = ok && r.ok; if (r.detail) detail += ' | ' + r.detail;
   }
-  SAME_ROWS.push({ id, label, legacy: 'n=' + legacy.selected.length + ' r=' + String(legacy.reason), rd: 'n=' + actual.selected.length + ' r=' + String(actual.reason), want: 'SAME', actual: same ? 'SAME' : 'CHANGED', pass: ok });
+  pushRow({ id, label, legacy: 'n=' + legacy.selected.length + ' r=' + String(legacy.reason), rd: 'n=' + actual.selected.length + ' r=' + String(actual.reason), want: 'SAME', actual: same ? 'SAME' : 'CHANGED', pass: ok });
   check(id + '.same.' + label, ok, detail);
   return { legacy, actual, rd };
 }
@@ -400,13 +416,112 @@ check('S24.budgetIsNotTheLimiterInAdvFixtures', (() => {
 })(), 'legacy must fit all six under the same budget — proving the seat cap, not chars, is the limiter');
 
 /* ══════════════════════════════════════════════════════════════════════
+   §5b · R2-E1b 新增行（first-turn coldStart / glossary）
+   ──────────────────────────────────────────────────────────────────────
+   原有 24 行**一个字都不改**：它们都没有提供 isFirstTurn，也没有 glossary
+   provider，因此仍然走 R2-D 的结论。下面这些行**显式**引入 E1b 输入，
+   每一行先声明 expected 再测实际 delta。
+   ══════════════════════════════════════════════════════════════════════ */
+section('§5b · R2-E1b delta（coldStart / glossary）');
+
+const CS_TURN = { conversationSignalAvailable: true, conversationId: 'dm:role_a' };
+const anchorRecs = [
+  mk({ id: 'anchorPin', title: '置顶锚点', content: '长期锚点', pinned: true, importance: 9 }),
+  mk({ id: 'anchorSem', title: '语义锚点', content: '语义长期', kind: 'semantic', importance: 8 }),
+  mk({ id: 'anchorMan', title: '手写', content: 'manual', source: 'manual', importance: 9 }),
+  mk({ id: 'plain', title: '普通', content: '普通经历', importance: 9 })
+];
+
+/* E1 · first-turn acknowledgement: R2-D early-exit → E1b coldStart */
+deltaRow('E1', 'first-turn ack → coldStart', anchorRecs, '嗯',
+  { delta: 'CHANGED', turnExtra: Object.assign({ isFirstTurn: true }, CS_TURN) },
+  ({ legacy, actual, rd }) => ({
+    ok: rd.trace.channel === 'coldStart' && actual.reason === null && actual.count > 0
+      && rd.meta.activationPolicy === 'none' && legacy.selected.length > 0,
+    detail: 'channel=' + rd.trace.channel + ' count=' + actual.count
+      + ' act=' + rd.meta.activationPolicy + ' legacy=' + legacy.selected.length
+  }));
+check('E1.anchorsArePinnedAndSemanticOnly', (() => {
+  const out = ORCH.recall(anchorRecs, Object.assign({}, BASE, { userMessage: '嗯',
+    turn: Object.assign({ message: '嗯' }, { isFirstTurn: true }, CS_TURN) }));
+  const ids = out.result.selected.map(x => x.id).sort();
+  return ids.indexOf('anchorMan') < 0 && ids.indexOf('plain') < 0 && ids.length > 0;
+})(), 'manual-only and ordinary records must not be admitted as anchors');
+check('E1.coldStartActivationIsNone', (() => {
+  const out = ORCH.recall(anchorRecs, Object.assign({}, BASE, { userMessage: '嗯',
+    turn: Object.assign({ message: '嗯' }, { isFirstTurn: true }, CS_TURN) }));
+  return out.meta.activationPolicy === 'none' && out.result.selected.length > 0;
+})(), 'selected non-empty AND activation policy none — the critical reverse proof');
+
+/* E2 · first-turn explicit recall: both R2-D and E1b recall */
+const equivRecs = [
+  mk({ id: 'gpuA', title: '显卡A', content: '显卡选购记录', importance: 8 }),
+  mk({ id: 'gpuB', title: '显卡B', content: '显卡使用体验', importance: 7 })
+];
+deltaRow('E2', 'first-turn explicit recall', equivRecs, '你还记得上次那个显卡吗',
+  { delta: 'SAME', turnExtra: Object.assign({ isFirstTurn: true }, CS_TURN) },
+  ({ legacy, actual, rd }) => ({
+    ok: rd.trace.channel === 'recall' && actual.count === legacy.selected.length
+      && actual.count > 0,
+    detail: 'channel=' + rd.trace.channel + ' legacy=' + legacy.selected.length + ' e1b=' + actual.count
+  }));
+
+/* E3 · non-first glossary exact hit: surface → glossary */
+/* E3 是**真正的 matrix row**：legacy(surface) → E1b(glossary)。
+   之前用手写 IIFE 绕过 deltaRow，导致它没进矩阵 —— 这正是 accounting
+   不闭合的第二半原因。现在它走与其它行**完全相同**的机制。 */
+(function E3() {
+  const GC = require(path.join(ROOT, 'assets/js/memory-recall/glossary-catalog.js'));
+  const prov = GC.createGlossaryCatalogProvider(function () {
+    return [{ alias: '地下室', kind: 'term', target: { type: 'memory', id: 'g1' } }];
+  });
+  const recs = [mk({ id: 'g1', title: '暗号甲', content: '与别名毫无字面重叠', importance: 8 }),
+    mk({ id: 'g2', title: '无关', content: '无关内容' })];
+  const out = deltaRow('E3', 'non-first glossary hit', recs, '我们去地下室看看吧',
+    { delta: 'CHANGED', turnExtra: Object.assign({ isFirstTurn: false }, CS_TURN),
+      options: { glossaryProvider: prov } },
+    ({ legacy, actual, rd }) => ({
+      ok: rd.trace.channel === 'glossary' && actual.selected.map(x => x.id).join(',') === 'g1'
+        && rd.meta.activationPolicy === 'normal'
+        && JSON.stringify(legacy.selected.map(x => x.id)) !== JSON.stringify(actual.selected.map(x => x.id)),
+      detail: 'channel=' + rd.trace.channel + ' legacy=' + JSON.stringify(legacy.selected.map(x => x.id))
+        + ' e1b=' + JSON.stringify(actual.selected.map(x => x.id)) + ' act=' + rd.meta.activationPolicy
+    }));
+  check('E3.noLexicalOverlapRequired', out.actual.selected.map(x => x.id).join(',') === 'g1',
+    'exact catalog hit is the admission evidence — content need not contain the alias');
+})();
+
+/* E4 · non-first, no glossary hit: surface stays surface (SAME) */
+deltaRow('E4', 'non-first no glossary hit', equivRecs, '显卡',
+  { delta: 'SAME', turnExtra: Object.assign({ isFirstTurn: false }, CS_TURN) },
+  ({ actual, rd }) => ({
+    ok: rd.trace.channel === 'surface' && actual.count > 0,
+    detail: 'channel=' + rd.trace.channel + ' count=' + actual.count
+  }));
+
+/* E5 · manual-only anchor must NOT be coldStart-selected */
+check('E5.manualOnlyAnchorPolicyZero', (() => {
+  const out = ORCH.recall([mk({ id: 'onlyManual', title: '手写', content: 'm', source: 'manual', importance: 10 })],
+    Object.assign({}, BASE, { userMessage: '嗯',
+      turn: Object.assign({ message: '嗯' }, { isFirstTurn: true }, CS_TURN) }));
+  return out.trace.channel === 'coldStart' && out.result.count === 0 && out.result.reason === 'gate-rejected';
+})(), 'source=manual alone buys no admission (policy-specific zero)');
+
+/* E6 · coldStart activation zero while selected non-empty */
+check('E6.coldStartSelectedNonEmpty', (() => {
+  const out = ORCH.recall(anchorRecs, Object.assign({}, BASE, { userMessage: '嗯',
+    turn: Object.assign({ message: '嗯' }, { isFirstTurn: true }, CS_TURN) }));
+  return out.result.selected.length > 0 && out.meta.activationPolicy === 'none';
+})(), 'selected non-empty AND activation zero');
+
+/* ══════════════════════════════════════════════════════════════════════
    §6 · 打印矩阵
    ══════════════════════════════════════════════════════════════════════ */
 console.log('\n' + '─'.repeat(100));
 console.log('SEMANTIC DELTA MATRIX');
 console.log('─'.repeat(100));
 console.log('id   fixture                          legacy                     R2-D                       expected  actual   result');
-CHANGED_ROWS.concat(SAME_ROWS).forEach(r => {
+ROWS.forEach(r => {
   console.log(
     r.id.padEnd(5)
     + r.label.padEnd(33)
@@ -418,9 +533,63 @@ CHANGED_ROWS.concat(SAME_ROWS).forEach(r => {
   );
 });
 console.log('─'.repeat(100));
-console.log('rows=' + (CHANGED_ROWS.length + SAME_ROWS.length)
-  + '  changed=' + CHANGED_ROWS.filter(r => r.actual === 'CHANGED').length
-  + '  same=' + SAME_ROWS.filter(r => r.actual === 'SAME').length);
+/* ── 机器闭合的 accounting（§4 硬门）────────────────────────────────
+   定义：
+     total   = ROWS.length                （矩阵行数）
+     changed = |{r ∈ ROWS : r.actual = CHANGED}|
+     same    = |{r ∈ ROWS : r.actual = SAME}|
+   恒等式 total === changed + same 必须成立，且 row id 必须唯一。
+   计数**一律在 ROWS 上按 actual 做** —— 这是与旧实现唯一实质差别。 */
+function computeSummary(rows) {
+  const ids = rows.map(r => r.id);
+  return {
+    total: rows.length,
+    changed: rows.filter(r => r.actual === 'CHANGED').length,
+    same: rows.filter(r => r.actual === 'SAME').length,
+    uniqueIds: new Set(ids).size,
+    ids: ids,
+    unknownActual: rows.filter(r => r.actual !== 'CHANGED' && r.actual !== 'SAME').map(r => r.id)
+  };
+}
+const SUMMARY = computeSummary(ROWS);
+
+check('M7.summaryCloses', SUMMARY.total === SUMMARY.changed + SUMMARY.same,
+  'rows=' + SUMMARY.total + ' changed=' + SUMMARY.changed + ' same=' + SUMMARY.same
+  + ' (must satisfy rows === changed + same)');
+check('M8.rowIdsAreUnique', SUMMARY.uniqueIds === SUMMARY.total,
+  'unique=' + SUMMARY.uniqueIds + ' total=' + SUMMARY.total);
+check('M9.everyRowHasKnownActual', SUMMARY.unknownActual.length === 0,
+  JSON.stringify(SUMMARY.unknownActual));
+check('M10.declaredSplitMatchesActualSplit',
+  CHANGED_ROWS.length === SUMMARY.changed && SAME_ROWS.length === SUMMARY.same,
+  'declared(changed=' + CHANGED_ROWS.length + ',same=' + SAME_ROWS.length + ') vs actual(changed='
+  + SUMMARY.changed + ',same=' + SUMMARY.same + ')');
+
+/* 反向控制：这些判据必须**有能力失败**，否则它们只是装饰。 */
+check('M11.reverseControl.duplicateIdIsDetectable', (() => {
+  const probe = ROWS.concat([{ id: ROWS[0].id, want: 'SAME', actual: 'SAME' }]);
+  return computeSummary(probe).uniqueIds !== computeSummary(probe).total;
+})(), 'duplicate row id must be detectable');
+check('M12.reverseControl.missingRowBreaksIdentity', (() => {
+  const dropped = ROWS.slice(0, ROWS.length - 1);
+  const s2 = computeSummary(dropped);
+  /* 少一行 ⇒ total 少 1，而 changed+same 也少 1 ⇒ 对 dropped 自身仍闭合，
+     所以反向控制要针对**混用两个来源**这个原始错误：total 取全量、
+     changed/same 取被丢了一行的集合。 */
+  return ROWS.length !== (s2.changed + s2.same);
+})(), 'tallying changed/same over a subset must break rows === changed + same');
+check('M13.reverseControl.inflatedCountBreaksIdentity', (() => {
+  const bad = SUMMARY.changed + 1;
+  return SUMMARY.total !== bad + SUMMARY.same;
+})(), 'an inflated changed count must break the identity');
+check('M14.reverseControl.unknownActualIsDetectable',
+  computeSummary([{ id: 'zz', want: 'SAME', actual: 'MAYBE' }]).unknownActual.length === 1);
+
+console.log('rows=' + SUMMARY.total + '  changed=' + SUMMARY.changed + '  same=' + SUMMARY.same);
+console.log('assert rows === changed + same : '
+  + (SUMMARY.total === SUMMARY.changed + SUMMARY.same));
+console.log('unique row ids               : ' + SUMMARY.uniqueIds + ' / ' + SUMMARY.total);
+console.log('row ids                      : ' + SUMMARY.ids.join(', '));
 
 console.log('\n' + '='.repeat(64));
 if (failures) {

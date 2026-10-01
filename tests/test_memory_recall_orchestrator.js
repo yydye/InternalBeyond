@@ -380,8 +380,10 @@ check('G5.metaKeysClosed', (() => {
   /* legacy 与 turn 两种模式各自有固定的 meta 键集（R2-D 为 turn 模式
      新增 turnUsable / channelSupported 等**如实报告**字段）。 */
   const legacyKeys = ['mode', 'consulted', 'channel', 'turnUsable'].sort();
+  /* R2-E1b：meta 新增 activationPolicy（§19 —— 只在这里暴露，不扩 result）。 */
   const turnKeys = ['mode', 'consulted', 'channel', 'turnUsable', 'decisionSource',
-    'channelSupported', 'channelImplemented', 'channelUnsupportedReason', 'earlyExitReason'].sort();
+    'channelSupported', 'channelImplemented', 'channelUnsupportedReason', 'earlyExitReason',
+    'activationPolicy'].sort();
   const legacy = ORCH.recall([mem({ id: 'a' })], BASE);
   const turn = ORCH.recall([mem({ id: 'a', title: '显卡', content: '显卡' })], withTurn('显卡'));
   const lk = Object.keys(legacy.meta).sort();
@@ -400,9 +402,11 @@ check('G7.dependenciesAreInjectedNotHostImports', (() => {
   const src = fs.readFileSync(path.join(ROOT, 'assets/js/memory-recall/memory-recall-orchestrator.js'), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
   const reqs = (src.match(/require\s*\(\s*'([^']+)'\s*\)/g) || []).map(s => s.slice(s.indexOf("'") + 1, s.lastIndexOf("'")));
+  /* R2-E1b：新增 glossary-catalog / glossary-match / coldstart-anchor 三个 sibling。 */
   const allowed = ['../memory-retrieval-core.js', '../memory-visibility-core.js',
     './turn-signal.js', './recall-query.js', './recall-trace.js', './scoring.js',
-    './channel-policy.js', './seat-planner.js'];
+    './channel-policy.js', './seat-planner.js',
+    './glossary-catalog.js', './glossary-match.js', './coldstart-anchor.js'];
   return reqs.length > 0 && reqs.every(r => allowed.indexOf(r) >= 0);
 })(), 'the orchestrator may only depend on the shared core and its sibling recall modules');
 check('G7b.noHostOrReverseDependency', (() => {
@@ -410,7 +414,7 @@ check('G7b.noHostOrReverseDependency', (() => {
   const bare = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
   /* R2-D 起 channel-policy / seat-planner 已实现并被依赖；
      cooldown 仍属 R2-F，不得出现。 */
-  return !/communication\.js|home-node|memory\.js|cooldown\.js/.test(bare);
+  return !/communication\.js|home-node|memory\.js|cooldown\.js|active-diary/.test(bare);
 })(), 'no Host import, and R2-F modules must not be referenced yet');
 check('G8.coreMissingFailsOpenNotThrows', (() => {
   const spy = ORCH.createOrchestrator({ core: null });

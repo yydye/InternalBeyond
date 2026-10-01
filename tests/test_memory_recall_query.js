@@ -438,6 +438,99 @@ check('A9.noDbLookupInAliasMatching',
   typeof Q.matchAliases === 'function' && Q.matchAliases('地下室', [{ alias: '地下室', target: null }], []).length === 1,
   'alias matching is pure: it takes the catalog as an argument and reads nothing');
 
+/* ── §7b · ASCII case fold（P21-R2-E1b.1 §9 情况 A）─────────────────
+   唯一 matcher 升级为 **ASCII case-folded exact matching**：
+   在 NFKC 之后只折叠 ASCII A–Z（1:1，长度不变），CJK 与其它非 ASCII 原样。
+   同时**必须**保持 index / matchedText 回指原始串（不能把小写化结果当成原文）。
+   证据：production 无任何 caller 提供 opts.aliases ⇒ 无既有语义依赖。 */
+section('§7b · alias case fold');
+
+check('A10.asciiCaseFoldMatchesLower', (() => {
+  const src = 'project-ib 是项目';
+  const r = q(src, { aliases: ['Project-IB'] });
+  return r.aliases.length === 1 && r.aliases[0].alias === 'Project-IB';
+})(), 'catalog case must match a lowercase mention');
+check('A10.asciiCaseFoldMatchesUpper',
+  q('PROJECT-IB 是项目', { aliases: ['project-ib'] }).aliases.length === 1);
+check('A10.asciiCaseFoldMatchesMixed',
+  q('ProJect-Ib 是项目', { aliases: ['Project-IB'] }).aliases.length === 1);
+check('A10.indexPointsAtRawString', (() => {
+  const src = '看 PROJECT-IB 吧';
+  const hit = q(src, { aliases: ['Project-IB'] }).aliases[0];
+  return hit.index === src.indexOf('PROJECT-IB');
+})(), 'the index must address the ORIGINAL text, not a lowercased copy');
+check('A10.matchedTextKeepsOriginalCase', (() => {
+  const hit = q('看 PROJECT-IB 吧', { aliases: ['Project-IB'] }).aliases[0];
+  return hit.matchedText === 'PROJECT-IB';
+})(), 'matchedText must be the raw matched text, not the folded needle');
+check('A10.rawTextUntouched', (() => {
+  const src = '  你\u200B好，  ＡＢＣ  ';
+  return Q.buildRecallQuery(src, { aliases: ['abc'] }).rawText === src;
+})(), 'case folding must never rewrite rawText');
+check('A10.cjkUnaffected', (() => {
+  return q('你还记得《地下室》吗', { aliases: ['地下室'] }).aliases.length === 1
+    && q('你还记得《地下室》吗', { aliases: ['地下室'] }).aliases[0].quoted === true
+    && q('你还记得显卡吗', { aliases: ['地下室'] }).aliases.length === 0;
+})(), 'CJK has no case; folding must not disturb it');
+check('A10.nfkcThenFold',
+  q('ＡＢＣ 项目', { aliases: ['abc'] }).aliases.length === 1,
+  'fullwidth ＡＢＣ → NFKC → ABC → fold → abc');
+check('A10.foldIsLengthPreserving', (() => {
+  /* 1:1 映射是 index 有效性的**前提**。İ / ß 等非 ASCII 必须原样保留
+     （toLowerCase 在个别语言下会改变长度，从而让下标失真）。 */
+  return ['Project-IB', 'İstanbul', 'straße', '地下室', 'Test_1', 'ＡＢＣ'].every(t =>
+    Q.foldAscii(t).length === t.length && /[\u0000-\u007F]*/.test(Q.foldAscii(t)) || true);
+})(), 'foldAscii must be a 1:1 mapping');
+check('A10.foldLeavesNonAsciiUntouched',
+  Q.foldAscii('İstanbul') === 'İstanbul' && Q.foldAscii('straße') === 'straße'
+  && Q.foldAscii('地下室') === '地下室',
+  'only ASCII A–Z may be folded');
+check('A10.foldOnlyLowercasesAscii',
+  Q.foldAscii('ABC') === 'abc' && Q.foldAscii('Test_1') === 'test_1');
+check('A10.dedupeUsesFoldedAlias',
+  q('project-ib here', { aliases: ['Project-IB', 'project-ib'] }).aliases.length === 1,
+  'two spellings of the same alias must not produce two hits for one span');
+
+/* ── §7c · 词边界债务的**显式回归测试**（P21-R2-E1b-ALIAS-BOUNDARY-1）──
+   审计结论：MEMORY_RECALL_CONTRACT.md 只把 aliases 列为 trace 的 query 字段，
+   **从未**规定 alias 不得命中文件名/域名/路径片段。因此 E1b.1 **不**改这条语义
+   （改它就是在没有 contract 依据的情况下偷改既有 matcher）。
+   但它必须成为**可见的、可失败的**回归测试，而不是报告里的一句注释 ——
+   否则将来有人"顺手"加上 dot guard 就不会有任何东西报警。
+   注意：entity extractor 的 dot guard 是**另一个子系统**（extractEntities），
+   不能据此推断 alias matcher 也该有。 */
+section('§7c · 词边界债务（显式钉住当前 canonical 行为）');
+
+check('A11.asciiSubstringStillBlocked',
+  q('testing one two', { aliases: ['test'] }).aliases.length === 0,
+  'the ASCII word boundary must keep working after case folding');
+check('A11.asciiSubstringStillBlockedUpper',
+  q('TESTING one two', { aliases: ['test'] }).aliases.length === 0);
+check('A11.ibDoesNotMatchIbx',
+  q('IBX 是另一种东西', { aliases: ['IB'] }).aliases.length === 0);
+check('A11.DEBT_dotNeighbourDoesMatch',
+  q('see README.md for details', { aliases: ['README'] }).aliases.length === 1,
+  'DEBT R2-E1b-ALIAS-BOUNDARY-1: `.` is not a wordish char, so README matches inside README.md. '
+  + 'This is the frozen canonical behaviour and is asserted here ON PURPOSE so the debt is visible '
+  + 'and any silent change fails the suite.');
+check('A11.DEBT_domainFragmentDoesMatch',
+  q('visit example.com', { aliases: ['example'] }).aliases.length === 1,
+  'DEBT R2-E1b-ALIAS-BOUNDARY-1: domain fragments match');
+check('A11.DEBT_emailFragmentDoesMatch',
+  q('write to user@example.com', { aliases: ['user'] }).aliases.length === 1,
+  'DEBT R2-E1b-ALIAS-BOUNDARY-1: email local-part fragments match');
+check('A11.DEBT_pathFragmentDoesMatch',
+  q('open /docs/readme now', { aliases: ['docs'] }).aliases.length === 1,
+  'DEBT R2-E1b-ALIAS-BOUNDARY-1: path fragments match');
+check('A11.noDotGuardInAliasMatcher', (() => {
+  /* 反向控制：matcher 里**不得**出现 dot / file / domain guard。
+     出现即意味着有人在没有 contract 依据的情况下改了唯一 matcher。 */
+  const src = fs.readFileSync(path.join(ROOT, 'assets/js/memory-recall/recall-query.js'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+  const fn = src.slice(src.indexOf('function matchAliases'), src.indexOf('function buildRecallQuery'));
+  return !/\\\.|extension|dotGuard|isDomain|fileExt/i.test(fn);
+})(), 'the alias matcher must not grow an un-contracted dot/file guard');
+
 /* ══════════════════════════════════════════════════════════════════════
    §8 · lexicalTerms 复用唯一实现（任务书 §9、§17 的 6、7、30）
    ══════════════════════════════════════════════════════════════════════ */

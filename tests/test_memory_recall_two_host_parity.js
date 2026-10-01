@@ -489,6 +489,111 @@ async function activationSpy() {
 }
 
 /* ══════════════════════════════════════════════════════════════════════
+   §8 · R2-E1b · coldStart 两 Host parity + activation/reinforcement 硬门
+   ──────────────────────────────────────────────────────────────────────
+   两个最重要的反向证明：
+     · Browser：coldStart 选中 ⇒ recordMemoryActivation **0 次**
+     · Home Node：selectedIds **非空** 且 reinforce **0 次**
+   必须**同时**成立 —— 只断言"没有强化"会漏掉"其实什么都没注入"的情形。
+   ══════════════════════════════════════════════════════════════════════ */
+async function coldStartParityAndActivation() {
+  section('§8 · coldStart parity + activation 硬门');
+  const NOW2 = 1750000000000, DAY2 = 86400000;
+  const recs = [
+    mem({ id: 'pin', pinned: true, title: '锚点', content: '长期锚点', importance: 9 }),
+    mem({ id: 'sem', kind: 'semantic', title: '语义', content: '语义长期', importance: 8 }),
+    mem({ id: 'man', source: 'manual', title: '手写', content: '手写', importance: 9 })
+  ];
+  const turn = { conversationSignalAvailable: true, isFirstTurn: true, conversationId: 'dm:role_a' };
+
+  /* ── 8.1 两 Host 对同一 coldStart 输入给出相同结论 ── */
+  const browserSel = await makeBrowserWrapper(recs, { settings: { budget: 2000, contentLen: 200 } })(
+    'role_a', { userMessage: '嗯', now: NOW2, random: () => 0.42, conversationId: 'dm:role_a',
+      isFirstTurn: true, conversationSignalAvailable: true });
+  const node = makeNodeRetrieval(recs, { settings: { budget: 2000, contentLen: 200 } })
+    .retrieve('role_a', { userMessage: '嗯', now: NOW2, conversationId: 'dm:role_a',
+      isFirstTurn: true, conversationSignalAvailable: true });
+  const oracle = ORCHESTRATOR.recall(recs, {
+    apiId: 'role_a', now: NOW2, random: () => 0.42, isGroup: false, groupMemEnabled: false,
+    maxChars: 2000, contentLen: 200, includeHeader: false, userMessage: '嗯',
+    turn: Object.assign({ message: '嗯' }, turn)
+  });
+
+  check('E1b.coldStartSelectedNonEmpty', oracle.result.selected.length > 0,
+    'the fixture must actually admit anchors: ' + JSON.stringify(oracle.result.selected.map(x => x.id)));
+  check('E1b.coldStartChannelShared', oracle.trace.channel === 'coldStart');
+  check('E1b.browserSelectedMatchesOracle',
+    JSON.stringify(browserSel.selectedIds) === JSON.stringify(oracle.result.selected.map(x => x.id)),
+    JSON.stringify({ browser: browserSel.selectedIds, oracle: oracle.result.selected.map(x => x.id) }));
+  check('E1b.homeNodeSelectedMatchesOracle',
+    JSON.stringify(node.selectedIds) === JSON.stringify(oracle.result.selected.map(x => x.id)),
+    JSON.stringify({ node: node.selectedIds, oracle: oracle.result.selected.map(x => x.id) }));
+  check('E1b.homeNodeTextMatchesOracle', node.text === oracle.result.text);
+  check('E1b.homeNodeReasonMatchesOracle', node.reason === oracle.result.reason);
+  check('E1b.manualOnlyExcluded', node.selectedIds.indexOf('man') < 0,
+    'source=manual alone must not be admitted: ' + JSON.stringify(node.selectedIds));
+
+  /* ── 8.2 Home Node：selectedIds 非空 且 reinforcementIds 为空 ── */
+  check('E1b.homeNodeReinforcementIdsEmpty', (() => {
+    /* 该模块**本身**就是 factory（module.exports = createMemoryRetrieval）。 */
+    const store = {
+      listRecords: () => ({ ok: true, records: recs }),
+      getMemorySettings: () => ({ ok: true, settings: { budget: 2000, contentLen: 200 } }),
+      recordActivation: () => ({ ok: true, updated: 0, revisionTouched: false })
+    };
+    const r = CREATE_NODE_RETRIEVAL({ store, logger: () => { }, clock: () => NOW2, random: () => 0.42 });
+    const out = r.retrieve('role_a', { userMessage: '嗯', now: NOW2,
+      conversationId: 'dm:role_a', isFirstTurn: true, conversationSignalAvailable: true });
+    return out.selectedIds.length > 0 && Array.isArray(out.reinforcementIds)
+      && out.reinforcementIds.length === 0 && out.activationPolicy === 'none';
+  })(), 'selectedIds non-empty AND reinforcementIds empty — the critical reverse proof');
+
+  /* ── 8.3 Browser：coldStart 不写 activation，surface 写一次 ── */
+  const actLog = { coldStart: [], surface: [], glossary: [] };
+  function browserActivation(kind, opts, records) {
+    const log = [];
+    const sandbox = {
+      console: { warn() { }, log() { }, error() { } }, Date: Date,
+      IBMemoryRetrievalCore: CORE, IBMemoryVisibilityCore: require(path.join(ROOT, 'assets/js/memory-visibility-core.js')),
+      IBMemoryRecallOrchestrator: ORCHESTRATOR,
+      dbGetAll: async () => records, dbGet: async () => null,
+      dbPut: async (s, r) => { log.push({ store: s, id: r && r.id }); },
+      dbUpdate: async (s, r) => { log.push({ store: s, id: r && r.id }); return true; },
+      getMemorySettings: async () => ({ budget: 2000, contentLen: 200 })
+    };
+    sandbox.window = sandbox;
+    vm.createContext(sandbox);
+    vm.runInContext(WRAPPER_SRC + '\n;globalThis.__g=getMemoryContext;', sandbox, { filename: 'memory.js[frag]' });
+    return sandbox.__g('role_a', opts).then(ctx => ({ ctx: ctx, log: log }));
+  }
+  const csRun = await browserActivation('coldStart', { userMessage: '嗯', now: NOW2, random: () => 0.42,
+    conversationId: 'dm:role_a', isFirstTurn: true, conversationSignalAvailable: true }, recs);
+  check('E1b.browserColdStartInjectsContext', csRun.ctx.length > 0,
+    'anchors must still be injected into the prompt');
+  check('E1b.browserColdStartActivatesZeroTimes', csRun.log.length === 0,
+    'coldStart must NOT reinforce — automatic context restoration is not "she remembered": '
+    + JSON.stringify(csRun.log));
+  const sfRun = await browserActivation('surface', { userMessage: '锚点', now: NOW2, random: () => 0.42,
+    conversationId: 'dm:role_a', isFirstTurn: false, conversationSignalAvailable: true }, recs);
+  check('E1b.browserSurfaceInjectsContext', sfRun.ctx.length > 0);
+  check('E1b.browserSurfaceActivatesOnce', sfRun.log.length === 1,
+    'surface keeps normal reinforcement: ' + JSON.stringify(sfRun.log));
+
+  /* ── 8.4 glossary 走 normal activation ── */
+  const GC = require(path.join(ROOT, 'assets/js/memory-recall/glossary-catalog.js'));
+  const glRecs = [mem({ id: 'code', title: '暗号甲', content: '与别名无字面重叠', importance: 8 })];
+  const glProv = GC.createGlossaryCatalogProvider(function () {
+    return [{ alias: '地下室', kind: 'term', target: { type: 'memory', id: 'code' } }];
+  });
+  const glRun = await browserActivation('glossary', { userMessage: '地下室', now: NOW2, random: () => 0.42,
+    conversationId: 'dm:role_a', isFirstTurn: false, conversationSignalAvailable: true,
+    glossaryProvider: glProv }, glRecs);
+  check('E1b.browserGlossaryInjectsContext', glRun.ctx.length > 0);
+  check('E1b.browserGlossaryActivatesOnce', glRun.log.length === 1,
+    'the user did mention the term ⇒ normal reinforcement: ' + JSON.stringify(glRun.log));
+}
+
+/* ══════════════════════════════════════════════════════════════════════
    §7 · 失败语义（Home Node 三分不因 orchestrator 而改变）
    ══════════════════════════════════════════════════════════════════════ */
 section('§5 · 失败语义');
@@ -535,6 +640,7 @@ async function main() {
   nodeRoutesThroughOrchestrator();
   threeWay();
   await activationSpy();
+  await coldStartParityAndActivation();
 
   console.log('\n' + '='.repeat(64));
   if (failures) {

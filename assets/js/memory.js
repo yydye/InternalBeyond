@@ -135,7 +135,13 @@ async function getMemoryContext(apiId,opts){
      递增、lastActivated 却落成 NaN 的记录（它参与衰减，等于把这条记忆的排名弄坏）。 */
   const _o=opts||{};
   const at=(typeof _o.now==='function')?_o.now():(_o.now==null?undefined:_o.now);
-  try{await recordMemoryActivation(picked.selectedIds,at)}catch(e){}
+  /* §18/§20：activation policy = 'none' 的通道（coldStart）**绝不**强化。
+     理由：自动恢复上下文不是"用户想起过"；若强化会形成自强化回路
+     （coldStart → activation++ → memoryValue↑ → 下次更易被 coldStart 选中）。
+     legacy / 其它通道保持既有 normal 行为（逐字节不变）。 */
+  if(picked.activationPolicy!=='none'){
+    try{await recordMemoryActivation(picked.selectedIds,at)}catch(e){}
+  }
   return picked.context;
 }
 /* 纯选择阶段：不做持久化副作用；返回 {context, selectedIds}。
@@ -173,15 +179,29 @@ async function selectMemoryContext(apiId,opts){
          也刻意**不**写 channelHint:'coldStart' —— 那会提前启用该通道。
          不把它们放成 _pickOpts 的兄弟键：那会让 legacy 直调 core 时多带三个
          无意义的字段（core 虽会忽略，但没有理由扩大 options 面）。 */
+      /* P21-R2-E1b · glossary provider 的**纯注入** seam（§31）：
+         调用方可以传入 { getEntries(context) } 或 getGlossaryEntries 纯函数；
+         默认不传 ⇒ provider absent ⇒ 自动 glossary 不触发，
+         普通 surface/recall/coldStart 照常工作。
+         绝不在这里从 DB / storage 读，也不造 demo entries。
+         注意：legacy 直调 core 时 core 会忽略这个未知字段。 */
+      glossaryProvider:opts.glossaryProvider,
+      getGlossaryEntries:opts.getGlossaryEntries,
       turn:{message:opts.userMessage,conversationId:(opts.conversationId==null?null:String(opts.conversationId)),isFirstTurn:opts.isFirstTurn===true,conversationSignalAvailable:opts.conversationSignalAvailable===true}
     };
     /* P21-R2-C 接线 + P21-R2-D 语义切换：经 orchestrator，且**传 turn**。
        orchestrator 未加载时回落到下面那条既有的 core 直调（fail-open 兼容缝），
        那时行为与接线前逐字节相同 —— 兼容层不因 R2-D 而删除。 */
     const _orch=_ibMemRecallOrchestrator();
-    const picked=_orch?_orch.recall(all,_pickOpts).result:core.buildMemoryContext(all,_pickOpts);
-    if(!picked||!picked.text)return {context:'',selectedIds:[],reason:picked?picked.reason:undefined};
-    return {context:picked.text,selectedIds:picked.selected.map(s=>s.id)};
+    /* P21-R2-E1b · activation policy：orchestrator 的 meta 只取**一个标量**，
+       trace / meta 本身绝不进入这里，更不进入聊天 API（§20）。
+       coldStart = 'none'：自动恢复上下文 ≠ 用户主动想起。
+       取不到（legacy / 无 orchestrator）时按 'normal' —— 保持既有行为。 */
+    const _out=_orch?_orch.recall(all,_pickOpts):null;
+    const picked=_out?_out.result:core.buildMemoryContext(all,_pickOpts);
+    const _actPolicy=(_out&&_out.meta&&_out.meta.activationPolicy==='none')?'none':'normal';
+    if(!picked||!picked.text)return {context:'',selectedIds:[],reason:picked?picked.reason:undefined,activationPolicy:_actPolicy};
+    return {context:picked.text,selectedIds:picked.selected.map(s=>s.id),activationPolicy:_actPolicy};
   }catch(e){return {context:'',selectedIds:[]}}
 }
 /* 强化阶段：只更新 activationCount / lastActivated（不改变本轮已选出的结果）。

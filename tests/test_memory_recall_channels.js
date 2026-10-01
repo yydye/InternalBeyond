@@ -82,37 +82,102 @@ check('C3.legacyPathStillWorksInOrchestrator', (() => {
 /* ══════════════════════════════════════════════════════════════════════
    §3 · 未来通道显式未实现
    ══════════════════════════════════════════════════════════════════════ */
-section('§3 · 未来通道');
+section('§3 · 通道实现状态（R2-E1b 相位切换）');
 
-[['C4', 'glossary'], ['C5', 'coldStart'], ['C6', 'reminisce']].forEach(([id, ch]) => {
+/* ⚠ PHASE TRANSITION（R2-D → R2-E1b，有意更新）
+   R2-D 时 glossary / coldStart 是 FUTURE，断言"未实现 + channel-unsupported"。
+   R2-E1b 的目标就是**实现并启用**它们，因此那两条断言按设计失效。
+   现在正确的判据是：该实现的能实现、该 future 的仍 future、
+   且**没有任何通道被静默映射到另一个通道**。 */
+[['C4', 'glossary', true], ['C5', 'coldStart', true], ['C6', 'reminisce', false]].forEach(([id, ch, wantImpl]) => {
   const r = CP.resolveChannelPolicy(ch);
-  check(id + '.' + ch + 'IsFuture', r.ok === false && r.implemented === false && r.future === true,
-    JSON.stringify(r));
-  check(id + '.' + ch + 'ReasonExplicit', r.reason === 'channel-not-implemented');
-  check(id + '.' + ch + 'NotInImplementedList', CP.listImplementedChannels().indexOf(ch) < 0);
-  check(id + '.' + ch + 'InFutureList', CP.listFutureChannels().indexOf(ch) >= 0);
+  check(id + '.' + ch + 'Implemented=' + wantImpl, r.implemented === wantImpl && r.future === !wantImpl,
+    JSON.stringify({ implemented: r.implemented, future: r.future }));
+  check(id + '.' + ch + 'ImplementedList',
+    (CP.listImplementedChannels().indexOf(ch) >= 0) === wantImpl);
+  check(id + '.' + ch + 'FutureList',
+    (CP.listFutureChannels().indexOf(ch) >= 0) === !wantImpl);
 });
-check('C4.futureChannelsNotSilentlyMappedToSurface', (() => {
-  /* 关键：resolveChannelPolicy('glossary') 不得返回 surface 的 policy。 */
-  const g = CP.resolveChannelPolicy('glossary');
-  return g.policy.maxTotalSeats !== CP.MAX_SURFACE_TOTAL_SEATS
-    && g.channel === 'glossary';
-})(), 'a future channel must not be silently mapped onto surface — otherwise R2-E cannot tell them apart');
-/* 端到端：未实现通道 fail closed（不注入），而不是退化。
-   channelHint 走 **turn**（Host 的通道请求就在 turn 里）。
-   直接构造 options（不用 withTurn 辅助）以免 turn 键被覆盖。 */
-['glossary', 'coldStart', 'reminisce'].forEach(ch => {
-  const out = ORCH.recall([mk({ id: 'a' })], Object.assign({}, BASE, {
-    userMessage: '显卡',
-    turn: { message: '显卡', channelHint: ch }
+check('C6.reminisceStillFutureExplicit', (() => {
+  const r = CP.resolveChannelPolicy('reminisce');
+  return r.ok === false && r.implemented === false && r.future === true
+    && r.reason === 'channel-not-implemented';
+})(), 'reminisce must remain explicitly unimplemented — R2-E1b does not own it');
+check('C6.futureListIsExactlyReminisce',
+  JSON.stringify(CP.listFutureChannels()) === JSON.stringify(['reminisce']),
+  JSON.stringify(CP.listFutureChannels()));
+
+check('C4.noChannelSilentlyMappedToSurface', (() => {
+  /* 关键：任何通道都不得返回 surface 的 policy 对象（那会让 R2-E 无法区分通道）。 */
+  return ['glossary', 'coldStart'].every(ch => {
+    const r = CP.resolveChannelPolicy(ch);
+    return r.channel === ch && r.policy !== surface.policy;
+  });
+})(), 'each channel must own its policy object');
+check('C4.glossarySeatsInheritRecall',
+  CP.resolveChannelPolicy('glossary').policy.maxTotalSeats === CP.MAX_RECALL_TOTAL_SEATS,
+  'glossary seat cap must INHERIT the recall constant, not copy the literal');
+check('C5.coldStartSeatsInheritSurface',
+  CP.resolveChannelPolicy('coldStart').policy.maxTotalSeats === CP.MAX_SURFACE_TOTAL_SEATS,
+  'coldStart seat cap must INHERIT the surface constant, not copy the literal');
+check('C4.activationPolicyIsExplicit', (() => {
+  return CP.resolveChannelPolicy('glossary').policy.activationPolicy === 'normal'
+    && CP.resolveChannelPolicy('coldStart').policy.activationPolicy === 'none';
+})(), 'glossary reinforces normally; coldStart must NOT reinforce (self-reinforcement loop)');
+check('C4.nonLexicalChannelsDoNotRequireRelevance', (() => {
+  return CP.resolveChannelPolicy('glossary').policy.requireRelevance === false
+    && CP.resolveChannelPolicy('coldStart').policy.requireRelevance === false;
+})(), 'admission for these channels is exact evidence, not lexical relevance');
+
+/* 端到端：host-forced 通道的行为（§24 / §5）。
+   channelHint 走 **turn**（Host 的通道请求就在 turn 里）。 */
+(function forcedChannelBehaviour() {
+  /* reminisce 仍 future ⇒ host 强制它必须 fail closed。 */
+  const rem = ORCH.recall([mk({ id: 'a' })], Object.assign({}, BASE, {
+    userMessage: '显卡', turn: { message: '显卡', channelHint: 'reminisce' }
   }));
-  check('C7.failClosedInOrchestrator.' + ch,
-    out.result.count === 0 && out.result.text === '' && out.result.reason === 'channel-unsupported',
-    JSON.stringify({ reason: out.result.reason, count: out.result.count }));
-  check('C7.metaReports.' + ch,
-    out.meta.channelSupported === false && out.meta.channelImplemented === false
-    && typeof out.meta.channelUnsupportedReason === 'string');
-});
+  check('C7.failClosedInOrchestrator.reminisce',
+    rem.result.count === 0 && rem.result.text === '' && rem.result.reason === 'channel-unsupported',
+    JSON.stringify({ reason: rem.result.reason, count: rem.result.count }));
+  check('C7.metaReports.reminisce',
+    rem.meta.channelSupported === false && rem.meta.channelImplemented === false
+    && typeof rem.meta.channelUnsupportedReason === 'string');
+
+  /* glossary 已实现但 production 默认**没有 provider** ⇒ host 强制时是
+     channel-unsupported（通道服务不了），**不是** gate-rejected。
+     这与"provider 可用但没有 entry"（⇒ 0 hit）必须区分。 */
+  const gl = ORCH.recall([mk({ id: 'a' })], Object.assign({}, BASE, {
+    userMessage: '显卡', turn: { message: '显卡', channelHint: 'glossary' }
+  }));
+  check('C7.forcedGlossaryWithoutProviderIsUnsupported',
+    gl.result.reason === 'channel-unsupported' && gl.result.count === 0,
+    JSON.stringify({ reason: gl.result.reason, count: gl.result.count }));
+  check('C7.forcedGlossaryReportsProviderReason',
+    gl.meta.channelImplemented === true && gl.meta.channelSupported === false
+    && typeof gl.meta.channelUnsupportedReason === 'string',
+    JSON.stringify(gl.meta));
+  check('C7.forcedGlossaryDiffersFromEmptyCatalog', (() => {
+    /* provider 可用但 entries=[] ⇒ 0 hit（gate-rejected），绝不是 unsupported。 */
+    const GC = require(path.join(ROOT, 'assets/js/memory-recall/glossary-catalog.js'));
+    const emptyProv = GC.createGlossaryCatalogProvider(function () { return []; });
+    const r2 = ORCH.recall([mk({ id: 'a' })], Object.assign({}, BASE, {
+      userMessage: '显卡', glossaryProvider: emptyProv,
+      turn: { message: '显卡', channelHint: 'glossary' }
+    }));
+    return r2.result.reason === 'gate-rejected' && r2.result.reason !== 'channel-unsupported';
+  })(), 'provider available + empty catalog is NOT the same as provider unavailable');
+
+  /* coldStart 已实现：host 强制时**不**因未实现而 unsupported。 */
+  const cs = ORCH.recall([mk({ id: 'a' })], Object.assign({}, BASE, {
+    userMessage: '显卡', turn: { message: '显卡', channelHint: 'coldStart' }
+  }));
+  check('C5.forcedColdStartIsSupported',
+    cs.result.reason !== 'channel-unsupported',
+    JSON.stringify({ reason: cs.result.reason, channel: cs.trace && cs.trace.channel }));
+  check('C5.forcedColdStartUsesColdStartChannel',
+    cs.trace && cs.trace.channel === 'coldStart', JSON.stringify(cs.trace && cs.trace.channel));
+  check('C5.forcedColdStartActivationNone', cs.meta.activationPolicy === 'none', JSON.stringify(cs.meta));
+})();
 
 /* ══════════════════════════════════════════════════════════════════════
    §4 · 无魔法相关性阈值

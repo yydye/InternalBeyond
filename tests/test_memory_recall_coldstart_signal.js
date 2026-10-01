@@ -321,10 +321,20 @@ async function main() {
     const bad = /seenConversations|firedColdStart|coldStartFired|coldstart-state/.test(ORCH_SRC + NODE_SRC + COMM_SRC);
     return !bad;
   })(), 'retrieval must not keep its own coldStart seen-set');
+  /* ⚠ PHASE TRANSITION（R2-E1a → R2-E1b）：coldstart-anchor.js 现在是**合法**
+     的实现模块（anchor eligibility 的纯谓词）。R2-E1b 仍然禁止的是
+     **durable/anchor 之外的状态模块** —— one-shot authority 仍是 Host 的
+     isFirstTurn，不是 retrieval 自己的 seen-set。 */
   check('13.noColdstartStateModule',
-    !fs.existsSync(path.join(ROOT, 'assets/js/memory-recall/coldstart-state.js'))
-    && !fs.existsSync(path.join(ROOT, 'assets/js/memory-recall/coldstart-anchor.js')),
-    'R2-E1a must not create coldstart-state.js / coldstart-anchor.js');
+    !fs.existsSync(path.join(ROOT, 'assets/js/memory-recall/coldstart-state.js')),
+    'no durable coldStart state module may exist — one-shot authority stays with the Host');
+  check('13.coldstartAnchorIsPurePredicate', (() => {
+    const f = path.join(ROOT, 'assets/js/memory-recall/coldstart-anchor.js');
+    if (!fs.existsSync(f)) return false;
+    const bare = fs.readFileSync(f, 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+    return !/localStorage|sessionStorage|indexedDB|Date\.now|Math\.random|fetch\s*\(/.test(bare);
+  })(), 'the anchor module must stay pure: no IO, no clock, no random');
   check('14.noSchemaChange', (() => {
     const schema = fs.readFileSync(path.join(ROOT, 'assets/js/webcore-db-schema.js'), 'utf8');
     const core = fs.readFileSync(path.join(ROOT, 'assets/js/chat-core.js'), 'utf8');
@@ -389,14 +399,30 @@ async function main() {
 
   const CP = require(path.join(ROOT, 'assets/js/memory-recall/channel-policy.js'));
   const coldPolicy = CP.resolveChannelPolicy('coldStart');
-  check('L1.coldStartStillFuture', coldPolicy.ok === false && coldPolicy.future === true
-    && coldPolicy.reason === 'channel-not-implemented', JSON.stringify(coldPolicy));
-  check('L1.coldStartNotInImplementedChannels', CP.listImplementedChannels().indexOf('coldStart') < 0);
-  check('L2.orchestratorDoesNotConsumeConversationSignal',
-    !/isFirstTurn/.test(ORCH_SRC) && !/conversationId/.test(ORCH_SRC),
-    'the orchestrator must NOT read the latent signal — otherwise production result could change');
-  check('L2.orchestratorHasNoColdStartBranch',
-    ORCH_SRC.indexOf("'coldStart'") < 0 || /FUTURE|channel-unsupported/.test(ORCH_SRC));
+  /* ⚠ PHASE TRANSITION（R2-E1a → R2-E1b，有意更新）：
+     E1a 断言 coldStart 仍为 FUTURE、且 orchestrator **不读**会话信号（纯 latent）。
+     E1b 的目标正是消费该信号并启用 coldStart ⇒ 两条断言按设计失效。
+     现在正确的判据是：channel 已实现 + orchestrator 确实读取信号 +
+     四个条件缺一不可（§22），且群聊不自动 coldStart（§23）。 */
+  check('L1.coldStartNowImplemented', coldPolicy.ok === true && coldPolicy.implemented === true
+    && coldPolicy.future === false, JSON.stringify(coldPolicy));
+  check('L1.coldStartInImplementedChannels', CP.listImplementedChannels().indexOf('coldStart') >= 0);
+  check('L2.orchestratorConsumesConversationSignal',
+    /isFirstTurn/.test(ORCH_SRC) && /conversationId/.test(ORCH_SRC),
+    'R2-E1b: the orchestrator now reads the E1a conversation signal');
+  check('L2.orchestratorHasColdStartBranch', ORCH_SRC.indexOf("'coldStart'") >= 0);
+  check('L3.signalUnavailableNeverColdStarts', (() => {
+    const O = require(path.join(ROOT, 'assets/js/memory-recall/memory-recall-orchestrator.js'));
+    const rec = [{ id: 'a', title: 't', content: 'c', importance: 5, arousal: .3, resolved: false,
+      activationCount: 0, created: FIXED_MS - 86400000, lastActivated: FIXED_MS - 86400000,
+      visibility: 'public', tags: [], domain: '日常', pinned: true }];
+    const base = { apiId: 'r', now: FIXED_MS, random: () => .42, isGroup: false, groupMemEnabled: false,
+      maxChars: 2000, contentLen: 200, userMessage: '嗯' };
+    const off = O.recall(rec, Object.assign({}, base, { turn: { message: '嗯' } }));
+    const on = O.recall(rec, Object.assign({}, base, { turn: { message: '嗯',
+      conversationSignalAvailable: true, isFirstTurn: true, conversationId: 'dm:r' } }));
+    return (off.trace.channel !== 'coldStart') && (on.trace.channel === 'coldStart');
+  })(), 'signal unavailable ⇒ no coldStart; signal present + first turn ⇒ coldStart');
 
   console.log('\n' + '='.repeat(64));
   if (failures) {

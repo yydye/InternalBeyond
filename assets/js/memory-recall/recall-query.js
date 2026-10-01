@@ -388,6 +388,21 @@
     return out;
   }
 
+  /* ── ASCII case fold（长度不变）────────────────────────────────────
+     只把 ASCII 的 A–Z 映射成 a–z；其余字符**原样保留**。
+     长度不变这一点是硬要求：匹配在折叠串上进行，但捕获的 index /
+     matchedText 必须回指**原串**，因此绝不能用 toLowerCase 之外的重写
+     （例如 toLocaleLowerCase 在个别语言里会改变字符数）。
+     刻意不用 String.prototype.toLowerCase()：它对非 ASCII 也有定义
+     （如 İ → i̇ 会使长度 +1），会让下标失真。 */
+  function foldAscii(value) {
+    var str = (value == null) ? '' : String(value);
+    if (!/[A-Z]/.test(str)) return str;   /* 无 ASCII 大写 ⇒ 原样返回，零开销 */
+    return str.replace(/[A-Z]/g, function (ch) {
+      return String.fromCharCode(ch.charCodeAt(0) + 32);
+    });
+  }
+
   function isWordishChar(ch) {
     if (!ch) return false;
     if (/[A-Za-z0-9_]/.test(ch)) return true;
@@ -398,17 +413,24 @@
     var protectedSpans = Array.isArray(spans) ? spans : [];
     var hits = [];
     var used = {};
+    /* 折叠一次 haystack 供整轮使用：确定性，且与逐个 alias 折叠等价。
+       折叠是 1:1 的 ⇒ needle 与 haystack 同长变换 ⇒ idx 对原串有效。 */
+    var foldedHay = foldAscii(normalized);
     for (var i = 0; i < entries.length; i++) {
       var alias = entries[i].alias;
-      var idx = normalized.indexOf(alias);
+      var needle = foldAscii(alias);
+      var idx = foldedHay.indexOf(needle);
       if (idx < 0) continue;
       /* ASCII 边界：避免 "test" 命中 "testing"。
          CJK 无词边界，因此只对以 ASCII 词字符开头/结尾的 alias 施加边界检查。 */
       if (/^[A-Za-z0-9_]/.test(alias) && isWordishChar(normalized.charAt(idx - 1))) continue;
       var endPos = idx + alias.length;
       if (/[A-Za-z0-9_]$/.test(alias) && isWordishChar(normalized.charAt(endPos))) continue;
-      if (used[alias]) continue;   /* 同一 alias 只返回首次出现 */
-      used[alias] = 1;
+      /* 同一 alias 只返回首次出现；键用**折叠后**的形式 ——
+         Project-IB 与 project-ib 在 case-fold 之后是同一个 alias，
+         用原始大小写做键会让同一处文本产出两行重复命中。 */
+      if (used[needle]) continue;
+      used[needle] = 1;
       hits.push({
         alias: alias,
         target: entries[i].target,
@@ -463,6 +485,7 @@
     extractEntities: extractEntities,
     extractTemporalHints: extractTemporalHints,
     matchAliases: matchAliases,
+    foldAscii: foldAscii,
     normalizeAliasEntries: normalizeAliasEntries,
     MAX_QUERY_INPUT_CHARS: MAX_QUERY_INPUT_CHARS,
     MAX_LEXICAL_INPUT_CHARS: MAX_LEXICAL_INPUT_CHARS,

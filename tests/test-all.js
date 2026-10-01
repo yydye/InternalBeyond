@@ -330,6 +330,10 @@ const GROUPS = [
          用户可见召回语义与 R2-D 完全相同（semantic delta 仍 10 CHANGED / 14 SAME）。 */
       ['test_memory_recall_glossary_catalog.js'],
       ['test_memory_recall_coldstart_signal.js'],
+      /* P21-R2-E1b：glossary / coldStart 正式启用（retrieval cutover）。
+         coldStart 的 activationPolicy = 'none' —— 注入但不强化。 */
+      ['test_memory_recall_glossary.js'],
+      ['test_memory_recall_coldstart.js'],
       /* M1-C.2m：canonical Understanding —— 存储/修订链/CAS/单活不变量/更正契约
          （纯 Node + 真 SQLite + 临时数据目录，零网络、零浏览器）。 */
       ['test_understanding_contract_closure.js'],

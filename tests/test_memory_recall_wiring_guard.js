@@ -194,6 +194,11 @@ const offenders = [];
 for (const full of scanned) {
   const rel = path.relative(ROOT, full).replace(/\\/g, '/');
   if (MODULES.indexOf(rel) >= 0) continue;              /* 模块自身 */
+  /* ⚠ PHASE TRANSITION（R2-E1b）：memory-recall/ 是**实现层**，不是 Host。
+     §4 要求 glossary-match 复用 recall-query 的唯一 alias matcher，
+     那正是通过这里扫的全局名发生的。把它们判成"绕过编排器"是误判。
+     真正的判据是"**Host** 不得直接触达"——由 A3.1 与下面的目录排除共同保证。 */
+  if (rel.indexOf('assets/js/memory-recall/') === 0) continue;
   if (rel === 'assets/js/memory.js') continue;           /* 已单独断言经 orchestrator */
   if (rel === 'services/home-node/memory-retrieval.js') continue; /* 同上 */
   const src = stripComments(fs.readFileSync(full, 'utf8'));
@@ -205,6 +210,21 @@ for (const full of scanned) {
     if (src.indexOf(token) >= 0) offenders.push(rel + ' :: ' + token);
   });
 }
+/* §4 正面断言：glossary-match 必须**复用**唯一 alias matcher，
+   而不是自带一套 ASCII/CJK 边界或引号检测。 */
+(function glossaryReusesUniqueMatcher() {
+  const gm = path.join(ROOT, 'assets/js/memory-recall/glossary-match.js');
+  if (!fs.existsSync(gm)) { check('A3.glossaryMatchExists', false, 'module missing'); return; }
+  const src = stripComments(fs.readFileSync(gm, 'utf8'));
+  check('A3.glossaryMatchReusesUniqueMatcher',
+    src.indexOf('matchAliases') >= 0 && src.indexOf('normalizeAliasEntries') >= 0
+    && src.indexOf('findProtectedSpans') >= 0 && src.indexOf('normalizeText') >= 0,
+    'glossary-match must reuse recall-query primitives');
+  check('A3.glossaryMatchCopiesNoBoundaryLogic',
+    !/localeCompare|charCodeAt|codePointAt|isWordishChar/.test(src),
+    'no second alias matcher: boundary/quoted logic must not be re-implemented');
+})();
+
 check('A3.recallPrimitivesNotUsedElsewhere', offenders.length === 0,
   'recall primitives must not be reached except through the orchestrator:\n        ' + offenders.join('\n        '));
 
@@ -275,10 +295,15 @@ check('A4.browserDoesNotCoerceToEmptyString', (() => {
 
 check('A4.homeNodeHostPassesTurn', (() => {
   const i = NODE_SRC.indexOf('const buildOpts = {');
-  const j = NODE_SRC.indexOf('const built =');
+  /* R2-E1b：retrieve() 里原来的 `const built = ...` 被改成
+     `let built, activationPolicy`（要同时取 meta.activationPolicy），
+     因此结束标记必须换成仍然存在的锚点，否则窗口为空 ⇒ 断言恒假。 */
+  const j = NODE_SRC.indexOf('let built, activationPolicy');
   if (i < 0 || j < 0 || j <= i) return false;
   /* R2-E1a：turn 变为多行对象（含 latent 会话字段）⇒ 判据只看 message 的取值来源。 */
-  return /\bturn\s*:\s*\{[\s\S]{0,400}?message\s*:\s*options\.userMessage\b/.test(NODE_SRC.slice(i, j));
+  /* R2-E1b：turn 现在含 conversationId / isFirstTurn / conversationSignalAvailable，
+     窗口放宽到 800 字符；判据仍是"message 的取值来自 options.userMessage"。 */
+  return /\bturn\s*:\s*\{[\s\S]{0,800}?message\s*:\s*options\.userMessage\b/.test(NODE_SRC.slice(i, j));
 })(), 'Home Node buildOpts must pass turn.message from options.userMessage');
 check('A4.homeNodeTurnSourceIsCurrentTurn', (() => {
   /* buildRuntimeContext 的 ctx.userMessage 由 mobile-gateway 的 beginTurn
@@ -299,10 +324,20 @@ check('A4.homeNodeDoesNotCoerceToEmptyString', (() => {
 check('A4.hostsDoNotPassColdStart', (() => {
   return !/isConversationOpen\s*:/.test(MEMORY_SRC) && !/isConversationOpen\s*:/.test(NODE_SRC);
 })(), 'coldStart belongs to R2-E — Host must not signal it yet');
-check('A4.hostsDoNotPassGlossaryOrReminisce', (() => {
-  const both = MEMORY_SRC + NODE_SRC;
-  return !/glossary/i.test(both) && !/reminisce/i.test(both);
-})());
+/* ⚠ PHASE TRANSITION（R2-D → R2-E1b，有意更新）：
+   R2-D 断言 Host 源码里**不出现** glossary 字样（那时它尚未实现）。
+   R2-E1b 给 Browser 加了 glossary provider 的**纯注入 seam**（§31），
+   因此该判据按设计失效。真正的判据是：Host **不得替用户强制通道** ——
+   即不得传 channelHint='glossary' / 'reminisce'，也不得从 DB 读 catalog。 */
+check('A4.hostsDoNotForceGlossaryChannel', (() => {
+  const both = MEMORY_SRC + NODE_SRC + COMM_SRC;
+  return !/channelHint\s*:\s*'glossary'/.test(both) && !/channelHint\s*:\s*'reminisce'/.test(both);
+})(), 'a Host may inject a catalog, but must not force the glossary channel');
+check('A4.hostsDoNotForceReminisceChannel',
+  !/channelHint\s*:\s*'reminisce'/.test(MEMORY_SRC + NODE_SRC));
+check('A4.hostsDoNotReadGlossaryFromDb',
+  !/glossary/i.test(NODE_SRC),
+  'Home Node must receive the catalog by injection, never by reading a store');
 check('A4.hostsDoNotPassCooldownState', (() => {
   const both = MEMORY_SRC + NODE_SRC;
   return !/cooldown|lastSurfacedAt|lastRecalledAt/i.test(both);

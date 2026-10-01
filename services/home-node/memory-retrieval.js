@@ -132,15 +132,29 @@ function createMemoryRetrieval(deps) {
        刻意**不**在 buildOpts 里放 turn ⇒ active behavior 始终是 legacy，
        text / selectedIds / count / chars / reason 的语义完全不变。
        orchestrator 缺失时回落到 core 直调（逐行为等价）。 */
-    const built = (MEMORY_RECALL_ORCHESTRATOR && typeof MEMORY_RECALL_ORCHESTRATOR.recall === 'function')
-      ? MEMORY_RECALL_ORCHESTRATOR.recall(page.records || [], buildOpts).result
-      : MEMORY_RETRIEVAL.buildMemoryContext(page.records || [], buildOpts);
+    /* P21-R2-E1b · activation policy：只从 meta 取**一个标量**（内部 seam）。
+       coldStart = 'none' ⇒ 注入照旧，但**不**强化（见 reinforcementIds）。
+       取不到时按 'normal' —— legacy / core 直调路径行为逐字节不变。 */
+    let built, activationPolicy = 'normal';
+    if (MEMORY_RECALL_ORCHESTRATOR && typeof MEMORY_RECALL_ORCHESTRATOR.recall === 'function') {
+      const out = MEMORY_RECALL_ORCHESTRATOR.recall(page.records || [], buildOpts);
+      built = out.result;
+      if (out.meta && out.meta.activationPolicy === 'none') activationPolicy = 'none';
+    } else {
+      built = MEMORY_RETRIEVAL.buildMemoryContext(page.records || [], buildOpts);
+    }
+    const selectedIds = built.selected.map(s => s.id);
     return {
       ok: true,
       text: built.text,
       count: built.count,
       chars: built.chars,
-      selectedIds: built.selected.map(s => s.id),
+      selectedIds: selectedIds,
+      /* §21：selection 与 reinforcement eligibility **分开**。
+         selectedIds 是"真正注入了谁"的事实，绝不因为不强化而被清空；
+         reinforcementIds 才是"允许强化谁"（coldStart ⇒ 空）。 */
+      reinforcementIds: (activationPolicy === 'none') ? [] : selectedIds.slice(),
+      activationPolicy: activationPolicy,
       reason: built.reason,
       candidates: (page.records || []).length
     };
@@ -240,6 +254,14 @@ function createMemoryRetrieval(deps) {
       runtimeContext: parts.join('\n\n'),
       memoryBlock: memoryBlock,
       selectedIds: Array.isArray(picked.selectedIds) ? picked.selectedIds : [],
+      /* P21-R2-E1b · 强化资格与选择事实**分开**（§21）。
+         coldStart 注入 anchors 但**不**强化 —— 自动恢复上下文 ≠ 用户主动想起；
+         若强化会形成 coldStart→activation++→memoryValue↑→更易被选中的自强化回路。
+         这是**内部** seam：不进入 mobile wire contract。 */
+      reinforcementIds: Array.isArray(picked.reinforcementIds)
+        ? picked.reinforcementIds
+        : (Array.isArray(picked.selectedIds) ? picked.selectedIds : []),
+      activationPolicy: (picked.activationPolicy === 'none') ? 'none' : 'normal',
       memoryCount: picked.count || 0,
       memoryReason: picked.reason || null,
       /* M1-C.2i：三个不同的真相必须分开回给调用方，否则 Middle Brain 的快照只能靠
