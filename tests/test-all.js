@@ -270,6 +270,19 @@ const GROUPS = [
          检索保持 visibility-before-ranking，且选择（纯）与激活强化（副作用）分离。
          抽取真实生产源码片段在 vm 中执行，零浏览器、零网络。 */
       ['test_memory_contract_closure.js'],
+      /* P21-R2-A：Memory Recall Contract —— 冻结 recall orchestration 的语义边界：
+         channel 词表（legacy/surface/recall/glossary/coldStart/reminisce）、reason 词表
+         （保留既有三值 + 新增 early-exit/gate-rejected，只增不改）、
+         "0 memory 是合法成功结果"、relevanceScore 可取 0、
+         relevanceScore 与 memoryValue 分离（LegacyMemoryValue 仅作兼容定义，
+         不永久冻结四因子公式）、visibility 必须先于 relevance/ranking/trace detail、
+         唯一 ACL、cooldown 先 session-local（RecallSessionState，不扩 TELEMETRY_FIELDS）、
+         Trace 禁止正文/凭据、Auto Memory 登记为并行管线、
+         D-7 登记为 Known Authority Gap（不修）、
+         以及 production memory runtime 文件逐字节未变（SHA-256 基线）。
+         断言分 [CONTRACT]（契约文本）与 [CURRENT]（当前代码事实，记录现状、
+         在现状变化时变红）。纯 Node、零浏览器、零网络。 */
+      ['test_memory_recall_contract.js'],
       /* M1-C.2m：canonical Understanding —— 存储/修订链/CAS/单活不变量/更正契约
          （纯 Node + 真 SQLite + 临时数据目录，零网络、零浏览器）。 */
       ['test_understanding_contract_closure.js'],

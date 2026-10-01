@@ -6,6 +6,10 @@
 > InternalBeyond Memory 子系统的当前状态描述：memory 如何被存储、检索、评分、admitted、
 > consolidated，以及谁拥有它。它不是 migration report、phase report 或 audit。
 > Source-of-truth 优先级：生产代码 → enforcement tests → 当前 contracts → audit → history。
+>
+> **Recall 的语义契约见 [`../contracts/memory/MEMORY_RECALL_CONTRACT.md`](../contracts/memory/MEMORY_RECALL_CONTRACT.md)**
+> （P21-R2-A 冻结）。本文档描述**当前**架构；那份 contract 描述 recall orchestration
+> 的**目标边界**，其中标注 FUTURE CONTRACT 的条款在 P21-R2-A 时点**尚无生产实现**。
 
 ---
 
@@ -98,12 +102,50 @@ candidate set → visibility/ACL → relevance → ranking → top-k / budget �
   保留并解析为 not-visible，绝不会解析为 public）。
 - **Budget**：有界注入；retrieval 不随 memory library 增长。
 
+### 5.1 Lexical / 非向量（如实声明）
+
+原生 recall 是**可解释的文本评分**：中文 2–3 字 n-gram + 英文词做相关性，
+配合上面的手写四因子打分。**没有** embedding、向量库、相似度检索或 RAG framework。
+（`DECISIONS.md` D14/D15 明确否决引入向量库。）
+
+用户可在 DIY → MCP 挂载外部 RAG / 向量工具，那会以 `mcp.<alias>.<tool>` 暴露为**工具通道**，
+**不是** Memory Runtime 本体，也不参与本节这条 recall 链。
+
+### 5.2 Recall Orchestration（目标契约，P21-R2-A 冻结 · **尚无生产实现**）
+
+当前召回是**单一管线**：一次 `buildMemoryContext()` 同时承担 turn 决策、相关性、
+打分、排序、预算与渲染，对所有触发场景使用同一套 policy。
+
+[`MEMORY_RECALL_CONTRACT.md`](../contracts/memory/MEMORY_RECALL_CONTRACT.md) 把
+**Memory Recall Orchestration** 的目标边界冻结为：
+
+- **channel 词表**：`legacy`（兼容旧调用 / 未提供 turn signal 的路径）· `surface` ·
+  `recall` · `glossary` · `coldStart` · `reminisce`；
+- **`relevanceScore` 与 `memoryValue` 分离**（前者依赖 query，后者不依赖）；
+- **hard gate**：`0 memory is a valid successful recall result`，且
+  `early-exit` / `gate-rejected` / `no-visible-memory` 三种"零结果"必须可区分；
+- **cooldown 先 session-local**（`RecallSessionState`，不落 MemoryRecord）；
+- **`RecallTrace`** 可解释、可断言、禁止正文与凭据。
+
+**这些在 P21-R2-A 时点都还不是当前行为。** 特别是：现行 `calcRelevance()` 的值域是
+`[1, 2.5]`，**下限恒为 1，无法表达"没有任何相关证据"**，因此当前实现**不满足**
+上面那条 hard gate 契约 —— 预算是唯一的停止条件。该契约的落地属于后续阶段
+（R2-B ~ R2-F），本文档不把它描述成已完成。
+
 ---
 
 ## 6. Admission
 
-Admission（P11-2J）决定某个 turn 是否执行 memory work。它是 browser-side 的 runtime
-关注点，不拥有 storage。见 `tests/test_p11_2j_memory_admission.js`。
+Admission（P11-2J）是**候选级写入准入**：`_calibrateMemoryCandidate`
+（`assets/js/memory/auto-memory.js` → `assets/js/understanding-derivation-core.js`）
+判断一个 memory **候选**是否值得被写进长期记忆，并给出稳定的拒绝原因。
+它属于 browser-side 的写入路径，不拥有 storage。
+
+**它不是 turn 级门。** 决定"某个 turn 是否执行 memory 副作用"的是
+Middle Brain 的 side-effect gate（`_mbSideEffectGate`），且它只在回复中
+**确实解析出 `<mem_*>` 操作**时被调用。
+
+见 `tests/test_p11_2j_memory_admission.js`。
 
 ---
 
@@ -124,16 +166,57 @@ Consolidation **does not own**：durable storage、sync、lifecycle、retrieval 
 
 | Consumer | Read | Write | Authority |
 | --- | --- | --- | --- |
-| Chat | 是（`getMemoryContext`） | 是（`quickCreateMemory`、auto-memory、经由 gate 的 `<mem_*>`） | consumer |
+| Chat | 是（`getMemoryContext`） | 是（`quickCreateMemory`） | consumer |
 | Group Chat | 仅 public 的 memory | 经由 group memory policy | consumer |
-| Role DM | role-scoped visibility | `roleLetterMemories`（独立 store） | consumer |
+| Role DM | role-scoped visibility | 是（`quickCreateMemory`，`source:'role_dm'`，`visibility:'only'`） | consumer |
 | Diary | — | `source:'diary'`（importance ≥ 6、similarity < 0.8） | consumer |
-| Moments | moments context | 经由 moments chain | consumer |
-| Letters | — | `role_letter`（importance 6） | consumer |
+| Moments | moments context | **否**（不写 memory record） | consumer |
+| Letters | — | `roleLetterMemories`（独立 store，**不**写 `memories`） | consumer |
+| Role Letters（私信记忆） | — | `roleLetterMemories`（独立 store，importance 6） | consumer |
 | Middle Brain | 选定的 context，read + compress | **否** | read-only |
 | Mobile | **否** | **否** | denied |
 
 Consumer ≠ Owner。除 Memory subsystem 外，没有任何 consumer 拥有 durable memory state。
+
+> **`roleLetterMemories` 是独立 store，不是 canonical memory。** 它不参与
+> `memory_records`、不参与 canonical recall、不共享 canonical ACL。
+> 历史上曾误入 `memories` 的 `source:'role_letter'` 行由一次性清理移除。
+>
+> **Auto Memory 不在本矩阵内** —— 它是一条并行的独立召回管线，见 §8.1。
+
+### 8.1 Known Parallel Recall Pipeline: Auto Memory
+
+`Auto Memory`（`assets/js/memory/auto-memory.js`）是一条**独立于 canonical memory
+recall 的并行召回管线**：
+
+| 维度 | canonical memory recall | Auto Memory |
+| --- | --- | --- |
+| 存储 | Home Node `memory_records`（canonical）+ IndexedDB mirror | 独立 store `autoMemory`（IndexedDB，按角色分区） |
+| 注入 | `getMemoryContext` / recall orchestration | **自有注入块**（`amBuildInject`） |
+| ACL | `memory-visibility-core.js`（fail-closed） | **不共享 canonical ACL** |
+| Scoring | canonical scoring | **自有打分** |
+| Home Node / Android 消费 | 是 | **否** |
+
+**它不得被描述为 canonical Memory 的 producer 或 canonical Memory 的一部分。**
+是否未来合并是一条**未决的产品 / 架构问题**，不属于 P21-R2。
+
+---
+
+## 8.2 Known Authority Gap: MEMORY-ACTIVATION-AUTHORITY
+
+| 事实 | 位置 |
+| --- | --- |
+| 桌面 `recordMemoryActivation` 经 `window.dbUpdate` 更新 **mirror** | `assets/js/memory.js` 的强化阶段 + `assets/js/core.js` 的原始 IndexedDB 事务 |
+| `memoryAuthority.recordActivation` **已存在**（镜像先落 + 远端 activate，不推进 revision） | `assets/js/memory-authority.js` |
+| 上述 authority 通道**没有生产调用点** | 仅测试引用 |
+| hydration 会**覆盖** mirror 的 activation telemetry | `assets/js/core.js` 的 mirror 整表重建 + 服务端从 promoted 列回填 |
+
+**后果**：桌面累计的 `activationCount` 不进入 canonical；每次 hydration 后被 canonical 值覆盖。
+因此"回忆习惯"在桌面上的实际效果**弱于**本文档 §5 公式给人的印象。
+
+**状态：登记，未修。** 修复属于 **R2-H · Authority Closure**（涉及 canonical 写入路径，
+需要独立评估）。这也解释了为什么 P21-R2 的 cooldown 先采用 **session-local**
+（`RecallSessionState`）—— 一个依赖跨端持久遥测的冷却机制在此缺口关闭前会周期性静默失效。
 
 ---
 
@@ -204,6 +287,7 @@ surfaces、provider prompt cache，或其他 browser stores 的 durable state（
 | Home Node storage assembly | `test_home_node_production_memory_assembly.js` |
 | Mobile read boundary | `test_mobile_memory_read_boundary.js`, `test_mobile_memory_continuity.js` |
 | Admission / consolidation | `test_p11_2j_memory_admission.js`, `test_memory_consolidation.js` |
+| Recall 契约（词表 / gate / trace / 生产文件完整性） | `test_memory_recall_contract.js` |
 
 Runtime 行为由这些 tests 强制；本文档是人类 canonical authority。
 
@@ -213,8 +297,9 @@ Runtime 行为由这些 tests 强制；本文档是人类 canonical authority。
 
 历史文档描述演进；它们不承载当前 authority。
 
+- [`../contracts/memory/MEMORY_RECALL_CONTRACT.md`](../contracts/memory/MEMORY_RECALL_CONTRACT.md) — Recall orchestration 目标契约（P21-R2-A 冻结，含 FUTURE CONTRACT 条款）
 - `docs/HOME_NODE_CHAT.md` §15 — M1-C.2d Wave 2 canonical memory authority（contract 起源）
-- `docs/DECISIONS.md` — D12/D14/D15 与 storage-authority 对比
+- `docs/DECISIONS.md` — D12/D14/D15 与 storage-authority 对比，以及 P21-R2 decision
 - `docs/MEMORY.md` — retrieval/scoring 叙述（pre-authority model）
 - `docs/history/runtime/CONTEXT-CONVERGENCE-C1-REPORT.md`
 - `docs/history/runtime/P2-CONTEXT-CONVERGENCE-AUDIT.md`

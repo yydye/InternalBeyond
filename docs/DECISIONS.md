@@ -1227,3 +1227,72 @@ D28/D29/D30 的真正冻结面（J5 / J8 / N1 / N2 / C8 等）**一个字都没�
 **最终原则**：事实是否真实、谁对事实负责、谁被允许知道事实、模型这一次是否
 应该看到事实，是**四个不同的问题**。D31 只回答第三个 —— 而第四个（prompt
 integration）连一行代码都还没有，并且是被明确禁止开始的下一步。
+
+---
+
+## D32. P21-R2 · Memory Recall Orchestration：recall 策略显式化，storage authority 不动（2026-10-01）
+
+- **背景（取证）**：P21-R2 只读审计以真实代码为准还原了当前 Memory Runtime。结论是
+  **Memory Core 健康、recall 策略有缺陷**：现行 `buildMemoryContext()` 是单一管线，
+  一次调用同时承担 turn 决策、相关性、打分、排序、预算与渲染，对所有触发场景使用同一套 policy。
+  最关键的缺陷是 `calcRelevance()` 的值域为 `[1, 2.5]`（`1 + ratio * 1.5`），**下限恒为 1**，
+  无法表达"没有任何相关证据" —— 因此 **0 条注入在结构上不可能**，字符预算是唯一的停止条件。
+  另有：无 per-turn early exit；探索窗口的随机区间是"剩余中分数最高的 N 条"（与其"唤醒沉睡记忆"
+  的声明相反）；`lastActivated` 同时抬高 activationFactor **并**重置衰减时钟，使召回正反馈强于设计。
+- **裁决**：把旧的一次性 `getMemoryContext` 召回演进为**可解释、可观测**的
+  **Recall Orchestration**，**不更换存储、不引入向量检索**。契约冻结在
+  `docs/contracts/memory/MEMORY_RECALL_CONTRACT.md`（Status: Canonical）。
+
+  **十条冻结内容**：
+  1. **不引入** vector DB / embedding / 向量检索 / RAG framework。原生 recall 保持
+     **lexical + 可解释**（中文 2–3 字 n-gram）。BM25 属 lexical 候选，但**必须先取真实分布证据**
+     并回答"解决哪一个可复现问题"，不得以"更先进"为由引入。
+  2. **storage authority 不变**：Home Node `memory_records` 仍是 durable canonical，
+     浏览器 IndexedDB `memories` 仍是 mirror / 桌面候选集。R2 不迁移 authority。
+  3. **visibility 必须先于 relevance / scoring / ranking / seat / exploration / trace detail**。
+     唯一 ACL 是 `memory-visibility-core.js`；**不得建立第二套**；未知/缺失 visibility → **fail closed**。
+     被 ACL 拒绝的记忆**不得**把标题或正文写进 trace，只允许计数或 opaque id。
+  4. **recall relevance 与 memory value 分离**：`relevanceScore` 回答"与本轮查询多相关"（依赖 query），
+     `memoryValue` 回答"这条记忆本身多值得浮现"（不依赖 query）。
+     现行四因子公式冻结为 **`LegacyMemoryValue`**（兼容定义），**不**冻结为"永久逐字不变"；
+     `MemoryValueV2` 预留，可在独立、可测试、可 A/B 的 **semantic cutover** 阶段调整
+     decay anchor / activation 贡献 / cooldown 交互，且必须有独立测试与行为变更记录。
+  5. **0 memory 是正常结果**：`early-exit`（未启动 recall）/ `gate-rejected`（启动了但无候选过门槛）/
+     `no-visible-memory`（ACL 后无可见候选）三者必须**可区分**，且都**不是** error / degraded。
+     `relevanceScore` 的值域**必须包含 0**，`score === 0` 必须能表达"无任何相关证据"。
+  6. **recall channel 显式化**：词表冻结为 `legacy`（兼容通道：未提供 turn signal 的路径）·
+     `surface` · `recall` · `glossary` · `coldStart` · `reminisce`。
+     只冻结 policy **形状**（gate / seats / cooldown / budgetShare / exploration），
+     **不**在契约里写死未经数据校准的数值。
+  7. **cooldown 先 session-local**：使用 `RecallSessionState`
+     （`byMemoryId → { lastSurfacedAt, lastRecalledAt, lastChannel }`）。
+     它是 session-local / runtime-local，**不是** MemoryRecord content、**不是** canonical field、
+     **不参与** `contentFingerprint`、重启可丢失、跨设备不保证一致 —— 这是**显式产品语义，不是 degraded**。
+     因此本轮**不扩展** `TELEMETRY_FIELDS`。
+  8. **durable cooldown / activation authority 后置 R2-H**：桌面 `recordMemoryActivation` 当前经
+     `dbUpdate` 只写 mirror，`memoryAuthority.recordActivation` 虽已存在却**没有生产调用点**，
+     且 hydration 会覆盖 mirror 的 activation telemetry。登记为
+     **Known Authority Gap: MEMORY-ACTIVATION-AUTHORITY**，修复属 R2-H · Authority Closure。
+     在上述缺口关闭前，任何依赖跨端持久遥测的冷却机制都会**周期性静默失效** ——
+     这正是本轮选择 session-local 的直接原因。
+  9. **legacy path 在 semantic cutover 之前保持 parity**：调用方未提供 turn / recall signal 时，
+     必须进入 legacy 语义，并满足"同 fixture / 同 clock / 同 random / 同 candidates
+     → selected IDs 相同、text 逐字节相同、reason 相同"。该 parity 是 R2-C 的安全带。
+  10. **Auto Memory 暂不合并**：它是**已知的并行召回管线**（独立 store `autoMemory`、独立注入、
+     不共享 canonical ACL / scoring，Home Node 与 Android 不消费），
+     **不得**被描述为 canonical Memory 的 producer。是否未来合并是**未决**的产品 / 架构问题，
+     不属于 P21-R2。
+- **本轮（R2-A）的边界**：只做 Baseline Verification → Contract Freeze → Contract Tests →
+  Documentation Reconciliation。**零生产代码改动** —— `assets/js/**` 下任何文件、
+  Home Node service、DB schema、依赖全部不动；未实现 early exit / hard gate / cooldown / orchestrator。
+  未来若任何 recall telemetry 被提升为 durable `MemoryRecord` 字段，**必须**先加入 telemetry exclusion
+  （`memory-contract.js` 的 `TELEMETRY_FIELDS`）**并证明** `contentFingerprint` / migration
+  idempotency 不受影响。
+- **与 D13 / D14 / D15 的关系**：三者**结论全部不变**。
+  D13（关系状态层禁止提前实现）继续有效 —— 本轮**不**新增 character / conversation / group scope 字段，
+  归属继续**只**由 visibility 表达。D14/D15 继续有效 —— **未**引入向量库，也未否决过的方案借尸还魂。
+  D14 中"未引入向量库"这一条在本轮被**再次确认**，而非修订。
+- **Enforcement**：`tests/test_memory_recall_contract.js`（契约文本 + 当前代码事实 +
+  production memory runtime 文件 SHA-256 完整性）。断言分 `[CONTRACT]`（契约写了什么）
+  与 `[CURRENT]`（当前代码事实，记录现状并在现状变化时变红），
+  以免"契约声称已实现"与"实现确实存在"被混为一谈。
