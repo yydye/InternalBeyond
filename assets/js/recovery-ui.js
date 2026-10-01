@@ -1,4 +1,4 @@
-/* P32-W.5 · explicit RecoveryOnly UI state machine.
+﻿/* P32-W.5 · explicit RecoveryOnly UI state machine.
  * No source is opened, no IndexedDB is touched and no approval is minted until
  * the corresponding user action. Production apply remains governed by the
  * adapter's immutable false kill switch. */

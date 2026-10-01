@@ -1,4 +1,4 @@
-/* P32-W.5 · recovery first-boot policy shared by Host-facing Web Core and tests.
+﻿/* P32-W.5 · recovery first-boot policy shared by Host-facing Web Core and tests.
  * It carries metadata only; it never reads Active plans, credentials or IDB. */
 (function(root,factory){
   'use strict';

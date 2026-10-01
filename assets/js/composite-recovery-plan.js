@@ -1,4 +1,4 @@
-/* P32-W.5-R3-B.3-P5.6 · pinned composite recovery package builder.
+﻿/* P32-W.5-R3-B.3-P5.6 · pinned composite recovery package builder.
  * Reads only three explicitly selected source files, projects credentials out,
  * and returns an immutable in-memory plan. It has no storage or network access. */
 (function(root,factory){

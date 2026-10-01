@@ -1,4 +1,4 @@
-/* RecoveryOnly bootstrap. Page load is inert; its explicit UI controls source
+﻿/* RecoveryOnly bootstrap. Page load is inert; its explicit UI controls source
  * validation and dry-run while production apply remains disabled. */
 (function(root){
   'use strict';

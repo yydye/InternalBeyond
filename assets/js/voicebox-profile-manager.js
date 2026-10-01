@@ -1,4 +1,4 @@
-/* Voicebox-owned profile lifecycle UI. Profile bytes and records stay in Voicebox;
+﻿/* Voicebox-owned profile lifecycle UI. Profile bytes and records stay in Voicebox;
    this file keeps only a per-page discovery cache and a local pending sample. */
 (function (root) {
   'use strict';

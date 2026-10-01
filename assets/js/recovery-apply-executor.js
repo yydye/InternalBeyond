@@ -1,4 +1,4 @@
-/* P32-W.5 · RecoveryOnly-only production apply orchestrator.
+﻿/* P32-W.5 · RecoveryOnly-only production apply orchestrator.
  * This module does not enable global apply. Every mutation is scoped by the
  * native one-use approval window and the durable plan-bound checkpoint. */
 (function(root,factory){

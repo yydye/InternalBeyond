@@ -1,4 +1,4 @@
-/* P32-W.5 · RecoveryEngine v1 pure planner/projection. No storage, network,
+﻿/* P32-W.5 · RecoveryEngine v1 pure planner/projection. No storage, network,
  * runtime, Vault or provider capability is imported by this module. Structured
  * diagnostics are emitted at the same validation sites as the legacy errors. */
 (function(root,factory){

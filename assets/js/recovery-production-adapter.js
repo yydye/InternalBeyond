@@ -1,4 +1,4 @@
-/* P32-W.5 · Production Recovery Adapter.
+﻿/* P32-W.5 · Production Recovery Adapter.
  * Production reads are pinned to the installed Tauri origin and an already
  * initialized v24 database. Global apply stays disabled; an exact native-issued
  * approval can open one RecoveryOnly-scoped window for the frozen plan only. */

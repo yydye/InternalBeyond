@@ -1,4 +1,4 @@
-/* Metadata-only trust anchor for the R3-B.1 accepted business checkpoint.
+﻿/* Metadata-only trust anchor for the R3-B.1 accepted business checkpoint.
  * This object intentionally contains no records or credential values. */
 (function(root){
   'use strict';
