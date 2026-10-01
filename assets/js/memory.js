@@ -168,7 +168,12 @@ async function selectMemoryContext(apiId,opts){
          explicitRecallHint 由 turn-signal 自行判定，不在这里造第二套判断。
          保留 undefined（不 `|| ''`）：缺输入应退回 legacy，
          而不是被伪装成"用户发了空消息"而静默关掉记忆。 */
-      turn:{message:opts.userMessage}
+      /* P21-R2-E1a · ColdStart 会话信号只放在 turn 里（latent）：
+         orchestrator 目前**不消费**这些字段 ⇒ 用户可见召回语义与 R2-D 完全相同；
+         也刻意**不**写 channelHint:'coldStart' —— 那会提前启用该通道。
+         不把它们放成 _pickOpts 的兄弟键：那会让 legacy 直调 core 时多带三个
+         无意义的字段（core 虽会忽略，但没有理由扩大 options 面）。 */
+      turn:{message:opts.userMessage,conversationId:(opts.conversationId==null?null:String(opts.conversationId)),isFirstTurn:opts.isFirstTurn===true,conversationSignalAvailable:opts.conversationSignalAvailable===true}
     };
     /* P21-R2-C 接线 + P21-R2-D 语义切换：经 orchestrator，且**传 turn**。
        orchestrator 未加载时回落到下面那条既有的 core 直调（fail-open 兼容缝），

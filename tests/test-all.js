@@ -325,6 +325,11 @@ const GROUPS = [
       ['test_memory_recall_channels.js'],
       ['test_memory_recall_seats.js'],
       ['test_memory_recall_semantic_delta.js'],
+      /* P21-R2-E1a：catalog contract + conversation signal plumbing。
+         两者都是 **latent**：glossary / coldStart 仍未在 production 启用，
+         用户可见召回语义与 R2-D 完全相同（semantic delta 仍 10 CHANGED / 14 SAME）。 */
+      ['test_memory_recall_glossary_catalog.js'],
+      ['test_memory_recall_coldstart_signal.js'],
       /* M1-C.2m：canonical Understanding —— 存储/修订链/CAS/单活不变量/更正契约
          （纯 Node + 真 SQLite + 临时数据目录，零网络、零浏览器）。 */
       ['test_understanding_contract_closure.js'],

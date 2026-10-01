@@ -881,11 +881,50 @@ function createMobileGateway(deps) {
       }
     }
 
+    /* ── P21-R2-E1a · ColdStart conversation signal（**latent plumbing**）──
+       目的：把一个**可靠**的"这是本会话第一轮"信号交给 memory runtime，
+             供将来的 coldStart channel 使用。本轮**不**启用 coldStart ——
+             orchestrator 目前忽略这两个字段，因此 production result 与 R2-D 逐字节相同。
+
+       判据（fail closed）：
+         isFirstTurn = 会话消息读取成功 && 已有消息数 === 0
+
+       时序：本探针必须在**当前 incoming user message 落库之前**执行。
+             `beginTurn` 只组装 turnRequest，真正的落库发生在之后的 `runTurn`；
+             因此此刻 store 里只有历史轮次。若把探针放到落库之后，
+             "0 条"将永远不成立，coldStart 会**静默失效**。
+
+       与"history 窗口化"的区别：这里问的是**该会话是否存在任何消息**
+       （limit:1 只取一条即可判定），而不是"这一页拿到几条"，
+       因此**不受** historyLimit 影响。也刻意不使用 history 数组 ——
+       它可能因为窗口、读取降级或封档而看起来是空的。
+
+       失败语义：读取失败 / store 不可用 / conversationId 非法
+                 ⇒ isFirstTurn 保持 **false**（**绝不**退化成 true）。 */
+    const conversationId = conversationIdFor(characterId, threadId);
+    let isFirstTurn = false;
+    let conversationSignalAvailable = false;
+    try {
+      const probe = store.listMessages({ conversationId: conversationId, limit: 1 });
+      if (probe && probe.ok === true && Array.isArray(probe.messages)) {
+        conversationSignalAvailable = true;
+        isFirstTurn = probe.messages.length === 0;
+      }
+    } catch (error) {
+      logger('coldstart-signal-probe-failed', { error: String((error && error.message) || error) });
+    }
+
     /* 运行上下文（P0 + canonical memory）在本轮请求时刻**组装一次**：
        召回是纯函数（无副作用），因此可以在这里算好并把结果放进 turnRequest；
        真正的激活强化在所有分支之后统一执行（见 handleSend），
        这样流式/非流式、成功/失败只有一处强化点。 */
-    const runtime = buildRuntimeContext(character, { characterId: characterId, userMessage: content });
+    const runtime = buildRuntimeContext(character, {
+      characterId: characterId,
+      userMessage: content,
+      conversationId: conversationId,
+      isFirstTurn: isFirstTurn,
+      conversationSignalAvailable: conversationSignalAvailable
+    });
 
     return {
       ok: true,
@@ -985,7 +1024,14 @@ function createMobileGateway(deps) {
           relationship: character && character.dto ? character.dto.relationship : '',
           currentTime: P0_CONTEXT.formatCurrentTime(clock(), timeZone),
           /* 用户本轮发言决定关键词相关性 —— 与桌面 getMemoryContext(apiId,{userMessage}) 同源。 */
-          userMessage: ctx.userMessage || ''
+          userMessage: ctx.userMessage || '',
+          /* P21-R2-E1a · ColdStart 会话信号（**latent**）：由 parseSendPayload
+             在**当前 user message 落库之前**用 conversation store 探得。
+             必须在这里逐项透传 —— 只带到这一层而不往下给，
+             信号会在 wrappers 链上静默丢失，coldStart 将来永远不会触发。 */
+          conversationId: ctx.conversationId,
+          isFirstTurn: ctx.isFirstTurn,
+          conversationSignalAvailable: ctx.conversationSignalAvailable
         });
         return {
           runtimeContext: built.runtimeContext,

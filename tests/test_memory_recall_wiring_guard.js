@@ -135,6 +135,8 @@ section('§A2 · Host 接线');
 
 const MEMORY_SRC = stripComments(read('assets/js/memory.js'));
 const NODE_SRC = stripComments(read('services/home-node/memory-retrieval.js'));
+/* R2-E1a：Browser 发送点也要被断言（latent 会话信号 + 不得启用 coldStart）。 */
+const COMM_SRC = stripComments(read('assets/js/communication.js'));
 
 check('A2.browserResolvesOrchestrator', MEMORY_SRC.indexOf('IBMemoryRecallOrchestrator') >= 0);
 check('A2.browserCallsRecall', /_orch\s*\?[^;]*\.recall\(/.test(MEMORY_SRC) || /_orch\.recall\(/.test(MEMORY_SRC));
@@ -242,8 +244,21 @@ check('A4.browserTurnMessageSourceIsUserMessage', (() => {
   const i = MEMORY_SRC.indexOf('const _pickOpts=');
   const j = MEMORY_SRC.indexOf('const _orch=');
   const block = MEMORY_SRC.slice(i, j);
-  return /turn\s*:\s*\{\s*message\s*:\s*opts\.userMessage\s*\}/.test(block);
+  /* R2-E1a：turn 现在**还**带 latent 的 ColdStart 会话字段，因此不再以 `}` 收尾；
+     判据改为"message 的取值必须是 opts.userMessage"（这才是要守的东西）。 */
+  return /turn\s*:\s*\{\s*message\s*:\s*opts\.userMessage\b/.test(block);
 })(), 'the message must come from the already-existing opts.userMessage — not from DOM / history / last message');
+/* R2-E1a · latent 会话信号必须被传下去，且**不得**借机启用 coldStart 通道。 */
+check('A4.browserPassesLatentConversationSignal', (() => {
+  const i = MEMORY_SRC.indexOf('const _pickOpts=');
+  const j = MEMORY_SRC.indexOf('const _orch=');
+  const block = MEMORY_SRC.slice(i, j);
+  return /conversationId\s*:/.test(block) && /isFirstTurn\s*:/.test(block);
+})(), 'conversationId / isFirstTurn must reach the orchestrator (latent plumbing)');
+check('A4.noHostForcesColdStartChannel', (() => {
+  const both = MEMORY_SRC + NODE_SRC + COMM_SRC;
+  return !/channelHint\s*:\s*'coldStart'/.test(both);
+})(), 'R2-E1a must NOT enable the coldStart channel — no Host may hint it');
 check('A4.browserDoesNotInferFromHistory', (() => {
   const i = MEMORY_SRC.indexOf('const _pickOpts=');
   const j = MEMORY_SRC.indexOf('const _orch=');
@@ -262,13 +277,16 @@ check('A4.homeNodeHostPassesTurn', (() => {
   const i = NODE_SRC.indexOf('const buildOpts = {');
   const j = NODE_SRC.indexOf('const built =');
   if (i < 0 || j < 0 || j <= i) return false;
-  return /\bturn\s*:\s*\{\s*message\s*:\s*options\.userMessage\s*\}/.test(NODE_SRC.slice(i, j));
+  /* R2-E1a：turn 变为多行对象（含 latent 会话字段）⇒ 判据只看 message 的取值来源。 */
+  return /\bturn\s*:\s*\{[\s\S]{0,400}?message\s*:\s*options\.userMessage\b/.test(NODE_SRC.slice(i, j));
 })(), 'Home Node buildOpts must pass turn.message from options.userMessage');
 check('A4.homeNodeTurnSourceIsCurrentTurn', (() => {
   /* buildRuntimeContext 的 ctx.userMessage 由 mobile-gateway 的 beginTurn
      从**本轮请求体**构造；这里同时钉住那条上游证据，避免有人改成历史反推。 */
   const gw = stripComments(read('services/home-node/mobile-gateway.js'));
-  return /buildRuntimeContext\(character,\s*\{\s*characterId:\s*characterId,\s*userMessage:\s*content\s*\}\)/.test(gw)
+  /* R2-E1a：网关现在给 buildRuntimeContext 传更多 ctx（含 conversationId/isFirstTurn），
+     因此判据改为"同一调用里同时带 characterId 与 userMessage:content"，仍然钉住上游证据。 */
+  return /buildRuntimeContext\(character,\s*\{[\s\S]{0,400}?userMessage:\s*content\b/.test(gw)
     && /payload\.content/.test(gw);
 })(), 'Home Node current-user message must come from the incoming payload, not history');
 check('A4.homeNodeDoesNotCoerceToEmptyString', (() => {

@@ -1702,7 +1702,11 @@ async function _buildSingleChatContext(cfg,opts){
   const _bUndChars=_bf?_ibScaledCap(_IB_BUDGET_CAP_TOKENS.understanding,_bf.understanding,60):null;
   const _bThreads=_bf?_ibScaledCap(3,_bf.thread,1):null;
   const _bActChars=_bf?_ibScaledCap(_IB_BUDGET_CAP_TOKENS.activity,_bf.activity,300):null;
-  if(_threadMemOk){_memCtx=await getMemoryContext(cfg.id,_bMemChars?{userMessage:_ctxText,maxChars:_bMemChars}:{userMessage:_ctxText});_pushCtxBlock(_memCtx);}
+  /* P21-R2-E1a · ColdStart 会话信号（latent）：由 send 点在本条消息落库前探得。
+     这里逐项透传 —— 只探到这一层而不往下给，信号会在链路上静默丢失。 */
+  var _cs=(opts&&opts.coldStart)||null;
+  var _csOpts=_cs?{conversationId:_cs.conversationId,isFirstTurn:_cs.isFirstTurn===true,conversationSignalAvailable:_cs.conversationSignalAvailable===true}:null;
+  if(_threadMemOk){_memCtx=await getMemoryContext(cfg.id,Object.assign(_bMemChars?{userMessage:_ctxText,maxChars:_bMemChars}:{userMessage:_ctxText},_csOpts||{}));_pushCtxBlock(_memCtx);}
   /* Understanding + Thread（v1）· 走 tail（末条 user 消息），绝不进 system（保 prompt cache 稳定）。 */
   try{if(_threadMemOk&&typeof getUnderstandingContext==='function'){_uCtx=await getUnderstandingContext(cfg.id,_bUndChars?{maxChars:_bUndChars}:undefined);_pushCtxBlock(_uCtx);}}catch(_uErr){console.warn('[Understanding] ctx failed',String(_uErr&&_uErr.message||_uErr).slice(0,120))}
   try{if(_threadMemOk&&typeof getThreadContext==='function'){_tCtx=await getThreadContext(cfg.id,_bThreads?{maxThreads:_bThreads}:undefined);_pushCtxBlock(_tCtx);}}catch(_tErr){console.warn('[Thread] ctx failed',String(_tErr&&_tErr.message||_tErr).slice(0,120))}
@@ -2932,6 +2936,11 @@ async function sendChatMessage(voiceMsg){
     if(_turnActivity)userMsg.metadata.activityId=_turnActivity.id;/* 只记来源，不改 threadId 归属 */
   }
   if(_targetThread)userMsg.threadId=_targetThread;
+  /* P21-R2-E1a · ColdStart 会话信号必须在**本条消息落库之前**探得：
+     探针问的是"该会话在此之前是否已有消息"，落库之后就永远是 false。
+     结果只作 latent 元数据往下传，本轮不改变任何用户可见召回行为。 */
+  var _coldStartSignal=null;
+  try{_coldStartSignal=await _ibProbeColdStartSignal(_targetFriend,_targetThread||'');}catch(e){_coldStartSignal=null;}
   await dbPut('chatMessages',userMsg);
   _ibAppBroadcast('turn',{state:'start',friendId:_targetFriend,threadId:_targetThread,activityId:(_turnActivity?_turnActivity.id:undefined)});
   appendChatBubble('user',text,undefined,undefined,userMsg.id,sentImages,sentFiles,undefined,_voice);
@@ -3024,7 +3033,7 @@ async function sendChatMessage(voiceMsg){
       _mbTrace.note(cfg.id,'inputMessages',messages.length);/* MB seam 之前的 messages 条数 */
       _mbTrace.note(cfg.id,'_paramsSeam',_mbParamsFingerprint(cfg,_streamingOk,thinkingOn));
     }
-    const _bcc=await buildChatContext(cfg,{friendId:_targetFriend,userMessage:_ctxText,ss:ss,summaryText:summaryText,threadId:_targetThread,voice:!!_callTurn,sentFiles:sentFiles,activity:_turnActivity,
+    const _bcc=await buildChatContext(cfg,{friendId:_targetFriend,userMessage:_ctxText,ss:ss,summaryText:summaryText,threadId:_targetThread,coldStart:_coldStartSignal,voice:!!_callTurn,sentFiles:sentFiles,activity:_turnActivity,
       /* M1-C.2o：把**本轮真正交给模型的那一段 canonical 历史**（上一行的 history，
          即阶梯窗口切片）交给上下文构建器，作为当前对话证据的来源。它不是"再读一次
          会话"，而是把同一个 `history` 变量复用 —— 于是"模型看到的对话"与
@@ -4882,6 +4891,44 @@ function _ibConvId(friendId,threadId){
     if(c&&typeof c.conversationIdOf==='function')return c.conversationIdOf(friendId,threadId);
   }catch(e){}
   return 'dm:'+String(friendId==null?'':friendId)+(threadId?('|'+String(threadId)):'');
+}
+/* ── P21-R2-E1a · ColdStart 会话信号探针（**latent**）──────────────────────────
+   目的：给将来的 coldStart channel 提供"这是本会话第一轮"的**可靠**信号。
+   本轮 orchestrator **不消费**它 ⇒ 用户可见召回语义与 R2-D 完全相同。
+
+   判据：conversationId 可派生 && 该会话在 store 中**已有消息数 === 0**。
+
+   三条刻意的设计约束：
+     ① **必须在当前 user message 落库之前调用**。调用点放在 dbPut 之前；
+        若放到之后，"0 条"永远不成立，coldStart 会静默失效。
+     ② **不做封档过滤、不截窗口**。这里问的是"该会话是否存在任何消息"，
+        而不是"这一页拿到几条"。封档(filterSealed)会把旧消息滤掉，
+        那会让"有历史的会话"看起来是空的 ⇒ 误判成新会话。
+     ③ **fail closed**：读失败 / 索引缺失 / 非数组 ⇒ isFirstTurn **false**。
+        "读不到"绝不能等于"是新的"。 */
+async function _ibProbeColdStartSignal(friendId,threadId){
+  var _tid=String(threadId==null?'':threadId);
+  var out={conversationId:null,isFirstTurn:false,conversationSignalAvailable:false};
+  try{
+    var cid=_ibConvId(friendId,_tid);
+    if(!cid)return out;
+    out.conversationId=cid;
+    var rows=await dbGetByIndex('chatMessages','byFriend',friendId);
+    if(!Array.isArray(rows))return out;
+    /* 会话归属判据与全仓其他调用点**逐字一致**：
+       threadId ? m.threadId===threadId : !m.threadId */
+    var n=0;
+    for(var i=0;i<rows.length;i++){
+      var m=rows[i];if(!m)continue;
+      if(_tid?String(m.threadId||'')===_tid:!m.threadId)n++;
+    }
+    out.isFirstTurn=(n===0);
+    out.conversationSignalAvailable=true;
+    return out;
+  }catch(e){
+    /* fail closed：读不到就**不**声称这是第一轮 */
+    return out;
+  }
 }
 /* ── P30-2 · Workspace 注入的会话归属 filter（WHERE）───────────────────────────
    契约（P30-1 冻结）：

@@ -1,4 +1,4 @@
-﻿/* ====================================================================
+/* ====================================================================
    IB Home Node · Canonical Memory Retrieval（M1-C.2d Wave 2）
    --------------------------------------------------------------------
    职责：把 Home Node canonical 的 `memories` 变成**一段可直接注入 prompt 的
@@ -114,8 +114,19 @@ function createMemoryRetrieval(deps) {
          不是 assistant 消息、不是 summary。
          刻意**不**沿用上面那行 `|| ''` 的归一化：把"缺输入"变成"空消息"
          会让 orchestrator 静默走 early-exit、从而关掉该 Host 的全部记忆。
-         缺输入时保持 undefined，orchestrator 会退回 legacy（见其 ①a fail-safe）。 */
-      turn: { message: options.userMessage }
+         缺输入时保持 undefined，orchestrator 会退回 legacy（见其 ①a fail-safe）。
+
+         P21-R2-E1a · ColdStart 会话信号（**latent**）：
+         conversationId / isFirstTurn 由 beginTurn 用 conversation store 探得
+         （见 mobile-gateway：探针在当前 user message 落库**之前**执行）。
+         本轮 orchestrator **不消费**它们 ⇒ production result 与 R2-D 逐字节相同。
+         特别地，这里**不**写 channelHint:'coldStart' —— 那会让通道被提前启用。 */
+      turn: {
+        message: options.userMessage,
+        conversationId: (options.conversationId == null) ? null : String(options.conversationId),
+        isFirstTurn: options.isFirstTurn === true,
+        conversationSignalAvailable: options.conversationSignalAvailable === true
+      }
     };
     /* P21-R2-C：经 orchestrator（legacy path 委托同一份 core）。
        刻意**不**在 buildOpts 里放 turn ⇒ active behavior 始终是 legacy，
@@ -206,7 +217,12 @@ function createMemoryRetrieval(deps) {
         userMessage: opts.userMessage,
         now: opts.now,
         maxChars: opts.maxChars,
-        contentLen: opts.contentLen
+        contentLen: opts.contentLen,
+        /* P21-R2-E1a · ColdStart 会话信号（latent）：如实透传给 retrieval，
+           由它放进 turn 元数据。本轮 orchestrator 不消费 ⇒ 结果不变。 */
+        conversationId: opts.conversationId,
+        isFirstTurn: opts.isFirstTurn,
+        conversationSignalAvailable: opts.conversationSignalAvailable
       });
       memoryBlock = picked.block || '';
     } catch (error) {
