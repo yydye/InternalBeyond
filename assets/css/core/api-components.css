@@ -243,6 +243,38 @@ body.theme-infernal .mi-sub-inf{display:inline}
 .glass-card{background:var(--surface-card);border:1px solid var(--border-soft);border-radius:var(--radius-panel);backdrop-filter:blur(16px) saturate(1.2);-webkit-backdrop-filter:blur(16px) saturate(1.2);box-shadow:var(--shadow-card);transition:border-color var(--motion-normal) var(--transition),box-shadow var(--motion-normal) var(--transition),background var(--motion-normal) var(--transition)}
 .glass-card:hover{border-color:var(--border-strong);box-shadow:var(--shadow-panel)}
 
+/* ── P3A-R.2 · Infernal object/card surface ownership ─────────────────────
+   问题不在"暗色做不到层次"，而在 object/card 这个角色被挂在了通用薄填充上。
+   Infernal 的 --surface-card 是 rgba(155,180,218,.10) —— 一层 10% 的浅蓝薄雾，
+   而世界本身也是同色系深蓝，于是"卡片 vs 紧邻世界"的 local contrast 只有
+   1.145–1.158（API 入口 1.147 / Diagnostics 1.145 / Packaging 1.145 / Letters
+   1.158）：四层里第 3 层读不出来。同一个暗色主题里，走 --surface-panel 的
+   Economy .esh-card 是 1.83、Memory 的 deck 是实心深板 —— 说明通用薄填充才是病因。
+   Original 的暗色对象同样不是"更薄的浅雾"，而是"更实的深玻璃"：
+     Desktop dark .glass-card = rgba(135,168,218,.13) + 冷蓝边 + 0 8px 32px rgba(0,0,0,.16)
+     Mobile  dark .card       = 深海军蓝 + 边 rgba(180,206,248,.22)
+                                + inset 0 1px 0 rgba(206,228,255,.17) + 0 12px 36px rgba(0,0,0,.3)
+   surface.object 这一族（取值由 core.css 主题层持有）正是这两个 recipe 的
+   canonical 归宿，此前只被 .ir-card 消费。这里做的只是"换 owner"：
+   把 object/card 角色接到它上面，不动 --surface-card 自己的取值 ——
+   所以 chip / input / 进度条 / 行内码 / 气泡这些薄填充角色保持原样，
+   不会跟着一起变厚（那才是 gray soup 的来源）。
+   仅 Infernal：Internal 同口径已是 1.26–1.40，不需要动。
+   未来若要再分层（章节集合卡 vs 可编辑实体对象），可另立 surface.collection，
+   不必把这两个角色永久绑在同一个 token 上。 */
+body.theme-infernal .glass-card,
+body.theme-infernal #api-onboarding-entry .ibo-entry{
+  background:var(--surface-object);
+  border-color:var(--surface-object-border);
+  box-shadow:var(--surface-object-shadow),inset 0 1px 0 var(--surface-object-rim);
+}
+/* 保留原有 hover 反馈：上面那条选择器权重更高，会把 .glass-card:hover 盖掉，
+   所以用 canonical 的 floating 档显式补回，不新增任何字面值。 */
+body.theme-infernal .glass-card:hover{
+  border-color:var(--glass-border-floating);
+  box-shadow:var(--glass-shadow-floating),inset 0 1px 0 var(--surface-object-rim);
+}
+
 /* ── P15 · Image Router 配置卡片（Settings → API → Image Router）───────────
    与 Middle Brain 区块同一视觉语言：glass 卡片 + api-form-group 表单 + mb-collapse 折叠。
    新增样式只覆盖"路由卡片"本身，不复制既有控件样式。
