@@ -52,13 +52,16 @@
 }(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
-  /* seat 标签词表（最小集）。
-     刻意**不**包含 exploration：core.selectWithinBudget 的 selected 条目
-     只带 {id, score, line}，无法从中**可靠**判断一条是否由探索窗口抽中
-     （索引位置会被 pinned 与预算截断打乱）。而"猜一个标签"会让 trace 撒谎。
-     细分留给 R2-F 重构 exploration 时。 */
+  /* seat 标签词表。**恰好**是当前能真实举证的四项 —— 不多不少。
+     R2-D.1 时它只有 pinned/primary，理由是 selectWithinBudget 只返回
+     {id, score, line}，从中**猜**谁被探索抽中会让 trace 撒谎。
+     P21-R2-F1a 让唯一 selector 通过 selectionMeta.explorationIds **如实提供**
+     该事实，猜测的前提因此消失 ⇒ exploration 成为可举证的席位。
+     仍然**不得**提前加入 dormant / reminisce / glossary：
+     它们没有对应的真实证据来源。 */
   var SEAT_PINNED = 'pinned';
   var SEAT_PRIMARY = 'primary';
+  var SEAT_EXPLORATION = 'exploration';
   /* 非 seat planner 管辖的既有选择路径（未选中条目的 seat 不可观察）。 */
   var SEAT_UNKNOWN = 'legacy';
 
@@ -96,28 +99,69 @@
     var labelOf = (typeof opts.labelOf === 'function') ? opts.labelOf : null;
     var rows = Array.isArray(selected) ? selected.filter(isPlainObject) : [];
     var cap = capOf(policy);
+    /* 探索 metadata **由 core 提供**（唯一 selector 才知道谁被抽中）。
+       本模块绝不根据"最后一条"之类的启发式猜测。 */
+    var exploreSet = {};
+    if (opts.allowExploration !== false && Array.isArray(opts.explorationIds)) {
+      for (var e = 0; e < opts.explorationIds.length; e++) {
+        if (opts.explorationIds[e] != null) exploreSet[String(opts.explorationIds[e])] = 1;
+      }
+    }
+    var isExplore = function (row) { return !!row && row.id != null && !!exploreSet[String(row.id)]; };
+    /* 注意签名：withSeat 会把 **id** 传进来（它内部调用 labelOf(row.id)），
+       所以这里必须按 id 判定，而不是按 row。 */
+    var labelWithExplore = function (id) {
+      if (id != null && exploreSet[String(id)]) return SEAT_EXPLORATION;
+      return labelOf ? labelOf(id) : SEAT_PRIMARY;
+    };
 
     if (cap <= 0) {
       return { seats: [], dropped: rows.slice(), capped: rows.length > 0, cap: cap };
     }
-    if (rows.length <= cap) {
-      /* 恒等变换：不排序、不重排、不重复计算 —— 装得下时对既有语义完全透明。
-         仍然逐条加 seat 标签（浅拷贝，不改写调用方对象）。 */
-      return {
-        seats: rows.map(function (r) { return withSeat(r, labelOf); }),
-        dropped: [], capped: false, cap: cap
-      };
+
+    /* 先按 core 的 canonical 顺序选出要保留的 id 集合，**再**按 canonical 顺序输出。
+       配额顺序（§0.7 / §14）：
+         1. pinned —— 按 core 顺序，pinned **不会**因为 exploration 被挤掉
+         2. 为探索项保留最多 1 个 seat（仍有非-pinned 空间时）
+         3. 其余按 core canonical 顺序填 primary
+       全程不排序、不算分、不随机、不重选候选 —— 只在 core 已决定的集合上做取舍。 */
+    var keep = {};
+    var kept = 0;
+    var i2;
+    for (i2 = 0; i2 < rows.length && kept < cap; i2++) {
+      if (labelOf && labelOf(rows[i2].id) === SEAT_PINNED && !keep[String(rows[i2].id)]) {
+        keep[String(rows[i2].id)] = 1; kept++;
+      }
+    }
+    if (kept < cap) {
+      for (i2 = 0; i2 < rows.length && kept < cap; i2++) {
+        if (isExplore(rows[i2]) && !keep[String(rows[i2].id)]) {
+          keep[String(rows[i2].id)] = 1; kept++; break;   /* 最多 1 个探索 seat */
+        }
+      }
+    }
+    for (i2 = 0; i2 < rows.length && kept < cap; i2++) {
+      if (rows[i2].id != null && !keep[String(rows[i2].id)]) { keep[String(rows[i2].id)] = 1; kept++; }
+    }
+
+    var seats = [], dropped = [];
+    for (i2 = 0; i2 < rows.length; i2++) {
+      var key = (rows[i2].id == null) ? null : String(rows[i2].id);
+      if (key != null && keep[key]) seats.push(withSeat(rows[i2], labelWithExplore));
+      else dropped.push(rows[i2]);
     }
     return {
-      seats: rows.slice(0, cap).map(function (r) { return withSeat(r, labelOf); }),
-      dropped: rows.slice(cap),
-      capped: true, cap: cap
+      seats: seats, dropped: dropped,
+      capped: dropped.length > 0, cap: cap,
+      /* 观察用：core 抽中但最终**没**进入注入的探索 id（trace 必须如实反映）。 */
+      droppedExplorationIds: dropped.filter(isExplore).map(function (r) { return r.id; })
     };
   }
 
   /* seatLabel(record) → 'pinned' | 'primary'
      pinned 是**记录自身的属性**（canonical record 字段），因此可以可靠判定。
-     其余一律 'primary' —— 不猜 exploration。 */
+     其余一律 'primary' —— 探索标签**不在这里**判定：它需要 core 的
+     selectionMeta，只能由 applySeats 注入（不猜）。 */
   function seatLabel(record) {
     return (record && record.pinned === true) ? SEAT_PINNED : SEAT_PRIMARY;
   }
@@ -127,6 +171,7 @@
     seatLabel: seatLabel,
     SEAT_PINNED: SEAT_PINNED,
     SEAT_PRIMARY: SEAT_PRIMARY,
+    SEAT_EXPLORATION: SEAT_EXPLORATION,
     SEAT_UNKNOWN: SEAT_UNKNOWN
   };
 }));

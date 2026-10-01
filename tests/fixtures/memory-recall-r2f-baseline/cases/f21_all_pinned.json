@@ -1,0 +1,88 @@
+{
+  "id": "f21_all_pinned",
+  "group": "shape",
+  "label": "all candidates pinned",
+  "records": [
+    {
+      "id": "pa",
+      "title": "PA",
+      "content": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "importance": 5,
+      "arousal": 0.3,
+      "resolved": false,
+      "activationCount": 0,
+      "created": 1749913600000,
+      "lastActivated": 1749913600000,
+      "visibility": "public",
+      "tags": [],
+      "domain": "日常",
+      "createdBy": "user",
+      "pinned": true
+    },
+    {
+      "id": "pb",
+      "title": "PB",
+      "content": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "importance": 5,
+      "arousal": 0.3,
+      "resolved": false,
+      "activationCount": 0,
+      "created": 1749913600000,
+      "lastActivated": 1749913600000,
+      "visibility": "public",
+      "tags": [],
+      "domain": "日常",
+      "createdBy": "user",
+      "pinned": true
+    },
+    {
+      "id": "pc",
+      "title": "PC",
+      "content": "cccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "importance": 5,
+      "arousal": 0.3,
+      "resolved": false,
+      "activationCount": 0,
+      "created": 1749913600000,
+      "lastActivated": 1749913600000,
+      "visibility": "public",
+      "tags": [],
+      "domain": "日常",
+      "createdBy": "user",
+      "pinned": true
+    }
+  ],
+  "options": {
+    "apiId": "role_a",
+    "now": 1750000000000,
+    "isGroup": false,
+    "groupMemEnabled": false,
+    "includeHeader": false,
+    "maxChars": 2000,
+    "contentLen": 200
+  },
+  "random": 0.5,
+  "expected": {
+    "text": "- [用户记录] PA（日常）：aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n- [用户记录] PB（日常）：bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n- [用户记录] PC（日常）：cccccccccccccccccccccccccccccccccccccccccccccccccc\n",
+    "selected": [
+      {
+        "id": "pa",
+        "score": 999,
+        "line": "- [用户记录] PA（日常）：aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+      },
+      {
+        "id": "pb",
+        "score": 999,
+        "line": "- [用户记录] PB（日常）：bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
+      },
+      {
+        "id": "pc",
+        "score": 999,
+        "line": "- [用户记录] PC（日常）：cccccccccccccccccccccccccccccccccccccccccccccccccc\n"
+      }
+    ],
+    "count": 3,
+    "chars": 201,
+    "reason": null
+  }
+}

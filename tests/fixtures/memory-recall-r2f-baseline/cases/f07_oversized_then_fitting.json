@@ -1,0 +1,69 @@
+{
+  "id": "f07_oversized_then_fitting",
+  "group": "budget",
+  "label": "oversized high-score candidate followed by fitting ones",
+  "records": [
+    {
+      "id": "A_big",
+      "title": "A",
+      "content": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+      "importance": 100,
+      "arousal": 0.3,
+      "resolved": false,
+      "activationCount": 0,
+      "created": 1749913600000,
+      "lastActivated": 1749913600000,
+      "visibility": "public",
+      "tags": [],
+      "domain": "日常",
+      "createdBy": "user"
+    },
+    {
+      "id": "B_small",
+      "title": "B",
+      "content": "zzzzzzzzzz",
+      "importance": 1,
+      "arousal": 0.3,
+      "resolved": false,
+      "activationCount": 0,
+      "created": 1749913600000,
+      "lastActivated": 1749913600000,
+      "visibility": "public",
+      "tags": [],
+      "domain": "日常",
+      "createdBy": "user"
+    },
+    {
+      "id": "C_small",
+      "title": "C",
+      "content": "zzzzzzzzzz",
+      "importance": 0.5,
+      "arousal": 0.3,
+      "resolved": false,
+      "activationCount": 0,
+      "created": 1749913600000,
+      "lastActivated": 1749913600000,
+      "visibility": "public",
+      "tags": [],
+      "domain": "日常",
+      "createdBy": "user"
+    }
+  ],
+  "options": {
+    "apiId": "role_a",
+    "now": 1750000000000,
+    "isGroup": false,
+    "groupMemEnabled": false,
+    "includeHeader": false,
+    "maxChars": 100,
+    "contentLen": 200
+  },
+  "random": 0.5,
+  "expected": {
+    "text": "",
+    "selected": [],
+    "count": 0,
+    "chars": 0,
+    "reason": "no-budget"
+  }
+}

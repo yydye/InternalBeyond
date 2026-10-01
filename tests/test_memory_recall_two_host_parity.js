@@ -176,12 +176,16 @@ FIXTURES.forEach(([label, records, over]) => {
      Oracle 仍是**同一份** orchestrator（浏览器与 Node require 的是同一个文件），
      因此这条断言测的是"两个 Host 是否把同一段输入喂成同一段语义证据"，
      而不是"两份实现碰巧一致"。 */
-  const oracle = ORCHESTRATOR.recall(records, {
+  const oracleBase = {
     apiId: 'role_a', now: NOW, random: function () { return 0.42; },
     userMessage: userMessage, isGroup: false, groupMemEnabled: false,
-    maxChars: o.nodeBudget || 2000, contentLen: 200, includeHeader: false,
+    maxChars: o.nodeBudget || 2000, contentLen: 200,
     turn: { message: userMessage }
-  });
+  };
+  /* Home Node 的 oracle：与 services/home-node/memory-retrieval.js:109 一致。 */
+  const oracle = ORCHESTRATOR.recall(records, Object.assign({}, oracleBase, { includeHeader: false }));
+  /* Browser 的 oracle：与 assets/js/memory.js 的实际行为一致（缺省 = 带标题）。 */
+  const oracleBrowser = ORCHESTRATOR.recall(records, Object.assign({}, oracleBase));
 
   check('H2.' + label + '.selectedIdsMatch',
     JSON.stringify(nodeRes.selectedIds) === JSON.stringify(oracle.result.selected.map(function (s) { return s.id; })),
@@ -206,7 +210,8 @@ FIXTURES.forEach(([label, records, over]) => {
   browserComparisons.push({
     label: label,
     promise: browserSel('role_a', browserOpts),
-    expectedIds: oracle.result.selected.map(function (s) { return s.id; })
+    /* Browser 的预期取自**它自己的** oracle（带标题的预算语义）。 */
+    expectedIds: oracleBrowser.result.selected.map(function (s) { return s.id; })
   });
 });
 
@@ -220,6 +225,9 @@ async function browserMatchesOracle() {
     check('H8.' + row.label + '.browserMatchesOracle',
       JSON.stringify(r.selectedIds) === JSON.stringify(row.expectedIds),
       JSON.stringify({ browser: r.selectedIds, oracle: row.expectedIds }));
+    /* 注意：memory.js.selectMemoryContext 只在**空结果**路径上设置 reason，
+       有内容时该键不存在；core 的 reason 则是 null。两者不可直接比较，
+       因此这里只比较 selectedIds（wrapper 真正承诺的形状）。 */
   }
 }
 

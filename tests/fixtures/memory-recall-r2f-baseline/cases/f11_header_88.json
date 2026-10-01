@@ -1,0 +1,110 @@
+{
+  "id": "f11_header_88",
+  "group": "budget",
+  "label": "header included, maxChars=88 (pre-F overflows)",
+  "records": [
+    {
+      "id": "h1",
+      "title": "H1",
+      "content": "hhhhhhhhhhhhhhhhhhhh",
+      "importance": 10,
+      "arousal": 0.3,
+      "resolved": false,
+      "activationCount": 0,
+      "created": 1749913600000,
+      "lastActivated": 1749913600000,
+      "visibility": "public",
+      "tags": [],
+      "domain": "日常",
+      "createdBy": "user"
+    },
+    {
+      "id": "h2",
+      "title": "H2",
+      "content": "hhhhhhhhhhhhhhhhhhhh",
+      "importance": 9,
+      "arousal": 0.3,
+      "resolved": false,
+      "activationCount": 0,
+      "created": 1749913600000,
+      "lastActivated": 1749913600000,
+      "visibility": "public",
+      "tags": [],
+      "domain": "日常",
+      "createdBy": "user"
+    },
+    {
+      "id": "h3",
+      "title": "H3",
+      "content": "hhhhhhhhhhhhhhhhhhhh",
+      "importance": 8,
+      "arousal": 0.3,
+      "resolved": false,
+      "activationCount": 0,
+      "created": 1749913600000,
+      "lastActivated": 1749913600000,
+      "visibility": "public",
+      "tags": [],
+      "domain": "日常",
+      "createdBy": "user"
+    },
+    {
+      "id": "h4",
+      "title": "H4",
+      "content": "hhhhhhhhhhhhhhhhhhhh",
+      "importance": 7,
+      "arousal": 0.3,
+      "resolved": false,
+      "activationCount": 0,
+      "created": 1749913600000,
+      "lastActivated": 1749913600000,
+      "visibility": "public",
+      "tags": [],
+      "domain": "日常",
+      "createdBy": "user"
+    },
+    {
+      "id": "h5",
+      "title": "H5",
+      "content": "hhhhhhhhhhhhhhhhhhhh",
+      "importance": 6,
+      "arousal": 0.3,
+      "resolved": false,
+      "activationCount": 0,
+      "created": 1749913600000,
+      "lastActivated": 1749913600000,
+      "visibility": "public",
+      "tags": [],
+      "domain": "日常",
+      "createdBy": "user"
+    }
+  ],
+  "options": {
+    "apiId": "role_a",
+    "now": 1750000000000,
+    "isGroup": false,
+    "groupMemEnabled": false,
+    "includeHeader": true,
+    "maxChars": 88,
+    "contentLen": 20
+  },
+  "random": 0.5,
+  "expected": {
+    "text": "【记忆（系统参考，勿提及此段）】\n- [用户记录] H1（日常）：hhhhhhhhhhhhhhhhhhhh\n- [用户记录] H2（日常）：hhhhhhhhhhhhhhhhhhhh\n",
+    "selected": [
+      {
+        "id": "h1",
+        "score": 11.8,
+        "line": "- [用户记录] H1（日常）：hhhhhhhhhhhhhhhhhhhh\n"
+      },
+      {
+        "id": "h2",
+        "score": 10.62,
+        "line": "- [用户记录] H2（日常）：hhhhhhhhhhhhhhhhhhhh\n"
+      }
+    ],
+    "count": 2,
+    "chars": 91,
+    "reason": null
+  }
+}

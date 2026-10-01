@@ -1,0 +1,65 @@
+{
+  "id": "f25_zero_budget",
+  "group": "budget",
+  "label": "maxChars = 0 (pre-F treated <=0 as \"use default 2000\"; F1a makes it a true zero budget)",
+  "records": [
+    {
+      "id": "z1",
+      "title": "Z1",
+      "content": "zzzzzzzzzzzzzzzzzzzz",
+      "importance": 10,
+      "arousal": 0.3,
+      "resolved": false,
+      "activationCount": 0,
+      "created": 1749913600000,
+      "lastActivated": 1749913600000,
+      "visibility": "public",
+      "tags": [],
+      "domain": "日常",
+      "createdBy": "user"
+    },
+    {
+      "id": "z2",
+      "title": "Z2",
+      "content": "zzzzzzzzzzzzzzzzzzzz",
+      "importance": 9,
+      "arousal": 0.3,
+      "resolved": false,
+      "activationCount": 0,
+      "created": 1749913600000,
+      "lastActivated": 1749913600000,
+      "visibility": "public",
+      "tags": [],
+      "domain": "日常",
+      "createdBy": "user"
+    }
+  ],
+  "options": {
+    "apiId": "role_a",
+    "now": 1750000000000,
+    "isGroup": false,
+    "groupMemEnabled": false,
+    "includeHeader": false,
+    "maxChars": 0,
+    "contentLen": 20
+  },
+  "random": 0.5,
+  "expected": {
+    "text": "- [用户记录] Z1（日常）：zzzzzzzzzzzzzzzzzzzz\n- [用户记录] Z2（日常）：zzzzzzzzzzzzzzzzzzzz\n",
+    "selected": [
+      {
+        "id": "z1",
+        "score": 11.8,
+        "line": "- [用户记录] Z1（日常）：zzzzzzzzzzzzzzzzzzzz\n"
+      },
+      {
+        "id": "z2",
+        "score": 10.62,
+        "line": "- [用户记录] Z2（日常）：zzzzzzzzzzzzzzzzzzzz\n"
+      }
+    ],
+    "count": 2,
+    "chars": 74,
+    "reason": null
+  }
+}

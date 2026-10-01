@@ -439,6 +439,66 @@ check('D3.noSinkRegistration', !/_sink|registerSink|setSink|__traceSink/.test(BA
   'R2-C trace is pure — sinks belong to R2-I Observatory');
 check('D4.traceToJSONWorks', typeof T.traceToJSON(trace) === 'string' && T.traceToJSON(trace).length > 2);
 
+/* ══════════════════════════════════════════════════════════════════════
+   §E · R2-F1a · exploration 席位的 trace 真实性
+   ──────────────────────────────────────────────────────────────────────
+   §16 要求：最终**真正进入 prompt** 的探索项必须有
+       seat='exploration' 且 reasons 含 'exploration-selected'；
+   被 seat cap 裁掉的探索项**不得**声称 seat='exploration'/decision='selected'。
+   ══════════════════════════════════════════════════════════════════════ */
+section('§E · exploration seat truthfulness');
+
+const F1A_NOW = 1750000000000;
+const f1aMem = o => Object.assign({ id: 'm', title: 'AAAA', content: 'AAAA ' + 'x'.repeat(195),
+  importance: 5, arousal: 0.3, resolved: false, activationCount: 0, created: F1A_NOW - DAY,
+  lastActivated: F1A_NOW - DAY, visibility: 'public', tags: [], domain: '日常', createdBy: 'user' }, o || {});
+/* 5 条使 main 只装得下 2 条 ⇒ 第 3 条来自探索窗口（surface cap = 3）。 */
+const F1A_RECS = [10, 9, 8, 7, 6].map((imp, i) => f1aMem({ id: 'e' + (i + 1), importance: imp }));
+const f1aRun = (r) => ORCH.recall(F1A_RECS, {
+  apiId: 'role_a', now: F1A_NOW, isGroup: false, groupMemEnabled: false,
+  maxChars: 700, contentLen: 200, userMessage: 'AAAA', random: () => r,
+  turn: { message: 'AAAA', conversationSignalAvailable: true, isFirstTurn: false, conversationId: 'dm:role_a' }
+});
+
+const f1aOut = f1aRun(0.999);
+const f1aSel = f1aOut.trace.candidates.filter(c => c.decision === 'selected');
+const explRows = f1aSel.filter(c => c.seat === SP.SEAT_EXPLORATION);
+check('E1.seatVocabularyHasExploration', SP.SEAT_EXPLORATION === 'exploration');
+check('E2.explorationItemIsLabelled', explRows.length === 1,
+  'exactly one injected row must carry seat=exploration: ' + JSON.stringify(f1aSel.map(c => c.memoryId + ':' + c.seat)));
+check('E3.explorationReasonPresent', explRows.length === 1
+  && explRows[0].reasons.indexOf('exploration-selected') >= 0,
+  JSON.stringify(explRows.map(c => c.reasons)));
+check('E4.explorationRowIsLastInCanonicalOrder',
+  explRows.length === 1 && f1aSel[f1aSel.length - 1].memoryId === explRows[0].memoryId,
+  'the exploration item is appended after the main selection (core order preserved)');
+check('E5.mainRowsAreNotLabelledExploration',
+  f1aSel.filter(c => c.seat === SP.SEAT_PRIMARY).every(c => c.reasons.indexOf('exploration-selected') < 0),
+  JSON.stringify(f1aSel.map(c => ({ id: c.memoryId, seat: c.seat, r: c.reasons }))));
+
+/* 反向控制：被 seat cap 裁掉的探索项必须是 rejected，且**不得**带 exploration 席位。 */
+check('E6.cappedExplorationIsNotClaimedAsSelected', (() => {
+  const recs = [10, 9, 8, 7, 6, 5, 4].map((imp, i) => f1aMem({ id: 'c' + (i + 1), importance: imp }));
+  const o = ORCH.recall(recs, {
+    apiId: 'role_a', now: F1A_NOW, isGroup: false, groupMemEnabled: false,
+    maxChars: 700, contentLen: 200, userMessage: 'AAAA', random: () => 0.999,
+    turn: { message: 'AAAA', conversationSignalAvailable: true, isFirstTurn: false, conversationId: 'dm:role_a' }
+  });
+  const rejected = o.trace.candidates.filter(c => c.decision === 'rejected');
+  return rejected.every(c => c.seat !== SP.SEAT_EXPLORATION
+    && c.reasons.indexOf('exploration-selected') < 0)
+    && o.trace.candidates.every(c => !(c.seat === SP.SEAT_EXPLORATION && c.decision !== 'selected'));
+})(), 'trace must describe final injection truth, not intent');
+
+check('E7.seatTotalsRespected', f1aSel.length <= 3,
+  'surface cap is 3, got ' + f1aSel.length);
+check('E8.explorationRespectsBudget', f1aOut.result.chars <= 700,
+  'chars=' + f1aOut.result.chars);
+check('E9.noCooldownIntroduced', f1aOut.trace.candidates.every(c => c.cooldownFactor === 1),
+  'R2-F1a must not introduce cooldown');
+check('E10.candidateKeysStillFrozen', f1aOut.trace.candidates.every(c =>
+  JSON.stringify(Object.keys(c).sort()) === JSON.stringify(T.CANDIDATE_KEYS.slice().sort())));
+
 /* ══════════════════════════════════════════════════════════════════════ */
 
 console.log('\n' + '='.repeat(64));

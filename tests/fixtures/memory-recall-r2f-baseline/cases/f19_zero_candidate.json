@@ -1,0 +1,23 @@
+{
+  "id": "f19_zero_candidate",
+  "group": "shape",
+  "label": "zero candidates",
+  "records": [],
+  "options": {
+    "apiId": "role_a",
+    "now": 1750000000000,
+    "isGroup": false,
+    "groupMemEnabled": false,
+    "includeHeader": false,
+    "maxChars": 2000,
+    "contentLen": 200
+  },
+  "random": 0.5,
+  "expected": {
+    "text": "",
+    "selected": [],
+    "count": 0,
+    "chars": 0,
+    "reason": "no-visible-memory"
+  }
+}

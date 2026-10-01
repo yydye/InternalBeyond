@@ -1,0 +1,105 @@
+{
+  "id": "f13_normal_335",
+  "group": "budget",
+  "label": "normal budget 335 (exploration gate boundary)",
+  "records": [
+    {
+      "id": "n1",
+      "title": "AAAA",
+      "content": "AAAA xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "importance": 10,
+      "arousal": 0.3,
+      "resolved": false,
+      "activationCount": 0,
+      "created": 1749913600000,
+      "lastActivated": 1749913600000,
+      "visibility": "public",
+      "tags": [],
+      "domain": "日常",
+      "createdBy": "user"
+    },
+    {
+      "id": "n2",
+      "title": "AAAA",
+      "content": "AAAA xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "importance": 9,
+      "arousal": 0.3,
+      "resolved": false,
+      "activationCount": 0,
+      "created": 1749913600000,
+      "lastActivated": 1749913600000,
+      "visibility": "public",
+      "tags": [],
+      "domain": "日常",
+      "createdBy": "user"
+    },
+    {
+      "id": "n3",
+      "title": "AAAA",
+      "content": "AAAA xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "importance": 8,
+      "arousal": 0.3,
+      "resolved": false,
+      "activationCount": 0,
+      "created": 1749913600000,
+      "lastActivated": 1749913600000,
+      "visibility": "public",
+      "tags": [],
+      "domain": "日常",
+      "createdBy": "user"
+    },
+    {
+      "id": "n4",
+      "title": "AAAA",
+      "content": "AAAA xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "importance": 7,
+      "arousal": 0.3,
+      "resolved": false,
+      "activationCount": 0,
+      "created": 1749913600000,
+      "lastActivated": 1749913600000,
+      "visibility": "public",
+      "tags": [],
+      "domain": "日常",
+      "createdBy": "user"
+    },
+    {
+      "id": "n5",
+      "title": "AAAA",
+      "content": "AAAA xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "importance": 6,
+      "arousal": 0.3,
+      "resolved": false,
+      "activationCount": 0,
+      "created": 1749913600000,
+      "lastActivated": 1749913600000,
+      "visibility": "public",
+      "tags": [],
+      "domain": "日常",
+      "createdBy": "user"
+    }
+  ],
+  "options": {
+    "apiId": "role_a",
+    "now": 1750000000000,
+    "isGroup": false,
+    "groupMemEnabled": false,
+    "includeHeader": false,
+    "maxChars": 335,
+    "contentLen": 200
+  },
+  "random": 0.999,
+  "expected": {
+    "text": "- [用户记录] AAAA（日常）：AAAA xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n",
+    "selected": [
+      {
+        "id": "n1",
+        "score": 11.8,
+        "line": "- [用户记录] AAAA（日常）：AAAA xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"
+      }
+    ],
+    "count": 1,
+    "chars": 219,
+    "reason": null
+  }
+}

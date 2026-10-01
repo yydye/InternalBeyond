@@ -155,11 +155,25 @@ check('S6.noPinnedReorder', (() => {
   const p = SP.applySeats(input, surfacePolicy, { labelOf: id => (id === 'p' ? SP.SEAT_PINNED : SP.SEAT_PRIMARY) });
   return JSON.stringify(ids(p.seats)) === JSON.stringify(['a', 'p', 'b']);
 })(), 'the planner must not hoist pinned entries — ordering is canonical');
+/* ⚠ PHASE TRANSITION（R2-D.1 → R2-F1a，**更新而非删除**）
+   R2-D.1 时词表只有 pinned/primary，理由是 selectWithinBudget 只返回
+   {id, score, line}，从中猜"谁被探索抽中"会让 trace 撒谎。
+   R2-F1a 让唯一 selector 通过 selectionMeta.explorationIds **如实提供**该事实，
+   猜测的前提消失 ⇒ exploration 成为可举证的席位，词表升级为四项。
+   仍然**不得**提前加入 dormant / reminisce / glossary：它们没有证据来源。 */
 check('S6.seatVocabularyMinimal', (() => {
-  const labels = [SP.SEAT_PINNED, SP.SEAT_PRIMARY];
-  return labels.length === 2 && ['exploration', 'dormant', 'glossary', 'reminisce', 'new-memory']
-    .every(x => labels.indexOf(x) < 0);
-})(), 'the seat vocabulary must be honest: only labels we can actually evidence');
+  const labels = [SP.SEAT_PINNED, SP.SEAT_PRIMARY, SP.SEAT_EXPLORATION, SP.SEAT_UNKNOWN].sort();
+  const expected = ['exploration', 'legacy', 'pinned', 'primary'];
+  return JSON.stringify(labels) === JSON.stringify(expected)
+    && ['dormant', 'reminisce', 'glossary', 'new-memory', 'protected']
+      .every(x => labels.indexOf(x) < 0);
+})(), 'the seat vocabulary must be honest: exactly the four labels we can evidence');
+check('S6.explorationSeatRequiresCoreMetadata', (() => {
+  /* 反向控制：没有 core 的 explorationIds 时**不得**凭空产生 exploration 标签。 */
+  const rows = [{ id: 'a', score: 1, line: 'a\n' }, { id: 'b', score: 2, line: 'b\n' }];
+  const noMeta = SP.applySeats(rows, { maxTotalSeats: 2 }, { labelOf: () => SP.SEAT_PRIMARY });
+  return noMeta.seats.every(x => x.seat !== SP.SEAT_EXPLORATION);
+})(), 'the planner must never guess exploration — the label needs core metadata');
 
 /* ══════════════════════════════════════════════════════════════════════
    §5 · 空输入 / 边界

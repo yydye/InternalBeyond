@@ -334,6 +334,10 @@ const GROUPS = [
          coldStart 的 activationPolicy = 'none' —— 注入但不强化。 */
       ['test_memory_recall_glossary.js'],
       ['test_memory_recall_coldstart.js'],
+      /* P21-R2-F1a：canonical selector 缺陷闭合 + pre-F 静态基线。
+         baseline = 只读的 frozen 数据（绝不 regenerate）；delta = 旧/新对照矩阵。 */
+      ['test_memory_recall_r2f_baseline.js'],
+      ['test_memory_recall_r2f_delta.js'],
       /* M1-C.2m：canonical Understanding —— 存储/修订链/CAS/单活不变量/更正契约
          （纯 Node + 真 SQLite + 临时数据目录，零网络、零浏览器）。 */
       ['test_understanding_contract_closure.js'],

@@ -94,6 +94,8 @@
   var REJECT_BUDGET = 'budget';
   /* 非 lexical 通道上"未被准入"的诚实措辞（≠ gate-rejected）。 */
   var REJECT_NOT_ADMITTED = 'not-admitted';
+  /* 真正被注入的探索项（seat='exploration'）的证据。 */
+  var REASON_EXPLORATION_SELECTED = 'exploration-selected';
 
   function isPlainObject(v) {
     return !!v && typeof v === 'object' && !Array.isArray(v);
@@ -641,7 +643,18 @@
         if (Object.prototype.hasOwnProperty.call(options, k) && k !== 'turn') coreOpts[k] = options[k];
       }
       coreOpts.userMessage = (turn.message == null) ? '' : String(turn.message);
+      /* P21-R2-F1a · 让 channel policy 的 allowExploration 成为**真实**输入。
+         在此之前该字段是**零消费者**的死字段，于是 glossary（canonical contract §9
+         明文要求关闭）与 coldStart（稳定 anchor 恢复）都在悄悄做随机探索。
+         缺省 true ⇒ legacy / 无 policy 的直调路径行为不变。 */
+      coreOpts.allowExploration = !(channelPolicy && channelPolicy.allowExploration === false);
+      /* 只有唯一 selector 才知道"谁是探索项"。请求内部 metadata；
+         它**不会**出现在对外 result 上（见下面的 strip）。 */
+      coreOpts.includeSelectionMeta = true;
       var gatedResult = core.buildMemoryContext(gated, coreOpts);
+      var explorationIds = (gatedResult && gatedResult.selectionMeta
+        && Array.isArray(gatedResult.selectionMeta.explorationIds))
+        ? gatedResult.selectionMeta.explorationIds.slice() : [];
 
       /* 记录 id → record，供 seat 标签使用（标签需要 record.pinned）。 */
       var recordById = {};
@@ -663,7 +676,10 @@
           labelOf: function (id) {
             var rec = recordById[String(id)];
             return planner.seatLabel(rec);
-          }
+          },
+          /* seat planner **不**自己挑探索项：它只能消费 core 已经选出的 id。 */
+          explorationIds: explorationIds,
+          allowExploration: coreOpts.allowExploration
         });
       }
       var keptSelected = seatPlan ? seatPlan.seats
@@ -709,6 +725,16 @@
         };
       }
 
+      /* selectionMeta 是**内部** seam（core → orchestrator → seat planner）。
+         对外 result 的键集合必须与 R2-F 之前逐字相同 ⇒ 这里显式剥掉。 */
+      if (result && Object.prototype.hasOwnProperty.call(result, 'selectionMeta')) {
+        var stripped = {};
+        for (var sk in result) {
+          if (Object.prototype.hasOwnProperty.call(result, sk) && sk !== 'selectionMeta') stripped[sk] = result[sk];
+        }
+        result = stripped;
+      }
+
       /* ⑨ candidate trace detail：**只针对 visible 记录**。
             隐藏记录在这里结构上不可能出现 —— 它们从未进入 scored。 */
       /* ⑩a 已注入条目：core 的 selected，按 core 顺序；decision 与 seat 有真实证据。 */
@@ -741,7 +767,12 @@
             /* 准入证据进入 reasons[] —— 不扩 CANDIDATE_KEYS（§11）。
                glossary / coldStart 的准入不是 lexical，必须由 reason 表达；
                lexical 通道（surface/recall）保持空数组（分数已由 relevanceScore 表达）。 */
-            reasons: (admitReasons[selKey] || []).slice()
+            /* 探索证据叠加在准入证据之上（同一 candidate 可有多个 reasons）。
+               只有**真正注入**的探索项才会走到这里 —— seat cap 裁掉的探索项
+               在 ⑩b 里以 rejected 报告，绝不声称 seat='exploration'。 */
+            reasons: (admitReasons[selKey] || []).concat(
+              (explorationIds.indexOf(selRow.id) >= 0) ? [REASON_EXPLORATION_SELECTED] : []
+            )
           }));
         }
       }

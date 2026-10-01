@@ -45,11 +45,42 @@
   var DEFAULT_BUDGET_CHARS = 2000;
   var DEFAULT_CONTENT_LEN = 200;
   var EXPLORE_RATIO = 0.15;
-  var EXPLORE_WINDOW = 10;
+  /* P21-R2-F1a：EXPLORE_WINDOW（top-10 前缀窗口）已**删除**。
+     旧实现 `remaining[floor(random * min(len, 10))]` 违反 MEMORY_RECALL_CONTRACT §9 的
+     MUST NOT（"从 remaining 的最高分前 N 条中随机取一条"）—— 当 remaining 按分数降序时，
+     索引前缀恰是分数最高的一段，采样区间与"唤起沉睡"的**目标相反**。
+     新语义：FULL-REMAINING UNIFORM，即 `remaining[floor(random * remaining.length)]`。
+     刻意**不**做 score-weighted / low-score-weighted / dormant-weighted：
+     当前没有 exposure / dormant authority，加权只会伪造一个不存在的信号。
+     本阶段只承诺**admitted candidate coverage**，**不**宣称 dormant / reminisce。 */
+
+  /* 记忆块标题。放在这里是因为它必须进入 maxChars 总预算（见 selectWithinBudget）：
+     旧实现先按 maxChars 填满正文、再把 header 拼上去并计入 chars，
+     于是 chars 可以超过 maxChars（maxChars < ~113 时可达）；P21-R2-F1a 修正为
+     payloadBudget = max(0, maxChars - header.length)，header 先扣。 */
+  var MEMORY_HEADER = '【记忆（系统参考，勿提及此段）】\n';
   var DOMAINS = ['情感', '日常', '创作', '思考'];
 
   /* 可见性核心必须存在。缺失时**绝不**退化成"全部可见" —— 那是 fail-open，
      等于把"无法判定可见性"变成"对外公开"。调用方据此fail closed（返回空）。 */
+  /* 把注入的 random 归一化到 [0, 1)。
+     §9：random 是**外部注入**的，不能假设调用方守规矩。
+     旧实现直接 `floor(rand() * n)` —— random=1 会得到 idx=n（越界，取到 undefined，
+     随后 renderMemoryLine(undefined) 会抛；NaN / 负数同理得到不可预期的下标）。
+     这里返回可测的归一化值，调用方**还会**再对下标做一次 clamp（双保险）。 */
+  function normalizeRandom01(value) {
+    var r = Number(value);
+    if (!isFinite(r)) return 0;      /* NaN / ±Infinity ⇒ 确定性地取第一个 */
+    if (r <= 0) return 0;
+    if (r >= 1) return 1 - Number.EPSILON;   /* 仍严格 < 1，floor(r*n) 必落在 [0, n-1] */
+    return r;
+  }
+
+  /* header 是否计入本轮的 maxChars 预算（includeHeader:false ⇒ 不占预算）。 */
+  function headerLength(opts) {
+    return (opts && opts.includeHeader === false) ? 0 : MEMORY_HEADER.length;
+  }
+
   function visibilityOf() {
     return (VIS && typeof VIS.isMemoryVisibleTo === 'function') ? VIS : null;
   }
@@ -149,54 +180,85 @@
   /* ── 4. 预算 / top-k：置顶优先 → 主选区 → 探索窗口 ─────────────────── */
   function selectWithinBudget(scored, options) {
     var opts = options || {};
+    /* maxChars：0 是**真实的零预算**（不是"用缺省"）。旧实现把 <=0 一律替换成
+       DEFAULT_BUDGET_CHARS，于是 maxChars=0 反而注入 ~1700 字符，违反
+       `chars <= maxChars` —— 这是 §11 要求封死的边界。非法值（NaN / 负数 / 缺失）
+       仍回落到缺省，保持 legacy 调用方的既有行为。 */
     var maxChars = Number(opts.maxChars);
-    if (!isFinite(maxChars) || maxChars <= 0) maxChars = DEFAULT_BUDGET_CHARS;
+    if (!isFinite(maxChars) || maxChars < 0) maxChars = DEFAULT_BUDGET_CHARS;
     var contentLen = Number(opts.contentLen);
     if (!isFinite(contentLen) || contentLen <= 0) contentLen = DEFAULT_CONTENT_LEN;
     var apiId = String(opts.apiId == null ? '' : opts.apiId);
     var rand = typeof opts.random === 'function' ? opts.random : Math.random;
     var rows = Array.isArray(scored) ? scored : [];
 
-    var mainBudget = Math.floor(maxChars * (1 - EXPLORE_RATIO));
-    var exploreBudget = maxChars - mainBudget;
+    /* header 先扣：正文预算必须给标题让路，否则 chars 会超过 maxChars。 */
+    var payloadBudget = Math.max(0, maxChars - headerLength(opts));
+    /* 85% = main selection cap；15% = **reserved exploration capacity（启用参考）**，
+       ——不是 exploration 单条 line 的独立上限。探索项最终只需满足
+       `chars <= payloadBudget`，因此它可以使用 main 未消费掉的 slack。
+       旧变量名 exploreBudget 会误导成"严格子预算"，故改名。 */
+    var mainBudget = Math.floor(payloadBudget * (1 - EXPLORE_RATIO));
+    var reservedExploreCapacity = payloadBudget - mainBudget;
     var lines = [];          /* 逐条渲染文本（不含标题） */
     var selected = [];       /* [{id, score, line}] 按注入顺序 */
+    var explorationIds = []; /* 真实由探索抽中的 id（供 seat planner / trace 使用） */
     var chars = 0;
     var seen = {};
 
     var pinned = rows.filter(function (m) { return m.pinned; });
     var unpinned = rows.filter(function (m) { return !m.pinned; });
 
-    /* 置顶记忆优先注入（保证每次都被 AI 看到），但它**仍然**占用字符预算 */
+    /* 置顶记忆优先注入 —— 但 pinned 只是"fitting candidates 中优先级最高"，
+       **没有**超额豁免：装不下就跳过，且**不得**终止整个循环（D-4）。
+       跳过而不是 break，后面的 fitting pinned / normal 仍会被检查。 */
     for (var i = 0; i < pinned.length; i++) {
       var line = renderMemoryLine(pinned[i], apiId, contentLen);
-      if (chars + line.length > mainBudget) break;
+      if (chars + line.length > mainBudget) continue;
       chars += line.length;
       lines.push(line);
       selected.push({ id: pinned[i].id, score: pinned[i]._score, line: line });
       seen[pinned[i].id] = 1;
     }
-    /* 主选区：剩余预算按分数从高到低填充非置顶记忆 */
+    /* 主选区：剩余预算按分数从高到低填充非置顶记忆。
+       同样 continue：一条装不下不代表后面都装不下（旧实现 break 会让大条目
+       把它后面所有能装下的候选一起饿死 —— D-4）。 */
     for (var j = 0; j < unpinned.length; j++) {
       var line2 = renderMemoryLine(unpinned[j], apiId, contentLen);
-      if (chars + line2.length > mainBudget) break;
+      if (chars + line2.length > mainBudget) continue;
       chars += line2.length;
       lines.push(line2);
       selected.push({ id: unpinned[j].id, score: unpinned[j]._score, line: line2 });
       seen[unpinned[j].id] = 1;
     }
-    /* 探索窗口：从未入选的中低分段随机抽一条 */
+    /* 探索：FULL-REMAINING UNIFORM（§0.1 / §8）。
+       · pool = 全部未入选、非 pinned 的候选（**不再是** top-10 前缀）
+       · random **只调用一次**；allowExploration=false 时一次都不调用
+       · 抽中的 line 装不下 ⇒ 本轮**不重抽**（重抽会改变随机分布），
+         直接放弃探索项，main selection 原样保留（§10）
+       · 仍受 reservedExploreCapacity > 50 的**启用门**约束（§0.6） */
+    var allowExploration = (opts.allowExploration !== false);
     var remaining = rows.filter(function (m) { return !seen[m.id] && !m.pinned; });
-    if (remaining.length && exploreBudget > 50) {
-      var pick = remaining[Math.floor(rand() * Math.min(remaining.length, EXPLORE_WINDOW))];
+    if (allowExploration && remaining.length && reservedExploreCapacity > 50) {
+      var r01 = normalizeRandom01(rand());
+      var idx = Math.floor(r01 * remaining.length);
+      if (!isFinite(idx) || idx < 0) idx = 0;
+      if (idx > remaining.length - 1) idx = remaining.length - 1;   /* 双保险 */
+      var pick = remaining[idx];
       var line3 = renderMemoryLine(pick, apiId, contentLen);
-      if (chars + line3.length <= maxChars) {
+      if (chars + line3.length <= payloadBudget) {
         chars += line3.length;
         lines.push(line3);
         selected.push({ id: pick.id, score: pick._score, line: line3 });
+        explorationIds.push(pick.id);
       }
     }
-    return { lines: lines, selected: selected, chars: chars, count: selected.length };
+    return {
+      lines: lines, selected: selected, chars: chars, count: selected.length,
+      /* 内部 metadata：唯一 selector 才能诚实提供"谁是探索项"。
+         buildMemoryContext 只在 opts.includeSelectionMeta === true 时才对外暴露。 */
+      explorationIds: explorationIds
+    };
   }
 
   /* ── 5. 渲染：与 memory.js 既有 _formatMemLine 逐字相同 ─────────────── */
@@ -233,15 +295,23 @@
     if (scored === null) return { text: '', selected: [], count: 0, chars: 0, reason: 'visibility-unavailable' };
     if (!scored.length) return { text: '', selected: [], count: 0, chars: 0, reason: 'no-visible-memory' };
     var picked = selectWithinBudget(scored, opts);
+    /* header 已由 selectWithinBudget 从 maxChars 中预扣 ⇒ 这里加上它仍然 <= maxChars。
+       一条也放不下时返回 0 memory，**绝不**产生"只有 header 没有正文"的块。 */
     if (!picked.count) return { text: '', selected: [], count: 0, chars: 0, reason: 'no-budget' };
-    var head = (opts.includeHeader === false) ? '' : '【记忆（系统参考，勿提及此段）】\n';
-    return {
+    var head = (opts.includeHeader === false) ? '' : MEMORY_HEADER;
+    var out = {
       text: head + picked.lines.join(''),
       selected: picked.selected,
       count: picked.count,
       chars: picked.chars + head.length,
       reason: null
     };
+    /* 只有显式请求时才多出 selectionMeta ⇒ 未请求的 caller 拿到的 result
+       **逐字不变**（原有键与值一个不少、一个不多）。 */
+    if (opts.includeSelectionMeta === true) {
+      out.selectionMeta = { explorationIds: (picked.explorationIds || []).slice() };
+    }
+    return out;
   }
 
   return {
@@ -255,6 +325,8 @@
     DEFAULT_BUDGET_CHARS: DEFAULT_BUDGET_CHARS,
     DEFAULT_CONTENT_LEN: DEFAULT_CONTENT_LEN,
     EXPLORE_RATIO: EXPLORE_RATIO,
+    MEMORY_HEADER: MEMORY_HEADER,
+    normalizeRandom01: normalizeRandom01,
     DOMAINS: DOMAINS
   };
 });

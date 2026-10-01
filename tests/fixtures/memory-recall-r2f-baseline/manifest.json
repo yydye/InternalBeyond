@@ -1,0 +1,351 @@
+{
+  "schemaVersion": 1,
+  "phase": "P21-R2-F1a · pre-F frozen behaviour baseline",
+  "note": "STATIC frozen data. Tests must NEVER regenerate this. The `random` field is a number descriptor (the test reconstructs () => random). Expected values were produced by the pre-R2-F canonical selector and must remain the OLD side of the R2-F semantic delta.",
+  "sourceHead": "a8ef991",
+  "coreSha256": "CC578F2640C68CEA4992389AAC1C2A7D7B8AD9BFAC4311AFB51FB6AA0DCE5B72",
+  "caseCount": 25,
+  "cases": [
+    "f01_exploration_random0",
+    "f02_exploration_random05",
+    "f03_exploration_random0999",
+    "f04_exploration_many_remaining",
+    "f05_exploration_tiny_budget",
+    "f06_exploration_disabled_equivalent",
+    "f07_oversized_then_fitting",
+    "f08_pinned_oversized",
+    "f09_multiple_pinned",
+    "f10_header_44",
+    "f11_header_88",
+    "f12_header_112",
+    "f13_normal_335",
+    "f14_normal_2000",
+    "f15_surface_like",
+    "f16_recall_like",
+    "f17_glossary_candidates",
+    "f18_coldstart_anchors",
+    "f19_zero_candidate",
+    "f20_one_candidate",
+    "f21_all_pinned",
+    "f22_pinned_and_normal",
+    "f23_pinned_oversized_then_fitting_pinned",
+    "f24_pinned_oversized_then_fitting_normal",
+    "f25_zero_budget"
+  ],
+  "generationPasses": 3,
+  "extendedAfterFreeze": {
+    "note": "Pass 2 added the pinned-continue cases. Their `expected` was produced by the PRE-F core extracted from git (git show <sourceHead>:assets/js/memory-retrieval-core.js, sha256 verified against the R2-A baseline), NOT by the modified core. The 22 pass-1 case files were verified byte-identical after this step. Pass 3 added f25_zero_budget (R2-F1a closure §10), again produced by the PRE-F core extracted from git, never by the modified core.",
+    "preFCoreSha256": "CC578F2640C68CEA4992389AAC1C2A7D7B8AD9BFAC4311AFB51FB6AA0DCE5B72",
+    "addedIds": [
+      "f23_pinned_oversized_then_fitting_pinned",
+      "f24_pinned_oversized_then_fitting_normal"
+    ],
+    "pass3Ids": [
+      "f25_zero_budget"
+    ]
+  },
+  "summary": [
+    {
+      "id": "f01_exploration_random0",
+      "count": 8,
+      "chars": 1784,
+      "reason": null,
+      "sel": [
+        "m01",
+        "m02",
+        "m03",
+        "m04",
+        "m05",
+        "m06",
+        "m07",
+        "m08"
+      ],
+      "maxChars": 2000
+    },
+    {
+      "id": "f02_exploration_random05",
+      "count": 8,
+      "chars": 1784,
+      "reason": null,
+      "sel": [
+        "m01",
+        "m02",
+        "m03",
+        "m04",
+        "m05",
+        "m06",
+        "m07",
+        "m13"
+      ],
+      "maxChars": 2000
+    },
+    {
+      "id": "f03_exploration_random0999",
+      "count": 8,
+      "chars": 1784,
+      "reason": null,
+      "sel": [
+        "m01",
+        "m02",
+        "m03",
+        "m04",
+        "m05",
+        "m06",
+        "m07",
+        "m17"
+      ],
+      "maxChars": 2000
+    },
+    {
+      "id": "f04_exploration_many_remaining",
+      "count": 7,
+      "chars": 1561,
+      "reason": null,
+      "sel": [
+        "m01",
+        "m02",
+        "m03",
+        "m04",
+        "m05",
+        "m06",
+        "m16"
+      ],
+      "maxChars": 1600
+    },
+    {
+      "id": "f05_exploration_tiny_budget",
+      "count": 1,
+      "chars": 219,
+      "reason": null,
+      "sel": [
+        "t1"
+      ],
+      "maxChars": 300
+    },
+    {
+      "id": "f06_exploration_disabled_equivalent",
+      "count": 1,
+      "chars": 219,
+      "reason": null,
+      "sel": [
+        "only1"
+      ],
+      "maxChars": 2000
+    },
+    {
+      "id": "f07_oversized_then_fitting",
+      "count": 0,
+      "chars": 0,
+      "reason": "no-budget",
+      "sel": [],
+      "maxChars": 100
+    },
+    {
+      "id": "f08_pinned_oversized",
+      "count": 1,
+      "chars": 67,
+      "reason": null,
+      "sel": [
+        "N1"
+      ],
+      "maxChars": 400
+    },
+    {
+      "id": "f09_multiple_pinned",
+      "count": 2,
+      "chars": 134,
+      "reason": null,
+      "sel": [
+        "P_norm",
+        "N1"
+      ],
+      "maxChars": 400
+    },
+    {
+      "id": "f10_header_44",
+      "count": 1,
+      "chars": 54,
+      "reason": null,
+      "sel": [
+        "h1"
+      ],
+      "maxChars": 44
+    },
+    {
+      "id": "f11_header_88",
+      "count": 2,
+      "chars": 91,
+      "reason": null,
+      "sel": [
+        "h1",
+        "h2"
+      ],
+      "maxChars": 88
+    },
+    {
+      "id": "f12_header_112",
+      "count": 2,
+      "chars": 91,
+      "reason": null,
+      "sel": [
+        "h1",
+        "h2"
+      ],
+      "maxChars": 112
+    },
+    {
+      "id": "f13_normal_335",
+      "count": 1,
+      "chars": 219,
+      "reason": null,
+      "sel": [
+        "n1"
+      ],
+      "maxChars": 335
+    },
+    {
+      "id": "f14_normal_2000",
+      "count": 5,
+      "chars": 1095,
+      "reason": null,
+      "sel": [
+        "n1",
+        "n2",
+        "n3",
+        "n4",
+        "n5"
+      ],
+      "maxChars": 2000
+    },
+    {
+      "id": "f15_surface_like",
+      "count": 3,
+      "chars": 657,
+      "reason": null,
+      "sel": [
+        "s1",
+        "s2",
+        "s5"
+      ],
+      "maxChars": 700
+    },
+    {
+      "id": "f16_recall_like",
+      "count": 3,
+      "chars": 657,
+      "reason": null,
+      "sel": [
+        "r1",
+        "r2",
+        "r5"
+      ],
+      "maxChars": 700
+    },
+    {
+      "id": "f17_glossary_candidates",
+      "count": 3,
+      "chars": 651,
+      "reason": null,
+      "sel": [
+        "g1",
+        "g2",
+        "g5"
+      ],
+      "maxChars": 700
+    },
+    {
+      "id": "f18_coldstart_anchors",
+      "count": 3,
+      "chars": 657,
+      "reason": null,
+      "sel": [
+        "pin1",
+        "sem1",
+        "sem4"
+      ],
+      "maxChars": 700
+    },
+    {
+      "id": "f19_zero_candidate",
+      "count": 0,
+      "chars": 0,
+      "reason": "no-visible-memory",
+      "sel": [],
+      "maxChars": 2000
+    },
+    {
+      "id": "f20_one_candidate",
+      "count": 1,
+      "chars": 66,
+      "reason": null,
+      "sel": [
+        "solo"
+      ],
+      "maxChars": 2000
+    },
+    {
+      "id": "f21_all_pinned",
+      "count": 3,
+      "chars": 201,
+      "reason": null,
+      "sel": [
+        "pa",
+        "pb",
+        "pc"
+      ],
+      "maxChars": 2000
+    },
+    {
+      "id": "f22_pinned_and_normal",
+      "count": 3,
+      "chars": 501,
+      "reason": null,
+      "sel": [
+        "p1",
+        "n1",
+        "n2"
+      ],
+      "maxChars": 700
+    },
+    {
+      "id": "f23_pinned_oversized_then_fitting_pinned",
+      "count": 0,
+      "chars": 0,
+      "reason": "no-budget",
+      "sel": [],
+      "maxChars": 100
+    },
+    {
+      "id": "f24_pinned_oversized_then_fitting_normal",
+      "count": 1,
+      "chars": 27,
+      "reason": null,
+      "sel": [
+        "N1"
+      ],
+      "maxChars": 100
+    },
+    {
+      "id": "f25_zero_budget",
+      "count": 2,
+      "chars": 74,
+      "reason": null,
+      "sel": [
+        "z1",
+        "z2"
+      ],
+      "maxChars": 0
+    }
+  ],
+  "changedByR2F1a": {
+    "note": "Post-freeze ANNOTATION layer. The frozen `expected` payloads in cases/*.json were NOT touched; this list only declares which of them the approved R2-F1a deltas are expected to change. The baseline test fails on any change that is NOT listed here.",
+    "f02_exploration_random05": "D-3 full-remaining uniform (window no longer capped at 10)",
+    "f03_exploration_random0999": "D-3 tail reachability: m17 -> real tail m20",
+    "f04_exploration_many_remaining": "D-3 full coverage beyond the old top-10 prefix",
+    "f07_oversized_then_fitting": "D-4 oversized candidate is skipped (continue), later fitting ones admitted",
+    "f10_header_44": "header budget: pre-F emitted chars=54 > maxChars=44; now 0 memory / no-budget",
+    "f11_header_88": "header budget: pre-F emitted chars=91 > maxChars=88; now chars=54 <= 88",
+    "f23_pinned_oversized_then_fitting_pinned": "D-4 on the pinned loop: an oversized pinned no longer starves later pinned",
+    "f25_zero_budget": "maxChars=0 semantics: pre-F replaced <=0 with DEFAULT_BUDGET_CHARS (2000) and emitted a non-empty block; F1a treats 0 as a true zero budget => 0 memory / no-budget"
+  }
+}
