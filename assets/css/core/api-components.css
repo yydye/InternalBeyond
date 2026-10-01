@@ -261,8 +261,19 @@ body.theme-infernal .mi-sub-inf{display:inline}
    不会跟着一起变厚（那才是 gray soup 的来源）。
    仅 Infernal：Internal 同口径已是 1.26–1.40，不需要动。
    未来若要再分层（章节集合卡 vs 可编辑实体对象），可另立 surface.collection，
-   不必把这两个角色永久绑在同一个 token 上。 */
+   不必把这两个角色永久绑在同一个 token 上。
+
+   P3A-R.3 增补 .mem-card：Original Desktop 暗色 .mem-card 的取值是
+   rgba(135,168,218,.13) 底 + 1px rgba(155,185,232,.24) 边
+   —— 与 .glass-card 暗色取值逐字相同，也就是本文件上面这一族。
+   也就是说，当年 .mem-card 与章节卡在暗色下本来就是同一种材料；是本项目
+   后来把 .mem-card 单独挂到 --surface-card(.10) 才分家的。这里把它接回来，
+   顺带补上它一直缺的冷白 rim（.mem-card 原本用 --shadow-card，没有 inset）。
+   Original Mobile 的 .mem-card 同样走 --panel/--panel-line（更实的深玻璃），
+   不是薄雾，与这里的结论一致。
+   仅 Infernal：Internal 同口径实测 1.41，健康，不动。 */
 body.theme-infernal .glass-card,
+body.theme-infernal .mem-card,
 body.theme-infernal #api-onboarding-entry .ibo-entry{
   background:var(--surface-object);
   border-color:var(--surface-object-border);
