@@ -1,0 +1,27 @@
+# Frontend line-ending authority.
+#
+# .editorconfig already declares this repository's canonical policy:
+#   [*] charset = utf-8-bom, end_of_line = lf
+# Editors honour it; git did not. There was no .gitattributes, so core.autocrlf=true
+# alone decided checkout and wrote CRLF for these files on Windows — which is why the
+# working tree drifted away from the declared policy.
+#
+# These rules make the existing policy binding for the BOM-managed frontend set only,
+# i.e. exactly the set tests/test_frontend_structure.js checks via frontFiles():
+# InternalBeyond.html plus every .css / .js under assets/css, assets/js and game.
+# Deliberately NO `* text=auto` and no other paths: renormalizing the whole repository
+# is not wanted, and every HEAD blob in this scope is already LF, so no stored content
+# changes — only how git checks these paths out.
+#
+# Scope note: this file governs line endings only. The UTF-8 BOM requirement is owned by
+# scripts/ib-bom.py and the encoding.bom.* assertions, not by this file.
+#
+# This file covers itself: core.autocrlf=true would otherwise check .gitattributes out as
+# CRLF, and a trailing CR is not something an attribute parser should ever have to tolerate.
+# .editorconfig already requires end_of_line = lf for [*], so this only makes it binding.
+.gitattributes text eol=lf
+InternalBeyond.html text eol=lf
+assets/css/**/*.css text eol=lf
+assets/js/**/*.js text eol=lf
+game/**/*.css text eol=lf
+game/**/*.js text eol=lf
