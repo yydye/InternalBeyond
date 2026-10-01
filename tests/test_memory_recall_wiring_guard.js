@@ -67,10 +67,14 @@ const MODULES = [
   'assets/js/memory-recall/turn-signal.js',
   'assets/js/memory-recall/recall-query.js',
   'assets/js/memory-recall/scoring.js',
+  'assets/js/memory-recall/channel-policy.js',
+  'assets/js/memory-recall/seat-planner.js',
   'assets/js/memory-recall/recall-trace.js',
   'assets/js/memory-recall/memory-recall-orchestrator.js'
 ];
-const FUTURE_MODULES = ['channel-policy.js', 'seat-planner.js', 'cooldown.js'];
+/* R2-D 起 channel-policy / seat-planner 已实现并被 HTML 加载，
+   因此它们从"未来模块"名单移出；只剩 R2-F 的 cooldown。 */
+const FUTURE_MODULES = ['cooldown.js'];
 const HTML = 'InternalBeyond.html';
 
 function walkJs(dir, out) {
@@ -113,8 +117,13 @@ check('A1.recallCorePrecedesRecallQuery',
   HTML_NO_COMMENTS.indexOf('assets/js/memory-retrieval-core.js')
   < HTML_NO_COMMENTS.indexOf('assets/js/memory-recall/recall-query.js'),
   'recall-query reuses core.extractKeywords — core must load first');
-check('A1.orchestratorLoadedLast',
-  MODULES.every(m => m === MODULES[4] || HTML_NO_COMMENTS.indexOf(m) < HTML_NO_COMMENTS.indexOf(MODULES[4])));
+check('A1.orchestratorLoadedLast', (() => {
+  /* orchestrator 必须是五个 recall 模块里**最后**加载的那个（它依赖其余全部）。 */
+  const orchRel = 'assets/js/memory-recall/memory-recall-orchestrator.js';
+  const orchPos = HTML_NO_COMMENTS.indexOf(orchRel);
+  if (orchPos < 0) return false;
+  return MODULES.every(m => m === orchRel || HTML_NO_COMMENTS.indexOf(m) < orchPos);
+})());
 check('A1.reverseControl.detectorSeesScriptTags',
   /<script[^>]*src=/i.test(HTML_NO_COMMENTS),
   'reverse control: the detector must be able to see real <script src> tags');
@@ -211,53 +220,76 @@ check('A3.recallPrimitivesNotUsedElsewhere', offenders.length === 0,
 })();
 
 /* ══════════════════════════════════════════════════════════════════════
-   §A4 · Host 不得传 turn（R2-C 的核心安全条件）
+   §A4 · Host **必须**传 turn（R2-D 语义切换的接线条件）
+   ──────────────────────────────────────────────────────────────────────
+   ⚠ PHASE TRANSITION（R2-C → R2-D，有意更新，不是 regression）
+     R2-C 断言：Host **不**传 turn（架构切换、语义不变）。
+     R2-D 断言：Host **必须**传 turn.message（用户可见语义正式切换）。
+   两条断言不能同时为真 —— 后者是前者的**目的**。因此这里不是放宽，
+   而是把判据换成"这一轮真正要做的事"：传的是**当前用户输入**，
+   且**不**传本轮未实现的通道状态。
    ══════════════════════════════════════════════════════════════════════ */
-section('§A4 · Host 不传 turn');
+section('§A4 · Host 传 turn（R2-D）');
 
-check('A4.browserHostOmitsTurn', (() => {
+check('A4.browserHostPassesTurn', (() => {
   const i = MEMORY_SRC.indexOf('const _pickOpts=');
   const j = MEMORY_SRC.indexOf('const _orch=');
   if (i < 0 || j < 0 || j <= i) return false;
-  return MEMORY_SRC.slice(i, j).indexOf('turn') < 0;
-})(), 'browser _pickOpts must not contain turn');
-check('A4.homeNodeHostOmitsTurn', (() => {
+  const block = MEMORY_SRC.slice(i, j);
+  return /\bturn\s*:\s*\{\s*message\s*:/.test(block);
+})(), 'browser _pickOpts must pass turn.message');
+check('A4.browserTurnMessageSourceIsUserMessage', (() => {
+  const i = MEMORY_SRC.indexOf('const _pickOpts=');
+  const j = MEMORY_SRC.indexOf('const _orch=');
+  const block = MEMORY_SRC.slice(i, j);
+  return /turn\s*:\s*\{\s*message\s*:\s*opts\.userMessage\s*\}/.test(block);
+})(), 'the message must come from the already-existing opts.userMessage — not from DOM / history / last message');
+check('A4.browserDoesNotInferFromHistory', (() => {
+  const i = MEMORY_SRC.indexOf('const _pickOpts=');
+  const j = MEMORY_SRC.indexOf('const _orch=');
+  const block = MEMORY_SRC.slice(i, j);
+  return !/dbGet|history|lastMessage|messages\[|querySelector/.test(block);
+})(), 'no history/DOM inference for the turn message');
+check('A4.browserDoesNotCoerceToEmptyString', (() => {
+  const i = MEMORY_SRC.indexOf('const _pickOpts=');
+  const j = MEMORY_SRC.indexOf('const _orch=');
+  const block = MEMORY_SRC.slice(i, j);
+  /* `|| ''` 会把"缺输入"伪装成"用户发了空消息"，从而静默关闭记忆。 */
+  return !/message\s*:\s*opts\.userMessage\s*\|\|/.test(block);
+})(), 'the message must NOT be coerced with || \'\' — that turns a wiring bug into a silent early-exit');
+
+check('A4.homeNodeHostPassesTurn', (() => {
   const i = NODE_SRC.indexOf('const buildOpts = {');
   const j = NODE_SRC.indexOf('const built =');
   if (i < 0 || j < 0 || j <= i) return false;
-  return NODE_SRC.slice(i, j).indexOf('turn') < 0;
-})(), 'Home Node buildOpts must not contain turn');
-check('A4.noHostPassesTurnToRecall', (() => {
-  /* 判据必须**贴着 recall 调用点**，不能对整文件扫 `turn:`。
-     counter-example（本轮真实踩到）：communication.js 里有一个完全无关的
-     请求生命周期辅助 `_ibTurnLc(turn)`，它自己的对象里就有 `turn:function(){…}`。
-     那个 `turn` 是"模型调用回合"，不是 memory recall 的 turn signal。
-     拿整文件扫描会把它误判成"Host 传了 recall turn" —— 一个假阳性，
-     而假阳性最坏的结果是有人把这条安全断言删掉。 */
-  function turnNearCall(src, callMarker) {
-    let idx = src.indexOf(callMarker);
-    while (idx >= 0) {
-      /* 窗口 = 调用点前 400 字符 **到** 调用点后 200 字符。
-         必须包含调用点自身之后的实参列表：`recall(rows, { turn: ... })`
-         里的 turn 出现在标记**之后**。只往前看会漏掉最典型的形态。 */
-      const window = src.slice(Math.max(0, idx - 400), idx + 200);
-      if (/\bturn\s*:/.test(window)) return true;
-      idx = src.indexOf(callMarker, idx + 1);
-    }
-    return false;
-  }
-  const probes = [
-    ['assets/js/memory.js', 'recall('],
-    ['services/home-node/memory-retrieval.js', 'recall(']
-  ];
-  const hits = [];
-  probes.forEach(([rel, marker]) => {
-    let src;
-    try { src = stripComments(read(rel)); } catch (e) { return; }
-    if (turnNearCall(src, marker)) hits.push(rel);
-  });
-  return hits.length === 0;
-})(), 'no production Host may pass a turn signal into recall (R2-C skeleton only)');
+  return /\bturn\s*:\s*\{\s*message\s*:\s*options\.userMessage\s*\}/.test(NODE_SRC.slice(i, j));
+})(), 'Home Node buildOpts must pass turn.message from options.userMessage');
+check('A4.homeNodeTurnSourceIsCurrentTurn', (() => {
+  /* buildRuntimeContext 的 ctx.userMessage 由 mobile-gateway 的 beginTurn
+     从**本轮请求体**构造；这里同时钉住那条上游证据，避免有人改成历史反推。 */
+  const gw = stripComments(read('services/home-node/mobile-gateway.js'));
+  return /buildRuntimeContext\(character,\s*\{\s*characterId:\s*characterId,\s*userMessage:\s*content\s*\}\)/.test(gw)
+    && /payload\.content/.test(gw);
+})(), 'Home Node current-user message must come from the incoming payload, not history');
+check('A4.homeNodeDoesNotCoerceToEmptyString', (() => {
+  const i = NODE_SRC.indexOf('const buildOpts = {');
+  const j = NODE_SRC.indexOf('const built =');
+  return !/turn\s*:\s*\{\s*message\s*:\s*options\.userMessage\s*\|\|/.test(NODE_SRC.slice(i, j));
+})());
+
+/* 本轮**未**批准的通道状态不得出现在 Host 里。 */
+check('A4.hostsDoNotPassColdStart', (() => {
+  return !/isConversationOpen\s*:/.test(MEMORY_SRC) && !/isConversationOpen\s*:/.test(NODE_SRC);
+})(), 'coldStart belongs to R2-E — Host must not signal it yet');
+check('A4.hostsDoNotPassGlossaryOrReminisce', (() => {
+  const both = MEMORY_SRC + NODE_SRC;
+  return !/glossary/i.test(both) && !/reminisce/i.test(both);
+})());
+check('A4.hostsDoNotPassCooldownState', (() => {
+  const both = MEMORY_SRC + NODE_SRC;
+  return !/cooldown|lastSurfacedAt|lastRecalledAt/i.test(both);
+})(), 'cooldown belongs to R2-F — no cooldown state may be wired into the Hosts');
+
 check('A4.reverseControl.turnDetectorIsLive',
   /\bturn\s*:/.test('const o={turn:{message:"x"}};'),
   'reverse control: the turn detector must fire on a real turn object');
@@ -267,6 +299,10 @@ check('A4.reverseControl.nearCallProbeIsLive', (() => {
   /* 与生产探针**同一窗口表达式**，否则反向控制测的就不是那条判据。 */
   return /\bturn\s*:/.test(poisoned.slice(Math.max(0, idx - 400), idx + 200));
 })(), 'reverse control: the near-call probe must fire when a turn IS passed');
+check('A4.reverseControl.emptyStringCoercionWouldBeCaught', (() => {
+  const bad = "turn:{message:opts.userMessage||''}";
+  return /message\s*:\s*opts\.userMessage\s*\|\|/.test(bad);
+})(), 'reverse control: the || \'\' guard must fire on the dangerous form');
 check('A4.nearCallProbeIgnoresUnrelatedTurnHelpers', (() => {
   const unrelated = 'function _ibTurnLc(turn){ return { turn:function(){ return turn; } }; }';
   const nearCallWindow = unrelated.slice(0, unrelated.length);
@@ -304,10 +340,10 @@ function runTest(rel, expectPattern) {
   return { ok: r.status === 0, out: out, matched: expectPattern ? expectPattern.test(out) : true };
 }
 
-const contractRun = runTest('tests/test_memory_recall_contract.js', /143 assertions green/);
+const contractRun = runTest('tests/test_memory_recall_contract.js', /148 assertions green/);
 check('B1.contractStillGreen', contractRun.ok && contractRun.matched,
-  'R2-A contract must still pass (R2-C upgraded one CURRENT assertion into three, '
-  + 'so the count moved 141 → 143 as an intentional phase transition)'
+  'R2-A contract must still pass (each phase moved the count as an intentional transition: '
+  + '141 → 143 at R2-C, → 148 at R2-D)'
   + '\n        ' + contractRun.out.split('\n').filter(l => /FAIL/.test(l)).join('\n        '));
 check('B2.productionIntegrityStillHolds', !/FAIL\s+P18\.unchanged/.test(contractRun.out));
 

@@ -106,7 +106,16 @@ function createMemoryRetrieval(deps) {
       contentLen: contentLen,
       /* 标题由本模块提供（【长期记忆】）：只要正文行，保证"哪一行怎么渲染"
          仍然出自共享实现，而小节标题是执行缝的决定。 */
-      includeHeader: false
+      includeHeader: false,
+      /* P21-R2-D · 语义切换点：Host 正式传 turn。
+         message 来自 buildRuntimeContext 的 ctx.userMessage —— 它在
+         mobile-gateway 的 beginTurn 里由**本轮请求体**构造
+         （payload.content / payload.message.content），不是历史最后一条、
+         不是 assistant 消息、不是 summary。
+         刻意**不**沿用上面那行 `|| ''` 的归一化：把"缺输入"变成"空消息"
+         会让 orchestrator 静默走 early-exit、从而关掉该 Host 的全部记忆。
+         缺输入时保持 undefined，orchestrator 会退回 legacy（见其 ①a fail-safe）。 */
+      turn: { message: options.userMessage }
     };
     /* P21-R2-C：经 orchestrator（legacy path 委托同一份 core）。
        刻意**不**在 buildOpts 里放 turn ⇒ active behavior 始终是 legacy，

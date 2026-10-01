@@ -160,11 +160,19 @@ async function selectMemoryContext(apiId,opts){
       isGroup:opts.isGroup||false,
       groupMemEnabled:opts.groupMemEnabled||false,
       maxChars:opts.maxChars||memSettings.budget||core.DEFAULT_BUDGET_CHARS,
-      contentLen:memSettings.contentLen||core.DEFAULT_CONTENT_LEN
+      contentLen:memSettings.contentLen||core.DEFAULT_CONTENT_LEN,
+      /* P21-R2-D · 语义切换点：Host 正式传 turn。
+         message 取自**已存在的**明确参数 opts.userMessage（即本轮用户输入），
+         不重读 DOM、不读最后一条消息、不从 history 反推。
+         只传 message：isConversationOpen（coldStart）属 R2-E；
+         explicitRecallHint 由 turn-signal 自行判定，不在这里造第二套判断。
+         保留 undefined（不 `|| ''`）：缺输入应退回 legacy，
+         而不是被伪装成"用户发了空消息"而静默关掉记忆。 */
+      turn:{message:opts.userMessage}
     };
-    /* P21-R2-C：经 orchestrator（当前经 legacy path 委托同一份 core）。
-       刻意**不**在 _pickOpts 里放 turn ⇒ active behavior 始终是 legacy。
-       orchestrator 未加载时回落到下面那条既有的 core 直调，逐行为等价。 */
+    /* P21-R2-C 接线 + P21-R2-D 语义切换：经 orchestrator，且**传 turn**。
+       orchestrator 未加载时回落到下面那条既有的 core 直调（fail-open 兼容缝），
+       那时行为与接线前逐字节相同 —— 兼容层不因 R2-D 而删除。 */
     const _orch=_ibMemRecallOrchestrator();
     const picked=_orch?_orch.recall(all,_pickOpts).result:core.buildMemoryContext(all,_pickOpts);
     if(!picked||!picked.text)return {context:'',selectedIds:[],reason:picked?picked.reason:undefined};

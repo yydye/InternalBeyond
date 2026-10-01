@@ -30,6 +30,9 @@ const ROOT = path.resolve(__dirname, '..');
 const SERVICE = require(path.join(ROOT, 'services', 'home-node-service.js'));
 const MEMORY_RETRIEVAL = require(path.join(ROOT, 'services', 'home-node', 'memory-retrieval.js'));
 const MEMORY_RETRIEVAL_CORE = require(path.join(ROOT, 'assets', 'js', 'memory-retrieval-core.js'));
+/* P21-R2-D：浏览器侧与 Node 侧必须用**同一个** orchestrator 才能做"同一输入
+   同一结果"的对照 —— 否则比较的是 turn-aware 与 legacy 两种语义。 */
+const MEMORY_RECALL_ORCHESTRATOR = require(path.join(ROOT, 'assets', 'js', 'memory-recall', 'memory-recall-orchestrator.js'));
 const MOBILE_DTO = require(path.join(ROOT, 'assets', 'js', 'mobile-dto.js'));
 
 let passed = 0, failed = 0;
@@ -269,7 +272,7 @@ function mem(id, over) {
         title: '细节', content: M.memory2 + ' 细节内容。', importance: 9
       }),
       mem('mem_hidden', {
-        title: '她不该记得的', content: M.hidden + ' 这是用户对她隐藏的记忆。',
+        title: '她不该记得的', content: M.hidden + ' InternalBeyond 这是用户对她隐藏的记忆。',
         importance: 10, visibility: 'private', createdBy: CHARACTER_ID, createdByName: '昔涟'
       }),
       mem('mem_offbudget', {
@@ -317,24 +320,64 @@ function mem(id, over) {
 
     /* 反向对照：把隐藏记忆改为可见后，它**必须**出现 —— 证明 T3.3 不是"恒不出现"的假绿。 */
     const flipped = instance.memoryStore.putRecord(mem('mem_hidden', {
-      title: '她应该记得的', content: M.hidden + ' 现在这条是可见的。',
+      /* 内容含查询词 'InternalBeyond'：R2-D 起召回先过 Hard Gate，
+         若不含，本对照会被 gate 拒掉而不是被 ACL 拒掉 —— 那就测错了东西。 */
+      title: '她应该记得的', content: M.hidden + ' InternalBeyond 现在这条是可见的。',
       importance: 10, visibility: 'public', createdBy: CHARACTER_ID
     }));
     check('T3.6 对照准备：隐藏记忆改为可见', flipped.ok === true && flipped.outcome === 'updated', flipped);
+    /* T3.7 要证明的是"ACL 解除后这条记忆**可注入**"，而不是"它抢过 mem_marker"。
+       用一条**临时**高分记录（临时可见 + 高 memoryValue）来承载这个结论：
+       这样既不必去动 canonical 的 mem_hidden（改它的 activationCount 会
+       污染 T6.2/T6.3 的激活断言 —— 那是关于'哪条被选中'的断言），
+       也顺便证明"可见的高分记忆确实能进召回"（排除假绿）。
+       注意 putRecord 不能改 activationCount：那是遥测字段，内容未变时
+       store 的既有策略是 'skipped'（telemetry 不进 contentFingerprint），
+       因此这里改用 importance/arousal 直接抬 high memoryValue。 */
+    instance.memoryStore.putRecord(mem('mem_tmp_probe', {
+      title: '显卡与项目', content: 'TEMPPROBE-MARKER InternalBeyond 可注入性对照。',
+      importance: 10, arousal: 1
+    }));
+    const _probe = instance.memoryRetrieval.retrieve(CHARACTER_ID, { userMessage: 'InternalBeyond 项目' });
+    check('T3.7 对照：可见的高分记忆确实能进入召回（排除假绿）',
+      _probe.text.indexOf('TEMPPROBE-MARKER') > -1, _probe.text.slice(0, 200));
+    /* 用完立刻删除，保证 canonical 集合与 T3.3/T3.5 及 T6 的假设一致。
+       删除**必须被断言**而不是靠自觉：临时探头若残留，会污染后续
+       「激活只发生在被选中的记忆上」（T6.2）与「哪条被选中」的断言 ——
+       这正是 R2-D 开发中真实踩到过一次的坑（当时用 recordActivation
+       改了 canonical 的 mem_hidden，T6.2/T6.3 立刻变红）。 */
+    instance.memoryStore.deleteRecord('mem_tmp_probe');
+    check('T3.7b 临时探头已删除，canonical fixture 集未被污染',
+      !instance.memoryStore.getRecord('mem_tmp_probe')
+      && instance.memoryStore.listRecords({}).records.every(r => r.id !== 'mem_tmp_probe'),
+      JSON.stringify(instance.memoryStore.listRecords({}).records.map(r => r.id)));
+    /* 注意：retrieve() 的预算是**已发布的设置**优先（settings.budget），
+       options.maxChars 只在没有发布设置时生效 —— 因此要放宽预算必须
+       重新发布设置，而不是传 maxChars。T3.9 仍有效：
+       mem_offbudget 的内容约 5×200 字符，400 依然装不下。 */
+    await request(port, 'POST', '/memory/settings', {
+      headers: admin, body: { budget: 400, contentLen: 200 }
+    });
     const retrieved2 = instance.memoryRetrieval.retrieve(CHARACTER_ID, { userMessage: 'InternalBeyond 项目' });
     check('T3.7 对照：变可见后它能进入召回（排除假绿）',
       retrieved2.text.indexOf(M.hidden) > -1, retrieved2.text.slice(0, 200));
     /* 改回隐藏，后续用例继续验证它不出现。 */
     instance.memoryStore.putRecord(mem('mem_hidden', {
-      title: '她不该记得的', content: M.hidden + ' 这是用户对她隐藏的记忆。',
+      title: '她不该记得的', content: M.hidden + ' InternalBeyond 这是用户对她隐藏的记忆。',
       importance: 10, visibility: 'private', createdBy: CHARACTER_ID, createdByName: '昔涟'
     }));
 
     /* 与浏览器侧同一实现：同一输入必须给出同一结果（T5 visibility parity）。 */
-    const browserSide = MEMORY_RETRIEVAL_CORE.buildMemoryContext(instance.memoryStore.listRecords({}).records, {
+    /* P21-R2-D：两侧都必须走**同一个 orchestrator 的 turn 模式**。
+       R2-C 时两侧都等价于 core 直调；R2-D 起 production Host 传 turn
+       （早退 / Hard Gate / seat 上限都生效），因此把浏览器侧继续写成 core 直调，
+       比较的就不再是"同一实现"，而是"turn-aware vs legacy" ——
+       那是 semantic_delta 测试要回答的问题，不是本用例要证明的东西。 */
+    const browserSide = MEMORY_RECALL_ORCHESTRATOR.recall(instance.memoryStore.listRecords({}).records, {
       apiId: CHARACTER_ID, now: FIXED_MS, random: () => 0, userMessage: 'InternalBeyond 项目',
-      maxChars: 260, contentLen: 200
-    });
+      maxChars: 260, contentLen: 200,
+      turn: { message: 'InternalBeyond 项目' }
+    }).result;
     const nodeSide = instance.memoryRetrieval.retrieve(CHARACTER_ID, { userMessage: 'InternalBeyond 项目' });
     check('T3.8 浏览器与 Node 用**同一份**核心 → 同一输入给出同一选择',
       browserSide.selected.map(s => s.id).join(',') === nodeSide.selectedIds.join(','),

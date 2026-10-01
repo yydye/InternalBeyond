@@ -18,7 +18,9 @@ const T = require(path.join(ROOT, MODULE_REL));
 const ORCH = require(path.join(ROOT, 'assets/js/memory-recall/memory-recall-orchestrator.js'));
 /* P21-R2-C.1：truthfulness 测试需要一个**可信的** relBoost 参照 ——
    它就是唯一 lexical 实现 core.calcRelevance（不复制公式）。 */
-const CORE = require(path.join(ROOT, 'assets/js/memory-retrieval-core.js'));
+const CORE = require(path.join(ROOT, 'assets/js/memory-retrieval-core.js'))
+/* P21-R2-D：seat 词表由 seat-planner 定义（唯一来源，不在测试里复制字面量）。 */
+const SP = require(path.join(ROOT, 'assets/js/memory-recall/seat-planner.js'));
 
 let failures = 0;
 let passed = 0;
@@ -170,8 +172,20 @@ check('B2.finalScoreKeyStillPresent', mixed.trace.candidates.every(c =>
   'the key must remain (canonical Trace shape froze it) — only its value is null');
 check('B2.cooldownFactorIsOne', mixed.trace.candidates.every(c => c.cooldownFactor === 1),
   'R2-C has no cooldown module — the trace must not pretend otherwise');
-check('B2.seatIsLegacyHonest', mixed.trace.candidates.every(c => c.seat === 'legacy'),
-  'R2-C has no seat planner — the trace must not fabricate seats');
+/* ── ⚠ PHASE TRANSITION（R2-C → R2-D）────────────────────────────────────
+   R2-C 断言 `seat === 'legacy'`，因为那时**没有** seat planner，
+   任何别的值都是伪造。R2-D 有了 seat planner（pinned / primary），
+   因此断言升级为"seat 必须来自 seat-planner 的真实词表"。 */
+check('B2.seatIsFromRealVocabulary', mixed.trace.candidates.every(c =>
+  c.seat === SP.SEAT_PINNED || c.seat === SP.SEAT_PRIMARY || c.seat === 'legacy'),
+  'R2-D: seat must be pinned | primary (real evidence) — or legacy for rejected rows whose seat is unobservable');
+check('B2.selectedRowsCarryRealSeat', (() => {
+  const sel = mixed.trace.candidates.filter(c => c.decision === 'selected');
+  return sel.length > 0 && sel.every(c => c.seat === SP.SEAT_PINNED || c.seat === SP.SEAT_PRIMARY);
+})(), 'a selected row must carry a seat we can actually evidence');
+check('B2.noFabricatedFutureSeats', mixed.trace.candidates.every(c =>
+  ['exploration', 'dormant', 'glossary', 'reminisce', 'new-memory'].indexOf(c.seat) < 0),
+  'R2-D must not invent seats for modules that do not exist yet');
 check('B2.decisionIsFromFrozenVocabulary', mixed.trace.candidates.every(c =>
   T.DECISIONS.indexOf(c.decision) >= 0));
 check('B2.reasonsIsArray', mixed.trace.candidates.every(c => Array.isArray(c.reasons)));

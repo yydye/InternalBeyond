@@ -1,13 +1,13 @@
 {
-  "note": "P21-R2-A established this baseline (production memory runtime SHA-256). R2-C intentionally rewired assets/js/memory.js and services/home-node/memory-retrieval.js through the Recall Orchestrator (legacy path delegates to the same core), and their hashes were updated here as an explicit, reviewable change. Any OTHER production change to these files must likewise be an explicit update to this file.",
+  "note": "P21-R2-A established this baseline (production memory runtime SHA-256). R2-C rewired assets/js/memory.js and services/home-node/memory-retrieval.js through the Recall Orchestrator (legacy path, byte-identical semantics). R2-D rewired the same two files again to PASS turn (user-visible semantic cutover) and updated their hashes here as an explicit, reviewable change. Any OTHER production change to these files must likewise be an explicit update to this file.",
   "files": {
-    "assets/js/memory.js": "6C9829E5E7FB2612175CADE21DE935E32E6EFF76C9CAD811E75EC9EBF5FD128C",
+    "assets/js/memory.js": "95960FC863C53CBB88F42ACA0934C033E4DB1F57A0CFFB422EC00F194D6910D4",
     "assets/js/memory-contract.js": "AF493100CDB37313A8BE01A101F5E787809019CB9DAD67CB03E210C1005EC2C9",
     "assets/js/memory-retrieval-core.js": "CC578F2640C68CEA4992389AAC1C2A7D7B8AD9BFAC4311AFB51FB6AA0DCE5B72",
     "assets/js/memory-visibility-core.js": "95F8425CB01C899C4EA132C672606F5A3D1458BBF86E0E955A55CA69937E24C3",
     "assets/js/communication.js": "10E62E840567CAAF1914330EF234FF12DD6DE5EBF7D773CB260B4AE360531E08",
     "assets/js/home-node-bootstrap.js": "433BE876AEA4778FF46C35C204D50D3188065326C322E1A4FE493BE420F95EBF",
-    "services/home-node/memory-retrieval.js": "BE82B4B43DC5B9DAD4801FE0FC9BADA1B3BB0F68B6B3FA3553F01ABEA1CC1722",
+    "services/home-node/memory-retrieval.js": "75231668C58E3BA37B495BFDD8E6ACB35C2EAB04D252F8FEFAA79F3132C57BA2",
     "services/home-node/memory-store.js": "9CF07B4714D89567551241CF06248DAE773C2F76B698D81F997E12ECE10DA180",
     "assets/js/memory-authority.js": "68AD041E03D61CFCFD0EFA7259E97E646CEBE3FF4380A04B5426A6B098663FDD",
     "assets/js/memory/auto-memory.js": "1D3E692457B80F923ECFCE02C6BD88202EDC082B208FC261B18F02CB564B0101"

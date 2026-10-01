@@ -140,34 +140,32 @@ CURRENT_REASONS.forEach(r => {
 check('R.currentSuccessReasonIsNull',
   /reason:\s*null/.test(RETRIEVAL_TEXT),
   'successful recall must still report reason: null');
-/* ── PHASE TRANSITION（R2-B → R2-C，有意更新，不是 regression）────────────
-   旧断言（R2-B）R.newReasonsAreNotYetInProduction：
-     断言 'early-exit' / 'gate-rejected' 在生产代码里**根本不存在**。
+/* ── PHASE TRANSITION 链（R2-B → R2-C → R2-D，每一步都是有意更新）────────
+   R2-B：`R.newReasonsAreNotYetInProduction` —— 断言两个新 reason 在
+         生产代码里**根本不存在**。
+   R2-C：升级为 `R.newReasonsImplementedInOrchestrator`（已实现）
+         + `R.newReasonsNotProducedByActiveLegacyPath`（legacy 路径不产出）。
+   R2-D：语义切换**正式发生**，因此后者的判据再次升级为：
+         production 的 **turn-aware 模式**确实产出它们，
+         而 **legacy 兼容路径**（不传 turn）仍然不产出。
 
-   R2-C 的目标就是让 Orchestrator 实现这两个 reason，因此"代码里不存在"
-   这条判据按设计失效。它被升级为两条更准确的：
-
-     R.newReasonsImplementedInOrchestrator
-        —— 两个 reason 已在 orchestrator 里实现。
-     R.newReasonsNotProducedByActiveLegacyPath
-        —— **active legacy path 从不产出它们**。
-
-   为什么最后一条才是真正要守的东西：用户可见行为由 **active path** 决定，
-   而不是由"代码里有没有这个字符串"决定。R2-C 允许 orchestrator 存在新语义，
-   但不允许 production 的 legacy 调用产出新 reason —— 那是 R2-D 的事。 */
+   为什么这条断言要跟着改而不是删掉：它守的是"用户可见行为由谁决定"。
+   R2-C 时答案是 legacy；R2-D 时答案变成 turn-aware。
+   把它删掉就等于放弃这条守护；把它留着不改则会在 R2-D 的**目标**上变红。
+   因此正确的动作是把它换成**R2-D 的真话**。 */
 const ORCH_PATH = 'assets/js/memory-recall/memory-recall-orchestrator.js';
 const ORCH_TEXT = fs.existsSync(path.join(ROOT, ORCH_PATH)) ? read(ORCH_PATH) : '';
 
 check('R.newReasonsImplementedInOrchestrator',
   ORCH_TEXT.indexOf("REASON_EARLY_EXIT = 'early-exit'") >= 0
   && ORCH_TEXT.indexOf("REASON_GATE_REJECTED = 'gate-rejected'") >= 0,
-  'R2-C must implement the two new reasons in the orchestrator');
+  'R2-C implemented the two new reasons in the orchestrator');
 
-/* 真判据：直接执行 production wrapper 的 legacy 路径（**不传 turn**）。 */
-check('R.newReasonsNotProducedByActiveLegacyPath', (() => {
-  if (!ORCH_TEXT) return false;
+/* ── R2-D：production semantic mode 是 turn-aware ─────────────────────── */
+(function r2dSemanticMode() {
+  if (!ORCH_TEXT) { check('R.r2dOrchestratorPresent', false); return; }
   let ORCH;
-  try { ORCH = require(path.join(ROOT, ORCH_PATH)); } catch (e) { return false; }
+  try { ORCH = require(path.join(ROOT, ORCH_PATH)); } catch (e) { check('R.r2dOrchestratorLoads', false); return; }
   const now = 1750000000000;
   const day = 86400000;
   const mk = (o) => Object.assign({
@@ -175,35 +173,70 @@ check('R.newReasonsNotProducedByActiveLegacyPath', (() => {
     activationCount: 0, created: now - day, lastActivated: now - day,
     visibility: 'public', tags: [], domain: '日常'
   }, o || {});
-  /* 覆盖面刻意拉满：空库 / 无命中 / 全私密 / 正常命中 / 预算打满 /
-     早退短语 / 纯 emoji / 空消息 —— 全部**不传 turn**（这就是 active legacy path）。 */
-  const cases = [
-    [[], {}],
-    [[mk({ id: 'a', title: 'zzz', content: 'qqq' })], { userMessage: '完全无关' }],
+  const base = {
+    apiId: 'role_a', now: now, random: () => 0.42, isGroup: false,
+    groupMemEnabled: false, maxChars: 2000, contentLen: 200
+  };
+  const turnCall = (recs, msg) => ORCH.recall(recs, Object.assign({}, base, {
+    userMessage: msg, turn: { message: msg }
+  }));
+  const legacyCall = (recs, msg) => ORCH.recall(recs, Object.assign({}, base, {
+    userMessage: msg, turn: null
+  }));
+
+  const gpu = mk({ id: 'gpu', title: '显卡', content: 'RTX 5070 Ti' });
+  const noise = mk({ id: 'noise', title: '量子', content: '退相干时间' });
+
+  /* ① turn-aware：可产出 early-exit */
+  const ack = turnCall([gpu], '嗯');
+  check('R.r2dTurnModeProducesEarlyExit',
+    ack.result.reason === 'early-exit' && ack.result.count === 0,
+    'got ' + ack.result.reason);
+  /* ② turn-aware：可产出 gate-rejected */
+  const unrel = turnCall([gpu], '量子纠缠的退相干时间');
+  check('R.r2dTurnModeProducesGateRejected',
+    unrel.result.reason === 'gate-rejected' && unrel.result.count === 0,
+    'got ' + unrel.result.reason);
+  /* ③ turn-aware：相关输入正常产出 */
+  const rel = turnCall([gpu], '显卡怎么样');
+  check('R.r2dTurnModeProducesNormalResult',
+    rel.result.reason === null && rel.result.count === 1 && rel.trace.channel === 'surface',
+    JSON.stringify({ reason: rel.result.reason, count: rel.result.count, channel: rel.trace.channel }));
+
+  /* ④ legacy 兼容路径：仍然**不产出**两个新 reason（R2-C 的守护仍然成立） */
+  const legacyCases = [
+    [[], {}], [[gpu], { userMessage: '量子纠缠的退相干时间' }],
     [[mk({ id: 'p', visibility: 'private' })], { userMessage: 'x' }],
-    [[mk({ id: 'a', title: '显卡', content: '显卡' })], { userMessage: '显卡' }],
-    [Array.from({ length: 20 }, (_, i) => mk({ id: 'e' + i, content: 'z'.repeat(200) })), { maxChars: 200 }],
-    [[mk({ id: 'a' })], { userMessage: '嗯' }],
-    [[mk({ id: 'a' })], { userMessage: '😂' }],
-    [[mk({ id: 'a' })], { userMessage: '' }]
+    [[gpu], { userMessage: '显卡' }], [[gpu], { userMessage: '嗯' }],
+    [[gpu], { userMessage: '😂' }], [[gpu], { userMessage: '' }]
   ];
-  const seen = new Set();
-  for (const [recs, over] of cases) {
-    const out = ORCH.recall(recs, Object.assign({
-      apiId: 'role_a', now: now, random: () => 0.42, userMessage: '',
-      isGroup: false, groupMemEnabled: false, maxChars: 2000, contentLen: 200
-    }, over || {}));
-    seen.add(String(out.result.reason));
-    if (out.result.reason === 'early-exit' || out.result.reason === 'gate-rejected') return false;
-    if (out.meta.mode !== 'legacy') return false;
+  let legacyClean = true;
+  const legacySeen = new Set();
+  for (const [recs, over] of legacyCases) {
+    const out = legacyCall(recs, over.userMessage == null ? '' : over.userMessage);
+    legacySeen.add(String(out.result.reason));
+    if (out.result.reason === 'early-exit' || out.result.reason === 'gate-rejected') legacyClean = false;
+    if (out.meta.mode !== 'legacy') legacyClean = false;
   }
-  /* 覆盖度自检：必须真的跑到过 legacy 的既有 reason，
-     否则"没有新 reason"可能只是因为什么都没跑到。 */
-  return seen.has('null') && seen.has('no-visible-memory');
-})(), 'the active legacy path must never produce early-exit / gate-rejected (that is R2-D)');
-check('R.reverseControl.legacyReasonVocabularyIsReachable',
-  /reason:\s*'no-visible-memory'/.test(RETRIEVAL_TEXT),
-  'reverse control: the probe fixtures must be able to exercise a real legacy reason');
+  check('R.legacyPathStillDoesNotProduceNewReasons', legacyClean,
+    'the R2-C compatibility layer must keep its old semantics');
+  check('R.legacyPathVocabularyReachable',
+    legacySeen.has('null') && legacySeen.has('no-visible-memory'),
+    'coverage self-check: the legacy probes must actually exercise real legacy reasons — '
+    + JSON.stringify(Array.from(legacySeen)));
+
+  /* ⑤ fail-safe：turn 存在但 message 缺失 ⇒ legacy-fallback，不是 early-exit */
+  const fb = ORCH.recall([gpu], Object.assign({}, base, { userMessage: '显卡', turn: {} }));
+  check('R.turnWithoutMessageFallsBackToLegacy',
+    fb.meta.mode === 'legacy-fallback' && fb.meta.turnUsable === false
+    && fb.result.reason !== 'early-exit',
+    JSON.stringify({ mode: fb.meta.mode, reason: fb.result.reason }));
+
+  /* ⑥ 反向控制：判据必须能发现"turn-aware 没生效"。 */
+  check('R.reverseControl.turnAwareDetectorIsLive',
+    legacyCall([gpu], '嗯').result.reason !== 'early-exit',
+    'reverse control: without turn the early-exit must NOT fire');
+})();
 
 CURRENT_REASONS.concat(['early-exit', 'gate-rejected']).forEach(r => {
   /* 词表条目可能写作 `'no-budget'`（代码字面量）或 `no-budget`（表格单元格）。

@@ -314,6 +314,17 @@ const GROUPS = [
       ['test_memory_recall_orchestrator.js'],
       ['test_memory_recall_legacy_parity.js'],
       ['test_memory_recall_two_host_parity.js'],
+      /* P21-R2-D：Surface + Recall 语义切换（**用户可见行为第一次改变**）。
+         Host 正式传 turn.message；channel-policy 实现 surface / recall
+         （glossary / coldStart / reminisce 显式 future，fail closed，不静默
+         映射成 surface）；seat-planner 施加通道**产品预算**上限
+         （surface 3 / recall 5，不是相关性阈值）。
+         semantic_delta 是本阶段的**硬门**：每个 fixture 先声明
+         EXPECTED SAME | CHANGED，再测实际 delta —— 未批准的变化即 regression。
+         legacy 兼容层不删除（不传 turn 仍逐字节等价，29 fixtures 仍绿）。 */
+      ['test_memory_recall_channels.js'],
+      ['test_memory_recall_seats.js'],
+      ['test_memory_recall_semantic_delta.js'],
       /* M1-C.2m：canonical Understanding —— 存储/修订链/CAS/单活不变量/更正契约
          （纯 Node + 真 SQLite + 临时数据目录，零网络、零浏览器）。 */
       ['test_understanding_contract_closure.js'],

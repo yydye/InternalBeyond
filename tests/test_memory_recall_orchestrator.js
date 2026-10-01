@@ -377,10 +377,18 @@ check('G4.envelopeKeysClosed', (() => {
   return JSON.stringify(Object.keys(out).sort()) === JSON.stringify(expected);
 })());
 check('G5.metaKeysClosed', (() => {
-  const out = ORCH.recall([mem({ id: 'a' })], BASE);
-  const expected = ['mode', 'consulted', 'channel'].sort();
-  return JSON.stringify(Object.keys(out.meta).sort()) === JSON.stringify(expected);
-})());
+  /* legacy 与 turn 两种模式各自有固定的 meta 键集（R2-D 为 turn 模式
+     新增 turnUsable / channelSupported 等**如实报告**字段）。 */
+  const legacyKeys = ['mode', 'consulted', 'channel', 'turnUsable'].sort();
+  const turnKeys = ['mode', 'consulted', 'channel', 'turnUsable', 'decisionSource',
+    'channelSupported', 'channelImplemented', 'channelUnsupportedReason', 'earlyExitReason'].sort();
+  const legacy = ORCH.recall([mem({ id: 'a' })], BASE);
+  const turn = ORCH.recall([mem({ id: 'a', title: '显卡', content: '显卡' })], withTurn('显卡'));
+  const lk = Object.keys(legacy.meta).sort();
+  const tk = Object.keys(turn.meta).sort();
+  return lk.every(k => legacyKeys.indexOf(k) >= 0) && tk.every(k => turnKeys.indexOf(k) >= 0)
+    && lk.indexOf('mode') >= 0 && lk.indexOf('consulted') >= 0 && lk.indexOf('channel') >= 0;
+})(), 'meta keys must stay within the documented set for each mode');
 check('G6.modeVocabularyClosed',
   ['legacy', 'turn'].indexOf(ORCH.recall([mem({ id: 'a' })], BASE).meta.mode) >= 0
   && ['legacy', 'turn'].indexOf(ORCH.recall([mem({ id: 'a' })], withTurn('显卡')).meta.mode) >= 0);
@@ -393,14 +401,17 @@ check('G7.dependenciesAreInjectedNotHostImports', (() => {
     .replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
   const reqs = (src.match(/require\s*\(\s*'([^']+)'\s*\)/g) || []).map(s => s.slice(s.indexOf("'") + 1, s.lastIndexOf("'")));
   const allowed = ['../memory-retrieval-core.js', '../memory-visibility-core.js',
-    './turn-signal.js', './recall-query.js', './recall-trace.js', './scoring.js'];
+    './turn-signal.js', './recall-query.js', './recall-trace.js', './scoring.js',
+    './channel-policy.js', './seat-planner.js'];
   return reqs.length > 0 && reqs.every(r => allowed.indexOf(r) >= 0);
 })(), 'the orchestrator may only depend on the shared core and its sibling recall modules');
 check('G7b.noHostOrReverseDependency', (() => {
   const src = fs.readFileSync(path.join(ROOT, 'assets/js/memory-recall/memory-recall-orchestrator.js'), 'utf8');
   const bare = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
-  return !/communication\.js|home-node|memory\.js|channel-policy|seat-planner|cooldown/.test(bare);
-})(), 'no Host import, and no future-phase module may be referenced yet');
+  /* R2-D 起 channel-policy / seat-planner 已实现并被依赖；
+     cooldown 仍属 R2-F，不得出现。 */
+  return !/communication\.js|home-node|memory\.js|cooldown\.js/.test(bare);
+})(), 'no Host import, and R2-F modules must not be referenced yet');
 check('G8.coreMissingFailsOpenNotThrows', (() => {
   const spy = ORCH.createOrchestrator({ core: null });
   const out = spy.recall([mem({ id: 'a' })], BASE);

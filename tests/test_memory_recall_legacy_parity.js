@@ -271,13 +271,35 @@ check('W4.homeNodeRequiresOrchestrator',
 check('W5.homeNodeKeepsCoreFallback',
   /MEMORY_RETRIEVAL\.buildMemoryContext\(page\.records \|\| \[\], buildOpts\)/.test(NODE_SRC),
   'Home Node must keep a core fallback');
-/* Host 不得传 turn —— 这是 R2-C 的核心安全条件。 */
-check('W6.memoryJsDoesNotPassTurn',
-  !/turn\s*:/.test(MEMORY_SRC.slice(MEMORY_SRC.indexOf('_pickOpts'), MEMORY_SRC.indexOf('_pickOpts') + 900)),
-  'browser Host must NOT pass turn in _pickOpts');
-check('W7.homeNodeDoesNotPassTurn',
-  !/turn\s*:/.test(NODE_SRC.slice(NODE_SRC.indexOf('const buildOpts'), NODE_SRC.indexOf('const buildOpts') + 900)),
-  'Home Node Host must NOT pass turn in buildOpts');
+/* ── ⚠ PHASE TRANSITION（R2-C → R2-D，有意更新，不是 regression）──────────
+   R2-C 这里断言的是"Host **不**传 turn"（架构切换、语义不变）。
+   R2-D 的目标恰恰是让 Host **传** turn，因此那两条断言按设计失效 ——
+   它们已被 test_memory_recall_wiring_guard.js 的 §A4 取代，那里断言的
+   是更准确的东西：传的是**当前用户输入**、且不 `|| ''` 归一化、且不传
+   本轮未实现的通道状态。
+   本文件**不再**重复那条已迁移的断言 —— 但下面两条新的断言证明
+   "legacy 兼容层仍在"：这是 R2-D 明确要求保留的（§22）。 */
+check('W6.hostsNowPassTurn',
+  /turn\s*:\s*\{\s*message\s*:/.test(MEMORY_SRC) && /turn\s*:\s*\{\s*message\s*:/.test(NODE_SRC),
+  'R2-D: both Hosts pass turn (asserted precisely in the wiring guard §A4)');
+check('W7.legacyPathStillReachableWithoutTurn', (() => {
+  /* 兼容层不因语义切换而删除：不传 turn ⇒ 仍走 legacy，且结果与 core 相同。 */
+  const rows = [mem({ id: 'a', title: '显卡', content: '显卡选购' })];
+  const opts = Object.assign({}, BASE, { userMessage: '显卡' });
+  const legacy = CORE.buildMemoryContext(rows, opts);
+  const viaOrch = ORCH.recall(rows, opts);
+  return viaOrch.meta.mode === 'legacy'
+    && JSON.stringify(viaOrch.result) === JSON.stringify(legacy);
+})(), 'the R2-C compatibility layer must survive the R2-D cutover');
+check('W7b.turnUnavailableFallsBackToLegacyNotEarlyExit', (() => {
+  /* fail-safe：turn 存在但 message 缺失 ⇒ legacy，**不是** early exit。
+     这是 R2-D 新冻结的语义（缺输入 ≠ 用户发了空消息）。 */
+  const rows = [mem({ id: 'a', title: '显卡', content: '显卡选购' })];
+  const opts = Object.assign({}, BASE, { userMessage: '显卡', turn: {} });
+  const out = ORCH.recall(rows, opts);
+  return out.meta.mode === 'legacy-fallback' && out.meta.turnUsable === false
+    && out.result.reason !== 'early-exit' && out.result.count > 0;
+})(), 'a missing message must never be silently treated as an empty user turn');
 
 /* ══════════════════════════════════════════════════════════════════════ */
 

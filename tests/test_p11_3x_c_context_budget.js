@@ -340,7 +340,7 @@ const BOOT_INSTRUMENT = `
         const act = await ev(cdp, `(async function(){
           window.__seedWorld({messages:10,memories:600});
           window.__ibProbe.reset();var t0=performance.now();
-          var c=await getMemoryContext('x3c',{userMessage:'测试查询'});
+          var c=await getMemoryContext('x3c',{userMessage:'X3C_MEM'});
           var dt=performance.now()-t0;
           var ro=window.__ibProbe.count('memories','readonly'), rw=window.__ibProbe.count('memories','readwrite');
           return {ms:Math.round(dt),ro:ro,rw:rw,ctx:String(c).length} })()`);
