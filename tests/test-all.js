@@ -283,6 +283,21 @@ const GROUPS = [
          断言分 [CONTRACT]（契约文本）与 [CURRENT]（当前代码事实，记录现状、
          在现状变化时变红）。纯 Node、零浏览器、零网络。 */
       ['test_memory_recall_contract.js'],
+      /* P21-R2-B：Turn Signal / Early Exit + Deterministic Query Construction。
+         两个新模块（assets/js/memory-recall/turn-signal.js 与 recall-query.js）是
+         **implemented but unwired** 的纯函数：零 IO / 零时钟 / 零随机 / 零 LLM，
+         lexicalTerms 依赖注入复用 memory-retrieval-core.js 的 extractKeywords
+         （不复制第二套 n-gram 实现）。
+         early-exit 部分钉住 R2-B 冻结的优先级（host-forced → coldStart →
+         explicit recall → semantic payload → early exit）以及"绝不按长度判断"、
+         "只做 normalized exact match（不 substring）"两条纪律；
+         query 部分钉住归一化 / boilerplate 去噪（保护引号段）/ entities /
+         temporal hints / aliases / 有界输入 / 确定性；wiring guard 证明生产面
+         零引用，并把 R2-A 的 141 条契约断言作为子进程回归跑一遍。
+         纯 Node、零浏览器、零网络。 */
+      ['test_memory_recall_early_exit.js'],
+      ['test_memory_recall_query.js'],
+      ['test_memory_recall_wiring_guard.js'],
       /* M1-C.2m：canonical Understanding —— 存储/修订链/CAS/单活不变量/更正契约
          （纯 Node + 真 SQLite + 临时数据目录，零网络、零浏览器）。 */
       ['test_understanding_contract_closure.js'],
