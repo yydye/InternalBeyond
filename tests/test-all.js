@@ -369,6 +369,10 @@ const GROUPS = [
       ['test_memory_recall_r2f_cooldown_baseline.js'],
       ['test_memory_recall_r2f_cooldown_delta.js'],
       ['test_memory_recall_cooldown_hosts.js'],
+      /* P21-R3-B：Offline MemoryValue calibration harness。只调用 production Legacy
+         scorer 做 baseline；A/B/C 是 tests-only shadow candidates，配 synthetic fixtures，
+         有限域 fuzz、producer-default matrix 与 pairwise/top-K comparison；不接 selection。 */
+      ['test_memory_value_v2_calibration.js'],
       /* M1-C.2m：canonical Understanding —— 存储/修订链/CAS/单活不变量/更正契约
          （纯 Node + 真 SQLite + 临时数据目录，零网络、零浏览器）。 */
       ['test_understanding_contract_closure.js'],

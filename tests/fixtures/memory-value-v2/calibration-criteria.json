@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "phase": "P21-R3-C",
+  "status": "FROZEN EVALUATION CRITERIA",
+  "scope": "tests and synthetic fixtures only",
+  "hardGates": [
+    {"id":"C1","criterion":"finite and deterministic output","measurement":"finite value/components; repeated same input deep-equals"},
+    {"id":"C2","criterion":"no query leakage","measurement":"same record and now across query variants has identical value"},
+    {"id":"C3","criterion":"no cooldown leakage","measurement":"exposure/cooldown/turn metadata changes do not change value"},
+    {"id":"C4","criterion":"no ACL leakage","measurement":"visibility/group ACL changes do not change value"},
+    {"id":"C5","criterion":"preserve valid zero values","measurement":"arousal 0 is accepted as 0; declared zero-valued fields have explicit policy"},
+    {"id":"C6","criterion":"activation monotonicity","measurement":"increase nonnegative activationCount at fixed other inputs never lowers value"},
+    {"id":"C7","criterion":"age monotonicity","measurement":"increase valid nonnegative age never raises value"},
+    {"id":"C8","criterion":"bounded activation contribution","measurement":"activation component remains finite with an explicit finite bound"},
+    {"id":"C9","criterion":"bounded emotion contribution","measurement":"emotion component remains finite and within an explicit range"},
+    {"id":"C10","criterion":"explicit missing-value semantics","measurement":"each normalized input reports effective value and reason"},
+    {"id":"C11","criterion":"created/createdAt compatibility","measurement":"createdAt-only input is treated by the declared alias rule"},
+    {"id":"C12","criterion":"no future-time amplification","measurement":"future timestamp is floored/normalized and cannot raise age factor above its age-zero value"},
+    {"id":"C13","criterion":"producer-neutral with intrinsic fields fixed","measurement":"source/type-only pairs have identical values"},
+    {"id":"C14","criterion":"explainable components","measurement":"output includes importance, activation, decay, emotion and effective input reasons"},
+    {"id":"C16","criterion":"schema remains unchanged","measurement":"candidate diff does not touch schema/version/migration paths"},
+    {"id":"C17","criterion":"no new durable authority","measurement":"candidate is a pure record+now function with no I/O or state"}
+  ],
+  "softMetrics": [
+    {"id":"C15","criterion":"small parameter count","measurement":"count tunable constants and normalization rules; no pass threshold is invented"},
+    {"id":"C18","criterion":"stable long-age behavior","measurement":"report age curves, score ties, and distinguishability windows through 10 years"},
+    {"id":"C19","criterion":"limited unnecessary rank churn","measurement":"report pair inversions, top-K set changes, Spearman and Kendall by synthetic family"},
+    {"id":"C20","criterion":"discrimination where Legacy debt exists","measurement":"identify axes and pairs where candidates mechanically diverge; no preferred ordering label"}
+  ],
+  "decisionRule": {
+    "hardGateFailure": "candidate is rejected; soft metrics cannot compensate",
+    "selection": "requires explicit tradeoff evidence and a canonical product rule; no weighted aggregate score",
+    "noSelectionIsValid": true,
+    "humanPreferenceLabels": false
+  }
+}

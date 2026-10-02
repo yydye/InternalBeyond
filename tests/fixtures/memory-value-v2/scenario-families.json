@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "phase": "P21-R3-C",
+  "dataset": "synthetic-only",
+  "now": 1750000000000,
+  "notes": [
+    "Each family is a discrimination fixture, not a correct-answer label.",
+    "No user content or human-preference winner field is included.",
+    "ageDays is expanded by the evaluator into created and lastActivated timestamps unless timestampMode overrides it."
+  ],
+  "scenarioFamilies": [
+    {"id":"S1","name":"recent mundane vs old important","mode":"tradeoff","members":[
+      {"id":"recent-mundane","ageDays":0,"fields":{"importance":3,"arousal":0.3,"activationCount":0,"resolved":false}},
+      {"id":"old-important","ageDays":30,"fields":{"importance":10,"arousal":0.3,"activationCount":0,"resolved":false}}]},
+    {"id":"S2","name":"recent low importance vs older high activation","mode":"tradeoff","members":[
+      {"id":"recent-low","ageDays":0,"fields":{"importance":4,"arousal":0.3,"activationCount":0,"resolved":false}},
+      {"id":"older-high-activation","ageDays":7,"fields":{"importance":5,"arousal":0.3,"activationCount":300,"resolved":false}}]},
+    {"id":"S3","name":"resolved high importance vs unresolved medium","mode":"tradeoff","members":[
+      {"id":"resolved-high","ageDays":30,"fields":{"importance":10,"arousal":0.3,"activationCount":0,"resolved":true}},
+      {"id":"unresolved-medium","ageDays":30,"fields":{"importance":6,"arousal":0.3,"activationCount":0,"resolved":false}}]},
+    {"id":"S4","name":"high emotion vs high importance","mode":"tradeoff","members":[
+      {"id":"high-emotion","ageDays":0,"fields":{"importance":4,"arousal":1,"activationCount":0,"resolved":false}},
+      {"id":"high-importance","ageDays":0,"fields":{"importance":8,"arousal":0,"activationCount":0,"resolved":false}}]},
+    {"id":"S5","name":"never activated old vs frequently activated old","mode":"tradeoff","members":[
+      {"id":"never-activated","ageDays":30,"fields":{"importance":5,"arousal":0.3,"activationCount":0,"resolved":false}},
+      {"id":"frequently-activated","ageDays":30,"fields":{"importance":5,"arousal":0.3,"activationCount":500,"resolved":false}}]},
+    {"id":"S6","name":"same intrinsic fields across producers","mode":"source-control","members":[
+      {"id":"same-as-manual","ageDays":7,"fields":{"importance":5,"arousal":0.3,"activationCount":10,"resolved":false,"source":"manual","rawSource":"manual","kind":"episodic"}},
+      {"id":"same-as-blog","ageDays":7,"fields":{"importance":5,"arousal":0.3,"activationCount":10,"resolved":false,"source":"blog","rawSource":"blog","kind":"episodic"}},
+      {"id":"same-as-role-dm","ageDays":7,"fields":{"importance":5,"arousal":0.3,"activationCount":10,"resolved":false,"source":"role_dm","rawSource":"role_dm","kind":"episodic"}}]},
+    {"id":"S7","name":"future timestamp malformed","mode":"boundary","members":[
+      {"id":"future-one-day","ageDays":0,"timestampMode":"future-last-activated","futureDays":1,"fields":{"importance":5,"arousal":0.3,"activationCount":0,"resolved":false}},
+      {"id":"future-thirty-days","ageDays":0,"timestampMode":"future-last-activated","futureDays":30,"fields":{"importance":5,"arousal":0.3,"activationCount":0,"resolved":false}}]},
+    {"id":"S8","name":"imported sparse metadata","mode":"boundary","members":[
+      {"id":"sparse-no-time","ageDays":0,"timestampMode":"omit-times","fields":{"importance":5}},
+      {"id":"sparse-created-alias","ageDays":30,"timestampMode":"createdAt-only","fields":{"importance":5,"arousal":0.3,"activationCount":0,"resolved":false}}]},
+    {"id":"S9","name":"createdAt-only alias","mode":"boundary","members":[
+      {"id":"createdAt-only","ageDays":30,"timestampMode":"createdAt-only","fields":{"importance":5,"arousal":0.3,"activationCount":0,"resolved":false}},
+      {"id":"created-field","ageDays":30,"timestampMode":"normal","fields":{"importance":5,"arousal":0.3,"activationCount":0,"resolved":false}}]},
+    {"id":"S10","name":"zero arousal","mode":"single-axis","members":[
+      {"id":"arousal-zero","ageDays":0,"fields":{"importance":5,"arousal":0,"activationCount":0,"resolved":false}},
+      {"id":"arousal-epsilon","ageDays":0,"fields":{"importance":5,"arousal":0.001,"activationCount":0,"resolved":false}}]},
+    {"id":"S11","name":"zero importance malformed","mode":"boundary","members":[
+      {"id":"importance-zero","ageDays":0,"fields":{"importance":0,"arousal":0.3,"activationCount":0,"resolved":false}},
+      {"id":"importance-one","ageDays":0,"fields":{"importance":1,"arousal":0.3,"activationCount":0,"resolved":false}}]},
+    {"id":"S12","name":"extreme activation count","mode":"single-axis","members":[
+      {"id":"activation-1000","ageDays":0,"fields":{"importance":5,"arousal":0.3,"activationCount":1000,"resolved":false}},
+      {"id":"activation-5000","ageDays":0,"fields":{"importance":5,"arousal":0.3,"activationCount":5000,"resolved":false}}]}
+  ]
+}

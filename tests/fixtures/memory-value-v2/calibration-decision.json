@@ -1,0 +1,158 @@
+{
+  "schemaVersion": 1,
+  "phase": "P21-R3-C",
+  "status": "CLOSED",
+  "formulaSelection": "NONE",
+  "currentFixtureDiscrimination": "INSUFFICIENT",
+  "measuredCandidateDivergence": true,
+  "selectedCandidate": null,
+  "formulaVersion": null,
+  "frozenFormula": null,
+  "candidates": {
+    "A": "CONTROL ONLY · SHADOW · NOT PRODUCTION · NOT FROZEN · NO CUTOVER",
+    "B": "NOT SELECTED · SHADOW · NOT PRODUCTION · NOT FROZEN · NO CUTOVER",
+    "C": "NOT SELECTED · SHADOW · NOT PRODUCTION · NOT FROZEN · NO CUTOVER"
+  },
+  "hardGates": {
+    "A": {
+      "C1_finiteDeterministic": true,
+      "C2_queryLeakage": true,
+      "C3_cooldownLeakage": true,
+      "C4_aclLeakage": true,
+      "C5_validZero": true,
+      "C6_activationMonotonic": true,
+      "C7_ageMonotonic": true,
+      "C8_activationBounded": true,
+      "C9_emotionBounded": true,
+      "C10_missingSemantics": true,
+      "C11_createdAlias": true,
+      "C12_noFutureAmplification": true,
+      "C13_sourceNeutral": true,
+      "C14_explainableComponents": true,
+      "C16_schemaUnchanged": true,
+      "C17_pureNoAuthority": true,
+      "scopeEvidence": {
+        "changedPathCount": 8,
+        "changedPaths": [
+          "tests/test-all.js",
+          "tests/fixtures/memory-value-v2/calibration-criteria.json",
+          "tests/fixtures/memory-value-v2/calibration-decision.json",
+          "tests/fixtures/memory-value-v2/cases.json",
+          "tests/fixtures/memory-value-v2/producer-defaults.json",
+          "tests/fixtures/memory-value-v2/scenario-families.json",
+          "tests/helpers/memory-value-v2-calibration.js",
+          "tests/test_memory_value_v2_calibration.js"
+        ],
+        "productionPathCount": 0,
+        "productionPaths": [],
+        "schemaPathCount": 0,
+        "schemaPaths": []
+      },
+      "passed": true
+    },
+    "B": {
+      "C1_finiteDeterministic": true,
+      "C2_queryLeakage": true,
+      "C3_cooldownLeakage": true,
+      "C4_aclLeakage": true,
+      "C5_validZero": true,
+      "C6_activationMonotonic": true,
+      "C7_ageMonotonic": true,
+      "C8_activationBounded": true,
+      "C9_emotionBounded": true,
+      "C10_missingSemantics": true,
+      "C11_createdAlias": true,
+      "C12_noFutureAmplification": true,
+      "C13_sourceNeutral": true,
+      "C14_explainableComponents": true,
+      "C16_schemaUnchanged": true,
+      "C17_pureNoAuthority": true,
+      "scopeEvidence": {
+        "changedPathCount": 8,
+        "changedPaths": [
+          "tests/test-all.js",
+          "tests/fixtures/memory-value-v2/calibration-criteria.json",
+          "tests/fixtures/memory-value-v2/calibration-decision.json",
+          "tests/fixtures/memory-value-v2/cases.json",
+          "tests/fixtures/memory-value-v2/producer-defaults.json",
+          "tests/fixtures/memory-value-v2/scenario-families.json",
+          "tests/helpers/memory-value-v2-calibration.js",
+          "tests/test_memory_value_v2_calibration.js"
+        ],
+        "productionPathCount": 0,
+        "productionPaths": [],
+        "schemaPathCount": 0,
+        "schemaPaths": []
+      },
+      "passed": true
+    },
+    "C": {
+      "C1_finiteDeterministic": true,
+      "C2_queryLeakage": true,
+      "C3_cooldownLeakage": true,
+      "C4_aclLeakage": true,
+      "C5_validZero": true,
+      "C6_activationMonotonic": true,
+      "C7_ageMonotonic": true,
+      "C8_activationBounded": true,
+      "C9_emotionBounded": true,
+      "C10_missingSemantics": true,
+      "C11_createdAlias": true,
+      "C12_noFutureAmplification": true,
+      "C13_sourceNeutral": true,
+      "C14_explainableComponents": true,
+      "C16_schemaUnchanged": true,
+      "C17_pureNoAuthority": true,
+      "scopeEvidence": {
+        "changedPathCount": 8,
+        "changedPaths": [
+          "tests/test-all.js",
+          "tests/fixtures/memory-value-v2/calibration-criteria.json",
+          "tests/fixtures/memory-value-v2/calibration-decision.json",
+          "tests/fixtures/memory-value-v2/cases.json",
+          "tests/fixtures/memory-value-v2/producer-defaults.json",
+          "tests/fixtures/memory-value-v2/scenario-families.json",
+          "tests/helpers/memory-value-v2-calibration.js",
+          "tests/test_memory_value_v2_calibration.js"
+        ],
+        "productionPathCount": 0,
+        "productionPaths": [],
+        "schemaPathCount": 0,
+        "schemaPaths": []
+      },
+      "passed": true
+    }
+  },
+  "blockers": [
+    {
+      "id": "activation-importance-tradeoff-has-no-canonical-direction",
+      "evidence": "The expanded crossover matrix shows candidate-specific count thresholds, but no canonical product rule says which side of those pairs must rank higher."
+    },
+    {
+      "id": "B-parameter-choice-is-not-evidenced",
+      "evidence": "The gain/K grid changes crossover boundaries; selecting a point would encode a tradeoff preference not present in the product contract."
+    },
+    {
+      "id": "C-provisional-weights-have-calibration-cost",
+      "evidence": "The bounded weight grid measures pairwise/top-K/source-spread movement; the synthetic grid does not justify a preferred weight vector."
+    },
+    {
+      "id": "synthetic-source-shapes-are-not-population-distribution",
+      "evidence": "Producer rows are source-derived synthetic representatives; no real producer population or preference labels were read."
+    }
+  ],
+  "knownTradeoffs": {
+    "A": "Normalization-only control; keeps Legacy activation/decay/emotion structure and round2 behavior.",
+    "B": "Changes only activation gain/saturation; diverges from A around activation/importance crossovers.",
+    "C": "Uses bounded provisional components; weight grid reports sensitivity without choosing weights."
+  },
+  "rejectedCandidates": [],
+  "evidenceRefs": [
+    "tests/fixtures/memory-value-v2/calibration-criteria.json",
+    "tests/fixtures/memory-value-v2/scenario-families.json",
+    "tmp/memory-value-v2-shadow.json",
+    "tmp/memory-value-v2-shadow.md"
+  ],
+  "productionLegacyRemainsAuthority": true,
+  "R3_D_CUTOVER_EVALUATION_AUTHORIZED": false
+}

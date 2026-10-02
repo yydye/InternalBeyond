@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "phase": "P21-R3-B",
+  "dataset": "synthetic-only",
+  "authority": "source-backed selectors; evaluated by tests/helpers/memory-value-v2-calibration.js",
+  "notes": [
+    "This file identifies current canonical producers and their production source anchors.",
+    "Numeric defaults and admission thresholds are extracted from production source at runtime; they are not copied from the R3-A report.",
+    "Where a producer supplies model input rather than a fixed default, the paired matrix uses the mechanically extracted minimum admitted importance as a representative synthetic case.",
+    "The representative rows are not a real producer distribution, mean, or prior.",
+    "roleLetterMemories and Auto Memory are excluded."
+  ],
+  "producers": [
+    {
+      "id": "manual",
+      "sourceFiles": ["assets/js/memory.js"],
+      "anchors": ["async function saveMemory()", "rawSource:document.getElementById('mem-f-source').value", "createdBy:'user'"]
+    },
+    {
+      "id": "chat",
+      "sourceFiles": ["assets/js/memory.js"],
+      "anchors": ["source:isGroup?'group_chat':'chat'", "const memoryData={title,summary,content,source:opts.source||'manual'"]
+    },
+    {
+      "id": "group_chat",
+      "sourceFiles": ["assets/js/memory.js"],
+      "anchors": ["source:isGroup?'group_chat':'chat'", "const memoryData={title,summary,content,source:opts.source||'manual'"]
+    },
+    {
+      "id": "blog",
+      "sourceFiles": ["assets/js/memory.js"],
+      "anchors": ["source:'blog',sourceId:postId", "const memoryData={title,summary,content,source:opts.source||'manual'"]
+    },
+    {
+      "id": "letter",
+      "sourceFiles": ["assets/js/memory.js"],
+      "anchors": ["source:'letter',sourceId:letterId", "const memoryData={title,summary,content,source:opts.source||'manual'"]
+    },
+    {
+      "id": "diary",
+      "sourceFiles": ["assets/js/active-diary/diary.js"],
+      "anchors": ["async function _diaryWriteMemory(character,memoryCandidate)", "importance:importance,source:'diary'", "visibility:'only'", "activationCount:0"]
+    },
+    {
+      "id": "consolidation",
+      "sourceFiles": ["assets/js/active-diary.js"],
+      "anchors": ["source:'consolidation',sourceId:roleId", "arousal:0.4,importance:importance", "resolved:false"]
+    },
+    {
+      "id": "coread",
+      "sourceFiles": ["assets/js/activity/activity-runtime.js"],
+      "anchors": ["source:activity.type,sourceId:activity.id", "arousal:0.3,importance:4,resolved:false"]
+    },
+    {
+      "id": "cinema",
+      "sourceFiles": ["assets/js/activity/activity-runtime.js"],
+      "anchors": ["source:activity.type,sourceId:activity.id", "arousal:0.3,importance:4,resolved:false"]
+    },
+    {
+      "id": "role_dm",
+      "sourceFiles": ["assets/js/role-dm.js", "assets/js/role-dm-core.js", "assets/js/memory.js"],
+      "anchors": ["source: 'role_dm'", "arousal: 0.4", "MEMORY_MIN_IMPORTANCE", "importance:data.importance||5"]
+    }
+  ]
+}
