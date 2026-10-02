@@ -656,11 +656,41 @@ migration 的幂等性建立在"内容相同 ⇒ skipped"之上。一个每轮�
 
 ### 15.3 本轮处置
 
-**MUST NOT**：本轮**不接线**、**不改 endpoint**、**不改 schema**、**不改 Home Node**。
+**MUST NOT**：**R2-A 时点**的处置是**不接线**、**不改 endpoint**、**不改 schema**、**不改 Home Node**。
 
 **登记为**：`Known Authority Gap: MEMORY-ACTIVATION-AUTHORITY`
 
 **指向未来**：**R2-H · Authority Closure**。
+
+> ### 15.3.1 状态更新（R2-H1 冻结 → R2-H2 实现 → R2-H3 语义收口 → **R2-H4 收口**）
+>
+> ```
+> AUTHORITY FROZEN IN R2-H1
+> IMPLEMENTED IN R2-H2
+> RETRY/IDEMPOTENCY SEMANTICS FROZEN IN R2-H3
+> R2-H ACTIVATION AUTHORITY = CLOSED（R2-H4）
+> ```
+>
+> - **已冻结**：在 canonical mode 下，**Home Node 是 activation telemetry 的唯一 canonical
+>   durable authority**；browser 的 `activationCount` / `lastActivated` 是 **mirror / cache**；
+>   canonical activation 写入必须 **remote-first**；失败时 **canonical 与 mirror 都不增加**
+>   （telemetry fail-closed），而 **turn 结果保持 fail-open**。
+>   规范文本见 [`MEMORY_AUTHORITY_CONTRACT.md`](MEMORY_AUTHORITY_CONTRACT.md) §2.1–§2.5，
+>   同步面语义见 [`MEMORY_SYNC_CONTRACT.md`](MEMORY_SYNC_CONTRACT.md) §3.1。
+> - **已实现（R2-H2）**：生产 browser 强化路径（`assets/js/memory.js` 的
+>   `recordMemoryActivation`）在 canonical mode 下**已经**经 `memoryAuthority.recordActivation`
+>   走 canonical activation authority（remote-first）；`memoryAuthority.recordActivation`
+>   现在是**生产 live seam**（不再是死缝）。canonical 成功后 mirror 用服务端返回的
+>   **权威 per-id telemetry** SET（不是按 delta 猜测）；拿不到权威值时保持 stale。
+>   本节 15.1 的四条事实描述的是 **R2-H0/R2-H1 时点的现状**，已由 R2-H2 关闭。
+> - **仍然成立的红线**：R2-H1/H2 没有把 activation 塞进 `memory_change_log`、
+>   没有推动 revision、没有引入 durable cooldown 字段，也没有引入队列/自动重试/幂等键
+>   （后者归 R2-H3）。
+> - **R2-H3 冻结（retry / idempotency）**：activation endpoint 是
+>   **NON-IDEMPOTENT MUTATION**，`AUTO_RETRY = NONE`；`DEFINITE_FAILURE`（服务端明确回失败）
+>   ⇒ canonical 与 mirror 都不增加；`AMBIGUOUS_OUTCOME`（transport 失败，服务端可能已 commit）
+>   ⇒ canonical 状态对 caller **未知**，mirror 不猜测、不自动重试，等下一次 hydrate 纠正。
+>   规范文本见 [`MEMORY_AUTHORITY_CONTRACT.md`](MEMORY_AUTHORITY_CONTRACT.md) §2.3 / §2.6。
 
 **与 cooldown 的关系**：这也是 cooldown 在 R2 阶段采用
 **session-local**（§10）的直接原因 —— 一个依赖跨端持久遥测的冷却机制，

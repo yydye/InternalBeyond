@@ -1754,9 +1754,14 @@ function createMobileGateway(deps) {
       const result = memoryStore.recordActivation(ids, { at: body.at, delta: body.delta });
       if (!result.ok) return fail(res, result.error || 'INTERNAL', req);
       /* revisionTouched 恒为 false，并且**在这里如实回报** —— 调用方与测试
-         可以直接断言"强化没有推动结构版本"，而不必去猜。 */
+         可以直接断言"强化没有推动结构版本"，而不必去猜。
+         R2-H2 · **additive**：新增 `activations`（canonical per-id telemetry），
+         旧字段 updated / at / revisionTouched / revision 原样保留，request shape 未变。
+         它让 browser 在 canonical 确认成功后把 mirror cache SET 成权威值，
+         而不是按 delta 猜一个可能已经过时的数（MEMORY_AUTHORITY_CONTRACT §2.2）。 */
       return sendJson(res, 200, okBody('memory.activation', null, {
-        updated: result.updated, at: result.at, revisionTouched: !!result.revisionTouched, revision: result.revision
+        updated: result.updated, at: result.at, revisionTouched: !!result.revisionTouched, revision: result.revision,
+        activations: Array.isArray(result.activations) ? result.activations : []
       }), req);
     }
     if (action === 'memory/settings' && req.method === 'POST') {

@@ -247,6 +247,21 @@ async function selectMemoryContext(apiId,opts){
     return {context:picked.text,selectedIds:picked.selected.map(s=>s.id),activationPolicy:_actPolicy};
   }catch(e){return {context:'',selectedIds:[]}}
 }
+/* R2-H2 · canonical activation authority 解析（沿用本文件既有的 resolver 纪律：
+   不缓存、每次现取，且任一环节缺失都返回 null 而不是抛错）。
+   来源是仓库既有 expose 约定 —— home-node-bootstrap.js:
+   `NS.expose('memoryAuthority', { instance, MODES })` → `IB.memoryAuthority.instance`；
+   `window.IBMemoryAuthority` 是 UMD 模块本身，只有它恰好是实例形状时才认。 */
+function _ibMemoryAuthority(){
+  try{
+    var IB=(typeof window!=='undefined')?window.IB:null;
+    var slot=IB&&IB.memoryAuthority;
+    var inst=slot&&slot.instance?slot.instance:(slot&&typeof slot.recordActivation==='function'?slot:null);
+    if(inst&&typeof inst.recordActivation==='function')return inst;
+    var direct=(typeof window!=='undefined')?window.IBMemoryAuthority:null;
+    return (direct&&typeof direct.recordActivation==='function')?direct:null;
+  }catch(e){return null}
+}
 /* 强化阶段：只更新 activationCount / lastActivated（不改变本轮已选出的结果）。
    `at` 注入以便复现；缺省 Date.now()。写入失败**只记账失败**，绝不抛出 ——
    激活是排名提示，不是事实，不能因为它失败而毁掉用户这一轮对话。 */
@@ -255,6 +270,23 @@ async function recordMemoryActivation(selectedIds,at){
   /* 非有限值一律回落到 Date.now()：宁可写"现在"，也绝不写 NaN（NaN 会污染衰减）。 */
   let stamp=Number(at);
   if(!Number.isFinite(stamp))stamp=Date.now();
+  /* ── R2-H1 §2.1 / AUTHORITY §2.1（R2-H2 接线）───────────────────────────
+     canonical mode：activation telemetry 的 durable truth 在 Home Node，
+     因此**必须**走 canonical activation authority（remote-first）。
+     绝不再把"直写 IndexedDB 镜像"当成 canonical durable write。
+
+     失败语义（两者同时成立）：
+       · TELEMETRY_FAIL_CLOSED —— authority 自己保证失败时两侧都不增加；
+       · TURN_FAIL_OPEN —— 这里吞掉一切异常，返回 0，绝不影响本轮 recall/chat。 */
+  try{
+    const auth=_ibMemoryAuthority();
+    if(auth&&typeof auth.status==='function'&&auth.status().mode==='canonical'){
+      const res=await auth.recordActivation(selectedIds.map(String),{at:stamp});
+      if(res&&res.ok)return Number(res.updated)||0;
+      /* 失败：**不**回落成镜像写入（那会造出未经 canonical 确认的本地增量）。 */
+      return 0;
+    }
+  }catch(e){}
   let n=0;
   /* P11-3X-C：读-改-写放进**同一个** readwrite 事务（window.dbUpdate）。
      实测此前每个被选中的记忆要开两个事务（readonly 读 + readwrite 写）：

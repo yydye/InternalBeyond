@@ -1326,3 +1326,96 @@ integration）连一行代码都还没有，并且是被明确禁止开始的下
 - **Enforcement**：`tests/test_memory_recall_contract.js` 增加 docs-truth guards（D1–D8），
   钉住"文档状态不得退回未实现"；`tests/test-all.js` 增加 registry integrity guard（R1–R4），
   钉住"登记不得指向不存在的文件"。
+
+## D32.2 P21-R2-H1 · Activation Authority 冻结（Option A）（2026-10-02）
+
+- **Decision**：canonical memory mode 下，**Home Node 是 activation telemetry 的唯一 canonical
+  durable authority**（`memory_records.activation_count` / `last_activated_at`）。
+  Browser IndexedDB 的 `activationCount` / `lastActivated` 是 **mirror / cache**，
+  **不是**可与 Home Node 分叉的独立 durable truth。即 `ACTIVATION_AUTHORITY_OPTION = A`。
+- **写入顺序**：browser canonical activation 必须 **remote-first** ——
+  canonical activation request 成功之后，mirror 才允许反映该次 activation。
+  "先本地乐观 +1、再 best-effort 发远端"被**禁止**。
+- **失败语义（两者必须同时成立）**：
+  `TELEMETRY_FAIL_CLOSED`（canonical 不增加 **且** mirror 也不增加）
+  ＋ `TURN_FAIL_OPEN`（activation failure 绝不改变 conversation / recall 结果）。
+  不引入持久队列、不自动重试；只留可观察的 failure 记账。
+- **Home Node 内部**：HN 自身回合的 recall activation 直接写 canonical SQLite，
+  **不**为"统一走 endpoint"重构内部路径；`/memory/activate` 是给 browser 的入口。
+- **同步面**：activation **不**写 `memory_change_log`、**不**推 revision、**不**更新 `updated_at`、
+  **不**进入 `changes(cursor)`。跨端可见性只发生在 **full hydrate**；
+  在 Option A 下 hydrate 用 canonical 值覆盖 mirror 是**合法的 authority correction**，
+  **不**引入 activation field merge，**不**新增 change-log activation event。
+- **schema / migration**：**无** schema 变更、**无** migration —— 仅复用既有两列。
+- **durable cooldown**：**无关**，仍为 FUTURE；本 decision **不**引入任何
+  `lastExposureTurn` / `lastSurfacedAt` / `lastRecalledAt` / `lastSelectedAt` / `lastCooldownAt`
+  之类的持久字段。
+- **mode 边界**：`mirror` / `off` 下 browser 本地 activation telemetry 视为
+  **NON-CANONICAL / HOST-LOCAL**；**不承诺**切回 canonical 后自动合并进 HN
+  （该 subcase 明确**未定义**，不在此猜测）。
+- **状态**：**authority 已冻结（R2-H1），实现已接线（R2-H2）**。
+  生产 browser 强化路径（`assets/js/memory.js`）在 canonical mode 下经
+  `memoryAuthority.recordActivation` 走 canonical authority（remote-first）；
+  `/memory/activate` 的响应**加法式**新增权威 per-id telemetry
+  （`activations[]`，旧字段 `updated`/`at`/`revisionTouched`/`revision` 不变），
+  mirror 据此 **SET** 成 canonical 值；拿不到权威值时保持 stale，
+  **不**按 delta 猜测（Strategy D 被禁止）。schema / migration / revision / change_log 均未变。
+- **idempotency / retry**：**不在 H1 范围**；归 **R2-H3**。当前 activation endpoint
+  没有幂等键这一事实**已登记**，但**不**作为 H1 的闭合条件。
+
+## D32.3 P21-R2-H3 · Activation Retry / Idempotency 语义冻结（2026-10-02）
+
+- **审计结论（机械）**：activation 链路上**不存在**可代表"同一次 activation event"、
+  且 retry 可复用、服务端可见的 stable identity ——
+  `activate()` 的 payload 只有 `ids` / `at` / `delta`（对比 `remove()`/`putBatch()` 都接受
+  `options.requestId`）；client 的 `_request`**不**生成任何请求身份；`at` 每次调用由
+  browser 现取（`Date.now()`），retry 会产生**新值**；`RecordSessionState` 的 turnIndex 是
+  **页面生命周期**状态且语义是"recall turn"而非"这一次 activation"。
+  ⇒ `IDEMPOTENCY_FEASIBILITY = B（NO_SAFE_IDENTITY）`。
+- **因此冻结（不实现伪幂等）**：
+  `ENDPOINT_SEMANTICS = NON-IDEMPOTENT MUTATION` · `AUTO_RETRY = NONE` ·
+  `CALLER MUST NOT AUTO-RETRY` · `IDEMPOTENCY_SCOPE = NOT PROVIDED`。
+  重复的**显式**请求 = **独立** activation event，可以再次 +1。
+- **理由**：activation 是**累加**语义。在缺少可靠 dedupe identity 时，
+  `AMBIGUOUS_OUTCOME` 的自动重试会造成第二次 +1，而"看起来幂等"的机制
+  （随机 UUID / 服务端现生成 key / 时间戳 / ids+at 哈希）**不算**幂等。
+- **现存可复用 primitive 的事实登记**：gateway 已有**有界、TTL 清理**的 chat-turn dedupe
+  （`liveTurns` / `turnByRequest` + `stableToken` 内容寻址的 `turnId`，`TURN_TTL_MS`），
+  它保证"同一 Home Node 回合只强化一次"；但该身份**不流经** activation 端点，
+  因此**不**能用于 browser 独立发起的 activation。**未**复制新框架，也**未**改造 chat 侧。
+- **DEFINITE_FAILURE vs AMBIGUOUS_OUTCOME（H1/H2 措辞的精化，不是反转）**：
+  服务端明确回失败 ⇒ canonical 与 mirror 都不增加；
+  transport 层失败（reset / timeout）⇒ 服务端**可能已 commit**，canonical 状态对 caller **未知**，
+  mirror 不猜测、不自动重试，等待下一次 hydrate 纠正。这**不是**回滚保证。
+  H1/H2 的 remote-first / Strategy C / hydrate canonical-wins **全部不变**。
+- **无 schema / 无 migration / 无 durable 状态**：未引入持久事件表、dedupe map 持久化、
+  revision CAS、后台队列或 durable cooldown 字段。
+- **归属（精确）**：
+  · **CURRENT**：activation 链上没有 stable retry identity；endpoint 非幂等；caller **不得**自动重试。
+  · **FUTURE 第一步**：可以先**设计 stable retry identity**（这一步本身**不需要** schema）。
+  · **PROCESS-LIFETIME 幂等**：identity + 有界内存 dedupe 即可，**理论上不需要 schema** ——
+    但当前**没有设计、也没有实现**（且不在 R2-H 范围）。
+  · **CROSS-RESTART exactly-once**：**才**需要 durable dedupe authority / 持久状态（超出 R2-H）。
+  ⇒ **不得**表述为"任何未来 activation 幂等都必须引入 durable schema"。
+
+## D32.4 P21-R2-H4 · Activation Authority 收口（2026-10-02）
+
+> **`R2-H ACTIVATION AUTHORITY = CLOSED`**（canonical memory mode）。
+
+- **收口内容**：把 H1（ownership 冻结）/ H2（canonical 接线）/ H3（retry & 幂等语义）三段的
+  文档状态从 `frozen` / `implemented-in-H2` / `pending` **统一收敛**为
+  `R2-H ACTIVATION AUTHORITY = CLOSED`；并在
+  [`MEMORY_AUTHORITY_CONTRACT.md`](contracts/memory/MEMORY_AUTHORITY_CONTRACT.md) **§2.7**
+  建立**唯一的最终 activation authority 矩阵**（其它文档只引用，不另立第二张表）。
+- **本轮未新增任何 authority 机制**：没有新 retry 机制、没有幂等键、没有 dedupe cache、
+  没有 queue / background replay、没有 schema / migration、没有 activation change_log、
+  没有 revision CAS、没有 field merge、没有 durable cooldown。
+- **保留的 chronology**：`MEMORY_RECALL_CONTRACT.md` §15.1 与 `architecture/MEMORY.md` §8.2
+  的表格记录的是 **R2-H0/H1 时点**的现状（historical），不得读成当前状态。
+- **仍然未定义（非 authority 缺口）**：`mirror` / `off` 模式下 host-local activation 在切回
+  `canonical` 时的处置 —— 本 decision **不**声称覆盖它，也**不**猜测。
+- **最终可声明**：canonical memory mode 的 durable activation telemetry 由 **Home Node** 权威持有；
+  browser 的 `activationCount` / `lastActivated` 是 **mirror / cache**；activation 失败
+  **不**使 recall/chat 回合失败。
+  **不得**声明：durable exactly-once、automatic retry、durable cooldown、
+  parallel store 统一、或 system-wide memory authority。

@@ -245,9 +245,24 @@ recall 的并行召回管线**：
 **后果**：桌面累计的 `activationCount` 不进入 canonical；每次 hydration 后被 canonical 值覆盖。
 因此"回忆习惯"在桌面上的实际效果**弱于**本文档 §5 公式给人的印象。
 
-**状态：登记，未修。** 修复属于 **R2-H · Authority Closure**（涉及 canonical 写入路径，
-需要独立评估）。这也解释了为什么 P21-R2 的 cooldown 先采用 **session-local**
-（`RecallSessionState`）—— 一个依赖跨端持久遥测的冷却机制在此缺口关闭前会周期性静默失效。
+**状态：`R2-H ACTIVATION AUTHORITY = CLOSED`**（R2-H1 冻结语义 → R2-H2 接线 → R2-H3 retry/幂等语义 → R2-H4 收口）。
+最终权威矩阵见 [`MEMORY_AUTHORITY_CONTRACT.md`](../contracts/memory/MEMORY_AUTHORITY_CONTRACT.md) **§2.7**（本节不重复维护第二张表）。
+
+- **R2-H1 冻结**：canonical mode 下 **Home Node 是 activation telemetry 的唯一 canonical durable
+  authority**；browser 的 `activationCount` / `lastActivated` 是 **mirror / cache**；
+  canonical activation 写入 **remote-first**；失败时 canonical 与 mirror **都不增加**
+  （telemetry fail-closed），而 **turn 结果保持 fail-open**。
+  规范文本：[`MEMORY_AUTHORITY_CONTRACT.md`](../contracts/memory/MEMORY_AUTHORITY_CONTRACT.md) §2.1–§2.5
+  · 同步面：[`MEMORY_SYNC_CONTRACT.md`](../contracts/memory/MEMORY_SYNC_CONTRACT.md) §3.1
+  · 状态更新：[`MEMORY_RECALL_CONTRACT.md`](../contracts/memory/MEMORY_RECALL_CONTRACT.md) §15.3.1
+- **R2-H2 已实现**：生产 browser 强化路径（`assets/js/memory.js`）在 canonical mode 下经
+  `memoryAuthority.recordActivation` 走 canonical authority（remote-first）；
+  `/memory/activate` 的响应**加法式**新增权威 per-id telemetry，mirror 据此 **SET** 成 canonical 值
+  （不按 delta 猜测；拿不到权威值就保持 stale，等 hydrate 纠正）。
+  上述 §8.2 表格记录的是 **R2-H0/H1 时点的现状**，已由 R2-H2 关闭。
+- 这也解释了为什么 P21-R2 的 cooldown 先采用 **session-local**
+  （`RecallSessionState`）—— 一个依赖跨端持久遥测的冷却机制在此缺口关闭前会周期性静默失效。
+  相关：**durable cooldown 仍为 FUTURE**，与本 decision 无关。
 
 ### 8.3 R2-G 未做的事（non-goals）
 

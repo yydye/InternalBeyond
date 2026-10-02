@@ -188,6 +188,35 @@ function mem(id, over) {
       !!after.body.payload && after.body.payload.revision >= 1,
       after.body && after.body.payload && after.body.payload.revision);
 
+    /* ══ T2b · R2-H2 · /memory/activate 的 **additive** 权威返回值（真实 HTTP）══
+       只测 store unit 是不够的：browser 侧拿到的必须是**这条 HTTP 响应**。
+       要求：旧字段（updated/at/revisionTouched/revision）原样保留，
+       新增 activations[] 携带 canonical per-id telemetry，且 revision 不被推动。 */
+    section('T2b · /memory/activate additive response（R2-H2）');
+    const revBeforeAct = (await req('GET', '/memory/list?limit=10')).body.payload.revision;
+    const act = await req('POST', '/memory/activate', { ids: ['mem_prod_assembly_guard'], at: 1789000009999 });
+    check('T2b.1 POST /memory/activate → 2xx', act.status === 200, { status: act.status, body: act.body && act.body.error });
+    const actPayload = (act.body && act.body.payload) || {};
+    check('T2b.2 旧字段保持兼容（updated / at / revisionTouched 均在）',
+      typeof actPayload.updated === 'number' && actPayload.at === 1789000009999 && actPayload.revisionTouched === false,
+      actPayload);
+    check('T2b.3 新增 activations[] 是权威 per-id telemetry',
+      Array.isArray(actPayload.activations) && actPayload.activations.length === 1 &&
+      actPayload.activations[0].id === 'mem_prod_assembly_guard' &&
+      typeof actPayload.activations[0].activationCount === 'number' &&
+      actPayload.activations[0].lastActivated === 1789000009999,
+      actPayload.activations);
+    check('T2b.4 activation 不推动 canonical revision（revisionTouched=false 且 revision 不变）',
+      actPayload.revision === revBeforeAct,
+      { before: revBeforeAct, after: actPayload.revision });
+    const afterAct = await req('GET', '/memory/list?limit=10');
+    const actRow = (afterAct.body.payload.records || []).filter(r => r && r.id === 'mem_prod_assembly_guard')[0];
+    check('T2b.5 返回值里的 canonical 计数与 /memory/list 读回的一致（同一份权威）',
+      !!actRow && actRow.activationCount === actPayload.activations[0].activationCount,
+      { response: actPayload.activations[0].activationCount, listed: actRow && actRow.activationCount });
+    check('T2b.6 返回值与读回的是同一条 memory 的 lastActivated',
+      !!actRow && actRow.lastActivated === 1789000009999, actRow && actRow.lastActivated);
+
     /* ══ T3 · 装配漂移守卫 ══
        两条装配路径（生产进程级 / buildHomeNode）必须给出**同一套** canonical
        memory 依赖，且都不允许缺席。断言直接打在共享装配函数的输出上，

@@ -75,6 +75,12 @@ Home Node 表为 query/ACL/ranking 提升 `owner_id`、`class`、`visibility`、
 `payload_json` 持有**每一个**字段。Activation 是一次双列 `UPDATE`
 （`activation_count`, `last_activated_at`），既不触碰 `payload_json` 也不触碰 `revision`。
 
+> **Authority 归属**：谁拥有 activation 的 durable truth、以及在 canonical mode 下
+> browser 侧 activation 的写入顺序，见
+> [`MEMORY_AUTHORITY_CONTRACT.md`](MEMORY_AUTHORITY_CONTRACT.md) §2.1–§2.5（R2-H1 冻结）。
+> 本节只固定**物理形状**（双列、窄 UPDATE、不触碰 payload/revision），**不**新增字段，
+> 也**不**改变 vocabulary。
+
 ---
 
 ## 6. Non-goals

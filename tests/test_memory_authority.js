@@ -137,7 +137,16 @@ function mockRemote(options) {
       }
       /* 断言用：如果哪天有人让 activate 推进 revision，这里会记录下来。 */
       if (state.activationTouchesRevision) state.revision++;
-      return Promise.resolve({ ok: true, updated: n, at: (opts && opts.at) || null, revisionTouched: false, revision: state.revision });
+      const out = { ok: true, updated: n, at: (opts && opts.at) || null, revisionTouched: false, revision: state.revision };
+      /* R2-H2：模拟 endpoint 的 **additive** 权威返回值。默认关闭 =
+         老服务端（只回 updated）⇒ 调用方必须保持 mirror stale、不得猜 delta。 */
+      if (state.returnActivationTelemetry) {
+        out.activations = ids.map(id => {
+          const r = state.stored.get(id) || {};
+          return { id: id, activationCount: Number(r.activationCount || 0), lastActivated: (opts && opts.at) || null };
+        });
+      }
+      return Promise.resolve(out);
     },
     migrationState(source) {
       state.calls.migrationState++;
@@ -338,8 +347,24 @@ function mockLocal(options) {
       remote.state.revision === revisionBefore, { before: revisionBefore, after: remote.state.revision });
     check('T7.4 强化确实更新了 Home Node 的激活计数',
       remote.state.stored.get('m1').activationCount === 1, remote.state.stored.get('m1').activationCount);
-    check('T7.5 镜像侧同步更新（浏览器看到的计数与 Node 一致）',
-      local.state.rows.get('m1').activationCount === 1, local.state.rows.get('m1').activationCount);
+    /* R2-H2 更新（原断言冻结的是 mirror-first 形状，与 R2-H1 的 normative contract 冲突）：
+       canonical 成功但服务端**没有**回权威 telemetry（老服务端）时，镜像必须保持 stale ——
+       禁止按 delta 猜一个可能已经过时的值（AUTHORITY §2.2，Strategy D 被禁）。 */
+    check('T7.5 无权威 telemetry 时镜像**不**被猜测式 +1（保持 stale）',
+      local.state.rows.get('m1').activationCount === 0 && res.mirrorStale === true,
+      { mirror: local.state.rows.get('m1').activationCount, res: res });
+    {
+      /* R2-H2 新增：服务端回权威 per-id 值时，镜像 SET 成 canonical 值。 */
+      const remoteT = mockRemote();
+      remoteT.state.returnActivationTelemetry = true;
+      const localT = mockLocal([mem('m1')]);
+      const authorityT = AUTHORITY.createMemoryAuthority({ remote: remoteT, local: localT, mode: 'canonical', clock: () => 5000 });
+      await authorityT.put(mem('m1'));   /* 先让 canonical 侧真的存在这条记录 */
+      const resT = await authorityT.recordActivation(['m1'], {});
+      check('T7.5b 权威 telemetry ⇒ 镜像 SET 成 canonical 值（不猜 delta）',
+        resT.mirrorSynced === 1 && localT.state.rows.get('m1').activationCount === 1,
+        { synced: resT.mirrorSynced, mirror: localT.state.rows.get('m1').activationCount });
+    }
     check('T7.6 空选择是 no-op（不发起请求）',
       (await authority.recordActivation([], {})) .updated === 0);
     /* 强化失败绝不抛出（排名提示不是事实） */

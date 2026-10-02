@@ -550,6 +550,12 @@ function createMemoryStore(deps) {
     if (!isFinite(at)) at = MEMORY_CONTRACT.intOf(clock());
     else at = Math.trunc(at);
     const revisionBefore = getRevision();
+    /* R2-H2：`activations` 是**同一个事务里已经算出来的**权威值
+       （selectActivation 的旧值 + 本次 delta），不额外 SELECT、不额外 UPDATE。
+       它只做**返回面**的加法：老调用方读 updated / at / revisionTouched 一字不变。
+       调用方（gateway → browser authority）据此把 mirror cache **SET 成 canonical 值**，
+       而不是猜一个 delta —— 见 MEMORY_AUTHORITY_CONTRACT §2.1–§2.2。 */
+    const touched = [];
     const updated = withTransaction(() => {
       let n = 0;
       for (const id of list) {
@@ -557,11 +563,18 @@ function createMemoryStore(deps) {
         if (!row) continue;
         const next = Number(row.activation_count || 0) + delta;
         const res = db.prepare(SQL.updateActivation).run(next, at, id);
-        if (res && res.changes) n++;
+        if (res && res.changes) {
+          n++;
+          touched.push({ id: id, activationCount: next, lastActivated: at });
+        }
       }
       return n;
     });
-    return { ok: true, updated: updated, ids: list, at: at, revisionTouched: getRevision() !== revisionBefore, revision: getRevision() };
+    return {
+      ok: true, updated: updated, ids: list, at: at,
+      revisionTouched: getRevision() !== revisionBefore, revision: getRevision(),
+      activations: touched
+    };
   }
 
   /* ── 读 ──────────────────────────────────────────────────────────── */

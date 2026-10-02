@@ -1,4 +1,4 @@
-﻿/* ====================================================================
+/* ====================================================================
    IB Memory Authority — `memories` 的 authority / mirror / fallback 策略
    --------------------------------------------------------------------
    UMD 双载：Browser <script src="assets/js/memory-authority.js"> → window.IBMemoryAuthority
@@ -351,33 +351,86 @@
       }
       if (!list.length) return Promise.resolve({ ok: true, updated: 0, flushed: false, revisionTouched: false });
       var at = (typeof clock === 'function') ? clock() : Date.now();
-      /* 镜像先落（本地、同步代价低）：即使 Home Node 不可达，用户本轮已经
-         看到的上下文也不受影响，镜像里的计数至少与"她确实想起过"一致。 */
-      var mirrorWork = local.bumpActivation ? local.bumpActivation(list, at) : Promise.resolve(0);
+      /* ── R2-H1 §2.1 / AUTHORITY §2.1（R2-H2 接线）─────────────────────────
+         canonical mode：activation 必须 **remote-first**。
+         旧的"镜像先落 +1，再 best-effort 发远端"形状被**禁止** ——
+         它会在远端失败时留下一个未经 canonical 确认的本地增量，
+         而 TELEMETRY_FAIL_CLOSED 要求失败时两侧都不增加。
+
+         canonical 成功**之后**才允许更新 mirror cache，而且**只**用服务端返回的
+         权威 per-id 值 SET（Strategy C）。拿不到权威值时**保持 stale**，
+         绝不按 delta 猜测（Strategy D 被禁止：无法证明 mirror 的前值与远端前值相等）。 */
       if (!remoteEnabled()) {
+        /* mirror / off：无 canonical authority 生效 ⇒ 既有 host-local 语义原样保留
+           （NON-CANONICAL / HOST-LOCAL，见 AUTHORITY §2.5）。 */
+        var mirrorWork = local.bumpActivation ? local.bumpActivation(list, at) : Promise.resolve(0);
         return Promise.resolve(mirrorWork).then(function (n) {
           return { ok: true, updated: n || 0, flushed: false, authority: 'indexeddb', mirrorOnly: true, revisionTouched: false };
         }, function () {
           return { ok: true, updated: 0, flushed: false, authority: 'indexeddb', mirrorOnly: true, revisionTouched: false };
         });
       }
+      /* 用权威 telemetry SET mirror cache：只更新**已存在**的镜像行，
+         绝不凭一次 activation 造出半条记录；失败只记账，绝不抛出。 */
+      function setMirrorFromCanonical(entries) {
+        var n = 0;
+        var work = Promise.resolve();
+        entries.forEach(function (e) {
+          if (!e || e.id == null) return;
+          work = work.then(function () {
+            return local.get(String(e.id)).then(function (row) {
+              if (!row) return null;
+              row.activationCount = Number(e.activationCount || 0);
+              if (e.lastActivated != null) row.lastActivated = Number(e.lastActivated);
+              return local.put(row).then(function () { n++; }, function () { return null; });
+            }, function () { return null; });
+          });
+        });
+        return work.then(function () { return n; });
+      }
       return remote.activate(list, { at: at }).then(function (res) {
         if (!res || !res.ok) {
+          /* DEFINITE_FAILURE：服务端**明确**回了失败 ⇒ 它没有 commit。
+             canonical 与 mirror 都不增加（TELEMETRY_FAIL_CLOSED）。
+             R2-H3：`outcome` 把这一类与下面的 ambiguous 明确区分开 ——
+             不得把网络层错误一律说成"canonical 一定没增加"。 */
           ctx.stats.activationFailures++;
           noteRemoteFailure({ code: (res && res.error) || 'activation-failed' });
           log('memory-activation-failed', { count: list.length, error: (res && res.error) || 'unknown' });
-          return { ok: false, error: (res && res.error) || 'activation-failed', flushed: false, revisionTouched: false };
+          return {
+            ok: false, error: (res && res.error) || 'activation-failed', flushed: false,
+            revisionTouched: false, mirrorUnchanged: true,
+            outcome: 'definite-failure', canonical: 'unchanged'
+          };
         }
         ctx.stats.activationFlushes++;
         ctx.stats.activationRecords += list.length;
         ctx.lastActivationFlushAt = at;
         ctx.remoteOnline = true;
-        return { ok: true, updated: res.updated || 0, flushed: true, at: at, revisionTouched: !!res.revisionTouched };
+        /* canonical 已确认。有权威 per-id 值 ⇒ SET mirror；没有 ⇒ 保持 stale。 */
+        var authoritative = Array.isArray(res.activations) ? res.activations : [];
+        if (!authoritative.length) {
+          return { ok: true, updated: res.updated || 0, flushed: true, at: at, revisionTouched: !!res.revisionTouched, mirrorSynced: 0, mirrorStale: true };
+        }
+        return setMirrorFromCanonical(authoritative).then(function (synced) {
+          return { ok: true, updated: res.updated || 0, flushed: true, at: at, revisionTouched: !!res.revisionTouched, mirrorSynced: synced || 0 };
+        }, function () {
+          return { ok: true, updated: res.updated || 0, flushed: true, at: at, revisionTouched: !!res.revisionTouched, mirrorSynced: 0, mirrorStale: true };
+        });
       }, function (error) {
+        /* AMBIGUOUS_OUTCOME：transport 层失败（reset / timeout / throw）。
+         服务端**可能已经 commit**，也可能没有 —— caller 无从得知。
+         R2-H3 冻结的处置：不自动 retry（AUTO_RETRY=NONE）、不 queue、
+         mirror 不做任何猜测；canonical 的最终状态由下一次与 canonical 的
+         交互（hydrate）纠正。这**不是** rollback 保证。 */
         ctx.stats.activationFailures++;
         noteRemoteFailure(error);
         log('memory-activation-failed', { count: list.length, error: String((error && error.message) || error) });
-        return { ok: false, error: 'home-node-offline', flushed: false, revisionTouched: false };
+        return {
+          ok: false, error: String((error && error.message) || error), flushed: false,
+          revisionTouched: false, mirrorUnchanged: true,
+          outcome: 'ambiguous', canonical: 'unknown-to-caller', retried: false
+        };
       });
     }
 

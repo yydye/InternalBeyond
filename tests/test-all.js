@@ -301,6 +301,14 @@ const GROUPS = [
          断言分 [CONTRACT]（契约文本）与 [CURRENT]（当前代码事实，记录现状、
          在现状变化时变红）。纯 Node、零浏览器、零网络。 */
       ['test_memory_recall_contract.js'],
+      /* P21-R2-H2 · **Activation Authority**（canonical 激活接线）。
+         冻结：canonical mode 下 Home Node 是 activation telemetry 的唯一 durable authority；
+         browser 必须 remote-first（失败则两侧都不增加 = TELEMETRY_FAIL_CLOSED），
+         而 turn 保持 fail-open。同时钉住 HN 窄写入（不推 revision / 不进 change_log）、
+         hydrate canonical-wins、mirror/off 模式的 host-local 语义、
+         以及 stale mirror 不得被 +delta 伪装成 canonical（Strategy D 被禁）。
+         纯 Node、零浏览器、零真实网络（HTTP 面由 test_home_node_production_memory_assembly 覆盖）。 */
+      ['test_memory_activation_authority.js'],
       /* P21-R2-B：Turn Signal / Early Exit + Deterministic Query Construction。
          两个新模块（assets/js/memory-recall/turn-signal.js 与 recall-query.js）是
          **implemented but unwired** 的纯函数：零 IO / 零时钟 / 零随机 / 零 LLM，
@@ -2203,6 +2211,11 @@ const GROUPS = [
                                             它是 MEMORY_RECALL_CONTRACT §17 的 **R2-A 历史**
                                             enforcement，mapping ≠ registry membership
      · test_p11_2i_integrity_closure.js     DEFER —— static 直跑 RED（多条旧 boundary 断言）
+
+   R2-H1 新增（**test-first RED**）→ **R2-H2 已转绿并登记**：
+     · test_memory_activation_authority.js  **REGISTERED at R2-H2**（static 组）。
+       H1 时它刻意不进默认 aggregate（当时有 6 条预期红）；H2 把 browser canonical recall
+       接到 activation authority（remote-first）之后 6 条全部转绿，因此按 H1 的 §27 承诺登记。
    ────────────────────────────────────────────────────────────────────── */
 
 /* ── Registry integrity guard（R2-G2）──────────────────────────────────
