@@ -12,8 +12,19 @@
  * 子进程输出透传；任一失败最终返回非零退出码；浏览器测试串行执行
  * （避免 Chrome/CDP 相互干扰）；服务测试自带随机端口与临时数据目录。
  *
- * P2-07：入口不再遗漏仓库内的测试脚本。登记条目共 110 条 = 109 个 test_*.js
- * + scripts_check_html.js（HTML 结构检查）；分组：static 43 / service 18 / browser 51。
+ * P2-07：入口不再遗漏仓库内的测试脚本。
+ *
+ * ── 计数口径（R2-G2；刻意不写死会立刻腐烂的"测试总数"）────────────────────
+ * 权威口径由 registry 在启动时**机械计算并打印**：
+ *     registry: <entries> entries · <unique> unique scripts · static <n> / p22-ui <n> /
+ *               service <n> / browser <n>
+ * 四个量互不相等，必须分开命名，禁止混成一个"测试总数"：
+ *   · registry entries            —— GROUPS 的登记条目（同一脚本可因不同 flag 登记多次）
+ *   · unique executable scripts   —— 去重后的可执行脚本数
+ *   · repo-discovered test files  —— 仓库中实际存在的 test_*.js（含**故意未登记**的）
+ *   · intentionally unregistered  —— 见本文件 "Intentionally unregistered" 台账
+ * `validateRegistry()` 在跑任何测试**之前**拒绝悬空/未登记的重复登记，
+ * 因此本注释不需要、也不允许再手写这些数字。
  * M1-A：新增 static 四条 —— test_lan_bridge_auth_contract.js（R19/§3.14 LAN 鉴权一致性）、
  *     test_chat_core_contract.js（Chat Message Contract）、
  *     test_chat_authority.js（权威/镜像/回退三态策略）、
@@ -22,8 +33,8 @@
  *     test_home_node_service.js（服务进程与 runner 注册契约）；
  *     browser 一条 —— test_m1a_chat_authority_smoke.js（真实 Home Node 进程 +
  *     真实 sendChatMessage，证明桌面单聊在切换权威之后仍然工作，且离线时 fail closed）。
- * 仓库当前有 99 个 test_*.js；并行会话在途的 test_context_snapshot.js 尚未登记
- * （不属于 P2/P3/P4/P5 改动面，登记与否由该会话决定）。
+ * test_context_snapshot.js 仍未登记：它由另一条并行工作线拥有（不属于本入口的登记
+ * 决定），R2-G2 只如实保留该 ownership，不代其裁决（详见文件末尾台账）。
  * P4：登记 test_setup_wizard.js（static）+ test_setup_wizard_smoke.js（browser）。
  * P5：登记 test_diagnostics.js（static）+ test_diagnostics_smoke.js（browser）。
  * P11-2：登记 test_middle_brain_integrity.js（browser，角色一致性守卫 / OOC Guard）。
@@ -92,6 +103,7 @@
  */
 
 const { spawnSync } = require('child_process');
+const fs = require('fs');
 const path = require('path');
 
 /* 本文件位于 tests/，因此显式区分两个根：
@@ -112,12 +124,18 @@ const SCRIPT_DIRS = {
   'test_release_builder_astages.js': path.join(REPO_ROOT, 'tools', 'release-builder', 'tests'),
   'test_release_builder_server.js': path.join(REPO_ROOT, 'tools', 'release-builder', 'tests'),
   'test_release_builder_exe.js': path.join(REPO_ROOT, 'tools', 'release-builder', 'tests'),
-  'test_packaging_contract.js': path.join(REPO_ROOT, 'tools', 'packaging-control-plane', 'tests'),
-  'test_packaging_environment_inspector.js': path.join(REPO_ROOT, 'tools', 'packaging-control-plane', 'tests'),
-  'test_packaging_build_planner.js': path.join(REPO_ROOT, 'tools', 'packaging-control-plane', 'tests'),
-  'test_packaging_artifact_validator.js': path.join(REPO_ROOT, 'tools', 'packaging-control-plane', 'tests'),
-  'test_packaging_manifest_writer.js': path.join(REPO_ROOT, 'tools', 'packaging-control-plane', 'tests'),
-  'test_packaging_executor.js': path.join(REPO_ROOT, 'tools', 'packaging-control-plane', 'tests')
+  /* R2-G2 · Registry 修复：这 6 条的登记名曾带 `packaging_` 中缀，而
+     tools/packaging-control-plane/tests/ 下的真实文件从来**不带**该中缀
+     （test_contract.js / test_environment_inspector.js / test_build_planner.js /
+      test_artifact_validator.js / test_manifest_writer.js / test_executor.js）。
+     后果是每轮 aggregate 都有 6 条 "Cannot find module" 的稳定失败。
+     现在按**真实文件名**登记；文件本身一字未动。 */
+  'test_contract.js': path.join(REPO_ROOT, 'tools', 'packaging-control-plane', 'tests'),
+  'test_environment_inspector.js': path.join(REPO_ROOT, 'tools', 'packaging-control-plane', 'tests'),
+  'test_build_planner.js': path.join(REPO_ROOT, 'tools', 'packaging-control-plane', 'tests'),
+  'test_artifact_validator.js': path.join(REPO_ROOT, 'tools', 'packaging-control-plane', 'tests'),
+  'test_manifest_writer.js': path.join(REPO_ROOT, 'tools', 'packaging-control-plane', 'tests'),
+  'test_executor.js': path.join(REPO_ROOT, 'tools', 'packaging-control-plane', 'tests')
 };
 function scriptPath(name) { return path.join(SCRIPT_DIRS[name] || TEST_ROOT, name); }
 
@@ -1713,13 +1731,15 @@ const GROUPS = [
       ['test_release_builder_exe.js'],
       /* P35 Packaging Control Plane: schema contract, read-only preflight,
          deterministic planning and read-only artifact validation. The suites
-         use isolated synthetic fixtures and never build or install. */
-      ['test_packaging_contract.js'],
-      ['test_packaging_environment_inspector.js'],
-      ['test_packaging_build_planner.js'],
-      ['test_packaging_artifact_validator.js'],
-      ['test_packaging_manifest_writer.js'],
-      ['test_packaging_executor.js'],
+         use isolated synthetic fixtures and never build or install.
+         R2-G2：脚本名按 tools/packaging-control-plane/tests/ 的**真实文件名**登记
+         （此前带 `packaging_` 中缀的 6 个名字指向不存在的文件）。 */
+      ['test_contract.js'],
+      ['test_environment_inspector.js'],
+      ['test_build_planner.js'],
+      ['test_artifact_validator.js'],
+      ['test_manifest_writer.js'],
+      ['test_executor.js'],
       /* P35.6 · same-origin packaging API gate, UI state mapping and safe request surface. */
       ['test_packaging_center_api.js'],
       ['test_packaging_center_ui.js'],
@@ -2163,6 +2183,83 @@ const GROUPS = [
     ]
   }
 ];
+
+/* ── Intentionally unregistered（台账 · R2-G2）──────────────────────────
+   未登记的 test_*.js 可以**合法**存在（DEFER / RETIRE），因此本入口不追求
+   "ACTUAL_ONLY = 0"。这里只登记**重要例外**与最终裁决；完整集合由机械审计生成
+   （tmp/g2-registry-audit.js），不手抄 80+ 行清单 —— 手抄清单正是会腐烂的东西。
+
+   R2-G2 对 G0 点名的 5 个候选的最终裁决（REGISTER / DEFER / RETIRE）：
+     · test_context_snapshot.js             DEFER —— 由另一条并行工作线拥有；browser 直跑 RED
+     · test_p11_2j_memory_admission.js      DEFER —— 静态锚点过期（createMoment 已变成
+                                            (data,options)；core.js 的 DB_VER / store 数组
+                                            已迁至 IBWebCoreDbSchema），修复属 schema-catalog
+                                            阶段，不是 registry 解析问题
+     · test_p11_3x_c_context_budget.js      DEFER —— 直跑 GREEN，但单测 235s；本入口没有
+                                            slow / opt-in 机制，为一条测试发明新 runner 架构
+                                            超出本轮范围
+     · test_mobile_memory_read_boundary.js  DEFER（候选 RETIRE）—— service 直跑 RED
+                                            （device-token 时代的 401 → suite error）；
+                                            它是 MEMORY_RECALL_CONTRACT §17 的 **R2-A 历史**
+                                            enforcement，mapping ≠ registry membership
+     · test_p11_2i_integrity_closure.js     DEFER —— static 直跑 RED（多条旧 boundary 断言）
+   ────────────────────────────────────────────────────────────────────── */
+
+/* ── Registry integrity guard（R2-G2）──────────────────────────────────
+   R1 每个 file-backed entry resolve 后必须 exists
+   R2 重复的 executable path 必须**显式允许**（登记脚本 + 理由）
+   R3 category 计数由 registry 机械计算 —— 不再有第二份手写 authority
+   R4 REGISTERED_MISSING === 0
+   刻意**不**要求 ACTUAL_ONLY === 0：未登记可以是合法 DEFER（见上面台账）。
+   ────────────────────────────────────────────────────────────────────── */
+const DUPLICATE_SCRIPTS_ALLOWED = {
+  /* 同一脚本、两组不同 flag：默认离线 mock 一次 + corpus readiness 一次。
+     两者语义不同，因此是**有意**重复登记，不是冗余登记。 */
+  'test_middle_brain_calibration_live.js':
+    'registered twice with different flag sets (default offline mock; --corpus=readiness run)'
+};
+
+const REGISTRY = [];
+GROUPS.forEach(g => g.tests.forEach(t => {
+  REGISTRY.push({ group: g.name, script: t[0], args: t.slice(1), path: scriptPath(t[0]) });
+}));
+
+function validateRegistry() {
+  const problems = [];
+  /* R1 / R4：file-backed entry 必须存在 */
+  REGISTRY.forEach(e => {
+    if (!fs.existsSync(e.path)) {
+      problems.push('MISSING_FILE  ' + e.script + '  ->  '
+        + path.relative(REPO_ROOT, e.path).replace(/\\/g, '/'));
+    }
+  });
+  /* R2：重复 executable path 必须显式允许 */
+  const byPath = new Map();
+  REGISTRY.forEach(e => {
+    if (!byPath.has(e.path)) byPath.set(e.path, []);
+    byPath.get(e.path).push(e);
+  });
+  byPath.forEach((list, p) => {
+    if (list.length < 2) return;
+    const name = path.basename(p);
+    if (!Object.prototype.hasOwnProperty.call(DUPLICATE_SCRIPTS_ALLOWED, name)) {
+      problems.push('DUPLICATE_NOT_ALLOWED  ' + name + '  x' + list.length
+        + '  (add it to DUPLICATE_SCRIPTS_ALLOWED with a reason, or de-duplicate the registry)');
+    }
+  });
+  return problems;
+}
+
+const REGISTRY_PROBLEMS = validateRegistry();
+if (REGISTRY_PROBLEMS.length) {
+  console.error('REGISTRY INVALID —— 不会运行任何测试：');
+  REGISTRY_PROBLEMS.forEach(p => console.error('  - ' + p));
+  process.exit(3);
+}
+/* R3：category 计数与 registry 摘要由 registry 自身机械计算 */
+const REGISTRY_CATEGORIES = GROUPS.map(g => g.name + ' ' + g.tests.length).join(' / ');
+console.log('registry: ' + REGISTRY.length + ' entries · ' + new Set(REGISTRY.map(e => e.path)).size
+  + ' unique scripts · ' + REGISTRY_CATEGORIES);
 
 const mode = process.argv.slice(2).find(a => a.startsWith('--')) || '--all';
 const groups = mode === '--all' ? GROUPS : (mode === '--quick' ? GROUPS.slice(0, 2) : GROUPS.slice(2));

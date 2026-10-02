@@ -399,10 +399,10 @@ function runTest(rel, expectPattern) {
   return { ok: r.status === 0, out: out, matched: expectPattern ? expectPattern.test(out) : true };
 }
 
-const contractRun = runTest('tests/test_memory_recall_contract.js', /148 assertions green/);
+const contractRun = runTest('tests/test_memory_recall_contract.js', /156 assertions green/);
 check('B1.contractStillGreen', contractRun.ok && contractRun.matched,
   'R2-A contract must still pass (each phase moved the count as an intentional transition: '
-  + '141 → 143 at R2-C, → 148 at R2-D)'
+  + '141 → 143 at R2-C, → 148 at R2-D, → 156 at R2-G1 (docs truth guards D1–D8))'
   + '\n        ' + contractRun.out.split('\n').filter(l => /FAIL/.test(l)).join('\n        '));
 check('B2.productionIntegrityStillHolds', !/FAIL\s+P18\.unchanged/.test(contractRun.out));
 

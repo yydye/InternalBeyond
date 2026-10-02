@@ -8,8 +8,13 @@
 > Source-of-truth 优先级：生产代码 → enforcement tests → 当前 contracts → audit → history。
 >
 > **Recall 的语义契约见 [`../contracts/memory/MEMORY_RECALL_CONTRACT.md`](../contracts/memory/MEMORY_RECALL_CONTRACT.md)**
-> （P21-R2-A 冻结）。本文档描述**当前**架构；那份 contract 描述 recall orchestration
-> 的**目标边界**，其中标注 FUTURE CONTRACT 的条款在 P21-R2-A 时点**尚无生产实现**。
+> （P21-R2-A 冻结）；cooldown 的行为契约见
+> [`../contracts/memory/MEMORY_COOLDOWN_CONTRACT.md`](../contracts/memory/MEMORY_COOLDOWN_CONTRACT.md)
+> （已实现，anchor = P21-R2-F1b closure commit `2e6f7e9`）。
+> 本文档描述**当前**架构。两份 contract 里标注 FUTURE CONTRACT 的条款，指的是
+> **R2-A 时点**尚无生产实现的部分；**R2-B ~ R2-F1b 现已实现并提交**，仍未实现的只有
+> `reminisce`、durable cooldown、`MemoryValueV2`，以及 §8.2 登记的 activation authority
+> 缺口（R2-H）。
 
 ---
 
@@ -111,26 +116,35 @@ candidate set → visibility/ACL → relevance → ranking → top-k / budget �
 用户可在 DIY → MCP 挂载外部 RAG / 向量工具，那会以 `mcp.<alias>.<tool>` 暴露为**工具通道**，
 **不是** Memory Runtime 本体，也不参与本节这条 recall 链。
 
-### 5.2 Recall Orchestration（目标契约，P21-R2-A 冻结 · **尚无生产实现**）
+### 5.2 Recall Orchestration（P21-R2-A 冻结契约 · **R2-B ~ R2-F1b 已实现**）
 
-当前召回是**单一管线**：一次 `buildMemoryContext()` 同时承担 turn 决策、相关性、
-打分、排序、预算与渲染，对所有触发场景使用同一套 policy。
+召回**不再**是"一次 `buildMemoryContext()` 决定一切"的单管线：turn 决策（early exit、
+channel 仲裁）、query 构造、visibility pre-filter、hard gate 与 trace 组装由
+`assets/js/memory-recall/memory-recall-orchestrator.js` 承担；排序 / 打分 / 预算 / 渲染仍由
+**唯一** selector `assets/js/memory-retrieval-core.js` 承担；browser 与 Home Node 共用这两层。
 
-[`MEMORY_RECALL_CONTRACT.md`](../contracts/memory/MEMORY_RECALL_CONTRACT.md) 把
-**Memory Recall Orchestration** 的目标边界冻结为：
+[`MEMORY_RECALL_CONTRACT.md`](../contracts/memory/MEMORY_RECALL_CONTRACT.md) 冻结的
+**Memory Recall Orchestration** 边界，逐条现状：
 
 - **channel 词表**：`legacy`（兼容旧调用 / 未提供 turn signal 的路径）· `surface` ·
-  `recall` · `glossary` · `coldStart` · `reminisce`；
-- **`relevanceScore` 与 `memoryValue` 分离**（前者依赖 query，后者不依赖）；
+  `recall` · `glossary` · `coldStart` —— **已实现**（策略真源
+  `assets/js/memory-recall/channel-policy.js`）；`reminisce` 仍为 **future**。
+- **`relevanceScore` 与 `memoryValue` 分离** —— **已实现**（gate 只看 relevance）；
+  `MemoryValueV2` 仍是 **future**（契约 §7.3）。
 - **hard gate**：`0 memory is a valid successful recall result`，且
-  `early-exit` / `gate-rejected` / `no-visible-memory` 三种"零结果"必须可区分；
-- **cooldown 先 session-local**（`RecallSessionState`，不落 MemoryRecord）；
-- **`RecallTrace`** 可解释、可断言、禁止正文与凭据。
+  `early-exit` / `gate-rejected` / `no-visible-memory` 三种"零结果"**可区分** —— **已实现**。
+- **cooldown 先 session-local**（`RecallSessionState`，不落 `MemoryRecord`）—— **已实现**，
+  作用于 browser 与 Home Node 的 canonical chat recall；行为 authority 是
+  [`MEMORY_COOLDOWN_CONTRACT.md`](../contracts/memory/MEMORY_COOLDOWN_CONTRACT.md)
+  （implementation anchor = P21-R2-F1b closure commit `2e6f7e9`）。
+  **durable** cooldown 仍是 **future**（契约 §10.2）。
+- **`RecallTrace`** 可解释、可断言、禁止正文与凭据 —— **已实现**。
 
-**这些在 P21-R2-A 时点都还不是当前行为。** 特别是：现行 `calcRelevance()` 的值域是
-`[1, 2.5]`，**下限恒为 1，无法表达"没有任何相关证据"**，因此当前实现**不满足**
-上面那条 hard gate 契约 —— 预算是唯一的停止条件。该契约的落地属于后续阶段
-（R2-B ~ R2-F），本文档不把它描述成已完成。
+**chronology（不得读成当前状态）**：上述条款在 **R2-A 时点**都还不是当前行为 ——
+当时 `calcRelevance()` 下限恒为 `1`、无法表达"没有任何相关证据"，预算曾是唯一的停止条件，
+也不存在任何 channel / cooldown 实现。**R2-B、R2-C、R2-D、R2-E1a/E1b、R2-F1a、R2-F1b
+现已全部实现并提交。** 仍未实现的只有：`reminisce`、durable cooldown、`MemoryValueV2`，
+以及 §8.2 登记的 activation authority 缺口（**R2-H**）。
 
 ---
 
@@ -159,6 +173,23 @@ Consolidation **does not own**：durable storage、sync、lifecycle、retrieval 
 
 > **Consolidation ≠ Storage Authority。** Consolidation 通过同一条 authority path
 > 写入（`quickCreateMemory` → authority）。`lastConsolidatedAt` 是 watermark，而非 content。
+
+### 7.1 Store 边界与术语（R2-G）
+
+| 术语 | 指什么 | durable authority？ |
+| --- | --- | --- |
+| **canonical memory** | Home Node `memory_records` 中的记录（canonical recall 的唯一输入面） | **是**（唯一） |
+| **canonical durable authority** | Home Node storage（`memory-store.js`）及其写入路径 | **是** |
+| **browser mirror** | IndexedDB `memories`，canonical 的镜像 | 否（hydration 会整表重建） |
+| **parallel store** | 与 canonical **并列**、不共享 canonical ACL、不参与 canonical recall 的独立持久域 | 否 |
+| **consolidation** | browser-side 的 summarize / merge / dedupe / provenance 过程（§7） | 否（经 canonical 写入路径落库） |
+| **Auto Memory** | 独立 store `autoMemory` + 自有打分/注入的并行召回管线（§8.1） | 否 |
+| **roleLetterMemories** | 角色私信的独立命名空间（`owner=characterId`），绝不写共享 `memories` | 否 |
+
+> **R2-G does not unify these stores.** 本轮**没有**把 Auto Memory、`roleLetterMemories`
+> 或任何其它 parallel store 并入 canonical memory，也没有改动它们的 ACL / scoring / 注入。
+> `docs/MEMORY.md` §6 的"长期记忆来源"表说的是**各来源的写入路径**，
+> **不等于**"全部进入 canonical memory" —— 只有走 canonical 路径的那些会进入 `memory_records`。
 
 ---
 
@@ -202,7 +233,7 @@ recall 的并行召回管线**：
 
 ---
 
-## 8.2 Known Authority Gap: MEMORY-ACTIVATION-AUTHORITY
+### 8.2 Known Authority Gap: MEMORY-ACTIVATION-AUTHORITY
 
 | 事实 | 位置 |
 | --- | --- |
@@ -217,6 +248,22 @@ recall 的并行召回管线**：
 **状态：登记，未修。** 修复属于 **R2-H · Authority Closure**（涉及 canonical 写入路径，
 需要独立评估）。这也解释了为什么 P21-R2 的 cooldown 先采用 **session-local**
 （`RecallSessionState`）—— 一个依赖跨端持久遥测的冷却机制在此缺口关闭前会周期性静默失效。
+
+### 8.3 R2-G 未做的事（non-goals）
+
+P21-R2-G 是 **docs / tests / registry 的 consolidation**。以下每一项都**没有**在本轮发生
+（不新增 phase 名称，只引用既有归属标签）：
+
+| 未做 | 归属 |
+| --- | --- |
+| activation authority closure（§8.2 的缺口） | **R2-H** |
+| browser mirror hydration authority closure（§12 的 hazard） | **R2-H** |
+| durable cooldown（把 recall telemetry 提升为 durable 字段） | FUTURE（cooldown contract §10.2） |
+| `MemoryValueV2` | FUTURE（recall contract §7.3） |
+| Auto Memory 并入 canonical recall | **out-of-scope**（§8.1 的未决产品 / 架构问题） |
+| `roleLetterMemories` 并入 canonical memory | **out-of-scope** |
+| Presence 二次召回（`R2-E0-PARALLEL-RECALL-1`） | 未决（cooldown contract §22） |
+| alias boundary closure（`R2-E1b-ALIAS-BOUNDARY-1`） | 未决 |
 
 ---
 

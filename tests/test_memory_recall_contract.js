@@ -693,6 +693,64 @@ check('T.registeredInTestAll',
     'the contract test must be registered in the static group, got: ' + JSON.stringify(groupOf));
 })();
 
+/* ══════════════════════════════════════════════════════════════════════
+   §16 · Docs truth guard（R2-G1）
+   ──────────────────────────────────────────────────────────────────────
+   为什么需要：canonical doc 的**状态描述**曾经落后于实现 —— cooldown contract 头部在
+   P21-R2-F1b 已闭合之后仍写着 "not implemented / do not cite this as evidence that
+   cooldown is live"。这类漂移不会让任何行为测试变红，只会让读者相信一件假事。
+
+   判据只钉**语义 token / 段落局部 marker**，不钉整段原文：
+   文档措辞可以自由演进，但不得退回"未实现"的旧状态。
+   ══════════════════════════════════════════════════════════════════════ */
+section('§16 · Docs truth guard（R2-G1）');
+
+const COOLDOWN_DOC = 'docs/contracts/memory/MEMORY_COOLDOWN_CONTRACT.md';
+const COOLDOWN_TRUTH = read(COOLDOWN_DOC);
+const CONTRACT_TRUTH = read(CONTRACT);
+const ARCH_TRUTH = read(ARCHITECTURE);
+/* 只扫**头部状态块**：正文会合法地讨论 FUTURE 条款（durable cooldown / reminisce），
+   对全文做 "not implemented" 扫描会产生假阳性。 */
+const COOLDOWN_HEADER = COOLDOWN_TRUTH.split('\n').slice(0, 40).join('\n');
+
+check('D1.cooldownHeaderNotUnimplemented',
+  !/\bnot implemented\b/i.test(COOLDOWN_HEADER) && !/contract only/i.test(COOLDOWN_HEADER),
+  'cooldown contract header must no longer claim "not implemented / contract only"');
+check('D2.noRecallSessionStateAbsenceClaim',
+  !/No\s+`?RecallSessionState`?\s+exists/i.test(COOLDOWN_TRUTH),
+  'cooldown contract must not claim RecallSessionState does not exist');
+check('D3.noHardcodedFactorClaim',
+  !/still hardcoded|hardcoded to/i.test(COOLDOWN_TRUTH),
+  'cooldown contract must not describe trace.cooldownFactor as hardcoded');
+check('D4.implementationAnchorPresent',
+  COOLDOWN_HEADER.indexOf('2e6f7e9') >= 0 && /\bimplemented\b/i.test(COOLDOWN_HEADER),
+  'cooldown contract header must carry an implemented status and the closure-commit anchor');
+check('D5.recallContractReferencesCooldownContract',
+  CONTRACT_TRUTH.indexOf('MEMORY_COOLDOWN_CONTRACT.md') >= 0,
+  'MEMORY_RECALL_CONTRACT must reference the cooldown contract as a current authority');
+check('D6.architectureSection52Truthful', (() => {
+  /* section-local：只钉 §5.2 这一段，不扫全文 —— 文档别处合法地讨论 R2-A 时点的 chronology
+     （"R2-A 时点尚无生产实现的部分"），全文 substring 扫描会把chronology 误判成陈旧声明。 */
+  const i = ARCH_TRUTH.indexOf('### 5.2');
+  const j = ARCH_TRUTH.indexOf('\n## 6.', i);
+  const s52 = (i >= 0 && j > i) ? ARCH_TRUTH.slice(i, j) : '';
+  return s52.length > 0
+    && s52.indexOf('尚无生产实现') < 0
+    && s52.indexOf('已实现') >= 0
+    && s52.indexOf('R2-F1b') >= 0;
+})(), 'architecture §5.2 must state the implemented status and must not claim "尚无生产实现"');
+check('D7.cooldownEnforcementMappingPresent',
+  /##\s*26\.\s*Enforcement/.test(COOLDOWN_TRUTH)
+  && COOLDOWN_TRUTH.indexOf('Mapping ≠ registry membership') >= 0,
+  'cooldown contract must carry an enforcement mapping plus the mapping≠registry clarification');
+check('D8.pipelineOrderMatchesImplementation', (() => {
+  /* R2-F1a-PIPELINE-DOC-1：§3.1 的顺序必须与实现一致 —— budget(main) → exploration → seat cap。 */
+  const i = CONTRACT_TRUTH.indexOf('⑥ budget composition');
+  const j = CONTRACT_TRUTH.indexOf('⑦ exploration');
+  const k = CONTRACT_TRUTH.indexOf('⑧ seat allocation');
+  return i >= 0 && j > i && k > j;
+})(), 'recall contract §3.1 must list budget → exploration → seat (implemented order)');
+
 /* ══════════════════════════════════════════════════════════════════════ */
 
 console.log('\n' + '='.repeat(64));

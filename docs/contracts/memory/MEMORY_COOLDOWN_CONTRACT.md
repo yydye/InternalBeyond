@@ -1,13 +1,21 @@
 # MEMORY COOLDOWN CONTRACT
 
-**Status:** Frozen (contract only — **not implemented**)
-**Phase:** P21-R2-F1b0 (P21-R2-F1a is implemented in the working tree, uncommitted)
+**Status:** Frozen — **implemented** on the canonical chat recall paths
+**Implementation anchor:** P21-R2-F1b closure commit `2e6f7e9`
+**Implemented scope:** browser + Home Node canonical chat recall paths（通道语义按 §6；
+`reminisce` 仍为 future，见 §12）
+**State:** runtime / session-local — **no** durable schema, **no** migration
+**Phase:** P21-R2-F1b0（契约冻结）→ P21-R2-F1b（实现闭合）
 **Scope:** session-local *exposure* cooldown for the canonical chat recall pipeline
-**Authority:** this document. Implementation is `R2-F1b`.
+**Authority:** this document（cooldown 行为）。Recall 行为归 `MEMORY_RECALL_CONTRACT.md`；
+人读架构总览归 `../../architecture/MEMORY.md`。
 
-> ⚠ **This contract describes behaviour that does not exist yet.**
-> `trace.cooldownFactor` is still hardcoded to `1` (`assets/js/memory-recall/recall-trace.js`).
-> No `RecallSessionState` exists. Do not cite this document as evidence that cooldown is live.
+> **Implementation status: live.** `RecallSessionState` 存在；`trace.cooldownFactor` 反映
+> canonical selector **实际施加**的因子；exposure writer 运行在已实现 browser / Home Node
+> chat 路径的 success seam 上。
+>
+> 仍然**不在**本契约的已实现范围内：cooldown 的任何 durable 形式（§10.2）、`reminisce`
+> 通道（§12）、以及 §6 未列为 implemented 的通道。本契约**不**声称 system-wide cooldown。
 
 ---
 
@@ -412,8 +420,11 @@ factor does not depend on wall-clock time
 
 ### 9.3 Recommendation
 
-> **FROZEN: scheme B (discrete, 3-turn recovery) with `factor(1) = 0.40`, `factor(2) = 0.70`,
-> `recoveryTurns = 3` — i.e. policy P2.**
+> **FROZEN — IMPLEMENTED: scheme B (discrete, 3-turn recovery) with `factor(1) = 0.40`,
+> `factor(2) = 0.70`, `recoveryTurns = 3` — i.e. policy P2.**
+>
+> 这是**已落地**的现行策略（不是待选方案）：implemented scope 与 anchor 见文档头。
+> 数值本身不得因实现状态更新而改变。
 
 Reasons: discrete and small-state (matches §4); integer-comparable in tests (no float tolerance);
 monotonic recovery expressible as `f(1) < f(2) <= 1`; and it avoids the "one turn off then fully
@@ -567,7 +578,11 @@ Reminisce therefore requires **durable exposure history**, which this contract f
 
 ## 13. Write semantics
 
-### 13.1 What may be written
+### 13.1 What may be written（IMPLEMENTED）
+
+> 已实现语义：exposure **只**从 **post-core / post-seat FINAL INJECTED ids** 写入，
+> 与 activation / reinforcement 完全分离（§13.2）。下面的 MUST NOT 表是**已经被执行**的
+> 边界，不是待实现的意图。
 
 Exposure may be recorded **only** for memories that ended up in the **final injected result**.
 
@@ -751,6 +766,25 @@ const turnId = 'turn_' + CHAT_CORE.stableToken(parsed.requestId + ':' + parsed.c
 ⇒ Home Node idempotency needs **only** `lastExposureTurn === turnIndex`. No per-memory `turnIds` set
 and no extra bounded seen-`turnId` map beyond the existing `liveTurns` sweep.
 
+### 15.8 Home Node lifecycle（IMPLEMENTED summary）
+
+以下为**已验证**的概念级事实。刻意**不**复制测试报告、断言计数或实现行号：它们是
+enforcement 的事，见 §26。
+
+- **stable logical turn identity**：`turnId` 由 `(requestId, conversationId)` 内容寻址推导，
+  且只有**一处**公式 authority —— pre-retrieval lifecycle 与 turn 构造共用它。
+- **begin before retrieval**：本轮 logical turn 的 begin 发生在 memory retrieval **之前**，
+  因此 retrieval 看到的是本轮**真实**的 `currentTurnIndex`。
+- **once per new logical turn**：每个**新** logical turn 恰好 begin 一次。
+- **duplicate `requestId`**：不推进 character turn counter、不产生第二次 begin、
+  不重复写 exposure（同一 logical turn 仍然只 exposure 一次）。
+- **pre-run failure**（begin 之后、回合开始之前失败）：释放 runtime lifecycle 身份。
+- **settled error**：不写 exposure，但 lifecycle 清理照常完成。
+- **successful turn**：以 **final injected ids** 写 exposure，随后释放 lifecycle。
+- **restart**：状态是 runtime-only；重启后读不到任何 exposure，`factor` 回到 `1`。
+
+以上不改变 §6 的通道语义，也不把 cooldown 提升为 durable。
+
 ## 16. Turn counter
 
 Cooldown needs a monotonic, session-local `currentTurnIndex` per character.
@@ -910,8 +944,28 @@ seat semantics · result shape · schema / `DB_VER=24` · legacy no-turn direct-
 
 - `docs/contracts/memory/MEMORY_RECALL_CONTRACT.md` — canonical recall contract (§9 exploration,
   §11 reason vocabulary). **Not modified by this document.**
-- `R2-F1a-PIPELINE-DOC-1` — the recall contract's pipeline diagram lists `seat → exploration →
-  budget`, while the implementation runs `budget(exploration) → seat cap`. Owned by **R2-G**.
-  This cooldown contract is compatible with both (cooldown is inserted before ranking).
+- `R2-F1a-PIPELINE-DOC-1` — **CLOSED in R2-G1**：recall contract 的管线图此前写作
+  `seat → exploration → budget`，而实现是 `budget(main) → exploration → seat cap`；
+  `MEMORY_RECALL_CONTRACT.md` §3.1 现已改为与实现一致的顺序。
+  （cooldown 插在 ranking 之前，两种顺序下都与本契约兼容。）
 - `R2-E0-PARALLEL-RECALL-1` — Presence second recall (§22).
 - `R2-E1b-ALIAS-BOUNDARY-1` — alias boundary debt; unrelated to cooldown.
+
+---
+
+## 26. Enforcement / verification mapping
+
+> **Mapping ≠ registry membership.** 下表是**语义归属**：哪个 concern 由哪个测试钉住。
+> 某个测试是否已进入 aggregate registry、当前是否 green，由 `tests/test-all.js` 与
+> aggregate 结果回答（R2-G0/G2），**不由本表回答**；本表不声明"被点名即已注册且 green"。
+
+| Concern | Tests |
+|---|---|
+| distance calibration（§9 factor 曲线与不变量） | `tests/test_memory_recall_cooldown.js` |
+| session state semantics（§4 / §16 计数、幂等、隔离、`clear`） | `tests/test_memory_recall_session_state.js` |
+| F1b frozen behaviour cases（§6 通道矩阵、§13 写入、§15 决策表、§20 重启） | `tests/test_memory_recall_r2f_cooldown_baseline.js`、`tests/test_memory_recall_r2f_cooldown_delta.js` |
+| browser / Home Node lifecycle + 行为闭合（§13 / §14 / §15.8） | `tests/test_memory_recall_cooldown_hosts.js` |
+| cross-host separation（browser/Home 状态分离，§3 / §22） | `tests/test_memory_recall_two_host_parity.js` |
+| contract / hash integrity（生产文件 pin 与契约文本冻结） | `tests/test_memory_recall_contract.js`、`tests/test_memory_recall_wiring_guard.js` |
+
+本契约的**行为**由上述测试强制；本契约是 cooldown 行为的 authority，**不是**测试计划的副本。

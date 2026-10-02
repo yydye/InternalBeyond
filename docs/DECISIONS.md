@@ -1296,3 +1296,33 @@ integration）连一行代码都还没有，并且是被明确禁止开始的下
   production memory runtime 文件 SHA-256 完整性）。断言分 `[CONTRACT]`（契约写了什么）
   与 `[CURRENT]`（当前代码事实，记录现状并在现状变化时变红），
   以免"契约声称已实现"与"实现确实存在"被混为一谈。
+
+## D32.1 P21-R2-G · Summary / Consolidation Closure（2026-10-02）
+
+- **R2-G 是 docs / tests / registry 的闭合，不是行为阶段**：**零 production 语义改动** ——
+  `assets/**`、`services/**`、schema、cooldown / retrieval / scoring 数值、activation authority
+  全部未动。这一轮的产出是"文档与登记表和实现对齐"，而不是"实现变化"。
+- **cooldown 的实现状态被对齐**：`MEMORY_COOLDOWN_CONTRACT.md` 的状态头由
+  "contract only — **not implemented**" 改为 **implemented**，implementation anchor =
+  P21-R2-F1b closure commit `2e6f7e9`；策略数值（`factor(1)=0.40` / `factor(2)=0.70` /
+  `recoveryTurns=3`）**未变**，且仍明确**不**声称 system-wide / durable cooldown。
+- **recall 契约与实现对齐**：§3.1 的 pipeline 顺序改为实现的
+  `budget(main) → exploration → seat cap`（旧图写作 `seat → exploration → budget`）；
+  §17 保留 R2-A 历史行但标注为"R2-A 时点"，并补 R2-F1b 执行行与
+  **mapping ≠ registry membership**；§18 收录 cooldown contract 为**并列的当前 authority**。
+- **registry 真相被重建**：登记表中原有 6 条 packaging 路径指向**不存在**的文件，
+  使每轮 aggregate 稳定产生 `Cannot find module`；现按 `tools/packaging-control-plane/tests/`
+  的**真实文件名**登记。计数不再手写 —— 由 runner 机械计算并打印，且新增
+  registry integrity guard（缺失文件 / 未授权的重复登记会在跑测试前拒绝启动）。
+- **历史文档被显式降级**：`docs/MEMORY.md` 标注为 **pre-authority 历史叙述**，
+  不再作为 recall / scoring / cooldown 的 authority（内容保留，不逐段重写）。
+- **consolidation / parallel-store 边界被写清**：canonical memory（Home Node `memory_records`）
+  是唯一 durable authority；consolidation 只经 canonical 写入路径落库并维护 watermark；
+  Auto Memory 与 `roleLetterMemories` 是**并列的独立持久域** ——
+  **R2-G 不统一它们**（见 `architecture/MEMORY.md` §7.1 / §8.1 / §8.3）。
+- **仍未闭合的 authority 工作继续延期**：`MEMORY-ACTIVATION-AUTHORITY` 缺口与 mirror hydration
+  hazard 归 **R2-H**；durable cooldown 与 `MemoryValueV2` 仍为 FUTURE；
+  Auto Memory / `roleLetterMemories` 的合并是**未决的产品问题**，不属于 P21-R2。
+- **Enforcement**：`tests/test_memory_recall_contract.js` 增加 docs-truth guards（D1–D8），
+  钉住"文档状态不得退回未实现"；`tests/test-all.js` 增加 registry integrity guard（R1–R4），
+  钉住"登记不得指向不存在的文件"。

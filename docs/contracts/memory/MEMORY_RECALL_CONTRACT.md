@@ -113,12 +113,20 @@ candidate set
    ↓  ③ relevance
    ↓  ④ scoring / memoryValue
    ↓  ⑤ hard gate
-   ↓  ⑥ seat allocation
-   ↓  ⑦ exploration
-   ↓  ⑧ budget composition
+   ↓  ⑥ budget composition（main 区填充；pinned-first）
+   ↓  ⑦ exploration（只使用 `payloadBudget` 的余量）
+   ↓  ⑧ seat allocation（seat cap 在 core 选择**之后**截断）
    ↓  ⑨ rendered context
    ↓  ⑩ trace candidate detail
 ```
+
+> **顺序事实（R2-G1 校正）**：⑥⑦⑧ 的**实际执行顺序**是
+> `budget composition(main) → exploration → seat cap`。
+> 唯一 selector（[`memory-retrieval-core.js`](../../../assets/js/memory-retrieval-core.js)）
+> 先确定 main / reserved 预算并完成 main 区填充；exploration 只能消费 `payloadBudget` 的余量；
+> seat planner 在 core 返回**之后**才做席位截断，且冻结的 seat 契约要求它**不得**重新解释预算。
+> 本次校正**只改文档的顺序描述**，不改变下面任何 MUST / MUST NOT 语义，
+> 也不改变 §9 Exploration Contract。
 
 **MUST**：visibility filtering MUST occur before **relevance、scoring、ranking、
 seat allocation、exploration、budget composition、trace candidate detail**。
@@ -697,17 +705,38 @@ migration 的幂等性建立在"内容相同 ⇒ skipped"之上。一个每轮�
 | 两端召回一致（parity） | `tests/test_memory_migration.js`（T5）、`tests/test_mobile_memory_continuity.js`（T3.8） |
 | Record contract / telemetry exclusion | `tests/test_memory_contract_closure.js` |
 | Migration 幂等性 | `tests/test_memory_migration.js` |
-| Production memory runtime 未被本阶段改动 | `tests/test_memory_recall_contract.js`（生产文件 hash 断言，见该测试说明） |
+| Production memory runtime 未被**本阶段（R2-A）**改动 | `tests/test_memory_recall_contract.js`（生产文件 hash 断言，见该测试说明） |
+
+> **历史语境（不得读成当前状态）**：上表最后一行是 **R2-A 时点**的陈述。P21-R2-F1b（closure
+> commit `2e6f7e9`）**确实修改了**生产 memory runtime 并显式迁移了 hash pin（见该 fixture 的
+> `note`）。该行保留为 chronology，不代表当前 truth。
+
+**P21-R2-F1b implementation enforcement（R2-G1 补录）**
+
+| Concern | 测试 / authority |
+|---|---|
+| session-local cooldown 行为 authority | [`MEMORY_COOLDOWN_CONTRACT.md`](MEMORY_COOLDOWN_CONTRACT.md)（其 §26 是完整映射） |
+| session state（计数 / 幂等 / 隔离 / restart） | `tests/test_memory_recall_session_state.js` |
+| factor 曲线与不变量 | `tests/test_memory_recall_cooldown.js` |
+| F1b 冻结行为用例 | `tests/test_memory_recall_r2f_cooldown_baseline.js`、`tests/test_memory_recall_r2f_cooldown_delta.js` |
+| browser / Home Node lifecycle 与行为闭合 | `tests/test_memory_recall_cooldown_hosts.js` |
+| 两端状态分离 | `tests/test_memory_recall_two_host_parity.js` |
+
+> **Mapping ≠ registry membership**：上面两张表都只表达**语义归属**。一个测试被本表点名
+> **不等于**它已经进入 `tests/test-all.js` 的 aggregate registry，也**不等于**它当前 green。
+> registry 成员资格与运行结果以 `tests/test-all.js` 和 aggregate 结果为准（R2-G0/G2）。
 
 **本 contract 在 R2-A 时点的执行方式**：契约文本以 **static assertion**
 钉住（文件存在、词表完整、声明齐全），接口形状以 **fixture / 形状断言**
 钉住。**尚未有生产实现的条款不要求生产行为已改变。**
+（R2-A 之后：R2-B ~ R2-F1b 已实现；仍未实现的条款见各节的 FUTURE CONTRACT 标注。）
 
 ---
 
 ## 18. Historical References
 
 - [`../architecture/MEMORY.md`](../../architecture/MEMORY.md) — 当前 Memory 架构（canonical）
+- [`MEMORY_COOLDOWN_CONTRACT.md`](MEMORY_COOLDOWN_CONTRACT.md) — **当前有效的 runtime cooldown 行为契约**（session-local；状态 implemented，implementation anchor = P21-R2-F1b closure commit `2e6f7e9`）。与本文档是**并列**的 authority：本文档冻结 recall 行为，它冻结 cooldown 行为
 - [`MEMORY_AUTHORITY_CONTRACT.md`](MEMORY_AUTHORITY_CONTRACT.md) — storage authority
 - [`MEMORY_RECORD_CONTRACT.md`](MEMORY_RECORD_CONTRACT.md) — record 形状与 telemetry exclusion
 - [`../../MEMORY.md`](../../MEMORY.md) — retrieval/scoring 叙述（pre-authority model）

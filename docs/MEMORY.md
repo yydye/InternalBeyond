@@ -1,4 +1,19 @@
-﻿# InternalBeyond · 记忆系统（Memory Runtime）
+# InternalBeyond · 记忆系统（Memory Runtime）
+
+> **⚠ HISTORICAL / PRE-AUTHORITY（R2-G 显式降级）**
+> 本文是 **pre-authority 时期**的记忆叙述，保留用于解释"当初为什么这样设计"。
+> **它不再是当前 recall / scoring / cooldown 的 authority**，也不要被当作端到端行为描述引用。
+>
+> | 需要什么 | 当前 authority |
+> | --- | --- |
+> | 当前 Memory 架构 | [`architecture/MEMORY.md`](architecture/MEMORY.md) |
+> | 当前 recall 行为契约 | [`contracts/memory/MEMORY_RECALL_CONTRACT.md`](contracts/memory/MEMORY_RECALL_CONTRACT.md) |
+> | 当前 cooldown 行为契约 | [`contracts/memory/MEMORY_COOLDOWN_CONTRACT.md`](contracts/memory/MEMORY_COOLDOWN_CONTRACT.md) |
+> | durable storage authority | [`contracts/memory/MEMORY_AUTHORITY_CONTRACT.md`](contracts/memory/MEMORY_AUTHORITY_CONTRACT.md) |
+>
+> 下文与上述任一份冲突时，**以上述为准**。正文的算法描述反映的是当时实现，部分细节
+> （例如召回入口、探索窗口的候选池、注入路径）已被 R2-B ~ R2-F1b 修改；本文**不做**逐段重写 ——
+> 保留原文正是它的价值。
 
 > 本文给出 IB 记忆系统的**正式定义**：它如何存储、打分、召回、遗忘、固化——以及为什么某些事情"会留下来"。
 > 这是角色**情感连续性**与**社会闭环**（见 [SOCIAL_RUNTIME.md](SOCIAL_RUNTIME.md)）的底层。
@@ -6,6 +21,8 @@
 
 > **当前 Memory authority 见 [architecture/MEMORY.md](architecture/MEMORY.md) 与 [contracts/memory/](contracts/memory/)。**
 > 本文档描述**检索 / 评分 / 固化算法**；§1 的 IndexedDB `memories` 是 Home Node canonical `memory_records` 的**镜像**，不是 durable authority。
+> 注意：§6 的"长期记忆来源"表列的是**各来源的写入路径**，**不等于**"全部进入 canonical memory" ——
+> 其中 Auto Memory 与 `roleLetterMemories` 是**并列的独立持久域**（见架构 §7.1 / §8.1）。
 
 ---
 
