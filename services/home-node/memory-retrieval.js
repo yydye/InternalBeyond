@@ -62,6 +62,10 @@ function createMemoryRetrieval(deps) {
      才能让"同一输入给出同一召回"成为可断言的契约（Wave 1 · §7.5）。 */
   const random = typeof deps.random === 'function' ? deps.random : Math.random;
   const logger = deps.logger || (() => {});
+  /* P21-R2-F1b：cooldown 的 session authority **由 composition 层注入**，
+     与写入方（mobile-gateway settle）必须是同一个实例。
+     缺席 ⇒ orchestrator 无 cooldown，行为与 F1a 逐字相同（legacy 兼容）。 */
+  const sessionState = deps.sessionState || null;
 
   /* ── 纯召回：从 canonical store 取候选集并交给共享核心 ──────────────
      无副作用。selectedIds 供调用方在**之后**做强化。 */
@@ -107,6 +111,10 @@ function createMemoryRetrieval(deps) {
       /* 标题由本模块提供（【长期记忆】）：只要正文行，保证"哪一行怎么渲染"
          仍然出自共享实现，而小节标题是执行缝的决定。 */
       includeHeader: false,
+      /* F1b：只在 visibility/Hard Gate 之后为已 admitted 的候选算 factor；
+         turnIndex 来自调用方在 retrieval **之前** begin 的 Home turn（§13/§17）。 */
+      sessionState: sessionState,
+      turnIndex: options.turnIndex == null ? null : options.turnIndex,
       /* P21-R2-D · 语义切换点：Host 正式传 turn。
          message 来自 buildRuntimeContext 的 ctx.userMessage —— 它在
          mobile-gateway 的 beginTurn 里由**本轮请求体**构造
@@ -232,6 +240,13 @@ function createMemoryRetrieval(deps) {
         now: opts.now,
         maxChars: opts.maxChars,
         contentLen: opts.contentLen,
+        /* ── P21-R2-F1b · §9 · logical turn index（**必须逐层转发**）────────
+           这一层此前只转发上面 6 个 key，于是 orchestrator 永远收到
+           turnIndex = undefined ⇒ 所有候选 distance=null ⇒ factor 恒 1
+           （cooldown 在 Home Node 上静默失效，而表面上"什么都没报错"）。
+           转发而不是在这里计算：cooldown 的唯一实现在 orchestrator + cooldown.js，
+           本模块绝不自己生成 factor map。 */
+        turnIndex: opts.turnIndex,
         /* P21-R2-E1a · ColdStart 会话信号（latent）：如实透传给 retrieval，
            由它放进 turn 元数据。本轮 orchestrator 不消费 ⇒ 结果不变。 */
         conversationId: opts.conversationId,

@@ -1,0 +1,68 @@
+{
+  "id": "c09_coldstart_then_surface",
+  "group": "channel",
+  "label": "coldStart then the next surface turn in the same character",
+  "kind": "orch",
+  "records": [
+    {
+      "id": "pin1",
+      "title": "AAAA",
+      "content": "AAAA xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "importance": 9,
+      "arousal": 0.3,
+      "resolved": false,
+      "activationCount": 0,
+      "created": 1749913600000,
+      "lastActivated": 1749913600000,
+      "visibility": "public",
+      "tags": [],
+      "domain": "日常",
+      "createdBy": "user",
+      "pinned": true
+    }
+  ],
+  "options": {
+    "apiId": "role_a",
+    "now": 1750000000000,
+    "isGroup": false,
+    "groupMemEnabled": false,
+    "contentLen": 200,
+    "maxChars": 700
+  },
+  "random": 0.999,
+  "message": "嗯",
+  "turnExtra": {
+    "isFirstTurn": true
+  },
+  "expected": {
+    "text": "【记忆（系统参考，勿提及此段）】\n- [用户记录] AAAA（日常）：AAAA xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n",
+    "selected": [
+      {
+        "id": "pin1",
+        "score": 999,
+        "line": "- [用户记录] AAAA（日常）：AAAA xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"
+      }
+    ],
+    "count": 1,
+    "chars": 236,
+    "reason": null
+  },
+  "expectedTrace": {
+    "channel": "coldStart",
+    "candidates": [
+      {
+        "memoryId": "pin1",
+        "seat": "pinned",
+        "decision": "selected",
+        "cooldownFactor": 1,
+        "reasons": [
+          "cold-start-anchor"
+        ],
+        "finalScore": null
+      }
+    ]
+  },
+  "expectedMeta": {
+    "activationPolicy": "none"
+  }
+}

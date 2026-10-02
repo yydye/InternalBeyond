@@ -41,6 +41,9 @@
    ══════════════════════════════════════════════════════════════════════════ */
 
 const assert = require('node:assert/strict');
+
+/* R2-F1b-HASH-BYTES-1: verification is byte-level canonical (CRLF->LF only). */
+const { canonicalTextBytes, canonicalTextSha256, rawSha256 } = require('./helpers/canonical-text-hash.js');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -620,8 +623,7 @@ const currentHashes = {};
 PRODUCTION_FILES.forEach(rel => {
   const p = path.join(ROOT, rel);
   assert.ok(fs.existsSync(p), 'production file missing: ' + rel);
-  currentHashes[rel] = crypto.createHash('sha256')
-    .update(fs.readFileSync(p)).digest('hex').toUpperCase();
+  currentHashes[rel] = canonicalTextSha256(fs.readFileSync(p));
 });
 
 if (!fs.existsSync(HASH_BASELINE)) {

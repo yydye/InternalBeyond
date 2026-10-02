@@ -1,0 +1,214 @@
+{
+  "id": "c07_glossary_after_exposure",
+  "group": "channel",
+  "label": "glossary after prior exposure (deterministic target)",
+  "kind": "orch",
+  "records": [
+    {
+      "id": "g1",
+      "title": "AAAA",
+      "content": "AAAA xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "importance": 10,
+      "arousal": 0.3,
+      "resolved": false,
+      "activationCount": 0,
+      "created": 1749913600000,
+      "lastActivated": 1749913600000,
+      "visibility": "public",
+      "tags": [],
+      "domain": "日常",
+      "createdBy": "user"
+    },
+    {
+      "id": "g2",
+      "title": "AAAA",
+      "content": "AAAA xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "importance": 9,
+      "arousal": 0.3,
+      "resolved": false,
+      "activationCount": 0,
+      "created": 1749913600000,
+      "lastActivated": 1749913600000,
+      "visibility": "public",
+      "tags": [],
+      "domain": "日常",
+      "createdBy": "user"
+    },
+    {
+      "id": "g3",
+      "title": "AAAA",
+      "content": "AAAA xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "importance": 8,
+      "arousal": 0.3,
+      "resolved": false,
+      "activationCount": 0,
+      "created": 1749913600000,
+      "lastActivated": 1749913600000,
+      "visibility": "public",
+      "tags": [],
+      "domain": "日常",
+      "createdBy": "user"
+    },
+    {
+      "id": "g4",
+      "title": "AAAA",
+      "content": "AAAA xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "importance": 7,
+      "arousal": 0.3,
+      "resolved": false,
+      "activationCount": 0,
+      "created": 1749913600000,
+      "lastActivated": 1749913600000,
+      "visibility": "public",
+      "tags": [],
+      "domain": "日常",
+      "createdBy": "user"
+    },
+    {
+      "id": "g5",
+      "title": "AAAA",
+      "content": "AAAA xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "importance": 6,
+      "arousal": 0.3,
+      "resolved": false,
+      "activationCount": 0,
+      "created": 1749913600000,
+      "lastActivated": 1749913600000,
+      "visibility": "public",
+      "tags": [],
+      "domain": "日常",
+      "createdBy": "user"
+    }
+  ],
+  "options": {
+    "apiId": "role_a",
+    "now": 1750000000000,
+    "isGroup": false,
+    "groupMemEnabled": false,
+    "contentLen": 200,
+    "maxChars": 700
+  },
+  "random": 0.999,
+  "message": "暗号",
+  "turnExtra": {
+    "isFirstTurn": false
+  },
+  "glossaryEntries": [
+    {
+      "alias": "暗号",
+      "kind": "term",
+      "target": {
+        "type": "memory",
+        "id": "g1"
+      }
+    },
+    {
+      "alias": "暗号",
+      "kind": "term",
+      "target": {
+        "type": "memory",
+        "id": "g2"
+      }
+    },
+    {
+      "alias": "暗号",
+      "kind": "term",
+      "target": {
+        "type": "memory",
+        "id": "g3"
+      }
+    },
+    {
+      "alias": "暗号",
+      "kind": "term",
+      "target": {
+        "type": "memory",
+        "id": "g4"
+      }
+    },
+    {
+      "alias": "暗号",
+      "kind": "term",
+      "target": {
+        "type": "memory",
+        "id": "g5"
+      }
+    }
+  ],
+  "expected": {
+    "text": "【记忆（系统参考，勿提及此段）】\n- [用户记录] AAAA（日常）：AAAA xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n- [用户记录] AAAA（日常）：AAAA xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n",
+    "selected": [
+      {
+        "id": "g1",
+        "score": 11.8,
+        "line": "- [用户记录] AAAA（日常）：AAAA xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"
+      },
+      {
+        "id": "g2",
+        "score": 10.62,
+        "line": "- [用户记录] AAAA（日常）：AAAA xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"
+      }
+    ],
+    "count": 2,
+    "chars": 455,
+    "reason": null
+  },
+  "expectedTrace": {
+    "channel": "glossary",
+    "candidates": [
+      {
+        "memoryId": "g1",
+        "seat": "primary",
+        "decision": "selected",
+        "cooldownFactor": 1,
+        "reasons": [
+          "exact-term"
+        ],
+        "finalScore": null
+      },
+      {
+        "memoryId": "g2",
+        "seat": "primary",
+        "decision": "selected",
+        "cooldownFactor": 1,
+        "reasons": [
+          "exact-term"
+        ],
+        "finalScore": null
+      },
+      {
+        "memoryId": "g3",
+        "seat": "legacy",
+        "decision": "rejected",
+        "cooldownFactor": 1,
+        "reasons": [
+          "not-selected-by-core"
+        ],
+        "finalScore": null
+      },
+      {
+        "memoryId": "g4",
+        "seat": "legacy",
+        "decision": "rejected",
+        "cooldownFactor": 1,
+        "reasons": [
+          "not-selected-by-core"
+        ],
+        "finalScore": null
+      },
+      {
+        "memoryId": "g5",
+        "seat": "legacy",
+        "decision": "rejected",
+        "cooldownFactor": 1,
+        "reasons": [
+          "not-selected-by-core"
+        ],
+        "finalScore": null
+      }
+    ]
+  },
+  "expectedMeta": {
+    "activationPolicy": "normal"
+  }
+}

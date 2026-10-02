@@ -126,6 +126,34 @@ function _calcRelevance(mem,keywords){
    getMemoryScore 的 activationFactor 与衰减，即"上轮被选中"会强化"下轮更容易被选中"。
    把它显式化为选择之后的独立阶段，才能在 Wave 2 迁移权威时让
    「计算选择」与「持久化强化」分别落在不同信任域，而不是把排名强化写进 revision 流。 */
+/* ── P21-R2-F1b · session cooldown 的 Browser 侧单例 ─────────────────
+   每**页面加载**一个实例：跨 conversation 共享、refresh 即 reset（by design）。
+   绝不写 IndexedDB / localStorage —— 契约 §3 明令禁止 durable exposure。
+   测试可注入自己的实例，也可调用 clear()。 */
+var _ibSessionState=null;
+function _ibRecallSessionState(){
+  if(!_ibSessionState){
+    try{
+      var SS=window.IBMemoryRecallSessionState;
+      _ibSessionState=(SS&&typeof SS.createRecallSessionState==='function')?SS.createRecallSessionState():null;
+    }catch(e){_ibSessionState=null}
+  }
+  return _ibSessionState;
+}
+/* 在 **memory retrieval 之前** begin logical turn ⇒ turnIndex 才是本轮的（§13：
+   先 begin 再检索，否则 distance 会 off-by-one）。同一 _ibTurn 对象重复调用返回同一 index。 */
+function _ibBeginRecallTurn(characterId,turnObject){
+  var st=_ibRecallSessionState();
+  if(!st)return null;
+  try{return st.beginBrowserTurn({characterId:characterId==null?null:String(characterId),turnObject:turnObject})}catch(e){return null}
+}
+/* success seam 用：把最终注入 ids 记为 exposure（幂等由 session state 保证）。 */
+function _ibRecordRecallExposure(exposure){
+  var st=_ibRecallSessionState();
+  if(!st||!exposure)return 0;
+  try{return st.recordExposure({characterId:exposure.characterId,memoryIds:exposure.memoryIds,turnIndex:exposure.turnIndex})}catch(e){return 0}
+}
+
 async function getMemoryContext(apiId,opts){
   const picked=await selectMemoryContext(apiId,opts);
   if(!picked.context)return '';
@@ -197,9 +225,24 @@ async function selectMemoryContext(apiId,opts){
        trace / meta 本身绝不进入这里，更不进入聊天 API（§20）。
        coldStart = 'none'：自动恢复上下文 ≠ 用户主动想起。
        取不到（legacy / 无 orchestrator）时按 'normal' —— 保持既有行为。 */
+    /* F1b：把 session state 与**本轮** turnIndex 交给 orchestrator；
+       它只在 visibility/Hard Gate 之后为已 admitted 的候选计算 factor。
+       未注入（direct caller / 测试）⇒ 无 cooldown，行为与 F1a 逐字相同。 */
+    _pickOpts.sessionState=(opts&&opts.sessionState)||_ibRecallSessionState();
+    _pickOpts.turnIndex=(opts&&opts.turnIndex==null)?null:opts.turnIndex;
     const _out=_orch?_orch.recall(all,_pickOpts):null;
     const picked=_out?_out.result:core.buildMemoryContext(all,_pickOpts);
     const _actPolicy=(_out&&_out.meta&&_out.meta.activationPolicy==='none')?'none':'normal';
+    /* F1b · exposure handoff：只挂在 runtime turn 对象上。
+       绝不写进 chat message / provider body / IndexedDB / 日志。 */
+    const _injIds=(_out&&_out.meta&&Array.isArray(_out.meta.injectedMemoryIds))?_out.meta.injectedMemoryIds:[];
+    if(opts&&opts._ibTurn&&typeof opts._ibTurn==='object'&&_injIds.length){
+      opts._ibTurn.memoryExposure={
+        characterId:apiId==null?null:String(apiId),
+        turnIndex:(opts.turnIndex==null?null:opts.turnIndex),
+        memoryIds:_injIds.slice()
+      };
+    }
     if(!picked||!picked.text)return {context:'',selectedIds:[],reason:picked?picked.reason:undefined,activationPolicy:_actPolicy};
     return {context:picked.text,selectedIds:picked.selected.map(s=>s.id),activationPolicy:_actPolicy};
   }catch(e){return {context:'',selectedIds:[]}}
@@ -2220,6 +2263,9 @@ window.isMemoryVisibleTo=isMemoryVisibleTo;
 window._extractKeywords=_extractKeywords;
 window._calcRelevance=_calcRelevance;
 window.getMemoryContext=getMemoryContext;
+window._ibBeginRecallTurn=_ibBeginRecallTurn;
+window._ibRecordRecallExposure=_ibRecordRecallExposure;
+window._ibRecallSessionState=_ibRecallSessionState;
 /* M1-C.2d Wave 1 · C3：选择（纯）与强化（副作用）分别可测、可独立调用。 */
 window.selectMemoryContext=selectMemoryContext;
 window.recordMemoryActivation=recordMemoryActivation;

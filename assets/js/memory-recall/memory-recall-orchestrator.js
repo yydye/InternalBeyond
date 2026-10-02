@@ -58,6 +58,7 @@
     try { deps.glossaryCatalog = require('./glossary-catalog.js'); } catch (e) { deps.glossaryCatalog = null; }
     try { deps.glossaryMatch = require('./glossary-match.js'); } catch (e) { deps.glossaryMatch = null; }
     try { deps.coldStartAnchor = require('./coldstart-anchor.js'); } catch (e) { deps.coldStartAnchor = null; }
+    try { deps.cooldown = require('./cooldown.js'); } catch (e) { deps.cooldown = null; }
     module.exports = factory(deps);
   } else {
     root.IBMemoryRecallOrchestrator = factory({
@@ -71,7 +72,8 @@
       seatPlanner: root.IBMemoryRecallSeatPlanner || null,
       glossaryCatalog: root.IBMemoryRecallGlossaryCatalog || null,
       glossaryMatch: root.IBMemoryRecallGlossaryMatch || null,
-      coldStartAnchor: root.IBMemoryRecallColdStartAnchor || null
+      coldStartAnchor: root.IBMemoryRecallColdStartAnchor || null,
+      cooldown: root.IBMemoryRecallCooldown || null
     });
   }
 })(typeof self !== 'undefined' ? self : this, function (DEFAULT_DEPS) {
@@ -235,6 +237,11 @@
         chars: chars,
         reason: reasonValue
       };
+    }
+
+    /* cooldown 的 reason 只反映**真实**发生的事；没有 info ⇒ 空数组。 */
+    function cooldownReasonOf(info) {
+      return (info && typeof info.reason === 'string' && info.reason) ? [info.reason] : [];
     }
 
     /* ── legacy mode ──────────────────────────────────────────────── */
@@ -638,6 +645,37 @@
               · 去掉 turn
                 turn 是本模块的编排输入，不是 core 的语义；把它透传下去会让
                 "core 不认识 turn" 这条边界变得模糊。 */
+      /* ── P21-R2-F1b · cooldown factor map ─────────────────────────────
+         **只在 visibility + Hard Gate 之后**枚举 exposure。原因（契约 §8 / §26）：
+         hidden 或 gate-rejected 的 memory 绝不能因为一次 session-state lookup
+         而变得可观测（时序、异常或日志都可能泄露其存在）。
+
+         core 只收到 memoryId → factor 这份**纯数据**；它不认识 session state、
+         characterId 或 turnIndex。map 用 Object.create(null) 构造，避免
+         "__proto__" / "constructor" 之类 id 触发原型链问题。 */
+      var cooldownFactorById = Object.create(null);
+      var cooldownInfoById = Object.create(null);
+      var sessionState = options.sessionState || null;
+      var cdModule = deps.cooldown;
+      if (sessionState && cdModule && typeof cdModule.computeCooldown === 'function') {
+        var cdCharacterId = (options.apiId == null) ? null : String(options.apiId);
+        var cdTurnIndex = options.turnIndex;
+        for (var cg = 0; cg < gated.length; cg++) {
+          var cgm = gated[cg];
+          if (!cgm || cgm.id == null) continue;
+          var cgid = String(cgm.id);
+          if (Object.prototype.hasOwnProperty.call(cooldownInfoById, cgid)) continue;
+          var cdExposure = null;
+          try { cdExposure = sessionState.getExposure({ characterId: cdCharacterId, memoryId: cgid }); }
+          catch (e) { cdExposure = null; }
+          var cdRes = cdModule.computeCooldown({
+            channel: channel, currentTurnIndex: cdTurnIndex, exposure: cdExposure
+          });
+          cooldownInfoById[cgid] = cdRes;
+          if (cdRes.factor < 1) cooldownFactorById[cgid] = cdRes.factor;
+        }
+      }
+
       var coreOpts = {};
       for (var k in options) {
         if (Object.prototype.hasOwnProperty.call(options, k) && k !== 'turn') coreOpts[k] = options[k];
@@ -651,6 +689,8 @@
       /* 只有唯一 selector 才知道"谁是探索项"。请求内部 metadata；
          它**不会**出现在对外 result 上（见下面的 strip）。 */
       coreOpts.includeSelectionMeta = true;
+      /* 只在真有 <1 的因子时才传；absent ⇒ core 视为无 cooldown（legacy 兼容）。 */
+      if (Object.keys(cooldownFactorById).length) coreOpts.cooldownFactorsById = cooldownFactorById;
       var gatedResult = core.buildMemoryContext(gated, coreOpts);
       var explorationIds = (gatedResult && gatedResult.selectionMeta
         && Array.isArray(gatedResult.selectionMeta.explorationIds))
@@ -770,8 +810,12 @@
             /* 探索证据叠加在准入证据之上（同一 candidate 可有多个 reasons）。
                只有**真正注入**的探索项才会走到这里 —— seat cap 裁掉的探索项
                在 ⑩b 里以 rejected 报告，绝不声称 seat='exploration'。 */
+            /* cooldownFactor 必须与 core 实际使用的一致；reason 只在**真实**
+               发生 penalty / bypass 时出现（§19 / §27 诚实性）。 */
+            cooldownFactor: (cooldownInfoById[selKey] || {}).factor,
             reasons: (admitReasons[selKey] || []).concat(
-              (explorationIds.indexOf(selRow.id) >= 0) ? [REASON_EXPLORATION_SELECTED] : []
+              (explorationIds.indexOf(selRow.id) >= 0) ? [REASON_EXPLORATION_SELECTED] : [],
+              cooldownReasonOf(cooldownInfoById[selKey])
             )
           }));
         }
@@ -799,8 +843,12 @@
             rowReasons.push(REJECT_NOT_SELECTED);
             if (reason === REASON_NO_BUDGET) rowReasons.push(REJECT_BUDGET);
           }
+          if (cooldownInfoById[id] && cooldownInfoById[id].reason) {
+            rowReasons.push(cooldownInfoById[id].reason);
+          }
           candidates.push(T.createCandidateEntry({
             memoryId: id,
+            cooldownFactor: (cooldownInfoById[id] || {}).factor,
             relevanceScore: row.relevance ? row.relevance.score : null,
             memoryValue: row.memoryValue,
             /* ── finalScore = null（P21-R2-C.1 · 诚实性裁决）─────────────────
@@ -861,7 +909,12 @@
         meta: {
           mode: 'turn', consulted: true, channel: channel,
           /* §19：activation policy 只在这里暴露，result 形状保持冻结。 */
-          activationPolicy: activationPolicy
+          activationPolicy: activationPolicy,
+          /* F1b · 内部 seam：**最终注入**（post-core、post-seat）的 ids。
+             调用方在模型 success seam 用它写 exposure ——
+             绝不使用 core pre-seat selection / gated candidates / reinforcementIds。
+             它只在 meta 上，result 的键集合逐字不变。 */
+          injectedMemoryIds: selectedIds.slice()
         }
       };
     }

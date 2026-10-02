@@ -1,0 +1,130 @@
+{
+  "id": "c05_pinned_immediate_repeat",
+  "group": "pinned",
+  "label": "pinned immediate repeat: pre-F1b pinned still dominates every turn",
+  "kind": "sequence-core",
+  "records": [
+    {
+      "id": "P",
+      "title": "P",
+      "content": "pppppppppppppppppppp",
+      "importance": 10,
+      "arousal": 0.3,
+      "resolved": false,
+      "activationCount": 0,
+      "created": 1749913600000,
+      "lastActivated": 1749913600000,
+      "visibility": "public",
+      "tags": [],
+      "domain": "日常",
+      "createdBy": "user",
+      "pinned": true
+    },
+    {
+      "id": "N1",
+      "title": "N1",
+      "content": "nnnnnnnnnnnnnnnnnnnn",
+      "importance": 12,
+      "arousal": 0.3,
+      "resolved": false,
+      "activationCount": 0,
+      "created": 1749913600000,
+      "lastActivated": 1749913600000,
+      "visibility": "public",
+      "tags": [],
+      "domain": "日常",
+      "createdBy": "user"
+    },
+    {
+      "id": "N2",
+      "title": "N2",
+      "content": "nnnnnnnnnnnnnnnnnnnn",
+      "importance": 11,
+      "arousal": 0.3,
+      "resolved": false,
+      "activationCount": 0,
+      "created": 1749913600000,
+      "lastActivated": 1749913600000,
+      "visibility": "public",
+      "tags": [],
+      "domain": "日常",
+      "createdBy": "user"
+    }
+  ],
+  "options": {
+    "apiId": "role_a",
+    "now": 1750000000000,
+    "isGroup": false,
+    "groupMemEnabled": false,
+    "contentLen": 200,
+    "maxChars": 700,
+    "userMessage": ""
+  },
+  "random": 0.5,
+  "turns": [
+    1,
+    2
+  ],
+  "steps": [
+    {
+      "logicalTurn": 1,
+      "input": {
+        "maxChars": 700,
+        "userMessage": ""
+      },
+      "expected": {
+        "text": "【记忆（系统参考，勿提及此段）】\n- [用户记录] P（日常）：pppppppppppppppppppp\n- [用户记录] N1（日常）：nnnnnnnnnnnnnnnnnnnn\n- [用户记录] N2（日常）：nnnnnnnnnnnnnnnnnnnn\n",
+        "selected": [
+          {
+            "id": "P",
+            "score": 999,
+            "line": "- [用户记录] P（日常）：pppppppppppppppppppp\n"
+          },
+          {
+            "id": "N1",
+            "score": 14.15,
+            "line": "- [用户记录] N1（日常）：nnnnnnnnnnnnnnnnnnnn\n"
+          },
+          {
+            "id": "N2",
+            "score": 12.97,
+            "line": "- [用户记录] N2（日常）：nnnnnnnnnnnnnnnnnnnn\n"
+          }
+        ],
+        "count": 3,
+        "chars": 127,
+        "reason": null
+      }
+    },
+    {
+      "logicalTurn": 2,
+      "input": {
+        "maxChars": 700,
+        "userMessage": ""
+      },
+      "expected": {
+        "text": "【记忆（系统参考，勿提及此段）】\n- [用户记录] P（日常）：pppppppppppppppppppp\n- [用户记录] N1（日常）：nnnnnnnnnnnnnnnnnnnn\n- [用户记录] N2（日常）：nnnnnnnnnnnnnnnnnnnn\n",
+        "selected": [
+          {
+            "id": "P",
+            "score": 999,
+            "line": "- [用户记录] P（日常）：pppppppppppppppppppp\n"
+          },
+          {
+            "id": "N1",
+            "score": 14.15,
+            "line": "- [用户记录] N1（日常）：nnnnnnnnnnnnnnnnnnnn\n"
+          },
+          {
+            "id": "N2",
+            "score": 12.97,
+            "line": "- [用户记录] N2（日常）：nnnnnnnnnnnnnnnnnnnn\n"
+          }
+        ],
+        "count": 3,
+        "chars": 127,
+        "reason": null
+      }
+    }
+  ]
+}

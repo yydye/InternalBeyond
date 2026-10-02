@@ -231,7 +231,24 @@ function createRateLimiter(deps) {
   };
 }
 
+/* ── canonical turn identity（P21-R2-F1b · §4 · **唯一** authority）──────
+   turnId 是 content-addressed：同一 (requestId, conversationId) 恒等同一
+   logical turn（retry / duplicate 因此得到同一个 index，不重复 increment）。
+   两个调用点必须共享**这一个**函数：
+     · pre-retrieval lifecycle（beginRecallTurn → beginHomeTurn）
+     · beginTurn（承载同一个身份，绝不自己推导第二份公式）
+   两份"看起来一样"的公式不会立刻报错，只会让同一 logical turn 在某条路径上
+   拿到两个不同身份 —— 那正是 cooldown 距离静默失真的形态。 */
+function deriveStableTurnId(requestId, conversationId) {
+  return 'turn_' + CHAT_CORE.stableToken(String(requestId == null ? '' : requestId)
+    + ':' + String(conversationId == null ? '' : conversationId));
+}
+
 function createMobileGateway(deps) {
+  /* P21-R2-F1b · cooldown state —— **由 composition 层注入的同一个实例**。
+     本模块绝不自己 new：否则 retrieval 读的与 settle 写的会是两份状态，
+     cooldown 永远不会生效（而且不会报错，只会静默失效）。 */
+  const recallSessionState = (deps && deps.sessionState) || null;
   deps = deps || {};
   const store = deps.store;
   const registry = deps.registry;
@@ -914,36 +931,81 @@ function createMobileGateway(deps) {
       logger('coldstart-signal-probe-failed', { error: String((error && error.message) || error) });
     }
 
-    /* 运行上下文（P0 + canonical memory）在本轮请求时刻**组装一次**：
-       召回是纯函数（无副作用），因此可以在这里算好并把结果放进 turnRequest；
-       真正的激活强化在所有分支之后统一执行（见 handleSend），
-       这样流式/非流式、成功/失败只有一处强化点。 */
-    const runtime = buildRuntimeContext(character, {
-      characterId: characterId,
-      userMessage: content,
-      conversationId: conversationId,
-      isFirstTurn: isFirstTurn,
-      conversationSignalAvailable: conversationSignalAvailable
-    });
+    /* ── P21-R2-F1b · §4 · canonical turn identity（**唯一** authority）──
+       turnId 是 content-addressed：同一 (requestId, conversationId) 恒等同一
+       logical turn。它在这里（identity 已校验、尚未 begin）**一次性**推导，
+       供 pre-retrieval beginHomeTurn 与 beginTurn 共用 ——
+       绝不出现第二处"看起来一样"的公式（那是下一个静默漂移点）。 */
+    const turnId = deriveStableTurnId(requestId, conversationId);
 
+    /* 本函数**只**返回 identity + 组装所需的输入。
+       运行上下文（P0 + canonical memory）与 turnRequest 的组装在
+       buildTurnRequest 里完成，因为 §5/§7 要求：
+         beginHomeTurn 必须发生在 retrieval **之前**，
+       而 duplicate 判定（handleMobile 的 getTurnByRequest）必须发生在
+         beginHomeTurn **之前** —— 把 retrieval 留在本函数里无法同时满足。 */
     return {
       ok: true,
       requestId: requestId,
       characterId: characterId,
       character: character,
+      spec: spec,
       threadId: threadId,
-      conversationId: conversationIdFor(characterId, threadId),
+      conversationId: conversationId,
       userMessage: userMessage,
+      history: history,
+      isFirstTurn: isFirstTurn,
+      conversationSignalAvailable: conversationSignalAvailable,
+      turnId: turnId
+    };
+  }
+
+  /* ── 运行上下文（P0 + canonical memory）在本轮请求时刻**组装一次** ────
+     时序硬约束（P21-R2-F1b · §5/§7）：
+         validate → derive identity → duplicate decision → beginHomeTurn
+           → **retrieval（带 recallTurnIndex）** → turnRequest
+     召回是纯函数（无副作用），因此可以在这里算好并把结果放进 turnRequest；
+     真正的激活强化在所有分支之后统一执行（见 handleSend），
+     这样流式/非流式、成功/失败只有一处强化点。
+     recallTurnIndex 由调用方传入：本函数**绝不**自己 begin（§10），
+     也绝不在缺席时猜一个 index（缺席 ⇒ retrieval 退回 legacy 无 cooldown）。 */
+  function buildTurnRequest(parsed, recallTurnIndex) {
+    const character = parsed.character;
+    const characterId = parsed.characterId;
+    const spec = parsed.spec;
+    const userMessage = parsed.userMessage;
+    const conversationId = parsed.conversationId;
+    const runtime = buildRuntimeContext(character, {
+      characterId: characterId,
+      userMessage: userMessage ? userMessage.content : '',
+      conversationId: conversationId,
+      isFirstTurn: parsed.isFirstTurn,
+      conversationSignalAvailable: parsed.conversationSignalAvailable,
+      turnIndex: recallTurnIndex == null ? null : recallTurnIndex
+    });
+
+    return {
+      ok: true,
+      requestId: parsed.requestId,
+      characterId: characterId,
+      character: character,
+      threadId: parsed.threadId,
+      conversationId: conversationId,
+      userMessage: userMessage,
+      /* §10：lifecycle identity 由**调用方**（pre-retrieval beginHomeTurn）
+         给定，本函数只承载 —— beginTurn 不得再次 begin。 */
+      turnId: parsed.turnId,
+      recallTurnIndex: recallTurnIndex == null ? null : recallTurnIndex,
       /* 供 handleSend 在回合成功之后做激活强化（C3 的 reinforcement 阶段）。 */
       selectedMemoryIds: runtime.selectedMemoryIds,
       reinforcementIds: runtime.reinforcementIds,
       turnRequest: {
-        requestId: requestId,
-        conversationId: conversationIdFor(characterId, threadId),
+        requestId: parsed.requestId,
+        conversationId: conversationId,
         friendId: characterId,
         character: { id: characterId, spec: spec },
         userMessage: userMessage,
-        history: history,
+        history: parsed.history,
         /* ── 运行上下文（P0 + canonical memory）──────────────────────
            P0（M1-C.2c-A）：四个事实在 **Home Node 内部**形成 —— 用户身份/称呼
            来自发布过来的 about/main（store meta），关系来自角色 DTO，当前时间
@@ -1032,7 +1094,14 @@ function createMobileGateway(deps) {
              信号会在 wrappers 链上静默丢失，coldStart 将来永远不会触发。 */
           conversationId: ctx.conversationId,
           isFirstTurn: ctx.isFirstTurn,
-          conversationSignalAvailable: ctx.conversationSignalAvailable
+          conversationSignalAvailable: ctx.conversationSignalAvailable,
+          /* ── P21-R2-F1b · §8 · logical turn index（**必须**随本轮一起下传）──
+             recallTurnIndex 由 pre-retrieval 的 beginHomeTurn 生成，是 canonical
+             Home turn 身份。缺席（null）时 retrieval 退回无 cooldown 的 legacy
+             行为 —— 绝不猜一个 index，也绝不在这里自己 begin。
+             不重复传 sessionState：sessionState 是**构造期**注入的同一个实例
+             （见 createMemoryRetrieval 的 deps 与该实例的装配守卫）。 */
+          turnIndex: ctx.turnIndex == null ? null : ctx.turnIndex
         });
         return {
           runtimeContext: built.runtimeContext,
@@ -1106,11 +1175,43 @@ function createMobileGateway(deps) {
     }
   }
 
+  /* ── P21-R2-F1b · §5/§6/§10 · Home turn lifecycle（**唯一** begin 点）────
+     为什么 begin 必须在 retrieval **之前**、且必须在这里而不是 beginTurn 里：
+       cooldown 的 turn distance = currentTurnIndex − lastExposureTurn。
+       若 retrieval 先发生，本轮 index 还不存在（ORCH 收到 null），
+       所有候选都拿不到 penalty —— cooldown 在 Home Node 上**静默失效**。
+     为什么每个 logical turn 恰好一次：
+       调用方（handleMobile）已先做过 duplicate 判定，因此走到这里的一定是
+       **新的** logical turn；同一 turnId 的 retry 会命中 duplicate 分支而不是这里。
+     返回 { turnId, characterId, recallTurnIndex }；recallTurnIndex 为 null 表示
+     没有 session state 或 characterId 缺失（fail closed，绝不用 conversation id 顶替）。 */
+  function beginRecallTurn(parsed) {
+    const characterId = String(parsed.characterId == null ? '' : parsed.characterId);
+    const turnId = String(parsed.turnId || deriveStableTurnId(parsed.requestId, parsed.conversationId));
+    const recallTurnIndex = (recallSessionState && characterId)
+      ? recallSessionState.beginHomeTurn({ characterId: characterId, turnId: turnId })
+      : null;
+    return { turnId: turnId, characterId: characterId, recallTurnIndex: recallTurnIndex };
+  }
+  /* 释放一个**已经 begin、但回合还没来得及开始**的 Home turn 身份。
+     §15：begin 被提前之后，任何在 begin 与 runTurn 之间的异常都必须清理，
+     否则 homeTurnIndex 会随失败请求线性增长（而且没有任何报错）。 */
+  function releaseRecallTurn(lifecycle) {
+    if (!recallSessionState || !lifecycle || !lifecycle.turnId) return false;
+    try { return recallSessionState.endHomeTurn({ turnId: lifecycle.turnId }); }
+    catch (error) { return false; }
+  }
+
   function beginTurn(parsed, device) {
     const existing = getTurnByRequest(parsed.requestId);
-    const turnId = 'turn_' + CHAT_CORE.stableToken(parsed.requestId + ':' + parsed.conversationId);
+    /* §10 · lifecycle identity 来自 pre-retrieval 的 beginRecallTurn：
+       这里**只承载**，绝不再次 beginHomeTurn（否则 counter 会被同一 logical
+       turn 推进两次，cooldown 距离随之整体偏移）。 */
+    const turnId = parsed.turnId;
+    const _recallTurnIndex = parsed.recallTurnIndex == null ? null : parsed.recallTurnIndex;
     const turn = existing || {
       turnId: turnId,
+      recallTurnIndex: _recallTurnIndex,
       requestId: parsed.requestId,
       conversationId: parsed.conversationId,
       characterId: parsed.characterId,
@@ -2386,7 +2487,24 @@ function createMobileGateway(deps) {
           return sendJson(res, 202, okBody('chat.send', requestId, duplicatePayload), req);
         }
 
-        const turn = beginTurn(parsed, device);
+        /* ── P21-R2-F1b · §5/§6/§7 · lifecycle 顺序（硬约束）─────────────
+           duplicate 判定（上面已完成）→ beginHomeTurn（这里，**恰好一次**）
+             → retrieval（buildTurnRequest，带 recallTurnIndex）→ beginTurn。
+           duplicate 命中时上面已经 return，因此到这里的一定是**新** logical turn：
+           同一 requestId 的 retry 绝不推进 character counter、绝不写第二次 exposure。 */
+        const lifecycle = beginRecallTurn(parsed);
+        let turn;
+        try {
+          turn = beginTurn(buildTurnRequest(parsed, lifecycle.recallTurnIndex), device);
+        } catch (error) {
+          /* §15 · begin 已经发生、而 runTurn 尚未开始 ⇒ 必须释放 Home turn 身份。
+             begin 被提前之后，这条清理是"失败请求不泄漏 lifecycle"的唯一保证。 */
+          releaseRecallTurn(lifecycle);
+          record('warn', 'turn-start-failed', {
+            turnId: lifecycle.turnId, error: String((error && error.message) || error).slice(0, 300)
+          });
+          return fail(res, 'INTERNAL', req, null, requestId);
+        }
         const payload = {
           turnId: turn.turnId,
           requestId: turn.requestId,
@@ -2446,6 +2564,33 @@ function createMobileGateway(deps) {
               record('warn', 'memory-activation-failed', { turnId: settled.turnId, error: String((error && error.message) || error) });
             }
           }
+          /* ── P21-R2-F1b · cooldown exposure 写入 ─────────────────────
+             success seam = settled 且 status !== 'error'（契约 §15）。
+             **独立于 reinforcement**：coldStart 的 reinforcementIds 为空，
+             但 selectedMemoryIds 非空 —— 那是"用户确实看到了什么"的事实。
+             写的是 **selectedMemoryIds（final post-seat injected ids）**，
+             不是 reinforcementIds。
+             无论成功失败都必须释放 Home turn 身份，否则 Map 会线性增长。 */
+          try {
+            if (settled.status !== 'error' && recallSessionState
+                && turn.recallTurnIndex != null && turn.characterId
+                && Array.isArray(turn.selectedMemoryIds) && turn.selectedMemoryIds.length) {
+              const _written = recallSessionState.recordExposure({
+                characterId: turn.characterId,
+                memoryIds: turn.selectedMemoryIds,
+                turnIndex: turn.recallTurnIndex
+              });
+              if (_written > 0) {
+                record('info', 'memory-exposure', { turnId: settled.turnId, count: _written });
+              }
+            }
+          } catch (error) {
+            /* 观测阶段的异常绝不影响已经成功的回合。 */
+            record('warn', 'memory-exposure-failed', { turnId: settled.turnId, error: String((error && error.message) || error) });
+          }
+          try {
+            if (recallSessionState) recallSessionState.endHomeTurn({ turnId: settled.turnId });
+          } catch (error) { /* cleanup 失败不影响回合 */ }
           if (settled.status === 'error') {
             record('warn', 'turn-error', { turnId: settled.turnId, code: settled.error });
           } else {

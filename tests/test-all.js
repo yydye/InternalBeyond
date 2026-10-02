@@ -338,6 +338,11 @@ const GROUPS = [
          baseline = 只读的 frozen 数据（绝不 regenerate）；delta = 旧/新对照矩阵。 */
       ['test_memory_recall_r2f_baseline.js'],
       ['test_memory_recall_r2f_delta.js'],
+      ['test_memory_recall_session_state.js'],
+      ['test_memory_recall_cooldown.js'],
+      ['test_memory_recall_r2f_cooldown_baseline.js'],
+      ['test_memory_recall_r2f_cooldown_delta.js'],
+      ['test_memory_recall_cooldown_hosts.js'],
       /* M1-C.2m：canonical Understanding —— 存储/修订链/CAS/单活不变量/更正契约
          （纯 Node + 真 SQLite + 临时数据目录，零网络、零浏览器）。 */
       ['test_understanding_contract_closure.js'],

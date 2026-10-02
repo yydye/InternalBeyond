@@ -109,6 +109,14 @@
   /* ── 2. candidate row ──────────────────────────────────────────────
      allowlist：未知键**抛错**（不是静默丢弃）。
      传入整条 memory record 会立刻在这里炸掉 —— 这正是我们想要的失败方式。 */
+  /* 只接受 (0, 1] 内的有限数；其余一律 1（fail-safe，不伪造）。 */
+  function normalizeFactor(v) {
+    if (v == null) return 1;
+    var n = Number(v);
+    if (!isFinite(n) || n <= 0 || n > 1) return 1;
+    return n;
+  }
+
   function createCandidateEntry(entry) {
     var e = isPlainObject(entry) ? entry : {};
     Object.keys(e).forEach(function (k) {
@@ -124,9 +132,12 @@
       memoryId: e.memoryId == null ? null : String(e.memoryId),
       relevanceScore: num(e.relevanceScore),
       memoryValue: num(e.memoryValue),
-      /* R2-C：cooldown 尚未实现 ⇒ 恒为 1（**不是** 0，也不是"缺失"）。
-         不要伪造未来模块已经存在。 */
-      cooldownFactor: 1,
+      /* P21-R2-F1b：cooldownFactor 现在是**真实**施加在 canonical ranking 上的因子 ——
+         由 orchestrator 从 cooldown.js 取得后传入，与 core 实际使用的是同一个值。
+         这里只做防御性校验：非有限 / <=0 / >1 一律回落 1，trace 绝不显示一个
+         core 并未使用的数字。
+         默认（未传）仍为 1：direct core caller / no-turn 路径没有 cooldown。 */
+      cooldownFactor: normalizeFactor(e.cooldownFactor),
       /* finalScore：契约 §13 冻结了这个键，因此**保留字段**，但值当前为 null。
          为什么不留"算出来的"值（P21-R2-C.1）：
            selector 真正用的是 core 的 getMemoryScore × relBoost × fatigue，
@@ -201,6 +212,7 @@
     buildTrace: buildTrace,
     createQueryTrace: createQueryTrace,
     createCandidateEntry: createCandidateEntry,
+    normalizeFactor: normalizeFactor,
     emptyTrace: emptyTrace,
     traceToJSON: traceToJSON
   };

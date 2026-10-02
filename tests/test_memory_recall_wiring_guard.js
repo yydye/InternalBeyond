@@ -306,12 +306,18 @@ check('A4.homeNodeHostPassesTurn', (() => {
   return /\bturn\s*:\s*\{[\s\S]{0,800}?message\s*:\s*options\.userMessage\b/.test(NODE_SRC.slice(i, j));
 })(), 'Home Node buildOpts must pass turn.message from options.userMessage');
 check('A4.homeNodeTurnSourceIsCurrentTurn', (() => {
-  /* buildRuntimeContext 的 ctx.userMessage 由 mobile-gateway 的 beginTurn
-     从**本轮请求体**构造；这里同时钉住那条上游证据，避免有人改成历史反推。 */
+  /* buildRuntimeContext 的 ctx.userMessage 由 mobile-gateway 从**本轮请求体**构造；
+     这里同时钉住那条上游证据，避免有人改成历史反推。 */
   const gw = stripComments(read('services/home-node/mobile-gateway.js'));
   /* R2-E1a：网关现在给 buildRuntimeContext 传更多 ctx（含 conversationId/isFirstTurn），
-     因此判据改为"同一调用里同时带 characterId 与 userMessage:content"，仍然钉住上游证据。 */
-  return /buildRuntimeContext\(character,\s*\{[\s\S]{0,400}?userMessage:\s*content\b/.test(gw)
+     因此判据改为"同一调用里同时带 characterId 与 userMessage:content"，仍然钉住上游证据。
+     ⚠ P21-R2-F1b.4g-2c-2b（有意更新，不是 regression）：retrieval 的组装从
+     parseSendPayload 移到 buildTurnRequest（§5 要求 beginHomeTurn 先于 retrieval），
+     ctx.userMessage 因此写成 `userMessage ? userMessage.content : ''` ——
+     来源仍是本轮 payload.content，**没有**退回历史反推。
+     runtime 侧的等价证据：tests/test_memory_recall_cooldown_hosts.js 的
+     `BUG6.runtime.orch.turnMessage`（真实 ORCH 收到的 turn.message === 本轮输入）。 */
+  return /buildRuntimeContext\(character,\s*\{[\s\S]{0,400}?userMessage:\s*(?:content\b|userMessage\s*\?\s*userMessage\.content\b)/.test(gw)
     && /payload\.content/.test(gw);
 })(), 'Home Node current-user message must come from the incoming payload, not history');
 check('A4.homeNodeDoesNotCoerceToEmptyString', (() => {

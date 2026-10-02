@@ -1706,7 +1706,12 @@ async function _buildSingleChatContext(cfg,opts){
      这里逐项透传 —— 只探到这一层而不往下给，信号会在链路上静默丢失。 */
   var _cs=(opts&&opts.coldStart)||null;
   var _csOpts=_cs?{conversationId:_cs.conversationId,isFirstTurn:_cs.isFirstTurn===true,conversationSignalAvailable:_cs.conversationSignalAvailable===true}:null;
-  if(_threadMemOk){_memCtx=await getMemoryContext(cfg.id,Object.assign(_bMemChars?{userMessage:_ctxText,maxChars:_bMemChars}:{userMessage:_ctxText},_csOpts||{}));_pushCtxBlock(_memCtx);}
+  /* F1b：turnIndex 由调用方在 retrieval 之前 begin 得到；这里只做透传。 */
+  var _ibRecallOpts={};
+  if(opts&&opts.sessionState)_ibRecallOpts.sessionState=opts.sessionState;
+  if(opts&&opts.turnIndex!=null)_ibRecallOpts.turnIndex=opts.turnIndex;
+  if(opts&&opts._ibTurn)_ibRecallOpts._ibTurn=opts._ibTurn;
+  if(_threadMemOk){_memCtx=await getMemoryContext(cfg.id,Object.assign(_bMemChars?{userMessage:_ctxText,maxChars:_bMemChars}:{userMessage:_ctxText},_ibRecallOpts, _csOpts||{}));_pushCtxBlock(_memCtx);}
   /* Understanding + Thread（v1）· 走 tail（末条 user 消息），绝不进 system（保 prompt cache 稳定）。 */
   try{if(_threadMemOk&&typeof getUnderstandingContext==='function'){_uCtx=await getUnderstandingContext(cfg.id,_bUndChars?{maxChars:_bUndChars}:undefined);_pushCtxBlock(_uCtx);}}catch(_uErr){console.warn('[Understanding] ctx failed',String(_uErr&&_uErr.message||_uErr).slice(0,120))}
   try{if(_threadMemOk&&typeof getThreadContext==='function'){_tCtx=await getThreadContext(cfg.id,_bThreads?{maxThreads:_bThreads}:undefined);_pushCtxBlock(_tCtx);}}catch(_tErr){console.warn('[Thread] ctx failed',String(_tErr&&_tErr.message||_tErr).slice(0,120))}
@@ -2729,7 +2734,7 @@ async function sendChatMessage(voiceMsg){
           const _gMemLive=_mkMemLiveFilter(function(ch){_gWsFilter.push(ch)},function(build){return _gWsFilter.card(build)});
           const _gFlush=(ch)=>{_gMemLive.push(ch)};
           try{
-          rawReply=await callApiChatStream(cfg,messages,{_ibTurn:_mbTurn,_ibConsumer:'group',wantThinking:thinkingOn,autoContinue:true,chatKey:_targetFriend,result:_gCallRes,searchLog:_gSrchLog,onSearch:_gOnSearch,
+          rawReply=await callApiChatStream(cfg,messages,{_ibTurn:_mbTurn,_ibConsumer:'group',_ibCharacterId:String((cfg&&cfg.id)||''),wantThinking:thinkingOn,autoContinue:true,chatKey:_targetFriend,result:_gCallRes,searchLog:_gSrchLog,onSearch:_gOnSearch,
             onThink:function(tk){_gThinkF(tk)},
             onChunk:function(chunk){
               if(_gSState===2){_gFlush(chunk);return}
@@ -2743,7 +2748,7 @@ async function sendChatMessage(voiceMsg){
               }
               if(_gSState===1){_gSThinkBuf+=chunk;_gSBuf='';_gThinkF(chunk);const ct=_gSThinkBuf.match(/<\/think(?:ing)?>/i);if(ct){const _gAfter=_gSThinkBuf.slice(ct.index+ct[0].length);_gSThinkBuf=_gSThinkBuf.slice(0,ct.index);_gSState=2;if(_gShowThinking)_finishStreamThinking(_gLiveThink,_gSThinkBuf);if(_gAfter&&_gAfter.trim())_gFlush(_gAfter.trim())}}
             }});
-          }catch(_streamErr){if(!rawReply)rawReply=await callApiChat(cfg,messages,{_ibTurn:_mbTurn,_ibConsumer:'group',wantThinking:thinkingOn,autoContinue:true,chatKey:_targetFriend,result:_gCallRes,searchLog:_gSrchLog});groupThinking=_gCallRes.reasoning_content||''}
+          }catch(_streamErr){if(!rawReply)rawReply=await callApiChat(cfg,messages,{_ibTurn:_mbTurn,_ibConsumer:'group',_ibCharacterId:String((cfg&&cfg.id)||''),wantThinking:thinkingOn,autoContinue:true,chatKey:_targetFriend,result:_gCallRes,searchLog:_gSrchLog});groupThinking=_gCallRes.reasoning_content||''}
           _showStreamingUI(false);
           _gMemLive.finish();
           _gWsFilter.finish();
@@ -2754,7 +2759,7 @@ async function sendChatMessage(voiceMsg){
           if(_gShowThinking&&groupThinking){_ensureStreamThinking(gStreamRefs,_gLiveThink);_finishStreamThinking(_gLiveThink,groupThinking)}
         }else{
           /* 群聊非流式 */
-          rawReply=await callApiChat(cfg,messages,{_ibTurn:_mbTurn,_ibConsumer:'group',wantThinking:thinkingOn,autoContinue:true,chatKey:_targetFriend,result:_gCallRes,searchLog:_gSrchLog});
+          rawReply=await callApiChat(cfg,messages,{_ibTurn:_mbTurn,_ibConsumer:'group',_ibCharacterId:String((cfg&&cfg.id)||''),wantThinking:thinkingOn,autoContinue:true,chatKey:_targetFriend,result:_gCallRes,searchLog:_gSrchLog});
           groupThinking=_gCallRes.reasoning_content||'';
           clearInterval(_gTypTimer);
           const _gElapsed=Math.round((Date.now()-_gTypStart)/1000);
@@ -3175,7 +3180,10 @@ async function sendChatMessage(voiceMsg){
         _mbTrace.note(cfg.id,'outputMessages',messages.length);
         _mbTrace.note(cfg.id,'_paramsSend',_mbParamsFingerprint(cfg,_streamingOk,thinkingOn));
       }
-      let rawReply=await callApiChatStream(cfg,messages,{_ibTurn:_turn,_ibConsumer:'chat',_ibCharacterId:cfg.id,wantThinking:thinkingOn,autoContinue:true,chatKey:_targetFriend,result:_callRes,searchLog:_srchLog,onSearch:_onSearch,
+      /* F1b · 在 retrieval 之前 begin logical turn（§13）——同 `_turn` 对象重复进入
+   返回同一 index，因此 retry / fallback / continuation 都不会重复 increment。 */
+const _ibTurnIndex=(typeof window._ibBeginRecallTurn==='function')?window._ibBeginRecallTurn(cfg.id,_turn):null;
+let rawReply=await callApiChatStream(cfg,messages,{_ibTurn:_turn,_ibConsumer:'chat',_ibCharacterId:cfg.id,wantThinking:thinkingOn,autoContinue:true,chatKey:_targetFriend,result:_callRes,searchLog:_srchLog,onSearch:_onSearch,
         onThink:function(tk){_thinkFlush(tk)},
         onChunk:function(chunk){
         if(_sState===2){_sFlush(chunk);return}
@@ -5616,6 +5624,30 @@ async function callApiChatStream(cfg,messages,opts){
   var budget=opts.maxTokens||_chatMaxTokens(cfg);
   var maxRounds=opts.autoContinue?(opts.maxContinues!=null?opts.maxContinues:_maxContinuesPref):0;
   var userChunk=opts.onChunk||function(){};
+  /* ── P21-R2-F1b · cooldown exposure 的 Browser success seam ─────────
+     契约：流式在 **first token / stream open** 写一次；非流式在成功返回前写一次。
+     为什么包在这里：内部 retry loop 就在本函数里（round++），per-attempt 钩子会
+     每次 retry 都写。本包装位于循环**之外**，并用一次标志位保证
+     **每个 logical turn 恰好一次**：
+       · 前一 attempt 在首 token 前失败 ⇒ 成功那次的 first token 写一次；
+       · 前一 attempt 已出 token 后失败 ⇒ 标志位已置，不再写第二次。
+     数据来源是 runtime turn 对象上的 memoryExposure（**最终注入** ids）——
+     绝不使用 reinforcementIds，也绝不落库。 */
+  var _ibExpFired=false;
+  var _ibUserChunkRaw=userChunk;
+  userChunk=function(ch){
+    if(!_ibExpFired){
+      _ibExpFired=true;
+      try{
+        var _et=opts&&opts._ibTurn;
+        var _ex=_et&&_et.memoryExposure;
+        if(_ex&&typeof window!=='undefined'&&typeof window._ibRecordRecallExposure==='function'){
+          window._ibRecordRecallExposure(_ex);
+        }
+      }catch(e){}
+    }
+    return _ibUserChunkRaw.apply(this,arguments);
+  };
   var full='',thinkAcc='',msgs=messages,tokRetries=0,tokenParam=_tokParamGet(cfg);
   var st=_newCallState(opts);/* 并发隔离：本次调用的独立状态（思考/结束原因/停止/可中止句柄），按 chatKey 注册供停止按钮定位 */
   /* FC：原生函数调用（anthropic/openai 走 tools 参数；无工具块/开关关/其他厂商 → 不激活，回落 XML 通道） */
@@ -5755,6 +5787,19 @@ async function callApiChat(cfg,messages,opts){
   }
   _lastApiReasoning=thinkAcc;
   if(opts.result){opts.result.reasoning_content=thinkAcc;opts.result.truncated=lastTrunc}
+  /* 非流式 success seam：走到这里说明 HTTP/model 成功返回。
+     同一 logical turn 只会到这里一次（retry 走 throw 分支）。 */
+  var _ibExpFiredNS=false;
+  if(!_ibExpFiredNS){
+    _ibExpFiredNS=true;
+    try{
+      var _nsT=opts&&opts._ibTurn;
+      var _nsX=_nsT&&_nsT.memoryExposure;
+      if(_nsX&&typeof window!=='undefined'&&typeof window._ibRecordRecallExposure==='function'){
+        window._ibRecordRecallExposure(_nsX);
+      }
+    }catch(e){}
+  }
   return opts.wantMeta?{text:full,truncated:lastTrunc}:full;
   }finally{_endCallState(st);_toolCycleEnd(_fcCtx,_turnB)}
 }

@@ -28,6 +28,7 @@ const fs = require('fs');
 const createStore = require('../services/home-node/chat-store.js');
 const createMemoryStore = require('../services/home-node/memory-store.js');
 const createMemoryRetrieval = require('../services/home-node/memory-retrieval.js');
+const { createRecallSessionState } = require('../assets/js/memory-recall/recall-session-state.js');
 /* M1-C.2m：canonical Understanding 的三个组件（store / 取回 / 派生）。 */
 const createUnderstandingStore = require('../services/home-node/understanding-store.js');
 const createUnderstandingDerivation = require('../services/home-node/understanding-derivation.js');
@@ -710,13 +711,18 @@ function applyCatalogBootstrap(economyStore) {
    生产启动路径与 buildHomeNode() 都调用它，因此"某个 canonical 域没有接线"
    不可能只在一侧发生。 */
 function gatewayAssembly(options) {
+  /* F1b：若调用方已创建（buildHomeNode / openAll），就**复用同一个实例**；
+     否则本装配自己建一个。关键是不管走哪条路，retrieval 读的与 gateway 写的
+     必须是同一个对象 —— 两份状态不会报错，只会让 cooldown 静默失效。 */
+  const recallSessionState = options.sessionState || createRecallSessionState();
   const memory = canonicalMemoryDeps(memoryAssembly({
     dataDir: options.dataDir,
     memoryStore: options.memoryStore,
     memoryRetrieval: options.memoryRetrieval,
     clock: options.clock,
     random: options.random,
-    logger: options.logger
+    logger: options.logger,
+    sessionState: recallSessionState
   }));
   /* M1-C.2k：线索派生器与记忆**共用同一个 canonical store**。
      它没有自己的表 —— 线索是 canonical memory 上的确定性函数，
@@ -749,6 +755,9 @@ function gatewayAssembly(options) {
     logger: options.logger
   }));
   const gateway = createMobileGateway(Object.assign({
+    /* F1b：与 memoryRetrieval 注入了**同一个** recallSessionState。
+       读写必须是同一份状态，否则 cooldown 静默失效。 */
+    sessionState: recallSessionState,
     store: options.store,
     registry: options.registry,
     executor: options.executor,
@@ -792,13 +801,17 @@ function buildHomeNode(options) {
      但拥有**自己的** revision / change_log 命名空间 —— 见 memory-store.js 头部）。
      刻意晚于 chat store 打开：chat store 负责损坏隔离（会给坏库改名），
      同一文件上的第二个 opener 不能去 rename 它。 */
+  /* F1b · 一个 service instance 一个 cooldown state；两条装配共用（§16）。 */
+  const recallSessionState = options.sessionState || createRecallSessionState();
   const memoryDeps = canonicalMemoryDeps(memoryAssembly({
     dataDir: dataDir,
     memoryStore: options.memoryStore,
     memoryRetrieval: options.memoryRetrieval,
     clock: options.clock,
     random: options.random,
-    logger: serviceLog
+    logger: serviceLog,
+    sessionState: recallSessionState
+
   }));
   const instanceMemoryStore = memoryDeps.memoryStore;
   const instanceMemoryRetrieval = memoryDeps.memoryRetrieval;
@@ -911,6 +924,7 @@ function buildHomeNode(options) {
   /* 与进程级启动路径**共用** gatewayAssembly（见其头部说明：两条路径两套装配
      必然漂移，memoryStore 就是这样在 production 上丢过一次）。 */
   const instanceGateway = options.gateway || gatewayAssembly({
+    sessionState: recallSessionState,
     /* dataDir 必须传下去：网关内部（经 memoryAssembly）可能自己建 memory store，
        不传就会兜到生产 DATA_DIR —— 一个"测试实例读写生产记忆库"的静默越界。 */
     dataDir: dataDir,
@@ -1062,6 +1076,8 @@ function buildHomeNode(options) {
   return {
     store: instanceStore,
     memoryStore: instanceMemoryStore,
+    /* F1b：与 memoryRetrieval / gateway 注入的是**同一个**实例（§16 identity spy）。 */
+    recallSessionState: recallSessionState,
     memoryRetrieval: instanceMemoryRetrieval,
     understandingStore: instanceUnderstanding.understandingStore,
     understandingRetrieval: instanceUnderstanding.understandingRetrieval,
@@ -1115,9 +1131,12 @@ function buildHomeNode(options) {
    接到网关上 —— 曾经漏掉，导致 23118 上 /memory/* 全部 `if (!memoryStore)`
    → 501，而测试因为只覆盖 buildHomeNode 而全绿。现在两条路径共用
    memoryAssembly()/gatewayAssembly()，缺席会在装配期直接抛错。 */
+/* F1b · 进程级路径同样只建一份 cooldown state（§16）。 */
+const recallSessionState = createRecallSessionState();
 const memory = memoryAssembly({
   dataDir: DATA_DIR,
-  logger: (level, event, fields) => log(level, event, fields)
+  logger: (level, event, fields) => log(level, event, fields),
+  sessionState: recallSessionState
 });
 const registry = createDeviceRegistry({
   dataDir: DATA_DIR,
@@ -1157,6 +1176,7 @@ const economy = economyAssembly({
 const momentStoreFailureProbe = createMomentStoreFailureProbe(moments.momentsStore);
 const gateway = gatewayAssembly({
   store,
+  sessionState: recallSessionState,
   registry,
   executor,
   memoryStore: memory.memoryStore,

@@ -68,6 +68,7 @@
     /* 允许既有 core 的探索窗口继续工作。R2-D **不**改探索算法
        （top-10 偏置属 R2-F）。 */
     allowExploration: true,
+    cooldownMode: 'obey',
     maxTotalSeats: MAX_SURFACE_TOTAL_SEATS
   });
   POLICIES[CHANNEL_RECALL] = Object.freeze({
@@ -78,6 +79,7 @@
     requireRelevance: true,
     gateMode: GATE_MODE_POSITIVE,
     allowExploration: true,
+    cooldownMode: 'bypass',
     maxTotalSeats: MAX_RECALL_TOTAL_SEATS
   });
 
@@ -91,7 +93,8 @@
     implemented: true,
     requireRelevance: false,   /* 准入证据 = exact catalog hit，不是 lexical */
     gateMode: GATE_MODE_POSITIVE,
-    allowExploration: false,   /* 确定性查表：不引入随机探索 */
+    allowExploration: false,
+    cooldownMode: 'bypass',
     maxTotalSeats: MAX_RECALL_TOTAL_SEATS,
     activationPolicy: 'normal' /* 用户确实提到了该术语 ⇒ 正常强化 */
   });
@@ -110,10 +113,18 @@
     requireRelevance: false,
     gateMode: GATE_MODE_POSITIVE,
     allowExploration: false,
+    cooldownMode: 'read-none',   /* 生命周期恢复：完全不读 cooldown */
     maxTotalSeats: MAX_SURFACE_TOTAL_SEATS,
     activationPolicy: 'none'
   });
 
+  /* P21-R2-F1b · cooldown mode（declarative，唯一来源）。
+       surface   obey      —— 受 session cooldown 影响
+       recall    bypass    —— 用户显式索取，selection 恒不受影响
+       glossary  bypass    —— 确定性 lookup 不得被隐藏
+       coldStart read-none —— 生命周期恢复，**完全不读** cooldown
+     放在 policy 上而不是散落在 orchestrator：避免多份
+     `if (channel === "surface") …` 硬编码。 */
   var FUTURE_POLICY = Object.freeze({
     channel: null,
     implemented: false,

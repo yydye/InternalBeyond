@@ -3441,6 +3441,11 @@ i would like the room to be enough.
 <script src="assets/js/memory-recall/glossary-catalog.js"></script>
 <script src="assets/js/memory-recall/glossary-match.js"></script>
 <script src="assets/js/memory-recall/coldstart-anchor.js"></script>
+<!-- P21-R2-F1b · session cooldown：state authority + 纯策略。
+     两者都无依赖，且必须在 memory-recall-orchestrator.js（使用方）之前加载；
+     orchestrator 也在 Node 侧 require 它们。 -->
+<script src="assets/js/memory-recall/recall-session-state.js"></script>
+<script src="assets/js/memory-recall/cooldown.js"></script>
 <script src="assets/js/memory-recall/recall-trace.js"></script>
 <script src="assets/js/memory-recall/memory-recall-orchestrator.js"></script>
 <!-- M1-C.2k：线索（open thread）派生的唯一确定性实现（规则 / 去重阈值 / 合并语义）。

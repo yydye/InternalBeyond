@@ -1,0 +1,61 @@
+{
+  "id": "c17_gate_rejected",
+  "group": "exclusion",
+  "label": "gate-rejected candidate (unrelated memory)",
+  "kind": "orch",
+  "records": [
+    {
+      "id": "x1",
+      "title": "ZZZ",
+      "content": "zzz",
+      "importance": 5,
+      "arousal": 0.3,
+      "resolved": false,
+      "activationCount": 0,
+      "created": 1749913600000,
+      "lastActivated": 1749913600000,
+      "visibility": "public",
+      "tags": [],
+      "domain": "日常",
+      "createdBy": "user"
+    }
+  ],
+  "options": {
+    "apiId": "role_a",
+    "now": 1750000000000,
+    "isGroup": false,
+    "groupMemEnabled": false,
+    "contentLen": 200,
+    "maxChars": 700
+  },
+  "random": 0.5,
+  "message": "AAAA",
+  "turnExtra": {
+    "isFirstTurn": false
+  },
+  "expected": {
+    "text": "",
+    "selected": [],
+    "count": 0,
+    "chars": 0,
+    "reason": "gate-rejected"
+  },
+  "expectedTrace": {
+    "channel": "surface",
+    "candidates": [
+      {
+        "memoryId": "x1",
+        "seat": "legacy",
+        "decision": "rejected",
+        "cooldownFactor": 1,
+        "reasons": [
+          "gate-rejected"
+        ],
+        "finalScore": null
+      }
+    ]
+  },
+  "expectedMeta": {
+    "activationPolicy": "normal"
+  }
+}

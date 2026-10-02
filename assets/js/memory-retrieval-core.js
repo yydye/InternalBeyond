@@ -77,6 +77,30 @@
   }
 
   /* header 是否计入本轮的 maxChars 预算（includeHeader:false ⇒ 不占预算）。 */
+  /* ── P21-R2-F1b · cooldown factor 的**安全**读取 ────────────────────
+     唯一 selector 只认 "memoryId → factor" 这份**纯数据**；它不认识
+     RecallSessionState / characterId / turnIndex（那些属于编排层）。
+
+     两类风险都挡在这里：
+       ① inherited-key：memory id 是 opaque string，可能是 "__proto__" /
+          "constructor" / "toString"。用 hasOwnProperty 判定，绝不读原型链。
+       ② 非法值：missing / NaN / ±Infinity / string / null / object / <=0 / >1
+          **一律 fail-safe → 1**（= 无 cooldown）；绝不 clamp 成 0.01，
+          也绝不让一个坏值把 memory 永久压没。 */
+  function cooldownFactorOf(map, id) {
+    if (!map || typeof map !== "object" || id == null) return 1;
+    var key = String(id);
+    if (!Object.prototype.hasOwnProperty.call(map, key)) return 1;
+    var v = map[key];
+    /* BUG-1（R2-F1b.1）：必须判**类型**，不能判"能否转成数"。
+       早先写作 Number(v)，于是字符串 "0.4" 与布尔 true 都被悄悄接受，
+       直接违反契约 §9/§20 的 invalid 清单（string / boolean 必须 → 1）。
+       注意 NaN/±Infinity 都是 typeof number，因此 isFinite 仍需保留。 */
+    if (typeof v !== "number") return 1;
+    if (!isFinite(v) || v <= 0 || v > 1) return 1;
+    return v;
+  }
+
   function headerLength(opts) {
     return (opts && opts.includeHeader === false) ? 0 : MEMORY_HEADER.length;
   }
@@ -172,7 +196,23 @@
       }
       var row = {};
       for (var key in m) { if (Object.prototype.hasOwnProperty.call(m, key)) row[key] = m[key]; }
-      row._score = base * relBoost * fatigue;
+      /* P21-R2-F1b · 唯一 selector 的 cooldown 注入点。canonical 契约公式（逐字）：
+             effectivePinned(m) = m.pinned === true AND cooldownFactor(m) === 1
+             scoreSource(m)     = effectivePinned ? 999 : getMemoryScore({...m, pinned:false})
+             _score(m)          = scoreSource(m) × relBoost × fatigue × cooldownFactor(m)
+         即：**只有 scoreSource 被替换**。relBoost 与 fatigue 继续按 record 的 **raw**
+         pinned 计算 —— 契约公式对它们没有附加限定，本实现不擅自扩大契约。
+         m 本身**绝不**被 mutate：非 pinned 副本只用于这一次分数计算。 */
+      var _cd = cooldownFactorOf(opts.cooldownFactorsById, m.id);
+      if (m.pinned && _cd < 1) {
+        var _unpinned = {};
+        for (var _uk in m) { if (Object.prototype.hasOwnProperty.call(m, _uk)) _unpinned[_uk] = m[_uk]; }
+        _unpinned.pinned = false;
+        base = getMemoryScore(_unpinned, now);
+      }
+      row._score = base * relBoost * fatigue * _cd;
+      row._cooldownFactor = _cd;
+      row._effPinned = (m.pinned === true) && _cd === 1;
       return row;
     }).sort(function (a, b) { return b._score - a._score; });
   }
@@ -206,8 +246,10 @@
     var chars = 0;
     var seen = {};
 
-    var pinned = rows.filter(function (m) { return m.pinned; });
-    var unpinned = rows.filter(function (m) { return !m.pinned; });
+    /* P21-R2-F1b：pinned-first 特权按 **effectivePinned** 判定，而不是 record.pinned。
+       cooled pinned 因此落入 normal loop（它仍是 pinned 记录，seat 身份不变）。 */
+    var pinned = rows.filter(function (m) { return m._effPinned === true; });
+    var unpinned = rows.filter(function (m) { return m._effPinned !== true; });
 
     /* 置顶记忆优先注入 —— 但 pinned 只是"fitting candidates 中优先级最高"，
        **没有**超额豁免：装不下就跳过，且**不得**终止整个循环（D-4）。
@@ -238,7 +280,12 @@
          直接放弃探索项，main selection 原样保留（§10）
        · 仍受 reservedExploreCapacity > 50 的**启用门**约束（§0.6） */
     var allowExploration = (opts.allowExploration !== false);
-    var remaining = rows.filter(function (m) { return !seen[m.id] && !m.pinned; });
+    /* P21-R2-F1b：cooled candidate 仍 admitted、仍可 primary selected，
+       但**不得作为 exploration pick**（契约 §12 —— 这不是 Hard Gate）。
+       过滤后为空 ⇒ 本轮不产生 exploration 项，不重抽、不回退。 */
+    var remaining = rows.filter(function (m) {
+      return !seen[m.id] && m._effPinned !== true && !(m._cooldownFactor < 1);
+    });
     if (allowExploration && remaining.length && reservedExploreCapacity > 50) {
       var r01 = normalizeRandom01(rand());
       var idx = Math.floor(r01 * remaining.length);
