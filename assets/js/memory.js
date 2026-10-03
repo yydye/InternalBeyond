@@ -311,15 +311,37 @@ async function recordMemoryActivation(selectedIds,at){
      `_ibMemoryAuthority()` 自身**结构上不会抛出**（整个函数体被 try/catch 包住并
      返回 null，见 tests/helpers/activation-wiring-probe.js 的
      `R.resolverIsStructurallyThrowSafe`），因此 res/ 这条 catch 只可能由
-     "已解析到 authority 之后的形状读取失败"触发 —— 也就是 ambiguous。 */
+     "已解析到 authority 之后的形状读取失败"触发 —— 也就是 ambiguous。
+
+     ── R4-A.4 · MODE VALIDATION 修复（把 A.3 的边界补完）─────────────────
+     A.3 仍然把 `mode !== 'canonical'` **一律**当成"非 canonical"，于是
+     `status().mode` 为 `undefined` / `null` / `''` / 任意未知字符串时，
+     调用方会**落进镜像乐观 +1** —— 而这恰恰是最危险的一类：
+     我们并不知道权威是不是 canonical。
+
+     合法 mode 有且只有三个（`assets/js/memory-authority.js` 的 `MODES`）：
+         canonical → canonical 路径（remote-first）
+         mirror    → host-local 镜像路径（既有语义，保持不变）
+         off       → 同 mirror（既有语义，保持不变）
+         其它 / missing / null / 非对象 / throwing ⇒ **fail closed**（return 0）
+
+     **MUST NOT**：把"未知 mode"当成 mirror/off。 */
   let canonicalAuth=null;
   try{
     const auth=_ibMemoryAuthority();
     if(auth){
-      if(typeof auth.status==='function'){
-        canonicalAuth=(auth.status().mode==='canonical')?auth:null;
-      }else{
+      if(typeof auth.status!=='function'){
         /* 有 authority 却没有 status()：无法判定归属 ⇒ 不猜。 */
+        return 0;
+      }
+      const st=auth.status();
+      const mode=(st&&typeof st==='object')?st.mode:null;
+      if(mode==='canonical'){
+        canonicalAuth=auth;
+      }else if(mode==='mirror'||mode==='off'){
+        canonicalAuth=null;          /* host-local 回落：既有语义，保持不变 */
+      }else{
+        /* 未知 / missing / null：既不是 canonical，也不是已知的本地模式 ⇒ 不猜。 */
         return 0;
       }
     }

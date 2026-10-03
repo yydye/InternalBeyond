@@ -297,6 +297,23 @@ async function runProbe(root) {
   });
   /* R4-A.3 新增：resolver **自身**抛出（与 status() 抛出、recordActivation reject 是三种不同的失败）。 */
   await capture('authorityResolverThrows', { authority: canonicalAuthority(), resolverThrows: true });
+  /* ── R4-A.4 · mode validation：合法 mode 只有 canonical / mirror / off ────
+     其它一律 **fail closed**；**MUST NOT** 把"未知 mode"当成 mirror/off。 */
+  await capture('statusModeUnknown', {
+    authority: canonicalAuthority({ status: function () { return { mode: 'weird' }; } })
+  });
+  await capture('statusModeNull', {
+    authority: canonicalAuthority({ status: function () { return { mode: null }; } })
+  });
+  await capture('statusModeUndefined', {
+    authority: canonicalAuthority({ status: function () { return { mode: undefined }; } })
+  });
+  await capture('statusReturnsEmptyObject', {
+    authority: canonicalAuthority({ status: function () { return {}; } })
+  });
+  await capture('statusReturnsNonObject', {
+    authority: canonicalAuthority({ status: function () { return 'canonical'; } })
+  });
   await capture('mirrorMode', {
     authority: canonicalAuthority({ status: function () { return { mode: 'mirror' }; } })
   });
@@ -315,7 +332,7 @@ async function runProbe(root) {
   await capture('emptySelection', { authority: canonicalAuthority(), selection: [] });
 
   return {
-    probe: 'P21-R4-A.3',
+    probe: 'P21-R4-A.4',
     modes: ACTIVE_MODES.slice(),
     ids: ['m1', 'm2'],
     scenarios: scenario
@@ -487,7 +504,7 @@ async function runUiProbe(root) {
     after: contentOnly.rows.m1
   };
 
-  return { probe: 'P21-R4-A.3', modes: ACTIVE_MODES.slice(), scenarios: out };
+  return { probe: 'P21-R4-A.4', modes: ACTIVE_MODES.slice(), scenarios: out };
 }
 
 module.exports = {

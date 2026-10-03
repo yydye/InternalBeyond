@@ -1183,6 +1183,211 @@ pin 更新，并在该文件 `note` 里记录原因。**pin 的目标是 clean c
 Reconstructive Memory runtime production implementation = NONE（仍然为真）。
 ```
 
+### 24.5 R4-A.4（phase addendum · Canonical Memory Content Authority 审计）
+
+> **追加**，不改写 §24.1–§24.4 的历史。
+
+**问题**：canonical mode 下，浏览器改**记忆内容**（编辑 / 写引言 / 删除 / 导入）
+是否绕过 Home Node content authority？
+
+**裁决：不绕过。** 拓扑事实（机械可得）：
+
+```
+所有 browser memory 写 = dbPut('memories', …) / dbDelete('memories', …)
+            ↓
+home-node-bootstrap.js:207 覆盖 window.dbPut / window.dbDelete
+            ↓
+isMemoryStore('memories') && memoryAuthority 存在
+            ↓
+memoryAuthority.put / .remove
+            ↓  canonical mode
+remote.put / remote.remove  **先**提交 → 成功后才 local.put（镜像 SET）
+                             失败 ⇒ 不写镜像（fail closed）
+```
+
+因此 `saveInlineEdit` / `writeOneLineToMemory` / `quickCreateMemory` / `saveMemory` /
+`toggleMemResolved` / `toggleMemPin` / `deleteMemory` / `importMemoriesFile` /
+`clearAllMemories` / `active-diary` / `diary` / `role-letters` 的写路径**全部**经过
+同一条 content authority seam；**没有**第二条 canonical content API。
+
+`oneLine` 的 authority = **canonical memory content**：它随 `payload_json` 往返、
+参与 `contentFingerprint`、随 sync 与 export 携带（**唯一**消费者是展示面：
+引言渲染 + 轮播池；recall / scoring / consolidation **都不读**它）。
+⇒ canonical mode 下走 remote-first 是**正确**的，无需把它降级为 browser-local。
+
+| 项 | 内容 |
+| --- | --- |
+| **唯一 production 修复** | `assets/js/memory.js`：`recordMemoryActivation` 的 mode 校验改为对照**声明词表** `{canonical, mirror, off}`；未知 / missing / null / 不可读 ⇒ fail closed（`return 0`，镜像不动） |
+| 内容写路径 | **零改动**（审计结论：本就 remote-first + fail closed） |
+| delete / import | **零改动**（同上） |
+| activation authority | **unchanged** |
+| 新增 enforcement | `tests/test_memory_content_authority.js`（真实 `memory-store.js` + 真实 `memory-authority.js` + 第二个 SQLite 连接直读原始列） |
+
+**登记（OBSERVED · 无生产触发路径）**：
+
+- `R4A4-IDEMPOTENT-MIRROR-SHAPE-1` —— `memory-store.putRecord` 命中已见过的
+  `requestId` 时返回 `ok:true / outcome:'duplicate-request'` **且 canonical 不变**。
+  任何"拿到 `ok:true` 就把**调用方**记录镜像下去"的实现在带 requestId 的路径上都会
+  产生镜像分叉。当前**无生产触发**：`memory-authority.put` 调用的是
+  `remote.put(record)`（**无** options ⇒ 无 requestId），由 `tests/test_memory_content_authority.js`
+  的 `I1` 强制。未来若给内容写加 requestId，**必须**改用响应里的权威记录。
+
+```
+本阶段不启用任何 reconstructive runtime。
+Reconstructive Memory runtime production implementation = NONE（仍然为真）。
+```
+
+### 24.6 R4-A.5（phase addendum · Canonical Content Retry + Authority Downgrade）
+
+> **追加**，不改写 §24.1–§24.5 的历史。
+
+#### (a) canonical content mutation 的 **AUTO_RETRY = NONE**
+
+retry owner **不在** memory-authority，也**不在** home-node-client，而在
+`home-node-bootstrap.js` 的 `withRetry`（`MIRROR_WRITE_ATTEMPTS = 3`）。
+`memoryAuthority.put` 对 transport 失败 **resolve** 成 `{ok:false, error:'home-node-offline'}`
+（**不抛**），`window.dbPut` 把它翻成 `throwWriteError`，`err.rejected` 为 false
+⇒ `withRetry` **重发同一个 payload**。
+
+```
+CONTENT_FINGERPRINT_IDEMPOTENCY = SAME-STATE ONLY
+```
+
+机械复现（真实 `memory-store.js`）：
+
+```
+attempt 1 : put A            → Home Node **已提交** A（响应丢失 = ambiguous）
+期间      : 另一个写者 put B  → canonical = B
+retry     : put A（同一 payload，无 requestId、无 CAS）
+结果      : canonical = **A**      ← 旧内容覆盖新内容
+```
+
+⇒ `R4A5-CONTENT-AMBIGUOUS-RETRY-1` **成立**。`contentFingerprint` 判等只在
+**状态未变**时给出 `skipped`；一旦中间存在别的提交，指纹判等必然失败 ⇒ 走进
+`updated` ⇒ **stale overwrite**。delete 同理（重试的 soft delete 会删掉并发复原的新内容）。
+
+**修复（唯一 production seam）**：`window.dbPut` / `window.dbDelete` 的 **memory 分支**
+去掉 `withRetry`；`withRetry` 本身与 chat 分支**一字未动**。
+
+```
+canonical content（put / delete）：
+  SUCCESS / DEFINITE_FAILURE / AMBIGUOUS / THROW / timeout / INVALID RESPONSE
+      ⇒ HTTP attempt = **1**
+      ⇒ 失败时 mirror **不变**，失败如实抛给调用方
+用户显式再次保存 = 一次**独立的新请求**（允许）
+```
+
+**MUST NOT**：在这条路径上重新启用自动重放，**除非**先引入持久请求身份
+（`requestId`）或 CAS/`expectedRevision`，或等价的并发保护。
+
+#### (b) canonical-intended + authority unavailable ⇒ **fail closed**
+
+`isMemoryStore(store)` 的定义是 `store === 'memories' && !!memoryAuthority`，
+因此 `memoryAuthority` 缺席时它返回 false，`window.dbPut` 会**静默**走到
+`original.put`（原始 IndexedDB）。这与"合法本地模式"是**两件事**：
+
+| 情形 | 语义 | 处置 |
+| --- | --- | --- |
+| `MODE = mirror` / `off`，authority 缺席 | **合法**本地模式 | 走 original（不变） |
+| authority 存在且 `mode = mirror` / `off` | **合法** host-local | 仍经 authority（不变） |
+| **`MODE = canonical` 且 authority 缺席** | **初始化失败**，不是本地模式 | **拒绝**：`memory-authority-unavailable` |
+
+`CAN_DETECT_CANONICAL_INTENT_WITHOUT_AUTHORITY = YES` —— 信号是
+`window.ibHomeNodeMode()`（`home-node-client.js:58`，读 `localStorage['ib_home_node_mode']`，
+默认 `'canonical'`），**独立于** `memoryAuthority` 实例。
+
+修复与该仓库既有纪律一致：理解域与动态域早就有
+`understanding-write-closed` / `moments-write-closed` 同款守卫；记忆域此前是唯一
+**静默降级**的域。
+
+**仍未覆盖（如实登记）**：`home-node-bootstrap.js` 在
+`_authorityFactory` 缺席或 `window.__ibCoreDb` 未就绪时会**整体 early-return**，
+那时 `window.dbPut` 覆盖**根本没有安装** ⇒ 一切写入走原始镜像。该路径无法在覆盖内部
+捕获，只能靠启动期诊断；本轮**不**改变它（见 §R4-A.5 报告 K 节）。
+
+```
+本阶段不启用任何 reconstructive runtime。
+Reconstructive Memory runtime production implementation = NONE（仍然为真）。
+```
+
+---
+
+### 24.7 R4-A.6（phase addendum · Startup Memory Authority Health Closure）
+
+> **追加**，不改写 §24.1–§24.6 的历史。
+
+#### (a) 缺口：override **根本没安装**
+
+`home-node-bootstrap.js` 在安装 `window.dbPut` / `window.dbDelete` 覆盖**之前**有
+**三处** IIFE 顶层 early-return：
+
+| # | 条件 | 早退后 `memoryAuthority` | 覆盖 | 诊断（修复前） |
+| --- | --- | --- | --- | --- |
+| E1 | `!_authorityFactory`（chat-authority.js 缺席） | null | **未安装** | **完全静默** |
+| E2 | `!window.__ibCoreDb`（core.js 接缝未就绪） | null | **未安装** | `console.warn` 自由文本 |
+| E3 | `!_remoteFactory`（home-node-client.js 缺席） | null | **未安装** | `remote-driver-missing` |
+
+早退后 `dbPut('memories', …)` 继续解析到**原始 IndexedDB writer**，即使
+`ibHomeNodeMode() === 'canonical'` 也静默产生 browser-local memory truth。
+
+A.5 的守卫在**覆盖内部**，覆盖不存在时它无从执行 —— 这就是
+`R4A5-BOOTSTRAP-ABORT-SILENT-DOWNGRADE-1`。
+
+**可达性**：生产脚本顺序（`core.js` → `chat-authority.js` → `memory-authority.js`
+→ `home-node-client.js` → `home-node-bootstrap.js`，全部**经典同步** script、无
+defer/async/module，且每个依赖都在自身文件模块顶层同步赋值）使 E1–E3 在**正常构建**下
+不可达；但**损坏构建 / 加载失败 / 加载期抛错**下可达。
+**UI 写入在早退后仍然可达**：`assets/js/memory.js` 不读 `IB.homeNode` 也不读
+`memoryAuthority`（只有 activation 路径读后者），因此 `saveMemory` / `saveInlineEdit` /
+`quickCreateMemory` / producer 全部照常调用 `dbPut('memories', …)`。
+
+#### (b) 修复：provisional canonical memory guard（在任何依赖检查**之前**）
+
+```
+canonical-intended（且非 file://） ⇒ memories put/delete 拒绝
+                                     code = memory-authority-not-ready
+MODE = mirror / off               ⇒ 逐字转发，合法 host-local 语义不变
+file://（显式 degraded 承载）      ⇒ 逐字转发，合法 host-local 语义不变
+非 memories store                 ⇒ 逐字转发，行为不变
+```
+
+- **安装幂等**（`window.__ibCanonicalMemoryGuard`），不会套娃；
+- 正式 bootstrap 用 `window.dbPut = function …` **直接赋值替换**它（不是包装）；
+- 两层守卫覆盖的是**互斥**窗口：guard 管"覆盖未安装"，A.5 守卫管"覆盖已安装 +
+  authority 缺席"，既无重叠也无空隙；
+- `NS.homeNodeOriginalDb` 也因此不再是一条静默本地写路径；
+- **NO QUEUE / NO REPLAY**：本阶段**不**引入任何"先写镜像、稍后同步"的机制。
+
+#### (c) 可观测性（复用既有 taxonomy，不新造 framework）
+
+| reason code | 触发 |
+| --- | --- |
+| `memory-authority-not-ready` | provisional guard 拒绝（早退窗口内的 memories 写） |
+| `memory-bootstrap-dependency-missing` | E1 / E2 / E3，带 `dependency` 字段 |
+| `memory-authority-unavailable` | A.5（覆盖已安装 + authority 缺席） |
+| `remote-driver-missing` | 既有（E3 保留） |
+
+三个早退点额外暴露**降级面** `IB.homeNode.memory.status()`，形状与成功路径
+`memory.status()` **逐字段同形**（`available` / `authority` / `authorityEffective` /
+`degraded` / `degradedReason`）；刻意**不**暴露 `remote`，消费方
+（`middle-brain-direct` / `moments` / `active-diary`）一律用安全属性链，
+缺 `remote` 时自动走本地分支。
+
+**只记状态词 / store / op / dependency，绝不记正文、凭据或用户内容。**
+
+#### (d) 明确不做
+
+```
+queue / background replay      = NONE
+schema / migration / 新 object store = 0（DB_VERSION 24 · MEMORY_SCHEMA_VERSION 1）
+reconstructive runtime         = NONE
+```
+
+```
+本阶段不启用任何 reconstructive runtime。
+Reconstructive Memory runtime production implementation = NONE（仍然为真）。
+```
+
 ---
 
 # PART II · PREDICTIVE MEMORY（R4-A.1 纳入冻结）

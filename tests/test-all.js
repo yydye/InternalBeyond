@@ -391,6 +391,46 @@ const GROUPS = [
          不得提升 LegacyMemoryValue 的 recency，附"旧行为会抬高分数"的反证。
          纯 Node、零浏览器、零网络。 */
       ['test_memory_ui_activation_coupling.js'],
+      /* P21-R4-A.4：canonical memory **内容** authority。
+         问题：canonical mode 下浏览器改记忆内容（编辑 / 写引言 / 删除）是否经过
+         Home Node content authority？结论：经过 —— 所有 `dbPut('memories', …)`
+         都被 home-node-bootstrap 的 `window.dbPut` 覆盖路由到 memoryAuthority.put
+         （canonical 下 remote-first，失败不写镜像）。
+         本测试用**真实** services/home-node/memory-store.js（真 SQLite，临时目录）
+         + **真实** assets/js/memory-authority.js 驱动，并用**第二个 SQLite 连接**
+         直接读原始列，证明：内容编辑真的改了 canonical 行、推进 revision、
+         写 change_log、且**不**触碰 activation_count / last_activated_at；
+         definite / offline / throw 三种失败下镜像保持不动且不自动重试；
+         hydrate 后成功的编辑仍在、失败的编辑被 canonical 覆盖。
+         纯 Node、零浏览器、零网络（store 走本地 SQLite，不经 HTTP）。 */
+      ['test_memory_content_authority.js'],
+      /* P21-R4-A.5：canonical content **retry** + authority downgrade。
+         把 home-node-bootstrap 的 `withRetry` / `throwWriteError` / `isMemoryStore` /
+         `window.dbPut` / `window.dbDelete` **原样抽出**在隔离 vm 里执行，统计真正的
+         **HTTP attempt 数**（不是"memoryAuthority.put 被调用几次"）。
+         冻结：canonical content mutation（put **与** delete）在 ambiguous / timeout /
+         transport throw 下 **AUTO_RETRY = NONE**（attempts = 1），definite rejection
+         同样不重试，用户显式第二次保存是独立新操作；chat 域的 3 次重试**保持不变**。
+         并用真实 store 复现 stale overwrite：A 提交（响应丢失）→ B 提交 → 重试 A
+         ⇒ 旧内容覆盖新内容（`contentFingerprint` 幂等 = SAME-STATE ONLY）。
+         另外证明 MODE=canonical 且 memoryAuthority 缺席时 **fail closed**
+         （`memory-authority-unavailable`），而 MODE=mirror/off 的合法本地模式不变。
+         纯 Node、零浏览器、零网络（store 走本地 SQLite，不经 HTTP）。 */
+      ['test_memory_content_retry.js'],
+      /* P21-R4-A.6：启动期 memory authority 健康闭合。
+         home-node-bootstrap 在安装 window.dbPut/dbDelete 覆盖**之前**有三处整体
+         early-return；早退之后覆盖根本不存在，A.5 的覆盖内守卫无从执行，
+         memories 的写会静默落到**原始 IndexedDB writer** —— 即使
+         ibHomeNodeMode() === 'canonical'。
+         本测试把真实 bootstrap 的 provisional guard / 三个早退点 / 降级面
+         原样抽进隔离 vm，证明：canonical-intended 下 memories put/delete 被
+         `memory-authority-not-ready` 拒绝且**零本地行**；MODE=mirror / off /
+         file:// 的合法 host-local 语义逐字保留；正式覆盖**直接替换**guard
+         （不套娃、不重复 remote 调用、不丢 originalDb）；并机械穷举
+         CANONICAL_LOCAL_WRITE_PATH_COUNT = 0。
+         另含真实 InternalBeyond.html 的 script 顺序 + 依赖同步赋值集成检查。
+         纯 Node、零浏览器、零网络。 */
+      ['test_memory_startup_authority.js'],
       /* M1-C.2m：canonical Understanding —— 存储/修订链/CAS/单活不变量/更正契约
          （纯 Node + 真 SQLite + 临时数据目录，零网络、零浏览器）。 */
       ['test_understanding_contract_closure.js'],

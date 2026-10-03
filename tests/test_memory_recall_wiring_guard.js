@@ -399,7 +399,7 @@ function runTest(rel, expectPattern) {
   return { ok: r.status === 0, out: out, matched: expectPattern ? expectPattern.test(out) : true };
 }
 
-const contractRun = runTest('tests/test_memory_recall_contract.js', /184 assertions green/);
+const contractRun = runTest('tests/test_memory_recall_contract.js', /187 assertions green/);
 check('B1.contractStillGreen', contractRun.ok && contractRun.matched,
   'R2-A contract must still pass (each phase moved the count as an intentional transition: '
   + '141 → 143 at R2-C, → 148 at R2-D, → 156 at R2-G1 (docs truth guards D1–D8), '
@@ -408,7 +408,9 @@ check('B1.contractStillGreen', contractRun.ok && contractRun.matched,
   + '+ a declared activation-writer registry), → 180 at R4-A.2 (per-outcome canonical '
   + 'fail-closed checks, comment-aware writer scan, and the three closed defects now '
   + 'asserted ABSENT rather than registered as debt), → 184 at R4-A.3 (resolver-throw '
-  + 'structural proof + the NO-AUTHORITY vs AMBIGUOUS-RESOLUTION distinction))'
+  + 'structural proof + the NO-AUTHORITY vs AMBIGUOUS-RESOLUTION distinction), '
+  + '→ 187 at R4-A.4 (mode vocabulary validation: unknown/missing/null/unreadable mode '
+  + 'must fail closed instead of being treated as mirror/off))'
   + '\n        ' + contractRun.out.split('\n').filter(l => /FAIL/.test(l)).join('\n        '));
 check('B2.productionIntegrityStillHolds', !/FAIL\s+P18\.unchanged/.test(contractRun.out));
 

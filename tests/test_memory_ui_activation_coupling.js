@@ -68,7 +68,7 @@ const MODES = ['canonical', 'mirror', 'off'];
 section('§1 · 探针覆盖');
 
 check('U1.probeCoversBothUiPathsInEveryMode',
-  PROBE.probe === 'P21-R4-A.3'
+  PROBE.probe === 'P21-R4-A.4'
   && MODES.every(m => S['saveInlineEdit@' + m] && S['writeOneLineToMemory@' + m])
   && S.saveInlineEditContentWriteFailure && S.saveInlineEditContentOnly,
   'the vm probe must execute both UI paths in all three modes plus the failure and content-only cases');

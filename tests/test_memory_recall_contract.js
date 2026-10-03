@@ -584,17 +584,40 @@ const S = PROBE.scenarios;
 const PROBE_SCENARIOS = ['canonicalSuccess', 'canonicalDefiniteFailure', 'canonicalTransportThrow',
   'canonicalSyncThrow', 'canonicalStatusThrows', 'canonicalInvalidResultShape',
   'canonicalMissingOkFlag', 'authorityWithoutStatus', 'authorityResolverThrows',
+  'statusModeUnknown', 'statusModeNull', 'statusModeUndefined', 'statusReturnsEmptyObject',
+  'statusReturnsNonObject',
   'mirrorMode', 'offMode', 'noAuthority', 'moduleFallbackInstance',
   'authorityWithoutRecordActivation', 'mirrorWithoutDbUpdate', 'emptySelection'];
 /* canonical / ambiguous 类场景：一律不得写镜像。 */
 const AMBIGUOUS_SCENARIOS = ['canonicalSuccess', 'canonicalDefiniteFailure', 'canonicalTransportThrow',
   'canonicalSyncThrow', 'canonicalStatusThrows', 'canonicalInvalidResultShape',
-  'canonicalMissingOkFlag', 'authorityWithoutStatus', 'authorityResolverThrows'];
+  'canonicalMissingOkFlag', 'authorityWithoutStatus', 'authorityResolverThrows',
+  'statusModeUnknown', 'statusModeNull', 'statusModeUndefined', 'statusReturnsEmptyObject',
+  'statusReturnsNonObject'];
+/* R4-A.4：合法 mode 只有 canonical / mirror / off；这三种之外的每个形状都必须 fail closed。 */
+const UNKNOWN_MODE_SCENARIOS = ['statusModeUnknown', 'statusModeNull', 'statusModeUndefined',
+  'statusReturnsEmptyObject', 'statusReturnsNonObject', 'canonicalStatusThrows'];
 
 check('R.activationProbeCoversEveryScenario',
-  PROBE.probe === 'P21-R4-A.3' && PROBE_SCENARIOS.every(name => S[name] && typeof S[name] === 'object'),
+  PROBE.probe === 'P21-R4-A.4' && PROBE_SCENARIOS.every(name => S[name] && typeof S[name] === 'object'),
   'the vm probe must report every declared activation scenario (missing: '
   + PROBE_SCENARIOS.filter(name => !S[name]).join(', ') + ')');
+
+check('R.unknownAuthorityModeFailsClosed',
+  UNKNOWN_MODE_SCENARIOS.every(name => S[name].mirrorWriteCalls === 0 && S[name].threw === null),
+  'an unrecognised/unreadable authority mode is ambiguous and MUST NOT be treated as mirror/off: '
+  + JSON.stringify(UNKNOWN_MODE_SCENARIOS.filter(name => S[name].mirrorWriteCalls !== 0 || S[name].threw !== null)));
+
+check('R.knownLocalModesStillFallBack',
+  S.mirrorMode.authorityCalls === 0 && S.mirrorMode.mirrorWriteCalls === 2 && S.mirrorMode.returned === 2
+  && S.offMode.authorityCalls === 0 && S.offMode.mirrorWriteCalls === 2 && S.offMode.returned === 2,
+  'the two KNOWN local modes must keep the host-local bump (only unknown modes fail closed)');
+
+check('R.modeIsValidatedAgainstTheDeclaredSet',
+  /mode==='canonical'/.test(read('assets/js/memory.js'))
+  && /mode==='mirror'\|\|mode==='off'/.test(read('assets/js/memory.js'))
+  && /MODES\s*=\s*\['canonical',\s*'mirror',\s*'off'\]/.test(read('assets/js/memory-authority.js')),
+  'the caller must branch on exactly the three modes declared by memory-authority MODES');
 
 check('R.canonicalActivationGoesThroughAuthoritySeam',
   S.canonicalSuccess.authorityCalls === 1

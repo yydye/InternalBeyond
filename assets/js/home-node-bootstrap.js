@@ -19,6 +19,118 @@
 (function (NS) {
 'use strict';
 
+/* ══ R4-A.6 · 启动期 canonical memory guard + 依赖诊断 ══════════════════
+   为什么必须有这一段（机械事实，不是推测）：
+
+   下面的依赖检查会在**安装 window.dbPut / window.dbDelete 覆盖之前**整体
+   early-return。一旦早退，`memories` 的写就仍然解析到**原始 IndexedDB writer**：
+   浏览器里静默出现一份"本地记忆真相"，而 Home Node 对此一无所知。
+   这正是 A.5 留下的 R4A5-BOOTSTRAP-ABORT-SILENT-DOWNGRADE-1。
+
+   A.5 已在**覆盖内部**修掉了 `MODE=canonical && !memoryAuthority` 的静默降级；
+   但覆盖根本没安装时，那段守卫无从执行，因此必须在**任何依赖检查之前**先装一道
+   provisional guard：
+
+     · canonical-intended 且非 file:// ⇒ 拒绝 memories 的 put/delete（fail closed）；
+     · MODE=mirror / off        ⇒ 逐字转发，合法 host-local 语义**不变**；
+     · file://（显式 degraded 承载）⇒ 逐字转发，合法 host-local 语义**不变**；
+     · 非 memories store        ⇒ 逐字转发给安装时的原函数，行为**不变**。
+
+   正式 bootstrap 走到下面时用 `window.dbPut = function (...) {...}` **直接赋值替换**
+   本 guard（不是套娃），因此正常路径只多一次被替换掉的赋值。
+   安装是幂等的（window.__ibCanonicalMemoryGuard），重复执行不会叠加包装。
+   ==================================================================== */
+
+/* 启动期诊断：函数声明会被提升，因此在下面的早退点上也**可以**调用。
+   刻意不依赖 LOG_TAG —— 那是 `var`，在早退点上还是 undefined。
+   只记状态词 / store / op / dependency，**绝不**记正文、凭据或用户内容。 */
+function bootNote(event, fields) {
+  try {
+    var ns = NS || (window.IB = window.IB || {});
+    if (!ns.homeNodeLog) ns.homeNodeLog = [];
+    ns.homeNodeLog.push(Object.assign({ at: Date.now(), event: event }, fields || {}));
+    if (ns.homeNodeLog.length > 100) ns.homeNodeLog.shift();
+  } catch (e) { /* 观测失败不影响功能 */ }
+  try { console.warn('[HomeNode] ' + event, fields || ''); } catch (e) { /* 无 console */ }
+}
+
+/* canonical intent 判定：与下面 `var MODE = ...` 用**同一个表达式**，
+   只是提前到任何依赖检查之前，好让 guard 在 bootstrap 早退时仍然知道
+   自己"本来想 canonical"。file:// 是**显式**声明的 degraded 承载
+   （Chrome 在网络层阻断 file://→loopback，见下方 FILE_ORIGIN 说明），
+   那种承载下 host-local 是合法语义 ⇒ 不拦。读不出来时 fail safe（拦）。 */
+function canonicalMemoryIntended() {
+  try {
+    if (typeof location !== 'undefined' && String(location.protocol) === 'file:') return false;
+    return ((typeof window.ibHomeNodeMode === 'function') ? window.ibHomeNodeMode() : 'canonical') === 'canonical';
+  } catch (e) { return true; }
+}
+
+/* 早退 / 初始化失败时对外可见的降级面：复用成功路径 `memory.status()` 的
+   **同一形状**（available / authority / authorityEffective / degraded / degradedReason），
+   不新造第二套 global health framework。
+   刻意**不**暴露 remote —— 消费方（middle-brain-direct / moments / active-diary）
+   一律用安全属性链 + `remote` 存在性判断，缺 remote 时自动走本地分支。 */
+function exposeDegradedMemorySurface(reason) {
+  try {
+    var ns = NS || (window.IB = window.IB || {});
+    if (!ns.homeNode) ns.homeNode = {};
+    if (ns.homeNode.memory && typeof ns.homeNode.memory.status === "function") return;
+    if (ns.homeNode.mode === undefined) ns.homeNode.mode = canonicalMemoryIntended() ? 'canonical' : 'local';
+    ns.homeNode.degraded = true;
+    ns.homeNode.degradedReason = reason;
+    ns.homeNode.memory = {
+      instance: null,
+      available: false,
+      authority: null,
+      status: function () {
+        return { store: 'memories', available: false, authority: 'indexeddb',
+          authorityEffective: false, degraded: true, degradedReason: reason,
+          canonicalIntended: canonicalMemoryIntended() };
+      },
+      sync: function () { return Promise.resolve({ ok: false, error: reason }); },
+      migrate: function () { return Promise.resolve({ ok: false, error: reason }); },
+      rebuildMirror: function () { return Promise.resolve({ ok: false, error: reason }); }
+    };
+    if (typeof ns.homeNode.status !== "function") {
+      ns.homeNode.status = function () {
+        return { available: false, degraded: true, degradedReason: reason, mode: ns.homeNode.mode };
+      };
+    }
+  } catch (e) { /* 观测失败不影响功能 */ }
+}
+
+/* ── provisional canonical memory guard（见上方说明）────────────────── */
+(function installCanonicalMemoryGuard() {
+  if (window.__ibCanonicalMemoryGuard) return;
+  var priorPut = window.dbPut;
+  var priorDel = window.dbDelete;
+  /* 没有可包装的原函数（core.js 未加载）⇒ 不装：此时 `window.dbPut` 本身
+     就不是函数，memory 写会以 TypeError 失败，已经是 fail closed。 */
+  if (typeof priorPut !== "function" && typeof priorDel !== "function") return;
+  window.__ibCanonicalMemoryGuard = true;
+
+  function refuse(op) {
+    bootNote('memory-authority-not-ready', { store: 'memories', op: op, reason: 'bootstrap-not-installed' });
+    var err = new Error('memory 的 canonical authority 未就绪（Home Node bootstrap 未完成安装）；拒绝写入本地镜像（fail closed）');
+    err.code = 'memory-authority-not-ready';
+    err.authority = 'home-node';
+    return Promise.reject(err);
+  }
+  if (typeof priorPut === "function") {
+    window.dbPut = function (store, data) {
+      if (store === 'memories' && canonicalMemoryIntended()) return refuse('put');
+      return priorPut.apply(this, arguments);
+    };
+  }
+  if (typeof priorDel === "function") {
+    window.dbDelete = function (store, key) {
+      if (store === 'memories' && canonicalMemoryIntended()) return refuse('delete');
+      return priorDel.apply(this, arguments);
+    };
+  }
+})();
+
 /* 策略层来自 assets/js/chat-authority.js（UMD，裸全局 IBChatAuthority ——
    与 chat-core.js / ib-model-core.js / provider-directory.js 同款约定，
    不是 IB.* 成员）。
@@ -28,8 +140,20 @@
 var _authorityFactory = (window.IBChatAuthority && typeof window.IBChatAuthority.createChatAuthority === 'function')
   ? window.IBChatAuthority.createChatAuthority
   : ((typeof window.createChatAuthority === 'function') ? window.createChatAuthority : null);
-if (!_authorityFactory) return;
-if (!window.__ibCoreDb) { console.warn('[HomeNode] core.js 接缝未就绪，跳过接管'); return; }
+if (!_authorityFactory) {
+  /* R4-A.6：此前这里**完全静默** —— 页面表现为"没有 Home Node 能力"
+     而没有任何可见错误。现在给出稳定 reason code 与降级面。
+     memory 写在 canonical-intended 下已由上面的 provisional guard 拒绝。 */
+  bootNote('memory-bootstrap-dependency-missing', { dependency: 'chat-authority', canonicalIntended: canonicalMemoryIntended() });
+  exposeDegradedMemorySurface('memory-bootstrap-dependency-missing:chat-authority');
+  return;
+}
+if (!window.__ibCoreDb) {
+  bootNote('memory-bootstrap-dependency-missing', { dependency: 'core-db', canonicalIntended: canonicalMemoryIntended() });
+  exposeDegradedMemorySurface('memory-bootstrap-dependency-missing:core-db');
+  console.warn('[HomeNode] core.js 接缝未就绪，跳过接管');
+  return;
+}
 
 var DB = window.__ibCoreDb;
 var MODE = (typeof window.ibHomeNodeMode === 'function') ? window.ibHomeNodeMode() : 'canonical';
@@ -113,7 +237,12 @@ var localDriver = {
 var _remoteFactory = (NS && typeof NS.createHomeNodeRemote === 'function')
   ? NS.createHomeNodeRemote
   : ((typeof window.createHomeNodeRemote === 'function') ? window.createHomeNodeRemote : null);
-if (!_remoteFactory) { warn('remote-driver-missing', { ibHas: typeof (NS && NS.createHomeNodeRemote) }); return; }
+if (!_remoteFactory) {
+  bootNote('memory-bootstrap-dependency-missing', { dependency: 'home-node-client', canonicalIntended: canonicalMemoryIntended() });
+  exposeDegradedMemorySurface('memory-bootstrap-dependency-missing:home-node-client');
+  warn('remote-driver-missing', { ibHas: typeof (NS && NS.createHomeNodeRemote) });
+  return;
+}
 var remoteDriver = _remoteFactory({});
 
 /* ── P22-12 §9 · Active planner 的**只读**目录事实 seam ─────────────────
@@ -205,15 +334,36 @@ function throwWriteError(result, fallbackId) {
 }
 
 window.dbPut = function (store, data) {
+  if (store === 'memories' && MODE === 'canonical' && !memoryAuthority) {
+    /* R4-A.5 · canonical-intended authority unavailable ⇒ **fail closed**。
+       `isMemoryStore()` 要求 `!!memoryAuthority`，因此在 authority 缺席时它会返回 false，
+       于是本函数此前会**静默**走 `original.put` —— 在"MODE=canonical"的环境里写下一份
+       没有权威确认的本地真相。理解域与动态域早就有同款守卫
+       （`understanding-write-closed` / `moments-write-closed`），记忆域此前没有。
+       注意区分三种"没有可用写路径"：
+         · MODE=mirror / off  ⇒ **合法**本地模式，走 original（下面那条分支，不拦）；
+         · authority 存在但 mode=mirror/off ⇒ 合法，仍经 authority（isMemoryStore 为真）；
+         · MODE=canonical 且 authority 缺席 ⇒ **初始化失败**，不是本地模式 ⇒ 拒绝并署名。 */
+    note('memory-authority-unavailable', { store: store, mode: MODE });
+    var unavailable = new Error('memory 是 Home Node 的 canonical 域，但 memoryAuthority 未装配；拒绝写入本地镜像（fail closed）');
+    unavailable.code = 'memory-authority-unavailable';
+    unavailable.authority = 'home-node';
+    return Promise.reject(unavailable);
+  }
   if (isMemoryStore(store)) {
-    /* 记忆：fail closed。写失败必须让调用方看到失败，绝不静默写第二份 canonical。
-       与 chat 一样重试镜像/传输层的瞬时失败，但不重试明确的拒绝。 */
-    return withRetry(function () {
-      return memoryAuthority.put(data).then(function (result) {
-        if (!result || !result.ok) throwWriteError(result, data && data.id);
-        note('memory-write', { id: data && data.id, outcome: result.outcome, revision: result.revision, mirrored: result.mirrored !== false });
-        return undefined;
-      });
+    /* R4-A.5 · canonical content mutation **不自动重试**（AUTO_RETRY = NONE）。
+       `withRetry` 对"传输层失败"会重发**同一个 payload**。对内容写而言这是危险的：
+       第一次请求可能**已经在 Home Node 提交**（只是响应丢失），若期间有别的写者提交了
+       新版本，重试会用旧内容覆盖新内容 —— 而 `contentFingerprint` 的幂等只在**状态未变**
+       时成立（skipped），挡不住这件事。内容写没有 requestId、没有 CAS，store 是
+       LAST-WRITE-WINS，因此唯一安全的做法是**不自动重放**：
+         · 结局未知 ⇒ 镜像不动、把失败如实抛给调用方；
+         · 用户再次点击保存 = 一次**独立的新请求**，允许。
+       chat 域仍然保留原有的 withRetry（本修复只动 memory 分支）。 */
+    return memoryAuthority.put(data).then(function (result) {
+      if (!result || !result.ok) throwWriteError(result, data && data.id);
+      note('memory-write', { id: data && data.id, outcome: result.outcome, revision: result.revision, mirrored: result.mirrored !== false });
+      return undefined;
     });
   }
   if (isUnderstandingStore(store) && understandingWriteClosed()) {
@@ -256,13 +406,21 @@ window.dbPut = function (store, data) {
 };
 
 window.dbDelete = function (store, key) {
+  if (store === 'memories' && MODE === 'canonical' && !memoryAuthority) {
+    /* 同 dbPut：canonical-intended 且 authority 缺席 ⇒ fail closed，绝不静默本地删。 */
+    note('memory-authority-unavailable', { store: store, mode: MODE, op: 'delete' });
+    var unavailableDel = new Error('memory 是 Home Node 的 canonical 域，但 memoryAuthority 未装配；拒绝删除本地镜像（fail closed）');
+    unavailableDel.code = 'memory-authority-unavailable';
+    unavailableDel.authority = 'home-node';
+    return Promise.reject(unavailableDel);
+  }
   if (isMemoryStore(store)) {
-    return withRetry(function () {
-      return memoryAuthority.remove(key).then(function (result) {
-        if (!result || !result.ok) throwWriteError(result, key);
-        note('memory-delete', { id: key, outcome: result.outcome, revision: result.revision });
-        return undefined;
-      });
+    /* R4-A.5 · delete 同样是 canonical content mutation，同样**不自动重试**：
+       重试的 soft delete 会删掉并发写者在两次尝试之间复原并写入的新内容。 */
+    return memoryAuthority.remove(key).then(function (result) {
+      if (!result || !result.ok) throwWriteError(result, key);
+      note('memory-delete', { id: key, outcome: result.outcome, revision: result.revision });
+      return undefined;
     });
   }
   if (isUnderstandingStore(store) && understandingWriteClosed()) {
