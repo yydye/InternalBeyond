@@ -441,6 +441,18 @@ const GROUPS = [
          只多一个内部 meta 键。failure 一律 fail open。
          纯 Node、零浏览器、零网络。 */
       ['test_metamemory_shadow.js'],
+      /* P21-R4-C：MemoryInterpretation **SHADOW**（模型就绪，生产**不调用**）。
+         FACTS MAY REMAIN STABLE · MEANING MAY CHANGE —— 解释层永远不改写 canonical。
+         纯核心（同步、零网络/DB/时钟/随机/持久化）负责结构化数据信封与严格输出校验；
+         独立 runner（异步、单次调用、AUTO_RETRY=NONE、有界超时 + AbortSignal、永不抛出）
+         是唯一会发起模型调用的文件，且**没有任何生产调用方** ——
+         recall 调用链是 async 且被 chat 回合 await 的，模型调用不可能同步，
+         因此宁可交付 model-ready 也不牺牲首 token 延迟（contract §24.9(c)）。
+         测试全部使用 deterministic fake model port：真实 provider 调用 = 0。
+         覆盖 prompt 注入隔离、输出 schema 校验、部分输出策略、失败/超时/取消、
+         单次批量调用预算、current-state 差分（同事实不同解释）、consumer=0、OFF parity。
+         纯 Node、零浏览器、零网络。 */
+      ['test_memory_interpretation_shadow.js'],
       /* M1-C.2m：canonical Understanding —— 存储/修订链/CAS/单活不变量/更正契约
          （纯 Node + 真 SQLite + 临时数据目录，零网络、零浏览器）。 */
       ['test_understanding_contract_closure.js'],

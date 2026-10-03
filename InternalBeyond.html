@@ -3448,6 +3448,12 @@ i would like the room to be enough.
 <script src="assets/js/memory-recall/cooldown.js"></script>
 <script src="assets/js/memory-recall/recall-trace.js"></script>
 <script src="assets/js/memory-recall/metamemory-shadow.js"></script>
+<!-- P21-R4-C · MemoryInterpretation SHADOW：纯核心（同步、零网络）+ 独立模型 runner。
+     **生产 invocation 默认关闭**（runner 没有任何生产调用方）—— recall 调用链是
+     async 且被 chat 回合 await 的，模型调用不可能同步，因此宁可交付 model-ready
+     也不牺牲首 token 延迟。详见 docs/contracts/memory/RECONSTRUCTIVE_MEMORY_CONTRACT.md §24.9。 -->
+<script src="assets/js/memory-recall/memory-interpretation-core.js"></script>
+<script src="assets/js/memory-recall/memory-interpretation-runner.js"></script>
 <script src="assets/js/memory-recall/memory-recall-orchestrator.js"></script>
 <!-- M1-C.2k：线索（open thread）派生的唯一确定性实现（规则 / 去重阈值 / 合并语义）。
      Home Node 由 services/home-node/thread-retrieval.js require **同一份文件**，
