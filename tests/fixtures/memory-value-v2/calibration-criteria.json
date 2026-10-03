@@ -3,6 +3,19 @@
   "phase": "P21-R3-C",
   "status": "FROZEN EVALUATION CRITERIA",
   "scope": "tests and synthetic fixtures only",
+  "declaredScope": {
+    "reason": "P21-R4-A.1 hygiene fix. C16 asks whether THE CANDIDATE DIFF touched schema/version/migration paths. That is a claim about this study's own change set, so it must be DECLARED and frozen here rather than sniffed from the live working tree. Sniffing 'git diff --name-only HEAD' made a tracked decision artifact depend on whatever unrelated user/Codex edits happened to be uncommitted, which permanently froze R3-C into a red assertion the moment it was committed. The declaration below is the study's scope claim; the live working tree is reported separately as transient diagnostics and never feeds the decision. Independent protection against real production edits is provided by the R2-A production hash baseline (tests/fixtures/memory-recall-contract/production-hashes.json), which is asserted by test_memory_recall_contract.js.",
+    "paths": [
+      "tests/test-all.js",
+      "tests/fixtures/memory-value-v2/calibration-criteria.json",
+      "tests/fixtures/memory-value-v2/calibration-decision.json",
+      "tests/fixtures/memory-value-v2/cases.json",
+      "tests/fixtures/memory-value-v2/producer-defaults.json",
+      "tests/fixtures/memory-value-v2/scenario-families.json",
+      "tests/helpers/memory-value-v2-calibration.js",
+      "tests/test_memory_value_v2_calibration.js"
+    ]
+  },
   "hardGates": [
     {"id":"C1","criterion":"finite and deterministic output","measurement":"finite value/components; repeated same input deep-equals"},
     {"id":"C2","criterion":"no query leakage","measurement":"same record and now across query variants has identical value"},

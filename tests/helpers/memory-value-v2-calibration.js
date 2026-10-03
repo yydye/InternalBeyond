@@ -1517,29 +1517,91 @@ function hardGateAssessment(properties, parameters) {
   return result;
 }
 
+/* ── P21-R4-A.1 hygiene fix · 稳定 scope 与瞬时 scope 的结构性分离 ──────────
+   缺陷（R4-A 已证明）：C16 的输入曾经是【实时工作树】——
+     git diff --name-only HEAD + git ls-files --others
+   而 buildCalibrationDecision() 把它的结果写进**被追踪的** decision artifact，
+   OUT2b 又对那份 artifact 做整体 deepEqual。于是 R3-C 一旦提交，
+   实时 changedPaths 变回 []、fixture 里却是提交前的 8 个路径 ⇒ **永久 RED**，
+   且任何无关的 user/Codex 未提交改动都会连带把 hard gate 判成 false。
+
+   修复原则：**稳定决策事实不得依赖实时工作树。**
+     · declaredCalibrationScope() —— 决策的输入：读 criteria 里**声明**的 scope，
+       纯文件读取、零 git、零环境依赖 ⇒ 决策可复现、可冻结。
+     · liveScopeDiagnostics()   —— 诊断：如实报告当前工作树脏集，
+       但**只进入 shadow report 的顶层诊断字段**，绝不进入 decision artifact。
+   两者形状刻意不同（diagnostics 多一个 source/available），因此不可能互相冒充。 */
+
+function declaredCalibrationScope(root) {
+  const base = root || ROOT;
+  const criteria = JSON.parse(sourceText(base, 'tests/fixtures/memory-value-v2/calibration-criteria.json'));
+  const declared = (criteria && criteria.declaredScope) || {};
+  const changedPaths = (Array.isArray(declared.paths) ? declared.paths : [])
+    .map(value => String(value).replace(/\\/g, '/'));
+  const productionPaths = changedPaths.filter(file => /^(assets|services|src-tauri)\//.test(file));
+  const schemaPaths = changedPaths.filter(file => /(?:schema|migration|DB_VER|MEMORY_SCHEMA_VERSION)/i.test(file)
+    && !file.startsWith('tests/'));
+  /* 形状**逐字**等于 R3-C 冻结的 scopeEvidence（四个键、无额外键），
+     因此 decision artifact 不需要任何改动，产品结论也不可能被这次修复改动。 */
+  return {
+    changedPathCount: changedPaths.length,
+    changedPaths,
+    productionPathCount: productionPaths.length,
+    productionPaths,
+    schemaPathCount: schemaPaths.length,
+    schemaPaths
+  };
+}
+
+function liveScopeDiagnostics(root) {
+  const base = root || ROOT;
+  const out = {
+    source: 'live',
+    available: false,
+    error: null,
+    changedPathCount: null,
+    changedPaths: [],
+    productionPathCount: null,
+    productionPaths: [],
+    schemaPathCount: null,
+    schemaPaths: [],
+    contaminated: null,
+    note: 'Transient working-tree state. Diagnostics only: it is never an input to the frozen calibration decision.'
+  };
+  try {
+    const tracked = childProcess.execFileSync('git', ['diff', '--name-only', 'HEAD'], { cwd: base, encoding: 'utf8' })
+      .split(/\r?\n/).filter(Boolean).map(value => value.replace(/\\/g, '/'));
+    const untracked = childProcess.execFileSync('git', ['ls-files', '--others', '--exclude-standard'], { cwd: base, encoding: 'utf8' })
+      .split(/\r?\n/).filter(Boolean).map(value => value.replace(/\\/g, '/'));
+    const changedPaths = [...new Set(tracked.concat(untracked))];
+    const productionPaths = changedPaths.filter(file => /^(assets|services|src-tauri)\//.test(file));
+    const schemaPaths = changedPaths.filter(file => /(?:schema|migration|DB_VER|MEMORY_SCHEMA_VERSION)/i.test(file)
+      && !file.startsWith('tests/'));
+    out.available = true;
+    out.changedPathCount = changedPaths.length;
+    out.changedPaths = changedPaths;
+    out.productionPathCount = productionPaths.length;
+    out.productionPaths = productionPaths;
+    out.schemaPathCount = schemaPaths.length;
+    out.schemaPaths = schemaPaths;
+    out.contaminated = productionPaths.length > 0 || schemaPaths.length > 0;
+  } catch (error) {
+    /* 非 git 目录 / git 不可用：诊断如实降级，绝不抛错、绝不污染决策。 */
+    out.error = String((error && error.message) || error);
+  }
+  return out;
+}
+
 function candidateCalibrationGates(now, root) {
   const at = now == null ? DEFAULT_NOW : now;
   const base = root || ROOT;
   const properties = propertyReport(at);
-  const tracked = childProcess.execFileSync('git', ['diff', '--name-only', 'HEAD'], { cwd: base, encoding: 'utf8' })
-    .split(/\r?\n/).filter(Boolean).map(value => value.replace(/\\/g, '/'));
-  const untracked = childProcess.execFileSync('git', ['ls-files', '--others', '--exclude-standard'], { cwd: base, encoding: 'utf8' })
-    .split(/\r?\n/).filter(Boolean).map(value => value.replace(/\\/g, '/'));
-  const changedPaths = [...new Set(tracked.concat(untracked))];
-  const productionPaths = changedPaths.filter(file => /^(assets|services|src-tauri)\//.test(file));
-  const schemaPaths = changedPaths.filter(file => /(?:schema|migration|DB_VER|MEMORY_SCHEMA_VERSION)/i.test(file)
-    && !file.startsWith('tests/'));
+  /* 决策输入 = 声明 scope（纯文件读取）。实时工作树只作为 diagnostics，见 liveScopeDiagnostics。 */
+  const scopeEvidence = declaredCalibrationScope(base);
   const parameters = {
     zeroArousalEffective: candidateA({ importance: 5, arousal: 0, activationCount: 0, resolved: false, created: at, lastActivated: at }, at).normalized.fields.arousal.effective,
     activationBounds: {}, emotionBounds: {}, normalizationReasons: {}, createdAlias: {}, futureFloor: {}, explainable: {}, noAuthorityIO: {},
-    scopeEvidence: {
-      changedPathCount: changedPaths.length,
-      changedPaths,
-      productionPathCount: productionPaths.length,
-      productionPaths,
-      schemaPathCount: schemaPaths.length,
-      schemaPaths
-    }
+    scopeEvidence: scopeEvidence
   };
   const source = sourceText(base, 'tests/helpers/memory-value-v2-calibration.js');
   const body = source.slice(source.indexOf('function candidateA'), source.indexOf('function materializeSpecial'));
@@ -1694,7 +1756,7 @@ function buildShadowReport(root) {
   const bSensitivity = bParameterSensitivity(expanded, now, base);
   const cSensitivity = cWeightSensitivity(expanded, producerRecords, now);
   const complexity = complexityEvidence();
-  const gates = candidateCalibrationGates(now);
+  const gates = candidateCalibrationGates(now, base);
   const scenarioExplainability = expanded.records.slice(0, 10).map(row => ({
     family: row.id.split(':')[0],
     id: row.id,
@@ -1743,6 +1805,10 @@ function buildShadowReport(root) {
       factor: 1 + 0.5 * activationCount / (activationCount + 100)
     })),
     R3_A_CORRECTION_CONFIRMED: true,
+    /* 瞬时诊断：如实报告当前工作树脏集。**不是**决策输入，
+       也**不得**被任何 frozen artifact 吸收（见 declaredCalibrationScope 的注释）。 */
+    scopeDiagnostics: liveScopeDiagnostics(base),
+    scopeDecisionBasis: 'declared (tests/fixtures/memory-value-v2/calibration-criteria.json#declaredScope)',
     LEGACY_BASELINE_SOURCE: 'assets/js/memory-recall/scoring.js#computeLegacyMemoryValue → assets/js/memory-retrieval-core.js#getMemoryScore',
     cases: caseValues,
     scenarioFamilies: scenarioComparisons,
@@ -1925,5 +1991,6 @@ module.exports = {
   importanceDomainCalibration, legacyActivationParameters, activationSensitivity,
   producerBucketMatrix, enumerateCWeightGrid, candidateMonotonicCounts,
   cWeightSensitivity, bParameterSensitivity, complexityEvidence,
-  hardGateAssessment, candidateCalibrationGates, buildCalibrationDecision
+  hardGateAssessment, candidateCalibrationGates, buildCalibrationDecision,
+  declaredCalibrationScope, liveScopeDiagnostics
 };

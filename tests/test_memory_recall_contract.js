@@ -550,32 +550,306 @@ check('C15.gapPointsToR2H',
   declares(CONTRACT_TEXT, 'R2-H'),
   'gap must point forward to R2-H Authority Closure');
 
-/* ── [CURRENT] 事实核对：authority 通道确实存在且确实无人调用 ───────────── */
+/* ══ [CURRENT] R4-A.1 · activation authority 的真实 wiring 不变量 ══════════
+   R2-A 时代这里断言的是"authority 通道存在，但**没有任何**生产调用者"。
+   R2-H2 已经**合法地**把桌面 recall 强化接进那条通道 —— 但接线走的是局部别名
+   （assets/js/memory.js 的 `auth.recordActivation(...)`），而旧断言查的是字面量
+   `memoryAuthority.recordActivation`。于是它一直绿着，却不再守任何东西：
+   这正是 R4-A 登记的 stale guard（"绿着但已失效"）。
+
+   本轮按 R2-H 的**当前真相**重写成两层不变量，不再依赖字面量匹配：
+     W1（行为）  把生产源码里的 _ibMemoryAuthority / recordMemoryActivation
+                 **原样抽出来**在隔离 vm 里执行（helpers/activation-wiring-probe.js），
+                 证明 canonical 分支是 remote-first，且失败**不回落**成镜像写入。
+     W2（结构）  登记**全部**把 activation 遥测写进浏览器 memories 的写者；
+                 新增一个绕过 authority 的写者会让本测试变红，而**已知**的越界面
+                 被显式登记为 debt，而不是被断言成"不存在"。
+   完整 runtime 行为（hydrate / retry / 双端 parity）由
+   test_memory_activation_authority.js 与 test_memory_recall_cooldown_hosts.js 覆盖；
+   这里**不**重复那套行为测试。 */
+/* R4-A.2：扫描器必须 comment-aware（helper 提供），否则修复注释里逐字引用的旧代码
+   会被误判成"仍然存在的写者"。 */
+const WIRING = require('./helpers/activation-wiring-probe.js');
 const AUTHORITY_TEXT = read('assets/js/memory-authority.js');
 check('R.authorityActivationChannelExists',
   /function recordActivation\(ids, options\)/.test(AUTHORITY_TEXT),
-  'memory-authority must expose a recordActivation channel (the un-wired one)');
-const PRODUCTION_JS_DIRS = ['assets/js', 'services', 'bridge'];
-const productionCallers = [];
-(function walk(dir) {
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) { walk(full); continue; }
-    if (!entry.name.endsWith('.js')) continue;
-    const text = fs.readFileSync(full, 'utf8');
-    if (text.indexOf('memoryAuthority.recordActivation') >= 0
-      || text.indexOf('authority.recordActivation') >= 0) {
-      productionCallers.push(path.relative(ROOT, full).replace(/\\/g, '/'));
+  'memory-authority must expose the recordActivation channel');
+
+/* ── W1 · 行为：执行真实生产源码（不是匹配字面量）───────────────────────── */
+const PROBE = JSON.parse(require('node:child_process').execFileSync(
+  process.execPath,
+  [path.join(__dirname, 'helpers', 'activation-wiring-probe.js')],
+  { cwd: ROOT, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 })).recall;
+const S = PROBE.scenarios;
+const PROBE_SCENARIOS = ['canonicalSuccess', 'canonicalDefiniteFailure', 'canonicalTransportThrow',
+  'canonicalSyncThrow', 'canonicalStatusThrows', 'canonicalInvalidResultShape',
+  'canonicalMissingOkFlag', 'authorityWithoutStatus', 'authorityResolverThrows',
+  'mirrorMode', 'offMode', 'noAuthority', 'moduleFallbackInstance',
+  'authorityWithoutRecordActivation', 'mirrorWithoutDbUpdate', 'emptySelection'];
+/* canonical / ambiguous 类场景：一律不得写镜像。 */
+const AMBIGUOUS_SCENARIOS = ['canonicalSuccess', 'canonicalDefiniteFailure', 'canonicalTransportThrow',
+  'canonicalSyncThrow', 'canonicalStatusThrows', 'canonicalInvalidResultShape',
+  'canonicalMissingOkFlag', 'authorityWithoutStatus', 'authorityResolverThrows'];
+
+check('R.activationProbeCoversEveryScenario',
+  PROBE.probe === 'P21-R4-A.3' && PROBE_SCENARIOS.every(name => S[name] && typeof S[name] === 'object'),
+  'the vm probe must report every declared activation scenario (missing: '
+  + PROBE_SCENARIOS.filter(name => !S[name]).join(', ') + ')');
+
+check('R.canonicalActivationGoesThroughAuthoritySeam',
+  S.canonicalSuccess.authorityCalls === 1
+  && S.canonicalSuccess.statusCalls === 1
+  && JSON.stringify(S.canonicalSuccess.authorityIds) === JSON.stringify(['m1', 'm2']),
+  'canonical mode must resolve the authority instance and call recordActivation with the selected ids');
+
+check('R.canonicalActivationIsRemoteFirstAndDoesNotTouchMirrorDirectly',
+  S.canonicalSuccess.mirrorUpdateCalls === 0
+  && S.canonicalSuccess.mirrorWriteCalls === 0
+  && S.canonicalSuccess.returned === 2
+  && S.canonicalSuccess.rowActivationCounts.every(count => count === 0),
+  'canonical success must not bump the mirror locally (AUTHORITY §2.1 remote-first)');
+
+check('R.canonicalActivationPreservesAtStamp',
+  S.canonicalSuccess.authorityOptions && S.canonicalSuccess.authorityOptions.at === 1700000000000,
+  'the activation timestamp must be forwarded to the authority unchanged');
+
+check('R.canonicalDefiniteFailureLeavesBothSidesUnchanged',
+  S.canonicalDefiniteFailure.authorityCalls === 1
+  && S.canonicalDefiniteFailure.mirrorWriteCalls === 0
+  && S.canonicalDefiniteFailure.returned === 0,
+  'DEFINITE_FAILURE must leave canonical and mirror unchanged (TELEMETRY_FAIL_CLOSED)');
+
+check('R.canonicalAmbiguousSeamResultLeavesMirrorUnchanged',
+  S.canonicalMissingOkFlag.authorityCalls === 1
+  && S.canonicalMissingOkFlag.mirrorWriteCalls === 0
+  && S.canonicalMissingOkFlag.returned === 0,
+  'a seam result without ok:true (AMBIGUOUS_OUTCOME shape) must not guess a mirror delta');
+
+/* ── R4-A.2 · R4A1-ACTIVATION-FALLTHROUGH-1 关闭后的**逐结局**断言 ─────────
+   修复前：canonical 判定与 authority 调用共用同一个 try/catch，因此 reject 会被
+   吞掉并**继续向下执行**到镜像分支（probe 实测 mirrorWriteCalls=2）。
+   修复后：canonical 归属一经判定 ⇒ 必定 return，镜像代码结构上不可达。
+   下面把"任何结局都不得本地补账"逐条钉住。 */
+check('R.canonicalTransportRejectCannotFallThroughToMirror',
+  S.canonicalTransportThrow.authorityCalls === 1
+  && S.canonicalTransportThrow.mirrorUpdateCalls === 0
+  && S.canonicalTransportThrow.mirrorWriteCalls === 0
+  && S.canonicalTransportThrow.returned === 0
+  && S.canonicalTransportThrow.threw === null,
+  'a rejected authority promise must fail closed: no local mirror delta, no throw to the chat caller');
+
+check('R.canonicalSyncThrowCannotFallThroughToMirror',
+  S.canonicalSyncThrow.authorityCalls === 1
+  && S.canonicalSyncThrow.mirrorWriteCalls === 0
+  && S.canonicalSyncThrow.returned === 0
+  && S.canonicalSyncThrow.threw === null,
+  'a synchronously throwing authority must fail closed exactly like a rejected promise');
+
+check('R.canonicalStatusThrowDoesNotGuessTheMode',
+  S.canonicalStatusThrows.statusCalls === 1
+  && S.canonicalStatusThrows.authorityCalls === 0
+  && S.canonicalStatusThrows.mirrorWriteCalls === 0
+  && S.canonicalStatusThrows.returned === 0
+  && S.canonicalStatusThrows.threw === null,
+  'if the resolved authority cannot report its mode, the caller must not guess — no mirror delta');
+
+check('R.canonicalInvalidResultShapeIsNotASuccess',
+  S.canonicalInvalidResultShape.authorityCalls === 1
+  && S.canonicalInvalidResultShape.mirrorWriteCalls === 0
+  && S.canonicalInvalidResultShape.returned === 0,
+  'a non-object / ok-less result must count as failure, never as confirmed telemetry');
+
+check('R.noCanonicalScenarioEverBumpsTheMirror',
+  AMBIGUOUS_SCENARIOS.every(name => S[name].mirrorWriteCalls === 0 && S[name].threw === null),
+  'no canonical/ambiguous scenario may write the mirror or throw to the caller: '
+  + JSON.stringify(AMBIGUOUS_SCENARIOS.filter(name => S[name].mirrorWriteCalls !== 0 || S[name].threw !== null)));
+
+/* ── R4-A.3 · resolver-throw 边界（§5/§6/§7）─────────────────────────────
+   关键区分（不得混淆）：
+     NO AUTHORITY                ⇒ 可以本地回落（既有 host-local 语义）
+     AUTHORITY RESOLUTION FAILED ⇒ ambiguous，**不得猜** */
+check('R.resolverIsStructurallyThrowSafe',
+  WIRING.resolverIsStructurallyThrowSafe(read('assets/js/memory.js')).ok === true,
+  'the whole _ibMemoryAuthority() body must stay inside try/catch returning null '
+  + '(so it can never propagate a throw): '
+  + JSON.stringify(WIRING.resolverIsStructurallyThrowSafe(read('assets/js/memory.js'))));
+
+check('R.authorityResolverThrowCannotFallThroughToMirror',
+  S.authorityResolverThrows.mirrorUpdateCalls === 0
+  && S.authorityResolverThrows.mirrorWriteCalls === 0
+  && S.authorityResolverThrows.returned === 0
+  && S.authorityResolverThrows.threw === null,
+  'if the resolver itself throws, the caller must fail closed — no local canonical guess');
+
+check('R.authorityWithoutStatusIsAmbiguousNotAbsent',
+  S.authorityWithoutStatus.mirrorWriteCalls === 0
+  && S.authorityWithoutStatus.returned === 0
+  && S.authorityWithoutStatus.threw === null,
+  'a resolved authority whose mode is unreadable is ambiguous, not absent: fail closed');
+
+check('R.noAuthorityStillFallsBackWhileAmbiguityDoesNot',
+  S.noAuthority.mirrorWriteCalls === 2 && S.noAuthority.returned === 2
+  && S.authorityResolverThrows.mirrorWriteCalls === 0
+  && S.authorityWithoutStatus.mirrorWriteCalls === 0,
+  'the NO-AUTHORITY fallback must survive while AMBIGUOUS RESOLUTION must not (the two are different states)');
+
+check('R.noScenarioEverRetries',
+  PROBE_SCENARIOS.every(name => S[name].authorityCalls <= 1),
+  'AUTO_RETRY = NONE: no scenario may call the authority twice');
+
+check('R.seamResolvesAmbiguousInsteadOfRejecting',
+  /outcome:\s*'ambiguous'/.test(AUTHORITY_TEXT)
+  && /mirrorUnchanged:\s*true/.test(AUTHORITY_TEXT)
+  && /noteRemoteFailure\(error\)/.test(AUTHORITY_TEXT),
+  'memory-authority must resolve transport failure as outcome:ambiguous (never reject). '
+  + 'R4-A.2 之后这**不再是** caller 唯一的保护 —— caller 自身已经 fail-closed '
+  + '（见 R.canonicalTransportRejectCannotFallThroughToMirror）；这条保留为两层防线中的 seam 层');
+
+/* ── W2 · 结构：登记每一个 activation 遥测写者 ───────────────────────────
+   motif 只描述**形状**，不描述意图；分类由人逐个读代码给出。
+   数量刻意写死：删掉/新增一个写者都必须显式更新这张表（可评审的改动）。
+   R4-A.2 之后 memory.js 剩两个 motif 组：
+     · mirror-bump ×2        —— recordMemoryActivation 的 host-local 回落（mirror/off/无 authority 才可达）
+     · last-activated-write ×3 —— 同上两条 + importMemoriesFile 的缺省填充
+   两个 UI 越界面（writeOneLineToMemory / saveInlineEdit）已不再出现在这里。 */
+const ACTIVATION_WRITER_MOTIFS = [
+  { id: 'mirror-bump', re: /([A-Za-z_$][\w$]*)\.activationCount\s*=\s*\(?\s*\1\.activationCount\s*\|\|\s*0\s*\)?\s*\+\s*1/g },
+  { id: 'authoritative-set', re: /([A-Za-z_$][\w$]*)\.activationCount\s*=\s*Number\(/g },
+  { id: 'last-activated-write', re: /\.lastActivated\s*=(?!=)/g }
+];
+const DECLARED_ACTIVATION_WRITERS = [
+  { file: 'assets/js/memory-authority.js', motif: 'authoritative-set', count: 1, kind: 'CANONICAL_CONFIRMED_MIRROR_SET',
+    why: 'setMirrorFromCanonical：canonical 成功后用服务端权威 per-id 值 SET mirror（Strategy C）' },
+  { file: 'assets/js/memory-authority.js', motif: 'last-activated-write', count: 1, kind: 'CANONICAL_CONFIRMED_MIRROR_SET',
+    why: '同上（权威 lastActivated 一并 SET）' },
+  { file: 'assets/js/home-node-bootstrap.js', motif: 'mirror-bump', count: 1, kind: 'MIRROR_MODE_LOCAL',
+    why: 'bumpActivation：memory-authority 的镜像驱动，只在 remoteEnabled()=false（mirror/off）时可达' },
+  { file: 'assets/js/home-node-bootstrap.js', motif: 'last-activated-write', count: 1, kind: 'MIRROR_MODE_LOCAL',
+    why: '同上' },
+  { file: 'assets/js/memory.js', motif: 'mirror-bump', count: 2, kind: 'MIRROR_MODE_LOCAL',
+    why: 'recordMemoryActivation 的 host-local 回落（canonical 分支必定 return；只有 mirror/off/无 authority 才到达）' },
+  { file: 'assets/js/memory.js', motif: 'last-activated-write', count: 3, kind: 'MIRROR_MODE_LOCAL + MIGRATION_IMPORT',
+    why: '2 = 同上的回落；1 = importMemoriesFile 的缺省填充（if(!m.lastActivated)m.lastActivated=m.created）' }
+];
+
+/* ── R4-A.2 关闭的 defect 登记 ────────────────────────────────────────────
+   这三个 ID 来自 R4-A.1 的机械发现。R4-A.2 已修，因此这里断言的不再是
+   "marker 存在"，而是：
+     · **旧代码在剥离注释后的代码面上不再出现**（回归即变红）；
+     · 修复标记仍在（防止有人把注释一起删掉、让读者不知道这里发生过什么）。 */
+const CLOSED_ACTIVATION_DEFECTS = [
+  { id: 'R4A1-ACTIVATION-UI-BYPASS-1', fn: 'writeOneLineToMemory',
+    repairMarker: 'R4A1-ACTIVATION-UI-BYPASS-1 修复',
+    forbidden: [/mem\.activationCount\s*=\s*\(\s*mem\.activationCount\s*\|\|\s*0\s*\)\s*\+\s*1/,
+      /mem\.lastActivated\s*=\s*Date\.now\(\)/],
+    why: 'UI 写一句话不是 recall 激活；此前直改镜像遥测（canonical mode 下也发生）' },
+  { id: 'R4A1-ACTIVATION-UI-BYPASS-2', fn: 'saveInlineEdit',
+    repairMarker: 'R4A1-ACTIVATION-UI-BYPASS-2 修复',
+    forbidden: [/m\.lastActivated\s*=\s*Date\.now\(\)\s*;/],
+    why: '编辑内容不是激活；此前把 lastActivated 写成 now，人为抬高 LegacyMemoryValue 的 recency' },
+  { id: 'R4A1-ACTIVATION-FALLTHROUGH-1', fn: 'recordMemoryActivation',
+    repairMarker: 'R4A1-ACTIVATION-FALLTHROUGH-1 修复',
+    forbidden: [/if\s*\(\s*auth\s*&&[^\n]*auth\.status\(\)\.mode\s*===\s*'canonical'\s*\)/],
+    why: 'canonical 判定与 authority 调用曾共用同一个 try/catch，reject 会落进镜像乐观 +1' }
+];
+
+function scanActivationWriters(dir) {
+  const found = [];
+  const walk = (target) => {
+    for (const entry of fs.readdirSync(target, { withFileTypes: true })) {
+      const full = path.join(target, entry.name);
+      if (entry.isDirectory()) { walk(full); continue; }
+      if (!entry.name.endsWith('.js')) continue;
+      /* R4-A.2：先剥注释再匹配 —— 注释里逐字引用的旧代码不是写者。 */
+      const text = WIRING.stripJsComments(fs.readFileSync(full, 'utf8'));
+      for (const motif of ACTIVATION_WRITER_MOTIFS) {
+        motif.re.lastIndex = 0;
+        const count = (text.match(motif.re) || []).length;
+        if (count > 0) {
+          found.push({ file: path.relative(ROOT, full).replace(/\\/g, '/'), motif: motif.id, count: count });
+        }
+      }
     }
-  }
-})(path.join(ROOT, 'assets', 'js'));
-check('R.authorityActivationHasNoProductionCaller',
-  productionCallers.length === 0,
-  'no production file may call the authority activation channel yet (found: ' + productionCallers.join(', ') + ')');
-/* 契约明确要求 R2-A 不接线：因此"无人调用"是**本轮期望的现状**，不是缺陷。 */
-check('R.desktopActivationUsesDbUpdate',
-  /window\.dbUpdate/.test(read('assets/js/memory.js')),
-  'desktop activation must still go through dbUpdate (the gap this contract registers)');
+  };
+  walk(dir);
+  return found.sort((a, b) => (a.file + a.motif).localeCompare(b.file + b.motif));
+}
+const FOUND_ACTIVATION_WRITERS = scanActivationWriters(path.join(ROOT, 'assets', 'js'));
+const DECLARED_SORTED = DECLARED_ACTIVATION_WRITERS
+  .map(row => ({ file: row.file, motif: row.motif, count: row.count }))
+  .sort((a, b) => (a.file + a.motif).localeCompare(b.file + b.motif));
+
+check('R.activationMirrorWritersMatchDeclaredRegistry',
+  JSON.stringify(FOUND_ACTIVATION_WRITERS) === JSON.stringify(DECLARED_SORTED),
+  'every production writer of activation telemetry must be registered in the declared table '
+  + '(this is what catches a NEW authority bypass)\n        found    =' + JSON.stringify(FOUND_ACTIVATION_WRITERS)
+  + '\n        declared =' + JSON.stringify(DECLARED_SORTED));
+
+check('R.activationCanonicalWriterIsAuthorityOnly',
+  DECLARED_ACTIVATION_WRITERS.filter(row => row.motif === 'authoritative-set').length === 1
+  && DECLARED_ACTIVATION_WRITERS.filter(row => row.motif === 'authoritative-set')[0].file === 'assets/js/memory-authority.js'
+  && /activate:\s*function \(ids, options\)/.test(read('assets/js/home-node-client.js')),
+  'the only authoritative activation SET in the browser must be memory-authority → /memory/activate');
+
+const MEMORY_JS_SOURCE = read('assets/js/memory.js');
+const MEMORY_JS_CODE = WIRING.stripJsComments(MEMORY_JS_SOURCE);
+let stripperSane = false;
+try { stripperSane = WIRING.assertStripperSane(MEMORY_JS_SOURCE, MEMORY_JS_CODE) === true; }
+catch (e) { stripperSane = false; }
+
+check('R.activationScannerIsCommentAware',
+  stripperSane && MEMORY_JS_CODE.indexOf('function writeOneLineToMemory(') >= 0
+  && MEMORY_JS_SOURCE.indexOf('R4A1-ACTIVATION-UI-BYPASS-1 修复') >= 0,
+  'the writer scan must strip comments without eating live code '
+  + '(the R4-A.2 repair comments quote the removed code verbatim)');
+
+check('R.closedActivationDefectsStayClosed',
+  CLOSED_ACTIVATION_DEFECTS.every(defect => defect.forbidden.every(re => !re.test(MEMORY_JS_CODE))),
+  'every R4-A.2-closed activation defect must remain absent from the CODE surface: '
+  + CLOSED_ACTIVATION_DEFECTS.filter(d => d.forbidden.some(re => re.test(MEMORY_JS_CODE))).map(d => d.id).join(', '));
+
+check('R.closedActivationDefectsKeepTheirRepairMarker',
+  CLOSED_ACTIVATION_DEFECTS.every(defect => MEMORY_JS_SOURCE.indexOf(defect.repairMarker) >= 0),
+  'each closed defect must keep its repair-marker comment so the change stays reviewable: '
+  + CLOSED_ACTIVATION_DEFECTS.filter(d => MEMORY_JS_SOURCE.indexOf(d.repairMarker) < 0).map(d => d.id).join(', '));
+
+check('R.rejectingSeamNowFailsClosedNotMirrorOnly',
+  S.canonicalTransportThrow.authorityCalls === 1
+  && S.canonicalTransportThrow.mirrorWriteCalls === 0
+  && S.canonicalTransportThrow.returned === 0,
+  'R4-A.2: with a rejecting seam the caller must fail closed (mirror untouched), not bump the mirror locally');
+
+check('R.mirrorModeUsesHostLocalMirrorOnly',
+  S.mirrorMode.authorityCalls === 0 && S.mirrorMode.mirrorWriteCalls === 2 && S.mirrorMode.returned === 2,
+  'mirror mode must keep the host-local bump and never call the canonical seam (AUTHORITY §2.5)');
+
+check('R.offModeUsesHostLocalMirrorOnly',
+  S.offMode.authorityCalls === 0 && S.offMode.mirrorWriteCalls === 2 && S.offMode.returned === 2,
+  'off mode must behave like mirror mode (AUTHORITY §2.5)');
+
+check('R.noAuthorityFallsBackToMirrorWithoutThrowing',
+  S.noAuthority.authorityCalls === 0 && S.noAuthority.statusCalls === 0
+  && S.noAuthority.mirrorWriteCalls === 2 && S.noAuthority.threw === null,
+  'an unavailable authority must degrade to the host-local path and never throw (TURN_FAIL_OPEN)');
+
+check('R.moduleFallbackInstanceIsAccepted',
+  S.moduleFallbackInstance.authorityCalls === 1 && S.moduleFallbackInstance.mirrorWriteCalls === 0,
+  'window.IBMemoryAuthority must still be accepted when it is instance-shaped');
+
+check('R.authorityWithoutRecordActivationIsTreatedAsAbsent',
+  S.authorityWithoutRecordActivation.authorityCalls === 0
+  && S.authorityWithoutRecordActivation.mirrorWriteCalls === 2,
+  'a mis-shaped authority object must be treated as unavailable rather than half-used');
+
+check('R.mirrorPathWorksWithoutDbUpdate',
+  S.mirrorWithoutDbUpdate.mirrorUpdateCalls === 0
+  && S.mirrorWithoutDbUpdate.mirrorWriteCalls === 2
+  && S.mirrorWithoutDbUpdate.returned === 2,
+  'without window.dbUpdate the mirror path must still work through dbGet + dbPut');
+
+check('R.emptySelectionIsANoOp',
+  S.emptySelection.mirrorWriteCalls === 0 && S.emptySelection.authorityCalls === 0,
+  'an empty selection must not touch the authority or the mirror');
 
 /* ══════════════════════════════════════════════════════════════════════
    §13 · DECISIONS.md（decisions 记录）

@@ -7,6 +7,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 const H = require('./helpers/memory-value-v2-calibration.js');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -737,6 +738,72 @@ check('R3C24.clean-candidate scope gate detects zero production/schema paths', (
   assert.equal(scope.productionPathCount, 0);
   assert.equal(scope.schemaPathCount, 0);
   assert.equal(scope.changedPaths.some(file => file.startsWith('assets/') || file.startsWith('services/') || file.startsWith('src-tauri/')), false);
+});
+
+/* ══════════════════════════════════════════════════════════════════════
+   § P21-R4-A.1 · 稳定 decision scope vs 瞬时 working-tree scope
+   ──────────────────────────────────────────────────────────────────────
+   R4-A 证明的缺陷：C16 的输入曾经是实时工作树（git diff HEAD + untracked），
+   而它的结果被写进**被追踪的** calibration-decision.json，再由 OUT2b 整体
+   deepEqual。R3-C 一提交，实时 changedPaths 变回 []、fixture 里是提交前的
+   8 个路径 ⇒ OUT2b 永久 RED；任何无关的 user/Codex 未提交改动也会连带把
+   hard gate 判成 false。
+
+   修复：决策输入改为 criteria 里**声明**的 scope（纯文件读取），实时工作树
+   降级为顶层 diagnostics。以下断言保证这次分离不会被未来改回去。
+   ══════════════════════════════════════════════════════════════════════ */
+section('§ R4-A.1 · stable decision scope vs transient working tree');
+
+check('R3C25.decision scope is declared, non-empty and production/schema-free', () => {
+  const scope = r3cReport.hardGates.A.scopeEvidence;
+  const criteria = JSON.parse(fs.readFileSync(path.join(ROOT, 'tests/fixtures/memory-value-v2/calibration-criteria.json'), 'utf8'));
+  assert.ok(criteria.declaredScope && Array.isArray(criteria.declaredScope.paths),
+    'calibration-criteria.json must declare the study scope explicitly');
+  assert.equal(scope.changedPathCount, criteria.declaredScope.paths.length);
+  assert.ok(scope.changedPathCount > 0, 'the declared study scope must not be empty');
+  assert.ok(scope.changedPaths.every(file => file.startsWith('tests/')),
+    'the declared study scope must stay inside tests/: ' + JSON.stringify(scope.changedPaths));
+  assert.deepEqual(scope.changedPaths, criteria.declaredScope.paths.map(value => value.replace(/\\/g, '/')));
+  assert.equal(scope.productionPathCount, 0);
+  assert.equal(scope.schemaPathCount, 0);
+});
+
+check('R3C26.declared scope is git-free and reproduces the frozen decision scope', () => {
+  const source = fs.readFileSync(path.join(ROOT, 'tests/helpers/memory-value-v2-calibration.js'), 'utf8');
+  const start = source.indexOf('function declaredCalibrationScope');
+  const end = source.indexOf('\nfunction ', start + 1);
+  assert.ok(start > 0 && end > start, 'declaredCalibrationScope must exist as its own function');
+  const body = source.slice(start, end);
+  assert.doesNotMatch(body, /execFileSync|spawnSync|childProcess|\bgit\b/,
+    'the decision scope must not read git or any live process state');
+  assert.deepEqual(H.declaredCalibrationScope(ROOT), r3cReport.hardGates.A.scopeEvidence);
+});
+
+check('R3C27.live working-tree state is diagnostics only, never decision input', () => {
+  assert.equal(Object.prototype.hasOwnProperty.call(r3cReport.calibrationDecision, 'scopeDiagnostics'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(r3cReport.calibrationDecision.hardGates.A, 'scopeDiagnostics'), false);
+  assert.equal(r3cReport.calibrationDecision.hardGates.A.scopeEvidence.source, undefined);
+  const live = r3cReport.scopeDiagnostics;
+  assert.equal(live.source, 'live');
+  assert.equal(live.available, true);
+  assert.equal(Array.isArray(live.changedPaths), true);
+  assert.equal(r3cReport.scopeDecisionBasis.indexOf('declared') >= 0, true);
+  /* 诊断**允许**与声明不同（无关的 user/Codex 未提交改动正是这种情况），
+     而这种不同**不得**改变任何产品结论。 */
+  assert.equal(r3cReport.FORMULA_SELECTION, 'NONE');
+  assert.equal(r3cReport.R3_D_CUTOVER_EVALUATION_AUTHORIZED, false);
+  assert.equal(r3cReport.allCandidateHardGatesPass, true);
+  assert.equal(r3cReport.calibrationDecision.formulaSelection, 'NONE');
+  assert.equal(r3cReport.calibrationDecision.R3_D_CUTOVER_EVALUATION_AUTHORIZED, false);
+  assert.equal(r3cReport.calibrationDecision.hardGates.A.C16_schemaUnchanged, true);
+});
+
+check('R3C28.live scope probe degrades safely outside a git work tree', () => {
+  const outside = H.liveScopeDiagnostics(os.tmpdir());
+  assert.equal(outside.source, 'live');
+  assert.equal(outside.available, false);
+  assert.equal(outside.changedPathCount, null);
+  assert.deepEqual(outside.changedPaths, []);
 });
 
 section('Shadow report artifacts and formula labels');

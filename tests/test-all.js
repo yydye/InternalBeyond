@@ -373,6 +373,24 @@ const GROUPS = [
          scorer 做 baseline；A/B/C 是 tests-only shadow candidates，配 synthetic fixtures，
          有限域 fuzz、producer-default matrix 与 pairwise/top-K comparison；不接 selection。 */
       ['test_memory_value_v2_calibration.js'],
+      /* P21-R4-A / R4-A.1：Reconstructive Memory foundation contract 的**静态守卫**。
+         只钉三类事实：(1) 边界被写下来（canonical vs recollection vs interpretation
+         vs metamemory vs expectation vs counterfactual vs behavior influence）；
+         (2) 生产面**零引用**（expectation / metamemory / counterfactual /
+         predictionError 不得出现在 assets、services、bridge、src-tauri）；
+         (3) schema 未变（DB_VERSION 24 / MEMORY_SCHEMA_VERSION 1 / 无新 object store）。
+         它**不**证明任何 runtime 行为 —— 对应的 runtime 尚不存在。
+         纯 Node、零浏览器、零网络、零 Home Node。 */
+      ['test_reconstructive_memory_contract.js'],
+      /* P21-R4-A.2：UI 路径 ↔ activation 遥测耦合守卫。
+         机械抽取 assets/js/memory.js 的**真实** writeOneLineToMemory / saveInlineEdit
+         在隔离 vm 里执行，断言：内容照常持久化，而 activationCount / lastActivated
+         在 canonical / mirror / off 三种模式下**一字不变**，且两条路径都不调用
+         activation authority（它们不是 activation event）。
+         并用**生产 scorer**（assets/js/memory-recall/scoring.js）证明：只编辑内容
+         不得提升 LegacyMemoryValue 的 recency，附"旧行为会抬高分数"的反证。
+         纯 Node、零浏览器、零网络。 */
+      ['test_memory_ui_activation_coupling.js'],
       /* M1-C.2m：canonical Understanding —— 存储/修订链/CAS/单活不变量/更正契约
          （纯 Node + 真 SQLite + 临时数据目录，零网络、零浏览器）。 */
       ['test_understanding_contract_closure.js'],

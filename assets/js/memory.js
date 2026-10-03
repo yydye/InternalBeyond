@@ -275,18 +275,67 @@ async function recordMemoryActivation(selectedIds,at){
      因此**必须**走 canonical activation authority（remote-first）。
      绝不再把"直写 IndexedDB 镜像"当成 canonical durable write。
 
-     失败语义（两者同时成立）：
-       · TELEMETRY_FAIL_CLOSED —— authority 自己保证失败时两侧都不增加；
-       · TURN_FAIL_OPEN —— 这里吞掉一切异常，返回 0，绝不影响本轮 recall/chat。 */
+     失败语义（三者同时成立）：
+       · TELEMETRY_FAIL_CLOSED —— 可确认的 mutation 未成功时，两侧都不增加；
+       · TURN_FAIL_OPEN —— 这里吞掉一切异常，返回 0，绝不影响本轮 recall/chat；
+       · CANONICAL_NO_LOCAL_FALLBACK —— canonical 归属一经判定，**任何**结局
+         （成功 / DEFINITE_FAILURE / ambiguous / reject / throw / 结果形状非法）
+         都**不**回落到本地镜像乐观 +1。
+
+     ── R4-A.2 · R4A1-ACTIVATION-FALLTHROUGH-1 修复 ──────────────────────
+     此前 canonical **判定**与 authority **调用**被同一个 try/catch 包住，
+     于是 `recordActivation` reject（或 status() throw）会被 catch 吞掉，
+     然后**继续向下执行**到镜像分支 —— 那正是 AUTHORITY §2.1 明文禁止的
+     "未经 Home Node 确认的本地增量"，也违反 §2.3 的 AMBIGUOUS_OUTCOME 处置
+     （mirror 不得做任何猜测）。
+
+     现在把两件事**拆开**，让镜像代码在 canonical 分支下**结构上不可达**：
+       ① 只判定归属；判定不出 mode 时不猜（fail closed，返回 0）；
+       ② 判定为 canonical ⇒ 进入必定 return 的分支，绝不 retry（AUTO_RETRY=NONE）。
+
+     ── R4-A.3 · AMBIGUOUS AUTHORITY RESOLUTION 修复 ─────────────────────
+     §7 的关键区分（A.2 之后仍然存在一个残留缺口）：
+
+         NO AUTHORITY              ⇒ 可以本地回落（既有 host-local 语义）
+         AUTHORITY RESOLUTION FAILED ⇒ ambiguous，**不得猜**
+
+     A.2 的写法只在 `typeof auth.status==='function'` **成功之后**才把
+     `authorityResolved` 置真。于是"已经解析到一个 authority 对象、但读它的
+     `status` 属性就抛"（例如 `status` 是 throwing getter）会落进 catch，
+     此时 `authorityResolved` 仍是 false ⇒ **继续落到镜像乐观 +1** ——
+     而那时我们根本无法排除 canonical 正在生效。
+
+     现在把"是否解析到 authority"与"能否读出 mode"分开记录：
+       · `_ibMemoryAuthority()` 返回 **null** ⇒ 真的没有 authority ⇒ 既有回落；
+       · 返回 **truthy** 但形状/模式读不出来 ⇒ ambiguous ⇒ `return 0`，绝不写镜像。
+     `_ibMemoryAuthority()` 自身**结构上不会抛出**（整个函数体被 try/catch 包住并
+     返回 null，见 tests/helpers/activation-wiring-probe.js 的
+     `R.resolverIsStructurallyThrowSafe`），因此 res/ 这条 catch 只可能由
+     "已解析到 authority 之后的形状读取失败"触发 —— 也就是 ambiguous。 */
+  let canonicalAuth=null;
   try{
     const auth=_ibMemoryAuthority();
-    if(auth&&typeof auth.status==='function'&&auth.status().mode==='canonical'){
-      const res=await auth.recordActivation(selectedIds.map(String),{at:stamp});
-      if(res&&res.ok)return Number(res.updated)||0;
-      /* 失败：**不**回落成镜像写入（那会造出未经 canonical 确认的本地增量）。 */
+    if(auth){
+      if(typeof auth.status==='function'){
+        canonicalAuth=(auth.status().mode==='canonical')?auth:null;
+      }else{
+        /* 有 authority 却没有 status()：无法判定归属 ⇒ 不猜。 */
+        return 0;
+      }
+    }
+  }catch(e){
+    /* 走到这里只可能是"已解析到 authority，但读它的形状/模式时抛出" ⇒ ambiguous。 */
+    return 0;
+  }
+  if(canonicalAuth){
+    try{
+      const res=await canonicalAuth.recordActivation(selectedIds.map(String),{at:stamp});
+      return (res&&res.ok)?(Number(res.updated)||0):0;
+    }catch(e){
+      /* transport throw / promise reject：fail closed，绝不本地补账。 */
       return 0;
     }
-  }catch(e){}
+  }
   let n=0;
   /* P11-3X-C：读-改-写放进**同一个** readwrite 事务（window.dbUpdate）。
      实测此前每个被选中的记忆要开两个事务（readonly 读 + readwrite 写）：
@@ -865,7 +914,16 @@ async function saveInlineEdit(id){
   m.visibleTo=vis==='only'?checked:[];
   m.excludeFrom=vis==='except'?checked:[];
   if(m.createdBy&&m.createdBy!=='user')m.editedByUser=true;
-  m.lastActivated=Date.now();
+  /* ── R4-A.2 · R4A1-ACTIVATION-UI-BYPASS-2 修复 ──────────────────────────
+     这里此前写着 `m.lastActivated=Date.now();`。**编辑内容不是激活**：
+     activationCount / lastActivated 的语义是"这条 memory 被**召回选中**过"
+     （唯一生产写者是 getMemoryContext → recordMemoryActivation），而保存一次
+     编辑表单既不是召回、也没有任何 contract / product 依据把它算作激活。
+     保留它会让人为地抬高 LegacyMemoryValue 的 recency（decayFactor 读
+     lastActivated），并使镜像在 canonical mode 下持有未经 Home Node 确认的
+     遥测 —— 违反 MEMORY_AUTHORITY_CONTRACT §2.1。
+     因此只删除该耦合；**内容写入路径（dbPut + _reconcileReferences + UI 刷新）
+     一行未动**，本函数也不再触碰任何 activation 遥测（读改写会原样写回）。 */
   await dbPut('memories',m);
   /* 编辑可能使引用它的 Understanding/Thread 的证据口径变化 → 轻度调和（内容修订不降级，仅更新） */
   if(id)try{await _reconcileReferences(id)}catch(e){}
@@ -997,8 +1055,15 @@ async function writeOneLineToMemory(memId){
     const resp=await callApi(cfg,context,{_ibConsumer:'memory'});/* RCI-1：调用身份（与记忆写入路径同一 consumer） */
     if(!resp){toast('未收到有效回复');return}
     mem.oneLine=resp.replace(/^["'"'\u201C\u201D]|["'"'\u201C\u201D]$/g,'').trim();
-    mem.lastActivated=Date.now();
-    mem.activationCount=(mem.activationCount||0)+1;
+    /* ── R4-A.2 · R4A1-ACTIVATION-UI-BYPASS-1 修复 ────────────────────────
+       这里此前写着 `mem.lastActivated=Date.now();` 与
+       `mem.activationCount=(mem.activationCount||0)+1;`。
+       本函数的产品语义是**产出内容**（写 mem.oneLine：斜体引言 + 随机播放池），
+       不是"这条 memory 被召回选中"。它此前直接 `dbPut` 到浏览器镜像，
+       在 canonical mode 下同样发生 ⇒ 制造了未经 Home Node 确认的本地遥测
+       （违反 MEMORY_AUTHORITY_CONTRACT §2.1），并人为抬高 recency score。
+       删除该耦合后：本函数只写内容，activation 遥测原样写回（不减不增）。
+       **没有**把它改道去调 /memory/activate —— 它本来就不是一次 activation event。 */
     await dbPut('memories',mem);
     renderMemories();
     toast(aiName+' 写下了一句话');

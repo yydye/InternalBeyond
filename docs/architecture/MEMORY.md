@@ -11,6 +11,14 @@
 > （P21-R2-A 冻结）；cooldown 的行为契约见
 > [`../contracts/memory/MEMORY_COOLDOWN_CONTRACT.md`](../contracts/memory/MEMORY_COOLDOWN_CONTRACT.md)
 > （已实现，anchor = P21-R2-F1b closure commit `2e6f7e9`）。
+> **Reconstructive Memory 的层边界契约**（canonical evidence / recollection /
+> interpretation / metamemory / **expectation & prediction error** / counterfactual /
+> behavior influence）见
+> [`../contracts/memory/RECONSTRUCTIVE_MEMORY_CONTRACT.md`](../contracts/memory/RECONSTRUCTIVE_MEMORY_CONTRACT.md)
+> （P21-R4-A / A.1 / A.2 / A.3 冻结；**runtime 生产实现 = NONE**，不得据此认为已生效。
+> R4-A.2 / A.3 只修 **activation authority** 的旧 UI telemetry coupling 与 resolver
+> ambiguity（唯一 production 文件 `assets/js/memory.js`），**不是** reconstructive
+> runtime implementation，也**不**改变 Home Node 的 activation authority。）
 > 本文档描述**当前**架构。两份 contract 里标注 FUTURE CONTRACT 的条款，指的是
 > **R2-A 时点**尚无生产实现的部分；**R2-B ~ R2-F1b 现已实现并提交**，仍未实现的只有
 > `reminisce`、durable cooldown、`MemoryValueV2`，以及 §8.2 登记的 activation authority
