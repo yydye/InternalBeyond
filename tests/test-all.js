@@ -431,6 +431,16 @@ const GROUPS = [
          另含真实 InternalBeyond.html 的 script 顺序 + 依赖同步赋值集成检查。
          纯 Node、零浏览器、零网络。 */
       ['test_memory_startup_authority.js'],
+      /* P21-R4-B：deterministic MetaMemory **SHADOW** —— R4 第一个（也是本阶段唯一一个）
+         reconstructive runtime，**只读、只诊断、零行为影响**。
+         纯函数核心（零 DB / 零网络 / 零 LLM / 零时钟 / 零持久化）复用
+         memory-visibility-core 的**同一份** evidenceLiveness，把"这条记忆的证据基础
+         现在是什么状态"变成机械可判的离散状态词。
+         硬门是 OFF/ON parity：selected ids / 顺序 / 渲染文本 / Legacy 分数 /
+         trace / cooldown / activation / seat / budget **逐字相同**，
+         只多一个内部 meta 键。failure 一律 fail open。
+         纯 Node、零浏览器、零网络。 */
+      ['test_metamemory_shadow.js'],
       /* M1-C.2m：canonical Understanding —— 存储/修订链/CAS/单活不变量/更正契约
          （纯 Node + 真 SQLite + 临时数据目录，零网络、零浏览器）。 */
       ['test_understanding_contract_closure.js'],

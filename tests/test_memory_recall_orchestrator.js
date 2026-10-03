@@ -385,7 +385,11 @@ check('G5.metaKeysClosed', (() => {
     'channelSupported', 'channelImplemented', 'channelUnsupportedReason', 'earlyExitReason',
     /* R2-F1b：meta 新增 injectedMemoryIds —— **内部 seam**，供调用方在 success seam
      写 exposure（final post-seat injected ids）。它只在 meta 上，result 键集不变。 */
-  'activationPolicy', 'injectedMemoryIds'].sort();
+  'activationPolicy', 'injectedMemoryIds',
+    /* R4-B：meta 新增 metaMemoryShadow —— deterministic MetaMemory **shadow** 的
+       内部诊断。与 F1b 的 injectedMemoryIds 同款纪律：**只在 meta 上**，
+       result 键集不变，未接线时为 null。 */
+  'metaMemoryShadow'].sort();
   const legacy = ORCH.recall([mem({ id: 'a' })], BASE);
   const turn = ORCH.recall([mem({ id: 'a', title: '显卡', content: '显卡' })], withTurn('显卡'));
   const lk = Object.keys(legacy.meta).sort();
@@ -409,7 +413,9 @@ check('G7.dependenciesAreInjectedNotHostImports', (() => {
   './recall-query.js', './scoring.js', './channel-policy.js', './seat-planner.js', './recall-trace.js',
   './turn-signal.js', './glossary-catalog.js', './glossary-match.js', './coldstart-anchor.js',
   /* R2-F1b：cooldown 纯策略模块（state 由调用方注入，orchestrator 只 require 策略）。 */
-  './cooldown.js'];
+  './cooldown.js',
+  /* R4-B：deterministic MetaMemory shadow —— 同层 sibling，纯函数，零 Host 依赖。 */
+  './metamemory-shadow.js'];
   return reqs.length > 0 && reqs.every(r => allowed.indexOf(r) >= 0);
 })(), 'the orchestrator may only depend on the shared core and its sibling recall modules');
 check('G7b.noHostOrReverseDependency', (() => {

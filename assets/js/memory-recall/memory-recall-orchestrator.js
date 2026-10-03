@@ -59,6 +59,9 @@
     try { deps.glossaryMatch = require('./glossary-match.js'); } catch (e) { deps.glossaryMatch = null; }
     try { deps.coldStartAnchor = require('./coldstart-anchor.js'); } catch (e) { deps.coldStartAnchor = null; }
     try { deps.cooldown = require('./cooldown.js'); } catch (e) { deps.cooldown = null; }
+    /* R4-B：deterministic MetaMemory shadow。**可选**依赖 —— 缺失时 shadow 为 null，
+       recall 行为逐字不变（fail open，绝不影响选择）。 */
+    try { deps.metamemoryShadow = require('./metamemory-shadow.js'); } catch (e) { deps.metamemoryShadow = null; }
     module.exports = factory(deps);
   } else {
     root.IBMemoryRecallOrchestrator = factory({
@@ -73,7 +76,8 @@
       glossaryCatalog: root.IBMemoryRecallGlossaryCatalog || null,
       glossaryMatch: root.IBMemoryRecallGlossaryMatch || null,
       coldStartAnchor: root.IBMemoryRecallColdStartAnchor || null,
-      cooldown: root.IBMemoryRecallCooldown || null
+      cooldown: root.IBMemoryRecallCooldown || null,
+      metamemoryShadow: root.IBMemoryMetaMemoryShadow || null
     });
   }
 })(typeof self !== 'undefined' ? self : this, function (DEFAULT_DEPS) {
@@ -903,6 +907,27 @@
         reason: reason
       }) : null;
 
+      /* ── R4-B · deterministic MetaMemory SHADOW（advisory-only）────────
+         接缝位置：**最终选择之后**（selectedIds 已定、trace 已建），return 之前。
+         它读的是**已经过 ACL** 的 visible 集，写的是 meta 上的一个内部键。
+         它**不可能**影响 gate / ranking / exploration / seat / budget /
+         injection / activation —— 那些在它之前就已全部定稿。
+         result / trace / selected / 顺序 / Legacy 分数 / cooldown
+         **逐字不变**（由 §15 parity 测试强制）。
+         任何异常都被吞掉：影子算不出来，recall 照常返回。 */
+      var mmShadow = null;
+      try {
+        var MM = deps.metamemoryShadow;
+        if (MM && typeof MM.evaluateTurnShadow === 'function') {
+          mmShadow = MM.evaluateTurnShadow({
+            selectedIds: selectedIds,
+            records: visible,
+            roleId: options.apiId == null ? null : options.apiId,
+            now: null
+          }, { visibility: deps.visibility });
+        }
+      } catch (e) { mmShadow = null; }
+
       return {
         result: result,
         trace: trace,
@@ -914,7 +939,10 @@
              调用方在模型 success seam 用它写 exposure ——
              绝不使用 core pre-seat selection / gated candidates / reinforcementIds。
              它只在 meta 上，result 的键集合逐字不变。 */
-          injectedMemoryIds: selectedIds.slice()
+          injectedMemoryIds: selectedIds.slice(),
+          /* R4-B：**内部专用**的 shadow 诊断。与 F1b 的 injectedMemoryIds 同款纪律 ——
+             只在 meta 上，result 的键集合逐字不变，且**永不**进入 prompt / UI。 */
+          metaMemoryShadow: mmShadow
         }
       };
     }

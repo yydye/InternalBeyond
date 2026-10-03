@@ -27,10 +27,21 @@ const ARCHITECTURE = 'docs/architecture/MEMORY.md';
 const DB_SCHEMA = 'assets/js/webcore-db-schema.js';
 const MEMORY_STORE = 'services/home-node/memory-store.js';
 
-/* 新层的**实现标识符**。它们目前必须只在 contract / tests 里出现。
-   选这些词是因为它们不可能出现在既有 memory 代码里（见 R4-A audit）。 */
-const FORBIDDEN_WIRING = ['expectation', 'metamemory', 'counterfactual', 'predictionError', 'prediction_error'];
+/* 新层的**实现标识符**。
+   ── R4-B 相位切换 ──────────────────────────────────────────────────
+   `metamemory` 曾在此列表中：R4-A.1 冻结时 reconstructive runtime = NONE，
+   因此 production 面必须**零引用**。R4-B 交付了这一阶段**唯一**允许的 runtime
+   —— deterministic MetaMemory **shadow** —— 所以这一个词按设计**移出**本列表。
+
+   **这不是放松**：metamemory 换来的是更**具体**的守卫（见下方 §5b
+   `R4B.*` 断言）—— 纯函数、零 DB/网络/LLM、零持久化、只挂 `meta`、
+   绝不进 `result` / prompt / 排序 / activation。
+
+   expectation / counterfactual / predictionError **仍然**禁止：它们仍未实现。 */
+const FORBIDDEN_WIRING = ['expectation', 'counterfactual', 'predictionError', 'prediction_error'];
 const FORBIDDEN_STORES = ['expectation', 'expectations', 'counterfactual', 'counterfactuals', 'metamemory'];
+/* R4-B：唯一被允许生产的 reconstructive runtime。 */
+const R4B_SHADOW = 'assets/js/memory-recall/metamemory-shadow.js';
 
 let failures = 0;
 let passed = 0;
@@ -223,6 +234,86 @@ check('N4.browserDbVersionUnchanged',
 check('N5.homeNodeMemorySchemaUnchanged',
   /const\s+MEMORY_SCHEMA_VERSION\s*=\s*1\s*;/.test(read(MEMORY_STORE)),
   'Home Node MEMORY_SCHEMA_VERSION must stay 1');
+
+/* ══════════════════════════════════════════════════════════════════════
+   §5b · R4-B SHADOW-ONLY 守卫（取代 metamemory 的零引用守卫）
+   ──────────────────────────────────────────────────────────────────────
+   metamemory 现在**允许**出现在 production —— 但只能以"影子"的形态。
+   下面把"影子"变成可机械判定的性质，而不是一句承诺。 */
+const SHADOW_TEXT = fs.existsSync(path.join(ROOT, R4B_SHADOW)) ? read(R4B_SHADOW) : '';
+const ORCH_TEXT = read('assets/js/memory-recall/memory-recall-orchestrator.js');
+/* 只看**代码面**：模块注释里逐字引用了 "Date.now" / "fetch" 等词来说明"本模块不做这些"，
+   用朴素的行过滤会把自己的说明文字判成违规。 */
+const stripComments = require('./helpers/activation-wiring-probe.js').stripJsComments;
+const SHADOW_CODE = stripComments(SHADOW_TEXT);
+const ORCH_CODE = stripComments(ORCH_TEXT);
+
+check('R4B1.shadowCoreExists', SHADOW_TEXT.length > 0,
+  'the one allowed runtime must exist at ' + R4B_SHADOW);
+check('R4B2.shadowCoreIsPure',
+  !/\bfetch\s*\(/.test(SHADOW_CODE)
+  && !/XMLHttpRequest|WebSocket|EventSource/.test(SHADOW_CODE)
+  && !/\brequire\s*\(\s*['"][^'"]*(home-node|memory-authority|memory-store|db|idb)/i.test(SHADOW_CODE)
+  && !/localStorage|sessionStorage|indexedDB/.test(SHADOW_CODE)
+  && !/\bDate\.now\s*\(/.test(SHADOW_CODE)
+  && !/dbPut|dbGet|dbDelete|recordActivation/.test(SHADOW_CODE),
+  'the shadow core must be a pure function: no network, no DB, no storage, no clock, no activation');
+check('R4B3.shadowProducesNoNumericConfidence',
+  /evidenceConfidence:\s*null/.test(SHADOW_TEXT)
+  && /subjectiveConfidence:\s*null/.test(SHADOW_TEXT)
+  && /subjectiveConfidenceState:\s*'not-evaluated'/.test(SHADOW_TEXT)
+  && /state:\s*null/.test(SHADOW_TEXT),
+  'R4-B must NOT invent numeric confidence: evidenceConfidence=null, subjectiveConfidence=null '
+  + '(its future type is number, so no string may occupy the value field), state=null (deferred)');
+check('R4B8.postAclShadowClaimsNothingUnobservable',
+  /evidence-unavailable/.test(SHADOW_CODE)
+  && !/evidence-missing/.test(SHADOW_CODE)
+  && /FULL_VIEW_ONLY_STATES/.test(SHADOW_CODE)
+  && /EVIDENCE_VIEWS\s*=\s*\['authorized',\s*'full'\]/.test(SHADOW_CODE)
+  && /evidenceView:\s*'authorized'/.test(SHADOW_CODE),
+  'post-ACL the shadow must say evidence-unavailable (cause unobservable) and may only emit '
+  + 'evidence-lost / evidence-hidden under an explicit full-authority diagnostic view');
+check('R4B9.noSecondaryEvidenceAlgorithmOrRetrieval',
+  !/function\s+evidenceLiveness/.test(SHADOW_CODE)
+  && !/\bfetch\s*\(|\bXMLHttpRequest\b/.test(SHADOW_CODE)
+  && !/recordActivation|memory-store|home-node/i.test(SHADOW_CODE),
+  'the shadow must reuse the single liveness authority and perform no extra retrieval');
+check('R4B10.shadowHasNoProductionConsumer',
+  (function () {
+    const hits = [];
+    const walk = dir => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const q = path.join(dir, e.name);
+        if (e.isDirectory()) { if (e.name !== 'node_modules') walk(q); continue; }
+        if (!/\.(js|rs|toml|html)$/.test(e.name)) continue;
+        const rel = path.relative(ROOT, q).replace(/\\/g, '/');
+        if (rel === R4B_SHADOW || rel === 'assets/js/memory-recall/memory-recall-orchestrator.js') continue;
+        if (fs.readFileSync(q, 'utf8').indexOf('metaMemoryShadow') >= 0) hits.push(rel);
+      }
+    };
+    ['assets', 'services', 'bridge', 'src-tauri'].forEach(d => {
+      const full = path.join(ROOT, d);
+      if (fs.existsSync(full)) walk(full);
+    });
+    return hits.length === 0;
+  })(),
+  'no production file outside the orchestrator may consume the shadow sidecar');
+check('R4B4.shadowReusesTheSingleEvidenceAlgorithm',
+  /evidenceLiveness/.test(SHADOW_TEXT)
+  && !/function\s+evidenceLiveness/.test(SHADOW_TEXT),
+  'the shadow must CALL memory-visibility-core.evidenceLiveness, never re-implement liveness');
+check('R4B5.shadowIsWiredOnlyIntoMeta',
+  /metaMemoryShadow:\s*mmShadow/.test(ORCH_CODE)
+  && !/result\.metaMemory/.test(ORCH_CODE)
+  && !/metaMemoryShadow/.test(ORCH_CODE.split('return {')[0] || ''),
+  'the shadow may only be attached to the internal meta seam, never to result');
+check('R4B6.shadowIsFailOpen',
+  /catch \(e\) \{ mmShadow = null; \}/.test(ORCH_CODE)
+  && /catch \(e\) \{[\s\S]{0,600}shadowUnavailable/.test(SHADOW_CODE),
+  'both the seam and the core must swallow their own failures (fail open)');
+check('R4B7.noDurableMetaMemoryStore',
+  !FORBIDDEN_STORES.some(name => declares(storeNames, "'" + name + "'")),
+  'metamemory must still never get a durable object store');
 
 /* ══════════════════════════════════════════════════════════════════════
    §6 · [CURRENT] 索引与注册

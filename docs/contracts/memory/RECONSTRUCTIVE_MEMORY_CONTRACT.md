@@ -1390,6 +1390,174 @@ Reconstructive Memory runtime production implementation = NONE（仍然为真）
 
 ---
 
+### 24.8 R4-B（phase addendum · Deterministic MetaMemory Shadow）
+
+> **追加**，不改写 §24.1–§24.7 的历史。
+
+#### (a) 相位切换：`metamemory` 从"零引用"变为"影子可引用"
+
+`§37` 的 **Forbidden production wiring** 守卫此前把 `metamemory` 与
+`expectation` / `counterfactual` / `predictionError` 一起列为 production **零引用**。
+那是一条 **R4-A.1 的冻结**：当时 `runtime 生产实现 = NONE`。
+
+R4-B 交付了本阶段**唯一**允许的 runtime，因此 `metamemory` 按设计**移出**该列表；
+`expectation` / `counterfactual` / `predictionError` **仍在其中**（仍未实现）。
+
+**这不是放松，是替换成更具体的守卫**（`tests/test_reconstructive_memory_contract.js` §5b）：
+
+| 守卫 | 约束 |
+| --- | --- |
+| `R4B1` | 唯一允许的 runtime 存在于 `assets/js/memory-recall/metamemory-shadow.js` |
+| `R4B2` | 纯函数：零 `fetch` / XHR / WebSocket / model port / IndexedDB / localStorage / `Date.now` / `recordActivation` |
+| `R4B3` | **不伪造数字**：`evidenceConfidence = null`、`subjectiveConfidence = 'unavailable'`、`state = null` |
+| `R4B4` | **只调用** `memory-visibility-core.evidenceLiveness`，**不得**重实现存活判定 |
+| `R4B5` | 只挂 `meta.metaMemoryShadow`，**绝不**进 `result` |
+| `R4B6` | fail open：接缝与核心都吞掉自己的异常 |
+| `R4B7` | 仍然**不得**有任何 durable object store |
+
+#### (b) SHADOW ONLY —— 冻结的"不影响任何东西"清单
+
+```
+NO recall ranking change      NO MemoryValue change     NO cooldown change
+NO activation change          NO selection change       NO seat/budget change
+NO prompt injection           NO disclosure change      NO persona/relationship mutation
+NO durable MetaMemory write   NO schema/migration       NO LLM call    NO network call
+```
+
+接缝位置：**最终选择之后**（`selectedIds` 已定、`trace` 已建）→ 因此它在结构上
+不可能影响 gate / ranking / exploration / seat / budget / injection / activation。
+
+**硬门（OFF/ON parity）**：同一组输入下，`selected` ids / 顺序 / 渲染文本 /
+Legacy 分数 / `trace` / cooldown / activation / seat / budget **逐字相同**；
+唯一允许的差异是 `meta.metaMemoryShadow`（未接线时为 `null`）。
+
+#### (c) `SYSTEM EVIDENCE STATE != CHARACTER SUBJECTIVE MEMORY STATE`
+
+本阶段输出的**只有**系统已知事实的机械投影：
+
+| 字段 | 值 | 依据 |
+| --- | --- | --- |
+| `evidenceState` | `direct` / `attested` / `evidence-missing` / `evidence-hidden` / `evidence-unattested` / `degraded` / `unknown` | 机械（闭集、互斥、有优先级） |
+| `evidenceConfidenceState` | `complete` / `partial` / `broken` / `not-applicable` / `not-evaluated` | 离散，**不是** 0..1 标量 |
+| `completeness` | `{expected, live, hidden, missing, complete}` 或 **`null`** | 仅在"存在可枚举的应有证据数"时给出 |
+| `provenance` | `source` / `sourceId` / `kind` / `declaredEvidenceCount` | 计数与词表，**无正文** |
+| `state` | **`null`** | 见下方 STATE_SUPPORT |
+| `evidenceConfidence` | **`null`** | `R4B_NUMERIC_CONFIDENCE_DEFERRED` |
+| `subjectiveConfidence` | `'unavailable'` | 永不评估、永不消费 |
+
+**DIRECT vs DERIVED（§7）**：判据是 **producer 语义**，不是"有没有 `evidenceIds`"。
+`manual` / `chat` / `group_chat` / `blog` / `letter` / `diary` / `coread` / `cinema` /
+`role_dm` 记的就是事件本身 ⇒ `NO-UPSTREAM-EVIDENCE-REQUIRED`，**不是** missing。
+`consolidation` / `kind='consolidated'` **即使 `consolidatedFrom` 为空**也仍是派生记忆
+⇒ `UPSTREAM-EVIDENCE-EXPECTED-BUT-MISSING`（`evidence-unattested`）。
+
+**ACL 先行（§12）**：接缝只交出**已授权**的可见集，因此不可见的上游证据在影子看来
+与 `missing` 无异 —— 影子**不是**绕过可见性的侧信道。只有显式交出全量集的
+内部/诊断调用方才可能得到 `hidden` **计数**（id 永不出现）。
+
+#### (d) STATE SUPPORT MATRIX（§9 裁决）
+
+| 状态 | 裁决 | 理由 |
+| --- | --- | --- |
+| `evidenceState` | **CURRENTLY_DERIVABLE** | 由证据存活/可见性机械决定 |
+| `completeness` | **CURRENTLY_DERIVABLE** | 可枚举的期望证据数 vs live/hidden/missing |
+| `evidenceConfidence` | **DERIVABLE_BUT_UNFROZEN** | 无冻结公式 ⇒ 本轮输出 `null` + `R4B_NUMERIC_CONFIDENCE_DEFERRED` |
+| `clear` | **NOT_DERIVABLE_YET** | "证据无缺陷" ≠ "角色觉得清晰"；后者是主观量 |
+| `fuzzy` / `fragmentary` / `reconstructed` | **REQUIRES_LLM** | 角色主观回忆状态，**禁止**用证据计数冒充 |
+| `conflicted` | **REQUIRES_ASSOCIATION** | 需要 R4-G 的 `contradictionIds`；**不得**因两条内容不同就自称矛盾 |
+| `subjectiveConfidence` | **REQUIRES_LLM** | 仅模型或显式人类输入 |
+
+#### (e) 明确不做
+
+```
+MemoryInterpretation / LLM MetaMemory / fuzzy recollection / memory-to-memory association
+contradiction discovery / Prediction / Expectation / Counterfactual / BehaviorEffect
+Semantic Forgetting / Shared Memory / Self Narrative / Unreliable Recollection
+queue / replay / durable MetaMemory / schema / migration
+```
+
+#### (f) R4-B.1 · Truthfulness Reconciliation（追加，不改写 (a)–(e)）
+
+三处 closure 前的语义对齐。**都不是功能变更** —— 是把"系统其实不知道"的东西
+从输出里拿掉。
+
+**① `subjectiveConfidence` 类型稳定**（`SUBJECTIVE_CONFIDENCE_CONTRACT`）
+
+| 项 | 值 |
+| --- | --- |
+| VALUE TYPE | `number \| null`（未来由**模型或显式人类输入**给出 0..1） |
+| STATE TYPE | 闭集 `subjectiveConfidenceState`，复用**同一个** `not-evaluated` 词 |
+| R4-B VALUE | **`null`** |
+| R4-B STATE | **`'not-evaluated'`** |
+| FUTURE VALUE | `number`（模型 / 人类） |
+
+**MUST NOT**：在 `subjectiveConfidence` 里放字符串。那会把字段冻结成
+`number|string` 多态，未来加真数值时就会破坏既有读者。
+`STATE_SUPPORT.subjectiveConfidence = 'REQUIRES_LLM'` 是**能力元数据**，
+与运行时**值**、运行时**状态**三者分开，测试分别钉住。
+
+**② post-ACL 认识论边界**（`POST_ACL_EVIDENCE_KNOWLEDGE_BOUNDARY`）
+
+生产接缝交给影子的**只有已授权记录**。此时"声明的证据 id 不在集合里"是
+**不可观察原因的并集**：记录不存在 / 被 ACL 挡住 / 属于别的角色 / 其它。
+
+⇒ 生产影子**MUST NOT** 宣称 `evidence-missing`（= "记录已经不存在"），
+因为它没有证据支持这个结论。改用 **`evidence-unavailable`**
+（`upstream-evidence-not-in-authorized-view`）。
+
+`completeness` 键集**稳定**，但授权视图下不可观察的两个计数用 **`null`**（不是 `0`）：
+
+```
+authorized: { expected, live, unavailable, lost: null, hidden: null, complete }
+full:       { expected, live, unavailable: 0, lost, hidden, complete }
+```
+
+**MUST NOT**：为了区分 lost/hidden 而把未授权记录重新交给影子。
+**ACL MUST STILL PRECEDE METAMEMORY** —— 不得改变。**不得**为此新增任何
+Home Node query / DB read / full-store scan / second recall / N+1 retrieval。
+
+**③ `evidence-hidden` / `evidence-lost` 的可达边界**
+
+两者**复用** `memory-visibility-core` 的既有 `closedReason` 词，
+**只在调用方显式声明 `evidenceView: 'full'`（受信内部诊断，真的持有全量集）时可达**。
+`EVIDENCE_VIEWS = ['authorized', 'full']`，默认 `'authorized'`；
+`FULL_VIEW_ONLY_STATES = ['evidence-lost', 'evidence-hidden']` 在代码中冻结。
+
+**生产运行时默认不得产生这两个状态**（`U5` / `R4B8` 强制）。
+
+**④ wrong-character 语义收敛**
+
+旧报告里同时写着"D1：授权外的证据与 missing 不可区分"和"C8：别的角色的证据
+不被伪造成 missing"。两句只在**一个词**下相容：
+
+```
+WRONG_CHARACTER_RUNTIME_RESULT = 该证据在授权视图里 ⇒ evidence-unavailable
+```
+
+既没有产生 hidden 计数（无侧信道），也没有被伪造成 lost。C8 已改为断言这一个词。
+
+**⑤ `evidenceConfidenceState` 措辞修正**
+
+`broken` → **`none-live`**。`live = 0` 只能机械支撑"当前没有存活证据"，
+**不能**支撑"canonical 证据已毁坏" —— 后者在授权视图下不可观察。
+闭集现为 `complete | partial | none-live | not-applicable | not-evaluated`。
+
+**⑥ production consumer = 0**
+
+`metaMemoryShadow` 在整个 production 面的出现次数：**只在 orchestrator 里写入一次**
+（`metaMemoryShadow: mmShadow`），**没有任何生产消费者**。
+`meta` 是**内部诊断侧车**，不是 stable public API；
+**MUST NOT** 被整对象序列化带出内部边界（`V1` / `V2` / `V3` / `W2` 强制：
+OFF vs ON 的**深比较差异路径恰好只有** `meta.metaMemoryShadow`）。
+
+```
+本阶段启用**唯一**一个 reconstructive runtime：deterministic MetaMemory shadow。
+它只读、只诊断、不持久化、不进 prompt / UI / IPC / log、不影响任何选择或排序。
+其余 reconstructive 层 runtime production implementation = NONE（仍然为真）。
+```
+
+---
+
 # PART II · PREDICTIVE MEMORY（R4-A.1 纳入冻结）
 
 > 本部分把 **Expectation / Prediction Error / Counterfactual** 正式纳入 foundation contract。
