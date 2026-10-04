@@ -2,19 +2,28 @@
 
 > 阶段：**P21-R4-LIVE-2.1 · Vault-Authorized Runtime Interpretation Boundary**
 > 　追加：**P21-R4-LIVE-2.2 · Runtime Interpretation Authority Truth + Exact Closure**
+> 　追加：**P21-R4-LIVE-3 · Server-Bound Canonical Evidence Foundation**
 > 基线 HEAD：`c1b257057279a9abde8e9604c9f58783cbc058f8`
+> （2.2 的提交：`a3d52f01016809d25d2a44afbebe029c8e2271f7`）
 > 状态：
 > ```
 > R4C_RUNTIME_EXECUTION_BOUNDARY = COMPLETE
 > R4C_PRODUCTION_EXECUTION       = DISABLED
 > R4C_AUTO_INVOCATION            = NOT_IMPLEMENTED
 > R4C_INTERPRETATION_LIVE        = NO
-> EVIDENCE_INPUT_AUTHORITY       = CALLER_SUPPLIED_AUTHORIZED_PRECONDITION
+>
+> EVIDENCE_CONTENT_AUTHORITY      = SERVER_CANONICAL
+> EVIDENCE_VISIBILITY_AUTHORITY   = SERVER
+> RECALL_SELECTION_AUTHORITY      = CALLER_PROPOSED
+> SELECTED_SET_BOUND_TO_CURRENT_RECALL = NO
 > ```
 > 定位：这是 **R4-C（MemoryInterpretation SHADOW）** 的追加契约，**不是** R4-F，
 > 也**不**取代 R4-C 主契约。凡是本文没有写的东西，一律回到 R4-C 原文。
 > ★ 2.2 只**冻结真相**（gate 可达性 / 证据输入权威），**不**修证据权威、
 > **不**开 production gate、**不**接 auto caller。
+> ★ 2.3（LIVE-3）把**内容与可见性**收进服务端：浏览器只提交
+> `selectedMemoryIds`，正文与 ACL 由 Home Node 从 canonical store 解析。
+> 它**仍然不**打开 production gate，也**不**声称"选择绑定于一次真实召回"。
 
 ---
 
@@ -75,24 +84,65 @@ POST /internal/runtime/memory-interpretation
   远端未配置 token 时先 `403 remote-admin-disabled`）。
 * 请求体上限沿用 `MAX_BODY_BYTES`；读体失败与其它 POST 写路径同形。
 
-### 请求（闭集，恰好四个字段）
+### 请求（闭集，恰好六个字段 · P21-R4-LIVE-3 起）
 
 ```json
 {
   "operation": "memory-interpretation",
   "characterId": "<角色 id>",
   "timeoutMs": 20000,
-  "inputEnvelope": { "selectedIds": [], "records": [], "evidence": {}, "currentState": {}, "roleName": "" }
+  "selectedMemoryIds": ["m3", "m1", "m2"],
+  "currentState": { "relationship": "", "emotion": "" },
+  "roleName": ""
 }
 ```
 
-* `inputEnvelope` 同样是闭集：`selectedIds / records / evidence / currentState / roleName`。
+* **`selectedMemoryIds`（必需）**：唯一非空字符串、**去重**、长度 ≤ `MAX_MEMORIES`（=8，
+  由 R4-C 核心自己的 `BOUNDS` 派生）。重复 ⇒ `duplicate-memory-id`；
+  超限 ⇒ `memory-selection-exceeds-bound`。
+  **它取代了 2.1/2.2 的 `inputEnvelope.records`**：浏览器不再提交正文。
+* `currentState`（闭集两键 `relationship / emotion`）与 `roleName` 是**仅存**的
+  非 canonical typed 输入。
+* **出现即拒绝**（`caller-attempted-to-supply-canonical-evidence`，并在 `field` 指名）：
+  `records / record / memoryRecords / memory_records / inputEnvelope / selectedIds /
+  content / summary / title / source / rawSource / kind / evidenceState / evidence /
+  systemEvidenceState / evidenceConfidence / visibility / visibleTo / excludeFrom /
+  createdBy / ownerId / createdAt / updatedAt / lastActivated / importance /
+  activationCount / valence / arousal / pinned / resolved / tags / revision /
+  canonical / snapshot / memoryPayload / memory`。
+  ★ **reject，绝不 silent ignore** —— 这些是 2.2 机械证明过的调用方任意文本通道。
+* 其余未知字段 ⇒ `request-field-forbidden`（既有码）。
 * `timeoutMs` 必须是真正的 `number`（`>0`、有限）；数字字符串不是权威。
 * 上限 120000ms，超出由服务端 clamp，并在成功结果上以 `timeoutClamped:true` 如实回报。
 
+### 服务端绑定（canonical rebinding）
+
+```
+selectedMemoryIds
+   → memoryStore.getRecord(id)                       （既有公开单条读，唯一内容来源）
+   → memory-visibility-core.canReadMemory(record, {kind:'role', id:characterId})
+   → 投影 { id, content, title, source, kind, valence, arousal }（恰好 7 字段，server-owned）
+   → 按 selectedMemoryIds 顺序 → R4-C buildRequest
+```
+
+* 这一步排在 **Vault 之前**：一条都绑不上的请求**零 Vault 读取、零 provider 调用**。
+* **不存在与不可见同形**：两者都只是"未被绑定"，只在 R4-C 的 `missingFor` 里出现，
+  不带任何 per-id 原因。**响应形状 / 状态码 / 错误文本三个通道因此关闭**
+  （见 §10.6 的三条 `NO_*_EXISTENCE_ORACLE`）；**时序通道未形式化关闭**
+  （`TIMING_EXISTENCE_ORACLE_ABSENCE = NOT_PROVEN`，实测 ~0.05 ms 差异，
+  **未证明可利用**）。
+* 内容、标题、来源、kind、encoding-time affect **全部**来自 canonical 行；
+  调用方没有任何字段可以让 provider 看到伪造正文。
+
 ### 响应
 
-成功 = R4-C `assembleShadow` 的**原始形状** + `operation / characterId / timeoutMs / timeoutClamped / status / boundary`。
+成功 = R4-C `assembleShadow` 的**原始形状** + `operation / characterId / timeoutMs /
+timeoutClamped / status / evidence / boundary`，其中：
+
+```
+evidence = { source:'SERVER_CANONICAL_PROJECTION', requested, bound,
+             canonicalRevision, truncated, projectionFields }
+```
 
 失败 = 与 R4-C runner 的 `unavailable()` 同形的信封 + `error / reasonCode / status / boundary`：
 
@@ -115,6 +165,10 @@ POST /internal/runtime/memory-interpretation
 | `operation-forbidden` | operation 不在白名单（含缺失/非字符串） | 403 |
 | `request-shape-invalid` | 信封/字段形状不合法 | 400 |
 | `request-field-forbidden` | 出现闭集之外的字段（**reject**，不 ignore） | 400 |
+| `caller-attempted-to-supply-canonical-evidence` | LIVE-3：请求携带 canonical 证据字段（`records`/`content`/`evidenceState`/`inputEnvelope`/…），`field` 指名 | 400 |
+| `duplicate-memory-id` | LIVE-3：`selectedMemoryIds` 有重复（**不**静默去重） | 400 |
+| `memory-selection-exceeds-bound` | LIVE-3：选择条数超过 R4-C `MAX_MEMORIES`（8） | 400 |
+| `canonical-evidence-unavailable` | LIVE-3：canonical store 或可见性 core 未装配（fail closed，**不**降级为信任调用方） | 503 |
 | `runtime-spec-unavailable` | 角色不存在、spec 缺失或不完整（缺 `credentialRef` 也算） | 404 |
 | `credential-unavailable` | Vault fail closed（未授权 binding / 取不到秘密） | 503 |
 | `timeout-authority-missing` | 调用方没给 `timeoutMs` | 400 |
@@ -140,37 +194,50 @@ POST /internal/runtime/memory-interpretation
 
 > 凭据的**正常读取**不是 mutation（§33 已登记）。
 
-### 4.1 本阶段的信任边界（P21-R4-LIVE-2.2 机械冻结）
+### 4.1 证据边界（P21-R4-LIVE-2.2 冻结 → **LIVE-3 收口**）
 
-`inputEnvelope.records` 是**调用方自己提交**的输入集 —— 调用方**自称**它是"已授权的"，
-而本边界**不复核**这个自称：它**不**读 canonical `memory_records`、**不**重跑 recall、
-**不**校验 record id 是否存在、**不**校验内容是否等于 canonical 文本、
-**不**校验角色可见性、也**不**校验这个 selected set 是否来自一次真实召回。
-（R4-C 的 `normalizeInput` 只做**有界**归一化，以及"未出现在 records 里的 id 直接跳过"。）
+**2.2 时的形状（已作废，保留为历史）**：`inputEnvelope.records` 是**调用方自己提交**的
+输入集 —— 调用方**自称**它是"已授权的"，而本边界**不复核**这个自称：它**不**读 canonical
+`memory_records`、**不**重跑 recall、**不**校验 record id 是否存在、**不**校验内容是否等于
+canonical 文本、**不**校验角色可见性、也**不**校验这个 selected set 是否来自一次真实召回。
+因此一个**持有桌面凭据**的调用方可以把任意文本作为 **DATA** 放进模型请求的 USER 段
+（§10.5 的四条攻击即为此实测）。
 
-因此一个**持有桌面凭据**的调用方可以把任意文本作为 **DATA** 放进模型请求的 USER 段。
-这条结论是**实测**的，不是推断的：见 §10.5 的四条攻击与它们的实测取值。
+**LIVE-3 之后的形状（当前）**：这条通道**已关闭**。
 
-**够不到的东西**（结构上不可达，已由测试与独立复核逐项证明）：
-system prompt（服务端常量）、provider、model、endpoint、credentialRef、apiKey、
-operation（闭集）—— 以及任何持久状态。
+* 浏览器**不能**再提交任何 canonical 内容：`records / content / summary / title /
+  source / rawSource / kind / evidenceState / evidence / visibility / …` 出现即
+  `caller-attempted-to-supply-canonical-evidence`（**reject，不 ignore**）。
+* 正文、标题、来源、kind、encoding-time affect **全部**由服务端从 `memory_records` 读取；
+  **可见性**由共享 core 判定；两者都在 **Vault 之前**完成。
+* 缺失与不可见**同形**（响应形状 / 状态码 / 错误文本三通道关闭；
+  **时序通道未形式化关闭** —— 见 §10.6）；重复 id 拒绝；顺序保持；
+  投影**恰好**七个字段（server-owned，调用方无法 override）；截断是服务端 policy
+  并如实标记 `evidence.truncated`。
+* **仍然不由服务端决定的事**：这个 id 列表**是不是一次真实召回选出来的**。
+  `RECALL_SELECTION_AUTHORITY = CALLER_PROPOSED` 且
+  `SELECTED_SET_BOUND_TO_CURRENT_RECALL = NO` —— 本契约**不**把这两件事说成已解决。
 
-**这是刻意的**：本阶段的权威分工是"浏览器负责召回选择、Home Node 负责凭据与执行"。
-等到 auto-caller 阶段把召回搬进服务端（POST_RECALL_NONBLOCKING），
-`records` 的来源必须一并改成服务端读 canonical memory，否则这条信任边界会
-原样继承下去。**本阶段不假装它已经解决，也不在本阶段修它。**
+**够不到的东西**（结构上不可达）：system prompt（服务端常量）、provider、model、
+endpoint、credentialRef、apiKey、operation（闭集）、记忆内容与可见性 —— 以及任何持久状态。
 
 ---
 
-## 4.2 Authority 冻结表（P21-R4-LIVE-2.2）
+## 4.2 Authority 冻结表（LIVE-3 更新）
 
 ```
 MODEL_EXECUTION_AUTHORITY   = SERVER                （provider/model/endpoint 由角色 runtime spec 解析）
-CREDENTIAL_AUTHORITY        = HOME_NODE_VAULT       （services/home-node/credential-access.js，request-scoped）
+CREDENTIAL_AUTHORITY        = HOME_NODE_VAULT       （services/home-node/credential-access.js，
+                                                     request-scoped；在 canonical 绑定**之后**）
 SYSTEM_PROMPT_AUTHORITY     = SERVER                （R4-C 常量；任何 systemPrompt/prompt/messages 输入一律 reject）
 OPERATION_AUTHORITY         = SERVER_ALLOWLIST      （只有 memory-interpretation）
-EVIDENCE_INPUT_AUTHORITY    = CALLER_SUPPLIED_AUTHORIZED_PRECONDITION
-                                                      （调用方自称已授权；server 不复核 —— 见 §4.1）
+EVIDENCE_CONTENT_AUTHORITY  = SERVER_CANONICAL      （memory_records，getRecord 单条读）
+EVIDENCE_VISIBILITY_AUTHORITY = SERVER              （memory-visibility-core.canReadMemory，唯一谓词）
+EVIDENCE_STATE_AUTHORITY    = SERVER_NOT_CLAIMED    （MetaMemory 证据状态由浏览器召回路径产出，
+                                                     服务端无法在不重跑召回的前提下复现 —— 因此**不主张**，
+                                                     模型收到 systemEvidenceState = null）
+RECALL_SELECTION_AUTHORITY  = CALLER_PROPOSED       （调用方提议 id 列表）
+SELECTED_SET_BOUND_TO_CURRENT_RECALL = NO           （不声称绑定于一次真实召回）
 ```
 
 ```
@@ -180,22 +247,29 @@ R4C_AUTO_INVOCATION            = NOT_IMPLEMENTED
 R4C_INTERPRETATION_LIVE        = NO
 ```
 
-**执行权威已闭合，证据权威未闭合**（execution authority closed / evidence authority not closed）。
+**执行权威闭合 · 证据内容与可见性权威闭合 · 召回选择权威未闭合。**
 "路由在测试里能跑"**不等于**"Interpretation production live"。
 
-### 4.3 Production enable 的前置条件（冻结，本阶段不实现）
+### 4.3 Production enable 的前置条件（冻结）
 
 ```
 PRODUCTION_ENABLE_PREREQUISITE = SERVER-BOUND AUTHORIZED RECALL/EVIDENCE
+REMAINING_GAP                  = RECALL-SELECTION BINDING
 ```
 
-在真正打开 server cost gate 或接 auto caller **之前**，必须至少满足其一：
+LIVE-3 交付了 prerequisite 的**前两项**（content + visibility，均为 SERVER）；
+**第三项缺失**：服务端仍然只知道"调用方说它想解释这几条"，不知道这些 id 是否来自
+一次真实召回。因此：
 
-* **A.** server 自己执行 **authorized recall**（读 canonical memory + 同一份可见性核），或
-* **B.** server 接收一个**由 server 自己发出、调用方不可伪造**的 recall/evidence capability，
+* **不能**把当前状态写成 `SERVER_AUTHORIZED_RECALL`；
+* 在打开 server cost gate 或接 auto caller **之前**，仍须满足其一：
+  * **A.** server 自己执行 **authorized recall**（读 canonical memory + 同一份可见性核），或
+  * **B.** server 接收一个**由 server 自己发出、调用方不可伪造**的 recall/evidence capability
+    （§25 的 opaque evidence ticket 是候选形态：绑定 character / selected ids /
+    canonical revision / expiry，使调用方无法重新选择）。
 
-或另一种经过审计的 authority。**本阶段只做分类，不动实现**：
-不搬 recall 进 Home Node、不新增 canonical query route、不新增 capability protocol。
+**本阶段只做分类，不动实现**：不搬 recall 进 Home Node、不新增 canonical query route、
+不新增 capability protocol。`PRODUCTION_ENABLE_ALLOWED = NO`（完成类 **B**）。
 
 ---
 
@@ -410,4 +484,79 @@ http.js 唯一一处 env 读取是既有的 `IB_HOME_NODE_TRACE`（trace 日志�
 **已登记的未修观察（future）**：`describe().costPolicy.source` 报告的是**解析后取值**的形状
 （函数返回对象时显示 `assembly-policy-object`），不是注入形态；`enabled` 取值始终正确，
 不影响闸门，留待后续阶段。
+
+### 10.6 Server-Bound Canonical Evidence（P21-R4-LIVE-3 · 机械实测）
+
+| 套件 | 结果 |
+|---|---|
+| `node tests/test_r4c_live_canonical_evidence.js`（新增） | **exit 0 · 212 PASS / 0 FAIL**（3 次一致） |
+| `node tests/test_r4c_live_runtime_boundary.js`（改版） | **271 assertions green** |
+| `node tests/test_r4c_live_authority_truth.js`（改版） | **109 assertions green** |
+| `node tests/test_r4c_live_browser_boundary.js`（改版，真实 Chrome） | **49 passed / 0 failed** |
+
+```
+SERVER_BINDS_RECORD_CONTENT_TO_CANONICAL      = YES
+SERVER_ENFORCES_EVIDENCE_CHARACTER_VISIBILITY = YES
+CALLER_CAN_SUPPLY_ARBITRARY_RECORD_TEXT       = NO
+CALLER_CONTROLLED_CANONICAL_DATA_CHANNEL      = NO
+CALLER_AUTHORED_TEXT_REACHING_THE_MODEL       = currentState.relationship / currentState.emotion
+                                                （各 ≤240 字符，R4-C 有界，**声明为非 canonical** typed 输入；
+                                                  roleName 被接受但 R4-C 不把它写进信封，因此到不了模型）
+NO_RESPONSE_SHAPE_EXISTENCE_ORACLE            = YES
+NO_STATUS_CODE_EXISTENCE_ORACLE               = YES
+NO_ERROR_TEXT_EXISTENCE_ORACLE                = YES
+TIMING_EXISTENCE_ORACLE_ABSENCE               = NOT_PROVEN
+TIMING_DIFFERENCE_OBSERVED                    = 进程内**中位数** +0.03…+0.06 ms 可复现（隐藏 id 多一次
+                                                canonical 行读）；配对**均值**与零假设对照同量级（噪声）；
+                                                loopback HTTP 上无可复现符号（~2 ms sd）
+TIMING_ORACLE_EXISTS                          = NOT_CLAIMED
+PROVIDER_MEMORY_SOURCE                        = SERVER_CANONICAL_PROJECTION
+PROVIDER_METADATA_LEAKS                       = 0
+PROVIDER_MAX_CALLS_PER_PATH                   = 1
+PROJECTION_FIELD_COUNT                        = 7
+CANONICAL_BEARING_FIELDS_ATTACKED             = 36（顶层）+ 36（嵌套）
+SERVER_GATE_DEFAULT                           = FALSE（生产默认关闭，未改变）
+REAL_PROVIDER_CALLS                           = 0
+```
+
+> **措辞纪律（由独立复核指出并已修正）**：不得把上表读成"调用方文本完全到不了模型"。
+> 准确的句子是：**canonical 记忆通道已关闭**（`MEMORY_BATCH` 只含服务端投影，
+> 任何拼写/嵌套的 canonical 字段都到不了 provider），而**非 canonical typed 输入**
+> （`currentState.relationship` / `currentState.emotion`）仍然由调用方 authored ——
+> 它们是这条边界上仅存的、有界的、被声明为数据的调用方文本。
+
+**最强证据**：
+
+* **存在性 oracle（三个通道关闭，一个通道未形式化关闭）**：单独的不存在 id 与单独的
+  真实 `private` id ⇒ **原始响应字节逐字节相同**（状态、码、detail、counts、`missingFor`、
+  0 provider、0 Vault 全同）⇒ 响应形状 / 状态码 / 错误文本三通道 **YES**；
+  对照面证明"拒绝是 ACL 而不是不存在"（同一条 B-only 行对 char_b **成功**）。
+  ★ **时序通道**：隐藏 id 多一次 canonical 行读。进程内**中位数**差异可复现
+  （+0.03…+0.06 ms），配对**均值**与零假设对照同量级，loopback HTTP 上无可复现符号
+  （~2 ms sd）。因此本契约**只**登记 `TIMING_EXISTENCE_ORACLE_ABSENCE = NOT_PROVEN` ——
+  既不声称存在**可利用**的时序 oracle（`TIMING_ORACLE_EXISTS = NOT_CLAIMED`），
+  也不声称时序通道已被关闭。**"未证明可利用"不等于"不存在"。**
+* **共享谓词而不是第二套 ACL**：边界对全部 11 条种子行的 bind/skip 决策与
+  `canReadMemory` **逐行一致**（char_a 8 可见 / 3 隐藏）。
+* **绑定先于付费边界**：72 个 canonical 字段攻击（36 顶层 + 36 嵌套）
+  全部 `provider = 0` **且** `vaultReads = 0`。
+* **allowedIds = 绑定集**：乱回包的 provider 为"请求过但未绑定"的 id 编造条目 ⇒
+  被核心以 `model-returned-unknown-memory-id` 拒绝，隐藏正文不出现在响应里。
+* **零持久变更**：canonical DB / WAL / 文件集 / revision / change feed /
+  Understanding 水位 / credential vault 字节在成功与失败两种调用后都不变。
+* 浏览器侧：wire body **恰好六个键**；provider 的 `MEMORY_BATCH` 正文
+  **逐字等于种进 canonical store 的正文**（浏览器 DECOY 永不出现）；
+  隐藏行与不存在行都不进 `MEMORY_BATCH`，只在 `missingFor`。
+
+**§19/§20 MetaMemory 证据状态裁决 = C（SERVER_NOT_CLAIMED）**：
+R4-B 的 `evidenceState` 由**浏览器召回路径**在全量候选集上产出；服务端只有
+≤8 条被绑定行，重跑它等于重跑召回（§3 明确禁止），凭想象声明一个 `direct`
+则是发明语义。因此边界**不提供** `evidence` map，核心据此给出
+`systemEvidenceState = null`（R4-C 契约本就把该字段定义为可空闭集）——
+这是 §19 允许的"安全降级"，不是省略。
+
+**§25 capability 审计（仅设计，未实现）**：
+opaque evidence ticket 是召回选择绑定最自然的候选形态 ——
+`server 签发 → 绑定 {characterId, selectedIds, canonicalRevision, expiry} → 调用方不可重选`。
+本阶段**不**实现它；`RECALL_SELECTION_AUTHORITY = CALLER_PROPOSED` 保持为事实。
 

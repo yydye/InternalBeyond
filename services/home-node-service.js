@@ -947,6 +947,12 @@ function buildHomeNode(options) {
     credentialAccess: instanceCredentialAccess,
     modelPort: options.port || createNodeModelPort({}),
     costPolicy: options.runtimeInterpretationPolicy,
+    /* P21-R4-LIVE-3 · canonical 证据的唯一来源。
+       ★ 必须与网关/召回读的是**同一个** store 实例：绑定的正是"这台实例
+         的 canonical 记忆"。给一个"能开、能查、永远为空"的第二实例不会抛
+         任何错，只会让每一次解释都回答"没有已授权的记忆" —— 与 M1-C.2i 的
+         memoryRetrieval 漂移同形，因此这里刻意复用 instanceMemoryStore。 */
+    memoryStore: instanceMemoryStore,
     clock: options.clock,
     logger: serviceLog
   });
@@ -1226,6 +1232,11 @@ const runtimeInterpretation = createRuntimeInterpretation({
   registry,
   credentialAccess: productionCredentialAccess,
   modelPort: port,
+  /* P21-R4-LIVE-3 · 生产路径同样必须拿到 canonical 记忆 store ——
+     与 buildHomeNode 那一行逐字同源。少了这一行，真实进程上每一次解释都会
+     以 canonical-evidence-unavailable 失败，而所有 buildHomeNode 的测试全绿
+     （这正是本文件已经记过四次的同一种装配缺口）。 */
+  memoryStore: memory.memoryStore,
   logger: (level, event, fields) => log(level, event, fields)
 });
 /* P11-3E：进程级 Moments 探针。openAll() 写它、/health 与 /moments/* 读它。

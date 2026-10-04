@@ -895,8 +895,9 @@ function createMomentsRemote(deps) {
 }
 NS.createMomentsRemote = createMomentsRemote;
 
-/* ── runtime remote driver（R4-C LIVE-2.1 · 运行时记忆解释边界的**唯一**入口）──
-   P21-R4-C-LIVE-2.1。与上面三个 remote 的两点**结构性**差异，都是刻意的：
+/* ── runtime remote driver（R4-C LIVE · 运行时记忆解释边界的**唯一**入口）──
+   P21-R4-C-LIVE-2.1 建立，P21-R4-C-LIVE-3 收窄为"只送 id"。
+   与上面三个 remote 的两点**结构性**差异，都是刻意的：
 
      · **只有一个动词**。memory / understanding / moments 各自是一整套 CRUD 面，
        因为它们服务的是"持久权威"；而运行时解释按定义是**非持久**的
@@ -905,7 +906,9 @@ NS.createMomentsRemote = createMomentsRemote;
        runRuntimeModel / deriveAnything 这类通用模型入口 —— 一个"可以指定
        provider / model / prompt 的运行时调用"就是第二条绕过 Vault 与成本护栏的
        模型通道，正是本阶段要消灭的形状。加一个"顺手也能跑别的"的动词，等于把
-       这一层从**一个边界**降级成**一个通用出口**。
+       这一层从**一个边界**降级成**一个通用出口**。同理**没有**"读一条记忆"的
+       动词：浏览器需要的 id 来自它已经持有的镜像，而**内容**必须由服务端从
+       canonical store 自己取（否则同一个内容通道又从客户端打开一遍）。
 
      · **不做信封解包**。`/memory/*`、`/understanding/*`、`/moments/*` 由
        mobile-gateway 包成 `{ok, payload:{…}}`，因此那三个 driver 都走
@@ -916,13 +919,20 @@ NS.createMomentsRemote = createMomentsRemote;
        "镜像被清空"是同一类事故。这里因此**逐字不动**地透出，解包只发生在
        该发生的那三条路径上。
 
+   ── P21-R4-C-LIVE-3 · 浏览器不再提交 canonical 记忆内容 ──────────────
+   LIVE-2.2 机械地证明了 `inputEnvelope.records` 是一条**调用方控制的数据
+   通道**：谁调用这个动词，谁就能决定模型读到什么"事实"。LIVE-3 把这条通道
+   从**协议层**关掉：请求里能表达的东西收窄成"要解释哪几条"（selectedMemoryIds）
+   加两个**非 canonical** 的当前状态输入（currentState / roleName）。
+   内容、可见性、归属、证据状态全部由 Home Node 从 canonical store 解析。
+
    ── 闭集构造（这是安全性质，不是代码风格）────────────────────────────
-   payload 由**显式字段列表**拼出：operation 是模块常量，inputEnvelope 的五个键
-   逐字列出。调用方即使传 `{credentialRef, apiKey, provider, model, endpoint,
-   systemPrompt, prompt, messages, …}`，这些键也**一个都到不了 wire** ——
-   它们不是被删除的，而是从来没有被复制过（`delete` 列表会随服务端新增字段而
-   漂移，白名单不会）。服务端仍会独立复核（request-field-forbidden），
-   但浏览器侧不把"拦住它"当成服务端的责任。
+   payload 由**显式字段列表**拼出：operation 是模块常量，三个调用方输入逐字列出。
+   调用方即使传 `{records, content, evidenceState, inputEnvelope, provider, model,
+   apiKey, prompt, …}`，这些键也**一个都到不了 wire** —— 它们不是被删除的，
+   而是从来没有被复制过（`delete` 列表会随服务端新增字段而漂移，白名单不会）。
+   服务端仍会独立复核（canonical 字段用 `caller-attempted-to-supply-canonical-
+   evidence` 指名拒绝，绝不是静默忽略），但浏览器侧不把"拦住它"当成服务端的责任。
 
    ── 超时权威 ───────────────────────────────────────────────────────
    这里**不发明**默认超时。调用方不给 timeoutMs，body 里就是 null，服务端以
@@ -932,9 +942,15 @@ NS.createMomentsRemote = createMomentsRemote;
    两者不可互相冒充。 */
 var RUNTIME_OPERATION = 'memory-interpretation';
 var RUNTIME_PATH = '/internal/runtime/memory-interpretation';
-/* inputEnvelope 的**闭集**键。服务端只认这五个，多一个就 request-field-forbidden；
-   这里逐字列出，因此"调用方多带一个字段"在**构造层**就不可能发生。 */
-var RUNTIME_ENVELOPE_KEYS = ['selectedIds', 'records', 'evidence', 'currentState', 'roleName'];
+/* 允许**从调用方复制**的输入只有三个：selectedMemoryIds（必需）与
+   currentState / roleName（可选）。canonical 证据（records / content /
+   evidenceState / …）与执行权威（provider / model / apiKey / …）都不在这里，
+   因此它们在**构造层**就没有机会出现 —— 白名单不是"记得去删"。
+   currentState 在契约里也只是两个键（R4-C normalizeInput 真正消费的那两个）。 */
+var RUNTIME_STATE_KEYS = ['relationship', 'emotion'];
+
+function _runtimeHasOwn(obj, key) { return !!obj && Object.prototype.hasOwnProperty.call(obj, key); }
+function _runtimeIsPlainObject(v) { return !!v && typeof v === 'object' && !Array.isArray(v); }
 
 function createRuntimeRemote(deps) {
   /* deps 与其余三个 driver 同形（装配层总是 `factory({})` 调用）。这里**刻意**
@@ -942,33 +958,51 @@ function createRuntimeRemote(deps) {
      浏览器侧没有第三个可以决定它们的地方。 */
   deps = deps || {};
   return {
-    /* input  = { characterId, inputEnvelope }；options = { timeoutMs }
-       —— 除这两个入参以外，本动词不接受任何其它参数。 */
+    /* input  = { characterId, selectedMemoryIds, currentState?, roleName? }
+       options = { timeoutMs } —— 除这两个入参以外，本动词不接受任何其它参数。 */
     runMemoryInterpretation: function (input, options) {
       options = options || {};
       var src = (input && typeof input === 'object' && !Array.isArray(input)) ? input : {};
-      var envelope = (src.inputEnvelope && typeof src.inputEnvelope === 'object' && !Array.isArray(src.inputEnvelope))
-        ? src.inputEnvelope : {};
-      /* 只搬这五个键，而且**缺失的键不补默认值**：替调用方补一个 [] 就等于
-         本层替它声明"这次没有输入"，而那不是浏览器能知道的事。 */
-      var closed = {};
-      for (var i = 0; i < RUNTIME_ENVELOPE_KEYS.length; i++) {
-        var key = RUNTIME_ENVELOPE_KEYS[i];
-        if (Object.prototype.hasOwnProperty.call(envelope, key)) closed[key] = envelope[key];
-      }
       /* 一个 timeoutMs 同时决定 body 里的**权威声明**与传输层的等待上界。
          两者取同一个数，是为了让"服务端以为的超时"与"客户端等待的超时"
          不会各自漂移；也正因为它们是同一个数，缺省时这里是 NaN，
          body 里落成 null 而由服务端拒绝 —— 而不是被悄悄填成 15000。 */
       var timeoutMs = Number(options.timeoutMs);
+      var payload = {
+        operation: RUNTIME_OPERATION,
+        characterId: String(src.characterId == null ? '' : src.characterId),
+        timeoutMs: timeoutMs
+      };
+      /* selectedMemoryIds：**只**带 id，而且是浅拷贝 —— 请求体要等
+         ensureCredential() 之后才序列化，浅拷贝让"调用方随后改这个数组"
+         不会改变这一次请求的事实。非数组**原样带上**：客户端不替调用方
+         "修好"一个坏输入，也不静默丢掉它（那会让一次失败的输入看起来成功）。 */
+      if (_runtimeHasOwn(src, 'selectedMemoryIds')) {
+        var ids = src.selectedMemoryIds;
+        payload.selectedMemoryIds = Array.isArray(ids) ? ids.slice() : ids;
+      }
+      /* currentState：契约只冻结 relationship / emotion 两个键，因此这里也
+         **闭集构造**。浅拷贝会把调用方塞在里面的 records / content 原样带上
+         wire —— 那是同一条内容通道的**嵌套变体**，而这一层的职责正是让它
+         在构造层不存在。非对象同样原样带上（同上：不静默丢弃坏输入）。 */
+      if (_runtimeHasOwn(src, 'currentState')) {
+        var state = src.currentState;
+        if (_runtimeIsPlainObject(state)) {
+          var closedState = {};
+          for (var i = 0; i < RUNTIME_STATE_KEYS.length; i++) {
+            var stateKey = RUNTIME_STATE_KEYS[i];
+            if (Object.prototype.hasOwnProperty.call(state, stateKey)) closedState[stateKey] = state[stateKey];
+          }
+          payload.currentState = closedState;
+        } else {
+          payload.currentState = state;
+        }
+      }
+      /* roleName 是**显示名**，不是权威：原样转发，由服务端与核心裁剪。 */
+      if (_runtimeHasOwn(src, 'roleName')) payload.roleName = src.roleName;
       return _request(RUNTIME_PATH, {
         method: 'POST',
-        body: {
-          operation: RUNTIME_OPERATION,
-          characterId: String(src.characterId == null ? '' : src.characterId),
-          timeoutMs: timeoutMs,
-          inputEnvelope: closed
-        },
+        body: payload,
         timeoutMs: timeoutMs
       });
     }

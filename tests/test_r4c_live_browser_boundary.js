@@ -1,31 +1,38 @@
 'use strict';
 /* ====================================================================
-   P21-R4-LIVE-2.1 · 浏览器侧的**运行时解释边界**端到端验收（真实浏览器）
+   P21-R4-LIVE-3 · 浏览器侧的**运行时解释边界**端到端验收（真实浏览器）
+   （LIVE-2.1 建立，LIVE-3 换成"只送 id"的 canonical 证据契约）
    --------------------------------------------------------------------
    运行：node tests/test_r4c_live_browser_boundary.js
 
    ★ 这个文件**不在** test-all.js 里，理由与 P22-15~25 那几条视觉/验收测试
      同款：它要开一个真实浏览器。
 
-   ── 它要证明的那条链 ────────────────────────────────────────────────
+   ── 它要证明的那条链（LIVE-3）────────────────────────────────────────
      真实 InternalBeyond.html（产品静态层 http://127.0.0.1:<web>/）
        ↓ 真实 assets/js/home-node-client.js 的 createRuntimeRemote
        ↓ 真实 assets/js/home-node-bootstrap.js 的 IB.homeNode.runtime 挂载
      POST /internal/runtime/memory-interpretation（桌面凭据 · loopback）
+       只有 selectedMemoryIds + currentState + roleName —— **没有内容**
        ↓ 真实 Home Node 子进程（真实 SQLite store / registry / Vault 取用 /
          真实 NodeModelPort）
        ↓ characterId → character_runtime_specs（服务端自己解析）
+       ↓ selectedMemoryIds → memory-store.getRecord + 共享可见性核心
+         （canonical 投影；隐藏与不存在**同一种**安全省略）
        ↓ credentialRef → Vault（服务端自己解析，secret 只活在这一次请求里）
        ↓ 恰一次 provider 调用（**假** provider，只为了能观测 wire）
+         ★ provider 的 MEMORY_BATCH 正文必须是**种进 store 的 canonical 正文**，
+           而不是浏览器送来的任何一段文本。
      一个非持久结果（durable:false · attempts:1 · 零 durable 写入）
 
    REAL：InternalBeyond.html、home-node-client.js、home-node-bootstrap.js、
          services/home-node-service.js 的 buildHomeNode 子进程、真实 HTTP、
-         真实 Vault resolver、真实 NodeModelPort。
-   FAKE：Vault 里那一条 secret（哨兵字符串）与一个本地 mock provider。
-   唯一被注入的装配事实是**成本闸门**（runtimeInterpretationPolicy）——
-   生产 require.main 路径刻意没有启用旋钮（F8），因此"打开它"只能发生在
-   测试夹具 tests/fixtures/r4c-live-home-node-child.js 里。
+         真实 canonical memory store、真实 Vault resolver、真实 NodeModelPort。
+   FAKE：Vault 里那一条 secret（哨兵字符串）与一个本地 mock provider；
+         canonical 行由测试夹具在 listen 之前种进**真实** store。
+   唯一被注入的装配事实是**成本闸门**（IB_R4C_INJECT_COST_POLICY=1）——
+   生产 require.main 路径刻意没有启用旋钮（F8），因此"打开它"只能由测试
+   显式要求，而 tests/fixtures/r4c-live-home-node-child.js 不会默认打开它。
 
    ★ 一个字节都不假：浏览器真的在跑，页面真的加载了产品的脚本，
      provider 是**真的**本地 HTTP 服务（它记录自己看到了什么）。
@@ -52,18 +59,37 @@ const PROVIDER_CLASS = 'custom';
 const PROVIDER_MODEL = 'ib-r4c-browser-mock-model';
 const PROVIDER_PATH = '/v1/chat/completions';
 const DESKTOP_TOKEN = 'r4c-live-browser-desktop-token';
-/* 浏览器**不得**有权选择的字段（出现在请求里必须是拒绝，而不是忽略）。 */
+
+/* ── canonical 世界：正文由**夹具**种进真实 store，从不经过浏览器 ──────
+   页面这一侧只知道 id（这是 LIVE-3 的全部要点）。因此 (e) 的判据是一条
+   可核对的等式：provider 的 MEMORY_BATCH 正文 === 下面种下去的正文。 */
+const CANON_TITLE_A = '便利店屋檐下的雨';
+const CANON_TITLE_B = '抽屉里的旧照片';
+const CANON_TEXT_A = 'CANONICAL_INTERP_TEXT_A_5E0C · 下午四点，我们站在便利店屋檐下等雨停。';
+const CANON_TEXT_B = 'CANONICAL_INTERP_TEXT_B_77A1 · 她说起一张放在抽屉最底下的旧照片。';
+const HIDDEN_TEXT = 'HIDDEN_CANONICAL_TEXT_31D9 · 这一条对任何读主体都不可读。';
+const VISIBLE_IDS = ['mem_r4c_a', 'mem_r4c_b'];
+const HIDDEN_ID = 'mem_r4c_hidden';    /* 存在，但 visibility=private ⇒ 不可读 */
+const ABSENT_ID = 'mem_r4c_absent';    /* store 里根本不存在 */
+/* 一次请求同时带上四种：2 条可见 + 1 条私有 + 1 条不存在。 */
+const REQUESTED_IDS = VISIBLE_IDS.concat([HIDDEN_ID, ABSENT_ID]);
+const CANONICAL_ROWS = [
+  { id: VISIBLE_IDS[0], title: CANON_TITLE_A, content: CANON_TEXT_A, kind: 'episodic', visibility: 'public', valence: 0.4, arousal: 0.5 },
+  { id: VISIBLE_IDS[1], title: CANON_TITLE_B, content: CANON_TEXT_B, kind: 'episodic', visibility: 'public', valence: 0.2, arousal: 0.3 },
+  { id: HIDDEN_ID, title: '对任何主体都不可读的一条', content: HIDDEN_TEXT, kind: 'episodic', visibility: 'private', valence: 0.1, arousal: 0.1 }
+];
+/* 浏览器**试图**当作"事实"送出去的那段文本：它必须一个字节都不上 wire，
+   也一个字都不进 provider 的 MEMORY_BATCH。 */
+const BROWSER_DECOY_TEXT = 'BROWSER_SUPPLIED_DECOY_9C3F · 这段文本不是任何一条 canonical 记忆。';
+
+/* canonical 证据字段：出现在请求里必须是**指名拒绝**，而不是静默忽略。 */
+const CANONICAL_SMUGGLE_FIELDS = ['records', 'content', 'evidenceState', 'inputEnvelope', 'selectedIds'];
+/* 执行权威字段：浏览器**不得**有权选择（同上，出现即拒）。 */
 const FORBIDDEN_FIELDS = ['credentialRef', 'apiKey', 'provider', 'model', 'endpoint',
   'systemPrompt', 'prompt', 'messages'];
 /* R4-C 纯核心的 SYSTEM_INSTRUCTIONS 里的稳定子串：证明 prompt 权威在服务端
    核心，而不是浏览器送进来的任何一段文本。 */
 const SYSTEM_AUTHORITY_SUBSTRING = '记忆解释影子';
-
-const IDS = ['mem_r4c_a', 'mem_r4c_b'];
-const RECORDS = [
-  { id: 'mem_r4c_a', title: '便利店屋檐下的雨', content: '下午四点，我们站在便利店屋檐下等雨停。', kind: 'episodic', rawSource: 'chat', valence: 0.4, arousal: 0.5 },
-  { id: 'mem_r4c_b', title: '抽屉里的旧照片', content: '她说起一张放在抽屉最底下的旧照片。', kind: 'episodic', rawSource: 'diary', valence: 0.2, arousal: 0.3 }
-];
 
 let passed = 0, failed = 0;
 function check(name, cond, extra) {
@@ -115,13 +141,13 @@ function createMockProvider() {
   return { server: server, seen: seen, count: function () { return seen.length; } };
 }
 
-/* 从 provider wire 的正文里取出**这一批**要解释的 memoryId。
+/* 从 provider wire 的正文里取出**这一批** MEMORY_BATCH 条目（结构化，不用正则）。
    ★ 必须结构化地取，不能用正则扫整段正文：信封里除了 MEMORY_BATCH 之外，
      requestedSchema 的示例也含一个 `"memoryId"` 键（值是说明文字），
      正则会把它当成一个真实 id，于是 mock 会回一条**幻觉 id** ——
      而那会让"假 provider 回什么"变成一个比被测边界更不可控的变量。
    位置：user 消息里那个 ```json 围栏内的信封（R4-C core.buildRequest 的形状）。 */
-function memoryIdsFromWire(raw) {
+function batchFromWire(raw) {
   try {
     const body = JSON.parse(String(raw));
     const messages = Array.isArray(body && body.messages) ? body.messages : [];
@@ -131,12 +157,14 @@ function memoryIdsFromWire(raw) {
       if (!fence) continue;
       const envelope = JSON.parse(fence[1]);
       const batch = Array.isArray(envelope && envelope.MEMORY_BATCH) ? envelope.MEMORY_BATCH : [];
-      const ids = batch.map(function (item) { return item && item.memoryId; })
-        .filter(Boolean).map(String);
-      if (ids.length) return ids;
+      if (batch.length) return batch;
     }
   } catch (_) { /* 形状不是我们预期的那一种：如实返回空，让断言去失败 */ }
   return [];
+}
+function memoryIdsFromWire(raw) {
+  return batchFromWire(raw).map(function (item) { return item && item.memoryId; })
+    .filter(Boolean).map(String);
 }
 
 function countOccurrences(text, needle) {
@@ -147,6 +175,11 @@ function countOccurrences(text, needle) {
     if (i < 0) return n;
     n++; at = i + needle.length;
   }
+}
+
+/* 短摘要：把"一组结构化事实没变"变成一句可比较的字符串。 */
+function digestOf(value) {
+  return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 32);
 }
 
 function listen(server) {
@@ -181,7 +214,7 @@ function dirDigest(dir) {
 }
 
 (async function main() {
-  console.log('P21-R4-LIVE-2.1 · 浏览器运行时解释边界（真实浏览器 · 真实 Home Node 子进程）');
+  console.log('P21-R4-LIVE-3 · 浏览器运行时解释边界（只送 id · 真实浏览器 · 真实 Home Node 子进程）');
 
   const exe = fx.chromePath();
   if (!exe) {
@@ -230,7 +263,8 @@ function dirDigest(dir) {
       fs.readFileSync(path.join(vaultDir, 'credential-vault.json'), 'utf8').indexOf(SENTINEL) < 0,
       { upserted: vaultUpserted, files: fs.readdirSync(vaultDir) });
 
-    /* ③ 真实 Home Node 子进程：真实装配 + 唯一注入的成本闸门。 */
+    /* ③ 真实 Home Node 子进程：真实装配 + **显式**注入的成本闸门 +
+          测试自己的 canonical 种子（浏览器一个字节的内容都不参与）。 */
     const child = spawnTracked(process.execPath,
       [path.join('tests', 'fixtures', 'r4c-live-home-node-child.js')], {
         cwd: ROOT,
@@ -239,6 +273,11 @@ function dirDigest(dir) {
           IB_R4C_CREDENTIAL_DIR: vaultDir,
           IB_R4C_TOKEN: DESKTOP_TOKEN,
           IB_R4C_PORT: String(homePort),
+          /* ★ 闸门只有这一行能开，而且它是**测试显式**要求的：
+             夹具缺省不注入政策（与生产一致：关）。 */
+          IB_R4C_INJECT_COST_POLICY: '1',
+          /* canonical 行的**唯一**来源。 */
+          IB_R4C_CANONICAL_ROWS: JSON.stringify(CANONICAL_ROWS),
           /* 双保险：模块顶层的 resolveDesktopCredential() 也按这两个变量选目录，
              因此装配期副作用同样落在临时目录里（生产数据目录一个字节不动）。 */
           IB_HOME_NODE_DATA_DIR: nodeDir,
@@ -280,13 +319,34 @@ function dirDigest(dir) {
       !!ready && ready.costPolicy && ready.costPolicy.memoryInterpretationEnabled === true && ready.port === homePort,
       { readyLine: readyLine, childTail: childOut.slice(-300) });
 
+    /* 子进程的**自述**：canonical 种子真的写进了真实 memory store（三个 id 全中）。 */
+    const seededLine = childOut.split(/\r?\n/).filter(function (l) { return l.indexOf('IB-R4C-NODE-SEEDED') === 0; })[0] || '';
+    let seeded = null;
+    try { seeded = JSON.parse(seededLine.replace('IB-R4C-NODE-SEEDED', '').trim()); } catch (_) { seeded = null; }
+    check('0.4 ★★★★ 子进程自述三条 canonical 行真的写进了 store（count=3，id 逐个一致）',
+      !!seeded && seeded.count === CANONICAL_ROWS.length &&
+      JSON.stringify((seeded.ids || []).slice().sort()) === JSON.stringify(CANONICAL_ROWS.map(function (r) { return r.id; }).sort()),
+      { seededLine: seededLine, childTail: childOut.slice(-400) });
+
+    /* 外部读数：canonical store 里那三行**原文**与夹具种的一致（不信自述，读一遍）。 */
+    const seededRead = await homeGet('/memory/list?limit=500');
+    const seededPayload = payloadOf(seededRead);
+    const seededById = {};
+    for (const row of (seededPayload && seededPayload.records) || []) seededById[row.id] = row;
+    check('0.5 ★★★★ 数据面复核：三条 canonical 行的正文与 visibility 与种子逐字一致',
+      seededRead.status === 200 && !!seededPayload && seededPayload.count === CANONICAL_ROWS.length &&
+      seededById[VISIBLE_IDS[0]] && seededById[VISIBLE_IDS[0]].content === CANON_TEXT_A && seededById[VISIBLE_IDS[0]].visibility === 'public' &&
+      seededById[VISIBLE_IDS[1]] && seededById[VISIBLE_IDS[1]].content === CANON_TEXT_B && seededById[VISIBLE_IDS[1]].visibility === 'public' &&
+      seededById[HIDDEN_ID] && seededById[HIDDEN_ID].content === HIDDEN_TEXT && seededById[HIDDEN_ID].visibility === 'private',
+      seededPayload && { count: seededPayload.count, ids: (seededPayload.records || []).map(function (r) { return [r.id, r.visibility, String(r.content).slice(0, 24)]; }) });
+
     /* /security 的**外部**读数：与自述同源，且是 HTTP 面的事实。
        ★ 配了桌面 token 的节点上 /security 也要出示凭据（它在 !authorized
          那条门之后），因此这里必须带 AUTH —— 不带会读到一次 401，
          而不是"这条面的自述"。 */
     const security = await homeGet('/security');
     const runtimeSecurity = security.body && security.body.runtimeInterpretation ? security.body.runtimeInterpretation : null;
-    check('0.4 ★★★ /security 自述这条面已装配、路径正确、闸门开着、自动调用未实现、非持久',
+    check('0.6 ★★★ /security 自述这条面已装配、路径正确、闸门开着、自动调用未实现、非持久',
       security.status === 200 && !!runtimeSecurity && runtimeSecurity.assembled === true &&
       runtimeSecurity.path === '/internal/runtime/memory-interpretation' &&
       runtimeSecurity.costPolicyEnabled === true &&
@@ -306,9 +366,53 @@ function dirDigest(dir) {
       }]
     });
     const publishPayload = payloadOf(publish);
-    check('0.5 ★★ 角色目录发布成功（spec 带 credentialRef，而 spec 永不离开 Node）',
+    check('0.7 ★★ 角色目录发布成功（spec 带 credentialRef，而 spec 永不离开 Node）',
       publish.status === 200 && !!publishPayload && publishPayload.count === 1,
       publish.body);
+
+    /* ── 0.8/0.9 · 闸门**缺省关闭**（生产默认）的对照子进程 ─────────────
+       同一个夹具、同一套 env，唯独不给 IB_R4C_INJECT_COST_POLICY。
+       没有这一条，"闸门是测试显式注入才开的"就只是夹具源码里的一句话；
+       有了它，"本阶段没有生产启用路径"这句话在**真实进程**上被观测过一次。 */
+    const offDir = tmp('node-gateoff');
+    const offPort = await fx.freePort();
+    const offChild = spawnTracked(process.execPath,
+      [path.join('tests', 'fixtures', 'r4c-live-home-node-child.js')], {
+        cwd: ROOT,
+        env: Object.assign({}, process.env, {
+          IB_R4C_DATA_DIR: offDir,
+          IB_R4C_CREDENTIAL_DIR: vaultDir,
+          IB_R4C_TOKEN: DESKTOP_TOKEN,
+          IB_R4C_PORT: String(offPort),
+          IB_R4C_CANONICAL_ROWS: '[]',
+          IB_HOME_NODE_DATA_DIR: offDir,
+          IB_CREDENTIAL_DATA_DIR: vaultDir,
+          IB_HOME_NODE_HOST: '127.0.0.1'
+        }),
+        stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true
+      });
+    let offOut = '';
+    offChild.stdout.on('data', function (c) { offOut += String(c); });
+    offChild.stderr.on('data', function (c) { offOut += String(c); });
+    let offUp = false;
+    for (let i = 0; i < 80; i++) {
+      const h = await fx.request(offPort, 'GET', '/health');
+      if (h.status === 200) { offUp = true; break; }
+      await sleep(250);
+    }
+    const offSecurity = offUp ? await fx.request(offPort, 'GET', '/security', null, AUTH) : { status: 0, body: null };
+    const offRuntime = offSecurity.body && offSecurity.body.runtimeInterpretation ? offSecurity.body.runtimeInterpretation : null;
+    const offPost = offUp ? await fx.request(offPort, 'POST', '/internal/runtime/memory-interpretation', {
+      operation: OPERATION, characterId: CHARACTER_ID, timeoutMs: 20000, selectedMemoryIds: VISIBLE_IDS
+    }, AUTH) : { status: 0, body: null };
+    check('0.8 ★★★★ 闸门缺省关闭（生产默认）：不给 IB_R4C_INJECT_COST_POLICY 的子进程自述 costPolicyEnabled=false',
+      offUp === true && !!offRuntime && offRuntime.assembled === true && offRuntime.costPolicyEnabled === false,
+      { offRuntime: offRuntime, childTail: offOut.slice(-200) });
+    check('0.9 ★★★★★ 而且这条面 fail closed：合法请求 ⇒ 503 disabled（零 provider / 零 Vault 读取）',
+      offPost.status === 503 && offPost.body && offPost.body.error === 'disabled' &&
+      offPost.body.boundary && offPost.body.boundary.providerCalls === 0 && offPost.body.boundary.vaultReads === 0,
+      offPost);
+    try { offChild.kill(); } catch (_) { /* 已结束 */ }
 
     /* ── ⑥ 真实浏览器 ─────────────────────────────────────────────── */
     launched = await fx.launchChrome(exe, {});
@@ -452,57 +556,91 @@ function dirDigest(dir) {
       { selfCheck: scanPositive, positiveHits: scan2 && scan2.hits, afterCleanup: scan3 && scan3.hits });
 
     /* ══════════════════════════════════════════════════════════════
-       (b) 浏览器**不能**选择 credentialRef / provider / model / endpoint
+       (b) 浏览器**不能**提交 canonical 证据，也不能选择执行权威
            —— 攻击路径用**裸 fetch**（绕过客户端），因此证明的是服务端的拒绝
        ══════════════════════════════════════════════════════════════ */
-    section('3 · (b) 权威字段在服务端被拒绝（裸 fetch 攻击路径）');
-    const attackBody = function (extras, envelope) {
-      return JSON.stringify({
-        operation: OPERATION, characterId: CHARACTER_ID, timeoutMs: 20000,
-        inputEnvelope: envelope || { selectedIds: IDS, records: RECORDS },
-        ...extras
-      });
-    };
-    const attackExpr = function (bodyJson) {
+    section('3 · (b) canonical 证据与执行权威在服务端被指名拒绝（裸 fetch 攻击路径）');
+    const attackExpr = function (bodyObject) {
+      /* ★ 两次 stringify 不是笔误：外层那次把 JSON 文本变成页面脚本里的
+         **字符串字面量**（body: "{\"operation\":…}"）。只 stringify 一次会把
+         一个对象字面量嵌进脚本，fetch 收到的是 "[object Object]" —— 服务端
+         会诚实地回 bad-json，于是这条攻击根本没测到那一层拒绝。 */
       return `(function(){
         return fetch(${JSON.stringify(homeBase + '/internal/runtime/memory-interpretation')}, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-IB-Protocol': '1', 'X-IB-Home-Token': ${JSON.stringify(DESKTOP_TOKEN)} },
-          body: ${JSON.stringify(bodyJson)}
+          body: ${JSON.stringify(JSON.stringify(bodyObject))}
         }).then(function(r){ return r.text().then(function(t){ var b = null; try { b = JSON.parse(t); } catch(e){ b = null; } return { status: r.status, body: b }; }); })
           .catch(function(e){ return { status: 0, error: String(e) }; });
       })()`;
     };
-    const attack1 = await evaluate(attackExpr(attackBody({
+    const newShape = function (extra) {
+      return Object.assign({
+        operation: OPERATION, characterId: CHARACTER_ID, timeoutMs: 20000,
+        selectedMemoryIds: REQUESTED_IDS
+      }, extra || {});
+    };
+
+    /* ① 旧的 canonical 内容通道：records/content/evidenceState/inputEnvelope/selectedIds
+          一次性全带上 —— 每一个都必须被**指名**拒绝（不是静默忽略）。 */
+    const smuggle = newShape({
+      records: [{ id: VISIBLE_IDS[0], content: BROWSER_DECOY_TEXT, title: '浏览器编的标题' }],
+      content: BROWSER_DECOY_TEXT,
+      evidenceState: 'direct',
+      inputEnvelope: { selectedIds: VISIBLE_IDS, records: [{ id: VISIBLE_IDS[0], content: BROWSER_DECOY_TEXT }] },
+      selectedIds: VISIBLE_IDS
+    });
+    const attack1 = await evaluate(attackExpr(smuggle), true);
+    check('3.1 ★★★★★ 送 canonical 内容（records/content/evidenceState/inputEnvelope/selectedIds）⇒ HTTP 400 caller-attempted-to-supply-canonical-evidence',
+      attack1 && attack1.status === 400 && attack1.body &&
+      attack1.body.error === 'caller-attempted-to-supply-canonical-evidence' &&
+      attack1.body.ok === false && attack1.body.durable === false &&
+      Array.isArray(attack1.body.reasonCodes) &&
+      attack1.body.reasonCodes.indexOf('caller-attempted-to-supply-canonical-evidence') >= 0 &&
+      attack1.body.reasonCodes.indexOf('request-field-forbidden') < 0,
+      attack1);
+    check('3.2 ★★★★★ 响应**指名**了被拒的 canonical 字段（而不是含糊的"坏请求"）',
+      attack1 && attack1.body && CANONICAL_SMUGGLE_FIELDS.indexOf(String(attack1.body.field)) >= 0 &&
+      /canonical/i.test(String(attack1.body.detail || '')),
+      attack1 && attack1.body && { field: attack1.body.field, detail: attack1.body.detail });
+
+    /* ② 执行权威字段：仍然是 request-field-forbidden（两个词表必须可区分）。 */
+    const attack2 = await evaluate(attackExpr(newShape({
       credentialRef: 'evil-ref', provider: 'evil-provider', model: 'evil-model',
       endpoint: 'http://127.0.0.1:1/v1', apiKey: SENTINEL
     })), true);
-    check('3.1 ★★★★★ 带 credentialRef/provider/model/endpoint/apiKey 的请求 ⇒ HTTP 400 request-field-forbidden',
-      attack1 && attack1.status === 400 && attack1.body && attack1.body.error === 'request-field-forbidden' &&
-      attack1.body.ok === false && attack1.body.durable === false &&
-      Array.isArray(attack1.body.reasonCodes) && attack1.body.reasonCodes.indexOf('request-field-forbidden') >= 0,
-      attack1);
-    check('3.2 ★★★ 响应**指名**了被拒的权威字段（而不是含糊的"坏请求"）',
-      attack1 && attack1.body && FORBIDDEN_FIELDS.indexOf(String(attack1.body.field)) >= 0,
-      attack1 && attack1.body && { field: attack1.body.field, detail: attack1.body.detail });
-
-    const attack2 = await evaluate(attackExpr(attackBody({}, {
-      selectedIds: IDS, records: RECORDS, provider: 'evil-provider', model: 'evil-model'
-    })), true);
-    check('3.3 ★★★ 把权威字段藏进 inputEnvelope 同样被拒（信封是闭集，field=inputEnvelope.*）',
+    check('3.3 ★★★★★ 送 credentialRef/provider/model/endpoint/apiKey ⇒ HTTP 400 request-field-forbidden（与 canonical 证据是两个不同的码）',
       attack2 && attack2.status === 400 && attack2.body && attack2.body.error === 'request-field-forbidden' &&
-      String(attack2.body.field || '').indexOf('inputEnvelope.') === 0,
+      FORBIDDEN_FIELDS.indexOf(String(attack2.body.field)) >= 0,
       attack2);
 
-    const attack3 = await evaluate(attackExpr(JSON.stringify({
-      operation: 'memory-interpretation', characterId: CHARACTER_ID, timeoutMs: 20000,
-      inputEnvelope: { selectedIds: IDS, records: RECORDS }, enabled: true
-    })), true);
-    check('3.4 ★★★ 调用方自带 enabled:true **不是**权威（未知字段 ⇒ 拒绝；成本闸门只认服务端策略）',
-      attack3 && attack3.status === 400 && attack3.body && attack3.body.error === 'request-field-forbidden',
+    /* ③ 旧协议的两个载体单独再打一次：inputEnvelope / selectedIds 必须各自被拒。 */
+    const attack3 = await evaluate(attackExpr(newShape({ inputEnvelope: { selectedIds: VISIBLE_IDS } })), true);
+    check('3.4 ★★★★ 旧的 inputEnvelope 单独出现也照样被拒（旧协议没有留下"看起来还能用"的歧义通道）',
+      attack3 && attack3.status === 400 && attack3.body &&
+      attack3.body.error === 'caller-attempted-to-supply-canonical-evidence' && attack3.body.field === 'inputEnvelope',
       attack3);
 
-    check('3.5 ★★★★ 三次被拒的请求一条都没有到达 provider（provider 调用数 = 0）',
+    /* ③b 嵌套变体：把 canonical 正文藏进唯一剩下的对象字段 currentState。
+           currentState 是闭集（只有 relationship / emotion），而且服务端对
+           **嵌套位置的同一类意图报同一个码**（canonical 名单在嵌套层也走
+           canonical 码，只有真正无关的未知键才是 request-field-forbidden）。 */
+    const attack3b = await evaluate(attackExpr(newShape({
+      currentState: { relationship: '同居', emotion: '平静', records: [{ id: VISIBLE_IDS[0], content: BROWSER_DECOY_TEXT }] }
+    })), true);
+    check('3.4b ★★★★ 把 canonical 正文藏进 currentState（嵌套变体）同样被 canonical 码指名拒绝（field=currentState.records）',
+      attack3b && attack3b.status === 400 && attack3b.body &&
+      attack3b.body.error === 'caller-attempted-to-supply-canonical-evidence' &&
+      attack3b.body.field === 'currentState.records',
+      attack3b);
+
+    /* ④ 未知字段（不是 canonical、也不是执行权威）：仍走 request-field-forbidden。 */
+    const attack4 = await evaluate(attackExpr(newShape({ enabled: true })), true);
+    check('3.5 ★★★ 调用方自带 enabled:true **不是**权威（未知字段 ⇒ request-field-forbidden；成本闸门只认服务端策略）',
+      attack4 && attack4.status === 400 && attack4.body && attack4.body.error === 'request-field-forbidden',
+      attack4);
+
+    check('3.6 ★★★★★ 四次被拒的请求一条都没有到达 provider（provider 调用数 = 0）',
       provider.count() === 0, { providerCalls: provider.count(), seen: provider.seen.map(function (e) { return e.url; }) });
 
     /* ══════════════════════════════════════════════════════════════
@@ -517,7 +655,15 @@ function dirDigest(dir) {
       const mp = payloadOf(mem); const mcp = payloadOf(memChanges);
       const up = payloadOf(und); const ucp = payloadOf(undChanges);
       return {
-        memoryRecords: mp ? { status: mem.status, count: mp.count, revision: mp.revision, ids: (mp.records || []).map(function (r) { return r.id; }).join('|') } : { status: mem.status, error: mem.body && mem.body.error },
+        memoryRecords: mp ? {
+          status: mem.status, count: mp.count, revision: mp.revision,
+          ids: (mp.records || []).map(function (r) { return r.id; }).join('|'),
+          /* 正文/可见性/修订的摘要：于是"这次调用没有改写任何一条 canonical 记忆"
+             也是逐字节可核对的（不只是"条数没变"）。 */
+          contentDigest: digestOf((mp.records || []).map(function (r) {
+            return [r.id, String(r.content), r.visibility, r.revision];
+          }))
+        } : { status: mem.status, error: mem.body && mem.body.error },
         memoryChangeFeed: mcp ? { status: memChanges.status, cursor: mcp.cursor, revision: mcp.revision, upserts: (mcp.upserts || []).length, deletes: (mcp.deletes || []).length } : { status: memChanges.status, error: memChanges.body && memChanges.body.error },
         understanding: up ? { status: und.status, count: up.count, revision: up.revision, ids: (up.records || []).map(function (r) { return r.id || r.characterId; }).join('|') } : { status: und.status, error: und.body && und.body.error },
         understandingChangeFeed: ucp ? { status: undChanges.status, cursor: ucp.cursor, revision: ucp.revision, upserts: (ucp.upserts || []).length, deletes: (ucp.deletes || []).length } : { status: undChanges.status, error: undChanges.body && undChanges.body.error },
@@ -544,10 +690,11 @@ function dirDigest(dir) {
     /* ══════════════════════════════════════════════════════════════
        (c)(d)(e) 真实客户端 + 真实挂载面的 happy path
        ══════════════════════════════════════════════════════════════ */
-    section('5 · (c)(d)(e) 真实客户端一次调用');
-    /* ★ 调用方**故意**把这些权威字段塞进 input：客户端必须一个都不转发。
-       同时用页面内的 fetch 探针记录**真正发出去的 body** —— 于是"闭集构造"
-       的断言打在 wire 上，而不是打在源码的意图上。 */
+    section('5 · (c)(d)(e) 真实客户端一次调用（只送 id）');
+    /* ★ 调用方**故意**把 canonical 内容与执行权威全塞进 input：
+       客户端必须一个都不转发。同时用页面内的 fetch 探针记录**真正发出去的
+       body** —— 于是"闭集构造"的断言打在 wire 上，而不是打在源码的意图上。
+       ★ currentState 里也塞了一份 canonical 材料（嵌套变体）：它同样不得上 wire。 */
     const happy = await evaluate(`(function(){
       var probe = window.__r4cWire = { requests: [] };
       var real = window.fetch;
@@ -562,13 +709,21 @@ function dirDigest(dir) {
       };
       var input = {
         characterId: ${JSON.stringify(CHARACTER_ID)},
-        inputEnvelope: {
-          selectedIds: ${JSON.stringify(IDS)},
-          records: ${JSON.stringify(RECORDS)},
-          evidence: {},
-          currentState: { relationship: '同居', emotion: '平静' },
-          roleName: '小满'
+        /* 页面只知道 id —— 这正是 LIVE-3 之后浏览器能表达的全部"事实"。 */
+        selectedMemoryIds: ${JSON.stringify(REQUESTED_IDS)},
+        currentState: {
+          relationship: '同居', emotion: '平静',
+          /* 嵌套的 canonical 材料：不得出现在 wire 上（闭集构造的第二层）。 */
+          records: [{ id: 'mem_r4c_a', content: ${JSON.stringify(BROWSER_DECOY_TEXT)} }],
+          content: ${JSON.stringify(BROWSER_DECOY_TEXT)}
         },
+        roleName: '小满',
+        /* 旧协议载体 + 执行权威 + canonical 内容：全部必须被构造层丢掉。 */
+        inputEnvelope: { selectedIds: ${JSON.stringify(VISIBLE_IDS)}, records: [{ id: 'mem_r4c_a', content: ${JSON.stringify(BROWSER_DECOY_TEXT)} }] },
+        selectedIds: ${JSON.stringify(VISIBLE_IDS)},
+        records: [{ id: 'mem_r4c_a', content: ${JSON.stringify(BROWSER_DECOY_TEXT)} }],
+        content: ${JSON.stringify(BROWSER_DECOY_TEXT)},
+        evidenceState: 'direct',
         credentialRef: 'evil-ref', apiKey: ${JSON.stringify(SENTINEL)},
         provider: 'evil-provider', model: 'evil-model', endpoint: 'http://127.0.0.1:1/v1',
         systemPrompt: 'evil system prompt', prompt: 'evil prompt', messages: [{ role: 'user', content: 'evil' }]
@@ -581,27 +736,30 @@ function dirDigest(dir) {
 
     const happyRes = happy && happy.res;
     const wireBody = happy && happy.wire && happy.wire[0] ? happy.wire[0].body : null;
+    const wireText = wireBody ? JSON.stringify(wireBody) : '';
     check('5.1 ★★★★★ 真实客户端调用成功（HTTP 200 + ok:true）',
       !!happy && happy.threw === false && !!happyRes && happyRes.ok === true && happyRes.status === 200,
       { threw: happy && happy.threw, error: happy && happy.error, res: happyRes });
-    check('5.2 ★★★★★ wire 上的 body 恰好四个键，且 operation 是模块常量（闭集构造）',
-      !!wireBody && JSON.stringify(Object.keys(wireBody).sort()) === JSON.stringify(['characterId', 'inputEnvelope', 'operation', 'timeoutMs']) &&
+    check('5.2 ★★★★★ wire 上的 body 恰好六个键（闭集契约），operation 是模块常量、id 列表原样送达',
+      !!wireBody && JSON.stringify(Object.keys(wireBody).sort()) ===
+      JSON.stringify(['characterId', 'currentState', 'operation', 'roleName', 'selectedMemoryIds', 'timeoutMs']) &&
       wireBody.operation === OPERATION && wireBody.characterId === CHARACTER_ID &&
+      JSON.stringify(wireBody.selectedMemoryIds) === JSON.stringify(REQUESTED_IDS) &&
       typeof wireBody.timeoutMs === 'number' && wireBody.timeoutMs === 20000,
       wireBody);
-    check('5.3 ★★★★★ 调用方塞进来的 credentialRef/apiKey/provider/model/endpoint/prompt… 一个都没上 wire',
-      !!wireBody && FORBIDDEN_FIELDS.every(function (f) {
-        return !Object.prototype.hasOwnProperty.call(wireBody, f) &&
-          !Object.prototype.hasOwnProperty.call(wireBody.inputEnvelope || {}, f);
-      }) && JSON.stringify(wireBody).indexOf(SENTINEL) < 0 &&
-      JSON.stringify(wireBody).indexOf('evil') < 0,
-      { wireBody: wireBody, forbidden: FORBIDDEN_FIELDS });
-    check('5.4 ★★★★ inputEnvelope 的五个键原样送达（闭集不等于丢字段）',
-      !!wireBody && wireBody.inputEnvelope && wireBody.inputEnvelope.selectedIds.join(',') === IDS.join(',') &&
-      (wireBody.inputEnvelope.records || []).length === RECORDS.length &&
-      wireBody.inputEnvelope.roleName === '小满' &&
-      wireBody.inputEnvelope.currentState && wireBody.inputEnvelope.currentState.emotion === '平静',
-      wireBody && wireBody.inputEnvelope);
+    check('5.3 ★★★★★ 调用方塞进来的 canonical 内容与执行权威一个都没上 wire（含嵌套变体）',
+      !!wireBody && CANONICAL_SMUGGLE_FIELDS.concat(FORBIDDEN_FIELDS).every(function (f) {
+        return !Object.prototype.hasOwnProperty.call(wireBody, f);
+      }) &&
+      JSON.stringify(Object.keys(wireBody.currentState || {}).sort()) === JSON.stringify(['emotion', 'relationship']) &&
+      wireText.indexOf(SENTINEL) < 0 && wireText.indexOf(BROWSER_DECOY_TEXT) < 0 &&
+      wireText.indexOf(CANON_TEXT_A) < 0 && wireText.indexOf(CANON_TEXT_B) < 0 &&
+      wireText.indexOf('evil') < 0,
+      { wireBody: wireBody, forbidden: CANONICAL_SMUGGLE_FIELDS.concat(FORBIDDEN_FIELDS) });
+    check('5.4 ★★★★ 两个非 canonical 输入原样送达（闭集不等于丢字段）',
+      !!wireBody && wireBody.roleName === '小满' &&
+      wireBody.currentState && wireBody.currentState.relationship === '同居' && wireBody.currentState.emotion === '平静',
+      wireBody && { roleName: wireBody.roleName, currentState: wireBody.currentState });
 
     /* (d) provider 恰一次。 */
     check('5.5 ★★★★★ (d) 假 provider 被调用**恰好 1 次**',
@@ -621,20 +779,47 @@ function dirDigest(dir) {
       JSON.stringify(p0.body).indexOf('evil') < 0,
       p0 && JSON.stringify(p0.body).slice(0, 240));
 
+    /* (e) ★ LIVE-3 的核心等式：provider 读到的正文 === **种进 store 的 canonical 正文**。
+       浏览器送来的 DECOY 一个字都不许出现。 */
+    const batch = p0 ? batchFromWire(p0.raw) : [];
+    const batchById = {};
+    for (const item of batch) batchById[String(item && item.memoryId)] = item;
+    const providerSawDecoy = !!p0 && JSON.stringify(p0.body).indexOf(BROWSER_DECOY_TEXT) >= 0;
+    const providerSawHidden = !!p0 && JSON.stringify(p0.body).indexOf(HIDDEN_TEXT) >= 0;
+    check('5.9 ★★★★★ (e) provider 的 MEMORY_BATCH 正文就是**种进 canonical store 的正文**（逐字相等，且不是浏览器送的那段）',
+      !!p0 && batch.length === VISIBLE_IDS.length &&
+      batchById[VISIBLE_IDS[0]] && String(batchById[VISIBLE_IDS[0]].content) === CANON_TEXT_A &&
+      String(batchById[VISIBLE_IDS[0]].title) === CANON_TITLE_A &&
+      batchById[VISIBLE_IDS[1]] && String(batchById[VISIBLE_IDS[1]].content) === CANON_TEXT_B &&
+      providerSawDecoy === false,
+      p0 && { batchIds: Object.keys(batchById), texts: batch.map(function (i) { return [i.memoryId, String(i.content).slice(0, 30)]; }), providerSawDecoy: providerSawDecoy });
+    check('5.10 ★★★★★ (e) 不可读的那条（private）与不存在的那条**都没有**进 provider 的 MEMORY_BATCH',
+      providerSawHidden === false && !batchById[HIDDEN_ID] && !batchById[ABSENT_ID],
+      p0 && { batchIds: Object.keys(batchById), providerSawHidden: providerSawHidden });
+
     /* (e) 结果形状：非持久 + attempts === 1。 */
-    check('5.9 ★★★★★ (e) 结果 durable:false 且 model.attempts === 1',
+    check('5.11 ★★★★★ (e) 结果 durable:false 且 model.attempts === 1',
       !!happyRes && happyRes.durable === false && happyRes.model && happyRes.model.attempts === 1,
       happyRes && { durable: happyRes.durable, model: happyRes.model });
-    check('5.10 ★★★★ (e) 校验过的条目真的回来了（items 覆盖请求的两条，没有 missingFor）',
-      !!happyRes && Array.isArray(happyRes.items) && happyRes.items.length === IDS.length &&
-      (happyRes.missingFor || []).length === 0 && happyRes.counts && happyRes.counts.returned === IDS.length &&
+    check('5.12 ★★★★ (e) 只有可见的两条回来；返回的 meaning 属于那两条 canonical id（不是编造的 id）',
+      !!happyRes && Array.isArray(happyRes.items) && happyRes.items.length === VISIBLE_IDS.length &&
+      JSON.stringify(happyRes.items.map(function (i) { return i.memoryId; }).sort()) === JSON.stringify(VISIBLE_IDS.slice().sort()) &&
+      happyRes.counts && happyRes.counts.returned === VISIBLE_IDS.length &&
       happyRes.items.every(function (i) { return i.meaning && i.basis === 'ai_inference' && i.appraisal === 'neutral'; }),
       happyRes && { items: happyRes.items, missingFor: happyRes.missingFor, counts: happyRes.counts });
-    check('5.11 ★★★ R4-C 的既有非持久语义一字未改：metaMemoryState/recollectionQuality 恒为 null',
+    check('5.13 ★★★★★ (e) 隐藏与不存在**无法区分**：都在 missingFor 里、都不在 items/rejected 里、都不产生任何访问类 reasonCode',
+      !!happyRes &&
+      Array.isArray(happyRes.missingFor) &&
+      JSON.stringify(happyRes.missingFor.slice().sort()) === JSON.stringify([ABSENT_ID, HIDDEN_ID].sort()) &&
+      !happyRes.items.some(function (i) { return i.memoryId === HIDDEN_ID || i.memoryId === ABSENT_ID; }) &&
+      !(happyRes.rejected || []).some(function (r) { return r && (r.memoryId === HIDDEN_ID || r.memoryId === ABSENT_ID); }) &&
+      !(happyRes.reasonCodes || []).some(function (c) { return /hidden|denied|unauthor|forbidden|private|not-found|missing/i.test(String(c)); }),
+      happyRes && { missingFor: happyRes.missingFor, rejected: happyRes.rejected, reasonCodes: happyRes.reasonCodes, counts: happyRes.counts });
+    check('5.14 ★★★ R4-C 的既有非持久语义一字未改：metaMemoryState/recollectionQuality 恒为 null',
       !!happyRes && happyRes.metaMemoryState === null && happyRes.recollectionQuality === null &&
       happyRes.operation === OPERATION && happyRes.characterId === CHARACTER_ID,
       happyRes && { meta: happyRes.metaMemoryState, rec: happyRes.recollectionQuality, op: happyRes.operation, cid: happyRes.characterId });
-    check('5.12 ★★★ boundary 块自述：runtimeOnly / vaultReads=1 / providerCalls=1 / autoInvocation=NOT_IMPLEMENTED',
+    check('5.15 ★★★ boundary 块自述：runtimeOnly / vaultReads=1 / providerCalls=1 / autoInvocation=NOT_IMPLEMENTED',
       !!happyRes && !!happyRes.boundary && happyRes.boundary.runtimeOnly === true && happyRes.boundary.durable === false &&
       happyRes.boundary.vaultReads === 1 && happyRes.boundary.providerCalls === 1 && happyRes.boundary.attempts === 1 &&
       happyRes.boundary.maxAttempts === 1 && happyRes.boundary.autoRetry === 'NONE' &&
@@ -646,7 +831,7 @@ function dirDigest(dir) {
     const noTimeout = await evaluate(`(function(){
       return Promise.resolve(IB.homeNode.runtime.runMemoryInterpretation({
         characterId: ${JSON.stringify(CHARACTER_ID)},
-        inputEnvelope: { selectedIds: ${JSON.stringify(IDS)}, records: ${JSON.stringify(RECORDS)} }
+        selectedMemoryIds: ${JSON.stringify(VISIBLE_IDS)}
       }, {})).then(function(res){ return res; }, function(e){ return { threw: String(e) }; });
     })()`, true);
     const noTimeoutWire = await evaluate('(function(){ var w = (window.__r4cWire && window.__r4cWire.requests) || []; return w.length ? w[w.length-1].body : null; })()');
@@ -656,13 +841,13 @@ function dirDigest(dir) {
       noTimeout);
     check('6.2 ★★★ 这一次 wire 上的 timeoutMs 是 null（NaN 序列化的诚实形状），而不是被填成某个默认值',
       !!noTimeoutWire && noTimeoutWire.timeoutMs === null &&
-      JSON.stringify(Object.keys(noTimeoutWire).sort()) === JSON.stringify(['characterId', 'inputEnvelope', 'operation', 'timeoutMs']),
+      JSON.stringify(Object.keys(noTimeoutWire).sort()) === JSON.stringify(['characterId', 'operation', 'selectedMemoryIds', 'timeoutMs']),
       noTimeoutWire);
 
     const unknown = await evaluate(`(function(){
       return Promise.resolve(IB.homeNode.runtime.runMemoryInterpretation({
         characterId: ${JSON.stringify(UNKNOWN_CHARACTER_ID)},
-        inputEnvelope: { selectedIds: ${JSON.stringify(IDS)}, records: ${JSON.stringify(RECORDS)} }
+        selectedMemoryIds: ${JSON.stringify(VISIBLE_IDS)}
       }, { timeoutMs: 20000 })).then(function(res){ return res; }, function(e){ return { threw: String(e) }; });
     })()`, true);
     check('6.3 ★★★★ characterId 指向不存在的角色 ⇒ runtime-spec-unavailable（spec 只能由服务端从 characterId 解析）',
@@ -682,10 +867,14 @@ function dirDigest(dir) {
       JSON.stringify(before.memoryChangeFeed) === JSON.stringify(after.memoryChangeFeed) &&
       JSON.stringify(before.understanding) === JSON.stringify(after.understanding) &&
       JSON.stringify(before.understandingChangeFeed) === JSON.stringify(after.understandingChangeFeed);
-    check('7.1 ★★★★★ memory_records 与 memory change feed 逐字段不变（count/revision/ids/upserts/deletes）',
+    check('7.1 ★★★★★ memory_records 与 memory change feed 逐字段不变（count/revision/ids/正文摘要/upserts/deletes）',
       JSON.stringify(before.memoryRecords) === JSON.stringify(after.memoryRecords) &&
       JSON.stringify(before.memoryChangeFeed) === JSON.stringify(after.memoryChangeFeed),
       { before: { r: before.memoryRecords, c: before.memoryChangeFeed }, after: { r: after.memoryRecords, c: after.memoryChangeFeed } });
+    check('7.5 ★★★★ 三条 canonical 记忆的**正文**在这次调用前后逐字节相同（服务端只读，不改写证据）',
+      !!before.memoryRecords.contentDigest && before.memoryRecords.contentDigest === after.memoryRecords.contentDigest &&
+      after.memoryRecords.count === CANONICAL_ROWS.length,
+      { beforeDigest: before.memoryRecords.contentDigest, afterDigest: after.memoryRecords.contentDigest, afterCount: after.memoryRecords.count });
     check('7.2 ★★★★★ Understanding 的 revision 与 change feed 逐字段不变（水位面没有被推进）',
       JSON.stringify(before.understanding) === JSON.stringify(after.understanding) &&
       JSON.stringify(before.understandingChangeFeed) === JSON.stringify(after.understandingChangeFeed),

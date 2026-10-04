@@ -89,6 +89,9 @@ const ASSETS_JS = path.join(__dirname, '..', '..', 'assets', 'js');
    就炸掉（fail closed）。`deps.core` 仍然可注入，测试因此可以替换它，
    但生产路径拿到的一定是下面这一份。 */
 const DEFAULT_CORE = require(path.join(ASSETS_JS, 'memory-recall', 'memory-interpretation-core.js'));
+/* 可见性 core：与浏览器、与 memory-store.listVisible **同一份**实现。
+   它在 UMD 下导出，Node 可直接 require（本行就是那次机械证明）。 */
+const DEFAULT_VISIBILITY_CORE = require(path.join(ASSETS_JS, 'memory-visibility-core.js'));
 
 /* ── 路径常量：全仓只有一份字面量（与 economyCommand.path 同一约定）────
    语义最窄的那一条：路径里带着 operation 名，因此审计者不需要读 handler
@@ -100,16 +103,33 @@ const OPERATION = 'memory-interpretation';
 const ALLOWED_RUNTIME_DERIVATIONS = Object.freeze([OPERATION]);
 
 /* ── 请求契约（闭集）────────────────────────────────────────────────
-   多一个字段就 reject：这不是"宽容解析"，而是让"浏览器能表达什么"这件事
-   在**结构上**只有四个词。权威字段（provider/model/endpoint/credentialRef/
-   apiKey/...）因此根本没有进入执行路径的入口，而不是"记得忽略它们"。 */
-const REQUEST_FIELDS = Object.freeze(['operation', 'characterId', 'timeoutMs', 'inputEnvelope']);
-/* inputEnvelope 同样是闭集：它的五个键就是 R4-C normalizeInput 真实消费的
-   那五个。信封里多一个键 → reject，因此"把 prompt / provider 藏在信封里"
-   这条隧道在类型上不存在。 */
-const ENVELOPE_FIELDS = Object.freeze(['selectedIds', 'records', 'evidence', 'currentState', 'roleName']);
-/* 权威字段名单：它们**不是**白名单的补充，而是"为什么闭集"的可读理由。
-   请求里出现任何一项 → request-field-forbidden，并在响应里指名那一个字段。 */
+   P21-R4-LIVE-3：**浏览器不再提交 canonical 记忆内容**。
+   它最多提交"要解释哪几条"（selectedMemoryIds）；内容、可见性、投影
+   全部由 Home Node 从 canonical store 解析。因此这一层能表达的东西
+   从"四个词 + 一个自由信封"收窄成"六个词，其中一个只是 id 列表"。
+
+   ★ 为什么这次不是"把 records 字段删掉"那么简单：旧形状里
+     `inputEnvelope.records` 是**内容**通道（LIVE-2.2 已机械证明它是
+     调用方控制的任意文本通道）。删掉它必须同时给出**新的权威路径**
+     （见 resolveCanonicalEvidence），否则只是把能力藏起来而不是换掉。 */
+const REQUEST_FIELDS = Object.freeze(['operation', 'characterId', 'timeoutMs', 'selectedMemoryIds', 'currentState', 'roleName']);
+/* ── canonical 证据字段：出现即 reject（**不** silent ignore）──────────
+   这不是"多了一个白名单项"，而是本阶段的核心安全属性：
+   任何试图把记忆内容/证据状态/可见性/存储元数据塞进来的请求，
+   都会得到一个**指名**的拒绝码 `caller-attempted-to-supply-canonical-evidence`。
+   `inputEnvelope` / `selectedIds` 也在名单里：它们是旧形状的载体，
+   留着它们等于留着一条"看起来还在用旧协议"的歧义通道。 */
+const CANONICAL_EVIDENCE_FIELDS = Object.freeze([
+  'records', 'record', 'memoryRecords', 'memory_records', 'inputEnvelope', 'selectedIds',
+  'content', 'summary', 'title', 'source', 'rawSource', 'kind',
+  'evidenceState', 'evidence', 'systemEvidenceState', 'evidenceConfidence',
+  'visibility', 'visibleTo', 'excludeFrom', 'createdBy', 'ownerId',
+  'createdAt', 'updatedAt', 'lastActivated', 'importance', 'activationCount',
+  'valence', 'arousal', 'pinned', 'resolved', 'tags', 'revision',
+  'canonical', 'snapshot', 'memoryPayload', 'memory'
+]);
+/* 权威字段名单（执行侧）：与上面同一套纪律，但属于**执行权威**而不是
+   证据权威。保留原名以便审计者一眼看出"哪些词被明确想过"。 */
 const AUTHORITY_BEARING_FIELDS = Object.freeze([
   'credentialRef', 'apiKey', 'secret', 'provider', 'model', 'endpoint',
   'systemPrompt', 'developerPrompt', 'developer', 'prompt', 'messages',
@@ -119,9 +139,18 @@ const AUTHORITY_BEARING_FIELDS = Object.freeze([
 /* ── 边界（有界请求）────────────────────────────────────────────────── */
 const MAX_CHARACTER_ID_CHARS = 180;
 const MAX_ROLE_NAME_CHARS = 120;
-const MAX_ENVELOPE_RECORDS = 64;      /* R4-C 自己再裁到 MAX_MEMORIES = 8 */
-const MAX_ENVELOPE_IDS = 64;
+/* canonical 投影允许交给 R4-C 的字段（**恰好**这些）。
+   逐一对应 R4-C normalizeInput 真正消费的键；存储/ACL/修订/激活等
+   内部元数据**不在**其中（§14）。 */
+const PROJECTION_FIELDS = Object.freeze(['id', 'content', 'title', 'source', 'kind', 'valence', 'arousal']);
+/* ★ 三个上限**全部派生自 R4-C 核心自己声明的边界**，不在这里另发明数字：
+   如果核心哪天把 MAX_MEMORIES 从 8 改成别的，这里的选择上限会**跟着变**，
+   而不是悄悄分叉成"请求允许 8 条、核心只解释 5 条"。 */
+const MAX_SELECTED_MEMORY_IDS = Number(DEFAULT_CORE.BOUNDS && DEFAULT_CORE.BOUNDS.MAX_MEMORIES) || 8;
+const MAX_CONTENT_CHARS = Number(DEFAULT_CORE.BOUNDS && DEFAULT_CORE.BOUNDS.MAX_CONTENT_CHARS) || 1200;
+const MAX_TITLE_CHARS = Number(DEFAULT_CORE.BOUNDS && DEFAULT_CORE.BOUNDS.MAX_TITLE_CHARS) || 200;
 const MAX_OPERATION_ECHO_CHARS = 64;
+const MAX_ID_CHARS = 180;
 
 /* ── 超时权威（与 R4-C.1 §12 同一条纪律）────────────────────────────
    本边界**不拥有**超时 policy：调用方必须显式给出 timeoutMs。
@@ -145,6 +174,17 @@ const REASON = Object.freeze({
   operationForbidden: 'operation-forbidden',
   requestShapeInvalid: 'request-shape-invalid',
   requestFieldForbidden: 'request-field-forbidden',
+  /* ── P21-R4-LIVE-3 新增（只有三个，刻意不膨胀词表）──────────────────
+     · caller-attempted-to-supply-canonical-evidence：请求里出现任何
+       canonical 证据字段（records/content/evidenceState/...）。
+       **一个**码覆盖整类，靠 `field` 指明具体是哪一个。
+     · duplicate-memory-id：selectedMemoryIds 里有重复（**不**静默去重，
+       否则"我选了 8 条"与"服务端解释了 7 条"会静默分叉）。
+     · memory-selection-exceeds-bound：超过 R4-C 的 MAX_MEMORIES。 */
+  canonicalEvidenceSupplied: 'caller-attempted-to-supply-canonical-evidence',
+  duplicateMemoryId: 'duplicate-memory-id',
+  selectionExceedsBound: 'memory-selection-exceeds-bound',
+  canonicalEvidenceUnavailable: 'canonical-evidence-unavailable',
   runtimeSpecUnavailable: 'runtime-spec-unavailable',
   credentialUnavailable: 'credential-unavailable',
   timeoutAuthorityMissing: 'timeout-authority-missing',
@@ -176,6 +216,10 @@ const STATUS_BY_REASON = Object.freeze({
   'operation-forbidden': 403,
   'request-shape-invalid': 400,
   'request-field-forbidden': 400,
+  'caller-attempted-to-supply-canonical-evidence': 400,
+  'duplicate-memory-id': 400,
+  'memory-selection-exceeds-bound': 400,
+  'canonical-evidence-unavailable': 503,
   'runtime-spec-unavailable': 404,
   'credential-unavailable': 503,
   'timeout-authority-missing': 400,
@@ -188,6 +232,20 @@ const STATUS_BY_REASON = Object.freeze({
   'interpretation-core-missing': 503,
   'no-authorized-memory': 422
 });
+
+/* ── P21-R4-LIVE-3 · 三项**分别**冻结的权威（不许合并成一个词）────────
+   EVIDENCE_CONTENT_AUTHORITY      内容从哪来
+   EVIDENCE_VISIBILITY_AUTHORITY   谁判定这条内容对这个角色可读
+   RECALL_SELECTION_AUTHORITY      谁决定"要解释哪几条"
+   本阶段只把前两项收进服务端；第三项仍然是调用方提议的，而且
+   **不**声称它绑定于一次真实召回。把三者写成一个词，正是上一阶段
+   被机械证伪的那种过度声明。 */
+const EVIDENCE_CONTENT_AUTHORITY = 'SERVER_CANONICAL';
+const EVIDENCE_VISIBILITY_AUTHORITY = 'SERVER';
+const RECALL_SELECTION_AUTHORITY = 'CALLER_PROPOSED';
+const SELECTED_SET_BOUND_TO_CURRENT_RECALL = 'NO';
+const EVIDENCE_STATE_AUTHORITY = 'SERVER_NOT_CLAIMED';
+const PROVIDER_MEMORY_SOURCE = 'SERVER_CANONICAL_PROJECTION';
 
 /* 传输真值：本阶段**只有桌面**。这两个常量同时出现在 describe() 与结果里，
    因此"不得声称 Android 兼容"是一句可以被机械核对的话。 */
@@ -277,9 +335,16 @@ function resolveCostPolicy(policy) {
 
 function createRuntimeInterpretation(deps) {
   deps = deps || {};
-  /* 三个依赖就是整条权威链：角色目录 → Vault → 模型端口。
+  /* 依赖链（P21-R4-LIVE-3 起）：角色目录 → **canonical 证据** → Vault → 模型端口。
      任何一个缺席都会在**请求期**以稳定的码失败，而不是在装配期被静默忽略。 */
   const registry = deps.registry || null;
+  /* canonical 记忆 store：唯一的内容/可见性来源（`getRecord` 单条读）。
+     ★ 它**不是**可选的降级项：没有它，这一层就只能回到"信任调用方内容"，
+       而那正是本阶段要消灭的形状 —— 因此缺席 = fail closed（不是跳过校验）。 */
+  const memoryStore = deps.memoryStore || null;
+  /* 可见性谓词：全仓**唯一**一份（assets/js/memory-visibility-core.js，
+     浏览器与 Home Node 共用）。这里只注入、绝不复制第二份判定。 */
+  const visibilityCore = deps.visibilityCore || DEFAULT_VISIBILITY_CORE;
   const credentialAccess = deps.credentialAccess || null;
   const modelPort = deps.modelPort || null;
   const core = deps.core || DEFAULT_CORE;
@@ -287,9 +352,9 @@ function createRuntimeInterpretation(deps) {
   const clock = typeof deps.clock === 'function' ? deps.clock : Date.now;
   const logger = typeof deps.logger === 'function' ? deps.logger : function () {};
 
-  /* 进程级计数（观测用）：provider 调用与 Vault 读取各一个。
+  /* 进程级计数（观测用）：provider 调用 / Vault 读取 / canonical 读取各一个。
      它们**不**含任何秘密，也不含任何正文。 */
-  const counters = { calls: 0, providerCalls: 0, vaultReads: 0, refused: 0, succeeded: 0 };
+  const counters = { calls: 0, providerCalls: 0, vaultReads: 0, canonicalReads: 0, refused: 0, succeeded: 0 };
 
   function note(event, fields) {
     try { logger(event, fields || {}); } catch (_) { /* 观测失败不影响执行 */ }
@@ -316,7 +381,13 @@ function createRuntimeInterpretation(deps) {
       vaultReads: vaultReads,
       credentialAuthority: 'HOME_NODE_CHARACTER_RUNTIME_SPEC',
       promptAuthority: 'memory-interpretation-core.js#SYSTEM_INSTRUCTIONS',
-      validatorAuthority: 'memory-interpretation-core.js#validateResponse'
+      validatorAuthority: 'memory-interpretation-core.js#validateResponse',
+      /* P21-R4-LIVE-3：三项**分别**登记，任何一项都不得被读成另一项。 */
+      evidenceContentAuthority: EVIDENCE_CONTENT_AUTHORITY,
+      evidenceVisibilityAuthority: EVIDENCE_VISIBILITY_AUTHORITY,
+      recallSelectionAuthority: RECALL_SELECTION_AUTHORITY,
+      selectedSetBoundToCurrentRecall: SELECTED_SET_BOUND_TO_CURRENT_RECALL,
+      evidenceStateAuthority: EVIDENCE_STATE_AUTHORITY
     };
   }
 
@@ -358,6 +429,9 @@ function createRuntimeInterpretation(deps) {
     if (c.detail) out.detail = String(c.detail).slice(0, 200);
     if (c.field) out.field = String(c.field).slice(0, 80);
     if (c.requestedOperation !== undefined) out.requestedOperation = c.requestedOperation;
+    /* 证据来源自述只在服务端确实做过绑定时出现（早退路径没有它 ——
+       "没有证据可谈"与"证据来自 canonical"是两件不同的事）。 */
+    if (c.evidence !== undefined) out.evidence = c.evidence;
     return out;
   }
 
@@ -366,10 +440,27 @@ function createRuntimeInterpretation(deps) {
     if (!isPlainObject(body)) {
       return { ok: false, result: failure(REASON.requestShapeInvalid, { detail: 'body-not-an-object' }) };
     }
-    /* ① 闭集：任何白名单之外的**自有**键一律拒绝（绝不 ignore）。
+    /* ① canonical 证据字段：**先**查这个，再查白名单。
+          顺序是刻意的：一个既带 apiKey 又带 records 的请求，报出来的应该是
+          本阶段真正关心的那件事（"你想自己提供证据"），而不是一个泛泛的
+          未知字段。两者都是 reject，但只有前者能告诉审计者攻击者想干什么。 */
+    const keys = Object.keys(body);
+    for (const key of keys) {
+      if (CANONICAL_EVIDENCE_FIELDS.indexOf(key) >= 0) {
+        return {
+          ok: false,
+          result: failure(REASON.canonicalEvidenceSupplied, {
+            field: key,
+            detail: 'canonical memory content / evidence / visibility is server-derived (R4-LIVE-3)',
+            requestedOperation: typeof own(body, 'operation') === 'string'
+              ? own(body, 'operation').slice(0, MAX_OPERATION_ECHO_CHARS) : null
+          })
+        };
+      }
+    }
+    /* ② 闭集：任何白名单之外的**自有**键一律拒绝（绝不 ignore）。
           JSON.parse('{"__proto__":{...}}') 会产生一个**自有**的 `__proto__`
           键，因此原型污染尝试也在这里被当成未知字段抓住。 */
-    const keys = Object.keys(body);
     for (const key of keys) {
       if (REQUEST_FIELDS.indexOf(key) < 0) {
         const authority = AUTHORITY_BEARING_FIELDS.indexOf(key) >= 0;
@@ -384,7 +475,7 @@ function createRuntimeInterpretation(deps) {
         };
       }
     }
-    /* ② operation：**只有**一项合法。缺失 / null / 非字符串 / 任何别的词
+    /* ③ operation：**只有**一项合法。缺失 / null / 非字符串 / 任何别的词
           一律 operation-forbidden（fail closed，且不做通用模型路由）。 */
     const operationRaw = own(body, 'operation');
     const operation = typeof operationRaw === 'string' ? operationRaw : '';
@@ -398,7 +489,7 @@ function createRuntimeInterpretation(deps) {
         })
       };
     }
-    /* ③ characterId：非空字符串、有界。 */
+    /* ④ characterId：非空字符串、有界。 */
     const characterIdRaw = own(body, 'characterId');
     const characterId = typeof characterIdRaw === 'string' ? characterIdRaw.trim() : '';
     if (!characterId || characterId.length > MAX_CHARACTER_ID_CHARS) {
@@ -409,8 +500,8 @@ function createRuntimeInterpretation(deps) {
         })
       };
     }
-    /* ④ timeoutMs：**调用方的显式权威**。刻意要求真正的 number：
-         数字字符串不是权威，NaN/Infinity/<=0 也不是。 */
+    /* ⑤ timeoutMs：**调用方的显式权威**。刻意要求真正的 number：
+          数字字符串不是权威，NaN/Infinity/<=0 也不是。 */
     const timeoutRaw = own(body, 'timeoutMs');
     if (typeof timeoutRaw !== 'number' || !isFinite(timeoutRaw) || !(timeoutRaw > 0)) {
       return {
@@ -422,71 +513,111 @@ function createRuntimeInterpretation(deps) {
       };
     }
     const effectiveTimeoutMs = Math.min(timeoutRaw, SAFETY_CAP_MS);
-    /* ⑤ inputEnvelope：闭集 + 有界。 */
-    const envelopeRaw = own(body, 'inputEnvelope');
-    if (!isPlainObject(envelopeRaw)) {
+    /* ⑥ selectedMemoryIds：**取代**了旧的 caller-supplied records。
+          逐条规则都是必要的，没有一条是"顺手加的"：
+            · 必须是数组（缺省不是"空选择"，而是形状错）；
+            · 上限取 R4-C 自己的 MAX_MEMORIES —— 不是这里另发明一个数；
+            · 重复 id 一律 reject（静默去重会让"我选了 8 条"与"解释了 7 条"
+              在调用方不知情的情况下分叉）；
+            · 每个都是非空有界字符串（数字 id 不是 id）。 */
+    const idsRaw = own(body, 'selectedMemoryIds');
+    if (!Array.isArray(idsRaw)) {
       return {
         ok: false,
         result: failure(REASON.requestShapeInvalid, {
-          operation: OPERATION, characterId: characterId, detail: 'inputEnvelope-must-be-an-object'
+          operation: OPERATION, characterId: characterId, detail: 'selectedMemoryIds-must-be-an-array'
         })
       };
     }
-    const envelopeKeys = Object.keys(envelopeRaw);
-    for (const key of envelopeKeys) {
-      if (ENVELOPE_FIELDS.indexOf(key) < 0) {
+    if (idsRaw.length > MAX_SELECTED_MEMORY_IDS) {
+      return {
+        ok: false,
+        result: failure(REASON.selectionExceedsBound, {
+          operation: OPERATION, characterId: characterId,
+          detail: 'selectedMemoryIds exceeds R4-C MAX_MEMORIES=' + MAX_SELECTED_MEMORY_IDS
+        })
+      };
+    }
+    const selectedMemoryIds = [];
+    const seenIds = Object.create(null);
+    for (const rawId of idsRaw) {
+      if (typeof rawId !== 'string') {
         return {
           ok: false,
-          result: failure(REASON.requestFieldForbidden, {
-            operation: OPERATION, characterId: characterId, field: 'inputEnvelope.' + key,
-            detail: 'inputEnvelope-is-a-closed-schema'
+          result: failure(REASON.requestShapeInvalid, {
+            operation: OPERATION, characterId: characterId,
+            detail: 'selectedMemoryIds entries must be non-empty strings'
           })
         };
       }
+      const id = rawId.trim();
+      if (!id || id.length > MAX_ID_CHARS) {
+        return {
+          ok: false,
+          result: failure(REASON.requestShapeInvalid, {
+            operation: OPERATION, characterId: characterId, detail: 'selectedMemoryIds entry out of bounds'
+          })
+        };
+      }
+      if (seenIds[id]) {
+        return {
+          ok: false,
+          result: failure(REASON.duplicateMemoryId, {
+            operation: OPERATION, characterId: characterId, field: 'selectedMemoryIds',
+            detail: 'duplicate id in selection (silent de-duplication would change the interpreted set)'
+          })
+        };
+      }
+      seenIds[id] = true;
+      selectedMemoryIds.push(id);
     }
-    const records = own(envelopeRaw, 'records');
-    if (records !== undefined && (!Array.isArray(records) || records.length > MAX_ENVELOPE_RECORDS
-      || records.some(function (r) { return !isPlainObject(r); }))) {
+    /* ⑦ currentState / roleName：**仅存**的两个非 canonical typed 输入。
+          currentState 也按闭集处理（核心只读 relationship / emotion），
+          因此"把记忆内容藏进 currentState"同样会被指名拒绝。 */
+    const currentStateRaw = own(body, 'currentState');
+    if (currentStateRaw !== undefined && !isPlainObject(currentStateRaw)) {
       return {
         ok: false,
         result: failure(REASON.requestShapeInvalid, {
-          operation: OPERATION, characterId: characterId,
-          detail: 'inputEnvelope.records must be an array of <= ' + MAX_ENVELOPE_RECORDS + ' objects'
+          operation: OPERATION, characterId: characterId, detail: 'currentState-must-be-an-object'
         })
       };
     }
-    const selectedIds = own(envelopeRaw, 'selectedIds');
-    if (selectedIds !== undefined && (!Array.isArray(selectedIds) || selectedIds.length > MAX_ENVELOPE_IDS)) {
-      return {
-        ok: false,
-        result: failure(REASON.requestShapeInvalid, {
-          operation: OPERATION, characterId: characterId,
-          detail: 'inputEnvelope.selectedIds must be an array of <= ' + MAX_ENVELOPE_IDS
-        })
-      };
+    if (isPlainObject(currentStateRaw)) {
+      for (const key of Object.keys(currentStateRaw)) {
+        if (key !== 'relationship' && key !== 'emotion') {
+          /* ★ 嵌套位置的**同一类意图必须报同一个码**：把 `content` 放在
+             currentState 里，和放在顶层是同一件事（"我想自己提供证据"），
+             因此 canonical 名单在嵌套层也走 canonical 码，只有真正无关的
+             未知键才是泛泛的 request-field-forbidden。
+             两处标签不一致会让审计者在日志里看到两种说法、一种行为。 */
+          const canonical = CANONICAL_EVIDENCE_FIELDS.indexOf(key) >= 0;
+          return {
+            ok: false,
+            result: canonical
+              ? failure(REASON.canonicalEvidenceSupplied, {
+                operation: OPERATION, characterId: characterId, field: 'currentState.' + key,
+                detail: 'canonical memory content / evidence / visibility is server-derived (R4-LIVE-3)'
+              })
+              : failure(REASON.requestFieldForbidden, {
+                operation: OPERATION, characterId: characterId, field: 'currentState.' + key,
+                detail: 'currentState-is-a-closed-schema'
+              })
+          };
+        }
+      }
     }
-    const currentState = own(envelopeRaw, 'currentState');
-    if (currentState !== undefined && !isPlainObject(currentState)) {
-      return {
-        ok: false,
-        result: failure(REASON.requestShapeInvalid, {
-          operation: OPERATION, characterId: characterId, detail: 'inputEnvelope.currentState must be an object'
-        })
-      };
-    }
-    const roleName = own(envelopeRaw, 'roleName');
+    const roleNameRaw = own(body, 'roleName');
     /* 这里只把"明显不是字符串/明显超大"挡掉；真正的截断由核心做（它自己
        把 roleName 裁到 120 字符）—— 边界不复制核心的裁剪规则。 */
-    if (roleName !== undefined && (typeof roleName !== 'string' || roleName.length > MAX_ROLE_NAME_CHARS * 4)) {
+    if (roleNameRaw !== undefined && (typeof roleNameRaw !== 'string' || roleNameRaw.length > MAX_ROLE_NAME_CHARS * 4)) {
       return {
         ok: false,
         result: failure(REASON.requestShapeInvalid, {
-          operation: OPERATION, characterId: characterId, detail: 'inputEnvelope.roleName must be a string'
+          operation: OPERATION, characterId: characterId, detail: 'roleName must be a string'
         })
       };
     }
-    /* ★ 交给核心的只有这五个键，而且是**新对象**：信封里就算藏着别的
-         东西（在闭集校验之后已经不可能），也不会被转发下去。 */
     return {
       ok: true,
       operation: OPERATION,
@@ -494,12 +625,100 @@ function createRuntimeInterpretation(deps) {
       timeoutMs: effectiveTimeoutMs,
       timeoutClamped: effectiveTimeoutMs !== timeoutRaw,
       requestedTimeoutMs: timeoutRaw,
-      envelope: {
-        selectedIds: selectedIds,
-        records: records,
-        evidence: own(envelopeRaw, 'evidence'),
-        currentState: currentState,
-        roleName: roleName
+      selectedMemoryIds: selectedMemoryIds,
+      currentState: currentStateRaw,
+      roleName: roleNameRaw
+    };
+  }
+  /* ── P21-R4-LIVE-3 · canonical 证据绑定（**唯一**内容/可见性来源）────
+     输入：characterId + selectedMemoryIds（调用方提议的 id 列表）。
+     输出：{ records, boundIds, omitted, truncated, canonicalRevision }。
+
+     ★ 为什么这不是"再写一个 memory reader"：它读的是**既有**的
+       `memoryStore.getRecord(id)`（memory-store.js 的公开单条读），
+       判定用的是**既有**的 `visibilityCore.canReadMemory`
+       （memory-visibility-core.js —— 浏览器与 listVisible 共用的那一份）。
+       本函数只做三件既有模块不做的事：按请求顺序逐条取、把"取不到"与
+       "不可读"折叠成**同一个**结果、把整行投影成 R4-C 需要的七个字段。
+
+     ★ 缺失与隐藏**必须同形**（§9/§10）：两者都只是"这条没有被绑定"，
+       都进 `omitted`，都不带任何 per-id 原因。任何区分都会让响应变成
+       一个存在性 oracle（"这个 id 存在但你看不到" ≠ "这个 id 不存在"）。
+
+     ★ 只读：`getRecord` 不推进 revision、不写 change log、**不**激活
+       （激活是 recordActivation 的事，本阶段一次都不调用）。 */
+  function resolveCanonicalEvidence(characterId, selectedMemoryIds) {
+    if (!memoryStore || typeof memoryStore.getRecord !== 'function') {
+      return { ok: false, reason: 'memory-store-unavailable' };
+    }
+    if (!visibilityCore || typeof visibilityCore.canReadMemory !== 'function') {
+      return { ok: false, reason: 'visibility-core-unavailable' };
+    }
+    /* 读主体 = 这个角色。设备 id / owner id / 会话 id 都不得冒充。 */
+    const principal = { kind: 'role', id: characterId };
+    const records = [];
+    const boundIds = [];
+    const omitted = [];
+    let truncated = false;
+    for (const id of selectedMemoryIds) {
+      counters.canonicalReads += 1;
+      let record = null;
+      try { record = memoryStore.getRecord(id); }
+      catch (_) { record = null; }                 /* 读失败 = 取不到，不猜 */
+      if (!record) { omitted.push(id); continue; } /* 不存在 / 已软删 */
+      let decision = null;
+      try { decision = visibilityCore.canReadMemory(record, principal); }
+      catch (_) { decision = null; }               /* 判定抛错 = 不可读 */
+      if (!decision || decision.ok !== true) { omitted.push(id); continue; }
+      const projected = projectCanonicalRecord(record);
+      if (projected.truncated) truncated = true;
+      records.push(projected.record);
+      boundIds.push(id);
+    }
+    let revision = null;
+    try {
+      revision = typeof memoryStore.getRevision === 'function' ? Number(memoryStore.getRevision()) : null;
+      if (!isFinite(revision)) revision = null;
+    } catch (_) { revision = null; }
+    return {
+      ok: true,
+      records: records,
+      boundIds: boundIds,
+      omitted: omitted,
+      truncated: truncated,
+      canonicalRevision: revision
+    };
+  }
+
+  /* ── canonical 投影：**恰好**七个字段，全部 server-owned ─────────────
+     对应 R4-C normalizeInput 真正消费的键（id / content / title / source /
+     kind + encoding-time 的 valence / arousal）。刻意**不**含：
+     visibility / visibleTo（ACL 字段）、createdBy（归属）、
+     revision / deleted_at / seq（存储元数据）、
+     importance / activationCount / lastActivated（激活权威）、
+     createdAt（不必要的时间戳）。
+
+     ★ 截断是**服务端 policy**（§18）：即使记录是真的，仍按 R4-C 的
+       MAX_CONTENT_CHARS / MAX_TITLE_CHARS 裁剪，并把"发生过裁剪"如实
+       报成 `truncated`。调用方既无法影响裁多少，也拿不到裁剪前的文本。 */
+  function projectCanonicalRecord(record) {
+    const rawContent = text(record.content != null ? record.content : record.summary);
+    const rawTitle = text(record.title);
+    const content = rawContent.slice(0, MAX_CONTENT_CHARS);
+    const title = rawTitle.slice(0, MAX_TITLE_CHARS);
+    const valence = record.valence == null ? null : Number(record.valence);
+    const arousal = record.arousal == null ? null : Number(record.arousal);
+    return {
+      truncated: content.length !== rawContent.length || title.length !== rawTitle.length,
+      /* 键序固定：投影的**形状**本身也是契约的一部分（测试直接比对键集）。 */
+      record: {
+        id: text(record.id),
+        content: content,
+        title: title,
+        source: text(record.rawSource != null ? record.rawSource : record.source),
+        kind: text(record.kind),
+        valence: valence != null && isFinite(valence) ? valence : null,
+        arousal: arousal != null && isFinite(arousal) ? arousal : null
       }
     };
   }
@@ -678,7 +897,46 @@ function createRuntimeInterpretation(deps) {
     }
     const spec = specResult.spec;
 
-    /* ④ Vault（request-scoped，唯一 resolver）。 */
+    /* ④ canonical 证据绑定（P21-R4-LIVE-3）——排在 **Vault 之前**。
+          这一步取代了旧形状里的 `inputEnvelope.records`：调用方只提议
+          "要解释哪几条"，内容与可见性由服务端从 canonical store 解析。
+          ★ 顺序是安全属性而不是效率优化：一个"什么都绑不上"的请求
+            （伪造 id / 别人的私有 id / 空选择）在**读凭据之前**就结束了，
+            因此它连一次 Vault 读取都花不掉。 */
+    const rebind = resolveCanonicalEvidence(characterId, shape.selectedMemoryIds);
+    if (!rebind.ok) {
+      counters.refused += 1;
+      note('runtime-interpretation-canonical-evidence-unavailable', { characterId: characterId, reason: rebind.reason });
+      return failure(REASON.canonicalEvidenceUnavailable, Object.assign({}, base, {
+        providerClass: spec.provider, modelId: spec.model, detail: rebind.reason
+      }));
+    }
+    const evidenceMeta = {
+      source: PROVIDER_MEMORY_SOURCE,
+      requested: shape.selectedMemoryIds.length,
+      bound: rebind.boundIds.length,
+      canonicalRevision: rebind.canonicalRevision,
+      truncated: rebind.truncated,
+      projectionFields: PROJECTION_FIELDS.slice()
+    };
+    if (rebind.boundIds.length === 0) {
+      /* 一条都绑不上（全部不存在 / 全部不可见 / 本来就是空选择）：
+         与"没有已授权记忆"是同一件事，用核心的既有码如实回答，零成本。
+         ★ `omitted` 的内容**不**出现在这里：它只在成功结果里作为
+           `missingFor` 的一部分出现，因此"不存在"与"不可见"在这一步
+           给出**逐字节相同**的响应（§9/§10）。 */
+      counters.refused += 1;
+      note('runtime-interpretation-no-authorized-memory', {
+        characterId: characterId, requested: shape.selectedMemoryIds.length
+      });
+      return failure(core.REASON_CODES.noInput, Object.assign({}, base, {
+        providerClass: spec.provider, modelId: spec.model,
+        requested: shape.selectedMemoryIds.length,
+        evidence: evidenceMeta
+      }));
+    }
+
+    /* ⑤ Vault（request-scoped，唯一 resolver）。 */
     if (!credentialAccess || typeof credentialAccess.resolve !== 'function') {
       counters.refused += 1;
       note('runtime-interpretation-credential-unavailable', { characterId: characterId, reason: 'credential-access-not-assembled' });
@@ -711,25 +969,40 @@ function createRuntimeInterpretation(deps) {
          不进 response、不进 error detail、不进 trace / log / describe。 */
     const providerSpec = { provider: spec.provider, model: spec.model, endpoint: spec.endpoint, secret: resolved.secret };
 
-    /* ⑤ 信封构造（R4-C 纯核心，**唯一**一份构建器）。 */
+    /* ⑥ 信封构造（R4-C 纯核心，**唯一**一份构建器）。
+          ★ `selectedIds` = **请求的 id 列表**（不是只绑上的那些）：
+            R4-C 的 `normalizeInput` 按 selectedIds 逐条去 records 里取，
+            取不到的**跳过**，而 `assembleShadow` 用 `selectedIds − items`
+            算出 `missingFor` —— 那正是"这条没被解释"的唯一出口。
+            如果这里只传 boundIds，missingFor 会恒为空，
+            "服务端丢掉了哪几条"就再也没人说得出来。
+          ★ `records` = **投影后的 canonical 行**（顺序即请求顺序）。
+            调用方提供的任何内容都不在这条链上 —— 它在第①步就被拒绝了。 */
+    const coreInput = {
+      selectedIds: shape.selectedMemoryIds,
+      records: rebind.records,
+      currentState: shape.currentState,
+      roleName: shape.roleName
+    };
     if (!core || typeof core.buildRequest !== 'function' || typeof core.validateResponse !== 'function') {
       counters.refused += 1;
       return failure(REASON.coreMissing, Object.assign({}, base, { detail: 'R4-C core not loadable' }));
     }
     let built = null;
-    try { built = core.buildRequest(shape.envelope); }
+    try { built = core.buildRequest(coreInput); }
     catch (_) { return failure(REASON.requestShapeInvalid, Object.assign({}, base, { detail: 'core-build-threw' })); }
     if (!built || !built.stats || !built.stats.memoryCount) {
-      /* 没有已授权的记忆可解释：如实说"没有输入"，绝不调用模型（零成本）。
-         码直接取核心的既有词（no-authorized-memory），不另发明一个。 */
+      /* 理论上到不了这里（上面已经拦过 bound===0），保留为第二道防御：
+         核心若因为任何原因认为"没有输入"，就不调用模型（零成本）。 */
       counters.refused += 1;
       note('runtime-interpretation-no-input', { characterId: characterId });
       return failure(core.REASON_CODES.noInput, Object.assign({}, base, {
-        providerClass: spec.provider, modelId: spec.model, vaultReads: vaultReadsForRequest
+        providerClass: spec.provider, modelId: spec.model, vaultReads: vaultReadsForRequest,
+        requested: shape.selectedMemoryIds.length, evidence: evidenceMeta
       }));
     }
 
-    /* ⑥ 单次执行。 */
+    /* ⑦ 单次执行。 */
     const called = await invokeOnce(providerSpec, built, {
       signal: opts.signal || null,
       timeoutMs: shape.timeoutMs
@@ -753,12 +1026,13 @@ function createRuntimeInterpretation(deps) {
         attempts: called.attempts,
         providerCalls: called.attempts,
         vaultReads: vaultReadsForRequest,
-        requested: Array.isArray(shape.envelope.selectedIds) ? shape.envelope.selectedIds.length : 0,
+        requested: shape.selectedMemoryIds.length,
+        evidence: evidenceMeta,
         detail: redactSecret(called.detail, resolved.secret)
       }));
     }
 
-    /* ⑦ 解析：provider 原文到此为止。浏览器只会收到**校验过**的结构化结果。 */
+    /* ⑧ 解析：provider 原文到此为止。浏览器只会收到**校验过**的结构化结果。 */
     const raw = called.text;
     if (typeof raw !== 'string' || !raw.trim()) {
       return failure(REASON.invalidOutput, Object.assign({}, base, modelMeta, {
@@ -778,8 +1052,15 @@ function createRuntimeInterpretation(deps) {
       }));
     }
 
-    /* ⑧ **同一份** R4-C validator。这里没有第二套 schema，也没有第二套枚举。 */
-    const allowedIds = Array.isArray(shape.envelope.selectedIds) ? shape.envelope.selectedIds : [];
+    /* ⑨ **同一份** R4-C validator。这里没有第二套 schema，也没有第二套枚举。
+          ★ allowedIds = **绑定成功的** id（不是请求的那一串）。
+            allowedIds 的语义是"模型**被允许**返回哪些 id"，而模型只见过
+            MEMORY_BATCH 里那几条；若把没绑上的 id（不存在 / 不可见）也放进
+            允许集，一个乱回包的 provider 就能替一条**服务端刻意没给它看的**
+            记忆编出一份"解释"，而那份解释会通过校验进入结果。
+            `assembleShadow` 仍然拿请求列表，因此 missingFor / counts.requested
+            的对外语义不受影响。 */
+    const allowedIds = rebind.boundIds.slice();
     const validated = core.validateResponse(parsed, { allowedIds: allowedIds });
     if (!validated || validated.ok !== true) {
       const code = (validated && Array.isArray(validated.reasonCodes) && validated.reasonCodes.length)
@@ -797,14 +1078,15 @@ function createRuntimeInterpretation(deps) {
       }
       return failure(code, Object.assign({}, base, modelMeta, {
         attempts: called.attempts, providerCalls: called.attempts, vaultReads: vaultReadsForRequest,
-        requested: allowedIds.length,
+        requested: shape.selectedMemoryIds.length,
         rejected: validated && validated.rejected ? validated.rejected : [],
-        extraCodes: perItem
+        extraCodes: perItem,
+        evidence: evidenceMeta
       }));
     }
 
-    /* ⑨ 非持久结果（R4-C assembleShadow 的原始形状 + 三个审计字段）。 */
-    const shadow = core.assembleShadow(shape.envelope, validated, {
+    /* ⑩ 非持久结果（R4-C assembleShadow 的原始形状 + 审计字段）。 */
+    const shadow = core.assembleShadow(coreInput, validated, {
       providerClass: spec.provider,
       modelId: spec.model,
       latencyMs: latencyMs,
@@ -823,6 +1105,9 @@ function createRuntimeInterpretation(deps) {
       timeoutMs: shape.timeoutMs,
       timeoutClamped: shape.timeoutClamped === true,
       status: 200,
+      /* 证据来源自述：调用方据此知道"模型看到的正文来自 canonical 投影"，
+         以及服务端裁过什么。**不**含任何被丢弃 id 的原因（§9/§10）。 */
+      evidence: evidenceMeta,
       /* boundary 覆盖 assembleShadow 里没有自述的那几件事；其余字段
          （durable:false / model.attempts:1 / metaMemoryState:null）来自核心。
          计数一律取本次请求的**实测值**，不硬编码。 */
@@ -873,7 +1158,26 @@ function createRuntimeInterpretation(deps) {
         productionEnablePath: 'NONE_IN_THIS_PHASE'
       },
       requestFields: REQUEST_FIELDS.slice(),
-      envelopeFields: ENVELOPE_FIELDS.slice(),
+      projectionFields: PROJECTION_FIELDS.slice(),
+      maxSelectedMemoryIds: MAX_SELECTED_MEMORY_IDS,
+      maxContentChars: MAX_CONTENT_CHARS,
+      maxTitleChars: MAX_TITLE_CHARS,
+      /* P21-R4-LIVE-3：三项权威分别出现，且**没有**任何一个字段叫
+         "SERVER_AUTHORIZED_RECALL" —— 那会是一句本阶段没有实现的话。 */
+      evidenceContentAuthority: EVIDENCE_CONTENT_AUTHORITY,
+      evidenceVisibilityAuthority: EVIDENCE_VISIBILITY_AUTHORITY,
+      recallSelectionAuthority: RECALL_SELECTION_AUTHORITY,
+      selectedSetBoundToCurrentRecall: SELECTED_SET_BOUND_TO_CURRENT_RECALL,
+      evidenceStateAuthority: EVIDENCE_STATE_AUTHORITY,
+      providerMemorySource: PROVIDER_MEMORY_SOURCE,
+      canonicalEvidence: {
+        reader: 'services/home-node/memory-store.js#getRecord',
+        visibility: 'assets/js/memory-visibility-core.js#canReadMemory',
+        rebinding: 'per-id canonical lookup + character visibility + bounded projection',
+        missingAndHiddenAreIndistinguishable: true,
+        duplicatesRejected: true,
+        orderPreserved: true
+      },
       counters: Object.assign({}, counters)
     };
   }
@@ -892,7 +1196,18 @@ module.exports.PATH = MEMORY_INTERPRETATION_PATH;
 module.exports.OPERATION = OPERATION;
 module.exports.ALLOWED_RUNTIME_DERIVATIONS = ALLOWED_RUNTIME_DERIVATIONS;
 module.exports.REQUEST_FIELDS = REQUEST_FIELDS;
-module.exports.ENVELOPE_FIELDS = ENVELOPE_FIELDS;
+module.exports.CANONICAL_EVIDENCE_FIELDS = CANONICAL_EVIDENCE_FIELDS;
+module.exports.PROJECTION_FIELDS = PROJECTION_FIELDS;
+module.exports.MAX_SELECTED_MEMORY_IDS = MAX_SELECTED_MEMORY_IDS;
+module.exports.MAX_CONTENT_CHARS = MAX_CONTENT_CHARS;
+module.exports.MAX_TITLE_CHARS = MAX_TITLE_CHARS;
+module.exports.EVIDENCE_CONTENT_AUTHORITY = EVIDENCE_CONTENT_AUTHORITY;
+module.exports.EVIDENCE_VISIBILITY_AUTHORITY = EVIDENCE_VISIBILITY_AUTHORITY;
+module.exports.RECALL_SELECTION_AUTHORITY = RECALL_SELECTION_AUTHORITY;
+module.exports.SELECTED_SET_BOUND_TO_CURRENT_RECALL = SELECTED_SET_BOUND_TO_CURRENT_RECALL;
+module.exports.EVIDENCE_STATE_AUTHORITY = EVIDENCE_STATE_AUTHORITY;
+module.exports.PROVIDER_MEMORY_SOURCE = PROVIDER_MEMORY_SOURCE;
+module.exports.DEFAULT_VISIBILITY_CORE = DEFAULT_VISIBILITY_CORE;
 module.exports.AUTHORITY_BEARING_FIELDS = AUTHORITY_BEARING_FIELDS;
 module.exports.REASON = REASON;
 module.exports.STATUS_BY_REASON = STATUS_BY_REASON;

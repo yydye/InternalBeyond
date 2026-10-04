@@ -1,6 +1,6 @@
 'use strict';
 /* ══════════════════════════════════════════════════════════════════════════
-   Internal Beyond · P21-R4-LIVE-2.1 · Runtime Interpretation Boundary
+   Internal Beyond · P21-R4-LIVE-3 · Runtime Interpretation Boundary
    （纯 Node · 零真实网络 · 零真实 provider · ZERO REAL PROVIDER CALLS）
 
    运行：node tests/test_r4c_live_runtime_boundary.js
@@ -10,10 +10,20 @@
        POST /internal/runtime/memory-interpretation
 
    它的权威链是**一条**：角色 runtime spec（registry.getCharacterSpec）
+     → **服务端 canonical rebinding**（memoryStore.getRecord → 共享可见性
+       谓词 canReadMemory → 7 键投影）
      → 该角色自己的 Vault 绑定（services/home-node/credential-access.js）
      → 单次 provider 调用（active/node-model-port.js，单次、不重试）
      → R4-C 核心（assets/js/memory-recall/memory-interpretation-core.js）的
        同一份 validator。
+
+   ── LIVE-3 相对 LIVE-2.1 的唯一行为变化（请求契约）────────────────────
+   浏览器**不再提交 canonical 记忆内容**。请求是 6 键扁平闭集：
+     { operation, characterId, timeoutMs, selectedMemoryIds, currentState?, roleName? }
+   它只能表达"要解释哪几条"；`content` / `title` / `source` / `visibility`
+   / `evidenceState` / 旧的 `inputEnvelope` 载体一律**指名拒绝**
+   （caller-attempted-to-supply-canonical-evidence），绝不静默忽略。
+   因此"调用方送什么正文"这件事在类型上不再存在 —— §D/§K 逐条证明。
 
    而且它**永远不持久化**：一次成功调用前后，记忆库 / 理解库 / 聊天库 /
    Vault 文件逐字节不变。
@@ -30,7 +40,7 @@
    ANDROID_COMPATIBILITY = NOT_PROVEN（本文件任何地方都不得声称安卓兼容）
 
    ── §N · 跨文件哈希一致性 ─────────────────────────────────────────────
-   路径 / 操作名 / 信封键在三处各有一份字面量（Node 服务、浏览器客户端、
+   路径 / 操作名 / **请求闭集键**在三处各有一份字面量（Node 服务、浏览器客户端、
    传输层路由判定）。本节把三者钉在一起，并打印：
      PATH_LITERAL_SOURCES_CONSISTENT / AUTO_INVOCATION_ABSENT /
      SERVER_ENABLE_PATH_ABSENT
@@ -62,6 +72,9 @@ const NODE_MODEL_PORT = require(path.join(ROOT, 'active', 'node-model-port.js'))
 const CREDENTIAL_ACCESS = require(path.join(ROOT, 'services', 'home-node', 'credential-access.js'));
 const CREDENTIAL_VAULT = require(path.join(ROOT, 'active', 'credential-vault.js'));
 const SERVICE = require(path.join(ROOT, 'services', 'home-node-service.js'));
+/* LIVE-3：内容权威在 canonical store 里，因此直接构造的边界实例也必须拿到
+   **真实** store（真实 SQLite + 真实 store API），而不是一份手写对象。 */
+const MEMORY_STORE = require(path.join(ROOT, 'services', 'home-node', 'memory-store.js'));
 
 /* ── 冻结常量 ─────────────────────────────────────────────────────────── */
 const SENTINEL = 'SECRET_SENTINEL_INTERP_91B7';
@@ -103,6 +116,26 @@ let PATH_LITERAL_SOURCES_CONSISTENT = false;
 let AUTO_INVOCATION_ABSENT = false;
 let SERVER_ENABLE_PATH_ABSENT = false;
 let HTTP_SECOND_PATH_LITERAL = null;
+
+/* ── LIVE-3 · canonical evidence 的实测裁决（全部先 UNKNOWN/NO，量到了才赋值）──
+   这些常量与 §D/§K 的断言**共享同一个测量**：打印出来的每一个字母都必须是
+   一次真实观测的结果，而不是注释里的一句话。 */
+let CANONICAL_REBINDING_PROVEN = false;          /* provider 收到的是 store 里的正文 */
+let CALLER_CANONICAL_EVIDENCE_REFUSED = false;   /* 22 个 canonical 名字逐个被指名拒绝 */
+let SELECTED_ID_ORDER_PRESERVED = false;         /* 批内顺序 == selectedMemoryIds 顺序 */
+let MISSING_AND_HIDDEN_INDISTINGUISHABLE = false;/* 缺失与隐藏除 id 外无任何差别 */
+let SELECTED_SET_BOUND_ENFORCED = false;         /* 0..8，重复拒绝、超界拒绝 */
+let PROJECTION_FIELD_COUNT = null;               /* 投影恰好 7 键 */
+let PROJECTION_FIELDS_OBSERVED = null;
+let EVIDENCE_BLOCK_SOURCE = null;                /* SERVER_CANONICAL_PROJECTION */
+let CANONICAL_REVISION_REPORTED = null;
+let SYSTEM_EVIDENCE_STATE_IS_NULL = false;       /* 服务端不声称 MetaMemory 证据态 */
+const CANONICAL_BEARING_NAMES = Object.freeze([
+  'records', 'record', 'memoryRecords', 'memory_records', 'content', 'summary',
+  'title', 'source', 'rawSource', 'evidenceState', 'evidence', 'visibility',
+  'visibleTo', 'excludeFrom', 'createdAt', 'importance', 'activationCount',
+  'canonical', 'snapshot', 'memoryPayload', 'inputEnvelope', 'selectedIds'
+]);
 
 /* ── 深扫描工具：结果信封的形状由服务拥有，测试只读它 ─────────────────── */
 function deepGet(node, key, maxDepth) {
@@ -312,28 +345,110 @@ function hangingProviderFetch(rec, observation) {
 }
 
 /* ── 输入构造 ─────────────────────────────────────────────────────────── */
+/* 一条 **canonical** 记忆行（memory-store 的合法形状）。LIVE-3 起正文只能来自
+   这里：服务端自己读 store、自己投影。下面 memoryRecord() 保留的唯一用途是
+   "调用方试图夹带 canonical 正文"的那些**拒绝**用例 —— 它们必须在到达核心
+   之前就被指名拒绝，而不是被静默忽略。 */
+function canonicalRow(id, over) {
+  return Object.assign({
+    id: id, kind: 'episodic', title: 'T-' + id, summary: '', content: 'CANON-' + id,
+    domain: '日常', tags: [], valence: 0.2, arousal: 0.7, importance: 5, resolved: false,
+    visibility: 'public', visibleTo: [], excludeFrom: [],
+    activationCount: 0, created: NOW, lastActivated: NOW,
+    createdBy: 'user', createdByName: '', editedByUser: false,
+    consolidatedFrom: [], lastConsolidatedAt: null
+  }, over || {});
+}
 function memoryRecord(over) {
   return Object.assign({
     id: 'm1', title: '显卡', content: '显卡 驱动 更新失败，我熬到凌晨', rawSource: 'chat',
     kind: 'episodic', valence: 0.2, arousal: 0.7
   }, over || {});
 }
-function envelope(over) {
-  return Object.assign({
-    selectedIds: ['m1'],
-    records: [memoryRecord()],
-    evidence: {},
-    currentState: { relationship: 'warm', emotion: 'calm' },
-    roleName: 'A'
-  }, over || {});
-}
+/* 请求体 = **扁平 6 键闭集**。`selectedMemoryIds` 是唯一的内容指涉方式：
+   它只说明"要解释哪几条"，不带任何正文、可见性或证据状态。 */
 function requestBody(over) {
   return Object.assign({
     operation: 'memory-interpretation',
     characterId: 'char_a',
     timeoutMs: 1000,
-    inputEnvelope: envelope()
+    selectedMemoryIds: ['m1'],
+    currentState: { relationship: 'warm', emotion: 'calm' },
+    roleName: 'A'
   }, over || {});
+}
+
+/* ── 共享的真实 canonical store（临时目录）──────────────────────────────
+   每一个直接构造的边界实例都注入**同一个** store。这里刻意用真实 SQLite +
+   真实 store API，而不是一份手写替身：本阶段的核心事实就是"正文来自 canonical
+   store"，如果 store 是假的，那条事实就退化成"正文来自测试写的一个对象"。 */
+let CANON_DIR = null;
+let CANON_STORE = null;
+function canonStore() {
+  if (CANON_STORE) return CANON_STORE;
+  CANON_DIR = freshDir('ib-interp-canon-');
+  CANON_STORE = MEMORY_STORE({ dataDir: CANON_DIR, logger: () => {} });
+  const opened = CANON_STORE.open();
+  if (!opened || opened.ok !== true) throw new Error('canonical store failed to open: ' + JSON.stringify(opened));
+  /* 三条可见行 + 一条"对 char_a 隐藏"的行。没有 m_missing 这一行 ——
+     "缺失"必须是**真的**不存在，而不是被测试标记成不存在。 */
+  const seeds = [
+    canonicalRow('m1', { content: '显卡 驱动 更新失败，我熬到凌晨' }),
+    canonicalRow('m2', { content: 'CANON-M2' }),
+    canonicalRow('m3', { content: 'CANON-M3' }),
+    canonicalRow('m_hidden', { content: 'CANON-HIDDEN', visibility: 'only', visibleTo: ['char_b'] })
+  ];
+  for (const row of seeds) {
+    const wrote = CANON_STORE.putRecord(row);
+    if (!wrote || wrote.ok !== true) throw new Error('canonical seed failed: ' + JSON.stringify(wrote));
+  }
+  return CANON_STORE;
+}
+function closeCanonStore() {
+  if (CANON_STORE) { try { CANON_STORE.close(); } catch (_) { /* 已关闭 */ } CANON_STORE = null; }
+  if (CANON_DIR) {
+    dropDir(CANON_DIR);
+    CANON_DIR_CLEANED = !fs.existsSync(CANON_DIR);
+    CANON_DIR = null;
+  }
+}
+let CANON_DIR_CLEANED = null;
+
+/* ── wire 观测（provider 真正收到了什么）────────────────────────────────
+   LIVE-3 要证明的是"投影后的 canonical 内容到达了 provider"，而 projection
+   只存在于 USER 消息的 JSON 块里 —— 因此必须把 wire 解析出来看，而不是相信
+   边界自己的自述。 */
+function wireEnvelope(wire) {
+  const messages = (wire && Array.isArray(wire.messages)) ? wire.messages : [];
+  const user = messages.filter(m => m && m.role === 'user')[0];
+  const text = user && typeof user.content === 'string' ? user.content : '';
+  const m = /```json\r?\n([\s\S]*?)\r?\n```/.exec(text);
+  if (!m) return null;
+  try { return JSON.parse(m[1]); } catch (_) { return null; }
+}
+function wireBatch(wire) {
+  const env = wireEnvelope(wire);
+  return env && Array.isArray(env.MEMORY_BATCH) ? env.MEMORY_BATCH : [];
+}
+/* 真实 NodeModelPort + 记录型 fake fetch：应答按**它自己收到的批次**生成，
+   因此"投影顺序"与"模型被要求解释的顺序"是同一份证据。 */
+function recordingProviderFetch(rec) {
+  return function (url, init) {
+    const bodyText = String((init && init.body) || '');
+    let wire = null;
+    try { wire = JSON.parse(bodyText); } catch (_) { wire = null; }
+    rec.push({
+      url: String(url), method: String((init && init.method) || ''),
+      headers: Object.assign({}, (init && init.headers) || {}),
+      bodyText: bodyText, wire: wire, hasSignal: !!(init && init.signal)
+    });
+    const batch = wireBatch(wire);
+    const payload = { items: batch.map(m => validItem(String(m.memoryId))) };
+    return Promise.resolve({
+      ok: true, status: 200,
+      text: function () { return Promise.resolve(JSON.stringify({ choices: [{ message: { content: JSON.stringify(payload) } }] })); }
+    });
+  };
 }
 function validItem(id) {
   return {
@@ -364,10 +479,15 @@ function makeService(over) {
   const credentialAccess = o.credentialAccess === undefined
     ? fakeCredentialAccess({ cred_a: SENTINEL, cred_b: SENTINEL + '_B' }) : o.credentialAccess;
   const modelPort = o.modelPort === undefined ? fakePort(validBatch(['m1'])) : o.modelPort;
+  /* LIVE-3：canonical store 是**第五个**依赖（registry / credentialAccess /
+     modelPort / core / memoryStore）。默认注入真实 store；显式传 null 用来
+     证明"store 缺席 ⇒ 明确失败"，而不是静默解释一个空集合。 */
+  const memoryStore = o.memoryStore === undefined ? canonStore() : o.memoryStore;
   const svc = RUNTIME.createRuntimeInterpretation({
     registry: registry,
     credentialAccess: credentialAccess,
     modelPort: modelPort,
+    memoryStore: memoryStore,
     costPolicy: o.costPolicy,
     clock: o.clock || (() => NOW),
     logger: (event, fields) => {
@@ -375,7 +495,7 @@ function makeService(over) {
       catch (_) { logs.push({ event: String(event) }); }
     }
   });
-  return { svc: svc, registry: registry, credentialAccess: credentialAccess, modelPort: modelPort, logs: logs };
+  return { svc: svc, registry: registry, credentialAccess: credentialAccess, modelPort: modelPort, memoryStore: memoryStore, logs: logs };
 }
 
 /* ── repo 静态扫描 ────────────────────────────────────────────────────── */
@@ -591,6 +711,16 @@ catch (error) { RUNTIME_LOAD_ERROR = error; }
       && !/require\([^)]*sqlite[^)]*\)/.test(rtCode),
       'no second lookup (no getCharacter DTO read, no catalog scan, no sqlite)');
 
+    /* LIVE-3：证据读取只有**一条**路 —— 注入的 store 上的 getRecord(id)。
+       不重跑 recall、不列全表、不自己开 sqlite；"服务端只按 id 取那几行"
+       这句话因此是可机械核对的。 */
+    check('A5b.canonicalEvidenceReadIsGetRecordOnly',
+      /memoryStore/.test(rtCode) && /\.getRecord\s*\(/.test(rtCode)
+      && !/\.listRecords\s*\(/.test(rtCode)
+      && !/\.listVisible\s*\(/.test(rtCode)
+      && !/memoryRetrieval|Orchestrator|\.retrieve\s*\(/i.test(rtCode),
+      'evidence read = memoryStore.getRecord(id) only; no recall rerun, no table scan');
+
     check('A6.credentialResolutionDelegatesToCredentialAccess',
       /credentialAccess/.test(rtCode) && /\.resolve\s*\(/.test(rtCode)
       && !/credential-vault|createCredentialResolver/.test(rtCode)
@@ -655,11 +785,28 @@ catch (error) { RUNTIME_LOAD_ERROR = error; }
     const FROZEN_BOUNDARY_CODES = ['disabled', 'operation-forbidden', 'request-shape-invalid',
       'request-field-forbidden', 'runtime-spec-unavailable', 'credential-unavailable',
       'timeout-authority-missing', 'timeout', 'provider-error', 'network', 'invalid-output',
-      'aborted', 'model-port-unavailable'];
+      'aborted', 'model-port-unavailable',
+      /* LIVE-3 新增（全部来自冻结契约，逐字） */
+      'caller-attempted-to-supply-canonical-evidence', 'duplicate-memory-id',
+      'memory-selection-exceeds-bound', 'canonical-evidence-unavailable'];
     const declaredCodes = Object.keys(RT.REASON || {}).map(k => RT.REASON[k]);
     check('A11.everyFrozenBoundaryReasonCodeIsDeclared',
       FROZEN_BOUNDARY_CODES.every(c => declaredCodes.indexOf(c) >= 0),
       'missing: ' + JSON.stringify(FROZEN_BOUNDARY_CODES.filter(c => declaredCodes.indexOf(c) < 0)));
+    /* 新码必须有 HTTP 权威（否则"同一个失败两个状态码"就会重新出现）。 */
+    check('A11b.everyLIVE3CodeHasADeclaredStatus',
+      RT.STATUS_BY_REASON['caller-attempted-to-supply-canonical-evidence'] === 400
+      && RT.STATUS_BY_REASON['duplicate-memory-id'] === 400
+      && RT.STATUS_BY_REASON['memory-selection-exceeds-bound'] === 400
+      && RT.STATUS_BY_REASON['canonical-evidence-unavailable'] === 503
+      && RT.STATUS_BY_REASON['no-authorized-memory'] === 422,
+      JSON.stringify({
+        callerCanonical: RT.STATUS_BY_REASON['caller-attempted-to-supply-canonical-evidence'],
+        duplicate: RT.STATUS_BY_REASON['duplicate-memory-id'],
+        exceeds: RT.STATUS_BY_REASON['memory-selection-exceeds-bound'],
+        unavailable: RT.STATUS_BY_REASON['canonical-evidence-unavailable'],
+        noAuthorized: RT.STATUS_BY_REASON['no-authorized-memory']
+      }));
 
     const FROZEN_CORE_CODES = ['model-shape-invalid', 'model-returned-unknown-memory-id',
       'model-returned-duplicate-memory-id', 'model-field-exceeds-bound', 'model-enum-out-of-vocabulary',
@@ -781,21 +928,31 @@ catch (error) { RUNTIME_LOAD_ERROR = error; }
   }
 
   /* ══════════════════════════════════════════════════════════════════════
-     D · request contract（闭集 + 超时权威 + clamp）
+     D · request contract
+        （扁平 6 键闭集 + canonical 证据指名拒绝 + 选择集边界 + 超时权威 + clamp）
      ══════════════════════════════════════════════════════════════════════ */
   section('D · request contract');
   {
     const s = makeService({ costPolicy: POLICY_ON });
 
-    /* 缺失/形状错误 → request-shape-invalid */
+    /* ① 形状：characterId / selectedMemoryIds / timeoutMs 是必填的有界值。
+          selectedMemoryIds 是**唯一**指向内容的字段，它自己也被严格定型。 */
     const shapeCases = [
       ['missing characterId', (() => { const b = requestBody(); delete b.characterId; return b; })()],
       ['empty characterId', requestBody({ characterId: '' })],
       ['whitespace characterId', requestBody({ characterId: '   ' })],
       ['non-string characterId', requestBody({ characterId: 42 })],
-      ['missing inputEnvelope', (() => { const b = requestBody(); delete b.inputEnvelope; return b; })()],
-      ['array inputEnvelope', requestBody({ inputEnvelope: [] })],
-      ['string inputEnvelope', requestBody({ inputEnvelope: 'x' })]
+      ['missing selectedMemoryIds', (() => { const b = requestBody(); delete b.selectedMemoryIds; return b; })()],
+      ['non-array selectedMemoryIds', requestBody({ selectedMemoryIds: 'm1' })],
+      ['object selectedMemoryIds', requestBody({ selectedMemoryIds: { m1: true } })],
+      ['null selectedMemoryIds', requestBody({ selectedMemoryIds: null })],
+      ['non-string id entry', requestBody({ selectedMemoryIds: [42] })],
+      ['empty-string id entry', requestBody({ selectedMemoryIds: [''] })],
+      ['blank id entry', requestBody({ selectedMemoryIds: ['   '] })],
+      ['object id entry', requestBody({ selectedMemoryIds: [{ id: 'm1' }] })],
+      ['non-object currentState', requestBody({ currentState: 'warm' })],
+      ['array currentState', requestBody({ currentState: [] })],
+      ['non-string roleName', requestBody({ roleName: 7 })]
     ];
     for (const [label, b] of shapeCases) {
       const r = await call(s.svc, b);
@@ -803,8 +960,26 @@ catch (error) { RUNTIME_LOAD_ERROR = error; }
         r.ok === false && r.error === 'request-shape-invalid' && r.status === 400,
         primaryCode(r) + ' status=' + r.status);
     }
+    /* ①b currentState 也是闭集（2 键）：它是仅存的两个非 canonical 输入之一，
+           "把内容藏进 currentState"必须同样被指名拒绝 —— 而且嵌套里的
+           canonical 名字走**同一个**证据拒绝码，不是笼统的未知字段。 */
+    const stateCanonical = await call(s.svc, requestBody({
+      currentState: { relationship: 'warm', content: 'HIDDEN-IN-STATE' }
+    }));
+    check('D1b.nestedCanonicalNameInsideCurrentStateIsRefusedAsCanonicalEvidence',
+      stateCanonical.ok === false
+      && stateCanonical.error === 'caller-attempted-to-supply-canonical-evidence'
+      && stateCanonical.field === 'currentState.content' && stateCanonical.status === 400,
+      primaryCode(stateCanonical) + ' field=' + stateCanonical.field);
+    const stateUnknown = await call(s.svc, requestBody({
+      currentState: { relationship: 'warm', emotion: 'calm', injectedPrompt: 'hi' }
+    }));
+    check('D1c.anyOtherNestedKeyInsideCurrentStateIsRefusedByTheClosedSchema',
+      stateUnknown.ok === false && stateUnknown.error === 'request-field-forbidden'
+      && stateUnknown.field === 'currentState.injectedPrompt' && stateUnknown.status === 400,
+      primaryCode(stateUnknown) + ' field=' + stateUnknown.field);
 
-    /* 权威字段注入 → request-field-forbidden（指名该字段），且零成本 */
+    /* ② 执行权威字段注入 → request-field-forbidden（指名该字段），且零成本 */
     const forbidden = ['apiKey', 'secret', 'credentialRef', 'provider', 'model', 'endpoint',
       'systemPrompt', 'prompt', 'messages', 'developerPrompt', 'instructions', 'developer',
       'baseURL', 'token', 'authorization', 'headers', 'spec', 'config'];
@@ -824,35 +999,107 @@ catch (error) { RUNTIME_LOAD_ERROR = error; }
       && /closed-schema/.test(String(hr.detail)),
       primaryCode(hr) + ' field=' + hr.field + ' detail=' + hr.detail);
 
+    /* ③ ★ LIVE-3 的核心安全属性：每一个 canonical 证据名字都**指名**拒绝。
+          不是 ignore、不是静默丢弃 —— 请求会得到稳定的码 + 那个字段名，
+          因此"我到底哪里越权了"不需要调用方去猜。 */
+    let canonicalRefusedAll = true;
+    for (const field of CANONICAL_BEARING_NAMES) {
+      const b = requestBody();
+      b[field] = (field === 'inputEnvelope')
+        ? { selectedIds: ['m1'], records: [memoryRecord()] }
+        : 'INJECTED_CANONICAL';
+      const r = await call(s.svc, b);
+      const ok = r.ok === false
+        && r.error === 'caller-attempted-to-supply-canonical-evidence'
+        && r.field === field && r.status === 400;
+      if (!ok) canonicalRefusedAll = false;
+      check('D4.canonicalEvidenceRefused.' + field, ok,
+        'field=' + field + ' -> ' + primaryCode(r) + ' reportedField=' + r.field + ' status=' + r.status);
+    }
+    CALLER_CANONICAL_EVIDENCE_REFUSED = canonicalRefusedAll;
+
+    /* ③b 证据权威**先于**执行权威：连 operation 都不看，就先报越权字段。
+            （否则"送一个 records 再顺手把 operation 写错"会得到两种码，
+             调用方据此就能推断服务端内部检查顺序 —— 那不是本阶段的事实。） */
+    const wrongOpWithRecords = requestBody({ operation: 'chat', records: [memoryRecord()] });
+    const wor = await call(s.svc, wrongOpWithRecords);
+    check('D4b.canonicalEvidenceRefusalPrecedesTheOperationAllowlist',
+      wor.ok === false && wor.error === 'caller-attempted-to-supply-canonical-evidence'
+      && wor.field === 'records',
+      primaryCode(wor) + ' field=' + wor.field);
+
+    /* ③c 静态对照：这 22 个名字既不在请求白名单里，也全在拒绝名单里。 */
+    const declaredCanonical = Array.isArray(RT.CANONICAL_EVIDENCE_FIELDS) ? RT.CANONICAL_EVIDENCE_FIELDS : [];
+    check('D4c.theRequestSchemaIsFlat6AndCarriesNoCanonicalName',
+      RT.REQUEST_FIELDS.length === 6
+      && JSON.stringify(RT.REQUEST_FIELDS.slice()) === JSON.stringify(
+        ['operation', 'characterId', 'timeoutMs', 'selectedMemoryIds', 'currentState', 'roleName'])
+      && CANONICAL_BEARING_NAMES.every(n => RT.REQUEST_FIELDS.indexOf(n) < 0)
+      && CANONICAL_BEARING_NAMES.every(n => declaredCanonical.indexOf(n) >= 0)
+      && declaredCanonical.indexOf('inputEnvelope') >= 0
+      && declaredCanonical.indexOf('selectedIds') >= 0,
+      'REQUEST_FIELDS=' + JSON.stringify(RT.REQUEST_FIELDS.slice())
+      + ' CANONICAL_EVIDENCE_FIELDS(' + declaredCanonical.length + ')');
+
+    /* ④ 原型污染：__proto__ 是**自有**键，因此闭集先抓住它 */
     const polluted = JSON.parse('{"operation":"memory-interpretation","characterId":"char_a","timeoutMs":1000,'
-      + '"inputEnvelope":{"selectedIds":["m1"],"records":[]},"__proto__":{"provider":"evil"}}');
+      + '"selectedMemoryIds":["m1"],"__proto__":{"provider":"evil"}}');
     const pr = await call(s.svc, polluted);
-    check('D4.prototypePollutionIsRefusedAsAnUnknownOwnKey',
+    check('D5.prototypePollutionIsRefusedAsAnUnknownOwnKey',
       pr.ok === false && pr.error === 'request-field-forbidden' && pr.field === '__proto__'
       && s.modelPort.calls.requests.every(q => !q.spec || q.spec.provider !== 'evil'),
       primaryCode(pr) + ' field=' + pr.field);
 
-    /* inputEnvelope 也是闭集 */
-    const envExtra = requestBody({ inputEnvelope: Object.assign(envelope(), { injectedPrompt: 'hi' }) });
-    const er = await call(s.svc, envExtra);
-    check('D5.envelopeIsAClosedSchema',
-      er.ok === false && er.error === 'request-field-forbidden' && er.field === 'inputEnvelope.injectedPrompt',
-      primaryCode(er) + ' field=' + er.field);
-    const envAuthority = requestBody({ inputEnvelope: Object.assign(envelope(), { provider: 'evil', model: 'evil', endpoint: 'https://evil.invalid' }) });
-    const ear = await call(s.svc, envAuthority);
-    check('D6.authorityHiddenInsideTheEnvelopeIsRefused',
-      ear.ok === false && ear.error === 'request-field-forbidden'
-      && s.modelPort.calls.requests.every(q => JSON.stringify(q).indexOf('evil.invalid') < 0),
-      primaryCode(ear) + ' field=' + ear.field);
-    const recTooMany = requestBody({
-      inputEnvelope: envelope({ records: Array.from({ length: 65 }, (_, i) => memoryRecord({ id: 'm' + i })) })
-    });
-    const rtr = await call(s.svc, recTooMany);
-    check('D7.oversizedEnvelopeArrayIsRefused',
-      rtr.ok === false && rtr.error === 'request-shape-invalid' && rtr.status === 400,
-      primaryCode(rtr) + ' status=' + rtr.status);
+    /* ⑤ 选择集边界：0..8 由服务端强制，重复 id 不当"同一件事"处理。
+          刻意**不**静默去重：去重会让调用方以为它提交的集合被接受了。 */
+    const dupPort = fakePort(validBatch(['m1']));
+    const dupVault = fakeCredentialAccess({ cred_a: SENTINEL });
+    const dupSvc = makeService({ costPolicy: POLICY_ON, modelPort: dupPort, credentialAccess: dupVault });
+    const dup = await call(dupSvc.svc, requestBody({ selectedMemoryIds: ['m1', 'm1'] }));
+    check('D6.duplicateMemoryIdIsRefusedByName',
+      dup.ok === false && dup.error === 'duplicate-memory-id' && dup.status === 400
+      && dupPort.calls.n === 0 && dupVault.calls.resolve.length === 0,
+      primaryCode(dup) + ' status=' + dup.status + ' providerCalls=' + dupPort.calls.n
+      + ' vaultReads=' + dupVault.calls.resolve.length);
 
-    /* 超时权威 */
+    const nine = Array.from({ length: 9 }, (_, i) => 'm' + i);
+    const ninePort = fakePort(validBatch(['m0']));
+    const nineSvc = makeService({ costPolicy: POLICY_ON, modelPort: ninePort });
+    const nineRes = await call(nineSvc.svc, requestBody({ selectedMemoryIds: nine }));
+    check('D7.selectionOverTheR4CMaximumIsRefused',
+      nineRes.ok === false && nineRes.error === 'memory-selection-exceeds-bound' && nineRes.status === 400
+      && ninePort.calls.n === 0,
+      primaryCode(nineRes) + ' status=' + nineRes.status + ' providerCalls=' + ninePort.calls.n);
+
+    const eight = Array.from({ length: 8 }, (_, i) => 'ghost' + i);
+    const eightPort = fakePort(validBatch(['m1']));
+    const eightVault = fakeCredentialAccess({ cred_a: SENTINEL });
+    const eightSvc = makeService({ costPolicy: POLICY_ON, modelPort: eightPort, credentialAccess: eightVault });
+    const eightRes = await call(eightSvc.svc, requestBody({ selectedMemoryIds: eight }));
+    check('D8.eightIsInsideTheBoundAndFailsForContentNotForShape',
+      eightRes.ok === false && eightRes.error === 'no-authorized-memory' && eightRes.status === 422
+      && eightPort.calls.n === 0 && eightVault.calls.resolve.length === 0,
+      '8 unique-but-unknown ids must pass the SHAPE gate and fail as no-authorized-memory ('
+      + primaryCode(eightRes) + ' status=' + eightRes.status + ')');
+    check('D8b.theDeclaredBoundComesFromTheR4CCore',
+      RT.MAX_SELECTED_MEMORY_IDS === CORE.BOUNDS.MAX_MEMORIES && CORE.BOUNDS.MAX_MEMORIES === 8,
+      'RT.MAX_SELECTED_MEMORY_IDS=' + RT.MAX_SELECTED_MEMORY_IDS
+      + ' CORE.BOUNDS.MAX_MEMORIES=' + CORE.BOUNDS.MAX_MEMORIES);
+
+    const emptyPort = fakePort(validBatch(['m1']));
+    const emptyVault = fakeCredentialAccess({ cred_a: SENTINEL });
+    const emptySvc = makeService({ costPolicy: POLICY_ON, modelPort: emptyPort, credentialAccess: emptyVault });
+    const emptyRes = await call(emptySvc.svc, requestBody({ selectedMemoryIds: [] }));
+    check('D8c.anEmptySelectionIsLegalButHasNothingToInterpret',
+      emptyRes.ok === false && emptyRes.error === 'no-authorized-memory' && emptyRes.status === 422
+      && emptyPort.calls.n === 0 && emptyVault.calls.resolve.length === 0,
+      primaryCode(emptyRes) + ' status=' + emptyRes.status);
+    SELECTED_SET_BOUND_ENFORCED = CALLER_CANONICAL_EVIDENCE_REFUSED
+      && dup.error === 'duplicate-memory-id' && nineRes.error === 'memory-selection-exceeds-bound'
+      && eightRes.error === 'no-authorized-memory' && emptyRes.error === 'no-authorized-memory'
+      && RT.MAX_SELECTED_MEMORY_IDS === CORE.BOUNDS.MAX_MEMORIES;
+
+    /* ⑥ 超时权威（与 LIVE-2.1 逐字相同：调用方显式给出，服务端不发明默认值） */
     const timeoutCases = [
       ['missing', undefined], ['zero', 0], ['negative', -1], ['NaN', NaN],
       ['numeric string', '10'], ['Infinity', Infinity], ['null', null], ['boolean', true]
@@ -861,11 +1108,11 @@ catch (error) { RUNTIME_LOAD_ERROR = error; }
       const b = requestBody();
       if (value === undefined) delete b.timeoutMs; else b.timeoutMs = value;
       const r = await call(s.svc, b);
-      check('D8.timeoutAuthorityMissing.' + label,
+      check('D9.timeoutAuthorityMissing.' + label,
         r.ok === false && r.error === 'timeout-authority-missing' && r.status === 400,
         'value=' + String(value) + ' -> ' + primaryCode(r) + ' status=' + r.status);
     }
-    check('D9.everyRefusalAboveSpentNothing',
+    check('D10.everyRefusalAboveSpentNothing',
       s.modelPort.calls.n === 0 && s.credentialAccess.calls.resolve.length === 0,
       'providerCalls=' + s.modelPort.calls.n + ' vaultReads=' + s.credentialAccess.calls.resolve.length);
 
@@ -874,16 +1121,116 @@ catch (error) { RUNTIME_LOAD_ERROR = error; }
     const capSvc = makeService({ costPolicy: POLICY_ON, modelPort: capPort });
     const capRes = await call(capSvc.svc, requestBody({ timeoutMs: 10 * 60 * 1000 }));
     const effective = capPort.calls.options[0] && capPort.calls.options[0].timeoutMs;
-    check('D10.overCapTimeoutIsClampedServerSide',
+    check('D11.overCapTimeoutIsClampedServerSide',
       capRes.ok === true && typeof effective === 'number' && effective <= RT.SAFETY_CAP_MS
       && capRes.timeoutClamped === true,
       'caller=600000 effective=' + effective + ' timeoutClamped=' + capRes.timeoutClamped);
     const exactPort = fakePort(validBatch(['m1']));
     const exactSvc = makeService({ costPolicy: POLICY_ON, modelPort: exactPort });
     await call(exactSvc.svc, requestBody({ timeoutMs: 4321 }));
-    check('D11.timeoutIsNotServerInvented',
+    check('D12.timeoutIsNotServerInvented',
       exactPort.calls.options[0] && exactPort.calls.options[0].timeoutMs === 4321,
       'port saw ' + (exactPort.calls.options[0] && exactPort.calls.options[0].timeoutMs) + ' for caller 4321');
+
+    /* ══ ⑦ canonical rebinding（真实 store + 真实行 · 直接面）══════════
+       LIVE-3 的正文权威在这里被机械证明：调用方只给 id，provider 收到的是
+       store 里那一行的内容；隐藏与缺失都只是"这一条没有被绑定"。 */
+    const bindPort = fakePort(request => {
+      const batch = wireBatch({ messages: request.messages });
+      return { items: batch.map(m => validItem(String(m.memoryId))) };
+    });
+    const bindSvc = makeService({ costPolicy: POLICY_ON, modelPort: bindPort });
+    const bindRes = await call(bindSvc.svc, requestBody({
+      selectedMemoryIds: ['m3', 'm_missing', 'm1', 'm_hidden']
+    }));
+    const bindBatch = wireBatch({ messages: (bindPort.calls.requests[0] || {}).messages });
+    const storeM3 = canonStore().getRecord('m3');
+    const storeM1 = canonStore().getRecord('m1');
+    check('D13.providerReceivesTheStoredCanonicalContentNotAnythingTheCallerWrote',
+      bindRes.ok === true && bindBatch.length === 2
+      && String(bindBatch[0].memoryId) === 'm3' && String(bindBatch[0].content) === String(storeM3.content)
+      && String(bindBatch[1].memoryId) === 'm1' && String(bindBatch[1].content) === String(storeM1.content),
+      'wireBatch=' + JSON.stringify(bindBatch.map(m => ({ memoryId: m.memoryId, content: m.content }))).slice(0, 300));
+    CANONICAL_REBINDING_PROVEN = bindRes.ok === true && bindBatch.length === 2
+      && String(bindBatch[0].content) === String(storeM3.content)
+      && String(bindBatch[1].content) === String(storeM1.content);
+    SELECTED_ID_ORDER_PRESERVED = JSON.stringify(bindBatch.map(m => String(m.memoryId))) === JSON.stringify(['m3', 'm1']);
+
+    check('D14.selectedIdOrderIsPreservedEndToEnd',
+      SELECTED_ID_ORDER_PRESERVED,
+      'caller=[m3,m_missing,m1,m_hidden] bound/ordered=[' + bindBatch.map(m => m.memoryId).join(',') + ']');
+
+    /* 隐藏（m_hidden 对 char_a 不可读）与缺失（m_missing 根本不存在）在结果里
+       必须是**同一件事**：都只出现在 missingFor，都是裸字符串，没有 reason。 */
+    const missingFor = Array.isArray(bindRes.missingFor) ? bindRes.missingFor : [];
+    check('D15.missingAndHiddenIdsAreUniformlyOmittedIntoMissingFor',
+      JSON.stringify(missingFor) === JSON.stringify(['m_missing', 'm_hidden'])
+      && missingFor.every(x => typeof x === 'string')
+      && JSON.stringify(bindRes.items.map(i => i.memoryId)) === JSON.stringify(['m3', 'm1']),
+      'missingFor=' + JSON.stringify(missingFor) + ' items=' + JSON.stringify(bindRes.items.map(i => i.memoryId)));
+
+    /* 只有缺失 / 只有隐藏：两次响应除 id 本身之外必须逐字相同。 */
+    const shapeOf = r => JSON.stringify(Object.keys(r || {}).sort());
+    const stripIds = r => JSON.stringify(r).split('m_missing').join('<ID>').split('m_hidden').join('<ID>');
+    const onlyMissing = await call(makeService({ costPolicy: POLICY_ON, modelPort: fakePort(validBatch(['m1'])) }).svc,
+      requestBody({ selectedMemoryIds: ['m_missing'] }));
+    const onlyHidden = await call(makeService({ costPolicy: POLICY_ON, modelPort: fakePort(validBatch(['m1'])) }).svc,
+      requestBody({ selectedMemoryIds: ['m_hidden'] }));
+    MISSING_AND_HIDDEN_INDISTINGUISHABLE = shapeOf(onlyMissing) === shapeOf(onlyHidden)
+      && stripIds(onlyMissing) === stripIds(onlyHidden)
+      && onlyMissing.error === 'no-authorized-memory' && onlyHidden.error === 'no-authorized-memory'
+      && onlyMissing.status === 422 && onlyHidden.status === 422;
+    check('D16.missingAndHiddenAreIndistinguishableEvenWhenNothingRemains',
+      MISSING_AND_HIDDEN_INDISTINGUISHABLE,
+      'missing=' + primaryCode(onlyMissing) + '/' + onlyMissing.status + ' hidden='
+      + primaryCode(onlyHidden) + '/' + onlyHidden.status);
+
+    /* 零成本：没有可绑定的行 ⇒ 连 Vault 都不读（rebinding 排在 Vault 之前）。 */
+    const nonePort = fakePort(validBatch(['m1']));
+    const noneVault = fakeCredentialAccess({ cred_a: SENTINEL });
+    const noneRes = await call(makeService({ costPolicy: POLICY_ON, modelPort: nonePort, credentialAccess: noneVault }).svc,
+      requestBody({ selectedMemoryIds: ['m_hidden', 'm_missing'] }));
+    check('D17.noAuthorizedMemoryReadsNoCredentialAndCallsNoProvider',
+      noneRes.ok === false && noneRes.error === 'no-authorized-memory' && noneRes.status === 422
+      && nonePort.calls.n === 0 && noneVault.calls.resolve.length === 0
+      && boundaryOf(noneRes).providerCalls === 0 && boundaryOf(noneRes).vaultReads === 0,
+      primaryCode(noneRes) + ' providerCalls=' + nonePort.calls.n
+      + ' vaultReads=' + noneVault.calls.resolve.length + ' boundary=' + JSON.stringify(boundaryOf(noneRes)));
+
+    /* 证据自述块 + 投影形状：服务端必须说明"这几条是我从 canonical 投出来的"。 */
+    const evidence = bindRes.evidence && typeof bindRes.evidence === 'object' ? bindRes.evidence : {};
+    const projectionFields = Array.isArray(evidence.projectionFields) ? evidence.projectionFields.map(String) : null;
+    PROJECTION_FIELD_COUNT = projectionFields ? projectionFields.length : null;
+    PROJECTION_FIELDS_OBSERVED = projectionFields ? projectionFields.slice() : null;
+    EVIDENCE_BLOCK_SOURCE = evidence.source === undefined ? null : String(evidence.source);
+    CANONICAL_REVISION_REPORTED = evidence.canonicalRevision === undefined ? null : evidence.canonicalRevision;
+    check('D18.successCarriesTheServerCanonicalProjectionEvidenceBlock',
+      EVIDENCE_BLOCK_SOURCE === 'SERVER_CANONICAL_PROJECTION'
+      && evidence.requested === 4 && evidence.bound === 2
+      && PROJECTION_FIELD_COUNT === 7
+      && JSON.stringify(PROJECTION_FIELDS_OBSERVED)
+        === JSON.stringify(['id', 'content', 'title', 'source', 'kind', 'valence', 'arousal'])
+      && typeof CANONICAL_REVISION_REPORTED === 'number' && CANONICAL_REVISION_REPORTED >= 1
+      && evidence.truncated === false,
+      JSON.stringify(evidence));
+
+    /* 投影里**不得**出现任何存储 / ACL / 激活元数据：正面看 wire 的字节。 */
+    const bindWireText = String(((bindPort.calls.requests[0] || {}).messages || [])
+      .map(m => m && m.content).join('\n'));
+    const EXCLUDED_METADATA = ['visibleTo', 'excludeFrom', 'activationCount', 'importance',
+      'createdBy', 'lastConsolidatedAt', 'CANON-HIDDEN', 'm_hidden'];
+    check('D19.projectionCarriesNoStorageAclOrActivationMetadata',
+      EXCLUDED_METADATA.every(tok => bindWireText.indexOf(tok) < 0)
+      && bindWireText.indexOf(String(storeM1.content)) >= 0,
+      'leaked=' + JSON.stringify(EXCLUDED_METADATA.filter(tok => bindWireText.indexOf(tok) >= 0)));
+
+    /* 证据状态：服务端**不**声称 MetaMemory 证据态（evidence map 不存在），
+       因此核心给出的 systemEvidenceState 恒为 null —— 调用方也再无法提供它。 */
+    SYSTEM_EVIDENCE_STATE_IS_NULL = bindBatch.every(m => m.systemEvidenceState === null);
+    check('D20.systemEvidenceStateIsNullBecauseTheServerClaimsNoEvidenceState',
+      SYSTEM_EVIDENCE_STATE_IS_NULL
+      && CANONICAL_BEARING_NAMES.indexOf('evidenceState') >= 0,
+      'wire systemEvidenceState=' + JSON.stringify(bindBatch.map(m => m.systemEvidenceState)));
   }
 
   /* ══════════════════════════════════════════════════════════════════════
@@ -1192,7 +1539,7 @@ catch (error) { RUNTIME_LOAD_ERROR = error; }
     });
     mk('noAuthorizedMemory', 'no-authorized-memory', {
       service: () => makeService({ costPolicy: POLICY_ON }),
-      body: () => requestBody({ inputEnvelope: envelope({ selectedIds: ['ghost-id'], records: [memoryRecord()] }) })
+      body: () => requestBody({ selectedMemoryIds: ['ghost-id'] })
     });
 
     for (const c of cases) {
@@ -1327,7 +1674,9 @@ catch (error) { RUNTIME_LOAD_ERROR = error; }
     const vaultFile = path.join(credentialDataDir, 'credential-vault.json');
     seedVault(credentialDataDir, 'cred_a', 'custom', SENTINEL);
     const fetchRec = [];
-    const probePort = NODE_MODEL_PORT({ fetch: jsonProviderFetch(fetchRec, validBatch(['m1'])) });
+    /* ★ 记录型 fake fetch：应答按**它自己收到的批次**生成，因此
+       "服务端投影了什么、按什么顺序"是可从 wire 直接读出的证据。 */
+    const probePort = NODE_MODEL_PORT({ fetch: recordingProviderFetch(fetchRec) });
     const inst = SERVICE.buildHomeNode({
       dataDir: dataDir,
       credentialDataDir: credentialDataDir,
@@ -1346,6 +1695,20 @@ catch (error) { RUNTIME_LOAD_ERROR = error; }
       published && published.ok === true && !!inst.runtimeInterpretation
       && typeof inst.runtimeInterpretation.run === 'function',
       JSON.stringify(published));
+
+    /* ★ 真实 canonical 行由**这个实例自己的 store** 写入。LIVE-3 的正文权威
+       就落在这一行数据上 —— 它不能来自请求体（请求体里已经没有那个通道）。 */
+    const seededRows = [
+      canonicalRow('m1', { content: 'K-CANON-M1' }),
+      canonicalRow('m2', { content: 'K-CANON-M2' }),
+      canonicalRow('m3', { content: 'K-CANON-M3' }),
+      canonicalRow('m_b', { content: 'K-CANON-B-ONLY', visibility: 'only', visibleTo: ['char_b'] })
+    ].map(row => inst.memoryStore.putRecord(row));
+    check('K1b.realCanonicalRowsAreInThisInstancesOwnStore',
+      seededRows.every(r => r && r.ok === true)
+      && !!inst.memoryStore.getRecord('m1') && inst.memoryStore.getRecord('m1').content === 'K-CANON-M1'
+      && !!inst.memoryStore.getRecord('m_b'),
+      JSON.stringify(seededRows.map(r => r && r.outcome)));
 
     const port = await listen(inst.server, '127.0.0.1');
     probe = { inst: inst, dataDir: dataDir, credentialDataDir: credentialDataDir, vaultFile: vaultFile, port: port, fetchRec: fetchRec };
@@ -1447,6 +1810,64 @@ catch (error) { RUNTIME_LOAD_ERROR = error; }
       JSON.stringify(okRes.body).indexOf(SENTINEL) < 0
       && JSON.stringify(inst.runtimeInterpretation.describe()).indexOf(SENTINEL) < 0);
 
+    /* ══ K14 · HTTP 面 canonical rebinding（真实实例 + 真实 store + 真实路由）══
+       这是本阶段最强的一条证据：请求里**只有 id**，而 wire 上是 canonical 正文
+       —— 并且顺序就是 selectedMemoryIds 的顺序。 */
+    const beforeRebind = fetchRec.length;
+    const rebindRes = await httpRequest('127.0.0.1', port, 'POST', RT.PATH, {
+      headers: admin,
+      body: requestBody({ timeoutMs: 2000, selectedMemoryIds: ['m3', 'm_missing', 'm1', 'm_b'] })
+    });
+    const rebindWire = fetchRec.length > beforeRebind ? fetchRec[fetchRec.length - 1].wire : null;
+    const rebindBatch = wireBatch(rebindWire);
+    const rebindEvidence = (rebindRes.body && rebindRes.body.evidence) || {};
+    check('K14.httpRequestWithIdsOnlyIsReboundToRealCanonicalRows',
+      rebindRes.status === 200 && rebindRes.body.ok === true
+      && JSON.stringify(rebindBatch.map(m => String(m.memoryId))) === JSON.stringify(['m3', 'm1'])
+      && String(rebindBatch[0].content) === 'K-CANON-M3'
+      && String(rebindBatch[1].content) === 'K-CANON-M1'
+      && rebindEvidence.source === 'SERVER_CANONICAL_PROJECTION'
+      && rebindEvidence.requested === 4 && rebindEvidence.bound === 2,
+      'status=' + rebindRes.status + ' batch='
+      + JSON.stringify(rebindBatch.map(m => ({ id: m.memoryId, content: m.content }))).slice(0, 300)
+      + ' evidence=' + JSON.stringify(rebindEvidence));
+
+    check('K15.missingAndHiddenIdsAreOmittedUniformlyIntoMissingFor',
+      JSON.stringify(rebindRes.body.missingFor) === JSON.stringify(['m_missing', 'm_b'])
+      && rebindRes.body.missingFor.every(x => typeof x === 'string')
+      && rebindBatch.every(m => String(m.content).indexOf('K-CANON-B-ONLY') < 0)
+      && String((fetchRec[fetchRec.length - 1] || {}).bodyText || '').indexOf('K-CANON-B-ONLY') < 0,
+      'missingFor=' + JSON.stringify(rebindRes.body.missingFor)
+      + ' (m_b is a REAL row that char_a may not read; m_missing does not exist)');
+
+    /* 只选一条"对 char_a 隐藏"的**真实**行：没有任何可解释的行 ⇒ 在 Vault 之前
+       就以 no-authorized-memory 结束，零 provider 调用、零 Vault 读取。 */
+    const beforeHiddenOnly = fetchRec.length;
+    const hiddenOnly = await httpRequest('127.0.0.1', port, 'POST', RT.PATH, {
+      headers: admin, body: requestBody({ timeoutMs: 2000, selectedMemoryIds: ['m_b'] })
+    });
+    check('K16.selectingOnlyAHiddenRowIsRefusedBeforeTheVaultAtZeroCost',
+      hiddenOnly.status === 422 && hiddenOnly.body.error === 'no-authorized-memory'
+      && hiddenOnly.body.boundary.providerCalls === 0 && hiddenOnly.body.boundary.vaultReads === 0
+      && fetchRec.length === beforeHiddenOnly,
+      'status=' + hiddenOnly.status + ' error=' + hiddenOnly.body.error
+      + ' fetchCallsDelta=' + (fetchRec.length - beforeHiddenOnly)
+      + ' boundary=' + JSON.stringify(hiddenOnly.body.boundary));
+
+    /* 同一件事在 HTTP 面上再证一次：调用方夹带的正文得到的不是"被忽略"，
+       而是**指名字段**的拒绝，且那段文本一个字节都没到 wire。 */
+    const forgedHttp = await httpRequest('127.0.0.1', port, 'POST', RT.PATH, {
+      headers: admin,
+      body: requestBody({ timeoutMs: 2000, records: [memoryRecord({ id: 'm1', content: 'FORGED-HTTP-TEXT' })] })
+    });
+    check('K17.aForgedRecordSmuggledOverHttpIsRefusedByNameAndNeverReachesTheWire',
+      forgedHttp.status === 400
+      && forgedHttp.body.error === 'caller-attempted-to-supply-canonical-evidence'
+      && forgedHttp.body.field === 'records'
+      && forgedHttp.raw.indexOf('FORGED-HTTP-TEXT') < 0
+      && fetchRec.every(r => String(r.bodyText || '').indexOf('FORGED-HTTP-TEXT') < 0),
+      'status=' + forgedHttp.status + ' error=' + forgedHttp.body.error + ' field=' + forgedHttp.body.field);
+
     /* ══════════════════════════════════════════════════════════════════
        L · HTTP transport
        ══════════════════════════════════════════════════════════════════ */
@@ -1471,15 +1892,31 @@ catch (error) { RUNTIME_LOAD_ERROR = error; }
       badJson.status === 400 && badJson.body && badJson.body.ok === false,
       'status=' + badJson.status + ' error=' + (badJson.body && badJson.body.error));
 
+    /* 超界的选择集：**指名**的 memory-selection-exceeds-bound（不是笼统的
+       request-shape-invalid —— 调用方需要知道它撞的是哪一条边界）。 */
     const oversized = await httpRequest('127.0.0.1', port, 'POST', RT.PATH, {
       headers: admin,
-      body: { operation: 'memory-interpretation', characterId: 'char_a', timeoutMs: 2000,
-        inputEnvelope: { selectedIds: ['m1'], records: Array.from({ length: 500 }, (_, i) => memoryRecord({ id: 'm' + i })) } }
+      body: requestBody({ timeoutMs: 2000, selectedMemoryIds: Array.from({ length: 500 }, (_, i) => 'm' + i) })
     });
-    check('L4.oversizedPayloadIs400NotACrash',
+    check('L4.oversizedSelectionIsRefusedWithTheNamedBoundCode',
       oversized.status === 400 && oversized.body && oversized.body.ok === false
-      && oversized.body.error === 'request-shape-invalid',
+      && oversized.body.error === 'memory-selection-exceeds-bound'
+      && oversized.status === RT.STATUS_BY_REASON['memory-selection-exceeds-bound'],
       'status=' + oversized.status + ' error=' + (oversized.body && oversized.body.error));
+
+    /* 同一个传输面上的 canonical 证据拒绝：与 K17 同形，但走"扁平字段"而不是
+       旧信封载体 —— 两条路径都必须指名。 */
+    const canonicalHttp = await httpRequest('127.0.0.1', port, 'POST', RT.PATH, {
+      headers: admin,
+      body: Object.assign(requestBody({ timeoutMs: 2000 }), { content: 'SMUGGLED_OVER_HTTP' })
+    });
+    check('L4b.canonicalBearingFieldOverHttpIsRefusedByName',
+      canonicalHttp.status === 400
+      && canonicalHttp.body.error === 'caller-attempted-to-supply-canonical-evidence'
+      && canonicalHttp.body.field === 'content'
+      && canonicalHttp.raw.indexOf('SMUGGLED_OVER_HTTP') < 0,
+      'status=' + canonicalHttp.status + ' error=' + (canonicalHttp.body && canonicalHttp.body.error)
+      + ' field=' + (canonicalHttp.body && canonicalHttp.body.field));
 
     const absent = await httpRequest('127.0.0.1', port, 'POST', RT.PATH, { headers: admin });
     check('L5.absentBodyIsAStructuredRefusalNotACrash',
@@ -1677,8 +2114,29 @@ catch (error) { RUNTIME_LOAD_ERROR = error; }
     const clientSrc = readFile('assets/js/home-node-client.js');
     const clientPath = (/var\s+RUNTIME_PATH\s*=\s*'([^']*)'\s*;/.exec(clientSrc) || [])[1] || null;
     const clientOperation = (/var\s+RUNTIME_OPERATION\s*=\s*'([^']*)'\s*;/.exec(clientSrc) || [])[1] || null;
-    const clientEnvelope = (() => {
-      const m = /var\s+RUNTIME_ENVELOPE_KEYS\s*=\s*(\[[^\]]*\])/.exec(clientSrc);
+    /* ★ 客户端**能发**的顶层键：从运行面的构造代码里读出来（body 字面量的键
+       + 后续 `payload.X = ...` 赋值）。这里刻意不看注释 —— 运行面里有一大段
+       解释"为什么不再有 records 通道"，把注释算进来会让一条**安全的**实现
+       因为文档而转红。 */
+    const clientCode = WIRING.stripJsComments(clientSrc);
+    const clientRuntimeBlock = sliceObjectBlock(clientCode, 'function createRuntimeRemote');
+    const clientSentKeys = (() => {
+      const out = [];
+      if (!clientRuntimeBlock) return out;
+      const literal = /\bvar\s+payload\s*=\s*\{([\s\S]*?)\n\s*\};/.exec(clientRuntimeBlock);
+      if (literal) {
+        const re = /^\s*([A-Za-z_$][\w$]*)\s*:/gm;
+        let m;
+        while ((m = re.exec(literal[1]))) if (out.indexOf(m[1]) < 0) out.push(m[1]);
+      }
+      const reAssign = /\bpayload\s*\.\s*([A-Za-z_$][\w$]*)\s*=/g;
+      let a;
+      while ((a = reAssign.exec(clientRuntimeBlock))) if (out.indexOf(a[1]) < 0) out.push(a[1]);
+      return out;
+    })();
+    /* currentState 的嵌套闭集（客户端侧的第二个白名单）。 */
+    const clientStateKeys = (() => {
+      const m = /var\s+RUNTIME_STATE_KEYS\s*=\s*(\[[^\]]*\])/.exec(clientCode);
       if (!m) return null;
       try { return JSON.parse(m[1].replace(/'/g, '"')); } catch (_) { return null; }
     })();
@@ -1709,10 +2167,35 @@ catch (error) { RUNTIME_LOAD_ERROR = error; }
     check('N5.browserClientOperationLiteralIsIdentical',
       !!clientOperation && clientOperation === RT.OPERATION,
       'client=' + JSON.stringify(clientOperation) + ' server=' + JSON.stringify(RT.OPERATION));
-    check('N6.browserClientEnvelopeKeysMatchTheServerClosedSchema',
-      Array.isArray(clientEnvelope)
-      && JSON.stringify(clientEnvelope) === JSON.stringify(RT.ENVELOPE_FIELDS.slice()),
-      'client=' + JSON.stringify(clientEnvelope) + ' server=' + JSON.stringify(RT.ENVELOPE_FIELDS.slice()));
+    /* ★ LIVE-3 的双向锁（比旧 ENVELOPE_FIELDS 等值断言更强，且能活过将来的
+       服务端字段新增）：
+         (a) 客户端**能发**的每一个顶层键都在服务端 REQUEST_FIELDS 里；
+         (b) 客户端能发的键没有一个落在 CANONICAL_EVIDENCE_FIELDS 里；
+         (c) 旧的 inputEnvelope 载体与 records 通道在运行面里**彻底消失**；
+         (d) 它确实还能发 selectedMemoryIds / currentState / roleName
+             （否则"锁住了"只是因为客户端坏了，而不是因为契约一致）。
+       任何一条不成立 → 浏览器与服务端已经在说两种协议，必须转红。 */
+    check('N6.browserClientClosedKeyListIsSubsetOfTheServerRequestSchema',
+      clientSentKeys.length > 0
+      && clientSentKeys.every(k => RT.REQUEST_FIELDS.indexOf(k) >= 0)
+      && clientSentKeys.indexOf('selectedMemoryIds') >= 0,
+      'clientSent=' + JSON.stringify(clientSentKeys)
+      + ' server REQUEST_FIELDS=' + JSON.stringify(RT.REQUEST_FIELDS.slice())
+      + ' runtimeBlock=' + (clientRuntimeBlock ? clientRuntimeBlock.length + ' chars' : 'NOT FOUND'));
+    check('N6b.browserClientCannotExpressAnyCanonicalEvidence',
+      clientSentKeys.length > 0
+      && clientSentKeys.every(k => (RT.CANONICAL_EVIDENCE_FIELDS || []).indexOf(k) < 0)
+      && ['selectedMemoryIds', 'currentState', 'roleName'].every(k => clientSentKeys.indexOf(k) >= 0)
+      && Array.isArray(clientStateKeys)
+      && JSON.stringify(clientStateKeys.slice().sort()) === JSON.stringify(['emotion', 'relationship'])
+      && !!clientRuntimeBlock
+      && clientRuntimeBlock.indexOf('inputEnvelope') < 0
+      && clientRuntimeBlock.indexOf('records') < 0
+      && !/RUNTIME_ENVELOPE_KEYS/.test(clientCode),
+      'clientSent=' + JSON.stringify(clientSentKeys)
+      + ' clientStateKeys=' + JSON.stringify(clientStateKeys)
+      + ' legacyInputEnvelopeLiteral=' + (clientCode.indexOf('RUNTIME_ENVELOPE_KEYS') >= 0)
+      + ' recordsInRuntimeBlock=' + (!!clientRuntimeBlock && clientRuntimeBlock.indexOf('records') >= 0));
 
     PATH_LITERAL_SOURCES_CONSISTENT = rtPath === '/internal/runtime/memory-interpretation'
       && clientPath === rtPath && secondLiteralAt < 0;
@@ -1788,6 +2271,12 @@ catch (error) { RUNTIME_LOAD_ERROR = error; }
       THROWN.length === 0, JSON.stringify(THROWN.slice(0, 5)));
   }
 
+  /* 临时目录清理：共享的 canonical store 也要关掉。Windows 上未释放的 SQLite
+     句柄会让目录删除失败 —— 那会留下一个"看起来通过但脏"的运行。 */
+  closeCanonStore();
+  check('Z4.sharedCanonicalStoreTempDirIsCleaned', CANON_DIR_CLEANED === true,
+    'canonical temp dir cleaned=' + String(CANON_DIR_CLEANED));
+
   /* ── machine-readable verdicts ────────────────────────────────────────── */
   console.log('\n' + '='.repeat(72));
   console.log('R4C LIVE RUNTIME BOUNDARY · sections A–N · Z');
@@ -1805,6 +2294,21 @@ catch (error) { RUNTIME_LOAD_ERROR = error; }
     + (HTTP_SECOND_PATH_LITERAL ? ' (second literal: ' + HTTP_SECOND_PATH_LITERAL + ')' : ''));
   console.log('AUTO_INVOCATION_ABSENT = ' + (AUTO_INVOCATION_ABSENT ? 'YES' : 'NO'));
   console.log('SERVER_ENABLE_PATH_ABSENT = ' + (SERVER_ENABLE_PATH_ABSENT ? 'YES' : 'NO'));
+  /* ── LIVE-3 · canonical evidence 的实测裁决 ───────────────────────────── */
+  console.log('REQUEST_SCHEMA_KEYS = ' + JSON.stringify((RT.REQUEST_FIELDS || []).slice()));
+  console.log('CANONICAL_EVIDENCE_FIELDS_REJECTED = ' + ((RT.CANONICAL_EVIDENCE_FIELDS || []).length));
+  console.log('CALLER_CANONICAL_EVIDENCE_REFUSED = ' + (CALLER_CANONICAL_EVIDENCE_REFUSED ? 'YES' : 'NO')
+    + ' (all ' + CANONICAL_BEARING_NAMES.length + ' canonical names rejected by name)');
+  console.log('CANONICAL_REBINDING_PROVEN = ' + (CANONICAL_REBINDING_PROVEN ? 'YES' : 'NO'));
+  console.log('SELECTED_ID_ORDER_PRESERVED = ' + (SELECTED_ID_ORDER_PRESERVED ? 'YES' : 'NO'));
+  console.log('MISSING_AND_HIDDEN_INDISTINGUISHABLE = ' + (MISSING_AND_HIDDEN_INDISTINGUISHABLE ? 'YES' : 'NO'));
+  console.log('SELECTED_SET_BOUND_ENFORCED = ' + (SELECTED_SET_BOUND_ENFORCED ? 'YES' : 'NO')
+    + ' (0..' + (RT.MAX_SELECTED_MEMORY_IDS === undefined ? 'UNKNOWN' : RT.MAX_SELECTED_MEMORY_IDS) + ')');
+  console.log('SERVER_PROJECTION_FIELD_COUNT = ' + String(PROJECTION_FIELD_COUNT)
+    + ' ' + JSON.stringify(PROJECTION_FIELDS_OBSERVED));
+  console.log('EVIDENCE_BLOCK_SOURCE = ' + String(EVIDENCE_BLOCK_SOURCE));
+  console.log('SERVER_CANONICAL_REVISION_REPORTED = ' + String(CANONICAL_REVISION_REPORTED));
+  console.log('SYSTEM_EVIDENCE_STATE_IS_NULL = ' + (SYSTEM_EVIDENCE_STATE_IS_NULL ? 'YES' : 'NO'));
   console.log('REAL_PROVIDER_CALLS = 0');
   console.log('-'.repeat(72));
   if (failures) {
@@ -1814,5 +2318,6 @@ catch (error) { RUNTIME_LOAD_ERROR = error; }
   console.log('RUNTIME INTERPRETATION BOUNDARY PASSED · ' + passed + ' assertions green');
 })().catch(error => {
   console.error('RUNTIME INTERPRETATION BOUNDARY CRASHED · ' + String((error && error.stack) || error));
+  try { closeCanonStore(); } catch (_) { /* 尽力而为 */ }
   process.exit(1);
 });
