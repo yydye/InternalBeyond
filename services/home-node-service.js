@@ -88,6 +88,15 @@ const economyConfigurationModule = require('../services/home-node/economy-config
      就是下面的 options.runtimeInterpretationPolicy —— 本文件不读任何 env、
      http.js 也不写任何默认值（frozen：本阶段没有生产启用路径）。 */
 const createRuntimeInterpretation = require('../services/home-node/runtime-interpretation.js');
+/* ── P21-R4-LIVE-3.3 · Runtime Recall —— "这一轮想起什么"的服务端窄边界。
+   ★ 与它上面每一个模块同款：**只有**装配层 require 它，而且它 require 的
+     目标仍是既有实现（memory-retrieval.js + 共享可见性核），没有第二套召回。
+   ★ 它为什么必须由**装配层**构造：memoryRetrieval / memoryStore / registry /
+     sessionState 全是装配事实；而 glossary 条目来源按契约**只**能从装配层
+     注入（request 里出现 glossary* 会被逐名拒绝）。
+   ★ 它不带 modelPort、不带 credentialAccess：这条边界不出网、不读 Vault，
+     因此"召回顺手调一次 provider"在依赖闭包上就不可能。 */
+const createRuntimeRecall = require('../services/home-node/runtime-recall.js');
 const createNodeModelPort = require('../active/node-model-port.js');
 /* P11-3E：canonical store 失败分类器（**唯一**一份，见 runtime/db-failure.js）。
    它在 runtime/ 下，与 runtime/local-services-runner.js 那份是同一模块 ——
@@ -956,6 +965,28 @@ function buildHomeNode(options) {
     clock: options.clock,
     logger: serviceLog
   });
+  /* ── P21-R4-LIVE-3.3 · Runtime Recall 的挂载点 ────────────────────────
+     依赖全部是**实例**作用域：这台实例的召回器、这台实例的 canonical memory
+     store、这台实例的设备目录、这台实例的 cooldown session state。
+     ★ memoryStore 与 memoryRetrieval **同时**传：服务在构造时核对
+       `memoryRetrieval.store === memoryStore`，不一致就 fail closed ——
+       "绑到另一个能开、能查、永远为空的实例"不会抛任何错，只会表现为
+       "她突然什么都不记得"，那种缺口必须在装配期拦住。
+     ★ sessionState 传的是**与网关同一个**实例（身份可核对），但本边界
+       绝不动它：它只用于读 cooldown 的 exposure，且**不推进**任何回合。
+     ★ glossary 条目来源只从这里进（options.*，默认 undefined）—— 请求侧
+       出现 glossary* 一律被逐名拒绝，因此"浏览器提交词表"这条路不存在。 */
+  const instanceRuntimeRecall = options.runtimeRecall || createRuntimeRecall({
+    memoryRetrieval: instanceMemoryRetrieval,
+    memoryStore: instanceMemoryStore,
+    registry: instanceRegistry,
+    sessionState: recallSessionState,
+    clock: options.clock,
+    random: options.random,
+    glossaryProvider: options.glossaryProvider,
+    getGlossaryEntries: options.getGlossaryEntries,
+    logger: serviceLog
+  });
   /* 与进程级启动路径**共用** gatewayAssembly（见其头部说明：两条路径两套装配
      必然漂移，memoryStore 就是这样在 production 上丢过一次）。 */
   const instanceGateway = options.gateway || gatewayAssembly({
@@ -1054,6 +1085,13 @@ function buildHomeNode(options) {
          （http.js 里那块在 authorized() 之后，没有 isEconomyCommandPath
          式豁免）。 */
     runtimeInterpretation: instanceRuntimeInterpretation,
+    /* ── P21-R4-LIVE-3.3 · Runtime Recall（**唯一**一条运行时召回面）──────
+       ★ 与解释边界同级、与 memoryStore 不同级：它替换不了 store，公开面只有
+         { path, operations, run, describe }。准入同样由桌面凭据判定负责
+         （http.js 里那块在 authorized() 之后，没有豁免）。
+       ★ 它**不**与解释边界共用信封或路径：一条读本地 canonical 记忆并只回
+         ids，一条出网读 Vault。合成一条会让审计读不出"这一步花没花钱"。 */
+    runtimeRecall: instanceRuntimeRecall,
     /* P11-3E · canonical store 清单：健康与"能不能服务"是同一个问题，
        所以这里列出本进程承诺的全部 canonical store，而不是只有 chat。
        声明角色（chat）在最前，`failure` 取第一个命中它的。 */
@@ -1160,6 +1198,11 @@ function buildHomeNode(options) {
        ★ 它与 http.js 从 deps 里拿到的是**同一个对象**：这正是"两条装配路径
          不得漂移"这句断言的载体（identity，而不是两个形状相同的对象）。 */
     runtimeInterpretation: instanceRuntimeInterpretation,
+    /* P21-R4-LIVE-3.3：Runtime Recall 与上面每一个域同级导出 —— "这台节点上
+       到底有没有一条运行时召回面"必须是一句可以直接断言的事实。
+       ★ 与 http.js 从 deps 里拿到的是**同一个对象**（identity）：这正是
+         "两条装配路径不得漂移"这句断言的载体。 */
+    runtimeRecall: instanceRuntimeRecall,
     registry: instanceRegistry,
     gateway: instanceGateway,
     executor: instanceExecutor,
@@ -1237,6 +1280,32 @@ const runtimeInterpretation = createRuntimeInterpretation({
      以 canonical-evidence-unavailable 失败，而所有 buildHomeNode 的测试全绿
      （这正是本文件已经记过四次的同一种装配缺口）。 */
   memoryStore: memory.memoryStore,
+  logger: (level, event, fields) => log(level, event, fields)
+});
+/* ── P21-R4-LIVE-3.3 · **进程级**的 Runtime Recall ──────────────────────
+   与 memory / understanding / moments / economy / interpretation 那几次的教训
+   逐字同形：只接 buildHomeNode 会让**真实进程**上这条路径整个不存在
+   （http.js 收不到 deps.runtimeRecall ⇒ 分支不存在 ⇒ 落到通用 404），
+   而所有 buildHomeNode 的测试全绿 —— 这正是本文件已经记过**五次**的那种缺口。
+   ★ memoryRetrieval / memoryStore 都用进程级那**一份**（identity）：
+     绑到别的实例不会抛错，只会让她"什么都不记得"。
+   ★ sessionState 用进程级那只（与网关同一个）—— 本边界只读它，绝不推进。
+   ★ 不传 glossary provider：生产侧今天没有词汇表条目来源，传 undefined 就是
+     如实（glossary 通道在服务端因此不可达，直到真的有来源为止）；
+     绝不为了"看起来对称"造一个空目录来源。 */
+const runtimeRecall = createRuntimeRecall({
+  memoryRetrieval: memory.memoryRetrieval,
+  memoryStore: memory.memoryStore,
+  registry,
+  sessionState: recallSessionState,
+  /* 词汇表条目来源：两个装配路径都必须**有能力**接上它（buildHomeNode 侧
+     由 options.glossaryProvider / options.getGlossaryEntries 注入）。
+     生产侧今天**没有**任何来源 —— 桌面 wrapper 与 Node wrapper 都没有真的
+     provider，因此 glossary 通道在两侧都是 dormant 的。这里显式写着"缺席"，
+     而不是让读者以为忘了接线；请求侧出现 glossary* 一律被逐名拒绝，
+     所以"浏览器提交词表"这条路不存在。 */
+  glossaryProvider: undefined,
+  getGlossaryEntries: undefined,
   logger: (level, event, fields) => log(level, event, fields)
 });
 /* P11-3E：进程级 Moments 探针。openAll() 写它、/health 与 /moments/* 读它。
@@ -1321,6 +1390,12 @@ const httpLayer = createHttp({
      没人引用的对象：路由分支不存在、日志里永远不会出现一行
      runtime-interpretation，而单元测试全绿（本文件已经记过四次同一种病）。 */
   runtimeInterpretation: runtimeInterpretation,
+  /* ── P21-R4-LIVE-3.3：**进程级**的 Runtime Recall ──────────────────────
+     这一行与 buildHomeNode 里那一行逐字同源，而它正是"生产启动路径上真的
+     有一条可用的召回面"的机器可读形式。★ 没有它，上面的构造函数只是一个
+     没人引用的对象：路由分支不存在、日志里永远不会出现一行 runtime-recall，
+     而单元测试全绿（本文件已经记过多次同一种病）。 */
+  runtimeRecall: runtimeRecall,
   /* P22-9：**进程级**的门。它与 store 同级导出，理由逐字相同 —— 门的缺席
      在生产上是一个静默的"每个 consumer 都能直接提议"，而那种缺口只有
      直接断言语料才能发现。 */
@@ -1633,6 +1708,11 @@ module.exports = {
      （memory / understanding / moments / economy），所以它的形式必须是可
      直接断言的，而不是靠读代码。 */
   runtimeInterpretation,
+  /* P21-R4-LIVE-3.3：**进程级**的 Runtime Recall（= 生产侧"这台节点到底有
+     没有一条运行时召回面"的唯一答案）。导出理由与上面每一个域逐字相同 ——
+     这一域的接线**同时**落在 buildHomeNode 与 require.main 两条路径上，
+     而"只接一条"在本文件已经发生过多次。 */
+  runtimeRecall,
   defaultEconomyChannelSources,
   economyAssembly,
   buildHomeNode,

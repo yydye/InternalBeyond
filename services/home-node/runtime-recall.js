@@ -1,0 +1,724 @@
+/* ====================================================================
+   IB Home Node · Runtime Recall Boundary（P21-R4-LIVE-3.3）
+   --------------------------------------------------------------------
+   职责：把"这一轮该想起什么"的**选择**变成一条服务端可调用、可审计、
+   可被未来解释边界消费的**窄边界**。
+
+        POST /internal/runtime/memory-recall
+              ↓  闭集请求（8 键；24+ 个权威字段逐名拒绝）
+              ↓  registry.getCharacterSpec(characterId)   ← 唯一的角色目录查询
+              ↓  memoryRetrieval.retrieve(...)            ← **既有**召回实现（唯一）
+              ↓  非持久信封：ids + 有界计数 + fingerprint
+
+   ── 为什么这里没有第二套召回 ────────────────────────────────────────────
+   本模块**不**判断可见性、**不**打分、**不**排序、**不**做预算、**不**选席位、
+   **不**读 sqlite。所有这些仍然只有一份实现：
+     · services/home-node/memory-retrieval.js（Node 侧 wrapper：取候选集、
+       注入 server 时钟与随机源、把预算交给共享核心）；
+     · assets/js/memory-retrieval-core.js + memory-recall/*（可见性与选择的
+       唯一实现，浏览器与 Node 共用同一份文件）。
+   本模块只做四件事：校验闭集、解析角色、把 **server 自有的** 选项交给既有
+   wrapper、把结果压成**有界**信封。它没有任何一行能重新计算 selection。
+
+   ── 权威（authority）───────────────────────────────────────────────────
+   CALLER_INTENT != RECALL_AUTHORITY。调用方提供的是**这一轮是什么**：
+   characterId / requestId / conversationId / message / 两个 turn 信号；
+   它**不**提供"想起谁"：selectedIds / candidateRecords / records / scores /
+   rank / ordering / topK / budget / maxChars / contentLen / seatPlan / seats /
+   exploration / cooldown / cooldownFactor / sessionState / turnIndex / random /
+   rng / now / timestamp / activation / activationPolicy / settings /
+   normalizedQuery / tokens / query / glossary* 一律**逐名拒绝**，而且用的是
+   一个**专用**码（caller-attempted-to-supply-recall-authority）——
+   不是笼统的 "bad request"：审计要能一眼看出"调用方试图自己决定召回"。
+   闭集之外的其他未知键则是 request-field-forbidden（同样逐名，绝不静默忽略）。
+
+   ── 纯影子（PURE SHADOW）───────────────────────────────────────────────
+   这条边界**只读**。它**不**写 exposure、**不**推进生产会话状态、**不**激活记忆、
+   **不**调用任何 provider。具体到本仓库的动词，下面这些在**任何路径上**都
+   不会被调用（也正因如此它们没有出现在本文件的任何一行里）：
+     · store.putRecord / putRecords / deleteRecord / recordActivation /
+       setMemorySettings / setMigrationState / open / close；
+     · sessionState.beginBrowserTurn / beginHomeTurn / endHomeTurn /
+       recordExposure / clear；
+     · memoryRetrieval.reinforce（它才是激活通道的入口）。
+   召回内部对 sessionState 的唯一动作是 **读**（cooldown 的 exposure 查询），
+   那发生在既有实现里，不在这里，而且是读。
+   ★ 这条性质不是靠注释成立的：装配层用**真实** store / 真实 session state
+     做测量（写动词全部包一层计数器），"零副作用"是一条可断言的事实。
+
+   ── 失败语义 ────────────────────────────────────────────────────────────
+   与解释边界同一条纪律：run() **永不抛出**，任何失败都回一个带 status 的
+   信封（形状与成功一致，ids 为空、计数为 0）。码是闭集（见 REASON），
+   状态码只有一个来源（STATUS_BY_REASON）。绝不在失败信封里回半份 selection。
+   ==================================================================== */
+'use strict';
+
+const crypto = require('crypto');
+/* 身份助手：`stableToken` 是仓库**既有**的确定性令牌实现
+   （assets/js/chat-core.js:162，requestId → userMessageId 用的同一个）。
+   本边界不铸造新 id、不生成永久 id、不落任何东西 —— 它只是把
+   (conversationId, requestId, message) 这三个**已经存在**的事实压成一个
+   稳定令牌，因此同一轮永远得到同一个 turn 身份（§5.4）。 */
+const CHAT_CORE = require('../../assets/js/chat-core.js');
+
+/* 路径与操作名是**契约**：装配层、http 层、测试与未来的消费者都从这里取，
+   不各写一份字面量（与 runtime-interpretation.js 同一条纪律）。 */
+const PATH = '/internal/runtime/memory-recall';
+const OPERATION = 'memory-recall';
+
+/* ── 闭集请求（8 键）────────────────────────────────────────────────────
+   `operation` 也在闭集里：它让"这条请求自称是哪条边界"成为可校验的事实，
+   而不是由路径决定（路径决定路由，operation 决定语义，两者不一致时拒绝）。 */
+const REQUEST_FIELDS = Object.freeze([
+  'operation',
+  'characterId',
+  'requestId',
+  'conversationId',
+  'message',
+  'isFirstTurn',
+  'conversationSignalAvailable',
+  'timeoutMs'
+]);
+
+/* ── 逐名拒绝的**权威字段** ─────────────────────────────────────────────
+   这张名单不是"顺手多写的几个词"：每一个都曾经是（或将会是）调用方试图
+   替服务端做决定的那条路。名单必须跟着能力长 —— 新能力若落在名单之外，
+   在实践中与"被允许"很难区分（P22 系列的既有教训）。 */
+const REJECTED_AUTHORITY_FIELDS = Object.freeze([
+  'selectedIds', 'candidateRecords', 'records', 'candidates', 'scores', 'rank',
+  'ordering', 'topK', 'budget', 'maxChars', 'contentLen', 'seatPlan', 'seats',
+  'exploration', 'allowExploration', 'cooldown', 'cooldownFactor', 'sessionState',
+  'turnIndex', 'random', 'rng', 'now', 'timestamp', 'activation', 'activationPolicy',
+  'settings', 'normalizedQuery', 'tokens', 'query', 'glossaryEntries',
+  'glossaryProvider', 'getGlossaryEntries'
+]);
+
+const REASON = Object.freeze({
+  requestShapeInvalid: 'request-shape-invalid',
+  requestFieldForbidden: 'request-field-forbidden',
+  callerSuppliedRecallAuthority: 'caller-attempted-to-supply-recall-authority',
+  operationForbidden: 'operation-forbidden',
+  runtimeSpecUnavailable: 'runtime-spec-unavailable',
+  recallUnavailable: 'recall-unavailable',
+  recallTimeout: 'recall-timeout'
+});
+
+/* HTTP 状态：唯一来源。http 层直接用信封里的 status，**不**重推。 */
+const STATUS_BY_REASON = Object.freeze({
+  'request-shape-invalid': 400,
+  'request-field-forbidden': 400,
+  'caller-attempted-to-supply-recall-authority': 400,
+  'operation-forbidden': 403,
+  'runtime-spec-unavailable': 404,
+  'recall-unavailable': 503,
+  'recall-timeout': 504
+});
+
+/* 超时：调用方的显式权威，可缺省（服务端默认），并且**一定**被上限夹住。
+   召回到目前为止是"本地读 + 纯计算"，因此 2s 已经非常宽；上限 10s 存在
+   只是为了让"调用方说 1 小时"不会变成一个没有意义的数字。 */
+const DEFAULT_TIMEOUT_MS = 2000;
+const MAX_TIMEOUT_MS = 10000;
+
+const MAX_CHARACTER_ID_CHARS = 128;
+const MAX_TURN_ID_CHARS = 200;
+const MAX_MESSAGE_CHARS = 16000;
+const MAX_OPERATION_ECHO_CHARS = 64;
+const MAX_DETAIL_CHARS = 200;
+
+/* fingerprint 的版本前缀：哈希一旦被未来消费者引用，就不能悄悄改输入元组。
+   改元组 = 换版本号（换一个前缀），而不是让同一串 hex 有两种含义。 */
+const FINGERPRINT_VERSION = 'sha256-v1';
+
+/* 传输真值：本阶段**只有桌面**（与解释边界逐字一致）。 */
+const TRANSPORT_SCOPE = 'DESKTOP_ONLY';
+
+function isPlainObject(v) { return !!v && typeof v === 'object' && !Array.isArray(v); }
+/* 一律**只读自有属性**：原型上的东西（含被污染的 __proto__）永远不参与校验。 */
+function own(obj, key) {
+  return obj && Object.prototype.hasOwnProperty.call(obj, key) ? obj[key] : undefined;
+}
+function text(v) { return v == null ? '' : String(v); }
+function bounded(v, limit) { return text(v).slice(0, limit || MAX_DETAIL_CHARS); }
+function statusFor(code) {
+  return Object.prototype.hasOwnProperty.call(STATUS_BY_REASON, code) ? STATUS_BY_REASON[code] : 503;
+}
+
+function sha256Hex(value) {
+  return crypto.createHash('sha256').update(String(value)).digest('hex');
+}
+
+function createRuntimeRecall(deps) {
+  deps = deps || {};
+  /* 依赖就是整条权威链：既有召回实现 → 角色目录。provider / Vault **不在**
+     这条链上 —— 召回不花钱、不出网，因此本文件没有、也不该有 modelPort。 */
+  const memoryRetrieval = deps.memoryRetrieval || null;
+  const memoryStore = deps.memoryStore || null;
+  const registry = deps.registry || null;
+  /* sessionState 被接受，但**只**用于两件事：describe() 如实说
+     `sessionStateOwned: false`，以及让装配层能把**同一个**实例同时交给
+     wrapper 与本边界（identity 可核对）。本文件没有它的任何写动词。 */
+  const sessionState = deps.sessionState || null;
+  const clock = typeof deps.clock === 'function' ? deps.clock : Date.now;
+  /* random 同样被接受，但**生效的**随机源是 createMemoryRetrieval 的构造依赖
+     —— 那是探索窗口抽样的唯一权威。这里再抽一次会造出第二个随机权威，
+     因此本层只如实报告 `randomInjected`，绝不把它转发出去。 */
+  const random = typeof deps.random === 'function' ? deps.random : null;
+  const logger = typeof deps.logger === 'function' ? deps.logger : function () {};
+  /* 词汇表（glossary）通道的条目来源：**只**能由装配层注入。
+     请求 schema 把 glossaryEntries / glossaryProvider / getGlossaryEntries
+     三个键逐名拒绝，因此"浏览器提交 glossary 结果"这条路不存在；
+     这里转发的两个依赖就是 wrapper 新增的那两个 seam（同一份 orchestrator
+     工厂，绝不复制 glossary 算法）。 */
+  const glossaryProvider = deps.glossaryProvider === undefined ? undefined : deps.glossaryProvider;
+  const getGlossaryEntries = deps.getGlossaryEntries === undefined ? undefined : deps.getGlossaryEntries;
+
+  /* 装配事实核对：召回器必须绑在**同一个** store 上。
+     绑到另一个能开、能查、永远返回空的实例上不会抛任何错，只会表现为
+     "她突然什么都不记得" —— 那种 bug 无法从行为反推，必须在这里 fail closed
+     （与 memory-retrieval.js 导出 store 的理由逐字相同）。 */
+  const storeIdentity = (!memoryStore || !memoryRetrieval)
+    ? 'UNVERIFIABLE'
+    : (memoryRetrieval.store === memoryStore ? 'SAME' : 'MISMATCH');
+
+  const counters = { calls: 0, ok: 0, refused: 0, timeouts: 0, unavailable: 0 };
+
+  function note(event, fields) {
+    try { logger(event, fields || {}); } catch (_) { /* 观测失败不影响执行 */ }
+  }
+
+  /* ── 信封：成功与失败**同一套顶层键** ──────────────────────────────────
+     调用方不需要猜"失败时少了哪个键"。失败时 ids 为空、fingerprint 为 null、
+     计数为 0 —— 半份 selection 在任何路径上都不会被回出去。 */
+  function boundaryBlock(attempts) {
+    return {
+      pureShadow: true,
+      exposureWrites: 0,
+      activationWrites: 0,
+      providerCalls: 0,
+      sessionMutation: 'NONE',
+      transportScope: TRANSPORT_SCOPE,
+      /* 这条边界**提议**选择（由既有召回实现算出），它不因此成为权威：
+         真正的权威仍然是 canonical store + 共享可见性核。 */
+      recallSelectionAuthority: 'CALLER_PROPOSED',
+      attempts: attempts
+    };
+  }
+
+  function failure(code, ctx) {
+    const c = ctx || {};
+    const attempts = Number(c.attempts) || 0;
+    if (code === REASON.recallTimeout) counters.timeouts += 1;
+    else if (code === REASON.recallUnavailable) counters.unavailable += 1;
+    else counters.refused += 1;
+    const out = {
+      ok: false,
+      durable: false,
+      operation: OPERATION,
+      characterId: c.characterId === undefined ? null : c.characterId,
+      error: code,
+      reasonCode: code,
+      turnIdentity: null,
+      selectedIds: [],
+      activationPolicy: null,
+      channel: null,
+      reason: null,
+      fingerprint: null,
+      counts: { candidates: 0, eligible: 0, selected: 0 },
+      chars: 0,
+      boundary: boundaryBlock(attempts),
+      status: statusFor(code)
+    };
+    if (c.detail !== undefined) out.detail = bounded(c.detail);
+    if (c.field !== undefined) out.field = bounded(c.field, 80);
+    if (c.requestedOperation !== undefined) out.requestedOperation = c.requestedOperation;
+    return out;
+  }
+
+  /* ── 请求闭集校验。返回 { ok:true, ... } 或 { ok:false, result } ─────── */
+  function validateRequest(body) {
+    if (!isPlainObject(body)) {
+      return { ok: false, result: failure(REASON.requestShapeInvalid, { detail: 'body-not-an-object' }) };
+    }
+    /* ① 闭集：白名单之外的**自有**键一律拒绝（绝不 ignore）。
+          JSON.parse('{"__proto__":{...}}') 会产生一个**自有**的 `__proto__`
+          键，因此原型污染尝试也在这里被当成未知字段抓住。
+          顺序：先认"权威字段"（专用码 + field），再认其他未知键 —— 两者都不
+          静默，但审计要能区分"你想自己决定召回"与"你写错了一个键名"。 */
+    for (const key of Object.keys(body)) {
+      if (REQUEST_FIELDS.indexOf(key) >= 0) continue;
+      if (REJECTED_AUTHORITY_FIELDS.indexOf(key) >= 0) {
+        return {
+          ok: false,
+          result: failure(REASON.callerSuppliedRecallAuthority, {
+            field: key,
+            detail: 'recall authority is server-owned; the caller supplies the turn, not the selection'
+          })
+        };
+      }
+      return {
+        ok: false,
+        result: failure(REASON.requestFieldForbidden, {
+          field: key,
+          detail: 'request-is-a-closed-schema'
+        })
+      };
+    }
+    /* ② operation：必须是本边界那一个词。缺省/写错/非字符串都走同一个码 ——
+          "这条请求自称不是 memory-recall"与"它自称的是一个不存在的操作"
+          对调用方是同一件事：走错门了。 */
+    const operationRaw = own(body, 'operation');
+    if (typeof operationRaw !== 'string' || operationRaw.trim() !== OPERATION) {
+      return {
+        ok: false,
+        result: failure(REASON.operationForbidden, {
+          requestedOperation: typeof operationRaw === 'string'
+            ? bounded(operationRaw, MAX_OPERATION_ECHO_CHARS) : null,
+          detail: 'allowlist=' + OPERATION
+        })
+      };
+    }
+    /* ③ characterId：非空字符串、有界。 */
+    const characterIdRaw = own(body, 'characterId');
+    const characterId = typeof characterIdRaw === 'string' ? characterIdRaw.trim() : '';
+    if (!characterId || characterId.length > MAX_CHARACTER_ID_CHARS) {
+      return {
+        ok: false,
+        result: failure(REASON.requestShapeInvalid, {
+          operation: OPERATION, detail: 'characterId-must-be-a-bounded-non-empty-string'
+        })
+      };
+    }
+    /* ④ requestId / conversationId：**turn 身份的两个来源**，两个都必填。
+         它们不是"日志用的备注"：fingerprint 的一部分与 turnIdentity 的全部
+         都由它们构成，缺一个就无法把一次召回绑定到具体的一轮对话上。 */
+    const requestIdRaw = own(body, 'requestId');
+    const requestId = typeof requestIdRaw === 'string' ? requestIdRaw.trim() : '';
+    if (!requestId || requestId.length > MAX_TURN_ID_CHARS) {
+      return {
+        ok: false,
+        result: failure(REASON.requestShapeInvalid, {
+          operation: OPERATION, characterId: characterId,
+          detail: 'requestId-must-be-a-bounded-non-empty-string'
+        })
+      };
+    }
+    const conversationIdRaw = own(body, 'conversationId');
+    const conversationId = typeof conversationIdRaw === 'string' ? conversationIdRaw.trim() : '';
+    if (!conversationId || conversationId.length > MAX_TURN_ID_CHARS) {
+      return {
+        ok: false,
+        result: failure(REASON.requestShapeInvalid, {
+          operation: OPERATION, characterId: characterId,
+          detail: 'conversationId-must-be-a-bounded-non-empty-string'
+        })
+      };
+    }
+    /* ⑤ message：**本轮用户原文**。它只作为召回的查询信号被消费，
+         绝不被回显（信封里只有长度与摘要），也绝不进日志。
+         空串是允许的：那是"这一轮没有可用的查询信号"，由既有实现如实
+         早退（返回空选择），而不是由这里编一个形状错误。 */
+    const messageRaw = own(body, 'message');
+    if (typeof messageRaw !== 'string') {
+      return {
+        ok: false,
+        result: failure(REASON.requestShapeInvalid, {
+          operation: OPERATION, characterId: characterId,
+          detail: 'message-must-be-a-string'
+        })
+      };
+    }
+    if (messageRaw.length > MAX_MESSAGE_CHARS) {
+      return {
+        ok: false,
+        result: failure(REASON.requestShapeInvalid, {
+          operation: OPERATION, characterId: characterId,
+          detail: 'message exceeds ' + MAX_MESSAGE_CHARS + ' characters'
+        })
+      };
+    }
+    /* ⑥ 两个 turn 信号：可选，但**出现就必须是布尔**。
+         它们是调用方对"这一轮是什么"的如实陈述（首轮？会话信号可用？），
+         不是召回策略：通道由既有 channel-policy 根据它们决定。 */
+    const isFirstTurnRaw = own(body, 'isFirstTurn');
+    if (isFirstTurnRaw !== undefined && typeof isFirstTurnRaw !== 'boolean') {
+      return {
+        ok: false,
+        result: failure(REASON.requestShapeInvalid, {
+          operation: OPERATION, characterId: characterId, detail: 'isFirstTurn-must-be-a-boolean'
+        })
+      };
+    }
+    const signalRaw = own(body, 'conversationSignalAvailable');
+    if (signalRaw !== undefined && typeof signalRaw !== 'boolean') {
+      return {
+        ok: false,
+        result: failure(REASON.requestShapeInvalid, {
+          operation: OPERATION, characterId: characterId,
+          detail: 'conversationSignalAvailable-must-be-a-boolean'
+        })
+      };
+    }
+    /* ⑦ timeoutMs：可选；出现就必须是**真正的** number（数字字符串不是权威，
+         0/负数/NaN/Infinity 也不是）。缺省用服务端默认值，超过上限被夹住 ——
+         夹住这件事会如实出现在 describe() 的 maxTimeoutMs 里。 */
+    const timeoutRaw = own(body, 'timeoutMs');
+    let effectiveTimeoutMs = DEFAULT_TIMEOUT_MS;
+    if (timeoutRaw !== undefined) {
+      if (typeof timeoutRaw !== 'number' || !isFinite(timeoutRaw) || !(timeoutRaw > 0)) {
+        return {
+          ok: false,
+          result: failure(REASON.requestShapeInvalid, {
+            operation: OPERATION, characterId: characterId,
+            detail: 'timeoutMs-must-be-a-finite-number-greater-than-zero'
+          })
+        };
+      }
+      effectiveTimeoutMs = Math.min(timeoutRaw, MAX_TIMEOUT_MS);
+    }
+    return {
+      ok: true,
+      characterId: characterId,
+      requestId: requestId,
+      conversationId: conversationId,
+      message: messageRaw,
+      isFirstTurn: isFirstTurnRaw === true,
+      conversationSignalAvailable: signalRaw === true,
+      effectiveTimeoutMs: effectiveTimeoutMs
+    };
+  }
+
+  /* ── 角色运行时 spec（**唯一**查询点）────────────────────────────────
+     与解释边界**同一个** accessor：registry.getCharacterSpec(characterId)。
+     本文件不发明第二套 character config lookup，也不读 sqlite。
+     ★ 与解释边界的差别只有一处，而且是刻意的：这里**不**要求
+       provider / model / endpoint / credentialRef 齐全 —— 召回既不调用
+       provider 也不读 Vault，拿"缺少 provider 配置"去拒绝一次本地读，
+       等于凭空造出一条依赖。这里只回答"这台节点上有没有这个运行时角色"。 */
+  function resolveCharacterSpec(characterId) {
+    if (!registry || typeof registry.getCharacterSpec !== 'function') {
+      return { ok: false, reason: 'registry-unavailable' };
+    }
+    let spec = null;
+    try { spec = registry.getCharacterSpec(characterId) || null; }
+    catch (_) { spec = null; }
+    if (!isPlainObject(spec)) return { ok: false, reason: 'spec-missing' };
+    return { ok: true };
+  }
+
+  /* ── 有界诊断（**唯一**来源）─────────────────────────────────────────
+     `channel` 与 counts（input/visible/gated/selected）**只**存在于既有
+     orchestrator 的 trace 里（assets/js/memory-recall/recall-trace.js），
+     而 wrapper 通过 `options.withTrace === true` 那个**显式 opt-in** 把它们
+     有界地透传出来（diagnostics 键；默认关闭时返回对象逐字节不变）。
+     本层**绝不**自己重算可见性、门或通道 —— 重算就是第二套召回引擎。
+     读不到 `diagnostics` 时返回 null，而不是编一个看起来合理的数字。 */
+  function boundedDiagnosticsOf(picked) {
+    const t = picked && (picked.diagnostics || picked.trace);
+    if (!isPlainObject(t)) return null;
+    const counts = isPlainObject(t.counts) ? t.counts : null;
+    return { channel: t.channel == null ? null : String(t.channel), counts: counts };
+  }
+  function metricOrNull(value) {
+    if (value == null) return null;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  /* ── 主入口：**永不抛出** ───────────────────────────────────────────── */
+  async function run(body, options) {
+    const opts = isPlainObject(options) ? options : {};
+    const startedAt = Number(clock());
+    try {
+      const shape = validateRequest(body);
+      if (!shape.ok) {
+        note('runtime-recall-refused', {
+          code: shape.result.error, field: shape.result.field || null,
+          characterId: shape.result.characterId || null
+        });
+        return shape.result;
+      }
+      const characterId = shape.characterId;
+
+      /* 已经取消的请求：连 store 都不读（零成本、零信息）。 */
+      if (opts.signal && opts.signal.aborted === true) {
+        note('runtime-recall-cancelled', { characterId: characterId });
+        return failure(REASON.recallTimeout, {
+          characterId: characterId, detail: 'caller-aborted-before-recall', attempts: 0
+        });
+      }
+
+      /* 装配缺口：一个"看不见同一个 store"的召回器不能服务（fail closed）。 */
+      if (storeIdentity === 'MISMATCH') {
+        note('runtime-recall-store-mismatch', { characterId: characterId });
+        return failure(REASON.recallUnavailable, {
+          characterId: characterId, detail: 'retrieval-store-mismatch', attempts: 0
+        });
+      }
+      if (!memoryRetrieval || typeof memoryRetrieval.retrieve !== 'function') {
+        return failure(REASON.recallUnavailable, {
+          characterId: characterId, detail: 'memory-retrieval-not-assembled', attempts: 0
+        });
+      }
+      const specResult = resolveCharacterSpec(characterId);
+      if (!specResult.ok) {
+        note('runtime-recall-spec-unavailable', { characterId: characterId, reason: specResult.reason });
+        return failure(REASON.runtimeSpecUnavailable, {
+          characterId: characterId, detail: specResult.reason, attempts: 0
+        });
+      }
+
+      counters.calls += 1;
+      /* ── logical turn index：**只读**注入的 session state ─────────────────
+         cooldown 需要"这是第几个逻辑回合"才能把最近曝光过的候选降权。没有它，
+         服务端的 cooldown 是 **inert** 的 —— 实测口径：同一批候选、同一个集合，
+         但顺序不同（被冷却的 pinned 候选不会被降位）。
+         ★ 这里只调 `currentTurnIndex`（纯读：内部就是 turnCounters.get）。
+           绝不 beginBrowserTurn / beginHomeTurn / endHomeTurn / recordExposure /
+           clear —— 读一个计数不改变任何状态，因此纯影子逐字成立。
+         ★ 诚实边界：今天这个计数器只由 Home Node **自己拥有的回合**推进
+           （mobile 的 beginTurn/settle）；会话所有权**尚未**转移给本阶段。
+           因此"桌面影子 vs 服务端边界"的顺序一致性只有在两侧喂**同一个**索引时
+           才有意义（parity harness 正是两侧同 seed 地构造的），而不是"服务端
+           已经能独立算出一轮"。 */
+      const turnIndex = (sessionState && typeof sessionState.currentTurnIndex === 'function')
+        ? sessionState.currentTurnIndex({ characterId: characterId })
+        : null;
+      /* ── 既有召回的**唯一**调用点 ─────────────────────────────────────
+         传下去的每一个选项都是服务端自有的：
+           · userMessage / conversationId / 两个 turn 信号 = 调用方对"这一轮
+             是什么"的如实陈述（它们的形状已经在上面校验过）；
+           · now = 服务端时钟（调用方的 now / timestamp 已被逐名拒绝）；
+           · includeHeader: true = 复现**桌面 wrapper** 的选择预算语义
+             （header 计入 maxChars，紧预算下会改变最终集合 —— 见
+             memory-retrieval.js 的 §5 说明）。这不是"顺手打开的一个开关"：
+             不传它，服务端与桌面就会在紧预算下选出不同的集合。
+           · **不传** maxChars / contentLen / turnIndex / sessionState /
+             random / glossary 条目：预算由 store 的已发布设置与共享缺省决定，
+             随机源与 sessionState 是 wrapper 的**构造依赖**（唯一权威），
+             而 glossary 条目只由装配层注入（见上面的两个 deps）。
+           · withTrace: true = 要**有界**诊断（通道 + input/visible/gated/
+             selected 计数）。它只让 wrapper 多回一个 diagnostics 键，
+             默认关闭时 wrapper 的返回对象逐字节不变 —— 因此这不是
+             "打开调试模式"，而是本边界如实回报"这一轮走了哪个通道、
+             几个候选"的唯一来源。逐条分数（trace.candidates）**不**在其中。 */
+      let picked = null;
+      try {
+        picked = memoryRetrieval.retrieve(characterId, {
+          userMessage: shape.message,
+          conversationId: shape.conversationId,
+          isFirstTurn: shape.isFirstTurn,
+          conversationSignalAvailable: shape.conversationSignalAvailable,
+          now: Number(clock()),
+          /* §cooldown：索引来自注入的 session state（纯读，见上面的说明）。
+             缺席时是 null ⇒ wrapper 把 turnIndex 置 null ⇒ 与今天逐字同行为。 */
+          turnIndex: turnIndex,
+          includeHeader: true,
+          withTrace: true,
+          glossaryProvider: glossaryProvider,
+          getGlossaryEntries: getGlossaryEntries
+        });
+      } catch (error) {
+        note('runtime-recall-threw', {
+          characterId: characterId, error: bounded((error && error.message) || error)
+        });
+        return failure(REASON.recallUnavailable, {
+          characterId: characterId, detail: 'retrieve-threw', attempts: 1
+        });
+      }
+      const latencyMs = Math.max(0, Number(clock()) - startedAt);
+      if (!picked || picked.ok !== true) {
+        note('runtime-recall-unavailable', {
+          characterId: characterId, reason: bounded(picked && (picked.error || picked.reason)) || 'retrieve-failed'
+        });
+        return failure(REASON.recallUnavailable, {
+          characterId: characterId,
+          detail: bounded(picked && (picked.error || picked.reason)) || 'retrieve-failed',
+          attempts: 1
+        });
+      }
+      /* 超时是**事后**判定：召回是本地同步调用，没有 provider 可以取消；
+         一旦越过调用方给的窗口，结果就不该再被消费（它是窗口外的观测）。
+         因为这条边界是纯影子，"丢弃结果"不会留下任何副作用。 */
+      if (opts.signal && opts.signal.aborted === true) {
+        note('runtime-recall-cancelled', { characterId: characterId, latencyMs: latencyMs });
+        return failure(REASON.recallTimeout, {
+          characterId: characterId, detail: 'caller-aborted-during-recall', attempts: 1
+        });
+      }
+      if (latencyMs > shape.effectiveTimeoutMs) {
+        note('runtime-recall-timeout', {
+          characterId: characterId, latencyMs: latencyMs, timeoutMs: shape.effectiveTimeoutMs
+        });
+        return failure(REASON.recallTimeout, {
+          characterId: characterId, detail: 'deadline-exceeded', attempts: 1
+        });
+      }
+
+      /* ── 成功信封：ids + **有界**诊断 ────────────────────────────────
+         ids 是**有序**的（既有实现的 selection 顺序，本层不重排）。
+         绝不回：隐藏候选、逐条分数、canonical 整行、完整 trace、
+         渲染后的正文（text）或 message 原文。 */
+      const selectedIds = Array.isArray(picked.selectedIds) ? picked.selectedIds.slice() : [];
+      const diagnostics = boundedDiagnosticsOf(picked);
+      const diagCounts = diagnostics && diagnostics.counts ? diagnostics.counts : null;
+      /* 冻结映射（与 wrapper 的 withTrace 契约逐条对应）：
+           · channel    ← diagnostics.channel —— **可空**：早退轮确实没有通道，
+                          这里如实透传，绝不替换成一个默认名（通道是被报告的，
+                          不是被选择的）。
+           · candidates ← diagnostics.counts.input —— 这一次读进来的候选行数。
+           · eligible   ← diagnostics.counts.gated —— 过了 hard relevance gate
+                          = 真正有资格进入选择的条数。
+           · selected   ← selectedIds.length —— 注入事实，由本层自己数。
+         trace 缺席时（orchestrator 不可用 ⇒ wrapper 直调 core）candidates 退回
+         picked.candidates、eligible 退回 selected 这个**下界**（"被选中的一定
+         曾经 eligible"是可证的事实）—— 不把未知伪装成一个精确数字。 */
+      const traceInput = diagCounts ? metricOrNull(diagCounts.input) : null;
+      const traceGated = diagCounts ? metricOrNull(diagCounts.gated) : null;
+      const traceVisible = diagCounts ? metricOrNull(diagCounts.visible) : null;
+      const counts = {
+        candidates: traceInput != null ? traceInput : (Number(picked.candidates) || 0),
+        eligible: traceGated != null ? traceGated : (traceVisible != null ? traceVisible : selectedIds.length),
+        selected: selectedIds.length
+      };
+      const channel = diagnostics ? (diagnostics.channel == null ? null : String(diagnostics.channel)) : null;
+      const activationPolicy = picked.activationPolicy === 'none' ? 'none' : 'normal';
+      const reason = picked.reason == null ? null : String(picked.reason);
+      const chars = Number(picked.chars) || 0;
+      /* turnIdentity：两个**身份** + 消息长度 + 一个 **turn 摘要**。
+         摘要的输入元组是这一轮的**全部**身份事实：
+             conversationId ⧺ requestId ⧺ message
+         因此它同时满足三条可断言的语义：
+           · 重放同一轮（三者全同）⇒ 完全相同的摘要；
+           · 换 requestId（同一句话的**另一轮**）⇒ 不同的摘要；
+           · 换 message（同一轮的**另一句话**）⇒ 不同的摘要。
+         只吃 message 会让"两次不同的回合"读起来像同一轮；把三者之外的东西
+         （时钟、随机、结果）混进来又会让重放不再稳定 —— 这个元组就是边界。
+         实现用仓库**既有**的确定性令牌 `CHAT_CORE.stableToken`（requestId →
+         userMessageId 用的同一个）：不铸造新 id、不生成永久 id、不落任何东西；
+         原文绝不回显（摘要不可逆，且长度固定）。 */
+      const turnIdentity = {
+        requestId: shape.requestId,
+        conversationId: shape.conversationId,
+        messageChars: shape.message.length,
+        messageHash: CHAT_CORE.stableToken(
+          shape.conversationId + '\u0000' + shape.requestId + '\u0000' + shape.message)
+      };
+      /* fingerprint：把"这次召回的完整事实"压成一个稳定摘要，供未来的解释
+         边界证明"我解释的正是这一份召回"。输入元组是**冻结**的（见
+         FINGERPRINT_VERSION 的说明）：同一份 turn + 同一份 canonical 数据
+         ⇒ 同一个 fingerprint；任何一条 selectedIds 变化都会改变它。 */
+      const fingerprint = FINGERPRINT_VERSION + ':' + sha256Hex(JSON.stringify([
+        FINGERPRINT_VERSION, characterId, shape.requestId, shape.conversationId,
+        turnIdentity.messageHash, selectedIds, activationPolicy, channel,
+        counts.candidates, counts.eligible, counts.selected, chars, reason
+      ]));
+
+      counters.ok += 1;
+      const out = {
+        ok: true,
+        durable: false,
+        operation: OPERATION,
+        characterId: characterId,
+        turnIdentity: turnIdentity,
+        selectedIds: selectedIds,
+        activationPolicy: activationPolicy,
+        channel: channel,
+        reason: reason,
+        fingerprint: fingerprint,
+        counts: counts,
+        chars: chars,
+        boundary: boundaryBlock(1),
+        status: 200
+      };
+      /* 审计只记**有界**字段：身份、结果、计数、通道、耗时。
+         message 原文、selectedIds 之外的正文、任何秘密都不进来。 */
+      note('runtime-recall', {
+        characterId: characterId,
+        requestId: shape.requestId,
+        outcome: 'ok',
+        selected: counts.selected,
+        candidates: counts.candidates,
+        eligible: counts.eligible,
+        channel: channel,
+        chars: chars,
+        latencyMs: latencyMs
+      });
+      return out;
+    } catch (error) {
+      /* 兜底：契约是"永不抛出"。任何未预料的编程错误都以稳定的码回答，
+         而不是把 500 留给上一层去猜。 */
+      note('runtime-recall-crashed', { error: bounded((error && error.message) || error) });
+      return failure(REASON.recallUnavailable, { detail: 'unexpected-boundary-error', attempts: 0 });
+    }
+  }
+
+  /* ── 自述：这条边界是什么、不是什么（机器可读）─────────────────────────
+     与解释边界同一条纪律：每一个"没有"都必须是一条可断言的字段，
+     而不是注释里的一句承诺。 */
+  function describe() {
+    return {
+      path: PATH,
+      operation: OPERATION,
+      operations: [OPERATION],
+      transport: 'POST',
+      transportScope: TRANSPORT_SCOPE,
+      /* 调用方在这条边界上的权威 = 只描述这一轮是什么。 */
+      callerAuthority: 'NONE',
+      pureShadow: true,
+      /* ★ 三个"零"是这条边界存在的全部理由，逐条可断言。 */
+      exposureWrites: 0,
+      activationWrites: 0,
+      providerCalls: 0,
+      providerReachable: false,
+      sessionMutation: 'NONE',
+      /* sessionState **不**由本边界拥有：它只被接受、被核对、被如实报告。
+         任何推进都发生在别处（回合结算），不在这里。 */
+      sessionStateOwned: false,
+      sessionStateInjected: !!sessionState,
+      /* cooldown 的 turn index 由本边界**只读**注入的 session state 得到：
+         它不推进、不拥有那个计数器（见 run() 里的说明与诚实边界）。 */
+      turnIndexAuthority: 'SERVER_SESSION_STATE_READ_ONLY',
+      randomAuthority: 'memory-retrieval-constructor',
+      randomInjected: !!random,
+      clockAuthority: 'home-node-server',
+      recallSelectionAuthority: 'CALLER_PROPOSED',
+      retrievalAuthority: 'services/home-node/memory-retrieval.js',
+      visibilityAuthority: 'assets/js/memory-retrieval-core.js',
+      glossaryAuthority: 'assembly-only',
+      storeIdentity: storeIdentity,
+      maxAttempts: 1,
+      autoRetry: 'NONE',
+      defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
+      maxTimeoutMs: MAX_TIMEOUT_MS,
+      /* 接受与被拒**两张名单**：它们是同一份冻结常量（不是副本），
+         因此 describe() 不可能与校验逻辑漂移。 */
+      requestFields: REQUEST_FIELDS,
+      acceptedFields: REQUEST_FIELDS,
+      rejectedAuthorityFields: REJECTED_AUTHORITY_FIELDS,
+      rejectedFields: REJECTED_AUTHORITY_FIELDS,
+      reasonCodes: Object.keys(STATUS_BY_REASON),
+      fingerprintVersion: FINGERPRINT_VERSION,
+      counters: Object.assign({}, counters)
+    };
+  }
+
+  return Object.freeze({
+    path: PATH,
+    operations: [OPERATION],
+    run: run,
+    describe: describe
+  });
+}
+
+module.exports = createRuntimeRecall;
+module.exports.createRuntimeRecall = createRuntimeRecall;
+module.exports.PATH = PATH;
+module.exports.OPERATION = OPERATION;
+module.exports.REQUEST_FIELDS = REQUEST_FIELDS;
+module.exports.REJECTED_AUTHORITY_FIELDS = REJECTED_AUTHORITY_FIELDS;
+module.exports.REASON = REASON;
+module.exports.STATUS_BY_REASON = STATUS_BY_REASON;
+module.exports.DEFAULT_TIMEOUT_MS = DEFAULT_TIMEOUT_MS;
+module.exports.MAX_TIMEOUT_MS = MAX_TIMEOUT_MS;
+module.exports.TRANSPORT_SCOPE = TRANSPORT_SCOPE;

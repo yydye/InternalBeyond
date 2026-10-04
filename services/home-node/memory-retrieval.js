@@ -109,8 +109,18 @@ function createMemoryRetrieval(deps) {
       maxChars: budget,
       contentLen: contentLen,
       /* 标题由本模块提供（【长期记忆】）：只要正文行，保证"哪一行怎么渲染"
-         仍然出自共享实现，而小节标题是执行缝的决定。 */
-      includeHeader: false,
+         仍然出自共享实现，而小节标题是执行缝的决定。
+
+         P21-R4-LIVE-3.3 · §5：`includeHeader` 由硬编码 `false` 变成**显式选项**，
+         默认仍是 false ⇒ 既有 Host（mobile）行为**逐字节不变**。
+         ★ 为什么必须暴露它：桌面 wrapper **省略**这个键 ⇒ core 默认 true ⇒
+           header（`【记忆（系统参考，勿提及此段）】\n`）计入 maxChars 预算，
+           并在**紧预算**下改变最终 selected set（实测 maxChars=200 时两侧集合不同）。
+           因此 header 在当前实现里**不是**纯 presentation —— 它是**选择预算语义
+           的一部分**。要让服务端 recall 边界复现桌面的选择，就必须能用同一套预算
+           语义（新路由显式传 true）；将来若两侧都改成 ids-only 消费者，再一起改
+           false —— 那需要改桌面 wrapper，不属本轮。 */
+      includeHeader: options.includeHeader === true,
       /* F1b：只在 visibility/Hard Gate 之后为已 admitted 的候选算 factor；
          turnIndex 来自调用方在 retrieval **之前** begin 的 Home turn（§13/§17）。 */
       sessionState: sessionState,
@@ -134,20 +144,68 @@ function createMemoryRetrieval(deps) {
         conversationId: (options.conversationId == null) ? null : String(options.conversationId),
         isFirstTurn: options.isFirstTurn === true,
         conversationSignalAvailable: options.conversationSignalAvailable === true
-      }
+      },
+      /* P21-R4-LIVE-3.3 · §3/§4 · glossary provider seam（wrapper gap A）。
+         桌面 wrapper 转发调用方的 `glossaryProvider` / `getGlossaryEntries`
+         （assets/js/memory.js:216-217），而本 wrapper 以前**一个都没转发** ⇒
+         服务端的 glossary 通道即使被显式要求，也永远拿不到 catalog
+         （orchestrator 的 resolveGlossaryCatalog 走到 createEmptyCatalogProvider
+         ⇒ available:false），于是同一次 turn 在两侧给出不同的选择。
+         这里补上**同样的两个键**：两侧因此共用 orchestrator 里那**同一份**
+         resolveGlossaryCatalog + glossary-catalog 工厂，
+         **绝不复制 glossary 算法**、绝不另造 catalog 格式。
+
+         ★ authority（§4）：provider **只由服务端装配层注入**（服务端自有的
+           条目来源）。本 wrapper **不从 request 取任何 glossary 内容** ——
+           entries / matches / forced result / selectedIds 都由新 recall 路由的
+           闭集 schema 在更外层拒绝，因此"浏览器提交 glossary 结果"这条路不存在。 */
+      glossaryProvider: options.glossaryProvider,
+      getGlossaryEntries: options.getGlossaryEntries
     };
     /* P21-R2-C：经 orchestrator（legacy path 委托同一份 core）。
-       刻意**不**在 buildOpts 里放 turn ⇒ active behavior 始终是 legacy，
-       text / selectedIds / count / chars / reason 的语义完全不变。
+       ★ P21-R4-LIVE-3.2 · 事实性更正（**只改注释，不改行为**）：
+         R2-D 起 **turn 已经在这里**（见紧邻上面的 `turn: {...}` 块）⇒ 本 Host 走的是
+         **turn 路径**，R2-D/E/F 的 gate（channel / cooldown / seats / exploration）
+         全部生效。P21-R2-C 写下"刻意**不**放 turn"时描述的是**接线阶段**的行为，
+         那句已被 R2-D 的语义切换取代；留着它会让读者以为桌面/mobile 仍走 legacy。
        orchestrator 缺失时回落到 core 直调（逐行为等价）。 */
     /* P21-R2-E1b · activation policy：只从 meta 取**一个标量**（内部 seam）。
        coldStart = 'none' ⇒ 注入照旧，但**不**强化（见 reinforcementIds）。
        取不到时按 'normal' —— legacy / core 直调路径行为逐字节不变。 */
-    let built, activationPolicy = 'normal';
+    let built, activationPolicy = 'normal', boundedDiagnostics = null;
     if (MEMORY_RECALL_ORCHESTRATOR && typeof MEMORY_RECALL_ORCHESTRATOR.recall === 'function') {
       const out = MEMORY_RECALL_ORCHESTRATOR.recall(page.records || [], buildOpts);
       built = out.result;
       if (out.meta && out.meta.activationPolicy === 'none') activationPolicy = 'none';
+      /* P21-R4-LIVE-3.3 · §21 · **有界**诊断（显式 opt-in）。
+         recall 边界要如实回报"这一轮走了哪个通道、几个候选、预算多少"，
+         但 orchestrator 的 trace 里同时带着 `candidates[]`（逐条分数），
+         而那正是边界明令**不得**外泄的东西。因此这里只取计数与通道：
+         绝不把 trace.candidates 带出去，也绝不带正文。
+         ★ 默认关闭（`withTrace !== true` ⇒ 返回对象逐字节不变），
+           因此既有调用方与 parity/hash 类断言不受影响。 */
+      if (options.withTrace === true) {
+        const tr = out.trace || null;
+        const meta = out.meta || null;
+        const tc = (tr && tr.counts) || null;
+        const tb = (tr && tr.budget) || null;
+        boundedDiagnostics = {
+          mode: meta && meta.mode != null ? meta.mode : null,
+          channel: meta && meta.channel != null ? meta.channel : null,
+          earlyExit: !!(tr && tr.earlyExit === true),
+          earlyExitReason: (tr && tr.earlyExitReason != null) ? tr.earlyExitReason : null,
+          counts: {
+            input: tc && tc.input != null ? Number(tc.input) : null,
+            visible: tc && tc.visible != null ? Number(tc.visible) : null,
+            gated: tc && tc.gated != null ? Number(tc.gated) : null,
+            selected: tc && tc.selected != null ? Number(tc.selected) : (built && Array.isArray(built.selected) ? built.selected.length : 0)
+          },
+          budget: {
+            maxChars: tb && tb.maxChars != null ? Number(tb.maxChars) : budget,
+            usedChars: tb && tb.usedChars != null ? Number(tb.usedChars) : (built && typeof built.chars === 'number' ? built.chars : 0)
+          }
+        };
+      }
     } else {
       built = MEMORY_RETRIEVAL.buildMemoryContext(page.records || [], buildOpts);
     }
@@ -164,7 +222,9 @@ function createMemoryRetrieval(deps) {
       reinforcementIds: (activationPolicy === 'none') ? [] : selectedIds.slice(),
       activationPolicy: activationPolicy,
       reason: built.reason,
-      candidates: (page.records || []).length
+      candidates: (page.records || []).length,
+      /* 只在 `withTrace:true` 时出现；默认**不存在**这个键。 */
+      ...(boundedDiagnostics ? { diagnostics: boundedDiagnostics } : {})
     };
   }
 

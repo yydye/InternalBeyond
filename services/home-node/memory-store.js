@@ -92,6 +92,65 @@ function createMemoryStore(deps) {
   let ownsDb = false;
   let lastOpenedAt = 0;
 
+  /* ── ACTIVATION TURN GUARD（P21-R4-LIVE-3.3）────────────────────────────
+     唯一职责：**同一个 (turnId, memoryId) 最多产生一次 canonical 激活自增。**
+
+     为什么需要它：`recordActivation` 本身是加法的（"被用了一次"），
+     在本守卫出现**之前**，"一个逻辑回合只自增一次"只靠**唯一一个生产调用点** +
+     gateway 的 requestId duplicate 分支（P21-R4-LIVE-3.3.1 · 措辞收范围：
+     不得写成无范围限定的 "exactly-once activation"）。将来出现第二个调用点
+     （例如桌面召回路径）时，同一次逻辑回合的两条路径会各自 +1，
+     而 activationCount 直接进入排序权重 —— 静默重复计数会改变"她先想起谁"。
+
+     冻结语义（与 contract / tests / 报告逐字一致）：
+       ACTIVATION_TURN_GUARD             = IN_PROCESS_TURN_SCOPED
+       SAME_PROCESS_SAME_TURN_DUPLICATE  = NO_INCREMENT
+       DIFFERENT_TURN                    = INCREMENT_ALLOWED
+       CROSS_PROCESS_RESTART_GUARANTEE   = NONE
+       CROSS_RESTART_EXACTLY_ONCE        = NO
+       AUTO_RETRY                        = NONE
+
+     ── 生命周期（必须如实说明，不许声称没有的持久性）──────────────────
+       · 这是**进程内、store 实例内**的 Map，**不是** durable 状态：
+         没有表、没有 schema 变更、没有 migration、没有写盘。
+       · 每次 `open()` 从空开始（`close()`/重启因此等价于清空）。
+       · **重启之后旧回合的重放会再次自增**。这是本守卫**不覆盖**的场景，
+         不许把它说成"激活是全局幂等的"。
+       · 重启后仍然存在的那一层保护是 gateway 的 requestId duplicate 分支
+         （`mobile-gateway.js:626-637 turnByRequest/liveTurns` → 同一个
+         requestId 直接返回上一回合结果，settle 不再执行，因此不会第二次
+         调用强化）。两层是**互补**的：
+           - 同一进程内、同一次逻辑回合的重复调用 → 本守卫 +0（即使调用方
+             没有 requestId，只有 turnId 也能挡住）；
+           - 同一进程内、同一 requestId 的传输重试 → gateway 分支在更上游
+             短路，根本走不到强化。
+         ★ 但 gateway 那一层同样是**内存**结构（有界 liveTurns），
+           所以"重启后重放旧回合"这一条对两层都不成立保护。
+           真正 durable 的幂等只覆盖**内容写入**（`putRecord` 的
+           `options.requestId` → idempotency 表），而 R2-H3 明确冻结
+           activation 端点为"显式非幂等（AUTO_RETRY=NONE）"。
+
+     ── 有界性 ──────────────────────────────────────────────────────────
+       只保留最近 MAX_TRACKED_ACTIVATION_TURNS 个回合（Map 插入序淘汰最旧），
+       因此长时间运行的进程不会因为守卫而无界增长。淘汰只影响"多久之后不再
+       去重"，不影响任何已发生的自增。 */
+  const MAX_TRACKED_ACTIVATION_TURNS = 64;
+  let activationTurnGuard = new Map();   /* turnId → Set<memoryId> */
+
+  function guardBucketFor(turnId) {
+    let bucket = activationTurnGuard.get(turnId);
+    if (!bucket) {
+      bucket = new Set();
+      activationTurnGuard.set(turnId, bucket);
+      while (activationTurnGuard.size > MAX_TRACKED_ACTIVATION_TURNS) {
+        const oldest = activationTurnGuard.keys().next();
+        if (oldest.done || oldest.value === turnId) break;
+        activationTurnGuard.delete(oldest.value);
+      }
+    }
+    return bucket;
+  }
+
   const SQL = {
     createRecords:
       'CREATE TABLE IF NOT EXISTS ' + RECORDS_TABLE + ' (' +
@@ -217,6 +276,9 @@ function createMemoryStore(deps) {
     }
     opened = true;
     lastOpenedAt = clock();
+    /* P21-R4-LIVE-3.3：turn guard 随本次 open 从空开始（见文件上方说明：
+       它是进程内状态，重启/重开即清空，因此不声称跨重启幂等）。 */
+    activationTurnGuard = new Map();
     /* 观测：只报条数与版本，绝不打印任何记忆正文。 */
     logger('memory-opened', {
       file: dbFile,
@@ -544,6 +606,28 @@ function createMemoryStore(deps) {
     if (!isOpen()) return { ok: false, error: 'store-closed' };
     const list = Array.isArray(ids) ? ids.map(String).filter(Boolean) : [];
     if (!list.length) return { ok: true, updated: 0, ids: [], at: null, revisionTouched: false };
+    /* ── P21-R4-LIVE-3.3 · turn scoping（唯一开关是 options.turnId）──────
+       turnId **缺失** ⇒ 完全不去重，与加法的历史行为逐字节相同
+       （legacy 调用方零变化）。turnId **存在** ⇒ 同一 (turnId, id)
+       最多自增一次；重复项不参与本次事务，并被**如实**报告出来
+       （`duplicated` + `reason:'turn-duplicate'`），绝不返回一个看起来像
+       自增成功、实际什么都没做的结果。 */
+    const turnId = (options.turnId == null) ? '' : String(options.turnId).trim();
+    const guarded = turnId ? guardBucketFor(turnId) : null;
+    const duplicated = [];
+    const applyList = guarded ? list.filter((id) => {
+      if (guarded.has(id)) { duplicated.push(id); return false; }
+      return true;
+    }) : list;
+    if (guarded && !applyList.length) {
+      /* 整批都是本回合已激活过的 id：诚实的 no-op（ok:true 是"请求合法"，
+         updated:0 + reason 才是"什么都没发生"）。 */
+      return {
+        ok: true, updated: 0, ids: list, at: null, revisionTouched: false,
+        revision: getRevision(), activations: [],
+        duplicated: duplicated.slice(), reason: 'turn-duplicate'
+      };
+    }
     const deltaRaw = options.delta == null ? 1 : Number(options.delta);
     const delta = isFinite(deltaRaw) && deltaRaw > 0 ? Math.trunc(deltaRaw) : 1;
     let at = Number(options.at);
@@ -558,7 +642,7 @@ function createMemoryStore(deps) {
     const touched = [];
     const updated = withTransaction(() => {
       let n = 0;
-      for (const id of list) {
+      for (const id of applyList) {
         const row = db.prepare(SQL.selectActivation).get(id);
         if (!row) continue;
         const next = Number(row.activation_count || 0) + delta;
@@ -570,11 +654,16 @@ function createMemoryStore(deps) {
       }
       return n;
     });
-    return {
+    /* 只有**真的写进去**的 id 才进入守卫：一条不存在的行不该让同一回合里
+       后续真正出现的写入被误判成重复。 */
+    if (guarded) { for (const t of touched) guarded.add(t.id); }
+    const out = {
       ok: true, updated: updated, ids: list, at: at,
       revisionTouched: getRevision() !== revisionBefore, revision: getRevision(),
       activations: touched
     };
+    if (guarded && duplicated.length) { out.duplicated = duplicated.slice(); out.reason = 'turn-duplicate'; }
+    return out;
   }
 
   /* ── 读 ──────────────────────────────────────────────────────────── */

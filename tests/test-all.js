@@ -1611,7 +1611,47 @@ const GROUPS = [
          多单元同回合、多成员独立、legacy 兼容、单聊隔离、Home Node payload 往返、
          秘密拒绝、不产生 parent/groupTurn 行、以及"绝不复制 P23 的排序·队列·拆句·
          模态·voice 契约"的边界断言。纯 Node，零浏览器、零网络、零真实 provider。 */
-      ['test_group_turn_identity.js']
+      ['test_group_turn_identity.js'],
+      /* P21-R4-LIVE-3.3 · **同类缺口补齐**（同一轮内由 3.3 发现并修）：
+         test_r4c_live_runtime_boundary.js 是 P21-R4-LIVE-2.1 的运行时解释边界
+         证明套件（271 green），但它和上面三份 recall 权威证据一样，
+         **写完就从没被本聚合 runner 发现过**（登记表里 0 命中）。
+         "写了测试"与"每轮真的被跑"是两件事 —— 只登记不跑，等于没有守卫。
+         该套件全部走本地假 provider / 临时目录，零真实收费调用。 */
+      ['test_r4c_live_runtime_boundary.js'],
+      /* P21-R4-LIVE-3.2/3.3 · Server Recall Boundary 的三份权威证据
+         （**本阶段才登记**，登记本身就是 3.3 的第一个 blocker）。
+         这三个套件在 3.2 就已写完并通过，但一直**没有被本聚合 runner 发现**：
+         聚合器只认这里的显式登记表，"写了测试"与"每轮真的被跑"是两件事
+         —— 实测 grep 0 命中，因此它们此前从未进入任何一轮 aggregate。
+         · test_r4c_live_recall_parity.js —— Desktop ⇄ Home Node 的**选择 parity**：
+           同一个 now / 同一串 random / 同一个 turn 身份 / 同一条角色 / 同一份设置下，
+           两侧是否给出同一个选择。Desktop 侧在 orchestrator 边界重放，并用**源码锁**
+           断言 memory.js 的候选源与选项键表没有漂移 —— 漂移即失败，绝不静默地
+           比较两个不同的东西。
+         · test_r4c_live_recall_session_authority.js —— **会话 / 曝光 / 激活的所有权**：
+           会话状态按什么键、cooldown 由谁持有且是否落盘、exposure/activation 现在
+           谁在写、选择与激活的顺序契约、turn 身份的最小提交、同一 requestId 重放的
+           保护范围（换 requestId 即新的 logical turn），以及"纯影子"不得调用的函数。
+         · test_r4c_live_recall_request_authority.js —— **请求权威审计**：
+           传输选型（B · 新建窄内部 /internal/runtime/memory-recall）、闭集请求字段、
+           recall query 由服务端解析、topK/budget/channel/exploration/cooldown 的
+           逐项权威归属、random/now 归 SERVER_RUNTIME，以及针对**当前面**的攻击
+           （设备令牌不能当桌面代理、跨角色记忆不注入、伪造 selectedIds/分数/seat/
+           cooldown/now 一律不落地）。同文件还登记了移动/网关回归与 pristine HEAD 对照。
+         · test_r4c_live_recall_boundary_closure.js —— **边界闭合**（3.3 新增）：
+           服务端能否用 canonical store + 共享选择核心**独立复现**桌面的召回选择，
+           并把 3.2 审计实测出的两处真实 wrapper 差异（glossary 通道不可触发 /
+           includeHeader 预算语义）钉死；同时验证"纯影子"零副作用。
+           ★ 登记时（3.3 中段）该套件**仍是红的**：它 drive 的
+             services/home-node/runtime-recall.js 尚未落盘（MISSING_PIECE，
+             11 passed / 3 failed）。登记本身不等它变绿 —— 否则又会变成
+             "写了测试但聚合器看不见"。路由落盘后应自然转绿。
+         三者都是纯 Node：零真实 provider、零浏览器、零真实网络，临时目录在 finally 清理。 */
+      ['test_r4c_live_recall_parity.js'],
+      ['test_r4c_live_recall_session_authority.js'],
+      ['test_r4c_live_recall_request_authority.js'],
+      ['test_r4c_live_recall_boundary_closure.js']
     ]
   },
   {

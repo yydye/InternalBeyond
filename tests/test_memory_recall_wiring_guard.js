@@ -137,6 +137,19 @@ const MEMORY_SRC = stripComments(read('assets/js/memory.js'));
 const NODE_SRC = stripComments(read('services/home-node/memory-retrieval.js'));
 /* R2-E1a：Browser 发送点也要被断言（latent 会话信号 + 不得启用 coldStart）。 */
 const COMM_SRC = stripComments(read('assets/js/communication.js'));
+/* P21-R4-LIVE-3.3.1 · **目录级**覆盖集合：任何 Home Node 服务文件都进扫描集。
+   ★ 为什么：3.3 的独立验证 refute 了"只扫点名文件"的旧判据 —— 本轮新加的
+     services/home-node/runtime-recall.js 不在扫描集里，往它里面塞一条
+     "从 store 取 catalog + 强制 glossary 通道"的旁路，整套守卫仍 exit 0。
+     改成目录级后，"新文件绕过"这一类旁路从此不成立。 */
+const HOME_NODE_DIR = path.join(ROOT, 'services', 'home-node');
+const HOME_NODE_SRCS = fs.readdirSync(HOME_NODE_DIR)
+  .filter(f => /\.js$/.test(f))
+  .map(f => ({ name: 'services/home-node/' + f, src: stripComments(fs.readFileSync(path.join(HOME_NODE_DIR, f), 'utf8')) }));
+const HOME_NODE_ALL_SRC = HOME_NODE_SRCS.map(f => f.src).join('\n');
+/* 任何"自行取得凭据/catalog"的形状：store/DB/文件读、构造工厂、匹配器、
+   或给注入 seam 造兜底（`||` / 内联箭头函数）。反向控制见下方 reverse control。 */
+const GLOSSARY_SELF_SOURCE = /store\s*\.|\.listRecords\b|\.getRecord\b|readFileSync|require\s*\(|createGlossaryCatalogProvider|createEmptyCatalogProvider|matchGlossary|prepare\s*\(|\bSELECT\b|\bFROM\b|\bINSERT\b|\|\||=>/;
 
 check('A2.browserResolvesOrchestrator', MEMORY_SRC.indexOf('IBMemoryRecallOrchestrator') >= 0);
 check('A2.browserCallsRecall', /_orch\s*\?[^;]*\.recall\(/.test(MEMORY_SRC) || /_orch\.recall\(/.test(MEMORY_SRC));
@@ -336,14 +349,71 @@ check('A4.hostsDoNotPassColdStart', (() => {
    因此该判据按设计失效。真正的判据是：Host **不得替用户强制通道** ——
    即不得传 channelHint='glossary' / 'reminisce'，也不得从 DB 读 catalog。 */
 check('A4.hostsDoNotForceGlossaryChannel', (() => {
-  const both = MEMORY_SRC + NODE_SRC + COMM_SRC;
+  /* P21-R4-LIVE-3.3.1：同样扩到**目录级** —— 新加的 Home Node 服务文件
+     在此之前完全不在扫描集里，"强制通道"这类旁路可以在新文件里藏身。 */
+  const both = MEMORY_SRC + COMM_SRC + HOME_NODE_ALL_SRC;
   return !/channelHint\s*:\s*'glossary'/.test(both) && !/channelHint\s*:\s*'reminisce'/.test(both);
 })(), 'a Host may inject a catalog, but must not force the glossary channel');
 check('A4.hostsDoNotForceReminisceChannel',
   !/channelHint\s*:\s*'reminisce'/.test(MEMORY_SRC + NODE_SRC));
-check('A4.hostsDoNotReadGlossaryFromDb',
-  !/glossary/i.test(NODE_SRC),
-  'Home Node must receive the catalog by injection, never by reading a store');
+/* P21-R4-LIVE-3.3.1 · 覆盖集合升级为**目录级**。
+   ★ 为什么升级：这条判据在 3.3 的独立验证里被 **refute** 过。当时的实现只扫
+     memory.js / memory-retrieval.js / communication.js 三个**点名**文件，
+     于是本轮**新加**的 services/home-node/runtime-recall.js 根本不在扫描集里：
+     在那个文件里塞一个"从 store 取 catalog + 强制 glossary 通道"的旁路，
+     整套守卫仍然 exit 0。同时它凭"转发那一行以 options.glossaryProvider 开头"
+     就放行，行尾加 `|| { getEntries: () => store.listRecords(...) }` 也照样通过。
+   现在的判据改成：
+     ① **任何** Home Node 服务文件，只要提到 glossary 就被逐行检查；
+     ② 提到 glossary 的**任何一行**都不得含"自行取数 / 自行构造 / 兜底"的形状
+        （store/DB/文件读、工厂、匹配器、`||`、内联箭头函数）——
+        这条同时封掉"前缀匹配 + 行尾兜底"和"新文件不在扫描集"两类旁路；
+     ③ memory-retrieval.js 必须仍然是**原样转发**（不得改写/兜底）；
+     ④ 不得替用户强制通道 —— 由 A4.hostsDoNotForceGlossaryChannel 独立把守
+        （该判据同样已扩到目录级）。
+   反向控制（两条都断言在下方 reverse control 段）：B1 行尾兜底与 B2 新建文件
+   都必须被判据抓住 —— 判据"看起来更严"不算数，必须能抓住已知旁路。
+   （目录级扫描集与 GLOSSARY_SELF_SOURCE 定义在 §A2 顶部，供本段与
+     A4.hostsDoNotForceGlossaryChannel 共用。） */
+check('A4.hostsDoNotReadGlossaryFromDb', (() => {
+  const files = HOME_NODE_SRCS.filter(f => /glossary/i.test(f.src));
+  /* 反向控制：扫描集必须非空，且必须真的含会构造 orchestrator options 的那个文件，
+     否则"一个文件都没扫到"会被误当成通过。 */
+  if (!files.length) return false;
+  if (!files.some(f => f.name === 'services/home-node/memory-retrieval.js')) return false;
+  for (const f of files) {
+    for (const line of f.src.split('\n')) {
+      if (!/glossary/i.test(line)) continue;
+      /* ② 此处一旦命中，就是"Home Node 自己把 catalog 弄进来"的形状 */
+      if (GLOSSARY_SELF_SOURCE.test(line)) return false;
+    }
+    /* ②b 不得把 seam 值当字面量/函数就地构造 */
+    if (/glossaryProvider\s*:\s*\{/.test(f.src)) return false;
+    if (/getGlossaryEntries\s*:\s*(?:async\s*)?(?:\(|function)/.test(f.src)) return false;
+  }
+  /* ②c 目录级：provider 接口名 `getEntries` 不得出现在**任何** Home Node 服务文件里。
+     ★ 这一条是为 B2 的"改名"变体加的：验证给出的旁路把构造器命名成
+       `_probeCatalogFromStore`，那一行**根本没有 glossary 字样** ——
+       只按"提到 glossary 的行"检查会整条漏掉。orchestrator 的 provider 契约
+       就是 `{ getEntries }`，所以想造一个能生效的 catalog 必然要用这个名字。 */
+  if (/\bgetEntries\b/.test(HOME_NODE_ALL_SRC)) return false;
+  /* ②d 目录级：catalog 工厂与匹配器只能活在共享模块里 */
+  if (/createGlossaryCatalogProvider|createEmptyCatalogProvider|matchGlossary/.test(HOME_NODE_ALL_SRC)) return false;
+  /* ③ memory-retrieval.js 必须仍是原样转发 */
+  if (!/glossaryProvider\s*:\s*options\.glossaryProvider\b/.test(NODE_SRC)) return false;
+  if (!/getGlossaryEntries\s*:\s*options\.getGlossaryEntries\b/.test(NODE_SRC)) return false;
+  return true;
+})(), 'Home Node must receive the catalog by injection, never by reading a store (directory-wide, line-level)');
+check('A4.reverseControl.glossarySelfSourceDetectorIsLive', (() => {
+  /* 判据必须能抓住 3.3 验证给出的两条真实旁路 —— 否则它只是"看起来更严"。
+     B2 另有一个**改名变体**（构造器不叫 glossary*，行里没有 glossary 字样），
+     它必须由目录级的 `getEntries` 子句抓住。 */
+  const b1 = "glossaryProvider: options.glossaryProvider || { getEntries: () => store.listRecords({kind:'term'}).records },";
+  const b2 = "function _probeCatalogFromStore(store){ return { getEntries: () => store.listRecords({kind:'term'}).records }; }";
+  const b2RenamedHasNoGlossaryWord = !/glossary/i.test(b2) && /\bgetEntries\b/.test(b2);
+  return GLOSSARY_SELF_SOURCE.test(b1) && GLOSSARY_SELF_SOURCE.test(b2)
+    && b2RenamedHasNoGlossaryWord;
+})(), 'reverse control: the self-source detector must fire on both reproduced bypasses');
 check('A4.hostsDoNotPassCooldownState', (() => {
   const both = MEMORY_SRC + NODE_SRC;
   return !/cooldown|lastSurfacedAt|lastRecalledAt/i.test(both);

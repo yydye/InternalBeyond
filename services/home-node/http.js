@@ -145,6 +145,15 @@ function createHomeNodeHttp(deps) {
        里，而唯一的启用入口是装配层传进来的 options.runtimeInterpretationPolicy。
        本文件不读任何 env、不写任何默认值（frozen：本阶段没有生产启用路径）。 */
   const runtimeInterpretation = deps.runtimeInterpretation || null;
+  /* ── P21-R4-LIVE-3.3 · Runtime Recall（**运行时**召回边界）──────────────
+     ★ 与上面那一行同款：拿到的是**服务窄对象**（{ path, operations, run,
+       describe }），不是 memory store、不是召回器、不是 provider。"这一轮
+       想起什么"仍然只有一份实现（services/home-node/memory-retrieval.js +
+       共享可见性核），本文件一行都碰不到它。
+     ★ 不注入时整条分支**不存在**：行为与接线前逐字一致。
+     ★ 它与解释边界同级：同样在桌面凭据判定**之后**，同样没有
+       isEconomyCommandPath 式豁免。 */
+  const runtimeRecall = deps.runtimeRecall || null;
   const executor = deps.executor || null;
   const gateway = deps.gateway || null;
   const clock = deps.clock || (() => Date.now());
@@ -732,6 +741,75 @@ function createHomeNodeHttp(deps) {
     }
   }
 
+  /* ── P21-R4-LIVE-3.3 · Runtime Recall 的**传输面** ──────────────────────
+     ★ 与解释边界逐字同一条纪律：本文件只做四件事：有界读体 → 把请求的
+       生命周期桥成 AbortSignal → 把 body 原样交给服务 → 把服务给的信封
+       原样发出。**不选**记忆、**不算**分数、**不读** store、**不碰** provider：
+       那些在既有召回实现里有唯一一份。
+     ★ 审计只记**有界**字段：operation / characterId / outcome / status /
+       selected / candidates / eligible / channel / chars / durationMs。
+       `message`（本轮用户原文）**绝不**进日志环 —— 它是这条边界上最敏感的
+       输入，而诊断只需要知道"选了几条、走了哪个通道"。 */
+  function runtimeRecallOperation() {
+    const ops = runtimeRecall && Array.isArray(runtimeRecall.operations) ? runtimeRecall.operations : [];
+    return ops.length ? String(ops[0]) : null;
+  }
+  async function handleRuntimeRecall(req, res) {
+    let body = null;
+    try {
+      body = await readBody(req, MAX_BODY_BYTES);
+    } catch (error) {
+      const code = (error && error.code) || 'read-error';
+      record('warn', 'runtime-recall-unreadable', {
+        operation: runtimeRecallOperation(), outcome: 'refused', reasonCode: code, loopback: isLoopback(req)
+      });
+      /* 与 /messages 和解释路由**逐字同一条**读体纪律（同一种失败在本文件里
+         必须读出同一个样子），服务此时还没看到这个请求。 */
+      bad(res, code === 'too-large' ? 413 : 400, code || 'bad-body', { unreadableBody: code }, req);
+      return;
+    }
+    /* 取消桥接：与解释边界同一份实现、同一条诚实边界 —— 只**转发**信号，
+       不宣称上游已经停止（召回是本地同步读，根本没有上游可停）。 */
+    const controller = new AbortController();
+    const onDisconnected = () => { try { controller.abort(); } catch (_) { /* 已中止 */ } };
+    const detachDisconnect = () => {
+      req.removeListener('aborted', onDisconnected);
+      res.removeListener('close', onDisconnected);
+    };
+    req.on('aborted', onDisconnected);
+    res.on('close', onDisconnected);
+    const startedAtMs = clock();
+    try {
+      const result = await runtimeRecall.run(body, { signal: controller.signal });
+      /* 服务承诺"永不抛、总是回信封"（冻结契约）。这一行保证**传输层**在任何
+         情况下都不发出一个非信封的响应体（契约被破坏时给诚实的 500）。 */
+      if (!result || typeof result !== 'object') {
+        record('error', 'runtime-recall-envelope-missing', { operation: runtimeRecallOperation() });
+        bad(res, 500, 'runtime-recall-failed', { durable: false }, req);
+        return;
+      }
+      detachDisconnect();
+      const ok = result.ok === true;
+      const counts = (result.counts && typeof result.counts === 'object') ? result.counts : {};
+      record(ok ? 'info' : 'warn', 'runtime-recall', {
+        operation: result.operation || runtimeRecallOperation(),
+        characterId: result.characterId || null,
+        outcome: ok ? 'accepted' : String(result.reasonCode || result.error || 'refused'),
+        /* 计数原样透传：0 是有意义的值（"一条都没选"），不用 `|| null` 抹掉。 */
+        status: metricOrNull(result.status),
+        selected: metricOrNull(counts.selected),
+        candidates: metricOrNull(counts.candidates),
+        eligible: metricOrNull(counts.eligible),
+        channel: result.channel == null ? null : String(result.channel),
+        chars: metricOrNull(result.chars),
+        durationMs: Math.max(0, clock() - startedAtMs)
+      });
+      sendJson(res, Number(result.status) || (ok ? 200 : 400), result, req);
+    } finally {
+      detachDisconnect();
+    }
+  }
+
   /* ── P21-R4-LIVE-2.1 · /security 里的诚实自述（唯一取值点）───────────────
      ★ 这一节回答"这台节点上到底有没有一条运行时解释执行面、它开不开、
        它是什么范围"。四个 NOT 类字段刻意写成**机器可读**的，而不是躺在
@@ -1216,6 +1294,27 @@ function createHomeNodeHttp(deps) {
         return;
       }
       await handleRuntimeInterpretation(req, res);
+      return;
+    }
+
+    /* ══════════════════════════════════════════════════════════════════
+       P21-R4-LIVE-3.3 · Runtime Recall（**唯一**一条运行时召回面 · POST）
+
+       ★ 与上面那块**逐字同级、逐字同门**：位置在桌面凭据判定之后，没有
+         任何豁免；也不在 /mobile/ 下，因此 `/internal/` 前缀守卫覆盖它。
+         一条"能读到她记得什么"的路径必须以桌面凭据为门，这不是可选加固。
+       ★ 它与解释边界是**两条**路径，而不是一条路径上的两种 operation：
+         一条回答"该想起谁"（本地、不花钱、纯影子），一条回答"这些记忆
+         意味着什么"（出网、花预算、读 Vault）。合成一条会让"召回"与
+         "解释"在审计里变成同一个动作。
+       ★ 本文件在这里只判定路径与方法；未注入服务时整条分支**不存在**。 */
+    if (runtimeRecall && path === runtimeRecall.path) {
+      if (method !== 'POST') {
+        record('warn', 'runtime-recall-wrong-method', { method: method, loopback: isLoopback(req) });
+        bad(res, 405, 'runtime-recall-is-post-only', { allowedMethods: ['POST'] }, req);
+        return;
+      }
+      await handleRuntimeRecall(req, res);
       return;
     }
 

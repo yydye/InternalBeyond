@@ -508,7 +508,7 @@ NO_ERROR_TEXT_EXISTENCE_ORACLE                = YES
 TIMING_EXISTENCE_ORACLE_ABSENCE               = NOT_PROVEN
 TIMING_DIFFERENCE_OBSERVED                    = 进程内**中位数** +0.03…+0.06 ms 可复现（隐藏 id 多一次
                                                 canonical 行读）；配对**均值**与零假设对照同量级（噪声）；
-                                                loopback HTTP 上无可复现符号（~2 ms sd）
+                                                loopback HTTP 上无可复现符号（sd 逐次测量，观测区间约 2–7 ms）
 TIMING_ORACLE_EXISTS                          = NOT_CLAIMED
 PROVIDER_MEMORY_SOURCE                        = SERVER_CANONICAL_PROJECTION
 PROVIDER_METADATA_LEAKS                       = 0
@@ -533,7 +533,7 @@ REAL_PROVIDER_CALLS                           = 0
   对照面证明"拒绝是 ACL 而不是不存在"（同一条 B-only 行对 char_b **成功**）。
   ★ **时序通道**：隐藏 id 多一次 canonical 行读。进程内**中位数**差异可复现
   （+0.03…+0.06 ms），配对**均值**与零假设对照同量级，loopback HTTP 上无可复现符号
-  （~2 ms sd）。因此本契约**只**登记 `TIMING_EXISTENCE_ORACLE_ABSENCE = NOT_PROVEN` ——
+  （sd 逐次测量，观测区间约 2–7 ms，**不冻结单一数值**）。因此本契约**只**登记 `TIMING_EXISTENCE_ORACLE_ABSENCE = NOT_PROVEN` ——
   既不声称存在**可利用**的时序 oracle（`TIMING_ORACLE_EXISTS = NOT_CLAIMED`），
   也不声称时序通道已被关闭。**"未证明可利用"不等于"不存在"。**
 * **共享谓词而不是第二套 ACL**：边界对全部 11 条种子行的 bind/skip 决策与
