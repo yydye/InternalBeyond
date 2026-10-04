@@ -367,20 +367,36 @@ function makeGateway(cfg) {
   const desktopSeam = lineOf('assets/js/communication.js', 'var _ibRecallOpts={};');
   const desktopConv = lineOf('assets/js/communication.js', '_csOpts=_cs?{conversationId:_cs.conversationId');
   const desktopBegin = lineOf('assets/js/communication.js', 'window._ibBeginRecallTurn(cfg.id,_turn)');
-  check('11.7 the Desktop recall seam has a conversationId but NO requestId / turnId',
-    !!desktopConv && !!desktopBegin
-    && read('assets/js/communication.js').indexOf('getMemoryContext(cfg.id,Object.assign(') >= 0
-    && !/getMemoryContext\(cfg\.id,[^)]*requestId/.test(read('assets/js/communication.js')),
+  /* ⚠ PHASE TRANSITION（LIVE-3.2 → LIVE-3.4，有意更新，**不是放宽**）：
+     LIVE-3.2 这条判据钉的是"桌面召回缝有 conversationId、但**没有** requestId"——
+     那时确实是缺口，所以 11.8 的裁决是 PARTIAL。
+     LIVE-3.4 的 cutover 把这个缺口**补上了**：per-turn 身份不再是"缺的东西"，
+     而是被复用并贯穿（requestId ← 既有的 `_turn.turnId`）。旧判据因此按设计失效。
+     新判据钉的是**补上之后的事实**（更强，不是更弱）：
+       ① 缝里必须**同时**出现 requestId 与 conversationId；
+       ② requestId 必须来自**既有**的每回合 turnId（`opts.turnId`，由 buildChatContext
+          调用点从 `_turn.turnId` 注入），**不得**是时钟/随机新造的 id；
+       ③ conversationId 必须来自既有的 canonical 派生（`_ibConvId`）。 */
+  const COMM_SRC_L34 = read('assets/js/communication.js');
+  const seamRequestId = lineOf('assets/js/communication.js', 'requestId:(opts&&opts.turnId)');
+  const bccTurnId = lineOf('assets/js/communication.js', 'turnId:(_turn&&_turn.turnId)');
+  const bccConv = lineOf('assets/js/communication.js', 'conversationId:_ibConvId(_targetFriend,_targetThread)');
+  check('11.7 the Desktop recall seam now supplies BOTH requestId and conversationId (was: conversationId only)',
+    !!desktopConv && !!desktopBegin && !!seamRequestId && !!bccTurnId && !!bccConv
+    && /requestId:\(opts&&opts\.turnId\)/.test(COMM_SRC_L34)
+    && COMM_SRC_L34.indexOf('_ibConvId(_targetFriend,_targetThread)') >= 0
+    && !/requestId:\s*(Date\.now|Math\.random)/.test(COMM_SRC_L34),
     'conversationId seam=' + J(desktopConv) + ' begin seam=' + J(desktopBegin)
-    + ' recallOpts seam=' + J(desktopSeam));
-  SESSION_STATE_MISSING_KEYS = 'requestId (or a pre-derived turnId) at the Desktop recall seam';
-  SESSION_STATE_KEYING_SUFFICIENT_FOR_DESKTOP = 'PARTIAL';
+    + ' requestId seam=' + J(seamRequestId) + ' turnId source=' + J(bccTurnId) + ' conv source=' + J(bccConv));
+  SESSION_STATE_MISSING_KEYS = 'NONE (requestId supplied by the LIVE-3.4 cutover from the existing per-turn turnId)';
+  SESSION_STATE_KEYING_SUFFICIENT_FOR_DESKTOP = 'YES';
   DESKTOP_RECALL_SESSION_STATE_OWNER = 'HOME_NODE';
-  check('11.8 the keying verdict it is PARTIAL, not YES and not NO',
-    SESSION_STATE_KEYING_SUFFICIENT_FOR_DESKTOP === 'PARTIAL' && SESSION_STATE_MISSING_KEYS.indexOf('requestId') === 0,
-    'state dimensions are sufficient ({characterId}x{memoryId}); the missing input is the TURN identity: '
-    + SESSION_STATE_MISSING_KEYS + '. conversationId is already available at '
-    + J(desktopConv) + '; the browser turn token is a JS object and cannot cross the wire.');
+  check('11.8 the keying verdict moved PARTIAL -> YES, and the supplied input is the EXISTING turn identity',
+    SESSION_STATE_KEYING_SUFFICIENT_FOR_DESKTOP === 'YES' && /^NONE/.test(SESSION_STATE_MISSING_KEYS)
+    && !!bccTurnId,
+    'state dimensions were already sufficient ({characterId}x{memoryId}); the missing INPUT was the turn identity, '
+    + 'and LIVE-3.4 now supplies it without minting a new id: requestId <- the existing `_turn.turnId` '
+    + '(turnIdFor(userMsg.id)), conversationId <- the existing canonical `_ibConvId` derivation.');
 
   /* ══════════════════════════════════════════════════════════════════════
      §12 · cooldown 必须在内存里：新进程空、不落盘

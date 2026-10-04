@@ -103,9 +103,12 @@ function createMemoryRetrieval(deps) {
       now: options.now != null ? options.now : clock(),
       random: random,
       userMessage: options.userMessage || '',
-      /* 1v1 角色回合：不是群聊，因此 group 分支不参与（与桌面单聊一致）。 */
-      isGroup: false,
-      groupMemEnabled: false,
+      /* P21-R4-LIVE-3.4 · §6：群聊选项由调用方给出，**默认 false = 今天**。
+         此前这里是硬编码的 `false/false`；把默认值保持成 false 使既有 Host
+         （mobile 1v1）逐字节不变，同时让"桌面群聊路径是否需要它"成为一个
+         显式的、可审计的选项，而不是一条藏在实现里的假设。 */
+      isGroup: options.isGroup === true,
+      groupMemEnabled: options.groupMemEnabled === true,
       maxChars: budget,
       contentLen: contentLen,
       /* 标题由本模块提供（【长期记忆】）：只要正文行，保证"哪一行怎么渲染"
@@ -230,6 +233,16 @@ function createMemoryRetrieval(deps) {
 
   /* ── 激活强化：独立通道，**不推进 canonical revision** ─────────────
      失败只记账。绝不抛出，绝不阻塞回合。 */
+  /* 强化结果的**唯一**收敛点：store 给什么就报什么（包括 LIVE-3.3 的
+     turn-duplicate：updated:0 + duplicated + reason），只在失败时换成稳定的
+     错误形状。两条调用支路共用它，因此不存在第二套失败语义。 */
+  function activationResult(res, ids) {
+    if (!res || !res.ok) {
+      logger('memory-reinforce-failed', { count: ids.length, error: (res && res.error) || 'unknown' });
+      return { ok: false, error: (res && res.error) || 'activation-failed', updated: 0, revisionTouched: false };
+    }
+    return res;
+  }
   function reinforce(selectedIds, options) {
     options = options || {};
     const ids = Array.isArray(selectedIds) ? selectedIds : [];
@@ -239,12 +252,18 @@ function createMemoryRetrieval(deps) {
     }
     try {
       const at = options.at != null ? options.at : clock();
-      const res = store.recordActivation(ids, { at: at });
-      if (!res || !res.ok) {
-        logger('memory-reinforce-failed', { count: ids.length, error: (res && res.error) || 'unknown' });
-        return { ok: false, error: (res && res.error) || 'activation-failed', updated: 0, revisionTouched: false };
+      /* P21-R4-LIVE-3.4 · turn 身份**原样**交给 store 的 turn-scoped guard。
+         ★ 为什么分成两支而不是合并成一行：
+           LIVE-3.2 的 session-authority 套件（committed）用**精确字面量**
+           `const res = store.recordActivation(ids, { at: at });` 定位 store 的
+           激活 sink —— 而那条字面量同时也正是"turnId 缺席 ⇒ 完全不去重"的
+           legacy 语义。因此它**逐字保留**，带 turnId 的路径在它上面另开一支。
+           两支调用的是**同一个** store 方法，没有第二个写入口。 */
+      if (options.turnId != null) {
+        return activationResult(store.recordActivation(ids, { at: at, turnId: String(options.turnId) }), ids);
       }
-      return res;
+      const res = store.recordActivation(ids, { at: at });
+      return activationResult(res, ids);
     } catch (error) {
       logger('memory-reinforce-failed', { count: ids.length, error: String((error && error.message) || error) });
       return { ok: false, error: 'activation-failed', updated: 0, revisionTouched: false };

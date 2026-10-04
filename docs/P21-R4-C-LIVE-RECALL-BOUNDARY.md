@@ -1,8 +1,25 @@
-# P21-R4-C-LIVE-3.3 · Server Recall Boundary Contract
+# P21-R4-C-LIVE-RECALL-BOUNDARY · Server Recall Boundary Contract
 
-> 状态：**Server Recall Boundary = READY**（Desktop cutover **未实现**）
-> HEAD `209c990b76ac12cb66049fbb2807b66648ec275c` · 本阶段不 commit、不 push
+> 状态：**P21-R4-LIVE-3.4 · Desktop Recall Authority Cutover = COMPLETE**
+> （边界已就绪 **且** Desktop 生产召回权威已切换到 Home Node）
+> 本阶段不 commit、不 push。
 > 关联：`docs/P21-R4-C-LIVE-EXECUTION-BOUNDARY.md`（Runtime Interpretation 边界）
+
+```
+SERVER_RECALL_BOUNDARY_READY        = YES
+DESKTOP_RECALL_CUTOVER              = COMPLETE
+RECALL_SELECTION_AUTHORITY          = SERVER
+    （范围：**Desktop 对话回合** —— 单聊 + 群聊。非对话的系统生成路径见 §11.4，
+      它们被显式分类为 B 且保持浏览器选择，不构成"第二个权威入口"。）
+DESKTOP_RECALL_SESSION_STATE_OWNER  = HOME_NODE
+DESKTOP_RECALL_EXPOSURE_OWNER       = HOME_NODE
+ACTIVATION_AUTHORITY                = HOME_NODE
+BROWSER_RECALL                      = DISABLED_FOR_PRODUCTION_DESKTOP_TURN
+                                      （引擎仍在：memory.js 未改，保留回滚与诊断能力）
+BROWSER_RECALL_ENGINE               = PRESENT_FOR_ROLLBACK_AND_DIAGNOSTICS
+R4C_PRODUCTION_EXECUTION            = DISABLED（本轮**未**开启）
+R4_F_LIVE_MEDIATOR_REQUIREMENT      = L3_AND_L5（未变）· R4-F_AUTHORIZED = NO
+```
 
 ---
 
@@ -196,10 +213,171 @@ definite failure 不本地猜 bump；ambiguous 保持 canonical unknown 且**不
 
 ---
 
-## 10 · 本阶段**未**做（边界就绪 ≠ 已切换）
+## 10 · P21-R4-LIVE-3.4 · Desktop Recall Authority Cutover（本轮）
 
-* Desktop selection/exposure/session 所有权**未移交**；
-* `communication.js` exposure writer **未停**；
+### 10.1 请求新增 `mode`（闭集第 9/10 键）
+```
+mode = 'shadow' | 'authoritative'   · 缺席 ⇒ 'shadow' · 其他值 ⇒ request-shape-invalid(400)
+isGroup = true|false                · 群聊回合声明（映射到引擎的 isGroup/groupMemEnabled）
+```
+`mode` 是**能力声明**，不是数据权威 —— 它不在 `REJECTED_AUTHORITY_FIELDS` 里。
+· `'shadow'`：与 3.3 逐字节相同（**恰好 14 键**、`boundary.pureShadow === true`、零写入）。
+· `'authoritative'`：**恰好 16 键** = 14 + `context` + `effects`；`boundary.mode='authoritative'`、`pureShadow=false`。
+  `context = { text, count, chars, includeHeader:true }`（共享 core 已渲染、已过可见性的有界块，**不是**新渲染器）；
+  `effects = { turnBegun, activation:{updated,duplicated,reason}, exposure:{written}, turnEnded }`。
+
+### 10.2 Authority lifecycle（复用既有机器，不造第二套）
+`beginHomeTurn → retrieve → reinforce（canonical activation）→ recordExposure → endHomeTurn`，
+与 mobile gateway 同形（`mobile-gateway.js:2500/2558/2583/2597`）。
+```
+DESKTOP_RECALL_SESSION_STATE_OWNER = HOME_NODE
+DESKTOP_RECALL_EXPOSURE_OWNER      = HOME_NODE
+ACTIVATION_AUTHORITY               = HOME_NODE
+```
+
+### 10.3 Prompt context authority（§10 裁决 = 方案 A）
+服务端在 authoritative 模式下**直接返回有界授权上下文**（`context.text`），
+浏览器**原样注入**：`_memCtx = result.context`。
+浏览器**不做** ID→mirror 查找、不重排、不替换、不补选、不重新打分 ——
+因为**这条路径上根本没有浏览器选择入参**（见 §10.4）。stale mirror 因此不可能影响选择。
+
+### 10.4 Consumption seam（唯一的召回入口）
+`assets/js/communication.js` 中的 `ibRecallContextForTurn(input)`，由
+`/* === P21-R4-LIVE-3.4 · CUTOVER CONSUMPTION SEAM === */` 界定。
+```
+入参：{ characterId, message, isGroup, requestId, conversationId,
+        isFirstTurn?, conversationSignalAvailable?, turn?, serverRecall?, timeoutMs? }
+出参：{ context, selectedIds, authority:'SERVER'|'SERVER_UNAVAILABLE', browserFallback:false }
+```
+★ **没有 browserSelect / legacySelect 入参** —— 浏览器选择**无从进入**这条路径（强于"接受但不咨询"）。
+成功时在 turn 对象上打 `_ibRecallAuthority = 'SERVER'`，两处浏览器 exposure 写入据此跳过。
+```
+BROWSER_RECALL_AFTER_CUTOVER = DISABLED（生产 Desktop 对话回合）
+```
+（§9 的 A/B 二选一里选 **B**：不保留浏览器 diagnostic shadow。理由：seam 已无选择入参，
+保留"影子选择"就必须重新引入浏览器选择器，反而把刚切掉的权威又请回来；§18/§19 因此不适用。）
+
+### 10.5 Identity（复用既有事实源，未新造任何 id）
+```
+requestId      = 既有的每回合 _turn.turnId（communication.js:3072，
+                 _seqCore.turnIdFor(userMsg.id) = 'turn_' + stableToken(seed)，确定性、无时钟无随机）
+conversationId = 既有的 canonical 派生 _ibConvId(friendId,threadId)（chat-core.conversationIdOf）
+NEW_PERMANENT_ID_REQUIRED = NO
+```
+两者由 `buildChatContext` 调用点注入（单聊 + 群聊各一处），group 侧用 `typeof _mbTurn!=='undefined'` 守卫：
+取不到 ⇒ `''` ⇒ 服务端 shape 拒绝 ⇒ 该轮**没有**记忆（fail-closed，绝不退回浏览器选择）。
+
+### 10.6 失败语义与超时（冻结）
+```
+SERVER_RECALL_FAILURE_RESTORES_BROWSER_AUTHORITY = NO
+FAILURE_BEHAVIOR      = 该轮没有记忆上下文，**聊天照常继续**（不阻塞、不回落浏览器权威）
+RECALL_WAIT_TIMEOUT_MS    = 2500   （客户端外层兜底，绝不无限阻塞 first token）
+RECALL_REQUEST_TIMEOUT_MS = 2000   （传给服务端的内层界；**不是** Interpretation 的 120s）
+```
+这不是 hybrid authority：`RECALL_SELECTION_AUTHORITY = SERVER` 要么真、要么这一轮没有记忆，
+**不存在**"服务端不在就浏览器接管"的第三条路。
+
+### 10.7 Replay
+同一 `(requestId, conversationId, message)`：选择不重新探索、session 不推进、exposure 不重复、
+activation 不重复；**不同 requestId = 新回合**，正常执行一次。
+传输层内部重试复用**同一个** `_turn`/turnId ⇒ 同一逻辑回合，不产生第二次。
+
+### 10.8 First-token 成本（如实记录）
+服务端召回归前置于主模型请求，因此 loopback HTTP hop **进入 first-token 关键路径**。
+实测值见最终报告 §O；**不是零成本**。诊断值，不设硬阈值。
+
+### 10.9 Activation 的诚实边界（未因 cutover 升级）
+```
+ACTIVATION_TURN_GUARD           = IN_PROCESS_TURN_SCOPED
+SAME_PROCESS_SAME_TURN_DUPLICATE= NO_INCREMENT
+DIFFERENT_TURN                  = INCREMENT_ALLOWED
+CROSS_PROCESS_RESTART_GUARANTEE = NONE
+CROSS_RESTART_EXACTLY_ONCE      = NO
+ACTIVATION_AUTO_RETRY           = NONE
+```
+restart 之后重放旧回合仍可能再次自增 —— **已知契约，不是 regression**。
+
+### 10.10 非对话路径（B 类，显式不在 cutover 范围）
+`RECALL_SELECTION_AUTHORITY = SERVER` 的范围是**Desktop 对话回合**（单聊 + 群聊）。
+以下路径经机械审计分类为 **B（不是用户对话召回路径）**，仍走浏览器选择；
+它们的存在**不构成**"第二个浏览器权威入口"：
+
+| 路径 | 位置 | 为什么是 B |
+|---|---|---|
+| 日志自动留言 | `communication.js:59` | 后台系统生成，无 conversation/turn 身份 |
+| 标注 annotations | `communication.js:141` | 同上 |
+| 信件 letters | `communication.js:259` | 同上 |
+| memory one-line | `memory.js:1114` | 诊断/摘要行，不注入对话 prompt |
+| role↔role DM | `role-dm.js:565` | 角色对角色，用户不是参与者 |
+| transport retry | `callApiChatStream` 内 | 复用同一 `_turn`/turnId，同一逻辑回合 |
+| XML 工具续轮 / MB organize / 主动日记 | — | 不自行 retrieval 或不经 canonical recall |
+
+**C 类（明确另一套权威）**：Auto Memory 注入（`autoMemory` + `<mem_*>` 协议）——
+不同的权威、不同的存储，**不是** canonical `memory_records` 召回。
+
+★ 诚实边界：**不得**把上面任何一条说成"召回权威已全面服务端化"。
+本轮切的是**用户对话回合**；B/C 类路径如实登记在此。
+
+---
+
+## 12 · P21-R4-LIVE-3.4.1 · Exact Closure Frees
+
+### 12.1 Authority scope（**不得**写成全局）
+```
+RECALL_SELECTION_AUTHORITY        = SERVER
+RECALL_SELECTION_AUTHORITY_SCOPE  = DESKTOP_CONVERSATION_TURNS_ONLY
+GLOBAL_RECALL_AUTHORITY           = NOT_CLAIMED
+```
+覆盖：单聊、群聊、以及审计表里归类为 **A** 的 conversation-turn 入口。
+**不覆盖**：B 类非对话路径（日志留言 / 标注 / 信件 / one-line / role↔role DM /
+transport retry / 工具续轮 / 诊断 peek / 主动日记 / exposure sink）与
+C 类 Auto Memory（另一套权威、另一个存储）。逐条表见 §10.10。
+
+### 12.2 Exposure 指标命名（消除二义）
+旧写法 `HOME_NODE_EXPOSURE_WRITES = 1` 与"2 条 memory ⇒ 2"并存属于二义表达。冻结为：
+```
+HOME_NODE_EXPOSURE_OPERATIONS_PER_TURN = 1                    （每回合**一次** exposure 生命周期操作）
+HOME_NODE_EXPOSED_MEMORY_COUNT         = selectedIds.length   （该次操作覆盖的记忆条数）
+BROWSER_EXPOSURE_OPERATIONS_PER_TURN   = 0                    （浏览器零写）
+```
+即：**操作数恒为 1，条数随选择变化**。实测：真实浏览器回合选 2 条 ⇒
+`OPERATIONS_PER_TURN = 1`、`EXPOSED_MEMORY_COUNT = 2`。
+
+### 12.3 Request identity（复用既有事实源）
+```
+DESKTOP_RECALL_REQUEST_ID_SOURCE = EXISTING_TURN_ID   （_turn.turnId ← turnIdFor(userMsg.id)）
+NEW_PERMANENT_ID_REQUIRED        = NO
+同 logical transport retry       ⇒ 同 turnId（同一逻辑回合，不产生第二次 effect）
+新 user turn                     ⇒ 新 turnId
+```
+
+### 12.4 Group identity（seam → wire 已实测）
+`isGroup` 确实离开浏览器并到达服务端契约（客户端白名单已补；该缺口由真实浏览器
+验证抓到）。两角色交错**不得共享** selected memories / session exposure /
+activation / turn identity（`GROUP_ISOLATION = CLEAN`，含阳性对照）。
+
+### 12.5 最决定性 authority 证据
+```
+DESKTOP_RECALL_AUTHORITY_NEGATIVE_CONTROL = SERVER_WINS
+```
+浏览器选择器被替换为返回 `[m_fake]` 的实现，被调用 **0 次**；最终 prompt **只含**
+服务端选中项；decoy 在任何 prompt 中都不出现。
+
+### 12.6 Stale mirror
+canonical 与 mirror 冲突时：**selection = canonical**、**prompt context = canonical**；
+浏览器**不得** substitute / reselect / 补位。
+
+### 12.7 First-token 成本（诊断）
+loopback recall 进入 first-token 关键路径：实测 median **11.05 ms** / p95 **16.3 ms**
+（12 次采样，真实浏览器）。**不是零开销**；不设硬阈值。
+
+---
+
+## 11 · 本阶段**未**做（cutover 之外）
+
 * Interpretation production gate **未开**（`R4C_PRODUCTION_EXECUTION = DISABLED`）；
-* 没有 3.3 之前遗留的 cutover 前置项之外的任何新依赖；
-* Expectation / R4-F **未开始**（`R4_F_LIVE_MEDIATOR_REQUIREMENT = L3_AND_L5`，未变）。
+* **未**把 server recall 接到 Interpretation（只保证结构上未来可直接消费）；
+* 浏览器召回引擎**未退役**（`PRESENT_FOR_ROLLBACK_AND_DIAGNOSTICS`，memory.js 未改）；
+* `IDS_ONLY_SELECTION_HEADER_POLICY = UNRESOLVED`（continue debt）；
+* glossary 生产来源仍 **dormant**（两侧都没有 provider，未为此新造 catalog authority）；
+* Expectation / R4-F **未开始**（`R4_F_LIVE_MEDIATOR_REQUIREMENT = L3_AND_L5` 未变）。

@@ -258,10 +258,27 @@ async function main() {
     check('12.groupIsNeverAutoFirstTurn', (() => {
       /* 群聊路径**不**传 coldStart 会话信号 ⇒ 默认 false，绝不为 true。
          只看该调用点**紧邻**的窗口：更远处（单聊路径）出现 coldStart 是正常的。 */
-      const groupCall = COMM_SRC.indexOf("isGroup:true,groupMemEnabled:true,userMessage:_ctxText");
+      /* ⚠ PHASE TRANSITION（LIVE-3.4，有意更新，**不是放宽**）：LIVE-3.4 把群聊召回
+         从 `getMemoryContext(...{isGroup:true,groupMemEnabled:true,...})` 换成服务端召回缝
+         `ibRecallContextForTurn({...isGroup:true...})`，旧调用形状不复存在。
+         判据本身不变（群聊路径**不得**携带 coldStart 会话信号），只是锚点跟着搬家。 */
+      const groupCall = COMM_SRC.indexOf("isGroup:true,requestId:(opts&&opts.turnId)");
       if (groupCall < 0) return false;
-      const window = COMM_SRC.slice(Math.max(0, groupCall - 500), groupCall + 900);
-      return window.indexOf('coldStart') < 0;
+      /* 精确判据：只看**这次调用自己的实参列表**（从调用名到配对的 `})`），
+         不再用固定窗口 —— 调用点搬家后，固定窗口会把旁边的单聊路径算进来，
+         那是"判据失效"，不是"性质被违反"。性质本身一字未改：群聊召回输入
+         不得携带 coldStart 会话信号。 */
+      const callStart = COMM_SRC.lastIndexOf("ibRecallContextForTurn(", groupCall);
+      if (callStart < 0) return false;
+      let depth = 0, callEnd = -1;
+      for (let k = callStart; k < COMM_SRC.length; k++) {
+        const ch = COMM_SRC[k];
+        if (ch === "(") depth++;
+        else if (ch === ")") { depth--; if (depth === 0) { callEnd = k; break; } }
+      }
+      if (callEnd < 0) return false;
+      const callArgs = COMM_SRC.slice(callStart, callEnd + 1);
+      return callArgs.indexOf("coldStart") < 0 && callArgs.indexOf("isFirstTurn") < 0;
     })(), 'the group call site must not carry a coldStart signal — group coldStart is deliberately unavailable');
 
     /* ── 9/10/11 · Browser ───────────────────────────────────────── */

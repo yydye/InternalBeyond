@@ -471,13 +471,22 @@ function dirDigest(dir) {
         available: runtime.available
       };
     })()`);
-    check('1.2 ★★★ createRuntimeRemote 只暴露一个动词 runMemoryInterpretation（没有第二个动词）',
-      narrow && JSON.stringify(narrow.verbs) === JSON.stringify(['runMemoryInterpretation']), narrow);
+    /* ⚠ PHASE TRANSITION（LIVE-2.1 → LIVE-3.4）：LIVE-2.1 冻结的是"运行面上只有
+       **一个**动词"（当时只有解释边界）。LIVE-3.4 有意加了第二个**具名边界**
+       动词 runMemoryRecall（desktop recall cutover 的传输），因此判据从
+       "只有一个动词"变成"没有**通用出口**"：动词必须逐个是闭集、具名的边界，
+       而 runRuntimeModel / deriveAnything / runPrompt / derive 这类一条都不能有
+       （那条性质由 1.3 独立断言，本次**没有**削弱）。 */
+    check('1.2 ★★★ createRuntimeRemote 只暴露两个具名边界动词 runMemoryInterpretation / runMemoryRecall（没有通用出口）',
+      narrow && JSON.stringify(narrow.verbs) === JSON.stringify(['runMemoryInterpretation', 'runMemoryRecall']), narrow);
     check('1.3 ★★★ 没有通用运行时模型入口（runRuntimeModel / deriveAnything / runPrompt / derive … 全不存在）',
       narrow && narrow.generic.length === 0, narrow && narrow.generic);
-    check('1.4 ★★ 挂载面刻意与 memory/understanding/moments 不同形：只有 instance/available/一个动词',
-      narrow && JSON.stringify(narrow.mountKeys) === JSON.stringify(['available', 'instance', 'runMemoryInterpretation']) &&
-      JSON.stringify(narrow.instanceKeys) === JSON.stringify(['runMemoryInterpretation']), narrow);
+    /* 同理：挂载面仍然**只有** instance / available / 那两个具名动词 ——
+       没有 status()/sync()/migrate()/rebuildMirror()（持久权威那套动词），
+       也没有任何"顺手也能跑别的"的出口。 */
+    check('1.4 ★★ 挂载面刻意与 memory/understanding/moments 不同形：只有 instance/available/两个具名动词',
+      narrow && JSON.stringify(narrow.mountKeys) === JSON.stringify(['available', 'instance', 'runMemoryInterpretation', 'runMemoryRecall']) &&
+      JSON.stringify(narrow.instanceKeys) === JSON.stringify(['runMemoryInterpretation', 'runMemoryRecall']), narrow);
 
     /* ══════════════════════════════════════════════════════════════
        (a) 浏览器**没有**秘密 —— 扫 window / localStorage / sessionStorage /

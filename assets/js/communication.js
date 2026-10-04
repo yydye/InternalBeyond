@@ -1677,7 +1677,59 @@ async function _buildSingleChatContext(cfg,opts){
       _dlgLines=_dlgCore.lines({history:opts.dialogueHistory||null, userMessage:_ctxText, currentId:null});
     }
   }catch(_dlgErr){console.warn('[Dialogue] evidence build failed',String(_dlgErr&&_dlgErr.message||_dlgErr).slice(0,120))}
-  const _pushCtxBlock=function(text){if(!text)return;const sep=_tailCtx?'\n\n':'';if(_ctxStart<0)_ctxStart=_tailCtx.length;_tailCtx+=sep+text;_ctxJoined+=sep+text;};
+  /* === P21-R4-LIVE-3.4 · CUTOVER CONSUMPTION SEAM (Node-sliceable, no DOM) === */
+/* Desktop 召回权威 cutover：本轮起，"谁进 prompt"由 Home Node 决定。
+   浏览器只做两件事：把**最小原始 turn 信号**送上去；把返回的**有界上下文**原样注入。
+   这条路径**没有** browserSelect 之类的入参 —— 浏览器选择根本无从进入。
+   失败语义（§23/§24 冻结）：服务端不可用 ⇒ 本轮没有记忆上下文，聊天照常继续；
+   **绝不**回落到浏览器选择权威（否则 RECALL_SELECTION_AUTHORITY = SERVER 就是假话）。 */
+var RECALL_WAIT_TIMEOUT_MS = 2500;    /* 客户端外层兜底：绝不无限阻塞 first token */
+var RECALL_REQUEST_TIMEOUT_MS = 2000; /* 传给服务端的请求内层界（服务端 MAX 10000） */
+async function ibRecallContextForTurn(input){
+  var o = input || {};
+  var unavailable = { context:'', selectedIds:[], authority:'SERVER_UNAVAILABLE', browserFallback:false };
+  var recall = null;
+  if(typeof o.serverRecall === 'function'){ recall = o.serverRecall; }
+  else{
+    try{
+      var _rt = (typeof window !== 'undefined' && window.IB && window.IB.homeNode && window.IB.homeNode.runtime) || null;
+      if(_rt && typeof _rt.runMemoryRecall === 'function'){ recall = _rt.runMemoryRecall; }
+    }catch(_e0){ recall = null; }
+  }
+  if(!recall){ return unavailable; }
+  /* 请求身份**复用既有事实源**，绝不 Date.now()/Math.random()/临时 UUID：
+     requestId = 本回合既有的 turnId；conversationId = chat-core 的 canonical 派生。 */
+  var payload = {
+    operation: 'memory-recall',
+    mode: 'authoritative',
+    characterId: (o.characterId == null) ? '' : String(o.characterId),
+    requestId: (o.requestId == null) ? '' : String(o.requestId),
+    conversationId: (o.conversationId == null) ? '' : String(o.conversationId),
+    message: (o.message == null) ? '' : String(o.message)
+  };
+  if(o.isFirstTurn === true) payload.isFirstTurn = true;
+  if(o.conversationSignalAvailable === true) payload.conversationSignalAvailable = true;
+  if(o.isGroup === true) payload.isGroup = true;
+  var out = null;
+  try{
+    var _call = Promise.resolve(recall(payload, { timeoutMs: RECALL_REQUEST_TIMEOUT_MS }));
+    /* 外层有界等待：本地 loopback 也必须 bounded，绝不无限阻塞 first token。 */
+    out = await Promise.race([ _call, new Promise(function(res){ setTimeout(function(){ res(null); }, RECALL_WAIT_TIMEOUT_MS); }) ]);
+  }catch(_err){ out = null; }
+  if(!out || out.ok !== true){ return unavailable; }
+  /* 本轮召回由 Home Node 权威执行（它自己写 exposure / 推进 session）：
+     在 turn 对象上打标，下面两处 exposure 写入据此跳过，避免 dual exposure。 */
+  if(o.turn && typeof o.turn === 'object'){ o.turn._ibRecallAuthority = 'SERVER'; }
+  var text = (out.context && typeof out.context.text === 'string') ? out.context.text : '';
+  return {
+    context: text,
+    selectedIds: Array.isArray(out.selectedIds) ? out.selectedIds.slice() : [],
+    authority: 'SERVER',
+    browserFallback: false
+  };
+}
+/* === end seam === */
+const _pushCtxBlock=function(text){if(!text)return;const sep=_tailCtx?'\n\n':'';if(_ctxStart<0)_ctxStart=_tailCtx.length;_tailCtx+=sep+text;_ctxJoined+=sep+text;};
   _tailCtx+='当前时间：'+new Date().toLocaleString('zh-CN',{year:'numeric',month:'long',day:'numeric',weekday:'long',hour:'2-digit',minute:'2-digit'})+'。';
   try{if(ss.musicEnabled&&currentTrackIdx>=0&&!audioEl.paused&&playlist[currentTrackIdx])_tailCtx+='正在听：《'+playlist[currentTrackIdx].name+'》。';}catch(e){}
   try{if(_calTailForGate)_tailCtx+='\n\n'+_calTailForGate}catch(e){}/* 复用上面那一次 buildTail 产物（不再重算，避免台账计数走两倍） */
@@ -1711,7 +1763,7 @@ async function _buildSingleChatContext(cfg,opts){
   if(opts&&opts.sessionState)_ibRecallOpts.sessionState=opts.sessionState;
   if(opts&&opts.turnIndex!=null)_ibRecallOpts.turnIndex=opts.turnIndex;
   if(opts&&opts._ibTurn)_ibRecallOpts._ibTurn=opts._ibTurn;
-  if(_threadMemOk){_memCtx=await getMemoryContext(cfg.id,Object.assign(_bMemChars?{userMessage:_ctxText,maxChars:_bMemChars}:{userMessage:_ctxText},_ibRecallOpts, _csOpts||{}));_pushCtxBlock(_memCtx);}
+  if(_threadMemOk){var _srvR=await ibRecallContextForTurn({characterId:cfg.id,message:_ctxText,isGroup:false,requestId:(opts&&opts.turnId)||'',conversationId:(opts&&opts.conversationId)||'',isFirstTurn:!!(_cs&&_cs.isFirstTurn===true),conversationSignalAvailable:!!(_cs&&_cs.conversationSignalAvailable===true),turn:(opts&&opts._ibRecallTurnMark)||null});_memCtx=_srvR.context;_pushCtxBlock(_memCtx);}
   /* Understanding + Thread（v1）· 走 tail（末条 user 消息），绝不进 system（保 prompt cache 稳定）。 */
   try{if(_threadMemOk&&typeof getUnderstandingContext==='function'){_uCtx=await getUnderstandingContext(cfg.id,_bUndChars?{maxChars:_bUndChars}:undefined);_pushCtxBlock(_uCtx);}}catch(_uErr){console.warn('[Understanding] ctx failed',String(_uErr&&_uErr.message||_uErr).slice(0,120))}
   try{if(_threadMemOk&&typeof getThreadContext==='function'){_tCtx=await getThreadContext(cfg.id,_bThreads?{maxThreads:_bThreads}:undefined);_pushCtxBlock(_tCtx);}}catch(_tErr){console.warn('[Thread] ctx failed',String(_tErr&&_tErr.message||_tErr).slice(0,120))}
@@ -1911,7 +1963,7 @@ async function _buildGroupChatContext(cfg,opts){
   });
   const _bGMemChars=(_bGAlloc&&_bGAlloc.plan.fractions)?_ibScaledCap(1500,_bGAlloc.plan.fractions.memory,100):null;
   if(group.memoryEnabled){
-    const gMemCtx=await getMemoryContext(cfg.id,_bGMemChars?{maxChars:_bGMemChars,isGroup:true,groupMemEnabled:true,userMessage:_ctxText}:{maxChars:1500,isGroup:true,groupMemEnabled:true,userMessage:_ctxText});
+    const gMemCtx=(await ibRecallContextForTurn({characterId:cfg.id,message:_ctxText,isGroup:true,requestId:(opts&&opts.turnId)||'',conversationId:(opts&&opts.conversationId)||'',turn:(opts&&opts._ibRecallTurnMark)||null})).context||'';
     if(gMemCtx)_gTailCtx+=(_gTailCtx?'\n\n':'')+gMemCtx;
   }
   if(_gAmInj.tail)_gTailCtx+=(_gTailCtx?'\n\n':'')+_gAmInj.tail;
@@ -2626,7 +2678,7 @@ async function sendChatMessage(voiceMsg){
         });
         const messages=collapseSameRole(mapped);
         /* FIX②: 上下文构建（Extraction Seam）——system/tail 分区由 buildChatContext 产出 */
-        const _gc=await buildChatContext(cfg,{isGroup:true,selfName:selfName,allNames:allNames,userDesc:userDesc,group:group,gss:gss,gSummaryText:gSummaryText,userMessage:_ctxText,isFirstTurn:_gWsFirstTurn,history:messages,sentFiles:sentFiles,threadId:_targetThread||null});
+        const _gc=await buildChatContext(cfg,{isGroup:true,selfName:selfName,allNames:allNames,userDesc:userDesc,group:group,gss:gss,gSummaryText:gSummaryText,turnId:(typeof _mbTurn!=="undefined"&&_mbTurn&&_mbTurn.turnId)?_mbTurn.turnId:'',conversationId:(typeof _mbTurn!=="undefined"&&_mbTurn&&_mbTurn.conversationId)?_mbTurn.conversationId:_ibConvId(String(group.id||''),(typeof opts!=="undefined"&&opts&&opts.threadId)?opts.threadId:null),_ibRecallTurnMark:(typeof _mbTurn!=="undefined"&&_mbTurn)?_mbTurn:null,userMessage:_ctxText,isFirstTurn:_gWsFirstTurn,history:messages,sentFiles:sentFiles,threadId:_targetThread||null});
         const sysContent=_gc.system;
         const _gTailCtx=_gc.tail;
         _gWsFirstTurn=false;/* 首个发言者兜底消费完无主/移出成员条目后置 false */
@@ -3038,7 +3090,7 @@ async function sendChatMessage(voiceMsg){
       _mbTrace.note(cfg.id,'inputMessages',messages.length);/* MB seam 之前的 messages 条数 */
       _mbTrace.note(cfg.id,'_paramsSeam',_mbParamsFingerprint(cfg,_streamingOk,thinkingOn));
     }
-    const _bcc=await buildChatContext(cfg,{friendId:_targetFriend,userMessage:_ctxText,ss:ss,summaryText:summaryText,threadId:_targetThread,coldStart:_coldStartSignal,voice:!!_callTurn,sentFiles:sentFiles,activity:_turnActivity,
+    const _bcc=await buildChatContext(cfg,{friendId:_targetFriend,userMessage:_ctxText,ss:ss,summaryText:summaryText,threadId:_targetThread,coldStart:_coldStartSignal,voice:!!_callTurn,sentFiles:sentFiles,activity:_turnActivity,turnId:(_turn&&_turn.turnId)||'',conversationId:_ibConvId(_targetFriend,_targetThread),_ibRecallTurnMark:_turn,
       /* M1-C.2o：把**本轮真正交给模型的那一段 canonical 历史**（上一行的 history，
          即阶梯窗口切片）交给上下文构建器，作为当前对话证据的来源。它不是"再读一次
          会话"，而是把同一个 `history` 变量复用 —— 于是"模型看到的对话"与
@@ -5640,7 +5692,7 @@ async function callApiChatStream(cfg,messages,opts){
       _ibExpFired=true;
       try{
         var _et=opts&&opts._ibTurn;
-        var _ex=_et&&_et.memoryExposure;
+                var _ex=(_et&&_et._ibRecallAuthority!=='SERVER')?(_et&&_et.memoryExposure):null;
         if(_ex&&typeof window!=='undefined'&&typeof window._ibRecordRecallExposure==='function'){
           window._ibRecordRecallExposure(_ex);
         }
@@ -5794,7 +5846,7 @@ async function callApiChat(cfg,messages,opts){
     _ibExpFiredNS=true;
     try{
       var _nsT=opts&&opts._ibTurn;
-      var _nsX=_nsT&&_nsT.memoryExposure;
+            var _nsX=(_nsT&&_nsT._ibRecallAuthority!=='SERVER')?(_nsT&&_nsT.memoryExposure):null;
       if(_nsX&&typeof window!=='undefined'&&typeof window._ibRecordRecallExposure==='function'){
         window._ibRecordRecallExposure(_nsX);
       }

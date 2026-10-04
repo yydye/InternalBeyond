@@ -1,4 +1,4 @@
-﻿/* ====================================================================
+/* ====================================================================
    IB Home Node Client — 浏览器侧唯一的 Home Node 传输实现
    --------------------------------------------------------------------
    职责边界（刻意收窄）：
@@ -942,6 +942,11 @@ NS.createMomentsRemote = createMomentsRemote;
    两者不可互相冒充。 */
 var RUNTIME_OPERATION = 'memory-interpretation';
 var RUNTIME_PATH = '/internal/runtime/memory-interpretation';
+/* ── P21-R4-LIVE-3.4 · 召回边界的契约常量（与上面同一份纪律）──────────────
+   路径与 operation 在浏览器侧只有**这一份**字面量；服务端那条路径的常量在
+   services/home-node/runtime-recall.js#PATH（装配层从那里取，两处是同一份契约）。 */
+var RECALL_OPERATION = 'memory-recall';
+var RECALL_PATH = '/internal/runtime/memory-recall';
 /* 允许**从调用方复制**的输入只有三个：selectedMemoryIds（必需）与
    currentState / roleName（可选）。canonical 证据（records / content /
    evidenceState / …）与执行权威（provider / model / apiKey / …）都不在这里，
@@ -1001,6 +1006,72 @@ function createRuntimeRemote(deps) {
       /* roleName 是**显示名**，不是权威：原样转发，由服务端与核心裁剪。 */
       if (_runtimeHasOwn(src, 'roleName')) payload.roleName = src.roleName;
       return _request(RUNTIME_PATH, {
+        method: 'POST',
+        body: payload,
+        timeoutMs: timeoutMs
+      });
+    },
+
+    /* ── P21-R4-LIVE-3.4 · 桌面召回边界（第二个**具名**运行时动词）──────────
+       它与 runMemoryInterpretation 是**两条边界**，不是一个动词的两种参数：
+       一条回答"这一轮该想起谁"（本地、不花钱、mode 决定影子/权威），一条回答
+       "这些记忆意味着什么"（出网、花预算、读 Vault）。这里加第二个动词因此
+       不违背上面那段"只有一个动词"的收窄原则 —— 那条禁止的是**通用出口**
+       （runRuntimeModel / deriveAnything / 可指定 provider 的调用），
+       而不是"第二条具名边界"。本动词同样没有内容通道、没有 provider 参数。
+
+       input  = { mode?, characterId, requestId, conversationId, message,
+                  isFirstTurn?, conversationSignalAvailable? }
+       options = { timeoutMs }
+
+       body 由**显式字段列表**按冻结顺序拼出（闭集构造是安全性质，不是风格）：
+         · operation / timeoutMs 恒在：timeoutMs 缺省时是 NaN ⇒ wire 上落成 null
+           ⇒ 服务端拒绝。这一层**不发明**默认超时（与解释动词逐字同一条理由）；
+         · 四个身份/文本字段恒在：null/undefined ⇒ ''（由服务端以 shape 拒绝），
+           绝不把 'undefined' / 'null' 当正文送上线；
+         · mode / isFirstTurn / conversationSignalAvailable **只在调用方给了**
+           的时候带。`mode` 缺席时服务端默认 'shadow' —— 那个默认是**服务端的**
+           决定，浏览器不替它写死（写了就等于把一条服务端策略复制到客户端）。
+       调用方即使传 { selectedIds, candidateRecords, records, scores, budget,
+       maxChars, cooldown, seatPlan, exploration, random, now, query, settings, … }，
+       这些键也**一个都到不了 wire**：它们不是被删除的（删除列表会随服务端新增
+       字段而漂移），而是从来没有被复制过。服务端仍会独立复核（权威字段用
+       caller-attempted-to-supply-recall-authority 逐名拒绝），但浏览器侧不把
+       "拦住它"当成服务端的责任。
+
+       ★ `mode` 是**能力请求**（要哪条生命周期：'shadow' | 'authoritative'），
+         不是数据权威：这一层原样转发，闭集校验与语义都由服务端给出；
+         客户端不替调用方"修好"一个坏值，也不静默丢掉它。
+
+       ★ 不做信封解包：与解释边界一样，这条路径返回的信封本来就是**平的**
+         （ok / selectedIds / counts / boundary …），再解一次 payload 会把
+         真正的选召事实推进一个不存在的 payload 里。 */
+    runMemoryRecall: function (input, options) {
+      options = options || {};
+      var src = (input && typeof input === 'object' && !Array.isArray(input)) ? input : {};
+      /* 一个 timeoutMs 同时决定 body 里的**权威声明**与传输层的等待上界
+         （与解释动词同源：两者取同一个数，缺省是 NaN ⇒ wire 上 null）。 */
+      var timeoutMs = Number(options.timeoutMs);
+      var payload = { operation: RECALL_OPERATION };
+      if (_runtimeHasOwn(src, 'mode')) payload.mode = src.mode;
+      payload.characterId = String(src.characterId == null ? '' : src.characterId);
+      payload.requestId = String(src.requestId == null ? '' : src.requestId);
+      payload.conversationId = String(src.conversationId == null ? '' : src.conversationId);
+      payload.message = String(src.message == null ? '' : src.message);
+      if (_runtimeHasOwn(src, 'isFirstTurn')) payload.isFirstTurn = src.isFirstTurn;
+      if (_runtimeHasOwn(src, 'conversationSignalAvailable')) {
+        payload.conversationSignalAvailable = src.conversationSignalAvailable;
+      }
+      /* P21-R4-LIVE-3.4 · 群聊回合声明。
+         ★ 少了这一行，桌面群聊的召回会被**当成单聊**评估：seam 传了 `isGroup:true`，
+           而这一层白名单不复制它 ⇒ wire 上没有该键 ⇒ 服务端按 DM 语义算可见性
+           （只读 only/except）而不是群聊语义（仅 public）。这是真实浏览器验证
+           （task-25）抓到的 seam→wire 缺口，不是理论问题。
+         与 mode 同规矩：只在调用方给了才带；值原样转发，坏值由服务端 shape 拒绝 ——
+         客户端既不"修好"也不静默丢弃。 */
+      if (_runtimeHasOwn(src, 'isGroup')) payload.isGroup = src.isGroup;
+      payload.timeoutMs = timeoutMs;
+      return _request(RECALL_PATH, {
         method: 'POST',
         body: payload,
         timeoutMs: timeoutMs

@@ -1,4 +1,4 @@
-﻿/* ====================================================================
+/* ====================================================================
    IB Home Node bootstrap — 把 canonical chat authority 接进浏览器数据层
    --------------------------------------------------------------------
    这是 M1-A 在浏览器侧**唯一**的写入点。它做四件事，每件都只有一处实现：
@@ -1337,7 +1337,8 @@ var surface = {
   /* ── R4-C LIVE-2.1：运行时记忆解释的可观测面 ──────────────────────────
      与上面三个面**故意不同形**：没有 status()/sync()/migrate()/rebuildMirror()，
      因为那些动词都属于"持久权威的三态语义"，而这个边界按定义非持久。
-     这里只有 instance（诊断用）与那一个动词。 */
+     这里只有 instance（诊断用）与那两个**具名边界**动词
+     （LIVE-3.4 加了召回：两条边界，不是一个通用出口）。 */
   runtime: {
     instance: runtimeRemote,
     available: !!runtimeRemote,
@@ -1358,6 +1359,31 @@ var surface = {
         });
       }
       return runtimeRemote.runMemoryInterpretation(input || {}, options || {});
+    },
+    /* ── R4-C LIVE-3.4：运行时**召回**边界 ───────────────────────────────
+       与上面那个动词**逐字同门**（同一个 remote、同一条凭据路径、同一套错误
+       信封纪律），但它是**另一条边界**：召回在本地读 canonical 记忆、不出网；
+       解释才出网花钱。所以这里不是"给解释加了个参数"，而是第二个具名动词。
+       工厂缺席时的降级信封与**服务端的召回失败信封同形**（14 键 + error），
+       于是调用方读 `res.ok` / `res.selectedIds` / `res.boundary` 时不必先判断
+       "这一层有没有加载"。`operation` 在这里是客户端字面量：服务端那份权威
+       常量在 services/home-node/runtime-recall.js#PATH / #OPERATION。 */
+    runMemoryRecall: function (input, options) {
+      if (!runtimeRemote) {
+        return Promise.resolve({
+          ok: false, durable: false, operation: 'memory-recall',
+          characterId: null, turnIdentity: null, selectedIds: [],
+          activationPolicy: null, channel: null, reason: null, fingerprint: null,
+          counts: { candidates: 0, eligible: 0, selected: 0 }, chars: 0,
+          boundary: {
+            pureShadow: true, exposureWrites: 0, activationWrites: 0, providerCalls: 0,
+            sessionMutation: 'NONE', transportScope: 'DESKTOP_ONLY',
+            recallSelectionAuthority: 'CALLER_PROPOSED', attempts: 0
+          },
+          error: 'runtime-remote-missing', reasonCode: 'runtime-remote-missing'
+        });
+      }
+      return runtimeRemote.runMemoryRecall(input || {}, options || {});
     }
   }
 };

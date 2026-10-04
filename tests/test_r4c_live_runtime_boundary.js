@@ -2117,13 +2117,22 @@ catch (error) { RUNTIME_LOAD_ERROR = error; }
     /* ★ 客户端**能发**的顶层键：从运行面的构造代码里读出来（body 字面量的键
        + 后续 `payload.X = ...` 赋值）。这里刻意不看注释 —— 运行面里有一大段
        解释"为什么不再有 records 通道"，把注释算进来会让一条**安全的**实现
-       因为文档而转红。 */
+       因为文档而转红。
+       ⚠ PHASE TRANSITION（LIVE-2.1 → LIVE-3.4）：LIVE-2.1 时运行面只有**一个**
+       动词，于是"整块的键并成一个列表"就等于"解释动词的键"。LIVE-3.4 有意加了
+       第二个**具名边界**动词（召回 = desktop cutover 的传输），因此键必须
+       **逐动词**取，并各自对照**自己那条**服务端 schema —— 两份 schema 合并成
+       一个超集会让这条检查失去意义（任何键都能落在某个 schema 里）。 */
     const clientCode = WIRING.stripJsComments(clientSrc);
     const clientRuntimeBlock = sliceObjectBlock(clientCode, 'function createRuntimeRemote');
-    const clientSentKeys = (() => {
+    /* 单个动词块 → 它能发到 wire 上的顶层键。两种 payload 字面量形状都认：
+       多行对象字面量（解释动词）与单行字面量（召回动词的
+       `var payload = { operation: RECALL_OPERATION };`）；`[^}]*` 对两者都成立，
+       因为这两个字面量里都没有嵌套的 `}`。 */
+    const sentKeysIn = (block) => {
       const out = [];
-      if (!clientRuntimeBlock) return out;
-      const literal = /\bvar\s+payload\s*=\s*\{([\s\S]*?)\n\s*\};/.exec(clientRuntimeBlock);
+      if (!block) return out;
+      const literal = /\bvar\s+payload\s*=\s*\{([^}]*)\}/.exec(block);
       if (literal) {
         const re = /^\s*([A-Za-z_$][\w$]*)\s*:/gm;
         let m;
@@ -2131,9 +2140,23 @@ catch (error) { RUNTIME_LOAD_ERROR = error; }
       }
       const reAssign = /\bpayload\s*\.\s*([A-Za-z_$][\w$]*)\s*=/g;
       let a;
-      while ((a = reAssign.exec(clientRuntimeBlock))) if (out.indexOf(a[1]) < 0) out.push(a[1]);
+      while ((a = reAssign.exec(block))) if (out.indexOf(a[1]) < 0) out.push(a[1]);
       return out;
-    })();
+    };
+    /* clientSentKeys 仍是**整块**的并集 —— N6b（"不能表达 canonical 证据"）与
+       下面几处用的是"客户端能发的所有键"，那条性质与动词个数无关。 */
+    const clientSentKeys = sentKeysIn(clientRuntimeBlock);
+    const interpVerbAt = clientRuntimeBlock ? clientRuntimeBlock.indexOf('runMemoryInterpretation: function') : -1;
+    const recallVerbAt = clientRuntimeBlock ? clientRuntimeBlock.indexOf('runMemoryRecall: function') : -1;
+    const interpVerbBlock = (interpVerbAt >= 0)
+      ? clientRuntimeBlock.slice(interpVerbAt, recallVerbAt > interpVerbAt ? recallVerbAt : undefined) : '';
+    const recallVerbBlock = (recallVerbAt >= 0) ? clientRuntimeBlock.slice(recallVerbAt) : '';
+    const interpSentKeys = sentKeysIn(interpVerbBlock);
+    const recallSentKeys = sentKeysIn(recallVerbBlock);
+    /* 召回边界的 schema 只有一份来源：服务端模块自己导出的闭集 + 可选键
+       （`mode` 在 OPTIONAL_REQUEST_FIELDS 里，缺省 'shadow'）。 */
+    const RECALL = require(path.join(ROOT, 'services', 'home-node', 'runtime-recall.js'));
+    const RECALL_SCHEMA = (RECALL.REQUEST_FIELDS || []).concat(RECALL.OPTIONAL_REQUEST_FIELDS || []);
     /* currentState 的嵌套闭集（客户端侧的第二个白名单）。 */
     const clientStateKeys = (() => {
       const m = /var\s+RUNTIME_STATE_KEYS\s*=\s*(\[[^\]]*\])/.exec(clientCode);
@@ -2169,18 +2192,28 @@ catch (error) { RUNTIME_LOAD_ERROR = error; }
       'client=' + JSON.stringify(clientOperation) + ' server=' + JSON.stringify(RT.OPERATION));
     /* ★ LIVE-3 的双向锁（比旧 ENVELOPE_FIELDS 等值断言更强，且能活过将来的
        服务端字段新增）：
-         (a) 客户端**能发**的每一个顶层键都在服务端 REQUEST_FIELDS 里；
+         (a) 客户端**能发**的每一个顶层键都在**它自己那条边界**的服务端 schema 里；
          (b) 客户端能发的键没有一个落在 CANONICAL_EVIDENCE_FIELDS 里；
          (c) 旧的 inputEnvelope 载体与 records 通道在运行面里**彻底消失**；
          (d) 它确实还能发 selectedMemoryIds / currentState / roleName
              （否则"锁住了"只是因为客户端坏了，而不是因为契约一致）。
-       任何一条不成立 → 浏览器与服务端已经在说两种协议，必须转红。 */
+       任何一条不成立 → 浏览器与服务端已经在说两种协议，必须转红。
+       ⚠ PHASE TRANSITION（LIVE-2.1 → LIVE-3.4）：LIVE-2.1 只有一个动词，因此
+       (a) 是"整块 ⊆ 解释 schema"。LIVE-3.4 加了第二个**具名边界**动词（召回），
+       于是 (a) 拆成**逐动词**对照：解释动词 ⊆ runtime-interpretation.REQUEST_FIELDS；
+       召回动词 ⊆ runtime-recall.REQUEST_FIELDS ∪ OPTIONAL_REQUEST_FIELDS。
+       刻意**不**把两份 schema 并成一个超集 —— 合并后"每个键总能落在某处"恒真，
+       这条检查会退化成同义反复。 */
     check('N6.browserClientClosedKeyListIsSubsetOfTheServerRequestSchema',
-      clientSentKeys.length > 0
-      && clientSentKeys.every(k => RT.REQUEST_FIELDS.indexOf(k) >= 0)
-      && clientSentKeys.indexOf('selectedMemoryIds') >= 0,
-      'clientSent=' + JSON.stringify(clientSentKeys)
-      + ' server REQUEST_FIELDS=' + JSON.stringify(RT.REQUEST_FIELDS.slice())
+      interpSentKeys.length > 0 && recallSentKeys.length > 0
+      && interpSentKeys.every(k => RT.REQUEST_FIELDS.indexOf(k) >= 0)
+      && recallSentKeys.every(k => RECALL_SCHEMA.indexOf(k) >= 0)
+      && interpSentKeys.indexOf('selectedMemoryIds') >= 0
+      && recallSentKeys.indexOf('message') >= 0 && recallSentKeys.indexOf('mode') >= 0,
+      'interpretation clientSent=' + JSON.stringify(interpSentKeys)
+      + ' ⊆ interpretation REQUEST_FIELDS=' + JSON.stringify(RT.REQUEST_FIELDS.slice())
+      + ' | recall clientSent=' + JSON.stringify(recallSentKeys)
+      + ' ⊆ recall REQUEST_FIELDS+OPTIONAL=' + JSON.stringify(RECALL_SCHEMA.slice())
       + ' runtimeBlock=' + (clientRuntimeBlock ? clientRuntimeBlock.length + ' chars' : 'NOT FOUND'));
     check('N6b.browserClientCannotExpressAnyCanonicalEvidence',
       clientSentKeys.length > 0
@@ -2224,14 +2257,19 @@ catch (error) { RUNTIME_LOAD_ERROR = error; }
       !!runtimeBlock && !/set(?:Interval|Timeout)\s*\(/.test(runtimeBlock)
       && !/setInterval\s*\(/.test(bootSrc),
       'no setInterval/setTimeout inside the runtime surface, and no setInterval anywhere in the bootstrap');
-    check('N10.bootstrapRuntimeSurfaceExportsExactlyOneVerb',
-      JSON.stringify(blockKeys) === JSON.stringify(['available', 'instance', 'runMemoryInterpretation']),
+    /* ⚠ PHASE TRANSITION（LIVE-2.1 → LIVE-3.4）：LIVE-2.1 冻结"运行面只导出**一个**
+       动词"；LIVE-3.4 有意加了第二个**具名边界**动词（召回 = desktop cutover 的
+       传输）。判据因此从"恰好一个动词"变成"导出的每一个动词都是闭集、具名边界"：
+       名单被加宽，而"没有定时器 / 没有自动调用 / 没有通用出口"三件事一条没动
+       （见 N7 / N9 / N3 与 1.3）。 */
+    check('N10.bootstrapRuntimeSurfaceExportsOnlyNamedBoundaryVerbs',
+      JSON.stringify(blockKeys) === JSON.stringify(['available', 'instance', 'runMemoryInterpretation', 'runMemoryRecall']),
       'runtime surface keys = ' + JSON.stringify(blockKeys));
 
     AUTO_INVOCATION_ABSENT = commHits.length === 0
       && !!runtimeBlock && !/set(?:Interval|Timeout)\s*\(/.test(runtimeBlock)
       && !/setInterval\s*\(/.test(bootSrc)
-      && JSON.stringify(blockKeys) === JSON.stringify(['available', 'instance', 'runMemoryInterpretation']);
+      && JSON.stringify(blockKeys) === JSON.stringify(['available', 'instance', 'runMemoryInterpretation', 'runMemoryRecall']);
 
     /* ── 生产启用路径必须缺席（本阶段冻结：没有 env、没有 UI 开关）──── */
     const svcCode = WIRING.stripJsComments(readFile('services/home-node-service.js'));

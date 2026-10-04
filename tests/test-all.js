@@ -1652,6 +1652,22 @@ const GROUPS = [
       ['test_r4c_live_recall_session_authority.js'],
       ['test_r4c_live_recall_request_authority.js'],
       ['test_r4c_live_recall_boundary_closure.js']
+      /* P21-R4-LIVE-3.4 · Desktop Recall Authority Cutover 的两份证据
+         （**本阶段才登记** —— 与上一轮同一类缺口：套件 standalone 全绿，
+         但聚合 runner 的显式登记表里 0 命中，于是"每轮真的被跑"从未发生）。
+         · test_r4c_live_recall_cutover.js —— **权威断言**：
+           服务端选择权威、单写方 exposure/session/activation、replay 语义、
+           stale mirror 走 canonical、群聊隔离、失败时不回落浏览器选择。
+           最决定性的一条是负向控制：把浏览器选择器换成返回 [m_fake] 的假实现，
+           最终 prompt 只能含服务端选中的记忆。
+         · test_r4c_live_recall_cutover_browser.js —— **真实浏览器链路**：
+           真 Chrome + 真 Home Node + 本地 mock provider，抓真实的
+           POST /internal/runtime/memory-recall 请求/响应，证明模型收到的是
+           canonical 文本、浏览器从未发送内容；同文件给出 first-token hop 的
+           median/p95 诊断值（**不是零成本**），以及服务端不可用时的行为。
+         两者都是纯本地：零真实收费调用（browser 套件只连 127.0.0.1 的 mock）。 */
+      ['test_r4c_live_recall_cutover.js'],
+      ['test_r4c_live_recall_cutover_browser.js']
     ]
   },
   {

@@ -80,6 +80,30 @@ const REQUEST_FIELDS = Object.freeze([
   'timeoutMs'
 ]);
 
+/* ── P21-R4-LIVE-3.4 · 唯一的**可选能力键**：`mode` ─────────────────────
+   ★ 为什么它**不**被并进 REQUEST_FIELDS：
+     LIVE-3.3 的 request-authority 套件（committed，必须逐字通过）把
+     `REQUEST_FIELDS.length === 8` 钉成一条断言。把 `mode` 追加进去会让那条
+     断言变成 9 而失败 —— 而本阶段不许改那条套件。因此闭集校验同时查**两张
+     名单**（必需形状的 8 个词 + 这一个可选能力词），describe() 也分开报告。
+   `mode` 是**能力请求**，不是数据权威：它只决定这条边界是否推进回合生命周期，
+   永远不决定召回看到什么（选择/可见性/预算仍全部服务端所有）。 */
+const OPTIONAL_REQUEST_FIELDS = Object.freeze(['mode', 'isGroup']);
+const MODES = Object.freeze(['shadow', 'authoritative']);
+const DEFAULT_MODE = 'shadow';
+
+/* 权威模式写入的四个生命周期动词（**唯一**实现仍在既有 machinery 里：
+   recall-session-state 的 beginHomeTurn/recordExposure/endHomeTurn，
+   memory-retrieval 的 reinforce → store.recordActivation）。 */
+const AUTHORITATIVE_WRITES = Object.freeze(['beginHomeTurn', 'reinforce', 'recordExposure', 'endHomeTurn']);
+
+/* 已结算回合的**进程内**备忘（有界）：同一 (requestId, conversationId, message)
+   的重放必须"不重新探索、不推进 session、不二次曝光、不二次激活"，同时还要
+   能回一份可用的信封 —— 这正是 mobile gateway 的 turnByRequest/liveTurns
+   重复分支在做的事（见 mobile-gateway.js:626-637），这里只是把同一个模式
+   实例化到本路由上。**不落盘、无 schema、重启即空**。 */
+const MAX_SETTLED_TURNS = 64;
+
 /* ── 逐名拒绝的**权威字段** ─────────────────────────────────────────────
    这张名单不是"顺手多写的几个词"：每一个都曾经是（或将会是）调用方试图
    替服务端做决定的那条路。名单必须跟着能力长 —— 新能力若落在名单之外，
@@ -148,6 +172,16 @@ function sha256Hex(value) {
   return crypto.createHash('sha256').update(String(value)).digest('hex');
 }
 
+/* ── turn 身份：**复用** mobile gateway 的同一个公式 ─────────────────────
+   services/home-node/mobile-gateway.js:242-245 的 deriveStableTurnId 是仓库里
+   canonical turn identity 的**唯一**权威（content-addressed：同一
+   (requestId, conversationId) 恒等同一 logical turn）。本文件**不**发明第二份
+   公式 —— 两份"看起来一样"的推导只会让同一轮在某条路径上拿到两个身份。 */
+function deriveStableTurnId(requestId, conversationId) {
+  return 'turn_' + CHAT_CORE.stableToken(String(requestId == null ? '' : requestId)
+    + ':' + String(conversationId == null ? '' : conversationId));
+}
+
 function createRuntimeRecall(deps) {
   deps = deps || {};
   /* 依赖就是整条权威链：既有召回实现 → 角色目录。provider / Vault **不在**
@@ -182,15 +216,50 @@ function createRuntimeRecall(deps) {
     : (memoryRetrieval.store === memoryStore ? 'SAME' : 'MISMATCH');
 
   const counters = { calls: 0, ok: 0, refused: 0, timeouts: 0, unavailable: 0 };
+  /* 权威模式的可观测计数（影子模式恒为 0 —— 这些数字会进 boundary 块，
+     因此"审计面自述"与"实际行为"必须是同一个来源）。 */
+  const authoritativeCounters = { exposureWrites: 0, activationWrites: 0, turnsBegun: 0, turnsEnded: 0, replaysServed: 0 };
+  /* turnId → { messageHash, selectedIds, context, counts, channel, reason, chars,
+     activationPolicy, fingerprint, activationIds }（有界，插入序淘汰最旧）。 */
+  const settledTurns = new Map();
 
   function note(event, fields) {
     try { logger(event, fields || {}); } catch (_) { /* 观测失败不影响执行 */ }
   }
 
+  /* 权威模式的空 context / 零 effects。失败与重放都用它们，形状与成功一致 ——
+     调用方不需要按路径猜键。 */
+  function emptyContext() { return { text: '', count: 0, chars: 0, includeHeader: true }; }
+  function zeroEffects(over) {
+    return Object.assign({
+      turnBegun: false,
+      activation: { updated: 0, duplicated: [], reason: null },
+      exposure: { written: 0 },
+      turnEnded: false
+    }, over || {});
+  }
+
   /* ── 信封：成功与失败**同一套顶层键** ──────────────────────────────────
      调用方不需要猜"失败时少了哪个键"。失败时 ids 为空、fingerprint 为 null、
-     计数为 0 —— 半份 selection 在任何路径上都不会被回出去。 */
-  function boundaryBlock(attempts) {
+     计数为 0 —— 半份 selection 在任何路径上都不会被回出去。
+
+     P21-R4-LIVE-3.4：影子模式的 boundary 块**逐字节不变**（committed 套件
+     钉住 pureShadow:true 且没有 `mode` 键）。权威模式多一个 `mode` 键、
+     pureShadow 翻成 false，并且两个写计数取自本次请求的**实测值**。 */
+  function boundaryBlock(attempts, authoritativeState) {
+    if (authoritativeState) {
+      return {
+        mode: MODES[1],
+        pureShadow: false,
+        exposureWrites: Number(authoritativeState.exposureWrites) || 0,
+        activationWrites: Number(authoritativeState.activationWrites) || 0,
+        providerCalls: 0,
+        sessionMutation: 'TURN_LIFECYCLE',
+        transportScope: TRANSPORT_SCOPE,
+        recallSelectionAuthority: 'CALLER_PROPOSED',
+        attempts: attempts
+      };
+    }
     return {
       pureShadow: true,
       exposureWrites: 0,
@@ -211,6 +280,10 @@ function createRuntimeRecall(deps) {
     if (code === REASON.recallTimeout) counters.timeouts += 1;
     else if (code === REASON.recallUnavailable) counters.unavailable += 1;
     else counters.refused += 1;
+    /* 权威模式：失败也回**同一套** 16 键（14 + context + effects），因此
+       `mode:'authoritative'` 的信封形状不随成功/失败分叉。校验期失败没有
+       可信的 mode（请求还没通过校验），因此仍是冻结的 14 键失败信封。 */
+    const authoritative = c.mode === MODES[1];
     const out = {
       ok: false,
       durable: false,
@@ -226,12 +299,16 @@ function createRuntimeRecall(deps) {
       fingerprint: null,
       counts: { candidates: 0, eligible: 0, selected: 0 },
       chars: 0,
-      boundary: boundaryBlock(attempts),
+      boundary: boundaryBlock(attempts, authoritative ? (c.authoritativeState || {}) : null),
       status: statusFor(code)
     };
     if (c.detail !== undefined) out.detail = bounded(c.detail);
     if (c.field !== undefined) out.field = bounded(c.field, 80);
     if (c.requestedOperation !== undefined) out.requestedOperation = c.requestedOperation;
+    if (authoritative) {
+      out.context = isPlainObject(c.context) ? c.context : emptyContext();
+      out.effects = isPlainObject(c.effects) ? c.effects : zeroEffects();
+    }
     return out;
   }
 
@@ -247,6 +324,8 @@ function createRuntimeRecall(deps) {
           静默，但审计要能区分"你想自己决定召回"与"你写错了一个键名"。 */
     for (const key of Object.keys(body)) {
       if (REQUEST_FIELDS.indexOf(key) >= 0) continue;
+      /* P21-R4-LIVE-3.4：`mode` 是唯一的可选能力键。 */
+      if (OPTIONAL_REQUEST_FIELDS.indexOf(key) >= 0) continue;
       if (REJECTED_AUTHORITY_FIELDS.indexOf(key) >= 0) {
         return {
           ok: false,
@@ -376,8 +455,45 @@ function createRuntimeRecall(deps) {
       }
       effectiveTimeoutMs = Math.min(timeoutRaw, MAX_TIMEOUT_MS);
     }
+    /* ⑦ mode：**唯一**的可选能力键。缺省 / 'shadow' ⇒ 与今天逐字节相同；
+          'authoritative' ⇒ 本边界接管这一轮的 Home turn 生命周期；
+          其它任何值（含非字符串、大小写变体）⇒ request-shape-invalid。
+          ★ mode 不是数据权威：它不改变召回看到什么，只改变谁推进回合。 */
+    const modeRaw = own(body, 'mode');
+    let mode = DEFAULT_MODE;
+    if (modeRaw !== undefined) {
+      if (typeof modeRaw !== 'string' || MODES.indexOf(modeRaw.trim()) < 0) {
+        return {
+          ok: false,
+          result: failure(REASON.requestShapeInvalid, {
+            operation: OPERATION, characterId: characterId, field: 'mode',
+            detail: 'mode-must-be-one-of-' + MODES.join('|')
+          })
+        };
+      }
+      mode = modeRaw.trim();
+    }
+    /* ⑦b isGroup：**唯一**的群聊键（可选）。它是"这一轮是什么"的一部分，
+          不是召回策略：它只切可见性分支（group ⇒ public-only），通道/排名/
+          预算/选择仍全部由既有引擎决定。
+          ★ 刻意**不**接受 groupMemEnabled 作为第二个 wire 键：一个键就是契约，
+            服务端按 `isGroup === true` 同时驱动两者（见下面的 retrieve 调用），
+            因此调用方不可能把两个语义拆开、让它们互相矛盾。
+          ★ 缺席 ⇒ 与今天逐字节相同（false/false）。 */
+    const isGroupRaw = own(body, 'isGroup');
+    if (isGroupRaw !== undefined && typeof isGroupRaw !== 'boolean') {
+      return {
+        ok: false,
+        result: failure(REASON.requestShapeInvalid, {
+          operation: OPERATION, characterId: characterId, field: 'isGroup',
+          detail: 'isGroup-must-be-a-boolean'
+        })
+      };
+    }
     return {
       ok: true,
+      mode: mode,
+      isGroup: isGroupRaw === true,
       characterId: characterId,
       requestId: requestId,
       conversationId: conversationId,
@@ -423,6 +539,18 @@ function createRuntimeRecall(deps) {
     if (value == null) return null;
     const n = Number(value);
     return Number.isFinite(n) ? n : null;
+  }
+
+  /* 释放一个**已经 begin、但这一轮没能走完**的 Home turn 身份。
+     与 mobile-gateway.js:1199-1203 releaseRecallTurn 同一职责：begin 一旦发生，
+     任何早退都必须 end，否则 homeTurnIndex 会随失败请求线性增长（而且不报错）。 */
+  function releaseTurn(active) {
+    if (!active || !sessionState || typeof sessionState.endHomeTurn !== 'function') return false;
+    try {
+      const ended = sessionState.endHomeTurn({ turnId: active.turnId }) === true;
+      if (ended) authoritativeCounters.turnsEnded += 1;
+      return ended;
+    } catch (_) { return false; }
   }
 
   /* ── 主入口：**永不抛出** ───────────────────────────────────────────── */
@@ -481,9 +609,71 @@ function createRuntimeRecall(deps) {
            因此"桌面影子 vs 服务端边界"的顺序一致性只有在两侧喂**同一个**索引时
            才有意义（parity harness 正是两侧同 seed 地构造的），而不是"服务端
            已经能独立算出一轮"。 */
-      const turnIndex = (sessionState && typeof sessionState.currentTurnIndex === 'function')
-        ? sessionState.currentTurnIndex({ characterId: characterId })
-        : null;
+      /* ── P21-R4-LIVE-3.4 · 上面的"只读"只适用于**影子模式**（默认）───────
+         权威模式（mode:'authoritative'）按下面的顺序接管这一轮的 Home turn：
+         begin → retrieve → reinforce → recordExposure → end。
+         顺序是**硬约束**（与 mobile-gateway.js:1178-1195 同款）：cooldown 的
+         turn distance = currentTurnIndex − lastExposureTurn，若 retrieval 先
+         发生，本轮 index 还不存在，所有候选都拿不到 penalty —— cooldown 会
+         静默失效。turnId 用**既有**公式（deriveStableTurnId）从
+         requestId+conversationId 推出，不铸造第二个身份。 */
+      const messageHash = CHAT_CORE.stableToken(
+        shape.conversationId + '\u0000' + shape.requestId + '\u0000' + shape.message);
+      const turnId = deriveStableTurnId(shape.requestId, shape.conversationId);
+      const authoritative = (shape.mode === MODES[1]);
+      let lifecycle = null;
+      let turnIndex = null;
+      if (authoritative) {
+        const prior = settledTurns.get(turnId);
+        if (prior && prior.messageHash === messageHash) {
+          /* 重放：同一 (requestId, conversationId, message) ⇒ **不** begin、
+             **不** retrieve、**不** 强化、**不** 曝光、**不** end。
+             直接回这一轮已经结算的信封；effects 如实报"本请求什么都没做"。 */
+          authoritativeCounters.replaysServed += 1;
+          counters.ok += 1;
+          settledTurns.delete(turnId); settledTurns.set(turnId, prior); /* 刷新 LRU 序 */
+          note('runtime-recall-replay', { characterId: characterId, turnId: turnId, selected: prior.selectedIds.length });
+          return {
+            ok: true,
+            durable: false,
+            operation: OPERATION,
+            characterId: characterId,
+            turnIdentity: prior.turnIdentity,
+            selectedIds: prior.selectedIds.slice(),
+            activationPolicy: prior.activationPolicy,
+            channel: prior.channel,
+            reason: prior.reason,
+            fingerprint: prior.fingerprint,
+            counts: Object.assign({}, prior.counts),
+            chars: prior.chars,
+            context: Object.assign({}, prior.context),
+            effects: zeroEffects({
+              activation: { updated: 0, duplicated: prior.activationIds.slice(), reason: 'turn-duplicate' }
+            }),
+            boundary: boundaryBlock(0, { exposureWrites: 0, activationWrites: 0 }),
+            status: 200
+          };
+        }
+        if (!sessionState || typeof sessionState.beginHomeTurn !== 'function') {
+          return failure(REASON.recallUnavailable, {
+            characterId: characterId, detail: 'session-state-not-assembled', attempts: 0,
+            mode: shape.mode, context: emptyContext(), effects: zeroEffects()
+          });
+        }
+        turnIndex = sessionState.beginHomeTurn({ characterId: characterId, turnId: turnId });
+        if (turnIndex == null) {
+          return failure(REASON.recallUnavailable, {
+            characterId: characterId, detail: 'turn-identity-unavailable', attempts: 0,
+            mode: shape.mode, context: emptyContext(), effects: zeroEffects()
+          });
+        }
+        authoritativeCounters.turnsBegun += 1;
+        lifecycle = { turnId: turnId, turnIndex: turnIndex };
+      } else {
+        turnIndex = (sessionState && typeof sessionState.currentTurnIndex === 'function')
+          ? sessionState.currentTurnIndex({ characterId: characterId })
+          : null;
+      }
       /* ── 既有召回的**唯一**调用点 ─────────────────────────────────────
          传下去的每一个选项都是服务端自有的：
            · userMessage / conversationId / 两个 turn 信号 = 调用方对"这一轮
@@ -514,44 +704,63 @@ function createRuntimeRecall(deps) {
              缺席时是 null ⇒ wrapper 把 turnIndex 置 null ⇒ 与今天逐字同行为。 */
           turnIndex: turnIndex,
           includeHeader: true,
+          /* P21-R4-LIVE-3.4 · §6：**一个** wire 键驱动两个 wrapper 选项。
+             浏览器在群聊路径上本来就是成对传的（isGroup:true +
+             groupMemEnabled:true）；服务端按同一个事实驱动两者，因此不存在
+             "群聊但记忆开关是 1v1"这种自相矛盾的组合。缺席 ⇒ false/false，
+             既有调用方逐字节不变。 */
+          isGroup: shape.isGroup === true,
+          groupMemEnabled: shape.isGroup === true,
           withTrace: true,
           glossaryProvider: glossaryProvider,
           getGlossaryEntries: getGlossaryEntries
         });
       } catch (error) {
+        const released = releaseTurn(lifecycle);
         note('runtime-recall-threw', {
           characterId: characterId, error: bounded((error && error.message) || error)
         });
         return failure(REASON.recallUnavailable, {
-          characterId: characterId, detail: 'retrieve-threw', attempts: 1
+          characterId: characterId, detail: 'retrieve-threw', attempts: 1,
+          mode: shape.mode, context: emptyContext(),
+          effects: zeroEffects({ turnBegun: !!lifecycle, turnEnded: released })
         });
       }
       const latencyMs = Math.max(0, Number(clock()) - startedAt);
       if (!picked || picked.ok !== true) {
+        const released = releaseTurn(lifecycle);
         note('runtime-recall-unavailable', {
           characterId: characterId, reason: bounded(picked && (picked.error || picked.reason)) || 'retrieve-failed'
         });
         return failure(REASON.recallUnavailable, {
           characterId: characterId,
           detail: bounded(picked && (picked.error || picked.reason)) || 'retrieve-failed',
-          attempts: 1
+          attempts: 1,
+          mode: shape.mode, context: emptyContext(),
+          effects: zeroEffects({ turnBegun: !!lifecycle, turnEnded: released })
         });
       }
       /* 超时是**事后**判定：召回是本地同步调用，没有 provider 可以取消；
          一旦越过调用方给的窗口，结果就不该再被消费（它是窗口外的观测）。
          因为这条边界是纯影子，"丢弃结果"不会留下任何副作用。 */
       if (opts.signal && opts.signal.aborted === true) {
+        const released = releaseTurn(lifecycle);
         note('runtime-recall-cancelled', { characterId: characterId, latencyMs: latencyMs });
         return failure(REASON.recallTimeout, {
-          characterId: characterId, detail: 'caller-aborted-during-recall', attempts: 1
+          characterId: characterId, detail: 'caller-aborted-during-recall', attempts: 1,
+          mode: shape.mode, context: emptyContext(),
+          effects: zeroEffects({ turnBegun: !!lifecycle, turnEnded: released })
         });
       }
       if (latencyMs > shape.effectiveTimeoutMs) {
+        const released = releaseTurn(lifecycle);
         note('runtime-recall-timeout', {
           characterId: characterId, latencyMs: latencyMs, timeoutMs: shape.effectiveTimeoutMs
         });
         return failure(REASON.recallTimeout, {
-          characterId: characterId, detail: 'deadline-exceeded', attempts: 1
+          characterId: characterId, detail: 'deadline-exceeded', attempts: 1,
+          mode: shape.mode, context: emptyContext(),
+          effects: zeroEffects({ turnBegun: !!lifecycle, turnEnded: released })
         });
       }
 
@@ -614,6 +823,93 @@ function createRuntimeRecall(deps) {
         counts.candidates, counts.eligible, counts.selected, chars, reason
       ]));
 
+      /* ── P21-R4-LIVE-3.4 · 权威模式：写 ───────────────────────────────
+         顺序与 mobile-gateway 的 settle 路径逐条对齐
+         （reinforce → recordExposure → endHomeTurn），而且**只有**这一处会写。
+         影子模式一个生命周期动词都不调用（committed 套件对此有硬断言）。 */
+      let contextExtra = null;
+      let effects = null;
+      if (authoritative && lifecycle) {
+        const ctx = {
+          text: typeof picked.text === 'string' ? picked.text : '',
+          count: Number(picked.count) || 0,
+          chars: chars,
+          includeHeader: true
+        };
+        /* ① 激活：走 canonical 通道（memoryRetrieval.reinforce →
+           store.recordActivation），并把 turnId 传下去 —— 于是 LIVE-3.3 的
+           turn-scoped guard 在同轮重放时如实回 updated:0 + duplicated +
+           reason:'turn-duplicate'：宁可少记，绝不重复计数。
+           用 reinforcementIds（coldStart ⇒ 空），与 mobile-gateway.js:2553-2555 同款。 */
+        const reinforcementIds = Array.isArray(picked.reinforcementIds)
+          ? picked.reinforcementIds.slice() : selectedIds.slice();
+        let activation = { updated: 0, duplicated: [], reason: null };
+        if (reinforcementIds.length) {
+          try {
+            const reinforced = (typeof memoryRetrieval.reinforce === 'function')
+              ? memoryRetrieval.reinforce(reinforcementIds, { turnId: lifecycle.turnId })
+              : null;
+            if (reinforced && reinforced.ok === true) {
+              activation = {
+                updated: Number(reinforced.updated) || 0,
+                duplicated: Array.isArray(reinforced.duplicated) ? reinforced.duplicated.slice() : [],
+                reason: reinforced.reason == null ? null : String(reinforced.reason)
+              };
+              authoritativeCounters.activationWrites += activation.updated;
+            } else {
+              activation.reason = bounded((reinforced && (reinforced.error || reinforced.reason)) || 'activation-unavailable');
+            }
+          } catch (error) {
+            activation.reason = 'activation-threw';
+            note('runtime-recall-activation-failed', {
+              characterId: characterId, error: bounded((error && error.message) || error)
+            });
+          }
+        }
+        /* ② 曝光：写**最终注入**的 ids（不是 reinforcementIds），与
+           mobile-gateway.js:2580-2587 逐字同款；recordExposure 对
+           (character, memory, turnIndex) 天然幂等。 */
+        let exposureWritten = 0;
+        if (selectedIds.length && sessionState && typeof sessionState.recordExposure === 'function') {
+          try {
+            exposureWritten = Number(sessionState.recordExposure({
+              characterId: characterId, memoryIds: selectedIds, turnIndex: lifecycle.turnIndex
+            })) || 0;
+            authoritativeCounters.exposureWrites += exposureWritten;
+          } catch (error) {
+            note('runtime-recall-exposure-failed', {
+              characterId: characterId, error: bounded((error && error.message) || error)
+            });
+          }
+        }
+        /* ③ end：释放 Home turn 身份（有界），与 mobile-gateway.js:2597 同款。 */
+        const ended = releaseTurn(lifecycle);
+        effects = {
+          turnBegun: true,
+          activation: activation,
+          exposure: { written: exposureWritten },
+          turnEnded: ended
+        };
+        contextExtra = ctx;
+        /* ④ 结算备忘（有界、内存、重启即空）：同一
+           (requestId, conversationId, message) 的下一次调用**不触碰任何状态**。 */
+        settledTurns.set(turnId, {
+          messageHash: messageHash,
+          selectedIds: selectedIds.slice(),
+          context: ctx,
+          counts: Object.assign({}, counts),
+          channel: channel, reason: reason, chars: chars,
+          activationPolicy: activationPolicy, fingerprint: fingerprint,
+          turnIdentity: turnIdentity,
+          activationIds: reinforcementIds.slice()
+        });
+        while (settledTurns.size > MAX_SETTLED_TURNS) {
+          const oldest = settledTurns.keys().next();
+          if (oldest.done) break;
+          settledTurns.delete(oldest.value);
+        }
+      }
+
       counters.ok += 1;
       const out = {
         ok: true,
@@ -628,12 +924,20 @@ function createRuntimeRecall(deps) {
         fingerprint: fingerprint,
         counts: counts,
         chars: chars,
-        boundary: boundaryBlock(1),
+        boundary: boundaryBlock(1, (authoritative && effects)
+          ? { exposureWrites: effects.exposure.written, activationWrites: effects.activation.updated }
+          : null),
         status: 200
       };
+      if (authoritative) {
+        out.context = contextExtra || emptyContext();
+        out.effects = effects || zeroEffects();
+      }
       /* 审计只记**有界**字段：身份、结果、计数、通道、耗时。
-         message 原文、selectedIds 之外的正文、任何秘密都不进来。 */
-      note('runtime-recall', {
+         message 原文、selectedIds 之外的正文、任何秘密都不进来。
+         ★ 影子模式的审计字段集合逐字不变（committed 套件可捕获日志）；
+           `mode` 只在权威模式出现。 */
+      const noteFields = {
         characterId: characterId,
         requestId: shape.requestId,
         outcome: 'ok',
@@ -643,7 +947,13 @@ function createRuntimeRecall(deps) {
         channel: channel,
         chars: chars,
         latencyMs: latencyMs
-      });
+      };
+      if (authoritative) {
+        noteFields.mode = shape.mode;
+        noteFields.activationWrites = effects ? effects.activation.updated : 0;
+        noteFields.exposureWrites = effects ? effects.exposure.written : 0;
+      }
+      note('runtime-recall', noteFields);
       return out;
     } catch (error) {
       /* 兜底：契约是"永不抛出"。任何未预料的编程错误都以稳定的码回答，
@@ -663,9 +973,23 @@ function createRuntimeRecall(deps) {
       operations: [OPERATION],
       transport: 'POST',
       transportScope: TRANSPORT_SCOPE,
-      /* 调用方在这条边界上的权威 = 只描述这一轮是什么。 */
+      /* 调用方在这条边界上的权威 = 只描述这一轮是什么 + （可选）请求接管回合。 */
       callerAuthority: 'NONE',
+      /* ── P21-R4-LIVE-3.4 · mode ────────────────────────────────────────
+         `pureShadow` 保持原义：**影子模式**是纯的（这也是默认模式）。
+         `shadowPure` 是同一件事的显式别名；`sessionStateOwned:false` 仍然为真
+         （实例由装配层拥有），新增的是"权威模式下本边界**推进**那个实例的
+         回合生命周期"这一事实。 */
       pureShadow: true,
+      shadowPure: true,
+      defaultMode: DEFAULT_MODE,
+      modes: MODES.slice(),
+      authoritativeMode: 'TURN_LIFECYCLE_OWNED',
+      authoritativeWrites: AUTHORITATIVE_WRITES.slice(),
+      authoritativeRequiresSessionState: true,
+      replayAuthority: 'IN_PROCESS_SETTLED_TURN_MEMO',
+      replayMemoMaxTurns: MAX_SETTLED_TURNS,
+      crossRestartExactlyOnce: 'NO',
       /* ★ 三个"零"是这条边界存在的全部理由，逐条可断言。 */
       exposureWrites: 0,
       activationWrites: 0,
@@ -692,14 +1016,18 @@ function createRuntimeRecall(deps) {
       defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
       maxTimeoutMs: MAX_TIMEOUT_MS,
       /* 接受与被拒**两张名单**：它们是同一份冻结常量（不是副本），
-         因此 describe() 不可能与校验逻辑漂移。 */
+         因此 describe() 不可能与校验逻辑漂移。
+         ★ `requestFields` 仍是那 8 个必需形状词（committed 套件钉住长度 8）；
+           `mode` 是**唯一**的可选能力键，单独一张名单如实报告。 */
       requestFields: REQUEST_FIELDS,
       acceptedFields: REQUEST_FIELDS,
+      optionalRequestFields: OPTIONAL_REQUEST_FIELDS,
       rejectedAuthorityFields: REJECTED_AUTHORITY_FIELDS,
       rejectedFields: REJECTED_AUTHORITY_FIELDS,
       reasonCodes: Object.keys(STATUS_BY_REASON),
       fingerprintVersion: FINGERPRINT_VERSION,
-      counters: Object.assign({}, counters)
+      counters: Object.assign({}, counters),
+      authoritativeCounters: Object.assign({}, authoritativeCounters)
     };
   }
 
@@ -716,6 +1044,11 @@ module.exports.createRuntimeRecall = createRuntimeRecall;
 module.exports.PATH = PATH;
 module.exports.OPERATION = OPERATION;
 module.exports.REQUEST_FIELDS = REQUEST_FIELDS;
+module.exports.OPTIONAL_REQUEST_FIELDS = OPTIONAL_REQUEST_FIELDS;
+module.exports.MODES = MODES;
+module.exports.DEFAULT_MODE = DEFAULT_MODE;
+module.exports.AUTHORITATIVE_WRITES = AUTHORITATIVE_WRITES;
+module.exports.deriveStableTurnId = deriveStableTurnId;
 module.exports.REJECTED_AUTHORITY_FIELDS = REJECTED_AUTHORITY_FIELDS;
 module.exports.REASON = REASON;
 module.exports.STATUS_BY_REASON = STATUS_BY_REASON;
