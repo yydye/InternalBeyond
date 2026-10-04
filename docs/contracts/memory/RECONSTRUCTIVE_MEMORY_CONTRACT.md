@@ -1796,6 +1796,286 @@ CURRENT_USER_COST = 0        （flag 默认 OFF + 零生产调用者）
 
 ---
 
+#### (k) R4-D · Expectation + Prediction Error Shadow（追加，不改写 (a)–(j)）
+
+**(k-1) 分层冻结**
+
+```
+PAST EXPERIENCE MAY SHAPE EXPECTATION · EXPECTATION MUST REMAIN A HYPOTHESIS
+Canonical Evidence > Interpretation > Expectation > Behavior[NOT IMPLEMENTED]
+                   > Observed Outcome > Prediction Error > Expectation Revision[NOT IMPLEMENTED]
+```
+
+`EXPECTATION != FACT` · `PREDICTION != OBSERVATION` · `PREDICTION ERROR != CANONICAL MUTATION`。
+
+**(k-2) §54 相位开关**
+
+`FORBIDDEN_WIRING` 由 `[expectation, counterfactual, predictionError, prediction_error]`
+收窄为 **`[counterfactual]`** —— R4-D 交付了 expectation 与 predictionError 的 **shadow**，
+两者按设计移出；**`counterfactual` 必须留下**（R4-E 未实现，不得顺手解禁）。
+替换为 17 条更具体的 `R4D*` 守卫（shadow-only / consumer-zero / no-persistence /
+no-behavior / no-prompt / no-canonical-mutation / 不得触碰 counterfactual）。
+
+**(k-3) 跨 turn 身份与结算可行性**
+
+`CROSS_TURN_IDENTITY_PRIMITIVES`（机械审计）：`conversationId`（`chat-core.js`
+`conversationIdOf` 派生）、`messageId`（`chat-core.js` / `active-diary._activeMessageId`）、
+`groupTurnId`（`agent-orchestration-core.js`）、`recall-session-state`（**纯内存**，
+文件头明写 `✗ DB / IndexedDB / localStorage / SQLite`）、
+Home Node change feed（`changesAfter`）。
+
+```
+LIVE_PREDICTION_SETTLEMENT_WITHOUT_PERSISTENCE = SESSION_ONLY
+EXPECTATION_RUNTIME    = PROTOCOL_ONLY
+PREDICTION_ERROR_RUNTIME = PROTOCOL_ONLY
+```
+
+- 能跨多少 turn：**同一页面会话内的后续 turn**（若把未结 expectation 放进内存）。
+- 何时丢失：**reload / 页面关闭 / `recall-session-state.clear()`**。
+- thread / character 切换：现有 session primitive 按 `characterId` 分键，但**不**按 thread 分键。
+- **本阶段没有实现活体结算**：跨 turn 需要 durable state，而 §43/§55 禁止持久化；
+  把 expectation 塞进 `recall-session-state` 会**污染 cooldown state**
+  （R4-B 刻意避免的那件事）。⇒ `LIVE_SETTLEMENT = NOT IMPLEMENTED`。
+
+**这是一份合法的 R4-D 交付**（§6 明文允许），不是缺口掩盖。
+
+**(k-4) Expectation 输入边界**
+
+| 输入 | 裁决 |
+| --- | --- |
+| canonical selected memories | **ALLOWED**（必需） |
+| R4-B system evidence state | **ALLOWED**（只读，系统真值高于模型猜测） |
+| R4-C MemoryInterpretation shadow | **OPTIONAL** —— 只接受调用方**已经拿到**的结果 |
+| current relationship / emotion | **ALLOWED**（有界注入） |
+| recent observed context | FORBIDDEN |
+| 当前 raw user prompt | FORBIDDEN |
+| full history | FORBIDDEN |
+
+**§9 明令**：R4-D **MUST NOT** 为了拿 Interpretation 偷偷触发 R4-C runner ——
+那会形成 `prediction call → interpretation call` 的隐式两阶段成本链。
+R4-C production invocation 目前 **DISABLED**，因此生产 Expectation **不得**假设
+Interpretation 每回合存在；缺失时按 `interpretation-unavailable-degraded` 降级。
+
+**(k-5) 模型端口与成本**
+
+沿用 R4-C 的 `model-port-protocol`（**不造第四套框架**）。
+`AUTO_RETRY = NONE` · `MAX_ATTEMPTS = 1` · `deps.enabled !== true` ⇒ 零调用 ·
+超时权威由调用方注入（`SAFETY_CAP_MS = 120000`，来源
+`understanding-derivation.js:70`）· `RUNNER_WAIT_BOUNDED = YES` ≠
+`PROVIDER_EXECUTION_CANCELLATION_GUARANTEED = NO`（R4-C.1 §j-4 继续适用）。
+`calls ≤ 1 / turn`。`CURRENT_USER_COST = 0`。
+
+**(k-6) 输出契约（逐字段裁决后的最小形态）**
+
+| 字段 | 必需? | 可空? | 模型可写? | 说明 |
+| --- | --- | --- | --- | --- |
+| `prediction` | ✔ | ✘ | ✔ | 有界 500 字 |
+| `trigger{kind,label}` | ✔ | ✘ | ✔ | **闭集 kind** + 受限 label（≤200）；这是预测**不变成无条件世界观**的条件 |
+| `evidenceMemoryIds` | ✔ | ✘ | ✔ | 必须 ∈ 已授权集，去重 |
+| `contradictoryEvidenceIds` | 可选 | ✔ | ✔ | 同样受授权集约束 |
+| `generalizationLevel` | ✔ | ✘ | ✔ | **只接受 `episode-hypothesis`** |
+| `subjectivePredictionConfidence` | 可选 | ✔ | ✔ | `number ∈ [0,1]` 或 `null` |
+| `epistemicStatus` | ✔ | ✘ | ✘ | 系统写入，恒为 `'prediction'` |
+| `evidenceConfidence` | — | 恒 `null` | **✘ 模型写即作废** | 系统持有 |
+| `calibrationConfidence` | — | 恒 `null` | **✘ 模型写即作废** | 只在有 settled observations 后才可能非空 |
+| `expectationId` | runtime-only **不需要 durable id** | ✔ | ✘ | 见 (k-7) |
+
+**(k-7) `EXPECTATION_IDENTITY_POLICY`**
+
+```
+runtime-only Expectation 不生成"看似永久、reload 后失效"的 id。
+· 本阶段不产出 expectationId；需要引用时用调用方**显式**提供的 turn-local 序号或 null。
+· settlement 的显式链接要求两侧 id **逐字相等**，否则拒绝结算。
+· durable UUID 属于未来的 durable expectation 阶段（§30，未实现）。
+```
+
+**(k-8) 泛化门与证据独立性**
+
+```
+Episode → Hypothesis → Repeated Observations → Generalized Expectation
+GENERALIZATION_REACHABLE = ['episode-hypothesis']
+GENERALIZED_REQUIRES_REPO_EVIDENCE = 'no-independent-observation-primitive-exists'
+```
+
+仓库**没有**能机械证明"多个独立观察"的原语（`sameEpisode` / `consolidatedFrom` /
+`sourceId` 都不能证明独立性）。因此：
+**"引用了 3 条 id" ≠ "3 次独立观察"** —— 模型即便引用多条，系统也**不**升级泛化级别，
+并输出 `evidenceIndependenceUnproven`。单条 episode **永不**成为世界观。
+
+**(k-9) 结算：`NO CANONICAL OUTCOME → NO SETTLEMENT`**
+
+`observedOutcome` **必须**来自 later canonical evidence（`canonical === true`
+且 id ∈ 已授权集），**不得**来自模型幻觉 / 当前 raw user text / Expectation 自己。
+
+```
+SETTLEMENT_JUDGEMENT_MATRIX
+  explicit-link                  DETERMINISTIC
+  deterministic-domain-trigger   DETERMINISTIC
+  model-validated                REQUIRES_MODEL（且必须先经结构校验）
+  text-similarity-only           NOT_SUPPORTED
+  implicit-inference             NOT_SUPPORTED
+```
+
+只因为"后来那条 memory 看起来像"**不得**自动结算。
+
+**(k-10) Prediction Error 语义**
+
+```
+kind = 'discrete' · metric = null
+result ∈ {confirmed, contradicted, partial, unknown, unsettled}
+```
+
+**没有冻结的连续 metric ⇒ 不给 0.63 这种数字**。
+`predictionErrorMetric = null` + `prediction-error-is-discrete-not-continuous` 是诚实的表达。
+
+**Prediction Error = revision signal，NOT canonical correction**：它**绝不**改写旧的
+canonical memory、visibility、provenance、activation 或 MemoryValue。
+
+**(k-11) 校准与自证预言**
+
+```
+calibrationCounts = {confirmed, contradicted, partial, unknown}   ← 只冻结计数语义
+calibrationConfidence = null                                       ← 无 settled 历史 ⇒ 恒为 null
+NO_SELF_REINFORCING_CONFIDENCE_LOOP                                ← 结算不得回写置信度
+```
+
+自证预言（§31）：`behaviorEffectsApplied` / `selfInfluencePossible` /
+`attributionConfidence` 三个字段**必须可表达**。BehaviorEffect 尚未实现（R4-F），
+因此本阶段：
+- 调用方**显式声明** `behaviorConsumerCount`；为 `0` 时才可机械断言
+  `selfInfluencePossible = false` / `behaviorInfluenceStatus = 'none-observed'`；
+- 未声明 ⇒ `null` / `'not-evaluated'`（**不猜**）；
+- `attributionConfidence` **恒为 `null`** —— 绝不伪造。
+
+**(k-12) 边界**
+
+| 禁止 | 说明 |
+| --- | --- |
+| durable expectation / observation / prediction error | 无新表 / store / route / storage（`R4D16`） |
+| expectation revision chain / supersedes / calibration store | 属于后续 durable 阶段 |
+| BehaviorEffect | 属 R4-F；`prediction` 生产 consumer = **0** |
+| Counterfactual | 属 R4-E；**`counterfactual` 仍在 FORBIDDEN_WIRING 里**（`R4D17`） |
+| canonical mutation | 零写入路径 |
+| prompt / UI / export / backup / log / trace 正文 | turn-local only |
+
+```
+本阶段新增两个**协议就绪**的纯核心，生产调用者均为 0，活体结算未实现。
+其余 reconstructive 层 runtime production implementation = NONE（仍然为真）。
+```
+
+---
+
+#### (l) R4-D.1 · Prediction Settlement Truthfulness Reconciliation（追加，不改写 (k)）
+
+**四项 truthfulness 修正。** 全部是**收窄声明**，不是新功能。
+
+**(l-1) canonical observation 不再靠 caller 自证**
+
+旧形态：`settle(exp, {evidenceMemoryId, canonical:true, observedOutcome:'任意文本'}, …)`。
+机械回答：`CAN_CALLER_FORGE_CANONICAL_TRUE = YES`、
+`CAN_CALLER_SUPPLY_OUTCOME_TEXT_UNRELATED_TO_RECORD = YES`。
+
+⇒ `NO CANONICAL OUTCOME → NO SETTLEMENT` 当时**只是调用协议，不是机械 authority**。
+
+登记并关闭：**`R4D1-CANONICAL-OBSERVATION-SELF-ATTESTATION`**
+
+**唯一合法来源**（新增纯函数）：
+
+```
+buildCanonicalObservation(record, { observedAt, authorizedMemoryIds }) -> { ok, value }
+  evidenceMemoryId  ← record.id                       （派生）
+  observedOutcome   ← content → summary → title       （确定性优先级，首个非空）
+  canonical         ← builder 产出的**派生标记**（带 OBSERVATION_BRAND）
+  sourceFingerprint ← memory-contract.contentFingerprint（复用既有实现，不造第二套）
+```
+
+`settle` **只接受**带 brand 的产物；裸对象即使写 `canonical:true` 也一律
+`observation-was-not-built-from-a-canonical-record`（`R4D18` 强制）。
+
+**快照字段裁决**：`content` → `summary` → `title`。
+**刻意不含 `oneLine`** —— R4-A.4 的审计已证明它只被**展示面**消费（引言渲染 + 轮播池）；
+把 UI 展示字符串当成"发生了什么"的证据，等于把展示文本升格为事实。
+
+**已如实登记的残余**：brand 只保证**来源形状**（由记录构建、带快照与指纹），
+**不保证不可变** —— 调用方若改写 builder 产物的字段，核心会照单接受（`K3` 断言了这一点）。
+这是**已知且文档化**的边界，不是缺口掩盖。
+
+**(l-2) matching ≠ judgement**
+
+```
+MATCHING_MODE_MATRIX       ← "这条 observation 是否**被允许**用于这个 expectation"（linkage）
+OUTCOME_JUDGEMENT_MATRIX   ← "它对 prediction 是 confirmed/contradicted/…"（result）
+```
+
+`MATCHING_MODE_MATRIX[*].derivesResult === false` —— **explicit-link 的 DETERMINISTIC
+只描述链接，不描述对错**。旧名 `SETTLEMENT_JUDGEMENT_MATRIX` **已删除**
+（它把 linkage 的逻辑描述成结算判断）。
+
+```
+OUTCOME_JUDGEMENT_MATRIX
+  caller-supplied-validated   CALLER_SUPPLIED_VALIDATED   ← 本阶段唯一被接受的来源
+  language-semantics          REQUIRES_MODEL
+  deterministic-comparator    NOT_SUPPORTED（需要专门的比较器，未实现）
+  text-similarity-only        NOT_SUPPORTED
+  implicit-inference          NOT_SUPPORTED
+
+OUTCOME_JUDGEMENT_RUNTIME = CALLER_VALIDATED_PROTOCOL_ONLY
+```
+
+**通用核心没有自然语言判断器，也不假装有。** 判定必须显式
+`judgementValidated: true`（或 `judgement:{result, validated:true}`），否则
+`outcome-judgement-not-marked-validated`。
+
+**(l-3) cross-turn 措辞修正**
+
+旧措辞「跨 turn settlement 需要 durable state」**不准确**。准确版本：
+
+```
+跨 turn settlement 需要 CROSS-TURN STATE：
+  SESSION_ONLY  —— 可由**独立的** bounded character + conversation/thread
+                   transient state 支持（**不**需要 durable authority）
+  RELOAD-SAFE   —— 需要 durable authority
+
+EXPECTATION_RUNTIME      = PROTOCOL_ONLY
+PREDICTION_ERROR_RUNTIME = PROTOCOL_ONLY
+LIVE_SETTLEMENT          = NOT IMPLEMENTED
+SESSION_ONLY_SETTLEMENT_FEASIBLE                     = YES
+RELOAD_SAFE_SETTLEMENT_REQUIRES_DURABLE_AUTHORITY    = YES
+CURRENT_SESSION_STATE_IMPLEMENTED                    = NO
+```
+
+**未污染 `RecallSessionState`**（`LT2` 强制）。未来若选 SESSION_ONLY，
+最小要求（**本轮只写契约，不实现**）：
+`key = characterId + conversationId/threadId` · bounded entries · explicit clear ·
+**no cooldown coupling**。
+
+**(l-4) expectation identity**
+
+```
+EXPECTATION_IDENTITY_POLICY = EXTERNAL_ID_REQUIRED_FOR_LINKED_SETTLEMENT
+LIVE_ID_ASSIGNMENT          = NOT IMPLEMENTED
+CORE_GENERATED_EXPECTATION_ID_COUNT = 0
+```
+
+核心**不生成** `expectationId`。`explicit-link` 要求**两侧都有**调用方提供的 id
+且逐字相等；缺失即 `no-validated-matching`。
+测试里的 `'exp1'` 是**调用方合成的** id，**不得**被读成"runtime 已经产生 id"。
+
+**(l-5) 未变的部分**
+
+generalization gate（只 `episode-hypothesis`）· 证据独立性门 ·
+confidence 三分（`calibrationConfidence` 恒 `null`）· 自证预言边界
+（`attributionConfidence` 恒 `null`）· `predictionErrorMetric = null` ·
+`counterfactual` 仍在 `FORBIDDEN_WIRING` · 零持久化 / 零 schema / 零 route ·
+生产 caller / consumer = 0 · `evidenceView:'full'` 生产调用 = 0。
+
+```
+Expectation 与 Prediction Error 仍是 **protocol-only**：无活体 producer、无活体结算。
+其余 reconstructive 层 runtime production implementation = NONE（仍然为真）。
+```
+
+---
+
 # PART II · PREDICTIVE MEMORY（R4-A.1 纳入冻结）
 
 > 本部分把 **Expectation / Prediction Error / Counterfactual** 正式纳入 foundation contract。

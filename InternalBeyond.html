@@ -3454,6 +3454,16 @@ i would like the room to be enough.
      也不牺牲首 token 延迟。详见 docs/contracts/memory/RECONSTRUCTIVE_MEMORY_CONTRACT.md §24.9。 -->
 <script src="assets/js/memory-recall/memory-interpretation-core.js"></script>
 <script src="assets/js/memory-recall/memory-interpretation-runner.js"></script>
+<!-- P21-R4-C · MemoryInterpretation SHADOW：纯核心（同步、零网络）+ 独立模型 runner。
+     **生产 invocation 默认关闭**（runner 没有任何生产调用方）。 -->
+<script src="assets/js/memory-recall/memory-interpretation-core.js"></script>
+<script src="assets/js/memory-recall/memory-interpretation-runner.js"></script>
+<!-- P21-R4-D · Expectation + Prediction Error SHADOW：两个**协议就绪**的纯核心
+     + 一个默认不启用的模型 runner。**生产调用者 = 0**；活体跨 turn 结算**未实现**。
+     observation 必须由 buildCanonicalObservation 派生，调用方不能自证 canonical。 -->
+<script src="assets/js/memory-recall/expectation-shadow-core.js"></script>
+<script src="assets/js/memory-recall/prediction-observation-core.js"></script>
+<script src="assets/js/memory-recall/expectation-shadow-runner.js"></script>
 <script src="assets/js/memory-recall/memory-recall-orchestrator.js"></script>
 <!-- M1-C.2k：线索（open thread）派生的唯一确定性实现（规则 / 去重阈值 / 合并语义）。
      Home Node 由 services/home-node/thread-retrieval.js require **同一份文件**，

@@ -453,6 +453,19 @@ const GROUPS = [
          单次批量调用预算、current-state 差分（同事实不同解释）、consumer=0、OFF parity。
          纯 Node、零浏览器、零网络。 */
       ['test_memory_interpretation_shadow.js'],
+      /* P21-R4-D：Expectation + Prediction Error **SHADOW**（协议就绪，生产调用者 = 0）。
+         PAST EXPERIENCE MAY SHAPE EXPECTATION · EXPECTATION MUST REMAIN A HYPOTHESIS。
+         两个纯核心：expectation 派生（分层信封 + 严格校验 + **泛化门**）与
+         prediction observation 结算（NO CANONICAL OUTCOME → NO SETTLEMENT）。
+         硬约束：prediction ≠ fact；证据/主观/校准三个置信度分离；
+         校准置信度在无 settled 历史时恒为 null；单条 episode 永不成为世界观；
+         "引用 N 条 id" ≠ "N 次独立观察"；Prediction Error 是**离散**真相而非连续 loss；
+         自证预言可表达但不伪造 attributionConfidence；无自增强置信环。
+         **活体跨 turn 结算未实现**（跨 turn 需要 durable state，本阶段禁止）——
+         诚实登记 LIVE_SETTLEMENT = NOT IMPLEMENTED，而不是偷偷造表。
+         模型交互全部使用 deterministic fake port：真实 provider 调用 = 0。
+         纯 Node、零浏览器、零网络。 */
+      ['test_expectation_shadow.js'],
       /* M1-C.2m：canonical Understanding —— 存储/修订链/CAS/单活不变量/更正契约
          （纯 Node + 真 SQLite + 临时数据目录，零网络、零浏览器）。 */
       ['test_understanding_contract_closure.js'],

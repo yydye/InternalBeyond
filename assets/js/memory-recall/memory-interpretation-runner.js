@@ -139,7 +139,6 @@
       });
       var bound = new Promise(function (resolve) {
         var t = setTimeout(function () { timedOut = true; resolve({ __timeout: true }); }, timeoutMs);
-        if (typeof t === 'object' && t && typeof t.unref === 'function') t.unref();
         if (controller) {
           try { controller.signal.addEventListener('abort', function () { resolve({ __timeout: true }); }); } catch (e) {}
         }

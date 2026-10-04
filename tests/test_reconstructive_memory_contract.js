@@ -38,7 +38,15 @@ const MEMORY_STORE = 'services/home-node/memory-store.js';
    绝不进 `result` / prompt / 排序 / activation。
 
    expectation / counterfactual / predictionError **仍然**禁止：它们仍未实现。 */
-const FORBIDDEN_WIRING = ['expectation', 'counterfactual', 'predictionError', 'prediction_error'];
+/* ── R4-D 相位切换 ──────────────────────────────────────────────────
+   R4-A.1 冻结时 reconstructive runtime = NONE，因此 `expectation` /
+   `predictionError` 与 `counterfactual` 一起被列为 production 零引用。
+   R4-D 交付了这两个层的 **shadow**，所以它们按设计**移出**本列表。
+
+   **`counterfactual` 必须留下** —— R4-E 未实现，不得顺手解禁。
+   换来的守卫见下方 §5c 的 `R4D*` 断言（shadow-only / consumer-zero /
+   no-persistence / no-behavior / no-prompt / no-canonical-mutation）。 */
+const FORBIDDEN_WIRING = ['counterfactual'];
 const FORBIDDEN_STORES = ['expectation', 'expectations', 'counterfactual', 'counterfactuals', 'metamemory'];
 /* R4-B：唯一被允许生产的 reconstructive runtime。 */
 const R4B_SHADOW = 'assets/js/memory-recall/metamemory-shadow.js';
@@ -221,6 +229,124 @@ check('N1.productionHasZeroPredictiveWiring',
 check('N2.productionScanIsNonTrivial',
   PRODUCTION_FILES.length > 200,
   'the production scan must actually cover the tree (scanned ' + PRODUCTION_FILES.length + ' files)');
+
+
+/* ══════════════════════════════════════════════════════════════════════
+   §5c · R4-D SHADOW-ONLY 守卫（取代 expectation / predictionError 的零引用守卫）
+   ──────────────────────────────────────────────────────────────────────
+   'expectation' 与 'predictionError' 现在**允许**出现在 production ——
+   但只能以"影子 + 协议就绪"的形态。下面把这份限制变成可机械判定的性质。
+   'counterfactual' **仍然**在上面的 FORBIDDEN_WIRING 里：R4-E 未实现。 */
+const R4D_FILES = [
+  'assets/js/memory-recall/expectation-shadow-core.js',
+  'assets/js/memory-recall/expectation-shadow-runner.js',
+  'assets/js/memory-recall/prediction-observation-core.js'
+];
+const R4D_TEXT = R4D_FILES.filter(f => fs.existsSync(path.join(ROOT, f))).map(f => read(f)).join('\n');
+const _R4D_STRIP = require('./helpers/activation-wiring-probe.js').stripJsComments;
+const R4D_CODE = _R4D_STRIP(R4D_TEXT);
+
+check('R4D1.shadowCoresExist', R4D_TEXT.length > 0,
+  'the R4-D cores must exist: ' + R4D_FILES.join(', '));
+check('R4D2.coreIsPure',
+  !/\bfetch\s*\(|XMLHttpRequest|WebSocket/.test(R4D_CODE)
+  && !/indexedDB|localStorage|sessionStorage/.test(R4D_CODE)
+  && !/Date\.now\s*\(|Math\.random/.test(R4D_CODE)
+  && !/dbPut|dbGet\(|dbDelete/.test(R4D_CODE),
+  'the R4-D cores must be pure: no network, no storage, no clock, no DB');
+check('R4D3.predictionIsNeverAFact',
+  /EPISTEMIC_STATUS\s*=\s*'prediction'/.test(R4D_TEXT)
+  && /epistemicStatus:\s*EPISTEMIC_STATUS/.test(R4D_TEXT),
+  'every expectation must carry an explicit hypothesis marker — prediction is not observation');
+check('R4D4.confidenceIsSplitThreeWays',
+  /subjectivePredictionConfidence/.test(R4D_TEXT)
+  && /evidenceConfidence:\s*null/.test(R4D_TEXT)
+  && /calibrationConfidence:\s*null/.test(R4D_TEXT),
+  'evidence / subjective / calibration confidence must stay three separate quantities');
+check('R4D5.calibrationIsNeverFabricated',
+  /calibrationConfidence\s*=\s*null/.test(R4D_TEXT)
+  && /calibratedNull|calibration-confidence-null-no-settled-history/.test(R4D_TEXT),
+  'without settled observations calibration confidence is null, not a confident guess');
+check('R4D6.generalizationLadderIsGated',
+  /GENERALIZATION_REACHABLE\s*=\s*\['episode-hypothesis'\]/.test(R4D_TEXT)
+  && /generalizationEscalation/.test(R4D_TEXT),
+  'a single episode must never become a generalized worldview');
+check('R4D7.independenceIsNotAssumed',
+  /evidenceIndependenceUnproven|independenceProven/.test(R4D_TEXT)
+  && /no-independent-observation-primitive-exists/.test(R4D_TEXT),
+  'quoting several ids must not be treated as several independent observations');
+check('R4D8.outcomeRequiresCanonicalEvidence',
+  /observation-was-not-built-from-a-canonical-record/.test(R4D_TEXT)
+  && /NO CANONICAL OUTCOME → NO SETTLEMENT|NO CANONICAL OUTCOME/.test(R4D_TEXT),
+  'NO CANONICAL OUTCOME → NO SETTLEMENT, and the observation must be builder-derived');
+check('R4D9.predictionErrorIsNotAScalar',
+  /predictionErrorMetric:\s*null/.test(R4D_TEXT)
+  && /prediction-error-is-discrete-not-continuous/.test(R4D_TEXT),
+  'no arbitrary continuous loss: prediction error is discrete and named');
+check('R4D10.errorIsARevisionSignalNotACorrection',
+  /prediction-error-is-a-revision-signal-not-a-correction/.test(R4D_TEXT)
+  && /settlement-does-not-mutate-canonical/.test(R4D_TEXT),
+  'prediction error is a revision signal, never a canonical correction');
+check('R4D11.noSelfReinforcingLoop',
+  /NO_SELF_REINFORCING_CONFIDENCE_LOOP/.test(R4D_TEXT),
+  'a settled outcome must not feed confidence back into the expectation');
+check('R4D12.selfFulfillingHazardIsRepresentableAndNotFaked',
+  /selfInfluencePossible/.test(R4D_TEXT)
+  && /behaviorEffectsApplied/.test(R4D_TEXT)
+  && /attributionConfidence:\s*null/.test(R4D_TEXT),
+  'the hazard must be representable while attributionConfidence stays unfaked');
+check('R4D13.behaviorEffectIsNotImplemented',
+  /NOT_IMPLEMENTED_R4F/.test(R4D_TEXT)
+  && !/behaviorEffect\s*[:=]\s*\{[^}]*applied\s*:\s*true/.test(R4D_CODE),
+  'R4-D must not pretend a behavior effect already happened');
+check('R4D14.runnerHasZeroProductionCallers',
+  (function () {
+    let callers = 0;
+    const walk = dir => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const q = path.join(dir, e.name);
+        if (e.isDirectory()) { if (e.name !== 'node_modules') walk(q); continue; }
+        if (!/\.(js|rs|toml)$/.test(e.name)) continue;
+        const rel = path.relative(ROOT, q).replace(/\\/g, '/');
+        if (R4D_FILES.indexOf(rel) >= 0) continue;
+        if (/expectation-shadow-runner/.test(_R4D_STRIP(read(rel)))) callers++;
+      }
+    };
+    ['assets', 'services', 'bridge', 'src-tauri'].forEach(d => {
+      const full = path.join(ROOT, d);
+      if (fs.existsSync(full)) walk(full);
+    });
+    return callers === 0;
+  })(),
+  'PRODUCTION EXPECTATION CALLER = 0 and PRODUCTION SETTLEMENT CALLER = 0');
+check('R4D15.inheritsR4CTimeoutAndCancellationDiscipline',
+  /SAFETY_CAP_SOURCE/.test(R4D_TEXT)
+  && /understanding-derivation\.js:70/.test(R4D_TEXT)
+  && /PROVIDER_EXECUTION_CANCELLATION_GUARANTEED\s*=\s*false/.test(R4D_TEXT)
+  && /AUTO_RETRY\s*=\s*'NONE'/.test(R4D_TEXT),
+  'R4-D must inherit R4-C.1 exactly: no invented timeout, wait-bound ≠ cancellation, no retry');
+check('R4D16.noDurableExpectationState',
+  !/memory_records|memory_change_log/.test(R4D_CODE)
+  && /no-durable-expectation-store/.test(R4D_TEXT),
+  'no durable expectation / observation / prediction-error state may be written');
+check('R4D18.canonicalObservationCannotBeSelfAttested',
+  /observation-was-not-built-from-a-canonical-record/.test(R4D_TEXT)
+  && /OBSERVATION_BRAND/.test(R4D_TEXT)
+  && /isBuiltObservation/.test(R4D_TEXT),
+  'a bare {canonical:true} object must never settle: only a builder-derived snapshot may');
+check('R4D19.matchingAndJudgementAreSeparate',
+  /MATCHING_MODE_MATRIX/.test(R4D_TEXT)
+  && /OUTCOME_JUDGEMENT_MATRIX/.test(R4D_TEXT)
+  && /OUTCOME_JUDGEMENT_RUNTIME = 'CALLER_VALIDATED_PROTOCOL_ONLY'/.test(R4D_TEXT)
+  && !/SETTLEMENT_JUDGEMENT_MATRIX/.test(R4D_TEXT),
+  'linkage and outcome judgement are two different things; the generic core never reads language');
+check('R4D20.snapshotReusesTheExistingFingerprint',
+  /contentFingerprint/.test(R4D_TEXT)
+  && !/function\s+contentFingerprint/.test(R4D_TEXT),
+  'snapshot integrity reuses memory-contract.contentFingerprint instead of a second algorithm');
+check('R4D17.counterfactualStaysOut',
+  !/counterfactual/i.test(R4D_TEXT),
+  'R4-D must not touch R4-E: the counterfactual token stays out of these production files');
 
 const DB_SCHEMA_TEXT = read(DB_SCHEMA);
 const STORE_NAMES_MATCH = /var\s+STORE_NAMES\s*=\s*\[([\s\S]*?)\]/.exec(DB_SCHEMA_TEXT);
