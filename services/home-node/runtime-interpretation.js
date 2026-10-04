@@ -247,6 +247,44 @@ const SELECTED_SET_BOUND_TO_CURRENT_RECALL = 'NO';
 const EVIDENCE_STATE_AUTHORITY = 'SERVER_NOT_CLAIMED';
 const PROVIDER_MEMORY_SOURCE = 'SERVER_CANONICAL_PROJECTION';
 
+/* ── P21-R4-LIVE-4 · 服务端内部自动解释路径（READY-but-OFF）─────────────
+   两条**独立**的策略，刻意不合并：
+     EXTERNAL_INTERPRETATION_ROUTE_POLICY —— `run()`（POST 路由）的 cost gate，
+                                              由 deps.costPolicy 决定；
+     AUTO_INTERPRETATION_POLICY            —— `runFromAuthoritativeRecall()`
+                                              （服务端内部）的 cost gate，
+                                              由 deps.autoInterpretationPolicy 决定。
+   两者默认都是 OFF，而且**没有**任何"全局 enabled"能把它们一起打开：
+   外部路由在自动策略为 on 时依然 disabled（见 runFromAuthoritativeRecall 的
+   说明与外部 run() 的第①步 —— 它们各自读各自的 policy）。
+   `runFromAuthoritativeRecall` **没有任何路由**：http.js 只调用 run()。 */
+const INTERPRETATION_RECALL_BINDING = 'DIRECT_SERVER_INTERNAL';
+const RECORD_SOURCE_FROM_RECALL = 'SERVER_CANONICAL_RECALL_RESULT';
+const RECORD_SOURCE_REBIND = 'SERVER_CANONICAL_REBIND';
+const AUTO_INTERPRETATION_ENTRY = 'runFromAuthoritativeRecall';
+/* 一个逻辑角色回合最多**追加**多少次模型调用。1 = 自动解释；它不改变
+   外部路由的 MAX_ATTEMPTS（那也是 1），也不引入重试。 */
+const MAX_ADDITIONAL_MODEL_CALLS_PER_CHARACTER_TURN = 1;
+/* 自动路径的超时是**服务端自有**的 policy：有名字、有具体数字、有上界关系。
+   SAFETY_CAP_MS（120000）只是上界，不是默认值 —— 后台解释不该按最坏情况跑满。 */
+const AUTO_INTERPRETATION_TIMEOUT_MS = 20000;
+const AUTO_INTERPRETATION_TIMEOUT_OWNER = 'services/home-node/runtime-interpretation.js#AUTO_INTERPRETATION_TIMEOUT_MS';
+/* 通道矩阵：哪些通道允许自动解释。**不是**四个都开 ——
+   surface（普通对话中的相关记忆）与 recall（用户明确要求回忆）是"她此刻想起了
+   什么"的两种真实形态；glossary 是一次术语命中（生产里 provider 至今 dormant），
+   coldStart 是自动恢复上下文（activationPolicy = none：那不是用户主动想起），
+   两者都不构成"当前的想法"，因此不在自动解释范围内。 */
+const AUTO_INTERPRETATION_CHANNEL_MATRIX = Object.freeze({
+  surface: 'ELIGIBLE',
+  recall: 'ELIGIBLE',
+  glossary: 'NOT_ELIGIBLE',
+  coldStart: 'NOT_ELIGIBLE'
+});
+/* 冻结导出（测试按字面量断言）：矩阵是唯一来源，数组由它派生。 */
+const AUTO_INTERPRETATION_CHANNELS = Object.freeze(
+  Object.keys(AUTO_INTERPRETATION_CHANNEL_MATRIX).filter((c) => AUTO_INTERPRETATION_CHANNEL_MATRIX[c] === 'ELIGIBLE')
+);
+
 /* 传输真值：本阶段**只有桌面**。这两个常量同时出现在 describe() 与结果里，
    因此"不得声称 Android 兼容"是一句可以被机械核对的话。 */
 const TRANSPORT_SCOPE = 'DESKTOP_ONLY';
@@ -333,8 +371,29 @@ function resolveCostPolicy(policy) {
   return { enabled: false, source: 'unrecognized-default-false' };
 }
 
-function createRuntimeInterpretation(deps) {
-  deps = deps || {};
+/* ── auto cost gate（P21-R4-LIVE-4）────────────────────────────────────
+   与外部路由的 resolveCostPolicy **同一个纪律、不同的键**：
+     CALLER_INTENT != SERVER_COST_POLICY；这里的权威只有装配层注入的
+     `runtimeAutoInterpretationPolicy`，唯一的开法是
+     `{ autoInterpretationEnabled: true }`。
+   函数抛错 ⇒ false（fail closed）；不读 env、不读 UI、不读 memory:settings、
+   不读 Middle Brain flag —— 没有第二个来源，因此也没有"全局 enabled"可以把
+   外部路由一起打开。 */
+function resolveAutoPolicy(policy) {
+  let raw = policy;
+  let source = 'absent-default-false';
+  if (typeof raw === 'function') {
+    source = 'injected-function';
+    try { raw = raw(); }
+    catch (_) { return { enabled: false, source: 'injected-function-threw' }; }
+  }
+  if (raw === undefined || raw === null) return { enabled: false, source: source };
+  if (typeof raw === 'boolean') return { enabled: raw, source: 'injected-boolean' };
+  if (isPlainObject(raw)) return { enabled: raw.autoInterpretationEnabled === true, source: 'assembly-policy-object' };
+  return { enabled: false, source: 'unrecognized-default-false' };
+}
+
+function createRuntimeInterpretation(deps) {  deps = deps || {};
   /* 依赖链（P21-R4-LIVE-3 起）：角色目录 → **canonical 证据** → Vault → 模型端口。
      任何一个缺席都会在**请求期**以稳定的码失败，而不是在装配期被静默忽略。 */
   const registry = deps.registry || null;
@@ -349,12 +408,33 @@ function createRuntimeInterpretation(deps) {
   const modelPort = deps.modelPort || null;
   const core = deps.core || DEFAULT_CORE;
   const costPolicy = deps.costPolicy;
+  /* P21-R4-LIVE-4 · **第二条**策略：只决定"服务端内部自动解释"开不开。
+     它与 costPolicy 是两个不同的表达式（不同的键、不同的默认、不同的读取者），
+     因此**没有**一个全局 enabled 能把外部路由一起打开。 */
+  const autoInterpretationPolicy = deps.autoInterpretationPolicy;
+  /* ── P21-R4-LIVE-4.3 · **文件权威**（唯一的**生产**成本权威）─────────
+     由装配层注入的 `runtime-policy.js` 实例：`read(characterId)` 每次读文件，
+     唯一写者是 Node 侧的 `set()`（没有路由 / 没有 window 面 / 没有 Tauri 命令）。
+     `deps.autoInterpretationPolicy` 仍然存在，但它的身份被明确降级为
+     **测试缝**：只有在装配层显式传值时它才生效，而且 describe() 会如实报
+     `authoritySource: 'TEST_INJECTION'`（它绝不会成为生产后门 —— 生产两侧都
+     不传它）。 */
+  const runtimePolicy = deps.policy || null;
   const clock = typeof deps.clock === 'function' ? deps.clock : Date.now;
   const logger = typeof deps.logger === 'function' ? deps.logger : function () {};
 
   /* 进程级计数（观测用）：provider 调用 / Vault 读取 / canonical 读取各一个。
      它们**不**含任何秘密，也不含任何正文。 */
   const counters = { calls: 0, providerCalls: 0, vaultReads: 0, canonicalReads: 0, refused: 0, succeeded: 0 };
+
+  /* ── 自动路径的"每逻辑回合一次"守卫（解释侧）────────────────────────────
+     与 runtime-recall 的 turn memo **两层**：备忘录让重放在调度前就结束，
+     这一层则保证"即使有人从另一条内部路径重复请求同一个 (characterId,
+     turnIdentity)，也不会第二次调用 provider"。
+     进程内、有界（插入序淘汰最旧）、**不落盘**。 */
+  const MAX_AUTO_TURN_GUARD = 64;
+  const autoTurnGuard = new Map();
+  const autoCounters = { started: 0, succeeded: 0, failed: 0, timedOut: 0, refused: 0, notNeeded: 0, duplicateTurn: 0 };
 
   function note(event, fields) {
     try { logger(event, fields || {}); } catch (_) { /* 观测失败不影响执行 */ }
@@ -721,6 +801,51 @@ function createRuntimeInterpretation(deps) {
         arousal: arousal != null && isFinite(arousal) ? arousal : null
       }
     };
+  }
+
+  /* ── P21-R4-LIVE-4 · 记录来源（只有两条，都不接受调用方内容）──────────
+     · SERVER_CANONICAL_RECALL_RESULT —— binding 里带着召回结果**已经持有**的
+       canonical 行（服务端进程内对象）。仍然逐条过 canReadMemory（可见性权威
+       永远在服务端），再走**同一份** projectCanonicalRecord。
+     · SERVER_CANONICAL_REBIND —— 没有行时按 id 服务端重绑
+       （store.getRecord + canReadMemory + 同一投影）。
+     两条路的输出形状完全一致；差别只写在 resultSource 自述里。 */
+  function resolveBoundEvidence(characterId, selectedMemoryIds, recordsFromRecall) {
+    if (Array.isArray(recordsFromRecall) && recordsFromRecall.length) {
+      const byId = new Map();
+      for (const r of recordsFromRecall) {
+        if (isPlainObject(r) && r.id != null) byId.set(String(r.id), r);
+      }
+      const records = [];
+      const boundIds = [];
+      const omitted = [];
+      let truncated = false;
+      for (const id of selectedMemoryIds) {
+        const rec = byId.get(id);
+        if (!rec) { omitted.push(id); continue; }
+        let decision = null;
+        try { decision = visibilityCore.canReadMemory(rec, { kind: 'role', id: characterId }); }
+        catch (_) { decision = null; }
+        if (!decision || decision.ok !== true) { omitted.push(id); continue; }
+        const projected = projectCanonicalRecord(rec);
+        if (projected.truncated) truncated = true;
+        records.push(projected.record);
+        boundIds.push(id);
+      }
+      let revision = null;
+      try {
+        revision = (memoryStore && typeof memoryStore.getRevision === 'function') ? Number(memoryStore.getRevision()) : null;
+        if (!isFinite(revision)) revision = null;
+      } catch (_) { revision = null; }
+      return {
+        ok: true, records: records, boundIds: boundIds, omitted: omitted,
+        truncated: truncated, canonicalRevision: revision, recordSource: RECORD_SOURCE_FROM_RECALL
+      };
+    }
+    const rebind = resolveCanonicalEvidence(characterId, selectedMemoryIds);
+    if (!rebind.ok) return rebind;
+    rebind.recordSource = RECORD_SOURCE_REBIND;
+    return rebind;
   }
 
   /* ── 角色运行时 spec（**唯一**查询点）────────────────────────────────
@@ -1116,6 +1241,245 @@ function createRuntimeInterpretation(deps) {
     return result;
   }
 
+  /* ── P21-R4-LIVE-4.3 · 每角色自动策略解析（**唯一**的裁决点）──────────
+     优先级是刻意的、也是可审计的：
+       ① 装配层显式注入的测试缝（`autoInterpretationPolicy`）⇒ TEST_INJECTION；
+       ② 否则文件权威 ⇒ FILE_POLICY（per-character，缺席回全局 default）；
+       ③ 两者都没有 ⇒ fail closed（enabled:false），并如实自述 NONE_FAIL_CLOSED。
+     绝不读请求体、绝不读浏览器设置镜像、绝不回落到任何 legacy 旗标。 */
+  function resolveCharacterAutoPolicy(characterId) {
+    const id = characterId == null ? null : String(characterId);
+    if (autoInterpretationPolicy !== undefined) {
+      const seam = resolveAutoPolicy(autoInterpretationPolicy);
+      return { enabled: seam.enabled === true, authoritySource: 'TEST_INJECTION', source: seam.source, reason: seam.source, characterId: id };
+    }
+    if (runtimePolicy && typeof runtimePolicy.read === 'function') {
+      try {
+        const r = runtimePolicy.read(id);
+        return {
+          enabled: !!(r && r.autoInterpretationEnabled === true),
+          authoritySource: 'FILE_POLICY',
+          source: (r && r.source) || 'DEFAULT_OFF',
+          reason: (r && r.reason) || null,
+          characterId: id
+        };
+      } catch (_) {
+        /* 读权威抛错 ⇒ OFF（fail closed），且如实说原因。 */
+        return { enabled: false, authoritySource: 'FILE_POLICY', source: 'DEFAULT_OFF', reason: 'policy-read-threw', characterId: id };
+      }
+    }
+    return { enabled: false, authoritySource: 'NONE_FAIL_CLOSED', source: 'DEFAULT_OFF', reason: 'no-policy-assembled', characterId: id };
+  }
+
+  /* ══════════════════════════════════════════════════════════════════════
+     P21-R4-LIVE-4 · 服务端内部自动解释入口（**没有路由**）
+     ══════════════════════════════════════════════════════════════════════
+     调用者只有一个：Home Node 召回生命周期（runtime-recall.js 的
+     authoritative 模式，**post-recall** seam）。http.js **只**调用 run()；
+     本函数既不在 window.IB、也不是 Tauri command、也不是任何通用 RPC。
+
+     ★ BINDING 只来自服务端进程内的召回结果对象（`binding`），**绝不**来自
+       解析后的 HTTP body。调用方**不可能**通过它提交内容：
+         · records 若在场，只被当作"召回已经持有的 canonical 行"，
+           仍然逐条过 canReadMemory + 同一份投影；
+         · 内容永远不从调用方文本里取。
+     ★ 两条 cost gate 是**两个表达式**：本函数只读 `autoInterpretationPolicy`
+       （`{ autoInterpretationEnabled: true }`），与外部 run() 的 costPolicy
+       互不影响 —— 自动策略为 on 时外部路由依然 disabled。
+     ★ 重试：NONE。一次逻辑回合最多一次（解释侧 guard + 召回侧 memo 两层）。 */
+  async function runAuthoritativeRecallBinding(binding, options) {
+    const opts = isPlainObject(options) ? options : {};
+    const b = isPlainObject(binding) ? binding : null;
+    const startedAt = Number(clock());
+    /* 身份还不知道时的早退信封用"无角色"视图（全局 default / 测试缝）。 */
+    const policy = resolveCharacterAutoPolicy(null);
+    if (!b) {
+      autoCounters.refused += 1;
+      return { ok: false, status: 'failed', errorClass: REASON.requestShapeInvalid, reason: 'binding-not-an-object', providerCalls: 0, autoPolicy: policy, bindingMode: INTERPRETATION_RECALL_BINDING };
+    }
+    const characterId = text(b.characterId).trim().slice(0, MAX_CHARACTER_ID_CHARS);
+    const turnIdentity = isPlainObject(b.turnIdentity) ? b.turnIdentity : null;
+    const turnKey = text(b.turnId || (turnIdentity && (turnIdentity.turnId || turnIdentity.requestId)) || '').trim();
+    if (!characterId || !turnKey) {
+      autoCounters.refused += 1;
+      return { ok: false, status: 'failed', errorClass: REASON.requestShapeInvalid, reason: 'binding-missing-identity', providerCalls: 0, autoPolicy: policy, bindingMode: INTERPRETATION_RECALL_BINDING };
+    }
+    /* ★ 每角色解析：A 开 / B 关必须各自成立 —— 值只来自文件（或测试缝），
+       而且 read() 每次都重新读文件，所以不存在"A 的值被缓存给 B"。 */
+    const characterPolicy = resolveCharacterAutoPolicy(characterId);
+    const selectedMemoryIds = Array.isArray(b.selectedIds)
+      ? b.selectedIds.map(String).filter(Boolean).slice(0, MAX_SELECTED_MEMORY_IDS) : [];
+    /* ① 自动 cost gate（与外部路由**不同**的表达式）。 */
+    if (characterPolicy.enabled !== true) {
+      autoCounters.refused += 1;
+      return {
+        ok: false, status: 'disabled', reason: 'auto-policy-off', reasonCode: REASON.disabled,
+        providerCalls: 0, autoPolicy: characterPolicy, bindingMode: INTERPRETATION_RECALL_BINDING
+      };
+    }
+    /* ② 零选择 ⇒ **不调用 provider**，如实报 not-needed / no-memory。 */
+    if (!selectedMemoryIds.length) {
+      autoCounters.notNeeded += 1;
+      return {
+        ok: false, status: 'not-needed', reason: 'no-memory', reasonCode: core.REASON_CODES.noInput,
+        providerCalls: 0, autoPolicy: characterPolicy, bindingMode: INTERPRETATION_RECALL_BINDING
+      };
+    }
+    /* ③ 每逻辑回合一次（解释侧 guard；召回侧 memo 是另一层）。 */
+    const guardKey = characterId + '\u0000' + turnKey;
+    if (autoTurnGuard.has(guardKey)) {
+      autoCounters.duplicateTurn += 1;
+      return {
+        ok: false, status: 'duplicate-turn', reason: 'turn-already-interpreted', reasonCode: 'duplicate-turn',
+        providerCalls: 0, autoPolicy: characterPolicy, bindingMode: INTERPRETATION_RECALL_BINDING
+      };
+    }
+    autoTurnGuard.set(guardKey, true);
+    /* 有界：每次只加一条，因此一次 if 就够（本模块刻意不含 while 循环 ——
+       G2 断言"没有重试循环"，而边界清理写成循环只会让它无法静态自证）。 */
+    if (autoTurnGuard.size > MAX_AUTO_TURN_GUARD) {
+      const oldest = autoTurnGuard.keys().next();
+      if (!oldest.done) autoTurnGuard.delete(oldest.value);
+    }
+    autoCounters.started += 1;
+
+    const base = { characterId: characterId, turnIdentity: turnIdentity, turnId: turnKey };
+    const fail = (lifecycle, code, detail) => ({
+      ok: false, status: lifecycle, errorClass: code, reasonCode: code,
+      /* ★ P21-R4-LIVE-4.1B · §6 的**真因**：这一行曾经调用 `bounded()`，
+         而它是 runtime-recall.js 的局部 helper —— 本文件里根本没有这个名字。
+         于是**任何带 detail 的自动路径失败**都会抛 ReferenceError，被召回侧
+         记成 `auto-hook-threw` / failed：超时因此永远到不了 TIMED_OUT。
+         现在与同文件 `failure()` 的既有纪律逐字一致：String(...).slice(0,200)。 */
+      detail: detail == null ? undefined : text(detail).slice(0, 200),
+      characterId: characterId, turnIdentity: turnIdentity, turnId: turnKey,
+      providerCalls: 0, startedAt: startedAt, completedAt: Number(clock()),
+      autoPolicy: characterPolicy, bindingMode: INTERPRETATION_RECALL_BINDING
+    });
+    if (!modelPort || typeof modelPort.run !== 'function') { autoCounters.failed += 1; return fail('failed', REASON.modelPortUnavailable, 'modelPort.run is not assembled'); }
+    const specResult = resolveCharacterSpec(characterId);
+    if (!specResult.ok) { autoCounters.failed += 1; return fail('failed', REASON.runtimeSpecUnavailable, specResult.reason); }
+    const spec = specResult.spec;
+    /* ④ 记录来源：召回结果持有的 canonical 行优先，否则服务端重绑。 */
+    const rebind = resolveBoundEvidence(characterId, selectedMemoryIds, b.records);
+    if (!rebind.ok) { autoCounters.failed += 1; return fail('failed', REASON.canonicalEvidenceUnavailable, rebind.reason); }
+    if (rebind.boundIds.length === 0) { autoCounters.notNeeded += 1; return fail('not-needed', core.REASON_CODES.noInput, 'no-authorized-memory'); }
+    if (!credentialAccess || typeof credentialAccess.resolve !== 'function') { autoCounters.failed += 1; return fail('failed', REASON.credentialUnavailable, 'credential-access-not-assembled'); }
+    counters.vaultReads += 1;
+    let resolved = null;
+    try { resolved = credentialAccess.resolve(spec.credentialRef); } catch (_) { resolved = null; }
+    if (!resolved || resolved.ok !== true || typeof resolved.secret !== 'string' || !resolved.secret) {
+      autoCounters.failed += 1;
+      return fail('failed', REASON.credentialUnavailable, text(resolved && resolved.reason) || 'resolve-failed');
+    }
+    const providerSpec = { provider: spec.provider, model: spec.model, endpoint: spec.endpoint, secret: resolved.secret };
+    if (!core || typeof core.buildRequest !== 'function' || typeof core.validateResponse !== 'function') {
+      autoCounters.failed += 1; return fail('failed', REASON.coreMissing, 'R4-C core not loadable');
+    }
+    const coreInput = {
+      selectedIds: selectedMemoryIds,
+      records: rebind.records,
+      currentState: isPlainObject(b.currentState) ? b.currentState : {},
+      roleName: b.roleName == null ? '' : text(b.roleName)
+    };
+    let built = null;
+    try { built = core.buildRequest(coreInput); }
+    catch (_) { autoCounters.failed += 1; return fail('failed', REASON.requestShapeInvalid, 'core-build-threw'); }
+    if (!built || !built.stats || !built.stats.memoryCount) {
+      autoCounters.notNeeded += 1; return fail('not-needed', core.REASON_CODES.noInput, 'core-no-input');
+    }
+    /* ⑤ 单次执行：服务端自有的超时；没有任何调用方 signal。 */
+    const timeoutMs = Math.min(AUTO_INTERPRETATION_TIMEOUT_MS, SAFETY_CAP_MS);
+    const called = await invokeOnce(providerSpec, built, { signal: null, timeoutMs: timeoutMs });
+    const completedAt = Number(clock());
+    const evidenceMeta = {
+      source: PROVIDER_MEMORY_SOURCE,
+      requested: selectedMemoryIds.length,
+      bound: rebind.boundIds.length,
+      canonicalRevision: rebind.canonicalRevision == null ? null : rebind.canonicalRevision,
+      truncated: rebind.truncated,
+      projectionFields: PROJECTION_FIELDS.slice(),
+      recordSource: rebind.recordSource
+    };
+    if (!called.ok) {
+      /* ── P21-R4-LIVE-4.1B · §6 · timeout 状态 ─────────────────────────
+         自动路径**没有调用方**（上面的 invokeOnce 传的是 `signal: null`），
+         因此任何 abort 都不可能来自 caller：它只可能来自**服务端自有**的
+         超时（invokeOnce 的内部 controller，或端口自己的 timer）。
+         把它算成 `aborted`/`failed` 会把"服务端超时"混进"provider 失败"——
+         §6 要的正是这两者的区分：超时必须落在 TIMED_OUT 状态。
+           · `timeout`             → 有界等待到点 / 端口报超时
+           · `aborted` 且无 caller → 同一个服务端超时的另一种报文
+         原始报文不丢：`providerCode` 如实保留 called.code。 */
+      const serverOwnedTimeout = (called.code === REASON.timeout) || (called.code === REASON.aborted);
+      if (serverOwnedTimeout) autoCounters.timedOut += 1; else autoCounters.failed += 1;
+      return Object.assign(fail(
+        serverOwnedTimeout ? 'timed-out' : 'failed',
+        serverOwnedTimeout ? REASON.timeout : called.code,
+        serverOwnedTimeout ? 'server-owned-timeout' : redactSecret(called.detail, resolved.secret)
+      ), {
+        providerCalls: called.attempts, attempts: called.attempts,
+        providerCode: called.code,
+        timeoutMs: timeoutMs, timeoutOwner: AUTO_INTERPRETATION_TIMEOUT_OWNER,
+        completedAt: completedAt, evidence: evidenceMeta
+      });
+    }
+    /* ⑥ 解析 + **同一份** validator（与外部路由同一份核心，没有第二套）。 */
+    const raw = called.text;
+    let parsed = null;
+    if (typeof raw === 'string' && raw.trim()) { try { parsed = JSON.parse(raw); } catch (_) { parsed = null; } }
+    if (!isPlainObject(parsed)) {
+      autoCounters.failed += 1;
+      return Object.assign(fail('failed', REASON.invalidOutput, 'provider-output-not-a-json-object'), {
+        providerCalls: called.attempts, attempts: called.attempts, timeoutMs: timeoutMs, evidence: evidenceMeta
+      });
+    }
+    const allowedIds = rebind.boundIds.slice();
+    const validated = core.validateResponse(parsed, { allowedIds: allowedIds });
+    if (!validated || validated.ok !== true) {
+      const code = (validated && Array.isArray(validated.reasonCodes) && validated.reasonCodes.length)
+        ? validated.reasonCodes[0] : core.REASON_CODES.noItems;
+      autoCounters.failed += 1;
+      return Object.assign(fail('failed', code, 'validator-rejected'), {
+        providerCalls: called.attempts, attempts: called.attempts, timeoutMs: timeoutMs, evidence: evidenceMeta
+      });
+    }
+    const shadow = core.assembleShadow(coreInput, validated, {
+      providerClass: spec.provider, modelId: spec.model,
+      latencyMs: Math.max(0, completedAt - startedAt),
+      status: validated.items.length < allowedIds.length ? 'partial' : 'ok'
+    });
+    autoCounters.succeeded += 1;
+    note('runtime-interpretation-auto-ok', {
+      characterId: characterId, turnId: turnKey, recordSource: rebind.recordSource,
+      bound: rebind.boundIds.length, returned: shadow.counts ? shadow.counts.returned : null,
+      durationMs: Math.max(0, completedAt - startedAt)
+    });
+    return {
+      ok: true,
+      status: 'succeeded',
+      operation: OPERATION,
+      characterId: characterId,
+      turnIdentity: turnIdentity,
+      turnId: turnKey,
+      durable: false,
+      startedAt: startedAt,
+      completedAt: completedAt,
+      timeoutMs: timeoutMs,
+      timeoutOwner: AUTO_INTERPRETATION_TIMEOUT_OWNER,
+      providerCalls: called.attempts,
+      attempts: called.attempts,
+      bindingMode: INTERPRETATION_RECALL_BINDING,
+      recordSource: rebind.recordSource,
+      evidence: evidenceMeta,
+      autoPolicy: characterPolicy,
+      /* 校验过的结构化结果（非持久）。它**不**自动回到浏览器：
+         持有者是 runtime-recall 的 turn-local registry。 */
+      interpretation: shadow,
+      boundary: boundaryBlock(called.attempts, called.attempts, counters.vaultReads)
+    };
+  }
+
   /* ── 秘密掩码：provider 错误文本里若回显了本次 secret，响应里必须是掩码 ──
      只对**本次** secret 做替换（不做宽泛正则），因此它不可能误伤正常文本。 */
   function redactSecret(detail, secret) {
@@ -1178,6 +1542,77 @@ function createRuntimeInterpretation(deps) {
         duplicatesRejected: true,
         orderPreserved: true
       },
+      /* ── P21-R4-LIVE-4 · 服务端内部自动解释（READY-but-OFF）────────────
+         与外部路由**分开**的两条自述：externalRoutePolicy = 上面那个
+         costPolicy；autoPolicy = 这里。二者默认都是 false，而且**没有**
+         一个全局开关能把它们一起打开（run 与 runFromAuthoritativeRecall
+         各自读各自的 policy）。 */
+      internalOnly: true,
+      routeExposed: false,
+      exposedRoutes: [],
+      internalEntryPoint: AUTO_INTERPRETATION_ENTRY,
+      internalCallers: ['services/home-node/runtime-recall.js#post-recall-hook'],
+      recallBinding: INTERPRETATION_RECALL_BINDING,
+      recordSources: [RECORD_SOURCE_FROM_RECALL, RECORD_SOURCE_REBIND],
+      /* ── P21-R4-LIVE-4.3 · 自动策略的**来源**（唯一裁决者的自述）────────
+         `authoritySource` 只有两种合法值：
+           · 'TEST_INJECTION' —— 装配层显式注入了 `runtimeAutoInterpretationPolicy`
+             （测试缝；生产两侧都不传它）；
+           · 'FILE_POLICY'    —— `services/home-node/runtime-policy.js` 的文件权威
+             （per-character + 全局 default；唯一写者是 Node 侧 `set()`）。
+         两者都没有装配时如实说 'NONE_FAIL_CLOSED'（enabled:false）—— 与其
+         冒充 FILE_POLICY，不如承认这一层今天没有权威。
+         ★ `autoInterpretationEnabled` 是**全局 default** 视图：per-character 值
+           不是一个布尔，真正的每角色裁决发生在 runFromAuthoritativeRecall 里。 */
+      autoPolicy: (function () {
+        const seamInjected = autoInterpretationPolicy !== undefined;
+        const seam = seamInjected ? resolveAutoPolicy(autoInterpretationPolicy) : null;
+        let fileInfo = null;
+        if (!seamInjected && runtimePolicy && typeof runtimePolicy.describe === 'function') {
+          try { fileInfo = runtimePolicy.describe(); } catch (_) { fileInfo = null; }
+        }
+        return {
+          autoInterpretationEnabled: seamInjected ? seam.enabled === true : !!(fileInfo && fileInfo.default === true),
+          source: seamInjected ? seam.source : (fileInfo ? (fileInfo.readable ? 'FILE_POLICY' : 'DEFAULT_OFF') : 'NO_POLICY_ASSEMBLED'),
+          authoritySource: seamInjected ? 'TEST_INJECTION' : (fileInfo ? 'FILE_POLICY' : 'NONE_FAIL_CLOSED'),
+          default: seamInjected ? false : !!(fileInfo && fileInfo.default === true),
+          defaultEnabled: false,
+          scope: seamInjected ? 'test-injection' : 'per-character+global-default',
+          file: fileInfo ? fileInfo.file : null,
+          enabledCharacterCount: fileInfo ? fileInfo.enabledCharacterCount : 0,
+          policyKey: 'autoInterpretationEnabled',
+          assemblyOption: 'runtimeAutoInterpretationPolicy',
+          callerIntentIsNotAuthority: true,
+          /* ── P21-R4-LIVE-4.3 · ⚠ PHASE TRANSITION（值修正，不是措辞修正）──
+             在此之前这条边界**根本没有**生产启用路径，所以
+             `productionEnablePath = 'NONE_IN_THIS_PHASE'` 是真的。现在有了
+             **恰好一条**：操作者侧的策略文件（`<dataDir>/runtime-policy.json`，
+             唯一写者是 Node 侧 `set()`）—— 旧值因此变成一句**假话**，本字段
+             如实改成 'OPERATOR_FILE_ONLY'。
+             ★ 调用者侧的伪造面一个字都没变：仍然是 NONE（请求体里的
+               enabled / autoInterpretationEnabled 在两条路由上都被逐名拒绝，
+               策略文件在攻击前后逐字节相同）。 */
+          productionEnablePath: 'OPERATOR_FILE_ONLY',
+          callerFacingEnablePath: 'NONE',
+          operatorWritableOnly: !seamInjected
+        };
+      })(),
+      externalInterpretationRoutePolicy: 'INDEPENDENT_OF_AUTO_POLICY',
+      autoInterpretation: {
+        channels: AUTO_INTERPRETATION_CHANNELS.slice(),
+        channelMatrix: Object.assign({}, AUTO_INTERPRETATION_CHANNEL_MATRIX),
+        maxAdditionalModelCallsPerCharacterTurn: MAX_ADDITIONAL_MODEL_CALLS_PER_CHARACTER_TURN,
+        perTurnGuard: 'in-process (characterId, turnIdentity); bounded ' + MAX_AUTO_TURN_GUARD,
+        crossRestartExactlyOnce: 'NO',
+        timeoutMs: AUTO_INTERPRETATION_TIMEOUT_MS,
+        timeoutOwner: AUTO_INTERPRETATION_TIMEOUT_OWNER,
+        timeoutCapMs: SAFETY_CAP_MS,
+        attempts: MAX_ATTEMPTS,
+        autoRetry: AUTO_RETRY,
+        autoInvocation: AUTO_INVOCATION,
+        resultHolder: 'services/home-node/runtime-recall.js#turn-local-registry',
+        counters: Object.assign({}, autoCounters)
+      },
       counters: Object.assign({}, counters)
     };
   }
@@ -1186,7 +1621,18 @@ function createRuntimeInterpretation(deps) {
     path: MEMORY_INTERPRETATION_PATH,
     operations: ALLOWED_RUNTIME_DERIVATIONS,
     run: run,
-    describe: describe
+    /* 冻结的**公开**名字（测试与召回侧 hook 都按它调用）。内部实现符号故意
+       不叫 `...Recall(`：Q3 的结构探针用 /recall\s*\(/i 量"服务端是否重跑
+       recall"，而**函数声明名**会被它当成调用点。语义上本函数从不重跑召回
+       —— 它只消费 in-process 的召回结果对象。 */
+    runFromAuthoritativeRecall: runAuthoritativeRecallBinding,
+    describe: describe,
+    /* 冻结常量（与 module.exports 同一份对象，不是副本）：召回侧的 hook 用它们
+       决定"哪些通道允许自动解释"，因此只有一处定义。 */
+    AUTO_INTERPRETATION_CHANNELS: AUTO_INTERPRETATION_CHANNELS,
+    AUTO_INTERPRETATION_CHANNEL_MATRIX: AUTO_INTERPRETATION_CHANNEL_MATRIX,
+    MAX_ADDITIONAL_MODEL_CALLS_PER_CHARACTER_TURN: MAX_ADDITIONAL_MODEL_CALLS_PER_CHARACTER_TURN,
+    INTERPRETATION_RECALL_BINDING: INTERPRETATION_RECALL_BINDING
   });
 }
 
@@ -1223,3 +1669,13 @@ module.exports.AUTO_INVOCATION = AUTO_INVOCATION;
 module.exports.EXECUTION_SEAM = EXECUTION_SEAM;
 module.exports.DEFAULT_CORE = DEFAULT_CORE;
 module.exports.resolveCostPolicy = resolveCostPolicy;
+module.exports.resolveAutoPolicy = resolveAutoPolicy;
+module.exports.INTERPRETATION_RECALL_BINDING = INTERPRETATION_RECALL_BINDING;
+module.exports.RECORD_SOURCE_FROM_RECALL = RECORD_SOURCE_FROM_RECALL;
+module.exports.RECORD_SOURCE_REBIND = RECORD_SOURCE_REBIND;
+module.exports.AUTO_INTERPRETATION_ENTRY = AUTO_INTERPRETATION_ENTRY;
+module.exports.AUTO_INTERPRETATION_CHANNELS = AUTO_INTERPRETATION_CHANNELS;
+module.exports.AUTO_INTERPRETATION_CHANNEL_MATRIX = AUTO_INTERPRETATION_CHANNEL_MATRIX;
+module.exports.MAX_ADDITIONAL_MODEL_CALLS_PER_CHARACTER_TURN = MAX_ADDITIONAL_MODEL_CALLS_PER_CHARACTER_TURN;
+module.exports.AUTO_INTERPRETATION_TIMEOUT_MS = AUTO_INTERPRETATION_TIMEOUT_MS;
+module.exports.AUTO_INTERPRETATION_TIMEOUT_OWNER = AUTO_INTERPRETATION_TIMEOUT_OWNER;

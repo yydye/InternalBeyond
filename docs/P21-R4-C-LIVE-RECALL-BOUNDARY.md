@@ -71,7 +71,15 @@ POST /internal/runtime/memory-recall      （唯一一条运行时召回面 · d
   `random` `rng` `now` `timestamp` `activation` `activationPolicy` `settings`
   `normalizedQuery` `tokens` `query` `glossaryEntries` `glossaryProvider`
   `getGlossaryEntries`
+  `selectedMemoryIds` `credentialRef` `provider` `model` `endpoint`
+  `systemPrompt` `messages`
+  （末行 7 个是 P21-R4-LIVE-4.1B §5 的标签修正：`selectedMemoryIds` 是
+  `selectedIds` 的解释边界别名，其余 6 个是执行权威字段 —— 两类都是"调用方
+  试图提供权威"，与无害未知键（写错键名）不是同一件事，因此不再混进
+  `request-field-forbidden`。同一个 400、同样带 `field`、零次 retrieve。）
 * `request-field-forbidden`（400）：其余未知键（闭集）。
+  ★ 例外（既有语义，P21-R4-LIVE-4.1B 未改）：`ownerId` 等"跨角色 payload"
+    字段仍走这个码 —— LIVE-3.3 的 request-authority 套件 §25.3 就是这样钉的。
 * 其他：`request-shape-invalid`(400) · `runtime-spec-unavailable`(404) ·
   `recall-unavailable`(503) · `recall-timeout`(504)。
 
@@ -381,3 +389,114 @@ loopback recall 进入 first-token 关键路径：实测 median **11.05 ms** / p
 * `IDS_ONLY_SELECTION_HEADER_POLICY = UNRESOLVED`（continue debt）；
 * glossary 生产来源仍 **dormant**（两侧都没有 provider，未为此新造 catalog authority）；
 * Expectation / R4-F **未开始**（`R4_F_LIVE_MEDIATOR_REQUIREMENT = L3_AND_L5` 未变）。
+
+---
+
+## 12 · P21-R4-LIVE-4.3 · Auto Interpretation 的**生产成本权威**（文件策略）
+
+自动解释的成本开关终于有了一个**服务端自有**的权威。它不是 env、不是浏览器设置、
+不是 Middle Brain 旗标、不是 Economy 余额、不是 `character_runtime_specs`，
+也**不是**新的 schema：权威是这台节点自己的一个 JSON 文件。
+
+```
+文件      <dataDir>/runtime-policy.json
+形状      { "version": 1,
+            "default":   { "autoInterpretationEnabled": false },
+            "characters": { "<characterId>": { "autoInterpretationEnabled": true|false } } }
+写者      services/home-node/runtime-policy.js#set()  ← **唯一**写者，Node 侧
+读着      runtime-interpretation.js#resolveCharacterAutoPolicy(characterId)
+来源      describe().autoPolicy.authoritySource = 'FILE_POLICY'（生产）
+          'TEST_INJECTION' 只在装配层显式注入测试缝（runtimeAutoInterpretationPolicy）时出现
+```
+
+* **为什么是文件**：LIVE-4.1/4.2 的结论是 `meta` 键或 `spec_json` 不需要 schema 变更，
+  但**没有非浏览器写者** —— 阻塞点是 provenance，不是 schema。文件把 provenance 说清楚了：
+  唯一写者是 Node 侧 `set()`，**没有 HTTP 路由、没有 window/IB 面、本阶段没有 Tauri 命令**。
+* **FAIL-CLOSED（§15）**：文件缺失 · 读不动 · JSON 坏 · `version` 不对 ·
+  `characters`/`default` 不是对象 · 值不是布尔 · 角色不在表里 ⇒ **OFF**。
+  任何一条都不会把异常抛进召回路径；每个出口都是"一个布尔 + 一个原因"。读不动的**现存**
+  文件绝不会被 `set()` 静默覆盖（`POLICY_FILE_UNUSABLE`）。
+* **PER-CHARACTER（§4）**：`read(characterId)` 每次重新读文件，**没有跨角色缓存**，
+  因此 A 的值不可能泄给 B（套件实测：A 开 ⇒ 恰好 1 次 provider 调用；B 关 ⇒ 0 次）。
+* **默认全关（§7）**：fresh dataDir ⇒ 文件不存在 ⇒ 每个角色都 OFF
+  （`AUTO_INTERPRETATION_ENABLED_CHARACTER_COUNT = 0`），不迁移、不推断任何 opt-in。
+* **浏览器伪造无效（§6/§11）**：两条路由的请求体里 `enabled`/`autoInterpretationEnabled`
+  都被闭集**逐名拒绝**，且策略文件在攻击前后**逐字节相同**（套件断言 hash 相等）。
+* **外部路由**（`POST /internal/runtime/memory-interpretation`）**不受影响**：
+  即使策略为 ON，它仍然是 503 `disabled`（两条 cost gate 是两个表达式）。
+* 见 `tests/test_r4c_live_interpretation_policy.js`（39 断言）与
+  `services/home-node/runtime-policy.js` 头部。
+
+### 12.1 已登记的观察（boundary-verify task-38：**登记，不改行为**）
+
+* **OBS-A · `set()` 的字段语义**：`set(characterId, enabled)` 写的是**整份文档**，
+  它保留 `version` / `default` / `characters` 三个字段，**丢弃未知的顶层字段**。
+  这是刻意的窄面：唯一写者只认自己那份形状，一个手工写进去的未知键不会借
+  `set()` 获得"被官方保留"的地位。手工编辑该文件时请只用这三个字段。
+* **OBS-B · `version` 必须是严格的数字 `1`**：字符串 `"1"` 不算（`=== SCHEMA_VERSION`）。
+  这条以前是宽松的（`Number()` 归一化），于是一个**形状错误**的文件配上
+  `default.autoInterpretationEnabled: true` 就能打开全局 default —— 与 fail-closed
+  矩阵直接矛盾。已修，并在套件里钉了一条 `version:"1"` ⇒ OFF 的用例
+  （reason `policy-version-unsupported`）。
+* **OBS-D · 操作者路径**：生产侧唯一的写入口是
+  `require('services/home-node/runtime-policy.js')` + `set()`；provenance 由两个服务的
+  `describe()`（`runtimeInterpretation.describe().autoPolicy`、
+  `runtimeRecall.describe().autoInterpretation`）如实自述。本阶段**不**新增 Tauri 命令、
+  **不**新增路由。
+
+---
+
+## 13 · P21-R4-LIVE-4.4 · 冻结契约（exact closure）
+
+以下是本阶段**冻结**的自述值。它们不是承诺，而是对**实测行为**的命名：
+每一条都有对应的套件断言或机械证据（见 §12 与
+`tests/test_r4c_live_interpretation_policy.js`）。
+
+```
+AUTO_INTERPRETATION_RUNTIME_READY                    = YES
+INTERPRETATION_COST_AUTHORITY_READY                  = YES
+INTERPRETATION_COST_AUTHORITY                        = SERVER_OWNED_FILE_POLICY
+INTERPRETATION_COST_AUTHORITY_SCOPE                  = PER_CHARACTER_WITH_GLOBAL_DEFAULT
+DEFAULT_AUTO_INTERPRETATION                          = OFF
+PRODUCTION_ENABLE_PATH                               = OPERATOR_FILE_ONLY
+CALLER_FACING_ENABLE_PATH                            = NONE
+AUTO_INTERPRETATION_ENABLED_CHARACTER_COUNT          = 0
+R4C_INTERPRETATION_LIVE                              = YES
+R4C_INTERPRETATION_LIVE_SEMANTICS                    = PRODUCTION_INFRASTRUCTURE_LIVE_CAPABLE
+R4C_AUTO_INVOCATION                                  = NOT_ENABLED_IN_PRODUCTION
+EXTERNAL_INTERPRETATION_ROUTE_PRODUCTION_ENABLED     = NO
+MAX_ADDITIONAL_MODEL_CALLS_PER_CHARACTER_TURN        = 1
+POLICY_VERSION_MATCHING                              = STRICT
+```
+
+**这些值各自的意思（逐条，不含推论）**
+
+* `AUTO_INTERPRETATION_RUNTIME_READY = YES` —— 自动解释的整条运行时链路存在且可端到端证明
+  （召回 → 进程内绑定 → 非阻塞执行 → turn-local 私有结果），并且**默认关闭**。
+* `INTERPRETATION_COST_AUTHORITY = SERVER_OWNED_FILE_POLICY` —— 成本权威是这台节点自有的
+  `<dataDir>/runtime-policy.json`；唯一写者是 Node 侧 `runtime-policy.js#set()`。
+* `PRODUCTION_ENABLE_PATH = OPERATOR_FILE_ONLY` / `CALLER_FACING_ENABLE_PATH = NONE` ——
+  **启用权威只可能是操作者侧的**。请求体里的 `enabled` / `autoInterpretationEnabled`、
+  环境变量、Middle Brain 旗标、凭据存在与否、Economy 余额**都不构成启用权威**：
+  前两者在这条边界上根本没有读点，后三者与本策略无关（各自的拒绝理由见 §12）。
+* `DEFAULT_AUTO_INTERPRETATION = OFF` 与 `AUTO_INTERPRETATION_ENABLED_CHARACTER_COUNT = 0` ——
+  fresh dataDir ⇒ 文件不存在 ⇒ 每个角色都关；不迁移、不推断任何 opt-in。
+  测试用的装配注入（`TEST_INJECTION`）**不计入**这个生产计数。
+* `R4C_INTERPRETATION_LIVE = YES` + `R4C_INTERPRETATION_LIVE_SEMANTICS =
+  PRODUCTION_INFRASTRUCTURE_LIVE_CAPABLE` —— "live" 的含义是**基础设施已具备生产能力**，
+  而不是"生产里已经打开"：`R4C_AUTO_INVOCATION = NOT_ENABLED_IN_PRODUCTION`。
+* `EXTERNAL_INTERPRETATION_ROUTE_PRODUCTION_ENABLED = NO` —— 外部路由
+  （`POST /internal/runtime/memory-interpretation`）即使在本策略为 ON 时仍然 503 `disabled`：
+  两条 cost gate 是两个不同的表达式。
+* `MAX_ADDITIONAL_MODEL_CALLS_PER_CHARACTER_TURN = 1` —— 每逻辑回合最多一次自动解释，
+  无重试；重放不产生第二次调用。
+* `POLICY_VERSION_MATCHING = STRICT` —— `version` 必须**严格等于数字 `1`**；字符串 `"1"`
+  不是合法形状（fail closed，reason `policy-version-unsupported`）。
+
+**Fail-closed 面（缺失 / 坏形状 / 不可读 / 未知角色一律 OFF）**
+
+策略文件**缺失** · **不可读** · **JSON 坏** · **不是对象** · **`version` 不支持（含 `"1"` 字符串）** ·
+**`characters`/`default` 不是对象** · **值不是布尔** · **角色不在表里**（回全局 default，
+而全局 default 默认 false）—— 上述每一种都返回 OFF，并带一个**具名 reason**，
+绝不把异常抛进召回路径。一个**存在但坏掉**的文件不会被 `set()` 静默覆盖
+（`POLICY_FILE_UNUSABLE`）。

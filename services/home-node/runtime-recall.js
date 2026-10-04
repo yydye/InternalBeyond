@@ -114,7 +114,23 @@ const REJECTED_AUTHORITY_FIELDS = Object.freeze([
   'exploration', 'allowExploration', 'cooldown', 'cooldownFactor', 'sessionState',
   'turnIndex', 'random', 'rng', 'now', 'timestamp', 'activation', 'activationPolicy',
   'settings', 'normalizedQuery', 'tokens', 'query', 'glossaryEntries',
-  'glossaryProvider', 'getGlossaryEntries'
+  'glossaryProvider', 'getGlossaryEntries',
+  /* ── P21-R4-LIVE-4.1B · §5 标签修正：同一个**类**必须给同一个码 ─────────
+     这一组的共同点是"调用方试图提供权威"，只是作者用了另一条路径的名字：
+       · `selectedMemoryIds` —— 解释边界的选词名，语义上就是上面那个
+         `selectedIds`（同一条选择权威的别名）；
+       · `credentialRef / provider / model / endpoint / systemPrompt / messages`
+         —— 执行权威字段（与 runtime-interpretation.js#AUTHORITY_BEARING_FIELDS
+         同一个类）：它们在这条边界上不存在，但一个把它们发过来的调用方
+         仍然是在"替服务端决定"。
+     为什么不是 request-field-forbidden：那个码的含义是"你写错了一个键名"
+     （闭集之外的无害未知键），而这一组的含义是"你想自己掌权"。把两者混成
+     一个码，审计者就无法从码本身区分攻击与笔误 —— 这正是 §5 要修的东西。
+     ★ 同一个 400、同样带 `field`、零次 retrieve、零 provider 调用。
+     ★ `ownerId` **刻意不在这里**：LIVE-3.3 的 request-authority 套件把
+       "跨角色 payload"钉成 request-field-forbidden（§25.3），那是它的语义。 */
+  'selectedMemoryIds', 'credentialRef', 'provider', 'model', 'endpoint',
+  'systemPrompt', 'messages'
 ]);
 
 const REASON = Object.freeze({
@@ -206,6 +222,23 @@ function createRuntimeRecall(deps) {
      工厂，绝不复制 glossary 算法）。 */
   const glossaryProvider = deps.glossaryProvider === undefined ? undefined : deps.glossaryProvider;
   const getGlossaryEntries = deps.getGlossaryEntries === undefined ? undefined : deps.getGlossaryEntries;
+  /* ── P21-R4-LIVE-4 · post-recall hook 的解释服务（**可选**）───────────
+     缺席 ⇒ 自动路径整体不存在（与今天逐字节相同）。在场时它只被这一个
+     hook 使用：召回选择 + 会话/曝光/激活生命周期完成**之后**调度，
+     fire-and-forget，绝不在召回响应路径上 await。 */
+  const interpretation = deps.interpretation || null;
+
+  /* turn-local 结果持有者：**非持久**、有界（条数 + TTL）、按
+     character+turn 作用域。绝不进 SQLite / memory_records / Understanding /
+     chat DB / IndexedDB / localStorage / 文件。 */
+  const MAX_TURN_INTERPRETATIONS = 64;
+  const TURN_INTERPRETATION_TTL_MS = 10 * 60 * 1000;
+  const turnInterpretations = new Map();   /* turnId → record（含正文，仅内部） */
+  /* 自动路径的观测计数（**只**计数，没有正文）。enabled 由解释服务的
+     autoPolicy 单独裁决（见 autoEnabled()）；这里不缓存它的值。 */
+  const autoCounters = { started: 0, succeeded: 0, failed: 0, timedOut: 0, notNeeded: 0, notEnabled: 0, inFlight: 0 };
+  let autoScheduled = 0;   /* 已调度、尚未结束的任务数（含尚未开跑的） */
+  const autoWaiters = new Set();
 
   /* 装配事实核对：召回器必须绑在**同一个** store 上。
      绑到另一个能开、能查、永远返回空的实例上不会抛任何错，只会表现为
@@ -539,6 +572,191 @@ function createRuntimeRecall(deps) {
     if (value == null) return null;
     const n = Number(value);
     return Number.isFinite(n) ? n : null;
+  }
+
+  /* ── P21-R4-LIVE-4 · post-recall auto-interpretation hook ──────────────
+     位置：authoritative 模式的**生命周期完成之后**（selection → exposure →
+     activation → end 全部结束）。fire-and-forget：本文件从不 await 它，
+     因此召回 HTTP 响应时间**不随**解释的模型延迟增长。
+     三层"每回合一次"：
+       ① 重放在 settledTurns 备忘录处就 return（根本走不到这里）；
+       ② 这里按 turnId 只调度一次（`interpretation` 侧还有一层
+          (characterId, turnIdentity) guard）。
+     全部有界：结果持有者 64 条 + 10 分钟 TTL；任务数用 autoScheduled/inFlight
+     计数，`awaitAutoIdle()` 是唯一的等待缝（测试用，不在生产路径上）。 */
+  function autoEnabled() {
+    if (!interpretation || typeof interpretation.describe !== 'function') return false;
+    try {
+      const d = interpretation.describe();
+      return !!(d && d.autoPolicy && d.autoPolicy.autoInterpretationEnabled === true);
+    } catch (_) { return false; }
+  }
+  /* 权威来源的只读透传（'FILE_POLICY' | 'TEST_INJECTION' | 'NONE_FAIL_CLOSED'）。 */
+  function autoAuthoritySource() {
+    if (!interpretation || typeof interpretation.describe !== 'function') return 'NONE_FAIL_CLOSED';
+    try {
+      const d = interpretation.describe();
+      return (d && d.autoPolicy && d.autoPolicy.authoritySource) ? String(d.autoPolicy.authoritySource) : 'NONE_FAIL_CLOSED';
+    } catch (_) { return 'NONE_FAIL_CLOSED'; }
+  }
+  function sweepTurnInterpretations() {
+    const now = Number(clock());
+    for (const [key, rec] of turnInterpretations) {
+      const stamp = rec && (rec.completedAt || rec.startedAt);
+      if (Number.isFinite(Number(stamp)) && (now - Number(stamp)) > TURN_INTERPRETATION_TTL_MS) {
+        turnInterpretations.delete(key);
+      }
+    }
+  }
+  function settleAutoWaiters() {
+    if (autoScheduled !== 0 || autoCounters.inFlight !== 0) return;
+    for (const w of Array.from(autoWaiters)) { try { w.finish(); } catch (_) { /* 已结算 */ } }
+    autoWaiters.clear();
+  }
+  function recordTurnInterpretation(rec) {
+    if (!rec || !rec.turnId) return;
+    sweepTurnInterpretations();
+    turnInterpretations.set(String(rec.turnId), rec);
+    while (turnInterpretations.size > MAX_TURN_INTERPRETATIONS) {
+      const oldest = turnInterpretations.keys().next();
+      if (oldest.done) break;
+      turnInterpretations.delete(oldest.value);
+    }
+  }
+  function scheduleAutoInterpretation(ctx) {
+    if (!interpretation || typeof interpretation.runFromAuthoritativeRecall !== 'function') return;
+    const characterId = String(ctx.characterId == null ? '' : ctx.characterId);
+    const turnId = String(ctx.turnId == null ? '' : ctx.turnId);
+    if (!turnId) return;
+    const selectedIds = Array.isArray(ctx.selectedIds) ? ctx.selectedIds.slice() : [];
+    const turnIdentity = ctx.turnIdentity || { turnId: turnId };
+    const startedAt = Number(clock());
+    /* 零选择 ⇒ **不调度 provider**，如实记 not-needed / no-memory（两个装配都如此）。 */
+    if (!selectedIds.length) {
+      autoCounters.notNeeded += 1;
+      recordTurnInterpretation({ turnId, characterId, turnIdentity, status: 'not-needed', reason: 'no-memory', errorClass: null, startedAt, completedAt: startedAt, providerCalls: 0, interpretation: null });
+      return;
+    }
+    /* 通道矩阵：只有 surface / recall 允许自动解释（见解释侧的矩阵常量）。 */
+    const channel = ctx.channel == null ? null : String(ctx.channel);
+    if (!interpretation.AUTO_INTERPRETATION_CHANNELS || interpretation.AUTO_INTERPRETATION_CHANNELS.indexOf(channel) < 0) {
+      autoCounters.notNeeded += 1;
+      recordTurnInterpretation({ turnId, characterId, turnIdentity, status: 'not-needed', reason: 'channel-not-eligible', errorClass: null, startedAt, completedAt: startedAt, providerCalls: 0, interpretation: null });
+      return;
+    }
+    const binding = {
+      characterId: characterId,
+      turnId: turnId,
+      turnIdentity: turnIdentity,
+      selectedIds: selectedIds,
+      /* 召回结果**已经持有**的 canonical 行（今天 wrapper 不返回它们 ⇒ 省略，
+         解释侧因此走 SERVER_CANONICAL_REBIND；将来 wrapper 若暴露，就变成
+         SERVER_CANONICAL_RECALL_RESULT —— 两条路都只接受服务端对象）。 */
+      records: Array.isArray(ctx.records) ? ctx.records : undefined,
+      currentState: isPlainObject(ctx.currentState) ? ctx.currentState : {},
+      roleName: ctx.roleName == null ? '' : String(ctx.roleName),
+      channel: channel,
+      fingerprint: ctx.fingerprint == null ? null : String(ctx.fingerprint),
+      canonicalRevision: ctx.canonicalRevision == null ? null : ctx.canonicalRevision
+    };
+    const runTask = async () => {
+      autoCounters.inFlight += 1;
+      /* `started` = 真的走到了解释入口的任务数（含 disabled / not-needed：
+         它们确实到达了入口，只是没有花钱）。它**不是**失败数 ——
+         P21-R4-LIVE-4.1B §7：disabled 曾经被记进 failed，那是标签撒谎。 */
+      autoCounters.started += 1;
+      let res = null;
+      try {
+        try { res = await interpretation.runFromAuthoritativeRecall(binding, {}); }
+        catch (error) {
+          res = { ok: false, status: 'failed', errorClass: 'auto-hook-threw', reason: bounded((error && error.message) || error), providerCalls: 0 };
+        }
+        const status = res && res.status ? String(res.status) : 'failed';
+        /* ── P21-R4-LIVE-4.1B · §6/§7 状态分类（**只**改标签）────────────
+           状态模型：succeeded · timed-out · disabled · not-needed ·
+                     duplicate-turn · failed（execution failure only）
+           · §7 —— `disabled`（auto policy OFF，`reason:'auto-policy-off'`）与
+             `not-scheduled`/`not-enabled` 一律进 `notEnabled`：**关闭不是失败**。
+             它与 `not-needed`（零记忆 / 通道不eligible / 重放）合起来构成
+             "到达入口但没有执行"的那一类，两者都不含 provider 调用。
+           · §6 —— `timed-out` 严格来自解释边界对"服务端自有超时"的分类
+             （见 runtime-interpretation.js 的 serverOwnedTimeout）：
+             自动路径没有调用方 signal，因此端口侧的 abort 也只可能是超时。
+             它绝不与普通 provider 失败 (`failed`) 混计。 */
+        if (status === 'succeeded') autoCounters.succeeded += 1;
+        else if (status === 'timed-out') autoCounters.timedOut += 1;
+        else if (status === 'disabled' || status === 'not-enabled' || status === 'not-scheduled') autoCounters.notEnabled += 1;
+        else if (status === 'not-needed' || status === 'duplicate-turn') autoCounters.notNeeded += 1;
+        else autoCounters.failed += 1;
+        try {
+          recordTurnInterpretation({
+            turnId, characterId, turnIdentity,
+            status: status,
+            reason: res && (res.reason || res.reasonCode) ? String(res.reason || res.reasonCode) : null,
+            errorClass: (res && res.ok !== true) ? String(res.errorClass || res.reasonCode || 'failed') : null,
+            startedAt: startedAt, completedAt: Number(clock()),
+            recordSource: res && res.recordSource ? String(res.recordSource) : null,
+            providerCalls: Number(res && res.providerCalls) || 0,
+            interpretation: (res && res.ok === true && res.interpretation) ? res.interpretation : null
+          });
+        } catch (_) { /* 结果持有者失败绝不影响任何东西 */ }
+        note('runtime-recall-auto-interpretation', {
+          characterId: characterId, turnId: turnId, status: status,
+          providerCalls: Number(res && res.providerCalls) || 0,
+          recordSource: res && res.recordSource ? String(res.recordSource) : null
+        });
+      } finally {
+        autoCounters.inFlight -= 1;
+        settleAutoWaiters();
+      }
+    };
+    recordTurnInterpretation({ turnId, characterId, turnIdentity, status: 'pending', reason: null, errorClass: null, startedAt, completedAt: null, providerCalls: 0, interpretation: null });
+    autoScheduled += 1;
+    /* 下一 tick 才启动（明确的"不在响应路径上"）；unref 让定时器不吊住进程。 */
+    if (typeof setTimeout === 'function') {
+      const t = setTimeout(() => { autoScheduled -= 1; runTask(); }, 0);
+      if (t && typeof t.unref === 'function') t.unref();
+    } else {
+      Promise.resolve().then(() => { autoScheduled -= 1; runTask(); });
+    }
+  }
+  /* 测试用的 settle 缝：等到"已调度 + 在飞"都归零（或超时）。
+     ★ 它**不在**召回响应路径上，也不改变任何生产行为。 */
+  function awaitAutoIdle(timeoutMs) {
+    const cap = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0 ? Number(timeoutMs) : 10000;
+    if (autoScheduled === 0 && autoCounters.inFlight === 0) {
+      return Promise.resolve({ idle: true, inFlight: 0, scheduled: 0 });
+    }
+    return new Promise((resolve) => {
+      let done = false;
+      const waiter = { finish: null };
+      const finish = () => {
+        if (done) return;
+        done = true;
+        autoWaiters.delete(waiter);
+        try { clearTimeout(timer); } catch (_) { /* 已触发 */ }
+        resolve({ idle: autoScheduled === 0 && autoCounters.inFlight === 0, inFlight: autoCounters.inFlight, scheduled: autoScheduled });
+      };
+      waiter.finish = finish;
+      autoWaiters.add(waiter);
+      /* ★ 这个定时器**不** unref：调用方正在 await 它，进程必须活到它有结论。
+         （任务本身的调度定时器仍然 unref —— 后台解释不该吊住进程退出。） */
+      const timer = setTimeout(finish, cap);
+    });
+  }
+  /* 内部读取缝（**没有路由**）：只给同一进程里的调用方/测试看这一轮的
+     turn-local 结果。它绝不进 HTTP 响应、window.IB、/security 或日志。 */
+  function getTurnInterpretation(turnId) {
+    const rec = turnInterpretations.get(String(turnId == null ? '' : turnId));
+    return rec ? Object.assign({}, rec) : null;
+  }
+  function listTurnInterpretations() {
+    sweepTurnInterpretations();
+    return Array.from(turnInterpretations.values()).map((r) => ({
+      turnId: r.turnId, characterId: r.characterId, status: r.status, reason: r.reason,
+      errorClass: r.errorClass, startedAt: r.startedAt, completedAt: r.completedAt,
+      recordSource: r.recordSource, providerCalls: r.providerCalls
+    }));
   }
 
   /* 释放一个**已经 begin、但这一轮没能走完**的 Home turn 身份。
@@ -908,6 +1126,25 @@ function createRuntimeRecall(deps) {
           if (oldest.done) break;
           settledTurns.delete(oldest.value);
         }
+        /* ── P21-R4-LIVE-4 · post-recall hook（fire-and-forget）──────────
+           位置就在这里：selection / exposure / activation / end **全部完成
+           之后**，而且在返回信封**之前只是"调度"**——本文件从不 await 它，
+           因此召回响应时间不随解释的模型延迟增长。
+           ★ 它只在 authoritative 模式存在；影子模式与既有 mobile 路径
+             一个字都没变（它们根本走不到这个分支）。 */
+        scheduleAutoInterpretation({
+          characterId: characterId,
+          turnId: turnId,
+          turnIdentity: turnIdentity,
+          selectedIds: selectedIds,
+          /* wrapper 今天不返回行 ⇒ undefined ⇒ 解释侧服务端重绑。 */
+          records: Array.isArray(picked.records) ? picked.records : undefined,
+          currentState: isPlainObject(shape.currentState) ? shape.currentState : {},
+          roleName: shape.roleName,
+          channel: channel,
+          fingerprint: fingerprint,
+          canonicalRevision: null
+        });
       }
 
       counters.ok += 1;
@@ -1027,7 +1264,51 @@ function createRuntimeRecall(deps) {
       reasonCodes: Object.keys(STATUS_BY_REASON),
       fingerprintVersion: FINGERPRINT_VERSION,
       counters: Object.assign({}, counters),
-      authoritativeCounters: Object.assign({}, authoritativeCounters)
+      authoritativeCounters: Object.assign({}, authoritativeCounters),
+      /* ── P21-R4-LIVE-4 · 自动解释（READY-but-OFF）─────────────────────
+         只报**有界状态与计数**，没有正文、没有 prompt、没有凭据。
+         `enabled` 直接来自解释服务的 autoPolicy（唯一裁决者）。 */
+      autoInterpretation: {
+        enabled: autoEnabled(),
+        /* ── P21-R4-LIVE-4.3 · 这一格说的是**全局 default 视图** ────────────
+           per-character 权威（文件策略）不是一个布尔：A 开 / B 关各自成立，
+           真正的每角色裁决发生在解释入口 `runFromAuthoritativeRecall` 里。
+           因此这里如实标出作用域，并把权威来源透传出来（TEST_INJECTION
+           只在装配层显式注入测试缝时出现）。 */
+        enabledScope: 'GLOBAL_DEFAULT_ONLY',
+        perCharacterAuthority: true,
+        authoritySource: autoAuthoritySource(),
+        hooked: !!interpretation,
+        binding: 'DIRECT_SERVER_INTERNAL',
+        trigger: 'POST_RECALL_NONBLOCKING',
+        awaitedOnRecallPath: false,
+        channels: (interpretation && Array.isArray(interpretation.AUTO_INTERPRETATION_CHANNELS))
+          ? interpretation.AUTO_INTERPRETATION_CHANNELS.slice() : [],
+        maxAdditionalModelCallsPerCharacterTurn: (interpretation && interpretation.MAX_ADDITIONAL_MODEL_CALLS_PER_CHARACTER_TURN) || 1,
+        crossRestartInterpretationExactlyOnce: 'NO',
+        resultHolder: {
+          scope: 'character+turn',
+          storage: 'IN_PROCESS_MEMORY_ONLY',
+          maxEntries: MAX_TURN_INTERPRETATIONS,
+          ttlMs: TURN_INTERPRETATION_TTL_MS,
+          durable: false,
+          routes: []
+        },
+        counters: Object.assign({}, autoCounters, { scheduled: autoScheduled, results: turnInterpretations.size }),
+        /* ── P21-R4-LIVE-4.1B · §6/§7 · 状态模型与计数语义 ─────────────
+           状态词表是**封闭**的；`failed` 只装真正的执行失败。 */
+        states: ['succeeded', 'timed-out', 'disabled', 'not-enabled', 'not-scheduled', 'not-needed', 'duplicate-turn', 'failed'],
+        counterSemantics: {
+          started: 'tasks that reached the interpretation entry',
+          succeeded: 'validated interpretation produced',
+          timedOut: 'server-owned timeout (never counted as a provider failure)',
+          disabled: 'auto policy OFF — counted in notEnabled, NOT a failure',
+          notEnabled: 'disabled / not-enabled / not-scheduled (no execution attempted)',
+          notNeeded: 'zero memory / channel not eligible / duplicate turn (no provider call)',
+          failed: 'execution failure only',
+          inFlight: 'scheduled + running tasks (released in a finally block)'
+        }
+      }
     };
   }
 
@@ -1035,7 +1316,15 @@ function createRuntimeRecall(deps) {
     path: PATH,
     operations: [OPERATION],
     run: run,
-    describe: describe
+    describe: describe,
+    /* P21-R4-LIVE-4 · 内部缝（**没有路由**）：
+       · awaitAutoIdle —— 测试用的 settle 钩子（等"已调度 + 在飞"归零）；
+       · getTurnInterpretation / listTurnInterpretations —— turn-local 结果
+         的只读视图（含正文，只给同进程调用方/测试；绝不进 HTTP 响应、
+         window.IB、/security、日志或遥测）。 */
+    awaitAutoIdle: awaitAutoIdle,
+    getTurnInterpretation: getTurnInterpretation,
+    listTurnInterpretations: listTurnInterpretations
   });
 }
 

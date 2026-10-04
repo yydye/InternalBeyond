@@ -1667,7 +1667,70 @@ const GROUPS = [
            median/p95 诊断值（**不是零成本**），以及服务端不可用时的行为。
          两者都是纯本地：零真实收费调用（browser 套件只连 127.0.0.1 的 mock）。 */
       ['test_r4c_live_recall_cutover.js'],
-      ['test_r4c_live_recall_cutover_browser.js']
+      ['test_r4c_live_recall_cutover_browser.js'],
+      /* P21-R4-LIVE-4 · Auto-Interpretation Runtime Readiness（**本阶段才登记**）。
+         ★ 登记本身就是这一条要修的东西：下面这句注释是第三次同类缺口的收尾 ——
+           "套件 standalone 全绿、但聚合 runner 的显式登记表里 0 命中"已经发生过
+           三次（3.3 的 parity/session/request-authority 三份、runtime-boundary、
+           以及 3.4 的 cutover 两份）。**"写了测试"与"每轮真的被跑"是两件事。**
+           本套件因此在文件内部**自检**：若 test_r4c_live_interpretation_auto.js
+           没有出现在本登记表里，§47.1 会直接转红 —— 缺口不能再靠人去记。
+         · test_r4c_live_interpretation_auto.js —— **自动解释的"就绪但关闭"证明**：
+           P21-R4-LIVE-4 的结论是 B（AUTO_INTERPRETATION_RUNTIME_READY = YES /
+           R4C_INTERPRETATION_LIVE = NO / BLOCKER = PRODUCTION_COST_OWNER_MISSING），
+           因此本套件必须用**两个不同的装配**把"策略关 ⇒ 0 次调用"与
+           "策略开 ⇒ 恰好 1 次调用"区分开：自动路径在**测试注入**的策略下真的跑通
+           （provider 收到的 MEMORY_BATCH 与本轮服务端召回选择逐项一致：ids、顺序、
+           canonical 正文、角色可见性、turn 身份），而生产的两个闸门
+           （外部路由的 describe().costPolicy.memoryInterpretationEnabled 与
+           自动路径的 describe().autoPolicy.autoInterpretationEnabled）**一处都不传**。
+           还覆盖：caller 自带 selectedMemoryIds 的负控制、外部路由在 auto 开启时
+           仍 503 disabled 且零调用、零记忆不烧调用、非阻塞响应路径（假 provider
+           睡 500ms/2000ms 而 HTTP 响应时间不随之增长）、重放不多起一次解释、
+           通道矩阵与每回合 1 次调用的成本账、prompt 隔离、不做
+           relationship/expectation/counterfactual 写入，以及记忆库/变更流/理解/
+           凭据库/聊天库的持久化探针。
+           provider 一律是注入的假 fetch（零真实收费调用），临时目录在
+           E: 的 .dsh-tmp 下并在收尾同步重试清理。 */
+      ['test_r4c_live_interpretation_auto.js'],
+      /* P21-R4-LIVE-4.1B · Interpretation Prompt Hardening（**本阶段才登记**）。
+         解释即将自动跑在真实 canonical 记忆上，而记忆正文是用户写的文本。
+         本条机械地证明：单一 prompt 权威（解释边界内恰好一处
+         SYSTEM_INSTRUCTIONS 定义、自动路径与外部路径的 system 文本逐字节
+         相同）、敌意语料（10 段：ignore/reveal/developer-message/
+         evidenceConfidence=1/unsupported fields/tool call/SYSTEM:/DEVELOPER:/
+         JSON schema 覆写/XML 工具调用）只落在 memory/evidence DATA 区，
+         有与无 hostile 行时 system 指令与 requestedSchema 逐字节相同，
+         caller-authored 的 currentState / roleName 同样是 DATA，
+         并且校验器仍然只有一份（超长/重复/未知 id/坏枚举/越界置信度被拒）。
+         ★ 只声称机械事实：MODEL_SEMANTIC_INJECTION_IMMUNITY = NOT_CLAIMED ——
+           一个假 provider 证明不了真实模型的语义免疫。
+         零真实收费调用（注入假 fetch + *.invalid），scratch 只在 .dsh-tmp。 */
+      ['test_r4c_live_interpretation_hardening.js'],
+      /* P21-R4-LIVE-4.3 · **生产成本权威**（文件策略）。
+         证明四件事：fresh dataDir ⇒ 每个角色都 OFF；唯一写者是 Node 侧
+         runtime-policy.set()（没有路由 / 没有 window 面 / 本阶段没有 Tauri
+         命令）；每角色隔离（A 开 ⇒ 恰好 1 次 provider 调用，B 关 ⇒ 0 次）；
+         以及请求体里的 enabled/autoInterpretationEnabled 在两条路由上都被
+         逐名拒绝且**不改文件**（前后 hash 相同）。fail-closed 覆盖缺失 ·
+         读不动 · JSON 坏 · version 不对 · 值不是布尔 · 角色不在表里。
+         零真实出网（假 fetch + *.invalid），scratch 只在 .dsh-tmp。 */
+      ['test_r4c_live_interpretation_policy.js'],
+      /* P21-R4-LIVE-4.1B · **真实浏览器**自动解释端到端（CDP）。
+         与上一条（Node 侧、注入假 fetch）互补：这里真的开一个 Chrome、加载
+         产品自己的 InternalBeyond.html、走**真实**的浏览器 → Home Node 召回
+         传输与真实的服务端召回权威，Home Node 以**进程内真实装配 + 真实 HTTP
+         监听**运行（唯一假的是 Vault 与 provider/modelPort，策略由测试显式
+         注入）。它证明的是 Node 套件结构上证明不了的那半条链：真实 Desktop
+         回合 → 召回响应先返回 → 主聊天照常继续 → 服务端在后台启动自动解释
+         （恰好 1 次 provider 调用）→ 校验过的结果落进 turn-local holder；
+         浏览器 wire 上**没有** selectedMemoryIds / 正文 / credentialRef /
+         provider / model / endpoint；非阻塞在浏览器侧、**awaitAutoIdle 之前**
+         用 500ms 与 2000ms 两档实测；auto 策略 ON 时外部解释路由仍 503 disabled；
+         零记忆 / 重放 / 五类失败分类 / prompt 隔离 / 零持久化写入 /
+         两角色交错 / 客户端断开 / 主聊天随后失败 / 哨兵只在请求作用域。
+         逐用例看门狗 + 自然退出；scratch 只在 .dsh-tmp 且收尾清理。 */
+      ['test_r4c_live_interpretation_auto_browser.js']
     ]
   },
   {

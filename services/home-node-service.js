@@ -88,6 +88,10 @@ const economyConfigurationModule = require('../services/home-node/economy-config
      就是下面的 options.runtimeInterpretationPolicy —— 本文件不读任何 env、
      http.js 也不写任何默认值（frozen：本阶段没有生产启用路径）。 */
 const createRuntimeInterpretation = require('../services/home-node/runtime-interpretation.js');
+/* ── P21-R4-LIVE-4.3 · 服务端自有的**成本权威文件**（唯一生产权威）。
+   只有装配层 require 它：它没有 HTTP 路由、没有 window 面、本阶段没有 Tauri
+   命令；唯一写者是 Node 侧的 `set()`（见 runtime-policy.js 头部）。 */
+const createRuntimePolicy = require('../services/home-node/runtime-policy.js').createRuntimePolicy;
 /* ── P21-R4-LIVE-3.3 · Runtime Recall —— "这一轮想起什么"的服务端窄边界。
    ★ 与它上面每一个模块同款：**只有**装配层 require 它，而且它 require 的
      目标仍是既有实现（memory-retrieval.js + 共享可见性核），没有第二套召回。
@@ -951,11 +955,27 @@ function buildHomeNode(options) {
      ★ costPolicy 只接受装配层显式传进来的 options.runtimeInterpretationPolicy：
        缺席即 false（默认关），而**没有任何环境变量或 UI 开关**能把它打开 ——
        这正是本阶段的冻结项（"没有生产启用路径"）。 */
+  /* ── P21-R4-LIVE-4.3 · 这台实例的**成本权威文件** ──────────────────────
+     它落在实例自己的数据目录里（与 registry / memory store 同一层保护），
+     默认 OFF：fresh dataDir ⇒ 文件不存在 ⇒ 每个角色都关。
+     `options.runtimePolicy` 是**装配注入**（测试用同一个实例做 A/B）；生产不传。 */
+  const instanceRuntimePolicy = options.runtimePolicy
+    || createRuntimePolicy({ dataDir: dataDir, logger: serviceLog });
   const instanceRuntimeInterpretation = options.runtimeInterpretation || createRuntimeInterpretation({
     registry: instanceRegistry,
     credentialAccess: instanceCredentialAccess,
     modelPort: options.port || createNodeModelPort({}),
     costPolicy: options.runtimeInterpretationPolicy,
+    /* ── P21-R4-LIVE-4 · **第二条**策略：服务端内部自动解释 ────────────────
+       与上面那条**不同**的键、**不同**的默认（都缺席 ⇒ 都关）。生产路径同样
+       不传它（见进程级装配处的说明）：READY-but-OFF。
+       装配选项名 = runtimeAutoInterpretationPolicy，键 =
+       { autoInterpretationEnabled: true }。
+       ★ P21-R4-LIVE-4.3：这个键的身份是**测试缝**（describe() 会如实报
+         authoritySource:'TEST_INJECTION'）。生产权威是下面的文件策略。 */
+    autoInterpretationPolicy: options.runtimeAutoInterpretationPolicy,
+    /* 文件权威：read(characterId) 每次读文件；唯一写者是 Node 侧 set()。 */
+    policy: instanceRuntimePolicy,
     /* P21-R4-LIVE-3 · canonical 证据的唯一来源。
        ★ 必须与网关/召回读的是**同一个** store 实例：绑定的正是"这台实例
          的 canonical 记忆"。给一个"能开、能查、永远为空"的第二实例不会抛
@@ -985,6 +1005,10 @@ function buildHomeNode(options) {
     random: options.random,
     glossaryProvider: options.glossaryProvider,
     getGlossaryEntries: options.getGlossaryEntries,
+    /* P21-R4-LIVE-4 · post-recall hook 的解释服务。缺席 ⇒ 自动路径整体不存在
+       （与今天逐字节相同）；在场时它也只在 autoPolicy 为 ON 且通道 eligible
+       时才会真的调用 provider。 */
+    interpretation: instanceRuntimeInterpretation,
     logger: serviceLog
   });
   /* 与进程级启动路径**共用** gatewayAssembly（见其头部说明：两条路径两套装配
@@ -1085,6 +1109,9 @@ function buildHomeNode(options) {
          （http.js 里那块在 authorized() 之后，没有 isEconomyCommandPath
          式豁免）。 */
     runtimeInterpretation: instanceRuntimeInterpretation,
+    /* P21-R4-LIVE-4.3 · 实例的**成本权威文件**（服务端对象，没有任何路由：
+       把它交给测试/宿主是为了 `set()`，而 set() 只存在于 Node 侧）。 */
+    runtimePolicy: instanceRuntimePolicy,
     /* ── P21-R4-LIVE-3.3 · Runtime Recall（**唯一**一条运行时召回面）──────
        ★ 与解释边界同级、与 memoryStore 不同级：它替换不了 store，公开面只有
          { path, operations, run, describe }。准入同样由桌面凭据判定负责
@@ -1198,6 +1225,9 @@ function buildHomeNode(options) {
        ★ 它与 http.js 从 deps 里拿到的是**同一个对象**：这正是"两条装配路径
          不得漂移"这句断言的载体（identity，而不是两个形状相同的对象）。 */
     runtimeInterpretation: instanceRuntimeInterpretation,
+    /* P21-R4-LIVE-4.3 · 实例的**成本权威文件**（服务端对象，没有任何路由：
+       把它交给测试/宿主是为了 `set()`，而 set() 只存在于 Node 侧）。 */
+    runtimePolicy: instanceRuntimePolicy,
     /* P21-R4-LIVE-3.3：Runtime Recall 与上面每一个域同级导出 —— "这台节点上
        到底有没有一条运行时召回面"必须是一句可以直接断言的事实。
        ★ 与 http.js 从 deps 里拿到的是**同一个对象**（identity）：这正是
@@ -1280,6 +1310,13 @@ const runtimeInterpretation = createRuntimeInterpretation({
      以 canonical-evidence-unavailable 失败，而所有 buildHomeNode 的测试全绿
      （这正是本文件已经记过四次的同一种装配缺口）。 */
   memoryStore: memory.memoryStore,
+  /* ── P21-R4-LIVE-4.3 · **生产权威**：这台节点的策略文件 ────────────────
+     唯一写者是 Node 侧 runtime-policy.set()（没有路由 / 没有 window 面 /
+     本阶段没有 Tauri 命令）。fresh 安装 ⇒ 文件不存在 ⇒ 每个角色都 OFF。 */
+  policy: createRuntimePolicy({ dataDir: DATA_DIR, logger: (level, event, fields) => log(level, event, fields) }),
+  /* P21-R4-LIVE-4 · 生产路径**刻意不传** autoInterpretationPolicy：
+     它是**测试缝**（describe() 会报 authoritySource:'TEST_INJECTION'），生产
+     两侧都不传 ⇒ 文件权威生效；没有 env、没有 UI 开关、没有默认 true。 */
   logger: (level, event, fields) => log(level, event, fields)
 });
 /* ── P21-R4-LIVE-3.3 · **进程级**的 Runtime Recall ──────────────────────
@@ -1306,6 +1343,10 @@ const runtimeRecall = createRuntimeRecall({
      所以"浏览器提交词表"这条路不存在。 */
   glossaryProvider: undefined,
   getGlossaryEntries: undefined,
+  /* P21-R4-LIVE-4 · 进程级的 post-recall hook：与 buildHomeNode 那一行逐字同源。
+     少了它，真实进程上"自动解释"这条路径整体不存在，而所有 buildHomeNode 的
+     测试全绿 —— 正是本文件已经记过五次的那种装配缺口。 */
+  interpretation: runtimeInterpretation,
   logger: (level, event, fields) => log(level, event, fields)
 });
 /* P11-3E：进程级 Moments 探针。openAll() 写它、/health 与 /moments/* 读它。
