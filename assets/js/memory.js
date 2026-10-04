@@ -243,6 +243,47 @@ async function selectMemoryContext(apiId,opts){
         memoryIds:_injIds.slice()
       };
     }
+  /* P21-R4-LIVE-1.1 · MetaMemory internal observability（**只观察，不重算**）。
+  直接读取 orchestrator 已经算出的 _out.meta.metaMemoryShadow，投影成有界的内部
+  诊断；**不**调用 evaluator、**不**重扫 memories、**不**切 full view。
+  与上面 memoryExposure 同一纪律：只挂在 runtime turn 对象上，
+  绝不写进 chat message / provider body / IndexedDB / 日志。
+  投影**刻意不含** memoryId / 正文 / 标题 —— 只有计数与状态（ID policy = EXCLUDE）。
+  纯诊断：任何异常一律吞掉，绝不成为 recall 的正确性依赖（fail open）。 */
+  try{
+    const _mm=(_out&&_out.meta)?_out.meta.metaMemoryShadow:null;
+    if(_mm&&opts&&opts._ibTurn&&typeof opts._ibTurn==='object'){
+      opts._ibTurn.metaMemoryDiagnostics={
+        version:1,
+        producer:'memory.js/selectMemoryContext',
+        ok:_mm.ok===true,
+        evidenceView:(_mm.evidenceView==='authorized')?'authorized':'unexpected',
+        evaluated:Array.isArray(_mm.memories)?_mm.memories.length:null,
+        /* 显式白名单 pick —— **绝不**整份转发 _mm.counts：
+           R4-B 的 counts 还含 lost / hidden，本阶段隐私要求下它们
+           **不得存在**（不是 0、不是 null，而是没有这个 own property）。
+           显式 pick 而非 spread，未来新增敏感 count 也不会自动泄漏。 */
+        counts:(function(c){
+          if(!c||typeof c!=='object')return null;
+          var k=['selected','direct','attested','degraded','defective','unavailable'],o={};
+          for(var i=0;i<k.length;i++){if(Object.prototype.hasOwnProperty.call(c,k[i]))o[k[i]]=c[k[i]];}
+          return o;
+        })(_mm.counts),
+        degraded:_mm.degraded===true,
+        /* 显式安全 allowlist（**不是** slice）—— R4-B 的闭集里含
+           'upstream-evidence-lost' / 'upstream-evidence-hidden'，
+           按本阶段隐私要求它们不得出现在 diagnostics 里。 */
+        reasonCodes:Array.isArray(_mm.reasonCodes)?_mm.reasonCodes.filter(function(c){
+          return ['ok','no-selected-memory','record-not-in-visible-set','evidence-not-evaluated',
+            'upstream-evidence-expected-but-missing','no-upstream-evidence-required',
+            'upstream-evidence-all-live','upstream-evidence-partially-live','upstream-evidence-none-live',
+            'upstream-evidence-not-in-authorized-view','memory-state-deferred-r4b',
+            'numeric-confidence-deferred-r4b','subjective-confidence-not-evaluated',
+            'shadow-unavailable'].indexOf(c)>=0;
+        }).slice(0,8):[]
+      };
+    }
+  }catch(e){}
     if(!picked||!picked.text)return {context:'',selectedIds:[],reason:picked?picked.reason:undefined,activationPolicy:_actPolicy};
     return {context:picked.text,selectedIds:picked.selected.map(s=>s.id),activationPolicy:_actPolicy};
   }catch(e){return {context:'',selectedIds:[]}}

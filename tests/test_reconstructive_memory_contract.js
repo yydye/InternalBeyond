@@ -562,7 +562,10 @@ check('R4B9.noSecondaryEvidenceAlgorithmOrRetrieval',
   && !/\bfetch\s*\(|\bXMLHttpRequest\b/.test(SHADOW_CODE)
   && !/recordActivation|memory-store|home-node/i.test(SHADOW_CODE),
   'the shadow must reuse the single liveness authority and perform no extra retrieval');
-check('R4B10.shadowHasNoProductionConsumer',
+/* ── R4-LIVE-1.2 相位切换 ──────────────────────────────────────────
+   R4-B 现在有**恰好一个**生产消费者（memory.js 的内部诊断投影）。
+   断言收窄为：**除该文件外**不得有其它消费者，且该消费者不得影响任何行为。 */
+check('R4B10.shadowHasOnlyTheInternalDiagnosticConsumer',
   (function () {
     const hits = [];
     const walk = dir => {
@@ -572,6 +575,9 @@ check('R4B10.shadowHasNoProductionConsumer',
         if (!/\.(js|rs|toml|html)$/.test(e.name)) continue;
         const rel = path.relative(ROOT, q).replace(/\\/g, '/');
         if (rel === R4B_SHADOW || rel === 'assets/js/memory-recall/memory-recall-orchestrator.js') continue;
+        /* R4-LIVE-1.2：唯一的合法消费者 = memory.js 的**内部只读诊断投影**
+           （写进 runtime turn 对象的 metaMemoryDiagnostics；不影响行为 / 提示 / 持久化）。 */
+        if (rel === 'assets/js/memory.js') continue;
         if (fs.readFileSync(q, 'utf8').indexOf('metaMemoryShadow') >= 0) hits.push(rel);
       }
     };

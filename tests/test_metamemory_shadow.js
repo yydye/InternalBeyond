@@ -579,9 +579,16 @@ section('V · production consumer inventory');
     const text = fs.readFileSync(f, 'utf8');
     if (text.indexOf('metaMemoryShadow') >= 0) consumers.push(rel);
   }
-  check('V1.productionConsumerCountIsZero',
-    consumers.length === 0,
-    'no production file may consume metaMemoryShadow (found: ' + consumers.join(', ') + ')');
+  /* ── R4-LIVE-1.2 相位切换 ──────────────────────────────────────────
+   R4-B 曾经是"零生产消费者"。LIVE-1.2 之后它有了**恰好一个**消费者：
+   `assets/js/memory.js` 内部的 observability 投影（只读 `_out.meta.metaMemoryShadow`，
+   写进 runtime turn 对象的 `metaMemoryDiagnostics`）。
+   换成更窄的断言：消费者**只能**是那一个文件，且**不得**有行为/提示/持久化消费。 */
+const R4B_INTERNAL_DIAGNOSTIC_CONSUMER = 'assets/js/memory.js';
+check('V1.productionConsumerIsOnlyTheInternalDiagnosticProjection',
+  consumers.length === 1 && consumers[0] === R4B_INTERNAL_DIAGNOSTIC_CONSUMER,
+  'the shadow may have exactly ONE production consumer — the internal diagnostic projection '
+  + '(found: ' + consumers.join(', ') + ')');
 
   const orch = fs.readFileSync(path.join(ROOT, PRODUCER), 'utf8');
   const orchCode = WIRING.stripJsComments(orch);

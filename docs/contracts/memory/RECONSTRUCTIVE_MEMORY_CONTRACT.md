@@ -2463,6 +2463,108 @@ Counterfactual 现在是"intervention 可追溯的因果假设影子"：
 
 ---
 
+#### (p) R4-LIVE-1 · MetaMemory Internal Observability + R4-F Mediator Requirement（追加，不改写 (k)–(o)）
+
+**(p-1) R4-B 曾经是 `LIVE_COMPUTED_UNCONSUMED`**
+
+机械审计（R4-F0）：R4-B 的 MetaMemory shadow **每次真实 recall 都在执行**
+（`memory.js:233 → orchestrator.recall → metamemory-shadow → meta.metaMemoryShadow`），
+但 `meta` 在 `memory.js:246-247` 的 return 上**被丢弃** ⇒ **生产消费者 = 0**。
+即：**计算已经在付费，只是没人看**。
+
+**(p-2) 选中的既有内部 surface**
+
+```
+SELECTED_METAMEMORY_OBSERVABILITY_SURFACE = opts._ibTurn.metaMemoryDiagnostics
+WHY_INTERNAL    : _ibTurn 由 communication.js 内部创建/持有；非 window global；不在任何公开返回里
+WHY_INSPECTABLE : 该对象**已有既有 writer/reader**（memory.js 写 memoryExposure；
+                  communication.js:6012 / 6166 读回）—— 同一条已验证的内部通道
+WHY_NOT_PUBLIC  : selectMemoryContext / getMemoryContext 的返回**键集逐字不变**
+WHY_NOT_SERIALIZED : _ibTurn 不进 provider body / IPC / _snaPField / UI
+```
+
+**未选**：Middle Brain（禁止）· `console.log` · 新 window global · 新 diagnostics singleton ·
+新 API / UI / route · RecallTrace sink 重设计。
+
+**(p-3) 只观察，不重算**
+
+投影**只读** `_out.meta.metaMemoryShadow`：**不**调用 evaluator、
+**不**调 `evidenceLiveness`、**不**重扫 memories、**不**切 view。
+`META_RECOMPUTATIONS = 0`。
+
+**(p-4) 投影契约（显式白名单，非 spread）**
+
+```
+{ version:1, producer, ok, evidenceView, evaluated, counts, degraded, reasonCodes }
+```
+
+```
+DIAGNOSTIC_COUNT_FIELDS = [selected, direct, attested, degraded, defective, unavailable]
+DIAGNOSTIC_ID_POLICY    = EXCLUDE      （无 memoryId / 正文 / 标题 / raw source）
+```
+
+**硬要求**：`counts` 中 **`lost` / `hidden` 的 own property 必须不存在**
+—— 不是 `0`，不是 `null`，而是**没有这个字段**。
+实现用**显式 pick**（非 `{...counts}`、非 `Object.assign`），
+因此未来 MetaMemory 新增敏感 count **不会自动泄漏**。
+
+`reasonCodes` **不得**仅靠 `slice(N)` 声称安全：R4-B 的闭集里含
+`upstream-evidence-lost` / `upstream-evidence-hidden`，
+因此改用**显式安全 allowlist**（排除上述两条），再 cap ≤8。
+
+`evidenceView !== 'authorized'` 时**不得**据此继续暴露 counts ——
+本阶段实现为投影该字段为 `'unexpected'` 并**仍然**只走白名单。
+
+**(p-5) 失败语义与成本**
+
+任何投影异常**一律吞掉**（`try/catch`）⇒ observability **绝不**成为 recall 的正确性依赖。
+`NEW_NETWORK_COST = 0` · `NEW_MODEL_COST = 0` · `NEW_DB_COST = 0` ·
+`INCREMENTAL_CPU = BOUNDED`（一次属性读取 + 小对象字面量，无循环、无扫描）·
+`DIAGNOSTIC_PAYLOAD_BYTES` 典型 ~180B / 上界受 ≤8 reasonCodes 约束。
+**不写 "zero latency"** —— 增量是**有界小常数**，不是字面 0。
+
+**(p-6) 相位切换**
+
+R4-B 由「零生产消费者」变为「**恰好一个**只读诊断消费者」。
+两条旧守卫被**收窄**而非删除：
+`V1.productionConsumerIsOnlyTheInternalDiagnosticProjection`
+（消费者必须**恰为** `assets/js/memory.js`）与
+`R4B10.shadowHasOnlyTheInternalDiagnosticConsumer`（其它文件仍为零）。
+
+**(p-7) R4-F mediator requirement（**纠正** F0 措辞）**
+
+```
+MAY_BEHAVIOR_EFFECT_BYPASS_INTERPRETATION_EXPECTATION = NO
+R4_F_LIVE_MEDIATOR_REQUIREMENT = L3_AND_L5
+```
+
+含义：**Interpretation（L3）** 与 **Expectation（L5）** **都必须 live**，
+才能启用 BehaviorEffect。
+
+**依据**：PART II 冻结的链条是 `Canonical → Interpretation → Expectation → Behavior`；
+line 159 只把 **L6 Counterfactual 与 L5 Expectation 列为兄弟**，
+**未**放宽 L3→L5→L7。若只 live L3 而让 Behavior 消费它，
+**仍然跳过 Expectation ⇒ 仍然是 bypass**。
+
+⇒ F0 报告中「L3/L5 **至少一层**」的措辞**不成立**，此处更正为 `L3 AND L5`。
+**Counterfactual（L6）是 sibling，不是 R4-F 的 mandatory mediator。**
+
+**(p-8) R4-C blocker 未变**
+
+```
+R4C_LIVE_ENABLE_REQUIRES_NEW_EXECUTION_BOUNDARY = YES
+```
+
+浏览器侧仍**没有** runtime-only + Vault 授权的派生出口；
+**不得**借 browser chat key / Middle Brain / durable Understanding route 制造假 live。
+
+```
+R4-B 现在是"**已被观察**的确定性影子"：内部可读、零行为影响、零持久化。
+R4-C / R4-D / R4-E 仍为 PROTOCOL_ONLY；其余 reconstructive 层 = NONE（仍然为真）。
+```
+
+---
+
 # PART II · PREDICTIVE MEMORY（R4-A.1 纳入冻结）
 
 > 本部分把 **Expectation / Prediction Error / Counterfactual** 正式纳入 foundation contract。
