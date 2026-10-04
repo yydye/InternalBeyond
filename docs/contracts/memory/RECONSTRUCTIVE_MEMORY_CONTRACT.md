@@ -2076,6 +2076,98 @@ Expectation 与 Prediction Error 仍是 **protocol-only**：无活体 producer�
 
 ---
 
+#### (m) R4-D.2 · Observation Integrity Seal（追加，不改写 (k)/(l)）
+
+**(m-1) 两个**不同**的问题（此前被混为一个 "canonical"）**
+
+```
+A. CANONICAL RECORD AUTHORITY
+   "这条 record 是否真的来自 Home Node canonical memory authority？"
+   ⇒ **上游可信前提**。builder **无法**独立认证。
+
+B. OBSERVATION SNAPSHOT INTEGRITY
+   "settle 收到的 snapshot 是否仍是 builder 从那条输入 record 构造出来的同一内容？"
+   ⇒ 本模块**机械保证**。
+```
+
+```
+CANONICAL_AUTHORITY_ESTABLISHED_BY_BUILDER = NO
+CANONICAL_RECORD_SOURCE   = UPSTREAM_TRUSTED_PRECONDITION
+AUTHORIZED_VIEW           = UPSTREAM_PRECONDITION
+LIVE_CANONICAL_SOURCE_BINDING = NOT IMPLEMENTED
+OBSERVATION_INTEGRITY_ENFORCEMENT = MODULE-MECHANICALLY-ENFORCED
+```
+
+**准确措辞**：builder 从 *caller-supplied, already-authorized canonical-record input*
+构造**受保护 snapshot** —— 它**不**证明 canonical 来源。
+`authorizedMemoryIds` 同样只是**上游前提**；核心只验证 `record.id ∈ authorizedMemoryIds`，
+**不**建立 ACL authority（与 R4-B / R4-C 一致：ACL occurs upstream）。
+**未新增**任何 DB query / full-view query / Home Node read / 第二套 ACL。
+
+**(m-2) 公开 brand **不是** capability**
+
+旧形态：`brand` 是**公开字符串常量**，准入检查就是
+`brand === OBSERVATION_BRAND && canonical === true && typeof … === 'string'`。
+
+```
+PUBLIC_BRAND_FORGEABLE = YES（旧）
+```
+
+⇒ 任何调用方复制那几个字段即可自造 accepted observation；
+且 builder 产物**可被改写**后仍被接受；`sourceFingerprint` 也没有被复验。
+
+**修法**（最小组合，无 crypto / 无签名 / 无 secret）：
+
+| 机制 | 作用 |
+| --- | --- |
+| `OBSERVATION_IDENTITY = new WeakSet()` | **身份**：只有 builder 真正产出的**那一个对象**在表里 |
+| `OBSERVATION_SEAL = new WeakMap()` | **封存**：该对象封存时的规范化序列化（`memory-contract.stableStringify`） |
+| `deepFreeze(value)` | 纵深防御：顶层与嵌套字段全部冻结，改写请求静默失效/抛错 |
+
+`settle` 的准入检查变成：
+
+```
+① isPlainObject(o)
+② OBSERVATION_IDENTITY.has(o)          ← 手工伪造 / 克隆 ⇒ 不在表里 ⇒ 拒绝
+③ canonicalize(o) === OBSERVATION_SEAL.get(o)   ← 被改写 ⇒ 不一致 ⇒ 拒绝
+④ 无能力原语（WeakSet/WeakMap 不可用）⇒ fail closed
+```
+
+**两份能力表都留在模块内，不导出**（`R4D21` 强制）。
+`brand` 字段**保留**，但它现在只是**人类可读标记**，不参与判定。
+
+**(m-3) 指纹语义**
+
+```
+sourceFingerprint   = contentFingerprint(record)   ← 复用既有实现，无第二套算法
+fingerprintRole     = 'provenance-metadata'
+cryptographicAuthority = false
+```
+
+**MUST NOT** 把它描述成密码学权威：settle 手上**没有** original record，
+因此指纹只能作为 snapshot 的**来源元数据**，**不能**证明 canonical source。
+（未来若 snapshot 需要跨进程/持久化 —— 应**重新设计 authority**，
+而不是把本地指纹升格成签名。本阶段**未**引入 HMAC/secret/crypto protocol。）
+
+**(m-4) 未变的部分**
+
+`LIVE_SETTLEMENT = NOT IMPLEMENTED` · `LIVE_CANONICAL_SOURCE_BINDING = NOT IMPLEMENTED` ·
+`SESSION_ONLY_SETTLEMENT_FEASIBLE = YES` · `RELOAD_SAFE … = durable authority required` ·
+`EXTERNAL_ID_REQUIRED_FOR_LINKED_SETTLEMENT` · `CORE_GENERATED_EXPECTATION_ID_COUNT = 0` ·
+`MATCHING != JUDGEMENT` · `OUTCOME_JUDGEMENT_RUNTIME = CALLER_VALIDATED_PROTOCOL_ONLY` ·
+快照字段 `content → summary → title`（**不含 `oneLine`**）·
+`counterfactual` 仍在 `FORBIDDEN_WIRING` · 零持久化 / 零 schema / 零 route ·
+生产 caller / consumer = 0。
+
+**修好 snapshot 完整性 **不**等于 live settlement 已实现** —— 两者不得互相顶替。
+
+```
+Prediction Observation 现在是"本地机械封存的协议"，canonical 来源仍是上游前提。
+其余 reconstructive 层 runtime production implementation = NONE（仍然为真）。
+```
+
+---
+
 # PART II · PREDICTIVE MEMORY（R4-A.1 纳入冻结）
 
 > 本部分把 **Expectation / Prediction Error / Counterfactual** 正式纳入 foundation contract。

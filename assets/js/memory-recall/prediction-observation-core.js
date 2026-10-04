@@ -68,6 +68,20 @@
 
   var OUTCOME_JUDGEMENT_RUNTIME = 'CALLER_VALIDATED_PROTOCOL_ONLY';
 
+  /* ── canonical authority vs snapshot integrity（R4-D.2 §3/§4/§5）──────
+     CANONICAL RECORD AUTHORITY  —— "这条 record 是否真的来自 Home Node
+                                    canonical memory authority？"
+                                    ⇒ **上游可信前提**，builder **无法**独立认证。
+     OBSERVATION SNAPSHOT INTEGRITY —— "settle 收到的 snapshot 是否仍是 builder
+                                    从那条输入 record 构造出来的同一内容？"
+                                    ⇒ 本模块**机械保证**。
+     二者**不得**混为一个 "canonical"。 */
+  var CANONICAL_RECORD_SOURCE = 'UPSTREAM_TRUSTED_PRECONDITION';
+  var AUTHORIZED_VIEW = 'UPSTREAM_PRECONDITION';
+  var CANONICAL_AUTHORITY_ESTABLISHED_BY_BUILDER = false;
+  var LIVE_CANONICAL_SOURCE_BINDING = 'NOT_IMPLEMENTED';
+  var OBSERVATION_INTEGRITY_ENFORCEMENT = 'MODULE-MECHANICALLY-ENFORCED';
+
   /* 观测快照字段优先级（§10，机械决定，不是偏好）：
        content  —— canonical 主文本（recall 渲染它、contentFingerprint 覆盖它）
        summary  —— canonical 短形式
@@ -78,8 +92,41 @@
   var SNAPSHOT_FIELD_PRECEDENCE = ['content', 'summary', 'title'];
   var MAX_SNAPSHOT_CHARS = 600;
 
-  /* builder 产物的 brand：**只有** buildCanonicalObservation 能设置。 */
+  /* ── observation 能力边界（R4-D.2）────────────────────────────────────
+     公开字符串 brand **可以**被手工复制 ⇒ 它**不是** capability。
+     真正的能力由**模块私有**的两张表承担：
+
+       OBSERVATION_IDENTITY  WeakSet —— 只有 builder 真正产出的**那个对象**
+                                       才在表里（身份，不可复制）
+       OBSERVATION_SEAL      WeakMap —— 该对象**封存时**的规范化序列化
+
+     settle 同时要求：① 对象在身份表里；② 当前序列化与封存串**逐字相同**。
+     ⇒ 手工伪造（不在表里）被拒；builder 产物被改写（序列化不一致）也被拒。
+     两张表**都不导出**，调用方无法从公开 API 取得或伪造能力。
+
+     brand 字段**保留**，但它现在只是**人类可读的标记**，不是信任依据。 */
   var OBSERVATION_BRAND = 'ib.canonical-observation.v1';
+  var OBSERVATION_IDENTITY = new WeakSet();
+  var OBSERVATION_SEAL = new WeakMap();
+  var HAS_WEAK = typeof WeakSet === 'function' && typeof WeakMap === 'function';
+
+  /* 规范化序列化：复用 memory-contract 的 stableStringify（不造第二套）。 */
+  function canonicalize(v) {
+    if (CONTRACT && typeof CONTRACT.stableStringify === 'function') return CONTRACT.stableStringify(v);
+    return JSON.stringify(v);
+  }
+  function deepFreeze(v) {
+    if (!v || typeof v !== 'object' || Object.isFrozen(v)) return v;
+    Object.freeze(v);
+    Object.keys(v).forEach(function (k) { deepFreeze(v[k]); });
+    return v;
+  }
+  function sealObservation(v) {
+    var text = canonicalize(v);
+    if (HAS_WEAK) { OBSERVATION_IDENTITY.add(v); OBSERVATION_SEAL.set(v, text); }
+    deepFreeze(v);
+    return v;
+  }
 
   var REASON_CODES = {
     ok: 'ok',
@@ -133,27 +180,41 @@
     }
     if (!text) return { ok: false, reason: REASON_CODES.observationSnapshotUnavailable };
     var hasFp = !!(CONTRACT && typeof CONTRACT.contentFingerprint === 'function');
-    return {
-      ok: true,
-      value: {
-        brand: OBSERVATION_BRAND,
-        evidenceMemoryId: id,
-        canonical: true,                 /* builder 派生输出，不是调用方输入 */
-        observedOutcome: text,
-        snapshotField: field,
-        truncated: rawLen > MAX_SNAPSHOT_CHARS,
-        observedAt: Number.isFinite(Number(c.observedAt)) ? Number(c.observedAt) : null,
-        source: str(record.rawSource != null ? record.rawSource : record.source, 64),
-        /* 完整性：复用仓库**已有**的 contentFingerprint（不复制第二套算法） */
-        sourceFingerprint: hasFp ? CONTRACT.contentFingerprint(record) : null,
-        fingerprintAuthority: hasFp ? 'memory-contract.contentFingerprint' : 'unavailable'
-      }
+    var value = {
+      brand: OBSERVATION_BRAND,          /* 人类可读标记，**不是**信任依据 */
+      evidenceMemoryId: id,
+      /* builder 派生输出，不是调用方输入；但见下方 capabilityNote */
+      canonical: true,
+      observedOutcome: text,
+      snapshotField: field,
+      truncated: rawLen > MAX_SNAPSHOT_CHARS,
+      observedAt: Number.isFinite(Number(c.observedAt)) ? Number(c.observedAt) : null,
+      source: str(record.rawSource != null ? record.rawSource : record.source, 64),
+      /* 指纹是**来源元数据**，不是密码学权威（§13）。 */
+      sourceFingerprint: hasFp ? CONTRACT.contentFingerprint(record) : null,
+      fingerprintAuthority: hasFp ? 'memory-contract.contentFingerprint' : 'unavailable',
+      fingerprintRole: 'provenance-metadata',
+      cryptographicAuthority: false,
+      /* 能力边界的**准确**声明（§3/§4）：
+         builder **不**建立 canonical authority，它只做本地快照完整性。 */
+      canonicalAuthorityEstablished: false,
+      canonicalSourceAuthority: CANONICAL_RECORD_SOURCE
     };
+    sealObservation(value);
+    return { ok: true, value: value };
   }
 
+  /* settle 的唯一准入检查：
+       ① 身份 —— 必须是 builder 真正产出过的那**一个**对象（WeakSet）
+       ② 封存 —— 当前规范化序列化必须与封存时**逐字相同**（WeakMap）
+     公开字段（brand / canonical）**不参与**判定，因此复制它们没有用。 */
   function isBuiltObservation(o) {
-    return isPlainObject(o) && o.brand === OBSERVATION_BRAND && o.canonical === true
-      && typeof o.evidenceMemoryId === 'string' && typeof o.observedOutcome === 'string';
+    if (!isPlainObject(o)) return false;
+    if (!HAS_WEAK) return false;                       /* 无能力原语 ⇒ fail closed */
+    if (!OBSERVATION_IDENTITY.has(o)) return false;    /* 手工伪造 ⇒ 不在表里 */
+    var sealed = OBSERVATION_SEAL.get(o);
+    if (typeof sealed !== 'string') return false;
+    return canonicalize(o) === sealed;                 /* 被改写 ⇒ 序列化不一致 */
   }
 
   /* ── ② 匹配门（**只**判 linkage，不判对错）────────────────────────── */
@@ -308,9 +369,18 @@
     OUTCOME_JUDGEMENT_RUNTIME: OUTCOME_JUDGEMENT_RUNTIME,
     SNAPSHOT_FIELD_PRECEDENCE: SNAPSHOT_FIELD_PRECEDENCE,
     OBSERVATION_BRAND: OBSERVATION_BRAND,
+    /* 边界声明 —— 公开，但**能力本身不导出**（WeakSet / WeakMap 留在模块内）。 */
+    CANONICAL_RECORD_SOURCE: CANONICAL_RECORD_SOURCE,
+    AUTHORIZED_VIEW: AUTHORIZED_VIEW,
+    CANONICAL_AUTHORITY_ESTABLISHED_BY_BUILDER: CANONICAL_AUTHORITY_ESTABLISHED_BY_BUILDER,
+    LIVE_CANONICAL_SOURCE_BINDING: LIVE_CANONICAL_SOURCE_BINDING,
+    OBSERVATION_INTEGRITY_ENFORCEMENT: OBSERVATION_INTEGRITY_ENFORCEMENT,
     REASON_CODES: REASON_CODES,
     STATE_SUPPORT: {
       liveSettlement: 'NOT_IMPLEMENTED_R4D',
+      liveCanonicalSourceBinding: LIVE_CANONICAL_SOURCE_BINDING,
+      canonicalAuthorityByBuilder: 'NOT_CLAIMED',
+      snapshotIntegrity: OBSERVATION_INTEGRITY_ENFORCEMENT,
       sessionOnlySettlement: 'FEASIBLE_NOT_IMPLEMENTED',
       durableObservation: 'NOT_IMPLEMENTED_R4D',
       numericPredictionError: 'NOT_FROZEN',

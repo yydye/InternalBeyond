@@ -329,6 +329,26 @@ check('R4D16.noDurableExpectationState',
   !/memory_records|memory_change_log/.test(R4D_CODE)
   && /no-durable-expectation-store/.test(R4D_TEXT),
   'no durable expectation / observation / prediction-error state may be written');
+check('R4D21.observationCapabilityIsNotForgeable',
+  /OBSERVATION_IDENTITY\s*=\s*new WeakSet\(\)/.test(R4D_TEXT)
+  && /OBSERVATION_SEAL\s*=\s*new WeakMap\(\)/.test(R4D_TEXT)
+  && /OBSERVATION_IDENTITY\.has\(o\)/.test(R4D_TEXT)
+  && /canonicalize\(o\) === sealed/.test(R4D_TEXT)
+  && !/^\s*(OBSERVATION_IDENTITY|OBSERVATION_SEAL)\s*:/m.test(R4D_TEXT),
+  'the observation capability must be a module-private WeakSet/WeakMap, never an exported token');
+check('R4D22.builderDoesNotClaimCanonicalAuthority',
+  /CANONICAL_AUTHORITY_ESTABLISHED_BY_BUILDER\s*=\s*false/.test(R4D_TEXT)
+  && /CANONICAL_RECORD_SOURCE\s*=\s*'UPSTREAM_TRUSTED_PRECONDITION'/.test(R4D_TEXT)
+  && /LIVE_CANONICAL_SOURCE_BINDING\s*=\s*'NOT_IMPLEMENTED'/.test(R4D_TEXT),
+  'canonical record authority is an upstream precondition; the builder only guarantees snapshot integrity');
+check('R4D23.fingerprintIsNotClaimedAsAuthority',
+  /fingerprintRole:\s*'provenance-metadata'/.test(R4D_TEXT)
+  && /cryptographicAuthority:\s*false/.test(R4D_TEXT),
+  'contentFingerprint is provenance metadata, not a cryptographic authority');
+check('R4D24.liveSettlementAndSourceBindingStayUnimplemented',
+  /liveSettlement:\s*'NOT_IMPLEMENTED_R4D'/.test(R4D_TEXT)
+  && /liveCanonicalSourceBinding/.test(R4D_TEXT),
+  'sealing the snapshot must not be reported as enabling live settlement');
 check('R4D18.canonicalObservationCannotBeSelfAttested',
   /observation-was-not-built-from-a-canonical-record/.test(R4D_TEXT)
   && /OBSERVATION_BRAND/.test(R4D_TEXT)

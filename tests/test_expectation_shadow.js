@@ -342,14 +342,13 @@ const baseInput = (o) => Object.assign({ selectedIds: ['m1'], records: [mem()], 
         return r.ok === false && r.result === 'unsettled';
       }),
       'none of the forgery shapes may produce a settled confirmed/contradicted');
-    check('K3.brandGuaranteesShapeNotImmutability',
+    check('K3.clonedSnapshotIsRejected',
       (function () {
         const tampered = Object.assign({}, built.value, { evidenceMemoryId: 'e9' });
         const r = PO.settle(exp, tampered, { match: { mode: 'explicit-link', observationExpectationId: 'exp1' }, result: 'confirmed', judgementValidated: true });
-        return r.ok === true && r.evidenceMemoryId === 'e9';
+        return r.ok === false && r.reasonCodes.indexOf('observation-was-not-built-from-a-canonical-record') >= 0;
       })(),
-      'DOCUMENTED: the brand guarantees the provenance SHAPE (built from a record, with a snapshot '
-      + 'and a fingerprint), not immutability of the returned object — callers must not mutate it');
+      'a clone — even one carrying every public field verbatim — is NOT the built object and must be rejected');
   }
 
   /* ══ Q · self-fulfilling hazard ══ */
@@ -553,6 +552,129 @@ section('R4D1 · identity, lifetime, boundaries');
       return crypto.createHash('sha256').update(JSON.stringify(rec)).digest('hex') === h1;
     })(),
     'neither the builder nor the settlement may mutate the canonical record');
+}
+
+
+/* ══════════════════════════════════════════════════════════════════
+   R4D2 · canonical authority vs snapshot integrity
+   ══════════════════════════════════════════════════════════════════ */
+section('R4D2 · observation integrity seal');
+
+{
+  const m = { mode: 'explicit-link', observationExpectationId: 'exp1' };
+  const exp = { expectationId: 'exp1', prediction: 'p', trigger: { kind: 'similar-situation' } };
+  const rec = mem({ id: 'e1', content: '他来了' });
+  const built = PO.buildCanonicalObservation(rec, { authorizedMemoryIds: ['e1'], observedAt: NOW });
+
+  /* A · 精确公开 brand 的手工伪造 */
+  check('A.exactPublicBrandForgeryRejected',
+    (function () {
+      const forged = {
+        brand: PO.OBSERVATION_BRAND, evidenceMemoryId: 'e1', canonical: true,
+        observedOutcome: '伪造的结果', snapshotField: 'content', truncated: false,
+        observedAt: NOW, source: 'chat', sourceFingerprint: 'deadbeef',
+        fingerprintRole: 'provenance-metadata', cryptographicAuthority: false,
+        canonicalAuthorityEstablished: false
+      };
+      const r = PO.settle(exp, forged, { match: m, result: 'confirmed', judgementValidated: true });
+      return r.ok === false && r.result === 'unsettled';
+    })(),
+    'copying every enumerable public field (including the exact brand) must NOT produce an accepted observation');
+
+  /* B · 伪造 canonical:true */
+  check('B.fakeCanonicalTrueRejected',
+    PO.settle(exp, { evidenceMemoryId: 'e1', canonical: true, observedOutcome: 'x' },
+      { match: m, result: 'confirmed', judgementValidated: true }).ok === false,
+    'canonical:true is not an input authority');
+
+  /* C · 伪造 fingerprint */
+  check('C.fakeFingerprintRejected',
+    (function () {
+      const forged = Object.assign({}, built.value, { sourceFingerprint: 'fake' });
+      return PO.settle(exp, forged, { match: m, result: 'confirmed', judgementValidated: true }).ok === false;
+    })(),
+    'a fabricated fingerprint must not buy acceptance');
+
+  /* D · builder 产物被改写 */
+  check('D.postBuildMutationDoesNotChangeSettlementInput',
+    (function () {
+      const obs = PO.buildCanonicalObservation(mem({ id: 'e2', content: '原始' }), { authorizedMemoryIds: ['e2'] }).value;
+      const before = obs.observedOutcome;
+      try { obs.observedOutcome = 'FORGED'; } catch (e) { /* strict mode throws */ }
+      try { obs.evidenceMemoryId = 'other'; } catch (e) { /* strict mode throws */ }
+      const r = PO.settle({ expectationId: 'exp1', prediction: 'p', trigger: { kind: 'similar-situation' } }, obs,
+        { match: m, result: 'confirmed', judgementValidated: true });
+      return obs.observedOutcome === before && r.observedOutcome === before;
+    })(),
+    'the builder output must be frozen: a mutation attempt cannot change what settlement sees');
+
+  /* E · 嵌套可变对象 */
+  check('E.noNestedMutableObjectsInTheSnapshot',
+    (function () {
+      const obs = built.value;
+      const nested = Object.keys(obs).filter(k => obs[k] && typeof obs[k] === 'object' && !Object.isFrozen(obs[k]));
+      return nested.length === 0 && Object.isFrozen(obs);
+    })(),
+    'the snapshot is flat and deep-frozen — no nested mutable object can smuggle a change');
+
+  /* F · 正常路径仍然成功 */
+  check('F.normalBuilderToSettleStillWorks',
+    PO.settle(exp, built.value, { match: m, result: 'confirmed', judgementValidated: true }).ok === true,
+    'the sealed happy path must keep working');
+
+  /* G · authorized view 是上游前提 */
+  check('G.authorizedViewIsAnUpstreamPrecondition',
+    PO.AUTHORIZED_VIEW === 'UPSTREAM_PRECONDITION'
+    && PO.buildCanonicalObservation(rec, { authorizedMemoryIds: ['other'] }).reason === 'observation-outside-authorized-evidence',
+    'the core only checks id ∈ authorizedMemoryIds; it does NOT establish ACL authority');
+
+  /* H · builder 不声称建立 canonical authority */
+  check('H.builderDoesNotClaimCanonicalAuthority',
+    PO.CANONICAL_AUTHORITY_ESTABLISHED_BY_BUILDER === false
+    && PO.CANONICAL_RECORD_SOURCE === 'UPSTREAM_TRUSTED_PRECONDITION'
+    && PO.LIVE_CANONICAL_SOURCE_BINDING === 'NOT_IMPLEMENTED'
+    && built.value.canonicalAuthorityEstablished === false
+    && built.value.canonicalSourceAuthority === 'UPSTREAM_TRUSTED_PRECONDITION',
+    'CANONICAL RECORD AUTHORITY is an upstream precondition; the builder only guarantees snapshot integrity');
+
+  /* I · 公开 API 不泄漏能力 */
+  check('I.publicApiLeaksNoCapability',
+    (function () {
+      const names = Object.keys(PO);
+      const leaky = names.filter(n => /weakset|weakmap|identity|seal|token|factory|register/i.test(n));
+      const sym = Object.getOwnPropertySymbols(PO).length;
+      /* 要求是"**不导出**能力"，不是"文件里不能出现这些标识符" ——
+         它们当然出现在模块代码里（那正是模块私有的意思）。 */
+      return leaky.length === 0 && sym === 0
+        && typeof PO.buildCanonicalObservation === 'function'
+        && typeof PO.OBSERVATION_IDENTITY === 'undefined'
+        && typeof PO.OBSERVATION_SEAL === 'undefined';
+    })(),
+    'the capability (WeakSet/WeakMap) is module-private: callers can only obtain a valid observation '
+    + 'by calling buildCanonicalObservation');
+
+  /* J · canonical record 未被改动 */
+  check('J.canonicalRecordImmutable',
+    (function () {
+      const r2 = mem({ id: 'e3', content: '不变' });
+      const h = crypto.createHash('sha256').update(JSON.stringify(r2)).digest('hex');
+      const o = PO.buildCanonicalObservation(r2, { authorizedMemoryIds: ['e3'] }).value;
+      PO.settle({ expectationId: 'exp1', prediction: 'p', trigger: { kind: 'similar-situation' } }, o,
+        { match: m, result: 'confirmed', judgementValidated: true });
+      return crypto.createHash('sha256').update(JSON.stringify(r2)).digest('hex') === h;
+    })(),
+    'neither build nor settle may mutate the canonical record');
+
+  /* K/L · 指纹语义与边界声明 */
+  check('K.fingerprintIsMetadataNotAuthority',
+    built.value.fingerprintRole === 'provenance-metadata'
+    && built.value.cryptographicAuthority === false,
+    'contentFingerprint is provenance metadata, NOT a cryptographic authority');
+  check('L.integrityEnforcementIsModuleMechanical',
+    PO.OBSERVATION_INTEGRITY_ENFORCEMENT === 'MODULE-MECHANICALLY-ENFORCED'
+    && PO.STATE_SUPPORT.snapshotIntegrity === 'MODULE-MECHANICALLY-ENFORCED'
+    && PO.STATE_SUPPORT.liveCanonicalSourceBinding === 'NOT_IMPLEMENTED',
+    'snapshot authenticity is locally enforced; canonical source binding is still NOT IMPLEMENTED');
 }
 
 console.log('\n' + '='.repeat(64));
