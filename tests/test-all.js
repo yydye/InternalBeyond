@@ -466,6 +466,21 @@ const GROUPS = [
          模型交互全部使用 deterministic fake port：真实 provider 调用 = 0。
          纯 Node、零浏览器、零网络。 */
       ['test_expectation_shadow.js'],
+      /* P21-R4-E：Counterfactual / Causal Hypothesis **SHADOW**（协议就绪，生产调用者 = 0）。
+         COUNTERFACTUAL = "如果一个条件不同，可能会发生什么？" = **CAUSAL HYPOTHESIS**，
+         不是 fact / observation / memory / prediction。
+         硬约束：purpose='causal-learning' · epistemicStatus='counterfactual' ·
+         observed=false · canonicalEvidence=false（系统写，模型越权即**整条拒绝**）；
+         **必须**声明恰好一个 intervention（闭集 kind，未知即拒绝）；
+         只证明 ONE DECLARED INTERVENTION —— SEMANTIC_SINGLE_CAUSE_GUARANTEED = NO；
+         causalLevel='hypothesis'（causalRelationProven=false）；EVIDENCE_WEIGHT = NONE；
+         causalAttributionConfidence 恒 null（无实验 ⇒ 不伪造）；
+         输出**不含**任何 prediction 语义（trigger / predictionError / calibration / settlement）；
+         无 durable identity；不依赖 association / causal graph runtime（R4-G 未实现）；
+         **绝不**为了拿 Interpretation / Expectation 触发 R4-C / R4-D runner。
+         模型交互全部使用 deterministic fake port：真实 provider 调用 = 0。
+         纯 Node、零浏览器、零网络。 */
+      ['test_counterfactual_shadow.js'],
       /* M1-C.2m：canonical Understanding —— 存储/修订链/CAS/单活不变量/更正契约
          （纯 Node + 真 SQLite + 临时数据目录，零网络、零浏览器）。 */
       ['test_understanding_contract_closure.js'],

@@ -2168,6 +2168,301 @@ Prediction Observation 现在是"本地机械封存的协议"，canonical 来源
 
 ---
 
+#### (n) R4-E · Counterfactual / Causal Hypothesis Shadow（追加，不改写 (k)/(l)/(m)）
+
+**(n-1) 核心原则**
+
+```
+COUNTERFACTUAL = "如果一个条件不同，可能会发生什么？"
+               = CAUSAL HYPOTHESIS
+```
+
+它**不是**：Canonical Fact · Observed Outcome · Prediction · Expectation ·
+Recollection · Interpretation · Behavior instruction。
+
+**系统写入的硬标签**（模型越权即**整条拒绝**，不静默修正）：
+
+```
+purpose           = 'causal-learning'
+epistemicStatus   = 'counterfactual'
+observed          = false
+canonicalEvidence = false
+```
+
+**(n-2) Prediction 与 Counterfactual 的边界（不得靠 status 硬切同一对象）**
+
+| | **Prediction** | **Counterfactual** |
+| --- | --- | --- |
+| 时间朝向 | **未来** | **过去**（未发生的分支） |
+| 前提类型 | 当前事实 | **反事实干预**（假设条件） |
+| observed | 尚未发生 | **永不发生** |
+| canonical status | 可成为证据（若后来发生） | **永不**成为证据 |
+| 结算语义 | confirmed / contradicted / partial / unknown | **无**（不可结算） |
+| 置信语义 | subjectivePredictionConfidence + calibration | **仅** subjectivePlausibility；causalAttributionConfidence 恒 null |
+| 结构 | `triggerPattern` + `predictionError` | `intervention` + `imaginedOutcome` + `causalHypothesis` |
+
+**两者是不同结构**，不是一个对象加不同 status。
+
+**(n-3) 不假设 R4-C / R4-D 已运行**
+
+R4-D 的 `EXPECTATION_RUNTIME = PROTOCOL_ONLY`、`LIVE_SETTLEMENT = NOT IMPLEMENTED`。
+因此 R4-E **MUST NOT** 假设 Expectation 在 production 已存在。
+
+| 输入 | 裁决 |
+| --- | --- |
+| canonical selected memory | **ALLOWED**（必需） |
+| system evidence state | **ALLOWED**（只读） |
+| caller 已持有的 Interpretation shadow | **OPTIONAL** |
+| caller 已持有的 Expectation shadow | **OPTIONAL** |
+| raw user prompt / full chat history / hidden evidence / full view / Middle Brain / 无关记忆 | **FORBIDDEN** |
+
+**MUST NOT** 自动调用 R4-C / R4-D runner —— 那会形成 hidden multi-stage cost chain。
+缺失即**诚实降级**（`subjectiveInterpretationAvailable: false` / `expectationAvailable: false`）。
+
+**(n-4) 干预（intervention）**
+
+- **必须**声明**恰好一个** intervention；只有 `imaginedOutcome` 而没有 intervention ⇒ **拒绝**。
+- `kind` 是**闭集**（未知 ⇒ 拒绝，不映射到 'other'）：
+
+```
+INTERVENTION_KINDS = [choice, timing, information, communication,
+                      participant-action, external-condition]
+```
+
+- `statement` 有界（≤240 字）—— 不得变成无限自由 prompt。
+
+```
+ONE DECLARED INTERVENTION      = PROVEN（结构上恰好一个对象）
+SEMANTIC_SINGLE_CAUSE_GUARANTEED = NO
+```
+
+**不得过度声明**：自然语言 statement 语义上是否真的只改变一个变量，
+**机械无法证明**。测试只能证明 instruction / schema boundary。
+
+**(n-5) Intervention 不改写基线事实**
+
+intervention 是 **alternate premise**，**不是**对 canonical memory 的 patch。
+禁止：把 intervention apply 到 memory record、修改 `content` / participant / timestamp / provenance。
+**canonical input hash 前后必须一致**（测试强制）。Prompt 明确：
+"Except for the single condition named by the intervention, all canonical facts remain the baseline."
+
+**(n-6) 输出契约（逐字段裁决后的最小形态）**
+
+| 字段 | 必需? | 可空? | 模型可写? | 说明 |
+| --- | --- | --- | --- | --- |
+| `basedOnMemoryIds` | ✔ | ✘ | ✔ | ⊆ 已授权集，去重，不得 forged |
+| `intervention{kind,statement}` | ✔ | ✘ | ✔ | **恰好一个对象**；kind 闭集；statement ≤240 |
+| `imaginedOutcome` | ✔ | ✘ | ✔ | ≤500 字 |
+| `causalHypothesis` | ✘ | ✔ | ✔ | ≤400 字 |
+| `subjectivePlausibility` | ✘ | ✔ | ✔ | `number ∈ [0,1]` 或 `null`；**模型主观可行性，不是因果证据** |
+| `purpose` / `epistemicStatus` / `observed` / `canonicalEvidence` | ✔ | ✘ | **✘** | 系统常量；模型写即**整条作废** |
+| `causalAttributionConfidence` | — | 恒 `null` | **✘** | 无实验 / 无随机化 ⇒ **不得**因模型自信而给 0.9 |
+| `systemEvidenceConfidence` | — | 恒 `null` | ✘ | 由 R4-B 持有，**不复制** |
+| `evidenceWeight` | — | 恒 `'NONE'` | ✘ | 语义，不引入数值 |
+| `counterfactualId` | **不产出** | ✔ | ✘ | 见 (n-7) |
+
+**越权字段一律拒绝整条**（`causalFact` / `provenCause` / `confirmedCause` / `causalProof` /
+`cause` / `newMemory` / `expectation` / `observation` / `durable` / `persist` …）。
+
+**(n-7) `COUNTERFACTUAL_IDENTITY_POLICY`**
+
+```
+turn-local · no persistence · no consumer ⇒ NO durable identity
+```
+
+**不生成**看起来永久、reload 后失效的 UUID。需要引用时由未来的 durable 阶段另行设计。
+
+**(n-8) 因果边界**
+
+```
+CAUSAL_HYPOTHESIS_ONLY = YES
+CAUSAL_RELATION_PROVEN = NO
+EVIDENCE_WEIGHT        = NONE
+```
+
+生成一个 Counterfactual **不得**：增加 evidence count / activation / importance /
+calibration、提升 generalization、创建 canonical memory 或 expectation observation。
+
+**(n-9) 不依赖未实现的 association runtime**
+
+R4-G 的 association / contradiction runtime **未实现**。因此 Counterfactual **不得**依赖
+`causedBy` 图 / contradiction 图 / multi-hop associations / spreading activation。
+只有普通 evidence IDs 时**就诚实使用这些**。
+`CURRENT_CAUSAL_PRIMITIVES` 审计结论：仓库**没有**因果图，只有
+`consolidatedFrom` / `rawSource` / `sourceId` 这类**来源**关系（可去重，**不**证明因果）。
+
+**(n-10) 模型端口 / 预算 / 超时（完全继承）**
+
+`MODEL-PORT-PROTOCOL-READY` · production execution boundary **仍 unresolved** ·
+只接受 **injected** `modelPort` · `calls ≤ 1 / 显式 invocation`（**不是** Tree-of-Thought，
+不自我辩论，不每 memory / 每 intervention 各调一次）· `AUTO_RETRY = NONE` ·
+`MAX_ATTEMPTS = 1` · 超时权威由调用方注入（`SAFETY_CAP_MS = 120000`，
+来源 `understanding-derivation.js:70`）· `RUNNER_WAIT_BOUNDED = YES` ≠
+`PROVIDER_EXECUTION_CANCELLATION_GUARANTEED = NO` · **未**发明 20s/30s。
+
+**(n-11) 边界**
+
+| 禁止 | 说明 |
+| --- | --- |
+| durable counterfactual | 0 表 / 0 store / 0 migration / 0 localStorage / 0 file write |
+| BehaviorEffect | R4-F；`consumer = 0` |
+| Interpretation rewrite | 不得回写 `meaning` / `appraisal` / `relationshipMeaning` |
+| Expectation rewrite | 不得创建 / 修改 expectation，不得增加其 confidence，不得结算 prediction |
+| Canonical contamination | 不得进入 `memory_records` / mirror / producer / observation builder / recall / activation / MetaMemory / Understanding / relationship |
+| `evidenceView:'full'` | 生产调用 = 0（不得为"知道隐藏事实后做假设"而请求） |
+| prompt / UI / export / backup / log / trace 正文 | turn-local only |
+
+**(n-12) Canonical Observation 边界**
+
+R4-D 的 `buildCanonicalObservation` 的 authority 是
+**`UPSTREAM_TRUSTED_PRECONDITION`**。**R4-E 不得成为这个 upstream** ——
+Counterfactual 对象**不是**合法的 canonical observation source。
+
+**(n-13) §45 相位开关**
+
+`FORBIDDEN_WIRING` 由 `['counterfactual']` 变为 **`[]`**。
+四个 token（`expectation` / `counterfactual` / `predictionError` / `prediction_error`）
+都已在 R4-B~R4-E 里以 **shadow** 形态实现，因此全部**按设计**移出。
+**空列表是结果，不是解禁**：约束改由 `R4B*` / `R4D*` / `R4E*` 具体守卫承担，
+并逐条断言 **BehaviorEffect / SelfNarrative / UnreliableRecollection / Association
+仍未被实现**。
+
+**(n-14) 计数上界**
+
+```
+MAX_ITEMS = 3 · BOUND_KIND = 'IMPLEMENTATION_SAFETY_BOUND'
+IMPLEMENTATION_SAFETY_BOUND != COGNITIVE_TRUTH
+```
+
+这是**实现安全上界**，**不是**关于"人一次能想几个"的主张。
+
+```
+Counterfactual 现在是"本地协议就绪的因果假设影子"：无活体 producer、
+无持久化、无消费者、无因果证明。
+其余 reconstructive 层 runtime production implementation = NONE（仍然为真）。
+```
+
+---
+
+#### (o) R4-E.1 · Intervention Authority + Epistemic Label Reconciliation（追加，不改写 (n)）
+
+**(o-1) `INTERVENTION_AUTHORITY = CALLER_OR_SYSTEM_INPUT`**
+
+旧形态自相矛盾：信封只带"**要求**"（`interventionRequired`），而 `requestedSchema`
+却要**模型返回** `intervention`。于是"对 A 的反事实推演"可能实际是"模型自己选的 B"。
+
+登记并关闭：**`R4E1-INTERVENTION-AUTHORITY-SPLIT`**
+
+机械审计结论（旧）：
+
+```
+INTERVENTION_ORIGIN = MODEL
+  prompt input         : 只有 requirements，**没有**具体 intervention
+  model requestedSchema: 要求模型返回 intervention
+  model output         : 模型的 intervention 被当作 premise
+  final sidecar        : 使用**模型**的 intervention
+```
+
+⇒ `PIPELINE_SUPPORTS_INTERVENTION_CONDITIONED_COUNTERFACTUAL` 当时**未被真实证明**。
+
+**(o-2) 冻结后的拓扑**
+
+```
+INPUT  : canonical evidence + system evidence state
+         + optional Interpretation/Expectation
+         + **EXPLICIT intervention**（必需；闭集 kind；statement ≤240）
+MODEL  : imaginedOutcome (+ causalHypothesis, subjectivePlausibility)
+SYSTEM : intervention echo · labels · purpose · causal level ·
+         causal relation proven · causal attribution confidence · evidence weight
+```
+
+模型 **MUST NOT** choose / replace / rewrite / expand / re-interpret the intervention。
+它只能**基于给定 intervention**推导 outcome 与 hypothesis。
+
+**请求 schema 里已删除 `intervention`**；系统指令明文"**不得**在输出里返回 intervention —
+哪怕逐字相同也不行"。
+
+**(o-3) Echo 完整性**
+
+```
+final.intervention  deepEqual  INPUT.intervention      （✅ 要求）
+final.intervention  deepEqual  MODEL.intervention      （❌ 从不使用）
+```
+
+- 缺失 / 非法 intervention ⇒ `intervention-authority-missing` /
+  `intervention-kind-out-of-vocabulary` / `intervention-statement-exceeds-bound`，
+  **在模型调用之前** fail closed。**不得**让模型补一个默认 intervention。
+- 模型返回 `intervention`（即使逐字相同）⇒
+  `model-attempted-to-choose-or-rewrite-the-intervention`，**整条拒绝**。
+- 嵌套位置的 intervention **被忽略**（输出只从输入复制），不构成改写路径。
+- 输入 intervention **不被 mutate**；输出使用 bounded 规范化**副本**
+  （deep-equal，非同一对象引用）。
+
+**(o-4) Proposal 模式不实现**
+
+"角色自己提出一个反事实问题"属于未来的
+**COUNTERFACTUAL_PROPOSAL / COUNTERFACTUAL_EXPLORATION**，本阶段**不实现**。
+**不得**把 proposal 与 evaluation 混成一个 model call。
+
+```
+counterfactualProposalMode = NOT_IMPLEMENTED_R4E1
+```
+
+**(o-5) Literal epistemic labels（机械确认）**
+
+```
+DOES_CONTRACT_REQUIRE_LITERAL_LABELS = YES
+```
+
+| label | contract 依据 | 字段映射 | 强制者 |
+| --- | --- | --- | --- |
+| `HYPOTHETICAL` | line 170「永远 `HYPOTHETICAL`」· line 1042「永远携带」 | `epistemicStatus = 'counterfactual'` | `EPISTEMIC_LABELS` + `D3b` |
+| `NOT OBSERVED` | line 66「**否（NOT OBSERVED）**」· line 1042 | `observed = false` | 同上 |
+| `NOT CANONICAL EVIDENCE` | line 1042 · line 2581 | `canonicalEvidence = false` | 同上 |
+
+因此采用 §16 的最小 canonical shape，**逐字**沿用 contract 的拼写（含空格）：
+
+```
+EPISTEMIC_LABELS = ['HYPOTHETICAL', 'NOT OBSERVED', 'NOT CANONICAL EVIDENCE']
+LABEL_AUTHORITY  = 'system'
+NO_SECOND_TAXONOMY = true
+```
+
+`labels` 与三个语义字段是**一一映射**，**不是**第二套分类法。
+`labels` 与其余系统字段一样：**system-owned · 模型不可写 · bounded · 不影响 behavior**。
+
+**(o-6) Purpose 拼写**
+
+contract 冻结的是**连字符**形式：
+
+```
+purpose = 'causal-learning'
+```
+
+生产与之一致。（`causal_learning` 下划线形式**不**采用。）
+
+**(o-7) 未变的部分**
+
+`ONE DECLARED INTERVENTION = YES` · `SEMANTIC_SINGLE_CAUSE_GUARANTEED = NO` ·
+`CAUSAL_HYPOTHESIS_ONLY = YES` · `CAUSAL_RELATION_PROVEN = NO` ·
+`REAL_CAUSAL_EFFECT_PROVEN = NOT TESTED` · `EVIDENCE_WEIGHT = NONE` ·
+`causalAttributionConfidence` 恒 `null` · 无 prediction / settlement 污染 ·
+`buildCanonicalObservation` 仍**不接受** counterfactual 作为来源 ·
+生产 caller / consumer = 0 · real provider calls = 0 ·
+零持久化 / 零 schema / 零 migration / 零 route。
+
+**把 intervention 改成 caller 输入 **不**提升因果真实性**：它只让"被评估的那个假设"
+变得**可追溯**，**不是** controlled experiment，**不是** minimal-change world，
+**不是** single causal variable。
+
+```
+Counterfactual 现在是"intervention 可追溯的因果假设影子"：
+无活体 producer、无持久化、无消费者、无因果证明。
+其余 reconstructive 层 runtime production implementation = NONE（仍然为真）。
+```
+
+---
+
 # PART II · PREDICTIVE MEMORY（R4-A.1 纳入冻结）
 
 > 本部分把 **Expectation / Prediction Error / Counterfactual** 正式纳入 foundation contract。

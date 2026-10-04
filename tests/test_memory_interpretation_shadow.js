@@ -449,7 +449,9 @@ const baseInput = (over) => Object.assign({
       /* R4-D 之后 FORBIDDEN_WIRING 收窄为 ['counterfactual']（expectation / predictionError
          由 R4-D 的 shadow 接管）。R4-C 要守的事实**从未**依赖列表的完整内容，只依赖
          "interpretation 不在其中" —— 现在按收窄后的真实状态断言。 */
-      /const FORBIDDEN_WIRING = \['counterfactual'\]/.test(guard)
+      /* 列表内容随 R4-D / R4-E 的相位切换而收窄（R4-E 后为 []）。
+         要守的事实**从不**依赖列表内容，只依赖 "interpretation 不在其中"。 */
+      /const FORBIDDEN_WIRING = \[/.test(guard)
       && /const FORBIDDEN_WIRING = \[[^\]]*\]/.exec(guard)[0].indexOf('interpretation') < 0,
       "'interpretation' was never in the forbidden list (and R4-D narrowed it to counterfactual), "
       + 'so R4-C needed no un-gating');

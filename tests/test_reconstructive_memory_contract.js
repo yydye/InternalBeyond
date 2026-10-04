@@ -46,7 +46,32 @@ const MEMORY_STORE = 'services/home-node/memory-store.js';
    **`counterfactual` 必须留下** —— R4-E 未实现，不得顺手解禁。
    换来的守卫见下方 §5c 的 `R4D*` 断言（shadow-only / consumer-zero /
    no-persistence / no-behavior / no-prompt / no-canonical-mutation）。 */
-const FORBIDDEN_WIRING = ['counterfactual'];
+/* ── R4-E 相位切换 ──────────────────────────────────────────────────
+   'counterfactual' 从 R4-A.1 起就被列为 production 零引用。R4-E 交付了
+   Counterfactual / Causal Hypothesis 的 **shadow**，因此它按设计**移出**列表。
+
+   列表**不是**被清空 —— 它被换成**仍然**未实现的四层。这既保留了
+   `N1`/`N2` 的非平凡扫描，也**防止** R4-E 顺手解禁它们：
+     behaviorEffect         —— R4-F
+     selfNarrative          —— 未选
+     unreliableRecollection —— 未选
+     association            —— R4-G（含 causal graph traversal）
+
+   R4-E 换来的具体守卫见下方 §5d 的 `R4E*` 断言。 */
+/* ── R4-E 之后这个列表**按设计为空** ────────────────────────────────
+   它曾经装着 `expectation` / `counterfactual` / `predictionError` /
+   `prediction_error` —— 四个都已在 R4-B~R4-E 里以 **shadow** 形态实现，
+   因此全部**按设计**移出。空列表是**结果**，不是疏漏。
+
+   一个空列表会让 N1 变成真空断言，所以约束改由**更具体**的守卫承担：
+     · `R4B*` / `R4D*` / `R4E*` 块 —— shadow-only / consumer-zero /
+       no-persistence / no-behavior / no-canonical-mutation / no-prompt
+     · `tests/test_counterfactual_shadow.js` 的 M7 与 R4E 的 P3 ——
+       逐条断言 BehaviorEffect / SelfNarrative / UnreliableRecollection /
+       Association **仍**被登记为 NOT IMPLEMENTED
+
+   **不得**因为本列表为空就认为这些层已被解禁：它们从未被实现。 */
+const FORBIDDEN_WIRING = [];
 const FORBIDDEN_STORES = ['expectation', 'expectations', 'counterfactual', 'counterfactuals', 'metamemory'];
 /* R4-B：唯一被允许生产的 reconstructive runtime。 */
 const R4B_SHADOW = 'assets/js/memory-recall/metamemory-shadow.js';
@@ -329,6 +354,119 @@ check('R4D16.noDurableExpectationState',
   !/memory_records|memory_change_log/.test(R4D_CODE)
   && /no-durable-expectation-store/.test(R4D_TEXT),
   'no durable expectation / observation / prediction-error state may be written');
+
+/* ══════════════════════════════════════════════════════════════════════
+   §5d · R4-E SHADOW-ONLY 守卫（取代 counterfactual 的零引用守卫）
+   ──────────────────────────────────────────────────────────────────────
+   'counterfactual' 现在**允许**出现在 production，但只能以"因果假设影子"
+   的形态。下面把这份限制变成可机械判定的性质。 */
+const R4E_FILES = [
+  'assets/js/memory-recall/counterfactual-shadow-core.js',
+  'assets/js/memory-recall/counterfactual-shadow-runner.js'
+];
+const R4E_TEXT = R4E_FILES.filter(f => fs.existsSync(path.join(ROOT, f))).map(f => read(f)).join('\n');
+const R4E_CODE = _R4D_STRIP(R4E_TEXT);
+
+check('R4E1.shadowCoresExist', R4E_TEXT.length > 0,
+  'the R4-E cores must exist: ' + R4E_FILES.join(', '));
+check('R4E2.coreIsPure',
+  !/\bfetch\s*\(|XMLHttpRequest|WebSocket/.test(R4E_CODE)
+  && !/indexedDB|localStorage|sessionStorage/.test(R4E_CODE)
+  && !/Date\.now\s*\(|Math\.random/.test(R4E_CODE)
+  && !/dbPut|dbGet\(|dbDelete|writeFile/.test(R4E_CODE),
+  'the R4-E cores must be pure: no network, no storage, no clock, no DB');
+check('R4E3.hardEpistemicLabelsAreSystemWritten',
+  /PURPOSE = 'causal-learning'/.test(R4E_TEXT)
+  && /EPISTEMIC_STATUS = 'counterfactual'/.test(R4E_TEXT)
+  && /OBSERVED = false/.test(R4E_TEXT)
+  && /CANONICAL_EVIDENCE = false/.test(R4E_TEXT),
+  'purpose / epistemicStatus / observed / canonicalEvidence are system-owned constants');
+check('R4E4.interventionAuthorityIsCallerOrSystemInput',
+  /INTERVENTION_AUTHORITY: 'CALLER_OR_SYSTEM_INPUT'/.test(R4E_TEXT)
+  && /intervention-authority-missing/.test(R4E_TEXT)
+  && /model-attempted-to-choose-or-rewrite-the-intervention/.test(R4E_TEXT)
+  && /normalizeIntervention/.test(R4E_TEXT),
+  'the intervention is a mandatory CALLER/SYSTEM input; the model can neither supply nor rewrite it');
+check('R4E18.literalEpistemicLabelsMatchContract',
+  /EPISTEMIC_LABELS = \['HYPOTHETICAL', 'NOT OBSERVED', 'NOT CANONICAL EVIDENCE'\]/.test(R4E_TEXT)
+  && /LABEL_AUTHORITY = 'system'/.test(R4E_TEXT)
+  && /NO_SECOND_TAXONOMY = true/.test(R4E_TEXT)
+  && /HYPOTHETICAL \/ NOT OBSERVED \/ NOT CANONICAL EVIDENCE/.test(read('docs/contracts/memory/RECONSTRUCTIVE_MEMORY_CONTRACT.md')),
+  'the contract literally requires the three labels; the core carries them verbatim with no second taxonomy');
+check('R4E19.modelCannotWriteInterventionOrLabels',
+  /'intervention', 'interventionKind'/.test(R4E_TEXT)
+  && /'labels', 'epistemicLabels'/.test(R4E_TEXT),
+  'intervention and labels are in the model-forbidden field list');
+check('R4E5.semanticSingleCauseIsNotOverclaimed',
+  /semanticalSingleCauseGuaranteed/.test(R4E_TEXT)
+  && /SEMANTIC_SINGLE_CAUSE|semantic-single-cause-not-mechanically-guaranteed/.test(R4E_TEXT),
+  'only ONE DECLARED INTERVENTION is proven — semantic single-change is NOT guaranteed');
+check('R4E6.causalHypothesisOnlyNotAProof',
+  /causalLevel: 'hypothesis'/.test(R4E_TEXT)
+  && /causalRelationProven: false/.test(R4E_TEXT)
+  && /causalFact|provenCause|confirmedCause/.test(R4E_TEXT),
+  'causal hypothesis is representable; causal FACT / PROOF vocabulary exists only as a rejection list');
+check('R4E7.counterfactualHasNoEvidenceWeight',
+  /evidenceWeight: 'NONE'/.test(R4E_TEXT),
+  'a counterfactual contributes no evidence: EVIDENCE_WEIGHT = NONE');
+check('R4E8.causalAttributionConfidenceNeverFabricated',
+  /causalAttributionConfidence: null/.test(R4E_TEXT),
+  'without an experiment there is no causal attribution confidence — it stays null');
+check('R4E9.noPredictionSemantics',
+  !/triggerPattern\s*:/.test(R4E_CODE)
+  && !/predictionError\s*:/.test(R4E_CODE)
+  && !/calibrationCounts\s*:/.test(R4E_CODE)
+  && !/observedAt\s*:/.test(R4E_CODE)
+  && /counterfactual-cannot-be-settled/.test(R4E_TEXT),
+  'a counterfactual carries no trigger / prediction error / calibration / settlement');
+check('R4E10.noDurableIdentity',
+  !/counterfactualId\s*:/.test(R4E_CODE.replace(/FORBIDDEN_MODEL_FIELDS[\s\S]*?\]/, '')),
+  'no counterfactual id is generated: no UUID that looks permanent but dies on reload');
+check('R4E11.observationBuilderRejectsCounterfactuals',
+  /UPSTREAM_TRUSTED_PRECONDITION/.test(R4D_TEXT)
+  && !/counterfactual/.test(read('assets/js/memory-recall/prediction-observation-core.js')),
+  'the D.2 observation authority is an upstream precondition, and R4-E does not become that upstream');
+check('R4E12.runnerHasZeroProductionCallers',
+  (function () {
+    let callers = 0;
+    const walk = dir => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const q = path.join(dir, e.name);
+        if (e.isDirectory()) { if (e.name !== 'node_modules') walk(q); continue; }
+        if (!/\.(js|rs|toml)$/.test(e.name)) continue;
+        const rel = path.relative(ROOT, q).replace(/\\/g, '/');
+        if (R4E_FILES.indexOf(rel) >= 0) continue;
+        if (/counterfactual-shadow-runner/.test(_R4D_STRIP(read(rel)))) callers++;
+      }
+    };
+    ['assets', 'services', 'bridge', 'src-tauri'].forEach(d => {
+      const full = path.join(ROOT, d); if (fs.existsSync(full)) walk(full);
+    });
+    return callers === 0;
+  })(),
+  'PRODUCTION COUNTERFACTUAL CALLER = 0 and CONSUMER = 0');
+check('R4E13.inheritsTimeoutAndCancellationDiscipline',
+  /understanding-derivation\.js:70/.test(R4E_TEXT)
+  && /PROVIDER_EXECUTION_CANCELLATION_GUARANTEED\s*=\s*false/.test(R4E_TEXT)
+  && /AUTO_RETRY\s*=\s*'NONE'/.test(R4E_TEXT),
+  'R4-E inherits R4-C/R4-D exactly: no invented timeout, wait-bound != cancellation, no retry');
+check('R4E14.noHiddenR4CorR4DChain',
+  !/interpretation-runner|expectation-shadow-runner/.test(R4E_CODE),
+  'R4-E must never trigger the R4-C / R4-D runners to fill a missing layer');
+check('R4E15.noPersistenceAndNoSchema',
+  !/memory_records|memory_change_log/.test(R4E_CODE)
+  && /no-durable-counterfactual-store/.test(R4E_TEXT),
+  'no counterfactual durable state, no new store/table, no migration');
+check('R4E16.noBehaviorOrRevisionSurface',
+  /NOT_IMPLEMENTED_R4F/.test(R4E_TEXT)
+  && /expectationRevision: null/.test(R4E_TEXT)
+  && /interpretationRevision: null/.test(R4E_TEXT),
+  'no behavior consumer, no interpretation rewrite, no expectation rewrite');
+check('R4E17.optionalLayersAreCallerSuppliedOnly',
+  /subjectiveInterpretationAvailable/.test(R4E_TEXT)
+  && /expectationAvailable/.test(R4E_TEXT),
+  'R4-E may only use caller-supplied interpretation / expectation, or degrade honestly');
+
 check('R4D21.observationCapabilityIsNotForgeable',
   /OBSERVATION_IDENTITY\s*=\s*new WeakSet\(\)/.test(R4D_TEXT)
   && /OBSERVATION_SEAL\s*=\s*new WeakMap\(\)/.test(R4D_TEXT)
