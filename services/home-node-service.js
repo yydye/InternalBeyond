@@ -79,6 +79,15 @@ const economyApprovalDecisionModule = require('../services/home-node/economy-app
      都是用户操作，但它们是**两种权威**；合成一条万能 user command endpoint
      会让"允许 Agent 自主花多少钱"与"批准这一笔"在审计里变成同一件事。 */
 const economyConfigurationModule = require('../services/home-node/economy-configuration.js');
+/* ── P21-R4-LIVE-2.1 · Runtime Interpretation —— Vault 授权、非持久化、
+   受成本闸门约束的**运行时**解释执行边界。
+   ★ 与它上面每一个模块同款：**只有**装配层 require 它，而它 require 的目标
+     仍是既有契约（依赖闭包没有变宽）。
+   ★ 它为什么必须由**装配层**构造：它的四个依赖（registry / credentialAccess /
+     modelPort / costPolicy）全是装配事实；而 costPolicy 的**唯一**启用入口
+     就是下面的 options.runtimeInterpretationPolicy —— 本文件不读任何 env、
+     http.js 也不写任何默认值（frozen：本阶段没有生产启用路径）。 */
+const createRuntimeInterpretation = require('../services/home-node/runtime-interpretation.js');
 const createNodeModelPort = require('../active/node-model-port.js');
 /* P11-3E：canonical store 失败分类器（**唯一**一份，见 runtime/db-failure.js）。
    它在 runtime/ 下，与 runtime/local-services-runner.js 那份是同一模块 ——
@@ -921,6 +930,26 @@ function buildHomeNode(options) {
     clock: options.clock,
     logger: serviceLog
   });
+  /* ── P21-R4-LIVE-2.1 · Runtime Interpretation 的挂载点 ────────────────
+     位置在 registry / credentialAccess 之后、http 之前：服务的四个依赖恰好是
+     "这台实例的设备目录 + 这台实例的 Vault 取用 + 这条实例的 wire 层 + 成本
+     闸门"，而它自己**不**持有 store、不持有凭据本体（公开面只有
+     { path, operations, describe, run }）。
+     ★ modelPort 与 executor / understanding 用**同一个**表达式（options.port）：
+       解释走的是与回合执行完全相同的那条 wire 层（IBModelCore 的唯一翻译器）
+       —— 另建一个 port 会让"解释请求"与"聊天请求"在 provider 形状上分叉，
+       而那种分叉只会在某个特定 provider 上才暴露。
+     ★ costPolicy 只接受装配层显式传进来的 options.runtimeInterpretationPolicy：
+       缺席即 false（默认关），而**没有任何环境变量或 UI 开关**能把它打开 ——
+       这正是本阶段的冻结项（"没有生产启用路径"）。 */
+  const instanceRuntimeInterpretation = options.runtimeInterpretation || createRuntimeInterpretation({
+    registry: instanceRegistry,
+    credentialAccess: instanceCredentialAccess,
+    modelPort: options.port || createNodeModelPort({}),
+    costPolicy: options.runtimeInterpretationPolicy,
+    clock: options.clock,
+    logger: serviceLog
+  });
   /* 与进程级启动路径**共用** gatewayAssembly（见其头部说明：两条路径两套装配
      必然漂移，memoryStore 就是这样在 production 上丢过一次）。 */
   const instanceGateway = options.gateway || gatewayAssembly({
@@ -1011,6 +1040,14 @@ function buildHomeNode(options) {
        ★ 它**不是** /internal/economy/approval-decision 的别名，也不是它的
          扩展：两条路径不共用命令、不共用信封（§8）。 */
     economyConfiguration: instanceEconomy.economyConfiguration,
+    /* ── P21-R4-LIVE-2.1 · Runtime Interpretation（**唯一**一条运行时执行面）──
+       ★ 与上面三条 economy seam 同级、与 economyStore 不同级：它替换不了任何
+         store，公开面只有 { path, operations, describe, run }。
+       ★ 为什么它能上 HTTP 而不违反"HTTP 面只读"：它不是读面，而是一条与
+         economy 写面同级的**执行**面，而它的准入完全由桌面凭据判定负责
+         （http.js 里那块在 authorized() 之后，没有 isEconomyCommandPath
+         式豁免）。 */
+    runtimeInterpretation: instanceRuntimeInterpretation,
     /* P11-3E · canonical store 清单：健康与"能不能服务"是同一个问题，
        所以这里列出本进程承诺的全部 canonical store，而不是只有 chat。
        声明角色（chat）在最前，`failure` 取第一个命中它的。 */
@@ -1111,6 +1148,12 @@ function buildHomeNode(options) {
        一个答案是"用户能决定一条 intent"，另一个是"用户能预设这台节点的钱与
        规则"。 */
     economyConfiguration: instanceEconomy.economyConfiguration,
+    /* P21-R4-LIVE-2.1：Runtime Interpretation 与上面每一个域同级导出 ——
+       "这台节点上到底有没有一条运行时解释执行面、它开不开"必须是一句可以
+       直接断言的事实，而不是读者从路由表或环境变量里推断的东西。
+       ★ 它与 http.js 从 deps 里拿到的是**同一个对象**：这正是"两条装配路径
+         不得漂移"这句断言的载体（identity，而不是两个形状相同的对象）。 */
+    runtimeInterpretation: instanceRuntimeInterpretation,
     registry: instanceRegistry,
     gateway: instanceGateway,
     executor: instanceExecutor,
@@ -1168,6 +1211,21 @@ const moments = momentsAssembly({
 const economy = economyAssembly({
   dataDir: DATA_DIR,
   registry,
+  logger: (level, event, fields) => log(level, event, fields)
+});
+/* ── P21-R4-LIVE-2.1 · **进程级**的 Runtime Interpretation ───────────────
+   与 memory / understanding / moments / economy 那四次的教训逐字同形：
+   只接 buildHomeNode 会让**真实进程**上这条路径整个不存在
+   （http.js 收不到 deps.runtimeInterpretation ⇒ 分支不存在 ⇒ 落到通用 404），
+   而所有 buildHomeNode 的测试全绿 —— 这正是本文件已经记过**四次**的那种缺口。
+   ★ 刻意**不传** costPolicy：生产路径上它是 undefined ⇒ 服务的默认（关）。
+     本阶段冻结"没有生产启用路径"：不加 env、不加 UI 开关、不加默认值。
+   ★ registry 用进程级的那一个；credentialAccess 用生产实例 —— 它的 isAllowed
+     读 productionRegistry，是"这台节点自己发布过的角色"那份最小权限白名单。 */
+const runtimeInterpretation = createRuntimeInterpretation({
+  registry,
+  credentialAccess: productionCredentialAccess,
+  modelPort: port,
   logger: (level, event, fields) => log(level, event, fields)
 });
 /* P11-3E：进程级 Moments 探针。openAll() 写它、/health 与 /moments/* 读它。
@@ -1246,6 +1304,12 @@ const httpLayer = createHttp({
      而它的开/关由凭据与三个 store 入口是否齐全共同决定，
      因此 /security 的 economyPolicy.configuration.open 才是诚实的答案。 */
   economyConfiguration: economy.economyConfiguration,
+  /* ── P21-R4-LIVE-2.1：**进程级**的 Runtime Interpretation ──────────────
+     这一行与 buildHomeNode 里那一行逐字同源，而它正是"生产启动路径上真的
+     有一条可用的解释面"的机器可读形式。★ 没有它，上面的构造函数只是一个
+     没人引用的对象：路由分支不存在、日志里永远不会出现一行
+     runtime-interpretation，而单元测试全绿（本文件已经记过四次同一种病）。 */
+  runtimeInterpretation: runtimeInterpretation,
   /* P22-9：**进程级**的门。它与 store 同级导出，理由逐字相同 —— 门的缺席
      在生产上是一个静默的"每个 consumer 都能直接提议"，而那种缺口只有
      直接断言语料才能发现。 */
@@ -1552,6 +1616,12 @@ module.exports = {
       ★ 与上面那一行同级导出，但它是**另一条**路径、**另一份**词表：把两者
       合成一个导出会掩盖"这是两种权威"。 */
   economyConfiguration: economy.economyConfiguration,
+  /* P21-R4-LIVE-2.1：**进程级**的 Runtime Interpretation（= 生产侧"这条路
+     存在吗、它开不开"的唯一答案）。导出理由与上面每一个域逐字相同：这一域
+     还没有被咬过，但"两条装配路径只接一条"在本文件已经发生过**四次**
+     （memory / understanding / moments / economy），所以它的形式必须是可
+     直接断言的，而不是靠读代码。 */
+  runtimeInterpretation,
   defaultEconomyChannelSources,
   economyAssembly,
   buildHomeNode,

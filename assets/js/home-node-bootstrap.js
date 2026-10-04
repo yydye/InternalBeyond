@@ -1102,6 +1102,30 @@ function publishMemorySettings(reason) {
   }, function () { return { ok: false, error: 'settings-publish-failed' }; });
 }
 
+/* ── R4-C LIVE-2.1：运行时记忆解释（**唯一**动词 · 非持久 · 显式调用）────────
+   与 memory / understanding / moments 三个 surface 的**结构性**差异：
+
+     · 这里没有 authority、没有 mirror、没有 sync、没有回退。那三套语义存在的
+       理由是它们身后有一条持久权威链（revision / CAS / 水位 / 迁移），而运行时
+       解释按定义是**非持久**的（服务端自述 durable:false）：它不写任何 store、
+       不推进任何 revision。给它配一个"镜像"就等于凭空造出第二个状态源。
+
+     · 工厂缺席时**如实**降级并留一条可诊断的 warn，而不是发明一个会静默失败的
+       对象 —— 与上面三个 remote 同一条纪律。
+
+   ★ 无定时器、无 per-turn hook、**无自动调用**：这一层不决定"什么时候解释"，
+     那是调用方显式的事。这也是本阶段"零自动成本"的结构性保证 ——
+     没有调用点，就没有 token 消耗。 */
+var _runtimeRemoteFactory = (NS && typeof NS.createRuntimeRemote === 'function')
+  ? NS.createRuntimeRemote : ((typeof window.createRuntimeRemote === 'function') ? window.createRuntimeRemote : null);
+var runtimeRemote = _runtimeRemoteFactory ? _runtimeRemoteFactory({}) : null;
+if (!runtimeRemote) {
+  warn('runtime-authority-missing', {
+    remote: !!_runtimeRemoteFactory,
+    note: '运行时解释边界不可用（home-node-client.js 未加载或版本不匹配）'
+  });
+}
+
 /* ── public surface：诊断 / 迁移 / 状态 ────────────────────────────── */
 var surface = {
   mode: MODE,
@@ -1308,6 +1332,32 @@ var surface = {
     rebuildMirror: function (options) {
       if (!momentsAuthority) return Promise.resolve({ ok: false, error: 'authority-disabled' });
       return momentsAuthority.rebuild(options || {});
+    }
+  },
+  /* ── R4-C LIVE-2.1：运行时记忆解释的可观测面 ──────────────────────────
+     与上面三个面**故意不同形**：没有 status()/sync()/migrate()/rebuildMirror()，
+     因为那些动词都属于"持久权威的三态语义"，而这个边界按定义非持久。
+     这里只有 instance（诊断用）与那一个动词。 */
+  runtime: {
+    instance: runtimeRemote,
+    available: !!runtimeRemote,
+    /* 唯一的动词。工厂缺席时返回一个**形状稳定**的失败对象（而不是抛异常）：
+       调用方不必为"这一层没加载"写一条 try/catch，而失败理由也不会伪装成
+       服务端的裁决词 —— `runtime-remote-missing` 是**客户端**诊断，
+       服务端的词表（timeout-authority-missing / credential-unavailable /
+       request-field-forbidden …）只由服务端给出。 */
+    runMemoryInterpretation: function (input, options) {
+      if (!runtimeRemote) {
+        return Promise.resolve({
+          ok: false, durable: false, items: [], rejected: [], missingFor: [],
+          counts: { requested: 0, returned: 0 },
+          model: { providerClass: null, modelId: null, latencyMs: null, status: 'runtime-remote-missing', attempts: 0 },
+          reasonCodes: ['runtime-remote-missing'],
+          metaMemoryState: null, recollectionQuality: null,
+          error: 'runtime-remote-missing'
+        });
+      }
+      return runtimeRemote.runMemoryInterpretation(input || {}, options || {});
     }
   }
 };

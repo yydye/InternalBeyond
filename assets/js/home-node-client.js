@@ -894,4 +894,85 @@ function createMomentsRemote(deps) {
   };
 }
 NS.createMomentsRemote = createMomentsRemote;
+
+/* ── runtime remote driver（R4-C LIVE-2.1 · 运行时记忆解释边界的**唯一**入口）──
+   P21-R4-C-LIVE-2.1。与上面三个 remote 的两点**结构性**差异，都是刻意的：
+
+     · **只有一个动词**。memory / understanding / moments 各自是一整套 CRUD 面，
+       因为它们服务的是"持久权威"；而运行时解释按定义是**非持久**的
+       （durable:false，见 memory-interpretation-core 的 noDurable），它不写任何
+       store、不推进任何 revision，因此这里没有 put / remove / sync，也**没有**
+       runRuntimeModel / deriveAnything 这类通用模型入口 —— 一个"可以指定
+       provider / model / prompt 的运行时调用"就是第二条绕过 Vault 与成本护栏的
+       模型通道，正是本阶段要消灭的形状。加一个"顺手也能跑别的"的动词，等于把
+       这一层从**一个边界**降级成**一个通用出口**。
+
+     · **不做信封解包**。`/memory/*`、`/understanding/*`、`/moments/*` 由
+       mobile-gateway 包成 `{ok, payload:{…}}`，因此那三个 driver 都走
+       `_unwrapMemoryEnvelope`；而 `/internal/runtime/memory-interpretation`
+       返回的信封**本来就是平的**（`{ok, durable, items, model, boundary…}`）。
+       再解一次 payload 会把真正的事实（items / model.attempts / durable）
+       推进一个不存在的 payload 里 —— 调用方读到 undefined，与当年
+       "镜像被清空"是同一类事故。这里因此**逐字不动**地透出，解包只发生在
+       该发生的那三条路径上。
+
+   ── 闭集构造（这是安全性质，不是代码风格）────────────────────────────
+   payload 由**显式字段列表**拼出：operation 是模块常量，inputEnvelope 的五个键
+   逐字列出。调用方即使传 `{credentialRef, apiKey, provider, model, endpoint,
+   systemPrompt, prompt, messages, …}`，这些键也**一个都到不了 wire** ——
+   它们不是被删除的，而是从来没有被复制过（`delete` 列表会随服务端新增字段而
+   漂移，白名单不会）。服务端仍会独立复核（request-field-forbidden），
+   但浏览器侧不把"拦住它"当成服务端的责任。
+
+   ── 超时权威 ───────────────────────────────────────────────────────
+   这里**不发明**默认超时。调用方不给 timeoutMs，body 里就是 null，服务端以
+   timeout-authority-missing 拒绝 —— 一个由浏览器凭空发明的"20 秒策略"
+   正是 R4-C.1 §12 删掉的那件东西。`_request` 那一层的 DEFAULT_TIMEOUT_MS
+   只是**传输层的上界**（socket 不能永远挂着），不是 provider policy，
+   两者不可互相冒充。 */
+var RUNTIME_OPERATION = 'memory-interpretation';
+var RUNTIME_PATH = '/internal/runtime/memory-interpretation';
+/* inputEnvelope 的**闭集**键。服务端只认这五个，多一个就 request-field-forbidden；
+   这里逐字列出，因此"调用方多带一个字段"在**构造层**就不可能发生。 */
+var RUNTIME_ENVELOPE_KEYS = ['selectedIds', 'records', 'evidence', 'currentState', 'roleName'];
+
+function createRuntimeRemote(deps) {
+  /* deps 与其余三个 driver 同形（装配层总是 `factory({})` 调用）。这里**刻意**
+     不从 deps 读任何超时或模型默认值：超时权威在调用方，模型与凭据在服务端，
+     浏览器侧没有第三个可以决定它们的地方。 */
+  deps = deps || {};
+  return {
+    /* input  = { characterId, inputEnvelope }；options = { timeoutMs }
+       —— 除这两个入参以外，本动词不接受任何其它参数。 */
+    runMemoryInterpretation: function (input, options) {
+      options = options || {};
+      var src = (input && typeof input === 'object' && !Array.isArray(input)) ? input : {};
+      var envelope = (src.inputEnvelope && typeof src.inputEnvelope === 'object' && !Array.isArray(src.inputEnvelope))
+        ? src.inputEnvelope : {};
+      /* 只搬这五个键，而且**缺失的键不补默认值**：替调用方补一个 [] 就等于
+         本层替它声明"这次没有输入"，而那不是浏览器能知道的事。 */
+      var closed = {};
+      for (var i = 0; i < RUNTIME_ENVELOPE_KEYS.length; i++) {
+        var key = RUNTIME_ENVELOPE_KEYS[i];
+        if (Object.prototype.hasOwnProperty.call(envelope, key)) closed[key] = envelope[key];
+      }
+      /* 一个 timeoutMs 同时决定 body 里的**权威声明**与传输层的等待上界。
+         两者取同一个数，是为了让"服务端以为的超时"与"客户端等待的超时"
+         不会各自漂移；也正因为它们是同一个数，缺省时这里是 NaN，
+         body 里落成 null 而由服务端拒绝 —— 而不是被悄悄填成 15000。 */
+      var timeoutMs = Number(options.timeoutMs);
+      return _request(RUNTIME_PATH, {
+        method: 'POST',
+        body: {
+          operation: RUNTIME_OPERATION,
+          characterId: String(src.characterId == null ? '' : src.characterId),
+          timeoutMs: timeoutMs,
+          inputEnvelope: closed
+        },
+        timeoutMs: timeoutMs
+      });
+    }
+  };
+}
+NS.createRuntimeRemote = createRuntimeRemote;
 })(window.IB || (window.IB = {}));

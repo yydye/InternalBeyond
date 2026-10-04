@@ -132,6 +132,19 @@ function createHomeNodeHttp(deps) {
          由 store 的 canonical 事实持有，不由路由层"记得检查"。
        ★ 不注入时（分解装配、只看读面的测试）这一整条分支**不存在**。 */
   const economyConfiguration = deps.economyConfiguration || null;
+  /* ── P21-R4-LIVE-2.1 · Runtime Interpretation（**运行时**解释边界）──────
+     ★ 这里拿到的**不是** provider、不是凭据、不是 memory store：服务自己的
+       依赖（registry / credentialAccess / modelPort / costPolicy）在装配层
+       （services/home-node-service.js）注入，本层只拿到一个窄对象
+       （公开面只有 { path, operations, describe, run }）。因此"HTTP 层变成
+       第二个 provider 调用方"在结构上不可能 —— 本文件没有任何一行能发起
+       一次模型调用，也没有任何一行能读 Vault。
+     ★ 不注入时（分解装配、只看读面的测试、未接解释面的部署）这整条分支
+       **不存在**，行为与本阶段之前逐字一致。
+     ★ 本层**不**决定"这条路开不开"：付费闸门的唯一解释在服务的 costPolicy
+       里，而唯一的启用入口是装配层传进来的 options.runtimeInterpretationPolicy。
+       本文件不读任何 env、不写任何默认值（frozen：本阶段没有生产启用路径）。 */
+  const runtimeInterpretation = deps.runtimeInterpretation || null;
   const executor = deps.executor || null;
   const gateway = deps.gateway || null;
   const clock = deps.clock || (() => Date.now());
@@ -614,6 +627,163 @@ function createHomeNodeHttp(deps) {
     });
     sendJson(res, configured.status || 400, configured, req);
   }
+
+  /* ── P21-R4-LIVE-2.1 · Runtime Interpretation 的**传输面** ──────────────
+     ★ 本文件在这里只做四件事：有界读体 → 把请求的生命周期桥成 AbortSignal
+       → 把 body 原样交给服务 → 把服务给的信封原样发出。**不解释**意图、
+       **不选**角色、**不碰**凭据、**不判断**钱：那四件事分别在服务的
+       registry 解析、credentialAccess、modelPort 与 costPolicy 里各有一份
+       唯一实现（与 P22-11 / P22-13 / P22-14 三条 seam 同一条纪律）。
+     ★ 审计只记**结构化元数据**（与文件头第 4 条一致）：operation /
+       characterId / outcome / status / attempts / providerCalls / vaultReads /
+       durationMs。正文、prompt、凭据**绝不**进来 —— 解释结果里可能有内容，
+       而内容只存在于响应体里，不进日志环。 */
+  function runtimeOperationName() {
+    /* 操作名从服务自己的 operations 里取，本文件**不**再抄一份字面量：
+       审计里的 operation 必须与路由认的那一份同源。 */
+    const ops = runtimeInterpretation && Array.isArray(runtimeInterpretation.operations)
+      ? runtimeInterpretation.operations : [];
+    return ops.length ? String(ops[0]) : null;
+  }
+  /* 计数一律原样透传：0 是**有意义**的值（"一次 provider 都没调"），
+     因此不能用 `|| null` 抹掉它；只有真读不到时才是 null。 */
+  function metricOrNull(value) {
+    if (value == null) return null;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  }
+  async function handleRuntimeInterpretation(req, res) {
+    let body = null;
+    try {
+      body = await readBody(req, MAX_BODY_BYTES);
+    } catch (error) {
+      const code = (error && error.code) || 'read-error';
+      record('warn', 'runtime-interpretation-unreadable', {
+        operation: runtimeOperationName(), outcome: 'refused', reasonCode: code, loopback: isLoopback(req)
+      });
+      /* 与既有 POST 写路径（/messages）**逐字同一条**读体纪律：太大是 413，
+         其余（坏 JSON / 读错误）是 400。刻意不发明新词 —— 同一种失败在本
+         文件里必须读出同一个样子。服务还没看到这个请求，因此任何"服务给出
+         的理由"此刻都不存在，这里也不假装有。 */
+      bad(res, code === 'too-large' ? 413 : 400, code || 'bad-body', { unreadableBody: code }, req);
+      return;
+    }
+    /* 调用方断开 ⇒ 把取消**转发**给这次运行。**必须**桥接：一次 run 会花真实
+       的 provider 预算，而"调用方已经走了"不该继续烧钱。两个事件都要听
+       （缺一个就有一半的断线场景继续烧钱）：
+         · req 'aborted' —— 请求体还没读完就断了；
+         · res 'close'   —— 响应写不出去（读完之后客户端消失）。
+       ★ 诚实边界：这条接线**只**转发取消信号，不宣称更多 —— 客户端断开
+         并不能证明上游 provider 的执行已经停止（SERVER_EXECUTION_MAY_CONTINUE
+         AFTER_CLIENT_DISCONNECT 不因这次转发而被推翻）。服务侧据此把
+         attempts 记为 0 / 不记 providerCalls，那是它对"端口有没有真的被调用"
+         的自述，而不是"世界已经安全"的证明。
+       ★ 成对摘除，而且在**写响应之前**先摘一次：响应正常结束时的 'close'
+         不该被读成本次运行的取消；finally 里再摘一次是幂等兜底（run 抛错时
+         也一定摘掉），否则每个请求都会往这两个 EventEmitter 上留一个永不释放
+         的监听器（长跑进程里的真实泄漏）。 */
+    const controller = new AbortController();
+    const onDisconnected = () => { try { controller.abort(); } catch (_) { /* 已中止 */ } };
+    const detachDisconnect = () => {
+      req.removeListener('aborted', onDisconnected);
+      res.removeListener('close', onDisconnected);
+    };
+    req.on('aborted', onDisconnected);
+    res.on('close', onDisconnected);
+    const startedAtMs = clock();
+    try {
+      const result = await runtimeInterpretation.run(body, { signal: controller.signal });
+      /* 服务承诺"永不抛、总是回信封"（冻结接口）。这一行不是为了兜住它，
+         而是为了让**传输层**在任何情况下都不发出一个非信封的响应体：
+         契约被破坏时给一个诚实的 500，而不是 JSON `null`。 */
+      if (!result || typeof result !== 'object') {
+        record('error', 'runtime-interpretation-envelope-missing', { operation: runtimeOperationName() });
+        bad(res, 500, 'runtime-interpretation-failed', { durable: false }, req);
+        return;
+      }
+      detachDisconnect();
+      const ok = result.ok === true;
+      /* 三个计数是**服务的自述事实**（传输层无法自己知道它们），而冻结信封
+         把它们放在 `boundary` 块里（cost / vault / attempt 的自述块）。
+         这里先看 boundary、再看顶层：两种形状都认，但绝不由本层编一个数 ——
+         读不到就是 null。 */
+      const boundary = (result.boundary && typeof result.boundary === 'object') ? result.boundary : {};
+      /* 服务自己量到的耗时优先（它知道工作真正在哪一刻开始/结束）；没有时
+         用本层量到的墙上时间 —— 被成本闸门或角色解析提前拒绝的请求就落后者。 */
+      const reportedDuration = result.durationMs != null
+        ? result.durationMs
+        : (result.model && typeof result.model === 'object' ? result.model.latencyMs : null);
+      const durationMs = (reportedDuration == null || !Number.isFinite(Number(reportedDuration)))
+        ? Math.max(0, clock() - startedAtMs) : Number(reportedDuration);
+      record(ok ? 'info' : 'warn', 'runtime-interpretation', {
+        operation: result.operation || runtimeOperationName(),
+        characterId: result.characterId || null,
+        outcome: ok ? 'accepted' : String(result.reasonCode || result.error || 'refused'),
+        status: metricOrNull(result.status),
+        attempts: metricOrNull(boundary.attempts != null ? boundary.attempts : result.attempts),
+        providerCalls: metricOrNull(boundary.providerCalls != null ? boundary.providerCalls : result.providerCalls),
+        vaultReads: metricOrNull(boundary.vaultReads != null ? boundary.vaultReads : result.vaultReads),
+        durationMs: durationMs
+      });
+      sendJson(res, Number(result.status) || (ok ? 200 : 400), result, req);
+    } finally {
+      /* 幂等兜底：正常路径上面已经摘过一次，这里覆盖 run 抛错与提前 return。 */
+      detachDisconnect();
+    }
+  }
+
+  /* ── P21-R4-LIVE-2.1 · /security 里的诚实自述（唯一取值点）───────────────
+     ★ 这一节回答"这台节点上到底有没有一条运行时解释执行面、它开不开、
+       它是什么范围"。四个 NOT 类字段刻意写成**机器可读**的，而不是躺在
+       注释里：
+         · transportScope: 'DESKTOP_ONLY' —— `/internal/` 前缀已在
+           isDesktopOnlyPath 里，设备面拿不到（路由事实，不是打算）；
+         · androidCompatibility: 'NOT_PROVEN' —— 安卓上没有验证过；
+         · autoInvocation: 'NOT_IMPLEMENTED' —— 没有任何自动触发（回合、
+           派生、定时器都不调用它）；
+         · autoRetry: 'NONE' + maxAttempts: 1 —— 失败不自动重试，因此
+           一次请求最多花一次 provider 预算；
+         · durable: false —— 非持久化：内容不落库，进程结束即消失。
+     ★ costPolicyEnabled 的取值路径**恰好一条**：
+       `describe().costPolicy.memoryInterpretationEnabled` —— 服务自己解释
+       costPolicy（undefined / false / true / 对象 / 函数），本层既不重写那份
+       解释，也不认第二个字段名。"这条付费路径开不开"因此只有一个真源。
+       describe() 无秘密、无正文，每请求读一次是安全的（与 /security 里
+       economyConfiguration.describe() 同一条既有做法）。 */
+  function runtimeInterpretationSecurity() {
+    /* 未装配时也回**同一套九个键**，一个不少：诊断页不该因为某一域缺席而
+       换一套形状（消费者会立刻分叉）。
+       ★ `path` 只有**一个**来源 = 服务对象自己的 `path`。本层**刻意不写**
+         那个字面量：字面量写在这里就是第二份"这条路径叫什么"，而它与
+         `route()` 用的判定（`path === runtimeInterpretation.path`）、以及
+         浏览器客户端里那份（它 require 不到 Node 模块，只能自带常量）三者
+         一旦漂移，`/security` 会继续报告一条**已经不存在的路径** —— 诊断面
+         撒谎比诊断面缺席更糟。未装配时如实报 null（"这个进程没有这条面"），
+         而不是替服务声明一条它并不拥有的路径。 */
+    const boundary = {
+      transportScope: 'DESKTOP_ONLY',
+      androidCompatibility: 'NOT_PROVEN',
+      autoInvocation: 'NOT_IMPLEMENTED',
+      maxAttempts: 1,
+      autoRetry: 'NONE',
+      runtimeOnly: true,
+      durable: false
+    };
+    if (!runtimeInterpretation) {
+      return Object.assign({ assembled: false, path: null, costPolicyEnabled: false }, boundary);
+    }
+    let enabled = false;
+    try {
+      const described = typeof runtimeInterpretation.describe === 'function' ? runtimeInterpretation.describe() : null;
+      const policy = described && typeof described === 'object' ? described.costPolicy : null;
+      enabled = !!(policy && typeof policy === 'object' && policy.memoryInterpretationEnabled === true);
+    } catch (_) { enabled = false; /* describe() 坏了不该让整个 /security 500 */ }
+    return Object.assign({
+      assembled: true,
+      path: runtimeInterpretation.path || null,
+      costPolicyEnabled: enabled
+    }, boundary);
+  }
   function authorized(req, url) {
     if (!token) return true;
     const headerToken = req.headers['x-ib-home-token'] || '';
@@ -1021,6 +1191,31 @@ function createHomeNodeHttp(deps) {
     if (!isEconomyCommandPath(path) && !authorized(req, url)) {
       record('warn', 'unauthorized', { path: path, loopback: isLoopback(req) });
       bad(res, 401, 'unauthenticated', null, req);
+      return;
+    }
+
+    /* ══════════════════════════════════════════════════════════════════
+       P21-R4-LIVE-2.1 · Runtime Interpretation（**唯一**一条运行时执行面 · POST）
+
+       ★ 位置是刻意的，而且它本身就是一条安全属性：这一块在上面那条桌面
+         凭据判定**之后**，并且这条路径**没有**任何 `isEconomyCommandPath`
+         式的豁免 —— 它与 /memory/ · /understanding/ · /economy/ 逐字同级。
+         因此"解释必须出示 Vault 侧的桌面凭据"不是服务内部的自觉，而是
+         传输层的门：未配置凭据的远端在更早那条 403 remote-admin-disabled，
+         配置了凭据而没带/带错在这里 401。
+       ★ 它也不在 /mobile/ 下，因此上面 isDesktopOnlyPath 的 `/internal/`
+         前缀守卫覆盖它：设备面**永远**看不到这条路径（/security 的
+         androidCompatibility: 'NOT_PROVEN' 说的正是这件事，而不是"以后再说"）。
+       ★ 本文件在这里只判定路径与方法：body 的解释、角色的解析、凭据的取用、
+         钱的闸门全在服务里。未注入服务时整条分支**不存在**，落到下面的
+         通用兜底 —— 与之前逐字一致。 */
+    if (runtimeInterpretation && path === runtimeInterpretation.path) {
+      if (method !== 'POST') {
+        record('warn', 'runtime-interpretation-wrong-method', { method: method, loopback: isLoopback(req) });
+        bad(res, 405, 'runtime-interpretation-is-post-only', { allowedMethods: ['POST'] }, req);
+        return;
+      }
+      await handleRuntimeInterpretation(req, res);
       return;
     }
 
@@ -1532,6 +1727,15 @@ function createHomeNodeHttp(deps) {
             requiresConfiguredDesktopCredential: true
           }
         },
+        /* ── P21-R4-LIVE-2.1 · Runtime Interpretation：运行时解释面的诚实自述 ──
+           它为什么必须在这里、而且是**顶层**字段：这一节回答的是"这台节点
+           到底有没有一条会花钱的解释执行面、它开不开、它是什么范围"。
+           读它的消费者（诊断页、未来的 UI 门控）不该从路由表或环境变量里
+           推断这件事 —— P22-15 / P22-16 的教训正是"开不开"必须是**可读的
+           字段**，而那两处读的也是 /security。
+           ★ 取值逻辑全在 runtimeInterpretationSecurity() 里，这一行不判断；
+             未装配时那节报 assembled:false 与一份同形状的中性值。 */
+        runtimeInterpretation: runtimeInterpretationSecurity(),
         doesNotExpose: ['llm-proxy', 'tools', 'payments', 'diary', 'letters', 'images', 'tts'],
         /* M1-B：设备身份 + 移动边界。mobile 面**只有** allowlist 里的 verb。 */
         deviceAuth: { scheme: 'per-device opaque token', storedAs: 'sha256', constantTimeCompare: true, revoke: 'immediate' },
