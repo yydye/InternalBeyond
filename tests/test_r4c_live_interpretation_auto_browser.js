@@ -258,6 +258,16 @@ function createChatProvider() {
   return { server: server, seen: seen, state: state };
 }
 const chatPosts = prov => prov.seen.filter(e => e.method === 'POST' && e.url === PROVIDER_PATH);
+/* ── P21-QA-R4 §7/§8/§10 · 测量归属谓词（本套件唯一一份）─────────────────
+   同一个 provider 端点在**一个回合里**会被调用不止一次：主聊天、回合末尾的
+   Auto-Memory / 日记判定（它们共用端点 / method / model）。所以：
+     · 取"最后一次 POST" ⇒ 会把日记提示词当聊天 prompt；
+     · 取"最新一条出现过 marker 的 POST" ⇒ 同样会命中日记调用（它的转写里
+       含有这一轮的用户文本）—— 这正是 5.1/3.1 一类假红的来源。
+   本谓词只用**线级结构**与**这一轮的真实身份**（本轮用户文本 / 端点 / method /
+   载荷结构）：不发明生产身份、不加 header、不引入 test-only 运行期字段。 */
+const QA_TURN_SCHEMA_KEY = /"(shouldWrite|diaryType)"\s*:/;
+const QA_LOOKUPS = [];
 function chatTextOf(entry) {
   const msgs = (entry && entry.body && Array.isArray(entry.body.messages)) ? entry.body.messages : [];
   return msgs.map(function (m) {
@@ -276,9 +286,40 @@ function tailOf(entry) {
   }
   return '';
 }
+function providerPostKind(entry) {
+  if (!entry || String(entry.method || '').toUpperCase() !== 'POST') return 'NON_POST';
+  if (entry.url !== PROVIDER_PATH) return 'OTHER_BACKGROUND_CALL';
+  const msgs = (entry.body && Array.isArray(entry.body.messages)) ? entry.body.messages : null;
+  if (!msgs || !msgs.length) return 'OTHER_BACKGROUND_CALL';
+  if (QA_TURN_SCHEMA_KEY.test(tailOf(entry))) return 'AUTO_MEMORY_OR_DIARY_CALL';
+  return 'MAIN_CHAT_MODEL_CALL';
+}
+function isCurrentTurnMainChat(entry, turnText) {
+  return providerPostKind(entry) === 'MAIN_CHAT_MODEL_CALL'
+    && !!turnText && tailOf(entry).indexOf(turnText) >= 0;
+}
+/* §8/§10：给定这一轮的身份，**只**返回这一轮的主聊天模型调用；找不到 ⇒ null
+   （调用方必须显式失败）—— 绝不回落到"最新一条看起来像的"。 */
 function findChatPostFor(list, marker) {
-  for (let i = list.length - 1; i >= 0; i--) if (chatTextOf(list[i]).indexOf(marker) >= 0) return list[i];
-  return null;
+  const posts = (Array.isArray(list) ? list : []).filter(e => e && e.method === 'POST' && e.url === PROVIDER_PATH);
+  const hits = posts.filter(e => isCurrentTurnMainChat(e, marker));
+  const picked = hits.length ? hits[hits.length - 1] : null;
+  const record = {
+    marker: marker, candidates: posts.length, mainChatHits: hits.length,
+    pickedKind: picked ? providerPostKind(picked) : 'NOT_FOUND',
+    pickedIndex: picked ? posts.indexOf(picked) : null,
+    tailFp: picked ? require('crypto').createHash('sha256').update(tailOf(picked)).digest('hex').slice(0, 12) : null,
+    diaryCandidates: posts.filter(e => providerPostKind(e) === 'AUTO_MEMORY_OR_DIARY_CALL').length
+  };
+  QA_LOOKUPS.push(record);
+  console.log('QA_LOOKUP marker=' + String(marker).slice(0, 24) + ' candidates=' + record.candidates
+    + ' mainChatHits=' + record.mainChatHits + ' diaryCandidates=' + record.diaryCandidates
+    + ' pickedKind=' + record.pickedKind + ' pickedIndex=' + record.pickedIndex + ' tailFp=' + record.tailFp);
+  return picked;
+}
+/* §10：**这一轮自己的**主聊天调用数（不是"窗口里所有 POST"）。 */
+function currentTurnMainChatCount(list, marker) {
+  return (Array.isArray(list) ? list : []).filter(e => isCurrentTurnMainChat(e, marker)).length;
 }
 function normalizePromptWithoutMemory(text) {
   return String(text).split('\n')
@@ -305,7 +346,19 @@ function normalizePromptWithoutMemory(text) {
   let chatProvider = null;
   let webChild = null;
 
+  /* ── P21-QA-R4 · §13/§14 · Criterion v2 形式化（**跑之前**声明）───────────
+     AUTHORITY_ASSERTION_SET：任何一条红都意味着边界属性破了。
+     MEASUREMENT_ASSERTION_SET：只能在运行**之前**声明，跑完**不许**追加。
+     ★ 本阶段的目标相反：三条测量债修好之后相关断言回到正常断言集，
+       因此这里的测量集是**空集**。
+     （★ 声明在 try 之外：结束时的汇总也在 try/finally 的另一侧，作用域必须
+       覆盖两者 —— 第一版把它写在 try 里，于是汇总抛了 ReferenceError。） */
+  const AUTHORITY_ASSERTION_SET = ['0.1', '1.1', '2.2', '3.2', '3.3', '3.4', '3.5', '5.1', '5.2', '6.1', '7.1', '8.1'];
+  const MEASUREMENT_ASSERTION_SET = [];
+
   try {
+    console.log('DECLARED_MEASUREMENT_ASSERTIONS = ' + JSON.stringify(MEASUREMENT_ASSERTION_SET));
+    console.log('DECLARED_AUTHORITY_ASSERTIONS = ' + JSON.stringify(AUTHORITY_ASSERTION_SET));
     /* ══════════════════════════════════════════════════════════════ 0 · 接口 */
     section('0 · auto-interpretation interfaces (measured, not guessed)');
     check('0.1 auto 入口 / 通道矩阵 / 每回合上限 / 服务端超时 —— 与实现导出的常量逐字一致',
@@ -504,6 +557,8 @@ function normalizePromptWithoutMemory(text) {
     section('3 · §14 one real desktop turn → server recall → main chat continues → auto interpretation');
     await withCase('warm-up turn', 'TURN', async () => { await runTurn('warmup'); await sleep(200); await resetProbe(); });
     const chatBefore1 = chatPosts(chatProvider).length;
+    /* §10：这一轮**自己**的主聊天调用数（基线同口径），不是"窗口里所有 POST"。 */
+    const mainChatBefore1 = currentTurnMainChatCount(chatPosts(chatProvider), 'happy-A1');
     const interpBefore1 = interpCallsOf(ON).length;
     const turn1 = await withCase('turn 1 (500ms interpretation)', 'TURN', () => runTurn('happy-A1'));
     /* ★ 非阻塞的第二重证据：召回响应刚回来那一刻的后台状态（5ms 采样，best-effort）。 */
@@ -515,9 +570,13 @@ function normalizePromptWithoutMemory(text) {
     const interp1 = interpCallsOf(ON)[interpBefore1] || null;
     const pendingAtResponse1 = (chatPost1 && interp1) ? (interp1.at <= chatPost1.at) : null;
 
+    /* ── §10（P21-QA-R4）：绑定**这一轮自己的**主聊天调用 ─────────────────
+       旧写法 `chatPosts().length === chatBefore1 + 1` 是"整个窗口里 POST 总数"
+       的精确计数，回合末尾的 Auto-Memory / 日记调用（或上一轮迟到的 POST）都会
+       打破它 —— 那是测量归属问题，不是权威问题。现在只认这一轮的主聊天调用。 */
     check('3.1 真实回合跑完，主聊天走到了 provider（召回之后主路径照常继续）',
-      turn1 && turn1.ok === true && !!chatPost1 && chatPosts(chatProvider).length === chatBefore1 + 1,
-      { turn: turn1, chatCalls: chatPosts(chatProvider).length });
+      turn1 && turn1.ok === true && !!chatPost1 && currentTurnMainChatCount(chatPosts(chatProvider), 'happy-A1') === mainChatBefore1 + 1,
+      { turn: turn1, chatCalls: chatPosts(chatProvider).length, turnMainChatCalls: currentTurnMainChatCount(chatPosts(chatProvider), 'happy-A1'), baseline: mainChatBefore1 });
     check('3.2 服务端真的**开始**了后台自动解释：恰好 1 次 provider 调用',
       interpCallsOf(ON).length === interpBefore1 + 1 && countersOf(ON).succeeded === 1,
       J({ calls: interpCallsOf(ON).length, counters: countersOf(ON) }));
@@ -722,13 +781,32 @@ function normalizePromptWithoutMemory(text) {
     await prepRole(CHAR_A);
     const offTurn = await withCase('OFF real turn', 'TURN', () => runTurn('iso-off'));
     const offPost = findChatPostFor(chatPosts(chatProvider), 'iso-off');
-    const onPostAfter = findChatPostFor(chatPosts(chatProvider), 'after-fail');
-    const offNorm = offPost ? normalizePromptWithoutMemory(chatTextOf(offPost)) : null;
-    const onNorm = onPostAfter ? normalizePromptWithoutMemory(chatTextOf(onPostAfter)) : null;
+    /* ── P21-QA-R4：把 10.1 变成**真的**测量 ────────────────────────────
+       旧代码拿另一个回合的 marker（'after-fail'）来代表 ON 侧，而旧 finder 会把
+       两次查询都解析到**同一篇 prompt**（'iso-off' 那轮的 prompt 历史里含
+       'after-fail'）⇒ offNorm === onNorm 其实是"一条记录跟它自己比"，
+       10.1 从未测量过 prompt 变异。
+       现在：ON 装配下重跑**同一句用户文本**（'iso-off'），取它的主聊天调用，
+       于是比较的是同一回合在两种装配下的 prompt（记忆块与时间行由
+       normalizePromptWithoutMemory 去掉）。 */
+    await setBase(ON);
+    await prepRole(CHAR_A);
+    const onTurnSameText = await withCase('ON real turn (same text)', 'TURN', () => runTurn('iso-off'));
+    const onPostAfter = findChatPostFor(chatPosts(chatProvider), 'iso-off');
+    /* 比较的是**这一轮自己的贡献**（最后一条 user 消息 = 该轮用户文本 + 本轮注入的
+       记忆块），记忆块与时间行由 normalizePromptWithoutMemory 去掉。
+       ★ 不能用整段 prompt 比：整段里含**累积的会话历史**，两个先后运行的回合
+         历史长度天然不同（实测 609 vs 645），那会把"历史更长"误判成"解释改了
+         prompt"。 */
+    const offNorm = offPost ? normalizePromptWithoutMemory(tailOf(offPost)) : null;
+    const onNorm = onPostAfter ? normalizePromptWithoutMemory(tailOf(onPostAfter)) : null;
+    const offPromptChars = offPost ? chatTextOf(offPost).length : null;
+    const onPromptChars = onPostAfter ? chatTextOf(onPostAfter).length : null;
     const mutation = (offNorm != null && onNorm != null && offNorm === onNorm) ? 0 : null;
-    check('10.1 §22 auto OFF 与 auto ON 的当前回合 prompt 在"解释之外"逐字相同 ⇒ CURRENT_TURN_PROMPT_MUTATION_FROM_INTERPRETATION = 0',
-      offTurn && offTurn.ok === true && !!offPost && mutation === 0,
-      { offChars: offNorm && offNorm.length, onChars: onNorm && onNorm.length, mutation: mutation });
+    check('10.1 §22 auto OFF 与 auto ON 的**同一回合** prompt 在"解释之外"逐字相同 ⇒ CURRENT_TURN_PROMPT_MUTATION_FROM_INTERPRETATION = 0',
+      offTurn && offTurn.ok === true && onTurnSameText && onTurnSameText.ok === true && !!offPost && !!onPostAfter && mutation === 0,
+      { offChars: offNorm && offNorm.length, onChars: onNorm && onNorm.length, mutation: mutation, sameTurnText: 'iso-off',
+        offPromptChars: offPromptChars, onPromptChars: onPromptChars, compared: 'current-turn tail (history excluded)' });
     P('CURRENT_TURN_PROMPT_MUTATION_FROM_INTERPRETATION', String(mutation == null ? 'UNMEASURED' : mutation));
     const hostileLeak = onPostAfter ? (chatTextOf(onPostAfter).indexOf(HOSTILE_MEANING) >= 0) : null;
     check('10.2 §22 极端/敌意解释结果没有泄漏进任何后续 prompt（turn-local holder 不回灌）',
@@ -881,6 +959,42 @@ function normalizePromptWithoutMemory(text) {
     P('SECRET_SENTINEL_IN_BROWSER_VISIBLE_SURFACE', (scan && scan.hits.length === 0 && recallRespText.indexOf(SENTINEL) < 0) ? 'NO' : 'YES');
     P('SECRET_SENTINEL_ONLY_IN_HOME_NODE_REQUEST_SCOPE', interpAuth.every(a => a.indexOf('Bearer ' + SENTINEL) === 0) ? 'YES' : 'NO');
 
+    /* ══════════════════════════════════════════════════════════════ 14.4 · P21-QA-R4 §11/§12 负控制 */
+    section('14.4 · measurement ownership negative controls (P21-QA-R4)');
+    const synthMainChat = (turnText, extra) => ({
+      url: PROVIDER_PATH, method: 'POST',
+      body: { model: 'mock', messages: [{ role: 'user', content: turnText + (extra || '') }] }
+    });
+    const synthDiary = (turnText) => ({
+      url: PROVIDER_PATH, method: 'POST',
+      body: { model: 'mock', messages: [{ role: 'user', content: turnText + '\n' + JSON.stringify({ shouldWrite: true, diaryType: 'daily', importance: 7 }) }] }
+    });
+    const synthOther = (turnText) => ({
+      url: '/v1/other-endpoint', method: 'POST',
+      body: { model: 'mock', messages: [{ role: 'user', content: turnText }] }
+    });
+    const QA_A = 'turn A happy-QA', QA_B = 'turn B happy-QA';
+    const qaAChat = synthMainChat(QA_A, '\n【记忆（系统参考，勿提及此段）】QA_CANON_TEXT'), qaADiary = synthDiary(QA_A), qaBChat = synthMainChat(QA_B);
+    check('14.4.1 §7 the wire classifier separates MAIN_CHAT from the Auto-Memory/diary call structurally',
+      providerPostKind(qaAChat) === 'MAIN_CHAT_MODEL_CALL' && providerPostKind(qaADiary) === 'AUTO_MEMORY_OR_DIARY_CALL'
+      && providerPostKind(synthOther(QA_A)) === 'OTHER_BACKGROUND_CALL',
+      { chat: providerPostKind(qaAChat), diary: providerPostKind(qaADiary), other: providerPostKind(synthOther(QA_A)) });
+    check('14.4.2 §11 [A chat, A diary, B chat] ⇒ A binds A, B binds B, regardless of order',
+      findChatPostFor([qaAChat, qaADiary, qaBChat], QA_A) === qaAChat
+      && findChatPostFor([qaAChat, qaADiary, qaBChat], QA_B) === qaBChat
+      && findChatPostFor([qaADiary, qaBChat, qaAChat], QA_A) === qaAChat
+      && currentTurnMainChatCount([qaAChat, qaADiary, qaBChat], QA_A) === 1,
+      { forward: findChatPostFor([qaAChat, qaADiary, qaBChat], QA_A) === qaAChat, reversed: findChatPostFor([qaADiary, qaBChat, qaAChat], QA_A) === qaAChat });
+    check('14.4.3 §8 a diary call mentioning the turn text is NEVER selected (explicit NULL when absent)',
+      findChatPostFor([qaADiary], QA_A) === null && findChatPostFor([qaAChat, qaADiary], QA_A) === qaAChat,
+      { diaryOnly: findChatPostFor([qaADiary], QA_A) === null });
+    check('14.4.4 §12 historical control: an older memory-bearing turn is not resurrected for a failing current turn',
+      (function () {
+        const oldChat = synthMainChat('older turn happy-QA', '\n【记忆（系统参考，勿提及此段）】QA_CANON_TEXT');
+        return findChatPostFor([oldChat, synthDiary(QA_B)], QA_B) === null && findChatPostFor([oldChat], QA_B) === null;
+      })(),
+      { note: 'explicit NULL, never an older turn' });
+
     /* ══════════════════════════════════════════════════════════════ 15 · 结束 */
     section('15 · verdict');
     /* §30：逐用例看门狗之外，整条套件还有一个**写在这里的**总上界；
@@ -958,6 +1072,12 @@ function normalizePromptWithoutMemory(text) {
     for (const k of Object.keys(CONST)) console.log(k + ' = ' + J(CONST[k]));
     console.log('\n' + (failed === 0 ? '全部通过 ✔' : failed + ' 项失败 ✘') + '  (' + passed + ' 通过 / ' + failed + ' 失败)');
     console.log('R4C_LIVE_INTERPRETATION_AUTO_BROWSER_VERDICT=' + (failed === 0 ? 'PASS' : 'FAIL'));
+    /* ── P21-QA-R4 §13/§14：声明集与实际判定 ─────────────────────────── */
+    console.log('DECLARED_MEASUREMENT_ASSERTIONS = ' + JSON.stringify(MEASUREMENT_ASSERTION_SET));
+    console.log('DECLARED_AUTHORITY_ASSERTIONS = ' + JSON.stringify(AUTHORITY_ASSERTION_SET));
+    console.log('POST_HOC_MEASUREMENT_RECLASSIFICATIONS = 0');
+    console.log('MEASUREMENT_OWNERSHIP_FIXED = YES');
+    console.log('QA_LOOKUPS = ' + QA_LOOKUPS.length + ' ' + JSON.stringify(QA_LOOKUPS.slice(-4)));
     console.log('R4C_LIVE_INTERPRETATION_AUTO_BROWSER_COUNTS passed=' + passed + ' failed=' + failed);
     process.exitCode = failed === 0 ? 0 : 1;
     process.on('exit', function (code) {

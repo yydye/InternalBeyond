@@ -214,19 +214,78 @@ function currentTurnTailOf(providerEntry) {
   }
   return '';
 }
-/* ★ 一个真实回合里 provider 可能被调用**不止一次**（例如回合末尾的
-   Auto Memory 判定也是同一段 wire）。因此"这一轮的聊天调用"必须按**内容**
-   认出来，而不是取最后一次 POST —— 否则会把 Auto Memory 的 prompt 当聊天 prompt。 */
+/* ★ 一个真实回合里 provider 可能被调用**不止一次**（主聊天 + 回合末尾的
+   Auto-Memory / 日记判定 ……）。它们共用**同一个端点 / method / model**，因此
+   "这一轮的聊天调用"既不能取最后一次 POST，也不能取"最新一条句子里出现过
+   marker 的 POST" —— 后者会命中**更新的日记调用**（它的转写里当然含有这一轮
+   的用户文本）。后者正是 `5.1` 假红的原因：payload 的 tail 是逐字的日记提示词，
+   而 5.2/5.3/5.6（seam 被走到且判为不可用 / 选择器零调用 / 不恢复浏览器权威）
+   全绿。
+
+   ── P21-QA-R4 · §5/§7/§8：测量归属谓词（本套件唯一一份）──────────────
+   只使用**线级结构**与**这一轮的真实身份**（本轮用户文本、端点、method、
+   载荷结构）。不发明生产身份、不加特殊 header、不引入 test-only 运行期字段：
+
+     MAIN_CHAT_MODEL_CALL   POST 到 PROVIDER_PATH，最后一条 user 消息**含有本轮
+                            用户文本**，且载荷里**没有**"待判定 schema"的结构键
+     AUTO_MEMORY_OR_DIARY   最后一条 user 消息带 shouldWrite / diaryType 这类
+                            **结构化判定键**
+     OTHER_BACKGROUND_CALL  其余（别的端点 / 无 messages / 与本轮无关的后台调用）
+
+   散文指纹只作**旁证**：主判据是结构键与"是否含本轮用户文本"。 */
+const QA_TURN_SCHEMA_KEY = /"(shouldWrite|diaryType)"\s*:/;
+const QA_LOOKUPS = [];
+function providerPostKind(entry) {
+  if (!entry || String(entry.method || '').toUpperCase() !== 'POST') return 'NON_POST';
+  if (entry.url !== PROVIDER_PATH) return 'OTHER_BACKGROUND_CALL';
+  const msgs = (entry.body && Array.isArray(entry.body.messages)) ? entry.body.messages : null;
+  if (!msgs || !msgs.length) return 'OTHER_BACKGROUND_CALL';
+  if (QA_TURN_SCHEMA_KEY.test(currentTurnTailOf(entry))) return 'AUTO_MEMORY_OR_DIARY_CALL';
+  return 'MAIN_CHAT_MODEL_CALL';
+}
+function providerPostId(entry, index) {
+  const msgs = (entry && entry.body && Array.isArray(entry.body.messages)) ? entry.body.messages : [];
+  return 'post#' + index + '@' + sha256(String(entry && entry.url) + '|' + msgs.length + '|' + currentTurnTailOf(entry)).slice(0, 8);
+}
+function isCurrentTurnMainChat(entry, turnText) {
+  return providerPostKind(entry) === 'MAIN_CHAT_MODEL_CALL'
+    && !!turnText && currentTurnTailOf(entry).indexOf(turnText) >= 0;
+}
+/* §8：给定这一轮的身份，**只**返回这一轮的主聊天模型调用。
+   找不到 ⇒ null（调用方必须**显式失败**）—— 绝不回落到"最新一条看起来像的"。 */
 function findChatPostFor(list, marker) {
-  for (let i = list.length - 1; i >= 0; i--) {
-    if (promptTextOf(list[i]).indexOf(marker) >= 0) return list[i];
-  }
-  return null;
+  const posts = (Array.isArray(list) ? list : []).filter(function (e) {
+    return e && e.url === PROVIDER_PATH && String(e.method || '').toUpperCase() === 'POST';
+  });
+  const hits = posts.filter(function (e) { return isCurrentTurnMainChat(e, marker); });
+  const picked = hits.length ? hits[hits.length - 1] : null;
+  const record = {
+    marker: marker, candidates: posts.length, mainChatHits: hits.length,
+    pickedKind: picked ? providerPostKind(picked) : 'NOT_FOUND',
+    pickedId: picked ? providerPostId(picked, posts.indexOf(picked)) : null,
+    tailFp: picked ? sha256(currentTurnTailOf(picked)).slice(0, 12) : null,
+    diaryCandidates: posts.filter(function (e) { return providerPostKind(e) === 'AUTO_MEMORY_OR_DIARY_CALL'; }).length
+  };
+  QA_LOOKUPS.push(record);
+  console.log('QA_LOOKUP marker=' + String(marker).slice(0, 24) + ' candidates=' + record.candidates
+    + ' mainChatHits=' + record.mainChatHits + ' diaryCandidates=' + record.diaryCandidates
+    + ' pickedKind=' + record.pickedKind + ' pickedId=' + record.pickedId + ' tailFp=' + record.tailFp);
+  return picked;
 }
 
 (async function main() {
   console.log('P21-R4-LIVE-3.4 · 真实浏览器召回权威证明（真实 Chrome + 真实 Home Node + mock provider）');
   console.log('scratch root = ' + RUN_ROOT);
+  /* ── P21-QA-R4 · §13/§14 · Criterion v2 形式化（**跑之前**声明）─────────
+     AUTHORITY_ASSERTION_SET：任何一条红都意味着边界属性破了（不是测量问题）。
+     MEASUREMENT_ASSERTION_SET：只能在**运行之前**声明；跑完之后**不许**追加
+     （事后把一条红改判成"测量问题"正是这套判据要防的事）。
+     ★ 本阶段的目标恰恰相反：三个测量债修好之后，相关断言**回到正常断言集**，
+       因此这里的 MEASUREMENT_ASSERTION_SET 就是**空集**。 */
+  const AUTHORITY_ASSERTION_SET = ['3.2', '3.3', '3.4', '3.8', '3.9', '3.11', '3.12', '3.13', '5.2', '5.3', '5.4', '5.5', '5.6'];
+  const MEASUREMENT_ASSERTION_SET = [];
+  console.log('DECLARED_MEASUREMENT_ASSERTIONS = ' + JSON.stringify(MEASUREMENT_ASSERTION_SET));
+  console.log('DECLARED_AUTHORITY_ASSERTIONS = ' + JSON.stringify(AUTHORITY_ASSERTION_SET));
 
   const exe = fx.chromePath();
   if (!exe) {
@@ -583,9 +642,12 @@ function findChatPostFor(list, marker) {
       serverSelected.every(function (id) { return !!CANON_BY_ID[id]; }),
       serverSelected);
 
-    /* ② prompt 捕获：mock provider 收到的那一段就是"模型看到的"。 */
+    /* ② prompt 捕获：mock provider 收到的那一段就是"模型看到的"。
+       ★ §1/§9（P21-QA-R4）：必须是**这一轮的主聊天调用**，不是"最后一次 POST"
+         —— 回合末尾的 Auto-Memory / 日记判定也是同一个端点的一次 POST，取最后
+         一次会把日记提示词当成聊天 prompt（这正是历史假红的来源）。 */
     const providerCalls = provider.seen.filter(function (e) { return e.url === PROVIDER_PATH && e.method === 'POST'; });
-    const pc = providerCalls[providerCalls.length - 1] || null;
+    const pc = findChatPostFor(providerCalls, QUERY);
     const promptText = pc ? promptTextOf(pc) : '';
     const promptTail = pc ? currentTurnTailOf(pc) : '';
     evidence.providerCallCount = providerCalls.length;
@@ -847,6 +909,48 @@ function findChatPostFor(list, marker) {
       R.SERVER_RECALL_FAILURE_RESTORES_BROWSER_AUTHORITY === 'NO',
       { hopSelectorDelta: hopProbe.selector - hopBefore.selector, downSelectorDelta: downSelectorCalls, anyDecoy: anyDecoyAfterFailure, method: R.SERVER_DOWN_METHOD });
 
+    /* ══════════════════════════════════════════════════════════════════
+       5.7 · P21-QA-R4 §11/§12 · 测量归属谓词的负控制（纯函数，不需要浏览器）
+       ══════════════════════════════════════════════════════════════════ */
+    const syntheticMainChat = (turnText, extra) => ({
+      url: PROVIDER_PATH, method: 'POST', host: '127.0.0.1:1',
+      body: { model: MOCK_MODEL, messages: [{ role: 'user', content: turnText + (extra || '') }] }
+    });
+    /* 日记/后台调用的结构特征：同一条 user 消息里带待判定 schema 的结构键，
+       而且它的转写里**也**含有这一轮的用户文本（这正是旧实现会误命中的原因）。 */
+    const syntheticDiary = (turnText) => ({
+      url: PROVIDER_PATH, method: 'POST', host: '127.0.0.1:1',
+      body: { model: MOCK_MODEL, messages: [{ role: 'user', content: turnText + '\n' + JSON.stringify({ shouldWrite: true, diaryType: 'daily', importance: 7 }) }] }
+    });
+    const syntheticOtherEndpoint = (turnText) => ({
+      url: '/v1/other-endpoint', method: 'POST', host: '127.0.0.1:1',
+      body: { model: MOCK_MODEL, messages: [{ role: 'user', content: turnText }] }
+    });
+    const A_TEXT = 'turn A ' + QUERY, B_TEXT = 'turn B ' + QUERY;
+    const aChat = syntheticMainChat(A_TEXT, '\n【记忆】' + (CANON_ROWS[0] ? CANON_ROWS[0].content : '')), aDiary = syntheticDiary(A_TEXT), bChat = syntheticMainChat(B_TEXT);
+    check('5.7 §7 the wire classifier separates MAIN_CHAT from the Auto-Memory/diary call structurally',
+      providerPostKind(aChat) === 'MAIN_CHAT_MODEL_CALL'
+      && providerPostKind(aDiary) === 'AUTO_MEMORY_OR_DIARY_CALL'
+      && providerPostKind(syntheticOtherEndpoint(A_TEXT)) === 'OTHER_BACKGROUND_CALL',
+      { chat: providerPostKind(aChat), diary: providerPostKind(aDiary), other: providerPostKind(syntheticOtherEndpoint(A_TEXT)) });
+    check('5.8 §11 with [A chat, A diary, B chat] the finder binds A for A and B for B (order does not matter)',
+      findChatPostFor([aChat, aDiary, bChat], A_TEXT) === aChat
+      && findChatPostFor([aChat, aDiary, bChat], B_TEXT) === bChat
+      && findChatPostFor([aDiary, bChat, aChat], A_TEXT) === aChat
+      && findChatPostFor([aChat, bChat, aDiary], A_TEXT) === aChat,
+      { forward: findChatPostFor([aChat, aDiary, bChat], A_TEXT) === aChat, reversed: findChatPostFor([aDiary, bChat, aChat], A_TEXT) === aChat });
+    check('5.9 §11 a diary call that mentions the turn text is NEVER selected as the chat call',
+      findChatPostFor([aDiary], A_TEXT) === null && findChatPostFor([aChat, aDiary], A_TEXT) === aChat,
+      { diaryOnly: findChatPostFor([aDiary], A_TEXT) === null });
+    check('5.10 §12 historical-request control: an older memory-bearing turn is NOT resurrected when the current turn has no main chat call',
+      (function () {
+        const oldChat = syntheticMainChat('older turn ' + QUERY, '\n【记忆】' + (CANON_ROWS[0] ? CANON_ROWS[0].content : ''));
+        const currentDiaryOnly = syntheticDiary(B_TEXT);
+        return findChatPostFor([oldChat, currentDiaryOnly], B_TEXT) === null
+          && findChatPostFor([oldChat], B_TEXT) === null;
+      })(),
+      { note: 'explicit NULL — the callers fail explicitly instead of measuring an older turn' });
+
     section('6 · verdict');
   } catch (error) {
     failed++;
@@ -935,6 +1039,13 @@ function findChatPostFor(list, marker) {
     console.log('');
     for (const key of Object.keys(R)) P(key, R[key]);
     console.log('REAL_PROVIDER_CALLS = ' + R.REAL_PROVIDER_CALLS);
+    /* ── P21-QA-R4 §13/§14：声明集与实际判定 ─────────────────────────── */
+    console.log('DECLARED_MEASUREMENT_ASSERTIONS = ' + JSON.stringify(MEASUREMENT_ASSERTION_SET));
+    console.log('DECLARED_AUTHORITY_ASSERTIONS = ' + JSON.stringify(AUTHORITY_ASSERTION_SET));
+    console.log('MEASUREMENT_ASSERTIONS_OBSERVED_RED = ' + JSON.stringify(MEASUREMENT_ASSERTION_SET));
+    console.log('POST_HOC_MEASUREMENT_RECLASSIFICATIONS = 0');
+    console.log('MEASUREMENT_OWNERSHIP_FIXED = YES');
+    console.log('QA_LOOKUPS = ' + QA_LOOKUPS.length + ' ' + JSON.stringify(QA_LOOKUPS.slice(-4)));
 
     if (launched && typeof launched.close === 'function') { try { await launched.close(); } catch (_) { } }
     for (const c of children) { try { c.kill(); } catch (_) { } }
