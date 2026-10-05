@@ -12,7 +12,7 @@
      · UI chrome 契约（世界满幅；次要动作收在 ··· 菜单里）
      · preview 是 annotation（无底、无边框），不是 card
      · 无 association 连线
-     · prefers-reduced-motion 停止全部环境运动
+     · 主世界始终静止；入口潮涌服从运动开关与 prefers-reduced-motion
    ============================================================================ */
 
 const fs = require('fs');
@@ -193,7 +193,7 @@ async function main() {
 
     check('depth.envAndMistAreSeparateLayers',
       await H.evaluate(cdp, "!!document.getElementById('mem-world-env') && !!document.getElementById('mem-world-mist') && document.getElementById('mem-world-mist') !== document.getElementById('mem-world-env')"),
-      '两层环境画布 = 视差纵深');
+      '两层静态环境画布 = 星云与深空层次');
 
     section('§5 light / dark：两个世界，独立材质');
 
@@ -248,7 +248,7 @@ async function main() {
       '顶部常驻只有 ··· 与 ×（其余按钮收在菜单里）barVisible=' + chrome.barVisible);
     check('chrome.secondaryActionsCollapsed',
       chrome.finderToggle.shown === false && chrome.motion.shown === false,
-      '查找 / 环境运动 默认收在菜单里');
+      '查找 / 入口潮涌 默认收在菜单里');
     const viewport = JSON.parse(await H.evaluate(cdp, `(function(){
       var r = document.getElementById('mem-world-overlay').getBoundingClientRect();
       return JSON.stringify({ w: Math.round(r.width), h: Math.round(r.height), iw: document.documentElement.clientWidth, ih: document.documentElement.clientHeight, open: document.getElementById('mem-world-overlay').classList.contains('is-open') });
@@ -294,18 +294,51 @@ async function main() {
       await H.evaluate(cdp, "!document.querySelector('#mem-world-overlay svg, #mem-world-overlay line')"));
     check('association.declaredDisabled', await H.evaluate(cdp, "IB.memoryWorld.associationLines === 'DISABLED'"));
 
+    await H.evaluate(cdp, 'IB.memoryWorld.setMotion(true)');
+    check('motion.worldIsStaticWithMotionEnabled', await H.evaluate(cdp, `(function(){
+      return ['mem-world-env', 'mem-world-mist', 'mem-world-nodes'].every(function(id){
+        var c = getComputedStyle(document.getElementById(id));
+        return c.animationName === 'none' && c.transform === 'none';
+      });
+    })()`));
+    await H.evaluate(cdp, `(function(){
+      window.__mwStillBackground = ['mem-world-env', 'mem-world-mist'].map(function(id){ return document.getElementById(id).toDataURL(); });
+      window.__mwEntryTideStart = getComputedStyle(document.getElementById('mem-world-entry-env')).transform;
+    })()`);
+    await H.sleep(650);
+    check('motion.worldPixelsRemainStill', await H.evaluate(cdp, `(function(){
+      return ['mem-world-env', 'mem-world-mist'].every(function(id, i){ return document.getElementById(id).toDataURL() === window.__mwStillBackground[i]; });
+    })()`));
+    check('motion.entryActuallySurges', await H.evaluate(cdp,
+      "getComputedStyle(document.getElementById('mem-world-entry-env')).transform !== window.__mwEntryTideStart"));
+    await H.evaluate(cdp, 'IB.memoryWorld.setFinderOpen(true)');
+    check('motion.finderKeepsSameBackground', await H.evaluate(cdp, `(function(){
+      return ['mem-world-env', 'mem-world-mist'].every(function(id, i){ return document.getElementById(id).toDataURL() === window.__mwStillBackground[i]; });
+    })()`));
+    await H.evaluate(cdp, 'IB.memoryWorld.setFinderOpen(false)');
+
     await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
     await H.sleep(400);
     check('motion.envStops',
       await H.evaluate(cdp, "getComputedStyle(document.getElementById('mem-world-env')).animationName === 'none'"));
     check('motion.mistStops',
       await H.evaluate(cdp, "getComputedStyle(document.getElementById('mem-world-mist')).animationName === 'none'"));
+    check('motion.reducedMotionStopsEntryTide', await H.evaluate(cdp, `(function(){
+      return ['mem-world-entry-env', 'mem-world-entry-mist'].every(function(id){ return getComputedStyle(document.getElementById(id)).animationName === 'none'; });
+    })()`));
     check('motion.moduleFlagOff',
       await H.evaluate(cdp, "document.getElementById('mem-world-overlay').getAttribute('data-motion') === 'off'"));
     await cdp.send('Emulation.setEmulatedMedia', { features: [] });
     await H.sleep(200);
-    check('motion.envResumesWhenAllowed',
-      await H.evaluate(cdp, "getComputedStyle(document.getElementById('mem-world-env')).animationName !== 'none'"));
+    check('motion.worldStaysStaticWhenAllowed',
+      await H.evaluate(cdp, "getComputedStyle(document.getElementById('mem-world-env')).animationName === 'none' && getComputedStyle(document.getElementById('mem-world-mist')).animationName === 'none'"));
+    check('motion.entryTideResumesWhenAllowed', await H.evaluate(cdp, `(function(){
+      return ['mem-world-entry-env', 'mem-world-entry-mist'].every(function(id){ return getComputedStyle(document.getElementById(id)).animationName !== 'none'; });
+    })()`));
+    await H.evaluate(cdp, 'IB.memoryWorld.setMotion(false)');
+    check('motion.manualSwitchStopsEntryTide', await H.evaluate(cdp, `(function(){
+      return ['mem-world-entry-env', 'mem-world-entry-mist'].every(function(id){ return getComputedStyle(document.getElementById(id)).animationName === 'none'; });
+    })()`));
 
     check('visual.noUncaughtExceptions', session.exceptions.length === 0, session.exceptions.slice(0, 3).join(' | '));
   } finally {

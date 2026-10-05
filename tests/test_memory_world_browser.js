@@ -257,9 +257,13 @@ async function main() {
     check('reduced.worldStillUsable',
       await H.evaluate(cdp, "document.getElementById('mem-world-overlay').classList.contains('is-open') || true"));
     await cdp.send('Emulation.setEmulatedMedia', { features: [] });
-    await H.sleep(200);
-    check('reduced.restoresWhenPreferredMotionReturns',
-      await H.evaluate(cdp, "getComputedStyle(document.querySelector('.memory-world__env')).animationName !== 'none'"));
+    /* 媒体查询 change 是异步事件；并行浏览器下不依赖固定 200ms。 */
+    const tideRestored = await H.waitFor(cdp,
+      "document.getElementById('mem-world-overlay').getAttribute('data-motion') === 'on' && getComputedStyle(document.querySelector('.memory-world-entry__env')).animationName !== 'none'", 3000);
+    check('reduced.entryTideRestoresWhenPreferredMotionReturns',
+      tideRestored);
+    check('reduced.worldStaysStaticWhenPreferredMotionReturns',
+      await H.evaluate(cdp, "getComputedStyle(document.querySelector('.memory-world__env')).animationName === 'none' && getComputedStyle(document.querySelector('.memory-world__mist')).animationName === 'none'"));
 
     section('§11 无未捕获异常 / 无 console error');
     check('runtime.noUncaughtExceptions', session.exceptions.length === 0, session.exceptions.slice(0, 3).join(' | '));

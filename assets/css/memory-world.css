@@ -45,9 +45,9 @@
   --mw-world-caption: 400 0.78rem/1.6 var(--font-ui);
   --mw-world-action: 400 0.8rem/1 var(--font-ui);
   --mw-world-annotation-title: 400 1.05rem/1.5 var(--font-reading);
-  /* 环境层：两条极慢、方向相反的漂移 → 视差纵深（节点始终静止） */
-  --mw-world-drift: 108s;
-  --mw-world-mist-drift: 166s;
+  /* 入口展示窗缓慢潮涌；进入后的主世界环境保持静止。 */
+  --mw-entry-tide: 26s;
+  --mw-entry-mist-tide: 41s;
   --mw-world-text-glow: var(--ib-token-canvas, var(--pale));
 }
 
@@ -109,28 +109,33 @@ body.theme-infernal .memory-world-scope {
   block-size: 100%;
 }
 
+.memory-world-entry__frame :is(.memory-world-entry__env, .memory-world-entry__mist) {
+  inset: -7%;
+  inline-size: 114%;
+  block-size: 114%;
+  pointer-events: none;
+}
+
 .memory-world-entry__env {
-  inset: -6%;
-  inline-size: 112%;
-  block-size: 112%;
-  animation: mw-world-drift var(--mw-world-drift) ease-in-out infinite alternate;
+  z-index: 0;
+  animation: mw-entry-tide var(--mw-entry-tide) ease-in-out infinite alternate;
 }
 
 .memory-world-entry__mist {
-  inset: -6%;
-  inline-size: 112%;
-  block-size: 112%;
-  animation: mw-world-mist var(--mw-world-mist-drift) ease-in-out infinite alternate;
+  z-index: 1;
+  animation: mw-entry-mist var(--mw-entry-mist-tide) ease-in-out infinite alternate;
 }
 
 .memory-world-entry__nodes {
   inset: 0;
+  z-index: 2;
   pointer-events: none;
 }
 
 /* 标题不占左下角 Hero 位：它是顶部的窗牌。 */
 .memory-world-entry__caption {
   position: absolute;
+  z-index: 3;
   inset-block-start: 0;
   inset-inline-start: 0;
   display: flex;
@@ -177,6 +182,7 @@ body.theme-infernal .memory-world-scope {
 /* Enter 是低 chrome 的文字动作，不是 outlined button。 */
 .memory-world-entry__go {
   position: absolute;
+  z-index: 3;
   inset-block-end: 0;
   inset-inline-end: 0;
   display: inline-flex;
@@ -392,6 +398,7 @@ body.theme-infernal .memory-world-scope {
 .memory-world__stage {
   position: absolute;
   inset: 0;
+  z-index: 0;
   overflow: hidden;
 }
 
@@ -405,21 +412,20 @@ body.theme-infernal .memory-world-scope {
 }
 
 .memory-world__env {
-  inset: -5%;
-  inline-size: 110%;
-  block-size: 110%;
-  animation: mw-world-drift var(--mw-world-drift) ease-in-out infinite alternate;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
 }
 
 .memory-world__mist {
-  inset: -5%;
-  inline-size: 110%;
-  block-size: 110%;
-  animation: mw-world-mist var(--mw-world-mist-drift) ease-in-out infinite alternate;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
 }
 
 .memory-world__nodes {
   inset: 0;
+  z-index: 2;
   touch-action: pan-y;
 }
 
@@ -720,24 +726,24 @@ body.theme-infernal .memory-world-scope {
   padding-block-start: var(--ib-token-space-lg, var(--space-4, 16px));
 }
 
-/* ============================================ 环境层运动（有界）====== */
-/* 只有两张环境画布在动，方向相反、周期不同；memory 节点完全静止。 */
+/* ============================================ 入口潮涌（有界）======== */
+/* 仅入口的云雾层流动；主世界与记忆节点没有持续动画。 */
 
-@keyframes mw-world-drift {
+@keyframes mw-entry-tide {
   from {
-    transform: translate3d(-1.2%, -0.7%, 0) scale(1.02);
+    transform: translate3d(-2.0%, -1.2%, 0) scale(1.02);
   }
   to {
-    transform: translate3d(1.2%, 0.7%, 0) scale(1.045);
+    transform: translate3d(2.0%, 1.2%, 0) scale(1.05);
   }
 }
 
-@keyframes mw-world-mist {
+@keyframes mw-entry-mist {
   from {
-    transform: translate3d(1.7%, 1.0%, 0) scale(1.055);
+    transform: translate3d(2.4%, 1.4%, 0) scale(1.055);
   }
   to {
-    transform: translate3d(-1.7%, -1.0%, 0) scale(1.02);
+    transform: translate3d(-2.4%, -1.4%, 0) scale(1.02);
   }
 }
 

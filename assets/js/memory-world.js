@@ -19,7 +19,7 @@
      · 不写 memory_records / canonical memory / activation / importance /
        visibility / recall / score / MetaMemory / relationship / persona。
      · 不用文本相似度或标签相似度自动连线，不生成 pseudo graph。
-     · 不在节点上做无限脉动；只有环境层有一条极慢的漂移。
+     · 不在节点上做无限脉动；主世界背景静止，仅入口展示窗缓慢潮涌。
      · 不创建第二份 memory authority / cache / IndexedDB store。
 
    编码约束（见 docs/architecture/IB_VISUAL_TOKEN_CONTRACT_V1.md 与
@@ -371,6 +371,10 @@
       riftBody: riftBody,
       riftRidge: riftRidge,
       riftWarm: dark ? mix({ r: 232, g: 244, b: 255, a: 1 }, warm, 0.30) : mix(canvas, ink, 0.18),
+      /* 宇宙场景继续从既有主题角色派生，独立于记忆节点配色。 */
+      nebula: dark ? mix(accent, riftGlow, 0.24) : mix(canvas, accent, 0.36),
+      dust: dark ? mix(ink, accentHover, 0.32) : mix(ink, accent, 0.24),
+      orbit: dark ? mix(faint, accent, 0.32) : mix(canvas, accent, 0.46),
       /* 节点亮度锚点：暗场用近白冷光，亮场用深墨。 */
       coreAnchor: dark ? { r: 244, g: 249, b: 255, a: 1 } : mix(ink, { r: 12, g: 26, b: 56, a: 1 }, 0.5),
       spriteCache: {},
@@ -537,9 +541,24 @@
      整幅画布上做 blur 的代价不可控，而分段描边的成本是线性的、可预算的。 */
   function strokeBandPass(ctx, pts, width, alpha, color, thicknessRef, ridgePass) {
     if (alpha <= 0) return;
-    ctx.strokeStyle = rgba(color, 1);
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
+    /* 宽雾层整条绘制一次：半透明分段 round-cap 会叠出串珠状圆斑。 */
+    if (width > 3) {
+      var wash = ctx.createLinearGradient(0, 0, pts[pts.length - 1].x, 0);
+      for (var j = 0; j < pts.length; j++) {
+        wash.addColorStop(j / (pts.length - 1), rgba(color, alpha * pts[j].m * (0.6 + pts[j].t / thicknessRef * 0.4)));
+      }
+      ctx.strokeStyle = wash;
+      ctx.globalAlpha = 1;
+      ctx.lineWidth = width;
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (var k = 1; k < pts.length; k++) ctx.lineTo(pts[k].x, pts[k].y);
+      ctx.stroke();
+      return;
+    }
+    ctx.strokeStyle = rgba(color, 1);
     for (var i = 1; i < pts.length; i++) {
       var a = pts[i - 1];
       var b = pts[i];
@@ -562,27 +581,28 @@
     var g = band.glow;
 
     if (dark) {
-      strokeBandPass(ctx, pts, 30 * scale, 0.032 * g, palette.riftGlow, band.thickness);
-      strokeBandPass(ctx, pts, 15 * scale, 0.058 * g, palette.riftGlow, band.thickness);
-      strokeBandPass(ctx, pts, 7.0 * scale, 0.090 * g, palette.riftBody, band.thickness);
-      strokeBandPass(ctx, pts, 2.8 * scale, 0.200 * g, palette.riftBody, band.thickness);
-      /* 亮脊：主断层带一点极淡的暖色（very limited pale warm accent），
-         并且沿 x 有明显厚薄 —— 亮核 / 化雾交替。 */
-      strokeBandPass(ctx, pts, 1.05 * scale, 0.78 * g, palette.riftWarm, band.thickness, true);
-      strokeBandPass(ctx, pts, 0.55 * scale, 0.40 * g, palette.coreAnchor, band.thickness, true);
+      strokeBandPass(ctx, pts, 164 * scale, 0.012 * g, palette.nebula, band.thickness);
+      strokeBandPass(ctx, pts, 130 * scale, 0.016 * g, palette.nebula, band.thickness);
+      strokeBandPass(ctx, pts, 96 * scale, 0.020 * g, palette.nebula, band.thickness);
+      strokeBandPass(ctx, pts, 68 * scale, 0.025 * g, palette.riftGlow, band.thickness);
+      strokeBandPass(ctx, pts, 46 * scale, 0.030 * g, palette.riftGlow, band.thickness);
+      strokeBandPass(ctx, pts, 28 * scale, 0.030 * g, palette.riftBody, band.thickness);
+      strokeBandPass(ctx, pts, 14 * scale, 0.030 * g, palette.riftBody, band.thickness);
+      /* 远处的潮线融入雾带，冷白亮度留给真实记忆点。 */
+      strokeBandPass(ctx, pts, 2.1 * scale, 0.055 * g, palette.riftBody, band.thickness);
+      strokeBandPass(ctx, pts, 0.8 * scale, 0.19 * g, palette.riftGlow, band.thickness, true);
     } else {
-      /* 浅色世界不是暗色反相：这里是「霜裂」——雾体更亮，脊是略深的冷灰蓝线。 */
-      strokeBandPass(ctx, pts, 34 * scale, 0.070 * g, palette.riftGlow, band.thickness);
-      strokeBandPass(ctx, pts, 16 * scale, 0.095 * g, palette.riftGlow, band.thickness);
-      strokeBandPass(ctx, pts, 6.0 * scale, 0.105 * g, palette.riftBody, band.thickness);
-      strokeBandPass(ctx, pts, 1.5 * scale, 0.400 * g, palette.riftRidge, band.thickness, true);
-      strokeBandPass(ctx, pts, 0.7 * scale, 0.180 * g, palette.riftGlow, band.thickness, true);
+      /* 浅色独立材质：蓝白雾海，淡墨潮线藏在云层里。 */
+      strokeBandPass(ctx, pts, 110 * scale, 0.035 * g, palette.nebula, band.thickness);
+      strokeBandPass(ctx, pts, 48 * scale, 0.046 * g, palette.riftGlow, band.thickness);
+      strokeBandPass(ctx, pts, 16 * scale, 0.055 * g, palette.riftBody, band.thickness);
+      strokeBandPass(ctx, pts, 1.0 * scale, 0.23 * g, palette.riftRidge, band.thickness, true);
     }
   }
 
   /* 断层颗粒聚集：沿线的高斯散布，密度与局部厚度相关。 */
   function paintBandParticles(ctx, band, W, H, scale) {
-    var count = Math.round((W * H) / band.particleDensity);
+    var count = Math.min(2200, Math.round((W * H) / band.particleDensity * 2.6));
     if (count <= 0) return;
     var rnd = seeded(band.seed);
     var dark = palette.dark;
@@ -596,8 +616,8 @@
       if (m <= 0.01) continue;
       var y = clamp(bandY(band, x) + off * t * 1.9, 0.01, 0.99);
       var falloff = Math.exp(-(off * off) * 2.1);
-      ctx.globalAlpha = clamp((dark ? 0.14 + 0.46 : 0.07 + 0.22) * falloff * m, 0, 1);
-      var r = (rnd() < 0.86 ? 0.45 : 0.8) * scale;
+      ctx.globalAlpha = (dark ? 0.055 + rnd() * 0.16 : 0.025 + rnd() * 0.09) * falloff * m * backgroundQuiet(x, y, W);
+      var r = (0.23 + Math.pow(rnd(), 2) * 0.48) * scale;
       ctx.beginPath();
       ctx.arc(x * W, y * H, Math.max(0.3, r), 0, 6.283185);
       ctx.fill();
@@ -605,57 +625,125 @@
     ctx.globalAlpha = 1;
   }
 
-  /* 雾：沿断层的局部柔和雾团（小半径 + 多停靠点，避免出现可见圆盘边缘）。 */
-  function paintMist(ctx, W, H, scale) {
+  /* 非数据性的远景层：固定种子、有限绘制，不订阅时钟或指针。 */
+  function backgroundQuiet(x, y, W) {
+    var header = 1 - 0.72 * clamp((0.20 - y) / 0.20, 0, 1);
+    var foot = clamp((y - 0.62) / 0.30, 0, 1);
+    var side = W <= 760 ? 1 : clamp((x - 0.54) / 0.30, 0, 1);
+    return header * (1 - 0.82 * foot * side);
+  }
+
+  /* 拉长的多停靠点雾斑：边界化开，避免圆盘、滤镜与全屏模糊。 */
+  function haze(ctx, x, y, rx, ry, color, alpha, angle) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(angle || 0);
+    ctx.scale(rx, ry);
+    var g = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
+    g.addColorStop(0, rgba(color, alpha));
+    g.addColorStop(0.24, rgba(color, alpha * 0.76));
+    g.addColorStop(0.56, rgba(color, alpha * 0.30));
+    g.addColorStop(0.82, rgba(color, alpha * 0.06));
+    g.addColorStop(1, rgba(color, 0));
+    ctx.fillStyle = g;
+    ctx.fillRect(-1, -1, 2, 2);
+    ctx.restore();
+  }
+
+  function paintSpaceDepth(ctx, W, H) {
+    var dark = palette.dark;
+    haze(ctx, W * 0.12, H * 0.34, W * 0.56, H * 0.52, palette.nebula, dark ? 0.15 : 0.24, -0.18);
+    haze(ctx, W * 0.78, H * 0.28, W * 0.48, H * 0.60, palette.accent, dark ? 0.10 : 0.08, 0.28);
+    haze(ctx, W * 0.42, H * 0.75, W * 0.62, H * 0.32, palette.riftGlow, dark ? 0.07 : 0.10, -0.12);
+  }
+
+  function paintMist(ctx, W, H) {
     var dark = palette.dark;
     for (var bi = 0; bi < RIFT_BANDS.length; bi++) {
       var band = RIFT_BANDS[bi];
       var rnd = seeded(band.seed ^ 0x5a5a);
-      var n = Math.round((W * H) / 26000) + 6;
+      var n = 22;
       for (var i = 0; i < n; i++) {
-        var x = rnd();
+        var x = (i + rnd() * 0.72) / n;
         var m = bandMask(band, x) * edgeFadeT(x);
         if (m <= 0.05) continue;
         var cx = x * W;
         var cy = clamp(bandY(band, x) + (rnd() - 0.5) * bandThickness(band, x) * 3.0, 0.01, 0.99) * H;
-        var br = (0.10 + rnd() * 0.20) * Math.min(W, H) * (dark ? 1.0 : 0.9);
-        var a = (dark ? 0.042 + rnd() * 0.055 : 0.034 + rnd() * 0.040) * m * band.glow;
-        var rg = ctx.createRadialGradient(cx, cy, 0, cx, cy, br);
-        rg.addColorStop(0, rgba(dark ? palette.riftGlow : palette.riftGlow, a));
-        rg.addColorStop(0.42, rgba(dark ? palette.riftGlow : palette.riftGlow, a * 0.42));
-        rg.addColorStop(1, rgba(palette.riftGlow, 0));
-        ctx.fillStyle = rg;
-        ctx.beginPath();
-        ctx.arc(cx, cy, br, 0, 6.283185);
-        ctx.fill();
+        var rx = (0.075 + rnd() * 0.115) * W;
+        var ry = (0.042 + rnd() * 0.072) * H;
+        var quiet = backgroundQuiet(x, cy / H, W);
+        var a = (dark ? 0.10 + rnd() * 0.095 : 0.12 + rnd() * 0.10) * m * band.glow * quiet;
+        haze(ctx, cx, cy, rx, ry, palette.nebula, a, (rnd() - 0.5) * 0.42);
+        haze(ctx, cx - rx * 0.22, cy - ry * 0.32, rx * 0.78, ry * 0.38, palette.riftGlow, a * 0.54, -0.14);
+        haze(ctx, cx, cy - ry * 0.80, rx * 0.46, ry * 2.2, palette.nebula, a * 0.25, (rnd() - 0.5) * 0.70);
+        /* 淡暗尘道把云层分开；浅色以白雾留出清澈的间隙。 */
+        haze(ctx, cx + rx * 0.28, cy + ry * 0.52, rx * 0.66, ry * 0.42,
+          dark ? palette.bottom : palette.top, a * (dark ? 2.4 : 1.8), 0.12);
       }
     }
   }
 
-  /* 浅色世界的「纸纤维 / 冰雾」颗粒：独立的 light 材质，不是反相。 */
-  function paintFiber(ctx, W, H, scale) {
-    var rnd = seeded(0x1ce0);
-    var n = Math.round((W * H) / 9000);
-    ctx.lineCap = 'round';
+  /* 星尘有疏密、大小与亮度差异；小而弱，无光晕，不冒充记忆节点。 */
+  function paintFarStars(ctx, W, H, scale) {
+    var rnd = seeded(WORLD_SEED ^ 0x2d0c11);
+    var n = Math.min(1000, Math.round((W * H) / 1550));
+    var dark = palette.dark;
+    ctx.fillStyle = rgba(palette.dust, 1);
     for (var i = 0; i < n; i++) {
-      var x = rnd() * W;
-      var y = rnd() * H;
-      var ang = rnd() * 6.283185;
-      var len = (2.0 + rnd() * 7.0) * scale;
-      ctx.globalAlpha = 0.020 + rnd() * 0.030;
-      ctx.strokeStyle = rgba(rnd() < 0.5 ? palette.ink : palette.accentHover, 1);
-      ctx.lineWidth = Math.max(0.4, 0.45 * scale);
+      var x = rnd();
+      var y = rnd();
+      if (rnd() < 0.62) y = clamp(bandY(RIFT_BANDS[0], x) + (rnd() + rnd() - 1) * 0.42, 0.01, 0.99);
+      var weight = Math.pow(rnd(), 2.6);
+      var r = (0.24 + weight * 0.55) * scale;
+      ctx.globalAlpha = (dark ? 0.025 + weight * 0.13 : 0.02 + weight * 0.075) * backgroundQuiet(x, y, W);
       ctx.beginPath();
-      ctx.moveTo(x, y);
-      ctx.lineTo(x + Math.cos(ang) * len, y + Math.sin(ang) * len);
-      ctx.stroke();
+      ctx.arc(x * W, y * H, Math.max(0.23, r), 0, 6.283185);
+      ctx.fill();
     }
     ctx.globalAlpha = 1;
   }
 
+  /* 三条远处弧线只表达空间秩序，与节点、标签和关联无关。 */
+  function paintOrbitArcs(ctx, W, H) {
+    var arcs = [
+      [0.26, 0.73, 0.72, 0.52, -0.22, 3.42, 4.86],
+      [0.78, 0.32, 0.61, 0.68, 0.28, 1.90, 3.00],
+      [0.78, 0.32, 0.64, 0.71, 0.28, 2.03, 2.68]
+    ];
+    ctx.save();
+    ctx.lineWidth = 0.55;
+    for (var i = 0; i < arcs.length; i++) {
+      var a = arcs[i];
+      var g = ctx.createLinearGradient(0, H * 0.08, W, H * 0.76);
+      var alpha = (palette.dark ? 0.080 : 0.13) * (i === 2 ? 0.48 : 1);
+      g.addColorStop(0, rgba(palette.orbit, 0));
+      g.addColorStop(0.30, rgba(palette.orbit, alpha));
+      g.addColorStop(0.65, rgba(palette.orbit, alpha * 0.68));
+      g.addColorStop(1, rgba(palette.orbit, 0));
+      ctx.strokeStyle = g;
+      ctx.beginPath();
+      ctx.ellipse(a[0] * W, a[1] * H, a[2] * W, a[3] * H, a[4], a[5], a[6]);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  /* 底色暗角与顶部 / 下缘洗色：装饰退后，透明 annotation 仍可读。 */
+  function paintQuietVeil(ctx, W, H) {
+    var g = ctx.createLinearGradient(0, 0, 0, H);
+    var top = palette.dark ? palette.canvas : palette.top;
+    var bottom = palette.dark ? palette.bottom : palette.top;
+    g.addColorStop(0, rgba(top, 0.48));
+    g.addColorStop(0.22, rgba(top, 0));
+    g.addColorStop(0.62, rgba(bottom, 0));
+    g.addColorStop(1, rgba(bottom, palette.dark ? 0.70 : 0.64));
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+  }
+
   /* ------------------------------------------------- 环境层 × 2 张画布 ---- */
-  /* env  = 底色 + 断层 + 断层颗粒（慢速漂移 A）
-     mist = 雾 + 远景微尘 + （浅色）纸纤维（更慢的反向漂移 B）→ 视差纵深 */
+  /* env = 深空底色 + 雾带潮线 + 星尘；mist = 星云 + 远星 + 弧线 + 静谧洗色。
+     主世界只在尺寸 / 主题 / 数据变化时重绘；CSS 仅让入口展示窗缓慢潮涌。 */
 
   function paintEnvLayer(cv, W, H) {
     if (!cv || W < 2 || H < 2) return;
@@ -666,8 +754,8 @@
 
     var g = ctx.createLinearGradient(0, 0, 0, H);
     if (palette.dark) {
-      g.addColorStop(0, rgba(palette.top, 1));
-      g.addColorStop(0.42, rgba(palette.canvas, 1));
+      g.addColorStop(0, rgba(mix(palette.top, palette.bottom, 0.23), 1));
+      g.addColorStop(0.42, rgba(mix(palette.canvas, palette.bottom, 0.35), 1));
       g.addColorStop(1, rgba(palette.bottom, 1));
     } else {
       g.addColorStop(0, rgba(palette.top, 1));
@@ -677,6 +765,7 @@
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, W, H);
 
+    paintSpaceDepth(ctx, W, H);
     for (var i = 0; i < RIFT_BANDS.length; i++) paintRift(ctx, RIFT_BANDS[i], W, H, scale);
     if (state.envOn) {
       for (var j = 0; j < RIFT_BANDS.length; j++) paintBandParticles(ctx, RIFT_BANDS[j], W, H, scale);
@@ -692,24 +781,10 @@
     ctx.clearRect(0, 0, W, H);
     if (!state.envOn) return;
 
-    if (palette.dark) {
-      /* 远景微尘：极暗、极稀疏，建立 background 层。 */
-      var rnd = seeded(0x2d0c11);
-      var n = Math.round((W * H) / 7200);
-      ctx.fillStyle = rgba(palette.coreAnchor, 1);
-      for (var i = 0; i < n; i++) {
-        var x = rnd() * W;
-        var y = rnd() * H;
-        ctx.globalAlpha = 0.025 + rnd() * 0.075;
-        ctx.beginPath();
-        ctx.arc(x, y, Math.max(0.3, (rnd() < 0.85 ? 0.4 : 0.7) * scale), 0, 6.283185);
-        ctx.fill();
-      }
-      ctx.globalAlpha = 1;
-    } else {
-      paintFiber(ctx, W, H, scale);
-    }
-    paintMist(ctx, W, H, scale);
+    paintMist(ctx, W, H);
+    paintFarStars(ctx, W, H, scale);
+    paintOrbitArcs(ctx, W, H);
+    paintQuietVeil(ctx, W, H);
     ctx.globalAlpha = 1;
   }
 
@@ -963,8 +1038,8 @@
   state.fitter = fitCanvas;
 
   function measureSurface(surface) {
-    /* 三张画布的盒子必须各自量：env / mist 是 110% 过扫描（CSS 漂移留余量），
-       nodes 是 100%。混用尺寸会让绘制坐标与命中测试错位。 */
+    /* 三张画布的盒子各自量：主世界等幅，入口雾层为潮涌留过扫描余量。
+       混用尺寸会让绘制坐标与命中测试错位。 */
     var nodes = fitCanvas(surface.nodes);
     surface.w = nodes.w;
     surface.h = nodes.h;
@@ -1250,7 +1325,7 @@
     var envToggle = el('button', 'memory-world__menu-item memory-world__btn--toggle', menuPanel);
     envToggle.type = 'button';
     envToggle.id = 'mem-world-motion-toggle';
-    envToggle.textContent = '环境运动';
+    envToggle.textContent = '入口潮涌';
     envToggle.setAttribute('aria-checked', 'true');
     envToggle.setAttribute('role', 'menuitemcheckbox');
     envToggle.addEventListener('click', function () {

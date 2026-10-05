@@ -449,3 +449,45 @@ layout / scale   = 35
 visual contract  = 41
 MEMORY_WORLD_ASSERTIONS = 167 PASS / 0 FAIL
 ```
+
+
+---
+
+## 19. UI-P1.3 · Cosmic Background Exact Closure（冻结）
+
+本节冻结静态宇宙背景候选的最终呈现契约。§17.8 的全屏环境漂移与 §18.5 的 167 项断言是 UI-P1.1 / UI-P1.2 的历史记录；本阶段的运动边界和验证总数以下列值为准。既有记忆权威与交互语义继续保持。
+
+```
+MEMORY_WORLD_COSMIC_BACKGROUND       = PASS
+MAIN_WORLD_MOTION                    = STATIC
+MEMORY_NODE_MOTION                   = STATIC
+ENTRY_ENVIRONMENT_MOTION             = SLOW_OPTIONAL_TIDE
+ENTRY_TIDE_PERIODS                   = 26s / 41s
+ENTRY_TIDE_REDUCED_MOTION_AWARE       = YES
+ENTRY_TIDE_PAUSES_WHEN_HIDDEN         = YES
+DARK_COSMIC_MATERIAL                 = YES
+LIGHT_COSMIC_MATERIAL                = YES
+LIGHT_WORLD_IS_DARK_INVERSION        = NO
+COSMIC_BACKGROUND_SEMANTICS          = PRESENTATION_ONLY
+MEMORY_WORLD_ROLE                    = PRESENTATION_LAYER_ONLY
+MEMORY_WORLD_DURABLE_WRITES          = 0
+ACTIVATION_WRITES                    = 0
+MEMORY_WORLD_SEMANTICS_CHANGED       = NO
+MEMORY_WORLD_ASSOCIATION_LINES       = DISABLED
+POSITION_HAS_SEMANTIC_AUTHORITY      = NO
+COGNITIVE_PRIVATE_STATE_EXPOSURE     = NONE
+```
+
+星云、远景星尘、空间弧线和环境洗色只表达空间氛围，不连接具体记忆节点，不表达关联、时间轴、因果关系、记忆聚类真值、语义接近度或重要性权威。节点布局、tier mapping、selection、hit testing、Finder、detail delegation、read / write authority 与 activation 语义均保持不变。
+
+主世界不包含持续 Canvas 动画循环；仅入口的两个环境层执行可关闭的 CSS 慢潮涌，菜单文案为「入口潮涌」。入口在 reduced-motion 下停止，在页面隐藏时暂停。无新增图片资产或依赖。
+
+```
+browser          = 55
+side effects     = 37
+layout / scale   = 35
+visual contract  = 48
+MEMORY_WORLD_ASSERTIONS = 175 PASS / 0 FAIL
+```
+
+浏览器偏好恢复检查等待实际 data-motion 与入口 animation 状态，上限 3s，不使用固定 200ms 猜测。
