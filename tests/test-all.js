@@ -2329,6 +2329,15 @@ const GROUPS = [
          light/dark 各自有宏观结构且不是反相、chrome 只留 ··· 与 ×、
          preview 无底无边框（annotation 而非 card）、无连线、reduced-motion 全停。 */
       ['test_memory_world_visual_contract.js'],
+      /* UI-P2 · Chat Image Deck：聊天消息多图的叠层呈现。
+         structural —— count policy / state reducer / stable key / clamping /
+                        non-looping / preload / stack depth / error isolation /
+                        no durable state / no attachment mutation（纯 Node）；
+         browser    —— 真实渲染器（window._renderAllChat）产出的 DOM 上的
+                        拖动阈值、纵向让位、click vs drag、既有 viewer、键盘、
+                        展开全部、多 deck 隔离、重渲染身份、390px、主题。 */
+      ['test_chat_image_deck.js'],
+      ['test_chat_image_deck_browser.js'],
       ['test_active_diary_smoke.js'],
       ['test_moments_smoke.js'],
       /* M1-C.2n：浏览器侧接线（真实 Chrome + 真实 file:// 承载）——

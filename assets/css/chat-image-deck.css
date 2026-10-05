@@ -1,0 +1,303 @@
+﻿/* ============================================================================
+   UI-P2 · Chat Image Deck — presentation layer only
+   ----------------------------------------------------------------------------
+   · 只读既有 <img class="chat-bubble-img">（由 communication.js 追加）；
+     本层只改变它们的叠放呈现，不改任何 message payload / 附件 / URL。
+   · 没有面板底、没有卡片套卡片、没有控制条：图片本身是主体。
+   · 全部颜色/时长/间距/字号走既有语义 token，并对更早的树保留原语回退。
+   · 不使用 --ib-token-* 之外的裸色值；无大幅圆角；无紫。
+   ============================================================================ */
+
+/* ------------------------------------------------------ deck 容器（帧） */
+/* 帧比例由 --deck-aspect 决定（JS 依第一张图设一次，clamp 到安全带），
+   此后切图不再改变高度 → 布局位移有界。 */
+
+#page-chat .chat-image-deck {
+  --deck-aspect: 1.4;
+  --deck-drag: 0px;
+  position: relative;
+  display: block;
+  inline-size: 100%;
+  max-inline-size: 320px;
+  aspect-ratio: var(--deck-aspect);
+  max-block-size: 300px;
+  margin-block-start: var(--ib-token-space-sm, var(--space-2, 8px));
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: grab;
+  border: 0;
+  border-radius: var(--ib-token-radius-control, var(--radius-control, 8px));
+  background: none;
+}
+
+#page-chat .chat-image-deck[data-dragging="true"] {
+  cursor: grabbing;
+}
+
+#page-chat .chat-image-deck:focus-visible {
+  outline: var(--ib-token-focus-ring-width, 2px) solid var(--ib-token-focus-ring, var(--focus-ring, currentColor));
+  outline-offset: var(--ib-token-focus-ring-offset, 2px);
+}
+
+#page-chat .chat-image-deck__stack {
+  position: absolute;
+  inset: 0;
+}
+
+/* ---------------------------------------------------------------- 卡片 */
+/* 当前图 = front card；后面最多 3 层 back card，越后越弱。
+   只动 transform / opacity：不动布局属性。 */
+
+#page-chat .chat-image-deck__card {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform-origin: 50% 60%;
+  transition: transform var(--ib-token-motion-state, var(--motion-fast, .2s)) var(--ib-token-motion-easing-standard, ease),
+    opacity var(--ib-token-motion-state, var(--motion-fast, .2s)) var(--ib-token-motion-easing-standard, ease);
+  will-change: transform;
+}
+
+#page-chat .chat-image-deck__card[data-depth="hidden"] {
+  display: none;
+}
+
+#page-chat .chat-image-deck__card[data-depth="0"] {
+  z-index: 4;
+  transform: translate3d(var(--deck-drag), 0, 0);
+}
+
+#page-chat .chat-image-deck__card[data-depth="1"] {
+  z-index: 3;
+  opacity: 0.92;
+  transform: translate3d(calc(var(--deck-drag) * 0.30 + 8px), 5px, 0) scale(0.965) rotate(0.5deg);
+}
+
+#page-chat .chat-image-deck__card[data-depth="2"] {
+  z-index: 2;
+  opacity: 0.8;
+  transform: translate3d(calc(var(--deck-drag) * 0.16 + 15px), 10px, 0) scale(0.93) rotate(-0.7deg);
+}
+
+#page-chat .chat-image-deck__card[data-depth="3"] {
+  z-index: 1;
+  opacity: 0.66;
+  transform: translate3d(calc(var(--deck-drag) * 0.08 + 21px), 15px, 0) scale(0.897) rotate(0.9deg);
+}
+
+/* 后卡不吃指针事件：只有 front card 可被点开，避免歧义。 */
+#page-chat .chat-image-deck__card[data-depth="1"],
+#page-chat .chat-image-deck__card[data-depth="2"],
+#page-chat .chat-image-deck__card[data-depth="3"] {
+  pointer-events: none;
+}
+
+/* ---------------------------------------------------------------- 图片 */
+/* 必须压过 #page-chat .chat-bubble-img（ID 作用域）与 .chat-bubble-img。 */
+
+#page-chat .chat-image-deck__card > img.chat-bubble-img {
+  inline-size: 100%;
+  block-size: 100%;
+  max-inline-size: 100%;
+  max-block-size: 100%;
+  min-block-size: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ib-token-radius-control, var(--radius-control, 8px));
+  object-fit: contain;
+  display: block;
+  background: none;
+  cursor: zoom-in;
+  -webkit-user-drag: none;
+}
+
+/* ------------------------------------------------------------ 计数 / 箭头 */
+
+#page-chat .chat-image-deck__count {
+  position: absolute;
+  inset-block-end: var(--ib-token-space-sm, var(--space-2, 8px));
+  inset-inline-end: var(--ib-token-space-sm, var(--space-2, 8px));
+  z-index: 6;
+  padding: 1px var(--ib-token-space-sm, var(--space-2, 8px));
+  border-radius: var(--ib-token-radius-compact, 4px);
+  background: color-mix(in srgb, var(--ib-token-canvas, var(--pale)) 72%, transparent);
+  color: var(--ib-token-content-muted, var(--content-muted));
+  font: var(--ib-token-text-meta, 400 12px/1.4 var(--font-ui));
+  letter-spacing: 0.06em;
+  pointer-events: none;
+}
+
+#page-chat .chat-image-deck__nav {
+  position: absolute;
+  inset-block-start: 50%;
+  z-index: 6;
+  inline-size: 30px;
+  block-size: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ib-token-radius-round, 50%);
+  background: color-mix(in srgb, var(--ib-token-canvas, var(--pale)) 70%, transparent);
+  color: var(--ib-token-content-secondary, var(--content-secondary));
+  font: var(--ib-token-text-section-title, 500 1.05rem/1.35 var(--font-ui));
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(-50%);
+  transition: opacity var(--ib-token-motion-micro, 160ms) var(--ib-token-motion-easing-standard, ease);
+}
+
+#page-chat .chat-image-deck__nav--prev { inset-inline-start: var(--ib-token-space-sm, var(--space-2, 8px)); }
+#page-chat .chat-image-deck__nav--next { inset-inline-end: var(--ib-token-space-sm, var(--space-2, 8px)); }
+
+#page-chat .chat-image-deck:hover .chat-image-deck__nav,
+#page-chat .chat-image-deck:focus-within .chat-image-deck__nav {
+  opacity: 0.86;
+}
+
+#page-chat .chat-image-deck__nav:focus-visible {
+  opacity: 1;
+  outline: var(--ib-token-focus-ring-width, 2px) solid var(--ib-token-focus-ring, var(--focus-ring, currentColor));
+  outline-offset: 2px;
+}
+
+#page-chat .chat-image-deck__nav:disabled {
+  opacity: 0;
+  pointer-events: none;
+}
+
+#page-chat .chat-image-deck__expand {
+  position: absolute;
+  inset-block-start: var(--ib-token-space-sm, var(--space-2, 8px));
+  inset-inline-start: var(--ib-token-space-sm, var(--space-2, 8px));
+  z-index: 6;
+  min-block-size: 28px;
+  padding: 0 var(--ib-token-space-md, var(--space-3, 12px));
+  border: 0;
+  border-radius: var(--ib-token-radius-compact, 4px);
+  background: color-mix(in srgb, var(--ib-token-canvas, var(--pale)) 76%, transparent);
+  color: var(--ib-token-content-secondary, var(--content-secondary));
+  font: var(--ib-token-text-meta, 400 12px/1.4 var(--font-ui));
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+
+#page-chat .chat-image-deck__expand:focus-visible {
+  outline: var(--ib-token-focus-ring-width, 2px) solid var(--ib-token-focus-ring, var(--focus-ring, currentColor));
+  outline-offset: 2px;
+}
+
+#page-chat .chat-image-deck__sr {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ------------------------------------------- >6 的「展开 N」最小 gallery */
+/* 不是第二套 fullscreen viewer：网格里每一张仍然交回既有 viewer。 */
+
+.chat-image-deck-gallery {
+  position: fixed;
+  inset: 0;
+  z-index: var(--ib-token-layer-dialog, 500);
+  display: flex;
+  flex-direction: column;
+  background: color-mix(in srgb, var(--ib-token-canvas, var(--pale)) 92%, transparent);
+}
+
+.chat-image-deck-gallery__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ib-token-space-md, var(--space-3, 12px));
+  padding: var(--ib-token-space-lg, var(--space-4, 16px)) var(--ib-token-space-xl, var(--space-5, 20px));
+  border-block-end: 1px solid var(--ib-token-boundary-subtle, var(--border-soft));
+}
+
+.chat-image-deck-gallery__title {
+  color: var(--ib-token-content-primary, var(--content-primary));
+  font: var(--ib-token-text-meta, 400 12px/1.4 var(--font-ui));
+  letter-spacing: 0.12em;
+}
+
+.chat-image-deck-gallery__close {
+  inline-size: 44px;
+  block-size: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ib-token-radius-control, var(--radius-control, 8px));
+  background: none;
+  color: var(--ib-token-content-secondary, var(--content-secondary));
+  font: var(--ib-token-text-reading, 400 16px/1.8 var(--font-reading));
+  cursor: pointer;
+}
+
+.chat-image-deck-gallery__close:focus-visible,
+.chat-image-deck-gallery__tile:focus-visible {
+  outline: var(--ib-token-focus-ring-width, 2px) solid var(--ib-token-focus-ring, var(--focus-ring, currentColor));
+  outline-offset: 2px;
+}
+
+.chat-image-deck-gallery__grid {
+  flex: 1;
+  min-block-size: 0;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: var(--ib-token-space-sm, var(--space-2, 8px));
+  padding: var(--ib-token-space-lg, var(--space-4, 16px));
+}
+
+.chat-image-deck-gallery__tile {
+  padding: 0;
+  border: 0;
+  border-radius: var(--ib-token-radius-control, var(--radius-control, 8px));
+  background: none;
+  cursor: zoom-in;
+  aspect-ratio: 1;
+  overflow: hidden;
+}
+
+.chat-image-deck-gallery__tile img {
+  inline-size: 100%;
+  block-size: 100%;
+  object-fit: cover;
+  display: block;
+  -webkit-user-drag: none;
+}
+
+/* --------------------------------------------------------------- 移动端 */
+/* 纵向下潜 / 纵向滚动优先：deck 只吃横向；帧高度受视口约束。 */
+
+@media (max-width: 760px) {
+  #page-chat .chat-image-deck {
+    max-inline-size: 100%;
+    max-block-size: 46vh;
+  }
+
+  #page-chat .chat-image-deck__nav {
+    display: none;   /* 移动端用 swipe；不常驻按钮挡图 */
+  }
+
+  .chat-image-deck-gallery__grid {
+    grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  }
+}
+
+/* -------------------------------------------------------- reduced motion */
+
+@media (prefers-reduced-motion: reduce) {
+  #page-chat .chat-image-deck__card,
+  #page-chat .chat-image-deck__nav {
+    transition: none;
+  }
+}

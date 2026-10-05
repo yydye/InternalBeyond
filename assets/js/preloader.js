@@ -38,3 +38,20 @@
 (function(NS){
   NS.expose('preloader', { mounted: true });
 })(window.IB || (window.IB = {}));
+
+/* ---- UI-P2 · Chat Image Deck 的加载接缝 ----
+   assets/js/chat-image-deck.js 由本文件在运行时注入，因此不需要改动
+   InternalBeyond.html（用户 own 且 dirty），也不需要改动
+   assets/js/communication.js（同样 dirty）—— deck 完全位于渲染器之外：
+   它观察 #chat-full-messages / #chat-messages，把 renderer 已经追加的那一段
+   <img class="chat-bubble-img"> 重新组合成叠层，并保留图片自己的 onclick
+   → 既有 viewer。做法与 communication.js（behavior-effect-render.js）和
+   app-store.js 的动态注入一致；失败时静默退化，聊天原有功能不受影响。 */
+(function loadChatImageDeck(){
+  if (!document || !document.head) return;
+  if (document.getElementById('ib-chat-image-deck-loader')) return;
+  var s=document.createElement('script');
+  s.id='ib-chat-image-deck-loader';
+  s.src='assets/js/chat-image-deck.js';
+  document.head.appendChild(s);
+})();
