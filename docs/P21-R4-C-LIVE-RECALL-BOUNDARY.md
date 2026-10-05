@@ -623,3 +623,311 @@ R4F_AUTHORIZED                         = NO
 凭据存在与否 / Economy 余额都不是期望的启用权威** —— 前两者在本边界没有读点，
 后三者与本策略无关。期望正文**永不**回到浏览器：`describe()` 只有状态 / 计数 /
 延迟 / 原因。
+
+---
+
+## 16 · P21-R4-F · BehaviorEffect Server Runtime Closure（冻结值）
+
+> **本条是 additive**：§15 的 `R4F_AUTHORIZED = NO` / `BEHAVIOR_EFFECT_CALLS = 0`
+> 是 **LIVE-5.1 时点**的记录，逐字保留、不改写。§16 记录的是它之后发生的事：
+> BehaviorEffect 的**服务端契约与运行时**落地了，但**活体仍未闭合** ——
+> prompt placement 需要用户 own 的 `assets/js/communication.js`。
+
+以下每条都是实测值（括号里指出它由什么测量）。
+
+```
+R4F_BEHAVIOR_EFFECT_RUNTIME_READY            = YES
+R4F_BEHAVIOR_EFFECT_LIVE                     = NO
+BLOCKER                                      = BROWSER_PROMPT_PLACEMENT_REQUIRES_USER_OWNED_FILE
+BEHAVIOR_EFFECT_EXECUTION_KIND               = DETERMINISTIC_RULES
+BEHAVIOR_EFFECT_INPUT_AUTHORITY              = VALIDATED_L3_AND_L5
+R4_F_LIVE_MEDIATOR_REQUIREMENT               = L3_AND_L5
+BEHAVIOR_EFFECT_APPLIES_TO                   = NEXT_ELIGIBLE_TURN
+BEHAVIOR_EFFECT_CONSUMPTION                  = SINGLE_CONSUMPTION_NEXT_ELIGIBLE_TURN
+SOURCE_TURN_RETROACTIVE_EFFECT               = NO
+MAX_ADDITIONAL_BEHAVIOR_MODEL_CALLS_PER_CHARACTER_TURN = 0
+MAX_COGNITIVE_EXTRA_MODEL_CALLS_PER_CHARACTER_TURN     = 2
+BEHAVIOR_EFFECT_PROVIDER_CALLS               = 0
+BEHAVIOR_EFFECT_CREDENTIAL_READS             = 0
+BEHAVIOR_EFFECT_DURABLE_WRITES               = 0
+MAX_HELD_BEHAVIOR_EFFECTS                    = 64
+HOLDER_TTL_MS                                = 600000
+HOLDER_SCOPE                                 = character+conversation+turn
+replayBound                                  = EVICTION_BOUNDED_NO_LEDGER
+CROSS_EVICTION_EXACTLY_ONCE                  = NO
+RECALL_ENVELOPE_TOP_LEVEL_KEYS               = 17
+BEHAVIOR_EFFECT_ENVELOPE_KEY                 = behaviorEffect
+BEHAVIOR_EFFECT_ENVELOPE_VALUE               = CLOSED_EFFECT_OBJECT_OR_NULL
+NO_SIGNAL_IS_FIRST_CLASS                     = YES
+BROWSER_MAY_SUBMIT_BEHAVIOR_EFFECT           = NO
+BROWSER_RECEIVES_BEHAVIOR_EFFECT             = YES_CLOSED_ENUMS_ONLY
+PREDICTION_ERROR_LIVE                        = NO
+PREDICTION_ERROR_CALLS                       = 0
+COUNTERFACTUAL_AUTO_CALLS                    = 0
+```
+
+### 16.1 与 §15 的关系（相位切换，不是推翻）
+
+| 项 | §15（LIVE-5.1 时点） | §16（R4-F 之后） |
+| --- | --- | --- |
+| `R4F_AUTHORIZED` | `NO` | 服务端**运行时**通道已存在且被实测；**活体仍 NO** |
+| `BEHAVIOR_EFFECT_CALLS` | `0` | `0`（本层是确定性投影，没有模型调用可授权） |
+| `HOLDER_SCOPE` | `character+conversation+turn`（期望） | `character+conversation+turn`（行为，**独立**持有者） |
+| AUTHORITATIVE 信封 | 16 键 | **17 键**（第 17 键 `behaviorEffect`） |
+
+**不要**把 §16 读成"R4-F 已 LIVE"。本轮范围明确是
+**server contract / runtime only**：`R4F_BEHAVIOR_EFFECT_LIVE = NO`，
+blocker 具名，且不得声称永久 exactly-once。
+
+### 16.2 冻结的 v1 schema（闭集 7 键）
+
+```
+behaviorEffect = {
+  stance, strategy, initiativeTendency, rationaleCode,
+  sourceTurn, derivedFrom: 'L3_AND_L5', ttlTurns: 1
+}
+```
+
+`validateEffect` 是**闭集键白名单**：白名单之外的键 ⇒ 不是效果。
+`promptText` / `instruction` / `fragment` / `guidance` / `text` / `prompt`
+逐名拒绝；`warmth` / `patience` / `openness` / `guardedness` / `protectiveness` /
+`trust` / `familiarity` / `affinity` 逐名拒绝。**没有免费文本通道可以写** ——
+不是"禁止写"，而是没有这个键。`derivedFrom` 的闭集**只有一个值**：
+`L3_AND_L5`（`L3` / `L5` / `L3+L5` 一律 fail closed）。
+
+### 16.3 中介（L3 **且** L5）与负例矩阵
+
+派生输入不是两个布尔，而是**两个服务端结果对象**：
+`interpretationResult` 必须是 `ok:true` + `status:'succeeded'` + `recordSource`
++ 结构合规的 shadow（每个 item 带非空 `memoryId` 且 `appraisal` 命中 R4-C 纯核心
+的闭集）；`expectation` 必须是 `status:'created'`。实测负例：
+
+| 输入 | 结果 |
+| --- | --- |
+| 只有 Recall | `l3-not-validated` ⇒ 无效果 |
+| 只有 L3（期望 OFF） | 0 次派生 ⇒ 无效果 |
+| 只有 L5 | `l3-not-validated` ⇒ 无效果 |
+| 裸 L3 shadow 的 clone | `l3-not-a-server-result` ⇒ 无效果 |
+| 结构伪造 L3（坏 appraisal） | `l3-shape-invalid` ⇒ 无效果 |
+| 伪造 L5（`status != created`） | `expectation-malformed` ⇒ 无效果 |
+| 浏览器提交 L3 / L5 / behaviorEffect | 请求闭集 ⇒ 400，零派生、零状态改变 |
+
+★ 诚实边界：进程内**克隆一份完整的服务端结果对象**在结构上与原件不可区分
+（`CLONE_OF_SERVER_RESULT_IN_PROCESS = NOT_DISTINGUISHABLE`）。真正的权威是
+"**没有第二个调用方**"：本模块没有路由，RECALL 请求是闭集，唯一调用点是
+`runtime-recall.js` 的期望 seam（`tests/helpers/runtime-seam-guard.js` 把它钉死）。
+
+### 16.4 交付通道：第 17 键，与 `effects` 的边界
+
+authoritative 信封从 16 键变为 **17 键**；第 17 键的值是**冻结对象本身**或 `null`
+（没有 `status` 包装层 —— 包装层会变成第二个"效果长什么样"的权威）。
+`effects` 仍然逐字是**召回生命周期**块（`turnBegun` / `activation` / `exposure` /
+`turnEnded`），认知行为语义**不**混进去。
+
+形状不随成功/失败分叉：知道 `mode` 的失败路径也回同一套 17 键（值为 `null`），
+且**不消费**任何持有的效果；**校验期失败**（还没有可信的 `mode`）仍是冻结的
+14 键基座失败信封，不含 `behaviorEffect` / `context` / `effects`。
+
+### 16.5 持有者、消费语义与淘汰的诚实边界
+
+* 持有者：**进程内**、非持久、64 条 / 600 000 ms、键
+  `characterId+conversationId+turnId`；消费时只取**同角色 + 同会话**的
+  最旧待取条目（§16 隔离：别的角色 / 别的会话在结构上取不到）。
+* `SOURCE_TURN_RETROACTIVE_EFFECT = NO`：源回合**取不到自己**刚派生的效果
+  （消费时按 `sourceTurn === 当前 turnId` 显式跳过）。
+* 单次消费：取走即删除。重放**不消费**（重放的冻结语义是"不触碰任何状态"）。
+* ★ `CROSS_EVICTION_EXACTLY_ONCE = NO`：被淘汰的旧回合可以再次产生效果。
+  本相位**不加**任何持久账本，`replayBound = EVICTION_BOUNDED_NO_LEDGER`。
+  把持有者去重描述成"永久 exactly-once"是**假话**。
+
+### 16.6 NO_SIGNAL 是一等合法结果
+
+中性 / 无信号（L3 的 `appraisal` 为 `neutral` / `unclear`，或没有可用条目）
+⇒ **结构化中性效果**（`neutral|answer_directly|normal` + `rationaleCode:'no-signal'`），
+**不是** `null` + fallback，也不是任意自然语言解释。固定渲染器对它给出
+`NO_PLACEMENT`（一等结果，但**不**往 prompt 里塞一行）。
+"每个 L3+L5 必然改变行为"是**假**命题。
+
+### 16.7 固定渲染器契约（下一相消费，本轮不接）
+
+* renderer 的输入**只能是**闭合 `behaviorEffect` 对象（7 键）；
+* 输出 = 固定模板 + enum 映射：`PLACEMENT | NO_PLACEMENT | REFUSED`，
+  `REFUSED` 一律 fail closed（未知组合不放置）；
+* 模板来自服务端自有表（3 行），**绝不**插入 `rationale` 自由文本 / L3 原文 /
+  L5 原文；
+* 指引文本内**明写**优先级：
+  `SYSTEM_DEVELOPER_POLICY > EXPLICIT_USER_REQUEST > BOUNDED_BEHAVIOR_EFFECT_GUIDANCE`；
+* 位置设计：`DEDICATED_SYSTEM_ROLE_MESSAGE`（独立 system 角色消息），
+  而不是改 persona / `cfg.systemPrompt`。
+
+### 16.8 守卫（seam 钉死 + 对抗样本）
+
+`behaviorEffect` 只允许出现在 `runtime-recall.js` 的 **5 个具名位置**
+（装配注入的 dep 行 · `behaviorEffectForEnvelope` · `failure` · `run` · `describe`），
+且 `deriveAndHold` / `consumeForTurn` 各**恰好一次**、各只在自己的授权函数内；
+选择阶段与 `scheduleAutoInterpretation` 体内**一个都不许有**。
+`counterfactual` / `prediction-error` 仍然全面禁止（解释边界四域全禁，措辞未放宽）。
+守自由 `tests/helpers/runtime-seam-guard.js` 承载（LIVE-5 两个套件 + R4-F 套件共用），
+并由 5 个**对抗样本**（第二个 seam / 直接构造 / 错误函数读 holder /
+selector 阶段派生 / 源回合直接消费）证明它真的抓得住伪造。
+
+### 16.9 本轮实测抓到的两个缺陷（为什么这些形状是现在这样）
+
+1. **`conversationId is not defined`**：候选的成功路径引用了 `run()` 里并不存在的
+   局部绑定（校验器把身份放在 `shape` 里）。它让**每一次** authoritative 召回
+   落进兜底 catch（`unexpected-boundary-error` ⇒ 503）—— "永不抛出"的契约把
+   一个拼写错误放大成整条链路不可用。R4-F 套件的三步实测抓到并修掉了它。
+2. **聚合 runner 的登记表空洞**：`tests/test-all.js` 里漏了一个逗号，
+   `['a'] /* c */ ['b']` 被解析成成员访问 ⇒ 该槽位是 `undefined` ⇒ REGISTRY 构建
+   **直接抛错**（HEAD 上即可复现）。"写了测试"与"每轮真的被跑"的缺口这次出现在
+   聚合器自己身上；已修，且登记表空洞数实测为 0。
+
+### 16.10 明确不做（本轮）
+
+Browser prompt placement（需要用户 own 的 `assets/js/communication.js`）·
+durable ledger · 第三个成本权威位（`autoBehaviorEffectEnabled` 这类"伪装成成本
+权威的开关"）· 改写关系 / persona / speech style / tool policy / canonical memory /
+Recall score / Expectation / Interpretation · Prediction Error 结算 ·
+Counterfactual 自动调用。
+
+---
+
+## 17 · P21-R4-F.2 · Browser BehaviorEffect Placement（冻结值）
+
+> **本条是 additive**：§16 记录的是"服务端就绪、活体未闭合"，
+> 并冻结了 BLOCKER = `BROWSER_PROMPT_PLACEMENT_REQUIRES_USER_OWNED_FILE`。
+> §17 记录 blocker 被**定向授权**解除之后的事实：第 17 键经浏览器固定 renderer
+> 落成**一条独立 system 角色消息**。§16 的每一条 server 事实**一个字都没改**。
+
+以下每条都是实测值（`tests/test_r4f_live_behavior_effect_browser.js`，真实 Chrome
++ 真实 Home Node + 真实 prompt assembly）。
+
+```
+R4F_BEHAVIOR_EFFECT_RUNTIME_READY       = YES
+R4F_BEHAVIOR_EFFECT_LIVE                = YES
+R4F_BEHAVIOR_EFFECT_LIVE_SEMANTICS      = PRODUCTION_INFRASTRUCTURE_LIVE_CAPABLE
+BEHAVIOR_EFFECT_APPLICATION_TARGET      = NEXT_ELIGIBLE_CONVERSATION_TURN
+BEHAVIOR_EFFECT_PROMPT_PLACEMENT        = DEDICATED_SYSTEM_ROLE_MESSAGE
+BEHAVIOR_EFFECT_RENDERER                = FIXED_ENUM_TABLE_NO_SOURCE_TEXT_INTERPOLATION
+BEHAVIOR_EFFECT_RENDERER_MODULE         = assets/js/behavior-effect-render.js
+BEHAVIOR_EFFECT_RENDERER_LOAD_PATH      = DYNAMIC_SCRIPT_INSERT_VIA_COMMUNICATION_JS
+INTERNALBEYOND_HTML_MODIFIED_BY_R4F2    = NO
+SOURCE_TURN_RETROACTIVE_EFFECT          = NO
+SOURCE_TURN_PROMPT_MUTATION_FROM_BEHAVIOR_EFFECT = 0
+BEHAVIOR_EFFECT_DURABLE_WRITES          = 0
+BEHAVIOR_EFFECT_BROWSER_DURABLE_WRITES  = 0
+MAX_ADDITIONAL_BEHAVIOR_MODEL_CALLS_PER_CHARACTER_TURN = 0
+MAX_COGNITIVE_EXTRA_MODEL_CALLS_PER_CHARACTER_TURN     = 2
+PREDICTION_ERROR_LIVE                   = NO
+COUNTERFACTUAL_AUTO_CALLS               = 0
+AUTO_BEHAVIOR_EFFECT_ENABLED_CHARACTER_COUNT =
+  NOT_APPLICABLE_NO_INDEPENDENT_ENABLE_BIT
+```
+
+### 17.1 §16 的 blocker 是如何被解除的（只读授权边界）
+
+`assets/js/communication.js` 是**用户 own 的 dirty 文件**（相位前 113 个用户 hunk /
+BOM=True / LF-only）。本相位拿到的是**窄授权**：保留第 17 键、调用固定 renderer、
+放置 bounded guidance、replay/group/failure 的最小 wiring —— 仅此而已。
+
+* **clean 候选先构造**：`CLEAN_HEAD` blob → 应用 8 个 hunk → `CLEAN_R4F2` blob
+  → `R4F2_COMMUNICATION_PATCH_SHA256`；**不在 dirty 文件上试错开发**。
+* 再把**同一份 hunk** 按锚点应用到 dirty 工作树（每个 `old` 在 clean 与 dirty
+  里都**恰好出现一次**）。
+* **机械证明**：把 8 个 hunk 反向替换回去，得到的字节与相位前的 dirty blob
+  **逐字节相等** ⇒ `USER_HUNKS_BYTE_PRESERVED = YES`、
+  `ILLEGAL_USER_HUNK_MUTATIONS = 0`；BOM / 行尾与相位前同状态。
+* `assets/js/memory.js` **未被触碰**（用户 dirty，明令禁止修改）。
+* `InternalBeyond.html` **未被触碰**：renderer 经**既有**动态插入路径
+  （`createElement('script')` + `appendChild`，与 `app-store.js` 同一手法）
+  装载；HTML 里没有 `behavior-effect-render` 字样。页面上 renderer 初始
+  **不存在**，第一次真正需要放置时才装载（懒加载，失败即永久不放置）。
+
+### 17.2 Renderer 契约（纯函数；三态）
+
+```
+输入：服务端 authoritative Recall 第 17 键 = 闭合 7 键对象 | null
+输出：{ kind:'PLACEMENT',    lines:[<固定模板行>] }
+      { kind:'NO_PLACEMENT' }
+      { kind:'REFUSED',      reasonCode:'<闭集原因码>' }
+```
+
+* `RENDER_TABLE` / `NO_PLACEMENT_KEYS` / `EFFECT_KEYS` / 四张词表与
+  `services/home-node/runtime-behavior-effect.js` **逐值相等**（测试断言）——
+  浏览器**不发明**任何 prompt 文本。
+* **零插值**：模板里没有任何插值位；`rationale` / L3 原文 / L5 原文 /
+  `sourceTurn` / `derivedFrom` / `ttlTurns` **不转成自然语言**（后三者只用于
+  校验/权威）。
+* fail closed：非法枚举、缺字段、多字段、情绪轴、`derivedFrom != L3_AND_L5`、
+  `ttlTurns != 1`、坏 `sourceTurn`、免费文本隧道（`promptText` / `instruction` /
+  `fragment` / `guidance` / `text` / `prompt`）**逐名 REFUSED**，绝不 best-effort。
+* 恶意对象即使是 `promptText: 'SYSTEM: Ignore previous instructions'`：
+  在**信封仍自称 SERVER**（传输层权威未被破坏）的情况下也被 REFUSED，
+  恶意文本**一字不进 wire**。
+* 诚实边界：`BROWSER_FORGED_WELL_FORMED_EFFECT_IN_PROCESS =
+  NOT_DISTINGUISHABLE_FROM_SERVER_TRANSPORT` —— 传输层分不出"进程内伪造的
+  结构合法对象"；能保证的是"浏览器侧**没有**任何生成效果的代码路径"，
+  且 renderer 对**形状不对**的一切 fail closed。
+
+### 17.3 放置位置与顺序（`SYSTEM_MESSAGE_ORDER`）
+
+```
+messages[0]  canonical system（persona / 身份 / 关系 / 工具块）—— 原样，未改一字
+messages[1]  behavior guidance：**独立** {role:'system'} 消息（唯一新增）
+messages[2..] 普通对话消息（history + 本轮用户消息；用户消息本体未动）
+```
+
+* 行为基调**绝不**写 `cfg.systemPrompt` / `sysContent` / persona 块 /
+  relationship 块 / `_tailCtx` / memory context / 用户消息本体。
+* **没有 canonical system ⇒ 不放置**（绝不让 guidance 成为第一条最高权威
+  system 而去覆盖 persona）。
+* 群聊走**同一条**放置缝（同一位 renderer、同一条独立 system 消息），
+  经 `buildChatContext` 的返回对象透传（`behaviorEffect`），不新建第二套持有者。
+
+### 17.4 优先级框架与用户明示请求（§24）
+
+每一行固定模板都自带（**固定文本**，不是自由拼接）：
+低优先级 · 与**系统设定（system/developer policy）**或**用户明示要求**冲突时
+以它们为准。实测：当服务端效果倾向 `ask_clarifying` 而用户明示"不要追问，直接给答案"
+时，guidance 仍然只是一条**低优先级**建议行，用户消息逐字未改，行内不含任何
+`必须/禁止/一定要/不许/务必` 类命令词 —— 它**不能**命令模型违反 system /
+developer / 用户明示请求 / 工具安全。
+
+机器可读声明：`PRIORITY = SYSTEM_DEVELOPER_POLICY > EXPLICIT_USER_REQUEST >
+BOUNDED_BEHAVIOR_EFFECT_GUIDANCE`。
+
+### 17.5 Prompt isolation matrix（实测）
+
+| 输入 | 服务端第 17 键 | renderer | wire 上的 system 消息数 |
+| --- | --- | --- | --- |
+| A 无效果 | `null` | `NO_PLACEMENT` | 1（只有 canonical） |
+| B NO_SIGNAL | 结构化中性对象 | `NO_PLACEMENT` | 1 |
+| **C 合法非中性** | 闭合 7 键对象 | **`PLACEMENT`** | **2（canonical + guidance）** |
+| D 非法（恶意隧道） | 被污染的对象 | `REFUSED` | 1 |
+
+**只有 C 新增那一条消息**；Turn A（源回合）自身零 guidance；Turn C 在服务端回
+`null` 时零陈旧 guidance（浏览器没有第二套 holder，也没有跨回合缓存）。
+跨角色隔离：A 的效果不会进入 B 的回合（服务端已隔离，浏览器侧实测同样为 null）。
+
+### 17.6 §34 为什么**没有**独立启用位
+
+`AUTO_BEHAVIOR_EFFECT_ENABLED_CHARACTER_COUNT = NOT_APPLICABLE_NO_INDEPENDENT_ENABLE_BIT`。
+
+BehaviorEffect 是**确定性投影**（0 次模型调用），因此**没有**第三个成本位：
+不存在 `autoBehaviorEffectEnabled` 这样的开关（那会是"伪装成成本权威的启用开关"，
+本相位刻意不加）。它的"活不活"完全由**上游两个既有布尔**自然约束：
+
+```
+Interpretation enabled  AND  Expectation enabled  ⇒ 该回合派生并交付行为基调
+否则                                              ⇒ 第 17 键 = null ⇒ 零放置
+```
+
+shipped default 两个布尔都是 OFF ⇒ 新装节点上行为基调的放置次数 = 0，
+**没有任何新增付费面**（整链最大额外模型调用仍是 1 + 1 + 0 = 2）。
+
+### 17.7 本轮明确不做
+
+Prediction Error 结算 · Counterfactual 自动调用 · 改写 relationship / persona /
+speech_style / tool policy / canonical memory / Recall score / Expectation /
+Interpretation · durable ledger · 第三个成本权威位 · 重构 bundling ·
+更新 R2-A hash baseline（那属于用户/其它工作流的决定）。

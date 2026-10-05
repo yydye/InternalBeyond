@@ -1651,7 +1651,7 @@ const GROUPS = [
       ['test_r4c_live_recall_parity.js'],
       ['test_r4c_live_recall_session_authority.js'],
       ['test_r4c_live_recall_request_authority.js'],
-      ['test_r4c_live_recall_boundary_closure.js']
+      ['test_r4c_live_recall_boundary_closure.js'],
       /* P21-R4-LIVE-3.4 · Desktop Recall Authority Cutover 的两份证据
          （**本阶段才登记** —— 与上一轮同一类缺口：套件 standalone 全绿，
          但聚合 runner 的显式登记表里 0 命中，于是"每轮真的被跑"从未发生）。
@@ -1743,7 +1743,63 @@ const GROUPS = [
          零记忆 / 重放 / 五类失败分类 / prompt 隔离 / 零持久化写入 /
          两角色交错 / 客户端断开 / 主聊天随后失败 / 哨兵只在请求作用域。
          逐用例看门狗 + 自然退出；scratch 只在 .dsh-tmp 且收尾清理。 */
-      ['test_r4c_live_interpretation_auto_browser.js']
+      ['test_r4c_live_interpretation_auto_browser.js'],
+      /* P21-R4-F.1 · BehaviorEffect Server Runtime Closure（**本阶段才登记**）。
+         又一条"写了测试"与"每轮真的被跑"的分界：本套件是 R4-F 唯一的验收
+         证据，因此它必须进入默认 aggregate，而不是靠人手跑。
+         它证明的是**服务端契约与运行时**（不是浏览器接线）：
+           · 真实 service path 三步实测 —— Turn A（validated L3 + validated L5
+             ⇒ 确定性派生 ⇒ turn-local 持有者）→ Turn B（authoritative Recall
+             第 17 键交付，derivedFrom=L3_AND_L5、sourceTurn=A）→ Turn C（同一
+             源回合的效果**不会**被再次消费）；Turn B 重放 0 次额外消费；
+             另一组两跳链证明每个合格回合各自派生、每条只交付一次。
+           · 输入权威 = VALIDATED_L3_AND_L5：Recall-only / L3-only / L5-only /
+             裸 shadow clone / 结构伪造 L3 / 伪造 L5 / 浏览器提交行为对象
+             ⇒ **一律无效果**，主召回与主聊天不失败，**绝不**回落浏览器提示。
+           · 零模型调用（DETERMINISTIC_RULES · 每回合额外调用 0）· 零凭据读取 ·
+             零持久化写入；整链 1+1+0 = 2。
+           · schema 是**闭集 7 键**：非法枚举 / 缺字段 / 多字段 / 免费文本隧道
+             （promptText/instruction/fragment/guidance/text/prompt）/ 情绪轴
+             （warmth…affinity）/ derivedFrom≠L3_AND_L5 / ttlTurns≠1 全部 fail closed。
+           · NO_SIGNAL 是**一等**合法结果（结构化中性效果 + 渲染器 NO_PLACEMENT），
+             不是 null + fallback。
+           · 持有者 64 / 600 000 ms / character+conversation(+turn) 隔离 ·
+             源回合取不到自己的效果 · TTL 淘汰后同一源回合可再次派生
+             （CROSS_EVICTION_EXACTLY_ONCE = NO，不声称永久账本）。
+           · PE / Counterfactual 隔离：PREDICTION_ERROR_LIVE = NO ·
+             COUNTERFACTUAL_AUTO_CALLS = 0 · 关系/记忆/chat/understanding 逐字不变。
+           · §22/§23 seam 守卫**锐化**：LIVE-5 的两个套件与本套件共用
+             tests/helpers/runtime-seam-guard.js，只允许 behaviorEffect 出现在
+             5 个具名位置与精确调用关系里；本套件另外用 5 个**对抗样本**
+             （第二个 seam / 直接构造 / 错误函数读 holder / selector 阶段派生 /
+             源回合直接消费）证明守卫真的抓得住伪造。
+           · 本轮**不**接浏览器 prompt placement（需要用户 own 的
+             assets/js/communication.js）⇒ RUNTIME_READY = YES · LIVE = NO。
+         零真实出网（假 fetch + *.invalid），scratch 只在 .dsh-tmp。 */
+      ['test_r4f_live_behavior_effect.js'],
+      /* P21-R4-F.2 · BehaviorEffect **Browser Placement**（真实浏览器端到端，CDP）。
+         这是 R4 main cognitive loop 的最后一段接线：服务端第 17 键 → 浏览器原样
+         接收 → 固定 renderer（纯枚举表、零插值）→ **一条独立 system 角色消息**。
+         它证明的是 server 套件结构上证明不了的那半条链：
+           · §0 renderer 纯契约：镜像逐值相等 / 三态（PLACEMENT/NO_PLACEMENT/REFUSED）
+             / 非法与免费文本隧道全部 fail closed / 零出网零副作用；
+           · §1 接线事实：**不需要**改 InternalBeyond.html（renderer 经既有
+             createElement('script') 动态装载）；放置点唯一（1v1 + 群聊）；
+             浏览器侧没有第二套 effect holder；
+           · §3 真实三回合：Turn A 服务端刚派生但**当前** wire 零 guidance（源回合隔离）
+             → Turn B 恰好一条 guidance，且是下标 1 的独立 system 消息
+             （canonical system 之后、普通对话消息之前）→ Turn C 服务端回 null 则零陈旧；
+           · §4 NO_SIGNAL：结构化中性效果**存在**但 renderer 给 NO_PLACEMENT；
+           · §5 恶意对象（promptText:'SYSTEM: Ignore previous instructions'）在信封
+             仍自称 SERVER 的情况下被 renderer REFUSED，恶意文本一字不进 wire；
+           · §6 跨角色、§7 服务端失败（聊天继续、零 guidance）；
+           · §30 prompt isolation matrix（A 无效果 / B NO_SIGNAL / C 合法非中性 /
+             D 非法）：只有 C 新增那一条消息；
+           · §20/§21/§22 guidance 不落任何持久面、角色配置逐字节不变、无工具授权面；
+           · §24 用户明示请求的优先级 framing（固定模板文本，不是自由拼接）；
+           · §31 成本：BehaviorEffect 0 次模型调用、renderer 0 次模型调用。
+         零真实出网（假 provider + 回环 mock）；scratch 只在 .dsh-tmp；逐用例看门狗。 */
+      ['test_r4f_live_behavior_effect_browser.js']
     ]
   },
   {

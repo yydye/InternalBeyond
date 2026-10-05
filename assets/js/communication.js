@@ -1687,7 +1687,7 @@ var RECALL_WAIT_TIMEOUT_MS = 2500;    /* 客户端外层兜底：绝不无限阻
 var RECALL_REQUEST_TIMEOUT_MS = 2000; /* 传给服务端的请求内层界（服务端 MAX 10000） */
 async function ibRecallContextForTurn(input){
   var o = input || {};
-  var unavailable = { context:'', selectedIds:[], authority:'SERVER_UNAVAILABLE', browserFallback:false };
+  var unavailable = { context:'', selectedIds:[], authority:'SERVER_UNAVAILABLE', browserFallback:false, behaviorEffect:null };
   var recall = null;
   if(typeof o.serverRecall === 'function'){ recall = o.serverRecall; }
   else{
@@ -1725,7 +1725,12 @@ async function ibRecallContextForTurn(input){
     context: text,
     selectedIds: Array.isArray(out.selectedIds) ? out.selectedIds.slice() : [],
     authority: 'SERVER',
-    browserFallback: false
+    browserFallback: false,
+    /* ── P21-R4-F.2 · 第 17 键：**原样透传** server-owned 闭合对象（或 null）──
+       浏览器不重算、不补字段、不推断、不按 L3/L5 文本构造、不按 memory 重新派生。
+       非对象（协议外的形状）⇒ null：这是「没有可信效果」的忠实表示，
+       不是 fallback 推断 —— renderer 还会再校验一次（双层 fail closed）。 */
+    behaviorEffect: (out.behaviorEffect && typeof out.behaviorEffect === 'object') ? out.behaviorEffect : null
   };
 }
 /* === end seam === */
@@ -1882,7 +1887,7 @@ const _pushCtxBlock=function(text){if(!text)return;const sep=_tailCtx?'\n\n':'';
       if(_bFinal.over)_ibBudgetLog(opts.isGroup?'group':'chat',_bAlloc,'actual~'+_bFinal.inputTokens+' tok');
     }
   }catch(_bErr){console.warn('[ContextBudget] measure failed',String(_bErr&&_bErr.message||_bErr).slice(0,120))}
-  return {system:sysContent, tail:_tailCtx, snapshot:_ctxSnapshot, budget:_bFinal};
+  return {system:sysContent, tail:_tailCtx, snapshot:_ctxSnapshot, budget:_bFinal, behaviorEffect:(_srvR&&_srvR.behaviorEffect)||null};
 }
 async function _buildGroupChatContext(cfg,opts){
   opts=opts||{};
@@ -1962,8 +1967,11 @@ async function _buildGroupChatContext(cfg,opts){
     caps:{memory:1500,moments:0,understanding:0,thread:0,activity:0}
   });
   const _bGMemChars=(_bGAlloc&&_bGAlloc.plan.fractions)?_ibScaledCap(1500,_bGAlloc.plan.fractions.memory,100):null;
+  var _gBeEffect=null;
   if(group.memoryEnabled){
-    const gMemCtx=(await ibRecallContextForTurn({characterId:cfg.id,message:_ctxText,isGroup:true,requestId:(opts&&opts.turnId)||'',conversationId:(opts&&opts.conversationId)||'',turn:(opts&&opts._ibRecallTurnMark)||null})).context||'';
+    const _gSrvR=await ibRecallContextForTurn({characterId:cfg.id,message:_ctxText,isGroup:true,requestId:(opts&&opts.turnId)||'',conversationId:(opts&&opts.conversationId)||'',turn:(opts&&opts._ibRecallTurnMark)||null});
+    _gBeEffect=(_gSrvR&&_gSrvR.behaviorEffect)||null;
+    const gMemCtx=(_gSrvR&&_gSrvR.context)||'';
     if(gMemCtx)_gTailCtx+=(_gTailCtx?'\n\n':'')+gMemCtx;
   }
   if(_gAmInj.tail)_gTailCtx+=(_gTailCtx?'\n\n':'')+_gAmInj.tail;
@@ -2038,12 +2046,67 @@ async function _buildGroupChatContext(cfg,opts){
       if(_bGFinal.over)_ibBudgetLog('group',_bGAlloc,'actual~'+_bGFinal.inputTokens+' tok');
     }
   }catch(_bGErr){console.warn('[ContextBudget] group measure failed',String(_bGErr&&_bGErr.message||_bGErr).slice(0,120))}
-  return {system:sysContent, tail:_gTailCtx, budget:_bGFinal};
+  return {system:sysContent, tail:_gTailCtx, budget:_bGFinal, behaviorEffect:_gBeEffect};
 }
 async function buildChatContext(cfg,opts){
   opts=opts||{};
   if(opts.isGroup)return await _buildGroupChatContext(cfg,opts);
   return await _buildSingleChatContext(cfg,opts);
+}
+
+/* ════ P21-R4-F.2 · BehaviorEffect → 独立 system 角色消息（唯一放置点）════
+   冻结契约（BEHAVIOR_EFFECT_PROMPT_PLACEMENT = DEDICATED_SYSTEM_ROLE_MESSAGE）：
+     · 只插入**一条独立**的 {role:'system'} 消息；绝不写 cfg.systemPrompt /
+       sysContent / persona 块 / relationship 块 / _tailCtx / memory context /
+       用户消息本体；
+     · 顺序：canonical system（下标 0）**先于** behavior guidance（下标 1），
+       guidance **先于**普通对话消息。没有 canonical system ⇒ **不放置**
+       （绝不让自己成为第一条最高权威 system 而去覆盖 persona）；
+     · 输入**只能**是服务端 authoritative Recall 第 17 键那份闭合 7 键对象
+       （或 null）。渲染完全交给固定 renderer（assets/js/behavior-effect-render.js，
+       纯枚举表、零插值）；本层不生成任何文本、不改任何一个字段；
+     · renderer 缺席 / REFUSED / NO_PLACEMENT / 对象非法 / 没有 canonical system
+       ⇒ **一个字符都不加**，聊天照常继续。绝不生成浏览器侧 stance，
+       也绝不 best-effort 渲染；
+     · 浏览器侧**没有第二套 effect holder**：效果是这一轮 prompt assembly 的
+       一次性消费，用完即弃，不写任何地方（见 §20）。
+   renderer 的装载复用**既有**动态插入路径（与 app-store.js 同一手法：
+   createElement('script') + appendChild），因此**不需要**改
+   InternalBeyond.html（那份文件由用户 own）。失败 ⇒ 缓存 null ⇒ 永远不放置。 */
+var _ibBeRenderPromise=null;
+function _ibBehaviorEffectRenderReady(){
+  try{
+    if(typeof window!=='undefined'&&window.IBBehaviorEffectRender)return Promise.resolve(window.IBBehaviorEffectRender);
+    if(typeof document==='undefined'||typeof document.createElement!=='function')return Promise.resolve(null);
+    if(_ibBeRenderPromise)return _ibBeRenderPromise;
+    _ibBeRenderPromise=new Promise(function(resolve){
+      try{
+        var sc=document.createElement('script');
+        sc.src='assets/js/behavior-effect-render.js';
+        sc.onload=function(){try{resolve(window.IBBehaviorEffectRender||null)}catch(_e){resolve(null)}};
+        sc.onerror=function(){resolve(null)};
+        (document.head||document.documentElement).appendChild(sc);
+      }catch(_e2){resolve(null)}
+    });
+    return _ibBeRenderPromise;
+  }catch(_e3){return Promise.resolve(null)}
+}
+async function _ibPlaceBehaviorEffectMessage(messages,effect,hasCanonicalSystem){
+  try{
+    if(!Array.isArray(messages)||!effect||typeof effect!=='object')return false;
+    if(hasCanonicalSystem!==true)return false;
+    if(!messages.length||!messages[0]||messages[0].role!=='system')return false;
+    var R=await _ibBehaviorEffectRenderReady();
+    if(!R||typeof R.render!=='function')return false;
+    var d=null;
+    try{ d=R.render(effect); }catch(_re){ d=null; }
+    if(!d||d.kind!=='PLACEMENT'||!Array.isArray(d.lines))return false;
+    var lines=[];
+    for(var i=0;i<d.lines.length;i++){ if(typeof d.lines[i]==='string'&&d.lines[i].trim())lines.push(d.lines[i]); }
+    if(!lines.length)return false;
+    messages.splice(1,0,{role:'system',content:lines.join('\n')});
+    return true;
+  }catch(_e4){return false}
 }
 
 /* ════ Middle Brain 注入契约（P11-3）════
@@ -2683,6 +2746,8 @@ async function sendChatMessage(voiceMsg){
         const _gTailCtx=_gc.tail;
         _gWsFirstTurn=false;/* 首个发言者兜底消费完无主/移出成员条目后置 false */
         messages.unshift({role:'system',content:sysContent});
+        /* P21-R4-F.2 · 群聊走同一条放置缝（同一位 renderer、同一条独立 system 消息）。 */
+        await _ibPlaceBehaviorEffectMessage(messages,_gc&&_gc.behaviorEffect,!!sysContent);
         if(_gTailCtx){/* 群聊尾部挂载：优先找用户本人的消息（无 senderName 且 role=user），找不到才回退到最后一条 user；
            带图消息（content 数组）用 _appendMsgText 追加，绝不 String() 化（图片 part 需要保留） */
           let _gtDone=false;
@@ -3099,6 +3164,10 @@ async function sendChatMessage(voiceMsg){
     const sysContent=_bcc.system;
     const _tailCtx=_bcc.tail;
     if(sysContent)messages.unshift({role:'system',content:sysContent});
+    /* P21-R4-F.2 · 行为基调走**独立 system 角色消息**（唯一放置点；契约见
+       _ibPlaceBehaviorEffectMessage 头部）。没有 canonical system / 没有服务端效果 /
+       renderer 拒绝 ⇒ 一个字符都不加。 */
+    await _ibPlaceBehaviorEffectMessage(messages,_bcc&&_bcc.behaviorEffect,!!sysContent);
     if(_tailCtx){for(let _ti=messages.length-1;_ti>=0;_ti--){if(messages[_ti].role==='user'){_appendMsgText(messages[_ti],_CTX_TAIL_SEP+_tailCtx);break}}}
     /* 声学语气参考（request-local）：由 call.js 在当前 turn 计算并传入，非空才注入。
        仅附加到 messages 末条用户消息的【新对象】（history.map 产出的副本，非 userMsg 本体），

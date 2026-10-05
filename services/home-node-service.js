@@ -107,6 +107,9 @@ const createRuntimeRecall = require('../services/home-node/runtime-recall.js');
    ★ 它**没有**任何返回期望正文的公开入口：外部只能看到状态/计数/延迟/原因，
      因此"没有消费者"是结构性的（见该文件头部）。 */
 const createRuntimeExpectation = require('../services/home-node/runtime-expectation.js').createRuntimeExpectation;
+/* ── P21-R4-F · L7 行为基调（**确定性**派生：没有模型调用、没有第三个成本位）──
+   它只把已验证的 L3（且该回合 L5 已成立）投影成闭合枚举的基调，交给**下一轮**。 */
+const createRuntimeBehaviorEffect = require('../services/home-node/runtime-behavior-effect.js').createRuntimeBehaviorEffect;
 const createNodeModelPort = require('../active/node-model-port.js');
 /* P11-3E：canonical store 失败分类器（**唯一**一份，见 runtime/db-failure.js）。
    它在 runtime/ 下，与 runtime/local-services-runner.js 那份是同一模块 ——
@@ -971,6 +974,9 @@ function buildHomeNode(options) {
      成本权威来自 instanceRuntimePolicy 的**期望段**（readExpectation），与解释段
      是两个独立布尔：解释开着**不**蕴含期望开着。默认 OFF ⇒ 零模型调用。
      modelPort 与解释/派生/聊天复用同一个 port（理由同上：另建一个会让 wire 形状分叉）。 */
+  const instanceRuntimeBehaviorEffect = options.runtimeBehaviorEffect || createRuntimeBehaviorEffect({
+    clock: options.clock, logger: serviceLog
+  });
   const instanceRuntimeExpectation = options.runtimeExpectation || createRuntimeExpectation({
     modelPort: options.port || createNodeModelPort({}),
     policy: instanceRuntimePolicy,
@@ -1036,6 +1042,8 @@ function buildHomeNode(options) {
     /* P21-R4-LIVE-5 · 期望的兄弟依赖（POST_INTERPRETATION_NONBLOCKING）。
        缺席 ⇒ 期望这条路径整体不存在（与今天逐字节相同）。 */
     expectation: instanceRuntimeExpectation,
+    /* P21-R4-F · L7：确定性派生 + 第 17 键交付（无模型调用）。 */
+    behaviorEffect: instanceRuntimeBehaviorEffect,
     logger: serviceLog
   });
   /* 与进程级启动路径**共用** gatewayAssembly（见其头部说明：两条路径两套装配
@@ -1147,6 +1155,7 @@ function buildHomeNode(options) {
          ids，一条出网读 Vault。合成一条会让审计读不出"这一步花没花钱"。 */
     runtimeRecall: instanceRuntimeRecall,
   runtimeExpectation: instanceRuntimeExpectation,
+  runtimeBehaviorEffect: instanceRuntimeBehaviorEffect,
     /* P11-3E · canonical store 清单：健康与"能不能服务"是同一个问题，
        所以这里列出本进程承诺的全部 canonical store，而不是只有 chat。
        声明角色（chat）在最前，`failure` 取第一个命中它的。 */
@@ -1262,6 +1271,7 @@ function buildHomeNode(options) {
          "两条装配路径不得漂移"这句断言的载体。 */
     runtimeRecall: instanceRuntimeRecall,
   runtimeExpectation: instanceRuntimeExpectation,
+  runtimeBehaviorEffect: instanceRuntimeBehaviorEffect,
     registry: instanceRegistry,
     gateway: instanceGateway,
     executor: instanceExecutor,
@@ -1370,6 +1380,10 @@ const runtimeInterpretation = createRuntimeInterpretation({
    ★ 权威 = 进程级那一份 runtime-policy 的**期望段**（readExpectation）；两个
      布尔互相独立，生产两侧都**不传** autoExpectationPolicy（它是测试缝）。
    ★ modelPort 复用进程级 port：期望与聊天/派生/解释走同一条 wire 层。 */
+const runtimeBehaviorEffect = createRuntimeBehaviorEffect({
+  clock: function () { return Date.now(); },
+  logger: (level, event, fields) => log(level, event, fields)
+});
 const runtimeExpectation = createRuntimeExpectation({
   modelPort: port,
   policy: runtimePolicy,
@@ -1399,6 +1413,7 @@ const runtimeRecall = createRuntimeRecall({
   interpretation: runtimeInterpretation,
   /* P21-R4-LIVE-5 · 进程级的期望兄弟依赖（与 buildHomeNode 那一行逐字同源）。 */
   expectation: runtimeExpectation,
+  behaviorEffect: runtimeBehaviorEffect,
   logger: (level, event, fields) => log(level, event, fields)
 });
 /* P11-3E：进程级 Moments 探针。openAll() 写它、/health 与 /moments/* 读它。
@@ -1490,6 +1505,7 @@ const httpLayer = createHttp({
      而单元测试全绿（本文件已经记过多次同一种病）。 */
   runtimeRecall: runtimeRecall,
   runtimeExpectation: runtimeExpectation,
+  runtimeBehaviorEffect: runtimeBehaviorEffect,
   /* P22-9：**进程级**的门。它与 store 同级导出，理由逐字相同 —— 门的缺席
      在生产上是一个静默的"每个 consumer 都能直接提议"，而那种缺口只有
      直接断言语料才能发现。 */

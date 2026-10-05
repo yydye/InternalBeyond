@@ -42,6 +42,7 @@ const check = (name, cond, detail) => {
 const P = (name, value) => console.log(name + ' = ' + value);
 const J = v => { try { return JSON.stringify(v); } catch (_) { return String(v); } };
 const read = rel => fs.readFileSync(path.join(ROOT, rel), 'utf8');
+const SEAM_GUARD = require(path.join(ROOT, 'tests', 'helpers', 'runtime-seam-guard.js'));
 const sha256File = f => { try { return crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex'); } catch (_) { return null; } };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -446,62 +447,38 @@ const idleOf = (h, ms) => h.inst.runtimeRecall.awaitAutoIdle(ms);
     chat: J(ISO.inst.store.meta()), und: J({ w: ISO.inst.understandingStore.getWatermark(CHAR), a: ISO.inst.understandingStore.getActive(CHAR) }) };
   check('9.1 the interpretation writes nothing to memory / chat / understanding state',
     J(isoBefore) === J(isoAfter), J({ before: isoBefore, after: isoAfter }));
-  /* ⚠ PHASE TRANSITION · P21-R4-LIVE-5 ────────────────────────────────────
+  /* ⚠ PHASE TRANSITION · P21-R4-LIVE-5 → P21-R4-F ─────────────────────────
      旧值（LIVE-4）：`!/(expectation|counterfactual)/.test(runtime-recall.js)`
      —— 那时自动路径不点名期望域，因为这样的 seam 根本不存在。
-     新值（LIVE-5）：期望有了一个**显式的、由装配注入的兄弟 seam**
-     （POST_INTERPRETATION_NONBLOCKING）。它**按设计**就出现在 runtime-recall.js，
-     因此本条改为**钉住唯一允许的位置**，而不是一刀切禁止：
-       · `counterfactual` 仍然全面禁止（R4-E 未实现，措辞未动）；
-       · 解释边界 runtime-interpretation.js（**去注释后**）一个期望域都不许有：
-         解释路径绝不获得期望语义 —— 那正是本条要防的耦合；
-       · runtime-recall.js 里的期望域只能来自装配（`deps.expectation`），
-         不许在这里构造、不许在这里读权威（readExpectation/setExpectation）、
-         不许在这里管持有者常量；
-       · 解释调度函数体内对期望域的**唯一**交互是那一行显式 seam 调用。
-     新值比旧值更严：旧值只证明"这个词没出现"，新值证明"它只出现在那一个
-     被允许的位置、以被允许的方式"。边界事实由 tests/test_r4d_live_expectation.js
-     继续测量（post-L3 调度 · 独立文件权威 · ≤1 次调用 · 正文零暴露）。 */
-  const stripComments = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-  const functionBodyOf = (src, signature) => {
-    const start = src.indexOf(signature);
-    if (start < 0) return null;
-    const open = src.indexOf('{', start + signature.length);
-    if (open < 0) return null;
-    let depth = 0;
-    for (let i = open; i < src.length; i++) {
-      const ch = src[i];
-      if (ch === '{') depth += 1;
-      else if (ch === '}') { depth -= 1; if (depth === 0) return src.slice(open, i + 1); }
-    }
-    return null;
-  };
+     中间值（LIVE-5）：期望的兄弟 seam 按设计就在 runtime-recall.js，于是本条
+     改为"钉住唯一允许的位置"：counterfactual 仍然全面禁止；解释边界一个期望域
+     都不许有；recall 里的期望域只能来自装配（`deps.expectation`）；解释调度
+     函数体内对期望域的**唯一**交互是那一行显式 seam 调用。
+     ★ 新值（R4-F）：BehaviorEffect 的**交付通道**（第 17 键）与确定性派生 seam
+     也按设计落进了 runtime-recall.js。因此"behaviorEffect 这个词不许出现"必然
+     变红 —— 而它**不能**被删、也**不能**被放宽成一个"允许出现"的正则：
+     那种正则看不见"第二个 seam / 在错误函数里读 holder / 在 selector 阶段派生 /
+     源回合直接消费"这四类真实缺陷。
+     ★ 因此本条改为调用**唯一的** seam 权威
+     `tests/helpers/runtime-seam-guard.js#auditRecallSeam`：它钉的是**精确位置与
+     调用关系**（dep 注入恰好一次 · `deriveAndHold` 恰好一次且只在期望 runTask 内
+     且必须携带 L3+L5 · `consumeForTurn` 恰好一次且只在交付缝内 · `behaviorEffect`
+     只允许落在 5 个具名位置 · 选择阶段与自动解释调度体内一个都不许有）。
+     该守卫自身有 5 个**对抗样本**（tests/test_r4f_live_behavior_effect.js §9.4）
+     证明它真的抓得住伪造的第二个 seam —— 正例通过从来不足以证明守卫在看什么。
+     边界事实由 tests/test_r4d_live_expectation.js（post-L3 调度 · 独立文件权威 ·
+     ≤1 次调用 · 正文零暴露）与 tests/test_r4f_live_behavior_effect.js
+     （Turn A→B→C · 17 键 · 零持久写）继续测量。 */
   const recallSrc = read('services/home-node/runtime-recall.js');
-  const interpCode = stripComments(read('services/home-node/runtime-interpretation.js'));
-  const schedBody = functionBodyOf(recallSrc, 'function scheduleAutoInterpretation(ctx)');
-  const schedExpectationLines = schedBody
-    ? (schedBody.match(/^.*expectation.*$/gim) || []).map(s => s.trim())
-      .filter(s => !/^(\*|\/\*|\/\/)/.test(s))
-    : null;
-  check('9.2 the expectation domain in the recall boundary is ONLY the assembly-injected sibling seam',
-    !/counterfactual/i.test(recallSrc)
-    && !/expectation/i.test(interpCode)
-    && /const expectation = deps\.expectation \|\| null;/.test(recallSrc)
-    && !/createRuntimeExpectation\s*\(/.test(recallSrc)
-    && !/readExpectation|setExpectation/.test(recallSrc)
-    && !/MAX_HELD_EXPECTATIONS|TURN_EXPECTATION_TTL_MS/.test(recallSrc)
-    && !!schedExpectationLines && schedExpectationLines.length === 1
-    && /scheduleExpectationFromInterpretation\(/.test(schedExpectationLines[0])
-    && /expectation/i.test(recallSrc),
-    {
-      counterfactualInRecall: /counterfactual/i.test(recallSrc),
-      expectationInInterpretationCode: /expectation/i.test(interpCode),
-      takenFromAssembly: /const expectation = deps\.expectation \|\| null;/.test(recallSrc),
-      constructedHere: /createRuntimeExpectation\s*\(/.test(recallSrc),
-      readsAuthorityHere: /readExpectation|setExpectation/.test(recallSrc),
-      managesHolderHere: /MAX_HELD_EXPECTATIONS|TURN_EXPECTATION_TTL_MS/.test(recallSrc),
-      schedulerInteractions: schedExpectationLines
-    });
+  const seamAudit = SEAM_GUARD.auditRecallSeam(recallSrc);
+  const interpAudit = SEAM_GUARD.auditInterpretationSeam(read('services/home-node/runtime-interpretation.js'));
+  check('9.2 the expectation/behaviorEffect domains in the recall boundary are ONLY the two assembly-injected, position-pinned seams',
+    seamAudit.ok && interpAudit.ok,
+    { recallReasons: seamAudit.reasons, interpretationReasons: interpAudit.reasons, facts: seamAudit.facts });
+  P('RECALL_SEAM_DEP_LINES', seamAudit.facts.depLineCount);
+  P('RECALL_SEAM_DERIVE_SITES', J(seamAudit.facts.deriveSites));
+  P('RECALL_SEAM_CONSUME_SITES', J(seamAudit.facts.consumeSites));
+  P('RECALL_SEAM_BEHAVIOR_EFFECT_TOKEN_SITES', seamAudit.facts.tokenSites.length);
   AUTO_INTERPRETATION_ISOLATION = (J(isoBefore) === J(isoAfter)) ? 'CLEAN' : 'WRITES_DETECTED';
 
   section('§10 · persistence probe');

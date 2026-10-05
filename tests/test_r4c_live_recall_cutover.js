@@ -284,9 +284,21 @@ let SEAM = null;
     r1 && r1.ok === true && s1.spy.exposureWrites.length === 1,
     J({ ok: r1 && r1.ok, error: r1 && r1.error, writes: s1.spy.exposureWrites.length }));
   HOME_NODE_EXPOSURE_WRITES = String(s1.spy.exposureWrites.length);
-  check('1.2 the authoritative envelope is exactly the 16 keys (14 + context + effects)',
-    J(Object.keys(r1).sort()) === J(SHADOW_KEYS.concat(['context', 'effects']).sort()),
-    'observed=' + J(Object.keys(r1).sort()));
+  /* ⚠ PHASE TRANSITION · P21-R4-F ─────────────────────────────────────────
+     旧值（LIVE-3.4 → LIVE-5.1）：`14 + context + effects` = **16** 键。
+     新值（R4-F）：**17** 键 —— 第 17 键 `behaviorEffect` 是 authoritative 模式
+     获授权的**交付通道**（server-owned 闭合 7 键对象，或 `null` 表示本轮没有
+     可交付的基调）。冻结依据：`docs/P21-R4-C-LIVE-RECALL-BOUNDARY.md` §16 与
+     §12「16 → 17 top-level keys」。
+     为什么旧值当时是对的：那时没有任何 BehaviorEffect 交付通道，16 键就是完整
+     形状（`effects` 是召回生命周期块，认知行为语义无处可去）。
+     ★ 这不是放宽：本条仍然是**精确键集**断言（多一个键都红），只是把键集从 16
+     钉到 17；紧随其后的 1.4 继续断言 `effects` 仍是**召回生命周期**块，因此
+     "行为语义没有混进 effects"这一点逐字未失。 */
+  check('1.2 the authoritative envelope is exactly the 17 keys (14 + context + effects + behaviorEffect; null on the source turn)',
+    J(Object.keys(r1).sort()) === J(SHADOW_KEYS.concat(['context', 'effects', 'behaviorEffect']).sort())
+    && Object.prototype.hasOwnProperty.call(r1, 'behaviorEffect') && r1.behaviorEffect === null,
+    'observed=' + J(Object.keys(r1).sort()) + ' behaviorEffect=' + J(r1.behaviorEffect));
   AUTHORITATIVE_ENVELOPE_KEY_COUNT = String(Object.keys(r1).length);
   check('1.3 the authoritative boundary declares itself non-pure and names its mode',
     r1.boundary && r1.boundary.pureShadow === false && r1.boundary.mode === 'authoritative',

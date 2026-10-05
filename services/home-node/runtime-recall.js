@@ -230,6 +230,8 @@ function createRuntimeRecall(deps) {
   /* P21-R4-LIVE-5 · L5 期望运行时（**兄弟**依赖：与 interpretation 各自独立，
      各自的权威、各自的持有者、各自的计数）。缺席 ⇒ 期望这条路径根本不存在。 */
   const expectation = deps.expectation || null;
+  /* P21-R4-F · L7 行为基调（确定性派生；没有模型调用、没有第三个成本位）。 */
+  const behaviorEffect = deps.behaviorEffect || null;
 
   /* turn-local 结果持有者：**非持久**、有界（条数 + TTL）、按
      character+turn 作用域。绝不进 SQLite / memory_records / Understanding /
@@ -266,6 +268,24 @@ function createRuntimeRecall(deps) {
   /* 权威模式的空 context / 零 effects。失败与重放都用它们，形状与成功一致 ——
      调用方不需要按路径猜键。 */
   function emptyContext() { return { text: '', count: 0, chars: 0, includeHeader: true }; }
+  /* ── P21-R4-F · 第 17 键 behaviorEffect（增量、获授权）─────────────────
+     信封里**就是**冻结 v1 效果对象本身（7 键闭合枚举），或 `null`。
+     这里**没有**第二个形状权威：没有 status / reason / guidance 包装层 ——
+     下一相的固定渲染器只需要那 7 个键，而包装层会变成第二种"效果长什么样"。
+     ★ 交付的是**当前 target turn** 可消费的那一条（持有者按
+       character+conversation 作用域 + source-turn 守卫选取），
+       源回合**取不到**自己刚派生的效果（SOURCE_TURN_RETROACTIVE_EFFECT = NO）。 */
+  function behaviorEffectForEnvelope(ctx) {
+    const c = ctx || {};
+    if (!behaviorEffect || typeof behaviorEffect.consumeForTurn !== 'function') return null;
+    try {
+      const r = behaviorEffect.consumeForTurn({
+        characterId: c.characterId, conversationId: c.conversationId, turnId: c.turnId
+      });
+      if (!r || r.status !== 'applied' || !r.effect) return null;
+      return r.effect;
+    } catch (_) { return null; }
+  }
   function zeroEffects(over) {
     return Object.assign({
       turnBegun: false,
@@ -316,7 +336,16 @@ function createRuntimeRecall(deps) {
     if (code === REASON.recallTimeout) counters.timeouts += 1;
     else if (code === REASON.recallUnavailable) counters.unavailable += 1;
     else counters.refused += 1;
-    /* 权威模式：失败也回**同一套** 16 键（14 + context + effects），因此
+    /* ⚠ PHASE TRANSITION · P21-R4-F ────────────────────────────────────────
+       旧值：权威模式失败也回**同一套** 16 键（14 + context + effects）。
+       新值：**17 键** —— 第 17 键 behaviorEffect 是本相位**获授权**的增量
+       （交付通道）。effects 仍然是**召回生命周期**块（turnBegun / activation /
+       exposure / turnEnded），行为语义**不**塞进它。成功与失败仍回同一套键。
+       为什么旧值当时是对的：那时没有任何 BehaviorEffect 交付通道，
+       16 键就是完整形状。现在通道存在，形状随之变为 17。
+       ★ 失败路径**不消费**任何持有的效果：这里是 `null`，不是一次 lookup ——
+         一次失败的召回不得吃掉本该留给下一个合格回合的基调。 */
+    /* 权威模式：失败也回**同一套** 17 键（14 + context + effects + behaviorEffect），因此
        `mode:'authoritative'` 的信封形状不随成功/失败分叉。校验期失败没有
        可信的 mode（请求还没通过校验），因此仍是冻结的 14 键失败信封。 */
     const authoritative = c.mode === MODES[1];
@@ -344,6 +373,8 @@ function createRuntimeRecall(deps) {
     if (authoritative) {
       out.context = isPlainObject(c.context) ? c.context : emptyContext();
       out.effects = isPlainObject(c.effects) ? c.effects : zeroEffects();
+      /* 第 17 键：键必须**在场**（形状与成功一致），值为"无效果"。 */
+      out.behaviorEffect = null;
     }
     return out;
   }
@@ -809,6 +840,23 @@ function createRuntimeRecall(deps) {
             completedAt: Number(clock())
           });
         } catch (_) { /* 记录失败绝不影响任何东西 */ }
+        /* ── P21-R4-F · L7 确定性派生（**只在 L3 已验证且该回合 L5 成立之后**）──
+           L3_AND_L5 中介在这里落地：没有模型调用，只把已验证的 L3 投影成闭合
+           枚举的基调。派生失败绝不影响任何东西。
+           ★ 传下去的是**这一次已验证的 L3 服务端结果**（`interpretationRes`，
+             即 R4-C 校验器+组装器的产物，带 status:'succeeded' 与 recordSource）
+             与**这一次成立的 L5 结果**（`res`，status:'created'）。
+             持有者自己会再结构校验一次；两个布尔只是 seam 的声明，
+             不是权威本身。 */
+        if (status === 'created' && behaviorEffect && typeof behaviorEffect.deriveAndHold === 'function') {
+          try {
+            behaviorEffect.deriveAndHold({
+              characterId: characterId, conversationId: payload.conversationId, turnId: turnId,
+              interpretationValidated: true, interpretationResult: interpretationRes,
+              expectationHeld: true, expectation: res
+            });
+          } catch (_) { /* 派生失败 = 无效果 */ }
+        }
         note('runtime-recall-expectation', {
           characterId: characterId, turnId: turnId, status: status,
           providerCalls: Number(res && res.providerCalls) || 0
@@ -990,6 +1038,10 @@ function createRuntimeRecall(deps) {
             effects: zeroEffects({
               activation: { updated: 0, duplicated: prior.activationIds.slice(), reason: 'turn-duplicate' }
             }),
+            /* P21-R4-F · 第 17 键必须在场（重放与成功是同一套 17 键），
+               但重放**不消费**任何东西：键的语义是"这一轮没有可交付的效果"，
+               而不是"再去 holder 里拿一条"。重放的冻结语义是"不触碰任何状态"。 */
+            behaviorEffect: null,
             boundary: boundaryBlock(0, { exposureWrites: 0, activationWrites: 0 }),
             status: 200
           };
@@ -1291,6 +1343,15 @@ function createRuntimeRecall(deps) {
       if (authoritative) {
         out.context = contextExtra || emptyContext();
         out.effects = effects || zeroEffects();
+        /* 第 17 键：消费**上一个**合格回合留下的基调（源回合取不到自己的效果）。
+           ★ 会话身份只能取 `shape.conversationId` —— `run()` 里**没有**一个叫
+             `conversationId` 的局部绑定（校验器把它们放在 shape 里）。写错这个名字
+             会让整条 authoritative 召回落进兜底 catch（unexpected-boundary-error）
+             —— 那是一个"永不抛出"的契约把**每一次召回**都变成 503 的形状，
+             本相位的 R4-F 套件实测抓到过一次。 */
+        out.behaviorEffect = behaviorEffectForEnvelope({
+          characterId: characterId, conversationId: shape.conversationId, turnId: turnId
+        });
       }
       /* 审计只记**有界**字段：身份、结果、计数、通道、耗时。
          message 原文、selectedIds 之外的正文、任何秘密都不进来。
@@ -1431,6 +1492,48 @@ function createRuntimeRecall(deps) {
           inFlight: 'scheduled + running tasks (released in a finally block)'
         }
       },
+      /* ── P21-R4-F · L7 行为基调（服务端契约；只报告状态/计数/形状）──────
+         ★ 诚实边界（不要把交付通道写成"浏览器看不见"）：
+           `behaviorEffect` 是 authoritative 信封的第 17 键，浏览器**会收到**
+           它 —— 那正是交付通道的目的。浏览器收到的是**闭合枚举对象**（没有
+           自由文本字段），而且**永远不能提交**它（RECALL 请求是闭集）。
+           本轮**没有**做 prompt placement：那需要用户 own 的
+           `assets/js/communication.js` ⇒ promptPlacement = NOT_INSTALLED、
+           live = NO、blocker 具名。 */
+      behaviorEffect: (function () {
+        const facts = {
+          hooked: !!behaviorEffect, executionKind: 'DETERMINISTIC_RULES',
+          appliesTo: 'NEXT_ELIGIBLE_TURN', consumption: 'SINGLE_CONSUMPTION_NEXT_ELIGIBLE_TURN',
+          mediatorRequirement: 'L3_AND_L5', inputAuthority: 'VALIDATED_L3_AND_L5',
+          sourceTurnRetroactiveEffect: 'NO',
+          envelopeKey: 'behaviorEffect', envelopeKeyCount: 17,
+          envelopeValueShape: 'CLOSED_EFFECT_OBJECT_OR_NULL',
+          placement: 'DEDICATED_SYSTEM_ROLE_MESSAGE', renderer: 'SERVER_OWNED_TABLE_DRIVEN',
+          priority: 'SYSTEM_DEVELOPER_POLICY > EXPLICIT_USER_REQUEST > BOUNDED_BEHAVIOR_EFFECT_GUIDANCE',
+          freeTextChannel: 'ABSENT_BY_SCHEMA', routes: [],
+          maxAdditionalBehaviorModelCallsPerCharacterTurn: 0,
+          chainMaxAdditionalModelCallsPerCharacterTurn: 2,
+          chainBreakdown: { interpretation: 1, expectation: 1, behaviorEffect: 0 },
+          shippedDefaultAdditionalModelCalls: 0,
+          thirdPolicyBit: 'NOT_ADDED',
+          replayBound: 'EVICTION_BOUNDED_NO_LEDGER',
+          durableWrites: 0,
+          browserReceivesEnvelopeKey: 'YES_CLOSED_ENUMS_ONLY',
+          browserMaySubmit: 'NONE',
+          promptPlacement: 'NOT_INSTALLED',
+          blocker: 'BROWSER_PROMPT_PLACEMENT_REQUIRES_USER_OWNED_FILE'
+        };
+        if (!behaviorEffect || typeof behaviorEffect.describe !== 'function') return facts;
+        try {
+          const d = behaviorEffect.describe();
+          return Object.assign(facts, {
+            status: d.status, live: d.live, liveBlocker: d.liveBlocker,
+            effectKeys: d.effectKeys, neutralPlacement: d.neutralPlacement,
+            freeTextFields: d.forbiddenFreeTextFields, forbiddenAxes: d.forbiddenAxes,
+            counters: d.counters, holder: d.holder
+          });
+        } catch (_) { return Object.assign(facts, { describeThrew: true }); }
+      })(),
       /* ── P21-R4-LIVE-5 · L5 期望（兄弟子系统；只报告状态/计数，绝无正文）── */
       expectation: {
         hooked: !!expectation,
