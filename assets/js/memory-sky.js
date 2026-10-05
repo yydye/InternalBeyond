@@ -146,4 +146,21 @@ NS.expose('memorySky', {
   play: play,
   pause: pause,
 });
+
+/* ---- UI-P1 · Memory World 的加载接缝 ----
+   assets/js/memory-world.js 由本文件在运行时注入，因此不需要改动
+   InternalBeyond.html：那份文件由用户 own，且其样式表数量受
+   tests/test_frontend_structure.js 的精确预算（split.externalStyleCount）
+   约束 —— 直接加 <link> 会让既有结构断言变红。
+   做法与 communication.js（behavior-effect-render.js）和 app-store.js
+   的动态注入完全一致：注入 + 模块自挂载，失败时静默退化，Memory 页
+   的既有功能不受影响。 */
+(function loadMemoryWorld(){
+  if (!document || !document.head) return;
+  if (document.getElementById('ib-memory-world-loader')) return;
+  var s=document.createElement('script');
+  s.id='ib-memory-world-loader';
+  s.src='assets/js/memory-world.js';
+  document.head.appendChild(s);
+})();
 })(window.IB || (window.IB = {}));

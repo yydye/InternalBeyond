@@ -1,0 +1,817 @@
+﻿/* ============================================================================
+   UI-P1.1 · Memory World / 记忆世界 · Memory Rift / 记忆断层
+   ----------------------------------------------------------------------------
+   ROLE = PRESENTATION_LAYER_ONLY（与 UI-P1 相同；本阶段只重做视觉）
+   · 只读取既有 memory facts（window.dbGetAll('memories') 这一条读路径）。
+   · 不写 memory_records / activation / importance / visibility / recall /
+     MetaMemory / relationship / persona / tool policy。
+   · 断层是环境地形：不连接任何两个 memory 节点，不承担 semantic graph。
+   · 位置是 presentation-only 的确定性布局，没有语义权威。
+   · 本文件不含任何裸色值、材质或模糊底板：环境材质全部由 canvas 绘制，
+     CSS 只承担布局、排版、发丝线与状态。
+   · 所有颜色/时长/间距/字号都走 --ib-token-* 语义角色，并带既有原语回退
+     （IB Visual Token Contract v1 §5 的 alias-first 策略）。
+   ============================================================================ */
+
+/* 入口、全屏世界与 Library 里的星图折叠项共用这一层 token 作用域。
+   入口**不能**带 .memory-world —— 那是全屏布局类（position:fixed /
+   opacity:0 / visibility:hidden），入口一旦共用就会把自己隐藏掉。 */
+.memory-world-scope {
+  --mw-world-ink: var(--ib-token-content-primary, var(--content-primary));
+  --mw-world-ink-dim: var(--ib-token-content-secondary, var(--content-secondary));
+  --mw-world-ink-faint: var(--ib-token-content-muted, var(--content-muted));
+  --mw-world-boundary: var(--ib-token-boundary-subtle, var(--border-soft));
+  --mw-world-boundary-strong: var(--ib-token-boundary-default, var(--content-muted));
+  --mw-world-surface: var(--ib-token-canvas, var(--pale));
+  --mw-world-surface-raised: var(--ib-token-canvas-subtle, var(--white));
+  --mw-world-accent: var(--ib-token-accent-brand, var(--accent));
+  --mw-world-selection: var(--ib-token-selection, var(--surface-pressed));
+  --mw-world-focus: var(--ib-token-focus-ring, var(--focus-ring, currentColor));
+  --mw-world-scrim: var(--ib-token-overlay, var(--surface-overlay-scrim));
+  --mw-world-popover: var(--ib-token-popover, var(--glass-bg-floating));
+  --mw-world-input-bg: var(--ib-token-input-bg, var(--surface-input));
+  --mw-world-input-ink: var(--ib-token-input-content, var(--content-primary));
+  --mw-world-input-hint: var(--ib-token-input-placeholder, var(--content-muted));
+  --mw-world-ease: var(--ib-token-motion-easing-standard, var(--transition, ease));
+  --mw-world-t-micro: var(--ib-token-motion-micro, 160ms);
+  --mw-world-t-state: var(--ib-token-motion-state, var(--motion-fast, .2s));
+  --mw-world-t-structural: var(--ib-token-motion-structural, 280ms);
+  --mw-world-radius: var(--ib-token-radius-surface, var(--radius-card, 12px));
+  --mw-world-radius-control: var(--ib-token-radius-control, var(--radius-control, 8px));
+  --mw-world-elevation: var(--ib-token-elevation-popover, none);
+  /* 排版角色（IB 字体体系不变；标题不做斜体书法） */
+  --mw-world-entry-title: 400 1.34rem/1.18 var(--font-display);
+  --mw-world-entry-cn: 400 0.8rem/1.5 var(--font-ui);
+  --mw-world-caption: 400 0.78rem/1.6 var(--font-ui);
+  --mw-world-action: 400 0.8rem/1 var(--font-ui);
+  --mw-world-annotation-title: 400 1.05rem/1.5 var(--font-reading);
+  /* 环境层：两条极慢、方向相反的漂移 → 视差纵深（节点始终静止） */
+  --mw-world-drift: 108s;
+  --mw-world-mist-drift: 166s;
+  --mw-world-text-glow: var(--ib-token-canvas, var(--pale));
+}
+
+body.theme-infernal .memory-world-scope {
+  --mw-world-ink: var(--ib-token-content-primary, var(--content-primary));
+  --mw-world-ink-dim: var(--ib-token-content-secondary, var(--content-secondary));
+  --mw-world-ink-faint: var(--ib-token-content-muted, var(--content-muted));
+  --mw-world-boundary: var(--ib-token-boundary-subtle, var(--border-soft));
+  --mw-world-boundary-strong: var(--ib-token-boundary-default, var(--content-muted));
+  --mw-world-surface: var(--ib-token-canvas, var(--bg-deep));
+  --mw-world-surface-raised: var(--ib-token-canvas-subtle, var(--bg-mid));
+  --mw-world-accent: var(--ib-token-accent-brand, var(--accent));
+  --mw-world-selection: var(--ib-token-selection, var(--surface-pressed));
+  --mw-world-focus: var(--ib-token-focus-ring, var(--focus-ring, currentColor));
+  --mw-world-scrim: var(--ib-token-overlay, var(--surface-overlay-scrim));
+  --mw-world-popover: var(--ib-token-popover, var(--glass-bg-floating));
+  --mw-world-input-bg: var(--ib-token-input-bg, var(--surface-input));
+  --mw-world-input-ink: var(--ib-token-input-content, var(--content-primary));
+  --mw-world-input-hint: var(--ib-token-input-placeholder, var(--content-muted));
+  --mw-world-text-glow: var(--ib-token-canvas, var(--bg-deep));
+}
+
+/* ====================================================== WORLD WINDOW ==== */
+/* 入口是页面里打开的一块空间切片：没有边框、没有卡片阴影、没有圆形大角，
+   「窗」的边缘由画布自己溶解（applyEdgeFade），所以这里只有排版。 */
+
+.memory-world-entry {
+  display: block;
+  inline-size: 100%;
+  margin-block-end: var(--ib-token-space-xxl, var(--space-6, 24px));
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.memory-world-entry__frame {
+  position: relative;
+  display: block;
+  inline-size: 100%;
+  aspect-ratio: 3 / 1;
+  min-block-size: 200px;
+  max-block-size: 306px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+
+.memory-world-entry__frame canvas {
+  position: absolute;
+  display: block;
+  inline-size: 100%;
+  block-size: 100%;
+}
+
+.memory-world-entry__env {
+  inset: -6%;
+  inline-size: 112%;
+  block-size: 112%;
+  animation: mw-world-drift var(--mw-world-drift) ease-in-out infinite alternate;
+}
+
+.memory-world-entry__mist {
+  inset: -6%;
+  inline-size: 112%;
+  block-size: 112%;
+  animation: mw-world-mist var(--mw-world-mist-drift) ease-in-out infinite alternate;
+}
+
+.memory-world-entry__nodes {
+  inset: 0;
+  pointer-events: none;
+}
+
+/* 标题不占左下角 Hero 位：它是顶部的窗牌。 */
+.memory-world-entry__caption {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ib-token-space-xs, var(--space-1, 4px));
+  max-inline-size: min(56ch, 74%);
+  padding: var(--ib-token-space-xl, var(--space-5, 20px)) var(--ib-token-space-xxl, var(--space-6, 24px));
+  pointer-events: none;
+}
+
+.memory-world-entry__title {
+  display: block;
+  font: var(--mw-world-entry-title);
+  letter-spacing: 0.02em;
+  color: var(--mw-world-ink);
+  text-shadow: 0 1px 16px var(--mw-world-text-glow), 0 0 3px var(--mw-world-text-glow);
+}
+
+.memory-world-entry__cn {
+  display: block;
+  font: var(--mw-world-entry-cn);
+  letter-spacing: 0.42em;
+  color: var(--mw-world-ink-dim);
+  text-shadow: 0 1px 14px var(--mw-world-text-glow);
+}
+
+.memory-world-entry__count {
+  display: block;
+  margin-block-start: var(--ib-token-space-xs, var(--space-1, 4px));
+  font: var(--mw-world-caption);
+  letter-spacing: 0.16em;
+  color: var(--mw-world-ink-dim);
+  text-shadow: 0 1px 14px var(--mw-world-text-glow);
+}
+
+.memory-world-entry__line {
+  display: block;
+  margin-block-start: var(--ib-token-space-xs, var(--space-1, 4px));
+  font: var(--mw-world-caption);
+  color: var(--mw-world-ink-faint);
+  text-shadow: 0 1px 14px var(--mw-world-text-glow);
+}
+
+/* Enter 是低 chrome 的文字动作，不是 outlined button。 */
+.memory-world-entry__go {
+  position: absolute;
+  inset-block-end: 0;
+  inset-inline-end: 0;
+  display: inline-flex;
+  align-items: center;
+  min-block-size: 44px;
+  padding: var(--ib-token-space-md, var(--space-3, 12px)) var(--ib-token-space-xxl, var(--space-6, 24px));
+  border: 0;
+  background: none;
+  color: var(--mw-world-ink);
+  font: var(--mw-world-action);
+  letter-spacing: 0.24em;
+  text-shadow: 0 1px 14px var(--mw-world-text-glow);
+  transition: color var(--mw-world-t-micro) var(--mw-world-ease);
+}
+
+.memory-world-entry__go::after {
+  content: "\2192";
+  margin-inline-start: var(--ib-token-space-sm, var(--space-2, 8px));
+  display: inline-block;
+  font-size: 1.05em;
+  transition: transform var(--mw-world-t-micro) var(--mw-world-ease);
+}
+
+.memory-world-entry:hover .memory-world-entry__go,
+.memory-world-entry:focus-visible .memory-world-entry__go {
+  color: var(--mw-world-accent);
+}
+
+.memory-world-entry:hover .memory-world-entry__go::after,
+.memory-world-entry:focus-visible .memory-world-entry__go::after {
+  transform: translateX(4px);
+}
+
+.memory-world-entry:focus-visible {
+  outline: var(--ib-token-focus-ring-width, 2px) solid var(--mw-world-focus);
+  outline-offset: var(--ib-token-focus-ring-offset, 2px);
+}
+
+/* ================================================== 全屏世界（满幅）== */
+/* 世界占满整屏，chrome 浮在上面：WORLD_OCCUPIES_VISUAL_ATTENTION >= 90%。 */
+
+.memory-world {
+  position: fixed;
+  inset: 0;
+  z-index: var(--ib-token-layer-overlay, 400);
+  display: block;
+  inline-size: 100%;
+  block-size: 100%;
+  overflow: hidden;
+  background: var(--mw-world-surface);
+  color: var(--mw-world-ink);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity var(--mw-world-t-structural) var(--mw-world-ease),
+    visibility 0s linear var(--mw-world-t-structural);
+}
+
+.memory-world.is-open {
+  opacity: 1;
+  visibility: visible;
+  transition-delay: 0s;
+}
+
+.memory-world__bar {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline: 0;
+  z-index: 3;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--ib-token-space-lg, var(--space-4, 16px));
+  padding: var(--ib-token-space-lg, var(--space-4, 16px)) var(--ib-token-space-xxl, var(--space-6, 24px));
+  pointer-events: none;
+}
+
+.memory-world__bar > * {
+  pointer-events: auto;
+}
+
+.memory-world__id {
+  display: block;
+  min-inline-size: 0;
+}
+
+.memory-world__title {
+  display: block;
+  margin: 0;
+  font: var(--ib-token-text-section-title, 500 1.05rem/1.35 var(--font-ui));
+  font-family: var(--font-display);
+  font-weight: 400;
+  letter-spacing: 0.06em;
+  color: var(--mw-world-ink);
+  white-space: nowrap;
+  text-shadow: 0 1px 18px var(--mw-world-text-glow);
+}
+
+.memory-world__count {
+  display: block;
+  margin-block-start: var(--ib-token-space-xs, var(--space-1, 4px));
+  font: var(--ib-token-text-meta, 400 12px/1.4 var(--font-ui));
+  letter-spacing: 0.14em;
+  color: var(--mw-world-ink-faint);
+  text-shadow: 0 1px 14px var(--mw-world-text-glow);
+}
+
+.memory-world__tools {
+  display: flex;
+  align-items: center;
+  gap: var(--ib-token-space-xs, var(--space-1, 4px));
+  flex: none;
+}
+
+/* 次要动作：··· 与 × —— 无描边大按钮，只有字形与 hover 反馈。 */
+.memory-world__icon {
+  min-inline-size: 44px;
+  min-block-size: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--mw-world-radius-control);
+  background: none;
+  color: var(--mw-world-ink-dim);
+  font: var(--ib-token-text-body, 400 14px/1.5 var(--font-ui));
+  line-height: 1;
+  cursor: pointer;
+  transition: color var(--mw-world-t-micro) var(--mw-world-ease),
+    background-color var(--mw-world-t-micro) var(--mw-world-ease);
+}
+
+.memory-world__icon:hover {
+  color: var(--mw-world-ink);
+  background: var(--ib-token-surface-interactive, var(--surface-hover));
+}
+
+.memory-world__icon:focus-visible {
+  outline: var(--ib-token-focus-ring-width, 2px) solid var(--mw-world-focus);
+  outline-offset: calc(-1 * var(--ib-token-focus-ring-offset, 2px));
+}
+
+.memory-world__icon--exit {
+  font-size: 1.15rem;
+  letter-spacing: 0;
+}
+
+.memory-world__menu-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.memory-world__menu {
+  position: absolute;
+  inset-block-start: calc(100% + var(--ib-token-space-sm, var(--space-2, 8px)));
+  inset-inline-end: 0;
+  display: none;
+  flex-direction: column;
+  min-inline-size: 176px;
+  padding: var(--ib-token-space-xs, var(--space-1, 4px));
+  border: 1px solid var(--mw-world-boundary);
+  border-radius: var(--mw-world-radius-control);
+  background: var(--mw-world-popover);
+  box-shadow: var(--mw-world-elevation);
+}
+
+.memory-world__menu-wrap[data-open="true"] .memory-world__menu {
+  display: flex;
+}
+
+.memory-world__menu-item {
+  display: flex;
+  align-items: center;
+  min-block-size: 44px;
+  padding: 0 var(--ib-token-space-md, var(--space-3, 12px));
+  border: 0;
+  border-radius: var(--mw-world-radius-control);
+  background: none;
+  color: var(--mw-world-ink-dim);
+  font: var(--ib-token-text-meta, 400 12px/1.4 var(--font-ui));
+  letter-spacing: 0.1em;
+  text-align: start;
+  cursor: pointer;
+  transition: color var(--mw-world-t-micro) var(--mw-world-ease),
+    background-color var(--mw-world-t-micro) var(--mw-world-ease);
+}
+
+.memory-world__menu-item:hover {
+  color: var(--mw-world-ink);
+  background: var(--ib-token-surface-interactive, var(--surface-hover));
+}
+
+.memory-world__menu-item:focus-visible {
+  outline: var(--ib-token-focus-ring-width, 2px) solid var(--mw-world-focus);
+  outline-offset: calc(-1 * var(--ib-token-focus-ring-offset, 2px));
+}
+
+/* 开关的「非颜色」线索：空心圆 = 关，实心圆 = 开。 */
+.memory-world__btn--toggle::before {
+  content: "";
+  display: inline-block;
+  inline-size: var(--ib-token-space-sm, var(--space-2, 8px));
+  block-size: var(--ib-token-space-sm, var(--space-2, 8px));
+  margin-inline-end: var(--ib-token-space-sm, var(--space-2, 8px));
+  border: 1px solid currentColor;
+  border-radius: var(--ib-token-radius-round, 50%);
+}
+
+.memory-world__btn--toggle[aria-checked="true"]::before {
+  background: currentColor;
+}
+
+.memory-world__stage {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.memory-world__env,
+.memory-world__mist,
+.memory-world__nodes {
+  position: absolute;
+  display: block;
+  inline-size: 100%;
+  block-size: 100%;
+}
+
+.memory-world__env {
+  inset: -5%;
+  inline-size: 110%;
+  block-size: 110%;
+  animation: mw-world-drift var(--mw-world-drift) ease-in-out infinite alternate;
+}
+
+.memory-world__mist {
+  inset: -5%;
+  inline-size: 110%;
+  block-size: 110%;
+  animation: mw-world-mist var(--mw-world-mist-drift) ease-in-out infinite alternate;
+}
+
+.memory-world__nodes {
+  inset: 0;
+  touch-action: pan-y;
+}
+
+.memory-world[data-paused="true"] .memory-world__env,
+.memory-world[data-paused="true"] .memory-world__mist,
+.memory-world-entry[data-paused="true"] .memory-world-entry__env,
+.memory-world-entry[data-paused="true"] .memory-world-entry__mist {
+  animation-play-state: paused;
+}
+
+.memory-world[data-motion="off"] .memory-world__env,
+.memory-world[data-motion="off"] .memory-world__mist,
+.memory-world-entry[data-motion="off"] .memory-world-entry__env,
+.memory-world-entry[data-motion="off"] .memory-world-entry__mist {
+  animation: none;
+}
+
+/* 空世界：安静，不报错，不放引导大卡 */
+.memory-world__quiet {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--ib-token-space-sm, var(--space-2, 8px));
+  padding: var(--ib-token-space-xxl, var(--space-6, 24px));
+  text-align: center;
+  pointer-events: none;
+}
+
+.memory-world__quiet[hidden] {
+  display: none;
+}
+
+.memory-world__quiet-title {
+  font: var(--ib-token-text-reading, 400 16px/1.8 var(--font-reading));
+  color: var(--mw-world-ink-dim);
+}
+
+.memory-world__quiet-note {
+  max-inline-size: 40ch;
+  font: var(--ib-token-text-meta, 400 12px/1.4 var(--font-ui));
+  line-height: 1.8;
+  color: var(--mw-world-ink-faint);
+}
+
+/* ==================================== preview = annotation（浮注）===== */
+/* 不是管理 card：没有面板底、没有边框；可读性由文字自身的光晕承担。 */
+
+.memory-world__preview {
+  position: absolute;
+  inset-inline-end: var(--ib-token-space-xxl, var(--space-6, 24px));
+  inset-block-end: var(--ib-token-space-xxl, var(--space-6, 24px));
+  z-index: 2;
+  inline-size: min(360px, calc(100% - (2 * var(--ib-token-space-xl, var(--space-5, 20px)))));
+  text-align: start;
+}
+
+.memory-world__preview[hidden] {
+  display: none;
+}
+
+.memory-world__preview-meta {
+  display: block;
+  font: var(--ib-token-text-meta, 400 12px/1.4 var(--font-ui));
+  letter-spacing: 0.12em;
+  color: var(--mw-world-ink-faint);
+  text-shadow: 0 1px 16px var(--mw-world-text-glow), 0 0 4px var(--mw-world-text-glow);
+}
+
+.memory-world__preview-title {
+  margin: var(--ib-token-space-sm, var(--space-2, 8px)) 0 0;
+  font: var(--mw-world-annotation-title);
+  color: var(--mw-world-ink);
+  overflow-wrap: anywhere;
+  text-shadow: 0 1px 18px var(--mw-world-text-glow), 0 0 4px var(--mw-world-text-glow);
+}
+
+.memory-world__preview-body {
+  margin-block-start: var(--ib-token-space-xs, var(--space-1, 4px));
+  max-block-size: 5.2em;
+  overflow: hidden;
+  font: var(--ib-token-text-body, 400 14px/1.5 var(--font-ui));
+  line-height: 1.8;
+  color: var(--mw-world-ink-dim);
+  overflow-wrap: anywhere;
+  text-shadow: 0 1px 16px var(--mw-world-text-glow), 0 0 4px var(--mw-world-text-glow);
+}
+
+.memory-world__preview-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ib-token-space-md, var(--space-3, 12px));
+  margin-block-start: var(--ib-token-space-lg, var(--space-4, 16px));
+  padding-block-start: var(--ib-token-space-sm, var(--space-2, 8px));
+  border-block-start: 1px solid var(--mw-world-boundary);
+}
+
+.memory-world__preview-state {
+  font: var(--ib-token-text-meta, 400 12px/1.4 var(--font-ui));
+  color: var(--mw-world-ink-faint);
+  text-shadow: 0 1px 16px var(--mw-world-text-glow);
+}
+
+.memory-world__open {
+  display: inline-flex;
+  align-items: center;
+  min-block-size: 44px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--mw-world-ink);
+  font: var(--mw-world-action);
+  letter-spacing: 0.18em;
+  cursor: pointer;
+  text-shadow: 0 1px 16px var(--mw-world-text-glow);
+  transition: color var(--mw-world-t-micro) var(--mw-world-ease);
+}
+
+.memory-world__open::after {
+  content: "\2192";
+  margin-inline-start: var(--ib-token-space-sm, var(--space-2, 8px));
+  display: inline-block;
+  transition: transform var(--mw-world-t-micro) var(--mw-world-ease);
+}
+
+.memory-world__open:hover {
+  color: var(--mw-world-accent);
+}
+
+.memory-world__open:hover::after {
+  transform: translateX(4px);
+}
+
+.memory-world__open:focus-visible {
+  outline: var(--ib-token-focus-ring-width, 2px) solid var(--mw-world-focus);
+  outline-offset: var(--ib-token-focus-ring-offset, 2px);
+}
+
+/* ============================== finder = command palette（窄浮层）===== */
+
+.memory-world__finder {
+  position: absolute;
+  inset-block-start: 11vh;
+  inset-inline: 0;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  inline-size: min(520px, calc(100% - (2 * var(--ib-token-space-xl, var(--space-5, 20px)))));
+  max-block-size: 56vh;
+  margin-inline: auto;
+  border: 1px solid var(--mw-world-boundary);
+  border-radius: var(--mw-world-radius);
+  background: var(--mw-world-popover);
+  box-shadow: var(--mw-world-elevation);
+}
+
+.memory-world__finder[hidden] {
+  display: none;
+}
+
+.memory-world__finder-field {
+  padding: var(--ib-token-space-sm, var(--space-2, 8px)) var(--ib-token-space-lg, var(--space-4, 16px));
+  border-block-end: 1px solid var(--mw-world-boundary);
+}
+
+.memory-world__finder-input {
+  inline-size: 100%;
+  min-block-size: 44px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--mw-world-input-ink);
+  font: var(--ib-token-text-reading, 400 16px/1.8 var(--font-reading));
+}
+
+.memory-world__finder-input::placeholder {
+  color: var(--mw-world-input-hint);
+}
+
+.memory-world__finder-input:focus-visible {
+  outline: none;
+}
+
+.memory-world__finder-note {
+  padding: var(--ib-token-space-sm, var(--space-2, 8px)) var(--ib-token-space-lg, var(--space-4, 16px));
+  border-block-end: 1px solid var(--mw-world-boundary);
+  font: var(--ib-token-text-meta, 400 12px/1.4 var(--font-ui));
+  color: var(--mw-world-ink-faint);
+}
+
+.memory-world__finder-list {
+  margin: 0;
+  padding: var(--ib-token-space-xs, var(--space-1, 4px));
+  list-style: none;
+  overflow-y: auto;
+  min-block-size: 0;
+}
+
+.memory-world__finder-row {
+  inline-size: 100%;
+  display: block;
+  min-block-size: 44px;
+  padding: var(--ib-token-space-sm, var(--space-2, 8px)) var(--ib-token-space-md, var(--space-3, 12px));
+  border: 0;
+  border-radius: var(--mw-world-radius-control);
+  background: none;
+  color: var(--mw-world-ink-dim);
+  font: var(--ib-token-text-body, 400 14px/1.5 var(--font-ui));
+  text-align: start;
+  cursor: pointer;
+}
+
+.memory-world__finder-row:hover {
+  background: var(--ib-token-surface-interactive, var(--surface-hover));
+  color: var(--mw-world-ink);
+}
+
+.memory-world__finder-row[aria-selected="true"] {
+  background: var(--ib-token-surface-selected, var(--surface-pressed));
+  color: var(--mw-world-ink);
+}
+
+.memory-world__finder-row:focus-visible {
+  outline: var(--ib-token-focus-ring-width, 2px) solid var(--mw-world-focus);
+  outline-offset: calc(-1 * var(--ib-token-focus-ring-offset, 2px));
+}
+
+.memory-world__finder-empty {
+  padding: var(--ib-token-space-md, var(--space-3, 12px));
+  font: var(--ib-token-text-meta, 400 12px/1.4 var(--font-ui));
+  color: var(--mw-world-ink-faint);
+}
+
+.memory-world__sr {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ==================================== 星图共存（Library 折叠项）====== */
+/* STAR_MAP_COEXISTENCE_DECISION = C+B：既有星图迁入 Library 末段并默认折叠。
+   功能一个不删：同一批 id / 同一个 buildMemorySky / 同一条 legend。 */
+
+.memory-world-skyfold {
+  margin-block-start: var(--ib-token-space-xxl, var(--space-6, 24px));
+  border-block-start: 1px solid var(--mw-world-boundary);
+  padding-block-start: var(--ib-token-space-md, var(--space-3, 12px));
+}
+
+.memory-world-skyfold__summary {
+  display: flex;
+  align-items: baseline;
+  gap: var(--ib-token-space-md, var(--space-3, 12px));
+  min-block-size: 44px;
+  list-style: none;
+  cursor: pointer;
+  color: var(--mw-world-ink-dim);
+  font: var(--ib-token-text-meta, 400 12px/1.4 var(--font-ui));
+  letter-spacing: 0.12em;
+}
+
+.memory-world-skyfold__summary::-webkit-details-marker {
+  display: none;
+}
+
+.memory-world-skyfold__summary::before {
+  content: "+";
+  display: inline-block;
+  inline-size: 1em;
+  text-align: center;
+  color: var(--mw-world-ink-faint);
+}
+
+.memory-world-skyfold[open] .memory-world-skyfold__summary::before {
+  content: "\2212";
+}
+
+.memory-world-skyfold__summary:focus-visible {
+  outline: var(--ib-token-focus-ring-width, 2px) solid var(--mw-world-focus);
+  outline-offset: var(--ib-token-focus-ring-offset, 2px);
+}
+
+.memory-world-skyfold__hint {
+  color: var(--mw-world-ink-faint);
+  letter-spacing: 0.04em;
+}
+
+.memory-world-skyfold__body {
+  padding-block-start: var(--ib-token-space-lg, var(--space-4, 16px));
+}
+
+/* ============================================ 环境层运动（有界）====== */
+/* 只有两张环境画布在动，方向相反、周期不同；memory 节点完全静止。 */
+
+@keyframes mw-world-drift {
+  from {
+    transform: translate3d(-1.2%, -0.7%, 0) scale(1.02);
+  }
+  to {
+    transform: translate3d(1.2%, 0.7%, 0) scale(1.045);
+  }
+}
+
+@keyframes mw-world-mist {
+  from {
+    transform: translate3d(1.7%, 1.0%, 0) scale(1.055);
+  }
+  to {
+    transform: translate3d(-1.7%, -1.0%, 0) scale(1.02);
+  }
+}
+
+/* ============================================================ 移动端 == */
+/* 纵向下潜：同一个归一化世界，竖屏把断层自然拉陡 → 纵向宏观结构。 */
+
+@media (max-width: 760px) {
+  .memory-world-entry {
+    margin-block-end: var(--ib-token-space-xl, var(--space-5, 20px));
+  }
+
+  .memory-world-entry__frame {
+    aspect-ratio: 4 / 5;
+    min-block-size: 320px;
+    max-block-size: 460px;
+  }
+
+  .memory-world-entry__caption {
+    max-inline-size: 100%;
+    padding: var(--ib-token-space-lg, var(--space-4, 16px));
+  }
+
+  .memory-world__bar {
+    padding: var(--ib-token-space-md, var(--space-3, 12px)) var(--ib-token-space-lg, var(--space-4, 16px));
+    gap: var(--ib-token-space-sm, var(--space-2, 8px));
+  }
+
+  .memory-world__title {
+    white-space: normal;
+  }
+
+  .memory-world__preview {
+    inset-inline: 0;
+    inset-block-end: 0;
+    inline-size: auto;
+    max-inline-size: none;
+    padding: var(--ib-token-space-lg, var(--space-4, 16px));
+    padding-block-end: calc(var(--ib-token-space-lg, var(--space-4, 16px)) + env(safe-area-inset-bottom, 0px));
+  }
+
+  .memory-world__preview-body {
+    max-block-size: 4.2em;
+  }
+
+  .memory-world__finder {
+    inset-block-start: var(--ib-token-space-xl, var(--space-5, 20px));
+    inline-size: calc(100% - (2 * var(--ib-token-space-md, var(--space-3, 12px))));
+    max-block-size: 62%;
+  }
+}
+
+@media (max-width: 460px) {
+  .memory-world-entry__frame {
+    aspect-ratio: 3 / 4;
+  }
+}
+
+/* ================================================ 减少动态 / 打印 ==== */
+
+@media (prefers-reduced-motion: reduce) {
+  .memory-world,
+  .memory-world-entry__go,
+  .memory-world-entry__go::after,
+  .memory-world__icon,
+  .memory-world__menu-item,
+  .memory-world__open,
+  .memory-world__open::after {
+    transition: none;
+  }
+
+  .memory-world__env,
+  .memory-world__mist,
+  .memory-world-entry__env,
+  .memory-world-entry__mist {
+    animation: none;
+  }
+}

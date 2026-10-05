@@ -2312,6 +2312,23 @@ const GROUPS = [
       ['test_chat_smoke.js'],
       ['test_workspace_smoke.js'],
       ['test_memory_smoke.js'],
+      /* UI-P1 · Memory World：纯表现层世界（入口 + 全屏世界）。
+         三条互补的浏览器证据：
+           · browser      —— 入口/进入/选中/打开既有 detail/退出、light 与 dark
+                             的真实像素差异、390px、prefers-reduced-motion、无横向溢出
+           · side_effects —— MEMORY_WORLD_DURABLE_WRITES = 0：进入世界、hover、
+                             选中、查找、打开、退出期间 memories 行逐字段不变、
+                             recordMemoryActivation 调用 = 0（视觉浏览不得强化记忆）
+           · layout       —— 确定性布局（模块重读 / 真实页面重载 / 输入顺序都一致）
+                             与 200 / 500 / 1000 条规模（完整渲染、不做 sampling） */
+      ['test_memory_world_browser.js'],
+      ['test_memory_world_side_effects.js'],
+      ['test_memory_world_layout.js'],
+      /* UI-P1.1 · Visual Recomposition：视觉**契约**（不是像素 golden）——
+         宏观断层存在且是曲线、环境几何确定性、深度分层 70/20/8/2、
+         light/dark 各自有宏观结构且不是反相、chrome 只留 ··· 与 ×、
+         preview 无底无边框（annotation 而非 card）、无连线、reduced-motion 全停。 */
+      ['test_memory_world_visual_contract.js'],
       ['test_active_diary_smoke.js'],
       ['test_moments_smoke.js'],
       /* M1-C.2n：浏览器侧接线（真实 Chrome + 真实 file:// 承载）——
