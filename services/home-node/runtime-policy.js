@@ -287,6 +287,67 @@ function createRuntimePolicy(deps) {
     return out;
   }
 
+  /* ── P21-R4-PROD-1 · setCognitive：**两段一次写**的产品级 writer ────────
+     为什么需要它（而不是让调用方连着调 set + setExpectation）：
+       · 产品控制面改的是**一对**状态 (I, E)。两次写会留下一个中间的
+         "只改了 I" 的文件状态；虽然那个中间态本身是合法态（I=ON,E=OFF），
+         但"一次用户操作 = 一次落盘"才是可审的语义，也让并发/崩溃下的
+         可观测状态只有"旧的一对"或"新的一对"。
+       · 它把**冻结的合法状态矩阵**放在 writer 层再挡一次：
+         I=OFF 且 E=ON 是非法态 ⇒ 拒绝（不规范化、不静默猜测）。
+       · 它**不改变** set / setExpectation 的任何语义：那两个仍是操作者级
+         原语（LIVE-4/5 的独立布尔断言依赖它们各自可独立写），本方法只是
+         在同一份文件、同一个权威实例上做一次原子替换。
+     §11：坏文件**绝不**被静默覆盖（先让人看到它坏了）。 */
+  function setCognitive(characterId, next) {
+    const id = normalizeCharacterId(characterId);
+    const want = isPlainObject(next) ? next : null;
+    if (!id) return { ok: false, code: 'INVALID_CHARACTER_ID' };
+    if (!want) return { ok: false, code: 'INVALID_VALUE' };
+    const interpretation = boolOf(want.autoInterpretationEnabled);
+    const expectation = boolOf(want.autoExpectationEnabled);
+    if (interpretation === null || expectation === null) return { ok: false, code: 'INVALID_VALUE' };
+    /* ★ 冻结矩阵：Expectation 不能在 Interpretation 关闭时开启。 */
+    if (expectation === true && interpretation === false) {
+      note('runtime-policy-write-refused', { reason: 'illegal-cognitive-state', characterId: id });
+      return { ok: false, code: 'ILLEGAL_COGNITIVE_STATE', characterId: id };
+    }
+    if (!dataDir) return { ok: false, code: 'NO_DATA_DIR' };
+    const current = readDocument();
+    if (!current.ok && current.reason !== 'policy-file-missing') {
+      note('runtime-policy-write-refused', { reason: current.reason, section: 'cognitive' });
+      return { ok: false, code: 'POLICY_FILE_UNUSABLE', reason: current.reason };
+    }
+    const doc = baseDocument(current);
+    doc.characters[id] = Object.assign({}, doc.characters[id], { autoInterpretationEnabled: interpretation });
+    doc.expectation.characters[id] = Object.assign({}, doc.expectation.characters[id], { autoExpectationEnabled: expectation });
+    const written = writeDocument(doc);
+    if (!written.ok) return written;
+    note('runtime-cognitive-policy-updated', {
+      characterId: id, autoInterpretationEnabled: interpretation, autoExpectationEnabled: expectation
+    });
+    return {
+      ok: true, characterId: id,
+      autoInterpretationEnabled: interpretation, autoExpectationEnabled: expectation,
+      version: SCHEMA_VERSION, updatedAt: Date.now()
+    };
+  }
+
+  /* ── documentStatus：**文件级**判据（P21-R4-PROD-1.1 UI closure 需要）────
+     它回答的是"这份文件现在能不能被写"，与 set / setExpectation / setCognitive
+     的 POLICY_FILE_UNUSABLE 判据**逐字同一个**（`readDocument().ok`）。控制面据此
+     告诉 UI"可编辑 / 不可编辑"，因此两者不可能漂移：
+       · 文件不存在 · JSON 合法且 version 认 · 形状是对象 ⇒ ok = true（可写）
+       · 读不动 / JSON 坏 / 不是对象 / version 不认    ⇒ ok = false（写会被拒）
+     ★ 只回 {ok, reason}：**不**回文档内容（别的角色、别的段落都不外泄）。 */
+  function documentStatus() {
+    const d = readDocument();
+    /* ★ 与三个写者的判据**逐字相同**：只有"文件存在但不可用"才拒绝写；
+       `policy-file-missing` 是**可写**的（写者会创建它）。 */
+    const usable = d.ok === true || d.reason === 'policy-file-missing';
+    return { ok: usable, reason: usable ? null : d.reason };
+  }
+
   function describe() {
     const doc = readDocument();
     const def = (doc.ok && isPlainObject(doc.document.default))
@@ -327,6 +388,8 @@ function createRuntimePolicy(deps) {
     set: set,
     readExpectation: readExpectation,
     setExpectation: setExpectation,
+    setCognitive: setCognitive,
+    documentStatus: documentStatus,
     describe: describe,
     enabledCharacters: enabledCharacters,
     enabledExpectationCharacters: enabledExpectationCharacters

@@ -288,10 +288,25 @@ function snapshotTree(dir) {
       && J(BE.L3_APPRAISALS) === J((INTERP_CORE.APPRAISALS || []).map(String)),
       { module: BE.L3_APPRAISALS, core: INTERP_CORE.APPRAISALS });
     const httpSrc = readRel('services/home-node/http.js');
-    check('0.9 §18 没有任何路由指向 BehaviorEffect 运行时（http.js 零引用）',
-      httpSrc.indexOf('behaviorEffect') < 0 && httpSrc.indexOf('runtimeBehaviorEffect') < 0
-      && httpSrc.indexOf('runtime-behavior-effect') < 0,
-      'http.js references: 0');
+    /* ⚠ PHASE TRANSITION · P21-R4-PROD-1 ────────────────────────────────────
+       旧值（R4-F）：`httpSrc.indexOf('behaviorEffect') < 0` —— 那时 http.js 里
+       这个记号**一个都不该有**，"零引用"就是"没有路由通向行为运行时"的完整证明。
+       新值（PROD-1）：认知控制面在它的**窄投影**里加了一句声明
+       `behaviorEffectIndependentPolicy: 'NONE'`（"没有第三个成本开关"）。
+       那是一个**声明**，不是一条通向运行时的路 —— 但它包含同名子串，于是旧守卫
+       会误报。因此本条改为**钉住意图**（而不是放宽成"允许出现"）：
+         · 仍然**禁止**一切**运行时**引用：不 require runtime-behavior-effect、
+           不注入 runtimeBehaviorEffect、不出现 runtime-behavior-effect 路径；
+         · `behaviorEffect` 记号只允许以那句声明出现（出现次数逐字相等）。
+       新值比旧值更精确：它同时证明了"没有路由"与"那句声明不是一条路由"。 */
+    const httpCode = require(path.join(ROOT, 'tests', 'helpers', 'activation-wiring-probe.js')).stripJsComments(httpSrc);
+    const beTokens = (httpCode.match(/behaviorEffect/g) || []).length;
+    const beDeclarative = (httpCode.match(/behaviorEffectIndependentPolicy/g) || []).length;
+    check('0.9 §18 没有任何路由指向 BehaviorEffect 运行时（去注释后：http.js 不 require / 不注入 / 不消费；唯一的记号是控制面那句"没有独立开关"的声明）',
+      httpSrc.indexOf('runtimeBehaviorEffect') < 0
+      && httpSrc.indexOf('runtime-behavior-effect') < 0
+      && beTokens === beDeclarative,
+      { behaviorEffectTokensInCode: beTokens, declarativeOnly: beDeclarative, runtimeRefs: 0 });
     P('R4F_BEHAVIOR_EFFECT_EXECUTION_KIND', BE.EXECUTION_KIND);
     P('MAX_HELD_BEHAVIOR_EFFECTS', BE.MAX_HELD_BEHAVIOR_EFFECTS);
     P('HOLDER_TTL_MS', BE.HOLDER_TTL_MS);

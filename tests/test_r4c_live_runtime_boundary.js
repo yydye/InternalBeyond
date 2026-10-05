@@ -2146,17 +2146,35 @@ catch (error) { RUNTIME_LOAD_ERROR = error; }
     /* clientSentKeys 仍是**整块**的并集 —— N6b（"不能表达 canonical 证据"）与
        下面几处用的是"客户端能发的所有键"，那条性质与动词个数无关。 */
     const clientSentKeys = sentKeysIn(clientRuntimeBlock);
-    const interpVerbAt = clientRuntimeBlock ? clientRuntimeBlock.indexOf('runMemoryInterpretation: function') : -1;
-    const recallVerbAt = clientRuntimeBlock ? clientRuntimeBlock.indexOf('runMemoryRecall: function') : -1;
-    const interpVerbBlock = (interpVerbAt >= 0)
-      ? clientRuntimeBlock.slice(interpVerbAt, recallVerbAt > interpVerbAt ? recallVerbAt : undefined) : '';
-    const recallVerbBlock = (recallVerbAt >= 0) ? clientRuntimeBlock.slice(recallVerbAt) : '';
+    /* ⚠ PHASE TRANSITION（LIVE-2.1 → LIVE-3.4 → P21-R4-PROD-1）：运行面的具名动词
+       从 1 个变 2 个、再到 3 个（新增 `runCognitivePolicy` = 认知控制面，走同一条
+       已认证桌面凭据路径）。旧写法把"召回动词块"切成**块尾**，于是最后一个动词
+       之后新增的动词会被并进它 —— N6 就会拿**别人的键**去比这张 schema
+       （症状：recallSentKeys 里出现 autoInterpretationEnabled）。
+       现在块边界一律由"**下一个**动词的起点"决定，逐个动词独立对照；
+       新增动词只会影响它自己那一格。 */
+    const VERB_NAMES = ['runMemoryInterpretation', 'runMemoryRecall', 'runCognitivePolicy'];
+    const verbStarts = VERB_NAMES.map(n => (clientRuntimeBlock ? clientRuntimeBlock.indexOf(n + ': function') : -1));
+    const verbBlockOf = (i) => {
+      const at = verbStarts[i];
+      if (at < 0) return '';
+      const nexts = verbStarts.slice(i + 1).filter(v => v > at).sort((a, b) => a - b);
+      return clientRuntimeBlock.slice(at, nexts.length ? nexts[0] : undefined);
+    };
+    const interpVerbBlock = verbBlockOf(0);
+    const recallVerbBlock = verbBlockOf(1);
+    const cognitiveVerbBlock = verbBlockOf(2);
     const interpSentKeys = sentKeysIn(interpVerbBlock);
     const recallSentKeys = sentKeysIn(recallVerbBlock);
+    const cognitiveSentKeys = sentKeysIn(cognitiveVerbBlock);
     /* 召回边界的 schema 只有一份来源：服务端模块自己导出的闭集 + 可选键
        （`mode` 在 OPTIONAL_REQUEST_FIELDS 里，缺省 'shadow'）。 */
     const RECALL = require(path.join(ROOT, 'services', 'home-node', 'runtime-recall.js'));
     const RECALL_SCHEMA = (RECALL.REQUEST_FIELDS || []).concat(RECALL.OPTIONAL_REQUEST_FIELDS || []);
+    /* 认知控制面的闭集：服务端产品边界自己的两个布尔 + 那条 route 的两个键
+       （operation / characterId）。第三格**必须**是闭集，且**没有**第三个 bit。 */
+    const COGNITIVE = require(path.join(ROOT, 'services', 'home-node', 'runtime-cognitive-policy.js'));
+    const COGNITIVE_SCHEMA = ['operation', 'characterId'].concat(COGNITIVE.REQUEST_FIELDS || []);
     /* currentState 的嵌套闭集（客户端侧的第二个白名单）。 */
     const clientStateKeys = (() => {
       const m = /var\s+RUNTIME_STATE_KEYS\s*=\s*(\[[^\]]*\])/.exec(clientCode);
@@ -2205,15 +2223,21 @@ catch (error) { RUNTIME_LOAD_ERROR = error; }
        刻意**不**把两份 schema 并成一个超集 —— 合并后"每个键总能落在某处"恒真，
        这条检查会退化成同义反复。 */
     check('N6.browserClientClosedKeyListIsSubsetOfTheServerRequestSchema',
-      interpSentKeys.length > 0 && recallSentKeys.length > 0
+      interpSentKeys.length > 0 && recallSentKeys.length > 0 && cognitiveSentKeys.length > 0
       && interpSentKeys.every(k => RT.REQUEST_FIELDS.indexOf(k) >= 0)
       && recallSentKeys.every(k => RECALL_SCHEMA.indexOf(k) >= 0)
+      && cognitiveSentKeys.every(k => COGNITIVE_SCHEMA.indexOf(k) >= 0)
       && interpSentKeys.indexOf('selectedMemoryIds') >= 0
-      && recallSentKeys.indexOf('message') >= 0 && recallSentKeys.indexOf('mode') >= 0,
+      && recallSentKeys.indexOf('message') >= 0 && recallSentKeys.indexOf('mode') >= 0
+      && cognitiveSentKeys.indexOf('autoInterpretationEnabled') >= 0
+      && cognitiveSentKeys.indexOf('autoExpectationEnabled') >= 0
+      && cognitiveSentKeys.indexOf('autoBehaviorEffectEnabled') < 0,
       'interpretation clientSent=' + JSON.stringify(interpSentKeys)
       + ' ⊆ interpretation REQUEST_FIELDS=' + JSON.stringify(RT.REQUEST_FIELDS.slice())
       + ' | recall clientSent=' + JSON.stringify(recallSentKeys)
       + ' ⊆ recall REQUEST_FIELDS+OPTIONAL=' + JSON.stringify(RECALL_SCHEMA.slice())
+      + ' | cognitive clientSent=' + JSON.stringify(cognitiveSentKeys)
+      + ' ⊆ cognitive REQUEST_FIELDS+operation/characterId=' + JSON.stringify(COGNITIVE_SCHEMA.slice())
       + ' runtimeBlock=' + (clientRuntimeBlock ? clientRuntimeBlock.length + ' chars' : 'NOT FOUND'));
     check('N6b.browserClientCannotExpressAnyCanonicalEvidence',
       clientSentKeys.length > 0
@@ -2257,13 +2281,17 @@ catch (error) { RUNTIME_LOAD_ERROR = error; }
       !!runtimeBlock && !/set(?:Interval|Timeout)\s*\(/.test(runtimeBlock)
       && !/setInterval\s*\(/.test(bootSrc),
       'no setInterval/setTimeout inside the runtime surface, and no setInterval anywhere in the bootstrap');
-    /* ⚠ PHASE TRANSITION（LIVE-2.1 → LIVE-3.4）：LIVE-2.1 冻结"运行面只导出**一个**
-       动词"；LIVE-3.4 有意加了第二个**具名边界**动词（召回 = desktop cutover 的
-       传输）。判据因此从"恰好一个动词"变成"导出的每一个动词都是闭集、具名边界"：
-       名单被加宽，而"没有定时器 / 没有自动调用 / 没有通用出口"三件事一条没动
-       （见 N7 / N9 / N3 与 1.3）。 */
+    /* ⚠ PHASE TRANSITION（LIVE-2.1 → LIVE-3.4 → P21-R4-PROD-1）：
+       · LIVE-2.1 冻结"运行面只导出**一个**动词"；
+       · LIVE-3.4 有意加了第二个**具名边界**动词（召回 = desktop cutover 的传输）；
+       · P21-R4-PROD-1 有意加了第三个**具名边界**动词
+         `runCognitivePolicy`（认知控制面：按角色读/写两个认知开关，走同一条
+         已认证桌面凭据路径；见 services/home-node/http.js#COGNITIVE_POLICY_PATH）。
+       判据因此是"导出的每一个动词都是闭集、具名边界"，而不是"恰好 N 个"：
+       名单被加宽，而"没有定时器 / 没有自动调用 / 没有通用出口 / 没有 token
+       或 fetch 面"四件事一条没动（见 N7 / N9 / N3 与 1.3）。 */
     check('N10.bootstrapRuntimeSurfaceExportsOnlyNamedBoundaryVerbs',
-      JSON.stringify(blockKeys) === JSON.stringify(['available', 'instance', 'runMemoryInterpretation', 'runMemoryRecall']),
+      JSON.stringify(blockKeys) === JSON.stringify(['available', 'instance', 'runCognitivePolicy', 'runMemoryInterpretation', 'runMemoryRecall']),
       'runtime surface keys = ' + JSON.stringify(blockKeys));
 
     AUTO_INVOCATION_ABSENT = commHits.length === 0

@@ -110,6 +110,11 @@ const createRuntimeExpectation = require('../services/home-node/runtime-expectat
 /* ── P21-R4-F · L7 行为基调（**确定性**派生：没有模型调用、没有第三个成本位）──
    它只把已验证的 L3（且该回合 L5 已成立）投影成闭合枚举的基调，交给**下一轮**。 */
 const createRuntimeBehaviorEffect = require('../services/home-node/runtime-behavior-effect.js').createRuntimeBehaviorEffect;
+/* ── P21-R4-PROD-1 · 认知控制面（产品级读写边界）────────────────────────
+   它**不是**第二份 policy 权威：持久化仍然只有上面那一份 runtime-policy
+   （同一份文件、同一个原子 writer `setCognitive`）。本层只负责"按角色的
+   两个布尔 + 冻结的合法状态矩阵 + 窄投影"。 */
+const createRuntimeCognitivePolicy = require('../services/home-node/runtime-cognitive-policy.js').createRuntimeCognitivePolicy;
 const createNodeModelPort = require('../active/node-model-port.js');
 /* P11-3E：canonical store 失败分类器（**唯一**一份，见 runtime/db-failure.js）。
    它在 runtime/ 下，与 runtime/local-services-runner.js 那份是同一模块 ——
@@ -977,6 +982,11 @@ function buildHomeNode(options) {
   const instanceRuntimeBehaviorEffect = options.runtimeBehaviorEffect || createRuntimeBehaviorEffect({
     clock: options.clock, logger: serviceLog
   });
+  /* P21-R4-PROD-1 · 认知控制面：与解释/期望**共用同一份** policy 权威实例
+     （instanceRuntimePolicy）—— 它自己绝不打开文件、绝不写第二份。 */
+  const instanceRuntimeCognitivePolicy = options.runtimeCognitivePolicy || createRuntimeCognitivePolicy({
+    policy: instanceRuntimePolicy, logger: serviceLog
+  });
   const instanceRuntimeExpectation = options.runtimeExpectation || createRuntimeExpectation({
     modelPort: options.port || createNodeModelPort({}),
     policy: instanceRuntimePolicy,
@@ -1155,6 +1165,7 @@ function buildHomeNode(options) {
          ids，一条出网读 Vault。合成一条会让审计读不出"这一步花没花钱"。 */
     runtimeRecall: instanceRuntimeRecall,
   runtimeExpectation: instanceRuntimeExpectation,
+  runtimeCognitivePolicy: instanceRuntimeCognitivePolicy,
   runtimeBehaviorEffect: instanceRuntimeBehaviorEffect,
     /* P11-3E · canonical store 清单：健康与"能不能服务"是同一个问题，
        所以这里列出本进程承诺的全部 canonical store，而不是只有 chat。
@@ -1271,6 +1282,7 @@ function buildHomeNode(options) {
          "两条装配路径不得漂移"这句断言的载体。 */
     runtimeRecall: instanceRuntimeRecall,
   runtimeExpectation: instanceRuntimeExpectation,
+  runtimeCognitivePolicy: instanceRuntimeCognitivePolicy,
   runtimeBehaviorEffect: instanceRuntimeBehaviorEffect,
     registry: instanceRegistry,
     gateway: instanceGateway,
@@ -1382,6 +1394,11 @@ const runtimeInterpretation = createRuntimeInterpretation({
    ★ modelPort 复用进程级 port：期望与聊天/派生/解释走同一条 wire 层。 */
 const runtimeBehaviorEffect = createRuntimeBehaviorEffect({
   clock: function () { return Date.now(); },
+  logger: (level, event, fields) => log(level, event, fields)
+});
+/* P21-R4-PROD-1 · 进程级认知控制面（与 buildHomeNode 那一份同源、同一 policy）。 */
+const runtimeCognitivePolicy = createRuntimeCognitivePolicy({
+  policy: runtimePolicy,
   logger: (level, event, fields) => log(level, event, fields)
 });
 const runtimeExpectation = createRuntimeExpectation({
@@ -1505,6 +1522,7 @@ const httpLayer = createHttp({
      而单元测试全绿（本文件已经记过多次同一种病）。 */
   runtimeRecall: runtimeRecall,
   runtimeExpectation: runtimeExpectation,
+  runtimeCognitivePolicy: runtimeCognitivePolicy,
   runtimeBehaviorEffect: runtimeBehaviorEffect,
   /* P22-9：**进程级**的门。它与 store 同级导出，理由逐字相同 —— 门的缺席
      在生产上是一个静默的"每个 consumer 都能直接提议"，而那种缺口只有

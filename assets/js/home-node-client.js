@@ -947,6 +947,14 @@ var RUNTIME_PATH = '/internal/runtime/memory-interpretation';
    services/home-node/runtime-recall.js#PATH（装配层从那里取，两处是同一份契约）。 */
 var RECALL_OPERATION = 'memory-recall';
 var RECALL_PATH = '/internal/runtime/memory-recall';
+/* ── P21-R4-PROD-1 · 认知控制面（产品级读写边界）──────────────────────────
+   路径与 operation 在浏览器侧只有**这一份**字面量（服务端那份在
+   services/home-node/http.js#COGNITIVE_POLICY_PATH）。
+   ★ 这一层是**窄动词**，不是通用配置写入：只允许 read / set 两个 operation，
+     set 只允许两个布尔。任何别的东西（provider / credentialRef / dataDir /
+   version / autoBehaviorEffectEnabled / …）在**构造层**就没有位置可放。 */
+var COGNITIVE_POLICY_PATH = '/internal/runtime/cognitive-policy';
+var COGNITIVE_POLICY_OPERATIONS = ['read', 'set'];
 /* 允许**从调用方复制**的输入只有三个：selectedMemoryIds（必需）与
    currentState / roleName（可选）。canonical 证据（records / content /
    evidenceState / …）与执行权威（provider / model / apiKey / …）都不在这里，
@@ -1072,6 +1080,38 @@ function createRuntimeRemote(deps) {
       if (_runtimeHasOwn(src, 'isGroup')) payload.isGroup = src.isGroup;
       payload.timeoutMs = timeoutMs;
       return _request(RECALL_PATH, {
+        method: 'POST',
+        body: payload,
+        timeoutMs: timeoutMs
+      });
+    },
+    /* ── P21-R4-PROD-1 · 认知控制面：按角色读/写两个认知开关 ─────────────
+       与 runMemoryRecall 同一套传输与凭据路径（`_request` 用同一个桌面
+       token 来源），但**只**构造两套闭集请求体：
+         { operation:'read', characterId }
+         { operation:'set',  characterId, autoInterpretationEnabled, autoExpectationEnabled }
+       浏览器提交的是**意图**；状态矩阵由服务端权威层裁决（OFF/ON 会被拒）。
+       本地不做任何 policy 缓存/镜像：每次调用都是一次真实的服务端往返。 */
+    runCognitivePolicy: function (input, options) {
+      options = options || {};
+      var src = (input && typeof input === 'object' && !Array.isArray(input)) ? input : {};
+      var operation = String(src.operation == null ? '' : src.operation);
+      if (COGNITIVE_POLICY_OPERATIONS.indexOf(operation) < 0) {
+        return Promise.resolve({ ok: false, operation: null, error: 'invalid-operation', reasonCode: 'invalid-operation' });
+      }
+      var timeoutMs = Number(options.timeoutMs);
+      var payload = {
+        operation: operation,
+        characterId: String(src.characterId == null ? '' : src.characterId)
+      };
+      if (operation === 'set') {
+        if (typeof src.autoInterpretationEnabled !== 'boolean' || typeof src.autoExpectationEnabled !== 'boolean') {
+          return Promise.resolve({ ok: false, operation: operation, characterId: payload.characterId, error: 'invalid-value', reasonCode: 'invalid-value' });
+        }
+        payload.autoInterpretationEnabled = src.autoInterpretationEnabled;
+        payload.autoExpectationEnabled = src.autoExpectationEnabled;
+      }
+      return _request(COGNITIVE_POLICY_PATH, {
         method: 'POST',
         body: payload,
         timeoutMs: timeoutMs

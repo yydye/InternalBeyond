@@ -1799,7 +1799,57 @@ const GROUPS = [
            · §24 用户明示请求的优先级 framing（固定模板文本，不是自由拼接）；
            · §31 成本：BehaviorEffect 0 次模型调用、renderer 0 次模型调用。
          零真实出网（假 provider + 回环 mock）；scratch 只在 .dsh-tmp；逐用例看门狗。 */
-      ['test_r4f_live_behavior_effect_browser.js']
+      ['test_r4f_live_behavior_effect_browser.js'],
+      /* P21-R4-PROD-1 · Cognitive Runtime **Control Plane**（产品化：用户可按角色开关）。
+         证明的是产品事实，不是新的认知层：
+           · 唯一 mutation boundary = 已认证的窄 HTTP 边界
+             `POST /internal/runtime/cognitive-policy`（落在 `/internal/` 前缀下，
+             自动继承 desktop-only + 桌面 token 判定；没有 LAN/mobile 匿名写面）；
+           · 冻结状态矩阵：ON/OFF · ON/ON · OFF/OFF 合法，**OFF/ON 被权威层拒绝**
+             （400 illegal-cognitive-state），不是靠 UI 拦；
+           · 读**无副作用**（不创建 policy 文件、不写 entry）且是**窄投影**
+             （无 file / dataDir / 其它角色 / 凭据 / provider）；
+           · 每角色隔离 · roundtrip · **重启 durability**（状态与 runtime 行为都一致）·
+             并发写不同角色 **0 lost update**；
+           · 坏文件：读 fail closed OFF、写 **409 policy-file-unusable**、
+             字节逐字不被覆盖；
+           · 浏览器伪造（含 autoBehaviorEffectEnabled 这类第三开关 / provider /
+             凭据 / 路径 / version）一律 400，且不因此创建策略；
+           · 控制面打开 **auto** 解释**不会**顺带打开外部 caller-proposed 解释路由；
+           · 运行时 read-back：I ON/E OFF ⇒ 1 次调用、0 派生；I ON/E ON ⇒ 2 次调用、
+             BehaviorEffect 确定性派生并交付给下一 eligible turn；OFF/OFF 之后 0 次调用；
+           · 零真实 provider 调用（全部走注入假端口）。 */
+      ['test_r4_product_cognitive_policy.js'],
+      /* P21-R4-PROD-1.1 · Cognitive Runtime **UI**（产品控制面的浏览器闭合）。
+         真实 Chrome + InternalBeyond.html + 真 Home Node + 已认证内部路由 + 假 provider：
+           · §26 流程：A 初始 OFF/OFF → 打开设置 → read（**无副作用**：不创建策略文件）
+             → 开 I（成本确认）→ 服务端 ON/OFF → reload → 开 E → ON/ON → reload
+             → 关 E → ON/OFF → 关 I → OFF/OFF → reload；
+           · §25 mutation wire：每次写都走既有已认证客户端（桌面凭据由客户端携带，
+             UI 不持有 token），请求体是闭集四项；
+           · §24 浏览器权威否定：DOM 手改 / 直接调 renderer / localStorage·IndexedDB 伪造 /
+             直接构造非法 OFF/ON / 注入第三个 bit·provider·dataDir·version ⇒ 都不能改 durable policy；
+           · §27 运行时 read-back（假 provider）：ON/OFF ⇒ 1 次·0 派生；ON/ON ⇒ 2 次·
+             BehaviorEffect 确定性派生并交付下一 eligible turn；OFF/OFF ⇒ 0/0/0；
+           · §17/§18 角色切换各自重读 + generation guard（晚返回不覆盖）+ 连点串行化；
+           · §29 坏策略文件：UI 显示 OFF/OFF **且**可见错误，尝试开启 ⇒ 409「未保存」，
+             文件字节不变；§28 重启后仍 ON/ON；
+           · §30/§31/§32 可访问性（label/for·disabled·role=status·"最多"措辞）、390px 无横向溢出、
+             明暗两主题（body.theme-infernal）—— 沿用现有语义 token，零新增硬编码视觉。
+         零真实出网（假 provider + *.invalid）；scratch 只在 .dsh-tmp；逐用例看门狗。 */
+      ['test_r4_product_cognitive_policy_browser.js'],
+      /* P21-R4-PROD-1.1a · Credential Separation Truth Probe（只回答一个问题：
+         角色没有可用模型凭据时，policy mutation 本身是否仍成功并持久化？）。
+         把两件事**分开**证明：
+           A. POLICY MUTATION —— 无凭据角色的 set ON/OFF · set ON/ON 依旧 200 +
+              落盘 + readback（readable=true，UI 走 saved 分支，不显示"未保存"）；
+           B. LATER COGNITIVE EXECUTION —— 之后的 eligible turn 0 次 provider 调用、
+              按既有 credential-unavailable / spec-incomplete 语义失败，而 durable
+              policy **保持 ON**（不自动关闭、不改回 OFF、不删 entry、不返回 409/400）。
+         另有**对照角色**（有凭据）证明同一装置真的会调用到假 provider ⇒ 0 次调用是
+         "凭据缺失"的结论而不是装置假象；以及代码事实：产品边界与那条 route 都不引用
+         凭据存储。零真实出网（假 provider + *.invalid）。 */
+      ['test_r4_product_cognitive_policy_credential_separation.js']
     ]
   },
   {

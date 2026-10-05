@@ -56,6 +56,10 @@ const PROTOCOL_VERSION = 1;
    module.exports 下面要把它们交出去，客户端与测试都从这里取，
    因此"这条路径叫什么"全仓只有一份字面量。 */
 const DESKTOP_CREDENTIAL_PATH = '/internal/desktop-credential';
+/* P21-R4-PROD-1 · 认知控制面的**唯一**变更/读取路径（窄 route）。
+   ★ 它落在 `/internal/` 前缀下 ⇒ 自动继承 isDesktopOnlyPath（远端未配置桌面
+     token → 403）、桌面 token 判定与 loopback 语义，一行豁免都不加。 */
+const COGNITIVE_POLICY_PATH = '/internal/runtime/cognitive-policy';
 const DESKTOP_CREDENTIAL_HEADER = 'x-ib-bootstrap';
 const MAX_BODY_BYTES = 64 * 1024 * 1024;       /* 单条消息可能内联 base64 图片（IMG_MAX_BYTES=20MiB × 压缩前） */
 const MAX_BATCH_ITEMS = CHAT_CORE.MAX_MIGRATION_BATCH;
@@ -154,6 +158,11 @@ function createHomeNodeHttp(deps) {
      ★ 它与解释边界同级：同样在桌面凭据判定**之后**，同样没有
        isEconomyCommandPath 式豁免。 */
   const runtimeRecall = deps.runtimeRecall || null;
+  /* P21-R4-PROD-1 · 认知控制面（产品级读写边界）。
+     ★ 它**不是**第二份 policy 权威：持久化仍然只有 runtime-policy.js 一份
+       （见 home-node-service.js 的装配）。本层只做状态矩阵与窄投影。
+     ★ 不注入时整条分支不存在（与其它运行时面同款）。 */
+  const runtimeCognitivePolicy = deps.runtimeCognitivePolicy || null;
   const executor = deps.executor || null;
   const gateway = deps.gateway || null;
   const clock = deps.clock || (() => Date.now());
@@ -810,6 +819,131 @@ function createHomeNodeHttp(deps) {
     }
   }
 
+  /* ── P21-R4-PROD-1 · 认知控制面（**唯一**的读取/变更面 · POST）─────────
+     闭集请求（两个 operation）：
+       { operation:'read', characterId }
+       { operation:'set',  characterId, autoInterpretationEnabled, autoExpectationEnabled }
+     ★ 浏览器提交的是**意图**，不是权威：这里没有 dataDir / 路径 / version /
+       provider / credential / endpoint / memoryId / behaviorEffect / 成本权威
+       任何一个键 —— 多一个自有键就是 request-field-forbidden。
+     ★ 响应是**窄投影**：只有 characterId + 两个布尔 + source/reason/cost。
+       绝不返回整份 policy 文件、其它角色、路径或凭据。
+     ★ 非法状态（I=OFF,E=ON）在**权威层**被拒绝（不是靠 UI 拦），并给出
+       具名 reasonCode；坏文件 ⇒ policy-file-unusable（绝不静默覆盖）。 */
+  const COGNITIVE_READ_FIELDS = Object.freeze(['operation', 'characterId']);
+  const COGNITIVE_SET_FIELDS = Object.freeze(['operation', 'characterId',
+    'autoInterpretationEnabled', 'autoExpectationEnabled']);
+  /* 本文件局部的小工具（与其它路由内联写法同源）：只做形状判断与有界回显。 */
+  function isPlainObject(value) { return !!value && typeof value === 'object' && !Array.isArray(value); }
+  function boundedString(value, limit) { return String(value == null ? '' : value).slice(0, limit || 80); }
+  function cognitivePolicyProjection(operation, view) {
+    const out = {
+      ok: view.ok === true,
+      operation: operation,
+      characterId: view.characterId,
+      autoInterpretationEnabled: view.autoInterpretationEnabled === true,
+      autoExpectationEnabled: view.autoExpectationEnabled === true,
+      source: isPlainObject(view.source) ? view.source : null,
+      reasonCode: isPlainObject(view.reasonCode) ? view.reasonCode : null,
+      readable: view.readable === true,
+      authoritySource: view.authoritySource,
+      mutationAuthority: view.mutationAuthority,
+      scope: view.scope,
+      browserDirectPolicyAuthority: 'NO',
+      behaviorEffectIndependentPolicy: 'NONE',
+      cost: view.cost
+    };
+    if (view.updatedAt !== undefined && view.updatedAt !== null) out.updatedAt = Number(view.updatedAt);
+    return out;
+  }
+  async function handleRuntimeCognitivePolicy(req, res) {
+    if (!runtimeCognitivePolicy) {
+      bad(res, 503, 'cognitive-policy-not-assembled', null, req);
+      return;
+    }
+    let body = null;
+    try {
+      body = await readBody(req, MAX_BODY_BYTES);
+    } catch (error) {
+      const code = (error && error.code) || 'read-error';
+      record('warn', 'cognitive-policy-unreadable', { outcome: 'refused', reasonCode: code, loopback: isLoopback(req) });
+      bad(res, code === 'too-large' ? 413 : 400, code || 'bad-body', { unreadableBody: code }, req);
+      return;
+    }
+    if (!isPlainObject(body)) {
+      bad(res, 400, 'body-not-an-object', null, req);
+      return;
+    }
+    const operation = typeof body.operation === 'string' ? body.operation.trim() : '';
+    if (operation !== 'read' && operation !== 'set') {
+      bad(res, 400, 'operation-not-allowed', { allowedOperations: ['read', 'set'] }, req);
+      return;
+    }
+    const allowed = operation === 'read' ? COGNITIVE_READ_FIELDS : COGNITIVE_SET_FIELDS;
+    for (const key of Object.keys(body)) {
+      if (allowed.indexOf(key) < 0) {
+        record('warn', 'cognitive-policy-field-forbidden', { operation: operation, field: key, loopback: isLoopback(req) });
+        bad(res, 400, 'request-field-forbidden', { field: boundedString(key, 80), detail: 'request-is-a-closed-schema' }, req);
+        return;
+      }
+    }
+    const characterId = typeof body.characterId === 'string' ? body.characterId.trim() : '';
+    if (!characterId || characterId.length > 180) {
+      bad(res, 400, 'invalid-character-id', { detail: 'characterId-must-be-a-bounded-non-empty-string' }, req);
+      return;
+    }
+    if (operation === 'read') {
+      const view = runtimeCognitivePolicy.readCharacter(characterId);
+      record('info', 'cognitive-policy-read', {
+        characterId: characterId, readable: view.readable === true,
+        interpretation: view.autoInterpretationEnabled === true,
+        expectation: view.autoExpectationEnabled === true, loopback: isLoopback(req)
+      });
+      sendJson(res, 200, cognitivePolicyProjection('cognitive-policy-read', view), req);
+      return;
+    }
+    const hasI = Object.prototype.hasOwnProperty.call(body, 'autoInterpretationEnabled');
+    const hasE = Object.prototype.hasOwnProperty.call(body, 'autoExpectationEnabled');
+    if (!hasI || !hasE) {
+      bad(res, 400, 'invalid-value', {
+        field: !hasI ? 'autoInterpretationEnabled' : 'autoExpectationEnabled',
+        detail: 'set requires BOTH booleans (the legal-state matrix is validated as a pair)'
+      }, req);
+      return;
+    }
+    const view = runtimeCognitivePolicy.setCharacter(characterId, {
+      autoInterpretationEnabled: body.autoInterpretationEnabled,
+      autoExpectationEnabled: body.autoExpectationEnabled
+    });
+    if (view.ok === true) {
+      record('info', 'cognitive-policy-updated', {
+        characterId: characterId,
+        interpretation: view.autoInterpretationEnabled === true,
+        expectation: view.autoExpectationEnabled === true, loopback: isLoopback(req)
+      });
+      sendJson(res, 200, cognitivePolicyProjection('cognitive-policy-set', view), req);
+      return;
+    }
+    const wireCode = String(view.code || 'cognitive-policy-failed').toLowerCase().replace(/_/g, '-');
+    const status = wireCode === 'policy-file-unusable' ? 409
+      : (wireCode === 'illegal-cognitive-state' ? 400
+        : (wireCode === 'invalid-character-id' ? 400 : 400));
+    record('warn', 'cognitive-policy-refused', {
+      characterId: characterId, reasonCode: wireCode, loopback: isLoopback(req)
+    });
+    sendJson(res, status, {
+      ok: false,
+      operation: 'cognitive-policy-set',
+      characterId: characterId,
+      error: wireCode,
+      reasonCode: wireCode,
+      field: view.field === undefined ? null : view.field,
+      detail: view.reason === undefined ? null : view.reason,
+      authoritySource: 'FILE_POLICY',
+      mutationAuthority: 'HOME_NODE_AUTHENTICATED_INTERNAL_ROUTE'
+    }, req);
+  }
+
   /* ── P21-R4-LIVE-2.1 · /security 里的诚实自述（唯一取值点）───────────────
      ★ 这一节回答"这台节点上到底有没有一条运行时解释执行面、它开不开、
        它是什么范围"。四个 NOT 类字段刻意写成**机器可读**的，而不是躺在
@@ -1315,6 +1449,26 @@ function createHomeNodeHttp(deps) {
         return;
       }
       await handleRuntimeRecall(req, res);
+      return;
+    }
+
+    /* ══════════════════════════════════════════════════════════════════
+       P21-R4-PROD-1 · Cognitive Runtime Control Plane（**唯一**控制面 · POST）
+
+       ★ 位置与上面两条运行时面**逐字同级**：在桌面凭据判定之后，没有任何
+         豁免；也不在 /mobile/ 下，因此 `/internal/` 前缀守卫覆盖它 ——
+         远端未配置桌面 token → 403 remote-admin-disabled，配置了而没带/
+         带错 → 401 unauthenticated。设备面拿不到这条路径（路由事实）。
+       ★ 它是**产品控制面**，不是第四个认知层：只读写两个既有布尔
+         （autoInterpretationEnabled / autoExpectationEnabled），
+         持久化仍然只有 runtime-policy.js 一份权威。 */
+    if (runtimeCognitivePolicy && path === COGNITIVE_POLICY_PATH) {
+      if (method !== 'POST') {
+        record('warn', 'cognitive-policy-wrong-method', { method: method, loopback: isLoopback(req) });
+        bad(res, 405, 'cognitive-policy-is-post-only', { allowedMethods: ['POST'] }, req);
+        return;
+      }
+      await handleRuntimeCognitivePolicy(req, res);
       return;
     }
 

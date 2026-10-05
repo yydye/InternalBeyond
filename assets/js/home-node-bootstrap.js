@@ -1384,6 +1384,28 @@ var surface = {
         });
       }
       return runtimeRemote.runMemoryRecall(input || {}, options || {});
+    },
+    /* ── P21-R4-PROD-1 · 认知控制面（产品级读/写两个认知开关）─────────────
+       与上面两个动词**逐字同门**：同一个 runtimeRemote、同一条桌面凭据路径、
+       同一套"工厂缺席时返回形状稳定的失败信封"纪律。
+       ★ 它只搬两个布尔，**没有**第三个 bit（BehaviorEffect 是确定性的，
+         没有独立开关）；UI 不得持有 token、不得自己拼请求。 */
+    runCognitivePolicy: function (input, options) {
+      if (!runtimeRemote) {
+        return Promise.resolve({
+          ok: false, operation: null, characterId: null,
+          autoInterpretationEnabled: false, autoExpectationEnabled: false,
+          source: null, reasonCode: null, readable: false,
+          authoritySource: 'FILE_POLICY',
+          mutationAuthority: 'HOME_NODE_AUTHENTICATED_INTERNAL_ROUTE',
+          scope: 'PER_CHARACTER_WITH_GLOBAL_DEFAULT',
+          browserDirectPolicyAuthority: 'NO',
+          behaviorEffectIndependentPolicy: 'NONE',
+          cost: { maxExtraModelCallsPerCharacterTurn: 2, interpretation: 1, expectation: 1, behaviorEffect: 0, wording: 'AT_MOST' },
+          error: 'runtime-remote-missing', reasonCode: 'runtime-remote-missing'
+        });
+      }
+      return runtimeRemote.runCognitivePolicy(input || {}, options || {});
     }
   }
 };
