@@ -227,6 +227,9 @@ function createRuntimeRecall(deps) {
      hook 使用：召回选择 + 会话/曝光/激活生命周期完成**之后**调度，
      fire-and-forget，绝不在召回响应路径上 await。 */
   const interpretation = deps.interpretation || null;
+  /* P21-R4-LIVE-5 · L5 期望运行时（**兄弟**依赖：与 interpretation 各自独立，
+     各自的权威、各自的持有者、各自的计数）。缺席 ⇒ 期望这条路径根本不存在。 */
+  const expectation = deps.expectation || null;
 
   /* turn-local 结果持有者：**非持久**、有界（条数 + TTL）、按
      character+turn 作用域。绝不进 SQLite / memory_records / Understanding /
@@ -700,6 +703,11 @@ function createRuntimeRecall(deps) {
             interpretation: (res && res.ok === true && res.interpretation) ? res.interpretation : null
           });
         } catch (_) { /* 结果持有者失败绝不影响任何东西 */ }
+        /* ── P21-R4-LIVE-5 · 期望的兄弟调度（POST_INTERPRETATION_NONBLOCKING）──
+           只在**已验证的 L3 成功**之后才调度；同样 fire-and-forget，绝不 await，
+           因此召回响应与主聊天都不随期望的模型延迟增长。 */
+        try { scheduleExpectationFromInterpretation(ctx, binding, res); }
+        catch (_) { /* 调度失败绝不影响解释或召回 */ }
         note('runtime-recall-auto-interpretation', {
           characterId: characterId, turnId: turnId, status: status,
           providerCalls: Number(res && res.providerCalls) || 0,
@@ -719,6 +727,120 @@ function createRuntimeRecall(deps) {
     } else {
       Promise.resolve().then(() => { autoScheduled -= 1; runTask(); });
     }
+  }
+  /* ══ P21-R4-LIVE-5 · L5 期望的兄弟调度（POST_INTERPRETATION_NONBLOCKING）══
+     与 `scheduleAutoInterpretation` 同形，但**只在一次已验证的 L3 成功之后**才
+     存在（OWNER RULING 1 的运行时纪律；协议层并不要求 L3 —— 两条声明分开报告）。
+     非阻塞：召回响应与主聊天**都不等**它；失败绝不影响它们。
+     有界：结果持有者在 runtime-expectation.js 里（64 条 / 10 分钟 TTL /
+     characterId+conversationId+turnId），这里只有调度计数与等待缝。 */
+  const expectationCounters = { scheduled: 0, started: 0, created: 0, notCreated: 0, failed: 0, skippedNoL3: 0 };
+  let expectationScheduled = 0;
+  const expectationWaiters = new Set();
+  const expectationTurns = new Map();
+  function settleExpectationWaiters() {
+    if (expectationScheduled !== 0) return;
+    for (const w of Array.from(expectationWaiters)) { try { w(); } catch (_) { /* 已结算 */ } }
+    expectationWaiters.clear();
+  }
+  function recordExpectationTurn(rec) {
+    if (!rec || !rec.turnId) return;
+    expectationTurns.set(String(rec.turnId), rec);
+    while (expectationTurns.size > 64) {
+      const oldest = expectationTurns.keys().next();
+      if (oldest.done) break;
+      expectationTurns.delete(oldest.value);
+    }
+  }
+  function expectationEnabled() {
+    if (!expectation || typeof expectation.describe !== 'function') return false;
+    try {
+      const p = expectation.describe().policy;
+      return !!(p && p.enabledCharacterCount > 0);
+    } catch (_) { return false; }
+  }
+  function scheduleExpectationFromInterpretation(ctx, binding, interpretationRes) {
+    if (!expectation || typeof expectation.runFromValidatedInterpretation !== 'function') return;
+    const characterId = String(ctx.characterId == null ? '' : ctx.characterId);
+    const turnId = String(binding && binding.turnId ? binding.turnId : '');
+    if (!turnId) return;
+    const completedAt = Number(clock());
+    /* §调度纪律：没有"已验证的 L3 成功"就**不**调度（0 次创建）。 */
+    if (!(interpretationRes && interpretationRes.ok === true && interpretationRes.interpretation)) {
+      expectationCounters.skippedNoL3 += 1;
+      recordExpectationTurn({ turnId, characterId, status: 'not-created', reason: 'l3-not-validated', providerCalls: 0, completedAt });
+      return;
+    }
+    const payload = {
+      characterId: characterId,
+      /* conversationId 从**既有的** turnIdentity 里取（`run()` 在 :1144 就用
+         shape.conversationId 建好了它）—— 不新增参数、不另造身份。 */
+      conversationId: String(
+        (ctx && ctx.conversationId != null ? ctx.conversationId : '')
+        || (binding && binding.turnIdentity && binding.turnIdentity.conversationId != null ? binding.turnIdentity.conversationId : '')
+      ),
+      turnId: turnId,
+      selectedIds: Array.isArray(binding.selectedIds) ? binding.selectedIds.slice() : [],
+      records: Array.isArray(binding.records) ? binding.records : undefined,
+      currentState: isPlainObject(binding.currentState) ? binding.currentState : {},
+      /* 调度纪律的**显式**声明：这一次调用发生在一次已验证的 L3 成功之后。 */
+      interpretationValidated: true,
+      interpretation: interpretationRes.interpretation,
+      independentObservationCount: Number(interpretationRes.independentObservationCount)
+    };
+    const runTask = async () => {
+      expectationCounters.started += 1;
+      let res = null;
+      try {
+        try { res = await expectation.runFromValidatedInterpretation(payload, {}); }
+        catch (error) {
+          res = { ok: false, status: 'failed', reason: 'expectation-hook-threw', providerCalls: 0, error: bounded((error && error.message) || error) };
+        }
+        const status = res && res.status ? String(res.status) : 'failed';
+        if (status === 'created') expectationCounters.created += 1;
+        else if (status === 'failed' || status === 'timed-out') expectationCounters.failed += 1;
+        else expectationCounters.notCreated += 1;
+        try {
+          recordExpectationTurn({
+            turnId: turnId, characterId: characterId, status: status,
+            reason: res && (res.reason || res.reasonCode) ? String(res.reason || res.reasonCode) : null,
+            providerCalls: Number(res && res.providerCalls) || 0,
+            itemCount: Number(res && res.itemCount) || 0,
+            completedAt: Number(clock())
+          });
+        } catch (_) { /* 记录失败绝不影响任何东西 */ }
+        note('runtime-recall-expectation', {
+          characterId: characterId, turnId: turnId, status: status,
+          providerCalls: Number(res && res.providerCalls) || 0
+        });
+      } finally {
+        settleExpectationWaiters();
+      }
+    };
+    recordExpectationTurn({ turnId, characterId, status: 'pending', reason: null, providerCalls: 0, completedAt: null });
+    expectationScheduled += 1;
+    expectationCounters.scheduled += 1;
+    if (typeof setTimeout === 'function') {
+      const t = setTimeout(() => { expectationScheduled -= 1; runTask(); }, 0);
+      if (t && typeof t.unref === 'function') t.unref();
+    } else {
+      Promise.resolve().then(() => { expectationScheduled -= 1; runTask(); });
+    }
+  }
+  /* 测试用 settle 缝（不在生产路径上）。 */
+  function awaitExpectationIdle(timeoutMs) {
+    const cap = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0 ? Number(timeoutMs) : 10000;
+    if (expectationScheduled === 0) return Promise.resolve({ idle: true, scheduled: 0 });
+    return new Promise(function (resolve) {
+      let done = false;
+      const waiter = function () { if (done) return; done = true; resolve({ idle: true, scheduled: expectationScheduled }); };
+      expectationWaiters.add(waiter);
+      const t = setTimeout(function () {
+        if (done) return; done = true; expectationWaiters.delete(waiter);
+        resolve({ idle: false, scheduled: expectationScheduled });
+      }, cap);
+      if (t && typeof t.unref === 'function') t.unref();
+    });
   }
   /* 测试用的 settle 缝：等到"已调度 + 在飞"都归零（或超时）。
      ★ 它**不在**召回响应路径上，也不改变任何生产行为。 */
@@ -1308,6 +1430,26 @@ function createRuntimeRecall(deps) {
           failed: 'execution failure only',
           inFlight: 'scheduled + running tasks (released in a finally block)'
         }
+      },
+      /* ── P21-R4-LIVE-5 · L5 期望（兄弟子系统；只报告状态/计数，绝无正文）── */
+      expectation: {
+        hooked: !!expectation,
+        binding: 'DIRECT_SERVER_INTERNAL',
+        trigger: 'POST_INTERPRETATION_NONBLOCKING',
+        awaitedOnRecallPath: false,
+        schedulingRequiresL3Success: 'YES',
+        protocolRequiresL3Interpretation: 'NO',
+        executionKind: (expectation && expectation.EXECUTION_KIND) || 'MODEL',
+        maxAdditionalExpectationModelCallsPerCharacterTurn: (expectation && expectation.MAX_ADDITIONAL_EXPECTATION_MODEL_CALLS_PER_CHARACTER_TURN) || 1,
+        enabledCharacterCount: expectationEnabled() ? 1 : 0,
+        crossRestartExpectationExactlyOnce: 'NO',
+        predictionErrorLive: 'NO',
+        durableWrites: 0,
+        routes: [],
+        counters: Object.assign({}, expectationCounters, { results: expectationTurns.size }),
+        states: ['created', 'not-created', 'timed-out', 'failed', 'pending'],
+        /* 正文永不出现在这里：只有状态/计数/原因。 */
+        contentExposed: 'NO'
       }
     };
   }
@@ -1324,7 +1466,15 @@ function createRuntimeRecall(deps) {
          window.IB、/security、日志或遥测）。 */
     awaitAutoIdle: awaitAutoIdle,
     getTurnInterpretation: getTurnInterpretation,
-    listTurnInterpretations: listTurnInterpretations
+    listTurnInterpretations: listTurnInterpretations,
+    /* P21-R4-LIVE-5 · 期望的 settle 缝（测试用）。
+       ★ 这里**没有**任何返回期望正文的入口 —— 内容留在
+         runtime-expectation.js 的持有者里，结构性不可消费。 */
+    awaitExpectationIdle: awaitExpectationIdle,
+    expectationTurnStatus: function (turnId) {
+      const rec = expectationTurns.get(String(turnId == null ? '' : turnId));
+      return rec ? { turnId: rec.turnId, status: rec.status, reason: rec.reason, providerCalls: rec.providerCalls, itemCount: rec.itemCount } : null;
+    }
   });
 }
 

@@ -446,9 +446,62 @@ const idleOf = (h, ms) => h.inst.runtimeRecall.awaitAutoIdle(ms);
     chat: J(ISO.inst.store.meta()), und: J({ w: ISO.inst.understandingStore.getWatermark(CHAR), a: ISO.inst.understandingStore.getActive(CHAR) }) };
   check('9.1 the interpretation writes nothing to memory / chat / understanding state',
     J(isoBefore) === J(isoAfter), J({ before: isoBefore, after: isoAfter }));
-  check('9.2 the auto path names no expectation / counterfactual module',
-    !/expectation|counterfactual/i.test(read('services/home-node/runtime-recall.js')),
-    'runtime-recall.js is clean of those domains');
+  /* ⚠ PHASE TRANSITION · P21-R4-LIVE-5 ────────────────────────────────────
+     旧值（LIVE-4）：`!/(expectation|counterfactual)/.test(runtime-recall.js)`
+     —— 那时自动路径不点名期望域，因为这样的 seam 根本不存在。
+     新值（LIVE-5）：期望有了一个**显式的、由装配注入的兄弟 seam**
+     （POST_INTERPRETATION_NONBLOCKING）。它**按设计**就出现在 runtime-recall.js，
+     因此本条改为**钉住唯一允许的位置**，而不是一刀切禁止：
+       · `counterfactual` 仍然全面禁止（R4-E 未实现，措辞未动）；
+       · 解释边界 runtime-interpretation.js（**去注释后**）一个期望域都不许有：
+         解释路径绝不获得期望语义 —— 那正是本条要防的耦合；
+       · runtime-recall.js 里的期望域只能来自装配（`deps.expectation`），
+         不许在这里构造、不许在这里读权威（readExpectation/setExpectation）、
+         不许在这里管持有者常量；
+       · 解释调度函数体内对期望域的**唯一**交互是那一行显式 seam 调用。
+     新值比旧值更严：旧值只证明"这个词没出现"，新值证明"它只出现在那一个
+     被允许的位置、以被允许的方式"。边界事实由 tests/test_r4d_live_expectation.js
+     继续测量（post-L3 调度 · 独立文件权威 · ≤1 次调用 · 正文零暴露）。 */
+  const stripComments = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const functionBodyOf = (src, signature) => {
+    const start = src.indexOf(signature);
+    if (start < 0) return null;
+    const open = src.indexOf('{', start + signature.length);
+    if (open < 0) return null;
+    let depth = 0;
+    for (let i = open; i < src.length; i++) {
+      const ch = src[i];
+      if (ch === '{') depth += 1;
+      else if (ch === '}') { depth -= 1; if (depth === 0) return src.slice(open, i + 1); }
+    }
+    return null;
+  };
+  const recallSrc = read('services/home-node/runtime-recall.js');
+  const interpCode = stripComments(read('services/home-node/runtime-interpretation.js'));
+  const schedBody = functionBodyOf(recallSrc, 'function scheduleAutoInterpretation(ctx)');
+  const schedExpectationLines = schedBody
+    ? (schedBody.match(/^.*expectation.*$/gim) || []).map(s => s.trim())
+      .filter(s => !/^(\*|\/\*|\/\/)/.test(s))
+    : null;
+  check('9.2 the expectation domain in the recall boundary is ONLY the assembly-injected sibling seam',
+    !/counterfactual/i.test(recallSrc)
+    && !/expectation/i.test(interpCode)
+    && /const expectation = deps\.expectation \|\| null;/.test(recallSrc)
+    && !/createRuntimeExpectation\s*\(/.test(recallSrc)
+    && !/readExpectation|setExpectation/.test(recallSrc)
+    && !/MAX_HELD_EXPECTATIONS|TURN_EXPECTATION_TTL_MS/.test(recallSrc)
+    && !!schedExpectationLines && schedExpectationLines.length === 1
+    && /scheduleExpectationFromInterpretation\(/.test(schedExpectationLines[0])
+    && /expectation/i.test(recallSrc),
+    {
+      counterfactualInRecall: /counterfactual/i.test(recallSrc),
+      expectationInInterpretationCode: /expectation/i.test(interpCode),
+      takenFromAssembly: /const expectation = deps\.expectation \|\| null;/.test(recallSrc),
+      constructedHere: /createRuntimeExpectation\s*\(/.test(recallSrc),
+      readsAuthorityHere: /readExpectation|setExpectation/.test(recallSrc),
+      managesHolderHere: /MAX_HELD_EXPECTATIONS|TURN_EXPECTATION_TTL_MS/.test(recallSrc),
+      schedulerInteractions: schedExpectationLines
+    });
   AUTO_INTERPRETATION_ISOLATION = (J(isoBefore) === J(isoAfter)) ? 'CLEAN' : 'WRITES_DETECTED';
 
   section('§10 · persistence probe');

@@ -500,3 +500,126 @@ POLICY_VERSION_MATCHING                              = STRICT
 而全局 default 默认 false）—— 上述每一种都返回 OFF，并带一个**具名 reason**，
 绝不把异常抛进召回路径。一个**存在但坏掉**的文件不会被 `set()` 静默覆盖
 （`POLICY_FILE_UNUSABLE`）。
+
+---
+
+## 14 · P21-R4-LIVE-5 · L5 期望（Expectation）冻结值
+
+L5 期望**第一次**进入真实的服务端会话运行时。以下是冻结的自述值；每一条都有
+对应的套件断言（`tests/test_r4d_live_expectation.js`，34 条）。
+
+```
+EXPECTATION_PROTOCOL_LAYER                     = FROZEN_UNCHANGED
+EXPECTATION_REQUIRES_L3_INTERPRETATION         = NO
+EXPECTATION_WITHOUT_INTERPRETATION             = CREATED_DEGRADED
+LIVE5_SCHEDULING_REQUIRES_L3_SUCCESS           = YES
+EXPECTATION_EXECUTION_KIND                     = MODEL
+MAX_ADDITIONAL_EXPECTATION_MODEL_CALLS_PER_CHARACTER_TURN = 1
+EXPECTATION_POLICY_AUTHORITY                   = SERVER_OWNED_FILE_POLICY
+EXPECTATION_POLICY_FILE                        = runtime-policy.json#expectation
+DEFAULT_AUTO_EXPECTATION                       = OFF
+AUTO_EXPECTATION_ENABLED_CHARACTER_COUNT       = 0
+NEW_EXPECTATION_MODEL_CALLS                    = 0
+EXPECTATION_SCHEMA_CHANGE_REQUIRED             = NO
+EXPECTATION_DURABLE_WRITES                     = 0
+MAX_HELD_EXPECTATIONS                          = 64
+TURN_EXPECTATION_TTL_MS                        = 600000
+EXPECTATION_HOLDER_KEY                         = characterId+conversationId+turnId
+PROMPT_MUTATION_FROM_EXPECTATION               = 0
+BROWSER_VISIBLE_EXPECTATION_CONTENT            = NO
+CROSS_RESTART_EXPECTATION_EXACTLY_ONCE         = NO
+PREDICTION_ERROR_LIVE                          = NO
+LIVE_CANONICAL_SOURCE_BINDING                  = NOT_IMPLEMENTED
+BLOCKER                                        = LATER_OBSERVATION_AUTHORITY_NOT_CLOSED
+```
+
+**协议层与调度层是两条不同的声明。** 冻结的 R4-D 协议把解释标为 **OPTIONAL**
+（`CONTRACT.md:1848`），并要求缺失时按 `interpretation-unavailable-degraded` **降级**
+（`:1856-1857`）—— 因此 `EXPECTATION_REQUIRES_L3_INTERPRETATION = NO` /
+`EXPECTATION_WITHOUT_INTERPRETATION = CREATED_DEGRADED` 是事实。本相位**没有**改动
+该协议，也**没有**发明拒绝路径。同时，生产 seam 的**调度纪律**是另一回事：
+只有一次**已验证的 L3 成功**之后才调度期望（`LIVE5_SCHEDULING_REQUIRES_L3_SUCCESS = YES`）。
+两条声明分开报告，谁也不冒充谁。
+
+**成本。** `EXPECTATION_EXECUTION_KIND = MODEL`：期望的**内容**由模型产生
+（纯核心只做信封组装 / 严格校验 / 组装，没有规则生成器）。因此成本权威是
+`runtime-policy.json` 的**期望段** —— 与解释段是**两个独立布尔**，由
+`setExpectation()` / `set()` 各自写入，且两个写者都**往返保留**对方的段
+（`set()` 过去会丢弃未知顶层键，那正是本段要修掉的陷阱）。
+`Interpretation enabled ⇒ Expectation paid calls enabled` 因此**构造上不成立**。
+期望段默认 OFF ⇒ `NEW_EXPECTATION_MODEL_CALLS = 0`；打开也只允许每角色回合
+**至多 1 次**（`MAX_ATTEMPTS = 1`、`AUTO_RETRY = NONE`）。
+
+**只产出，不消费。** `runtime-expectation.js` **不导出任何返回期望正文的入口**：
+外部只能看到状态 / 计数 / 延迟 / 原因，因此"没有消费者"是**结构性**的而不是约定。
+实测：期望正文不出现在任何 provider wire、召回响应、`/security` 或 `describe()` 里；
+关系状态逐字节不变；零持久写。**PREDICTION ERROR 仍然 NOT live**：
+later-observation authority 未闭合，本相位**不**强行结算。
+
+---
+
+## 15 · P21-R4-LIVE-5.1 · 精确闭合（冻结值）
+
+L5 期望的**精确闭合**。以下每条都是实测值；括号里指出它由什么测量。
+
+```
+R4D_EXPECTATION_RUNTIME_READY          = YES
+R4D_EXPECTATION_LIVE                   = YES
+R4D_EXPECTATION_LIVE_SEMANTICS         = PRODUCTION_INFRASTRUCTURE_LIVE_CAPABLE
+R4D_PROTOCOL_L3_INTERPRETATION         = OPTIONAL
+R4D_DEGRADED_EXPECTATION_CREATION      = ALLOWED
+LIVE5_SCHEDULING_REQUIRES_L3_SUCCESS   = YES
+LIVE_EXPECTATION_WITHOUT_VALIDATED_L3  = NOT_SCHEDULED
+EXPECTATION_EXECUTION_KIND              = MODEL
+EXPECTATION_EXECUTION_KIND_SEMANTICS    = LLM_BACKED
+EXPECTATION_COST_AUTHORITY             = SERVER_OWNED_FILE_POLICY
+EXPECTATION_COST_AUTHORITY_SCOPE       = PER_CHARACTER_WITH_GLOBAL_DEFAULT
+DEFAULT_AUTO_EXPECTATION               = OFF
+AUTO_EXPECTATION_ENABLED_CHARACTER_COUNT = 0
+EXPECTATION_INVOCATION_AUTHORITY       = HOME_NODE_VALIDATED_INTERPRETATION
+EXPECTATION_INPUT_AUTHORITY            = SERVER_VALIDATED_L3_INTERPRETATION
+EXPECTATION_INVOCATION_SEAM            = POST_INTERPRETATION_NONBLOCKING
+MAX_HELD_EXPECTATIONS                  = 64
+HOLDER_TTL_MS                          = 600000
+HOLDER_SCOPE                           = character+conversation+turn
+EXPECTATION_DURABLE_WRITES             = 0
+CURRENT_TURN_PROMPT_MUTATION_FROM_EXPECTATION = 0
+CROSS_RESTART_EXPECTATION_EXACTLY_ONCE = NO
+PREDICTION_ERROR_LIVE                  = NO
+BLOCKER                                = LATER_OBSERVATION_AUTHORITY_NOT_CLOSED
+LIVE_CANONICAL_SOURCE_BINDING          = NOT_IMPLEMENTED
+COUNTERFACTUAL_AUTO_CALLS              = 0
+BEHAVIOR_EFFECT_CALLS                  = 0
+R4F_AUTHORIZED                         = NO
+```
+
+### 15.1 协议层与调度层是**两条不同的**声明（不要合并）
+
+| 层 | 值 | 含义 |
+| --- | --- | --- |
+| **协议层**（冻结的 R4-D 文本，本相位**一个字都没改**） | `R4D_PROTOCOL_L3_INTERPRETATION = OPTIONAL` · `R4D_DEGRADED_EXPECTATION_CREATION = ALLOWED` | 解释是**可选**的主观层；缺失时协议允许按 degraded 形态创建期望（`CONTRACT.md:1848` 与 `:1856-1857`） |
+| **运行时调度层**（本相位的策略） | `LIVE5_SCHEDULING_REQUIRES_L3_SUCCESS = YES` · `LIVE_EXPECTATION_WITHOUT_VALIDATED_L3 = NOT_SCHEDULED` | 生产 seam **只在一次已验证的 L3 成功之后**才调度期望；所以活体路径上"有召回但没有可用解释"⇒ 自动创建数 = 0 |
+
+**这两条必须分开报告。** 特别地：**不要**把调度纪律写成协议层常量 —— 任何声称
+"期望在协议上**要求** L3 解释"的写法都会**篡改冻结协议**，正是审计
+（对应 `.dsh-research/r4d-live5-audit.md` §5）抓到的那种混淆。
+同理，§8 的"零创建"是**调度策略**的断言，**不是**"协议禁止降级创建"的断言：
+协议允许降级创建，是我们的 seam 不去调度它。
+
+### 15.2 执行种类的语义（消除 Predictive-Model 歧义）
+
+`EXPECTATION_EXECUTION_KIND = MODEL` 指的是**语言模型**（LLM-backed 的模型调用），
+**不是**统计学意义上的 "predictive model"：期望正文由模型生成，纯核心只做
+信封组装 / 严格校验 / 组装（`expectation-shadow-core.js:219-286`）。
+既有协议 enum 一个字未改；这里只是补一条**语义注解**。
+
+### 15.3 成本权威
+
+权威是这台节点自有的 `runtime-policy.json` 的**期望段**：
+`readExpectation()` / `setExpectation()`，与解释段是**两个独立布尔**
+（`autoInterpretationEnabled != autoExpectationEnabled`，没有任何隐式交叉启用）。
+默认 OFF ⇒ `AUTO_EXPECTATION_ENABLED_CHARACTER_COUNT = 0` ⇒
+`NEW_EXPECTATION_MODEL_CALLS = 0`。**浏览器请求体 / 环境变量 / Middle Brain 旗标 /
+凭据存在与否 / Economy 余额都不是期望的启用权威** —— 前两者在本边界没有读点，
+后三者与本策略无关。期望正文**永不**回到浏览器：`describe()` 只有状态 / 计数 /
+延迟 / 原因。

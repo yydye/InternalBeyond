@@ -1716,6 +1716,19 @@ const GROUPS = [
          读不动 · JSON 坏 · version 不对 · 值不是布尔 · 角色不在表里。
          零真实出网（假 fetch + *.invalid），scratch 只在 .dsh-tmp。 */
       ['test_r4c_live_interpretation_policy.js'],
+      /* P21-R4-LIVE-5 · L5 Expectation live runtime（**本阶段才登记**）。
+         ★ 又一次"写了测试"与"每轮真的被跑"的分界：本套件证明的是
+           `EXPECTATION_EXECUTION_KIND = MODEL` 下**默认关闭、开着也每回合 ≤ 1 次**，
+           以及 L5 只产出不消费。协议层与调度层是**两条分开的**声明：
+             EXPECTATION_REQUIRES_L3_INTERPRETATION = NO（冻结协议：解释 OPTIONAL）
+             EXPECTATION_WITHOUT_INTERPRETATION     = CREATED_DEGRADED
+             LIVE5_SCHEDULING_REQUIRES_L3_SUCCESS   = YES（本 seam 的调度纪律）
+           成本权威是同一份 runtime-policy.json 里的**期望段**（与解释段两个独立
+           布尔，往返保留）；有界兄弟持有者 64 / 600 000 ms /
+           characterId+conversationId+turnId；期望正文永不进 prompt / 响应 /
+           describe()；PREDICTION ERROR 仍是 NO（later-observation authority 未闭合）。
+           零真实出网（假 fetch + *.invalid），scratch 只在 .dsh-tmp。 */
+      ['test_r4d_live_expectation.js'],
       /* P21-R4-LIVE-4.1B · **真实浏览器**自动解释端到端（CDP）。
          与上一条（Node 侧、注入假 fetch）互补：这里真的开一个 Chrome、加载
          产品自己的 InternalBeyond.html、走**真实**的浏览器 → Home Node 召回

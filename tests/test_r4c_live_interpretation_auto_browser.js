@@ -839,10 +839,58 @@ function normalizePromptWithoutMemory(text) {
       { before: persBefore, afterRecall: persAfterRecallOnly, after: persAfter });
     P('INTERPRETATION_DURABLE_WRITES', persAfterRecallOnly.db === persAfter.db ? '0' : 'NONZERO');
     P('RECALL_OWN_EFFECTS_SEPARATED', J({ revBefore: persBefore.rev, revAfter: persAfter.rev, countBefore: persBefore.count, countAfter: persAfter.count }));
-    check('11.2 §24 自动解释路径的**代码**（去注释后）不点名 Expectation / prediction-error / counterfactual / BehaviorEffect 域',
-      !/expectation|counterfactual|prediction-error|behaviorEffect/i.test(WIRING.stripJsComments(readRel('services/home-node/runtime-recall.js'))) &&
-      !/expectation|counterfactual|prediction-error|behaviorEffect/i.test(WIRING.stripJsComments(readRel('services/home-node/runtime-interpretation.js'))),
-      'auto path code names none of those domains (comments may document the NOT_ENABLED decision)');
+    /* ── ⚠ PHASE TRANSITION · P21-R4-LIVE-5 ────────────────────────────────
+       旧值（LIVE-4）：召回边界与解释边界的**代码**里，四个域
+       （expectation / counterfactual / prediction-error / behaviorEffect）
+       一个都不许出现 —— 那时期望域没有任何 seam，出现即代表隐藏耦合。
+       新值（LIVE-5）：期望的兄弟 seam **按设计**就在 runtime-recall.js 里
+       （POST_INTERPRETATION_NONBLOCKING，由装配注入）。因此本条改为**钉住位置**：
+         · counterfactual / prediction-error / behaviorEffect 仍然全面禁止
+           （R4-E 与 PE 都没落地 —— 措辞未动）；
+         · 期望域**只允许**以装配注入的 deps.expectation 出现在 runtime-recall.js，
+           不许在那里构造、不许出现在解释调度函数体内；
+         · 解释边界（runtime-interpretation.js）仍然四域全禁：解释路径**绝不**
+           获得期望语义 —— 那正是这些守卫要防的耦合。
+       新值比旧值更严：它不再只说"没有这个词"，而是说"只有一个被允许的位置，
+       而且那个位置不是本文件造的"。边界事实由 tests/test_r4d_live_expectation.js
+       测量（post-L3 调度 · 独立文件权威 · ≤1 次调用 · 正文零暴露）。 */
+    const recallCode = WIRING.stripJsComments(readRel('services/home-node/runtime-recall.js'));
+    const interpCode = WIRING.stripJsComments(readRel('services/home-node/runtime-interpretation.js'));
+    const schedBody = (() => {
+      const sig = 'function scheduleAutoInterpretation(ctx)';
+      const start = recallCode.indexOf(sig);
+      if (start < 0) return null;
+      const open = recallCode.indexOf('{', start + sig.length);
+      if (open < 0) return null;
+      let depth = 0;
+      for (let i = open; i < recallCode.length; i++) {
+        const ch = recallCode[i];
+        if (ch === '{') depth += 1;
+        else if (ch === '}') { depth -= 1; if (depth === 0) return recallCode.slice(open, i + 1); }
+      }
+      return null;
+    })();
+    const schedExpectationLines = schedBody
+      ? (schedBody.match(/^.*expectation.*$/gim) || []).map(s => s.trim()).filter(s => !/^(\*|\/\*|\/\/)/.test(s))
+      : null;
+    check('11.2 §24 期望域只以"装配注入的兄弟 seam"出现在召回边界；解释边界仍然四域全禁',
+      !/counterfactual|prediction-error|behaviorEffect/i.test(recallCode)
+      && !/expectation|counterfactual|prediction-error|behaviorEffect/i.test(interpCode)
+      && /const expectation = deps\.expectation \|\| null;/.test(recallCode)
+      && !/createRuntimeExpectation\s*\(/.test(recallCode)
+      && !/readExpectation|setExpectation/.test(recallCode)
+      && !!schedExpectationLines && schedExpectationLines.length === 1
+      && /scheduleExpectationFromInterpretation\(/.test(schedExpectationLines[0])
+      && /expectation/i.test(recallCode),
+      {
+        forbiddenInRecall: /counterfactual|prediction-error|behaviorEffect/i.test(recallCode),
+        anyDomainInInterpretation: /expectation|counterfactual|prediction-error|behaviorEffect/i.test(interpCode),
+        takenFromAssembly: /const expectation = deps\.expectation \|\| null;/.test(recallCode),
+        constructedInRecall: /createRuntimeExpectation\s*\(/.test(recallCode),
+        readsAuthorityInRecall: /readExpectation|setExpectation/.test(recallCode),
+        schedulerInteractions: schedExpectationLines,
+        transition: 'BEFORE LIVE-5: no expectation seam existed; AFTER: one explicit assembly-injected seam, pinned to this single location'
+      });
     const itemKeys = persHolder && persHolder.interpretation && persHolder.interpretation.items && persHolder.interpretation.items[0]
       ? Object.keys(persHolder.interpretation.items[0]) : null;
     const banned = ['trust', 'familiarity', 'affinity', 'emotion', 'speechStyle', 'toolPolicy', 'relationship'];

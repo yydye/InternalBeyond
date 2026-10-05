@@ -101,6 +101,12 @@ const createRuntimePolicy = require('../services/home-node/runtime-policy.js').c
    ★ 它不带 modelPort、不带 credentialAccess：这条边界不出网、不读 Vault，
      因此"召回顺手调一次 provider"在依赖闭包上就不可能。 */
 const createRuntimeRecall = require('../services/home-node/runtime-recall.js');
+/* ── P21-R4-LIVE-5 · L5 期望运行时（**兄弟**模块，不是解释的一部分）──────
+   它 require 的纯核心仍是既有实现（assets/js/memory-recall/
+   expectation-shadow-core.js，UMD）+ 既有 runner —— 没有第二套期望。
+   ★ 它**没有**任何返回期望正文的公开入口：外部只能看到状态/计数/延迟/原因，
+     因此"没有消费者"是结构性的（见该文件头部）。 */
+const createRuntimeExpectation = require('../services/home-node/runtime-expectation.js').createRuntimeExpectation;
 const createNodeModelPort = require('../active/node-model-port.js');
 /* P11-3E：canonical store 失败分类器（**唯一**一份，见 runtime/db-failure.js）。
    它在 runtime/ 下，与 runtime/local-services-runner.js 那份是同一模块 ——
@@ -961,6 +967,24 @@ function buildHomeNode(options) {
      `options.runtimePolicy` 是**装配注入**（测试用同一个实例做 A/B）；生产不传。 */
   const instanceRuntimePolicy = options.runtimePolicy
     || createRuntimePolicy({ dataDir: dataDir, logger: serviceLog });
+  /* ── P21-R4-LIVE-5 · L5 期望运行时（**兄弟**依赖，与解释各自独立）──────
+     成本权威来自 instanceRuntimePolicy 的**期望段**（readExpectation），与解释段
+     是两个独立布尔：解释开着**不**蕴含期望开着。默认 OFF ⇒ 零模型调用。
+     modelPort 与解释/派生/聊天复用同一个 port（理由同上：另建一个会让 wire 形状分叉）。 */
+  const instanceRuntimeExpectation = options.runtimeExpectation || createRuntimeExpectation({
+    modelPort: options.port || createNodeModelPort({}),
+    policy: instanceRuntimePolicy,
+    /* canonical 内容的唯一来源：与 instanceRuntimeInterpretation 用**同一个**
+       store 实例（换第二个 store 不会抛错，只会让每次期望都回答
+       "没有已授权的记忆" —— 与 M1-C.2i 的 memoryRetrieval 漂移同形）。 */
+    memoryStore: instanceMemoryStore,
+    /* 角色 spec 与凭据：与解释边界同一对实例依赖。 */
+    registry: instanceRegistry,
+    credentialAccess: instanceCredentialAccess,
+    autoExpectationPolicy: options.runtimeAutoExpectationPolicy,
+    clock: options.clock,
+    logger: serviceLog
+  });
   const instanceRuntimeInterpretation = options.runtimeInterpretation || createRuntimeInterpretation({
     registry: instanceRegistry,
     credentialAccess: instanceCredentialAccess,
@@ -1009,6 +1033,9 @@ function buildHomeNode(options) {
        （与今天逐字节相同）；在场时它也只在 autoPolicy 为 ON 且通道 eligible
        时才会真的调用 provider。 */
     interpretation: instanceRuntimeInterpretation,
+    /* P21-R4-LIVE-5 · 期望的兄弟依赖（POST_INTERPRETATION_NONBLOCKING）。
+       缺席 ⇒ 期望这条路径整体不存在（与今天逐字节相同）。 */
+    expectation: instanceRuntimeExpectation,
     logger: serviceLog
   });
   /* 与进程级启动路径**共用** gatewayAssembly（见其头部说明：两条路径两套装配
@@ -1119,6 +1146,7 @@ function buildHomeNode(options) {
        ★ 它**不**与解释边界共用信封或路径：一条读本地 canonical 记忆并只回
          ids，一条出网读 Vault。合成一条会让审计读不出"这一步花没花钱"。 */
     runtimeRecall: instanceRuntimeRecall,
+  runtimeExpectation: instanceRuntimeExpectation,
     /* P11-3E · canonical store 清单：健康与"能不能服务"是同一个问题，
        所以这里列出本进程承诺的全部 canonical store，而不是只有 chat。
        声明角色（chat）在最前，`failure` 取第一个命中它的。 */
@@ -1233,6 +1261,7 @@ function buildHomeNode(options) {
        ★ 与 http.js 从 deps 里拿到的是**同一个对象**（identity）：这正是
          "两条装配路径不得漂移"这句断言的载体。 */
     runtimeRecall: instanceRuntimeRecall,
+  runtimeExpectation: instanceRuntimeExpectation,
     registry: instanceRegistry,
     gateway: instanceGateway,
     executor: instanceExecutor,
@@ -1301,6 +1330,13 @@ const economy = economyAssembly({
      本阶段冻结"没有生产启用路径"：不加 env、不加 UI 开关、不加默认值。
    ★ registry 用进程级的那一个；credentialAccess 用生产实例 —— 它的 isAllowed
      读 productionRegistry，是"这台节点自己发布过的角色"那份最小权限白名单。 */
+/* ── P21-R4-LIVE-4.3 / 5 · **进程级**唯一的生产成本权威实例 ──────────────
+   一份文件、一个实例，被**解释**与**期望**两条路径共用：解释段与期望段是同一份
+   runtime-policy.json 里的两个**独立**布尔（`set()` / `setExpectation()`），
+   共用一个实例不构成耦合 —— 耦合只会在"一个键同时喂两个功能"时出现。
+   唯一写者是 Node 侧 set()/setExpectation()（没有路由 / 没有 window 面 /
+   本阶段没有 Tauri 命令）。fresh 安装 ⇒ 文件不存在 ⇒ 两个功能都 OFF。 */
+const runtimePolicy = createRuntimePolicy({ dataDir: DATA_DIR, logger: (level, event, fields) => log(level, event, fields) });
 const runtimeInterpretation = createRuntimeInterpretation({
   registry,
   credentialAccess: productionCredentialAccess,
@@ -1310,10 +1346,8 @@ const runtimeInterpretation = createRuntimeInterpretation({
      以 canonical-evidence-unavailable 失败，而所有 buildHomeNode 的测试全绿
      （这正是本文件已经记过四次的同一种装配缺口）。 */
   memoryStore: memory.memoryStore,
-  /* ── P21-R4-LIVE-4.3 · **生产权威**：这台节点的策略文件 ────────────────
-     唯一写者是 Node 侧 runtime-policy.set()（没有路由 / 没有 window 面 /
-     本阶段没有 Tauri 命令）。fresh 安装 ⇒ 文件不存在 ⇒ 每个角色都 OFF。 */
-  policy: createRuntimePolicy({ dataDir: DATA_DIR, logger: (level, event, fields) => log(level, event, fields) }),
+  /* ── P21-R4-LIVE-4.3 · **生产权威**：这台节点的策略文件（解释段）────── */
+  policy: runtimePolicy,
   /* P21-R4-LIVE-4 · 生产路径**刻意不传** autoInterpretationPolicy：
      它是**测试缝**（describe() 会报 authoritySource:'TEST_INJECTION'），生产
      两侧都不传 ⇒ 文件权威生效；没有 env、没有 UI 开关、没有默认 true。 */
@@ -1330,6 +1364,22 @@ const runtimeInterpretation = createRuntimeInterpretation({
    ★ 不传 glossary provider：生产侧今天没有词汇表条目来源，传 undefined 就是
      如实（glossary 通道在服务端因此不可达，直到真的有来源为止）；
      绝不为了"看起来对称"造一个空目录来源。 */
+/* ── P21-R4-LIVE-5 · **进程级**的 L5 期望运行时 ─────────────────────────
+   与上面那些的教训逐字同形：只接 buildHomeNode 会让**真实进程**上这条路径
+   整个不存在，而所有 buildHomeNode 的测试全绿。
+   ★ 权威 = 进程级那一份 runtime-policy 的**期望段**（readExpectation）；两个
+     布尔互相独立，生产两侧都**不传** autoExpectationPolicy（它是测试缝）。
+   ★ modelPort 复用进程级 port：期望与聊天/派生/解释走同一条 wire 层。 */
+const runtimeExpectation = createRuntimeExpectation({
+  modelPort: port,
+  policy: runtimePolicy,
+  /* 进程级那**一份** canonical store（与解释/召回同一个实例）。 */
+  memoryStore: memory.memoryStore,
+  /* 角色 spec 与凭据：与 runtimeInterpretation 同一对进程级依赖。 */
+  registry: registry,
+  credentialAccess: productionCredentialAccess,
+  logger: (level, event, fields) => log(level, event, fields)
+});
 const runtimeRecall = createRuntimeRecall({
   memoryRetrieval: memory.memoryRetrieval,
   memoryStore: memory.memoryStore,
@@ -1347,6 +1397,8 @@ const runtimeRecall = createRuntimeRecall({
      少了它，真实进程上"自动解释"这条路径整体不存在，而所有 buildHomeNode 的
      测试全绿 —— 正是本文件已经记过五次的那种装配缺口。 */
   interpretation: runtimeInterpretation,
+  /* P21-R4-LIVE-5 · 进程级的期望兄弟依赖（与 buildHomeNode 那一行逐字同源）。 */
+  expectation: runtimeExpectation,
   logger: (level, event, fields) => log(level, event, fields)
 });
 /* P11-3E：进程级 Moments 探针。openAll() 写它、/health 与 /moments/* 读它。
@@ -1437,6 +1489,7 @@ const httpLayer = createHttp({
      没人引用的对象：路由分支不存在、日志里永远不会出现一行 runtime-recall，
      而单元测试全绿（本文件已经记过多次同一种病）。 */
   runtimeRecall: runtimeRecall,
+  runtimeExpectation: runtimeExpectation,
   /* P22-9：**进程级**的门。它与 store 同级导出，理由逐字相同 —— 门的缺席
      在生产上是一个静默的"每个 consumer 都能直接提议"，而那种缺口只有
      直接断言语料才能发现。 */

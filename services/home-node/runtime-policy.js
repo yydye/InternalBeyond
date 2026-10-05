@@ -16,13 +16,29 @@
      {
        "version": 1,
        "default": { "autoInterpretationEnabled": false },
-       "characters": { "<characterId>": { "autoInterpretationEnabled": true|false } }
+       "characters": { "<characterId>": { "autoInterpretationEnabled": true|false } },
+       "expectation": {
+         "default": { "autoExpectationEnabled": false },
+         "characters": { "<characterId>": { "autoExpectationEnabled": true|false } }
+       }
      }
+
+   ── 两个**互相独立**的功能（P21-R4-LIVE-5 · RULING 2）───────────────
+   `autoInterpretationEnabled` 与 `autoExpectationEnabled` 是**两个独立的布尔**，
+   分别由 `set()` 与 `setExpectation()` 写：解释开着**不**蕴含预期开着
+   （两个键、两个写者入口、两段 describe）。把期望塞进解释的表里，或者让一个
+   键同时喂两个功能，都会造出 R4-D 明确拒绝的隐式耦合。
+
+   ★ 两个写者都必须**往返保留对方的段**：`set()` 过去只重建
+     version/default/characters，于是任何未知顶层键都会被抹掉 —— 期望段如果
+     以"未知键"的身份存在，就会被一次解释写入静默删除。因此期望段是**一等字段**，
+     两个写者都显式重建它（见 `baseDocument()` / `writeDocument()`）。
 
    ── FAIL-CLOSED（§15）───────────────────────────────────────────────
    文件缺失 · 读不动 · JSON 坏 · version 不对 · characters/default 不是对象 ·
    值不是布尔 · 角色不在表里 ⇒ **OFF**。任何一条都不许把异常抛进召回路径：
    本模块的每个出口都是"一个布尔 + 一个原因"，没有 throw 路径。
+   期望段缺失（老文件 / 只写过解释的文件）⇒ 期望 OFF，并且**不**算损坏。
 
    ── PER-CHARACTER（§4）─────────────────────────────────────────────
    `read(characterId)` 每次**重新读文件**（没有跨角色共享缓存，因此不可能把
@@ -119,29 +135,75 @@ function createRuntimePolicy(deps) {
     return { autoInterpretationEnabled: def, source: 'FILE_POLICY', reason: 'global-default', characterId: id };
   }
 
-  /* ── set：**唯一**写者（Node 侧；没有路由、没有 window 面、没有 Tauri 命令）──
-     整份文档原子替换（临时文件 + fsync + rename）：中断的写入不会留下半份策略。 */
-  function set(characterId, enabled) {
+  /* ── readExpectation：期望段的唯一读入口（与 read 同一份文件、同一套 fail-closed）──
+     期望段**缺失**（老文件 / 只写过解释的文件）⇒ OFF + reason 'expectation-section-missing'，
+     这**不是**损坏：文件其余部分仍然有效，解释照常工作。 */
+  function readExpectation(characterId) {
     const id = normalizeCharacterId(characterId);
-    if (!id) return { ok: false, code: 'INVALID_CHARACTER_ID' };
-    if (enabled !== true && enabled !== false) return { ok: false, code: 'INVALID_VALUE' };
-    if (!dataDir) return { ok: false, code: 'NO_DATA_DIR' };
-    const current = readDocument();
-    /* ★ 现存但坏掉的文件**绝不**被静默覆盖（与 desktop-credential 的
-       "坏掉的凭据文件不重新生成" 同一条纪律）：先让人看到它坏了。 */
-    if (!current.ok && current.reason !== 'policy-file-missing') {
-      note('runtime-policy-write-refused', { reason: current.reason });
-      return { ok: false, code: 'POLICY_FILE_UNUSABLE', reason: current.reason };
+    const doc = readDocument();
+    if (!doc.ok) {
+      if (doc.reason !== 'policy-file-missing') note('runtime-policy-unusable', { reason: doc.reason, section: 'expectation' });
+      return { autoExpectationEnabled: false, source: 'DEFAULT_OFF', reason: doc.reason, characterId: id };
     }
-    const base = current.ok
-      ? current.document
-      : { version: SCHEMA_VERSION, default: { autoInterpretationEnabled: false }, characters: {} };
-    const next = {
+    const section = isPlainObject(doc.document.expectation) ? doc.document.expectation : null;
+    if (!section) {
+      return { autoExpectationEnabled: false, source: 'DEFAULT_OFF', reason: 'expectation-section-missing', characterId: id };
+    }
+    const characters = isPlainObject(section.characters) ? section.characters : null;
+    if (!characters) {
+      return { autoExpectationEnabled: false, source: 'DEFAULT_OFF', reason: 'expectation-characters-not-an-object', characterId: id };
+    }
+    if (id && Object.prototype.hasOwnProperty.call(characters, id)) {
+      const entry = characters[id];
+      const value = isPlainObject(entry) ? boolOf(entry.autoExpectationEnabled) : null;
+      if (value === null) {
+        return { autoExpectationEnabled: false, source: 'DEFAULT_OFF', reason: 'expectation-character-value-not-a-boolean', characterId: id };
+      }
+      return { autoExpectationEnabled: value, source: 'FILE_POLICY', reason: null, characterId: id };
+    }
+    const def = isPlainObject(section.default) ? boolOf(section.default.autoExpectationEnabled) : null;
+    if (def === null) {
+      return { autoExpectationEnabled: false, source: 'DEFAULT_OFF', reason: 'expectation-default-value-not-a-boolean', characterId: id };
+    }
+    return { autoExpectationEnabled: def, source: 'FILE_POLICY', reason: 'expectation-global-default', characterId: id };
+  }
+
+  /* 有界只读视图：哪些角色显式 `autoExpectationEnabled === true`（与解释**分开**数）。 */
+  function enabledExpectationCharacters() {
+    const doc = readDocument();
+    if (!doc.ok || !isPlainObject(doc.document.expectation)) return [];
+    const characters = doc.document.expectation.characters;
+    if (!isPlainObject(characters)) return [];
+    const out = [];
+    for (const key of Object.keys(characters)) {
+      if (out.length >= MAX_ENABLED_CHARACTERS) break;
+      const entry = characters[key];
+      if (isPlainObject(entry) && entry.autoExpectationEnabled === true) out.push(key);
+    }
+    return out;
+  }
+
+  /* ── 文档构造：**两个写者共用**，保证对方的段往返保留 ──────────────── */
+  function emptyExpectationSection() {
+    return { default: { autoExpectationEnabled: false }, characters: {} };
+  }
+  function baseDocument(current) {
+    const base = (current && current.ok && isPlainObject(current.document)) ? current.document : {};
+    const exp = isPlainObject(base.expectation) ? base.expectation : null;
+    return {
       version: SCHEMA_VERSION,
       default: isPlainObject(base.default) ? base.default : { autoInterpretationEnabled: false },
-      characters: isPlainObject(base.characters) ? Object.assign({}, base.characters) : {}
+      characters: isPlainObject(base.characters) ? Object.assign({}, base.characters) : {},
+      expectation: exp
+        ? {
+          default: isPlainObject(exp.default) ? exp.default : { autoExpectationEnabled: false },
+          characters: isPlainObject(exp.characters) ? Object.assign({}, exp.characters) : {}
+        }
+        : emptyExpectationSection()
     };
-    next.characters[id] = { autoInterpretationEnabled: enabled };
+  }
+  /* 原子替换（tmp + fsync + rename 0600）。中断的写入不会留下半份策略。 */
+  function writeDocument(next) {
     const tmp = file + '.' + process.pid + '.' + crypto.randomBytes(6).toString('hex') + '.tmp';
     let fd = null;
     try {
@@ -152,6 +214,7 @@ function createRuntimePolicy(deps) {
       fd = null;
       try { fs.chmodSync(tmp, 0o600); } catch (_) { /* Windows / 只读挂载上可能失败，不致命 */ }
       fs.renameSync(tmp, file);
+      return { ok: true };
     } catch (error) {
       try { if (fd !== null) fs.closeSync(fd); } catch (_) { /* 已关 */ }
       try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch (_) { /* 已清 */ }
@@ -159,9 +222,54 @@ function createRuntimePolicy(deps) {
       note('runtime-policy-write-failed', { error: detail });
       return { ok: false, code: 'POLICY_WRITE_FAILED', reason: detail };
     }
+  }
+
+
+  /* ── set：解释段的唯一写者（Node 侧；没有路由、没有 window 面、没有 Tauri 命令）──
+     整份文档原子替换（临时文件 + fsync + rename）：中断的写入不会留下半份策略。
+     `set()` 只动解释段；期望段原样**往返保留**（一等字段，不是未知键）。 */
+  function set(characterId, enabled) {
+    const id = normalizeCharacterId(characterId);
+    if (!id) return { ok: false, code: 'INVALID_CHARACTER_ID' };
+    if (enabled !== true && enabled !== false) return { ok: false, code: 'INVALID_VALUE' };
+    if (!dataDir) return { ok: false, code: 'NO_DATA_DIR' };
+    const current = readDocument();
+    /* ★ 现存但坏掉的文件**绝不**被静默覆盖（与 desktop-credential 的
+       "坏掉的凭据文件绝不重新生成" 同一条纪律）：先让人看到它坏了。 */
+    if (!current.ok && current.reason !== 'policy-file-missing') {
+      note('runtime-policy-write-refused', { reason: current.reason });
+      return { ok: false, code: 'POLICY_FILE_UNUSABLE', reason: current.reason };
+    }
+    const next = baseDocument(current);
+    next.characters[id] = Object.assign({}, next.characters[id], { autoInterpretationEnabled: enabled });
+    const written = writeDocument(next);
+    if (!written.ok) return written;
     note('runtime-policy-updated', { characterId: id, autoInterpretationEnabled: enabled });
     return {
       ok: true, file: file, characterId: id, autoInterpretationEnabled: enabled,
+      version: SCHEMA_VERSION, updatedAt: Date.now()
+    };
+  }
+
+  /* ── setExpectation：期望段的唯一写者（与 set 同一个权威实例、同一份文件）──
+     独立入口、独立键：解释的写入不会改期望，期望的写入不会改解释。 */
+  function setExpectation(characterId, enabled) {
+    const id = normalizeCharacterId(characterId);
+    if (!id) return { ok: false, code: 'INVALID_CHARACTER_ID' };
+    if (enabled !== true && enabled !== false) return { ok: false, code: 'INVALID_VALUE' };
+    if (!dataDir) return { ok: false, code: 'NO_DATA_DIR' };
+    const current = readDocument();
+    if (!current.ok && current.reason !== 'policy-file-missing') {
+      note('runtime-policy-write-refused', { reason: current.reason, section: 'expectation' });
+      return { ok: false, code: 'POLICY_FILE_UNUSABLE', reason: current.reason };
+    }
+    const next = baseDocument(current);
+    next.expectation.characters[id] = Object.assign({}, next.expectation.characters[id], { autoExpectationEnabled: enabled });
+    const written = writeDocument(next);
+    if (!written.ok) return written;
+    note('runtime-expectation-policy-updated', { characterId: id, autoExpectationEnabled: enabled });
+    return {
+      ok: true, file: file, characterId: id, autoExpectationEnabled: enabled,
       version: SCHEMA_VERSION, updatedAt: Date.now()
     };
   }
@@ -183,6 +291,8 @@ function createRuntimePolicy(deps) {
     const doc = readDocument();
     const def = (doc.ok && isPlainObject(doc.document.default))
       ? boolOf(doc.document.default.autoInterpretationEnabled) : null;
+    const section = (doc.ok && isPlainObject(doc.document.expectation)) ? doc.document.expectation : null;
+    const expDef = section && isPlainObject(section.default) ? boolOf(section.default.autoExpectationEnabled) : null;
     return {
       file: file,
       /* fail closed：文件不可用 / 值不是布尔 ⇒ false（绝不报告"可能是真的"） */
@@ -194,7 +304,20 @@ function createRuntimePolicy(deps) {
       reason: doc.ok ? null : doc.reason,
       enabledCharacterCount: enabledCharacters().length,
       routeExposed: false,
-      writer: 'node-side-set-only'
+      writer: 'node-side-set-only',
+      /* ── 期望段：**独立**的权威视图（同一份文件、不同的键与写者入口）── */
+      expectationPolicy: {
+        authoritySource: AUTHORITY_SOURCE,
+        /* 期望段缺失 ⇒ false（fail closed），并且与解释的 default 完全无关 */
+        default: expDef === true,
+        scope: 'per-character+global-default',
+        sectionPresent: !!section,
+        enabledCharacterCount: enabledExpectationCharacters().length,
+        file: file,
+        routeExposed: false,
+        writer: 'node-side-setExpectation-only',
+        independentFromInterpretation: true
+      }
     };
   }
 
@@ -202,8 +325,11 @@ function createRuntimePolicy(deps) {
     file: file,
     read: read,
     set: set,
+    readExpectation: readExpectation,
+    setExpectation: setExpectation,
     describe: describe,
-    enabledCharacters: enabledCharacters
+    enabledCharacters: enabledCharacters,
+    enabledExpectationCharacters: enabledExpectationCharacters
   });
 }
 
