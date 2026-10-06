@@ -65,6 +65,35 @@
    ==================================================================== */
 
 const path = require('path');
+/* P5-B2 · 纯归因核心（status / coverage / relevance / facts）。 */
+const behaviorEffectAttributionCore = require(path.join(
+  __dirname, '..', '..', 'assets', 'js', 'memory-recall', 'behavior-effect-attribution-core.js'));
+
+/* ── Attribution snapshot capability seal（module-private · module 级）──
+   `{status:'known-none'}` 这种普通对象**永远**不是合法证据：
+   known-none 是一个 negative coverage assertion，必须由 authority 铸造。 */
+const ATTR_IDENTITY = new WeakSet();
+const ATTR_SEAL = new WeakMap();
+const ATTR_BRAND = 'ib.behavior-effect-attribution.v1';
+function attrFingerprint(v) { return behaviorEffectAttributionCore.canonicalize(v); }
+function attrSeal(snapshot) {
+  ATTR_IDENTITY.add(snapshot);
+  ATTR_SEAL.set(snapshot, Object.freeze({ brand: ATTR_BRAND, fingerprint: attrFingerprint(snapshot) }));
+  return snapshot;
+}
+/** 只有本模块铸造、仍然冻结、未被篡改、且 status/coverage 合法的 snapshot 才有效。 */
+function isBehaviorEffectAttributionSnapshot(x) {
+  if (!x || typeof x !== 'object') return false;
+  if (!ATTR_IDENTITY.has(x)) return false;
+  if (!Object.isFrozen(x)) return false;
+  const s = ATTR_SEAL.get(x);
+  if (!s || s.brand !== ATTR_BRAND) return false;
+  if (behaviorEffectAttributionCore.STATUSES.indexOf(x.status) < 0) return false;
+  if (behaviorEffectAttributionCore.COVERAGES.indexOf(x.coverage) < 0) return false;
+  /* known-none 只可能来自 complete coverage —— 封印期间也复核一次 */
+  if (x.status === 'known-none' && x.coverage !== 'complete') return false;
+  return attrFingerprint(x) === s.fingerprint;
+}
 
 /* ★ 词表**只有一个出处**：R4-C 纯核心的 `APPRAISALS`。在这里再抄一份
    枚举就是第二份权威（那正是 R4-C 花了整个相位去消灭的东西）。 */
@@ -76,6 +105,8 @@ const L3_APPRAISALS = Object.freeze((INTERPRETATION_CORE.APPRAISALS || []).map(S
 const MAX_HELD_BEHAVIOR_EFFECTS = 64;
 const HOLDER_TTL_MS = 10 * 60 * 1000;
 const HOLDER_SCOPE = 'character+conversation+turn';
+/* P5-B3-A · closed history retention 上界（会话内、有界；裁剪只影响过去 horizon） */
+const ATTR_MAX_CLOSED_HISTORY = 512;
 const TTL_TURNS = 1;
 const MAX_SOURCE_TURN_CHARS = 200;
 const MAX_HELD_REASON_CHARS = 64;
@@ -248,6 +279,16 @@ function createRuntimeBehaviorEffect(deps) {
   const d = deps || {};
   const logger = typeof d.logger === 'function' ? d.logger : function () {};
   const clock = typeof d.clock === 'function' ? d.clock : function () { return Date.now(); };
+  /* 活跃持有者容量：可注入以便证明**极小容量**下 authority 语义仍然正确
+     （P5-B3-A §40）。默认仍是 canonical 常量，**不**为了提高通过率而放大。 */
+  const maxHeldBehaviorEffects = Number.isFinite(Number(d.maxHeldBehaviorEffects))
+    && Number(d.maxHeldBehaviorEffects) > 0
+    ? Number(d.maxHeldBehaviorEffects) : MAX_HELD_BEHAVIOR_EFFECTS;
+  const holderTtlMs = Number.isFinite(Number(d.holderTtlMs)) && Number(d.holderTtlMs) > 0
+    ? Number(d.holderTtlMs) : HOLDER_TTL_MS;
+  const maxClosedHistory = Number.isFinite(Number(d.maxClosedHistory))
+    && Number(d.maxClosedHistory) >= 0
+    ? Number(d.maxClosedHistory) : ATTR_MAX_CLOSED_HISTORY;
   function note(event, fields) { try { logger(event, fields || {}); } catch (_) { /* 观测失败不影响判定 */ } }
 
   const counters = {
@@ -258,6 +299,148 @@ function createRuntimeBehaviorEffect(deps) {
      sourceTurn, effect, createdAt }。**非持久、有界、进程内**。 */
   const held = new Map();
 
+  /* ══════════════════════════════════════════════════════════════════
+     P5-B2 · BehaviorEffect Attribution Authority
+     ------------------------------------------------------------------
+     **ONE EFFECT FACT OWNER**：归因账本就长在这个模块里 —— 它已经有
+     唯一的创建 seam（deriveAndHold）、唯一的消费 seam（consumeForTurn）、
+     唯一的过期 seam（sweep）与唯一的淘汰 seam（evictOverflow）。
+     再建第二个 registry 只会让两套状态各自漂移。
+
+     `held` 是**当前待取**集合；consumed 即删除 ⇒ 它无法回答"过去某刻有没有
+     干预在生效"。因此这里额外维护一个 **session-only 有界账本**，
+     在每次生命周期转移时记录 instance 的 startedAt / endedAt / endReason。
+     ══════════════════════════════════════════════════════════════════ */
+  /* ① 活跃 authority：与 `held` 一一对应的 instance 表。
+     它**不设独立容量**：容量压力一律由 canonical 终止（capacity-evicted）解决，
+     所以活跃集合永远完整 —— 这正是"容量不再永久污染 coverage"的机制。 */
+  const attrActive = new Map();          /* effectInstanceId → instance */
+  const attrActiveByKey = new Map();     /* heldKey → effectInstanceId */
+  /* ② closed history：已终止 instance 的**有界**保留；裁剪只影响过去。 */
+  const attrClosed = [];
+  let attrSeq = 0;
+  /* authoritySince：本 authority 开始观察的时刻。 */
+  let attrSince = null;
+  /* historyRetentionFloor：closed history 被裁剪到的最早完整时刻。 */
+  let attrRetentionFloor = null;
+  /* 真正的降级：active 集合出现**未被观察到的消失**（invariant 破坏 / 状态损坏）。
+     正常运行（consume / expiry / replacement / capacity eviction）**绝不**置位。 */
+  let attrUnobserved = false;
+  const attrCounters = {
+    instances: 0, closed: 0, active: 0,
+    consumed: 0, expired: 0, replaced: 0, capacityEvicted: 0,
+    closedHistoryEvicted: 0, invariantViolations: 0
+  };
+
+  function attrNow() {
+    const t = Number(clock());
+    return Number.isFinite(t) ? t : null;
+  }
+  /** 把 instance 从"活跃"移入"closed history"。**唯一**的终止路径。 */
+  function attrTerminate(instanceId, reason, at) {
+    const instance = attrActive.get(instanceId);
+    if (!instance) return null;
+    const t = Number.isFinite(Number(at)) ? Number(at) : attrNow();
+    instance.endedAt = t;
+    instance.endReason = text(reason);
+    attrActive.delete(instanceId);
+    if (attrActiveByKey.get(instance.key) === instanceId) attrActiveByKey.delete(instance.key);
+    attrCounters.closed += 1;
+    if (reason === 'consumed') attrCounters.consumed += 1;
+    else if (reason === 'expired') attrCounters.expired += 1;
+    else if (reason === 'replaced') attrCounters.replaced += 1;
+    else if (reason === 'capacity-evicted') attrCounters.capacityEvicted += 1;
+    /* 进入 closed history（有界）；裁剪只推进 retention floor */
+    attrClosed.push(instance);
+    while (attrClosed.length > maxClosedHistory) {
+      const dropped = attrClosed.shift();
+      if (dropped) {
+        if (dropped.endedAt != null) {
+          attrRetentionFloor = attrRetentionFloor == null
+            ? dropped.endedAt : Math.max(attrRetentionFloor, dropped.endedAt);
+        }
+        attrCounters.closedHistoryEvicted += 1;
+      }
+    }
+    return instance;
+  }
+  function attrOpen(rec, key) {
+    const at = attrNow();
+    if (attrSince == null) attrSince = at;
+    attrSeq += 1;
+    const instance = {
+      key: key,
+      effectInstanceId: behaviorEffectAttributionCore.effectInstanceId({
+        characterId: rec.characterId, conversationId: rec.conversationId,
+        sourceTurn: rec.sourceTurn, createdAt: rec.createdAt, instanceSeq: attrSeq
+      }),
+      characterId: text(rec.characterId),
+      conversationId: text(rec.conversationId),
+      subjectLabel: '',
+      sourceTurn: text(rec.sourceTurn),
+      effectKind: text(rec.effect && rec.effect.rationaleCode) || 'no-signal',
+      stance: text(rec.effect && rec.effect.stance),
+      strategy: text(rec.effect && rec.effect.strategy),
+      initiativeTendency: text(rec.effect && rec.effect.initiativeTendency),
+      rationaleCode: text(rec.effect && rec.effect.rationaleCode),
+      startedAt: Number(rec.createdAt),
+      endedAt: null,
+      endReason: null,
+      /* 稳定 ref：目前 BE 派生路径**没有** prediction 输入 ⇒ 恒 null（不猜 false） */
+      sourcePredictionId: null,
+      sourceExpectationId: null
+    };
+    attrCounters.instances += 1;
+    attrActive.set(instance.effectInstanceId, instance);
+    attrActiveByKey.set(key, instance.effectInstanceId);
+    return instance;
+  }
+  /** 当前 holder key 对应的活跃 instance（若已终止则不返回）。 */
+  function attrActiveIdOfKey(key) {
+    const id = attrActiveByKey.get(key);
+    if (!id) return null;
+    return attrActive.has(id) ? id : null;
+  }
+  /** 归因可见的全部 instance：活跃 + retention horizon 内的 closed。 */
+  function attrKnownInstances() {
+    const out = [];
+    for (const inst of attrActive.values()) out.push(inst);
+    for (const inst of attrClosed) out.push(inst);
+    return out;
+  }
+  /** §18 内部一致性审计：不依赖日志文本。 */
+  function auditAttributionInvariants() {
+    const violations = [];
+    for (const inst of attrActive.values()) {
+      if (inst.endedAt != null) violations.push('active-instance-has-endedAt:' + inst.effectInstanceId);
+    }
+    const seen = new Set();
+    for (const inst of attrClosed) {
+      if (inst.endedAt == null) violations.push('closed-instance-without-endedAt:' + inst.effectInstanceId);
+      if (behaviorEffectAttributionCore.END_REASONS.indexOf(text(inst.endReason)) < 0) {
+        violations.push('closed-instance-without-canonical-endReason:' + inst.effectInstanceId);
+      }
+      if (seen.has(inst.effectInstanceId)) violations.push('instance-in-history-twice:' + inst.effectInstanceId);
+      seen.add(inst.effectInstanceId);
+    }
+    for (const id of attrActive.keys()) {
+      if (seen.has(id)) violations.push('instance-active-and-closed:' + id);
+    }
+    for (const [key, id] of attrActiveByKey.entries()) {
+      if (!attrActive.has(id)) violations.push('dangling-active-key:' + key);
+    }
+    /* 活跃表必须与 holder 一一对应（除 holder 中尚未登记的瞬态） */
+    for (const id of attrActive.keys()) {
+      const inst = attrActive.get(id);
+      if (inst && !held.has(inst.key)) violations.push('active-instance-not-in-holder:' + id);
+    }
+    return { ok: violations.length === 0, violations: violations };
+  }
+  if (auditAttributionInvariants().violations.length) {
+    attrUnobserved = true;
+    attrCounters.invariantViolations += 1;
+  }
+
   function keyOf(characterId, conversationId, sourceTurn) {
     return text(characterId) + '|' + text(conversationId) + '|' + text(sourceTurn);
   }
@@ -265,13 +448,31 @@ function createRuntimeBehaviorEffect(deps) {
     const now = Number(clock());
     for (const [key, rec] of held) {
       if (!rec || !Number.isFinite(Number(rec.createdAt))) { held.delete(key); continue; }
-      if (now - Number(rec.createdAt) > HOLDER_TTL_MS) { held.delete(key); counters.expired += 1; }
+      if (now - Number(rec.createdAt) > holderTtlMs) {
+        held.delete(key);
+        counters.expired += 1;
+        /* P5-B3-A · TTL 到期是**已观察的终止** ⇒ 不降级 coverage。
+           ★ endedAt 用**理论到期时刻**（createdAt + TTL），而不是惰性清扫的
+             观察时刻 —— 否则历史查询会把"其实早就结束"的 effect 算成 active。 */
+        const id = attrActiveIdOfKey(key);
+        if (id) attrTerminate(id, 'expired', Number(rec.createdAt) + holderTtlMs);
+      }
     }
   }
   function evictOverflow() {
-    while (held.size > MAX_HELD_BEHAVIOR_EFFECTS) {
+    while (held.size > maxHeldBehaviorEffects) {
       const oldest = held.keys().next();
       if (oldest.done) break;
+      /* ★ 先机械终止（endedAt = 淘汰时刻，endReason = capacity-evicted），
+         再从活跃持有者移除。审计已确认：被淘汰的 entry **永远不会**再被
+         consumeForTurn 使用 ⇒ 容量淘汰在产品语义上就是该 effect 的终止。 */
+      const id = attrActiveIdOfKey(oldest.value);
+      if (id) attrTerminate(id, 'capacity-evicted', attrNow());
+      else if (attrActiveByKey.has(oldest.value)) {
+        /* holder 里有、活跃表里没有 ⇒ 真正的未观察消失 */
+        attrUnobserved = true;
+        attrCounters.invariantViolations += 1;
+      }
       held.delete(oldest.value);
       counters.evicted += 1;
     }
@@ -291,7 +492,7 @@ function createRuntimeBehaviorEffect(deps) {
       if (!rec) continue;
       if (text(rec.characterId) !== charKey || text(rec.conversationId) !== convKey) continue;
       if (text(rec.sourceTurn) === text(turnId)) continue;      /* 源回合不能取自己的效果 */
-      return { key: key, rec: rec };
+      return { key: key, rec: rec, attrId: attrActiveIdOfKey(key) };
     }
     return null;
   }
@@ -336,10 +537,15 @@ function createRuntimeBehaviorEffect(deps) {
     sweep();
     const key = keyOf(characterId, conversationId, turnId);
     if (held.has(key)) { counters.replaced += 1; }
+    /* P5-B3-A · replacement：旧 instance 先机械终止（replaced），再造新 instance。
+       绝不出现"旧的消失、新的出现，而旧的没有终态事实"的幽灵。 */
+    const priorId = attrActiveIdOfKey(key);
+    if (priorId) attrTerminate(priorId, 'replaced', Number(clock()));
     held.set(key, {
       characterId: characterId, conversationId: conversationId, sourceTurn: turnId,
       effect: effect, createdAt: Number(clock())
     });
+    attrOpen(held.get(key), key);
     evictOverflow();
     counters.derived += 1;
     note('behavior-effect-derived', {
@@ -376,6 +582,9 @@ function createRuntimeBehaviorEffect(deps) {
       return { status: 'none', reason: 'held-effect-invalid:' + v.reason, effect: null };
     }
     held.delete(pick.key);                       /* 单次消费：取走即删除 */
+    /* P5-B3-A · consume 是**已观察的终止**：先记终态事实，再移出活跃集合。
+       消费后 activeAt(after) = false；retention horizon 内仍可回溯"它曾存在过"。 */
+    if (pick.attrId) attrTerminate(pick.attrId, 'consumed', attrNow());
     counters.consumed += 1;
     note('behavior-effect-consumed', { characterId: characterId, conversationId: conversationId, turnId: turnId, sourceTurn: text(pick.rec.sourceTurn) });
     return { status: 'applied', reason: null, effect: Object.assign({}, pick.rec.effect) };
@@ -383,6 +592,125 @@ function createRuntimeBehaviorEffect(deps) {
 
   /* 只读诊断缝（**不**返回效果对象本身；与 LIVE-5 同一纪律）。 */
   function heldCount() { sweep(); return held.size; }
+
+  /* ══════════════════════════════════════════════════════════════════
+     P5-B2 · 归因查询（**唯一**入口；返回 capability-sealed 不可变 snapshot）
+     ══════════════════════════════════════════════════════════════════ */
+  /**
+   * snapshotBehaviorEffectAttribution({ characterId, conversationId, subject, at, predictionId })
+   *   · 纯机械：只读账本 + 时间区间重叠；**不**读模型、**不**写任何东西
+   *   · `known-none` 只在 coverage === 'complete' 时出现
+   *   · `predictionInfluencedSystem` 的 false 需要**完整**依赖追踪范围
+   */
+  function snapshotBehaviorEffectAttribution(query) {
+    const q = isPlainObject(query) ? query : {};
+    /* 查询本身也触发惰性清扫：保证"查询时刻"看到的活跃集合是最新的 */
+    sweep();
+    const at = Number.isFinite(Number(q.at)) ? Number(q.at) : attrNow();
+    const scope = {
+      characterId: text(q.characterId),
+      conversationId: text(q.conversationId),
+      subjectLabel: text(q.subjectLabel)
+    };
+    const core = behaviorEffectAttributionCore;
+    const coverageRes = core.resolveCoverage({
+      authorityPresent: true,
+      authorityEnabled: attrAuthorityEnabled === true,
+      authoritySince: attrSince,
+      historyRetentionFloor: attrRetentionFloor,
+      unobservedDisappearance: attrUnobserved,
+      scopeRepresented: true,
+      at: at
+    });
+    /* 归因可见集合 = 活跃 + retention horizon 内的 closed（历史查询用） */
+    const active = core.relevantEffects(attrKnownInstances(), scope, at);
+    const statusRes = core.resolveStatus({ relevantCount: active.length, coverage: coverageRes.coverage });
+    /* 稳定 ref 的因果 linkage：目前 BE 派生路径没有 prediction 输入 ⇒ 找不到 */
+    const linked = active.filter(function (e) { return text(e.sourcePredictionId) === text(q.predictionId) && text(q.predictionId) !== ''; });
+    const influenced = core.resolvePredictionInfluenced({
+      linkedPredictionFound: linked.length > 0,
+      /* 追踪范围：**只**覆盖 BehaviorEffect 子系统（本模块的创建/消费 seam）。
+         不宣称覆盖全体 system behavior —— 所以 false 的含义被限定具名。 */
+      dependencyTraceComplete: true,
+      dependencyTraceScope: 'BEHAVIOR_EFFECT_SUBSYSTEM_ONLY'
+    });
+    const snapshot = core.deepFreeze({
+      schemaVersion: core.SCHEMA_VERSION,
+      attributionAuthority: core.AUTHORITY,
+      idLifetime: core.ID_LIFETIME,
+      authoritySince: attrSince,
+      at: at,
+      scope: { characterId: scope.characterId, conversationId: scope.conversationId, subjectLabel: scope.subjectLabel },
+      status: statusRes.status,
+      coverage: statusRes.coverage,
+      effects: active.slice(0, core.BOUNDS.MAX_EFFECTS).map(function (e) {
+        return {
+          effectInstanceId: e.effectInstanceId,
+          effectKind: e.effectKind,
+          /* BE effect 的**闭集投影**（无自由文本）—— P1 builder 需要这五个字段 */
+          stance: e.stance,
+          strategy: e.strategy,
+          initiativeTendency: e.initiativeTendency,
+          rationaleCode: e.rationaleCode,
+          sourceTurn: e.sourceTurn,
+          startedAt: e.startedAt,
+          endedAt: e.endedAt
+        };
+      }),
+      predictionInfluencedSystem: influenced.value,
+      dependencyTraceScope: influenced.dependencyTraceScope,
+      coverageBasis: {
+        authorityPresent: true,
+        authorityEnabled: attrAuthorityEnabled === true,
+        authoritySince: attrSince,
+        historyRetentionFloor: attrRetentionFloor,
+        effectiveCoverageFloor: coverageRes.facts ? coverageRes.facts.effectiveCoverageFloor : null,
+        unobservedDisappearance: attrUnobserved,
+        activeAuthorityComplete: true,
+        scopeRepresented: true
+      },
+      contaminationFacts: core.contaminationFacts({
+        status: statusRes.status, coverage: statusRes.coverage,
+        effects: active, predictionInfluencedSystem: influenced.value,
+        reasonCodes: statusRes.reasonCodes
+      }),
+      reasonCodes: statusRes.reasonCodes.concat(coverageRes.reasonCodes).concat([influenced.reasonCode])
+        .filter(function (v, i, a) { return a.indexOf(v) === i; }).slice(0, 12)
+    });
+    return attrSeal(snapshot);
+  }
+
+  /** 审计视图（内部；不含正文） */
+  function describeAttribution() {
+    return {
+      authority: behaviorEffectAttributionCore.AUTHORITY,
+      lifetime: behaviorEffectAttributionCore.ID_LIFETIME,
+      oneEffectFactOwner: 'YES',
+      activeEffects: attrActive.size,
+      activeInstances: attrActive.size,
+      closedHistoryHeld: attrClosed.length,
+      closedHistoryBound: ATTR_MAX_CLOSED_HISTORY,
+      closedHistoryEvicted: attrCounters.closedHistoryEvicted,
+      ledgerInstances: attrActive.size + attrClosed.length,
+      authoritySince: attrSince,
+      historyRetentionFloor: attrRetentionFloor,
+      coverageFloor: behaviorEffectAttributionCore.effectiveCoverageFloorOf(attrSince, attrRetentionFloor),
+      activeAuthorityComplete: true,
+      unobservedDisappearance: attrUnobserved,
+      invariants: auditAttributionInvariants(),
+      endReasons: behaviorEffectAttributionCore.END_REASONS.slice(),
+      counters: Object.assign({}, attrCounters, { active: attrActive.size }),
+      statuses: behaviorEffectAttributionCore.STATUSES.slice(),
+      coverages: behaviorEffectAttributionCore.COVERAGES.slice(),
+      knownNoneRequiresCompleteCoverage: 'YES',
+      absenceOfEffectRecordIsNotKnownNone: 'YES',
+      durableWrites: 0,
+      modelCalls: 0
+    };
+  }
+  /* 本实例是否被授权对外提供归因（默认 true：authority 就在本模块内）。 */
+  const attrAuthorityEnabled = d.attributionAuthorityEnabled !== false;
+
   function hasHeldFor(characterId, conversationId, turnId) {
     sweep();
     return oldestPendingFor(characterId, conversationId, turnId) !== null;
@@ -465,6 +793,12 @@ function createRuntimeBehaviorEffect(deps) {
     describe: describe,
     heldCount: heldCount,
     hasHeldFor: hasHeldFor,
+    /* ── P5-B2 · BehaviorEffect Attribution Authority ──────────────────
+       唯一 owner。Registry / OutcomeObservation 只能**消费** snapshot，
+       不得自行推断"没有干预"。 */
+    snapshotBehaviorEffectAttribution: snapshotBehaviorEffectAttribution,
+    describeAttribution: describeAttribution,
+    isBehaviorEffectAttributionSnapshot: isBehaviorEffectAttributionSnapshot,
     EXECUTION_KIND: EXECUTION_KIND,
     MAX_ADDITIONAL_BEHAVIOR_MODEL_CALLS_PER_CHARACTER_TURN: MAX_ADDITIONAL_BEHAVIOR_MODEL_CALLS_PER_CHARACTER_TURN,
     MAX_HELD_BEHAVIOR_EFFECTS: MAX_HELD_BEHAVIOR_EFFECTS,
@@ -516,3 +850,7 @@ module.exports.renderLine = renderLine;
 module.exports.validatedL3Of = validatedL3Of;
 module.exports.serverL3Result = serverL3Result;
 module.exports.expectationCreated = expectationCreated;
+
+
+
+

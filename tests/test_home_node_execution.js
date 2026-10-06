@@ -17,6 +17,13 @@ const createPort = require(path.join(ROOT, 'active', 'node-model-port.js'));
 /* 复用生产 core 的格式判定与 system 取值，**不**为测试复制一套 wire 假设。 */
 const IBModelCore = require(path.join(ROOT, 'assets', 'js', 'ib-model-core.js'));
 
+/* ── P5-B3-D3 · character binding test seam ──────────────────────────
+   TURN_CHARACTER_SCOPE_AUTHORITY = SERVER_VALIDATED_CANONICAL_CHARACTER_BINDING。
+   生产由 device-registry.getCharacterSpec 提供；测试在**构造期**注入等价接口
+   （绝不通过 execute({...}) 逐次传入 —— authority 属于 executor 实例）。
+   这里只确认"该 character id 存在"，provider 配置仍走既有 request 契约。 */
+const testCharacterRegistry = { getCharacterSpec: function (id) { return String(id || '').trim() ? {} : null; } };
+
 /* provider 真正收到的 system 文本（wire-shape 兼容）。
    与 test_model_core_contract.js:65 / :95 / :106 的取法同一语义：
      openai    → messages[] 里 role==='system' 的 content 拼合
@@ -125,7 +132,8 @@ function userMsg(overrides) {
     ].join('\u0000');
     const mock = mockProvider(script);
     const port = await listen(mock.server);
-    const executor = createExecutor({ store, port: createPort({}) });
+    const executor = createExecutor({
+  characterRegistry: testCharacterRegistry, store, port: createPort({}) });
     const events = [];
     const sent = userMsg({ id: 'msg_stream_u' });
     const result = await executor.executeCharacterTurn({
@@ -171,7 +179,8 @@ function userMsg(overrides) {
     const store = newStore();
     const mock = mockProvider(openaiChunk({ content: 'ok' }) + '\u0000data: [DONE]\n\n');
     const port = await listen(mock.server);
-    const executor = createExecutor({ store, port: createPort({}) });
+    const executor = createExecutor({
+  characterRegistry: testCharacterRegistry, store, port: createPort({}) });
     const req = {
       requestId: 'req-dup-1',
       character: { id: 'char_a', spec: spec(port) },
@@ -194,7 +203,8 @@ function userMsg(overrides) {
     const store = newStore();
     const mock = mockProvider(openaiChunk({ content: 'slow' }) + '\u0000data: [DONE]\n\n', { chunkDelayMs: 60 });
     const port = await listen(mock.server);
-    const executor = createExecutor({ store, port: createPort({}) });
+    const executor = createExecutor({
+  characterRegistry: testCharacterRegistry, store, port: createPort({}) });
     const p1 = executor.executeCharacterTurn({
       requestId: 'req-busy-1', character: { id: 'c', spec: spec(port) }, userMessage: userMsg({ id: 'msg_busy_1' })
     }, { timeoutMs: 5000 });
@@ -223,7 +233,8 @@ function userMsg(overrides) {
     const store = newStore();
     const mock = mockProvider('', { status: 500, errorMessage: 'upstream exploded' });
     const port = await listen(mock.server);
-    const executor = createExecutor({ store, port: createPort({}) });
+    const executor = createExecutor({
+  characterRegistry: testCharacterRegistry, store, port: createPort({}) });
     const events = [];
     const res = await executor.executeCharacterTurn({
       requestId: 'req-err-1', character: { id: 'c', spec: spec(port) }, userMessage: userMsg({ id: 'msg_err_u' })
@@ -242,7 +253,8 @@ function userMsg(overrides) {
     const store = newStore();
     const mock = mockProvider(openaiChunk({ content: '半句' }), { neverEnd: true });
     const port = await listen(mock.server);
-    const executor = createExecutor({ store, port: createPort({}) });
+    const executor = createExecutor({
+  characterRegistry: testCharacterRegistry, store, port: createPort({}) });
     const ac = new AbortController();
     setTimeout(() => ac.abort(), 250);
     const events = [];
@@ -263,7 +275,8 @@ function userMsg(overrides) {
     const store = newStore();
     const mock = mockProvider('', { neverEnd: true });
     const port = await listen(mock.server);
-    const executor = createExecutor({ store, port: createPort({}) });
+    const executor = createExecutor({
+  characterRegistry: testCharacterRegistry, store, port: createPort({}) });
     const ac = new AbortController();
     setTimeout(() => ac.abort(), 150);
     const res = await executor.executeCharacterTurn({
@@ -281,7 +294,8 @@ function userMsg(overrides) {
     const store = newStore();
     const mock = mockProvider(openaiChunk({ content: 'ok' }) + '\u0000data: [DONE]\n\n');
     const port = await listen(mock.server);
-    const executor = createExecutor({ store, port: createPort({}) });
+    const executor = createExecutor({
+  characterRegistry: testCharacterRegistry, store, port: createPort({}) });
     const rich = userMsg({
       id: 'msg_rich_u',
       images: [{ dataUrl: 'data:image/png;base64,QUJD', base64: 'QUJD', mime: 'image/png', name: 'a.png' }],
@@ -308,7 +322,8 @@ function userMsg(overrides) {
   /* ── 8 · thread 不串：threadId 只落在自己的 conversation ────────── */
   {
     const store = newStore();
-    const executor = createExecutor({ store, port: createPort({}) });
+    const executor = createExecutor({
+  characterRegistry: testCharacterRegistry, store, port: createPort({}) });
     await executor.executeCharacterTurn({
       requestId: 'bad-1', character: { id: 'c' }, userMessage: userMsg({ id: 'x1', threadId: 't1' })
     });
@@ -328,7 +343,8 @@ function userMsg(overrides) {
     const store = newStore();
     const mock = mockProvider(openaiChunk({}, { choices: [{ delta: {}, finish_reason: 'content_filter' }] }) + '\u0000data: [DONE]\n\n');
     const port = await listen(mock.server);
-    const executor = createExecutor({ store, port: createPort({}) });
+    const executor = createExecutor({
+  characterRegistry: testCharacterRegistry, store, port: createPort({}) });
     const events = [];
     const res = await executor.executeCharacterTurn({
       requestId: 'req-empty-1', character: { id: 'c', spec: spec(port) }, userMessage: userMsg({ id: 'msg_empty_u' })
@@ -353,7 +369,8 @@ function userMsg(overrides) {
     const store = newStore();
     const mock = mockProvider(openaiChunk({ content: '在的' }) + '\u0000data: [DONE]\n\n');
     const port = await listen(mock.server);
-    const executor = createExecutor({ store, port: createPort({}) });
+    const executor = createExecutor({
+  characterRegistry: testCharacterRegistry, store, port: createPort({}) });
     const PERSONA = 'M1C2A-PERSONA-昔涟 · 你是昔涟，不是任何别的人工智能。';
     /* exactly the production shape — no top-level systemPrompt */
     const character = {
@@ -387,7 +404,8 @@ function userMsg(overrides) {
     const store = newStore();
     const mock = mockProvider(openaiChunk({ content: 'ok' }) + '\u0000data: [DONE]\n\n');
     const port = await listen(mock.server);
-    const executor = createExecutor({ store, port: createPort({}) });
+    const executor = createExecutor({
+  characterRegistry: testCharacterRegistry, store, port: createPort({}) });
     await executor.executeCharacterTurn({
       requestId: 'req-legacy-1',
       character: { id: 'char_legacy', spec: spec(port), systemPrompt: 'LEGACY-TOP-LEVEL-PERSONA' },
@@ -406,13 +424,15 @@ function userMsg(overrides) {
     store1.open();
     const mock = mockProvider(openaiChunk({ content: 'x' }) + '\u0000data: [DONE]\n\n');
     const port = await listen(mock.server);
-    const ex1 = createExecutor({ store: store1, port: createPort({}) });
+    const ex1 = createExecutor({
+  characterRegistry: testCharacterRegistry, store: store1, port: createPort({}) });
     const req = { requestId: 'req-restart-1', character: { id: 'c', spec: spec(port) }, userMessage: userMsg({ id: 'msg_restart_u' }) };
     const a = await ex1.executeCharacterTurn(req, { timeoutMs: 5000 });
     store1.close();
     const store2 = createStore({ dataDir: dir });
     store2.open();
-    const ex2 = createExecutor({ store: store2, port: createPort({}) });
+    const ex2 = createExecutor({
+  characterRegistry: testCharacterRegistry, store: store2, port: createPort({}) });
     const b = await ex2.executeCharacterTurn(req, { timeoutMs: 5000 });
     check('exec.restart 重启后幂等仍命中', b.outcome === 'duplicate-request', b);
     check('exec.restart 重启后模型未再被调用', mock.seen.bodies.length === 1, mock.seen.bodies.length);

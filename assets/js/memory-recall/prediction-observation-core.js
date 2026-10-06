@@ -140,6 +140,9 @@
     modelMatchingNotValidated: 'model-matching-without-structural-validation',
     judgementMissing: 'outcome-judgement-not-supplied',
     judgementNotValidated: 'outcome-judgement-not-marked-validated',
+    /* P2 · authority transfer：legacy 自证形态一律拒绝 */
+    callerValidatedInvalid: 'caller-supplied-validated-invalid',
+    judgementNotACapability: 'judgement-is-not-a-validated-capability',
     unsettled: 'no-canonical-outcome-yet',
     calibratedNull: 'calibration-confidence-null-no-settled-history',
     discreteErrorOnly: 'prediction-error-is-discrete-not-continuous',
@@ -241,21 +244,92 @@
     return { ok: true, value: { mode: mode, linkage: spec.linkage, derivesResult: false } };
   }
 
-  /* ── ③ 判定门（**只**接受已验证的外部判定；核心不推导）────────────── */
+  /* ══ P2 · validated judgement capability（authority transfer）══════════
+     `judgement.validated === true` **不再是**可信输入：调用方（含模型）不能自证。
+     合法 validation 只能来自本模块铸造的 module-private capability
+     （WeakSet 身份 + WeakMap 封存 + deepFreeze），与 observation capability 同一套纪律。
+     ★ 这是**收窄**，不是放宽：legacy 布尔形态（`validated:true` /
+       `judgementValidated:true` / 裸 `result`）**一律**具名拒绝。
+     ★ 本模块此后只是 **snapshot / linkage / protocol primitive** ——
+       它不是 settlement authority（那是 P3 的 Settlement Engine）。 */
+  var JUDGEMENT_IDENTITY = (typeof WeakSet === 'function') ? new WeakSet() : null;
+  var JUDGEMENT_SEAL = (typeof WeakMap === 'function') ? new WeakMap() : null;
+  var HAS_JUDGEMENT_CAPABILITY = !!(JUDGEMENT_IDENTITY && JUDGEMENT_SEAL);
+  var VALIDATED_JUDGEMENT_AUTHORITY = 'MODULE_PRIVATE_CAPABILITY';
+  var JUDGEMENT_BRAND = 'ib.validated-judgement.v1';
+
+  /* 唯一铸造点。**不接受**任何旧的自证形态（防止把布尔洗白成 capability）。 */
+  function mintValidatedJudgementCapability(input) {
+    var i = isPlainObject(input) ? input : null;
+    if (!i) return { ok: false, reason: REASON_CODES.judgementMissing };
+    if (i.validated === true || i.judgementValidated === true || i.callerValidated === true) {
+      return { ok: false, reason: REASON_CODES.callerValidatedInvalid };
+    }
+    var r = str(i.result, 32);
+    if (!r || RESULTS.indexOf(r) < 0 || r === 'unsettled') {
+      return { ok: false, reason: REASON_CODES.judgementMissing };
+    }
+    var value = {
+      brand: JUDGEMENT_BRAND,
+      result: r,
+      source: str(i.source, 64) || 'unnamed',
+      authority: VALIDATED_JUDGEMENT_AUTHORITY,
+      validated: true
+    };
+    if (HAS_JUDGEMENT_CAPABILITY) {
+      JUDGEMENT_IDENTITY.add(value);
+      JUDGEMENT_SEAL.set(value, canonicalize(value));
+    }
+    deepFreeze(value);
+    return { ok: true, value: value };
+  }
+
+  /* 三重校验：能力原语在场 ∧ 身份在表里 ∧ 封存串逐字一致 ∧ 形状合法。 */
+  function isValidatedJudgementCapability(x) {
+    try {
+      if (!HAS_JUDGEMENT_CAPABILITY) return false;      /* 无原语 ⇒ fail closed */
+      if (!isPlainObject(x)) return false;
+      if (!JUDGEMENT_IDENTITY.has(x)) return false;      /* 伪造 / 克隆 / JSON round-trip */
+      var sealed = JUDGEMENT_SEAL.get(x);
+      if (typeof sealed !== 'string') return false;
+      if (canonicalize(x) !== sealed) return false;      /* 被改写 */
+      if (x.authority !== VALIDATED_JUDGEMENT_AUTHORITY) return false;
+      var r = String(x.result);
+      if (RESULTS.indexOf(r) < 0 || r === 'unsettled') return false;
+      return true;
+    } catch (e) { return false; }
+  }
+
+  /* ── ③ 判定门（**只**接受本模块铸造的 capability；核心不推导 result）────── */
   function normalizeJudgement(deps) {
     var d = isPlainObject(deps) ? deps : {};
-    var j = isPlainObject(d.judgement) ? d.judgement : null;
-    if (!j) {
-      var legacy = str(d.result, 32);
-      if (!legacy) return { ok: false, reason: REASON_CODES.judgementMissing };
-      if (d.judgementValidated !== true) return { ok: false, reason: REASON_CODES.judgementNotValidated };
-      if (RESULTS.indexOf(legacy) < 0 || legacy === 'unsettled') return { ok: false, reason: REASON_CODES.judgementMissing };
-      return { ok: true, value: { result: legacy, source: 'caller-supplied-validated', validated: true } };
+    /* legacy 自证形态：具名拒绝（CALLER_SUPPLIED_VALIDATED = INVALID） */
+    if (d.judgementValidated === true || d.validated === true) {
+      return { ok: false, reason: REASON_CODES.callerValidatedInvalid };
     }
-    if (j.validated !== true) return { ok: false, reason: REASON_CODES.judgementNotValidated };
-    var r = str(j.result, 32);
-    if (RESULTS.indexOf(r) < 0 || r === 'unsettled') return { ok: false, reason: REASON_CODES.judgementMissing };
-    return { ok: true, value: { result: r, source: str(j.source, 64) || 'caller-supplied-validated', validated: true } };
+    if (d.judgement != null && !isValidatedJudgementCapability(d.judgement)) {
+      return {
+        ok: false,
+        reason: (isPlainObject(d.judgement) && d.judgement.validated === true)
+          ? REASON_CODES.callerValidatedInvalid
+          : REASON_CODES.judgementNotACapability
+      };
+    }
+    if (!isValidatedJudgementCapability(d.judgement)) {
+      /* 旧形态（裸 result + judgementValidated:true）也走这里 */
+      if (str(d.result, 32)) return { ok: false, reason: REASON_CODES.callerValidatedInvalid };
+      return { ok: false, reason: REASON_CODES.judgementMissing };
+    }
+    var j = d.judgement;
+    return {
+      ok: true,
+      value: {
+        result: String(j.result),
+        source: str(j.source, 64) || 'validated-capability',
+        validated: true,
+        authority: j.authority
+      }
+    };
   }
 
   /* ── ④ 结算主体 ───────────────────────────────────────────────────── */
@@ -362,6 +436,10 @@
     noSelfReinforcingUpdate: noSelfReinforcingUpdate,
     normalizeMatch: normalizeMatch,
     normalizeJudgement: normalizeJudgement,
+    /* P2 · validated judgement capability（唯一铸造点 + 校验器） */
+    mintValidatedJudgementCapability: mintValidatedJudgementCapability,
+    isValidatedJudgementCapability: isValidatedJudgementCapability,
+    VALIDATED_JUDGEMENT_AUTHORITY: VALIDATED_JUDGEMENT_AUTHORITY,
     RESULTS: RESULTS,
     MATCHING_MODES: MATCHING_MODES,
     MATCHING_MODE_MATRIX: MATCHING_MODE_MATRIX,
@@ -385,6 +463,10 @@
       durableObservation: 'NOT_IMPLEMENTED_R4D',
       numericPredictionError: 'NOT_FROZEN',
       outcomeJudgement: OUTCOME_JUDGEMENT_RUNTIME,
+      /* P2 · authority transfer（收窄：调用方不能自证） */
+      validatedJudgementAuthority: VALIDATED_JUDGEMENT_AUTHORITY,
+      callerSuppliedValidated: 'INVALID',
+      judgementIsProtocolPrimitiveOnly: 'YES',
       expectationIdAssignment: 'EXTERNAL_ID_REQUIRED_FOR_LINKED_SETTLEMENT',
       calibrationConfidence: 'NULL_UNTIL_SETTLED_HISTORY',
       expectationRevision: 'NOT_IMPLEMENTED_R4D',

@@ -3110,3 +3110,3919 @@ expectation authority 已选定、或 behavior effect 已有落点 ——
 - `docs/architecture/DISCLOSURE.md` — disclosure authority（`authorize()` 无 production caller）
 - `services/home-node/understanding-store.js` — **durable 可修订解释层**的既有模式（§7.1）
 - `assets/js/role-dm-core.js` — **有界关系更新**与**纯投影**的既有模式（§12.2 / §12.5）
+
+---
+
+## 附录 (q) · Prediction Error · Contract Reconciliation
+
+> **状态：APPENDED · 只追加 · 不改写任何既有条款**
+> 追加锚：**Prediction Error P0 · Contract Reconciliation**
+> 本附录**不修改** §1–§40 与 (a)–(p) 的任何一个字；它们**逐字节不变**。
+> 设计面与证据面见 [`PREDICTION_ERROR_AUTHORITY_CONTRACT.md`](PREDICTION_ERROR_AUTHORITY_CONTRACT.md)。
+>
+> `IMPLEMENTATION = NONE` · `PRODUCTION_WIRING = NONE` · `DURABLE_WRITE = NONE`（本附录同样不实现任何 runtime）。
+
+### (q-0) 六项 Owner Ruling（本附录的最高约束）
+
+```
+PREDICTION_REGISTRY_LIFETIME            = SESSION_ONLY
+DURABLE_PREDICTION_STORE                = NO_V1
+CROSS_RESTART_EXACTLY_ONCE              = NO
+RESTART_RECOVERY                        = NONE
+
+EXPECTATION_ADDITIVE_SCHEMA_EXTENSION   = APPROVED
+UNSTRUCTURED_EXPECTATION_SETTLEABLE     = NO
+FREE_TEXT_TO_PREDICTION_PARSING         = FORBIDDEN
+MODEL_MAY_NOT_CHOOSE_PREDICTION_TYPE    = YES
+
+GUARD_MIGRATION_ORDER                   = BEFORE_ANY_PRODUCTION_PE_SEAM
+GUARD_MATCH_MODE                        = SEPARATOR_AND_CASE_AWARE
+
+CALLER_SUPPLIED_VALIDATED               = INVALID
+
+AUTO_SETTLE_PREFERENCE_FROM_BEHAVIOR    = OFF
+OPERATOR_TOGGLEABLE_PREFERENCE_BEHAVIOR = NO_V1
+WRITE_INDEPENDENT_OBSERVATION_COUNT     = FORBIDDEN
+
+SETTLEMENT_DISCLOSURE_V1                = INTERNAL_AUDIT_ONLY
+```
+
+---
+
+### (q-1) §28.2 的 authority supersession
+
+**§28.2 原文（`:2696-2707`）逐字节保留在历史中，但其中"由模型判定
+`confirmed` / `contradicted` / `partial`"这一列**被本附录收窄**。
+
+```
+MODEL_ROLE_CHANGE              = DECIDES → ADVISES
+DIRECTION_OF_CHANGE            = NARROWING
+SETTLEMENT_STATE_AUTHORITY     = DETERMINISTIC_POLICY_ENGINE
+```
+
+**MODEL_MAY_OUTPUT**
+
+```
+support
+conflict
+irrelevant
+ambiguous
+strengthHint      ∈ {weak, moderate, strong}
+rationale         （有界）
+evidenceRefs      （有界）
+```
+
+**MODEL_MAY_NOT_OUTPUT**
+
+```
+matched
+missed
+mixed
+confirmed
+contradicted
+validated
+settlement confidence
+prediction error magnitude
+direction
+```
+
+**MUST**
+
+- 模型输出里出现任何 settlement 状态词或任何 confidence / magnitude 字段
+  ⇒ **整条 judgement 作废**（不是截断、不是降级）。
+- `SETTLEMENT_STATE_AUTHORITY` **MUST** 唯一属于确定性的 Settlement Engine。
+- 判定不确定时 **MUST** fail-closed，**MUST NOT** 猜 `confirmed` / `contradicted`
+  （与 §28.2 `:2706-2707` 逐字一致 —— 这一条**未被收窄，反而被加强**）。
+
+**CALLER_SUPPLIED_VALIDATED = INVALID**
+
+```
+(k-9) / (l-2) 的 caller-supplied validated judgement 形态：
+  · 保留其**协议形状**（不删除、不重开）
+  · 但 `validated === true` **不再**是可以由调用方声明的 authority
+  · 合法 validation 只能来自 Settlement Engine 的 module-private capability
+    （复用 (m-2) `:2119-2137` 已冻结的 WeakSet / WeakMap seal 思路）
+  · R4-D.2 保留 snapshot integrity 与 linkage 能力，
+    从 settlement authority **降级**为 protocol primitive
+```
+
+---
+
+### (q-2) 七状态 canonical vocabulary
+
+```
+SETTLEMENT_STATES = [
+  'pending', 'matched', 'missed', 'mixed',
+  'expired_unobserved', 'unresolvable', 'superseded'
+]
+
+matched  != canonical truth
+missed   != canonical memory contradiction
+LEGACY_RESULT_ADAPTER = NONE
+```
+
+**MUST NOT**：把 `matched` 读成"某认知成为永恒事实"；把 `missed` 读成"原 Memory 被推翻"。
+二者都**不**写 canonical、**不**改真值地位（§28.3 `:2709-2716` / §28.4 `:2732-2735` 不变）。
+
+**(q-2.1) `mixed` 的冻结定义**
+
+```
+mixed = 双向证据**同时存在**，且**没有形成允许的 decisive settlement**。
+```
+**MUST NOT** 再使用旧措辞"双向都未达门槛" —— 它会漏掉
+「support 达门槛 ∧ 存在 opposing SUPPORTING conflict」这一格。
+
+**(q-2.2) `expired_unobserved` 的冻结定义**
+
+```
+expired_unobserved = observation window 已关闭，
+                     且**没有形成一个可用于结果结算的 completed opportunity**。
+
+reasonCodes（**不许**新增第八种状态）：
+  opportunity ABSENT        → 'opportunity-absent'
+  opportunity NOT-CONSUMED  → 'opportunity-not-consumed'
+```
+
+```
+absence != missed
+```
+没有 completed opportunity **永远**不构成负证据。唯一可把"观察到"变成负证据的形状
+仍是 `window_closure_negative`，且**必须**带 `completeness='full-window-attested'`
+且只对机制域（`runtime_state` / `user_behavior`）可用（§28.2 的 fail-closed 纪律不变）。
+
+**(q-2.3) T8 状态计算 MUST 是有序判定（先命中先返回）**
+
+```
+1. decisive admissible conflict 且 opportunity / contradictionMode 全满足  → missed
+2. matchedThresholdMet ∧ conflictAll == 0                                  → matched
+3. supportAll > 0 ∧ conflictAll > 0                                        → mixed
+4. supportAll > 0 ∨ conflictAll > 0（单向次门槛）                            → 窗口关 ? unresolvable : pending
+5. supportAll == 0 ∧ conflictAll == 0                                      → 见 opportunity / window
+                                                                              ABSENT/NOT-CONSUMED → expired_unobserved
+                                                                              其它               → unresolvable
+                                                                              窗口未关            → pending
+```
+
+```
+E.4-TOTALITY：行 3/4/5 的条件互斥且穷尽 (supportAll>0, conflictAll>0) 的全部四种取值
+⇒ 对任意合法输入组合，有且只有一个确定输出。
+```
+
+---
+
+### (q-3) OutcomeObservation 命名空间边界
+
+```
+P26_2_OBSERVATION     != OUTCOME_OBSERVATION
+```
+
+| | P26-2 Observation | OutcomeObservation |
+| --- | --- | --- |
+| 回答 | **现在是什么**（read-only state snapshot） | **关于某条 prediction，后来发生了什么** |
+| 载体 | `assets/js/observation-core.js`（**不改，一字不动**） | 新文件（新命名空间） |
+| 是否证据 | 否 | 是（仅在 authority 闸门通过时） |
+
+**MUST NOT** 修改 `assets/js/observation-core.js`（其整文件 hash、5 函数 API、
+`ALLOWED_CONSUMERS` 均被既有守卫冻结）。
+**MUST NOT** 把 OutcomeObservation 包装成 P26-2 observation，反之亦然。
+
+---
+
+### (q-4) Observation Authority
+
+```
+AUTHORITY = source × targetDomain
+```
+
+**不是**全局 source 排名。冻结：
+
+```
+effectiveAdmissibility = min(
+  matrixCeiling,
+  scopeGate,
+  temporalGate,
+  opportunityGate,
+  contaminationGate,
+  domainPayloadGate
+)
+```
+
+**MUST**
+
+```
+每个 gate 只能**降低**，不能提升 effectiveAdmissibility
+任一 gate 输入缺失 ⇒ 该 gate 取 FORBIDDEN（不是"跳过"）
+matrixCeiling 是**天花板**，不是授权
+```
+
+```
+MODEL_INFERENCE        → settlement 权限恒 FORBIDDEN（全部 targetDomain）
+BEHAVIORAL_TELEMETRY   → settlement 权限恒 FORBIDDEN（全部 targetDomain）
+EXPLICIT_USER_REPORT   → 主观域的最高权威
+任意 source × 主观域   → 上限 SUPPORTING（除非 source 是 EXPLICIT_USER_REPORT）
+```
+
+---
+
+### (q-5) 四类 Prediction Policy + 类型推导权威
+
+```
+PREDICTION_TYPES = ['event', 'preference', 'latent_state', 'relational']
+
+MODEL_MAY_NOT_CHOOSE_PREDICTION_TYPE = YES
+predictionType    = TYPE_TABLE[subject.kind, predicate.kind, expectedOutcome.kind]
+settlementPolicy  = POLICY_TABLE[predictionType]
+contradictionMode = MODE_TABLE[predictionType][expectedOutcome.kind]
+无法唯一推导 ⇒ settleable = false · reasonCode 'prediction-type-ambiguous'
+```
+
+| type | 自动 deterministic settlement | 行为自动结算 | 最强 authority |
+| --- | --- | --- | --- |
+| `event` | **允许** | 不适用 | `CANONICAL_RUNTIME` / `USER_BEHAVIOR` |
+| `preference` | 仅 explicit user report | **OFF（v1）** | `EXPLICIT_USER_REPORT` |
+| `latent_state` | 仅 explicit user report / denial | **禁止** | `EXPLICIT_USER_REPORT`（唯一） |
+| `relational` | **不结算**（除 explicit report / denial） | **禁止** | `EXPLICIT_USER_REPORT`（唯一） |
+
+```
+relational MUST NOT 写 relationship / trust / affinity / familiarity / persona
+（与 §35.2 `:2968-2982` 的 MUST NOT 逐字一致）
+```
+
+**`PREDICATE_KINDS` 补口（relational 必须可被机械区分）**
+
+```
+'relationship-state' · 'relationship-change'   ← 新增，唯一映射到 relational
+'holds-stance'                                 ← 永不映射到 relational
+```
+
+---
+
+### (q-6) calibration 命名归一
+
+审计结论：`calibrationEvidence` 与 `calibrationConfidence` **不是同一概念**，
+但 `calibrationEvidence` 与代码里的另一个名字 `calibrationCounts` **是同一概念**。
+
+```
+calibrationEvidence  （§26 `:2627` / §32 `:2858` 的散文名）
+calibrationCounts    （代码名 / (m-4) 之后各处）
+  ⇒ **同一个量**：跨 expectation 的**机械结算统计**
+  ⇒ CANONICAL_NAME = calibrationCounts
+  ⇒ calibrationEvidence = DEPRECATED_PROSE_ALIAS（只在 §26/§32 历史正文里保留，不再新增引用）
+  ⇒ OWNER = Settlement Engine / Calibration Ledger
+
+calibrationConfidence（(k-6) `:1880` / (k-11) `:1938` / 全部代码）
+  ⇒ **另一个量**：由 calibrationCounts 派生的**系统校准置信度**
+  ⇒ OWNER = Calibration Ledger
+  ⇒ v1: CALIBRATION_APPLIED_TO_LIVE = NO · calibrationConfidence = null
+```
+
+**MUST NOT**：把 `calibrationEvidence` / `calibrationCounts` / `calibrationConfidence`
+三者中的任意两个合并成一个标量，或让模型产生其中任何一个
+（§26 `:2633-2635` / §32 `:2858-2859` 不变）。
+
+**MUST NOT**：把跨记录的统计量塞进单条 `Expectation`（§26 `:2635` 不变）。
+
+**(q-6.1) 统计键的词表**
+
+```
+新 Settlement Engine / Calibration Ledger 的统计键 = 七状态词表的**已结算**子集：
+  { matched, missed, mixed, expired_unobserved, unresolvable, superseded }
+  （pending 不计入；sampleCount = 上述之和）
+
+LEGACY_COUNT_KEYS = ['confirmed', 'contradicted', 'partial', 'ambiguous', 'unknown']
+  ⇒ NOT_EMITTED by the new engine
+  ⇒ 仅保留在 R4-D.2 协议核心的既有输出里（该核心 production consumer = 0，
+    且其键集被 test_expectation_shadow.js:328 钉住 ⇒ **本附录不改它**）
+```
+
+---
+
+### (q-7) Temporal authority
+
+```
+OUTCOME_OBSERVATION_MUST_POSTDATE_PREDICTION = YES
+```
+
+**MUST**：至少满足
+
+```
+observedAt > prediction.createdAt
+```
+
+且 `observedAt` 落在 `observationWindow` 内。
+
+**MUST NOT**：把**过去**的 canonical memory 重新包装成"后来发生的结果"。
+（§28.1 `:2688` 的 `evidenceMemoryId` = "该 outcome 对应的**新** canonical event"，
+本附录把它变成可机械判定的强制项。）
+
+```
+temporalValidity = 'before-window' ⇒ 丢弃（保持 pending）
+                   'after-window'  ⇒ unresolvable（'evidence-after-window'，**不**回溯结算）
+```
+
+---
+
+### (q-8) GAP registry
+
+| GAP | 描述 | status | owner phase | must-fix-before |
+| --- | --- | --- | --- | --- |
+| **GAP-1** | disclosure gate（§35.3 `:2992` / I4·I21 `:988,:1005`）**无 production caller** | OPEN · PRE-EXISTING | 未分配（需独立 disclosure 相位） | 任何 **external** settlement disclosure |
+| **GAP-2** | `tests/helpers/runtime-seam-guard.js:113-115` 用 `indexOf('prediction-error')` ⇒ camelCase（如 `predictionErrorLive`，`services/home-node/runtime-recall.js:1549`）**bypass** | OPEN · CONFIRMED | **P1.5** | 任何 production Prediction Error seam |
+| **GAP-3** | `FORBIDDEN_WIRING = []`（`tests/test_reconstructive_memory_contract.js:74`）⇒ N1 永不失败；§37 `:3055` 的"production 面零引用"为假 | OPEN · CONFIRMED | P1.5（或独立契约卫生相位） | 任何依赖该守卫提供保证的设计 |
+| **GAP-4** | §39 `:3089` 的 canonical fingerprint 逐字节比对只对**测试自建对象**做（非 store）；§39 `:3091` 的"同一 prediction 反复 settlement 的 confidence 有界断言"**不存在** | OPEN · CONFIRMED | P3 / P4 | P3 验收（canonical 逐字节）· P4 验收（有界性） |
+
+```
+GAP-1 与 SETTLEMENT_DISCLOSURE_V1 = INTERNAL_AUDIT_ONLY 直接耦合。
+GAP-2 与 GUARD_MIGRATION_ORDER 直接耦合。
+GAP-3 不阻塞纯核心，但使"守卫是绿的"不构成任何证据。
+GAP-4 不阻塞核心，但阻塞 P3/P4 的验收声明。
+```
+
+**对本附录自身的要求**：GAP-1..GAP-4 **MUST** 以
+`status` / `owner phase` / `must-fix-before` 三列持续在册，
+**MUST NOT** 只作为散文留在文档里而无人收口。
+
+---
+
+### (q-9) 本附录**没有**改变的东西（负面清单）
+
+```
+§1–§40 与 (a)–(p) 的正文                    = 逐字节不变
+§28.2 的历史原文                            = 保留（只收窄其 authority 列）
+Prediction Error 不是一层（§3.1）            = 不变
+Observed outcome 作为新 L0 事件追加（§3.2）   = 不变
+Prediction settlement MUST NOT 修改 canonical（§28.3） = 不变
+旧 canonical memory 逐字节不变（§28.4）       = 不变
+三量不得合并（§26 / I22 / §35.4）            = 不变
+NO SELF-REINFORCING CONFIDENCE LOOP（§32）   = 不变
+§31 的 behaviorEffectsApplied / selfInfluencePossible / attributionConfidence = 不变（且更被强调）
+§34 durable authority（若选 durable ⇒ Home Node single writer） = 不变
+I21 disclosure MUST（§35.3）                  = 不变（因此 GAP-1 仍是 OPEN）
+```
+
+```
+NEW_TABLES / NEW_STORES / NEW_ROUTES / NEW_FIELDS_IN_CANONICAL_PAYLOAD = 0
+MODEL_CALLS_ADDED   = 0
+DURABLE_WRITES_ADDED = 0
+```
+
+---
+
+### (q-10) `(q-4)` 澄清（**追加，不改写 (q-4) 原文**）· Opportunity 闸门是**方向性**的
+
+P1 实现暴露了 `(q-4)` 的一处真实歧义：原文把 `opportunityGate` 与其它闸门一起
+放进 `effectiveAdmissibility = min(...)`，仿佛它会**无条件**降低正向证据的 authority。
+
+但 Opportunity 约束的本质是：
+
+```
+negative / contradictory settlement eligibility
+```
+
+而不是正向证据的 authority。反例：
+
+```
+用户自发明确说"我喜欢 A"
+```
+不能因为此前没有构造过 `SATISFIED opportunity`，就降低这条 explicit report 的**正向** authority。
+
+```
+OPPORTUNITY_GATE_IS_DIRECTIONAL = YES
+```
+
+**正式语义归一**
+
+```
+baseAdmissibility = min(
+  matrixCeiling,
+  scopeGate,
+  temporalGate,
+  contaminationGate,
+  domainPayloadGate
+)
+
+directionalAdmissibility.support  = baseAdmissibility
+directionalAdmissibility.conflict = min(baseAdmissibility, opportunityConflictGate)
+```
+
+**`opportunityConflictGate` 冻结值**
+
+```
+SATISFIED      → ELIGIBLE   （负方向可保持 eligible）
+NOT-REQUIRED   → ELIGIBLE   （该 prediction 不需要机会）
+ABSENT         → FORBIDDEN  （**禁止** decisive negation）
+NOT-CONSUMED   → FORBIDDEN  （**禁止** decisive negation）
+UNKNOWN        → FORBIDDEN  （**禁止** decisive negation）
+```
+
+**MUST**
+
+```
+absence != missed
+Opportunity does not suppress spontaneous positive evidence
+merely because no pre-existing opportunity was consumed.
+```
+
+**与 `(q-4)` 的关系（不改写，只精化）**
+
+- `(q-4)` 的六闸门 `min(...)` 仍然**成立**，前提是把 `opportunityGate` 理解为
+  「对 base 的贡献恒为 `ELIGIBLE`」——它的真实限制表达在 `directional.conflict`；
+- 因此 `effectiveAdmissibility`（= `directionalAdmissibility.support`）**不因**机会状态下降；
+- `(q-2.3)` 的 T8 判定顺序**不变**：机会只在"无可采证据"那一支行使其全部影响，
+  且 `conflictDecisive` 要求 `opportunity === 'SATISFIED'`。
+
+**与 P1 实现的一致性（无需机械重构代码）**
+
+```
+assets/js/memory-recall/outcome-observation-core.js 已用
+  opportunityGateOf().negationAllowed
+  gateTrace.directional.conflict
+表达同一语义；本澄清只要求 **canonical contract 与实现不再冲突**。
+```
+
+---
+
+### (q-11) Prediction Error seam taxonomy（P1.5 · 追加，不改写任何既有条款）
+
+**背景：两个真实的 governance bypass（已关闭）**
+
+```
+① 拼写绕过：匹配用 code.toLowerCase().indexOf('prediction-error')
+   ⇒ camelCase（predictionError → predictionerror，不含连字符）不命中。
+② token 大小写绕过：同一表达式只 lowercase haystack、**不** lowercase token
+   ⇒ FORBIDDEN_IN_INTERPRETATION 里的 'behaviorEffect' 在 lowercased 源码里
+     **永远匹配不到** —— 那条禁令此前是**空转**的。
+```
+
+**MUST**：任何 banned-domain 列表的匹配 **MUST** 使用 semantic normalization，
+**MUST NOT** 使用「lowercase 一侧 + 原样另一侧」的裸 `indexOf`。
+
+```
+SEMANTIC_TOKEN = predictionerror
+
+normalizeSemantic = lowercase
+                  → 移除语言分隔符 [\s\-_./]+      （同一 token 的不同写法）
+                  → 其余非 [a-z0-9] 替换为硬边界   （阻断跨 token 拼接）
+
+⇒ prediction-error ≡ predictionError ≡ PredictionError ≡ PREDICTION_ERROR ≡
+  prediction_error ≡ prediction.error ≡ prediction/error ≡ prediction error
+硬边界保证 `runPrediction(error)` 这类跨 token 拼接**不误报**。
+```
+
+**三类面（definition allowed / wiring forbidden / future reserved）**
+
+```
+A · DEFINITION_ALLOWED（允许出现 PE 语义的定义/契约/测试面）
+    canonical contracts · Prediction Error 纯核心 · PE 专用测试 ·
+    已批准的 future Home Node 模块名（仅在 contract/test 中被命名）
+
+B · WIRING_FORBIDDEN（在 P2/P3 到达之前，**零** PE 记号）
+    Recall · Interpretation · selector · browser 消息流 · prompt 构造 ·
+    UI · export · relationship runtime · Memory 写路径
+
+C · FUTURE_RESERVED_SEAMS（已预留名字，允许被命名，**P1.5 不创建任何生产接线**）
+    runtime-prediction-registry · runtime-prediction-settlement
+```
+
+**MUST NOT**：仅凭"字符串出现"粗暴等同于 production wiring。
+
+**边界内的只读自述 = LEGITIMATE_METADATA**
+
+```
+`predictionErrorLive: 'NO'` 断言"PE **没有**接线"，不是接线证据。
+adoption 纪律（与 behaviorEffect 的具名位置纪律同源）：
+  · 具名闭集：predictionErrorLive · predictionErrorCalls · predictionErrorBlocker
+  · 每个名字**至多一次**
+  · 右侧**必须**是字面量（`predictionErrorLive: settle(...)` 一律拒绝）
+  · 任何其它 PE 形态（**任何拼写**）⇒ 第二条 seam ⇒ 红
+解释边界（runtime-interpretation.js）的允许集为**空**：零 PE 记号、零 PE 能力。
+```
+
+**P1.5 的关闭证据**
+
+```
+PHASE_MIGRATION（不是 GUARD_RELAXATION）
+  旧守卫原本禁止的**全部仍然禁止**（回归夹具逐条验证）
+  新增的只是"此前漏掉的拼写变体也被抓到"
+TIGHTENING_PROVEN_BY = tests/test_prediction_error_seam_guard.js §B §C
+SECOND_SEAM_ATTACKS  = 7 类 + 9 种拼写变体，全部 CAUGHT（§D §E）
+NO_PRODUCTION_PE_SEAM_UNTIL = P2/P3 通过其自身 gate
+```
+
+---
+
+### (q-12) OutcomeObservation capability instance constraint（P1.5 · 追加）
+
+P1 已证明：OutcomeObservation 的 capability =
+
+```
+module-instance-local WeakSet / WeakMap authority
+```
+
+`(q)` 因此冻结**未来装配约束**（P2/P3 MUST 服从；P1.5 只登记 / 守卫，**不实现** Registry/Settlement）：
+
+```
+OUTCOME_OBSERVATION_BUILDER_INSTANCE == OUTCOME_OBSERVATION_VERIFIER_INSTANCE
+SAME_MODULE_INSTANCE_REQUIRED            = YES
+REGISTRY_AND_SETTLEMENT_MUST_SHARE_ONE_CORE_INSTANCE = YES
+```
+
+**MUST**：builder 与 verifier **MUST** 位于
+
+```
+same Home Node process
+same loaded core instance
+```
+
+**MUST NOT**
+
+```
+browser builds OutcomeObservation
+JSON transport
+Node trusts a reconstructed object
+Registry uses core instance A while Settlement uses a separately loaded core instance B
+```
+
+```
+BROWSER_OUTCOME_OBSERVATION_ACCEPTANCE = FORBIDDEN
+JSON_TRANSPORT_RECONSTITUTION          = FORBIDDEN
+```
+
+**机械形式**：`isBuiltObservation()` 的身份表是 per-instance 的
+⇒ 另一个实例产出的对象（或 JSON round-trip 重建的对象）**必然**被拒（fail closed）。
+（P1 已测：跨模块实例、JSON 克隆、Object.assign 克隆、Proxy 包装 全部 false。
+P1.5 把它升格为**装配约束**，而不仅仅是一个测试事实。）
+
+---
+
+### (q-13) Prediction Registry · P2 落地（追加，不改写 (q-1)～(q-12)）
+
+**(q-13.1) 唯一新增的 live 能力**
+
+```
+validated Expectation → deterministic projection → PredictionRecord
+                      → bounded session-only holder
+```
+
+```
+PREDICTION_REGISTRY_LIVE   = YES
+PREDICTION_REGISTRY_LIFETIME = SESSION_ONLY
+DURABLE_PREDICTION_STORE   = NO_V1
+CROSS_RESTART_EXACTLY_ONCE = NO
+RESTART_RECOVERY           = NONE
+```
+
+落点（与 (q-11) 的 FUTURE_RESERVED_SEAMS 同名，**已接线**）：
+
+```
+assets/js/memory-recall/prediction-record-core.js    纯投影核心（无 I/O / 无时钟 / 无模型）
+services/home-node/runtime-prediction-registry.js    有界会话内持有者（64 / 10min / 进程内存）
+services/home-node/runtime-expectation.js            **唯一**批准的 PE 内部 seam（dep + 探针 + 锚后唯一调用）
+services/home-node-service.js                        装配（构造 + 导出 runtimePredictionRegistry）
+```
+
+**(q-13.2) Registry 的两个唯一权威**
+
+```
+PREDICTION_ID_AUTHORITY           = PREDICTION_REGISTRY
+PREDICTION_RECORD_MINT_AUTHORITY  = PREDICTION_REGISTRY
+SETTLEMENT_AUTHORITY              = NONE
+OBSERVATION_AUTHORITY             = NONE
+MEMORY_AUTHORITY                  = NONE
+RELATIONSHIP_AUTHORITY            = NONE
+MODEL_AUTHORITY                   = NONE
+```
+
+**(q-13.3) 投影纪律（(q-5) 的落地形式）**
+
+```
+MODEL_MAY_NOT_CHOOSE_PREDICTION_TYPE = YES（已实现：TYPE_TABLE 全枚举，模型提供的类型被忽略）
+FREE_TEXT_TO_PREDICTION_PARSING      = FORBIDDEN（已实现：核心无解析、无模型回退）
+REGISTRY_MAY_NOT_INVENT_CONTENT      = YES
+PROJECTION_IS_CONTENT_NON_EXPANSIVE  = YES（semanticPayload 键集闭集，系统只新增治理字段）
+UNSTRUCTURED_EXPECTATION_SETTLEABLE  = NO（旧 Expectation 依旧合法，只是不可结算）
+MODEL_MAY_NOT_DECLARE_OPPORTUNITY_EXISTENCE = YES（opportunity.consumedAt 恒 null）
+```
+
+**(q-13.4) 建档快照与生命周期**
+
+```
+PREDICTION_CREATION_SNAPSHOT_IMMUTABLE = YES
+P2_LIFECYCLE_STATES = ['open', 'superseded', 'withdrawn']
+P2_SETTLEMENT_STATE_PLACEHOLDER = 'pending'
+```
+
+```
+matched / missed / mixed / expired_unobserved / unresolvable = **P3 ONLY**
+```
+
+**(q-13.5) `CALLER_SUPPLIED_VALIDATED = INVALID` 的落地**
+
+```
+VALIDATED_JUDGEMENT_AUTHORITY = MODULE_PRIVATE_CAPABILITY
+mintValidatedJudgementCapability() / isValidatedJudgementCapability()
+plain {validated:true} / judgementValidated:true / 裸 result / JSON clone /
+copied brand / cross-module capability  ⇒ **全部 invalid**
+LEGACY_RESULT_ADAPTER = NONE（未创建 matched→confirmed adapter）
+旧 RESULTS / OUTCOME_JUDGEMENT_MATRIX / OUTCOME_JUDGEMENT_RUNTIME 词表 = **全部保留**
+```
+
+**(q-13.6) P2.0 guard 扩展（enforcement 扩到 expectation / behavior-effect）**
+
+```
+NO_REGISTRY_RUNTIME_SEAM_BEFORE_P2_0_GUARD_PASSES = YES（已遵守：先扩守卫，后写 seam）
+LEGITIMATE_METADATA（predictionErrorLive / Calls / Blocker） = 仍然允许，具名闭集 + 字面量
+APPROVED_P2_INTERNAL_SEAM = runtime-expectation.js 的 dep + 探针 + **锚后唯一**调用（位置与计数钉死）
+FORBIDDEN_WIRING = 其余一切 PE 形态 / 结算动词被调方 / 结算状态字符串字面量
+SETTLEMENT_LITERAL_COINCIDENCES = {'assets/js/home-node-bootstrap.js': ['superseded']}（delivery 词表碰撞，逐面登记）
+RESIDUAL_LIMITATIONS = 命名型守卫不可能完备（任意命名且不引用 PE 能力、不用结算动词的 helper 不可发现；
+                       更深保护来自"seam 内没有可消费对象、没有可写权威"）
+```
+
+**(q-13.7) P2 明确没有做**
+
+```
+SETTLEMENT_ENGINE = NONE · LIVE_SETTLEMENT = NO
+MATCHED_MISSED_CALCULATION = NONE · PREDICTION_ERROR_CALCULATION = NONE
+CALIBRATION_APPLIED_TO_LIVE = NO · EVIDENCE_MATCHER = OFF
+MODEL_CALLS_ADDED = 0 · DURABLE_WRITES_ADDED = 0
+RECALL_ENVELOPE_CHANGED = NO · UI_DISCLOSURE_CHANGED = NO
+MEMORY_WRITE_FROM_PREDICTION = FORBIDDEN · RELATIONSHIP_WRITE_FROM_PREDICTION = FORBIDDEN
+NO_HTTP_ROUTE_FOR_THE_REGISTRY = YES
+```
+
+---
+
+### (q-14) BehaviorEffect attribution：`[]` **不等于** known-none（P3.0 · 追加）
+
+P2 记录里出现过这样的组合：
+
+```
+behaviorEffectsInForce   = []
+predictionInfluencedSystem = null
+```
+
+它**不能**被读成"确认没有干预"。`[]` 只说明"我们手上没有效果记录"，
+不说明"当时没有效果在生效"。用空数组暗示 `known-absent` 是一个
+**self-confirming hole**（`[] → no intervention → clean evidence`）。
+
+**冻结**：用**显式三态**取代这种暗示。
+
+```
+behaviorEffectAttributionStatus ∈ {
+  'known-none'      —— 有可靠来源证明当时**没有**效果在生效
+  'known-present'   —— 有可靠来源证明当时**有**效果在生效
+  'unknown'         —— **没有可靠 attribution source**（P2/P3 生产默认）
+}
+
+ATTRIBUTION_DEFAULT_STATUS = 'unknown'
+```
+
+**MUST**
+
+```
+behaviorEffectsInForce: []  ⇒  MUST NOT 被解释为 known-none
+没有可靠来源时 MUST 记 'unknown'，MUST NOT 猜 'known-none'
+```
+
+**MUST（对结算）**
+
+```
+attribution = 'unknown'  ∧  主观域（preference / latent_state / relational）
+  ⇒ **禁止** decisive settlement（fail closed）
+  ⇒ 语义上的 support/conflict 只能作为 non-decisive 证据被记录
+attribution = 'known-present'
+  ⇒ calibrationCounted = false（保持 NO SELF-REINFORCING CONFIDENCE LOOP）
+attribution = 'unknown'  ∧  机制域（event）
+  ⇒ 不降级：机制事实仍然可以有事实 authority
+```
+
+**MUST NOT**：把 `unknown` 当作污染等级 `NONE` 使用。
+
+```
+MODEL_MAY_NOT_DECLARE_BEHAVIOR_EFFECT_ATTRIBUTION = YES
+ATTRIBUTION_STATUS_OUT_OF_VOCABULARY ⇒ 拒绝建档（不猜）
+```
+
+---
+
+### (q-15) P3 · Settlement Engine 落地（追加）
+
+**(q-15.1) 唯一结算权威**
+
+```
+SETTLEMENT_ENGINE_LIVE = YES
+SETTLEMENT_STATE_AUTHORITY = DETERMINISTIC_POLICY_ENGINE（唯一）
+```
+
+落点：
+
+```
+assets/js/memory-recall/prediction-settlement-core.js   纯状态机（T0–T8 + ordinal PE）
+services/home-node/runtime-prediction-settlement.js     runtime 持有者（一次性 · 有界 · 进程内存）
+services/home-node-service.js                           **唯一**装配路径
+```
+
+**(q-15.2) 七状态 vocabulary 与 legacy 隔离**
+
+```
+CANONICAL_STATES = ['pending','matched','missed','mixed','expired_unobserved','unresolvable','superseded']
+TERMINAL = 除 pending 外全部
+LEGACY_RESULTS = ['confirmed','contradicted','partial','unknown','unsettled']  ⇒ **声明但不产出**
+LEGACY_RESULT_ADAPTER = NONE
+```
+
+**MUST NOT**：新引擎产出 legacy 五词表的任何一个；**MUST NOT** 建 matched→confirmed 适配层。
+
+**(q-15.3) 一次性与优先序**
+
+```
+SETTLEMENT_ONCE = YES · REOPEN = NO_V1 · RESETTLEMENT = REJECTED · POST_WINDOW_RETRO_SETTLE = NO
+superseded **优先于** matched / missed / mixed
+revisionDetected（creation ≠ settlement 快照）⇒ superseded
+```
+
+**(q-15.4) T8 是 TOTAL FUNCTION**
+
+```
+有序判定（先命中先返回）：
+  1. permitted decisive conflict            → missed
+  2. support 达门槛 ∧ opposing evidence == 0 → matched
+  3. support > 0 ∧ conflict > 0             → mixed
+  4. 单向次门槛                              → 窗口关 ? unresolvable : pending
+  5. 无可采证据                              → 窗口关 ? (ABSENT/NOT-CONSUMED ? expired_unobserved : unresolvable) : pending
+**没有** else-unknown 兜底；落不到七状态之一即引擎缺陷。
+mixed = 双向证据同时存在 **且没有形成允许的 decisive settlement**（含 P0 修掉的漏格）。
+```
+
+**(q-15.5) 只消费 authority，不重判**
+
+```
+directional.support / directional.conflict **由 authority 面计算**，本引擎只消费
+语义 conflict ∧ directional.conflict = FORBIDDEN  ⇒ **绝不** missed
+调用方自带的 gate 若与权威面计算不一致 ⇒ **整次结算拒绝**（caller-supplied-gate-mismatch）
+```
+
+**(q-15.6) 机械 relation 分类的诚实边界**
+
+```
+RELATION_CLASSIFICATION = MECHANICAL_ONLY
+  exclusive_outcome      → 期望 token vs 观察 token 的机械相等/不等
+  window_closure_negative→ 需要 full-window-attested 的缺失 token
+  threshold / explicit_denial / statement ⇒ 'unclassifiable'
+EVIDENCE_MATCHER_INVOCATION = OFF（P5 才启用）
+⇒ 基于 statement 的主观预测在 P3 **不可能**被决定性结算；
+  这不是策略缺失，而是"禁止模型补判断"的直接后果，已诚实登记。
+```
+
+**(q-15.7) ordinal Prediction Error**
+
+```
+PREDICTION_ERROR = ORDINAL_ONLY
+predictionErrorMetric = **恒为 null**（无 Brier / Bayesian / 后验 / 连续分数）
+CONFIDENCE_BUCKETS = low | medium | high | unstated
+direction ∈ over-confident | under-confident | calibrated | unknown
+magnitude ∈ none | low | moderate | high | unknown
+查表 = 7 状态 × 4 bucket（唯一出处：prediction-settlement-core.js#PE_TABLE）
+模型**不参与**。unstated ⇒ unknown（**不许**猜一个数）。
+```
+
+**(q-15.8) 零变更**
+
+```
+MEMORY_WRITE_FROM_SETTLEMENT = FORBIDDEN（真实 store 结算前后逐字节一致）
+RELATIONSHIP_WRITE_FROM_SETTLEMENT = FORBIDDEN（trust/affinity/familiarity 一律不碰）
+UNDERSTANDING_WRITE = FORBIDDEN
+CALIBRATION_WRITEBACK = NONE（只计算 calibrationEligible，**不**写回）
+SETTLEMENT_DISCLOSURE_V1 = INTERNAL_AUDIT_ONLY（无路由 · 无 UI · 无 prompt · 无 export）
+NEXT_ALLOWED_PHASE = P4（仅 P3 全部通过之后）
+```
+
+---
+
+### (q-16) P4 · Calibration Ledger 落地（追加）
+
+**(q-16.1) 校准 authority：只有一个来源**
+
+```
+CALIBRATION_AUTHORITY_SOURCE      = P3_SETTLEMENT_RECORD
+P4_REOPENS_SETTLEMENT_AUTHORITY   = NO
+CALIBRATION_LEDGER_MAY_CONSUME    = ONLY SettlementRecord.calibrationCounted === true
+```
+
+**MUST NOT**：P4 重新判 observation authority / contamination / opportunity /
+settlement validity / prediction type。P3 说 `calibrationCounted = false`，
+P4 **没有** authority 覆盖 —— 即使它自己"觉得这条挺可靠"。
+
+**(q-16.2) provenance：不接受自证**
+
+合法的输入**只**能是 P3 模块用 **module-private capability seal** 铸造的
+SettlementRecord（WeakSet 身份 + WeakMap 封存 brand/canonicalize 指纹 + deepFreeze）。
+
+```
+SELF_ASSERTED_VALIDATED_BOOLEAN = INVALID
+plain object / JSON clone / Object.assign clone / cross-module instance / tampered
+  ⇒ **全部拒绝**
+```
+
+**(q-16.3) 禁止全局精度（本相位最重要的设计约束）**
+
+```
+GLOBAL_PREDICTION_ACCURACY = FORBIDDEN
+```
+
+**MUST NOT** 产出 `globalAccuracy` / `overallAccuracy` / `predictionAccuracy` /
+`hitRate` / `successRate` 这类**可被 authority 消费**的 runtime 字段。
+若存在聚合量，它**只能**是 diagnostics 并必须显式标注
+（`diagnosticOnly: true` / `participatesInConfidence: false`）。
+
+**(q-16.4) 分区（跨域隔离的唯一机制）**
+
+```
+CALIBRATION_PARTITION_KEY = { predictionType, targetDomain }
+CROSS_PARTITION_CONFIDENCE_TRANSFER = FORBIDDEN
+```
+
+**MUST NOT**：`event × runtime_state` 的准确率抬高
+`preference` / `latent_state` / `relational` 的置信。
+多域结算**不得**静默挑一个域 ⇒ `targetDomain = 'mixed-domains'`；
+缺域 ⇒ 分区不可解析 ⇒ **拒绝**（不猜）。
+
+**(q-16.5) session-only：三条链共享生命周期**
+
+```
+CALIBRATION_LEDGER_LIFETIME = SESSION_ONLY
+DURABLE_CALIBRATION_HISTORY = NO_V1
+```
+
+理由：PredictionRecord / SettlementRecord 都是 session-only；若 calibration 独自 durable，
+会出现"统计还在、原始预测已无法审计"的 **authority inversion**。
+
+```
+Prediction · Settlement · Calibration  v1 MUST 共享 session lifecycle
+```
+
+**(q-16.6) exactly-once**
+
+```
+CALIBRATION_COUNT_EXACTLY_ONCE_PER_SETTLEMENT = YES
+exactlyOnceScope = YES_WITHIN_BOUNDED_LEDGER_WINDOW（作用域必须如实声明）
+holder = 有界 partition 表 + 有界 dedupe 索引（**禁止**无界 Set(settlementId)）
+```
+
+重复 ingest **MUST** 幂等（不是错误，也不是重复计数）。
+
+**(q-16.7) calibrationCounts vocabulary**
+
+```
+canonical name  = calibrationCounts
+deprecated alias = calibrationEvidence（**不得**作为 runtime field 重新引入）
+keys = matched · missed · mixed · expired_unobserved · unresolvable · superseded
+       · eligibleTotal · decisiveTotal
+```
+
+P3 已冻结只有 `matched` / `missed` 会 `calibrationCounted = true`
+⇒ 其余四态恒为 **0**（完整审计 vocabulary），**MUST NOT** 折算成半个成功/失败。
+
+```
+legacy D.2 五词表（confirmed / contradicted / partial / ambiguous）**MUST NOT** 作为 ledger key
+LEGACY_RESULT_ADAPTER = NONE
+```
+
+**(q-16.8) ordinal Prediction Error 聚合**
+
+```
+只做离散 bucket 计数；MUST NOT 把 low/moderate/high 赋成 0.25/0.5/1.0 再求平均
+NUMERIC_PE_AGGREGATION = FORBIDDEN
+```
+
+**(q-16.9) calibrationConfidence = null（契约已冻结，不是自由裁量）**
+
+```
+calibrationConfidence        = **null**（v1 恒 null）
+calibrationConfidenceBasis   = NULL_BY_CONTRACT_NO_FROZEN_DERIVATION_RULE
+NO_FORMULA_INVENTION_TO_AVOID_NULL = YES
+```
+
+契约没有冻结 sample threshold / ordinal lookup / partition semantics 的派生规则
+⇒ **不得**发明 `matched / (matched + missed)`，也不得发明 ">= 5 strong" 这类无来源阈值。
+
+```
+sampleStatus ∈ { empty, counts-only }
+  empty      —— 定义性（0 条），不是阈值
+  counts-only —— 有数据但无已冻结的 sufficiency 规则
+```
+
+**(q-16.10) capability coverage 必须可见**
+
+```
+POLICY_ALLOWS_SETTLEMENT != CURRENT_RUNTIME_CAN_CLASSIFY_SETTLEMENT
+EVIDENCE_MATCHER_INVOCATION = OFF（P5 才启用）
+capabilityCoverage ∈ { settleable-by-current-runtime, capability-gap, not-policy-allowed }
+```
+
+**MUST** 区分 `NO_ELIGIBLE_SAMPLE` 与 `CAPABILITY_GAP`：
+"这个 partition 没数据" **MUST NOT** 被读成"这个 partition 的预测很不准"。
+
+**(q-16.11) 零写回 · 内部审计**
+
+```
+CALIBRATION_APPLIED_TO_LIVE = NO
+EXPECTATION_WRITEBACK       = NONE
+INTERPRETATION_WRITEBACK    = NONE
+MEMORY_WRITE_FROM_CALIBRATION       = FORBIDDEN
+RELATIONSHIP_WRITE_FROM_CALIBRATION = FORBIDDEN
+CALIBRATION_DISCLOSURE_V1   = INTERNAL_AUDIT_ONLY
+```
+
+**MUST NOT** 存在 `applyToExpectation` / `applyCalibration` /
+`adjustExpectationConfidence` / `adjustInterpretation` /
+`updateExpectation` / `updateInterpretation` / `rewritePolicy` / `updatePrompt`
+等任何写回 API。Ledger **只读过去**。
+
+**(q-16.12) 单一 seam**
+
+```
+APPROVED_P4_INTERNAL_SEAM = Settlement Engine → Calibration Ledger（**唯一一条**消费 seam）
+装配 = services/home-node-service.js（**唯一**路径）
+```
+
+**MUST NOT** 新增：HTTP route · mobile route · browser calibration API。
+其余一切面（recall / interpretation / expectation / behavior-effect /
+browser / communication / memory-store / relationship）**零**校准能力；
+**尤其** Calibration → Expectation 写回必须被 guard 抓住。
+
+---
+
+### (q-17) P4-R1 · Calibration Reconciliation（追加，不改写 (q-16)）
+
+**(q-17.1) `NO_SAMPLE` 的三个"不等于"**
+
+`policyPermission` × `runtimeCapability` × `sampleAvailability` 是**三个正交维度**，
+**MUST NOT** 压进一个字段。
+
+```
+NO_SAMPLE != BAD_PERFORMANCE
+NO_SAMPLE != POLICY_FORBIDDEN
+NO_SAMPLE != CAPABILITY_GAP
+CAPABILITY_GAP != POLICY_FORBIDDEN
+```
+
+**capabilityCoverage truth table（冻结）**
+
+| policyAllowed | runtimeClassifiable | eligibleTotal | status | noEligibleSample | capabilityGap |
+|---|---|---|---|---|---|
+| true | true | > 0 | `settleable-by-current-runtime` | false | false |
+| true | true | 0 | `settleable-by-current-runtime` | **true** | false |
+| true | false | 任意 | `capability-gap` | 由样本决定 | **true** |
+| **false** | 任意 | 任意 | `not-policy-allowed` | 由样本决定 | false |
+
+**MUST**：样本数量**不得**影响 `status`。
+**MUST NOT**：`empty-but-policy-allowed` 被写成 `not-policy-allowed`（(q-16.10) 的实现缺陷，已在 R1 修正）。
+
+**(q-17.2) `CALIBRATION_INPUT_MUST_BE_REACHABLE_FROM_P3 = YES`**
+
+P4 **MUST** 在计数前额外问一句：
+
+> 这个 `predictionType × targetDomain × settlementState × calibrationCounted`
+> 组合，**是否可能**由当前 frozen P3 policy 合法地产生？
+
+这是 **reachability validation**，**不是** settlement re-judgement：
+
+```
+P4_REOPENS_SETTLEMENT_AUTHORITY = NO（不变）
+P4_REJUDGES_SETTLEMENT          = NO
+```
+
+权威来自 **P3 settlement core 的共享 primitive**，P4 **MUST NOT** 复制第二份 policy：
+
+```
+ONE_POLICY_TABLE_MULTIPLE_CONSUMERS = YES
+DECISIVE_AUTHORITY_SOURCES（唯一出处 = prediction-settlement-core.js）
+  与 P2 `POLICY_TABLE[type].strongestAuthority` **逐字一致**（tests 机械断言）
+```
+
+被拒绝时：
+
+```
+refuse ingest · changed = false
+reasonCode = settlement-combination-unreachable
+```
+
+**MUST NOT** 让 reachability 成为普通对象绕过 settlement capability seal 的路径：
+ingest 顺序冻结为
+
+```
+① provenance / capability seal
+② calibrationCounted === true
+③ P3 reachability
+④ partition resolution
+⑤ idempotency
+⑥ count
+```
+
+**(q-17.3) v1 明确不可达的组合**
+
+```
+preference × user_behavior × matched|missed × calibrationCounted=true  ⇒ UNREACHABLE_V1
+latent_state × user_behavior × matched|missed × counted               ⇒ UNREACHABLE_V1
+relational × user_behavior × matched|missed × counted                 ⇒ UNREACHABLE_V1
+```
+
+理由：`AUTO_SETTLE_PREFERENCE_FROM_BEHAVIOR = OFF`，
+`DECISIVE_AUTHORITY_SOURCES` 对 preference / latent_state / relational
+只允许 `EXPLICIT_USER_REPORT`。
+
+**P3 侧同步收紧**（根因，不只是 P4 拦）：
+
+```
+ELIGIBLE（matrix 天花板）只说"看得见"
+decisive 还需：source ∈ DECISIVE_AUTHORITY_SOURCES[predictionType]
+⇒ 行为证据对 preference / latent_state / relational 永远是 non-decisive
+```
+
+**statement 型 explicit report** 属于 **CAPABILITY_GAP**（需要 Evidence Matcher，当前 OFF），
+**不是** policy forbidden：
+
+```
+policy 允许 + runtime 无能力  ⇒ capability-gap
+policy 禁止                  ⇒ not-policy-allowed
+```
+
+**(q-17.4) `MULTI_DOMAIN_CALIBRATION_PARTITION_V1 = FORBIDDEN`**
+
+```
+EXACTLY_ONE_ADMITTED_TARGET_DOMAIN_REQUIRED_FOR_CALIBRATION_COUNT = YES
+```
+
+```
+admittedTargetDomains.length === 0  ⇒ partition-unresolvable-no-domain（拒绝）
+admittedTargetDomains.length === 1  ⇒ 可计数
+admittedTargetDomains.length  > 1  ⇒ diagnostics-only · changed=false
+                                      reasonCode = partition-unresolvable-multi-domain
+```
+
+**MUST NOT**：
+
+```
+choose first domain
+create a mixed-domains calibration bucket
+split one settlement into N partitions（会让一条结算被多次统计）
+```
+
+**MUST**：多域只是 **partition resolution failure**，
+**MUST NOT** 被写成 settlement state `mixed` —— 两个概念严格分开。
+
+**(q-17.5) diagnostics 只做审计**
+
+```
+diagnostics.multiDomainSettlementCount
+diagnostics.unresolvablePartitionCount
+diagnostics.unreachableCombinationCount
+participatesInConfidence        = false
+participatesInCalibrationCounts = false
+```
+
+**MUST NOT** 影响任何 partition。
+
+**(q-17.6) R1 不改变的东西**
+
+```
+calibrationCounts          = 不变（matched / missed 之外恒 0）
+calibrationConfidence      = null（不变；R1 与 confidence derivation 无关）
+CALIBRATION_COUNT_EXACTLY_ONCE_PER_SETTLEMENT = YES_WITHIN_BOUNDED_LEDGER_WINDOW（不变）
+holder                     = 64 partitions / 1024 dedupe / 10 min TTL（不变）
+CALIBRATION_APPLIED_TO_LIVE = NO（不变）
+NEW_RUNTIME_SEAMS          = 0（R1 **不**新增 seam）
+```
+
+---
+
+### (q-18) P5-B · Evidence Matcher（追加，不改写 (q-1)～(q-17)）
+
+**(q-18.1) 角色：advisory semantic classifier only**
+
+```
+EVIDENCE_MATCHER_ROLE = ADVISORY_SEMANTIC_CLASSIFIER_ONLY
+```
+
+权威链（**只有**这一条）：
+
+```
+OutcomeObservation
+   ↓
+Evidence Matcher        ← 只产出 semantic relation
+   ↓
+relation ∈ { support | conflict | irrelevant | ambiguous }
+   ↓
+既有 source provenance（**不**被 matcher 改写）
+   ↓
+Authority Gate（directional authority）
+   ↓
+DECISIVE_AUTHORITY_SOURCES（P3 policy）
+   ↓
+Settlement Engine
+```
+
+**MUST NOT**：
+
+```
+LLM says conflict  →  missed            ← **绝对禁止**的短路
+```
+
+**MUST**：
+
+```
+LLM says conflict
+∧ source provenance permits decisiveness
+∧ authority gate permits conflict
+∧ opportunity permits negative settlement
+∧ P3 policy permits this source/type
+⇒ MAY become missed
+```
+
+**(q-18.2) 能力边界（全部为 YES）**
+
+```
+MATCHER_MAY_CLASSIFY_RELATION        = YES
+MATCHER_MAY_NOT_UPGRADE_SOURCE       = YES
+MATCHER_MAY_NOT_UPGRADE_DOMAIN       = YES
+MATCHER_MAY_NOT_CHOOSE_PREDICTION_TYPE = YES
+MATCHER_MAY_NOT_CHOOSE_SETTLEMENT_STATE = YES
+MATCHER_MAY_NOT_DECLARE_VALIDATED    = YES
+MATCHER_MAY_NOT_CREATE_OPPORTUNITY   = YES
+MATCHER_PREDICTION_TYPE_AUTHORITY    = NONE
+MATCHER_MODEL_AUTHORITY              = SYSTEM_CONFIG
+MATCHER_CANNOT_DECLARE_EXPLICITNESS  = YES
+STRENGTH_HINT_AUTHORITY              = NONE
+```
+
+**(q-18.3) 输出 vocabulary（闭集）**
+
+```
+relation ∈ { support, conflict, irrelevant, ambiguous }
+```
+
+可选审计字段（**均无 authority**）：
+
+```
+strengthHint ∈ { weak, moderate, strong, unspecified }   ⇒ advisory only
+rationale                                                ⇒ bounded · audit only
+evidenceRefs                                             ⇒ 只能引用输入给的 bounded refs
+matcherVersion
+```
+
+**MUST NOT** 出现（出现即 schema rejection / strip + 具名 reason）：
+
+```
+matched · missed · mixed · expired_unobserved · unresolvable · superseded      （结算状态）
+confirmed · contradicted · partial                                            （legacy D.2）
+validated · settleable · calibrationCounted                                   （自证 / 越权）
+predictionType · targetDomain · source · sourceInstance · admissibility · authorityLevel
+confidence · probability · score                                              （伪精度）
+```
+
+**(q-18.4) 不可变性**
+
+```
+SOURCE_PROVENANCE_IMMUTABLE_ACROSS_MATCHER = YES
+TARGET_DOMAIN_IMMUTABLE_ACROSS_MATCHER     = YES
+PREDICTION_TYPE_IMMUTABLE_ACROSS_MATCHER   = YES
+MATCHER_OUTPUT_HAS_NO_SOURCE_FIELD         = YES（schema 上就不给模型返回的机会）
+```
+
+`explicit user report` 的定义**依赖 provenance**，不依赖模型判断：
+
+```
+MATCHER_CANNOT_DECLARE_EXPLICITNESS = YES
+只有由 authoritative producer 标记 source = EXPLICIT_USER_REPORT 的 statement 才可被匹配
+LINGUISTIC_EVIDENCE / USER_BEHAVIOR / MODEL_INFERENCE
+  ⇒ 即使 matcher 输出 support/conflict，也**保持原有 authority ceiling**
+```
+
+**(q-18.5) 输入最小化**
+
+```
+MINIMUM_CONTEXT_MATCHING = YES
+```
+
+只允许：`predictionId` · `prediction{subject, predicate, expectedOutcome, predictionType, temporalFrame}` ·
+`observation{observationId, source, targetDomain, outcomeRef/statement}` · `scope summary`。
+
+**MUST NOT** 发送：完整对话历史 · Memory 全量 · 角色记忆 · relationship state ·
+完整 system prompt · 凭据 / API key · 无关消息。
+
+**(q-18.6) 只在需要时调用**
+
+```
+needsEvidenceMatcher(prediction, observation)   —— MUST 确定性
+```
+
+```
+event × token（机械 token 比较）        ⇒ matcher = OFF
+runtime_state token 比较                ⇒ matcher = OFF
+user_behavior token 比较                ⇒ matcher = OFF
+statement evidence                      ⇒ matcher candidate
+```
+
+机械可判的路径 **MUST** 保持 0 次模型调用。
+
+**(q-18.7) 失败一律 fail-closed**
+
+```
+MATCHER_FAILURE_RELATION = ambiguous
+MATCHER_RETRY            = 0（无冻结 retry policy）
+MATCHER_CACHE            = NONE_V1
+```
+
+失败 reasonCode：`matcher-invalid-output` · `matcher-timeout` · `matcher-provider-error` ·
+`matcher-unavailable` · `matcher-disabled`。
+
+**MUST NOT**：failure → support / conflict。超时 **MUST NOT** 无限期阻塞 Chat generation。
+
+**(q-18.8) capability seal**
+
+```
+ONLY_MATCHER_RUNTIME_MINTS_VALID_EVIDENCE_MATCH = YES
+```
+
+原始模型 JSON **MUST** 经过本地 validator/builder（strict parse → canonicalize →
+WeakSet 身份 + WeakMap 封存 + deepFreeze）才能成为 `EvidenceMatch`。
+
+拒绝：plain object · `{relation:'support'}` · JSON clone · Object.assign clone ·
+copied brand · cross-module object · tampered match。
+
+**(q-18.9) 唯一 seam**
+
+```
+APPROVED_P5_INTERNAL_SEAM = Settlement Engine → Evidence Matcher（**唯一**一条）
+```
+
+**MUST NOT**：`Recall → Matcher` · `Interpretation → Matcher` · `Chat UI → Matcher` ·
+`communication.js → Matcher` · `Memory → Matcher` · `Calibration → Matcher` ·
+`Relationship → Matcher` · **`Matcher → Settlement state direct assignment`**。
+
+**(q-18.10) Settlement 集成：只替换 capability gap**
+
+P3 对 statement 原本返回 `relation-unclassifiable-without-evidence-matcher`；
+P5-B **只**替换这一条。Settlement **仍然**重新使用：
+
+```
+source provenance · directional authority · DECISIVE_AUTHORITY_SOURCES ·
+opportunity · contamination · scope · temporal · policy
+```
+
+`EvidenceMatch` **只**提供 `semantic relation`。
+
+```
+MATCHER_MAY_NOT_ENTER_CALIBRATION_DIRECTLY = YES
+链路 MUST = Matcher → Settlement → Prediction Error → Calibration
+```
+
+**(q-18.11) enablement（**不**默认全局开启）**
+
+```
+EVIDENCE_MATCHER_ENABLED_DEFAULT = false
+```
+
+未启用时的运行时行为：statement 保持 `relation-unclassifiable-without-evidence-matcher`，
+**0** 次模型调用，主观域 partition 保持 `capability-gap`。
+启用后：仅在 `EXPLICIT_USER_REPORT + valid EvidenceMatch` 条件下，
+`reachable-policy-only` 才变为 `reachable-now`；行为路径**仍然** unreachable。
+
+```
+MATCHER_CALLS_ADDED = conditional
+```
+
+**MUST NOT** 声称 `MODEL_CALLS_ADDED = 0` 作为永久不变量。
+
+**(q-18.12) 不动的量**
+
+```
+calibrationConfidence     = null（不变）
+CALIBRATION_APPLIED_TO_LIVE = NO（不变）
+DURABLE_WRITES_ADDED      = 0（matcher 无 durable store · 无 vector store）
+MEMORY_WRITE / RELATIONSHIP_WRITE = FORBIDDEN
+RECALL_ENVELOPE_CHANGED   = NO · UI_DISCLOSURE_CHANGED = NO
+NEXT_PHASE_REQUIRES_OWNER_RULING = YES
+```
+
+---
+
+### (q-19) P5-B-R1 · Matcher Enablement Closure（追加，不改写 (q-18)）
+
+**(q-19.1) 三层 capability taxonomy（冻结）**
+
+不能用同一个 `reachable-now` 同时表示"代码里有 matcher"、"配置启用了 matcher"、
+"当前证据真能 decisive"。正式拆成三层：
+
+```
+matcherCapabilityPresent   （compiled）—— runtime 里存在合法 matcher implementation
+matcherEnabled             （enabled） —— system config 是否允许真实 model call
+productionSettleable                    —— 生产上这条路径真能产生 decisive settlement
+```
+
+```
+compiled != enabled != production-settleable
+```
+
+`productionSettleable` **只有**在下列**全部**为真时才是 true：
+
+```
+matcherCapabilityPresent
+∧ matcherEnabled
+∧ policyAllowed
+∧ sourceDecisive（source ∈ DECISIVE_AUTHORITY_SOURCES[type]）
+∧ attributionAuthorityAvailable        ← (q-14) 的归因门**不因 matcher 而放宽**
+∧ 正常 P1/P3 gate 可合法允许 decisive
+```
+
+**MUST NOT**：
+
+```
+MATCHER_SUCCESS_IMPLIES_CLEAN_ATTRIBUTION
+matcher 启用        ⇒ 自动 productionSettleable
+compiled            ⇒ runtimeClassifiable
+```
+
+**(q-19.2) 具名 capability gap 原因**
+
+```
+capabilityGapReason ∈ {
+  matcher-not-present · matcher-disabled · statement-relation-unavailable ·
+  attribution-unknown · policy-forbidden · source-not-decisive · no-eligible-sample
+}
+```
+
+**MUST NOT** 把所有原因压成一个无信息的 `capability-gap` 字符串。
+
+**(q-19.3) `(q-14)` 归因门**不**因 P5-B 放宽**
+
+```
+unknown != known-none（不变）
+matcher support/conflict ∧ attribution unknown
+  ⇒ 主观域 decisive settlement **仍然禁止**
+```
+
+⇒ 当前生产默认（P2 projection 恒 `unknown`）下，
+`preference` / `latent_state` / `relational` 的 `productionSettleable` **恒为 false**，
+即使 matcher 已编译且已启用。这是**真实状态**，不是缺陷。
+
+**(q-19.4) P4 capabilityCoverage 必须跟真实 enablement 一致**
+
+```
+四个正交维度：policyAllowed · runtimeClassifiable · productionSettleable · sampleAvailability
+semanticRuntimeClassifiable = matcherCapabilityPresent ∧ matcherEnabled
+productionSettleable        = runtimeClassifiable ∧ policyAllowed ∧ attributionAuthorityAvailable
+```
+
+**MUST NOT**：`matcher module exists ⇒ runtimeClassifiable = true`。
+
+保持 (q-17.1) 的三条**不相等**，并新增两条：
+
+```
+COMPILED_BUT_DISABLED       != RUNTIME_CLASSIFIABLE
+RUNTIME_CLASSIFIABLE        != PRODUCTION_SETTLEABLE
+```
+
+**(q-19.5) matcher idempotency（R3）**
+
+```
+MATCHER_AT_MOST_ONCE_PER_MATCH_KEY_WITHIN_SESSION = YES
+
+MATCH_KEY = stableToken(
+  predictionSemanticFingerprint | observationFingerprint | matcherVersion | relationSchemaVersion
+)
+```
+
+```
+same semantic prediction ∧ same observation ∧ same matcherVersion  ⇒ same MatchKey
+任何真实语义变化                                                    ⇒ new MatchKey
+identity MUST NOT 使用 Date.now / Math.random / 全局计数器
+```
+
+命中已有 sealed `EvidenceMatch`：
+
+```
+⇒ reuse existing sealed EvidenceMatch · matcherCalls 不增加 · 不扣预算
+```
+
+**(q-19.6) bounded holder**
+
+```
+MATCHER_HOLDER_LIFETIME = SESSION_ONLY
+DURABLE_MATCHER_CACHE   = NO
+capacity bound + TTL bound + eviction diagnostics（沿用既有 holder 纪律）
+禁止 unbounded Map / Set
+只缓存 runtime-minted sealed EvidenceMatch（**不得**缓存 raw model JSON 再恢复 authority）
+```
+
+**(q-19.7) failure memo policy**
+
+```
+timeout / provider-error / invalid-output / budget-exhausted
+  ⇒ canonical ambiguous failure result
+  ⇒ **MAY** be memoized by MatchKey（默认 SUCCESS_AND_FAILURE）
+CALLER_RETRY_CANNOT_UPGRADE_RELATION = YES
+```
+
+即：调用方**不得**靠重复请求"抽到" support/conflict。
+
+**(q-19.8) 调用预算（R4）—— hard ceiling**
+
+```
+maxMatcherCallsPerSettlementAttempt = 4
+maxMatcherCallsPerPrediction        = 4
+maxMatcherCallsPerTurn              = 8
+MATCHER_CALL_BUDGET_AUTHORITY       = SYSTEM_CONFIG
+evidence 不得携带 retry / budget / maxCalls / timeout / model / provider
+```
+
+顺序（**memo 先于 budget**）：
+
+```
+1 needed? 2 MatchKey 3 memo 4 hit ⇒ reuse（不扣预算）
+5 budget 6 exhausted ⇒ ambiguous 7 一次调用 8 validate 9 seal 10 memoize
+```
+
+```
+BUDGET_EXHAUSTION_RELATION = ambiguous
+BUDGET_EXHAUSTION MUST NOT produce support / conflict
+机械可判路径**不**受预算影响（它根本不需要 matcher）
+```
+
+**(q-19.9) 生产默认不变**
+
+```
+EVIDENCE_MATCHER_ENABLED_DEFAULT = false   ← 本轮硬冻结，**不得**自动改为 true
+PRODUCTION_ENABLEMENT_READY = YES（能力已就绪；是否启用是 owner ruling）
+```
+
+**(q-19.10) R5 · input schema 口径归一**
+
+之前报告称 "four top-level keys" 却列出五个 —— **报告**是错的；
+实现、测试、契约一致为**五**键。正式冻结：
+
+```
+MATCHER_INPUT_TOP_LEVEL_KEY_COUNT = 5
+MATCHER_INPUT_TOP_LEVEL_KEYS = [schemaVersion, predictionId, prediction, observation, scope]
+CODE == TEST == CONTRACT == REPORT
+```
+
+修 key count **MUST NOT** 被用来扩大 input：input minimization 全部保持
+（无完整对话 / 无 Memory dump / 无 relationship state / 无凭据）。
+
+**(q-19.11) 不动的量**
+
+```
+CALIBRATION_CONFIDENCE = null · CALIBRATION_APPLIED_TO_LIVE = NO
+MATCHER_RELATION_AUTHORITY = ADVISORY_ONLY · SETTLEMENT_STATE_AUTHORITY = P3_ONLY
+NEW_RUNTIME_SEAMS = 0（holder / budget 是 pure/internal implementation detail）
+DURABLE_WRITES_ADDED = 0 · MEMORY_WRITE = NONE · RELATIONSHIP_WRITE = NONE
+```
+
+---
+
+### (q-20) P5-B2 · BehaviorEffect Attribution Authority（追加，不改写 (q-1)～(q-19)）
+
+**(q-20.1) 最高 invariant**
+
+```
+ABSENCE_OF_EFFECT_RECORD != KNOWN_NO_EFFECT
+```
+
+`behaviorEffectsInForce: []` / `effects.length === 0` **永远不能单独**证明
+"当时没有干预"。只有 authoritative producer 能证明：
+
+```
+all relevant BehaviorEffect sources were observed
+∧ none were active/relevant
+```
+
+时，才允许 `known-none`。否则一律 `unknown`。
+
+**(q-20.2) 唯一 owner**
+
+```
+BEHAVIOR_EFFECT_ATTRIBUTION_AUTHORITY = RUNTIME_BEHAVIOR_EFFECT
+ONE_EFFECT_FACT_OWNER = YES
+```
+
+归因账本**长在既有的 `services/home-node/runtime-behavior-effect.js` 里**，
+不新建第二个 registry。理由：该模块已经拥有唯一的创建 seam（`deriveAndHold`）、
+唯一的消费 seam（`consumeForTurn`）、唯一的过期 seam（`sweep`）与唯一的淘汰 seam
+（`evictOverflow`）—— 两套状态必然漂移。
+
+**MUST NOT**：browser 声称有效果 · UI 声称没有 · Matcher 声称没有 ·
+Settlement 推断没有 · Prediction Registry 猜没有。
+
+**(q-20.3) 状态词表（三态，不加第四种）**
+
+```
+ATTRIBUTION_STATUS = { known-none, known-present, unknown }
+```
+
+| authority coverage | 观测到 ≥1 relevant effect | 观测到 0 个 |
+|---|---|---|
+| `complete` | `known-present` | **`known-none`** |
+| `partial` | `known-present`（coverage incomplete 记入诊断） | **`unknown`** |
+| `unavailable` | `known-present`（同上） | **`unknown`** |
+
+```
+KNOWN_NONE_REQUIRES_COMPLETE_COVERAGE = YES
+```
+
+**(q-20.4) coverage 判定**
+
+```
+BehaviorEffectAttributionSnapshot {
+  status   : known-none | known-present | unknown
+  coverage : complete | partial | unavailable
+  effects  : [...]
+}
+```
+
+```
+coverage = unavailable  ⇒ authority 缺席 / 未启用
+coverage = partial      ⇒ 出现"未观察到终态就消失"的条目（淘汰 / 降级）
+                          ∨ 查询窗口早于 authoritySince
+                          ∨ scope 未被完整表达
+coverage = complete     ⇒ 以上皆不成立
+```
+
+```
+effects.length === 0 ∧ coverage != complete  ⇒  status = unknown
+```
+
+**(q-20.5) Effect identity 与生命周期**
+
+```
+behaviorEffectInstanceId = deterministic hash(characterId|conversationId|sourceTurn|createdAt|instanceSeq)
+```
+
+`instanceSeq` 由 authority 单调发号 ⇒ 同一 key 的两次激活可分、
+同一 effect 被观察两次可分。**MUST NOT** 只用 `effectKind` 做 identity。
+
+```
+每个 instance MUST 携带 startedAt，并以 endedAt | null + endReason 表达终态
+activeAt(t) 是纯机械区间判定；时间由 runtime 注入（pure core 内 MUST NOT Date.now）
+```
+
+**(q-20.6) 归因账本**
+
+```
+BEHAVIOR_EFFECT_ATTRIBUTION_LEDGER_LIFETIME = SESSION_ONLY
+bounded capacity（实例上限）+ 有界淘汰 + 降级诊断
+MUST NOT 用"永远积累历史"实现 complete coverage
+MUST NOT 新增 durable storage
+```
+
+**(q-20.7) 快照不可变 / 两个时点**
+
+```
+ATTRIBUTION_SNAPSHOT_AT_PREDICTION_CREATION = IMMUTABLE
+PREDICTION_CREATION_ATTRIBUTION != OUTCOME_OBSERVATION_ATTRIBUTION
+```
+
+创建时的归因真相**不得**被后续 lifecycle 改写成 `known-none`（或反过来）。
+两个时点各自独立取快照。
+
+**(q-20.8) capability seal**
+
+```
+ONLY_ATTRIBUTION_AUTHORITY_MINTS_VALID_SNAPSHOT = YES
+```
+
+拒绝：plain object · JSON clone · Object.assign clone · copied brand ·
+cross-module object · tampered snapshot。
+封印层**额外**复核 `known-none ⇒ coverage === 'complete'`。
+
+**(q-20.9) `predictionInfluencedSystem` 三态**
+
+```
+true  ：存在通过**稳定 ref**（sourcePredictionId / sourceExpectationId）证明
+        由该 Prediction 条件化的 effect
+false ：依赖追踪**完整**，且证明没有任何 behavior 路径消费该 Prediction
+null  ：追踪不可用 / 不完整 ⇒ **绝不**猜 false
+```
+
+```
+PREDICTION_INFLUENCED_SYSTEM_FALSE_REQUIRES_COMPLETE_TRACE = YES
+```
+
+追踪范围**MUST** 具名（例如 `BEHAVIOR_EFFECT_SUBSYSTEM_ONLY`）；
+false 的含义被限定在该范围内。**MUST NOT** 用"文本包含"做因果 linkage。
+
+**(q-20.10) 相关性过滤（机械）**
+
+至少：`characterId` · `conversationId` · `subject` · `activeAt(at)`。
+
+```
+角色 A 的 effect MUST NOT 污染角色 B
+会话 A 的 effect MUST NOT 污染会话 B
+已结束 / 尚未开始的 effect MUST NOT 出现在该时点
+```
+
+**(q-20.11) contamination 的分工**
+
+```
+Attribution Authority → **facts**（effectPresent · effectKinds ·
+                                  predictionConditioned · temporalOverlap · coverage）
+P1 core               → NONE / POSSIBLE / LIKELY / DIRECT / UNKNOWN
+```
+
+attribution authority **MUST NOT** 直接给出 `contaminationClass`。
+
+**(q-20.12) 消费侧纪律**
+
+```
+Prediction Registry 只**消费** sealed snapshot；**没有** attribution authority
+fail-closed：缺席 / 抛错 / 非法 capability / scope 不匹配 ⇒ status = 'unknown'
+attribution 是 **decisive capability dependency**，不是 prediction creation dependency
+  ⇒ 任何 attribution 失败 MUST NOT 让 Prediction 建档失败
+```
+
+**(q-20.13) 不动的量**
+
+```
+EVIDENCE_MATCHER_ENABLED_DEFAULT = false（**保持**；本轮 MUST NOT 改）
+MATCHER_DEFAULT_CHANGED = NO
+MODEL_CALLS_ADDED = 0 · DURABLE_WRITES_ADDED = 0
+MEMORY_WRITE = NONE · RELATIONSHIP_WRITE = NONE
+CALIBRATION_CONFIDENCE = null · CALIBRATION_APPLIED_TO_LIVE = NO
+RECALL_ENVELOPE_CHANGED = NO · UI_DISCLOSURE_CHANGED = NO
+NEW_RUNTIME_SEAMS = 0（attribution 是既有 BE owner 的内部设施）
+```
+
+---
+
+### (q-21) P5-B3-A · BehaviorEffect Attribution Coverage Closure（追加）
+
+**(q-21.1) 核心区分（冻结）**
+
+```
+ACTIVE_EFFECT_AUTHORITY      !=  ATTRIBUTION_HISTORY_RETENTION
+```
+
+- **Active authority** 回答"T 时刻有哪些 relevant BehaviorEffect 在生效"。
+  **MUST** 由 canonical owner 机械确定，且**必须完整**。
+- **History retention** 回答"归因能精确回溯到多早"。**可以** bounded。
+
+```
+历史 retention 被裁剪 MUST NOT 自动使 present-time active authority 失效
+```
+
+**(q-21.2) 修正旧错误模型**
+
+```
+旧（已废弃）：capacity eviction → effect 消失 → coverage **永久** partial
+```
+
+canonical owner **自己执行**的四条 exit 全部属于 **OBSERVED_TERMINATION**：
+
+```
+consume · TTL expiry · replacement · capacity eviction
+```
+
+```
+OBSERVED_TERMINATION_PRESERVES_ACTIVE_COVERAGE = YES
+CAPACITY_EVICTION_IS_OBSERVED_TERMINATION      = YES
+UNOBSERVED_DISAPPEARANCE_DEGRADES_COVERAGE     = YES
+```
+
+**(q-21.3) 每条 exit 的终态事实**
+
+```
+consume            → endedAt = 消费时刻            · endReason = 'consumed'
+TTL expiry         → endedAt = createdAt + TTL     · endReason = 'expired'
+replacement        → endedAt = 替换时刻            · endReason = 'replaced'
+capacity eviction  → endedAt = 淘汰时刻            · endReason = 'capacity-evicted'
+```
+
+```
+END_REASONS = { consumed, expired, replaced, capacity-evicted }
+```
+
+**MUST NOT** `delete()` 之后当它从未存在过。
+**MUST**：`at >= endedAt ⇒ definitely inactive`；`at < endedAt ⇒ may be active`。
+TTL 的 `endedAt` 用**理论到期时刻**，不是惰性清扫的观察时刻。
+
+**(q-21.4) replacement 不产生幽灵**
+
+```
+旧 instance → endedAt = 替换时刻 · endReason = 'replaced'
+新 instance → **新** behaviorEffectInstanceId · startedAt = 替换时刻
+```
+
+**(q-21.5) 分层（同一 owner，不是一个新 registry）**
+
+```
+activeEffects        （与 holder 一一对应；**不设独立容量**）
+closedEffectHistory  （有界；裁剪只推进 horizon）
+ONE_EFFECT_FACT_OWNER = YES（仍然成立）
+```
+
+活跃集合之所以永远完整：**容量压力由终止解决，而不是靠遗忘**。
+
+**(q-21.6) coverage horizon**
+
+```
+authoritySince                        —— authority 开始观察的时刻
+historyRetentionFloor                 —— closed history 被裁剪到的最早完整时刻
+effectiveCoverageFloor = max(authoritySince, historyRetentionFloor)
+```
+
+```
+at >= effectiveCoverageFloor ⇒ coverage may be complete（其余条件成立时）
+at <  effectiveCoverageFloor ⇒ coverage = partial
+```
+
+```
+HISTORICAL_RETENTION_EVICTION
+  DEGRADES ONLY THE AFFECTED PAST HORIZON
+  NOT THE ENTIRE SESSION
+```
+
+**(q-21.7) 真正的 UNOBSERVED_DISAPPEARANCE**
+
+只有下列情形才降级 coverage（**不再**包含正常 FIFO 淘汰）：
+
+```
+internal invariant broken
+active entry vanished without canonical lifecycle close
+state corruption / lifecycle replay mismatch
+authority detects an impossible missing instance
+```
+
+**(q-21.8) 状态规则不变**
+
+```
+KNOWN_NONE_REQUIRES_COMPLETE_COVERAGE = YES（不变）
+≥1 relevant effect positively active at T ⇒ known-present（即使 coverage partial；不变）
+[] ∧ coverage != complete ⇒ unknown（不变）
+```
+
+**(q-21.9) 不可变与隔离**
+
+```
+PREDICTION_ATTRIBUTION_SNAPSHOT_IMMUTABLE = YES
+历史 retention 变化 MUST NOT 回写已 sealed 的 PredictionRecord snapshot
+  （不得 retroactively known-none → unknown）
+active set 与 history 都 MUST 继续按 characterId / conversationId /
+  subject-relevance 隔离；coverage horizon **per-scope**，不得用一个
+  过度悲观的 global floor 错误降级无关 scope
+```
+
+**(q-21.10) 不动的量**
+
+```
+EVIDENCE_MATCHER_ENABLED_DEFAULT = false（**保持**；本轮 MUST NOT 改）
+OUTCOME_OBSERVATION_PRODUCTION_PRODUCER = NOT_LIVE（本轮**不**接线）
+MODEL_CALLS_ADDED = 0 · DURABLE_WRITES_ADDED = 0
+CALIBRATION_CONFIDENCE = null · CALIBRATION_APPLIED_TO_LIVE = NO
+MEMORY_WRITE = NONE · RELATIONSHIP_WRITE = NONE
+NEW_RUNTIME_SEAMS = 0
+```
+
+---
+
+### (q-22) P5-B3-B · OutcomeObservation Production Authority（追加）
+
+**(q-22.1) 最高原则**
+
+```
+OUTCOME_OBSERVATION_PRODUCER_MAY_OBSERVE_FACTS_ONLY = YES
+OBSERVATION_FACT_AUTHORITY != SEMANTIC_RELATION_AUTHORITY != SETTLEMENT_AUTHORITY
+```
+
+Producer **可以**决定：what happened · when · where · concerning whom ·
+source provenance · bounded factual payload · observation identity。
+Producer **禁止**决定：support · conflict · matched · missed · mixed ·
+settleable · calibrationCounted · predictionType · authority level。
+
+**(q-22.2) 唯一 mint 权威**
+
+```
+ONE_CANONICAL_OUTCOME_OBSERVATION_MINT_PATH = YES
+OUTCOME_OBSERVATION_CAPABILITY_MINT_AUTHORITY = OUTCOME_OBSERVATION_CORE_BUILDER
+```
+
+Producer **MUST NOT** 自己造 seal；事实 → canonical P1 builder → sealed capability。
+
+**(q-22.3) producer allowlist（静态，禁止动态注册）**
+
+```
+PRODUCER_SOURCE_ALLOWLIST = REQUIRED · DYNAMIC_PRODUCER_REGISTRATION = FORBIDDEN
+runtime-state / runtime-activity  → CANONICAL_RUNTIME    → runtime_state
+user-action                       → USER_BEHAVIOR        → user_behavior
+linguistic-evidence               → LINGUISTIC_EVIDENCE  → 主观域（低权）
+MODEL_INFERENCE                   → **不得** mint 现实事实
+EXPLICIT_USER_REPORT_PRODUCER     = NOT_AVAILABLE（审计未发现 authoritative boundary）
+```
+
+**(q-22.4) 身份与幂等**
+
+```
+OUTCOME_OBSERVATION_AT_MOST_ONCE_PER_SOURCE_EVENT_WITHIN_SESSION = YES
+observationId MUST NOT 由 Date.now / Math.random / 进程计数器单独决定
+同一 source event + 同一 Prediction ⇒ 同一条逻辑 observation（复用同一 sealed 对象）
+不同 source event（即使 payload 相同）⇒ distinct
+holder = SESSION_ONLY · bounded（无 unbounded Set）
+```
+
+**(q-22.5) 时间模型**
+
+```
+OUTCOME_ATTRIBUTION_SNAPSHOT_TIME = REALITY_EVENT_TIME
+occurredAt / observedAt / processedAt MUST 语义分离
+延迟处理 MUST 用 event time 查询归因
+natural-language temporal claim MUST NOT 作为 authoritative clock
+payload MUST NOT 自带 observedAt 覆盖 authority
+```
+
+**(q-22.6) 归因失败不等于事件丢失**
+
+```
+ATTRIBUTION_FAILURE != REALITY_EVENT_LOST
+attribution 缺席 / 抛错 / 非法 capability / scope 不匹配 / at < coverageFloor
+  ⇒ observation 仍然 mint，behaviorEffectAttributionStatus = unknown，P3 fail closed
+```
+
+**(q-22.7) opportunity 与 pairing**
+
+```
+OUTCOME_OBSERVATION != OPPORTUNITY
+OBSERVATION_MINT_AUTHORITY != PREDICTION_PAIRING_AUTHORITY
+PAIRING_AUTHORITY = PREDICTION_REGISTRY_SCOPE_QUERY（character + conversation + window）
+pairing candidate ≠ relation（MUST 继续走 mechanical relation / Evidence Matcher）
+文本相似度 MUST NOT 作为 production pairing authority
+producer MUST NOT 决定 opportunity 语义（NOT-CONSUMED / ABSENT 属 P3）
+```
+
+**(q-22.8) contamination 分工**
+
+```
+attribution authority → facts
+确定性映射 → contaminationClass（NONE / DIRECT / LIKELY / UNKNOWN）
+P1 core → **门**（最终 admissibility）
+```
+
+**(q-22.9) 边界**
+
+```
+OUTCOME_OBSERVATION_LIFETIME = SESSION_ONLY · 无 durable observation store
+Producer MUST NOT 直接写 Calibration（链路 Observation → Settlement → PE → Calibration）
+INTERNAL_AUDIT_ONLY · 无 UI
+MODEL_CALLS_ADDED = 0 · DURABLE_WRITES_ADDED = 0
+```
+
+**(q-22.10) 生产就绪分级（不用一个 boolean）**
+
+```
+OBSERVATION_PRODUCTION_LIVE = capability live（PRODUCER_TABLE 生效）
+MECHANICAL_FEEDBACK_LOOP_READY = YES
+SUBJECTIVE_OBSERVATION_PRODUCTION_LIVE = PARTIAL（仅 LINGUISTIC_EVIDENCE）
+SUBJECTIVE_FEEDBACK_LOOP_READY = NO
+FULL_PREDICTION_ERROR_PRODUCTION_LOOP_READY = NO
+blocker：EXPLICIT_USER_REPORT_PRODUCER = NOT_AVAILABLE
+         ∧ EVIDENCE_MATCHER_ENABLED_DEFAULT = false
+```
+
+---
+
+### (q-23) P5-B3-C · RealityEvent Backbone / Observation Identity Reconciliation（追加）
+
+**(q-23.1) 核心区分（冻结）**
+
+```
+REALITY_EVENT != OUTCOME_OBSERVATION
+REALITY_EVENT_IDENTITY_INDEPENDENT_OF_PREDICTION = YES
+```
+
+```
+RealityEvent E42            （一份现实事实；identity **不含** predictionId）
+  E42 + P1 → OutcomeObservation O1
+  E42 + P2 → OutcomeObservation O2
+```
+O1 / O2 是 **prediction-scoped reality projections**，不是两个现实事件。
+
+**(q-23.2) RealityEvent schema：复用，不另造**
+
+```
+REALITY_EVENT_SCHEMA_AUTHORITY = assets/js/domain-event-core.js
+```
+
+该 core 已具备：`eventId` · `domain` · `type` · `entityId` · `timestamp`（**注入**，
+不读 `Date.now`）· `causationId` · `correlationId` · 确定性 identity 派生 ·
+`dedupeKeyFor` / `orderingKeyFor` · 拒绝泄漏 body 字段与 secret。
+**MUST NOT** 另造第二套 event schema（避免 browser/Node 两套几乎相同的 contract）。
+
+**(q-23.3) authority 分层（schema-valid != authoritative）**
+
+```
+valid schema            != trusted authoritative reality
+BROWSER_DOMAIN_EVENT    != AUTHORITATIVE_REALITY_EVENT
+```
+
+```
+trusted runtime source → canonical builder（domain-event-core）→ sealed RealityEvent capability
+seal discipline = WeakSet identity + WeakMap fingerprint + Object.freeze
+browser 可以 construct / render / transport，但 MUST NOT 因此获得 seal
+```
+
+**(q-23.4) 唯一 mint 路径与执行顺序**
+
+```
+source event → RealityEvent → candidate pairing → OutcomeObservation
+ONE_CANONICAL_REALITY_EVENT_MINT_PATH = YES
+```
+**MUST NOT**：先选 Prediction 再倒推事件 identity。Pairing 不是现实事实成立的前提。
+
+**(q-23.5) actor / pairing 权限分离**
+
+```
+REALITY_EVENT_FACT_AUTHORITY_ONLY = YES
+OBSERVATION_MINT_AUTHORITY != PREDICTION_PAIRING_AUTHORITY（不变）
+PAIRING_AUTHORITY = PREDICTION_REGISTRY_SCOPE_QUERY（不变）
+```
+RealityEvent **MUST NOT** 携带 `predictionId`（出现即拒绝）；
+`causationId` / `sourcePredictionId` 只是**事实**，不是 identity 成分，
+也**不能**自动推出 `predictionInfluencedSystem = true`。
+
+**(q-23.6) projection identity 与 lineage**
+
+```
+observationId = stableToken(realityEventId | predictionId | observationProjectionVersion)
+OUTCOME_OBSERVATION_ROLE = PREDICTION_SCOPED_REALITY_PROJECTION
+lineage = evidenceRefs[0] === realityEventId（P1 schema **不**新增字段）
+```
+**MUST** 机械可验证 O1 与 O2 来自同一 RealityEvent；**MUST NOT** 靠 payload 相似度判断。
+
+**(q-23.7) 幂等**
+
+```
+REALITY_EVENT_AT_MOST_ONCE_PER_SOURCE_EVENT_WITHIN_SESSION = YES
+OUTCOME_OBSERVATION_AT_MOST_ONCE_PER_REALITY_EVENT_PREDICTION_PAIR = YES
+REALITY_EVENT_DEDUPE_KEY DOES NOT CONTAIN PREDICTION_ID
+holder = SESSION_ONLY · bounded · 无 durable event store
+holder eviction MUST NOT 改变已 sealed 的 Prediction / Settlement / Calibration 记录
+```
+
+**(q-23.8) zero-pair 合法**
+
+```
+REALITY_EVENT_EXISTENCE_DOES_NOT_REQUIRE_PREDICTION_PAIR = YES
+```
+没有候选 Prediction ⇒ **仍然 mint RealityEvent**，只是不产生 projection。
+
+**(q-23.9) 时间与归因层**
+
+```
+occurredAt = RealityEvent.occurredAt = authoritative reality time
+observedAt = RealityEvent.occurredAt
+attribution 查询 @ RealityEvent.occurredAt（不是 projection / settlement 处理时间）
+BehaviorEffect attribution MUST NOT 写进 RealityEvent identity 或 payload
+RealityEvent MUST NOT 含 relation / settlement state / contaminationClass / admissibility
+```
+
+**(q-23.10) 生产就绪词汇（废止模糊的 "production live"）**
+
+```
+REALITY_EVENT_MINT_CAPABILITY_LIVE
+REALITY_EVENT_SOURCE_LIVE
+OUTCOME_OBSERVATION_MINT_CAPABILITY_LIVE
+OUTCOME_OBSERVATION_PRODUCTION_CALLER_LIVE
+MECHANICAL_FEEDBACK_LOOP_IMPLEMENTATION_READY
+MECHANICAL_FEEDBACK_LOOP_PRODUCTION_LIVE
+SUBJECTIVE_FEEDBACK_LOOP_PRODUCTION_LIVE
+FULL_PREDICTION_ERROR_PRODUCTION_LOOP_READY
+```
+**MUST NOT** 用 capability live 冒充 production live。
+
+**(q-23.11) 边界不变**
+
+```
+RealityEvent MUST NOT → Calibration（链路必须经 Observation → Settlement → PE → Calibration）
+EVIDENCE_MATCHER_ENABLED_DEFAULT = false（**保持**）
+EXPLICIT_USER_REPORT_PRODUCER = NOT_AVAILABLE（**保持**）
+MODEL_CALLS_ADDED = 0 · DURABLE_WRITES_ADDED = 0
+MEMORY_WRITE = NONE · RELATIONSHIP_WRITE = NONE · UI_DISCLOSURE_CHANGED = NO
+```
+
+---
+
+### (q-24) P5-B3-D · Live Mechanical Reality Source（追加 · 结论：BLOCKED）
+
+**(q-24.1) 最高原则**
+
+```
+SOURCE_ADAPTER_MAY_NORMALIZE_FACTS_ONLY = YES
+SOURCE_ADAPTER_MAY_NOT_INTERPRET_PREDICTIONS = YES
+```
+
+Source adapter 只允许：field rename · enum mapping · scope mapping · payload bounding。
+**MUST NOT**：prediction lookup · semantic interpretation · support/conflict 分类 ·
+settlement state。**MUST NOT** 存在 `Canonical Runtime Fact → matched/missed` 的短路。
+
+**(q-24.2) live source 准入门槛（冻结）**
+
+```
+LIVE_REALITY_SOURCE_MUST_HAVE_AUTHORITATIVE_OWNER = YES
+AUTHORITATIVE_OWNER = YES
+STABLE_SOURCE_EVENT_ID = YES
+AUTHORITATIVE_TIMESTAMP = YES
+TYPED_FACT = YES
+SCOPE_AVAILABLE = YES（characterId + conversationId，**不得编造**）
+HOME_NODE_ACCESSIBLE = YES
+NO_MODEL_INFERENCE = YES
+ONE_PRODUCTION_EMISSION_POINT_PER_SOURCE_EVENT_FAMILY = YES
+```
+
+**(q-24.3) 本轮结论**
+
+```
+P5_B3_D_STATUS = BLOCKED_BY_NO_AUTHORITATIVE_LIVE_SOURCE
+```
+
+逐候选证据：
+
+```
+A. economy-store change log（services/home-node/economy-store.js:186,618,2526）
+   authoritative ✓ · durable ✓ · typed(kind) ✓ · timestamp(at) ✓ · stable id(revision) ✓
+   scope ✗ —— 行形状是 (revision, kind, entity_id, transaction_id, wallet_id, at, payload_json)，
+             **没有** characterId / conversationId 列；owner/character 只在
+             party 派生 helper（:8088,:8171）里出现，不是事件的 canonical scope
+   emission ✗ —— `appendChange({...})` 有 **33** 处调用点，没有单一 canonical 发射点
+   ⇒ REJECTED_FOR_SCOPE + ONE_PRODUCTION_EMISSION_POINT 不成立
+
+B. execution.js turn 完成（services/home-node/execution.js:54,325）
+   authoritative ✓ · requestId 幂等 ✓
+   stable event id ✗ —— makeTurnId = 'turn_' + stableToken(clock() + ':' + Math.random())
+   ⇒ REJECTED：STABLE_SOURCE_EVENT_ID = NO
+
+C. delivery / activity runtime
+   本仓的 delivery/activity 面是 BehaviorEffect 的 render/effect 生命周期层，
+   **不是**拥有权威 terminal fact 的 Node 事实 owner
+   ⇒ REJECTED：AUTHORITATIVE_OWNER = NO
+
+D. domain-event-core
+   仅 schema/validator，无 live producer（(q-23) 已记录）
+   ⇒ REJECTED：无事实来源
+```
+
+**MUST NOT** 为了通过验收新造 fake runtime source；
+**MUST NOT** 用 `characterId='default'` 之类编造 scope 让候选"达标"。
+
+**(q-24.4) 仍然冻结的语义（本轮不因 BLOCKED 而放宽）**
+
+```
+SOURCE_EVENT_REPLAY_REUSES_SAME_REALITY_EVENT = YES（(q-23.7) 已有 dedupe 复用）
+REALITY_EVENT_OCCURRED_AT = SOURCE_FACT_EVENT_TIME = YES
+REALITY_SOURCE_FAILURE_MUST_NOT_MUTATE_CANONICAL_SOURCE_FACT = YES
+REALITY_EVENT_BACKBONE DOES NOT BECOME ECONOMY_STATE_AUTHORITY = YES
+RealityEvent != Opportunity = YES
+RealityEvent MUST NOT → Calibration（必须经 Observation → Settlement → PE） = YES
+DEDICATED_REALITY_EVENT_REF = DEFERRED（v1 lineage 仍为 evidenceRefs[0]）
+```
+
+**(q-24.5) readiness（保持 NO，如实报告）**
+
+```
+REALITY_EVENT_MINT_CAPABILITY_LIVE = YES
+REALITY_EVENT_SOURCE_LIVE = NO
+OUTCOME_OBSERVATION_MINT_CAPABILITY_LIVE = YES
+OUTCOME_OBSERVATION_PRODUCTION_CALLER_LIVE = NO
+MECHANICAL_FEEDBACK_LOOP_IMPLEMENTATION_READY = YES
+MECHANICAL_FEEDBACK_LOOP_PRODUCTION_LIVE = NO
+blocker（唯一）：EXISTING_AUTHORITATIVE_LIVE_SOURCE_WITH_CHARACTER_SCOPE = NONE
+```
+
+**(q-24.6) 解锁路径（供下一轮 owner ruling，本轮**不**执行）**
+
+```
+要么 (a) 给某个既有 canonical 事实族补上 canonical characterId/conversationId scope
+        并选定**单一**发射点；
+要么 (b) 由 owner 裁定把 RealityEvent scope 扩展为 wallet/account 域
+        （这需要新的 scope authority，不能由 adapter 自行决定）；
+要么 (c) 新建一条真正权威的 runtime-state 事实族（非 fake，需产品面真实产生）。
+```
+
+---
+
+### (q-25) P5-B3-D1 · Economy Scope Authority & Canonical Emission Point Audit（追加 · audit-only）
+
+**(q-25.1) 本轮性质（冻结）**
+
+```
+P5_B3_D1_SCOPE_AUDIT_ONLY = YES
+PRODUCTION_REALITY_WIRING_ADDED = NO
+ECONOMY_SCHEMA_MIGRATION_PERFORMED = NO
+ADAPTER_WRITTEN = NO
+```
+本轮**只**做 authority / topology audit；不允许 wiring、不允许 durable schema 变更、
+不允许新 producer 注册、不允许新 event kind。
+
+**(q-25.2) 拓扑原则（冻结）**
+
+```
+FACT_CREATION_SITES != CANONICAL_EMISSION_SINKS
+ONE_PRODUCTION_EMISSION_POINT_PER_SOURCE_EVENT_FAMILY = YES（不变）
+```
+
+**(q-25.3) 审计结果：shared sink 成立**
+
+```
+APPEND_CHANGE_CALL_SITES = 33
+CANONICAL_DURABLE_SINKS = 1
+sink = economy-store.js#appendChange → SQL.insertChange（:2527，唯一定义 :618）
+```
+`SQL.insertChange` 全仓**只被** `appendChange` 使用；change_log 的 INSERT 字面量唯一
+⇒ 没有旁路写入。**但**（见 q-25.4）sink 唯一 **不等于** 它已经是合法 emission point。
+
+**(q-25.4) emission point 仍不成立：replay 污染 + post-commit 未定**
+
+```
+shared sink 同时接收：
+  LIVE mutation                              ✓
+  REPAIR / REBUILD（BALANCE_REBUILT）        ✓
+  BOOTSTRAP（ECONOMY_INITIAL_CREDIT_BOOTSTRAPPED） ✓
+今天**没有** LIVE / REPLAY / MIGRATION / RESTORE 判别
+  ⇒ REALITY_SOURCE_MUST_NOT_EMIT_DURING_REPLAY = YES 尚未满足
+economy-store **无** post-commit 回调
+  ⇒ POST_INSERT != POST_COMMIT（UNDETERMINED）
+```
+```
+ONE_CANONICAL_EMISSION_POINT = CONDITIONAL（不是 PASS）
+```
+
+**(q-25.5) scope authority 结论：两条都 FAIL**
+
+```
+CHARACTER_SCOPE_AUTHORITY    = NONE
+CONVERSATION_SCOPE_AUTHORITY = NONE
+```
+
+```
+change_log 行形状 = (revision, kind, entity_id, transaction_id, wallet_id, at, payload_json)
+                    ⇒ 没有 character_id / conversation_id 列
+economy-store 全仓 **0 处** conversationId / threadId / sessionId
+Economy **明确不读角色表**（源注释逐字）⇒ 不存在 ownerId → character 的 canonical FK
+payload_json 里的 characterId 只是可选/反规范化 detail，**不是** schema guarantee
+  ⇒ PAYLOAD_CHARACTER_ID_IS_CANONICAL_SCOPE = NO
+```
+
+```
+SCOPE_MUST_BE_AUTHORITATIVE_RELATION = YES
+NOT_HEURISTIC_MAPPING = YES
+CANONICAL_SCOPE_COLUMN_REQUIRED   = NO
+CANONICAL_SCOPE_AUTHORITY_REQUIRED = YES
+```
+**MUST NOT**：`payload_json` 恰好含 characterId 就当 canonical；
+`ownerId` 强转 characterId；缺 conversationId 就填 current/default conversation；
+用 UI 选中的角色当 scope。
+
+**(q-25.6) `ownerId` 裁定**
+
+```
+OWNER_ID_EQ_CHARACTER_ID = NO
+```
+`ownerId` 是 canonical **party** 引用（`character | user | system`），
+且 `'user'` 与 `'character'` 是**不同 id 空间**（源注释逐字）。
+不存在 frozen 一对一 `ownerId → characterId` 关系 ⇒ 不得用于 scope。
+
+**(q-25.7) 身份与时间（本族可通过的部分）**
+
+```
+sourceEventId 候选 = change `revision`（owner 分配的 monotonic 值）
+entityId     候选 = entity_id（operation / transaction / reservation / wallet）
+event identity 与 entity identity MUST 分离
+REALITY_EVENT_OCCURRED_AT = SOURCE_FACT_EVENT_TIME = `at`（不是 adapter 调用时刻）
+```
+
+**(q-25.8) admission table 结果**
+
+| gate | 结果 |
+|---|---|
+| AUTHORITATIVE_OWNER | PASS |
+| STABLE_SOURCE_EVENT_ID | PASS |
+| AUTHORITATIVE_TIMESTAMP | PASS |
+| TYPED_FACT | PASS |
+| **CHARACTER_SCOPE** | **FAIL** |
+| **CONVERSATION_SCOPE** | **FAIL** |
+| BOUNDED_PAYLOAD | PASS |
+| ONE_CANONICAL_EMISSION_POINT | CONDITIONAL |
+| HOME_NODE_ACCESSIBLE | PASS |
+
+```
+P5_B3_D1_RESULT = BLOCKED
+blocker（唯一）：EXISTING_AUTHORITATIVE_ECONOMY_FACT_WITH_CHARACTER_AND_CONVERSATION_SCOPE = NONE
+```
+
+**(q-25.9) durable schema 决策**
+
+```
+GENERIC_ECONOMY_SCHEMA_MIGRATION_REQUIRED = NOT_DECIDED（本轮不做）
+```
+**MUST NOT** 先 `ALTER economy_change_log ADD character_id / conversation_id`
+只为了满足 Prediction Error。优先级仍为：
+① 选中的事实已带 canonical scope → ② 既有权威 FK/context 关系解析 →
+③ 只扩展**一个**选中事件族 → ④ generic change-log schema 迁移（**最后**选择）。
+本轮审计证明 ①② 都不存在。
+
+**(q-25.10) readiness 不变**
+
+```
+REALITY_EVENT_SOURCE_LIVE = NO
+OUTCOME_OBSERVATION_PRODUCTION_CALLER_LIVE = NO
+MECHANICAL_FEEDBACK_LOOP_PRODUCTION_LIVE = NO
+EVIDENCE_MATCHER_ENABLED_DEFAULT = false
+EXPLICIT_USER_REPORT_PRODUCER = NOT_AVAILABLE
+MODEL_CALLS_ADDED = 0 · DURABLE_WRITES_ADDED = 0
+```
+
+**(q-25.11) 最小 unlock options（供 owner ruling，本轮**不**执行）**
+
+```
+A. 既有权威 FK/context 路由    —— 审计证明：**不存在**（Economy 不读角色表）
+B. 只扩展**一个**选中事件族     —— 需要选定 family 并定义 canonical scope 来源
+C. generic economy schema 变更  —— 影响面最大，最后选择
+D. 新建 runtime-state 事实族    —— 产品面须真实产生（不得 fake）
+```
+
+---
+
+### (q-26) P5-B3-D2 · Authoritative Runtime Fact Family（追加 · 结论：BLOCKED）
+
+**(q-26.1) 本轮性质**
+
+```
+P5_B3_D2_STATUS = BLOCKED
+IMPLEMENTATION_NOT_ENTERED = YES
+ECONOMY_ROUTE_REOPENED = NO
+```
+audit-only：未接 RealityEvent、未写 adapter、未改 production。
+
+**(q-26.2) 最高原则（冻结）**
+
+```
+EXISTING_RUNTIME_TRUTH → MAY BECOME CANONICAL FACT
+PREDICTION_ERROR_NEEDS_A_FACT → MUST NOT INVENT ONE
+RUNTIME_INSTANCE != RUNTIME_FACT
+TERMINAL_FACT_IDENTITY = INSTANCE_ID + FACT_TYPE
+```
+
+**(q-26.3) identity taxonomy（新增冻结）**
+
+```
+DETERMINISTIC_REPLAY_IDENTITY != AUTHORITATIVE_SESSION_INSTANCE_IDENTITY
+
+SESSION_SCOPED_REALITY_SOURCE MAY USE AUTHORITATIVE_RUNTIME_INSTANCE_ID
+  IF  MINTED_BY_CANONICAL_OWNER
+  AND UNIQUE_WITHIN_AUTHORITY_LIFETIME
+  AND IMMUTABLE_FOR_INSTANCE
+  AND USED_ACROSS_FULL_LIFECYCLE
+  AND NOT_CALLER_SUPPLIED
+  AND NOT_BROWSER_SUPPLIED
+
+admission 允许：DETERMINISTIC_EVENT_ID **或** AUTHORITATIVE_SESSION_INSTANCE_ID
+admission 禁止：CALLER_SUPPLIED_ID · UNTRUSTED_ID
+```
+即 `DETERMINISTIC_ACROSS_RESTART = NO` **本身**不再自动否决，
+因为 RealityEvent v1 是 `SESSION_ONLY`；
+真正决定 authority 的是 **owner + lifecycle consistency**，不是 random quality。
+
+**(q-26.4) 候选 A：turn execution lifecycle（services/home-node/execution.js）**
+
+```
+TURN_LIFECYCLE_AUTHORITY = createTurnExecutor（唯一 owner）
+```
+
+| gate | 结果 | 证据 |
+|---|---|---|
+| AUTHORITATIVE_OWNER | PASS | `createTurnExecutor`（:40） |
+| **CHARACTER_SCOPE** | **FAIL** | `characterId = request.character.id \|\| friendId \|\| ''`（:358）⇒ caller-supplied + 启发式兜底 |
+| CONVERSATION_SCOPE | PASS | `CHAT_CORE.conversationIdOf(friendId, threadId)`（:294），确定性且可逆 |
+| **AUTHORITATIVE_INSTANCE_ID** | **FAIL** | `turnId = options.turnId \|\| makeTurnId()`（:325）⇒ caller 可覆盖 |
+| AUTHORITATIVE_EVENT_ID | UNDETERMINED | instance id 与 terminal event id 尚未分离 |
+| AUTHORITATIVE_TIMESTAMP | PASS | `clock()` 在 terminal transition 处 |
+| TYPED_TERMINAL_STATE | PASS | `completed` / `busy` / `invalid-message` / `character-not-ready` / `credential-unavailable` / `empty-output` / `store-write-failed` / `abort` / `timeout` / `cancelled` |
+| **ONE_CANONICAL_TRANSITION_POINT** | **FAIL** | executeTurn 内 **8+** 个 terminal return；唯一单点是 `finally { inFlight.delete(conversationId) }`（:541-543），而**清理不是 fact 成立处** |
+| HOME_NODE_PRODUCTION_PATH | PASS | 真实生产缝 |
+| BOUNDED_PAYLOAD | PASS | 可只取 identity/scope/status/reasonCode |
+
+```
+SELECTED_RUNTIME_FACT_FAMILY = NONE
+```
+
+**(q-26.5) 真实 terminal 语义（记录，不扩写）**
+
+```
+completed            仅当 store.putMessage 成功之后（持久化是成功前提）
+duplicate-request    同 requestId 重试，在 mint turnId **之前**返回 ⇒ 不产生第二个 instance
+abort / timeout / cancelled  真实 runtime 分类；非空部分文本按 partial 落库
+empty-output / store-write-failed  两个互不相同的 terminal 状态
+MUST NOT 把以上统一成 `failed`
+```
+
+**(q-26.6) 三个独立 blocker（不得只修一个就放行）**
+
+```
+① CHARACTER_SCOPE_AUTHORITY = NONE
+     characterId 由 caller 提供并以 friendId 兜底；roledm_ 前缀说明 friendId 编码 role
+     而非 character ⇒ 需要独立权威 character 解析（当前 execution 内不存在）
+② AUTHORITATIVE_INSTANCE_ID = FAIL
+     options.turnId 允许 caller 覆盖 ⇒ NOT_CALLER_SUPPLIED = NO
+     修法必须**移除 caller override**或仅限 test-only seam，不得改 identity contract 迁就
+③ ONE_CANONICAL_TRANSITION_POINT = NO
+     8+ 个 return 点；finally 只是清理 ⇒ 需要单一 outcome 汇聚点（例如统一 finalize seam）
+```
+
+**(q-26.7) 后续候选（未完成审计，不得视为 PASS）**
+
+```
+B. generation completion/failure（同一 execution 内，与 A 共享 blocker）
+C. cancellation/abort（真实分类存在，但同样受 ①②③ 约束）
+D. retry lifecycle（已确定为复用同 requestId，不产生新 instance ⇒ 无独立 fact）
+E. message persistence completion（store 层，scope 同 A）
+F. runtime task/action completion（未发现拥有 character+conversation scope 的 Node 侧 owner）
+G/H. delivery / activity completion（render/effect 层，非事实 owner）
+```
+
+**(q-26.8) readiness 不变（本轮未 wiring）**
+
+```
+REALITY_EVENT_SOURCE_LIVE = NO
+OUTCOME_OBSERVATION_PRODUCTION_CALLER_LIVE = NO
+MECHANICAL_FEEDBACK_LOOP_PRODUCTION_LIVE = NO
+SUBJECTIVE_FEEDBACK_LOOP_PRODUCTION_LIVE = NO
+FULL_PREDICTION_ERROR_PRODUCTION_LOOP_READY = NO
+EVIDENCE_MATCHER_ENABLED_DEFAULT = false
+EXPLICIT_USER_REPORT_PRODUCER = NOT_AVAILABLE
+MODEL_CALLS_ADDED = 0 · DURABLE_WRITES_ADDED = 0
+```
+---
+
+### (q-27) P5-B3-D3 · Turn Execution Authority Closure（追加 · 结论：BLOCKED · 含 D2 更正）
+
+**(q-27.1) 本轮性质**
+
+```
+P5_B3_D3_STATUS = BLOCKED
+PRODUCTION_CHANGE_THIS_ROUND = NONE
+REALITY_EVENT_WIRING_ADDED = NO
+ECONOMY_ROUTE_REOPENED = NO
+```
+§37：authority gate 不明确时**停在 audit result，不硬做**。
+
+**(q-27.2) D2 结论更正（必须记录）**
+
+D2 报告称 `options.turnId` 无生产调用方。**该结论不完整**。实际：
+
+```
+PRODUCTION_OPTIONS_TURN_ID_CALLERS = 1
+  services/home-node/mobile-gateway.js:670-672
+    await executor.executeCharacterTurn(turn.request, { turnId: turn.turnId, ... })
+TEST_OPTIONS_TURN_ID_CALLERS = 若干（test doubles）
+```
+`http.js:2942` 则**不**传 turnId。D2 的最终裁定
+（`TURN_ID_IS_AUTHORITATIVE_SESSION_INSTANCE_ID = NO`）方向正确，
+但依据必须改为"存在生产调用方提供 identity"，而非"无生产调用方"。
+
+**(q-27.3) 已发现的既有 canonical 先例（重要）**
+
+```
+services/home-node/mobile-gateway.js:242-245
+  deriveStableTurnId(requestId, conversationId)
+    = 'turn_' + CHAT_CORE.stableToken(requestId + ':' + conversationId)
+  ⇒ mobile 路径的 turn identity 是**确定性**的，比 execution.js 自身
+    的 clock+random 默认更强
+
+services/home-node/mobile-gateway.js:1187（源注释逐字）
+  「recallTurnIndex 为 null 表示没有 session state 或 characterId 缺失
+    （fail closed，**绝不用 conversation id 顶替**）」
+  ⇒ 项目**已经**冻结了"不得用 conversation id 顶替 character id"的纪律；
+     execution.js:358/387/574 的 `|| friendId` 兜底与该纪律冲突
+```
+
+**(q-27.4) 三个 blocker 的真实状态**
+
+```
+D3-A · CHARACTER_SCOPE_AUTHORITY = BLOCKED（需 owner ruling）
+  两个生产入口的 character 都源自客户端：
+    http.js:2942     直接将**原始 HTTP body** 作为 payload 传入
+    mobile-gateway   payload.characterId（:840,:974）
+  服务端**存在** resolver：runtime-recall.js:581 / runtime-interpretation.js:854
+    resolveCharacterSpec(characterId)
+    但它以**客户端提供的 id** 为输入 ⇒ 解析的是 spec，不是 id 的权威性
+  ⇒ "request-derived + 服务端校验过的 characterId 是否算 canonical authority"
+    是 **owner ruling**，不是实现细节
+
+D3-B · AUTHORITATIVE_INSTANCE_ID = BLOCKED（需跨模块裁定）
+  生产路径**已**由 mobile-gateway mint turnId（确定性）。
+  若按 §13 无条件改成 `turnId = makeTurnId()`，
+  会**回退** mobile 的确定性 identity 并破坏 recall session state 配对
+  ⇒ 正解是承认 mobile-gateway 为 mobile 路径的 identity owner，
+    并约束 execution.js 的 fallback —— 属跨模块 lifecycle 决策
+
+D3-C · ONE_CANONICAL_TRANSITION_POINT = LOCAL_CLOSABLE
+  execution.js 内部 8+ terminal return 可收敛为单一 settle seam，
+  这是三项中**唯一**纯机械可闭合的
+```
+
+**(q-27.5) 为什么不单独落地 D3-C**
+
+```
+TURN_TERMINAL_FACT_ADMISSION = PASS 需要**全部** gate PASS。
+只闭合 D3-C 不改变 admission 结果 ⇒ 本轮不做 production 改动，
+避免在 authority 模型未裁定前先动物理结构。
+```
+
+**(q-27.6) 冻结（新原则）**
+
+```
+TURN_AUTHORITY_MUST_COME_FROM_RUNTIME_OWNER_NOT_CALLER_CLAIMS = YES
+TURN_CHARACTER_SCOPE_MUST_BE_AUTHORITATIVE = YES
+FRIEND_ID_EQ_CHARACTER_ID = NO
+（mobile-gateway:1187 已是该纪律的既有先例）
+PRODUCTION_CALLER_SUPPLIED_TURN_ID = NOT_YET_DECIDED（存在 1 个生产调用方）
+AUTHORITATIVE_SESSION_INSTANCE_ID DOES_NOT_REQUIRE DETERMINISTIC_ACROSS_RESTART = YES
+TURN_INSTANCE != TURN_TERMINAL_FACT = YES
+TERMINAL_DECISION_COUNT_PER_TURN = 1
+FINALLY_IS_CLEANUP_NOT_TERMINAL_AUTHORITY = YES
+PERSISTENCE_SUCCESS_REQUIRED_FOR_COMPLETED = YES
+PRE_TURN_REJECTION != TURN_TERMINAL_FACT = YES
+FRIEND_ID_FALLBACK_FOR_CHARACTER_ID_IN_EXECUTION = VIOLATION（待裁定后修）
+```
+
+**(q-27.7) readiness 不变**
+
+```
+REALITY_EVENT_SOURCE_LIVE = NO
+OUTCOME_OBSERVATION_PRODUCTION_CALLER_LIVE = NO
+MECHANICAL_FEEDBACK_LOOP_PRODUCTION_LIVE = NO
+TURN_TERMINAL_FACT_ADMISSION = FAIL
+EVIDENCE_MATCHER_ENABLED_DEFAULT = false
+EXPLICIT_USER_REPORT_PRODUCER = NOT_AVAILABLE
+MODEL_CALLS_ADDED = 0 · DURABLE_WRITES_ADDED = 0
+```
+
+**(q-27.8) 下一阶段必须先由 owner 裁定两件事**
+
+```
+① character authority：客户端提供的 characterId（经服务端 spec 解析）
+   是否构成 canonical character scope？
+   若否 —— 需要一个 server-side canonical character resolver（新的 authority 面）。
+② turn identity ownership：mobile-gateway 与 execution.js 谁是 turn instance
+   identity 的 canonical owner？（现状：两者都能 mint）
+裁定后才可进入 D3 实现与 D4 wiring。
+```---
+
+### (q-28) P5-B3-D3 · Turn Execution Authority Closure（追加 · 结论：COMPLETE + FROZEN）
+
+**(q-28.1) owner rulings（落地）**
+
+```
+TURN_CHARACTER_SCOPE_AUTHORITY = SERVER_VALIDATED_CANONICAL_CHARACTER_BINDING
+RAW_CLIENT_CHARACTER_ID_IS_AUTHORITY = NO
+FRIEND_ID_EQ_CHARACTER_ID = NO
+FRIEND_ID_CHARACTER_FALLBACK = FORBIDDEN
+TURN_INSTANCE_ID_AUTHORITY = EXECUTION_RUNTIME
+PRODUCTION_CALLER_SUPPLIED_TURN_ID = FORBIDDEN
+MOBILE_GATEWAY_STABLE_ID_ROLE = REQUEST_IDEMPOTENCY / CORRELATION
+REQUEST_IDENTITY != TURN_INSTANCE_IDENTITY
+TURN_TERMINAL_AUTHORITY = EXECUTION_RUNTIME
+ONE_CANONICAL_TERMINAL_SETTLE_SEAM = REQUIRED
+FINALLY_IS_CLEANUP_ONLY = YES
+PERSISTENCE_SUCCESS_REQUIRED_FOR_COMPLETED = YES
+```
+
+**(q-28.2) D3-A · character scope authority**
+
+```
+实现：services/home-node/execution.js#resolveCharacterBinding
+      selector = request.character.id（**只是 selector**）
+      → characterRegistry.getCharacterSpec(selector)（与 runtime-recall /
+        runtime-interpretation 同一个 device-registry accessor）
+fail closed：missing-character-selector / character-authority-unavailable /
+             character-not-bound / character-not-ready
+MUST NOT：回退 friendId / 默认角色 / 当前角色 / 未校验的 client id
+```
+装配点：`services/home-node-service.js`（module 级 executor 与 `buildHomeNode`
+的 `instanceExecutor` 都注入惰性 registry 委托）。
+
+**(q-28.3) D3-B · turn instance identity authority**
+
+```
+turnId = makeTurnId()          （owner mint；options.turnId / request.turnId 一律无效）
+turnIdFactory = 构造期依赖      （test seam；**不得**逐次经 execute() 传入）
+TurnContext（immutable，deepFreeze）：
+  turnId · requestCorrelationId · characterId · conversationId
+TURN_CONTEXT_CREATION_POINT = execution.js（inFlight.set 之后立即建立）
+```
+
+**(q-28.4) D3-C · single terminal settle seam**
+
+```
+ONE_CANONICAL_TERMINAL_SETTLE_SEAM =
+  execution.js#settleTurnOutcome(turnContext, outcomeCode) / finalize(turnContext, outcomeCode, result)
+TERMINAL_DECISION_COUNT_PER_TURN = 1（holder 有界 256 · session-only · 无 durable）
+POST_INSTANCE_TERMINAL_OUTCOMES = completed / credential-unavailable / empty-output /
+  store-write-failed / abort / timeout / cancelled / 其它 classify(kind)
+PRE_TURN_REJECTIONS = store-unavailable / missing-request-id / missing-user-message /
+  invalid-message / missing-friend-id / character-* / busy / user-message-rejected /
+  duplicate-request
+PRE_TURN_REJECTION != TURN_TERMINAL_FACT（pre-turn 不 mint turnId、不产生终局）
+```
+`finally` 只做 `inFlight.delete(conversationId)`；终局由 seam 决定，**不**由 finally 推断。
+
+**(q-28.5) 本轮修复的真实缺陷（记录）**
+
+```
+① credential-unavailable 曾位于 big-try **之外**：
+   ⇒ 既不记录终局、也走不到 finally 的 inFlight 清理（槽位泄漏）。
+   已移入 try 内；credential 失败结果补齐 turnId（与 empty-output /
+   store-write-failed 一致，D4 需要）。
+② execution.js:358/387/574 的 `(request.character.id) || friendId` 三处兜底
+   （与 mobile-gateway:1187「绝不用 conversation id 顶替」的既有纪律冲突）已移除。
+```
+
+**(q-28.6) admission（D2 的三个 blocker 全部关闭）**
+
+| gate | D2 | D3 |
+|---|---|---|
+| AUTHORITATIVE_OWNER | PASS | PASS |
+| CHARACTER_SCOPE | FAIL | **PASS** |
+| CONVERSATION_SCOPE | PASS | PASS |
+| AUTHORITATIVE_INSTANCE_ID | FAIL | **PASS** |
+| AUTHORITATIVE_EVENT_ID | UNDETERMINED | **PASS**（= turnId + terminalOutcomeType） |
+| AUTHORITATIVE_TIMESTAMP | PASS | PASS（seam 内 clock()） |
+| TYPED_TERMINAL_STATE | PASS | PASS |
+| ONE_CANONICAL_TRANSITION_POINT | FAIL | **PASS** |
+| HOME_NODE_PRODUCTION_PATH | PASS | PASS |
+| BOUNDED_PAYLOAD | PASS | PASS |
+
+```
+TURN_TERMINAL_FACT_ADMISSION = PASS
+P5_B3_D3_STATUS = COMPLETE · P5_B3_D3_FREEZE = FROZEN
+```
+
+**(q-28.7) readiness（D3 不接线 RealityEvent）**
+
+```
+REALITY_EVENT_WIRING_ADDED = NO
+REALITY_EVENT_SOURCE_LIVE = NO
+OUTCOME_OBSERVATION_PRODUCTION_CALLER_LIVE = NO
+MECHANICAL_FEEDBACK_LOOP_PRODUCTION_LIVE = NO
+EVIDENCE_MATCHER_ENABLED_DEFAULT = false
+EXPLICIT_USER_REPORT_PRODUCER = NOT_AVAILABLE
+MODEL_CALLS_ADDED = 0 · DURABLE_WRITES_ADDED = 0
+```
+
+**(q-28.8) 下一阶段**
+
+```
+NEXT = P5-B3-D4 · Wire Turn Terminal Reality Source
+只做一件事：把已经成为 canonical authority 的 TurnTerminalFact
+（terminalOutcomeOf(turnId)）投影成 RealityEvent；不再改 authority。
+```---
+
+### (q-29) P5-B3-D4 · Turn Terminal Reality Source（追加 · 结论：PARTIAL — source LIVE · loop BLOCKED）
+
+**(q-29.1) 最高原则（冻结）**
+
+```
+TURN_TERMINAL_FACT_IS_UPSTREAM_TRUTH = YES
+TURN_TERMINAL_FACT != REALITY_EVENT
+REALITY_EVENT_EMISSION_FAILURE MUST_NOT_REWRITE_TURN_OUTCOME
+TURN_REALITY_EVENT_OCCURRED_AT = TURN_TERMINAL_FACT_OCCURRED_AT
+TURN_REALITY_EVENT_SCOPE = CANONICAL_TURN_CONTEXT_SCOPE
+ONE_TURN_TERMINAL_FACT -> AT_MOST_ONE_REALITY_EVENT
+PRE_TURN_REJECTION -> NO_TURN_REALITY_EVENT
+EXECUTION_RUNTIME != REALITY_EVENT_MINT_AUTHORITY
+```
+
+**(q-29.2) 第一条 live source：TURN_TERMINAL_FACT**
+
+```
+LIVE_REALITY_SOURCE = TURN_TERMINAL_FACT
+domain = runtime · type = turn_terminal          （TOKEN_PATTERN 合规）
+sourceId = 'turn-terminal' · source = CANONICAL_RUNTIME · sourceInstance = runtime.turn-execution
+entityId   = turnId                               （entity identity = runtime instance）
+timestamp  = TurnTerminalOutcome.occurredAt       （**不**重新 clock）
+scope      = characterId / conversationId 逐字投影（**不**重新 resolve）
+body       = { outcomeCode }                      （bounded；outcome 是 payload 不是 type）
+eventId    = 'turn_terminal:' + stableToken(turnId | 'terminal' | outcomeCode)
+```
+
+**(q-29.3) authority 分离（未 collapse）**
+
+```
+TURN_TERMINAL_FACT_OWNER = execution runtime（finalize → settleTurnOutcome）
+REALITY_EVENT_MINT_OWNER = runtime-reality-event（唯一 seal）
+adapter = services/home-node/turn-terminal-reality-source.js（ONE_MAPPING_DEFINITION）
+execution.js MUST NOT import runtime-reality-event（seam guard 强制）
+execution 只通过**注入的** onTurnTerminal 通知；assembly 在两个 live construction
+（home-node-service.js:281 与 :934）注入同一 adapter。
+```
+
+**(q-29.4) 关键不变式（已测）**
+
+```
+terminal fact 先成立，之后才 notify（CALLBACK TIMING）
+sink 抛错 ⇒ 不改写 turn outcome、终局仍记录、inFlight 仍清理
+callback 恰好一次（D3 terminal singularity）· 100 次重放 ⇒ 1 个 RealityEvent
+plain / mutable 伪造终局被拒（只接受 canonical frozen 见证）
+adapter 不含 character/conversation resolver · turnId mint · pairing · relation · settlement · calibration
+pre-turn rejection（未绑定角色 / 缺 userMessage）⇒ 0 RealityEvent
+group conversation：conversationId = group:... 而 characterId = 实际执行角色
+role-DM：participant key **不**成为 characterId
+```
+
+**(q-29.5) ★ BLOCKER（如实记录，不得绕过）**
+
+```
+OUTCOME_OBSERVATION_PRODUCTION_CALLER_LIVE = NO
+MECHANICAL_FEEDBACK_LOOP_PRODUCTION_LIVE = NO
+
+blocker：P1 `AUTHORIZED_OBSERVERS[CANONICAL_RUNTIME]` 是**冻结闭集**
+  ['runtime.delivery','runtime.popup','runtime.activity','runtime.payment','runtime.memory-store']
+  **不含** 'runtime.turn-execution'
+  ⇒ RealmEvent 可以被 mint、可以配对候选 Prediction，但
+    OutcomeObservation 在 P1 builder 的 source-instance 门被拒
+    （unauthorized-source-instance），因此 Prediction Error 闭环无法闭合。
+
+为什么本轮**不**修：
+  · 该表现为 assets/js/memory-recall/outcome-observation-core.js（P1 冻结核心）
+  · 不在 P5-B3-D4 允许修改范围（§1 只批准 execution.js / home-node-service.js /
+    runtime-reality-event.js / runtime-outcome-observation.js / mapping / allowlist /
+    guard / tests / contracts）
+  · 与 §22 同构："event prediction schema 不支持时**不要**顺手改 type system，报告 blocker"
+
+解锁路径（需 owner ruling，本轮不执行）：
+  在 P1 AUTHORIZED_OBSERVERS[CANONICAL_RUNTIME] 中登记 'runtime.turn-execution'
+  ≡ 承认 turn execution runtime 是一个 canonical runtime observer。
+```
+
+**(q-29.6) readiness**
+
+```
+REALITY_EVENT_MINT_CAPABILITY_LIVE = YES
+REALITY_EVENT_SOURCE_LIVE = YES            ← 本轮 flip（两个 live construction 都 wired）
+OUTCOME_OBSERVATION_MINT_CAPABILITY_LIVE = YES
+OUTCOME_OBSERVATION_PRODUCTION_CALLER_LIVE = NO   ← blocker 见 q-29.5
+MECHANICAL_FEEDBACK_LOOP_IMPLEMENTATION_READY = YES
+MECHANICAL_FEEDBACK_LOOP_PRODUCTION_LIVE = NO     ← blocker 见 q-29.5
+SUBJECTIVE_FEEDBACK_LOOP_PRODUCTION_LIVE = NO
+FULL_PREDICTION_ERROR_PRODUCTION_LOOP_READY = NO
+EVIDENCE_MATCHER_ENABLED_DEFAULT = false
+EXPLICIT_USER_REPORT_PRODUCER = NOT_AVAILABLE
+MODEL_CALLS_ADDED = 0 · DURABLE_WRITES_ADDED = 0
+DEDICATED_REALITY_EVENT_REF = DEFERRED（v1 lineage 仍为 evidenceRefs[0]）
+```---
+
+### (q-30) P5-B3-D4-R1 · P1 Turn Observer Admission（追加 · 结论：BLOCKED_BY_PREDICTION_SCHEMA）
+
+**(q-30.1) owner ruling 落地（唯一改动）**
+
+```
+AUTHORIZED_OBSERVERS[CANONICAL_RUNTIME]
+  before = [runtime.delivery, runtime.popup, runtime.activity, runtime.payment, runtime.memory-store]
+  after  = 上述 5 项 + 'runtime.turn-execution'
+```
+精确 token；**无** wildcard；**无** prefix match；其它 source class 一字未动。
+
+```
+RUNTIME_TURN_EXECUTION_IS_CANONICAL_RUNTIME_OBSERVER = YES
+RUNTIME_TURN_EXECUTION_OBSERVER_SCOPE = TURN_TERMINAL_FACT_ONLY
+AUTHORIZED_OBSERVER_TOKEN = runtime.turn-execution
+```
+
+**(q-30.2) 不变量（已测）**
+
+```
+OBSERVER_ALLOWLIST_MEMBERSHIP DOES NOT GRANT REALITY_EVENT_MINT_CAPABILITY = YES
+SOURCE_INSTANCE_TOKEN DOES NOT UPGRADE SOURCE_CLASS = YES
+MODEL_INFERENCE CANNOT LAUNDER THROUGH runtime.turn-execution = YES
+BROWSER CANNOT LAUNDER THROUGH runtime.turn-execution = YES
+SOURCE_LAUNDERING = FORBIDDEN（真实 instance 就是 runtime.turn-execution）
+```
+exactness：`runtime.turn-execution` PASS；`runtime.turn-execution.foo` /
+`runtime.turn_execution` / `runtime.turn` / `runtime.fake` /
+`runtime.turn-execution-evil` 全部 `unauthorized-source-instance`。
+
+**(q-30.3) 准入后的真实链路**
+
+```
+Canonical TurnTerminalFact
+  → runtime-reality-event.ingest（seal）
+  → RealityEvent（domain=runtime / type=turn_terminal）
+  → Registry pairing
+  → OutcomeObservation（**不再** unauthorized-source-instance）
+     scope / occurredAt / evidenceRefs[0]=realityEventId 逐字保留
+```
+```
+OUTCOME_OBSERVATION_PRODUCTION_CALLER_LIVE = YES
+```
+
+**(q-30.4) ★ 剩余 blocker（唯一，已用对照实验证明）**
+
+```
+P5_B3_D4_STATUS = BLOCKED_BY_PREDICTION_SCHEMA
+
+runtime.turn_terminal ∉ P1 冻结的 RUNTIME_STATE_TOKENS（12 项闭集）
+  ⇒ authorityGate 的 directional.support / conflict = FORBIDDEN
+  ⇒ effectiveAdmissibility = FORBIDDEN
+  ⇒ P3 停在 pending（observation-discarded-by-authority-gate）· calibrationCounted = false
+  ⇒ MECHANICAL_FEEDBACK_LOOP_PRODUCTION_LIVE = NO
+
+对照实验（**同一 sourceInstance**，唯一变量是 token）：
+  runtime.turn_terminal   → effective=FORBIDDEN  support=FORBIDDEN  conflict=FORBIDDEN
+  delivery.completed      → effective=ELIGIBLE   support=ELIGIBLE   conflict=ELIGIBLE
+  activity.available      → effective=ELIGIBLE   support=ELIGIBLE   conflict=ELIGIBLE
+  memory.record-written   → effective=ELIGIBLE   support=ELIGIBLE   conflict=ELIGIBLE
+```
+
+为什么本轮**不**修：owner ruling 只批准 observer token 准入；
+`(q-30.5)` 的 P1 source matrix 与 vocabulary 属于「禁止重新设计 P1 source matrix /
+新增 observer token 不能改变 ELIGIBLE/SUPPORTING/CANDIDATE/FORBIDDEN 矩阵关系」范围。
+
+解锁路径（需 owner ruling，本轮不执行）：
+  把 `runtime.turn_terminal` 纳入 P1 的 directional 词表（等价于承认
+  turn terminal 是一个可判定方向的 canonical runtime outcome token）。
+
+**(q-30.5) readiness**
+
+```
+REALITY_EVENT_MINT_CAPABILITY_LIVE = YES
+REALITY_EVENT_SOURCE_LIVE = YES
+OUTCOME_OBSERVATION_MINT_CAPABILITY_LIVE = YES
+OUTCOME_OBSERVATION_PRODUCTION_CALLER_LIVE = YES      ← 本轮 flip
+MECHANICAL_FEEDBACK_LOOP_IMPLEMENTATION_READY = YES
+MECHANICAL_FEEDBACK_LOOP_PRODUCTION_LIVE = NO         ← blocker 见 q-30.4
+SUBJECTIVE_FEEDBACK_LOOP_PRODUCTION_LIVE = NO
+FULL_PREDICTION_ERROR_PRODUCTION_LOOP_READY = NO
+EVIDENCE_MATCHER_ENABLED_DEFAULT = false
+MODEL_CALLS_ADDED = 0 · DURABLE_WRITES_ADDED = 0
+CALIBRATION_CONFIDENCE = null · CALIBRATION_APPLIED_TO_LIVE = NO
+```---
+
+### (q-31) P5-B3-D4-R2 · Turn Terminal Directional Admission（追加 · 结论：BLOCKED_BY_NO_PRODUCTION_SUBSCRIBER）
+
+**(q-31.1) owner ruling 落地（唯一改动）**
+
+```
+RUNTIME_STATE_TOKENS
+  before = 12 项（delivery.* / popup.* / activity.* / memory.*）
+  after  = 13 项（前 12 项逐字保留 + 'runtime.turn_terminal'）
+```
+精确 token；无 wildcard；无 `runtime.*` / `runtime.turn` / `runtime.execution`。
+`USER_ACTION_TOKENS`（9 项）未动。
+
+**(q-31.2) token 语义（冻结）**
+
+```
+RUNTIME_TURN_TERMINAL_DIRECTIONAL_TOKEN = YES
+AUTHORIZED_DIRECTIONAL_TOKEN = runtime.turn_terminal
+TOKEN_SEMANTICS = canonical TURN_TERMINAL_FACT only
+TOKEN_DOMAIN_TYPE = runtime / turn_terminal
+TOKEN_SOURCE_INSTANCE = runtime.turn-execution
+TOKEN_ALLOWED_FOR_DIRECTIONAL_EVALUATION = YES
+
+TOKEN_AUTOMATICALLY_SUPPORTS_PREDICTION = NO
+TOKEN_AUTOMATICALLY_CONFLICTS_PREDICTION = NO
+TOKEN_AUTOMATICALLY_SETTLES_PREDICTION = NO
+
+TOKEN_ADMISSION != OPPORTUNITY
+TOKEN_ADMISSION != SOURCE_AUTHORITY
+TOKEN_ADMISSION != SETTLEMENT_AUTHORITY
+```
+入表**只**表示该 factual token 可以进入 P1 directional 评估；不表示 turn started /
+streaming / healthy / provider succeeded / message delivered / prediction matched。
+后续仍须经过 source authority · scope · temporal · contamination · opportunity ·
+target domain · prediction semantics · mutual-exclusivity · P3 settlement。
+
+**(q-31.3) 受控实验（before / after）**
+
+```
+固定 sourceInstance / scope / prediction / observation，**只**改变 token：
+
+token                     before                          after
+runtime.turn_terminal     FORBIDDEN/FORBIDDEN/FORBIDDEN    ELIGIBLE/ELIGIBLE/ELIGIBLE
+delivery.completed        ELIGIBLE/ELIGIBLE/ELIGIBLE      ELIGIBLE/ELIGIBLE/ELIGIBLE（不变）
+activity.available        ELIGIBLE/ELIGIBLE/ELIGIBLE      ELIGIBLE/ELIGIBLE/ELIGIBLE（不变）
+memory.record-written     ELIGIBLE/ELIGIBLE/ELIGIBLE      ELIGIBLE/ELIGIBLE/ELIGIBLE（不变）
+```
+
+**(q-31.4) 闭环真实可达（决定性结算已在生产形状装配下达成）**
+
+```
+TurnTerminalFact（production executor terminal seam）
+  → RealityEvent（seal · domain=runtime / type=turn_terminal）
+  → Registry pairing（listOpenPredictions 命中 1 条）
+  → OutcomeObservation（scope / occurredAt / evidenceRefs[0] 逐字保留）
+  → P3 Settlement = **matched**，calibrationCounted = true
+     前提：attribution = known-none（contamination = NONE）
+     若 attribution 缺失/unknown ⇒ 仍 fail closed，**不**得 decisive
+Matcher calls = 0
+```
+
+**(q-31.5) ★ 剩余 blocker（唯一，且与 token 无关）**
+
+```
+P5_B3_D4_R2_STATUS = BLOCKED_BY_NO_PRODUCTION_SUBSCRIBER
+MECHANICAL_FEEDBACK_LOOP_PRODUCTION_LIVE = NO
+
+blocker：production 中**没有订阅者**消费已 mint 的 RealityEvent 去执行
+  pairing（candidatePredictions）+ projection（projectForPrediction）。
+  这两个入口目前只在 runtime-outcome-observation.js 内定义/导出，
+  services/ 下**无** production caller。
+⇒ RealityEvent 的 mint 是 production-driven；
+  但 RealityEvent → OutcomeObservation 这一步没有任何 production driver，
+  因此"真正出现 production 链路"未满足。
+```
+
+**(q-31.6) readiness**
+
+```
+REALITY_EVENT_MINT_CAPABILITY_LIVE = YES
+REALITY_EVENT_SOURCE_LIVE = YES
+OUTCOME_OBSERVATION_MINT_CAPABILITY_LIVE = YES
+OUTCOME_OBSERVATION_PRODUCTION_CALLER_LIVE = NO      ← 更正：无 production 订阅者
+MECHANICAL_FEEDBACK_LOOP_IMPLEMENTATION_READY = YES
+MECHANICAL_FEEDBACK_LOOP_PRODUCTION_LIVE = NO        ← blocker 见 q-31.5
+SUBJECTIVE_FEEDBACK_LOOP_PRODUCTION_LIVE = NO
+FULL_PREDICTION_ERROR_PRODUCTION_LOOP_READY = NO
+EVIDENCE_MATCHER_ENABLED_DEFAULT = false
+MODEL_CALLS_ADDED = 0 · DURABLE_WRITES_ADDED = 0
+CALIBRATION_CONFIDENCE = null · CALIBRATION_APPLIED_TO_LIVE = NO
+```
+
+**(q-31.7) P1 core tracking audit**
+
+```
+file = assets/js/memory-recall/outcome-observation-core.js
+PRODUCTION_LOADED      = YES（runtime-outcome-observation.js:23 ·
+                              runtime-prediction-settlement.js:32 直接 require 该路径）
+GENERATED              = NO
+INTENTIONALLY_IGNORED  = NO
+GITIGNORE_MATCH        = NO（git check-ignore 退出码 1）
+TRACKED_CANONICAL_TWIN = NO（git ls-files 无匹配）
+
+P1_CORE_SHOULD_BE_VERSION_CONTROLLED = YES
+TRACKING_ACTION_REQUIRED = YES
+本轮**不** stage：staged 保持 0。
+```
+⇒ P1 的权威词表（AUTHORIZED_OBSERVERS / RUNTIME_STATE_TOKENS）目前**不在 git 历史**内。---
+
+### (q-32) P5-B3-D4-R3 · Production Reality Feedback Driver（追加 · 结论：COMPLETE + FROZEN）
+
+**(q-32.1) owner ruling 落地**
+
+```
+REALITY_EVENT_FEEDBACK_DRIVER_OWNER = HOME_NODE_RUNTIME_ASSEMBLY
+FEEDBACK_TRIGGER = NEW_CANONICAL_REALITY_EVENT_MINT
+REALITY_SOURCE_ADAPTER != FEEDBACK_DRIVER
+REALITY_EVENT_MINT_AUTHORITY != FEEDBACK_DRIVER
+FEEDBACK_DRIVER_IS_ORCHESTRATION_ONLY = YES
+PAIRING_AUTHORITY = PREDICTION_REGISTRY
+OBSERVATION_AUTHORITY = P1
+SETTLEMENT_AUTHORITY = P3
+ONE_NEW_REALITY_EVENT -> AT_MOST_ONE_NORMAL_FEEDBACK_DISPATCH
+DUPLICATE_REALITY_EVENT -> NO_NORMAL_REDISPATCH
+REALITY_EVENT_MINT IS UPSTREAM TRUTH OF FEEDBACK_DISPATCH
+FEEDBACK_FAILURE MUST_NOT_REWRITE SOURCE_FACT_OR_REALITY_EVENT
+DRIVER_MAY_REQUEST_SETTLEMENT = YES · DRIVER_MAY_CHOOSE_SETTLEMENT_STATE = NO
+DURABLE_FEEDBACK_QUEUE = NO · FAILED_FEEDBACK_RECOVERY = DEFERRED
+```
+
+**(q-32.2) 模块与接线**
+
+```
+driver      = services/home-node/runtime-reality-feedback.js（唯一编排面）
+mint seam   = runtime-reality-event.js#onRealityEventMinted（构造期订阅；**只** NEW mint 触发）
+assembly    = home-node-service.js：
+                module 级 composition（realityEventAuthority + buildRealityFeedbackDriver）
+                buildHomeNode 实例级 composition（同一 helper）
+                lazy 引用避免 require cycle / 初始化顺序问题
+```
+
+**(q-32.3) mint API：before → after**
+
+```
+ingest 返回信封**未改**：status ∈ {minted, duplicate, refused} + reasonCode + realityEvent
+唯一新增：构造期 onRealityEventMinted 回调（只在 minted 分支、evict 之后触发，
+          try/catch 包裹 ⇒ 下游异常不影响 mint 结果）
+```
+因此「new / duplicate / rejected」的区分**本来就存在**，R3 未做 return-envelope 扩展。
+
+**(q-32.4) production-driven 闭环（核心验收）**
+
+```
+turn completed（真实 executor terminal seam）
+  → RealityEvent minted（seal）
+  → post-mint subscriber 自动触发
+  → candidatePredictions = 1（Registry pairing authority）
+  → projectForPrediction = 1（P1 observation authority）
+  → P3 settlement = 1（settlement authority；driver 未提供 opportunity）
+TEST_MANUAL_FEEDBACK_CALLS = 0
+MATCHER_CALLS = 0
+```
+```
+PRODUCTION_REALITY_FEEDBACK_DRIVER_LIVE = YES
+OUTCOME_OBSERVATION_PRODUCTION_CALLER_LIVE = YES
+MECHANICAL_FEEDBACK_LOOP_PRODUCTION_LIVE = YES
+```
+
+**(q-32.5) 其他已测不变式**
+
+```
+zero-pair：dispatch = 1，observation = 0，settlement = 0（合法，非失败）
+multi-pair：dispatch = 1（单位是 RealityEvent），observation = 2
+100x source replay ⇒ RealityEvent new = 1 · duplicate = 99 · normal dispatch = 1
+driver 按 realityEventId 去重（session-only · bounded 512 · durability NONE）
+plain object 无 seal ⇒ refused（not-canonical-reality-event）
+subscriber 抛错 ⇒ mint 仍成立（REALITY_EVENT_MINT IS UPSTREAM TRUTH）
+wrong-scope prediction 不配对 · unknown character 不产生 dispatch
+source adapter / execution.js 均不 import driver
+```
+
+**(q-32.6) 已知语义限制（记录，不在本轮修）**
+
+```
+D4 mapping 的 observation token 是 'runtime.turn_terminal'，**不含** outcomeCode；
+outcomeCode 只在 RealityEvent body 里。
+⇒ 期望"turn terminal"的 Prediction 对**任意** terminal outcome 都得到 support。
+按 §6/§14 不重开 D4 mapping；如后续需要按 outcomeCode 区分方向，
+需 owner ruling（属于 mapping/directional 语义变更）。
+```
+
+**(q-32.7) P1 core tracking debt（不变）**
+
+```
+P1_CORE_TRACKING_DEBT = OPEN
+P1_CORE_SHOULD_BE_VERSION_CONTROLLED = YES
+TRACKING_ACTION_REQUIRED = YES
+STAGED = NO
+```
+
+**(q-32.8) readiness**
+
+```
+REALITY_EVENT_MINT_CAPABILITY_LIVE = YES
+REALITY_EVENT_SOURCE_LIVE = YES
+PRODUCTION_REALITY_FEEDBACK_DRIVER_LIVE = YES
+OUTCOME_OBSERVATION_MINT_CAPABILITY_LIVE = YES
+OUTCOME_OBSERVATION_PRODUCTION_CALLER_LIVE = YES
+MECHANICAL_FEEDBACK_LOOP_IMPLEMENTATION_READY = YES
+MECHANICAL_FEEDBACK_LOOP_PRODUCTION_LIVE = YES
+
+SUBJECTIVE_FEEDBACK_LOOP_PRODUCTION_LIVE = NO
+FULL_PREDICTION_ERROR_PRODUCTION_LOOP_READY = NO
+EXPLICIT_USER_REPORT_PRODUCER = NOT_AVAILABLE
+EVIDENCE_MATCHER_ENABLED_DEFAULT = false
+MODEL_CALLS_ADDED = 0 · DURABLE_WRITES_ADDED = 0
+CALIBRATION_CONFIDENCE = null · CALIBRATION_APPLIED_TO_LIVE = NO
+```
+
+---
+
+### (q-33) P5-B3-E · Explicit User Report Authority & Subjective Feedback Loop（追加 · 结论：BLOCKED）
+
+**(q-33.1) 本阶段要回答的问题（不是 NLP 分类问题）**
+
+```
+什么时候用户的一句话 / 一次操作，拥有关于**用户自身**主观状态 / 偏好 / 意图的
+factual authority？
+
+RAW_USER_MESSAGE != AUTOMATIC_EXPLICIT_USER_REPORT
+```
+
+必须区分四个**不可互相升级**的类别：
+
+```
+EXPLICIT_USER_REPORT ≠ LINGUISTIC_EVIDENCE ≠ MODEL_INFERENCE ≠ USER_BEHAVIOR
+```
+
+**(q-33.2) 最高原则（冻结 · append-only）**
+
+```
+USER_IS_AUTHORITATIVE_ABOUT_EXPLICITLY_REPORTED_FIRST_PERSON_SUBJECTIVE_STATE = YES
+  （但**仅**在报告的实际 scope 内，且**必须**先存在 explicitness authority）
+
+EXPLICIT_USER_REPORT_AUTHORITY != RAW_USER_MESSAGE
+EXPLICIT_USER_REPORT_AUTHORITY != LINGUISTIC_EVIDENCE
+EXPLICIT_USER_REPORT_AUTHORITY != MODEL_INFERENCE
+EXPLICIT_USER_REPORT_AUTHORITY != USER_BEHAVIOR
+MODEL_MAY_NOT_DECLARE_EXPLICITNESS = YES
+MATCHER_CANNOT_DECLARE_EXPLICITNESS = YES
+CANDIDATE_REPORT != AUTHORITATIVE_REPORT
+EXPLICIT_REPORT_IDENTITY DOES NOT CONTAIN predictionId = YES
+EXPLICIT_REPORT_OCCURRED_AT = AUTHORITATIVE_USER_REPORT_TIME（不是 classification time）
+EXPLICIT_USER_REPORT MUST NOT DIRECTLY WRITE MEMORY = YES
+EXPLICIT_USER_REPORT MUST NOT DIRECTLY WRITE RELATIONSHIP = YES
+EXPLICIT_USER_REPORT IS AUTHORITATIVE ONLY FOR THE REPORTED SUBJECTIVE PROPOSITION
+ABSENCE_OF_REPORT != CONTRADICTION
+REPORT_CORRECTION = NEW FACT · NOT HISTORY REWRITE
+```
+
+**(q-33.3) E0 audit 结论：EXPLICITNESS_AUTHORITY = NONE_AVAILABLE**
+
+候选边界（逐项 file:line 证据由 `tests/test_explicit_user_report_authority.js` 冻结）：
+
+```
+候选                                    生产入口                                 结构化  服务器校验作者  产物主体
+A raw user chat message                 POST /messages（http.js:2859）            NO     NO（role 客户端断言） 消息字节
+B validated user-authored message       POST /turn（http.js:2934）                NO     NO（character 由 registry 绑定） 消息字节
+C mobile chat/send                      mobile-gateway.js:2459                    NO     role 服务端赋值，只证明设备通道 消息字节
+D persisted user message                chat-store.js putMessage                  NO     role/id/timestamp 客户端原样落库 消息字节
+E structured UI action（favorites）      assets/js/favorites.js（IndexedDB）      部分    NO author 字段          artifact 引用
+F 现有 preference setting               role-dm / role-dm-social（localStorage）  是     NO server ingress      agent 行为配置
+G profile / config update               middle-brain / economy 配置 + ingress     是     transport 级            agent 行为配置
+H Memory / disclosure write             memories(createdBy='user') / disclosureFacts 部分是 客户端字面量       记忆记录 / 角色的秘密
+I linguistic classifier                 active-diary.js `_explicit` / understanding-derivation `basis`  regex/模型输出  candidate
+J model extraction                      runtime-interpretation / expectation       NO     —                      MODEL_INFERENCE（结构性禁 mint）
+```
+
+结论：**没有任何**候选同时满足 structured（或 deterministic）· user-authored ·
+server-validated · scope/timestamp 来自 canonical runtime · 产物是关于**用户自身**的命题。
+结构化动作（Economy approval / configuration、Middle Brain config）全部属于
+**agent 行为配置 / 对 agent 动作的许可决策**，不是用户内在状态；把它们当
+ExplicitUserReport 属于语义泛化，违反 (q-33.2) 最后两条。
+
+**(q-33.4) 为什么"再写个 classifier"不是合法出路**
+
+```
+RAW_USER_MESSAGE_IS_EXPLICIT_REPORT = NO
+MODEL_MAY_DECLARE_EXPLICITNESS = NO
+```
+
+仓库里**已经存在** regex 级 "explicit" 检测器（`assets/js/active-diary.js:804`
+的 `_explicit`、`understanding-derivation-core.js:155`），但它们对**引语 / 举例 /
+假设 / 角色扮演 / 历史时态 / 不确定度全盲** —— 六个对抗样例（"她说她喜欢这个"、
+"比如我可以说我喜欢这个"、"如果我喜欢它会怎样"、"角色A：我喜欢你"、
+"我以前喜欢这个"、"我可能有点喜欢这个"）**全部命中**。它们只能产 candidate
+（记忆候选 / 理解派生），且没有被任何 PE 面消费。
+⇒ 没有 frozen deterministic explicitness boundary ⇒ **不允许**升级 source class。
+
+**(q-33.5) 子域与既有 policy 状态（证明 blocker 在 producer 侧）**
+
+```
+SUBJECTIVE_TARGET_DOMAINS_SUPPORTED = [user_preference, latent_state, relationship, user_emotion, user_intent]
+P2 PREDICTION_TYPES                 = [event, preference, latent_state, relational]
+P1 authority matrix                 = EXPLICIT_USER_REPORT × 主观域 = ELIGIBLE（天花板）
+P3 DECISIVE_AUTHORITY_SOURCES       = preference / latent_state / relational = ['EXPLICIT_USER_REPORT']（唯一）
+P1 AUTHORIZED_OBSERVERS             = EXPLICIT_USER_REPORT: ['chat.user-utterance']（精确 token，唯一）
+⇒ policy **早已准备好**；缺的是"谁有权铸造"。
+SELECTED_EXPLICIT_REPORT_FAMILY = NONE（无合法 producer ⇒ 没有第一条 family）
+EXPLICITNESS_AUTHORITY = NONE_AVAILABLE
+```
+
+**(q-33.6) 第二个独立 blocker：机械 relation 能力（capability gap，不是 policy forbidden）**
+
+```
+SUBJECTIVE_DOMAIN_PAYLOAD      = statement（P1：token / numeric 只允许机制域）
+P3 RUNTIME_CLASSIFIABLE_MODES  = [exclusive_outcome, window_closure_negative]（只认 token）
+⇒ statement ⇒ relation-unclassifiable-without-evidence-matcher
+唯一补法 = 启用 Evidence Matcher；§41 / §64 要求 MATCHER_CALLS = 0 且默认 OFF
+⇒ P3_CAN_PRODUCE_DECISIVE_SUBJECTIVE_SETTLEMENT = NO
+```
+
+即：即使**凭空**存在一条 canonical EXPLICIT_USER_REPORT 观察，在 matcher OFF 的
+冻结链路上它**仍然不能**产生 decisive settlement（对照实验中唯一 decisive 的组合是
+matcher ON + EXPLICIT_USER_REPORT）。
+
+**(q-33.7) 生产链实测（只有机械侧存在，主观侧不存在）**
+
+```
+preference prediction + 真实 executeCharacterTurn：
+  RealityEvent 1 · dispatch 1 · candidate 1 · observation 1 · settlement 1
+  admittedTargetDomains = [runtime_state]（**不是**主观域）
+  state = unresolvable · calibrationCounted = false
+  reason = evidence-source-cannot-decide-this-prediction-type
+  matcher enabled = false · model calls = 0
+zero-pair：dispatch 1 · observation 0 · settlement 0（合法，非失败）
+
+EXPLICIT_USER_REPORT_PRODUCTION_CALLER_LIVE = NO
+STRUCTURED_EXPLICIT_USER_REPORT_PRODUCTION_LIVE = NO
+FREE_TEXT_EXPLICIT_USER_REPORT_PRODUCTION_LIVE = NO
+SUBJECTIVE_FEEDBACK_LOOP_PRODUCTION_LIVE = NO
+SUBJECTIVE_CALIBRATION_SAMPLE_PRODUCED = NO
+```
+
+**(q-33.8) 本阶段未做的事（诚实登记）**
+
+```
+不得为了"长阶段必须有结果"造 classifier（owner 已明示允许 BLOCKED）
+P1 core / P3 core / RealityEvent source table / PRODUCER_TABLE / 装配 = 未改
+未新增 UI · 未新增 HTTP 路由 · 未新增用户 command grammar
+未启用 Evidence Matcher（仍 OFF）· 未接 P4 ledger driver · 未进 calibration application
+未重开 Economy（D1 结论不变）· 未重开 D3 / D4
+未新增未 tracked 的 P1 authority change（P1_CORE_TRACKING_DEBT 状态不变）
+```
+
+**(q-33.9) 测试与 guard**
+
+```
+新增 tests/test_explicit_user_report_authority.js（§77 audit freeze · 36 assertions）
+新增 tests/test_subjective_prediction_feedback.js（§79 loop freeze + §N 对照 · 26 assertions）
+两者登记进 tests/test-all.js（static 组）
+seam guard 未改：本阶段**没有**新增 source，故 §76 的 guard migration 不触发
+```
+
+**(q-33.10) 回归与既有红**
+
+```
+D4 机械环：test_turn_terminal_reality_source · test_turn_terminal_directional_admission
+           test_turn_observer_admission · test_turn_execution_authority
+           test_runtime_fact_authority · test_reality_feedback_driver
+P1–P4：    test_outcome_observation_authority · test_outcome_observation_production
+           test_prediction_registry · test_prediction_settlement_core
+           test_prediction_error_seam_guard · test_behavior_effect_attribution
+           test_prediction_calibration_ledger · test_evidence_matcher
+           test_reality_event_backbone
+⇒ 全部 PASS（本阶段未触碰它们引用的 production 文件）
+
+既有红（本阶段前即存在，文件未被触碰）：
+  test_group_turn_cancellation.js · F.failClosedShowsNotice
+  test_p26_closure_guard.js · C4.dbUnchanged
+  test_home_node_service.js · isolation.* 3 项
+  test_frontend_structure.js · 18 项（assets/js BOM 要求 + imageRouterSettings）
+```
+
+**(q-33.11) readiness（最终 · 如实）**
+
+```
+MECHANICAL_FEEDBACK_LOOP_PRODUCTION_LIVE = YES（不变）
+STRUCTURED_EXPLICIT_USER_REPORT_PRODUCTION_LIVE = NO
+FREE_TEXT_EXPLICIT_USER_REPORT_PRODUCTION_LIVE = NO
+SUBJECTIVE_FEEDBACK_LOOP_PRODUCTION_LIVE = NO
+FULL_PREDICTION_ERROR_PRODUCTION_LOOP_READY = NO
+blocker ①：EXPLICIT_USER_REPORT_PRODUCER = NOT_AVAILABLE（无 explicitness authority boundary）
+blocker ②：EVIDENCE_MATCHER_ENABLED_DEFAULT = false ∧ 主观域 statement relation 不可机械判
+
+EXPLICIT_USER_REPORT_PRODUCER = NOT_AVAILABLE（保持）
+EVIDENCE_MATCHER_ENABLED_DEFAULT = false（保持）
+CALIBRATION_CONFIDENCE = null · CALIBRATION_APPLIED_TO_LIVE = NO
+MODEL_CALLS_ADDED = 0 · DURABLE_WRITES_ADDED = 0
+P1_CORE_TRACKING_DEBT = OPEN · STAGED = NO · COMMITTED = NO · PUSHED = NO
+```
+
+**(q-33.12) 出口状态**
+
+```
+P5_B3_E_STATUS = BLOCKED_BY_NO_EXPLICIT_REPORT_AUTHORITY_BOUNDARY
+P5_B3_E_FREEZE = NOT_FROZEN（没有 live 主观链可冻结；E0/E1 裁决已由测试机械冻结）
+```
+
+`NEXT` 是 **owner ruling 之后**才可选的方向，不得自动进入：
+
+```
+· P5-B3-F · Evidence Matcher Production Admission（唯一能关闭 blocker ② 的路）
+· P5-B3-D5 · Turn Outcome Directional Semantics
+· 产品决策：是否新造一个 structured explicit-report 面（唯一能关闭 blocker ① 的路）
+· 或者接受 "FULL_PREDICTION_ERROR_PRODUCTION_LOOP = MECHANICAL_ONLY" 并冻结
+```
+
+---
+
+### (q-34) P5-B3-E-R1 · Structured Explicit Report Surface + Mechanical Preference Relation（追加 · 结论：COMPLETE + FROZEN）
+
+**(q-34.1) owner ruling：explicitness authority 有了真实载体**
+
+```
+EXPLICITNESS_AUTHORITY = DEDICATED_STRUCTURED_USER_REPORT_ACTION
+RAW_CHAT_TEXT_IS_EXPLICIT_REPORT = NO
+FREE_TEXT_EXPLICIT_REPORT_PARSER = NONE
+MODEL_MAY_DECLARE_EXPLICITNESS = NO
+MATCHER_MAY_DECLARE_EXPLICITNESS = NO
+LINGUISTIC_EVIDENCE_MAY_UPGRADE_TO_REPORT = NO
+EXPLICIT_REPORT_FAMILY = USER_PREFERENCE
+STANCE_ENUM = LIKE | DISLIKE
+```
+
+语音/行为/语言证据/模型推断**全部**仍然是 candidate；只有"用户显式执行一次
+结构化的**偏好报告动作**"才产生 canonical report。普通聊天里说 "I like X"
+**永远**不是 report（既没有入口，也没有解析器）。
+
+**(q-34.2) 入口：一条**专用**的窄路径（不新造 mini-server）**
+
+```
+SELECTED_INGRESS_STYLE = RAW DEDICATED ROUTE IN services/home-node/http.js
+                          （与 P22-13 approval-decision / P22-14 configuration 同型）
+REPORT_PATH = '/internal/user-reports/preference'   ← 只在 seam 模块里出现一次
+USER_AUTHORSHIP_AUTHORITY = LOOPBACK_SOCKET + CONFIGURED_DESKTOP_CREDENTIAL（恒定时间比较）
+WHY：/messages · /turn · chat/send 的语义是 "send a user message"；
+     把它们当权威边界 = 让"用户随便说的一句话"自动成为关于他自己的事实。
+     `/internal/` 前缀自动继承 isDesktopOnlyPath ⇒ 远端无桌面 token 一律 403。
+ENVELOPE_KEYS = ['requestId','characterId','targetKey','stance','threadId']
+```
+
+caller 自报的身份 / scope / 时间 / provenance 键**逐名拒绝**（userId、conversationId、
+timestamp、occurredAt、source、sourceInstance、reportId、predictionId、validated、
+text、content …），且拒绝时 `reachedProducer = false`（身份不明者学不到 payload）。
+
+**(q-34.3) canonical report 契约**
+
+```
+ExplicitUserPreferenceReport {
+  schemaVersion  : 'explicit-user-preference-report/v1'
+  reportId       : 'pref_report_' + stableToken(actionId | characterId | conversationId | targetKey | stance)
+  source         : 'EXPLICIT_USER_REPORT'
+  characterId    : 经 server canonical registry 绑定（D3 同一个 accessor）
+  conversationId : CHAT_CORE.conversationIdOf(boundCharacterId, threadId)（服务端派生）
+  targetKey      : canonical 小写 [a-z0-9][a-z0-9._:-]{0,47}
+  stance         : 'like' | 'dislike'（闭集，恰好两个）
+  preferenceToken: 'pref.<stance>.<targetKey>'（**派生**字段）
+  sourceActionId : 'pref_action_' + stableToken(requestId)（transport 派生）
+  occurredAt     : SERVER_ACCEPTED_REPORT_TIME（**不**读客户端）
+  sealedBy       : 'EXPLICIT_USER_PREFERENCE_REPORT_AUTHORITY'
+  idLifetime     : 'SESSION_ONLY'
+}
+DEEP_FROZEN = YES · 不变量：不含 predictionId / full text / conversation / prompt /
+              model output / Memory snapshot / relationship / credentials
+REPORT_DURABILITY = SESSION_ONLY（有界去重 256；不新增 durable DB）
+```
+
+**(q-34.4) 身份三层分离（§6/§7）**
+
+```
+REQUEST_IDENTITY          = HTTP requestId                       （transport：幂等/关联/重试）
+CANONICAL_ACTION_IDENTITY = pref_action_<stableToken(requestId)> （transport 派生）
+REPORT_FACT_IDENTITY      = pref_report_<stableToken(actionId|scope|targetKey|stance)>
+REPORT_IDENTITY_DOES_NOT_CONTAIN_PREDICTION_ID = YES
+REPORT_IDENTITY_EQUALS_REQUEST_ID = NO
+```
+※ 同一 action 重放 ⇒ 同一 reportId（100x ⇒ 1 条逻辑 report）；
+※ 同一命题换一次 action ⇒ **新**事实（T1 LIKE / T3 LIKE 不塌缩）；
+※ 时钟不参与 identity（同一 action、不同服务器接受时间 ⇒ 同一 reportId）。
+
+**(q-34.5) provenance 与洗权**
+
+```
+ONLY_THE_MODULE_MINTS_CANONICAL_REPORTS = YES
+  （module 级 WeakSet 身份 + WeakMap 指纹 + deepFreeze）
+PLAIN_OBJECT / JSON_CLONE / OBJECT_ASSIGN_CLONE / FROZEN_COPY / COPIED_SEALED_BY = REJECTED
+caller 声明的 source / sourceInstance **不能**升级 provenance（由 producer 表决定）
+```
+
+**(q-34.6) RealityEvent：最小 source-class admission + observer 裁定**
+
+```
+ALLOWED_REALITY_SOURCE_CLASSES = [CANONICAL_RUNTIME, EXPLICIT_USER_REPORT]   ← 冻结闭集
+  仍**不在**闭集里：LINGUISTIC_EVIDENCE · MODEL_INFERENCE · USER_BEHAVIOR
+唯一 EXPLICIT_USER_REPORT 源：sourceId = user-explicit-preference-report
+  sourceInstance = user.explicit-preference-report
+  domain = user_preference · type = preference_report
+  body = { targetKey, stance, reportId }   ← 闭集；缺键/多键/越权字段/非 canonical 命题全拒
+  requiredBodyKeys / allowedBodyKeys / requiresCanonicalPreferenceProposition（defense in depth）
+REALITY_EVENT_OCCURRED_AT = REPORT_OCCURRED_AT（**不重 clock**）
+REALITY_EVENT_IDENTITY = stableToken(reportId | mappingVersion)（不含 predictionId）
+```
+
+```
+observer owner ruling（§23/§24）：
+  `chat.user-utterance` 的历史语义 = "任意用户聊天话语" ⇒ 与本轮 authority model
+  **冲突**（raw chat 不是 report）⇒ **不复用**。
+  新增精确 token：AUTHORIZED_OBSERVERS.EXPLICIT_USER_REPORT += 'user.explicit-preference-report'
+  旧 token 被**保留**为"无生产来源的假设向量"（P1/P3/P5 既有冻结测试向量用它），
+  它**不是**一条通道 —— 生产侧没有任何 producer 会发出它。
+```
+
+**(q-34.7) 唯一共享表示：canonical preference token**
+
+审计事实：P2 的 `preference` 预测**没有** target/object 字段 —— 唯一承载"期望值"的
+字段是 `expectedOutcome.token`（只做长度约束，无 charset）。因此第一版把
+"canonical target representation"定义为**一个文法**，并且**只有一处出处**：
+
+```
+assets/js/memory-recall/preference-proposition-core.js      ← 唯一实现
+  token = 'pref.' + stance + '.' + targetKey
+  CANONICAL_TOKEN = /^pref\.(like|dislike)\.[a-z0-9][a-z0-9._:-]{0,47}$/
+  MAX_TOKEN_LENGTH = 61 ≤ P1 BOUNDS.MAX_TOKEN(80)
+两侧共用：Prediction.semanticPayload.expectedOutcome.token ←→ Observation.outcomeRef.token
+USER_PREFERENCE_IS_THE_ONLY_STRUCTURED_SUBJECTIVE_DOMAIN = YES（第一版）
+NO_SEMANTIC_EXPANSION = YES（无同义词/单复数/上下位/LLM entity resolution）
+```
+
+**(q-34.8) 机械 relation（**不需要** Evidence Matcher）**
+
+```
+P1 domainPayloadConsistency 新增唯一例外：
+  token 载荷进入主观域 ⟺ targetDomain === 'user_preference'
+                            ∧ source === 'EXPLICIT_USER_REPORT'
+                            ∧ isCanonicalPreferenceToken(token)
+  其余一切不变（statement 规则不变；机制域 token 表不变；MATRIX_ROWS 不变）
+
+P3 classifyRelation 新增分支（仍只在 exclusive_outcome 下）：
+  任一侧进入 `pref.` 命名空间 ⇒ 必须双侧可解析，否则 'unclassifiable'（**绝不** conflict）
+  非 preference 预测看到 pref.* ⇒ 'irrelevant'
+  target 不同            ⇒ 'irrelevant'（**绝不** conflict —— §33/§35）
+  target 同 + stance 同  ⇒ 'support'
+  target 同 + stance 反  ⇒ 'conflict'（like/dislike 在该 target 上互斥）
+MATCHER_CALLS_ON_STRUCTURED_PREFERENCE_PATH = 0
+STATEMENT_RELATION_STILL_REQUIRES_EVIDENCE_MATCHER = YES（未变）
+```
+
+**(q-34.9) 生产闭链实测（真实 HTTP 主 E2E）**
+
+```
+POST /internal/user-reports/preference（桌面凭据）
+  → route validation（loopback + credential + 信封 + character binding）
+  → canonical ExplicitUserPreferenceReport（seal）
+  → RealityEvent（EXPLICIT_USER_REPORT · user_preference · preference_report）
+  → 既有 runtime-reality-feedback 自动 dispatch（**没有**第二个 driver）
+  → Prediction Registry pairing → P1 projection（EXPLICIT_USER_REPORT × user_preference · token）
+  → P3 settlement = **matched** · calibrationCounted = true
+计数：Report 1 · RealityEvent 1 · Dispatch 1 · Candidate 1 · Observation 1 · Settlement 1
+     MATCHER_CALLS = 0 · TEST_MANUAL_FEEDBACK_CALLS = 0
+zero-pair：Dispatch 1 / Observation 0 / Settlement 0（合法）
+multi-pair：1 report / 1 event / 1 dispatch / N observations
+replay 100x：1 report / 1 reality mint / 1 dispatch
+raw chat 对照：真实 executeCharacterTurn 说 "I like scifi" ⇒ **0 条 report**、0 次 reality emit
+```
+
+```
+conflict 的**冻结语义**（如实记录，不粉饰）：
+  production driver 不提供 opportunity ⇒ opportunityGate = UNKNOWN
+  ⇒ directional.conflict = FORBIDDEN ⇒ 反立场报告被丢弃 ⇒ 状态**不是** missed
+     reason = directional-conflict-forbidden-cannot-produce-missed
+  受控实验（提供权威 SATISFIED opportunity）下，同 target 反 stance 确实产 **missed**
+  ⇒ 解锁需要一条**权威 opportunity 来源**（见 (q-34.14) GAP-3）。
+ABSENCE_OF_REPORT != CONTRADICTION（无 report 永不 missed）
+REPORT_CORRECTION = NEW FACT · REPORT_HISTORY_REWRITE = NO
+```
+
+**(q-34.10) 加法式装配闭合：P5-B2 归因权威终于接进 PE 链（本相位唯一的既有链改动）**
+
+```
+PRODUCTION_ATTRIBUTION_AUTHORITY_WIRED = YES
+  · runtime-prediction-registry  ← attributionAuthority: runtimeBehaviorEffect
+  · runtime-outcome-observation  ← attributionAuthority（经 buildRealityFeedbackDriver 第 4 参）
+理由：P3.0 冻结规则要求主观域 decisive 必须 attribution **known-none**（unknown ≠ none），
+     P1 的 contamination 闸门同样要它才能推出 NONE。没有它，结构化偏好报告会在
+     gate 就被判 FORBIDDEN ⇒ 主观链形同不存在。
+★ 这是**加一个只读依赖**，不是给 driver 增加语义：driver 仍然只编排，
+  attribution 的判定完全由 P1/P3 做出。
+★ 副作用（如实登记）：机械侧（event 预测）在生产上也因此变得可 decisive ——
+  这正是 D4-R2 owner ruling 的原意（"只在 attribution known-none 时成立"），
+  但它是生产**行为**的变化；D4 全套测试仍全绿。
+★ P4 的 `attributionAuthorityAvailable: false` 未同步（§57 禁止扩 scope）⇒ GAP-4。
+```
+
+**(q-34.11) 边界**
+
+```
+EXPLICIT_REPORT_MUST_NOT_DIRECTLY_WRITE_MEMORY = YES（MEMORY_WRITE = NONE）
+EXPLICIT_REPORT_MUST_NOT_DIRECTLY_WRITE_RELATIONSHIP = YES（RELATIONSHIP_WRITE = NONE）
+ONE_REALITY_FEEDBACK_BACKBONE = YES（未新增第二个 driver）
+报告链不 require P1 observation core / settlement / calibration / model port
+EVIDENCE_MATCHER_ENABLED_DEFAULT = false（未改）
+CALIBRATION_CONFIDENCE = null · CALIBRATION_APPLIED_TO_LIVE = NO（未进 calibration application）
+P4_PRODUCTION_LEDGER_DRIVER = NOT_LIVE（未扩 scope）
+```
+
+**(q-34.12) 本相位**翻面**的既有断言（逐条，均为相位性审计结论）**
+
+```
+tests/test_reality_event_backbone.js        G6（EXPLICIT_USER_REPORT 不在源表）· H2（只有 CANONICAL_RUNTIME）
+tests/test_outcome_observation_production.js A1（PRODUCER_TABLE 恰好 4）· A2（无 explicit producer）
+                                             · H5（producer 文件里没有该字面量）
+tests/test_turn_observer_admission.js        A4（EXPLICIT_USER_REPORT observer 恰好 1）
+tests/test_explicit_user_report_authority.js 整份（P5-B3-E 的 BLOCKED 审计冻结 → R1 的 authority 冻结）
+tests/test_subjective_prediction_feedback.js 整份（"主观链不可 decisive" → "主观链 production live"）
+未动：P1 matrix 行 / RUNTIME_STATE_TOKENS / USER_ACTION_TOKENS / P3·P4·P5 seam 表面清单 /
+      MECHANICAL_RELATIONS / RUNTIME_CLASSIFIABLE_MODES / EVIDENCE_MATCHER_INVOCATION /
+      OO.STATE_SUPPORT（P1 core 的纯核心自述仍然成立：它自己不做任何 wiring）
+```
+
+**(q-34.13) readiness**
+
+```
+MECHANICAL_FEEDBACK_LOOP_PRODUCTION_LIVE = YES
+STRUCTURED_EXPLICIT_USER_REPORT_PRODUCTION_LIVE = YES
+FREE_TEXT_EXPLICIT_USER_REPORT_PRODUCTION_LIVE = NO
+SUBJECTIVE_FEEDBACK_LOOP_PRODUCTION_LIVE = YES
+P3_DECISIVE_SUBJECTIVE_SETTLEMENT = REACHABLE（matched 已在生产 E2E 实测）
+DEDICATED_EXPLICIT_REPORT_INGRESS = LIVE
+CANONICAL_PREFERENCE_REPORT_PRODUCER = LIVE
+EXPLICIT_REPORT_REALITY_SOURCE = LIVE
+EXISTING_REALITY_FEEDBACK_DRIVER_REUSED = YES
+SUBJECTIVE_MECHANICAL_RELATION = LIVE
+MATCHER_CALLS = 0 · MEMORY_WRITE = NONE · RELATIONSHIP_WRITE = NONE
+EVIDENCE_MATCHER_ENABLED_DEFAULT = false
+CALIBRATION_CONFIDENCE = null · CALIBRATION_APPLIED_TO_LIVE = NO
+```
+
+**(q-34.14) 出口状态与**新发现**的 gaps（诚实登记，不在本轮修）**
+
+```
+P5_B3_E_R1_STATUS = COMPLETE
+P5_B3_E_R1_FREEZE = FROZEN
+```
+
+```
+GAP-1 PRODUCTION_STRUCTURED_EXPECTATION_PROJECTION = NOT_LIVE
+      审计事实：expectation-shadow-core 的输出 schema **没有** subject / predicate /
+      expectedOutcome 字段，runtime-expectation 直接把 items[index] 交给
+      projectFromValidatedExpectation ⇒ 生产上每一次投影都以
+      `missing-structured-prediction-fields` 结束。
+      ⇒ P2 生产 registry 实际上是空的；本相位的 E2E 用**canonical P2 入档缝**
+        （projectFromValidatedExpectation）以预置验证过的 structured expectation 驱动，
+        这正是 D4-R3 的既有做法，但**产品端到端**仍缺这一段。
+      （contract (q-… ) 早已声明 PREDICTION_STRUCTURE_REQUIRES_EXPECTATION_SCHEMA_EXTENSION = YES，
+        但从未实现。）
+GAP-2 FULL_PREDICTION_ERROR_PRODUCTION_LOOP_READY = NO（因为 GAP-1 + free-text 仍然 NOT_AVAILABLE）
+GAP-3 SUBJECTIVE_NEGATIVE_SETTLEMENT_OPPORTUNITY_SOURCE = MISSING
+      冲突（missed）需要权威 opportunity；当前 feedback driver 不提供 ⇒ 见 (q-34.9)。
+GAP-4 P4_ATTRIBUTION_FLAG_STALE = YES
+      services/home-node-service.js 两处 `attributionAuthorityAvailable: false` 未随
+      (q-34.10) 同步；P4 的 calibration tax 仍会报 capability gap。（§57 禁止本轮扩 scope）
+GAP-5 FREE_TEXT_EXPLICIT_REPORT_SUPPORT = NOT_AVAILABLE（本相位刻意不做）
+GAP-6 PREDICTION_ERROR_CORE_TRACKING_DEBT = OPEN（见 (q-34.15)）
+GAP-7 TURN_TERMINAL_OUTCOME_DIRECTIONAL_DISCRIMINATION = CAPABILITY_GAP（未做 D5）
+GAP-8 MULTI_HOME_NODE_FEEDBACK_ROUTING = 未做（ONE_HOME_NODE_INSTANCE_PER_PROCESS）
+```
+
+**(q-34.15) 新增/改动的文件与 tracking debt**
+
+```
+新增 production（3，全在 services/home-node/）：
+  runtime-explicit-preference-report.js            （canonical report mint · seal · 去重）
+  explicit-preference-report-reality-source.js     （ONE report → RealityEvent 映射）
+  explicit-preference-report-seam.js               （唯一入口：loopback+凭据+信封+绑定）
+新增纯核心（1，assets/js/memory-recall/）：
+  preference-proposition-core.js                   （token 文法唯一出处 · 带 UTF-8 BOM）
+改动：
+  assets/js/memory-recall/outcome-observation-core.js   （observer token + 域载荷例外）
+  assets/js/memory-recall/prediction-settlement-core.js （结构化偏好 relation 分支）
+  services/home-node/runtime-reality-event.js           （source class 闭集 + 新源 + body 契约）
+  services/home-node/runtime-outcome-observation.js     （producer 表 + 结构化投影表）
+  services/home-node/http.js                            （第四条写路径）
+  services/home-node-service.js                         （两处装配 + 归因接线）
+  tests/（3 份既有断言翻面 + 2 份 E 阶段套件重写 + test-all.js 台账）
+  docs/contracts/memory/RECONSTRUCTIVE_MEMORY_CONTRACT.md（本追加）
+
+PREDICTION_ERROR_CORE_TRACKING_DEBT = OPEN
+UNTRACKED_AUTHORITY_CHANGES_THIS_ROUND = [
+  assets/js/memory-recall/outcome-observation-core.js,      ← 未 tracked
+  assets/js/memory-recall/prediction-settlement-core.js,    ← 未 tracked
+  services/home-node/runtime-reality-event.js,              ← 未 tracked
+  services/home-node/runtime-outcome-observation.js         ← 未 tracked
+]
+（其余改动文件在 git 里是 tracked；没有任何 stage / commit / push）
+```
+
+**(q-34.16) 下一步（不自动进入）**
+
+```
+· P5-B3-E-R2 · Free-text Explicit Report Candidate / Confirmation Flow
+· P5-B3-F   · Evidence Matcher Production Admission
+· GAP-1     · Expectation Schema Extension（让生产真的能建档 —— E2E 产品闭环的前置）
+· GAP-3     · Subjective Negative Settlement Opportunity Source
+· P5-B3-D5  · Turn Outcome Directional Semantics
+· Prediction Error Tracking Closure
+```
+
+---
+
+### (q-35) P5-B3-G1 · Production Structured Expectation Projection（追加 · 结论：COMPLETE + FROZEN）
+
+**(q-35.1) owner ruling（G1 的核心）**
+
+```
+MODEL_MAY_PROPOSE_EXPECTATION = YES
+MODEL_MAY_PROPOSE_STRUCTURED_EXPECTATION_FIELDS = YES
+MODEL_MAY_NOT_MINT_CANONICAL_PREDICTION_RECORD = YES
+MODEL_MAY_NOT_CHOOSE_PREDICTION_ID = YES
+MODEL_MAY_DECLINE_TO_PREDICT = YES
+PREDICTION_PROJECTION_AUTHORITY = RUNTIME
+PREDICTION_REGISTRY_AUTHORITY = EXISTING_P2_RUNTIME
+TYPE_TABLE_IS_SOLE_PREDICTION_TYPE_AUTHORITY = YES
+G1_PRODUCTION_PROJECTION_TYPES = [preference]
+UNSTRUCTURED_EXPECTATION_SETTLEABLE = false
+FREE_TEXT_TO_PREDICTION_PARSING = FORBIDDEN
+MODEL_DOES_NOT_DEFINE_PREFERENCE_TOKEN_GRAMMAR = YES
+PREDICTION_SCOPE_IS_RUNTIME_AUTHORITY = YES
+PREDICTION_ID_IS_RUNTIME_AUTHORITY = YES
+PREDICTION_PROJECTION_FAILURE MUST_NOT FAIL CHAT TURN = YES
+```
+
+分工：模型 = candidate proposer · Expectation runtime = cognition owner ·
+Schema/validator = candidate admission · Projection runtime = Prediction creation
+authority · P2 Registry = lifecycle authority。
+
+**(q-35.2) 根因（GAP-1 的机械形状）**
+
+```
+expectation-shadow-core.validateResponse（旧）**不是**闭合键校验器：
+  它只拒 evidenceConfidence / calibrationConfidence / confidence，
+  其余模型键**静默丢弃**，只发出 8 个键。
+⇒ subject / predicate / expectedOutcome —— 恰好是 prediction-record-core 要求的三个键
+  —— 被"接受然后丢掉"。
+⇒ runtime-expectation 那处**早已存在**的 P2 seam 每一次调用都以
+  `not-settleable` + `missing-structured-prediction-fields` 结束
+  （prediction-record-core:521-527）。
+⇒ 生产 Prediction Registry 事实上是空的。
+∴ 修的不是"再加一条链"，而是**把被丢掉的候选接上去**。
+```
+
+**(q-35.3) 结构化候选契约（expectation schema v2 · additive）**
+
+```
+EXPECTATION_SCHEMA_VERSION = 'expectation-shadow/v2'
+STRUCTURED_CANDIDATE_VERSION = 'structured-expectation-candidate/v1'
+item.structuredPrediction = null | {
+  version, kind ∈ STRUCTURED_PREDICTION_KINDS(镜像 TYPE_TABLE),
+  targetKey?(canonical), stance?(like|dislike)
+}
+item.structuredPredictionRejection = null | <candidate reasonCode>   （诊断，非 authority）
+```
+
+- **candidate ≠ authority**：候选层只回答"形状合法吗"；"允许入档吗"由 runtime 策略决定。
+- 坏候选**不**作废 expectation item（§26）—— 只把候选置 null 并登记原因。
+- 旧模型 / 旧 fixture 不提供该字段 ⇒ 逐字照常工作（向后兼容）。
+- 只做机械归一：`trim` / `lowercase` / 闭集 / **共享** target 文法；无语义变换。
+
+**(q-35.4) 生产准入与组装（runtime authority）**
+
+```
+runtime-structured-expectation.js（新增 · owner = HOME_NODE_COGNITION_RUNTIME）
+  · production admission：只有 G1_PRODUCTION_PROJECTION_TYPES 里的 kind 可投影
+      - TYPE_TABLE 支持但未开放（relational）⇒ production-type-not-enabled
+      - 越出 TYPE_TABLE（mood）           ⇒ unsupported-prediction-type
+      - 非法 target / stance              ⇒ invalid-preference-target / -stance
+      - 无候选 / 模型没预测               ⇒ missing-structured-prediction
+  · 组装 = **显式白名单**（ALLOWED_ITEM_KEYS），绝不 Object.assign(rawItem)：
+      subject   = { kind:'user', label:'' }
+      predicate = { kind:'prefers' }
+      expectedOutcome = { kind:'exclusive-outcome', token:'pref.<stance>.<targetKey>', unit:null }
+  · token 由**共享** preference-proposition-core 生成（模型不拼 token）
+  · ④ 一致性自检：调用 P2 的 derivePredictionType 验证三元组真的推导成同一个 kind
+      （表漂移 ⇒ type-table-disagreement，fail closed）
+  · 有界：沿用既有 MAX_OUTPUT_ITEMS(=4)，**不**新增无界数组
+```
+
+**(q-35.5) 接线（single seam · 未新增注册点）**
+
+```
+runtime-expectation.js：plan() → **既有唯一** P2 seam
+  predictionRegistry.projectFromValidatedExpectation(plan.expectation, {... expectationIndex: plan.index})
+  · 仍是 1 处调用、仍在 `status === 'created'` 之后、仍 try/catch
+  · 投影失败只累加 predictionProjectionFailed（chat turn 不受影响）
+  · 装配层**未改动**（模块自 require）；模型输出/正文不进任何诊断
+```
+
+**(q-35.6) 生产实测（真实 HTTP cognition turn）**
+
+```
+Step 1  真实 memory-recall 回合 → L3 解释 → L5 期望
+        → 模型给出 structuredPrediction {kind:'preference', targetKey:'SciFi', stance:'like'}
+        → runtime 校验 + 组装 + 自动注册
+        ⇒ ProductionExpectations 1 · StructuredCandidates 1 · PredictionsRegistered 1
+        ⇒ TEST_MANUAL_PREDICTION_INSERTS = 0
+Step 2  再走一个真实回合（消费 L7 行为基调 effect —— 它的终止是"已观察的终止"）
+Step 3  later 真实 HTTP POST /internal/user-reports/preference
+        → RealityEvent → 自动 feedback dispatch → paired observation
+        ⇒ Settlement = **matched** · calibrationCounted = true
+        ⇒ MATCHER_CALLS = 0 · TEST_MANUAL_FEEDBACK_CALLS = 0
+常量：MAX_PRODUCTION_PREDICTIONS_PER_TURN = 4（既有 bound）· PROVIDER_SPECIFIC_CHANGES = 0
+```
+
+**(q-35.7) 失败隔离（§26/§40–§42/§56）**
+
+```
+模型 null            ⇒ 回合成功 · 0 Prediction（MODEL_MAY_DECLINE_TO_PREDICT）
+模型 stance=maybe    ⇒ 回合成功 · 0 Prediction · reason invalid-preference-stance
+模型 kind=relational ⇒ 回合成功 · 0 Prediction · reason production-type-not-enabled
+旧模型输出（无字段） ⇒ 回合成功 · 0 Prediction（向后兼容）
+无 Registry          ⇒ 期望照常创建，只是没有记录
+投影抛错             ⇒ 只影响该条记录，chat turn 不受影响
+模型伪造 authority   ⇒ predictionId/characterId/conversationId/createdAt 被剥掉；
+                       记录 scope/identity 仍来自 runtime
+同回合重放           ⇒ duplicate-turn（不重复注册）
+```
+
+**(q-35.8) 边界（本轮**未**做）**
+
+```
+未启用 Evidence Matcher（仍 false）· 未接 free-text explicit report（仍 NOT_AVAILABLE）
+未处理 GAP-3（负向 missed 仍需权威 opportunity）· 未做 D5 · 未做 multi-Home-Node
+未接 P4 ledger driver · 未进 calibration application · 未改 P2 identity/type semantics
+MEMORY_WRITE = NONE · RELATIONSHIP_WRITE = NONE · CALIBRATION_APPLIED_TO_LIVE = NO
+PredictionRecord MUST NOT be accepted as RealityEvent（模块里没有 ingest/realityEvent）
+NO_NEW_NUMERIC_CONFIDENCE（未引入新 confidence）· opportunity 仍属 later settlement authority
+```
+
+**(q-35.9) readiness（G1 后重估）**
+
+```
+PRODUCTION_EXPECTATION_RUNTIME = LIVE
+STRUCTURED_PREFERENCE_EXPECTATION_CANDIDATE = LIVE
+RUNTIME_VALIDATION = LIVE
+CANONICAL_P2_RECORD_CREATION = LIVE
+PREDICTION_REGISTRY_AUTOMATIC_INSERT = LIVE
+PRODUCTION_STRUCTURED_EXPECTATION_PROJECTION = LIVE      ← GAP-1 关闭
+PRODUCTION_PREDICTION_REGISTRATION = LIVE
+POSITIVE_PREDICTION_ERROR_PRODUCT_E2E = LIVE
+TEST_MANUAL_PREDICTION_INSERTS = 0 · MATCHER_CALLS = 0
+MECHANICAL_FEEDBACK_LOOP_PRODUCTION_LIVE = YES
+STRUCTURED_EXPLICIT_USER_REPORT_PRODUCTION_LIVE = YES
+SUBJECTIVE_FEEDBACK_LOOP_PRODUCTION_LIVE = YES
+FREE_TEXT_EXPLICIT_USER_REPORT_PRODUCTION_LIVE = NO
+SUBJECTIVE_NEGATIVE_DECISIVE_SETTLEMENT_LIVE = NO（GAP-3）
+EVIDENCE_MATCHER_ENABLED_DEFAULT = false · CALIBRATION_APPLIED_TO_LIVE = NO
+```
+
+**(q-35.10) FULL_PREDICTION_ERROR_PRODUCTION_LOOP_READY 重估（引用 frozen definition）**
+
+```
+FULL_PREDICTION_ERROR_PRODUCTION_LOOP_READY = YES
+依据（既有 contract 对 "full" 的定义，本相位未改定义）：
+  · (q-22.10) / (q-33.11) 把 "full" 的 blocker 逐条列为
+      ① EXPLICIT_USER_REPORT_PRODUCER = NOT_AVAILABLE  → **已关闭**（E-R1）
+      ② EVIDENCE_MATCHER_ENABLED_DEFAULT = false ∧ statement relation 不可机械判
+         → 对**结构化**偏好链已不再构成 blocker（E-R1 的机械 relation），
+           Matcher 只对 free-text 证据仍是 blocker
+      ③ 生产端不产生 structured prediction（GAP-1）     → **本轮关闭**
+  · 即 "至少一条机械链 + 一条主观链，且 Prediction 由生产 runtime 创建" 已成立。
+仍**不**包含（明确登记为缺口，不是隐藏 blocker）：
+  free-text explicit report · 负向 decisive（missed）· Evidence Matcher ·
+  P4 production ledger driver · D5 · multi-Home-Node routing
+⇒ 定义若被 owner 改为"覆盖一般自然语言证据"，则本行立即变回 NO。
+```
+
+**(q-35.11) 测试与回归**
+
+```
+新增 tests/test_structured_expectation_projection.js（34 assertions）
+新增 tests/test_prediction_error_product_e2e.js（17 assertions）
+两者登记进 tests/test-all.js（static 组）
+seam guard **未改**：唯一 P2 seam 仍是 1 处调用（dep/probe/call 三行不变）
+未新增 provider 代码（PROVIDER_SPECIFIC_CHANGES = 0）
+```
+
+**(q-35.12) 出口状态**
+
+```
+P5_B3_G1_STATUS = COMPLETE
+P5_B3_G1_FREEZE = FROZEN
+GAP-1 = CLOSED（PRODUCTION_STRUCTURED_EXPECTATION_PROJECTION = LIVE）
+NEXT（不自动进入，见 (q-35.13)）
+```
+
+**(q-35.13) 剩余缺口（按真实优先级重排）**
+
+```
+GAP-3  SUBJECTIVE_NEGATIVE_SETTLEMENT_OPPORTUNITY_SOURCE = MISSING
+       （positive 已 live；negative 需要一条权威 opportunity 来源）
+GAP-5  FREE_TEXT_EXPLICIT_REPORT_SUPPORT = NOT_AVAILABLE
+       （结构化链已闭环；自然语言证据仍只有 candidate 级，且需要 Matcher）
+GAP-4  P4_PRODUCTION_LEDGER_DRIVER = NOT_LIVE + P4 attribution 标志未随 E-R1 同步
+GAP-6  PREDICTION_ERROR_CORE_TRACKING_DEBT = OPEN（见 (q-35.14)）
+GAP-7  TURN_TERMINAL_OUTCOME_DIRECTIONAL_DISCRIMINATION = CAPABILITY_GAP
+GAP-8  MULTI_HOME_NODE_FEEDBACK_ROUTING = ONE_HOME_NODE_INSTANCE_PER_PROCESS
+新  G1-EXECUTION-POLICY：生产 expectation 段默认 **OFF**（runtime-policy.json 没有
+       expectation 段 ⇒ 0 模型调用 ⇒ 不建档）。本轮**未**改默认值：那是一次
+       成本/产品决策，不是 authority 变更。
+新  MODEL-COVERAGE：第一版只开放 preference；event/latent_state/relational 的
+       structured 候选会被 production-type-not-enabled 拒掉（有意为之）。
+```
+
+**(q-35.14) tracking debt**
+
+```
+PREDICTION_ERROR_CORE_TRACKING_DEBT = OPEN
+UNTRACKED_AUTHORITY_CHANGES_THIS_ROUND = [
+  assets/js/memory-recall/expectation-shadow-core.js   ← tracked 文件（本相位**修改**）
+  services/home-node/runtime-expectation.js            ← tracked 文件（本相位**修改**）
+]
+（其余新增/改动落在 untracked 或已登记文件；未 stage / 未 commit / 未 push）
+```
+
+---
+
+### (q-36) P5-B3-H · Prediction Error Tracking & Authority Closure（追加 · 结论：AUDIT COMPLETE / ACTION PENDING）
+
+**(q-36.1) 本轮不做能力，只做可追踪性**
+
+```
+P5_B3_H_IS_AUDIT_ONLY = YES
+PRODUCTION_CODE_CHANGES = 0
+STAGED = 0 · COMMITTED = NO · PUSHED = NO
+```
+
+**(q-36.2) 冻结的 tracking ruling**
+
+```
+PRODUCTION_AUTHORITY_FILE
+  MUST_BE_VERSION_CONTROLLED
+  UNLESS_GENERATED_BY_A_TRACKED_CANONICAL_GENERATOR = YES
+
+UNTRACKED_PRODUCTION_AUTHORITY = TRACKING_DEBT
+GIT_DIFF_VISIBILITY_IS_NOT_SUFFICIENT_TO_PROVE_AUTHORITY_TRACKING = YES
+  （untracked canonical file 在 git diff 里**完全不可见** —— 这正是本债的成因）
+
+SHADOW_CANONICAL_IS_A_CLOSURE_BLOCKER = YES
+SPLIT_AUTHORITY_IS_A_CLOSURE_BLOCKER = YES
+
+TRACKING_AUDIT != STAGING != COMMIT
+P5_B3_TRACKING_AUDIT_REQUIRED = YES
+
+TRACKING_AUDIT_STATUS        （审计做完了吗）
+TRACKING_ACTION_STATUS       （文件真的被跟踪了吗）
+```
+
+**(q-36.3) 依赖图（从 3 个 production root 机械遍历 require/构造/回调）**
+
+```
+roots: services/home-node-service.js · services/home-node/execution.js · services/home-node/http.js
+遍历结果：88 个可达 production 模块 · 其中 28 个属于 Prediction Error authority 面
+（23 个 authority 文件 + runtime-recall / runtime-policy / domain-event-core 等相邻面）
+```
+
+**(q-36.4) 结论：19 个 production authority 文件处于 untracked**
+
+```
+UNTRACKED（??）· NOT ignored（git check-ignore 逐文件 exit=1 ⇒ 非 by-design 忽略）
+  assets/js/memory-recall/outcome-observation-core.js          （P1）
+  assets/js/memory-recall/prediction-record-core.js            （P2）
+  assets/js/memory-recall/prediction-settlement-core.js        （P3）
+  assets/js/memory-recall/prediction-calibration-core.js       （P4）
+  assets/js/memory-recall/evidence-match-core.js               （P5-B）
+  assets/js/memory-recall/behavior-effect-attribution-core.js  （P5-B2）
+  assets/js/memory-recall/preference-proposition-core.js       （E-R1）
+  services/home-node/runtime-reality-event.js
+  services/home-node/runtime-outcome-observation.js
+  services/home-node/runtime-reality-feedback.js
+  services/home-node/runtime-prediction-registry.js
+  services/home-node/runtime-prediction-settlement.js
+  services/home-node/runtime-prediction-calibration.js
+  services/home-node/runtime-evidence-matcher.js
+  services/home-node/runtime-explicit-preference-report.js
+  services/home-node/explicit-preference-report-reality-source.js
+  services/home-node/explicit-preference-report-seam.js
+  services/home-node/runtime-structured-expectation.js
+  services/home-node/turn-terminal-reality-source.js
+以及 **contract**：docs/contracts/memory/PREDICTION_ERROR_AUTHORITY_CONTRACT.md（??）
+以及 **16 个 PE 测试套件**（全部 ??，但 16/16 已登记进 tests/test-all.js）
+```
+
+```
+TRACKED_MODIFIED（已有跟踪，工作区修改）
+  assets/js/memory-recall/expectation-shadow-core.js（G1 修改）
+  services/home-node/runtime-expectation.js（G1 修改）
+  services/home-node/runtime-behavior-effect.js（前序相位修改）
+  services/home-node-service.js · services/home-node/execution.js · services/home-node/http.js
+TRACKED_CLEAN
+  assets/js/domain-event-core.js · services/home-node/runtime-recall.js · services/home-node/runtime-policy.js
+GENERATED = NO（全仓 generator/packaging 脚本对这些文件名 0 引用）
+SHADOW_CANONICAL = NO（规范树内没有同名第二份；scratch/build/release 副本见 (q-36.5)）
+SPLIT_AUTHORITY = NO
+```
+
+**(q-36.5) 非 canonical 副本（明确分类，不删除、不改 .gitignore）**
+
+```
+.dsh-tmp/** · tmp/** · src-tauri/target/** → 已被 .gitignore 覆盖（scratch / build 输出）
+Economy-v1-release/**                      → .gitignore 明确登记为"构建快照"，非产品发布链
+这些副本**不可被 production 加载**：production 只按仓库内相对路径 require，
+机械遍历证明根链只触达规范路径（见 (q-36.3)）。
+```
+
+**(q-36.6) 唯一性（全部 PASS）**
+
+```
+ONE_PRODUCTION_PREDICTION_INSERT_SEAM = YES
+  projectFromValidatedExpectation( 的生产调用点恰好 1 处：runtime-expectation.js:482
+ONE_REALITY_EVENT_MINT_AUTHORITY = YES
+  唯一 ingest 权威 runtime-reality-event.js；2 个 source adapter（turn-terminal / explicit-report）是设计
+ONE_OUTCOME_OBSERVATION_AUTHORITY = YES
+  buildOutcomeObservation( 的生产调用点恰好 1 处：runtime-outcome-observation.js:383
+ONE_SETTLEMENT_AUTHORITY = YES
+  settlePrediction( 只在 runtime-reality-feedback.js:147 被调用；状态字面量只出现在 P3 与其 forbidden-key 表
+ONE_REALITY_FEEDBACK_DRIVER = YES（runtime-reality-feedback.js 是唯一编排面）
+ONE_PREFERENCE_PROPOSITION_GRAMMAR = YES（preference-proposition-core.js:47/63 唯一）
+ONE_EXPLICIT_REPORT_ROUTE = YES（路径字面量只在 explicit-preference-report-seam.js:59）
+ONE_EXPECTATION_SCHEMA_AUTHORITY = YES（expectation-shadow-core）
+```
+
+**(q-36.7) 本轮发现并修复的一处**真实遗漏**（manifest-only）**
+
+```
+FINDING：tests/test-all.js 的 `['test_reality_feedback_driver.js'],` 登记行**缺失**
+  （E-R1 相位做台账行区间删除时把它连同注释尾部一起删掉；注释块被截断并与下一段合并，
+   文件仍能通过 node --check，所以当时没有红灯）。
+证据：Phase-H 机械审计 `PE suites not registered` → 修正前 = ['test_reality_feedback_driver.js']。
+处置（§34 允许的 manifest-only 修补，**不改任何 test semantics**）：
+  · 恢复该 entry 行；
+  · 补齐被截断的 D4-R3 注释块并正确闭合。
+结果：manifest entries 410 · unique 409（重复的 test_middle_brain_calibration_live.js 是设计允许）
+      · 16/16 PE 套件已登记 · 无悬空 entry。
+```
+
+**(q-36.8) 遗留（本轮**不**处理，逐项登记）**
+
+```
+ENCODING_DEBT（OPEN · 非本轮引入）
+  assets/js 的 BOM 要求下有 8 个 PE core 缺 BOM：
+    outcome-observation-core · prediction-record-core · prediction-settlement-core ·
+    prediction-calibration-core · evidence-match-core · behavior-effect-attribution-core ·
+    expectation-shadow-core · prediction-observation-core
+  （preference-proposition-core.js 由本线创建时**已带 BOM** ✓）
+  §47 允许"只对本轮新增/修改的 candidate 做最小编码修复"，但本轮是 audit-only：
+  半量修复会破坏既有 18 项 red 的基线，故**不做**，留给专门的 encoding closure。
+GIT_DIFF_CHECK = FAIL（4 条 whitespace finding，全部 pre-existing：
+  runtime-behavior-effect.js:853 EOF、tests/helpers/runtime-seam-guard.js:1231 EOF、
+  tests/test-all.js:770 trailing ws、tests/test-all.js:3219 EOF —— 均非本轮改动行）
+LINE_ENDINGS = MIXED（tracked 文件随 core.autocrlf 检出为 CRLF；untracked PE 文件全部 LF）
+```
+
+**(q-36.9) 出口状态**
+
+```
+P5_B3_H_STATUS = COMPLETE
+P5_B3_H_TRACKING_AUDIT = FROZEN
+TRACKING_AUDIT_STATUS = COMPLETE
+TRACKING_CANDIDATE_SET_READY = YES
+TRACKING_ACTION_STATUS = PENDING（本轮不 stage）
+PREDICTION_ERROR_CORE_TRACKING_DEBT = OPEN
+```
+
+`NEXT = P5-B3-H2 · Prediction Error Tracking Action`（stage exact audited set → staged-only regression → staged diff audit → optional commit only with explicit authorization）。**不自动进入。**
+
+---
+
+### (q-37) P5-B3-H2 · Prediction Error Tracking Action（追加 · 结论：STAGED CANDIDATE READY）
+
+**(q-37.1) 本轮只做 index closure**
+
+```
+P5_B3_H2_IS_STAGING_ONLY = YES
+RUNTIME_SEMANTIC_CHANGES = 0
+PRODUCTION_CODE_CHANGES = 0
+COMMIT = NO · PUSH = NO · HEAD_UNCHANGED = YES
+```
+
+**(q-37.2) 冻结的 tracking state**
+
+```
+P5_B3_TRACKING_ACTION = COMPLETE
+TRACKED_CANONICAL_SET = PHASE_H_AUDITED_SET
+                      + 2 dependency-closure additions
+                      + 5 lock-step test additions
+INDEX_SET_EQUALITY = PASS
+STAGED_RECONSTRUCTION = PASS
+PREDICTION_ERROR_CORE_TRACKING_DEBT = CLOSED
+  定义 = 所有 MUST_TRACK authority / contract / test 已进入 Git index，
+         且 staged candidate 可以从 HEAD **独立重建**并通过 authority regression。
+         它**不要求**已经 commit。
+PREDICTION_ERROR_COMMIT_STATUS = PENDING
+```
+
+**(q-37.3) Phase-H 候选集的两处缺口（由 Layer B 重建机械发现，不是靠猜目录）**
+
+```
+gap 1 · STAGE_SET_EXTENSION（require 依赖闭包）
+  assets/js/memory-recall/prediction-observation-core.js   （PE authority core · tracked M ·
+      diff 全属 P2 authority transfer：mintValidatedJudgementCapability / callerValidatedInvalid）
+  tests/helpers/runtime-seam-guard.js                       （PE 治理守卫 · tracked M ·
+      diff 全属 P1.5 seam taxonomy + semantic normalization）
+  两者都被 stage 集合内的文件 require —— 不收进来，重建就会缺依赖。
+
+gap 2 · LOCK_STEP_TEST_SET（语义锁定；require 图看不见）
+  tests/test_expectation_shadow.js             （P2 authority transfer 的测试面）
+  tests/test_dialogue_authority.js             （P5-B3-D3 character binding test seam）
+  tests/test_home_node_credential_migration.js （同上）
+  tests/test_home_node_execution.js            （同上）
+  tests/test_middle_brain_convergence.js       （同上）
+  证据：Layer B 首次重建中 test_expectation_shadow.js 用 HEAD 版本 ⇒ T5/W1 FAIL + crash；
+        收进工作区版本后 107 green。
+```
+
+**(q-37.4) 收录边界**
+
+```
+收录（index · 55 files）
+  19 MUST_TRACK_CANONICAL + 1 MUST_TRACK_CANONICAL_CONTRACT + 20 SHOULD_TRACK_TEST
+  + 8 TRACKED_MODIFIED（逐文件证明 diff 全属 PE）+ 2 dependency-closure + 5 lock-step
+不收录（原样保留）
+  unrelated worktree（其余 modified / untracked 一个都没动）
+  ENCODING_DEBT（8 个 core 缺 BOM）= DEFERRED
+  pre-existing whitespace findings = 不修
+```
+
+**(q-37.5) 验证**
+
+```
+AUTHORITY_HASH_DRIFT = NO（19 个 authority 与 Phase-H seed 逐字节一致）
+staged-only syntax                     = 48/48
+staged-only test-all manifest          = PE 20/20 registered
+staged diff --check                    = 13 findings，**全部**为既有内容（EOF 空行 / 2 处 tailing ws），H2 未新增
+staged reconstruction（HEAD + index）  = PASS（git checkout-index -a；staged 文件逐字节存在）
+dependency closure                     = nodes 111 · MISSING_STAGED_DEPENDENCY = 0
+Layer B regression                     = 26/26
+  （含 FULL_PRODUCT_E2E：auto Prediction → later explicit report → matched ·
+    TEST_MANUAL_PREDICTION_INSERTS = 0 · TEST_MANUAL_FEEDBACK_CALLS = 0 · MATCHER_CALLS = 0）
+```
+
+`NEXT = P5-B3-H3 · Prediction Error Commit Closure`（final staged review → optional commit → post-commit regression）。**不自动进入。**

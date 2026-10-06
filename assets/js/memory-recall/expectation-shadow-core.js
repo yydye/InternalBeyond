@@ -23,9 +23,17 @@
    模型调用在 `expectation-shadow-runner.js`（异步、默认不接、零生产调用方）。
    ==================================================================== */
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory();
-  else root.IBMemoryExpectationShadow = factory();
-})(typeof self !== 'undefined' ? self : this, function () {
+  if (typeof module === 'object' && module.exports) {
+    /* P5-B3-G1 · preference proposition 文法的**唯一**出处（与 E-R1 的
+       explicit report / P1 / P3 用的是同一个文件，不在这里抄第二份）。
+       缺席 ⇒ 结构化候选一律 fail closed（structuredPrediction = null）。 */
+    var preferenceProposition = null;
+    try { preferenceProposition = require('./preference-proposition-core.js'); } catch (e) { preferenceProposition = null; }
+    module.exports = factory(preferenceProposition);
+  } else {
+    root.IBMemoryExpectationShadow = factory(root.IBMemoryPreferenceProposition || null);
+  }
+})(typeof self !== 'undefined' ? self : this, function (PREFERENCE) {
   'use strict';
 
   var MAX_MEMORIES = 8;
@@ -34,6 +42,36 @@
   var MAX_TRIGGER_CHARS = 200;
   var MAX_RELATION_CHARS = 240;
   var MAX_OUTPUT_ITEMS = 4;          /* 一轮最多几条 expectation，避免刷屏式世界观 */
+
+  /* ── P5-B3-G1 · 可选的结构化预测候选（schema v2 · additive）─────────────
+     ★ Expectation != PredictionRecord：这里只承载**候选**，
+       canonical PredictionRecord 仍由 P2 projection runtime 创建（§17）。
+     ★ 词表**镜像** P2 的 predictionType（TYPE_TABLE 仍是唯一类型权威）；
+       本模块只回答"这个候选的形状合法吗"，不回答"允许它入档吗" ——
+       生产投影策略（G1：只允许 preference）由 runtime 侧独立 enforce（§54）。
+     ★ 模型**不得**提供任何 authority 字段（§8）：它们被逐名剥掉并登记。 */
+  var STRUCTURED_CANDIDATE_VERSION = 'structured-expectation-candidate/v1';
+  var EXPECTATION_SCHEMA_VERSION = 'expectation-shadow/v2';
+  var STRUCTURED_PREDICTION_KINDS = ['event', 'preference', 'latent_state', 'relational'];
+  var FORBIDDEN_CANDIDATE_KEYS = [
+    'predictionId', 'characterId', 'conversationId', 'turnId', 'createdAt',
+    'source', 'sourceInstance', 'registrySessionRef', 'settlementState',
+    'calibrationCounted', 'validated', 'authority', 'confidence',
+    'evidenceConfidence', 'calibrationConfidence', 'subjectKind', 'subjectLabel',
+    'targetDomain', 'predictionType', 'semanticPayload', 'semanticFingerprint'
+  ];
+  /* 候选层的封闭拒绝词表（**不是** item 级拒绝：结构化候选坏掉不该让
+     一条本来合法的 expectation 作废 —— 见 §26）。 */
+  var CANDIDATE_REASON = {
+    absent: 'structured-candidate-absent',
+    shapeInvalid: 'structured-candidate-shape-invalid',
+    unsupportedKind: 'structured-candidate-unsupported-kind',
+    invalidTarget: 'structured-candidate-invalid-target',
+    invalidStance: 'structured-candidate-invalid-stance',
+    authorityFieldsStripped: 'structured-candidate-authority-fields-stripped',
+    coreUnavailable: 'structured-candidate-proposition-core-unavailable'
+  };
+  var MAX_STRUCTURED_REJECTIONS = MAX_OUTPUT_ITEMS;
 
   /* ── 泛化阶梯（§17/§27）──────────────────────────────────────────────
      仓库**没有**能机械证明"多个独立观察"的原语（见 §18 审计），
@@ -119,6 +157,12 @@
     '6. 单条 episode **不得**直接升成普适世界观。本阶段只接受 episode-hypothesis。',
     '7. 每条 expectation **必须**给出何时适用的 trigger（这是它不变成无条件世界观的条件）。',
     '8. 只输出严格 JSON，只引用给定的 memoryId。',
+    '9. structuredPrediction 是**可选**的：不确定就给 null 或省略。',
+    '   你**绝不**可以输出 predictionId / characterId / conversationId / turnId /',
+    '   createdAt / source / registrySessionRef / settlementState / calibrationCounted',
+    '   —— 那些是系统权威字段，出现会被剥掉。',
+    '   你只提出主张的形状：kind + targetKey + stance；',
+    '   token（pref.<stance>.<targetKey>）由系统生成，你不要自己拼。',
     '',
     '输出 JSON 形状：',
     '{"items":[{"prediction":"<将来可能发生什么>",',
@@ -126,7 +170,8 @@
     '"evidenceMemoryIds":["<原样引用>"],',
     '"contradictoryEvidenceIds":[],',
     '"generalizationLevel":"episode-hypothesis",',
-    '"subjectivePredictionConfidence":<0..1 或 null>}]}'
+    '"subjectivePredictionConfidence":<0..1 或 null>,',
+    '"structuredPrediction":null 或 {"kind":"preference","targetKey":"<小写标识>","stance":"like|dislike"}}]}'
   ].join('\n');
 
   /* triggerPattern 的最小可验证表达（§19）：**闭集 kind + 受限 label**，
@@ -189,13 +234,17 @@
         emotion: str(cur.emotion, MAX_RELATION_CHARS)
       },
       requestedSchema: {
+        schemaVersion: EXPECTATION_SCHEMA_VERSION,
         items: [{
           prediction: 'string, bounded',
           trigger: { kind: TRIGGER_KINDS.join('|'), label: 'string<=200' },
           evidenceMemoryIds: 'subset of canonicalEvidence ids',
           contradictoryEvidenceIds: 'subset (optional)',
           generalizationLevel: GENERALIZATION_REACHABLE.join('|'),
-          subjectivePredictionConfidence: 'number 0..1 or null'
+          subjectivePredictionConfidence: 'number 0..1 or null',
+          structuredPrediction: 'null (optional) or {kind:' + STRUCTURED_PREDICTION_KINDS.join('|')
+            + ', targetKey:string(lowercase id), stance:' + (PREFERENCE ? PREFERENCE.STANCES.join('|') : 'like|dislike')
+            + '} — candidate only; no system/authority fields'
         }]
       }
     };
@@ -215,6 +264,59 @@
     };
   }
 
+  /* ── ②b · P5-B3-G1 · 结构化预测候选归一（**候选**，不是权威）───────────
+     返回 { candidate, reasonCode, stripped }。
+     ★ 一条坏候选**不会**让整条 expectation 作废（§26/§41）：
+       item 照常产出，只是 structuredPrediction = null，投影端跳过。
+     ★ 只做机械归一：trim / lowercase / 闭集 / target 文法（复用共享 core）。
+       没有语义变换（science fiction / sci-fi / scifi **不会**被合并，§15）。 */
+  function normalizeStructuredCandidate(raw) {
+    if (raw == null) return { candidate: null, reasonCode: CANDIDATE_REASON.absent, stripped: [] };
+    if (!isPlainObject(raw)) return { candidate: null, reasonCode: CANDIDATE_REASON.shapeInvalid, stripped: [] };
+    if (!PREFERENCE || typeof PREFERENCE.canonicalTargetKey !== 'function') {
+      return { candidate: null, reasonCode: CANDIDATE_REASON.coreUnavailable, stripped: [] };
+    }
+    /* ① authority 字段：逐名剥掉并登记（绝不进入 authority plane，§8） */
+    var stripped = [];
+    var clean = {};
+    Object.keys(raw).forEach(function (k) {
+      if (FORBIDDEN_CANDIDATE_KEYS.indexOf(k) >= 0) { stripped.push(k); return; }
+      clean[k] = raw[k];
+    });
+    /* ② kind：形状词表（镜像 TYPE_TABLE）；生产准入由 runtime 策略决定。
+       只折大小写（§59 允许的机械归一），不做别的。 */
+    var kind = String(clean.kind == null ? '' : clean.kind).trim().toLowerCase();
+    if (STRUCTURED_PREDICTION_KINDS.indexOf(kind) < 0) {
+      return { candidate: null, reasonCode: CANDIDATE_REASON.unsupportedKind, stripped: stripped };
+    }
+    /* ③ v1 只定义 preference 的载荷；其它 kind 保留形状、不带任何字段 */
+    if (kind !== 'preference') {
+      return {
+        candidate: { version: STRUCTURED_CANDIDATE_VERSION, kind: kind },
+        reasonCode: stripped.length ? CANDIDATE_REASON.authorityFieldsStripped : null,
+        stripped: stripped
+      };
+    }
+    var targetKey = PREFERENCE.canonicalTargetKey(clean.targetKey);
+    if (targetKey == null) {
+      return { candidate: null, reasonCode: CANDIDATE_REASON.invalidTarget, stripped: stripped };
+    }
+    var stance = String(clean.stance == null ? '' : clean.stance).trim().toLowerCase();
+    if (PREFERENCE.isStance(stance) !== true) {
+      return { candidate: null, reasonCode: CANDIDATE_REASON.invalidStance, stripped: stripped };
+    }
+    return {
+      candidate: {
+        version: STRUCTURED_CANDIDATE_VERSION,
+        kind: 'preference',
+        targetKey: targetKey,
+        stance: stance
+      },
+      reasonCode: stripped.length ? CANDIDATE_REASON.authorityFieldsStripped : null,
+      stripped: stripped
+    };
+  }
+
   /* ── ② 严格校验（§11/§17/§18/§19/§15）────────────────────────────── */
   function validateResponse(raw, ctx) {
     var context = isPlainObject(ctx) ? ctx : {};
@@ -222,7 +324,7 @@
     /* 独立性证据：调用方必须**显式**声明哪些 id 属于同一次观察。
        缺省 = 无法证明独立 ⇒ 泛化不得升级。 */
     var independentCount = Number(context.independentObservationCount);
-    var out = { ok: false, items: [], rejected: [], reasonCodes: [] };
+    var out = { ok: false, items: [], rejected: [], reasonCodes: [], structuredRejections: [], schemaVersion: EXPECTATION_SCHEMA_VERSION };
     if (!isPlainObject(raw) || !Array.isArray(raw.items)) {
       out.reasonCodes.push(REASON_CODES.shapeInvalid); return out;
     }
@@ -267,6 +369,15 @@
       /* 即便模型只说 episode-hypothesis，只要它引用了多条证据，
          系统仍**不**把它升级为 repeated-pattern —— 因为"引用 3 条" ≠ "3 次独立观察"。 */
       var independenceProven = isFinite(independentCount) && independentCount >= 2 && evIds.length <= independentCount;
+      /* P5-B3-G1 · 结构化候选（可选）。坏候选 ⇒ null + 登记，**不**作废 item。 */
+      var structured = normalizeStructuredCandidate(it.structuredPrediction);
+      if (structured.reasonCode && structured.reasonCode !== CANDIDATE_REASON.absent
+        && out.structuredRejections.length < MAX_STRUCTURED_REJECTIONS) {
+        out.structuredRejections.push({
+          index: i, reason: structured.reasonCode,
+          stripped: structured.stripped.slice(0, 8)
+        });
+      }
       out.items.push({
         prediction: pred,
         trigger: { kind: String(trig.kind), label: label },
@@ -275,7 +386,14 @@
         generalizationLevel: level,
         independenceProven: independenceProven,
         subjectivePredictionConfidence: spc == null ? null : spc,
-        epistemicStatus: EPISTEMIC_STATUS
+        epistemicStatus: EPISTEMIC_STATUS,
+        /* candidate only —— authority plane 不认识这个字段 */
+        structuredPrediction: structured.candidate,
+        /* 诊断：候选**为什么**没有通过（bounded 词表；不是 authority，投影端只读它
+           给 reasonCode，绝不让它进 canonical record）。 */
+        structuredPredictionRejection: (structured.candidate === null
+          && structured.reasonCode && structured.reasonCode !== CANDIDATE_REASON.absent)
+          ? structured.reasonCode : null
       });
     }
     out.ok = out.items.length > 0;
@@ -336,6 +454,13 @@
     EPISTEMIC_STATUS: EPISTEMIC_STATUS,
     REASON_CODES: REASON_CODES,
     STATE_SUPPORT: STATE_SUPPORT,
+    /* P5-B3-G1 · 结构化候选（additive schema v2） */
+    EXPECTATION_SCHEMA_VERSION: EXPECTATION_SCHEMA_VERSION,
+    STRUCTURED_CANDIDATE_VERSION: STRUCTURED_CANDIDATE_VERSION,
+    STRUCTURED_PREDICTION_KINDS: STRUCTURED_PREDICTION_KINDS,
+    FORBIDDEN_CANDIDATE_KEYS: FORBIDDEN_CANDIDATE_KEYS,
+    CANDIDATE_REASON: CANDIDATE_REASON,
+    normalizeStructuredCandidate: normalizeStructuredCandidate,
     BOUNDS: {
       MAX_MEMORIES: MAX_MEMORIES, MAX_CONTENT_CHARS: MAX_CONTENT_CHARS,
       MAX_PREDICTION_CHARS: MAX_PREDICTION_CHARS, MAX_TRIGGER_CHARS: MAX_TRIGGER_CHARS,

@@ -42,6 +42,20 @@ const createMomentsRetrieval = require('../services/home-node/moments-retrieval.
 const createHttp = require('../services/home-node/http.js');
 const createExecutor = require('../services/home-node/execution.js');
 const createDeviceRegistry = require('../services/home-node/device-registry.js');
+/* P5-B3-D4 · ONE_MAPPING_DEFINITION：turn terminal → RealityEvent 的唯一适配器 */
+const createTurnTerminalRealitySource = require('../services/home-node/turn-terminal-reality-source.js').createTurnTerminalRealitySource;
+const createRuntimeRealityEvent = require('../services/home-node/runtime-reality-event.js').createRuntimeRealityEvent;
+const createRuntimeOutcomeObservation = require('../services/home-node/runtime-outcome-observation.js').createRuntimeOutcomeObservation;
+const createRuntimeRealityFeedback = require('../services/home-node/runtime-reality-feedback.js').createRuntimeRealityFeedback;
+/* P5-B3-E-R1 · **唯一**的 explicit user preference report 链（三段，各自单一职责）：
+     runtime-explicit-preference-report.js         ← canonical report mint authority（seal）
+     explicit-preference-report-reality-source.js   ← ONE report → RealityEvent 映射
+     explicit-preference-report-seam.js             ← 受信部署面的唯一入口（loopback + 桌面凭据）
+   ★ 三者都**不** require P1 observation core / settlement / calibration：
+     它们只把"用户显式提交的结构化命题"变成一条 canonical fact。 */
+const createRuntimeExplicitPreferenceReport = require('../services/home-node/runtime-explicit-preference-report.js').createRuntimeExplicitPreferenceReport;
+const createExplicitPreferenceReportRealitySource = require('../services/home-node/explicit-preference-report-reality-source.js').createExplicitPreferenceReportRealitySource;
+const createExplicitPreferenceReportSeam = require('../services/home-node/explicit-preference-report-seam.js').createExplicitPreferenceReportSeam;
 const createMobileGateway = require('../services/home-node/mobile-gateway.js');
 /* P22-2：Agent Economy 的第一块 canonical runtime（SQLite Ledger + 派生
    Wallet 余额）。**唯一** require 点是这里 —— Economy 自己不 require
@@ -110,6 +124,14 @@ const createRuntimeExpectation = require('../services/home-node/runtime-expectat
 /* ── P21-R4-F · L7 行为基调（**确定性**派生：没有模型调用、没有第三个成本位）──
    它只把已验证的 L3（且该回合 L5 已成立）投影成闭合枚举的基调，交给**下一轮**。 */
 const createRuntimeBehaviorEffect = require('../services/home-node/runtime-behavior-effect.js').createRuntimeBehaviorEffect;
+/* P2 · Prediction Registry（会话内 · 有界 · 纯进程内存；无 settlement authority）。 */
+const createRuntimePredictionRegistry = require('../services/home-node/runtime-prediction-registry.js').createRuntimePredictionRegistry;
+/* P3 · Prediction Settlement Engine（**唯一**结算权威；内部审计面；无 memory/relationship 写）。 */
+const createRuntimePredictionSettlement = require('../services/home-node/runtime-prediction-settlement.js').createRuntimePredictionSettlement;
+/* P4 · Prediction Calibration Ledger（**唯一**校准统计权威；只读过去；无写回）。 */
+const createRuntimePredictionCalibration = require('../services/home-node/runtime-prediction-calibration.js').createRuntimePredictionCalibration;
+/* P5-B · Evidence Matcher（**唯一** semantic relation 分类面；advisory only；默认关闭）。 */
+const createRuntimeEvidenceMatcher = require('../services/home-node/runtime-evidence-matcher.js').createRuntimeEvidenceMatcher;
 /* ── P21-R4-PROD-1 · 认知控制面（产品级读写边界）────────────────────────
    它**不是**第二份 policy 权威：持久化仍然只有上面那一份 runtime-policy
    （同一份文件、同一个原子 writer `setCognitive`）。本层只负责"按角色的
@@ -237,11 +259,93 @@ catch (error) {
 
 const store = createStore({ dataDir: DATA_DIR, logger: (event, fields) => log('info', event, fields) });
 const port = createNodeModelPort({});
+/* ── P5-B3-D4 · canonical terminal sink ────────────────────────────────
+   execution runtime 只通知终局；RealityEvent authority 属于 runtime-reality-event。
+   这里构造**唯一** adapter 实例并把它注入两个 live executor construction。
+   下游失败只诊断，绝不改写 turn outcome。 */
+/* 唯一的 RealityEvent mint authority（process 级）。 */
+/* P5-B3-D4-R3 · feedback driver 的 lazy 引用（避免 require cycle / 初始化顺序问题）。
+   driver 由 composition root 构造后填入；未填入时 mint 仍然成立，只是不 dispatch。 */
+let realityFeedbackDriver = null;
+const realityEventAuthority = createRuntimeRealityEvent({
+  logger: (e, f) => log('info', e, f),
+  /* post-mint subscriber：只在 NEW canonical mint 后触发 */
+  onRealityEventMinted: function (realityEvent) {
+    if (realityFeedbackDriver) realityFeedbackDriver.onRealityEventMinted(realityEvent);
+  }
+});
+/* 构造 driver：orchestration only（pairing→Registry / observation→P1 / settlement→P3）
+   ★ P5-B3-E-R1：`attributionAuthority` 是 P5-B2 那个**已存在**的只读归因权威
+     （snapshotBehaviorEffectAttribution）。它在这里接上，理由只有一条：
+     P3.0 的 fail-closed 规则要求主观域 decisive 必须 attribution **known-none**
+     （`unknown` ≠ `none`），而 P1 的 contamination 闸门同样要它才能推出 NONE。
+     没有它，结构化偏好报告会走到 gate 就被判 FORBIDDEN ⇒ 主观链形同不存在。
+     ★ 这是**加一个只读依赖**，不是给 driver 增加语义：driver 仍然只编排，
+        attribution 决定完全由 P1/P3 做出（driver 不读、不判、不改写）。 */
+function buildRealityFeedbackDriver(registryRuntime, settlementRuntime, logger, attributionAuthority) {
+  const observationRuntime = createRuntimeOutcomeObservation({
+    registry: registryRuntime,
+    isRealityEvent: realityEventAuthority.isRealityEvent,
+    settlementRuntime: settlementRuntime,
+    attributionAuthority: attributionAuthority || null,
+    logger: logger
+  });
+  return createRuntimeRealityFeedback({
+    registry: registryRuntime,
+    observationRuntime: observationRuntime,
+    settlementRuntime: settlementRuntime,
+    isRealityEvent: realityEventAuthority.isRealityEvent,
+    logger: logger
+  });
+}
+function buildTurnTerminalSink(logger) {
+  const source = createTurnTerminalRealitySource({ realityEvent: realityEventAuthority, logger: logger });
+  return function onTurnTerminal(outcome) { source.emit(outcome); };
+}
+/* ── P5-B3-E-R1 · explicit user preference report 的**三段**装配 ─────────
+   ① producer：canonical report mint（seal / deepFreeze / 有界会话去重）
+   ② reality source：ONE mapping → runtimeEventAuthority.ingest
+   ③ seam：唯一入口（loopback + 桌面凭据）→ producer → ②
+   ★ 三个对象都不持有 store / settlement / calibration / memory / relationship。
+   ★ character binding 走**同一个** D3 accessor（getCharacterSpec），不新造 resolver。 */
+function buildPreferenceReportSeam(options) {
+  const o = options || {};
+  const producer = o.reportProducer || createRuntimeExplicitPreferenceReport({ clock: o.clock, logger: o.logger });
+  const realitySource = createExplicitPreferenceReportRealitySource({
+    realityEvent: realityEventAuthority,
+    logger: o.logger
+  });
+  const seam = createExplicitPreferenceReportSeam({
+    reportProducer: producer,
+    realitySink: function (report) { return realitySource.emit(report); },
+    characterRegistry: o.characterRegistry || null,
+    desktopCredential: o.desktopCredential,
+    clock: o.clock,
+    logger: o.logger
+  });
+  return { producer: producer, realitySource: realitySource, seam: seam };
+}
+
 const executor = createExecutor({
   store,
   port,
   credentialAccess: productionCredentialAccess,
-  logger: (event, fields) => log('info', event, fields)
+  logger: (event, fields) => log('info', event, fields),
+  /* ── P5-B3-D3-A · canonical character binding authority ──────────────
+     与 runtime-recall / runtime-interpretation 用的是**同一个** accessor：
+     deviceRegistry.getCharacterSpec(characterId)。
+     instanceRegistry 在本文件稍后才构造（:862），因此这里传一个**惰性委托**：
+     每回合解析时才解析到真正的 registry 实例。
+     未就绪 / 解析失败一律让 execution 侧 fail closed，绝不回退到
+     friendId、默认角色或当前角色。 */
+  characterRegistry: {
+    getCharacterSpec: function (characterId) {
+      if (!instanceRegistry || typeof instanceRegistry.getCharacterSpec !== 'function') return null;
+      return instanceRegistry.getCharacterSpec(characterId);
+    }
+  },
+  /* P5-B3-D4 · canonical terminal sink（assembly 注入）*/
+  onTurnTerminal: buildTurnTerminalSink((e, f) => log('info', e, f))
 });
 
 /* ── 绑定地址判定（Phase 2/20）─────────────────────────────────────────
@@ -881,7 +985,23 @@ function buildHomeNode(options) {
     port: options.port || createNodeModelPort({}),
     middleBrain: instanceMiddleBrain,
     credentialAccess: instanceCredentialAccess,
-    logger: (e, f) => serviceLog('info', e, f)
+    /* P5-B3-D4-R3 · assembly 注入的 clock 同时给 executor，保证 terminal occurredAt
+       与 registry 观测窗使用同一时间轴。 */
+    clock: options.clock,
+    logger: (e, f) => serviceLog('info', e, f),
+    /* ── P5-B3-D3-A · canonical character binding authority ────────────
+       与 runtime-recall / runtime-interpretation 同一个 accessor：
+       deviceRegistry.getCharacterSpec(characterId)（本函数上方已构造）。
+       RAW_CLIENT_CHARACTER_ID_IS_AUTHORITY = NO；
+       解析不到 ⇒ fail closed，绝不回退 friendId / 默认角色。 */
+    characterRegistry: {
+      getCharacterSpec: function (characterId) {
+        if (!instanceRegistry || typeof instanceRegistry.getCharacterSpec !== 'function') return null;
+        return instanceRegistry.getCharacterSpec(characterId);
+      }
+    },
+    /* P5-B3-D4 · canonical terminal sink（assembly 注入）*/
+    onTurnTerminal: buildTurnTerminalSink((e, f) => serviceLog('info', e, f))
   });
   /* M1-C.2m：理解域的挂载点（网关委派给它的 store / 取回 / 派生）。
      为什么 modelPort 用**同一个** options.port：派生是"用角色自己的凭据做
@@ -987,6 +1107,81 @@ function buildHomeNode(options) {
   const instanceRuntimeCognitivePolicy = options.runtimeCognitivePolicy || createRuntimeCognitivePolicy({
     policy: instanceRuntimePolicy, logger: serviceLog
   });
+  /* ── P2 · Prediction Registry（会话内 · 有界 · 纯进程内存）──────────────
+     它只拥有两个权威：PREDICTION_ID_AUTHORITY / PREDICTION_RECORD_MINT_AUTHORITY。
+     不拥有 settlement / observation / memory / relationship / model authority。
+     clock 与其它 service **同一个**注入时钟（测试可完全确定化）。 */
+  const instanceRuntimePredictionRegistry = options.runtimePredictionRegistry
+    || createRuntimePredictionRegistry({
+      clock: options.clock,
+      logger: serviceLog,
+      /* P5-B3-E-R1 · 与 P1 用的是**同一个** P5-B2 归因权威实例。 */
+      attributionAuthority: instanceRuntimeBehaviorEffect
+    });
+  /* ── P5-B · Evidence Matcher（**唯一** semantic relation 分类面）────────
+     advisory only：只产出 relation，**没有** source / domain / predictionType /
+     admissibility / settlement state authority。
+     ★ EVIDENCE_MATCHER_ENABLED_DEFAULT = false —— **不**默认全局开启。
+       未启用时 statement 保持 unclassifiable，主观域 partition 保持 capability gap，
+       生产**零**新增模型调用。开启与否是 owner 配置，不是本相位擅自决定。
+     ★ 先建 matcher、再建 settlement，让 "Settlement Engine → Evidence Matcher"
+       成为**唯一**且**真实接线**的 seam（而不是留给调用方自己接）。 */
+  const instanceRuntimeEvidenceMatcher = options.runtimeEvidenceMatcher
+    || createRuntimeEvidenceMatcher({
+      modelPort: options.port || createNodeModelPort({}),
+      registry: instanceRegistry,
+      credentialAccess: instanceCredentialAccess,
+      enabled: options.evidenceMatcherEnabled === true,
+      timeoutMs: options.evidenceMatcherTimeoutMs,
+      logger: serviceLog
+    });
+  /* ── P3 · Prediction Settlement Engine（**唯一**结算权威）──────────────
+     它消费 Registry 冻结的 PredictionRecord + 经过 authority gate 的观察；
+     与 authority 面**共享同一个** loaded core instance（同进程 require）。
+     没有 memory / relationship authority，不写 calibration。
+     P5-B：matcher 只提供 semantic relation；结算状态永远由本引擎决定。 */
+  const instanceRuntimePredictionSettlement = options.runtimePredictionSettlement
+    || createRuntimePredictionSettlement({
+      clock: options.clock,
+      logger: serviceLog,
+      evidenceMatcher: instanceRuntimeEvidenceMatcher
+    });
+  /* ── P4 · Prediction Calibration Ledger（**唯一**校准统计权威）──────────
+     它只消费 P3 标记 calibrationCounted=true 的 SettlementRecord；
+     provenance 由 P3 模块的 module-private capability seal 提供。
+     ★ **没有**写回 API：不存在 applyToExpectation / adjustInterpretation。
+     ★ **没有**全局精度：不存在 accuracy / hitRate 这类可被 authority 消费的字段。 */
+  /* P5-B3-D4-R3 · production feedback driver（instance 级 composition） */
+  const instanceRealityFeedback = options.runtimeRealityFeedback
+    || buildRealityFeedbackDriver(instanceRuntimePredictionRegistry, instanceRuntimePredictionSettlement, (e, f) => serviceLog('info', e, f), instanceRuntimeBehaviorEffect);
+  realityFeedbackDriver = instanceRealityFeedback;
+  /* P5-B3-E-R1 · 结构化显式偏好报告（instance 级 composition）。
+     ★ character binding 与 execution 用**同一个** accessor（instanceRegistry
+       .getCharacterSpec），不新造 resolver。 */
+  const instancePreferenceReport = options.runtimePreferenceReport || buildPreferenceReportSeam({
+    clock: options.clock,
+    logger: serviceLog,
+    desktopCredential: options.token === undefined ? TOKEN : options.token,
+    characterRegistry: {
+      getCharacterSpec: function (characterId) {
+        if (!instanceRegistry || typeof instanceRegistry.getCharacterSpec !== 'function') return null;
+        return instanceRegistry.getCharacterSpec(characterId);
+      }
+    }
+  });
+  const instanceRuntimePredictionCalibration = options.runtimePredictionCalibration
+    || createRuntimePredictionCalibration({
+      settlementRuntime: instanceRuntimePredictionSettlement,
+      clock: options.clock,
+      logger: serviceLog,
+      /* R2 · P4 必须跟**真实** enablement 一致：compiled ≠ enabled */
+      matcherState: function () {
+        const d = instanceRuntimeEvidenceMatcher && typeof instanceRuntimeEvidenceMatcher.describe === 'function'
+          ? instanceRuntimeEvidenceMatcher.describe() : null;
+        return { present: !!d, enabled: !!(d && d.enabled === true) };
+      },
+      attributionAuthorityAvailable: false
+    });
   const instanceRuntimeExpectation = options.runtimeExpectation || createRuntimeExpectation({
     modelPort: options.port || createNodeModelPort({}),
     policy: instanceRuntimePolicy,
@@ -997,6 +1192,8 @@ function buildHomeNode(options) {
     /* 角色 spec 与凭据：与解释边界同一对实例依赖。 */
     registry: instanceRegistry,
     credentialAccess: instanceCredentialAccess,
+    /* P2：**唯一**批准的 Prediction Error 内部 seam（只建档、不结算）。 */
+    predictionRegistry: instanceRuntimePredictionRegistry,
     autoExpectationPolicy: options.runtimeAutoExpectationPolicy,
     clock: options.clock,
     logger: serviceLog
@@ -1164,7 +1361,17 @@ function buildHomeNode(options) {
        ★ 它**不**与解释边界共用信封或路径：一条读本地 canonical 记忆并只回
          ids，一条出网读 Vault。合成一条会让审计读不出"这一步花没花钱"。 */
     runtimeRecall: instanceRuntimeRecall,
+    /* P5-B3-E-R1 · explicit preference report seam（**唯一**入口）。
+       公开面只有 { path, dispatch, describe }：没有 store、没有 settlement、
+       没有 prediction lookup、没有 model port、没有 memory/relationship。 */
+    preferenceReportSeam: instancePreferenceReport.seam,
   runtimeExpectation: instanceRuntimeExpectation,
+  runtimeRealityFeedback: instanceRealityFeedback,
+  runtimePredictionRegistry: instanceRuntimePredictionRegistry,
+  runtimePredictionSettlement: instanceRuntimePredictionSettlement,
+  runtimePredictionCalibration: instanceRuntimePredictionCalibration,
+  /* P5-B · Evidence Matcher（advisory only · 默认未启用 · 无 settlement authority）。 */
+  runtimeEvidenceMatcher: instanceRuntimeEvidenceMatcher,
   runtimeCognitivePolicy: instanceRuntimeCognitivePolicy,
   runtimeBehaviorEffect: instanceRuntimeBehaviorEffect,
     /* P11-3E · canonical store 清单：健康与"能不能服务"是同一个问题，
@@ -1281,7 +1488,16 @@ function buildHomeNode(options) {
        ★ 与 http.js 从 deps 里拿到的是**同一个对象**（identity）：这正是
          "两条装配路径不得漂移"这句断言的载体。 */
     runtimeRecall: instanceRuntimeRecall,
+    /* P5-B3-E-R1 · 结构化显式偏好报告（producer + reality source + seam）。
+       ★ 与 http.js 从 deps 里拿到的是**同一个** seam 对象（identity）。 */
+    runtimePreferenceReport: instancePreferenceReport,
   runtimeExpectation: instanceRuntimeExpectation,
+  runtimeRealityFeedback: instanceRealityFeedback,
+  runtimePredictionRegistry: instanceRuntimePredictionRegistry,
+  runtimePredictionSettlement: instanceRuntimePredictionSettlement,
+  runtimePredictionCalibration: instanceRuntimePredictionCalibration,
+  /* P5-B · Evidence Matcher（advisory only · 默认未启用 · 无 settlement authority）。 */
+  runtimeEvidenceMatcher: instanceRuntimeEvidenceMatcher,
   runtimeCognitivePolicy: instanceRuntimeCognitivePolicy,
   runtimeBehaviorEffect: instanceRuntimeBehaviorEffect,
     registry: instanceRegistry,
@@ -1401,6 +1617,58 @@ const runtimeCognitivePolicy = createRuntimeCognitivePolicy({
   policy: runtimePolicy,
   logger: (level, event, fields) => log(level, event, fields)
 });
+/* P2 · 进程级 Prediction Registry（与 buildHomeNode 那一份同源、同一纪律）。
+   ★ P5-B3-E-R1：接上**同一个** P5-B2 归因权威（process 级那一份）。 */
+const runtimePredictionRegistry = createRuntimePredictionRegistry({
+  clock: function () { return Date.now(); },
+  logger: (level, event, fields) => log(level, event, fields),
+  attributionAuthority: runtimeBehaviorEffect
+});
+/* P5-B · 进程级 Evidence Matcher。★ 默认**未启用**：生产零新增模型调用。 */
+const runtimeEvidenceMatcher = createRuntimeEvidenceMatcher({
+  modelPort: port,
+  registry: registry,
+  credentialAccess: productionCredentialAccess,
+  enabled: false,
+  logger: (level, event, fields) => log(level, event, fields)
+});
+/* P3 · 进程级 Prediction Settlement Engine（与 buildHomeNode 那一份同源）。 */
+const runtimePredictionSettlement = createRuntimePredictionSettlement({
+  clock: function () { return Date.now(); },
+  logger: (level, event, fields) => log(level, event, fields),
+  evidenceMatcher: runtimeEvidenceMatcher
+});
+/* P4 · 进程级 Prediction Calibration Ledger（与 buildHomeNode 那一份同源）。 */
+/* P5-B3-D4-R3 · module 级 feedback driver */
+const runtimeRealityFeedback = buildRealityFeedbackDriver(
+  runtimePredictionRegistry, runtimePredictionSettlement, (e, f) => log('info', e, f), runtimeBehaviorEffect);
+realityFeedbackDriver = runtimeRealityFeedback;
+/* P5-B3-E-R1 · 进程级 explicit preference report（与 buildHomeNode 那一份同源）。
+   ★ 没有这一行，构造函数只是一个没人引用的对象：路由分支不存在、日志里永远
+     不会出现一行 explicit-preference-report —— 而单元测试全绿（本文件已经
+     记过多次同一种病）。 */
+const runtimePreferenceReport = buildPreferenceReportSeam({
+  clock: function () { return Date.now(); },
+  logger: (level, event, fields) => log(level, event, fields),
+  desktopCredential: TOKEN,
+  characterRegistry: {
+    getCharacterSpec: function (characterId) {
+      if (!registry || typeof registry.getCharacterSpec !== 'function') return null;
+      return registry.getCharacterSpec(characterId);
+    }
+  }
+});
+const runtimePredictionCalibration = createRuntimePredictionCalibration({
+  settlementRuntime: runtimePredictionSettlement,
+  clock: function () { return Date.now(); },
+  logger: (level, event, fields) => log(level, event, fields),
+  matcherState: function () {
+    const d = runtimeEvidenceMatcher && typeof runtimeEvidenceMatcher.describe === 'function'
+      ? runtimeEvidenceMatcher.describe() : null;
+    return { present: !!d, enabled: !!(d && d.enabled === true) };
+  },
+  attributionAuthorityAvailable: false
+});
 const runtimeExpectation = createRuntimeExpectation({
   modelPort: port,
   policy: runtimePolicy,
@@ -1409,6 +1677,8 @@ const runtimeExpectation = createRuntimeExpectation({
   /* 角色 spec 与凭据：与 runtimeInterpretation 同一对进程级依赖。 */
   registry: registry,
   credentialAccess: productionCredentialAccess,
+  /* P2：唯一批准的 Prediction Error 内部 seam（只建档、不结算）。 */
+  predictionRegistry: runtimePredictionRegistry,
   logger: (level, event, fields) => log(level, event, fields)
 });
 const runtimeRecall = createRuntimeRecall({
@@ -1521,9 +1791,29 @@ const httpLayer = createHttp({
      没人引用的对象：路由分支不存在、日志里永远不会出现一行 runtime-recall，
      而单元测试全绿（本文件已经记过多次同一种病）。 */
   runtimeRecall: runtimeRecall,
+  /* P5-B3-E-R1 · **进程级** explicit preference report seam。
+     与 buildHomeNode 那一行逐字同源；它是"生产启动路径上真的有一条
+     structured explicit report 入口"的机器可读形式。 */
+  preferenceReportSeam: runtimePreferenceReport.seam,
+  runtimePreferenceReport: runtimePreferenceReport,
   runtimeExpectation: runtimeExpectation,
   runtimeCognitivePolicy: runtimeCognitivePolicy,
   runtimeBehaviorEffect: runtimeBehaviorEffect,
+  /* P2 · 进程级 Prediction Registry。与 store 同级导出，理由同上：
+     它是"validated Expectation 真的被投影成 PredictionRecord"这句声明的
+     机器可读形式 —— 没有这一行，"Registry 已接线"就只是一句话。
+     ★ 它**没有** settlement / observation / memory / relationship authority。 */
+  runtimePredictionRegistry: runtimePredictionRegistry,
+  /* P3 · 进程级 Prediction Settlement Engine。**唯一**结算权威：
+     七状态、ordinal Prediction Error、internal audit only。
+     它**没有** memory / relationship / model authority，也**不**写 calibration。 */
+  runtimePredictionSettlement: runtimePredictionSettlement,
+  /* P4 · 进程级 Prediction Calibration Ledger。**唯一**校准统计权威：
+     分区隔离的机械计数 + ordinal PE bucket + `calibrationConfidence = null`。
+     ★ 它**没有**写回能力，也**不**产出任何可供 authority 消费的全局精度。 */
+  runtimePredictionCalibration: runtimePredictionCalibration,
+  /* P5-B · 进程级 Evidence Matcher（advisory only · 默认未启用）。 */
+  runtimeEvidenceMatcher: runtimeEvidenceMatcher,
   /* P22-9：**进程级**的门。它与 store 同级导出，理由逐字相同 —— 门的缺席
      在生产上是一个静默的"每个 consumer 都能直接提议"，而那种缺口只有
      直接断言语料才能发现。 */
@@ -1841,6 +2131,13 @@ module.exports = {
      这一域的接线**同时**落在 buildHomeNode 与 require.main 两条路径上，
      而"只接一条"在本文件已经发生过多次。 */
   runtimeRecall,
+  /* P5-B3-D4 · 唯一 RealityEvent mint authority（供验收/诊断读取，不构成第二写入面） */
+  runtimeRealityEvent: realityEventAuthority,
+  runtimeRealityFeedback: runtimeRealityFeedback,
+  /* P5-B3-E-R1 · 结构化显式偏好报告（producer + reality source + seam）。
+     ★ 导出的是**同一个** seam 对象（identity），与 buildHomeNode 那一份同源。 */
+  runtimePreferenceReport: runtimePreferenceReport,
+  runtimeOutcomeObservation: null,
   defaultEconomyChannelSources,
   economyAssembly,
   buildHomeNode,

@@ -136,6 +136,12 @@ function createHomeNodeHttp(deps) {
          由 store 的 canonical 事实持有，不由路由层"记得检查"。
        ★ 不注入时（分解装配、只看读面的测试）这一整条分支**不存在**。 */
   const economyConfiguration = deps.economyConfiguration || null;
+  /* ── P5-B3-E-R1 · Explicit Preference Report Seam（受信用户的唯一结构化自述面）──
+     ★ 与三条 economy seam 同级、与 store 不同级：公开面只有
+       { path, dispatch, describe }，没有 store、没有 settlement、没有 model。
+     ★ 路径**不**在这里写死（与 approval-decision / configuration 同一条纪律）：
+       本文件只认 `preferenceReportSeam.path`。 */
+  const preferenceReportSeam = deps.preferenceReportSeam || null;
   /* ── P21-R4-LIVE-2.1 · Runtime Interpretation（**运行时**解释边界）──────
      ★ 这里拿到的**不是** provider、不是凭据、不是 memory store：服务自己的
        依赖（registry / credentialAccess / modelPort / costPolicy）在装配层
@@ -599,6 +605,53 @@ function createHomeNodeHttp(deps) {
       transportIsNotAnEconomyAuthority: true
     });
     sendJson(res, decision.status || 400, decision, req);
+  }
+
+  /* ── P5-B3-E-R1 · explicit preference report 的来源信息 ────────────────
+     ★ 与 economyApprovalDecisionRequestInfo **逐字同形**，但**故意**是第三个
+       独立函数：三条路径各自回答一次"调用者是谁"，而不是共用一个入口。
+     ★ 本文件仍然**不判定**：它把三个原始事实（loopback / 凭据 / 来源地址）
+       交给 seam，判定与拒绝信封由 seam 唯一给出。 */
+  function preferenceReportRequestInfo(req) {
+    const headerToken = String(req.headers['x-ib-home-token'] || '');
+    const auth = String(req.headers.authorization || '');
+    const bearer = /^Bearer\s+(.+)$/i.test(auth) ? auth.replace(/^Bearer\s+/i, '') : '';
+    return {
+      loopback: isLoopback(req),
+      remoteAddress: String((req.socket && req.socket.remoteAddress) || ''),
+      desktopCredential: headerToken || bearer
+    };
+  }
+  async function handlePreferenceReport(req, res) {
+    let body = null;
+    try {
+      body = await readBody(req, MAX_BODY_BYTES);
+    } catch (error) {
+      const code = (error && error.code) || 'read-error';
+      record('warn', 'preference-report-unreadable', { code: code, loopback: isLoopback(req) });
+      /* ★ 读不出来也走**同一个**拒绝信封（seam 自己给的），而不是本文件
+         临时拼一个 —— 与两条 economy 写路径逐字同源。 */
+      const refused = preferenceReportSeam.dispatch(preferenceReportRequestInfo(req), null);
+      bad(res, code === 'too-large' ? 413 : 400, refused.reasonCode, {
+        dispatched: false,
+        unreadableBody: code
+      }, req);
+      return;
+    }
+    const reported = preferenceReportSeam.dispatch(preferenceReportRequestInfo(req), body);
+    record(reported.ok === true ? 'info' : 'warn', 'explicit-preference-report', {
+      /* ★ 审计只记这六样：canonical report id、闭合枚举 stance、target key
+         （canonical、非敏感标识）、上报结果、RealityEvent 归类、有没有真的铸出。
+         **绝不**记正文 / 凭据 / 用户原话 —— 本面根本没有正文可记。 */
+      reportId: reported.reportId || null,
+      stance: (reported.report && reported.report.stance) || null,
+      targetKey: (reported.report && reported.report.targetKey) || null,
+      outcome: reported.ok === true ? String(reported.outcome || 'accepted') : String(reported.reasonCode || 'refused'),
+      realityStatus: reported.realityStatus || null,
+      reportMinted: reported.reportMinted === true,
+      transportIsNotAReportAuthority: true
+    });
+    sendJson(res, reported.status || 400, reported, req);
   }
 
   /* ── P22-14 · 配置面的来源信息 ──────────────────────────────────────
@@ -2810,6 +2863,30 @@ function createHomeNodeHttp(deps) {
         return;
       }
       await handleEconomyConfiguration(req, res);
+      return;
+    }
+
+    /* ══════════════════════════════════════════════════════════════════
+       P5-B3-E-R1 · Explicit Preference Report Seam（结构化用户自述 · POST）
+
+       ★ 它是**第四条**写路径，且必须是第四条：
+         · /messages · /turn · chat/send 的语义是 "send a user message"；
+         · 本条路径的语义是 "the user declares an authoritative structured
+           report about himself"。
+         把两者合并，就等于让"用户随便说的一句话"自动获得关于他自己的
+         factual authority —— 这正是 P5-B3-E 冻结时拒绝的那件事。
+       EXPLICITNESS_AUTHORITY = DEDICATED_STRUCTURED_USER_REPORT_ACTION
+
+       ★ 本文件在这里仍然只做三件事：readBody（有界）→ dispatch → 原样发出
+         它给的信封。**不解释**命题、**不挑**身份、**不看** prediction，
+         也没有任何一行能从这条路到达 store、settlement 或 calibration。 */
+    if (preferenceReportSeam && path === preferenceReportSeam.path) {
+      if (method !== 'POST') {
+        record('warn', 'preference-report-wrong-method', { method: method, loopback: isLoopback(req) });
+        bad(res, 405, 'explicit-preference-report-is-post-only', { allowedMethods: ['POST'] }, req);
+        return;
+      }
+      await handlePreferenceReport(req, res);
       return;
     }
 

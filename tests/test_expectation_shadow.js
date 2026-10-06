@@ -254,7 +254,7 @@ const baseInput = (o) => Object.assign({ selectedIds: ['m1'], records: [mem()], 
 
     check('H1.callerCannotSelfAttestCanonical',
       PO.settle(exp, { evidenceMemoryId: 'e1', canonical: true, observedOutcome: '他来了' },
-        { match: { mode: 'explicit-link', observationExpectationId: 'exp1' }, result: 'confirmed', judgementValidated: true })
+        { match: { mode: 'explicit-link', observationExpectationId: 'exp1' }, judgement: PO.mintValidatedJudgementCapability({ result: 'confirmed' }).value })
         .reasonCodes.indexOf('observation-was-not-built-from-a-canonical-record') >= 0,
       'a bare object claiming canonical:true must NOT settle anything');
 
@@ -296,25 +296,45 @@ const baseInput = (o) => Object.assign({ selectedIds: ['m1'], records: [mem()], 
       && PO.OUTCOME_JUDGEMENT_RUNTIME === 'CALLER_VALIDATED_PROTOCOL_ONLY',
       'the generic core does NOT read natural language outcomes — judgement is caller-validated only');
     check('T3.explicitLinkStillNeedsAMatch',
-      PO.settle(exp, built.value, { match: { mode: 'explicit-link', observationExpectationId: 'exp9' }, result: 'confirmed', judgementValidated: true })
+      PO.settle(exp, built.value, { match: { mode: 'explicit-link', observationExpectationId: 'exp9' }, judgement: PO.mintValidatedJudgementCapability({ result: 'confirmed' }).value })
         .reasonCodes.indexOf('no-validated-matching') >= 0,
       'a link to a different expectation must not settle');
     check('T4.modelMatchingWithoutStructuralValidationRefused',
-      PO.settle(exp, built.value, { match: { mode: 'model-validated' }, result: 'confirmed', judgementValidated: true })
+      PO.settle(exp, built.value, { match: { mode: 'model-validated' }, judgement: PO.mintValidatedJudgementCapability({ result: 'confirmed' }).value })
         .reasonCodes.indexOf('model-matching-without-structural-validation') >= 0,
       'semantic matching must be structurally validated before it can settle');
-    check('T5.unvalidatedJudgementRefused',
+    /* ★ P2 authority transfer（带注释的相位迁移，**收窄不是放宽**）：
+       裸 `result` 形态过去报 'outcome-judgement-not-marked-validated'（意思是"你没声明"），
+       现在报 'caller-supplied-validated-invalid'（意思是"**调用方无权声明**"）。
+       断言从"未被标记"升级为"自证本身就非法"。 */
+    check('T5.callerSuppliedValidationIsInvalid',
       PO.settle(exp, built.value, { match: { mode: 'explicit-link', observationExpectationId: 'exp1' }, result: 'confirmed' })
-        .reasonCodes.indexOf('outcome-judgement-not-marked-validated') >= 0,
-      'the caller must declare its judgement validated; the core never infers it');
+        .reasonCodes.indexOf('caller-supplied-validated-invalid') >= 0,
+      'a bare result is no longer "unmarked" — caller-supplied validation is INVALID');
+    check('T5b.legacyJudgementValidatedBooleanIsInvalid',
+      PO.settle(exp, built.value, {
+        match: { mode: 'explicit-link', observationExpectationId: 'exp1' },
+        result: 'confirmed', judgementValidated: true
+      }).reasonCodes.indexOf('caller-supplied-validated-invalid') >= 0,
+      'the legacy `judgementValidated:true` form must be rejected, not honoured');
+    check('T5c.plainValidatedTrueObjectIsInvalid',
+      PO.settle(exp, built.value, {
+        match: { mode: 'explicit-link', observationExpectationId: 'exp1' },
+        judgement: { result: 'confirmed', validated: true }
+      }).reasonCodes.indexOf('caller-supplied-validated-invalid') >= 0,
+      '`{...fields, validated:true}` must not be authority');
+    check('T5d.missingJudgementStillReportedAsMissing',
+      PO.settle(exp, built.value, { match: { mode: 'explicit-link', observationExpectationId: 'exp1' } })
+        .reasonCodes.indexOf('outcome-judgement-not-supplied') >= 0,
+      'a genuinely absent judgement is still "not supplied" (distinct from "invalid")');
 
     const st = PO.settle(exp, built.value,
-      { match: { mode: 'explicit-link', observationExpectationId: 'exp1' }, result: 'contradicted', judgementValidated: true, behaviorConsumerCount: 0 });
+      { match: { mode: 'explicit-link', observationExpectationId: 'exp1' }, judgement: PO.mintValidatedJudgementCapability({ result: 'contradicted', source: 'd2-protocol-primitive' }).value, behaviorConsumerCount: 0 });
     check('W1.settlesWithValidatedInputs',
-      st.ok === true && st.result === 'contradicted' && st.resultSource === 'caller-supplied-validated'
+      st.ok === true && st.result === 'contradicted' && st.resultSource === 'd2-protocol-primitive'
       && st.evidenceMemoryId === 'e1' && st.snapshotField === 'content'
       && st.coreGeneratedExpectationId === false,
-      'a settled outcome must carry canonical provenance, and the core generates no expectation id');
+      'a settled outcome must carry canonical provenance (now from the capability), and the core generates no expectation id');
     check('W2.predictionErrorIsDiscreteNotAScalar',
       st.predictionError.kind === 'discrete' && st.predictionError.metric === null
       && st.predictionErrorMetric === null
@@ -328,6 +348,61 @@ const baseInput = (o) => Object.assign({ selectedIds: ['m1'], records: [mem()], 
       st.calibrationCounts.contradicted === 1 && st.calibrationConfidence === null,
       'counts are frozen; they are never mapped to a 0..1 confidence');
 
+    /* ── P2 · validated judgement capability 的伪造矩阵 ──────────────────
+       CALLER_SUPPLIED_VALIDATED = INVALID：唯一合法的 validation
+       是本模块铸造的 module-private capability（身份 + 封存 + 冻结）。 */
+    {
+      const cap = PO.mintValidatedJudgementCapability({ result: 'confirmed', source: 'unit' }).value;
+      check('V1.capabilityIsAcceptedAndSelfDescribing',
+        PO.isValidatedJudgementCapability(cap) === true
+        && cap.authority === PO.VALIDATED_JUDGEMENT_AUTHORITY
+        && cap.result === 'confirmed',
+        'the minted capability is the only accepted form');
+      check('V2.jsonCloneIsNotACapability',
+        PO.isValidatedJudgementCapability(JSON.parse(JSON.stringify(cap))) === false,
+        'JSON round-trip must not revive authority');
+      check('V3.assignCloneIsNotACapability',
+        PO.isValidatedJudgementCapability(Object.assign({}, cap)) === false,
+        'Object.assign clone must not revive authority');
+      check('V4.copiedBrandIsNotACapability',
+        PO.isValidatedJudgementCapability({
+          brand: 'ib.validated-judgement.v1', result: 'confirmed', source: 'unit',
+          authority: 'MODULE_PRIVATE_CAPABILITY', validated: true
+        }) === false,
+        'copying the public brand/authority must not grant authority');
+      check('V5.sealedCapabilityIsImmutable',
+        Object.isFrozen(cap) === true && (function () {
+          try { cap.result = 'contradicted'; } catch (e) { return true; }
+          return cap.result === 'confirmed';
+        })(),
+        'the capability is frozen: mutation is impossible');
+      check('V6.mintRefusesToLaunderTheLegacyBoolean',
+        PO.mintValidatedJudgementCapability({ result: 'confirmed', validated: true }).ok === false
+        && PO.mintValidatedJudgementCapability({ result: 'confirmed', judgementValidated: true }).ok === false,
+        'the mint must not turn the old self-certification into a capability');
+      check('V7.mintRefusesOutOfVocabularyAndUnsettled',
+        PO.mintValidatedJudgementCapability({ result: 'matched' }).ok === false
+        && PO.mintValidatedJudgementCapability({ result: 'unsettled' }).ok === false
+        && PO.mintValidatedJudgementCapability({}).ok === false,
+        'the settlement vocabulary and "unsettled" are not judgements');
+
+      /* 跨模块实例：每个实例有自己的私有表 ⇒ 另一个实例的 capability 必然被拒 */
+      const poPath = require.resolve(path.join(ROOT, 'assets/js/memory-recall/prediction-observation-core.js'));
+      const savedCache = require.cache[poPath];
+      delete require.cache[poPath];
+      const PO2 = require(poPath);
+      const crossOk = PO2.isValidatedJudgementCapability(cap);
+      if (savedCache) require.cache[poPath] = savedCache;
+      check('V8.crossModuleCapabilityIsRejected', crossOk === false,
+        'a capability minted by another module instance must not be accepted (per-instance tables)');
+      check('V9.stateSupportDeclaresTheTransfer',
+        PO.STATE_SUPPORT.validatedJudgementAuthority === 'MODULE_PRIVATE_CAPABILITY'
+        && PO.STATE_SUPPORT.callerSuppliedValidated === 'INVALID'
+        && PO.STATE_SUPPORT.judgementIsProtocolPrimitiveOnly === 'YES'
+        && PO.STATE_SUPPORT.outcomeJudgement === 'CALLER_VALIDATED_PROTOCOL_ONLY',
+        'the legacy runtime label is preserved; the live authority is the capability');
+    }
+
     /* ── §14 伪造矩阵：五种都不得得到 settled confirmed/contradicted ── */
     const forged = [
       ['A.bareObjectWithForgedOutcome', { evidenceMemoryId: 'e1', canonical: true, observedOutcome: '他来了' }],
@@ -338,14 +413,14 @@ const baseInput = (o) => Object.assign({ selectedIds: ['m1'], records: [mem()], 
     ];
     check('K2.forgedObservationsNeverSettle',
       forged.every(([name, obs]) => {
-        const r = PO.settle(exp, obs, { match: { mode: 'explicit-link', observationExpectationId: 'exp1' }, result: 'confirmed', judgementValidated: true });
+        const r = PO.settle(exp, obs, { match: { mode: 'explicit-link', observationExpectationId: 'exp1' }, judgement: PO.mintValidatedJudgementCapability({ result: 'confirmed' }).value });
         return r.ok === false && r.result === 'unsettled';
       }),
       'none of the forgery shapes may produce a settled confirmed/contradicted');
     check('K3.clonedSnapshotIsRejected',
       (function () {
         const tampered = Object.assign({}, built.value, { evidenceMemoryId: 'e9' });
-        const r = PO.settle(exp, tampered, { match: { mode: 'explicit-link', observationExpectationId: 'exp1' }, result: 'confirmed', judgementValidated: true });
+        const r = PO.settle(exp, tampered, { match: { mode: 'explicit-link', observationExpectationId: 'exp1' }, judgement: PO.mintValidatedJudgementCapability({ result: 'confirmed' }).value });
         return r.ok === false && r.reasonCodes.indexOf('observation-was-not-built-from-a-canonical-record') >= 0;
       })(),
       'a clone — even one carrying every public field verbatim — is NOT the built object and must be rejected');
@@ -356,7 +431,7 @@ const baseInput = (o) => Object.assign({ selectedIds: ['m1'], records: [mem()], 
   {
     const exp = { expectationId: 'exp1', prediction: 'x', trigger: { kind: 'similar-situation' } };
     const obs = PO.buildCanonicalObservation(mem({ id: 'e1', content: '他来了' }), { authorizedMemoryIds: ['e1'] }).value;
-    const deps = { match: { mode: 'explicit-link', observationExpectationId: 'exp1' }, result: 'confirmed', judgementValidated: true };
+    const deps = { match: { mode: 'explicit-link', observationExpectationId: 'exp1' }, judgement: PO.mintValidatedJudgementCapability({ result: 'confirmed' }).value };
     const none = PO.settle(exp, obs, Object.assign({ behaviorConsumerCount: 0 }, deps));
     check('Q1.zeroBehaviorConsumerIsMechanicallyProvable',
       none.attribution.selfInfluencePossible === false
@@ -417,8 +492,8 @@ const baseInput = (o) => Object.assign({ selectedIds: ['m1'], records: [mem()], 
     const obsA = PO.buildCanonicalObservation(mem({ id: 'o1', content: '他来了' }), { authorizedMemoryIds: ['o1'] }).value;
     const obsB = PO.buildCanonicalObservation(mem({ id: 'o2', content: '他没来' }), { authorizedMemoryIds: ['o2'] }).value;
     const mk = { mode: 'explicit-link', observationExpectationId: 'exp1' };
-    const supporting = PO.settle(exp, obsA, { match: mk, result: 'confirmed', judgementValidated: true, behaviorConsumerCount: 0 });
-    const contradicting = PO.settle(exp, obsB, { match: mk, result: 'contradicted', judgementValidated: true, behaviorConsumerCount: 0 });
+    const supporting = PO.settle(exp, obsA, { match: mk, judgement: PO.mintValidatedJudgementCapability({ result: 'confirmed' }).value, behaviorConsumerCount: 0 });
+    const contradicting = PO.settle(exp, obsB, { match: mk, judgement: PO.mintValidatedJudgementCapability({ result: 'contradicted' }).value, behaviorConsumerCount: 0 });
     check('AJ1.pipelineAcceptsValidatedDistinctResults',
       supporting.result === 'confirmed' && contradicting.result === 'contradicted'
       && supporting.observedOutcome === '他来了' && contradicting.observedOutcome === '他没来',
@@ -509,7 +584,7 @@ section('R4D1 · identity, lifetime, boundaries');
     PO.STATE_SUPPORT.expectationIdAssignment === 'EXTERNAL_ID_REQUIRED_FOR_LINKED_SETTLEMENT'
     && PO.settle({ prediction: 'x', trigger: { kind: 'similar-situation' } },
       PO.buildCanonicalObservation(mem({ id: 'e1', content: 'c' }), {}).value,
-      { match: { mode: 'deterministic-domain-trigger', matchTriggerKind: 'similar-situation' }, result: 'confirmed', judgementValidated: true })
+      { match: { mode: 'deterministic-domain-trigger', matchTriggerKind: 'similar-situation' }, judgement: PO.mintValidatedJudgementCapability({ result: 'confirmed' }).value })
       .coreGeneratedExpectationId === false,
     'CORE_GENERATED_EXPECTATION_ID_COUNT = 0 — linked settlement needs an EXTERNAL id');
   check('ID2.linkedSettlementRequiresAnExternalId',
@@ -517,7 +592,7 @@ section('R4D1 · identity, lifetime, boundaries');
       const obs = PO.buildCanonicalObservation(mem({ id: 'e1', content: 'c' }), {}).value;
       /* 没有 expectationId 时 explicit-link 必须拒绝 —— id 由外部提供，核心不造。 */
       return PO.settle({ prediction: 'x' }, obs,
-        { match: { mode: 'explicit-link', observationExpectationId: 'exp1' }, result: 'confirmed', judgementValidated: true })
+        { match: { mode: 'explicit-link', observationExpectationId: 'exp1' }, judgement: PO.mintValidatedJudgementCapability({ result: 'confirmed' }).value })
         .reasonCodes.indexOf('no-validated-matching') >= 0;
     })(),
     'an expectation without a caller-supplied id cannot use explicit-link');
@@ -548,7 +623,7 @@ section('R4D1 · identity, lifetime, boundaries');
       const h1 = crypto.createHash('sha256').update(JSON.stringify(rec)).digest('hex');
       const obs = PO.buildCanonicalObservation(rec, { authorizedMemoryIds: ['e1'] }).value;
       PO.settle({ expectationId: 'x', prediction: 'p', trigger: { kind: 'similar-situation' } }, obs,
-        { match: { mode: 'explicit-link', observationExpectationId: 'x' }, result: 'confirmed', judgementValidated: true, behaviorConsumerCount: 0 });
+        { match: { mode: 'explicit-link', observationExpectationId: 'x' }, judgement: PO.mintValidatedJudgementCapability({ result: 'confirmed' }).value, behaviorConsumerCount: 0 });
       return crypto.createHash('sha256').update(JSON.stringify(rec)).digest('hex') === h1;
     })(),
     'neither the builder nor the settlement may mutate the canonical record');
@@ -576,7 +651,7 @@ section('R4D2 · observation integrity seal');
         fingerprintRole: 'provenance-metadata', cryptographicAuthority: false,
         canonicalAuthorityEstablished: false
       };
-      const r = PO.settle(exp, forged, { match: m, result: 'confirmed', judgementValidated: true });
+      const r = PO.settle(exp, forged, { match: m, judgement: PO.mintValidatedJudgementCapability({ result: 'confirmed' }).value });
       return r.ok === false && r.result === 'unsettled';
     })(),
     'copying every enumerable public field (including the exact brand) must NOT produce an accepted observation');
@@ -584,14 +659,14 @@ section('R4D2 · observation integrity seal');
   /* B · 伪造 canonical:true */
   check('B.fakeCanonicalTrueRejected',
     PO.settle(exp, { evidenceMemoryId: 'e1', canonical: true, observedOutcome: 'x' },
-      { match: m, result: 'confirmed', judgementValidated: true }).ok === false,
+      { match: m, judgement: PO.mintValidatedJudgementCapability({ result: 'confirmed' }).value }).ok === false,
     'canonical:true is not an input authority');
 
   /* C · 伪造 fingerprint */
   check('C.fakeFingerprintRejected',
     (function () {
       const forged = Object.assign({}, built.value, { sourceFingerprint: 'fake' });
-      return PO.settle(exp, forged, { match: m, result: 'confirmed', judgementValidated: true }).ok === false;
+      return PO.settle(exp, forged, { match: m, judgement: PO.mintValidatedJudgementCapability({ result: 'confirmed' }).value }).ok === false;
     })(),
     'a fabricated fingerprint must not buy acceptance');
 
@@ -603,7 +678,7 @@ section('R4D2 · observation integrity seal');
       try { obs.observedOutcome = 'FORGED'; } catch (e) { /* strict mode throws */ }
       try { obs.evidenceMemoryId = 'other'; } catch (e) { /* strict mode throws */ }
       const r = PO.settle({ expectationId: 'exp1', prediction: 'p', trigger: { kind: 'similar-situation' } }, obs,
-        { match: m, result: 'confirmed', judgementValidated: true });
+        { match: m, judgement: PO.mintValidatedJudgementCapability({ result: 'confirmed' }).value });
       return obs.observedOutcome === before && r.observedOutcome === before;
     })(),
     'the builder output must be frozen: a mutation attempt cannot change what settlement sees');
@@ -619,7 +694,7 @@ section('R4D2 · observation integrity seal');
 
   /* F · 正常路径仍然成功 */
   check('F.normalBuilderToSettleStillWorks',
-    PO.settle(exp, built.value, { match: m, result: 'confirmed', judgementValidated: true }).ok === true,
+    PO.settle(exp, built.value, { match: m, judgement: PO.mintValidatedJudgementCapability({ result: 'confirmed' }).value }).ok === true,
     'the sealed happy path must keep working');
 
   /* G · authorized view 是上游前提 */
@@ -660,7 +735,7 @@ section('R4D2 · observation integrity seal');
       const h = crypto.createHash('sha256').update(JSON.stringify(r2)).digest('hex');
       const o = PO.buildCanonicalObservation(r2, { authorizedMemoryIds: ['e3'] }).value;
       PO.settle({ expectationId: 'exp1', prediction: 'p', trigger: { kind: 'similar-situation' } }, o,
-        { match: m, result: 'confirmed', judgementValidated: true });
+        { match: m, judgement: PO.mintValidatedJudgementCapability({ result: 'confirmed' }).value });
       return crypto.createHash('sha256').update(JSON.stringify(r2)).digest('hex') === h;
     })(),
     'neither build nor settle may mutate the canonical record');

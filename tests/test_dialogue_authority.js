@@ -37,6 +37,13 @@ const createStore = require(path.join(ROOT, 'services', 'home-node', 'chat-store
 const createExecutor = require(path.join(ROOT, 'services', 'home-node', 'execution.js'));
 const createNodeMiddleBrain = require(path.join(ROOT, 'services', 'home-node', 'middle-brain.js'));
 
+/* ── P5-B3-D3 · character binding test seam ──────────────────────────
+   TURN_CHARACTER_SCOPE_AUTHORITY = SERVER_VALIDATED_CANONICAL_CHARACTER_BINDING。
+   生产由 device-registry.getCharacterSpec 提供；测试在**构造期**注入等价接口
+   （绝不通过 execute({...}) 逐次传入 —— authority 属于 executor 实例）。
+   这里只确认"该 character id 存在"，provider 配置仍走既有 request 契约。 */
+const testCharacterRegistry = { getCharacterSpec: function (id) { return String(id || '').trim() ? {} : null; } };
+
 let passed = 0, failed = 0;
 function check(name, cond, extra) {
   if (cond) { passed++; console.log('\u2714 ' + name); }
@@ -128,7 +135,8 @@ function main() {
     executionConfig: () => CORE.projectExecutionConfig({ enabled: true, reasoningEffort: 'auto' }),
     logger: () => {}
   });
-  const executor = createExecutor({ store, port, middleBrain: mbNode, logger: () => {} });
+  const executor = createExecutor({
+  characterRegistry: testCharacterRegistry, store, port, middleBrain: mbNode, logger: () => {} });
 
   /* 驱动一次真实的 Home Node 回合：走真实执行器 + 真实适配层 + 真实共享核心。
      返回：provider 看到的 prompt，以及从**同一份输入**出发的节点侧对话证据。 */

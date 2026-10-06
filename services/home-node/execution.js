@@ -1,4 +1,4 @@
-﻿/* ====================================================================
+/* ====================================================================
    IB Home Node · Canonical Character Turn Execution
    --------------------------------------------------------------------
    这是 Home Node 唯一的「角色回合」执行入口：
@@ -51,11 +51,111 @@ function createTurnExecutor(deps) {
   /* P34.3-B · Home Node credential access layer (ADR P34.3-A.1 Decision 1).
      Optional: when absent the executor keeps pre-P34.3 behavior (spec.apiKey). */
   const credentialAccess = deps.credentialAccess || null;
-  const makeTurnId = deps.makeTurnId || (() => TURN_ID_PREFIX + CHAT_CORE.stableToken(String(clock()) + ':' + Math.random()));
+  /* ── P5-B3-D3-B · turn instance identity authority ──────────────────
+     TURN_INSTANCE_ID_AUTHORITY = EXECUTION_RUNTIME。
+     生产路径**不得**由 caller 提供 turnId；`turnIdFactory` 只是**构造期**注入的
+     依赖（测试用），owner mint 的调用点始终在本模块内。 */
+  const turnIdFactory = typeof deps.turnIdFactory === 'function' ? deps.turnIdFactory : null;
+  const makeTurnId = turnIdFactory || (() => TURN_ID_PREFIX + CHAT_CORE.stableToken(String(clock()) + ':'
+    + Math.random()));
+  /* ── P5-B3-D3-A · canonical character binding authority ─────────────
+     RAW_CLIENT_CHARACTER_ID_IS_AUTHORITY = NO
+     FRIEND_ID_CHARACTER_FALLBACK = FORBIDDEN
+     character scope 只能来自服务端 canonical registry（device-registry
+     的 getCharacterSpec 接口，与 runtime-recall / runtime-interpretation 同一个）。 */
+  const characterRegistry = deps.characterRegistry || null;
+  /* ── P5-B3-D4 · downstream terminal sink（assembly 注入）────────────────
+     执行 runtime 只 **通知** 终局；RealityEvent authority 属于 runtime-reality-event。
+     本模块**不得** import runtime-reality-event（见 seam guard）。 */
+  const onTurnTerminal = typeof deps.onTurnTerminal === 'function' ? deps.onTurnTerminal : null;
   const inFlight = new Map();                   /* conversationId → turnId */
 
   function fail(code, extra) {
     return Object.assign({ ok: false, error: code }, extra || {});
+  }
+
+  /* ── P5-B3-D3 · canonical Turn Context（authority fields **immutable**）── */
+  function deepFreezeTurnContext(ctx) {
+    Object.keys(ctx).forEach((k) => { if (ctx[k] && typeof ctx[k] === 'object') Object.freeze(ctx[k]); });
+    return Object.freeze(ctx);
+  }
+  function createTurnContext(input) {
+    return deepFreezeTurnContext({
+      turnId: String(input.turnId),
+      requestCorrelationId: String(input.requestCorrelationId),
+      characterId: String(input.characterId),
+      conversationId: String(input.conversationId)
+    });
+  }
+
+  /* character selector → server-validated canonical binding。
+     失败一律 fail closed；**绝不**回退到 friendId / 默认角色 / 当前角色。
+
+     ★ 权威边界（P5-B3-D3 owner ruling）：
+       · **identity**（characterId）必须由服务端 canonical registry 确认存在
+         ⇒ RAW_CLIENT_CHARACTER_ID_IS_AUTHORITY = NO
+       · provider 配置（endpoint / model / systemPrompt）沿用既有 request 契约
+         （与本轮 ruling 无关，不在 D3 scope 内；此处显式记录，不静默扩权）。 */
+  function resolveCharacterBinding(request) {
+    const declared = (request && typeof request.character === 'object' && request.character) ? request.character : null;
+    const selector = declared && declared.id != null ? String(declared.id).trim() : '';
+    if (!selector) return { ok: false, error: 'missing-character-selector' };
+    /* 客户端 id 只是 selector，不是 authority。 */
+    if (!characterRegistry || typeof characterRegistry.getCharacterSpec !== 'function') {
+      return { ok: false, error: 'character-authority-unavailable', characterId: selector };
+    }
+    let registrySpec = null;
+    try { registrySpec = characterRegistry.getCharacterSpec(selector); } catch (_) { registrySpec = null; }
+    if (!registrySpec || typeof registrySpec !== 'object') {
+      return { ok: false, error: 'character-not-bound', characterId: selector };
+    }
+    const declaredSpec = (declared.spec && typeof declared.spec === 'object') ? declared.spec : declared;
+    const spec = Object.assign({}, registrySpec, declaredSpec);
+    if (!spec.endpoint || !spec.model) {
+      return { ok: false, error: 'character-not-ready', characterId: selector };
+    }
+    return { ok: true, characterId: selector, spec: spec, authority: 'server-registry' };
+  }
+
+  /* ── P5-B3-D3-C · ONE canonical terminal settle seam ─────────────────
+     TERMINAL_DECISION_COUNT_PER_TURN = 1
+     所有 **turn instance 创建之后** 的终局路径都必须只经过这里。
+     finally 仍然是 cleanup，**不是** terminal authority。 */
+  const TERMINAL_HOLDER_MAX = 256;
+  const terminalByTurnId = new Map();
+  function settleTurnOutcome(turnContext, outcomeCode) {
+    if (!turnContext || !turnContext.turnId) return { ok: false, status: 'no-instance', terminal: null };
+    const prior = terminalByTurnId.get(turnContext.turnId);
+    if (prior) return { ok: false, status: 'duplicate', terminal: prior };
+    const terminal = Object.freeze({
+      turnId: turnContext.turnId,
+      characterId: turnContext.characterId,
+      conversationId: turnContext.conversationId,
+      requestCorrelationId: turnContext.requestCorrelationId,
+      outcome: String(outcomeCode),
+      occurredAt: Number(clock())
+    });
+    terminalByTurnId.set(turnContext.turnId, terminal);
+    while (terminalByTurnId.size > TERMINAL_HOLDER_MAX) {
+      const oldest = terminalByTurnId.keys().next();
+      if (oldest.done) break;
+      terminalByTurnId.delete(oldest.value);
+    }
+    return { ok: true, status: 'terminal', terminal: terminal };
+  }
+  /* 返回值**逐字节不变**：seam 只负责记录终局，不改变既有结果形状。 */
+  function finalize(turnContext, outcomeCode, result) {
+    const settled = settleTurnOutcome(turnContext, outcomeCode);
+    /* CALLBACK TIMING：terminal fact **先**成立，之后才 notify。
+       §28：只有**新**终局才通知（第二次 settle 是 duplicate ⇒ 不再 emit）。
+       §6/§26：下游抛错只做 diagnostics，**绝不**改写 turn outcome。 */
+    if (settled && settled.ok === true && onTurnTerminal) {
+      try { onTurnTerminal(settled.terminal); }
+      catch (error) {
+        try { logger('turn-terminal-sink-failed', { turnId: settled.terminal.turnId, error: String((error && error.message) || error).slice(0, 200) }); } catch (_) { /* diagnostics 不得影响回合 */ }
+      }
+    }
+    return result;
   }
 
   /* P34.3-B · resolve this turn's provider secret from the Vault.
@@ -293,9 +393,17 @@ function createTurnExecutor(deps) {
     const threadId = userMessage.threadId != null ? String(userMessage.threadId) : '';
     const conversationId = CHAT_CORE.conversationIdOf(friendId, threadId);
 
-    const character = request.character || {};
-    const spec = character.spec || character;
-    if (!spec || !spec.endpoint || !spec.model) return fail('character-not-ready');
+    /* character 必须经服务端 canonical registry 绑定；失败 fail closed。 */
+    const binding = resolveCharacterBinding(request);
+    if (!binding.ok) {
+      logger('turn-character-unbound', {
+        requestId: requestId, conversationId: conversationId,
+        reason: binding.error, characterSelector: binding.characterId || null
+      });
+      return fail(binding.error, { characterId: binding.characterId || null });
+    }
+    const characterId = binding.characterId;
+    const spec = binding.spec;
 
     /* 并发：一个会话同时只有一个回合。 */
     const existingTurn = inFlight.get(conversationId);
@@ -322,8 +430,18 @@ function createTurnExecutor(deps) {
     }
 
     const userMessageId = seen.id;
-    const turnId = options.turnId || makeTurnId();
+    /* PRODUCTION_CALLER_SUPPLIED_TURN_ID = FORBIDDEN：
+       caller 的 options.turnId / request.turnId **不**参与 identity。 */
+    const turnId = makeTurnId();
     inFlight.set(conversationId, turnId);
+    /* TURN_CONTEXT_CREATION_POINT —— 此刻 turnId / characterId /
+       conversationId / requestCorrelationId 全部已知且此后 immutable。 */
+    const turnContext = createTurnContext({
+      turnId: turnId,
+      requestCorrelationId: requestId,
+      characterId: characterId,
+      conversationId: conversationId
+    });
     const onEvent = typeof options.onEvent === 'function' ? options.onEvent : function () {};
 
     const emit = (event) => {
@@ -355,7 +473,7 @@ function createTurnExecutor(deps) {
        再"应用" Middle Brain 就只是在事后改一个字符串，模型早就收到了。
        每轮**只进一次**：本函数是单轮执行入口，没有第二个调用点。 */
     const mbCtx = {
-      characterId: String((request.character && request.character.id) || friendId || ''),
+      characterId: turnContext.characterId,
       turnId: turnId,
       userMessage: String(userMessage.content || ''),
       /* M1-C.2o：当前回合的**身份**（不是内容）。canonical 用户行 id 由 requestId
@@ -384,7 +502,7 @@ function createTurnExecutor(deps) {
       /* 角色证据与桌面 communication.js 传的是**同一个形状**（cfg = spec）：
          spec.systemPrompt 是 integrity 的 persona 维度唯一来源，缺了它守卫会
          因"证据不可用"而拒绝判定（那是防误杀的设计，不是失败）。 */
-      character: Object.assign({ id: String((request.character && request.character.id) || '') }, spec),
+      character: Object.assign({ id: turnContext.characterId }, spec),
       voice: !!userMessage.voice
     };
     let mbPolicy = String(request.contextPolicy || 'unspecified');
@@ -419,9 +537,11 @@ function createTurnExecutor(deps) {
       mbPolicy = 'middle-brain:bypass/memory:' + memoryReadiness + '/error';
     }
     const composedRuntimeContext = composeRuntimeContext(request.runtimeContextParts, mbCtx.injectedContext);
-    const runtimeSpec = resolveRuntimeSpec(spec);
-    if (!runtimeSpec.ok) return fail(runtimeSpec.error || 'credential-unavailable');
     try {
+      /* credential 解析属于 **post-instance** terminal —— 必须在本 try 之内，
+         否则既不记录终局、也走不到 finally 的 inFlight 清理。 */
+      const runtimeSpec = resolveRuntimeSpec(spec);
+      if (!runtimeSpec.ok) return finalize(turnContext, 'credential-unavailable', fail(runtimeSpec.error || 'credential-unavailable', { turnId: turnId, userMessageId: userMessageId, conversationId: conversationId }));
       let result;
       try {
         result = await port.runStream({
@@ -450,7 +570,7 @@ function createTurnExecutor(deps) {
       if (!text.trim() && !reasoning.trim()) {
         emit({ type: 'error', kind: 'empty-output', message: 'model returned no content', retryable: true });
         logger('turn-empty-output', { turnId: turnId, conversationId: conversationId });
-        return fail('empty-output', { turnId: turnId, userMessageId: userMessageId, conversationId: conversationId });
+        return finalize(turnContext, 'empty-output', fail('empty-output', { turnId: turnId, userMessageId: userMessageId, conversationId: conversationId }));
       }
 
       /* ── 执行缝 2 · 生成后（Character Integrity Guard）──────────────────
@@ -476,6 +596,7 @@ function createTurnExecutor(deps) {
       }
 
       const assistantMessage = buildAssistantMessage({
+        characterId: turnContext.characterId,
         request: request, userMessage: userMessage, friendId: friendId, threadId: threadId,
         text: finalText, reasoning: reasoning, result: result, conversationId: conversationId,
         extraMetadata: { contextPolicy: mbPolicy }
@@ -486,7 +607,7 @@ function createTurnExecutor(deps) {
            重试同一 requestId 会命中 user 消息的幂等记录，不会产生第二条用户消息。 */
         emit({ type: 'error', kind: 'store-write-failed', message: String(written.error || 'write failed'), retryable: true });
         logger('turn-store-write-failed', { turnId: turnId, conversationId: conversationId, error: String(written.error || '') });
-        return fail('store-write-failed', { turnId: turnId, userMessageId: userMessageId, conversationId: conversationId, errors: written.errors });
+        return finalize(turnContext, 'store-write-failed', fail('store-write-failed', { turnId: turnId, userMessageId: userMessageId, conversationId: conversationId, errors: written.errors }));
       }
 
       emit({
@@ -504,7 +625,9 @@ function createTurnExecutor(deps) {
         contextPolicy: mbPolicy,
         reasoningEffort: mbReasoningEffort
       });
-      return {
+      /* PERSISTENCE_SUCCESS_REQUIRED_FOR_COMPLETED = YES：
+         走到这里意味着 store.putMessage 已经成功。 */
+      return finalize(turnContext, 'completed', {
         ok: true,
         outcome: 'completed',
         turnId: turnId,
@@ -516,7 +639,7 @@ function createTurnExecutor(deps) {
         reasoning: reasoning,
         contextPolicy: mbPolicy,
         message: assistantMessage
-      };
+      });
     } catch (error) {
       const kind = classify(error);
       const partialText = partial.text;
@@ -526,6 +649,7 @@ function createTurnExecutor(deps) {
          这样重试同一 requestId 不会重复生成，客户端能看到已经产出的内容。 */
       if (aborted && partialText.trim()) {
         const partialMessage = buildAssistantMessage({
+          characterId: turnContext.characterId,
           request: request, userMessage: userMessage, friendId: friendId, threadId: threadId,
           text: partialText, reasoning: '', result: {}, conversationId: conversationId,
           extraMetadata: { partial: true, interrupted: kind }
@@ -533,11 +657,11 @@ function createTurnExecutor(deps) {
         const written = store.putMessage(partialMessage, { idempotent: false });
         emit({ type: 'error', kind: kind, message: String(error && error.message || kind), retryable: kind !== 'cancelled', partialMessageId: written.ok ? written.id : null });
         logger('turn-partial', { turnId: turnId, conversationId: conversationId, kind: kind, partialLength: partialText.length });
-        return fail(kind, { turnId: turnId, userMessageId: userMessageId, conversationId: conversationId, partialMessageId: written.ok ? written.id : null });
+        return finalize(turnContext, kind, fail(kind, { turnId: turnId, userMessageId: userMessageId, conversationId: conversationId, partialMessageId: written.ok ? written.id : null }));
       }
       emit({ type: 'error', kind: kind, message: String(error && error.message || kind), retryable: kind !== 'cancelled' });
       logger('turn-error', { turnId: turnId, conversationId: conversationId, kind: kind, error: String(error && error.message || '').slice(0, 300) });
-      return fail(kind, { turnId: turnId, userMessageId: userMessageId, conversationId: conversationId, message: String(error && error.message || '') });
+      return finalize(turnContext, kind, fail(kind, { turnId: turnId, userMessageId: userMessageId, conversationId: conversationId, message: String(error && error.message || '') }));
     } finally {
       inFlight.delete(conversationId);
     }
@@ -571,7 +695,7 @@ function createTurnExecutor(deps) {
       metadata: Object.assign({
         model: String((request.character && (request.character.spec || request.character).provider) || ''),
         model_id: String(((request.character && (request.character.spec || request.character)) || {}).model || ''),
-        config_id: String((request.character && request.character.id) || userMessage.friendId || ''),
+        config_id: String(ctx.characterId || ''),
         source: 'home_node',
         /* M1-C.2i：contextPolicy 由**本轮实际发生的事**决定（执行缝参与了没有、
            注入有没有发生）。这个字段是"这一轮到底吃了什么上下文"的唯一诚实记录，
@@ -589,6 +713,13 @@ function createTurnExecutor(deps) {
     return message;
   }
 
+  /* P5-B3-D3 · 只读终局访问器。**不** mint RealityEvent，**不**做 pairing。 */
+  function terminalOutcomeOf(turnId) {
+    const t = terminalByTurnId.get(String(turnId || ''));
+    return t || null;
+  }
+  function terminalHolderSize() { return terminalByTurnId.size; }
+
   function activeTurn(conversationId) {
     return inFlight.get(String(conversationId || '')) || null;
   }
@@ -598,7 +729,11 @@ function createTurnExecutor(deps) {
     activeTurn: activeTurn,
     /* 供测试与诊断：直接暴露 prompt 组装（纯函数，无 I/O）。 */
     buildPrompt: buildPrompt,
-    messageContent: messageContent
+    messageContent: messageContent,
+    /* P5-B3-D3 · 终局见证（只读）。D4 将用它投影 RealityEvent；
+       本模块**不**接 RealityEvent。 */
+    terminalOutcomeOf: terminalOutcomeOf,
+    terminalHolderSize: terminalHolderSize
   };
 }
 

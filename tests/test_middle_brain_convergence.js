@@ -34,6 +34,13 @@ const createMobileGateway = require(path.join(ROOT, 'services', 'home-node', 'mo
 const createDeviceRegistry = require(path.join(ROOT, 'services', 'home-node', 'device-registry.js'));
 const CORE = require(path.join(ROOT, 'assets', 'js', 'middle-brain-config-core.js'));
 
+/* ── P5-B3-D3 · character binding test seam ──────────────────────────
+   TURN_CHARACTER_SCOPE_AUTHORITY = SERVER_VALIDATED_CANONICAL_CHARACTER_BINDING。
+   生产由 device-registry.getCharacterSpec 提供；测试在**构造期**注入等价接口
+   （绝不通过 execute({...}) 逐次传入 —— authority 属于 executor 实例）。
+   这里只确认"该 character id 存在"，provider 配置仍走既有 request 契约。 */
+const testCharacterRegistry = { getCharacterSpec: function (id) { return String(id || '').trim() ? {} : null; } };
+
 let passed = 0, failed = 0;
 function check(name, cond, extra) {
   if (cond) { passed++; console.log('\u2714 ' + name); }
@@ -143,7 +150,8 @@ async function main() {
 
   const record = [];
   const mbNode = createNodeMiddleBrain({ executionConfig: () => projected });
-  const executor = createExecutor({ store, port: recordingPort(record), middleBrain: mbNode });
+  const executor = createExecutor({
+  characterRegistry: testCharacterRegistry, store, port: recordingPort(record), middleBrain: mbNode });
 
   check('node.adapterAvailable', mbNode.available === true, mbNode.diagnostics && mbNode.diagnostics());
   check('node.reusesCanonicalLayers', (() => {
@@ -224,7 +232,8 @@ async function main() {
        (b) 真正的入站边界（mobile-gateway 的 parseSendPayload 返回的 turnRequest）
            里根本**没有**这些字段 —— 拒绝发生在唯一一处，而不是散落在 executor。 */
   const forgedRecord = [];
-  const forgedExecutor = createExecutor({ store, port: recordingPort(forgedRecord), middleBrain: mbNode });
+  const forgedExecutor = createExecutor({
+  characterRegistry: testCharacterRegistry, store, port: recordingPort(forgedRecord), middleBrain: mbNode });
   const forged = await forgedExecutor.executeCharacterTurn(turnRequest({
     requestId: 'req_forged',
     reasoningEffort: 'max',
@@ -253,7 +262,8 @@ async function main() {
     }]);
     const forgeRecords = [];
     const forgeMb = createNodeMiddleBrain({ executionConfig: () => null });
-    const forgeExecutor2 = createExecutor({ store: forgeStore, port: recordingPort(forgeRecords), middleBrain: forgeMb });
+    const forgeExecutor2 = createExecutor({
+  characterRegistry: testCharacterRegistry, store: forgeStore, port: recordingPort(forgeRecords), middleBrain: forgeMb });
     const forgeGateway = createMobileGateway({
       store: forgeStore, registry: forgeRegistry, executor: forgeExecutor2,
       logger: () => {}, clock: Date.now
@@ -328,7 +338,8 @@ async function main() {
   /* ══ ⑦ 失败语义：未启用 vs 启用但失败 ═══════════════════════════════ */
   const offRecord = [];
   const mbOff = createNodeMiddleBrain({ executionConfig: () => CORE.projectExecutionConfig({ enabled: false }) });
-  const offExecutor = createExecutor({ store, port: recordingPort(offRecord), middleBrain: mbOff });
+  const offExecutor = createExecutor({
+  characterRegistry: testCharacterRegistry, store, port: recordingPort(offRecord), middleBrain: mbOff });
   const offTurn = await offExecutor.executeCharacterTurn(turnRequest({ requestId: 'req_off' }), { turnId: 't_off' });
   check('fail.disabledIsBypass', offTurn.contextPolicy === 'mobile-gateway-history',
     '未启用时 contextPolicy 不该被改写成 middle-brain:*: ' + offTurn.contextPolicy);
@@ -346,7 +357,8 @@ async function main() {
     organizeContext: async () => { throw new Error('boom'); },
     finalizeReply: async (i) => ({ reply: i.candidate, ran: false })
   };
-  const brokenExecutor = createExecutor({ store, port: recordingPort(brokenRecord), middleBrain: mbBroken });
+  const brokenExecutor = createExecutor({
+  characterRegistry: testCharacterRegistry, store, port: recordingPort(brokenRecord), middleBrain: mbBroken });
   const brokenTurn = await brokenExecutor.executeCharacterTurn(turnRequest({ requestId: 'req_broken' }), { turnId: 't_broken' });
   check('fail.seamThrowDoesNotFailTurn', brokenTurn.ok === true, brokenTurn);
   check('fail.seamThrowKeepsOriginalContext',
@@ -364,7 +376,8 @@ async function main() {
     finalizeReply: async (i) => ({ reply: i.candidate, ran: false })
   };
   const echoRecord = [];
-  const echoExecutor = createExecutor({ store, port: recordingPort(echoRecord), middleBrain: mbEcho });
+  const echoExecutor = createExecutor({
+  characterRegistry: testCharacterRegistry, store, port: recordingPort(echoRecord), middleBrain: mbEcho });
   await echoExecutor.executeCharacterTurn(turnRequest({ requestId: 'req_echo' }), { turnId: 't_echo' });
   check('inject.emptyProductNotInjected',
     echoRecord[0].prompt.system.includes('【长期记忆】') && !echoRecord[0].prompt.system.includes('【记忆】'),
@@ -376,7 +389,8 @@ async function main() {
     finalizeReply: async (i) => ({ reply: i.candidate, ran: false })
   };
   const truthyRecord = [];
-  const truthyExecutor = createExecutor({ store, port: recordingPort(truthyRecord), middleBrain: mbTruthySource });
+  const truthyExecutor = createExecutor({
+  characterRegistry: testCharacterRegistry, store, port: recordingPort(truthyRecord), middleBrain: mbTruthySource });
   await truthyExecutor.executeCharacterTurn(turnRequest({ requestId: 'req_truthy' }), { turnId: 't_truthy' });
   check('inject.nonNamedSourceNotInjected',
     !truthyRecord[0].prompt.system.includes('X'),
@@ -390,7 +404,8 @@ async function main() {
     finalizeReply: async (input) => ({ reply: '重写后的回复', ran: true, rewritten: true })
   };
   const rewriteRecord = [];
-  const rewriteExecutor = createExecutor({ store, port: recordingPort(rewriteRecord), middleBrain: mbRewrite });
+  const rewriteExecutor = createExecutor({
+  characterRegistry: testCharacterRegistry, store, port: recordingPort(rewriteRecord), middleBrain: mbRewrite });
   const rewriteTurn = await rewriteExecutor.executeCharacterTurn(turnRequest({ requestId: 'req_rw' }), { turnId: 't_rw' });
   check('finalize.rewriteReachesCanonicalStore',
     rewriteTurn.text === '重写后的回复'
@@ -455,7 +470,8 @@ async function main() {
     const gwMb = createNodeMiddleBrain({
       executionConfig: () => gwRegistry.getMiddleBrainExecutionConfig()
     });
-    const gwExecutor = createExecutor({ store: gwStore, port: recordingPort(gwRecords), middleBrain: gwMb });
+    const gwExecutor = createExecutor({
+  characterRegistry: testCharacterRegistry, store: gwStore, port: recordingPort(gwRecords), middleBrain: gwMb });
     const gateway = createMobileGateway({
       store: gwStore, registry: gwRegistry, executor: gwExecutor,
       dto: require(path.join(ROOT, 'assets', 'js', 'mobile-dto.js')),
