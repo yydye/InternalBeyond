@@ -289,6 +289,23 @@ body.theme-infernal .memory-world-scope {
   text-shadow: 0 1px 14px var(--mw-world-text-glow);
 }
 
+.memory-world__authority {
+  display: block;
+  max-inline-size: min(58vw, 46rem);
+  margin-block-start: var(--ib-token-space-xs, var(--space-1, 4px));
+  font: var(--ib-token-text-meta, 400 12px/1.45 var(--font-ui));
+  letter-spacing: 0.02em;
+  color: var(--mw-world-ink-faint);
+  overflow-wrap: anywhere;
+  text-shadow: 0 1px 14px var(--mw-world-text-glow);
+}
+
+.memory-world__authority[data-state="canonical"] { color: var(--status-success); }
+.memory-world__authority[data-state="degraded"],
+.memory-world__authority[data-state="local"],
+.memory-world__authority[data-state="syncing"] { color: var(--status-warning); }
+.memory-world__authority[data-state="unavailable"] { color: var(--status-danger); }
+
 .memory-world__tools {
   display: flex;
   align-items: center;

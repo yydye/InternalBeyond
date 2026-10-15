@@ -27,6 +27,19 @@
 .mem-toolbar select:focus,.mem-toolbar input:focus{border-color:var(--border-strong);outline:none;box-shadow:0 0 0 2px color-mix(in srgb,var(--focus-ring) 16%,transparent)}
 .mem-toolbar input{flex:1;min-width:140px}
 
+/* Canonical authority status: compact inline system state, not another Memory card. */
+.memory-authority-state{max-width:976px;margin:0 auto 14px;padding:8px 12px;display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px;
+  border:1px solid var(--border-soft);border-radius:var(--radius-card);background:var(--glass-bg-ambient);
+  color:var(--content-secondary);font-size:var(--fs-meta);line-height:1.55}
+.memory-authority-state__label{font-family:var(--font-reading);letter-spacing:.08em;color:var(--content-primary)}
+.memory-authority-state__detail{min-width:0;color:var(--content-muted)}
+.memory-authority-state[data-state="canonical"] .memory-authority-state__label{color:var(--status-success)}
+.memory-authority-state[data-state="degraded"]{border-left:2px solid var(--status-warning)}
+.memory-authority-state[data-state="degraded"] .memory-authority-state__label,
+.memory-authority-state[data-state="local"] .memory-authority-state__label{color:var(--status-warning)}
+.memory-authority-state[data-state="unavailable"]{border-left:2px solid var(--status-danger)}
+.memory-authority-state[data-state="unavailable"] .memory-authority-state__label{color:var(--status-danger)}
+
 
 /* Chat 气泡 / 思考链 / 工具栏 / 成员选择 / 输入区修复：P3.1 起迁至 core/chat.css 与 chat-shell.css（聊天视觉单源） */
 
@@ -394,6 +407,7 @@ body:not(.theme-infernal) .mem-star-dot{
 .mem-sky-legend span{display:inline-flex;align-items:center;gap:6px}
 .mem-sky-legend-desc{font-size:var(--fs-body)}
 .mem-sky-legend i.lg-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.mem-sky-legend i.lg-dot.am-profile{background:var(--accent-light);opacity:.55;border:1px dotted var(--content-muted)}
 body:not(.theme-infernal) .mem-sky-legend i.lg-dot{filter:saturate(1.3) brightness(0.95);border:1px solid var(--border-soft)}
 
 /* --- Instrument Deck ---

@@ -50,6 +50,7 @@ const section = t => console.log('\n── ' + t + ' ──');
 
 const NOW = 1750000000000;
 const DAY = 86400000;
+const FixedDate = class extends Date { static now() { return NOW; } };
 function mem(over) {
   return Object.assign({
     id: 'm', title: 't', content: 'c', importance: 5, arousal: 0.3, resolved: false,
@@ -97,7 +98,7 @@ function makeBrowserWrapper(records, opts) {
     dbPut: async function () {},
     dbUpdate: async function () { return false; },
     getMemorySettings: async function () { return settings; },
-    Date: Date
+    Date: FixedDate
   };
   /* window 上的同名全局：真实浏览器里两条路径都能取到。 */
   sandbox.window = Object.assign(sandbox.window, {

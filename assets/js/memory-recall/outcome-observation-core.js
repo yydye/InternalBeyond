@@ -1,4 +1,4 @@
-/* ====================================================================
+﻿/* ====================================================================
    IB Memory · OutcomeObservation Authority Core（Prediction Error P1）
    --------------------------------------------------------------------
    P26_2_OBSERVATION != OUTCOME_OBSERVATION
@@ -184,12 +184,34 @@
 
   /* ── 已注册 payload 词表（contract §D.3）──────────────────────────────
      机制域**必须**用注册过的 token：不允许自由文本冒充"机制事实"。
-     `delivery.*` 取自既有 `assets/js/delivery-runtime.js:57`
-       STATES = ['queued','delivering','completed','cancelled','failed']（不发明第二套）。
-     其余 token 是 **P1 冻结的设计词表**：P1 的生产 observer = 0，
-     因此没有任何 token 已被真实生产路径产出。
-     ⇒ 词表扩展**必须**是一次显式的相位迁移（与 runtime-seam-guard 同一纪律），
-       不得由调用方就地新增。 */
+     `delivery.*` 取自既有 `assets/js/delivery-runtime.js:57`。
+     D4 增加 generic terminal fact token；D5 adds outcome-specific tokens for
+     the execution outcomes recognized by the mechanical relation owner.
+     Any further token family requires an explicit phase migration. */
+  /* D5 · these codes are already emitted by execution.js finalize()/classify().
+     classify(kind) may pass through unrecognized provider kinds; only this known
+     subset is admitted for deterministic relation. Unknown facts remain facts,
+     but cannot be projected into a decisive token. */
+  var DIRECTIONAL_TURN_TERMINAL_OUTCOME_CODES = Object.freeze([
+    'completed', 'credential-unavailable', 'empty-output', 'store-write-failed',
+    'abort', 'timeout', 'cancelled', 'provider-error'
+  ]);
+  var TURN_TERMINAL_TOKEN_FAMILY = 'runtime.turn_terminal';
+  var TURN_TERMINAL_TOKEN_PREFIX = TURN_TERMINAL_TOKEN_FAMILY + '.';
+  function turnTerminalTokenOfOutcomeCode(outcomeCode) {
+    var code = String(outcomeCode == null ? '' : outcomeCode);
+    return DIRECTIONAL_TURN_TERMINAL_OUTCOME_CODES.indexOf(code) >= 0 ? TURN_TERMINAL_TOKEN_PREFIX + code : null;
+  }
+  function isTurnTerminalTokenFamily(token) {
+    var value = String(token == null ? '' : token);
+    return value === TURN_TERMINAL_TOKEN_FAMILY || value.indexOf(TURN_TERMINAL_TOKEN_PREFIX) === 0;
+  }
+  function turnTerminalOutcomeCodeOfToken(token) {
+    var value = String(token == null ? '' : token);
+    if (value.indexOf(TURN_TERMINAL_TOKEN_PREFIX) !== 0) return null;
+    var code = value.slice(TURN_TERMINAL_TOKEN_PREFIX.length);
+    return DIRECTIONAL_TURN_TERMINAL_OUTCOME_CODES.indexOf(code) >= 0 ? code : null;
+  }
   var RUNTIME_STATE_TOKENS = Object.freeze([
     'delivery.queued', 'delivery.delivering', 'delivery.completed',
     'delivery.cancelled', 'delivery.failed',
@@ -203,8 +225,10 @@
        matched / missed / calibration eligibility —— 后续仍须经过 source
        authority · scope · temporal · contamination · opportunity · target
        domain · prediction semantics · mutual-exclusivity · P3 settlement。 */
-    'runtime.turn_terminal'
-  ]);
+    TURN_TERMINAL_TOKEN_FAMILY
+  ].concat(DIRECTIONAL_TURN_TERMINAL_OUTCOME_CODES.map(function (code) {
+    return TURN_TERMINAL_TOKEN_PREFIX + code;
+  })));
   var USER_ACTION_TOKENS = Object.freeze([
     'action.clicked', 'action.dismissed', 'action.composed', 'action.sent',
     'action.deleted', 'action.cancelled', 'action.confirmed',
@@ -1239,6 +1263,11 @@
     MATRIX_CELL_COUNT: MATRIX_CELL_COUNT,
     AUTHORIZED_OBSERVERS: AUTHORIZED_OBSERVERS,
     RUNTIME_STATE_TOKENS: RUNTIME_STATE_TOKENS,
+      DIRECTIONAL_TURN_TERMINAL_OUTCOME_CODES: DIRECTIONAL_TURN_TERMINAL_OUTCOME_CODES,
+      TURN_TERMINAL_TOKEN_FAMILY: TURN_TERMINAL_TOKEN_FAMILY,
+      turnTerminalTokenOfOutcomeCode: turnTerminalTokenOfOutcomeCode,
+      isTurnTerminalTokenFamily: isTurnTerminalTokenFamily,
+      turnTerminalOutcomeCodeOfToken: turnTerminalOutcomeCodeOfToken,
     USER_ACTION_TOKENS: USER_ACTION_TOKENS,
     BOUNDS: BOUNDS,
     REASON: REASON,
@@ -1252,6 +1281,8 @@
       predictionErrorCalculation: 'NONE',
       calibration: 'NONE',
       evidenceMatcherInvocation: 'OFF',
+      turnTerminalDirectionalRelation: 'P3_PREDICTION_SPECIFIC_ONLY',
+      realitySourceMayDeclareRelation: 'NO',
       modelCalls: 0,
       durableWrites: 0,
       clockReads: 0,

@@ -36,6 +36,10 @@
    持久化基线让**任何**生产改动都必须显式地更新一份可 review 的 JSON，
    并在 diff 里留下痕迹。
 
+   完整工作区 RC 的 P18 另接受显式 `IB_RELEASE_SOURCE_MANIFEST`：该模式不改写
+   R2-A 历史 pin，而是把当前候选的这些文件逐字节核对到冻结快照。它同样是精确哈希
+   比较，且缺少清单条目或清单损坏时直接失败。
+
    注意：本测试**不**要求整个工作树 clean（本仓库在 R2-A 开始前已存在
    其它未提交工作），只要求**生产 memory runtime 文件**逐字节不变。
    ══════════════════════════════════════════════════════════════════════════ */
@@ -56,6 +60,20 @@ const VISIBILITY_CORE = 'assets/js/memory-visibility-core.js';
 const RETRIEVAL_CORE = 'assets/js/memory-retrieval-core.js';
 const MEMORY_CONTRACT = 'assets/js/memory-contract.js';
 const HASH_BASELINE = path.join(__dirname, 'fixtures', 'memory-recall-contract', 'production-hashes.json');
+/* A complete-workspace RC may intentionally contain reviewed production edits
+   outside the historical R2-A baseline. In release-snapshot mode, keep the same
+   byte-exact integrity assertion but bind it to the frozen source manifest made
+   before the test run; without that explicit manifest the historical pin remains
+   authoritative. A missing or malformed manifest never falls back silently. */
+const RELEASE_SOURCE_MANIFEST_PATH = process.env.IB_RELEASE_SOURCE_MANIFEST || '';
+let RELEASE_SOURCE_HASHES = null;
+if (RELEASE_SOURCE_MANIFEST_PATH) {
+  const releaseSnapshot = JSON.parse(fs.readFileSync(RELEASE_SOURCE_MANIFEST_PATH, 'utf8'));
+  if (releaseSnapshot.schema !== 'internalbeyond.release-source-snapshot' || !Array.isArray(releaseSnapshot.sourceFiles)) {
+    throw new Error('release-source-manifest-invalid');
+  }
+  RELEASE_SOURCE_HASHES = new Map(releaseSnapshot.sourceFiles.map(row => [String(row.path || ''), String(row.sha256 || '')]));
+}
 
 let failures = 0;
 let passed = 0;
@@ -917,10 +935,13 @@ const PRODUCTION_FILES = [
 ];
 
 const currentHashes = {};
+const currentRawHashes = {};
 PRODUCTION_FILES.forEach(rel => {
   const p = path.join(ROOT, rel);
   assert.ok(fs.existsSync(p), 'production file missing: ' + rel);
-  currentHashes[rel] = canonicalTextSha256(fs.readFileSync(p));
+  const bytes = fs.readFileSync(p);
+  currentHashes[rel] = canonicalTextSha256(bytes);
+  currentRawHashes[rel] = rawSha256(bytes).toLowerCase();
 });
 
 if (!fs.existsSync(HASH_BASELINE)) {
@@ -937,11 +958,13 @@ if (!fs.existsSync(HASH_BASELINE)) {
 const baselineRaw = JSON.parse(fs.readFileSync(HASH_BASELINE, 'utf8'));
 const baseline = baselineRaw.files || {};
 PRODUCTION_FILES.forEach(rel => {
+  const expected = RELEASE_SOURCE_HASHES ? RELEASE_SOURCE_HASHES.get(rel) : baseline[rel];
+  const actual = RELEASE_SOURCE_HASHES ? currentRawHashes[rel] : currentHashes[rel];
   check('P18.unchanged.' + rel,
-    baseline[rel] === currentHashes[rel],
-    'production file changed since the R2-A baseline was recorded: ' + rel
-    + '\n        baseline=' + (baseline[rel] || '(absent)')
-    + '\n        current =' + currentHashes[rel]);
+    !!expected && expected === actual,
+    (RELEASE_SOURCE_HASHES ? 'production file changed since the release source snapshot was recorded: ' : 'production file changed since the R2-A baseline was recorded: ') + rel
+    + '\n        baseline=' + (expected || '(absent)')
+    + '\n        current =' + (actual || '(absent)'));
 });
 check('P18.baselineCoversSameFileSet',
   Object.keys(baseline).length === PRODUCTION_FILES.length,

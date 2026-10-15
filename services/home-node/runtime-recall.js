@@ -7,8 +7,9 @@
         POST /internal/runtime/memory-recall
               ↓  闭集请求（8 键；24+ 个权威字段逐名拒绝）
               ↓  registry.getCharacterSpec(characterId)   ← 唯一的角色目录查询
-              ↓  memoryRetrieval.retrieve(...)            ← **既有**召回实现（唯一）
-              ↓  非持久信封：ids + 有界计数 + fingerprint
+              ↓  memoryRetrieval.retrieve(...)            ← direct Recall 选择权威（唯一）
+              ↓  bounded Association（authoritative mode only）
+              ↓  非持久信封：direct ids + bounded Association trace
 
    ── 为什么这里没有第二套召回 ────────────────────────────────────────────
    本模块**不**判断可见性、**不**打分、**不**排序、**不**做预算、**不**选席位、
@@ -32,19 +33,21 @@
    不是笼统的 "bad request"：审计要能一眼看出"调用方试图自己决定召回"。
    闭集之外的其他未知键则是 request-field-forbidden（同样逐名，绝不静默忽略）。
 
-   ── 纯影子（PURE SHADOW）───────────────────────────────────────────────
-   这条边界**只读**。它**不**写 exposure、**不**推进生产会话状态、**不**激活记忆、
-   **不**调用任何 provider。具体到本仓库的动词，下面这些在**任何路径上**都
-   不会被调用（也正因如此它们没有出现在本文件的任何一行里）：
+   ── Authority 与副作用 ─────────────────────────────────────────────────
+   Shadow mode 仍然只读：它不写 exposure、不推进生产会话状态、不激活记忆，也
+   不调用 provider。Authoritative mode 保留 Recall 自身的选择权威；最终选择后
+   可调用一个 bounded Association classifier。Association 失败会回退到 direct
+   Recall，且不会改变 direct selectedIds / activation / exposure。
+   具体到 canonical Memory 写动词，下面这些在任何路径上都不会被调用：
      · store.putRecord / putRecords / deleteRecord / recordActivation /
        setMemorySettings / setMigrationState / open / close；
      · sessionState.beginBrowserTurn / beginHomeTurn / endHomeTurn /
        recordExposure / clear；
      · memoryRetrieval.reinforce（它才是激活通道的入口）。
-   召回内部对 sessionState 的唯一动作是 **读**（cooldown 的 exposure 查询），
-   那发生在既有实现里，不在这里，而且是读。
-   ★ 这条性质不是靠注释成立的：装配层用**真实** store / 真实 session state
-     做测量（写动词全部包一层计数器），"零副作用"是一条可断言的事实。
+   Shadow Recall 对 sessionState 的唯一动作是读（cooldown 的 exposure 查询）。
+   Association 从同一个 canonical store 做有界读取，并复用共享 visibility /
+   ranking core；模型最多看到 12 对、每条有界投影。它没有 Memory /
+   Relationship / Prediction 写入口。
 
    ── 失败语义 ────────────────────────────────────────────────────────────
    与解释边界同一条纪律：run() **永不抛出**，任何失败都回一个带 status 的
@@ -60,13 +63,18 @@ const crypto = require('crypto');
    (conversationId, requestId, message) 这三个**已经存在**的事实压成一个
    稳定令牌，因此同一轮永远得到同一个 turn 身份（§5.4）。 */
 const CHAT_CORE = require('../../assets/js/chat-core.js');
+const MEMORY_RETRIEVAL_CORE = require('../../assets/js/memory-retrieval-core.js');
+const RESPONSE_GUIDANCE_CORE = require('../../assets/js/response-guidance-core.js');
+const META_MEMORY_AWARENESS_CORE = require('../../assets/js/memory-recall/meta-memory-awareness-core.js');
+const MEMORY_UNRELIABILITY_CORE = require('../../assets/js/memory-recall/memory-unreliability-core.js');
+const SHARED_MEMORY_CORE = require('../../assets/js/memory-recall/shared-memory-core.js');
 
 /* 路径与操作名是**契约**：装配层、http 层、测试与未来的消费者都从这里取，
    不各写一份字面量（与 runtime-interpretation.js 同一条纪律）。 */
 const PATH = '/internal/runtime/memory-recall';
 const OPERATION = 'memory-recall';
 
-/* ── 闭集请求（8 键）────────────────────────────────────────────────────
+/* ── 闭集请求（8 required + bounded derived-query optional）──────────────
    `operation` 也在闭集里：它让"这条请求自称是哪条边界"成为可校验的事实，
    而不是由路径决定（路径决定路由，operation 决定语义，两者不一致时拒绝）。 */
 const REQUEST_FIELDS = Object.freeze([
@@ -80,15 +88,14 @@ const REQUEST_FIELDS = Object.freeze([
   'timeoutMs'
 ]);
 
-/* ── P21-R4-LIVE-3.4 · 唯一的**可选能力键**：`mode` ─────────────────────
-   ★ 为什么它**不**被并进 REQUEST_FIELDS：
+/* ── 有界可选键：能力 mode 与派生查询 groundedQuery ─────────────────────
+   ★ 为什么它们**不**被并进 REQUEST_FIELDS：
      LIVE-3.3 的 request-authority 套件（committed，必须逐字通过）把
      `REQUEST_FIELDS.length === 8` 钉成一条断言。把 `mode` 追加进去会让那条
-     断言变成 9 而失败 —— 而本阶段不许改那条套件。因此闭集校验同时查**两张
-     名单**（必需形状的 8 个词 + 这一个可选能力词），describe() 也分开报告。
-   `mode` 是**能力请求**，不是数据权威：它只决定这条边界是否推进回合生命周期，
-   永远不决定召回看到什么（选择/可见性/预算仍全部服务端所有）。 */
-const OPTIONAL_REQUEST_FIELDS = Object.freeze(['mode', 'isGroup']);
+     断言变成 9 而失败 —— 因此闭集校验把必需形状与有界可选键分开报告。
+   `mode` 是能力请求；`groundedQuery` 是经 Chat 层有界解析后提供的搜索措辞。
+   它不带选择结果、Memory id 或权限，不改变 Recall ranking/visibility/预算权威。 */
+const OPTIONAL_REQUEST_FIELDS = Object.freeze(['mode', 'isGroup', 'groundedQuery']);
 const MODES = Object.freeze(['shadow', 'authoritative']);
 const DEFAULT_MODE = 'shadow';
 
@@ -165,10 +172,14 @@ const MAX_TURN_ID_CHARS = 200;
 const MAX_MESSAGE_CHARS = 16000;
 const MAX_OPERATION_ECHO_CHARS = 64;
 const MAX_DETAIL_CHARS = 200;
+const MAX_RELATIONSHIP_CONTEXT_CHARS = 240;
 
 /* fingerprint 的版本前缀：哈希一旦被未来消费者引用，就不能悄悄改输入元组。
    改元组 = 换版本号（换一个前缀），而不是让同一串 hex 有两种含义。 */
 const FINGERPRINT_VERSION = 'sha256-v1';
+const MAX_ASSOCIATION_SCAN_RECORDS = 20000;
+const MAX_ASSOCIATION_SOURCE_CANDIDATES = 64;
+const MAX_ASSOCIATION_ANCHOR_QUERY_CHARS = 2000;
 
 /* 传输真值：本阶段**只有桌面**（与解释边界逐字一致）。 */
 const TRANSPORT_SCOPE = 'DESKTOP_ONLY';
@@ -200,8 +211,9 @@ function deriveStableTurnId(requestId, conversationId) {
 
 function createRuntimeRecall(deps) {
   deps = deps || {};
-  /* 依赖就是整条权威链：既有召回实现 → 角色目录。provider / Vault **不在**
-     这条链上 —— 召回不花钱、不出网，因此本文件没有、也不该有 modelPort。 */
+  /* Direct Recall remains the sole selection authority. Association is a
+     separate bounded post-selection runtime; it may classify at most one
+     small batch, and any failure leaves the direct Recall result usable. */
   const memoryRetrieval = deps.memoryRetrieval || null;
   const memoryStore = deps.memoryStore || null;
   const registry = deps.registry || null;
@@ -227,9 +239,25 @@ function createRuntimeRecall(deps) {
      hook 使用：召回选择 + 会话/曝光/激活生命周期完成**之后**调度，
      fire-and-forget，绝不在召回响应路径上 await。 */
   const interpretation = deps.interpretation || null;
+  const associationRuntime = deps.associationRuntime || null;
   /* P21-R4-LIVE-5 · L5 期望运行时（**兄弟**依赖：与 interpretation 各自独立，
      各自的权威、各自的持有者、各自的计数）。缺席 ⇒ 期望这条路径根本不存在。 */
   const expectation = deps.expectation || null;
+  /* P21-R4-L · One internal Narrative owner. It receives only validated R4-K
+     output plus the same Association provenance; it has no public route. */
+  const selfNarrative = deps.selfNarrative || null;
+  /* P21-R4-M · one derived, bounded, turn-scoped posture producer. */
+  const behaviorModulation = deps.behaviorModulation || null;
+  /* P21-R4-N · pure projection seam; injection exists only for deterministic
+     failure-path coverage and never adds another provider/cognition call. */
+  const metaMemoryAwareness = deps.metaMemoryAwarenessCore || META_MEMORY_AWARENESS_CORE;
+  /* P21-R4-O · deterministic current-recollection projection. */
+  const memoryUnreliability = deps.memoryUnreliabilityCore || MEMORY_UNRELIABILITY_CORE;
+  /* P21-R4-P · Only a server-assembled authority may confirm shared history. */
+  const sharedMemoryAcknowledgementAuthority = deps.sharedMemoryAcknowledgementAuthority || null;
+  const sharedMemoryCore = deps.sharedMemoryCore || SHARED_MEMORY_CORE;
+  /* P21-R4-Q · One turn-scoped consumer of the completed K/L/N/O/P view. */
+  const counterfactualMemory = deps.counterfactualMemory || null;
   /* P21-R4-F · L7 行为基调（确定性派生；没有模型调用、没有第三个成本位）。 */
   const behaviorEffect = deps.behaviorEffect || null;
 
@@ -252,6 +280,158 @@ function createRuntimeRecall(deps) {
   const storeIdentity = (!memoryStore || !memoryRetrieval)
     ? 'UNVERIFIABLE'
     : (memoryRetrieval.store === memoryStore ? 'SAME' : 'MISMATCH');
+
+  /* Bounded Association candidate discovery reuses the shared visibility and
+     ranking core over a capped canonical snapshot. The semantic classifier
+     never receives this source set; only the later six-candidate / twelve-pair
+     projection can reach it. */
+  function associationCandidatesForRecall(selectedIds, characterId, isGroup, sourceRecords, sourceTruncated) {
+    /* Production Recall passes its same-cycle candidate snapshot. Older
+       internal fixtures/callers without that extension retain R3's original
+       bounded-list fallback. The Memory behavior producer itself never scans. */
+    let recordsSnapshot = Array.isArray(sourceRecords) ? sourceRecords : null;
+    let truncated = sourceTruncated === true;
+    if (!recordsSnapshot) {
+      if (!memoryStore || typeof memoryStore.listRecords !== 'function') {
+        return { ok: false, reason: 'memory-store-unavailable', records: [], budgetChars: null };
+      }
+      let page = null;
+      try { page = memoryStore.listRecords({ limit: MAX_ASSOCIATION_SCAN_RECORDS }); }
+      catch (_) { return { ok: false, reason: 'candidate-scan-failed', records: [], budgetChars: null }; }
+      if (!page || page.ok !== true || !Array.isArray(page.records)) {
+        return { ok: false, reason: (page && page.error) || 'candidate-scan-unavailable', records: [], budgetChars: null };
+      }
+      recordsSnapshot = page.records;
+      truncated = page.truncated === true;
+    }
+    if (truncated || recordsSnapshot.length > MAX_ASSOCIATION_SCAN_RECORDS) {
+      return { ok: false, reason: 'candidate-scan-cap-reached', records: [], budgetChars: null };
+    }
+    const byId = new Map();
+    for (const record of recordsSnapshot) {
+      if (record && record.id != null && !byId.has(String(record.id))) byId.set(String(record.id), record);
+    }
+    const anchors = [];
+    for (const id of (Array.isArray(selectedIds) ? selectedIds : []).slice(0, 4)) {
+      const record = byId.get(String(id));
+      if (!record) continue;
+      anchors.push(record);
+    }
+    if (!anchors.length) {
+      return { ok: false, reason: 'anchor-record-unavailable', records: [], budgetChars: null };
+    }
+    const anchorText = anchors.map((record) =>
+      String(record.title || '') + ' ' + String(record.content == null ? record.summary || '' : record.content)
+    ).join('\n').slice(0, MAX_ASSOCIATION_ANCHOR_QUERY_CHARS);
+    const terms = MEMORY_RETRIEVAL_CORE.extractKeywords(anchorText);
+    if (!terms.length) {
+      return { ok: true, reason: 'anchor-has-no-lexical-terms', records: anchors, budgetChars: null };
+    }
+    let scored = null;
+    try {
+      scored = MEMORY_RETRIEVAL_CORE.rankMemoryCandidates(recordsSnapshot, {
+        apiId: String(characterId),
+        isGroup: isGroup === true,
+        groupMemEnabled: isGroup === true,
+        userMessage: anchorText,
+        now: Number(clock())
+      });
+    } catch (_) { scored = null; }
+    if (!Array.isArray(scored)) {
+      return { ok: false, reason: 'candidate-ranking-unavailable', records: [], budgetChars: null };
+    }
+    const directSet = new Set((Array.isArray(selectedIds) ? selectedIds : []).map(String));
+    const candidateIds = [];
+    for (const row of scored) {
+      if (!row || row.id == null || directSet.has(String(row.id))) continue;
+      if (MEMORY_RETRIEVAL_CORE.calcRelevance(row, terms) <= 1) continue;
+      candidateIds.push(String(row.id));
+      if (candidateIds.length >= MAX_ASSOCIATION_SOURCE_CANDIDATES) break;
+    }
+    const seen = new Set();
+    const records = [];
+    for (const record of anchors.concat(candidateIds.map((id) => byId.get(id)).filter(Boolean))) {
+      const id = record && record.id != null ? String(record.id) : '';
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      records.push(record);
+    }
+    let budgetChars = MEMORY_RETRIEVAL_CORE.DEFAULT_BUDGET_CHARS;
+    try {
+      const settings = memoryStore.getMemorySettings ? memoryStore.getMemorySettings() : null;
+      const published = settings && settings.ok ? settings.settings : null;
+      if (published && Number(published.budget) > 0) budgetChars = Number(published.budget);
+    } catch (_) { /* use the shared Recall default */ }
+    return { ok: true, reason: null, records: records, budgetChars: budgetChars };
+  }
+
+  function emptyAssociation(status, reason) {
+    return {
+      status: status, reason: reason, authority: 'DERIVED_RELATION_VIEW', durability: 'RUNTIME_ONLY',
+      schemaVersion: null, depth: 1, maxDepth: 1, candidateCount: 0, candidatePairCount: 0,
+      classifiedPairCount: 0, expandedCount: 0, contextBudgetChars: 0, contextChars: 0,
+      providerCalls: 0, memoHits: 0, edges: [], tensionSets: [], workingSet: []
+    };
+  }
+  /* The same single Association operation is used by Desktop Recall and by the
+     Mobile gateway's already-selected recall result. This helper never invokes
+     Memory Retrieval; callers supply that cycle's selected ids. */
+  async function runAssociationForCurrentRecall(input) {
+    const src = isPlainObject(input) ? input : {};
+    const selectedIds = Array.isArray(src.selectedIds) ? src.selectedIds.slice(0, 8) : [];
+    const characterId = String(src.characterId || '');
+    const isGroup = src.isGroup === true;
+    const budgetMs = Math.max(0, Number(src.remainingBudgetMs) || 0);
+    if (!associationRuntime || typeof associationRuntime.expand !== 'function') {
+      return { text: '', meta: emptyAssociation('not-scheduled', 'association-runtime-unavailable'),
+        expandedCount: 0, providerCalls: 0, records: [], budgetChars: null };
+    }
+    if (!selectedIds.length || budgetMs < 50) {
+      return { text: '', meta: emptyAssociation(selectedIds.length ? 'fallback-direct' : 'no-direct-recall',
+        selectedIds.length ? 'deadline-exhausted' : 'no-direct-recall'),
+      expandedCount: 0, providerCalls: 0, records: [], budgetChars: null };
+    }
+    const candidateSet = associationCandidatesForRecall(selectedIds, characterId, isGroup,
+      src.candidateRecords, src.candidateRecordsTruncated);
+    let associationRun = null;
+    let records = [];
+    let budgetChars = null;
+    if (candidateSet.ok === true) {
+      records = Array.isArray(candidateSet.records) ? candidateSet.records : [];
+      budgetChars = Number(candidateSet.budgetChars) || null;
+      const remaining = Math.max(0, Number(src.deadlineAt) - Number(clock()));
+      const callBudget = Number.isFinite(remaining) ? Math.max(0, Math.min(budgetMs, remaining)) : budgetMs;
+      try {
+        associationRun = callBudget < 50
+          ? { ok: false, status: 'fallback-direct', reason: 'deadline-exhausted', providerCalls: 0 }
+          : await associationRuntime.expand({
+            characterId: characterId,
+            anchorIds: selectedIds,
+            records: records,
+            currentMessage: String(src.message || '').slice(0, 1200),
+            budgetChars: candidateSet.budgetChars,
+            isGroup: isGroup,
+            groupMemEnabled: isGroup
+          }, { timeoutMs: callBudget, signal: src.signal || null });
+      } catch (error) {
+        associationRun = { ok: false, status: 'fallback-direct', reason: 'association-threw', providerCalls: 0 };
+        note('runtime-recall-association-failed', { characterId: characterId,
+          reason: bounded((error && error.message) || error) });
+      }
+    } else {
+      associationRun = { ok: false, status: 'fallback-direct',
+        reason: candidateSet.reason || 'candidate-discovery-unavailable', providerCalls: 0 };
+    }
+    const successful = associationRun && associationRun.ok === true && isPlainObject(associationRun.result);
+    return {
+      text: successful && typeof associationRun.result.text === 'string' ? associationRun.result.text : '',
+      meta: associationTraceOf(associationRun),
+      expandedCount: successful ? Number(associationRun.result.expandedCount) || 0 : 0,
+      providerCalls: Number(associationRun && associationRun.providerCalls) || 0,
+      records: records,
+      budgetChars: budgetChars
+    };
+  }
 
   const counters = { calls: 0, ok: 0, refused: 0, timeouts: 0, unavailable: 0 };
   /* 权威模式的可观测计数（影子模式恒为 0 —— 这些数字会进 boundary 块，
@@ -309,7 +489,7 @@ function createRuntimeRecall(deps) {
         pureShadow: false,
         exposureWrites: Number(authoritativeState.exposureWrites) || 0,
         activationWrites: Number(authoritativeState.activationWrites) || 0,
-        providerCalls: 0,
+        providerCalls: Number(authoritativeState.providerCalls) || 0,
         sessionMutation: 'TURN_LIFECYCLE',
         transportScope: TRANSPORT_SCOPE,
         recallSelectionAuthority: 'CALLER_PROPOSED',
@@ -483,6 +663,23 @@ function createRuntimeRecall(deps) {
         })
       };
     }
+    /* ⑤b groundedQuery：可选的有界派生搜索措辞。原 message 保留为 turn identity 输入；
+       groundedQuery 只替换 lexical search text，不携带 selectedIds / referent refs / rows，
+       因此不改变任何选择 authority。 */
+    const groundedQueryRaw = own(body, 'groundedQuery');
+    let groundedQuery = null;
+    if (groundedQueryRaw !== undefined) {
+      if (typeof groundedQueryRaw !== 'string' || groundedQueryRaw.length > MAX_MESSAGE_CHARS) {
+        return {
+          ok: false,
+          result: failure(REASON.requestShapeInvalid, {
+            operation: OPERATION, characterId: characterId,
+            detail: 'groundedQuery-must-be-a-bounded-string'
+          })
+        };
+      }
+      groundedQuery = groundedQueryRaw.trim() || null;
+    }
     /* ⑥ 两个 turn 信号：可选，但**出现就必须是布尔**。
          它们是调用方对"这一轮是什么"的如实陈述（首轮？会话信号可用？），
          不是召回策略：通道由既有 channel-policy 根据它们决定。 */
@@ -522,7 +719,7 @@ function createRuntimeRecall(deps) {
       }
       effectiveTimeoutMs = Math.min(timeoutRaw, MAX_TIMEOUT_MS);
     }
-    /* ⑦ mode：**唯一**的可选能力键。缺省 / 'shadow' ⇒ 与今天逐字节相同；
+    /* ⑦ mode：可选能力键。缺省 / 'shadow' ⇒ 与今天逐字节相同；
           'authoritative' ⇒ 本边界接管这一轮的 Home turn 生命周期；
           其它任何值（含非字符串、大小写变体）⇒ request-shape-invalid。
           ★ mode 不是数据权威：它不改变召回看到什么，只改变谁推进回合。 */
@@ -565,6 +762,7 @@ function createRuntimeRecall(deps) {
       requestId: requestId,
       conversationId: conversationId,
       message: messageRaw,
+      groundedQuery: groundedQuery,
       isFirstTurn: isFirstTurnRaw === true,
       conversationSignalAvailable: signalRaw === true,
       effectiveTimeoutMs: effectiveTimeoutMs
@@ -588,6 +786,18 @@ function createRuntimeRecall(deps) {
     if (!isPlainObject(spec)) return { ok: false, reason: 'spec-missing' };
     return { ok: true };
   }
+  /* R4-K reads the only current relationship authority: the character DTO's
+     configured relationship string. This is configuration context, not a
+     dynamic relationship-state engine. */
+  function relationshipConfigurationForCharacter(characterId) {
+    if (!registry || typeof registry.getCharacter !== 'function') return '';
+    try {
+      const character = registry.getCharacter(characterId);
+      const dto = character && isPlainObject(character.dto) ? character.dto : null;
+      return dto && typeof dto.relationship === 'string'
+        ? dto.relationship.slice(0, MAX_RELATIONSHIP_CONTEXT_CHARS) : '';
+    } catch (_) { return ''; }
+  }
 
   /* ── 有界诊断（**唯一**来源）─────────────────────────────────────────
      `channel` 与 counts（input/visible/gated/selected）**只**存在于既有
@@ -607,11 +817,658 @@ function createRuntimeRecall(deps) {
     const n = Number(value);
     return Number.isFinite(n) ? n : null;
   }
+  function associationTraceOf(outcome) {
+    if (!outcome) return null;
+    const result = isPlainObject(outcome.result) ? outcome.result : null;
+    const edges = result && Array.isArray(result.edges) ? result.edges : [];
+    const sets = result && Array.isArray(result.tensionSets) ? result.tensionSets : [];
+    const working = result && Array.isArray(result.workingSet) ? result.workingSet : [];
+    return {
+      status: String(outcome.status || (result && result.status) || 'fallback-direct'),
+      reason: outcome.reason == null ? null : String(outcome.reason),
+      authority: result && result.authority ? String(result.authority) : 'DERIVED_RELATION_VIEW',
+      durability: result && result.durability ? String(result.durability) : 'RUNTIME_ONLY',
+      schemaVersion: result && result.schemaVersion ? String(result.schemaVersion) : null,
+      depth: result && Number.isFinite(Number(result.depth)) ? Number(result.depth) : 1,
+      maxDepth: 1,
+      candidateCount: result ? Number(result.candidateCount) || 0 : 0,
+      candidatePairCount: result ? Number(result.candidatePairCount) || 0 : 0,
+      classifiedPairCount: result ? Number(result.classifiedPairCount) || 0 : 0,
+      expandedCount: result ? Number(result.expandedCount) || 0 : 0,
+      contextBudgetChars: result ? Number(result.contextBudgetChars) || 0 : 0,
+      contextChars: result ? Number(result.chars) || 0 : 0,
+      providerCalls: Number(outcome.providerCalls) || 0,
+      memoHits: Number(outcome.memoHits) || 0,
+      edges: edges.slice(0, 12).map((edge) => ({
+        anchorMemoryId: String(edge.anchorMemoryId || ''),
+        relatedMemoryId: String(edge.relatedMemoryId || ''),
+        relation: String(edge.relation || ''),
+        basis: Array.isArray(edge.basis) ? edge.basis.slice(0, 4).map(String) : [],
+        pairRole: String(edge.pairRole || '')
+      })),
+      tensionSets: sets.slice(0, 12).map((group) => ({
+        anchorMemoryId: String(group.anchorMemoryId || ''),
+        support: Array.isArray(group.support) ? group.support.slice(0, 6).map(String) : [],
+        complement: Array.isArray(group.complement) ? group.complement.slice(0, 6).map(String) : [],
+        conflict: Array.isArray(group.conflict) ? group.conflict.slice(0, 6).map(String) : [],
+        correction: Array.isArray(group.correction) ? group.correction.slice(0, 6).map(String) : [],
+        continuation: Array.isArray(group.continuation) ? group.continuation.slice(0, 6).map(String) : [],
+        contextualize: Array.isArray(group.contextualize) ? group.contextualize.slice(0, 6).map(String) : [],
+        unrelated: Array.isArray(group.unrelated) ? group.unrelated.slice(0, 6).map(String) : []
+      })),
+      workingSet: working.map((item) => ({
+        memoryId: String(item.memoryId || ''),
+        activationReasons: Array.isArray(item.activationReasons) ? item.activationReasons.slice(0, 8).map(String) : [],
+        anchorMemoryIds: Array.isArray(item.anchorMemoryIds) ? item.anchorMemoryIds.slice(0, 4).map(String) : []
+      }))
+    };
+  }
+  function hasAssociatedWorkingMemory(association) {
+    return !!(association && Array.isArray(association.workingSet)
+      && association.workingSet.some((item) => item && item.memoryId != null
+        && Array.isArray(item.activationReasons)
+        && item.activationReasons.some((reason) => String(reason).indexOf('association_') === 0)));
+  }
+  function renderContextualMeaning(contextualInterpretation, maxChars) {
+    const meaning = contextualInterpretation && contextualInterpretation.currentMeaning;
+    const cap = Math.max(0, Math.min(1200, Number(maxChars) || 0));
+    if (!meaning || typeof meaning.summary !== 'string' || cap <= 0) return '';
+    const lines = [
+      '', '', '【当前意义（派生解释）】',
+      '关联关系只提供解释线索，不裁决历史事实；当时情绪仍作为历史体验保留。',
+      '当前理解：' + meaning.summary.slice(0, 300),
+      '不确定性：' + String(meaning.uncertainty || 'unresolved')
+    ];
+    const sections = [
+      ['historicalEmotions', '当时情绪'],
+      ['historicalFacts', '历史事实主张'],
+      ['currentKnowledge', '当前知识'],
+      ['currentBeliefs', '当前理解']
+    ];
+    for (const [key, label] of sections) {
+      const claims = Array.isArray(meaning[key]) ? meaning[key] : [];
+      for (const claim of claims.slice(0, 1)) {
+        if (!claim || !claim.memoryId || typeof claim.statement !== 'string') continue;
+        lines.push(label + ' [' + String(claim.memoryId).slice(0, 60) + ']：' + claim.statement.slice(0, 100));
+      }
+    }
+    const rendered = lines.join('\n');
+    return rendered.length <= cap ? rendered : rendered.slice(0, cap).replace(/[\uD800-\uDBFF]$/, '');
+  }
+  function boundedCurrentMeaning(meaning) {
+    if (!meaning || typeof meaning.summary !== 'string') return null;
+    const result = {
+      summary: meaning.summary.slice(0, 300),
+      historicalFacts: [], historicalEmotions: [], currentKnowledge: [], currentBeliefs: [],
+      uncertainty: String(meaning.uncertainty || 'unresolved')
+    };
+    for (const key of ['historicalFacts', 'historicalEmotions', 'currentKnowledge', 'currentBeliefs']) {
+      const claims = Array.isArray(meaning[key]) ? meaning[key] : [];
+      for (const claim of claims.slice(0, 1)) {
+        if (!claim || !claim.memoryId || typeof claim.statement !== 'string') continue;
+        result[key].push({ memoryId: String(claim.memoryId).slice(0, 60), statement: claim.statement.slice(0, 80) });
+      }
+    }
+    return result;
+  }
+  function contextualInterpretationTrace(ctx, result, status) {
+    const association = ctx && isPlainObject(ctx.association) ? ctx.association : {};
+    const working = Array.isArray(association.workingSet) ? association.workingSet : [];
+    const directIds = Array.isArray(ctx && ctx.selectedIds) ? ctx.selectedIds.map(String).slice(0, 8) : [];
+    const associatedLimit = Math.max(0, 8 - directIds.length);
+    const associatedIds = working.filter((item) => item && item.memoryId != null
+      && Array.isArray(item.activationReasons)
+      && item.activationReasons.some((reason) => String(reason).indexOf('association_') === 0))
+      .map((item) => String(item.memoryId)).filter((id, index, all) => all.indexOf(id) === index).slice(0, associatedLimit);
+    const permittedIds = new Set(directIds.concat(associatedIds));
+    const activationReasonsByMemoryId = Object.create(null);
+    working.forEach((item) => {
+      if (!item || item.memoryId == null) return;
+      const id = String(item.memoryId);
+      if (!permittedIds.has(id)) return;
+      activationReasonsByMemoryId[id] = Array.isArray(item.activationReasons)
+        ? item.activationReasons.slice(0, 8).map(String) : [];
+    });
+    const contextual = result && result.contextualInterpretation;
+    const factors = contextual && isPlainObject(contextual.contextualFactorsUsed)
+      ? contextual.contextualFactorsUsed : {};
+    const edges = Array.isArray(association.edges) ? association.edges : [];
+    const sets = Array.isArray(association.tensionSets) ? association.tensionSets : [];
+    const usedEdges = edges.filter((edge) => edge && permittedIds.has(String(edge.anchorMemoryId || ''))
+      && permittedIds.has(String(edge.relatedMemoryId || '')));
+    const usedTensionSets = sets.filter((set) => set && permittedIds.has(String(set.anchorMemoryId || '')))
+      .map((set) => {
+        const filtered = { anchorMemoryId: String(set.anchorMemoryId) };
+        for (const relation of ['support', 'complement', 'conflict', 'correction', 'continuation', 'contextualize', 'unrelated']) {
+          filtered[relation] = Array.isArray(set[relation])
+            ? set[relation].filter((id) => permittedIds.has(String(id))).slice(0, 8).map(String) : [];
+        }
+        return filtered;
+      });
+    return {
+      schemaVersion: 'memory-reinterpretation-v1',
+      status: String(status || (result && result.status) || 'failed'),
+      directMemoryIds: directIds,
+      associatedMemoryIds: associatedIds,
+      activationReasonsByMemoryId: activationReasonsByMemoryId,
+      relationsUsed: usedEdges.slice(0, 12).map((edge) => ({
+        anchorMemoryId: String(edge.anchorMemoryId || ''),
+        relatedMemoryId: String(edge.relatedMemoryId || ''),
+        relation: String(edge.relation || ''),
+        basis: Array.isArray(edge.basis) ? edge.basis.slice(0, 4).map(String) : [],
+        pairRole: String(edge.pairRole || '')
+      })),
+      tensionsUsed: usedTensionSets.slice(0, 8),
+      contextDimensionsUsed: {
+        currentTopic: ctx && ctx.currentTopic ? 'current-user-message' : 'NOT_AVAILABLE',
+        relationship: factors.relationship || (ctx && ctx.relationshipAvailable ? 'character-configuration' : 'NOT_AVAILABLE'),
+        emotion: 'NOT_AVAILABLE',
+        cognitiveSnapshot: 'NOT_AVAILABLE'
+      },
+      interpretationStatus: String(status || (result && result.status) || 'failed'),
+      fallbackReason: result && result.ok === true ? null
+        : (result && (result.reason || result.reasonCode) ? String(result.reason || result.reasonCode) : 'interpretation-unavailable'),
+      providerCalls: Number(result && result.providerCalls) || 0,
+      currentMeaning: contextual && contextual.currentMeaning ? boundedCurrentMeaning(contextual.currentMeaning) : null,
+      identity: contextual && contextual.identity ? contextual.identity : null
+    };
+  }
+  function renderSelfNarrative(narrativeView, maxChars) {
+    const narrative = narrativeView && isPlainObject(narrativeView.narrative) ? narrativeView.narrative : null;
+    const cap = Math.max(0, Math.min(1200, Number(maxChars) || 0));
+    if (!narrative || cap < 250) return '';
+    const lines = [
+      '', '', '【当前自我叙事（派生 / session-only）】',
+      '这是当前可修订的解释性故事，不是历史事实、共同认可的关系结论或人格配置。',
+      '版本：' + String(narrativeView.version || 1)
+    ];
+    const sections = [
+      ['themes', '主题'], ['currentBeliefs', '我目前相信'],
+      ['relationshipBeliefs', '我对这段关系的理解'],
+      ['unresolvedTensions', '仍未解决的张力'],
+      ['resolvedTensions', '重新理解的张力'],
+      ['turningPoints', '转折'], ['continuityClaims', '连续性']
+    ];
+    for (const [key, label] of sections) {
+      const claims = Array.isArray(narrative[key]) ? narrative[key] : [];
+      for (const claim of claims.slice(0, 2)) {
+        if (!claim || typeof claim.statement !== 'string') continue;
+        const refs = Array.isArray(claim.evidenceMemoryIds) ? claim.evidenceMemoryIds.slice(0, 3).map(String) : [];
+        lines.push(label + (claim.scope ? ' [' + String(claim.scope) + ']' : '')
+          + (refs.length ? ' [' + refs.join(',') + ']' : '') + '：' + claim.statement.slice(0, 120));
+      }
+    }
+    lines.push('不确定性：' + String(narrative.uncertainty || 'unresolved'));
+    const rendered = lines.join('\n');
+    return rendered.length <= cap ? rendered : rendered.slice(0, cap).replace(/[\uD800-\uDBFF]$/, '');
+  }
+  async function runSelfNarrative(ctx, interpretationOutcome) {
+    const result = interpretationOutcome && interpretationOutcome.result;
+    const trace = interpretationOutcome && interpretationOutcome.trace;
+    if (!selfNarrative || typeof selfNarrative.runFromValidatedInterpretation !== 'function') {
+      return { result: null, trace: { schemaVersion: 'self-narrative-v1', status: 'not-scheduled', reason: 'runtime-not-assembled', providerCalls: 0 } };
+    }
+    if (!(result && result.ok === true && result.contextualInterpretation && trace && trace.identity)) {
+      return { result: null, trace: { schemaVersion: 'self-narrative-v1', status: 'not-needed', reason: 'validated-current-meaning-unavailable', providerCalls: 0 } };
+    }
+    const outputChars = Math.max(0, Math.min(1200, Number(ctx.selfNarrativeOutputChars) || 0));
+    if (outputChars < 300) {
+      return { result: null, trace: { schemaVersion: 'self-narrative-v1', status: 'not-needed', reason: 'narrative-output-budget-exhausted', providerCalls: 0 } };
+    }
+    const binding = {
+      characterId: String(ctx.characterId || ''),
+      conversationId: String(ctx.conversationId || ''),
+      turnId: String(ctx.turnId || ''),
+      policyAuthorized: !!(result.autoPolicy && result.autoPolicy.enabled === true),
+      directMemoryIds: Array.isArray(trace.directMemoryIds) ? trace.directMemoryIds.slice(0, 8) : [],
+      associatedMemoryIds: Array.isArray(trace.associatedMemoryIds) ? trace.associatedMemoryIds.slice(0, 4) : [],
+      activationReasonsByMemoryId: isPlainObject(trace.activationReasonsByMemoryId) ? trace.activationReasonsByMemoryId : {},
+      interpretationRefs: trace.identity && trace.identity.value ? [String(trace.identity.value)] : [],
+      associationRelations: Array.isArray(trace.relationsUsed) ? trace.relationsUsed.slice(0, 12) : [],
+      tensionsUsed: Array.isArray(trace.tensionsUsed) ? trace.tensionsUsed.slice(0, 8) : [],
+      currentMeaning: trace.currentMeaning,
+      remainingBudgetMs: Math.max(0, Number(ctx.remainingRecallMs) || 0)
+    };
+    let narrativeResult = null;
+    try {
+      narrativeResult = await selfNarrative.runFromValidatedInterpretation(binding, {
+        remainingBudgetMs: Math.min(1200, binding.remainingBudgetMs)
+      });
+    } catch (error) {
+      narrativeResult = {
+        ok: false, status: 'failed', reason: bounded((error && error.message) || error),
+        providerCalls: 0, narrative: null
+      };
+    }
+    const narrativeTrace = narrativeResult && narrativeResult.trace
+      ? Object.assign({}, narrativeResult.trace) : {
+        schemaVersion: 'self-narrative-v1',
+        status: String(narrativeResult && narrativeResult.status || 'failed'),
+        fallbackReason: narrativeResult && (narrativeResult.reason || narrativeResult.errorClass) || 'narrative-result-unavailable',
+        providerCalls: Number(narrativeResult && narrativeResult.providerCalls) || 0
+      };
+    const view = narrativeResult && narrativeResult.narrative;
+    const addedText = view ? renderSelfNarrative(view, outputChars) : '';
+    if (addedText && ctx.context && typeof ctx.context.text === 'string') {
+      ctx.context.text += addedText;
+      ctx.context.chars = (Number(ctx.context.chars) || 0) + addedText.length;
+      narrativeTrace.contextDelivered = true;
+    } else {
+      narrativeTrace.contextDelivered = false;
+    }
+    note('runtime-recall-self-narrative', {
+      characterId: binding.characterId,
+      turnId: binding.turnId,
+      status: String(narrativeResult && narrativeResult.status || 'failed'),
+      providerCalls: Number(narrativeResult && narrativeResult.providerCalls) || 0,
+      contextDelivered: narrativeTrace.contextDelivered === true
+    });
+    return { result: narrativeResult, trace: narrativeTrace, addedText: addedText };
+  }
 
-  /* ── P21-R4-LIVE-4 · post-recall auto-interpretation hook ──────────────
+  async function runCurrentMeaningAndNarrative(ctx) {
+    let outcome = null;
+    if (!hasAssociatedWorkingMemory(ctx && ctx.association)) {
+      outcome = {
+        reinterpretation: { result: null, trace: { schemaVersion: 'memory-reinterpretation-v1',
+          status: 'not-needed', reason: 'associated-working-memory-unavailable', providerCalls: 0 } },
+        selfNarrative: { result: null, trace: { schemaVersion: 'self-narrative-v1',
+          status: 'not-needed', reason: 'validated-current-meaning-unavailable', providerCalls: 0 } }
+      };
+    } else {
+      const reinterpretation = await runContextualInterpretation(ctx);
+      const narrativeContext = Object.assign({}, ctx, {
+        conversationId: String(ctx.conversationId || ''),
+        selfNarrativeOutputChars: Math.max(0, Math.min(1200, Number(ctx.selfNarrativeOutputChars) || 0))
+      });
+      const selfNarrativeOutcome = await runSelfNarrative(narrativeContext, reinterpretation);
+      outcome = { reinterpretation: reinterpretation, selfNarrative: selfNarrativeOutcome };
+    }
+    outcome.metaMemory = runMetaMemoryAwareness(ctx, outcome.reinterpretation, outcome.selfNarrative);
+    outcome.memoryUnreliability = runMemoryUnreliability(ctx, outcome.metaMemory);
+    outcome.sharedMemory = runSharedMemoryView(ctx, outcome.metaMemory, outcome.memoryUnreliability);
+    outcome.counterfactualMemory = await runCounterfactualMemory(ctx, outcome);
+    return outcome;
+  }
+  async function runCounterfactualMemory(ctx, cognition) {
+    const b = ctx || {};
+    if (!counterfactualMemory || typeof counterfactualMemory.derive !== 'function') {
+      return { ok: false, status: 'not-needed', reason: 'counterfactual-runtime-not-assembled', text: '', view: null, providerCalls: 0 };
+    }
+    try {
+      const liveRemaining = Number.isFinite(Number(b.deadlineAt))
+        ? Math.max(0, Number(b.deadlineAt) - Number(clock()))
+        : Math.max(0, Number(b.remainingRecallMs) || 0);
+      const result = await counterfactualMemory.derive({
+        characterId: String(b.characterId || ''),
+        conversationId: String(b.conversationId || ''),
+        turnId: String(b.turnId || ''),
+        currentMessage: String(b.currentTopic || '').slice(0, 1200),
+        selectedIds: Array.isArray(b.metaMemorySelectedIds) ? b.metaMemorySelectedIds.slice(0, 32)
+          : (Array.isArray(b.selectedIds) ? b.selectedIds.slice(0, 32) : []),
+        records: Array.isArray(b.associationRecords) ? b.associationRecords.slice(0, 64) : [],
+        memoryProvenanceById: Array.isArray(b.memoryProvenanceById) ? b.memoryProvenanceById.slice(0, 32) : [],
+        association: b.association,
+        reinterpretation: cognition && cognition.reinterpretation ? cognition.reinterpretation.result : null,
+        selfNarrative: cognition && cognition.selfNarrative ? cognition.selfNarrative.result : null,
+        metaMemoryAwareness: cognition && cognition.metaMemory && cognition.metaMemory.awareness,
+        reconstructedRecollection: cognition && cognition.memoryUnreliability && cognition.memoryUnreliability.recollection,
+        sharedMemoryView: b.context && b.context.sharedMemoryView
+      }, { remainingBudgetMs: Math.min(900, liveRemaining), signal: b.signal || null });
+      if (!result || result.ok !== true || !result.view) return result || {
+        ok: false, status: 'unavailable', reason: 'counterfactual-result-unavailable', text: '', view: null, providerCalls: 0
+      };
+      const addedText = typeof result.text === 'string' ? result.text : '';
+      if (addedText && b.context && typeof b.context.text === 'string') {
+        const separator = !b.context.text ? '' : (String(b.context.text).endsWith('\n') ? '\n' : '\n\n');
+        b.context.text += separator + addedText;
+        b.context.chars = (Number(b.context.chars) || 0) + separator.length + addedText.length;
+      }
+      if (b.context && isPlainObject(b.context)) b.context.counterfactualView = result.view;
+      return result;
+    } catch (error) {
+      note('runtime-recall-counterfactual-failed', {
+        characterId: String(b.characterId || ''), turnId: String(b.turnId || ''),
+        reason: bounded((error && error.message) || error)
+      });
+      return { ok: false, status: 'failed', reason: 'counterfactual-runtime-failed', text: '', view: null, providerCalls: 0 };
+    }
+  }
+  function runMetaMemoryAwareness(ctx, reinterpretationOutcome, narrativeOutcome) {
+    const b = ctx || {};
+    try {
+      const derived = metaMemoryAwareness.derive({
+        selectedIds: Array.isArray(b.metaMemorySelectedIds)
+          ? b.metaMemorySelectedIds.slice(0, 32)
+          : (Array.isArray(b.selectedIds) ? b.selectedIds.slice(0, 32) : []),
+        semanticForgettingById: Array.isArray(b.semanticForgettingById)
+          ? b.semanticForgettingById.slice(0, 32) : [],
+        reinterpretationResult: reinterpretationOutcome && reinterpretationOutcome.result,
+        reinterpretationTrace: reinterpretationOutcome && reinterpretationOutcome.trace,
+        selfNarrativeResult: narrativeOutcome && narrativeOutcome.result
+      });
+      if (!derived || derived.ok !== true) {
+        return { ok: false, status: 'failed', reason: String(derived && derived.reason || 'meta-memory-unavailable'),
+          text: '', awareness: null };
+      }
+      const addedText = metaMemoryAwareness.renderGuidance(derived);
+      if (addedText && b.context && typeof b.context.text === 'string') {
+        const separator = !b.context.text ? '' : (String(b.context.text).endsWith('\n') ? '\n' : '\n\n');
+        b.context.text += separator + addedText;
+        b.context.chars = (Number(b.context.chars) || 0) + separator.length + addedText.length;
+        return { ok: true, status: 'succeeded', text: addedText, memoryCount: derived.awareness.memoryStates.length,
+          awareness: derived.awareness };
+      }
+      return { ok: true, status: 'not-needed', text: '', memoryCount: 0, awareness: derived.awareness };
+    } catch (error) {
+      note('runtime-recall-meta-memory-failed', {
+        characterId: String(b.characterId || ''), turnId: String(b.turnId || ''),
+        reason: bounded((error && error.message) || error)
+      });
+      return { ok: false, status: 'failed', reason: 'meta-memory-runtime-failed', text: '', awareness: null };
+    }
+  }
+  function runMemoryUnreliability(ctx, metaMemoryOutcome) {
+    const b = ctx || {};
+    try {
+      if (!metaMemoryOutcome || metaMemoryOutcome.ok !== true || !metaMemoryOutcome.awareness) {
+        return { ok: false, status: 'not-needed', reason: 'meta-memory-gate-unavailable', text: '', recollection: null };
+      }
+      const derived = memoryUnreliability.derive({
+        metaMemoryAwareness: metaMemoryOutcome.awareness,
+        semanticForgettingById: Array.isArray(b.semanticForgettingById)
+          ? b.semanticForgettingById.slice(0, 32) : [],
+        associationEdges: associationEdgesConsumedByInterpretation(b.association, metaMemoryOutcome.awareness),
+        memoryProvenanceById: Array.isArray(b.memoryProvenanceById) ? b.memoryProvenanceById.slice(0, 32) : []
+      });
+      if (!derived || derived.ok !== true) {
+        return { ok: false, status: 'failed', reason: String(derived && derived.reason || 'recollection-unavailable'),
+          text: '', recollection: null };
+      }
+      const addedText = memoryUnreliability.renderGuidance(derived);
+      if (addedText && b.context && typeof b.context.text === 'string') {
+        const separator = !b.context.text ? '' : (String(b.context.text).endsWith('\n') ? '\n' : '\n\n');
+        b.context.text += separator + addedText;
+        b.context.chars = (Number(b.context.chars) || 0) + separator.length + addedText.length;
+      }
+      return { ok: true, status: addedText ? 'succeeded' : 'not-needed', text: addedText,
+        recollection: derived.recollection };
+    } catch (error) {
+      note('runtime-recall-memory-unreliability-failed', {
+        characterId: String(b.characterId || ''), turnId: String(b.turnId || ''),
+        reason: bounded((error && error.message) || error)
+      });
+      return { ok: false, status: 'failed', reason: 'recollection-runtime-failed', text: '', recollection: null };
+    }
+  }
+  function sharedMemoryProvenanceForContext(context) {
+    const b = context || {};
+    const edges = b.association && Array.isArray(b.association.edges) ? b.association.edges.slice(0, 12) : [];
+    const edgeIds = new Set();
+    edges.forEach((edge) => {
+      if (!edge || edge.anchorMemoryId == null || edge.relatedMemoryId == null) return;
+      edgeIds.add(String(edge.anchorMemoryId));
+      edgeIds.add(String(edge.relatedMemoryId));
+    });
+    const rowsById = new Map();
+    const selected = Array.isArray(b.memoryProvenanceById) ? b.memoryProvenanceById.slice(0, 32) : [];
+    for (const row of selected) {
+      if (!row || row.memoryId == null) continue;
+      const id = String(row.memoryId);
+      if (!rowsById.has(id)) rowsById.set(id, Object.assign({ evidenceSource: 'selected_recall' }, row));
+    }
+    const records = Array.isArray(b.associationRecords) ? b.associationRecords.slice(0, 64) : [];
+    for (const record of records) {
+      if (!record || record.id == null) continue;
+      const id = String(record.id);
+      if (!edgeIds.has(id) || rowsById.has(id) || rowsById.size >= 32) continue;
+      const source = String(record.rawSource || record.source || '').trim().toLowerCase();
+      const kind = String(record.kind || '').trim().toLowerCase();
+      const createdBy = String(record.createdBy || '');
+      const upstream = Array.isArray(record.consolidatedFrom) ? record.consolidatedFrom
+        : (Array.isArray(record.evidenceIds) ? record.evidenceIds : []);
+      const uniqueUpstream = new Set(upstream.filter((value) => value != null).map(String).filter(Boolean));
+      const derived = source === 'consolidation' || kind === 'semantic' || kind === 'consolidated';
+      const provenanceState = (!source || source === 'unknown'
+        || (derived && (!uniqueUpstream.size || uniqueUpstream.size > 1))) ? 'ambiguous' : 'clear';
+      rowsById.set(id, {
+        memoryId: id,
+        provenanceState: provenanceState,
+        authorSide: createdBy === 'user' ? 'user_report'
+          : (b.characterId && createdBy === String(b.characterId) ? 'character_recollection' : 'unknown'),
+        kind: kind === 'semantic' || kind === 'consolidated' ? 'semantic'
+          : (kind === 'episodic' ? 'episodic' : 'other'),
+        upstreamCount: Math.min(64, uniqueUpstream.size),
+        evidenceSource: 'association_candidate_snapshot'
+      });
+    }
+    const edgeRows = [];
+    const otherRows = [];
+    rowsById.forEach((row, id) => (edgeIds.has(id) ? edgeRows : otherRows).push(row));
+    return edgeRows.concat(otherRows).slice(0, 32);
+  }
+  function runSharedMemoryView(ctx, metaMemoryOutcome, recollectionOutcome) {
+    const b = ctx || {};
+    try {
+      if (!metaMemoryOutcome || metaMemoryOutcome.ok !== true || !metaMemoryOutcome.awareness
+        || !recollectionOutcome || recollectionOutcome.ok !== true || !recollectionOutcome.recollection) {
+        return { ok: false, status: 'not-needed', reason: 'shared-memory-prerequisite-unavailable', text: '', view: null };
+      }
+      const authority = sharedMemoryAcknowledgementAuthority;
+      let acknowledgements = [];
+      if (authority && typeof authority.listForTurn === 'function') {
+        try {
+          const candidates = authority.listForTurn({
+            characterId: String(b.characterId || ''), conversationId: String(b.conversationId || ''),
+            turnId: String(b.turnId || ''), memoryRefs: recollectionOutcome.recollection.memoryRefs.slice(0, 32)
+          });
+          acknowledgements = Array.isArray(candidates) ? candidates.slice(0, 8) : [];
+        } catch (_) { acknowledgements = []; }
+      }
+      const verify = authority && typeof authority.verify === 'function'
+        ? function (ack, binding) {
+          try {
+            return authority.verify(ack, Object.assign({}, binding, {
+              characterId: String(b.characterId || ''), conversationId: String(b.conversationId || ''),
+              turnId: String(b.turnId || '')
+            })) === true;
+          } catch (_) { return false; }
+        } : null;
+      const derived = sharedMemoryCore.derive({
+        reconstructedRecollection: recollectionOutcome.recollection,
+        metaMemoryAwareness: metaMemoryOutcome.awareness,
+        memoryProvenanceById: sharedMemoryProvenanceForContext(b),
+        associationEdges: b.association && Array.isArray(b.association.edges) ? b.association.edges.slice(0, 12) : [],
+        explicitAcknowledgements: acknowledgements
+      }, { verifyJointAcknowledgement: verify });
+      if (!derived || derived.ok !== true) {
+        return { ok: false, status: 'failed', reason: String(derived && derived.reason || 'shared-memory-unavailable'),
+          text: '', view: null };
+      }
+      const addedText = sharedMemoryCore.renderGuidance(derived);
+      if (addedText && b.context && typeof b.context.text === 'string') {
+        const separator = !b.context.text ? '' : (String(b.context.text).endsWith('\n') ? '\n' : '\n\n');
+        b.context.text += separator + addedText;
+        b.context.chars = (Number(b.context.chars) || 0) + separator.length + addedText.length;
+      }
+      if (b.context && isPlainObject(b.context)) b.context.sharedMemoryView = derived.projection;
+      return { ok: true, status: derived.status, text: addedText, view: derived.projection };
+    } catch (error) {
+      note('runtime-recall-shared-memory-failed', {
+        characterId: String(b.characterId || ''), turnId: String(b.turnId || ''),
+        reason: bounded((error && error.message) || error)
+      });
+      return { ok: false, status: 'failed', reason: 'shared-memory-runtime-failed', text: '', view: null };
+    }
+  }
+  function associationEdgesConsumedByInterpretation(association, awareness) {
+    const rows = association && Array.isArray(association.edges) ? association.edges : [];
+    const interpretation = awareness && isPlainObject(awareness.reinterpretation) ? awareness.reinterpretation : {};
+    const refs = Array.isArray(interpretation.associationRelations) ? interpretation.associationRelations : [];
+    if (!rows.length || !refs.length) return [];
+    const consumed = Object.create(null);
+    refs.forEach((edge) => {
+      if (!edge || edge.anchorMemoryId == null || edge.relatedMemoryId == null) return;
+      const key = [String(edge.anchorMemoryId), String(edge.relatedMemoryId), String(edge.relation || ''),
+        String(edge.pairRole || '')].join('\u0000');
+      consumed[key] = true;
+    });
+    return rows.filter((edge) => {
+      if (!edge || edge.anchorMemoryId == null || edge.relatedMemoryId == null) return false;
+      const key = [String(edge.anchorMemoryId), String(edge.relatedMemoryId), String(edge.relation || ''),
+        String(edge.pairRole || '')].join('\u0000');
+      return !!consumed[key];
+    }).slice(0, 12);
+  }
+  async function runBehaviorModulation(ctx, reinterpretationOutcome, narrativeOutcome) {
+    if (!behaviorModulation || typeof behaviorModulation.derive !== 'function') return null;
+    const b = ctx || {};
+    try {
+      return await behaviorModulation.derive({
+        characterId: String(b.characterId || ''),
+        conversationId: String(b.conversationId || ''),
+        requestId: String(b.requestId || ''),
+        turnId: String(b.turnId || ''),
+        currentTopic: String(b.currentTopic || '').slice(0, 600),
+        reinterpretationResult: reinterpretationOutcome && reinterpretationOutcome.result,
+        reinterpretationTrace: reinterpretationOutcome && reinterpretationOutcome.trace,
+        selfNarrativeResult: narrativeOutcome && narrativeOutcome.result,
+        selfNarrativeTrace: narrativeOutcome && narrativeOutcome.trace
+      }, { remainingBudgetMs: Math.max(0, Number(b.remainingRecallMs) || 0) });
+    } catch (error) {
+      note('runtime-recall-behavior-modulation-failed', {
+        characterId: String(b.characterId || ''), turnId: String(b.turnId || ''),
+        reason: bounded((error && error.message) || error)
+      });
+      return { ok: true, status: 'baseline', reason: 'behavior-modulation-failed',
+        posture: { warmth: 'baseline', trustPosture: 'neutral', initiative: 'baseline',
+          interpersonalDistance: 'baseline', disclosureWillingness: 'baseline' },
+        providerCalls: 0, responseGuidance: null, durable: false };
+    }
+  }
+
+  /* Internal Home Node seam for Mobile. It consumes the selection already
+     produced by buildRuntimeContext, runs the existing Association → K → L
+     stages once, then derives the posture. It does not invoke Recall again. */
+  async function deriveFromExistingRecall(input) {
+    const src = isPlainObject(input) ? input : {};
+    const characterId = String(src.characterId || '').trim();
+    const conversationId = String(src.conversationId || '').trim();
+    const requestId = String(src.requestId || '').trim();
+    const turnId = String(src.turnId || '').trim();
+    const message = typeof src.message === 'string' ? src.message : '';
+    const metaMemorySelectedIds = Array.isArray(src.selectedIds) ? src.selectedIds.map(String).slice(0, 32) : [];
+    const selectedIds = metaMemorySelectedIds.slice(0, 8);
+    const expectedTurnId = requestId && conversationId ? deriveStableTurnId(requestId, conversationId) : '';
+    if (!characterId || !conversationId || !requestId || !turnId || turnId !== expectedTurnId
+      || message.length > MAX_MESSAGE_CHARS || selectedIds.some((id) => !id || id.length > 240)) {
+      return { ok: false, status: 'refused', reason: 'existing-recall-binding-invalid',
+        association: emptyAssociation('not-needed', 'existing-recall-binding-invalid'),
+        reinterpretation: null, selfNarrative: null, memoryUnreliability: null, sharedMemoryView: null,
+        counterfactualMemoryText: '', counterfactualMemoryView: null,
+        behaviorModulation: null, responseGuidance: null };
+    }
+    const startedAt = Number(clock());
+    const budgetMs = Math.max(0, Math.min(MAX_TIMEOUT_MS, Number(src.remainingBudgetMs) || MAX_TIMEOUT_MS));
+    const deadlineAt = startedAt + budgetMs;
+    const turnIdentity = {
+      requestId: requestId,
+      conversationId: conversationId,
+      messageChars: message.length,
+      messageHash: CHAT_CORE.stableToken(conversationId + '\u0000' + requestId + '\u0000' + message)
+    };
+    const associationOutcome = await runAssociationForCurrentRecall({
+      selectedIds: selectedIds, characterId: characterId, isGroup: src.isGroup === true,
+      message: message, remainingBudgetMs: Math.max(0, deadlineAt - Number(clock())),
+      deadlineAt: deadlineAt, signal: src.signal || null,
+      candidateRecords: Array.isArray(src.candidateRecords) ? src.candidateRecords : null,
+      candidateRecordsTruncated: src.candidateRecordsTruncated === true
+    });
+    const associationMeta = associationOutcome.meta || emptyAssociation('fallback-direct', 'association-unavailable');
+    const relationshipConfig = relationshipConfigurationForCharacter(characterId);
+    const context = {
+      text: (typeof src.memoryText === 'string' ? src.memoryText : '') + associationOutcome.text,
+      count: selectedIds.length + associationOutcome.expandedCount,
+      chars: associationOutcome.text.length,
+      includeHeader: true,
+      directCount: selectedIds.length,
+      associatedCount: associationOutcome.expandedCount
+    };
+    const interpretationContext = {
+      characterId: characterId,
+      conversationId: conversationId,
+      requestId: requestId,
+      turnId: turnId,
+      turnIdentity: turnIdentity,
+      selectedIds: selectedIds,
+      metaMemorySelectedIds: metaMemorySelectedIds,
+      records: undefined,
+      currentState: isPlainObject(src.currentState) ? src.currentState : {},
+      roleName: typeof src.roleName === 'string' ? src.roleName : '',
+      channel: src.channel == null ? null : String(src.channel),
+      fingerprint: src.fingerprint == null ? null : String(src.fingerprint),
+      canonicalRevision: null,
+      association: associationMeta,
+      associationRecords: associationOutcome.records,
+      memoryProvenanceById: Array.isArray(src.memoryProvenanceById)
+        ? src.memoryProvenanceById.slice(0, 32) : [],
+      semanticForgettingById: Array.isArray(src.semanticForgettingById)
+        ? src.semanticForgettingById.slice(0, 32) : [],
+      currentTopic: message.slice(0, 1200),
+      relationshipConfig: relationshipConfig,
+      relationshipAvailable: !!relationshipConfig.trim(),
+      context: context,
+      contextualOutputChars: Math.max(500, Math.min(1200,
+        Math.floor((associationOutcome.budgetChars || MEMORY_RETRIEVAL_CORE.DEFAULT_BUDGET_CHARS) * 0.5))),
+      selfNarrativeOutputChars: Math.max(300, Math.min(1200,
+        Math.floor((associationOutcome.budgetChars || MEMORY_RETRIEVAL_CORE.DEFAULT_BUDGET_CHARS) * 0.25))),
+      remainingRecallMs: Math.max(0, deadlineAt - Number(clock())),
+      deadlineAt: deadlineAt
+    };
+    const cognition = await runCurrentMeaningAndNarrative(interpretationContext);
+    const remaining = Math.max(0, deadlineAt - Number(clock()));
+    const modulationContext = Object.assign({}, interpretationContext, {
+      remainingRecallMs: remaining
+    });
+    const modulation = await runBehaviorModulation(modulationContext,
+      cognition.reinterpretation, cognition.selfNarrative);
+    return {
+      ok: true,
+      status: 'succeeded',
+      association: associationMeta,
+      reinterpretation: cognition.reinterpretation.trace,
+      selfNarrative: cognition.selfNarrative.trace,
+      memoryAwarenessText: cognition.metaMemory && cognition.metaMemory.ok === true
+        ? cognition.metaMemory.text : '',
+      memoryUnreliabilityText: cognition.memoryUnreliability && cognition.memoryUnreliability.ok === true
+        ? cognition.memoryUnreliability.text : '',
+      reconstructedRecollection: cognition.memoryUnreliability && cognition.memoryUnreliability.ok === true
+        ? cognition.memoryUnreliability.recollection : null,
+      sharedMemoryText: cognition.sharedMemory && cognition.sharedMemory.ok === true
+        ? cognition.sharedMemory.text : '',
+      sharedMemoryView: cognition.sharedMemory && cognition.sharedMemory.ok === true
+        ? cognition.sharedMemory.view : null,
+      counterfactualMemoryText: cognition.counterfactualMemory && cognition.counterfactualMemory.ok === true
+        ? cognition.counterfactualMemory.text : '',
+      counterfactualMemoryView: cognition.counterfactualMemory && cognition.counterfactualMemory.ok === true
+        ? cognition.counterfactualMemory.view : null,
+      behaviorModulation: modulation ? {
+        status: modulation.status, reason: modulation.reason || null,
+        postureIdentity: modulation.postureIdentity || null,
+        providerCalls: Number(modulation.providerCalls) || 0,
+        evidenceFingerprint: modulation.evidenceFingerprint || null
+      } : null,
+      responseGuidance: modulation && modulation.responseGuidance || null,
+      durable: false
+    };
+  }
+
+  /* ── P21-R4-C · direct-only post-recall auto-interpretation hook ───────
      位置：authoritative 模式的**生命周期完成之后**（selection → exposure →
      activation → end 全部结束）。fire-and-forget：本文件从不 await 它，
      因此召回 HTTP 响应时间**不随**解释的模型延迟增长。
+     有 Association expansion 时，R4-K 使用下面的 bounded-await 分支，以便
+     validated currentMeaning 进入同一轮 cognition context；该分支不调用此函数。
      三层"每回合一次"：
        ① 重放在 settledTurns 备忘录处就 return（根本走不到这里）；
        ② 这里按 turnId 只调度一次（`interpretation` 侧还有一层
@@ -759,6 +1616,122 @@ function createRuntimeRecall(deps) {
       Promise.resolve().then(() => { autoScheduled -= 1; runTask(); });
     }
   }
+  async function runContextualInterpretation(ctx) {
+    if (!interpretation || typeof interpretation.runFromAuthoritativeRecall !== 'function') {
+      return { result: null, trace: contextualInterpretationTrace(ctx, null, 'not-scheduled') };
+    }
+    const characterId = String(ctx.characterId == null ? '' : ctx.characterId);
+    const turnId = String(ctx.turnId == null ? '' : ctx.turnId);
+    const selectedIds = Array.isArray(ctx.selectedIds) ? ctx.selectedIds.slice(0, 8) : [];
+    const turnIdentity = ctx.turnIdentity || { turnId: turnId };
+    const channel = ctx.channel == null ? null : String(ctx.channel);
+    const startedAt = Number(clock());
+    const contextualOutputChars = Math.max(0, Math.min(1200, Number(ctx.contextualOutputChars) || 0));
+    if (!turnId || !selectedIds.length || !hasAssociatedWorkingMemory(ctx.association)) {
+      return { result: null, trace: contextualInterpretationTrace(ctx, null, 'not-needed') };
+    }
+    if (!interpretation.AUTO_INTERPRETATION_CHANNELS
+      || interpretation.AUTO_INTERPRETATION_CHANNELS.indexOf(channel) < 0) {
+      autoCounters.notNeeded += 1;
+      const skipped = { ok: false, status: 'not-needed', reason: 'channel-not-eligible', providerCalls: 0 };
+      const trace = contextualInterpretationTrace(ctx, skipped, 'not-needed');
+      recordTurnInterpretation({
+        turnId, characterId, turnIdentity, status: 'not-needed', reason: skipped.reason,
+        errorClass: null, startedAt, completedAt: startedAt, providerCalls: 0,
+        interpretation: null, contextualInterpretation: null, trace: trace
+      });
+      return { result: skipped, trace: trace };
+    }
+    if (contextualOutputChars < 500) {
+      autoCounters.notNeeded += 1;
+      const skipped = { ok: false, status: 'not-needed', reason: 'context-budget-exhausted', providerCalls: 0 };
+      const trace = contextualInterpretationTrace(ctx, skipped, 'not-needed');
+      recordTurnInterpretation({
+        turnId, characterId, turnIdentity, status: 'not-needed', reason: skipped.reason,
+        errorClass: null, startedAt, completedAt: startedAt, providerCalls: 0,
+        interpretation: null, contextualInterpretation: null, trace: trace
+      });
+      return { result: skipped, trace: trace };
+    }
+    const binding = {
+      characterId: characterId,
+      turnId: turnId,
+      turnIdentity: turnIdentity,
+      selectedIds: selectedIds,
+      association: ctx.association,
+      associationRecords: Array.isArray(ctx.associationRecords) ? ctx.associationRecords : [],
+      currentTopic: String(ctx.currentTopic || '').slice(0, 1200),
+      relationshipAvailable: ctx.relationshipAvailable === true,
+      channel: channel,
+      fingerprint: ctx.fingerprint == null ? null : String(ctx.fingerprint),
+      canonicalRevision: ctx.canonicalRevision == null ? null : ctx.canonicalRevision
+    };
+    recordTurnInterpretation({
+      turnId, characterId, turnIdentity, status: 'pending', reason: null,
+      errorClass: null, startedAt, completedAt: null, providerCalls: 0,
+      interpretation: null, contextualInterpretation: null, trace: null
+    });
+    autoCounters.started += 1;
+    autoCounters.inFlight += 1;
+    let result = null;
+    try {
+      const remainingMs = Math.max(0, Number(ctx.remainingRecallMs) || 0);
+      try {
+        result = await interpretation.runFromAuthoritativeRecall(binding, {
+          remainingBudgetMs: Math.min(1200, remainingMs)
+        });
+      } catch (error) {
+        result = {
+          ok: false, status: 'failed', errorClass: 'auto-hook-threw',
+          reason: bounded((error && error.message) || error), providerCalls: 0
+        };
+      }
+      const status = result && result.status ? String(result.status) : 'failed';
+      if (status === 'succeeded') autoCounters.succeeded += 1;
+      else if (status === 'timed-out') autoCounters.timedOut += 1;
+      else if (status === 'disabled' || status === 'not-enabled' || status === 'not-scheduled') autoCounters.notEnabled += 1;
+      else if (status === 'not-needed' || status === 'duplicate-turn') autoCounters.notNeeded += 1;
+      else autoCounters.failed += 1;
+      const trace = contextualInterpretationTrace(ctx, result, status);
+      const contextual = result && result.ok === true ? result.contextualInterpretation : null;
+      let addedText = '';
+      if (contextual) {
+        addedText = renderContextualMeaning(contextual, contextualOutputChars);
+        if (addedText && ctx.context && typeof ctx.context.text === 'string') {
+          ctx.context.text += addedText;
+          ctx.context.chars = (Number(ctx.context.chars) || 0) + addedText.length;
+          trace.contextDelivered = true;
+        } else {
+          trace.contextDelivered = false;
+          trace.fallbackReason = trace.fallbackReason || 'context-render-empty';
+        }
+      }
+      try {
+        recordTurnInterpretation({
+          turnId, characterId, turnIdentity, status: status,
+          reason: result && (result.reason || result.reasonCode) ? String(result.reason || result.reasonCode) : null,
+          errorClass: result && result.ok !== true ? String(result.errorClass || result.reasonCode || 'failed') : null,
+          startedAt: startedAt, completedAt: Number(clock()),
+          recordSource: result && result.recordSource ? String(result.recordSource) : null,
+          providerCalls: Number(result && result.providerCalls) || 0,
+          /* Keep the R4-C holder distinct: no legacy per-memory result is
+             exposed to BehaviorEffect or the expectation/Prediction path. */
+          interpretation: null,
+          contextualInterpretation: contextual,
+          trace: trace
+        });
+      } catch (_) { /* a holder failure cannot affect Recall */ }
+      note('runtime-recall-contextual-interpretation', {
+        characterId: characterId, turnId: turnId, status: status,
+        providerCalls: Number(result && result.providerCalls) || 0,
+        contextDelivered: trace.contextDelivered === true
+      });
+      return { result: result, trace: trace, addedText: addedText };
+    } finally {
+      autoCounters.inFlight -= 1;
+      settleAutoWaiters();
+    }
+  }
   /* ══ P21-R4-LIVE-5 · L5 期望的兄弟调度（POST_INTERPRETATION_NONBLOCKING）══
      与 `scheduleAutoInterpretation` 同形，但**只在一次已验证的 L3 成功之后**才
      存在（OWNER RULING 1 的运行时纪律；协议层并不要求 L3 —— 两条声明分开报告）。
@@ -810,6 +1783,10 @@ function createRuntimeRecall(deps) {
         (ctx && ctx.conversationId != null ? ctx.conversationId : '')
         || (binding && binding.turnIdentity && binding.turnIdentity.conversationId != null ? binding.turnIdentity.conversationId : '')
       ),
+      /* Used only to bind a terminal event candidate to the matching active D3
+         request. The event Prediction turnId itself comes from D3, never here. */
+      requestCorrelationId: String(binding && binding.turnIdentity && binding.turnIdentity.requestId != null
+        ? binding.turnIdentity.requestId : ''),
       turnId: turnId,
       selectedIds: Array.isArray(binding.selectedIds) ? binding.selectedIds.slice() : [],
       records: Array.isArray(binding.records) ? binding.records : undefined,
@@ -914,8 +1891,8 @@ function createRuntimeRecall(deps) {
       const timer = setTimeout(finish, cap);
     });
   }
-  /* 内部读取缝（**没有路由**）：只给同一进程里的调用方/测试看这一轮的
-     turn-local 结果。它绝不进 HTTP 响应、window.IB、/security 或日志。 */
+  /* 内部读取缝（**没有路由**）：只给同一进程里的调用方/测试看完整
+     turn-local 结果。HTTP 只拿 bounded structured trace，不拿这个 holder。 */
   function getTurnInterpretation(turnId) {
     const rec = turnInterpretations.get(String(turnId == null ? '' : turnId));
     return rec ? Object.assign({}, rec) : null;
@@ -1011,7 +1988,7 @@ function createRuntimeRecall(deps) {
       const authoritative = (shape.mode === MODES[1]);
       let lifecycle = null;
       let turnIndex = null;
-      if (authoritative) {
+      if (authoritative && associationRuntime && typeof associationRuntime.expand === 'function') {
         const prior = settledTurns.get(turnId);
         if (prior && prior.messageHash === messageHash) {
           /* 重放：同一 (requestId, conversationId, message) ⇒ **不** begin、
@@ -1034,7 +2011,16 @@ function createRuntimeRecall(deps) {
             fingerprint: prior.fingerprint,
             counts: Object.assign({}, prior.counts),
             chars: prior.chars,
-            context: Object.assign({}, prior.context),
+            context: Object.assign({}, prior.context, prior.behaviorModulation && prior.behaviorModulation.responseGuidance
+              ? { responseGuidance: prior.behaviorModulation.responseGuidance } : {}),
+            ...(prior.association ? { association: prior.association } : {}),
+            ...(prior.reinterpretation ? { reinterpretation: prior.reinterpretation } : {}),
+            ...(prior.selfNarrative ? { selfNarrative: prior.selfNarrative } : {}),
+            ...(prior.behaviorModulation ? { behaviorModulation: {
+              status: prior.behaviorModulation.status, reason: prior.behaviorModulation.reason,
+              postureIdentity: prior.behaviorModulation.postureIdentity,
+              providerCalls: prior.behaviorModulation.providerCalls
+            } } : {}),
             effects: zeroEffects({
               activation: { updated: 0, duplicated: prior.activationIds.slice(), reason: 'turn-duplicate' }
             }),
@@ -1087,7 +2073,7 @@ function createRuntimeRecall(deps) {
       let picked = null;
       try {
         picked = memoryRetrieval.retrieve(characterId, {
-          userMessage: shape.message,
+          userMessage: shape.groundedQuery || shape.message,
           conversationId: shape.conversationId,
           isFirstTurn: shape.isFirstTurn,
           conversationSignalAvailable: shape.conversationSignalAvailable,
@@ -1104,6 +2090,8 @@ function createRuntimeRecall(deps) {
           isGroup: shape.isGroup === true,
           groupMemEnabled: shape.isGroup === true,
           withTrace: true,
+          includeCandidateRecords: true,
+          includeSemanticForgettingMeta: true,
           glossaryProvider: glossaryProvider,
           getGlossaryEntries: getGlossaryEntries
         });
@@ -1118,7 +2106,7 @@ function createRuntimeRecall(deps) {
           effects: zeroEffects({ turnBegun: !!lifecycle, turnEnded: released })
         });
       }
-      const latencyMs = Math.max(0, Number(clock()) - startedAt);
+      let latencyMs = Math.max(0, Number(clock()) - startedAt);
       if (!picked || picked.ok !== true) {
         const released = releaseTurn(lifecycle);
         note('runtime-recall-unavailable', {
@@ -1186,6 +2174,29 @@ function createRuntimeRecall(deps) {
       const activationPolicy = picked.activationPolicy === 'none' ? 'none' : 'normal';
       const reason = picked.reason == null ? null : String(picked.reason);
       const chars = Number(picked.chars) || 0;
+      let associationText = '';
+      let associationMeta = null;
+      let associationExpandedCount = 0;
+      let associationProviderCalls = 0;
+      let associationRecords = [];
+      let associationMemoryBudgetChars = null;
+      if (authoritative) {
+        const associationOutcome = await runAssociationForCurrentRecall({
+          selectedIds: selectedIds, characterId: characterId, isGroup: shape.isGroup === true,
+          message: shape.groundedQuery || shape.message, remainingBudgetMs: Math.max(0,
+            shape.effectiveTimeoutMs - Math.max(0, Number(clock()) - startedAt)),
+          deadlineAt: startedAt + shape.effectiveTimeoutMs, signal: opts.signal || null,
+          candidateRecords: Array.isArray(picked.candidateRecords) ? picked.candidateRecords : null,
+          candidateRecordsTruncated: picked.candidateRecordsTruncated === true
+        });
+        associationText = associationOutcome.text;
+        associationMeta = associationOutcome.meta;
+        associationExpandedCount = associationOutcome.expandedCount;
+        associationProviderCalls = associationOutcome.providerCalls;
+        associationRecords = associationOutcome.records;
+        associationMemoryBudgetChars = associationOutcome.budgetChars;
+        latencyMs = Math.max(0, Number(clock()) - startedAt);
+      }
       /* turnIdentity：两个**身份** + 消息长度 + 一个 **turn 摘要**。
          摘要的输入元组是这一轮的**全部**身份事实：
              conversationId ⧺ requestId ⧺ message
@@ -1223,10 +2234,12 @@ function createRuntimeRecall(deps) {
       let effects = null;
       if (authoritative && lifecycle) {
         const ctx = {
-          text: typeof picked.text === 'string' ? picked.text : '',
-          count: Number(picked.count) || 0,
-          chars: chars,
-          includeHeader: true
+          text: (typeof picked.text === 'string' ? picked.text : '') + associationText,
+          count: (Number(picked.count) || 0) + associationExpandedCount,
+          chars: chars + associationText.length,
+          includeHeader: true,
+          directCount: Number(picked.count) || 0,
+          associatedCount: associationExpandedCount
         };
         /* ① 激活：走 canonical 通道（memoryRetrieval.reinforce →
            store.recordActivation），并把 turnId 传下去 —— 于是 LIVE-3.3 的
@@ -1289,6 +2302,10 @@ function createRuntimeRecall(deps) {
           messageHash: messageHash,
           selectedIds: selectedIds.slice(),
           context: ctx,
+          association: associationMeta,
+          reinterpretation: null,
+          selfNarrative: null,
+          behaviorModulation: null,
           counts: Object.assign({}, counts),
           channel: channel, reason: reason, chars: chars,
           activationPolicy: activationPolicy, fingerprint: fingerprint,
@@ -1300,25 +2317,75 @@ function createRuntimeRecall(deps) {
           if (oldest.done) break;
           settledTurns.delete(oldest.value);
         }
-        /* ── P21-R4-LIVE-4 · post-recall hook（fire-and-forget）──────────
-           位置就在这里：selection / exposure / activation / end **全部完成
-           之后**，而且在返回信封**之前只是"调度"**——本文件从不 await 它，
-           因此召回响应时间不随解释的模型延迟增长。
-           ★ 它只在 authoritative 模式存在；影子模式与既有 mobile 路径
-             一个字都没变（它们根本走不到这个分支）。 */
-        scheduleAutoInterpretation({
+        const relationshipConfig = relationshipConfigurationForCharacter(characterId);
+        const interpretationContext = {
           characterId: characterId,
+          requestId: shape.requestId,
+          conversationId: shape.conversationId,
           turnId: turnId,
           turnIdentity: turnIdentity,
           selectedIds: selectedIds,
+          semanticForgettingById: Array.isArray(picked.semanticForgettingById)
+            ? picked.semanticForgettingById.slice(0, 32) : [],
+          memoryProvenanceById: Array.isArray(picked.memoryProvenanceById)
+            ? picked.memoryProvenanceById.slice(0, 32) : [],
           /* wrapper 今天不返回行 ⇒ undefined ⇒ 解释侧服务端重绑。 */
           records: Array.isArray(picked.records) ? picked.records : undefined,
           currentState: isPlainObject(shape.currentState) ? shape.currentState : {},
           roleName: shape.roleName,
           channel: channel,
           fingerprint: fingerprint,
-          canonicalRevision: null
-        });
+          canonicalRevision: null,
+          association: associationMeta,
+          associationRecords: associationRecords,
+          currentTopic: String(shape.message || '').slice(0, 1200),
+          relationshipConfig: relationshipConfig,
+          relationshipAvailable: !!relationshipConfig.trim(),
+          context: contextExtra,
+          contextualOutputChars: Math.max(0, Math.min(1200,
+            Math.floor((associationMemoryBudgetChars || MEMORY_RETRIEVAL_CORE.DEFAULT_BUDGET_CHARS) * 0.5))),
+          remainingRecallMs: Math.max(0, shape.effectiveTimeoutMs - Math.max(0, Number(clock()) - startedAt)),
+          deadlineAt: startedAt + shape.effectiveTimeoutMs
+        };
+        if (hasAssociatedWorkingMemory(associationMeta)) {
+          /* Association-bound current meaning is awaited only inside the bounded
+             Recall budget so it can join this turn's cognition context. */
+          const cognitionContext = Object.assign({}, interpretationContext, {
+            selfNarrativeOutputChars: Math.max(0, Math.min(1200,
+              Math.floor((associationMemoryBudgetChars || MEMORY_RETRIEVAL_CORE.DEFAULT_BUDGET_CHARS) * 0.25))),
+            remainingRecallMs: Math.max(0, shape.effectiveTimeoutMs - Math.max(0, Number(clock()) - startedAt))
+          });
+          const cognition = await runCurrentMeaningAndNarrative(cognitionContext);
+          const reinterpretationOutcome = cognition.reinterpretation;
+          const narrativeOutcome = cognition.selfNarrative;
+          const settled = settledTurns.get(turnId);
+          if (settled) settled.reinterpretation = reinterpretationOutcome.trace;
+          if (settled) settled.selfNarrative = narrativeOutcome.trace;
+          const modulationContext = Object.assign({}, cognitionContext, {
+            remainingRecallMs: Math.max(0, shape.effectiveTimeoutMs - Math.max(0, Number(clock()) - startedAt))
+          });
+          const modulationOutcome = await runBehaviorModulation(modulationContext, reinterpretationOutcome, narrativeOutcome);
+          if (settled) settled.behaviorModulation = modulationOutcome ? {
+            status: modulationOutcome.status, reason: modulationOutcome.reason || null,
+            postureIdentity: modulationOutcome.postureIdentity || null,
+            providerCalls: Number(modulationOutcome.providerCalls) || 0,
+            responseGuidance: modulationOutcome.responseGuidance || null
+          } : null;
+        } else {
+          /* Direct-only R4-C remains the existing post-recall nonblocking path. */
+          const directMetaMemory = runMetaMemoryAwareness(interpretationContext, null, null);
+          const directRecollection = runMemoryUnreliability(interpretationContext, directMetaMemory);
+          runSharedMemoryView(interpretationContext, directMetaMemory, directRecollection);
+          const baselineModulation = await runBehaviorModulation(interpretationContext, null, null);
+          const settled = settledTurns.get(turnId);
+          if (settled) settled.behaviorModulation = baselineModulation ? {
+            status: baselineModulation.status, reason: baselineModulation.reason || null,
+            postureIdentity: baselineModulation.postureIdentity || null,
+            providerCalls: Number(baselineModulation.providerCalls) || 0,
+            responseGuidance: null
+          } : null;
+          scheduleAutoInterpretation(interpretationContext);
+        }
       }
 
       counters.ok += 1;
@@ -1336,13 +2403,29 @@ function createRuntimeRecall(deps) {
         counts: counts,
         chars: chars,
         boundary: boundaryBlock(1, (authoritative && effects)
-          ? { exposureWrites: effects.exposure.written, activationWrites: effects.activation.updated }
+          ? {
+            exposureWrites: effects.exposure.written,
+            activationWrites: effects.activation.updated,
+            providerCalls: associationProviderCalls
+          }
           : null),
         status: 200
       };
       if (authoritative) {
         out.context = contextExtra || emptyContext();
         out.effects = effects || zeroEffects();
+        if (associationMeta) out.association = associationMeta;
+        const settled = settledTurns.get(turnId);
+        if (settled && settled.reinterpretation) out.reinterpretation = settled.reinterpretation;
+        if (settled && settled.selfNarrative) out.selfNarrative = settled.selfNarrative;
+        if (settled && settled.behaviorModulation) {
+          out.behaviorModulation = {
+            status: settled.behaviorModulation.status,
+            reason: settled.behaviorModulation.reason,
+            postureIdentity: settled.behaviorModulation.postureIdentity,
+            providerCalls: settled.behaviorModulation.providerCalls
+          };
+        }
         /* 第 17 键：消费**上一个**合格回合留下的基调（源回合取不到自己的效果）。
            ★ 会话身份只能取 `shape.conversationId` —— `run()` 里**没有**一个叫
              `conversationId` 的局部绑定（校验器把它们放在 shape 里）。写错这个名字
@@ -1352,6 +2435,31 @@ function createRuntimeRecall(deps) {
         out.behaviorEffect = behaviorEffectForEnvelope({
           characterId: characterId, conversationId: shape.conversationId, turnId: turnId
         });
+        /* M0 + R4-M · both sources share the same closed response-guidance-v1
+           envelope. The existing BehaviorEffect field remains unchanged;
+           posture is a separate temporary entry. */
+        const guidanceIdentity = {
+          characterId: characterId, conversationId: shape.conversationId,
+          requestId: shape.requestId, turnId: turnId
+        };
+        const guidanceEntries = [];
+        if (out.behaviorEffect) {
+          const behaviorGuidance = RESPONSE_GUIDANCE_CORE.fromBehaviorEffect(out.behaviorEffect, guidanceIdentity);
+          if (behaviorGuidance && behaviorGuidance.ok === true) guidanceEntries.push.apply(guidanceEntries, behaviorGuidance.envelope.entries);
+        }
+        const modulationGuidance = settled && settled.behaviorModulation
+          ? settled.behaviorModulation.responseGuidance : null;
+        const validatedModulation = modulationGuidance
+          ? RESPONSE_GUIDANCE_CORE.validateEnvelope(modulationGuidance, guidanceIdentity) : null;
+        if (validatedModulation && validatedModulation.ok === true) {
+          guidanceEntries.push.apply(guidanceEntries, validatedModulation.envelope.entries);
+        }
+        if (guidanceEntries.length && isPlainObject(out.context)) {
+          const guidance = RESPONSE_GUIDANCE_CORE.buildEnvelope(guidanceIdentity, guidanceEntries);
+          if (guidance && guidance.ok === true) {
+            out.context = Object.assign({}, out.context, { responseGuidance: guidance.envelope });
+          }
+        }
       }
       /* 审计只记**有界**字段：身份、结果、计数、通道、耗时。
          message 原文、selectedIds 之外的正文、任何秘密都不进来。
@@ -1372,6 +2480,9 @@ function createRuntimeRecall(deps) {
         noteFields.mode = shape.mode;
         noteFields.activationWrites = effects ? effects.activation.updated : 0;
         noteFields.exposureWrites = effects ? effects.exposure.written : 0;
+        noteFields.associationStatus = associationMeta ? associationMeta.status : 'not-assembled';
+        noteFields.associationExpanded = associationMeta ? Number(associationMeta.expandedCount) || 0 : 0;
+        noteFields.associationProviderCalls = associationProviderCalls;
       }
       note('runtime-recall', noteFields);
       return out;
@@ -1413,8 +2524,47 @@ function createRuntimeRecall(deps) {
       /* ★ 三个"零"是这条边界存在的全部理由，逐条可断言。 */
       exposureWrites: 0,
       activationWrites: 0,
-      providerCalls: 0,
-      providerReachable: false,
+      directRecallProviderCalls: 0,
+      directRecallProviderReachable: false,
+      associationRuntime: associationRuntime && typeof associationRuntime.describe === 'function'
+        ? associationRuntime.describe()
+        : {
+          hooked: !!associationRuntime,
+          status: associationRuntime ? 'CAPABILITY_PRESENT' : 'NOT_ASSEMBLED',
+          maxProviderCallsPerRecall: 0
+        },
+      selfNarrativeRuntime: selfNarrative && typeof selfNarrative.describe === 'function'
+        ? selfNarrative.describe()
+        : { status: selfNarrative ? 'CAPABILITY_PRESENT' : 'NOT_ASSEMBLED', routeExposed: false, durability: 'SESSION_ONLY' },
+      metaMemoryAwareness: Object.assign({}, META_MEMORY_AWARENESS_CORE.describe(), {
+        integrationSeam: 'services/home-node/runtime-recall.js#runCurrentMeaningAndNarrative',
+        desktopConsumption: 'PRIVATE_COGNITION_CONTEXT',
+        mobileConsumption: 'EXISTING_RUNTIME_CONTEXT',
+        consumesRecallAgain: 'NO',
+        memoryDatabaseScan: 'NO'
+      }),
+      memoryUnreliability: Object.assign({}, MEMORY_UNRELIABILITY_CORE.describe(), {
+        integrationSeam: 'services/home-node/runtime-recall.js#runCurrentMeaningAndNarrative',
+        inputAuthority: 'R4_H_N_R3_ASSOCIATION_R4_K_R4_L_ONLY',
+        privatePrompt: 'YES',
+        canonicalMemoryWriter: 'NONE'
+      }),
+      sharedMemory: Object.assign({}, SHARED_MEMORY_CORE.describe(), {
+        integrationSeam: 'services/home-node/runtime-recall.js#runCurrentMeaningAndNarrative',
+        userSideSource: 'USER_AUTHORED_CANONICAL_MEMORY_RECORDS_ONLY',
+        preferenceReportReusedAsHistory: 'NO',
+        explicitAcknowledgementAuthorityAssembled: !!sharedMemoryAcknowledgementAuthority,
+        jointAcknowledgementCore: !!sharedMemoryCore,
+        requestCanSubmitAcknowledgement: 'NO',
+        canonicalMemoryWriter: 'NONE'
+      }),
+      counterfactualMemory: Object.assign({}, counterfactualMemory && typeof counterfactualMemory.describe === 'function'
+        ? counterfactualMemory.describe() : { COUNTERFACTUAL_RUNTIME: 'NOT_ASSEMBLED' }, {
+        integrationSeam: 'services/home-node/runtime-recall.js#runCurrentMeaningAndNarrative',
+        consumesExistingRecallAgain: 'NO',
+        selfNarrativeConsumer: 'NO',
+        canonicalMemoryWriter: 'NONE'
+      }),
       sessionMutation: 'NONE',
       /* sessionState **不**由本边界拥有：它只被接受、被核对、被如实报告。
          任何推进都发生在别处（回合结算），不在这里。 */
@@ -1463,8 +2613,18 @@ function createRuntimeRecall(deps) {
         authoritySource: autoAuthoritySource(),
         hooked: !!interpretation,
         binding: 'DIRECT_SERVER_INTERNAL',
-        trigger: 'POST_RECALL_NONBLOCKING',
-        awaitedOnRecallPath: false,
+        trigger: 'POST_RECALL_CONTEXTUAL_BOUNDED_AWAIT + DIRECT_ONLY_NONBLOCKING',
+        awaitedOnRecallPath: 'ASSOCIATION_CONTEXTUAL_ONLY',
+        contextualReinterpretation: {
+          status: 'CAPABILITY_PRESENT',
+          timeoutMs: 1200,
+          maxMemories: 8,
+          outputChars: 1200,
+          minimumOutputChars: 500,
+          durability: 'RUNTIME_ONLY',
+          currentMeaningEntersCognitionContext: true,
+          failureFallback: 'RECALL_AND_ASSOCIATION_CONTEXT'
+        },
         channels: (interpretation && Array.isArray(interpretation.AUTO_INTERPRETATION_CHANNELS))
           ? interpretation.AUTO_INTERPRETATION_CHANNELS.slice() : [],
         maxAdditionalModelCallsPerCharacterTurn: (interpretation && interpretation.MAX_ADDITIONAL_MODEL_CALLS_PER_CHARACTER_TURN) || 1,
@@ -1534,6 +2694,28 @@ function createRuntimeRecall(deps) {
           });
         } catch (_) { return Object.assign(facts, { describeThrew: true }); }
       })(),
+      /* P21-R4-M · current meaning + Self Narrative to bounded posture. */
+      behaviorModulation: (function () {
+        const producer = behaviorModulation && typeof behaviorModulation.describe === 'function'
+          ? behaviorModulation.describe() : { runtime: 'NOT_LIVE' };
+        const live = producer.runtime === 'LIVE' && !!associationRuntime
+          && !!interpretation && !!selfNarrative;
+        return Object.assign({}, producer, {
+          MEMORY_BEHAVIOR_MODULATION_RUNTIME: live ? 'LIVE' : 'NOT_LIVE',
+          MEMORY_TO_BEHAVIOR_CAUSALITY: live ? 'LIVE' : 'NOT_LIVE',
+          REINTERPRETATION_TO_BEHAVIOR: live ? 'LIVE' : 'NOT_LIVE',
+          SELF_NARRATIVE_TO_BEHAVIOR: live ? 'LIVE' : 'NOT_LIVE',
+          BEHAVIOR_POSTURE_IS_DERIVED: 'YES',
+          BEHAVIOR_POSTURE_IS_TEMPORARY: 'YES',
+          BEHAVIOR_POSTURE_IS_TURN_SCOPED: 'YES',
+          BEHAVIOR_POSTURE_IS_BOUNDED: 'YES',
+          MEMORY_CAN_INFLUENCE_BEHAVIOR_WITHOUT_FORCED_DISCLOSURE: live ? 'VERIFIED' : 'NOT_VERIFIED',
+          PERSONA_BASELINE_PRESERVED: 'YES',
+          FAILURE_FALLBACK_TO_BASELINE: live ? 'LIVE' : 'NOT_LIVE',
+          mobilePath: 'EXISTING_RECALL_SNAPSHOT_TO_ASSOCIATION_K_L_TO_SHARED_GUIDANCE',
+          desktopAttribution: 'UNVERIFIABLE_UNKNOWN_PARTIAL_FAIL_CLOSED'
+        });
+      })(),
       /* ── P21-R4-LIVE-5 · L5 期望（兄弟子系统；只报告状态/计数，绝无正文）── */
       expectation: {
         hooked: !!expectation,
@@ -1561,6 +2743,7 @@ function createRuntimeRecall(deps) {
     path: PATH,
     operations: [OPERATION],
     run: run,
+    deriveFromExistingRecall: deriveFromExistingRecall,
     describe: describe,
     /* P21-R4-LIVE-4 · 内部缝（**没有路由**）：
        · awaitAutoIdle —— 测试用的 settle 钩子（等"已调度 + 在飞"归零）；

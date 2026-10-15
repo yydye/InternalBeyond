@@ -1,6 +1,6 @@
 'use strict';
 /* ====================================================================
-   IB Home Node · Structured Expectation → Prediction Projection（P5-B3-G1）
+   IB Home Node · Structured Expectation → Prediction Projection（P5-B3-G1/G2）
    --------------------------------------------------------------------
    MODEL_MAY_PROPOSE_STRUCTURED_EXPECTATION = YES
    MODEL_MAY_NOT_MINT_CANONICAL_PREDICTION  = YES
@@ -16,11 +16,10 @@
        → Prediction Registry
 
    ── 它**只**做两件事 ─────────────────────────────────────────────────
-     ① 生产准入：只有 G1_PRODUCTION_PROJECTION_TYPES 里的 kind 可以被投影
-        （即使 TYPE_TABLE 还支持别的 —— §11/§42/§54）
-     ② 组装：把候选 (kind, targetKey, stance) 组装成 prediction-record-core
-        能吃的 **expectation 形状**（subject / predicate / expectedOutcome），
-        其中 token 由**共享** proposition core 生成（模型不定义 token 文法，§18）
+     ① 生产准入：G1 preference + G2 的单一 runtime.turn_terminal event family；
+        latent_state / relational / arbitrary event 仍拒绝。
+     ② 组装：把受限候选组装成 P2 expectation；preference token 来自共享
+        proposition core，terminal token 来自 P1 parser（模型均不定义 token 文法）。
 
    ── 它**没有**的能力 ─────────────────────────────────────────────────
      predictionId 生成（P2）· identity（P2）· scope（runtime）· settlement ·
@@ -37,12 +36,14 @@ const path = require('path');
 const ASSETS_JS = path.join(__dirname, '..', '..', 'assets', 'js');
 const PREF = require(path.join(ASSETS_JS, 'memory-recall', 'preference-proposition-core.js'));
 const EXPECTATION_CORE = require(path.join(ASSETS_JS, 'memory-recall', 'expectation-shadow-core.js'));
+const OUTCOME_CORE = require(path.join(ASSETS_JS, 'memory-recall', 'outcome-observation-core.js'));
 /* P2 的**唯一**类型推导函数：本模块用它做"组装出来的三元组真的会被推导成
    同一个 kind"的**真**校验（不是抄一份 TYPE_TABLE）。 */
 const RECORD_CORE = require(path.join(ASSETS_JS, 'memory-recall', 'prediction-record-core.js'));
 
-/* ── 生产投影策略（runtime 持有，**不是** prompt 里的一句话，§54）──────── */
+/* G1 baseline is retained for audit; G2_PRODUCTION_PROJECTION_TYPES is active. */
 const G1_PRODUCTION_PROJECTION_TYPES = Object.freeze(['preference']);
+const G2_PRODUCTION_PROJECTION_TYPES = Object.freeze(['preference', 'event:runtime.turn_terminal']);
 
 /* kind → (subject, predicate, expectedOutcome.kind) 的**唯一**映射表。
    新增一个 kind 必须同时证明 TYPE_TABLE 能推导出它（见 assertTypeTableAgreement）。 */
@@ -50,6 +51,11 @@ const PROJECTION_SHAPE = Object.freeze({
   preference: Object.freeze({
     subjectKind: 'user',
     predicateKind: 'prefers',
+    outcomeKind: 'exclusive-outcome'
+  }),
+  event: Object.freeze({
+    subjectKind: 'system',
+    predicateKind: 'will-occur',
     outcomeKind: 'exclusive-outcome'
   })
 });
@@ -65,6 +71,11 @@ const REASON = Object.freeze({
   productionTypeNotEnabled: 'production-type-not-enabled',
   invalidPreferenceTarget: 'invalid-preference-target',
   invalidPreferenceStance: 'invalid-preference-stance',
+  invalidTerminalEventFamily: 'invalid-terminal-event-family',
+  invalidTerminalOutcome: 'invalid-terminal-outcome',
+  malformedTerminalEventCandidate: 'malformed-terminal-event-candidate',
+  authorityFieldsForbidden: 'structured-candidate-authority-fields-stripped',
+  terminalTokenGrammarUnavailable: 'terminal-token-grammar-unavailable',
   unstructuredExpectationNotSettleable: 'unstructured-expectation-not-settleable',
   malformedExpectationItem: 'malformed-expectation-item',
   scopeUnavailable: 'scope-unavailable',
@@ -79,6 +90,10 @@ const REASON = Object.freeze({
 const CANDIDATE_REJECTION_TO_REASON = Object.freeze({
   'structured-candidate-invalid-target': REASON.invalidPreferenceTarget,
   'structured-candidate-invalid-stance': REASON.invalidPreferenceStance,
+  'structured-candidate-invalid-event-family': REASON.invalidTerminalEventFamily,
+  'structured-candidate-invalid-event-outcome': REASON.invalidTerminalOutcome,
+  'structured-candidate-invalid-event-shape': REASON.malformedTerminalEventCandidate,
+  'structured-candidate-authority-fields-stripped': REASON.authorityFieldsForbidden,
   'structured-candidate-unsupported-kind': REASON.unsupportedPredictionType,
   'structured-candidate-shape-invalid': REASON.unsupportedPredictionType,
   'structured-candidate-proposition-core-unavailable': REASON.propositionCoreUnavailable
@@ -147,37 +162,66 @@ function createRuntimeStructuredExpectationProjection(deps) {
       return refuse(REASON.unsupportedPredictionType);
     }
 
-    /* ① 生产准入：只有策略里的 kind 可以被投影（TYPE_TABLE 支持 ≠ 允许入档） */
+    /* ① 生产准入：kind 单独不足以开放 event；family 必须命中窄闭集。 */
     const kind = text(candidate.kind);
-    if (G1_PRODUCTION_PROJECTION_TYPES.indexOf(kind) < 0) {
+    const eventFamily = kind === 'event' ? text(candidate.eventFamily) : '';
+    const productionType = kind === 'event' ? 'event:runtime.' + eventFamily : kind;
+    if (kind === 'event' && eventFamily !== 'turn_terminal') {
+      counters.candidatesRejected += 1; tally(REASON.invalidTerminalEventFamily);
+      return refuse(REASON.invalidTerminalEventFamily);
+    }
+    if (G2_PRODUCTION_PROJECTION_TYPES.indexOf(productionType) < 0) {
       counters.candidatesRejected += 1; tally(REASON.productionTypeNotEnabled);
-      return refuse(REASON.productionTypeNotEnabled, { kind: kind, enabled: G1_PRODUCTION_PROJECTION_TYPES.slice() });
+      return refuse(REASON.productionTypeNotEnabled, { kind: kind, enabled: G2_PRODUCTION_PROJECTION_TYPES.slice() });
     }
     const shape = PROJECTION_SHAPE[kind];
     if (!shape) {
       counters.candidatesRejected += 1; tally(REASON.unsupportedPredictionType);
       return refuse(REASON.unsupportedPredictionType, { kind: kind });
     }
-    if (!PREF || typeof PREF.buildPreferenceToken !== 'function') {
-      counters.candidatesRejected += 1; tally(REASON.propositionCoreUnavailable);
-      return refuse(REASON.propositionCoreUnavailable);
-    }
-
-    /* ② 重新过一遍**共享**文法（不信任上游形状；同一个 core，不抄第二份） */
-    const targetKey = PREF.canonicalTargetKey(candidate.targetKey);
-    if (targetKey == null) {
-      counters.candidatesRejected += 1; tally(REASON.invalidPreferenceTarget);
-      return refuse(REASON.invalidPreferenceTarget);
-    }
-    const stance = text(candidate.stance);
-    if (PREF.isStance(stance) !== true) {
-      counters.candidatesRejected += 1; tally(REASON.invalidPreferenceStance);
-      return refuse(REASON.invalidPreferenceStance, { acceptedStances: PREF.STANCES.slice() });
-    }
-    const preferenceToken = PREF.buildPreferenceToken(stance, targetKey);
-    if (preferenceToken == null) {
-      counters.candidatesRejected += 1; tally(REASON.invalidPreferenceTarget);
-      return refuse(REASON.invalidPreferenceTarget);
+    let targetKey = null;
+    let stance = null;
+    let expectedToken = null;
+    if (kind === 'preference') {
+      if (!PREF || typeof PREF.buildPreferenceToken !== 'function') {
+        counters.candidatesRejected += 1; tally(REASON.propositionCoreUnavailable);
+        return refuse(REASON.propositionCoreUnavailable);
+      }
+      targetKey = PREF.canonicalTargetKey(candidate.targetKey);
+      if (targetKey == null) {
+        counters.candidatesRejected += 1; tally(REASON.invalidPreferenceTarget);
+        return refuse(REASON.invalidPreferenceTarget);
+      }
+      stance = text(candidate.stance);
+      if (PREF.isStance(stance) !== true) {
+        counters.candidatesRejected += 1; tally(REASON.invalidPreferenceStance);
+        return refuse(REASON.invalidPreferenceStance, { acceptedStances: PREF.STANCES.slice() });
+      }
+      expectedToken = PREF.buildPreferenceToken(stance, targetKey);
+      if (expectedToken == null) {
+        counters.candidatesRejected += 1; tally(REASON.invalidPreferenceTarget);
+        return refuse(REASON.invalidPreferenceTarget);
+      }
+    } else if (kind === 'event') {
+      const eventKeys = Object.keys(candidate);
+      if (eventKeys.some(function (key) { return ['version', 'kind', 'eventFamily', 'expectedOutcome'].indexOf(key) < 0; })
+        || candidate.version !== EXPECTATION_CORE.STRUCTURED_CANDIDATE_VERSION
+        || typeof candidate.expectedOutcome !== 'string') {
+        counters.candidatesRejected += 1; tally(REASON.malformedTerminalEventCandidate);
+        return refuse(REASON.malformedTerminalEventCandidate);
+      }
+      if (!OUTCOME_CORE || typeof OUTCOME_CORE.turnTerminalTokenOfOutcomeCode !== 'function') {
+        counters.candidatesRejected += 1; tally(REASON.terminalTokenGrammarUnavailable);
+        return refuse(REASON.terminalTokenGrammarUnavailable);
+      }
+      expectedToken = OUTCOME_CORE.turnTerminalTokenOfOutcomeCode(candidate.expectedOutcome);
+      if (!expectedToken) {
+        counters.candidatesRejected += 1; tally(REASON.invalidTerminalOutcome);
+        return refuse(REASON.invalidTerminalOutcome);
+      }
+    } else {
+      counters.candidatesRejected += 1; tally(REASON.unsupportedPredictionType);
+      return refuse(REASON.unsupportedPredictionType, { kind: kind });
     }
 
     /* ③ 组装 canonical expectation —— **显式白名单**，authority 字段进不来 */
@@ -187,7 +231,7 @@ function createRuntimeStructuredExpectationProjection(deps) {
     }
     expectation.subject = { kind: shape.subjectKind, label: '' };
     expectation.predicate = { kind: shape.predicateKind };
-    expectation.expectedOutcome = { kind: shape.outcomeKind, token: preferenceToken, unit: null };
+    expectation.expectedOutcome = { kind: shape.outcomeKind, token: expectedToken, unit: null };
 
     /* ④ 与 TYPE_TABLE 的一致性自检 —— 用 P2 的**唯一**推导函数验证：
           我们刚组装的 (subject, predicate, expectedOutcome) **真的**会被推导成
@@ -215,7 +259,12 @@ function createRuntimeStructuredExpectationProjection(deps) {
       ok: true,
       reasonCode: REASON.ok,
       expectation: expectation,
-      projection: { kind: kind, targetKey: targetKey, stance: stance, preferenceToken: preferenceToken }
+      projection: kind === 'event'
+        ? {
+            kind: 'event', eventFamily: 'turn_terminal', targetDomain: 'runtime_state',
+            mechanism: 'exclusive_outcome', expectedOutcome: candidate.expectedOutcome, token: expectedToken
+          }
+        : { kind: kind, targetKey: targetKey, stance: stance, preferenceToken: expectedToken }
     };
   }
 
@@ -254,11 +303,15 @@ function createRuntimeStructuredExpectationProjection(deps) {
       modelMayChoosePredictionId: 'NO',
       modelDefinesTokenGrammar: 'NO',
       typeTableIsSoleTypeAuthority: 'YES',
-      productionProjectionTypes: G1_PRODUCTION_PROJECTION_TYPES.slice(),
+      productionProjectionTypes: G2_PRODUCTION_PROJECTION_TYPES.slice(),
+      g1ProductionProjectionTypes: G1_PRODUCTION_PROJECTION_TYPES.slice(),
       projectionShapes: Object.keys(PROJECTION_SHAPE),
       allowedItemKeys: ALLOWED_ITEM_KEYS.slice(),
       authorityFieldsCopied: 0,
       sharedPropositionCore: 'assets/js/memory-recall/preference-proposition-core.js',
+      terminalTokenGrammarOwner: 'assets/js/memory-recall/outcome-observation-core.js',
+      eventProjectionFamily: 'runtime.turn_terminal',
+      eventTargetDomain: 'runtime_state',
       maxProductionPredictionsPerTurn: maxProjections,
       registryWriteAuthority: 'CALLER_OWNED_SINGLE_P2_SEAM',
       typeTableAgreementChecked: 'YES',
@@ -273,6 +326,10 @@ function createRuntimeStructuredExpectationProjection(deps) {
     ENTRY: ENTRY,
     projectItem: projectItem,
     plan: plan,
+    terminalOutcomeCodes: function () {
+      return OUTCOME_CORE && Array.isArray(OUTCOME_CORE.DIRECTIONAL_TURN_TERMINAL_OUTCOME_CODES)
+        ? OUTCOME_CORE.DIRECTIONAL_TURN_TERMINAL_OUTCOME_CODES.slice() : [];
+    },
     describe: describe,
     counters: counters,
     reasonTally: function () { return Object.assign({}, reasonTally); }
@@ -282,6 +339,7 @@ function createRuntimeStructuredExpectationProjection(deps) {
 module.exports = {
   createRuntimeStructuredExpectationProjection: createRuntimeStructuredExpectationProjection,
   G1_PRODUCTION_PROJECTION_TYPES: G1_PRODUCTION_PROJECTION_TYPES,
+  G2_PRODUCTION_PROJECTION_TYPES: G2_PRODUCTION_PROJECTION_TYPES,
   PROJECTION_SHAPE: PROJECTION_SHAPE,
   ALLOWED_ITEM_KEYS: ALLOWED_ITEM_KEYS,
   DEFAULT_MAX_PROJECTIONS: DEFAULT_MAX_PROJECTIONS,

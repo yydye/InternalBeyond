@@ -3,7 +3,7 @@
    运行：node tests/test_memory_recall_query.js
 
    ══════════════════════════════════════════════════════════════════════════
-   本测试证明的是 **R2-B 的确定性 query 构造**，不是"已接入生产"。
+   本测试证明确定性 query 构造，并锁定它由共享 Recall Orchestrator 消费。
    ══════════════════════════════════════════════════════════════════════════
 
    被测模块：assets/js/memory-recall/recall-query.js（纯函数，零 IO）
@@ -23,6 +23,8 @@ const MODULE_REL = 'assets/js/memory-recall/recall-query.js';
 const CORE_REL = 'assets/js/memory-retrieval-core.js';
 const Q = require(path.join(ROOT, MODULE_REL));
 const CORE = require(path.join(ROOT, CORE_REL));
+const ORCHESTRATOR_SRC = fs.readFileSync(path.join(ROOT,
+  'assets/js/memory-recall/memory-recall-orchestrator.js'), 'utf8');
 
 let failures = 0;
 let passed = 0;
@@ -706,8 +708,11 @@ check('D6.exportedFunctionsPure', (() => {
    ══════════════════════════════════════════════════════════════════════ */
 section('§12 · 模块自我声明');
 
-check('V1.moduleDeclaresUnwired', /implemented but unwired/i.test(SRC),
-  'the module must declare its R2-B wiring status');
+check('V1.moduleDeclaresOrchestratorWiring', /经 memory-recall-orchestrator 消费本模块/.test(SRC),
+  'the module must declare that Hosts consume it through the shared orchestrator');
+check('V1.orchestratorCallsProductionQueryBuilder',
+  /deps\.query\.buildRecallQuery\(turn\.message,\s*options\.queryOptions\)/.test(ORCHESTRATOR_SRC),
+  'the Home Node Recall path builds the deterministic query before Hard Gate');
 check('V2.moduleDeclaresNoSecondNgram', /不复制|extractKeywords/.test(SRC));
 check('V3.coreAvailableReported', typeof Q.coreAvailable === 'boolean');
 

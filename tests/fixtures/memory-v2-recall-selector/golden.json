@@ -1,0 +1,167 @@
+{
+  "schemaVersion": "memory-recall-v1-v2-golden/v1",
+  "now": 172800000000,
+  "cases": [
+    {
+      "id": "recent-strong-affect",
+      "userMessage": "",
+      "records": [
+        {
+          "id": "strong-negative",
+          "title": "bridge event",
+          "summary": "bridge event summary",
+          "oneLine": "bridge event meaning",
+          "content": "bridge incident details",
+          "importance": 7,
+          "arousal": 1,
+          "valence": 0.05,
+          "createdAgeDays": 3,
+          "lastActivatedAgeHours": 3,
+          "activationCount": 19
+        },
+        {
+          "id": "ordinary",
+          "title": "ordinary topic",
+          "summary": "ordinary topic summary",
+          "oneLine": "ordinary topic meaning",
+          "content": "ordinary topic details",
+          "importance": 7,
+          "arousal": 0.3,
+          "valence": 0.5,
+          "createdAgeDays": 3,
+          "lastActivatedAgeHours": 72,
+          "activationCount": 0
+        }
+      ],
+      "expected": {
+        "v1Order": ["strong-negative", "ordinary"],
+        "v1Scores": {"strong-negative": 13.27, "ordinary": 7.47},
+        "v2Order": ["strong-negative", "ordinary"],
+        "v2Scores": {"strong-negative": 8.43, "ordinary": 6.71}
+      }
+    },
+    {
+      "id": "resolved-vs-unresolved-at-30-days",
+      "userMessage": "",
+      "records": [
+        {
+          "id": "unresolved",
+          "title": "unresolved event",
+          "summary": "unresolved event summary",
+          "oneLine": "unresolved event meaning",
+          "content": "unresolved event details",
+          "importance": 8,
+          "arousal": 0.9,
+          "valence": 0.1,
+          "resolved": false,
+          "createdAgeDays": 30,
+          "lastActivatedAgeHours": 720,
+          "activationCount": 0
+        },
+        {
+          "id": "resolved",
+          "title": "resolved event",
+          "summary": "resolved event summary",
+          "oneLine": "resolved event meaning",
+          "content": "resolved event details",
+          "importance": 8,
+          "arousal": 0.9,
+          "valence": 0.1,
+          "resolved": true,
+          "createdAgeDays": 30,
+          "lastActivatedAgeHours": 720,
+          "activationCount": 0
+        }
+      ],
+      "expected": {
+        "v1Order": ["unresolved", "resolved"],
+        "v1Scores": {"unresolved": 3.07, "resolved": 0.38},
+        "v2Order": ["unresolved", "resolved"],
+        "v2Scores": {"unresolved": 2.43, "resolved": 0.30}
+      }
+    },
+    {
+      "id": "old-important-memory-with-exact-query",
+      "userMessage": "important long term memory",
+      "records": [
+        {
+          "id": "old-important",
+          "title": "important long term memory",
+          "summary": "important long term memory summary",
+          "oneLine": "important memory",
+          "content": "important long term memory RAW_DETAIL_SENTINEL",
+          "importance": 8,
+          "arousal": 0.3,
+          "valence": 0.5,
+          "createdAgeDays": 365,
+          "lastActivatedAgeHours": 8760,
+          "activationCount": 0
+        }
+      ],
+      "expected": {
+        "v1Order": ["old-important"],
+        "v1Scores": {"old-important": 0},
+        "v2Order": ["old-important"],
+        "v2Scores": {"old-important": 4.86},
+        "v2Forgetting": {
+          "factualDetail": "suppressed",
+          "emotionalResidue": "suppressed",
+          "narrativeMeaning": "faded",
+          "accessibility": "accessible",
+          "resurfaced": true
+        }
+      }
+    },
+    {
+      "id": "new-correction-vs-reactivated-old-memory",
+      "userMessage": "hospital abandonment correction",
+      "records": [
+        {
+          "id": "strong-negative",
+          "title": "painful old event",
+          "summary": "painful old event summary",
+          "oneLine": "painful old event meaning",
+          "content": "painful old event details",
+          "importance": 7,
+          "arousal": 1,
+          "valence": 0.05,
+          "createdAgeDays": 2.5,
+          "lastActivatedAgeHours": 3,
+          "activationCount": 19
+        },
+        {
+          "id": "ordinary",
+          "title": "ordinary topic",
+          "summary": "ordinary topic summary",
+          "oneLine": "ordinary topic meaning",
+          "content": "ordinary topic details",
+          "importance": 7,
+          "arousal": 0.3,
+          "valence": 0.5,
+          "createdAgeDays": 2.5,
+          "lastActivatedAgeHours": 60,
+          "activationCount": 0
+        },
+        {
+          "id": "correction",
+          "title": "hospital abandonment correction",
+          "summary": "hospital abandonment correction summary",
+          "oneLine": "hospital abandonment correction",
+          "content": "hospital abandonment correction evidence",
+          "importance": 4,
+          "arousal": 0.3,
+          "valence": 0.5,
+          "createdAgeDays": 0,
+          "lastActivatedAgeHours": 0,
+          "activationCount": 0
+        }
+      ],
+      "expected": {
+        "v1Order": ["strong-negative", "correction", "ordinary"],
+        "v1Scores": {"strong-negative": 13.27, "correction": 12.4, "ordinary": 7.66},
+        "v2Order": ["correction", "strong-negative", "ordinary"],
+        "v2Scores": {"correction": 11.2, "strong-negative": 8.65, "ordinary": 6.89}
+      }
+    }
+  ]
+}

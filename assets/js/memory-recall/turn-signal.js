@@ -25,10 +25,10 @@
        §11 reason 词表：本模块只产出 'early-exit'，且**只作为分析结果**，
            不写进任何 recall result（那是 R2-C 的事）
 
-   ── R2-B 的接线状态：implemented but unwired ────────────────────────
-     本文件**没有**任何生产调用方；不加入 InternalBeyond.html；不被 memory.js /
-     communication.js / home-node-bootstrap.js / memory-retrieval.js 引用。
-     因此现有 production recall output 在结构上不可能改变。
+   ── 当前接线边界 ─────────────────────────────────────────────────────
+     Browser 与 Home Node 都只经 memory-recall-orchestrator 消费本模块；
+     Browser 脚本由 InternalBeyond.html 按依赖顺序加载。
+     Host 不得直接调用 turn-signal，也不得在 Host 侧复制其分类规则。
 
    ── 优先级（R2-B 正式冻结的行为，从高到低）──────────────────────────
      1. Host-forced recall channel（recall / glossary / coldStart / reminisce）

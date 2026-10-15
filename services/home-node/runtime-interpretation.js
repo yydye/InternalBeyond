@@ -82,6 +82,7 @@
 'use strict';
 
 const path = require('path');
+const crypto = require('crypto');
 
 const ASSETS_JS = path.join(__dirname, '..', '..', 'assets', 'js');
 /* ★ 机械证明：Node 侧能直接加载 R4-C 纯核心。这里刻意**硬 require** ——
@@ -149,6 +150,8 @@ const PROJECTION_FIELDS = Object.freeze(['id', 'content', 'title', 'source', 'ki
 const MAX_SELECTED_MEMORY_IDS = Number(DEFAULT_CORE.BOUNDS && DEFAULT_CORE.BOUNDS.MAX_MEMORIES) || 8;
 const MAX_CONTENT_CHARS = Number(DEFAULT_CORE.BOUNDS && DEFAULT_CORE.BOUNDS.MAX_CONTENT_CHARS) || 1200;
 const MAX_TITLE_CHARS = Number(DEFAULT_CORE.BOUNDS && DEFAULT_CORE.BOUNDS.MAX_TITLE_CHARS) || 200;
+const MAX_STATE_VALUE_CHARS = Number(DEFAULT_CORE.BOUNDS && DEFAULT_CORE.BOUNDS.MAX_STATE_VALUE_CHARS) || 240;
+const MAX_CONTEXTUAL_TOPIC_CHARS = 1200;
 const MAX_OPERATION_ECHO_CHARS = 64;
 const MAX_ID_CHARS = 180;
 
@@ -269,6 +272,48 @@ const MAX_ADDITIONAL_MODEL_CALLS_PER_CHARACTER_TURN = 1;
    SAFETY_CAP_MS（120000）只是上界，不是默认值 —— 后台解释不该按最坏情况跑满。 */
 const AUTO_INTERPRETATION_TIMEOUT_MS = 20000;
 const AUTO_INTERPRETATION_TIMEOUT_OWNER = 'services/home-node/runtime-interpretation.js#AUTO_INTERPRETATION_TIMEOUT_MS';
+/* Contextual reinterpretation is on the Recall path, so its server-owned wait
+   is intentionally much shorter than the background R4-C interpretation. */
+const MAX_CONTEXTUAL_REINTERPRETATION_TIMEOUT_MS = 1200;
+
+function fingerprint(value) {
+  return 'sha256-v1:' + crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
+function contextualInterpretationIdentity(core, input) {
+  if (!core || typeof core.normalizeInput !== 'function') return null;
+  let normalized = null;
+  try { normalized = core.normalizeInput(input); } catch (_) { return null; }
+  if (!normalized || !normalized.association) return null;
+  const memorySetFingerprint = fingerprint(normalized.memories.map(function (memory) {
+    return [memory.memoryId, memory.title, memory.content, memory.source, memory.kind];
+  }));
+  const associationFingerprint = fingerprint({
+    schemaVersion: normalized.association.schemaVersion,
+    directMemoryIds: normalized.association.directMemoryIds,
+    associatedMemoryIds: normalized.association.associatedMemoryIds,
+    activationReasonsById: normalized.association.activationReasonsById,
+    edges: normalized.association.edges,
+    tensionSets: normalized.association.tensionSets
+  });
+  const contextFingerprint = fingerprint({
+    currentTopic: normalized.currentContext.currentTopic,
+    currentTopicSource: normalized.currentContext.currentTopicSource,
+    relationship: normalized.currentContext.relationship,
+    relationshipSource: normalized.currentContext.relationshipSource,
+    emotionalStateStatus: normalized.currentContext.emotionalStateStatus,
+    cognitiveSnapshotStatus: normalized.currentContext.cognitiveSnapshotStatus
+  });
+  return {
+    schemaVersion: 'memory-reinterpretation-v1',
+    value: fingerprint([
+      'memory-reinterpretation-v1', memorySetFingerprint,
+      associationFingerprint, contextFingerprint
+    ]),
+    memorySetFingerprint: memorySetFingerprint,
+    associationFingerprint: associationFingerprint,
+    contextFingerprint: contextFingerprint
+  };
+}
 /* 通道矩阵：哪些通道允许自动解释。**不是**四个都开 ——
    surface（普通对话中的相关记忆）与 recall（用户明确要求回忆）是"她此刻想起了
    什么"的两种真实形态；glossary 是一次术语命中（生产里 provider 至今 dormant），
@@ -871,7 +916,10 @@ function createRuntimeInterpretation(deps) {  deps = deps || {};
     /* ★ 刻意**不**接受 spec.apiKey 回落（execution.js / understanding-derivation.js
        在迁移期仍然接受）：本阶段的权威是 Vault，明文回落会让
        "no plaintext fallback" 变成半真。 */
-    return { ok: true, spec: { provider: provider, model: model, endpoint: endpoint, credentialRef: credentialRef } };
+    return { ok: true, spec: {
+      provider: provider, model: model, endpoint: endpoint,
+      credentialRef: credentialRef
+    } };
   }
 
   /* ── 单次执行（MAX_ATTEMPTS = 1，AUTO_RETRY = NONE）────────────────
@@ -1309,6 +1357,23 @@ function createRuntimeInterpretation(deps) {  deps = deps || {};
     const characterPolicy = resolveCharacterAutoPolicy(characterId);
     const selectedMemoryIds = Array.isArray(b.selectedIds)
       ? b.selectedIds.map(String).filter(Boolean).slice(0, MAX_SELECTED_MEMORY_IDS) : [];
+    const associationRaw = isPlainObject(b.association) ? b.association : null;
+    const associatedMemoryIds = [];
+    const associationCapacity = Math.max(0, MAX_SELECTED_MEMORY_IDS - selectedMemoryIds.length);
+    if (associationRaw && associationCapacity > 0 && Array.isArray(associationRaw.workingSet)) {
+      const directSet = new Set(selectedMemoryIds);
+      const seenAssociated = new Set();
+      for (const work of associationRaw.workingSet) {
+        if (!isPlainObject(work) || work.memoryId == null || !Array.isArray(work.activationReasons)) continue;
+        const id = String(work.memoryId);
+        if (directSet.has(id) || seenAssociated.has(id)) continue;
+        if (!work.activationReasons.some((reason) => String(reason).indexOf('association_') === 0)) continue;
+        seenAssociated.add(id);
+        associatedMemoryIds.push(id);
+        if (associatedMemoryIds.length >= associationCapacity) break;
+      }
+    }
+    const contextualMode = !!(associationRaw && associatedMemoryIds.length);
     /* ① 自动 cost gate（与外部路由**不同**的表达式）。 */
     if (characterPolicy.enabled !== true) {
       autoCounters.refused += 1;
@@ -1361,9 +1426,22 @@ function createRuntimeInterpretation(deps) {  deps = deps || {};
     if (!specResult.ok) { autoCounters.failed += 1; return fail('failed', REASON.runtimeSpecUnavailable, specResult.reason); }
     const spec = specResult.spec;
     /* ④ 记录来源：召回结果持有的 canonical 行优先，否则服务端重绑。 */
-    const rebind = resolveBoundEvidence(characterId, selectedMemoryIds, b.records);
+    const selectedEvidenceIds = contextualMode ? selectedMemoryIds.concat(associatedMemoryIds) : selectedMemoryIds;
+    const associationRecords = Array.isArray(b.associationRecords)
+      ? b.associationRecords : b.records;
+    const rebind = resolveBoundEvidence(characterId, selectedEvidenceIds, associationRecords);
     if (!rebind.ok) { autoCounters.failed += 1; return fail('failed', REASON.canonicalEvidenceUnavailable, rebind.reason); }
     if (rebind.boundIds.length === 0) { autoCounters.notNeeded += 1; return fail('not-needed', core.REASON_CODES.noInput, 'no-authorized-memory'); }
+    const directBoundIds = selectedMemoryIds.filter((id) => rebind.boundIds.indexOf(id) >= 0);
+    const associatedBoundIds = associatedMemoryIds.filter((id) => rebind.boundIds.indexOf(id) >= 0);
+    if (!directBoundIds.length) {
+      autoCounters.notNeeded += 1;
+      return fail('not-needed', core.REASON_CODES.noInput, 'no-authorized-direct-anchor');
+    }
+    if (contextualMode && !associatedBoundIds.length) {
+      autoCounters.notNeeded += 1;
+      return fail('not-needed', core.REASON_CODES.noInput, 'association-evidence-unavailable');
+    }
     if (!credentialAccess || typeof credentialAccess.resolve !== 'function') { autoCounters.failed += 1; return fail('failed', REASON.credentialUnavailable, 'credential-access-not-assembled'); }
     counters.vaultReads += 1;
     let resolved = null;
@@ -1377,19 +1455,48 @@ function createRuntimeInterpretation(deps) {  deps = deps || {};
       autoCounters.failed += 1; return fail('failed', REASON.coreMissing, 'R4-C core not loadable');
     }
     const coreInput = {
-      selectedIds: selectedMemoryIds,
+      selectedIds: directBoundIds,
       records: rebind.records,
-      currentState: isPlainObject(b.currentState) ? b.currentState : {},
-      roleName: b.roleName == null ? '' : text(b.roleName)
+      currentState: contextualMode ? {} : (isPlainObject(b.currentState) ? b.currentState : {}),
+      roleName: contextualMode ? '' : (b.roleName == null ? '' : text(b.roleName))
     };
+    if (contextualMode) {
+      coreInput.association = {
+        schemaVersion: associationRaw.schemaVersion,
+        depth: associationRaw.depth,
+        maxDepth: associationRaw.maxDepth,
+        workingSet: associationRaw.workingSet,
+        edges: associationRaw.edges,
+        tensionSets: associationRaw.tensionSets
+      };
+      coreInput.currentContext = {
+        currentTopic: text(b.currentTopic).slice(0, MAX_CONTEXTUAL_TOPIC_CHARS),
+        currentTopicSource: text(b.currentTopic).trim() ? 'current-user-message' : 'unavailable',
+        relationship: text(b.relationshipConfig).slice(0, MAX_STATE_VALUE_CHARS),
+        relationshipSource: text(b.relationshipConfig).trim() ? 'character-configuration' : 'unavailable'
+      };
+    }
     let built = null;
     try { built = core.buildRequest(coreInput); }
     catch (_) { autoCounters.failed += 1; return fail('failed', REASON.requestShapeInvalid, 'core-build-threw'); }
     if (!built || !built.stats || !built.stats.memoryCount) {
       autoCounters.notNeeded += 1; return fail('not-needed', core.REASON_CODES.noInput, 'core-no-input');
     }
-    /* ⑤ 单次执行：服务端自有的超时；没有任何调用方 signal。 */
-    const timeoutMs = Math.min(AUTO_INTERPRETATION_TIMEOUT_MS, SAFETY_CAP_MS);
+    /* ⑤ 单次执行：服务端自有的超时；没有任何调用方 signal。
+       The contextual path is awaited by Recall and can only shorten this cap. */
+    let timeoutMs = Math.min(AUTO_INTERPRETATION_TIMEOUT_MS, SAFETY_CAP_MS);
+    if (contextualMode) {
+      const remainingBudget = Number(opts.remainingBudgetMs);
+      timeoutMs = Math.min(timeoutMs, MAX_CONTEXTUAL_REINTERPRETATION_TIMEOUT_MS,
+        Number.isFinite(remainingBudget) ? Math.max(0, Math.floor(remainingBudget)) : MAX_CONTEXTUAL_REINTERPRETATION_TIMEOUT_MS);
+      if (timeoutMs <= 0) {
+        autoCounters.timedOut += 1;
+        return Object.assign(fail('timed-out', REASON.timeout, 'recall-budget-exhausted'), {
+          providerCalls: 0, attempts: 0, timeoutMs: 0,
+          timeoutOwner: AUTO_INTERPRETATION_TIMEOUT_OWNER
+        });
+      }
+    }
     const called = await invokeOnce(providerSpec, built, { signal: null, timeoutMs: timeoutMs });
     const completedAt = Number(clock());
     const evidenceMeta = {
@@ -1434,8 +1541,13 @@ function createRuntimeInterpretation(deps) {  deps = deps || {};
         providerCalls: called.attempts, attempts: called.attempts, timeoutMs: timeoutMs, evidence: evidenceMeta
       });
     }
-    const allowedIds = rebind.boundIds.slice();
-    const validated = core.validateResponse(parsed, { allowedIds: allowedIds });
+    const allowedIds = directBoundIds.slice();
+    const currentMeaningAllowedIds = rebind.boundIds.slice();
+    const validated = core.validateResponse(parsed, {
+      allowedIds: allowedIds,
+      contextualMode: contextualMode,
+      currentMeaningAllowedIds: currentMeaningAllowedIds
+    });
     if (!validated || validated.ok !== true) {
       const code = (validated && Array.isArray(validated.reasonCodes) && validated.reasonCodes.length)
         ? validated.reasonCodes[0] : core.REASON_CODES.noItems;
@@ -1449,6 +1561,22 @@ function createRuntimeInterpretation(deps) {  deps = deps || {};
       latencyMs: Math.max(0, completedAt - startedAt),
       status: validated.items.length < allowedIds.length ? 'partial' : 'ok'
     });
+    let contextualInterpretation = null;
+    if (contextualMode && typeof core.assembleContextualInterpretation === 'function') {
+      contextualInterpretation = core.assembleContextualInterpretation(coreInput, validated, {
+        providerClass: spec.provider, modelId: spec.model,
+        latencyMs: Math.max(0, completedAt - startedAt), status: 'ok'
+      });
+      const identity = contextualInterpretationIdentity(core, coreInput);
+      if (contextualInterpretation && identity) contextualInterpretation.identity = identity;
+    }
+    if (contextualMode && !contextualInterpretation) {
+      autoCounters.failed += 1;
+      return Object.assign(fail('failed', REASON.coreMissing, 'contextual-result-unavailable'), {
+        providerCalls: called.attempts, attempts: called.attempts,
+        timeoutMs: timeoutMs, evidence: evidenceMeta
+      });
+    }
     autoCounters.succeeded += 1;
     note('runtime-interpretation-auto-ok', {
       characterId: characterId, turnId: turnKey, recordSource: rebind.recordSource,
@@ -1476,6 +1604,7 @@ function createRuntimeInterpretation(deps) {  deps = deps || {};
       /* 校验过的结构化结果（非持久）。它**不**自动回到浏览器：
          持有者是 runtime-recall 的 turn-local registry。 */
       interpretation: shadow,
+      ...(contextualInterpretation ? { contextualInterpretation: contextualInterpretation } : {}),
       boundary: boundaryBlock(called.attempts, called.attempts, counters.vaultReads)
     };
   }
@@ -1526,6 +1655,17 @@ function createRuntimeInterpretation(deps) {  deps = deps || {};
       maxSelectedMemoryIds: MAX_SELECTED_MEMORY_IDS,
       maxContentChars: MAX_CONTENT_CHARS,
       maxTitleChars: MAX_TITLE_CHARS,
+      contextualReinterpretation: {
+        enabledBySameAutoPolicy: true,
+        maxWaitMs: MAX_CONTEXTUAL_REINTERPRETATION_TIMEOUT_MS,
+        maxMemories: MAX_SELECTED_MEMORY_IDS,
+        currentTopicChars: MAX_CONTEXTUAL_TOPIC_CHARS,
+        identityComponents: ['memory-set-fingerprint', 'association-fingerprint', 'context-fingerprint', 'schema-version'],
+        durable: false,
+        canonicalWrites: 0,
+        relationshipWrites: 0,
+        selfNarrativeWrites: 0
+      },
       /* P21-R4-LIVE-3：三项权威分别出现，且**没有**任何一个字段叫
          "SERVER_AUTHORIZED_RECALL" —— 那会是一句本阶段没有实现的话。 */
       evidenceContentAuthority: EVIDENCE_CONTENT_AUTHORITY,
@@ -1679,3 +1819,4 @@ module.exports.AUTO_INTERPRETATION_CHANNEL_MATRIX = AUTO_INTERPRETATION_CHANNEL_
 module.exports.MAX_ADDITIONAL_MODEL_CALLS_PER_CHARACTER_TURN = MAX_ADDITIONAL_MODEL_CALLS_PER_CHARACTER_TURN;
 module.exports.AUTO_INTERPRETATION_TIMEOUT_MS = AUTO_INTERPRETATION_TIMEOUT_MS;
 module.exports.AUTO_INTERPRETATION_TIMEOUT_OWNER = AUTO_INTERPRETATION_TIMEOUT_OWNER;
+module.exports.MAX_CONTEXTUAL_REINTERPRETATION_TIMEOUT_MS = MAX_CONTEXTUAL_REINTERPRETATION_TIMEOUT_MS;

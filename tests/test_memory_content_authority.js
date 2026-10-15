@@ -225,7 +225,7 @@ const wait = () => new Promise(r => setTimeout(r, 0));
     'R4-A.5: both dbPut and dbDelete must refuse to silently degrade when canonical is intended '
     + 'but the authority could not be assembled');
   check('T3.contentEditUsesTheOverriddenSeam',
-    /await dbPut\('memories',m\);/.test(memoryJs) && /await dbPut\('memories',mem\);/.test(memoryJs),
+    /await dbPut\('memories',m\)/.test(memoryJs) && /await dbPut\('memories',mem\)/.test(memoryJs),
     'saveInlineEdit / writeOneLineToMemory must write through the overridden dbPut, not raw IndexedDB');
 
   /* ══════════════════════════════════════════════════════════════════

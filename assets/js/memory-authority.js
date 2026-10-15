@@ -1,4 +1,4 @@
-/* ====================================================================
+﻿/* ====================================================================
    IB Memory Authority — `memories` 的 authority / mirror / fallback 策略
    --------------------------------------------------------------------
    UMD 双载：Browser <script src="assets/js/memory-authority.js"> → window.IBMemoryAuthority
@@ -95,6 +95,17 @@
       ctx.remoteOnline = false;
       ctx.degradedReason = (error && error.code) || 'home-node-unreachable';
       ctx.lastError = String((error && error.message) || error || '');
+    }
+    function noteMirrorFailure(reason, error) {
+      /* Home Node committed, but the materialized IndexedDB view is stale.
+         Force the next read through a full hydrate and keep the UI degraded
+         until that replacement succeeds. */
+      ctx.hydrated = false;
+      ctx.hasFullHistory = false;
+      ctx.remoteOnline = true;
+      ctx.degradedReason = reason;
+      ctx.lastError = String((error && error.message) || error || reason);
+      readyPromise = null;
     }
     function isTransportFailure(res) {
       return !res || res.offline || /unreachable|transport|timeout/.test(String((res && res.error) || ''));
@@ -243,7 +254,8 @@
        顺序严格为：Home Node → 镜像。绝不允许"镜像成功就算成功"。
        与 chat 的唯一差异是 **没有** existingPolicy:'skip' —— 记忆是可变的，
        Node 侧用默认的 overwrite（内容不同则更新）。 */
-    function put(record) {
+    function put(record, options) {
+      options = options || {};
       ensureDrivers();
       if (!remoteEnabled()) {
         return Promise.resolve(local.put(record)).then(function () {
@@ -252,7 +264,8 @@
           return { ok: true, outcome: 'local-only', authority: 'indexeddb', mirrorOnly: true, reason: ctx.degradedReason };
         });
       }
-      return remote.put(record).then(function (res) {
+      var pendingPut = Object.keys(options).length ? remote.put(record, options) : remote.put(record);
+      return pendingPut.then(function (res) {
         if (!res || !res.ok) {
           if (isTransportFailure(res)) {
             ctx.stats.failures++;
@@ -282,7 +295,7 @@
         }, function (mirrorError) {
           ctx.stats.writes++;
           ctx.stats.remoteWrites++;
-          ctx.remoteOnline = true;
+          noteMirrorFailure('memory-mirror-write-failed', mirrorError);
           log('memory-mirror-write-failed', { id: record && record.id, error: String((mirrorError && mirrorError.message) || mirrorError) });
           return {
             ok: true, outcome: res.outcome, authority: 'home-node', revision: res.revision,
@@ -316,6 +329,7 @@
         return Promise.resolve(local.remove(String(id))).then(function () {
           return { ok: true, outcome: res.outcome, authority: 'home-node', revision: res.revision, mirrored: true };
         }, function (mirrorError) {
+          noteMirrorFailure('memory-mirror-delete-failed', mirrorError);
           log('memory-mirror-delete-failed', { id: String(id), error: String((mirrorError && mirrorError.message) || mirrorError) });
           return { ok: true, outcome: res.outcome, authority: 'home-node', revision: res.revision, mirrored: false };
         });

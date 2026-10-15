@@ -7026,3 +7026,2061 @@ Layer B regression                     = 26/26
 ```
 
 `NEXT = P5-B3-H3 · Prediction Error Commit Closure`（final staged review → optional commit → post-commit regression）。**不自动进入。**
+
+### (q-38) P5-B3-I · Subjective Negative Settlement Opportunity Authority
+
+**(q-38.1) Authority audit（从 Prediction 到 P3 的完整路径）**
+
+```
+A. Opportunity canonical shape
+   P2 只记录期望形状：required / kind / existenceAuthority /
+   consumedAt / consumedByObservationId
+   P1 gate 消费：{ required, existence:{ present, authoritySource }, consumedAt }
+   SATISFIED = required ∧ authoritySource=CANONICAL_RUNTIME ∧ present ∧ consumedAt
+   source: assets/js/memory-recall/prediction-record-core.js:204-210,386-399
+          assets/js/memory-recall/outcome-observation-core.js:474-504
+
+B. Opportunity authority owner
+   runtime-explicit-preference-report owns the sealed accepted report action;
+   runtime-reality-event owns the sealed event and source identity;
+   runtime-subjective-opportunity-authority validates the action/event link,
+   canonical target, character, conversation and occurrence time;
+   P3 alone owns matched / missed / mixed / expired_unobserved / unresolvable.
+   source: services/home-node/runtime-explicit-preference-report.js:135-203,248-282
+          services/home-node/runtime-reality-event.js:91-103,293-324,370-411
+          services/home-node/runtime-subjective-opportunity-authority.js:73-132,149-275
+          services/home-node/runtime-prediction-settlement.js:203-214,336-385
+
+C. Existing production sources
+   Only the dedicated authenticated structured preference action is target-specific
+   and records a completed like/dislike choice. Its sealed report is linked to a
+   RealityEvent by the sole mapping. Generic turn completion and BehaviorEffect
+   completion do not prove a preference choice.
+   source: services/home-node/explicit-preference-report-seam.js:22-24,286-410
+          services/home-node/explicit-preference-report-reality-source.js:42-63
+          services/home-node/runtime-reality-feedback.js:74-114,129-150
+
+D. P3 automatic derivation before this phase
+   P3 aggregated opportunityGate from accepted P1 gate traces with
+   deriveOpportunityFromGates(); SATISFIED permitted a decisive conflict.
+   With no opportunity supplied in production, P1 returned UNKNOWN and
+   directional.conflict=FORBIDDEN; P3 discarded the report with
+   directional-conflict-forbidden-cannot-produce-missed.
+   source: assets/js/memory-recall/prediction-settlement-core.js:437-466,577-619,656-678
+          services/home-node/runtime-reality-feedback.js:144-148
+   At anchor 64ea0a6, runtime-prediction-settlement.js:318-321 passed
+   ctx.opportunity || null to P1. The old controlled test injected SATISFIED at
+   tests/test_subjective_prediction_feedback.js:376-385. That control was removed.
+
+E. Why the explicit report can witness an opportunity under this narrow contract
+   P2 already types preference Opportunity as exclusive-choice
+   (prediction-record-core.js:204-210). The dedicated report action accepts one
+   canonical target and one closed stance, binds character/conversation at the
+   server, assigns occurredAt from the server clock, and seals one report fact.
+   Acceptance therefore proves that a target-specific choice action completed.
+   The stance proposition remains EXPLICIT_USER_REPORT evidence; opportunity
+   authority comes from the sealed accepted action and its verified runtime event
+   mapping. The relation (support/conflict) is never read when resolving the
+   opportunity. This is not a general authority for self-reported text or raw chat.
+
+   Candidate audit:
+   · Explicit preference report acceptance: target and scope known; prediction
+     independent; completed and server accepted; can prove the completed choice
+     action. Selected, only through the canonical report capability.
+   · Report RealityEvent occurrence: target/scope/time preserved and sealed;
+     proves the mapped report action occurred; selected to bind the OutcomeObservation.
+   · Separate canonical user choice/action: no second choice event schema exists;
+     the accepted report action is the existing canonical choice representation.
+   · Explicit preference query/confirmation: no production query/confirmation source.
+   · Generic structured-interaction completion: may prove that an interaction
+     completed, but lacks preference target unless it is the dedicated report action.
+   · BehaviorEffect completion: records system effects, not user preference choice;
+     it remains contamination/attribution input only.
+   · Turn completion: TURN_TERMINAL_FACT_ONLY, no preference target, therefore no
+     subjective opportunity. Source: services/home-node/turn-terminal-reality-source.js:54-71.
+
+F. Test injection source
+   Production feedback still passes only { now } to P3; it supplies no Opportunity.
+   P3 now refuses a caller-owned `opportunity` context field. The product E2E has
+   TEST_MANUAL_OPPORTUNITY_INJECTION=0. Core policy tests use a test-only sealed
+   authority fixture; it is not passed through the P3 public context.
+
+**(q-38.2) Frozen authority boundary**
+
+```
+SUBJECTIVE_OPPORTUNITY_AUTHORITY = CANONICAL_ACCEPTED_REPORT_ACTION
+                                  + SEALED_REALITY_EVENT_BINDING
+EVIDENCE_AUTHORITY != OPPORTUNITY_AUTHORITY
+EXPLICIT_USER_REPORT_CONTENT_MAY_DECLARE_OPPORTUNITY = NO
+REPORT_ACTION_ACCEPTANCE_MAY_WITNESS_COMPLETED_EXCLUSIVE_CHOICE = YES
+FEEDBACK_DRIVER_MAY_SUPPLY_OPPORTUNITY = NO
+MODEL_MAY_DECLARE_OPPORTUNITY = NO
+MATCHER_MAY_DECLARE_OPPORTUNITY = NO
+RAW_USER_TEXT_MAY_DECLARE_OPPORTUNITY = NO
+ABSENCE_OF_EVIDENCE_IS_OPPORTUNITY = NO
+TIME_ELAPSED_IS_SATISFIED_OPPORTUNITY = NO
+```
+
+```
+OPPORTUNITY_IDENTITY = canonical reportId
+OPPORTUNITY_IDENTITY_INDEPENDENT_OF_PREDICTION = YES
+REPORT_IDENTITY_CONTAINS_PREDICTION_ID = NO
+OPPORTUNITY_SCOPE = characterId + conversationId + user_preference + canonical targetKey
+OPPORTUNITY_OCCURRED_AT = acceptedReport.occurredAt
+REALITY_EVENT_OCCURRED_AT = acceptedReport.occurredAt
+OPPORTUNITY_TARGET_MISMATCH = FORBIDDEN
+OPPORTUNITY_SCOPE_MISMATCH = FORBIDDEN
+```
+
+For a bound OutcomeObservation, the sealed RealityEvent must map exactly to a held,
+sealed canonical report with the same reportId, source mapping, target, stance, scope,
+and timestamp. One reportId may witness multiple same-scope/target Predictions; neither
+report nor RealityEvent identity contains predictionId. A forged RealityEvent with a
+plausible body but no sealed report is rejected.
+
+No-report expiry uses the bounded canonical report-action history. `ABSENT` requires a
+closed prediction window, complete report history from before prediction creation, and
+no same-scope/target report action in that window. Eviction, disposal, unavailable report
+authority, or incomplete coverage yields `UNKNOWN`. An accepted report whose RealityEvent
+mint fails still records a completed opportunity, but it creates no OutcomeObservation;
+without evidence P3 returns `unresolvable`, never `missed`.
+
+**(q-38.3) P3 ownership and policy preservation**
+
+```
+OPPORTUNITY_AUTHORITY_DECIDES_SETTLEMENT_STATE = NO
+OUTCOME_OBSERVATION_DECIDES_SETTLEMENT_STATE = NO
+REALITY_FEEDBACK_DRIVER_DECIDES_SETTLEMENT_STATE = NO
+P3_SETTLEMENT_STATE_AUTHORITY = YES
+CALLER_OPPORTUNITY_INJECTION = FORBIDDEN
+MATCHER_CALLS_ON_STRUCTURED_PREFERENCE_PATH = 0
+```
+
+P3 verifies the module-private Opportunity resolution, passes its existing gate shape
+to P1, and remains the only owner of the final state. With no observations, P3 consumes
+the same authority's state only to preserve the existing closed-window ABSENT policy.
+No change was made to mechanical relation:
+
+```
+same target + same stance      → support
+same target + opposite stance → conflict
+different target              → irrelevant
+```
+
+**(q-38.4) Verification and boundaries**
+
+```
+PRODUCTION NEGATIVE E2E
+  production cognition structured expectation → automatic Prediction pref.like.scifi
+  real HTTP POST /internal/user-reports/preference stance=dislike
+  → canonical report → sealed RealityEvent → automatic feedback → OutcomeObservation
+  → verified opportunity → P3 missed · calibrationCounted=true
+
+TEST_MANUAL_PREDICTION_INSERTS = 0
+TEST_MANUAL_FEEDBACK_CALLS = 0
+TEST_MANUAL_OPPORTUNITY_INJECTION = 0
+MATCHER_CALLS = 0
+MEMORY_WRITE = NONE · RELATIONSHIP_WRITE = NONE
+CALIBRATION_CONFIDENCE = null · CALIBRATION_APPLIED_TO_LIVE = NO
+P4_PRODUCTION_LEDGER_DRIVER = NOT_LIVE
+```
+
+Passed suites:
+`test_prediction_error_product_e2e` (24), `test_subjective_prediction_feedback` (39),
+`test_explicit_user_report_authority` (45), `test_prediction_settlement_core` (81),
+`test_outcome_observation_authority` (84), `test_reality_feedback_driver` (29),
+`test_behavior_effect_attribution` (88), `test_prediction_registry` (61),
+`test_subjective_opportunity_authority` (16), `test_outcome_observation_production` (50),
+`test_reality_event_backbone` (39). Modified JavaScript syntax check: PASS.
+
+```
+P5_B3_I_STATUS = COMPLETE
+P5_B3_I_FREEZE = FROZEN
+SUBJECTIVE_NEGATIVE_DECISIVE_SETTLEMENT_LIVE = YES
+GAP-3 = CLOSED
+```
+
+**(q-38.5) Git and remaining gaps**
+
+```
+HEAD = 64ea0a616a23acff27d03ea0172ba38372465df4 (unchanged)
+COMMIT = NO · PUSH = NO
+PREDICTION_ERROR_CORE_TRACKING_DEBT = CLOSED (anchor retained)
+FREE_TEXT_EXPLICIT_REPORT_SUPPORT = NOT_AVAILABLE
+P4_PRODUCTION_LEDGER_DRIVER = NOT_LIVE
+TURN_TERMINAL_OUTCOME_DIRECTIONAL_DISCRIMINATION = CAPABILITY_GAP
+MULTI_HOME_NODE_FEEDBACK_ROUTING = ONE_HOME_NODE_INSTANCE_PER_PROCESS
+```
+
+This phase does not change the remaining gaps above, Matcher default, Memory, or
+Relationship behavior. No encoding debt was addressed.
+
+### (q-39) P5-B3-J · Calibration Ledger Production Driver
+
+**(q-39.1) P4 authority audit**
+
+```
+A. Canonical P4 ingest API
+   runtimePredictionCalibration.ingestSettlement(settlement, { now, predictionError })
+   P4 requires module-private P3 SettlementRecord provenance, then consumes
+   calibrationCounted=true, checks P3 reachability, resolves exactly one partition,
+   dedupes by calibrationEntryId, and updates mechanical counts.
+   source: services/home-node/runtime-prediction-calibration.js:193-321
+          assets/js/memory-recall/prediction-calibration-core.js:245-255,289-321
+
+B. Authority owners
+   P3 module-private seal = SettlementRecord / PredictionErrorRecord validity.
+   P3 `calibrationCounted` = sole sample-eligibility authority.
+   runtime-prediction-calibration = sole ledger / aggregation authority.
+   source: services/home-node/runtime-prediction-settlement.js:55-109,446-479,619-629
+          services/home-node/runtime-prediction-calibration.js:212-258,410-473
+
+C. Existing P4 composition
+   P4 Ledger instances were already constructed and exported in both
+   buildHomeNode() and process-level composition. They had no production caller.
+   source at pre-J anchor 64ea0a6: services/home-node-service.js:1188-1200,1690-1700
+   Current assembly constructs the P4 instance and its driver before the feedback
+   runtime, then exports both.
+
+D. Why no automatic ingest existed
+   At the anchor, runtime-reality-feedback.js called P3, counted its state, and
+   returned; it had no post-settlement callback. Home Node constructed feedback
+   before P4 and never connected the two. Also, P4 was passed the P3 factory instance,
+   which has no `isSettlementRecord` method; P4 therefore refused with
+   `prediction-settlement-runtime-missing` if called.
+
+E. Driver owner
+   HOME_NODE_RUNTIME_ASSEMBLY. It now creates a local P3 authority facade composed
+   of the P3 module-private validators plus that P3 instance's reachability view,
+   constructs P4, constructs the thin driver, then wires the driver as an
+   onSettlement callback in the feedback composition.
+   source: services/home-node-service.js:311-313,1170-1205,1690-1711
+
+F. Dormant seam
+   No dormant Settlement→P4 callback existed. This phase adds
+   services/home-node/runtime-prediction-calibration-driver.js and a generic
+   post-settlement callback in runtime-reality-feedback.js. Feedback only notifies;
+   it does not implement P4 partition, policy, dedupe, or aggregation.
+   source: services/home-node/runtime-prediction-calibration-driver.js:33-159
+          services/home-node/runtime-reality-feedback.js:144-169
+```
+
+**(q-39.2) Frozen driver contract**
+
+```
+P3_SETTLEMENT_IS_SOLE_CALIBRATION_ELIGIBILITY_AUTHORITY = YES
+P4_LEDGER_IS_SOLE_CALIBRATION_STORAGE_AND_AGGREGATION_AUTHORITY = YES
+CALIBRATION_DRIVER_ROLE = ORCHESTRATION_ONLY
+P4_MAY_NOT_REJUDGE_SETTLEMENT = YES
+DRIVER_REQUIRES_P3_SETTLEMENT_SEAL = YES
+DRIVER_REQUIRES_MATCHING_P3_PREDICTION_ERROR_SEAL = YES
+DRIVER_ELIGIBILITY_INPUT = settlement.calibrationCounted
+CALIBRATION_COUNTED_FALSE_MUST_NOT_CALL_P4 = YES
+P4_RECHECKS_ITS_EXISTING_PROVENANCE_AND_ELIGIBILITY_GATES = YES
+LEDGER_FAILURE_MUST_NOT_REWRITE_SETTLEMENT = YES
+```
+
+`dispatchSettlement()` verifies both module-private P3 seals and the settlement/error
+identity link. If `calibrationCounted !== true`, it skips P4. Otherwise it passes the
+canonical P3 `settledAt` and sealed ordinal PredictionError to `ingestSettlement()`.
+The P4 driver does not inspect `state`, `predictionType`, attribution, or self-influence.
+P4 continues to own `calibrationEntryId`, dedupe, partitioning, and all counts.
+
+**(q-39.3) Identity, partitions, and lifetime**
+
+```
+P4_PARTITION = predictionType × targetDomain
+CALIBRATION_ENTRY_ID = stable function of registrySessionRef + settlementId
+                               + predictionId + partition key
+P4_CAPACITY / TTL / DEDUPE_BOUND = EXISTING FROZEN VALUES
+P4_DURABILITY = SESSION_ONLY
+GLOBAL_ACCURACY = FORBIDDEN
+CROSS_PARTITION_CONFIDENCE_TRANSFER = FORBIDDEN
+```
+
+No clock value participates in sample identity. Re-dispatching one sealed SettlementRecord
+100 times yields one accepted entry and 100 P4 duplicate responses. Separate P3 records
+from one RealityEvent are independently ingested and enter their own existing partitions.
+Production matched/missed samples are verified in `preference × user_preference` and
+unit event samples in `event × runtime_state`. The relational/relationship partition key
+is verified at the P4 core boundary; no production relational source or type was enabled.
+
+**(q-39.4) False eligibility and failure isolation**
+
+```
+pending / mixed / expired_unobserved / unresolvable / superseded
+or calibrationCounted=false
+  → driver dispatch observed
+  → P4 ingest calls = 0
+
+P4 ingest throws or rejects
+  → P3 Settlement remains sealed and held
+  → RealityEvent / OutcomeObservation / accepted report remain valid
+  → no unsettled / rewrite / rollback path
+```
+
+The calibration driver returns bounded status and counters only; the feedback callback
+records failure without changing P3 or failing the user report/chat path.
+
+**(q-39.5) Verification**
+
+Production E2E now proves both:
+
+```
+production cognition → Prediction like X → later HTTP report like X
+  → P3 matched · calibrationCounted=true → automatic P4 matched sample = 1
+
+production cognition → Prediction like X → later HTTP report dislike X
+  → P3 missed · calibrationCounted=true → automatic P4 missed sample = 1
+```
+
+```
+TEST_MANUAL_PREDICTION_INSERTS = 0
+TEST_MANUAL_FEEDBACK_CALLS = 0
+TEST_MANUAL_OPPORTUNITY_INJECTION = 0
+TEST_MANUAL_CALIBRATION_INGEST = 0
+SETTLEMENT_REJUDGEMENT_IN_DRIVER = 0
+DUPLICATE_SAMPLE_COUNT = 0 (production matched + missed E2E)
+EVIDENCE_MATCHER_ENABLED_DEFAULT = false · MATCHER_CALLS = 0
+CALIBRATION_CONFIDENCE = null · CALIBRATION_APPLIED_TO_LIVE = NO
+MEMORY_WRITE = NONE · RELATIONSHIP_WRITE = NONE
+P4_PRODUCTION_LEDGER_DRIVER = LIVE
+```
+
+Regression results:
+`test_prediction_calibration_ledger` (113), `test_calibration_production_driver` (11),
+`test_prediction_settlement_core` (81), `test_prediction_error_product_e2e` (27),
+`test_subjective_prediction_feedback` (40), `test_subjective_opportunity_authority` (16),
+`test_behavior_effect_attribution` (88), `test_reality_feedback_driver` (29),
+`test_prediction_registry` (61), `test_outcome_observation_authority` (84),
+`test_explicit_user_report_authority` (45), `test_outcome_observation_production` (50),
+`test_reality_event_backbone` (39): all passed. Modified JavaScript syntax check: PASS.
+
+**(q-39.6) Readiness and remaining gaps**
+
+```
+P5_B3_J_STATUS = COMPLETE
+P5_B3_J_FREEZE = FROZEN
+P4_PRODUCTION_LEDGER_DRIVER = LIVE
+AUTOMATIC_MATCHED_SAMPLE_INGEST = YES
+AUTOMATIC_MISSED_SAMPLE_INGEST = YES
+TEST_MANUAL_CALIBRATION_INGEST = 0
+SETTLEMENT_REJUDGEMENT_IN_DRIVER = 0
+DUPLICATE_SAMPLE_COUNT = 0
+CALIBRATION_CONFIDENCE = null
+CALIBRATION_APPLIED_TO_LIVE = NO
+P4_DURABILITY = SESSION_ONLY
+```
+
+`attributionAuthorityAvailable=false` remains in the existing P4 capability-coverage
+projection; this phase does not alter it. The P3 sample decision and P4 capability
+coverage remain orthogonal. No Expectation/Interpretation/Memory/Relationship/provider/
+prompt writeback was added. P4 calibration application remains out of scope.
+
+```
+HEAD = 64ea0a616a23acff27d03ea0172ba38372465df4 (unchanged)
+COMMIT = NO · PUSH = NO
+ENCODING_DEBT = OPEN (unchanged)
+```
+
+## q-40 · P5-B3-J-R1 Calibration Capability Truth Reconciliation
+
+**(q-40.1) Audit result and root cause**
+
+The prior P4 value was false because both Home Node construction paths passed the
+literal `attributionAuthorityAvailable: false` into the P4 runtime:
+`services/home-node-service.js` (the `buildHomeNode` P4 assembly and the process-level
+P4 assembly). P4 only consumed this input while projecting read-only capability
+coverage; `ingestSettlement()` does not read it. This explains why P4 sample ingestion
+was live while its reported attribution capability was stale.
+
+**(q-40.2) Canonical truth owner**
+
+`services/home-node/runtime-behavior-effect.js` owns the attribution snapshot seal and
+validator. Its module-private authority identity map recognizes only the exact frozen
+runtime object minted by that loaded module, with the expected snapshot, validator,
+and describe methods still reachable. P4 and the Evidence Matcher derive availability
+from that injected runtime through the module validator. Both Home Node assembly paths
+inject the same BehaviorEffect runtime instance already used by their prediction
+pipeline. Missing objects, plain objects, copied methods or brands, JSON reconstructions,
+cross-module instances, missing validators, and checker failures resolve to `false`.
+
+**(q-40.3) Frozen semantic separation**
+
+```
+attributionAuthorityAvailable
+  = canonical runtime authority is constructed and reachable
+
+attributionAuthorityAvailable != calibrationCounted
+attributionAuthorityAvailable != eligible sample exists
+attributionAuthorityAvailable != history coverage complete
+attributionAuthorityAvailable != calibration confidence
+unknown attribution         != authority unavailable
+```
+
+P4 `policyAllowed`, `runtimeClassifiable`, `attributionAuthorityAvailable`,
+`noEligibleSample`, and `capabilityGap` remain separate report dimensions. A query may
+be `unknown` with `partial` or `unavailable` history coverage while the authority flag
+remains true. Coverage resolution remains owned by
+`behavior-effect-attribution-core.js`; availability is not inferred from a query.
+
+**(q-40.4) Capability surfaces**
+
+The same derived fact is reported by BehaviorEffect `describe()` and
+`describeAttribution()`, P4 partition `capabilityCoverage`, P4 `describe()` and
+`inspectCalibration().view.diagnostics`, Evidence Matcher `describe()`, and the
+read-only process-level `describePredictionCalibrationCapability()` status projection.
+The Home Node instance returns the same P4 runtime object used by its HTTP assembly.
+No route, calibration application, or writeback was added.
+
+**(q-40.5) Regression and readiness**
+
+```
+AUTHORITY_WIRED = true
+AUTHORITY_MISSING_OR_INVALID = false
+PARTIAL_COVERAGE_AUTHORITY = true
+UNAVAILABLE_COVERAGE_AUTHORITY = true
+UNKNOWN_ATTRIBUTION_AUTHORITY = true
+P3_SETTLEMENT_STATE_AND_CALIBRATION_COUNTED_POLICY = UNCHANGED
+P4_MATCHED_AND_MISSED_INGEST_AND_DEDUPE = UNCHANGED
+AUTOMATIC_MATCHED_SAMPLE_INGEST = YES
+AUTOMATIC_MISSED_SAMPLE_INGEST = YES
+DUPLICATE_SAMPLE_COUNT = 0
+CALIBRATION_CONFIDENCE = null
+CALIBRATION_APPLIED_TO_LIVE = NO
+P5_B3_J_R1_STATUS = COMPLETE
+P5_B3_J_R1_FREEZE = FROZEN
+```
+
+Passing suites: `test_behavior_effect_attribution` (88),
+`test_prediction_settlement_core` (81), `test_prediction_calibration_ledger` (113),
+`test_calibration_production_driver` (11), `test_prediction_error_product_e2e` (30),
+`test_subjective_prediction_feedback` (40), `test_reality_feedback_driver` (29),
+`test_evidence_matcher` (136), and `test_calibration_capability_truth` (13).
+JavaScript syntax checks and `git diff --check` passed.
+
+**(q-40.6) Remaining scope notes**
+
+Earlier q-39 text recording `attributionAuthorityAvailable=false` is historical and is
+superseded by this append-only reconciliation. The older q-19.4 formula for
+`productionSettleable` and the current pure-core formula remain untouched in this round;
+changing that separate P4 semantic is outside J-R1. Encoding debt remains open.
+
+```
+HEAD = 64ea0a616a23acff27d03ea0172ba38372465df4 (unchanged)
+COMMIT = NO · PUSH = NO · AMEND = NO
+ENCODING_DEBT = OPEN
+```
+
+## q-41 · P5-B3-J-R2 Calibration `productionSettleable` Contract Reconciliation
+
+**(q-41.1) Formula audit**
+
+Historical q-19.1 describes the matcher-required statement path:
+
+```
+matcherCapabilityPresent ∧ matcherEnabled ∧ policyAllowed ∧ sourceDecisive
+∧ attributionAuthorityAvailable ∧ normal P1/P3 gates
+```
+
+Historical q-19.4 gives the normalized P4 formula:
+
+```
+runtimeClassifiable ∧ policyAllowed ∧ attributionAuthorityAvailable
+```
+
+Before J-R2 the P4 pure core and its runtime composition used:
+
+```
+runtimeClassifiable ∧ attributionAuthorityAvailable
+```
+
+The P4 runtime computes `runtimeClassifiable` from P3 mechanical-mode
+classification, or from an enabled Matcher when a mode requires semantic
+statement relation. P4 carries `policyAllowed` as a distinct input. Therefore the
+pre-R2 pure-core expression omitted a required conjunct; q-19.4 is retained and
+this append supplies the correction.
+
+**(q-41.2) Canonical normalized formula**
+
+```
+PRODUCTION_SETTLEABLE_CANONICAL_FORMULA
+  = policyAllowed ∧ runtimeClassifiable ∧ attributionAuthorityAvailable
+```
+
+In the Evidence Matcher taxonomy, `runtimeClassifiable` already includes matcher
+presence, matcher enablement, policy permission, and decisive-source permission.
+Its `runtimeClassifiable ∧ attributionAuthorityAvailable` expression is the same
+formula after those dimensions are folded into `runtimeClassifiable`.
+
+`productionSettleable` is the current classifier/policy/attribution capability
+for a valid canonical P2 Prediction and its P4 type/mode partition. It is not a
+claim that P2 currently creates every supported type. The current structured
+expectation projection creates `preference` only. P3 still validates the exact
+source/domain reachability and the individual attribution and opportunity gates
+before minting each SettlementRecord.
+
+**(q-41.3) Frozen orthogonality**
+
+```
+AUTHORITY_AVAILABLE       != RUNTIME_CLASSIFIABLE
+RUNTIME_CLASSIFIABLE      != SAMPLE_AVAILABLE
+NO_ELIGIBLE_SAMPLE        != CAPABILITY_GAP
+CALIBRATION_CONFIDENCE    != PRODUCTION_SETTLEABLE
+CALIBRATION_CONFIDENCE    = null
+CALIBRATION_APPLIED_TO_LIVE = NO
+```
+
+```
+noEligibleSample = (eligibleTotal == 0)
+capabilityGap    = policyAllowed ∧ ¬runtimeClassifiable
+```
+
+Neither sample count nor calibration quality participates in
+`productionSettleable`. If policy is forbidden, the result is false and status is
+`not-policy-allowed`, even when the mode is mechanically classifiable and the
+authority is present. This is not reported as a runtime `capabilityGap`.
+
+**(q-41.4) Matcher boundary and type truth**
+
+With `EVIDENCE_MATCHER_ENABLED_DEFAULT = false`:
+
+| Type | Current production prediction source | Classifier path | Current P4 capability, if a canonical partition exists | P3 / opportunity boundary |
+|---|---|---|---|---|
+| `event` | Not emitted by the current G1 structured projection | `exclusive_outcome` and `window_closure_negative` are mechanical | True when policy and attribution authority are present | P3 allows runtime-state/user-behavior event sources; negative settlement still needs its runtime-execution opportunity |
+| `preference` | G1 structured projection is live | Structured exclusive-outcome token is mechanical; statement relation would need Matcher | True with Matcher off | Explicit report source and exclusive-choice opportunity are production-live; product E2E proves matched and missed |
+| `latent_state` | Not emitted by G1 projection | `explicit_denial` needs Matcher; disabled now | False now because `runtimeClassifiable = false` | P3 explicit-report path is policy-reachable; an individual negative still needs its utterance-slot opportunity |
+| `relational` | Not emitted by G1 projection | `explicit_denial` needs Matcher; disabled now | False now because `runtimeClassifiable = false` | P3 relationship-domain explicit-report path is policy-reachable; an individual negative still needs its utterance-slot opportunity |
+
+The event row is a P3/P4 settlement capability conditional on a canonical event
+Prediction; it does not declare an event Prediction producer. The current
+structured preference result remains `productionSettleable = true` while Matcher
+is off. Matcher enablement only changes the statement-classification dimension;
+it does not globally gate mechanical paths. Opportunity state remains a
+per-Prediction directional gate: it affects whether a specific conflict can
+produce `missed`, not whether an eligible support can produce `matched`.
+
+**(q-41.5) Runtime correction and change boundary**
+
+The pure core now evaluates all three canonical conjuncts. Its attribution reason
+is emitted only when runtime classification exists and attribution authority is
+missing, so a policy-denied row is not mislabeled `attribution-unknown`. P4
+`describe()` reports the canonical formula; the Matcher description declares that
+its runtime-classification field already includes policy/source decisiveness.
+
+```
+RUNTIME_SEMANTIC_CHANGE = YES
+CHANGE_SCOPE = READ_ONLY_P4_CAPABILITY_PROJECTION_AND_REASON_REPORTING
+VALID_CURRENT_TYPE_VALUES_CHANGED = NO
+P3_SETTLEMENT_CHANGED = NO
+P4_INGEST_CHANGED = NO
+P4_COUNTS_OR_DEDUPE_CHANGED = NO
+MATCHER_ENABLED_DEFAULT = false
+```
+
+All four supported P3 types currently have at least one decisive source. The new
+policy conjunct therefore does not change a valid production partition's value;
+it closes the invalid/disallowed pure-core case and protects future policy
+tables. No Calibration Application, confidence formula, writeback, or new
+prediction producer was added.
+
+**(q-41.6) Verification**
+
+```
+PREFERENCE_MECHANICAL_WITH_MATCHER_OFF = productionSettleable true
+STATEMENT_CLASSIFICATION_WITH_MATCHER_OFF = productionSettleable false
+POLICY_DENIED_BUT_MECHANICALLY_CLASSIFIABLE = productionSettleable false
+NO_ELIGIBLE_SAMPLE_ORTHOGONAL = YES
+CAPABILITY_GAP_ORTHOGONAL = YES
+AUTOMATIC_MATCHED_SAMPLE_INGEST = YES
+AUTOMATIC_MISSED_SAMPLE_INGEST = YES
+DUPLICATE_SAMPLE_COUNT = 0
+CALIBRATION_CONFIDENCE = null
+CALIBRATION_APPLIED_TO_LIVE = NO
+P5_B3_J_R2_STATUS = COMPLETE
+P5_B3_J_R2_FREEZE = FROZEN
+```
+
+Passing suites: `test_prediction_calibration_ledger` (115),
+`test_calibration_capability_truth` (22), `test_calibration_production_driver` (12),
+`test_prediction_error_product_e2e` (31), `test_prediction_settlement_core` (81),
+`test_evidence_matcher` (136), `test_subjective_prediction_feedback` (40), and
+`test_reality_feedback_driver` (29).
+
+The P3 reachability diagnostic is intentionally not recalculated in J-R2. It is
+domain-coarse for statement-only subjective domains; the P3 product tests remain
+the evidence for the mechanical preference token path. This diagnostic granularity
+is a remaining audit item if a later phase needs per-payload reachability reporting.
+
+**(q-41.7) Producer and opportunity scope clarification**
+
+The formula is the P4 classifier/policy/attribution capability for an existing
+canonical Prediction partition. It does not turn on a P2 producer. The current G1
+structured expectation projection emits only `preference`; `event`,
+`latent_state`, and `relational` remain unproduced by that path.
+
+All four P2 policies require opportunity evidence for a negative result, but the
+current `runtime-subjective-opportunity-authority` only recognizes scoped
+preference choices. Thus J-R2 does not claim that event/latent/relational negative
+settlements are production-live. Opportunity is a per-record P3 directional
+gate; it is outside the P4 type-level formula.
+
+```
+HEAD = 64ea0a616a23acff27d03ea0172ba38372465df4 (unchanged)
+COMMIT = NO · PUSH = NO · AMEND = NO
+ENCODING_DEBT = OPEN
+```
+
+## q-42 · P5-B3-D5 TurnTerminal Outcome Directional Semantics
+
+**(q-42.1) Audit result**
+
+D3's terminal fact is minted by `execution.js#settleTurnOutcome/finalize` with
+`turnId`, `characterId`, `conversationId`, `requestCorrelationId`, `outcome`,
+and `occurredAt`. Current literal outcomes include `completed`,
+`credential-unavailable`, `empty-output`, and `store-write-failed`;
+`classify(error)` also yields `abort`, `timeout`, `provider-error`, and an open
+`kind` passthrough (the canonical Node Model Port can produce `unknown`). Thus
+the execution outcome vocabulary is not globally closed. D5 mechanically
+recognizes only existing codes:
+
+```
+completed · credential-unavailable · empty-output · store-write-failed ·
+abort · timeout · cancelled · provider-error
+```
+
+Unknown and future provider-specific kinds still mint as factual RealityEvents
+when D3 emits them, but P1 refuses terminal directional projection. It does not
+convert unknown to conflict.
+
+The D4 source adapter continues to map only `body: { outcomeCode }`, with
+`entityId = turnId`, event-time timestamp, canonical character/conversation
+scope, and an event ID independent of Prediction. It owns no relation,
+settlement, opportunity, or calibration field. P1 uses its existing
+runtime-state token owner to map a recognized outcome to
+`runtime.turn_terminal.<outcomeCode>`. P3 imports only that pure token parser and
+remains the deterministic relation owner.
+
+**(q-42.2) Frozen D5 relation and pairing**
+
+```
+event / runtime_state / same turn / expected token == observed terminal token
+  → support
+
+event / runtime_state / same turn / two distinct recognized terminal tokens
+  → conflict
+
+other proposition family or non-event Prediction
+  → irrelevant
+
+generic terminal family token, unknown suffix, unknown outcome code
+  → unclassifiable / refused
+```
+
+The recognized terminal codes are mutually exclusive because the D3 authority
+allows one terminal decision per turn. P1's Registry pairing requires exact
+character, conversation, window, and
+`Prediction.sourceExpectationRef.turnId == RealityEvent.entityId`; a terminal
+fact for Turn A cannot pair to a Prediction sourced from Turn B. Multi-Prediction
+fanout remains valid for several Predictions bound to the same turn. Neither
+RealityEvent nor its identity gains a Prediction ID; P1 observation identity is
+unchanged.
+
+`runtime.turn_terminal` remains in the P1 token vocabulary as a generic fact
+marker, but lacks an expected outcome and can no longer be decisive in P3 by
+itself. The D5-specific tokens are appended to the existing P1 runtime-state
+vocabulary; no parallel proposition grammar or Prediction type was added.
+
+**(q-42.3) Opportunity and production boundary**
+
+The exact `completed` support path runs through terminal fact → RealityEvent →
+same-turn P1 observation → P3 `matched` / `calibrationCounted=true`; the existing
+P4 driver automatically ingests that sample. A recognized mismatched outcome is
+mechanically `conflict`, but the current opportunity authority does not resolve
+event `runtime-execution` opportunities. P3 therefore keeps opportunity
+`UNKNOWN`, refuses `missed`, and does not count a sample. No opportunity is
+fabricated.
+
+The D5 relation capability is live for canonical P2 event fixtures. The G1
+structured prediction producer remains `preference`-only, so automatic
+production creation of event Predictions remains unavailable. Matcher stays
+disabled; exact terminal and cross-outcome mechanical relation use no model.
+
+**(q-42.4) Verification**
+
+```
+TERMINAL_EXACT_MATCH = support
+TERMINAL_MUTUALLY_EXCLUSIVE_MISMATCH = conflict
+OTHER_PROPOSITION = irrelevant
+UNKNOWN_OR_MALFORMED_OUTCOME_CANNOT_CONFLICT = YES
+WRONG_TURN_OR_SCOPE_CANNOT_PAIR = YES
+ONE_REALITY_EVENT_TO_MULTI_PREDICTIONS = YES (same bound turn)
+REPLAY = one RealityEvent / one dispatch / one Settlement per Prediction
+MATCHER_CALLS = 0
+P3_SETTLEMENT_AUTHORITY_CHANGED = NO
+P4_INGEST_SEMANTICS_CHANGED = NO
+CALIBRATION_CONFIDENCE = null
+CALIBRATION_APPLIED_TO_LIVE = NO
+EVENT_PRODUCTION_PREDICTION_CREATION = NOT_YET_LIVE
+D5_DIRECTIONAL_RELATION = COMPLETE
+D5_DECISIVE_NEGATIVE_SETTLEMENT = BLOCKED_BY_EVENT_OPPORTUNITY
+P5_B3_D5_STATUS = COMPLETE
+P5_B3_D5_FREEZE = FROZEN
+```
+
+Passing D5 suite: `test_turn_terminal_directional_semantics` (21).
+The requested terminal, observer, execution, runtime-fact, P1, P3, P4, feedback,
+registry, Matcher, and product regressions all passed. The event opportunity gap
+and preference-only G1 producer remain explicit follow-up boundaries; D5 does not
+enter Calibration Application or alter P3/P4 authority.
+
+**(q-42.5) Historical blocker supersession**
+
+The earlier q-30/q-31 notes that P1 lacked the `runtime.turn-execution`
+observer and that no production subscriber paired RealityEvents are historical.
+D4-R1 added the exact observer; D4-R3 wired the post-mint RealityEvent subscriber
+to Registry pairing, P1 projection, and P3 settlement. D5 closes the remaining
+directional outcome gap. The generic `runtime.turn_terminal` token remains
+admissible at P1 but is unclassifiable for decisive P3 relation without an
+outcome-specific token.
+
+```
+HEAD = 64ea0a616a23acff27d03ea0172ba38372465df4 (unchanged)
+COMMIT = NO · PUSH = NO · AMEND = NO
+ENCODING_DEBT = OPEN
+```
+
+## q-43 · P5-B3-D5-R1 Event Negative Opportunity Authority
+
+**(q-43.1) Audit: terminal finality and current opportunity contract**
+
+P2 event Predictions derive `opportunity.kind = runtime-execution` and require
+opportunity evidence for negative settlement. P1's opportunity gate permits
+conflict only when a canonical-runtime opportunity is both present and consumed;
+P3 still decides the final settlement state.
+
+D3 execution is the terminal finality owner. It internally mints the turn ID,
+freezes the turn context, and sends every post-instance outcome through one
+`finalize()` / `settleTurnOutcome()` seam before notifying the downstream source.
+The only production turn executor refuses a concurrent replacement in the same
+conversation. A repeated `requestId` is stopped by store-backed idempotency before
+a second turn is created; a distinct request creates a distinct owner-minted turn.
+Abort, timeout, and cancellation use the same terminal seam. There is no later
+turn-replacement transition that can append another legitimate terminal result to
+the same turn. The D3 terminal holder is bounded to 256 entries and RealityEvent
+holding is session-bounded; R1 therefore proves opportunity only from a currently
+held sealed event and makes no durable-history or absence claim.
+
+The source adapter continues to emit only the factual `outcomeCode`, turn entity,
+scope, and event timestamp. RealityEvent identity remains independent of
+Prediction. Neither the source nor the RealityEvent contains relation, settlement,
+opportunity, or Prediction identity.
+
+**(q-43.2) Frozen independent opportunity owner**
+
+`runtime-event-opportunity-authority` is distinct from the subjective preference
+owner. Given a canonical event Prediction and P1-built OutcomeObservation, it
+resolves the first evidence reference through the RealityEvent authority's held
+sealed-event lookup. It then verifies exact terminal source provenance, the
+canonical terminal event ID and known outcome token, `runtime_state`, P2 event /
+`exclusive_outcome` semantics, same character and conversation,
+`sourceExpectationRef.turnId == RealityEvent.entityId`, and the event timestamp
+within the prediction window.
+
+Its stable identity uses terminal family, RealityEvent ID, turn, character,
+conversation, and occurrence time. It contains no `predictionId` or
+`observationId`; separate P1 observations for same-turn Predictions therefore
+share one logical opportunity. Unknown outcomes, forged/unheld events, wrong
+scope/turn/family/window, and a missing terminal observation return `UNKNOWN`.
+The authority never reads relation, so `conflict -> opportunity` is impossible.
+
+```text
+canonical same-turn recognized terminal fact → opportunity SATISFIED
+no terminal observation → opportunity UNKNOWN
+unknown terminal outcome → fail closed
+relation owner = P3 · opportunity owner = runtime-event-opportunity-authority
+settlement owner = P3 (unchanged)
+```
+
+P3 obtains an authority-sealed resolution, passes its opportunity object to the
+P1 gate, and independently classifies the outcome relation. Exact outcome match
+continues to settle `matched`. A recognized mutually-exclusive mismatch with the
+same-turn opportunity can settle `missed`. The automatic RealityEvent subscriber
+then sends clean matched/missed SettlementRecords to the existing P4 driver.
+BehaviorEffect contamination remains authoritative: an influenced `missed`
+record is not calibration-counted.
+
+**(q-43.3) Verification and production boundary**
+
+The R1 suite includes a production `buildHomeNode()` assembly path driven only by
+`executeCharacterTurn`: actual `completed` reaches `matched`; actual `timeout`
+against expected `completed` reaches relation `conflict`, authoritative
+opportunity `SATISFIED`, P3 `missed`, and automatic P4 missed ingestion. The
+asserted manual opportunity, feedback, and calibration-ingest counts are all 0.
+It also covers multi-Prediction fanout, prediction-independent opportunity
+identity, wrong scope/proposition, missing facts, forged events, unknown outcome,
+100x replay, and contamination.
+
+```
+EVENT_OPPORTUNITY_AUTHORITY = LIVE
+TERMINAL_SUPPORT = matched
+TERMINAL_CONFLICT = missed (clean, same turn, recognized terminal outcome)
+WRONG_SCOPE_CANNOT_SATISFY = YES
+NO_TERMINAL_FACT != OPPORTUNITY_SATISFIED
+UNKNOWN_TERMINAL_FAILS_CLOSED = YES
+TEST_MANUAL_OPPORTUNITY_INJECTION = 0
+TEST_MANUAL_FEEDBACK_CALLS = 0
+TEST_MANUAL_CALIBRATION_INGEST = 0
+MATCHER_CALLS = 0
+P3_SETTLEMENT_AUTHORITY = UNCHANGED
+P4_SEMANTICS_CHANGED = NO
+CALIBRATION_CONFIDENCE = null
+CALIBRATION_APPLIED_TO_LIVE = NO
+EVENT_PRODUCTION_PREDICTION_CREATION = NOT_YET_LIVE
+D5_DECISIVE_NEGATIVE_SETTLEMENT = LIVE
+P5_B3_D5_R1_STATUS = COMPLETE
+P5_B3_D5_R1_FREEZE = FROZEN
+```
+
+Passing suites: `test_event_opportunity_authority` (16) and
+`test_turn_terminal_directional_semantics` (21). The event producer remains
+G1 preference-only; Matcher and Calibration Application remain off.
+
+## q-44 · P5-B3-G2 Production Structured Terminal Event Prediction
+
+**(q-44.1) G1 schema and P2 audit**
+
+G1's candidate kind vocabulary already contains `event`, but its structured
+payload only normalized preference fields (`targetKey`, `stance`); non-preference
+kinds survived only as kind-only candidates. Runtime production admission allowed
+`preference` alone. Thus `event` was known to the candidate enum and P2 TYPE_TABLE,
+but G1 could neither express a terminal outcome nor project it.
+
+P2 already supports `event` / `exclusive_outcome`. G2 leaves TYPE_TABLE, P2 schema,
+Prediction identity, and P3/P4 semantics unchanged. The runtime composes
+`subject=system`, `predicate=will-occur`, and `expectedOutcome.kind=exclusive-outcome`,
+then verifies the tuple with the P2 `derivePredictionType` authority.
+
+The optional structured candidate schema is now v3 with candidate v2. It has two
+production shapes: the existing preference candidate, and
+`{kind:event,eventFamily:turn_terminal,expectedOutcome:<code>}`. It does not accept
+a model-supplied token, target domain, mechanism, scope, or identity. The runtime
+uses P1's existing closed D5 parser to create
+`runtime.turn_terminal.<recognized-outcomeCode>`; unknown and malformed values
+produce no Prediction. Free-text `prediction` is not parsed to select an outcome.
+
+**(q-44.2) Execution turn binding and sole projection seam**
+
+The G1 recall identity and D3 execution identity are different authorities. G2
+therefore projects an event candidate only if the execution runtime reports an
+active immutable D3 turn with the same conversation, character, and
+`requestCorrelationId` as the recall cognition request. P2 receives that D3
+`turnId`; it never receives the recall turn ID as a substitute. A late candidate,
+missing active turn, or request mismatch is skipped, so a terminal fact cannot be
+borrowed from a neighboring execution. The D3 addition is read-only active-turn
+binding; it does not alter turn minting or terminal finality.
+
+The existing `runtime-structured-expectation → runtime-expectation →
+projectFromValidatedExpectation` path remains the sole P2 insertion seam. G1
+preference projection remains active; latent-state, relational, and arbitrary
+event families remain production-disabled. L5 stays non-blocking: if it does not
+finish while the matching D3 turn is active, the event candidate safely creates
+no Prediction.
+
+**(q-44.3) Production verification and boundaries**
+
+The G2 product E2E runs production Home Node cognition while a real D3
+`executeCharacterTurn` is held active. It proves runtime-created event Predictions
+use the exact D3 turn ID, then releases real `completed` and `timeout` terminal
+outcomes through the existing RealityEvent → P1 → P3 → P4 path. One completed fact
+fans out to expected `completed` / `timeout` Predictions and produces `matched` /
+`missed`; a separate real timeout produces `missed`. Recalling the same cognition
+request does not repeat L5 or change Prediction IDs. A different request ID in the
+same conversation creates no event Prediction for that execution.
+
+```text
+PRODUCTION_STRUCTURED_EVENT_PREDICTION = ENABLED
+PRODUCTION_EVENT_PROJECTION_FAMILY = runtime.turn_terminal
+MODEL_MAY_PROPOSE_TERMINAL_EVENT = YES
+MODEL_MAY_MINT_EVENT_PREDICTION = NO
+MODEL_MAY_DEFINE_TERMINAL_TOKEN_GRAMMAR = NO
+EVENT_SCOPE_IS_RUNTIME_AUTHORITY = YES
+EVENT_PREDICTION_ID_IS_RUNTIME_AUTHORITY = YES
+UNKNOWN_TERMINAL_EXPECTATION_FAILS_CLOSED = YES
+FREE_TEXT_TO_EVENT_PREDICTION = FORBIDDEN
+TEST_MANUAL_PREDICTION_INSERTS = 0
+TEST_MANUAL_OPPORTUNITY_INJECTION = 0
+TEST_MANUAL_FEEDBACK_CALLS = 0
+TEST_MANUAL_CALIBRATION_INGEST = 0
+MATCHER_CALLS = 0
+P3_SEMANTICS_CHANGED = NO
+P4_SEMANTICS_CHANGED = NO
+CALIBRATION_CONFIDENCE = null
+CALIBRATION_APPLIED_TO_LIVE = NO
+EVENT_PRODUCTION_PREDICTION_CREATION = LIVE
+P5_B3_G2_STATUS = COMPLETE
+P5_B3_G2_FREEZE = FROZEN
+```
+
+Passing G2 suites: `test_structured_event_prediction_projection` (8),
+`test_structured_expectation_projection` (36), and
+`test_prediction_error_product_e2e` (36). The event family is available only
+when cognition finishes during the matching active D3 turn; no late or
+cross-request backfill is performed.
+
+## q-45 · P5-B3-K Free-text Explicit Report Candidate / Confirmation
+
+**(q-45.1) Candidate authority boundary**
+
+Raw chat text is never a canonical Explicit Report. A deterministic first-person
+reader may propose only a `user_preference` candidate for exact current like or
+dislike wording whose target passes the shared preference proposition grammar.
+Quoted, hypothetical, historical, third-person, question-form, uncertain, and
+ambiguous text produces no candidate. Candidate extraction is independent of
+Middle Brain and never enters Memory Ops, Calendar, Workspace, disclosure, or
+relationship write authority.
+
+The public candidate contains only version, stance, canonical target key, and
+source message reference. Candidate ID, source content snapshot, scope snapshot,
+status, expiry, and retry identity are private session state, bounded to 15
+minutes and 32 candidates. Candidate identity is not report/action identity.
+Confirmation revalidates active character/thread and the unchanged canonical
+source user message; stale scope, deleted/changed source, expiry, or lost session
+is rejected.
+
+**(q-45.2) Confirmation and sole report producer**
+
+An explicit user click is required. Confirm sends a closed five-key request via
+the credentialed Home Node client to the already-existing
+`POST /internal/user-reports/preference` route. That seam remains the sole
+Explicit Report ingress and its existing runtime authority remains the only
+report producer and validator. Candidate ID and source text are not sent.
+Replay uses the same structured action request ID and existing report/event
+idempotency. Decline and no-confirmation/expiry make zero report, RealityEvent,
+settlement, P4, or Memory writes. Confirmation itself performs no Memory,
+relationship, disclosure, `cal_note`, or `ws_*` action.
+
+**(q-45.3) Verified product path and frozen non-goals**
+
+Production E2E starts from the candidate-only reader, requires the session
+confirmation action, and then uses the existing report HTTP route. An expected
+`pref.like.scifi` Prediction is matched by confirmed `I like scifi`; the opposite
+`I dislike scifi` candidate is confirmed into the same route and settles the
+Prediction as missed through the existing subjective opportunity and P4 chain.
+No direct report mint, manual RealityEvent, manual feedback, or Matcher call is
+used. Evidence Matcher remains default-off and Calibration is not applied to
+live decisions.
+
+```text
+FREE_TEXT_EXPLICIT_REPORT_SUPPORT = CONFIRMATION_GATED
+RAW_CHAT_TEXT_IS_EXPLICIT_REPORT = NO
+FREE_TEXT_CANDIDATE_IS_AUTHORITY = NO
+CONFIRMATION_IS_REQUIRED = YES
+CONFIRMATION_REUSES_EXISTING_REPORT_AUTHORITY = YES
+SECOND_EXPLICIT_REPORT_VALIDATOR = NO
+NO_CONFIRMATION_REPORT_COUNT = 0
+DECLINE_REPORT_COUNT = 0
+FREE_TEXT_MATCHED_E2E = LIVE
+FREE_TEXT_MISSED_E2E = LIVE
+MEMORY_WRITE_FROM_CONFIRMATION = 0
+EVIDENCE_MATCHER_ENABLED_DEFAULT = false
+CALIBRATION_APPLIED_TO_LIVE = NO
+P5_B3_K_STATUS = COMPLETE
+P5_B3_K_FREEZE = FROZEN
+```
+
+## q-46 · P5-B3-L Evidence Matcher Production Admission
+
+This addendum admits the existing Evidence Matcher implementation to the
+production P3 relation-classification seam. Production capability is live while
+enablement remains explicitly opt-in:
+
+```text
+MATCHER_PRODUCTION_CAPABILITY = LIVE
+EVIDENCE_MATCHER_ENABLED_DEFAULT = false
+PROCESS_OPT_IN = IB_EVIDENCE_MATCHER_ENABLED=1
+BUILD_INSTANCE_OPT_IN = evidenceMatcherEnabled:true
+COMPILED != ENABLED != PRODUCTION_SETTLEABLE
+PRODUCTION_SETTLEABLE_FORMULA = policyAllowed && runtimeClassifiable && attributionAuthorityAvailable
+```
+
+There is one production classification call seam:
+`runtimePredictionSettlement.settlePredictionWithEvidenceMatcher`. The
+RealityEvent feedback driver may select that same P3 method under explicit
+enablement; it never calls the Matcher directly. With enablement off, feedback
+continues to use synchronous `settlePrediction`. P3 recomputes P1 authority
+gates and remains the only settlement-state authority.
+
+Mechanical token relation classification takes priority and consumes no model
+call. Semantic classification is limited to statement observations belonging to
+the existing P3 subjective type set. A P1 directional ceiling of `ELIGIBLE` or
+`SUPPORTING` is required to reach the Matcher. `SUPPORTING` stays non-decisive;
+Matcher output cannot upgrade source or domain, create Opportunity, declare
+Explicitness, or choose settlement state. The verified P1 path is
+`LINGUISTIC_EVIDENCE → relationship` (`SUPPORTING`). Its
+`LINGUISTIC_EVIDENCE → latent_state` path remains forbidden by the P1 matrix.
+
+Credential policy reuses system/character registry configuration, the existing
+read-only Credential Access layer, and Credential Vault. Evidence-provided
+provider, model, endpoint, API key, or credential reference override is ignored
+or rejected. Missing Vault material fails closed without a plaintext fallback
+or key creation.
+
+The existing budgets remain hard ceilings: four calls per P3 settlement
+attempt, four per Prediction, and eight per canonical P2 turn. P3 passes an
+opaque attempt token; character and turn identities come from P2. The session
+memo is bounded to 256 sealed entries with a 10 minute TTL; its key includes
+Prediction and observation fingerprints, Matcher version, and schema version.
+Success/failure memo policy remains `SUCCESS_AND_FAILURE`. Each call has an 8
+second default timeout, a 20 second maximum, and zero retries. Timeout, provider
+failure, invalid output, and budget exhaustion cannot produce support or
+conflict.
+
+This phase adds no P1 producer and no automatic raw-chat-to-statement path. The
+admission E2E uses the existing canonical `linguistic-evidence` P1 producer in a
+fixture with the actual Home Node P2/P3/Matcher assembly. The live RealityEvent
+projector still supplies mechanical token observations. A negative relation
+cannot settle as missed while its source ceiling is supporting or Opportunity
+is unknown. Matcher enablement does not change K confirmation, G2 terminal
+semantics, structured preference classification, P4 behavior, or live
+Calibration Application.
+
+```text
+MATCHER_ON_STATEMENT_RELATION = LIVE
+ONE_MATCHER_PRODUCTION_CALL_SEAM = YES
+MECHANICAL_RELATION_PRECEDES_MATCHER = YES
+MATCHER_RELATION_SET = support | conflict | irrelevant | ambiguous
+MATCHER_STRENGTH_AUTHORITY = NONE
+EVIDENCE_SUPPLIED_CREDENTIALS = IGNORED
+VAULT_DISCIPLINE_PRESERVED = YES
+MATCHER_MAY_NOT_UPGRADE_SOURCE = YES
+MATCHER_MAY_NOT_UPGRADE_DOMAIN = YES
+MATCHER_MAY_NOT_CREATE_OPPORTUNITY = YES
+MATCHER_MAY_NOT_DECLARE_EXPLICITNESS = YES
+MATCHER_MAY_NOT_CHOOSE_SETTLEMENT = YES
+DECISIVE_NEGATIVE_SETTLEMENT = BLOCKED_BY_SOURCE_CEILING_AND_OR_OPPORTUNITY
+P3_SETTLEMENT_AUTHORITY = UNCHANGED
+P4_SEMANTICS_CHANGED = NO
+CALIBRATION_APPLIED_TO_LIVE = NO
+P5_B3_L_STATUS = COMPLETE
+P5_B3_L_FREEZE = FROZEN
+EVIDENCE_MATCHER_PRODUCTION_ADMISSION = LIVE
+```
+
+## q-47 · P5-B3-L-R1 Production Linguistic Evidence Observation Producer
+
+**(q-47.1) Canonical message fact ownership**
+
+```text
+USER_MESSAGE_FACT_AUTHORITY = HOME_NODE_CANONICAL_CHAT_STORE
+PRODUCER_TRIGGER = NEW_ROLE_USER_MESSAGE_ROW_AFTER_COMMIT
+PRODUCER_INPUT = STORE_SEALED_FACT_ONLY
+PRODUCER_MAY_NOT_READ_DOM_OR_COMPOSER = YES
+CHAT_SEND_MUST_NOT_WAIT_FOR_EVIDENCE = YES
+```
+
+The chat store emits a private sealed fact only after a new user row commits.
+The fact contains only source message ID, stored friend/character ID,
+conversation/thread scope, the server-owned change-log commit time, and bounded
+message content. It contains no chat history, attachments, images, voice data,
+metadata, Memory, credentials, prediction ID, or settlement result. The
+Home Node's persisted row is the fact owner; the adapter does not create a
+second chat record.
+
+**(q-47.2) Existing P1 producer and scope policy**
+
+The adapter invokes the existing `runtime-outcome-observation.mintObservation`
+with fixed `producerId=linguistic-evidence`. P1's producer table fixes source
+and sourceInstance. The first production target is the existing `preference`
+Prediction family with P1-permitted `user_preference` statement domain; its
+`LINGUISTIC_EVIDENCE` ceiling is `SUPPORTING`. `latent_state` stays `FORBIDDEN`
+for this source. No P1 matrix change, RealityEvent language source, or parallel
+Observation mint is added. Pairing uses the existing P1 candidate helper and
+canonical P2 registry; source fact identity is the canonical source message ID,
+independent of Prediction identity.
+
+Same-ID request replay and store retries yield one logical linguistic fact.
+Only first creation emits; same-ID edits do not reemit, and soft delete does not
+retract an existing session fact. Historical batch migration is not treated as
+a new live user utterance. The evidence producer has bounded session-only
+dedupe/pending state and never persists message text as a second evidence
+record.
+
+**(q-47.3) K, Matcher, P3/P4 isolation**
+
+```text
+RAW_CHAT_TEXT_IS_EXPLICIT_REPORT = NO
+LINGUISTIC_EVIDENCE != EXPLICIT_USER_REPORT
+LINGUISTIC_EVIDENCE != MEMORY
+MATCHER_MAY_CLASSIFY_RELATION = YES
+MATCHER_MAY_DECLARE_EXPLICITNESS = NO
+MATCHER_MAY_UPGRADE_SOURCE_OR_DOMAIN = NO
+MATCHER_MAY_CREATE_OPPORTUNITY = NO
+MATCHER_MAY_CHOOSE_SETTLEMENT = NO
+```
+
+The adapter calls only the existing P3 settlement API. If Matcher is off, the
+statement may remain unclassifiable and chat still succeeds. When enabled,
+Matcher relation remains advisory; the P1 supporting ceiling and independent
+Opportunity gate remain in force. Provider/Vault/timeout/schema failures do not
+fail the chat write or change the stored user fact. Existing P4 consumes only
+settlements marked calibration-counted; no live Calibration Application is
+added.
+
+```text
+CANONICAL_USER_MESSAGE_MAY_PRODUCE = LINGUISTIC_EVIDENCE
+LINGUISTIC_EVIDENCE_DOMAIN = user_preference
+LINGUISTIC_EVIDENCE_CEILING = SUPPORTING
+P1_MATRIX_CHANGED = NO
+REALITY_EVENT_LANGUAGE_SOURCE_ADDED = NO
+USER_MESSAGE_REPLAY_100X = ONE_LOGICAL_FACT
+MESSAGE_EDIT_REEMITS_FACT = NO
+MESSAGE_DELETE_RETRACTS_FACT = NO
+CHAT_SEND_SUCCESS_INDEPENDENT_OF_PROJECTION = YES
+TEST_MANUAL_LINGUISTIC_EVIDENCE_INSERTS = 0
+TEST_MANUAL_OBSERVATION_INSERTS = 0
+TEST_MANUAL_FEEDBACK_CALLS = 0
+EVIDENCE_MATCHER_ENABLED_DEFAULT = false
+K_CONFIRMATION_SEMANTICS_CHANGED = NO
+MEMORY_WRITE_FROM_LINGUISTIC_EVIDENCE = 0
+CALIBRATION_APPLIED_TO_LIVE = NO
+RAW_CHAT_TO_STATEMENT_OBSERVATION = LIVE
+P5_B3_L_R1_STATUS = COMPLETE
+P5_B3_L_R1_FREEZE = FROZEN
+```
+
+## q-48 · P5-B3-N Single-Home Prediction Error v1 Engineering Closure
+
+This append-only status entry supersedes no historical q-44 through q-47 phase
+result. It records the current single-Home-Node v1 readiness; the original R4-A
+header remains the historical foundation-contract snapshot.
+
+```text
+PREDICTION_ERROR_V1_SCOPE = SINGLE_HOME_NODE
+SINGLE_HOME_PREDICTION_ERROR_PRODUCTION_CHAIN = CLOSED
+PREDICTION_ERROR_V1_STATUS = ENGINEERING_CLOSED
+PREDICTION_ERROR_V1_FREEZE = FROZEN
+MULTI_HOME_PREDICTION_ERROR = DEFERRED_BY_PLATFORM_DEPENDENCY
+MULTI_HOME_NODE_OWNER_BINDING = NOT_LIVE
+MULTI_HOME_NODE_FEEDBACK_ROUTING = BLOCKED
+CALIBRATION_APPLICATION = INTENTIONALLY_DEFERRED
+CALIBRATION_CONFIDENCE = null
+CALIBRATION_APPLIED_TO_LIVE = NO
+RESTART_RECOVERY = NONE
+DURABLE_PREDICTION_REGISTRY = NO_V1
+EVIDENCE_MATCHER_ENABLED_DEFAULT = false
+```
+
+The M audit blocker does not block the single-Home-Node v1 loop. The canonical
+capability matrix, test baseline, authority invariants, durability, deferred
+registry, and future commit candidate are recorded in
+[`PREDICTION_ERROR_V1_CLOSURE.md`](PREDICTION_ERROR_V1_CLOSURE.md).
+
+## q-49 · P21-R4-K Contextual Reinterpretation
+
+This append-only phase uses **R4-K** because the existing roadmap already assigns
+R4-H to Semantic Forgetting, R4-I to Shared Memory / Self Narrative, and R4-J to
+Unreliable Recollection. It does not rename or replace those historical entries.
+
+The implementation extends the existing `memory-interpretation-core.js` and
+`runtime-interpretation.js` seam. It does not add a parallel Association
+interpreter. Direct Recall remains the selection authority; the bounded R3
+working set supplies related evidence, relation provenance, and tension sets to
+the same core and runtime.
+
+```text
+CANONICAL_MEMORY != CURRENT_INTERPRETATION
+CURRENT_INTERPRETATION_IS_DERIVED = YES
+INTERPRETATION_MAY_CHANGE_OVER_TIME = YES
+INTERPRETATION_MAY_REWRITE_CANONICAL_MEMORY = NO
+INTERPRETATION_MAY_DELETE_OR_MERGE_MEMORY = NO
+INTERPRETATION_MAY_CHANGE_PROVENANCE = NO
+INTERPRETATION_MAY_DECLARE_HISTORICAL_FACT_FALSE = NO
+ASSOCIATION_RELATIONS_ARE_TRUTH_AUTHORITY = NO
+DIRECT_RECALL_RESELECTION_FROM_INTERPRETATION = NO
+```
+
+The bounded input envelope contains the direct anchors, any admitted R3
+associated memories, each memory's activation reason, and relation edges with
+their basis and pair role. Direct memories retain priority; the combined input
+cannot exceed eight memories. The model receives at most twelve relation edges
+and the R3 depth-one tension view. The current user message supplies the current
+topic, and the character DTO's configured `relationship` supplies relationship
+context. No canonical current-emotion owner exists. The browser has an
+`IBContextSnapshot` assembled for Middle Brain, but the Home Node Recall request
+does not carry it; it is not authoritative input at this interpreter seam.
+Current emotion and Home Node cognitive snapshot are therefore explicitly
+`NOT_AVAILABLE`.
+
+The derived `memory-reinterpretation-v1` view separates historical fact claims,
+historical emotions, current knowledge, current beliefs, unresolved tensions,
+corrections considered, context dimensions, and uncertainty. Historical emotions
+remain a separate section when later facts change a current belief. A conflict
+can remain unresolved; neither Association labels nor the model select a truth
+winner. The closed schema has no mutation or side-effect fields, and Runtime does
+not execute a Memory, state, BehaviorEffect, Prediction Error, or Self Narrative
+operation from this result.
+
+The result is runtime-only. It has no durable canonical meaning field and no
+interpretation cache keyed only by memory ID. Its deterministic identity includes
+the canonical memory-set fingerprint, Association fingerprint, context
+fingerprint, and schema version. The existing bounded Recall replay memo reuses
+the exact turn result; a different topic produces a different context identity.
+When the existing per-character auto-interpretation policy is enabled, the
+contextual call is limited to one model call, at most 1,200 ms, at most eight
+memories, and at most 1,200 delivered characters. Its output allowance is half
+the configured Recall budget, capped at 1,200 characters; calls are skipped when
+that allowance is below 500 characters. The derived
+meaning is added to that Recall's cognition context. With the policy disabled,
+insufficient budget, invalid output, timeout, or provider failure, Recall and
+Association context remain usable and the chat turn continues. Direct-only R4-C
+interpretation retains its existing nonblocking path.
+
+```text
+MEMORY_REINTERPRETATION_RUNTIME = LIVE_BEHIND_EXISTING_PER_CHARACTER_POLICY
+ASSOCIATION_TO_INTERPRETATION = LIVE
+CURRENT_MEANING_IS_DERIVED = YES
+INTERPRETATION_DURABILITY = RUNTIME_ONLY
+CANONICAL_MEMORY_WRITES_FROM_REINTERPRETATION = 0
+CANONICAL_MEMORY_DELETES_FROM_REINTERPRETATION = 0
+MEMORY_MERGES_FROM_REINTERPRETATION = 0
+RELATIONSHIP_WRITES_FROM_REINTERPRETATION = 0
+EMOTIONAL_STATE_WRITES_FROM_REINTERPRETATION = 0
+BEHAVIOR_EFFECT_WRITES_FROM_R4K_CONTEXTUAL_INTERPRETATION = 0
+PREDICTION_ERROR_WRITES_FROM_R4K_CONTEXTUAL_INTERPRETATION = 0
+SELF_NARRATIVE_WRITES_FROM_REINTERPRETATION = 0
+CURRENT_EMOTIONAL_CONTEXT = NOT_AVAILABLE
+CURRENT_COGNITIVE_SNAPSHOT = NOT_AVAILABLE
+CURRENT_TOPIC_SOURCE = VALIDATED_CURRENT_USER_MESSAGE
+RELATIONSHIP_SOURCE = CHARACTER_DTO_CONFIGURATION
+CONTEXTUAL_INTERPRETATION_TIMEOUT_MS = 1200
+CONTEXTUAL_INTERPRETATION_MAX_MEMORIES = 8
+CONTEXTUAL_INTERPRETATION_MAX_OUTPUT_CHARS = 1200
+INTERPRETATION_FAILURE_FALLBACK = RECALL_AND_ASSOCIATION_CONTEXT
+SELF_NARRATIVE_SCOPE = OUT_OF_SCOPE
+BEHAVIOR_CAUSALITY_SCOPE = OUT_OF_SCOPE
+SEMANTIC_FORGETTING_SCOPE = OUT_OF_SCOPE
+SHARED_MEMORY_SCOPE = OUT_OF_SCOPE
+META_MEMORY_SCOPE = OUT_OF_SCOPE
+MEMORY_DISTORTION_SCOPE = OUT_OF_SCOPE
+PREDICTION_ERROR_SCOPE = FROZEN
+P21-R4-K_STATUS = COMPLETE
+P21-R4-K_FREEZE = FROZEN
+```
+
+Deterministic fake-provider coverage is in `test_memory_reinterpretation_core.js`,
+`test_memory_reinterpretation_runtime.js`, and
+`test_memory_reinterpretation_product_e2e.js`. These tests verify the runtime
+seam and authority boundaries; they do not claim real-provider interpretation
+quality. The legacy R4 phase table above remains unchanged.
+
+## q-50 · P21-R4-L Autobiographical Relationship Narrative
+
+This append-only implementation entry uses R4-L, the next unused phase after
+R4-K. The roadmap's R4-I row already names Shared Memory / Self Narrative as a
+future concept. That historical row is unchanged; R4-L implements the
+Self-Narrative part without implementing Shared Memory.
+
+Audit found no production Self Narrative / autobiography / self-model state
+owner. The R4-I contract already sketches themes, beliefs, turning points,
+unresolved contradictions, evidence ids, and revision. `chatSummaries` is a
+bounded conversation recap; Diary and Letters are content records; Moments is
+the canonical social-post domain; Memory Consolidation writes canonical
+semantic Memory; Understanding is a separate user-understanding document. None
+is the authority for a character's current autobiographical belief. The
+relationship authority remains the character DTO's configured string; no
+dynamic Relationship Engine exists. The browser `IBContextSnapshot` is not
+carried through the Home Node Recall request.
+
+```text
+SELF_NARRATIVE_IS_DERIVED = YES
+SELF_NARRATIVE_IS_NOT_FACTUAL_HISTORY = YES
+SELF_NARRATIVE_IS_NOT_MEMORY_SUMMARY = YES
+SELF_NARRATIVE_IS_REVISIONABLE = YES
+SELF_NARRATIVE_MAY_CONTAIN_INTERPRETIVE_BIAS = YES
+SELF_NARRATIVE_MAY_CONTAIN_UNRESOLVED_TENSION = YES
+SELF_NARRATIVE_MAY_NOT_FABRICATE_HISTORICAL_EVENTS = YES
+SELF_NARRATIVE_MAY_NOT_DECLARE_CANONICAL_FACTS_FALSE = YES
+ASSOCIATION_AND_REINTERPRETATION_MAY_INFORM_SELF_NARRATIVE = YES
+SELF_NARRATIVE_DOMAINS = [self, relationship_with_user]
+SELF_NARRATIVE_IS_SHARED_MEMORY = NO
+```
+
+The single integration seam is after successful R4-K interpretation inside
+`runtime-recall.js`. It passes a bounded evidence envelope to the sole
+`runtime-self-narrative.js` owner: direct and associated Memory ids with
+activation reasons, filtered Association relations/tension sets, the validated
+R4-K current meaning and interpretation identity, and the previous session
+narrative. It does not rescan the Memory store or run a second Association or
+Interpretation pass. The Self Narrative prompt receives ids and derived claims,
+not raw Memory records or the Memory database.
+
+The closed `self-narrative-v1` schema requires themes and at least one current
+belief, with separate relationship beliefs, unresolved/resolved tensions,
+turning points, continuity claims, uncertainty, and per-claim Memory
+provenance. Runtime adds the R4-K interpretation ref and matching Association
+relation/tension refs to each validated claim. The schema has no event-summary
+only output, identity, version, Memory write, relationship update, persona
+update, behavior effect, Prediction, or shared agreement field. Runtime mints
+the narrative id/version from subject, evidence fingerprint, previous version,
+and schema version.
+
+```text
+SELF_NARRATIVE_DURABILITY = SESSION_ONLY
+SESSION_STATE_SCOPE = character+conversation
+SESSION_STATE_MAX_ENTRIES = 64
+SESSION_STATE_TTL_MS = 1800000
+SESSION_NARRATIVE_MAX_VERSIONS = 32
+SESSION_VERSION_HISTORY_IS_RETAINED_UNTIL_SESSION_EVICTION = YES
+SAME_EVIDENCE_REFRESH = NO_CHANGE_WITHOUT_MODEL_CALL
+NARRATIVE_MODEL_CALLS_PER_REFRESH = 1
+NARRATIVE_MODEL_TIMEOUT_MS = 1200
+SAME_EVIDENCE_FAILURE_RETRY_SUPPRESSION_MS = 300000
+CHANGED_EVIDENCE_MAY_REFRESH_AFTER_FAILURE = YES
+NARRATIVE_AUTO_RETRY = NONE
+NARRATIVE_MEMORY_REFS_MAX = 8
+NARRATIVE_ASSOCIATION_RELATIONS_MAX = 12
+NARRATIVE_TENSION_SETS_MAX = 8
+NARRATIVE_PREVIOUS_STATE_MAX_CHARS = 3200
+NARRATIVE_PROMPT_MAX_CHARS = 12000
+NARRATIVE_MODEL_OUTPUT_MAX_CHARS = 10000
+NARRATIVE_CONTEXT_OUTPUT_MAX_CHARS = 1200
+NARRATIVE_CONTEXT_OUTPUT_BUDGET_SHARE = 25_PERCENT_OF_RECALL_BUDGET
+NARRATIVE_AUTO_POLICY = EXISTING_R4K_PER_CHARACTER_POLICY
+NARRATIVE_AUTO_POLICY_DEFAULT = OFF
+```
+
+Session state is in process memory only; it resets on restart and is not
+exported into `chatSummaries`, `understanding_records`, `diary_entries`,
+`moments`, persona configuration, relationship configuration, or canonical
+Memory. Evidence-identical refreshes reuse the current narrative without a
+provider call. A new evidence fingerprint may produce a new version; identical
+validated narrative content reports `NO_CHANGE` and keeps its version. The
+session retains up to 32 full revisions; at the cap it serves the current
+narrative without silently discarding an earlier revision. A failed or timed
+out provider attempt suppresses another call for the same evidence fingerprint
+for five minutes; changed evidence can start a new refresh immediately. This
+suppression is session-local and does not extend the no-retry-per-refresh rule.
+
+```text
+CANONICAL_MEMORY_WRITES_FROM_SELF_NARRATIVE = 0
+CANONICAL_MEMORY_DELETES_FROM_SELF_NARRATIVE = 0
+MEMORY_MERGES_FROM_SELF_NARRATIVE = 0
+RELATIONSHIP_WRITES_FROM_SELF_NARRATIVE = 0
+PERSONA_WRITES_FROM_SELF_NARRATIVE = 0
+EMOTIONAL_STATE_WRITES_FROM_SELF_NARRATIVE = 0
+BEHAVIOR_EFFECT_WRITES_FROM_SELF_NARRATIVE = 0
+PREDICTION_ERROR_WRITES_FROM_SELF_NARRATIVE = 0
+SHARED_MEMORY_WRITES_FROM_SELF_NARRATIVE = 0
+SELF_NARRATIVE_FAILURE_FALLBACK = PREVIOUS_SESSION_NARRATIVE_OR_NO_NARRATIVE
+RECALL_ASSOCIATION_REINTERPRETATION_FAILURES = DO_NOT_FAIL_CHAT
+P21-R4-L_STATUS = COMPLETE
+P21-R4-L_FREEZE = FROZEN
+```
+
+Deterministic fake-provider coverage is in `test_self_narrative_core.js`,
+`test_self_narrative_runtime.js`, and `test_self_narrative_product_e2e.js`.
+They verify summary separation, provenance, revision/no-change, unresolved
+tension, failure fallback, and zero authority writes; real-provider narrative
+quality is not claimed. The earlier phase table and R4-I definition remain
+unchanged.
+
+## q-51 · P21-R4-M0 Behavior Influence Attribution and Shared Guidance
+
+M0 adds infrastructure only. It does not implement a Memory-derived posture,
+add posture dimensions, change R4-F output, modify Active Message policy, or
+change Prediction Error settlement semantics.
+
+```text
+EXTERNAL_RESPONSE_INFLUENCE != R4F_BEHAVIOR_EFFECT
+EXTERNAL_RESPONSE_INFLUENCE != BEHAVIOR_POSTURE
+BEHAVIOR_EFFECT_ATTRIBUTION_OWNER = RUNTIME_BEHAVIOR_EFFECT
+EXTERNAL_INFLUENCE_SOURCE_KINDS = [memory_behavior_modulation]
+EXTERNAL_INFLUENCE_CARRIES_POSTURE_OR_PROMPT_TEXT = NO
+EXTERNAL_INFLUENCE_REGISTRATION_DURABILITY = SESSION_ONLY
+UNACCOUNTED_EXTERNAL_INFLUENCE = ATTRIBUTION_UNKNOWN
+FALSE_KNOWN_NONE_WITH_REGISTERED_OR_CONSUMED_EXTERNAL_INFLUENCE = IMPOSSIBLE
+R4F_EFFECT_SCHEMA_OR_RENDERING_CHANGED = NO
+R4F_GUIDANCE_SOURCE_KIND = r4f_behavior_effect
+MEMORY_BEHAVIOR_MODULATION_IMPLEMENTED = NO
+```
+
+External participation lives inside the existing RUNTIME_BEHAVIOR_EFFECT
+authority as a separate bounded fact with a runtime-minted participation id.
+The API accepts only character, conversation, turn, and the closed source kind;
+it accepts no effect, posture, Memory, prompt, credential, or attribution-status
+payload. REGISTERED means a trusted server owner has created an influence
+candidate. CONSUMED is minted only by a server-side execution consumer after it
+validates and places the envelope in the final prompt. NOT_CONSUMED is available
+only to that trusted consumer when it can prove placement did not happen.
+Registered-but-unverified or consumed external participation makes the sealed
+snapshot UNKNOWN/PARTIAL when no R4-F effect is present. It never becomes a
+synthetic BehaviorEffect. `predictionInfluencedSystem` remains explicitly scoped
+to the R4-F BehaviorEffect subsystem.
+
+`response-guidance-v1` is the shared closed envelope. It binds character,
+conversation, request, and turn identity; carries bounded structured entries
+with source and provenance; rejects duplicates, unknown keys, scope mismatch,
+and free-text instructions; and delegates R4-F rendering to the existing fixed
+renderer. The M0-only `memory_behavior_modulation` fixture is test-gated and
+contains only a fixed marker. No R4-M posture schema or production producer is
+introduced.
+
+The Home Node Mobile execution consumer can verify placement before it records
+CONSUMED. Desktop `communication.js` renders the same envelope into its prompt,
+but the provider call remains browser-side and there is no trusted Home Node
+acknowledgment for that placement. Desktop therefore cannot claim CONSUMED; an
+unverified external registration remains UNKNOWN. This leaves
+`BLOCKED_BY_UNVERIFIABLE_CONSUMPTION` open and keeps R4-M blocked.
+
+```text
+RESPONSE_GUIDANCE_SHARED_CONTRACT = LIVE
+MOBILE_GUIDANCE_CONSUMER = LIVE
+DESKTOP_GUIDANCE_RENDERER = LIVE
+DESKTOP_CONSUMPTION_RUNTIME_VERIFIABLE = NO
+P21-R4-M0_STATUS = PARTIAL
+P21-R4-M0_FREEZE = NOT_FROZEN
+R4-M_REENTRY = STILL_BLOCKED
+```
+
+The 17-key Recall shape is the R4-F base. R3/R4-K/R4-L source-owned
+`association`, `reinterpretation`, and `selfNarrative` projections are
+append-only optional fields; Prediction/Expectation fields remain forbidden.
+The R4-F regression test now pins the base-key set and that explicit optional
+allowlist instead of a stale exact total.
+
+The OOC judge readiness failure was a test-fixture prerequisite mismatch: the
+CDP test attempted a Vault write from a browser without the native resolver.
+The harness now uses a fake legacy key only in its temporary Chrome IndexedDB;
+production configuration and the OOC readiness gate are unchanged.
+
+## q-52 · P21-R4-M0-R2 · Desktop fail-closed admission audit
+
+The project owner accepted Option B: trusted Desktop provider execution
+convergence is deferred platform work, and Desktop consumption remains
+unverifiable. The existing attribution owner correctly reports a registered
+Desktop influence without a trusted receipt as `unknown/partial`. This ruling
+does not by itself establish that an affected Prediction cannot reach P4 as a
+clean sample.
+
+The isolated guard `tests/test_r4m_desktop_admission.js` found a counterexample:
+a Prediction is created with `known-none`; an external influence is registered
+later; a subsequent outcome is `UNKNOWN`; and a prior clean decisive support
+observation lets P3 settle `matched` with `calibrationCounted=true`. The existing
+P4 driver then forwards that sealed settlement. R2 is therefore blocked until
+the calibration eligibility authority can account for outcome-time unknown
+external influence. R2 does not change P3/P4 semantics or bypass their owners.
+
+```text
+OPTION_B = OWNER_ACCEPTED
+DESKTOP_CONSUMPTION_RUNTIME_VERIFIABLE = NO
+DESKTOP_ATTRIBUTION_FAIL_CLOSED = LIVE
+UNVERIFIED_EXTERNAL_INFLUENCE_CLEAN_CALIBRATION = POSSIBLE
+P21_R4_M0_R2_STATUS = BLOCKED
+BLOCKER = BLOCKED_BY_CALIBRATION_FAIL_CLOSED_GAP
+P21_R4_M0_STATUS = PARTIAL
+R4_M_REENTRY = STILL_BLOCKED
+TRUSTED_DESKTOP_EXECUTION_CONVERGENCE = DEFERRED_PLATFORM_WORK
+```
+
+This addendum records the failed admission gate; it does not authorize Memory
+Behavior Modulation or declare R4-M ready.
+
+## q-53 · P5-B3-J-R3 · Outcome-Time Calibration Evidence Basis
+
+The R2 calibration guard has been closed by a narrow P3 corrective phase. P3
+now derives a bounded evidence basis from the decisive P1 observations used by
+the existing settlement policy. It keeps the settlement state intact and sets
+`calibrationCounted=false` when a required decisive observation is UNKNOWN,
+partial, possible, likely, direct, or otherwise lacks a clean outcome-time
+attribution. P4 remains an ingest-only consumer of the sealed P3 bit.
+
+The prior R2 counterexample is refined by the basis distinction: if clean
+decisive observation A independently suffices for `matched`, later UNKNOWN
+supporting observation B is non-basis and does not poison A. If no clean
+decisive basis exists, P3 may still settle the Prediction, but the sample is
+not eligible for P4. Prediction-creation `known-none` is not proof that later
+outcome evidence was clean; the existing creation self-influence veto remains.
+
+```text
+OUTCOME_TIME_CALIBRATION_ATTRIBUTION = LIVE
+CALIBRATION_EVIDENCE_BASIS = DETERMINISTIC
+UNVERIFIED_EXTERNAL_INFLUENCE_CLEAN_CALIBRATION = IMPOSSIBLE_FOR_REQUIRED_DECISIVE_EVIDENCE
+P3_SETTLEMENT_STATES_CHANGED = NO
+P3_CALIBRATION_ELIGIBILITY_NARROWLY_CORRECTED = YES
+P4_REJUDGMENT = NO
+P5_B3_J_R3_STATUS = COMPLETE
+P5_B3_J_R3_FREEZE = FROZEN
+P21_R4_M0_R2_CLOSURE_RECONCILIATION = REQUIRED
+R4_M_REENTRY = STILL_BLOCKED_PENDING_R2_RECONCILIATION
+```
+
+This does not implement Memory Behavior Modulation, change the external
+participation lifecycle, or reopen other Prediction Error v1 subsystems.
+
+## q-54 · P21-R4-M0-R2 · Fail-Closed Desktop Admission Closure
+
+The owner accepted Option B. P5-B3-J-R3 closed the calibration eligibility gap
+at the P3 evidence basis: Desktop may be admitted with unverifiable consumption
+only under fail-closed attribution. An external registration without a trusted
+receipt remains `unknown/partial`; it cannot yield false `known-none` or a
+clean P4 sample when that influence is part of the required decisive outcome
+basis. A separate clean decisive basis remains eligible when later UNKNOWN
+supporting/irrelevant evidence is not required by the settlement policy.
+
+```text
+R4_M_DESKTOP_ADMISSION_POLICY = FAIL_CLOSED_UNVERIFIED_ALLOWED
+DESKTOP_CONSUMPTION_RUNTIME_VERIFIABLE = NO
+DESKTOP_ATTRIBUTION_FAIL_CLOSED = LIVE
+MOBILE_CONSUMPTION_RUNTIME_VERIFIABLE = YES
+FALSE_KNOWN_NONE_WITH_UNVERIFIED_EXTERNAL_INFLUENCE = IMPOSSIBLE
+UNVERIFIED_EXTERNAL_INFLUENCE_CLEAN_CALIBRATION = IMPOSSIBLE_FOR_REQUIRED_DECISIVE_EVIDENCE
+PREDICTION_SETTLEMENT_REMAINS_LIVE = YES
+BEHAVIOR_ATTRIBUTION_SINGLE_OWNER = PRESERVED
+PREDICTION_ERROR_SEMANTICS_CHANGED_BY_R2 = NO
+PREDICTION_ERROR_CALIBRATION_ELIGIBILITY_CORRECTIVE = P5-B3-J-R3
+MEMORY_BEHAVIOR_MODULATION_IMPLEMENTED = NO
+TRUSTED_DESKTOP_EXECUTION_CONVERGENCE = DEFERRED_PLATFORM_WORK
+P21_R4_M0_R2_STATUS = COMPLETE
+P21_R4_M0_STATUS = COMPLETE
+P21_R4_M0_FREEZE = FROZEN
+R4_M_REENTRY = ALLOWED
+```
+
+R4-M may now begin its own phase under this admission policy. This closure does
+not implement posture, Memory Behavior Modulation, or trusted Desktop provider
+execution.
+
+## q-55 · P21-R4-M · Memory-Driven Behavior Modulation
+
+R4-M adds one server-owned derivation from the existing cognition outputs:
+
+```text
+Recall → Association → R4-K current interpretation → R4-L Self Narrative
+      → temporary ordinal posture → response-guidance-v1 → response generation
+```
+
+The posture has five closed dimensions:
+
+```text
+warmth: reduced | baseline | elevated
+trustPosture: guarded | neutral | open
+initiative: restrained | baseline | proactive
+interpersonalDistance: increased | baseline | reduced
+disclosureWillingness: reduced | baseline | elevated
+```
+
+All dimensions use ordinal enums. There are no floats, open-ended labels, model
+explanations, or free-text instructions in the posture output. The model input
+contains validated R4-K current meaning, R4-L narrative claims, and Association
+relation/tension provenance. It contains no raw Memory records. Current meaning
+has priority over historical claims; correction can soften a guarded response,
+but the bounded posture cannot become hostile or force disclosure of a Memory.
+
+Authority is frozen:
+
+```text
+BEHAVIOR_POSTURE_IS_DERIVED = YES
+BEHAVIOR_POSTURE_IS_TEMPORARY = YES
+BEHAVIOR_POSTURE_IS_TURN_SCOPED = YES
+BEHAVIOR_POSTURE_IS_BOUNDED = YES
+```
+
+Posture is not Persona, Relationship State, Emotion State, or Self Narrative.
+The runtime does not write to those owners or to canonical Memory, Prediction
+Error, or Active Message schedules. It allows at most one bounded posture model
+call for an evidence/context fingerprint. A bounded session-only cache suppresses
+same-evidence replay. Provider timeout, invalid schema, missing evidence, or
+unavailable credentials produce baseline posture and do not block chat.
+
+The shared `response-guidance-v1` contract accepts a production
+`memory-behavior-posture-v1` entry with closed posture payload and bounded
+provenance references. Desktop and Mobile use the same fixed renderer. The
+renderer names its low priority explicitly: canonical Persona, system/developer
+constraints, OOC/integrity rules, and the explicit user request take precedence.
+Baseline posture has no prompt placement.
+
+Mobile derives posture after its one existing Memory Retrieval using the
+same-cycle candidate snapshot, then runs the existing Association → R4-K → R4-L
+owners once. It does not repeat Retrieval or rescan the Memory DB to build the
+posture. The server execution consumer records `CONSUMED` only after successful
+rendering and handoff to the model port. Desktop renders the same guidance in the
+browser, where Home Node cannot verify provider consumption; its attribution
+therefore remains `unknown/partial`. The P3/P4 outcome-time calibration basis is
+unchanged and excludes required decisive evidence with unknown attribution.
+
+The E2E suite covers corrected hurt yielding mild guarded posture, reliable
+evidence allowing openness, mixed bounded tension, K/L revisions, replay
+suppression, no forced disclosure, Persona/OOC precedence, failure fallback,
+Desktop fail-closed attribution, Mobile verified consumption, and zero authority
+mutations.
+
+```text
+MEMORY_BEHAVIOR_MODULATION_RUNTIME = LIVE
+MEMORY_TO_BEHAVIOR_CAUSALITY = LIVE
+REINTERPRETATION_TO_BEHAVIOR = LIVE
+SELF_NARRATIVE_TO_BEHAVIOR = LIVE
+BEHAVIOR_POSTURE_IS_DERIVED = YES
+BEHAVIOR_POSTURE_IS_TEMPORARY = YES
+BEHAVIOR_POSTURE_IS_TURN_SCOPED = YES
+BEHAVIOR_POSTURE_IS_BOUNDED = YES
+MEMORY_CAN_INFLUENCE_BEHAVIOR_WITHOUT_FORCED_DISCLOSURE = VERIFIED
+PERSONA_BASELINE_PRESERVED = YES
+FAILURE_FALLBACK_TO_BASELINE = LIVE
+CANONICAL_MEMORY_MUTATION = 0
+RELATIONSHIP_MUTATION = 0
+PERSONA_MUTATION = 0
+EMOTIONAL_STATE_MUTATION = 0
+SELF_NARRATIVE_MUTATION = 0
+PREDICTION_ERROR_MUTATION = 0
+ACTIVE_MESSAGE_SCHEDULE_MUTATION = 0
+P21_R4_M_STATUS = COMPLETE
+P21_R4_M_FREEZE = FROZEN
+```
+
+## q-56 · P21-R4-H · Semantic Forgetting
+
+R4-H implements **availability**, not deletion. The canonical Memory schema has
+no forgetting metadata. R4-H therefore derives a runtime-only projection from
+existing fields in the one shared `assets/js/memory-retrieval-core.js` seam. It
+does not change `MemoryRecord`, payload JSON, provenance, or the existing scalar
+`getMemoryScore()` formula.
+
+The projection uses this closed state set for overall accessibility and each
+semantic dimension:
+
+```text
+accessible | faded | suppressed | latent
+```
+
+V1 separates dimensions with coarse day bands, not float scores. Narrative
+availability uses the record's stable `created` timestamp. `lastConsolidatedAt`
+remains the existing consolidation watermark; H does not treat it as record
+freshness.
+
+| Dimension | Age anchor | Accessible | Faded | Suppressed | Latent |
+| --- | --- | --- | --- | --- | --- |
+| `factualDetail` | immutable `created` | through 30 days | through 180 days | through 730 days | later |
+| `emotionalResidue` (weak) | `created` | through 7 days | through 90 days | through 365 days | later |
+| `emotionalResidue` (strong) | `created` | through 180 days | through 730 days | through 1825 days | later |
+| `narrativeMeaning` | `created` | through 90 days | through 730 days | through 1825 days | later |
+
+Strong affect is derived from existing `arousal >= 0.6` or extreme `valence <=
+0.25 / >= 0.75`. `resolved` and `kind=semantic` each worsen factual-detail
+availability by one ordinal band; they do not shorten emotional residue or
+narrative meaning. Narrative meaning is available only when an existing
+`summary`, `oneLine`, or semantic-memory content can carry it. Overall
+accessibility takes the best of the three dimension states. A pinned record or a
+strong current lexical match makes it accessible for this Recall; an existing
+activation within 30 days improves overall accessibility by one band. These
+resurfacing rules do not improve factual-detail availability, which remains
+anchored to `created`.
+
+The ranker applies the ordinal accessibility band after visibility/ACL filtering
+and before the existing score tie-break. It still keeps faded, suppressed, and
+latent records in the candidate set; they can surface by relevance, pinning,
+exploration, or existing Recall activation. Detail rendering uses `oneLine` or
+`summary` when factual detail is faded and otherwise caps the content projection
+to 64 / 32 / 16 characters for faded / suppressed / latent. Consolidated
+semantic content remains a meaning-level projection. The stored record is never
+edited by this projection.
+
+The core computes all candidate projections before ranking. If any input has an
+invalid timestamp or malformed forgetting evidence, the whole Recall falls back
+to the original ranking and original detail rendering. This keeps partial
+forgetting failure from hiding or deleting a Memory. The current R2-F frozen
+`coldStart` anchor fixture remains byte-identical; ordinary visible Recall uses
+the new derived accessibility layer.
+
+```text
+SEMANTIC_FORGETTING_IS_DERIVED = YES
+FORGETTING_MAY_CHANGE_ACCESSIBILITY = YES
+FORGETTING_MAY_CHANGE_DETAIL_AVAILABILITY = YES
+FORGETTING_MAY_NOT_DELETE_CANONICAL_MEMORY = YES
+FORGETTING_MAY_NOT_REWRITE_HISTORICAL_FACT = YES
+FORGETTING_MAY_NOT_MUTATE_PERSONA = YES
+FORGETTING_MAY_NOT_MUTATE_RELATIONSHIP = YES
+SEMANTIC_FORGETTING_RUNTIME = LIVE
+FACTUAL_DETAIL_DECAY = LIVE
+EMOTIONAL_RESIDUE_DECAY = LIVE
+NARRATIVE_MEANING_DECAY = LIVE
+FORGETTING_AFFECTS_RECALL_ACCESSIBILITY = YES
+FORGETTING_IS_NOT_DELETION = VERIFIED
+RESURFACING = LIVE
+FAILURE_FALLBACK_TO_NORMAL_RECALL = LIVE
+CANONICAL_MEMORY_DELETES_FROM_FORGETTING = 0
+CANONICAL_MEMORY_TEXT_REWRITES_FROM_FORGETTING = 0
+RELATIONSHIP_MUTATION = 0
+PERSONA_MUTATION = 0
+SELF_NARRATIVE_MUTATION = 0
+BEHAVIOR_MODULATION_MUTATION = 0
+PREDICTION_ERROR_MUTATION = 0
+P21_R4_H_STATUS = COMPLETE
+P21_R4_H_FREEZE = FROZEN
+```
+
+---
+
+## P21-R4-N · Meta-Memory Awareness & Uncertainty (q-57, append-only)
+
+**Status: COMPLETE / FROZEN.** This phase derives awareness of the current
+memory state; it is not a Memory authority.
+
+```text
+META_MEMORY_IS_DERIVED = YES
+META_MEMORY_MAY_DESCRIBE_MEMORY_STATE = YES
+META_MEMORY_MAY_NOT_REWRITE_MEMORY = YES
+META_MEMORY_MAY_NOT_DELETE_MEMORY = YES
+META_MEMORY_MAY_NOT_CHANGE_FORGETTING_STATE = YES
+META_MEMORY_MAY_NOT_MUTATE_RELATIONSHIP = YES
+META_MEMORY_MAY_NOT_MUTATE_PERSONA = YES
+
+META_MEMORY_RUNTIME = LIVE
+MEMORY_STATE_AWARENESS = LIVE
+FORGETTING_AWARENESS = LIVE
+INTERPRETATION_VS_FACT_AWARENESS = LIVE
+UNCERTAINTY_AWARENESS = LIVE
+META_MEMORY_DOES_NOT_REWRITE_MEMORY = VERIFIED
+FAILURE_FALLBACK = LIVE
+
+CANONICAL_MEMORY_MUTATION = 0
+SEMANTIC_FORGETTING_MUTATION = 0
+RELATIONSHIP_MUTATION = 0
+PERSONA_MUTATION = 0
+SELF_NARRATIVE_MUTATION = 0
+BEHAVIOR_MODULATION_MUTATION = 0
+PREDICTION_ERROR_MUTATION = 0
+
+P21_R4_N_STATUS = COMPLETE
+P21_R4_N_FREEZE = FROZEN
+```
+
+The pure `meta-memory-awareness-v1` schema uses the closed states
+`remembered`, `partial`, `uncertain`, `faded`, `interpretation_only`, and
+`unavailable`. It reports selected-memory availability separately for factual
+detail, emotional residue, and narrative meaning. Reinterpretation and
+self-narrative entries retain their evidence memory ids and interpretation
+references, are marked as derived, and do not assert that a historical claim
+is a world fact. No floating confidence value is emitted.
+
+The only producer seam is after R4-L in
+`services/home-node/runtime-recall.js#runCurrentMeaningAndNarrative`. It reads
+the final selected ids, the R4-H projections already produced in that Recall,
+and existing R4-K / R4-L result and provenance objects. It does not read or
+rescan the Memory database. The projection is opt-in through the existing
+shared Recall core and only contains selected ids; ordinary Recall result
+shapes remain unchanged.
+
+Desktop places the short internal reminder in the private cognition context.
+Mobile forwards the same reminder as `runtimeContextParts.memoryAwarenessContext`
+to the existing execution composer, which places it after evidence and before
+current time. The reminder contains no Memory body or debug tag, tells the
+model to leave missing details unknown, and does not direct it to disclose a
+Memory.
+
+There is no N provider call. Invalid projection/schema or a thrown derivation
+omits the awareness text and leaves Recall plus any completed K/L cognition
+intact. The derived object is not persisted. H state, canonical Memory,
+relationship, persona, Self Narrative, behavior modulation, and Prediction
+Error are not mutated.
+
+Product coverage:
+
+- `tests/test_meta_memory_awareness_product_e2e.js`: 15 checks for clear and
+  faded detail, affect/detail separation in both directions, fact versus
+  interpretation, K/L uncertainty and provenance, deterministic replay,
+  no detail invention or forced disclosure, single-scan H pass-through,
+  failure fallback, and zero mutations.
+- `tests/test_self_narrative_product_e2e.js`: Desktop cognition-context
+  placement after K/L.
+- `tests/test_mobile_memory_continuity.js`: provider receives private
+  awareness context; prompt time remains last; SSE and Mobile DTOs do not
+  expose the context.
+
+---
+
+## P21-R4-O · Memory Unreliability / Reconstructive Recall Distortion (q-58, append-only)
+
+**Status: COMPLETE / FROZEN.** This is the current phase label. Historical
+roadmap references to R4-J remain unchanged; they were not renamed by this
+append-only phase.
+
+```text
+MEMORY_UNRELIABILITY_IS_DERIVED = YES
+RECONSTRUCTED_RECOLLECTION_IS_NOT_CANONICAL_MEMORY = YES
+IMAGINATION_AS_MEMORY = OUT_OF_SCOPE_V1
+
+MEMORY_UNRELIABILITY_RUNTIME = LIVE
+RECONSTRUCTED_RECOLLECTION = LIVE
+OMISSION = LIVE
+TEMPORAL_BLUR = LIVE
+SOURCE_BLUR = LIVE
+BLENDING = LIVE
+INTERPRETATION_LEAKAGE_GUARD = LIVE
+META_MEMORY_GATES_UNRELIABILITY = YES
+FABRICATED_EVENT_CREATION = 0
+FAILURE_FALLBACK = LIVE
+
+CANONICAL_MEMORY_MUTATION = 0
+CANONICAL_MEMORY_REWRITE = 0
+CANONICAL_MEMORY_DELETE = 0
+PROVENANCE_REWRITE = 0
+SEMANTIC_FORGETTING_MUTATION = 0
+META_MEMORY_MUTATION = 0
+RELATIONSHIP_MUTATION = 0
+PERSONA_MUTATION = 0
+SELF_NARRATIVE_MUTATION = 0
+BEHAVIOR_MODULATION_MUTATION = 0
+PREDICTION_ERROR_MUTATION = 0
+
+P21_R4_O_STATUS = COMPLETE
+P21_R4_O_FREEZE = FROZEN
+```
+
+The private `reconstructed-recollection-v1` result contains `memoryRefs`, an
+ordinal `reliabilityState`, closed `distortionTypes`, provenance-qualified
+`preservedFacts`, `uncertainDetails`, `blendedSources`, and an
+`interpretationLeakage` guard. It carries ids and statuses, not reconstructed
+event prose. Preserved historical items are marked as Memory-record claims,
+not world-fact adjudications.
+
+Distortion is gated by R4-N's per-memory states and interpretation/narrative
+uncertainty. `remembered` factual detail with clear provenance does not receive
+random distortion. `omission` can only omit or qualify unavailable detail;
+`temporal_blur` requires an existing R3 temporal-proximity edge and explicitly
+does not infer event order from stored-record proximity; `source_blur` requires
+ambiguous provenance; `blending` requires two real referenced memories plus a
+validated lexical-overlap or same-cluster R3 relation and a Meta-Memory
+uncertainty gate. A related pair never creates a third Memory or event.
+
+`interpretationLeakage` keeps R4-K historical fact references separate from
+current knowledge/belief references. The private prompt guard says current
+meaning is not evidence that the character knew that meaning during the event.
+R4-O does not modify R4-H accessibility, R4-N awareness, Memory body,
+provenance, or any other authority. It is deterministic and makes zero model
+calls. Invalid Meta-Memory, Association, or provenance projection returns no O
+result or text; normal Recall and any R4-N context continue.
+
+The only producer seam is after R4-N at
+`services/home-node/runtime-recall.js#runCurrentMeaningAndNarrative`.
+R4-H's existing projection and an opt-in selected-row provenance map are passed
+from the same Recall computation; Association references and K/L provenance
+are reused. No second Memory database scan is introduced. Desktop and Mobile
+place the same private reminder in their existing cognition context. No
+user-facing label, DTO field, or Memory World UI is added.
+
+Product coverage:
+
+- `tests/test_memory_unreliability_product_e2e.js`: 16 checks for omission,
+  Meta-Memory gating, temporal blur, ambiguous provenance, real-source
+  blending, interpretation leakage, no invented event, fail-open behavior,
+  and zero mutations.
+- `tests/test_self_narrative_product_e2e.js`: Desktop context receives the
+  interpretation-leakage guard after R4-K/L/N.
+- `tests/test_mobile_memory_continuity.js`: Mobile consumes private O guidance
+  without exposing it through SSE/DTOs; current time remains last.
+
+---
+
+## P21-R4-P · Shared Memory / Co-constructed Relationship Memory (q-59, append-only)
+
+**Status: COMPLETE / FROZEN.** Shared Memory is a derived, turn-scoped
+relationship view over separately sourced records. It is not a merged Memory
+authority and cannot decide which side is historically correct.
+
+```text
+SHARED_MEMORY_IS_DERIVED = YES
+SHARED_MEMORY_IS_NOT_CANONICAL_MERGE = YES
+SHARED_MEMORY_IS_NOT_RELATIONSHIP_AUTHORITY = YES
+SHARED_MEMORY_IS_NOT_SELF_NARRATIVE = YES
+USER_REPORT_IS_NOT_CHARACTER_RECOLLECTION = YES
+
+SHARED_MEMORY_RUNTIME = LIVE
+CO_CONSTRUCTED_MEMORY_VIEW = LIVE
+ASYMMETRIC_MEMORY = SUPPORTED
+DISPUTED_MEMORY = SUPPORTED
+JOINT_ACKNOWLEDGEMENT = AUTHORITY_GATED
+CHARACTER_MEMORY_PRESERVED = YES
+USER_RECOLLECTION_PRESERVED = YES
+AUTOMATIC_TRUTH_MERGE = 0
+FAILURE_FALLBACK = LIVE
+
+CANONICAL_MEMORY_MUTATION = 0
+USER_REPORT_REWRITE = 0
+RELATIONSHIP_MUTATION = 0
+PERSONA_MUTATION = 0
+SELF_NARRATIVE_MUTATION = 0
+BEHAVIOR_MODULATION_MUTATION = 0
+PREDICTION_ERROR_MUTATION = 0
+
+P21_R4_P_STATUS = COMPLETE
+P21_R4_P_FREEZE = FROZEN
+```
+
+`shared-memory-view-v1` contains separate `characterSide` and `userSide`
+references, a closed relation state (`aligned`, `complementary`, `asymmetric`,
+`disputed`, `jointly_acknowledged`, or `unresolved`), preserved K/L
+interpretation references, the validated R3 agreement/disagreement basis, and
+unresolved differences. Without a validated cross-side relation, each record
+stays in its own one-sided asymmetric view; the producer does not group
+unrelated records into a presumed shared event. `aligned` is not joint
+acknowledgement.
+
+The current canonical schema exposes author provenance, not a dedicated
+general-purpose event-report authority. The projection therefore labels rows
+with `createdBy === 'user'` as user-authored records and labels rows authored by
+the current role id as character recollections; ambiguous authors remain
+unknown and cannot establish either side. The existing P5 Explicit User Report
+capability is preference-only and is not reused as event history. No report is
+copied into character Memory. The structured user-side label records its
+canonical user-authored-record basis rather than claiming a separate report
+authority.
+
+Joint acknowledgement is only accepted when both explicit confirmation flags,
+exact character/user memory refs, a confirmation ref, and an injected
+server-owned verifier all bind successfully. Similarity or an acknowledgement
+request alone is insufficient. No such event-acknowledgement authority is
+currently assembled in production, so production stays gated and cannot emit
+`jointly_acknowledged` until that authority exists.
+
+The sole producer seam is after R4-N/R4-O at
+`services/home-node/runtime-recall.js#runCurrentMeaningAndNarrative`. It reads
+the existing selected-row author/provenance projection, validated R3 edges, and
+only the already-bounded R3 candidate snapshot rows referenced by those edges;
+it does not rescan Memory or call a provider. Candidate provenance is carried
+with an explicit `association_candidate_snapshot` evidence source. R4-O
+reliability remains on the character side and is not repaired by the user side. The private prompt reminder
+preserves both sides, declines to choose a winner, and does not direct the role
+to disclose either record. Mobile forwards the same reminder through its
+existing private runtime context; no client DTO or UI field is added.
+
+Invalid R4-N/R4-O, provenance, or Association input omits the view and prompt
+text while normal Recall and completed cognition continue. The derivation is
+pure and turn-scoped. No Memory, user-authored record, relationship, persona,
+self-narrative, behavior-modulation, or Prediction Error writer is called.
+
+Product coverage:
+
+- `tests/test_shared_memory_product_e2e.js`: 13 checks for aligned and
+  complementary views, one-sided asymmetry, disputed conflicts, explicit
+  acknowledgement gating, user-side non-repair of R4-O uncertainty, unknown
+  provenance, same-cycle association-candidate provenance, mutation assertions,
+  private runtime integration, and failure fallback.
+- `tests/test_mobile_memory_continuity.js`: the composed private cognition
+  reminder uses the existing Mobile prompt context and is not exposed in
+  SSE/client DTOs.
+
+---
+
+## P21-R4-Q · Counterfactual Memory / Alternative-History Reasoning (q-60, append-only)
+
+**Status: COMPLETE / FROZEN.** Q derives one bounded possible branch only when
+the current message explicitly supplies an “if” premise and a clear, preserved
+R4-O factual anchor. The premise must share a grounded term with the existing
+Memory/K evidence. Unsupported premises, faded/uncertain facts, and disputed
+Shared Memory anchors produce no counterfactual view.
+
+```text
+COUNTERFACTUAL_IS_DERIVED = YES
+COUNTERFACTUAL_IS_NON_FACTUAL = YES
+COUNTERFACTUAL_MAY_NOT_CREATE_MEMORY = YES
+COUNTERFACTUAL_MAY_NOT_CREATE_PREDICTION = YES
+COUNTERFACTUAL_MAY_NOT_REWRITE_HISTORY = YES
+
+COUNTERFACTUAL_RUNTIME = LIVE
+ALTERNATIVE_HISTORY_VIEW = LIVE
+FACTUAL_ANCHOR_PRESERVED = YES
+ACTUAL_VS_COUNTERFACTUAL_SEPARATION = VERIFIED
+CAUSAL_BASIS_REQUIRED = YES
+UNCERTAINTY_SUPPORTED = YES
+FABRICATED_HISTORY_CREATION = 0
+FAILURE_FALLBACK = LIVE
+
+CANONICAL_MEMORY_MUTATION = 0
+PREDICTION_SETTLEMENT_MUTATION = 0
+PREDICTION_CREATION_FROM_COUNTERFACTUAL = 0
+PREDICTION_ERROR_MUTATION = 0
+P4_MUTATION = 0
+SELF_NARRATIVE_MUTATION = 0
+RELATIONSHIP_MUTATION = 0
+PERSONA_MUTATION = 0
+BEHAVIOR_MODULATION_MUTATION = 0
+
+P21_R4_Q_STATUS = COMPLETE
+P21_R4_Q_FREEZE = FROZEN
+```
+
+`counterfactual-view-v1` keeps the actual canonical Memory claim in
+`actualOutcome`, the single user-supplied and source-anchored premise in
+`changedPremise`, and the model's one tentative branch in
+`alternativeOutcome`. The view carries `factualAnchorRefs`, a structured
+`causalBasis`, ordinal `uncertainty` (`plausible`, `uncertain`, or
+`unsupported`), and source provenance. Memory-based actual outcomes retain the
+authority label `CANONICAL_MEMORY_RECORD_CLAIM_NOT_WORLD_FACT`; faded or
+uncertain R4-O facts cannot be promoted to a certain premise. `plausible` is
+reserved for a verified sealed RealityEvent causation link. R4-K-only,
+Association, or P.E support remains `uncertain`; no causal basis means no view.
+
+P3/P.E is an evidence reader only. The runtime reads same-character,
+same-conversation PredictionRecords, requires the existing P3 seal for both
+SettlementRecord and PredictionErrorRecord, resolves the existing P1 RealityEvent
+references, and preserves their source IDs. It does not re-settle, reclassify,
+revise, or report P.E as causal proof. The R4-Q projection cannot access P4
+mutation APIs.
+
+The sole producer seam is
+`services/home-node/runtime-recall.js#runCurrentMeaningAndNarrative`, after
+R4-K/L/N/O/P. Q reads current Recall rows, validated K meaning, L interpretation
+references, O preserved-fact state, R3 relations, and optional sealed P1/P3
+evidence. It performs no second Memory scan. The existing bounded R4-E runner
+provides at most one provider call; Q supplies its own strict schema and
+validation. A local 64-entry, ten-minute replay holder suppresses repeated
+calls for identical turn/evidence/premise context. No route, Memory store,
+Prediction store, P4, or durable identity is added.
+
+The prompt preserves the recorded actual outcome and instructs the model to
+write only a tentative alternative. The validator rejects model-authored
+premises, outcomes stated as certain, unknown Memory refs, and unsupported new
+participants. Failure, timeout, invalid schema, or insufficient evidence omits
+the view and leaves K/L/N/O/P and Chat usable. Q does not feed its result back
+into Self Narrative, Behavior Modulation, Relationship, Persona, Prediction,
+Settlement, or Calibration.
+
+Product coverage:
+
+- `tests/test_counterfactual_memory_product_e2e.js`: 16 checks for one grounded
+  premise, actual/alternative separation, weak-basis uncertainty, unsupported
+  event rejection, sealed P.E evidence, zero Prediction/settlement mutation,
+  faded-memory gating, Shared Memory dispute preservation, provider failure,
+  replay suppression, runtime integration, and zero mutations.
+- `tests/test_counterfactual_shadow.js`: retains the R4-E pure-shadow contract;
+  exactly one production caller now consumes its bounded runner through the
+  R4-Q runtime with a Q-specific schema.
+- `tests/test_mobile_memory_continuity.js` and
+  `tests/test_memory_recall_two_host_parity.js`: existing private-context and
+  Recall transport regressions.
+
+## q-61 · Memory System v1 Engineering Closure (append-only)
+
+The current cross-phase closure has been completed. This entry does not rewrite
+the historical R4-B/C/E/I/J roadmap snapshots or any earlier phase ruling.
+
+[MEMORY_SYSTEM_V1_CLOSURE.md](MEMORY_SYSTEM_V1_CLOSURE.md) is the current
+status index for the authority graph, end-to-end runtime chain, durability,
+mutation owners, Desktop/Mobile truth, failure fallbacks, shadow-authority
+audit, contract reconciliation, test/red classification, capability manifest,
+and remaining post-v1 work.
+
+- MEMORY_AUTHORITY_GRAPH = CONSISTENT
+- SHADOW_AUTHORITY_COUNT = 0
+- DERIVED_MODULE_CANONICAL_MEMORY_WRITES = 0
+- DURABILITY_BOUNDARIES = DOCUMENTED
+- DESKTOP_MOBILE_CAPABILITY_TRUTH = DOCUMENTED
+- FAILURE_FALLBACK_CHAIN = VERIFIED
+- CONTRACT_STATE = RECONCILED
+- KNOWN_REDS = CLASSIFIED
+- NO_DERIVED_MEMORY_STAGE_CAN_KILL_CHAT = YES
+- NO_BLOCKING_CORRECTNESS_GAP = YES
+
+- MEMORY_SYSTEM_V1_STATUS = ENGINEERING_CLOSED
+- MEMORY_SYSTEM_V1_FREEZE = FROZEN

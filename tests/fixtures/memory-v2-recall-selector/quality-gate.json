@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "evaluation": "memory-v2-phase-c2",
+  "status": "BLOCKED_MISSING_REAL_HUMAN_LABELS",
+  "syntheticFixturesEligibleForQualityGate": false,
+  "datasetRequirements": {
+    "source": "consented, de-identified Chat Memory scenarios; exclude Work Mode Agent Memory",
+    "minimumQueries": 120,
+    "minimumQueriesPerCategory": 24,
+    "categories": [
+      "long_term_preference",
+      "stale_or_superseded_fact",
+      "explicit_fact_correction",
+      "high_historical_arousal",
+      "cross_time_query"
+    ],
+    "relevanceScale": {
+      "0": "not relevant to the query",
+      "1": "related context but does not answer the requested fact",
+      "2": "directly answers or supplies the current requested fact"
+    },
+    "ratersPerQuery": 2,
+    "disagreement": "adjudicate before computing selector metrics",
+    "pairedInputs": "V1 and V2 must receive the same candidate set, query, clock, ACL and budget"
+  },
+  "acceptanceGates": {
+    "overallNdcgAt5": "paired bootstrap 95% lower confidence bound for V2 minus V1 must be >= -0.02",
+    "categoryNdcgAt5": "paired bootstrap 95% lower confidence bound must be >= -0.05 in every category",
+    "precisionAt3": "paired bootstrap 95% lower confidence bound for V2 minus V1 must be >= -0.03",
+    "correctionPriority": "latest explicitly corrected evidence must rank above its superseded fact in the top 3 for at least 95% of explicit correction queries",
+    "staleDetail": "zero ACL violations; V2 must not expose exact detail whose R4-H factualDetail is suppressed or latent",
+    "diversity": "distinct relevant fact clusters in top 5 must not regress by more than 0.05 against V1",
+    "blindContextRating": "paired human context-quality rating on a 1-5 scale; V2 mean difference lower 95% confidence bound must be >= -0.2",
+    "selectorLatency": "V2-only p95 must be <= 1.25x V1 p95 on the same host and candidate set"
+  },
+  "rollbackConditions": [
+    "any ACL or hidden-memory exposure",
+    "any exact-detail exposure beyond the R4-H projection",
+    "any failed category or overall non-inferiority gate",
+    "correction-priority rate below 95%",
+    "selector latency above the registered limit"
+  ],
+  "notes": [
+    "Do not lower these thresholds after seeing V2 results.",
+    "The current Phase A/B/C.1 synthetic fixtures validate mechanics only and are not a substitute for this labeled set."
+  ]
+}

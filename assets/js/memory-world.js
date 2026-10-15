@@ -4,7 +4,7 @@
    ROLE ................ PRESENTATION_LAYER_ONLY
    DATA AUTHORITY ...... window.dbGetAll('memories')  （既有唯一读路径）
    DURABLE WRITES ...... 0
-   ASSOCIATION LINES ... DISABLED（当前没有 live Association authority）
+   ASSOCIATION LINES ... DISABLED（Runtime Association 不由本 UI 持有或可视化）
    POSITION SEMANTICS .. 无（确定性布局，仅视觉）
    COGNITIVE STATE ..... NONE（不读 Interpretation / Expectation /
                          BehaviorEffect / MetaMemory 私有状态）
@@ -1290,6 +1290,12 @@
     title.textContent = 'Memory World';
     var count = el('p', 'memory-world__count', idBox);
     count.textContent = '正在读取记忆…';
+    var authority = el('p', 'memory-world__authority', idBox);
+    authority.id = 'mem-world-authority';
+    authority.dataset.state = 'checking';
+    authority.setAttribute('role', 'status');
+    authority.setAttribute('aria-live', 'polite');
+    authority.textContent = '正在确认 Memory 来源…';
 
     var tools = el('div', 'memory-world__tools', bar);
 
@@ -1474,6 +1480,7 @@
       root: root,
       bar: bar,
       count: count,
+      authority: authority,
       env: envCanvas,
       mist: mistCanvas,
       nodes: nodeCanvas,
@@ -1702,6 +1709,15 @@
     var label = n + ' 条记忆';
     if (dom.entryCount) dom.entryCount.textContent = label;
     if (dom.worldCount) dom.worldCount.textContent = label;
+    if (dom.worldAuthority) {
+      var helper = window.getMemoryAuthorityUiState;
+      var info = typeof helper === 'function'
+        ? helper(null, state.lastError ? new Error(state.lastError) : null)
+        : { state: 'unavailable', label: 'AUTHORITY UNKNOWN', detail: '无法确认 Memory 数据来源。' };
+      dom.worldAuthority.dataset.state = info.state || 'unavailable';
+      dom.worldAuthority.textContent = info.label + ' · ' + info.detail;
+      dom.worldAuthority.title = info.detail || '';
+    }
     if (dom.quiet) dom.quiet.hidden = n > 0;
     if (dom.entry) dom.entry.setAttribute('aria-label', '进入 Memory World 记忆世界，共 ' + n + ' 条记忆');
   }
@@ -1862,6 +1878,7 @@
     dom.entryCount = entry.count;
     dom.root = world.root;
     dom.worldCount = world.count;
+    dom.worldAuthority = world.authority;
     dom.worldEnv = world.env;
     dom.worldMist = world.mist;
     dom.worldNodes = world.nodes;

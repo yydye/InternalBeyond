@@ -47,6 +47,7 @@
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
     var deps = {};
+    deps.selectorShadowHost = 'node';
     try { deps.core = require('../memory-retrieval-core.js'); } catch (e) { deps.core = null; }
     try { deps.visibility = require('../memory-visibility-core.js'); } catch (e) { deps.visibility = null; }
     try { deps.turnSignal = require('./turn-signal.js'); } catch (e) { deps.turnSignal = null; }
@@ -65,6 +66,7 @@
     module.exports = factory(deps);
   } else {
     root.IBMemoryRecallOrchestrator = factory({
+      selectorShadowHost: 'browser',
       core: root.IBMemoryRetrievalCore || null,
       visibility: root.IBMemoryVisibilityCore || null,
       turnSignal: root.IBMemoryRecallTurnSignal || null,
@@ -234,13 +236,27 @@
         out += ln;
         chars += ln.length;
       }
-      return {
+      var result = {
         text: out,
         selected: plan.seats,
         count: plan.seats.length,
         chars: chars,
         reason: reasonValue
       };
+      if (Array.isArray(built && built.semanticForgettingById)) {
+        var kept = Object.create(null);
+        for (var k = 0; k < plan.seats.length; k++) {
+          if (plan.seats[k] && plan.seats[k].id != null) kept[String(plan.seats[k].id)] = true;
+        }
+        result.semanticForgettingById = built.semanticForgettingById.filter(function (entry) {
+          return entry && entry.memoryId != null && kept[String(entry.memoryId)];
+        });
+        result.memoryProvenanceById = Array.isArray(built.memoryProvenanceById)
+          ? built.memoryProvenanceById.filter(function (entry) {
+            return entry && entry.memoryId != null && kept[String(entry.memoryId)];
+          }) : [];
+      }
+      return result;
     }
 
     /* cooldown 的 reason 只反映**真实**发生的事；没有 info ⇒ 空数组。 */
@@ -368,9 +384,12 @@
          （turn-signal 已保证 host-forced 通道先于 early exit。） */
       var forcedRaw = (turn.channelHint == null) ? null : String(turn.channelHint);
       var signalChan = signal.suggestedChannel ? String(signal.suggestedChannel) : null;
-      var forced = forcedRaw || signalChan;
-      var explicitColdStart = (forced === 'coldStart');
-      var forcedOther = (forced && forced !== 'coldStart') ? forced : null;
+      /* Only the trusted host hint is forced. `signalChan` may be an automatic
+         lifecycle suggestion; treating it as forced let first-turn coldStart
+         override an explicit recall cue and remove episodic candidates before
+         the Hard Gate. */
+      var explicitColdStart = (forcedRaw === 'coldStart');
+      var forcedOther = (forcedRaw && forcedRaw !== 'coldStart') ? forcedRaw : null;
 
       /* E1a 的 latent 会话信号现在是正式输入（§22）。 */
       var convSignal = {
@@ -400,7 +419,7 @@
       if (explicitColdStart) channel = 'coldStart';
       else if (forcedOther) channel = forcedOther;
       else if (signal.explicitRecall === true) channel = 'recall';
-      else if (autoColdStart) channel = 'coldStart';
+      else if (autoColdStart || signalChan === 'coldStart') channel = 'coldStart';
       else if (autoGlossary) channel = 'glossary';
       else if (signal.earlyExit === true) channel = 'early-exit';
       else channel = 'surface';
@@ -682,7 +701,7 @@
 
       var coreOpts = {};
       for (var k in options) {
-        if (Object.prototype.hasOwnProperty.call(options, k) && k !== 'turn') coreOpts[k] = options[k];
+        if (Object.prototype.hasOwnProperty.call(options, k) && k !== 'turn' && k !== 'selectorVersion') coreOpts[k] = options[k];
       }
       coreOpts.userMessage = (turn.message == null) ? '' : String(turn.message);
       /* P21-R2-F1a · 让 channel policy 的 allowExploration 成为**真实**输入。
@@ -693,12 +712,64 @@
       /* 只有唯一 selector 才知道"谁是探索项"。请求内部 metadata；
          它**不会**出现在对外 result 上（见下面的 strip）。 */
       coreOpts.includeSelectionMeta = true;
+      if (options.includeSemanticForgettingMeta === true) coreOpts.includeSemanticForgettingMeta = true;
       /* 只在真有 <1 的因子时才传；absent ⇒ core 视为无 cooldown（legacy 兼容）。 */
       if (Object.keys(cooldownFactorById).length) coreOpts.cooldownFactorsById = cooldownFactorById;
-      var gatedResult = core.buildMemoryContext(gated, coreOpts);
+
+      /* Memory v2 · explicit Home Node selector choice and Phase B shadow.
+         Capture the one V1 exploration draw, then replay it into V2. This keeps
+         the production random stream and V1 selection unchanged while giving
+         both selectors the same candidate set, query, time, cooldown map and
+         exploration draw. No selector result is exposed to the caller here. */
+      var selectorV2Actual = deps.selectorShadowHost === 'node'
+        && options.selectorVersion === 'v2'
+        && core && typeof core.buildMemoryContextV2 === 'function';
+      var selectorShadowEnabled = !selectorV2Actual
+        && deps.selectorShadowHost === 'node'
+        && options.selectorShadow === true
+        && core && typeof core.buildMemoryContextV2 === 'function';
+      var selectorShadowRandomValues = [];
+      var selectorShadowRandomReplayMisses = 0;
+      if (selectorShadowEnabled) {
+        var productionRandom = (typeof coreOpts.random === 'function') ? coreOpts.random : Math.random;
+        coreOpts.random = function () {
+          var value = productionRandom();
+          if (selectorShadowRandomValues.length < 8) selectorShadowRandomValues.push(value);
+          return value;
+        };
+      }
+      var gatedResult = selectorV2Actual
+        ? core.buildMemoryContextV2(gated, coreOpts)
+        : core.buildMemoryContext(gated, coreOpts);
       var explorationIds = (gatedResult && gatedResult.selectionMeta
         && Array.isArray(gatedResult.selectionMeta.explorationIds))
         ? gatedResult.selectionMeta.explorationIds.slice() : [];
+      var selectorShadowBuilt = null;
+      if (selectorShadowEnabled) {
+        try {
+          var v2Opts = {};
+          for (var v2k in coreOpts) {
+            if (Object.prototype.hasOwnProperty.call(coreOpts, v2k)) v2Opts[v2k] = coreOpts[v2k];
+          }
+          var selectorShadowDrawIndex = 0;
+          v2Opts.random = function () {
+            if (selectorShadowDrawIndex < selectorShadowRandomValues.length) {
+              return selectorShadowRandomValues[selectorShadowDrawIndex++];
+            }
+            selectorShadowRandomReplayMisses += 1;
+            return 0.5;
+          };
+          /* If V1 had no exploration draw, compare the primary selection only.
+             Shadow must not invent an extra random opportunity from V2's
+             different remaining set. */
+          if (!selectorShadowRandomValues.length) v2Opts.allowExploration = false;
+          /* These are internal projection fields. The shadow summary below
+             drops all ids and text before it leaves this function. */
+          v2Opts.includeSelectionMeta = true;
+          v2Opts.includeSemanticForgettingMeta = true;
+          selectorShadowBuilt = core.buildMemoryContextV2(gated, v2Opts);
+        } catch (e) { selectorShadowBuilt = null; }
+      }
 
       /* 记录 id → record，供 seat 标签使用（标签需要 record.pinned）。 */
       var recordById = {};
@@ -777,6 +848,118 @@
           if (Object.prototype.hasOwnProperty.call(result, sk) && sk !== 'selectionMeta') stripped[sk] = result[sk];
         }
         result = stripped;
+      }
+
+      /* Compare the complete post-seat V1/V2 selections using aggregate-only
+         counters. No memory ids, query text, rendered lines, or record fields
+         are retained in the returned metadata. This is deliberately after V1
+         has fixed its result and before any caller can write activation. */
+      var selectorShadow = null;
+      if (selectorShadowBuilt && Array.isArray(selectorShadowBuilt.selected)) {
+        try {
+          var v2ExplorationIds = selectorShadowBuilt.selectionMeta
+            && Array.isArray(selectorShadowBuilt.selectionMeta.explorationIds)
+            ? selectorShadowBuilt.selectionMeta.explorationIds.slice() : [];
+          var v2Selected = selectorShadowBuilt.selected;
+          if (planner && typeof planner.applySeats === 'function') {
+            var v2SeatPlan = planner.applySeats(v2Selected, channelPolicy, {
+              labelOf: function (id) {
+                var rec = recordById[String(id)];
+                return planner.seatLabel(rec);
+              },
+              explorationIds: v2ExplorationIds,
+              allowExploration: coreOpts.allowExploration
+            });
+            if (v2SeatPlan && Array.isArray(v2SeatPlan.seats)) v2Selected = v2SeatPlan.seats;
+          }
+
+          var selectedV1Ids = keptSelected.map(function (row) { return row && row.id != null ? String(row.id) : ''; })
+            .filter(function (id) { return !!id; });
+          var selectedV2Ids = v2Selected.map(function (row) { return row && row.id != null ? String(row.id) : ''; })
+            .filter(function (id) { return !!id; });
+          var v2Set = Object.create(null), recordByKey = Object.create(null);
+          selectedV2Ids.forEach(function (id) { v2Set[id] = true; });
+          for (var recIndex = 0; recIndex < gated.length; recIndex++) {
+            var metricRecord = gated[recIndex];
+            if (metricRecord && metricRecord.id != null) recordByKey[String(metricRecord.id)] = metricRecord;
+          }
+          var topK = {};
+          [1, 3, 5].forEach(function (kTop) {
+            var k1 = selectedV1Ids.slice(0, kTop), k2 = selectedV2Ids.slice(0, kTop);
+            var kSet = Object.create(null), overlap = 0;
+            k1.forEach(function (id) { kSet[id] = true; });
+            k2.forEach(function (id) { if (kSet[id]) overlap += 1; });
+            topK[String(kTop)] = {
+              overlap: overlap,
+              compared: Math.min(kTop, Math.max(k1.length, k2.length))
+            };
+          });
+          function countSelectedWhere(ids, predicate) {
+            var count = 0;
+            for (var si = 0; si < ids.length; si++) {
+              var selectedRecord = recordByKey[ids[si]];
+              if (selectedRecord && predicate(selectedRecord)) count += 1;
+            }
+            return count;
+          }
+          function ageDaysOf(record) {
+            var created = Number(record && (record.created != null ? record.created : record.createdAt));
+            var nowValue = Number(coreOpts.now);
+            return isFinite(created) && isFinite(nowValue) ? Math.max(0, (nowValue - created) / 86400000) : null;
+          }
+          var activatedMoreThanOnce = function (record) { return Number(record.activationCount) > 1; };
+          var longTerm = function (record) { var age = ageDaysOf(record); return age != null && age >= 180; };
+          var v2ProjectionById = Object.create(null);
+          (selectorShadowBuilt.semanticForgettingById || []).forEach(function (entry) {
+            if (entry && entry.memoryId != null && entry.projection) v2ProjectionById[String(entry.memoryId)] = entry.projection;
+          });
+          var r4hCompared = 0, r4hDetailMismatch = 0, r4hResidueMismatch = 0;
+          var r4hNarrativeMismatch = 0, r4hAccessibilityMismatch = 0;
+          var v1ActivationResurfaced = 0, v1Resurfaced = 0, v2Resurfaced = 0;
+          var keywords = (typeof core.extractKeywords === 'function')
+            ? core.extractKeywords(coreOpts.userMessage || '') : [];
+          for (var commonIndex = 0; commonIndex < selectedV1Ids.length; commonIndex++) {
+            var commonId = selectedV1Ids[commonIndex];
+            if (!v2Set[commonId]) continue;
+            var commonRecord = recordByKey[commonId];
+            var v2Projection = v2ProjectionById[commonId];
+            if (!commonRecord || !v2Projection || typeof core.deriveSemanticForgetting !== 'function') continue;
+            var relevanceBoost = commonRecord.pinned ? 1
+              : ((typeof core.calcRelevance === 'function') ? core.calcRelevance(commonRecord, keywords) : 1);
+            var v1Projection = core.deriveSemanticForgetting(commonRecord, coreOpts.now, relevanceBoost);
+            if (!v1Projection) continue;
+            r4hCompared += 1;
+            if (v1Projection.factualDetail !== v2Projection.factualDetail) r4hDetailMismatch += 1;
+            if (v1Projection.emotionalResidue !== v2Projection.emotionalResidue) r4hResidueMismatch += 1;
+            if (v1Projection.narrativeMeaning !== v2Projection.narrativeMeaning) r4hNarrativeMismatch += 1;
+            if (v1Projection.accessibility !== v2Projection.accessibility) r4hAccessibilityMismatch += 1;
+            if (v1Projection.resurfaced === true) v1Resurfaced += 1;
+            if (v2Projection.resurfaced === true) v2Resurfaced += 1;
+            if (v1Projection.resurfaced === true && v2Projection.resurfaced !== true
+              && commonRecord.pinned !== true && relevanceBoost < 2) v1ActivationResurfaced += 1;
+          }
+          selectorShadow = {
+            candidateCount: gated.length,
+            v1SelectedCount: selectedV1Ids.length,
+            v2SelectedCount: selectedV2Ids.length,
+            topK: topK,
+            repeatedActivationSelectedV1: countSelectedWhere(selectedV1Ids, activatedMoreThanOnce),
+            repeatedActivationSelectedV2: countSelectedWhere(selectedV2Ids, activatedMoreThanOnce),
+            longTermSelectedV1: countSelectedWhere(selectedV1Ids, longTerm),
+            longTermSelectedV2: countSelectedWhere(selectedV2Ids, longTerm),
+            r4h: {
+              commonSelectedCompared: r4hCompared,
+              factualDetailMismatch: r4hDetailMismatch,
+              emotionalResidueMismatch: r4hResidueMismatch,
+              narrativeMeaningMismatch: r4hNarrativeMismatch,
+              accessibilityMismatch: r4hAccessibilityMismatch,
+              v1Resurfaced: v1Resurfaced,
+              v2Resurfaced: v2Resurfaced,
+              v1ActivationOnlyResurfaced: v1ActivationResurfaced
+            },
+            randomReplayMisses: selectorShadowRandomReplayMisses
+          };
+        } catch (e) { selectorShadow = null; }
       }
 
       /* ⑨ candidate trace detail：**只针对 visible 记录**。
@@ -928,23 +1111,24 @@
         }
       } catch (e) { mmShadow = null; }
 
-      return {
-        result: result,
-        trace: trace,
-        meta: {
-          mode: 'turn', consulted: true, channel: channel,
-          /* §19：activation policy 只在这里暴露，result 形状保持冻结。 */
-          activationPolicy: activationPolicy,
-          /* F1b · 内部 seam：**最终注入**（post-core、post-seat）的 ids。
-             调用方在模型 success seam 用它写 exposure ——
-             绝不使用 core pre-seat selection / gated candidates / reinforcementIds。
-             它只在 meta 上，result 的键集合逐字不变。 */
-          injectedMemoryIds: selectedIds.slice(),
-          /* R4-B：**内部专用**的 shadow 诊断。与 F1b 的 injectedMemoryIds 同款纪律 ——
-             只在 meta 上，result 的键集合逐字不变，且**永不**进入 prompt / UI。 */
-          metaMemoryShadow: mmShadow
-        }
+      var finalMeta = {
+        mode: 'turn', consulted: true, channel: channel,
+        /* §19：activation policy 只在这里暴露，result 形状保持冻结。 */
+        activationPolicy: activationPolicy,
+        /* F1b · 内部 seam：**最终注入**（post-core、post-seat）的 ids。
+           调用方在模型 success seam 用它写 exposure ——
+           绝不使用 core pre-seat selection / gated candidates / reinforcementIds。
+           它只在 meta 上，result 的键集合逐字不变。 */
+        injectedMemoryIds: selectedIds.slice(),
+        /* R4-B：**内部专用**的 shadow 诊断。与 F1b 的 injectedMemoryIds 同款纪律 ——
+           只在 meta 上，result 的键集合逐字不变，且**永不**进入 prompt / UI。 */
+        metaMemoryShadow: mmShadow
       };
+      /* Preserve the default meta shape; Phase B metadata exists only for the
+         explicitly shadow-enabled Home Node composition. */
+      if (selectorShadow) finalMeta.selectorShadow = selectorShadow;
+      if (selectorV2Actual) finalMeta.selectorVersion = 'memory-recall-v2';
+      return { result: result, trace: trace, meta: finalMeta };
     }
 
     /* ── 唯一公开入口 ─────────────────────────────────────────────── */

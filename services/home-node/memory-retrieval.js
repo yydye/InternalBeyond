@@ -15,10 +15,12 @@
    ── 为什么这里没有第二套召回 ──────────────────────────────────────────
    本模块**不**实现任何可见性判断、打分、排序或渲染 —— 那些全部来自
    assets/js/memory-retrieval-core.js（浏览器用同一份文件）。
-   本模块只做三件 Node 特有的事：
+   本模块只做几件 Node 特有的事：
      ① 从 canonical store 取候选集；
      ② 注入确定性 now / random；
-     ③ 把结果与 P0 上下文按**稳定前缀**顺序拼接，并把激活强化交给
+     ③ 按 composition flag 在同一候选/query/time 上运行 V2 Shadow，只累积
+        不含 id / query / Memory 正文的进程内计数；V1 仍提供真实结果；
+     ④ 把结果与 P0 上下文按**稳定前缀**顺序拼接，并把激活强化交给
         store.recordActivation（不推进 revision）。
 
    ── 顺序契约（§13.4）─────────────────────────────────────────────────
@@ -62,6 +64,114 @@ function createMemoryRetrieval(deps) {
      才能让"同一输入给出同一召回"成为可断言的契约（Wave 1 · §7.5）。 */
   const random = typeof deps.random === 'function' ? deps.random : Math.random;
   const logger = deps.logger || (() => {});
+  /* The selector policy is composition-owned, never request-owned. It accepts
+     v1 (default), v2, a per-character resolver, or `v2:id1,id2` for a canary. */
+  const configuredSelectorVersion = deps.selectorVersion;
+  let selectorVersionOverride = null;
+  let selectorVersionByCharacter = Object.create(null);
+  function getSelectorVersion(characterId) {
+    const roleId = String(characterId == null ? '' : characterId);
+    if (Object.prototype.hasOwnProperty.call(selectorVersionByCharacter, roleId)) {
+      return selectorVersionByCharacter[roleId];
+    }
+    if (selectorVersionOverride != null) return selectorVersionOverride;
+    let configured = configuredSelectorVersion;
+    if (typeof configured === 'function') {
+      try { configured = configured(roleId); } catch (_) { configured = 'v1'; }
+    }
+    if (configured === 'v2') return 'v2';
+    if (typeof configured === 'string' && configured.indexOf('v2:') === 0) {
+      const ids = configured.slice(3).split(',').map(id => id.trim()).filter(Boolean);
+      return ids.indexOf(roleId) >= 0 ? 'v2' : 'v1';
+    }
+    return 'v1';
+  }
+  function setSelectorVersion(version, characterIds) {
+    const normalized = String(version == null ? '' : version).toLowerCase();
+    if (normalized !== 'v1' && normalized !== 'v2') {
+      return { ok: false, error: 'selector-version-invalid' };
+    }
+    if (Array.isArray(characterIds)) {
+      const seen = Object.create(null);
+      let scopeCount = 0;
+      characterIds.forEach(id => {
+        const roleId = String(id == null ? '' : id).trim();
+        if (!roleId || Object.prototype.hasOwnProperty.call(seen, roleId)) return;
+        seen[roleId] = true;
+        selectorVersionByCharacter[roleId] = normalized;
+        scopeCount += 1;
+      });
+      if (!scopeCount) return { ok: false, error: 'selector-scope-empty' };
+      return { ok: true, selectorVersion: normalized, scopeCount: scopeCount };
+    }
+    selectorVersionOverride = normalized;
+    selectorVersionByCharacter = Object.create(null);
+    return { ok: true, selectorVersion: normalized, scope: 'all' };
+  }
+  /* Phase B runs V2 as a pure, in-process comparison only when the canonical
+     Home Node composition explicitly enables it. These counters never leave
+     this retrieval instance and contain no ids, query text, or Memory body. */
+  const selectorShadowEnabled = deps.selectorShadow === true;
+  const selectorShadowTotals = {
+    calls: 0, candidateCount: 0, v1SelectedCount: 0, v2SelectedCount: 0,
+    topK: { '1': { overlap: 0, compared: 0 }, '3': { overlap: 0, compared: 0 }, '5': { overlap: 0, compared: 0 } },
+    repeatedActivationSelectedV1: 0, repeatedActivationSelectedV2: 0,
+    longTermSelectedV1: 0, longTermSelectedV2: 0,
+    r4h: {
+      commonSelectedCompared: 0, factualDetailMismatch: 0, emotionalResidueMismatch: 0,
+      narrativeMeaningMismatch: 0, accessibilityMismatch: 0,
+      v1Resurfaced: 0, v2Resurfaced: 0, v1ActivationOnlyResurfaced: 0
+    },
+    randomReplayMisses: 0
+  };
+  function recordSelectorShadow(metrics) {
+    if (!selectorShadowEnabled || !metrics || typeof metrics !== 'object') return;
+    selectorShadowTotals.calls += 1;
+    ['candidateCount', 'v1SelectedCount', 'v2SelectedCount',
+      'repeatedActivationSelectedV1', 'repeatedActivationSelectedV2',
+      'longTermSelectedV1', 'longTermSelectedV2', 'randomReplayMisses'].forEach(function (key) {
+      const value = Number(metrics[key]);
+      if (Number.isFinite(value) && value >= 0) selectorShadowTotals[key] += value;
+    });
+    ['1', '3', '5'].forEach(function (key) {
+      const source = metrics.topK && metrics.topK[key];
+      if (!source) return;
+      const overlap = Number(source.overlap), compared = Number(source.compared);
+      if (Number.isFinite(overlap) && overlap >= 0) selectorShadowTotals.topK[key].overlap += overlap;
+      if (Number.isFinite(compared) && compared >= 0) selectorShadowTotals.topK[key].compared += compared;
+    });
+    const r4h = metrics.r4h || {};
+    Object.keys(selectorShadowTotals.r4h).forEach(function (key) {
+      const value = Number(r4h[key]);
+      if (Number.isFinite(value) && value >= 0) selectorShadowTotals.r4h[key] += value;
+    });
+  }
+  function selectorShadowSnapshot() {
+    const topK = {};
+    ['1', '3', '5'].forEach(function (key) {
+      const row = selectorShadowTotals.topK[key];
+      topK[key] = {
+        overlap: row.overlap,
+        compared: row.compared,
+        rate: row.compared ? Number((row.overlap / row.compared).toFixed(4)) : null
+      };
+    });
+    return {
+      enabled: selectorShadowEnabled,
+      version: 'memory-recall-v2-shadow',
+      calls: selectorShadowTotals.calls,
+      candidateCount: selectorShadowTotals.candidateCount,
+      v1SelectedCount: selectorShadowTotals.v1SelectedCount,
+      v2SelectedCount: selectorShadowTotals.v2SelectedCount,
+      topK: topK,
+      repeatedActivationSelectedV1: selectorShadowTotals.repeatedActivationSelectedV1,
+      repeatedActivationSelectedV2: selectorShadowTotals.repeatedActivationSelectedV2,
+      longTermSelectedV1: selectorShadowTotals.longTermSelectedV1,
+      longTermSelectedV2: selectorShadowTotals.longTermSelectedV2,
+      r4h: Object.assign({}, selectorShadowTotals.r4h),
+      randomReplayMisses: selectorShadowTotals.randomReplayMisses
+    };
+  }
   /* P21-R2-F1b：cooldown 的 session authority **由 composition 层注入**，
      与写入方（mobile-gateway settle）必须是同一个实例。
      缺席 ⇒ orchestrator 无 cooldown，行为与 F1a 逐字相同（legacy 兼容）。 */
@@ -72,6 +182,7 @@ function createMemoryRetrieval(deps) {
   function retrieve(characterId, options) {
     options = options || {};
     const roleId = String(characterId == null ? '' : characterId);
+    const selectorVersion = getSelectorVersion(roleId);
     if (!store || typeof store.listRecords !== 'function') {
       return { ok: false, error: 'memory-store-unavailable', text: '', selectedIds: [], count: 0 };
     }
@@ -124,6 +235,12 @@ function createMemoryRetrieval(deps) {
            语义（新路由显式传 true）；将来若两侧都改成 ids-only 消费者，再一起改
            false —— 那需要改桌面 wrapper，不属本轮。 */
       includeHeader: options.includeHeader === true,
+      /* P21-R4-N consumes only the already-derived projection for final
+         selected rows. The option is internal and absent from public callers. */
+      includeSemanticForgettingMeta: options.includeSemanticForgettingMeta === true,
+      /* Shadow is an internal composition flag; callers cannot turn it on with
+         request data and it never changes which selector supplies `result`. */
+      selectorShadow: selectorShadowEnabled,
       /* F1b：只在 visibility/Hard Gate 之后为已 admitted 的候选算 factor；
          turnIndex 来自调用方在 retrieval **之前** begin 的 Home turn（§13/§17）。 */
       sessionState: sessionState,
@@ -165,6 +282,10 @@ function createMemoryRetrieval(deps) {
       glossaryProvider: options.glossaryProvider,
       getGlossaryEntries: options.getGlossaryEntries
     };
+    /* Selector choice is injected from the retrieval instance. Request options
+       cannot opt a chat turn into V2. Omit the key for V1 to preserve its exact
+       legacy option shape. */
+    if (selectorVersion === 'v2') buildOpts.selectorVersion = 'v2';
     /* P21-R2-C：经 orchestrator（legacy path 委托同一份 core）。
        ★ P21-R4-LIVE-3.2 · 事实性更正（**只改注释，不改行为**）：
          R2-D 起 **turn 已经在这里**（见紧邻上面的 `turn: {...}` 块）⇒ 本 Host 走的是
@@ -180,6 +301,7 @@ function createMemoryRetrieval(deps) {
       const out = MEMORY_RECALL_ORCHESTRATOR.recall(page.records || [], buildOpts);
       built = out.result;
       if (out.meta && out.meta.activationPolicy === 'none') activationPolicy = 'none';
+      if (out.meta && out.meta.selectorShadow) recordSelectorShadow(out.meta.selectorShadow);
       /* P21-R4-LIVE-3.3 · §21 · **有界**诊断（显式 opt-in）。
          recall 边界要如实回报"这一轮走了哪个通道、几个候选、预算多少"，
          但 orchestrator 的 trace 里同时带着 `candidates[]`（逐条分数），
@@ -227,7 +349,20 @@ function createMemoryRetrieval(deps) {
       reason: built.reason,
       candidates: (page.records || []).length,
       /* 只在 `withTrace:true` 时出现；默认**不存在**这个键。 */
-      ...(boundedDiagnostics ? { diagnostics: boundedDiagnostics } : {})
+      ...(boundedDiagnostics ? { diagnostics: boundedDiagnostics } : {}),
+      ...(options.includeCandidateRecords === true ? {
+        /* Same-cycle internal snapshot for Association; this never crosses the
+           Mobile wire or the public Recall envelope. */
+        candidateRecords: Array.isArray(page.records) ? page.records.slice(0, 20000) : [],
+        candidateRecordsTruncated: page.truncated === true
+          || (Array.isArray(page.records) && page.records.length >= 20000)
+      } : {}),
+      ...(options.includeSemanticForgettingMeta === true ? {
+        semanticForgettingById: Array.isArray(built.semanticForgettingById)
+          ? built.semanticForgettingById.slice(0, 32) : [],
+        memoryProvenanceById: Array.isArray(built.memoryProvenanceById)
+          ? built.memoryProvenanceById.slice(0, 32) : []
+      } : {})
     };
   }
 
@@ -273,7 +408,14 @@ function createMemoryRetrieval(deps) {
   /* ── 记忆块（无 P0）────────────────────────────────────────────────
      返回 '' 表示"没有可注入的记忆" —— 此时调用方绝不塞空标题。 */
   function buildMemoryBlock(characterId, options) {
-    const picked = retrieve(characterId, options);
+    const roleId = String(characterId == null ? '' : characterId);
+    const selectorVersion = getSelectorVersion(roleId);
+    const retrieveOptions = Object.assign({}, options || {});
+    /* The authoritative Desktop Recall counts the core header in its budget.
+       Use that same selection budget and rendered core block on Mobile V2; V1's
+       existing Mobile wrapper/header contract stays untouched. */
+    if (selectorVersion === 'v2') retrieveOptions.includeHeader = true;
+    const picked = retrieve(roleId, retrieveOptions);
     /* 失败时把 retrieve 的 error 带成 reason：否则调用方只看到 "没有记忆"，
        而真相可能是"存储读不出来" —— 两者对诊断的含义完全不同
        （前者正常，后者需要修）。刻意不把 reason 覆盖成 null。
@@ -286,7 +428,7 @@ function createMemoryRetrieval(deps) {
       });
     }
     const body = picked.text.endsWith('\n') ? picked.text : picked.text + '\n';
-    const block = MEMORY_HEADER + '\n' + body + MEMORY_FOOTER;
+    const block = (selectorVersion === 'v2') ? body : (MEMORY_HEADER + '\n' + body + MEMORY_FOOTER);
     return Object.assign({}, picked, { block: block });
   }
 
@@ -326,11 +468,16 @@ function createMemoryRetrieval(deps) {
            转发而不是在这里计算：cooldown 的唯一实现在 orchestrator + cooldown.js，
            本模块绝不自己生成 factor map。 */
         turnIndex: opts.turnIndex,
+        /* P21-R4-M · bounded channel metadata lets the current selected recall
+           enter the existing R4-K policy gate without repeating Retrieval. */
+        withTrace: true,
         /* P21-R2-E1a · ColdStart 会话信号（latent）：如实透传给 retrieval，
            由它放进 turn 元数据。本轮 orchestrator 不消费 ⇒ 结果不变。 */
         conversationId: opts.conversationId,
         isFirstTurn: opts.isFirstTurn,
-        conversationSignalAvailable: opts.conversationSignalAvailable
+        conversationSignalAvailable: opts.conversationSignalAvailable,
+        includeCandidateRecords: true,
+        includeSemanticForgettingMeta: true
       });
       memoryBlock = picked.block || '';
     } catch (error) {
@@ -358,6 +505,15 @@ function createMemoryRetrieval(deps) {
       activationPolicy: (picked.activationPolicy === 'none') ? 'none' : 'normal',
       memoryCount: picked.count || 0,
       memoryReason: picked.reason || null,
+      /* Internal cognition metadata only; never sent over the Mobile wire. */
+      recallChannel: picked.diagnostics && picked.diagnostics.channel != null
+        ? String(picked.diagnostics.channel) : null,
+      recallCandidateRecords: Array.isArray(picked.candidateRecords) ? picked.candidateRecords : [],
+      recallCandidateRecordsTruncated: picked.candidateRecordsTruncated === true,
+      semanticForgettingById: Array.isArray(picked.semanticForgettingById)
+        ? picked.semanticForgettingById.slice(0, 32) : [],
+      memoryProvenanceById: Array.isArray(picked.memoryProvenanceById)
+        ? picked.memoryProvenanceById.slice(0, 32) : [],
       /* M1-C.2i：三个不同的真相必须分开回给调用方，否则 Middle Brain 的快照只能靠
          "记忆块是不是空串"猜，而"已读但为空 / 根本没读成功"的语义会一起塌成 empty：
            consulted=false → 本轮**没有**读过（读取失败 / 没有 store）→ 快照记 missing，
@@ -392,6 +548,11 @@ function createMemoryRetrieval(deps) {
        必须在装配期拦（见 services/home-node-service.js 的 canonicalMemoryDeps）。 */
     store: deps.store || null,
     retrieve: retrieve,
+    getSelectorVersion: getSelectorVersion,
+    setSelectorVersion: setSelectorVersion,
+    /* In-memory aggregate view for local evaluation only; not wired to HTTP,
+       Memory, logs, prompts, or the Mobile contract. */
+    getSelectorShadowMetrics: selectorShadowSnapshot,
     reinforce: reinforce,
     buildMemoryBlock: buildMemoryBlock,
     buildRuntimeContext: buildRuntimeContext,

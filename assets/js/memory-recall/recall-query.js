@@ -36,9 +36,10 @@
      §16：本模块不写死任何 Recall product budget；MAX_QUERY_INPUT_CHARS 是
      实现安全上限，不是产品语义。
 
-   ── R2-B 的接线状态：implemented but unwired ────────────────────────
-     本文件没有任何生产调用方；不加入 InternalBeyond.html；不被 memory.js /
-     communication.js / home-node-bootstrap.js / memory-retrieval.js 引用。
+   ── 当前接线边界 ─────────────────────────────────────────────────────
+     Browser 与 Home Node 都只经 memory-recall-orchestrator 消费本模块；
+     Browser 脚本由 InternalBeyond.html 按依赖顺序加载。
+     Host 不得直接调用 query builder，也不得在 Host 侧复制 lexical 规则。
    ==================================================================== */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {

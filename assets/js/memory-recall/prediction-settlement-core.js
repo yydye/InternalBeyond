@@ -1,4 +1,4 @@
-/* ====================================================================
+﻿/* ====================================================================
    IB Memory · Prediction Settlement Core（Prediction Error P3）
    --------------------------------------------------------------------
    NO REINTERPRETATION · NO RE-AUTHORITY · NO MODEL
@@ -23,19 +23,23 @@
    ==================================================================== */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    var memoryContract = null, preferenceProposition = null;
+    var memoryContract = null, preferenceProposition = null, observationCore = null;
     try { memoryContract = require('../memory-contract.js'); } catch (e) { memoryContract = null; }
     /* P5-B3-E-R1 · canonical preference proposition 文法的**唯一**出处
        （与 P1 core 用的是同一个文件，不在这里抄第二份正则）。 */
     try { preferenceProposition = require('./preference-proposition-core.js'); } catch (e) { preferenceProposition = null; }
-    module.exports = factory(memoryContract, preferenceProposition);
+    /* D5 · reuse P1's canonical runtime-state token registry/parser; do not copy
+       terminal outcome codes into a second relation grammar. */
+    try { observationCore = require('./outcome-observation-core.js'); } catch (e) { observationCore = null; }
+    module.exports = factory(memoryContract, preferenceProposition, observationCore);
   } else {
     root.IBMemoryPredictionSettlement = factory(
       root.IBMemoryContract || null,
-      root.IBMemoryPreferenceProposition || null
+      root.IBMemoryPreferenceProposition || null,
+      root.IBMemoryOutcomeObservation || null
     );
   }
-})(typeof self !== 'undefined' ? self : this, function (CONTRACT, PREFERENCE) {
+})(typeof self !== 'undefined' ? self : this, function (CONTRACT, PREFERENCE, OBSERVATION_CORE) {
   'use strict';
 
   var SCHEMA_VERSION = 'prediction-settlement/v1';
@@ -271,6 +275,11 @@
     behaviourEffectObserved: 'behavior-effect-attribution-known-present',
     notIndependentConfirmation: 'self-influenced-settlement-is-not-independent-confirmation',
     calibrationCounted: 'calibration-counted',
+    calibrationEvidenceAttributionUnknown: 'decisive-evidence-attribution-unknown',
+    calibrationEvidenceSystemInfluenced: 'decisive-evidence-system-influenced',
+    calibrationEvidenceBasisMissing: 'decisive-calibration-evidence-basis-missing',
+    calibrationEvidenceStateIneligible: 'settlement-state-is-not-calibration-eligible',
+    calibrationCreationInfluenced: 'prediction-creation-self-influenced',
     legacyAdapterDisabled: 'legacy-result-adapter-disabled',
     sessionOnly: 'session-only-lifetime'
   });
@@ -345,6 +354,20 @@
     try { return PREFERENCE.relatePreferenceTokens(expectedToken, observedToken); } catch (e) { return null; }
   }
 
+  function isTurnTerminalTokenFamily(token) {
+    if (OBSERVATION_CORE && typeof OBSERVATION_CORE.isTurnTerminalTokenFamily === 'function') {
+      return OBSERVATION_CORE.isTurnTerminalTokenFamily(token) === true;
+    }
+    /* UMD without P1 loaded: retain only the narrow family guard; parsing still
+       fails closed because no canonical outcome-code parser is available. */
+    var value = text(token);
+    return value === 'runtime.turn_terminal' || value.indexOf('runtime.turn_terminal.') === 0;
+  }
+  function turnTerminalOutcomeCodeOfToken(token) {
+    if (!OBSERVATION_CORE || typeof OBSERVATION_CORE.turnTerminalOutcomeCodeOfToken !== 'function') return null;
+    try { return OBSERVATION_CORE.turnTerminalOutcomeCodeOfToken(token); } catch (e) { return null; }
+  }
+
   function classifyRelation(prediction, observation) {
     var snap = isPlainObject(prediction) && isPlainObject(prediction.predictionSnapshotAtCreation)
       ? prediction.predictionSnapshotAtCreation : null;
@@ -356,6 +379,27 @@
     var ref = isPlainObject(obs.outcomeRef) ? obs.outcomeRef : null;
     if (!exp || !ref) return 'unclassifiable';
     var mode = text(prediction.contradictionMode);
+
+    /* P5-B3-D5 · terminal facts are compared only within their canonical
+       prediction proposition family. A different runtime token is irrelevant,
+       and a terminal-family token without a recognized outcome remains unknown. */
+    if (mode === 'exclusive_outcome' && text(ref.kind) === 'token') {
+      var terminalExpectedToken = text(exp.token);
+      var terminalObservedToken = text(ref.token);
+      var expectedIsTerminal = isTurnTerminalTokenFamily(terminalExpectedToken);
+      var observedIsTerminal = isTurnTerminalTokenFamily(terminalObservedToken);
+      if (expectedIsTerminal || observedIsTerminal) {
+        if (text(prediction.predictionType) !== 'event') return 'irrelevant';
+        if (!expectedIsTerminal || !observedIsTerminal) return 'irrelevant';
+        if (text(obs.source) !== 'CANONICAL_RUNTIME'
+          || text(obs.sourceInstance) !== 'runtime.turn-execution'
+          || text(obs.targetDomain) !== 'runtime_state') return 'unclassifiable';
+        var expectedTerminalCode = turnTerminalOutcomeCodeOfToken(terminalExpectedToken);
+        var observedTerminalCode = turnTerminalOutcomeCodeOfToken(terminalObservedToken);
+        if (!expectedTerminalCode || !observedTerminalCode) return 'unclassifiable';
+        return expectedTerminalCode === observedTerminalCode ? 'support' : 'conflict';
+      }
+    }
 
     /* ① P5-B3-E-R1 · 结构化偏好命名空间（**先**于旧的相等规则判定） */
     if (mode === 'exclusive_outcome' && text(ref.kind) === 'token') {
@@ -465,6 +509,107 @@
     return 'unresolvable';
   }
 
+  var CALIBRATION_EVIDENCE_BASIS_VERSION = 'p3-calibration-evidence-basis/v1';
+  var CALIBRATION_EVIDENCE_BASIS_REF_LIMIT = 32;
+
+  function calibrationEvidenceCandidateOf(observation, relation, gate) {
+    var obs = isPlainObject(observation) ? observation : {};
+    var ic = isPlainObject(obs.interventionContext) ? obs.interventionContext : {};
+    var effects = Array.isArray(ic.behaviorEffectsInForce) ? ic.behaviorEffectsInForce : [];
+    var contaminationClass = text(ic.contaminationClass) || 'UNKNOWN';
+    var influenced = ic.predictionInfluencedSystem === true ? true
+      : (ic.predictionInfluencedSystem === false ? false : null);
+    return {
+      observationId: text(obs.observationId),
+      relation: relation,
+      contaminationClass: contaminationClass,
+      predictionInfluencedSystem: influenced,
+      behaviorEffectCount: effects.length,
+      opportunityState: text(gate && gate.opportunityGate) || 'UNKNOWN',
+      clean: contaminationClass === 'NONE' && influenced !== true && effects.length === 0
+    };
+  }
+
+  function uniqueSortedCalibrationCandidates(input) {
+    var source = Array.isArray(input) ? input.slice() : [];
+    source.sort(function (a, b) {
+      var ax = text(a && a.observationId), bx = text(b && b.observationId);
+      return ax < bx ? -1 : (ax > bx ? 1 : 0);
+    });
+    var out = [], seen = Object.create(null);
+    source.forEach(function (candidate) {
+      if (!candidate || !candidate.observationId || seen[candidate.observationId]) return;
+      seen[candidate.observationId] = true;
+      out.push(candidate);
+    });
+    return out;
+  }
+
+  /* Calibration uses a minimal decisive basis, not every observation that
+     happened during the Prediction lifetime. With the frozen v1 support
+     threshold of one, any one clean decisive support is sufficient for
+     matched; any one clean decisive conflict is sufficient for missed. P1's
+     sealed contamination class is the outcome-time attribution fact. */
+  function deriveCalibrationEvidenceBasis(input) {
+    var i = isPlainObject(input) ? input : {};
+    var state = text(i.state);
+    var counts = isPlainObject(i.counts) ? i.counts : {};
+    var relation = state === 'matched' ? 'support' : (state === 'missed' ? 'conflict' : null);
+    var candidateInput = relation === 'support' ? i.supportCandidates
+      : (relation === 'conflict' ? i.conflictCandidates : []);
+    var candidates = uniqueSortedCalibrationCandidates(candidateInput);
+    var cleanCandidates = candidates.filter(function (candidate) { return candidate.clean === true; });
+    var requiredCount = relation === 'support'
+      ? Math.max(1, Number(counts.supportThreshold) || 1)
+      : (relation === 'conflict' ? 1 : 0);
+    var eligibleState = relation !== null;
+    var outcomeBasisClean = eligibleState && cleanCandidates.length >= requiredCount;
+    var creationSelfInfluenced = i.creationSelfInfluenced === true;
+    var calibrationCounted = outcomeBasisClean && !creationSelfInfluenced;
+    var reasonCode = REASON.calibrationCounted;
+    if (!eligibleState) reasonCode = REASON.calibrationEvidenceStateIneligible;
+    else if (creationSelfInfluenced) reasonCode = REASON.calibrationCreationInfluenced;
+    else if (!candidates.length) reasonCode = REASON.calibrationEvidenceBasisMissing;
+    else if (!outcomeBasisClean) {
+      var hasUnknown = candidates.some(function (candidate) {
+        return candidate.contaminationClass === 'UNKNOWN';
+      });
+      reasonCode = hasUnknown
+        ? REASON.calibrationEvidenceAttributionUnknown
+        : REASON.calibrationEvidenceSystemInfluenced;
+    }
+    return {
+      schemaVersion: CALIBRATION_EVIDENCE_BASIS_VERSION,
+      settlementState: state,
+      relation: relation,
+      requiredDecisiveCount: requiredCount,
+      decisiveObservationCount: candidates.length,
+      decisiveObservationIds: candidates.map(function (candidate) { return candidate.observationId; })
+        .slice(0, CALIBRATION_EVIDENCE_BASIS_REF_LIMIT),
+      cleanDecisiveObservationCount: cleanCandidates.length,
+      cleanDecisiveObservationIds: cleanCandidates.map(function (candidate) { return candidate.observationId; })
+        .slice(0, CALIBRATION_EVIDENCE_BASIS_REF_LIMIT),
+      decisiveEvidence: candidates.slice(0, CALIBRATION_EVIDENCE_BASIS_REF_LIMIT).map(function (candidate) {
+        return {
+          observationId: candidate.observationId,
+          relation: candidate.relation,
+          contaminationClass: candidate.contaminationClass,
+          predictionInfluencedSystem: candidate.predictionInfluencedSystem,
+          behaviorEffectCount: candidate.behaviorEffectCount,
+          opportunityState: candidate.opportunityState,
+          clean: candidate.clean === true
+        };
+      }),
+      opportunityStates: uniq(candidates.map(function (candidate) { return candidate.opportunityState; }))
+        .sort().slice(0, 8),
+      noOpposingEvidence: state === 'matched' ? Number(counts.conflictAll || 0) === 0 : null,
+      creationAttributionSelfInfluenced: creationSelfInfluenced,
+      cleanBasisAvailable: outcomeBasisClean,
+      calibrationCounted: calibrationCounted,
+      reasonCode: reasonCode
+    };
+  }
+
   /* ══════════════════════════════════════════════════════════════════
      ⑥ 结算主体：T0 / T7 / T8
      ══════════════════════════════════════════════════════════════════ */
@@ -497,6 +642,7 @@
       unclassifiable: 0, irrelevant: 0,
       opportunityState: null, windowClosed: null,
       decisiveForbiddenUnknownAttribution: false,
+      calibrationEvidenceBasis: null,
       attributionStatus: p ? text(p.behaviorEffectAttributionStatus) : null
     };
 
@@ -540,6 +686,8 @@
       supportDecisive: 0, supportNonDecisive: 0, conflictDecisive: 0, conflictNonDecisive: 0,
       supportAll: 0, conflictAll: 0, supportThreshold: threshold
     };
+    var supportCalibrationCandidates = [];
+    var conflictCalibrationCandidates = [];
     var observationRefs = [];
     var evidenceRefs = [];
     var gateTraceRefs = [];
@@ -633,10 +781,16 @@
       var isDecisive = adm === 'ELIGIBLE' && policyDecisive;
       if (relation === 'support') {
         counts.supportAll += 1;
-        if (isDecisive) counts.supportDecisive += 1; else counts.supportNonDecisive += 1;
+        if (isDecisive) {
+          counts.supportDecisive += 1;
+          supportCalibrationCandidates.push(calibrationEvidenceCandidateOf(obs, relation, gate));
+        } else counts.supportNonDecisive += 1;
       } else {
         counts.conflictAll += 1;
-        if (isDecisive) counts.conflictDecisive += 1; else counts.conflictNonDecisive += 1;
+        if (isDecisive) {
+          counts.conflictDecisive += 1;
+          conflictCalibrationCandidates.push(calibrationEvidenceCandidateOf(obs, relation, gate));
+        } else counts.conflictNonDecisive += 1;
       }
     }
 
@@ -651,11 +805,17 @@
       reasons.push(REASON.decisiveForbiddenUnknownAttribution);
       counts.supportNonDecisive += counts.supportDecisive; counts.supportDecisive = 0;
       counts.conflictNonDecisive += counts.conflictDecisive; counts.conflictDecisive = 0;
+      supportCalibrationCandidates = [];
+      conflictCalibrationCandidates = [];
     }
 
     /* ── opportunity / window ── */
     var opportunityRequired = !!(p.opportunity && p.opportunity.required === true);
-    var opportunityState = deriveOpportunityFromGates(opportunityRequired, gates, p);
+    var authorityOpportunityState = text(i.authoritativeOpportunityState);
+    var opportunityState = (gates.length === 0 && opportunityRequired
+      && ['SATISFIED', 'ABSENT', 'NOT-CONSUMED', 'UNKNOWN'].indexOf(authorityOpportunityState) >= 0)
+      ? authorityOpportunityState
+      : deriveOpportunityFromGates(opportunityRequired, gates, p);
     var closesAt = finiteTime(p.observationWindow && p.observationWindow.closesAt);
     var windowClosed = closesAt != null && now >= closesAt;
     trace.opportunityState = opportunityState;
@@ -679,9 +839,21 @@
 
     /* ── calibration 记数资格（**只算不写**）─────────────────────────── */
     var effects = Array.isArray(p.behaviorEffectsInForce) ? p.behaviorEffectsInForce : [];
-    var selfInfluenced = effects.length > 0 || attributionStatus === 'known-present';
-    var calibrationCounted = (state === 'matched' || state === 'missed') && !selfInfluenced;
+    var selfInfluenced = effects.length > 0 || attributionStatus === 'known-present'
+      || p.predictionInfluencedSystem === true;
+    var calibrationEvidenceBasis = deriveCalibrationEvidenceBasis({
+      state: state,
+      counts: counts,
+      supportCandidates: supportCalibrationCandidates,
+      conflictCandidates: conflictCalibrationCandidates,
+      creationSelfInfluenced: selfInfluenced
+    });
+    trace.calibrationEvidenceBasis = calibrationEvidenceBasis;
+    var calibrationCounted = calibrationEvidenceBasis.calibrationCounted === true;
     if (selfInfluenced) reasons.push(REASON.behaviourEffectObserved, REASON.notIndependentConfirmation);
+    if (!calibrationCounted && calibrationEvidenceBasis.reasonCode !== REASON.calibrationEvidenceStateIneligible) {
+      reasons.push(calibrationEvidenceBasis.reasonCode);
+    }
     if (calibrationCounted) reasons.push(REASON.calibrationCounted);
     reasons.push(REASON.legacyAdapterDisabled, REASON.sessionOnly);
 
@@ -701,6 +873,7 @@
       reasonCodes: uniq(reasons),
       trace: trace,
       counts: counts,
+      calibrationEvidenceBasis: calibrationEvidenceBasis,
       observationRefs: uniq(observationRefs),
       evidenceRefs: uniq(evidenceRefs),
       gateTraceRefs: gateTraceRefs,
@@ -730,8 +903,10 @@
     policyAllowsDecisiveSettlement: policyAllowsDecisiveSettlement,
     runtimeCanClassifyMode: runtimeCanClassifyMode,
     calibrationReachability: calibrationReachability,
+    deriveCalibrationEvidenceBasis: deriveCalibrationEvidenceBasis,
 
     SCHEMA_VERSION: SCHEMA_VERSION,
+    CALIBRATION_EVIDENCE_BASIS_VERSION: CALIBRATION_EVIDENCE_BASIS_VERSION,
     PE_SCHEMA_VERSION: PE_SCHEMA_VERSION,
     ID_PREFIX: ID_PREFIX,
     PE_ID_PREFIX: PE_ID_PREFIX,
@@ -775,6 +950,9 @@
       matcherMaySupplyRelation: 'YES',
       matcherMaySupplyAuthority: 'NO',
       matcherMayAssignSettlementState: 'NO',
+      turnTerminalRelationAuthority: 'PREDICTION_SETTLEMENT_CORE',
+      turnTerminalRelationRequiresEvidenceMatcher: 'NO',
+      turnTerminalConflictRequiresRecognizedSameFamilyOutcome: 'YES',
       decisiveAuthoritySourcesTable: 'DECISIVE_AUTHORITY_SOURCES',
       p4ReachabilityGate: 'SHARED_PRIMITIVE_NOT_DUPLICATED',
       decisiveSettlementForbiddenWhenAttributionUnknown: 'YES',

@@ -320,7 +320,9 @@ function deriveProducerDefaults(root) {
   const quickArousalDefault = numericCapture(quick, /arousal:data\.arousal!=null\?data\.arousal:(\d+(?:\.\d+)?)/,
     'quickCreate arousal nullish fallback');
   requirePattern(quick, /resolved:data\.resolved!=null\?!!data\.resolved:false/, 'quickCreate resolved default');
-  requirePattern(quick, /activationCount:0,created:Date\.now\(\),lastActivated:Date\.now\(\)/, 'quickCreate initial telemetry');
+  requirePattern(quick,
+    /const createdAt=\(data\.canonicalReceipt===true[\s\S]*?\?Math\.trunc\(Number\(data\.sourceTimestamp\)\):Date\.now\(\);[\s\S]*?activationCount:0,created:createdAt,lastActivated:data\.canonicalReceipt===true\?createdAt:Date\.now\(\)/,
+    'quickCreate default telemetry plus canonical receipt timestamp path');
 
   const diaryThreshold = numericCapture(diary, /if\(importance<(\d+)\)return null;/,
     'diary writer admission minimum');
@@ -1568,6 +1570,13 @@ function liveScopeDiagnostics(root) {
     contaminated: null,
     note: 'Transient working-tree state. Diagnostics only: it is never an input to the frozen calibration decision.'
   };
+  /* A Release Source Snapshot is intentionally git-free. Report that state
+     directly instead of invoking git, emitting its usage text, and pretending
+     the snapshot has a working-tree diff. */
+  if (!fs.existsSync(path.join(base, '.git'))) {
+    out.error = 'git-metadata-unavailable';
+    return out;
+  }
   try {
     const tracked = childProcess.execFileSync('git', ['diff', '--name-only', 'HEAD'], { cwd: base, encoding: 'utf8' })
       .split(/\r?\n/).filter(Boolean).map(value => value.replace(/\\/g, '/'));

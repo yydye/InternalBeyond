@@ -9,8 +9,8 @@
       （那是 R2-C 的硬门，不在这里重复）。
 
    ── 注意 ─────────────────────────────────────────────────────────────
-     turn mode 目前**只有测试直接调用**。production Host 在本轮结束时
-     仍然不传 turn。见 test_memory_recall_wiring_guard.js 的 Host 断言。
+     本文件覆盖 orchestrator 的纯函数语义；production Desktop / Home Node
+     也经共享 orchestrator 传递当前 turn（由 two-host parity / wiring guard 验证）。
    ══════════════════════════════════════════════════════════════════════════ */
 
 const assert = require('node:assert/strict');

@@ -234,6 +234,59 @@ async function main() {
     check('corrupt.scoreSurvives', await evaluate(cdp, "(function(){ var s = getMemoryScore({ title:null, content:123 }); return typeof s === 'number'; })()"));
     await evaluate(cdp, "renderMemories()");
     await evaluate(cdp, "dbDelete('memories','mem_corrupt')");
+    check('ui.localAuthorityIsNotPresentedAsCanonical', await evaluate(cdp,
+      "(function(){ var s=document.getElementById('memory-authority-status'); return !!s && s.dataset.state==='local' && /LOCAL ONLY/.test(s.textContent); })()"));
+
+    /* 0b. Browser UI against a canonical Memory adapter. The authority integration
+       tests exercise the real Home Node SQLite writer; this smoke verifies every
+       visible UI action stays on the same db* seam and never reports rejected writes. */
+    await evaluate(cdp, "(function(){ var clone=function(v){return JSON.parse(JSON.stringify(v))}; var rows=new Map(); var revision=41; var now=Date.now(); rows.set('ui_explicit',{id:'ui_explicit',title:'显式保存的生日',summary:'用户生日是 3 月 25 日',content:'用户生日是 3 月 25 日',rawSource:'chat',sourceId:'msg_ui_explicit',visibility:'public',importance:8,created:now}); rows.set('ui_implicit',{id:'ui_implicit',title:'搬家计划',summary:'下个月搬到东京',content:'用户下个月要搬到东京',rawSource:'chat',sourceId:'msg_ui_implicit',visibility:'public',importance:7,created:now+1}); window.__memoryUiCanonical={rows:rows,revision:revision,old:{get:window.dbGet,getAll:window.dbGetAll,put:window.dbPut,del:window.dbDelete,status:window.IB.homeNode.memory.status,toast:window.toast}}; window.IB.homeNode.memory.status=function(){return {mode:'canonical',authority:'home-node',authorityEffective:true,remoteOnline:true,degraded:false,hydrated:true,fullHistory:true,cursor:revision}}; window.dbGet=function(s,id){return s==='memories'?Promise.resolve(clone(rows.get(String(id))||null)):window.__memoryUiCanonical.old.get(s,id)}; window.dbGetAll=function(s){if(s!=='memories')return window.__memoryUiCanonical.old.getAll(s);var out=Array.from(rows.values()).map(clone);out.authority='home-node';out.readFrom='mirror';out.revision=revision;return Promise.resolve(out)}; window.dbPut=function(s,row){if(s!=='memories')return window.__memoryUiCanonical.old.put(s,row);rows.set(String(row.id),clone(row));revision++;return Promise.resolve()}; window.dbDelete=function(s,id){if(s!=='memories')return window.__memoryUiCanonical.old.del(s,id);rows.delete(String(id));revision++;return Promise.resolve()}; window.__memoryUiToasts=[];window.toast=function(m){window.__memoryUiToasts.push(String(m))}; return true; })()");
+    await evaluate(cdp, "renderMemories()");
+    check('ui.canonicalAuthorityLabel', await evaluate(cdp,
+      "(function(){ var s=document.getElementById('memory-authority-status'); return !!s && s.dataset.state==='canonical' && /memory_records/.test(s.textContent); })()"));
+    check('ui.explicitAndImplicitRecordsShareCanonicalList', await evaluate(cdp,
+      "(function(){ var t=document.getElementById('mem-list').textContent; return t.indexOf('显式保存的生日')>=0 && t.indexOf('搬家计划')>=0; })()"));
+    check('ui.searchReadsCanonicalRows', await evaluate(cdp,
+      "(async function(){document.getElementById('mem-search').value='东京';await renderMemories();var t=document.getElementById('mem-list').textContent;document.getElementById('mem-search').value='';await renderMemories();return t.indexOf('搬家计划')>=0&&t.indexOf('显式保存的生日')<0;})()"));
+    await evaluate(cdp, "openMemoryModal('ui_implicit')");
+    check('ui.detailReadsCanonicalRecord', await waitFor(cdp,
+      "document.getElementById('mem-f-content').value==='用户下个月要搬到东京'", 5000));
+    const uiManualId = await evaluate(cdp, "quickCreateMemory({title:'手动 canonical 记忆',summary:'手动创建',content:'手动记下的长期信息',domain:'日常',visibility:'public',importance:7})");
+    check('ui.manualCreateUsesCanonicalSeam', await evaluate(cdp,
+      "(async function(){await renderMemories();return window.__memoryUiCanonical.rows.has('" + uiManualId + "')&&document.getElementById('mem-list').textContent.indexOf('手动 canonical 记忆')>=0;})()"));
+    await evaluate(cdp, "openMemoryModal('" + uiManualId + "')");
+    check('ui.editFormLoadsCanonicalRecord', await waitFor(cdp,
+      "document.getElementById('mem-f-title').value==='手动 canonical 记忆'", 5000));
+    await evaluate(cdp, "document.getElementById('mem-f-title').value='已修改的生日记忆';document.getElementById('mem-f-content').value='用户生日是 4 月 2 日';saveMemory()");
+    check('ui.editIsVisibleToRecall', await evaluate(cdp,
+      "(async function(){var row=window.__memoryUiCanonical.rows.get('" + uiManualId + "');var ctx=await getMemoryContext('smoke_mem_friend',{maxChars:2000});return row&&row.title==='已修改的生日记忆'&&ctx.indexOf('4 月 2 日')>=0;})()"));
+    await evaluate(cdp, "deleteMemory('" + uiManualId + "')");
+    check('ui.deleteRemovesCanonicalAndRecallResult', await evaluate(cdp,
+      "(async function(){var ctx=await getMemoryContext('smoke_mem_friend',{maxChars:2000});return !window.__memoryUiCanonical.rows.has('" + uiManualId + "')&&ctx.indexOf('4 月 2 日')<0;})()"));
+    await evaluate(cdp, "(function(){var s=window.__memoryUiCanonical;window.IB.homeNode.memory.status=function(){return {mode:'canonical',authority:'home-node',authorityEffective:false,remoteOnline:false,degraded:true,degradedReason:'home-node-offline',hydrated:true,fullHistory:true,cursor:s.revision}};window.dbPut=function(store,row){return store==='memories'?Promise.reject(Object.assign(new Error('offline'),{code:'home-node-offline'})):s.old.put(store,row)};window.dbDelete=function(store,id){return store==='memories'?Promise.reject(Object.assign(new Error('offline'),{code:'home-node-offline'})):s.old.del(store,id)};return true})()");
+    await evaluate(cdp, "renderMemories()");
+    check('ui.offlineMirrorIsExplicitlyDegraded', await evaluate(cdp,
+      "(function(){var s=document.getElementById('memory-authority-status');return s.dataset.state==='degraded'&&/最近同步的 IndexedDB 镜像/.test(s.textContent)})()"));
+    check('ui.fullBackupLabelsTheDegradedCanonicalMemorySnapshot', await evaluate(cdp,
+      "(async function(){var data=await _ibBuildExportData();var m=data.memoryAuthoritySnapshot;return data.memories.some(function(row){return row.id==='ui_explicit'})&&m.authority==='home-node'&&m.store==='memory_records'&&m.state==='degraded'&&m.degradedReason==='home-node-offline'})()"));
+    const unreadableBackupResult = await evaluate(cdp,
+      "(async function(){var old=window.dbGetAll;window.dbGetAll=function(store){return store==='memories'?Promise.reject(Object.assign(new Error('offline'),{code:'home-node-offline'})):old(store)};try{await _ibBuildExportData();return 'returned'}catch(e){return String(e.memoryExport)+'|'+String(e.code)+'|'+String(e.message)}finally{window.dbGetAll=old}})()");
+    check('ui.fullBackupFailsInsteadOfReplacingUnreadableMemoryWithEmptyRows', unreadableBackupResult === 'true|home-node-offline|offline', String(unreadableBackupResult));
+    await evaluate(cdp, "openMemoryModal();document.getElementById('mem-f-title').value='离线不能保存';document.getElementById('mem-f-content').value='不得出现假成功';saveMemory()");
+    check('ui.offlineCreateFailsClosedWithoutSuccessToast', await evaluate(cdp,
+      "(function(){var rows=window.__memoryUiCanonical.rows;var t=window.__memoryUiToasts.slice(-1)[0]||'';return !Array.from(rows.values()).some(function(m){return m.title==='离线不能保存'})&&t.indexOf('Home Node 当前不可用')>=0&&t.indexOf('已保存')<0})()"));
+    await evaluate(cdp, "(function(){var cb=document.createElement('input');cb.type='checkbox';cb.className='mem-clean-cb';cb.value='ui_explicit';cb.checked=true;document.body.appendChild(cb);window.__memoryUiCleanCheckbox=cb})()");
+    await evaluate(cdp, "deleteCheckedCleanLyrics()");
+    check('ui.offlineCleanDeleteFailsClosedWithoutSuccessToast', await evaluate(cdp,
+      "(function(){var t=window.__memoryUiToasts.slice(-1)[0]||'';var kept=window.__memoryUiCanonical.rows.has('ui_explicit');if(window.__memoryUiCleanCheckbox)window.__memoryUiCleanCheckbox.remove();return kept&&t.indexOf('Home Node 当前不可用')>=0&&t.indexOf('已删除')<0})()"));
+    await evaluate(cdp, "clearAllMemories()");
+    check('ui.offlineClearAllDoesNotClaimSuccess', await evaluate(cdp,
+      "(function(){var t=window.__memoryUiToasts.slice(-1)[0]||'';return window.__memoryUiCanonical.rows.size===2&&t.indexOf('Home Node 当前不可用')>=0&&t.indexOf('记忆库已清空')<0})()"));
+    await evaluate(cdp, "(async function(){await closeMemoryModal();await window.IB.memoryWorld.reload();window.IB.memoryWorld.open()})()");
+    check('ui.memoryWorldShowsSameCanonicalAuthority', await waitFor(cdp,
+      "document.getElementById('mem-world-authority')&&document.getElementById('mem-world-authority').dataset.state==='degraded'&&/DEGRADED · HOME NODE/.test(document.getElementById('mem-world-authority').textContent)", 8000));
+    await evaluate(cdp, "window.IB.memoryWorld.close('smoke')");
+    await evaluate(cdp, "(function(){var s=window.__memoryUiCanonical;window.dbGet=s.old.get;window.dbGetAll=s.old.getAll;window.dbPut=s.old.put;window.dbDelete=s.old.del;window.IB.homeNode.memory.status=s.old.status;window.toast=s.old.toast;return true})()");
 
     /* 1. 记忆增删改与持久化重载 */
     const memId = await evaluate(cdp, "quickCreateMemory({ title:'雨天的记忆', summary:'喜欢下雨天。', content:'用户说雨声让人安心。', domain:'日常', tags:['雨'], valence:0.6, arousal:0.3, importance:5, visibility:'public' })");

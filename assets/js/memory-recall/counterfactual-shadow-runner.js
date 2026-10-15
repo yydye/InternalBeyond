@@ -1,14 +1,15 @@
-/* ====================================================================
+﻿/* ====================================================================
    IB Memory · Counterfactual SHADOW — 模型 runner（R4-E）
    --------------------------------------------------------------------
-   这是 R4-E 里**唯一**会发起模型调用的文件，而它**没有任何生产调用方**。
+   这是 R4-E 里唯一的有界传输 runner。R4-E 默认核心仍是独立 shadow；
+   P21-R4-Q 是唯一生产调用方，并注入自己的严格 Q schema / validator。
 
    继承 R4-C / R4-D 的全部纪律（不重新发明）：
      · AUTO_RETRY = NONE，MAX_ATTEMPTS = 1
      · 超时**权威由调用方注入**；本 runner 不发明 20s/30s/60s
      · SAFETY_CAP_MS 只是**已有证据上界**（Repo 自身的 UNDERSTANDING_TIMEOUT_MS）
      · RUNNER_WAIT_BOUNDED = YES ≠ PROVIDER_EXECUTION_CANCELLATION_GUARANTEED = NO
-     · deps.enabled !== true ⇒ 零调用（默认 OFF）
+     · deps.enabled !== true ⇒ 零调用；R4-Q 仅在显式条件问题与证据门通过后注入 true
      · calls ≤ 1 / 显式 invocation（不是 Tree-of-Thought，不自我辩论）
      · **绝不**为了拿 Interpretation / Expectation 偷偷触发 R4-C / R4-D runner
      · 任何失败 ⇒ fail open，绝不 fallback / retry / replay
@@ -132,7 +133,9 @@
     if (!isPlainObject(parsed)) return unavailable('counterfactual-json-invalid', core);
 
     var validated = core.validateResponse(parsed, {
-      allowedMemoryIds: (input && input.selectedIds) || []
+      allowedMemoryIds: (input && input.selectedIds) || [],
+      groundingText: input && input.groundingText,
+      changedPremise: input && input.intervention && input.intervention.statement
     });
     var latency = (startedAt != null && typeof d.now === 'function') ? (Number(d.now()) - Number(startedAt)) : null;
     return core.assembleShadow(input, validated, {

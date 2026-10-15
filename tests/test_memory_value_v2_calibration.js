@@ -785,7 +785,9 @@ check('R3C27.live working-tree state is diagnostics only, never decision input',
   assert.equal(r3cReport.calibrationDecision.hardGates.A.scopeEvidence.source, undefined);
   const live = r3cReport.scopeDiagnostics;
   assert.equal(live.source, 'live');
-  assert.equal(live.available, true);
+  const hasGitMetadata = fs.existsSync(path.join(ROOT, '.git'));
+  assert.equal(live.available, hasGitMetadata);
+  if (!hasGitMetadata) assert.equal(live.error, 'git-metadata-unavailable');
   assert.equal(Array.isArray(live.changedPaths), true);
   assert.equal(r3cReport.scopeDecisionBasis.indexOf('declared') >= 0, true);
   /* 诊断**允许**与声明不同（无关的 user/Codex 未提交改动正是这种情况），

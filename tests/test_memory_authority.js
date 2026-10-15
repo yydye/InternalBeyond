@@ -309,6 +309,15 @@ function mockLocal(options) {
     check('T5.3 带 mirrorError 字段', typeof res.mirrorError === 'string' && res.mirrorError.length > 0, res.mirrorError);
     check('T5.4 Home Node 里确实有这条', remote.state.stored.has('m-mirrorfail'));
     check('T5.5 镜像里确实没有这条', !local.state.rows.has('m-mirrorfail'));
+    check('T5.6 mirror failure marks the UI source degraded and forces the next read to hydrate',
+      authority.status().degraded === true
+        && authority.status().degradedReason === 'memory-mirror-write-failed'
+        && authority.status().hydrated === false);
+    local.state.failPut = false;
+    const hydratedAfterMirrorFailure = await authority.getAll();
+    check('T5.7 next canonical read rebuilds the stale mirror and clears degraded state',
+      hydratedAfterMirrorFailure.some(row => row.id === 'm-mirrorfail')
+        && authority.status().degraded === false && authority.status().hydrated === true);
   }
 
   /* ══════════════ T6 · 记忆可变：内容变化必须真的更新 ═════════════════════ */

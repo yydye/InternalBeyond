@@ -354,9 +354,8 @@ async function main() {
   })(), 'the anchor module must stay pure: no IO, no clock, no random');
   check('14.noSchemaChange', (() => {
     const schema = fs.readFileSync(path.join(ROOT, 'assets/js/webcore-db-schema.js'), 'utf8');
-    const core = fs.readFileSync(path.join(ROOT, 'assets/js/chat-core.js'), 'utf8');
     return schema.indexOf('coldStart') < 0 && schema.indexOf('glossary') < 0
-      && /DB_VER = 24/.test(core);
+      && require('./helpers/db-schema-authority.js').isVersion('InternalBeyondDB', 24);
   })(), 'no new store, DB_VER unchanged (24)');
   check('14.noNewStoreNames', (() => {
     const schema = fs.readFileSync(path.join(ROOT, 'assets/js/webcore-db-schema.js'), 'utf8');

@@ -42,15 +42,26 @@ function _amRecordOnlyBlock(cfg){
   +'标签内部必须是合法 JSON。confidence 为 0-100 整数，reasons 最多 3 条；结合主动表达、重复出现、未来影响与一次性特征判断，不要随机给分。\n'
   +'未收到明确指示时不执行任何记忆操作。';
 }
-async function amBuildInject(cfg,queryText){
+function _amChatImplicitInstrBlock(){
+  return '【普通单聊 · implicit Memory candidate】\n'
+    +'随后注入的既有 Auto Memory 档案可作为回复背景，但普通 Chat 的新建长期事实使用 canonical Memory 候选路径。\n'
+    +'检查当前这条用户消息是否包含对未来对话有明确价值、与用户本人相关的长期事实、稳定偏好、持续计划、进行中的项目/工作上下文或重要变更。只在证据充分时，最多在自然回复末尾输出一个 <mem_create category="personal_context" priority="normal">JSON</mem_create> 候选；不值得长期保留时不要输出任何 mem_create。\n'
+    +'候选 JSON 必须包含：content（独立可读的简短事实）、category（personal_fact|preference|ongoing_plan|ongoing_project|provider_change）、durability（stable|ongoing|temporary）、userRelevance（high|medium|low）、futureValue（0 到 1）、uncertainty（0 到 1）、evidence（当前用户消息中的逐字短引文）、confidence（0 到 100）、reasons（最多 3 条）。evidence 必须能在当前用户原文中逐字找到。\n'
+    +'若当前消息包含“那个/上次/之前/老地方/她说的那个”等指代，只有收到 Host 提供的唯一指代落地结果时才能输出 mem_create，并以其中无悬空指代的含义为候选；没有结果或结果有歧义时不要写入候选，正常回复可按需自然澄清。不要输出 message id 或 provenance。\n'
+    +'不要为倒水、临时状态、一次性操作、玩笑、寒暄生成候选。持续计划可以是 ongoing，不要把它改写成已经完成或永久事实。\n'
+    +'该标签只是候选，runtime admission 可能忽略；runtime 才能决定是否写入。不要输出 memoryId、id、revision、authority、canonical 或任何写入成功声明。普通 Chat 的新建候选使用此标签，不要为同一事实输出第二个 mem_create。\n'
+    +'只有用户明确纠正/要求删除一条已注入的旧 Auto Memory 档案时，才可用 mem_update 或 mem_delete，并且 id 必须逐字取自现有档案；不得为新候选伪造 id。';
+}
+async function amBuildInject(cfg,queryText,options){
   const out={sys:'',tail:''};
   if(!amEnabled(cfg))return out;
+  options=options||{};
   /* 缓存修复：昵称异步加载竞态——打开页面后秒发首条消息时 _cached */
   if(!_cachedUserName){try{const _ab=await dbGet('about','main');if(_ab&&_ab.name)_cachedUserName=_ab.name}catch(e){}}
   if(cfg.amRecordOnly){out.sys=_amRecordOnlyBlock(cfg);return out}
   const entries=await amGetEntries(cfg.id);
   /* sys：仅放指令格式（会话内不变，可被缓存） */
-  out.sys=_amInstrBlock(cfg);
+  out.sys=options.chatImplicit===true?_amChatImplicitInstrBlock():_amInstrBlock(cfg);
   if(!entries.length){out.tail='【记忆档案（共 0 条，勿向对方复述此段）】\n（目前为空）';return out}/* 缓存修复：空档案提示移至 tail——原先拼在 sys 末尾，首条记忆写入时 sys 字节变化会触发一次全量缓存重建 */
   const mode=cfg.autoMemMode||'hybrid';
   const budget=Math.max(300,parseInt(cfg.autoMemBudget)||1200);
@@ -411,15 +422,27 @@ function _mkMemLiveFilter(out,cardFn){
 let _amIdx=0,_amExpandPersona=false,_amQuoteFor=null;
 var _amArchMode=false;/* Memory 页 AM 归档模式：展区与引言切换为归档好友，条目只读 */
 function _amList(){const src=_amArchMode?(archivedConfigs||[]):(apiConfigs||[]);return src.filter(a=>a&&!String(a.id).startsWith('group_'))}
+function _amUiText(key,fallback){return window.IBI18n&&typeof window.IBI18n.t==='function'?window.IBI18n.t(key):fallback}
 function _amArchToggleUI(){
   const l=document.getElementById('am-switch-label');
+  const note=document.getElementById('am-authority-note');
   const b=document.getElementById('am-arch-toggle');
-  if(l)l.textContent=_amArchMode?'Archived':'Auto Memory';
+  const setbtn=document.getElementById('am-setbtn');
+  if(l)l.textContent=_amUiText(_amArchMode?'memory.autoMemoryArchived':'memory.autoMemory',_amArchMode?'Archived · Role archive':'Auto Memory · 角色档案');
+  if(note)note.textContent=_amArchMode
+    ?_amUiText('memory.autoMemoryArchivedAuthority','已归档 API 的独立角色档案；仍不属于 Home Node canonical Memory，也不参与 canonical Recall。')
+    :_amUiText('memory.autoMemoryAuthority','按 AI 角色分区的独立 IndexedDB 档案；不属于 Home Node canonical Memory，也不参与 canonical Recall。');
   if(b){
-    if(_amArchMode){b.classList.add('arch-return');b.innerHTML=_ARCH_RETURN_SVG+'Return'}
-    else{b.classList.remove('arch-return');b.innerHTML='Archived'+_ARCH_CLOCK_SVG}
+    if(_amArchMode){b.classList.add('arch-return');b.innerHTML=_ARCH_RETURN_SVG+_amUiText('memory.return','Return')}
+    else{b.classList.remove('arch-return');b.innerHTML=_amUiText('memory.archived','Archived')+_ARCH_CLOCK_SVG}
+  }
+  if(setbtn&&!_amArchMode){
+    const key=_amList().length?'memory.roleAutoMemory':'api.addRole';
+    setbtn.setAttribute('data-i18n',key);
+    setbtn.textContent=_amUiText(key,key==='api.addRole'?'添加 AI 角色 ↗':'角色级 Auto Memory ↗');
   }
 }
+document.addEventListener('ib:locale-changed',_amArchToggleUI);
 function toggleAmArchive(){
   _amArchMode=!_amArchMode;
   _amIdx=0;_amExpandPersona=false;
@@ -468,7 +491,7 @@ async function renderAutoMemShowcase(dir){
   const stage=document.getElementById('am-stage');if(!stage)return;
   const core=document.getElementById('am-core'),tray=document.getElementById('am-tray'),setbtn=document.getElementById('am-setbtn');
   if(!core||!tray)return;
-  const under=stage.querySelector('.am-under');if(under)under.style.display=_amArchMode?'none':'';/* 归档模式隐藏 API Settings 入口 */
+  const under=stage.querySelector('.am-under');if(under)under.style.display=_amArchMode?'none':'';/* 归档模式隐藏角色配置入口 */
   const seq=++_amSeq;
   const list=_amList();
   if(!list.length){
@@ -483,7 +506,7 @@ async function renderAutoMemShowcase(dir){
       tray.innerHTML='<div class="am-right-head"><span class="am-title">Auto Memory</span></div>'
         +'<div class="am-void-t">尚未配置任何 API。<br>每一位 AI 都可以在这里拥有一份由它自主维护的、关于你的长期记忆档案。</div>'
         +'<div class="am-void-w">Auto Memory</div>';
-      if(setbtn){setbtn.textContent='前往 API 设置 \u2197';setbtn.onclick=function(){navTo('api')}}
+      if(setbtn){setbtn.setAttribute('data-i18n','api.addRole');setbtn.textContent=_amUiText('api.addRole','添加 AI 角色 ↗');setbtn.onclick=function(){navTo('api')}}
     }
     requestAnimationFrame(function(){core.style.transition=''});
     _amSyncQuote(null);
@@ -494,7 +517,7 @@ async function renderAutoMemShowcase(dir){
   _amSyncQuote(cfg);
   const entries=await amGetEntries(cfg.id);
   if(seq!==_amSeq)return;/* 快速连点：只让最后一次请求落地 */
-  if(setbtn){setbtn.textContent='API Settings \u2197';setbtn.onclick=function(){amJumpSettings(cfg.id)}}
+  if(setbtn){setbtn.setAttribute('data-i18n','memory.roleAutoMemory');setbtn.textContent=_amUiText('memory.roleAutoMemory','角色级 Auto Memory ↗');setbtn.onclick=function(){amJumpSettings(cfg.id)}}
   const reduce=!!(window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches);
   const apply=function(stagger){
     core.innerHTML=_amCoreHtml(cfg);tray.innerHTML=_amTrayHtml(cfg,entries);

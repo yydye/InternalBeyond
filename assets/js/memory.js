@@ -481,7 +481,7 @@ function openMemoryModal(id){
       const targets=m.visibility==='only'?(m.visibleTo||[]):m.visibility==='except'?(m.excludeFrom||[]):[];
       checksEl.querySelectorAll('input').forEach(cb=>{cb.checked=targets.includes(cb.value)});
       updMemPreview();
-    });
+    }).catch(e=>_memoryUiMutationFailure('读取详情',e));
   }else{
     document.getElementById('mem-f-title').value='';
     document.getElementById('mem-f-summary').value='';
@@ -536,7 +536,8 @@ async function saveMemory(){
     createdBy:'user',createdByName:'',editedByUser:false
   };
   if(_editingMemId){
-    const old=await dbGet('memories',_editingMemId);
+    let old;
+    try{old=await dbGet('memories',_editingMemId)}catch(e){_memoryUiMutationFailure('读取',e);return}
     if(old){
       mem.created=old.created;mem.activationCount=old.activationCount||0;
       mem.createdBy=old.createdBy||'user';
@@ -555,7 +556,7 @@ async function saveMemory(){
       if(old.lastConsolidatedAt!=null)mem.lastConsolidatedAt=Number(old.lastConsolidatedAt);
     }
   }
-  await dbPut('memories',mem);
+  try{await dbPut('memories',mem)}catch(e){_memoryUiMutationFailure(_editingMemId?'更新':'保存',e);return}
   /* 编辑可能改变某条证据的可见性 → 引用它的 Understanding/Thread 需要重新校验
      （与内联编辑器 _memInlineSave 的既有行为一致）。 */
   if(_editingMemId)try{await _reconcileReferences(_editingMemId)}catch(e){}
@@ -567,32 +568,87 @@ async function saveMemory(){
 
 async function deleteMemory(id){
   if(!confirm('确定删除这条记忆？'))return;
-  await dbDelete('memories',id);
+  try{await dbDelete('memories',id)}catch(e){_memoryUiMutationFailure('删除',e);return}
   try{await _reconcileReferences(id)}catch(e){}/* 证据失效→建议的 Understanding/Thread 置 stale/orphan（不级联删） */
   renderMemories();updateMemDashboard();toast('记忆已删除');
 }
 
 async function toggleMemResolved(id){
-  const m=await dbGet('memories',id);
+  let m;
+  try{m=await dbGet('memories',id)}catch(e){_memoryUiMutationFailure('读取',e);return}
   if(!m)return;
   m.resolved=!m.resolved;
-  await dbPut('memories',m);
+  try{await dbPut('memories',m)}catch(e){_memoryUiMutationFailure('更新状态',e);return}
   renderMemories();updateMemDashboard();
   toast(m.resolved?'已标记为已解决':'已标记为未解决');
 }
 
 async function toggleMemPin(id){
-  const m=await dbGet('memories',id);
+  let m;
+  try{m=await dbGet('memories',id)}catch(e){_memoryUiMutationFailure('读取',e);return}
   if(!m)return;
   if(!m.pinned){
-    const all=await dbGetAll('memories');
+    let all;
+    try{all=await dbGetAll('memories')}catch(e){_memoryUiMutationFailure('读取',e);return}
     const pinnedCount=all.filter(x=>x.pinned).length;
     if(pinnedCount>=7){toast('最多只能置顶 7 条记忆');return}
   }
   m.pinned=!m.pinned;
-  await dbPut('memories',m);
+  try{await dbPut('memories',m)}catch(e){_memoryUiMutationFailure('置顶',e);return}
   renderMemories();updateMemDashboard();
   toast(m.pinned?'已置顶':'已取消置顶');
+}
+
+/* Memory UI displays canonical Home Node state separately from the IndexedDB
+   mirror. A degraded/local snapshot remains browsable, but is never labeled as
+   current canonical data. */
+function getMemoryAuthorityUiState(readResult,readError){
+  var host=typeof window!=='undefined'?window:null;
+  var surface=host&&host.IB&&host.IB.homeNode&&host.IB.homeNode.memory;
+  var status=null;
+  try{status=surface&&typeof surface.status==='function'?surface.status():null}catch(e){}
+  var readFrom=readResult&&readResult.readFrom||'';
+  var revision=readResult&&readResult.revision!=null?Number(readResult.revision):null;
+  if(status&&status.mode==='canonical'&&status.authority==='home-node'){
+    if(status.authorityEffective===true&&status.remoteOnline===true&&status.hydrated===true&&status.fullHistory===true&&status.degraded!==true&&readFrom!=='mirror-degraded'&&!readError){
+      return{state:'canonical',label:'CANONICAL · HOME NODE',detail:'memory_records · IndexedDB 镜像已同步'+(Number.isFinite(revision)?' · revision '+revision:'')};
+    }
+    if(status.remoteOnline===false||status.degraded||readFrom==='mirror-degraded'||readError){
+      return{state:'degraded',label:'DEGRADED · HOME NODE',detail:'当前显示最近同步的 IndexedDB 镜像；新写入必须由 Home Node 确认'+(status.degradedReason?' · '+String(status.degradedReason):'')};
+    }
+    return{state:'syncing',label:'SYNCING · HOME NODE',detail:'canonical Memory 镜像尚未完成完整同步。'};
+  }
+  if(status&&(status.authority==='indexeddb'||status.mode==='mirror'||status.mode==='off'||status.fileOrigin===true)){
+    return{state:'local',label:'LOCAL ONLY · INDEXEDDB',detail:'当前是浏览器本地模式；这份数据不是 Home Node canonical Memory。'};
+  }
+  return{state:'unavailable',label:'AUTHORITY UNKNOWN',detail:'无法确认 Memory 数据来源；请检查 Home Node 状态。'};
+}
+function updateMemoryAuthorityStatus(readResult,readError){
+  const root=document.getElementById('memory-authority-status');
+  if(!root)return null;
+  const info=getMemoryAuthorityUiState(readResult,readError);
+  root.dataset.state=info.state;
+  const label=document.getElementById('memory-authority-label');
+  const detail=document.getElementById('memory-authority-detail');
+  if(label)label.textContent=info.label;
+  if(detail)detail.textContent=info.detail;
+  return info;
+}
+function _memoryUiMutationFailure(action,error,completed){
+  updateMemoryAuthorityStatus(null,error);
+  const code=String(error&&error.code||'');
+  let message;
+  if(code==='home-node-offline'||code==='home-node-unhealthy'||/unreachable|timeout/i.test(code)){
+    message='Home Node 当前不可用，'+action+'未获 canonical 确认。';
+  }else if(code.indexOf('memory-authority-')===0||code==='canonical-memory-authority-unavailable'){
+    message='canonical Memory authority 未就绪，'+action+'未执行。';
+  }else if(code==='home-node-rejected'||code==='invalid-record'){
+    message='Home Node 拒绝了这次'+action+'，未保存。';
+  }else{
+    message='Memory '+action+'失败，未确认写入。';
+  }
+  if(Number(completed)>0)message+=' 已确认写入 '+Number(completed)+' 条；其余未完成。';
+  toast(message);
 }
 
 /* --- 渲染记忆列表 --- */
@@ -613,7 +669,14 @@ async function populateMemApiFilter(){
 }
 
 async function renderMemories(){
-  const all=await dbGetAll('memories');
+  let all;
+  try{all=await dbGetAll('memories');updateMemoryAuthorityStatus(all)}catch(e){
+    updateMemoryAuthorityStatus(null,e);
+    const failedList=document.getElementById('mem-list');
+    if(failedList)failedList.textContent='Memory 暂时无法读取；请检查 Home Node 状态后重试。';
+    return;
+  }
+  if(!Array.isArray(all))all=[];
   const domainFilter=document.getElementById('mem-filter-domain')?.value||'all';
   const statusFilter=document.getElementById('mem-filter-status')?.value||'all';
   const apiFilter=document.getElementById('mem-filter-api')?.value||'all';
@@ -922,7 +985,8 @@ async function toggleInlineEdit(id){
   const panel=document.getElementById('mce-'+id);
   if(!panel)return;
   if(panel.classList.contains('show')){panel.classList.remove('show');panel.innerHTML='';if(window._memRelayoutTimeline)requestAnimationFrame(window._memRelayoutTimeline);return}
-  const m=await dbGet('memories',id);
+  let m;
+  try{m=await dbGet('memories',id)}catch(e){_memoryUiMutationFailure('读取详情',e);return}
   if(!m)return;
   const apiOpts=apiConfigs.map(a=>'<label style="margin:0;display:flex;align-items:center;gap:4px"><input type="checkbox" class="mce-vis-cb-'+id+'" value="'+a.id+'"'
     +((m.visibility==='only'&&(m.visibleTo||[]).includes(a.id))||(m.visibility==='except'&&(m.excludeFrom||[]).includes(a.id))?' checked':'')
@@ -955,7 +1019,8 @@ async function toggleInlineEdit(id){
 }
 
 async function saveInlineEdit(id){
-  const m=await dbGet('memories',id);
+  let m;
+  try{m=await dbGet('memories',id)}catch(e){_memoryUiMutationFailure('读取详情',e);return}
   if(!m)return;
   const title=document.getElementById('mce-title-'+id)?.value?.trim();
   if(!title){toast('标题不能为空');return}
@@ -987,7 +1052,7 @@ async function saveInlineEdit(id){
      遥测 —— 违反 MEMORY_AUTHORITY_CONTRACT §2.1。
      因此只删除该耦合；**内容写入路径（dbPut + _reconcileReferences + UI 刷新）
      一行未动**，本函数也不再触碰任何 activation 遥测（读改写会原样写回）。 */
-  await dbPut('memories',m);
+  try{await dbPut('memories',m)}catch(e){_memoryUiMutationFailure('更新',e);return}
   /* 编辑可能使引用它的 Understanding/Thread 的证据口径变化 → 轻度调和（内容修订不降级，仅更新） */
   if(id)try{await _reconcileReferences(id)}catch(e){}
   renderMemories();updateMemDashboard();
@@ -1062,31 +1127,52 @@ async function updateMemDashboard(){
 
 /* --- 导出记忆 --- */
 async function exportMemories(){
-  const all=await dbGetAll('memories');
+  let all,authorityState;
+  try{
+    all=await dbGetAll('memories');
+    authorityState=updateMemoryAuthorityStatus(all);
+  }catch(e){_memoryUiMutationFailure('导出',e);return}
   if(!all.length){toast('没有记忆可导出');return}
   downloadJSON(all,'memories_backup_'+new Date().toISOString().slice(0,10)+'.json');
-  toast('记忆已导出（'+all.length+'条）');
+  const state=authorityState&&authorityState.state;
+  const sourceNote=state==='degraded'?' · 来自最近同步的镜像，可能不是最新':state==='local'?' · 当前为本机 IndexedDB 数据，不是 Home Node canonical Memory':state==='canonical'?'':' · Memory authority 状态未确认';
+  toast('记忆已导出（'+all.length+'条）'+sourceNote);
 }
 
-/* --- 导入记忆 --- */
+/* --- 导入记忆：每条都经过同一 canonical dbPut seam --- */
+async function importCanonicalMemoryRows(rows){
+  let completed=0;
+  for(const source of rows||[]){
+    const record=Object.assign({},source||{});
+    if(!record.id)record.id='mem_'+Date.now()+'_'+Math.floor(Math.random()*100000);
+    if(!record.created)record.created=Date.now();
+    if(!record.lastActivated)record.lastActivated=record.created;
+    try{await dbPut('memories',record);completed++}
+    catch(error){
+      if(!error||typeof error!=='object')error=new Error(String(error||'canonical Memory import failed'));
+      error.memoryImport=true;
+      error.memoryImportCompleted=completed;
+      throw error;
+    }
+  }
+  return completed;
+}
 function importMemoriesFile(){
   const inp=document.createElement('input');inp.type='file';inp.accept='.json';
   inp.onchange=async function(e){
     const file=e.target.files[0];if(!file)return;
+    let count=0;
     try{
       const text=await file.text();const data=JSON.parse(text);
       const arr=Array.isArray(data)?data:(data.memories||[]);
       if(!arr.length){toast('文件中没有找到记忆数据');return}
-      let count=0;
-      for(const m of arr){
-        if(!m.id)m.id='mem_'+Date.now()+'_'+Math.floor(Math.random()*100000);
-        if(!m.created)m.created=Date.now();
-        if(!m.lastActivated)m.lastActivated=m.created;
-        await dbPut('memories',m);count++;
-      }
+      count=await importCanonicalMemoryRows(arr);
       renderMemories();updateMemDashboard();
       toast('已导入 '+count+' 条记忆');
-    }catch(err){toast('导入失败：文件格式错误')}
+    }catch(err){
+      if(err instanceof SyntaxError){toast('导入失败：JSON 格式无效');return}
+      _memoryUiMutationFailure('导入',err,Number(err&&err.memoryImportCompleted)||count);
+    }
   };
   inp.click();
 }
@@ -1200,15 +1286,30 @@ async function deleteCheckedCleanLyrics(){
   var ids=[].map.call(document.querySelectorAll('.mem-clean-cb:checked'),function(cb){return cb.value});
   if(!ids.length)return;
   if(!confirm('确定删除选中的 '+ids.length+' 条记忆？此操作不可恢复。'))return;
-  for(var i=0;i<ids.length;i++){try{await dbDelete('memories',ids[i])}catch(e){}}
-  _cleanLyricsCandidates=_cleanLyricsCandidates.filter(function(c){return ids.indexOf(c.id)<0});
+  var deleted=[];
+  for(var i=0;i<ids.length;i++){
+    try{await dbDelete('memories',ids[i]);deleted.push(ids[i])}
+    catch(e){
+      _cleanLyricsCandidates=_cleanLyricsCandidates.filter(function(c){return deleted.indexOf(c.id)<0});
+      _renderCleanLyricsList(_cleanLyricsCandidates);
+      renderMemories();updateMemDashboard();
+      _memoryUiMutationFailure('清理',e,deleted.length);
+      return;
+    }
+  }
+  _cleanLyricsCandidates=_cleanLyricsCandidates.filter(function(c){return deleted.indexOf(c.id)<0});
   _renderCleanLyricsList(_cleanLyricsCandidates);
   renderMemories();updateMemDashboard();
-  toast('已删除 '+ids.length+' 条无意义记忆');
+  toast('已删除 '+deleted.length+' 条无意义记忆');
 }
 async function quickCreateMemory(data){
+  data=data||{};
+  const explicitSourceId=data.canonicalReceipt===true?String(data.sourceMessageId||'').trim():'';
+  const explicitId=explicitSourceId?'mem_explicit_'+explicitSourceId.replace(/[^A-Za-z0-9_-]/g,'_').slice(0,140):'';
+  const createdAt=(data.canonicalReceipt===true&&Number.isFinite(Number(data.sourceTimestamp))&&Number(data.sourceTimestamp)>0)
+    ?Math.trunc(Number(data.sourceTimestamp)):Date.now();
   const mem={
-    id:'mem_'+Date.now()+'_'+Math.floor(Math.random()*10000),
+    id:explicitId||('mem_'+Date.now()+'_'+Math.floor(Math.random()*10000)),
     title:data.title||'未命名记忆',
     summary:data.summary||'',
     content:data.content||'',
@@ -1226,7 +1327,7 @@ async function quickCreateMemory(data){
     visibility:data.visibility||'public',
     visibleTo:Array.isArray(data.visibleTo)?data.visibleTo.map(String):[],
     excludeFrom:Array.isArray(data.excludeFrom)?data.excludeFrom.map(String):[],
-    activationCount:0,created:Date.now(),lastActivated:Date.now(),
+    activationCount:0,created:createdAt,lastActivated:data.canonicalReceipt===true?createdAt:Date.now(),
     createdBy:data.createdBy||'user',
     createdByName:data.createdByName||'',
     editedByUser:false,
@@ -1235,6 +1336,37 @@ async function quickCreateMemory(data){
     consolidatedFrom:Array.isArray(data.consolidatedFrom)?data.consolidatedFrom.slice(0,50):[],
     lastConsolidatedAt:data.lastConsolidatedAt!=null?Number(data.lastConsolidatedAt):null
   };
+  if(data.canonicalReceipt===true){
+    if(!explicitSourceId)throw Object.assign(new Error('explicit Memory source message is required'),{code:'memory-provenance-unavailable'});
+    if(data.provenance&&typeof data.provenance==='object'){
+      mem.provenance={sourceMessageId:explicitSourceId,conversationId:String(data.provenance.conversationId||'')};
+      const referenceIds=Array.isArray(data.provenance.referenceMessageIds)
+        ?Array.from(new Set(data.provenance.referenceMessageIds.map(String).filter(Boolean))).filter(function(id){return id!==explicitSourceId}).slice(0,4):[];
+      if(referenceIds.length)mem.provenance.referenceMessageIds=referenceIds;
+      const referenceMemoryIds=Array.isArray(data.provenance.referenceMemoryIds)
+        ?Array.from(new Set(data.provenance.referenceMemoryIds.map(String).filter(Boolean))).slice(0,4):[];
+      if(referenceMemoryIds.length)mem.provenance.referenceMemoryIds=referenceMemoryIds;
+    }
+    const surface=window.IB&&window.IB.homeNode&&window.IB.homeNode.memory;
+    const authority=surface&&(surface.authority||surface.instance);
+    let status=null;
+    try{status=authority&&typeof authority.status==='function'?authority.status():null}catch(e){}
+    if(!authority||!status||status.mode!=='canonical'||status.fileOrigin===true){
+      throw Object.assign(new Error('canonical Home Node Memory authority unavailable'),{code:'canonical-memory-authority-unavailable'});
+    }
+    const probe=await authority.probe();
+    if(!probe||probe.online!==true){
+      throw Object.assign(new Error('Home Node is offline'),{code:'home-node-offline'});
+    }
+    const receipt=await authority.put(mem,{requestId:String(data.requestId||('chat-explicit-memory:'+explicitSourceId)),existingPolicy:String(data.existingPolicy||'skip')});
+    if(!receipt||receipt.ok!==true){
+      throw Object.assign(new Error('Home Node Memory write failed'),{code:(receipt&&receipt.error)||'home-node-write-failed',receipt:receipt||null});
+    }
+    if(receipt.authority!=='home-node'||String(receipt.id||'')!==mem.id||!Number.isFinite(Number(receipt.revision))){
+      throw Object.assign(new Error('Home Node returned an invalid Memory receipt'),{code:'canonical-memory-receipt-invalid',receipt:receipt});
+    }
+    return {ok:true,id:mem.id,receipt:receipt};
+  }
   await dbPut('memories',mem);
   return mem.id;
 }
@@ -1869,6 +2001,19 @@ async function generateMemoryFromChat(){
 var _chatSelectMode=false;
 var _chatSelectedIds=new Set();
 
+function _chatCreateSelectionControl(msgId){
+  var id=String(msgId||'');
+  if(!id)return null;
+  var control=document.createElement('button');
+  control.type='button';
+  control.className='chat-sel-circle';
+  control.dataset.msgId=id;
+  control.setAttribute('aria-label','选择此消息');
+  control.setAttribute('aria-pressed','false');
+  control.addEventListener('click',function(event){event.stopPropagation();_toggleMsgSel(id,control)});
+  return control;
+}
+
 function toggleChatSelectMode(){
   if(_chatArchMode)return;/* 归档对话不支持选择操作 */
   if(_chatSelectMode){exitChatSelectMode();return}
@@ -1879,8 +2024,8 @@ function toggleChatSelectMode(){
     container.classList.add('chat-select-mode');
     container.querySelectorAll('.chat-msg[data-msg-id]').forEach(el=>{
       if(!el.querySelector('.chat-sel-circle')){
-        const c=document.createElement('div');c.className='chat-sel-circle';
-        c.onclick=function(ev){ev.stopPropagation();_toggleMsgSel(el.dataset.msgId,c)};
+        const c=_chatCreateSelectionControl(el.dataset.msgId);
+        if(!c)return;
         el.appendChild(c);
       }
     });
@@ -1899,7 +2044,11 @@ function exitChatSelectMode(){
   const container=document.getElementById('chat-full-messages');
   if(container){
     container.classList.remove('chat-select-mode');
-    container.querySelectorAll('.chat-sel-circle').forEach(c=>c.classList.remove('checked'));
+    container.querySelectorAll('.chat-sel-circle').forEach(c=>{
+      c.classList.remove('checked');
+      c.setAttribute('aria-pressed','false');
+      c.setAttribute('aria-label',window.IBI18n&&window.IBI18n.t?window.IBI18n.t('memory.selectMessage'):'选择此消息');
+    });
   }
   const bar=document.getElementById('chat-select-bar');if(bar)bar.classList.remove('active');
   const inputArea=container?.parentElement?.querySelector('.chat-input-area');if(inputArea)inputArea.style.display='';
@@ -1909,23 +2058,41 @@ function exitChatSelectMode(){
 function _toggleMsgSel(msgId,circleEl){
   if(_chatSelectedIds.has(msgId)){
     _chatSelectedIds.delete(msgId);circleEl.classList.remove('checked');
+    circleEl.setAttribute('aria-pressed','false');circleEl.setAttribute('aria-label',window.IBI18n&&window.IBI18n.t?window.IBI18n.t('memory.selectMessage'):'选择此消息');
   }else{
     if(_chatSelectedIds.size>=50){toast('最多选择 50 条消息');return}
     _chatSelectedIds.add(msgId);circleEl.classList.add('checked');
+    circleEl.setAttribute('aria-pressed','true');circleEl.setAttribute('aria-label',window.IBI18n&&window.IBI18n.t?window.IBI18n.t('memory.deselectMessage'):'取消选择此消息');
   }
   _updateSelCount();
 }
 
 function _updateSelCount(){
-  const el=document.getElementById('chat-sel-count');if(el)el.textContent='已选 '+_chatSelectedIds.size+' 条';
+  const el=document.getElementById('chat-sel-count');if(el)el.textContent=window.IBI18n&&window.IBI18n.t?window.IBI18n.t('chat.selectedCount',{count:_chatSelectedIds.size}):'已选 '+_chatSelectedIds.size+' 条';
 }
+document.addEventListener('ib:locale-changed',function(){
+  _updateSelCount();
+  const container=document.getElementById('chat-full-messages');
+  if(!container||!window.IBI18n||!window.IBI18n.t)return;
+  container.querySelectorAll('.chat-sel-circle').forEach(function(el){
+    el.setAttribute('aria-label',window.IBI18n.t(el.getAttribute('aria-pressed')==='true'?'memory.deselectMessage':'memory.selectMessage'));
+  });
+});
 
 async function deleteSelectedMessages(){
   if(_chatSelectedIds.size===0){toast('未选择任何消息');return}
   const ids=[..._chatSelectedIds];
+  const failed=[];let firstError=null;
   _vmStopForMsgIds(ids);/* 被删消息中含正在播放的语音时同步停止播放 */
-  for(const id of ids){try{await dbDelete('chatMessages',id)}catch(e){}}
-  toast('已删除 '+ids.length+' 条消息');
+  for(const id of ids){try{await dbDelete('chatMessages',id)}catch(e){failed.push(id);if(!firstError)firstError=e}}
+  if(ids.length>failed.length)toast('已删除 '+(ids.length-failed.length)+' 条消息');
+  if(failed.length){
+    var model=window.IBERR&&typeof window.IBERR.report==='function'?window.IBERR.report(firstError||new Error('CHAT_BULK_DELETE_FAILED'),{friendId:activeFriendId,stage:'chat_bulk_delete'}).model:null;
+    if(model){model.title='部分消息未能删除';model.message='有 '+failed.length+' 条消息仍保留在对话中。';model.suggestion='可以重新选择未删除的消息，再次使用删除操作。';model.action=null}
+    var host=document.getElementById('chat-full-messages');
+    if(host&&typeof window._chatAppendErrorDisclosure==='function')window._chatAppendErrorDisclosure(host,model,{scope:'bulk-delete',stage:'chat_bulk_delete'});
+    else if(model&&window.IBERR.show)window.IBERR.show(model,{stage:'chat_bulk_delete'});
+  }
   exitChatSelectMode();
   if(activeFriendId)selectFriend(activeFriendId);
   else loadChatMessages();
@@ -2449,6 +2616,10 @@ window._memGoldRgba=_memGoldRgba;
 window.updateMemDashboard=updateMemDashboard;
 window.exportMemories=exportMemories;
 window.importMemoriesFile=importMemoriesFile;
+window.importCanonicalMemoryRows=importCanonicalMemoryRows;
+window.getMemoryAuthorityUiState=getMemoryAuthorityUiState;
+window.updateMemoryAuthorityStatus=updateMemoryAuthorityStatus;
+window._memoryUiMutationFailure=_memoryUiMutationFailure;
 window.writeOneLineToMemory=writeOneLineToMemory;
 window.quickCreateMemory=quickCreateMemory;
 window.scanLyricalMemories=scanLyricalMemories;
@@ -2480,6 +2651,7 @@ window.generateMemoryFromChat=generateMemoryFromChat;
 window.toggleChatSelectMode=toggleChatSelectMode;
 window.exitChatSelectMode=exitChatSelectMode;
 window._toggleMsgSel=_toggleMsgSel;
+window._chatCreateSelectionControl=_chatCreateSelectionControl;
 window._updateSelCount=_updateSelCount;
 window.deleteSelectedMessages=deleteSelectedMessages;
 window.getChatSealTimestamp=getChatSealTimestamp;

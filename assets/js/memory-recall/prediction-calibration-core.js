@@ -1,4 +1,4 @@
-/* ====================================================================
+﻿/* ====================================================================
    IB Memory · Prediction Calibration Core（Prediction Error P4）
    --------------------------------------------------------------------
    NO REINTERPRETATION · NO RE-AUTHORITY · NO GLOBAL ACCURACY · NO MODEL
@@ -355,9 +355,13 @@
     /* policy / capability 的**唯一**出处是 P3 settlement core（由 runtime 传入）。 */
     var policyAllowed = i.policyAllowed === true;
     var runtimeClassifiable = i.runtimeClassifiable === true;
-    /* R2 · production settleability 是**第四个**正交维度：
-       runtime 能分类 ≠ 生产上真能 decisive（还要归因 authority 足够）。 */
-    var productionSettleable = runtimeClassifiable && i.attributionAuthorityAvailable === true;
+    var attributionAuthorityAvailable = i.attributionAuthorityAvailable === true;
+    /* R2 · P5-B3-J-R2 · production settleability is the capability conjunction:
+       policy permission × current runtime classification × attribution authority.
+       It does not depend on partition samples or their quality. */
+    var productionSettleable = policyAllowed
+      && runtimeClassifiable
+      && attributionAuthorityAvailable;
     var status;
     if (!policyAllowed) status = 'not-policy-allowed';
     else if (runtimeClassifiable) status = 'settleable-by-current-runtime';
@@ -369,7 +373,7 @@
     if (capabilityGap) reasons.push(REASON.capabilityGap);
     /* R2 · 具名 reason 列表（不要把原因压成一个无信息字符串） */
     var reasonList = Array.isArray(i.capabilityGapReason) ? i.capabilityGapReason.slice(0, 8) : [];
-    if (runtimeClassifiable && !productionSettleable) {
+    if (runtimeClassifiable && !attributionAuthorityAvailable) {
       reasons.push(REASON.productionNotSettleable);
       if (reasonList.indexOf('attribution-unknown') < 0) reasonList.push('attribution-unknown');
     }
@@ -385,7 +389,7 @@
       policyAllowed: policyAllowed,
       runtimeClassifiable: runtimeClassifiable,
       productionSettleable: productionSettleable,
-      attributionAuthorityAvailable: i.attributionAuthorityAvailable === true,
+      attributionAuthorityAvailable: attributionAuthorityAvailable,
       noEligibleSample: noEligibleSample,
       capabilityGap: capabilityGap,
       status: status,
@@ -502,6 +506,8 @@
       exactlyOneAdmittedTargetDomainRequired: EXACTLY_ONE_ADMITTED_TARGET_DOMAIN_REQUIRED,
       reachabilityPrimitive: 'CONSUMED_FROM_P3_SETTLEMENT_CORE_NOT_DUPLICATED',
       capabilityCoverageIsOrthogonal: 'YES',
+      productionSettleableFormula: 'policyAllowed && runtimeClassifiable && attributionAuthorityAvailable',
+      productionSettleableIncludesSampleAvailability: 'NO',
       compiledButDisabledIsNotRuntimeClassifiable: 'YES',
       runtimeClassifiableIsNotProductionSettleable: 'YES',
       capabilityGapReasonVocabulary: CAPABILITY_GAP_REASONS,

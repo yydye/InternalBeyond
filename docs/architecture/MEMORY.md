@@ -373,3 +373,452 @@ Runtime 行为由这些 tests 强制；本文档是人类 canonical authority。
 - `docs/MEMORY.md` — retrieval/scoring 叙述（pre-authority model）
 - `docs/history/runtime/CONTEXT-CONVERGENCE-C1-REPORT.md`
 - `docs/history/runtime/P2-CONTEXT-CONVERGENCE-AUDIT.md`
+
+## 16. P21-R3 Association
+
+Association is a bounded, runtime-derived relation view after direct authoritative
+Recall. It can expand cognition context and report support, complement, conflict,
+correction, continuation, contextualize, and unrelated relations. It does not
+change Recall selection, canonical Memory, activation, exposure, or relationship
+state.
+
+Candidate discovery scans at most 20,000 canonical rows with the shared Memory
+visibility and ranking core, then caps its source set at 64. The relation
+classifier receives at most 12 pairs in one call. The working set adds at most
+four memories at depth one and preserves direct Recall activation provenance.
+Association failures fall back to direct Recall. No durable relation graph is
+introduced.
+
+The canonical contract is
+[MEMORY_ASSOCIATION_CONTRACT.md](../contracts/memory/MEMORY_ASSOCIATION_CONTRACT.md).
+This P21-R3 runtime does not implement R4-G causal graph traversal.
+
+## 17. P21-R4-K Contextual Reinterpretation
+
+The existing MemoryInterpretation runtime now accepts an Association working
+set through one internal seam. Direct Recall remains authoritative; direct
+memories are prioritized within the eight-memory cap, and each associated
+memory retains its activation reason and relation provenance. A validated,
+runtime-only `currentMeaning` is added to the same Recall cognition context.
+
+The topic comes from the current validated user message. Relationship context is
+read from the character DTO configuration. Current emotion and a stable
+cognitive snapshot are not available to this Home Node seam and are reported as
+unavailable. A browser `IBContextSnapshot` exists for Middle Brain, but Recall's
+closed request does not carry it. One contextual model call is capped at 1,200 ms
+and 1,200 delivered characters; its output allowance uses half the configured
+Recall budget. It runs behind the existing per-character auto-interpretation
+policy. A failure leaves Recall and Association context
+available. No Memory, relationship, emotion, BehaviorEffect, Prediction Error,
+or Self Narrative write is owned by this phase.
+
+The phase extends
+[`RECONSTRUCTIVE_MEMORY_CONTRACT.md`](../contracts/memory/RECONSTRUCTIVE_MEMORY_CONTRACT.md)
+and is covered by the three `test_memory_reinterpretation_*` suites.
+
+## 18. P21-R4-L Self Narrative
+
+Self Narrative is a revisionable, derived story about the character and the
+relationship with the user. The only production call site is the post-R4-K
+branch in Runtime Recall. It consumes the validated current meaning and the
+already-filtered Association provenance; it does not query Memory again.
+
+The narrative owner is `runtime-self-narrative.js`, with one pure core for its
+closed schema and evidence envelope. Claims carry Memory refs plus the R4-K
+interpretation ref and relevant Association relation/tension refs. The schema
+requires themes and current beliefs, so an event-only summary cannot pass.
+
+Narrative revisions live in a bounded per-character/per-conversation in-memory
+session map (64 sessions, 30-minute TTL, up to 32 retained versions per live
+session). The existing R4-K per-character policy gates its single model call;
+no new cost bit or persistent store is introduced. Failure serves the previous
+session narrative when available, otherwise no narrative, while Recall,
+Association, Reinterpretation, and chat continue. No canonical Memory,
+relationship, persona, behavior, Prediction Error, or shared-memory writer is
+called by this phase. After a failed or timed-out provider call, the same
+evidence fingerprint is suppressed for five minutes; changed evidence may
+start a new refresh.
+
+The canonical contract is
+[`RECONSTRUCTIVE_MEMORY_CONTRACT.md`](../contracts/memory/RECONSTRUCTIVE_MEMORY_CONTRACT.md)
+q-50. Deterministic fake-provider coverage is registered in the three
+`test_self_narrative_*` suites.
+
+## 19. P21-R4-M0 · Response Guidance and External Participation
+
+M0 adds a shared `response-guidance-v1` envelope consumed by both the Desktop
+message assembler and the Home Node Mobile execution prompt. The existing R4-F
+BehaviorEffect remains its own source entry and keeps its seven-key schema and
+fixed renderer. External participation is a separate record inside the one
+`runtime-behavior-effect.js` attribution owner; it never carries a posture or
+creates a synthetic BehaviorEffect.
+
+The Mobile executor marks external participation consumed only after the
+server has validated and inserted it in the prompt sent to the model port.
+Unaccounted participation makes attribution `unknown/partial`, not
+`known-none`. The Desktop provider call still happens in the browser, so the
+Home Node cannot verify prompt consumption there. M0 is partial, no Memory
+Behavior Modulation producer or schema exists, and R4-M remains blocked until a
+trusted Desktop consumption receipt or server-owned response execution path is
+available.
+
+The append-only contracts are q-51 in
+[`RECONSTRUCTIVE_MEMORY_CONTRACT.md`](../contracts/memory/RECONSTRUCTIVE_MEMORY_CONTRACT.md)
+and I.29 in
+[`PREDICTION_ERROR_AUTHORITY_CONTRACT.md`](../contracts/memory/PREDICTION_ERROR_AUTHORITY_CONTRACT.md).
+
+## 20. P21-R4-M0-R2 · Desktop fail-closed admission audit
+
+The owner accepted Option B and deferred trusted Desktop provider execution.
+Desktop external participation without a trusted receipt stays
+`unknown/partial`; the Mobile execution consumer remains runtime-verifiable.
+An isolated P3/P4 probe found that this attribution fact is not sufficient for
+calibration exclusion in every case: a Prediction created as `known-none`
+before registration can combine a later UNKNOWN observation with an earlier
+clean decisive support observation, settle as `matched`, and pass
+`calibrationCounted=true` through the existing P4 driver.
+
+No production P.E. code changed in R2. The registered clean-sample guard records
+this counterexample and currently fails, so R2 does not unlock R4-M. Resolving
+the gap requires an authorized P3/P4 semantic decision; R2 must not add a
+Desktop-specific calibration bypass or declare Option B safe prematurely.
+
+```text
+DESKTOP_CONSUMPTION_RUNTIME_VERIFIABLE = NO
+DESKTOP_ATTRIBUTION_FAIL_CLOSED = LIVE
+UNVERIFIED_EXTERNAL_INFLUENCE_CLEAN_CALIBRATION = POSSIBLE
+P21_R4_M0_R2_STATUS = BLOCKED
+P21_R4_M0_STATUS = PARTIAL
+R4_M_REENTRY = STILL_BLOCKED
+TRUSTED_DESKTOP_EXECUTION_CONVERGENCE = DEFERRED_PLATFORM_WORK
+```
+
+## 21. P5-B3-J-R3 · Outcome-Time Calibration Evidence Basis
+
+The P3 `calibrationCounted` decision now uses a deterministic basis of the
+decisive P1 observations that support `matched` or `missed`. P1 already binds
+outcome-time attribution to the RealityEvent timestamp and Prediction turn;
+P3 consumes the sealed contamination class without another attribution query.
+
+An independent clean decisive support can remain a valid matched basis when
+later UNKNOWN supporting evidence is non-basis. Required decisive evidence
+that is UNKNOWN or system-influenced keeps calibration ineligible while P3
+still records its settlement. The existing Prediction-creation
+self-influence veto remains. The P4 driver and ledger are unchanged and consume
+only P3's sealed `calibrationCounted` bit.
+
+The corrective tests cover clean/unknown mixed evidence, UNKNOWN-only evidence,
+system-influenced decisive support and conflict, opportunity-gated missed
+settlement, irrelevant evidence, replay, and P4 ingest/skip. This closes the
+calibration gap for outcome-relevant decisive evidence. P21-R4-M0-R2 still
+requires its own closure reconciliation before R4-M re-entry.
+
+## 22. P21-R4-M0-R2 · Fail-Closed Desktop Admission Closure
+
+Option B is accepted. Desktop provider dispatch remains browser-owned and
+consumption remains unverifiable. Admission is safe after P5-B3-J-R3 because
+unverified influence remains `unknown/partial`, while P3 ties calibration to
+the outcome-time decisive basis. P4 continues to ingest only sealed P3
+eligibility. Independent clean evidence remains eligible when later UNKNOWN
+supporting evidence is non-basis.
+
+```text
+DESKTOP_CONSUMPTION_RUNTIME_VERIFIABLE = NO
+R4_M_DESKTOP_ADMISSION_POLICY = FAIL_CLOSED_UNVERIFIED_ALLOWED
+UNVERIFIED_EXTERNAL_INFLUENCE_CLEAN_CALIBRATION = IMPOSSIBLE_FOR_REQUIRED_DECISIVE_EVIDENCE
+P21_R4_M0_R2_STATUS = COMPLETE
+P21_R4_M0_STATUS = COMPLETE
+P21_R4_M0_FREEZE = FROZEN
+R4_M_REENTRY = ALLOWED
+TRUSTED_DESKTOP_EXECUTION_CONVERGENCE = DEFERRED_PLATFORM_WORK
+MEMORY_BEHAVIOR_MODULATION_IMPLEMENTED = NO
+```
+
+## 23. P21-R4-M · Memory-Driven Behavior Modulation
+
+R4-M consumes only successful R4-K current meaning, the matching R4-L
+self-narrative revision, and their Association provenance. Its output is a
+five-axis `behavior-posture-v1` object with closed ordinal values. The temporary
+posture is carried as `memory-behavior-posture-v1` inside the existing
+`response-guidance-v1` envelope and rendered by that contract's fixed renderer.
+It does not carry Memory bodies or narrative text and cannot force disclosure.
+
+The Mobile path passes the candidate snapshot already read by the current Recall
+into the existing Association → K → L stages. The posture producer consumes
+those validated outputs; it does not retrieve Memories or repeat Association.
+One bounded posture call is allowed per evidence/context fingerprint, with a
+session-only replay cache. Failure, invalid output, missing evidence, or timeout
+returns baseline and the chat continues. The posture has no writer into Memory,
+relationship, persona, emotion, Self Narrative, Prediction Error, or message
+schedule state.
+
+Mobile records `CONSUMED` only after the shared envelope is validated, rendered,
+and handed to the model port. Desktop renders the same posture through the
+shared renderer; since provider execution stays browser-owned, attribution stays
+`unknown/partial` and P3's decisive outcome-time gate excludes required unknown
+influence from clean calibration.
+
+```text
+MEMORY_BEHAVIOR_MODULATION_RUNTIME = LIVE
+MEMORY_TO_BEHAVIOR_CAUSALITY = LIVE
+REINTERPRETATION_TO_BEHAVIOR = LIVE
+SELF_NARRATIVE_TO_BEHAVIOR = LIVE
+BEHAVIOR_POSTURE_IS_DERIVED = YES
+BEHAVIOR_POSTURE_IS_TEMPORARY = YES
+BEHAVIOR_POSTURE_IS_TURN_SCOPED = YES
+BEHAVIOR_POSTURE_IS_BOUNDED = YES
+MEMORY_CAN_INFLUENCE_BEHAVIOR_WITHOUT_FORCED_DISCLOSURE = VERIFIED
+PERSONA_BASELINE_PRESERVED = YES
+FAILURE_FALLBACK_TO_BASELINE = LIVE
+CANONICAL_MEMORY_MUTATION = 0
+RELATIONSHIP_MUTATION = 0
+PERSONA_MUTATION = 0
+EMOTIONAL_STATE_MUTATION = 0
+SELF_NARRATIVE_MUTATION = 0
+PREDICTION_ERROR_MUTATION = 0
+ACTIVE_MESSAGE_SCHEDULE_MUTATION = 0
+P21_R4_M_STATUS = COMPLETE
+P21_R4_M_FREEZE = FROZEN
+```
+
+The append-only contract is q-55 in
+[`RECONSTRUCTIVE_MEMORY_CONTRACT.md`](../contracts/memory/RECONSTRUCTIVE_MEMORY_CONTRACT.md).
+
+## 24. P21-R4-H · Semantic Forgetting
+
+R4-H is a runtime-only projection inside the shared Recall core. It distinguishes
+factual detail, emotional residue, and narrative meaning with the closed states
+`accessible`, `faded`, `suppressed`, and `latent`. The dimension-specific day
+bands use existing `created`, `lastActivated`, `resolved`, `kind`, `summary` /
+`oneLine`, `valence`, and `arousal`; no durable forgetting field is introduced.
+`lastConsolidatedAt` remains a consolidation watermark, not a forgetting age
+anchor. The `getMemoryScore()` calculation remains unchanged.
+
+Visibility remains the first Recall gate. The ordinal accessibility band affects
+ranking before the existing score tie-break. Detail projection reads a stored
+summary or one-line view when factual details fade, and otherwise shortens the
+rendered content. These are new per-turn views only. Pinned or strongly relevant
+records can resurface, and existing selection activation can improve later
+accessibility without restoring factual-detail availability.
+
+Malformed forgetting input disables the projection for the entire Recall
+candidate set and uses the prior ranking and rendering. Faded, suppressed, and
+latent entries remain canonical and eligible for later resurfacing. The frozen
+R2-F coldStart anchor fixture remains unchanged.
+
+```text
+SEMANTIC_FORGETTING_RUNTIME = LIVE
+FACTUAL_DETAIL_DECAY = LIVE
+EMOTIONAL_RESIDUE_DECAY = LIVE
+NARRATIVE_MEANING_DECAY = LIVE
+FORGETTING_AFFECTS_RECALL_ACCESSIBILITY = YES
+FORGETTING_IS_NOT_DELETION = VERIFIED
+RESURFACING = LIVE
+FAILURE_FALLBACK_TO_NORMAL_RECALL = LIVE
+CANONICAL_MEMORY_DELETES_FROM_FORGETTING = 0
+CANONICAL_MEMORY_TEXT_REWRITES_FROM_FORGETTING = 0
+P21_R4_H_STATUS = COMPLETE
+P21_R4_H_FREEZE = FROZEN
+```
+
+The append-only contract is q-56 in
+[`RECONSTRUCTIVE_MEMORY_CONTRACT.md`](../contracts/memory/RECONSTRUCTIVE_MEMORY_CONTRACT.md).
+
+## 25. P21-R4-N · Meta-Memory Awareness & Uncertainty
+
+R4-N derives a bounded, turn-scoped awareness object from the final selected
+Recall ids and their already-computed R4-H projections, plus validated R4-K
+meaning and R4-L narrative provenance. Its closed ordinal statuses are
+`remembered`, `partial`, `uncertain`, `faded`, `interpretation_only`, and
+`unavailable`. Factual detail, emotional residue, and narrative meaning keep
+their separate H-derived availability. K/L claims carry source ids and
+interpretation refs; current meaning is marked as derived and never promoted
+to historical fact.
+
+The only producer seam is `runtime-recall.js#runCurrentMeaningAndNarrative`,
+after R4-L. Desktop appends its short internal reminder to the same private
+cognition context. Mobile passes that same text through
+`runtimeContextParts.memoryAwarenessContext`; the existing execution composer
+places it after evidence and before current time. The reminder contains no
+Memory body or debug status label, and it says not to fill missing wording or
+bring up a memory solely because the reminder exists.
+
+R4-N does not scan Memory, call a provider, or store awareness. Any invalid or
+failed derivation is omitted; Recall and any successful K/L context remain
+usable. It cannot write Memory, change H state, or mutate relationship,
+persona, Self Narrative, behavior modulation, or Prediction Error.
+
+```text
+META_MEMORY_RUNTIME = LIVE
+MEMORY_STATE_AWARENESS = LIVE
+FORGETTING_AWARENESS = LIVE
+INTERPRETATION_VS_FACT_AWARENESS = LIVE
+UNCERTAINTY_AWARENESS = LIVE
+META_MEMORY_IS_DERIVED = YES
+META_MEMORY_DOES_NOT_REWRITE_MEMORY = VERIFIED
+FAILURE_FALLBACK = LIVE
+CANONICAL_MEMORY_MUTATION = 0
+SEMANTIC_FORGETTING_MUTATION = 0
+RELATIONSHIP_MUTATION = 0
+PERSONA_MUTATION = 0
+SELF_NARRATIVE_MUTATION = 0
+BEHAVIOR_MODULATION_MUTATION = 0
+PREDICTION_ERROR_MUTATION = 0
+P21_R4_N_STATUS = COMPLETE
+P21_R4_N_FREEZE = FROZEN
+```
+
+The append-only contract is q-57 in
+[`RECONSTRUCTIVE_MEMORY_CONTRACT.md`](../contracts/memory/RECONSTRUCTIVE_MEMORY_CONTRACT.md).
+
+## 26. P21-R4-O · Memory Unreliability
+
+R4-O produces a private, turn-scoped `reconstructed-recollection-v1` object
+from current R4-H availability, R4-N state awareness, validated R3 relation
+edges and selected-row provenance, plus R4-K/L claims and references. Its
+closed distortion vocabulary is `none`, `omission`, `temporal_blur`,
+`source_blur`, `blending`, and `interpretation_leakage`. Each uncertain item
+keeps its existing Memory ids; blending requires two distinct real references
+and an existing similarity/cluster relation. No prose or third event is
+generated by the projection.
+
+R4-N gates the projection. Clear remembered details with clear provenance do
+not receive random unreliability. H's accessibility and decay are read only.
+Faded details permit omission, R3 temporal proximity can only warn that order
+is unproven, ambiguous selected provenance can warn about source attribution,
+and K's current meaning remains separate from historical claims. A private
+renderer asks the model to preserve uncertainty and avoid converting later
+meaning into what was known during the event. There is no provider call and no
+durable holder or writer.
+
+The producer uses the shared post-N cognition seam
+`runtime-recall.js#runCurrentMeaningAndNarrative`. Selected provenance flags
+are an opt-in, ID-bounded projection from the current Recall selection; O does
+not read the Memory database again. Desktop returns the result only within
+private cognition context. Mobile appends the same private text to the existing
+runtime context before current time; it adds no client field or UI.
+
+```text
+MEMORY_UNRELIABILITY_RUNTIME = LIVE
+RECONSTRUCTED_RECOLLECTION = LIVE
+OMISSION = LIVE
+TEMPORAL_BLUR = LIVE
+SOURCE_BLUR = LIVE
+BLENDING = LIVE
+INTERPRETATION_LEAKAGE_GUARD = LIVE
+META_MEMORY_GATES_UNRELIABILITY = YES
+FABRICATED_EVENT_CREATION = 0
+CANONICAL_MEMORY_MUTATION = 0
+SEMANTIC_FORGETTING_MUTATION = 0
+META_MEMORY_MUTATION = 0
+RELATIONSHIP_MUTATION = 0
+PERSONA_MUTATION = 0
+SELF_NARRATIVE_MUTATION = 0
+BEHAVIOR_MODULATION_MUTATION = 0
+PREDICTION_ERROR_MUTATION = 0
+FAILURE_FALLBACK = LIVE
+P21_R4_O_STATUS = COMPLETE
+P21_R4_O_FREEZE = FROZEN
+```
+
+The append-only contract is q-58 in
+[`RECONSTRUCTIVE_MEMORY_CONTRACT.md`](../contracts/memory/RECONSTRUCTIVE_MEMORY_CONTRACT.md).
+
+## 27. P21-R4-P · Shared Memory
+
+R4-P keeps role-authored and user-authored Memory references separate in a
+turn-scoped `shared-memory-view-v1`. Its closed relation is derived only from
+validated cross-side R3 Association edges. With no validated cross-side edge,
+the current selected records remain separate one-sided asymmetric views; no
+event identity is inferred by bundling unrelated rows. A referenced candidate
+from the existing bounded R3 snapshot can contribute author provenance without
+another Memory scan. Conflict stays disputed
+with no winner. Similarity or alignment is never treated as shared
+acknowledgement.
+
+The only producer seam is after R4-N and R4-O in
+`runtime-recall.js#runCurrentMeaningAndNarrative`. It consumes the current
+Recall's selected provenance, R3 edges, R4-N awareness, and R4-O recollection;
+it does not rescan canonical Memory. Existing preference-only Explicit User
+Report data is not event history. User-authored canonical records and role-
+authored records remain distinguishable by author metadata, while unknown or
+ambiguous authors do not establish a side. The P5 report capability is not
+rewritten or repurposed.
+
+`jointly_acknowledged` requires exact source refs, explicit confirmation from
+both sides, and a server-owned verifier. Production has no event-acknowledgment
+authority assembled, so the status remains authority-gated. The private
+cognition reminder preserves source, disagreement, and R4-O uncertainty; it
+cannot update Memory, relationship, persona, Self Narrative, behavior
+modulation, or Prediction Error. Failure omits the view and leaves the existing
+Recall/K/L/N/O path usable. Mobile uses its existing private cognition context
+and adds no client DTO or UI.
+
+```text
+SHARED_MEMORY_RUNTIME = LIVE
+CO_CONSTRUCTED_MEMORY_VIEW = LIVE
+ASYMMETRIC_MEMORY = SUPPORTED
+DISPUTED_MEMORY = SUPPORTED
+JOINT_ACKNOWLEDGEMENT = AUTHORITY_GATED
+AUTOMATIC_TRUTH_MERGE = 0
+CANONICAL_MEMORY_MUTATION = 0
+FAILURE_FALLBACK = LIVE
+P21_R4_P_STATUS = COMPLETE
+P21_R4_P_FREEZE = FROZEN
+```
+
+The append-only contract is q-59 in
+[`RECONSTRUCTIVE_MEMORY_CONTRACT.md`](../contracts/memory/RECONSTRUCTIVE_MEMORY_CONTRACT.md).
+
+## 28. P21-R4-Q · Counterfactual Memory
+
+Q is a post-K/L/N/O/P, turn-scoped alternative-history view. The current user
+message must supply one explicit conditional premise. The runtime binds that
+premise to one clear R4-O-preserved K historical claim and one canonical
+character Memory row; it skips the branch if either provenance or grounding is
+missing. Shared Memory disputes on the anchor are left unresolved and block a
+single-outcome alternative.
+
+The actual recorded claim and the tentative alternative occupy separate
+fields. Q's model schema cannot write either the premise or actual result; the
+system carries them with provenance and checks the alternative for tentative
+language, source references, and unsupported participants. R3 continuation or
+contextualization, K current meaning, and sealed P.E evidence may inform
+`causalBasis`, but only a verified sealed RealityEvent `causationId` link earns
+`plausible`; other supported bases remain `uncertain`. Missing causal basis
+returns no view.
+
+The only integration seam is
+`runtime-recall.js#runCurrentMeaningAndNarrative`. Q reuses the current Recall
+snapshot and the existing R4-E bounded runner, with a Q-specific structured
+validator, one call maximum, and a bounded replay cache. Its P3/P.E and P1
+access is read-only and scope-bound. It does not create or settle Predictions,
+write P4, rewrite Self Narrative, or mutate any other authority. Failure
+omits the view; Desktop and Mobile keep using the existing private cognition
+context.
+
+```text
+COUNTERFACTUAL_RUNTIME = LIVE
+ALTERNATIVE_HISTORY_VIEW = LIVE
+FACTUAL_ANCHOR_PRESERVED = YES
+ACTUAL_VS_COUNTERFACTUAL_SEPARATION = VERIFIED
+CAUSAL_BASIS_REQUIRED = YES
+UNCERTAINTY_SUPPORTED = YES
+FABRICATED_HISTORY_CREATION = 0
+PREDICTION_CREATION = 0
+PREDICTION_SETTLEMENT_MUTATION = 0
+P4_MUTATION = 0
+FAILURE_FALLBACK = LIVE
+P21_R4_Q_STATUS = COMPLETE
+P21_R4_Q_FREEZE = FROZEN
+```
+
+The append-only contract is q-60 in
+[`RECONSTRUCTIVE_MEMORY_CONTRACT.md`](../contracts/memory/RECONSTRUCTIVE_MEMORY_CONTRACT.md).
+
+## 29. Memory System v1 Engineering Closure
+
+The current cross-phase authority graph, durability matrix, Desktop/Mobile capability truth, mutation audit, fallback chain, test-red classification, and post-v1 limits are recorded in
+[MEMORY_SYSTEM_V1_CLOSURE.md](../contracts/memory/MEMORY_SYSTEM_V1_CLOSURE.md).
+
+That closure record is the current status index. Earlier roadmap and phase text remains append-only historical state.

@@ -3,7 +3,7 @@
    运行：node tests/test_memory_recall_early_exit.js
 
    ══════════════════════════════════════════════════════════════════════════
-   本测试证明的是 **R2-B 的优先级裁决与 early-exit 分类**，不是"已接入生产"。
+   本测试证明优先级裁决与 early-exit 分类，并锁定它由共享 Recall Orchestrator 消费。
    ══════════════════════════════════════════════════════════════════════════
 
    被测模块：assets/js/memory-recall/turn-signal.js（纯函数，零 IO）
@@ -406,6 +406,8 @@ check('D2.cueOrderStable', (() => {
 section('§12b · 纯函数静态证明');
 
 const SRC = fs.readFileSync(path.join(ROOT, MODULE_REL), 'utf8');
+const ORCHESTRATOR_SRC = fs.readFileSync(path.join(ROOT,
+  'assets/js/memory-recall/memory-recall-orchestrator.js'), 'utf8');
 const SRC_NO_COMMENTS = SRC
   .replace(/\/\*[\s\S]*?\*\//g, '')
   .replace(/(^|[^:])\/\/[^\n]*/g, '$1');
@@ -458,10 +460,12 @@ check('V5.cueTablesNonEmpty', TS.RECALL_CUES_ZH.length > 0 && TS.RECALL_CUES_EN.
 check('V6.bareTemporalWordsNotCues',
   ['昨天', '去年', '以前'].every(w => TS.RECALL_CUES_ZH.indexOf(w) < 0),
   'bare temporal words must NOT be recall cues');
-/* 模块头明确声明 unwired，且不得声称已接入。 */
-check('V7.moduleDeclaresUnwired',
-  /implemented but unwired/i.test(SRC),
-  'the module must declare its R2-B wiring status');
+check('V7.moduleDeclaresOrchestratorWiring',
+  /经 memory-recall-orchestrator 消费本模块/.test(SRC),
+  'the Host consumes turn-signal through the shared orchestrator');
+check('V7.orchestratorConsumesTurnSignal',
+  /deps\.turnSignal\.analyzeTurnSignal\(/.test(ORCHESTRATOR_SRC),
+  'the Recall path uses the deterministic turn-signal module');
 
 /* ══════════════════════════════════════════════════════════════════════ */
 
