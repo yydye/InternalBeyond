@@ -185,7 +185,10 @@ async function buildInstance(tag, opts) {
   seedVault(credDir, 'cred_a', 'custom', SENTINEL);
   const rec = [];
   const port = NODE_MODEL_PORT({ fetch: makeFetch(rec, o.behaviour) });
-  const buildOpts = { dataDir, credentialDataDir: credDir, token: TOKEN, port, clock: () => NOW, logger: () => {} };
+  /* This suite freezes the R4-C Interpretation envelope. Keep R3 Association
+     out of its provider wire so its one-call assertions remain phase-specific. */
+  const buildOpts = { dataDir, credentialDataDir: credDir, token: TOKEN, port,
+    memoryAssociationEnabled: false, clock: () => NOW, logger: () => {} };
   if (o.autoPolicy !== undefined) buildOpts.runtimeAutoInterpretationPolicy = o.autoPolicy;
   if (o.interpPolicy !== undefined) buildOpts.runtimeInterpretationPolicy = o.interpPolicy;
   const inst = SERVICE.buildHomeNode(buildOpts);
@@ -292,7 +295,10 @@ function repoFiles() {
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
     for (const e of entries) {
       const q = path.join(dir, e.name);
-      if (e.isDirectory()) { if (e.name !== 'node_modules' && e.name !== '.git') walk(q); continue; }
+      if (e.isDirectory()) {
+        if (!['.git', '.dsh-tmp', 'node_modules', 'target', 'dist', 'tmp'].includes(e.name)) walk(q);
+        continue;
+      }
       if (!/\.(js|rs|toml|html)$/.test(e.name)) continue;
       try { if (fs.statSync(q).size > MAX_BYTES) continue; } catch (_) { continue; }
       out.push(q);

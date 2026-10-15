@@ -184,7 +184,10 @@ async function buildInstance(tag, opts) {
   seedVault(credDir, 'cred_a', 'custom', SENTINEL);
   const rec = [];
   const port = NODE_MODEL_PORT({ fetch: makeFetch(rec, o.behaviour) });
-  const buildOpts = { dataDir, credentialDataDir: credDir, token: 'l41-token', port, clock: () => NOW, logger: () => {} };
+  /* Keep the R4-C nonblocking suite direct-only; R4-K Association-bound
+     cognition delivery has its own bounded-await product E2E. */
+  const buildOpts = { dataDir, credentialDataDir: credDir, token: 'l41-token', port,
+    memoryAssociationEnabled: false, clock: () => NOW, logger: () => {} };
   if (o.autoPolicy !== undefined) buildOpts.runtimeAutoInterpretationPolicy = o.autoPolicy;
   if (o.interpPolicy !== undefined) buildOpts.runtimeInterpretationPolicy = o.interpPolicy;
   const inst = SERVICE.buildHomeNode(buildOpts);

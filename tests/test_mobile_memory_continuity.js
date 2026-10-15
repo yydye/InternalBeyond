@@ -403,6 +403,14 @@ function mem(id, over) {
     check('T7.1 provider 的 system 非空', system.length > 0, system.length);
     check('T7.2 **provider system 含 MEMORY-MARKER-WAVE2**（她记得桌面告诉她的事）',
       system.indexOf(M.memory) > -1, system.slice(0, 400));
+    check('T7.2n provider 私有上下文含回忆确定度提示（不是调试标签）',
+      system.indexOf('只根据本轮已召回记录实际包含的内容描述过去') > -1
+        && system.indexOf('不要求主动提起或披露某段记忆') > -1
+        && system.indexOf('META_MEMORY') < 0,
+      system.slice(-500));
+    check('T7.2o 清晰记忆收到不主动制造失真的 O 提示',
+      system.indexOf('不要为了显得像人而扭曲清晰记忆') > -1,
+      system.slice(-500));
     check('T7.3 persona 仍是 system 开头（记忆只在尾部追加，不改前缀）',
       system.indexOf(PERSONA_PROMPT) === 0, { head: system.slice(0, 140) });
     check('T7.4 P0 事实仍在（Wave 1/2c 回归）',
@@ -420,7 +428,9 @@ function mem(id, over) {
     check('T8.2 SSE 原始帧不含隐藏记忆标记', send1.raw.indexOf(M.hidden) < 0);
     check('T8.3 SSE 帧里也没有 selectedMemoryIds / 任何记忆字段名',
       send1.raw.indexOf('selectedMemory') < 0 && send1.raw.indexOf('memoryBlock') < 0 &&
-      send1.raw.indexOf('runtimeContext') < 0, String(send1.raw).slice(0, 300));
+      send1.raw.indexOf('runtimeContext') < 0 && send1.raw.indexOf('reconstructedRecollection') < 0
+      && send1.raw.indexOf('distortionTypes') < 0
+      && send1.raw.indexOf('只根据本轮已召回记录') < 0, String(send1.raw).slice(0, 300));
 
     const history = await request(port, 'GET', '/mobile/v1/chat/history?characterId=' + CHARACTER_ID, { headers: auth });
     check('T8.4 chat.history 不含记忆标记',

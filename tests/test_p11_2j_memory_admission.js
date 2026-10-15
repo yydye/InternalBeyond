@@ -88,6 +88,7 @@ console.log('P11-2J · Memory Admission Boundary Audit · offline deterministic'
    ReferenceError —— 一个被异常打断的测试看起来"失败为 0"）。 */
 const AUTO_MEM = rd('memory/auto-memory.js');
 const MEMORY = rd('memory.js');
+const CHAT_IMPLICIT = rd('chat-implicit-memory.js');
 const DIARY = rd('active-diary/diary.js');
 const ACTIVE = rd('active-diary.js');
 const COM = rd('communication.js');
@@ -114,8 +115,10 @@ section('§0 · Memory Write Entry Registry');
 
 const ENTRIES = [
   /* [id, file, needle, admissionKind] */
-  ['chat.stream',        COM,          "_execMemOps(_mp.ops,cfg,cfg.nickname||cfg.model||'AI')", 'gate+consent'],
-  ['chat.nonStream',     COM,          "_execMemOps(_mpn.ops,cfg,cfg.nickname||cfg.model||'AI')", 'gate+consent'],
+  ['chat.stream',        COM,          "_execMemOps(_autoOps,cfg,cfg.nickname||cfg.model||'AI')", 'gate+consent(legacy edits)'],
+  ['chat.nonStream',     COM,          "_execMemOps(_autoOpsN,cfg,cfg.nickname||cfg.model||'AI')", 'gate+consent(legacy edits)'],
+  ['chat.implicit.stream', COM,        'window.IBChatImplicitMemory.schedule({operations:_implicitOps', 'gate+runtime-admission+canonical'],
+  ['chat.implicit.nonStream', COM,      'window.IBChatImplicitMemory.schedule({operations:_implicitOpsN', 'gate+runtime-admission+canonical'],
   ['group.memberOps',    COM,          '_execMemOps(_gAllowed.map(x=>x.op),cfg,selfName)', 'groupPolicy+consent'],
   ['blogComment',        COM,          '_execMemOps(_cm.ops,cfg,', 'none'],
   ['roleLetter.inbox',   LETTERS,      '_execMemOps(_lm.ops,cfg,_letterSender)', 'none'],
@@ -168,23 +171,26 @@ check('E0.storeDoesNotGateAdmission',
    把调用点改成**不带闸门**的形式（闸门仍在别处被调用）会全部逃过。
    因此下面把每个**生产写入调用点**的精确形态钉住 —— 变异审计 M02 正是这种形状。 */
 const COM_BARE = stripComments(COM);
+const _memoryGate = 'if(amEnabled(cfg)&&!cfg.amRecordOnly&&_mbSideEffectGate(_MB_SEC.mem))';
+const _streamGateAt = COM_BARE.indexOf(_memoryGate);
+const _nonStreamGateAt = COM_BARE.indexOf(_memoryGate, _streamGateAt + _memoryGate.length);
+const _streamGateEnd = _streamGateAt < 0 ? -1 : COM_BARE.indexOf('var _calR=[]', _streamGateAt);
+const _nonStreamGateEnd = _nonStreamGateAt < 0 ? -1 : COM_BARE.indexOf('var _calRNs=[]', _nonStreamGateAt);
+const _streamGateBlock = _streamGateEnd < 0 ? '' : COM_BARE.slice(_streamGateAt, _streamGateEnd);
+const _nonStreamGateBlock = _nonStreamGateEnd < 0 ? '' : COM_BARE.slice(_nonStreamGateAt, _nonStreamGateEnd);
 check('E0.gatedChatWriteSitesExactForm',
-  countOcc(COM_BARE, 'if(amEnabled(cfg)&&_mbSideEffectGate(_MB_SEC.mem))_memR=await _execMemOps(') === 1
-  && countOcc(COM_BARE, 'if(amEnabled(cfg)&&_mbSideEffectGate(_MB_SEC.mem))_memRNs=await _execMemOps(') === 1,
-  'both chat write sites must be executed only behind the side-effect gate');
-/* 上一条只证明**存在**带闸门的形式。若同时还存在一个**不带闸门**的同类调用点，
-   闸门就被绕过了而断言仍绿。因此这里用计数恒等式封闭它：
-     出现 "X=await _execMemOps(" 的次数  ==  出现 "<gate>)X=await _execMemOps(" 的次数
-   两个数相等 ⇒ 每一个赋值点都在闸门之后（多一个裸赋值点就会让左边大于右边）。
-   注意不能用"`_memR=await` 出现过"这种朴素判据 —— 闸门行里紧邻 `_memR` 的字符
-   正好是 `)`，朴素子串判据会**总是**命中，从而变成一条永远为红的假断言。 */
-const _bareWriteSites = countOcc(COM_BARE, '_memR=await _execMemOps(') + countOcc(COM_BARE, '_memRNs=await _execMemOps(');
-const _gatedWriteSites = countOcc(COM_BARE, '_mbSideEffectGate(_MB_SEC.mem))_memR=await _execMemOps(')
-  + countOcc(COM_BARE, '_mbSideEffectGate(_MB_SEC.mem))_memRNs=await _execMemOps(');
+  _streamGateAt >= 0 && _nonStreamGateAt > _streamGateAt
+    && _streamGateBlock.includes('_memR=await _execMemOps(_autoOps,')
+    && _nonStreamGateBlock.includes('_memRNs=await _execMemOps(_autoOpsN,'),
+  'legacy Auto Memory updates/deletes and implicit candidates must stay inside each Chat side-effect gate');
 check('E0.noUngatedChatWriteSite',
-  _bareWriteSites === 2 && _bareWriteSites === _gatedWriteSites,
-  'every chat `_memR/_memRNs = await _execMemOps(...)` assignment must sit behind the gate (bare='
-  + _bareWriteSites + ' gated=' + _gatedWriteSites + ')');
+  countOcc(COM_BARE, '_execMemOps(_autoOps,cfg,') === 1
+    && countOcc(COM_BARE, '_execMemOps(_autoOpsN,cfg,') === 1
+    && countOcc(COM_BARE, 'window.IBChatImplicitMemory.schedule({operations:_implicitOps,userText') === 1
+    && countOcc(COM_BARE, 'window.IBChatImplicitMemory.schedule({operations:_implicitOpsN,userText') === 1
+    && _streamGateBlock.includes('window.IBChatImplicitMemory.schedule({operations:_implicitOps,userText')
+    && _nonStreamGateBlock.includes('window.IBChatImplicitMemory.schedule({operations:_implicitOpsN,userText'),
+  'every Chat Memory side effect must remain behind its Middle Brain gate');
 check('E0.outerAdjudicationWriteSitesSelfDeclare',
   /if\(_cm\.ops\.length&&amEnabled\(cfg\)&&!cfg\.amRecordOnly\)/.test(COM_BARE)
   && /if\(_lm\.ops\.length&&amEnabled\(cfg\)&&!cfg\.amRecordOnly\)/.test(stripComments(LETTERS)),

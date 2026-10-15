@@ -330,7 +330,10 @@ check('R4D14.runnerHasZeroProductionCallers',
     const walk = dir => {
       for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
         const q = path.join(dir, e.name);
-        if (e.isDirectory()) { if (e.name !== 'node_modules') walk(q); continue; }
+        if (e.isDirectory()) {
+          if (!['.git', '.dsh-tmp', 'node_modules', 'target', 'dist', 'tmp'].includes(e.name)) walk(q);
+          continue;
+        }
         if (!/\.(js|rs|toml)$/.test(e.name)) continue;
         const rel = path.relative(ROOT, q).replace(/\\/g, '/');
         if (R4D_FILES.indexOf(rel) >= 0) continue;
@@ -426,25 +429,28 @@ check('R4E11.observationBuilderRejectsCounterfactuals',
   /UPSTREAM_TRUSTED_PRECONDITION/.test(R4D_TEXT)
   && !/counterfactual/.test(read('assets/js/memory-recall/prediction-observation-core.js')),
   'the D.2 observation authority is an upstream precondition, and R4-E does not become that upstream');
-check('R4E12.runnerHasZeroProductionCallers',
+check('R4E12.runnerHasOnlyTheR4QRuntimeConsumer',
   (function () {
-    let callers = 0;
+    const callers = [];
     const walk = dir => {
       for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
         const q = path.join(dir, e.name);
-        if (e.isDirectory()) { if (e.name !== 'node_modules') walk(q); continue; }
+      if (e.isDirectory()) {
+        if (!['.git', '.dsh-tmp', 'node_modules', 'target', 'dist', 'tmp'].includes(e.name)) walk(q);
+        continue;
+      }
         if (!/\.(js|rs|toml)$/.test(e.name)) continue;
         const rel = path.relative(ROOT, q).replace(/\\/g, '/');
         if (R4E_FILES.indexOf(rel) >= 0) continue;
-        if (/counterfactual-shadow-runner/.test(_R4D_STRIP(read(rel)))) callers++;
+        if (/counterfactual-shadow-runner/.test(_R4D_STRIP(read(rel)))) callers.push(rel);
       }
     };
     ['assets', 'services', 'bridge', 'src-tauri'].forEach(d => {
       const full = path.join(ROOT, d); if (fs.existsSync(full)) walk(full);
     });
-    return callers === 0;
+    return callers.length === 1 && callers[0] === 'services/home-node/runtime-counterfactual-memory.js';
   })(),
-  'PRODUCTION COUNTERFACTUAL CALLER = 0 and CONSUMER = 0');
+  'R4-E bounded transport has only the approved R4-Q consumer');
 check('R4E13.inheritsTimeoutAndCancellationDiscipline',
   /understanding-derivation\.js:70/.test(R4E_TEXT)
   && /PROVIDER_EXECUTION_CANCELLATION_GUARANTEED\s*=\s*false/.test(R4E_TEXT)
@@ -571,7 +577,10 @@ check('R4B10.shadowHasOnlyTheInternalDiagnosticConsumer',
     const walk = dir => {
       for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
         const q = path.join(dir, e.name);
-        if (e.isDirectory()) { if (e.name !== 'node_modules') walk(q); continue; }
+        if (e.isDirectory()) {
+          if (!['.git', '.dsh-tmp', 'node_modules', 'target', 'dist', 'tmp'].includes(e.name)) walk(q);
+          continue;
+        }
         if (!/\.(js|rs|toml|html)$/.test(e.name)) continue;
         const rel = path.relative(ROOT, q).replace(/\\/g, '/');
         if (rel === R4B_SHADOW || rel === 'assets/js/memory-recall/memory-recall-orchestrator.js') continue;

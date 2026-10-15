@@ -767,7 +767,7 @@ function p95(xs) {
     accepted: FROZEN_ACCEPTED,
     rejectedByAuthority: FROZEN_AUTHORITY_FIELDS,
     pureShadow: true,
-    providerCalls: 'NONE (no modelPort dependency in the contract)'
+    directRecallProviderCalls: 'NONE (optional Association runtime is a separate seam)'
   });
   if (typeof recallFactory !== 'function') {
     skip('§25.1–§25.14 new-route attacks',
@@ -935,12 +935,14 @@ function p95(xs) {
     const desc = typeof recallSvc.describe === 'function' ? recallSvc.describe() : null;
     check('§25.8 describe() declares the boundary truthfully and carries no secret',
       desc && desc.transportScope === 'DESKTOP_ONLY' && desc.callerAuthority === 'NONE'
-      && desc.pureShadow === true && desc.providerCalls === 0 && desc.providerReachable === false
+      && desc.pureShadow === true && desc.directRecallProviderCalls === 0 && desc.directRecallProviderReachable === false
+      && desc.associationRuntime && desc.associationRuntime.maxProviderCallsPerRecall === 0
       && desc.exposureWrites === 0 && desc.activationWrites === 0 && desc.sessionMutation === 'NONE'
       && desc.randomAuthority === 'memory-retrieval-constructor' && desc.clockAuthority === 'home-node-server'
       && JSON.stringify(desc).indexOf(SECRET_B2) < 0,
       JSON.stringify(desc && { path: desc.path, callerAuthority: desc.callerAuthority,
-        transportScope: desc.transportScope, providerCalls: desc.providerCalls, storeIdentity: desc.storeIdentity }));
+        transportScope: desc.transportScope, directRecallProviderCalls: desc.directRecallProviderCalls,
+        storeIdentity: desc.storeIdentity }));
     check('§25.9 the service never threw during the attacks', THROWN.length === 0, JSON.stringify(THROWN.slice(0, 4)));
 
     /* HTTP 面：只有在装配层真的导出了这条服务时才测。 */
@@ -973,13 +975,14 @@ function p95(xs) {
       if (httpRecallInst) { try { httpRecallInst.close(); } catch (_) { /* 已关闭 */ } }
       dropDir(httpProbeDir);
     }
-    check('§25.14 zero provider calls on this route (no model port is even a dependency)',
+    check('§25.14 direct Recall has no model call and optional Association is absent in this fixture',
       /* 看**代码面**：头注释里写着 "没有 modelPort" 正是我们要的，不能把它当成引用。 */
       !/modelPort/.test(WIRING.stripJsComments(read('services/home-node/runtime-recall.js')))
       && !/require\(['"](?:node:)?https?['"]\)/.test(read('services/home-node/runtime-recall.js'))
-      && desc && desc.providerReachable === false && desc.providerCalls === 0
+      && desc && desc.directRecallProviderReachable === false && desc.directRecallProviderCalls === 0
+      && desc.associationRuntime && desc.associationRuntime.maxProviderCallsPerRecall === 0
       && retrieveCalls > 0,
-      'retrieveCalls=' + retrieveCalls + ' · runtime-recall.js has no modelPort reference in code');
+      'retrieveCalls=' + retrieveCalls + ' · Association runtime is absent in this direct-only fixture');
     verdict('NEW_ROUTE_SECURITY_ATTACKS', attackFailures === 0 && looseFailures === 0 ? 'ALL_REFUSED' : 'FAILURES=' + (attackFailures + looseFailures));
     try { attackStore.close(); } catch (_) { /* 已关闭 */ }
     dropDir(attackDir);

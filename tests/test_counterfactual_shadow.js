@@ -555,26 +555,29 @@ const ctx = { allowedMemoryIds: ['m1', 'm2'] };
       /var\s+DB_VERSION\s*=\s*24\s*;/.test(read('assets/js/webcore-db-schema.js'))
       && /const\s+MEMORY_SCHEMA_VERSION\s*=\s*1\s*;/.test(read('services/home-node/memory-store.js')),
       'DB_VERSION 24 / MEMORY_SCHEMA_VERSION 1 unchanged');
-    check('M4.productionCallersAndConsumersAreZero',
+    check('M4.onlyR4QConsumesTheBoundedShadowTransport',
       (function () {
         const self = ['counterfactual-shadow-core.js', 'counterfactual-shadow-runner.js'];
-        let callers = 0;
+        const callers = [];
         const walk = dir => {
           for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
             const q = path.join(dir, e.name);
-            if (e.isDirectory()) { if (e.name !== 'node_modules') walk(q); continue; }
+            if (e.isDirectory()) {
+              if (!['.git', '.dsh-tmp', 'node_modules', 'target', 'dist', 'tmp'].includes(e.name)) walk(q);
+              continue;
+            }
             if (!/\.(js|rs|toml)$/.test(e.name)) continue;
             const rel = path.relative(ROOT, q).replace(/\\/g, '/');
             if (self.some(s => rel.endsWith(s))) continue;
-            if (/counterfactual-shadow-runner/.test(WIRING.stripJsComments(read(rel)))) callers++;
+            if (/counterfactual-shadow-runner/.test(WIRING.stripJsComments(read(rel)))) callers.push(rel);
           }
         };
         ['assets', 'services', 'bridge', 'src-tauri'].forEach(d => {
           const full = path.join(ROOT, d); if (fs.existsSync(full)) walk(full);
         });
-        return callers === 0;
+        return callers.length === 1 && callers[0] === 'services/home-node/runtime-counterfactual-memory.js';
       })(),
-      'PRODUCTION COUNTERFACTUAL CALLER = 0 and CONSUMER = 0');
+      'the shadow runner has exactly one production caller, the bounded R4-Q runtime');
     check('M5.recallSurfaceUntouched',
       (function () {
         const out = ORCH.createOrchestrator({ metamemoryShadow: MM })

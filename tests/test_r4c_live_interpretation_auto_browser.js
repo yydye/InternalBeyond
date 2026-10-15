@@ -187,7 +187,10 @@ async function buildInstance(tag, opts) {
   if (o.vaultB) seedVault(credDir, 'cred_b', 'custom', SENTINEL + '_B');
   const rec = [];
   const port = NODE_MODEL_PORT({ fetch: makeInterpFetch(rec, o.behaviour, o.hostile === true), timeoutMs: 30000 });
-  const buildOpts = { dataDir, credentialDataDir: credDir, token: TOKEN, port, clock: () => NOW, logger: () => {} };
+  /* This suite asserts the R4-C direct-only auto path; R4-K has separate
+     Association-bound cognition-context tests. */
+  const buildOpts = { dataDir, credentialDataDir: credDir, token: TOKEN, port,
+    memoryAssociationEnabled: false, clock: () => NOW, logger: () => {} };
   if (o.autoPolicy !== undefined) buildOpts.runtimeAutoInterpretationPolicy = o.autoPolicy;
   const inst = SERVICE.buildHomeNode(buildOpts);
   inst.open();
