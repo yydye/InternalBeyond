@@ -30,6 +30,8 @@ const { pathToFileURL } = require('url');
 const ROOT = path.resolve(__dirname, '..');
 const PAGE_URL = pathToFileURL(path.join(ROOT, 'InternalBeyond.html')).href;
 const MOCK_REPLY = '这是 M1-A authority 冒烟回复。';
+const TEST_HOME_NODE_TOKEN = 'm1a-chat-authority-test-token';
+const TEST_HOME_NODE_AUTH = { 'X-IB-Home-Token': TEST_HOME_NODE_TOKEN };
 
 let failures = 0;
 const check = (name, condition, detail) => {
@@ -242,14 +244,10 @@ async function main() {
     env: Object.assign({}, process.env, {
       IB_HOME_NODE_PORT: String(homePort),
       IB_HOME_NODE_DATA_DIR: dataDir,
-      /* ★ P22-23：这一条验的是**未配置桌面凭据**的部署形态 —— 本文件下面要
-         走 /characters/publish 与 /pairing/session，而未配置凭据时那几条路径
-         按 P11-3A 就是 403 desktop-token-required。产品默认现在会在首次启动
-         时自动 provision 一份凭据（那正是 Economy 首次使用链闭合的前提），
-         因此这里显式关掉它，把"没有凭据"这个仍然合法的部署形态固定下来。
-         自动 provisioning 本身由 tests/test_p22_23_home_node_provisioning.js
-         与 tests/test_p22_23_first_run_acceptance.js 覆盖。 */
-      IB_HOME_NODE_TOKEN_AUTOPROVISION: '0'
+      /* P22-23 · 使用隔离的显式测试凭据验证已配置部署的聊天 authority。
+         Auto-provision 保持关闭；首次 provisioning 的行为由专用套件覆盖。 */
+      IB_HOME_NODE_TOKEN_AUTOPROVISION: '0',
+      IB_HOME_NODE_TOKEN: TEST_HOME_NODE_TOKEN
     }),
     stdio: ['ignore', 'pipe', 'pipe']
   });
@@ -297,13 +295,17 @@ async function main() {
     /* 在页面脚本执行之前把测试用的 Home Node 端口写进 localStorage。 */
     await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
       source: 'try{localStorage.setItem("ib_home_node_http","http://127.0.0.1:' + homePort + '");' +
-        'localStorage.setItem("ib_home_node_mode","canonical");}catch(e){}'
+        'localStorage.setItem("ib_home_node_mode","canonical");' +
+        'localStorage.setItem("ib_home_node_token","' + TEST_HOME_NODE_TOKEN + '");}catch(e){}'
     });
     await cdp.send('Page.navigate', { url: 'http://127.0.0.1:' + site.port + '/InternalBeyond.html' });
 
     check('page.pageOriginIsHttp', (await evaluate(cdp, 'location.origin')).indexOf('http://127.0.0.1:') === 0);
     check('page.loaded', await waitFor(cdp, "typeof window.IB === 'object' && typeof window.sendChatMessage === 'function'", 30000));
-    check('page.homeNodeSurface', await evaluate(cdp, "!!(window.IB && window.IB.homeNode) && typeof window.IB.homeNode.status === 'function' && typeof window.IB.homeNode.migrate === 'function'"));
+    const homeNodeSurfaceReady = await waitFor(cdp,
+      "!!(window.IB && window.IB.homeNode) && typeof window.IB.homeNode.status === 'function' && typeof window.IB.homeNode.migrate === 'function'",
+      15000);
+    check('page.homeNodeSurface', homeNodeSurfaceReady);
     check('page.modeCanonical', (await evaluate(cdp, "window.IB.homeNode.mode")) === 'canonical');
     check('page.basePointsAtTestHomeNode', (await evaluate(cdp, "window.ibHomeNodeBase()")) === 'http://127.0.0.1:' + homePort);
 
@@ -335,7 +337,7 @@ async function main() {
     check('mobile.publishReachesHomeNodeThroughPreflight',
       !!(publishProbe && publishProbe.result && publishProbe.result.ok === true && publishProbe.result.payload &&
          publishProbe.result.payload.count >= 1), publishProbe);
-    const catalog = await homeNodeRequest(homePort, '/characters');
+    const catalog = await homeNodeRequest(homePort, '/characters', 'GET', null, TEST_HOME_NODE_AUTH);
     const catalogEntries = ((catalog && catalog.payload && catalog.payload.characters) || []);
     const catalogIds = catalogEntries.map(c => c.id);
     check('mobile.catalog.published', catalogIds.indexOf('m1a_friend') >= 0, { catalogIds: catalogIds, publishProbe: publishProbe });
@@ -343,7 +345,7 @@ async function main() {
     check('mobile.catalog.hasRunnableSpec',
       catalogEntries.some(c => c.id === 'm1a_friend' && c.forTurn === true), catalogEntries);
     /* 通过真实 mobile 面读一次：需要一台设备，用管理面签发。 */
-    const pairSession = await homeNodeRequest(homePort, '/pairing/session', 'POST', { deviceName: 'smoke', deviceType: 'android' });
+    const pairSession = await homeNodeRequest(homePort, '/pairing/session', 'POST', { deviceName: 'smoke', deviceType: 'android' }, TEST_HOME_NODE_AUTH);
     const paired = await homeNodeRequest(homePort, '/mobile/v1/pairing/complete', 'POST', {
       v: 1, payload: {
         pairingId: pairSession && pairSession.payload && pairSession.payload.pairingId,
@@ -383,7 +385,7 @@ async function main() {
 
     /* 关键断言：canonical 写入落在 Home Node，而不是只落在浏览器 */
     await new Promise(resolve => setTimeout(resolve, 600));
-    const homeList = await homeNodeRequest(homePort, '/list?conversationId=' + encodeURIComponent('dm:m1a_friend') + '&limit=50');
+    const homeList = await homeNodeRequest(homePort, '/list?conversationId=' + encodeURIComponent('dm:m1a_friend') + '&limit=50', 'GET', null, TEST_HOME_NODE_AUTH);
     const homeMessages = (homeList && homeList.messages) || [];
     check('canonical.userMessageInHomeNode',
       homeMessages.some(m => m.role === 'user' && m.content === 'M1A-AUTHORITY-PROBE'),
@@ -394,7 +396,7 @@ async function main() {
     check('canonical.messageIdsPreserved',
       homeMessages.every(m => /^(msg_|active_)/.test(String(m.id))),
       homeMessages.map(m => m.id));
-    const homeMeta = await homeNodeRequest(homePort, '/meta');
+    const homeMeta = await homeNodeRequest(homePort, '/meta', 'GET', null, TEST_HOME_NODE_AUTH);
     check('canonical.revisionAdvanced', homeMeta && homeMeta.meta && homeMeta.meta.revision >= 2, homeMeta && homeMeta.meta);
 
     /* 镜像：IndexedDB 里也应有同一批 message id（派生副本，不是第二套事实） */

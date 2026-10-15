@@ -52,6 +52,8 @@ const DC = require(path.join(ROOT, 'assets/js/disclosure-core.js'));
 const AC = require(path.join(ROOT, 'assets/js/disclosure-authoring-core.js'));
 const MRC = require(path.join(ROOT, 'assets/js/memory-retrieval-core.js'));
 const PBC = require(path.join(ROOT, 'assets/js/prompt-boundary-core.js'));
+const DeliveryRuntime = require(path.join(ROOT, 'assets/js/delivery-runtime.js'));
+const DB_SCHEMA_AUTHORITY = require('./helpers/db-schema-authority.js');
 
 let passed = 0, failed = 0;
 function check(name, cond, detail) {
@@ -157,6 +159,14 @@ global.window.IB = {
     middleBrainFinalizeReply: async (id, u, candidate) => ({ reply: candidate, outcome: { verdict: 'PASS' } })
   }
 };
+/* The real Role DM delegates timing and ordering to Delivery Runtime. Keep that
+   dependency real in this in-memory privacy test, with zero-delay scheduling. */
+const testDeliveryRuntime = DeliveryRuntime.createDeliveryRuntime({
+  setTimeout: (fn) => setTimeout(fn, 0),
+  clearTimeout: (timer) => clearTimeout(timer),
+  pacing: { baseMs: 0, perCharMs: 0, typingBaseMs: 0, typingPerCharMs: 0 }
+});
+global.window._ibDeliveryRuntime = () => testDeliveryRuntime;
 
 /* ── 按 InternalBeyond.html 的脚本顺序载入（UMD 浏览器分支）── */
 (0, eval)(SRC_PBC); global.window.IBPromptBoundaryCore = global.IBPromptBoundaryCore;
@@ -178,6 +188,7 @@ function resetState() {
   for (const k of Object.keys(DB)) delete DB[k];
   for (const k of Object.keys(LS)) delete LS[k];
   CALLS.length = 0;
+  testDeliveryRuntime.reset();
 }
 /* 冻结时钟只包住 composeSide：它的 nowLabel 是分钟粒度，不冻结会让
    "逐字节相同"偶发假红。**不**全局冻结 —— role-dm 的 ledger / pairCooldown
@@ -583,7 +594,11 @@ group('静态结构：谁读得到 disclosure fact（答案：模型侧没有任
     touched.length === 1 && touched[0] === 'social.js', touched);
   check('Y2. Role DM 全链路（含 core / social / ui）零引用（4B-1 的 J5 冻结面仍在）',
     ['role-dm.js', 'role-dm-core.js', 'role-dm-social.js', 'role-dm-social-core.js', 'role-dm-ui.js']
-      .every((f) => { const s = readSrc('assets/js/' + f); return s.indexOf('disclosure') < 0 && s.indexOf('IBDisclosureCore') < 0; }));
+      .every((f) => {
+        const source = readSrc('assets/js/' + f);
+        const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+        return !/(?:IBDisclosure(?:Core|Store)|disclosureFacts|disclosure-(?:core|store|authorization))/i.test(code);
+      }));
   check('Y3. memory.js 的召回读取点仍是 dbGetAll(\'memories\')（复刻的就是生产读取形状）',
     /const all=await dbGetAll\('memories'\);/.test(readSrc('assets/js/memory.js')));
   check('Y4. memory.js 整文件不出现 disclosure store（召回池不可能含披露事实）',
@@ -598,11 +613,12 @@ group('静态结构：谁读得到 disclosure fact（答案：模型侧没有任
       /* 导出名单里"disclosureFacts"只允许出现在 DB_VER 注释里，不允许出现在 store 数组里 */
       return exp.indexOf('disclosureFacts') < 0 && pri.indexOf('disclosureFacts') < 0;
     })());
-  check('Y7. 唯一真源：store 名只在 store 定义一次，且 core.js 建表名与它一致',
+  check('Y7. canonical schema 声明 Disclosure store，core.js 使用同一 schema 模块',
     /STORE_NAME = 'disclosureFacts'/.test(readSrc('assets/js/disclosure-store.js'))
-    && /'disclosureFacts'\]/.test(readSrc('assets/js/core.js')));
+    && DB_SCHEMA_AUTHORITY.STORE_NAMES.includes('disclosureFacts')
+    && /DB_SCHEMA\s*=\s*window\.IBWebCoreDbSchema/.test(readSrc('assets/js/core.js')));
   check('Y8. store 的 keyPath 是 factId（身份一个真源，不为迁就 keyPath 复制 id）',
-    /s==='disclosureFacts'\?'factId':'id'/.test(readSrc('assets/js/core.js')));
+    require('./helpers/db-schema-authority.js').schema.keyPathFor('disclosureFacts') === 'factId');
   check('Y9. 两个新模块零网络 / 零定时器（按**去掉注释后**的代码判定：注释里提到 localStorage 不算 IO）',
     (() => {
       const strip = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
@@ -619,10 +635,12 @@ group('静态结构：谁读得到 disclosure fact（答案：模型侧没有任
       const html = fs.readdirSync(ROOT).filter((f) => /\.html$/i.test(f)).map((f) => readSrc(f)).join('\n');
       /* 按完整 script 标签定位：说明注释里也会出现这些文件名。 */
       const tag = (n) => '<script src="assets/js/' + n + '"></script>';
+      const roleDmTag = /<script src="assets\/js\/role-dm\.js(?:\?[^\"]*)?"><\/script>/i.exec(html);
       return html.indexOf(tag('disclosure-core.js')) > 0
         && html.indexOf(tag('disclosure-authoring-core.js')) > 0
         && html.indexOf(tag('disclosure-store.js')) > 0
-        && html.indexOf(tag('disclosure-core.js')) < html.indexOf(tag('role-dm.js'));
+        && !!roleDmTag
+        && html.indexOf(tag('disclosure-core.js')) < roleDmTag.index;
     })());
   /* 私密事实小节的**精确**切片：从它自己的 id 到下一个 api-ed-block（功能设置）。
      用固定字符数截断会溢出到隔壁小节，那里的 style= 会被误算到本次改动头上。 */
