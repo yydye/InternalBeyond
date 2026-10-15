@@ -182,7 +182,8 @@
         if(findBinary(data))throw new Error('当前存档含有浏览器二进制文件，无法安全写入加密 JSON。请先用「普通 JSON」导出，或移除这些文件后再试。');
         var envelope=await encryptBackup(data,value);
         downloadEncrypted(envelope);renderBackupMeta();
-        closeModal();say('已创建加密备份；请把密码与文件分开保存。');
+        var memoryState=data.memoryAuthoritySnapshot&&data.memoryAuthoritySnapshot.state;
+        closeModal();say('已创建加密备份；请把密码与文件分开保存。'+(memoryState==='degraded'?'其中 Memory 为最近同步的镜像，可能不是最新。':memoryState==='local'?'其中 Memory 仅来自本机 IndexedDB。':memoryState&&memoryState!=='canonical'?'Memory authority 状态未确认。':''));
       }else{
         if(!pendingEnvelope)throw new Error('没有待导入的加密备份，请重新选择文件。');
         var decrypted=await decryptBackup(pendingEnvelope,value);
