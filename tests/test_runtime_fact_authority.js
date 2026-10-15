@@ -116,7 +116,8 @@ const code = WIRING.stripJsComments(read(EXEC));
       && code.indexOf("finalize(turnContext, 'store-write-failed'") < code.indexOf("finalize(turnContext, 'completed'"),
       '★ PERSISTENCE_SUCCESS_REQUIRED_FOR_COMPLETED = YES');
     check('C7.terminalVocabularyNotFlattened', (function () {
-      const kinds = ['empty-output', 'store-write-failed', 'credential-unavailable', 'completed'];
+      const kinds = ['empty-output', 'store-write-failed', 'credential-unavailable', 'completed',
+        'abort', 'timeout', 'cancelled', 'provider-error'];
       return kinds.every(k => code.indexOf("'" + k + "'") >= 0);
     })(), '真实 outcome 词汇未被压平成 failed');
     check('C8.noRealityOrSettlementAuthorityInSeam',

@@ -1,6 +1,6 @@
 'use strict';
 /* ══════════════════════════════════════════════════════════════════════════
-   Internal Beyond · Prediction Error P5-B3-G1 · Structured Expectation Projection
+   Internal Beyond · Prediction Error P5-B3-G2 · Structured Event Expectation Projection
    （纯 Node · 零浏览器 · 零真实出网（假 provider port）· 零真实模型调用）
 
    运行：node tests/test_structured_expectation_projection.js
@@ -10,7 +10,8 @@
      MODEL_MAY_NOT_MINT_CANONICAL_PREDICTION  = YES
      PREDICTION_PROJECTION_AUTHORITY          = RUNTIME
      TYPE_TABLE_IS_SOLE_PREDICTION_TYPE_AUTHORITY = YES
-     G1_PRODUCTION_PROJECTION_TYPES           = [preference]
+     G2_PRODUCTION_PROJECTION_TYPES           = [preference,event:runtime.turn_terminal]
+     EVENT_TURN_SCOPE_AUTHORITY               = ACTIVE_D3_EXECUTION_TURN
      UNSTRUCTURED_EXPECTATION_SETTLEABLE      = false
      FREE_TEXT_TO_PREDICTION_PARSING          = FORBIDDEN
      MODEL_DOES_NOT_DEFINE_PREFERENCE_TOKEN_GRAMMAR = YES
@@ -27,6 +28,7 @@ const WIRING = require('./helpers/activation-wiring-probe.js');
 const SERVICE = require(path.join(ROOT, 'services/home-node-service.js'));
 const CORE = require(path.join(ROOT, 'assets/js/memory-recall/expectation-shadow-core.js'));
 const PREF = require(path.join(ROOT, 'assets/js/memory-recall/preference-proposition-core.js'));
+const RECORD_CORE = require(path.join(ROOT, 'assets/js/memory-recall/prediction-record-core.js'));
 const PROJ = require(path.join(ROOT, 'services/home-node/runtime-structured-expectation.js'));
 const { createRuntimePredictionRegistry } = require(path.join(ROOT, 'services/home-node/runtime-prediction-registry.js'));
 
@@ -96,12 +98,12 @@ function validate(sp) {
 }
 
 (async function main() {
-  /* ══ A · expectation schema v2（additive · 候选）══ */
+  /* ══ A · expectation schema v3（additive candidate union）══ */
   section('A · expectation schema (candidate only)');
   {
     check('A1.schemaIsVersionedAndAdditive',
-      CORE.EXPECTATION_SCHEMA_VERSION === 'expectation-shadow/v2'
-      && CORE.STRUCTURED_CANDIDATE_VERSION === 'structured-expectation-candidate/v1'
+      CORE.EXPECTATION_SCHEMA_VERSION === 'expectation-shadow/v3'
+      && CORE.STRUCTURED_CANDIDATE_VERSION === 'structured-expectation-candidate/v2'
       && JSON.stringify(CORE.STRUCTURED_PREDICTION_KINDS) === '["event","preference","latent_state","relational"]',
       { v: CORE.EXPECTATION_SCHEMA_VERSION, kinds: CORE.STRUCTURED_PREDICTION_KINDS });
     check('A2.backwardCompatibleLegacyOutput',
@@ -164,9 +166,11 @@ function validate(sp) {
     check('A7.promptContractStatesTheRules',
       CORE.SYSTEM_INSTRUCTIONS.indexOf('structuredPrediction') >= 0
       && CORE.SYSTEM_INSTRUCTIONS.indexOf('predictionId') >= 0
-      && CORE.SYSTEM_INSTRUCTIONS.indexOf('pref.<stance>.<targetKey>') >= 0
+      && CORE.SYSTEM_INSTRUCTIONS.indexOf('token') >= 0
+      && CORE.SYSTEM_INSTRUCTIONS.indexOf('eventFamily') >= 0
+      && CORE.SYSTEM_INSTRUCTIONS.indexOf('runtime.turn_terminal token') >= 0
       && CORE.SYSTEM_INSTRUCTIONS.indexOf('可选') >= 0,
-      'prompt 里明说"可选/不得写系统字段/token 由系统生成"');
+      'prompt distinguishes preference/event candidates and keeps token generation in runtime');
   }
 
   /* ══ B · projection policy（runtime authority）══ */
@@ -175,8 +179,8 @@ function validate(sp) {
     const proj = PROJ.createRuntimeStructuredExpectationProjection({});
     const scope = { characterId: CHAR, conversationId: CONV, turnId: 't1' };
     const item = (sp) => validate(sp).items[0];
-    check('B1.allowedTypesAreExactlyPreference',
-      JSON.stringify(PROJ.G1_PRODUCTION_PROJECTION_TYPES) === '["preference"]'
+    check('B1.productionTypesArePreferencePlusOneTerminalFamily',
+      JSON.stringify(PROJ.G2_PRODUCTION_PROJECTION_TYPES) === '["preference","event:runtime.turn_terminal"]'
       && proj.describe().modelMayMintPrediction === 'NO'
       && proj.describe().projectionAuthority === 'RUNTIME'
       && proj.describe().modelDefinesTokenGrammar === 'NO',
@@ -194,6 +198,33 @@ function validate(sp) {
           && e.epistemicStatus === 'prediction';
       })(),
       'token 由**共享** core 生成');
+    check('B2e.validTerminalCandidateGetsCanonicalRuntimeTokenAndP2Shape', (function () {
+      const r = proj.projectItem(item({ kind: 'event', eventFamily: 'turn_terminal', expectedOutcome: 'completed' }), scope);
+      const e = r.expectation;
+      const derived = RECORD_CORE.derivePredictionType({ subject: e.subject, predicate: e.predicate, expectedOutcome: e.expectedOutcome });
+      return r.ok === true
+        && r.projection.kind === 'event'
+        && r.projection.eventFamily === 'turn_terminal'
+        && r.projection.targetDomain === 'runtime_state'
+        && r.projection.mechanism === 'exclusive_outcome'
+        && e.expectedOutcome.token === 'runtime.turn_terminal.completed'
+        && e.subject.kind === 'system' && e.predicate.kind === 'will-occur'
+        && derived.ok === true && derived.predictionType === 'event';
+    })(), 'model proposes outcome code; P1 grammar and P2 TYPE_TABLE own the projection');
+    check('B2f.unknownFamilyOutcomeTokenAndAuthorityFieldsFailClosed', (function () {
+      const family = item({ kind: 'event', eventFamily: 'delivery', expectedOutcome: 'completed' });
+      const badFamily = proj.projectItem(family, scope);
+      const unknownOutcome = proj.projectItem(item({ kind: 'event', eventFamily: 'turn_terminal', expectedOutcome: 'provider-custom' }), scope);
+      const directToken = item({ kind: 'event', eventFamily: 'turn_terminal', expectedOutcome: 'runtime.turn_terminal.completed' });
+      const tokenAttempt = proj.projectItem(directToken, scope);
+      const authority = item({ kind: 'event', eventFamily: 'turn_terminal', expectedOutcome: 'completed', targetDomain: 'user_preference', mechanism: 'matcher' });
+      return badFamily.ok === false
+        && unknownOutcome.ok === false && unknownOutcome.reasonCode === 'invalid-terminal-outcome'
+        && tokenAttempt.ok === false
+        && authority.structuredPrediction === null
+        && ['invalid-terminal-event-family', 'invalid-terminal-outcome', 'structured-candidate-authority-fields-stripped']
+          .indexOf(authority.structuredPredictionRejection) >= 0;
+    })(), 'no arbitrary family, custom outcome, supplied token, target, or mechanism enters P2');
     check('B3.unsupportedTypeIsRefusedWithItsOwnReason',
       proj.projectItem(item({ kind: 'relational', targetKey: 'x', stance: 'like' }), scope).reasonCode === 'production-type-not-enabled'
       && proj.projectItem(validate({ kind: 'mood' }).items[0], scope).reasonCode === 'unsupported-prediction-type',
@@ -404,13 +435,20 @@ function validate(sp) {
       '继续用既有 safe parser');
     check('E3.noNewConfidenceNoOpportunityNoSettlementAuthority', (function () {
       const src = code('services/home-node/runtime-structured-expectation.js');
+      const projection = PROJ.createRuntimeStructuredExpectationProjection({});
+      const terminal = projection.projectItem(validate({ kind: 'event', eventFamily: 'turn_terminal', expectedOutcome: 'completed' }).items[0], {
+        characterId: CHAR, conversationId: CONV, turnId: 't1'
+      });
       return src.indexOf('confidence') < 0
-        && src.indexOf('opportunity') < 0
+        && !/opportunity\s*:/.test(src)
         && !/\.settlePrediction\s*\(/.test(src)
         && !/buildOutcomeObservation|authorityGate/.test(src)
         && !/require\([^)]*(memory-store|relationship)/.test(src)
-        && !/require\([^)]*(prediction-settlement|prediction-calibration|outcome-observation)/.test(src);
-    })(), 'NO_NEW_NUMERIC_CONFIDENCE · 无 opportunity · 无 settlement/memory/relationship');
+        && !/require\([^)]*(prediction-settlement|prediction-calibration)/.test(src)
+        && src.indexOf('outcome-observation-core.js') >= 0
+        && terminal.ok === true
+        && Object.prototype.hasOwnProperty.call(terminal.expectation, 'opportunity') === false;
+    })(), 'runtime may parse P1 terminal codes but cannot create opportunity or settlement');
     check('E4.predictionIsNotReality',
       code('services/home-node/runtime-structured-expectation.js').indexOf('realityEvent') < 0
       && code('services/home-node/runtime-structured-expectation.js').indexOf('ingest') < 0,
@@ -424,6 +462,7 @@ function validate(sp) {
     P('MODEL_MAY_PROPOSE_STRUCTURED_EXPECTATION', 'YES');
     P('MODEL_MAY_NOT_MINT_CANONICAL_PREDICTION', 'YES');
     P('G1_PRODUCTION_PROJECTION_TYPES', '[preference]');
+    P('G2_PRODUCTION_PROJECTION_TYPES', '[preference,event:runtime.turn_terminal]');
     P('MAX_PRODUCTION_PREDICTIONS_PER_TURN', CORE.BOUNDS.MAX_OUTPUT_ITEMS);
     P('EVIDENCE_MATCHER_ENABLED_DEFAULT', false);
     P('MEMORY_WRITE', 'NONE');

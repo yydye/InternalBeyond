@@ -208,10 +208,10 @@ function ref(pid, opensAt, closesAt) {
       });
       const s = createRuntimePredictionSettlement({ clock: () => T0 });
       const first = s.settlePrediction(pred, [{ observation: pr.observation }], {
-        now: T0 + 5000, opportunity: { required: true, existence: { present: true, authoritySource: 'CANONICAL_RUNTIME' }, consumedAt: T0 + 1500 }
+        now: T0 + 5000
       });
       const again = s.settlePrediction(pred, [{ observation: pr.observation }], {
-        now: T0 + 6000, opportunity: { required: true, existence: { present: true, authoritySource: 'CANONICAL_RUNTIME' }, consumedAt: T0 + 1500 }
+        now: T0 + 6000
       });
       return first.settlement.state === 'matched' && again.status === 'already-settled' && s.heldCount() === 1;
     })(), 'reality 层幂等 ⇒ Settlement 不重复计数');
