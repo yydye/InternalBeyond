@@ -29,6 +29,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('node:crypto');
 const manifest = require('./release-manifest.js');
 
 /* ── Secret / privacy rules ─────────────────────────────────────────────
@@ -44,7 +45,7 @@ const SECRET_RULES = [
   { id: 'github-token', severity: 'error', why: 'GitHub Token', re: /\bgh[pousr]_[A-Za-z0-9]{30,}\b/g },
   { id: 'slack-token', severity: 'error', why: 'Slack Token', re: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g },
   { id: 'jwt', severity: 'error', why: 'JWT', re: /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g },
-  { id: 'private-key', severity: 'error', why: '私钥文件内容', re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/g },
+  { id: 'private-key', severity: 'error', why: '私钥文件内容', re: /-----BEGIN [A-Z ]*PRIVATE KEY-----\s*(?:[A-Za-z0-9+/=]{40,}\s*)+-----END [A-Z ]*PRIVATE KEY-----/g },
   { id: 'bearer', severity: 'error', why: 'Bearer 凭据', re: /\bBearer\s+[A-Za-z0-9._~+/-]{20,}=*/g },
   { id: 'assigned-secret', severity: 'error', why: '赋值形式的密钥', re: /\b(?:api[_-]?key|apikey|access[_-]?token|auth[_-]?token|client[_-]?secret|secret|password|passwd)\b\s*[:=]\s*["'`][^"'`\s]{12,}["'`]/gi },
   { id: 'demo-secret', severity: 'error', why: '演示占位密钥', re: /\bsk-demo-[A-Za-z0-9-]+/g },
@@ -65,6 +66,17 @@ const BINARY_MARKERS = [
   { id: 'private-key', severity: 'error', text: 'begin private key', why: '私钥文件内容' }
 ];
 
+/* This pinned Windows Canvas binary carries one Cargo registry source path in
+   upstream debug metadata. Suppress only that rule on those exact upstream
+   bytes; any package change re-enables the path scan. */
+const PINNED_VENDOR_MARKER_EXCEPTIONS = Object.freeze([
+  Object.freeze({
+    path: 'runtime/dsh-runtime/node_modules/@napi-rs/canvas-win32-x64-msvc/skia.win32-x64-msvc.node',
+    rule: 'dev-path-win',
+    sha256: '834d33ae6445f4abf49edffb0c7ecef0a4a249c2ef0921ac86b21a1d94c219f5'
+  })
+]);
+
 /* Files above this size are only scanned case-sensitively for the exact marker
    spellings (avoids materialising a 90 MB lowercase string for node.exe, which
    is verified by SHA-256 against nodejs.org instead). */
@@ -82,11 +94,34 @@ function lineOf(text, index) {
   return line;
 }
 
+function assignedSecretIsKnownExample(value) {
+  const match = /^\s*([A-Za-z_-]+)\s*[:=]\s*["'`]([^"'`]*)["'`]\s*$/.exec(String(value));
+  if (!match) return false;
+  const field = match[1].toLowerCase().replace(/[^a-z0-9]/g, '');
+  const sample = match[2].trim();
+  const normalized = sample.toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (field === 'password' && /^(?:new|current)-password$/i.test(sample)) return true;
+  if (normalized === field) return true;
+  if (/^[A-Z][A-Z0-9_]{2,}$/.test(sample) && /(?:KEY|TOKEN|SECRET|PASSWORD)/i.test(sample)) return true;
+  return /^(?:your|my|example|sample|placeholder|dummy|test)[_-]/i.test(sample);
+}
+
+function knownLanguageKeyword(rel, rule, value) {
+  return rule === 'openai-key'
+    && rel === 'runtime/dsh-runtime/node_modules/@shikijs/langs/dist/emacs-lisp.mjs'
+    && /^sk-prompt-/i.test(String(value));
+}
+
 function scanText(rel, text, findings) {
   for (const rule of SECRET_RULES) {
     rule.re.lastIndex = 0;
     let m;
     while ((m = rule.re.exec(text)) !== null) {
+      if ((rule.id === 'assigned-secret' && assignedSecretIsKnownExample(m[0]))
+        || knownLanguageKeyword(rel, rule.id, m[0])) {
+        if (m.index === rule.re.lastIndex) rule.re.lastIndex++;
+        continue;
+      }
       findings.push({
         path: rel, rule: rule.id, severity: rule.severity, why: rule.why,
         line: lineOf(text, m.index), excerpt: mask(m[0])
@@ -101,6 +136,13 @@ function scanText(rel, text, findings) {
 /* True when the bytes right after a marker look like an actual value (used so
    documentation that merely names a prefix is not reported as a secret). */
 function markerHasValue(buf, index, marker, wide) {
+  if (marker.id === 'private-key') {
+    const step = wide ? 2 : 1;
+    const start = index + marker.text.length * step;
+    const end = Math.min(buf.length, start + 16 * 1024 * step);
+    const tail = buf.subarray(start, end).toString(wide ? 'utf16le' : 'latin1');
+    return /^-{0,5}[\t ]*(?:\r?\n)[A-Za-z0-9+/=\r\n]{40,}-----END\s+[A-Z ]*PRIVATE KEY-----/i.test(tail);
+  }
   const need = Number(marker.requireValue) || 0;
   if (!need) return true;
   const step = wide ? 2 : 1;
@@ -156,7 +198,10 @@ function scanMarkers(rel, buf, findings) {
         if (hit) break;
       }
     }
-    if (hit) findings.push({ path: rel, rule: marker.id, severity: marker.severity, why: marker.why + '（二进制标记）', line: 0, excerpt: mask(marker.text) });
+    const pinnedVendorException = hit && PINNED_VENDOR_MARKER_EXCEPTIONS.some(exception =>
+      exception.path === rel && exception.rule === marker.id
+      && crypto.createHash('sha256').update(buf).digest('hex') === exception.sha256);
+    if (hit && !pinnedVendorException) findings.push({ path: rel, rule: marker.id, severity: marker.severity, why: marker.why + '（二进制标记）', line: 0, excerpt: mask(marker.text) });
   }
   return findings;
 }

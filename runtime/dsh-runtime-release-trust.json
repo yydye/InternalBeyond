@@ -1,0 +1,18 @@
+{
+  "schema": "internalbeyond.dsh-runtime-release-trust",
+  "schemaVersion": 1,
+  "manifestUrl": "https://dl.chatvault.top/dsh-runtime/dsh-runtime-stable.json",
+  "manifestHosts": [
+    "dl.chatvault.top"
+  ],
+  "artifactHosts": [
+    "dl.chatvault.top"
+  ],
+  "keys": [
+    {
+      "keyId": "dsh-runtime-release-ed25519-2026-10",
+      "algorithm": "Ed25519",
+      "publicKeySpkiBase64": "MCowBQYDK2VwAyEAIkkeDVfIxh1wE7RuQNkOzDXcqha3xF8RA888Ys4G0eQ="
+    }
+  ]
+}

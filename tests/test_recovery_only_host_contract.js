@@ -60,17 +60,20 @@ check('RecoveryOnly is an explicit Host argument and branches before normal laun
 check('RecoveryOnly keeps the singleton guard and exposes only recovery checkpoint commands',()=>{
   const rust=read('src-tauri/src/lib.rs');
   assert.ok(rust.includes('tauri_plugin_single_instance::init'));
-  assert.ok(rust.includes('if !restricted_recovery_page {\n            builder = builder.plugin(tauri_plugin_window_state'));
+  assert.match(rust, /if\s+!restricted_recovery_page\s*&&\s*!dev_mode\s*\{[\s\S]*?builder\s*=\s*builder\.plugin\(tauri_plugin_window_state/,
+    'window-state persistence must stay disabled in RecoveryOnly and Dev modes');
   assert.ok(rust.includes('if !recovery_only_instance && args_request_recovery_only(&args)'));
   assert.ok(rust.includes('let restricted_recovery_page = recovery_only || recovery_policy.blocked();'));
   assert.ok(rust.includes("Object.defineProperty(window, '__IB_RECOVERY_TARGET_IDENTITY__'"));
   assert.ok(rust.includes("Object.defineProperty(window, '__IB_TAURI_HOST__'"));
-  assert.ok(rust.includes('} else if recovery_policy.blocked() {\n        builder'));
+  assert.match(rust, /}\s*else if recovery_policy\.blocked\(\)\s*\{\s*builder/,
+    'blocked recovery policy must keep the restricted builder branch');
   assert.ok(rust.includes('window.__IB_RECOVERY_BOOT_BLOCKED__ = {};'));
-  assert.ok(rust.includes('read_recovery_checkpoint,\n            issue_recovery_restore_approval,\n            open_recovery_apply_window,\n            close_recovery_apply_window,\n            write_recovery_checkpoint,\n            abort_recovery_checkpoint_before_apply'));
+  assert.match(rust, /read_recovery_checkpoint,\s*issue_recovery_restore_approval,\s*open_recovery_apply_window,\s*close_recovery_apply_window,\s*write_recovery_checkpoint,\s*abort_recovery_checkpoint_before_apply/);
   assert.ok(rust.includes('const PRODUCTION_RESTORE_ENABLED: bool = false'));
   assert.ok(rust.includes('recovery_apply_window_matches'));
-  assert.ok(rust.includes('credential_status,\n            acknowledge_recovery_first_boot'));
+  assert.match(rust, /credential_status,\s*credential_resolve,\s*acknowledge_recovery_first_boot/,
+    'RecoveryOnly keeps the read-only credential status/resolver commands alongside first-boot acknowledgement');
   assert.ok(rust.includes('const PRODUCTION_RESTORE_ENABLED: bool = false'));
 });
 
@@ -146,7 +149,7 @@ check('P5.7 executor is RecoveryOnly-only and does not turn on global apply',()=
   const confirmBody=rust.slice(rust.indexOf('fn confirm_native_restore_approval('),rust.indexOf('#[cfg(not(windows))]',rust.indexOf('fn confirm_native_restore_approval(')));
   assert.ok(confirmBody.includes('IsWindow(owner)'));
   assert.ok(confirmBody.includes('GetForegroundWindow()'));
-  assert.ok(confirmBody.includes('MessageBoxW(\n            owner,'));
+  assert.match(confirmBody, /MessageBoxW\(\s*owner,/);
   assert.ok(!confirmBody.includes('std::ptr::null_mut()'));
   const recoveryCommands=rust.slice(rust.indexOf('let builder = if recovery_only {'),rust.indexOf('} else if recovery_policy.blocked()',rust.indexOf('let builder = if recovery_only {')));
   assert.ok(recoveryCommands.includes('issue_recovery_restore_approval'));
@@ -158,7 +161,7 @@ check('RecoveryOnly target identity fingerprints declared payload bytes without 
   assert.ok(rust.includes('fn recovery_payload_content_identity_from_manifest('));
   assert.ok(rust.includes('fn recovery_payload_content_identity('));
   assert.ok(rust.includes('hasher.update(&bytes)'));
-  assert.ok(rust.includes('if recovery_only {\n                    recovery_payload_content_identity_from_manifest(&runtime.root)'));
+  assert.match(rust, /if recovery_only \{\s*recovery_payload_content_identity_from_manifest\(&runtime\.root\)/);
   assert.ok(rust.includes('runtime.payload_identity.clone().unwrap_or_default()'));
 });
 

@@ -8,7 +8,7 @@
 **一个离线运行、数据留在本机的个人 AI 陪伴站。** 支持同时对接多个 AI 模型，
 包含像素互动房间、多角色聊天、社交圈、长期记忆、日记、书信、代码工作区等 13 个模块与两套视觉主题。
 
-`Windows 10+` · 当前版本 **1.0.6** · 免管理员权限 · 内置运行环境 · [PolyForm Noncommercial 1.0.0](LICENSE)
+`Windows 10+` · 当前版本 **1.0.8** · 免管理员权限 · 内置运行环境 · [PolyForm Noncommercial 1.0.0](LICENSE)
 
 > **本仓库是 [Sui](https://github.com/Sui-IB) 的 [Internal Beyond](https://github.com/Sui-IB/InternalBeyond) 的非官方二次开发版本**（已与原作者沟通）。原作者署名、原项目地址与许可文件全部保留，改动内容说明见文末「关于本仓库 / About this fork」。
 > This is an **unofficial derivative** of [Sui](https://github.com/Sui-IB)'s Internal Beyond — original project: <https://github.com/Sui-IB/InternalBeyond>.
@@ -166,6 +166,24 @@ Anthropic、OpenAI、Grok、DeepSeek、Gemini、GLM、Qwen、豆包、Moonshot�
 - `scripts\windows\Start Internal Beyond.cmd` 保留为**兼容别名**（同样只调用 `runtime\launch-internal-beyond.js`，非第二套逻辑）。
 - 需要显式看到 / 控制服务进程时，用 `scripts\windows\start-local-services.cmd`。
 - **桌面快捷方式**：`scripts\windows\create-desktop-shortcut.cmd` 幂等创建 / 刷新桌面 `InternalBeyond.lnk`（目标指向 `启动 InternalBeyond.vbs`，图标 `assets\icons\IB-icon.ico`）；移动项目后重跑一次即可。
+
+### IB Dev Launcher v1（不打包的桌面开发测试）
+
+正式版和开发版可同时运行。先启动正式版，在正式版「本地数据保险库」点击「普通 JSON」导出，然后运行：
+
+```bat
+scripts\windows\ib-dev-launcher.cmd start "%USERPROFILE%\Downloads\InternalBeyond_backup_YYYY-MM-DD.json"
+```
+
+不带路径运行时，Launcher 会在控制台提示输入导出文件路径。它只接受正式版生成的 version 9 普通 JSON，不接受加密 `.ibvault` 文件；只把角色配置、聊天、Memory 与关系等允许的数据净化后写入 `%LOCALAPPDATA%\InternalBeyond\dev-sandbox`，不会把原始导出文件复制进 Sandbox。Dev IndexedDB 导入只补缺失 key，已有 Sandbox 行及本地修改优先保留；若要用新基线替换旧数据，需在确认后手动 reset Sandbox。正式版 WebView2 UDF 不由 Dev 挂载。Home Node 仍通过 SQLite online backup 复制到 Sandbox。正式 Credential Vault 不复制，模型调用按请求通过现有只读解析器取用凭据；Sandbox 快照和日志不含 API Key。
+
+安装版没有给外部 Launcher 使用的 IndexedDB 导出 IPC；现有普通 JSON 导出在正式 WebView 内对各数据表分别执行只读读取。导出日期和 Home Node SQLite backup 时间会分别记录；它不是跨全部数据表的单一原子事务快照。若需跨表原子快照，需要后续正式 Host 支持，当前 Launcher 不会另开 WebView2 访问正式 UDF。
+
+- 控制台输入 `s` 查看状态、`l` 查看日志、`q` 正常退出；也可运行 `ib-dev-launcher.cmd status|logs|stop`。
+- Dev 端口：Web `23130`、Bridge `23135`、Home Node `23138`、Active `23134`、重启控制面 `23136`。
+- Active 定时调度和 Home Node 自动同步在 Dev 模式关闭，手动 Role DM / Chat 模型请求可用。
+- `ib-dev-launcher.cmd reset` 只清空 `dev-sandbox`；停止 Dev 后使用，下一次启动需要重新从正式版手动导出 JSON，并重新进行 SQLite online backup。
+- Launcher 不打包、不安装、不改正式安装器。需要现成的 Rust/Tauri 开发工具链。
 
 ### 测试
 

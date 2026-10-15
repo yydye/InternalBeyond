@@ -27,6 +27,7 @@ const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 
 const manifest = require(path.join(ROOT, 'scripts', 'release-manifest.js'));
+const packagingDiscovery = require(path.join(ROOT, 'scripts', 'packaging-auto-discovery.js'));
 const audit = require(path.join(ROOT, 'scripts', 'release-audit.js'));
 const productVersion = require(path.join(ROOT, 'runtime', 'product-version.js'));
 const ibStop = require(path.join(ROOT, 'installer', 'tools', 'ib-stop.js'));
@@ -197,10 +198,49 @@ console.log('\n[3] release whitelist manifest');
 
 const resolved = manifest.resolve({});
 
-check('manifest resolves with no missing or denied entry', () => {
+check('manifest resolves with no missing, denied, unsafe or unresolved referenced entry', () => {
   assert.strictEqual(resolved.missing.length, 0, 'missing sources: ' + JSON.stringify(resolved.missing));
   assert.strictEqual(resolved.denied.length, 0, 'denied paths: ' + JSON.stringify(resolved.denied));
+  assert.strictEqual(resolved.unsafe.length, 0, 'unsafe source files or references: ' + JSON.stringify(resolved.unsafe));
+  assert.strictEqual(resolved.missingReferences.length, 0, 'missing static references: ' + JSON.stringify(resolved.missingReferences));
+  assert.strictEqual(resolved.duplicatePaths.length, 0, 'duplicate target paths: ' + JSON.stringify(resolved.duplicatePaths));
   assert.ok(resolved.count > 100, 'payload looks too small: ' + resolved.count);
+});
+
+check('auto-discovery uses the canonical release resolver and recognizes recursive front-end resources', () => {
+  const report = packagingDiscovery.summarize(ROOT);
+  assert.strictEqual(report.ok, true, JSON.stringify(report.findings));
+  const automatic = new Set(report.automaticDirectoryFiles.map(file => file.path));
+  for (const relative of ['assets/js/core.js', 'assets/css/core.css', 'assets/images/bg-internal.jpg']) {
+    assert.ok(automatic.has(relative), 'check mode missed recursively included application resource: ' + relative);
+  }
+  assert.strictEqual(report.findings.missingReferences.length, 0, 'all local static references must resolve');
+});
+
+check('build gates artifact generation and verifies the exact Stage consumed by Inno', () => {
+  const checkCall = BUILD_SRC.indexOf("$nodeExe $discoveryCheck '--check' '--json'");
+  const dshBuild = BUILD_SRC.indexOf('$optionalDshJson =');
+  const stageCall = BUILD_SRC.indexOf("'scripts\\release-manifest.js') '--stage'");
+  const stageVerify = BUILD_SRC.indexOf("$discoveryCheck '--verify-stage' $staging");
+  const compile = BUILD_SRC.indexOf('$compileArgs =');
+  assert.ok(checkCall > 0 && dshBuild > checkCall && stageCall > dshBuild,
+    'source discovery must pass before any release artifact and Stage are produced');
+  assert.ok(stageVerify > stageCall && compile > stageVerify,
+    'the actual Stage and payload manifest must be verified before ISCC');
+  assert.ok(/Source: "\{#StagingDir\}\\\*"; DestDir: "\{app\}"; Flags: ignoreversion recursesubdirs createallsubdirs/.test(ISS_SRC),
+    'Inno must recursively package the verified StagingDir');
+  assert.ok(/\/DStagingDir=/.test(BUILD_SRC), 'ISCC must receive the exact Stage directory');
+});
+
+check('payload manifest retains upgrade paths and adds size/SHA-256 records', () => {
+  assert.ok(/artifactCount\s*=\s*\$payloadRecords\.Count/.test(BUILD_SRC),
+    'generated manifest must count integrity records');
+  assert.ok(/sizeBytes\s*=/.test(BUILD_SRC) && /sha256\s*=\s*Get-Sha256/.test(BUILD_SRC),
+    'generated manifest must measure actual staged and Host bytes');
+  assert.ok(/files\s*=\s*@\(\$payloadFiles \| Sort-Object\)/.test(BUILD_SRC),
+    'legacy files path list must remain available to upgrade cleanup');
+  assert.ok(/artifacts\s*=\s*\$payloadRecords/.test(BUILD_SRC),
+    'new integrity records must be additive to the existing ownership manifest');
 });
 
 check('every whitelist entry states why it is shipped', () => {
@@ -227,6 +267,31 @@ check('payload contains the full application closure', () => {
   assert.ok(files.some(f => /^assets\/js\//.test(f)), 'assets/js must ship');
   assert.ok(files.some(f => /^game\/game_module\.js$/.test(f)), 'game module must ship');
   assert.ok(files.some(f => /^bridge\//.test(f)) && files.some(f => /^active\//.test(f)), 'bridge/active modules must ship');
+});
+
+check('Dev snapshot importer is gated by the Dev Host and excluded from the production payload', () => {
+  const files = new Set(resolved.files.map(f => f.to.replace(/\\/g, '/')));
+  const html = read(path.join(ROOT, 'InternalBeyond.html'));
+  const core = read(path.join(ROOT, 'assets', 'js', 'core.js'));
+  const roleDmUi = read(path.join(ROOT, 'assets', 'js', 'role-dm-ui.js'));
+  const host = read(path.join(ROOT, 'src-tauri', 'src', 'lib.rs'));
+  const releaseHandler = host.match(/#\[cfg\(not\(debug_assertions\)\)\]\s*let builder = builder\.invoke_handler\(tauri::generate_handler!\[([\s\S]*?)\]\);/);
+  const debugHandler = host.match(/#\[cfg\(debug_assertions\)\]\s*let builder = builder\.invoke_handler\(tauri::generate_handler!\[([\s\S]*?)\]\);/);
+  assert.ok(!files.has('assets/js/dev-runtime.js'), 'Dev IndexedDB seed importer must not ship');
+  assert.ok(/window\.__IB_DEV_MODE__\s*===\s*true[\s\S]*?document\.write\([\s\S]*assets\/js\/dev-runtime\.js/.test(core)
+    && /<script src="assets\/js\/webcore-db-schema\.js"><\/script>[\s\S]*?<script src="assets\/js\/core\.js"><\/script>/.test(html),
+  'the Dev importer may load only behind the Host-injected Dev mode flag after the schema is ready');
+  assert.ok(!/<script(?![^>]*\bsrc\s*=)[^>]*>\s*[^<\s][\s\S]*?<\/script>/i.test(html),
+    'the production document must not introduce inline executable scripts');
+  assert.ok(releaseHandler && !/ib_dev_snapshot_(?:load|mark_imported)/.test(releaseHandler[1]),
+    'Release Host invoke handler must not register Dev snapshot IPC commands');
+  assert.ok(debugHandler && /ib_dev_snapshot_load/.test(debugHandler[1]) && /ib_dev_snapshot_mark_imported/.test(debugHandler[1]),
+    'debug Dev Host must retain the snapshot IPC commands used by the Launcher');
+  assert.ok(/#\[cfg\(debug_assertions\)\]\s*#\[tauri::command\]\s*fn ib_dev_snapshot_load/.test(host)
+    && /#\[cfg\(debug_assertions\)\]\s*#\[tauri::command\]\s*fn ib_dev_snapshot_mark_imported/.test(host),
+  'Dev snapshot command implementations must not compile into Release Host');
+  assert.ok(!/23130|23135|23138|dev-sandbox/i.test(roleDmUi),
+    'production Role DM UI must not contain Dev port or Sandbox detection');
 });
 
 check('canonical Node payload closes every static local require', () => {
@@ -268,6 +333,7 @@ check('payload excludes dev, private and test material', () => {
     /^test-ui\.cmd$/, /^assets\/images\/bg-canvas\.png$/, /^_icon_preview\.png$/,
     /^Gemini_Generated_Image_/, /^game\/portraits\/portrait_\[.*\]\.png$/,
     /^scripts\/capture-guide-shots\.js$/, /^scripts\/guide-fixtures\.js$/, /^scripts\/cdp-lite\.js$/,
+    /^assets\/js\/dev-runtime\.js$/,
     /^installer\/InternalBeyond\.iss$/, /^installer\/languages\//
   ];
   for (const f of files) {
@@ -280,8 +346,9 @@ check('manifest deny rules cover the audited leak classes', () => {
   const samples = [
     '.git/config', 'logs/launcher.log', 'browser-data/x/IndexedDB', 'test_bridge.js',
     'docs/P9-REPORT.md', 'tmp_ib_probe.js', 'node_modules/x/y.js', 'vision/main.py',
-    'scripts/capture-guide-shots.js', 'start-bridge-service.cmd', 'foo/.env',
-    'installer/InternalBeyond.iss', 'x.log', 'y.bak'
+    'scripts/capture-guide-shots.js', 'start-bridge-service.cmd', 'assets/js/dev-runtime.js', 'foo/.env',
+    'assets/private.key', 'assets/js/new-feature.test.js', 'assets/test-fixtures/screenshot.png',
+    'assets/user-data/profile.json', 'installer/InternalBeyond.iss', 'x.log', 'y.bak'
   ];
   for (const s of samples) {
     const hit = manifest.DENY_PATH.some(rule => rule.test.test(s));
@@ -397,7 +464,7 @@ check('single user-facing entry point, no dev launchers', () => {
 check('canonical Inno consumes a stable Tauri Host and owns WebView2 policy', () => {
   assert.ok(/internalbeyond-host\.exe/.test(ISS_SRC), 'canonical Inno must install and launch the Host');
   assert.ok(/stage-tauri-host\.ps1/.test(BUILD_SRC), 'build must stage Host through the stable distribution helper');
-  assert.ok(/cargo build --release --locked/.test(read(path.join(ROOT, 'scripts', 'stage-tauri-host.ps1'))),
+  assert.ok(/'build',\s*'--release'[\s\S]*?'--locked'/.test(read(path.join(ROOT, 'scripts', 'stage-tauri-host.ps1'))),
     'Host staging must use the locked Cargo build');
   assert.ok(/WebView2AppGuid/.test(ISS_SRC) && /WebView2BootstrapUrl/.test(ISS_SRC) && /EnsureWebView2/.test(ISS_SRC),
     'canonical Inno must own WebView2 detect/bootstrap policy');

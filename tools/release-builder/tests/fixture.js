@@ -338,10 +338,12 @@ function create(opts) {
 
   /* Payload sources the real whitelist resolves. */
   mk('InternalBeyond.html', '<!DOCTYPE html><html><body>IB</body></html>');
+  mk('Recovery.html', '<!DOCTYPE html><html><body>Recovery fixture</body></html>');
   mk('assets/js/app.js', '/* app */');
   mk('assets/images/bg.jpg', 'img');
   mk('apps/catalog.json', '{"apps":[]}');
   mk('game/game_story.js', '/* game */');
+  mk('Video/08e2b1dc2b734d4fafae30c3fb9f2f01 (1).mp4', Buffer.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70]));
   mk('bridge/bridge.js', '/* bridge */');
   mk('active/active.js', '/* active */');
   mk('services/internal-beyond-server.js', '/* server */');
@@ -349,7 +351,10 @@ function create(opts) {
   mk('services/active-message-service.js', '/* active svc */');
   mk('services/home-node-service.js', '/* home node */');
   mk('services/home-node/chat.js', '/* chat */');
+  mk('services/project-knowledge.js', '/* read-only project-knowledge fixture */');
+  mk('services/packaging-center-api.js', '/* packaging-center API fixture */');
   mk('runtime/boot-state.js', '/* boot */');
+  mk('runtime/host-origin.js', '/* bundled host-origin predicate fixture */');
   mk('runtime/component-registry.js', '/* registry */');
   mk('runtime/component-supervisor.js', '/* supervisor */');
   mk('runtime/db-failure.js', '/* dbf */');

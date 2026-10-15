@@ -1,0 +1,11 @@
+{
+  "name": "buffers",
+  "version": "1.0.0-ib.1",
+  "description": "InternalBeyond BufferList compatibility module for the pinned DSH runtime",
+  "main": "index.js",
+  "license": "MIT",
+  "internalbeyond": {
+    "replaces": "buffers@0.1.1",
+    "consumer": "binary@0.3.0"
+  }
+}

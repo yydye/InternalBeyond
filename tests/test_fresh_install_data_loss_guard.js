@@ -83,8 +83,10 @@ check('11. Startup chain still checks after DB open, but no longer reads ib_last
   assert.ok(start >= 0 && end > start, 'guard function must remain present');
   const guard = core.slice(start, end);
   assert.ok(guard.indexOf('ib_lastActive') < 0, 'guard must not use presence timestamp');
-  assert.ok(core.indexOf('_ibMarkBusinessDataPresent(s,d)') >= 0, 'successful dbPut must mark business presence');
-  assert.ok(read('assets/js/active-diary.js').indexOf('await openDB();_ibGuardCheck()') >= 0);
+  assert.ok(core.indexOf('_ibMarkBusinessDataPresent(s,stored)') >= 0,
+    'successful dbPut must mark presence from the credential-free record actually stored');
+  assert.match(read('assets/js/active-diary.js'), /await openDB\(\);\s*await _ibGuardCheck\(\)/,
+    'the startup guard must run after the database is opened');
 });
 
 check('12. ib_lastActive remains welcome-back state only', () => {

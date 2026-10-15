@@ -151,6 +151,9 @@ Source: "{#StagingDir}\runtime\service-control.js"; DestDir: "{tmp}"; Flags: don
 ; Shared production dependency of service-control.js. It is extracted from the
 ; same canonical staged bytes because PrepareToInstall runs before {app} exists.
 Source: "{#StagingDir}\runtime\host-origin.js"; DestDir: "{tmp}"; Flags: dontcopy
+; Used only during upgrades from releases that bundled DSH: migrate the static
+; runtime into the per-user extension tree before the payload diff removes it.
+Source: "{#StagingDir}\runtime\optional-dsh-runtime.js"; DestDir: "{tmp}"; Flags: dontcopy
 
 [Icons]
 ; The ONLY user-facing entry point. Users never choose between .cmd / .vbs / .js.
@@ -449,6 +452,8 @@ begin
       + #13#10#13#10 + '安装程序不会强制覆盖正在使用中的文件。';
 end;
 
+function MigrateLegacyDshRuntime(): String; forward;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   NeedsRestart := False;
@@ -465,6 +470,54 @@ begin
   Result := EnsureWebView2();
   if Result <> '' then exit;
   Result := StopInternalBeyond();
+  if Result <> '' then exit;
+  Result := MigrateLegacyDshRuntime();
+end;
+
+function MigrateLegacyDshRuntime(): String;
+var
+  Node, Script, LegacyRoot, ExtensionRoot, PreviousManifest, Params: String;
+  ManifestText: AnsiString;
+  Code: Integer;
+begin
+  Result := '';
+  LegacyRoot := ExpandConstant('{app}\runtime\dsh-runtime');
+  if not DirExists(LegacyRoot) then exit;
+  PreviousManifest := ExpandConstant('{tmp}\{#PayloadManifest}');
+  if not FileExists(PreviousManifest) then exit;
+  if not LoadStringFromFile(PreviousManifest, ManifestText) then
+  begin
+    Result := '无法读取旧版载荷清单；安装未继续，现有 DSH 未清理。';
+    exit;
+  end;
+  if Pos('runtime/dsh-runtime/', ManifestText) = 0 then exit;
+  if (Pos('runtime/dsh-runtime/runtime-manifest.json', ManifestText) = 0)
+     or (Pos('runtime/dsh-runtime/apps/cli/src/bin.ts', ManifestText) = 0)
+     or (Pos('runtime/dsh-runtime/node_modules/@deepseek-ai/dsh-web-frontend/dist/index.html', ManifestText) = 0) then
+  begin
+    Result := '旧版载荷清单中的 DSH Runtime 不完整；安装未继续，旧 DSH 保持原样。';
+    exit;
+  end;
+  ExtensionRoot := ExpandConstant('{localappdata}\InternalBeyond\extensions\dsh-runtime\current');
+  Node := ExpandConstant('{app}\runtime\node\node.exe');
+  if not FileExists(Node) then
+  begin
+    Result := '检测到现有 DSH Runtime，但找不到内置运行环境；安装未继续，旧 DSH 未清理。';
+    exit;
+  end;
+  ExtractTemporaryFile('optional-dsh-runtime.js');
+  Script := ExpandConstant('{tmp}\optional-dsh-runtime.js');
+  Params := '"' + Script + '" --migrate-legacy --source "' + LegacyRoot
+    + '" --target "' + ExtensionRoot + '" --previous-manifest "' + PreviousManifest
+    + '" --product-version "{#AppVersion}"';
+  if not Exec(Node, Params, ExpandConstant('{tmp}'), SW_HIDE, ewWaitUntilTerminated, Code) then
+  begin
+    Result := '无法安全迁移现有 DSH Runtime；安装未继续，旧 DSH 和 Home Node 数据均未清理。';
+    exit;
+  end;
+  if Code <> 0 then
+    Result := '现有 DSH Runtime 未能通过迁移校验；安装已停止，旧 DSH 保持原样。'
+      + #13#10#13#10 + '请检查可用磁盘空间后重试。';
 end;
 
 { ── Obsolete payload cleanup (upgrade §7) ───────────────────────────────

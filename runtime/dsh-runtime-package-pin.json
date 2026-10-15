@@ -1,0 +1,9 @@
+{
+  "schema": "internalbeyond.optional-dsh-runtime-pin",
+  "schemaVersion": 1,
+  "runtimeVersion": "0.2.1-alpha.2",
+  "sourceRevision": "d743267388641bc76f17c45ce8b4c231aed1d32c",
+  "target": "windows-x64",
+  "archiveFile": "InternalBeyond-DSH-Runtime-0.2.1-alpha.2-windows-x64.zip",
+  "archiveSha256": "b13559724cac67a858f3cc3748732c7872a9a2960de684137b66066a7ac94448"
+}

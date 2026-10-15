@@ -53,6 +53,10 @@ InternalBeyond-Economy-v1.tar.gz.sha256
 # bundled Node runtime binary: fetched by scripts/update-node-runtime.ps1, never committed
 runtime/node/node.exe
 
+# Optional DSH Runtime output: reproducible from the pinned external source by
+# scripts/build-dsh-runtime.js, then packaged as an independent ZIP.
+runtime/dsh-runtime/
+
 # Test fixtures that must live INSIDE the checkout, so that "which install root
 # owns this process?" is answerable the way the product answers it (by command
 # line / executable path against the root). Created and removed by the suites.

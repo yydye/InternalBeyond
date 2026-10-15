@@ -1,6 +1,6 @@
 [package]
 name = "internalbeyond-host"
-version = "1.0.6"
+version = "1.0.8"
 description = "InternalBeyond Tauri 2 host foundation"
 authors = ["InternalBeyond"]
 edition = "2021"

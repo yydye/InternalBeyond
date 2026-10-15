@@ -4,38 +4,30 @@
 > 决策依据见 [DECISIONS.md](DECISIONS.md) U 系列；更新功能本身的机制见
 > [ARCHITECTURE.md](ARCHITECTURE.md)；用户视角的安装/升级说明见 [README.md](../README.md)。
 >
-> **本文档是发行契约的唯一真源。** 代码里的对应真源只有一个：
-> `runtime/update-manifest.js`（schema + 唯一 URL 构造 + 客户端校验）。
+> **本文档是发行规则的唯一真源。** Stable 更新清单的 schema、URL 和客户端校验以
+> `runtime/update-manifest.js` 为准；Windows 载荷、Inno 安装与可选 DSH Runtime 的实现权威见 §10。
 
 ---
 
 ## 1. 一次发行产出什么
 
-| 产物 | 位置 | 上传为 Release asset |
-|---|---|---|
-| `InternalBeyond-Setup-<version>.exe` | `dist\` | ✅ |
-| `SHA256SUMS.txt` | `dist\` | ✅ |
-| `update-stable.json` | `dist\` | ✅ **最后** |
+| 产物 | 位置 / 分发边界 |
+|---|---|
+| `InternalBeyond-Setup-<version>.exe` | `dist\`；归墟 Windows 主安装包，Inno Setup 6 产出 |
+| `SHA256SUMS.txt` | `dist\`；记录主安装包实际字节的 SHA-256 |
+| `update-stable.json` | `dist\`；主程序 Stable 更新清单，按 §2 最后上传 |
+| `InternalBeyond-DSH-Runtime-<runtime-version>-windows-x64.zip` | `dist\`；独立可选运行时，绝不打入主安装包 |
+| `dsh-runtime-stable.json` | P35 独立签名清单；经独立 HTTPS 地址分发，不替代 `update-stable.json` |
 
-产物全部由一条命令产出，`dist\` 不进版本库（`.gitignore`）：
+主安装包与版本化 DSH ZIP 由 canonical 构建流程产出；DSH 签名清单由离线签名步骤单独生成。
+`dist\` 不进版本库（`.gitignore`）：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-installer.ps1 `
-  -NotesFile docs\release-notes\1.0.3.md `
-  -MinimumVersion 1.0.1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-installer.ps1
 ```
 
-`-ReleasedAt` / `-NotesFile` / `-MinimumVersion` 都是**可选**的，见 §4 / §8。
-
-- **1.0.1**：三个都不传（构建时刻不是发布时刻，见 §4；`minimumVersion` 的理由见 §8）。
-- **1.0.2**：传 `-NotesFile docs\release-notes\1.0.2.md` 与 `-MinimumVersion 1.0.1`
-  （`minimumVersion` 从这一版起第一次成为真实契约），仍然**不传** `-ReleasedAt`（§4）。
-- **1.0.3**：与 1.0.2 相同——传 `-NotesFile docs\release-notes\1.0.3.md` 与
-  `-MinimumVersion 1.0.1`，仍然**不传** `-ReleasedAt`（§4）。本版没有契约增量。
-- **1.0.4**：与 1.0.3 相同——传 `-NotesFile docs\release-notes\1.0.4.md` 与
-  `-MinimumVersion 1.0.1`，仍然**不传** `-ReleasedAt`（§4）。本版同样没有契约增量
-  （功能 + 修复版本：A1.5 止血 / P11-3 / P21 统一思考深度 / P21.1 DeepSeek 校准，
-  见 [CHANGELOG.md](CHANGELOG.md)）。
+`-ReleasedAt` / `-NotesFile` / `-MinimumVersion` 都是**可选**的，见 §4 / §8；只有确有对应
+发布信息时才传入。旧版本的逐版参数记录属于历史，不作为当前 1.0.8 构建指令。
 
 ---
 
@@ -114,6 +106,14 @@ primary   GET manifest.installer.url            （版本钉死的 release asset
   sha256 mismatch、PE ProductVersion/FileVersion mismatch、任何安全校验失败。
 - **发布者的责任没有变化**：备路不能救一个「资产名不对 / 版本没钉死 / digest 对不上」的
   release。§2 的上传顺序与 §5 的构建期闸门仍然是唯一正确的做法。
+
+### 2.3 可选 DSH Runtime 是独立分发通道
+
+主安装包更新顺序只适用于 `InternalBeyond-Setup`、`SHA256SUMS.txt` 与 `update-stable.json`。
+DSH Runtime 使用独立的版本化 ZIP 和 Ed25519 签名清单：先发布 ZIP 并核对实际 SHA-256、完整
+HTTPS 下载及 HTTP Range `206`，再发布 `dsh-runtime-stable.json`。客户端固定读取
+`https://dl.chatvault.top/dsh-runtime/dsh-runtime-stable.json`；清单禁止长期缓存，ZIP 文件名带
+Runtime 版本。清单签名私钥留在签名机器的本地安全位置，绝不进入源码包、主安装包或 VPS。
 
 ---
 
@@ -208,8 +208,8 @@ exe 的 sha256 与字节数**没有变**。**不要**为了改一个可选字段
 
 ## 5. 构建期闸门（写清单之前必须全部成立）
 
-构建脚本第 7 步按顺序验证，任一不符即**整个构建失败**（宁可不产出，也不产出一份和
-字节对不上的清单）：
+Windows 载荷检查按 §10 先完成；这里的闸门随后验证 Stable 更新清单。任一不符即**整个构建失败**
+（宁可不产出，也不产出一份和字节对不上的清单）：
 
 1. `installer.sha256` = 第 6 步对刚编译出的 exe 实测的 SHA-256（不是重新输入的值）；
 2. `installer.sizeBytes` = 该 exe 的实际文件长度；
@@ -223,8 +223,8 @@ exe 的 sha256 与字节数**没有变**。**不要**为了改一个可选字段
 6. 清单**不进载荷**：`dist\update-stable.json` 是发布资产，不在白名单里，
    不会被打进安装包。
 
-`sizeBytes` 的合理区间（`8 MiB`–`512 MiB`）不是安全控制，只是防截断/防胡写的闸门：
-载荷始终含内置 Node 运行时，真实安装包约 48 MB。
+`sizeBytes` 的合理区间（`8 MiB`–`512 MiB`）不是安全控制，只是防截断/防胡写的闸门。
+旧版「约 48 MB」是历史构建记录；当前文件大小一律以该次最终安装包实测为准，不能把旧数值当门槛。
 
 ### 5.1 发行声明闸门（在第 4 步，不在第 7 步）
 
@@ -329,6 +329,8 @@ manifest.version           ==  tag 去掉 v 前缀
   因此 SHA-256 **只能证明「下载到的字节 == 清单描述的字节」**，
   **不能证明发布者身份**，也无法抵御仓库/账号被攻陷。
   **任何文档、UI 文案、错误提示都不允许把 SHA-256 描述成「验证发布者」或「已签名」。**
+- DSH Runtime 的发布清单另有独立 Ed25519 签名，并由客户端内置公钥验证；这不代表主安装包已
+  代码签名。DSH ZIP 的 SHA-256 用于字节完整性，签名用于验证清单来源，两者不可互相替代。
 - 清单里的一切都是**数据**。客户端不得从中拼接命令行、不得把任何字段交给 shell；
   固定参数数组 + `shell:false` 是 U3 的红线。
 - 传输必须 HTTPS；`installer.url` 的 host 只允许 `github.com`（清单层校验），
@@ -756,3 +758,90 @@ primary 直连 200 一次成功，回退门（`fallbackAllowed(result) === (resu
 
 真实构建回归默认不跑（需要 Inno Setup 6，约 35 s），见
 [P7-TEST-BUDGET.md](P7-TEST-BUDGET.md)。
+
+## 10. Windows 1.0.8 / P35 打包与验收规则
+
+本节是当前 Windows 产品打包规则；产品版本以根目录 `VERSION` 为准。Tauri Host 由锁定的 Cargo
+依赖构建，`src-tauri/Cargo.toml` 版本必须与 `VERSION` 一致；`installer/InternalBeyond.iss` 经
+`scripts/build-installer.ps1` 调用 Inno Setup 6，是唯一正式安装器。不要用 Tauri bundler 或手工
+复制文件替代该流程。
+
+### 10.1 主安装包、可选 DSH 与迁移边界
+
+- 主安装包包含 Tauri Host、内置 Node、Home Node 与服务依赖、DSH 安装/验签器、兼容性 pin、公开
+  信任公钥及 Work Mode UI 接线；不包含完整 `runtime/dsh-runtime`。完整 DSH Runtime 只进入独立的
+  `InternalBeyond-DSH-Runtime-<runtime-version>-windows-x64.zip`，不随主程序安装。
+- P35 ZIP 必须与 pin 中的 Runtime 版本、源码 revision、目标架构、文件数、SHA-256 和产品兼容范围
+  一致。`dsh-runtime-stable.json` 由 `scripts/sign-dsh-runtime-release.js` 在本地离线签名，客户端
+  使用 `runtime/dsh-runtime-release-trust.json` 中的公钥校验后才允许安装；私钥不得上传。已安装
+  Runtime 应能在离线时继续启动，清单或网络故障不得替换、删除已有版本。
+- 旧版内嵌 DSH 只根据旧版 `ib-payload-manifest.json` 中声明的文件迁移到
+  `%LOCALAPPDATA%\InternalBeyond\extensions\dsh-runtime\current`。Inno 先验证旧清单与必需文件，
+  再由可选 Runtime 安装器校验并原子迁移；迁移失败就停止升级并保留旧 DSH。只有新载荷完整安装后，
+  才能按前后两份产品清单的差集清理旧产品文件；不得扫描目录猜测所有权。
+- Home Node 仍是 DSH 启动、Host 身份、Consent、Vault 与 Work Run 的权限权威。主安装、迁移和验证
+  均不得重置正式数据、Vault、Memory 或 WebView2 用户配置；Dev/Synthetic 使用独立沙箱、实例身份
+  与临时 WebView2 目录，不得调用真实 Provider。
+
+### 10.2 载荷清单与依赖闭包
+
+`scripts/release-manifest.js` 是文件白名单权威。Stage 必须与该白名单解析结果逐项一致：相对路径统一
+为 `/`，目标路径不得重复，解析数量必须等于实际 Stage 文件数。生成的
+`ib-payload-manifest.json` 必须满足：
+
+```text
+stageFiles = unique(stagePaths) = physicalStageFiles
+payloadFiles = stagePaths + internalbeyond-host.exe + ib-payload-manifest.json
+payloadManifest.count = payloadManifest.files.length = unique(payloadManifest.files).length
+```
+
+日常检查使用 `node scripts/packaging-auto-discovery.js --check`，只读扫描当前工作树，不生成安装包。
+它复用上述清单的目录递归、排除和拒绝规则，发现新 JS/CSS/图片等目录内资源，并追踪正式 HTML、CSS
+和 Node 模块中的静态本地引用；缺失引用、危险路径、重复目标、符号链接或未分类文件类型都会阻止构建。
+被正式载荷引用且类型可安全判定的新增模块会进入同一个解析结果和 Stage。构建脚本在生成任何发行产物前
+自动执行该检查，并在 ISCC 之前以当前源文件哈希验证完整 Stage、安装路径清单与内容记录；Inno 的
+`{#StagingDir}\*` 递归收集规则直接使用这份已验证 Stage。
+
+Payload Manifest 的 `files` 仍是旧版升级清理使用的路径数组（含清单自身）；新增 `artifacts` 对其余每个
+载荷文件记录相对路径、字节数和 SHA-256。清单自身保留在 `files` 中以维持升级/回滚所有权，但不记录
+自身 SHA-256，因为那会形成自引用哈希。旧版只有 `files` 的清单仍按原路径差集迁移和清理。
+
+因此 Payload Manifest 的条目数比 Stage 文件数多 2（Host 与 Manifest 自身）。任何重复路径、计数
+不一致、缺少必需文件或依赖、版本不一致都必须在构建期失败；不能手改计数、放宽 Host 校验或继续打包。
+Cargo 使用锁文件，Node 版本与 SHA-256 必须符合 pin，Tauri Host PE `ProductVersion` 必须等于
+`VERSION`。完整 DSH 源码、`.dsh-research`、`target`、测试产物、日志和用户数据不得进入主安装包。
+
+近期 1.0.8 故障记录：旧清单 `count=520`、数组长度 `520`，但去重后只有 `518` 条；两个 Home Node
+DSH 安装器已由 `services/home-node` 目录递归纳入，又被单独重复列入。移除冗余白名单项后，一次
+`release-manifest.resolve()` 核对得到 **516 个唯一目标路径**；预期 Stage 物化 516 个文件，加 Host
+与 Manifest 后应为 **518 条 Payload Manifest**。这是本次故障的算术对账，不是未来发行固定文件数；
+每次都检查上述等式，并以当次实际 Stage 为准。本轮文档更新没有重新物化 Stage 或构建安装包。
+
+### 10.3 自用快速构建与公开发布
+
+| 自用快速构建 | 正式公开发布 |
+|---|---|
+| 直接使用 canonical `scripts/build-installer.ps1` 与 Inno 流程；不强制全量测试或 RC 签收。 | 使用现有 Release Builder / Stable 发布流程；满足公开发布所需的完整测试、RC 审计与来源/版本资格。 |
+| 保留构建必需的 preflight、Node/Cargo pin、Stage/载荷清单、重复项与依赖检查、内容/密钥审计、Inno 编译、PE 版本及 SHA-256 核对。 | 增加隔离安装/升级和正常启动验收；验证 Bridge、Active、Home Node、Web Server 与预期 Work Mode 路径。 |
+| 至少在隔离载荷目录中以 `--recovery-only` 启动 Host，使用临时 `WEBVIEW2_USER_DATA_FOLDER`，确认 Payload 校验通过、Recovery WebView 启动且不以 101 退出。该项只证明 Host 初始化，不代表后台服务或 DSH 已验收。 | 若发布 DSH Runtime，另验证签名清单、ZIP SHA-256、兼容性、HTTPS 完整下载、Range `206`、离线启动及适用的旧 Runtime 迁移。 |
+| 不运行正式数据上的安装 smoke，不自动覆盖安装；明确记录跳过的全量测试、RC 审计和未验证路径。 | 安装验证只在一次性 Windows VM/用户配置中进行；正式用户数据、Vault、Memory、WebView2 与 Dev/Synthetic 数据保持隔离。 |
+
+自用构建不是公开发布签收。两种模式都不得跳过载荷完整性或为通过构建而删除测试、削弱身份/权限门禁。
+
+常用命令：
+
+```powershell
+node scripts/packaging-auto-discovery.js --check
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-installer.ps1
+```
+
+### 10.4 失败停止与结果记录
+
+- Stage 与白名单不一致、目标重复、Payload Manifest 数量不等、依赖缺失、Node/Cargo/Host 版本不匹配、
+  Host 启动失败、DSH 签名/哈希/兼容性校验失败，任一项都停止该次构建或发布；不通过改清单、绕过
+  门禁、复用旧 hash 或宣称未跑过的验证来继续。
+- 记录最终 EXE 与 DSH ZIP 的绝对产物路径、字节数、各自 SHA-256；另记录 DSH 签名清单 SHA-256、
+  key id 与签名验证结果。明确区分「已编译」「清单/载荷已核验」「Host 初始化已启动」「后台服务
+  已验收」「隔离安装/升级已验收」；不能用前一项代称后一项。
+- 构建失败时报告首个失败阶段与真实错误，保留可用日志；若脚本已清理 Stage，明确说明，不从源码
+  推断其通过。失败产物不得发布，用户数据和旧 DSH 不作为清理对象。

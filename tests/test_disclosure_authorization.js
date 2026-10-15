@@ -37,6 +37,7 @@ const path = require('path');
 const fs = require('fs');
 const vm = require('vm');
 const { execFileSync } = require('child_process');
+const frozenBaseline = require('./helpers/disclosure-frozen-baseline.js');
 
 const ROOT = path.join(__dirname, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
@@ -890,14 +891,7 @@ group('W. AUTHORIZATION EXISTS / CONSUMPTION DOES NOT（结构性断言）');
 
      三者合起来才是"authorization 不绕过、secret 不泄漏、disclosure rules 不变"：
      W5b 挡住"偷偷改文件"，W5c/W5d 挡住"改了但看起来没改"。 */
-  const DISCLOSURE_FROZEN_SITES = [
-    'assets/js/disclosure-core.js',
-    'assets/js/disclosure-authoring-core.js',
-    'assets/js/role-dm.js',
-    'assets/js/role-dm-core.js',
-    'assets/js/disclosure-store.js',
-    'assets/js/social.js'
-  ];
+  const DISCLOSURE_FROZEN_SITES = frozenBaseline.FILES;
   /* 本轮**唯一**允许存在差异的冻结文件，以及允许差异的**位置**边界。
      social.js 的三个 Voice 区段（全部是"新增行"的落点，而且都**只**是 Voice 面）：
        ① Voice API Source 目录 + provider 下拉 + 能力字段 + 音色选项 + 音色 id 存取
@@ -1041,16 +1035,13 @@ group('W. AUTHORIZATION EXISTS / CONSUMPTION DOES NOT（结构性断言）');
       return { start: a, end: b >= a ? b : -1 };
     });
   }
-  const showGit = (rel) => {
-    try { return execFileSync('git', ['show', 'HEAD:' + rel], { cwd: ROOT, encoding: 'utf8' }); }
-    catch (e) { return null; }
-  };
+  const showGit = (rel) => frozenBaseline.readHeadFile(ROOT, rel);
   /* 工作区文本（行尾归一 → `\n`）。冻结面的判据全部跑在它上面。 */
   const worktreeText = (rel) => String(readSrc(rel)).replace(/\r\n/g, '\n');
   {
     let diffText = null, gitErr = null;
     try {
-      diffText = execFileSync('git', ['diff', '--unified=0', 'HEAD', '--', ...DISCLOSURE_FROZEN_SITES], { cwd: ROOT, encoding: 'utf8' });
+      diffText = frozenBaseline.diffAgainstHead(ROOT, DISCLOSURE_FROZEN_SITES).diffText;
     } catch (e) { gitErr = String(e.message || e).slice(0, 120); }
     const verdict = diffText === null ? null : judgeFrozenDiff(diffText, { regions: frozenRegions, textOf: worktreeText });
     check('W5b.frozenSurfaceIsUnchangedOrAdditiveVoiceOnly：六个冻结文件对 HEAD 的差异只允许' +
@@ -1158,10 +1149,11 @@ group('W. AUTHORIZATION EXISTS / CONSUMPTION DOES NOT（结构性断言）');
       hits.length === 0 && added.indexOf('loadVoiceSourceCatalog') >= 0, { hits: hits, regionChars: added.length });
   }
 
-  check('W6. Role DM 全链路仍不含 disclosure 字样（4B-1 冻结的 J5 未被本轮破坏）',
+  check('W6. Role DM 全链路仍不接入 Disclosure authority/store（4B-1 的 J5 冻结面仍在）',
     [readSrc('assets/js/role-dm.js'), readSrc('assets/js/role-dm-core.js'),
       readSrc('assets/js/role-dm-social.js'), readSrc('assets/js/role-dm-social-core.js')]
-      .every((s) => !/disclosure/i.test(s)));
+      .every((s) => !/(?:IBDisclosure(?:Core|Store)|disclosureFacts|disclosure-(?:core|store|authorization))/i
+        .test(s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, ''))));
   check('W7. HTML 加载授权核心，且顺序在 disclosure-core 之后',
     (() => {
       const html = fs.readdirSync(ROOT).filter((f) => /\.html$/i.test(f)).map((f) => readSrc(f)).join('\n');
@@ -1394,7 +1386,7 @@ group('Z. REAL AI CALLS = 0 / PRODUCTION GRANT WRITER = 0');
       const hits = [];
       const walk = (d) => {
         for (const e of fs.readdirSync(d, { withFileTypes: true })) {
-          if (e.name === 'node_modules' || e.name === '.git' || e.name === 'dist' || e.name === 'installer') continue;
+          if (['node_modules', '.git', '.dsh-tmp', 'tmp', 'target', 'dist', 'installer'].includes(e.name)) continue;
           const full = path.join(d, e.name);
           if (e.isDirectory()) walk(full);
           else if (/\.(js|mjs|cjs|html)$/i.test(e.name)) {

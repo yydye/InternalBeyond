@@ -10,7 +10,9 @@
   Pipeline (no manual file copying anywhere):
     1. preflight        — VERSION / pin / Inno Setup / required sources
     2. runtime gate     — bundled node.exe exists, exact version, SHA-256, runs
-    3. staging          — whitelist manifest materialised into dist\staging
+    3. source discovery — shared release resolver checks uncommitted files and
+       static dependency closure before any release artifact is generated
+       staging          — materialise that same manifest into dist\staging
     4. content + secret + release-claim — release-audit over the staged bytes
     5. compile          — ISCC (per-user, no UAC, no console window)
     6. hash             — installer SHA-256 → dist\SHA256SUMS.txt
@@ -113,6 +115,8 @@ $pinFile   = Join-Path $repo 'installer\runtime-pin.json'
 $versionFile = Join-Path $repo 'VERSION'
 $nodeExe   = Join-Path $repo 'runtime\node\node.exe'
 $smoke     = Join-Path $repo 'tests\test_installer_smoke.js'
+$optionalDshBuilder = Join-Path $repo 'scripts\build-optional-dsh-runtime.js'
+$discoveryCheck = Join-Path $repo 'scripts\packaging-auto-discovery.js'
 $hostStageTool = Join-Path $repo 'scripts\stage-tauri-host.ps1'
 $hostBuildRoot = Join-Path ($env:ProgramData | ForEach-Object { if ($_){$_} else { Split-Path -Parent $repo } }) 'InternalBeyond\host-build'
 $manifestOut = Join-Path $dist 'update-stable.json'
@@ -288,7 +292,9 @@ foreach ($required in @(
     (Join-Path $repo 'installer\languages\ChineseSimplified.isl'),
     (Join-Path $repo 'installer\tools\ib-stop.js'),
     (Join-Path $repo 'scripts\release-manifest.js'),
+    $discoveryCheck,
     (Join-Path $repo 'scripts\release-audit.js'),
+    $optionalDshBuilder,
     $hostStageTool,
     (Join-Path $repo 'src-tauri\Cargo.toml'),
     (Join-Path $repo 'src-tauri\Cargo.lock'),
@@ -358,8 +364,45 @@ $requireCheck = (& $nodeExe '-e' "require('http');require('fs');require('path');
 if ($requireCheck -ne 'ok') { Fail "内置 node.exe 无法加载内置模块：$requireCheck" }
 Write-Ok "node.exe 可执行 · --version = $reported · process.version = $procVer"
 
-# ── 3. staging from the whitelist manifest ─────────────────────────────────
-Write-Step '3/9' 'staging (whitelist manifest)'
+# Resolve the complete production payload before any release artifact is
+# generated, including the separately distributed DSH ZIP. The standalone
+# check uses the same resolver that the later Stage command consumes.
+$script:stage = 'packaging auto-discovery'
+Write-Info 'Packaging Auto-Discovery · checking source files and static references'
+$discoveryJson = & $nodeExe $discoveryCheck '--check' '--json' 2>&1 | Out-String
+if ($LASTEXITCODE -ne 0) {
+  try {
+    $discovery = $discoveryJson.Trim() | ConvertFrom-Json
+    foreach ($bucket in @('missingEntries', 'excludedOrDangerous', 'unsafeFilesOrReferences', 'missingReferences', 'duplicatePaths')) {
+      foreach ($finding in @($discovery.findings.$bucket)) {
+        Write-Host ("     ✗ [{0}] {1} — {2}" -f $bucket, $finding.path, $finding.why) -ForegroundColor Red
+      }
+    }
+  } catch { Write-Host $discoveryJson -ForegroundColor Red }
+  Fail 'Packaging Auto-Discovery 未通过；停止打包'
+}
+$discovery = $discoveryJson.Trim() | ConvertFrom-Json
+Write-Ok ("auto-discovery PASS · {0} source files · {1} front-end resources · {2} referenced modules" -f `
+  $discovery.count, $discovery.frontEndResourceCount, $discovery.staticallyDiscoveredFiles.Count)
+
+# Package the pinned production DSH Runtime separately and verify its archive
+# against the SHA-256 embedded in the Home Node installer payload.
+$optionalDshZipName = 'InternalBeyond-DSH-Runtime-0.2.1-alpha.2-windows-x64.zip'
+$optionalDshZip = Join-Path $dist $optionalDshZipName
+Write-Info 'building optional DSH Runtime ZIP from the existing pinned runtime'
+$optionalDshJson = & $nodeExe $optionalDshBuilder '--output' $optionalDshZip '--replace' 2>&1 | Out-String
+if ($LASTEXITCODE -ne 0) { Fail "optional DSH Runtime ZIP build failed: $optionalDshJson" }
+try { $optionalDsh = $optionalDshJson.Trim() | ConvertFrom-Json }
+catch { Fail "optional DSH Runtime ZIP report is invalid: $optionalDshJson" }
+if (-not $optionalDsh.ok -or $optionalDsh.sourceRevision -ne 'd743267388641bc76f17c45ce8b4c231aed1d32c' -or
+    $optionalDsh.target -ne 'windows-x64' -or $optionalDsh.archiveSha256 -notmatch '^[a-f0-9]{64}$') {
+  Fail "optional DSH Runtime ZIP does not match its pinned production contract: $optionalDshJson"
+}
+Write-Ok ("optional DSH Runtime ZIP · {0:N1} MiB · {1} files · sha256 {2}" -f `
+  ($optionalDsh.archiveBytes / 1MB), $optionalDsh.fileCount, $optionalDsh.archiveSha256)
+
+# ── 3. staging from the release manifest and discovered dependency closure ─
+Write-Step '3/9' 'staging (release manifest + discovered dependencies)'
 $script:stage = 'staging'
 # 从此处起 dist\staging 归本次构建所有：之后任何失败都必须清掉它。
 $script:stagingOwned = $true
@@ -370,6 +413,18 @@ if ($LASTEXITCODE -ne 0) { Fail "staging 失败：$stageJson" }
 $stageResult = $stageJson.Trim() | ConvertFrom-Json
 if (-not $stageResult.ok) { Fail "staging 不完整：$stageJson" }
 Write-Ok ("staged {0} files · {1:N1} MiB → {2}" -f $stageResult.staged, ($stageResult.totalBytes / 1MB), $stageResult.dir)
+
+$dshPinPath = Join-Path $staging 'runtime\dsh-runtime-package-pin.json'
+if (-not (Test-Path -LiteralPath $dshPinPath)) { Fail 'staging is missing the optional DSH Runtime pin' }
+try { $dshPin = Get-Content -LiteralPath $dshPinPath -Raw -Encoding UTF8 | ConvertFrom-Json }
+catch { Fail 'optional DSH Runtime pin is malformed in staging' }
+if ($dshPin.schema -ne 'internalbeyond.optional-dsh-runtime-pin' -or
+    $dshPin.runtimeVersion -ne $optionalDsh.runtimeVersion -or
+    $dshPin.sourceRevision -ne $optionalDsh.sourceRevision -or
+    $dshPin.target -ne $optionalDsh.target -or
+    [string]$dshPin.archiveSha256 -ne [string]$optionalDsh.archiveSha256) {
+  Fail 'optional DSH Runtime pin does not match the ZIP built for this release'
+}
 
 # The native host is the only generated production input. Build it from the
 # locked Cargo project, verify its PE version against root VERSION, then copy
@@ -400,16 +455,40 @@ $payloadFiles = @($stageResult.files)
 if ($payloadFiles.Count -ne $stageResult.staged) {
   Fail "staging 报告 $($stageResult.staged) 个文件，但白名单返回 $($payloadFiles.Count) 条 —— 拒绝生成载荷清单"
 }
+$uniquePayloadFiles = @($payloadFiles | ForEach-Object { ([string]$_).Replace('\', '/') } | Sort-Object -Unique)
+if ($uniquePayloadFiles.Count -ne $payloadFiles.Count) {
+  Fail 'staging 白名单包含重复目标路径 —— 拒绝生成会被正式 Host 拒绝的载荷清单'
+}
+$payloadFiles = $uniquePayloadFiles
+$payloadRecords = @($stageResult.records)
+if ($payloadRecords.Count -ne $payloadFiles.Count) {
+  Fail "Stage 记录 $($payloadRecords.Count) 个 size/SHA-256 项，但清单返回 $($payloadFiles.Count) 个路径 —— 拒绝生成载荷清单"
+}
+$recordPaths = @($payloadRecords | ForEach-Object { ([string]$_.path).Replace('\', '/') } | Sort-Object -Unique)
+if ($recordPaths.Count -ne $payloadRecords.Count -or
+    (@($recordPaths | Where-Object { $payloadFiles -notcontains $_ }).Count -gt 0)) {
+  Fail 'Stage size/SHA-256 记录与解析器路径不一致 —— 拒绝生成载荷清单'
+}
+$hostRecord = [ordered]@{
+  path = 'internalbeyond-host.exe'
+  sizeBytes = (Get-Item -LiteralPath $hostOutput).Length
+  sha256 = Get-Sha256 $hostOutput
+}
+$payloadRecords += $hostRecord
 $payloadFiles += 'internalbeyond-host.exe'
 $payloadFiles += 'ib-payload-manifest.json'
+$payloadRecords = @($payloadRecords | Sort-Object -Property path)
 $payloadManifestObject = [ordered]@{
   schema    = 'internalbeyond.payload-manifest'
   version   = 1
   product   = $version
   generated = 'scripts/build-installer.ps1'
-  note      = 'Every file this release installs, root-relative, forward slashes. An upgrade deletes exactly (previous manifest - this manifest) and nothing else.'
+  note      = 'files lists every installed path, including this manifest. artifacts records byte size and SHA-256 for every other staged file; the manifest cannot hash itself. An upgrade deletes exactly (previous manifest - this manifest) and nothing else.'
   count     = $payloadFiles.Count
   files     = @($payloadFiles | Sort-Object)
+  artifactCount = $payloadRecords.Count
+  artifactTotalBytes = [long](($payloadRecords | Measure-Object -Property sizeBytes -Sum).Sum)
+  artifacts = $payloadRecords
 }
 # UTF-8 WITHOUT BOM: JSON.parse cannot read a BOM, and the installer's helper is
 # the only reader. ConvertTo-Json escapes non-ASCII, so the Chinese entry names
@@ -443,6 +522,21 @@ if ($SkipAudit) {
     }
   }
 }
+
+# Final byte-level check runs after the content audit, immediately before ISCC.
+# Inno's recursive [Files] entry consumes this exact verified Stage directory.
+$script:stage = 'Stage and payload manifest verification'
+$stageVerifyJson = & $nodeExe $discoveryCheck '--verify-stage' $staging '--json' 2>&1 | Out-String
+if ($LASTEXITCODE -ne 0) {
+  try {
+    $stageVerify = $stageVerifyJson.Trim() | ConvertFrom-Json
+    foreach ($failure in @($stageVerify.failures)) { Write-Host ("     ✗ {0}" -f $failure) -ForegroundColor Red }
+  } catch { Write-Host $stageVerifyJson -ForegroundColor Red }
+  Fail 'Stage 与 Payload Manifest 不一致；停止打包'
+}
+$stageVerify = $stageVerifyJson.Trim() | ConvertFrom-Json
+Write-Ok ("Stage + payload manifest exact · {0} files · {1:N1} MiB" -f `
+  $stageVerify.fileCount, ($stageVerify.totalBytes / 1MB))
 
 # ── 5. compile ─────────────────────────────────────────────────────────────
 Write-Step '5/9' 'ISCC compile'
@@ -621,6 +715,9 @@ if ($TestMode) {
   Write-Host '  release    : TEST ONLY — do not upload or publish'
 } else {
   Write-Host ("  manifest   : {0}" -f $manifestOut)
+  Write-Host ("  DSH Runtime ZIP : {0}" -f $optionalDshZip)
+  Write-Host ("  DSH ZIP size    : {0} bytes" -f $optionalDsh.archiveBytes)
+  Write-Host ("  DSH ZIP sha256  : {0}" -f $optionalDsh.archiveSha256)
   Write-Host ''
   Write-Host '  发布（顺序即契约，清单最后）：' -ForegroundColor White
   Write-Host '    gh release create v<version> "<exe>" "dist\SHA256SUMS.txt" --title "InternalBeyond v<version>" --notes-file <notes>'
