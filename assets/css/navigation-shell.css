@@ -194,3 +194,82 @@ body.ib-nav-collapsed .nav-actions .theme-toggle{grid-column:1/-1;justify-self:c
   }
   body:has(.page.active:not(#page-home):not(#page-api)) #wg-petal-field{display:none}
 }
+
+/* Phase 3 · Moments became a tenth permanent cornice entry. Measured on the real
+   navbar, that pushed the row past the available width below ~870px — and because
+   .nav-scroll-region hides its scrollbar, the tail would sit in an invisible scroll
+   area instead of being visibly reachable. Tighten only the item gap across that band:
+   labels keep the 0.08em letter-spacing floor of the label language, nothing is
+   dropped and no type shrinks below --fs-meta. Measured clean from 1440 down to 850,
+   and equally clean above 900px where the original 22px rhythm is untouched — the
+   900px bound simply removes the 871–899 dead zone between the two. Below ~800px the
+   row genuinely cannot hold ten letter-spaced labels; that band is what the <769px
+   sidebar fallback is for (residual recorded in the Phase 3 note). */
+@media(min-width:769px) and (max-width:900px){
+  .nav-links{gap:9px}
+}
+
+/* Phase 3 · Desktop route overflow menu (see navigation-shell.js mountRouteMenu).
+   Eight routes left the cornice in Phase 2 and had no desktop entry point afterwards.
+   One quiet pill in nav-actions, matching the Bridge action, opens a
+   floating panel listing them. The panel reuses the codebase's own floating-surface
+   treatment — #ib-bridge-panel's --surface-panel + --border-soft + floating shadow,
+   no backdrop blur — instead of inventing a second one. Desktop-only: below 769px the
+   sidebar already carries the full grouped inventory, so the control is hidden. */
+.nav-more{display:none}
+@media(min-width:769px){
+  .nav-more{position:relative;display:flex}
+  .nav-more-panel{
+    position:absolute;top:calc(100% + 8px);right:0;z-index:var(--layer-floating-panel);min-width:170px;
+    display:flex;flex-direction:column;gap:2px;padding:6px;
+    background:var(--surface-panel);border:1px solid var(--border-soft);
+    border-radius:var(--radius-panel);box-shadow:var(--glass-shadow-floating)
+  }
+  .nav-more-panel[hidden]{display:none}
+  .nav-more-item{
+    display:block;padding:7px 10px;border-radius:var(--radius-control);
+    color:var(--content-secondary);font-family:var(--font-display);font-size:var(--fs-meta);
+    letter-spacing:.04em;line-height:1.2;text-decoration:none;white-space:nowrap;
+    transition:background var(--motion-fast) var(--transition),color var(--motion-fast) var(--transition)
+  }
+  .nav-more-item:hover,.nav-more-item:focus-visible{
+    background:var(--surface-hover);color:var(--content-primary)
+  }
+  .nav-more-item:focus-visible{outline:2px solid var(--focus-ring);outline-offset:1px}
+}
+
+/* Startup video sits above the existing preloader while Home routes underneath. */
+#ib-startup-animation{
+  position:fixed;inset:0;z-index:100001;display:grid;place-items:center;overflow:hidden;
+  background:var(--ib-token-canvas,var(--bg-deep));opacity:0;visibility:hidden;
+  transition:opacity 900ms cubic-bezier(0.4,0,0.2,1),visibility 0s linear 900ms;
+}
+#ib-startup-animation[hidden]{display:none}
+#ib-startup-animation.is-visible{opacity:1;visibility:visible;transition:opacity 900ms cubic-bezier(0.4,0,0.2,1),visibility 0s}
+#ib-startup-animation.is-leaving{opacity:0;pointer-events:none}
+#ib-startup-animation video{
+  position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;
+  transition:opacity 500ms cubic-bezier(0.4,0,0.2,1);
+}
+#ib-startup-animation video.is-playing{opacity:1}
+.ib-startup-animation-skip{
+  position:absolute;right:max(24px,env(safe-area-inset-right));bottom:max(24px,env(safe-area-inset-bottom));
+  z-index:1;min-width:44px;min-height:44px;padding:9px 16px;border:1px solid var(--border-soft);border-radius:var(--radius-control);
+  background:var(--glass-bg-floating);color:var(--content-primary);font:var(--ib-token-text-meta,var(--font-ui));
+  cursor:pointer;transition:background var(--motion-fast) var(--transition),opacity 250ms var(--transition);
+}
+.ib-startup-animation-skip:hover{background:var(--surface-hover)}
+.ib-startup-animation-skip:focus-visible{outline:2px solid var(--focus-ring);outline-offset:3px}
+@media(prefers-reduced-motion:reduce){
+  #ib-startup-animation,#ib-startup-animation video{transition-duration:180ms}
+}
+
+.ib-tauri-runtime-status{
+  position:fixed;top:calc(40px + env(safe-area-inset-top));left:50%;transform:translateX(-50%);
+  z-index:var(--ib-token-layer-toast,700);width:max-content;max-width:calc(100vw - 32px);
+  padding:10px 16px;border:1px solid var(--border-soft);border-radius:var(--radius-control);
+  background:var(--glass-bg-floating);color:var(--content-primary);box-shadow:var(--glass-shadow-floating);
+  font:var(--ib-token-text-meta,400 12px/1.5 var(--font-ui));text-align:center;pointer-events:none;
+}
+.ib-tauri-runtime-status[hidden]{display:none}
+.ib-tauri-runtime-status[data-state="degraded"]{border-color:var(--ib-token-status-warning,var(--status-warning))}

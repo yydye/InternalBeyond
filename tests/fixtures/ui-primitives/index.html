@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>IB Structural Primitive Fixture</title>
+  <link rel="stylesheet" href="../../../assets/css/core.css">
+  <link rel="stylesheet" href="../../../assets/css/ui-primitives.css">
+  <link rel="stylesheet" href="fixture.css">
+</head>
+<body class="ib-primitives-fixture">
+  <div class="ib-primitives">
+    <main class="ib-app-shell__main" id="primitive-main" tabindex="-1">
+      <header class="ib-page-header">
+        <div class="ib-page-header__body">
+          <p class="ib-page-header__context">Profile settings</p>
+          <h1 class="ib-page-header__title" id="fixture-title">Your local profile</h1>
+          <p class="ib-page-header__supporting">Manage the name and preferences shown on this device.</p>
+        </div>
+        <div class="ib-page-header__actions">
+          <span class="ib-inline-status" data-status="connected">
+            <span>Ready to save</span>
+            <span class="ib-inline-status__marker" aria-hidden="true"></span>
+          </span>
+          <button class="btn btn-primary" type="button">Save preferences</button>
+        </div>
+      </header>
+
+      <section class="ib-section" aria-labelledby="profile-section-title">
+        <header>
+          <h2 class="ib-section__heading" id="profile-section-title">Profile details</h2>
+          <p class="ib-section__description">A short set of preferences for this device.</p>
+        </header>
+        <div class="ib-section__body">
+          <div class="ib-form-group" data-state="error">
+            <label class="ib-form-group__label" for="display-name">Display name</label>
+            <input id="display-name" name="display-name" type="text" aria-invalid="true" aria-describedby="display-name-help display-name-error">
+            <p class="ib-form-group__help" id="display-name-help">Choose a name that is easy to recognize.</p>
+            <p class="ib-form-group__error" id="display-name-error"><strong>Error:</strong> Add a display name before saving.</p>
+          </div>
+
+          <div class="ib-form-group">
+            <label class="ib-form-group__label" for="profile-note">Personal note</label>
+            <textarea id="profile-note" name="profile-note" rows="4" placeholder="Add a short note" aria-describedby="profile-note-help"></textarea>
+            <p class="ib-form-group__help" id="profile-note-help">This field is optional.</p>
+          </div>
+
+          <div class="ib-form-group">
+            <label class="ib-form-group__label" for="reminder-frequency">Reminder frequency</label>
+            <select id="reminder-frequency" name="reminder-frequency">
+              <option>Every day</option>
+              <option>Every week</option>
+            </select>
+          </div>
+
+          <label class="ib-checkbox-row">
+            <input type="checkbox" name="keep-signed-in" checked>
+            <span>Keep this profile available on this device</span>
+          </label>
+          <label class="ib-checkbox-row">
+            <input type="checkbox" role="switch" name="compact-view">
+            <span>Use a compact view</span>
+          </label>
+          <label class="ib-checkbox-row" data-disabled="true">
+            <input type="checkbox" name="team-sharing" disabled>
+            <span>Sharing is unavailable for this profile</span>
+          </label>
+
+          <div class="fixture-controls" role="group" aria-label="Foundation control examples">
+            <button class="btn" type="button">Secondary action</button>
+            <button class="btn" data-variant="text" type="button">Text action</button>
+            <button class="btn" data-variant="destructive" type="button" aria-describedby="delete-consequence">Permanently remove this profile</button>
+            <button class="btn" data-icon-only type="button" aria-label="Close preview"><span aria-hidden="true">×</span></button>
+            <button class="btn btn-primary" type="button" aria-busy="true" disabled>Saving preferences</button>
+            <button class="btn" type="button" disabled>Unavailable action</button>
+          </div>
+          <p class="ib-form-group__help" id="delete-consequence">This action cannot be undone.</p>
+        </div>
+      </section>
+
+      <div class="ib-divider" aria-hidden="true"></div>
+
+      <section class="ib-section" aria-labelledby="saved-items-title">
+        <header>
+          <h2 class="ib-section__heading" id="saved-items-title">Saved items</h2>
+          <p class="ib-section__description">One read-only row and two actions kept distinct.</p>
+        </header>
+        <div class="ib-section__body">
+          <ul class="ib-list" aria-label="Recent saved items">
+            <li class="ib-list-row">
+              <span>
+                <span class="ib-list-row__primary">Morning reflection</span><br>
+                <span class="ib-list-row__secondary">Saved earlier today</span>
+              </span>
+              <span class="ib-list-row__trailing">Private</span>
+            </li>
+            <li>
+              <a class="ib-interactive-row" href="#selected-item" aria-current="page">
+                <span class="ib-interactive-row__primary">Weekly plan</span>
+                <span class="ib-interactive-row__trailing">Selected</span>
+              </a>
+            </li>
+            <li>
+              <button class="ib-interactive-row" type="button" aria-pressed="true">
+                <span class="ib-interactive-row__primary">Pin this item</span>
+                <span class="ib-interactive-row__trailing">Pinned</span>
+              </button>
+            </li>
+            <li>
+              <button class="ib-interactive-row" type="button" disabled>
+                <span class="ib-interactive-row__primary">Open unavailable item</span>
+                <span class="ib-interactive-row__secondary">Available after this profile reconnects</span>
+              </button>
+            </li>
+          </ul>
+
+          <div class="ib-divider" role="separator" aria-orientation="horizontal" aria-label="Saved items end here"></div>
+
+          <p class="ib-inline-status" data-status="syncing" role="status">
+            Preferences are syncing
+            <span class="ib-inline-status__marker" aria-hidden="true"></span>
+          </p>
+          <ul class="ib-status-examples" aria-label="Status semantics">
+            <li><span class="ib-inline-status" data-status="loading">Loading preferences<span class="ib-inline-status__marker" aria-hidden="true"></span></span></li>
+            <li><span class="ib-inline-status" data-status="running">Working on your request<span class="ib-inline-status__marker" aria-hidden="true"></span></span></li>
+            <li><span class="ib-inline-status" data-status="connected">Connected<span class="ib-inline-status__marker" aria-hidden="true"></span></span></li>
+            <li><span class="ib-inline-status" data-status="degraded">Some features are limited<span class="ib-inline-status__marker" aria-hidden="true"></span></span></li>
+            <li><span class="ib-inline-status" data-status="offline">Offline<span class="ib-inline-status__marker" aria-hidden="true"></span></span></li>
+            <li><span class="ib-inline-status" data-status="warning">Review this preference<span class="ib-inline-status__marker" aria-hidden="true"></span></span></li>
+            <li><span class="ib-inline-status" data-status="error">Could not save preferences<span class="ib-inline-status__marker" aria-hidden="true"></span></span></li>
+            <li><span class="ib-inline-status" data-status="success">Preferences saved<span class="ib-inline-status__marker" aria-hidden="true"></span></span></li>
+            <li><span class="ib-inline-status" data-status="disabled">Sharing is disabled<span class="ib-inline-status__marker" aria-hidden="true"></span></span></li>
+          </ul>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script>
+    const theme = new URLSearchParams(window.location.search).get('theme');
+    if (theme === 'infernal') document.body.classList.add('theme-infernal');
+  </script>
+</body>
+</html>

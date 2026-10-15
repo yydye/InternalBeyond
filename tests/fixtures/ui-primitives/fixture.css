@@ -1,0 +1,5 @@
+body.ib-primitives-fixture {
+  min-block-size: 100vh;
+  color: var(--ib-token-content-primary);
+  background: var(--ib-token-canvas);
+}

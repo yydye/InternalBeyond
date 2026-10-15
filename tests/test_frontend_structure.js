@@ -92,9 +92,12 @@ check('split.noInlineScripts', inlineScripts.length === 0, String(inlineScripts.
 
 const scriptSources = [...html.matchAll(/<script[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi)].map(m => m[1]);
 const styleSources = [...html.matchAll(/<link[^>]*\brel\s*=\s*["'][^"']*stylesheet[^"']*["'][^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*>/gi)].map(m => m[1]);
+const scriptPaths = scriptSources.map(value => value.replace(/[?#].*$/, ''));
+const stylePaths = styleSources.map(value => value.replace(/[?#].*$/, ''));
 check('split.externalScriptCount', scriptSources.length >= 15, String(scriptSources.length));
 /* P35.6 Packaging Center, P36 Navigation Shell, and P37 Home Workspace each own one local stylesheet. */
-check('split.externalStyleCount', styleSources.length === 24, String(styleSources.length));
+/* D4.1-B adds one page-scoped Chat Family stylesheet. */
+check('split.externalStyleCount', styleSources.length === 30, String(styleSources.length));
 const expectedCoreStyles = [
   'assets/css/core.css',
   'assets/css/core/chat-shell.css',
@@ -107,9 +110,11 @@ const expectedCoreStyles = [
   'assets/css/core/blog.css',
   'assets/css/core/about.css',
   'assets/css/core/widgets.css',
-  'assets/css/core/archive-active.css'
+  'assets/css/core/archive-active.css',
+  'assets/css/core/middle-brain-direct.css'
 ];
-check('split.coreStyleOrder', JSON.stringify(styleSources.slice(0, expectedCoreStyles.length)) === JSON.stringify(expectedCoreStyles), styleSources.slice(0, expectedCoreStyles.length).join(', '));
+const actualCoreStyles = stylePaths.filter(value => value === 'assets/css/core.css' || value.startsWith('assets/css/core/'));
+check('split.coreStyleOrder', JSON.stringify(actualCoreStyles) === JSON.stringify(expectedCoreStyles), actualCoreStyles.join(', '));
 
 const missing = [];
 for (const value of scriptSources.concat(styleSources)) {
@@ -354,8 +359,8 @@ for (const name of mbLayerFiles) {
 }
 const mbAllText = Object.values(mbTexts).join('\n');
 const mbText = mbTexts['middle-brain.js'];
-const mbScriptOk = mbLayerFiles.every((name, i) => scriptSources.includes('assets/js/' + name)
-  && (i === 0 || scriptSources.indexOf('assets/js/' + name) > scriptSources.indexOf('assets/js/' + mbLayerFiles[i - 1])));
+const mbScriptOk = mbLayerFiles.every((name, i) => scriptPaths.includes('assets/js/' + name)
+  && (i === 0 || scriptPaths.indexOf('assets/js/' + name) > scriptPaths.indexOf('assets/js/' + mbLayerFiles[i - 1])));
 check('middleBrain.scriptLoaded', mbScriptOk, 'middle-brain 分层脚本未按序挂载（config → policy → astra → judge → facade）');
 /* 四层职责不得再混回单文件：每层必须自带其代表符号。 */
 const mbLayerSymbols = {

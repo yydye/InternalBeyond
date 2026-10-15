@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 
 const assert = require('assert');
 const fs = require('fs');
@@ -40,10 +40,10 @@ function navGroups(source) {
 const groups = navGroups(html);
 assert.deepStrictEqual(groups.map(group => group.label), ['Core', 'Create & Connect', 'Work', 'Tools', 'Help']);
 assert.deepStrictEqual(groups.map(group => group.routes.map(route => route.page)), [
-  ['workspace', 'chat', 'about', 'memory', 'favorites'],
+  ['workspace', 'chat', 'voicebox', 'about', 'memory', 'favorites'],
   ['blog', 'moments', 'letters', 'roledm', 'diary'],
-  ['active', 'diy', 'apps', 'economy'],
-  ['packaging', 'api', 'diagnostics'],
+  ['active', 'diy', 'work-mode', 'apps', 'economy'],
+  ['packaging', 'settings', 'api', 'diagnostics'],
   ['guide']
 ]);
 
@@ -54,8 +54,7 @@ for (const route of visibleRoutes) {
   assert.ok(pageIds.has(route.page), 'sidebar route has its original page id: ' + route.page);
 }
 
-/* Phase 2 · Navigation Exposure Reconciliation.
-   Desktop cornice keeps only the nine primary places; every exited route keeps its
+/* Desktop cornice keeps ten primary places; every contextual route keeps its
    page container, hash, navTo access and its sidebar entry below 769px. */
 const navLinksStart = html.indexOf('<ul class="nav-links"');
 const navLinksBlock = html.slice(navLinksStart, html.indexOf('</ul>', navLinksStart));
@@ -67,16 +66,16 @@ assert.ok(/id="ib-bridge-nav"[^>]*aria-haspopup="dialog"[^>]*aria-controls="ib-b
   'Bridge keeps its dialog action contract');
 assert.ok(!pageIds.has('bridge'), 'Bridge remains a modal action, not a route');
 
-const DESKTOP_PERMANENT = ['guide', 'about', 'blog', 'game', 'chat', 'letters', 'memory', 'api', 'diy'];
+const DESKTOP_PERMANENT = ['settings', 'about', 'blog', 'moments', 'game', 'chat', 'letters', 'memory', 'api', 'diy'];
 assert.deepStrictEqual(navigation.DESKTOP_ROUTE_ORDER, DESKTOP_PERMANENT,
-  'desktop cornice order keeps only the nine primary places');
+  'desktop cornice order keeps only the ten primary places');
 
-const contextual = ['favorites', 'moments', 'roledm', 'diary', 'active', 'apps', 'economy', 'packaging', 'diagnostics'];
+const contextual = ['voicebox', 'favorites', 'roledm', 'diary', 'active', 'work-mode', 'apps', 'economy', 'packaging', 'guide', 'diagnostics'];
 for (const page of contextual) {
   assert.ok(new RegExp('<li class="nav-item-contextual"><a href="#' + page + '" data-page="' + page + '"').test(html),
     page + ' keeps its sidebar entry but leaves the permanent desktop cornice');
 }
-for (const page of ['workspace', 'chat', 'about', 'memory', 'blog', 'letters', 'diy', 'api', 'guide']) {
+for (const page of ['workspace', 'chat', 'about', 'memory', 'blog', 'moments', 'letters', 'diy', 'settings', 'api']) {
   assert.ok(!new RegExp('<li class="nav-item-contextual"><a[^>]*data-page="' + page + '"').test(html),
     page + ' does not carry the contextual marker');
 }
@@ -102,7 +101,7 @@ assert.ok(pageIds.has('coread'), 'Coread route remains even though it is not a t
 assert.ok(/data-page="game"/.test(gameModule) && /page\.id='page-game'/.test(gameModule), 'the existing Room route remains dynamically supplied by its module');
 assert.ok(/normalizeNavigationLinks/.test(fs.readFileSync(path.join(ROOT, 'assets/js/navigation-shell.js'), 'utf8')),
   'dynamically injected route links receive the same collapsed/expanded presentation');
-assert.ok(!visibleRoutes.some(route => ['characters', 'middlebrain', 'cinema', 'voice', 'calendar', 'settings'].includes(route.page)),
+assert.ok(!visibleRoutes.some(route => ['characters', 'middlebrain', 'cinema', 'voice', 'calendar'].includes(route.page)),
   'embedded and hidden capabilities do not become invented routes');
 assert.ok(/function navTo\(page\)/.test(core));
 assert.ok(/document\.getElementById\('page-'\+page\)/.test(core));

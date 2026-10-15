@@ -1,12 +1,14 @@
 # UI Surface Authority（Desktop Shell）
 
+> **视觉规范已由 [IB Visual Language v1](IB_VISUAL_LANGUAGE_V1.md) 与 [IB Visual Token Contract v1](IB_VISUAL_TOKEN_CONTRACT_V1.md) 取代。** 本文保留为现有 Desktop Shell 与 token 消费关系的实现记录；其中的 Glass ladder、嵌套层数、密度和 motion 约定描述当前代码，不覆盖新规范。
+
 状态：P1 已落地（2026-09-28）。本文记录**壳层/共享层**的视觉权威与护栏；业务模块内部视觉仍由各模块在自身阶段迁移。
 
 ## 1. 权威分层
 
 | 层 | 文件 | 职责 |
 |---|---|---|
-| L1/L2 tokens | `assets/css/core.css` | 唯一 token 权威：`--glass-*` ladder、`--surface-*`、`--content-*`、`--border-*`、`--radius-*`、`--shadow-*`、`--motion-*`、`--space-*`、`--fs-*`、`--status-*`、`--layer-*`、`--focus-ring`；`surface.overlay` / `surface.dialog` 遮罩 token（P1 新增） |
+| Existing Web values | `assets/css/core.css` | 继续提供当前 Web token 值；语义名称及新消费者规则由 IB Visual Token Contract v1 定义。旧 `--glass-*`、`--surface-*` 等仍服务现有消费者。 |
 | Navigation shell | `assets/css/navigation-shell.css` | **唯一导航来源**：几何（260/76px）、elevated 表面、行状态、折叠、响应式、Tauri titlebar 条。其他文件不得再声明 `#navbar` / `.nav-links` / `.nav-actions` 的几何与颜色 |
 | pageChrome | `assets/css/core/api-components.css` 的 `.module-intro` 块 | `surface.pageChrome` 契约实现：透明底 + 底部发丝线、无玻璃/无模糊/无发光；类名保留，除非做 DOM 迁移不得改名 |
 | 模块页视觉 | 各模块 CSS | 按 P3–P6 阶段迁移；壳层规则不越界，模块内部规则不越界回壳层 |

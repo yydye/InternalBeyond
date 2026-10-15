@@ -1,0 +1,73 @@
+﻿/*
+ * P36-VL-D2-C opt-in presentation roles.
+ * Native popover/dialog elements and ui-overlay-lifecycle.js own behavior.
+ */
+.ib-primitives [popover].ib-overlay-popover {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  max-inline-size: calc(100vw - (2 * var(--ib-token-space-md)));
+  max-block-size: calc(100dvh - (2 * var(--ib-token-space-md)));
+  overflow: auto;
+  padding: var(--ib-token-space-md);
+  color: var(--ib-token-content-primary);
+  background: var(--ib-token-popover);
+  border: 1px solid var(--ib-token-boundary-subtle);
+  border-radius: var(--ib-token-radius-control);
+  box-shadow: var(--ib-token-elevation-popover);
+  z-index: var(--ib-token-layer-popover);
+}
+
+.ib-primitives dialog.ib-overlay-dialog {
+  position: fixed;
+  inset: 0;
+  inline-size: max-content;
+  max-inline-size: calc(100vw - (2 * var(--ib-token-space-md)));
+  max-block-size: calc(100dvh - (2 * var(--ib-token-space-md)));
+  margin: auto;
+  overflow: auto;
+  padding: var(--ib-token-space-lg);
+  color: var(--ib-token-content-primary);
+  background: var(--ib-token-dialog);
+  border: 1px solid var(--ib-token-boundary-subtle);
+  border-radius: var(--ib-token-radius-dialog);
+  box-shadow: var(--ib-token-elevation-dialog);
+  z-index: var(--ib-token-layer-dialog);
+}
+
+.ib-primitives dialog.ib-overlay-dialog::backdrop {
+  background: var(--ib-token-overlay);
+}
+
+.ib-primitives .ib-overlay-dialog__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--ib-token-space-sm);
+  margin-block-start: var(--ib-token-space-lg);
+}
+
+.ib-primitives .ib-overlay-dialog__title {
+  color: var(--ib-token-content-primary);
+  font: var(--ib-token-text-section-title);
+}
+
+.ib-primitives .ib-overlay-dialog__summary,
+.ib-primitives .ib-overlay-dialog__status {
+  margin-block-start: var(--ib-token-space-sm);
+  color: var(--ib-token-content-secondary);
+  font: var(--ib-token-text-body);
+  overflow-wrap: anywhere;
+}
+
+.ib-primitives .ib-overlay-dialog__status[hidden] {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ib-primitives [popover].ib-overlay-popover,
+  .ib-primitives dialog.ib-overlay-dialog {
+    scroll-behavior: auto;
+    transition: none;
+  }
+}

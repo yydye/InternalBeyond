@@ -234,6 +234,38 @@ async function main() {
     await cdp.send('Page.navigate', { url: PAGE_URL });
     check('page.ready', await waitFor(cdp, "document.readyState==='complete' && window.__ibBootCount===1", 20000));
 
+    const localeSwitch = await evaluate(cdp, `(()=>{
+      const result=window.IBI18n.setLocale('en-US');
+      const settingsCard=document.querySelector('#settings-general-content .settings-shortcuts');
+      const lightSurface=settingsCard&&getComputedStyle(settingsCard).backgroundColor;
+      document.body.classList.add('theme-infernal');
+      const darkSurface=settingsCard&&getComputedStyle(settingsCard).backgroundColor;
+      document.body.classList.remove('theme-infernal');
+      return {locale:window.IBI18n.locale,lang:document.documentElement.lang,persisted:result.persisted,
+        settings:document.getElementById('settings-center-title').textContent,
+        general:document.getElementById('settings-general-title').textContent,
+        api:document.querySelector('#navbar a[data-page="api"] .nav-label').textContent,
+        apiVisible:!document.querySelector('#navbar a[data-page="api"]').closest('li').classList.contains('nav-item-contextual'),
+        guideMore:document.querySelector('#nav-more-panel a[data-page="guide"]')?.textContent||'',
+        chatTool:document.getElementById('chat-select-toggle').textContent,
+        memoryAction:document.querySelector('#page-memory .mem-section-title button:nth-of-type(3)').textContent,
+        apiLibrary:document.getElementById('api-mgmt-title').textContent.trim(),themeSurfacesDiffer:lightSurface!==darkSurface,
+        fallbackChinese:document.querySelector('#page-diy .module-intro-desc').textContent.indexOf('素材')>=0};
+    })()`);
+    check('i18n.englishAppliesToSettingsNavigationAndMainControls', localeSwitch.locale === 'en-US' && localeSwitch.lang === 'en-US' && localeSwitch.settings === 'Settings' && localeSwitch.general === 'General' && localeSwitch.api === 'API' && localeSwitch.apiVisible && localeSwitch.guideMore === 'Guide' && localeSwitch.chatTool === 'Select' && localeSwitch.memoryAction === 'Memory & Cognition settings' && localeSwitch.apiLibrary.indexOf('Character library') === 0, JSON.stringify(localeSwitch));
+    check('i18n.settingsUsesThemeSemanticSurfaces', localeSwitch.themeSurfacesDiffer, JSON.stringify(localeSwitch));
+    check('i18n.untranslatedPagesKeepSourceCopy', localeSwitch.fallbackChinese, JSON.stringify(localeSwitch));
+    check('i18n.localePreferenceStored', localeSwitch.persisted === true, JSON.stringify(localeSwitch));
+    await evaluate(cdp, 'window.__i18nReloadSentinel=true');
+    await cdp.send('Page.reload', { ignoreCache: true });
+    check('i18n.pageReloadReady', await waitFor(cdp, "!window.__i18nReloadSentinel && document.readyState==='complete' && window.__ibBootCount===1 && window.IBI18n&&window.IBI18n.locale==='en-US'", 20000));
+    const localeAfterReload = await evaluate(cdp, "({locale:window.IBI18n.locale,lang:document.documentElement.lang,settings:document.getElementById('settings-center-title').textContent,general:document.getElementById('settings-general-title').textContent})");
+    check('i18n.languagePersistsAcrossReload', localeAfterReload.locale === 'en-US' && localeAfterReload.lang === 'en-US' && localeAfterReload.settings === 'Settings' && localeAfterReload.general === 'General', JSON.stringify(localeAfterReload));
+    await evaluate(cdp, `window.IBI18n.setLocale('zh-CN');(()=>{
+      const splash=document.getElementById('splash');if(splash)splash.classList.add('hidden');
+      document.getElementById('navbar').classList.add('visible');document.getElementById('app').classList.add('visible');return true;
+    })()`);
+
     await evaluate(cdp, `(()=>{
       const splash=document.getElementById('splash');if(splash)splash.classList.add('hidden');
       document.getElementById('navbar').classList.add('visible');
@@ -290,6 +322,72 @@ async function main() {
     check('a11y.staticButtonsNamed', structure.unnamedButtons.length === 0, JSON.stringify(structure.unnamedButtons));
     check('a11y.customButtonsNamed', structure.unnamedRoleButtons.length === 0, JSON.stringify(structure.unnamedRoleButtons));
 
+    /* Settings Center uses the existing controls and data handlers. This browser run has
+       a disposable Chrome profile; it never sends requests to a real Provider. */
+    const settingsCenter = await evaluate(cdp, `(async()=>{
+      navTo('settings');IBSettingsCenter.setCategory('memory');
+      await loadMemorySettingsUI();
+      IBSettingsCenter.setCategory('ai');document.querySelector('#settings-ai-content .btn-primary').click();
+      const roleShortcut=document.getElementById('page-api').classList.contains('active');
+      IBSettingsCenter.open('memory');await loadMemorySettingsUI();
+      const belongs=(id,category)=>{const el=document.getElementById(id);const panel=el&&el.closest('[data-settings-panel]');return !!panel&&panel.getAttribute('data-settings-panel')===category};
+      const before=await getMemorySettings();
+      await saveMemorySettings();
+      const saved=await dbGet('apiSettings','memorySettings');
+      return {
+        route:document.getElementById('page-settings').classList.contains('active'),
+        selected:document.getElementById('page-settings').getAttribute('data-settings-active-category'),
+        roleShortcut:roleShortcut,
+        startup:belongs('ib-startup-animation-settings','appearance'),
+        ai:belongs('middle-brain-section','ai')&&belongs('image-router-section','ai')&&belongs('api-voice-transcription-settings','ai'),
+        memory:belongs('api-read-scope-settings','memory')&&belongs('api-summary-settings','memory')&&belongs('api-memory-settings','memory'),
+        general:belongs('api-presence-settings','general')&&belongs('api-output-settings','general')&&belongs('bg-ai-settings-card','general'),
+        data:belongs('api-chat-history-settings','data')&&belongs('api-data-protection','data')&&belongs('importFile','data'),
+        services:belongs('ibtools-settings-card','services')&&belongs('pay-auth-settings-card','services'),
+        credentialsStayWithApi:document.getElementById('ib-cred-modal-backdrop').parentElement.id==='page-api',
+        roleEditorStaysWithApi:!!document.getElementById('api-editor')&&document.getElementById('api-editor').parentElement.closest('#page-api')!==null,
+        memorySettingsPersisted:!!saved&&saved.budget===before.budget&&saved.contentLen===before.contentLen&&!!saved.memStreaming===!!before.memStreaming,
+        singleMemoryPanel:document.querySelectorAll('#api-memory-settings').length===1
+      };
+    })()`);
+    check('settings.routeAndCategory', settingsCenter.route && settingsCenter.selected === 'memory', JSON.stringify(settingsCenter));
+    check('settings.roleProviderShortcut', settingsCenter.roleShortcut, JSON.stringify(settingsCenter));
+    check('settings.existingControlsMovedByCategory', settingsCenter.startup && settingsCenter.ai && settingsCenter.memory && settingsCenter.general && settingsCenter.data && settingsCenter.services, JSON.stringify(settingsCenter));
+    check('settings.authoritiesAndSaveRemainStable', settingsCenter.credentialsStayWithApi && settingsCenter.roleEditorStaysWithApi && settingsCenter.memorySettingsPersisted && settingsCenter.singleMemoryPanel, JSON.stringify(settingsCenter));
+
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width: 850, height: 900, deviceScaleFactor: 1, mobile: false });
+    const settingsDesktopNav = await evaluate(cdp, `(()=>{
+      const nav=document.getElementById('navbar'),region=nav.querySelector('.nav-scroll-region');
+      const settings=nav.querySelector('a[data-page="settings"]'),more=document.getElementById('nav-more');
+      return {regionWidth:region.clientWidth,regionScroll:region.scrollWidth,settingsRight:settings.getBoundingClientRect().right,navRight:nav.getBoundingClientRect().right,moreVisible:getComputedStyle(more).display!=='none'};
+    })()`);
+    check('settings.desktopNavigationReachableAt850px', settingsDesktopNav.regionScroll <= settingsDesktopNav.regionWidth + 1 && settingsDesktopNav.settingsRight <= settingsDesktopNav.navRight && settingsDesktopNav.moreVisible, JSON.stringify(settingsDesktopNav));
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
+
+    const settingsDanger = await evaluate(cdp, `(async()=>{
+      IBSettingsCenter.setCategory('data');
+      const before=(await dbGetAll('memories')).length;
+      const original=window.confirm;let prompts=0;
+      window.confirm=()=>{prompts++;return false};
+      try{document.querySelector('#api-data-protection button[onclick="clearAllMemories()"]')?.click();await Promise.resolve();}
+      finally{window.confirm=original}
+      return {prompts,unchanged:before===(await dbGetAll('memories')).length};
+    })()`);
+    check('settings.dangerousActionStillConfirms', settingsDanger.prompts === 1 && settingsDanger.unchanged, JSON.stringify(settingsDanger));
+
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: false });
+    const settingsMobile = await evaluate(cdp, `(()=>{
+      navTo('settings');document.querySelector('[data-settings-category="services"]').click();
+      const layout=document.querySelector('.settings-center-layout').getBoundingClientRect();
+      const nav=document.querySelector('.settings-center-nav'),navRect=nav.getBoundingClientRect();
+      const contentRect=document.querySelector('.settings-center-content').getBoundingClientRect();
+      const integrations=['ib-net-card','ib-richlib-card','ib-sbx-card','ib-mcp-card'].every(id=>{const el=document.getElementById(id);return !!el&&el.parentElement.id==='settings-services-content'});
+      return {viewport:innerWidth,documentWidth:document.documentElement.scrollWidth,stacked:navRect.top<contentRect.top,navOverflow:getComputedStyle(nav).overflowX,pageWidth:layout.width,selected:document.getElementById('page-settings').getAttribute('data-settings-active-category'),integrations};
+    })()`);
+    check('settings.mobileSidebarStacksAndScrolls', settingsMobile.stacked && settingsMobile.navOverflow === 'auto' && settingsMobile.selected === 'services' && settingsMobile.integrations && settingsMobile.documentWidth <= settingsMobile.viewport + 1, JSON.stringify(settingsMobile));
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
+    await evaluate(cdp, "navTo('workspace')");
+
     check('vault.panelMounted', await waitFor(cdp, "!!document.getElementById('ib-local-vault-root') && !!document.querySelector('[data-ib-vault-action=\"encrypted-export\"]')", 10000));
     /* 加密导出依赖 IndexedDB；页面 ready 后 db 还要约几百毫秒才打开，必须等它就绪再读写 */
     check('vault.dbReady', await waitFor(cdp, "typeof db !== 'undefined'", 10000));
@@ -337,6 +435,7 @@ async function main() {
     })()`);
     check('vault.encryptDecryptRoundTrip', vaultRoundTrip.skipped || (vaultRoundTrip.ok && vaultRoundTrip.format === 'InternalBeyondEncryptedBackup' && vaultRoundTrip.version === 1), JSON.stringify(vaultRoundTrip));
 
+    await evaluate(cdp, "navTo('settings');IBSettingsCenter.setCategory('data')");
     check('localFirst.panelMounted', await waitFor(cdp, "!!document.getElementById('ib-local-first-root') && document.getElementById('ib-local-first-root').dataset.mounted==='1' && !!document.getElementById('ib-local-first-save')", 10000));
     const localFirst = await evaluate(cdp, `(async()=>{
       const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -374,8 +473,8 @@ async function main() {
         await sleep(20);
         quietOff=document.documentElement.classList.contains('ib-quiet-mode')===originalQuiet
           && localStorage.getItem('ib_quiet_mode')===(originalQuiet?'1':'0');
-        result={saved:!!saved,noKey:saved&&saved.apiKey==='',model:saved&&saved.model===model,endpoint:saved&&saved.endpoint===endpoint,localRuntime:saved&&saved.localRuntime&&saved.localRuntime.endpoint===endpoint,promptCacheOff:saved&&saved.promptCache===false,quietOn,quietOff};
-      }catch(error){result={error:String(error&&error.message||error),saved:!!saved,noKey:saved&&saved.apiKey===''};}
+        result={saved:!!saved,noKey:!!saved&&!String(saved.apiKey||'').trim(),model:saved&&saved.model===model,endpoint:saved&&saved.endpoint===endpoint,localRuntime:saved&&saved.localRuntime&&saved.localRuntime.endpoint===endpoint,promptCacheOff:saved&&saved.promptCache===false,quietOn,quietOff};
+      }catch(error){result={error:String(error&&error.message||error),saved:!!saved,noKey:!!saved&&!String(saved.apiKey||'').trim()};}
       finally{
         try{
           if(saved){await dbDelete('apiConfigs',saved.id);if(typeof _apiFallbackRemove==='function')_apiFallbackRemove(saved.id);}
@@ -396,10 +495,11 @@ async function main() {
     check('localFirst.quietModeToggleRestore', localFirst.quietOn && localFirst.quietOff, JSON.stringify(localFirst));
     check('localFirst.testConfigCleanup', localFirst.cleaned, JSON.stringify(localFirst));
 
+    await evaluate(cdp, "navTo('api')");
     const roleGroups = await evaluate(cdp, `(async()=>{
       const ids=Array.from({length:12},(_,i)=>'role_group_smoke_'+i);
       const now=Date.now();
-      const configs=ids.map((id,i)=>({id,nickname:'Role '+i,provider:'custom',apiKey:'key-'+i,model:'model-'+i,endpoint:'http://127.0.0.1:1/v1/chat/completions',systemPrompt:'prompt-'+i,relationship:'relation-'+i,autoMem:i%2===0,voice:{enabled:true,voiceId:'voice-'+i,rate:1+i/10},activeMessage:{interval:i+1},avatar:'avatar-'+i,created:now+i}));
+      const configs=ids.map((id,i)=>({id,nickname:'Role '+i,provider:'custom',credentialRef:'',model:'model-'+i,endpoint:'http://127.0.0.1:1/v1/chat/completions',systemPrompt:'prompt-'+i,relationship:'relation-'+i,autoMem:i%2===0,voice:{enabled:true,voiceId:'voice-'+i,rate:1+i/10},activeMessage:{interval:i+1},avatar:'avatar-'+i,created:now+i}));
       const memories=ids.map((id,i)=>({id:'role_group_memory_'+i,friendId:id,content:'memory-'+i,created:now+i}));
       const groupIds=[];
       const putGroup=(id,members)=>{groupIds.push(id);return dbPut('groups',{id,name:id,members:members.map(characterId=>({characterId,status:'active',joinedAt:now})),memoryEnabled:true,created:now})};
@@ -473,10 +573,11 @@ async function main() {
 
     await evaluate(cdp, 'toggleTheme()');
     check('theme.liveSwitch', await waitFor(cdp, "document.body.classList.contains('theme-infernal')", 3500));
-    await new Promise(resolve => setTimeout(resolve, 650));
+    const themeSurfaceChanged = await waitFor(cdp,
+      "document.body.classList.contains('theme-infernal') && getComputedStyle(document.getElementById('ib-bridge-panel')).backgroundColor!==" + JSON.stringify(light.background) + " && getComputedStyle(document.getElementById('ib-bridge-panel')).color!==" + JSON.stringify(light.color), 2500);
     const dark = await evaluate(cdp, `(()=>{const p=document.getElementById('ib-bridge-panel'),s=getComputedStyle(p);return{open:p.classList.contains('open'),background:s.backgroundColor,color:s.color,theme:getComputedStyle(document.body).getPropertyValue('--surface-panel').trim(),body:document.body.className}})()`);
     check('theme.bridgeStaysOpen', dark.open);
-    check('theme.bridgeStyleChanged', dark.background !== light.background && dark.color !== light.color, JSON.stringify({ light, dark }));
+    check('theme.bridgeStyleChanged', themeSurfaceChanged && dark.background !== light.background && dark.color !== light.color, JSON.stringify({ light, dark }));
 
     await evaluate(cdp, "document.getElementById('ib-panel-close').click()");
     await new Promise(resolve => setTimeout(resolve, 50));
@@ -837,7 +938,7 @@ async function main() {
     const mobile = await evaluate(cdp, `(()=>{const p=document.getElementById('ib-bridge-panel'),r=p.getBoundingClientRect(),nr=document.getElementById('navbar').getBoundingClientRect();return{open:p.classList.contains('open'),left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height,viewport:[innerWidth,innerHeight],navHeight:nr.height,navCssHeight:getComputedStyle(document.getElementById('navbar')).height,mobileMedia:matchMedia('(max-width:768px)').matches,scrollWidth:document.documentElement.scrollWidth}})()`);
     check('bridge.mobileOpen', mobile.open);
     check('bridge.mobileWithinViewport', mobile.left >= 7 && mobile.top >= 7 && mobile.right <= 383 && mobile.bottom <= 837, JSON.stringify(mobile));
-    check('layout.mobileNavbarHeight', mobile.navHeight <= 42, JSON.stringify(mobile));
+    check('layout.mobileNavigationUsesFullHeightRail', mobile.navHeight >= mobile.viewport[1] - 1 && mobile.navHeight <= mobile.viewport[1] + 1 && mobile.scrollWidth <= mobile.viewport[0], JSON.stringify(mobile));
 
     const bridgeNames = await evaluate(cdp, `(()=>[...document.querySelectorAll('#ib-bridge-panel button')].filter(b=>{
       const name=(b.getAttribute('aria-label')||b.getAttribute('title')||b.textContent||'').trim();return !name;

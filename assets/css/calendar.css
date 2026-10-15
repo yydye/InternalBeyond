@@ -825,6 +825,8 @@ body:not(.theme-infernal) .ibn-inf{display:none}
 /* 隐藏态不参与绘制：视窗与部件收起时停掉花瓣与表盘的后台渲染 */
 #eph-win:not(.show):not(.to-widget){visibility:hidden}
 #cal-widget:not(.show){visibility:hidden}
+/* 隐藏的大窗不再逐帧驱动装饰花瓣；时钟指针继续走时，展开时花瓣从暂停帧恢复 */
+#eph-win:not(.show):not(.to-widget) .window-petal{animation-play-state:paused}
 
 /* 响应式 */
 @media (max-width:1060px){

@@ -1,0 +1,27 @@
+body.ib-primitives-fixture {
+  min-block-size: 100vh;
+  color: var(--ib-token-content-primary);
+  background: var(--ib-token-canvas);
+}
+
+.feedback-popover-anchor {
+  display: flex;
+  justify-content: flex-end;
+  min-inline-size: 0;
+}
+
+.feedback-dialog-triggers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ib-token-space-sm);
+}
+
+#options-popover {
+  position-area: block-end span-inline-end;
+  position-try-fallbacks: flip-block, flip-inline;
+}
+
+#nested-options-popover {
+  position-area: block-end span-inline-end;
+  position-try-fallbacks: flip-block, flip-inline;
+}

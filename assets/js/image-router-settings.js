@@ -26,7 +26,7 @@
   var INHERIT_LABEL = '跟随当前角色';
   /* 两条路由共用的来源说明：把"凭据到底从哪来"讲清楚，用户不用猜 */
   var SOURCE_HINT_PICK = '留空 = 跟随当前角色（用正在聊天的那个角色的图片凭据，与旧行为一致）；选择具体来源 = 该路由始终使用它，与正在和谁聊天无关。';
-  var SOURCE_HINT_FROM = '图片凭据取自该来源绑定的 Credential Vault API Key；图片服务商与接口地址在下方「角色库」的 API 编辑器里设置。';
+  var SOURCE_HINT_FROM = '图片凭据取自该来源绑定的 Credential Vault API Key；图片服务商 / 图片接口地址 / 图片 API Key 在下方「角色库」的 API 编辑器里设置。';
   var _bound = false;
   var _collapsed = false;
 

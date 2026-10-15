@@ -60,7 +60,10 @@
 .page-overlay{position:fixed;inset:0;z-index:1;background:var(--glass-bg-ambient);backdrop-filter:var(--surface-overlay-filter);-webkit-backdrop-filter:var(--surface-overlay-filter);display:none;animation:modalIn 0.5s var(--transition);pointer-events:none}
 .page-overlay.show{display:block}
 ::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--accent) 22%,transparent);border-radius:2px}
-.toast-stack{position:fixed;bottom:80px;left:0;right:0;z-index:600;display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:none}
+.toast-stack{position:fixed;bottom:80px;left:0;right:0;z-index:var(--ib-token-layer-toast);display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:none}
+.toast-stack[data-modal-toast="true"]{bottom:var(--ib-token-space-md)}
+.toast-stack[data-modal-toast="true"] .toast{max-inline-size:calc(100vw - (2 * var(--ib-token-space-md)));white-space:normal;overflow-wrap:anywhere}
+@media (max-height: 480px){.ib-primitives dialog.ib-overlay-dialog.ib-toast-present{margin-block-start:var(--ib-token-space-md);margin-block-end:auto;max-block-size:calc(100dvh - (2 * var(--ib-token-space-md)) - (2 * var(--ib-token-space-xxl)))} }
 /* Toast：与 dock / 时钟同属 floating 档 —— 一套 bg / border / blur / shadow，两套主题各自成立，
    因此不再需要浅色主题的单独皮肤。 */
 .toast{padding:10px 24px;border-radius:var(--glass-radius-md);background:var(--glass-bg-floating);border:1px solid var(--glass-border-floating);backdrop-filter:var(--glass-filter-md);-webkit-backdrop-filter:var(--glass-filter-md);box-shadow:var(--glass-shadow-floating);color:var(--content-primary);font-size:0.82rem;white-space:nowrap;animation:toastIn 0.4s var(--transition),toastOut 0.4s var(--transition) 2.2s forwards}

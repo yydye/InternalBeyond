@@ -2,8 +2,9 @@
   --bg-deep:#181e32;--bg-mid:#263050;
   --mist:#8895b4;--silver:#b2c0d8;--light:#cdd6ea;--pale:#e2e9f5;--white:#eff2fa;
   --accent:#5080b0;--accent-light:#72a8d8;
-  /* 旧玻璃 token（P10）：全部 alias 到 ladder 的 1 档，取值与历史完全一致 → 零视觉变化。
-     新代码请用下面的 --glass-* ladder，按 elevation 选档，不要再写死 rgba/blur。 */
+  /* P10 glass names are compatibility inputs for existing consumers.
+     New consumers use --ib-token-* roles; consult IB_VISUAL_TOKEN_CONTRACT_V1.md
+     before assigning a glass material to an elevated or narrative role. */
   --glass-bg:var(--glass-bg-ambient);--glass-border:var(--glass-border-soft);--glass-shadow:var(--glass-shadow-soft);
   --text-primary:#e0e6f2;--text-secondary:#adb8d0;--text-muted:#7e90b2;
   --transition:cubic-bezier(0.4,0,0.2,1);
@@ -46,14 +47,10 @@
   --radius-panel:16px;
   --radius-card:12px;
   --radius-control:10px;
-  /* ── Glass elevation ladder（P10）─────────────────────────────
-     1 ambient  薄雾层：页面背景之上，几乎不抢正文
-     2 surface  主面板 / 章节卡：正文所在的层
-     3 elevated 抬升面板：侧栏 / 诊断 / 工具栏
-     4 floating 浮动控件：时钟 / dock / toast
-     5 modal    最高层：遮罩与弹窗
-     同一层只允许一套 bg / border / blur / shadow；不同层必须能一眼分开。
-     blur 只保留 8 / 16 / 24 / 40 四档，禁止再新增任意数值。 */
+  /* ── Legacy glass material ladder（P10）────────────────────────
+     These values remain for existing surfaces. Their historical rungs combine
+     material and elevation; new consumers choose semantic --ib-token-* roles instead.
+     Blur tiers stay only for existing overlays / narrative surfaces, not new defaults. */
   --glass-bg-ambient:rgba(155,180,218,.10);
   --glass-bg-surface:rgba(250,253,255,.58);
   --glass-bg-elevated:rgba(248,252,255,.72);
@@ -84,7 +81,7 @@
      recipe 来源：Original Desktop 的 .glass-card（浅色 rgba(250,253,255,.62)
      + 1px rgba(200,225,248,.45) + 0 4px 20px rgba(130,175,235,.08)）与
      对象卡的白边（.mem-card inset 0 1px 0 rgba(255,255,255,.55)）。
-     这一族是 P38 未来唯一需要覆写的对象表面，组件不再自己写死材质。 */
+     This is a module-private legacy material family, not the v1 default Surface role. */
   --surface-object:rgba(250,253,255,.64);
   --surface-object-border:rgba(200,225,248,.48);
   --surface-object-rim:rgba(255,255,255,.72);
@@ -105,7 +102,9 @@
   --motion-normal:.35s;
   --layer-nav:100;
   --layer-floating-panel:9981;
-  /* surface.overlay / surface.dialog 遮罩。P3A-R 把 veil 恢复到 Original 的
+  /* Legacy page veil / dialog scrim values. The D1 semantic overlay role maps only
+     the scrim; the old page veil filter remains supported for its current consumer.
+     P3A-R 把 veil 恢复到 Original 的
      雾配方（rgba(235,244,255,0.5) + blur(32px) saturate(1.2)）；P1 时期实测的
      0.32 / blur(14px) 让子页面世界仍是一张可辨认的照片，是「过灰」的来源之一。
      影响范围：所有非 Home 页面共用的世界层（Home 不加 .show，不受影响）。 */
@@ -116,6 +115,92 @@
   --status-info:#5080b0;
   --status-warning:#b58a55;
   --status-danger:#c78282;
+  /* IB Visual Token Contract v1 · D1 semantic bridge.
+     New consumers use role names. Existing page tokens above remain the value source
+     where their meaning matches; old consumers and glass recipes stay untouched. */
+  --ib-token-canvas:var(--pale);
+  --ib-token-canvas-subtle:var(--white);
+  --ib-token-content-primary:var(--content-primary);
+  --ib-token-content-secondary:var(--content-secondary);
+  --ib-token-content-muted:color-mix(in srgb,var(--content-muted) 90%,var(--content-primary) 10%);
+  --ib-token-content-disabled:var(--ib-token-content-muted);
+  --ib-token-content-inverse:var(--white);
+  --ib-token-accent-brand:var(--accent);
+  --ib-token-accent-action:var(--accent);
+  --ib-token-accent-hover:var(--accent-light);
+  --ib-token-accent-active:var(--accent);
+  --ib-token-accent-action-fill:color-mix(in srgb,var(--accent) 80%,var(--content-primary) 20%);
+  --ib-token-accent-action-content:var(--white);
+  --ib-token-accent-soft:color-mix(in srgb,var(--accent) 14%,transparent);
+  --ib-token-selection:var(--surface-pressed);
+  --ib-token-focus-ring:var(--accent);
+  --ib-token-link:var(--content-secondary);
+  --ib-token-boundary-subtle:color-mix(in srgb,var(--border-soft) 45%,transparent);
+  --ib-token-boundary-default:var(--ib-token-content-muted);
+  --ib-token-boundary-strong:var(--content-secondary);
+  --ib-token-surface:transparent;
+  --ib-token-surface-interactive:var(--surface-hover);
+  --ib-token-surface-selected:var(--surface-pressed);
+  --ib-token-surface-elevated:var(--glass-bg-elevated);
+  --ib-token-overlay:var(--surface-overlay-scrim);
+  --ib-token-dialog:var(--glass-bg-modal);
+  --ib-token-popover:var(--glass-bg-floating);
+  --ib-token-input-bg:var(--surface-input);
+  --ib-token-input-boundary:var(--ib-token-boundary-default);
+  --ib-token-input-content:var(--ib-token-content-primary);
+  --ib-token-input-placeholder:var(--ib-token-content-muted);
+  --ib-token-input-focus:var(--ib-token-focus-ring);
+  --ib-token-input-disabled:var(--surface-hover);
+  --ib-token-status-success:var(--status-success);
+  --ib-token-status-info:var(--status-info);
+  --ib-token-status-warning:var(--status-warning);
+  --ib-token-status-danger:var(--status-danger);
+  --ib-token-status-neutral:var(--ib-token-content-muted);
+  --ib-token-radius-compact:4px;
+  --ib-token-radius-control:8px;
+  --ib-token-radius-surface:var(--radius-card);
+  --ib-token-radius-dialog:var(--radius-panel);
+  --ib-token-radius-round:50%;
+  --ib-token-elevation-none:none;
+  --ib-token-elevation-popover:var(--glass-shadow-floating);
+  --ib-token-elevation-dialog:var(--glass-shadow-modal);
+  --ib-token-motion-micro:160ms;
+  --ib-token-motion-state:var(--motion-fast);
+  --ib-token-motion-structural:280ms;
+  --ib-token-motion-easing-standard:var(--transition);
+  --ib-token-motion-easing-linear:linear;
+  --ib-token-space-xs:var(--space-1);
+  --ib-token-space-sm:var(--space-2);
+  --ib-token-space-md:var(--space-3);
+  --ib-token-space-lg:var(--space-4);
+  --ib-token-space-xl:var(--space-5);
+  --ib-token-space-xxl:var(--space-6);
+  --ib-token-space-xxxl:var(--space-8);
+  --ib-token-density-relaxed-section-gap:var(--ib-token-space-xxxl);
+  --ib-token-density-relaxed-group-gap:var(--ib-token-space-xxl);
+  --ib-token-density-relaxed-control-gap:var(--ib-token-space-md);
+  --ib-token-density-standard-section-gap:var(--ib-token-space-xxl);
+  --ib-token-density-standard-group-gap:var(--ib-token-space-lg);
+  --ib-token-density-standard-control-gap:var(--ib-token-space-sm);
+  --ib-token-density-dense-section-gap:var(--ib-token-space-lg);
+  --ib-token-density-dense-group-gap:var(--ib-token-space-md);
+  --ib-token-density-dense-control-gap:var(--ib-token-space-sm);
+  --ib-token-text-body:400 14px/1.5 var(--font-ui);
+  --ib-token-text-meta:400 12px/1.4 var(--font-ui);
+  --ib-token-text-page-title:500 var(--fs-h2)/1.25 var(--font-ui);
+  --ib-token-text-section-title:500 18px/1.35 var(--font-ui);
+  --ib-token-text-reading:400 16px/1.8 var(--font-reading);
+  --ib-token-text-identity:400 28px/1.2 var(--font-display);
+  --ib-token-text-technical:400 12px/1.5 'Fira Code',monospace;
+  --ib-token-focus-ring-width:2px;
+  --ib-token-focus-ring-offset:2px;
+  --ib-token-layer-content:0;
+  --ib-token-layer-page-veil:1;
+  --ib-token-layer-navigation:var(--layer-nav);
+  --ib-token-layer-popover:300;
+  --ib-token-layer-overlay:400;
+  --ib-token-layer-dialog:500;
+  --ib-token-layer-toast:600;
   --beyond-color:#4a5882;
   --beyond-glow:0 0 15px rgba(255,255,255,0.4),0 0 30px rgba(255,255,255,0.25),0 0 50px rgba(255,255,255,0.12),0 0 80px rgba(255,255,255,0.06);
   --internal-color:#fff;
@@ -171,6 +256,42 @@ body.theme-infernal{
   --neo-inset-highlight:rgba(255,255,255,.06);
   --neo-inset-shadow:rgba(0,0,0,.45);
   --neo-ring:0 0 0 3px rgba(114,168,216,.20);
+  /* D1 theme values. Role meaning stays fixed; Infernal supplies night values. */
+  --ib-token-canvas:var(--bg-deep);
+  --ib-token-canvas-subtle:var(--bg-mid);
+  --ib-token-content-inverse:var(--light);
+  --ib-token-accent-action:var(--accent-light);
+  --ib-token-accent-hover:var(--accent);
+  --ib-token-accent-active:var(--accent-light);
+  --ib-token-accent-action-fill:var(--accent-light);
+  --ib-token-accent-action-content:var(--bg-deep);
+  --ib-token-accent-soft:color-mix(in srgb,var(--accent-light) 14%,transparent);
+  --ib-token-focus-ring:var(--accent-light);
+  --ib-token-link:var(--accent-light);
+  --ib-token-boundary-subtle:color-mix(in srgb,var(--border-soft) 65%,transparent);
+  --ib-token-boundary-default:var(--content-muted);
+  --ib-token-boundary-strong:var(--content-secondary);
+  /* Rebind aliases here as well: :root custom properties resolve against :root,
+     so they cannot observe theme overrides declared on body without this block. */
+  --ib-token-content-primary:var(--content-primary);
+  --ib-token-content-secondary:var(--content-secondary);
+  --ib-token-content-muted:var(--content-muted);
+  --ib-token-content-disabled:var(--ib-token-content-muted);
+  --ib-token-selection:var(--surface-pressed);
+  --ib-token-surface:transparent;
+  --ib-token-surface-interactive:var(--surface-hover);
+  --ib-token-surface-selected:var(--surface-pressed);
+  --ib-token-surface-elevated:var(--glass-bg-elevated);
+  --ib-token-overlay:var(--surface-overlay-scrim);
+  --ib-token-dialog:var(--glass-bg-modal);
+  --ib-token-popover:var(--glass-bg-floating);
+  --ib-token-input-bg:var(--surface-input);
+  --ib-token-input-boundary:var(--ib-token-boundary-default);
+  --ib-token-input-content:var(--ib-token-content-primary);
+  --ib-token-input-placeholder:var(--ib-token-content-muted);
+  --ib-token-input-focus:var(--ib-token-focus-ring);
+  --ib-token-input-disabled:var(--surface-hover);
+  --ib-token-status-neutral:var(--ib-token-content-muted);
 }
 
 *{margin:0;padding:0;box-sizing:border-box}
@@ -500,8 +621,8 @@ body.infernal-beyond #app{position:relative;z-index:1;}
 .mb-adv-divider{height:1px;background:var(--border-soft);opacity:.5;margin:16px 0;}
 /* Phase 3A：Middle Brain 的设置分组是 paper subsection，不再形成 card-inside-card。
    标题、说明、间距与 hairline 仍保留三组身份；真实的安全 / 编辑 surface 不在此规则内。 */
-.mb-adv-card{border:0;border-radius:0;padding:16px 0 0;background:transparent;}
-.mb-adv-card + .mb-adv-card{margin-top:18px;border-top:1px solid var(--border-soft);padding-top:18px;}
+.mb-adv-card{background:var(--surface-object);border:1px solid var(--surface-object-border);border-radius:var(--radius-card);padding:16px 18px;box-shadow:var(--surface-object-shadow),inset 0 1px 0 var(--surface-object-rim);}
+.mb-adv-card + .mb-adv-card{margin-top:18px;}
 .mb-adv-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px;}
 /* .mb-adv-title 是对象名层级：Original 的 serif 角色始终写成
    'Cormorant Garamond','Noto Serif SC'（见 .api-ed-btitle）。之前只写 var(--font-display)
@@ -604,3 +725,4 @@ body.infernal-beyond #app{position:relative;z-index:1;}
 .mem-clean-title{font-weight:600;letter-spacing:.03em;}
 .mem-clean-meta{font-size:var(--fs-meta);opacity:.6;}
 .mem-clean-preview{font-size:.82rem;opacity:.8;word-break:break-word;}
+.ib-generated-app-frame{display:block;width:100%;height:100%;min-height:70vh;border:0;background:transparent;}

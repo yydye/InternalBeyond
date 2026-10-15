@@ -72,7 +72,7 @@ const html = fs.readFileSync(HTML_PATH, 'utf8');
 const scriptTags = [...html.matchAll(/<script[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi)].map(m => m[1]);
 const styleTags = [...html.matchAll(/<link[^>]*\brel\s*=\s*["'][^"']*stylesheet[^"']*["'][^>]*\bhref\s*=\s*["']([^"']+)["']/gi)].map(m => m[1]);
 check('HTML 只挂载一次 api-onboarding.js', scriptTags.filter(s => s === 'assets/js/api-onboarding.js').length === 1);
-check('HTML 没有新增样式表（仍为 20）', styleTags.length === 20, styleTags.length);
+check('Settings Center 样式表只挂载一次，API Onboarding 不增加专属样式表', styleTags.filter(s => s === 'assets/css/settings-center.css').length === 1 && !styleTags.includes('assets/css/api-onboarding.css'));
 check('HTML 没有 api-onboarding.css 的 <link>', !styleTags.includes('assets/css/api-onboarding.css'));
 check('入口容器在既有 #page-api 内', (() => {
   const page = (html.match(/<div class="page" id="page-api">[\s\S]*?<div class="page" id="page-/) || [''])[0];

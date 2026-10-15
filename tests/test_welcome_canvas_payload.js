@@ -265,8 +265,8 @@ async function main() {
       assert.strictEqual(jpgRules.length, 0,
         'the JPG must ride the assets whitelist, not a new explicit entry');
       assert.strictEqual(mentioning.length, 1, 'expected exactly the pre-existing assets exclude to mention bg-canvas');
-      assert.deepStrictEqual(mentioning[0].exclude, ['images/bg-canvas.png'],
-        'the frozen assets entry must keep excluding only the PNG');
+      assert.deepStrictEqual(mentioning[0].exclude, ['images/bg-canvas.png', 'js/dev-runtime.js'],
+        'the frozen assets entry must exclude the optional PNG and the Dev-only importer');
       assert.strictEqual(mentioning[0].dir, true, 'the assets entry must stay a directory whitelist');
     });
   } finally {

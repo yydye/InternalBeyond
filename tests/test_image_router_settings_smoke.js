@@ -246,7 +246,7 @@ function startMockApi() {
       + "await dbPut('apiConfigs',{id:'ir_local',credentialRef:'',provider:'openai',model:'text-local',endpoint:'" + EP + "',nickname:'本地无Key',imageGen:true,imageGenModel:'',imageGenEndpoint:'" + LOCAL_IMG_EP + "'});"
       + "await dbPut('apiConfigs',{id:'ir_char',credentialRef:'ir_char',provider:'openai',model:'text-char',endpoint:'" + EP + "',nickname:'角色',systemPrompt:'x',imageGen:true,imageGenModel:'',imageGenEndpoint:'" + IMG_EP + "'});"
       + "await loadApiConfigs();return true})()");
-    /* 真实入口是 navTo('api') → loadApiSettingsUI() → loadImageRouterSettingsUI()：
+    /* 真实入口是 navTo('settings') → Settings Center 的 AI 分类：
        种子之后刷新一次，让绑定下拉看到刚写入的 API 配置 */
     await evaluate(cdp, "(async function(){await loadImageRouterSettingsUI();return true})()");
     check('ui.refreshPicksUpConfigs', await evaluate(cdp, "document.getElementById('ir-config-generation').options.length>=4"));
@@ -267,31 +267,25 @@ function startMockApi() {
     check('ui.datalistFromCatalog', await evaluate(cdp, "(function(){var d=document.getElementById('api-imagegen-model-list');return !!d&&[].map.call(d.options,function(o){return o.value}).indexOf('gpt-image-2.5-sunburst')>=0})()"));
     check('ui.routeLineVisible', await evaluate(cdp, "document.getElementById('ir-line-generation').textContent.indexOf('Image Generation')>=0&&document.getElementById('ir-line-generation').textContent.indexOf('→')>=0"));
 
-    /* ── ②b A1.5 布局：API 页顶级卡片垂直节奏（结构性 contract，且与折叠状态无关） ──
-       修复前：系统诊断入口是 JS 注入的顶级卡、不带 .api-section，于是与 Middle Brain
-       之间是 0px。这里同时验证「四张顶级卡都是同一条 28px 节奏」与「折叠 / 展开
-       Middle Brain、Image Router 后间距不变」（间距挂在外层卡上，不随内容高度变化）。 */
-    await evaluate(cdp, "(async function(){try{navTo('api');}catch(e){}await loadImageRouterSettingsUI();return true})()");
+    /* ── ②b Settings Center 分类内的共享卡片间距在折叠状态下保持稳定。 ── */
+    await evaluate(cdp, "(async function(){try{navTo('settings');IBSettingsCenter.setCategory('ai');}catch(e){}await loadImageRouterSettingsUI();return true})()");
     const measureSpacing = "(function(){"
-      + "function mb(n){if(!n)return null;try{return getComputedStyle(n).marginBottom}catch(e){return null}}"
       + "function cls(n){var e=document.getElementById(n);return e?String(e.className):null}"
-      + "var t=document.getElementById('api-mgmt-title');"
-      + "var mgmt=(t&&t.closest)?t.closest('.api-section'):null;"
-      + "return{diag:mb(document.getElementById('ib-diag-entry')),"
-      + "middle:mb(document.getElementById('middle-brain-section')),"
-      + "router:mb(document.getElementById('image-router-section')),mgmt:mb(mgmt),"
+      + "var stack=document.getElementById('settings-ai-content');"
+      + "return{gap:stack?getComputedStyle(stack).gap:null,"
+      + "middleParent:document.getElementById('middle-brain-section').parentElement.id,"
+      + "routerParent:document.getElementById('image-router-section').parentElement.id,"
       + "mbBody:cls('mb-collapse-body'),irBody:cls('ir-collapse-body')}})()";
-    const spTop = ['diag', 'middle', 'router', 'mgmt'];
     const spOpen = await evaluate(cdp, measureSpacing);
-    check('spacing.fourTopLevelCardsShare28px', spOpen && spTop.every(k => spOpen[k] === '28px'), JSON.stringify(spOpen));
+    check('spacing.aiCardsShareSettingsStack', spOpen && spOpen.gap === '12px' && spOpen.middleParent === 'settings-ai-content' && spOpen.routerParent === 'settings-ai-content', JSON.stringify(spOpen));
     /* 真实点击两个 header 折叠（不是直接改 class），再测一次 */
     await evaluate(cdp, "(function(){document.getElementById('mb-collapse-toggle').click();document.getElementById('ir-collapse-toggle').click();return true})()");
     const spClosed = await evaluate(cdp, measureSpacing);
     check('spacing.collapseActuallyTookEffect', !!(spClosed && /is-collapsed/.test(spClosed.mbBody) && /is-collapsed/.test(spClosed.irBody)), JSON.stringify(spClosed));
-    check('spacing.unchangedWhenCollapsed', spClosed && spTop.every(k => spClosed[k] === '28px'), JSON.stringify(spClosed));
+    check('spacing.unchangedWhenCollapsed', spClosed && spClosed.gap === spOpen.gap && spClosed.middleParent === spOpen.middleParent && spClosed.routerParent === spOpen.routerParent, JSON.stringify(spClosed));
     await evaluate(cdp, "(function(){document.getElementById('mb-collapse-toggle').click();document.getElementById('ir-collapse-toggle').click();return true})()");
     const spBack = await evaluate(cdp, measureSpacing);
-    check('spacing.unchangedWhenExpandedAgain', !!(spBack && spTop.every(k => spBack[k] === '28px') && !/is-collapsed/.test(spBack.mbBody) && !/is-collapsed/.test(spBack.irBody)), JSON.stringify(spBack));
+    check('spacing.unchangedWhenExpandedAgain', !!(spBack && spBack.gap === spOpen.gap && !/is-collapsed/.test(spBack.mbBody) && !/is-collapsed/.test(spBack.irBody)), JSON.stringify(spBack));
 
     /* ── ③ 保存：Generation → 主配置 + Sunburst；Editing → 主配置 + Flare ── */
     const saved = await evaluate(cdp, "(async function(){"

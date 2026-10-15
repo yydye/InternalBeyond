@@ -1,11 +1,10 @@
 ﻿/* ====================================================================
    IB · P21-R4-PROD-1.1 · Cognitive Runtime Settings（产品控制面 UI）
    --------------------------------------------------------------------
-   位置：角色/API 设置页 → 「高级认知」区块（COGNITIVE_UI_PLACEMENT =
-   CHARACTER_API_SETTINGS_ADVANCED_COGNITIVE_SECTION）。
+   位置：Settings Center → 「记忆与认知」→ 按角色配置区。
 
    ── 它是什么 ────────────────────────────────────────────────────────
-   一个**自挂载**的小模块：在 `#page-api` 里追加一个克制的 `api-section`，
+   一个**自挂载**的小模块：在 `#settings-memory-content` 里追加一个克制的 `api-section`，
    按角色读取/写入两个既有认知开关：
        自动解释（autoInterpretationEnabled）· 预测与行为（autoExpectationEnabled）
    BehaviorEffect（行为影响）**没有开关**：它是确定性投影，+0 次模型调用。
@@ -127,7 +126,7 @@
     var doc = d.doc || (typeof document !== 'undefined' ? document : null);
     var win = d.win || (typeof window !== 'undefined' ? window : null);
     if (!doc || !win) return null;
-    var host = doc.getElementById('page-api');
+    var host = doc.getElementById('settings-memory-content') || doc.getElementById('page-api');
     if (!host) return null;
     if (doc.getElementById(SECTION_ID)) return null;   /* 幂等：自挂载只做一次 */
 

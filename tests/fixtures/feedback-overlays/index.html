@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>IB Feedback and Overlay Behavior Laboratory</title>
+  <link rel="stylesheet" href="../../../assets/css/core.css">
+  <link rel="stylesheet" href="../../../assets/css/core/widgets.css">
+  <link rel="stylesheet" href="../../../assets/css/ui-primitives.css">
+  <link rel="stylesheet" href="../../../assets/css/ui-overlay-primitives.css">
+  <link rel="stylesheet" href="fixture.css">
+</head>
+<body class="ib-primitives-fixture">
+  <div class="ib-primitives">
+    <main class="ib-app-shell__main" id="feedback-lab-main" tabindex="-1">
+      <header class="ib-page-header">
+        <div class="ib-page-header__body">
+          <p class="ib-page-header__context">BEHAVIOR LABORATORY</p>
+          <h1 class="ib-page-header__title">Feedback and overlays</h1>
+          <p class="ib-page-header__supporting">Lifecycle fixture only. This is not a page or visual reference.</p>
+        </div>
+        <div class="ib-page-header__actions">
+          <button class="btn" id="show-success-toast" type="button">Show saved confirmation</button>
+          <button class="btn" id="show-multiple-toasts" type="button">Show two confirmations</button>
+        </div>
+      </header>
+
+      <section class="ib-section" aria-labelledby="error-lab-title">
+        <header>
+          <h2 class="ib-section__heading" id="error-lab-title">Error Disclosure</h2>
+          <p class="ib-section__description">Human explanation and recovery stay visible; technical evidence starts collapsed.</p>
+        </header>
+        <div class="ib-section__body">
+          <p class="ib-inline-status" id="error-recovery-status" data-status="info" role="status" aria-live="polite">
+            Recovery has not been started.
+            <span class="ib-inline-status__marker" aria-hidden="true"></span>
+          </p>
+          <button class="btn" id="show-retryable-error" type="button">Show retryable connection error</button>
+          <button class="btn" id="show-fixed-error" type="button">Show non-retryable settings error</button>
+        </div>
+      </section>
+
+      <section class="ib-section" aria-labelledby="popover-lab-title">
+        <header>
+          <h2 class="ib-section__heading" id="popover-lab-title">Popover</h2>
+          <p class="ib-section__description">Native auto popovers own outside dismissal and topmost Escape handling.</p>
+        </header>
+        <div class="ib-section__body">
+          <div class="feedback-popover-anchor">
+            <button class="btn" id="options-trigger" type="button" popovertarget="options-popover" aria-expanded="false">Open options</button>
+            <section class="ib-overlay-popover" id="options-popover" popover="auto" data-ib-popover aria-labelledby="options-popover-title">
+              <h3 class="ib-section__heading" id="options-popover-title">Quick options</h3>
+              <a class="ib-interactive-row" href="#profile-choice">Open profile choices</a>
+              <button class="ib-interactive-row" id="nested-popover-trigger" type="button" popovertarget="nested-options-popover" aria-expanded="false">More choices</button>
+              <section class="ib-overlay-popover" id="nested-options-popover" popover="auto" data-ib-popover aria-labelledby="nested-popover-title">
+                <h3 class="ib-section__heading" id="nested-popover-title">Additional choices</h3>
+                <button class="btn" type="button" popovertarget="options-popover" popovertargetaction="hide">Use this choice</button>
+              </section>
+            </section>
+          </div>
+          <button class="btn" id="outside-popover-target" type="button">Outside target</button>
+        </div>
+      </section>
+
+      <section class="ib-section" aria-labelledby="dialog-lab-title">
+        <header>
+          <h2 class="ib-section__heading" id="dialog-lab-title">Dialog</h2>
+          <p class="ib-section__description">Native modal behavior supplies focus containment and background inertness; the helper defines safe dismissal and restoration.</p>
+        </header>
+        <div class="ib-section__body">
+          <div class="feedback-dialog-triggers">
+            <button class="btn" id="choice-dialog-trigger" type="button" data-ib-dialog-open="choice-dialog" aria-haspopup="dialog" aria-expanded="false">Open short decision</button>
+            <button class="btn" id="busy-dialog-trigger" type="button" data-ib-dialog-open="busy-dialog" aria-haspopup="dialog" aria-expanded="false">Open busy operation</button>
+            <button class="btn" id="destructive-dialog-trigger" type="button" data-ib-dialog-open="destructive-dialog" aria-haspopup="dialog" aria-expanded="false">Open destructive confirmation</button>
+          </div>
+        </div>
+      </section>
+
+      <dialog class="ib-overlay-dialog" id="choice-dialog" data-ib-dialog data-dismissible="true" aria-labelledby="choice-dialog-title">
+        <h2 class="ib-overlay-dialog__title" id="choice-dialog-title" data-dialog-title tabindex="-1">Save this preference?</h2>
+        <p class="ib-overlay-dialog__summary">This short decision can be cancelled safely.</p>
+        <div class="ib-overlay-dialog__actions">
+          <button class="btn" type="button" data-ib-dialog-cancel>Cancel</button>
+          <button class="btn" id="toast-in-dialog" type="button">Show saved confirmation</button>
+          <form data-dialog-submit>
+            <button class="btn btn-primary" type="submit" data-dialog-safe-primary>Save preference</button>
+          </form>
+        </div>
+      </dialog>
+
+      <dialog class="ib-overlay-dialog" id="busy-dialog" data-ib-dialog data-dismissible="true" data-cancel-while-busy="false" data-busy-message="Saving the preference…" aria-labelledby="busy-dialog-title">
+        <h2 class="ib-overlay-dialog__title" id="busy-dialog-title" data-dialog-title tabindex="-1">Save an updated preference?</h2>
+        <form data-dialog-submit>
+          <div class="ib-form-group">
+            <label class="ib-form-group__label" for="busy-dialog-value">Preference name</label>
+            <input id="busy-dialog-value" data-dialog-initial-focus type="text" value="Quiet hours">
+          </div>
+          <p class="ib-overlay-dialog__status" data-dialog-submit-status role="status" aria-live="polite" hidden></p>
+          <div class="ib-overlay-dialog__actions">
+            <button class="btn" type="button" data-ib-dialog-cancel>Cancel</button>
+            <button class="btn btn-primary" type="submit" data-busy-label="Saving…">Save changes</button>
+          </div>
+        </form>
+      </dialog>
+
+      <dialog class="ib-overlay-dialog" id="destructive-dialog" data-ib-dialog data-destructive="true" data-dismissible="false" aria-labelledby="destructive-dialog-title">
+        <h2 class="ib-overlay-dialog__title" id="destructive-dialog-title" data-dialog-title tabindex="-1">Remove this local profile permanently?</h2>
+        <p class="ib-overlay-dialog__summary">This action cannot be undone. Escape and backdrop clicks do not confirm it.</p>
+        <form data-dialog-submit>
+          <div class="ib-overlay-dialog__actions">
+            <button class="btn" type="button" data-ib-dialog-cancel>Keep profile</button>
+            <button class="btn" type="submit" data-destructive-confirm>Permanently remove profile</button>
+          </div>
+        </form>
+      </dialog>
+    </main>
+  </div>
+
+  <script src="../../../assets/js/ib-namespace.js"></script>
+  <script src="../../../assets/js/webcore-db-schema.js"></script>
+  <script src="../../../assets/js/core.js"></script>
+  <script src="../../../assets/js/error-catalog.js"></script>
+  <script src="../../../assets/js/ui-overlay-lifecycle.js"></script>
+  <script src="fixture.js"></script>
+</body>
+</html>
