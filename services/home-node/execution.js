@@ -32,6 +32,8 @@
 'use strict';
 
 const CHAT_CORE = require('../../assets/js/chat-core.js');
+const RESPONSE_GUIDANCE_CORE = require('../../assets/js/response-guidance-core.js');
+const BEHAVIOR_EFFECT_RENDERER = require('../../assets/js/behavior-effect-render.js');
 
 const DEFAULT_MAX_TOKENS = 4096;
 const DEFAULT_TIMEOUT_MS = 120000;
@@ -48,6 +50,12 @@ function createTurnExecutor(deps) {
      reasoningEffort 保持 'auto'，不做任何上下文替换。这让现有调用方（测试、
      只走 /turn 的桌面路径）不需要知道 Middle Brain 存在。 */
   const middleBrain = deps.middleBrain || null;
+  /* M0 · optional server-owned guidance proposal producer. The caller cannot
+     submit this input through the mobile wire; it is injected at assembly. */
+  const responseGuidanceProvider = typeof deps.responseGuidanceProvider === 'function'
+    ? deps.responseGuidanceProvider : null;
+  const responseGuidanceAttribution = deps.responseGuidanceAttribution || null;
+  const allowTestResponseGuidanceFixtures = deps.allowTestResponseGuidanceFixtures === true;
   /* P34.3-B · Home Node credential access layer (ADR P34.3-A.1 Decision 1).
      Optional: when absent the executor keeps pre-P34.3 behavior (spec.apiKey). */
   const credentialAccess = deps.credentialAccess || null;
@@ -69,6 +77,7 @@ function createTurnExecutor(deps) {
      本模块**不得** import runtime-reality-event（见 seam guard）。 */
   const onTurnTerminal = typeof deps.onTurnTerminal === 'function' ? deps.onTurnTerminal : null;
   const inFlight = new Map();                   /* conversationId → turnId */
+  const activeTurnContexts = new Map();          /* conversationId → frozen canonical context */
 
   function fail(code, extra) {
     return Object.assign({ ok: false, error: code }, extra || {});
@@ -230,6 +239,87 @@ function createTurnExecutor(deps) {
     return out;
   }
 
+  function renderResponseGuidance(envelope, request, hasCanonicalSystem) {
+    if (!envelope || typeof envelope !== 'object') {
+      return { ok: true, text: '', accepted: [], rejected: [], reason: 'no-guidance-or-canonical-system' };
+    }
+    const character = request && request.character || {};
+    const identity = {
+      characterId: String(character.id || request.characterId || request.friendId || ''),
+      conversationId: String(request.conversationId || ''),
+      requestId: String(request.requestId || ''),
+      turnId: String(request.turnId || '')
+    };
+    const renderers = {
+      'behavior-effect-v1': function (payload) { return BEHAVIOR_EFFECT_RENDERER.render(payload); },
+      'memory-behavior-posture-v1': function (payload) {
+        return RESPONSE_GUIDANCE_CORE.renderBehaviorPosture(payload);
+      },
+      'test-marker-v1': function (payload) {
+        if (allowTestResponseGuidanceFixtures === true && payload && payload.marker === 'test-guidance') {
+          return { kind: 'PLACEMENT', lines: ['【M0 测试夹具：response guidance 已进入 Mobile prompt】'] };
+        }
+        return { kind: 'REFUSED', reasonCode: 'test-guidance-disabled' };
+      }
+    };
+    const options = { allowTestFixtures: allowTestResponseGuidanceFixtures === true };
+    if (hasCanonicalSystem !== true) {
+      const validated = RESPONSE_GUIDANCE_CORE.validateEnvelope(envelope, identity, options);
+      return validated.ok === true
+        ? { ok: true, text: '', accepted: [], rejected: validated.envelope.entries.map(function (entry) {
+          return { entryId: entry.entryId, sourceKind: entry.sourceKind,
+            participationId: entry.participationId, reason: 'no-canonical-system' };
+        }), reason: 'no-canonical-system' }
+        : Object.assign({ text: '', accepted: [], rejected: [] }, validated);
+    }
+    return RESPONSE_GUIDANCE_CORE.renderEnvelope(envelope, identity, renderers, {
+      allowTestFixtures: options.allowTestFixtures
+    });
+  }
+  function recordResponseGuidanceParticipation(rendered, identity) {
+    if (!responseGuidanceAttribution || !isPlainObject(rendered) || !isPlainObject(identity)) return;
+    const consume = responseGuidanceAttribution.consumeExternalInfluence;
+    const reject = responseGuidanceAttribution.markExternalInfluenceNotConsumed;
+    for (const entry of Array.isArray(rendered.accepted) ? rendered.accepted : []) {
+      if (!entry || entry.sourceKind !== 'memory_behavior_modulation' || !entry.participationId
+        || entry.placed !== true || typeof consume !== 'function') continue;
+      try {
+        const result = consume.call(responseGuidanceAttribution, {
+          characterId: identity.characterId,
+          conversationId: identity.conversationId,
+          turnId: identity.turnId,
+          sourceKind: entry.sourceKind,
+          participationId: entry.participationId
+        });
+        if (!result || result.ok !== true || result.status !== 'consumed') {
+          logger('turn-response-guidance-participation-unconfirmed', {
+            turnId: identity.turnId, sourceKind: entry.sourceKind,
+            reasonCode: String(result && result.reasonCode || 'attribution-owner-unavailable').slice(0, 100)
+          });
+        }
+      } catch (_) {
+        logger('turn-response-guidance-participation-unconfirmed', {
+          turnId: identity.turnId, sourceKind: entry.sourceKind, reasonCode: 'attribution-owner-error'
+        });
+      }
+    }
+    for (const entry of Array.isArray(rendered.rejected) ? rendered.rejected : []) {
+      if (!entry || entry.sourceKind !== 'memory_behavior_modulation' || !entry.participationId
+        || typeof reject !== 'function') continue;
+      const code = entry.reason === 'no-canonical-system' ? 'no-canonical-system' : 'renderer-refused';
+      try {
+        reject.call(responseGuidanceAttribution, {
+          characterId: identity.characterId,
+          conversationId: identity.conversationId,
+          turnId: identity.turnId,
+          sourceKind: entry.sourceKind,
+          participationId: entry.participationId,
+          reasonCode: code
+        });
+      } catch (_) { /* Attribution failures fail closed; the turn still proceeds. */ }
+    }
+  }
+
   /* prompt 组装。
      M1-C.2i：运行时上下文不再由本函数直接决定 —— 调用方先把 canonical 上下文组织成
      `runtimeContext`，Middle Brain 执行缝（若参与）再把它**替换**成压缩结果。
@@ -254,9 +344,14 @@ function createTurnExecutor(deps) {
     if (request.userMessage) messages.push({ role: 'user', content: messageContent(request.userMessage) });
     /* 运行时上下文（如果调用方给了）注入到 system 尾部，绝不复述给用户。 */
     let system = String(spec.systemPrompt || character.systemPrompt || '');
+    const hasCanonicalSystem = !!system.trim();
     const ctx = String(composedRuntimeContext == null ? (request.runtimeContext || '') : composedRuntimeContext);
     if (ctx) system += (system ? '\n\n' : '') + ctx;
-    return { system: system, messages: messages };
+    const guidance = renderResponseGuidance(request.responseGuidance, request, hasCanonicalSystem);
+    if (guidance && guidance.ok === true && guidance.text) {
+      system += (system ? '\n\n' : '') + guidance.text;
+    }
+    return { system: system, messages: messages, responseGuidance: guidance };
   }
 
   /* ── M1-C.2i · canonical Middle Brain 注入契约（与桌面 _mbInjectable 同一纪律）──
@@ -311,6 +406,10 @@ function createTurnExecutor(deps) {
            memory → understanding → thread → moments）。 */
         if (parts.momentsBlock) list.push(String(parts.momentsBlock));
       }
+      /* P21-R4-N · private Meta-Memory awareness is a cognition instruction,
+         not Memory content. Keep it after evidence (or its middleware
+         replacement) and before current time, without exposing it in DTOs. */
+      if (parts.memoryAwarenessContext) list.push(String(parts.memoryAwarenessContext));
       if (parts.p0Time) list.push(String(parts.p0Time));
       if (list.length) return list.join('\n\n');
     }
@@ -442,6 +541,7 @@ function createTurnExecutor(deps) {
       characterId: characterId,
       conversationId: conversationId
     });
+    activeTurnContexts.set(conversationId, turnContext);
     const onEvent = typeof options.onEvent === 'function' ? options.onEvent : function () {};
 
     const emit = (event) => {
@@ -542,11 +642,33 @@ function createTurnExecutor(deps) {
          否则既不记录终局、也走不到 finally 的 inFlight 清理。 */
       const runtimeSpec = resolveRuntimeSpec(spec);
       if (!runtimeSpec.ok) return finalize(turnContext, 'credential-unavailable', fail(runtimeSpec.error || 'credential-unavailable', { turnId: turnId, userMessageId: userMessageId, conversationId: conversationId }));
+      let responseGuidanceEnvelope = null;
+      if (responseGuidanceProvider) {
+        try {
+          responseGuidanceEnvelope = await responseGuidanceProvider(Object.freeze({
+            characterId: characterId,
+            conversationId: conversationId,
+            requestId: requestId,
+            turnId: turnId
+          }), request.responseGuidance || null);
+        } catch (_) {
+          responseGuidanceEnvelope = null;
+          logger('turn-response-guidance-provider-failed', { turnId: turnId, reasonCode: 'provider-failed' });
+        }
+      }
+      const promptRequest = Object.assign({}, request, {
+        characterId: characterId,
+        conversationId: conversationId,
+        turnId: turnId,
+        responseGuidance: responseGuidanceEnvelope
+      });
+      const promptBuilt = buildPrompt(promptRequest, composedRuntimeContext);
+      const finalPrompt = { system: promptBuilt.system, messages: promptBuilt.messages };
       let result;
       try {
-        result = await port.runStream({
+        const runPromise = port.runStream({
           spec: runtimeSpec.spec,
-          prompt: buildPrompt(request, composedRuntimeContext),
+          prompt: finalPrompt,
           maxTokens: request.maxTokens != null ? request.maxTokens : DEFAULT_MAX_TOKENS,
           temperature: request.temperature != null ? request.temperature : (spec.temperature != null ? spec.temperature : null),
           reasoningEffort: mbReasoningEffort,
@@ -561,6 +683,13 @@ function createTurnExecutor(deps) {
             }
           }
         });
+        /* Only the trusted server executor can attest to prompt placement.
+           Mark after the model port has accepted the exact final prompt object;
+           caller-supplied consumed flags are never read. */
+        recordResponseGuidanceParticipation(promptBuilt.responseGuidance, {
+          characterId: characterId, conversationId: conversationId, turnId: turnId
+        });
+        result = await runPromise;
       } finally {
         if (runtimeSpec.requestScoped) runtimeSpec.spec.apiKey = '';
       }
@@ -664,6 +793,7 @@ function createTurnExecutor(deps) {
       return finalize(turnContext, kind, fail(kind, { turnId: turnId, userMessageId: userMessageId, conversationId: conversationId, message: String(error && error.message || '') }));
     } finally {
       inFlight.delete(conversationId);
+      activeTurnContexts.delete(conversationId);
     }
   }
 
@@ -723,10 +853,27 @@ function createTurnExecutor(deps) {
   function activeTurn(conversationId) {
     return inFlight.get(String(conversationId || '')) || null;
   }
+  function isPlainObject(value) { return !!value && typeof value === 'object' && !Array.isArray(value); }
+
+  /* Read-only cross-runtime binding for cognition that completes while this
+     exact request is executing. A recall/candidate request cannot name another
+     active turn merely by sharing the conversation. */
+  function activeTurnBindingOf(conversationId, requestCorrelationId) {
+    const context = activeTurnContexts.get(String(conversationId || '')) || null;
+    const requestId = String(requestCorrelationId == null ? '' : requestCorrelationId);
+    if (!context || !requestId || context.requestCorrelationId !== requestId) return null;
+    return Object.freeze({
+      turnId: context.turnId,
+      requestCorrelationId: context.requestCorrelationId,
+      characterId: context.characterId,
+      conversationId: context.conversationId
+    });
+  }
 
   return {
     executeCharacterTurn: executeCharacterTurn,
     activeTurn: activeTurn,
+    activeTurnBindingOf: activeTurnBindingOf,
     /* 供测试与诊断：直接暴露 prompt 组装（纯函数，无 I/O）。 */
     buildPrompt: buildPrompt,
     messageContent: messageContent,

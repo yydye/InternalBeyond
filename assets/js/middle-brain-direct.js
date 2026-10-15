@@ -759,33 +759,126 @@
     return null;
   }
 
+  function turnTraceEvent(traceId, eventType, fields) {
+    try {
+      var core = root && root.IBModelCore;
+      if (traceId && core && typeof core.turnTraceEvent === 'function') return core.turnTraceEvent(traceId, eventType, fields || {});
+    } catch (e) {}
+    return null;
+  }
+
+  function turnTraceFinish(traceId, status, fields) {
+    try {
+      var core = root && root.IBModelCore;
+      if (traceId && core && typeof core.turnTraceFinish === 'function') return core.turnTraceFinish(traceId, status, fields || {});
+    } catch (e) {}
+    return null;
+  }
+
+  function turnTraceBegin(meta) {
+    try {
+      var core = root && root.IBModelCore;
+      if (core && typeof core.turnTraceBegin === 'function') return core.turnTraceBegin(meta || {});
+    } catch (e) {}
+    return '';
+  }
+
+  function modelErrorCategory(result) {
+    var error = String(result && result.error || ''), status = Number(result && result.status) || 0;
+    if (error === 'http' && status === 429) return 'rate_limit';
+    if (error === 'http' && status >= 500 && status < 600) return 'provider';
+    return error || 'unknown';
+  }
+
+  function retryLimit(result) {
+    var category = modelErrorCategory(result);
+    if (category === 'timeout') return 1;
+    if (category === 'network' || category === 'rate_limit' || category === 'provider') return 2;
+    return 0;
+  }
+
+  function retryDelay(result, retryIndex) {
+    var backoff = Math.min(4000, 400 * Math.pow(2, Math.max(0, retryIndex - 1)));
+    return Math.min(15000, Math.max(backoff, Number(result && result.retryAfterMs) || 0));
+  }
+
+  async function waitForRetry(delayMs, signal) {
+    var end = Date.now() + Math.max(0, Number(delayMs) || 0);
+    while (Date.now() < end) {
+      if (signal && signal.aborted) return false;
+      await new Promise(function (resolve) { setTimeout(resolve, Math.min(100, Math.max(1, end - Date.now()))); });
+    }
+    return !(signal && signal.aborted);
+  }
+
   async function send(text, options) {
     options = options || {};
     var question = str(text).trim();
     if (!question) return { ok: false, error: 'empty' };
     var storage = options.storage || defaultStorage();
     var before = readTranscript({ storage: storage });
+    var traceId = turnTraceBegin({ consumer: 'middle_brain.direct', threadId: 'middlebrain-direct' });
+    turnTraceEvent(traceId, 'input', { inputMessages: before.length + 1, inputChars: question.length });
     appendTranscript({ role: 'user', content: question }, { storage: storage });
     var resolver = options.resolver && typeof options.resolver.resolve === 'function' ? options.resolver : createResolver(options.dependencies);
     var context;
     try { context = await resolver.resolve({ query: question, history: before }); }
     catch (e) { context = { characters: [], groups: [], sources: [], text: '', stats: { errors: ['resolver'] } }; }
     var prompt = buildDirectPrompt(question, before, context);
+    var sources = Array.isArray(context && context.sources) ? context.sources : [];
+    var memorySources = sources.filter(function (source) { return source && source.sourceType === 'memory'; });
+    var contextChars = 0;
+    (prompt.messages || []).forEach(function (message) { contextChars += String((message && message.content) || '').length; });
+    var memoryChars = memorySources.reduce(function (total, source) { return total + String(source.content || '').length; }, 0);
+    turnTraceEvent(traceId, 'memory', { memoryState: memorySources.length ? 'present' : 'empty', memoryItems: memorySources.length,
+      memoryChars: memoryChars, memoryAuthority: 'visibility_filtered_readonly' });
+    turnTraceEvent(traceId, 'middle_brain', { mbSource: 'direct', mbInjected: sources.length > 0 });
+    turnTraceEvent(traceId, 'context', { contextMessages: (prompt.messages || []).length, contextChars: contextChars,
+      systemChars: String(prompt.system || '').length, tailChars: String(context && context.text || '').length,
+      contextTokens: context && context.stats && context.stats.tokens });
+    turnTraceEvent(traceId, 'tool_execution', { toolName: 'none', toolStatus: 'disabled', toolCount: 0 });
     var caller = options.modelCall || canonicalModelCall();
-    if (typeof caller !== 'function') return { ok: false, error: 'middle_brain_unavailable', context: context, history: readTranscript({ storage: storage }) };
-    var result;
-    try {
-      result = await caller(prompt, {
-        maxTokens: options.maxTokens || 1600,
-        timeoutMs: options.timeoutMs,
-        jsonMode: false,
-        consumer: 'middle_brain.direct'
-      });
-    } catch (e) { result = { ok: false, error: 'model_error' }; }
+    if (typeof caller !== 'function') {
+      turnTraceFinish(traceId, 'failed', { reasonCode: 'model_unavailable', resultChars: 0, assistantMessages: 0 });
+      return { ok: false, error: 'middle_brain_unavailable', context: context, history: readTranscript({ storage: storage }) };
+    }
+    var result, retries = 0, startedAt = 0;
+    var modelOptions = { maxTokens: options.maxTokens || 1600, timeoutMs: options.timeoutMs,
+      jsonMode: false, consumer: 'middle_brain.direct', signal: options.signal };
+    while (true) {
+      startedAt = Date.now();
+      turnTraceEvent(traceId, 'model_call_started', { attempt: retries + 1, format: 'middle_brain' });
+      try { result = await caller(prompt, modelOptions); }
+      catch (e) { result = { ok: false, error: 'model_error' }; }
+      if (result && result.ok === true) {
+        turnTraceEvent(traceId, 'model_call_finished', { attempt: retries + 1, status: 'success',
+          latencyMs: Date.now() - startedAt, resultChars: str(result.content).length });
+        break;
+      }
+      var category = modelErrorCategory(result);
+      var status = Number(result && result.status) || 0;
+      turnTraceEvent(traceId, 'model_call_finished', { attempt: retries + 1, status: 'failed', latencyMs: Date.now() - startedAt,
+        errorCategory: category, httpStatus: status || null });
+      var limit = retryLimit(result);
+      if (retries >= limit || (options.signal && options.signal.aborted)) break;
+      retries++;
+      var delay = retryDelay(result, retries);
+      turnTraceEvent(traceId, 'model_call_retry', { attempt: retries + 1, retryCount: retries, retryDelayMs: delay,
+        errorCategory: category, httpStatus: status || null });
+      if (!await waitForRetry(delay, options.signal)) {
+        result = { ok: false, error: 'aborted' };
+        break;
+      }
+    }
     if (!result || result.ok !== true || !str(result.content).trim()) {
+      turnTraceFinish(traceId, result && result.error === 'aborted' ? 'aborted' : 'failed', {
+        errorCategory: modelErrorCategory(result || { error: 'empty' }), httpStatus: Number(result && result.status) || null,
+        resultChars: 0, assistantMessages: 0
+      });
       return { ok: false, error: (result && result.error) || 'empty', context: context, history: readTranscript({ storage: storage }) };
     }
     var history = appendTranscript({ role: 'assistant', content: str(result.content, MAX_MESSAGE_CHARS) }, { storage: storage });
+    turnTraceFinish(traceId, 'completed', { resultChars: str(result.content, MAX_MESSAGE_CHARS).length, assistantMessages: 1 });
     return { ok: true, content: str(result.content, MAX_MESSAGE_CHARS), usage: result.usage || null, context: context, history: history };
   }
 

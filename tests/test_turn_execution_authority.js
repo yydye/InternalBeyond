@@ -223,10 +223,17 @@ function req(requestId, friendId, characterId, content) {
     check('F1.concurrentSecondTurnIsBusy', busy.ok === false && busy.error === 'busy', busy);
     check('F2.busyIsPreTurn', terminalBefore === ex.terminalHolderSize(), 'busy 不产生新 turn instance / 新终局');
     check('F3.activeTurnVisibleBeforeTerminal', typeof ex.activeTurn(CHAT_CORE.conversationIdOf('char_a', '')) === 'string', ex.activeTurn(CHAT_CORE.conversationIdOf('char_a', '')));
+    const activeBinding = ex.activeTurnBindingOf(CHAT_CORE.conversationIdOf('char_a', ''), 'f1');
+    check('F3b.activeBindingRequiresMatchingRequestCorrelation',
+      activeBinding && activeBinding.turnId === ex.activeTurn(CHAT_CORE.conversationIdOf('char_a', ''))
+      && activeBinding.requestCorrelationId === 'f1'
+      && ex.activeTurnBindingOf(CHAT_CORE.conversationIdOf('char_a', ''), 'f2') === null,
+      activeBinding);
     release();
     const done = await inflight;
     check('F4.firstTurnStillCompletes', done.ok === true && done.outcome === 'completed', done && done.outcome);
     check('F5.finallyCleanupRan', ex.activeTurn(CHAT_CORE.conversationIdOf('char_a', '')) === null, 'inFlight cleared');
+    check('F5b.activeBindingExpiresAtFinality', ex.activeTurnBindingOf(CHAT_CORE.conversationIdOf('char_a', ''), 'f1') === null);
   }
 
   /* ══ G · scope immutability / conversation variants ══ */

@@ -205,14 +205,16 @@ function req(requestId, friendId, characterId) {
       return res.ok === true && res.realityEvent.domain === 'runtime' && res.realityEvent.type === 'turn_terminal';
     })(), 'outcome 是 payload，不是 event type');
 
-    /* 冻结的 outcome 词汇全部可发射 */
-    const outcomes = ['completed', 'credential-unavailable', 'empty-output', 'store-write-failed', 'abort', 'timeout', 'cancelled'];
+    /* D3 keeps terminal facts verbatim, including classify(kind) passthroughs;
+       D5 narrows only the outcomes it can classify directionally. */
+    const outcomes = ['completed', 'credential-unavailable', 'empty-output', 'store-write-failed',
+      'abort', 'timeout', 'cancelled', 'provider-error', 'unknown', 'provider-specific-kind'];
     const allOk = outcomes.every((oc, i) => {
       const a = createRuntimeRealityEvent({});
       const s = createTurnTerminalRealitySource({ realityEvent: a });
       return s.emit(terminal({ turnId: 'turn_oc_' + i, outcome: oc })).ok === true;
     });
-    check('E4.allTerminalOutcomesAreEmittable', allOk, outcomes);
+    check('E4.knownAndOpenPassthroughTerminalFactsAreEmittable', allOk, outcomes);
   }
 
   /* ══ F · failure isolation（§26） ══ */
@@ -319,23 +321,24 @@ function req(requestId, friendId, characterId) {
     const authorized = (OO.AUTHORIZED_OBSERVERS.CANONICAL_RUNTIME || []).indexOf('runtime.turn-execution') >= 0;
     check('J1.turnExecutionObserverAdmitted', authorized === true,
       'P1 AUTHORIZED_OBSERVERS[CANONICAL_RUNTIME] = ' + JSON.stringify(OO.AUTHORIZED_OBSERVERS.CANONICAL_RUNTIME));
-    check('J2.mechanicalDirectionAdmittedAfterR2', (function () {
+    check('J2.exactTerminalOutcomeTokenAdmittedByP1', (function () {
       const b = OO.buildOutcomeObservation({
         windowRef: { predictionId: 'p1', predictionCreatedAt: 1760000000000, opensAt: 1760000000000, closesAt: 1760086400000 },
         source: 'CANONICAL_RUNTIME', sourceInstance: 'runtime.turn-execution', targetDomain: 'runtime_state',
         observedAt: 1760000001000, completeness: 'point',
         scope: { characterId: 'c', conversationId: 'dm:c', subjectKind: 'user', subjectLabel: '' },
-        outcomeRef: { kind: 'token', token: 'runtime.turn_terminal' }, evidenceRefs: ['e'],
+        outcomeRef: { kind: 'token', token: 'runtime.turn_terminal.completed' }, evidenceRefs: ['e'],
         interventionContext: { behaviorEffectsInForce: [], predictionInfluencedSystem: null, contaminationClass: 'NONE', contaminationBasis: 'x' }
       });
       if (!b.ok) return false;
       const g = OO.authorityGate(b.value, { expectedScope: { characterId: 'c', conversationId: 'dm:c', subjectKind: 'user', subjectLabel: '' }, opportunity: { required: true, existence: { present: true, authoritySource: 'CANONICAL_RUNTIME' }, consumedAt: 1760000001500 } });
       return g.gateTrace.effectiveAdmissibility === 'ELIGIBLE';
-    })(), '★ R2 阶段迁移：runtime.turn_terminal 已入 directional 词表 ⇒ ELIGIBLE');
+    })(), 'exact recognized terminal outcome token is P1-admissible; relation remains P3-owned');
     P('REALITY_EVENT_SOURCE_LIVE', 'YES');
-    P('OUTCOME_OBSERVATION_PRODUCTION_CALLER_LIVE', 'NO');
-    P('MECHANICAL_FEEDBACK_LOOP_PRODUCTION_LIVE', 'NO');
-    P('BLOCKER', 'P1_AUTHORIZED_OBSERVERS lacks runtime.turn-execution');
+    P('OUTCOME_OBSERVATION_PRODUCTION_CALLER_LIVE', 'YES');
+    P('MECHANICAL_FEEDBACK_LOOP_PRODUCTION_LIVE', 'YES');
+    P('EVENT_PRODUCTION_PREDICTION_CREATION', 'LIVE · runtime.turn_terminal only');
+    P('BLOCKER', 'latent_state / relational / arbitrary event remain disabled');
   }
 
   console.log('\n' + '='.repeat(64));

@@ -452,9 +452,11 @@ section('G · boundaries');
     && SEAM_MOD.createExplicitPreferenceReportSeam({}).describe().predictionLookups === 0,
     'MODEL_CALLS_ADDED = 0 · DURABLE_WRITES_ADDED = 0');
   check('G4.matcherStillDefaultOff',
-    code('services/home-node-service.js').indexOf('enabled: false') >= 0
+    /EVIDENCE_MATCHER_ENABLED_DEFAULT\s*=\s*false/.test(code('services/home-node-service.js'))
+    && /enabled:\s*process\.env\.IB_EVIDENCE_MATCHER_ENABLED === '1'/.test(code('services/home-node-service.js'))
+    && /enabled:\s*options\.evidenceMatcherEnabled === true/.test(code('services/home-node-service.js'))
     && SETTLE_CORE.EVIDENCE_MATCHER_INVOCATION === 'OFF',
-    'EVIDENCE_MATCHER_ENABLED_DEFAULT = false');
+    'default stays false; only explicit process/instance policy can enable it');
   check('G5.existingRegexClassifierStillCandidateOnly',
     (function () {
       const adSrc = read('assets/js/active-diary.js');

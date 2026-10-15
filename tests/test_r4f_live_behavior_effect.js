@@ -63,6 +63,23 @@ function check(name, cond, detail) {
 function section(t) { console.log('\n── ' + t + ' ──'); }
 function P(k, v) { console.log(k + ' = ' + v); }
 function J(v) { try { return JSON.stringify(v); } catch (_) { return String(v); } }
+/* R4-F's 17-key base remains intact. R3 / R4-K / R4-L add their own
+   optional diagnostic projections; pin the allowed union instead of treating
+   those append-only fields as a P.E. envelope mutation. */
+const RECALL_BASE_KEYS = [
+  'ok', 'durable', 'operation', 'characterId', 'turnIdentity', 'selectedIds',
+  'activationPolicy', 'channel', 'reason', 'fingerprint', 'counts', 'chars',
+  'boundary', 'status', 'context', 'effects', 'behaviorEffect'
+];
+const RECALL_ADDITIVE_KEYS = ['association', 'reinterpretation', 'selfNarrative', 'behaviorModulation'];
+const RECALL_FAILURE_KEYS = ['error', 'reasonCode', 'detail', 'field', 'requestedOperation'];
+function hasAllowedRecallKeys(keys, failureEnvelope) {
+  const allowed = new Set(RECALL_BASE_KEYS.concat(RECALL_ADDITIVE_KEYS,
+    failureEnvelope ? RECALL_FAILURE_KEYS : []));
+  return RECALL_BASE_KEYS.every(key => keys.indexOf(key) >= 0)
+    && keys.every(key => allowed.has(key))
+    && (!failureEnvelope || (keys.indexOf('error') >= 0 && keys.indexOf('reasonCode') >= 0));
+}
 function sha256File(p) { try { return crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex'); } catch (_) { return null; } }
 const readRel = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 
@@ -327,9 +344,9 @@ function snapshotTree(dir) {
 
     const tA = await recallPost(H, reqA);
     const keysA = tA.body && tA.body.ok === true ? Object.keys(tA.body) : [];
-    check('1.1 Turn A：authoritative 信封恰好 17 个顶层键，第 17 键 behaviorEffect **在场**',
-      tA.status === 200 && keysA.length === 17 && keysA.indexOf('behaviorEffect') >= 0,
-      { status: tA.status, keys: keysA.length, hasKey: keysA.indexOf('behaviorEffect') >= 0 });
+    check('1.1 Turn A：R4-F base envelope is intact and approved R3/R4-K/R4-L projections are additive',
+      tA.status === 200 && hasAllowedRecallKeys(keysA, false),
+      { status: tA.status, keys: keysA, hasBehaviorEffect: keysA.indexOf('behaviorEffect') >= 0 });
     check('1.2 §15 current-turn isolation：Turn A 的响应**不含**它自己刚派生给未来的效果（值为 null）',
       tA.body && tA.body.behaviorEffect === null,
       { turnAEffect: tA.body && tA.body.behaviorEffect });
@@ -408,7 +425,7 @@ function snapshotTree(dir) {
   }
 
   /* ══════════════════════════════════════════════════════════════════ 2 · 信封形状 */
-  section('2 · authoritative envelope — 17 keys, effects untouched, caller may not submit');
+  section('2 · authoritative envelope — R4-F base keys, additive cognition projections, caller may not submit');
   {
     /* 递进时钟（+1 ms/次）：让"deadline-exceeded"这条**知道 mode** 的失败路径
        可被真实触达（固定时钟下 latencyMs 恒为 0，永远命不中那条分支），
@@ -418,16 +435,16 @@ function snapshotTree(dir) {
     const ok = await recallPost(H, { requestId: 'r4f_env_ok' });
     await settle(H);
     const keysOk = Object.keys(ok.body || {});
-    check('2.1 §12 成功信封 17 键，且 behaviorEffect 是 server-owned / 结构化 / 可空',
-      ok.status === 200 && keysOk.length === 17 && keysOk.indexOf('behaviorEffect') >= 0 && ok.body.behaviorEffect === null,
+    check('2.1 §12 成功信封保留 R4-F base keys 与闭集 additive projections，behaviorEffect 仍是 server-owned / 结构化 / 可空',
+      ok.status === 200 && hasAllowedRecallKeys(keysOk, false) && ok.body.behaviorEffect === null,
       { keys: keysOk });
     const beforeDerived = H.inst.runtimeBehaviorEffect.describe().counters.derived;
     const fail = await recallPost(H, { requestId: 'r4f_env_fail', timeoutMs: 1 });
     const keysFail = Object.keys(fail.body || {});
-    check('2.2 §12 知道 mode 的失败路径与成功**同一套**键（17 键超集：多出的只是 error/reasonCode 类字段）',
+    check('2.2 §12 权威失败路径保留 R4-F base keys；成功态的派生可选投影不要求在失败态伪造',
       fail.status !== 200 && fail.body && fail.body.behaviorEffect === null
-      && keysOk.every(k => keysFail.indexOf(k) >= 0),
-      { status: fail.status, error: fail.body && fail.body.error, missingFromFailure: keysOk.filter(k => keysFail.indexOf(k) < 0) });
+      && hasAllowedRecallKeys(keysFail, true),
+      { status: fail.status, error: fail.body && fail.body.error, keys: keysFail });
     const effects = ok.body && ok.body.effects ? ok.body.effects : {};
     check('2.3 §12 既有 `effects` 逐字仍是召回生命周期块（turnBegun/activation/exposure/turnEnded），行为语义没有混进去',
       J(Object.keys(effects).sort()) === J(['activation', 'exposure', 'turnBegun', 'turnEnded'])
@@ -754,9 +771,10 @@ function snapshotTree(dir) {
       && H.inst.runtimeExpectation.describe().predictionErrorLive === 'NO',
       { kind: H.inst.runtimeExpectation.describe().executionKind });
     const recallSrc = readRel('services/home-node/runtime-recall.js');
-    check('8.5 召回边界仍无 counterfactual / prediction-error 域（LIVE-4/5 的禁止项一个字都没放宽）',
-      !/counterfactual/i.test(SEAM_CODE_STRIP(recallSrc)) && !/prediction-error/i.test(SEAM_CODE_STRIP(recallSrc)),
-      'forbidden domains still absent from the recall boundary');
+    check('8.5 Counterfactual is pinned to the one post-cognition seam and PE remains outside recall',
+      SEAM.auditCounterfactualRecallSeam(recallSrc).ok === true
+        && !/prediction-error/i.test(SEAM_CODE_STRIP(recallSrc)),
+      SEAM.auditCounterfactualRecallSeam(recallSrc));
   }
 
   /* ══════════════════════════════════════════════════════════════════ 9 · 守卫锐化 + 对抗样本 */

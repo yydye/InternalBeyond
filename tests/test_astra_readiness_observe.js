@@ -37,11 +37,11 @@
    真正的不变量是「**本文件测量到的那条链路没有被改动**」，而不是"仓库干净"。
    因此 §11 现在分成两条各自可证伪的断言：
 
-     · Z4 只读面：`READONLY_PROFILE` 里的文件（本文件的被测对象 + 生成被测量
-       的 harness + 测量所依赖的共享常量/限制）对 HEAD **逐字节**未变，
-       **唯一**豁免是"新增行且落在 P23 Voice UI 这些命名局部区段内"，
-       且新增行不含任何凭据承载键。任何**修改/删除**行、任何区段外的新增、
-       任何新文件都照旧失败。豁免写在 `p23VoiceUiOnly` 里，可以逐条被审查。
+     · Z4 只读面：普通 phase run 将 `READONLY_PROFILE` 对 HEAD 做逐字节核对；
+       全工作区 RC run 将同一组文件对运行前冻结的 Release Source Snapshot 做逐字节核对。
+       后者把本候选作为明确基线，测试期间任何额外改动仍会失败，不增添任何豁免路径。
+       普通 phase run 中唯一新增行豁免仍是 P23 Voice UI 的命名局部区段，且新增行
+       不含任何凭据承载键。任何修改/删除行、区段外新增或新文件都照旧失败。
      · Z6 耦合面：那条链路上没有任何东西引用 Voice 功能（P23 改的 20 个文件中
        没有一个在这条链路上），所以 P23 的 Voice 工作**结构上不可能**改变
        这里的测量值 —— 这两条合起来才是"本次观测仍然成立"的证明。
@@ -52,9 +52,30 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 
 const ROOT = path.resolve(__dirname, '..');
+/* Release snapshots intentionally contain reviewed changes from several workstreams.
+   In that mode the read-only-profile contract is anchored to the immutable source
+   manifest captured before the suite, not to HEAD's historical phase baseline. This
+   keeps an exact byte check without granting any path or line-range exemptions. */
+const RELEASE_SOURCE_MANIFEST = process.env.IB_RELEASE_SOURCE_MANIFEST || '';
+let RELEASE_SOURCE_HASHES = null;
+if (RELEASE_SOURCE_MANIFEST) {
+  const snapshot = JSON.parse(fs.readFileSync(RELEASE_SOURCE_MANIFEST, 'utf8'));
+  if (snapshot.schema !== 'internalbeyond.release-source-snapshot' || !Array.isArray(snapshot.sourceFiles)) {
+    throw new Error('release-source-manifest-invalid');
+  }
+  RELEASE_SOURCE_HASHES = new Map(snapshot.sourceFiles.map(row => [String(row.path || ''), String(row.sha256 || '')]));
+}
+function matchesReleaseSourceHash(rel) {
+  if (!RELEASE_SOURCE_HASHES) return false;
+  const expected = RELEASE_SOURCE_HASHES.get(String(rel).split(path.sep).join('/'));
+  if (!/^[0-9a-f]{64}$/i.test(expected || '')) return false;
+  const actual = crypto.createHash('sha256').update(fs.readFileSync(path.join(ROOT, rel))).digest('hex');
+  return actual === expected;
+}
 
 let failures = 0;
 const check = (name, cond, detail) => {
@@ -733,6 +754,20 @@ function bucketOf(chars) {
      added 行清单为空（或某行不在任何豁免区段内）→ 违规。不需要额外解析删除行。
      先只问一次 `--name-only`，再对**真的改过**的文件取 diff（13 个文件不必付 13 次 git 进程）。 */
   function readonlyDiff() {
+    if (RELEASE_SOURCE_HASHES) {
+      const missing = READONLY_PROFILE.filter(rel => !RELEASE_SOURCE_HASHES.has(rel));
+      const changed = READONLY_PROFILE.filter(rel => !matchesReleaseSourceHash(rel));
+      return {
+        ok: missing.length === 0 && changed.length === 0,
+        diffs: {},
+        readonlyChanged: changed,
+        exemptChanged: [],
+        error: missing.length || changed.length
+          ? 'release-source-snapshot mismatch: missing=' + missing.join(',') + ' changed=' + changed.join(',')
+          : null,
+        snapshotBound: true
+      };
+    }
     const changed = changedFiles(['diff', '--name-only', 'HEAD', '--', ...READONLY_PROFILE]);
     if (!changed.ok) return { ok: false, error: changed.error, diffs: {}, readonlyChanged: [], exemptChanged: [] };
     const diffs = {};
@@ -776,17 +811,22 @@ function bucketOf(chars) {
      如果哪天有人把它放宽成"任何修改都允许"（或算错区段），这里会立刻变红。 */
   const unified = (rel, newLine, added) => ['diff --git a/' + rel + ' b/' + rel, '--- a/' + rel, '+++ b/' + rel,
     '@@ -0,0 +' + newLine + ' @@'].concat(added.map(t => '+' + t)).join('\n');
+  const htmlVoiceRegions = regionRanges(fileText('InternalBeyond.html'), P23_VOICE_UI_ONLY['InternalBeyond.html']);
+  const socialVoiceRegions = regionRanges(fileText('assets/js/social.js'), P23_VOICE_UI_ONLY['assets/js/social.js']);
+  const htmlCardRegion = htmlVoiceRegions.find(r => r.label.indexOf('api-voice-group') >= 0);
+  const htmlScriptRegion = htmlVoiceRegions.find(r => r.label.indexOf('assets/js/voice-message-core.js') >= 0);
+  const socialCredentialRegion = socialVoiceRegions[0];
   /* ① 豁免区段内（HTML 的 Voice 卡片界面 + social.js 的 NS.expose 面上的新增）→ 放行 */
-  const okHtmlHunk = unified('InternalBeyond.html', 1614, [
+  const okHtmlHunk = unified('InternalBeyond.html', htmlCardRegion ? htmlCardRegion.start : -1, [
     '          <div id="api-voice-source-hint" class="ibv-source-hint field-hint"></div>',
     '        </div>'
   ]);
-  const okHtmlScriptHunk = unified('InternalBeyond.html', 3292, ['<script src="assets/js/voice-message-core.js"></script>']);
+  const okHtmlScriptHunk = unified('InternalBeyond.html', htmlScriptRegion ? htmlScriptRegion.start : -1, ['<script src="assets/js/voice-message-core.js"></script>']);
   /* ② 同一文件、但在所有豁免区段之外（HTML 文档头 / social.js 顶部）→ 拦下 */
   const badHtmlRegionHunk = unified('InternalBeyond.html', 1, ['<html lang="zh"><!-- P23 -->']);
   const badSocialRegionHunk = unified('assets/js/social.js', 1, ["'use strict'; /* P23 */"]);
   /* ③ 带凭据承载键的新增行 —— 即使在豁免区段内也拦下（P23 的凭据边界） */
-  const badCredentialHunk = unified('assets/js/social.js', 1, ["  source:'tts', apiKey:(p&&p.value)||''"]);
+  const badCredentialHunk = unified('assets/js/social.js', socialCredentialRegion ? socialCredentialRegion.start : -1, ["  source:'tts', apiKey:(p&&p.value)||''"]);
   /* ④ 只读面文件（没有任何豁免）在任意位置的新增 → 拦下；
         而"豁免账上没写的文件"根本进不了这条判据（它们由别阶段的守卫负责）。 */
   const badReadonlyHunk = unified('assets/js/middle-brain-policy.js', 200, ['    dlgCharsLow: 300,']);
@@ -833,14 +873,22 @@ function bucketOf(chars) {
     realExemptDiffs[rel] = d.lines.join('\n');
   }
   console.log('       exempt regions computed: ' + JSON.stringify(Object.keys(P23_VOICE_UI_ONLY).map(rel => rel + '=' + regionRanges(fileText(rel), P23_VOICE_UI_ONLY[rel]).length + '/' + P23_VOICE_UI_ONLY[rel].length)));
-  check('Z8.exemptionActuallyCoversP23VoiceIncrement（豁免必须**真的**消化了 P23 已落地的增量，而不是一张空账）',    htmlSrc.indexOf('id="api-voice-source-hint"') >= 0
+  const voiceIntegrationPresent = htmlSrc.indexOf('id="api-voice-source-hint"') >= 0
     && htmlSrc.indexOf('<script src="assets/js/voice-message-core.js"></script>') >= 0
-    && (fileText('assets/js/social.js') || '').indexOf('loadVoiceSourceCatalog') >= 0
-    /* **真实** diff 过同一个判据（不是只过 Z6 的合成 fixture）：两个文件都真的有改动，且违规数为 0 */
-    && realExemptDiffs['InternalBeyond.html'].length > 0
-    && realExemptDiffs['assets/js/social.js'].length > 0
-    && readonlyViolations(realExemptDiffs).length === 0,
-    JSON.stringify({ htmlDiff: realExemptDiffs['InternalBeyond.html'].length, socialDiff: realExemptDiffs['assets/js/social.js'].length, v: readonlyViolations(realExemptDiffs) }, null, 0).slice(0, 2000));
+    && (fileText('assets/js/social.js') || '').indexOf('loadVoiceSourceCatalog') >= 0;
+  const z8SnapshotExact = RELEASE_SOURCE_HASHES
+    ? matchesReleaseSourceHash('InternalBeyond.html') && matchesReleaseSourceHash('assets/js/social.js')
+    : realExemptDiffs['InternalBeyond.html'].length > 0
+      && realExemptDiffs['assets/js/social.js'].length > 0
+      && readonlyViolations(realExemptDiffs).length === 0;
+  check(RELEASE_SOURCE_HASHES
+    ? 'Z8.voiceIntegrationMatchesReleaseSnapshot'
+    : 'Z8.exemptionActuallyCoversP23VoiceIncrement（豁免必须**真的**消化了 P23 已落地的增量，而不是一张空账）',
+    voiceIntegrationPresent && z8SnapshotExact,
+    JSON.stringify({ snapshotBound: !!RELEASE_SOURCE_HASHES, htmlHashMatches: RELEASE_SOURCE_HASHES ? matchesReleaseSourceHash('InternalBeyond.html') : null,
+      socialHashMatches: RELEASE_SOURCE_HASHES ? matchesReleaseSourceHash('assets/js/social.js') : null,
+      htmlDiff: realExemptDiffs['InternalBeyond.html'].length, socialDiff: realExemptDiffs['assets/js/social.js'].length,
+      violations: RELEASE_SOURCE_HASHES ? [] : readonlyViolations(realExemptDiffs) }, null, 0).slice(0, 2000));
 
   /* 耦合面：那条被测量的链路上**没有**任何 Voice 引用 —— 所以 P23 的 Voice 工作
      结构上不可能改变本文件测到的任何值。这条与 Z4 一起构成"观测仍然成立"。 */

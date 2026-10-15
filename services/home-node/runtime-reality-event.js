@@ -176,6 +176,7 @@ function createRuntimeRealityEvent(deps) {
   /* bounded session 幂等：key = domain-event 的 dedupeKey（**不含** predictionId） */
   const held = new Map();
   const heldOrder = [];
+  let disposed = false;
   const counters = {
     attempts: 0, minted: 0, duplicatesSuppressed: 0,
     rejectedSource: 0, rejectedDomain: 0, rejectedType: 0,
@@ -362,13 +363,54 @@ function createRuntimeRealityEvent(deps) {
     };
   }
 
+  /* P5-B3-I · read-only fact lookup for downstream authorities.
+     The event is returned only from this authority's sealed, session-local
+     holder. `historyComplete` is deliberately conservative: one eviction
+     means absence can no longer be asserted from this holder. */
+  function getRealityEventById(realityEventId) {
+    const id = text(realityEventId);
+    if (!id) return null;
+    for (const event of held.values()) {
+      if (text(event && event.realityEventId) === id && isRealityEvent(event)) return event;
+    }
+    return null;
+  }
+
+  function queryRealityEvents(filter) {
+    const q = isPlainObject(filter) ? filter : {};
+    const fromAt = Number.isFinite(Number(q.fromAt)) ? Number(q.fromAt) : null;
+    const toAt = Number.isFinite(Number(q.toAt)) ? Number(q.toAt) : null;
+    const events = Array.from(held.values()).filter(function (event) {
+      if (!isRealityEvent(event)) return false;
+      if (q.realitySourceId != null && text(event.realitySourceId) !== text(q.realitySourceId)) return false;
+      if (q.sourceInstance != null && text(event.sourceInstance) !== text(q.sourceInstance)) return false;
+      if (q.domain != null && text(event.domain) !== text(q.domain)) return false;
+      if (q.type != null && text(event.type) !== text(q.type)) return false;
+      if (q.characterId != null && text(event.characterId) !== text(q.characterId)) return false;
+      if (q.conversationId != null && text(event.conversationId) !== text(q.conversationId)) return false;
+      if (fromAt != null && Number(event.occurredAt) < fromAt) return false;
+      if (toAt != null && Number(event.occurredAt) > toAt) return false;
+      return true;
+    }).sort(function (a, b) {
+      return Number(a.occurredAt) - Number(b.occurredAt)
+        || text(a.realityEventId).localeCompare(text(b.realityEventId));
+    });
+    return Object.freeze({
+      events: Object.freeze(events),
+      historyComplete: !disposed && counters.evicted === 0,
+      authority: 'REALITY_EVENT_AUTHORITY'
+    });
+  }
+
   return {
     ENTRY: ENTRY,
     ingest: ingest,
     describe: describe,
     isRealityEvent: isRealityEvent,
+    getRealityEventById: getRealityEventById,
+    queryRealityEvents: queryRealityEvents,
     heldEventCount: function () { return held.size; },
-    dispose: function () { held.clear(); heldOrder.length = 0; },
+    dispose: function () { disposed = true; held.clear(); heldOrder.length = 0; },
     __counters: counters,
     awaitIdle: function () { return Promise.resolve({ idle: true, inFlight: 0 }); }
   };

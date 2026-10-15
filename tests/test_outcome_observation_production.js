@@ -59,10 +59,11 @@ function predRef(id, opensAt, closesAt) {
   section('A · producer allowlist');
   {
     check('A1.staticTableOnly',
-      /* ★ P5-B3-E-R1 翻面：4 → 5。新增的第 5 个是**唯一**一个
-         EXPLICIT_USER_REPORT producer，只由 dedicated structured report 链到达。 */
-      Object.keys(PRODUCER_TABLE).length === 5
+      /* P5-B3-D5 新增精确 turn-terminal fact projection；原有 report producer 仍唯一。 */
+      Object.keys(PRODUCER_TABLE).length === 6
       && PRODUCER_TABLE['runtime-state'].allowedSource === 'CANONICAL_RUNTIME'
+      && PRODUCER_TABLE['turn-terminal'].allowedSource === 'CANONICAL_RUNTIME'
+      && PRODUCER_TABLE['turn-terminal'].sourceInstance === 'runtime.turn-execution'
       && PRODUCER_TABLE['user-action'].allowedSource === 'USER_BEHAVIOR'
       && PRODUCER_TABLE['linguistic-evidence'].allowedSource === 'LINGUISTIC_EVIDENCE'
       && PRODUCER_TABLE['explicit-user-report'].allowedSource === 'EXPLICIT_USER_REPORT',
@@ -429,12 +430,12 @@ function predRef(id, opensAt, closesAt) {
     }).observation;
     const s1 = createRuntimePredictionSettlement({ clock: () => T0 });
     const r1 = s1.settlePrediction(pred, [{ observation: okObs }], {
-      now: T0 + 2000, opportunity: { required: true, existence: { present: true, authoritySource: 'CANONICAL_RUNTIME' }, consumedAt: T0 + 1500 }
+      now: T0 + 2000
     });
     check('H1.runtimeSuccessSettlesMatched',
       r1.settlement.state === 'matched' && r1.settlement.calibrationCounted === true,
       JSON.stringify({ s: r1.settlement.state }));
-    /* ② runtime conflict ⇒ 只有 opportunity policy 允许才 missed */
+    /* ② Runtime evidence cannot declare its own completed opportunity. */
     const reg2 = makeRegistry();
     const pred2 = project(reg2, 'delivery.cancelled', 'hs2');
     const prod2 = producer({ attributionAuthority: be(), registry: reg2 });
@@ -445,14 +446,15 @@ function predRef(id, opensAt, closesAt) {
     }).observation;
     const s2 = createRuntimePredictionSettlement({ clock: () => T0 });
     const r2 = s2.settlePrediction(pred2, [{ observation: missObs }], {
-      now: T0 + 2000, opportunity: { required: true, existence: { present: true, authoritySource: 'CANONICAL_RUNTIME' }, consumedAt: T0 + 1500 }
+      now: T0 + 2000
     });
-    check('H2.runtimeConflictSettlesMissedViaPolicy',
-      r2.settlement.state === 'missed'
+    check('H2.runtimeConflictNeedsCanonicalOpportunityAuthority',
+      r2.settlement.state !== 'missed'
+      && r2.settlement.conflictSummary.decisive === 0
       /* producer 侧**不产出**结算状态：'missed' 只出现在禁止键表里（声明它为非法） */
       && FORBIDDEN_PAYLOAD_KEYS.indexOf('missed') >= 0
       && FORBIDDEN_PAYLOAD_KEYS.indexOf('matched') >= 0,
-      'producer 从未写 missed；状态由 P3 决定 (state=' + r2.settlement.state + ')');
+      'runtime source does not provide an opportunity; P3 blocks decisive conflict (state=' + r2.settlement.state + ')');
     check('H3.noUniqueOpportunityConflation',
       read(PROD_REL).indexOf('NOT-CONSUMED') < 0 && read(PROD_REL).indexOf('ABSENT') < 0,
       'producer 不决定 opportunity');
@@ -498,7 +500,7 @@ function predRef(id, opensAt, closesAt) {
       });
       const e = createRuntimePredictionSettlement({ clock: () => T0, evidenceMatcher: matcher });
       const r = await e.settlePredictionWithEvidenceMatcher(pred2, [{ observation: lingObs.observation }], {
-        now: T0 + 2000, opportunity: { required: true, existence: { present: true, authoritySource: 'CANONICAL_RUNTIME' }, consumedAt: T0 + 1500 }
+        now: T0 + 2000
       });
       return r.settlement.state !== 'matched' && r.settlement.calibrationCounted === false;
     })(), 'Matcher support 不能把 linguistic evidence 洗成 decisive');

@@ -35,6 +35,7 @@ const path = require('path');
 const ASSETS_JS = path.join(__dirname, '..', '..', 'assets', 'js');
 const DEFAULT_CORE = require(path.join(ASSETS_JS, 'memory-recall', 'prediction-calibration-core.js'));
 const DEFAULT_SETTLEMENT_RUNTIME = require('./runtime-prediction-settlement.js');
+const behaviorEffectRuntimeModule = require('./runtime-behavior-effect.js');
 
 /* 有界持有者：与 Registry / Settlement 同一纪律（纯进程内存 · 会话内 · 有界）。 */
 const MAX_PARTITIONS = 64;
@@ -105,17 +106,18 @@ function createRuntimePredictionCalibration(deps) {
     return { classifiable: false, reason: reason };
   }
   /**
-   * R2 · 归因 authority 是否足够。
-   *   (q-14)：主观域 attribution = unknown ⇒ decisive 仍然被禁。
-   *   生产 projection 目前**恒**为 unknown（P2 默认），所以主观域
-   *   productionSettleable 现在**必然**是 false —— 这是真实状态，不是缺陷。
+   * P5-B3-J-R1 · Authority availability comes only from the exact canonical
+   * BehaviorEffect runtime injected by assembly. Query coverage and query status
+   * are deliberately not consulted here.
    */
   function attributionAuthorityFor(predictionType) {
-    if (typeof d.attributionAuthorityAvailable === 'function') {
-      return d.attributionAuthorityAvailable(predictionType) === true;
+    void predictionType;
+    try {
+      return typeof behaviorEffectRuntimeModule.isCanonicalBehaviorEffectAttributionAuthority === 'function'
+        && behaviorEffectRuntimeModule.isCanonicalBehaviorEffectAttributionAuthority(d.attributionAuthority) === true;
+    } catch (_) {
+      return false;   /* missing, wrong-module, or unreachable authority fails closed */
     }
-    if (typeof d.attributionAuthorityAvailable === 'boolean') return d.attributionAuthorityAvailable;
-    return false;   /* fail-closed 默认 */
   }
 
   /* partitionKey → partition state */
@@ -388,6 +390,7 @@ function createRuntimePredictionCalibration(deps) {
           sampleStatus: s.sampleStatus,
           capabilityStatus: s.capabilityCoverage.status,
           runtimeClassifiable: s.capabilityCoverage.runtimeClassifiable,
+          capabilityCoverage: s.capabilityCoverage,
           calibrationConfidence: s.calibrationConfidence,
           predictionErrorBuckets: s.predictionErrorBuckets
         })),
@@ -396,6 +399,8 @@ function createRuntimePredictionCalibration(deps) {
           diagnosticOnly: true,
           participatesInConfidence: false,
           participatesInCalibrationCounts: false,
+          attributionAuthorityAvailable: attributionAuthorityFor(null),
+          attributionAuthorityAvailabilityMeans: 'CANONICAL_RUNTIME_AUTHORITY_CONSTRUCTED_AND_REACHABLE',
           globalEligibleCount: list.reduce((n, s) => n + s.calibrationCounts.eligibleTotal, 0),
           multiDomainSettlementCount: counters.multiDomainSettlements,
           unresolvablePartitionCount: counters.rejectedPartition,
@@ -438,8 +443,16 @@ function createRuntimePredictionCalibration(deps) {
       multiDomainCalibrationPartitionV1: 'FORBIDDEN',
       exactlyOneAdmittedTargetDomainRequired: 'YES',
       capabilityCoverageIsOrthogonal: 'YES',
+      productionSettleableFormula: core.STATE_SUPPORT.productionSettleableFormula,
+      runtimeClassifiableIncludesPolicyAllowed: 'NO',
+      productionSettleableIsSampleDependent: 'NO',
       compiledButDisabledIsNotRuntimeClassifiable: 'YES',
       runtimeClassifiableIsNotProductionSettleable: 'YES',
+      attributionAuthorityAvailable: attributionAuthorityFor(null),
+      attributionAuthorityAvailabilityMeans: 'CANONICAL_RUNTIME_AUTHORITY_CONSTRUCTED_AND_REACHABLE',
+      authorityAvailabilityIsAttributionCoverage: 'NO',
+      authorityAvailabilityIsSampleEligibility: 'NO',
+      authorityAvailabilityIsCalibrationConfidence: 'NO',
       capabilityGapReasonVocabulary: core.CAPABILITY_GAP_REASONS,
 
       canonicalCountsName: core.CANONICAL_COUNTS_NAME,

@@ -1,11 +1,11 @@
 'use strict';
 /* ══════════════════════════════════════════════════════════════════════════
-   Internal Beyond · P5-B3-D4-R2 · Turn Terminal Directional Admission
+   Internal Beyond · P5-B3-D5 · Turn Terminal Directional Admission Regression
    （运行 node tests/test_turn_terminal_directional_admission.js）
 
-   owner ruling：RUNTIME_STATE_TOKENS += 'runtime.turn_terminal'
-   TOKEN_ALLOWED_FOR_DIRECTIONAL_EVALUATION = YES
-   TOKEN_AUTOMATICALLY_SUPPORTS/CONFLICTS/SETTLES_PREDICTION = NO
+   D4 generic token remains a fact-only admission marker.
+   D5 recognized outcome-specific tokens feed P3 prediction-specific relation.
+   Reality source / P1 still do not declare relation or settlement.
    TOKEN_ADMISSION != OPPORTUNITY / SOURCE_AUTHORITY / SETTLEMENT_AUTHORITY
    ══════════════════════════════════════════════════════════════════════════ */
 
@@ -20,6 +20,7 @@ const { createTurnTerminalRealitySource } = require(path.join(ROOT, 'services', 
 const { createRuntimeOutcomeObservation } = require(path.join(ROOT, 'services', 'home-node', 'runtime-outcome-observation.js'));
 const { createRuntimePredictionRegistry } = require(path.join(ROOT, 'services', 'home-node', 'runtime-prediction-registry.js'));
 const { createRuntimePredictionSettlement } = require(path.join(ROOT, 'services', 'home-node', 'runtime-prediction-settlement.js'));
+const SETTLEMENT_CORE = require(path.join(ROOT, 'assets', 'js', 'memory-recall', 'prediction-settlement-core.js'));
 const { createRuntimeBehaviorEffect } = require(path.join(ROOT, 'services', 'home-node', 'runtime-behavior-effect.js'));
 const SRC_REL = 'services/home-node/turn-terminal-reality-source.js';
 
@@ -33,7 +34,7 @@ const P = (k, v) => console.log('  FACTS ' + k + ' = ' + v);
 const read = rel => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 
 const T0 = 1760000000000;
-const TOKEN = 'runtime.turn_terminal';
+const TOKEN = 'runtime.turn_terminal.completed';
 const SCOPE = { characterId: 'char_a', conversationId: 'dm:char_a', subjectKind: 'user', subjectLabel: '' };
 const OPP = { required: true, existence: { present: true, authoritySource: 'CANONICAL_RUNTIME' }, consumedAt: T0 + 1500 };
 const CLOSE = T0 + 86400000;
@@ -58,14 +59,20 @@ function direction(token, si) {
 }
 function makePrediction(token, over) {
   const o = over || {};
-  const reg = createRuntimePredictionRegistry({ clock: () => T0 });
+  const reg = o.registry || createRuntimePredictionRegistry({ clock: () => T0, attributionAuthority: o.attributionAuthority || null });
   return reg.projectFromValidatedExpectation({
     epistemicStatus: 'prediction', prediction: '本回合会正常完成',
     trigger: { kind: 'explicit-cue', label: 'l' }, evidenceMemoryIds: ['m1'],
     contradictoryEvidenceIds: [], generalizationLevel: 'episode-hypothesis',
     subjectivePredictionConfidence: 0.8, subject: { kind: 'user', label: '' },
     predicate: { kind: 'will-do' }, expectedOutcome: { kind: 'exclusive-outcome', token: token }
-  }, { now: T0, characterId: o.characterId || 'char_a', conversationId: o.conversationId || 'dm:char_a', turnId: o.turnId || 'tp1', expectationIndex: 0 }).record;
+  }, {
+    now: T0,
+    characterId: o.characterId || 'char_a',
+    conversationId: o.conversationId || 'dm:char_a',
+    turnId: o.turnId || 'turn_r2',
+    expectationIndex: o.expectationIndex || 0
+  }).record;
 }
 function terminal(over) {
   return Object.freeze(Object.assign({
@@ -78,14 +85,34 @@ function chain(token, opts) {
   const re = createRuntimeRealityEvent({});
   const src = createTurnTerminalRealitySource({ realityEvent: re });
   const be = createRuntimeBehaviorEffect({ clock: () => T0, logger: () => {} });
-  const pr = createRuntimeOutcomeObservation({ isRealityEvent: re.isRealityEvent, attributionAuthority: o.attribution === false ? null : be });
-  const ev = src.emit(terminal(o.terminal)).realityEvent;
+  const terminalFact = terminal(o.terminal);
+  const registry = createRuntimePredictionRegistry({
+    clock: () => T0,
+    attributionAuthority: o.attribution === false ? null : be
+  });
+  const pred = makePrediction(token, {
+    registry: registry,
+    attributionAuthority: o.attribution === false ? null : be,
+    turnId: terminalFact.turnId,
+    expectationIndex: o.expectationIndex || 0
+  });
+  const pr = createRuntimeOutcomeObservation({
+    registry: registry,
+    isRealityEvent: re.isRealityEvent,
+    attributionAuthority: o.attribution === false ? null : be
+  });
+  const ev = src.emit(terminalFact).realityEvent;
   const obs = pr.projectForPrediction({
     realityEvent: ev,
-    predictionRef: { predictionId: o.predictionId || 'P1', opensAt: T0, closesAt: CLOSE, predictionCreatedAt: T0 }
+    predictionRef: {
+      predictionId: pred.predictionId,
+      opensAt: pred.observationWindow.opensAt,
+      closesAt: pred.observationWindow.closesAt,
+      predictionCreatedAt: pred.createdAt
+    }
   });
   const cands = pr.candidatePredictions(ev, { characterId: o.characterId || 'char_a', conversationId: o.conversationId || 'dm:char_a' });
-  return { re: re, src: src, pr: pr, ev: ev, obs: obs, cands: cands };
+  return { re: re, src: src, pr: pr, ev: ev, obs: obs, cands: cands, registry: registry, prediction: pred, attributionAuthority: be };
 }
 
 (function main() {
@@ -94,11 +121,16 @@ function chain(token, opts) {
   {
     check('A1.exactTokenPresent', OO.RUNTIME_STATE_TOKENS.indexOf(TOKEN) >= 0, OO.RUNTIME_STATE_TOKENS);
     check('A2.exactlyOneAddition',
-      OO.RUNTIME_STATE_TOKENS.length === 13
+      OO.RUNTIME_STATE_TOKENS.length === 21
       && ['delivery.queued', 'delivery.delivering', 'delivery.completed', 'delivery.cancelled', 'delivery.failed',
         'popup.shown', 'popup.dismissed', 'popup.answered', 'activity.available', 'activity.unavailable',
-        'memory.record-written', 'memory.record-refused'].every(t => OO.RUNTIME_STATE_TOKENS.indexOf(t) >= 0),
-      '前 12 项逐字保留；总数 = ' + OO.RUNTIME_STATE_TOKENS.length);
+        'memory.record-written', 'memory.record-refused', 'runtime.turn_terminal',
+        'runtime.turn_terminal.completed', 'runtime.turn_terminal.credential-unavailable',
+        'runtime.turn_terminal.empty-output', 'runtime.turn_terminal.store-write-failed',
+        'runtime.turn_terminal.abort', 'runtime.turn_terminal.timeout',
+        'runtime.turn_terminal.cancelled', 'runtime.turn_terminal.provider-error']
+        .every(t => OO.RUNTIME_STATE_TOKENS.indexOf(t) >= 0),
+      '前 12 项与 generic terminal token 保留；增加 8 个实际 outcome token；总数 = ' + OO.RUNTIME_STATE_TOKENS.length);
     check('A3.noWildcardOrNearToken',
       OO.RUNTIME_STATE_TOKENS.every(t => t.indexOf('*') < 0)
       && OO.RUNTIME_STATE_TOKENS.indexOf('runtime.turn') < 0
@@ -178,8 +210,18 @@ function chain(token, opts) {
       { obs: zero.obs.ok });
     check('D3.multiPairSharesOneRealityEvent', (function () {
       const l = chain(TOKEN);
-      const two = ['P1', 'P2'].map(pid => l.pr.projectForPrediction({
-        realityEvent: l.ev, predictionRef: { predictionId: pid, opensAt: T0, closesAt: CLOSE, predictionCreatedAt: T0 }
+      const second = makePrediction(TOKEN, {
+        registry: l.registry, turnId: l.prediction.sourceExpectationRef.turnId, expectationIndex: 1
+      });
+      const records = [l.prediction, second];
+      const two = records.map(record => l.pr.projectForPrediction({
+        realityEvent: l.ev,
+        predictionRef: {
+          predictionId: record.predictionId,
+          opensAt: record.observationWindow.opensAt,
+          closesAt: record.observationWindow.closesAt,
+          predictionCreatedAt: record.createdAt
+        }
       }));
       return l.re.heldEventCount() === 1
         && two.every(r => r.ok === true)
@@ -212,10 +254,10 @@ function chain(token, opts) {
   /* ══ E · decisive settlement（真实闭环） ══ */
   section('E · decisive settlement');
   {
-    const pred = makePrediction(TOKEN);
     const c = chain(TOKEN);
+    const pred = c.prediction;
     const st = createRuntimePredictionSettlement({ clock: () => T0 });
-    const r = st.settlePrediction(pred, [{ observation: c.obs.observation }], { now: CLOSE + 1, opportunity: OPP });
+    const r = st.settlePrediction(pred, [{ observation: c.obs.observation }], { now: T0 + 2000 });
     P('E2E.TurnTerminalFact', 1);
     P('E2E.RealityEvent', c.re.heldEventCount());
     P('E2E.OutcomeObservation', c.obs.ok ? 1 : 0);
@@ -229,35 +271,41 @@ function chain(token, opts) {
       r.settlement.calibrationCounted === true
       && WIRING.stripJsComments(read(SRC_REL)).replace(/FORBIDDEN_INPUT_KEYS[\s\S]*?\]/, '').indexOf('calibrationCounted') < 0,
       'adapter 从未写 calibrationCounted');
-    check('E3.decisiveRequiresKnownAttribution', (function () {
-      /* 无 attribution authority ⇒ 归因 unknown ⇒ 不得 decisive（frozen gate 仍生效） */
-      const l = chain(TOKEN, { attribution: false });
+    check('E3.exclusiveTerminalMismatchIsConflictButOpportunityStillGatesMissed', (function () {
+      const l = chain(TOKEN, { terminal: { outcome: 'store-write-failed' } });
+      const relation = SETTLEMENT_CORE.classifyRelation(l.prediction, l.obs.observation);
       const s2 = createRuntimePredictionSettlement({ clock: () => T0 });
-      const rr = s2.settlePrediction(makePrediction(TOKEN), [{ observation: l.obs.observation }], { now: CLOSE + 1, opportunity: OPP });
-      return rr.settlement.state !== 'matched';
-    })(), 'contamination gate 未被 token 入表绕过');
+      const rr = s2.settlePrediction(l.prediction, [{ observation: l.obs.observation }], { now: CLOSE + 1 });
+      return relation === 'conflict'
+        && rr.settlement.state !== 'missed'
+        && rr.settlement.opportunityState === 'UNKNOWN'
+        && rr.settlement.calibrationCounted === false;
+    })(), 'mechanical conflict is not an opportunity witness');
     check('E4.matchedNeverProducedByTokenAlone', (function () {
-      /* token 入表不等于支持：预期其它 token 的预测面对本 observation 应得 conflict/不支持 */
-      const other = makePrediction('delivery.completed');
+      /* unrelated runtime proposition is irrelevant to a terminal outcome Prediction */
+      const other = makePrediction('delivery.completed', { turnId: c.prediction.sourceExpectationRef.turnId });
       const s3 = createRuntimePredictionSettlement({ clock: () => T0 });
-      const rr = s3.settlePrediction(other, [{ observation: c.obs.observation }], { now: CLOSE + 1, opportunity: OPP });
-      return rr.settlement.state !== 'matched';
-    })(), 'TOKEN_AUTOMATICALLY_SUPPORTS_PREDICTION = NO');
+      return SETTLEMENT_CORE.classifyRelation(other, c.obs.observation) === 'irrelevant'
+        && s3.settlePrediction(other, [{ observation: c.obs.observation }], { now: CLOSE + 1 }).settlement.state !== 'matched';
+    })(), 'unrelated event proposition does not become terminal conflict or support');
   }
 
   /* ══ F · production subscriber audit ══ */
   section('F · production subscriber');
   {
-    const svcFiles = ['services/home-node-service.js', 'services/home-node/runtime-prediction-settlement.js', 'services/home-node/runtime-reality-event.js'];
-    const callers = svcFiles.filter(f => {
-      try { return read(f).indexOf('projectForPrediction') >= 0; } catch (e) { return false; }
-    });
-    check('F1.noProductionSubscriberForPairing', callers.length === 0, callers);
+    const feedback = read('services/home-node/runtime-reality-feedback.js');
+    const service = read('services/home-node-service.js');
+    check('F1.productionSubscriberPairsAndProjectsCanonicalFacts',
+      feedback.indexOf('observationRuntime.candidatePredictions') >= 0
+      && feedback.indexOf('observationRuntime.projectForPrediction') >= 0
+      && service.indexOf('onRealityEventMinted: function (realityEvent)') >= 0,
+      'canonical RealityEvent subscriber → Registry pairing → P1 projection');
     check('F2.realitySourceIsProductionWired',
       (read('services/home-node-service.js').match(/onTurnTerminal: buildTurnTerminalSink\(/g) || []).length === 2,
       'executor terminal sink 已接线');
-    P('MECHANICAL_FEEDBACK_LOOP_PRODUCTION_LIVE', 'NO');
-    P('BLOCKER', 'no production subscriber consumes minted RealityEvents to run pairing + OutcomeObservation projection');
+    P('MECHANICAL_FEEDBACK_LOOP_PRODUCTION_LIVE', 'YES');
+    P('EVENT_PRODUCTION_PREDICTION_CREATION', 'LIVE · runtime.turn_terminal only');
+    P('BLOCKER', 'latent_state / relational / arbitrary event remain disabled');
   }
 
   /* ══ G · readiness ══ */
@@ -267,8 +315,9 @@ function chain(token, opts) {
     P('AUTHORIZED_DIRECTIONAL_TOKEN', TOKEN);
     P('TOKEN_ALLOWED_FOR_DIRECTIONAL_EVALUATION', 'YES');
     P('REALITY_EVENT_SOURCE_LIVE', 'YES');
-    P('OUTCOME_OBSERVATION_PRODUCTION_CALLER_LIVE', 'NO');
-    P('MECHANICAL_FEEDBACK_LOOP_PRODUCTION_LIVE', 'NO');
+    P('OUTCOME_OBSERVATION_PRODUCTION_CALLER_LIVE', 'YES');
+    P('MECHANICAL_FEEDBACK_LOOP_PRODUCTION_LIVE', 'YES');
+    P('EVENT_PRODUCTION_PREDICTION_CREATION', 'LIVE · runtime.turn_terminal only');
     P('EVIDENCE_MATCHER_ENABLED_DEFAULT', false);
     P('CALIBRATION_CONFIDENCE', 'null');
     P('CALIBRATION_APPLIED_TO_LIVE', 'NO');

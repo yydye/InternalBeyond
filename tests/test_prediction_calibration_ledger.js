@@ -110,14 +110,38 @@ function obsFor(pred, token, over) {
 function opp() {
   return { required: true, existence: { present: true, authoritySource: 'CANONICAL_RUNTIME' }, consumedAt: T0 + 1500 };
 }
+/* P4 policy fixtures grant a sealed unit-test opportunity capability to P3;
+   they never pass `opportunity` through P3's public settlement context. */
+function testOpportunityAuthority(fixture) {
+  const identity = new WeakSet();
+  return {
+    resolveForPrediction: function () {
+      const state = fixture && fixture.required === true && fixture.existence
+        && fixture.existence.authoritySource === 'CANONICAL_RUNTIME'
+        && fixture.existence.present === true && fixture.consumedAt != null
+        ? 'SATISFIED' : 'UNKNOWN';
+      const result = Object.freeze({ state: state, opportunity: fixture });
+      identity.add(result);
+      return result;
+    },
+    isResolution: function (value) { return !!value && identity.has(value); }
+  };
+}
 /* 走完整链路：settle → 返回 { settlement, predictionError } */
 function settleOne(pred, token, over) {
   const o = obsFor(pred, token, over);
-  const e = createRuntimePredictionSettlement({ clock: () => T0 });
-  const r = e.settlePrediction(pred, [{ observation: o }], {
-    now: pred.observationWindow.opensAt + 2000, opportunity: opp()
+  const e = createRuntimePredictionSettlement({
+    clock: () => T0,
+    opportunityAuthority: testOpportunityAuthority(opp())
   });
+  const r = e.settlePrediction(pred, [{ observation: o }], { now: pred.observationWindow.opensAt + 2000 });
   return { ok: r.ok, state: r.settlement && r.settlement.state, settlement: r.settlement, predictionError: r.predictionError };
+}
+function p3WithOpportunity() {
+  return createRuntimePredictionSettlement({
+    clock: () => T0,
+    opportunityAuthority: testOpportunityAuthority(opp())
+  });
 }
 /**
  * 造一条**必然 calibration-eligible** 的结算。
@@ -179,10 +203,10 @@ function cal(over) { return createRuntimePredictionCalibration(Object.assign({},
     })(), 'another loaded instance must not validate this record');
 
     check('A6.tamperedSealedRecordIsRejected', (function () {
-      const e = createRuntimePredictionSettlement({ clock: () => T0 });
+      const e = p3WithOpportunity();
       const pred = eventPred('delivery.cancelled');
       const s = e.settlePrediction(pred, [{ observation: obsFor(pred, 'delivery.cancelled') }],
-        { now: pred.observationWindow.opensAt + 2000, opportunity: opp() }).settlement;
+        { now: pred.observationWindow.opensAt + 2000 }).settlement;
       /* 深层字段若可写（不会，因为 deepFreeze），指纹也会抓出来 */
       return SETTLEMENT.isSettlementRecord(s) === true
         && SETTLEMENT.isSettlementRecord(Object.assign({}, s)) === false;
@@ -271,9 +295,9 @@ function cal(over) { return createRuntimePredictionCalibration(Object.assign({},
     const superseded = (function () {
       const pred = eventPred('delivery.cancelled');
       const o = obsFor(pred, 'delivery.cancelled');
-      const e = createRuntimePredictionSettlement({ clock: () => T0 });
+      const e = p3WithOpportunity();
       return e.settlePrediction(pred, [{ observation: o }], {
-        now: pred.observationWindow.opensAt + 2000, opportunity: opp(), supersededByNewer: true
+        now: pred.observationWindow.opensAt + 2000, supersededByNewer: true
       }).settlement;
     })();
     check('C4.supersededIsNeverASample',
@@ -496,9 +520,9 @@ function cal(over) { return createRuntimePredictionCalibration(Object.assign({},
       /* 直接改不进冻结记录 ⇒ 用一个带指定 confidence 的等价预测 */
       void p2;
       const o = obsFor(pred, token);
-      const e = createRuntimePredictionSettlement({ clock: () => T0 });
+      const e = p3WithOpportunity();
       const r = e.settlePrediction(pred, [{ observation: o }], {
-        now: pred.observationWindow.opensAt + 2000, opportunity: opp()
+        now: pred.observationWindow.opensAt + 2000
       });
       void confidence;
       return r;
@@ -636,6 +660,33 @@ function cal(over) { return createRuntimePredictionCalibration(Object.assign({},
       return s.sampleStatus === 'empty' && s.calibrationConfidence === null
         && CORE.FORBIDDEN_ACCURACY_FIELDS.every(f => Object.prototype.hasOwnProperty.call(s, f) === false);
     })(), 'NO_ELIGIBLE_SAMPLE must never be read as "this prediction type is bad"');
+    const deniedButClassifiable = CORE.capabilityCoverage({
+      predictionType: 'not-a-type', contradictionMode: 'exclusive_outcome',
+      counts: noSample, policyAllowed: false, runtimeClassifiable: true,
+      attributionAuthorityAvailable: true
+    });
+    const mechanicallySettleableEmpty = CORE.capabilityCoverage({
+      predictionType: 'preference', contradictionMode: 'exclusive_outcome',
+      counts: noSample, policyAllowed: true, runtimeClassifiable: true,
+      attributionAuthorityAvailable: true
+    });
+    const mechanicallySettleableSampled = CORE.capabilityCoverage({
+      predictionType: 'preference', contradictionMode: 'exclusive_outcome',
+      counts: withSample, policyAllowed: true, runtimeClassifiable: true,
+      attributionAuthorityAvailable: true
+    });
+    check('H12.productionSettleableRequiresPolicyPermission',
+      deniedButClassifiable.runtimeClassifiable === true
+      && deniedButClassifiable.policyAllowed === false
+      && deniedButClassifiable.productionSettleable === false
+      && deniedButClassifiable.capabilityGap === false,
+      JSON.stringify(deniedButClassifiable));
+    check('H13.productionSettleableDoesNotDependOnSampleCount',
+      mechanicallySettleableEmpty.productionSettleable === true
+      && mechanicallySettleableEmpty.noEligibleSample === true
+      && mechanicallySettleableSampled.productionSettleable === true
+      && mechanicallySettleableSampled.noEligibleSample === false,
+      JSON.stringify({ empty: mechanicallySettleableEmpty, sampled: mechanicallySettleableSampled }));
   }
 
   /* ══════════════════════════════════════════════════════════════════
@@ -762,7 +813,9 @@ function cal(over) { return createRuntimePredictionCalibration(Object.assign({},
 
     /* ③ 真实 canonical memory store 前后逐字节一致 */
     const createMemoryStore = require(path.join(ROOT, 'services', 'home-node', 'memory-store.js'));
-    const dir = fs.mkdtempSync(path.join(ROOT, '.dsh-tmp', 'p4-nomut-'));
+    const scratchRoot = path.join(ROOT, '.dsh-tmp');
+    fs.mkdirSync(scratchRoot, { recursive: true });
+    const dir = fs.mkdtempSync(path.join(scratchRoot, 'p4-nomut-'));
     let store = null;
     try {
       store = createMemoryStore({ dataDir: dir, clock: () => T0, logger: () => {} });
@@ -1061,9 +1114,9 @@ function cal(over) { return createRuntimePredictionCalibration(Object.assign({},
       const o2 = obsFor(pred, 'action.confirmed', {   /* user_behavior, 互斥 ⇒ conflict */
         source: 'CANONICAL_RUNTIME', sourceInstance: 'runtime.popup', targetDomain: 'user_behavior'
       });
-      const e = createRuntimePredictionSettlement({ clock: () => T0 });
+      const e = p3WithOpportunity();
       return e.settlePrediction(pred, [{ observation: o1 }, { observation: o2 }], {
-        now: pred.observationWindow.opensAt + 2000, opportunity: opp()
+        now: pred.observationWindow.opensAt + 2000
       });
     })();
     check('O7.realTwoDomainSettlementExistsButIsRefused', (function () {
@@ -1147,8 +1200,19 @@ function cal(over) { return createRuntimePredictionCalibration(Object.assign({},
       return s.indexOf('系统会取消') < 0 && s.indexOf('delivery.cancelled') < 0 && s.indexOf('evidence_1') < 0;
     })(), 'the audit view must not leak prediction text or tokens');
 
+    const service = read('services/home-node-service.js');
+    const feedback = read('services/home-node/runtime-reality-feedback.js');
+    check('M7.productionDriverIsComposedAfterP3P4AndPostSettlementOnly',
+      service.indexOf('createRuntimePredictionCalibrationDriver') >= 0
+      && service.indexOf('calibrationRuntime: instanceRuntimePredictionCalibration') >= 0
+      && service.indexOf('instanceRuntimeBehaviorEffect, instanceRuntimePredictionCalibrationDriver') >= 0
+      && feedback.indexOf('onSettlement(settled.settlement, settled.predictionError)') >= 0
+      && feedback.indexOf('ingestSettlement') < 0,
+      'Home Node composes the thin driver; feedback only notifies after P3 returns');
+
     P('P4_STATUS', 'COMPLETE');
     P('CALIBRATION_LEDGER_LIVE', 'YES');
+    P('P4_PRODUCTION_LEDGER_DRIVER', 'LIVE');
     P('CALIBRATION_LEDGER_LIFETIME', 'SESSION_ONLY');
     P('CROSS_PARTITION_TRANSFER', 'FORBIDDEN');
     P('GLOBAL_PREDICTION_ACCURACY', 'FORBIDDEN');
@@ -1162,7 +1226,7 @@ function cal(over) { return createRuntimePredictionCalibration(Object.assign({},
     P('RELATIONSHIP_WRITE_FROM_CALIBRATION', 'FORBIDDEN');
     P('RECALL_ENVELOPE_CHANGED', 'NO');
     P('UI_DISCLOSURE_CHANGED', 'NO');
-    P('NEXT_PHASE_REQUIRES_OWNER_RULING', 'YES');
+    P('CALIBRATION_DRIVER_ROLE', 'ORCHESTRATION_ONLY');
   }
 
   console.log('\n' + '='.repeat(64));

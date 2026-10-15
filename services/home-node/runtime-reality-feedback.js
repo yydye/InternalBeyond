@@ -41,6 +41,8 @@ function createRuntimeRealityFeedback(deps) {
   const registry = d.registry || null;
   const observationRuntime = d.observationRuntime || null;
   const settlementRuntime = d.settlementRuntime || null;
+  const evidenceMatcherEnabled = d.evidenceMatcherEnabled === true;
+  const onSettlement = typeof d.onSettlement === 'function' ? d.onSettlement : null;
   const isRealityEvent = typeof d.isRealityEvent === 'function' ? d.isRealityEvent : null;
   const clock = typeof d.clock === 'function' ? d.clock : (() => Date.now());
   const logger = typeof d.logger === 'function' ? d.logger : null;
@@ -49,13 +51,71 @@ function createRuntimeRealityFeedback(deps) {
 
   /* session-only、bounded：dispatch key = realityEventId（不另造随机 id） */
   const dispatched = new Map();
+  /* The opt-in P3 Matcher path is asynchronous. Keep only a bounded set of
+     session tasks; RealityEvent subscribers never create a durable queue. */
+  const pendingMatcherSettlements = new Set();
+  const maxPendingMatcherSettlements = Number.isFinite(Number(d.maxPendingMatcherSettlements))
+    && Number(d.maxPendingMatcherSettlements) > 0 ? Math.min(128, Number(d.maxPendingMatcherSettlements)) : 128;
   const counters = {
     dispatchAttempted: 0, dispatchCompleted: 0, dispatchFailed: 0,
     rejectedNotCanonical: 0, duplicateSuppressed: 0,
     candidateCount: 0, observationCount: 0, settlementCount: 0,
+    postSettlementCallbacks: 0, postSettlementFailures: 0,
     projectionRefused: 0, perPredictionFailures: 0,
+    matcherPendingCapacityExceeded: 0,
     modelCalls: 0, durableWrites: 0
   };
+
+  function completeSettlement(settled, predictionId, eventId, out, resultIndex) {
+    const state = settled && settled.settlement ? settled.settlement.state : null;
+    if (state) { out.settlements += 1; counters.settlementCount += 1; }
+    let postSettlement = null;
+    if (settled && settled.settlement && onSettlement) {
+      counters.postSettlementCallbacks += 1;
+      try {
+        postSettlement = onSettlement(settled.settlement, settled.predictionError);
+        if (!postSettlement || postSettlement.ok !== true) counters.postSettlementFailures += 1;
+      } catch (_) {
+        counters.postSettlementFailures += 1;
+        postSettlement = { ok: false, status: 'failed', reasonCode: 'post-settlement-callback-threw' };
+      }
+    }
+    const result = {
+      predictionId: predictionId, status: 'settled', state: state,
+      postSettlementStatus: postSettlement ? text(postSettlement.status) : null,
+      postSettlementReasonCode: postSettlement ? text(postSettlement.reasonCode) : null
+    };
+    if (Number.isInteger(resultIndex)) out.settlementsByPrediction[resultIndex] = result;
+    else out.settlementsByPrediction.push(result);
+    return settled;
+  }
+
+  function trackMatcherSettlement(record, observation, predictionId, eventId, out, now) {
+    if (pendingMatcherSettlements.size >= maxPendingMatcherSettlements) {
+      counters.matcherPendingCapacityExceeded += 1;
+      counters.perPredictionFailures += 1;
+      out.settlementsByPrediction.push({ predictionId: predictionId, status: 'matcher-pending-capacity' });
+      return false;
+    }
+    const resultIndex = out.settlementsByPrediction.length;
+    out.settlementsByPrediction.push({ predictionId: predictionId, status: 'matcher-settlement-pending' });
+    let tracked = null;
+    tracked = Promise.resolve()
+      .then(() => settlementRuntime.settlePredictionWithEvidenceMatcher(record, [{ observation: observation }], { now: now }))
+      .then((settled) => completeSettlement(settled, predictionId, eventId, out, resultIndex))
+      .catch((error) => {
+        counters.perPredictionFailures += 1;
+        if (logger) logger('reality-feedback-matcher-settlement-failed', {
+          realityEventId: eventId, predictionId: predictionId,
+          error: String((error && error.message) || error).slice(0, 200)
+        });
+        out.settlementsByPrediction[resultIndex] = { predictionId: predictionId, status: 'failed' };
+        return null;
+      })
+      .finally(() => pendingMatcherSettlements.delete(tracked));
+    pendingMatcherSettlements.add(tracked);
+    return true;
+  }
 
   function remember(eventId) {
     dispatched.set(eventId, Number(clock()));
@@ -144,10 +204,14 @@ function createRuntimeRealityFeedback(deps) {
           if (settlementRuntime && typeof settlementRuntime.settlePrediction === 'function') {
             /* ③ settlement authority = P3；driver **不**提供 opportunity /
                    relation / matched 等任何语义输入。 */
-            const settled = settlementRuntime.settlePrediction(record, [{ observation: projected.observation }], { now: Number(clock()) });
-            const state = settled && settled.settlement ? settled.settlement.state : null;
-            if (state) { out.settlements += 1; counters.settlementCount += 1; }
-            out.settlementsByPrediction.push({ predictionId: predictionId, status: 'settled', state: state });
+            const now = Number(clock());
+            if (evidenceMatcherEnabled
+              && typeof settlementRuntime.settlePredictionWithEvidenceMatcher === 'function') {
+              trackMatcherSettlement(record, projected.observation, predictionId, eventId, out, now);
+              continue;
+            }
+            const settled = settlementRuntime.settlePrediction(record, [{ observation: projected.observation }], { now: now });
+            completeSettlement(settled, predictionId, eventId, out);
           } else {
             out.settlementsByPrediction.push({ predictionId: predictionId, status: 'observation-only' });
           }
@@ -184,7 +248,11 @@ function createRuntimeRealityFeedback(deps) {
       pairingAuthority: 'PREDICTION_REGISTRY',
       observationAuthority: 'P1',
       settlementAuthority: 'P3',
+      matcherSettlementPath: evidenceMatcherEnabled ? 'P3_MATCHER_AWARE_ENTRY' : 'OFF',
+      matcherPendingSettlements: { max: maxPendingMatcherSettlements, current: pendingMatcherSettlements.size, durability: 'NONE' },
       calibrationAuthority: 'NONE',
+      postSettlementCallbackAttached: !!onSettlement,
+      postSettlementCallbackMayRewriteP3: 'NO',
       driverChoosesSettlementState: 'NO',
       driverSuppliesOpportunity: 'NO',
       dispatchKey: 'realityEventId',
@@ -199,6 +267,29 @@ function createRuntimeRealityFeedback(deps) {
   return {
     processRealityEvent: processRealityEvent,
     onRealityEventMinted: onRealityEventMinted,
+    awaitIdle: async function (timeoutMs) {
+      const requested = Number(timeoutMs);
+      const boundedTimeout = Number.isFinite(requested) && requested > 0 ? Math.min(requested, 30000) : 5000;
+      const deadline = Date.now() + boundedTimeout;
+      while (pendingMatcherSettlements.size > 0) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) break;
+        let timer = null;
+        try {
+          await Promise.race([
+            Promise.all(Array.from(pendingMatcherSettlements)),
+            new Promise(resolve => { timer = setTimeout(resolve, remaining); })
+          ]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      }
+      return {
+        idle: pendingMatcherSettlements.size === 0,
+        pending: pendingMatcherSettlements.size,
+        timeoutMs: boundedTimeout
+      };
+    },
     describe: describe,
     dispatchedCount: function () { return dispatched.size; },
     counters: counters

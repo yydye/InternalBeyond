@@ -93,16 +93,44 @@ function makeObservation(predictionRecord, token, over) {
   }, over || {}), {});
   return r.ok ? r.value : null;
 }
-function engine(over) { return createRuntimePredictionSettlement(Object.assign({ clock: () => T0 }, over || {})); }
 function opp(present, consumed) {
   return { required: true, existence: { present: present, authoritySource: 'CANONICAL_RUNTIME' }, consumedAt: consumed == null ? null : consumed };
 }
-const OPEN = (p) => ({ now: p.observationWindow.opensAt + 2000, opportunity: opp(true, p.observationWindow.opensAt + 1500) });
-const CLOSED = (p) => ({ now: p.observationWindow.closesAt + 1, opportunity: opp(true, p.observationWindow.opensAt + 1500) });
+function testAuthorityState(fixture) {
+  if (!fixture || typeof fixture !== 'object') return 'UNKNOWN';
+  if (fixture.required === false) return 'NOT-REQUIRED';
+  if (!fixture.existence || fixture.existence.authoritySource !== 'CANONICAL_RUNTIME') return 'UNKNOWN';
+  if (fixture.existence.present !== true) return 'ABSENT';
+  return fixture.consumedAt == null ? 'NOT-CONSUMED' : 'SATISFIED';
+}
+function testOpportunityAuthority(fixture) {
+  const identity = new WeakSet();
+  return {
+    resolveForPrediction: function () {
+      const value = Object.freeze({ state: testAuthorityState(fixture), opportunity: fixture || null });
+      identity.add(value);
+      return value;
+    },
+    isResolution: function (value) { return !!value && identity.has(value); }
+  };
+}
+function engine(fixture) {
+  const selectedFixture = arguments.length ? fixture : opp(true, T0 + 1500);
+  return createRuntimePredictionSettlement({
+    clock: () => T0,
+    opportunityAuthority: testOpportunityAuthority(selectedFixture)
+  });
+}
+const OPEN = (p) => ({ now: p.observationWindow.opensAt + 2000 });
+const CLOSED = (p) => ({ now: p.observationWindow.closesAt + 1 });
 
 function settleWith(pred, obsEntries, ctxOver) {
-  const e = engine();
-  return e.settlePrediction(pred, obsEntries, ctxOver);
+  const ctx = Object.assign({}, ctxOver || {});
+  const fixture = Object.prototype.hasOwnProperty.call(ctx, 'testOpportunityFixture')
+    ? ctx.testOpportunityFixture : opp(true, T0 + 1500);
+  delete ctx.testOpportunityFixture;
+  const e = engine(fixture);
+  return e.settlePrediction(pred, obsEntries, ctx);
 }
 
 /* ── PE 查表 oracle（独立于实现） ─────────────────────────────────────── */
@@ -125,7 +153,7 @@ const ORACLE_PE = {
     const base = makePrediction().record;
 
     /* pending：窗口未关且无可采证据 */
-    const pending = settleWith(base, [], { now: T0 + 1000, opportunity: opp(true, null) });
+    const pending = settleWith(base, [], { now: T0 + 1000, testOpportunityFixture: opp(true, null) });
     check('A1.pending', pending.settlement && pending.settlement.state === 'pending',
       pending.settlement ? pending.settlement.state : 'no settlement');
 
@@ -156,7 +184,7 @@ const ORACLE_PE = {
 
     /* expired_unobserved：窗口关闭 + 机会 ABSENT */
     const expired = settleWith(base, [{ observation: makeObservation(base, 'action.confirmed') }],
-      { now: base.observationWindow.closesAt + 1, opportunity: opp(false, null) });
+      { now: base.observationWindow.closesAt + 1, testOpportunityFixture: opp(false, null) });
     check('A5.expiredUnobserved', expired.settlement.state === 'expired_unobserved'
       && expired.settlement.reasonCodes.indexOf('opportunity-absent') >= 0,
       JSON.stringify(expired.settlement.reasonCodes));
@@ -166,7 +194,7 @@ const ORACLE_PE = {
       observation: makeObservation(base, 'action.cancelled', {
         source: 'EXPLICIT_USER_REPORT', sourceInstance: 'chat.user-utterance'
       })
-    }], { now: base.observationWindow.closesAt + 1, opportunity: opp(false, null) });
+    }], { now: base.observationWindow.closesAt + 1, testOpportunityFixture: opp(false, null) });
     check('A6.unresolvable', unresolvable.settlement.state === 'unresolvable',
       unresolvable.settlement.state);
 
@@ -260,9 +288,9 @@ const ORACLE_PE = {
       'SETTLEMENT_ONCE / REOPEN=NO_V1 / RESETTLEMENT=REJECTED / POST_WINDOW_RETRO_SETTLE=NO');
     check('C6.postWindowEvidenceDoesNotRetroSettle', (function () {
       const p2 = makePrediction({}, { turnId: 'turn_retro' }).record;
-      const e2 = engine();
+      const e2 = engine(opp(true, p2.observationWindow.opensAt + 1));
       const late = makeObservation(p2, 'action.cancelled', { observedAt: p2.observationWindow.closesAt + 10 });
-      const r = e2.settlePrediction(p2, [{ observation: late }], { now: p2.observationWindow.closesAt + 20, opportunity: opp(true, p2.observationWindow.opensAt + 1) });
+      const r = e2.settlePrediction(p2, [{ observation: late }], { now: p2.observationWindow.closesAt + 20 });
       return !r.settlement || r.settlement.state !== 'matched';
     })(), 'evidence after the window must not settle');
   }
@@ -310,14 +338,14 @@ const ORACLE_PE = {
     /* popup never shown → expired_unobserved */
     const p1 = makePrediction({}, { turnId: 'opp_absent' }).record;
     const r1 = settleWith(p1, [{ observation: makeObservation(p1, 'action.confirmed') }],
-      { now: p1.observationWindow.closesAt + 1, opportunity: opp(false, null) });
+      { now: p1.observationWindow.closesAt + 1, testOpportunityFixture: opp(false, null) });
     check('E1.popupNeverShownIsExpiredNotMissed', r1.settlement.state === 'expired_unobserved',
       r1.settlement.state + ' ' + JSON.stringify(r1.settlement.reasonCodes));
 
     /* popup shown, no choice → NOT-CONSUMED → expired_unobserved */
     const p2 = makePrediction({}, { turnId: 'opp_notconsumed' }).record;
     const r2 = settleWith(p2, [{ observation: makeObservation(p2, 'action.confirmed') }],
-      { now: p2.observationWindow.closesAt + 1, opportunity: opp(true, null) });
+      { now: p2.observationWindow.closesAt + 1, testOpportunityFixture: opp(true, null) });
     check('E2.shownButNotConsumedIsExpiredNotMissed',
       r2.settlement.state === 'expired_unobserved'
       && r2.settlement.reasonCodes.indexOf('opportunity-not-consumed') >= 0,
@@ -336,7 +364,7 @@ const ORACLE_PE = {
     /* opportunity UNKNOWN → never missed */
     const p5 = makePrediction({}, { turnId: 'opp_unknown' }).record;
     const r5 = settleWith(p5, [{ observation: makeObservation(p5, 'action.confirmed') }],
-      { now: p5.observationWindow.closesAt + 1, opportunity: null });
+      { now: p5.observationWindow.closesAt + 1, testOpportunityFixture: null });
     check('E5.unknownOpportunityIsNeverMissed', r5.settlement.state !== 'missed',
       r5.settlement.state);
 
@@ -354,7 +382,7 @@ const ORACLE_PE = {
     const base = makePrediction().record;
     /* 语义 conflict + directional.conflict = FORBIDDEN ⇒ 不能 missed */
     const noOpp = settleWith(base, [{ observation: makeObservation(base, 'action.confirmed') }],
-      { now: base.observationWindow.closesAt + 1, opportunity: opp(false, null) });
+      { now: base.observationWindow.closesAt + 1, testOpportunityFixture: opp(false, null) });
     check('F1.semanticConflictWithForbiddenDirectionCannotMiss',
       noOpp.settlement.state !== 'missed'
       && noOpp.settlement.trace.discarded >= 1,
@@ -365,7 +393,7 @@ const ORACLE_PE = {
       observation: makeObservation(base, 'action.cancelled', {
         source: 'CANONICAL_RUNTIME', sourceInstance: 'runtime.popup'
       })
-    }], { now: base.observationWindow.closesAt + 1, opportunity: opp(false, null) });
+    }], { now: base.observationWindow.closesAt + 1, testOpportunityFixture: opp(false, null) });
     check('F2.spontaneousSupportIsNotSuppressedByAbsentOpportunity',
       spontaneous.settlement.state === 'matched',
       spontaneous.settlement.state);
@@ -614,6 +642,12 @@ const ORACLE_PE = {
     check('J5.mechanismFactKeepsAuthorityUnderIntervention',
       factUnderIntervention.settlement.state === 'missed',
       factUnderIntervention.settlement.state);
+    check('J5b.outcomeTimeInfluencedDecisiveEvidenceIsNotCalibrationClean',
+      factUnderIntervention.settlement.calibrationCounted === false
+        && factUnderIntervention.settlement.calibrationEvidenceBasis.reasonCode
+          === 'decisive-evidence-system-influenced',
+      JSON.stringify({ counted: factUnderIntervention.settlement.calibrationCounted,
+        basis: factUnderIntervention.settlement.calibrationEvidenceBasis }));
 
     const prefUnderIntervention = makePrediction({
       prediction: '用户喜欢这个功能', predicate: { kind: 'prefers' }, expectedOutcome: { kind: 'state-claim' }
@@ -729,7 +763,9 @@ const ORACLE_PE = {
 
     /* 动态：真实 canonical memory store 前后逐字节一致 */
     const createMemoryStore = require(path.join(ROOT, 'services', 'home-node', 'memory-store.js'));
-    const dir = fs.mkdtempSync(path.join(ROOT, '.dsh-tmp', 'p3-nomut-'));
+    const scratchRoot = path.join(ROOT, '.dsh-tmp');
+    fs.mkdirSync(scratchRoot, { recursive: true });
+    const dir = fs.mkdtempSync(path.join(scratchRoot, 'p3-nomut-'));
     let store = null;
     try {
       store = createMemoryStore({ dataDir: dir, clock: () => T0, logger: () => {} });

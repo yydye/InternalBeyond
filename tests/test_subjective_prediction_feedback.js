@@ -55,15 +55,17 @@ let seq = 0;
 function build(tag, over) {
   const o = over || {};
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'r1fb-' + tag + '-'));
+  let now = T0;
   const inst = SERVICE.buildHomeNode({
     dataDir: dir, credentialDataDir: dir, token: o.token === undefined ? TOKEN : o.token, port: 0, logger: () => {},
-    clock: () => T0,
+    clock: () => now,
     registry: {
       getCharacterSpec: id => (String(id) === 'char_a' ? { endpoint: 'https://x', model: 'm', systemPrompt: 'sys', apiKey: 'k' } : null),
       open: function () { return true; }
     },
     port: { runStream: async () => ({ ok: true, text: 'hi', reasoning: '', usage: null, streamed: false }) }
   });
+  inst.setTestClock = at => { now = Number(at); };
   inst.open();
   return inst;
 }
@@ -193,9 +195,15 @@ function tokenObs(pred, token, over) {
     check('A5.nonPreferencePredictionSeesPreferenceTokenAsIrrelevant',
       SETTLE_CORE.classifyRelation(unitEventPrediction('pref.like.scifi'),
         { outcomeRef: { kind: 'token', token: 'pref.like.scifi' } }) === 'irrelevant'
-      && SETTLE_CORE.classifyRelation(unitEventPrediction('runtime.turn_terminal'),
-        { outcomeRef: { kind: 'token', token: 'runtime.turn_terminal' } }) === 'support',
-      '命名空间不匹配 ⇒ irrelevant；既有 token 相等语义**不变**');
+      && SETTLE_CORE.classifyRelation(unitEventPrediction('runtime.turn_terminal.completed'), {
+        source: 'CANONICAL_RUNTIME', sourceInstance: 'runtime.turn-execution', targetDomain: 'runtime_state',
+        outcomeRef: { kind: 'token', token: 'runtime.turn_terminal.completed' }
+      }) === 'support'
+      && SETTLE_CORE.classifyRelation(unitEventPrediction('runtime.turn_terminal'), {
+        source: 'CANONICAL_RUNTIME', sourceInstance: 'runtime.turn-execution', targetDomain: 'runtime_state',
+        outcomeRef: { kind: 'token', token: 'runtime.turn_terminal.completed' }
+      }) === 'unclassifiable',
+      'terminal requires a specific canonical outcome; the old family-only token cannot assert support');
     check('A6.statementStillNeedsTheMatcher',
       SETTLE_CORE.classifyRelation(unitPrediction('pref.like.scifi'), { outcomeRef: { kind: 'statement', statement: '我喜欢科幻' } }) === 'unclassifiable'
       && SETTLE_CORE.EVIDENCE_MATCHER_INVOCATION === 'OFF'
@@ -359,31 +367,20 @@ function tokenObs(pred, token, over) {
   /* ══ E · conflict ══ */
   section('E · conflict');
   {
-    /* 生产路径：driver 不提供 opportunity ⇒ negation 被 directional gate 禁止。 */
+    /* Canonical report action is independently observed as a completed
+       same-target choice. The driver supplies no opportunity field. */
     const inst = build('conflict');
     const pred = seedPreference(inst, 'pref.like.coffee');
+    inst.setTestClock(T0 + 1000);
     const r = act(inst, body({ requestId: 'conflict-1', targetKey: 'coffee', stance: 'dislike' }));
     const sv = inst.runtimePredictionSettlement.getSettlement(pred.predictionId);
     P('conflict.productionSettlement', sv && sv.state);
     P('conflict.productionReason', sv && sv.reasonCodes[0]);
-    check('E1.productionConflictDoesNotProduceMissedWithoutAuthoritativeOpportunity',
-      r.realityStatus === 'minted' && !!sv && sv.state !== 'missed' && sv.state !== 'matched'
-      && sv.reasonCodes.indexOf('directional-conflict-forbidden-cannot-produce-missed') >= 0,
+    check('E1.productionConflictUsesCanonicalReportChoiceOpportunity',
+      r.realityStatus === 'minted' && !!sv && sv.state === 'missed'
+      && sv.opportunityState === 'SATISFIED' && sv.calibrationCounted === true
+      && sv.conflictSummary.decisive === 1,
       sv && { state: sv.state, reasons: sv.reasonCodes });
-    /* 受控实验（§43 · D4-R2 同款）：提供**权威** opportunity 后，互斥立场确实产 missed。
-       ★ 需要 attribution known-none —— 这是 P3.0 冻结的 fail-closed 前提
-         （`unknown` ≠ `none`），生产装配已接上 P5-B2 归因权威。 */
-    const p2 = unitPrediction('pref.like.coffee', null, { behaviorEffectAttribution: { status: 'known-none', effects: [] } });
-    const obs = tokenObs(p2, 'pref.dislike.coffee');
-    const settle = createRuntimePredictionSettlement({ clock: () => T0 });
-    const controlled = settle.settlePrediction(p2, [{ observation: obs }], {
-      now: T0 + 2000,
-      opportunity: { required: true, existence: { present: true, authoritySource: 'CANONICAL_RUNTIME' }, consumedAt: T0 + 1000 }
-    });
-    check('E2.mutuallyExclusiveStanceProducesMissedWhenOpportunityIsAuthoritative',
-      controlled.ok === true && controlled.settlement.state === 'missed'
-      && controlled.settlement.conflictSummary.decisive === 1,
-      controlled.settlement && { state: controlled.settlement.state, conflict: controlled.settlement.conflictSummary });
     P('LIKE_AND_DISLIKE_ARE_MUTUALLY_EXCLUSIVE_ONLY_FOR_SAME_TARGET_AND_SCOPE', 'YES');
   }
 
@@ -436,6 +433,13 @@ function tokenObs(pred, token, over) {
       && !Object.prototype.hasOwnProperty.call(r.report, 'predictionId')
       && !Object.prototype.hasOwnProperty.call(r.realityEvent, 'predictionId'),
       Object.keys(r.realityEvent));
+    const p4 = inst.runtimePredictionCalibration.getPartition('preference', 'user_preference');
+    check('H3.oneRealityEventAutomaticallyIngestsEachEligibleSettlement',
+      !!p4 && p4.calibrationCounts.matched === 2 && p4.calibrationCounts.eligibleTotal === 2
+      && inst.runtimePredictionCalibrationDriver.describe().counters.ledgerAccepted === 2
+      && fb.counters.postSettlementCallbacks === 2,
+      p4 && { counts: p4.calibrationCounts,
+        driver: inst.runtimePredictionCalibrationDriver.describe().counters, feedback: fb.counters });
   }
 
   /* ══ I · replay ══ */
@@ -551,7 +555,9 @@ function tokenObs(pred, token, over) {
     check('L1.matcherRemainsOff',
       SETTLE_CORE.EVIDENCE_MATCHER_INVOCATION === 'OFF'
       && SETTLE_CORE.STATE_SUPPORT.matcherMaySupplyAuthority === 'NO'
-      && code('services/home-node-service.js').indexOf('enabled: false') >= 0,
+       && /EVIDENCE_MATCHER_ENABLED_DEFAULT\s*=\s*false/.test(code('services/home-node-service.js'))
+       && code('services/home-node-service.js').indexOf("enabled: process.env.IB_EVIDENCE_MATCHER_ENABLED === '1'") >= 0
+       && code('services/home-node-service.js').indexOf('enabled: options.evidenceMatcherEnabled === true') >= 0,
       'EVIDENCE_MATCHER_ENABLED_DEFAULT = false');
     check('L2.noMemoryOrRelationshipWriteInTheSubjectivePath',
       SETTLE_CORE.STATE_SUPPORT.memoryAuthority === 'NONE'
@@ -568,12 +574,11 @@ function tokenObs(pred, token, over) {
         const p = unitPrediction('pref.like.scifi');
         const settle = createRuntimePredictionSettlement({ clock: () => T0 });
         const r = settle.settlePrediction(p, [], {
-          now: p.observationWindow.closesAt + 1,
-          opportunity: { required: true, existence: { present: false, authoritySource: 'CANONICAL_RUNTIME' } }
+          now: p.observationWindow.closesAt + 1
         });
         return r.ok === true && r.settlement.state !== 'missed' && r.settlement.conflictSummary.decisive === 0;
       })(),
-      'ABSENCE_OF_REPORT != CONTRADICTION');
+      'ABSENCE_OF_REPORT != CONTRADICTION · no caller opportunity input');
   }
 
   /* ══ M · readiness ══ */
@@ -583,12 +588,16 @@ function tokenObs(pred, token, over) {
     P('STRUCTURED_EXPLICIT_USER_REPORT_PRODUCTION_LIVE', 'YES');
     P('FREE_TEXT_EXPLICIT_USER_REPORT_PRODUCTION_LIVE', 'NO');
     P('SUBJECTIVE_FEEDBACK_LOOP_PRODUCTION_LIVE', 'YES');
-    P('P3_DECISIVE_SUBJECTIVE_SETTLEMENT', 'REACHABLE（matched / missed 见 E2 受控实验）');
+    P('P3_DECISIVE_SUBJECTIVE_SETTLEMENT', 'LIVE（matched / missed 见 production report path）');
+    P('SUBJECTIVE_NEGATIVE_DECISIVE_SETTLEMENT_LIVE', 'YES');
+    P('P5_B3_I_STATUS', 'COMPLETE');
+    P('GAP-3', 'CLOSED');
     P('MATCHER_CALLS_ON_STRUCTURED_PREFERENCE_PATH', 0);
     P('EVIDENCE_MATCHER_ENABLED_DEFAULT', false);
     P('CALIBRATION_CONFIDENCE', 'null');
     P('CALIBRATION_APPLIED_TO_LIVE', 'NO');
-    P('P1_CORE_TRACKING_DEBT', 'OPEN');
+    P('PREDICTION_ERROR_CORE_TRACKING_DEBT', 'CLOSED');
+    P('P4_PRODUCTION_LEDGER_DRIVER', 'LIVE');
     P('TURN_TERMINAL_OUTCOME_DIRECTIONAL_DISCRIMINATION', 'CAPABILITY_GAP');
     P('MULTI_HOME_NODE_FEEDBACK_ROUTING', 'ONE_HOME_NODE_INSTANCE_PER_PROCESS');
   }

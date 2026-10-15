@@ -26,7 +26,8 @@
      · 选择阶段区域（`const messageHash` → `counters.ok += 1;`）与
        `scheduleAutoInterpretation` 体内：`behaviorEffect` 一个都不许有
        （那正是"在 selector 阶段派生 / 源回合直接消费"的形状）；
-     · `counterfactual` / `prediction-error` **仍然全面禁止**；
+     · Prediction Error 仍然全面禁止；Counterfactual 仅允许经下方唯一的
+       post-K/L/N/O/P 生产 seam 消费；
      · 解释边界（runtime-interpretation.js）四个域**全部**仍然禁止。
 
    ── Prediction Error P1.5 · 命名归一与 seam taxonomy（治理相位迁移）──────
@@ -67,7 +68,7 @@ const { stripJsComments } = require('./activation-wiring-probe.js');
 
 /* 完全禁止的域（任何文件、任何理由）。behaviorEffect **不在这里** ——
    它是本相位获授权的交付通道，但只允许出现在下面那 5 个具名位置。 */
-const FORBIDDEN_EVERYWHERE = Object.freeze(['counterfactual', 'prediction-error']);
+const FORBIDDEN_EVERYWHERE = Object.freeze(['prediction-error']);
 const FORBIDDEN_IN_INTERPRETATION = Object.freeze(['expectation', 'behaviorEffect', 'counterfactual', 'prediction-error']);
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -956,6 +957,9 @@ function auditRecallSeam(rawSource) {
     if (token === 'prediction-error') continue;
     if (containsSemantic(code, token)) reasons.push('forbidden-domain-in-recall:' + token);
   }
+  const counterfactualAudit = auditCounterfactualRecallSeam(code);
+  facts.counterfactual = counterfactualAudit.facts;
+  for (const reason of counterfactualAudit.reasons) reasons.push('recall:' + reason);
   /* 1b · Prediction Error：白名单只读自述之外的一切 PE 形态 ⇒ 第二条 seam */
   const peAudit = auditPredictionErrorSurface(code, {
     declarationAllowlist: PREDICTION_ERROR_DECLARATION_ALLOWLIST
@@ -1091,6 +1095,40 @@ function auditRecallSeam(rawSource) {
   return { ok: reasons.length === 0, reasons: reasons, facts: facts, codeLength: code.length };
 }
 
+/* P21-R4-Q · Counterfactual has one authorized consumer: the post-K/L/N/O/P
+   cognition function. This guards callsite location/count, while keeping the
+   interpretation boundary and selector stage free of this capability. */
+function auditCounterfactualRecallSeam(rawSource) {
+  const code = stripJsComments(String(rawSource == null ? '' : rawSource));
+  const reasons = [];
+  const depSignature = 'const counterfactualMemory = deps.counterfactualMemory || null;';
+  const depSites = occurrences(code, depSignature);
+  const deriveSites = occurrences(code, 'counterfactualMemory.derive(');
+  const cognition = regionOf(code, 'async function runCurrentMeaningAndNarrative(ctx)');
+  const consumer = regionOf(code, 'async function runCounterfactualMemory(ctx, cognition)');
+  const runCallSites = occurrences(code, 'await runCounterfactualMemory(ctx, outcome)');
+  const facts = {
+    depCount: depSites.length,
+    deriveCount: deriveSites.length,
+    runCallCount: runCallSites.length,
+    cognitionRegion: !!cognition,
+    consumerRegion: !!consumer,
+    deriveLines: deriveSites.map((at) => lineOf(code, at)),
+    runLines: runCallSites.map((at) => lineOf(code, at))
+  };
+  if (depSites.length !== 1) reasons.push('counterfactual-dependency-count:' + depSites.length);
+  if (!cognition || !consumer) reasons.push('counterfactual-cognition-seam-missing');
+  if (deriveSites.length !== 1 || !contains(consumer, deriveSites[0])) reasons.push('counterfactual-derive-outside-approved-consumer');
+  if (runCallSites.length !== 1 || !contains(cognition, runCallSites[0])) reasons.push('counterfactual-cognition-call-count-or-location-invalid');
+  const selectionStart = code.indexOf('const messageHash');
+  const selectionEnd = code.indexOf('counters.ok += 1;');
+  if (selectionStart >= 0 && selectionEnd > selectionStart
+    && code.slice(selectionStart, selectionEnd).indexOf('counterfactual') >= 0) {
+    reasons.push('counterfactual-in-selection-stage');
+  }
+  return { ok: reasons.length === 0, reasons: reasons, facts: facts };
+}
+
 /* ── 解释边界审计：四域全禁（措辞未放宽）───────────────────────────── */
 function auditInterpretationSeam(rawSource) {
   const code = stripJsComments(String(rawSource == null ? '' : rawSource));
@@ -1198,7 +1236,7 @@ function forgeRecallPeSeam(source, kind) {
 }
 
 module.exports = {
-  auditRecallSeam, auditInterpretationSeam,
+  auditRecallSeam, auditInterpretationSeam, auditCounterfactualRecallSeam,
   forgeRecallSeam, FORGERY_KINDS,
   FORBIDDEN_EVERYWHERE, FORBIDDEN_IN_INTERPRETATION,
   DEP_LINE_SIGNATURE, regionOf, contains, occurrences, lineOf,

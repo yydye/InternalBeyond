@@ -104,6 +104,7 @@ function createRuntimeExplicitPreferenceReport(deps) {
 
   const held = new Map();
   const heldOrder = [];
+  let disposed = false;
   const counters = {
     attempts: 0, minted: 0, duplicatesSuppressed: 0,
     rejectedMalformed: 0, rejectedActionId: 0, rejectedScope: 0,
@@ -242,14 +243,46 @@ function createRuntimeExplicitPreferenceReport(deps) {
     };
   }
 
+  /* Read-only canonical action facts for the subjective opportunity authority.
+     Coverage is fail-closed after holder eviction or disposal. */
+  function getExplicitPreferenceReportById(reportId) {
+    const report = held.get(text(reportId));
+    return report && isExplicitPreferenceReport(report) ? report : null;
+  }
+
+  function queryExplicitPreferenceReports(filter) {
+    const q = isPlainObject(filter) ? filter : {};
+    const fromAt = Number.isFinite(Number(q.fromAt)) ? Number(q.fromAt) : null;
+    const toAt = Number.isFinite(Number(q.toAt)) ? Number(q.toAt) : null;
+    const reports = Array.from(held.values()).filter(function (report) {
+      if (!isExplicitPreferenceReport(report)) return false;
+      if (q.characterId != null && text(report.characterId) !== text(q.characterId)) return false;
+      if (q.conversationId != null && text(report.conversationId) !== text(q.conversationId)) return false;
+      if (q.targetKey != null && text(report.targetKey) !== text(q.targetKey)) return false;
+      if (fromAt != null && Number(report.occurredAt) < fromAt) return false;
+      if (toAt != null && Number(report.occurredAt) > toAt) return false;
+      return true;
+    }).sort(function (a, b) {
+      return Number(a.occurredAt) - Number(b.occurredAt)
+        || text(a.reportId).localeCompare(text(b.reportId));
+    });
+    return Object.freeze({
+      reports: Object.freeze(reports),
+      historyComplete: !disposed && counters.evicted === 0,
+      authority: 'EXPLICIT_USER_PREFERENCE_REPORT_AUTHORITY'
+    });
+  }
+
   return {
     ENTRY: ENTRY,
     submit: submit,
     describe: describe,
     isExplicitPreferenceReport: isExplicitPreferenceReport,
+    getExplicitPreferenceReportById: getExplicitPreferenceReportById,
+    queryExplicitPreferenceReports: queryExplicitPreferenceReports,
     heldReportCount: function () { return held.size; },
     counters: counters,
-    dispose: function () { held.clear(); heldOrder.length = 0; }
+    dispose: function () { disposed = true; held.clear(); heldOrder.length = 0; }
   };
 }
 

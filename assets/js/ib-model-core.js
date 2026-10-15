@@ -187,6 +187,118 @@
   }
   function reasoningTraceReset() { _reasoningTrace.length = 0; }
 
+  /* ── Turn Trace · bounded, in-memory event view ───────────────────────
+     Keep the Work Run event vocabulary (sequence / eventType / status /
+     reasonCode / createdAt) while keeping Chat turns out of work_runs: that
+     store is authority-bound to Work Mode run/consent state. Only metrics and
+     stable identities enter this ring; no prompt, message, memory text, tool
+     arguments, endpoint, or credential is accepted by the field whitelist. */
+  var TURN_TRACE_MAX = 40;
+  var TURN_TRACE_EVENT_MAX = 48;
+  var TURN_TRACE_EVENT_TYPES = Object.freeze([
+    'input', 'context', 'memory', 'middle_brain', 'model_call_started',
+    'model_call_retry', 'model_call_finished', 'tool_execution', 'tool_guard', 'result'
+  ]);
+  var TURN_TRACE_EVENT_FIELDS = Object.freeze([
+    'inputMessages', 'inputChars', 'attachmentCount', 'contextMessages', 'contextChars', 'contextTokens',
+    'systemChars', 'tailChars', 'memoryState', 'memoryChars', 'memoryItems',
+    'memoryAuthority', 'mbSource', 'mbInjected', 'provider', 'model', 'format',
+    'attempt', 'latencyMs', 'retryDelayMs', 'retryCount', 'httpStatus', 'errorCategory',
+    'finishReason', 'truncated', 'toolName', 'toolCount', 'toolStatus', 'toolCalls',
+    'toolRounds', 'guardTripped', 'guardReason', 'guardEvents', 'resultChars',
+    'assistantMessages', 'reasonCode', 'status'
+  ]);
+  var _turnTraceRing = [];
+  var _turnTraceById = Object.create(null);
+  var _turnTraceSeq = 0;
+
+  function _traceText(value, limit) {
+    return String(value == null ? '' : value).replace(/[\r\n\u0000-\u001f\u007f]/g, ' ').trim().slice(0, limit || 100);
+  }
+  function _traceNumber(value) {
+    var n = Number(value);
+    return isFinite(n) && n >= 0 ? Math.floor(n) : null;
+  }
+  function turnTraceBegin(meta) {
+    meta = meta || {};
+    var traceId = 'turn_' + Date.now().toString(36) + '_' + (++_turnTraceSeq).toString(36);
+    var rec = {
+      traceId: traceId,
+      consumer: _traceText(meta.consumer, 40),
+      characterId: _traceText(meta.characterId, 100),
+      threadId: _traceText(meta.threadId, 120),
+      turnId: _traceText(meta.turnId, 120),
+      startedAt: Date.now(), completedAt: null, status: 'active',
+      nextSequence: 1, events: []
+    };
+    _turnTraceById[traceId] = rec;
+    return traceId;
+  }
+  function turnTraceEvent(traceId, eventType, fields) {
+    var rec = _turnTraceById[String(traceId || '')];
+    var type = String(eventType || '');
+    if (!rec || TURN_TRACE_EVENT_TYPES.indexOf(type) < 0) return null;
+    fields = fields || {};
+    var event = {
+      sequence: rec.nextSequence++, eventType: type,
+      fromStatus: rec.events.length ? String(rec.events[rec.events.length - 1].eventType) : 'active',
+      toStatus: type, version: rec.nextSequence - 1,
+      reasonCode: fields.reasonCode == null ? null : _traceText(fields.reasonCode, 64),
+      createdAt: Date.now()
+    };
+    TURN_TRACE_EVENT_FIELDS.forEach(function (key) {
+      if (!Object.prototype.hasOwnProperty.call(fields, key) || key === 'reasonCode') return;
+      var value = fields[key];
+      if (key === 'guardEvents') {
+        event[key] = Array.isArray(value) ? value.slice(0, 16).map(function (v) { return _traceText(v, 32); }) : [];
+      } else if (typeof value === 'boolean') event[key] = value;
+      else if (typeof value === 'number') event[key] = _traceNumber(value);
+      else if (value != null) event[key] = _traceText(value, key === 'toolName' ? 80 : 100);
+    });
+    rec.events.push(event);
+    if (rec.events.length > TURN_TRACE_EVENT_MAX) rec.events.shift();
+    return Object.assign({}, event);
+  }
+  function turnTraceFinish(traceId, status, fields) {
+    var rec = _turnTraceById[String(traceId || '')];
+    if (!rec) return null;
+    if (rec.completedAt == null) {
+      var finalFields = Object.assign({}, fields || {}, { status: _traceText(status || 'completed', 32) });
+      turnTraceEvent(traceId, 'result', finalFields);
+      rec.status = finalFields.status;
+      rec.completedAt = Date.now();
+      _turnTraceRing.push(rec);
+      while (_turnTraceRing.length > TURN_TRACE_MAX) {
+        var expired = _turnTraceRing.shift();
+        if (expired && expired.traceId) delete _turnTraceById[expired.traceId];
+      }
+    }
+    return _turnTraceClone(rec);
+  }
+  function _turnTraceClone(rec) {
+    return {
+      traceId: rec.traceId, consumer: rec.consumer, characterId: rec.characterId,
+      threadId: rec.threadId, turnId: rec.turnId, startedAt: rec.startedAt,
+      completedAt: rec.completedAt, status: rec.status,
+      events: rec.events.map(function (event) { return Object.assign({}, event, { guardEvents: event.guardEvents ? event.guardEvents.slice() : undefined }); })
+    };
+  }
+  function turnTraceRecent(n, traceId) {
+    var k = Math.max(1, Math.min(TURN_TRACE_MAX, Number(n) || 10));
+    var list = _turnTraceRing.slice();
+    Object.keys(_turnTraceById).forEach(function (id) {
+      var rec = _turnTraceById[id];
+      if (rec && rec.completedAt == null) list.push(rec);
+    });
+    list.sort(function (a, b) { return a.startedAt - b.startedAt; });
+    if (traceId != null) list = list.filter(function (rec) { return rec.traceId === String(traceId); });
+    return list.slice(-k).map(_turnTraceClone);
+  }
+  function turnTraceReset() {
+    _turnTraceRing.length = 0;
+    _turnTraceById = Object.create(null);
+  }
+
   function _setByPath(body, path, value) {
     var o = body;
     for (var i = 0; i < path.length - 1; i++) {
@@ -952,6 +1064,11 @@
     reasoningTrace: reasoningTrace,
     reasoningTraceReset: reasoningTraceReset,
     noteReasoningTokens: noteReasoningTokens,
+    turnTraceBegin: turnTraceBegin,
+    turnTraceEvent: turnTraceEvent,
+    turnTraceFinish: turnTraceFinish,
+    turnTraceRecent: turnTraceRecent,
+    turnTraceReset: turnTraceReset,
     reasoningTokensFromUsage: reasoningTokensFromUsage,
     adaptMessageParts: adaptMessageParts,
     geminiParts: geminiParts,

@@ -48,13 +48,16 @@ function tempDir(tag) { return fs.mkdtempSync(path.join(os.tmpdir(), 'd4r3-' + t
 function build(tag, opts) {
   const o = opts || {};
   const dir = tempDir(tag);
+  const testTurnId = 'turn_d5_' + tag;
   const inst = SERVICE.buildHomeNode({
     dataDir: dir, credentialDataDir: dir, token: 't', port: 0, logger: () => {},
     clock: () => TURN_T,
+    turnIdFactory: () => testTurnId,
     registry: strictRegistry(o.ids || ['char_a']),
     port: stubPort(o.text)
   });
   inst.open();
+  inst.__testTurnId = testTurnId;
   return inst;
 }
 function seed(inst, token, over) {
@@ -65,7 +68,10 @@ function seed(inst, token, over) {
     contradictoryEvidenceIds: [], generalizationLevel: 'episode-hypothesis',
     subjectivePredictionConfidence: 0.8, subject: { kind: 'user', label: '' },
     predicate: { kind: 'will-do' }, expectedOutcome: { kind: 'exclusive-outcome', token: token }
-  }, { now: TURN_T, characterId: o.characterId || 'char_a', conversationId: o.conversationId || 'dm:char_a', turnId: o.turnId || 'tp1', expectationIndex: 0 }).record;
+  }, {
+    now: TURN_T, characterId: o.characterId || 'char_a', conversationId: o.conversationId || 'dm:char_a',
+    turnId: o.turnId || inst.__testTurnId, expectationIndex: o.expectationIndex || 0
+  }).record;
 }
 async function turn(inst, requestId, friendId, characterId) {
   return inst.executor.executeCharacterTurn({
@@ -180,7 +186,7 @@ async function turn(inst, requestId, friendId, characterId) {
   section('E · one-pair automatic production E2E');
   {
     const inst = build('one');
-    const pred = seed(inst, 'runtime.turn_terminal');
+    const pred = seed(inst, 'runtime.turn_terminal.completed');
     const r = await turn(inst, 'o1', 'char_a', 'char_a');
     const fb = inst.runtimeRealityFeedback;
     P('one.TurnTerminalFact', 1);
@@ -212,8 +218,8 @@ async function turn(inst, requestId, friendId, characterId) {
   section('F · multi-pair automatic');
   {
     const inst = build('multi');
-    seed(inst, 'runtime.turn_terminal', { turnId: 'm1', conversationId: 'dm:char_a' });
-    seed(inst, 'runtime.turn_terminal', { turnId: 'm2', conversationId: 'dm:char_a' });
+    seed(inst, 'runtime.turn_terminal.completed', { turnId: inst.__testTurnId, conversationId: 'dm:char_a', expectationIndex: 0 });
+    seed(inst, 'runtime.turn_terminal.timeout', { turnId: inst.__testTurnId, conversationId: 'dm:char_a', expectationIndex: 1 });
     await turn(inst, 'mp1', 'char_a', 'char_a');
     const fb = inst.runtimeRealityFeedback;
     P('multi.RealityEvent', 1);
@@ -231,7 +237,7 @@ async function turn(inst, requestId, friendId, characterId) {
   section('G · scope & fail-closed');
   {
     const inst = build('scope');
-    seed(inst, 'runtime.turn_terminal', { turnId: 's1', characterId: 'char_b', conversationId: 'dm:char_b' });
+    seed(inst, 'runtime.turn_terminal.completed', { turnId: inst.__testTurnId, characterId: 'char_b', conversationId: 'dm:char_b' });
     await turn(inst, 's1', 'char_a', 'char_a');
     const fb = inst.runtimeRealityFeedback;
     check('G1.wrongScopeNotPaired', fb.counters.observationCount === 0, fb.counters);
@@ -266,8 +272,80 @@ async function turn(inst, requestId, friendId, characterId) {
     })(), 'execution.js 只通过注入 callback');
   }
 
-  /* ══ I · readiness ══ */
-  section('I · readiness');
+  /* ══ I · opt-in P3 matcher-aware routing ══ */
+  section('I · opt-in P3 Matcher routing');
+  {
+    const eventAuthority = createRuntimeRealityEvent({});
+    const terminalSource = require(path.join(ROOT, 'services', 'home-node', 'turn-terminal-reality-source.js'))
+      .createTurnTerminalRealitySource({ realityEvent: eventAuthority });
+    const event = terminalSource.emit(Object.freeze({
+      turnId: 'turn_matcher_route', characterId: 'char_a', conversationId: 'dm:char_a',
+      requestCorrelationId: 'request_matcher_route', outcome: 'completed', occurredAt: REAL_NOW
+    })).realityEvent;
+    let matcherAwareCalls = 0, syncCalls = 0, postSettlementCalls = 0;
+    const registry = {
+      getPrediction: () => ({ predictionId: 'p_matcher_route', observationWindow: { opensAt: TURN_T, closesAt: REAL_NOW + 1000 } })
+    };
+    const observationRuntime = {
+      candidatePredictions: () => ['p_matcher_route'],
+      projectForPrediction: () => ({ ok: true, observation: { observationId: 'obs_matcher_route', outcomeRef: { kind: 'statement' } } })
+    };
+    const settlementRuntime = {
+      settlePrediction: () => {
+        syncCalls += 1;
+        return { ok: true, settlement: { state: 'pending' }, predictionError: null };
+      },
+      settlePredictionWithEvidenceMatcher: async () => {
+        matcherAwareCalls += 1;
+        return { ok: true, settlement: { state: 'pending' }, predictionError: null };
+      }
+    };
+    const fb = createRuntimeRealityFeedback({
+      registry: registry,
+      observationRuntime: observationRuntime,
+      settlementRuntime: settlementRuntime,
+      isRealityEvent: eventAuthority.isRealityEvent,
+      evidenceMatcherEnabled: true,
+      onSettlement: () => { postSettlementCalls += 1; return { ok: true, status: 'ingested' }; },
+      clock: () => REAL_NOW
+    });
+    const dispatched = fb.processRealityEvent(event);
+    const idle = await fb.awaitIdle(1000);
+    check('I1.optInUsesExistingP3MatcherAwareEntry', idle.idle && matcherAwareCalls === 1 && syncCalls === 0,
+      { idle: idle, matcherAwareCalls: matcherAwareCalls, syncCalls: syncCalls });
+    check('I2.asyncSettlementPreservesP4CallbackAndOneResult', postSettlementCalls === 1
+      && dispatched.settlementsByPrediction.length === 1
+      && dispatched.settlementsByPrediction[0].state === 'pending', dispatched.settlementsByPrediction);
+    check('I3.noSecondMatcherCallSeam', fb.describe().matcherSettlementPath === 'P3_MATCHER_AWARE_ENTRY'
+      && fb.describe().matcherPendingSettlements.max === 128,
+      fb.describe().matcherSettlementPath);
+
+    let offSyncCalls = 0, offMatcherCalls = 0;
+    const offAuthority = createRuntimeRealityEvent({});
+    const offEvent = require(path.join(ROOT, 'services', 'home-node', 'turn-terminal-reality-source.js'))
+      .createTurnTerminalRealitySource({ realityEvent: offAuthority })
+      .emit(Object.freeze({
+        turnId: 'turn_matcher_route_off', characterId: 'char_a', conversationId: 'dm:char_a',
+        requestCorrelationId: 'request_matcher_route_off', outcome: 'completed', occurredAt: REAL_NOW
+      })).realityEvent;
+    const offFb = createRuntimeRealityFeedback({
+      registry: registry,
+      observationRuntime: observationRuntime,
+      settlementRuntime: {
+        settlePrediction: () => { offSyncCalls += 1; return { ok: true, settlement: { state: 'pending' } }; },
+        settlePredictionWithEvidenceMatcher: async () => { offMatcherCalls += 1; return { ok: true, settlement: { state: 'pending' } }; }
+      },
+      isRealityEvent: offAuthority.isRealityEvent,
+      evidenceMatcherEnabled: false,
+      clock: () => REAL_NOW
+    });
+    offFb.processRealityEvent(offEvent);
+    check('I4.defaultOffKeepsSynchronousP3Path', offSyncCalls === 1 && offMatcherCalls === 0,
+      { syncCalls: offSyncCalls, matcherAwareCalls: offMatcherCalls });
+  }
+
+  /* ══ J · readiness ══ */
+  section('J · readiness');
   {
     P('REALITY_EVENT_FEEDBACK_DRIVER_OWNER', 'HOME_NODE_RUNTIME_ASSEMBLY');
     P('FEEDBACK_TRIGGER', 'NEW_CANONICAL_REALITY_EVENT_MINT');

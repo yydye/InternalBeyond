@@ -447,7 +447,7 @@ function expectation(over) {
     async function settle(pred, obs, rel) {
       const e = createRuntimePredictionSettlement({ clock: () => T0, evidenceMatcher: matcher(rel) });
       return e.settlePredictionWithEvidenceMatcher(pred, [{ observation: obs }],
-        { now: pred.observationWindow.opensAt + 2000, opportunity: { required: true, existence: { present: true, authoritySource: 'CANONICAL_RUNTIME' }, consumedAt: T0 + 1500 } });
+        { now: pred.observationWindow.opensAt + 2000 });
     }
 
     /* Case A：known-none + matcher support ⇒ 第一次真正可以 decisive */

@@ -350,17 +350,34 @@ const interpCode = WIRING.stripJsComments(interpRaw);
       });
     };
     ['assets/js', 'services', 'src-tauri'].forEach(walk);
-    /* ★ P3 相位迁移：OutcomeObservation core 现在有**恰好一个**已批准消费者 ——
-       Settlement Engine（(q-12) 的 SAME_MODULE_INSTANCE_REQUIRED：它必须消费
-       权威面的 gate 输出，而不是重判 authority）。规则从"零消费"收紧为
-       "**只有**这一个已具名消费者"。 */
-    const APPROVED_OBSERVATION_CORE_CONSUMERS = ['services/home-node/runtime-prediction-settlement.js',
-      'services/home-node/runtime-outcome-observation.js'];
+    /* P3/G2/D5 have several named consumers of the shared P1 core. They use
+       distinct exported authorities: observation mint/validation, relation
+       gates, structured terminal-token construction, and event-opportunity
+       token validation. This is not a second P1 matrix or observation builder. */
+    const APPROVED_OBSERVATION_CORE_CONSUMERS = [
+      'assets/js/memory-recall/prediction-settlement-core.js',
+      'services/home-node/runtime-event-opportunity-authority.js',
+      'services/home-node/runtime-outcome-observation.js',
+      'services/home-node/runtime-prediction-settlement.js',
+      'services/home-node/runtime-structured-expectation.js'
+    ];
     const unexpected = consumers.filter(rel => APPROVED_OBSERVATION_CORE_CONSUMERS.indexOf(rel) < 0);
-    check('F7.onlyTheApprovedConsumerUsesTheP1Core',
+    check('F7.onlyApprovedConsumersUseTheP1Core',
       unexpected.length === 0
       && APPROVED_OBSERVATION_CORE_CONSUMERS.every(rel => consumers.indexOf(rel) >= 0),
       'consumers=' + JSON.stringify(consumers));
+
+    const counterfactualReadPath = read('services/home-node/runtime-counterfactual-memory.js');
+    check('F8.R4QUsesOnlySealedReadCapabilities',
+      /predictionSettlement\.getSettlement\(/.test(counterfactualReadPath)
+      && /predictionSettlement\.getPredictionError\(/.test(counterfactualReadPath)
+      && /realityEventAuthority\.getRealityEventById\(/.test(counterfactualReadPath)
+      && /P3\.isSettlementRecord\(/.test(counterfactualReadPath)
+      && /P3\.isPredictionErrorRecord\(/.test(counterfactualReadPath)
+      && !/\.settlePrediction\s*\(/.test(counterfactualReadPath)
+      && !/projectFromValidatedExpectation\s*\(/.test(counterfactualReadPath)
+      && !/calibration(Runtime|Driver|Counted|Confidence)/i.test(counterfactualReadPath),
+      'R4-Q validates and reads sealed P1/P3 evidence; it has no Prediction, Settlement, or P4 writer');
 
     P('SAME_MODULE_INSTANCE_REQUIRED', 'YES');
     P('BROWSER_OUTCOME_OBSERVATION_ACCEPTANCE', 'FORBIDDEN');
@@ -570,15 +587,16 @@ const interpCode = WIRING.stripJsComments(interpRaw);
   section('G · scope proof');
   {
     P('P1_5_STATUS', 'COMPLETE');
-    P('PRODUCTION_PE_WIRING', 'NONE');
-    P('PREDICTION_REGISTRY_LIVE', 'NO');
-    P('SETTLEMENT_ENGINE', 'NONE');
-    P('OUTCOME_OBSERVER_PRODUCERS_LIVE', 'NO');
-    P('MODEL_CALLS_ADDED', 0);
+    P('PRODUCTION_PE_MUTATION_WIRING_FROM_R4Q', 'NONE');
+    P('SEALED_P3_P1_READ_CONSUMER', 'P21-R4-Q');
+    P('PREDICTION_REGISTRY_LIVE', 'YES');
+    P('SETTLEMENT_ENGINE', 'YES_FROZEN_P3');
+    P('OUTCOME_OBSERVER_PRODUCERS_LIVE', 'YES');
+    P('P3_P4_MODEL_CALLS_ADDED', 0);
     P('DURABLE_WRITES_ADDED', 0);
-    P('RECALL_ENVELOPE_CHANGED', 'NO');
+    P('RECALL_TOP_LEVEL_ENVELOPE_CHANGED', 'NO');
     P('UI_DISCLOSURE_CHANGED', 'NO');
-    P('NEXT_ALLOWED_PHASE', 'P2');
+    P('NEXT_ALLOWED_PHASE', 'P21-R4-Q_READ_ONLY_CONSUMPTION');
     check('G1.scopeProof', true, 'declared');
   }
 

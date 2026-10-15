@@ -128,16 +128,36 @@ function tokenObs(pred, token, over) {
   }, over || {}), {});
   return r.ok ? r.value : null;
 }
-const OPP = () => ({
-  required: true, existence: { present: true, authoritySource: 'CANONICAL_RUNTIME' }, consumedAt: T0 + 1500
-});
 function settleEngine(m) {
-  return createRuntimePredictionSettlement({ clock: () => T0, evidenceMatcher: m || null });
+  const resolutionIdentity = new WeakSet();
+  const opportunityAuthority = {
+    resolveForPrediction: function (input) {
+      const prediction = input && input.prediction;
+      const window = prediction && prediction.observationWindow;
+      const required = !!(prediction && prediction.opportunity && prediction.opportunity.required === true);
+      const result = Object.freeze({
+        state: required ? 'SATISFIED' : 'NOT-REQUIRED',
+        opportunity: {
+          required: required,
+          existence: { present: true, authoritySource: 'CANONICAL_RUNTIME' },
+          consumedAt: required ? Number(window && window.opensAt) + 1500 : null
+        }
+      });
+      resolutionIdentity.add(result);
+      return result;
+    },
+    isResolution: function (result) { return !!result && resolutionIdentity.has(result); }
+  };
+  return createRuntimePredictionSettlement({
+    clock: () => T0,
+    evidenceMatcher: m || null,
+    opportunityAuthority: opportunityAuthority
+  });
 }
 async function settleWithMatcher(pred, obs, m, over) {
   const e = settleEngine(m);
   return e.settlePredictionWithEvidenceMatcher(pred, [{ observation: obs }],
-    Object.assign({ now: pred.observationWindow.opensAt + 2000, opportunity: OPP() }, over || {}));
+    Object.assign({ now: pred.observationWindow.opensAt + 2000 }, over || {}));
 }
 
 (async function main() {
@@ -351,7 +371,7 @@ async function settleWithMatcher(pred, obs, m, over) {
     const m1 = matcher('{"relation":"support"}');
     const e1 = settleEngine(m1);
     const r1 = await e1.settlePredictionWithEvidenceMatcher(evPred, [{ observation: evObs }],
-      { now: T0 + 2000, opportunity: OPP() });
+      { now: T0 + 2000 });
     check('E2.eventRuntimeStateTokenSkipsTheMatcher',
       m1.__port.seen.length === 0 && r1.settlement.state === 'matched'
       && e1.describe().counters.matcherSkippedMechanical === 1
@@ -363,7 +383,7 @@ async function settleWithMatcher(pred, obs, m, over) {
     const m2 = matcher('{"relation":"support"}');
     const e2 = settleEngine(m2);
     const r2 = await e2.settlePredictionWithEvidenceMatcher(evPred, [{ observation: evObs2 }],
-      { now: T0 + 2000, opportunity: OPP() });
+      { now: T0 + 2000 });
     check('E3.eventUserBehaviorTokenSkipsTheMatcher',
       m2.__port.seen.length === 0 && r2.settlement.state === 'missed'
       && e2.describe().counters.matcherSkippedMechanical === 1
@@ -373,7 +393,7 @@ async function settleWithMatcher(pred, obs, m, over) {
       (function () {
         const m = matcher('{"relation":"support"}');
         const e = settleEngine(m);
-        e.settlePrediction(evPred, [{ observation: evObs }], { now: T0 + 2000, opportunity: OPP() });
+        e.settlePrediction(evPred, [{ observation: evObs }], { now: T0 + 2000 });
         return m.__port.seen.length === 0;
       })(), 'the sync entry point has no matcher relation path at all');
     P('MATCHER_CALLS_ON_MECHANICAL_PATH', 0);
@@ -545,11 +565,11 @@ async function settleWithMatcher(pred, obs, m, over) {
       return res.match !== null && res.match.relation === 'ambiguous'
         && m.describe().counters.failures >= 1;
     })());
-    check('H.noRetryAndNoCache',
+    check('H.noRetryAndBoundedSessionMemo',
       matcher('{"relation":"support"}').describe().autoRetry === 'NONE'
-      && matcher('{"relation":"support"}').describe().cache === 'NONE_V1'
-      && read(MATCH_RT_REL).indexOf('retry') < 0 || read(MATCH_RT_REL).indexOf('AUTO_RETRY = \'NONE\'') >= 0,
-      'MATCHER_RETRY = 0 · MATCHER_CACHE = NONE_V1');
+      && matcher('{"relation":"support"}').describe().cache === 'BOUNDED_SESSION_MEMO'
+      && matcher('{"relation":"support"}').describe().holder.lifetime === 'SESSION_ONLY',
+      'MATCHER_RETRY = 0 · bounded session-only memo');
     check('H.failureRelationIsFrozen',
       MC.FAILURE_RELATION === 'ambiguous' && MC.STATE_SUPPORT.failureRelation === 'ambiguous',
       'MATCHER_FAILURE_RELATION = ambiguous');
@@ -752,10 +772,11 @@ async function settleWithMatcher(pred, obs, m, over) {
     check('L9.costIsReportedHonestly',
       (function () {
         const d = matcher('{"relation":"support"}').describe();
-        return d.callsPerSettlementAtMost === 'ONE_PER_STATEMENT_OBSERVATION'
+        return d.callsPerSettlementAtMost === d.budget.perSettlementAttempt
+          && d.settlementAttemptBudgetScope === 'OPAQUE_P3_TOKEN'
           && d.callAccounting === 'PER_OBSERVATION'
           && d.durableWrites === 0;
-      })(), 'MATCHER_CALLS_ADDED = conditional, declared per observation');
+      })(), 'Matcher calls are bounded per P3 attempt and accounted per observation');
     P('MATCHER_CALLS_ADDED', 'conditional');
     P('EVIDENCE_MATCHER_ENABLED_DEFAULT', false);
   }
@@ -812,6 +833,8 @@ async function settleWithMatcher(pred, obs, m, over) {
         const d = off.describe();
         return d.matcherCapabilityPresent === true && d.matcherEnabled === false
           && d.runtimeClassifiable === false && d.productionSettleable === false
+          && d.runtimeClassifiableIncludesPolicyAndSourceDecisiveness === 'YES'
+          && d.productionSettleableFormula === 'policyAllowed && runtimeClassifiable && attributionAuthorityAvailable'
           && d.capabilityGapReason.indexOf('matcher-disabled') >= 0;
       })(),
       'the live runtime must expose the same three layers');
@@ -975,6 +998,22 @@ async function settleWithMatcher(pred, obs, m, over) {
       return m.__port.seen.length === 0 && r.status === 'budget-exhausted'
         && m.describe().counters.budgetDeniedPerAttempt === 1;
     })());
+    check('Q3b.perAttemptTokenCapsOneP3Settlement', (async function () {
+      const m = matcher('{"relation":"support"}', {
+        maxMatcherCallsPerSettlementAttempt: 2,
+        maxMatcherCallsPerPrediction: 99,
+        maxMatcherCallsPerTurn: 99
+      });
+      const attempt = m.beginSettlementAttempt();
+      const results = [];
+      for (let i = 0; i < 4; i += 1) {
+        results.push(await m.matchRelation(pred, mk(100 + i), { settlementAttemptToken: attempt }));
+      }
+      return m.__port.seen.length === 2
+        && results[2].match.relation === 'ambiguous'
+        && results[2].status === 'budget-exhausted'
+        && m.describe().counters.budgetDeniedPerAttempt >= 1;
+    })());
     check('Q4.budgetExhaustionNeverUpgradesRelation', (async function () {
       const m = matcher('{"relation":"support"}', { maxMatcherCallsPerSettlementAttempt: 0 });
       const r = await m.matchRelation(pred, mk(2), { characterId: 'char_A', turnId: 't9' });
@@ -993,7 +1032,7 @@ async function settleWithMatcher(pred, obs, m, over) {
       });
       const e = settleEngine(m);
       const r = await e.settlePredictionWithEvidenceMatcher(evPred, [{ observation: evObs }],
-        { now: T0 + 2000, opportunity: OPP() });
+        { now: T0 + 2000 });
       return r.settlement.state === 'matched'
         && m.__port.seen.length === 0
         && e.describe().counters.matcherSkippedMechanical === 1;

@@ -50,6 +50,7 @@ const CREDENTIAL_VAULT = require(path.join(ROOT, 'active', 'credential-vault.js'
 const RC = require(path.join(ROOT, 'services', 'home-node', 'runtime-recall.js'));
 const BE = require(path.join(ROOT, 'services', 'home-node', 'runtime-behavior-effect.js'));
 const RENDER = require(path.join(ROOT, 'assets', 'js', 'behavior-effect-render.js'));
+const RESPONSE_GUIDANCE = require(path.join(ROOT, 'assets', 'js', 'response-guidance-core.js'));
 
 const NOW = 1750000000000;
 const TOKEN = 'r4f2-browser-token';
@@ -340,28 +341,39 @@ function guidanceMessages(entry) {
     /* ══════════════════════════════════════════════════════════════ 1 · 接线事实 */
     section('1 · 接线事实（静态；不需要改 HTML）');
     const commSrc = readRel('assets/js/communication.js');
-    check('1.1 renderer 只经**既有**动态插入路径装载（createElement script + appendChild），没有被写进 InternalBeyond.html',
-      /createElement\('script'\)/.test(commSrc) && /sc\.src='assets\/js\/behavior-effect-render\.js'/.test(commSrc)
-      && readRel('InternalBeyond.html').indexOf('behavior-effect-render') < 0,
+    check('1.1 shared guidance core 与 R4-F renderer 都经动态插入路径装载，没有写入 InternalBeyond.html',
+      /createElement\('script'\)/.test(commSrc)
+      && /sc\.src='assets\/js\/behavior-effect-render\.js'/.test(commSrc)
+      && /sc\.src='assets\/js\/response-guidance-core\.js'/.test(commSrc)
+      && readRel('InternalBeyond.html').indexOf('behavior-effect-render') < 0
+      && readRel('InternalBeyond.html').indexOf('response-guidance-core') < 0,
       'html untouched');
     const htmlHash = sha256File(path.join(ROOT, 'InternalBeyond.html'));
     P('INTERNALBEYOND_HTML_SHA256', String(htmlHash).slice(0, 16));
     check('1.2 本套件已登记进 tests/test-all.js（否则它永远不会被聚合跑）',
       readRel('tests/test-all.js').indexOf('test_r4f_live_behavior_effect_browser.js') >= 0,
       'registered in the aggregate runner');
-    check('1.3 放置点唯一：_ibPlaceBehaviorEffectMessage 恰好被调用两次（1v1 + 群聊），且都紧跟在 primary system unshift 之后',
-      (commSrc.split('await _ibPlaceBehaviorEffectMessage(').length - 1) === 2
-      && /if\(sysContent\)messages\.unshift\(\{role:'system',content:sysContent\}\);\n[\s\S]{0,400}?await _ibPlaceBehaviorEffectMessage\(messages,_bcc&&_bcc\.behaviorEffect,!!sysContent\);/.test(commSrc)
-      && /messages\.unshift\(\{role:'system',content:sysContent\}\);\n[\s\S]{0,200}?await _ibPlaceBehaviorEffectMessage\(messages,_gc&&_gc\.behaviorEffect,!!sysContent\);/.test(commSrc),
+    check('1.3 shared response-guidance placement seam has exactly two callers (1v1 + group), each after canonical system',
+      (commSrc.split('await _ibPlaceResponseGuidanceMessage(').length - 1) === 2
+      && /if\(sysContent\)messages\.unshift\(\{role:'system',content:sysContent\}\);\n[\s\S]{0,450}?await _ibPlaceResponseGuidanceMessage\(messages,_bcc&&_bcc\.responseGuidance,!!sysContent,_bcc&&_bcc\.responseGuidanceIdentity\);/.test(commSrc)
+      && /messages\.unshift\(\{role:'system',content:sysContent\}\);\n[\s\S]{0,240}?await _ibPlaceResponseGuidanceMessage\(messages,_gc&&_gc\.responseGuidance,!!sysContent,_gc&&_gc\.responseGuidanceIdentity\);/.test(commSrc),
       'one placement seam per chat family');
     check('1.4 §15 浏览器侧没有第二套 effect holder：没有跨回合缓存 behaviorEffect 的容器，也没有把它写回 turn/config',
       !/_ibBeCache|_ibBehaviorCache|behaviorEffectCache|_ibLastBehaviorEffect/.test(commSrc)
-      && !/_ibPlaceBehaviorEffectMessage[\s\S]{0,400}?(localStorage|sessionStorage|indexedDB|dbPut)/.test(commSrc),
+      && !/_ibPlaceResponseGuidanceMessage[\s\S]{0,500}?(localStorage|sessionStorage|indexedDB|dbPut)/.test(commSrc),
       'no browser-side holder');
-    check('1.5 §10 放置不写 sysContent / persona / 关系 / _tailCtx / memory context：splice 只发生在 messages 数组上下标 1',
-      /messages\.splice\(1,0,\{role:'system',content:lines\.join\('\\n'\)\}\);/.test(commSrc)
+    check('1.5 §10 放置不写 sysContent / persona / 关系 / _tailCtx / memory context：shared renderer 只在 messages 数组下标 1 插入',
+      /messages\.splice\(1,0,\{role:'system',content:result\.text\}\);/.test(commSrc)
       && !/_pushCtxBlock\([^)]*lines\.join/.test(commSrc),
       'dedicated system message only');
+    check('1.6 Desktop browser never claims external participation consumption to Home Node',
+      !/consumeExternalInfluence|markExternalInfluenceNotConsumed|externalInfluenceConsumed/.test(commSrc),
+      'no browser-issued attribution receipt');
+    const recallSrc = readRel('services/home-node/runtime-recall.js');
+    check('1.7 Home Node wraps the server-owned R4-F entry in the same response-guidance contract',
+      /RESPONSE_GUIDANCE_CORE\.fromBehaviorEffect/.test(recallSrc)
+      && /responseGuidance:\s*guidance\.envelope/.test(recallSrc),
+      'server-owned nested guidance envelope');
 
     /* ══════════════════════════════════════════════════════════════ 2 · 真实浏览器 */
     section('2 · 真实 Chrome + InternalBeyond.html + 真实 Home Node + 真实 prompt assembly');
@@ -427,8 +439,10 @@ function guidanceMessages(entry) {
     })()`, 30000, 'runtime + sendChatMessage').catch(() => false);
     check('2.3 真实页面里必需件都在（runtime 面 / runMemoryRecall / sendChatMessage）', surfaceOk === true, surfaceOk);
     const rendererInitially = await evaluate('(function(){ return !!window.IBBehaviorEffectRender; })()');
-    check('2.4 §25 renderer **不是**页面预载的（没有改 HTML）：初始时 window.IBBehaviorEffectRender 不存在',
-      rendererInitially === false, rendererInitially);
+    const guidanceCoreInitially = await evaluate('(function(){ return !!window.IBResponseGuidanceCore; })()');
+    check('2.4 renderer 与 shared guidance core 都不是页面预载（没有改 HTML）',
+      rendererInitially === false && guidanceCoreInitially === false,
+      { renderer: rendererInitially, core: guidanceCoreInitially });
 
     const INSTRUMENT = `(function(){
       var P = window.__r4f2 = { http: [], injected: null };
@@ -507,7 +521,8 @@ function guidanceMessages(entry) {
     const warmPost = findChatPostFor(chatPosts(chatProvider), 'warmup');
     check('2.7 冷启动回合：没有服务端效果 ⇒ prompt 里没有行为指引，renderer 仍未装载（懒加载）',
       !!warmPost && guidanceMessages(warmPost).length === 0
-      && (await evaluate('(function(){ return !!window.IBBehaviorEffectRender; })()')) === false,
+      && (await evaluate('(function(){ return !!window.IBBehaviorEffectRender; })()')) === false
+      && (await evaluate('(function(){ return !!window.IBResponseGuidanceCore; })()')) === false,
       { guidance: warmPost ? guidanceMessages(warmPost).length : null });
 
     /* ══════════════════════════════════════════════════════════════ 3 · Turn A → B → C */
@@ -540,7 +555,14 @@ function guidanceMessages(entry) {
       !!bRecall && bRecall.response && bRecall.response.ok === true
       && bRecall.response.behaviorEffect && bRecall.response.behaviorEffect.derivedFrom === 'L3_AND_L5'
       && J(Object.keys(bRecall.response.behaviorEffect).sort()) === J(BE.EFFECT_KEYS.slice().sort())
-      && !!aTurnId && bRecall.response.behaviorEffect.sourceTurn === aTurnId,
+      && !!aTurnId && bRecall.response.behaviorEffect.sourceTurn === aTurnId
+      && bRecall.response.context && bRecall.response.context.responseGuidance
+      && bRecall.response.context.responseGuidance.schemaVersion === RESPONSE_GUIDANCE.SCHEMA_VERSION
+      && bRecall.response.context.responseGuidance.entries.length === 1
+      && bRecall.response.context.responseGuidance.entries[0].sourceKind === 'r4f_behavior_effect'
+      && J(bRecall.response.context.responseGuidance.entries[0].payload) === J(bRecall.response.behaviorEffect)
+      && bRecall.response.context.responseGuidance.turnIdentity.requestId === bRecall.body.requestId
+      && !/(prediction|expectation)/i.test(JSON.stringify(bRecall.response.context.responseGuidance)),
       { effect: bRecall && bRecall.response && bRecall.response.behaviorEffect, sourceTurnOfA: aTurnId });
     check('3.4 §14/§10 Turn B main wire：恰好**一条** guidance，且它是**独立 system 角色消息**、位于 canonical system 之后（下标 1）',
       bGuide.length === 1 && bGuide[0].role === 'system'
@@ -564,8 +586,8 @@ function guidanceMessages(entry) {
       && cRecall && cRecall.response && cRecall.response.behaviorEffect === null,
       { guidance: cPost ? guidanceMessages(cPost).length : null, recallEffect: cRecall && cRecall.response && cRecall.response.behaviorEffect });
     check('3.8 渲染器此时已被懒加载（Turn B 触发）；loader 只插入一次 script 标签',
-      (await evaluate('(function(){ return !!window.IBBehaviorEffectRender; })()')) === true,
-      'renderer lazily loaded on first placement');
+      (await evaluate('(function(){return !!window.IBBehaviorEffectRender&&!!window.IBResponseGuidanceCore&&document.querySelectorAll("script[src*=\\"behavior-effect-render.js\\"]").length===1&&document.querySelectorAll("script[src*=\\"response-guidance-core.js\\"]").length===1})()')) === true,
+      'renderer and shared core lazily loaded once on first placement');
     P('BEHAVIOR_EFFECT_RENDERER_LOAD_PATH', 'DYNAMIC_SCRIPT_INSERT_VIA_COMMUNICATION_JS');
 
     /* ══════════════════════════════════════════════════════════════ 4 · NO_SIGNAL */

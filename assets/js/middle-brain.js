@@ -265,6 +265,237 @@
     return ASTRA.middleBrainModelCall(prompt, directOpts);
   }
 
+  /* P28-WM-P2 · Work Mode cognition proposals. These methods only select
+     supplied project-file references and review a transient report; they do
+     not know Workspace storage and cannot execute a capability. They are
+     exposed through a workflow-scoped contract below, not the Chat facade. */
+  var MB_WORK_MODE_MAX_FILES = 200;
+  var MB_WORK_MODE_MAX_STEPS = 12;
+  var MB_WORK_MODE_MAX_EVIDENCE = 12;
+  var MB_WORK_MODE_MAX_EVIDENCE_CHARS = 18000;
+  var MB_WORK_MODE_MAX_REPORT_CHARS = 12000;
+  var MB_WORK_MODE_FOCUS = ['entrypoint', 'configuration', 'implementation', 'tests', 'documentation', 'security', 'other'];
+  var MB_WORK_MODE_ISSUES = ['unsupported_claim', 'missing_evidence', 'missed_scope', 'unsafe_recommendation', 'incomplete_review'];
+  var MB_WORK_MODE_ERRORS = ['not_ready', 'request', 'timeout', 'network', 'http', 'parse', 'empty', 'error', 'aborted'];
+
+  function _mbWorkModeExactObject(value, keys) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    var actual = Object.keys(value).sort();
+    var expected = keys.slice().sort();
+    return actual.length === expected.length && actual.every(function (key, index) { return key === expected[index]; });
+  }
+
+  function _mbWorkModeProjectRef(value) {
+    return typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,180}$/.test(value);
+  }
+
+  function _mbWorkModePath(value) {
+    if (typeof value !== 'string' || !value || value.length > 400) return false;
+    if (value.charAt(0) === '/' || value.indexOf('\\') >= 0 || /^[A-Za-z]:/.test(value)) return false;
+    if (/[\u0000-\u001F\u007F]/.test(value)) return false;
+    return value.split('/').every(function (part) { return !!part && part !== '.' && part !== '..'; });
+  }
+
+  function _mbWorkModePlanInput(input) {
+    if (!_mbWorkModeExactObject(input, ['projectRef', 'files']) || !_mbWorkModeProjectRef(input.projectRef)
+      || !Array.isArray(input.files) || input.files.length > MB_WORK_MODE_MAX_FILES) return null;
+    var seen = Object.create(null), files = [];
+    for (var i = 0; i < input.files.length; i++) {
+      var file = input.files[i];
+      if (!_mbWorkModeExactObject(file, ['fileId', 'path', 'size'])
+        || typeof file.fileId !== 'string' || !/^[A-Za-z0-9_.:-]{1,180}$/.test(file.fileId)
+        || !_mbWorkModePath(file.path) || !Number.isSafeInteger(file.size) || file.size < 0) return null;
+      if (seen[file.fileId]) return null;
+      seen[file.fileId] = true;
+      files.push({ fileId: file.fileId, path: file.path, size: file.size });
+    }
+    return { projectRef: input.projectRef, files: files };
+  }
+
+  function _mbWorkModeParseJson(text) {
+    try {
+      var value = JSON.parse(String(text || '').trim());
+      return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+    } catch (_) { return null; }
+  }
+
+  function _mbWorkModePlanResult(value, allowedFileIds) {
+    if (!_mbWorkModeExactObject(value, ['steps']) || !Array.isArray(value.steps)
+      || value.steps.length > MB_WORK_MODE_MAX_STEPS) return null;
+    var seen = Object.create(null), steps = [];
+    for (var i = 0; i < value.steps.length; i++) {
+      var step = value.steps[i];
+      if (!_mbWorkModeExactObject(step, ['fileId', 'focus'])
+        || typeof step.fileId !== 'string' || !allowedFileIds[step.fileId]
+        || MB_WORK_MODE_FOCUS.indexOf(step.focus) < 0 || seen[step.fileId]) return null;
+      seen[step.fileId] = true;
+      steps.push({ fileId: step.fileId, focus: step.focus });
+    }
+    return { steps: steps };
+  }
+
+  function _mbWorkModeBeforeSend(projectRef, fileIds, options, consumer) {
+    options = options || {};
+    var authorization = options.authorization;
+    var consentCore = root.IBWorkModeConsentCore;
+    var workRuns = root.IB && root.IB.homeNode && root.IB.homeNode.workRuns;
+    if (!_mbWorkModeExactObject(authorization, ['runId', 'consentId'])
+      || !/^wr_[A-Za-z0-9-]{36}$/.test(String(authorization.runId || ''))
+      || !/^wrc_[A-Za-z0-9-]{36}$/.test(String(authorization.consentId || ''))
+      || !consentCore || typeof consentCore.providerScope !== 'function'
+      || !workRuns || typeof workRuns.checkConsent !== 'function') return null;
+    return async function (route) {
+      var config;
+      try { config = await CFG.getMiddleBrainConfig(); } catch (_) { return { ok: false, error: 'consent-denied' }; }
+      var providerRef = String(config && (config.providerConfigId || config.credentialRef) || '').trim();
+      if (!providerRef) return { ok: false, error: 'consent-denied' };
+      var providerScope = await consentCore.providerScope('middle_brain', providerRef, route, root.crypto);
+      if (!providerScope) return { ok: false, error: 'consent-denied' };
+      try {
+        return await workRuns.checkConsent(authorization.runId, authorization.consentId, {
+          projectRef: projectRef,
+          providerScope: providerScope,
+          fileIds: fileIds,
+          consumer: consumer
+        });
+      } catch (_) { return { ok: false, error: 'consent-denied' }; }
+    };
+  }
+
+  async function middleBrainWorkModePlan(input, options) {
+    options = options || {};
+    var normalized = _mbWorkModePlanInput(input);
+    if (!normalized) return { ok: false, error: 'invalid-plan-input' };
+    var allowedFileIds = Object.create(null);
+    normalized.files.forEach(function (file) { allowedFileIds[file.fileId] = true; });
+    var beforeSend = _mbWorkModeBeforeSend(normalized.projectRef,
+      normalized.files.map(function (file) { return file.fileId; }), options, 'middle_brain_plan');
+    if (!beforeSend) return { ok: false, error: 'consent-denied' };
+    var system = String(CFG.MB_SYSTEM_PROMPT || '')
+      + '\n\nFor Work Mode, propose a read-only project audit plan. You cannot execute tools, request writes, run shell commands, or invent file identifiers. Select only supplied fileId values. Return JSON exactly as {"steps":[{"fileId":"...","focus":"entrypoint|configuration|implementation|tests|documentation|security|other"}]}. Use at most 12 unique steps; use an empty list for an empty project.';
+    var prompt = {
+      system: system,
+      messages: [{ role: 'user', content: JSON.stringify({
+        task: 'Read-only project audit',
+        files: normalized.files
+      }) }]
+    };
+    var result = await ASTRA.middleBrainModelCall(prompt, {
+      consumer: 'middle_brain.work_mode.plan',
+      maxTokens: 700,
+      jsonMode: true,
+      timeoutMs: options.timeoutMs,
+      signal: options.signal,
+      beforeSend: beforeSend
+    });
+    if (!result || result.ok !== true) {
+      if (result && result.error === 'consent-denied') return { ok: false, error: 'consent-denied' };
+      var planError = MB_WORK_MODE_ERRORS.indexOf(String(result && result.error || '')) >= 0
+        ? String(result.error) : 'error';
+      return { ok: false, error: 'middle-brain-unavailable', reasonCode: planError };
+    }
+    var plan = _mbWorkModePlanResult(_mbWorkModeParseJson(result.content), allowedFileIds);
+    return plan ? { ok: true, plan: plan } : { ok: false, error: 'invalid-plan-response' };
+  }
+
+  function _mbWorkModeReviewInput(input) {
+    if (!_mbWorkModeExactObject(input, ['projectRef', 'steps', 'evidence', 'report', 'dataClassification'])
+      || !_mbWorkModeProjectRef(input.projectRef) || !Array.isArray(input.steps)
+      || input.steps.length > MB_WORK_MODE_MAX_STEPS || !Array.isArray(input.evidence)
+      || input.evidence.length > MB_WORK_MODE_MAX_EVIDENCE
+      || ['project_only', 'memory_derived'].indexOf(input.dataClassification) < 0
+      || typeof input.report !== 'string' || !input.report.trim()
+      || input.report.length > MB_WORK_MODE_MAX_REPORT_CHARS) return null;
+    var steps = _mbWorkModePlanResult({ steps: input.steps },
+      input.steps.reduce(function (out, step) {
+        if (step && typeof step.fileId === 'string') out[step.fileId] = true;
+        return out;
+      }, Object.create(null)));
+    if (!steps) return null;
+    var evidenceById = Object.create(null), evidence = [], evidenceChars = 0;
+    for (var i = 0; i < input.evidence.length; i++) {
+      var item = input.evidence[i];
+      if (!_mbWorkModeExactObject(item, ['fileId', 'path', 'bytesRead', 'excerpt'])
+        || typeof item.fileId !== 'string' || !_mbWorkModePath(item.path)
+        || !Number.isSafeInteger(item.bytesRead) || item.bytesRead < 0
+        || typeof item.excerpt !== 'string' || item.excerpt.length > 3000
+        || !steps.steps.some(function (step) { return step.fileId === item.fileId; })
+        || evidenceById[item.fileId]) return null;
+      evidenceById[item.fileId] = true;
+      evidenceChars += item.excerpt.length;
+      if (evidenceChars > MB_WORK_MODE_MAX_EVIDENCE_CHARS) return null;
+      evidence.push({ fileId: item.fileId, path: item.path, bytesRead: item.bytesRead, excerpt: item.excerpt });
+    }
+    return {
+      projectRef: input.projectRef,
+      steps: steps.steps,
+      evidence: evidence,
+      report: input.report,
+      dataClassification: input.dataClassification
+    };
+  }
+
+  function _mbWorkModeReviewResult(value) {
+    if (!_mbWorkModeExactObject(value, ['decision', 'issueCodes'])
+      || ['approve', 'revise'].indexOf(value.decision) < 0
+      || !Array.isArray(value.issueCodes) || value.issueCodes.length > 5) return null;
+    var seen = Object.create(null), codes = [];
+    for (var i = 0; i < value.issueCodes.length; i++) {
+      var code = value.issueCodes[i];
+      if (MB_WORK_MODE_ISSUES.indexOf(code) < 0 || seen[code]) return null;
+      seen[code] = true;
+      codes.push(code);
+    }
+    if ((value.decision === 'approve' && codes.length !== 0)
+      || (value.decision === 'revise' && codes.length === 0)) return null;
+    return { decision: value.decision, issueCodes: codes };
+  }
+
+  async function middleBrainWorkModeReview(input, options) {
+    options = options || {};
+    var normalized = _mbWorkModeReviewInput(input);
+    if (!normalized) return { ok: false, error: 'invalid-review-input' };
+    var beforeSend = _mbWorkModeBeforeSend(normalized.projectRef,
+      normalized.evidence.map(function (item) { return item.fileId; }), options, 'middle_brain_review');
+    if (!beforeSend) return { ok: false, error: 'consent-denied' };
+    var system = String(CFG.MB_SYSTEM_PROMPT || '')
+      + '\n\nReview a read-only Work Mode audit report against its proposed steps and the cited observations. Do not execute tools or add facts. Return JSON exactly as {"decision":"approve|revise","issueCodes":["unsupported_claim|missing_evidence|missed_scope|unsafe_recommendation|incomplete_review"]}. Approved reports must use an empty issueCodes list; revised reports must name at least one allowed issue code.';
+    var prompt = {
+      system: system,
+      messages: [{ role: 'user', content: JSON.stringify({
+        steps: normalized.steps,
+        evidence: normalized.evidence,
+        dataClassification: normalized.dataClassification,
+        report: normalized.report
+      }) }]
+    };
+    var result = await ASTRA.middleBrainModelCall(prompt, {
+      consumer: 'middle_brain.work_mode.review',
+      maxTokens: 500,
+      jsonMode: true,
+      timeoutMs: options.timeoutMs,
+      signal: options.signal,
+      beforeSend: beforeSend
+    });
+    if (!result || result.ok !== true) {
+      if (result && result.error === 'consent-denied') return { ok: false, error: 'consent-denied' };
+      var reviewError = MB_WORK_MODE_ERRORS.indexOf(String(result && result.error || '')) >= 0
+        ? String(result.error) : 'error';
+      return { ok: false, error: 'middle-brain-unavailable', reasonCode: reviewError };
+    }
+    var review = _mbWorkModeReviewResult(_mbWorkModeParseJson(result.content));
+    return review ? { ok: true, review: review } : { ok: false, error: 'invalid-review-response' };
+  }
+
+  async function middleBrainWorkModeProviderRef() {
+    try {
+      var config = await CFG.getMiddleBrainConfig();
+      if (!config || config.enabled !== true) return { ok: false, error: 'middle-brain-disabled' };
+      var providerRef = String(config.providerConfigId || config.credentialRef || '').trim();
+      return providerRef ? { ok: true, providerRef: providerRef } : { ok: false, error: 'middle-brain-provider-unbound' };
+    } catch (_) { return { ok: false, error: 'middle-brain-config-unavailable' }; }
+  }
+
   /* ── 公共 API 组装表（P11-1B）────────────────────────────────────────
      每项 = [public key, owner layer]；key 顺序即 IB.middleBrain 的键顺序，
      由 test_frontend_structure.js 锁定（不得重排 / 改名 / 改 owner）。
@@ -348,7 +579,12 @@
   var MB_LAYERS = {
     config: CFG, policy: POL, astra: ASTRA, judge: JUDGE, integrity: INTEG,
     /* facade 自身导出的符号（不来自任何层契约） */
-    facade: { middleBrainCompressPipeline: middleBrainCompressPipeline, middleBrainExecute: middleBrainExecute, middleBrainAstraEnabled: middleBrainAstraEnabled, middleBrainFinalizeReply: middleBrainFinalizeReply }
+    facade: {
+      middleBrainCompressPipeline: middleBrainCompressPipeline,
+      middleBrainExecute: middleBrainExecute,
+      middleBrainAstraEnabled: middleBrainAstraEnabled,
+      middleBrainFinalizeReply: middleBrainFinalizeReply
+    }
   };
   var _mbApi = {};
   MB_PUBLIC_API.forEach(function (entry) { _mbApi[entry[0]] = MB_LAYERS[entry[1]][entry[0]]; });
@@ -361,6 +597,13 @@
   root._middleBrain = _mbApi;
   root.IB = root.IB || {};
   root.IB.middleBrain = _mbApi;
+  /* P28-WM-P2 · additive workflow-scoped port; preserve the frozen
+     Chat/Role-facing IB.middleBrain key set and compatibility aliases. */
+  root.IB.workModeCognition = Object.freeze({
+    plan: middleBrainWorkModePlan,
+    review: middleBrainWorkModeReview,
+    providerRef: middleBrainWorkModeProviderRef
+  });
   root.IB.middleBrainDirectModelCall = middleBrainDirectModelCall;
   /* dev-only 观测入口（独立于 canonical 门面 key 列表，不参与 MB_PUBLIC_API 契约）。 */
   root.IB.__mbTrace = {

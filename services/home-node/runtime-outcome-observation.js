@@ -48,6 +48,15 @@ const PRODUCER_TABLE = Object.freeze({
     timestampAuthority: 'CANONICAL_EVENT_TIMESTAMP',
     requiredIdentity: Object.freeze(['sourceEventId', 'characterId', 'conversationId', 'occurredAt'])
   }),
+  /* P5-B3-D5 · retain terminal-fact provenance through P1 projection. */
+  'turn-terminal': Object.freeze({
+    producerId: 'turn-terminal',
+    allowedSource: 'CANONICAL_RUNTIME',
+    sourceInstance: 'runtime.turn-execution',
+    allowedDomains: Object.freeze(['runtime_state']),
+    timestampAuthority: 'CANONICAL_EVENT_TIMESTAMP',
+    requiredIdentity: Object.freeze(['sourceEventId', 'characterId', 'conversationId', 'occurredAt'])
+  }),
   'user-action': Object.freeze({
     producerId: 'user-action',
     allowedSource: 'USER_BEHAVIOR',
@@ -111,6 +120,10 @@ const REASON = Object.freeze({
   attributionUnknown: 'outcome-attribution-unknown',
   attributionKnownNone: 'outcome-attribution-known-none',
   attributionKnownPresent: 'outcome-attribution-known-present',
+  turnTerminalPredictionBindingMissing: 'turn-terminal-prediction-binding-missing',
+  turnTerminalTurnMismatch: 'turn-terminal-target-turn-mismatch',
+  turnTerminalScopeMismatch: 'turn-terminal-target-scope-mismatch',
+  turnTerminalWindowMismatch: 'turn-terminal-prediction-window-mismatch',
   modelInferenceForbidden: 'model-inference-may-not-mint-reality',
   structuredProjectionRefused: 'structured-source-projection-refused',
   internalAuditOnly: 'internal-audit-only',
@@ -125,16 +138,17 @@ const BOUNDS = Object.freeze({
   MAX_PAIRING_CANDIDATES: 16
 });
 
-/* ── P5-B3-E-R1 · RealityEvent provenance → projection descriptor（静态表）──
-   机械 source（CANONICAL_RUNTIME）的映射规则**未改**：
-     producer = runtime-state · targetDomain = runtime_state · token = domain.type
-   结构化 source 需要一张显式的表，理由只有一条：它的 proposition 在
-   `re.body` 里（targetKey + stance），**不可能**从 domain/type 推出来
-   （`domain-event-core` 的 TOKEN_PATTERN 也不允许点号）。
-   ★ 表是闭集 + 精确 sourceInstance，禁止动态注册。
-   ★ 表命中时 producer/targetDomain **由 provenance 决定**，调用方无法覆盖
-     （否则"给一个 producerId"就能把结构化事实塞进别的 source class）。 */
+/* RealityEvent provenance → projection descriptor（静态闭集）。
+   Source-specific projections preserve canonical facts that cannot be derived
+   from domain/type alone. Producer and targetDomain remain provenance-owned. */
 const STRUCTURED_PROJECTIONS = Object.freeze({
+  'runtime.turn-execution': Object.freeze({
+    producerId: 'turn-terminal',
+    targetDomain: 'runtime_state',
+    tokenOf: function (re) {
+      return OBSERVATION_CORE.turnTerminalTokenOfOutcomeCode(text(re.body && re.body.outcomeCode));
+    }
+  }),
   'user.explicit-preference-report': Object.freeze({
     producerId: 'explicit-user-report',
     targetDomain: 'user_preference',
@@ -256,14 +270,64 @@ function createRuntimeOutcomeObservation(deps) {
     return Object.assign({ ok: false, status: 'refused', reasonCode: reasonCode, observation: null }, extra || {});
   }
 
+  function isTurnTerminalRealityEvent(re) {
+    return !!re
+      && text(re.realitySourceId) === 'turn-terminal'
+      && text(re.sourceInstance) === 'runtime.turn-execution'
+      && text(re.domain) === 'runtime'
+      && text(re.type) === 'turn_terminal';
+  }
+
+  /* D5 · pairing is bound to the P2 record's own source turn and exact scope. */
+  function terminalPredictionBinding(re, ref) {
+    if (!isTurnTerminalRealityEvent(re)) return { ok: true };
+    if (!registry || typeof registry.getPrediction !== 'function') {
+      return { ok: false, reasonCode: REASON.turnTerminalPredictionBindingMissing };
+    }
+    let record = null;
+    try { record = registry.getPrediction(text(ref && ref.predictionId)); } catch (_) { record = null; }
+    if (!record || text(record.predictionId) !== text(ref && ref.predictionId)
+      || text(record.lifecycleState) !== 'open') {
+      return { ok: false, reasonCode: REASON.turnTerminalPredictionBindingMissing };
+    }
+    const scope = isPlainObject(record.scope) ? record.scope : {};
+    const window = isPlainObject(record.observationWindow) ? record.observationWindow : {};
+    if (text(scope.characterId) !== text(re.characterId)
+      || text(scope.conversationId) !== text(re.conversationId)) {
+      return { ok: false, reasonCode: REASON.turnTerminalScopeMismatch };
+    }
+    if (text(record.sourceExpectationRef && record.sourceExpectationRef.turnId) !== text(re.entityId)) {
+      return { ok: false, reasonCode: REASON.turnTerminalTurnMismatch };
+    }
+    if (num(ref && ref.opensAt) !== num(window.opensAt)
+      || num(ref && ref.closesAt) !== num(window.closesAt)) {
+      return { ok: false, reasonCode: REASON.turnTerminalWindowMismatch };
+    }
+    return { ok: true, record: record };
+  }
+
+  /* External response participation is request-scoped. Carry the Prediction's
+     own source turn into the attribution query so an unrelated turn in the same
+     conversation cannot inherit that influence. Missing linkage remains
+     conservative: the attribution owner treats an unscoped external record as
+     unknown rather than known-none. */
+  function predictionSourceTurnId(predictionId) {
+    if (!registry || typeof registry.getPrediction !== 'function' || !text(predictionId)) return '';
+    try {
+      const record = registry.getPrediction(text(predictionId));
+      return text(record && record.sourceExpectationRef && record.sourceExpectationRef.turnId);
+    } catch (_) { return ''; }
+  }
+
   /** 事件时间归因：**必须**用 reality event time，不是处理时间。 */
-  function attributionAt(characterId, conversationId, at, subjectLabel) {
+  function attributionAt(characterId, conversationId, at, subjectLabel, turnId) {
     if (!attributionAuthority || typeof attributionAuthority.snapshotBehaviorEffectAttribution !== 'function') {
       return { status: 'unknown', coverage: 'unavailable', influenced: null, reasonCode: REASON.attributionUnavailable, refs: [], effects: [] };
     }
     try {
       const snap = attributionAuthority.snapshotBehaviorEffectAttribution({
-        characterId: characterId, conversationId: conversationId, at: at, subjectLabel: subjectLabel
+        characterId: characterId, conversationId: conversationId, turnId: turnId,
+        at: at, subjectLabel: subjectLabel
       });
       const valid = typeof attributionAuthority.isBehaviorEffectAttributionSnapshot !== 'function'
         || attributionAuthority.isBehaviorEffectAttributionSnapshot(snap) === true;
@@ -369,7 +433,8 @@ function createRuntimeOutcomeObservation(deps) {
     }
 
     /* ④ outcome-time attribution：**at = reality event time**（不是 now） */
-    const attribution = attributionAt(characterId, conversationId, occurredAt, text(i.subjectLabel));
+    const attribution = attributionAt(characterId, conversationId, occurredAt, text(i.subjectLabel),
+      predictionSourceTurnId(predictionId));
     if (attribution.status === 'unknown') counters.attributionFailures += 1;
 
     /* ⑤ 交给 **canonical P1 builder**（不自己造第二套 validation） */
@@ -443,11 +508,15 @@ function createRuntimeOutcomeObservation(deps) {
     const subject = (observation && observation.scope && typeof observation.scope === 'object')
       ? { characterId: text(observation.scope.characterId), conversationId: text(observation.scope.conversationId), at: num(observation.observedAt) }
       : { characterId: text(observation && observation.characterId), conversationId: text(observation && observation.conversationId), at: num(observation && observation.occurredAt) };
+    const terminalFact = isTurnTerminalRealityEvent(observation);
     return list
       .filter(function (r) {
         if (!r) return false;
         if (text(r.scope && r.scope.characterId) !== subject.characterId) return false;
         if (text(r.scope && r.scope.conversationId) !== subject.conversationId) return false;
+        /* A terminal fact can pair only to Predictions minted for that exact turn. */
+        if (terminalFact
+          && text(r.sourceExpectationRef && r.sourceExpectationRef.turnId) !== text(observation.entityId)) return false;
         /* 时间窗必须覆盖事件时刻 */
         const opens = num(r.observationWindow && r.observationWindow.opensAt);
         const closes = num(r.observationWindow && r.observationWindow.closesAt);
@@ -479,11 +548,28 @@ function createRuntimeOutcomeObservation(deps) {
       counters.rejectedRealityEvent += 1;
       return refuse(REASON.realityEventNotSealed);
     }
+    const terminalFact = isTurnTerminalRealityEvent(re);
     const ref = isPlainObject(i.predictionRef) ? i.predictionRef : null;
     if (!text(ref && ref.predictionId)) {
       counters.rejectedPairing += 1;
       return refuse(REASON.pairingBindingMissing);
     }
+    const terminalBinding = terminalPredictionBinding(re, ref);
+    if (!terminalBinding.ok) {
+      counters.rejectedPairing += 1;
+      return refuse(terminalBinding.reasonCode);
+    }
+    const terminalPrediction = terminalBinding.record || null;
+    const terminalScope = terminalPrediction && isPlainObject(terminalPrediction.scope) ? terminalPrediction.scope : null;
+    /* P1 subject scope must mirror the canonical P2 subject. In particular G2
+       terminal Predictions use `system`; defaulting them to `user` would make
+       the sealed observation fail the existing four-field scope gate. */
+    const projectionSubjectKind = terminalFact
+      ? text(terminalScope && terminalScope.subjectKind)
+      : text(i.subjectKind);
+    const projectionSubjectLabel = terminalFact
+      ? text(terminalScope && terminalScope.subjectLabel)
+      : text(i.subjectLabel);
     /* 事实 → 既有 canonical mint 路径（**不**复制 validation） */
     const structured = STRUCTURED_PROJECTIONS[text(re.sourceInstance)] || null;
     /* ★ 结构化 source：producer / targetDomain / token 全部由 **provenance** 决定，
@@ -495,7 +581,7 @@ function createRuntimeOutcomeObservation(deps) {
       targetDomain: structured ? structured.targetDomain : (text(i.targetDomain) || 'runtime_state'),
       predictionRef: ref,
       completeness: text(i.completeness) || 'point',
-      subjectKind: i.subjectKind, subjectLabel: i.subjectLabel,
+       subjectKind: projectionSubjectKind || 'user', subjectLabel: projectionSubjectLabel,
       evidenceRefs: [text(re.realityEventId)].concat(
         Array.isArray(i.evidenceRefs) ? i.evidenceRefs.map(text) : []).slice(0, BOUNDS.MAX_EVIDENCE_REFS),
       sourceEvent: {
@@ -541,6 +627,8 @@ function createRuntimeOutcomeObservation(deps) {
       explicitUserReportDomains: ['user_preference'],
       structuredProjectionSources: Object.keys(STRUCTURED_PROJECTIONS),
       structuredProjectionOverridableByCaller: 'NO',
+      turnTerminalProjection: 'PREDICTION_SOURCE_TURN_MUST_MATCH_REALITY_ENTITY_ID',
+      turnTerminalOutcomeGrammar: 'P1_RUNTIME_STATE_TOKEN_REGISTRY',
       freeTextMayReachExplicitReportProducer: 'NO',
       /* P5-B3-C */
       outcomeObservationRole: 'PREDICTION_SCOPED_REALITY_PROJECTION',

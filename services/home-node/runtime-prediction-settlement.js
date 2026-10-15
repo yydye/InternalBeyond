@@ -48,7 +48,8 @@ const REASON = Object.freeze({
   noInjectedTime: 'injected-time-missing',
   notFound: 'settlement-not-found',
   gateMismatch: 'caller-supplied-gate-mismatch',
-  gateNotComputed: 'authority-gate-not-computed'
+  gateNotComputed: 'authority-gate-not-computed',
+  opportunityInjectionForbidden: 'caller-supplied-opportunity-forbidden'
 });
 
 /* ── Settlement capability seal（module-private · **module 级**）─────────
@@ -161,6 +162,7 @@ function createRuntimePredictionSettlement(deps) {
   const d = deps || {};
   const core = d.core || DEFAULT_CORE;
   const observationCore = d.observationCore || DEFAULT_OBSERVATION_CORE;
+  const opportunityAuthority = d.opportunityAuthority || d.subjectiveOpportunityAuthority || null;
   /* P5-B · Evidence Matcher（可选注入；缺席 ⇒ statement 保持 unclassifiable） */
   const evidenceMatcher = d.evidenceMatcher || null;
   const clock = typeof d.clock === 'function' ? d.clock : null;
@@ -190,6 +192,22 @@ function createRuntimePredictionSettlement(deps) {
       try { const c = Number(clock()); if (Number.isFinite(c) && c > 0) return c; } catch (e) { /* ignore */ }
     }
     return null;
+  }
+  function callerSuppliedOpportunity(ctx) {
+    return isPlainObject(ctx) && Object.prototype.hasOwnProperty.call(ctx, 'opportunity');
+  }
+  function refuseOpportunityInjection() {
+    counters.refused += 1;
+    return { ok: false, status: 'refused', reasonCode: REASON.opportunityInjectionForbidden, settlement: null, predictionError: null };
+  }
+  function resolveOpportunity(prediction, observation, now) {
+    if (!opportunityAuthority || typeof opportunityAuthority.resolveForPrediction !== 'function') return null;
+    let result = null;
+    try { result = opportunityAuthority.resolveForPrediction({ prediction: prediction, observation: observation || null, now: now }); }
+    catch (_) { result = null; }
+    if (!result || typeof opportunityAuthority.isResolution !== 'function'
+      || opportunityAuthority.isResolution(result) !== true) return null;
+    return result;
   }
   function sweep(now) {
     for (const key of Array.from(held.keys())) {
@@ -224,6 +242,7 @@ function createRuntimePredictionSettlement(deps) {
    *     ⇒ authority 只被**消费**，从不被重新发明。
    */
   function settlePrediction(predictionRecord, observations, ctx) {
+    if (callerSuppliedOpportunity(ctx)) return refuseOpportunityInjection();
     return doSettle(predictionRecord, observations, ctx, []);
   }
 
@@ -238,32 +257,53 @@ function createRuntimePredictionSettlement(deps) {
    */
   async function settlePredictionWithEvidenceMatcher(predictionRecord, observations, ctx) {
     const c = isPlainObject(ctx) ? ctx : {};
+    if (callerSuppliedOpportunity(c)) return refuseOpportunityInjection();
     const matcher = c.evidenceMatcher || evidenceMatcher;
     const incoming = Array.isArray(observations) ? observations : [];
     const matches = [];
     if (matcher && typeof matcher.matchRelation === 'function') {
       const p = isPlainObject(predictionRecord) ? predictionRecord : null;
       const expectedScope = p && isPlainObject(p.scope) ? p.scope : null;
+      const matcherFamilies = core && Array.isArray(core.SUBJECTIVE_TYPES) ? core.SUBJECTIVE_TYPES : [];
+      const matcherAttemptToken = typeof matcher.beginSettlementAttempt === 'function'
+        ? matcher.beginSettlementAttempt() : null;
+      const now = nowFrom(c);
       for (let i = 0; i < incoming.length; i++) {
         const entry = isPlainObject(incoming[i]) ? incoming[i] : null;
         const obs = entry && isPlainObject(entry.observation) ? entry.observation : null;
         if (!obs || !observationCore || typeof observationCore.authorityGate !== 'function') continue;
+        if (!p) {
+          counters.matcherSkippedPolicy += 1;
+          continue;
+        }
         let gate = null;
-        try { gate = observationCore.authorityGate(obs, { expectedScope: expectedScope, opportunity: c.opportunity || null }); }
+        const opportunityResolution = resolveOpportunity(p, obs, now);
+        const opportunity = opportunityResolution && opportunityResolution.opportunity
+          ? opportunityResolution.opportunity : null;
+        try { gate = observationCore.authorityGate(obs, { expectedScope: expectedScope, opportunity: opportunity }); }
         catch (e) { gate = null; }
         if (!gate || gate.ok !== true) continue;
-        /* gate 判定（确定性、纯函数）：两个方向都不被允许 ⇒ 不必花模型调用 */
+        /* gate 判定（确定性、纯函数）：只要一个方向可贡献 ELIGIBLE 或
+           SUPPORTING 证据就允许语义分类；SUPPORTING 仍由 P3 保持非决定性。 */
         const dir = gate.gateTrace.directional || {};
-        const admissibleEither = text(dir.support) === 'ELIGIBLE' || text(dir.conflict) === 'ELIGIBLE';
+        const contributes = (value) => value === 'ELIGIBLE' || value === 'SUPPORTING';
+        const admissibleEither = contributes(text(dir.support)) || contributes(text(dir.conflict));
         if (!admissibleEither) { counters.matcherSkippedPolicy += 1; continue; }
         /* 机械可判 ⇒ 0 次调用 */
         const need = MATCHER_CORE && typeof MATCHER_CORE.needsEvidenceMatcher === 'function'
           ? MATCHER_CORE.needsEvidenceMatcher(p, obs)
           : { needed: true };
         if (!need.needed) { counters.matcherSkippedMechanical += 1; continue; }
+        /* Only the already-supported subjective families may use semantic
+           statement classification; mechanical token paths above always win. */
+        if (matcherFamilies.indexOf(text(p.predictionType)) < 0
+          || text(obs.outcomeRef && obs.outcomeRef.kind) !== 'statement') {
+          counters.matcherSkippedPolicy += 1;
+          continue;
+        }
         let res = null;
         try {
-          res = await matcher.matchRelation(p, obs, { characterId: c.characterId });
+          res = await matcher.matchRelation(p, obs, { settlementAttemptToken: matcherAttemptToken });
         } catch (e) { res = null; }
         counters.matcherAttempts += 1;
         if (res && res.called) counters.matcherCalls += 1;
@@ -315,7 +355,9 @@ function createRuntimePredictionSettlement(deps) {
       const obs = entry && isPlainObject(entry.observation) ? entry.observation : null;
       if (!obs) continue;
       const expectedScope = isPlainObject(p.scope) ? p.scope : null;
-      const opportunity = c.opportunity || null;
+      const opportunityResolution = resolveOpportunity(p, obs, now);
+      const opportunity = opportunityResolution && opportunityResolution.opportunity
+        ? opportunityResolution.opportunity : null;
       let gate = null;
       if (observationCore && typeof observationCore.authorityGate === 'function') {
         try { gate = observationCore.authorityGate(obs, { expectedScope: expectedScope, opportunity: opportunity }); }
@@ -340,6 +382,15 @@ function createRuntimePredictionSettlement(deps) {
       }
       gated.push({ observation: obs, gate: gate.gateTrace });    }
 
+    /* No observation still needs an authority-derived opportunity state at
+       window close (ABSENT → expired_unobserved). P3 consumes this sealed
+       resolution; callers cannot provide it or provide an opportunity object. */
+    let authoritativeOpportunityState = null;
+    if (gated.length === 0) {
+      const opportunityResolution = resolveOpportunity(p, null, now);
+      if (opportunityResolution) authoritativeOpportunityState = opportunityResolution.state;
+    }
+
     /* ── T0 / T7 / T8 · 纯核心决定状态 ─────────────────────────────── */
     const computed = core.computeSettlement({
       prediction: p,
@@ -347,6 +398,7 @@ function createRuntimePredictionSettlement(deps) {
       now: now,
       snapshotAtSettlement: c.snapshotAtSettlement,
       supersededByNewer: c.supersededByNewer === true,
+      authoritativeOpportunityState: authoritativeOpportunityState,
       /* P5-B：**只**有 semantic relation 从这里进入；其余 authority 照旧重判 */
       evidenceMatches: evidenceMatches || []
     });
@@ -407,6 +459,8 @@ function createRuntimePredictionSettlement(deps) {
         selfInfluenced: computed.selfInfluenced === true
       },
 
+      /* P5-B3-J-R3 · P3 owns the outcome-time decisive evidence basis. */
+      calibrationEvidenceBasis: computed.calibrationEvidenceBasis || null,
       calibrationCounted: computed.calibrationCounted === true,
       reasonCodes: computed.reasonCodes.slice(0, 64),
       trace: computed.trace
@@ -492,6 +546,7 @@ function createRuntimePredictionSettlement(deps) {
         supportSummary: s.supportSummary,
         conflictSummary: s.conflictSummary,
         interventionSummary: s.interventionSummary,
+        calibrationEvidenceBasis: s.calibrationEvidenceBasis || null,
         calibrationCounted: s.calibrationCounted,
         observationCount: s.observationRefs.length,
         evidenceCount: s.evidenceRefs.length,
@@ -510,6 +565,9 @@ function createRuntimePredictionSettlement(deps) {
     return {
       status: 'LIVE_CAPABLE',
       entry: ENTRY,
+      calibrationEligibilityAuthority: 'P3_SETTLEMENT_CORE',
+      calibrationEvidenceBasis: core.CALIBRATION_EVIDENCE_BASIS_VERSION,
+      p4Rejudgment: 'NO',
       routes: 'NONE',
       lifetime: 'SESSION_ONLY',
       durable: false,
@@ -538,6 +596,9 @@ function createRuntimePredictionSettlement(deps) {
       evidenceMatcherSupplies: 'RELATION_ONLY',
       matcherMayAssignSettlementState: 'NO',
       matcherCallAccounting: 'CONDITIONAL_PER_STATEMENT_OBSERVATION',
+      opportunityAuthorityAttached: !!opportunityAuthority,
+      feedbackDriverMaySupplyOpportunity: 'NO',
+      callerOpportunityInjection: 'FORBIDDEN',
       /* 明确的自述：这些**没有** */
       memoryAuthority: 'NONE',
       relationshipAuthority: 'NONE',

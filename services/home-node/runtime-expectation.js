@@ -121,6 +121,9 @@ function createRuntimeExpectation(deps) {
      由装配注入；只读消费**这一次已验证的** L5 结果，把它确定性投影成
      PredictionRecord。不新增模型调用、不结算、不落盘、不进响应。 */
   const predictionRegistry = deps.predictionRegistry || null;
+  /* Event candidates may target only the D3 turn for the same active request. */
+  const resolveActiveExecutionTurnBinding = typeof d.resolveActiveExecutionTurnBinding === 'function'
+    ? d.resolveActiveExecutionTurnBinding : null;
   const logger = typeof d.logger === 'function' ? d.logger : function () {};
   const clock = typeof d.clock === 'function' ? d.clock : function () { return Date.now(); };
   /* 测试缝：与生产权威**分开**（TEST_INJECTION ≠ FILE_POLICY），
@@ -138,7 +141,8 @@ function createRuntimeExpectation(deps) {
     started: 0, created: 0, notCreated: 0, failed: 0, timedOut: 0,
     inFlight: 0, scheduled: 0, providerCalls: 0,
     /* P5-B3-G1 · 结构化投影诊断（有界；**绝不**记录模型正文） */
-    predictionProjected: 0, predictionProjectionFailed: 0
+    predictionProjected: 0, predictionProjectionFailed: 0,
+    eventProjectionSkippedNoActiveTurn: 0, eventProjectionBindingMismatch: 0
   };
   /* P5-B3-G1：结构化投影 runtime（可注入，测试可替换；生产用默认实现）。 */
   const structuredExpectation = d.structuredExpectation
@@ -395,7 +399,9 @@ function createRuntimeExpectation(deps) {
         selectedIds: rebound.boundIds,
         evidence: isPlainObject(i.evidence) ? i.evidence : undefined,
         interpretations: subjectiveFrom(i.interpretation),
-        currentState: isPlainObject(i.currentState) ? i.currentState : {}
+        currentState: isPlainObject(i.currentState) ? i.currentState : {},
+        terminalOutcomeCodes: typeof structuredExpectation.terminalOutcomeCodes === 'function'
+          ? structuredExpectation.terminalOutcomeCodes() : []
       };
       const built = core.buildRequest(coreInput);
       if (!built || !built.stats || !built.stats.evidenceCount) {
@@ -468,9 +474,9 @@ function createRuntimeExpectation(deps) {
            就是它在本回合里的序号 —— 确定性、无随机、无计数器。
            投影失败 = 没有记录，主链照常继续（与 BehaviorEffect 同一条纪律）。 */
         if (predictionRegistry && typeof predictionRegistry.projectFromValidatedExpectation === 'function') {
-          /* ── P5-B3-G1 · 结构化 expectation → canonical PredictionRecord ──────
-             投影**准入**（G1 只允许 preference）与 canonical expectation 的
-             组装都由 runtime 侧 projection 决定；模型只提供候选。
+          /* ── P5-B3-G1/G2 · structured expectation → canonical PredictionRecord ──
+             投影准入与 P2 三元组由 runtime 决定；模型只提供候选。
+             terminal event 另须由 D3 active-turn binding 校验同 request scope。
              ★ 注册仍然**只**走下面这一处 P2 seam（ONE registry call site）。 */
           const planned = structuredExpectation.plan(items, {
             characterId: characterId, conversationId: conversationId, turnId: turnId
@@ -478,12 +484,33 @@ function createRuntimeExpectation(deps) {
           for (let step = 0; step < planned.plans.length; step += 1) {
             const plan = planned.plans[step];
             if (!plan || plan.ok !== true) continue;
+            let predictionTurnId = turnId;
+            if (plan.projection && plan.projection.kind === 'event') {
+              const requestCorrelationId = normalizeId(i.requestCorrelationId, 200) || '';
+              let activeBinding = null;
+              try {
+                activeBinding = resolveActiveExecutionTurnBinding && requestCorrelationId
+                  ? resolveActiveExecutionTurnBinding(conversationId, requestCorrelationId) : null;
+              } catch (_) { activeBinding = null; }
+              if (!activeBinding) {
+                counters.eventProjectionSkippedNoActiveTurn += 1;
+                continue;
+              }
+              if (text(activeBinding.characterId) !== characterId
+                || text(activeBinding.conversationId) !== conversationId
+                || text(activeBinding.requestCorrelationId) !== requestCorrelationId
+                || !normalizeId(activeBinding.turnId, 200)) {
+                counters.eventProjectionBindingMismatch += 1;
+                continue;
+              }
+              predictionTurnId = text(activeBinding.turnId);
+            }
             try {
               predictionRegistry.projectFromValidatedExpectation(plan.expectation, {
                 now: completedAt,
                 characterId: characterId,
                 conversationId: conversationId,
-                turnId: turnId,
+                turnId: predictionTurnId,
                 expectationIndex: plan.index,
                 interpretationRef: { turnId: turnId }
               });
@@ -559,6 +586,9 @@ function createRuntimeExpectation(deps) {
       predictionErrorBlocker: 'LATER_OBSERVATION_AUTHORITY_NOT_CLOSED',
       liveCanonicalSourceBinding: 'NOT_IMPLEMENTED',
       crossRestartExpectationExactlyOnce: 'NO',
+      eventPredictionScopeAuthority: 'ACTIVE_D3_EXECUTION_TURN',
+      eventPredictionRequiresSameRequestCorrelationId: 'YES',
+      eventCandidateWithoutActiveTurn: 'REFUSED',
       holder: {
         maxEntries: MAX_HELD_EXPECTATIONS,
         ttlMs: TURN_EXPECTATION_TTL_MS,

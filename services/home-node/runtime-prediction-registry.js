@@ -142,7 +142,7 @@ function createRuntimePredictionRegistry(deps) {
     }
     try {
       const snap = authority.snapshotBehaviorEffectAttribution({
-        characterId: characterId, conversationId: conversationId, at: now
+        characterId: characterId, conversationId: conversationId, turnId: text(c.turnId), at: now
       });
       const validatorOk = typeof authority.isBehaviorEffectAttributionSnapshot !== 'function'
         || authority.isBehaviorEffectAttributionSnapshot(snap) === true;

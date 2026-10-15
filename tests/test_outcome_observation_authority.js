@@ -740,18 +740,25 @@ function gate(obs, over) {
     /* InternalBeyond.html 也不得加载它（P26-2 closure guard 同款纪律） */
     const html = read('InternalBeyond.html');
     const loadedInHtml = html.indexOf('outcome-observation-core') >= 0;
-    /* ★ P3 相位迁移：本核心现在有**恰好一个**已批准消费者 ——
-       `runtime-prediction-settlement.js`（(q-12) 要求 builder/verifier 同实例：
-       Settlement 必须消费权威面的 gate 输出，而不是重判 authority）。
-       规则从"零生产消费者"收紧为"**只有**这一个具名消费者"，且仍**不得**进 HTML。 */
+    /* D5 P3/R1 and G2 runtime projection consume P1's pure parser/vocabulary;
+       P1 remains the only observation mint/gate owner. */
     const APPROVED_CONSUMERS = ['services/home-node/runtime-prediction-settlement.js',
-      'services/home-node/runtime-outcome-observation.js'];
+      'services/home-node/runtime-outcome-observation.js',
+      'assets/js/memory-recall/prediction-settlement-core.js',
+      'services/home-node/runtime-event-opportunity-authority.js',
+      'services/home-node/runtime-structured-expectation.js'];
     const unexpected = consumers.filter(rel => APPROVED_CONSUMERS.indexOf(rel) < 0);
     check('K6.onlyTheApprovedConsumersAndNotLoadedInHtml',
       unexpected.length === 0
       && APPROVED_CONSUMERS.every(rel => consumers.indexOf(rel) >= 0)
       && loadedInHtml === false,
       'consumers=' + JSON.stringify(consumers) + ' loadedInHtml=' + loadedInHtml);
+    check('K6b.P3UsesOnlyThePureTerminalTokenParser', (function () {
+      const p3 = read('assets/js/memory-recall/prediction-settlement-core.js');
+      return p3.indexOf('turnTerminalOutcomeCodeOfToken') >= 0
+        && p3.indexOf('OBSERVATION_CORE.authorityGate') < 0
+        && p3.indexOf('OBSERVATION_CORE.buildOutcomeObservation') < 0;
+    })(), 'P3 relation owner imports canonical parsing only; P1 still owns mint/admission');
 
     /* recall envelope 不得被改动 */
     const recallSrc = read('services/home-node/runtime-recall.js');

@@ -19,6 +19,7 @@ const { createTurnTerminalRealitySource } = require(path.join(ROOT, 'services', 
 const { createRuntimeOutcomeObservation } = require(path.join(ROOT, 'services', 'home-node', 'runtime-outcome-observation.js'));
 const { createRuntimePredictionRegistry } = require(path.join(ROOT, 'services', 'home-node', 'runtime-prediction-registry.js'));
 const { createRuntimePredictionSettlement } = require(path.join(ROOT, 'services', 'home-node', 'runtime-prediction-settlement.js'));
+const { createRuntimeBehaviorEffect } = require(path.join(ROOT, 'services', 'home-node', 'runtime-behavior-effect.js'));
 const OBS_CORE_REL = 'assets/js/memory-recall/outcome-observation-core.js';
 
 let passed = 0, failures = 0;
@@ -31,7 +32,7 @@ const P = (k, v) => console.log('  FACTS ' + k + ' = ' + v);
 const read = rel => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 
 const T0 = 1760000000000;
-const TOKEN = 'runtime.turn_terminal';
+const TOKEN = 'runtime.turn_terminal.completed';
 const SCOPE = { characterId: 'char_a', conversationId: 'dm:char_a', subjectKind: 'user', subjectLabel: '' };
 const OPP = { required: true, existence: { present: true, authoritySource: 'CANONICAL_RUNTIME' }, consumedAt: T0 + 500 };
 
@@ -56,18 +57,24 @@ function terminal(over) {
 function truth() {
   const re = createRuntimeRealityEvent({});
   const src = createTurnTerminalRealitySource({ realityEvent: re });
-  const pr = createRuntimeOutcomeObservation({ isRealityEvent: re.isRealityEvent });
-  return { re: re, src: src, pr: pr };
+  const attributionAuthority = createRuntimeBehaviorEffect({ clock: () => T0, logger: () => {} });
+  const registry = createRuntimePredictionRegistry({ clock: () => T0, attributionAuthority: attributionAuthority });
+  const pr = createRuntimeOutcomeObservation({
+    registry: registry, isRealityEvent: re.isRealityEvent, attributionAuthority: attributionAuthority
+  });
+  return { re: re, src: src, pr: pr, registry: registry, attributionAuthority: attributionAuthority };
 }
-function prediction(token) {
-  const reg = createRuntimePredictionRegistry({ clock: () => T0 });
+function prediction(reg, token, turnId, expectationIndex) {
   return reg.projectFromValidatedExpectation({
     epistemicStatus: 'prediction', prediction: '本回合会正常完成',
     trigger: { kind: 'explicit-cue', label: 'l' }, evidenceMemoryIds: ['m1'],
     contradictoryEvidenceIds: [], generalizationLevel: 'episode-hypothesis',
     subjectivePredictionConfidence: 0.8, subject: { kind: 'user', label: '' },
     predicate: { kind: 'will-do' }, expectedOutcome: { kind: 'exclusive-outcome', token: token }
-  }, { now: T0, characterId: 'char_a', conversationId: 'dm:char_a', turnId: 'tp1', expectationIndex: 0 }).record;
+  }, {
+    now: T0, characterId: 'char_a', conversationId: 'dm:char_a',
+    turnId: turnId || 'turn_r1', expectationIndex: expectationIndex || 0
+  }).record;
 }
 
 (function main() {
@@ -173,14 +180,31 @@ function prediction(token) {
   section('E · production chain → observation');
   {
     const t = truth();
+    const pred = prediction(t.registry, TOKEN, 'turn_r1');
     const e = t.src.emit(terminal());
     const cands = t.pr.candidatePredictions(e.realityEvent, { characterId: 'char_a', conversationId: 'dm:char_a' });
     const pr = t.pr.projectForPrediction({
       realityEvent: e.realityEvent,
-      predictionRef: { predictionId: 'P1', opensAt: T0, closesAt: T0 + 86400000, predictionCreatedAt: T0 }
+      predictionRef: {
+        predictionId: pred.predictionId,
+        opensAt: pred.observationWindow.opensAt,
+        closesAt: pred.observationWindow.closesAt,
+        predictionCreatedAt: pred.createdAt
+      }
     });
     check('E1.realityEventMinted', e.status === 'minted' && t.re.isRealityEvent(e.realityEvent) === true, e.status);
-    check('E2.observationMintedFromRealityEvent', pr.ok === true && pr.observation !== null, pr.reasonCode);
+    check('E2.sameTurnPredictionPairsAndObservationMints',
+      cands.length === 1 && cands[0] === pred.predictionId && pr.ok === true && pr.observation !== null,
+      { candidates: cands, reason: pr.reasonCode });
+    check('E2b.terminalProjectionKeepsCanonicalProvenanceAndOutcomeToken',
+      pr.observation.source === 'CANONICAL_RUNTIME'
+      && pr.observation.sourceInstance === 'runtime.turn-execution'
+      && pr.observation.targetDomain === 'runtime_state'
+      && pr.observation.outcomeRef.token === 'runtime.turn_terminal.completed',
+      pr.observation && {
+        source: pr.observation.source, sourceInstance: pr.observation.sourceInstance,
+        domain: pr.observation.targetDomain, token: pr.observation.outcomeRef.token
+      });
     check('E3.scopePreservedVerbatim',
       pr.observation.scope.characterId === 'char_a' && pr.observation.scope.conversationId === 'dm:char_a',
       pr.observation.scope);
@@ -227,23 +251,26 @@ function prediction(token) {
     })(), '★ R2：同 sourceInstance 下两种 token 同档（差异只曾来自词表）');
     /* P5-B3-D4-R2 阶段迁移：owner 已批准加入词表。 */
     check('F5.tokenVocabularyNowIncludesTurnTerminal',
-      OO.RUNTIME_STATE_TOKENS.indexOf('runtime.turn_terminal') >= 0 && OO.RUNTIME_STATE_TOKENS.length === 13,
-      'RUNTIME_STATE_TOKENS = ' + OO.RUNTIME_STATE_TOKENS.length + ' 项，含 turn terminal');
+      OO.RUNTIME_STATE_TOKENS.indexOf('runtime.turn_terminal') >= 0
+      && OO.RUNTIME_STATE_TOKENS.indexOf('runtime.turn_terminal.completed') >= 0
+      && OO.RUNTIME_STATE_TOKENS.indexOf('runtime.turn_terminal.provider-error') >= 0
+      && OO.RUNTIME_STATE_TOKENS.length === 21,
+      'RUNTIME_STATE_TOKENS = ' + OO.RUNTIME_STATE_TOKENS.length + ' 项，含闭集 terminal outcome tokens');
     P('P5_B3_D4_R1_BLOCKER', 'RESOLVED_BY_R2');
   }
 
   /* ══ G · one-pair E2E（如实报告到哪一步） ══ */
   section('G · one-pair E2E');
   {
-    const pred = prediction(TOKEN);
     const t = truth();
+    const pred = prediction(t.registry, TOKEN, 'turn_r1');
     const e = t.src.emit(terminal());
     const pr = t.pr.projectForPrediction({
       realityEvent: e.realityEvent,
       predictionRef: { predictionId: pred.predictionId, opensAt: pred.observationWindow.opensAt, closesAt: pred.observationWindow.closesAt, predictionCreatedAt: pred.observationWindow.opensAt }
     });
     const st = createRuntimePredictionSettlement({ clock: () => T0 });
-    const r = st.settlePrediction(pred, [{ observation: pr.observation }], { now: T0 + 2000, opportunity: OPP });
+    const r = st.settlePrediction(pred, [{ observation: pr.observation }], { now: T0 + 2000 });
     P('E2E.TurnTerminalFact', 1);
     P('E2E.RealityEvent', t.re.heldEventCount());
     P('E2E.OutcomeObservation', pr.ok ? 1 : 0);
@@ -251,16 +278,18 @@ function prediction(token) {
     P('E2E.CalibrationCounted', r.settlement.calibrationCounted);
     P('E2E.MatcherCalls', 0);
     check('G1.observationProducedFromProductionSource', pr.ok === true, pr.reasonCode);
-    /* R2 阶段迁移：authority gate 不再丢弃该 observation；若早于窗口关闭结算，
-       P3 按既有 policy 停在 pending（window-still-open），这是**正常策略**而非 blocker。 */
+    /* D5：exact expected terminal outcome mechanically supports the event Prediction.
+       Opportunity remains UNKNOWN; the existing P3 rule allows support, not missed. */
     check('G2.gateNoLongerDiscardsObservation',
-      r.settlement.calibrationCounted === false
+      r.settlement.state === 'matched'
+      && r.settlement.opportunityState === 'UNKNOWN'
+      && r.settlement.calibrationCounted === true
       && (r.settlement.reasonCodes || []).indexOf('observation-discarded-by-authority-gate') < 0,
       { state: r.settlement.state, reasons: r.settlement.reasonCodes });
     check('G3.matchedNeverProducedByP1OrAdapter',
-      r.settlement.state !== 'matched'
+      r.settlement.state === 'matched'
       && read('services/home-node/turn-terminal-reality-source.js').replace(/FORBIDDEN_INPUT_KEYS[\s\S]*?\]/, '').indexOf("'matched'") < 0,
-      'matched 只能来自 P3；本轮为 pending');
+      'P1/adapter carry the terminal fact only; P3 produces matched');
   }
 
   /* ══ H · zero-pair / multi-pair ══ */
@@ -273,11 +302,21 @@ function prediction(token) {
       { realityEvent: t.re.heldEventCount() });
     check('H2.multiProjectionSharesOneRealityEvent', (function () {
       const l = truth();
+      const predA = prediction(l.registry, 'runtime.turn_terminal.completed', 'turn_multi', 0);
+      const predB = prediction(l.registry, 'runtime.turn_terminal.timeout', 'turn_multi', 1);
       const ev = l.src.emit(terminal({ turnId: 'turn_multi' })).realityEvent;
-      const ids = ['P1', 'P2'].map(pid => l.pr.projectForPrediction({
-        realityEvent: ev, predictionRef: { predictionId: pid, opensAt: T0, closesAt: T0 + 86400000, predictionCreatedAt: T0 }
+      const records = [predA, predB];
+      const ids = records.map(record => l.pr.projectForPrediction({
+        realityEvent: ev,
+        predictionRef: {
+          predictionId: record.predictionId,
+          opensAt: record.observationWindow.opensAt,
+          closesAt: record.observationWindow.closesAt,
+          predictionCreatedAt: record.createdAt
+        }
       }));
       return ids.every(r => r.ok === true)
+        && l.pr.candidatePredictions(ev, { characterId: 'char_a', conversationId: 'dm:char_a' }).length === 2
         && l.re.heldEventCount() === 1
         && new Set(ids.map(r => r.realityEventRef)).size === 1
         && new Set(ids.map(r => r.observation.observationId)).size === 2;
@@ -300,8 +339,9 @@ function prediction(token) {
       && read('services/home-node/turn-terminal-reality-source.js').indexOf("TYPE = 'turn_terminal'") >= 0,
       'domain/type 未重开');
     check('I4.matcherStillOff',
-      read('services/home-node/runtime-evidence-matcher.js').indexOf('enabled: false') >= 0
-      || read('services/home-node-service.js').indexOf('enabled: false') >= 0,
+      /EVIDENCE_MATCHER_ENABLED_DEFAULT\s*=\s*false/.test(read('services/home-node-service.js'))
+      && read('services/home-node-service.js').indexOf("enabled: process.env.IB_EVIDENCE_MATCHER_ENABLED === '1'") >= 0
+      && read('services/home-node-service.js').indexOf('enabled: options.evidenceMatcherEnabled === true') >= 0,
       'EVIDENCE_MATCHER_ENABLED_DEFAULT = false');
   }
 
@@ -311,8 +351,10 @@ function prediction(token) {
     P('RUNTIME_TURN_EXECUTION_IS_CANONICAL_RUNTIME_OBSERVER', 'YES');
     P('RUNTIME_TURN_EXECUTION_OBSERVER_SCOPE', 'TURN_TERMINAL_FACT_ONLY');
     P('OUTCOME_OBSERVATION_PRODUCTION_CALLER_LIVE', 'YES');
-    P('MECHANICAL_FEEDBACK_LOOP_PRODUCTION_LIVE', 'NO');
-    P('P5_B3_D4_STATUS', 'BLOCKED_BY_PREDICTION_SCHEMA');
+    P('MECHANICAL_FEEDBACK_LOOP_PRODUCTION_LIVE', 'YES');
+    P('EVENT_PRODUCTION_PREDICTION_CREATION', 'LIVE · runtime.turn_terminal only');
+    P('P5_B3_D4_STATUS', 'COMPLETE');
+    P('P5_B3_D4_FREEZE', 'FROZEN');
     P('EVIDENCE_MATCHER_ENABLED_DEFAULT', false);
   }
 

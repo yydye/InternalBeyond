@@ -21,7 +21,7 @@
      MATCHER_MODEL_AUTHORITY = SYSTEM_CONFIG
        ⇒ provider/model/endpoint/credential 来自 registry + Credential Vault，
          evidence **不能**覆盖（也不在输入里）。
-     MATCHER_RETRY = 0 · MATCHER_CACHE = NONE_V1 · MATCHER_FAILURE_RELATION = ambiguous
+     MATCHER_RETRY = 0 · MATCHER_CACHE = BOUNDED_SESSION_MEMO · MATCHER_FAILURE_RELATION = ambiguous
      EVIDENCE_MATCHER_ENABLED_DEFAULT = false（**不**默认全局开启）
      ONLY_MATCHER_RUNTIME_MINTS_VALID_EVIDENCE_MATCH = YES
 
@@ -32,6 +32,7 @@ const path = require('path');
 
 const ASSETS_JS = path.join(__dirname, '..', '..', 'assets', 'js');
 const DEFAULT_CORE = require(path.join(ASSETS_JS, 'memory-recall', 'evidence-match-core.js'));
+const behaviorEffectRuntimeModule = require('./runtime-behavior-effect.js');
 
 /* 与 expectation / interpretation 同一套纪律：单次调用、无重试、有界等待。 */
 const DEFAULT_TIMEOUT_MS = 8000;
@@ -191,6 +192,18 @@ function createRuntimeEvidenceMatcher(deps) {
   };
   const spentByPrediction = new Map();
   const spentByTurn = new Map();
+  /* Opaque, one-settlement-attempt budget scopes. The P3 runtime creates one
+     token per matcher-aware settlement and reuses it for that attempt's
+     observations; callers cannot reset the budget by supplying a string id. */
+  const settlementAttemptTokens = new WeakSet();
+  const spentBySettlementAttempt = new WeakMap();
+
+  function beginSettlementAttempt() {
+    const token = Object.freeze({});
+    settlementAttemptTokens.add(token);
+    spentBySettlementAttempt.set(token, 0);
+    return token;
+  }
 
   function nowMs() {
     const t = clock ? Number(clock()) : null;
@@ -227,8 +240,10 @@ function createRuntimeEvidenceMatcher(deps) {
     evictMemo(now);
   }
   /* 预算检查：**不**消费；命中 memo 的路径根本不会走到这里 */
-  function budgetCheck(predictionId, turnId) {
+  function budgetCheck(predictionId, turnId, attemptToken) {
     if (budget.perSettlementAttempt <= 0) return 'per-attempt';
+    if (settlementAttemptTokens.has(attemptToken)
+      && (spentBySettlementAttempt.get(attemptToken) || 0) >= budget.perSettlementAttempt) return 'per-attempt';
     const byPred = spentByPrediction.get(predictionId) || 0;
     if (byPred >= budget.perPrediction) return 'per-prediction';
     if (turnId) {
@@ -237,7 +252,10 @@ function createRuntimeEvidenceMatcher(deps) {
     }
     return null;
   }
-  function budgetSpend(predictionId, turnId) {
+  function budgetSpend(predictionId, turnId, attemptToken) {
+    if (settlementAttemptTokens.has(attemptToken)) {
+      spentBySettlementAttempt.set(attemptToken, (spentBySettlementAttempt.get(attemptToken) || 0) + 1);
+    }
     spentByPrediction.set(predictionId, (spentByPrediction.get(predictionId) || 0) + 1);
     if (turnId) spentByTurn.set(turnId, (spentByTurn.get(turnId) || 0) + 1);
   }
@@ -350,12 +368,15 @@ function createRuntimeEvidenceMatcher(deps) {
       }
     }
 
-    const characterId = text(c.characterId) || text(prediction && prediction.scope && prediction.scope.characterId);
+    /* Credentials are selected only from the P2 record's canonical scope;
+       no caller/evidence override participates in registry or Vault lookup. */
+    const characterId = text(prediction && prediction.scope && prediction.scope.characterId);
     const predictionId = text(prediction && prediction.predictionId);
-    const turnId = text(c.turnId);
+    const turnId = text(prediction && prediction.sourceExpectationRef && prediction.sourceExpectationRef.turnId);
+    const attemptToken = c.settlementAttemptToken;
 
     /* ── R4 · hard ceiling：耗尽 ⇒ canonical ambiguous（绝不 support/conflict）── */
-    const denied = budgetCheck(predictionId, turnId);
+    const denied = budgetCheck(predictionId, turnId, attemptToken);
     if (denied) {
       counters.budgetExhausted += 1;
       if (denied === 'per-attempt') counters.budgetDeniedPerAttempt += 1;
@@ -380,7 +401,7 @@ function createRuntimeEvidenceMatcher(deps) {
     }
 
     counters.calls += 1;
-    budgetSpend(predictionId, turnId);
+    budgetSpend(predictionId, turnId, attemptToken);
     const call = await invokeOnce(input, specResolved);
     let parsed;
     if (!call.ok) {
@@ -420,12 +441,19 @@ function createRuntimeEvidenceMatcher(deps) {
   }
 
   function describe() {
+    let attributionAuthorityAvailable = false;
+    try {
+      attributionAuthorityAvailable = typeof behaviorEffectRuntimeModule.isCanonicalBehaviorEffectAttributionAuthority === 'function'
+        && behaviorEffectRuntimeModule.isCanonicalBehaviorEffectAttributionAuthority(d.attributionAuthority) === true;
+    } catch (_) {
+      attributionAuthorityAvailable = false;
+    }
     const taxonomy = core.capabilityTaxonomy({
       matcherCapabilityPresent: true,
       matcherEnabled: enabled,
       policyAllowed: true,
       sourceDecisive: true,
-      attributionAuthorityAvailable: d.attributionAuthorityAvailable === true,
+      attributionAuthorityAvailable: attributionAuthorityAvailable,
       sampleAvailable: true
     });
     return {
@@ -438,6 +466,9 @@ function createRuntimeEvidenceMatcher(deps) {
       matcherEnabled: taxonomy.matcherEnabled,
       runtimeClassifiable: taxonomy.runtimeClassifiable,
       productionSettleable: taxonomy.productionSettleable,
+      attributionAuthorityAvailable: taxonomy.attributionAuthorityAvailable,
+      runtimeClassifiableIncludesPolicyAndSourceDecisiveness: 'YES',
+      productionSettleableFormula: 'policyAllowed && runtimeClassifiable && attributionAuthorityAvailable',
       capabilityGapReason: taxonomy.capabilityGapReason.slice(),
       role: core.MATCHER_ROLE,
       relationAuthority: core.RELATION_AUTHORITY,
@@ -445,7 +476,7 @@ function createRuntimeEvidenceMatcher(deps) {
       failureRelation: core.FAILURE_RELATION,
       relations: core.RELATIONS.slice(),
       autoRetry: AUTO_RETRY,
-      cache: 'NONE_V1',
+      cache: 'BOUNDED_SESSION_MEMO',
       timeoutMs: timeoutMs,
       maxTokens: DEFAULT_MAX_TOKENS,
       modelAuthority: 'SYSTEM_CONFIG',
@@ -468,17 +499,17 @@ function createRuntimeEvidenceMatcher(deps) {
       budget: Object.assign({}, budget),
       budgetAuthority: 'SYSTEM_CONFIG',
       evidenceMayNotControlBudget: 'YES',
+      settlementAttemptBudgetScope: 'OPAQUE_P3_TOKEN',
       budgetExhaustionRelation: core.FAILURE_RELATION,
       callerRetryCannotUpgradeRelation: 'YES',
       settlementStateAuthority: 'NONE',
       sourceAuthority: 'NONE',
       predictionTypeAuthority: 'NONE',
       mayEnterCalibrationDirectly: 'NO',
-      callsPerSettlementAtMost: 'ONE_PER_STATEMENT_OBSERVATION',
-      duplicateCallSuppression: 'NONE_V1',
+      callsPerSettlementAtMost: budget.perSettlementAttempt,
+      duplicateCallSuppression: 'BOUNDED_SESSION_MEMO_BY_MATCH_KEY',
       shadowDedupe: 'NONE_V1',
-      /* 同一次结算里多条 statement observation 会各自调用一次；
-         本相位**不**做缓存（MATCHER_CACHE = NONE_V1），如实登记。 */
+      /* 同一 P3 attempt 内受硬预算约束；相同语义的输入复用 sealed memo。 */
       callAccounting: 'PER_OBSERVATION',
       durable: false,
       durableWrites: 0,
@@ -494,6 +525,7 @@ function createRuntimeEvidenceMatcher(deps) {
 
   return {
     ENTRY: ENTRY,
+    beginSettlementAttempt: beginSettlementAttempt,
     matchRelation: matchRelation,
     describe: describe,
     isEvidenceMatch: isEvidenceMatch,

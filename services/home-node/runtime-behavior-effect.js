@@ -74,6 +74,9 @@ const behaviorEffectAttributionCore = require(path.join(
    known-none 是一个 negative coverage assertion，必须由 authority 铸造。 */
 const ATTR_IDENTITY = new WeakSet();
 const ATTR_SEAL = new WeakMap();
+/* Canonical authority instance identity is module-private as well. A copied API,
+   a JSON reconstruction, or an instance from a second module load is not proof. */
+const ATTRIBUTION_AUTHORITY_INSTANCES = new WeakMap();
 const ATTR_BRAND = 'ib.behavior-effect-attribution.v1';
 function attrFingerprint(v) { return behaviorEffectAttributionCore.canonicalize(v); }
 function attrSeal(snapshot) {
@@ -95,6 +98,25 @@ function isBehaviorEffectAttributionSnapshot(x) {
   return attrFingerprint(x) === s.fingerprint;
 }
 
+/** True only for the exact frozen runtime instance minted by this module. */
+function isCanonicalBehaviorEffectAttributionAuthority(runtime) {
+  if (!runtime || (typeof runtime !== 'object' && typeof runtime !== 'function')) return false;
+  const methods = ATTRIBUTION_AUTHORITY_INSTANCES.get(runtime);
+  if (!methods) return false;
+  try {
+    return Object.isFrozen(runtime)
+      && runtime.snapshotBehaviorEffectAttribution === methods.snapshot
+      && runtime.isBehaviorEffectAttributionSnapshot === methods.validator
+      && runtime.registerExternalInfluence === methods.registerExternalInfluence
+      && runtime.consumeExternalInfluence === methods.consumeExternalInfluence
+      && runtime.markExternalInfluenceNotConsumed === methods.markExternalInfluenceNotConsumed
+      && runtime.describeAttribution === methods.describeAttribution
+      && runtime.describe === methods.describe;
+  } catch (_) {
+    return false;
+  }
+}
+
 /* ★ 词表**只有一个出处**：R4-C 纯核心的 `APPRAISALS`。在这里再抄一份
    枚举就是第二份权威（那正是 R4-C 花了整个相位去消灭的东西）。 */
 const ASSETS_JS = path.join(__dirname, '..', '..', 'assets', 'js');
@@ -105,6 +127,11 @@ const L3_APPRAISALS = Object.freeze((INTERPRETATION_CORE.APPRAISALS || []).map(S
 const MAX_HELD_BEHAVIOR_EFFECTS = 64;
 const HOLDER_TTL_MS = 10 * 60 * 1000;
 const HOLDER_SCOPE = 'character+conversation+turn';
+/* M0 · external response participation is a separate fact, never a BehaviorEffect. */
+const MAX_EXTERNAL_PARTICIPATIONS = 64;
+const EXTERNAL_PARTICIPATION_TTL_MS = 10 * 60 * 1000;
+const EXTERNAL_INFLUENCE_SOURCE_KINDS = Object.freeze(['memory_behavior_modulation']);
+const EXTERNAL_INFLUENCE_STATES = Object.freeze(['REGISTERED', 'CONSUMED', 'NOT_CONSUMED', 'STALE']);
 /* P5-B3-A · closed history retention 上界（会话内、有界；裁剪只影响过去 horizon） */
 const ATTR_MAX_CLOSED_HISTORY = 512;
 const TTL_TURNS = 1;
@@ -181,6 +208,11 @@ const APPRAISAL_TO_EFFECT = Object.freeze({
 function isPlainObject(v) { return !!v && typeof v === 'object' && !Array.isArray(v); }
 function text(v) { return v == null ? '' : String(v); }
 function has(obj, key) { return Object.prototype.hasOwnProperty.call(obj, key); }
+function hasExactKeys(value, keys) {
+  if (!isPlainObject(value)) return false;
+  const got = Object.keys(value).sort(), expected = keys.slice().sort();
+  return got.length === expected.length && got.every((key, i) => key === expected[i]);
+}
 function bounded(v, limit) { return text(v).slice(0, limit); }
 
 /* ── 校验一个效果对象是否**严格**符合冻结的 7 键形状 ──────────────────
@@ -277,6 +309,10 @@ function expectationCreated(raw) {
 
 function createRuntimeBehaviorEffect(deps) {
   const d = deps || {};
+  let attributionRuntimeInstance = null;
+  function attributionAuthorityAvailable() {
+    return isCanonicalBehaviorEffectAttributionAuthority(attributionRuntimeInstance);
+  }
   const logger = typeof d.logger === 'function' ? d.logger : function () {};
   const clock = typeof d.clock === 'function' ? d.clock : function () { return Date.now(); };
   /* 活跃持有者容量：可注入以便证明**极小容量**下 authority 语义仍然正确
@@ -293,11 +329,21 @@ function createRuntimeBehaviorEffect(deps) {
 
   const counters = {
     derived: 0, notDerived: 0, consumed: 0, notConsumed: 0,
-    expired: 0, evicted: 0, replaced: 0, schemaRejected: 0
+    expired: 0, evicted: 0, replaced: 0, schemaRejected: 0,
+    externalRegistered: 0, externalConsumed: 0, externalNotConsumed: 0,
+    externalRejected: 0, externalExpired: 0, externalEvicted: 0
   };
   /* key = characterId|conversationId|sourceTurn → { characterId, conversationId,
      sourceTurn, effect, createdAt }。**非持久、有界、进程内**。 */
   const held = new Map();
+  /* M0: registration + consumption facts live under this same attribution
+     owner. Entries carry no posture/effect payload and never enter `effects[]`. */
+  const externalParticipations = new Map();       /* participationId -> bounded fact */
+  const externalParticipationKeys = new Map();    /* exact scoped idempotency key -> participationId */
+  const externalUnknownScopes = new Map();        /* scopeKey -> { from, through } */
+  let externalUnknownGlobalFrom = null;
+  let externalUnknownGlobalThrough = null;
+  let externalParticipationSeq = 0;
 
   /* ══════════════════════════════════════════════════════════════════
      P5-B2 · BehaviorEffect Attribution Authority
@@ -444,8 +490,210 @@ function createRuntimeBehaviorEffect(deps) {
   function keyOf(characterId, conversationId, sourceTurn) {
     return text(characterId) + '|' + text(conversationId) + '|' + text(sourceTurn);
   }
+  function externalScopeKey(characterId, conversationId) {
+    return text(characterId) + '|' + text(conversationId);
+  }
+  function externalLogicalKey(characterId, conversationId, turnId, sourceKind) {
+    return [text(characterId), text(conversationId), text(turnId), text(sourceKind)].join('|');
+  }
+  function noteExternalUnknown(rec, through) {
+    const scopeKey = externalScopeKey(rec && rec.characterId, rec && rec.conversationId);
+    const from = Number(rec && rec.registeredAt);
+    const end = Number.isFinite(Number(through)) ? Number(through) : Number(rec && rec.expiresAt);
+    if (!scopeKey || !Number.isFinite(from) || !Number.isFinite(end)) {
+      externalUnknownGlobalFrom = externalUnknownGlobalFrom == null ? 0 : externalUnknownGlobalFrom;
+      externalUnknownGlobalThrough = null;
+      return;
+    }
+    const prior = externalUnknownScopes.get(scopeKey);
+    if (prior) {
+      prior.from = Math.min(prior.from, from);
+      prior.through = Math.max(prior.through, end);
+      return;
+    }
+    if (externalUnknownScopes.size < MAX_EXTERNAL_PARTICIPATIONS) {
+      externalUnknownScopes.set(scopeKey, { from: from, through: end });
+      return;
+    }
+    externalUnknownGlobalFrom = externalUnknownGlobalFrom == null
+      ? from : Math.min(externalUnknownGlobalFrom, from);
+    externalUnknownGlobalThrough = externalUnknownGlobalThrough == null
+      ? end : Math.max(externalUnknownGlobalThrough, end);
+  }
+  function externalUnknownAt(characterId, conversationId, at) {
+    const scopeKey = externalScopeKey(characterId, conversationId);
+    const local = externalUnknownScopes.get(scopeKey);
+    if (local && at >= local.from && at <= local.through) return true;
+    return externalUnknownGlobalFrom != null && externalUnknownGlobalThrough != null
+      && at >= externalUnknownGlobalFrom && at <= externalUnknownGlobalThrough;
+  }
+  function externalInputsMatch(input, participation) {
+    return !!participation
+      && participation.characterId === text(input.characterId)
+      && participation.conversationId === text(input.conversationId)
+      && participation.turnId === text(input.turnId)
+      && participation.sourceKind === text(input.sourceKind)
+      && participation.participationId === text(input.participationId);
+  }
+  function externalResult(participation, status, reasonCode) {
+    return {
+      ok: ['registered', 'duplicate', 'consumed', 'not-consumed'].indexOf(status) >= 0,
+      status: status,
+      reasonCode: reasonCode || null,
+      participation: participation ? {
+        participationId: participation.participationId,
+        characterId: participation.characterId,
+        conversationId: participation.conversationId,
+        turnId: participation.turnId,
+        sourceKind: participation.sourceKind,
+        state: participation.state,
+        registeredAt: participation.registeredAt,
+        consumedAt: participation.consumedAt,
+        expiresAt: participation.expiresAt
+      } : null,
+      durable: false
+    };
+  }
+  function sweepExternalParticipations(now) {
+    const t = Number.isFinite(Number(now)) ? Number(now) : attrNow();
+    if (!Number.isFinite(t)) return;
+    for (const participation of externalParticipations.values()) {
+      if (!participation || participation.state === 'NOT_CONSUMED' || participation.state === 'STALE') continue;
+      if (t > participation.expiresAt) {
+        noteExternalUnknown(participation, participation.expiresAt);
+        participation.state = 'STALE';
+        counters.externalExpired += 1;
+      }
+    }
+    while (externalParticipations.size > MAX_EXTERNAL_PARTICIPATIONS) {
+      const oldest = externalParticipations.keys().next();
+      if (oldest.done) break;
+      const participation = externalParticipations.get(oldest.value);
+      if (participation && participation.state !== 'NOT_CONSUMED' && participation.state !== 'STALE') {
+        noteExternalUnknown(participation, participation.expiresAt);
+      }
+      externalParticipations.delete(oldest.value);
+      if (participation) externalParticipationKeys.delete(participation.logicalKey);
+      counters.externalEvicted += 1;
+    }
+  }
+  function registerExternalInfluence(input) {
+    const i = isPlainObject(input) ? input : null;
+    if (!i || !hasExactKeys(i, ['characterId', 'conversationId', 'turnId', 'sourceKind'])) {
+      counters.externalRejected += 1;
+      return externalResult(null, 'rejected', 'external-input-shape-invalid');
+    }
+    const characterId = text(i.characterId).trim(), conversationId = text(i.conversationId).trim();
+    const turnId = text(i.turnId).trim(), sourceKind = text(i.sourceKind).trim();
+    if (!characterId || characterId.length > 180 || !conversationId || conversationId.length > 240
+      || !turnId || turnId.length > MAX_SOURCE_TURN_CHARS
+      || EXTERNAL_INFLUENCE_SOURCE_KINDS.indexOf(sourceKind) < 0) {
+      counters.externalRejected += 1;
+      return externalResult(null, 'rejected', 'external-scope-or-source-invalid');
+    }
+    const now = attrNow();
+    if (now == null) {
+      counters.externalRejected += 1;
+      return externalResult(null, 'rejected', 'external-clock-unavailable');
+    }
+    sweepExternalParticipations(now);
+    const logicalKey = externalLogicalKey(characterId, conversationId, turnId, sourceKind);
+    const existingId = externalParticipationKeys.get(logicalKey);
+    const existing = existingId ? externalParticipations.get(existingId) : null;
+    if (existing) {
+      const status = existing.state === 'STALE' ? 'stale' : 'duplicate';
+      return externalResult(existing, status, status === 'stale' ? 'external-registration-stale' : 'external-registration-reused');
+    }
+    externalParticipationSeq += 1;
+    const minted = behaviorEffectAttributionCore.effectInstanceId({
+      characterId: characterId,
+      conversationId: conversationId,
+      sourceTurn: 'external:' + sourceKind + ':' + turnId,
+      createdAt: now,
+      instanceSeq: externalParticipationSeq
+    });
+    const participation = {
+      participationId: 'ext_' + minted.slice('be_'.length),
+      logicalKey: logicalKey,
+      characterId: characterId,
+      conversationId: conversationId,
+      turnId: turnId,
+      sourceKind: sourceKind,
+      state: 'REGISTERED',
+      registeredAt: now,
+      consumedAt: null,
+      expiresAt: now + EXTERNAL_PARTICIPATION_TTL_MS
+    };
+    externalParticipations.set(participation.participationId, participation);
+    externalParticipationKeys.set(logicalKey, participation.participationId);
+    counters.externalRegistered += 1;
+    note('behavior-external-influence-registered', {
+      characterId: characterId, conversationId: conversationId, turnId: turnId,
+      sourceKind: sourceKind, participationId: participation.participationId
+    });
+    sweepExternalParticipations(now);
+    return externalResult(participation, 'registered', null);
+  }
+  function consumeExternalInfluence(input) {
+    const i = isPlainObject(input) ? input : null;
+    if (!i || !hasExactKeys(i, ['characterId', 'conversationId', 'turnId', 'sourceKind', 'participationId'])) {
+      counters.externalRejected += 1;
+      return externalResult(null, 'rejected', 'external-consumption-shape-invalid');
+    }
+    const participation = externalParticipations.get(text(i.participationId));
+    if (!externalInputsMatch(i, participation)) {
+      counters.externalRejected += 1;
+      return externalResult(null, 'rejected', 'external-consumption-scope-mismatch');
+    }
+    const now = attrNow();
+    if (now == null) {
+      counters.externalRejected += 1;
+      return externalResult(participation, 'rejected', 'external-clock-unavailable');
+    }
+    sweepExternalParticipations(now);
+    if (participation.state === 'CONSUMED') return externalResult(participation, 'consumed', 'external-consumption-reused');
+    if (participation.state !== 'REGISTERED' || now > participation.expiresAt) {
+      counters.externalRejected += 1;
+      return externalResult(participation, 'rejected', 'external-registration-not-consumable');
+    }
+    participation.state = 'CONSUMED';
+    participation.consumedAt = now;
+    counters.externalConsumed += 1;
+    note('behavior-external-influence-consumed', {
+      characterId: participation.characterId, conversationId: participation.conversationId,
+      turnId: participation.turnId, sourceKind: participation.sourceKind,
+      participationId: participation.participationId
+    });
+    return externalResult(participation, 'consumed', null);
+  }
+  function markExternalInfluenceNotConsumed(input) {
+    const i = isPlainObject(input) ? input : null;
+    if (!i || !hasExactKeys(i, ['characterId', 'conversationId', 'turnId', 'sourceKind', 'participationId', 'reasonCode'])) {
+      counters.externalRejected += 1;
+      return externalResult(null, 'rejected', 'external-rejection-shape-invalid');
+    }
+    const participation = externalParticipations.get(text(i.participationId));
+    const reasonCode = text(i.reasonCode);
+    const allowedReasons = ['renderer-refused', 'no-canonical-system', 'consumer-unavailable', 'scope-mismatch'];
+    if (!externalInputsMatch(i, participation) || participation.state !== 'REGISTERED'
+      || allowedReasons.indexOf(reasonCode) < 0) {
+      counters.externalRejected += 1;
+      return externalResult(null, 'rejected', 'external-rejection-not-authorized');
+    }
+    participation.state = 'NOT_CONSUMED';
+    participation.notConsumedAt = attrNow();
+    participation.rejectionReason = reasonCode;
+    counters.externalNotConsumed += 1;
+    note('behavior-external-influence-not-consumed', {
+      characterId: participation.characterId, conversationId: participation.conversationId,
+      turnId: participation.turnId, sourceKind: participation.sourceKind,
+      participationId: participation.participationId, reasonCode: reasonCode
+    });
+    return externalResult(participation, 'not-consumed', reasonCode);
+  }
   function sweep() {
     const now = Number(clock());
+    sweepExternalParticipations(now);
     for (const [key, rec] of held) {
       if (!rec || !Number.isFinite(Number(rec.createdAt))) { held.delete(key); continue; }
       if (now - Number(rec.createdAt) > holderTtlMs) {
@@ -612,6 +860,7 @@ function createRuntimeBehaviorEffect(deps) {
       conversationId: text(q.conversationId),
       subjectLabel: text(q.subjectLabel)
     };
+    const queryTurnId = text(q.turnId);
     const core = behaviorEffectAttributionCore;
     const coverageRes = core.resolveCoverage({
       authorityPresent: true,
@@ -624,7 +873,23 @@ function createRuntimeBehaviorEffect(deps) {
     });
     /* 归因可见集合 = 活跃 + retention horizon 内的 closed（历史查询用） */
     const active = core.relevantEffects(attrKnownInstances(), scope, at);
-    const statusRes = core.resolveStatus({ relevantCount: active.length, coverage: coverageRes.coverage });
+    const externalAt = Array.from(externalParticipations.values()).filter(function (entry) {
+      if (!entry || entry.characterId !== scope.characterId || entry.conversationId !== scope.conversationId) return false;
+      if (queryTurnId && entry.turnId !== queryTurnId) return false;
+      if (entry.state !== 'REGISTERED' && entry.state !== 'CONSUMED') return false;
+      return at >= entry.registeredAt && at <= entry.expiresAt;
+    }).slice(0, MAX_EXTERNAL_PARTICIPATIONS);
+    const externalUnknown = externalAt.length > 0
+      || externalUnknownAt(scope.characterId, scope.conversationId, at);
+    const baseStatus = core.resolveStatus({ relevantCount: active.length, coverage: coverageRes.coverage });
+    /* External response influence remains a separate fact, never a synthetic
+       BehaviorEffect. With no R4-F effect to establish known-present, any
+       registered/consumed-but-external participation makes attribution UNKNOWN
+       until that source is accounted for. */
+    const statusRes = externalUnknown && active.length === 0
+      ? { status: 'unknown', coverage: 'partial', reasonCodes: ['external-influence-unaccounted'] }
+      : baseStatus;
+    const statusCoverage = externalUnknown ? 'partial' : statusRes.coverage;
     /* 稳定 ref 的因果 linkage：目前 BE 派生路径没有 prediction 输入 ⇒ 找不到 */
     const linked = active.filter(function (e) { return text(e.sourcePredictionId) === text(q.predictionId) && text(q.predictionId) !== ''; });
     const influenced = core.resolvePredictionInfluenced({
@@ -642,7 +907,7 @@ function createRuntimeBehaviorEffect(deps) {
       at: at,
       scope: { characterId: scope.characterId, conversationId: scope.conversationId, subjectLabel: scope.subjectLabel },
       status: statusRes.status,
-      coverage: statusRes.coverage,
+      coverage: statusCoverage,
       effects: active.slice(0, core.BOUNDS.MAX_EFFECTS).map(function (e) {
         return {
           effectInstanceId: e.effectInstanceId,
@@ -657,6 +922,16 @@ function createRuntimeBehaviorEffect(deps) {
           endedAt: e.endedAt
         };
       }),
+      externalInfluences: externalAt.map(function (entry) {
+        return {
+          participationId: entry.participationId,
+          sourceKind: entry.sourceKind,
+          turnId: entry.turnId,
+          state: entry.state,
+          registeredAt: entry.registeredAt,
+          consumedAt: entry.consumedAt
+        };
+      }),
       predictionInfluencedSystem: influenced.value,
       dependencyTraceScope: influenced.dependencyTraceScope,
       coverageBasis: {
@@ -666,15 +941,18 @@ function createRuntimeBehaviorEffect(deps) {
         historyRetentionFloor: attrRetentionFloor,
         effectiveCoverageFloor: coverageRes.facts ? coverageRes.facts.effectiveCoverageFloor : null,
         unobservedDisappearance: attrUnobserved,
+        externalInfluenceCoverageComplete: !externalUnknown,
+        unaccountedExternalInfluence: externalUnknown,
         activeAuthorityComplete: true,
         scopeRepresented: true
       },
       contaminationFacts: core.contaminationFacts({
-        status: statusRes.status, coverage: statusRes.coverage,
+        status: statusRes.status, coverage: statusCoverage,
         effects: active, predictionInfluencedSystem: influenced.value,
-        reasonCodes: statusRes.reasonCodes
+        reasonCodes: statusRes.reasonCodes.concat(externalUnknown ? ['external-influence-unaccounted'] : [])
       }),
       reasonCodes: statusRes.reasonCodes.concat(coverageRes.reasonCodes).concat([influenced.reasonCode])
+        .concat(externalUnknown ? ['external-influence-unaccounted'] : [])
         .filter(function (v, i, a) { return a.indexOf(v) === i; }).slice(0, 12)
     });
     return attrSeal(snapshot);
@@ -684,10 +962,16 @@ function createRuntimeBehaviorEffect(deps) {
   function describeAttribution() {
     return {
       authority: behaviorEffectAttributionCore.AUTHORITY,
+      attributionAuthorityAvailable: attributionAuthorityAvailable(),
+      attributionAuthorityAvailabilityMeans: 'CANONICAL_RUNTIME_AUTHORITY_CONSTRUCTED_AND_REACHABLE',
       lifetime: behaviorEffectAttributionCore.ID_LIFETIME,
       oneEffectFactOwner: 'YES',
       activeEffects: attrActive.size,
       activeInstances: attrActive.size,
+      externalParticipations: externalParticipations.size,
+      externalParticipationSources: EXTERNAL_INFLUENCE_SOURCE_KINDS.slice(),
+      externalUnknownScopes: externalUnknownScopes.size,
+      externalUnknownGlobal: externalUnknownGlobalThrough != null,
       closedHistoryHeld: attrClosed.length,
       closedHistoryBound: ATTR_MAX_CLOSED_HISTORY,
       closedHistoryEvicted: attrCounters.closedHistoryEvicted,
@@ -699,7 +983,7 @@ function createRuntimeBehaviorEffect(deps) {
       unobservedDisappearance: attrUnobserved,
       invariants: auditAttributionInvariants(),
       endReasons: behaviorEffectAttributionCore.END_REASONS.slice(),
-      counters: Object.assign({}, attrCounters, { active: attrActive.size }),
+      counters: Object.assign({}, counters, attrCounters, { active: attrActive.size }),
       statuses: behaviorEffectAttributionCore.STATUSES.slice(),
       coverages: behaviorEffectAttributionCore.COVERAGES.slice(),
       knownNoneRequiresCompleteCoverage: 'YES',
@@ -720,6 +1004,8 @@ function createRuntimeBehaviorEffect(deps) {
     sweep();
     return {
       status: 'RUNTIME_READY',
+      attributionAuthorityAvailable: attributionAuthorityAvailable(),
+      attributionAuthorityAvailabilityMeans: 'CANONICAL_RUNTIME_AUTHORITY_CONSTRUCTED_AND_REACHABLE',
       live: 'NO',
       liveBlocker: 'BROWSER_PROMPT_PLACEMENT_REQUIRES_USER_OWNED_FILE',
       executionKind: EXECUTION_KIND,
@@ -787,9 +1073,14 @@ function createRuntimeBehaviorEffect(deps) {
     };
   }
 
-  return Object.freeze({
+  const runtime = Object.freeze({
     deriveAndHold: deriveAndHold,
     consumeForTurn: consumeForTurn,
+    /* M0 · one owner records only external participation facts. These methods
+       accept no behavior payload and never mint or mutate a BehaviorEffect. */
+    registerExternalInfluence: registerExternalInfluence,
+    consumeExternalInfluence: consumeExternalInfluence,
+    markExternalInfluenceNotConsumed: markExternalInfluenceNotConsumed,
     describe: describe,
     heldCount: heldCount,
     hasHeldFor: hasHeldFor,
@@ -821,14 +1112,29 @@ function createRuntimeBehaviorEffect(deps) {
     serverL3Result: serverL3Result,
     expectationCreated: expectationCreated
   });
+  ATTRIBUTION_AUTHORITY_INSTANCES.set(runtime, Object.freeze({
+    snapshot: snapshotBehaviorEffectAttribution,
+    validator: isBehaviorEffectAttributionSnapshot,
+    registerExternalInfluence: registerExternalInfluence,
+    consumeExternalInfluence: consumeExternalInfluence,
+    markExternalInfluenceNotConsumed: markExternalInfluenceNotConsumed,
+    describeAttribution: describeAttribution,
+    describe: describe
+  }));
+  attributionRuntimeInstance = runtime;
+  return runtime;
 }
 
 module.exports.createRuntimeBehaviorEffect = createRuntimeBehaviorEffect;
+module.exports.isCanonicalBehaviorEffectAttributionAuthority = isCanonicalBehaviorEffectAttributionAuthority;
 module.exports.EXECUTION_KIND = EXECUTION_KIND;
 module.exports.MAX_ADDITIONAL_BEHAVIOR_MODEL_CALLS_PER_CHARACTER_TURN = MAX_ADDITIONAL_BEHAVIOR_MODEL_CALLS_PER_CHARACTER_TURN;
 module.exports.MAX_HELD_BEHAVIOR_EFFECTS = MAX_HELD_BEHAVIOR_EFFECTS;
 module.exports.HOLDER_TTL_MS = HOLDER_TTL_MS;
 module.exports.HOLDER_SCOPE = HOLDER_SCOPE;
+module.exports.MAX_EXTERNAL_PARTICIPATIONS = MAX_EXTERNAL_PARTICIPATIONS;
+module.exports.EXTERNAL_PARTICIPATION_TTL_MS = EXTERNAL_PARTICIPATION_TTL_MS;
+module.exports.EXTERNAL_INFLUENCE_SOURCE_KINDS = EXTERNAL_INFLUENCE_SOURCE_KINDS;
 module.exports.TTL_TURNS = TTL_TURNS;
 module.exports.MEDIATOR_REQUIREMENT = MEDIATOR_REQUIREMENT;
 module.exports.INPUT_AUTHORITY = INPUT_AUTHORITY;

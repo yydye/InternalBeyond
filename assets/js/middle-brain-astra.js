@@ -54,13 +54,19 @@
       if (!ref || typeof root.dbGet !== 'function') return null;
       var row = await root.dbGet('apiConfigs', ref);
       if (!row || row.archived) return null;
-      var endpoint = String(row.endpoint || '').trim();
-      var model = String(row.model || '').trim();
-      if (!endpoint || !model) return null;
-      return Object.assign({}, cfg, {
+      var routeCore = root.IBWorkModeProviderRoute;
+      var route = routeCore && routeCore.normalize({
+        id: ref,
+        credentialRef: ref,
         provider: String(row.provider || cfg.provider || 'openai'),
-        endpoint: endpoint,
-        model: model,
+        endpoint: String(row.endpoint || ''),
+        model: String(row.model || '')
+      });
+      if (!route) return null;
+      return Object.assign({}, cfg, {
+        provider: route.provider,
+        endpoint: route.endpoint,
+        model: route.model,
         format: row.format
       });
     } catch (e) { return null; }
@@ -173,14 +179,19 @@
      opts: {maxTokens, jsonMode, schema, schemaName, timeoutMs} */
   async function middleBrainModelCall(prompt, opts) {
     opts = opts || {};
-    var cred = null, auth = '';
+    var cred = null, auth = '', tm = null, removeAbort = null, externallyAborted = false;
     try {
       if (!(await CFG.middleBrainReady())) return { ok: false, error: 'not_ready' };
       var cfg = await CFG.getMiddleBrainConfig();
-      cred = await resolveRuntimeCredential(cfg);
-      if (!cred.ok) return { ok: false, error: 'not_ready' };
-      auth = 'Bearer ' + (cred.apiKey || '');
       var consumer = String(opts.consumer || 'middle_brain');
+      var workModeConsumer = consumer.indexOf('middle_brain.work_mode.') === 0;
+      var hasConsentGate = typeof opts.beforeSend === 'function';
+      if (workModeConsumer !== hasConsentGate) return { ok: false, error: 'consent-denied' };
+      if (!workModeConsumer) {
+        cred = await resolveRuntimeCredential(cfg);
+        if (!cred.ok) return { ok: false, error: 'not_ready' };
+        auth = 'Bearer ' + (cred.apiKey || '');
+      }
       /* P34.2-A：绑定到现有 apiConfig 时复用其网络路径（provider/endpoint/model + 对应 wire 格式）。 */
       var bound = await _mbProviderPath(cfg);
       var eff = bound || cfg;
@@ -193,9 +204,33 @@
         req.body.text = { format: { type: 'json_schema', name: opts.schemaName || 'middle_brain_report', schema: opts.schema } };
       }
       if (eff.endpoint) req.endpoint = eff.endpoint;
+      /* Work Mode only: check the resolved existing Provider route before any
+         project metadata or evidence crosses the network boundary. */
+      if (hasConsentGate) {
+        var beforeSendResult;
+        try {
+          beforeSendResult = await opts.beforeSend({
+            consumer: consumer,
+            provider: String(eff.provider || cfg.provider || ''),
+            model: String(eff.model || cfg.model || ''),
+            endpoint: String(req.endpoint || eff.endpoint || '')
+          });
+        } catch (_) { return { ok: false, error: 'consent-denied' }; }
+        if (!beforeSendResult || beforeSendResult.ok !== true) return { ok: false, error: 'consent-denied' };
+        cred = await resolveRuntimeCredential(cfg);
+        if (!cred.ok) return { ok: false, error: 'not_ready' };
+        auth = 'Bearer ' + (cred.apiKey || '');
+      }
       var ac = new AbortController();
       var timedOut = false;
-      var tm = setTimeout(function () { timedOut = true; ac.abort(); }, (opts.timeoutMs != null ? Number(opts.timeoutMs) : MB_ASTRA_TIMEOUT_MS));
+      var signal = opts.signal || null;
+      if (signal && signal.aborted) return { ok: false, error: 'aborted' };
+      if (signal && typeof signal.addEventListener === 'function') {
+        var onAbort = function () { externallyAborted = true; try { ac.abort(); } catch (_) {} };
+        signal.addEventListener('abort', onAbort, { once: true });
+        removeAbort = function () { try { signal.removeEventListener('abort', onAbort); } catch (_) {} };
+      }
+      tm = setTimeout(function () { timedOut = true; ac.abort(); }, (opts.timeoutMs != null ? Number(opts.timeoutMs) : MB_ASTRA_TIMEOUT_MS));
       var res;
       try {
         if (typeof root._ibApiPost === 'function') {
@@ -208,9 +243,24 @@
             signal: ac.signal
           });
         }
-      } catch (e) { clearTimeout(tm); return { ok: false, error: timedOut ? 'timeout' : 'network' }; }
+      } catch (e) { return { ok: false, error: externallyAborted ? 'aborted' : (timedOut ? 'timeout' : 'network') }; }
       clearTimeout(tm);
-      if (!res || !res.ok) return { ok: false, error: 'http' };
+      tm = null;
+      if (!res || !res.ok) {
+        var failed = { ok: false, error: 'http' };
+        if (consumer === 'middle_brain.direct') {
+          failed.status = Number(res && res.status) || undefined;
+          try {
+            var retryAfter = res && res.headers && res.headers.get('retry-after');
+            if (retryAfter) {
+              var seconds = Number(retryAfter), retryAfterMs = isFinite(seconds) ? seconds * 1000 : (Date.parse(retryAfter) - Date.now());
+              if (!isFinite(retryAfterMs) || retryAfterMs < 0) retryAfterMs = 0;
+              failed.retryAfterMs = Math.min(15000, retryAfterMs) || undefined;
+            }
+          } catch (_) { /* backoff will use its exponential default */ }
+        }
+        return failed;
+      }
       var data = await res.json().catch(function () { return null; });
       if (!data) return { ok: false, error: 'parse' };
       var parsed = null;
@@ -223,7 +273,12 @@
       _mbNoteReasoningTokens(parsed.usage, cfg, consumer);
       return { ok: true, content: String(parsed.content), usage: parsed.usage || null };
     } catch (e) { return { ok: false, error: 'error' }; }
-    finally { if (cred) cred.apiKey = ''; auth = ''; }
+    finally {
+      if (tm) clearTimeout(tm);
+      if (removeAbort) removeAbort();
+      if (cred) cred.apiKey = '';
+      auth = '';
+    }
   }
 
   /* ====================================================================
