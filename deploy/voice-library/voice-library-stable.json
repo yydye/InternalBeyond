@@ -1,0 +1,95 @@
+{
+  "schema": "internalbeyond.voice-library-manifest",
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-14T00:00:00Z",
+  "resources": [
+    {
+      "id": "kokoro-af-heart-en",
+      "kind": "voicebox-preset-profile",
+      "title": "Kokoro · Heart (US English)",
+      "description": "Voicebox Kokoro preset reference; runtime supplies audio and model files.",
+      "provider": "voicebox",
+      "engine": "kokoro",
+      "presetVoiceId": "af_heart",
+      "language": "en",
+      "source": {
+        "name": "Voicebox Kokoro preset catalogue",
+        "url": "https://github.com/jamiepine/voicebox/blob/main/backend/backends/kokoro_backend.py"
+      },
+      "license": {
+        "id": "Apache-2.0",
+        "name": "Apache License 2.0 · Kokoro-82M model",
+        "url": "https://huggingface.co/hexgrad/Kokoro-82M"
+      },
+      "path": "profiles/kokoro-af-heart-en.json",
+      "sizeBytes": 735,
+      "sha256": "9623ae0e418b21f2514cb956093686c90d86eb4f6922a0c512da7ec54a7f869b"
+    },
+    {
+      "id": "kokoro-af-bella-en",
+      "kind": "voicebox-preset-profile",
+      "title": "Kokoro · Bella (US English)",
+      "description": "Voicebox Kokoro preset reference; runtime supplies audio and model files.",
+      "provider": "voicebox",
+      "engine": "kokoro",
+      "presetVoiceId": "af_bella",
+      "language": "en",
+      "source": {
+        "name": "Voicebox Kokoro preset catalogue",
+        "url": "https://github.com/jamiepine/voicebox/blob/main/backend/backends/kokoro_backend.py"
+      },
+      "license": {
+        "id": "Apache-2.0",
+        "name": "Apache License 2.0 · Kokoro-82M model",
+        "url": "https://huggingface.co/hexgrad/Kokoro-82M"
+      },
+      "path": "profiles/kokoro-af-bella-en.json",
+      "sizeBytes": 735,
+      "sha256": "5ccdada22bc9857cef5d09f7be50e998e2576880869e23f78ae85a0466eea0db"
+    },
+    {
+      "id": "kokoro-am-michael-en",
+      "kind": "voicebox-preset-profile",
+      "title": "Kokoro · Michael (US English)",
+      "description": "Voicebox Kokoro preset reference; runtime supplies audio and model files.",
+      "provider": "voicebox",
+      "engine": "kokoro",
+      "presetVoiceId": "am_michael",
+      "language": "en",
+      "source": {
+        "name": "Voicebox Kokoro preset catalogue",
+        "url": "https://github.com/jamiepine/voicebox/blob/main/backend/backends/kokoro_backend.py"
+      },
+      "license": {
+        "id": "Apache-2.0",
+        "name": "Apache License 2.0 · Kokoro-82M model",
+        "url": "https://huggingface.co/hexgrad/Kokoro-82M"
+      },
+      "path": "profiles/kokoro-am-michael-en.json",
+      "sizeBytes": 741,
+      "sha256": "b67fadf327130267d7f592e6c7f987f8d465265e23ecc58822c4ef1ccb305f2a"
+    },
+    {
+      "id": "kokoro-zf-xiaobei-zh",
+      "kind": "voicebox-preset-profile",
+      "title": "Kokoro · Xiaobei (Chinese)",
+      "description": "Voicebox Kokoro preset reference; runtime supplies audio and model files.",
+      "provider": "voicebox",
+      "engine": "kokoro",
+      "presetVoiceId": "zf_xiaobei",
+      "language": "zh",
+      "source": {
+        "name": "Voicebox Kokoro preset catalogue",
+        "url": "https://github.com/jamiepine/voicebox/blob/main/backend/backends/kokoro_backend.py"
+      },
+      "license": {
+        "id": "Apache-2.0",
+        "name": "Apache License 2.0 · Kokoro-82M model",
+        "url": "https://huggingface.co/hexgrad/Kokoro-82M"
+      },
+      "path": "profiles/kokoro-zf-xiaobei-zh.json",
+      "sizeBytes": 738,
+      "sha256": "bf2f75d7835a3b2a3ba3eb971d021fb6f39065529039579791dc7354b4575bcf"
+    }
+  ]
+}

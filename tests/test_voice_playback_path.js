@@ -53,7 +53,7 @@ function sliceFunction(text, signature) {
 function extractPlaybackRuntime() {
   const start = src.indexOf('var _vmObjUrl=null;');
   if (start < 0) throw new Error('无法定位播放实现起点');
-  const sourceVar = 'var _vmObjUrl=null; var _vmPlaySeq=0; var _vmAudio=null; var _vmPlayingEl=null;';
+  const sourceVar = 'var _vmObjUrl=null; var _vmPlaySeq=0; var _vmAudio=null; var _vmPlayingEl=null; var _vmLoadingEl=null;';
   const body = sourceVar + '\n' +
     sliceFunction(src, 'function _vmSrcOf(') + '\n' +
     sliceFunction(src, 'function _vmReleaseObjUrl(') + '\n' +
@@ -126,12 +126,13 @@ function makeRealLoader(opts) {
     sliceFunction(bridge, 'function ibBridgeFetch(') + '\n' +
     sliceFunction(bridge, 'function ibBridgeLoadAudio(') + '\n';
   const factory = new Function(
-    'localStorage', 'IBNET', 'Headers', 'fetch', 'URL',
+    'window', 'localStorage', 'IBNET', 'Headers', 'fetch', 'URL',
     body + '\nreturn { ibBridgeBase:ibBridgeBase, ibBridgeToken:ibBridgeToken, ibBridgeAssetUrl:ibBridgeAssetUrl, ibBridgeFetch:ibBridgeFetch, ibBridgeLoadAudio:ibBridgeLoadAudio };'
   );
   const localStorage = { getItem: k => (k === 'ib_bridge_http' && o.base ? o.base : null) };
+  const window = { __IB_DEV_MODE__: false, __IB_BRIDGE_PORT__: 23115 };
   const IBNET = { cfg: () => ({ token: o.token || '' }) };
-  const api = factory(localStorage, IBNET, Headers, fetch, URL);
+  const api = factory(window, localStorage, IBNET, Headers, fetch, URL);
   return { loadAudio: (pathname, done, failed) => api.ibBridgeLoadAudio(pathname, done, failed), api, base: o.base };
 }
 
@@ -187,13 +188,13 @@ function run() {
   {
     const v = VoiceCore.build({ audioUrl: '/tts/tts_a.wav', mime: 'audio/wav', duration: 75, transcript: 'y' });
     const { rt, calls } = makeRuntime({ tokenMode: true });
-    let got = null, failed = null;
-    rt._vmResolveSrc(v, s => { got = s }, r => { failed = r });
+    let got = null, failed = null, revoke = false;
+    rt._vmResolveSrc(v, (s, shouldRevoke) => { got = s; revoke = shouldRevoke; }, r => { failed = r });
     ok('B.reference.loaderCalledWithPath', calls.loader.length === 1 && calls.loader[0] === '/tts/tts_a.wav', JSON.stringify(calls.loader));
     ok('B.reference.neverHandsBackRawPath', got !== '/tts/tts_a.wav', got);
     ok('B.reference.onReadyIsObjectUrl', /^blob:/.test(String(got)), got);
     ok('B.reference.noFailure', failed === null);
-    ok('B.reference.objUrlTrackedForRevocation', rt._objUrl() === got, rt._objUrl());
+    ok('B.reference.objUrlOwnershipReturnedToCaller', revoke === true && rt._objUrl() === null, JSON.stringify({ revoke: revoke, owned: rt._objUrl() }));
   }
 
   /* ── C. 引用型 + 无 token：loader 返回 Bridge 绝对地址（origin 完整） ── */
@@ -316,6 +317,40 @@ function run() {
     ok('H.singleInstance.currentPlaying', eb._classes.has('playing') && rt._playing() === eb);
   }
 
+  /* ── H2. 快速切换：迟到的 A URL 只回收自己，不能撤销正在播放的 B ── */
+  {
+    const va = VoiceCore.build({ audioUrl: '/tts/rapid-a.wav', duration: 3, transcript: 'a' });
+    const vb = VoiceCore.build({ audioUrl: '/tts/rapid-b.wav', duration: 3, transcript: 'b' });
+    const ea = stubEl(), eb = stubEl(), pending = [];
+    const { rt, calls } = makeRuntime({ loader: function (pathname, done) {
+      calls.loader.push(pathname);
+      pending.push(function () { done('blob:http://127.0.0.1:23115/' + pathname.split('/').pop(), true); });
+    } });
+    rt._vmTogglePlay(ea, va);
+    rt._vmTogglePlay(eb, vb);
+    pending[1]();
+    const activeUrl = rt._objUrl();
+    pending[0]();
+    ok('H2.rapidSwitch.staleUrlReleasedAlone', calls.revoked.length === 1 && calls.revoked[0].endsWith('/rapid-a.wav'), JSON.stringify(calls.revoked));
+    ok('H2.rapidSwitch.currentUrlStillOwned', rt._objUrl() === activeUrl && activeUrl.endsWith('/rapid-b.wav'), rt._objUrl());
+    ok('H2.rapidSwitch.currentAudioKeepsPlaying', !!rt._audio() && rt._audio().src === activeUrl && eb._classes.has('playing'), rt._audio() && rt._audio().src);
+  }
+
+  /* ── H3. 离开时无效化正在取音频的请求，迟到结果不再开播 ── */
+  {
+    const v = VoiceCore.build({ audioUrl: '/tts/leave.wav', duration: 2, transcript: 'leave' });
+    const el = stubEl(), pending = [];
+    const { rt, calls } = makeRuntime({ loader: function (pathname, done) {
+      calls.loader.push(pathname);
+      pending.push(function () { done('blob:http://127.0.0.1:23115/leave.wav', true); });
+    } });
+    rt._vmTogglePlay(el, v);
+    rt._vmStopAudio();
+    pending[0]();
+    ok('H3.pageLeave.lateAudioDoesNotStart', !rt._audio() && !el._classes.has('playing'), JSON.stringify({ audio: !!rt._audio(), classes: Array.from(el._classes) }));
+    ok('H3.pageLeave.lateUrlReleased', calls.revoked.length === 1 && calls.revoked[0].endsWith('/leave.wav'), JSON.stringify(calls.revoked));
+  }
+
   /* ── I. 播放被浏览器拦截（autoplay policy）也必须收尾 ── */
   {
     const v = VoiceCore.build({ dataUrl: 'data:audio/wav;base64,RIFFAA', duration: 2, transcript: 'p' });
@@ -338,7 +373,7 @@ function run() {
     const bridgeRaw = fs.readFileSync(path.join(ROOT, 'assets', 'js', 'bridge.js'), 'utf8');
     const bridge = bridgeRaw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
     ok('J.invariant.singleAudioConstructionInVoiceJs', (body.match(/new Audio\(/g) || []).length === 1, (body.match(/new Audio\(/g) || []).length);
-    ok('J.invariant.audioOnlyFromResolvedSrc', /function _vmStartPlay\(el,src,seq,onEnd\)\{[\s\S]{0,200}new Audio\(src\)/.test(body));
+    ok('J.invariant.audioOnlyFromResolvedSrc', /function _vmStartPlay\(el,src,seq,onEnd(?:,onStatus)?\)\{[\s\S]{0,220}new Audio\(src\)/.test(body));
     ok('J.invariant.noDataUrlDirectlyPlayed', !/new Audio\(\s*(v\.dataUrl|v\.audioUrl|voice\.dataUrl|voice\.audioUrl)/.test(src));
     ok('J.invariant.voiceJsUsesLoader', /ibBridgeLoadAudio\(path,/.test(src));
     /* 旧 live 播放条只允许在 ibBridgeLoadAudio 的成功回调里被创建 */
@@ -351,6 +386,30 @@ function run() {
     ok('J.invariant.probeNoUnauthorizedDurationSource', !/_ibProbeAudioDuration\(ibBridgeAssetUrl/.test(bridge));
     const social = fs.readFileSync(path.join(ROOT, 'assets', 'js', 'social.js'), 'utf8');
     ok('J.invariant.socialTestVoiceUsesLoaderFirst', /ibBridgeLoadAudio\(j\.url,/.test(social));
+    const speakAdapter = sliceFunction(bridgeRaw, 'function ibTtsSpeakText(');
+    const adapterCalls = [];
+    const adapterQueue = ['pending-chat-tts'];
+    let adapterSessionSeq = 0;
+    const adapterFactory = new Function('_ibTtsQueue', '_ibTtsQueueBusy', '_ibTtsQueueEpoch', '_ibTtsStartSession', '_ibTtsSpeakImpl',
+      speakAdapter + '\nreturn { speak:ibTtsSpeakText, queue:function(){return _ibTtsQueue;} };');
+    const adapter = adapterFactory(adapterQueue, true, 0, function (bubble, button, onStatus, control) {
+      return { id: ++adapterSessionSeq, bubble: bubble, button: button, onStatus: onStatus, control: control };
+    }, function () { adapterCalls.push(Array.prototype.slice.call(arguments)); });
+    const dmHost = { querySelector: function () { return null; } }, dmButton = {}, dmVoice = { provider: 'voicebox', voiceId: 'role-profile' };
+    const replayControl = { cancelled: false }, cancelledControl = { cancelled: true };
+    ok('J.roleDmVoiceAdapter.exposedOnExistingBridge', /speakText:\s*ibTtsSpeakText/.test(bridgeRaw));
+    ok('J.roleDmVoiceAdapter.reusesTtsFlowWithoutPersistingChatVoice', adapter.speak('Role DM text only', dmVoice, dmHost, dmButton, function () {}) === true
+      && adapter.queue().length === 0 && adapterCalls.length === 1
+      && adapterCalls[0][0] === dmHost && adapterCalls[0][1] === dmButton
+      && adapterCalls[0][2] === dmVoice && adapterCalls[0][5] === 'Role DM text only' && adapterCalls[0][6] === false);
+    ok('J.roleDmVoiceAdapter.acceptsReplayCancellationControl', adapter.speak('Replay text', dmVoice, dmHost, dmButton, function () {}, replayControl) === true
+      && adapterCalls.length === 2 && adapterCalls[1][7] === replayControl
+      && adapter.speak('Cancelled replay', dmVoice, dmHost, dmButton, function () {}, cancelledControl) === false && adapterCalls.length === 2);
+    const ttsImpl = sliceFunction(bridgeRaw, 'function _ibTtsSpeakImpl(');
+    const playQueue = sliceFunction(bridgeRaw, 'function _ibTtsPlayQ(');
+    ok('J.roleDmVoiceAdapter.persistenceGuardAndPlaybackStatusCallbacks',
+      /persistVoice!==false/.test(ttsImpl) && /control&&control\.cancelled===true/.test(ttsImpl) && /reportStatus\('playing'\)/.test(playQueue)
+        && /reportStatus\('ended'\)/.test(playQueue) && /reportStatus\('failed'\)/.test(playQueue));
   }
 
   /* ── K. 真实取源链路：真实 ibBridgeLoadAudio + 真实 http origin（跨 origin + 鉴权） ──

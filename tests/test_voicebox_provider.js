@@ -57,10 +57,12 @@ function startMockVoicebox(state) {
   st.audioCalls = [];
   st.cancelCalls = [];
   st.healthCalls = 0;
+  st.shutdownCalls = 0;
   st.profileCalls = 0;
   st.profileCreateCalls = [];
   st.profileDeleteCalls = [];
   st.sampleUploadCalls = [];
+  st.sampleUploadAbortCount = 0;
   st.profileSamples = st.profileSamples || {};
   st.pollCount = 0;
   st.profiles = st.profiles || [
@@ -82,6 +84,10 @@ function startMockVoicebox(state) {
         st.healthCalls++;
         if (st.healthStatus) { res.writeHead(st.healthStatus, { 'Content-Type': 'text/plain' }); res.end('nope'); return; }
         return json(200, { status: 'healthy', model_loaded: true, gpu_available: true, gpu_type: 'CUDA (RTX)' });
+      }
+      if (url === '/shutdown' && req.method === 'POST') {
+        st.shutdownCalls++;
+        return json(st.shutdownStatus || 200, { ok: !st.shutdownStatus || st.shutdownStatus < 400, stopping: true });
       }
       if (url === '/profiles') {
         st.profileCalls++;
@@ -143,12 +149,17 @@ function startMockVoicebox(state) {
           const uploadedText = refStart >= 4 && refEnd > refStart ? body.slice(refStart, refEnd) : 'Reference words';
           st.sampleUploadCalls.push({ profileId, multipart: String(req.headers['content-type'] || '').indexOf('multipart/form-data; boundary=') === 0, hasReferenceText: refAt >= 0, referenceText: uploadedText });
           if (st.sampleUploadStatus) { res.writeHead(st.sampleUploadStatus, { 'Content-Type': 'text/plain' }); res.end('sample upload failed'); return; }
-          const sample = { id: '10000000-0000-4000-8000-' + String(st.sampleUploadCalls.length).padStart(12, '0'), profile_id: profileId, reference_text: uploadedText, audio_path: 'C:\\private\\voicebox\\sample.wav' };
-          st.profileSamples[profileId] = st.profileSamples[profileId] || [];
-          st.profileSamples[profileId].push(sample);
-          const profile = st.profiles.find(p => p.id === profileId);
-          if (profile) profile.sample_count = st.profileSamples[profileId].length;
-          return json(201, sample);
+          const finishSample = () => {
+            if (res.destroyed) { st.sampleUploadAbortCount++; return; }
+            const sample = { id: '10000000-0000-4000-8000-' + String(st.sampleUploadCalls.length).padStart(12, '0'), profile_id: profileId, reference_text: uploadedText, audio_path: 'C:\\private\\voicebox\\sample.wav' };
+            st.profileSamples[profileId] = st.profileSamples[profileId] || [];
+            st.profileSamples[profileId].push(sample);
+            const profile = st.profiles.find(p => p.id === profileId);
+            if (profile) profile.sample_count = st.profileSamples[profileId].length;
+            return json(201, sample);
+          };
+          if (st.sampleUploadDelayMs) { setTimeout(finishSample, st.sampleUploadDelayMs); return; }
+          return finishSample();
         }
         return json(200, st.profileSamples[profileId] || []);
       }
@@ -257,7 +268,8 @@ async function main() {
     const litHits = [];
     (function walk(dir) {
       fs.readdirSync(dir, { withFileTypes: true }).forEach(e => {
-        if (e.name === 'node_modules' || e.name === '.git' || e.name === 'target' || e.name.startsWith('.')) return;
+        /* 生成的发行副本与保留的临时 worktree 不是源码声明；避免把它们重复计入权威常量检查。 */
+        if (e.name === 'node_modules' || e.name === '.git' || e.name === 'target' || e.name === 'dist' || e.name === 'tmp' || e.name.startsWith('.')) return;
         const full = path.join(dir, e.name);
         if (e.isDirectory()) return walk(full);
         if (!/\.(js|html|css)$/.test(e.name)) return;
@@ -295,6 +307,8 @@ async function main() {
     /* 目录里绝不能出现 credential 值本身的字段 */
     const dump = JSON.stringify(sources);
     ok('B.source.noSecretFields', !/apiKey|api_key|token|secret|authorization|bearer/i.test(dump), dump);
+    ok('B.cloneConsent.localEndpointClassification', vb0.profileCapabilities().referenceAudio.localEndpoint === true
+      && createVoicebox({ config: voiceboxConfig('https://voice.example.invalid') }).profileCapabilities().referenceAudio.localEndpoint === false);
     ok('B.source.allFourPresent', sources.length === 4 && sources.map(s => s.id).sort().join(',') === 'edge,tts,ttsMimo,voicebox', JSON.stringify(sources.map(s => s.id)));
     ok('B.source.legacyProvidersIntact', !!t.normalizeVoiceProfile({ text: 'x', provider: 'edge' }).provider);
   }
@@ -454,6 +468,12 @@ async function main() {
       const h = await createVoicebox({ config: voiceboxConfig('http://127.0.0.1:' + mock.port) }).health();
       ok('H.healthHttpError', h.ok === false && h.error.indexOf('HTTP 500') > -1, h.error);
     });
+    await withMock({}, async (_t, mock) => {
+      const stopped = await createVoicebox({ config: voiceboxConfig('http://127.0.0.1:' + mock.port) }).shutdown();
+      ok('H.shutdown.usesUpstreamControlEndpoint', stopped.ok === true && mock.state.shutdownCalls === 1 && mock.state.shutdownStatus === undefined, JSON.stringify(stopped));
+    });
+    const remoteShutdown = await createVoicebox({ config: voiceboxConfig('https://voice.example') }).shutdown();
+    ok('H.shutdown.refusesRemoteEndpoint', remoteShutdown.ok === false && remoteShutdown.status === 403, JSON.stringify(remoteShutdown));
     /* 连接被拒绝：可见的「未连接」，不是静默 */
     {
       const cfg = voiceboxConfig('http://127.0.0.1:1');
@@ -750,7 +770,7 @@ async function main() {
     await new Promise(r => mockOpenai.listen(0, '127.0.0.1', r));
     const oaPort = mockOpenai.address().port;
     fs.writeFileSync(path.join(dataDir, 'config.json'), JSON.stringify({
-      voicebox: { enabled: true, endpoint: 'http://127.0.0.1:1' },
+      voicebox: { enabled: true, endpoint: 'http://127.0.0.1:1', executablePath: path.join(dataDir, 'uninstalled', 'Voicebox.exe') },
       tts: { enabled: true, endpoint: 'http://127.0.0.1:' + oaPort + '/v1/audio/speech', apiKey: 'openai-secret-key', model: 'tts-1', voice: 'alloy' }
     }, null, 2), 'utf8');
     const port = 23000 + Math.floor(Math.random() * 2000);
@@ -764,6 +784,24 @@ async function main() {
     for (let i = 0; i < 50; i++) { try { const r = await fetch('http://127.0.0.1:' + port + '/health'); if (r.ok) { healthy = true; break; } } catch (e) { /* retry */ } await sleep(200); }
     ok('J.bridge.healthy', healthy);
     try {
+      const runtimeOfflineResponse = await fetch('http://127.0.0.1:' + port + '/api/tts/voicebox/runtime');
+      const runtimeOffline = await runtimeOfflineResponse.json();
+      ok('J.runtimeControl.refusedConnectionIsNormalNotStartedState', runtimeOfflineResponse.status === 200 && runtimeOffline.ok && runtimeOffline.state === 'not-installed' && runtimeOffline.errorCode === 'program-not-found', JSON.stringify(runtimeOffline));
+      const missingVoiceboxPath = path.join(dataDir, 'missing', 'Voicebox.exe');
+      const savedRuntimePathResponse = await fetch('http://127.0.0.1:' + port + '/api/tts/voicebox/runtime/config', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ executablePath: missingVoiceboxPath })
+      });
+      const savedRuntimePath = await savedRuntimePathResponse.json();
+      ok('J.runtimeControl.pathStoredInExistingConfig', savedRuntimePathResponse.status === 200 && savedRuntimePath.ok
+        && JSON.parse(fs.readFileSync(path.join(dataDir, 'config.json'), 'utf8')).voicebox.executablePath === missingVoiceboxPath);
+      const publicRuntimeConfig = await (await fetch('http://127.0.0.1:' + port + '/api/config')).json();
+      ok('J.runtimeControl.executablePathMaskedFromGeneralConfig', publicRuntimeConfig.config.voicebox.executablePath === '[configured]');
+      const missingStartResponse = await fetch('http://127.0.0.1:' + port + '/api/tts/voicebox/runtime/start', { method: 'POST' });
+      const missingStart = await missingStartResponse.json();
+      ok('J.runtimeControl.missingProgramDoesNotSpawnOrRaiseSystemFault', missingStartResponse.status === 409 && missingStart.state === 'not-installed' && missingStart.errorCode === 'program-not-found', JSON.stringify(missingStart));
+      const missingStop = await (await fetch('http://127.0.0.1:' + port + '/api/tts/voicebox/runtime/stop', { method: 'POST' })).json();
+      ok('J.runtimeControl.stopWithoutProcessIsIdempotent', missingStop.ok === true && missingStop.alreadyStopped === true, JSON.stringify(missingStop));
+
       /* 1) source 目录：四个来源，credential 只是说明，绝无密钥值 */
       const srcRes = await (await fetch('http://127.0.0.1:' + port + '/api/tts/sources')).json();
       ok('J.sources.ok', srcRes.ok === true && Array.isArray(srcRes.sources) && srcRes.sources.length === 4, JSON.stringify(srcRes).slice(0, 200));
@@ -830,6 +868,7 @@ async function main() {
     try {
       const caps = await (await fetch(base + '/api/tts/voicebox/capabilities')).json();
       ok('K.capabilities.clonePresetSeparation', caps.ok && caps.engines.qwen.clone === true && caps.engines.kokoro.preset === true && caps.engines.kokoro.clone === false);
+      ok('K.capabilities.referenceAudioTargetIsSafeBoolean', caps.referenceAudio.localEndpoint === true && !JSON.stringify(caps).includes(mock.port));
       ok('K.capabilities.currentCloneEngineMatrix', caps.cloneEngines.slice().sort().join(',') === 'chatterbox,chatterbox_turbo,luxtts,qwen,tada');
       ok('K.capabilities.currentPresetEngineMatrix', caps.presetEngines.slice().sort().join(',') === 'kokoro,qwen_custom_voice');
       ok('K.capabilities.instructIsEngineSpecific', caps.engines.qwen.instruct === false && caps.engines.qwen_custom_voice.instruct === true && caps.engines.chatterbox.instruct === false);
@@ -880,6 +919,20 @@ async function main() {
       const deleteSample = await (await fetch(base + '/api/tts/voicebox/samples/' + encodeURIComponent(secondSample.sample.id), { method: 'DELETE' })).json();
       ok('K.samples.deleteSupported', deleteSample.ok && mock.state.profileSamples[profileId].length === 1);
 
+      mock.state.sampleUploadDelayMs = 250;
+      const sampleCountBeforeCancel = mock.state.profileSamples[profileId].length;
+      const sampleCancelController = new AbortController();
+      const sampleCancelQuery = new URLSearchParams({ filename: 'cancelled.wav', reference_text: 'Cancel upload.' });
+      const sampleCancelRequest = fetch(base + '/api/tts/voicebox/profiles/' + encodeURIComponent(profileId) + '/samples?' + sampleCancelQuery, {
+        method: 'POST', headers: { 'Content-Type': 'audio/wav' }, body: wav, signal: sampleCancelController.signal
+      }).catch(() => null);
+      await waitFor(() => mock.state.sampleUploadCalls.length === 3);
+      sampleCancelController.abort();
+      await sampleCancelRequest;
+      await waitFor(() => mock.state.sampleUploadAbortCount === 1);
+      mock.state.sampleUploadDelayMs = 0;
+      ok('K.samples.clientCancellationReachesVoicebox', mock.state.profileSamples[profileId].length === sampleCountBeforeCancel && mock.state.sampleUploadAbortCount === 1);
+
       const uploadReference = async (filename, mime, bytes, transcript) => {
         const query = new URLSearchParams({ filename, reference_text: transcript || 'Reference text' });
         const response = await fetch(base + '/api/tts/voicebox/profiles/' + encodeURIComponent(profileId) + '/samples?' + query, {
@@ -888,17 +941,17 @@ async function main() {
         return { response, data: await response.json() };
       };
       const invalid = await uploadReference('bad.wav', 'audio/wav', Buffer.from('RIFFnot-a-wave'), 'Bad reference');
-      ok('K.audio.corruptRejectedBeforeUpstream', invalid.data.ok === false && mock.state.sampleUploadCalls.length === 2);
+      ok('K.audio.corruptRejectedBeforeUpstream', invalid.data.ok === false && mock.state.sampleUploadCalls.length === 3);
       const unsupported = await uploadReference('reference.m4a', 'audio/mp4', Buffer.from('not-m4a'), 'Bad reference');
-      ok('K.audio.unsupportedBridgeFormatRejected', unsupported.data.ok === false && mock.state.sampleUploadCalls.length === 2);
+      ok('K.audio.unsupportedBridgeFormatRejected', unsupported.data.ok === false && mock.state.sampleUploadCalls.length === 3);
       const mimeMismatch = await uploadReference('reference.wav', 'audio/mpeg', wav, 'Bad reference');
-      ok('K.audio.mimeExtensionMagicMustAgree', mimeMismatch.data.ok === false && mock.state.sampleUploadCalls.length === 2);
+      ok('K.audio.mimeExtensionMagicMustAgree', mimeMismatch.data.ok === false && mock.state.sampleUploadCalls.length === 3);
       const shortAudio = await uploadReference('short.wav', 'audio/wav', wavBuffer(1), 'Short reference');
-      ok('K.audio.durationValidated', shortAudio.data.ok === false && mock.state.sampleUploadCalls.length === 2);
+      ok('K.audio.durationValidated', shortAudio.data.ok === false && mock.state.sampleUploadCalls.length === 3);
       const emptyAudio = await uploadReference('empty.wav', 'audio/wav', Buffer.alloc(0), 'Empty reference');
-      ok('K.audio.emptyRejected', emptyAudio.data.ok === false && mock.state.sampleUploadCalls.length === 2);
+      ok('K.audio.emptyRejected', emptyAudio.data.ok === false && mock.state.sampleUploadCalls.length === 3);
       const tooLargeAudio = await uploadReference('large.wav', 'audio/wav', Buffer.alloc(10 * 1024 * 1024 + 1), 'Large reference');
-      ok('K.audio.oversizedRejected', tooLargeAudio.response.status === 413 && tooLargeAudio.data.ok === false && mock.state.sampleUploadCalls.length === 2);
+      ok('K.audio.oversizedRejected', tooLargeAudio.response.status === 413 && tooLargeAudio.data.ok === false && mock.state.sampleUploadCalls.length === 3);
 
       /* The UI owns the create → upload → rollback sequence. Exercise its Bridge primitives deterministically. */
       const transactionProfile = await (await fetch(base + '/api/tts/voicebox/profiles', {
@@ -961,6 +1014,20 @@ async function main() {
         body: JSON.stringify({ text: 'x'.repeat(301), source: 'voicebox', provider: 'voicebox', voiceId: profileId, model: 'qwen', preview: true })
       });
       ok('K.preview.lengthLimited', tooLong.status === 400);
+
+      mock.state.neverCompletes = true;
+      const cancelGenerationBefore = mock.state.generateCalls.length, cancelRequestBefore = mock.state.cancelCalls.length, cancelPollBefore = mock.state.pollCount;
+      const previewCancelController = new AbortController();
+      const previewCancelRequest = fetch(base + '/api/tts', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: previewCancelController.signal,
+        body: JSON.stringify({ text: 'Cancelable Voicebox preview.', source: 'voicebox', provider: 'voicebox', voiceId: profileId, model: 'qwen', language: 'en', preview: true })
+      }).catch(() => null);
+      await waitFor(() => mock.state.generateCalls.length === cancelGenerationBefore + 1 && mock.state.pollCount > cancelPollBefore, 4000);
+      previewCancelController.abort();
+      await previewCancelRequest;
+      await waitFor(() => mock.state.cancelCalls.length === cancelRequestBefore + 1, 3000);
+      mock.state.neverCompletes = false;
+      ok('K.preview.clientCancellationReachesVoiceboxCancelEndpoint', mock.state.cancelCalls[cancelRequestBefore] === 'gen-' + (cancelGenerationBefore + 1));
       const deleteProfile = await (await fetch(base + '/api/tts/voicebox/profiles/' + encodeURIComponent(profileId), { method: 'DELETE' })).json();
       ok('K.profile.deleteLeavesNoVoiceboxProfile', deleteProfile.ok && !mock.state.profiles.some(p => p.id === profileId));
     } finally {

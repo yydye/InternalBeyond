@@ -108,6 +108,13 @@ const AUDIO_TIMEOUT_MS = 30000;
 const POLL_INTERVAL_MS = 400;
 const GENERATE_TIMEOUT_MS = 180000;
 
+function endpointIsLoopback(value) {
+  try {
+    const host = String(new URL(String(value || '')).hostname || '').replace(/^\[|\]$/g, '').toLowerCase();
+    return host === 'localhost' || host === '::1' || /^127(?:\.\d{1,3}){3}$/.test(host);
+  } catch (_) { return false; }
+}
+
 function createVoicebox(deps) {
   const config = deps.config || {};
   const injectedTimeouts = deps.timeouts || {};
@@ -255,7 +262,7 @@ function createVoicebox(deps) {
       cloneEngines: CLONING_ENGINES.slice(),
       presetEngines: PRESET_ENGINES.slice(),
       designedProfiles: false,
-      referenceAudio: { requiredForClone: true, formats: ['mp3', 'wav'], maxBytes: 10 * 1024 * 1024, minDurationSeconds: 2, maxDurationSeconds: 30 },
+      referenceAudio: { requiredForClone: true, formats: ['mp3', 'wav'], maxBytes: 10 * 1024 * 1024, minDurationSeconds: 2, maxDurationSeconds: 30, localEndpoint: endpointIsLoopback(endpoint()) },
       transcript: { required: true, minLength: 1, maxLength: SAMPLE_TEXT_MAX, autoTranscribe: false, reason: 'Voicebox transcription may load/download Whisper; IB keeps sample transcript explicit in this phase.' }
     };
   }
@@ -419,7 +426,7 @@ function createVoicebox(deps) {
     } finally { clearTimeout(timer); }
   }
 
-  async function addProfileSample(profileId, sample) {
+  async function addProfileSample(profileId, sample, context) {
     if (!isEnabled()) return notConfigured();
     const id = String(profileId || '');
     const upload = sample && typeof sample === 'object' ? sample : {};
@@ -435,19 +442,26 @@ function createVoicebox(deps) {
     const base = endpoint();
     const pathname = '/profiles/' + encodeURIComponent(id) + '/samples';
     const ctrl = new AbortController();
+    const externalSignal = context && context.signal;
+    if (externalSignal && externalSignal.aborted) return { ok: false, cancelled: true, error: 'Voicebox reference upload cancelled' };
+    const onAbort = () => ctrl.abort();
+    if (externalSignal) externalSignal.addEventListener('abort', onAbort, { once: true });
     const timer = setTimeout(() => ctrl.abort(), audioTimeoutMs);
     try {
       const response = await fetch(base + pathname, { method: 'POST', body: form, signal: ctrl.signal });
       const text = await response.text().catch(() => '');
+      if (externalSignal && externalSignal.aborted) return { ok: false, cancelled: true, error: 'Voicebox reference upload cancelled' };
       if (!response.ok) return { ok: false, status: response.status, error: 'Voicebox ' + pathname + ' failed (HTTP ' + response.status + '): ' + String(text || '').slice(0, 200) };
       let data = null;
       try { data = JSON.parse(text); } catch (e) { data = null; }
       if (!data || typeof data !== 'object') return { ok: false, status: response.status, error: 'Voicebox sample upload returned malformed JSON.' };
       return { ok: true, sample: sanitizeSample(data) };
     } catch (e) {
+      if (externalSignal && externalSignal.aborted) return { ok: false, cancelled: true, error: 'Voicebox reference upload cancelled' };
       return { ok: false, status: 503, error: e && e.name === 'AbortError' ? 'Voicebox reference upload timed out.' : 'Voicebox reference upload failed: ' + String(e && e.message || e).slice(0, 160) };
     } finally {
       clearTimeout(timer);
+      if (externalSignal && typeof externalSignal.removeEventListener === 'function') externalSignal.removeEventListener('abort', onAbort);
     }
   }
 
@@ -500,6 +514,18 @@ function createVoicebox(deps) {
       gpuAvailable: !!d.gpu_available,
       gpuType: d.gpu_type ? String(d.gpu_type) : ''
     };
+  }
+
+  /* The upstream desktop runtime exposes POST /shutdown. This is an explicit
+     user-requested lifecycle call; inference, TTS and profile flows do not use it. */
+  async function shutdown() {
+    if (!isEnabled()) return notConfigured();
+    let target;
+    try { target = new URL(endpoint()); } catch (_) { return { ok: false, status: 400, error: 'Voicebox shutdown endpoint is invalid' }; }
+    if (target.protocol !== 'http:' || !['127.0.0.1', 'localhost', '::1', '[::1]'].includes(String(target.hostname).toLowerCase())) {
+      return { ok: false, status: 403, error: 'Voicebox shutdown is restricted to loopback endpoints' };
+    }
+    return requestJson('/shutdown', { method: 'POST', timeoutMs: HEALTH_TIMEOUT_MS, expectJson: false });
   }
 
   /* GET /profiles —— 只透传选择所必需的非秘密字段（profile id 是 IB 侧要保存的唯一标识）。 */
@@ -771,7 +797,7 @@ function createVoicebox(deps) {
   }
 
   return {
-    endpoint, isEnabled, health, profiles, resolveProfile, synthesize,
+    endpoint, isEnabled, health, shutdown, profiles, resolveProfile, synthesize,
     profileCapabilities, modelStatus, previewModelReady, getProfile, createProfile, deleteProfile,
     profileSamples, profileSampleAudio, addProfileSample, updateProfileSample, deleteProfileSample, presetVoices,
     DEFAULT_ENDPOINT, ENGINES, LANGUAGES, PROFILE_ENGINE_CAPABILITIES

@@ -9,7 +9,7 @@
    识别不可用时注明未识别）。能听音频的模型（Gemini 等）当轮直接收到原声 WAV，历史轮回落文字稿行。
    注入方式与文件上传一致：逐条消息确定性拼接，历史前缀保持稳定，不影响提示缓存命中。 */
 var _vmSt=null;/* 当前录音会话状态 */
-var _vmAudio=null,_vmPlayingEl=null;/* 语音播放：全局单实例，点击新语音条时自动停掉上一条 */
+var _vmAudio=null,_vmPlayingEl=null,_vmLoadingEl=null;/* 语音播放：全局单实例，点击新语音条时自动停掉上一条 */
 var _vmNoSrWarned=false;
 var _vmRecogWarned=false;/* 识别失败原因提示：每次会话只弹一次，具体错误码每次都写入控制台 */
 function _vmRecogErrMsg(code){
@@ -52,11 +52,11 @@ async function _voiceboxAsrSelected(){
     return !!(j&&j.provider==='voicebox'&&j.configured===true&&j.fileTranscription===true);
   }catch(e){return false}finally{clearTimeout(timer)}
 }
-async function _voiceboxAsrTranscribe(blob,mime){
+async function _voiceboxAsrTranscribe(blob,mime,signal){
   if(typeof window.ibBridgeFetch!=='function'||typeof window.ibBridgeBase!=='function')throw new Error('IB Bridge 不可用');
   const type=String(mime||blob&&blob.type||'').split(';')[0].trim().toLowerCase();
   const r=await window.ibBridgeFetch(window.ibBridgeBase()+'/api/asr/transcriptions',{
-    method:'POST',headers:{'Content-Type':type},body:blob
+    method:'POST',headers:{'Content-Type':type},body:blob,signal:signal
   });
   let j={};try{j=await r.json()}catch(e){}
   if(!r.ok||!j||j.ok!==true)throw new Error(String(j&&j.error||('转写失败（HTTP '+(r&&r.status||0)+'）')));
@@ -102,7 +102,7 @@ function _vmAudioNative(cfg){
   return /(gemini|omni|audio)/i.test(String(cfg.model||''));
 }
 /* OpenAI 兼容转写请求：multipart 上传原始录音（webm/mp4 原样交给服务端解码） */
-async function _vtTranscribeWithKey(vt,runtimeKey,blob,mime){
+async function _vtTranscribeWithKey(vt,runtimeKey,blob,mime,externalSignal){
   const url=_vtUrl(vt.endpoint);
   if(!url)throw new Error('转写接口地址为空');
   const fd=new FormData();
@@ -110,6 +110,8 @@ async function _vtTranscribeWithKey(vt,runtimeKey,blob,mime){
   fd.append('file',blob,'voice.'+ext);
   fd.append('model',vt.model);
   const ac=new AbortController();const tm=setTimeout(function(){try{ac.abort()}catch(e){}},30000);
+  var abortExternal=function(){try{ac.abort()}catch(e){}};
+  if(externalSignal){if(externalSignal.aborted)abortExternal();else try{externalSignal.addEventListener('abort',abortExternal,{once:true})}catch(e){}}
   try{
     const res=await fetch(url,{method:'POST',signal:ac.signal,headers:{'Authorization':'Bearer '+runtimeKey},body:fd});
     clearTimeout(tm);
@@ -117,20 +119,21 @@ async function _vtTranscribeWithKey(vt,runtimeKey,blob,mime){
     const ct=res.headers.get('content-type')||'';
     if(ct.includes('json')){const j=await res.json();return String((j&&(j.text!=null?j.text:(j.data&&j.data.text!=null?j.data.text:'')))||'').trim()}
     return String(await res.text()||'').trim();
-  }catch(e){clearTimeout(tm);if(e&&e.name==='AbortError')throw new Error('转写请求超时（30秒）');throw e}
+  }catch(e){clearTimeout(tm);if(externalSignal&&externalSignal.aborted)throw e;if(e&&e.name==='AbortError')throw new Error('转写请求超时（30秒）');throw e}
+  finally{try{if(externalSignal)externalSignal.removeEventListener('abort',abortExternal)}catch(e){}}
 }
-async function _vtTranscribe(vt,blob,mime){
+async function _vtTranscribe(vt,blob,mime,signal){
   const ref=String(vt&&vt.credentialRef||'').trim();
   if(ref){
     if(typeof window._ibWithRuntimeApiCredential!=='function')throw new Error('CREDENTIAL_UNAVAILABLE');
     return window._ibWithRuntimeApiCredential({id:ref,credentialRef:ref,provider:'openai',endpoint:vt.endpoint},function(runtimeCfg){
-      return _vtTranscribeWithKey(vt,runtimeCfg.apiKey,blob,mime);
+      return _vtTranscribeWithKey(vt,runtimeCfg.apiKey,blob,mime,signal);
     });
   }
   /* Pre-ref data remains usable only as migration compatibility; saving the form moves it into Vault. */
   const legacyKey=String(vt&&vt.apiKey||'');
   if(!legacyKey)throw new Error('CREDENTIAL_UNAVAILABLE');
-  return _vtTranscribeWithKey(vt,legacyKey,blob,mime);
+  return _vtTranscribeWithKey(vt,legacyKey,blob,mime,signal);
 }
 /* 解码到 AudioBuffer（回调式写法兼容 Safari） */
 var _vmACtx=null;
@@ -339,6 +342,21 @@ function _vmToggle(btn){
   }
   _vmStart(btn);
 }
+function _vmCancelCapture(reason){
+  var st=_vmSt;
+  if(!st||st.purpose!=='chat')return false;
+  st.cancelled=true;st.released=true;
+  if(st.cancelController)try{st.cancelController.abort()}catch(e){}
+  if(st.timer){clearInterval(st.timer);st.timer=null;}
+  try{if(st.btn&&st.btn.classList)st.btn.classList.remove('recording')}catch(e){}
+  _vmIndicator(false);
+  if(st.recog)try{st.recog.abort?st.recog.abort():st.recog.stop()}catch(e){}
+  if(st.rec&&st.rec.state!=='inactive')try{st.rec.stop()}catch(e){}
+  if(st.stream)try{st.stream.getTracks().forEach(function(track){track.stop()})}catch(e){}
+  if(_vmSt===st)_vmSt=null;
+  _vmSetChatVoiceState(st.friendId,'interrupted');
+  return true;
+}
 
 function _vmReferenceError(st,message){
   var error=new Error(String(message||'参考录音失败'));
@@ -373,19 +391,25 @@ async function _vmStart(btn,options){
   }
   if(!_vmSupported()){if(isReference)_vmReferenceError(options,'当前浏览器不支持录音');else toast('当前浏览器不支持录音');return}
   if(isReference&&_vmVoiceCallActive()){_vmReferenceError(options,'语音通话正在使用麦克风，请结束通话后再录制');return}
+  if(!isReference&&_vmVoiceCallActive()){toast('语音通话正在使用麦克风，请结束通话后再录音');return}
   if(!isReference&&_chatArchMode)return;
   if(!isReference&&!activeFriendId&&apiConfigs.length===0){toast('请先在 API 页面配置密钥');return}
+  if(!isReference){
+    try{if(window.IB&&window.IB.bridge&&typeof window.IB.bridge.stopVoicePlayback==='function')window.IB.bridge.stopVoicePlayback(document.getElementById('page-chat'))}catch(e){}
+    _vmStopAudio();
+  }
   var _tgt=isReference?'':(activeFriendId||(apiConfigs[0]&&apiConfigs[0].id));
   if(!isReference&&_tgt&&_chatSendingFor.has(_tgt)){toast('对方正在回复中，请稍后再发语音');return}
-  var st={btn:btn,friendId:_tgt,purpose:isReference?'reference':'chat',onReferenceCapture:options.onReferenceCapture,onReferenceError:options.onReferenceError,released:false,chunks:[],transcript:'',interim:'',start:0,timer:null,rec:null,recog:null,recogDone:null,stream:null,mime:'',vt:null,vtOn:false,voiceboxAsr:false,maxSeconds:isReference?30:VM_MAX_SEC};/* friendId：普通聊天录音记录目标对话；参考录音不进入聊天 */
+  var st={btn:btn,friendId:_tgt,purpose:isReference?'reference':'chat',onReferenceCapture:options.onReferenceCapture,onReferenceError:options.onReferenceError,released:false,cancelled:false,cancelController:(typeof AbortController==='function'?new AbortController():null),chunks:[],transcript:'',interim:'',start:0,timer:null,rec:null,recog:null,recogDone:null,stream:null,mime:'',vt:null,vtOn:false,voiceboxAsr:false,maxSeconds:isReference?30:VM_MAX_SEC};/* friendId：普通聊天录音记录目标对话；参考录音不进入聊天 */
   _vmSt=st;
   if(!isReference){
     try{st.voiceboxAsr=await _voiceboxAsrSelected();st.vt=await _vtGet()}catch(e){st.vt=null;st.voiceboxAsr=false}
     st.vtOn=st.voiceboxAsr||_vtOn(st.vt);/* Bridge Voicebox 或外部转写：本次录音不启动浏览器内置识别 */
   }
+  if(_vmSt!==st||st.cancelled)return;
   var stream;
   try{stream=await navigator.mediaDevices.getUserMedia({audio:true})}
-  catch(err){if(_vmSt===st)_vmSt=null;if(isReference)_vmReferenceError(st,'无法访问麦克风，请检查浏览器权限');else toast('无法访问麦克风，请检查浏览器权限');return}
+  catch(err){if(_vmSt!==st||st.cancelled)return;if(_vmSt===st)_vmSt=null;if(isReference)_vmReferenceError(st,'无法访问麦克风，请检查浏览器权限');else{_vmSetChatVoiceState(st.friendId,'error');toast('无法访问麦克风，请检查浏览器权限')}return}
   if(_vmSt!==st||st.released){stream.getTracks().forEach(function(t){t.stop()});if(_vmSt===st)_vmSt=null;return}/* 授权弹窗期间已被再次点按停止 */
   st.stream=stream;
   var mime='';
@@ -396,7 +420,7 @@ async function _vmStart(btn,options){
   }catch(ex){}
   st.mime=mime||'audio/webm';
   try{st.rec=mime?new MediaRecorder(stream,{mimeType:mime,audioBitsPerSecond:32000}):new MediaRecorder(stream)}
-  catch(ex){try{st.rec=new MediaRecorder(stream);st.mime=st.rec.mimeType||st.mime}catch(e2){stream.getTracks().forEach(function(t){t.stop()});_vmSt=null;if(isReference)_vmReferenceError(st,'录音初始化失败');else toast('录音初始化失败');return}}
+  catch(ex){try{st.rec=new MediaRecorder(stream);st.mime=st.rec.mimeType||st.mime}catch(e2){stream.getTracks().forEach(function(t){t.stop()});_vmSt=null;if(isReference)_vmReferenceError(st,'录音初始化失败');else{_vmSetChatVoiceState(st.friendId,'error');toast('录音初始化失败')}return}}
   st.rec.ondataavailable=function(ev){if(ev.data&&ev.data.size)st.chunks.push(ev.data)};
   /* 本地语音识别（浏览器内置：Chrome / Edge 可用，Firefox 不支持）——识别失败不影响语音本身的发送；
      已配置外部转写服务时整条浏览器识别通道跳过（其失联/报错提示也随之消失） */
@@ -412,8 +436,9 @@ async function _vmStart(btn,options){
     }catch(ex){st.recog=null}
   }
   st.start=Date.now();
-  try{st.rec.start(250)}catch(ex){if(st.recog){try{st.recog.stop()}catch(e3){}}stream.getTracks().forEach(function(t){t.stop()});_vmSt=null;if(isReference)_vmReferenceError(st,'录音启动失败');else toast('录音启动失败');return}
+  try{st.rec.start(250)}catch(ex){if(st.recog){try{st.recog.stop()}catch(e3){}}stream.getTracks().forEach(function(t){t.stop()});_vmSt=null;if(isReference)_vmReferenceError(st,'录音启动失败');else{_vmSetChatVoiceState(st.friendId,'error');toast('录音启动失败')}return}
   btn.classList.add('recording');
+  if(!isReference)_vmSetChatVoiceState(st.friendId,'listening');
   _vmIndicator(true,isReference?'录制参考音频 · 再次点击停止':'点按麦克风按钮停止并发送');
   st.timer=setInterval(function(){
     var s=Math.floor((Date.now()-st.start)/1000);
@@ -436,7 +461,7 @@ async function _vmFinish(st){
   if(st.timer){clearInterval(st.timer);st.timer=null}
   st.btn.classList.remove('recording');
   _vmIndicator(false);
-  if(!st.rec){_vmSt=null;if(st.purpose==='reference')_vmReferenceError(st,'麦克风尚未就绪');return}/* 麦克风尚未就绪就被再次点按：授权分支自行收尾 */
+  if(!st.rec){if(_vmSt===st)_vmSt=null;if(st.purpose==='reference')_vmReferenceError(st,'麦克风尚未就绪');else _vmSetChatVoiceState(st.friendId,'idle');return}/* 麦克风尚未就绪就被再次点按：授权分支自行收尾 */
   var durMs=Date.now()-st.start;
   var stopped=new Promise(function(res){
     if(st.rec.state==='inactive'){res();return}
@@ -446,6 +471,8 @@ async function _vmFinish(st){
   if(st.recog){try{st.recog.stop()}catch(ex){}}
   await stopped;
   if(st.stream)st.stream.getTracks().forEach(function(t){t.stop()});
+  if(st.cancelled){if(_vmSt===st)_vmSt=null;return}
+  if(st.purpose==='chat')_vmSetChatVoiceState(st.friendId,'thinking');
   if(st.purpose==='reference'){
     var referenceBlob=new Blob(st.chunks,{type:st.mime||'audio/webm'});
     _vmSt=null;
@@ -459,39 +486,41 @@ async function _vmFinish(st){
   }
   var tooShort=durMs<800;
   if(tooShort){
-    _vmSt=null;
+    if(_vmSt===st)_vmSt=null;_vmSetChatVoiceState(st.friendId,'idle');
     toast('说话时间太短');
     return;
   }
   /* 点按模式下录音期间界面可自由操作：发送前校验目标对话未切换、对方未在回复中，避免语音串发或被静默丢弃 */
   var _nowTgt=activeFriendId||(apiConfigs[0]&&apiConfigs[0].id);
-  if(st.friendId&&_nowTgt!==st.friendId){_vmSt=null;toast('对话已切换，语音未发送');return}
-  if(_nowTgt&&_chatSendingFor.has(_nowTgt)){_vmSt=null;toast('对方正在回复中，语音未发送');return}
+  if(st.friendId&&_nowTgt!==st.friendId){if(_vmSt===st)_vmSt=null;_vmSetChatVoiceState(st.friendId,'interrupted');toast('对话已切换，语音未发送');return}
+  if(_nowTgt&&_chatSendingFor.has(_nowTgt)){if(_vmSt===st)_vmSt=null;_vmSetChatVoiceState(st.friendId,'idle');toast('对方正在回复中，语音未发送');return}
   /* 等待识别收尾（上限 1.5 秒），拿到最后一段结果 */
   if(st.recogDone)await Promise.race([st.recogDone,new Promise(function(res){setTimeout(res,1500)})]);
   var transcript=((st.transcript||'')+(st.interim||'')).trim();
   var blob=new Blob(st.chunks,{type:st.mime});
-  _vmSt=null;
-  if(!blob.size){toast('录音失败，未捕获到音频');return}
+  if(st.cancelled){if(_vmSt===st)_vmSt=null;return}
+  if(!blob.size){if(_vmSt===st)_vmSt=null;_vmSetChatVoiceState(st.friendId,'error');toast('录音失败，未捕获到音频');return}
   /* Bridge Voicebox 或外部转写会产出文字稿；失败不拦截语音消息发送 */
   if(st.voiceboxAsr||st.vtOn&&st.vt){
     toast('语音转写中…');
     try{
-      var _tx=st.voiceboxAsr?await _voiceboxAsrTranscribe(blob,st.mime):await _vtTranscribe(st.vt,blob,st.mime);
+      var _tx=st.voiceboxAsr?await _voiceboxAsrTranscribe(blob,st.mime,st.cancelController&&st.cancelController.signal):await _vtTranscribe(st.vt,blob,st.mime,st.cancelController&&st.cancelController.signal);
       if(_tx)transcript=_tx;
       try{console.info('[IB语音转写] 完成，'+(_tx?_tx.length:0)+' 字')}catch(e){}
     }catch(exv){
+      if(st.cancelled){if(_vmSt===st)_vmSt=null;return}
       try{console.info('[IB语音转写] 失败: '+((exv&&exv.message)||exv))}catch(e){}
       toast('语音转写失败：'+String((exv&&exv.message)||'未知错误').slice(0,140)+'。语音仍将发送（标注未能识别）');
     }
     /* 转写耗时期间可能切换了对话或对方开始回复：重新校验，避免语音串发或被静默丢弃 */
     var _tgt2=activeFriendId||(apiConfigs[0]&&apiConfigs[0].id);
-    if(st.friendId&&_tgt2!==st.friendId){toast('对话已切换，语音未发送');return}
-    if(_tgt2&&_chatSendingFor.has(_tgt2)){toast('对方正在回复中，语音未发送');return}
+    if(st.friendId&&_tgt2!==st.friendId){if(_vmSt===st)_vmSt=null;_vmSetChatVoiceState(st.friendId,'interrupted');toast('对话已切换，语音未发送');return}
+    if(_tgt2&&_chatSendingFor.has(_tgt2)){if(_vmSt===st)_vmSt=null;_vmSetChatVoiceState(st.friendId,'idle');toast('对方正在回复中，语音未发送');return}
   }
   /* 本地声学语气分析（不联网、确定性）：结果定格存入消息，仅发给听不到原声的模型，界面不显示 */
   var _ab=null,_tone='';
   try{_ab=await _vmDecode(blob)}catch(exd){try{console.info('[IB语音语气] 音频解码失败，本条不附带语气特征: '+((exd&&exd.message)||exd))}catch(e){}}
+  if(st.cancelled){if(_vmSt===st)_vmSt=null;return}
   if(_ab)_tone=_vmToneAnalyze(_ab,transcript);
   /* 无文字稿提醒：仅在「未配置转写 且 当前模型也听不到原声」时提示（转写失败上方已单独提示过） */
   if(!transcript&&!st.vtOn){
@@ -507,10 +536,23 @@ async function _vmFinish(st){
   }
   var dataUrl;
   try{dataUrl=await new Promise(function(res,rej){var fr=new FileReader();fr.onload=function(){res(fr.result)};fr.onerror=rej;fr.readAsDataURL(blob)})}
-  catch(ex){toast('录音数据读取失败');return}
+  catch(ex){if(_vmSt===st)_vmSt=null;_vmSetChatVoiceState(st.friendId,'error');toast('录音数据读取失败');return}
+  if(st.cancelled){if(_vmSt===st)_vmSt=null;return}
+  if(_vmSt===st)_vmSt=null;
+  _vmSetChatVoiceState(st.friendId,'idle');
   sendChatMessage({dataUrl:dataUrl,mime:st.mime,duration:Math.max(1,Math.round(durMs/1000)),transcript:transcript,tone:_tone,_ab:_ab});
 }
 
+function _vmSetChatVoiceState(roleId,state){
+  try{
+    var host=document.getElementById('chat-header-name'),api=window.IBExpressionPacks;
+    if(!host)return;
+    var value=String(state||'idle');host.dataset.voiceStatus=value;host.dataset.voiceRoleId=String(roleId||'');
+    if(!roleId||!api||typeof api.applyRoleState!=='function')return;
+    var expressionState=value==='thinking'?'typingExpression':(value==='speaking'?'voiceExpression':(value==='error'?'errorExpression':'neutralExpression'));
+    api.applyRoleState(String(roleId),expressionState,host);
+  }catch(e){}
+}
 function _vmIndicator(show,hint){
   var el=document.getElementById('vm-indicator');
   if(!show){if(el)el.remove();return}
@@ -519,6 +561,7 @@ function _vmIndicator(show,hint){
     el.innerHTML='<div class="vm-ind-core"><span class="vm-ind-dot"></span><span class="vm-ind-time">0:00</span></div><div class="vm-ind-hint">点按麦克风按钮停止并发送</div>';
     document.body.appendChild(el);
   }
+  el.dataset.voiceStatus='listening';
   var hintEl=el.querySelector('.vm-ind-hint');if(hintEl&&hint)hintEl.textContent=hint;
   _vmIndicatorTime(0);
 }
@@ -546,9 +589,28 @@ function _vmSrcOf(v){
 var _vmObjUrl=null;
 var _vmPlaySeq=0;
 function _vmReleaseObjUrl(){ if(_vmObjUrl){ try{URL.revokeObjectURL(_vmObjUrl)}catch(e){} _vmObjUrl=null } }
+function _vmApplyVoiceExpression(el,seq){
+  try{
+    var host=el&&el.closest?el.closest('.chat-msg[data-msg-id]'):null;
+    var messageId=String(host&&host.dataset&&host.dataset.msgId||'');
+    if(!host||!messageId||typeof window.dbGet!=='function')return;
+    Promise.resolve(window.dbGet('chatMessages',messageId)).then(function(message){
+      if(!message||message.role==='user'||seq!==_vmPlaySeq||_vmPlayingEl!==el||!_vmAudio||_vmAudio.paused)return;
+      var metadata=message.metadata||{};
+      var roleId=String(metadata.speakerId||metadata.config_id||message.friendId||'');
+      if(!roleId||!window.IBExpressionPacks||typeof window.IBExpressionPacks.applyRoleState!=='function')return;
+      window._vmExpressionHost=host;window._vmExpressionRoleId=roleId;
+      window.IBExpressionPacks.applyRoleState(roleId,'voiceExpression',host);
+    }).catch(function(){});
+  }catch(e){}
+}
 function _vmStopAudio(){
+  _vmPlaySeq++;
   if(_vmAudio){ try{_vmAudio.pause()}catch(e){} _vmAudio=null }
+  try{if(window._vmExpressionHost&&window.IBExpressionPacks&&typeof window.IBExpressionPacks.clearRoleState==='function')window.IBExpressionPacks.clearRoleState(window._vmExpressionHost,window._vmExpressionRoleId)}catch(e){}
+  window._vmExpressionHost=null;window._vmExpressionRoleId='';
   if(_vmPlayingEl){ _vmPlayingEl.classList.remove('playing'); _vmPlayingEl=null }
+  if(_vmLoadingEl){_vmLoadingEl.classList.remove('vm-loading');_vmLoadingEl=null}
   _vmReleaseObjUrl();
 }
 /* onReady(src) · onFail(reason: 'no-source'|'load-failed') */
@@ -557,34 +619,47 @@ function _vmResolveSrc(v,onReady,onFail){
   var inline='';
   if(core&&typeof core.isAudioDataUrl==='function'){ inline=core.isAudioDataUrl(v&&v.dataUrl)?String(v.dataUrl):''; }
   else if(v&&typeof v.dataUrl==='string'&&/^data:audio\//i.test(v.dataUrl)){ inline=v.dataUrl; }
-  if(inline){ onReady(inline); return; }
+  if(inline){ onReady(inline,false); return; }
   var path='';
   if(core&&typeof core.isBridgeAudioPath==='function'){ path=core.isBridgeAudioPath(v&&v.audioUrl)?String(v.audioUrl):''; }
   if(!path){ onFail('no-source'); return; }
   if(typeof ibBridgeLoadAudio!=='function'){ onFail('load-failed'); return; }
   try{
     ibBridgeLoadAudio(path,function(src,revoke){
-      if(revoke)_vmObjUrl=src;      /* 只有 blob 形态需要（也才允许）回收 */
-      onReady(src);
+      onReady(src,!!revoke);
     },function(){ onFail('load-failed') });
   }catch(e){ onFail('load-failed') }
 }
 /* 统一的「开始播放一段已解析好的 src」。single-instance：调用方已通过 _vmStopAudio 清场。 */
-function _vmStartPlay(el,src,seq,onEnd){
+function _vmStartPlay(el,src,seq,onEnd,onStatus){
+  var report=function(value){try{if(typeof onStatus==='function')onStatus(String(value||''))}catch(e){}};
   var au;
-  try{ au=new Audio(src) }catch(e){ toast('语音播放失败'); if(onEnd)onEnd(); return; }
+  try{ au=new Audio(src) }catch(e){ report('failed');toast('语音播放失败'); if(onEnd)onEnd(); return; }
   _vmAudio=au;_vmPlayingEl=el;el.classList.add('playing');
   var settled=false;
-  var finish=function(){
+  var finish=function(state){
     if(settled)return;settled=true;
+    report(state||'ended');
     el.classList.remove('playing');
+    var messageHost=el&&typeof el.closest==='function'?el.closest('.chat-msg[data-msg-id]'):null;
+    if(messageHost&&window._vmExpressionHost===messageHost){
+      try{if(window.IBExpressionPacks&&typeof window.IBExpressionPacks.clearRoleState==='function')window.IBExpressionPacks.clearRoleState(window._vmExpressionHost,window._vmExpressionRoleId)}catch(e){}
+      window._vmExpressionHost=null;window._vmExpressionRoleId='';
+    }
     if(_vmPlayingEl===el)_vmPlayingEl=null;
     if(seq===_vmPlaySeq)_vmReleaseObjUrl();   /* 本段结束即回收；重播会重新取回 */
     if(onEnd)onEnd();
   };
-  au.onended=finish;
-  au.onerror=function(){ finish(); toast('语音播放失败') };
-  au.play().catch(function(){ finish(); toast('语音播放失败') });
+  au.onended=function(){finish('ended')};
+  au.onerror=function(){ finish('failed'); toast('语音播放失败') };
+  try{
+    var playback=au.play();
+    if(playback&&typeof playback.then==='function')playback.then(
+      function(){if(seq!==_vmPlaySeq)return;report('playing');if(typeof _vmApplyVoiceExpression==='function')_vmApplyVoiceExpression(el,seq)},
+      function(){finish('failed');toast('语音播放失败')}
+    );
+    else{report('playing');if(typeof _vmApplyVoiceExpression==='function')_vmApplyVoiceExpression(el,seq)}
+  }catch(e){finish('failed');toast('语音播放失败')}
 }
 function _buildVoiceEl(v,opts){
   var o=opts||{};
@@ -627,24 +702,31 @@ function _vmWrapVoice(bar,transcript){
 }
 /* 点击/程序化播放。onEnd 供自动播放队列在播完后继续（可选）。
    失败语义：缺音源 → vm-unplayable（不伪装可播放）；Bridge 取回失败 → 明确提示，绝不静默。 */
-function _vmTogglePlay(el,v,onEnd){
+function _vmTogglePlay(el,v,onEnd,onStatus){
+  var report=function(value){try{if(typeof onStatus==='function')onStatus(String(value||''))}catch(e){}};
   if(!_vmSrcOf(v)){
     if(el&&el.classList)el.classList.add('vm-unplayable');
+    report('failed');
     toast('语音不可播放：缺少音频数据');
     if(onEnd)onEnd();
     return;
   }
-  if(_vmPlayingEl===el&&_vmAudio&&!_vmAudio.paused){ _vmStopAudio(); if(onEnd)onEnd(); return; }
+  if(_vmPlayingEl===el&&_vmAudio&&!_vmAudio.paused){ _vmStopAudio();report('interrupted'); if(onEnd)onEnd(); return; }
   _vmStopAudio();
   var seq=++_vmPlaySeq;
-  if(el&&el.classList)el.classList.add('vm-loading');
-  _vmResolveSrc(v,function(src){
-    if(seq!==_vmPlaySeq){ _vmReleaseObjUrl(); return }   /* 期间又播了别的语音：本次作废 */
+  if(el&&el.classList){el.classList.add('vm-loading');_vmLoadingEl=el;}
+  report('loading');
+  _vmResolveSrc(v,function(src,revoke){
+    if(seq!==_vmPlaySeq){ if(revoke)try{URL.revokeObjectURL(src)}catch(e){}return }   /* 期间又播了别的语音：只回收本次取回的 URL */
+    if(revoke)_vmObjUrl=src;
     if(el&&el.classList)el.classList.remove('vm-loading');
-    _vmStartPlay(el,src,seq,onEnd);
+    if(_vmLoadingEl===el)_vmLoadingEl=null;
+    _vmStartPlay(el,src,seq,onEnd,onStatus);
   },function(reason){
     if(seq!==_vmPlaySeq)return;
     if(el&&el.classList)el.classList.remove('vm-loading');
+    if(_vmLoadingEl===el)_vmLoadingEl=null;
+    report('failed');
     if(reason==='no-source'){ if(el&&el.classList)el.classList.add('vm-unplayable'); toast('语音不可播放：缺少音频数据'); }
     else toast('语音加载失败：Bridge 未连接或音频已不存在');
     if(onEnd)onEnd();
@@ -662,6 +744,7 @@ window._voiceApiLine=_voiceApiLine;
 window.getVoiceTransSettings=getVoiceTransSettings;
 window._vtGet=_vtGet;
 window._vtOn=_vtOn;
+window._voiceboxAsrSelected=_voiceboxAsrSelected;
 window._vtUrl=_vtUrl;
 window.saveVoiceTransSettings=saveVoiceTransSettings;
 window.loadVoiceTransUI=loadVoiceTransUI;
@@ -674,6 +757,7 @@ window._vmToneAnalyze=_vmToneAnalyze;
 window._vmPcmToAudioLike=_vmPcmToAudioLike;
 window._vmInit=_vmInit;
 window._vmToggle=_vmToggle;
+window._vmCancelCapture=_vmCancelCapture;
 window._vmStart=_vmStart;
 window._vmStartReferenceCapture=_vmStartReferenceCapture;
 window._vmReferenceBlobToWav=_vmReferenceBlobToWav;
@@ -699,6 +783,7 @@ NS.expose('chat.voice', {
   getVoiceTransSettings: getVoiceTransSettings,
   _vtGet: _vtGet,
   _vtOn: _vtOn,
+  _voiceboxAsrSelected: _voiceboxAsrSelected,
   _vtUrl: _vtUrl,
   saveVoiceTransSettings: saveVoiceTransSettings,
   loadVoiceTransUI: loadVoiceTransUI,
@@ -711,6 +796,7 @@ NS.expose('chat.voice', {
   _vmPcmToAudioLike: _vmPcmToAudioLike,
   _vmInit: _vmInit,
   _vmToggle: _vmToggle,
+  _vmCancelCapture: _vmCancelCapture,
   _vmStart: _vmStart,
   startReferenceCapture: _vmStartReferenceCapture,
   referenceBlobToWav: _vmReferenceBlobToWav,

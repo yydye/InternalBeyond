@@ -130,7 +130,7 @@ function main() {
       'ownedIdx=' + ownedIdx + ' playQIdxAfterOwned=' + playQIdx);
     ok('D.singleUi.ownedBranchPlaysThroughBubble', /if\(owned&&owned\.el\)\{[\s\S]{0,260}_vmTogglePlay\(owned\.el,owned\.voice/.test(implBody));
     ok('D.singleUi.ownedBranchRemovesLegacyButton', /if\(owned&&owned\.el\)\{[\s\S]{0,260}if\(btn\)btn\.remove\(\);/.test(implBody));
-    ok('D.singleUi.liveBarOnlyAsFallback', /if\(owned&&owned\.el\)\{[\s\S]{0,400}return;\s*\}\s*\n\s*\/\*[^\n]*\*\/\s*\n\s*ibBridgeLoadAudio\(j\.url,function\(audioUrl,revoke\)\{ _ibTtsPlayQ/.test(implBody),
+    ok('D.singleUi.liveBarOnlyAsFallback', /if\(owned&&owned\.el\)\{[\s\S]{0,400}return;\s*\}\s*\n\s*\/\*[^\n]*\*\/[\s\S]{0,180}ibBridgeLoadAudio\(j\.url,function\(audioUrl,revoke\)\{[\s\S]{0,300}_ibTtsPlayQ\(bubble,btn,/.test(implBody),
       implBody.slice(implBody.indexOf('if(owned&&owned.el)'), implBody.indexOf('if(owned&&owned.el)') + 460));
 
     const exclusive = comm.match(/const _avm=_ibAiVoicePayload\(m\);if\(_avm\)_renderAiVoice\(txt,m\);else _renderAiContent\(txt,div,_displayContent\)/g) || [];

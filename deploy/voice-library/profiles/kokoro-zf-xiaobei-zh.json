@@ -1,0 +1,22 @@
+{
+  "schema": "internalbeyond.voice-profile-package",
+  "schemaVersion": 1,
+  "profile": {
+    "provider": "voicebox",
+    "voiceType": "preset",
+    "name": "Kokoro · Xiaobei (Chinese)",
+    "description": "Voicebox Kokoro preset reference. Voice ID: zf_xiaobei. Audio and model files are supplied by the existing Voicebox runtime.",
+    "language": "zh",
+    "engine": "kokoro",
+    "presetVoiceId": "zf_xiaobei"
+  },
+  "source": {
+    "name": "Voicebox Kokoro preset catalogue",
+    "url": "https://github.com/jamiepine/voicebox/blob/main/backend/backends/kokoro_backend.py"
+  },
+  "license": {
+    "id": "Apache-2.0",
+    "name": "Apache License 2.0 · Kokoro-82M model",
+    "url": "https://huggingface.co/hexgrad/Kokoro-82M"
+  }
+}

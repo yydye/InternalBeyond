@@ -16,9 +16,15 @@
   var storedSampleUrls = [];
   var recording = null;
   var previewAudio = null;
+  var previewAudioCleanup = null;
+  var previewGeneration = 0;
+  var uploadController = null;
+  var uploadScope = '';
+  var activePreviewController = null;
 
   function byId(id) { return document.getElementById(id); }
   function setText(id, value) { var el = byId(id); if (el) el.textContent = String(value || ''); }
+  function notifyProfilesChanged() { try { window.dispatchEvent(new CustomEvent('ib:voicebox-profiles-changed')); } catch (e) {} }
   function setHidden(el, hidden) { if (el) { el.hidden = !!hidden; if (!hidden && el.style.display === 'none') el.style.display = ''; } }
   function button(label, action, disabled) {
     var el = document.createElement('button');
@@ -27,6 +33,74 @@
     return el;
   }
   function bridgeUrl(path) { return String(ibBridgeBase()).replace(/\/+$/, '') + path; }
+  function releasePreviewUrl(url, owned) {
+    if (owned !== true || !url) return;
+    if (typeof root.ibBridgeReleaseAudio === 'function') {
+      root.ibBridgeReleaseAudio(url, true);
+      return;
+    }
+    try { if (root.URL && typeof root.URL.revokeObjectURL === 'function') root.URL.revokeObjectURL(url); } catch (e) {}
+  }
+  function releaseCurrentPreviewAudio() {
+    if (previewAudioCleanup) {
+      previewAudioCleanup();
+      return;
+    }
+    var audio = previewAudio;
+    previewAudio = null;
+    if (!audio) return;
+    try { audio.pause(); } catch (e) {}
+    try { if (typeof audio.removeAttribute === 'function') audio.removeAttribute('src'); } catch (e) {}
+    try { if (typeof audio.load === 'function') audio.load(); } catch (e) {}
+  }
+  function previewControls(active, label) {
+    ['api-voicebox-cancel-preview', 'voicebox-cancel-preview'].forEach(function (id) {
+      var control = byId(id);
+      if (control) { control.hidden = !active; control.disabled = false; if (label) control.textContent = label; }
+    });
+    try { window.dispatchEvent(new CustomEvent('ib:voicebox-preview-state', { detail: { active: !!active, label: String(label || '') } })); } catch (e) {}
+  }
+  function stopPreviewAudio() {
+    previewGeneration += 1;
+    var controller = activePreviewController;
+    activePreviewController = null;
+    if (controller && !controller.signal.aborted) controller.abort();
+    releaseCurrentPreviewAudio();
+    previewControls(false);
+  }
+  function startPreviewAudio(url, owned) {
+    releaseCurrentPreviewAudio();
+    var audio;
+    try { audio = new Audio(url); }
+    catch (error) { releasePreviewUrl(url, owned); return; }
+    var settled = false;
+    function cleanup() {
+      if (settled) return;
+      settled = true;
+      try { audio.removeEventListener('ended', cleanup); } catch (e) {}
+      try { audio.removeEventListener('error', cleanup); } catch (e) {}
+      try { audio.pause(); } catch (e) {}
+      try { if (typeof audio.removeAttribute === 'function') audio.removeAttribute('src'); } catch (e) {}
+      try { if (typeof audio.load === 'function') audio.load(); } catch (e) {}
+      releasePreviewUrl(url, owned);
+      if (previewAudio === audio) {
+        previewAudio = null;
+        previewAudioCleanup = null;
+      }
+      previewControls(false);
+    }
+    previewAudio = audio;
+    previewAudioCleanup = cleanup;
+    try {
+      audio.addEventListener('ended', cleanup);
+      audio.addEventListener('error', cleanup);
+    } catch (error) { cleanup(); return; }
+    try {
+      var playback = audio.play();
+      if (playback && typeof playback.catch === 'function') playback.catch(cleanup);
+    } catch (error) { cleanup(); }
+    previewControls(true, '停止试听');
+  }
   async function request(path, options) {
     var response = await ibBridgeFetch(bridgeUrl(path), options || {});
     var data = null;
@@ -125,6 +199,7 @@
     var health = results[0].status === 'fulfilled' ? results[0].value : null;
     var profileResult = results[1].status === 'fulfilled' ? results[1].value : null;
     capabilities = results[2].status === 'fulfilled' ? results[2].value : null;
+    setText('api-voicebox-reference-destination', referenceDestinationCopy());
     capabilitiesAttempted = true;
     models = results[3].status === 'fulfilled' && Array.isArray(results[3].value.models) ? results[3].value.models : null;
     available = !!(health && health.ok && profileResult && profileResult.ok && Array.isArray(profileResult.profiles));
@@ -145,12 +220,17 @@
   }
   function openVoiceboxProfileManager() {
     var modal = byId('api-voicebox-manager-backdrop');
+    /* The dialog is legacy markup under page-api. Move it to the document root
+       before opening so the Voicebox page can use it while page-api is hidden. */
+    if (modal && document.body && modal.parentNode !== document.body && typeof document.body.appendChild === 'function') document.body.appendChild(modal);
     if (modal) { modal.hidden = false; modal.style.display = 'flex'; }
     fillCreateEngines();
     refreshVoiceboxProfileManager();
   }
   function closeVoiceboxProfileManager() {
     var modal = byId('api-voicebox-manager-backdrop');
+    cancelVoiceboxProfileCreate();
+    stopPreviewAudio();
     if (recording) stopReferenceRecording();
     clearStoredSamplePreviews();
     if (modal) { modal.hidden = true; modal.style.display = 'none'; }
@@ -194,6 +274,20 @@
     if (ref) ref.style.display = preset ? 'none' : '';
     if (reload !== false) fillCreateEngines();
     else voiceboxCreateEngineChanged();
+  }
+  function referenceDestinationCopy() {
+    var reference = capabilities && capabilities.referenceAudio;
+    if (!reference || typeof reference.localEndpoint !== 'boolean') return '参考音频会先留在本机；重新检测 Provider 后才能确认上传目标。';
+    return reference.localEndpoint
+      ? '参考音频会先留在本机；授权后只发送到本机 Voicebox，不经过 IB 下载站。'
+      : '当前 Voicebox Provider 是远程地址；授权后参考音频会离开本机并发送给该 Provider。';
+  }
+  function cancelVoiceboxProfileCreate() {
+    if (!uploadController) return false;
+    if (uploadScope === 'sample') setText('api-voicebox-sample-status', '正在取消上传并等待 Voicebox 确认…');
+    else setText('api-voicebox-create-state', '正在取消上传并清理未完成 Profile…');
+    uploadController.abort();
+    return true;
   }
   async function voiceboxCreateEngineChanged() {
     var type = byId('api-voicebox-create-type');
@@ -320,24 +414,25 @@
     var el = byId(scope === 'sample' ? 'api-voicebox-sample-text' : 'api-voicebox-reference-text');
     return String(el && el.value || '').trim();
   }
-  async function uploadSample(profileId, scope) {
+  async function uploadSample(profileId, scope, options) {
     var ref = pending[scope];
     var transcript = sampleText(scope);
     if (!ref) throw new Error('请先选择或录制参考音频，并在本地试听。');
     if (!transcript || transcript.length > 1000) throw new Error('参考音频文本必填，最多 1000 个字符。');
     var query = new URLSearchParams({ filename: ref.name, reference_text: transcript });
     return request('/api/tts/voicebox/profiles/' + encodeURIComponent(profileId) + '/samples?' + query.toString(), {
-      method: 'POST', headers: { 'Content-Type': ref.mime }, body: ref.blob
+      method: 'POST', headers: { 'Content-Type': ref.mime }, body: ref.blob, signal: options && options.signal
     });
   }
   async function createVoiceboxProfile(buttonEl) {
+    if (uploadController) { setText('api-voicebox-create-state', '已有参考音频任务正在进行。'); return; }
     var type = String(byId('api-voicebox-create-type') && byId('api-voicebox-create-type').value || 'cloned');
     var engine = String(byId('api-voicebox-create-engine') && byId('api-voicebox-create-engine').value || '');
     var language = String(byId('api-voicebox-create-language') && byId('api-voicebox-create-language').value || '');
     var name = String(byId('api-voicebox-create-name') && byId('api-voicebox-create-name').value || '').trim();
     var description = String(byId('api-voicebox-create-description') && byId('api-voicebox-create-description').value || '').trim();
     var cap = engineCapabilities(engine);
-    if (!available || !cap) { setText('api-voicebox-create-state', 'Voicebox 或所选 engine capability 不可用。'); return; }
+    if (!available || !cap || (type === 'cloned' && cap.clone !== true)) { setText('api-voicebox-create-state', 'Voicebox Runtime 不可用，或所选 Engine 未声明支持声音克隆。'); return; }
     if (!name || name.length > 100) { setText('api-voicebox-create-state', '名称必填，最多 100 个字符。'); return; }
     var body = { name: name, description: description, language: language, voiceType: type, engine: engine };
     if (type === 'preset') {
@@ -346,6 +441,12 @@
     } else {
       if (!pending.create) { setText('api-voicebox-create-state', '请先选择或录制参考音频，并本地试听。'); return; }
       if (!sampleText('create')) { setText('api-voicebox-create-state', '参考音频文本必填。'); return; }
+      if (!capabilities || !capabilities.referenceAudio || typeof capabilities.referenceAudio.localEndpoint !== 'boolean') {
+        setText('api-voicebox-create-state', '无法确认当前 Voicebox Provider 的位置；参考音频未发送。'); return;
+      }
+      if (!byId('api-voicebox-create-consent') || !byId('api-voicebox-create-consent').checked) {
+        setText('api-voicebox-create-state', '请确认你有权使用此声音，并同意将参考音频发送至已说明的 Voicebox Provider。'); return;
+      }
     }
     if (buttonEl) buttonEl.disabled = true;
     setText('api-voicebox-create-state', '正在创建 Voicebox Profile…');
@@ -355,24 +456,36 @@
       profile = created.profile;
       if (!profile || !profile.id) throw new Error('Voicebox did not return a profile ID.');
       if (type === 'cloned') {
-        setText('api-voicebox-create-state', 'Profile 已创建；Voicebox 正在验证并处理参考音频…');
+        uploadController = new AbortController(); uploadScope = 'create';
+        var cancellation = uploadController;
+        var cancelButton = byId('api-voicebox-create-cancel-btn'); if (cancelButton) cancelButton.hidden = false;
+        setText('api-voicebox-create-state', '步骤 2/3：Profile 已创建；Voicebox 正在验证并处理参考音频…');
         try {
-          await uploadSample(profile.id, 'create');
+          await uploadSample(profile.id, 'create', { signal: cancellation.signal });
         } catch (uploadError) {
-          setText('api-voicebox-create-state', '参考样本失败；正在尝试删除空 Profile…');
+          var wasCancelled = cancellation.signal.aborted;
+          setText('api-voicebox-create-state', wasCancelled ? '正在清理已取消的克隆任务…' : '参考样本失败；正在尝试删除空 Profile…');
           var rollback = null;
           try { rollback = await request('/api/tts/voicebox/profiles/' + encodeURIComponent(profile.id), { method: 'DELETE' }); } catch (e) {}
           if (rollback && rollback.ok) {
-            setText('api-voicebox-create-state', '创建失败，空 Profile 已清理：' + uploadError.message);
+            setText('api-voicebox-create-state', wasCancelled ? '已取消；未完成 Profile 已清理。本地参考音频保留，可修改后重试。' : '创建失败，空 Profile 已清理；参考音频保留，可重试：' + uploadError.message);
           } else {
             profile.sampleCount = 0;
             profiles = profiles.filter(function (p) { return p.id !== profile.id; });
             profiles.unshift(profile);
             setCachedProfiles(profiles, 'ready');
-            setText('api-voicebox-create-state', 'Incomplete profile 保留，ID ' + profile.id + '。可在列表中修复或删除。失败原因：' + uploadError.message);
+            setText('api-voicebox-create-state', (wasCancelled ? '取消未能清理 ' : 'Incomplete Profile 保留，ID ') + profile.id + '。可在列表中修复或删除。失败原因：' + uploadError.message);
           }
           renderProfileList();
+          if (cancelButton) cancelButton.hidden = true;
+          uploadController = null; uploadScope = '';
+          await refreshVoiceboxProfileManager();
+          notifyProfilesChanged();
           return;
+        } finally {
+          if (uploadController === cancellation) uploadController = null;
+          uploadScope = '';
+          if (cancelButton) cancelButton.hidden = true;
         }
         profile.sampleCount = 1;
       }
@@ -380,11 +493,13 @@
       profiles.unshift(profile);
       setCachedProfiles(profiles, 'ready');
       discardVoiceboxReference('create');
-      setText('api-voicebox-create-state', 'Ready · Profile 已创建；当前角色没有改变。请在 profile 列表中显式绑定。');
+      var consent = byId('api-voicebox-create-consent'); if (consent) consent.checked = false;
+      setText('api-voicebox-create-state', '步骤 3/3：Profile 已保存；可在列表试听，再显式绑定到角色。');
       byId('api-voicebox-create-name').value = '';
       await refreshVoiceboxProfileManager();
+      notifyProfilesChanged();
     } catch (error) {
-      setText('api-voicebox-create-state', 'Failed：' + error.message);
+      setText('api-voicebox-create-state', '创建失败；参考音频仍保留，可修正参数后重试：' + error.message);
     } finally { if (buttonEl) buttonEl.disabled = false; }
   }
   function renderProfileList() {
@@ -433,6 +548,7 @@
       await request('/api/tts/voicebox/profiles/' + encodeURIComponent(profile.id), { method: 'DELETE' });
       setText('api-voicebox-manager-status', 'Profile 已删除；角色配置没有修改。');
       await refreshVoiceboxProfileManager();
+      notifyProfilesChanged();
     } catch (error) { setText('api-voicebox-manager-status', '删除失败：' + error.message); }
   }
   async function openSampleManager(profileId, preserveStatus) {
@@ -445,6 +561,8 @@
     var heading = document.createElement('h4'); heading.textContent = '参考样本 · ' + profile.name; panel.appendChild(heading);
     var note = document.createElement('div'); note.className = 'field-hint';
     note.textContent = 'Voicebox 保存并管理参考音频；既存样本通过 IB Bridge 本地代理试听，不暴露 Voicebox 文件路径。新样本仍可在上传前本地试听。'; panel.appendChild(note);
+    var destination = document.createElement('div'); destination.className = 'voicebox-clone-disclosure';
+    destination.textContent = referenceDestinationCopy(); panel.appendChild(destination);
     var rows = document.createElement('div'); panel.appendChild(rows);
     try {
       var data = await request('/api/tts/voicebox/profiles/' + encodeURIComponent(profileId) + '/samples');
@@ -480,7 +598,7 @@
           var last = samples.length <= 1;
           if (!window.confirm(last ? '删除最后一个参考样本后，此克隆 Profile 将变为不完整。继续？' : '删除这个 Voicebox 参考样本？')) return;
           event.currentTarget.disabled = true;
-          try { await request('/api/tts/voicebox/samples/' + encodeURIComponent(sample.id), { method: 'DELETE' }); await openSampleManager(profileId, true); await refreshVoiceboxProfileManager(); }
+          try { await request('/api/tts/voicebox/samples/' + encodeURIComponent(sample.id), { method: 'DELETE' }); await openSampleManager(profileId, true); await refreshVoiceboxProfileManager(); notifyProfilesChanged(); }
           catch (error) { setText('api-voicebox-sample-status', '删除样本失败：' + error.message); event.currentTarget.disabled = false; }
         }));
         rows.appendChild(row);
@@ -494,18 +612,35 @@
     var recordBtn = button('录制参考音频', function (event) { toggleVoiceboxReferenceRecording(event.currentTarget, 'sample'); }); panel.appendChild(recordBtn);
     var status = document.createElement('div'); status.id = 'api-voicebox-sample-status'; status.className = 'field-hint'; status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite'); panel.appendChild(status);
     var audio = document.createElement('audio'); audio.id = 'api-voicebox-sample-preview'; audio.controls = true; audio.hidden = true; audio.style.cssText = 'display:none;width:100%;margin-top:8px'; panel.appendChild(audio);
+    var consentLabel = document.createElement('label'); consentLabel.className = 'form-check-row voicebox-clone-consent';
+    var consent = document.createElement('input'); consent.type = 'checkbox'; consent.className = 'u-native-check'; consent.id = 'api-voicebox-sample-consent';
+    consentLabel.appendChild(consent);
+    var consentText = document.createElement('span'); consentText.textContent = '我确认有权使用这段声音，并同意将参考音频发送至上方说明的 Voicebox Provider。'; consentLabel.appendChild(consentText);
+    panel.appendChild(consentLabel);
     panel.appendChild(button('清除本地待上传音频', function () { discardVoiceboxReference('sample'); }));
-    panel.appendChild(button('添加到此 Profile', async function (event) {
-      event.currentTarget.disabled = true;
+    var addSampleButton = button('添加到此 Profile', async function (event) {
+      var action = event.currentTarget;
+      if (!capabilities || !capabilities.referenceAudio || typeof capabilities.referenceAudio.localEndpoint !== 'boolean') {
+        setText('api-voicebox-sample-status', '无法确认当前 Voicebox Provider 的位置；参考音频未发送。'); return;
+      }
+      if (!consent.checked) { setText('api-voicebox-sample-status', '请先确认声音使用授权；参考音频尚未发送。'); return; }
+      if (uploadController) { setText('api-voicebox-sample-status', '已有 Voicebox 参考音频任务正在进行。'); return; }
+      uploadController = new AbortController();
+      var cancellation = uploadController;
+      action.disabled = true; cancelUploadButton.hidden = false;
       try {
         setText('api-voicebox-sample-status', 'Voicebox 正在接收并验证参考样本…');
-        await uploadSample(profileId, 'sample');
+        await uploadSample(profileId, 'sample', { signal: cancellation.signal });
         discardVoiceboxReference('sample');
         setText('api-voicebox-sample-status', '参考样本已添加。');
         await refreshVoiceboxProfileManager();
-      } catch (error) { setText('api-voicebox-sample-status', '添加失败：' + error.message); }
-      finally { event.currentTarget.disabled = false; }
-    }));
+        notifyProfilesChanged();
+      } catch (error) { setText('api-voicebox-sample-status', cancellation.signal.aborted ? '上传已取消；本地参考音频仍保留，可重试。' : '添加失败：' + error.message); }
+      finally { if (uploadController === cancellation) uploadController = null; uploadScope = ''; cancelUploadButton.hidden = true; action.disabled = false; }
+    });
+    var cancelUploadButton = button('取消上传', function () { cancelVoiceboxProfileCreate(); });
+    cancelUploadButton.hidden = true;
+    panel.appendChild(addSampleButton); panel.appendChild(cancelUploadButton);
     if (!preserveStatus) setText('api-voicebox-manager-status', '样本操作通过 IB Bridge 代理到 Voicebox。');
   }
   async function previewVoiceboxProfile(profileId, engineOverride, textOverride, buttonEl) {
@@ -517,23 +652,99 @@
     var text = String(textOverride || byId('api-voicebox-preview-text') && byId('api-voicebox-preview-text').value || '你好，这是一段本地音色试听。').trim();
     if (!text) text = '你好，这是一段本地音色试听。';
     if (text.length > 300) { setText('api-voicebox-manager-status', '试听文本最多 300 个字符。'); return; }
+    stopPreviewAudio();
+    var generation = ++previewGeneration;
+    var controller = new AbortController(); activePreviewController = controller;
+    previewControls(true, '取消生成');
     if (buttonEl) buttonEl.disabled = true;
     var engine = String(engineOverride || profile.defaultEngine || profile.presetEngine || '');
     var voice = { enabled: true, source: 'voicebox', provider: 'voicebox', voiceId: profile.id, model: engine, language: profile.language || '', rate: 1, pitch: '+0Hz', style: '', voiceType: 'builtin', voiceData: null };
     try {
+      setText('api-voicebox-manager-status', 'Voicebox 正在生成试听；模型不会自动下载。');
       var payload = IB.bridge.ttsPayload(voice, text); payload.preview = true;
-      var result = await request('/api/tts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      var result = await request('/api/tts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal: controller.signal });
+      if (generation !== previewGeneration) return;
       if (!result.url) throw new Error('Bridge did not return an audio URL.');
-      if (previewAudio) { try { previewAudio.pause(); } catch (e) {} }
       var play = function (url, revoke) {
-        previewAudio = new Audio(url);
-        previewAudio.play().catch(function () {});
-        if (revoke) previewAudio.addEventListener('ended', function () { try { URL.revokeObjectURL(url); } catch (e) {} });
+        if (generation !== previewGeneration) { releasePreviewUrl(url, revoke); return; }
+        startPreviewAudio(url, revoke);
       };
-      ibBridgeLoadAudio(result.url, play, function () { play(bridgeUrl(result.url), false); });
+      ibBridgeLoadAudio(result.url, play, function () {
+        if (generation === previewGeneration) play(bridgeUrl(result.url), false);
+      });
       setText('api-voicebox-manager-status', '试听生成完成；没有创建聊天消息。');
-    } catch (error) { setText('api-voicebox-manager-status', '试听失败：' + error.message); }
-    finally { if (buttonEl) buttonEl.disabled = false; }
+      return { ok: true, playing: true };
+    } catch (error) {
+      if (controller.signal.aborted) {
+        setText('api-voicebox-manager-status', '试听已取消；没有创建聊天消息。');
+        return { ok: false, cancelled: true };
+      }
+      setText('api-voicebox-manager-status', '试听失败，可重试：' + error.message);
+      return { ok: false, error: error.message };
+    } finally {
+      if (activePreviewController === controller) activePreviewController = null;
+      if (!previewAudio) previewControls(false);
+      if (buttonEl) buttonEl.disabled = false;
+    }
+  }
+  function cancelVoiceboxPreview() {
+    var active = !!activePreviewController || !!previewAudio;
+    stopPreviewAudio();
+    if (active) setText('api-voicebox-manager-status', '试听已停止；可以重新试听。');
+    return active;
+  }
+  async function listPresetVoiceboxVoices(engine) {
+    var key = String(engine || '').toLowerCase(), cap = engineCapabilities(key);
+    if (!available || !cap || cap.preset !== true) throw new Error('Voicebox preset engine is unavailable.');
+    var result = await request('/api/tts/voicebox/presets/' + encodeURIComponent(key));
+    return Array.isArray(result.voices) ? result.voices : [];
+  }
+  async function importPresetVoiceboxProfile(profile) {
+    var value = profile && typeof profile === 'object' ? profile : {};
+    var engine = String(value.engine || '').toLowerCase();
+    var name = String(value.name || '').trim();
+    var description = String(value.description || '').trim();
+    var language = String(value.language || '').toLowerCase();
+    var presetVoiceId = String(value.presetVoiceId || '').trim();
+    var cap = engineCapabilities(engine);
+    if (!available) throw new Error('Voicebox Runtime 当前不可用；没有创建 Profile。');
+    if (!cap || cap.preset !== true || !Array.isArray(cap.profileTypes) || cap.profileTypes.indexOf('preset') < 0) {
+      throw new Error('该 Provider/Engine 不支持 Voicebox 预设 Profile。');
+    }
+    if (!name || name.length > 100 || description.length > 500 || !presetVoiceId || presetVoiceId.length > 120) {
+      throw new Error('Profile 名称、描述或预设音色引用无效。');
+    }
+    if (!language || (Array.isArray(cap.languages) && cap.languages.indexOf(language) < 0)) {
+      throw new Error('该 Engine 不支持此语言。');
+    }
+    var voices = await listPresetVoiceboxVoices(engine);
+    if (!voices.some(function (voice) { return String(voice.id || '') === presetVoiceId; })) {
+      throw new Error('Voicebox 当前不提供这个预设音色。');
+    }
+    var result = await request('/api/tts/voicebox/profiles', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name, description: description, language: language,
+        voiceType: 'preset', engine: engine, presetVoiceId: presetVoiceId })
+    });
+    var created = result && result.profile;
+    if (!created || !created.id || created.voiceType !== 'preset'
+      || String(created.presetVoiceId || '') !== presetVoiceId || String(created.presetEngine || created.defaultEngine || '') !== engine) {
+      throw new Error('Voicebox did not return a compatible preset Profile.');
+    }
+    profiles = profiles.filter(function (item) { return String(item.id) !== String(created.id); });
+    profiles.unshift(created);
+    setCachedProfiles(profiles, 'ready');
+    renderProfileList();
+    notifyProfilesChanged();
+    return created;
+  }
+  function profileStatus(profileId) {
+    var profile = findProfile(profileId);
+    if (!profile) return { available: false, label: 'Profile 不在当前 Voicebox 列表中。', ready: false };
+    var incomplete = profileIncomplete(profile), model = modelState(profile);
+    return { available: !!available, incomplete: incomplete, ready: !!available && !incomplete && model.ready,
+      modelKnown: model.known, label: !available ? 'Voicebox Runtime 不可用'
+        : incomplete ? 'Profile 不完整：缺少参考样本' : model.label };
   }
   async function bindVoiceboxProfile(profileId, buttonEl) {
     var profile = findProfile(profileId);
@@ -542,21 +753,28 @@
     if (typeof editingApiId === 'undefined' || !editingApiId) { setText('api-voicebox-role-status', '请先打开并保存一个当前角色，再绑定 Voicebox 音色。'); return; }
     var provider = byId('api-voice-provider');
     if (!provider) return;
-    if (typeof window._voiceSyncProviderOptions === 'function') window._voiceSyncProviderOptions();
+    var social = window.IB && window.IB.social || {};
+    var syncProviders = window._voiceSyncProviderOptions || social._voiceSyncProviderOptions;
+    var toggleVoiceDetail = window._voiceToggleDetail || social._voiceToggleDetail;
+    var setVoiceId = window._voiceSetId || social._voiceSetId;
+    if (typeof syncProviders === 'function') syncProviders();
     if (typeof provider.querySelector === 'function' && !provider.querySelector('option[value="voicebox"]')) {
       var option = document.createElement('option'); option.value = 'voicebox'; option.textContent = 'Voicebox Local Runtime'; provider.appendChild(option);
     }
     provider.value = 'voicebox';
-    if (typeof window._voiceToggleDetail === 'function') window._voiceToggleDetail();
-    if (typeof window._voiceSetId === 'function') window._voiceSetId(profile.id);
+    if (typeof toggleVoiceDetail === 'function') toggleVoiceDetail();
+    if (typeof setVoiceId === 'function') setVoiceId(profile.id);
     var select = byId('api-voice-select'); if (select) select.value = profile.id;
     var toggle = byId('api-voice-toggle'); if (toggle) toggle.checked = true;
     syncRoleControls();
     if (buttonEl) buttonEl.disabled = true;
     try {
       if (typeof window.saveCurrentApi !== 'function') throw new Error('Role editor save action is unavailable.');
-      await window.saveCurrentApi(buttonEl || null);
+      /* bind owns this button's busy state; saveCurrentApi treats a disabled
+         button argument as an already-running save and would return early. */
+      await window.saveCurrentApi(null);
       setText('api-voicebox-manager-status', '已显式绑定并保存当前角色；只保存 Voicebox profile ID。');
+      notifyProfilesChanged();
     } catch (error) {
       setText('api-voicebox-manager-status', '角色未保存：' + error.message);
     } finally { if (buttonEl) buttonEl.disabled = false; }
@@ -575,6 +793,10 @@
   function init() {
     var file = byId('api-voicebox-reference-file');
     if (file) file.addEventListener('change', function () { referenceFileChanged('create', file); });
+    var cancelCreate = byId('api-voicebox-create-cancel-btn');
+    if (cancelCreate) cancelCreate.addEventListener('click', cancelVoiceboxProfileCreate);
+    var cancelPreview = byId('api-voicebox-cancel-preview');
+    if (cancelPreview) cancelPreview.addEventListener('click', cancelVoiceboxPreview);
   }
   var api = {
     open: openVoiceboxProfileManager,
@@ -582,8 +804,15 @@
     refresh: refreshVoiceboxProfileManager,
     syncRoleControls: syncRoleControls,
     preview: previewVoiceboxProfile,
+    stopPreview: stopPreviewAudio,
+    cancelPreview: cancelVoiceboxPreview,
+    isPreviewActive: function () { return !!activePreviewController || !!previewAudio; },
+    cancelCreate: cancelVoiceboxProfileCreate,
     bind: bindVoiceboxProfile,
     capabilities: function () { return capabilities; },
+    presetVoices: listPresetVoiceboxVoices,
+    importPresetProfile: importPresetVoiceboxProfile,
+    profileStatus: profileStatus,
     styleSupported: function (profileId) {
       var profile = findProfile(profileId);
       var cap = profile && engineCapabilities(String(profile.defaultEngine || profile.presetEngine || ''));

@@ -10,8 +10,13 @@
 var WORKLET_SOURCE="class IBVoiceCapture extends AudioWorkletProcessor{constructor(){super();this.acc=0;this.ratio=sampleRate/16000}process(inputs){var ch=inputs[0]&&inputs[0][0];if(!ch)return true;var out=[];for(var i=0;i<ch.length;i++){this.acc++;if(this.acc>=this.ratio){this.acc-=this.ratio;out.push(ch[i])}}var sum=0;for(var j=0;j<ch.length;j++)sum+=ch[j]*ch[j];var pcm=new Int16Array(out.length);for(var k=0;k<out.length;k++){var v=Math.max(-1,Math.min(1,out[k]));pcm[k]=v<0?v*32768:v*32767}this.port.postMessage({pcm:pcm.buffer,rms:Math.sqrt(sum/Math.max(1,ch.length))},[pcm.buffer]);return true}}registerProcessor('ib-voice-capture',IBVoiceCapture);";
 
 function wsUrl(){
-  var base=typeof ibBridgeBase==='function'?ibBridgeBase():'http://127.0.0.1:23115';
+  var base=typeof ibBridgeBase==='function'?ibBridgeBase():('http://127.0.0.1:'+String(window.__IB_BRIDGE_PORT__||23115));
   var value=String(base).replace(/^http:/,'ws:').replace(/^https:/,'wss:').replace(/\/+$/,'')+'/voice';
+  if(window.__IB_DEV_MODE__===true){
+    var dev=window.__IB_DEV_SERVICE_CONFIG__;
+    if(!dev||!dev.sessionToken||!dev.instanceId)return '';
+    try{var parsed=new URL(value);parsed.searchParams.set('ib_dev_session',String(dev.sessionToken));parsed.searchParams.set('ib_dev_instance',String(dev.instanceId));value=parsed.toString()}catch(e){return ''}
+  }
   var access=token();return access?value+'?token='+encodeURIComponent(access):value;
 }
 function token(){try{return typeof ibBridgeToken==='function'?ibBridgeToken():''}catch(e){return ''}}
@@ -37,6 +42,7 @@ function VoiceCall(opts){
   this.connectedAt=0;this.durationTimer=null;this._wave=[];
   this.ws=null;this.stream=null;this.ctx=null;this.node=null;
   this.state='idle';this.callSessionId='';this.generationId=0;this.asrGeneration=0;this.turnEpoch=0;
+  this._interruptAwaitingAck=false;
   this.speaking=false;this.playing=false;
   this.audioQueue=[];this.currentAudio=null;this.audioUrl='';this.replyDone=false;this.replyEnded=false;
   /* Streaming audio: ordered per-sentence entries, played head-to-toe. */
@@ -57,15 +63,42 @@ function VoiceCall(opts){
 }
 
 VoiceCall.prototype.setState=function(state){
-  this.state=state;
+  var valid=['idle','incoming','connecting','connected','listening','thinking','speaking','interrupted','interrupting','ending','error','ended'];
+  var next=String(state||'idle');
+  if(valid.indexOf(next)<0)next=this.state||'idle';
+  this.state=next;
   var labels={idle:'Idle',incoming:'Incoming',connecting:'Connecting',connected:'Connected',listening:'Listening',thinking:'Thinking',speaking:'Speaking',interrupted:'Interrupted',interrupting:'Interrupting',ending:'Ending',error:'Error',ended:'Call ended'};
-  var root=byId('voice-call-modal');if(root)root.dataset.state=state;
-  text(byId('voice-call-state'),labels[state]||state);
+  var presented=(next==='listening'||next==='thinking'||next==='speaking')?next:
+    (next==='interrupted'||next==='interrupting'?'interrupted':(next==='error'?'error':'idle'));
+  var root=byId('voice-call-modal');if(root){root.dataset.state=next;root.dataset.voiceStatus=presented;}
+  var status=byId('voice-call-state');if(status){status.dataset.voiceStatus=presented;text(status,labels[next]||next);}
+  this._syncExpression(presented);
   /* 通话一旦进入语音活动状态即开始计时；挂断/结束停止。 */
-  if(state==='listening'||state==='speaking'||state==='thinking'||state==='connected'){
+  if(next==='listening'||next==='speaking'||next==='thinking'||next==='connected'){
     if(!this.connectedAt)this.connectedAt=Date.now();
     this._startDuration();
   }
+};
+VoiceCall.prototype._syncExpression=function(state){
+  var host=byId('voice-call-expression'),api=window.IBExpressionPacks,root=byId('voice-call-modal');
+  var reduced=false,motion=true;
+  try{
+    reduced=!!(window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches)
+      ||document.documentElement.dataset.reducedMotion==='true'||document.documentElement.dataset.motion==='off'
+      ||(document.body&&(document.body.dataset.reducedMotion==='true'||document.body.dataset.motion==='off'));
+    var configs=Array.isArray(window.apiConfigs)?window.apiConfigs:[],cfg=configs.find(function(item){return String(item&&item.id||'')===String(this.roleId||'')}.bind(this));
+    if(cfg&&window.IBExpressionPackCore&&typeof window.IBExpressionPackCore.settingsOf==='function')motion=window.IBExpressionPackCore.settingsOf(cfg).microMotion!==false;
+  }catch(e){}
+  if(root)root.dataset.motion=reduced||!motion?'off':'on';
+  if(!host||!this.roleId||!api||typeof api.applyRoleState!=='function')return;
+  var expressionState=state==='speaking'?'voiceExpression':
+    (state==='thinking'?'typingExpression':(state==='error'?'errorExpression':'neutralExpression'));
+  try{
+    if(typeof api.clearRoleState==='function')api.clearRoleState(host);
+    api.applyRoleState(String(this.roleId),expressionState,host);
+    host.dataset.voiceState=String(state||'idle');
+    host.dataset.voiceRoleId=String(this.roleId);
+  }catch(e){}
 };
 VoiceCall.prototype._startDuration=function(){
   var self=this;
@@ -89,6 +122,10 @@ VoiceCall.prototype.start=async function(){
     if(error&&(/NotAllowed|PermissionDenied/.test(error.name)||error.name==='SecurityError'))throw new Error('Microphone permission was denied. Allow microphone access and try again.');
     if(error&&/NotFound|DevicesNotFound/.test(error.name))throw new Error('No microphone was found');
     throw error;
+  }
+  if(this.destroyed||this.state==='ended'){
+    if(this.stream){this.stream.getTracks().forEach(function(track){try{track.stop()}catch(e){}});this.stream=null;}
+    throw _voiceConnError('cancelled');
   }
   var AC=window.AudioContext||window.webkitAudioContext;
   if(!AC)throw new Error('Web Audio is not supported');
@@ -249,6 +286,7 @@ VoiceCall.prototype.speechStart=function(){
   this.send({type:'speech_start'});
   for(var i=0;i<this.preRoll.length;i++){if(typeof this._acTurn==='object'&&this._acTurn)this._acTurn.push(this.preRoll[i]);if(this.ws&&this.ws.readyState===1)this.ws.send(this.preRoll[i]);}
   this.preRoll=[];this.preRollBytes=0;
+  this.setState('listening');
   var mic=byId('voice-call-mute');if(mic&&!this.micMuted)mic.classList.add('active');
 };
 VoiceCall.prototype.speechEnd=function(){
@@ -261,9 +299,17 @@ VoiceCall.prototype.speechEnd=function(){
 VoiceCall.prototype.attachVideo=function(runtime){this.videoRuntime=runtime||null;return this};
 
 VoiceCall.prototype.interrupt=function(reason){
-  this.turnEpoch++;this.asrGeneration++;this.stopAudio();
+  if(this.destroyed||this.state==='ended')return false;
+  if(this.state==='interrupted'&&!this.speaking&&!this.playing&&!this.sinkActive)return false;
+  this.turnEpoch++;this.asrGeneration++;
+  this.generationId=(Number(this.generationId)||0)+1;
+  this._interruptAwaitingAck=true;
+  this.stopAudio();this.sinkActive=false;
+  if(this.speaking){this.speaking=false;this.send({type:'speech_end'});}
+  var mic=byId('voice-call-mute');if(mic)mic.classList.remove('active');
   if(typeof stopStreaming==='function')try{stopStreaming()}catch(e){}
   this.send({type:'interrupt',reason:reason||'user'});this.setState('interrupted');
+  return true;
 };
 
 /* Freeze playback: stop the playing element, empty the sentence queue, release
@@ -271,6 +317,7 @@ VoiceCall.prototype.interrupt=function(reason){
 VoiceCall.prototype.stopAudio=function(){
   for(var i=0;i<this.aEntries.length;i++){
     var e=this.aEntries[i];
+    e.cancelled=true;
     if(e.mse){try{e.mse.destroy()}catch(_){/*ignore*/}}
     if(e.el){try{e.el.pause()}catch(_){/*ignore*/}}
     if(e.url){try{URL.revokeObjectURL(e.url)}catch(_){/*ignore*/}}
@@ -279,6 +326,7 @@ VoiceCall.prototype.stopAudio=function(){
   if(this.currentAudio){try{this.currentAudio.pause();this.currentAudio.src=''}catch(e){}this.currentAudio=null}
   if(this.audioUrl){try{URL.revokeObjectURL(this.audioUrl)}catch(e){}this.audioUrl=''}
   this.audioQueue=[];this.playing=false;this.replyDone=false;this.replyEnded=false;
+  var meter=byId('voice-call-meter-fill');if(meter)meter.style.transform='scaleX(0)';
 };
 
 function b64ToBuf(data){
@@ -351,6 +399,8 @@ VoiceCall.prototype._assemble=function(entry){
 };
 
 VoiceCall.prototype._onEntryEnded=function(entry){
+  if(!entry||entry.cancelled||this.destroyed||this.aEntries.indexOf(entry)<0||entry.settled)return;
+  entry.settled=true;
   if(this.playingEntry===entry)this.playingEntry=null;
   this.aPlaying=false;
   this.aIndex++;
@@ -475,11 +525,18 @@ VoiceCall.prototype.onMessage=function(msg){
     this.callSessionId=msg.call_session_id||msg.callSessionId||'';
     if(!this.connectedAt)this.connectedAt=Date.now();
     this._startDuration();
-    if(msg.asr&&msg.asr.configured===false)this.showError('Bridge ASR is not configured');
+    if(msg.asr&&msg.asr.configured===false){this.showError('Bridge ASR is not configured');this.setState('error');}
+    else {this.showError('');this.setState('listening');}
     if(this.openingMessage){this.send({type:'greeting',turn_id:'greeting',text:this.openingMessage});this.openingMessage='';}
     return
   }
-  if(msg.type==='state'){if(!(msg.mode==='listening'&&this.playing))this.setState(msg.mode||this.state);return}
+  if(msg.type==='state'){
+    var stateGeneration=Number(msg.generation_id),stateMode=String(msg.mode||this.state);
+    if(isFinite(stateGeneration)&&stateGeneration<this.generationId)return;
+    if(this._interruptAwaitingAck&&(stateMode==='thinking'||stateMode==='speaking'))return;
+    if(!(stateMode==='listening'&&this.playing))this.setState(stateMode);
+    return
+  }
   if(msg.type==='speech_start'){this.asrGeneration=Number(msg.generation_id)||this.asrGeneration;return}
   if(msg.type==='transcript_final'){
     if(Number(msg.generation_id)===Number(this.asrGeneration)||msg.generation_id==null){this.onTranscript(msg)}return;
@@ -487,11 +544,22 @@ VoiceCall.prototype.onMessage=function(msg){
   if(msg.type==='transcript_partial'){
     if(Number(msg.generation_id)===Number(this.asrGeneration)||msg.generation_id==null){text(byId('voice-call-transcript'),msg.text||'');}return;
   }
-  if(msg.type==='reply_text'){this.generationId=Number(msg.generation_id)||0;if(!this.sinkActive)this.replyText=String(msg.text||'');text(byId('voice-call-reply'),this.replyText);if(!this.playing)this.setState('speaking');return}
+  if(msg.type==='reply_text'){
+    var replyGeneration=Number(msg.generation_id);
+    if(isFinite(replyGeneration)&&replyGeneration<this.generationId)return;
+    if(isFinite(replyGeneration))this.generationId=replyGeneration;
+    if(!this.sinkActive)this.replyText=String(msg.text||'');text(byId('voice-call-reply'),this.replyText);if(!this.playing)this.setState('thinking');return
+  }
   if(msg.type==='audio'){this._onAudio(msg);return}
-  if(msg.type==='interrupted'){this.generationId=Number(msg.next_generation_id)||this.generationId+1;this.stopAudio();this.sinkActive=false;this.setState('interrupted');return}
-  if(msg.type==='generation_end'){if(Number(msg.generation_id)===Number(this.generationId)){this.sinkActive=false;this._sendMetrics();if(!this.playing){this.setState('listening')}else{this.replyEnded=true}}return}
-  if(msg.type==='nothing_heard'){this.sinkActive=false;text(byId('voice-call-transcript'),'No speech detected');this.setState('listening');return}
+  if(msg.type==='interrupted'){
+    var nextGeneration=Number(msg.next_generation_id);
+    if(isFinite(nextGeneration)&&nextGeneration>=this.generationId)this.generationId=nextGeneration;
+    else if(!isFinite(nextGeneration)&&!this._interruptAwaitingAck)this.generationId++;
+    this._interruptAwaitingAck=false;
+    this.stopAudio();this.sinkActive=false;this.setState('interrupted');return
+  }
+  if(msg.type==='generation_end'){if(Number(msg.generation_id)===Number(this.generationId)){this.sinkActive=false;this._sendMetrics();if(!this.playing){if(this.state!=='error'&&this.state!=='interrupted')this.setState('listening')}else{this.replyEnded=true}}return}
+  if(msg.type==='nothing_heard'){this.sinkActive=false;text(byId('voice-call-transcript'),'No speech detected');this.showError('');this.setState('listening');return}
   if(msg.type==='hangup'){this.finish();return}
   if(msg.type==='error'){this.showError(msg.error||'Voice call failed');if(msg.stage==='asr'||msg.stage==='tts')this.setState('error')}
 };
@@ -506,8 +574,9 @@ VoiceCall.prototype.toggleSpeaker=function(){
   this.speakerMuted=!this.speakerMuted;
   var btn=byId('voice-call-speaker');if(btn)btn.classList.toggle('speaker-off',this.speakerMuted);
   text(byId('voice-call-speaker'),this.speakerMuted?'\u2605':'');
-  if(this.speakerMuted)this.stopAudio();
-  else this._maybePlay();
+  if(this.speakerMuted){this.stopAudio();this.sinkActive=false;this.setState('interrupted');}
+  else if(this.aIndex<this.aEntries.length)this._maybePlay();
+  else this.setState('listening');
 };
 VoiceCall.prototype.hangup=function(){this.send({type:'hangup'});this.finish()};
 VoiceCall.prototype.release=function(){
@@ -522,10 +591,14 @@ VoiceCall.prototype.release=function(){
 VoiceCall.prototype.finish=function(){
   this.destroyed=true;
   this.release();
-  this.setState('ended');setTimeout(closeVoiceCall,280);
+  this.setState('ended');
+  var finishedCall=this;
+  if(_voiceCallCloseTimer)clearTimeout(_voiceCallCloseTimer);
+  _voiceCallCloseTimer=setTimeout(function(){if(!current||current===finishedCall)closeVoiceCall();},280);
 };
 
 var current=null;
+var _voiceCallCloseTimer=null;
 var _voiceCallOpener=null;  /* Focus restoration anchor: the element that opened the modal */
 var _incomingCallOpener=null;  /* Focus anchor for the incoming call overlay */
 /* ── P2 · Call modal 视频面 UI：注入相机开关 + 视频预览（不碰 .voice-call-controls）── */
@@ -563,11 +636,15 @@ function _mountCallVideoSurface(call){
 /* 以指定角色开一次语音通话（outgoing，或由主动呼入 accept 后进入）。 */
 async function startVoiceCallFor(roleId,opts){
   opts=opts||{};
-  if(current){if(opts.incoming)toast('已有一通通话进行中');return}
+  if(current){
+    if(String(current.roleId||'')===String(roleId||'')){if(opts.incoming)toast('已有一通通话进行中');return}
+    current.hangup();current=null;
+  }
   if(String(roleId).indexOf('group_')===0){toast('Voice calls currently support one character at a time');return}
   var role=(apiConfigs||[]).find(function(item){return String(item.id)===String(roleId)})||(typeof archivedConfigs!=='undefined'?(archivedConfigs||[]).find(function(item){return String(item.id)===String(roleId)}):null);
   if(!role){toast('The selected character is unavailable');return}
   var modal=byId('voice-call-modal');if(!modal)return;
+  if(_voiceCallCloseTimer){clearTimeout(_voiceCallCloseTimer);_voiceCallCloseTimer=null;}
   /* Capture the element that triggered the modal for focus restoration on close. */
   if(!_voiceCallOpener&&document.activeElement&&document.activeElement!==document.body)_voiceCallOpener=document.activeElement;
   modal.hidden=false;modal.setAttribute('aria-hidden','false');
@@ -580,9 +657,13 @@ async function startVoiceCallFor(roleId,opts){
   /* Move focus to the first control (mute button) after the modal opens, so keyboard
      navigation works and screen readers announce the modal's purpose. */
   window.setTimeout(function(){var btn=byId('voice-call-mute');if(btn)try{btn.focus()}catch(e){}},0);
-  current=new VoiceCall({roleId:String(roleId),conversationId:conversationId,role:role,incoming:!!opts.incoming,openingMessage:opts.openingMessage||''});
-  _mountCallVideoSurface(current);/* P2 · 视频面 UI（可切换预览 + 相机开关；不碰 .voice-call-controls 计数） */
-  try{await current.start()}catch(error){current.showError(String(error&&error.message||error));current.setState('error');current.release()}
+  var call=new VoiceCall({roleId:String(roleId),conversationId:conversationId,role:role,incoming:!!opts.incoming,openingMessage:opts.openingMessage||''});
+  current=call;
+  _mountCallVideoSurface(call);/* P2 · 视频面 UI（可切换预览 + 相机开关；不碰 .voice-call-controls 计数） */
+  try{await call.start()}catch(error){
+    call.destroyed=true;call.release();
+    if(current===call){call.showError(String(error&&error.message||error));call.setState('error');current=null;}
+  }
 }
 async function startVoiceCall(){
   if(current)return;

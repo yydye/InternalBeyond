@@ -12,6 +12,9 @@ const voiceSource = fs.readFileSync(path.join(ROOT, 'assets/js/communication/voi
 const managerSource = fs.readFileSync(path.join(ROOT, 'assets/js/voicebox-profile-manager.js'), 'utf8');
 const socialSource = fs.readFileSync(path.join(ROOT, 'assets/js/social.js'), 'utf8');
 const htmlSource = fs.readFileSync(path.join(ROOT, 'InternalBeyond.html'), 'utf8');
+const voiceboxPageSource = fs.readFileSync(path.join(ROOT, 'assets/js/voicebox-page.js'), 'utf8');
+const bridgeRoutesSource = fs.readFileSync(path.join(ROOT, 'bridge/routes.js'), 'utf8');
+const voiceboxAdapterSource = fs.readFileSync(path.join(ROOT, 'bridge/voicebox.js'), 'utf8');
 
 let pass = 0, fail = 0;
 async function check(name, fn) {
@@ -154,34 +157,89 @@ async function shortRecordingCheck() {
     assert.strictEqual(header.readUInt32LE(24), 16000);
   });
 
-  await check('Voicebox modal exposes upload, record, preview, create, manage and explicit bind controls', () => {
-    for (const id of ['api-voicebox-manager-backdrop', 'api-voicebox-reference-file', 'api-voicebox-record-btn', 'api-voicebox-reference-preview', 'api-voicebox-create-btn', 'api-voicebox-bind-btn']) assert(htmlSource.includes('id="' + id + '"'), id);
+  await check('Voicebox clone workflow exposes reference, permission, progress, cancel, preview and bind controls', () => {
+    for (const id of ['api-voicebox-manager-backdrop', 'api-voicebox-reference-file', 'api-voicebox-record-btn', 'api-voicebox-reference-preview', 'api-voicebox-create-btn', 'api-voicebox-create-consent', 'api-voicebox-create-cancel-btn', 'api-voicebox-cancel-preview', 'api-voicebox-bind-btn']) assert(htmlSource.includes('id="' + id + '"'), id);
     assert(/accept="\.wav,\.mp3,audio\/wav,audio\/mpeg"/.test(htmlSource));
+    assert(htmlSource.includes('我确认有权使用这段声音'));
+    assert(htmlSource.includes('Voicebox Provider'));
+    assert(managerSource.includes('document.body.appendChild(modal)'));
+  });
+  await check('Voicebox page has a capability-gated clone entry and destination disclosure', () => {
+    assert(htmlSource.includes('data-page="voicebox"'));
+    for (const id of ['page-voicebox', 'voicebox-asr-provider', 'voicebox-tts-provider', 'voicebox-current-profile', 'voicebox-profile-list', 'voicebox-role-voice-list', 'voicebox-clone-open', 'voicebox-clone-engines', 'voicebox-clone-destination']) {
+      assert(htmlSource.includes('id="' + id + '"'), id);
+    }
+    assert(voiceboxPageSource.includes('caps.engines[key].clone === true'));
+    assert(voiceboxPageSource.includes("api.open()"));
+    assert(htmlSource.includes('assets/js/voicebox-page.js'));
+    assert(htmlSource.includes('assets/css/voicebox-page.css'));
+  });
+  await check('Voicebox page delegates audition and role binding to existing Voicebox and API editor paths', () => {
+    assert(voiceboxPageSource.includes('api.preview('));
+    assert(voiceboxPageSource.includes('api.bind('));
+    assert(voiceboxPageSource.includes('window.editApi('));
+    assert(voiceboxPageSource.includes('window.testCharacterVoice()'));
+    assert(!/request\(['"]\/api\/tts/.test(voiceboxPageSource));
+    assert(!/sendChatMessage|chatMessages|Memory|WorkMode|agentRuntime/i.test(voiceboxPageSource));
+  });
+  await check('Voice Library uses a fixed HTTPS Manifest, verifies downloaded bytes, and imports through the Voicebox Profile owner', () => {
+    const library = fs.readFileSync(path.join(ROOT, 'assets/js/voicebox-library-core.js'), 'utf8');
+    assert(library.includes('https://dl.chatvault.top/voice-library/voice-library-stable.json'));
+    assert(library.includes('resource-size-mismatch') && library.includes('resource-sha256-mismatch'));
+    assert(voiceboxPageSource.includes('credentials: \'omit\''));
+    assert(voiceboxPageSource.includes('redirect: \'error\''));
+    assert(voiceboxPageSource.includes('core.verifyResourceBytes'));
+    assert(voiceboxPageSource.includes('api.importPresetProfile('));
+    assert(!/audioData|apiKey|credential|chatMessages/i.test(library));
+  });
+  await check('Voice Profile packages are limited to supported Voicebox preset metadata, excluding clone samples', () => {
+    assert(managerSource.includes('async function importPresetVoiceboxProfile'));
+    assert(managerSource.includes('listPresetVoiceboxVoices(engine)'));
+    assert(managerSource.includes("voiceType: 'preset'"));
+    assert(managerSource.includes('presetVoices: listPresetVoiceboxVoices'));
+    assert(voiceboxPageSource.includes('profile.voiceType') && voiceboxPageSource.includes("!== 'preset'"));
   });
   await check('clone/preset engine choices derive from Bridge capabilities', () => {
     assert(managerSource.includes('cap.clone === true'));
     assert(managerSource.includes('cap.preset === true'));
     assert(managerSource.includes("request('/api/tts/voicebox/presets/'"));
   });
+  await check('reference audio stays local until explicit authorization and remote Providers are disclosed', () => {
+    assert(managerSource.includes('function referenceDestinationCopy()'));
+    assert(managerSource.includes('reference.localEndpoint'));
+    assert(managerSource.includes('远程地址'));
+    assert(managerSource.includes('!byId(\'api-voicebox-create-consent\').checked'));
+    assert(managerSource.includes('!consent.checked'));
+    assert(voiceboxAdapterSource.includes('localEndpoint: endpointIsLoopback(endpoint())'));
+    assert(bridgeRoutesSource.includes('referenceAudio: Object.assign({}, caps.referenceAudio'));
+  });
   await check('create flow creates, uploads, rolls back, and never silently binds', () => {
     const create = managerSource.slice(managerSource.indexOf('async function createVoiceboxProfile'), managerSource.indexOf('function renderProfileList'));
     const createAt = create.indexOf("request('/api/tts/voicebox/profiles'");
-    const uploadAt = create.indexOf("await uploadSample(profile.id, 'create')");
+    const uploadAt = create.indexOf("await uploadSample(profile.id, 'create', { signal: cancellation.signal })");
     const rollbackAt = create.indexOf("{ method: 'DELETE' }");
     assert(createAt >= 0 && uploadAt > createAt && rollbackAt > uploadAt);
+    assert(create.includes('步骤 2/3') && create.includes('步骤 3/3'));
+    assert(managerSource.includes('function cancelVoiceboxProfileCreate()'));
     assert(!/bindVoiceboxProfile|saveCurrentApi/.test(create));
-    assert(/Incomplete profile/.test(create));
+    assert(create.includes('Incomplete Profile 保留') || create.includes('空 Profile 已清理'));
   });
   await check('preview reuses Bridge TTS seam and never enters chat or memory flow', () => {
     assert(managerSource.includes('IB.bridge.ttsPayload(voice, text)'));
     assert(managerSource.includes('payload.preview = true'));
+    assert(managerSource.includes('signal: controller.signal'));
+    assert(bridgeRoutesSource.includes('context.signal = cancellation.signal'));
+    assert(bridgeRoutesSource.includes('clientCancellation(req, res)'));
+    assert(managerSource.includes('cancelPreview: cancelVoiceboxPreview'));
     assert(!/sendChatMessage|dbPut\(|middleBrain|MiddleBrain|Memory/.test(managerSource));
   });
   await check('profile binding is explicit and uses the current editor save path', () => {
     const bind = managerSource.slice(managerSource.indexOf('async function bindVoiceboxProfile'), managerSource.indexOf('function bindSelectedVoiceboxProfile'));
     assert(bind.includes("provider.value = 'voicebox'"));
-    assert(bind.includes('_voiceSetId(profile.id)'));
+    assert(bind.includes('window.IB && window.IB.social'));
+    assert(bind.includes('setVoiceId(profile.id)'));
     assert(bind.includes('saveCurrentApi'));
+    assert(bind.includes('saveCurrentApi(null)'));
     assert(!bind.includes('profile.name'));
     assert(socialSource.includes("source:(function(){var p=document.getElementById('api-voice-provider')"));
   });
